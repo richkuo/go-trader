@@ -1,4 +1,3 @@
-"""Tests for check_hyperliquid.py — specifically the fill extraction logic."""
 
 import sys
 import os
@@ -15,19 +14,15 @@ _UNSET = object()
 
 
 def _load_check_module():
-    """Load check_hyperliquid.py as a module."""
     script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "check_hyperliquid.py")
     spec = importlib.util.spec_from_file_location("check_hyperliquid", script_path)
     mod = importlib.util.module_from_spec(spec)
-    # Don't execute top-level code that sets up sys.path — we'll mock the adapter
     return mod, spec
 
 
 class TestFillExtraction:
-    """Test that run_execute extracts oid and fee from Hyperliquid SDK responses."""
 
     def _run_execute_with_mock_response(self, sdk_response, lookup_result=_UNSET):
-        """Helper: mock the adapter and capture JSON output from run_execute."""
         mod, spec = _load_check_module()
         spec.loader.exec_module(mod)
 
@@ -41,7 +36,6 @@ class TestFillExtraction:
         captured = StringIO()
         with patch.dict(sys.modules, {}):
             with patch.object(mod, "__builtins__", mod.__builtins__):
-                # Patch the import inside run_execute
                 import builtins
                 original_import = builtins.__import__
 
@@ -59,7 +53,6 @@ class TestFillExtraction:
         return json.loads(captured.getvalue())
 
     def test_fill_with_oid_and_fee(self):
-        """SDK response includes oid and fee — both should appear in output."""
         sdk_response = {
             "status": "ok",
             "response": {
@@ -86,7 +79,6 @@ class TestFillExtraction:
         assert fill["fee"] == 0.35
 
     def test_fill_with_oid_no_fee(self):
-        """SDK response has oid but no fee — fee should be absent."""
         sdk_response = {
             "status": "ok",
             "response": {
@@ -110,7 +102,6 @@ class TestFillExtraction:
         assert "fee" not in fill
 
     def test_fill_uses_numeric_lookup_result(self):
-        """userFills lookup fee + closed PnL should be copied only as numbers."""
         sdk_response = {
             "status": "ok",
             "response": {
@@ -137,7 +128,6 @@ class TestFillExtraction:
         assert fill["closed_pnl"] == 3.14
 
     def test_fill_ignores_truthy_non_mapping_lookup_result(self):
-        """A bare MagicMock lookup result must not leak into JSON output."""
         sdk_response = {
             "status": "ok",
             "response": {
@@ -162,7 +152,6 @@ class TestFillExtraction:
         assert "closed_pnl" not in fill
 
     def test_fill_ignores_malformed_lookup_values(self):
-        """Truthy dicts with non-numeric payloads are ignored."""
         sdk_response = {
             "status": "ok",
             "response": {
@@ -190,7 +179,6 @@ class TestFillExtraction:
         assert "closed_pnl" not in fill
 
     def test_fill_without_oid(self):
-        """SDK response has no oid — backwards compatible with old responses."""
         sdk_response = {
             "status": "ok",
             "response": {
@@ -215,7 +203,6 @@ class TestFillExtraction:
         assert "fee" not in fill
 
     def test_fill_empty_statuses(self):
-        """SDK response with empty statuses — fill should be empty dict."""
         sdk_response = {
             "status": "ok",
             "response": {"type": "order", "data": {"statuses": []}},
@@ -225,9 +212,6 @@ class TestFillExtraction:
 
 
 class TestMarginMode:
-    """#486: run_execute calls update_leverage with isolated/cross before placing
-    the market order. Failure of update_leverage must abort the order (fail closed)
-    so a bad config can't silently land in the wrong margin mode."""
 
     def _run_execute_with_margin(self, margin_mode, leverage, update_leverage_side_effect=None):
         mod, spec = _load_check_module()
@@ -312,12 +296,6 @@ class TestMarginMode:
 
 
 class TestPeerLeverageSkip:
-    """#491: when a peer strategy has already opened the same coin, HL has
-    (margin_mode, leverage) pinned to the existing on-chain position. A fresh
-    update_leverage call would fail, so run_execute queries get_position_leverage
-    and skips the call when state already matches. LoadConfig validates that
-    peers agree on (margin_mode, leverage), so a match is the expected case
-    when peers share a coin."""
 
     def _run_execute_with_existing_pos(self, margin_mode, leverage, current_state):
         mod, spec = _load_check_module()
@@ -374,17 +352,11 @@ class TestPeerLeverageSkip:
         adapter.update_leverage.assert_called_once_with(5, "ETH", is_cross=False)
 
     def test_calls_update_leverage_when_no_existing_position(self):
-        # get_position_leverage returns None when HL has no open position
-        # for the coin — then update_leverage is safe to call (HL only
-        # rejects mode changes on an OPEN position).
         result, adapter, exit_code = self._run_execute_with_existing_pos(
             "isolated", 5, None)
         adapter.update_leverage.assert_called_once_with(5, "ETH", is_cross=False)
 
     def test_state_fetch_failure_falls_back_to_calling_update_leverage(self):
-        # If get_position_leverage raises, fall back to calling
-        # update_leverage so the existing fail-closed safety net catches a
-        # genuine mismatch — never silently skip without confirmation.
         mod, spec = _load_check_module()
         spec.loader.exec_module(mod)
 
@@ -424,11 +396,6 @@ class TestPeerLeverageSkip:
 
 
 class TestClassifySLResponse:
-    """Unit coverage for _classify_sl_response added in #421. The classifier
-    is the load-bearing piece that distinguishes a resting SL from an instant
-    fill or rejection — getting it wrong means either virtual state thinks
-    the position is open when it's flat, or the scheduler treats a happy
-    instant fill as a placement error."""
 
     def _classify(self, response):
         mod, spec = _load_check_module()
@@ -500,9 +467,6 @@ class TestClassifySLResponse:
         assert payload is None
 
 
-# #1456 review round 10: a CONFIRMED HL cancel lands as {"status":"ok"} with a
-# per-order success entry; rejections arrive inside a normal body instead of
-# raising.
 _CANCEL_OK_RESPONSE = {
     "status": "ok",
     "response": {"type": "cancel", "data": {"statuses": ["success"]}},
@@ -514,7 +478,6 @@ _CANCEL_REJECTED_RESPONSE = {
 
 
 class TestClassifyCancelResponse:
-    """Only an exchange-confirmed landing may report a cancel as succeeded."""
 
     def _load(self):
         mod, spec = _load_check_module()
@@ -545,8 +508,6 @@ class TestClassifyCancelResponse:
 
 
 class TestUpdateStopLoss:
-    """#501: trailing stops reuse cancel_trigger_order + place_stop_loss without
-    submitting a market order."""
 
     def _run_update(
         self,
@@ -575,10 +536,6 @@ class TestUpdateStopLoss:
         if open_oids_side_effect is not None:
             mock_adapter.open_order_oids.side_effect = open_oids_side_effect
         elif post_place_oids is not _UNSET:
-            # #1456 review round 16: the book-diff resolver re-reads the book
-            # AFTER submitting, so the harness must be able to answer
-            # differently on that second read. The first read is the pre-submit
-            # snapshot; every read after it reports post_place_oids.
             reads = {"n": 0}
 
             def _oids(_symbol):
@@ -636,10 +593,6 @@ class TestUpdateStopLoss:
         assert out["stop_loss_oid"] == 22222
 
     def test_unreadable_placement_resolves_to_the_resting_oid(self):
-        """#1456 review round 16 (Optional 2), must-survive (a): the response
-        could not be read but the order DID rest. The book diff finds the one
-        fresh oid and reports a normal resting placement, so Go sees no
-        ambiguity, keeps no stale state, and never places a duplicate."""
         out, _ = self._run_update(
             place_response={"status": "weird"},
             post_place_oids={22222},
@@ -656,9 +609,6 @@ class TestUpdateStopLoss:
         assert "stop_loss_outcome_unknown" not in out
 
     def test_unreadable_placement_with_nothing_resting_is_a_genuine_failure(self):
-        """Must-survive (b): the diff shows no new order, so the submission
-        really did not land. Reported as a plain failure — NOT outcome-unknown —
-        so Go clears the dead OID and re-places, as before."""
         out, _ = self._run_update(
             place_response={"status": "weird"},
             post_place_oids=set(),
@@ -668,9 +618,6 @@ class TestUpdateStopLoss:
         assert "no usable status" in out["stop_loss_error"]
 
     def test_unresolvable_diff_marks_outcome_unknown(self):
-        """The residue round 11 introduced the flag for: the book cannot be
-        re-read, so the order may be resting untracked. Go must KEEP the
-        recorded stop state and license no re-place."""
         out, _ = self._run_update(
             place_response={"status": "weird"},
             post_place_oids=RuntimeError("indexer down"),
@@ -679,7 +626,6 @@ class TestUpdateStopLoss:
         assert "stop_loss_oid" not in out
 
     def test_ambiguous_diff_marks_outcome_unknown(self):
-        """More than one fresh oid cannot be attributed to this stop-loss."""
         out, _ = self._run_update(
             place_response={"status": "weird"},
             post_place_oids={22222, 33333},
@@ -688,7 +634,6 @@ class TestUpdateStopLoss:
         assert "stop_loss_oid" not in out
 
     def test_rejected_placement_does_not_mark_outcome_unknown(self):
-        """A positively rejected placement (open-order cap) is retryable."""
         out, _ = self._run_update(
             place_response={"status": "err", "response": "open order limit"},
         )
@@ -702,9 +647,6 @@ class TestUpdateStopLoss:
         assert "stop_loss_oid" not in out
 
     def test_cancel_rejected_defers_replacement(self):
-        """#1456 review round 10: HL reports a REJECTED cancel inside a normal
-        response body. The old order may still rest — no replacement may be
-        stacked on top of it."""
         out, adapter = self._run_update(cancel_response=_CANCEL_REJECTED_RESPONSE)
         adapter.place_stop_loss.assert_not_called()
         assert "cancel_stop_loss_succeeded" not in out
@@ -733,12 +675,6 @@ class TestUpdateStopLoss:
         assert out["stop_loss_oid"] == 22222
 
     def test_initial_placement_without_cancel_oid(self):
-        """#1456 review round 16: a fresh arm now takes ONE pre-submit
-        open-order read so an unreadable placement outcome is resolvable here
-        too. This is the entry point the static-scalar re-arm and the #885
-        one-shot arm use, and it is exactly where an unresolved ambiguity would
-        force a choice between duplicating an order and leaving the position
-        naked. No cancel is attempted."""
         out, adapter = self._run_update(cancel_oid=0)
         adapter.open_order_oids.assert_called_once_with("ETH")
         adapter.cancel_trigger_order.assert_not_called()
@@ -747,7 +683,6 @@ class TestUpdateStopLoss:
 
 
 class TestCloseFullPosition:
-    """#592: final-tier TP close uses market_close(sz=None) instead of market_open."""
 
     def _run_close_full(self, market_close_response=None):
         mod, spec = _load_check_module()
@@ -756,7 +691,6 @@ class TestCloseFullPosition:
         mock_adapter_cls = MagicMock()
         mock_adapter = MagicMock()
         mock_adapter_cls.return_value = mock_adapter
-        # Return {} so `if lookup:` is falsy and we skip fee overwrite (#585 path)
         mock_adapter.lookup_fill_fee_by_oid.return_value = {}
         mock_adapter.market_close.return_value = market_close_response or {
             "status": "ok",
@@ -794,13 +728,11 @@ class TestCloseFullPosition:
         return json.loads(captured.getvalue()), mock_adapter
 
     def test_uses_market_close_not_market_open(self):
-        """close_full_position=True must call market_close(sz=None), not market_open."""
         _, adapter = self._run_close_full()
         adapter.market_close.assert_called_once_with("ETH", sz=None)
         adapter.market_open.assert_not_called()
 
     def test_output_shape_matches_sized_close(self):
-        """JSON output shape must be identical to a sized close so Go consumer works unchanged."""
         out, _ = self._run_close_full()
         assert "execution" in out
         fill = out["execution"]["fill"]
@@ -809,8 +741,6 @@ class TestCloseFullPosition:
         assert fill["oid"] == 888
 
     def test_dust_scenario_closes_full_residual(self):
-        """Regression for #592: TP2 after a 0.421 ETH position that was half-closed to 0.211.
-        The close_full_position path closes the entire residual, not just 0.210."""
         _, adapter = self._run_close_full(market_close_response={
             "status": "ok",
             "response": {
@@ -820,7 +750,7 @@ class TestCloseFullPosition:
                         {
                             "filled": {
                                 "avgPx": "3100.0",
-                                "totalSz": "0.211",  # full residual, not 0.210
+                                "totalSz": "0.211",
                                 "oid": 999,
                             }
                         }
@@ -828,16 +758,10 @@ class TestCloseFullPosition:
                 },
             },
         })
-        # market_close called with sz=None — HL determines the size, not the caller
         adapter.market_close.assert_called_once_with("ETH", sz=None)
 
 
 class TestSyncProtection:
-    """#601 / #604 review #1: run_sync_protection branches for OID present /
-    gone-but-cancelled / gone-but-filled. The over-close hazard arises when a
-    TP OID dropped from open_orders because it actually filled (not because
-    it was cancelled), and the script blindly re-places at the same price
-    sized off the stale virtual qty."""
 
     def _run_sync(
         self,
@@ -869,8 +793,6 @@ class TestSyncProtection:
             set() if open_oids is None else set(open_oids)
         )
         mock_adapter.round_perps_trigger_px.side_effect = lambda _sym, px: round(px, 4)
-        # ETH on HL has sz_decimals=3.  Match the real adapter's behavior so
-        # the new round-then-floor tier sizing logic exercises real lot math.
         mock_adapter.round_size.side_effect = lambda _sym, sz: round(sz, 3)
         mock_adapter.floor_size.side_effect = lambda _sym, sz: math.floor(sz * 1000) / 1000
 
@@ -887,8 +809,6 @@ class TestSyncProtection:
             return responses.get("sl", {"status": "ok", "response": {"type": "order", "data": {"statuses": [{"resting": {"oid": 9000}}]}}})
 
         def tp_side_effect(symbol, sz, px, is_buy):
-            # Return distinct OIDs for TP1 vs TP2 by detecting which call this
-            # is via a counter on the side_effect itself.
             count = mock_adapter.place_take_profit_limit.call_count
             key = "tp1" if count == 1 else "tp2"
             return responses.get(key, {
@@ -936,7 +856,6 @@ class TestSyncProtection:
         return json.loads(captured.getvalue()), mock_adapter
 
     def test_sl_skips_force_replace_when_size_zero(self):
-        """#843: dust cycle echoes resting SL instead of place_stop_loss(0)."""
         out, adapter = self._run_sync(
             size=0,
             cancel_tp_oids=[303],
@@ -948,7 +867,6 @@ class TestSyncProtection:
         adapter.place_stop_loss.assert_not_called()
 
     def test_surplus_cancel_failed_reported(self):
-        """#843: failed surplus cancel surfaces OID for Go retry; runs even when size=0."""
         mod, spec = _load_check_module()
         spec.loader.exec_module(mod)
         mock_adapter_cls = MagicMock()
@@ -988,7 +906,6 @@ class TestSyncProtection:
         mock_adapter.cancel_order_by_oid.assert_called_once_with("ETH", 303)
 
     def test_surplus_cancel_filled_skips_cancel(self):
-        """#843: surplus OID already filled → report filled, do not cancel."""
         out, adapter = self._run_sync(
             cancel_tp_oids=[303],
             open_oids=set(),
@@ -999,7 +916,6 @@ class TestSyncProtection:
         adapter.cancel_order_by_oid.assert_not_called()
 
     def test_surplus_cancel_runs_when_size_zero(self):
-        """#843: tier placement skipped for dust but surplus cancel still runs."""
         out, adapter = self._run_sync(
             size=0,
             tp_tiers=[(1.0, 0.5), (2.0, 1.0)],
@@ -1009,11 +925,6 @@ class TestSyncProtection:
         adapter.cancel_order_by_oid.assert_called_once_with("ETH", 303)
 
     def test_sl_filled_at_submit_skips_tp_placement(self):
-        """#1456 review round 18 (Optional 1): a submit-filled SL has flattened
-        the position on-chain. The TP tier walk below would place reduce-only
-        limits against nothing, sized off the virtual quantity — and Go books
-        the close BEFORE applyHyperliquidProtectionSync, so any TP OIDs placed
-        here were dropped from tracking for good. None may be placed."""
         out, adapter = self._run_sync(
             tp_tiers=[(1.0, 0.5), (2.0, 1.0)],
             place_responses={"sl": {
@@ -1028,8 +939,6 @@ class TestSyncProtection:
         assert not out.get("tp_oids")
 
     def test_resting_still_places_and_records_tps(self):
-        """#1456 review round 18 (Optional 1) must-survive: a normal resting
-        placement still walks the tiers and records both TP OIDs."""
         out, adapter = self._run_sync(
             tp_tiers=[(1.0, 0.5), (2.0, 1.0)],
         )
@@ -1037,7 +946,6 @@ class TestSyncProtection:
         assert len(out.get("tp_oids") or []) == 2
 
     def test_existing_oid_still_open_returns_same_oid(self):
-        """OID still in open_orders → echo it back, do NOT call place_take_profit_limit."""
         out, adapter = self._run_sync(
             tp1_oid=200,
             tp2_oid=300,
@@ -1052,46 +960,35 @@ class TestSyncProtection:
         adapter.lookup_fill_fee_by_oid.assert_not_called()
 
     def test_missing_oid_with_no_fill_places_replacement(self):
-        """OID gone from open_orders AND not in userFills → cancelled, place new."""
         out, adapter = self._run_sync(
             tp1_oid=200,
             tp2_oid=300,
-            open_oids=set(),  # empty — TP OIDs gone
-            fill_lookup_by_oid={},  # no fills for any OID
+            open_oids=set(),
+            fill_lookup_by_oid={},
         )
-        # New OIDs surfaced
         assert "tp1_oid" in out
         assert "tp2_oid" in out
-        # userFills was consulted to make sure the OID hadn't filled
         assert adapter.lookup_fill_fee_by_oid.called
-        # New TPs placed
         assert adapter.place_take_profit_limit.call_count == 2
-        # Filled-externally flag NOT set
         assert not out.get("tp1_filled_externally")
         assert not out.get("tp2_filled_externally")
 
     def test_missing_oid_with_fill_marks_externally_filled(self):
-        """OID gone AND userFills shows a fill → filled externally; do NOT re-place. (#604 review #1)"""
         out, adapter = self._run_sync(
             tp1_oid=200,
             tp2_oid=300,
             open_oids=set(),
             fill_lookup_by_oid={
                 200: {"fee": 0.05, "closed_pnl": 25.0, "count": 1},
-                # TP2 still missing (cancelled, not filled)
             },
         )
         assert out.get("tp1_filled_externally") is True
         assert "tp1_fill" in out
         assert out["tp1_fill"]["fee"] == 0.05
-        # TP2 should be placed since no fill found
         assert not out.get("tp2_filled_externally")
-        # Only ONE place_take_profit_limit call (for TP2), because TP1 was filled.
         assert adapter.place_take_profit_limit.call_count == 1
 
     def test_zero_oid_armed_true_does_not_re_place_consumed_tp1(self):
-        """#749: after TP1 fills, Go passes TPArmedTiers with tier0=true and OID 0.
-        A later sync must not treat OID 0 as 'never placed' and recreate TP1."""
         out, adapter = self._run_sync(
             size=0.22,
             tp_oids=[0, 300],
@@ -1105,7 +1002,6 @@ class TestSyncProtection:
         adapter.place_take_profit_limit.assert_not_called()
 
     def test_three_tiers_places_incremental_sizes(self):
-        """#612: N-tier protection sizes each order from cumulative fractions."""
         out, adapter = self._run_sync(
             size=10.0,
             tp_tiers=[
@@ -1123,7 +1019,6 @@ class TestSyncProtection:
         assert adapter.place_take_profit_limit.call_count == 3
 
     def test_final_tier_fraction_is_coerced_to_remaining_size(self):
-        """Two-tier configs ending below 1.0 keep the old TP2 remaining-size behavior."""
         out, adapter = self._run_sync(
             size=10.0,
             tp_tiers=[
@@ -1138,7 +1033,6 @@ class TestSyncProtection:
         assert sizes == pytest.approx([5.0, 5.0])
 
     def test_non_increasing_sorted_tiers_are_rejected(self):
-        """Go and Python both reject configs whose fractions decrease after ATR sort."""
         out, adapter = self._run_sync(
             tp_tiers=[
                 {"atr_multiple": 1.0, "close_fraction": 0.5},
@@ -1151,7 +1045,6 @@ class TestSyncProtection:
         adapter.place_take_profit_limit.assert_not_called()
 
     def test_single_tier_config_is_rejected(self):
-        """On-chain tiered protection still requires at least two TP tiers."""
         out, adapter = self._run_sync(
             tp_tiers=[
                 {"atr_multiple": 1.0, "close_fraction": 1.0},
@@ -1163,7 +1056,6 @@ class TestSyncProtection:
         adapter.place_take_profit_limit.assert_not_called()
 
     def test_three_tiers_detects_middle_oid_filled_externally(self):
-        """#612: filled-externally detection is indexed, not hardcoded to TP1/TP2."""
         out, adapter = self._run_sync(
             tp_tiers=[
                 {"atr_multiple": 1.0, "close_fraction": 0.5},
@@ -1180,7 +1072,6 @@ class TestSyncProtection:
         adapter.place_take_profit_limit.assert_not_called()
 
     def test_reconcile_fill_hints_skips_lookup_fill_fee_by_oid(self):
-        """#759: same-cycle Go prefetch JSON avoids duplicate userFills for that OID."""
         hints = json.dumps(
             [{"oid": 9101, "filled": True, "fee": 0.02, "closed_pnl": 1.5, "count": 2}]
         )
@@ -1199,7 +1090,6 @@ class TestSyncProtection:
         adapter.lookup_fill_fee_by_oid.assert_not_called()
 
     def test_reconcile_fill_hints_filled_false_still_queries_userfills(self):
-        """#761 review: filled=false hints must not suppress Python's indexer retry."""
         hints = json.dumps([{"oid": 9101, "filled": False}])
         out, adapter = self._run_sync(
             tp1_oid=9100,
@@ -1214,7 +1104,6 @@ class TestSyncProtection:
         adapter.lookup_fill_fee_by_oid.assert_called()
 
     def test_reconcile_fill_hints_malformed_json_queries_userfills(self):
-        """#761 review: invalid JSON disables hints; userFills path still works."""
         out, adapter = self._run_sync(
             tp1_oid=9100,
             tp2_oid=9101,
@@ -1227,7 +1116,6 @@ class TestSyncProtection:
         adapter.lookup_fill_fee_by_oid.assert_called()
 
     def test_reconcile_fill_hints_extra_oid_does_not_skip_other_oid_lookup(self):
-        """#761 review: hints for an unrelated OID do not bypass lookup for missing TP."""
         hints = json.dumps([{"oid": 1, "filled": True, "fee": 0.0, "count": 0}])
         out, adapter = self._run_sync(
             tp1_oid=9100,
@@ -1242,9 +1130,6 @@ class TestSyncProtection:
         assert 9101 in called_oids
 
     def test_open_orders_fetch_failure_defers_replacement(self):
-        """open_order_oids() raise → leave existing OIDs alone, do not re-place
-        (would double-up the protection). The script returns the failure
-        marker so the Go side knows to retry next cycle."""
         mod, spec = _load_check_module()
         spec.loader.exec_module(mod)
 
@@ -1277,14 +1162,10 @@ class TestSyncProtection:
                 )
         out = json.loads(captured.getvalue())
         assert out["open_order_check_error"] == "indexer down"
-        # No re-placements issued — existing OIDs are left alone.
         mock_adapter.place_take_profit_limit.assert_not_called()
         mock_adapter.place_stop_loss.assert_not_called()
 
     def test_floor_residual_absorbed_by_final_tier(self):
-        """#628 issue 1: at sz_decimals=3 a 0.003 ETH virtual qty with 50/50
-        tiers must place 0.001 + 0.002, NOT 0.001 + 0.001 (which would strand
-        0.001 ETH uncovered for the life of the position)."""
         out, adapter = self._run_sync(
             size=0.003,
             tp_tiers=[
@@ -1300,12 +1181,8 @@ class TestSyncProtection:
         assert sum(sizes) == pytest.approx(0.003)
 
     def test_float_drift_below_lot_boundary_normalizes(self):
-        """#628 issue 2: Go's `pos.Quantity -= closeQty` can produce values
-        like 0.011 - 0.010 = 0.0009999999999999992.  round_size must lift
-        this back to 0.001 so the tier loop places a real reduce-only
-        order rather than failing with `Size floored to zero`."""
-        drifted = 0.011 - 0.010  # 0.0009999999999999992
-        assert drifted < 0.001  # confirm we're testing the drift case
+        drifted = 0.011 - 0.010
+        assert drifted < 0.001
         out, adapter = self._run_sync(
             size=drifted,
             tp_tiers=[
@@ -1315,17 +1192,13 @@ class TestSyncProtection:
             tp_oids=[0, 0],
             open_oids=set(),
         )
-        # At 0.001 lot with sz_decimals=3, tier 1 floors to 0 (skipped) and
-        # tier 2 absorbs the full 0.001 remainder.
         assert out["tp_oids"]
         sizes = [call.args[1] for call in adapter.place_take_profit_limit.call_args_list]
         assert sum(sizes) == pytest.approx(0.001)
 
     def test_size_rounds_to_zero_skips_tier_block(self):
-        """When the virtual qty rounds below one lot, no TPs should be placed
-        and the output must not carry stale tp_oids/tp_pxs (#628 review #4)."""
         out, adapter = self._run_sync(
-            size=0.0004,  # rounds to 0 at sz_decimals=3
+            size=0.0004,
             tp_tiers=[
                 {"atr_multiple": 1.0, "close_fraction": 0.5},
                 {"atr_multiple": 2.0, "close_fraction": 1.0},
@@ -1338,9 +1211,6 @@ class TestSyncProtection:
         assert "tp_pxs" not in out
 
     def test_three_tier_non_uniform_flooring_zero_residual(self):
-        """Multi-tier non-uniform fractions where each tier's `size*fraction`
-        truncates differently — final tier must still cover the lot-aligned
-        remainder so `sum(tier_sizes) == floor(size)`."""
         out, adapter = self._run_sync(
             size=0.007,
             tp_tiers=[
@@ -1353,19 +1223,13 @@ class TestSyncProtection:
         )
         assert out["tp_oids"]
         sizes = [call.args[1] for call in adapter.place_take_profit_limit.call_args_list]
-        # 0.007 * 0.3 = 0.0021 → floor 0.002; 0.007 * 0.3 = 0.0021 → floor 0.002;
-        # final = 0.007 - (0.002 + 0.002) = 0.003.  No residual stranded.
         assert sum(sizes) == pytest.approx(0.007)
 
 
 class TestComputeTPTierSizes:
-    """#628 review #3: pure helper for per-tier reduce-only sizing.  Exercises
-    the same flooring math as run_sync_protection without needing the full
-    sync-protection plumbing or adapter mocks."""
 
     @staticmethod
     def _floor3(sz):
-        """sz_decimals=3 (matches ETH on Hyperliquid)."""
         return math.floor(sz * 1000) / 1000
 
     def _load(self):
@@ -1388,16 +1252,13 @@ class TestComputeTPTierSizes:
         assert mod.compute_tp_tier_sizes(1.0, [], self._floor3) == []
 
     def test_two_tier_5050_split_zero_residual(self):
-        """0.003 / [0.5, 1.0] / sz_decimals=3 → [0.001, 0.002], NOT [0.001, 0.001]."""
         mod = self._load()
         sizes = mod.compute_tp_tier_sizes(0.003, [(1.0, 0.5), (2.0, 1.0)], self._floor3)
         assert sizes == pytest.approx([0.001, 0.002])
         assert sum(sizes) == pytest.approx(0.003)
 
     def test_final_tier_absorbs_subdivided_floor_loss(self):
-        """3 tiers, fractions that don't divide evenly into size."""
         mod = self._load()
-        # 0.007 / [0.3, 0.6, 1.0]: floors are [0.002, 0.002, remainder=0.003]
         sizes = mod.compute_tp_tier_sizes(
             0.007, [(1.0, 0.3), (2.0, 0.6), (3.0, 1.0)], self._floor3
         )
@@ -1405,17 +1266,12 @@ class TestComputeTPTierSizes:
         assert sum(sizes) == pytest.approx(0.007)
 
     def test_lot_aligned_size_preserves_exact_split(self):
-        """Lot-aligned size with even fraction → no residual to absorb."""
         mod = self._load()
         sizes = mod.compute_tp_tier_sizes(10.0, [(1.0, 0.5), (2.0, 1.0)], self._floor3)
         assert sizes == pytest.approx([5.0, 5.0])
 
     def test_final_tier_below_one_uses_floored_remainder(self):
-        """When the helper is fed a normalized [(_, 0.5), (_, 0.7)] (final
-        coerced to 1.0 by _normalize_tp_tiers, but the helper itself accepts
-        any cumulative shape), the final tier still gets the floored remainder."""
         mod = self._load()
-        # Use 1.0 final like the real normalizer produces.
         sizes = mod.compute_tp_tier_sizes(0.5, [(1.0, 0.5), (2.0, 1.0)], self._floor3)
         assert sum(sizes) == pytest.approx(0.5)
         assert sizes[0] == pytest.approx(0.25)
@@ -1423,14 +1279,6 @@ class TestComputeTPTierSizes:
 
 
 class TestProtectionSyncStopLossTriggerContract:
-    """#1450 review round 2: ``stop_loss_trigger_px`` reports the trigger of the
-    order THIS sync put on the book — never a price the plan merely derived.
-
-    Go writes the field straight into ``pos.StopLossTriggerPx``. Emitting it on a
-    branch that places nothing records a stop price no order rests at, which the
-    per-cycle #1450 audit then reads and "heals" by cancelling and re-placing a
-    perfectly healthy order, once per due cycle for the life of the position.
-    """
 
     def _run_sync(self, *, open_oids, stop_loss_oid, force_sl_replace, place_response):
         mod, spec = _load_check_module()
@@ -1471,7 +1319,6 @@ class TestProtectionSyncStopLossTriggerContract:
         return {"status": "ok", "response": {"data": {"statuses": [{"resting": {"oid": oid}}]}}}
 
     def test_echoed_oid_reports_no_trigger_price(self):
-        """The order keeps resting where it was placed; the sync knows nothing new."""
         out, adapter = self._run_sync(
             open_oids=[4242], stop_loss_oid=4242, force_sl_replace=False,
             place_response=self._resting(9001),
@@ -1486,12 +1333,10 @@ class TestProtectionSyncStopLossTriggerContract:
             place_response=self._resting(9002),
         )
         assert out.get("stop_loss_oid") == 9002
-        # 2400 - 2.5 * 30
         assert out.get("stop_loss_trigger_px") == pytest.approx(2325.0)
         adapter.place_stop_loss.assert_called_once()
 
     def test_force_replace_whose_placement_fails_reports_no_trigger_price(self):
-        """Cancel landed, placement rejected: nothing rests, so nothing is claimed."""
         out, _ = self._run_sync(
             open_oids=[4242], stop_loss_oid=4242, force_sl_replace=True,
             place_response={"status": "err", "response": "open order limit"},
@@ -1500,8 +1345,6 @@ class TestProtectionSyncStopLossTriggerContract:
         assert out.get("stop_loss_error")
 
     def test_force_replace_cancel_rejected_defers_replacement(self):
-        """#1456 review round 10: a REJECTED cancel (normal body, no raise)
-        leaves the old stop possibly resting — nothing placed on top of it."""
         out, adapter = self._run_sync_cancel_response(_CANCEL_REJECTED_RESPONSE)
         adapter.place_stop_loss.assert_not_called()
         assert out.get("cancel_stop_loss_succeeded") is False
@@ -1552,8 +1395,6 @@ class TestProtectionSyncStopLossTriggerContract:
         adapter.place_stop_loss.assert_called_once()
 
     def _run_sync_dynamic_oids(self, *, oid_reads, place_response):
-        """Like _run_sync but open_order_oids returns a SEQUENCE of reads:
-        the top-of-call fetch, then the re-read inside the book diff."""
         import builtins
         mod, spec = _load_check_module()
         spec.loader.exec_module(mod)
@@ -1588,11 +1429,6 @@ class TestProtectionSyncStopLossTriggerContract:
         return json.loads(captured.getvalue()), adapter
 
     def test_unreadable_placement_resolved_to_resting_reports_no_error(self):
-        """#1456 review round 19 (Optional 1), must-survive (a): the response
-        was unreadable but the book diff resolves one fresh oid. Go records a
-        normal resting placement — a success — so NO stop_loss_error may ride
-        alongside the OID, or formatProtectionSyncWarnings fires a false
-        "protection partially failed" DM for a protected position."""
         out, _ = self._run_sync_dynamic_oids(
             oid_reads=[{4242}, {9004}],
             place_response={"status": "weird"},
@@ -1601,9 +1437,6 @@ class TestProtectionSyncStopLossTriggerContract:
         assert "stop_loss_error" not in out
 
     def test_unreadable_placement_ambiguous_diff_reports_no_warning_error(self):
-        """Must-survive (c): an ambiguous diff is the single accurate
-        outcome-unknown CRITICAL — the generic partial-failure WARNING must
-        not stack on top of it via a stray error field."""
         out, _ = self._run_sync_dynamic_oids(
             oid_reads=[{4242}, {9004, 9005}],
             place_response={"status": "weird"},
@@ -1612,8 +1445,6 @@ class TestProtectionSyncStopLossTriggerContract:
         assert "stop_loss_error" not in out
 
     def test_unreadable_placement_nothing_resting_keeps_the_error(self):
-        """Must-survive (b): the diff shows nothing rested — a genuine
-        failure whose error text must survive so Go clears and re-places."""
         out, _ = self._run_sync_dynamic_oids(
             oid_reads=[{4242}, set()],
             place_response={"status": "weird"},

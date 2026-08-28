@@ -35,15 +35,11 @@ func TestEffectiveOpenStrategy(t *testing.T) {
 }
 
 func TestAppendOpenCloseArgsOnlyWhenOptedIn(t *testing.T) {
-	// Legacy strategies (no open/close opt-in) get no extra args.
 	legacy := StrategyConfig{Args: []string{"sma_crossover", "BTC/USDT", "1h"}}
 	if got := appendOpenCloseArgs(legacy.Args, legacy, PositionCtx{Side: "long"}); !reflect.DeepEqual(got, legacy.Args) {
 		t.Fatalf("legacy args mutated: %#v", got)
 	}
 
-	// #640: open/close names + per-ref params are sent via --strategy-refs JSON
-	// (see buildStrategyRefsArg), not as separate --open-strategy / --close-strategies
-	// flags. appendOpenCloseArgs only adds position-context flags when they're set.
 	sc := StrategyConfig{
 		Args:          []string{"sma_crossover", "BTC/USDT", "1h"},
 		OpenStrategy:  StrategyRef{Name: "momentum"},
@@ -60,15 +56,12 @@ func TestAppendOpenCloseArgsOnlyWhenOptedIn(t *testing.T) {
 }
 
 func TestBuildStrategyRefsArg(t *testing.T) {
-	// Legacy: no opt-in → no flag emitted.
 	legacy := StrategyConfig{Args: []string{"sma_crossover", "BTC/USDT", "1h"}}
 	got, err := buildStrategyRefsArg(legacy)
 	if err != nil {
 		t.Fatalf("legacy: unexpected err: %v", err)
 	}
 	if got != nil {
-		// effectiveOpenStrategy falls back to args[0]; we still emit the open ref.
-		// Verify the JSON shape carries only the open name with no params and no closes.
 		if len(got) != 2 || got[0] != "--strategy-refs" {
 			t.Fatalf("legacy: got %#v, want a single --strategy-refs flag", got)
 		}
@@ -91,7 +84,6 @@ func TestBuildStrategyRefsArg(t *testing.T) {
 	if len(got) != 2 || got[0] != "--strategy-refs" {
 		t.Fatalf("got %#v, want --strategy-refs JSON", got)
 	}
-	// Round-trip the JSON to validate structure.
 	var payload struct {
 		Open   StrategyRef   `json:"open"`
 		Closes []StrategyRef `json:"closes"`
@@ -105,7 +97,6 @@ func TestBuildStrategyRefsArg(t *testing.T) {
 	if got, want := payload.Open.Params["rsi_period"], 14.0; got != want {
 		t.Errorf("open.params[rsi_period] = %v, want %v", got, want)
 	}
-	// #842: the wire carries the single close as a length-1 "closes" list.
 	if len(payload.Closes) != 1 {
 		t.Fatalf("closes length = %d, want 1 (single close)", len(payload.Closes))
 	}

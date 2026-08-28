@@ -1,7 +1,3 @@
-"""Unit tests for compose_claude_comment.py.
-
-Run: python3 .github/scripts/test_compose_claude_comment.py
-"""
 
 import os
 import sys
@@ -57,8 +53,6 @@ class ComposeTest(unittest.TestCase):
         )
 
     def test_empty_body_composes_standalone_status_comment(self):
-        # patch_claude_comment.sh ON_MISS=post composes a NEW comment from an
-        # empty body — no leading blank lines before the status note.
         note = "**Workflow failed before completion.** See [run log](http://x)."
         out = compose("", "claude-sonnet-5", "high", HARNESS, note)
         self.assertTrue(out.startswith("**Workflow failed before completion.**"))
@@ -95,7 +89,6 @@ class ComposeTest(unittest.TestCase):
         out = compose(comment, "claude-sonnet-5", "xhigh", HARNESS)
         decoded = urllib.parse.unquote(out)
         self.assertNotIn("claude.com/claude-code", decoded)
-        # One footer inside the rewritten link body, one on the comment itself.
         self.assertEqual(decoded.count("LLM:"), 2)
 
 

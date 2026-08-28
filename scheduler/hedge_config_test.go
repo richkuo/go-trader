@@ -5,13 +5,6 @@ import (
 	"testing"
 )
 
-// Config-surface and collision-matrix tests for #1159 correlated hedge legs.
-//
-// The collision rules are the load-bearing phase-1 safety constraint: they are
-// what makes it safe for every shared-coin mechanism (peer margin checks,
-// circuit-breaker drain, kill-switch fill share, reconcile ownership) to stay
-// blind to hedge coins. Each rule gets an explicit test.
-
 func hedgePerpsStrategy(id, coin string) StrategyConfig {
 	return StrategyConfig{
 		ID:       id,
@@ -55,8 +48,6 @@ func TestValidateHedgeConfigsRejectsOwnPrimaryCoin(t *testing.T) {
 	}
 }
 
-// A ccxt-style symbol must normalize to the same coin as the bare ticker, or
-// the collision check could be bypassed by writing "ETH/USDC:USDC".
 func TestValidateHedgeConfigsNormalizesCcxtSymbolForCollisions(t *testing.T) {
 	cfg := &Config{Strategies: []StrategyConfig{
 		withHedge(hedgePerpsStrategy("eth-long", "ETH"), &HedgeConfig{Enabled: true, Symbol: "eth/USDC:USDC"}),
@@ -78,8 +69,6 @@ func TestValidateHedgeConfigsRejectsPeerPrimaryCoin(t *testing.T) {
 	}
 }
 
-// Paper peers count. A paper strategy on the hedge coin today becomes a live
-// peer the moment its mode flips, and nothing would re-validate at that point.
 func TestValidateHedgeConfigsRejectsPaperPeerPrimaryCoin(t *testing.T) {
 	paper := hedgePerpsStrategy("btc-paper", "BTC")
 	paper.Args = []string{"--symbol", "BTC", "--mode", "paper"}
@@ -93,7 +82,6 @@ func TestValidateHedgeConfigsRejectsPaperPeerPrimaryCoin(t *testing.T) {
 	}
 }
 
-// Manual strategies share the same on-chain coin aggregation, so they count too.
 func TestValidateHedgeConfigsRejectsManualPeerPrimaryCoin(t *testing.T) {
 	manual := StrategyConfig{ID: "btc-manual", Type: "manual", Platform: "hyperliquid", Symbol: "BTC"}
 	cfg := &Config{Strategies: []StrategyConfig{
@@ -129,9 +117,6 @@ func TestValidateHedgeConfigsRejectsDirectionBoth(t *testing.T) {
 	}
 }
 
-// Legacy allow_shorts=true resolves to direction "both" via EffectiveDirection,
-// so it must be caught by the same gate — otherwise the reject is bypassable
-// with a pre-v14 field.
 func TestValidateHedgeConfigsRejectsLegacyAllowShortsBoth(t *testing.T) {
 	sc := hedgePerpsStrategy("eth-legacy", "ETH")
 	sc.AllowShorts = true
@@ -189,9 +174,6 @@ func TestValidateHedgeConfigsRejectsBadVocabularyAndBounds(t *testing.T) {
 	}
 }
 
-// A disabled block is inert: it must pass the shape checks but must NOT be
-// subject to the ownership/collision rules, so an operator can park a hedge
-// block on a strategy while its coin is temporarily claimed elsewhere.
 func TestValidateHedgeConfigsDisabledBlockSkipsCollisionsButKeepsShapeChecks(t *testing.T) {
 	cfg := &Config{Strategies: []StrategyConfig{
 		withHedge(hedgePerpsStrategy("eth-long", "ETH"), &HedgeConfig{Enabled: false, Symbol: "ETH", Side: "same"}),
@@ -220,8 +202,6 @@ func TestHedgeAccessorDefaults(t *testing.T) {
 	if got := hedgeMarginMode(sc); got != "isolated" {
 		t.Fatalf("hedgeMarginMode default = %q, want isolated", got)
 	}
-	// A disabled block must resolve to no coin so every gated call site
-	// (marks, kill switch, reconcile) collapses to "no hedge" on one check.
 	sc.Hedge.Enabled = false
 	if got := hedgeCoin(sc); got != "" {
 		t.Fatalf("hedgeCoin on disabled block = %q, want empty", got)
@@ -242,14 +222,11 @@ func TestHedgeSideForPrimary(t *testing.T) {
 	if got := HedgeSideForPrimary("short"); got != "long" {
 		t.Fatalf("short → %q, want long", got)
 	}
-	// An unknown side must NOT be guessed — a wrong guess doubles exposure.
 	if got := HedgeSideForPrimary(""); got != "" {
 		t.Fatalf("unknown side → %q, want empty (fail closed)", got)
 	}
 }
 
-// A typo inside the hedge block must fail loudly. Silently defaulting
-// `"ration": 0.5` to ratio 1.0 would open a hedge at twice the intended size.
 func TestValidateStrategyJSONKeysFlagsUnknownHedgeKeys(t *testing.T) {
 	raw := []byte(`{"strategies":[{"id":"eth-long","hedge":{"enabled":true,"symbol":"BTC","ration":0.5}}]}`)
 	errs := validateStrategyJSONKeys(raw)
@@ -265,8 +242,6 @@ func TestValidateStrategyJSONKeysAcceptsKnownHedgeKeys(t *testing.T) {
 	}
 }
 
-// The top-level "hedge" key must be recognized by the reflective strategy-key
-// guard, or every hedge config would be rejected as an unknown field.
 func TestKnownStrategyConfigKeysIncludesHedge(t *testing.T) {
 	if !knownStrategyConfigKeys()["hedge"] {
 		t.Fatal("knownStrategyConfigKeys must include \"hedge\"")
@@ -291,11 +266,6 @@ func TestHedgeConfigEqual(t *testing.T) {
 	}
 }
 
-// Regression (#1404 review, optional finding): the collision matrix must
-// normalize BOTH sides identically. hyperliquidConfiguredCoin does not strip a
-// ccxt suffix while normalizeHedgeCoin does, so an unnormalized comparison lets
-// a configured "BTC/USDC:USDC" slip past a hedge declared as "BTC" — exactly
-// the silent per-coin misattribution the matrix exists to prevent.
 func TestValidateHedgeConfigsNormalizesBothSidesOfCollisionChecks(t *testing.T) {
 	ccxtPrimary := func(id, sym string) StrategyConfig {
 		sc := hedgePerpsStrategy(id, sym)

@@ -1,4 +1,3 @@
-# backtest/tests/test_regime_diagnostics.py
 import os, sys
 import numpy as np
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -15,8 +14,6 @@ def test_forward_returns_horizon():
 
 
 def test_forward_realized_vol_horizon1():
-    # log prices [0, 0.1, 0.3, 0.6] -> 1-bar log returns [0, 0.1, 0.2, 0.3].
-    # forward realized vol at h=1 is |next log return|: [0.1, 0.2, 0.3, NaN].
     close = np.exp(np.array([0.0, 0.1, 0.3, 0.6]))
     fv = forward_realized_vol(close, 1)
     np.testing.assert_allclose(fv[:3], [0.1, 0.2, 0.3], atol=1e-12)
@@ -26,14 +23,11 @@ def test_forward_realized_vol_horizon1():
 def test_forward_realized_vol_horizon2_sums_squared_log_returns():
     close = np.exp(np.array([0.0, 0.1, 0.3, 0.6]))
     fv = forward_realized_vol(close, 2)
-    # out[0] = sqrt(0.1^2 + 0.2^2) = sqrt(0.05); out[1] = sqrt(0.2^2 + 0.3^2) = sqrt(0.13)
     np.testing.assert_allclose(fv[:2], [np.sqrt(0.05), np.sqrt(0.13)], atol=1e-12)
-    assert np.isnan(fv[2]) and np.isnan(fv[3])  # last `horizon` bars have no full window
+    assert np.isnan(fv[2]) and np.isnan(fv[3])
 
 
 def test_forward_realized_vol_separates_quiet_from_volatile():
-    # A quiet leg (tiny moves) then a volatile leg (large moves): forward vol must rank
-    # the volatile-state bars far above the quiet-state bars (the regime's real signal).
     rng = np.random.default_rng(0)
     quiet = rng.normal(0, 0.001, 200)
     loud = rng.normal(0, 0.02, 200)
@@ -62,7 +56,7 @@ def test_separation_directional():
 def test_stability_transition_rate():
     labels = np.array(["a", "a", "b", "b", "a"])
     st = stability(labels)
-    assert abs(st["transition_rate"] - 0.5) < 1e-9  # 2 flips over 4 transitions
+    assert abs(st["transition_rate"] - 0.5) < 1e-9
     assert st["flips"] == 2
 
 
@@ -105,7 +99,6 @@ def test_score_labels_bundle():
 
 
 def test_score_labels_masks_warmup():
-    """NaN feature rows are excluded: labeling them 'ranging_quiet' vs 'default_label' is irrelevant."""
     from regime_diagnostics import score_labels
     rng = np.random.default_rng(42)
     n = 120
@@ -114,7 +107,7 @@ def test_score_labels_masks_warmup():
         ["up" if r >= 0 else "down" for r in np.diff(close, prepend=close[0])], dtype=object
     )
     feats = rng.normal(0, 1, (n, 4))
-    feats[:10] = np.nan  # warmup bars have NaN features
+    feats[:10] = np.nan
 
     labels_a = base_labels.copy()
     labels_a[:10] = "ranging_quiet"
@@ -124,10 +117,8 @@ def test_score_labels_masks_warmup():
     out_a = score_labels(close, labels_a, feats, horizons=(4,), seed=0)
     out_b = score_labels(close, labels_b, feats, horizons=(4,), seed=0)
 
-    # warmup-label variants must not appear in coverage
     assert "ranging_quiet" not in out_a["coverage"]
     assert "default_label" not in out_b["coverage"]
-    # scoring is identical regardless of which label the warmup bars carry
     assert out_a["coverage"] == out_b["coverage"]
     assert out_a["stability"] == out_b["stability"]
     assert out_a["h4"]["significance"]["p_value"] == out_b["h4"]["significance"]["p_value"]
@@ -136,7 +127,6 @@ def test_score_labels_masks_warmup():
 def test_score_labels_target_volatility_stamped_and_distinct():
     from regime_diagnostics import score_labels
     rng = np.random.default_rng(1)
-    # Quiet then volatile leg so the vol target genuinely separates the two label groups.
     steps = np.concatenate([rng.normal(0, 0.001, 150), rng.normal(0, 0.02, 150)])
     close = 100 * np.exp(np.cumsum(steps))
     labels = np.array(["quiet"] * 150 + ["loud"] * 150, dtype=object)
@@ -145,9 +135,7 @@ def test_score_labels_target_volatility_stamped_and_distinct():
     vol = score_labels(close, labels, feats, horizons=(4,), seed=0, target="volatility")
     ret = score_labels(close, labels, feats, horizons=(4,), seed=0, target="returns")
     assert vol["target"] == "volatility" and ret["target"] == "returns"
-    # Different forward variable -> different separation statistic on the same labels.
     assert vol["h4"]["separation"]["kruskal_h"] != ret["h4"]["separation"]["kruskal_h"]
-    # Vol target strongly separates quiet vs loud; the gate reads this KW-H.
     assert vol["h4"]["separation"]["kruskal_h"] > 5.0
 
 
@@ -164,19 +152,17 @@ def test_score_labels_rejects_unknown_target():
 def test_per_state_significance():
     from regime_diagnostics import per_state_significance
 
-    # Clearly separated returns → both states should reject at FDR level
     labels_sep = np.array(["up"] * 100 + ["down"] * 100)
     fwd_sep = np.concatenate([np.full(100, 0.02), np.full(100, -0.02)])
     result = per_state_significance(labels_sep, fwd_sep, block_len=5, n_perm=200, seed=0)
     assert result["up"]["fdr_reject"] is True
     assert result["down"]["fdr_reject"] is True
-    assert result["up"]["gap"] > 0  # up mean > global mean
+    assert result["up"]["gap"] > 0
     assert result["down"]["gap"] < 0
 
-    # All-noise: random labels, random returns → few/no rejects expected
     rng = np.random.default_rng(7)
     labels_noise = np.array(["a", "b"])[rng.integers(0, 2, 300)]
     fwd_noise = rng.normal(0, 0.01, 300)
     result_noise = per_state_significance(labels_noise, fwd_noise, block_len=10, n_perm=200, seed=0)
     n_reject = sum(1 for v in result_noise.values() if v["fdr_reject"])
-    assert n_reject <= 1  # at most 1 false positive under noise
+    assert n_reject <= 1

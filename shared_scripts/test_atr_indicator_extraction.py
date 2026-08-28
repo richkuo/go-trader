@@ -1,8 +1,3 @@
-"""Regression test for #536: stale `last` row hides injected `atr` indicator.
-
-Verifies that capturing `last = result_df.iloc[-1]` AFTER `ensure_atr_indicator`
-includes the injected `atr` column, whereas capturing before does not.
-"""
 import sys
 import os
 
@@ -25,7 +20,6 @@ def _make_df(n=20):
 
 
 def test_stale_last_missing_atr():
-    """Captures before ensure — atr absent (the bug pattern)."""
     df = _make_df()
     stale_last = df.iloc[-1]
     ensure_atr_indicator(df)
@@ -33,7 +27,6 @@ def test_stale_last_missing_atr():
 
 
 def test_fresh_last_has_atr():
-    """Captures after ensure — atr present (the fix pattern)."""
     df = _make_df()
     ensure_atr_indicator(df)
     fresh_last = df.iloc[-1]
@@ -43,7 +36,6 @@ def test_fresh_last_has_atr():
 
 
 def test_noop_when_atr_already_present():
-    """Recapturing after ensure is safe when atr is already a column."""
     df = _make_df()
     df["atr"] = 0.05
     original_atr = df.iloc[-1]["atr"]

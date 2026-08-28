@@ -1,15 +1,4 @@
 #!/usr/bin/env python3
-"""
-Robinhood crypto strategy check script.
-Fetches OHLCV via yfinance, runs strategy, outputs JSON to stdout, exits.
-
-Signal check mode (paper or live):
-    check_robinhood.py <strategy> <symbol> <timeframe> [--mode=paper|live]
-
-Execution mode (live only, called by Go as phase 2):
-    check_robinhood.py --execute --symbol=BTC --side=buy --amount_usd=950 [--mode=live]
-    check_robinhood.py --execute --symbol=BTC --side=sell --quantity=0.01 [--mode=live]
-"""
 
 import sys
 import os
@@ -18,8 +7,6 @@ import math
 import traceback
 from datetime import datetime, timezone
 
-# Add paths: platforms/robinhood/ for adapter, shared_strategies/open/spot/ for apply_strategy,
-# shared_tools/ for utilities.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'platforms', 'robinhood'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strategies', 'open', 'spot'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
@@ -29,7 +16,6 @@ from regime import latest_regime, parse_regime_windows_spec_json, prepare_check_
 
 
 def _make_dataframe(candles):
-    """Convert raw OHLCV list to pandas DataFrame compatible with strategy functions."""
     import pandas as pd
     df = pd.DataFrame(candles, columns=["timestamp", "open", "high", "low", "close", "volume"])
     df["datetime"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
@@ -104,7 +90,6 @@ def _extract_fee_value(value, fee_context=False):
 
 
 def _extract_fee(response):
-    """Best-effort Robinhood order fee extraction; absent fees fall back in Go."""
     if not isinstance(response, dict):
         return None
     for key in _FEE_CONTAINER_KEYS:
@@ -122,7 +107,6 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                      regime_payload_json=None,
                      close_params_by_name=None,
                      atr_method="simple"):
-    """Run strategy signal check using yfinance OHLCV data."""
     try:
         from adapter import RobinhoodExchangeAdapter
         from strategies import apply_strategy, get_strategy, list_strategies
@@ -187,7 +171,6 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             atr_now = latest_atr(df, method=atr_method)
             if atr_now > 0:
                 market_ctx["atr"] = atr_now
-            # #733: live regime label for tiered_tp_atr_live_regime evaluator.
             if live_regime:
                 market_ctx["regime"] = live_regime
             evaluation = evaluate_open_close(
@@ -214,7 +197,6 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
         last = result_df.iloc[-1]
         price = float(last["close"])
 
-        # Apply HTF trend filter if enabled (skip for funding-rate strategies — #103)
         htf_info = {}
         htf_strategy_name = open_strategy or strategy_name
         if htf_filter_enabled and htf_strategy_name != "delta_neutral_funding":
@@ -234,7 +216,6 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             decision = finalize_decision(evaluation, position_side, signal)
             signal = decision["signal"]
 
-        # Freshen price with live quote if available
         try:
             live_price = adapter.get_price(symbol)
             if live_price > 0:
@@ -259,7 +240,6 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                 except (ValueError, TypeError):
                     pass
 
-        # Merge HTF indicators
         if htf_info:
             for k, v in htf_info.items():
                 if isinstance(v, (int, float)):
@@ -300,7 +280,6 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
 
 
 def run_execute(symbol, side, amount_usd, quantity, mode):
-    """Place a live crypto order on Robinhood."""
     if mode != "live":
         print(json.dumps({"error": "--execute requires --mode=live"}))
         sys.exit(1)
@@ -316,7 +295,6 @@ def run_execute(symbol, side, amount_usd, quantity, mode):
         else:
             result = adapter.market_sell(symbol, quantity)
 
-        # Extract fill info from robin_stocks response
         fill = {}
         try:
             if result:
@@ -384,12 +362,7 @@ def main():
         parser.add_argument("--regime-windows-spec-json", default="")
         parser.add_argument("--ohlcv-limit", type=int, default=200)
         parser.add_argument("--regime-atr-window", default="")
-        # #879: precomputed global-store regime payload; presence (even empty)
-        # disables inline regime computation.
         parser.add_argument("--regime-payload-json", default=None)
-        # #1277: ATR smoothing method for the standard_atr surface (EntryATR
-        # stamping + market_ctx["atr"]). Forwarded by Go from the resolved
-        # atr_method config; "simple" is the frozen legacy default.
         parser.add_argument("--atr-method", default="simple", choices=["simple", "wilder"])
         parser.add_argument("--regime-directional-window", default="")
         parser.add_argument("--params", default=None)

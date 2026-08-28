@@ -1,13 +1,3 @@
-"""Tests for the #1197 live-label fidelity gate (pure helpers, no data
-access).
-
-The load-bearing properties: the per-row verdict fails CLOSED (a window too
-short to measure agreement blocks — it never rides a vacuous agreement=1.0 on
-~0 bars), the overall verdict blocks when any expected dataset-window row is
-missing (silence is not evidence), and the gate-membership flip count keys on
-`trending_up_clean` membership CHANGING — not on any disagreement touching the
-label pair.
-"""
 
 import importlib.util
 import os
@@ -29,9 +19,9 @@ def _drift(n, agreement, transitions=None):
 
 def test_gate_membership_flips_counts_both_directions():
     drift = _drift(100, 0.97, {
-        "trending_up_clean->trending_up_choppy": 2,   # gate loses an entry bar
-        "trending_up_choppy->trending_up_clean": 1,   # gate admits an unscored bar
-        "ranging_quiet->ranging_volatile": 4,          # gate bit unchanged
+        "trending_up_clean->trending_up_choppy": 2,
+        "trending_up_choppy->trending_up_clean": 1,
+        "ranging_quiet->ranging_volatile": 4,
     })
     assert llf.gate_membership_flips(drift) == 3
 
@@ -42,7 +32,6 @@ def test_gate_membership_flips_ignores_non_gate_disagreements():
 
 
 def test_row_verdict_fails_closed_below_min_bars():
-    # A vacuous agreement=1.0 on too few comparable bars must BLOCK.
     v = llf.row_verdict(_drift(3, 1.0), agreement_threshold=0.95,
                         min_agreement_bars=30)
     assert not v["passes"]
@@ -65,7 +54,6 @@ def test_row_verdict_passes_and_derives_gate_agreement():
     assert v["passes"]
     assert v["gate_membership_flips"] == 1
     assert v["gate_membership_agreement"] == 0.99
-    # The gate bit can never disagree more often than labels overall.
     assert v["gate_membership_agreement"] >= v["agreement"]
 
 

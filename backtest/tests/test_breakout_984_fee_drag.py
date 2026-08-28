@@ -1,4 +1,3 @@
-"""Tests for the #984 fee-drag aggregation (pure helper, no data access)."""
 
 import importlib.util
 import os
@@ -25,7 +24,6 @@ def test_summarize_pairs_gross_net_and_drag():
     assert s["mean_gross_return_pct"] == pytest.approx(6.0)
     assert s["mean_net_return_pct"] == pytest.approx(2.5)
     assert s["drag_pp"] == pytest.approx(3.5)
-    # trades/span come from the NET legs: 20 trades over one summed year.
     assert s["trades"] == 20
     assert s["trades_per_year"] == pytest.approx(20.0)
 
@@ -34,7 +32,6 @@ def test_summarize_drops_none_legs_pairwise():
     gross = [_leg(5.0), None, _leg(9.0)]
     net = [_leg(2.0), _leg(4.0), None]
     s = fee_drag.summarize_fee_drag(gross, net)
-    # Only the first pair survives: a None on EITHER side drops the dataset.
     assert s["legs"] == 1
     assert s["mean_gross_return_pct"] == pytest.approx(5.0)
     assert s["mean_net_return_pct"] == pytest.approx(2.0)

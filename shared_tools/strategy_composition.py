@@ -1,10 +1,3 @@
-"""Helpers for composing decoupled open and close strategy decisions.
-
-The check scripts still emit the legacy integer ``signal`` because the Go
-executor consumes that today. When a config opts into ``open_strategy`` /
-``close_strategies``, these helpers evaluate the open layer and close layer
-separately, then compose them back to the existing signal contract.
-"""
 
 from __future__ import annotations
 
@@ -38,16 +31,6 @@ class OpenCloseEvaluation:
 
 
 def parse_strategy_refs_arg(raw: Optional[str]) -> Optional[dict]:
-    """#640: Parse --strategy-refs JSON into a dict shaped for run_signal_check.
-
-    Returns None when raw is None/empty so the caller can fall through to
-    legacy --params/--open-strategy/--close-strategies flags. The returned
-    dict has keys:
-      - open_name: str|None
-      - open_params: dict|None
-      - close_csv: str (comma-joined names; matches the legacy --close-strategies)
-      - close_params_by_name: dict[str, dict] keyed by close strategy name
-    """
     if not raw:
         return None
     import json
@@ -186,28 +169,15 @@ _DEPRECATED_CLOSE_NAMES = {"tp_at_pct": "tiered_tp_pct"}
 
 
 def canonical_close_name(name: str) -> str:
-    """Rewrite deprecated close evaluator names (#841 read shim)."""
     name = (name or "").strip()
     return _DEPRECATED_CLOSE_NAMES.get(name, name)
 
 
 def close_names_include_avwap_stop(close_names: Iterable[str]) -> bool:
-    """True when ``avwap_stop`` is among the (canonicalized) close names (#1196)."""
     return any(canonical_close_name(name) == "avwap_stop" for name in close_names)
 
 
 def warn_avwap_stop_missing_context() -> None:
-    """Warn (stderr) that ``avwap_stop`` is configured but has no usable line (#1196 review).
-
-    ``avwap_stop`` no-ops on every bar when the resolved open strategy never
-    emits a positive ``avwap`` value — a misconfiguration such as a typo'd or
-    non-AVWAP open, or an anchor whose warmup never confirms across the run.
-    This fails safe (the engine stop-loss still protects the position) but
-    silently disables the intended exit, so surface it to the operator instead
-    of no-opping in silence. Warn-once is enforced by *call placement* (once per
-    live check subprocess / once per ``Backtester.run``), not by module state —
-    so multiple runs in one process and per-test assertions each see it.
-    """
     print(
         "[WARN] close strategy 'avwap_stop' is configured but the open strategy "
         "produced no usable 'avwap' value; the AVWAP exit can never fire and the "
@@ -218,7 +188,6 @@ def warn_avwap_stop_missing_context() -> None:
 
 
 def rewrite_deprecated_close_ref(name: str, params: Optional[dict]) -> tuple[str, Optional[dict]]:
-    """One-window shim: tp_at_pct → single-tier tiered_tp_pct (#841)."""
     name = (name or "").strip()
     resolved = canonical_close_name(name)
     if name != "tp_at_pct":
@@ -241,14 +210,6 @@ def reject_backtest_only_strategies(
     names: Iterable[str],
     get_strategy: Callable[[str], dict],
 ) -> None:
-    """Refuse live evaluation of registry entries flagged ``backtest_only``.
-
-    Live check scripts call this on their configured open-strategy names in
-    place of the bare existence loop — it validates existence exactly like
-    ``get_strategy(name)`` did (unknown names raise the registry's ValueError)
-    and additionally fails closed on offline research strategies (#1138),
-    which must only ever run through the backtester / M1 harness.
-    """
     for name in names:
         entry = get_strategy(name)
         if isinstance(entry, dict) and entry.get("backtest_only"):
@@ -267,7 +228,6 @@ def validate_close_strategy_names(
     list_open_strategies: Optional[Callable[[], Iterable[str]]] = None,
     list_close_strategies: Optional[Callable[[], Iterable[str]]] = None,
 ) -> None:
-    """Validate explicit close names against close registry, then legacy open fallback."""
     for name in close_names:
         resolved = canonical_close_name(name)
         try:
@@ -283,8 +243,6 @@ def validate_close_strategy_names(
                 f"Available close strategies: {_safe_list_strategy_names(list_close_strategies)}; "
                 f"fallback open strategies: {_safe_list_strategy_names(list_open_strategies)}"
             ) from exc
-        # The open-as-close fallback is a live path too — a backtest_only open
-        # strategy must not sneak in as a close evaluator (#1138).
         if isinstance(entry, dict) and entry.get("backtest_only"):
             raise ValueError(
                 f"Close strategy '{name}' resolves to the backtest_only open "
@@ -346,11 +304,6 @@ def strip_unsupported_position_context(fn, params: dict) -> dict:
             inspect.Parameter.KEYWORD_ONLY,
         )
     }
-    # Framework-injected position-context kwargs (regime, side, avg_cost, ...) must be
-    # opt-in via explicit signature. The earlier VAR_KEYWORD short-circuit silently
-    # forwarded them through `def *_strategy(df, **params)` wrappers into thin cores
-    # that crash on unknown kwargs (#720). Regular strategy params still pass through
-    # untouched — only POSITION_CONTEXT_PARAM_KEYS are stripped when undeclared.
     return {
         key: value for key, value in params.items()
         if key in accepted or key not in POSITION_CONTEXT_PARAM_KEYS
@@ -390,11 +343,6 @@ def evaluate_open_close(
     open_signal = _last_signal(open_result)
     close_evals: list[CloseEvaluation] = []
     market = market_ctx if market_ctx is not None else _default_market_ctx(df)
-    # #1196: expose the open strategy's anchored VWAP line (last closed bar) to
-    # close evaluators as market["avwap"], so avwap_stop exits against the same
-    # line the entry was built on. NaN (pre-anchor warmup) and non-positive
-    # values are skipped — the evaluator no-ops without the key. Copy-on-write
-    # so the caller's market_ctx dict is never mutated.
     avwap_injected = False
     if not open_result.empty and "avwap" in open_result.columns:
         try:
@@ -404,19 +352,10 @@ def evaluate_open_close(
         if avwap_value == avwap_value and avwap_value > 0:
             market = {**market, "avwap": avwap_value}
             avwap_injected = True
-    # #1196 review: if avwap_stop is configured but no usable line was injected
-    # (typo'd/non-AVWAP open, or an anchor that never confirmed), the exit can
-    # never fire — warn the operator once per check invocation rather than
-    # no-opping silently. Fails safe either way (engine SL still protects).
     if not avwap_injected and close_names_include_avwap_stop(close_names):
         warn_avwap_stop_missing_context()
     for name in close_names:
         resolved, _ = rewrite_deprecated_close_ref(name, None)
-        # #640: per-close params arrive via close_params_by_name (carried on the
-        # matching StrategyRef on the Go side). Implicit-self close still
-        # inherits the open strategy's params unless the operator explicitly
-        # set per-ref params for that name. Other close strategies default to
-        # their registry defaults — never to the open strategy's params.
         if close_params_by_name and name in close_params_by_name:
             base_close_params = close_params_by_name[name]
         elif close_params_by_name and resolved in close_params_by_name:

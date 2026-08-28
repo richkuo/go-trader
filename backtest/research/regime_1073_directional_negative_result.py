@@ -1,27 +1,3 @@
-"""Reproducible evidence for #1073: the 7-state composite regime classifier has no
-statistically real forward-RETURN (directional) separation to beat, but does strongly
-separate forward VOLATILITY (its real job).
-
-Three diagnostics, all reusing backtest/regime_diagnostics.py scorers against the
-eval_windows splits:
-
-  windows   per-window hand-rule forward-return separation + block-shuffle significance,
-            alongside the in-sample k-means yardstick (model-free ceiling on the 4 features).
-  horizons  hand-rule forward-return significance swept across horizons {1..72} x windows.
-            (Finding 1: 0/35 block-shuffle significant -> no directional signal at any horizon.)
-  vol       (A) hand-rule forward-VOLATILITY separation + significance -> strong & real.
-            (B) in-sample-overfit k-means on the same 4 features, block-shuffle significance
-                on forward RETURNS -> still fails (Finding 2: not feature poverty).
-
-Run (needs the trading_bot.db OHLCV cache reachable from shared_tools/):
-
-    uv run --no-sync python backtest/research/regime_1073_directional_negative_result.py
-    uv run --no-sync python backtest/research/regime_1073_directional_negative_result.py \
-        --symbol ETH/USDT --timeframe 1h --diagnostics horizons
-
-Parameterized by --symbol/--timeframe so #1076 (multi-asset directional-premise validation)
-can reuse it. Read-only; no live or Go path touched.
-"""
 from __future__ import annotations
 import os
 import sys

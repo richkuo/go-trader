@@ -1,4 +1,3 @@
-"""Tests for tema_cross and tema_cross_bd strategies in registry.py."""
 
 import importlib.util
 import os
@@ -39,7 +38,6 @@ def registry():
 
 
 def _oscillating_uptrend(n=200, start=100.0, drift=0.4, amp=3.0, period=20, seed=0):
-    """Linear uptrend with sinusoidal oscillation so ema_short crosses ema_mid repeatedly."""
     t = np.arange(n)
     rng = np.random.RandomState(seed)
     return start + t * drift + amp * np.sin(2 * np.pi * t / period) + rng.randn(n) * 0.05
@@ -57,11 +55,7 @@ def _trend_up_then_down(up_n=200, down_n=200, start=100.0, amp=3.0, period=20):
     return np.concatenate([up, down])
 
 
-# ─── tema_cross (long-only) ─────────────────────────────────────────────
-
-
 def test_tema_cross_emits_buy_during_uptrend(registry):
-    """A run-up after a downtrend should fire a buy on the bullish cross."""
     prices = _oscillating_uptrend(200, start=100.0)
     df = make_ohlcv(prices)
     result = registry.tema_cross_strategy(df)
@@ -69,23 +63,19 @@ def test_tema_cross_emits_buy_during_uptrend(registry):
 
 
 def test_tema_cross_position_persists_between_crosses(registry):
-    """Position must hold at 1 across silent bars between bullish and bearish cross."""
     prices = _trend_up_then_down(150, 100, start=100.0)
     df = make_ohlcv(prices)
     result = registry.tema_cross_strategy(df)
     assert (result["signal"] == 1).any(), "Expected an entry"
-    # After the first +1 signal and before any -1, position should equal 1 on multiple bars.
     entry_idx = result.index[result["signal"] == 1][0]
     after_entry = result.loc[entry_idx:]
     in_position = after_entry["position"] == 1
-    # At least 5 consecutive in-position bars proves persistence vs single-bar bug.
     assert in_position.sum() > 5, (
         f"Position only held for {in_position.sum()} bars after entry — should persist until bearish cross"
     )
 
 
 def test_tema_cross_exits_on_bearish_cross(registry):
-    """An uptrend followed by a sustained downtrend should produce a -1 exit signal."""
     prices = _trend_up_then_down(120, 120, start=100.0)
     df = make_ohlcv(prices)
     result = registry.tema_cross_strategy(df)
@@ -94,7 +84,6 @@ def test_tema_cross_exits_on_bearish_cross(registry):
 
 
 def test_tema_cross_no_short_entries(registry):
-    """Long-only strategy must never go to position == -1."""
     prices = _trend_up_then_down(120, 120, start=100.0)
     df = make_ohlcv(prices)
     result = registry.tema_cross_strategy(df)
@@ -102,14 +91,9 @@ def test_tema_cross_no_short_entries(registry):
 
 
 def test_tema_cross_flat_market_no_signals(registry):
-    """A flat market should produce no entry signals."""
     df = make_ohlcv(np.full(200, 100.0), noise=0)
     result = registry.tema_cross_strategy(df)
-    # No bullish cross can fire when EMAs converge to the same flat value.
     assert not (result["signal"] == 1).any()
-
-
-# ─── tema_cross_bd (bidirectional) ───────────────────────────────────────
 
 
 def test_tema_cross_bd_emits_long_in_uptrend(registry):
@@ -120,9 +104,6 @@ def test_tema_cross_bd_emits_long_in_uptrend(registry):
 
 
 def test_tema_cross_bd_emits_short_in_downtrend(registry):
-    # Prime EMAs with an uptrend, then a sharp dump to push ema_mid below ema_long
-    # (confirmed downtrend), then a small oscillating drift down so bearish crosses
-    # keep firing while the downtrend remains confirmed.
     up = _oscillating_uptrend(120, start=100.0, drift=0.6, amp=2.0)
     dump = np.linspace(up[-1], up[-1] - 60.0, 80)
     rng = np.random.RandomState(0)
@@ -136,7 +117,6 @@ def test_tema_cross_bd_emits_short_in_downtrend(registry):
 
 
 def test_tema_cross_bd_position_persists(registry):
-    """Position must hold across silent bars between confirmed crosses."""
     prices = _trend_up_then_down(150, 150, start=100.0)
     df = make_ohlcv(prices)
     result = registry.tema_cross_bd_strategy(df)
@@ -145,7 +125,6 @@ def test_tema_cross_bd_position_persists(registry):
 
 
 def test_tema_cross_bd_signal_bounded(registry):
-    """Signal must be in {-1, 0, 1} even on direct long→short flips."""
     prices = _trend_up_then_down(100, 100, start=100.0)
     df = make_ohlcv(prices)
     result = registry.tema_cross_bd_strategy(df)

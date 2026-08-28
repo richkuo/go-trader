@@ -1,46 +1,3 @@
-"""Scope-1 evidence for #1076: does the regime label predict forward DIRECTION?
-
-``regime_directional_policy`` (#779, scheduler/regime_directional_policy.go:5-16) bets a
-live HL perps strategy long/short on the CURRENT regime label (long in ``trending_up``,
-short in ``trending_down``). Its entire edge premise is regime -> forward-direction, and
-``allowed_regimes`` directional entry-gating shares it. #1073 finding 1 refuted that premise
-for the 7-state composite classifier on BTC/USDT 1h (0/35 block-shuffle tests).
-
-This script generalizes the test so the premise is judged on the surface the policy actually
-keys on, across a multi-asset / multi-timeframe universe:
-
-  - BOTH classifiers a policy can key on: ``adx`` (3-state -- the policy-doc default form,
-    ``trending_up``/``trending_down``/``ranging``) and ``composite`` (7-state -- the #1073
-    surface).
-  - per-STATE block-shuffle significance with Benjamini-Hochberg FDR (reuses
-    backtest/regime_diagnostics.py:per_state_significance) so one state with real directional
-    separation is not masked by a null group-level statistic.
-  - per-state mean forward return + sign-vs-policy-direction, so a "significant but
-    wrong-signed" state (separation that would LOSE money under the policy mapping) is
-    distinguished from a genuine long/short edge.
-
-A state is a candidate edge only when it is FDR-significant AND its gap sign matches the
-policy's bet for that state (long states want gap > 0, short states gap < 0). The economic
-walk-forward test (#1076 scope 2) is the real arbiter; this is the statistical screen.
-
-Read-only; no live or Go path touched. Universe is fully CLI-parameterized.
-
-Run (needs the trading_bot.db OHLCV cache reachable from shared_tools/):
-
-    uv run --no-sync python backtest/research/regime_1076_directional_premise.py
-    uv run --no-sync python backtest/research/regime_1076_directional_premise.py \
-        --symbols BTC/USDT,ETH/USDT,SOL/USDT --timeframes 1h,4h --classifiers adx,composite
-
-#1443: ``--symbols`` accepts an optional per-symbol data source, ``SYMBOL[@exchange]``.
-A bare symbol keeps the ``eval_windows.PLATFORM`` default ("binanceus"); an ``@exchange``
-suffix loads that symbol's OHLCV from that exchange's cache namespace instead. This exists
-because assets that do not trade on the default venue (HYPE, an HL perp) are otherwise
-unreachable by the screen. ``PLATFORM`` itself is NEVER repointed — the #1315 axis
-separation pins it, because every committed regime baseline was computed on that series.
-
-    uv run --no-sync python backtest/research/regime_1076_directional_premise.py \
-        --symbols "BTC/USDT,ETH/USDT,SOL/USDT,HYPE/USDC:USDC@hyperliquid"
-"""
 from __future__ import annotations
 import os
 import sys
@@ -66,11 +23,6 @@ from eval_windows import WINDOWS, PLATFORM
 from regime_diagnostics import forward_returns, separation, stability, per_state_significance
 from regime_stats import benjamini_hochberg
 
-# eval_windows split: "is"/"oos" are the recent forward-looking protocol windows
-# (2025-06 -> 2026); the 2023/2024/2025H1 windows are historical. A durable, tradeable
-# regime->direction edge must persist into the held-out forward windows, above all "oos"
-# (2026-) — a state significant only in a historical window is in-sample/regime-specific
-# overfit, not an edge the live policy can bank on today.
 HELD_OUT_FORWARD = ("is", "oos")
 
 DEFAULT_SYMBOLS = ("BTC/USDT", "ETH/USDT", "SOL/USDT")
@@ -78,20 +30,12 @@ DEFAULT_TIMEFRAMES = ("1h", "4h")
 DEFAULT_WINDOWS = ("is", "oos", "2023", "2024", "2025H1")
 DEFAULT_HORIZONS = (1, 4, 8, 12, 24, 48, 72)
 DEFAULT_CLASSIFIERS = ("adx", "composite")
-COMPOSITE_PERIOD = 48        # matches #1073 / the live composite default lookback
-ADX_PERIOD = 14              # Wilder standard for the 3-state directional classifier
-ADX_THRESHOLD = 20.0         # compute_regime / _normalize_spec default
+COMPOSITE_PERIOD = 48
+ADX_PERIOD = 14
+ADX_THRESHOLD = 20.0
 
 
 def parse_symbol_spec(spec: str) -> tuple[str, str | None]:
-    """Split a ``SYMBOL[@exchange]`` CLI spec into ``(symbol, exchange_or_None)``.
-
-    Splits on the LAST ``@`` so ccxt symbols carrying ``/`` and ``:`` parse
-    correctly: ``"HYPE/USDC:USDC@hyperliquid"`` -> ``("HYPE/USDC:USDC",
-    "hyperliquid")``. A bare symbol returns ``(symbol, None)``, meaning "use the
-    PLATFORM default". An empty symbol or an empty exchange raises loudly rather
-    than silently falling back — a typo must never quietly screen the wrong
-    series. Pure; unit-tested without data access."""
     raw = (spec or "").strip()
     if not raw:
         raise ValueError("empty symbol spec")
@@ -108,17 +52,6 @@ def parse_symbol_spec(spec: str) -> tuple[str, str | None]:
 
 
 def parse_symbols_arg(raw: str) -> tuple[tuple[str, str | None], ...]:
-    """Parse a comma-separated ``--symbols`` value into ``(symbol, exchange)``
-    pairs. Shared by this script and regime_1076_certify.py so both CLIs honor
-    one contract.
-
-    #1443 review: a repeated symbol STRING is rejected outright. Every
-    symbol-keyed surface downstream is a dict — resolve_data_sources keeps only
-    the last exchange for a repeated key, coverage_table blends both series into
-    one (symbol, timeframe, window) cell — so the same symbol listed twice under
-    two exchanges would double the correction family while recording the
-    provenance of only one of them. Refusing at parse time is the only place the
-    two entries are still distinguishable."""
     specs = tuple(parse_symbol_spec(part) for part in (raw or "").split(",")
                   if part.strip())
     if not specs:
@@ -136,10 +69,6 @@ def parse_symbols_arg(raw: str) -> tuple[tuple[str, str | None], ...]:
 
 
 def normalize_symbol_specs(symbols) -> tuple[tuple[str, str | None], ...]:
-    """Accept either bare symbol strings or ``(symbol, exchange)`` pairs and
-    return pairs. A bare ``str`` entry is NOT re-parsed for ``@`` — callers that
-    want spec parsing use parse_symbols_arg; run() stays tolerant of the plain
-    tuple-of-strings form its existing callers and tests pass."""
     out = []
     for entry in symbols:
         if isinstance(entry, str):
@@ -151,26 +80,11 @@ def normalize_symbol_specs(symbols) -> tuple[tuple[str, str | None], ...]:
 
 
 def resolve_data_sources(symbols) -> dict:
-    """``{symbol: exchange_id}`` for the resolved run, PLATFORM where unset.
-    Recorded in the run banner, the ``--out`` dump and (via the certify
-    producer) the artifact ``criteria`` so a screen's data provenance is
-    inspectable after the fact."""
     return {symbol: (exchange or PLATFORM)
             for symbol, exchange in normalize_symbol_specs(symbols)}
 
 
 def _clip_window(df, start, end):
-    """Clip a loaded OHLCV frame to the eval window on its datetime index.
-
-    load_cached_data's CACHED path already filters to [start, end], but its
-    empty-cache fallback fetches from ``since=start_date`` and returns the whole
-    fetched history UNSLICED (shared_tools/data_fetcher.py). For an asset whose
-    listing post-dates a window (HYPE, listed Nov 2024, against the "2023"
-    window) that fallback would hand back later data mislabeled as the requested
-    window — a silent statistical corruption. Clipping here defuses it and is a
-    no-op on the cached path, so every already-screened cell stays identical.
-    End is inclusive, matching storage.load_ohlcv's ``timestamp <= end_ts``.
-    Pure; unit-tested without data access."""
     if df is None or len(df) == 0:
         return df
     if not isinstance(df.index, pd.DatetimeIndex):
@@ -185,10 +99,6 @@ def _clip_window(df, start, end):
 
 
 def coverage_table(rows) -> list:
-    """Per-(symbol, timeframe, window) screened coverage derived purely from
-    result rows: which windows actually contributed, from which source, with how
-    many labeled bars. #1443 requires the run itself to state this for a newly
-    added asset whose history starts mid-universe."""
     agg: dict = {}
     for r in rows:
         key = (str(r["symbol"]), str(r["timeframe"]), str(r["window"]))
@@ -201,7 +111,6 @@ def coverage_table(rows) -> list:
 
 
 def _policy_direction(label: str) -> int:
-    """The side regime_directional_policy bets for a state: +1 long, -1 short, 0 neutral."""
     if label.startswith("trending_up"):
         return +1
     if label.startswith("trending_down"):
@@ -210,7 +119,6 @@ def _policy_direction(label: str) -> int:
 
 
 def _label_stream(close_df, classifier, th):
-    """Return (close array, per-bar label array, valid mask dropping warmup bars)."""
     if classifier == "composite":
         labels = compute_regime_composite(close_df, period=COMPOSITE_PERIOD,
                                           thresholds=th)["regime"].to_numpy()
@@ -220,7 +128,7 @@ def _label_stream(close_df, classifier, th):
         labels = compute_regime(close_df, period=ADX_PERIOD,
                                 adx_threshold=ADX_THRESHOLD)["regime"].to_numpy()
         valid = np.ones(len(labels), dtype=bool)
-        valid[:ADX_PERIOD] = False     # Wilder ADX warmup -> default 'ranging', not a real read
+        valid[:ADX_PERIOD] = False
     else:
         raise SystemExit(f"unknown classifier {classifier!r}")
     return close_df["close"].to_numpy(), labels, valid
@@ -243,10 +151,6 @@ def _load(symbol, timeframe, window, classifier, th, exchange=None):
 
 
 def run(symbols, timeframes, windows, horizons, classifiers, th, n_perm, seed):
-    """Returns a flat list of per-(classifier,symbol,tf,window,horizon,state) result rows.
-
-    ``symbols`` accepts bare symbol strings (loaded from PLATFORM) or
-    ``(symbol, exchange)`` pairs from parse_symbols_arg (#1443)."""
     rows = []
     specs = normalize_symbol_specs(symbols)
     for classifier in classifiers:
@@ -269,8 +173,6 @@ def run(symbols, timeframes, windows, horizons, classifiers, th, n_perm, seed):
                         for state, r in per_state.items():
                             pol = _policy_direction(state)
                             gap = float(r["gap"])
-                            # candidate edge: FDR-significant AND gap sign matches policy bet.
-                            # bool() casts numpy bool_ -> Python bool so the row JSON-dumps.
                             aligned = bool(pol != 0 and np.sign(gap) == pol)
                             rows.append({
                                 "classifier": classifier, "symbol": symbol,
@@ -287,13 +189,6 @@ def run(symbols, timeframes, windows, horizons, classifiers, th, n_perm, seed):
 
 
 def _report_coverage(rows, symbols=None, timeframes=None, windows=None):
-    """Print which (symbol, timeframe, window) cells actually contributed rows.
-
-    #1443: a symbol whose listing post-dates part of the window grid contributes
-    nothing for the earlier windows, and the run must say so instead of leaving
-    the reader to infer it from a row count. The empty-cell enumeration reads the
-    REQUESTED axes, never the axes present in the results — a timeframe that
-    produced no rows for any symbol must still be named as empty."""
     cov = coverage_table(rows)
     print("SCREENED COVERAGE — (symbol, tf, window) cells that contributed rows:")
     print(f"{'symbol':18s} {'source':12s} {'tf':4s} {'window':8s} {'rows':>5s}  labeled bars")
@@ -319,7 +214,7 @@ def _report_coverage(rows, symbols=None, timeframes=None, windows=None):
 
 
 def report(rows, classifiers, symbols=None, timeframes=None, windows=None):
-    directional = [r for r in rows if r["policy_dir"] != 0]   # trending_* states only
+    directional = [r for r in rows if r["policy_dir"] != 0]
     n_dir = len(directional)
     n_fdr = sum(r["fdr_reject"] for r in directional)
     candidates = [r for r in directional if r["candidate_edge"]]
@@ -334,7 +229,6 @@ def report(rows, classifiers, symbols=None, timeframes=None, windows=None):
 
     _report_coverage(rows, symbols, timeframes, windows)
 
-    # per-classifier breakdown
     for c in classifiers:
         cr = [r for r in directional if r["classifier"] == c]
         if not cr:
@@ -346,17 +240,12 @@ def report(rows, classifiers, symbols=None, timeframes=None, windows=None):
               f"(aligned {cc}, wrong-signed {wrong})")
     print()
 
-    # GLOBAL multiple-comparisons correction. per_state_significance applies BH only
-    # WITHIN a (classifier,symbol,tf,window,horizon) cell. Running ~N such cells is a
-    # family of N*states tests, so within-cell "significant" hits are expected by chance.
-    # The honest screen corrects across the WHOLE directional family.
     pvals = [r["p_value"] for r in directional]
     n = len(pvals)
     global_bh = benjamini_hochberg(pvals, alpha=0.05) if pvals else []
     bonf_thresh = 0.05 / n if n else 0.0
     n_global_bh = sum(global_bh)
     n_bonf = sum(p <= bonf_thresh for p in pvals)
-    # aligned survivors under each global correction
     bh_aligned = sum(b and r["sign_aligned"] for b, r in zip(global_bh, directional))
     bonf_aligned = sum((r["p_value"] <= bonf_thresh) and r["sign_aligned"]
                        for r in directional)
@@ -368,8 +257,6 @@ def report(rows, classifiers, symbols=None, timeframes=None, windows=None):
           f"({bonf_aligned} policy-aligned)")
     print()
 
-    # Held-out-forward persistence: candidate edges that land in is/oos (2025-06->2026),
-    # the windows the live policy must work in. Historical-only hits are overfit.
     held = [r for r in candidates if r["window"] in HELD_OUT_FORWARD]
     oos = [r for r in candidates if r["window"] == "oos"]
     print("Within-cell candidate edges by window class:")

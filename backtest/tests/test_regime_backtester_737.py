@@ -1,4 +1,3 @@
-"""Backtester parity for regime-aware ATR surfaces (#737)."""
 
 import pytest
 import pandas as pd
@@ -8,7 +7,6 @@ from shared_strategies.close import regime_atr
 
 
 def _tier_spec_widely_separated():
-    """Single tier whose ATR multiple differs sharply by regime label."""
     return [
         {
             "trend_regime": {
@@ -21,15 +19,12 @@ def _tier_spec_widely_separated():
 
 
 def test_tiered_tp_atr_regime_frozen_multiplier_ignores_mid_trade_regime_shift():
-    """Tier distances stay anchored to the open-time label across regime flips."""
     idx = pd.date_range("2024-01-01", periods=6, freq="D")
     df = pd.DataFrame(
         {
             "open": [100.0, 100.0, 100.0, 100.26, 100.26, 100.26],
             "close": [100.0, 100.0, 100.0, 100.26, 100.26, 100.26],
             "atr": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
-            # Raw labels (``regime_enabled`` is off — stamp + live paths read
-            # from ``_regime_bar_close`` captured before any shift).
             "regime": [
                 "ranging",
                 "ranging",
@@ -38,7 +33,6 @@ def test_tiered_tp_atr_regime_frozen_multiplier_ignores_mid_trade_regime_shift()
                 "trending_up",
                 "trending_up",
             ],
-            # Shifted pipeline: raw ``long`` at idx1 fills at idx2 open.
             "open_action": ["none", "long", "none", "none", "none", "none"],
         },
         index=idx,
@@ -56,14 +50,11 @@ def test_tiered_tp_atr_regime_frozen_multiplier_ignores_mid_trade_regime_shift()
     )
     result = bt.run(df, save=False)
 
-    # End-of-bar idx3 close hits ranging multiple 0.25×ATR → pending full close
-    # at idx4 open (shifted pipeline).
     assert result["total_trades"] == 1
     assert result["trades"][0]["exit_date"] == str(idx[4])
 
 
 def test_tiered_tp_atr_live_regime_re_resolves_multiplier_mid_trade():
-    """Live variant moves tier distances with each bar's regime label."""
     idx = pd.date_range("2024-01-01", periods=6, freq="D")
     df = pd.DataFrame(
         {
@@ -95,13 +86,11 @@ def test_tiered_tp_atr_live_regime_re_resolves_multiplier_mid_trade():
     )
     result = bt.run(df, save=False)
 
-    # No TP partial: the engine flattens at the last bar (still one round-trip).
     assert result["total_trades"] == 1
     assert result["trades"][0]["exit_date"] == str(idx[-1])
 
 
 def test_stop_loss_atr_regime_use_defaults_matches_baseline_table():
-    """``use_defaults: true`` expands to the shared REGIME_ATR_DEFAULTS_STOP_LOSS."""
     mult = regime_atr.resolve_regime_atr(
         regime_atr.parse_regime_atr_block(
             {"use_defaults": True}, "probe", regime_atr.SURFACE_STOP_LOSS,
@@ -112,7 +101,6 @@ def test_stop_loss_atr_regime_use_defaults_matches_baseline_table():
 
 
 def test_stop_loss_atr_regime_seeds_initial_sl_trigger_from_open_stamp():
-    """Hand-check: ranging default SL is 1.5×ATR below entry for a long."""
     idx = pd.date_range("2024-01-01", periods=6, freq="D")
     df = pd.DataFrame(
         {
@@ -129,8 +117,6 @@ def test_stop_loss_atr_regime_seeds_initial_sl_trigger_from_open_stamp():
         "name": "tiered_tp_atr",
         "params": {
             "tp_tiers": [{"atr_multiple": 100.0, "close_fraction": 1.0}],
-            # ``sl_after`` arms the bar-level SL machinery (``_initial_sl_trigger``),
-            # which is otherwise unused in the open/close engine (#737 test).
             "sl_after": "breakeven",
         },
     }
@@ -143,7 +129,6 @@ def test_stop_loss_atr_regime_seeds_initial_sl_trigger_from_open_stamp():
     )
     result = bt.run(df, save=False)
 
-    # SL trigger at 100 - 1.5 = 98.5; idx3 close 96 trips SL next open at 96.
     assert result["total_trades"] == 1
     tr = result["trades"][0]
     assert tr["entry_price"] == 100.0

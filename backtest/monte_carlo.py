@@ -1,86 +1,4 @@
 #!/usr/bin/env python3
-"""monte_carlo.py — trade-order Monte Carlo resampler for drawdown and
-risk-of-ruin distributions (#1274).
-
-The validation stack reports path-dependent risk as single-path point
-estimates: the Backtester's ``max_drawdown_pct`` is the drawdown of the ONE
-realized trade ordering, and eval_windows/gross_edge_noise resample only the
-per-trade MEAN. Max drawdown is an order statistic of the trade sequence —
-the same multiset of trades in a different order produces a different max
-drawdown — so a single historical ordering is one draw from a distribution.
-This tool resamples the trade ORDER to produce that distribution:
-
-  - P5 / P50 / P95 (configurable via --percentiles) of max drawdown and of
-    final return across resampled equity paths;
-  - P(final equity < starting equity) — probability the strategy ends
-    underwater;
-  - P(max drawdown >= kill-switch threshold) — probability of tripping the
-    per-strategy drawdown limit. The threshold resolves from a live config
-    (--config PATH --strategy-id ID, mirroring scheduler/config.go's
-    hierarchy: explicit strategy max_drawdown_pct > platform risk override >
-    type default 40/45/50/60) or from --kill-switch-pct (default 25, the
-    portfolio-level kill-switch default in PortfolioRiskConfig).
-
-Two resampling schemes, both run by default (--schemes to restrict):
-
-  - ``permute`` — shuffle the observed trade order (identical multiset,
-    order randomized); isolates pure sequencing risk.
-  - ``block`` — CIRCULAR block bootstrap: sample contiguous blocks (with
-    replacement, wrapping past the series end so tail trades are not
-    under-sampled) and concatenate to the original length; preserves
-    short-range autocorrelation in trade outcomes and also varies the trade
-    multiset. Block length via --block-len (0 = auto, ceil(n^(1/3))).
-
-Compounding model: per-trade percent returns are compounded multiplicatively
-into an equity path marked at TRADE CLOSES only (equity *= 1 + r/100). This
-matches the Backtester's single-mode full-equity deployment but is
-trade-close resolution — intra-trade (bar-level) excursions are invisible, so
-the resampled drawdowns UNDERSTATE what a bar-level equity curve would show.
-Returns default to NET of fees (``pnl / (shares * entry_price)`` — Trade.pnl
-has both commissions deducted; #1241 documents that ``pnl_pct`` is gross);
---returns gross switches to raw fill-price edge. A path whose equity touches
-0 is a bust: it is sticky-floored there (max DD 100, final return -100),
-mirroring the Backtester's #1005 liquidation-floor convention.
-
-Both probabilities are add-one smoothed ((count + 1) / (n_paths + 1), the
-gross_edge_noise convention) so a finite path count never reports exactly 0.
-All statistics are stdlib-only and deterministic under --seed.
-
-SUGGEST-ONLY / diagnostics-only: output never gates a promotion, writes a
-config, or feeds a live path.
-
-Three trade sources, exactly one per invocation: ``--trades-json`` (a saved
-run), ``--strategy`` (one bare registry strategy on the M1 harness), or
-``--candidate-json`` (a full eval_windows candidate — name, params, direction,
-close_strategies, allowed_regimes, regime_windows_spec, stops — resampled
-exactly as M1 scores it). The candidate source is what auto_suggest shells:
-resampling a gate-carrying candidate as if it were the bare strategy would
-report drawdowns for a strategy nobody is considering.
-
-MULTI-LEG MODE (#1295): pass ``--windows`` and/or ``--datasets`` (comma lists)
-instead of the singular ``--window``/``--dataset`` to fan one invocation across
-every (window, dataset) pair, emitting one stats block per leg under a ``legs``
-key — the same fan shape as the other M-harness payloads. ``--datasets``
-defaults to the six audit datasets. The singular flags keep their original
-single-leg payload shape (``observed`` + ``schemes`` at the top level).
-
-Usage:
-  # Resample the trades of a completed run saved as JSON (a results dict
-  # with a "trades" list, or a bare list of trade dicts / percent returns)
-  uv run --no-sync python backtest/monte_carlo.py --trades-json results.json
-
-  # Run one leg on the M1 audit-identical harness and resample its trades
-  uv run --no-sync python backtest/monte_carlo.py \\
-      --strategy squeeze_momentum --dataset BTC/USDT:1h --window is
-
-  # Resample a full candidate across the protocol windows and audit datasets
-  uv run --no-sync python backtest/monte_carlo.py \\
-      --candidate-json cand.json --windows is,oos
-
-  # Kill-switch threshold from a live config's strategy entry
-  uv run --no-sync python backtest/monte_carlo.py --trades-json results.json \\
-      --config scheduler/config.json --strategy-id hl-btc-squeeze
-"""
 
 from __future__ import annotations
 
@@ -97,20 +15,13 @@ if _THIS_DIR not in sys.path:
     sys.path.insert(0, _THIS_DIR)
 sys.path.insert(0, os.path.join(_THIS_DIR, "..", "shared_tools"))
 
-from exit_policy_ab import DEFAULT_SEED  # noqa: E402  (path bootstrap above)
+from exit_policy_ab import DEFAULT_SEED
 
 DEFAULT_N_PATHS = 10000
 DEFAULT_PERCENTILES = (5.0, 50.0, 95.0)
-# Portfolio-level kill-switch default (scheduler/config.go
-# PortfolioRiskConfig.MaxDrawdownPct).
 DEFAULT_KILL_SWITCH_PCT = 25.0
 SCHEMES = ("permute", "block")
 
-# ---------------------------------------------------------------------------
-# Mirror of scheduler/config.go loadConfig's per-strategy max_drawdown_pct
-# hierarchy (strategy-specific > platform risk override > type default).
-# Change only alongside the Go side.
-# ---------------------------------------------------------------------------
 GO_ID_PREFIX_PLATFORM = (
     ("ibkr-", "ibkr"),
     ("deribit-", "deribit"),
@@ -124,21 +35,7 @@ GO_TYPE_DEFAULT_MAX_DD = {"options": 40.0, "perps": 50.0, "futures": 45.0}
 GO_FALLBACK_MAX_DD = 60.0
 
 
-# ---------------------------------------------------------------------------
-# Pure statistics (stdlib only; deterministic; unit-tested without data).
-# ---------------------------------------------------------------------------
-
 def equity_path_stats(returns_pct: Sequence[float]) -> tuple:
-    """Compound per-trade percent returns into an equity path and score it.
-
-    Returns ``(max_dd_pct, final_return_pct)`` where ``max_dd_pct`` is the
-    max peak-to-trough drawdown as a POSITIVE magnitude (0 = never below a
-    peak) so it compares directly against a kill-switch threshold, and
-    ``final_return_pct`` is the compounded total return. Equity is marked at
-    trade closes only (see module docstring). A path whose equity touches 0
-    busts: sticky-floored per the #1005 convention (DD 100, final -100).
-    Empty input → (0.0, 0.0).
-    """
     equity = 1.0
     peak = 1.0
     max_dd = 0.0
@@ -155,10 +52,6 @@ def equity_path_stats(returns_pct: Sequence[float]) -> tuple:
 
 
 def percentile(sorted_values: Sequence[float], q: float) -> Optional[float]:
-    """Linear-interpolation percentile (numpy's default) on a SORTED list.
-
-    q in [0, 100]. None on an empty sample.
-    """
     n = len(sorted_values)
     if n == 0:
         return None
@@ -172,18 +65,14 @@ def percentile(sorted_values: Sequence[float], q: float) -> Optional[float]:
 
 
 def add_one_smoothed(count: int, n_paths: int) -> float:
-    """(count + 1) / (n_paths + 1) — a finite path count never reports 0."""
     return (count + 1) / (n_paths + 1)
 
 
 def auto_block_len(n: int) -> int:
-    """Default block length ceil(n^(1/3)) — the standard n^(1/3) rate for
-    block bootstraps, floored at 1."""
     return max(1, math.ceil(n ** (1.0 / 3.0)))
 
 
 def permuted_path(values: Sequence[float], rng: Random) -> List[float]:
-    """One shuffled copy of the observed trade order (same multiset)."""
     out = list(values)
     rng.shuffle(out)
     return out
@@ -191,12 +80,6 @@ def permuted_path(values: Sequence[float], rng: Random) -> List[float]:
 
 def block_bootstrap_path(values: Sequence[float], block_len: int,
                          rng: Random) -> List[float]:
-    """One circular-block-bootstrap path of the original length.
-
-    Blocks of exactly ``block_len`` are drawn with replacement from random
-    start offsets, wrapping past the series end (circular — tail trades are
-    sampled as often as any other), concatenated, and truncated to len(values).
-    """
     n = len(values)
     out: List[float] = []
     while len(out) < n:
@@ -214,13 +97,6 @@ def resample_stats(values: Sequence[float], scheme: str,
                    seed: int = DEFAULT_SEED,
                    kill_switch_pct: float = DEFAULT_KILL_SWITCH_PCT,
                    percentiles: Sequence[float] = DEFAULT_PERCENTILES) -> dict:
-    """Full Monte Carlo stats block for one resampling scheme.
-
-    ``block_len`` <= 0 means auto (ceil(n^(1/3))); ignored for ``permute``.
-    Empty input returns a degenerate block (n_trades 0, everything None) —
-    there is no path to resample, and reporting a fabricated 0-risk number
-    would be worse than reporting nothing.
-    """
     if scheme not in SCHEMES:
         raise ValueError(f"unknown scheme {scheme!r}; known: {SCHEMES}")
     n = len(values)
@@ -264,19 +140,7 @@ def resample_stats(values: Sequence[float], scheme: str,
     }
 
 
-# ---------------------------------------------------------------------------
-# Trade-series extraction (pure).
-# ---------------------------------------------------------------------------
-
 def trade_returns(trades: Sequence, returns: str = "net") -> List[float]:
-    """Per-trade percent returns, in the recorded (chronological) order.
-
-    Accepts Backtester ``Trade.to_dict()`` dicts or bare numbers. ``net``
-    (default) computes ``pnl / (shares * entry_price) * 100`` — Trade.pnl has
-    entry+exit commissions deducted (#1241) — falling back to the gross
-    ``pnl_pct`` when notional is unavailable. ``gross`` reads ``pnl_pct``
-    (fill-price edge, commissions excluded).
-    """
     if returns not in ("net", "gross"):
         raise ValueError(f"returns must be 'net' or 'gross', got {returns!r}")
     out: List[float] = []
@@ -307,11 +171,6 @@ def trade_returns(trades: Sequence, returns: str = "net") -> List[float]:
 
 
 def trades_from_json_payload(payload) -> List:
-    """Extract the trade list from a results-JSON payload.
-
-    Accepts a Backtester results dict (``{"trades": [...]}``) or a bare list
-    of trade dicts / percent returns.
-    """
     if isinstance(payload, dict):
         trades = payload.get("trades")
         if not isinstance(trades, list):
@@ -326,11 +185,6 @@ def trades_from_json_payload(payload) -> List:
 
 
 def resolve_kill_switch_pct(cfg: dict, strategy_id: str) -> float:
-    """Per-strategy drawdown threshold, mirroring scheduler/config.go's
-    loadConfig hierarchy: explicit strategy ``max_drawdown_pct`` > platform
-    ``risk.max_drawdown_pct`` override > type default (options 40, futures
-    45, perps 50, else 60). Raises ValueError when the strategy is missing.
-    """
     sc = None
     for cand in cfg.get("strategies") or []:
         if isinstance(cand, dict) and cand.get("id") == strategy_id:
@@ -362,12 +216,7 @@ def resolve_kill_switch_pct(cfg: dict, strategy_id: str) -> float:
     return GO_TYPE_DEFAULT_MAX_DD.get(stype, GO_FALLBACK_MAX_DD)
 
 
-# ---------------------------------------------------------------------------
-# Leg execution (I/O; everything above stays pure).
-# ---------------------------------------------------------------------------
-
 def _leg_returns(leg: Optional[dict], returns: str) -> Optional[List[float]]:
-    """Per-trade percent returns from a run_leg result; None when no data."""
     if leg is None:
         return None
     key = "pnl_pct_net" if returns == "net" else "pnl_pct"
@@ -388,15 +237,6 @@ def run_leg_trades(strategy: str, registry: str, params: Optional[dict],
                    dataset: str, window_name: str,
                    capital: float, direction: Optional[str],
                    returns: str) -> List[float]:
-    """Run one (strategy, dataset, window) leg on the M1 audit-identical
-    harness (eval_windows.run_leg, default friction) and return its per-trade
-    percent returns in close order.
-
-    The BARE-STRATEGY source: ``direction`` is threaded exactly as given (None
-    = the engine's raw-signal default), matching gross_edge_noise's leg. A full
-    candidate goes through ``run_candidate_leg_trades`` instead, where the
-    validated "long" default applies (#996).
-    """
     from eval_windows import parse_dataset_arg, run_leg
 
     reg, window = _load_reg_and_window(registry, window_name)
@@ -420,11 +260,6 @@ def run_leg_trades(strategy: str, registry: str, params: Optional[dict],
 def run_candidate_leg_trades(candidate: dict, registry: str, dataset: str,
                              window_name: str, capital: float,
                              returns: str) -> Optional[List[float]]:
-    """Per-trade returns for ONE candidate leg, resampled exactly as M1 scores
-    it — the full candidate shape (close stack, entry gate, stops, profile
-    allocation) is threaded via ``eval_windows.run_candidate_leg``, never a
-    hand-picked subset. ``None`` when the dataset has no cached bars in the
-    window (a missing dataset must not abort a multi-leg fan)."""
     from eval_windows import parse_dataset_arg, run_candidate_leg
 
     reg, window = _load_reg_and_window(registry, window_name)
@@ -442,7 +277,6 @@ def run_candidate_leg_trades(candidate: dict, registry: str, dataset: str,
 
 
 def default_dataset_args() -> List[str]:
-    """The six audit datasets as SYMBOL:TIMEFRAME strings (eval_windows SSoT)."""
     from eval_windows import DATASETS
     return [f"{sym}:{tf}" for sym, tf in DATASETS]
 
@@ -451,17 +285,12 @@ def leg_blocks(values: Sequence[float], schemes: Sequence[str], *,
                n_paths: int, block_len: int, seed: int,
                kill_switch_pct: float,
                percentiles: Sequence[float]) -> List[dict]:
-    """One resample_stats block per scheme, for a single leg's trade series."""
     return [resample_stats(values, scheme, n_paths=n_paths,
                            block_len=block_len, seed=seed,
                            kill_switch_pct=kill_switch_pct,
                            percentiles=percentiles)
             for scheme in schemes]
 
-
-# ---------------------------------------------------------------------------
-# Reporting / CLI.
-# ---------------------------------------------------------------------------
 
 def _fmt(v, prec=2):
     return "-" if v is None else f"{v:+.{prec}f}"
@@ -724,8 +553,6 @@ def main(argv: Optional[List[str]] = None) -> int:
                         candidate, args.registry, ds, wname, args.capital,
                         args.returns)
                 else:
-                    # Bare strategy: the gross_edge_noise leg (direction
-                    # threaded as given), fanned across windows/datasets.
                     reg, window = _load_reg_and_window(args.registry, wname)
                     if args.strategy not in reg.STRATEGY_REGISTRY:
                         raise SystemExit(
@@ -738,8 +565,6 @@ def main(argv: Optional[List[str]] = None) -> int:
                         args.returns)
                 leg = {"window": wname, "dataset": dataset_key(symbol, timeframe)}
                 if values is None:
-                    # A dataset with no cached bars in this window must not
-                    # abort the fan — record it and keep going.
                     leg.update({"status": "no_data", "n_trades": 0,
                                 "observed": None, "schemes": []})
                 else:

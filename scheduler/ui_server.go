@@ -25,7 +25,7 @@ type UIStrategy struct {
 	Symbol    string `json:"symbol"`
 	Timeframe string `json:"timeframe"`
 	Direction string `json:"direction,omitempty"`
-	Paused    bool   `json:"paused,omitempty"` // #1150: position-increasing signals held
+	Paused    bool   `json:"paused,omitempty"`
 }
 
 type UIStrategyOverview struct {
@@ -41,10 +41,10 @@ type UIStrategyOverview struct {
 	PortfolioValue        float64                `json:"portfolio_value"`
 	InitialCapital        float64                `json:"initial_capital"`
 	PoolBudget            bool                   `json:"pool_budget,omitempty"`
-	RegimeDivergence      *RegimeDivergenceState `json:"regime_divergence,omitempty"`       // #907: active window-divergence state; nil when none
-	Paused                bool                   `json:"paused,omitempty"`                  // #1150
-	RegimeGateFailClosed  bool                   `json:"regime_gate_fail_closed,omitempty"` // #1278: entry gate actively failing closed (opens held while regime unknown)
-	CashReconcileRequired bool                   `json:"cash_reconcile_required,omitempty"` // #1394: live spot over-budget books still need operator reconciliation
+	RegimeDivergence      *RegimeDivergenceState `json:"regime_divergence,omitempty"`
+	Paused                bool                   `json:"paused,omitempty"`
+	RegimeGateFailClosed  bool                   `json:"regime_gate_fail_closed,omitempty"`
+	CashReconcileRequired bool                   `json:"cash_reconcile_required,omitempty"`
 }
 
 type UIStrategyStatus struct {
@@ -65,24 +65,23 @@ type UIStrategyStatus struct {
 	LifetimeStats         LifetimeTradeStats         `json:"lifetime_stats"`
 	Sharpe                float64                    `json:"sharpe,omitempty"`
 	Regime                string                     `json:"regime,omitempty"`
-	RegimeDivergence      *RegimeDivergenceState     `json:"regime_divergence,omitempty"` // #907: active window-divergence state; nil when none
+	RegimeDivergence      *RegimeDivergenceState     `json:"regime_divergence,omitempty"`
 	RiskState             RiskState                  `json:"risk_state"`
 	Positions             map[string]*Position       `json:"positions"`
 	OptionPositions       map[string]*OptionPosition `json:"option_positions"`
 	Leverage              float64                    `json:"leverage,omitempty"`
 	SizingLeverage        float64                    `json:"sizing_leverage,omitempty"`
 	MarginMode            string                     `json:"margin_mode,omitempty"`
-	Paused                bool                       `json:"paused,omitempty"`                  // #1150
-	CashReconcileRequired bool                       `json:"cash_reconcile_required,omitempty"` // #1394
+	Paused                bool                       `json:"paused,omitempty"`
+	CashReconcileRequired bool                       `json:"cash_reconcile_required,omitempty"`
 
-	// #779/#1157: directional-policy display fields, mirroring /status.
 	EffectiveDirection             string              `json:"effective_direction,omitempty"`
 	EffectiveInvertSignal          bool                `json:"effective_invert_signal,omitempty"`
 	RegimeDirectionalPolicy        bool                `json:"regime_directional_policy,omitempty"`
 	EffectivePolicyRegime          string              `json:"effective_policy_regime,omitempty"`
 	DirectionalCertificationStatus string              `json:"directional_certification_status,omitempty"`
 	DirectionalCertificationCell   string              `json:"directional_certification_cell,omitempty"`
-	RegimeProfile                  *RegimeProfileState `json:"regime_profile,omitempty"` // #998: active regime-profile allocation switch state
+	RegimeProfile                  *RegimeProfileState `json:"regime_profile,omitempty"`
 }
 
 type UIEquityPoint struct {
@@ -90,8 +89,6 @@ type UIEquityPoint struct {
 	V float64 `json:"v"`
 }
 
-// uiEquityLookbackLimit caps closed-position rows for dashboard equity curves (#805).
-// Independent of sharpeLookbackLimit so Sharpe tuning does not shrink sparklines.
 const uiEquityLookbackLimit = 500
 
 type UITradeMarker struct {
@@ -152,9 +149,6 @@ func (ss *StatusServer) handleDashboard(w http.ResponseWriter, r *http.Request) 
 	http.StripPrefix("/dashboard/", http.FileServer(http.FS(sub))).ServeHTTP(w, r)
 }
 
-// handleTuning serves the dedicated read-and-launch tuning page. The page uses
-// the same embedded assets and loopback/drain boundary as the dashboard, while
-// the tuning APIs retain their own read and mutation authentication guards.
 func (ss *StatusServer) handleTuning(w http.ResponseWriter, r *http.Request) {
 	if ss.rejectIfDraining(w) {
 		return
@@ -275,15 +269,12 @@ func (ss *StatusServer) handleAPIStrategy(w http.ResponseWriter, r *http.Request
 			return
 		}
 		ss.handleAPIStrategySimulate(w, r, id)
-	// #1256 low-risk mutations (ui_mutations.go); POST-only enforced inside.
 	case "pause":
 		ss.handleAPIStrategyPause(w, r, id)
 	case "notifications":
 		ss.handleAPIStrategyNotifications(w, r, id)
-	// #1257 confirm-nonce-gated trade actions (ui_trade_actions.go).
 	case "open", "add", "close", "force-close", "update-sl", "cancel-sl":
 		ss.handleAPIStrategyTradeAction(w, r, id, resource)
-	// #1258 confirm-nonce-gated structural mutations (ui_structural.go).
 	case "remove-strategy", "paper-to-live", "apply-regime-gate":
 		ss.handleAPIStrategyStructural(w, r, id, resource)
 	default:
@@ -613,12 +604,6 @@ func (ss *StatusServer) handleAPIStrategyEquity(w http.ResponseWriter, r *http.R
 	}
 
 	initCap := EffectiveInitialCapital(sc, &snapshot)
-	// Cost-basis terminal point only — avoids N× external mark fetches when
-	// loadSparklines polls one equity URL per visible strategy (#813). For a
-	// shared-wallet member this returns the exchange-derived value (#918) so the
-	// sparkline's last point matches the overview card; it still adds no mark
-	// fetch (displayStrategyValue falls through to the same PortfolioValue when
-	// the gate is unset).
 	pv := displayStrategyValue(&snapshot, map[string]float64{})
 
 	var closed []ClosedPosition
@@ -639,8 +624,6 @@ func (ss *StatusServer) handleAPIStrategyEquity(w http.ResponseWriter, r *http.R
 	})
 }
 
-// buildEquityCurvePoints builds a mini equity curve from initial capital, realized
-// PnL at each closed position (ASC), and the current portfolio value.
 func buildEquityCurvePoints(initCap float64, closed []ClosedPosition, currentPV float64, limit int) []UIEquityPoint {
 	if limit <= 0 {
 		limit = 40
@@ -778,7 +761,6 @@ func tradeMarkers(trades []Trade) []UITradeMarker {
 	return out
 }
 
-// tradeMarkersForTable returns a copy of markers (already oldest-first from tradeMarkers) for the trades JSON key (#808).
 func tradeMarkersForTable(markers []UITradeMarker) []UITradeMarker {
 	if len(markers) == 0 {
 		return []UITradeMarker{}

@@ -1,75 +1,4 @@
 #!/usr/bin/env python3
-"""#1422: Hurst entry-gate POWER study — report only.
-
-The #1410 study (``hurst_1410_gate_calibration.py``) returned ``INCONCLUSIVE``:
-0 of 30 swept configurations reached Benjamini-Hochberg significance at
-alpha=0.05, while 16 met every economic condition and failed only on
-significance. Three properties of that design, not "Hurst does not work",
-explain the null:
-
-1. ONE re-used sample. 5 exemplars x 6 audit datasets x 5 windows = 150 legs,
-   and all 30 hypotheses were scored on that same pooled trade set. Nothing in
-   it was out-of-sample with respect to the sweep.
-2. A 30-hypothesis grid that was a convenience, not a hypothesis, so the
-   Benjamini-Hochberg denominator was 30.
-3. A null that assumes trades are exchangeable. Both #1410 permutation tests
-   shuffle freely across the pooled trades, but a momentum entry on BTC 1h and
-   the concurrent one on ETH 1h are strongly correlated. Free shuffling counts
-   correlated rows as independent information.
-
-This one-shot answers the question decisively rather than re-running the same
-design. It (A) MEASURES the detection limit of the old design and of this one,
-(B) adds genuinely independent samples and reports EFFECTIVE sample size beside
-nominal, (C) replaces the null with a cluster rotation that matches the
-dependence structure, (D) scores a small primary hypothesis set on data #1410
-never saw, so hypothesis selection cannot contaminate it, and (E) renders the
-joint ADX x Hurst bucket analysis #1412's Stage 0 gate requires.
-
-An ``INCONCLUSIVE`` verdict WITH a measured power ceiling is a legitimate and
-valuable outcome: it converts #1412 Stage 0 from "maybe" into a defensible "no"
-and closes the question, instead of licensing a third re-run.
-
-REPORT-PATH CONTRACT (#1424). ``backtest/research/hurst_gate_calibration.md`` is
-the live-evidence path cited by ``scheduler/hurst_gate.go``,
-``docs/ARCHITECTURE.md`` and #1412's Stage 0 gate. This study OWNED it until
-#1424 superseded it; the owner is now ``hurst_1424_gate_resolution.py``. This
-study is a SUPERSEDED artifact and must never write the contract path again —
-its own render lives beside it at ``hurst_1422_gate_power.md``, exactly as this
-study did to #1410's render. #1424 inherits this design wholesale and changes
-three things: one pre-registered primary hypothesis instead of four, pre-2020
-calendar clusters from two additional venues, and a bounded-variance primary
-target. Read #1424's report for the live verdict.
-
-REPORT-ONLY. Zero scheduler, config, gating, sizing, or live-path changes. The
-gate and size arms are OFFLINE SIMULATIONS. #1411's ``hurst_gate`` ships
-default-off with no recommended thresholds and is untouched by this study;
-whether that stays true is what the Recommendation section decides.
-
-Method
-------
-Part A — outcome buckets by H at entry, per family per Hurst window, over the
-expanded pool (the #1410 shape, on more data).
-
-Part B — hard-gate sweeps: real ``Backtester`` re-runs with entry signals masked
-while a hysteresis gate is disarmed. Closes are NEVER masked.
-
-Part C — size sweeps: the ungated trade sequence re-compounded with a size
-multiplier.
-
-Part D — joint ADX x Hurst buckets and the #1412 Stage 0 separation verdict.
-
-Inference — every hypothesis carries TWO p-values: the #1410 free shuffle (for
-continuity) and the cluster rotation (which the verdict reads). Two disjoint
-Benjamini-Hochberg families: the PRIMARY set (scored only on cells #1410 never
-saw) and the EXPLORATORY grid. They never share a denominator.
-
-Usage
------
-  uv run --no-sync python backtest/research/hurst_1422_gate_power.py \
-      --jobs 8 --write-report --out-dir /tmp/hurst1422
-  uv run --no-sync python backtest/research/hurst_1422_gate_power.py --render-only
-  uv run --no-sync python backtest/research/hurst_1422_gate_power.py --fetch-only
-"""
 
 import argparse
 import json
@@ -88,10 +17,10 @@ for _p in (_THIS_DIR, _BACKTEST, _ROOT, os.path.join(_ROOT, "shared_tools")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-import numpy as np  # noqa: E402
-import pandas as pd  # noqa: E402
+import numpy as np
+import pandas as pd
 
-from eval_windows import (  # noqa: E402  (sys.path bootstrap must run first)
+from eval_windows import (
     DATASETS as AUDIT_DATASETS,
     DEFAULT_CAPITAL,
     FEE_PLATFORM,
@@ -103,13 +32,9 @@ from eval_windows import (  # noqa: E402  (sys.path bootstrap must run first)
     leg_from_results,
     run_leg,
 )
-from regime_stats import benjamini_hochberg  # noqa: E402
+from regime_stats import benjamini_hochberg
 
-# The #1410 study is the SSoT for every helper this study did not have to
-# change. Imported by unambiguous module name off research/ on sys.path — the
-# pattern test_hurst_1410_gate_calibration.py uses, and the one that stays safe
-# under the #1304 `pytest -n auto` parallel run.
-import hurst_1410_gate_calibration as study1410  # noqa: E402
+import hurst_1410_gate_calibration as study1410
 
 bucket_label = study1410.bucket_label
 cache_entry_is_usable = study1410.cache_entry_is_usable
@@ -148,29 +73,17 @@ SIZING_GAINS = study1410.SIZING_GAINS
 SIZING_NAN_MULTIPLIER = study1410.SIZING_NAN_MULTIPLIER
 _MIRRORED_LEG_KEYS = study1410._MIRRORED_LEG_KEYS
 
-# ---------------------------------------------------------------------------
-# Pre-registered design constants. Fixed before the sweep ran; serialized
-# verbatim into the JSON and the report so a reader can tell the Recommendation
-# was not tuned after seeing the numbers.
-# ---------------------------------------------------------------------------
-SCHEMA_VERSION = 3   # v3: pool-matched observed separations (mde.observed_separation_pp_by_pool)
+SCHEMA_VERSION = 3
 ISSUE = 1422
-SEED = ISSUE  # 1422 — fixed so a re-run reproduces every p-value
+SEED = ISSUE
 
-# History floor. Everything before this is not fetched, so a window may never
-# start earlier than HISTORY_SINCE + the deepest Hurst lead.
 HISTORY_SINCE = "2020-01-01"
 
-# The three PRE-2023 windows. #1410 scored nothing before 2023-01-01, so these
-# are the backbone of the primary (uncontaminated) cohort.
 NEW_WINDOWS = {
     "2020H2": ("2020-07-01", "2021-01-01"),
     "2021":   ("2021-01-01", "2022-01-01"),
     "2022":   ("2022-01-01", "2023-01-01"),
 }
-# The five #1410 windows are reused VERBATIM from eval_windows — never
-# redefined here, so a drift in the M1 bar fails loud below instead of
-# silently rescoring the exploratory arm on different spans.
 WINDOWS = dict(AUDIT_WINDOWS)
 for _k, _v in NEW_WINDOWS.items():
     if _k in WINDOWS:
@@ -179,24 +92,13 @@ for _k, _v in NEW_WINDOWS.items():
 
 WINDOW_ORDER = tuple(sorted(WINDOWS, key=lambda w: (WINDOWS[w][0], w)))
 
-# Economics windows for the PRIMARY cohort: two protocol windows and the rest
-# held out. Pre-2023 tape only, so a primary verdict never rests on a window
-# #1410 already mined.
 PRIMARY_PROTOCOL_WINDOWS = ("2021", "2022")
 PRIMARY_HELD_OUT_WINDOWS = ("2020H2", "is", "oos", "2023", "2024", "2025H1")
-# The exploratory arm keeps #1410's split byte-identical.
 EXPLORATORY_PROTOCOL_WINDOWS = tuple(AUDIT_PROTOCOL_WINDOWS)
 EXPLORATORY_HELD_OUT_WINDOWS = tuple(AUDIT_HELD_OUT_WINDOWS)
 
-# The base symbols #1410 scored. A trade on any OTHER symbol is primary by
-# construction, whatever window it lands in.
 AUDIT_SYMBOLS = tuple(sorted({s for s, _ in AUDIT_DATASETS}))
 
-# Datasets. The audit six verbatim, plus 2h on the audit symbols, plus the
-# most-liquid non-BTC-clique names binanceus carries. 15m/30m are deliberately
-# EXCLUDED: a 512-bar Hurst window at 15m spans about five days, which measures
-# microstructure rather than the multi-week persistence this study is about,
-# and same-tape resampling adds almost nothing to effective N anyway.
 NEW_TIMEFRAME_DATASETS = [(sym, "2h") for sym in AUDIT_SYMBOLS]
 NEW_SYMBOL_DATASETS = [
     (sym, tf)
@@ -206,9 +108,6 @@ NEW_SYMBOL_DATASETS = [
 ]
 DATASETS = list(AUDIT_DATASETS) + NEW_TIMEFRAME_DATASETS + NEW_SYMBOL_DATASETS
 
-# The exact (dataset, window) grid #1410 scored. Frozen from eval_windows so a
-# future edit there fails this assertion instead of silently shrinking the
-# exclusion set and letting contaminated cells into the primary cohort.
 D_1410 = frozenset(
     (dataset_key(s, t), w) for (s, t) in AUDIT_DATASETS for w in AUDIT_WINDOWS
 )
@@ -220,11 +119,6 @@ if len(D_1410) != 30:
 COHORT_PRIMARY = "primary"
 COHORT_EXPLORATORY = "exploratory"
 
-# Primary hypothesis set: per family x mode, the config with the smallest raw
-# p in the COMMITTED #1410 JSON. Selection on #1410's outcomes is legitimate
-# here ONLY because the primary cohort is disjoint from the data those outcomes
-# came from. The expected ids are pinned so a regenerated #1410 JSON can never
-# silently swap the primary set underneath the pre-registration.
 PRIMARY_CONFIG_IDS = (
     "momentum/gate/W512/arm0.52/dis0.48",
     "momentum/size/W512/gain2.5",
@@ -232,81 +126,39 @@ PRIMARY_CONFIG_IDS = (
     "mean_reversion/size/W128/gain5",
 )
 
-# Cluster rotation. A permutation is ONE calendar offset shared by every
-# dataset, so concurrent correlated trades move together under the null and the
-# hysteresis autocorrelation of the label run survives.
-MIN_OFFSET_DAYS = 30          # no near-identity alignment may count as a draw
+MIN_OFFSET_DAYS = 30
 MIN_CLUSTER_SPAN_DAYS = 3 * MIN_OFFSET_DAYS
 N_PERM = 10000
-N_PERM_MDE = 2000             # cheaper null for the MDE grid; stated in report
+N_PERM_MDE = 2000
 
-# Minimum-detectable-effect search grid, in percentage points per trade.
 MDE_GRID_STEP = 0.1
 MDE_GRID_MAX = 5.0
 MDE_REFINE_STEP = 0.02
 
-# Coverage density floor. A cell must carry at least this fraction of the bars
-# a complete cache would hold inside its window, or it is dropped. Without it a
-# delisting gap (Binance.US delisted XRP for most of 2021-2023) would score a
-# whole year on a few hundred bars and weight it like a complete one.
 MIN_WINDOW_BAR_FRACTION = 0.8
 
-# Decision floors, applied to EFFECTIVE N (not row count) — this is what makes
-# them carry #1410's meaning, "this many INDEPENDENT trades", on a pool whose
-# rows are correlated.
 MIN_SUPPRESSED_EFFECTIVE = 20.0
 MIN_KEPT_EFFECTIVE = 30.0
 
-# Economic acceptance thresholds — #1410's values, unchanged.
 RETURN_TOLERANCE_PP = 1.0
 RETURN_TOLERANCE_FRAC = 0.1
-# #1410 required 2 of 3 held-out windows to hold. Generalized to a fraction so
-# one rule covers both cohorts: 2/3 of the held-out windows that carry legs,
-# and at least 3 must carry legs for the check to be testable at all.
 HELD_OUT_MIN_FRACTION = 2.0 / 3.0
 HELD_OUT_MIN_WINDOWS = 3
 
 ALPHA = 0.05
 
-# ADX (Part D). Wilder period 14 — compute_regime's default — and the composite
-# classifier's default split threshold.
 ADX_PERIOD = 14
 ADX_SPLIT = 25.0
 JOINT_H_BUCKETS = ("<0.45", "0.45-0.55", ">0.55", BUCKET_NAN)
 JOINT_ADX_BUCKETS = ("<25", ">=25", BUCKET_NAN)
 NO_JOINT_SEPARATION = "NO JOINT SEPARATION"
-# Two families tested for joint separation, so Bonferroni the pair.
 JOINT_ALPHA = ALPHA / 2.0
 
 _DEFAULT_JSON_OUT = os.path.join(_THIS_DIR, "hurst_1422_gate_power.json")
-# NOT "hurst_gate_calibration.md" — that is the live-evidence contract path, and
-# #1424 owns it now (see the REPORT-PATH CONTRACT note in the module docstring).
-# A --render-only here must never be able to revert the live evidence to this
-# superseded study.
 _DEFAULT_REPORT_OUT = os.path.join(_THIS_DIR, "hurst_1422_gate_power.md")
 
 
-# ---------------------------------------------------------------------------
-# Pure helpers (unit-tested without data access).
-# ---------------------------------------------------------------------------
-
 def cell_cohort(symbol: str, timeframe: str, window_name: str) -> str:
-    """Which inference cohort one (dataset, window) cell belongs to.
-
-    PRIMARY iff the window is one #1410 never scored, OR the symbol is one
-    #1410 never scored. Everything else is EXPLORATORY.
-
-    The symbol/window test is deliberately COARSER than the (dataset, window)
-    grid. BTC 2h over a #1410 window is not in that grid, but it is the same
-    TAPE #1410 mined at 1h and 4h over the same months — scoring a hypothesis
-    there that was chosen by reading #1410's p-values would be selection on the
-    same data wearing a different timeframe. Only a genuinely new period or a
-    genuinely new asset is clean.
-
-    This is the whole defence against selection contamination: the primary
-    hypotheses were chosen by reading #1410's p-values, so they may only ever
-    be scored on tape those p-values did not come from.
-    """
     if window_name not in WINDOWS:
         raise ValueError(f"unknown window {window_name!r}")
     if window_name not in AUDIT_WINDOWS:
@@ -315,11 +167,6 @@ def cell_cohort(symbol: str, timeframe: str, window_name: str) -> str:
 
 
 def joint_h_bucket(h) -> str:
-    """Coarse H bucket for the joint ADX x Hurst table (#1412 Stage 0).
-
-    Deliberately coarser than #1410's four-way ``bucket_label`` — Stage 0 asks
-    a three-way question. NaN is its own bucket and is never coerced to 0.5.
-    """
     if h is None:
         return BUCKET_NAN
     value = float(h)
@@ -333,12 +180,6 @@ def joint_h_bucket(h) -> str:
 
 
 def joint_adx_bucket(adx) -> str:
-    """High/low ADX split at the composite classifier's default threshold.
-
-    NaN is its own bucket. That matters: ``compute_regime`` fills ADX warm-up
-    bars with 0.0, not NaN, so an unmasked stamp would silently file every
-    warm-up bar under "low ADX". ``adx_entry_stamp`` masks them first.
-    """
     if adx is None:
         return BUCKET_NAN
     value = float(adx)
@@ -348,29 +189,14 @@ def joint_adx_bucket(adx) -> str:
 
 
 def anti_signal_side(h: float, sense: str) -> bool:
-    """True when H sits on the side that family's gate SUPPRESSES.
-
-    Keyed on the sense, never on the family, so a new family that reuses an
-    existing sense needs no edit here. An unknown sense raises rather than
-    defaulting — a silent default would invert an injected contrast.
-    """
-    if sense == SENSE_HIGH:      # arms on high H -> suppresses low H
+    if sense == SENSE_HIGH:
         return float(h) < 0.5
-    if sense == SENSE_LOW:       # arms on low H  -> suppresses high H
+    if sense == SENSE_LOW:
         return float(h) >= 0.5
     raise ValueError(f"unknown gate sense {sense!r}")
 
 
 def count_overlapping_pairs(a_start, a_end, b_start, b_end) -> int:
-    """Ordered pairs (i, j) whose intervals overlap: a_start_i < b_end_j and
-    b_start_j < a_end_i.
-
-    Exact and O(n log n): because ``b_start_j <= b_end_j``, the set
-    ``{j : b_end_j <= a_start_i}`` is contained in ``{j : b_start_j < a_end_i}``
-    whenever ``a_start_i < a_end_i``, so the count is one searchsorted minus
-    another. Used for the effective-N denominator, where the pair count between
-    two datasets is what carries their correlation.
-    """
     a_s = np.sort(np.asarray(a_start, dtype=np.int64))
     a_e = np.asarray(a_end, dtype=np.int64)[np.argsort(np.asarray(a_start, dtype=np.int64))]
     b_s = np.sort(np.asarray(b_start, dtype=np.int64))
@@ -383,37 +209,17 @@ def count_overlapping_pairs(a_start, a_end, b_start, b_end) -> int:
 
 
 def pairwise_trade_rho(rho_by_symbol: dict, sym_a: str, sym_b: str) -> float:
-    """Correlation credited to a pair of trades on two symbols.
-
-    Same symbol (any timeframe) is the SAME TAPE, so 1.0. Otherwise the
-    symbol-level daily-log-return correlation, CLIPPED to [0, 1]: a negative
-    correlation would raise effective N, and this study refuses that credit
-    rather than letting anti-correlation manufacture power.
-    """
     if sym_a == sym_b:
         return 1.0
     raw = rho_by_symbol.get((sym_a, sym_b))
     if raw is None:
         raw = rho_by_symbol.get((sym_b, sym_a))
     if raw is None or not math.isfinite(float(raw)):
-        # Unknown correlation is treated as fully correlated — the
-        # conservative direction, never a free grant of independence.
         return 1.0
     return float(min(1.0, max(0.0, float(raw))))
 
 
 def effective_n(trades: Sequence[dict], rho_by_symbol: dict) -> float:
-    """Effective sample size of a pooled trade set.
-
-    ``N_eff = N^2 / sum_ij rho_ij`` with ``rho_ii = 1`` and, for ``i != j``,
-    the symbol-level correlation when the two trades' holding periods OVERLAP
-    in calendar time and 0 when they do not. Two trades that never coexist
-    carry independent information however correlated their assets are.
-
-    No matrix is inverted anywhere, so a near-singular correlation structure
-    cannot blow the estimate up; with a unit diagonal and off-diagonals in
-    [0, 1] the result is bounded ``1 <= N_eff <= N`` by construction.
-    """
     rows = [t for t in trades if t.get("entry_ns") is not None
             and t.get("exit_ns") is not None]
     n = len(rows)
@@ -422,7 +228,7 @@ def effective_n(trades: Sequence[dict], rho_by_symbol: dict) -> float:
     by_ds: dict = {}
     for t in rows:
         by_ds.setdefault((t["symbol"], t["timeframe"]), []).append(t)
-    total = float(n)  # the diagonal
+    total = float(n)
     keys = sorted(by_ds)
     for a in keys:
         rows_a = by_ds[a]
@@ -437,8 +243,6 @@ def effective_n(trades: Sequence[dict], rho_by_symbol: dict) -> float:
                 a_start, a_end, [r["entry_ns"] for r in rows_b],
                 [r["exit_ns"] for r in rows_b])
             if a == b:
-                # count_overlapping_pairs counts every i against itself; the
-                # diagonal is already in `total`.
                 pairs -= len(rows_a)
             total += rho * float(pairs)
     if total <= 0.0:
@@ -447,11 +251,6 @@ def effective_n(trades: Sequence[dict], rho_by_symbol: dict) -> float:
 
 
 def cluster_rotation_offsets(trades: Sequence[dict]) -> dict:
-    """Per-dataset chronological ordering and span, the rotation's substrate.
-
-    Returns ``{dataset_key: {"order": [idx...], "ns": [entry_ns...],
-    "span_days": int}}`` with each dataset's trade indices sorted by entry time.
-    """
     by_ds: dict = {}
     for i, t in enumerate(trades):
         by_ds.setdefault(dataset_key(t["symbol"], t["timeframe"]), []).append(i)
@@ -465,52 +264,16 @@ def cluster_rotation_offsets(trades: Sequence[dict]) -> dict:
 
 
 def effective_offset_days(offset_days: int, span_days: int) -> int:
-    """The shared calendar offset folded into ONE dataset's rotatable band.
-
-    Each dataset rotates on its own circular calendar, so an offset longer than
-    a dataset's span HAS to wrap. Leaving it unwrapped is not a harmless edge
-    case: ``searchsorted`` would run off the end, the modulo would turn the
-    shift into exactly 0, and that dataset would hand the null draw its OBSERVED
-    label ordering. Unrotated rows carry the observed contrast into the null
-    statistic, so the bias is one-directional — every cluster p comes out too
-    high. Because the draw range is the POOL's longest span, a ragged pool
-    (a ~900-day dataset beside a ~2,200-day one) hits that path on most draws.
-
-    The fold lands in ``[MIN_OFFSET_DAYS, span - MIN_OFFSET_DAYS]``, the same
-    band ``_admissible_offsets`` draws from.
-
-    In this study it is a DORMANT guard: the draw range is capped at the
-    pool's SHORTEST span (see ``_admissible_offsets``), so every drawn offset
-    already fits every retained dataset and this function returns its argument
-    unchanged. It exists so a direct caller, or a future range that is not
-    capped, still cannot produce the identity rotation.
-    """
     span = int(span_days)
     lo = MIN_OFFSET_DAYS
     hi = span - MIN_OFFSET_DAYS
     if hi <= lo:
-        # Too short to host the guard band at all; such a dataset is dropped by
-        # `usable_cluster_rows` before it reaches a null, and this stays only so
-        # a direct caller still gets a real rotation instead of the identity.
         return max(1, span // 2)
     width = hi - lo + 1
     return lo + ((int(offset_days) - lo) % width)
 
 
 def rotation_shift_counts(clusters: dict, offset_days: int) -> dict:
-    """Trades-per-dataset falling inside the first ``offset_days`` of its span.
-
-    Rotating a dataset's chronological label vector by THIS many positions is
-    the discrete stand-in for shifting it ``offset_days`` in calendar time. The
-    offset is shared across datasets, so two concurrent datasets shift by the
-    same calendar amount and their labels stay aligned under the null; a dataset
-    whose span cannot hold the whole offset folds it (``effective_offset_days``)
-    rather than declining to rotate.
-
-    The returned shift is always in ``[1, len-1]`` for a dataset with two or
-    more trades, so no dataset can contribute its observed label ordering to a
-    null draw.
-    """
     out = {}
     for key, info in clusters.items():
         ns = np.asarray(info["ns"], dtype=np.int64)
@@ -522,15 +285,11 @@ def rotation_shift_counts(clusters: dict, offset_days: int) -> dict:
         cut = int(np.searchsorted(ns, ns[0] + eff * 86_400_000_000_000,
                                   side="left"))
         cut %= n
-        # `eff >= 1` puts at least ns[0] inside the cut, so this only fires on a
-        # dataset whose whole span is under a day — belt and braces, never the
-        # identity.
         out[key] = cut or 1
     return out
 
 
 def _rotate_values(values: np.ndarray, clusters: dict, shifts: dict) -> np.ndarray:
-    """Values rotated cyclically WITHIN each dataset by that dataset's shift."""
     out = np.array(values, copy=True)
     for key, info in clusters.items():
         order = info["order"]
@@ -543,14 +302,6 @@ def _rotate_values(values: np.ndarray, clusters: dict, shifts: dict) -> np.ndarr
 
 
 def usable_cluster_rows(trades: Sequence[dict]) -> tuple:
-    """(row_indices, excluded_datasets) — rows the cluster null can rotate.
-
-    A dataset whose scored span is shorter than ``MIN_CLUSTER_SPAN_DAYS`` cannot
-    host a meaningful rotation, so its rows leave the CONTRAST as well as the
-    null. Excluding it from the offset range alone would be a label, not an
-    exclusion: its rows would still be scored, still sit in the observed
-    statistic, and still enter every draw carrying their observed alignment.
-    """
     clusters = cluster_rotation_offsets(trades)
     excluded = sorted(k for k, v in clusters.items()
                       if v["span_days"] < MIN_CLUSTER_SPAN_DAYS)
@@ -561,26 +312,6 @@ def usable_cluster_rows(trades: Sequence[dict]) -> tuple:
 
 
 def _admissible_offsets(clusters: dict) -> tuple:
-    """``(lo, hi)`` calendar offsets a draw may use, or ``()`` when none can.
-
-    The range is bounded by the SHORTEST span in the pool, not the longest.
-    That is what keeps the null's whole purpose intact: every retained dataset
-    can host every drawn offset without wrapping, so two concurrent datasets
-    shift by the SAME calendar amount in every draw and their correlated labels
-    move together. Drawing against the longest span instead would send offsets
-    past a shorter dataset's end — and whichever way that is handled it costs
-    something. Leaving it unrotated hands the null that dataset's observed
-    alignment (p too high). Wrapping it into its own band rotates it, but by a
-    different calendar amount than its neighbours, which understates the
-    cross-dataset correlation the null is supposed to preserve and makes p too
-    LOW. A false positive is the worse failure, so the shared range is capped
-    and the wrap (``effective_offset_days``) stays only as a dormant guard.
-
-    ``MIN_OFFSET_DAYS`` still trims both ends. The offsets it leaves are long
-    against a hysteresis run's autocorrelation, which is what a rotation has to
-    break — so a long dataset rotating by a small FRACTION of its span still
-    has its label alignment destroyed.
-    """
     if not clusters:
         return ()
     span = min(v["span_days"] for v in clusters.values())
@@ -595,20 +326,6 @@ def cluster_permutation_pvalue_group_diff(trades: Sequence[dict],
                                           suppressed: Sequence[bool],
                                           n_perm: int = N_PERM,
                                           seed: int = SEED) -> dict:
-    """One-sided cluster p for "suppressed trades are WORSE than kept trades".
-
-    The null is a shared circular CALENDAR rotation: one offset per draw,
-    applied to every dataset's chronologically ordered label vector by the
-    number of that dataset's trades inside the offset. Concurrent trades on
-    correlated assets therefore move TOGETHER, and a label run's autocorrelation
-    survives the rotation (only the wrap seam breaks it) — neither is true of
-    the #1410 free shuffle.
-
-    Returns ``{"p": float|None, "n_draws": int, "excluded_datasets": [...],
-    "n_scored": int, "n_excluded_trades": int, "offset_range": [lo, hi]|None}``.
-    ``p`` is None when the pool cannot host a rotation at all; the caller must
-    treat that as untestable, never as "not significant".
-    """
     vals = np.asarray(values, dtype=float)
     mask = np.asarray(suppressed, dtype=bool)
     if vals.shape != mask.shape or len(trades) != vals.size:
@@ -674,12 +391,6 @@ def cluster_permutation_pvalue_weighted(trades: Sequence[dict],
                                         multipliers: Sequence[float],
                                         n_perm: int = N_PERM,
                                         seed: int = SEED) -> dict:
-    """One-sided cluster p for "this multiplier PAIRING beats a rotated one".
-
-    Same shared calendar rotation as the gate variant, applied to the
-    multiplier vector. Both marginal distributions stay fixed, so only the
-    pairing — the thing a size rule claims to get right — is tested.
-    """
     rets = np.asarray(returns, dtype=float)
     mults = np.asarray(multipliers, dtype=float)
     if rets.shape != mults.shape or len(trades) != rets.size:
@@ -699,8 +410,6 @@ def cluster_permutation_pvalue_weighted(trades: Sequence[dict],
     trades = [trades[i] for i in idx]
     rets = rets[idx]
     mults = mults[idx]
-    # Checked AFTER the exclusion: variation the dropped rows carried is not
-    # variation this test can use.
     if float(np.ptp(mults)) == 0.0:
         return {"p": None, "n_draws": 0, "excluded_datasets": excluded,
                 "n_scored": rets.size, "n_excluded_trades": n_excluded,
@@ -736,12 +445,6 @@ def cluster_permutation_pvalue_weighted(trades: Sequence[dict],
 
 
 def _rank1_threshold(family_size: int, alpha: float = ALPHA) -> float:
-    """The HARDEST bar Benjamini-Hochberg can impose on one hypothesis.
-
-    BH rejects the smallest p only when ``p <= alpha/m``. Using that as the MDE
-    bar makes the reported detection limit conservative and independent of how
-    the OTHER hypotheses happened to land.
-    """
     return float(alpha) / float(max(1, int(family_size)))
 
 
@@ -754,25 +457,6 @@ def min_detectable_effect(trades: Sequence[dict],
                           n_perm: int = N_PERM_MDE,
                           seed: int = SEED,
                           alpha: float = ALPHA) -> Optional[float]:
-    """Smallest per-trade edge this design could have detected, in pp.
-
-    Injection is a deterministic shift: every SUPPRESSED trade's net return is
-    lowered by ``d`` percentage points, which raises the observed statistic by
-    exactly ``d`` while the null re-pools the shifted values. The search is a
-    fixed grid then one refinement pass — no bisection, because a permutation
-    p-value is only approximately monotone in ``d`` and a grid is trivially
-    reproducible.
-
-    Returns None when even the largest grid point cannot clear the rank-1
-    Benjamini-Hochberg threshold — a design that cannot detect a 5 pp/trade
-    edge is reported as such, never as a number it did not reach.
-
-    Raises when the permutation count cannot RESOLVE the threshold. With the
-    add-one convention the smallest p a run can produce is ``1/(n_perm+1)``, so
-    too few draws would make every effect look undetectable and the report
-    would publish "no power" when the truth is "no permutations". That failure
-    must be loud, never a silent None.
-    """
     vals = np.asarray(values, dtype=float)
     mask = np.asarray(suppressed, dtype=bool)
     bar = _rank1_threshold(family_size, alpha)
@@ -820,12 +504,6 @@ def min_detectable_effect(trades: Sequence[dict],
 
 
 def held_out_verdict(windows: dict, held_out_names: Sequence[str]) -> tuple:
-    """(passed, n_non_degrading, n_with_legs) for the held-out drawdown rule.
-
-    #1410 required 2 of 3. Generalized to the same 2/3 FRACTION so one rule
-    covers both cohorts, with at least ``HELD_OUT_MIN_WINDOWS`` windows
-    carrying legs — otherwise the check is untestable and fails closed.
-    """
     with_legs = [n for n in held_out_names
                  if (windows.get(n) or {}).get("n_legs")]
     non_deg = sum(1 for n in with_legs if windows[n]["dd_delta"] <= 0)
@@ -836,14 +514,6 @@ def held_out_verdict(windows: dict, held_out_names: Sequence[str]) -> tuple:
 
 
 def config_verdict(cfg: dict) -> tuple:
-    """Pure accept/reject for one swept config. Returns ``(passed, reasons)``.
-
-    #1410's rule shape, with two deliberate changes:
-      * the volume floors are on EFFECTIVE N, so a pool of correlated rows
-        cannot buy its way past them;
-      * significance reads the CLUSTER p, never the free-shuffle p. An
-        untestable cluster p (None) fails closed.
-    """
     reasons = []
     if float(cfg.get("n_suppressed_effective") or 0.0) < MIN_SUPPRESSED_EFFECTIVE:
         reasons.append(
@@ -886,7 +556,6 @@ def config_verdict(cfg: dict) -> tuple:
 
 
 def protocol_dd_reduction(cfg: dict) -> float:
-    """Pooled protocol-window drawdown reduction, positive = better."""
     windows = cfg.get("windows") or {}
     total = 0.0
     for name in cfg.get("protocol_windows") or ():
@@ -897,12 +566,6 @@ def protocol_dd_reduction(cfg: dict) -> float:
 
 
 def decide_recommendation(configs: Sequence[dict], mde: dict) -> dict:
-    """Mechanically derive the Recommendation.
-
-    ONLY primary-cohort configs can win — the exploratory grid is reported for
-    completeness and can never produce a recommendation, because its
-    hypotheses were selected by reading the same data they are scored on.
-    """
     primary = [c for c in configs if c.get("cohort") == COHORT_PRIMARY]
     families = {}
     for family in FAMILIES:
@@ -941,11 +604,6 @@ def decide_recommendation(configs: Sequence[dict], mde: dict) -> dict:
             f"could resolve {_limit('1410')}; this expanded design resolves "
             f"{_limit('primary')}. ")
 
-    # The relationship between the raw H split's separation and the detection
-    # limit is a FACT of this run, so state it from the numbers rather than
-    # asserting a direction. Getting this backwards would be the study's worst
-    # possible failure: a "no edge" claim on a design that simply could not see
-    # one, or the reverse.
     obs = (mde.get("observed_separation_pp_by_pool") or {}).get("primary") or {}
     limit = mde.get("pooled_primary_cluster")
     p0 = mde.get("pooled_primary_cluster_p0")
@@ -995,7 +653,6 @@ def decide_recommendation(configs: Sequence[dict], mde: dict) -> dict:
 
 
 def joint_adx_hurst_table(trades: Sequence[dict], hurst_window: int) -> dict:
-    """Part D: the ADX-level x Hurst-level cell table for one family."""
     cells = {}
     for a in JOINT_ADX_BUCKETS:
         for h in JOINT_H_BUCKETS:
@@ -1020,28 +677,6 @@ def joint_adx_hurst_table(trades: Sequence[dict], hurst_window: int) -> dict:
 def joint_separation_verdict(trades: Sequence[dict], hurst_window: int,
                              n_perm: int = N_PERM,
                              seed: int = SEED) -> dict:
-    """#1412 Stage 0: does high-ADX + low-H separate beyond high-ADX alone?
-
-    Restricted to ``ADX >= 25`` trades, contrasts ``H < 0.45`` against
-    ``H >= 0.45`` under the cluster rotation. Material separation requires BOTH
-    a Bonferroni-corrected significant cluster p AND an effect at least as
-    large as the detection limit — an effect the design cannot resolve is not
-    evidence, however large the point estimate looks.
-
-    That limit is measured HERE, on the rows this contrast actually scores and
-    at the bar this contrast is actually corrected by (``JOINT_ALPHA``, i.e.
-    rank-1 over the families). Borrowing a limit measured on a different pool
-    sets the bar by how much data some OTHER test had.
-
-    The uninjected p and the limit use the SAME permutation count and seed.
-    One consequence follows from that and is deliberate: a contrast whose p
-    already clears the bar has a measured limit of 0.0, so the materiality
-    condition is a FLOOR rather than a second hurdle. Different resolutions
-    could contradict each other at the boundary and make that otherwise-dead
-    branch reachable. The verdict still fails closed when the limit is
-    unreachable, when no rotation exists, and when the pool cannot be rotated
-    at all — the cases it was written for.
-    """
     pool = [t for t in trades if joint_adx_bucket(t.get("adx")) == ">=25"]
     low = [t for t in pool
            if joint_h_bucket((t.get("h") or {}).get(hurst_window)) == "<0.45"]
@@ -1062,8 +697,6 @@ def joint_separation_verdict(trades: Sequence[dict], hurst_window: int,
     sub = low + high
     values = [float(t["pnl_pct_net"]) for t in sub]
     suppressed = [True] * len(low) + [False] * len(high)
-    # Score the delta on the same rows the null keeps, so the effect and the
-    # p-value describe one pool.
     idx, excluded = usable_cluster_rows(sub)
     base["cluster_excluded_datasets"] = excluded
     base["n_scored"] = len(idx)
@@ -1105,12 +738,6 @@ def joint_separation_verdict(trades: Sequence[dict], hurst_window: int,
 
 
 def dedup_entries(rows: Sequence[dict], window_order: Sequence[str]) -> list:
-    """#1410's dedup, parameterized on the window order (which grew here).
-
-    Key is ``(strategy, symbol, timeframe, entry_date)``; windows are iterated
-    in chronological start order and the first occurrence wins, so the result
-    does not depend on scheduling order.
-    """
     order = {name: i for i, name in enumerate(window_order)}
     ordered = sorted(
         rows,
@@ -1133,7 +760,6 @@ def dedup_entries(rows: Sequence[dict], window_order: Sequence[str]) -> list:
 
 
 def timeframe_minutes(timeframe: str) -> int:
-    """Bar length in minutes, for the coverage density check."""
     unit = str(timeframe)[-1].lower()
     value = int(str(timeframe)[:-1])
     scale = {"m": 1, "h": 60, "d": 1440, "w": 10080}
@@ -1143,17 +769,8 @@ def timeframe_minutes(timeframe: str) -> int:
 
 
 def expected_bars(window: tuple, timeframe: str, reference_last) -> int:
-    """Bars a COMPLETE cache would hold inside a window.
-
-    ``reference_last`` closes an open-ended window and MUST be a run-level
-    reference — the latest bar any dataset in the run reached — never the
-    cell's own last bar. A per-cell cap lets a dataset that stops early inside
-    the window define its own denominator and score 100% dense, which is the
-    exact failure this density check exists to catch.
-    """
     start = pd.Timestamp(window[0])
     if window[1] is not None:
-        # A CLOSED window's expectation is its own span, for the same reason.
         end = pd.Timestamp(window[1])
     else:
         if reference_last is None:
@@ -1167,20 +784,7 @@ def expected_bars(window: tuple, timeframe: str, reference_last) -> int:
 
 def coverage_audit(frames: dict, window_names: Sequence[str],
                    hurst_windows: Sequence[int]) -> dict:
-    """Which (dataset, window) cells the cache can actually support.
-
-    A cell survives only when its dataset carries enough lead before the window
-    start for the deepest Hurst window's entry stamp AND enough bars INSIDE the
-    window. The density floor is what catches a delisting gap: Binance.US
-    delisted XRP for most of 2021-2023, so an unchecked "more than zero bars"
-    rule would score a whole year on a few hundred bars and quietly weight it
-    equally with a complete one. Everything dropped is listed in the manifest —
-    never scored on partial history and never silently absent.
-    """
     need_lead = max((required_lead_bars(hw) for hw in hurst_windows), default=0)
-    # ONE reference bar for every open-ended cell in the run. Measuring each
-    # dataset against its own last bar would make a dataset that stopped early
-    # score 100% dense and contribute weeks against other datasets' months.
     last_bars = [f.index[-1] for f in frames.values()
                  if f is not None and not f.empty]
     reference_last = max(last_bars) if last_bars else None
@@ -1228,15 +832,6 @@ def coverage_audit(frames: dict, window_names: Sequence[str],
 
 def scored_warmup_leads(frames: dict, coverage: dict,
                         scored_windows: Sequence[str]) -> dict:
-    """Warm-up lead per dataset, measured against the windows IT ACTUALLY SCORES.
-
-    Not against the earliest window in the run. A dataset whose early cells the
-    coverage audit already dropped — a late listing like SOL, a delisting gap
-    like XRP — has no unscored bars to warn about. Auditing it against a window
-    it never touches would make the report print "the NaN bucket carries real
-    trades" over a table whose NaN buckets are empty, which is worse than no
-    warning at all: it teaches the reader to distrust a correct table.
-    """
     leads = {}
     for (symbol, timeframe), frame in frames.items():
         if frame is None or frame.empty:
@@ -1252,12 +847,6 @@ def scored_warmup_leads(frames: dict, coverage: dict,
 
 
 def symbol_return_correlations(frames: dict) -> dict:
-    """Symbol-level Pearson correlation of DAILY log returns.
-
-    Computed off the finest cached timeframe per symbol, resampled to 1d, over
-    the overlapping span. This is the input the effective-N estimator credits
-    between two different symbols; same-symbol pairs never consult it.
-    """
     finest = {}
     for (symbol, timeframe), frame in sorted(frames.items()):
         if frame is None or frame.empty:
@@ -1284,9 +873,6 @@ def symbol_return_correlations(frames: dict) -> dict:
                 continue
             if (joined.iloc[:, 0].nunique() < 2
                     or joined.iloc[:, 1].nunique() < 2):
-                # Pearson correlation is undefined for a constant return
-                # series. Skip it explicitly instead of relying on corr() to
-                # emit NaN (and a runtime warning) for the finite guard below.
                 continue
             rho = float(joined.iloc[:, 0].corr(joined.iloc[:, 1]))
             if math.isfinite(rho):
@@ -1294,19 +880,8 @@ def symbol_return_correlations(frames: dict) -> dict:
     return out
 
 
-# ---------------------------------------------------------------------------
-# ADX stamp (look-ahead safe, warm-up honest).
-# ---------------------------------------------------------------------------
-
 def adx_series(frame: pd.DataFrame, period: int = ADX_PERIOD) -> pd.Series:
-    """Per-bar ADX with WARM-UP BARS MASKED TO NaN.
-
-    ``compute_regime`` fills warm-up bars with 0.0, not NaN
-    (``shared_tools/regime.py``), so an unmasked stamp would file every warm-up
-    bar under "low ADX" — a silent, systematic mislabel at the start of every
-    frame. NaN is unknown and stays its own bucket, exactly as H does.
-    """
-    from regime import _compute_adx_components  # noqa: WPS437 - the resolved SSoT
+    from regime import _compute_adx_components
     n = len(frame)
     values = np.full(n, np.nan, dtype=float)
     if n == 0 or n <= period:
@@ -1320,28 +895,10 @@ def adx_series(frame: pd.DataFrame, period: int = ADX_PERIOD) -> pd.Series:
 
 
 def adx_entry_stamp(frame: pd.DataFrame, period: int = ADX_PERIOD) -> pd.Series:
-    """ADX indexed by FILL bar, on H's exact shift convention.
-
-    ``decision_series`` is ``shift(1)`` (a bar-N signal reads bars through N-1)
-    and the fill-bar stamp is ``shift(2)`` (the trade fills at N+1 but was
-    gated by the decision at N). ADX must use the SAME two shifts or the two
-    features in the joint table would sit on different look-ahead rules.
-    """
     return entry_stamp_series(adx_series(frame, period=period))
 
 
-# ---------------------------------------------------------------------------
-# Engine arms.
-# ---------------------------------------------------------------------------
-
 def trade_samples_with_span(results: dict) -> list:
-    """``eval_windows.trade_samples_from_results`` plus the holding period.
-
-    ``exit_date`` is on every Backtester trade dict but the shared helper does
-    not carry it, and the effective-N estimator needs the interval to decide
-    which trades coexist. ``pnl_pct``/``pnl_pct_net`` are computed identically
-    to the shared helper so the two never diverge.
-    """
     out = []
     for t in results.get("trades") or []:
         gross = float(t["pnl_pct"])
@@ -1359,12 +916,6 @@ def trade_samples_with_span(results: dict) -> list:
 
 def _run_arm(reg, name: str, symbol: str, timeframe: str, df: pd.DataFrame,
              armed: Optional[np.ndarray], overrides: dict) -> Optional[dict]:
-    """One Backtester run on a pre-sliced frame, optionally entry-masked.
-
-    Kwargs mirror ``eval_windows.run_leg``'s no-regime, no-profile path exactly;
-    every leg additionally verifies its ungated arm against ``run_leg`` itself,
-    so the mirror can never drift silently.
-    """
     from atr import ensure_atr_indicator
     from backtester import Backtester
     from run_backtest import FUNDING_COLUMN_STRATEGIES
@@ -1432,11 +983,6 @@ size_config_id = study1410.size_config_id
 def build_leg(reg, family: str, exemplar: str, symbol: str, timeframe: str,
               window_name: str, full: pd.DataFrame, hurst_by_window: dict,
               adx_stamp: pd.Series, verify_mirror: bool = True) -> Optional[dict]:
-    """Every arm for one (exemplar, dataset, window) cell.
-
-    #1410's ``build_leg`` plus the entry-ADX stamp and the cohort label; reads
-    this study's window dict rather than #1410's module global.
-    """
     window = WINDOWS[window_name]
     overrides = EXEMPLAR_CLOSE_OVERRIDES.get(exemplar, {})
     df = slice_window(full, window)
@@ -1538,12 +1084,7 @@ def build_leg(reg, family: str, exemplar: str, symbol: str, timeframe: str,
     }
 
 
-# ---------------------------------------------------------------------------
-# Aggregation.
-# ---------------------------------------------------------------------------
-
 def bucket_tables(trades: Sequence[dict], hurst_window: int) -> dict:
-    """Part A: per-bucket outcome table over an already-deduped trade pool."""
     by_bucket = {b: [] for b in BUCKETS}
     for t in trades:
         by_bucket[bucket_label((t.get("h") or {}).get(hurst_window))].append(
@@ -1570,7 +1111,6 @@ def _cohort_legs(legs: Sequence[dict], family: str, cohort: str) -> list:
 
 def _window_rows_gate(legs: Sequence[dict], family: str, cohort: str,
                       config_id: str) -> dict:
-    """Per-window mean deltas for a gate config, over that cohort's legs only."""
     rows = {}
     own = _cohort_legs(legs, family, cohort)
     for wname in WINDOW_ORDER:
@@ -1602,12 +1142,6 @@ def _window_rows_gate(legs: Sequence[dict], family: str, cohort: str,
 
 def _window_rows_size(legs: Sequence[dict], family: str, cohort: str,
                       hurst_window: int, gain: float) -> dict:
-    """Per-window mean deltas for a sizing config, over that cohort's legs only.
-
-    Both arms are TRADE-GRANULAR re-compoundings of the same ungated sequence,
-    so they are like-for-like with each other and NOT with a bar-level Part B
-    drawdown.
-    """
     sense = FAMILY_SENSE[family]
     rows = {}
     own = _cohort_legs(legs, family, cohort)
@@ -1671,12 +1205,6 @@ def _config_shell(family: str, cohort: str, mode: str, hw: int,
 
 
 def _sweep_grid(cohort: str, hurst_windows: Sequence[int]) -> list:
-    """(family, mode, hw, arm, disarm, gain) tuples this cohort tests.
-
-    PRIMARY tests only the four pinned hypotheses; EXPLORATORY tests the full
-    #1410 grid. The two lists are disjoint by construction, which is what keeps
-    their Benjamini-Hochberg denominators from ever merging.
-    """
     grid = []
     for family in FAMILIES:
         for hw in hurst_windows:
@@ -1695,7 +1223,6 @@ def _sweep_grid(cohort: str, hurst_windows: Sequence[int]) -> list:
 
 def build_configs(legs: Sequence[dict], pooled: dict, hurst_windows: Sequence[int],
                   rho_by_symbol: dict, n_perm: int, seed: int) -> list:
-    """Every swept config in both cohorts, with both p-values and economics."""
     configs = []
     for cohort in (COHORT_PRIMARY, COHORT_EXPLORATORY):
         for family, mode, hw, arm, disarm, gain in _sweep_grid(cohort, hurst_windows):
@@ -1706,10 +1233,6 @@ def build_configs(legs: Sequence[dict], pooled: dict, hurst_windows: Sequence[in
             cid = cfg["config_id"]
             if mode == "gate":
                 sub = [t for t in trades if cid in t["armed"]]
-                # ONE pool for everything downstream. A dataset the cluster null
-                # cannot rotate leaves the free p, the counts and the effective-N
-                # floors too, so no config can clear a volume floor on rows that
-                # never entered the significance test.
                 idx, excluded = usable_cluster_rows(sub)
                 n_excluded = len(sub) - len(idx)
                 sub = [sub[i] for i in idx]
@@ -1734,8 +1257,6 @@ def build_configs(legs: Sequence[dict], pooled: dict, hurst_windows: Sequence[in
                     rets, mults, n_perm=n_perm, seed=seed)
                 cluster = cluster_permutation_pvalue_weighted(
                     sub, rets, mults, n_perm=n_perm, seed=seed)
-                # A sizing config's "suppressed" analogue is the down-weighted
-                # side (m < 1); the same volume floors then apply unchanged.
                 sup_rows = [t for t, m in zip(sub, mults) if m < 1.0]
                 kept_rows = [t for t, m in zip(sub, mults) if m >= 1.0]
                 cfg["windows"] = _window_rows_size(legs, family, cohort, hw, gain)
@@ -1757,19 +1278,8 @@ def build_configs(legs: Sequence[dict], pooled: dict, hurst_windows: Sequence[in
 
 
 def apply_bh_by_cohort(configs: Sequence[dict], alpha: float = ALPHA) -> None:
-    """Benjamini-Hochberg over the CLUSTER p, separately per cohort.
-
-    The primary and exploratory families never share a denominator: the primary
-    hypotheses were selected by reading #1410's outcomes, so pooling them with
-    the exploratory grid would either inflate the primary penalty or lend the
-    exploratory arm the primary arm's protection. Untestable configs stay in
-    each denominator via ``family_size``, so dropping them can never make a
-    correction more permissive.
-    """
     for cohort in (COHORT_PRIMARY, COHORT_EXPLORATORY):
         own = [c for c in configs if c.get("cohort") == cohort]
-        # RESET, never setdefault: a stale True from an earlier pass must not
-        # survive a correction that would not grant it.
         for cfg in own:
             cfg["bh_reject"] = False
         testable = [c for c in own if c.get("p_cluster") is not None]
@@ -1780,11 +1290,6 @@ def apply_bh_by_cohort(configs: Sequence[dict], alpha: float = ALPHA) -> None:
         for cfg, flag in zip(testable, flags):
             cfg["bh_reject"] = bool(flag)
 
-
-# ---------------------------------------------------------------------------
-# Report rendering. `## Recommendation` is always the FINAL section and is a
-# mechanical render of decide_recommendation — never hand-written.
-# ---------------------------------------------------------------------------
 
 def _fmt(value, digits: int = 2, suffix: str = "") -> str:
     if value is None:
@@ -1805,10 +1310,6 @@ def render_recommendation(decision: dict, mde: dict) -> str:
         lines.append("")
         lines.append(decision["justification"])
         lines.append("")
-        # The closing guidance must follow the SAME branch the justification
-        # took. A fixed "no edge exists" sign-off under a run that measured a
-        # resolvable separation would be the report telling a reader the
-        # opposite of its own table.
         obs = ((mde.get("observed_separation_pp_by_pool") or {})
                .get("primary") or {})
         limit = mde.get("pooled_primary_cluster")
@@ -1844,11 +1345,6 @@ def render_recommendation(decision: dict, mde: dict) -> str:
                 "correction — and it must re-register those hypotheses BEFORE "
                 "looking at these numbers, or it inherits exactly the selection "
                 "problem this design was built to avoid.")
-        # The pools OUTSIDE the confirmatory cohort can be better powered than
-        # it is, because they carry more rows. Where one of them resolves its
-        # own separation, its uninjected p is evidence the primary cohort is
-        # too underpowered to supply — reported as the exploratory context it
-        # is, never as a substitute for the pre-registered test.
         resolved = []
         for key, label in (("1410", "the #1410 design's cells"),
                            ("primary", "the primary cohort"),
@@ -1998,7 +1494,6 @@ def _render_joint_table(table: dict) -> list:
 
 
 def render_report(payload: dict) -> str:
-    """Full Markdown report. `## Recommendation` is guaranteed to be last."""
     pre = payload["pre_registered"]
     run = payload["run_summary"]
     cfgs = payload["configs"]
@@ -2432,25 +1927,11 @@ def render_report(payload: dict) -> str:
 
 
 def report_from_payload(payload: dict) -> str:
-    """Render straight from a committed JSON (the ``--render-only`` path)."""
     return render_report(payload)
 
 
-# ---------------------------------------------------------------------------
-# Data acquisition.
-# ---------------------------------------------------------------------------
-
 def ensure_min_history(datasets: Sequence[tuple], since: str = HISTORY_SINCE,
                        platform: str = PLATFORM) -> dict:
-    """Backfill each dataset to ``since``.
-
-    ``load_cached_data`` fetches ONLY when the cached slice comes back empty,
-    so a 2020 request against a 2023-start cache silently returns 2023+ rows and
-    never backfills. This calls ``fetch_full_history(..., store=True)``
-    explicitly; ``store_ohlcv`` upserts, so re-running is a no-op. A venue that
-    never listed a pair fails here and the coverage audit drops its cells — one
-    missing symbol never aborts the study.
-    """
     from data_fetcher import fetch_full_history
     report = {}
     for symbol, timeframe in datasets:
@@ -2459,7 +1940,7 @@ def ensure_min_history(datasets: Sequence[tuple], since: str = HISTORY_SINCE,
             df = fetch_full_history(symbol, timeframe, since=since,
                                     exchange_id=platform, store=True)
             report[key] = {"ok": True, "bars": int(len(df))}
-        except Exception as exc:  # pragma: no cover - network dependent
+        except Exception as exc:
             report[key] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
             print(f"[1422] backfill FAILED for {key}: {exc}", flush=True)
             traceback.print_exc()
@@ -2489,13 +1970,6 @@ def _parse_windows(raw: Optional[str]) -> list:
 
 
 def resolve_primary_config_ids(json_path: str) -> tuple:
-    """The per-(family, mode) smallest-raw-p configs in the committed #1410 JSON.
-
-    Returned for the assertion against ``PRIMARY_CONFIG_IDS``: the pinned tuple
-    is what the pre-registration promises, and this is what the data actually
-    says. A regenerated #1410 JSON that moves the argmin fails loud instead of
-    silently swapping the primary set.
-    """
     with open(json_path) as fh:
         payload = json.load(fh)
     best = {}
@@ -2511,7 +1985,7 @@ def resolve_primary_config_ids(json_path: str) -> tuple:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    p = argparse.ArgumentParser()
     p.add_argument("--jobs", type=int, default=4, help="worker threads")
     p.add_argument("--out-dir", default=None,
                    help="optional dir for the rolling-Hurst npz cache")
@@ -2541,11 +2015,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         "runs no backtests")
     args = p.parse_args(argv)
 
-    # #1424: this study is superseded and may never write the live-evidence
-    # contract path again — not from a complete run, not from --render-only,
-    # not from an explicit --report-out. Changing the default alone would leave
-    # `--report-out .../hurst_gate_calibration.md` as a one-flag revert of the
-    # live evidence to a study a better-powered successor replaced.
     if (os.path.abspath(args.report_out)
             == os.path.abspath(os.path.join(_THIS_DIR,
                                             "hurst_gate_calibration.md"))):
@@ -2555,10 +2024,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "hurst_1424_gate_resolution.py owns it. Its own render belongs at "
             f"{_DEFAULT_REPORT_OUT}.")
 
-    # The committed JSON and the contract report describe the PRE-REGISTERED
-    # design. A scoped debug run produces a different study, so it may not
-    # occupy either path — the same hazard this PR closed for #1410's report
-    # default, approached from the JSON side.
     scope = {
         "only": args.only,
         "datasets": args.datasets,
@@ -2586,8 +2051,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         is_contract = (os.path.abspath(args.report_out)
                        == os.path.abspath(_DEFAULT_REPORT_OUT))
         if is_contract:
-            # Fail closed: a payload with no scope stamp predates this guard and
-            # cannot prove it came from a complete run.
             stamped = ((payload.get("run_summary") or {}).get("scope")
                        or {}).get("complete")
             if not stamped:
@@ -2622,8 +2085,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     hurst_windows = (tuple(int(t) for t in args.hurst_windows.split(","))
                      if args.hurst_windows else HURST_WINDOWS)
 
-    # The primary set is pre-registered; verify the committed #1410 evidence
-    # still yields exactly it before anything is scored.
     json_1410 = os.path.join(_THIS_DIR, "hurst_1410_gate_calibration.json")
     resolved = resolve_primary_config_ids(json_1410)
     if resolved != tuple(sorted(PRIMARY_CONFIG_IDS)):
@@ -2648,7 +2109,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         try:
             frames[(symbol, timeframe)] = load_cached_data(
                 symbol, timeframe, exchange_id=PLATFORM)
-        except Exception as exc:  # pragma: no cover - network dependent
+        except Exception as exc:
             print(f"[1422] load FAILED for {dataset_key(symbol, timeframe)}: {exc}")
             frames[(symbol, timeframe)] = pd.DataFrame()
 
@@ -2753,9 +2214,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         pooled.setdefault(family, [])
         raw_counts.setdefault(family, 0)
 
-    # Structural guarantee, not a promise: no primary trade may come from a
-    # cell #1410 scored. Without this the primary hypotheses — chosen by
-    # reading #1410's p-values — would be scored on their own selection data.
     for family in FAMILIES:
         for t in pooled[family]:
             if t["cohort"] != COHORT_PRIMARY:
@@ -2893,12 +2351,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 def _separation(values: Sequence[float],
                 suppressed: Sequence[bool]) -> Optional[float]:
-    """Mean(kept) - mean(suppressed), in pp per trade, or None if one-sided.
-
-    Returned in the same orientation as the injected edge in
-    `min_detectable_effect`, so a separation and a detection limit measured on
-    the same rows are directly comparable.
-    """
     if not values or all(suppressed) or not any(suppressed):
         return None
     v = np.asarray(values, dtype=float)
@@ -2908,14 +2360,6 @@ def _separation(values: Sequence[float],
 
 def _measure_detection_limits(pooled: dict, hurst_windows: Sequence[int],
                               json_1410_path: str, n_perm: int, seed: int) -> dict:
-    """Stage A: what each design could have detected.
-
-    Three pools, all under the same injection model and the same rank-1
-    Benjamini-Hochberg bar: the #1410 design (its cells, its 30-hypothesis
-    denominator), this study's primary cohort (4 hypotheses), and this study's
-    exploratory grid (30). Reported beside the separations the buckets actually
-    show, so a reader can see whether the null means "no edge" or "no power".
-    """
     out: dict = {"by_family_cluster": {}}
     hw = max(hurst_windows)
 
@@ -2931,11 +2375,6 @@ def _measure_detection_limits(pooled: dict, hurst_windows: Sequence[int],
         return rows
 
     def _split(rows, family: str):
-        # The suppressed side is the FAMILY'S OWN anti-signal bucket, so the
-        # injected edge sits exactly where that family's gate claims one lives.
-        # A single `h < 0.5` split for both would run the injection backwards
-        # for `arms_on_low_h`, and the two families would partly cancel in the
-        # pooled row set.
         sense = FAMILY_SENSE[family]
         values, mask, keep = [], [], []
         for t in rows:
@@ -2962,9 +2401,6 @@ def _measure_detection_limits(pooled: dict, hurst_windows: Sequence[int],
             mask_all += mask
             families_all += [family] * len(rows)
             if label == "primary":
-                # A family-specific limit has its own cluster-usable subset;
-                # filter before measuring it so no caller can accidentally
-                # pair that limit with a contrast that retained dropped rows.
                 fam_idx, _ = usable_cluster_rows(rows)
                 fam_rows = [rows[i] for i in fam_idx]
                 fam_vals = [vals[i] for i in fam_idx]
@@ -2974,12 +2410,6 @@ def _measure_detection_limits(pooled: dict, hurst_windows: Sequence[int],
                     n_perm=n_perm, seed=seed)
                 out["by_family_cluster"][family] = fam_mde
 
-        # The cluster null defines this pool's usable sample. Apply that sample
-        # ONCE to every number printed beside it: the family separations, both
-        # detection limits, and both zero-injection p-values. Letting the free
-        # columns or observed contrast retain rows the cluster null discarded
-        # would reintroduce the mismatched-sample inference this table exists
-        # to prevent.
         idx, _ = usable_cluster_rows(rows_all)
         rows_all = [rows_all[i] for i in idx]
         vals_all = [vals_all[i] for i in idx]
@@ -3001,10 +2431,6 @@ def _measure_detection_limits(pooled: dict, hurst_windows: Sequence[int],
         out[f"pooled_{label}_free"] = min_detectable_effect(
             rows_all, vals_all, mask_all, family_size, cluster=False,
             n_perm=n_perm, seed=seed)
-        # The UNINJECTED p of the same contrast. Without it a reader cannot tell
-        # whether a detection limit below the observed separation means "the
-        # split is significant" or "the injection moved the null too" — and the
-        # Recommendation leans on exactly that distinction.
         if rows_all and 0 < int(np.sum(mask_all)) < len(mask_all):
             out[f"pooled_{label}_cluster_p0"] = (
                 cluster_permutation_pvalue_group_diff(

@@ -1,78 +1,3 @@
-"""Bounded-window ADX re-validation harness (#1082).
-
-WHY THIS EXISTS
----------------
-The offline fit (regime_calibrate.fit_on_window -> composite_feature_matrix ->
-compute_regime) computes Wilder ADX over the **full** eval window: the recursive
-DI/ADX smoothing is seeded at the window start and warmed by every bar before the
-scored bar. The **live** regime check (shared_scripts/check_regime.py) runs as a
-fresh subprocess each cycle over a **bounded** fetch (`--ohlcv-limit`, default 200
-bars), so its ADX recursion is seeded only `lookback` bars back. Wilder ADX is
-recursive, so the same calendar bar can receive a different ADX live vs in the
-fit, and a model fitted on full-window ADX may not reproduce live.
-
-This harness re-validates a fitted model's forward-volatility separation under
-bounded-window ADX (matching the live lookback) and quantifies the drift, so
-promotion of a model into the live classifier (#1074) can be gated on a check
-that reflects what the model will actually see live.
-
-CAUSALITY NOTE (sets expectations for the drift magnitude)
-----------------------------------------------------------
-Wilder ADX is *causal*: ADX at bar i depends only on bars <= i, so
-compute_regime(series[:i+1]) and compute_regime(series)[i] are identical. Bounded
-vs full ADX therefore differ at bar i **only** when the bounded window starts
-later than index 0 (i.e. it has dropped early warmup the full window kept). The
-seed's influence decays geometrically at ((p-1)/p)^k per bar, and the composite
-classifier caps the ADX sub-period at COMPOSITE_ADX_PERIOD_CAP (14) regardless of
-the fit's `period`, so over a 200-bar live lookback the residual warmup drift is
-expected to be small. The point of this harness is to *measure* it, not assume it.
-
-Two boundary facts the comparison respects:
-  * ADX arms at index 2*cap-1 and only emits once a later bar exists, so a fetch
-    must carry > 2*cap bars to read a non-zero ADX. Live always does
-    (check_regime.py enforces `--min-bars 30` > 2*14), and the harness lookback
-    must exceed it too; below that the bounded ADX is unarmed (0), not "drifted".
-  * The full-window (fit) view is *cold* at the window's first ~2*period bars
-    (ADX seeded at the window start), whereas the bounded view is *warm* there
-    because each bar carries a real `lookback`-bar prefix -- exactly the live
-    asymmetry. Drift and label-agreement are therefore measured on the bars valid
-    in BOTH views (the fit's cold warm-up bars, NaN-masked out of the fit, are
-    excluded so they cannot masquerade as drift).
-
-FAITHFUL LIVE REPRODUCTION
---------------------------
-For each scored bar i the harness reproduces exactly what a live cycle does for
-that bar: take the trailing `lookback` bars, run the real
-`composite_feature_matrix` (bounded ADX inside) over that slice, and either
-forward-filter the model over the slice or run `compute_regime_composite`
-(hand-rule incumbent) over it -- taking the last bar's feature row / label. The
-HMM forward-filter is itself windowed to `filter_window`, but it still consumes
-the bounded ADX values, so model-label drift is real and mediated entirely by the
-ADX feature. We call the same functions live calls; we do not re-implement them.
-
-GO / NO-GO CHECK (gates #1074 promotion)
-----------------------------------------
-A model is cleared for promotion only when ALL hold:
-  1. It still passes the regime_calibrate gate (`gate_verdict(...).ship`) when that
-     gate is re-run on the **bounded-window** labels of both arms -- i.e. the
-     forward-volatility separation and stability improvement survive bounded ADX.
-  2. Per-bar model-label agreement between the full-window and bounded-window
-     views is >= `agreement_threshold` (default 0.95): the labels the model was
-     validated on are the labels it will emit live.
-  3. That agreement was measured on >= `min_agreement_bars` bars BOTH arms scored
-     (default 30). Fail-closed floor: a window too short to give the cold full-window
-     arm overlap with the warm bounded arm yields a vacuous agreement=1.0 on ~0 bars,
-     which must BLOCK, never promote.
-Both arms are scored at the same periods the regime_calibrate gate uses -- the model
-arm at its fit period, the hand-rule incumbent arm at `incumbent_period`
-(= regime_diagnostics.DEFAULT_PERIOD, what run_window scores model=None at) -- so the
-full-window verdict here equals the calibrate verdict for the same model+window even
-when the fit period != 48. The report surfaces the full-window verdict (to flag a
-regression: passes full, fails bounded) and ADX/label drift statistics. An optional
-`--lookback-sweep` shows how drift decays as the lookback lengthens; its CLI exit code
-is worst-case (non-zero if ANY swept lookback blocks promotion) so neither mode of this
-gate can exit success while promotion is blocked.
-"""
 from __future__ import annotations
 
 import inspect
@@ -88,51 +13,29 @@ for _p in (_THIS_DIR, _ROOT, os.path.join(_ROOT, "shared_tools")):
 import numpy as np
 import pandas as pd
 
-from regime import (  # noqa: E402
+from regime import (
     COMPOSITE_ADX_PERIOD_CAP,
     _DEFAULT_COMPOSITE_THRESHOLDS,
     composite_feature_matrix,
     compute_regime,
     compute_regime_composite,
 )
-from regime_calibrate import gate_verdict  # noqa: E402
-# DEFAULT_PERIOD is the period regime_calibrate scores its hand-rule incumbent at
-# (run_window with model=None) and the fallback when a model omits "period" -- imported
-# (not re-declared) so the incumbent baseline here can never desync from the gate it re-runs.
-from regime_diagnostics import DEFAULT_PERIOD, score_labels  # noqa: E402
-from regime_hmm import forward_filter_labels  # noqa: E402
+from regime_calibrate import gate_verdict
+from regime_diagnostics import DEFAULT_PERIOD, score_labels
+from regime_hmm import forward_filter_labels
 
-# Mirrors shared_scripts/check_regime.py's `--ohlcv-limit` default and the probe
-# argv in scheduler/version_probe.go. The live regime check fetches this many
-# bars per cycle; the harness reproduces ADX over exactly this trailing window.
 DEFAULT_LOOKBACK = 200
-# A model whose live labels disagree with the labels it was validated on more than
-# this fraction of bars has not been validated for what it will actually emit.
 DEFAULT_AGREEMENT_THRESHOLD = 0.95
-# Fail-closed floor: the agreement gate must be measured on at least this many bars that
-# both arms score. Below it (e.g. an eval window barely longer than the fit warm-up, so the
-# cold full-window arm is almost all NaN) label_drift_stats reports a vacuous agreement=1.0
-# on ~0 bars; the gate must BLOCK, not promote. 30 mirrors check_regime's `--min-bars 30`.
 DEFAULT_MIN_AGREEMENT_BARS = 30
-ADX_COL = 3  # composite_feature_matrix column order: return_eff, range_eff, efficiency, adx
+ADX_COL = 3
 
 
 def _gate_primary_horizon() -> int:
-    """Forward horizon the calibrate gate scores on, derived from gate_verdict's own
-    `primary` default (e.g. 'h4' -> 4). gate_verdict reads report[primary]['separation']
-    etc., and score_labels only emits that flat alias when the horizon is in `horizons`
-    (regime_diagnostics.score_labels). Introspecting the signature (instead of hardcoding
-    4 here) keeps this guard locked to the gate's real primary if it ever changes."""
     primary = inspect.signature(gate_verdict).parameters["primary"].default
     return int(str(primary).lstrip("h"))
 
 
 def _windows_overlap(fit_range, val_range) -> bool:
-    """True iff two eval windows share any bars. WINDOWS are half-open [start, end) date
-    ranges (an end of None means 'open to the latest cached bar'), so a SHARED boundary is
-    NOT an overlap -- e.g. is=[..,2026-01-01) and oos=[2026-01-01,..) are disjoint, which is
-    exactly the clean protocol split. ISO date strings compare lexicographically; None end
-    is treated as +infinity via a sentinel."""
     fs, fe = fit_range
     vs, ve = val_range
     fe = "9999-12-31" if fe is None else str(fe)
@@ -142,23 +45,9 @@ def _windows_overlap(fit_range, val_range) -> bool:
 
 def _provenance_status(model, symbol: str, timeframe: str, window: str,
                        windows: dict | None = None) -> dict:
-    """Compare the validation context against the model's fit provenance (#1082 gate
-    safety). fit_on_window stamps fitted_on={symbol,timeframe,window}; an empty/absent
-    fitted_on means the model wasn't stamped (hand-built/legacy) and provenance can't be
-    verified. The gate must refuse any **in-sample** validation -- re-scoring separation/
-    stability on bars the model was fit on is optimistic and would let an overfit model
-    clear the #1074 promotion gate.
-
-    `in_sample` fires on BOTH exact name equality AND date-range overlap: named windows
-    overlap by calendar even when their names differ (e.g. a model fit on `is` validated on
-    the held-out `2025H1` shares ~3 weeks), so name equality alone is not enough. Overlap is
-    only meaningful for the same (symbol, timeframe); a different instrument shares no bars.
-    `overlap_resolvable` is False when the fit window's name can't be resolved to a date
-    range (absent from WINDOWS) -- the validation can't be confirmed held-out, so it is
-    treated as unverifiable (warn, or block under --require-provenance), never silently OK."""
     if windows is None:
         try:
-            from eval_windows import WINDOWS as windows  # dict literal; no data access
+            from eval_windows import WINDOWS as windows
         except Exception:
             windows = {}
     fitted_on = dict((model or {}).get("fitted_on") or {})
@@ -174,7 +63,7 @@ def _provenance_status(model, symbol: str, timeframe: str, window: str,
         fit_range = windows.get(fitted_on.get("window"))
         val_range = windows.get(window)
         if fit_range is None or val_range is None:
-            overlap_resolvable = False  # cannot confirm disjoint -> unverifiable
+            overlap_resolvable = False
         elif _windows_overlap(fit_range, val_range):
             date_overlap = True
             overlap_detail = {"fit_window": fitted_on.get("window"),
@@ -188,20 +77,8 @@ def _provenance_status(model, symbol: str, timeframe: str, window: str,
             "in_sample": in_sample}
 
 
-# ---------------------------------------------------------------------------
-# Core views (pure; operate on DataFrames so they are unit-testable without the
-# data loader). `df` carries OHLCV with high/low/close columns.
-# ---------------------------------------------------------------------------
-
 def bounded_window_adx(df: pd.DataFrame, period: int, lookback: int,
                        adx_threshold: float, eval_start: int = 0) -> np.ndarray:
-    """Per-bar ADX as the *live* bounded fetch computes it.
-
-    For each bar i in [eval_start, n) the ADX is computed over only the trailing
-    `lookback` bars (seeded at the start of that slice), at the composite ADX
-    sub-period cap -- exactly what shared_scripts/check_regime.py sees. Bars
-    before `eval_start` are NaN. Returns an array aligned to df (length n).
-    """
     n = len(df)
     out = np.full(n, np.nan)
     adx_period = min(int(period), COMPOSITE_ADX_PERIOD_CAP)
@@ -218,13 +95,6 @@ def bounded_window_adx(df: pd.DataFrame, period: int, lookback: int,
 
 def full_window_views(df_window: pd.DataFrame, model, period: int, th: dict, *,
                       want_model: bool = True, want_handrule: bool = True):
-    """Full-window features + (model, hand-rule) labels -- what the FIT consumed.
-
-    ADX is seeded at the window start (recursive warm-up over the whole window).
-    Returns (features[n x 4], model_labels|None, handrule_labels|None). The two arms
-    are scored at DIFFERENT periods (model at its fit period, incumbent at
-    DEFAULT_PERIOD), so callers request only the arm they want at this period.
-    """
     feats = composite_feature_matrix(df_window, period, th).to_numpy()
     hr_labels = None
     if want_handrule:
@@ -238,12 +108,6 @@ def full_window_views(df_window: pd.DataFrame, model, period: int, th: dict, *,
 def bounded_window_views(df: pd.DataFrame, model, period: int, th: dict,
                          lookback: int, eval_start: int, *,
                          want_model: bool = True, want_handrule: bool = True):
-    """Faithful per-bar live reproduction over `df` for bars [eval_start, n).
-
-    Each scored bar is computed from its own trailing `lookback`-bar slice using
-    the same functions the live cycle calls. Returns
-    (features[m x 4], model_labels[m]|None, handrule_labels[m]|None) where m = n - eval_start.
-    """
     feats_rows: list[np.ndarray] = []
     model_labs: list = []
     hr_labs: list = []
@@ -265,10 +129,6 @@ def bounded_window_views(df: pd.DataFrame, model, period: int, th: dict,
     hr_arr = np.array(hr_labs, dtype=object) if want_handrule else None
     return feats, model_arr, hr_arr
 
-
-# ---------------------------------------------------------------------------
-# Drift statistics
-# ---------------------------------------------------------------------------
 
 def adx_drift_stats(full_adx: np.ndarray, bounded_adx: np.ndarray) -> dict:
     a = np.asarray(full_adx, dtype=float)
@@ -316,15 +176,10 @@ def label_drift_stats(full_labels, bounded_labels, valid_mask) -> dict:
 
 
 def _feature_valid_mask(full_feats: np.ndarray, bounded_feats: np.ndarray) -> np.ndarray:
-    """Bars usable in BOTH views: neither feature row is NaN (warm-up / low-ATR)."""
     fv = ~np.isnan(np.asarray(full_feats, dtype=float)).any(axis=1)
     bv = ~np.isnan(np.asarray(bounded_feats, dtype=float)).any(axis=1)
     return fv & bv
 
-
-# ---------------------------------------------------------------------------
-# Go / no-go check
-# ---------------------------------------------------------------------------
 
 def go_no_go(full_model_scored, full_hr_scored, bounded_model_scored, bounded_hr_scored,
              model_label_drift: dict, *,
@@ -332,23 +187,6 @@ def go_no_go(full_model_scored, full_hr_scored, bounded_model_scored, bounded_hr
              min_agreement_bars: int = DEFAULT_MIN_AGREEMENT_BARS,
              in_sample: bool = False, provenance_verified: bool = True,
              require_provenance: bool = False) -> dict:
-    """Promotion gate for #1074. Promote iff EVERY blocking condition is clear: the
-    calibrate gate still ships under bounded-window labels, the full-vs-bounded model
-    label agreement clears the threshold, that agreement was measured on enough
-    comparable bars, AND the validation was not an in-sample re-score.
-
-    `model_label_drift` is the model arm's label_drift_stats dict; its `n` is the count
-    of bars BOTH views scored. The bar-count guard is load-bearing: label_drift_stats
-    returns a vacuous agreement=1.0 on zero comparable bars, so without it a window too
-    short to give the cold full-window arm any overlap with the warm bounded arm would
-    promote on ~0 bars while the bounded gate ships on its own larger sample.
-
-    `in_sample` True means the validation window equals the model's fit window
-    (symbol/timeframe/window all match): gate separation/stability would be optimistic, so
-    promotion is refused outright. `provenance_verified` False means the model carries no
-    fitted_on stamp so out-of-sample-ness can't be confirmed -- a non-blocking warning by
-    default (the dangerous confirmed-overlap case is already refused), or a hard block when
-    `require_provenance` is set (fail-closed mode for the #1074 automation)."""
     label_agreement = float(model_label_drift.get("agreement", 0.0))
     comparable_bars = int(model_label_drift.get("n", 0))
     full_verdict = gate_verdict(full_hr_scored, full_model_scored)
@@ -380,8 +218,6 @@ def go_no_go(full_model_scored, full_hr_scored, bounded_model_scored, bounded_hr
         reasons.append(
             f"full-vs-bounded model label agreement {label_agreement:.4f} "
             f"< threshold {agreement_threshold:.4f}")
-    # promote iff NO blocking reason fired -- single source of truth so a new blocking
-    # condition can never be added to `reasons` while still letting `promote` stay True.
     promote = not reasons
     return {
         "promote": promote,
@@ -398,10 +234,6 @@ def go_no_go(full_model_scored, full_hr_scored, bounded_model_scored, bounded_hr
     }
 
 
-# ---------------------------------------------------------------------------
-# Orchestration (pure core + data-loading wrapper)
-# ---------------------------------------------------------------------------
-
 def validate_frames(df_window: pd.DataFrame, df_ext: pd.DataFrame, eval_start: int, model, *,
                     period: int | None = None, incumbent_period: int = DEFAULT_PERIOD,
                     thresholds: dict | None = None,
@@ -411,29 +243,11 @@ def validate_frames(df_window: pd.DataFrame, df_ext: pd.DataFrame, eval_start: i
                     min_agreement_bars: int = DEFAULT_MIN_AGREEMENT_BARS,
                     in_sample: bool = False, provenance_verified: bool = True,
                     require_provenance: bool = False) -> dict:
-    """Pure validation core. `df_window` is the exact eval window (full-window/fit
-    view); `df_ext` is the same window prefixed with >= `lookback` warm-up bars,
-    with `eval_start` the index in df_ext where the eval window begins. The eval
-    bars of both frames are the same calendar bars.
-
-    The MODEL arm is scored at `period` (the fit period; defaults to the model's own
-    "period", else DEFAULT_PERIOD); the HAND-RULE incumbent arm is scored at
-    `incumbent_period` (DEFAULT_PERIOD) -- the same period regime_calibrate's gate uses
-    for the incumbent (run_window with model=None), so the full-window verdict here
-    equals the calibrate verdict for the same model+window even when period != 48.
-
-    `in_sample`/`provenance_verified`/`require_provenance` are passed through to go_no_go
-    (provenance is resolved by the data-loading `validate` wrapper, which knows the
-    symbol/timeframe/window the model was fit on)."""
     th = dict(_DEFAULT_COMPOSITE_THRESHOLDS if thresholds is None else thresholds)
     close = df_window["close"].to_numpy(dtype=float)
     model_period = int(period) if period is not None else (
         int(model["period"]) if model and "period" in model else DEFAULT_PERIOD)
     if model is not None:
-        # Reject before any scoring: the calibrate gate reads report['h<primary>'], an alias
-        # score_labels only emits when that horizon is in `horizons`. Omitting it would make
-        # go_no_go -> gate_verdict raise a deep KeyError partway through the run instead of a
-        # clear up-front rejection.
         gate_h = _gate_primary_horizon()
         if gate_h not in {int(h) for h in horizons}:
             raise ValueError(
@@ -441,7 +255,6 @@ def validate_frames(df_window: pd.DataFrame, df_ext: pd.DataFrame, eval_start: i
                 f"primary horizon h{gate_h}; gate_verdict reads report['h{gate_h}'] and "
                 f"would KeyError mid-run. Include {gate_h} in horizons.")
 
-    # Hand-rule incumbent arm at the incumbent period (no model labels needed here).
     hr_full_feats, _, hr_full_labels = full_window_views(
         df_window, None, incumbent_period, th, want_model=False, want_handrule=True)
     hr_bounded_feats, _, hr_bounded_labels = bounded_window_views(
@@ -470,8 +283,6 @@ def validate_frames(df_window: pd.DataFrame, df_ext: pd.DataFrame, eval_start: i
     }
 
     if model is not None:
-        # Model arm at the model period (its own features/ADX; ADX sub-period is capped
-        # at COMPOSITE_ADX_PERIOD_CAP regardless, so the drift it measures is the model's).
         m_full_feats, m_full_labels, _ = full_window_views(
             df_window, model, model_period, th, want_model=True, want_handrule=False)
         m_bounded_feats, m_bounded_labels, _ = bounded_window_views(
@@ -503,8 +314,6 @@ def validate_frames(df_window: pd.DataFrame, df_ext: pd.DataFrame, eval_start: i
 
 
 def _align_eval_start(df_window: pd.DataFrame, df_ext: pd.DataFrame) -> int:
-    """Index in df_ext where the eval window begins. Both frames end at the same
-    bar (same end_date), so the window is df_ext's tail of len(df_window)."""
     eval_start = len(df_ext) - len(df_window)
     if eval_start < 0:
         raise ValueError("extended frame is shorter than the window frame")
@@ -522,13 +331,6 @@ def validate(symbol: str, timeframe: str, window: str, model, *,
              agreement_threshold: float = DEFAULT_AGREEMENT_THRESHOLD,
              min_agreement_bars: int = DEFAULT_MIN_AGREEMENT_BARS,
              require_provenance: bool = False) -> dict:
-    """Data-loading wrapper: load the eval window plus a >= lookback warm-up
-    prefix, then run validate_frames (model arm at the model's fit period, incumbent
-    arm at `incumbent_period`).
-
-    Resolves the model's fit provenance against (symbol, timeframe, window): an in-sample
-    re-score (validation window == fit window) is refused by the gate, and unverifiable
-    provenance is flagged (or blocked under `require_provenance`)."""
     from data_fetcher import load_cached_data
     from eval_windows import WINDOWS, PLATFORM
     if window not in WINDOWS:
@@ -540,9 +342,6 @@ def validate(symbol: str, timeframe: str, window: str, model, *,
                               start_date=None, end_date=end)
     eval_start = _align_eval_start(df_window, df_ext)
     prov = _provenance_status(model, symbol, timeframe, window, WINDOWS) if model is not None else None
-    # Unverifiable provenance = no fitted_on stamp OR a fit-window name we can't resolve to a
-    # date range (so we can't prove the validation window is disjoint). Both route to the
-    # warn-by-default / block-under-require-provenance channel.
     provenance_verified = bool(prov and prov["verified"] and prov["overlap_resolvable"])
     report = validate_frames(df_window, df_ext, eval_start, model, period=None,
                              incumbent_period=incumbent_period, lookback=lookback,
@@ -559,7 +358,6 @@ def validate(symbol: str, timeframe: str, window: str, model, *,
 
 
 def _sweep_summary(report: dict) -> dict:
-    """Compact per-lookback row for the sensitivity sweep."""
     row = {"lookback": report["lookback"], "adx_mean_abs": report["adx_drift"]["mean_abs"],
            "adx_p95_abs": report["adx_drift"]["p95_abs"], "adx_corr": report["adx_drift"]["corr"]}
     if "model" in report:
@@ -571,17 +369,9 @@ def _sweep_summary(report: dict) -> dict:
 
 
 def _sweep_blocked(sweep: list[dict]) -> bool:
-    """Worst-case fail-closed verdict over a lookback sweep: blocked if a promotion
-    decision exists for any swept lookback and ANY of them does not promote. The CLI's
-    exit code keys off this so a sweep -- reachable by the #1074 promotion automation --
-    can never exit success while some lookback (including the live default) is blocked."""
     model_rows = [r for r in sweep if "promote" in r]
     return bool(model_rows) and not all(bool(r["promote"]) for r in model_rows)
 
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
 
 def build_parser():
     import argparse
@@ -618,10 +408,6 @@ def build_parser():
 
 
 def _warn_provenance(prov: dict | None, require_provenance: bool) -> None:
-    """Loud stderr flag for the provenance hazards (the invariant: an in-sample re-score is
-    never silently promoted). Confirmed in-sample (name match or date overlap) is always a
-    blocking error; unverifiable provenance (no stamp, or a fit window whose date range can't
-    be resolved) is a warning unless --require-provenance escalates it to a block."""
     if not prov:
         return
     if prov.get("in_sample"):
@@ -657,8 +443,6 @@ def main(argv=None) -> int:
         model = loaded.get("model", loaded) if isinstance(loaded, dict) else loaded
     horizons = tuple(int(x) for x in args.horizons.split(","))
 
-    # Reject up front (before loading data / scoring) when a model is present but the gate's
-    # primary horizon is missing: the calibrate gate reads report['h<primary>'].
     if model is not None:
         gate_h = _gate_primary_horizon()
         if gate_h not in set(horizons):

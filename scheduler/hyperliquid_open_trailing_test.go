@@ -5,12 +5,6 @@ import (
 	"testing"
 )
 
-// armTrailingStopAtOpenNow places the initial trailing SL on the SAME cycle as a
-// fresh open for an ATR-trailing owner (#885) — those owners get no inline SL at
-// the execute call (EffectiveStopLossPct defers to 0) and are not handled by the
-// post-trade protection sync (buildHyperliquidProtectionPlan never reads the
-// trailing fields), so without this they stay naked until the next Signal==0
-// walker cycle.
 func TestArmTrailingStopAtOpenNow(t *testing.T) {
 	old := runHyperliquidUpdateStopLossFunc
 	defer func() { runHyperliquidUpdateStopLossFunc = old }()
@@ -25,8 +19,6 @@ func TestArmTrailingStopAtOpenNow(t *testing.T) {
 	}
 	var mu sync.RWMutex
 
-	// Happy path: live ATR-trailing owner with no resting SL → arm inline at the
-	// AvgCost-seeded trigger (2000 * (1 - 5%) = 1900), full filled qty, no cancel.
 	var called bool
 	var gotSize, gotTrigger float64
 	var gotCancelOID int64
@@ -59,16 +51,12 @@ func TestArmTrailingStopAtOpenNow(t *testing.T) {
 		t.Errorf("pos.StopLossTriggerPx = %v, want 1900", got)
 	}
 
-	// Guard: a resting SL already exists — scalar trailing_stop_pct places it
-	// inline at the execute order, fixed/regime ATR via the post-trade sync — so
-	// arming again would double-place. No-op.
 	called = false
 	st = mkState(123, 1950)
 	if n, _ := armTrailingStopAtOpenNow(sc, st, "ETH", 2000, map[string]float64{"ETH": 0}, 2, &mu, nil, newTestLogger(t)); n != 0 || called {
 		t.Errorf("existing-SL: expected no-op, got trades=%d called=%v", n, called)
 	}
 
-	// Guard: not live (paper) → no subprocess call.
 	called = false
 	scPaper := sc
 	scPaper.Args = []string{"x.py", "ETH", "1h"}
@@ -78,8 +66,6 @@ func TestArmTrailingStopAtOpenNow(t *testing.T) {
 		t.Errorf("not-live: expected no subprocess call")
 	}
 
-	// Guard: non-trailing owner (fixed ATR) — the post-trade protection sync
-	// already armed its SL — so this no-ops on the effectiveTrailingStopPct gate.
 	called = false
 	scFixed := StrategyConfig{ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py", Args: liveArgs, StopLossATRMult: &fixed}
 	st = mkState(0, 0)
@@ -88,8 +74,6 @@ func TestArmTrailingStopAtOpenNow(t *testing.T) {
 		t.Errorf("fixed-ATR: expected no-op (post-trade sync owns the SL)")
 	}
 
-	// Guard: still size-capped after correcting on-chain qty (preOpen 0 + fill
-	// 0.5 < virtual 2) → defer to the next walker cycle, no placement.
 	called = false
 	st = mkState(0, 0)
 	armTrailingStopAtOpenNow(sc, st, "ETH", 2000, map[string]float64{"ETH": 0}, 0.5, &mu, nil, newTestLogger(t))
@@ -100,10 +84,6 @@ func TestArmTrailingStopAtOpenNow(t *testing.T) {
 		t.Errorf("capped: SL OID set (%d) despite deferral", st.Positions["ETH"].StopLossOID)
 	}
 
-	// Immediate-fill path: price was already through the just-computed trigger at
-	// submit (HL fills it on placement) → book a trailing_stop_loss_immediate
-	// close now, returning trades=1 + detail rather than leaving a phantom open
-	// position for a later reconcile to mislabel.
 	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 		return &HyperliquidStopLossUpdateResult{StopLossFilledImmediately: true, StopLossTriggerPx: triggerPx}, "", nil
 	}
@@ -120,10 +100,6 @@ func TestArmTrailingStopAtOpenNow(t *testing.T) {
 	}
 }
 
-// A regime-aware trailing owner (trailing_stop_atr_regime) resolves its distance
-// from the stamped pos.Regime and arms inline at open the same way the scalar
-// trailing_stop_atr_mult owner does — exercising the regime branch of
-// effectiveTrailingStopPct.
 func TestArmTrailingStopAtOpenNowRegime(t *testing.T) {
 	old := runHyperliquidUpdateStopLossFunc
 	defer func() { runHyperliquidUpdateStopLossFunc = old }()
@@ -133,8 +109,6 @@ func TestArmTrailingStopAtOpenNowRegime(t *testing.T) {
 		gotSize, gotTrigger = size, triggerPx
 		return &HyperliquidStopLossUpdateResult{StopLossOID: 777, StopLossTriggerPx: triggerPx}, "", nil
 	}
-	// "trending" → 2.0× ATR; same geometry as the scalar test: 2.0*50/2000 = 5%,
-	// trigger 2000 * 0.95 = 1900.
 	regimeBlock := &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{
 		"trending": {ATR: 2.0},
 		"ranging":  {ATR: 1.0},

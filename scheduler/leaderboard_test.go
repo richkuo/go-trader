@@ -54,8 +54,6 @@ func TestBuildLeaderboardMessages(t *testing.T) {
 		t.Fatal("BuildLeaderboardMessages returned nil")
 	}
 
-	// Only aggregate top/bottom messages are produced; per-product sections
-	// were removed in issue #310.
 	if _, ok := messages["top"]; !ok {
 		t.Error("Missing top leaderboard message")
 	}
@@ -91,11 +89,6 @@ func TestBuildLeaderboardMessages(t *testing.T) {
 	}
 }
 
-// TestBuildLeaderboardMessages_SharpeColumn verifies that a populated
-// sharpeByStrategy map surfaces the Sharpe column header and at least one
-// non-N/A value in the rendered message. Regression for the review nit that
-// every leaderboard test previously passed nil and the column was exercised
-// only by fmtSharpe unit tests.
 func TestBuildLeaderboardMessages_SharpeColumn(t *testing.T) {
 	cfg := &Config{
 		Strategies: []StrategyConfig{
@@ -131,19 +124,12 @@ func TestBuildLeaderboardMessages_SharpeColumn(t *testing.T) {
 	}
 }
 
-// TestBuildLeaderboardMessages_TfIntColumns verifies that Tf (Args[2]) and Int
-// (per-strategy or global IntervalSeconds) are extracted into LeaderboardEntry
-// and surfaced in the rendered message. Regression for #580.
-//
-// Asserts on the full Tf+Int cell pair (right-aligned in a %4s %4s row) rather
-// than each value as a free substring — `"4h"` would otherwise match elsewhere
-// in the rendered table.
 func TestBuildLeaderboardMessages_TfIntColumns(t *testing.T) {
 	cfg := &Config{
 		IntervalSeconds: 3600,
 		Strategies: []StrategyConfig{
 			{ID: "sma-btc", Type: "spot", Capital: 1000, Platform: "binanceus", Args: []string{"sma_crossover", "BTC/USDT", "30m"}, IntervalSeconds: 600},
-			{ID: "rsi-eth", Type: "spot", Capital: 500, Platform: "binanceus", Args: []string{"rsi_divergence", "ETH/USDT", "4h"}}, // falls back to global 1h
+			{ID: "rsi-eth", Type: "spot", Capital: 500, Platform: "binanceus", Args: []string{"rsi_divergence", "ETH/USDT", "4h"}},
 		},
 	}
 	state := NewAppState()
@@ -154,21 +140,16 @@ func TestBuildLeaderboardMessages_TfIntColumns(t *testing.T) {
 	}
 	messages := BuildLeaderboardMessages(cfg, state, map[string]float64{"BTC/USDT": 50000, "ETH/USDT": 3000}, nil, nil, nil, nil)
 	topMsg := messages["top"]
-	// Per-strategy interval (sma-btc): Tf="30m", Int="10m" → " 30m  10m".
 	smaCell := fmt.Sprintf("%4s %4s", "30m", "10m")
 	if !containsStr(topMsg, smaCell) {
 		t.Errorf("top message should contain Tf+Int cell %q for sma-btc, got:\n%s", smaCell, topMsg)
 	}
-	// Global fallback (rsi-eth): Tf="4h", Int="1h" → "  4h   1h".
 	rsiCell := fmt.Sprintf("%4s %4s", "4h", "1h")
 	if !containsStr(topMsg, rsiCell) {
 		t.Errorf("top message should contain Tf+Int cell %q for rsi-eth, got:\n%s", rsiCell, topMsg)
 	}
 }
 
-// TestBuildLeaderboardMessages_PositionsOpenedAndWinLoss verifies that #T and W/L
-// columns reflect the supplied lifetimeStats map (not in-memory TradeHistory).
-// Regression for #580.
 func TestBuildLeaderboardMessages_PositionsOpenedAndWinLoss(t *testing.T) {
 	cfg := &Config{
 		Strategies: []StrategyConfig{
@@ -185,18 +166,12 @@ func TestBuildLeaderboardMessages_PositionsOpenedAndWinLoss(t *testing.T) {
 	}
 	messages := BuildLeaderboardMessages(cfg, state, map[string]float64{"BTC/USDT": 50000}, nil, lifetime, nil, nil)
 	topMsg := messages["top"]
-	// Assert on the full #T+W/L cell pair (`"%4d %5s"`) so a future width
-	// change to either column fails loudly instead of silently passing on the
-	// happy substring " 7 ". 5 wins / 2 losses → fmtWinLossRatio="2.50".
 	wantCell := fmt.Sprintf("%4d %5s", 7, fmtWinLossRatio(5, 2))
 	if !containsStr(topMsg, wantCell) {
 		t.Errorf("top message should render #T+W/L cell %q, got:\n%s", wantCell, topMsg)
 	}
 }
 
-// TestBuildLeaderboardMessages_Empty verifies BuildLeaderboardMessages returns
-// nil when no strategies have state. PostLeaderboard relies on this to surface
-// the "no strategies" error instead of posting empty messages.
 func TestBuildLeaderboardMessages_Empty(t *testing.T) {
 	cfg := &Config{DBFile: filepath.Join(t.TempDir(), "state.db")}
 	state := NewAppState()
@@ -242,7 +217,6 @@ func TestFmtSignedPct(t *testing.T) {
 	}
 }
 
-// TestLeaderboardTopNDefault verifies that leaderboardTopN returns 5 when unset.
 func TestLeaderboardTopNDefault(t *testing.T) {
 	cfg := &Config{}
 	if got := leaderboardTopN(cfg); got != 5 {
@@ -250,7 +224,6 @@ func TestLeaderboardTopNDefault(t *testing.T) {
 	}
 }
 
-// TestLeaderboardTopNConfigured verifies that leaderboardTopN respects the configured value.
 func TestLeaderboardTopNConfigured(t *testing.T) {
 	cfg := &Config{Discord: DiscordConfig{LeaderboardTopN: 10}}
 	if got := leaderboardTopN(cfg); got != 10 {
@@ -258,7 +231,6 @@ func TestLeaderboardTopNConfigured(t *testing.T) {
 	}
 }
 
-// TestLeaderboardTopNNegative verifies that leaderboardTopN ignores negative values.
 func TestLeaderboardTopNNegative(t *testing.T) {
 	cfg := &Config{Discord: DiscordConfig{LeaderboardTopN: -1}}
 	if got := leaderboardTopN(cfg); got != 5 {
@@ -266,7 +238,6 @@ func TestLeaderboardTopNNegative(t *testing.T) {
 	}
 }
 
-// TestBuildLeaderboardMessages_TopN verifies that LeaderboardTopN limits the entries shown.
 func TestBuildLeaderboardMessages_TopN(t *testing.T) {
 	var strats []StrategyConfig
 	for i := 0; i < 8; i++ {
@@ -300,7 +271,6 @@ func TestBuildLeaderboardMessages_TopN(t *testing.T) {
 	if topMsg == "" {
 		t.Fatal("Expected non-empty top all-time message")
 	}
-	// Top 3 by PnL%: sma-s07, sma-s06, sma-s05.
 	if !containsStr(topMsg, "sma-s07") {
 		t.Error("top all-time should contain sma-s07 when top_n=3")
 	}
@@ -326,8 +296,6 @@ func TestBuildLeaderboardMessages_TopN(t *testing.T) {
 	}
 }
 
-// leaderboardTestFixture builds a small cfg+state with two strategies and the
-// prices needed to revalue them. Used by PostLeaderboard routing tests below.
 func leaderboardTestFixture() (*Config, *AppState, map[string]float64) {
 	cfg := &Config{
 		Strategies: []StrategyConfig{
@@ -338,15 +306,12 @@ func leaderboardTestFixture() (*Config, *AppState, map[string]float64) {
 	state := NewAppState()
 	for _, sc := range cfg.Strategies {
 		ss := NewStrategyState(sc)
-		ss.Cash = sc.Capital + 100 // profitable
+		ss.Cash = sc.Capital + 100
 		state.Strategies[sc.ID] = ss
 	}
 	return cfg, state, map[string]float64{"BTC/USDT": 50000, "ETH/USDT": 3000}
 }
 
-// TestPostLeaderboard_DedicatedChannel verifies that when DiscordConfig.LeaderboardChannel
-// is set (wired into notifierBackend.leaderboardChannel), PostLeaderboard routes
-// the top/bottom messages to the dedicated channel instead of broadcasting.
 func TestPostLeaderboard_DedicatedChannel(t *testing.T) {
 	cfg, state, prices := leaderboardTestFixture()
 
@@ -361,7 +326,6 @@ func TestPostLeaderboard_DedicatedChannel(t *testing.T) {
 		t.Fatalf("PostLeaderboard: %v", err)
 	}
 
-	// Only top + bottom should land on the dedicated channel.
 	if len(mock.messages) != 2 {
 		t.Fatalf("expected 2 messages on dedicated channel, got %d: %v", len(mock.messages), mock.messages)
 	}
@@ -372,8 +336,6 @@ func TestPostLeaderboard_DedicatedChannel(t *testing.T) {
 	}
 }
 
-// TestPostLeaderboard_FallbackRouting verifies that when no LeaderboardChannel
-// is configured, top/bottom broadcast to all configured channels.
 func TestPostLeaderboard_FallbackRouting(t *testing.T) {
 	cfg, state, prices := leaderboardTestFixture()
 
@@ -387,12 +349,10 @@ func TestPostLeaderboard_FallbackRouting(t *testing.T) {
 		t.Fatalf("PostLeaderboard: %v", err)
 	}
 
-	// top → broadcast to 2 channels; bottom → broadcast to 2 channels = 4.
 	if len(mock.messages) != 4 {
 		t.Fatalf("expected 4 messages from fallback routing, got %d: %v", len(mock.messages), mock.messages)
 	}
 
-	// Each channel should receive both top and bottom content.
 	for _, ch := range []string{"spot-ch", "perps-ch"} {
 		seen := 0
 		for _, m := range mock.messages {
@@ -406,9 +366,6 @@ func TestPostLeaderboard_FallbackRouting(t *testing.T) {
 	}
 }
 
-// TestPostLeaderboard_MixedBackends is the regression test for the bug where
-// HasLeaderboardChannel returning true on *any* backend caused all other
-// backends to silently drop leaderboard messages.
 func TestPostLeaderboard_MixedBackends(t *testing.T) {
 	cfg, state, prices := leaderboardTestFixture()
 
@@ -440,7 +397,6 @@ func TestPostLeaderboard_MixedBackends(t *testing.T) {
 		t.Fatalf("PostLeaderboard: %v", err)
 	}
 
-	// Discord: top + bottom should land on discord-lb.
 	if len(discord.messages) != 2 {
 		t.Fatalf("expected 2 discord messages on discord-lb, got %d: %v", len(discord.messages), discord.messages)
 	}
@@ -450,7 +406,6 @@ func TestPostLeaderboard_MixedBackends(t *testing.T) {
 		}
 	}
 
-	// Telegram: top and bottom each broadcast to all 4 channels = 8 total.
 	if len(telegram.messages) != 8 {
 		t.Fatalf("expected 8 telegram messages from broadcast routing, got %d: %v", len(telegram.messages), telegram.messages)
 	}
@@ -468,9 +423,6 @@ func TestPostLeaderboard_MixedBackends(t *testing.T) {
 	}
 }
 
-// TestPostLeaderboard_NoStrategies verifies PostLeaderboard returns an error
-// when there is nothing to report (used to be a silent no-op when the file
-// didn't exist; now it surfaces clearly).
 func TestPostLeaderboard_NoStrategies(t *testing.T) {
 	cfg := &Config{}
 	state := NewAppState()
@@ -538,7 +490,6 @@ func TestBuildLeaderboardSummary_PlatformOnly(t *testing.T) {
 	if !containsStr(msg, "hl-sma-btc") || !containsStr(msg, "hl-rsi-eth") || !containsStr(msg, "hl-mom-sol") {
 		t.Errorf("Expected all 3 HL strategies in message, got:\n%s", msg)
 	}
-	// Non-HL strategy must be excluded.
 	if containsStr(msg, " sma-btc ") {
 		t.Errorf("Expected non-HL strategy to be excluded, got:\n%s", msg)
 	}
@@ -579,7 +530,7 @@ func TestBuildLeaderboardSummary_TickerFilter(t *testing.T) {
 	state := NewAppState()
 	for _, sc := range cfg.Strategies {
 		ss := NewStrategyState(sc)
-		ss.Cash = sc.Capital + 100 // all profitable
+		ss.Cash = sc.Capital + 100
 		state.Strategies[sc.ID] = ss
 	}
 
@@ -597,8 +548,6 @@ func TestBuildLeaderboardSummary_TickerFilter(t *testing.T) {
 	if !containsStr(msg, "hl-rsi-eth") || !containsStr(msg, "hl-mom-eth") {
 		t.Errorf("Expected both ETH strategies, got:\n%s", msg)
 	}
-	// Sort order: hl-rsi-eth yields +$100/$500 = +20%; hl-mom-eth yields
-	// +$100/$800 = +12.5%. Higher PnL% must appear first. (#309 review nit)
 	rsiIdx := strings.Index(msg, "hl-rsi-eth")
 	momIdx := strings.Index(msg, "hl-mom-eth")
 	if rsiIdx < 0 || momIdx < 0 || rsiIdx >= momIdx {
@@ -625,7 +574,6 @@ func TestBuildLeaderboardSummary_DefaultTopN(t *testing.T) {
 		state.Strategies[sc.ID] = ss
 	}
 
-	// TopN=0 means default (5).
 	lc := LeaderboardSummaryConfig{Platform: "hyperliquid", Channel: "c1"}
 	msg := BuildLeaderboardSummary(lc, cfg, state, nil, nil, nil, nil, nil)
 	if !containsStr(msg, "Hyperliquid Top 5") {
@@ -633,9 +581,6 @@ func TestBuildLeaderboardSummary_DefaultTopN(t *testing.T) {
 	}
 }
 
-// TestBuildLeaderboardSummary_PositionsOpenedAndWinLoss covers the per-platform path
-// (BuildLeaderboardSummary) for the #T / W/L columns introduced in #580 — the
-// top/bottom path is covered by TestBuildLeaderboardMessages_PositionsOpenedAndWinLoss.
 func TestBuildLeaderboardSummary_PositionsOpenedAndWinLoss(t *testing.T) {
 	cfg := &Config{
 		Strategies: []StrategyConfig{
@@ -709,9 +654,6 @@ func TestLeaderboardSummaryConfig_ParsedFrequency(t *testing.T) {
 	}
 }
 
-// TestFindLeaderboardSummariesByChannel covers the multi-match case called out
-// in review item 3 on #309: -summary <ch> should surface every configured entry
-// sharing a channel, in config order.
 func TestFindLeaderboardSummariesByChannel(t *testing.T) {
 	cfg := &Config{
 		LeaderboardSummaries: []LeaderboardSummaryConfig{
@@ -738,9 +680,6 @@ func TestFindLeaderboardSummariesByChannel(t *testing.T) {
 	}
 }
 
-// TestBuildLeaderboardMessages_AdjustedTotal verifies #915: when wallet
-// balances are provided, the TOTAL row in the leaderboard uses the
-// shared-wallet-adjusted value rather than the naive per-strategy sum.
 func TestBuildLeaderboardMessages_AdjustedTotal(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
 
@@ -760,7 +699,7 @@ func TestBuildLeaderboardMessages_AdjustedTotal(t *testing.T) {
 	prices := map[string]float64{}
 
 	walletBalances := map[SharedWalletKey]float64{
-		{Platform: "hyperliquid", Account: "0xtest"}: 8000, // real balance < naive sum
+		{Platform: "hyperliquid", Account: "0xtest"}: 8000,
 	}
 	accountShared := detectSharedWallets(cfg.Strategies)
 
@@ -790,8 +729,6 @@ func TestBuildLeaderboardMessages_AdjustedTotal(t *testing.T) {
 	}
 }
 
-// TestBuildLeaderboardSummary_AdjustedTotal verifies #915: BuildLeaderboardSummary
-// uses shared-wallet-adjusted values for the TOTAL row.
 func TestBuildLeaderboardSummary_AdjustedTotal(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
 
@@ -812,10 +749,6 @@ func TestBuildLeaderboardSummary_AdjustedTotal(t *testing.T) {
 
 	lc := LeaderboardSummaryConfig{Platform: "hyperliquid", TopN: 5, Channel: "test"}
 
-	// Inject a real wallet balance ($8,000) for the shared HL account so the
-	// TOTAL row dedups to it instead of the naive $10,000 virtual sum (#915).
-	// Both strategies share key {hyperliquid, 0xtest}, fully contained in the
-	// subset, so the adjusted total = the injected balance.
 	walletKey := SharedWalletKey{Platform: "hyperliquid", Account: "0xtest"}
 	walletBalances := map[SharedWalletKey]float64{walletKey: 8000}
 	accountShared := detectSharedWallets(cfg.Strategies)
@@ -834,7 +767,6 @@ func TestBuildLeaderboardSummary_AdjustedTotal(t *testing.T) {
 	if totalLine == "" {
 		t.Fatalf("no TOTAL row found in:\n%s", msg)
 	}
-	// Adjusted TOTAL value must be $8,000 (deduped), not $10,000 (naive sum).
 	if !strings.Contains(totalLine, "8,000") {
 		t.Errorf("TOTAL row should show adjusted $8,000; got: %q\nfull msg:\n%s", totalLine, msg)
 	}

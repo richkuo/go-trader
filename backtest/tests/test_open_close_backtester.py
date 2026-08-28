@@ -63,11 +63,6 @@ def test_backtester_open_action_short_round_trip():
 
 
 def test_backtester_short_open_charges_commission_once():
-    # Round-trip short at flat price (no price change) — only commissions paid.
-    # open commission  = 1000 * 0.001 = 1.0 (on initial capital)
-    # notional = 999, shares = 9.99
-    # close commission = 9.99 * 100 * 0.001 = 0.999
-    # final = 1000 - 1.0 - 0.999 = 998.001 — same as a long round-trip
     idx = pd.date_range("2024-01-01", periods=4, freq="D")
     df = pd.DataFrame({
         "open":           [100, 100, 100, 100],
@@ -79,5 +74,4 @@ def test_backtester_short_open_charges_commission_once():
     bt = Backtester(initial_capital=1000, commission_pct=0.001, slippage_pct=0)
     result = bt.run(df, save=False)
 
-    # round(998.001, 2) == 998.0 (final_capital is rounded to 2 dp)
     assert result["final_capital"] == 998.0

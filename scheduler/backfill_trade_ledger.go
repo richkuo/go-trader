@@ -6,40 +6,10 @@ import (
 	"math"
 	"os"
 	"sort"
+	"strings"
 	"time"
 )
 
-// `go-trader backfill trade-ledger` (#954): repairs the lossy columns of the
-// trades table from userFills and migrates legacy net-convention rows to the
-// gross convention, so the shared-wallet ledger display path
-// (ledgerSharedWalletMemberValues) reads exchange-accurate values.
-//
-// Per HL-live strategy row, chronologically:
-//
-//  1. Legacy rows (pnl_gross=0) migrate: the fee that was deducted at booking
-//     (stored exchange_fee when real, else the modeled taker fee) is stamped
-//     into exchange_fee, close-leg realized_pnl gets that fee added back
-//     (net → gross), pnl_gross=1, fee_source records provenance.
-//     Rows marked fee_source='reconcile_adjustment' are explicit model-only
-//     cleanup rows. They are repaired only when they lack an OID and can be
-//     uniquely matched to a userFills close by coin + time + quantity (#1091).
-//  2. Rows whose OID matches a userFills aggregate are then trued up:
-//     exchange_fee ← real fee, price/value ← fill VWAP, close-leg
-//     realized_pnl ← exchange closedPnl (gross), fee_source='userfills'.
-//     Rows sharing one OID (partial TP legs, resting-limit partial adds)
-//     apportion the aggregate by quantity share.
-//  3. strategies.cash is replayed under net semantics (close net PnL − open
-//     fees; funding rows never touch cash), with the same SIGHUP-divergence
-//     guard + --reset-cash override as `backfill hl-fees`.
-//
-// Idempotent: a second run against the same fills produces zero changes —
-// migration keys off the pnl_gross marker and the userFills true-up converges.
-// --apply also resets the ledger drift baseline of each wallet whose members
-// were repaired (ResetWalletLedgerBaseline, scoped) so the repaired ledger
-// re-anchors instead of reading the correction as drift; untouched wallets
-// keep their baseline and any standing drift there keeps alarming.
-
-// TradeLedgerChange is one trade-row rewrite produced by planTradeLedgerForStrategyWithOIDTotals.
 type TradeLedgerChange struct {
 	RowID        int64
 	Timestamp    time.Time
@@ -59,7 +29,6 @@ type TradeLedgerChange struct {
 	NewFeeSource string
 }
 
-// TradeLedgerPlan is the full change set for one strategy.
 type TradeLedgerPlan struct {
 	StrategyID                  string
 	Changes                     []TradeLedgerChange
@@ -69,15 +38,14 @@ type TradeLedgerPlan struct {
 	NewCash                     float64
 	ReplayedCash                float64
 	CashBaselineDivergent       bool
-	MigratedCount               int // legacy net→gross conversions
-	MatchedCount                int // rows trued up from a userFills aggregate
+	MigratedCount               int
+	MatchedCount                int
 	ReconcileAdjustMatchedCount int
 	UnmatchedOIDCount           int
 	MissingOIDCount             int
 	ReconcileAdjustCount        int
 }
 
-// tradeLedgerRowNewValues is the planner's per-row outcome.
 type tradeLedgerRowNewValues struct {
 	Price, Value, Fee, PnL float64
 	FeeSource              string
@@ -102,6 +70,9 @@ func tradeLedgerNoOIDReconcileMatches(trades []TradeBackfillRow, fillMap map[str
 	byOID := make(map[string][]rowMatch)
 	for _, t := range trades {
 		if t.FeeSource != FeeSourceReconcileAdjustment || !t.IsClose || t.ExchangeOrderID != "" || t.Quantity <= 0 {
+			continue
+		}
+		if strings.Contains(t.Details, modelOnlyFillReconciledMarker) && !strings.Contains(t.Details, modelOnlyAbandonedMarker) {
 			continue
 		}
 		candidates := findHLFillCandidatesByCoinQty(fillMap, t.Symbol, t.Quantity, false, t.Timestamp, tradeLedgerNoOIDRepairWindow, reservedOIDs)
@@ -150,8 +121,6 @@ func planTradeLedgerForStrategyWithOIDTotals(
 		return sorted[i].Timestamp.Before(sorted[j].Timestamp)
 	})
 
-	// Pre-correction replay with current on-disk values (net semantics) —
-	// mirrors planBackfillForStrategy's SIGHUP-top-up divergence guard.
 	preReplay := initialCapital
 	for _, t := range sorted {
 		if t.TradeType == TradeTypeFunding {
@@ -172,13 +141,6 @@ func planTradeLedgerForStrategyWithOIDTotals(
 		plan.CashBaselineDivergent = true
 	}
 
-	// Quantity totals per OID across this strategy's rows, optionally widened
-	// to shared-wallet peers. A userFills aggregate spans every leg of the OID
-	// — partial TP legs, resting-limit partial adds, bidirectional flip legs,
-	// and shared-wallet external closes — so apportion by qty share instead
-	// of letting each leg absorb the full aggregate. The fee was charged on
-	// the whole order (all legs); closedPnl accrues only on close legs, so the
-	// two use different denominators.
 	feeQtyByOID := make(map[string]float64)
 	closeQtyByOID := make(map[string]float64)
 	for _, t := range sorted {
@@ -220,7 +182,7 @@ func planTradeLedgerForStrategyWithOIDTotals(
 	cash := initialCapital
 	for _, t := range sorted {
 		if t.TradeType == TradeTypeFunding {
-			continue // funding rows are written gross at ingestion; never cash
+			continue
 		}
 		modeledFee := math.Abs(t.Value) * HyperliquidTakerFeePct
 
@@ -267,7 +229,6 @@ func planTradeLedgerForStrategyWithOIDTotals(
 			}
 		} else {
 
-			// Step 1: legacy net → gross migration.
 			if !t.PnLGross {
 				feePaid := t.ExchangeFee
 				source := FeeSourceUserFills
@@ -282,7 +243,6 @@ func planTradeLedgerForStrategyWithOIDTotals(
 				}
 			}
 
-			// Step 2: userFills true-up when the OID matched.
 			summary, matched := fillMap[t.ExchangeOrderID]
 			switch {
 			case t.ExchangeOrderID == "":
@@ -313,11 +273,6 @@ func planTradeLedgerForStrategyWithOIDTotals(
 					if total := closeQtyTotal(t.ExchangeOrderID); total > 0 && t.Quantity > 0 {
 						pnlShare = t.Quantity / total
 					}
-					// Exchange-reported gross closedPnl. For shared-coin peers HL
-					// computes this against the ACCOUNT's average entry, so the
-					// per-strategy attribution can shift slightly vs the locally
-					// computed (px − AvgCost) value — the per-wallet SUM is exact,
-					// which is what the drift alarm reconciles.
 					nv.PnL = summary.ClosedPnLGross * pnlShare
 				}
 				plan.MatchedCount++
@@ -347,7 +302,6 @@ func planTradeLedgerForStrategyWithOIDTotals(
 			})
 		}
 
-		// Cash replay with corrected values (net semantics).
 		if t.IsClose {
 			cash += nv.PnL - nv.Fee
 		} else {
@@ -358,9 +312,6 @@ func planTradeLedgerForStrategyWithOIDTotals(
 	return plan
 }
 
-// tradeLedgerCorrectedNetRows returns the strategy's rows with the planned
-// values applied AND RealizedPnL converted to NET, for the closed_positions
-// recompute (closed_positions stays net-of-fee).
 func tradeLedgerCorrectedNetRows(trades []TradeBackfillRow, plan TradeLedgerPlan) []TradeBackfillRow {
 	byRowID := make(map[int64]TradeLedgerChange, len(plan.Changes))
 	for _, c := range plan.Changes {
@@ -379,13 +330,12 @@ func tradeLedgerCorrectedNetRows(trades []TradeBackfillRow, plan TradeLedgerPlan
 			row.FeeSource = c.NewFeeSource
 		}
 		row.RealizedPnL = tradeBackfillRowNetPnL(row)
-		row.PnLGross = false // values now net; prevent double subtraction downstream
+		row.PnLGross = false
 		out = append(out, row)
 	}
 	return out
 }
 
-// ApplyTradeLedgerPlan commits one strategy's plan in a single transaction.
 func (sdb *StateDB) ApplyTradeLedgerPlan(plan TradeLedgerPlan) error {
 	if sdb == nil || sdb.db == nil {
 		return fmt.Errorf("state db unavailable")
@@ -513,9 +463,6 @@ func tradeLedgerSharedWalletOIDTotals(strategies []StrategyConfig, tradesByID ma
 	return out
 }
 
-// runBackfillTradeLedger implements `go-trader backfill trade-ledger`.
-// Dry-run by default; --apply commits and resets the per-wallet ledger drift
-// baselines so the next reconcile re-anchors on the repaired ledger.
 func runBackfillTradeLedger(args []string) int {
 	fs := flag.NewFlagSet("backfill trade-ledger", flag.ContinueOnError)
 	configPath := fs.String("config", "scheduler/config.json", "Path to config file")
@@ -695,12 +642,6 @@ func runBackfillTradeLedger(args []string) int {
 	}
 
 	if len(appliedIDs) > 0 {
-		// Repaired ledger sums shift Σ member values — recompute the drift
-		// baseline on the next reconciled cycle instead of alarming on the
-		// correction itself. Scoped to wallets whose members were actually
-		// repaired: a targeted --strategy run must not re-anchor an unrelated
-		// wallet's baseline (that would fold its genuine standing drift into
-		// the new offset and silence a real alarm).
 		resetWalletBaselinesForAppliedStrategies(stateDB, cfg.Strategies, appliedIDs)
 	}
 	if !*apply {
@@ -709,7 +650,6 @@ func runBackfillTradeLedger(args []string) int {
 	return exitCode
 }
 
-// printTradeLedgerReport renders one strategy's summary block.
 func printTradeLedgerReport(plan TradeLedgerPlan) {
 	feeDelta, pnlDelta := 0.0, 0.0
 	for _, c := range plan.Changes {
@@ -732,11 +672,6 @@ func printTradeLedgerReport(plan TradeLedgerPlan) {
 	}
 }
 
-// resetWalletBaselinesForAppliedStrategies clears the drift baseline of every
-// shared wallet that has at least one repaired member (perps members from
-// detectSharedWallets plus same-account live manual strategies — the same
-// membership the reconcile uses). Wallets untouched by the apply keep their
-// baseline so genuine standing drift there keeps alarming.
 func resetWalletBaselinesForAppliedStrategies(sdb *StateDB, strategies []StrategyConfig, appliedIDs map[string]bool) {
 	wallets := detectSharedWallets(strategies)
 	keys := make([]SharedWalletKey, 0, len(wallets))

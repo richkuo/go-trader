@@ -13,8 +13,6 @@ func testRegimeConfig() *RegimeConfig {
 	return &RegimeConfig{Enabled: true, Period: 14, ADXThreshold: 20}
 }
 
-// ─── signature derivation ────────────────────────────────────────────────────
-
 func TestStrategyRegimeBundleRequestPlatformMapping(t *testing.T) {
 	rc := testRegimeConfig()
 	cases := []struct {
@@ -28,7 +26,6 @@ func TestStrategyRegimeBundleRequestPlatformMapping(t *testing.T) {
 		{"okx perps", StrategyConfig{ID: "okx-a", Type: "perps", Platform: "okx", Args: []string{"momentum", "BTC-USDT-SWAP", "1h"}}, "okx", "BTC-USDT-SWAP", "1h"},
 		{"okx spot", StrategyConfig{ID: "okx-s", Type: "spot", Platform: "okx", Args: []string{"sma", "BTC-USDT", "4h"}}, "okx", "BTC-USDT", "4h"},
 		{"robinhood spot", StrategyConfig{ID: "rh-a", Type: "spot", Platform: "robinhood", Args: []string{"sma", "BTC", "1d"}}, "robinhood", "BTC", "1d"},
-		// Default spot dispatch fetches BinanceUS data regardless of platform.
 		{"default spot", StrategyConfig{ID: "spot-a", Type: "spot", Args: []string{"sma", "BTC/USDT", "1h"}}, "binanceus", "BTC/USDT", "1h"},
 		{"luno spot uses binanceus data", StrategyConfig{ID: "luno-a", Type: "spot", Platform: "luno", Args: []string{"sma", "BTC/USDT", "1h"}}, "binanceus", "BTC/USDT", "1h"},
 		{"futures", StrategyConfig{ID: "ts-a", Type: "futures", Platform: "topstep", Args: []string{"momentum", "MES", "15m"}}, "topstep", "MES", "15m"},
@@ -90,9 +87,6 @@ func TestStrategyRegimeBundleRequestDisabled(t *testing.T) {
 }
 
 func TestStrategyRegimeBundleRequestOptions(t *testing.T) {
-	// Options regime is NOT gated on cfg.Regime.Enabled — the inline
-	// check_options path never was. Signature mirrors the hardcoded 4h/ADX
-	// defaults and upper-cases the underlying like the script does.
 	sc := StrategyConfig{ID: "deribit-theta", Type: "options", Platform: "deribit", Args: []string{"theta_harvest", "btc", "--platform=deribit"}}
 	rc := testRegimeConfig()
 	rc.Timeframe = "1d"
@@ -118,16 +112,15 @@ func TestCollectRegimeBundleRequestsDedupesPeers(t *testing.T) {
 	rc := testRegimeConfig()
 	due := []StrategyConfig{
 		{ID: "hl-a", Type: "perps", Platform: "hyperliquid", Args: []string{"momentum", "BTC", "1h"}},
-		{ID: "hl-b", Type: "perps", Platform: "hyperliquid", Args: []string{"mean_reversion", "BTC", "1h"}}, // same signature
+		{ID: "hl-b", Type: "perps", Platform: "hyperliquid", Args: []string{"mean_reversion", "BTC", "1h"}},
 		{ID: "hl-c", Type: "perps", Platform: "hyperliquid", Args: []string{"momentum", "ETH", "1h"}},
-		{ID: "hl-manual", Type: "manual", Platform: "hyperliquid", Symbol: "BTC", Args: []string{"hold", "BTC", "1h"}}, // same as hl-a/hl-b
+		{ID: "hl-manual", Type: "manual", Platform: "hyperliquid", Symbol: "BTC", Args: []string{"hold", "BTC", "1h"}},
 		{ID: "deribit-theta", Type: "options", Platform: "deribit", Args: []string{"theta_harvest", "BTC"}},
 	}
 	reqs := collectRegimeBundleRequests(due, rc)
 	if len(reqs) != 3 {
 		t.Fatalf("expected 3 distinct signatures, got %d: %+v", len(reqs), reqs)
 	}
-	// Deterministic order: sorted by platform/symbol/timeframe/spec.
 	if reqs[0].Key.Platform != "deribit" || reqs[1].Key.Symbol != "BTC" || reqs[2].Key.Symbol != "ETH" {
 		t.Errorf("unexpected order: %+v", reqs)
 	}
@@ -144,8 +137,6 @@ func TestCollectRegimeBundleRequestsDisabledKeepsOptions(t *testing.T) {
 	}
 }
 
-// ─── subprocess output parsing ───────────────────────────────────────────────
-
 func TestParseRegimeBundleOutput(t *testing.T) {
 	key := regimeBundleKey{Platform: "hyperliquid", Symbol: "BTC", Timeframe: "1h", SpecJSON: "{}"}
 	now := time.Now().UTC()
@@ -159,8 +150,6 @@ func TestParseRegimeBundleOutput(t *testing.T) {
 	if got := b.Payload.Label("default", nil); got != "trending_up" {
 		t.Errorf("label = %q", got)
 	}
-	// RawRegimeJSON must preserve the subprocess's exact bytes (incl. fields
-	// Go doesn't model, e.g. "classifier") for --regime-payload-json.
 	if !strings.Contains(b.RawRegimeJSON, `"classifier":"adx"`) {
 		t.Errorf("raw payload lost subprocess fields: %s", b.RawRegimeJSON)
 	}
@@ -187,8 +176,6 @@ func TestParseRegimeBundleOutputErrors(t *testing.T) {
 		}
 	}
 }
-
-// ─── store population + failure policy ───────────────────────────────────────
 
 func stubRegimeBundleCheck(t *testing.T, fn func(context.Context, regimeBundleRequest) (*RegimeBundle, error)) {
 	t.Helper()
@@ -222,9 +209,6 @@ func TestPopulateRegimeStoreSharesBundleAcrossPeers(t *testing.T) {
 }
 
 func TestPopulateRegimeStoreFailureYieldsEmptyPayload(t *testing.T) {
-	// Issue #879 failure policy (b): a failed bundle leaves no entry — the
-	// payload is empty (gate fails open, regime=-) and the check script still
-	// receives the flag with an EMPTY value so it never recomputes inline.
 	rc := testRegimeConfig()
 	sc := StrategyConfig{ID: "hl-a", Type: "perps", Platform: "hyperliquid", Args: []string{"momentum", "BTC", "1h"}}
 	stubRegimeBundleCheck(t, func(_ context.Context, req regimeBundleRequest) (*RegimeBundle, error) {
@@ -268,8 +252,6 @@ func TestPopulateRegimeStoreClearsPriorCycle(t *testing.T) {
 	if store.PayloadForStrategy(sc, rc).IsEmpty() {
 		t.Fatal("first cycle should have a payload")
 	}
-	// Next cycle the subprocess fails: NO reuse-last — the store is rebuilt
-	// empty (a strategy must not open against a stale label during an outage).
 	ok = false
 	populateRegimeStore(store, []StrategyConfig{sc}, rc, nil)
 	if !store.PayloadForStrategy(sc, rc).IsEmpty() {
@@ -288,7 +270,6 @@ func TestRegimeStoreSetAfterSealDiscards(t *testing.T) {
 	if _, ok := store.get(key); ok {
 		t.Error("a sealed store must discard late bundles (no mid-cycle flips)")
 	}
-	// A new cycle unseals — but only same-generation writes land.
 	gen2 := store.resetForCycle(time.Now().UTC())
 	store.set(&RegimeBundle{Key: key, Payload: RegimePayload{Legacy: "trending_up"}}, gen2)
 	if _, ok := store.get(key); !ok {
@@ -297,12 +278,9 @@ func TestRegimeStoreSetAfterSealDiscards(t *testing.T) {
 }
 
 func TestRegimeStoreStaleGenerationWriteDropped(t *testing.T) {
-	// Cross-cycle regression: a straggler from a budget-exceeded cycle N that
-	// completes AFTER cycle N+1 unsealed the store must not write its stale
-	// cycle-N bundle into N+1's map ("no reuse-last across cycles").
 	store := &RegimeStore{}
 	genN := store.resetForCycle(time.Now().UTC())
-	store.seal() // cycle N exceeded its budget
+	store.seal()
 	genN1 := store.resetForCycle(time.Now().UTC())
 	if genN1 == genN {
 		t.Fatal("resetForCycle must advance the generation")
@@ -319,9 +297,6 @@ func TestRegimeStoreStaleGenerationWriteDropped(t *testing.T) {
 }
 
 func TestRegimeStorePhaseBudgetSealsStragglers(t *testing.T) {
-	// A hanging signature must not stall the cycle past the phase budget, and
-	// its late result must be discarded — the signature fails open this cycle
-	// instead of flipping mid-fan-out.
 	origBudget := regimeStorePhaseBudget
 	regimeStorePhaseBudget = 50 * time.Millisecond
 	t.Cleanup(func() { regimeStorePhaseBudget = origBudget })
@@ -332,7 +307,7 @@ func TestRegimeStorePhaseBudgetSealsStragglers(t *testing.T) {
 	release := make(chan struct{})
 	stubRegimeBundleCheck(t, func(_ context.Context, req regimeBundleRequest) (*RegimeBundle, error) {
 		if req.Key.Symbol == "ETH" {
-			<-release // hung subprocess
+			<-release
 		}
 		return &RegimeBundle{Key: req.Key, Payload: RegimePayload{Legacy: "trending_up"}, RawRegimeJSON: `"trending_up"`, At: time.Now().UTC()}, nil
 	})
@@ -350,7 +325,7 @@ func TestRegimeStorePhaseBudgetSealsStragglers(t *testing.T) {
 	if !store.PayloadForStrategy(slow, rc).IsEmpty() {
 		t.Error("hung signature must fail open this cycle")
 	}
-	close(release) // straggler completes after the seal
+	close(release)
 	time.Sleep(100 * time.Millisecond)
 	if !store.PayloadForStrategy(slow, rc).IsEmpty() {
 		t.Error("straggler result after seal must be discarded, not applied mid-cycle")
@@ -377,8 +352,6 @@ func TestRegimeBundleCheckArgs(t *testing.T) {
 		t.Error("options request must pass --allow-spot-fallback")
 	}
 }
-
-// ─── dashboard projection ────────────────────────────────────────────────────
 
 func TestUIRegimeEntriesProjection(t *testing.T) {
 	store := &RegimeStore{}

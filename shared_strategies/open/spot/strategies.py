@@ -1,12 +1,3 @@
-"""Spot strategy shim \u2014 platform-filtered view of shared_strategies.registry.
-
-All strategy implementations live in ``shared_strategies/open/registry.py``; this
-file exposes the subset tagged ``platforms=("spot", ...)`` with any spot-specific
-``variants`` applied. ``check_strategy.py`` and the spot backtester path import
-from this module via sys.path insertion (``from strategies import ...``), so
-the surface (``STRATEGY_REGISTRY`` dict, ``apply_strategy``, ``list_strategies``,
-``get_strategy``) must stay stable.
-"""
 
 import importlib.util
 import json
@@ -24,13 +15,6 @@ from strategy_composition import strip_unsupported_position_context
 
 
 def _load_registry_module():
-    """Load ``shared_strategies/open/registry.py`` as an isolated module.
-
-    We use ``spec_from_file_location`` instead of a package import so this
-    shim works whether callers put ``shared_strategies/open/spot/`` or the repo
-    root on sys.path \u2014 and so spot and futures shims each get a fresh
-    registry instance (the ``test_both_registries_coexist`` contract).
-    """
     registry_path = os.path.join(os.path.dirname(__file__), "..", "registry.py")
     spec = importlib.util.spec_from_file_location("_strategy_registry_spot", registry_path)
     mod = importlib.util.module_from_spec(spec)
@@ -55,7 +39,6 @@ def list_strategies() -> List[str]:
 
 
 def apply_strategy(name: str, df: pd.DataFrame, params: Optional[dict] = None) -> pd.DataFrame:
-    """Apply a named strategy with optional parameter overrides."""
     strat = get_strategy(name)
     p = {**strat["default_params"], **(params or {})}
     p = strip_unsupported_position_context(strat["fn"], p)
@@ -64,18 +47,12 @@ def apply_strategy(name: str, df: pd.DataFrame, params: Optional[dict] = None) -
 
 def validate_params(name: str, params: Optional[dict] = None,
                     default_params: Optional[dict] = None) -> None:
-    """Validate ``params`` against ``name``'s declared constraints WITHOUT
-    running it, raising ``ValueError`` on violation (#1338). ``default_params``
-    defaults to this platform's merged defaults so cross-parameter constraints
-    resolve any omitted operand to the value the spot strategy would see."""
     if default_params is None:
         default_params = get_strategy(name)["default_params"]
     _registry.validate_params(name, params or {}, default_params)
 
 
 def validate_param_value(name: str, param: str, value) -> None:
-    """Loudly validate one override ``value`` for ``param`` against the
-    single-parameter constraints declared on ``name`` (#1338)."""
     _registry.validate_param_value(name, param, value)
 
 

@@ -1,22 +1,3 @@
-"""Default tiered-TP ATR ladder must agree across all three sources of truth.
-
-The fallback ladder used when a ``tiered_tp_atr*`` close ref omits explicit
-tiers lives in THREE places that must stay byte-for-byte identical:
-
-  • Go   — ``defaultHLProtectionTiers()`` in scheduler/hyperliquid_protection.go
-           (the on-chain reduce-only TP source of truth; #870)
-  • Py   — ``DEFAULT_TIERS`` in shared_strategies/close/tiered_tp_atr.py
-           (paper + backtest scale-out for tiered_tp_atr / tiered_tp_atr_live)
-  • Py   — ``_DEFAULT_SCALAR_TP_TIERS`` in shared_strategies/close/post_tp_sl.py
-           (the ``tp_atr_fraction`` firing-tier multiple is derived from this)
-
-Today all three are 1.5×/3×/5× @ 40%/80%/100% cumulative. A retune that
-updates one mirror but misses another silently desyncs live on-chain TP
-placement from paper/backtest scale-outs. This test (mirroring the parity
-style of test_platform_fees.py) pins the literal and cross-checks all three
-so the suite fails the moment they drift. If you intentionally retune the
-ladder, update ALL THREE sources AND the ``EXPECTED_LADDER`` below together.
-"""
 import importlib.util
 import os
 import re
@@ -31,9 +12,6 @@ _HYPERLIQUID_PROTECTION_GO = os.path.join(
     _REPO_ROOT, "scheduler", "hyperliquid_protection.go"
 )
 
-# The canonical ladder as (atr_multiple, cumulative_close_fraction) pairs.
-# Mirror of #870's patient 3-rung scale-out. If a real retune lands, change
-# this AND all three sources scraped/imported below in the same commit.
 EXPECTED_LADDER = (
     (1.5, 0.40),
     (3.0, 0.80),
@@ -42,9 +20,6 @@ EXPECTED_LADDER = (
 
 
 def _load_close_module(filename: str, attr: str, mod_name: str):
-    """Load a module under shared_strategies/close via spec_from_file_location
-    (sidesteps the open/close registry.py name collision) with both the repo
-    root and the close dir on sys.path so absolute/relative imports resolve."""
     for p in (_REPO_ROOT, _CLOSE_DIR):
         if p not in sys.path:
             sys.path.insert(0, p)
@@ -57,7 +32,6 @@ def _load_close_module(filename: str, attr: str, mod_name: str):
 
 
 def _python_tiered_tp_atr_ladder():
-    """``DEFAULT_TIERS`` from tiered_tp_atr.py as (mult, frac) pairs."""
     raw = _load_close_module(
         "tiered_tp_atr.py", "DEFAULT_TIERS", "_ladder_probe_tiered_tp_atr"
     )
@@ -67,7 +41,6 @@ def _python_tiered_tp_atr_ladder():
 
 
 def _python_scalar_tp_ladder():
-    """``_DEFAULT_SCALAR_TP_TIERS`` from post_tp_sl.py as (mult, frac) pairs."""
     raw = _load_close_module(
         "post_tp_sl.py", "_DEFAULT_SCALAR_TP_TIERS", "_ladder_probe_post_tp_sl"
     )
@@ -75,8 +48,6 @@ def _python_scalar_tp_ladder():
 
 
 def _go_default_protection_tiers():
-    """Scrape ``defaultHLProtectionTiers()`` from hyperliquid_protection.go and
-    parse its ``{Multiple: X, Fraction: Y}`` rows into (mult, frac) pairs."""
     text = open(_HYPERLIQUID_PROTECTION_GO, encoding="utf-8").read()
     body = re.search(
         r"func defaultHLProtectionTiers\(\)\s*\[\]hlProtectionTier\s*\{(.*?)\n\}",
@@ -91,9 +62,6 @@ def _go_default_protection_tiers():
     return tuple((float(m), float(f)) for m, f in rows)
 
 
-# ─── Each source matches the pinned expectation ──────────────────────────────
-
-
 def test_python_tiered_tp_atr_default_tiers_match_expected():
     assert _python_tiered_tp_atr_ladder() == EXPECTED_LADDER
 
@@ -104,9 +72,6 @@ def test_python_scalar_tp_tiers_match_expected():
 
 def test_go_default_protection_tiers_match_expected():
     assert _go_default_protection_tiers() == EXPECTED_LADDER
-
-
-# ─── Cross-source parity (the actual desync guard) ───────────────────────────
 
 
 def test_all_three_default_tier_ladders_agree():
@@ -122,8 +87,6 @@ def test_all_three_default_tier_ladders_agree():
 
 
 def test_final_tier_closes_everything_remaining():
-    """The final rung is a full exit (cumulative fraction == 1.0); finalize
-    coerces it to 1.0 live, so the default must already encode that."""
     for ladder in (
         _go_default_protection_tiers(),
         _python_tiered_tp_atr_ladder(),
@@ -133,8 +96,6 @@ def test_final_tier_closes_everything_remaining():
 
 
 def test_tier_multiples_and_fractions_are_monotonic():
-    """ATR triggers strictly increase and cumulative fractions are
-    non-decreasing — a retune that breaks this would mis-order the scale-out."""
     for ladder in (
         _go_default_protection_tiers(),
         _python_tiered_tp_atr_ladder(),

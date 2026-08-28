@@ -1,26 +1,4 @@
 #!/usr/bin/env python3
-"""IS-window close-stack screen for breakout (#984, M2 on a frozen entry).
-
-Expands the #996 default close-stack grid (DEFAULT_CLOSE_STACK_SPECS — audit
-baseline, ATR stops, trailing stops, tiered-TP ladders x optional SL), freezes
-the entry at registry defaults, and scores every stack on the six audit
-datasets over the protocol IS window via the M1 harness (eval_windows.run_leg,
-audit-identical fees/slippage). Ranks by mean DD-adjusted return — the #984
-headline metric. Selection happens HERE (IS only); the shortlist is then
-judged once on protocol OOS + held-out windows through eval_windows.py.
-
-`breakout` is futures-registry-only and emits signal=-1 on breakdowns without
-being in bidirectionalPerpsStrategies, so every leg pins direction="long":
-with close refs the open/close engine path would otherwise open shorts on raw
-signal=-1 (#996). Note the structural asymmetry this creates — stacks with
-close refs REPLACE the breakdown exit (the -1 is masked to 0 on the engine
-path), while stop-only/trail-only stacks keep the signal exit and add a stop
-on top of it.
-
-Run from repo root:
-  uv run --no-sync python backtest/candidates/breakout_984/sweep_close_stacks.py \
-      [--window is] [--json backtest/candidates/breakout_984/sweep_is.json]
-"""
 
 import argparse
 import json
@@ -29,11 +7,11 @@ import statistics
 import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(_HERE, "..", ".."))          # backtest/
+sys.path.insert(0, os.path.join(_HERE, "..", ".."))
 sys.path.insert(0, os.path.join(_HERE, "..", "..", "..", "shared_tools"))
 
-from eval_windows import DATASETS, WINDOWS, dataset_key, run_leg  # noqa: E402
-from optimizer import (DEFAULT_CLOSE_STACK_SPECS,                  # noqa: E402
+from eval_windows import DATASETS, WINDOWS, dataset_key, run_leg
+from optimizer import (DEFAULT_CLOSE_STACK_SPECS,
                        generate_close_stack_grid)
 
 STRATEGY = "breakout"
@@ -45,8 +23,6 @@ def score_stack(reg, stack, window, capital=1000.0):
         legs[dataset_key(symbol, timeframe)] = run_leg(
             reg, STRATEGY, None, symbol, timeframe, window, capital=capital,
             close_strategies=stack["close_strategies"] or None,
-            # Frozen long-leg entry universe: with close refs the engine path
-            # would open shorts on raw signal=-1 (#996) — pin direction.
             direction="long",
             stop_loss_atr_mult=stack["stop_loss_atr_mult"],
             trailing_stop_atr_mult=stack["trailing_stop_atr_mult"],

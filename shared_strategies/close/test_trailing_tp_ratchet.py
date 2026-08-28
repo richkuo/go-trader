@@ -1,4 +1,3 @@
-"""Tests for trailing_tp_ratchet close evaluators (#844)."""
 
 from __future__ import annotations
 
@@ -105,9 +104,6 @@ def test_regime_table_resolution(ratchet):
 
 
 def test_omitted_tp_tiers_resolves_system_default(ratchet):
-    # #866: a close ref with no tp_tiers (or use_defaults:true) falls back to
-    # the conservative system default ladder, on both the scalar and the regime
-    # (broadcast) paths, and they must match.
     scalar, e1 = ratchet.resolve_tiers_for_regime({}, "", regime_table=False)
     regime, e2 = ratchet.resolve_tiers_for_regime({}, "trending_up", regime_table=True)
     assert e1 == [] and e2 == []
@@ -118,9 +114,7 @@ def test_omitted_tp_tiers_resolves_system_default(ratchet):
 
 
 def test_default_ratchet_tiers_constant_matches_registry(ratchet, registry):
-    # The registry's advertised scalar default_params must be sourced from the
-    # single-source-of-truth constant (no drift).
-    assert registry.build_close_registry  # registry import smoke
+    assert registry.build_close_registry
     advertised = ratchet.DEFAULT_RATCHET_TIERS
     assert [t["atr_multiple"] for t in advertised] == [2.0, 2.5, 3.0]
     assert [t["trailing_mult_after"] for t in advertised] == [1.5, 1.0, 0.8]
@@ -133,12 +127,11 @@ def test_registry_lists_new_strategies(registry):
 
 
 def test_regime_close_default_group_mapping(ratchet):
-    # #870: composite quality suffixes win; ADX trends fall to choppy.
     g = ratchet.regime_close_default_group
     assert g("trending_up_clean") == "clean"
     assert g("trending_down_clean") == "clean"
     assert g("trending_up_choppy") == "choppy"
-    assert g("trending_up") == "choppy"  # ADX trend → choppy
+    assert g("trending_up") == "choppy"
     assert g("trending_down") == "choppy"
     assert g("ranging") == "ranging"
     assert g("ranging_volatile") == "ranging"
@@ -147,22 +140,20 @@ def test_regime_close_default_group_mapping(ratchet):
 
 
 def test_resolve_tiers_for_regime_group_defaults(ratchet):
-    # #870: regime variant + omitted tp_tiers → per-quality-group ladder.
     clean, errs = ratchet.resolve_tiers_for_regime(
         {"use_defaults": True}, "trending_up_clean", regime_table=True,
     )
     assert errs == []
     assert [t[0] for t in clean] == [3.0, 4.5, 6.0]
-    assert all(t[1] == 0.0 for t in clean)  # trend group: no scale-out
+    assert all(t[1] == 0.0 for t in clean)
 
     ranging, errs = ratchet.resolve_tiers_for_regime(
         {"use_defaults": True}, "ranging_quiet", regime_table=True,
     )
     assert errs == []
     assert [t[0] for t in ranging] == [0.75, 1.5, 2.0]
-    assert [t[1] for t in ranging] == [0.4, 0.8, 1.0]  # ranging scales out
+    assert [t[1] for t in ranging] == [0.4, 0.8, 1.0]
 
-    # Scalar variant still broadcasts the single #866 default.
     scalar, errs = ratchet.resolve_tiers_for_regime(
         {"use_defaults": True}, "", regime_table=False,
     )
@@ -171,30 +162,22 @@ def test_resolve_tiers_for_regime_group_defaults(ratchet):
 
 
 def test_ratchet_close_default_group_differentiates_ranging_substates(ratchet):
-    # #1059: the ratchet-only resolver splits the composite ranging substates.
     g = ratchet.ratchet_close_default_group
     assert g("ranging_quiet") == "ranging_quiet"
     assert g("ranging_volatile") == "ranging_volatile"
     assert g("ranging_directional") == "ranging_directional"
-    # #1124: directional-drift substates share the ranging_directional ladder —
-    # NOT a fall-through to "ranging" (which has no ratchet ladder → never-arm).
     assert g("ranging_directional_up") == "ranging_directional"
     assert g("ranging_directional_down") == "ranging_directional"
-    # Bare ADX "ranging" (no substate signal) → quiet ladder (pre-#1059 behavior).
     assert g("ranging") == "ranging_quiet"
-    # clean/choppy/trend labels delegate to the shared fn, unchanged.
     assert g("trending_up_clean") == "clean"
     assert g("trending_up") == "choppy"
     assert g("") is None
     assert g("bogus") is None
-    # The shared regime_close_default_group MUST still collapse the substates, or
-    # the B2 ATR-TP use_defaults path would miss its map and never-arm (#1059).
     assert ratchet.regime_close_default_group("ranging_directional") == "ranging"
     assert ratchet.regime_close_default_group("ranging_volatile") == "ranging"
 
 
 def test_resolve_tiers_for_regime_ranging_substates(ratchet):
-    # #1059 ranging_volatile: widened triggers, close fractions unchanged vs quiet.
     volatile, errs = ratchet.resolve_tiers_for_regime(
         {"use_defaults": True}, "ranging_volatile", regime_table=True,
     )
@@ -202,19 +185,14 @@ def test_resolve_tiers_for_regime_ranging_substates(ratchet):
     assert [t[0] for t in volatile] == [1.0, 2.0, 3.0]
     assert [t[1] for t in volatile] == [0.4, 0.8, 1.0]
 
-    # #1059 ranging_directional: lighter early scale-out (25/50/75) + a 4th
-    # let-ride rung adding no close (cumulative stays 0.75) but tightening trail.
     directional, errs = ratchet.resolve_tiers_for_regime(
         {"use_defaults": True}, "ranging_directional", regime_table=True,
     )
     assert errs == []
     assert [t[0] for t in directional] == [1.0, 2.0, 3.0, 4.5]
     assert [t[1] for t in directional] == [0.25, 0.50, 0.75, 0.75]
-    assert [t[2] for t in directional] == [1.0, 1.0, 0.8, 0.6]  # trail non-increasing
+    assert [t[2] for t in directional] == [1.0, 1.0, 0.8, 0.6]
 
-    # #1124: the directional-drift substates resolve to the SAME ladder as the
-    # bare ranging_directional — never an empty ladder (which would silently
-    # leave the auto-protective ratchet exit unarmed).
     for label in ("ranging_directional_up", "ranging_directional_down"):
         tiers, errs = ratchet.resolve_tiers_for_regime(
             {"use_defaults": True}, label, regime_table=True,
@@ -222,7 +200,6 @@ def test_resolve_tiers_for_regime_ranging_substates(ratchet):
         assert errs == []
         assert tiers == directional, f"{label} must mirror the ranging_directional ladder"
 
-    # Bare ADX "ranging" still resolves to the quiet ladder (unchanged pre-#1059).
     adx_ranging, errs = ratchet.resolve_tiers_for_regime(
         {"use_defaults": True}, "ranging", regime_table=True,
     )

@@ -1,14 +1,3 @@
-"""
-TopStep Prop Trading Exchange Adapter.
-
-Supports paper (simulated fills, no credentials) and live (real orders via
-TopStepX API, credentials required) modes for CME futures.
-
-Environment variables:
-    TOPSTEP_API_KEY        — API key for TopStepX REST API
-    TOPSTEP_API_SECRET     — API secret
-    TOPSTEP_ACCOUNT_ID     — trading account ID
-"""
 
 import os
 import sys
@@ -17,7 +6,6 @@ from datetime import datetime, timezone, timedelta
 
 API_BASE_URL = "https://api.topstepx.com"
 
-# Yahoo Finance symbol mapping for paper mode market data
 YAHOO_SYMBOL_MAP = {
     "ES": "ES=F",
     "NQ": "NQ=F",
@@ -27,7 +15,6 @@ YAHOO_SYMBOL_MAP = {
     "GC": "GC=F",
 }
 
-# CME contract specifications (margin = approximate CME initial margin per contract)
 CONTRACT_SPECS = {
     "ES": {"tick_size": 0.25, "tick_value": 12.50, "multiplier": 50, "margin": 15400, "type": "index"},
     "NQ": {"tick_size": 0.25, "tick_value": 5.00, "multiplier": 20, "margin": 21000, "type": "index"},
@@ -39,10 +26,6 @@ CONTRACT_SPECS = {
 
 
 def _normalize_topstep_fill(f):
-    """Shape one raw TopStep fill into the cash-flow journal record, or None if
-    its timestamp is unparseable (#1106). ``realized_pnl`` is GROSS; ``fee`` is
-    the commission. Tolerant of both camelCase venue keys and the snake_case
-    journal keys."""
     try:
         ts_ms = int(f.get("timestamp", f.get("ts_ms", 0)))
     except (TypeError, ValueError):
@@ -58,12 +41,6 @@ def _normalize_topstep_fill(f):
 
 
 class TopStepExchangeAdapter:
-    """
-    Exchange adapter for TopStep prop trading (CME futures).
-
-    Paper mode:  no credentials needed; uses simulated prices.
-    Live mode:   requires TOPSTEP_API_KEY, TOPSTEP_API_SECRET, TOPSTEP_ACCOUNT_ID.
-    """
 
     def __init__(self, mode="paper"):
         self._mode = mode
@@ -101,23 +78,15 @@ class TopStepExchangeAdapter:
     def name(self) -> str:
         return "topstep"
 
-    # ─────────────────────────────────────────────
-    # Contract specs
-    # ─────────────────────────────────────────────
 
     def get_contract_spec(self, symbol: str) -> dict:
-        """Get contract specification for a symbol."""
         spec = CONTRACT_SPECS.get(symbol)
         if spec is None:
             raise ValueError(f"Unknown symbol: {symbol}. Supported: {list(CONTRACT_SPECS.keys())}")
         return dict(spec)
 
-    # ─────────────────────────────────────────────
-    # Market data
-    # ─────────────────────────────────────────────
 
     def get_price(self, symbol: str) -> float:
-        """Get current price for a futures symbol."""
         if not self.is_live:
             return self._get_yahoo_price(symbol)
         try:
@@ -134,11 +103,6 @@ class TopStepExchangeAdapter:
             return 0.0
 
     def get_ohlcv(self, symbol: str, interval: str = "1h", limit: int = 200) -> list:
-        """
-        Fetch OHLCV candles from TopStepX API.
-
-        Returns list of [timestamp_ms, open, high, low, close, volume].
-        """
         if not self.is_live:
             return self._get_yahoo_ohlcv(symbol, interval, limit)
         try:
@@ -169,18 +133,8 @@ class TopStepExchangeAdapter:
             print(f"[topstep] get_ohlcv error: {e}", file=sys.stderr)
             return []
 
-    # ─────────────────────────────────────────────
-    # Account data
-    # ─────────────────────────────────────────────
 
     def get_open_positions(self) -> list:
-        """Get open positions for the configured account.
-
-        Soft-fails on error (returns []) to keep signal-check / paper paths
-        resilient. Callers that must distinguish "no positions" from "fetch
-        failed" (e.g. the portfolio kill switch) should use
-        :meth:`get_open_positions_raise` instead.
-        """
         if not self.is_live:
             return []
         try:
@@ -190,12 +144,6 @@ class TopStepExchangeAdapter:
             return []
 
     def get_open_positions_raise(self) -> list:
-        """Same as :meth:`get_open_positions` but re-raises on failure.
-
-        Used by the kill-switch fetch path so auth/network errors propagate
-        into the error envelope instead of being silently swallowed as an
-        empty position list (issue #347 follow-up).
-        """
         if self._mode != "live":
             raise RuntimeError("TopStep adapter not in live mode")
         if self._session is None:
@@ -227,18 +175,6 @@ class TopStepExchangeAdapter:
         return positions
 
     def get_account_equity_and_upnl(self):
-        """Return ``(equity, unrealized_pnl)`` for the configured account, in USD.
-
-        Used by the shared-wallet cash-flow journal (#1106). ``equity`` is the
-        account value (settled cash + unrealized PnL); ``unrealized_pnl`` is
-        ``equity − cashBalance`` from the SAME balance read so the journal
-        reconciles a coherent equity/uPnL snapshot with no intra-cycle jitter
-        (mirrors OKX ``get_account_equity_and_upnl``). Live mode only.
-
-        NOTE: the ``/v1/account/balance`` shape mirrors this adapter's existing
-        (unverified) TopStepX REST contract; confirm against the live venue
-        before any Phase-4b alarm flip (#1106).
-        """
         if not self.is_live:
             raise RuntimeError("get_account_equity_and_upnl requires live mode")
         resp = self._session.get(
@@ -248,43 +184,13 @@ class TopStepExchangeAdapter:
         )
         resp.raise_for_status()
         data = resp.json()
-        # A missing "equity" field means a shape-mismatched 200 (the contract is
-        # unverified). RAISE rather than coerce to 0 — the Go side treats a
-        # non-positive equity as a fetch miss anyway, but raising here makes the
-        # error envelope carry a clear cause instead of a silent $0 (#1106 review).
         if "equity" not in data:
             raise ValueError("TopStep /v1/account/balance response missing 'equity' field")
         equity = float(data.get("equity", 0))
-        # cashBalance is the settled cash; fall back to "balance" then to equity
-        # (uPnL 0) so a feed without an explicit cash field degrades to cash==equity
-        # rather than mis-stating uPnL.
         cash = float(data.get("cashBalance", data.get("balance", equity)))
         return equity, equity - cash
 
     def get_account_fills(self, since_ms=0, page_limit=100, max_fills=10000):
-        """Return ``(fills, capped)`` — settled trade fills at or after
-        ``since_ms``, oldest first (#1106).
-
-        Each fill: ``{"fill_id", "ts_ms", "symbol", "kind", "realized_pnl",
-        "fee"}``. ``realized_pnl`` is GROSS (0 for entry fills); ``fee`` is the
-        commission charged. Live mode only.
-
-        Pages FORWARD by the ``sinceMs`` cursor until the feed is DRAINED (a page
-        shorter than ``page_limit``) — mirroring ``OKXExchangeAdapter.
-        get_account_bills``. ``capped`` is True ONLY when the feed was NOT proven
-        drained: the ``max_fills`` safety cap was hit, a single-millisecond block
-        exceeded ``page_limit`` (timestamp paging cannot step through it), or the
-        per-cycle iteration budget ran out. A naive ``len(page) >= limit`` test
-        would mark a venue page-capped backlog ``Usable`` while fills at/before the
-        snapshot are still missing → phantom journal drift in the shadow log (the
-        exact Phase-4b promotion signal). The cursor advances with a one-ms OVERLAP
-        (cursor = page's last ts) so a same-ms fill beyond the page cut is re-read
-        next page; ``collected`` dedups the overlap by fill id.
-
-        NOTE: the ``/v1/account/fills`` shape mirrors this adapter's existing
-        (unverified) TopStepX REST contract; confirm against the live venue
-        before any Phase-4b alarm flip (#1106).
-        """
         if not self.is_live:
             raise RuntimeError("get_account_fills requires live mode")
         collected = {}
@@ -319,31 +225,20 @@ class TopStepExchangeAdapter:
                 capped = True
                 break
             if len(page) < int(page_limit):
-                break  # short page → feed exhausted
+                break
             if page_last_ts <= cursor and added == 0:
-                # A FULL page that neither advanced the timestamp nor yielded any
-                # new fill: a single-millisecond block larger than page_limit, which
-                # timestamp paging cannot step through without dropping fills. Fail
-                # closed so the Go journal treats the cycle as not-usable.
                 capped = True
                 break
-            cursor = page_last_ts  # overlap on the boundary ms (dedup absorbs it)
+            cursor = page_last_ts
         else:
-            # Loop ran out of iterations without a drained/cap break: the returned
-            # set is an INCOMPLETE prefix → report capped so the Go cursor is not
-            # advanced past the unfetched tail.
             capped = True
         fills = sorted(collected.values(), key=lambda x: x["ts_ms"])
         if len(fills) > max_fills:
             fills = fills[:max_fills]
         return fills, capped
 
-    # ─────────────────────────────────────────────
-    # Yahoo Finance helpers (paper mode)
-    # ─────────────────────────────────────────────
 
     def _get_yahoo_price(self, symbol: str) -> float:
-        """Fetch current price via yfinance for paper mode."""
         yahoo_sym = YAHOO_SYMBOL_MAP.get(symbol)
         if not yahoo_sym:
             return 0.0
@@ -362,18 +257,14 @@ class TopStepExchangeAdapter:
             return 0.0
 
     def _get_yahoo_ohlcv(self, symbol: str, interval: str = "1h", limit: int = 200) -> list:
-        """Fetch OHLCV via yfinance for paper mode."""
         yahoo_sym = YAHOO_SYMBOL_MAP.get(symbol)
         if not yahoo_sym:
             return []
         try:
             import yfinance as yf
-            # Map interval: "1h" → "1h", "15m" → "15m", "1d" → "1d"
-            # yfinance accepts: 1m,2m,5m,15m,30m,60m,90m,1h,1d,5d,1wk,1mo,3mo
             yf_interval = interval
-            # Determine period based on interval and limit
             if "m" in interval:
-                period = "5d"  # yfinance limits intraday to recent data
+                period = "5d"
             elif interval in ("1h", "60m"):
                 period = "30d"
             else:
@@ -382,7 +273,6 @@ class TopStepExchangeAdapter:
             hist = ticker.history(period=period, interval=yf_interval)
             if hist.empty:
                 return []
-            # Convert to [timestamp_ms, open, high, low, close, volume]
             result = []
             for idx, row in hist.iterrows():
                 ts_ms = int(idx.timestamp() * 1000)
@@ -394,7 +284,6 @@ class TopStepExchangeAdapter:
                     float(row["Close"]),
                     float(row.get("Volume", 0)),
                 ])
-            # Return last `limit` candles
             return result[-limit:]
         except ImportError:
             print("[topstep] yfinance not installed — paper mode has no OHLCV data. Run: uv add yfinance", file=sys.stderr)
@@ -403,12 +292,8 @@ class TopStepExchangeAdapter:
             print(f"[topstep] yahoo ohlcv error for {symbol}: {e}", file=sys.stderr)
             return []
 
-    # ─────────────────────────────────────────────
-    # Order execution (live mode only)
-    # ─────────────────────────────────────────────
 
     def market_open(self, symbol: str, is_buy: bool, contracts: int) -> dict:
-        """Place a market order. Live mode only, integer contracts."""
         if not self.is_live:
             raise RuntimeError("market_open requires live mode")
         contracts = int(contracts)
@@ -428,7 +313,6 @@ class TopStepExchangeAdapter:
         return resp.json()
 
     def market_close(self, symbol: str) -> dict:
-        """Close all positions for a symbol. Live mode only."""
         if not self.is_live:
             raise RuntimeError("market_close requires live mode")
         resp = self._session.post(
@@ -442,45 +326,31 @@ class TopStepExchangeAdapter:
         resp.raise_for_status()
         return resp.json()
 
-    # ─────────────────────────────────────────────
-    # Market hours
-    # ─────────────────────────────────────────────
 
     def is_market_open(self) -> bool:
-        """
-        Check if CME futures market is open.
-
-        CME Globex hours: Sunday 6:00 PM ET – Friday 5:00 PM ET
-        Daily maintenance break: 5:00 PM – 6:00 PM ET
-        """
         try:
             from zoneinfo import ZoneInfo
         except ImportError:
             from backports.zoneinfo import ZoneInfo
 
         now = datetime.now(ZoneInfo("America/New_York"))
-        weekday = now.weekday()  # Monday=0, Sunday=6
+        weekday = now.weekday()
         hour = now.hour
         minute = now.minute
         current_minutes = hour * 60 + minute
 
-        # Daily maintenance break: 5:00 PM – 6:00 PM ET (17:00 – 18:00)
-        maintenance_start = 17 * 60  # 5:00 PM
-        maintenance_end = 18 * 60    # 6:00 PM
+        maintenance_start = 17 * 60
+        maintenance_end = 18 * 60
         if maintenance_start <= current_minutes < maintenance_end:
             return False
 
-        # Saturday: closed all day
         if weekday == 5:
             return False
 
-        # Sunday: opens at 6:00 PM ET
         if weekday == 6:
             return current_minutes >= maintenance_end
 
-        # Friday: closes at 5:00 PM ET
         if weekday == 4:
             return current_minutes < maintenance_start
 
-        # Monday–Thursday: open except during maintenance
         return True

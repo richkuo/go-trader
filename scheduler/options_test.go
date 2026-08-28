@@ -33,7 +33,6 @@ func TestEncodePositionsJSON(t *testing.T) {
 
 	got := EncodePositionsJSON(positions)
 
-	// Should be valid JSON
 	var parsed []map[string]interface{}
 	if err := json.Unmarshal([]byte(got), &parsed); err != nil {
 		t.Fatalf("invalid JSON: %v\n%s", err, got)
@@ -79,7 +78,6 @@ func TestEncodeAllPositionsJSON(t *testing.T) {
 		t.Fatalf("len = %d, want 2", len(parsed))
 	}
 
-	// Find spot entry
 	foundSpot := false
 	for _, entry := range parsed {
 		if entry["position_type"] == "spot" {
@@ -306,7 +304,7 @@ func TestCheckThetaHarvestProfitTarget(t *testing.T) {
 				ID:              "pos1",
 				Action:          "sell",
 				EntryPremiumUSD: 100,
-				CurrentValueUSD: -30, // cost to buy back = 30, profit = 70%
+				CurrentValueUSD: -30,
 				Quantity:        1,
 			},
 		},
@@ -337,7 +335,6 @@ func TestCheckThetaHarvestProfitTarget(t *testing.T) {
 		t.Errorf("detail should mention theta harvest: %q", details[0])
 	}
 
-	// Position should be removed
 	if _, ok := s.OptionPositions["pos1"]; ok {
 		t.Error("position should be removed after harvest")
 	}
@@ -358,8 +355,8 @@ func TestCheckThetaHarvestDTEExit(t *testing.T) {
 				ID:              "pos1",
 				Action:          "sell",
 				EntryPremiumUSD: 100,
-				CurrentValueUSD: -90, // barely any profit
-				DTE:             2,   // below min
+				CurrentValueUSD: -90,
+				DTE:             2,
 				Quantity:        1,
 			},
 		},

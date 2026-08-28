@@ -5,15 +5,6 @@ import (
 	"testing"
 )
 
-// #1416 (review round 2): a scale-in ADD cycle carries Signal != 0, so the
-// manage-path ratchet never runs. If price on that same cycle also clears a
-// ratchet tier, the tighter trail must still be stamped and the resting stop
-// moved on that cycle — the add branch must not defer it to a later Signal==0
-// cycle, and it must do it in ONE cancel+replace sized to the post-add total.
-
-// scaleInRatchetStrategy builds a live HL perps strategy with a two-rung
-// ratchet ladder over the issue's real geometry (ATR ~0.56% of price), so a
-// single tier step lands under the shipped 0.5% min-move default.
 func scaleInRatchetStrategy() StrategyConfig {
 	return StrategyConfig{
 		ID: "hl-scalein-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py",
@@ -29,13 +20,9 @@ func scaleInRatchetStrategy() StrategyConfig {
 			},
 		},
 		TrailingStopATRMult: floatPtr(2.5),
-		// TrailingStopMinMovePct unset -> defaultTrailingStopMinMovePct (0.5).
 	}
 }
 
-// scaleInRatchetState builds a post-add position: the add already blended
-// AvgCost and set ScaleInResizePending, while RiskAnchorPrice stays frozen at
-// the first entry (#873).
 func scaleInRatchetState(side string, postAddQty, highWater, trigger, postTPMult float64) *StrategyState {
 	pos := &Position{
 		Symbol: "ETH", Side: side, Quantity: postAddQty, InitialQuantity: postAddQty,
@@ -51,8 +38,6 @@ func scaleInRatchetState(side string, postAddQty, highWater, trigger, postTPMult
 		Positions: map[string]*Position{"ETH": pos}}
 }
 
-// (a) + (c): an add that also clears a tier resizes AND tightens in exactly one
-// replace, at the post-add quantity, on both sides.
 func TestScaleInResizeTrailingSLNow_AddPlusTightenIsOneReplace(t *testing.T) {
 	cases := []struct {
 		name, side string
@@ -69,7 +54,6 @@ func TestScaleInResizeTrailingSLNow_AddPlusTightenIsOneReplace(t *testing.T) {
 			oldTrigger := trailingTriggerFor(c.side, c.highWater, 2.5)
 			wantTrigger := trailingTriggerFor(c.side, c.highWater, 2.0)
 			sc := scaleInRatchetStrategy()
-			// Post-add total 0.3 = pre-add on-chain 0.2 + confirmed add 0.1.
 			st := scaleInRatchetState(c.side, 0.3, c.highWater, oldTrigger, 2.0)
 			var mu sync.RWMutex
 
@@ -110,14 +94,11 @@ func TestScaleInResizeTrailingSLNow_AddPlusTightenIsOneReplace(t *testing.T) {
 	}
 }
 
-// (b): an add with no tier clear keeps the #873 behavior — one forced replace at
-// the grown size, no multiplier change and no trigger move.
 func TestScaleInResizeTrailingSLNow_AddWithoutTightenIsUnchanged(t *testing.T) {
 	old := runHyperliquidUpdateStopLossFunc
 	defer func() { runHyperliquidUpdateStopLossFunc = old }()
 
 	highWater := 1900.0
-	// Resting trigger already matches the live trail distance: nothing to tighten.
 	trigger := trailingTriggerFor("long", highWater, 2.0)
 	sc := scaleInRatchetStrategy()
 	st := scaleInRatchetState("long", 0.3, highWater, trigger, 2.0)
@@ -145,19 +126,14 @@ func TestScaleInResizeTrailingSLNow_AddWithoutTightenIsUnchanged(t *testing.T) {
 	}
 }
 
-// A forced resize must never re-arm a trigger LOOSER than the current trail
-// implies. Covers the tail of the #621 capped-qty deferral: an earlier cycle
-// stamped the tighter multiplier but could not place it, so this pass — which
-// is cancelling and re-placing anyway — has to adopt the tighter trigger even
-// with no tighten event of its own.
 func TestScaleInResizeTrailingSLNow_ForcedResizeAdoptsPendingTighten(t *testing.T) {
 	old := runHyperliquidUpdateStopLossFunc
 	defer func() { runHyperliquidUpdateStopLossFunc = old }()
 
 	highWater := 1900.0
-	staleTrigger := trailingTriggerFor("long", highWater, 2.5) // placed under the OLD trail
+	staleTrigger := trailingTriggerFor("long", highWater, 2.5)
 	sc := scaleInRatchetStrategy()
-	st := scaleInRatchetState("long", 0.3, highWater, staleTrigger, 2.0) // stamped 2.0x, unplaced
+	st := scaleInRatchetState("long", 0.3, highWater, staleTrigger, 2.0)
 	var mu sync.RWMutex
 
 	var gotTrigger float64
@@ -166,7 +142,6 @@ func TestScaleInResizeTrailingSLNow_ForcedResizeAdoptsPendingTighten(t *testing.
 		return &HyperliquidStopLossUpdateResult{StopLossOID: 5557, StopLossTriggerPx: triggerPx}, "", nil
 	}
 
-	// ratchetTightened=false: this cycle saw no tier clear of its own.
 	scaleInResizeTrailingSLNow(sc, st, "ETH", highWater,
 		map[string]float64{"ETH": 0.2}, nil, nil, 0.1, false, &mu, nil, newTestLogger(t))
 
@@ -176,12 +151,10 @@ func TestScaleInResizeTrailingSLNow_ForcedResizeAdoptsPendingTighten(t *testing.
 	}
 }
 
-// The add branch itself must apply the ratchet and hand the alert back, so the
-// caller can DM the owner and drive the same-cycle walker.
 func TestExecuteHyperliquidScaleInDeferredOpen_AppliesRatchet(t *testing.T) {
 	mk := func(mark float64) (StrategyConfig, *StrategyState, *HyperliquidResult) {
 		sc := scaleInRatchetStrategy()
-		sc.Args = []string{"x.py", "ETH", "1h"} // paper: execResult is nil
+		sc.Args = []string{"x.py", "ETH", "1h"}
 		st := &StrategyState{ID: sc.ID, Platform: "hyperliquid", Type: "perps", Cash: 10000,
 			Positions: map[string]*Position{
 				"ETH": {
@@ -193,7 +166,6 @@ func TestExecuteHyperliquidScaleInDeferredOpen_AppliesRatchet(t *testing.T) {
 		return sc, st, &HyperliquidResult{Symbol: "ETH", Signal: 1}
 	}
 
-	// 3.0 ATR of profit clears the second rung -> trail tightens 2.5x -> 1.0x.
 	clearing := ratchetTestAnchor + 3.0*ratchetTestEntryATR
 	sc, st, res := mk(clearing)
 	trades, _, _, alert := executeHyperliquidScaleInDeferredOpen(sc, st, res, nil, "BUY", clearing, 0.1, newTestLogger(t))
@@ -214,7 +186,6 @@ func TestExecuteHyperliquidScaleInDeferredOpen_AppliesRatchet(t *testing.T) {
 		t.Errorf("RiskAnchorPrice = %v, want %v frozen at the first entry", pos.RiskAnchorPrice, ratchetTestAnchor)
 	}
 
-	// An add with no tier newly cleared must not alert and must not stamp.
 	belowNextTier := ratchetTestAnchor + 1.5*ratchetTestEntryATR
 	sc, st, res = mk(belowNextTier)
 	_, _, _, alert = executeHyperliquidScaleInDeferredOpen(sc, st, res, nil, "BUY", belowNextTier, 0.1, newTestLogger(t))
@@ -226,15 +197,9 @@ func TestExecuteHyperliquidScaleInDeferredOpen_AppliesRatchet(t *testing.T) {
 	}
 }
 
-// A scale-in add must leave StopLossHighWaterPx alone. executeHyperliquidResultDeferredOpen
-// re-seeds it from the fill price; the add path deliberately does not, since an
-// add's fill price says nothing about the trail already in progress and could
-// push the stored high-water backward. Pins that asymmetry, and pins the only
-// zero case: an unset high-water seeds from the FROZEN entry, not the blended
-// average (#873).
 func TestExecuteHyperliquidScaleInDeferredOpen_LeavesHighWaterUntouched(t *testing.T) {
 	sc := scaleInRatchetStrategy()
-	sc.Args = []string{"x.py", "ETH", "1h"} // paper: execResult is nil
+	sc.Args = []string{"x.py", "ETH", "1h"}
 	const establishedHighWater = 1990.0
 	st := &StrategyState{ID: sc.ID, Platform: "hyperliquid", Type: "perps", Cash: 10000,
 		Positions: map[string]*Position{
@@ -244,8 +209,6 @@ func TestExecuteHyperliquidScaleInDeferredOpen_LeavesHighWaterUntouched(t *testi
 				StopLossHighWaterPx: establishedHighWater, SLAdjustedTiersProcessed: 1,
 			},
 		}}
-	// Add fills BELOW the established high-water — the case where re-seeding
-	// would walk the trail backward.
 	addPrice := ratchetTestAnchor + 1.5*ratchetTestEntryATR
 	if addPrice >= establishedHighWater {
 		t.Fatalf("fixture invalid: add price %v must be below the high-water %v", addPrice, establishedHighWater)
@@ -257,8 +220,6 @@ func TestExecuteHyperliquidScaleInDeferredOpen_LeavesHighWaterUntouched(t *testi
 		t.Fatalf("StopLossHighWaterPx = %v, want %v untouched by the add", got, establishedHighWater)
 	}
 
-	// Zero case: the walker seeds from RiskAnchorPrice, so the blended AvgCost
-	// never becomes the trail base.
 	old := runHyperliquidUpdateStopLossFunc
 	defer func() { runHyperliquidUpdateStopLossFunc = old }()
 	var gotTrigger float64
@@ -268,8 +229,7 @@ func TestExecuteHyperliquidScaleInDeferredOpen_LeavesHighWaterUntouched(t *testi
 	}
 	pos := st.Positions["ETH"]
 	pos.StopLossHighWaterPx = 0
-	live := scaleInRatchetStrategy() // live args
-	// mark below the anchor so the anchor (not the mark) is the high-water base.
+	live := scaleInRatchetStrategy()
 	runHyperliquidTrailingStopUpdate(live, "ETH", "long", pos.Quantity, pos, ratchetTestAnchor-20,
 		0, 0, 0, trailingReplacePolicy{}, nil, newTestLogger(t))
 	if want := trailingTriggerFor("long", ratchetTestAnchor, 2.5); !approxEq(gotTrigger, want) {

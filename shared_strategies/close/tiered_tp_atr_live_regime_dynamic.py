@@ -1,10 +1,3 @@
-"""Dynamic regime-aware tiered ATR take-profit (#843).
-
-Re-resolves the unified per-regime block against the live ATR-window regime
-each tick (paper / non-HL-live). HL live uses on-chain protection synced from
-Go with confirm-cycle hysteresis — this evaluator is suppressed there like
-other tiered_tp_atr* closes when on-chain TPs are active.
-"""
 
 from __future__ import annotations
 

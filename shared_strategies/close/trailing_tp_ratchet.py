@@ -1,8 +1,3 @@
-"""Trailing-stop tier ratchet close evaluators (#844).
-
-Each tier tightens the trailing ATR distance and may scale out (``close_fraction``
-may be 0 for trail-only rungs). Regime is frozen at open via ``position["regime"]``.
-"""
 
 from __future__ import annotations
 
@@ -16,41 +11,12 @@ from _helpers import (
 )
 from regime_atr import CANONICAL_TREND_REGIME_LABELS, regime_close_default_group
 
-# DEFAULT_RATCHET_TIERS is the conservative fallback ladder (#866) used when the
-# SCALAR trailing_tp_ratchet omits tp_tiers (or sets use_defaults:true). It
-# mirrors the Go single source of truth defaultTrailingRatchetTiers() in
-# scheduler/trailing_tp_ratchet.go — keep the two in sync. Precondition: the
-# first rung tightens to 1.5xATR, so a strategy using this default must set
-# trailing_stop_atr_mult >= 1.5 (else the Go loader rejects it via
-# validateTrailingRatchetInitialTrail).
 DEFAULT_RATCHET_TIERS = [
     {"atr_multiple": 2.0, "trailing_mult_after": 1.5, "close_fraction": 0.0},
     {"atr_multiple": 2.5, "trailing_mult_after": 1.0, "close_fraction": 0.0},
     {"atr_multiple": 3.0, "trailing_mult_after": 0.8, "close_fraction": 0.0},
 ]
 
-# #870: per-group default ratchet ladders for the REGIME variant
-# (trailing_tp_ratchet_regime) when tp_tiers is omitted / use_defaults:true.
-# Mirrors ratchetTierGroupDefaults in scheduler/trailing_tp_ratchet.go. Trend
-# groups (clean/choppy) are pure let-it-ride (close_fraction 0). #1059 split the
-# single ranging ladder into three composite substate ladders keyed by
-# ratchet_close_default_group (NOT the shared regime_close_default_group, which
-# still collapses ranging* → "ranging" for the B2 ATR-TP path):
-#   - ranging_quiet keeps the pre-#1059 ranging geometry and is also the target
-#     for bare ADX "ranging", so ADX behavior is unchanged.
-#   - ranging_volatile widens the triggers (avoid scaling out on wide-range
-#     noise); close fractions unchanged.
-#   - ranging_directional scales out lighter early (25/50/75) and adds a 4th
-#     let-ride rung that only tightens the trail (no extra close) so a nascent
-#     breakout's runner survives.
-# Each group's first rung couples to that group's opening trail in
-# REGIME_ATR_DEFAULTS_TRAILING (#1120: clean 2.5 / choppy 2.25 / ranging_quiet 1.0
-# / ranging_volatile 1.25 / ranging_directional* 1.5).
-# #1152 validated the ranging split with M6 entry-locked replay (see
-# docs/research/1152-ranging-exit-geometry-m6.md): volatile + directional
-# incumbents stand (directional's let-ride runner survived its inverse check);
-# ranging_quiet is unevaluable on the audit data (label ≈0.2–0.9% of bars) and
-# keeps its pre-#1059 geometry on that documented evidence gap.
 DEFAULT_RATCHET_TIERS_BY_GROUP = {
     "clean": [
         {"atr_multiple": 3.0, "trailing_mult_after": 1.5, "close_fraction": 0.0},
@@ -82,22 +48,9 @@ DEFAULT_RATCHET_TIERS_BY_GROUP = {
 
 
 def ratchet_close_default_group(label: str) -> Optional[str]:
-    """Resolve a classifier label to a ratchet default-ladder group key (#1059).
-
-    Unlike the shared regime_close_default_group (which collapses every ranging*
-    → "ranging" for the B2 ATR-TP path), the ratchet ladder differentiates the
-    three composite ranging substates. Bare ADX "ranging" maps to the quiet
-    ladder (pre-#1059 behavior). clean/choppy and ADX-trend labels delegate
-    unchanged to regime_close_default_group. Mirrors ratchetCloseDefaultGroup in
-    scheduler/trailing_tp_ratchet.go."""
     l = (label or "").strip()
     if l in ("ranging_quiet", "ranging_volatile", "ranging_directional"):
         return l
-    # #1124: the directional-drift substates share the ranging_directional
-    # scale-out ladder (the geometry is direction-agnostic — the SL side carries
-    # direction, the TP scale-out does not), so map them to that group rather
-    # than fall through to regime_close_default_group's "ranging" (which has no
-    # ratchet ladder → silent never-arm of the protective exit).
     if l in ("ranging_directional_up", "ranging_directional_down"):
         return "ranging_directional"
     if l == "ranging":
@@ -113,7 +66,6 @@ def _first_present(d: dict, *keys: str):
 
 
 def resolve_trailing_mult_after(tier: dict, firing_multiple: float) -> Optional[float]:
-    """Return the new trail distance in ATR units for a firing tier."""
     has_abs = "trailing_mult_after" in tier
     has_frac = "tp_atr_fraction" in tier
     if has_abs and has_frac:
@@ -136,7 +88,6 @@ def resolve_trailing_mult_after(tier: dict, firing_multiple: float) -> Optional[
 
 
 def _parse_tier_dict(tier: dict) -> Optional[Tuple[float, float, Optional[float]]]:
-    """Return (atr_multiple, close_fraction, trailing_mult) or None when invalid."""
     if not isinstance(tier, dict):
         return None
     mult_raw = _first_present(tier, "atr_multiple", "multiple", "atr")
@@ -200,19 +151,14 @@ def _parse_regime_table(raw, labels) -> Tuple[List[Tuple[float, float, float]], 
             errs.append(f"tp_tiers: unknown regime key {key!r}")
     if errs:
         return [], errs
-    # Validation-only path may pass regime="" — caller supplies table per open.
     return [], []
 
 
 def resolve_tiers_for_regime(
     params: dict, regime: str, *, regime_table: bool
 ) -> Tuple[List[Tuple[float, float, float]], List[str]]:
-    """Resolve concrete tiers for the stamped regime label."""
     raw = tier_list_from_params(params)
     if raw is None:
-        # Omitted tp_tiers (or use_defaults:true) resolves to the system default
-        # ladder. #870: the regime variant resolves the per-quality-group ladder
-        # for the stamped regime; the scalar variant uses the single #866 default.
         if regime_table:
             group = ratchet_close_default_group(regime)
             ladder = DEFAULT_RATCHET_TIERS_BY_GROUP.get(group) if group else None
@@ -298,7 +244,6 @@ def maybe_apply_mark_ratchet(
     post_tp_trail_mult: Optional[float],
     trailing_stop_atr_mult: float,
 ) -> tuple[int, Optional[float]]:
-    """Return (new_watermark, new_post_tp_trail_mult) after mark-based tier clears."""
     if not tiers or mark_price <= 0 or avg_cost <= 0 or entry_atr <= 0:
         return watermark, post_tp_trail_mult
     profit_distance = mark_price - avg_cost if side == "long" else avg_cost - mark_price

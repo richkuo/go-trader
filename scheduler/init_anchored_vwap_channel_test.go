@@ -30,12 +30,6 @@ func TestAnchoredVWAPChannelWiring(t *testing.T) {
 	}
 }
 
-// anchored_vwap_channel fades both edges of an AVWAP channel — range-edge mean
-// reversion whose edge depends on ranging conditions, so init pre-gates it to
-// the composite quiet/volatile ranging substates exactly like atr_band_revert
-// (ranging_directional stays excluded: directional pressure inside a range is
-// the breakout precursor, mean reversion's worst case).
-
 func TestGenerateConfig_AnchoredVWAPChannel_DefaultsToCompositeRangingGate(t *testing.T) {
 	opts := baseOpts()
 	opts.Assets = []string{"BTC"}

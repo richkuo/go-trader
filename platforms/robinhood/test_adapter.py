@@ -1,4 +1,3 @@
-"""Tests for RobinhoodExchangeAdapter — mock robin_stocks and yfinance."""
 
 import sys
 import os
@@ -6,7 +5,6 @@ import importlib.util
 import pytest
 from unittest.mock import MagicMock, patch
 
-# Load robinhood adapter by file path to avoid module name collisions
 _adapter_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "adapter.py")
 _shared_tools = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'shared_tools'))
 if _shared_tools not in sys.path:
@@ -14,7 +12,6 @@ if _shared_tools not in sys.path:
 
 
 def _load_rh_module():
-    """Load the robinhood adapter module fresh."""
     spec = importlib.util.spec_from_file_location("rh_adapter", _adapter_path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -28,14 +25,11 @@ _get_strike_interval = _mod._get_strike_interval
 
 @pytest.fixture
 def paper_adapter():
-    """Create a paper-mode adapter (no login attempt)."""
     with patch.dict(os.environ, {}, clear=False):
         for key in ("ROBINHOOD_USERNAME", "ROBINHOOD_PASSWORD", "ROBINHOOD_TOTP_SECRET"):
             os.environ.pop(key, None)
         return RobinhoodExchangeAdapter(mode="paper")
 
-
-# ─── Properties ────────────────────────────────────
 
 class TestProperties:
     def test_name(self, paper_adapter):
@@ -53,8 +47,6 @@ class TestProperties:
                 RobinhoodExchangeAdapter(mode="live")
 
 
-# ─── Symbol Resolution ────────────────────────────
-
 class TestSymbolResolution:
     def test_crypto_resolves_to_yahoo(self, paper_adapter):
         assert paper_adapter._resolve_yahoo_symbol("BTC") == "BTC-USD"
@@ -65,11 +57,8 @@ class TestSymbolResolution:
         assert paper_adapter._resolve_yahoo_symbol("AAPL") == "AAPL"
 
 
-# ─── Market Data ───────────────────────────────────
-
 class TestMarketData:
     def test_get_spot_price_alias(self, paper_adapter):
-        """get_spot_price should delegate to get_price."""
         with patch.object(paper_adapter, "get_price", return_value=42000.0):
             assert paper_adapter.get_spot_price("BTC") == 42000.0
 
@@ -93,8 +82,6 @@ class TestMarketData:
             assert paper_adapter.get_ohlcv_closes("BTC", "4h", 100) is None
 
 
-# ─── Strike Interval ──────────────────────────────
-
 class TestStrikeInterval:
     def test_under_100(self):
         assert _get_strike_interval(50) == 1
@@ -106,38 +93,29 @@ class TestStrikeInterval:
         assert _get_strike_interval(600) == 10
 
 
-# ─── Options Protocol ──────────────────────────────
-
 class TestOptionsProtocol:
     def test_get_real_expiry_paper(self, paper_adapter):
         expiry, dte = paper_adapter.get_real_expiry("SPY", 30)
         assert dte == 30
-        # Should be a valid YYYY-MM-DD
         from datetime import datetime
         datetime.strptime(expiry, "%Y-%m-%d")
 
     def test_get_real_strike_paper_stock(self, paper_adapter):
-        # SPY at ~450 => $5 intervals
         strike = paper_adapter.get_real_strike("SPY", "2026-05-01", "call", 453.0)
-        assert strike == 455.0  # round to nearest 5
+        assert strike == 455.0
 
     def test_get_real_strike_paper_low_price(self, paper_adapter):
-        # Stock under $100 => $1 intervals
         strike = paper_adapter.get_real_strike("XYZ", "2026-05-01", "call", 42.3)
         assert strike == 42.0
 
     def test_get_premium_and_greeks_paper_bs(self, paper_adapter):
-        """Paper mode uses Black-Scholes."""
         pct, usd, greeks = paper_adapter.get_premium_and_greeks(
             "SPY", "call", 450, "2026-05-01", 30, 445, 0.20
         )
         assert usd > 0
         assert "delta" in greeks
-        # For stock options, premium is per-contract (x100)
-        assert usd >= pct * 445 * 90  # rough sanity check
+        assert usd >= pct * 445 * 90
 
-
-# ─── Order Execution ──────────────────────────────
 
 class TestOrderExecution:
     def test_market_buy_paper_raises(self, paper_adapter):

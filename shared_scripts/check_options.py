@@ -1,10 +1,4 @@
 #!/usr/bin/env python3
-"""
-Unified options strategy check script.
-Evaluates options strategies using a platform adapter.
-
-Usage: python3 check_options.py <strategy> <underlying> [--platform=deribit|ibkr|robinhood]
-"""
 
 import sys
 import os
@@ -14,7 +8,6 @@ import traceback
 import importlib.util
 from datetime import datetime, timezone
 
-# ── path setup ───────────────────────────────────────────────────────────────
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.dirname(_THIS_DIR)
 sys.path.insert(0, _REPO_ROOT)
@@ -29,10 +22,7 @@ REGIME_LIMIT = 100
 REGIME_MIN_BARS = 30
 
 
-# ── adapter loader ───────────────────────────────────────────────────────────
-
 def _load_adapter(platform: str):
-    """Dynamically load ExchangeAdapter from platforms/<platform>/adapter.py."""
     adapter_path = os.path.join(_REPO_ROOT, "platforms", platform, "adapter.py")
     if not os.path.exists(adapter_path):
         raise ImportError(f"No adapter found for platform '{platform}' at {adapter_path}")
@@ -48,15 +38,7 @@ def _load_adapter(platform: str):
     raise AttributeError(f"No ExchangeAdapter class found in {adapter_path}")
 
 
-# ── shared helpers ────────────────────────────────────────────────────────────
-
 def _fetch_ohlcv_df(underlying, timeframe, limit, min_len, adapter=None):
-    """Fetch OHLCV rows as a pandas DataFrame for regime detection.
-
-    Uses adapter.get_ohlcv when available (Robinhood stocks, OKX), otherwise
-    falls back to BinanceUS ccxt. Returns None when the upstream fetch fails or
-    produces fewer than min_len bars (regime requires ~2*ADX_period for warmup).
-    """
     rows = None
     if adapter is not None:
         ohlcv_fn = getattr(adapter, "get_ohlcv", None)
@@ -86,7 +68,6 @@ def _fetch_ohlcv_df(underlying, timeframe, limit, min_len, adapter=None):
 
 
 def _regime_label_from_df(df):
-    """Return the regime string label, or None if df is None / too short / errors."""
     if df is None or len(df) < REGIME_MIN_BARS:
         return None
     try:
@@ -97,7 +78,6 @@ def _regime_label_from_df(df):
 
 
 def _platform_extra(adapter, underlying: str) -> dict:
-    """Return platform-specific action fields (multiplier, contract_spec) if applicable."""
     multiplier_fn = getattr(adapter, 'get_multiplier', None)
     if multiplier_fn is not None:
         return {'multiplier': multiplier_fn(underlying), 'contract_spec': 'CME_MICRO'}
@@ -122,7 +102,6 @@ def _build_action(action, option_type, strike, expiry_str, dte,
 
 def _option_leg(underlying, action, option_type, target_strike,
                 expiry_str, dte, fallback_pct, spot, vol, adapter, **extra) -> dict:
-    """Look up the nearest real strike, fetch premium + Greeks, and return an action dict."""
     strike = adapter.get_real_strike(underlying, expiry_str, option_type, target_strike)
     prem_pct, prem_usd, greeks = adapter.get_premium_and_greeks(
         underlying, option_type, strike, expiry_str, dte, spot, vol
@@ -133,7 +112,6 @@ def _option_leg(underlying, action, option_type, target_strike,
 
 
 def parse_positions_context(raw_positions):
-    """Split combined Go position list into option and spot position lists."""
     option_positions, spot_positions = [], []
     for p in (raw_positions or []):
         if isinstance(p, dict) and p.get("position_type") == "spot":
@@ -144,7 +122,6 @@ def parse_positions_context(raw_positions):
 
 
 def score_new_trade(proposed_action, existing_positions, spot_price):
-    """Score a proposed trade against existing positions. Returns (score, reason)."""
     if not existing_positions:
         return 1.0, "first position"
 
@@ -196,10 +173,6 @@ def score_new_trade(proposed_action, existing_positions, spot_price):
 
     return round(score, 2), "; ".join(reasons) if reasons else "default"
 
-
-# ── strategy evaluators ────────────────────────────────────────────────────────
-# Signature: (underlying, spot_price, vol_annual, iv_rank, existing, spot_pos, adapter)
-# Returns: (signal, actions, iv_rank)
 
 def evaluate_momentum_options(underlying, spot_price, vol_annual, iv_rank,
                                existing_positions, spot_positions, adapter):
@@ -403,24 +376,18 @@ STRATEGY_MAP = {
 }
 
 
-# ── main ──────────────────────────────────────────────────────────────────────
-
 def main():
-    # #645: startup compatibility probe — exit 0 without running the strategy.
     if "--probe-only" in sys.argv:
         sys.exit(0)
-    # Parse args: strip --platform= / --regime-payload-json= before positional parsing
     args = sys.argv[1:]
     platform = "deribit"
-    # #879: precomputed global-store regime payload; presence (even empty)
-    # disables the inline 4h regime fetch. None when the flag is absent.
     regime_payload_json = None
     remaining = []
     for arg in args:
         if arg.startswith("--platform="):
             platform = arg.split("=", 1)[1]
         elif arg.startswith("--platform"):
-            pass  # bare flag without value, ignore
+            pass
         elif arg.startswith("--regime-payload-json="):
             regime_payload_json = arg.split("=", 1)[1]
         elif arg.startswith("--regime-payload-json"):
@@ -437,7 +404,6 @@ def main():
     strategy_name = remaining[0]
     underlying = remaining[1].upper()
 
-    # Parse existing positions from stdin or argv[2]
     raw_positions = []
     if len(remaining) > 2:
         try:
@@ -506,10 +472,6 @@ def main():
         vol_annual, iv_rank = adapter.get_vol_metrics(underlying)
 
         if regime_payload_json is not None:
-            # #879: Go injected the precomputed bundle for this underlying's
-            # (4h, ADX) signature — never refetch/recompute inline. An empty
-            # injection (regime-subprocess failure) resolves to None, the same
-            # value the inline path emits on a failed fetch.
             _, _, regime_snap = regime_from_injected_payload(regime_payload_json)
             regime_label = str(regime_snap.get("regime") or "") or None
         else:
@@ -549,7 +511,6 @@ def main():
             "platform": platform,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
-        # Include multiplier in top-level output for IBKR (informational)
         multiplier_fn = getattr(adapter, 'get_multiplier', None)
         if multiplier_fn is not None:
             output["multiplier"] = multiplier_fn(underlying)

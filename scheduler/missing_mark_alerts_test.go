@@ -6,10 +6,6 @@ import (
 	"time"
 )
 
-// TestMissingMarkTracker_ThrottlesPerStrategySymbol pins the review's first
-// must-survive case: a multi-cycle mark outage must not send one DM per
-// position per cycle. Each (strategy, symbol) slot fires once per window, and
-// two positions inside the same outage stay independent.
 func TestMissingMarkTracker_ThrottlesPerStrategySymbol(t *testing.T) {
 	prev := effectiveAlertThrottleInterval()
 	applyAlertThrottleInterval(6 * time.Hour)
@@ -26,7 +22,6 @@ func TestMissingMarkTracker_ThrottlesPerStrategySymbol(t *testing.T) {
 	if !tr.Record(sol, base) {
 		t.Fatal("first SOL miss should notify — slots are per symbol")
 	}
-	// Same outage, later cycles inside the window: silent.
 	for i := 1; i <= 20; i++ {
 		at := base.Add(time.Duration(i) * time.Minute)
 		if tr.Record(btc, at) {
@@ -36,16 +31,11 @@ func TestMissingMarkTracker_ThrottlesPerStrategySymbol(t *testing.T) {
 			t.Fatalf("SOL re-notified %v into the throttle window", at.Sub(base))
 		}
 	}
-	// Window elapsed: re-alert so a still-broken protection is not forgotten.
 	if !tr.Record(btc, base.Add(6*time.Hour)) {
 		t.Error("BTC should re-notify once the throttle window elapses")
 	}
 }
 
-// TestMissingMarkTracker_RetainRearmsAfterMarkReturns pins the review's third
-// must-survive case: once the mark returns the alert stops, and a LATER outage
-// notifies immediately — no restart, and no hiding behind the first outage's
-// window.
 func TestMissingMarkTracker_RetainRearmsAfterMarkReturns(t *testing.T) {
 	prev := effectiveAlertThrottleInterval()
 	applyAlertThrottleInterval(6 * time.Hour)
@@ -62,17 +52,13 @@ func TestMissingMarkTracker_RetainRearmsAfterMarkReturns(t *testing.T) {
 	if tr.Record(miss, base.Add(time.Minute)) {
 		t.Fatal("second miss inside the window should stay silent")
 	}
-	// Mark returns: this cycle reports no misses at all.
 	tr.Retain(nil)
-	// Mark drops again, still well inside the original 6h window.
 	tr.Retain([]missingMarkPosition{miss})
 	if !tr.Record(miss, base.Add(10*time.Minute)) {
 		t.Error("a NEW outage after a recovery must notify immediately")
 	}
 }
 
-// TestMissingMarkTracker_RetainKeepsOtherSlots verifies Retain prunes only the
-// positions that recovered, so an ongoing outage elsewhere keeps its window.
 func TestMissingMarkTracker_RetainKeepsOtherSlots(t *testing.T) {
 	prev := effectiveAlertThrottleInterval()
 	applyAlertThrottleInterval(6 * time.Hour)
@@ -85,7 +71,6 @@ func TestMissingMarkTracker_RetainKeepsOtherSlots(t *testing.T) {
 
 	tr.Record(btc, base)
 	tr.Record(sol, base)
-	// SOL recovers, BTC still missing.
 	tr.Retain([]missingMarkPosition{btc})
 	if tr.Record(btc, base.Add(time.Minute)) {
 		t.Error("BTC kept missing: its throttle window must survive Retain")
@@ -96,12 +81,6 @@ func TestMissingMarkTracker_RetainKeepsOtherSlots(t *testing.T) {
 	}
 }
 
-// TestFormatMissingMarkDM_NamesDisabledProtections keeps the operator-facing
-// text actionable: it must say which auto-protective mechanisms stopped, not
-// merely that a price is missing.
-//
-// #1445 review must-survive (a): a live HL perps/manual miss still names the
-// walker and the ratchet.
 func TestFormatMissingMarkDM_NamesDisabledProtections(t *testing.T) {
 	miss := missingMarkPosition{
 		StrategyID: "hl-live", Symbol: "BTC", Live: true,
@@ -116,8 +95,6 @@ func TestFormatMissingMarkDM_NamesDisabledProtections(t *testing.T) {
 	}
 }
 
-// TestFormatMissingMarkDM_ManualNamesDisabledProtections is the manual half of
-// must-survive (a) — manual runs the same two HL mechanisms.
 func TestFormatMissingMarkDM_ManualNamesDisabledProtections(t *testing.T) {
 	miss := missingMarkPosition{
 		StrategyID: "manual-hl", Symbol: "HYPE", Live: true,
@@ -132,12 +109,6 @@ func TestFormatMissingMarkDM_ManualNamesDisabledProtections(t *testing.T) {
 	}
 }
 
-// TestFormatMissingMarkDM_NonHLVenuesClaimNoHLMechanism is must-survive (b)
-// and (c): a live BinanceUS spot or OKX-perps miss must not tell the operator
-// that a Hyperliquid walker or ratchet stopped — those managers do not exist
-// on those venues, so the claim would be false. The DM must still carry the
-// one consequence that IS true everywhere: the portfolio kill switch reads a
-// stale valuation for this position.
 func TestFormatMissingMarkDM_NonHLVenuesClaimNoHLMechanism(t *testing.T) {
 	cases := []struct {
 		name string
@@ -171,9 +142,6 @@ func TestFormatMissingMarkDM_NonHLVenuesClaimNoHLMechanism(t *testing.T) {
 	}
 }
 
-// TestFormatManualMarkBasisRebaselineDM_StatesDrawdownNotReset pins the
-// operator-facing claim that matters: only the units moved. A DM that read as
-// "drawdown cleared" would hide an armed kill switch.
 func TestFormatManualMarkBasisRebaselineDM_StatesDrawdownNotReset(t *testing.T) {
 	got := formatManualMarkBasisRebaselineDM(60000, 56000, 56000, 60000)
 	for _, want := range []string{"60000.00", "56000.00", "NOT reset", "-4000.00"} {

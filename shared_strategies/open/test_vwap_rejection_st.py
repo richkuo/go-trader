@@ -1,4 +1,3 @@
-"""Tests for vwap_rejection_st.py — VWAP Rejection Short strategy."""
 
 import numpy as np
 import pandas as pd
@@ -34,26 +33,14 @@ def _hourly_index(n: int, start: str = "2026-01-01 00:00:00") -> pd.DatetimeInde
 
 
 def _bear_setup_with_rally_and_rejection():
-    """Long multi-day hourly downtrend, then a same-day rally + rejection.
-
-    The rally is *contained inside the final session* so the daily-anchored
-    VWAP starts fresh near the rally's lows and gets pierced by the rally
-    high — this is the level the strategy expects price to reject from.
-    """
     rng = np.random.default_rng(42)
-    # 230 hourly bars (~10 days) trending 200 → 110 — long enough for
-    # EMA200 to sit well above EMA50.
     down = np.linspace(200.0, 110.0, 230) + rng.normal(0, 0.4, 230)
-    # 5-bar rally up to ~130 — overshoots EMA20/50 and pierces same-day VWAP.
     rally = np.linspace(110.0, 130.0, 5)
-    # Rejection bars — engineered as red candles closing back below VWAP/EMA20.
     reject_closes = [120.0, 113.0, 109.0, 106.0]
     closes = np.concatenate([down, rally, reject_closes])
     n = len(closes)
     idx = _hourly_index(n)
     df = make_ohlcv_from_closes(closes, idx, noise=0.4)
-    # Force the last 4 bars into clean red candles (open above close) so the
-    # rejection-trigger gate (close < open) actually fires.
     for i, close_px in enumerate(reject_closes, start=len(down) + len(rally)):
         prev_close = closes[i - 1]
         df.iat[i, df.columns.get_loc("open")] = prev_close + 0.5
@@ -76,7 +63,6 @@ def test_emits_short_on_vwap_rejection_in_bear_trend():
 
 
 def test_no_long_signals_emitted():
-    """Strategy is short-only — signal must never be +1."""
     df = _bear_setup_with_rally_and_rejection()
     result = vwap_rejection_st_core(df)
     assert not (result["signal"] == 1).any(), "Strategy should never emit long signals"
@@ -84,7 +70,6 @@ def test_no_long_signals_emitted():
 
 
 def test_bullish_regime_blocks_shorts():
-    """In an uptrend (EMA50 > EMA200) the regime filter must veto every short."""
     rng = np.random.default_rng(0)
     closes = np.linspace(100.0, 200.0, 250) + rng.normal(0, 0.4, 250)
     idx = _hourly_index(len(closes))
@@ -111,14 +96,7 @@ def test_indicator_columns_exposed():
 
 
 def test_rsi_reclaim_above_50_blocks_short():
-    """If RSI is forced above the reclaim cap, every trigger must be vetoed.
-
-    The RSI gate is the momentum filter — even with a textbook rally + red
-    rejection candle, RSI > rsi_max_reclaim says momentum has flipped and the
-    short setup is no longer valid.
-    """
     df = _bear_setup_with_rally_and_rejection()
-    # Drop the cap to a value the trigger-bar RSI cannot satisfy.
     result = vwap_rejection_st_core(df, rsi_max_reclaim=0.0)
     assert (result["signal"] == 0).all(), (
         "RSI reclaim gate at 0 must veto every short"
@@ -126,16 +104,7 @@ def test_rsi_reclaim_above_50_blocks_short():
 
 
 def test_buffer_rejects_wick_only_touch():
-    """A high that merely *grazes* the resistance levels without exceeding the
-    buffer must not count as a rally touch.
-
-    Construct a tame setup where the rally bar's high sits very close to —
-    but never meaningfully above — VWAP/EMA(short). With a fat 50% buffer
-    nothing realistic can satisfy the touch gate, so no short signal can fire.
-    """
     df = _bear_setup_with_rally_and_rejection()
-    # 50% buffer is far wider than any high-vs-EMA gap in the synthetic setup,
-    # so every touch is filtered out — proves the buffer gate is wired up.
     result = vwap_rejection_st_core(df, rally_touch_buffer_pct=0.5)
     assert (result["signal"] == 0).all(), (
         "Buffer gate at 50% must veto every short — no high realistically overshoots that much"
@@ -149,15 +118,6 @@ def test_signal_values_valid():
 
 
 def test_trigger_closes_below_every_rally_magnet():
-    """Every fired short must close back below VWAP AND EMA(short) AND EMA(mid).
-
-    Regression for PR #657 review: the rally check ORs three levels (VWAP,
-    EMA20, EMA50) but the original trigger only ANDed two (VWAP, EMA20).
-    A rally piercing only EMA(mid) could therefore fire a short whose
-    trigger bar close was still above EMA(mid) — the level that was
-    pierced never actually got rejected. Post-fix the trigger set mirrors
-    the rally set; this property test pins the invariant.
-    """
     df = _bear_setup_with_rally_and_rejection()
     result = vwap_rejection_st_core(df)
     fired = result[result["signal"] == -1]

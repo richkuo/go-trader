@@ -1,21 +1,3 @@
-"""
-Consolidation parameter sweep runner.
-
-Fetches OHLCV ONCE, then iterates a parameter grid in-process (no per-cell
-re-fetch), forcing the swept detector as primary so its episode-level
-distributions are computed for every cell. Each cell is auto-appended as a row
-to the runs CSV (only the swept method's row, to keep the grid readable) and a
-ranked summary is printed.
-
-Phases (see docs/research/consolidation-findings.md):
-  1  range_containment box-tightening: box_width_pct x min_bars   (default)
-  2  escape-candle sensitivity: escape_k, atr_period
-  3  timeframe mini-grid (run once per --timeframe)
-
-Usage:
-  uv run --no-sync python backtest/consolidation_sweep.py \
-      --phase 1 --symbol BTC/USDT --timeframe 1h --since 2021-01-01
-"""
 
 import argparse
 import datetime
@@ -25,9 +7,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-import consolidation_research as cr  # noqa: E402
+import consolidation_research as cr
 
-# Best box from Phase 1 (run 009): box_width_pct=0.02, min_bars=12.
 DEFAULTS = {
     "min_bars": 12,
     "box_width_pct": 0.02,
@@ -38,7 +19,6 @@ DEFAULTS = {
     "atr_period": 14,
 }
 
-# Phase -> (swept detector, list of param-override dicts).
 PHASE_GRIDS = {
     1: (
         "range_containment",
@@ -55,8 +35,6 @@ PHASE_GRIDS = {
         [{"escape_k": k} for k in [1.0, 1.25, 1.5, 2.0, 2.5]]
         + [{"atr_period": p} for p in [7, 14, 21]],
     ),
-    # Phase 3: box mini-grid spanning tight->wide so the same grid fits any
-    # timeframe (run the sweep once per --timeframe). 15 cells.
     3: (
         "range_containment",
         [
@@ -77,11 +55,10 @@ def _grid_for(phase, base):
 
 
 def _run_phase4(args):
-    """Cross-asset robustness: fixed best-box params, one fetch per symbol."""
     from data_fetcher import fetch_full_history
 
     method = "range_containment"
-    params = dict(DEFAULTS)  # the chosen best box for args.timeframe
+    params = dict(DEFAULTS)
     symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
     run_date = datetime.date.today().isoformat()
     print(f"Phase 4 — {args.timeframe} box {params['box_width_pct']}/"
@@ -182,7 +159,7 @@ def main(argv=None):
     run_date = datetime.date.today().isoformat()
     sym = args.symbol.replace("/", "").lower()
     summary_rows = []
-    detector_cache = {}  # reused across cells; unchanged detectors aren't recomputed
+    detector_cache = {}
 
     for i, ov in enumerate(overrides):
         params = {**DEFAULTS, **ov}
@@ -198,7 +175,6 @@ def main(argv=None):
             detector_cache=detector_cache,
         )
 
-        # lightweight args namespace for the CSV row.
         row_args = argparse.Namespace(
             symbol=args.symbol, timeframe=args.timeframe, since=args.since,
             out_dir=(out_dir if args.charts else "(metrics-only)"), **params,

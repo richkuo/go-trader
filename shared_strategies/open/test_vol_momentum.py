@@ -1,4 +1,3 @@
-"""Tests for vol_momentum.py — volatility-targeted time-series momentum (#959)."""
 
 import numpy as np
 import pandas as pd
@@ -19,7 +18,6 @@ def make_ohlcv(closes, noise=0.5, volume=100.0):
 
 
 def make_uptrend_with_plateau():
-    """Quiet base → clean ramp → plateau; momentum builds, then decays."""
     return np.concatenate([
         100 + np.random.RandomState(1).randn(40) * 0.3,
         np.linspace(100, 180, 100),
@@ -36,8 +34,6 @@ def make_downtrend_with_plateau():
 
 
 def make_round_trip_chop():
-    """Perfectly periodic oscillation (period 8 divides mom_window 24):
-    the 24-bar net move is exactly zero → vol_mom and efficiency are 0."""
     return 100 + np.tile([0, 2, 4, 2, 0, -2, -4, -2], 38)[:300] * 1.5
 
 
@@ -61,8 +57,6 @@ def test_warmup_returns_no_signal():
 
 
 def test_uptrend_exact_entry_and_decay_exit():
-    """One long entry once ATR-normalized momentum and efficiency confirm the
-    ramp; one exit when momentum decays on the plateau."""
     out = vol_momentum_core(make_ohlcv(make_uptrend_with_plateau(), noise=0.4))
     assert np.where(out["signal"].values == 1)[0].tolist() == [50]
     assert np.where(out["signal"].values == -1)[0].tolist() == [163]
@@ -86,8 +80,6 @@ def test_downtrend_allow_short_enters_short():
 
 
 def test_round_trip_chop_never_enters():
-    """Zero net move over the window → vol_mom == efficiency == 0 → flat,
-    even with shorts allowed. This is the whole point of the normalization."""
     out = vol_momentum_core(make_ohlcv(make_round_trip_chop()), allow_short=True)
     assert (out["position"] == 0).all()
     assert float(out["vol_mom"].abs().max()) == 0.0
@@ -106,8 +98,6 @@ def test_impossible_efficiency_gate_blocks_entries():
 
 
 def test_efficiency_collapse_exits_position():
-    """With the momentum-decay exit disabled (exit_threshold pushed far below
-    zero), the plateau's efficiency collapse must still flatten the long."""
     out = vol_momentum_core(
         make_ohlcv(make_uptrend_with_plateau(), noise=0.4),
         exit_threshold=-10.0, eff_exit=0.15)

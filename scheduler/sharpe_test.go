@@ -15,9 +15,6 @@ func day(s string) time.Time {
 	return t
 }
 
-// manyDays builds a canned N-day slice of ClosedPositions starting from start.
-// Useful for tests that need >= minSharpeDays of data without spelling out
-// every entry.
 func manyDays(start time.Time, n int, pnl func(i int) float64) []ClosedPosition {
 	out := make([]ClosedPosition, n)
 	for i := 0; i < n; i++ {
@@ -33,12 +30,10 @@ func TestComputeSharpeRatioInsufficientData(t *testing.T) {
 	if got := ComputeSharpeRatio(nil, 1000, 0.02); got != 0 {
 		t.Fatalf("empty input should yield 0, got %v", got)
 	}
-	// Single day = only one sample, variance undefined.
 	one := []ClosedPosition{{ClosedAt: day("2026-01-01"), RealizedPnL: 10}}
 	if got := ComputeSharpeRatio(one, 1000, 0.02); got != 0 {
 		t.Fatalf("single-day input should yield 0, got %v", got)
 	}
-	// Rows with a zero ClosedAt are skipped.
 	skipped := []ClosedPosition{
 		{ClosedAt: time.Time{}, RealizedPnL: 10},
 		{ClosedAt: time.Time{}, RealizedPnL: -5},
@@ -46,7 +41,6 @@ func TestComputeSharpeRatioInsufficientData(t *testing.T) {
 	if got := ComputeSharpeRatio(skipped, 1000, 0.02); got != 0 {
 		t.Fatalf("zero-timestamp rows should be skipped, got %v", got)
 	}
-	// Fewer than minSharpeDays (20) distinct close days → undefined.
 	short := manyDays(day("2026-01-01"), minSharpeDays-1, func(i int) float64 {
 		if i%2 == 0 {
 			return 10
@@ -59,9 +53,6 @@ func TestComputeSharpeRatioInsufficientData(t *testing.T) {
 }
 
 func TestComputeSharpeRatioZeroStdev(t *testing.T) {
-	// All days have identical daily PnL → stdev 0 → Sharpe undefined.
-	// Must be at least minSharpeDays to exercise the stdev branch (not the
-	// insufficient-days branch).
 	same := manyDays(day("2026-01-01"), minSharpeDays, func(int) float64 { return 10 })
 	if got := ComputeSharpeRatio(same, 1000, 0); got != 0 {
 		t.Fatalf("zero-stdev should yield 0, got %v", got)
@@ -84,16 +75,12 @@ func TestComputeSharpeRatioInvalidCapital(t *testing.T) {
 }
 
 func TestComputeSharpeRatioKnownValue(t *testing.T) {
-	// A contiguous minSharpeDays-day series with consistent +$100/-$50/+$75
-	// rotation. Because every day has a close, the zero-fill path is a no-op
-	// here and we can compare against the closed-form daily-return Sharpe.
 	pattern := []float64{100, -50, 75}
 	closed := manyDays(day("2026-01-01"), minSharpeDays, func(i int) float64 {
 		return pattern[i%len(pattern)]
 	})
 	got := ComputeSharpeRatio(closed, 10000, 0)
 
-	// Build the expected value from the same series.
 	returns := make([]float64, minSharpeDays)
 	for i := 0; i < minSharpeDays; i++ {
 		returns[i] = pattern[i%len(pattern)] / 10000
@@ -119,11 +106,6 @@ func TestComputeSharpeRatioKnownValue(t *testing.T) {
 }
 
 func TestComputeSharpeRatioZeroFillBetweenCloses(t *testing.T) {
-	// Two closes, 30 days apart. The zero-fill path should produce 31 daily
-	// returns (mostly zero), bringing the distinct-close count to 2 — which is
-	// still below minSharpeDays, so the result is 0. This asserts the
-	// gating is on *distinct close days*, not zero-filled days, so sparse
-	// trading can't fabricate a usable sample.
 	sparse := []ClosedPosition{
 		{ClosedAt: day("2026-01-01"), RealizedPnL: 100},
 		{ClosedAt: day("2026-01-31"), RealizedPnL: -50},
@@ -134,8 +116,6 @@ func TestComputeSharpeRatioZeroFillBetweenCloses(t *testing.T) {
 }
 
 func TestComputeSharpeRatioBucketsByDay(t *testing.T) {
-	// Two rows on the same UTC day collapse into one daily return; with only
-	// one distinct close day we should get 0 (insufficient data).
 	sameDay := []ClosedPosition{
 		{ClosedAt: time.Date(2026, 1, 1, 9, 0, 0, 0, time.UTC), RealizedPnL: 30},
 		{ClosedAt: time.Date(2026, 1, 1, 18, 0, 0, 0, time.UTC), RealizedPnL: 20},
@@ -144,10 +124,8 @@ func TestComputeSharpeRatioBucketsByDay(t *testing.T) {
 		t.Fatalf("multiple rows same day should produce one bucket (insufficient), got %v", got)
 	}
 
-	// Positive drift with low noise → positive Sharpe. Needs minSharpeDays
-	// contiguous days to satisfy the new sampling floor.
 	closed := manyDays(day("2026-01-01"), minSharpeDays, func(i int) float64 {
-		return 10 + float64(i%2) // alternating 10, 11
+		return 10 + float64(i%2)
 	})
 	got := ComputeSharpeRatio(closed, 1000, 0)
 	if got <= 0 {
@@ -168,16 +146,12 @@ func TestComputeSharpeRatioRiskFreeLowersSharpe(t *testing.T) {
 }
 
 func TestRiskFreeRateOrDefault(t *testing.T) {
-	// A nil pointer — whether because cfg itself is nil or the field was
-	// omitted — falls back to the default.
 	if got := RiskFreeRateOrDefault(nil); got != DefaultAnnualRiskFreeRate {
 		t.Fatalf("nil cfg should yield default, got %v", got)
 	}
 	if got := RiskFreeRateOrDefault(&Config{}); got != DefaultAnnualRiskFreeRate {
 		t.Fatalf("nil field should yield default, got %v", got)
 	}
-	// A genuine zero is respected — a user pinning to a 0% rate for backtest
-	// comparisons should not be silently overridden.
 	zero := 0.0
 	if got := RiskFreeRateOrDefault(&Config{RiskFreeRate: &zero}); got != 0 {
 		t.Fatalf("explicit zero should be respected, got %v", got)
@@ -193,9 +167,6 @@ func TestRiskFreeRateOrDefault(t *testing.T) {
 }
 
 func TestFmtSharpe(t *testing.T) {
-	// "N/A" is plain ASCII — 3 bytes, 3 runes — so fmt.Sprintf("%7s", ...)
-	// padding aligns correctly in Discord monospace code blocks. A UTF-8
-	// em-dash would be 3 bytes but 1 rune and misalign the column.
 	cases := []struct {
 		in   float64
 		want string
@@ -227,11 +198,6 @@ func TestAggregateSharpeEmpty(t *testing.T) {
 	}
 }
 
-// TestAggregateSharpePositivePath is the positive-path coverage for the
-// book-Sharpe aggregator that the review flagged as missing. Two strategies
-// share the same time window; we assert the pooled Sharpe is real (non-zero)
-// and differs from the mean of per-strategy Sharpes — the whole point of
-// pooling on capital rather than averaging.
 func TestAggregateSharpePositivePath(t *testing.T) {
 	base := day("2026-01-01")
 	closedByStrategy := map[string][]ClosedPosition{
@@ -258,8 +224,6 @@ func TestAggregateSharpePositivePath(t *testing.T) {
 		t.Fatalf("pooled Sharpe should be non-zero for profitable mixed strategies")
 	}
 
-	// The per-strategy Sharpes should not trivially average to the pooled one
-	// — that is the whole reason we aggregate on capital.
 	sharpeA := ComputeSharpeRatio(closedByStrategy["a"], 10000, 0)
 	sharpeB := ComputeSharpeRatio(closedByStrategy["b"], 5000, 0)
 	mean := (sharpeA + sharpeB) / 2
@@ -268,10 +232,6 @@ func TestAggregateSharpePositivePath(t *testing.T) {
 	}
 }
 
-// TestAggregateSharpeFillsFlatDays covers the continuous-book fix: a strategy
-// whose closes span 30 days but only touch the first and last day should be
-// gated by minSharpeDays (distinct close days = 2), not produce a Sharpe off
-// the two raw samples. This is the regression test for review item 1.
 func TestAggregateSharpeFillsFlatDays(t *testing.T) {
 	closedByStrategy := map[string][]ClosedPosition{
 		"a": {
@@ -286,8 +246,6 @@ func TestAggregateSharpeFillsFlatDays(t *testing.T) {
 	}
 }
 
-// TestComputeSharpeByStrategyFromMap covers the positive path for the
-// per-strategy wrapper that feeds leaderboard rows.
 func TestComputeSharpeByStrategyFromMap(t *testing.T) {
 	base := day("2026-01-01")
 	closedByStrategy := map[string][]ClosedPosition{
@@ -297,7 +255,7 @@ func TestComputeSharpeByStrategyFromMap(t *testing.T) {
 			}
 			return -20
 		}),
-		"b": nil, // no history → should be omitted
+		"b": nil,
 	}
 	cfg := &Config{Strategies: []StrategyConfig{
 		{ID: "a", Capital: 10000},
@@ -316,17 +274,12 @@ func TestComputeSharpeByStrategyFromMap(t *testing.T) {
 	}
 }
 
-// TestLoadClosedPositionsByStrategyNilDB guards the nil-sdb branch that keeps
-// the downstream callers tolerant of a DB that failed to open.
 func TestLoadClosedPositionsByStrategyNilDB(t *testing.T) {
 	if got := LoadClosedPositionsByStrategy(nil, &Config{}); got != nil {
 		t.Fatalf("nil sdb should yield nil, got %v", got)
 	}
 }
 
-// TestLoadClosedPositionsByStrategy wires through a real StateDB so the full
-// DB round-trip (insertion via SaveStateWithDB → query via
-// QueryClosedPositions) is exercised.
 func TestLoadClosedPositionsByStrategy(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "state.db")

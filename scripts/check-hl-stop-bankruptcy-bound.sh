@@ -1,60 +1,9 @@
 #!/usr/bin/env bash
-# check-hl-stop-bankruptcy-bound.sh — READ-ONLY fleet preflight for the #1450
-# isolated-margin bankruptcy bound on percentage stop-loss owners.
-#
-# #1450 added validateHLStopWithinBankruptcyBound to validateConfig, which makes
-# a percentage stop at or beyond 100 / leverage a FATAL config error. A geometry
-# like stop_loss_pct: 5 with leverage: 20 loads today and refuses to load after
-# the update. The rule is correct — Hyperliquid force-closes the position before
-# such a stop could ever fill — but a fatal rule that only announces itself at
-# restart-verify would have update.sh roll back with live positions unmanaged in
-# the interim.
-#
-# This is that rule's preflight, mirroring scripts/check-config-versions.sh
-# (#1285): run it on the production host BEFORE the update, and record its
-# output. It never writes anything — no config rewrite, no daemon interaction.
-#
-# Usage:
-#   bash scripts/check-hl-stop-bankruptcy-bound.sh                    # auto-discover active systemd deployments
-#   bash scripts/check-hl-stop-bankruptcy-bound.sh /opt/go-trader ... # audit explicit deployment dirs instead
-#
-# Scope mirrors the Go check EXACTLY (scheduler/hyperliquid_liquidation_guard.go,
-# validateHLStopWithinBankruptcyBound). Change one, change the other:
-#   - platform hyperliquid, type perps, LIVE args only (paper has no account);
-#   - ISOLATED margin only (empty margin_mode reads as isolated; a cross-margin
-#     liquidation can sit beyond 1/leverage, so the bound would falsely reject);
-#   - percentage owners only: stop_loss_pct, the derived
-#     stop_loss_margin_pct / leverage, and the max_drawdown_pct fallback that
-#     EffectiveStopLossPct resolves when all explicit stop fields are absent.
-#     ATR-derived owners need a per-position EntryATR and are checked at arm
-#     time by the runtime clamp instead. trailing_stop_pct is EXCLUDED: its
-#     anchor ratchets with the mark, so the entry-anchored bound is not exact
-#     for it and the runtime clamp handles the pre-move window (#1456 review).
-#
-# The Go check runs on the config AFTER LoadConfig resolves it, so this script
-# mirrors LoadConfig's stop-owner resolution before applying the bound
-# (#1456 review round 4). Reading the raw per-strategy keys is a DIFFERENT
-# question and drifts three ways:
-#   - an explicit-zero stop_loss_atr_mult / trailing_stop_atr_mult falls THROUGH
-#     in EffectiveStopLossPct, so max_drawdown_pct still owns the stop;
-#   - the #562/#601/#605 default_stop_loss_atr_mult auto-default attaches an ATR
-#     owner to any HL perps strategy with no stop field set, so the fallback
-#     does NOT own the stop there;
-#   - the #1133 user_defaults.close ratchet-regime trail attaches a
-#     trailing_stop_atr_regime that never appears in the strategy's own JSON.
-#
-# Exit codes:
-#   0 — every deployment readable and every live isolated strategy inside the bound
-#   1 — at least one offending strategy, or a deployment that could not be read
-#   2 — nothing to audit (an empty audit is NOT a verified fleet)
 set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-# shellcheck source=update_helpers.sh
 source "${SCRIPT_DIR}/update_helpers.sh"
 
-# Emit one line per offending strategy, or a diagnostic token on its own line
-# ("missing-file" / "unreadable"). Silence means the config is clean.
 scan_config() {
     local path="$1"
     if [[ ! -e "$path" ]]; then
@@ -73,9 +22,6 @@ except Exception:
 
 
 def is_live(args):
-    # Mirrors isLiveArgs (scheduler/state_presence.go): "--mode=live", or
-    # "--mode" immediately followed by "live". Nothing looser — a bare "live"
-    # token elsewhere in argv is not a live marker.
     args = args or []
     for i, a in enumerate(args):
         if a == "--mode=live":
@@ -86,20 +32,11 @@ def is_live(args):
 
 
 def effective_leverage(sc):
-    # Mirrors EffectiveExchangeLeverage (scheduler/config.go): the "leverage"
-    # field on a perps strategy, defaulting to 1.
     v = sc.get("leverage")
     if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
         return float(v)
     return 1.0
 
-
-# --- load-time stop-owner resolution -------------------------------------
-# The Go check runs on the config AFTER LoadConfig has resolved it, so reading
-# the raw per-strategy keys is NOT the same question. Two load-time injections
-# attach a stop owner that never appears in the strategy's own JSON, and the
-# explicit-zero ATR scalars fall THROUGH instead of owning the stop. Mirror all
-# three here (#1456 review round 4), in LoadConfig's own order.
 
 SCALAR_STOP_FIELDS = (
     "stop_loss_pct", "stop_loss_margin_pct", "trailing_stop_pct",
@@ -109,11 +46,6 @@ REGIME_STOP_FIELDS = ("stop_loss_atr_regime", "trailing_stop_atr_regime")
 
 
 def uses_unified_regime_close(sc):
-    # Mirrors strategyUsesUnifiedRegimeClose (scheduler/regime_unified.go):
-    # a close ref named one of the unified regime closes whose params carry
-    # the trend_regime classifier key. Only the canonical close_strategy ref
-    # is mirrored, which is exact for config_version >= 13 (closeRefs returns
-    # that single ref).
     cs = sc.get("close_strategy")
     if not isinstance(cs, dict):
         return False
@@ -126,7 +58,6 @@ def uses_unified_regime_close(sc):
 
 
 def uses_ratchet_regime_close(sc):
-    # Mirrors strategyUsesTrailingTPRatchetRegimeClose (close_defaults.go).
     cs = sc.get("close_strategy")
     if not isinstance(cs, dict):
         return False
@@ -134,14 +65,10 @@ def uses_ratchet_regime_close(sc):
 
 
 def regime_block_is_configured(v):
-    # Mirrors RegimeATRBlock.IsConfigured (regime_atr.go): raw-aware, so ANY
-    # non-empty object counts. This is the predicate LoadConfig's injections
-    # use, and it is deliberately looser than is_zero below.
     return isinstance(v, dict) and len(v) > 0
 
 
 def has_explicit_stop_owner(sc):
-    # Mirrors strategyHasExplicitStopOwner (close_defaults.go).
     if any(sc.get(f) is not None for f in SCALAR_STOP_FIELDS):
         return True
     if any(regime_block_is_configured(sc.get(f)) for f in REGIME_STOP_FIELDS):
@@ -150,8 +77,6 @@ def has_explicit_stop_owner(sc):
 
 
 def user_close_default_trailing_regime(cfg):
-    # Mirrors userCloseDefaultTrailingStopATRRegime (close_defaults.go) +
-    # closeDefaultsEntry's case-insensitive key match.
     ud = cfg.get("user_defaults")
     if not isinstance(ud, dict):
         return None
@@ -172,8 +97,6 @@ def user_close_default_trailing_regime(cfg):
 
 
 def default_stop_loss_atr_mult(cfg):
-    # Mirrors LoadConfig: nil/omitted default_stop_loss_atr_mult falls back to
-    # the DefaultStopLossATRMult constant (1.0); an explicit 0 opts out.
     v = cfg.get("default_stop_loss_atr_mult")
     if isinstance(v, (int, float)) and not isinstance(v, bool):
         return float(v)
@@ -181,12 +104,6 @@ def default_stop_loss_atr_mult(cfg):
 
 
 def resolve_stop_owners(cfg, sc):
-    # Applies LoadConfig's two stop-owner injections, IN ITS ORDER, mutating a
-    # copy of the strategy so the checks below see what validateConfig sees.
-    #   1. applyUserCloseDefaultRatchetRegimeTrails (#1133) attaches
-    #      user_defaults.close.trailing_tp_ratchet_regime.trailing_stop_atr_regime.
-    #   2. the #562/#601/#605 default_stop_loss_atr_mult auto-default attaches
-    #      stop_loss_atr_mult to any HL perps strategy with NO stop field set.
     sc = dict(sc)
     if uses_ratchet_regime_close(sc) and not has_explicit_stop_owner(sc):
         block = user_close_default_trailing_regime(cfg)
@@ -204,12 +121,6 @@ def resolve_stop_owners(cfg, sc):
 
 
 def effective_max_drawdown_pct(cfg, sc):
-    # Mirrors LoadConfig's hierarchical default (scheduler/config.go): an
-    # omitted OR EXPLICIT-ZERO strategy field falls through to the platform
-    # risk override, then the per-type default. validateConfig never sees a
-    # non-positive value, and validateHLStopWithinBankruptcyBound scores the
-    # RESOLVED one — so the preflight must score it too, or it prints OK for
-    # exactly the configs Go rejects at boot (#1456 review round 19).
     v = sc.get("max_drawdown_pct")
     if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
         return float(v)
@@ -229,12 +140,6 @@ def effective_max_drawdown_pct(cfg, sc):
 
 
 def resolves_from_max_drawdown_fallback(sc):
-    # Mirrors hlStopLossResolvesFromMaxDrawdownFallback
-    # (scheduler/hyperliquid_liquidation_guard.go) EXACTLY: the ATR scalars only
-    # defer when POSITIVE (an explicit 0 falls through, per EffectiveStopLossPct),
-    # the regime blocks defer on the same raw-aware IsConfigured() predicate the
-    # Go check uses at this phase, and the three pct fields must be absent
-    # entirely.
     if uses_unified_regime_close(sc):
         return False
     for f in ("trailing_stop_atr_mult", "stop_loss_atr_mult"):
@@ -263,10 +168,6 @@ for sc in cfg.get("strategies", []) or []:
     strategy_id = sc.get("id", "<no id>")
     sc = resolve_stop_owners(cfg, sc)
 
-    # Mirrors validateHLStopWithinBankruptcyBound (#1456 review round 6): the
-    # pct fields are scored ONLY when they resolve as the stop distance.
-    # EffectiveStopLossPct returns 0 under a unified regime close (the close
-    # owns an ATR-based SL armed after open), making both fields inert there.
     checks = []
     if not uses_unified_regime_close(sc):
         slp = sc.get("stop_loss_pct")
@@ -275,10 +176,6 @@ for sc in cfg.get("strategies", []) or []:
         smp = sc.get("stop_loss_margin_pct")
         if isinstance(smp, (int, float)) and not isinstance(smp, bool) and smp > 0:
             checks.append(("stop_loss_margin_pct/leverage", float(smp) / max(lev, 1.0)))
-    # Mirrors hlStopLossResolvesFromMaxDrawdownFallback + the MaxAutoStopLossPct
-    # cap, evaluated on the strategy AS LOADCONFIG RESOLVES IT (resolve_stop_owners
-    # above) — the fallback owns the stop only when every explicit owner is absent
-    # AFTER the two load-time injections have run.
     mdd = effective_max_drawdown_pct(cfg, sc)
     if resolves_from_max_drawdown_fallback(sc):
         checks.append(("max_drawdown_pct", min(float(mdd), 50.0)))

@@ -9,9 +9,6 @@ import (
 	"testing"
 )
 
-// parsePythonFrozensetLiteral extracts the string members of a named
-// `NAME = frozenset({...})` literal from shared_strategies/open/registry.py.
-// Go CI must not spawn Python, so tests parse the Python source directly.
 func parsePythonFrozensetLiteral(t *testing.T, name string) map[string]struct{} {
 	t.Helper()
 	src, err := os.ReadFile(filepath.Join("..", "shared_strategies", "open", "registry.py"))
@@ -35,9 +32,6 @@ func parsePythonFrozensetLiteral(t *testing.T, name string) map[string]struct{} 
 	return names
 }
 
-// pythonDiscoveryHiddenStrategies returns the effective DISCOVERY_HIDDEN_STRATEGIES
-// set: its literal members unioned with M5_DEPRECATED_EDGE_STRATEGIES, mirroring
-// the `frozenset({...}) | M5_DEPRECATED_EDGE_STRATEGIES` expression in registry.py.
 func pythonDiscoveryHiddenStrategies(t *testing.T) map[string]struct{} {
 	t.Helper()
 	hidden := parsePythonFrozensetLiteral(t, "DISCOVERY_HIDDEN_STRATEGIES")
@@ -47,9 +41,6 @@ func pythonDiscoveryHiddenStrategies(t *testing.T) map[string]struct{} {
 	return hidden
 }
 
-// TestM5DeprecatedRosterMatchesPythonRegistry enforces the cross-language
-// mirror (#1275): the Go m5DeprecatedEdgeStrategies set must stay identical
-// to M5_DEPRECATED_EDGE_STRATEGIES in shared_strategies/open/registry.py.
 func TestM5DeprecatedRosterMatchesPythonRegistry(t *testing.T) {
 	pyNames := parsePythonFrozensetLiteral(t, "M5_DEPRECATED_EDGE_STRATEGIES")
 	for name := range pyNames {
@@ -67,13 +58,6 @@ func TestM5DeprecatedRosterMatchesPythonRegistry(t *testing.T) {
 	}
 }
 
-// TestConfigGenerationSurfacesExcludeQuarantinedStrategies guards every
-// config-generation surface against defaulting to or offering a strategy the
-// registry hides (#1275 review): the minimal-starter default, the interactive
-// wizard's pre-selection (both use starterSpotStrategyID), and the
-// discovery-failure fallback lists. Checked against the full effective
-// DISCOVERY_HIDDEN_STRATEGIES set (not just the M5 roster), so a name later
-// hidden for any reason cannot silently re-enter a generation surface.
 func TestConfigGenerationSurfacesExcludeQuarantinedStrategies(t *testing.T) {
 	hidden := pythonDiscoveryHiddenStrategies(t)
 
@@ -120,9 +104,7 @@ func TestStrategyEdgeDeprecatedResolution(t *testing.T) {
 func TestDeprecatedEdgeStartupWarnings(t *testing.T) {
 	trueVal := true
 	strategies := []StrategyConfig{
-		// Live deprecated without ack → warns (live behavior unchanged).
 		{ID: "s-macd", Type: "spot", OpenStrategy: StrategyRef{Name: "macd"}, Args: []string{"macd", "BTC", "1h", "--mode=live"}},
-		// Live deprecated with explicit ack → silent.
 		{ID: "s-ack", Type: "perps", OpenStrategy: StrategyRef{Name: "rsi"}, Args: []string{"rsi", "ETH", "1h", "--mode=live"}, AllowDeprecated: &trueVal},
 		{ID: "s-clean", Type: "spot", OpenStrategy: StrategyRef{Name: "chart_pattern"}, Args: []string{"chart_pattern", "BTC", "1h", "--mode=live"}},
 	}
@@ -138,9 +120,6 @@ func TestDeprecatedEdgeStartupWarnings(t *testing.T) {
 	}
 }
 
-// #1402: paper strategies auto-suppress the deprecated-edge warning/DM unless
-// allow_deprecated is explicitly false; live strategies keep pre-#1402
-// semantics. Summary tags still surface the risk state.
 func TestDeprecatedEdgePaperSuppression(t *testing.T) {
 	trueVal, falseVal := true, false
 	paperDep := StrategyConfig{
@@ -228,7 +207,6 @@ func TestDeprecatedEdgePaperSuppression(t *testing.T) {
 	})
 
 	t.Run("mixed-paper-live-config", func(t *testing.T) {
-		// Only the live peer warns; paper peer stays silent.
 		got := deprecatedEdgeStartupWarnings([]StrategyConfig{paperDep, liveDep})
 		if len(got) != 1 || !strings.Contains(got[0], liveDep.ID) {
 			t.Fatalf("mixed config should warn only live peer, got %v", got)
@@ -236,7 +214,6 @@ func TestDeprecatedEdgePaperSuppression(t *testing.T) {
 	})
 
 	t.Run("paper-no-mode-flag-is-paper", func(t *testing.T) {
-		// Args without --mode=live are paper (isLiveArgs false).
 		sc := StrategyConfig{
 			ID: "s-spot-paper", Type: "spot",
 			OpenStrategy: StrategyRef{Name: "macd"},
@@ -268,17 +245,12 @@ func TestEdgeStatusSummaryTagNeverHiddenByAck(t *testing.T) {
 	if got := edgeStatusSummaryTag(clean); got != "" {
 		t.Errorf("clean strategy tag = %q, want empty", got)
 	}
-	// The startup summary line carries the tag (both raw and acknowledged).
 	line := formatStrategySummaryLine(dep, nil, nil)
 	if !strings.Contains(line, "edge=deprecated_m5(ack)") {
 		t.Errorf("summary line missing edge tag: %s", line)
 	}
 }
 
-// #1275 review: allow_deprecated is advisory-only and must be freely
-// hot-reloadable — masked from the restart-shape comparison and applied by
-// applyHotReloadConfig, alone, bundled with another reloadable field, and
-// while a position is open.
 func TestAllowDeprecatedHotReloadable(t *testing.T) {
 	trueVal, falseVal := true, false
 	a := StrategyConfig{ID: "s", AllowDeprecated: &trueVal}
@@ -312,7 +284,6 @@ func TestAllowDeprecatedHotReloadable(t *testing.T) {
 		}}
 	}
 
-	// (a) toggle alone while a position is open: accepted, value applied.
 	cfg := minimalReloadConfig(base(&falseVal, 1000))
 	next := minimalReloadConfig(base(&trueVal, 1000))
 	changes, err := applyHotReloadConfig(cfg, next, openState(), nil, nil)
@@ -326,7 +297,6 @@ func TestAllowDeprecatedHotReloadable(t *testing.T) {
 		t.Fatalf("expected an allow_deprecated change entry, got %v", changes)
 	}
 
-	// (b) bundled with another hot-reloadable field (capital): both applied.
 	cfg = minimalReloadConfig(base(&trueVal, 1000))
 	next = minimalReloadConfig(base(&falseVal, 2000))
 	if _, err := applyHotReloadConfig(cfg, next, openState(), nil, nil); err != nil {
@@ -342,7 +312,6 @@ func TestAllowDeprecatedHotReloadable(t *testing.T) {
 		t.Fatalf("expected capital applied alongside, got %v", cfg.Strategies[0].Capital)
 	}
 
-	// (c) unset → explicit false on paper re-arms the warning path via Effective.
 	cfg = minimalReloadConfig(base(nil, 1000))
 	next = minimalReloadConfig(base(&falseVal, 1000))
 	if _, err := applyHotReloadConfig(cfg, next, openState(), nil, nil); err != nil {
@@ -353,10 +322,6 @@ func TestAllowDeprecatedHotReloadable(t *testing.T) {
 	}
 }
 
-// #1275/#1402 review: a hot reload that moves an open leg onto an M5-deprecated
-// name (or drops an allow_deprecated ack) must re-fire the warning, while
-// unchanged deprecated strategies and switches AWAY must stay silent. Paper
-// auto-suppression uses the same Effective predicate on the reload path.
 func TestNewlyDeprecatedEdgeWarnings(t *testing.T) {
 	trueVal, falseVal := true, false
 	live := func(id, name string, ack *bool) StrategyConfig {
@@ -382,7 +347,6 @@ func TestNewlyDeprecatedEdgeWarnings(t *testing.T) {
 		{"ack flipped off re-warns", []StrategyConfig{live("s1", "macd", &trueVal)}, []StrategyConfig{live("s1", "macd", &falseVal)}, 1},
 		{"ack flipped on silences", []StrategyConfig{live("s1", "macd", nil)}, []StrategyConfig{live("s1", "macd", &trueVal)}, 0},
 		{"deprecated-to-different-deprecated re-warns", []StrategyConfig{live("s1", "macd", nil)}, []StrategyConfig{live("s1", "rsi", nil)}, 1},
-		// #1402: paper unset stays silent across reload; paper unset→false re-warns.
 		{"paper unchanged no respam", []StrategyConfig{paper("s1", "macd", nil)}, []StrategyConfig{paper("s1", "macd", nil)}, 0},
 		{"paper switch onto deprecated still silent", []StrategyConfig{paper("s1", "chart_pattern", nil)}, []StrategyConfig{paper("s1", "macd", nil)}, 0},
 		{"paper unset to explicit false re-warns", []StrategyConfig{paper("s1", "macd", nil)}, []StrategyConfig{paper("s1", "macd", &falseVal)}, 1},

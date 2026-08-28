@@ -8,17 +8,8 @@ import (
 	"strings"
 )
 
-// knownStrategyConfigKeys returns the JSON tag names declared on
-// StrategyConfig. Used by validateStrategyJSONKeys to flag operator typos
-// (e.g. `take_profit_atr_mult`) instead of silently dropping invented fields
-// that would otherwise produce a config that looks correct but is missing the
-// requested protection (#704).
 func knownStrategyConfigKeys() map[string]bool {
 	known := knownJSONKeys(reflect.TypeOf(StrategyConfig{}))
-	// #842: close_strategies (array) was collapsed to the single close_strategy
-	// ref, but UnmarshalJSON still reads the legacy array for back-compat, so it
-	// must not trip the unknown-field guard. A len>1 array is rejected with the
-	// strategy id in validateConfig; a len-1 array is lifted to close_strategy.
 	known["close_strategies"] = true
 	return known
 }
@@ -46,10 +37,6 @@ func knownJSONKeys(t reflect.Type) map[string]bool {
 	return known
 }
 
-// unknownKeyHint returns a one-line suggestion for an unknown strategy field,
-// chosen by substring match against the most commonly mistyped categories. The
-// goal is to make the most frequent miss — TP/SL fields that look plausible
-// but never existed — fail loudly with actionable guidance (#704).
 func unknownKeyHint(key string) string {
 	lk := strings.ToLower(key)
 	switch {
@@ -64,24 +51,11 @@ func unknownKeyHint(key string) string {
 	}
 }
 
-// validateStrategyJSONKeys re-parses the raw config bytes and flags any key
-// inside an entry of `strategies[]` that isn't declared on StrategyConfig.
-// json.Unmarshal silently drops unknown keys, so without this check an
-// operator typo (e.g. `take_profit_atr_mult`) loads as a stripped struct
-// indistinguishable from "no TP configured" — which is exactly the misdiagnosis
-// path that led to #704.
-//
-// Scoped to the strategies array only. We don't enable DisallowUnknownFields
-// globally because the surrounding config has optional/extension fields
-// (platforms, notifier backends) that intentionally tolerate forward-compat
-// keys. Returns a sorted list of "strategy[id]: unknown field %q" errors.
 func validateStrategyJSONKeys(rawData []byte) []string {
 	var envelope struct {
 		Strategies []map[string]json.RawMessage `json:"strategies"`
 	}
 	if err := json.Unmarshal(rawData, &envelope); err != nil {
-		// Top-level shape errors are reported by the main json.Unmarshal in
-		// LoadConfig; skip here so we don't double-report.
 		return nil
 	}
 	known := knownStrategyConfigKeys()
@@ -108,36 +82,20 @@ func validateStrategyJSONKeys(rawData []byte) []string {
 			}
 			errs = append(errs, msg)
 		}
-		// #1159: the hedge block is a live-order surface — a typo'd
-		// `"ration": 0.5` would silently default the ratio to 1.0 and open a
-		// hedge at twice the intended notional. The top-level "hedge" key is
-		// covered by the reflective knownStrategyConfigKeys above; this walks
-		// one level deeper.
 		errs = append(errs, nestedObjectUnknownKeyErrors(s, "hedge", knownHedgeConfigKeys(), prefix)...)
-		// #1411: the hurst_gate block gates live entries and scales live order
-		// size. A typo'd `"disarm": 0.5` would silently drop the hysteresis
-		// exit bound and leave a gate that latches disarmed on the arm bound —
-		// the same silent-misconfiguration class as the hedge block above. The
-		// top-level "hurst_gate" key is covered by the reflective
-		// knownStrategyConfigKeys; this walks one level deeper.
 		errs = append(errs, nestedObjectUnknownKeyErrors(s, "hurst_gate", knownHurstGateKeys(), prefix)...)
 	}
 	return errs
 }
 
-// knownHedgeConfigKeys returns the JSON tag names declared on HedgeConfig.
 func knownHedgeConfigKeys() map[string]bool {
 	return knownJSONKeys(reflect.TypeOf(HedgeConfig{}))
 }
 
-// knownHurstGateKeys returns the JSON tag names declared on HurstGateConfig.
 func knownHurstGateKeys() map[string]bool {
 	return knownJSONKeys(reflect.TypeOf(HurstGateConfig{}))
 }
 
-// nestedObjectUnknownKeyErrors flags unknown keys inside a nested object field
-// of a strategy entry. A non-object value (or a missing field) is not this
-// helper's problem — json.Unmarshal reports the type error separately.
 func nestedObjectUnknownKeyErrors(entry map[string]json.RawMessage, field string, known map[string]bool, prefix string) []string {
 	raw, ok := entry[field]
 	if !ok {
@@ -161,10 +119,6 @@ func nestedObjectUnknownKeyErrors(entry map[string]json.RawMessage, field string
 	return errs
 }
 
-// validateUserDefaultsJSONKeys flags typos inside the canonical #1135
-// user_defaults tree. Top-level config keys stay forward-compatible, but once
-// an operator opts into the stop-loss-adjacent defaults block, unknown siblings
-// and manual leaf keys must fail loudly instead of silently falling back.
 func validateUserDefaultsJSONKeys(rawData []byte) []string {
 	var envelope struct {
 		UserDefaults map[string]json.RawMessage `json:"user_defaults"`

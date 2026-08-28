@@ -1,26 +1,4 @@
 #!/usr/bin/env python3
-"""
-TopStep live positions fetcher (issue #347).
-
-Fetches every open TopStep futures position on the configured account and
-emits a JSON list to stdout. Used by the portfolio kill switch in the Go
-scheduler to decide which symbols need market-flattens — mirrors
-``fetch_okx_positions.py`` / ``fetch_robinhood_positions.py``. Requires
-live credentials (TopStepX REST API); there is no public unauthenticated
-endpoint.
-
-Usage:
-    fetch_topstep_positions.py
-
-Requires TOPSTEP_API_KEY / TOPSTEP_API_SECRET / TOPSTEP_ACCOUNT_ID.
-Output:
-``{"positions": [{"coin": "ES", "size": 2, "avg_price": 5000.0, "side": "long"}, ...],
-  "platform": "topstep", "timestamp": ...}``
-Size is signed (positive=long, negative=short) — mirrors OKX/HL so the
-Go-side kill-switch parser contract stays symmetric. Zero-size entries
-are filtered upstream, but forceCloseTopStepLive has its own size==0
-defense-in-depth.
-"""
 
 import json
 import os

@@ -1,4 +1,3 @@
-"""Dependency-free statistics for regime diagnostics (#1065). numpy only."""
 from __future__ import annotations
 import numpy as np
 
@@ -14,7 +13,7 @@ def rank_data(x: np.ndarray) -> np.ndarray:
         j = i
         while j + 1 < n and sx[j + 1] == sx[i]:
             j += 1
-        ranks[order[i : j + 1]] = (i + j) / 2.0 + 1.0  # 1-based average rank
+        ranks[order[i : j + 1]] = (i + j) / 2.0 + 1.0
         i = j + 1
     return ranks
 
@@ -43,20 +42,6 @@ def kruskal_h(groups: list[np.ndarray]) -> float:
 
 def benjamini_hochberg(pvals: list[float], alpha: float = 0.05,
                        family_size: int | None = None) -> list[bool]:
-    """Benjamini-Hochberg FDR mask over ``pvals`` at level ``alpha``.
-
-    ``family_size`` overrides the BH denominator (default ``len(pvals)``). Pass
-    a value LARGER than the number of p-values to correct as if the family had
-    that many hypotheses, of which only these were tested — the untested
-    remainder is treated as p=1 (never rejected). Under BH this collapses to
-    ranking the k supplied p-values 1..k but dividing each rank's threshold by
-    the full family size N instead of k, i.e. ``thresh_i = (i / N) * alpha``.
-    That is exactly the correction a selection-aware two-stage search needs
-    (#1338): stage 1 mined N candidates, so the k survivors that reach stage 2
-    must be corrected against N, not re-baselined to a fresh family of k.
-    Must be ``>= len(pvals)`` — a denominator below the tested count would
-    understate, not correct for, multiplicity.
-    """
     p = np.asarray(pvals, dtype=float)
     m = len(p)
     if m == 0:

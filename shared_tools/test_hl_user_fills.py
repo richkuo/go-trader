@@ -1,4 +1,3 @@
-"""Tests for shared_tools/hl_user_fills.py — shape/numeric guard helpers."""
 
 import importlib.util
 import pathlib

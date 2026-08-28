@@ -1,62 +1,4 @@
 #!/usr/bin/env python3
-"""#1410: calibration study for a FUTURE Hurst-based entry gate — report only.
-
-#1409 added the Hurst exponent estimator (``hurst_exponent`` in
-``shared_strategies/open/indicators_core.py``) and surfaced it as an
-observability metric. Nothing measured whether entry outcomes actually vary
-with H at entry time, so any gate threshold would be a guess. This one-shot
-produces that evidence and renders ``backtest/research/hurst_1410_gate_calibration.md``.
-
-REPORT-PATH CONTRACT (#1424). ``backtest/research/hurst_gate_calibration.md`` is
-the LIVE-EVIDENCE contract path — it is what ``scheduler/hurst_gate.go``,
-``docs/ARCHITECTURE.md`` and #1412's Stage 0 gate cite, and it is owned by the
-CURRENT live-evidence study, today ``hurst_1424_gate_resolution.py`` (#1422 held
-it before and now refuses to write it). This study is a FROZEN negative-result
-artifact and
-must never write that file: a later ``--render-only`` here would silently revert
-the live evidence to this study's superseded verdict. Its own render lives beside
-its JSON at ``hurst_1410_gate_calibration.md``.
-
-ADVISORY-ONLY INVARIANT (#1409, stamped beside ``hurst_exponent``): no consumer
-of that estimator may feed gating, sizing, or config surfaces. This script is a
-report-only research harness. It writes exactly two artifacts (a JSON aggregate
-and a Markdown report) and touches no scheduler, config, or live path. The
-"gate" and "size" arms below are OFFLINE SIMULATIONS used to decide whether such
-a gate should ever be built — they ship nothing.
-
-Design constants are PRE-REGISTERED at module level and echoed into both
-artifacts, so the Recommendation is the mechanical output of fixed rules rather
-than a hand-curated conclusion.
-
-Method
-------
-Part A — bucketing. Run each family exemplar ungated on the M1 harness
-(``eval_windows.run_leg``), stamp every trade with H at its entry decision, and
-report per-bucket trade count / win rate / mean+median net return / compounded
-return / trade-sequence max drawdown. NaN is its own bucket and is never
-coerced to 0.5.
-
-Part B — hard-gate sweeps. Real ``Backtester`` re-runs with entry signals
-masked while the hysteresis gate is disarmed (``+1`` zeroed, ``-1`` closes
-untouched), using Backtester kwargs identical to ``run_leg``. Deltas vs the
-ungated leg: max drawdown, total return, chop loss, trade count.
-
-Part C — sizing variant. Exact re-compounding of the ungated per-trade net
-returns with a per-trade multiplier ``m = clamp(1 + gain * e, 0.0, 1.5)``.
-Under fraction-of-equity sizing this transform is exact for return and
-trade-sequence drawdown. Its drawdown is TRADE-GRANULAR, while Part B
-drawdowns are bar-level — the report says so at the table.
-
-Statistics — one-sided seeded permutation tests, all hypotheses corrected
-together with ``regime_stats.benjamini_hochberg``; raw and corrected results
-are reported side by side.
-
-Usage
------
-  uv run --no-sync python backtest/research/hurst_1410_gate_calibration.py \\
-      [--jobs 4] [--write-report] [--only momentum] [--windows is,oos] \\
-      [--datasets BTC/USDT:1h,...] [--out-dir /tmp/hurst_1410]
-"""
 from __future__ import annotations
 
 import argparse
@@ -78,7 +20,7 @@ for _p in (_BACKTEST, _ROOT, os.path.join(_ROOT, "shared_tools")):
 import numpy as np
 import pandas as pd
 
-from eval_windows import (  # noqa: E402  (sys.path bootstrap must run first)
+from eval_windows import (
     DATASETS,
     DEFAULT_CAPITAL,
     FEE_PLATFORM,
@@ -91,14 +33,11 @@ from eval_windows import (  # noqa: E402  (sys.path bootstrap must run first)
     run_leg,
     trade_samples_from_results,
 )
-from regime_stats import benjamini_hochberg  # noqa: E402
+from regime_stats import benjamini_hochberg
 
-# #1409 SSoT estimator. Package import first (repo root on sys.path), file-spec
-# fallback second — the same two-step shared_tools/regime.py uses. Never
-# reimplement DFA here.
 try:
-    from shared_strategies.open.indicators_core import hurst_exponent  # noqa: E402
-except ImportError:  # pragma: no cover - direct-path execution fallback
+    from shared_strategies.open.indicators_core import hurst_exponent
+except ImportError:
     import importlib.util
 
     _HURST_SPEC = importlib.util.spec_from_file_location(
@@ -112,17 +51,9 @@ except ImportError:  # pragma: no cover - direct-path execution fallback
     hurst_exponent = _HURST_MODULE.hurst_exponent
 
 
-# ---------------------------------------------------------------------------
-# Pre-registered design constants. Changing any of these changes the study;
-# they are serialized verbatim into the JSON and the report so a reader can
-# tell that the Recommendation was not tuned after seeing the numbers.
-# ---------------------------------------------------------------------------
 SCHEMA_VERSION = 1
 ISSUE = 1410
 
-# Strategy families. The exemplars are spot-registry names run on the M1
-# long-leg path with registry default params — the same harness incumbents
-# eval_windows scores. The report states this mapping explicitly.
 FAMILY_MOMENTUM = "momentum"
 FAMILY_MEAN_REVERSION = "mean_reversion"
 FAMILY_EXEMPLARS = {
@@ -131,10 +62,6 @@ FAMILY_EXEMPLARS = {
 }
 FAMILIES = (FAMILY_MOMENTUM, FAMILY_MEAN_REVERSION)
 
-# `atr_band_revert` emits only +1 opens on the spot path (zero close signals),
-# so ungated it opens once and never exits — a degenerate one-trade leg that
-# no gate study can read. Pair it with a documented exit stack so it produces
-# real round trips. Recorded in the report's family-mapping section.
 EXEMPLAR_CLOSE_OVERRIDES = {
     "atr_band_revert": {
         "close_strategies": [{"name": "tiered_tp_atr", "params": {}}],
@@ -142,16 +69,11 @@ EXEMPLAR_CLOSE_OVERRIDES = {
     },
 }
 
-# Buckets on H at entry. NaN is its own bucket (#1409: the estimator returns
-# NaN for insufficient data and must never be read as "measured random walk").
 BUCKET_NAN = "NaN"
 BUCKETS = ("<0.45", "0.45-0.50", "0.50-0.55", ">=0.55", BUCKET_NAN)
 
-# Rolling Hurst window lengths in bars; all above HURST_DFA_MIN_POINTS (100).
 HURST_WINDOWS = (128, 256, 512)
 
-# Gate senses. A momentum family arms on HIGH H (persistence); a
-# mean-reversion family arms on LOW H (anti-persistence).
 SENSE_HIGH = "arms_on_high_h"
 SENSE_LOW = "arms_on_low_h"
 FAMILY_SENSE = {
@@ -159,89 +81,51 @@ FAMILY_SENSE = {
     FAMILY_MEAN_REVERSION: SENSE_LOW,
 }
 
-# Hysteresis (arm, disarm) pairs, both senses. SENSE_HIGH arms when H >= arm
-# and disarms when H < disarm (arm > disarm). SENSE_LOW mirrors it downward:
-# arms when H <= arm, disarms when H > disarm (arm < disarm).
 GATE_PAIRS = {
     FAMILY_MOMENTUM: ((0.55, 0.50), (0.60, 0.52), (0.52, 0.48)),
     FAMILY_MEAN_REVERSION: ((0.45, 0.50), (0.40, 0.48), (0.48, 0.52)),
 }
 
-# Gate state machine: INITIAL STATE ARMED (ungated behaviour until evidence
-# says otherwise), and NaN neither arms nor disarms (the state holds). This
-# makes the gate a pure overlay and stops warmup bars manufacturing benefit.
 GATE_INITIAL_ARMED = True
 
-# Sizing variant: signed edge e, multiplier m = clamp(1 + gain*e, lo, hi);
-# NaN gives m = 1.0 (never 0.5-as-H, never a fabricated edge).
 SIZING_GAINS = (2.5, 5.0)
 SIZING_CLAMP_LO = 0.0
 SIZING_CLAMP_HI = 1.5
 SIZING_NAN_MULTIPLIER = 1.0
 
-# Decision floors. A config with too few suppressed or too few kept trades is
-# degenerate and unrecommendable — this is what stops "trade nothing" winning.
 MIN_SUPPRESSED_TRADES = 20
 MIN_KEPT_TRADES = 30
 
-# Economic acceptance thresholds.
-RETURN_TOLERANCE_PP = 1.0        # absolute floor on allowed return give-up
-RETURN_TOLERANCE_FRAC = 0.1      # or 10% of |ungated return|, whichever larger
-HELD_OUT_MIN_NON_DEGRADING = 2   # of the 3 held-out windows
+RETURN_TOLERANCE_PP = 1.0
+RETURN_TOLERANCE_FRAC = 0.1
+HELD_OUT_MIN_NON_DEGRADING = 2
 
-# Inference.
 ALPHA = 0.05
 N_PERM = 10000
-SEED = ISSUE  # 1410 — fixed so a re-run reproduces every p-value
+SEED = ISSUE
 
-# Bars of extra lead pulled ahead of a window start so the shifted decision
-# series is defined on the window's first bar (needs 2; 4 is margin).
 STAMP_LEAD_BARS = 4
 
-# Warm-up depth a DATASET must carry BEFORE the earliest window start for the
-# entry stamp to be defined on that window's first bar. Rolling H at bar i
-# needs bars [i-W+1, i], and the entry stamp at fill bar p reads the rolling
-# value at p-2 (decision_series shift 1 + fill shift 1), so p >= W+1 is the
-# exact requirement; WARMUP_MARGIN_BARS = 2 keeps one bar of margin and
-# matches the pre-registered "window start minus W+2 bars" convention.
 WARMUP_MARGIN_BARS = 2
 
 _DEFAULT_JSON_OUT = os.path.join(_THIS_DIR, "hurst_1410_gate_calibration.json")
-# NOT "hurst_gate_calibration.md" — that is the live-evidence contract path, owned
-# by whichever study is the current live evidence (see the REPORT-PATH CONTRACT
-# note in the module docstring). A --render-only run here must never overwrite it.
 _DEFAULT_REPORT_OUT = os.path.join(_THIS_DIR, "hurst_1410_gate_calibration.md")
 
 WINDOW_ORDER = tuple(
     sorted(WINDOWS, key=lambda w: (WINDOWS[w][0], w))
-)  # chronological by window start — the dedup iteration order
+)
 
-
-# ---------------------------------------------------------------------------
-# Pure helpers (unit-tested without data access).
-# ---------------------------------------------------------------------------
 
 def required_lead_bars(hurst_window: int) -> int:
-    """Bars a dataset must carry BEFORE the earliest window start so the entry
-    stamp is defined on that window's first bar. See ``WARMUP_MARGIN_BARS``."""
     return int(hurst_window) + WARMUP_MARGIN_BARS
 
 
 def warmup_lead_bars(index, first_needed) -> int:
-    """Bars in ``index`` that fall strictly BEFORE ``first_needed``."""
     return int(pd.Index(index).searchsorted(pd.Timestamp(first_needed),
                                             side="left"))
 
 
 def warmup_audit(leads: dict, hurst_windows: Sequence[int]) -> dict:
-    """Record — never assume — the warm-up depth every scored bar rests on.
-
-    The report claims the ``NaN`` bucket is empty as a property of the harness.
-    That claim is only true when every dataset carries ``required_lead_bars``
-    of history before the earliest window start. This turns the claim into a
-    measurement the run stores, so a reader of the committed JSON can tell
-    which case produced the shipped tables.
-    """
     required = max((required_lead_bars(hw) for hw in hurst_windows), default=0)
     short = sorted(k for k, v in leads.items() if int(v) < required)
     return {
@@ -253,16 +137,10 @@ def warmup_audit(leads: dict, hurst_windows: Sequence[int]) -> dict:
     }
 
 
-# Metadata stored beside every cached rolling-Hurst array, so a cache HIT is
-# indistinguishable from a fresh recompute. Length alone is not enough: the
-# NaN coverage of an array depends on the ``first_needed`` it was computed
-# with, and two runs over one dataset with different --windows selections
-# produce same-length arrays with very different coverage.
-CACHE_META_FIELDS = 4  # first_needed_ns, index_first_ns, index_last_ns, length
+CACHE_META_FIELDS = 4
 
 
 def cache_meta(index, first_needed) -> np.ndarray:
-    """Identity of one cached rolling-Hurst array."""
     idx = pd.Index(index)
     return np.array([
         pd.Timestamp(first_needed).value,
@@ -273,13 +151,6 @@ def cache_meta(index, first_needed) -> np.ndarray:
 
 
 def cache_entry_is_usable(meta, index, first_needed) -> bool:
-    """True only when reusing the cached array cannot change any read value.
-
-    Requires the SAME bar series (first bar, last bar, length) and a cached
-    ``first_needed`` no LATER than the one this run needs — an array computed
-    from further back is a superset of the requested coverage, while one
-    computed from later carries NaN on bars this run reads.
-    """
     if meta is None:
         return False
     arr = np.asarray(meta)
@@ -293,12 +164,6 @@ def cache_entry_is_usable(meta, index, first_needed) -> bool:
 
 
 def bucket_label(h) -> str:
-    """Bucket for one H reading.
-
-    NaN / None is its own bucket and is NEVER coerced to 0.5 — "unknown"
-    stays distinguishable from "measured random walk" (#1409). Boundaries are
-    half-open upward: ``<0.45``, ``[0.45,0.50)``, ``[0.50,0.55)``, ``>=0.55``.
-    """
     if h is None:
         return BUCKET_NAN
     value = float(h)
@@ -314,7 +179,6 @@ def bucket_label(h) -> str:
 
 
 def validate_gate_pair(arm: float, disarm: float, sense: str) -> None:
-    """Reject a pair whose thresholds do not form hysteresis in its sense."""
     if sense == SENSE_HIGH:
         if not arm > disarm:
             raise ValueError(
@@ -329,12 +193,6 @@ def validate_gate_pair(arm: float, disarm: float, sense: str) -> None:
 
 def hysteresis_mask(values: Sequence[float], arm: float, disarm: float,
                     sense: str) -> np.ndarray:
-    """Armed-state boolean series over a decision-H series.
-
-    Starts ARMED (``GATE_INITIAL_ARMED``). A NaN reading neither arms nor
-    disarms — the state holds — so warmup bars never manufacture a gate
-    benefit and "unknown" is never treated as an edge signal.
-    """
     validate_gate_pair(arm, disarm, sense)
     armed = bool(GATE_INITIAL_ARMED)
     out = np.empty(len(values), dtype=bool)
@@ -346,7 +204,7 @@ def hysteresis_mask(values: Sequence[float], arm: float, disarm: float,
                     armed = True
                 elif value < disarm:
                     armed = False
-            else:  # SENSE_LOW
+            else:
                 if value <= arm:
                     armed = True
                 elif value > disarm:
@@ -356,12 +214,6 @@ def hysteresis_mask(values: Sequence[float], arm: float, disarm: float,
 
 
 def mask_entry_signals(signal: Sequence[float], armed: Sequence[bool]) -> np.ndarray:
-    """Zero entry signals (``> 0``) on disarmed bars; closes (``< 0``) pass.
-
-    A gate may only stop NEW exposure. Suppressing a close would strand a
-    position the ungated arm would have exited, which is a different (and
-    unsafe) experiment.
-    """
     sig = np.asarray(signal, dtype=float)
     arm = np.asarray(armed, dtype=bool)
     if sig.shape != arm.shape:
@@ -371,12 +223,6 @@ def mask_entry_signals(signal: Sequence[float], armed: Sequence[bool]) -> np.nda
 
 
 def size_multiplier(h, sense: str, gain: float) -> float:
-    """Per-trade size multiplier from one H reading.
-
-    ``e`` is the signed edge in the family's sense; ``m = clamp(1 + gain*e)``.
-    NaN gives exactly 1.0 — unchanged size. NaN is never mapped to H=0.5 and
-    never produces a size opinion of its own.
-    """
     if sense not in (SENSE_HIGH, SENSE_LOW):
         raise ValueError(f"unknown gate sense {sense!r}")
     if h is None:
@@ -390,14 +236,6 @@ def size_multiplier(h, sense: str, gain: float) -> float:
 
 def compound_equity(returns_pct: Sequence[float],
                     multipliers: Optional[Sequence[float]] = None) -> tuple:
-    """Trade-sequence compounded return and max drawdown, both in percent.
-
-    ``equity *= 1 + m_i * r_i / 100``. Equity is floored at 0 and stays there
-    (a busted account cannot recover), mirroring the backtester's liquidation
-    floor convention. Returns ``(total_return_pct, max_drawdown_pct)`` with the
-    drawdown reported as a NON-POSITIVE number, same sign convention as
-    ``Backtester.max_drawdown_pct``.
-    """
     rets = list(returns_pct)
     if multipliers is None:
         mults = [1.0] * len(rets)
@@ -423,10 +261,6 @@ def compound_equity(returns_pct: Sequence[float],
 
 
 def chop_loss(returns_pct: Sequence[float]) -> float:
-    """Summed MAGNITUDE of losing trades — the cost a chop filter should cut.
-
-    Reported as a non-negative number; smaller is better.
-    """
     return round(float(sum(-float(r) for r in returns_pct if float(r) < 0.0)), 6)
 
 
@@ -438,14 +272,6 @@ def win_rate(returns_pct: Sequence[float]) -> Optional[float]:
 
 
 def dedup_entries(rows: Sequence[dict]) -> list:
-    """Collapse the same physical entry seen through overlapping windows.
-
-    Key is ``(strategy, symbol, timeframe, entry_date)`` — the eval_windows
-    entry-date convention, extended with strategy/symbol/timeframe so two
-    genuinely different physical entries that merely share a timestamp are
-    never collapsed. Windows are iterated in CHRONOLOGICAL start order and the
-    first occurrence wins, so the result is independent of scheduling order.
-    """
     order = {name: i for i, name in enumerate(WINDOW_ORDER)}
     ordered = sorted(
         rows,
@@ -473,13 +299,6 @@ def permutation_pvalue_group_diff(values: Sequence[float],
                                   suppressed: Sequence[bool],
                                   n_perm: int = N_PERM,
                                   seed: int = SEED) -> Optional[float]:
-    """One-sided p for "suppressed trades are WORSE than kept trades".
-
-    Statistic is ``mean(kept) - mean(suppressed)``; the null shuffles the
-    kept/suppressed labels across the pooled trades. ``p = (1 + #{shuffled >=
-    observed}) / (n_perm + 1)`` — the add-one convention, so p is never 0.
-    Returns None when either group is empty (no testable contrast).
-    """
     vals = np.asarray(values, dtype=float)
     mask = np.asarray(suppressed, dtype=bool)
     if vals.shape != mask.shape:
@@ -510,13 +329,6 @@ def permutation_pvalue_weighted(returns: Sequence[float],
                                 multipliers: Sequence[float],
                                 n_perm: int = N_PERM,
                                 seed: int = SEED) -> Optional[float]:
-    """One-sided p for "this multiplier assignment beats a random one".
-
-    Statistic is ``mean(m_i * r_i)``; the null shuffles the multipliers across
-    trades, which keeps both marginal distributions fixed and tests only the
-    PAIRING (the thing a size rule claims to get right). Add-one convention.
-    Returns None when the multipliers carry no variation (nothing to shuffle).
-    """
     rets = np.asarray(returns, dtype=float)
     mults = np.asarray(multipliers, dtype=float)
     if rets.shape != mults.shape:
@@ -532,8 +344,6 @@ def permutation_pvalue_weighted(returns: Sequence[float],
     tile = np.broadcast_to(mults, (chunk_size, n))
     while remaining > 0:
         take = min(chunk_size, remaining)
-        # rng.permuted shuffles each row independently in O(n) — cheaper than
-        # argsorting a random key matrix, and the null is identical.
         shuffled = rng.permuted(np.array(tile[:take], copy=True), axis=1)
         stats = (shuffled * rets).mean(axis=1)
         ge += int(np.count_nonzero(stats >= observed))
@@ -542,19 +352,6 @@ def permutation_pvalue_weighted(returns: Sequence[float],
 
 
 def config_verdict(cfg: dict) -> tuple:
-    """Pure accept/reject for one swept config. Returns ``(passed, reasons)``.
-
-    A config wins only when EVERY pre-registered rule holds:
-      * volume floors met (suppressed and kept),
-      * BH-corrected significant,
-      * on BOTH protocol windows: drawdown reduced, chop loss reduced, and
-        return not given up beyond the tolerance,
-      * drawdown does not degrade on at least ``HELD_OUT_MIN_NON_DEGRADING``
-        of the three held-out windows.
-
-    ``dd_delta`` and ``chop_delta`` are MAGNITUDE deltas (gated minus
-    ungated); negative means improvement.
-    """
     reasons = []
     if int(cfg.get("n_suppressed") or 0) < MIN_SUPPRESSED_TRADES:
         reasons.append(
@@ -593,10 +390,6 @@ def config_verdict(cfg: dict) -> tuple:
 
 
 def protocol_dd_reduction(cfg: dict) -> float:
-    """Pooled protocol-window drawdown reduction, positive = better.
-
-    Tie-break metric: the summed magnitude improvement over ``is`` and ``oos``.
-    """
     windows = cfg.get("windows") or {}
     total = 0.0
     for name in PROTOCOL_WINDOWS:
@@ -607,14 +400,6 @@ def protocol_dd_reduction(cfg: dict) -> float:
 
 
 def decide_recommendation(configs: Sequence[dict]) -> dict:
-    """Mechanically derive the Recommendation from the swept configs.
-
-    Returns ``{"verdict": "config"|"inconclusive", "families": {...},
-    "justification": str}``. A family with at least one passing config gets its
-    best one (largest pooled protocol drawdown reduction); a family with none
-    gets an explicit no-gate statement. With no family winning anywhere the
-    verdict is ``inconclusive`` and the report prints exactly ``INCONCLUSIVE``.
-    """
     families = {}
     for family in FAMILIES:
         own = [c for c in configs if c.get("family") == family]
@@ -657,23 +442,8 @@ def decide_recommendation(configs: Sequence[dict]) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
-# Hurst series (look-ahead safe).
-# ---------------------------------------------------------------------------
-
 def rolling_hurst(close: pd.Series, window: int,
                   first_needed: Optional[pd.Timestamp] = None) -> pd.Series:
-    """Rolling H: the value at bar ``i`` uses closes ``[i-window+1, i]``.
-
-    This is the BAR-CLOSE series; it is NOT the decision series. Bars with
-    fewer than ``window`` observations are NaN, as is any window the estimator
-    itself refuses (#1409 semantics: NaN means unknown).
-
-    ``first_needed`` trims the computation to the bars a caller actually reads
-    (with ``STAMP_LEAD_BARS`` of margin for the shifts) — purely a cost cut,
-    it never changes a computed value, because H at bar ``i`` depends only on
-    that bar's own trailing window.
-    """
     if window < 2:
         raise ValueError(f"hurst window must be >= 2, got {window}")
     prices = close.astype(float)
@@ -689,43 +459,18 @@ def rolling_hurst(close: pd.Series, window: int,
 
 
 def decision_series(rolling: pd.Series) -> pd.Series:
-    """H available to a decision taken AT signal bar N: bars through N-1.
-
-    One ``shift(1)`` off the bar-close series. The backtester fills a bar-N
-    signal at bar N+1's open, so this is strictly closed-bar information and is
-    one bar MORE conservative than the live regime gate (which reads bar N's
-    label for the N+1 fill). The extra bar of lag is deliberate: it makes the
-    calibration immune to any bar-close ambiguity.
-    """
     return rolling.shift(1)
 
 
 def entry_stamp_series(rolling: pd.Series) -> pd.Series:
-    """Decision H indexed by FILL bar.
-
-    A trade's ``entry_date`` is the fill bar N+1, but the value that gated it
-    was the decision value at signal bar N. That is the bar-close series
-    shifted twice.
-    """
     return rolling.shift(2)
 
-
-# ---------------------------------------------------------------------------
-# Engine arms. `_run_arm` mirrors eval_windows.run_leg's Backtester
-# construction exactly; every leg additionally verifies its ungated arm
-# against run_leg itself, so the mirror can never drift silently.
-# ---------------------------------------------------------------------------
 
 _MIRRORED_LEG_KEYS = ("sharpe", "return_pct", "max_dd_pct", "ddadj", "trades",
                       "liquidated")
 
 
 def slice_window(full: pd.DataFrame, window: tuple) -> pd.DataFrame:
-    """The exact bar slice ``run_leg`` scores: ``[start, end)``.
-
-    ``end=None`` (the ``oos`` window) means "latest cached bar" and skips the
-    upper bound, matching run_leg.
-    """
     start, end = window
     df = full[full.index >= pd.Timestamp(start)]
     if end is not None:
@@ -735,12 +480,6 @@ def slice_window(full: pd.DataFrame, window: tuple) -> pd.DataFrame:
 
 def _run_arm(reg, name: str, symbol: str, timeframe: str, df: pd.DataFrame,
              armed: Optional[np.ndarray], overrides: dict) -> Optional[dict]:
-    """One Backtester run on a pre-sliced frame, optionally entry-masked.
-
-    Kwargs are byte-identical to ``eval_windows.run_leg``'s no-regime,
-    no-profile path: FEE_PLATFORM fee model, the Backtester's 5 bps slippage
-    default, ``ohlc_walk`` intrabar resolution, registry default params.
-    """
     from atr import ensure_atr_indicator
     from backtester import Backtester
     from run_backtest import FUNDING_COLUMN_STRATEGIES
@@ -789,7 +528,6 @@ def _run_arm(reg, name: str, symbol: str, timeframe: str, df: pd.DataFrame,
 
 
 def _leg_metrics(leg: Optional[dict]) -> dict:
-    """Bar-level engine metrics + the trade-derived chop loss for one arm."""
     if leg is None:
         return {"return_pct": 0.0, "max_dd_pct": 0.0, "chop_loss": 0.0, "trades": 0}
     rets = [s["pnl_pct_net"] for s in leg.get("trade_samples") or []]
@@ -801,12 +539,6 @@ def _leg_metrics(leg: Optional[dict]) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
-# Per-leg work unit.
-# ---------------------------------------------------------------------------
-
-# Config ids appear inside Markdown table cells, so the separator must not be
-# a pipe — GitHub splits cells on `|` even inside a code span.
 CONFIG_ID_SEP = "/"
 
 
@@ -823,11 +555,6 @@ def size_config_id(family: str, hurst_window: int, gain: float) -> str:
 def build_leg(reg, family: str, exemplar: str, symbol: str, timeframe: str,
               window_name: str, full: pd.DataFrame, hurst_by_window: dict,
               verify_mirror: bool = True) -> Optional[dict]:
-    """Every arm for one (exemplar, dataset, window) cell.
-
-    Returns the ungated leg's stamped trades plus one gated leg per
-    (hurst window x gate pair), or None when the cell has no bars.
-    """
     window = WINDOWS[window_name]
     overrides = EXEMPLAR_CLOSE_OVERRIDES.get(exemplar, {})
     df = slice_window(full, window)
@@ -839,9 +566,6 @@ def build_leg(reg, family: str, exemplar: str, symbol: str, timeframe: str,
     if ungated is None:
         return None
 
-    # Mirror guard: the ungated arm must reproduce eval_windows.run_leg
-    # exactly. Without this the gated arms could silently be scored on a
-    # different harness than the M1 baseline they are compared against.
     mirror_ok = None
     if verify_mirror:
         reference = run_leg(reg, exemplar, None, symbol, timeframe, window,
@@ -862,15 +586,12 @@ def build_leg(reg, family: str, exemplar: str, symbol: str, timeframe: str,
     index_keys = [str(ts) for ts in df.index]
     key_pos = {k: i for i, k in enumerate(index_keys)}
 
-    # H stamps per hurst window, indexed by FILL bar (shift(2)).
     stamps = {}
     decisions = {}
     for hw, rolling in hurst_by_window.items():
         stamps[hw] = entry_stamp_series(rolling).reindex(df.index).to_numpy(dtype=float)
         decisions[hw] = decision_series(rolling).reindex(df.index).to_numpy(dtype=float)
 
-    # Armed state per gate config, on the leg's own decision series (initial
-    # state armed), then shifted one bar so it is indexed by FILL bar.
     armed_signal_bar = {}
     armed_fill_bar = {}
     for hw in hurst_by_window:
@@ -923,12 +644,7 @@ def build_leg(reg, family: str, exemplar: str, symbol: str, timeframe: str,
     }
 
 
-# ---------------------------------------------------------------------------
-# Aggregation.
-# ---------------------------------------------------------------------------
-
 def bucket_tables(trades: Sequence[dict], hurst_window: int) -> dict:
-    """Part A: per-bucket outcome table over an already-deduped trade pool."""
     by_bucket = {b: [] for b in BUCKETS}
     for t in trades:
         by_bucket[bucket_label(t["h"].get(hurst_window))].append(t["pnl_pct_net"])
@@ -948,7 +664,6 @@ def bucket_tables(trades: Sequence[dict], hurst_window: int) -> dict:
 
 
 def _window_rows_gate(legs: Sequence[dict], family: str, config_id: str) -> dict:
-    """Per-window mean deltas for a gate config, across that family's legs."""
     rows = {}
     for wname in WINDOWS:
         cells = [lg for lg in legs
@@ -980,12 +695,6 @@ def _window_rows_gate(legs: Sequence[dict], family: str, config_id: str) -> dict
 
 def _window_rows_size(legs: Sequence[dict], family: str, hurst_window: int,
                       gain: float) -> dict:
-    """Per-window mean deltas for a sizing config.
-
-    Both arms are TRADE-GRANULAR re-compoundings of the same ungated trade
-    sequence (baseline m=1 vs the sized multipliers), so the comparison is
-    like-for-like. It is NOT comparable to the bar-level Part B drawdowns.
-    """
     sense = FAMILY_SENSE[family]
     rows = {}
     for wname in WINDOWS:
@@ -1027,7 +736,6 @@ def _window_rows_size(legs: Sequence[dict], family: str, hurst_window: int,
 
 def build_configs(legs: Sequence[dict], pooled: dict, hurst_windows: Sequence[int],
                   n_perm: int, seed: int) -> list:
-    """Every swept config with its raw p-value and per-window economics."""
     configs = []
     for family in FAMILIES:
         sense = FAMILY_SENSE[family]
@@ -1061,8 +769,6 @@ def build_configs(legs: Sequence[dict], pooled: dict, hurst_windows: Sequence[in
                 mults = [size_multiplier(t["h"].get(hw), sense, gain) for t in trades]
                 p_raw = permutation_pvalue_weighted(
                     rets, mults, n_perm=n_perm, seed=seed)
-                # A sizing config's "suppressed" analogue is the down-weighted
-                # side (m < 1); the same volume floors then apply unchanged.
                 n_down = int(sum(1 for m in mults if m < 1.0))
                 configs.append({
                     "config_id": cid,
@@ -1083,12 +789,6 @@ def build_configs(legs: Sequence[dict], pooled: dict, hurst_windows: Sequence[in
 
 
 def apply_bh(configs: Sequence[dict], alpha: float = ALPHA) -> None:
-    """One Benjamini-Hochberg correction over EVERY tested hypothesis.
-
-    Untestable configs (p is None — no contrast to test) are excluded from the
-    p-value list but still counted in the BH denominator via ``family_size``,
-    so dropping them can never make the correction more permissive.
-    """
     testable = [c for c in configs if c.get("p_raw") is not None]
     if not testable:
         for cfg in configs:
@@ -1102,11 +802,6 @@ def apply_bh(configs: Sequence[dict], alpha: float = ALPHA) -> None:
         cfg.setdefault("bh_reject", False)
 
 
-# ---------------------------------------------------------------------------
-# Report rendering. The Recommendation is always the FINAL section and is a
-# mechanical render of decide_recommendation — never hand-written.
-# ---------------------------------------------------------------------------
-
 def _fmt(value, digits: int = 2, suffix: str = "") -> str:
     if value is None:
         return "-"
@@ -1116,7 +811,6 @@ def _fmt(value, digits: int = 2, suffix: str = "") -> str:
 
 
 def render_recommendation(decision: dict, configs: Sequence[dict]) -> str:
-    """The `## Recommendation` body: per-family config lines, or INCONCLUSIVE."""
     lines = ["## Recommendation", ""]
     if decision["verdict"] == "inconclusive":
         lines.append("INCONCLUSIVE")
@@ -1175,13 +869,6 @@ _NAN_POLICY_NOTE = (
 
 
 def render_nan_bucket_note(warmup) -> str:
-    """The `NaN` bucket paragraph, rendered from the run's MEASURED warm-up.
-
-    The emptiness of the NaN bucket is a property of the warm-up depth the
-    datasets happened to carry, so the report states the measurement rather
-    than asserting the property. A payload with no recorded audit (an older
-    JSON re-rendered with ``--render-only``) says so instead of claiming it.
-    """
     if not warmup:
         return ("The `NaN` bucket's contents depend on warm-up depth, and this "
                 "run recorded no warm-up audit, so whether H was defined on "
@@ -1208,7 +895,6 @@ def render_nan_bucket_note(warmup) -> str:
 
 
 def render_report(payload: dict) -> str:
-    """Full Markdown report. `## Recommendation` is guaranteed to be last."""
     cfgs = payload["configs"]
     decision = payload["decision"]
     const = payload["pre_registered"]
@@ -1449,19 +1135,7 @@ def render_report(payload: dict) -> str:
     return "\n".join(out)
 
 
-# ---------------------------------------------------------------------------
-# Driver.
-# ---------------------------------------------------------------------------
-
 def report_from_payload(payload: dict) -> str:
-    """Render the report from a committed JSON payload.
-
-    The stored ``decision`` keeps only the winner's id (to stay compact), so
-    the full decision is recomputed from the stored configs. That recompute is
-    a pure function of the same numbers, which is exactly the property the
-    report contract needs: the Recommendation cannot drift away from the
-    evidence it is rendered beside.
-    """
     rebuilt = dict(payload)
     rebuilt["decision"] = decide_recommendation(payload["configs"])
     return render_report(rebuilt)
@@ -1493,7 +1167,7 @@ def _parse_windows(raw: Optional[str]) -> list:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    p = argparse.ArgumentParser()
     p.add_argument("--jobs", type=int, default=4, help="worker threads")
     p.add_argument("--out-dir", default=None,
                    help="optional dir for the rolling-Hurst npz cache")
@@ -1543,8 +1217,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     from registry_loader import load_registry
     reg = load_registry("spot")
 
-    # 1. Preload every dataset ONCE (data-source axis: PLATFORM), so the
-    #    backtest fan-out never touches SQLite concurrently.
     print(f"[1410] loading {len(datasets)} datasets from {PLATFORM} cache...")
     frames = {}
     for symbol, timeframe in datasets:
@@ -1553,10 +1225,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     first_needed = min(pd.Timestamp(WINDOWS[w][0]) for w in window_names)
 
-    # Measure — do not assume — the warm-up depth every scored bar rests on.
-    # The report's "the NaN bucket is empty by construction" claim is only
-    # true when this audit says `sufficient`; on a thinner cache the run says
-    # so out loud and the rendered report names the shortfall.
     warmup = warmup_audit(
         {dataset_key(s, t): warmup_lead_bars(frames[(s, t)].index, first_needed)
          for s, t in datasets},
@@ -1574,7 +1242,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"[1410] warm-up OK: min lead {warmup['min_lead_bars']} bars "
               f"before {first_needed.date()} (need {warmup['required_bars']}).")
 
-    # 2. Rolling Hurst per (dataset, W), computed once over the padded span.
     print(f"[1410] computing rolling Hurst for {len(datasets)}x"
           f"{len(hurst_windows)} (dataset, window) pairs...")
     hurst: dict = {}
@@ -1609,7 +1276,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 frames[ds].index, first_needed)
         np.savez_compressed(cache_path, **arrays)
 
-    # 3. Fan out the legs.
     units = [(family, exemplar, symbol, timeframe, wname)
              for family in families
              for exemplar in FAMILY_EXEMPLARS[family]
@@ -1629,7 +1295,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         legs = [lg for lg in pool.map(_leg_job, units) if lg is not None]
     legs.sort(key=lambda lg: (lg["family"], lg["strategy"], lg["dataset"], lg["window"]))
 
-    # 4. Pool + dedup trades per family.
     pooled = {}
     raw_counts = {}
     for family in families:
@@ -1640,7 +1305,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         pooled.setdefault(family, [])
         raw_counts.setdefault(family, 0)
 
-    # 5. Sweep + inference.
     configs = build_configs(legs, pooled, hurst_windows, args.n_perm, args.seed)
     configs = [c for c in configs if c["family"] in families]
     apply_bh(configs, alpha=ALPHA)
@@ -1706,9 +1370,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         fh.write("\n")
     print(f"[1410] wrote {args.json_out}")
 
-    # render_report reads the in-memory decision (with winner objects) so the
-    # Recommendation can print the winner's full config; the JSON keeps only
-    # the id to stay compact.
     payload_for_report = dict(payload)
     payload_for_report["decision"] = decision
     report = render_report(payload_for_report)

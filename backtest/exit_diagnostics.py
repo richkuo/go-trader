@@ -1,31 +1,4 @@
 #!/usr/bin/env python3
-"""Holding-time / excursion diagnostics for exit-quality refinement (#997 M3).
-
-Step 1 of methodology M3 in one command: *where does a strategy's PnL die* —
-early reversal (loser runs straight against the entry), late giveback (winner
-peaks then bleeds back), or fee churn on the exit leg? The answer points at the
-mechanism to try next (atr_stop / time_stop / zscore_target), instead of a
-blind close-param sweep.
-
-It runs the SAME audit-identical harness as the M1 scorer: it imports the
-versioned ``WINDOWS`` / ``DATASETS`` / ``FEE_PLATFORM`` from ``eval_windows.py`` so
-diagnosis and scoring see byte-identical data slices, then reads the per-trade
-hold telemetry the backtester stamps (#997: ``bars_held``, ``mfe_pct`` /
-``mae_pct`` excursions, ``entry_fee`` / ``exit_fee``, ``exit_reason``).
-
-Usage:
-  uv run --no-sync python backtest/exit_diagnostics.py --strategy ichimoku_cloud
-  uv run --no-sync python backtest/exit_diagnostics.py --strategy ichimoku_cloud \
-      --registry spot --windows is,oos --json /tmp/diag.json
-  # diagnose a candidate WITH close refs (use --direction long to keep it
-  # long-only; the open/close engine opens shorts on signal=-1 otherwise):
-  uv run --no-sync python backtest/exit_diagnostics.py --strategy ichimoku_cloud \
-      --close-strategies '[{"name":"atr_stop","params":{"atr_mult":2.5}}]' \
-      --direction long
-
-All aggregation logic is pure (operates on lists of trade dicts) so it is unit
-tested without data access — same architecture as eval_windows.py.
-"""
 
 from __future__ import annotations
 
@@ -41,7 +14,7 @@ _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _THIS_DIR not in sys.path:
     sys.path.insert(0, _THIS_DIR)
 
-from eval_windows import (  # noqa: E402  (path bootstrap above)
+from eval_windows import (
     DATASETS,
     DEFAULT_CAPITAL,
     FEE_PLATFORM,
@@ -50,34 +23,15 @@ from eval_windows import (  # noqa: E402  (path bootstrap above)
     parse_dataset_arg,
 )
 
-# --------------------------------------------------------------------------
-# Tunable classification thresholds (documented; not magic numbers).
-# --------------------------------------------------------------------------
 
-# Holding-time buckets (inclusive bar-count ranges).
 HOLD_BUCKETS = [(1, 1), (2, 5), (6, 20), (21, 50), (51, math.inf)]
 
-# A favourable excursion below this (percent) is "never meaningfully in profit".
 MFE_MIN_PCT = 1.0
-# late_giveback: captured at most this fraction of the peak favourable move.
 CAPTURE_FRAC = 0.5
-# early_reversal: a loser whose peak favourable move stayed under this (percent).
 EARLY_MFE_MAX_PCT = 0.5
 
 
-# --------------------------------------------------------------------------
-# Pure per-trade + aggregation helpers (unit-tested without data access).
-# --------------------------------------------------------------------------
-
 def trade_metrics(t: dict) -> dict:
-    """Derive gross/net/fee fractions + excursions from a stamped trade dict.
-
-    ``pnl_pct`` / ``mfe_pct`` / ``mae_pct`` are already percent (Trade.to_dict).
-    Fees are absolute; convert to percent of this leg's notional using shares
-    and prices so the result is independent of which run path booked the leg
-    (Trade.pnl is net of both fees at every close site since #1241, but pnl_pct
-    stays gross on all paths, so we key off pnl_pct and re-derive fees here).
-    """
     gross_pct = float(t.get("pnl_pct", 0.0) or 0.0)
     shares = float(t.get("shares", 0.0) or 0.0)
     entry_price = float(t.get("entry_price", 0.0) or 0.0)
@@ -135,7 +89,6 @@ def _mean(xs):
 
 
 def holding_time_summary(metrics: List[dict]) -> dict:
-    """Bars-held distribution + PnL bucketed by holding time."""
     if not metrics:
         return {"trades": 0, "buckets": [], "bars_held": {}}
     bars = [m["bars_held"] for m in metrics]
@@ -163,7 +116,6 @@ def holding_time_summary(metrics: List[dict]) -> dict:
 
 
 def _pct(xs, q):
-    """Linear-interpolation percentile (q in 0..100); xs non-empty."""
     s = sorted(xs)
     if len(s) == 1:
         return float(s[0])
@@ -176,11 +128,6 @@ def _pct(xs, q):
 
 
 def excursion_summary(metrics: List[dict]) -> dict:
-    """MFE/MAE excursion profile, aggregate + per holding-time bucket.
-
-    MAE/MFE are reported in ATR multiples too — read the atr_stop knob straight
-    off ``mae_atr`` percentiles (set the stop just beyond winners' typical MAE).
-    """
     if not metrics:
         return {"aggregate": {}, "buckets": []}
     winners = [m for m in metrics if m["net_pct"] > 0]
@@ -213,18 +160,6 @@ def excursion_summary(metrics: List[dict]) -> dict:
 
 
 def classify_bleed_modes(metrics: List[dict]) -> dict:
-    """Tag each trade with the dominant bleed mode → where the PnL dies.
-
-    Priority (first match wins):
-      fee_churn      — fees flipped a gross win to a net loss, or the gross
-                       price move was smaller than the round-trip fee.
-      late_giveback  — peaked >= MFE_MIN_PCT favourable then captured <=
-                       CAPTURE_FRAC of it (gave the profit back). → time_stop.
-      early_reversal — a net loser that never got meaningfully favourable
-                       (MFE < EARLY_MFE_MAX_PCT): ran against from the open.
-                       → atr_stop.
-      clean_win / clean_loss — the residual.
-    """
     counts: dict = {}
     for m in metrics:
         gross, net, fee = m["gross_pct"], m["net_pct"], m["fee_pct"]
@@ -256,7 +191,6 @@ def classify_bleed_modes(metrics: List[dict]) -> dict:
 
 
 def fee_churn_summary(metrics: List[dict]) -> dict:
-    """Exit-leg fee-drag read + exit-reason tally."""
     if not metrics:
         return {"trades": 0}
     fees = [m["fee_pct"] for m in metrics]
@@ -278,7 +212,6 @@ def fee_churn_summary(metrics: List[dict]) -> dict:
 
 
 def diagnose_trades(trades: List[dict]) -> dict:
-    """Full diagnostic for one set of trade dicts."""
     metrics = [trade_metrics(t) for t in trades]
     return {
         "holding_time": holding_time_summary(metrics),
@@ -288,21 +221,11 @@ def diagnose_trades(trades: List[dict]) -> dict:
     }
 
 
-# --------------------------------------------------------------------------
-# Leg execution (I/O; everything above stays pure).
-# --------------------------------------------------------------------------
-
 def run_leg_trades(reg, name: str, params: Optional[dict], symbol: str,
                    timeframe: str, window: tuple, capital: float,
                    close_strategies: Optional[List[dict]] = None,
                    direction: Optional[str] = None,
                    invert_signal: bool = False) -> Optional[List[dict]]:
-    """One (strategy, dataset, window) leg → its list of trade dicts.
-
-    Mirrors eval_windows.run_leg's harness construction exactly (audit-identical
-    fees/data) but returns the full per-trade telemetry instead of collapsed
-    metrics.
-    """
     from atr import ensure_atr_indicator
     from data_fetcher import load_cached_data
     from backtester import Backtester
@@ -321,12 +244,6 @@ def run_leg_trades(reg, name: str, params: Optional[dict], symbol: str,
     strat_params = params if params is not None else strat["default_params"]
 
     df_signals = reg.apply_strategy(name, df, strat_params)
-    # Always inject ATR so entry_atr telemetry (and MAE-in-ATR readout) is
-    # populated even for strategies that emit no `atr` column. This is
-    # diagnostics-only: with no ATR stop/close configured the backtester reads
-    # the series solely to stamp Trade.entry_atr, so trade behaviour — and any
-    # downstream M1 score, which runs through eval_windows, not here — is
-    # unchanged.
     df_signals = ensure_atr_indicator(df_signals)
 
     bt = Backtester(

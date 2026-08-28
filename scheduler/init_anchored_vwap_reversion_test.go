@@ -30,13 +30,6 @@ func TestAnchoredVWAPReversionWiring(t *testing.T) {
 	}
 }
 
-// anchored_vwap_reversion fades ATR-measured stretches beyond the anchored
-// VWAP — mean reversion whose edge depends on ranging conditions, so init
-// pre-gates it to the composite quiet/volatile ranging substates exactly like
-// atr_band_revert and anchored_vwap_channel (ranging_directional stays
-// excluded: directional pressure inside a range is the breakout precursor,
-// mean reversion's worst case).
-
 func TestGenerateConfig_AnchoredVWAPReversion_DefaultsToCompositeRangingGate(t *testing.T) {
 	opts := baseOpts()
 	opts.Assets = []string{"BTC"}

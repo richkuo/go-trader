@@ -485,9 +485,6 @@ func TestConfigValidationOpenCloseFields(t *testing.T) {
 	}
 }
 
-// #842: a legacy close_strategies array with >1 entry no longer composes via
-// max close_fraction — LoadConfig must reject it with the strategy id so the
-// operator collapses to a single profit-taking close.
 func TestLoadConfigRejectsMultipleCloseStrategies(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{
@@ -586,7 +583,7 @@ func TestConfigValidationPortfolioRisk(t *testing.T) {
 			ID: "test", Type: "spot", Script: "check.py", Capital: 100, MaxDrawdownPct: 10,
 		}},
 		PortfolioRisk: &PortfolioRiskConfig{
-			MaxDrawdownPct:   0, // invalid
+			MaxDrawdownPct:   0,
 			WarnThresholdPct: 80,
 		},
 	}
@@ -644,21 +641,18 @@ func TestConfigValidationLeaderboardPostTime(t *testing.T) {
 		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
 	}
 
-	// Valid time should pass.
 	cfg := base
 	cfg.LeaderboardPostTime = "11:00"
 	if err := validateConfig(&cfg, false); err != nil {
 		t.Errorf("expected valid config with leaderboard_post_time=11:00, got: %v", err)
 	}
 
-	// Empty (disabled) should pass.
 	cfg2 := base
 	cfg2.LeaderboardPostTime = ""
 	if err := validateConfig(&cfg2, false); err != nil {
 		t.Errorf("expected valid config with empty leaderboard_post_time, got: %v", err)
 	}
 
-	// Invalid format should fail.
 	cfg3 := base
 	cfg3.LeaderboardPostTime = "noon"
 	err := validateConfig(&cfg3, false)
@@ -795,7 +789,6 @@ func TestLoadConfigInitialCapital(t *testing.T) {
 	}
 }
 
-// #254: perps strategies get default Leverage=1 when unset.
 func TestLoadConfigPerpsLeverageDefault(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{
@@ -819,7 +812,6 @@ func TestLoadConfigPerpsLeverageDefault(t *testing.T) {
 	}
 }
 
-// #254: explicit perps Leverage is preserved.
 func TestLoadConfigPerpsLeverageExplicit(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{
@@ -846,7 +838,6 @@ func TestLoadConfigPerpsLeverageExplicit(t *testing.T) {
 	}
 }
 
-// #497: sizing_leverage can differ from exchange leverage.
 func TestLoadConfigPerpsSizingLeverageExplicit(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{
@@ -875,7 +866,6 @@ func TestLoadConfigPerpsSizingLeverageExplicit(t *testing.T) {
 	}
 }
 
-// #254: Leverage must be rejected on non-perps types.
 func TestLoadConfigLeverageRejectsSpot(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{
@@ -898,7 +888,6 @@ func TestLoadConfigLeverageRejectsSpot(t *testing.T) {
 	}
 }
 
-// #254: Leverage must be in [1, 100].
 func TestLoadConfigLeverageRejectsOutOfRange(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{
@@ -944,9 +933,6 @@ func TestLoadConfigSizingLeverageRejectsSpot(t *testing.T) {
 	}
 }
 
-// #497: fractional sizing_leverage is valid — high exchange leverage with
-// conservative position size (e.g. leverage=20, sizing_leverage=0.5) is the
-// motivating use case for decoupling.
 func TestLoadConfigSizingLeverageAcceptsFractional(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{
@@ -995,10 +981,6 @@ func TestLoadConfigSizingLeverageRejectsOutOfRange(t *testing.T) {
 	}
 }
 
-// #518: margin_per_trade_usd lets operators size opens in margin-space
-// (notional = margin × exchange_leverage) instead of the legacy notional
-// formula (cash × sizing_leverage). Loaded as a pointer so omitted (nil) is
-// distinguishable from explicit 0.
 func TestLoadConfigMarginPerTradeUSDAccepted(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{
@@ -1025,7 +1007,6 @@ func TestLoadConfigMarginPerTradeUSDAccepted(t *testing.T) {
 	if got := EffectiveMarginPerTradeUSD(sc); got != 56 {
 		t.Errorf("EffectiveMarginPerTradeUSD = %g, want 56", got)
 	}
-	// The full sizing wrapper should reflect the margin formula.
 	if got := ComputePerpsOpenNotional(sc, 1000); got != 1120 {
 		t.Errorf("ComputePerpsOpenNotional(cash=1000) = %g, want 1120 (56 × 20)", got)
 	}
@@ -1077,20 +1058,16 @@ func TestLoadConfigMarginPerTradeUSDRejectsNonPositive(t *testing.T) {
 	}
 }
 
-// #518: an omitted margin_per_trade_usd leaves the legacy sizing_leverage
-// formula in effect — the field is purely additive opt-in.
 func TestEffectiveMarginPerTradeUSDOmittedReturnsZero(t *testing.T) {
 	sc := StrategyConfig{Type: "perps", Leverage: 20, SizingLeverage: 1}
 	if got := EffectiveMarginPerTradeUSD(sc); got != 0 {
 		t.Errorf("EffectiveMarginPerTradeUSD(omitted) = %g, want 0", got)
 	}
-	// And ComputePerpsOpenNotional should still use the legacy formula.
 	if got := ComputePerpsOpenNotional(sc, 1000); got != 1000 {
 		t.Errorf("ComputePerpsOpenNotional with omitted margin_per_trade_usd = %g, want 1000 (cash × sizing_leverage)", got)
 	}
 }
 
-// #486: HL perps strategies default to isolated margin mode.
 func TestLoadConfigHLPerpsDefaultsToIsolatedMargin(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{
@@ -1113,13 +1090,6 @@ func TestLoadConfigHLPerpsDefaultsToIsolatedMargin(t *testing.T) {
 	}
 }
 
-// #494/#562/#605: a single HL perps strategy on a coin gets the top-level
-// default_stop_loss_atr_mult when no stop_loss_* / trailing_stop_* fields are
-// configured. EffectiveStopLossPct returns 0 at order-placement time because
-// the price-% can only be derived from the per-position EntryATR/AvgCost; the
-// arming step runs on the cycle after open. Setting an explicit stop_loss_pct
-// or stop_loss_margin_pct still falls through to the original auto-derive
-// path (max_drawdown_pct fallback) when those are also omitted.
 func TestLoadConfigHLPerpsSingleStrategyAutoDerivesStopLoss(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{
@@ -1151,8 +1121,6 @@ func TestLoadConfigHLPerpsSingleStrategyAutoDerivesStopLoss(t *testing.T) {
 	}
 }
 
-// #691/#1121: type=manual HL strategies default to stop_loss_atr_mult=2.0 (wider
-// than the 1.0× HL perps default) when no stop fields are configured.
 func TestLoadConfigManualDefaultsStopLossATRMultTo2Point0(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{
@@ -1181,10 +1149,6 @@ func TestLoadConfigManualDefaultsStopLossATRMultTo2Point0(t *testing.T) {
 	}
 }
 
-// #691 / PR #692 review: default_stop_loss_atr_mult=0 opts manual strategies
-// out of the auto-default just like non-manual HL perps. Without this gate,
-// the operator-facing INFO message advertising =0 as the global switch would
-// be a half-truth for type=manual.
 func TestLoadConfigManualOptsOutWhenGlobalDefaultIsZero(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{
@@ -1211,8 +1175,6 @@ func TestLoadConfigManualOptsOutWhenGlobalDefaultIsZero(t *testing.T) {
 	}
 }
 
-// #691: explicit stop_loss_atr_mult on a manual strategy is preserved
-// verbatim — the hardcoded default must not overwrite operator intent.
 func TestLoadConfigManualExplicitATRMultPreserved(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{
@@ -1242,7 +1204,6 @@ func TestLoadConfigManualExplicitATRMultPreserved(t *testing.T) {
 	}
 }
 
-// #696/#1135: user_defaults.manual.stop_loss_atr_mult overrides the hardcoded fallback.
 func TestLoadConfigManualDefaultsStopLossATRMultOverride(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{
@@ -1272,9 +1233,6 @@ func TestLoadConfigManualDefaultsStopLossATRMultOverride(t *testing.T) {
 	}
 }
 
-// #696/#1135: user_defaults.manual.stop_loss_atr_mult=0 opts manual strategies
-// out of the auto-default just like the fleet-wide default_stop_loss_atr_mult=0.
-// Lets operators disable the manual SL default without affecting non-manual perps.
 func TestLoadConfigManualDefaultsStopLossATRMultZeroOptsOut(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{
@@ -1301,8 +1259,6 @@ func TestLoadConfigManualDefaultsStopLossATRMultZeroOptsOut(t *testing.T) {
 	}
 }
 
-// #696/#1135: user_defaults.manual.tp_tiers overrides the hardcoded 2×/3× tier literal
-// for tiered_tp_atr* close strategies.
 func TestLoadConfigManualDefaultsTPTiersOverride(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{
@@ -1360,12 +1316,8 @@ func TestLoadConfigManualDefaultsTPTiersOverride(t *testing.T) {
 	}
 }
 
-// #696/#1135: explicit `tiers` on a close-strategy ref wins over user_defaults.manual.tp_tiers
-// so per-strategy operator intent is preserved.
 func TestLoadConfigManualDefaultsTPTiersDoesNotOverrideExplicit(t *testing.T) {
 	dir := t.TempDir()
-	// config_version: 14 skips the v13 migration so the object-shaped
-	// close_strategies entry isn't dropped.
 	cfgJSON := `{
 		"config_version": 14,
 		"user_defaults": {
@@ -1403,8 +1355,6 @@ func TestLoadConfigManualDefaultsTPTiersDoesNotOverrideExplicit(t *testing.T) {
 	}
 }
 
-// #696/#1121: absent user_defaults.manual block uses the hardcoded 2.0× SL and
-// 1×/2× tier defaults.
 func TestLoadConfigManualDefaultsAbsentPreservesHardcodedDefaults(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{
@@ -1442,7 +1392,6 @@ func TestLoadConfigManualDefaultsAbsentPreservesHardcodedDefaults(t *testing.T) 
 	}
 }
 
-// #696/#1135: user_defaults.manual validation rejects invalid values.
 func TestLoadConfigManualDefaultsValidation(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -1485,7 +1434,6 @@ func TestLoadConfigManualDefaultsValidation(t *testing.T) {
 	}
 }
 
-// #696: resolveManual* helpers fall back to hardcoded defaults when block absent.
 func TestConfigResolveManualHelpersFallback(t *testing.T) {
 	var cfg Config
 	if got := cfg.resolveManualMarginUSD(); got != defaultManualMarginUSD {
@@ -1506,7 +1454,6 @@ func TestConfigResolveManualHelpersFallback(t *testing.T) {
 	}
 }
 
-// #696/#1135: resolveManual* helpers honor populated user_defaults.manual block.
 func TestConfigResolveManualHelpersFromConfig(t *testing.T) {
 	margin := 125.0
 	slMult := 2.0
@@ -1557,7 +1504,6 @@ func TestConfigResolveManualRatchetFallbackIgnoresZeroScalarOptOut(t *testing.T)
 	}
 }
 
-// #486: explicit cross margin mode is preserved.
 func TestLoadConfigHLPerpsExplicitCross(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{
@@ -1581,7 +1527,6 @@ func TestLoadConfigHLPerpsExplicitCross(t *testing.T) {
 	}
 }
 
-// #486: invalid margin_mode rejected.
 func TestLoadConfigMarginModeRejectsInvalidValue(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{
@@ -1605,7 +1550,6 @@ func TestLoadConfigMarginModeRejectsInvalidValue(t *testing.T) {
 	}
 }
 
-// #486: margin_mode is HL-perps-only (rejected on spot).
 func TestLoadConfigMarginModeRejectsSpot(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{
@@ -1628,13 +1572,8 @@ func TestLoadConfigMarginModeRejectsSpot(t *testing.T) {
 	}
 }
 
-// #491: two HL perps strategies on the same coin must agree on margin_mode
-// and leverage — HL aggregates positions per coin per account, so peers
-// share a single on-chain position. Matching peers load successfully.
 func TestLoadConfigHLPerpsPeersOnSameCoinMatching(t *testing.T) {
 	dir := t.TempDir()
-	// #494: omitted stop_loss_* on same-coin peers is normalized to opt-out so
-	// existing multi-strategy configs don't all become stop-loss owners.
 	cfgJSON := `{
 		"strategies": [
 			{
@@ -1674,7 +1613,6 @@ func TestLoadConfigHLPerpsPeersOnSameCoinMatching(t *testing.T) {
 	}
 }
 
-// #491: peers on the same coin with mismatched margin_mode are rejected.
 func TestLoadConfigHLPerpsPeersMismatchedMarginMode(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{
@@ -1714,7 +1652,6 @@ func TestLoadConfigHLPerpsPeersMismatchedMarginMode(t *testing.T) {
 	}
 }
 
-// #491: peers on the same coin with mismatched leverage are rejected.
 func TestLoadConfigHLPerpsPeersMismatchedLeverage(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{
@@ -1751,8 +1688,6 @@ func TestLoadConfigHLPerpsPeersMismatchedLeverage(t *testing.T) {
 	}
 }
 
-// #601: multiple shared-coin peers may carry stop_loss_pct because protection
-// orders are now sized per strategy.
 func TestLoadConfigHLPerpsPeersMultipleStopLossAllowed(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{
@@ -1788,12 +1723,8 @@ func TestLoadConfigHLPerpsPeersMultipleStopLossAllowed(t *testing.T) {
 	}
 }
 
-// #491: a single peer with stop_loss_pct is fine; the guard only fires when
-// two or more peers configure SLs that would race on the shared position.
 func TestLoadConfigHLPerpsPeersSingleStopLossAllowed(t *testing.T) {
 	dir := t.TempDir()
-	// #494: an omitted same-coin peer is normalized to opt-out, while the
-	// explicit positive stop_loss_pct remains the sole trigger owner.
 	cfgJSON := `{
 		"strategies": [
 			{
@@ -1836,8 +1767,6 @@ func TestLoadConfigHLPerpsPeersSingleStopLossAllowed(t *testing.T) {
 	}
 }
 
-// #491: peer-validation only applies within a single coin — strategies on
-// different coins don't constrain each other.
 func TestLoadConfigHLPerpsPeersDifferentCoinsIndependent(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{
@@ -1870,9 +1799,6 @@ func TestLoadConfigHLPerpsPeersDifferentCoinsIndependent(t *testing.T) {
 	}
 }
 
-// #491/#494: peers that disable SL via explicit stop_loss_pct:0 must not trip
-// the conflict guard. Explicit zero remains an opt-out even though omitted
-// same-coin peers are also normalized to opt-out.
 func TestLoadConfigHLPerpsPeersNoStopLossAllowed(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{
@@ -1907,9 +1833,6 @@ func TestLoadConfigHLPerpsPeersNoStopLossAllowed(t *testing.T) {
 	}
 }
 
-// #491: margin_mode defaulting (empty -> "isolated") happens at LoadConfig
-// time, so peer comparison must see normalized values. A peer with
-// margin_mode:"" should match a peer with margin_mode:"isolated".
 func TestLoadConfigHLPerpsPeersDefaultedMarginModeMatches(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{
@@ -1947,8 +1870,6 @@ func TestLoadConfigHLPerpsPeersDefaultedMarginModeMatches(t *testing.T) {
 	}
 }
 
-// #494: two peers that both omit stop_loss_* on the same coin are normalized
-// to explicit opt-out so old multi-strategy configs keep loading after v9.
 func TestLoadConfigHLPerpsPeersOmittedStopLossDoesNotConflict(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{
@@ -2138,10 +2059,6 @@ func TestConfigValidationLeaderboardSummariesInvalid(t *testing.T) {
 	}
 }
 
-// TestConfigValidationLeaderboardSummariesDuplicateKey covers review item 4 on
-// #309: two entries with identical platform/ticker/channel share a single
-// LastLeaderboardSummaries timestamp, so whichever posts first silently blocks
-// the other. Detect the collision at config load instead.
 func TestConfigValidationLeaderboardSummariesDuplicateKey(t *testing.T) {
 	cfg := &Config{
 		IntervalSeconds: 60,
@@ -2150,7 +2067,6 @@ func TestConfigValidationLeaderboardSummariesDuplicateKey(t *testing.T) {
 		},
 		LeaderboardSummaries: []LeaderboardSummaryConfig{
 			{Platform: "hyperliquid", Ticker: "ETH", Channel: "chan-1", Frequency: "6h"},
-			// Case-insensitive collision — Key() normalizes to lowercase.
 			{Platform: "Hyperliquid", Ticker: "eth", Channel: "chan-1", Frequency: "12h"},
 		},
 	}
@@ -2166,9 +2082,6 @@ func TestConfigValidationLeaderboardSummariesDuplicateKey(t *testing.T) {
 	}
 }
 
-// TestConfigValidationLeaderboardSummariesDistinctTickersSameChannel confirms we
-// don't flag legitimate configurations where the same channel hosts multiple
-// leaderboards scoped by distinct tickers.
 func TestConfigValidationLeaderboardSummariesDistinctTickersSameChannel(t *testing.T) {
 	cfg := &Config{
 		IntervalSeconds: 60,
@@ -2176,8 +2089,8 @@ func TestConfigValidationLeaderboardSummariesDistinctTickersSameChannel(t *testi
 			{ID: "s1", Type: "spot", Platform: "binanceus", Capital: 100, MaxDrawdownPct: 10, Script: "x.py"},
 		},
 		LeaderboardSummaries: []LeaderboardSummaryConfig{
-			{Platform: "hyperliquid", Channel: "hl-ch", Frequency: "6h"},                 // unfiltered
-			{Platform: "hyperliquid", Ticker: "ETH", Channel: "hl-ch", Frequency: "12h"}, // ticker-scoped
+			{Platform: "hyperliquid", Channel: "hl-ch", Frequency: "6h"},
+			{Platform: "hyperliquid", Ticker: "ETH", Channel: "hl-ch", Frequency: "12h"},
 		},
 	}
 	if err := validateConfig(cfg, false); err != nil {
@@ -2194,7 +2107,7 @@ func TestConfigValidationLeaderboardSummariesValid(t *testing.T) {
 		LeaderboardSummaries: []LeaderboardSummaryConfig{
 			{Platform: "hyperliquid", TopN: 10, Channel: "chan-1", Frequency: "6h"},
 			{Platform: "hyperliquid", Ticker: "eth", TopN: 5, Channel: "chan-2", Frequency: "12h"},
-			{Platform: "binanceus", TopN: 5, Channel: "chan-3"}, // no freq = on-demand only
+			{Platform: "binanceus", TopN: 5, Channel: "chan-3"},
 		},
 	}
 	if err := validateConfig(cfg, false); err != nil {
@@ -2235,9 +2148,6 @@ func TestLoadConfigLeaderboardSummaries(t *testing.T) {
 	}
 }
 
-// TestStrategyIntervalExceedsGlobalWarning covers #409: per-strategy
-// interval_seconds greater than the top-level interval should emit a warning
-// describing the "every Nth portfolio cycle" cadence.
 func TestStrategyIntervalExceedsGlobalWarning(t *testing.T) {
 	cases := []struct {
 		name           string
@@ -2325,7 +2235,6 @@ func TestStrategyIntervalExceedsGlobalWarning(t *testing.T) {
 	}
 }
 
-// TestOrdinal spot-checks the ordinal suffix helper used by the #409 warning.
 func TestOrdinal(t *testing.T) {
 	cases := map[int]string{
 		1:   "1st",
@@ -2350,9 +2259,6 @@ func TestOrdinal(t *testing.T) {
 	}
 }
 
-// TestConfigValidationManualSymbolSharingAllowed covers issue #619: manual
-// strategies may share a coin with manual or automated perps peers because
-// close paths now use the same sized-close sole-peer guard as perps.
 func TestConfigValidationManualSymbolSharingAllowed(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -2457,10 +2363,6 @@ func TestConfigValidationManualPerpsPeerLeverageMismatchRejected(t *testing.T) {
 	}
 }
 
-// TestConfigValidationManualPerpsPeerMarginModeMismatchRejected covers the
-// type-set widening in hyperliquidPeerStrategyErrors (#619/#620): manual peers
-// must share margin_mode with co-resident perps peers because HL aggregates
-// per coin per account.
 func TestConfigValidationManualPerpsPeerMarginModeMismatchRejected(t *testing.T) {
 	cfg := Config{
 		Strategies: []StrategyConfig{
@@ -2577,11 +2479,6 @@ func TestConfigValidationMultipleTrailingRatchetRegimeOwnersAllowed(t *testing.T
 	}
 }
 
-// TestConfigValidationInvertSignal covers #775: invert_signal must be accepted
-// on HL perps/manual regardless of direction (long/short/both compose with
-// invert at different signal layers — invert runs in the Go executor before
-// direction interprets the sign), but must still be rejected on platforms or
-// strategy types where the Go layer never sees a numeric +1/-1 signal to flip.
 func TestConfigValidationInvertSignal(t *testing.T) {
 	hlPerps := func(direction string, invert bool) StrategyConfig {
 		return StrategyConfig{
@@ -2693,7 +2590,6 @@ func TestConfigValidationInvertSignal(t *testing.T) {
 	})
 }
 
-// #787: normal startup still requires live credentials in the environment.
 func TestConfigValidationHLLiveRequiresSecretKey(t *testing.T) {
 	t.Setenv("HYPERLIQUID_SECRET_KEY", "")
 	cfg := Config{
@@ -2713,8 +2609,6 @@ func TestConfigValidationHLLiveRequiresSecretKey(t *testing.T) {
 	}
 }
 
-// #787: probe/update.sh loads config without shell secrets when the running
-// process has them via systemd EnvironmentFile, etc.
 func TestLoadConfigForProbeSkipsLiveCredentialChecks(t *testing.T) {
 	t.Setenv("HYPERLIQUID_SECRET_KEY", "")
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "")
@@ -2761,8 +2655,6 @@ func TestLoadConfigForProbeSkipsLiveCredentialChecks(t *testing.T) {
 	}
 }
 
-// #1048: CircuitBreakerEnabled defaults to true (safe default) for nil receiver
-// and nil field; explicit true/false are honored.
 func TestCircuitBreakerEnabled_DefaultsToTrue(t *testing.T) {
 	var nilSC *StrategyConfig
 	if !nilSC.CircuitBreakerEnabled() {
@@ -2784,9 +2676,6 @@ func TestCircuitBreakerEnabled_DefaultsToTrue(t *testing.T) {
 	}
 }
 
-// #1273: the CB timing/threshold accessors fall back to the historical
-// hardcoded values (24h / 5 losses / 1h) on a nil receiver or nil fields, and
-// honor explicit overrides. Call sites read only through these accessors.
 func TestCircuitBreakerOverrideAccessors(t *testing.T) {
 	for name, sc := range map[string]*StrategyConfig{"nil receiver": nil, "nil fields": {}} {
 		if got := sc.CircuitBreakerDrawdownCooldown(); got != 24*time.Hour {
@@ -2812,9 +2701,6 @@ func TestCircuitBreakerOverrideAccessors(t *testing.T) {
 	}
 }
 
-// #1273: validateConfig accepts in-bounds cb_* overrides and rejects
-// non-positive values, out-of-bounds values, and any of the fields on
-// type=manual (exempt from CheckRisk, where they would silently do nothing).
 func TestConfigValidationCBOverrides(t *testing.T) {
 	intp := func(v int) *int { return &v }
 	mk := func(mut func(*StrategyConfig)) Config {
@@ -2839,7 +2725,6 @@ func TestConfigValidationCBOverrides(t *testing.T) {
 	if err := validateConfig(&valid, false); err != nil {
 		t.Fatalf("in-bounds cb_* overrides should validate: %v", err)
 	}
-	// Boundary values are inclusive.
 	boundary := mk(func(sc *StrategyConfig) {
 		sc.CBDrawdownCooldownMinutes = intp(30 * 24 * 60)
 		sc.CBLossStreakThreshold = intp(100)
@@ -2904,7 +2789,7 @@ func TestStrategyNotifyRatchetTriggersEnabled_TwoLayerResolve(t *testing.T) {
 	f := false
 	globalFalse := &Config{NotifyRatchetTriggers: &f}
 	globalTrue := &Config{NotifyRatchetTriggers: &tr}
-	globalDefault := &Config{} // nil field → global resolves to true
+	globalDefault := &Config{}
 
 	cases := []struct {
 		name     string

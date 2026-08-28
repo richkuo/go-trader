@@ -71,8 +71,6 @@ func TestComputeTradeQualityLoserHasNoCaptureRatio(t *testing.T) {
 }
 
 func TestComputeTradeQualityImmediateReversal(t *testing.T) {
-	// Price never went favorable: MFE floors at entry, no capture ratio even
-	// though exit > entry is impossible here.
 	candles := []UICandle{diagCandle(0, 100, 100, 92, 93)}
 	m, ok := computeTradeQuality(candles, "long", 100, 93)
 	if !ok {
@@ -101,7 +99,6 @@ func TestComputeTradeQualitySingleBarHold(t *testing.T) {
 }
 
 func TestComputeTradeQualityCaptureClampsAtOne(t *testing.T) {
-	// Exit fill better than any candle extreme (gap fill): ratio clamps to 1.
 	candles := []UICandle{diagCandle(0, 100, 104, 99, 104)}
 	m, ok := computeTradeQuality(candles, "long", 100, 106)
 	if !ok {
@@ -309,8 +306,6 @@ func TestDiagnosticsWorkerFailurePaths(t *testing.T) {
 		}
 	})
 	t.Run("uncovered window", func(t *testing.T) {
-		// Earliest candle starts two hours after the open: metrics would be
-		// biased, so they must be refused.
 		f := newDiagWorkerFixture([]UICandle{diagCandle(opened.Add(2*time.Hour).Unix(), 3150, 3160, 3080, 3100)}, nil)
 		f.worker.process(diagTestRow(opened, closed))
 		if f.updates[0] != diagMetricsWindowUncovered || f.metrics[0] != nil {
@@ -350,9 +345,6 @@ func TestDiagnosticsWorkerFailurePaths(t *testing.T) {
 		}
 	})
 	t.Run("missing timeframe defaults to 1h and fetches at 1h", func(t *testing.T) {
-		// Manual strategy with no sc.Timeframe and <3 args (the exact case the
-		// default targets): window math AND the candle fetch must use 1h, so the
-		// row reaches metrics_status=ok rather than fetch_failed.
 		f := newDiagWorkerFixture([]UICandle{diagCandle(opened.Unix(), 3000, 3200, 2980, 3100)}, nil)
 		f.worker.UpdateStrategies([]StrategyConfig{{ID: "hl-test", Platform: "hyperliquid", Type: "manual", Symbol: "ETH"}})
 		f.worker.process(diagTestRow(opened, closed))
@@ -367,8 +359,6 @@ func TestDiagnosticsWorkerFailurePaths(t *testing.T) {
 		}
 	})
 	t.Run("unknown timeframe token uses 1h for both window math and fetch", func(t *testing.T) {
-		// diagTimeframeDuration rejects the token: the window math falls back to
-		// 1h, and the fetch must be re-pointed at 1h too (not the bad token).
 		f := newDiagWorkerFixture([]UICandle{diagCandle(opened.Unix(), 3000, 3200, 2980, 3100)}, nil)
 		f.worker.UpdateStrategies([]StrategyConfig{{ID: "hl-test", Platform: "hyperliquid", Type: "manual", Symbol: "ETH", Timeframe: "bogus"}})
 		f.worker.process(diagTestRow(opened, closed))
@@ -383,8 +373,6 @@ func TestDiagnosticsWorkerFailurePaths(t *testing.T) {
 		}
 	})
 	t.Run("explicit timeframe fetches unchanged", func(t *testing.T) {
-		// A valid explicit timeframe must reach the fetch verbatim — no regression
-		// from the resolution→fetch wiring.
 		f := newDiagWorkerFixture([]UICandle{diagCandle(opened.Truncate(15*time.Minute).Unix(), 3000, 3200, 2980, 3100)}, nil)
 		f.worker.UpdateStrategies([]StrategyConfig{{ID: "hl-test", Platform: "hyperliquid", Type: "perps", Symbol: "ETH", Timeframe: "15m"}})
 		f.worker.process(diagTestRow(opened, closed))
@@ -454,7 +442,6 @@ func TestTradeDiagnosticsDBRoundTrip(t *testing.T) {
 		t.Fatalf("timestamps round-trip wrong: %+v", got)
 	}
 
-	// Status-only update (failure path) leaves quality columns NULL.
 	row2 := &TradeDiagnosticsRow{StrategyID: "hl-a", Symbol: "BTC", MetricsStatus: diagMetricsPending, OpenedAt: opened, ClosedAt: closed}
 	if err := sdb.InsertTradeDiagnostics(row2); err != nil {
 		t.Fatalf("insert2: %v", err)
@@ -473,7 +460,6 @@ func TestTradeDiagnosticsDBRoundTrip(t *testing.T) {
 		t.Fatalf("failure row wrong: %+v", rows[1])
 	}
 
-	// Idempotent migration: reopening the same DB must not error.
 	if err := sdb.Close(); err != nil {
 		t.Fatalf("close: %v", err)
 	}
@@ -500,8 +486,6 @@ func TestNetPnLByPositionAggregatesLegs(t *testing.T) {
 	defer sdb.Close()
 
 	now := time.Now().UTC()
-	// Two tiered-TP close legs of the same position under the #954 gross
-	// convention: net = (60-1) + (50-1) = 108.
 	for i, pnl := range []float64{60, 50} {
 		trade := Trade{
 			Timestamp: now.Add(time.Duration(i) * time.Minute), Symbol: "ETH", Side: "sell",
@@ -512,13 +496,11 @@ func TestNetPnLByPositionAggregatesLegs(t *testing.T) {
 			t.Fatalf("insert trade: %v", err)
 		}
 	}
-	// Legacy-convention close leg of a different position: net = RealizedPnL as-is.
 	legacy := Trade{Timestamp: now, Symbol: "ETH", Side: "sell", Quantity: 1, Price: 3000, Value: 3000,
 		PositionID: "p2", IsClose: true, RealizedPnL: -25}
 	if err := sdb.InsertTrade("hl-a", legacy); err != nil {
 		t.Fatalf("insert legacy: %v", err)
 	}
-	// Open leg must not contribute.
 	open := Trade{Timestamp: now, Symbol: "ETH", Side: "buy", Quantity: 1, Price: 3000, Value: 3000,
 		PositionID: "p1", PnLGross: true, ExchangeFee: 1, FeeSource: FeeSourceModeled}
 	if err := sdb.InsertTrade("hl-a", open); err != nil {
@@ -570,7 +552,6 @@ func TestDiagnosticsReportSampleGating(t *testing.T) {
 
 func TestDiagnosticsReportCaptureAndRegimeHypotheses(t *testing.T) {
 	var rows []TradeDiagnosticsRow
-	// 20 winners in trending_up with low capture, 12 losers in ranging_choppy.
 	for i := 0; i < 20; i++ {
 		rows = append(rows, diagReportRow(i, "trending_up", "long", 10, fptr(0.2)))
 	}
@@ -610,8 +591,6 @@ func TestDiagnosticsReportDirectionHypothesis(t *testing.T) {
 }
 
 func TestDiagnosticsReportPartialCloseAggregation(t *testing.T) {
-	// The diagnostics row stores only the final leg's PnL (-5), but the trades
-	// join says the position's legs sum to +40 net — the report must use +40.
 	row := diagReportRow(0, "trending_up", "long", -5, nil)
 	net := map[string]map[string]float64{"hl-a": {"p0": 40}}
 	out := buildTradeDiagnosticsReport([]TradeDiagnosticsRow{row}, net, "cfg.json", diagReportOptions{MinTrades: 30, MinBucket: 10})

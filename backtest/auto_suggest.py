@@ -1,47 +1,4 @@
 #!/usr/bin/env python3
-"""#1210: Generalized M1-M6 auto-suggester — sweep candidates, rank gate-survivors.
-
-The M1-M6 research harnesses grade a candidate change you hand them; they do not
-search. Every retune (e.g. ``regime_1152_exit_retune.py``) re-authors the same
-driver skeleton — candidate enumeration -> parallel harness shelling -> window
-rollup -> promotion gate — from scratch. This module extracts that skeleton once
-and adds the one thing a hand-rolled driver keeps omitting: a sweep-wide
-multiple-comparisons correction, so mining N candidates cannot surface a lucky
-p<.05 as a "survivor".
-
-SUGGEST-ONLY — HARD BOUNDARY. This tool NEVER writes a live default
-(``ratchetTierGroupDefaults`` / ``regimeTPTierGroupDefaults`` / any stop field),
-never opens the live config, never shells git/gh, and has no apply/promote/PR
-surface. It emits a ranked report with per-dataset evidence and the exact
-reproduction command; a human makes every promotion call (the #1152 study is the
-cautionary case — 22 disciplined candidates, ``mr.b2_rv_wider`` even cleared the
-pre-registered gate, and the human still correctly held it).
-
-Given a declarative spec (see ``backtest/candidates/<study>/suggest.json``) it:
-  1. expands a candidate space (explicit candidate-json files + optional param
-     sweeps + gate variants + M2 close-stack grids),
-  2. fans each candidate across the appropriate M-harnesses (respecting each
-     harness's preconditions — the M1 step-2 noise gate runs BEFORE selectivity
-     work; non-replayable M6 closes are excluded, mirroring
-     ``_REPLAYABLE_CLOSE_NAMES``),
-  3. corrects the family of primary p-values (M1 step-2 permutation + M6 paired
-     Wilcoxon) with Benjamini-Hochberg — M3/M5/MC emit no p-values and pass
-     through as clearly-labeled uncorrected context,
-  4. ranks survivors first and writes a shortlist artifact.
-
-The Monte Carlo columns (#1295, the ``mc`` harness) are ADVISORY in the strong
-sense: they never gate a promotion whether the run succeeds, fails, or is
-skipped. See ``ADVISORY_HARNESSES`` / ``gate_relevant_results`` — "the gate does
-not read the mc key" would NOT have been sufficient, because the failed-run scan
-reads the results dict's VALUES.
-
-Usage:
-  uv run --no-sync python backtest/auto_suggest.py \
-      --spec backtest/candidates/squeeze_momentum_1198/suggest.json \
-      [--jobs 4] [--out-dir /tmp/suggest] [--only KEY[,KEY...]] \
-      [--windows is,oos] [--datasets BTC/USDT:1h,...] [--alpha 0.05] \
-      [--dry-run] [--json OUT.json] [--markdown OUT.md]
-"""
 from __future__ import annotations
 
 import argparse
@@ -58,17 +15,15 @@ _REPO = os.path.abspath(os.path.join(_THIS_DIR, ".."))
 if _THIS_DIR not in sys.path:
     sys.path.insert(0, _THIS_DIR)
 
-from eval_windows import (  # noqa: E402  (path set above)
+from eval_windows import (
     DATASETS as M1_DATASETS,
     WINDOWS as M1_WINDOWS,
     expand_sweep,
     validate_candidate,
 )
-from exit_policy_ab import candidate_is_replayable  # noqa: E402
-from regime_stats import benjamini_hochberg  # noqa: E402
+from exit_policy_ab import candidate_is_replayable
+from regime_stats import benjamini_hochberg
 
-# Harness paths, relative to the repo root (reproduction commands print these)
-# and absolute (subprocess spawns use these).
 HARNESS_REL = {
     "m1_noise": "backtest/gross_edge_noise.py",
     "m1": "backtest/eval_windows.py",
@@ -80,29 +35,15 @@ HARNESS_REL = {
 HARNESS_ABS = {k: os.path.join(_REPO, v) for k, v in HARNESS_REL.items()}
 
 KNOWN_HARNESSES = set(HARNESS_REL)
-OPEN_HARNESSES = ("m1_noise", "m1", "m3", "m5", "mc")  # applied to open candidates
-DEFAULT_HARNESSES = ["m1_noise", "m1", "m3", "m5"]  # "mc" is opt-in only, see ADVISORY_HARNESSES below
+OPEN_HARNESSES = ("m1_noise", "m1", "m3", "m5", "mc")
+DEFAULT_HARNESSES = ["m1_noise", "m1", "m3", "m5"]
 KNOWN_REGISTRIES = ("spot", "futures")
 
-# ADVISORY harnesses (#1295) emit no p-value AND must never influence the
-# promotion gate IN ANY STATE — including a failed run. This is strictly
-# stronger than "candidate_verdict does not read the key": both
-# ``candidate_verdict`` and ``main`` scan ``results.values()`` generically for a
-# failed status, so an advisory harness that merely APPEARS in the results dict
-# would demote a genuine survivor to ``run_failed`` and flip the exit code.
-# Every gate-facing scan goes through ``gate_relevant_results`` instead.
-#
-# M3/M5 are deliberately NOT listed. They are uncorrected CONTEXT for the
-# reader, but a failed M3/M5 run has always marked the candidate run_failed and
-# that pre-#1295 gate behavior is preserved byte-for-byte.
 ADVISORY_HARNESSES = ("mc",)
 
-# monte_carlo.py's own defaults, restated because auto_suggest passes them
-# explicitly into the argv tail.
 MC_DEFAULT_N_PATHS = 10000
-MC_SCHEME_FOR_COLUMNS = "permute"  # pure sequencing risk; block kept in evidence
+MC_SCHEME_FOR_COLUMNS = "permute"
 
-# Verdict vocabulary (ranked best-to-worst for the shortlist).
 VERDICT_ORDER = [
     "survivor",
     "positive_uncorrected_only",
@@ -118,14 +59,7 @@ FOOTER = ("Suggest-only. No config was modified and no live default was written.
           "Promotion is a human decision.")
 
 
-# ===========================================================================
-# Pure — spec model and candidate expansion (unit-tested without data access)
-# ===========================================================================
-
 def _resolve_ref(ref, spec_dir: str) -> dict:
-    """A candidate/config ref is either an inline dict or a filename resolved
-    against the spec's own directory (the ``backtest/candidates/<study>/``
-    convention)."""
     if isinstance(ref, dict):
         return copy.deepcopy(ref)
     if isinstance(ref, str):
@@ -136,9 +70,6 @@ def _resolve_ref(ref, spec_dir: str) -> dict:
 
 
 def load_spec(raw: dict, spec_dir: str) -> dict:
-    """Validate/normalize a suggest.json spec, resolving file refs against
-    ``spec_dir`` and running every open candidate through the M1 validator so a
-    malformed candidate fails loudly here rather than deep in a subprocess."""
     if not isinstance(raw, dict):
         raise ValueError("spec must be a JSON object")
 
@@ -163,13 +94,6 @@ def load_spec(raw: dict, spec_dir: str) -> dict:
         raise ValueError("correction.method must be 'benjamini_hochberg' "
                          "(the only supported family correction, per #1210 scope)")
     alpha = float(correction.get("alpha", 0.05))
-    # #1338: optional selection-aware family-size override. When a two-stage
-    # driver (tune_live.py) searched N candidates in stage 1 and hands only the
-    # survivors to auto_suggest, the BH family must be corrected against N, not
-    # the smaller survivor count — else the pruning inflates significance. The
-    # ">= actual test count" check runs in apply_family_correction where the
-    # produced p-value count is known; here we only fix the type (a positive
-    # integer; bool is explicitly rejected since it subclasses int).
     family_size = correction.get("family_size")
     if family_size is not None:
         if isinstance(family_size, bool) or not isinstance(family_size, int):
@@ -187,9 +111,6 @@ def load_spec(raw: dict, spec_dir: str) -> dict:
         if "key" not in c or "candidate" not in c:
             raise ValueError("each candidates[] entry needs 'key' and 'candidate'")
         cand = _resolve_ref(c["candidate"], spec_dir)
-        # Fail-loud validation on a copy — validate_candidate mutates in place
-        # (normalizes regime_windows_spec), and we keep the RAW dict so the M1
-        # subprocess re-validates from source.
         validate_candidate(copy.deepcopy(cand))
         candidates.append({
             "key": c["key"],
@@ -198,11 +119,6 @@ def load_spec(raw: dict, spec_dir: str) -> dict:
             "hypothesis": c.get("hypothesis"),
         })
 
-    # ---- mc (#1295): advisory Monte Carlo block -----------------------------
-    # The threshold source mirrors monte_carlo.py's own mutual exclusion: an
-    # explicit percentage, OR a live config + strategy id to resolve the
-    # per-strategy max_drawdown_pct hierarchy — never both. Neither => the
-    # harness default (25, the portfolio kill-switch default).
     mc = dict(raw.get("mc") or {})
     if mc:
         unknown_mc = set(mc) - {"kill_switch_pct", "config", "strategy_id",
@@ -232,25 +148,12 @@ def load_spec(raw: dict, spec_dir: str) -> dict:
         if bc and isinstance(bc, str):
             m6["baseline_config"] = (bc if os.path.isabs(bc)
                                      else os.path.join(spec_dir, bc))
-        # M6 resolves the incumbent from EXACTLY one of a live-daemon
-        # baseline-config (resolve the strategy's live close) or an explicit
-        # incumbent_close ladder — mirroring exit_policy_ab, which rejects both
-        # and neither. The explicit path lets a spec exercise M6 self-contained,
-        # without authoring a v15 config fixture.
         if bool(m6.get("baseline_config")) == bool(m6.get("incumbent_close")):
             raise ValueError(
                 "m6 block needs EXACTLY one of 'baseline_config' (resolve the "
                 "live close from a daemon config) or 'incumbent_close' (an "
                 "explicit close-ref ladder); got "
                 + ("both" if m6.get("baseline_config") else "neither"))
-        # strategy_id is embedded unconditionally into every M6 argv
-        # (m6_argv_tail's leading --strategy) on BOTH incumbent paths — the
-        # baseline_config path uses it to select the strategy inside the
-        # config, the incumbent_close path uses it as the open-strategy name.
-        # Resolution is per-variant with an m6-level default
-        # (_exit_ab_entry: variant.get("strategy_id") or m6.get("strategy_id")),
-        # so fail loudly HERE at load time if any variant would resolve to
-        # None rather than surfacing as a broken '--strategy None' subprocess.
         if not m6.get("strategy_id"):
             if m6.get("close_stack_specs"):
                 raise ValueError(
@@ -273,7 +176,7 @@ def load_spec(raw: dict, spec_dir: str) -> dict:
         "registry": registry,
         "harnesses": harnesses,
         "windows": windows,
-        "datasets": raw.get("datasets"),  # None -> audit six
+        "datasets": raw.get("datasets"),
         "correction": {"method": method, "alpha": alpha,
                        "family_size": family_size},
         "base": base,
@@ -287,14 +190,11 @@ def load_spec(raw: dict, spec_dir: str) -> dict:
 
 
 def _sanitize_label(label: str) -> str:
-    """expand_sweep emits 'kc_mult=1.3 mom_lookback=12'; make it key/path safe."""
     return label.replace("=", "").replace(" ", ".").replace("/", "_")
 
 
 def _open_entry(key: str, candidate: dict, harnesses: list, hypothesis) -> dict:
     limitations = []
-    # fee_audit (M5) screens registry defaults only — it has no --params surface,
-    # so a swept/params candidate cannot be audited at its own params.
     if "m5" in harnesses and candidate.get("params"):
         limitations.append("m5_params_unaudited")
     return {
@@ -312,9 +212,6 @@ def _exit_ab_entry(key: str, variant: dict, m6: dict) -> dict:
     close_refs = variant.get("candidate_close")
     errors = []
     if not candidate_is_replayable(close_refs):
-        # Mirrors M6's own refusal: a non-self-contained close (open-as-close,
-        # signal-reversal, per-tick regime variant) has no rule to replay per
-        # entry, so it is excluded rather than run and fabricated.
         errors.append("excluded_not_replayable")
     return {
         "key": key,
@@ -335,13 +232,6 @@ def _exit_ab_entry(key: str, variant: dict, m6: dict) -> dict:
 
 
 def expand_candidates(spec: dict) -> list:
-    """Expand the declarative spec into concrete candidate entries.
-
-    Sources: explicit ``candidates`` (fully-formed, gate baked in) + an optional
-    ``base`` x ``sweep`` (expand_sweep) x ``gate_variants`` grid + an optional
-    ``m6`` exit-A/B block (its own close variants, plus M2 ``close_stack_specs``
-    expanded via optimizer.generate_close_stack_grid). Keys are deterministic;
-    duplicates are rejected."""
     entries = []
     default_harnesses = spec["harnesses"]
 
@@ -412,10 +302,6 @@ def expand_candidates(spec: dict) -> list:
     return entries
 
 
-# ===========================================================================
-# Pure — per-harness argv tails (the caller prepends [python, harness path])
-# ===========================================================================
-
 def _csv(items) -> str:
     return ",".join(items)
 
@@ -469,12 +355,6 @@ def m5_argv_tail(strategy, registry, direction, windows, datasets, out_json) -> 
 
 def mc_argv_tail(candidate_path, registry, windows, datasets, n_paths, seed,
                  mc: dict, out_json) -> list:
-    """Advisory Monte Carlo (#1295), multi-leg mode.
-
-    Threads the CANDIDATE JSON — not a bare --strategy/--params pair — so the
-    resampled trade series carries the candidate's close stack, entry gate and
-    stops. A bare-strategy tail would resample a strategy nobody is ranking.
-    """
     tail = ["--candidate-json", candidate_path, "--registry", registry,
             "--windows", _csv(windows), "--n-paths", str(n_paths),
             "--seed", str(seed), "--json", out_json]
@@ -496,8 +376,6 @@ def m6_argv_tail(m6_candidate, registry, windows, datasets, resamples, seed, out
             "--windows", _csv(windows),
             "--bootstrap-resamples", str(resamples),
             "--seed", str(seed), "--json", out_json]
-    # Exactly one incumbent source (load_spec enforces this): a live-daemon
-    # config to resolve the strategy's live close, or an explicit ladder.
     if m6_candidate.get("baseline_config"):
         tail += ["--baseline-config", m6_candidate["baseline_config"]]
     elif m6_candidate.get("incumbent_close"):
@@ -509,12 +387,7 @@ def m6_argv_tail(m6_candidate, registry, windows, datasets, resamples, seed, out
     return tail
 
 
-# ===========================================================================
-# Pure — payload extractors (None-tolerant, mirror the harness JSON contracts)
-# ===========================================================================
-
 def extract_m1(payload: dict) -> dict:
-    """window_scores -> {window: {verdict, mean_sharpe, mean_ddadj}}."""
     out = {}
     for score in (payload.get("window_scores") or []):
         w = score.get("window")
@@ -529,7 +402,6 @@ def extract_m1(payload: dict) -> dict:
 
 
 def extract_noise(payload: dict) -> dict:
-    """gross_edge_noise trade_level -> {verdict, permutation_p, mean, n}."""
     tl = payload.get("trade_level") or {}
     perm = tl.get("permutation") or {}
     summary = tl.get("summary") or {}
@@ -542,9 +414,6 @@ def extract_noise(payload: dict) -> dict:
 
 
 def m6_window_rollup(payload: dict) -> dict:
-    """Generalized ``regime_1152._window_rollup``: paired-N-weighted pooled
-    Δnet/entry per window PLUS the raw per-dataset (mean, n, p) evidence the
-    family correction needs. Same None-guards as the 1152 driver."""
     out = {}
     for wname, results in (payload.get("results") or {}).items():
         deltas, per_dataset = [], []
@@ -576,7 +445,6 @@ def m6_window_rollup(payload: dict) -> dict:
 
 
 def extract_m3(payload: dict) -> dict:
-    """Compact per-window/per-dataset bleed-mode + fee-churn context (no p)."""
     out = {}
     for wname, per_ds in (payload.get("windows") or {}).items():
         out[wname] = {}
@@ -591,26 +459,15 @@ def extract_m3(payload: dict) -> dict:
 
 
 def _p95_max_dd(block: dict):
-    """P95 max drawdown from a monte_carlo scheme block, when the run used the
-    default percentile set. None — never a fabricated number — otherwise."""
     return (block.get("max_dd_pct_percentiles") or {}).get("p95")
 
 
 def _worst(values: list):
-    """Max over the non-None values; None when every leg is unusable. A risk
-    column aggregates across datasets by WORST case — averaging would let one
-    benign dataset mask a fragile one."""
     present = [v for v in values if v is not None]
     return max(present) if present else None
 
 
 def extract_mc(payload: dict) -> dict:
-    """monte_carlo multi-leg payload -> {window: {per_dataset, worst}}.
-
-    ADVISORY ONLY (#1295): emits no p-value, and is never read by
-    ``candidate_verdict`` or ``collect_family_pvalues``. ``worst`` carries the
-    across-dataset worst case per scheme, which is what the shortlist prints.
-    """
     out = {}
     for leg in (payload.get("legs") or []):
         w = leg.get("window")
@@ -643,7 +500,6 @@ def extract_mc(payload: dict) -> dict:
 
 
 def extract_m5(payload: dict, strategy: str) -> dict:
-    """fee_audit rows -> the salvage screen for one strategy (no p)."""
     for row in (payload.get("rows") or []):
         if row.get("strategy") == strategy:
             return {
@@ -656,15 +512,7 @@ def extract_m5(payload: dict, strategy: str) -> dict:
     return {}
 
 
-# ===========================================================================
-# Pure — family correction, promotion gate, ranking
-# ===========================================================================
-
 def collect_family_pvalues(entries: list) -> list:
-    """The pre-registered candidate family = every PRIMARY p-value produced by
-    one full-spec invocation: one M1 step-2 permutation p per unique noise run,
-    plus one M6 paired Wilcoxon p per (candidate, window, dataset). M3/M5 emit no
-    p-values and contribute nothing here by construction."""
     tests = []
     seen_noise = set()
     for e in entries:
@@ -676,13 +524,6 @@ def collect_family_pvalues(entries: list) -> list:
                 seen_noise.add(fam)
                 p = noise.get("permutation_p")
                 if p is not None:
-                    # The noise p is deduped to ONE test per family (keeping the
-                    # BH family size honest — the same noise run must not be
-                    # counted once per sibling), but it is the shared evidence for
-                    # EVERY entry in the family, so it is keyed by noise_family_key
-                    # and looked up by family in candidate_verdict — not by the
-                    # first sibling's candidate_key (which would let the other
-                    # siblings skip the BH downgrade and promote on a failed p).
                     tests.append({"candidate_key": e["key"], "harness": "m1_noise",
                                   "noise_family_key": fam,
                                   "window": None, "dataset": None, "p": float(p),
@@ -702,17 +543,6 @@ def collect_family_pvalues(entries: list) -> list:
 
 def apply_family_correction(tests: list, alpha: float = 0.05,
                             family_size: int | None = None) -> dict:
-    """One Benjamini-Hochberg pass over the whole family (the #1076 precedent).
-    Stamps ``bh_pass`` onto each test and returns the correction summary
-    including the effective threshold (largest passing p).
-
-    ``family_size`` (#1338): the searched candidate-family size N for a
-    selection-aware two-stage run. When set, the BH denominator becomes N
-    instead of the number of p-values actually produced — so a stage-1 sweep
-    of N candidates that hands only its survivors here cannot cash the pruning
-    in as extra significance. Must be ``>= len(tests)`` (a denominator below
-    the produced count would understate multiplicity); the type was fixed in
-    ``load_spec``, but only here is the produced count known to bound it."""
     pvals = [t["p"] for t in tests]
     if family_size is not None and family_size < len(pvals):
         raise ValueError(
@@ -724,9 +554,6 @@ def apply_family_correction(tests: list, alpha: float = 0.05,
         t["bh_pass"] = bool(passed)
     passing = [t["p"] for t, ok in zip(tests, mask) if ok]
     tests_run = len(tests)
-    # ``m`` is the BH denominator (what the threshold divides by): the searched
-    # family size when overridden, else the tested count. ``tests_run`` records
-    # the actual pooled p-value count so the shortlist can show both.
     m = family_size if family_size is not None else tests_run
     return {
         "method": "benjamini_hochberg",
@@ -744,50 +571,29 @@ def _tests_for(entry, tests: list) -> list:
 
 
 def gate_relevant_results(entry: dict) -> dict:
-    """The entry's harness runs MINUS the advisory ones (#1295).
-
-    The only place the promotion gate is allowed to look at ``entry["results"]``.
-    An advisory harness must not change a verdict by succeeding, by failing, or
-    by being absent — filtering here is what makes that true, since the
-    failed-run scan below keys on the dict's VALUES, not on any harness name.
-    """
     return {h: r for h, r in (entry.get("results") or {}).items()
             if h not in ADVISORY_HARNESSES}
 
 
 def any_gate_failure(entries: list) -> bool:
-    """Did any GATE-relevant harness run fail? Drives the process exit code."""
     return any((v or {}).get("status") == "failed"
                for e in entries for v in gate_relevant_results(e).values())
 
 
 def advisory_failures(entry: dict) -> list:
-    """Advisory harnesses whose run failed — surfaced as a limitation, never as
-    a verdict. Silence would be worse: an operator reads a blank MC column as
-    "low risk" rather than "not measured"."""
     return sorted(h for h, r in (entry.get("results") or {}).items()
                   if h in ADVISORY_HARNESSES
                   and (r or {}).get("status") == "failed")
 
 
 def candidate_verdict(entry: dict, tests: list) -> str:
-    """Pre-registered promotion gate, generalized from ``regime_1152._verdict``
-    with the BH layer added. A candidate is only a ``survivor`` when its positive
-    evidence survives the family correction; positive-but-only-uncorrected is
-    reported as its own verdict, never as a survivor."""
     if entry.get("precondition_errors"):
         return "excluded_not_replayable"
-    # Advisory harnesses are filtered OUT before the failed-run scan, and are
-    # never read below — the gate is byte-for-byte what it was pre-#1295.
     r = gate_relevant_results(entry)
     if any((v or {}).get("status") == "failed" for v in r.values()):
         return "run_failed"
 
     my_tests = _tests_for(entry, tests)
-    # The noise p is deduped to one family-keyed test (see collect_family_pvalues),
-    # so it lives under the FIRST sibling's candidate_key, not this entry's. Match
-    # it across the whole family by noise_family_key so every sibling sharing the
-    # family gets the same BH-survival verdict.
     fam = entry.get("noise_family_key")
     noise_t = next((t for t in tests if t["harness"] == "m1_noise"
                     and t.get("noise_family_key") == fam), None)
@@ -798,8 +604,6 @@ def candidate_verdict(entry: dict, tests: list) -> str:
             return "noise_gate_blocked"
         m1 = (r.get("m1") or {}).get("data")
         if m1 is None:
-            # No selectivity bar ran (m1 not requested): fall back to the noise
-            # gate alone when present.
             if noise is None:
                 return "inconclusive"
             if noise.get("verdict") == "distinguishable_positive":
@@ -807,19 +611,16 @@ def candidate_verdict(entry: dict, tests: list) -> str:
                     return "positive_uncorrected_only"
                 return "survivor"
             return "incumbent_stands"
-        rollup = m1  # already the extract_m1 rollup ({window: {verdict, ...}})
+        rollup = m1
         protocol = [w for w in ("is", "oos") if w in rollup]
         if not protocol:
             return "inconclusive"
         if not all(rollup[w].get("verdict") == "pass" for w in protocol):
             return "incumbent_stands"
-        # M1 protocol passed. If a noise p is in the family, gate the survivor
-        # call on it surviving the correction.
         if noise_t and not noise_t.get("bh_pass"):
             return "positive_uncorrected_only"
         return "survivor"
 
-    # exit_ab (M6)
     m6 = (r.get("m6") or {}).get("data")
     if m6 is None:
         return "inconclusive"
@@ -832,8 +633,6 @@ def candidate_verdict(entry: dict, tests: list) -> str:
         return "incumbent_stands"
     pos = [t for t in my_tests if t["harness"] == "m6" and t["effect_positive"]]
     neg = [t for t in my_tests if t["harness"] == "m6" and not t["effect_positive"]]
-    # Contradictions block at RAW p<0.05 (uncorrected — deliberately conservative,
-    # matching the 1152 gate: a significant loss anywhere kills the candidate).
     if any(t["p"] < 0.05 for t in neg):
         return "incumbent_stands"
     if any(t.get("bh_pass") for t in pos):
@@ -844,8 +643,6 @@ def candidate_verdict(entry: dict, tests: list) -> str:
 
 
 def _rank_score(entry: dict) -> float:
-    """Sort key within the survivor/positive tiers: pooled OOS Δ/entry for M6,
-    mean OOS sharpe for open candidates (higher = better)."""
     r = entry.get("results") or {}
     m6 = (r.get("m6") or {}).get("data")
     if m6:
@@ -859,8 +656,6 @@ def _rank_score(entry: dict) -> float:
 
 
 def rank_shortlist(entries: list) -> list:
-    """Survivors first, then positive-uncorrected, then the rest by verdict
-    order; failed/excluded runs stay visible (never silently dropped)."""
     order = {v: i for i, v in enumerate(VERDICT_ORDER)}
     return sorted(
         entries,
@@ -870,8 +665,6 @@ def rank_shortlist(entries: list) -> list:
 
 
 def reproduction_command(entry: dict) -> list:
-    """Copy-pasteable per-harness reproduction commands (the fee_audit
-    ``_reproduce_command`` precedent) plus the suggester's own --only line."""
     cmds = []
     for harness, run in (entry.get("results") or {}).items():
         tail = run.get("argv_tail")
@@ -883,21 +676,7 @@ def reproduction_command(entry: dict) -> list:
     return cmds
 
 
-# ===========================================================================
-# Pure — report formatting
-# ===========================================================================
-
 def _mc_column_window(mc: dict):
-    """Which window the advisory column should report, preferring ``oos``.
-
-    ``extract_mc`` buckets EVERY window it sees, including one whose datasets
-    were all ``no_data`` (empty ``worst``). Keying blindly on "oos" would let
-    such a bucket win and blank the column even though another window was
-    resampled — and since the run itself succeeded, no ``mc_run_failed`` flag
-    would explain the absence. So: prefer a window with usable numbers, then a
-    window that was resampled but had nothing to resample (0 trades -> all-None
-    stats, reported as dashes), and only then give up. ``oos`` wins each tier.
-    """
     def pick(windows):
         return "oos" if "oos" in windows else (sorted(windows)[0] if windows else None)
 
@@ -910,11 +689,6 @@ def _mc_column_window(mc: dict):
 
 
 def _mc_segment(mc: dict) -> str:
-    """The advisory MC column: worst-dataset sequencing risk, OOS if scored.
-
-    Deliberately labeled ``(adv)`` and printed with the window it came from —
-    an unlabeled probability next to a promotion verdict reads as evidence.
-    """
     if not mc:
         return ""
     window = _mc_column_window(mc)
@@ -939,9 +713,6 @@ def format_shortlist(report: dict) -> str:
                      f"(ran {report['ran']} of {report['total']} candidates; "
                      "the committed artifact must come from a full-spec run) ***")
     thr = corr.get("effective_threshold")
-    # #1338: when a selection-aware family_size override is in force, m (the BH
-    # denominator) exceeds the pooled p-value count — spell out both so the
-    # reader never mistakes the searched family for the tested set.
     tests_run = corr.get("tests_run", corr["m"])
     m_note = (f"m={corr['m']} (searched family; {tests_run} tested)"
               if tests_run != corr["m"] else f"m={corr['m']}")
@@ -984,13 +755,7 @@ def format_shortlist(report: dict) -> str:
     return "\n".join(lines)
 
 
-# ===========================================================================
-# I/O — orchestration (modeled on regime_1152's _run_one / main)
-# ===========================================================================
-
 def _direction_for(candidate: dict):
-    """Noise/M3/M5 accept only long/short; a 'both' candidate has no single
-    open-side leg there, so we drop the flag (harness default = long)."""
     d = str(candidate.get("direction") or "").strip().lower()
     return d if d in ("long", "short") else None
 
@@ -1004,8 +769,6 @@ def _noise_family_key(candidate: dict) -> str:
 
 
 def _m5_family_key(candidate: dict) -> str:
-    # fee_audit screens registry defaults by name+direction (no --params surface),
-    # so params are deliberately excluded — one m5 run covers a name+direction.
     return json.dumps({"name": candidate.get("name"),
                        "direction": _direction_for(candidate)}, sort_keys=True)
 
@@ -1025,9 +788,6 @@ def _run_harness(harness: str, tail: list, out_json: str) -> dict:
 
 
 def ensure_noise(entry: dict, spec: dict, out_dir: str, noise_cache: dict) -> None:
-    """Run (or reuse) the M1 step-2 noise gate for this entry's base open. The
-    #1054 contract runs it BEFORE any selectivity work, so main() primes the
-    cache with this in a serial pre-pass; per-base results are memoized."""
     cand = entry["candidate"]
     entry["noise_family_key"] = _noise_family_key(cand)
     if "m1_noise" not in entry["harnesses"]:
@@ -1046,10 +806,6 @@ def ensure_noise(entry: dict, spec: dict, out_dir: str, noise_cache: dict) -> No
 
 
 def ensure_m5(entry: dict, spec: dict, out_dir: str, m5_cache: dict) -> None:
-    """Run (or reuse) the family-level M5 fee audit. Like the noise gate, this
-    MUST be primed serially before the parallel map — otherwise two entries
-    sharing an m5 family race on the same fee_audit output path and a read can
-    hit a half-written file. Per (name, direction) results are memoized."""
     cand = entry["candidate"]
     if "m5" not in entry["harnesses"]:
         return
@@ -1079,12 +835,6 @@ def run_open_entry(entry: dict, spec: dict, out_dir: str,
     written = []
 
     def candidate_path() -> str:
-        # Shared by m1 and mc — both consume the SAME candidate JSON, so the
-        # advisory resampler cannot drift onto a narrower view of the candidate.
-        # Written once per RUN, but ALWAYS rewritten: out_dir persists across
-        # runs (main() only makedirs(exist_ok=True)) and keys are stable, so an
-        # existence check would let an edited candidate be scored from the
-        # previous run's file — silently, since the harness outputs regenerate.
         path = os.path.join(out_dir, f"{key}.candidate.json")
         if not written:
             with open(path, "w") as fh:
@@ -1113,19 +863,9 @@ def run_open_entry(entry: dict, spec: dict, out_dir: str,
         results["m3"] = run
 
     if "m5" in entry["harnesses"]:
-        # m5 is family-level (fee_audit screens registry defaults by name, no
-        # --params surface). It MUST be primed serially by ensure_m5 before the
-        # parallel map — a check-then-run here would let two threads sharing an
-        # m5 family both miss the cache, both spawn fee_audit writing the same
-        # output path, and a read racing that rewrite would raise JSONDecodeError
-        # and abort the whole suggester. By this point the cache is populated.
         results["m5"] = m5_cache[_m5_family_key(cand)]
 
     if "mc" in entry["harnesses"]:
-        # ADVISORY (#1295) — per-candidate, unlike the family-keyed noise/m5
-        # runs: the resampled trade series depends on this candidate's entry
-        # gate, close stack and params, so two siblings sharing a noise family
-        # still need their own Monte Carlo.
         out = os.path.join(out_dir, f"{key}.mc.json")
         mc = spec.get("mc") or {}
         tail = mc_argv_tail(candidate_path(), reg, windows, datasets,
@@ -1162,12 +902,6 @@ def _cmd(harness: str, tail: list) -> str:
 
 
 def _dry_run_commands(entries: list, spec: dict, out_dir: str) -> list:
-    """Every planned command, without running anything.
-
-    EVERY enabled harness appears here. A dry run that omits a harness it will
-    actually spawn under-reports the plan — the one thing a dry run exists to
-    prevent.
-    """
     cmds = []
     for e in entries:
         reg, windows, datasets = spec["registry"], spec["windows"], spec["datasets"]
@@ -1214,7 +948,6 @@ def _dry_run_commands(entries: list, spec: dict, out_dir: str) -> list:
 
 
 def _serializable(entry: dict) -> dict:
-    """Strip subprocess bookkeeping the artifact does not need."""
     out = {k: entry[k] for k in ("key", "kind", "hypothesis", "verdict",
                                  "limitations", "precondition_errors")}
     out["candidate"] = entry["candidate"]
@@ -1225,7 +958,7 @@ def _serializable(entry: dict) -> dict:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    p = argparse.ArgumentParser()
     p.add_argument("--spec", required=True, help="Path to a suggest.json spec")
     p.add_argument("--jobs", type=int, default=4)
     p.add_argument("--out-dir", default=None, help="Per-run harness JSON dir "
@@ -1290,9 +1023,6 @@ def main(argv=None) -> int:
     open_entries = [e for e in entries if e["kind"] == "open"]
     ab_entries = [e for e in entries if e["kind"] == "exit_ab"]
 
-    # Noise gate FIRST (M1 step-2 precondition), serialized so the family cache
-    # is populated before selectivity work; the family-level M5 audit is primed
-    # in the same serial pass so concurrent entries never race its output path.
     for e in open_entries:
         ensure_noise(e, spec, out_dir, noise_cache)
         ensure_m5(e, spec, out_dir, m5_cache)
@@ -1336,10 +1066,6 @@ def main(argv=None) -> int:
             fh.write("```\n" + text + "\n```\n")
         print(f"wrote {args.markdown_out}")
 
-    # Advisory-harness failures are reported (stderr + a per-entry limitation
-    # flag + a missing MC column) but never fail the run: an unavailable Monte
-    # Carlo column must not change the process's success signal any more than
-    # it changes a verdict (#1295).
     return 1 if any_gate_failure(entries) else 0
 
 

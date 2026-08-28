@@ -1,4 +1,3 @@
-"""Tiered ATR-multiple take-profit close evaluator using live ATR per tick."""
 
 from __future__ import annotations
 
@@ -7,7 +6,6 @@ from tiered_tp_atr import _tiers
 
 
 def _resolve_atr(market: dict, position: dict, atr_source: str) -> tuple[float, str]:
-    """Return (atr, source_label). Falls back to entry_atr when live ATR is unusable."""
     entry_atr = float_from(position, "entry_atr")
     if atr_source == "entry":
         return entry_atr, "entry"

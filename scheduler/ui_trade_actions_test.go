@@ -14,9 +14,6 @@ import (
 	"time"
 )
 
-// newTradeActionTestServer builds a StatusServer over a real temp SQLite
-// state DB, one type=manual strategy and one live HL perps strategy, each
-// with an open long position in the in-memory AppState.
 func newTradeActionTestServer(t *testing.T) (*StatusServer, *StateDB, *Config) {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "state.db")
@@ -35,8 +32,6 @@ func newTradeActionTestServer(t *testing.T) (*StatusServer, *StateDB, *Config) {
 				Args: []string{"hold", "ETH", "1h", "--mode=live"}, Capital: 1000, Leverage: 2,
 			},
 			{
-				// Production-shaped perps config: NO symbol field — the coin
-				// lives in args[1] only (pins the #1260 review-3 guard fix).
 				ID: "hl-perps-eth", Type: "perps", Platform: "hyperliquid",
 				Script: "shared_scripts/check_hyperliquid.py",
 				Args:   []string{"tcross", "ETH", "1h", "--mode=live"}, Capital: 1000, Leverage: 2,
@@ -67,8 +62,6 @@ func newTradeActionTestServer(t *testing.T) (*StatusServer, *StateDB, *Config) {
 	return ss, db, cfg
 }
 
-// tradeActionPost drives the real /api/strategies/ prefix router so path
-// dispatch is covered too.
 func tradeActionPost(ss *StatusServer, path, body string, hdr map[string]string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -84,7 +77,6 @@ func tradeActionPost(ss *StatusServer, path, body string, hdr map[string]string)
 	return w
 }
 
-// confirmNonceFor round-trips POST /api/confirm and returns the nonce.
 func confirmNonceFor(t *testing.T, ss *StatusServer, action, id, params string) string {
 	t.Helper()
 	body := fmt.Sprintf(`{"action":%q,"strategy_id":%q,"params":%s}`, action, id, params)
@@ -102,8 +94,6 @@ func confirmNonceFor(t *testing.T, ss *StatusServer, action, id, params string) 
 	return resp.Nonce
 }
 
-// tradeStubs lets a test override individual on-chain seams; anything left
-// nil fails loudly if hit.
 type tradeStubs struct {
 	updateSL    func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error)
 	execute     func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error)
@@ -111,8 +101,6 @@ type tradeStubs struct {
 	cancelOrder func(script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error)
 }
 
-// stubTradeDeps replaces every on-chain seam with fail-loud stubs; tests set
-// fields on the returned tradeStubs to allow specific calls.
 func stubTradeDeps(t *testing.T, ss *StatusServer) *tradeStubs {
 	t.Helper()
 	stubs := &tradeStubs{}
@@ -164,7 +152,6 @@ func TestConfirmNonceLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("binding: %v", err)
 	}
-	// Key-order-insensitive canonicalization.
 	binding2, _ := canonicalConfirmBinding("close", "hl-manual-eth", json.RawMessage(`{ "qty": 0.1 }`))
 	if binding != binding2 {
 		t.Fatalf("binding not canonical: %q vs %q", binding, binding2)
@@ -177,22 +164,18 @@ func TestConfirmNonceLifecycle(t *testing.T) {
 	if _, err := ss.consumeConfirmNonce(nonce, binding, now); err != nil {
 		t.Fatalf("consume: %v", err)
 	}
-	// Reuse rejected (single-use).
 	if _, err := ss.consumeConfirmNonce(nonce, binding, now); err == nil {
 		t.Fatal("reused nonce must be rejected")
 	}
 
-	// Expired rejected.
 	nonce, _ = ss.issueConfirmNonce(binding, "", now)
 	if _, err := ss.consumeConfirmNonce(nonce, binding, now.Add(confirmNonceTTL+time.Second)); err == nil {
 		t.Fatal("expired nonce must be rejected")
 	}
-	// ... and burned even though it failed.
 	if _, err := ss.consumeConfirmNonce(nonce, binding, now); err == nil {
 		t.Fatal("expired nonce must stay burned")
 	}
 
-	// Wrong action binding rejected (and burned).
 	nonce, _ = ss.issueConfirmNonce(binding, "", now)
 	other, _ := canonicalConfirmBinding("force-close", "hl-manual-eth", json.RawMessage(`{"qty":0.1}`))
 	if _, err := ss.consumeConfirmNonce(nonce, other, now); err == nil {
@@ -202,14 +185,12 @@ func TestConfirmNonceLifecycle(t *testing.T) {
 		t.Fatal("mismatched nonce must be burned on failure")
 	}
 
-	// Wrong strategy binding rejected.
 	nonce, _ = ss.issueConfirmNonce(binding, "", now)
 	otherStrat, _ := canonicalConfirmBinding("close", "hl-perps-eth", json.RawMessage(`{"qty":0.1}`))
 	if _, err := ss.consumeConfirmNonce(nonce, otherStrat, now); err == nil {
 		t.Fatal("wrong-strategy nonce must be rejected")
 	}
 
-	// Wrong params binding rejected.
 	nonce, _ = ss.issueConfirmNonce(binding, "", now)
 	otherQty, _ := canonicalConfirmBinding("close", "hl-manual-eth", json.RawMessage(`{"qty":0.2}`))
 	if _, err := ss.consumeConfirmNonce(nonce, otherQty, now); err == nil {
@@ -221,20 +202,17 @@ func TestTradeActionNonceBindingOverHTTP(t *testing.T) {
 	ss, db, _ := newTradeActionTestServer(t)
 	stubTradeDeps(t, ss)
 
-	// Nonce confirmed for close must not authorize force-close.
 	nonce := confirmNonceFor(t, ss, "close", "hl-manual-eth", `{"qty":0.1}`)
 	w := tradeActionPost(ss, "/api/strategies/hl-perps-eth/force-close",
 		fmt.Sprintf(`{"nonce":%q,"params":{"qty":0.1}}`, nonce), nil)
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("rebound nonce status = %d, body %s", w.Code, w.Body.String())
 	}
-	// The nonce is burned: the originally-confirmed action now fails too.
 	w = tradeActionPost(ss, "/api/strategies/hl-manual-eth/close",
 		fmt.Sprintf(`{"nonce":%q,"params":{"qty":0.1}}`, nonce), nil)
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("burned nonce status = %d, body %s", w.Code, w.Body.String())
 	}
-	// Missing nonce → 400.
 	w = tradeActionPost(ss, "/api/strategies/hl-manual-eth/close", `{"params":{"qty":0.1}}`, nil)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("missing nonce status = %d", w.Code)
@@ -281,9 +259,6 @@ func TestTradeActionsEnforceConfiguredToken(t *testing.T) {
 	}
 }
 
-// TestUIUpdateSLQueuesPendingActionLikeCLI pins the zero-bypass invariant:
-// the UI SL edit produces a PendingManualAction identical to the CLI core's
-// (same core), and never touches the position directly.
 func TestUIUpdateSLQueuesPendingActionLikeCLI(t *testing.T) {
 	ss, db, cfg := newTradeActionTestServer(t)
 	stubs := stubTradeDeps(t, ss)
@@ -294,7 +269,6 @@ func TestUIUpdateSLQueuesPendingActionLikeCLI(t *testing.T) {
 		return &HyperliquidStopLossUpdateResult{StopLossOID: 555, StopLossTriggerPx: triggerPx, CancelStopLossSucceeded: true}, "", nil
 	}
 
-	// CLI-path reference row: same core, CLI-style deps over the same DB.
 	if err := db.SaveState(ss.state); err != nil {
 		t.Fatalf("SaveState: %v", err)
 	}
@@ -319,7 +293,6 @@ func TestUIUpdateSLQueuesPendingActionLikeCLI(t *testing.T) {
 		t.Fatalf("clear queue: %v", err)
 	}
 
-	// UI path.
 	nonce := confirmNonceFor(t, ss, "update-sl", "hl-manual-eth", `{"trigger":1850}`)
 	w := tradeActionPost(ss, "/api/strategies/hl-manual-eth/update-sl",
 		fmt.Sprintf(`{"nonce":%q,"params":{"trigger":1850}}`, nonce), nil)
@@ -339,7 +312,6 @@ func TestUIUpdateSLQueuesPendingActionLikeCLI(t *testing.T) {
 		t.Fatalf("UI rows = %d (err=%v), want 1", len(uiRows), err)
 	}
 	uiRow := uiRows[0]
-	// Identical rows modulo ID/CreatedAt.
 	cliRow.ID, uiRow.ID = 0, 0
 	cliRow.CreatedAt, uiRow.CreatedAt = time.Time{}, time.Time{}
 	if fmt.Sprintf("%+v", cliRow) != fmt.Sprintf("%+v", uiRow) {
@@ -349,7 +321,6 @@ func TestUIUpdateSLQueuesPendingActionLikeCLI(t *testing.T) {
 		t.Fatalf("queued row = %+v", uiRow)
 	}
 
-	// Regression: no direct position mutation — the daemon adopts on drain.
 	pos := ss.state.Strategies["hl-manual-eth"].Positions["ETH"]
 	if pos.StopLossOID != 111 || pos.StopLossTriggerPx != 1900 {
 		t.Fatalf("position mutated directly: OID=%d trigger=%.2f", pos.StopLossOID, pos.StopLossTriggerPx)
@@ -390,8 +361,6 @@ func TestUITradeActionsKillSwitchAndCBGates(t *testing.T) {
 	ss, db, _ := newTradeActionTestServer(t)
 	stubTradeDeps(t, ss)
 
-	// Kill switch blocks open (and add). Flat first, so the open reaches the
-	// core's kill-switch gate instead of the handler's double-open guard.
 	delete(ss.state.Strategies["hl-manual-eth"].Positions, "ETH")
 	ss.state.PortfolioRisk.KillSwitchActive = true
 	nonce := confirmNonceFor(t, ss, "open", "hl-manual-eth", `{"margin":50}`)
@@ -402,7 +371,6 @@ func TestUITradeActionsKillSwitchAndCBGates(t *testing.T) {
 	}
 	ss.state.PortfolioRisk.KillSwitchActive = false
 
-	// Pending circuit-breaker close blocks add.
 	ss.state.Strategies["hl-manual-eth"].RiskState.PendingCircuitCloses = map[string]*PendingCircuitClose{
 		PlatformPendingCloseHyperliquid: {},
 	}
@@ -418,8 +386,6 @@ func TestUITradeActionsKillSwitchAndCBGates(t *testing.T) {
 	}
 }
 
-// TestUICloseQueuesFromStubbedFill covers the happy close path end-to-end:
-// stubbed venue fill → queued close action → response reports the queue.
 func TestUICloseQueuesFromStubbedFill(t *testing.T) {
 	ss, db, _ := newTradeActionTestServer(t)
 	stubs := stubTradeDeps(t, ss)
@@ -449,25 +415,18 @@ func TestUICloseQueuesFromStubbedFill(t *testing.T) {
 	if row.Action != "close" || !row.IsFullClose || row.Quantity != 0.4 || row.FillPrice != 2100 {
 		t.Fatalf("queued close row = %+v", row)
 	}
-	// PnL is net of the fee: 0.4*(2100-2000) - 1.5.
 	if row.RealizedPnL != 38.5 {
 		t.Fatalf("realized pnl = %v, want 38.5", row.RealizedPnL)
 	}
-	// Position untouched until the scheduler drains.
 	if ss.state.Strategies["hl-manual-eth"].Positions["ETH"].Quantity != 0.4 {
 		t.Fatal("position mutated before drain")
 	}
 }
 
-// TestUIOpenGuardsDoubleFire pins the #1260-review double-open guard: a UI
-// open is refused while the strategy already holds the symbol or a
-// position-increasing action is still queued, and passes again once the
-// scheduler drain has applied + deleted the row (simulated by deleting it).
 func TestUIOpenGuardsDoubleFire(t *testing.T) {
 	ss, db, _ := newTradeActionTestServer(t)
 	stubs := stubTradeDeps(t, ss)
 
-	// (1) Position already open -> 409, no venue call.
 	nonce := confirmNonceFor(t, ss, "open", "hl-manual-eth", `{"margin":50}`)
 	w := tradeActionPost(ss, "/api/strategies/hl-manual-eth/open",
 		fmt.Sprintf(`{"nonce":%q,"params":{"margin":50}}`, nonce), nil)
@@ -475,7 +434,6 @@ func TestUIOpenGuardsDoubleFire(t *testing.T) {
 		t.Fatalf("open-with-position status = %d, body %s", w.Code, w.Body.String())
 	}
 
-	// (2) Flat, but a queued open (submitted, not yet drained) -> 409.
 	delete(ss.state.Strategies["hl-manual-eth"].Positions, "ETH")
 	if err := db.InsertPendingManualAction(PendingManualAction{
 		StrategyID: "hl-manual-eth", Action: "open", Symbol: "ETH", Side: "long",
@@ -490,7 +448,6 @@ func TestUIOpenGuardsDoubleFire(t *testing.T) {
 		t.Fatalf("open-with-pending status = %d, body %s", w.Code, w.Body.String())
 	}
 
-	// (3) Drain applied (row deleted) -> a legitimate re-open passes.
 	rows, _ := db.LoadPendingManualActions()
 	if err := db.DeletePendingManualActionsThrough(rows[len(rows)-1].ID); err != nil {
 		t.Fatalf("delete pending: %v", err)
@@ -519,19 +476,14 @@ func TestUIOpenGuardsDoubleFire(t *testing.T) {
 	if rows[0].Action != "open" || rows[0].Quantity != 0.05 || rows[0].FillPrice != 2000 {
 		t.Fatalf("queued open row = %+v", rows[0])
 	}
-	// No in-memory position until the scheduler drains.
 	if ss.state.Strategies["hl-manual-eth"].Positions["ETH"] != nil {
 		t.Fatal("position created before drain")
 	}
-	// A peer strategy holding the same coin never blocked any of this: the
-	// hl-perps-eth fixture position was present throughout.
 	if ss.state.Strategies["hl-perps-eth"].Positions["ETH"] == nil {
 		t.Fatal("fixture peer position missing")
 	}
 }
 
-// TestUIAddQueuesAndGuardsPending: happy add queues an "add" row without
-// mutating the in-memory position; a still-queued add blocks a retry.
 func TestUIAddQueuesAndGuardsPending(t *testing.T) {
 	ss, db, _ := newTradeActionTestServer(t)
 	stubs := stubTradeDeps(t, ss)
@@ -555,7 +507,6 @@ func TestUIAddQueuesAndGuardsPending(t *testing.T) {
 		t.Fatal("position mutated before drain")
 	}
 
-	// Retry while the add is still queued -> 409, no second venue call.
 	stubs.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
 		t.Error("execute must not be called for a guarded add retry")
 		return nil, "", fmt.Errorf("stub")
@@ -568,9 +519,6 @@ func TestUIAddQueuesAndGuardsPending(t *testing.T) {
 	}
 }
 
-// TestUICancelSLQueuesAndErrors: cancel-sl with a resting SL queues the
-// removal without touching the in-memory position; with no resting SL it
-// errors and queues nothing.
 func TestUICancelSLQueuesAndErrors(t *testing.T) {
 	ss, db, _ := newTradeActionTestServer(t)
 	stubs := stubTradeDeps(t, ss)
@@ -595,7 +543,6 @@ func TestUICancelSLQueuesAndErrors(t *testing.T) {
 		t.Fatal("in-memory SL OID mutated before drain")
 	}
 
-	// No resting SL -> error, nothing queued beyond the first row.
 	if err := db.DeletePendingManualActionsThrough(rows[0].ID); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
@@ -615,11 +562,6 @@ func TestUICancelSLQueuesAndErrors(t *testing.T) {
 	}
 }
 
-// TestUICloseGuardsDoubleFire pins the #1260-review close double-fire guard:
-// close and force-close are refused while a close for the same
-// strategy+symbol is still queued (a sized manual close is NOT reduce-only —
-// a re-click could flip into an opposite position), and pass again once the
-// drain has applied + deleted the row.
 func TestUICloseGuardsDoubleFire(t *testing.T) {
 	ss, db, _ := newTradeActionTestServer(t)
 	stubs := stubTradeDeps(t, ss)
@@ -631,7 +573,6 @@ func TestUICloseGuardsDoubleFire(t *testing.T) {
 		t.Fatalf("insert pending close: %v", err)
 	}
 
-	// close retry -> 409, execute never called (default stub errors if hit).
 	nonce := confirmNonceFor(t, ss, "close", "hl-manual-eth", `{}`)
 	w := tradeActionPost(ss, "/api/strategies/hl-manual-eth/close",
 		fmt.Sprintf(`{"nonce":%q,"params":{}}`, nonce), nil)
@@ -639,7 +580,6 @@ func TestUICloseGuardsDoubleFire(t *testing.T) {
 		t.Fatalf("guarded close status = %d, body %s", w.Code, w.Body.String())
 	}
 
-	// force-close for a peer with its own queued close -> 409, closer not called.
 	if err := db.InsertPendingManualAction(PendingManualAction{
 		StrategyID: "hl-perps-eth", Action: "close", Symbol: "ETH", Side: "sell",
 		Quantity: 0.4, FillPrice: 2100, IsFullClose: true, CreatedAt: time.Now().UTC(),
@@ -653,9 +593,6 @@ func TestUICloseGuardsDoubleFire(t *testing.T) {
 		t.Fatalf("guarded force-close status = %d, body %s", w.Code, w.Body.String())
 	}
 
-	// A queued update-sl for the strategy does NOT trip the close guard (the
-	// core's own pendingSLActionExists handles that class) — and after the
-	// drain deletes the close rows, a legitimate close passes.
 	rows, _ := db.LoadPendingManualActions()
 	if err := db.DeletePendingManualActionsThrough(rows[len(rows)-1].ID); err != nil {
 		t.Fatalf("delete: %v", err)
@@ -676,9 +613,6 @@ func TestUICloseGuardsDoubleFire(t *testing.T) {
 	}
 }
 
-// TestUITradeActionsConcurrentOpensSerialized pins the #1260-review atomicity
-// fix: two truly concurrent opens must produce exactly one on-chain submit +
-// one queued row; tradeActionMu makes the guard's check-then-insert atomic.
 func TestUITradeActionsConcurrentOpensSerialized(t *testing.T) {
 	ss, db, _ := newTradeActionTestServer(t)
 	stubs := stubTradeDeps(t, ss)
@@ -687,7 +621,7 @@ func TestUITradeActionsConcurrentOpensSerialized(t *testing.T) {
 	var execCalls int32
 	stubs.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
 		atomic.AddInt32(&execCalls, 1)
-		time.Sleep(20 * time.Millisecond) // widen the race window
+		time.Sleep(20 * time.Millisecond)
 		return &HyperliquidExecuteResult{
 			Execution: &HyperliquidExecution{Fill: &HyperliquidFill{AvgPx: 2000, TotalSz: 0.05, OID: 557, Fee: 0.5}},
 		}, "", nil
@@ -730,15 +664,10 @@ func TestUITradeActionsConcurrentOpensSerialized(t *testing.T) {
 	}
 }
 
-// TestUICrossClassPendingGuard pins the #1260 review-4 fix: open/add/close/
-// force-close share ONE in-flight class — an add is refused while a close is
-// queued (and vice versa), never firing the venue seam, so the drain can
-// never orphan an on-chain order behind a just-applied close.
 func TestUICrossClassPendingGuard(t *testing.T) {
 	ss, db, _ := newTradeActionTestServer(t)
-	stubTradeDeps(t, ss) // every venue seam fails loudly if invoked
+	stubTradeDeps(t, ss)
 
-	// Full close queued -> add on the still-rendered position must 409.
 	if err := db.InsertPendingManualAction(PendingManualAction{
 		StrategyID: "hl-manual-eth", Action: "close", Symbol: "ETH", Side: "sell",
 		Quantity: 0.4, FillPrice: 2100, IsFullClose: true, CreatedAt: time.Now().UTC(),
@@ -752,7 +681,6 @@ func TestUICrossClassPendingGuard(t *testing.T) {
 		t.Fatalf("add-while-close-queued status = %d, body %s", w.Code, w.Body.String())
 	}
 
-	// Inverse: add queued -> close and force-close must 409.
 	rows, _ := db.LoadPendingManualActions()
 	if err := db.DeletePendingManualActionsThrough(rows[len(rows)-1].ID); err != nil {
 		t.Fatalf("delete: %v", err)
@@ -783,11 +711,6 @@ func TestUICrossClassPendingGuard(t *testing.T) {
 	}
 }
 
-// TestUISLEditGuardedWhileCloseQueued pins the #1260 review-5 symmetric
-// guard: update-sl/cancel-sl are refused while a position-changing action is
-// queued for the same strategy+symbol (the queued close will delete the
-// position before the edit row drains), SL seams never invoked; a legitimate
-// edit passes again once the close has drained.
 func TestUISLEditGuardedWhileCloseQueued(t *testing.T) {
 	ss, db, _ := newTradeActionTestServer(t)
 	stubs := stubTradeDeps(t, ss)
@@ -799,7 +722,6 @@ func TestUISLEditGuardedWhileCloseQueued(t *testing.T) {
 		t.Fatalf("insert pending close: %v", err)
 	}
 
-	// update-sl while a close is queued -> refused, updateSL never called.
 	nonce := confirmNonceFor(t, ss, "update-sl", "hl-manual-eth", `{"trigger":1950}`)
 	w := tradeActionPost(ss, "/api/strategies/hl-manual-eth/update-sl",
 		fmt.Sprintf(`{"nonce":%q,"params":{"trigger":1950}}`, nonce), nil)
@@ -807,7 +729,6 @@ func TestUISLEditGuardedWhileCloseQueued(t *testing.T) {
 		t.Fatalf("update-sl-while-close-queued status = %d, body %s", w.Code, w.Body.String())
 	}
 
-	// cancel-sl too (inverse direction of the close-blocked-by-SL-edit rule).
 	nonce = confirmNonceFor(t, ss, "cancel-sl", "hl-manual-eth", `{}`)
 	w = tradeActionPost(ss, "/api/strategies/hl-manual-eth/cancel-sl",
 		fmt.Sprintf(`{"nonce":%q,"params":{}}`, nonce), nil)
@@ -815,8 +736,6 @@ func TestUISLEditGuardedWhileCloseQueued(t *testing.T) {
 		t.Fatalf("cancel-sl-while-close-queued status = %d, body %s", w.Code, w.Body.String())
 	}
 
-	// After the close drains (row deleted; here the position also survives a
-	// partial close), a legitimate SL edit passes again.
 	rows, _ := db.LoadPendingManualActions()
 	if err := db.DeletePendingManualActionsThrough(rows[len(rows)-1].ID); err != nil {
 		t.Fatalf("delete: %v", err)

@@ -6,9 +6,6 @@ import (
 	"time"
 )
 
-// TestLifetimeTradeStatsAll_GrossConventionRowsNetOfFee verifies W/L counting
-// reads NET PnL through tradeNetPnLSQL on gross-convention (#954) rows: a
-// small gross win whose fee exceeds it must count as a loss, not a win.
 func TestLifetimeTradeStatsAll_GrossConventionRowsNetOfFee(t *testing.T) {
 	sdb := openTestDB(t)
 	now := time.Now().UTC()
@@ -31,9 +28,6 @@ func TestLifetimeTradeStatsAll_GrossConventionRowsNetOfFee(t *testing.T) {
 	}
 }
 
-// TestTradeNetPnLSQL_MirrorsGoHelper verifies the SQL expressions
-// tradeNetPnLSQL / tradeLedgerDeltaSQL agree with their Go mirrors
-// tradeNetPnL / tradeLedgerDelta on every row convention.
 func TestTradeNetPnLSQL_MirrorsGoHelper(t *testing.T) {
 	sdb := openTestDB(t)
 	now := time.Now().UTC()

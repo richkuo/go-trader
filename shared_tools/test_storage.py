@@ -1,4 +1,3 @@
-"""Tests for storage.py — SQLite persistence for OHLCV and backtest results."""
 
 import json
 import os
@@ -9,9 +8,6 @@ import sys
 import pandas as pd
 import pytest
 
-# Import storage functions directly — we override DB_PATH per-test via db_path param
-# Note: storage.py calls init_db() at import time using default DB_PATH.
-# Tests always pass an explicit db_path to avoid touching the real database.
 from storage import get_connection, init_db, store_ohlcv, load_ohlcv, store_backtest_result, get_backtest_results
 
 
@@ -54,18 +50,14 @@ def test_ohlcv_cache_env_override_fails_loudly_when_unwritable(tmp_path):
     assert str(blocker / "ohlcv.sqlite3") in proc.stderr
 
 
-# ─── Fixtures ──────────────────────────────────
-
 @pytest.fixture
 def db_path(tmp_path):
-    """Create a temporary SQLite database."""
     path = str(tmp_path / "test_trading.db")
     init_db(path)
     return path
 
 
 def _sample_ohlcv_df():
-    """Create a sample OHLCV DataFrame."""
     return pd.DataFrame({
         "timestamp": [1700000000000, 1700003600000, 1700007200000],
         "open":      [35000.0, 35200.0, 35600.0],
@@ -77,7 +69,6 @@ def _sample_ohlcv_df():
 
 
 def _sample_backtest_result():
-    """Create a sample backtest result dict."""
     return {
         "strategy_name": "sma_crossover",
         "symbol": "BTC/USDT",
@@ -99,8 +90,6 @@ def _sample_backtest_result():
     }
 
 
-# ─── init_db ───────────────────────────────────
-
 class TestInitDb:
     def test_creates_ohlcv_table(self, db_path):
         conn = sqlite3.connect(db_path)
@@ -121,7 +110,6 @@ class TestInitDb:
         conn.close()
 
     def test_idempotent(self, db_path):
-        # Calling init_db twice should not raise
         init_db(db_path)
         init_db(db_path)
 
@@ -135,8 +123,6 @@ class TestInitDb:
         conn.close()
 
 
-# ─── get_connection ────────────────────────────
-
 class TestGetConnection:
     def test_returns_connection(self, db_path):
         conn = get_connection(db_path)
@@ -149,8 +135,6 @@ class TestGetConnection:
         assert mode == "wal"
         conn.close()
 
-
-# ─── store_ohlcv / load_ohlcv ─────────────────
 
 class TestOhlcvRoundTrip:
     def test_store_and_load(self, db_path):
@@ -177,20 +161,19 @@ class TestOhlcvRoundTrip:
         df = _sample_ohlcv_df()
         store_ohlcv(df, "binanceus", "BTC/USDT", "1h", db_path=db_path)
 
-        # Store again with updated close price for first candle
         df2 = pd.DataFrame({
             "timestamp": [1700000000000],
             "open": [35000.0],
             "high": [35500.0],
             "low": [34800.0],
-            "close": [99999.0],  # changed
+            "close": [99999.0],
             "volume": [100.0],
         })
         store_ohlcv(df2, "binanceus", "BTC/USDT", "1h", db_path=db_path)
 
         loaded = load_ohlcv("binanceus", "BTC/USDT", "1h", db_path=db_path)
-        assert len(loaded) == 3  # still 3 rows, not 4
-        assert loaded["close"].iloc[0] == pytest.approx(99999.0)  # updated
+        assert len(loaded) == 3
+        assert loaded["close"].iloc[0] == pytest.approx(99999.0)
 
     def test_filter_by_start_ts(self, db_path):
         df = _sample_ohlcv_df()
@@ -235,7 +218,6 @@ class TestOhlcvRoundTrip:
         assert len(loaded) == 0
 
     def test_ordered_by_timestamp(self, db_path):
-        # Insert in reverse order
         df = pd.DataFrame({
             "timestamp": [1700007200000, 1700000000000, 1700003600000],
             "open": [1.0, 2.0, 3.0],
@@ -249,8 +231,6 @@ class TestOhlcvRoundTrip:
         timestamps = list(loaded["timestamp"])
         assert timestamps == sorted(timestamps)
 
-
-# ─── store_backtest_result / get_backtest_results ──
 
 class TestBacktestRoundTrip:
     def test_store_and_retrieve(self, db_path):
@@ -311,7 +291,6 @@ class TestBacktestRoundTrip:
         assert len(df) == 0
 
     def test_missing_fields_use_defaults(self, db_path):
-        # Minimal result dict
         result = {
             "strategy_name": "test",
             "symbol": "BTC/USDT",
@@ -345,12 +324,7 @@ class TestBacktestRoundTrip:
         assert list(df["strategy_name"]) == ["strategy_2", "strategy_1", "strategy_0"]
 
 
-# ─── Funding coverage ledger (#1176) ──────────────────────────────
-
-
 class TestFundingCoverage:
-    """Interval-set semantics for funding_coverage: disjoint fetches stay
-    disjoint (never min/max-unioned), overlapping/touching fetches merge."""
 
     def _load(self, db_path, exchange="hyperliquid", coin="BTC"):
         from storage import load_funding_coverage
@@ -365,8 +339,6 @@ class TestFundingCoverage:
         assert self._load(db_path) == [(100, 200)]
 
     def test_disjoint_intervals_stay_disjoint(self, db_path):
-        """#1176 regression: the old ledger widened by min/max union, so two
-        disjoint fetches falsely claimed the unfetched middle as covered."""
         from storage import store_funding_coverage
         store_funding_coverage("hyperliquid", "BTC", 1000, 2000, db_path=db_path)
         store_funding_coverage("hyperliquid", "BTC", 100, 200, db_path=db_path)
@@ -385,7 +357,6 @@ class TestFundingCoverage:
         assert self._load(db_path) == [(100, 300)]
 
     def test_bridging_interval_collapses_neighbors(self, db_path):
-        """A fetch spanning the gap between two intervals merges all three."""
         from storage import store_funding_coverage
         store_funding_coverage("hyperliquid", "BTC", 100, 200, db_path=db_path)
         store_funding_coverage("hyperliquid", "BTC", 400, 500, db_path=db_path)
@@ -401,10 +372,6 @@ class TestFundingCoverage:
         assert self._load(db_path, coin="SOL") == []
 
     def test_old_single_row_schema_migrates_and_drops_rows(self, tmp_path):
-        """A DB created with the pre-#1176 one-row-per-coin schema (UNIQUE on
-        (exchange, coin), min/max-union widened) migrates to the interval
-        schema and DROPS its rows — a unioned row may claim never-fetched
-        middles as covered, so refetch is the only safe recovery."""
         path = str(tmp_path / "legacy.db")
         conn = sqlite3.connect(path)
         conn.execute("""
@@ -422,14 +389,12 @@ class TestFundingCoverage:
 
         init_db(path)
         assert self._load(path) == [], "poisoned min/max-union row must be dropped"
-        # And the migrated table accepts multiple intervals per coin.
         from storage import store_funding_coverage
         store_funding_coverage("hyperliquid", "BTC", 100, 200, db_path=path)
         store_funding_coverage("hyperliquid", "BTC", 400, 500, db_path=path)
         assert self._load(path) == [(100, 200), (400, 500)]
 
     def test_new_schema_not_re_migrated(self, db_path):
-        """init_db on an already-migrated DB must keep its coverage rows."""
         from storage import store_funding_coverage
         store_funding_coverage("hyperliquid", "BTC", 100, 200, db_path=db_path)
         init_db(db_path)

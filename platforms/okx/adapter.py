@@ -1,16 +1,3 @@
-"""
-OKX Exchange Adapter — unified interface for spot, perpetual swaps, and options.
-Uses CCXT for all API interactions.
-
-Supports paper (public API only, no credentials) and
-live (real orders on OKX, API credentials required) modes.
-
-Environment variables:
-    OKX_API_KEY        — API key for live trading
-    OKX_API_SECRET     — API secret for live trading
-    OKX_PASSPHRASE     — API passphrase for live trading
-    OKX_SANDBOX=1      — use OKX demo trading environment
-"""
 
 import os
 import sys
@@ -24,7 +11,6 @@ import ccxt
 
 
 def _bill_float(value) -> float:
-    """Parse an OKX bill numeric field; missing/blank/garbage → 0.0."""
     try:
         return float(value)
     except (TypeError, ValueError):
@@ -32,9 +18,6 @@ def _bill_float(value) -> float:
 
 
 def _okx_usdt_cash_balance(info):
-    """Pull the USDT ``cashBal`` from a raw OKX fetch_balance ``info`` payload
-    (``data[0].details[]``). Returns a float, or None when the field is absent
-    or unparseable. Pure — unit-tested without a live exchange."""
     try:
         details = ((info or {}).get("data") or [{}])[0].get("details") or []
     except (AttributeError, IndexError, TypeError):
@@ -49,13 +32,6 @@ def _okx_usdt_cash_balance(info):
 
 
 def _normalize_okx_bill(entry: dict) -> dict:
-    """Normalize one ccxt fetch_ledger entry into the #1105 journal bill shape.
-
-    Pulls the raw OKX bill from ``entry["info"]`` (authoritative field names —
-    billId/balChg/etc.) and falls back to the ccxt-unified ``timestamp`` for the
-    millisecond time when the raw ``ts`` is absent. Pure — unit-tested without a
-    live exchange.
-    """
     info = entry.get("info") or {}
     ts = info.get("ts")
     if ts in (None, ""):
@@ -75,12 +51,6 @@ def _normalize_okx_bill(entry: dict) -> dict:
 
 
 class OKXExchangeAdapter:
-    """
-    Exchange adapter for OKX — spot, perpetual swaps, and options.
-
-    Paper mode:  no credentials needed; uses live OKX prices for simulation.
-    Live mode:   requires OKX_API_KEY, OKX_API_SECRET, OKX_PASSPHRASE.
-    """
 
     def __init__(self):
         api_key = os.environ.get("OKX_API_KEY", "")
@@ -105,30 +75,23 @@ class OKXExchangeAdapter:
 
     @property
     def is_live(self) -> bool:
-        """True if API credentials are provided (live mode)."""
         return self._is_live
 
     @property
     def mode(self) -> str:
-        """'live' or 'paper'."""
         return "live" if self.is_live else "paper"
 
     @property
     def name(self) -> str:
         return "okx"
 
-    # ─────────────────────────────────────────────
-    # Market data
-    # ─────────────────────────────────────────────
 
     def _load_markets(self):
-        """Load and cache markets from OKX."""
         if not self._markets_loaded:
             self._exchange.load_markets()
             self._markets_loaded = True
 
     def get_spot_price(self, symbol: str) -> float:
-        """Get current spot price for a coin (e.g. 'BTC')."""
         for suffix in ("/USDT", "/USD", "/USDC"):
             try:
                 ticker = self._exchange.fetch_ticker(symbol + suffix)
@@ -140,7 +103,6 @@ class OKXExchangeAdapter:
         return 0.0
 
     def get_perp_price(self, symbol: str) -> float:
-        """Get current last price for a perpetual swap (e.g. 'BTC')."""
         try:
             ticker = self._exchange.fetch_ticker(f"{symbol}/USDT:USDT")
             price = ticker.get("last") or 0
@@ -151,26 +113,18 @@ class OKXExchangeAdapter:
         return 0.0
 
     def get_ohlcv(self, symbol: str, interval: str = "1h", limit: int = 200) -> list:
-        """
-        Fetch OHLCV candles from OKX.
-
-        interval: "1m", "5m", "15m", "30m", "1h", "2h", "4h", "1d", etc.
-        Returns list of [timestamp_ms, open, high, low, close, volume].
-        """
         pair = f"{symbol}/USDT"
         try:
             candles = self._exchange.fetch_ohlcv(pair, interval, limit=limit)
-            return candles  # ccxt already returns [ts, o, h, l, c, v]
+            return candles
         except Exception:
             return []
 
     def get_ohlcv_closes(self, symbol: str, interval: str = "1h", limit: int = 200) -> list:
-        """Fetch OHLCV and return just close prices (for HTF filter compatibility)."""
         candles = self.get_ohlcv(symbol, interval, limit)
         return [c[4] for c in candles] if candles else []
 
     def get_perp_ohlcv(self, symbol: str, interval: str = "1h", limit: int = 200) -> list:
-        """Fetch OHLCV candles for perpetual swap (USDT-margined)."""
         pair = f"{symbol}/USDT:USDT"
         try:
             candles = self._exchange.fetch_ohlcv(pair, interval, limit=limit)
@@ -179,10 +133,6 @@ class OKXExchangeAdapter:
             return []
 
     def get_funding_rate(self, symbol: str) -> float:
-        """Get current predicted funding rate for a perpetual swap.
-
-        Returns the raw rate as a float (e.g. 0.0001 = 0.01% per 8h).
-        """
         try:
             pair = f"{symbol}/USDT:USDT"
             data = self._exchange.fetch_funding_rate(pair)
@@ -191,10 +141,6 @@ class OKXExchangeAdapter:
             return 0.0
 
     def get_funding_history(self, symbol: str, days: int = 7) -> list:
-        """Get historical funding rate snapshots.
-
-        Returns list of {"rate": float, "time": int} dicts, newest last.
-        """
         try:
             pair = f"{symbol}/USDT:USDT"
             since = int((time.time() - days * 86400) * 1000)
@@ -206,17 +152,8 @@ class OKXExchangeAdapter:
         except Exception:
             return []
 
-    # ─────────────────────────────────────────────
-    # Order execution (live mode only)
-    # ─────────────────────────────────────────────
 
     def fetch_open_positions(self) -> list:
-        """Return every open perpetual swap position on the account.
-
-        Thin wrapper around ccxt's ``fetch_positions`` — exists so shared
-        scripts can stay off the private ``_exchange`` attribute (CLAUDE.md
-        rule). Raises in paper mode: position queries require auth.
-        """
         if not self._is_live:
             raise RuntimeError(
                 "fetch_open_positions requires live mode (set OKX_API_KEY, OKX_API_SECRET, OKX_PASSPHRASE)"
@@ -224,12 +161,6 @@ class OKXExchangeAdapter:
         return self._exchange.fetch_positions() or []
 
     def market_open(self, symbol: str, is_buy: bool, size: float, inst_type: str = "spot") -> dict:
-        """
-        Place a market order.
-
-        inst_type: "spot" for spot trading, "swap" for perpetual swap.
-        Only available in live mode; raises RuntimeError in paper mode.
-        """
         if not self._is_live:
             raise RuntimeError(
                 "market_open requires live mode (set OKX_API_KEY, OKX_API_SECRET, OKX_PASSPHRASE)"
@@ -244,19 +175,6 @@ class OKXExchangeAdapter:
         return self._exchange.create_market_order(pair, side, size, params=params)
 
     def market_close(self, symbol: str, sz: float | None = None) -> dict:
-        """
-        Close an open perpetual swap position for a symbol (reduce-only).
-
-        When ``sz`` is None, closes the full on-chain contracts for the
-        position (portfolio kill switch / sole-owner circuit breakers).
-        When ``sz`` is set, submits a reduce-only market order for that
-        contract quantity only — used for shared-wallet per-strategy
-        circuit breakers (#360). The caller is responsible for sizing;
-        OKX enforces reduceOnly=True on the order itself so an oversized
-        request cannot flip the position.
-
-        Only available in live mode; raises RuntimeError in paper mode.
-        """
         if not self._is_live:
             raise RuntimeError(
                 "market_close requires live mode (set OKX_API_KEY, OKX_API_SECRET, OKX_PASSPHRASE)"
@@ -283,25 +201,6 @@ class OKXExchangeAdapter:
         return results[0] if results else {}
 
     def get_account_balance(self) -> float:
-        """Return the total USDT-denominated account VALUE for shared-wallet
-        aggregation (#360 phase 2 — unlocks multi-strategy OKX portfolio value
-        correctness).
-
-        Returns ccxt's ``balance["total"]["USDT"]``, which ccxt's OKX driver
-        maps from the account's equity field (``eq``) — i.e. cash balance PLUS
-        unrealized P&L on open positions for the unified/cross margin account.
-
-        #918 RELIES on this being equity-inclusive: the shared-wallet
-        reconciler computes ``base = accountBalance - Σ unrealizedPnL`` and
-        redistributes the base by capital weight, attributing each position's
-        unrealized P&L to its owning strategy. If this value ever excluded
-        unrealized P&L the per-member equity rows would be skewed by the
-        owners' P&L (the member SUM still reconciles to this number, so the
-        drift alarm stays correct, but the split would misreport per strategy).
-        Verify against a live OKX account if the ccxt mapping changes.
-
-        Only available in live mode; raises RuntimeError in paper mode.
-        """
         if not self._is_live:
             raise RuntimeError(
                 "get_account_balance requires live mode (set OKX_API_KEY, OKX_API_SECRET, OKX_PASSPHRASE)"
@@ -314,24 +213,6 @@ class OKXExchangeAdapter:
             return 0.0
 
     def get_account_equity_and_upnl(self) -> Tuple[float, float]:
-        """Return a COHERENT ``(equity, unrealized_pnl)`` snapshot from ONE
-        ``fetch_balance`` call, for the #1105 cash-flow journal.
-
-        ``equity`` is the USDT account value (ccxt ``total["USDT"]`` == OKX
-        ``eq`` — the same field ``get_account_balance`` returns and the #918
-        capital-weight split reconciles). ``unrealized_pnl`` is derived as
-        ``eq - cashBal`` for USDT from the SAME response, so eq and uPnL are one
-        atomic snapshot: in the journal's equity equation the uPnL term then
-        cancels exactly against ``eq``, leaving residual drift = settled-cash
-        reconstruction error only. Pairing eq with a uPnL sampled from a SEPARATE
-        ``fetch_positions`` call (a different instant) would inject intra-cycle
-        uPnL jitter — dollars on a leveraged position — into the shadow drift,
-        the very signal Phase 3b must evaluate.
-
-        Falls back to uPnL ``0.0`` when the USDT ``cashBal`` is absent/unparseable
-        (the shadow drift then conservatively carries uPnL — visible, never a
-        false "clean"). Only available in live mode; raises in paper mode.
-        """
         if not self._is_live:
             raise RuntimeError(
                 "get_account_equity_and_upnl requires live mode (set OKX_API_KEY, OKX_API_SECRET, OKX_PASSPHRASE)"
@@ -348,38 +229,6 @@ class OKXExchangeAdapter:
 
     def get_account_bills(self, since_ms: int = 0, page_limit: int = 100,
                           max_bills: int = 10000) -> Tuple[list, bool]:
-        """Fetch OKX account bills (settled cash-flow events) since ``since_ms``
-        for the #1105 exchange-sourced cash-flow journal (shadow phase).
-
-        Every OKX balance change is an account bill carrying ``balChg`` (the
-        signed change to the settled cash balance), so this single feed is the
-        COMPLETE settled-cash-flow source — trade PnL, fees, funding, transfers,
-        deposits and withdrawals are all bills. ``balChg`` already nets every
-        component, so the consumer needs no per-fill fee arithmetic; ``pnl`` /
-        ``fee`` are returned as attribution metadata only.
-
-        Returns ``(bills, capped)`` where ``bills`` is oldest-first, each a dict:
-        ``{"bill_id","ts_ms","ccy","type","sub_type","bal_chg","pnl","fee",
-        "inst_id","trade_id"}`` sourced from the raw OKX bill
-        (ccxt ``fetch_ledger`` entry ``info``). ``capped`` is True when the
-        ``max_bills`` safety cap was hit before the feed was exhausted — the Go
-        journal then treats that cycle as not-usable but still advances its
-        cursor past the contiguous oldest prefix.
-
-        Horizon: ccxt ``fetch_ledger`` reads OKX ``/account/bills`` (~7 days). In
-        steady per-cycle operation the window is ample; after a multi-day outage
-        older bills fall outside it and surface as journal drift in the shadow
-        log (visible to the operator before any Phase-3b alarm flip).
-
-        Ordering assumption: this pages FORWARD by timestamp and relies on ccxt's
-        unified ``fetch_ledger`` returning entries ascending-from-``since`` (ccxt
-        ``parse_ledger`` sorts by timestamp). That contract — and that the
-        millisecond ``ts`` matches the live feed — is offline-unverifiable; confirm
-        the settled-Σ tracks eq to ~0 over a multi-cycle live window before any
-        Phase-3b alarm flip.
-
-        Only available in live mode; raises RuntimeError in paper mode.
-        """
         if not self._is_live:
             raise RuntimeError(
                 "get_account_bills requires live mode (set OKX_API_KEY, OKX_API_SECRET, OKX_PASSPHRASE)"
@@ -387,25 +236,6 @@ class OKXExchangeAdapter:
         collected = {}
         cursor = int(since_ms or 0)
         capped = False
-        # Page FORWARD from the cursor, advancing the `since` watermark with a
-        # one-millisecond OVERLAP (cursor = page's last ts, NOT last_ts + 1) so a
-        # bill that shares the boundary millisecond but fell beyond the page cut
-        # is re-fetched on the next page — the `collected` dedup absorbs the
-        # re-read. Advancing past last_ts would permanently skip such a same-ms
-        # bill (a standing offset in the settled sum, not a transient miss).
-        #
-        # INVARIANT: capped=False must mean the feed was DRAINED (a short/empty
-        # page), never that the per-cycle iteration budget ran out. The overlap
-        # re-read makes net-new-per-page < page_limit when bills cluster on the
-        # boundary millisecond (a fill emits a trade + a fee bill at the same ms;
-        # settlements batch), so a dense backlog can exhaust the budget before the
-        # feed drains AND before the max_bills cap trips. The `for…else` makes that
-        # budget-exhaustion fall-through report capped=True: every feed-drained or
-        # cap exit above uses `break` (so `else` does NOT run), and only a loop that
-        # runs out of iterations reaches `else`. The Go journal then treats the
-        # cycle as not-usable and re-reads forward from maxTime next cycle
-        # (okxBillDedupID / INSERT OR IGNORE absorbs the re-reads) instead of
-        # advancing the cursor past the unfetched tail.
         for _ in range(max(1, max_bills // max(1, page_limit)) + 2):
             page = self._exchange.fetch_ledger(code=None, since=cursor, limit=page_limit) or []
             if not page:
@@ -420,33 +250,21 @@ class OKXExchangeAdapter:
                 capped = True
                 break
             if len(page) < page_limit:
-                break  # short page → feed exhausted
+                break
             page_last_ts = max((int(e.get("timestamp") or 0) for e in page), default=cursor)
             if page_last_ts <= cursor and added == 0:
-                # A FULL page that neither advanced the timestamp nor yielded any
-                # new bill: a single-millisecond block larger than page_limit, which
-                # timestamp paging cannot step through without dropping bills. Fail
-                # closed — the Go journal treats `capped` as not-usable for the
-                # cycle rather than silently advancing past the undelivered tail.
                 capped = True
                 break
-            cursor = page_last_ts  # overlap on the boundary ms (dedup absorbs it)
+            cursor = page_last_ts
         else:
-            # Loop ran out of iterations without a feed-drained/cap break: the
-            # returned set is an INCOMPLETE prefix of the feed. Report capped so the
-            # cursor is not advanced past the unfetched tail.
             capped = True
         bills = sorted(collected.values(), key=lambda b: b["ts_ms"])
         if len(bills) > max_bills:
             bills = bills[:max_bills]
         return bills, capped
 
-    # ─────────────────────────────────────────────
-    # Options Protocol methods
-    # ─────────────────────────────────────────────
 
     def get_vol_metrics(self, underlying: str) -> Tuple[float, float]:
-        """Compute 14-day historical vol and IV rank from daily OHLCV."""
         try:
             ohlcv = self._exchange.fetch_ohlcv(underlying + "/USDT", "1d", limit=90)
             if not ohlcv or len(ohlcv) < 15:
@@ -478,10 +296,6 @@ class OKXExchangeAdapter:
             return 0.60, 50.0
 
     def get_real_expiry(self, underlying: str, target_dte: int) -> Tuple[str, int]:
-        """Return options expiry closest to target_dte.
-
-        Returns (expiry_str: "YYYY-MM-DD", actual_dte: int).
-        """
         self._load_markets()
         from datetime import datetime, timezone
         now = datetime.now(timezone.utc)
@@ -496,7 +310,6 @@ class OKXExchangeAdapter:
                     expiries.add(int(exp))
 
         if not expiries:
-            # Fallback: synthetic expiry
             from datetime import timedelta
             syn = now + timedelta(days=target_dte)
             return syn.strftime("%Y-%m-%d"), target_dte
@@ -524,13 +337,12 @@ class OKXExchangeAdapter:
 
     def get_real_strike(self, underlying: str, expiry: str,
                         option_type: str, target_strike: float) -> float:
-        """Return strike closest to target_strike for given underlying/expiry/type."""
         self._load_markets()
         from datetime import datetime, timezone
 
         exp_dt = datetime.strptime(expiry, "%Y-%m-%d").replace(tzinfo=timezone.utc)
         exp_start = int(exp_dt.timestamp() * 1000)
-        exp_end = exp_start + 86400 * 1000  # within same day
+        exp_end = exp_start + 86400 * 1000
 
         strikes = []
         for market in self._exchange.markets.values():
@@ -545,7 +357,6 @@ class OKXExchangeAdapter:
                         strikes.append(float(strike))
 
         if not strikes:
-            # Fallback: round to nearest 1000 for BTC, 100 for ETH
             if underlying.upper() == "BTC":
                 return round(target_strike / 1000) * 1000
             elif underlying.upper() == "ETH":
@@ -557,12 +368,6 @@ class OKXExchangeAdapter:
     def get_premium_and_greeks(self, underlying: str, option_type: str,
                                 strike: float, expiry: str, dte: float,
                                 spot: float, vol: float) -> Tuple[float, float, dict]:
-        """Estimate premium and Greeks.
-
-        Returns (premium_pct, premium_usd, greeks_dict).
-        Tries live OKX quote first, falls back to Black-Scholes.
-        """
-        # Try live quote
         try:
             self._load_markets()
             from datetime import datetime, timezone
@@ -582,7 +387,7 @@ class OKXExchangeAdapter:
                         ticker = self._exchange.fetch_ticker(sym)
                         mark = ticker.get("last") or ticker.get("close") or 0
                         if mark and mark > 0:
-                            premium_usd = float(mark) * spot  # OKX options priced in base currency
+                            premium_usd = float(mark) * spot
                             premium_pct = float(mark)
                             greeks = {
                                 "delta": ticker.get("info", {}).get("delta", 0),
@@ -590,13 +395,11 @@ class OKXExchangeAdapter:
                                 "theta": ticker.get("info", {}).get("theta", 0),
                                 "vega": ticker.get("info", {}).get("vega", 0),
                             }
-                            # Convert to floats
                             greeks = {k: float(v or 0) for k, v in greeks.items()}
                             return premium_pct, premium_usd, greeks
         except Exception:
             pass
 
-        # Fallback: Black-Scholes
         try:
             from pricing import bs_price_and_greeks
             premium_usd, greeks = bs_price_and_greeks(spot, strike, dte, vol, option_type)

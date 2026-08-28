@@ -1,14 +1,3 @@
-"""Strip a trailing LLM footer from a comment body.
-
-Reads from stdin, writes the stripped body to stdout.  Idempotent: a body
-with no LLM footer passes through unchanged.
-
-Stripped pattern (anchored to end-of-string):
-    <newlines> [--- <newlines>] LLM: <rest-of-line> <trailing-whitespace>
-
-The pattern is anchored to end-of-string (\\Z) so an "LLM:" token elsewhere in the body
-(e.g. inside a code block) is preserved.
-"""
 
 import re
 import sys

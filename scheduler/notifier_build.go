@@ -2,10 +2,6 @@ package main
 
 import "fmt"
 
-// buildNotifierFromConfig constructs a MultiNotifier from the Discord and Telegram
-// sections of cfg. It prints the same connection messages as the daemon startup path
-// so callers (main and CLI subcommands alike) see consistent output. The returned
-// cleanup function must be deferred by the caller to close gateway connections.
 func buildNotifierFromConfig(cfg *Config) (*MultiNotifier, func()) {
 	var backends []notifierBackend
 	var closers []func()

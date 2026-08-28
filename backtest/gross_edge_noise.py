@@ -1,69 +1,4 @@
 #!/usr/bin/env python3
-"""gross_edge_noise.py — M1 step-2 sample-noise adjudicator for `graduate_m1`
-fee-audit verdicts (#1054).
-
-The M5 screen (#999, fee_audit.py) graduates a strategy when its mean per-leg
-GROSS return is positive while net is not — "a real edge exists under the
-churn; raise selectivity". On a thin trade sample that premise itself needs
-adjudication: a +0.27%/leg gross mean over 37 trades can be indistinguishable
-from zero, in which case there is no edge to salvage and the honest M1 verdict
-is deprecate, not mechanism work. This tool answers exactly that question,
-BEFORE any selectivity effort is spent.
-
-For each (window x dataset) it re-runs the fee audit's zero-friction gross leg
-(``eval_windows.run_leg`` with ``commission_pct=0.0, slippage_pct=0.0`` — the
-identical harness and therefore the identical trade universe) and pools the
-per-trade gross returns. On the pooled sample it reports:
-
-  - a one-sided SIGN-FLIP PERMUTATION test on the mean (the pre-registered
-    primary test: under H0 "no edge, wins and losses of a given magnitude
-    equally likely", each return's sign is a fair coin; p = share of sign-flip
-    resamples whose mean >= the observed mean, add-one smoothed);
-  - a seeded percentile BOOTSTRAP CI on the mean (exit_policy_ab.bootstrap_ci)
-    plus the bootstrap P(mean <= 0);
-  - the exact two-sided SIGN TEST and the tie-corrected WILCOXON signed-rank
-    (both reused from exit_policy_ab) as supporting views;
-
-and the same permutation/bootstrap pair over the per-LEG gross returns — the
-per-leg mean is literally the M5 screen statistic being adjudicated.
-
-The verdict keys off the primary test alone: ``distinguishable_positive``
-needs permutation p < alpha (default 0.05); a non-positive pooled mean is
-``no_positive_edge``; anything else is ``indistinguishable_from_zero``.
-Supporting views are reported, never blended into the verdict — one
-pre-registered test, no p-hacking across four.
-
-Overlapping windows (e.g. ``is`` and ``2025H1`` share 2025-06-10→07-01) would
-double-count the overlap period in the pooled sample — and NOT as byte-equal
-duplicates: each leg's indicators warm up from its own window start, so the
-same calendar period fires *non-identical* entries across windows and an
-exact (dataset, entry_date) key would drop nothing. The trade-level pool
-therefore dedupes by CALENDAR COVERAGE: per dataset, the first window pooled
-claims its full [start, end) range, and any later-pooled trade whose entry
-falls inside an already-claimed range is dropped (first-window-wins, order =
-the --windows order); exact-duplicate keys are dropped too. Both dropped
-counts are reported, never silent. Per-LEG returns are atomic (one compounded
-number per whole window), so the leg-level pool cannot be partially deduped —
-instead any pairwise window overlap is computed and disclosed alongside the
-leg-level stats.
-
-All statistics are stdlib-only and deterministic under ``--seed`` (same
-conventions as exit_policy_ab.py); the pure helpers are unit-tested without
-data access in backtest/tests/test_gross_edge_noise.py.
-
-Usage:
-  # Adjudicate the M5 verdict slices (the screen's own is+oos pair)
-  uv run --no-sync python backtest/gross_edge_noise.py \\
-      --strategy regime_adaptive_htf --registry spot
-
-  # Wider pooled sample across every M1 window (held-out included)
-  uv run --no-sync python backtest/gross_edge_noise.py \\
-      --strategy regime_adaptive_htf --windows is,oos,2023,2024,2025H1
-
-  # Short leg of a short-only strategy
-  uv run --no-sync python backtest/gross_edge_noise.py \\
-      --strategy bear_pullback_st --registry futures --direction short
-"""
 
 from __future__ import annotations
 
@@ -80,7 +15,7 @@ if _THIS_DIR not in sys.path:
     sys.path.insert(0, _THIS_DIR)
 sys.path.insert(0, os.path.join(_THIS_DIR, "..", "shared_tools"))
 
-from eval_windows import (  # noqa: E402  (path bootstrap above)
+from eval_windows import (
     DATASETS,
     DEFAULT_CAPITAL,
     WINDOWS,
@@ -88,7 +23,7 @@ from eval_windows import (  # noqa: E402  (path bootstrap above)
     parse_dataset_arg,
     run_leg,
 )
-from exit_policy_ab import (  # noqa: E402
+from exit_policy_ab import (
     DEFAULT_BOOTSTRAP_RESAMPLES,
     DEFAULT_SEED,
     bootstrap_ci,
@@ -96,7 +31,7 @@ from exit_policy_ab import (  # noqa: E402
     wilcoxon_signed_rank,
 )
 
-DEFAULT_WINDOWS = ("is", "oos")  # the M5 screen's own slices (#999)
+DEFAULT_WINDOWS = ("is", "oos")
 DEFAULT_ALPHA = 0.05
 
 VERDICT_DISTINGUISHABLE = "distinguishable_positive"
@@ -104,12 +39,7 @@ VERDICT_INDISTINGUISHABLE = "indistinguishable_from_zero"
 VERDICT_NO_EDGE = "no_positive_edge"
 
 
-# ---------------------------------------------------------------------------
-# Pure statistics (stdlib only; deterministic; unit-tested without data).
-# ---------------------------------------------------------------------------
-
 def summarize_returns(values: Sequence[float], zero_tol: float = 1e-12) -> dict:
-    """Descriptive summary of a return sample (percent units throughout)."""
     n = len(values)
     if n == 0:
         return {"n": 0, "mean": None, "median": None, "min": None,
@@ -130,14 +60,6 @@ def summarize_returns(values: Sequence[float], zero_tol: float = 1e-12) -> dict:
 def sign_flip_permutation(values: Sequence[float],
                           n_resamples: int = DEFAULT_BOOTSTRAP_RESAMPLES,
                           seed: int = DEFAULT_SEED) -> dict:
-    """One-sided sign-flip permutation test on the sample mean.
-
-    H0: returns are symmetric about zero (no directional edge) — each value's
-    sign is a fair coin flip. ``p_value`` is the one-sided
-    P(resampled mean >= observed mean), add-one smoothed
-    ((#exceedances + 1) / (n_resamples + 1)) so a reported p is never exactly
-    0 off a finite resample count. Empty sample → p 1.0 (nothing to test).
-    """
     n = len(values)
     if n == 0:
         return {"n": 0, "mean": None, "p_value": 1.0, "n_resamples": 0}
@@ -161,12 +83,6 @@ def sign_flip_permutation(values: Sequence[float],
 def bootstrap_p_mean_le_zero(values: Sequence[float],
                              n_resamples: int = DEFAULT_BOOTSTRAP_RESAMPLES,
                              seed: int = DEFAULT_SEED) -> Optional[float]:
-    """Bootstrap P(resampled mean <= 0) — the CI view collapsed to one number.
-
-    Same index-resampling scheme as exit_policy_ab.bootstrap_ci (kept separate
-    because that helper returns only the interval endpoints). None on an
-    empty sample; on a single-value sample the point estimate decides.
-    """
     n = len(values)
     if n == 0:
         return None
@@ -184,14 +100,6 @@ def bootstrap_p_mean_le_zero(values: Sequence[float],
 
 
 def _entry_in_range(entry_date: str, window_range: tuple) -> bool:
-    """Is an ISO ``entry_date`` inside a window's [start, end) calendar range?
-
-    Comparison is lexicographic, valid for zero-padded ISO timestamps (the
-    Backtester stamps ``str(pd.Timestamp)``); ``end=None`` means open-ended.
-    A bare-date bound compares correctly against a full timestamp: a start
-    of "2025-06-10" precedes "2025-06-10 00:00:00", and an end of
-    "2025-07-01" excludes "2025-07-01 00:00:00".
-    """
     start, end = window_range
     if start and entry_date < start:
         return False
@@ -201,15 +109,6 @@ def _entry_in_range(entry_date: str, window_range: tuple) -> bool:
 
 
 def dedupe_samples(samples: List[dict]) -> tuple:
-    """Drop pooled trades that are the same physical entry counted twice.
-
-    Key = (dataset, entry_date) — the byte-identical replay case (e.g. the
-    same window listed twice). The real overlap case (per-window warmup
-    makes overlap entries NON-identical, so this key never collides) is
-    handled by the calendar-coverage guard in ``pool_trade_samples``, which
-    needs leg structure this flat view lacks. Returns
-    (deduped_list, n_dropped); order is preserved (first occurrence wins).
-    """
     seen = set()
     out = []
     dropped = 0
@@ -225,15 +124,6 @@ def dedupe_samples(samples: List[dict]) -> tuple:
 
 def window_overlaps(window_names: List[str],
                     windows: Optional[dict] = None) -> List[dict]:
-    """Pairwise calendar overlaps among the requested windows (leg-level
-    disclosure: a leg's return is one atomic number per window, so an
-    overlap cannot be partially deduped out of the leg pool — it is
-    reported instead).
-
-    Returns [{"windows": (a, b), "start": ..., "end": ..., "days": float}]
-    for every pair whose [start, end) ranges intersect; ``end=None`` is
-    open-ended. Dates are ISO strings; days is the intersection length.
-    """
     from datetime import datetime
 
     if windows is None:
@@ -266,7 +156,6 @@ def window_overlaps(window_names: List[str],
 
 def noise_verdict(mean: Optional[float], permutation_p: float,
                   alpha: float = DEFAULT_ALPHA) -> str:
-    """Verdict off the pre-registered primary test (see module docstring)."""
     if mean is None or mean <= 0:
         return VERDICT_NO_EDGE
     if permutation_p < alpha:
@@ -278,7 +167,6 @@ def analyze_sample(values: Sequence[float],
                    n_resamples: int = DEFAULT_BOOTSTRAP_RESAMPLES,
                    seed: int = DEFAULT_SEED,
                    alpha: float = DEFAULT_ALPHA) -> dict:
-    """Full stats block for one pooled return sample (trade- or leg-level)."""
     perm = sign_flip_permutation(values, n_resamples=n_resamples, seed=seed)
     boot = bootstrap_ci(list(values), n_resamples=n_resamples, seed=seed)
     return {
@@ -294,22 +182,10 @@ def analyze_sample(values: Sequence[float],
     }
 
 
-# ---------------------------------------------------------------------------
-# Leg execution (I/O; everything above stays pure).
-# ---------------------------------------------------------------------------
-
 def collect_gross_legs(reg, name: str, params: Optional[dict],
                        datasets: List[tuple], window_names: List[str],
                        capital: float = DEFAULT_CAPITAL,
                        direction: Optional[str] = None) -> List[dict]:
-    """Zero-friction gross legs with per-trade samples attached.
-
-    Identical harness to fee_audit.py's gross run (run_leg with commission
-    and slippage zeroed), so the trade universe is the one the M5 verdict
-    was computed on. Legs with no data are skipped (reported by the caller
-    via the leg count); a raising leg propagates — a noise verdict computed
-    on a silently partial sample would overstate its own coverage.
-    """
     legs = []
     for wname in window_names:
         window = WINDOWS[wname]
@@ -328,27 +204,9 @@ def collect_gross_legs(reg, name: str, params: Optional[dict],
 
 def pool_trade_samples(legs: List[dict],
                        windows: Optional[dict] = None) -> tuple:
-    """Pool per-trade samples across legs, counting each calendar period once.
-
-    Two first-window-wins guards (pooling order = the --windows order):
-
-    1. exact key (dataset, entry_date) — byte-identical replays;
-    2. calendar coverage — per dataset, every leg already pooled claims its
-       window's full [start, end) range (claimed even when the leg fired no
-       trades: the strategy sampled that period and chose not to enter). A
-       later leg from a different window drops any trade whose entry falls
-       inside a claimed range, even though warmup divergence means its
-       timestamp never collides with the first window's trades — the real
-       overlap case an exact key cannot catch (``is`` ∩ ``2025H1`` fire
-       non-identical entries over 2025-06-10→07-01).
-
-    ``windows`` defaults to the harness WINDOWS map (injectable for tests).
-    Returns (samples, n_exact_dropped, n_overlap_dropped); both drop counts
-    are surfaced by the caller, never silent.
-    """
     if windows is None:
         windows = WINDOWS
-    covered: dict = {}  # dataset -> [(window_name, (start, end)), ...]
+    covered: dict = {}
     seen = set()
     pooled = []
     dropped_exact = 0
@@ -375,10 +233,6 @@ def pool_trade_samples(legs: List[dict],
             claimed.append((wname, wrange))
     return pooled, dropped_exact, dropped_overlap
 
-
-# ---------------------------------------------------------------------------
-# Reporting / CLI.
-# ---------------------------------------------------------------------------
 
 def _fmt(v, prec=3):
     return "-" if v is None else f"{v:+.{prec}f}"

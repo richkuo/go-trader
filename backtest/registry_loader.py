@@ -1,12 +1,3 @@
-"""Load the spot/ or futures/ strategy registry by platform name.
-
-Both ``shared_strategies/open/spot/strategies.py`` and
-``shared_strategies/open/futures/strategies.py`` expose a module-level
-``STRATEGY_REGISTRY`` dict and ``apply_strategy`` / ``list_strategies``
-helpers. We load each via ``importlib.util`` under a unique module name so
-the two registries can coexist in the same process without clobbering each
-other on ``sys.modules['strategies']``.
-"""
 import importlib.util
 import os
 import sys
@@ -24,26 +15,17 @@ _cached: dict = {}
 
 
 def registry_for_strategy_type(strategy_type: str) -> str:
-    """Return the open-strategy registry used by a live strategy type.
-
-    Perpetuals, exchange futures, and manual Hyperliquid positions share the
-    futures strategy surface. Every other strategy type uses the spot surface.
-    Keep this mapping here so dashboard previews, tuner schema lookup, and
-    fleet tuning cannot drift onto different registries.
-    """
     key = str(strategy_type or "").strip().lower()
     return "futures" if key in ("perps", "futures", "manual") else "spot"
 
 
 def _ensure_import_paths() -> None:
-    # Strategy modules resolve ``indicators``, ``amd_ifvg``, etc. via sys.path.
     for p in (_SPOT_DIR, _SHARED_DIR, _TOOLS_DIR):
         if p not in sys.path:
             sys.path.insert(0, p)
 
 
 def load_registry(platform: str = "spot") -> ModuleType:
-    """Return the strategy module for ``platform`` (``'spot'`` or ``'futures'``)."""
     key = platform.lower()
     if key not in _PLATFORM_DIRS:
         raise ValueError(
@@ -58,9 +40,6 @@ def load_registry(platform: str = "spot") -> ModuleType:
     )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    # An accidentally-empty registry (e.g. all @register_strategy decorators
-    # removed) otherwise surfaces as "Unknown strategy <name>" at the caller,
-    # indistinguishable from a typo.
     registry = getattr(mod, "STRATEGY_REGISTRY", None)
     if not registry:
         raise RuntimeError(

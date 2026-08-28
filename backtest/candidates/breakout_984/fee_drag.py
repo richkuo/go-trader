@@ -1,27 +1,4 @@
 #!/usr/bin/env python3
-"""Fee-drag screen for the #984 shortlist (README fee-gate step).
-
-breakout's audit economics are fee-marginal: the M5 screen (#999,
-docs/research/fee-audit-m5.md) measured gross +5.28%/leg vs net -1.54%/leg —
-6.82pp of friction drag over 260 trades (44.3/yr) at ~0.31%/leg. Any stack
-that cuts drawdown by exiting earlier/more often adds legs, and every added
-leg spends part of that same thin gross edge. This driver re-runs each
-candidate twice per audit dataset on the continuous audit window — default
-friction vs zero friction (the documented #999 overrides:
-``commission_pct=0.0, slippage_pct=0.0``) — and reports the gross/net split,
-drag in percentage points, and annualized trade rate, per candidate and
-vs baseline.
-
-The aggregation is a pure function (``summarize_fee_drag``) over leg dicts so
-it is unit-testable without data access
-(backtest/tests/test_breakout_984_fee_drag.py).
-
-Run from repo root:
-  uv run --no-sync python backtest/candidates/breakout_984/fee_drag.py \
-      [--start 2025-06-10] [--end YYYY-MM-DD] \
-      [--candidates baseline.json,...] \
-      [--json backtest/candidates/breakout_984/fee_drag_shortlist.json]
-"""
 
 import argparse
 import json
@@ -30,9 +7,8 @@ import statistics
 import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(_HERE, "..", ".."))          # backtest/
+sys.path.insert(0, os.path.join(_HERE, "..", ".."))
 sys.path.insert(0, os.path.join(_HERE, "..", "..", "..", "shared_tools"))
-# trailing_tp_ratchet.py imports its sibling _helpers at evaluate time.
 sys.path.insert(0, os.path.join(_HERE, "..", "..", "..",
                                 "shared_strategies", "close"))
 
@@ -40,14 +16,6 @@ DEFAULT_CANDIDATES = "baseline.json"
 
 
 def summarize_fee_drag(gross_legs, net_legs):
-    """Collapse paired (gross, net) leg dicts into the fee-drag summary.
-
-    Pure: takes two equal-length lists of leg dicts (each needs
-    ``return_pct``, ``trades``, ``span_days``; ``None`` legs are dropped
-    pairwise) and returns mean gross/net return %, drag in pp, summed trades,
-    and trades/yr annualized over the summed calendar span. Returns None when
-    no paired legs survive.
-    """
     pairs = [(g, n) for g, n in zip(gross_legs, net_legs)
              if g is not None and n is not None]
     if not pairs:

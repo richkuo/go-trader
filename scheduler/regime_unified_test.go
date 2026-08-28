@@ -18,8 +18,6 @@ func unifiedBlock() map[string]interface{} {
 					map[string]interface{}{"atr_multiple": 4.0, "close_fraction": 1.0},
 				},
 			},
-			// Different tier count per regime is allowed under select-then-scalar
-			// (>=2 required to match the on-chain resolver): 3 tiers here vs 2.
 			"trending_down": map[string]interface{}{
 				"stop_loss_atr": 1.0,
 				"tp_tiers": []interface{}{
@@ -68,7 +66,6 @@ func TestUnifiedRegimeScalarParams(t *testing.T) {
 		t.Fatalf("tp_tiers = %v, want 2-tier list", scalar["tp_tiers"])
 	}
 
-	// Variable tier count: trending_down has 3 tiers vs trending_up's 2.
 	scalarDown, _, ok := unifiedRegimeScalarParams(unifiedBlock(), "trending_down")
 	if !ok {
 		t.Fatal("expected ok for trending_down")
@@ -77,7 +74,6 @@ func TestUnifiedRegimeScalarParams(t *testing.T) {
 		t.Fatalf("trending_down tp_tiers len = %d, want 3", len(td))
 	}
 
-	// Unknown label → miss (caller falls back).
 	if _, _, ok := unifiedRegimeScalarParams(unifiedBlock(), "nonsense"); ok {
 		t.Fatal("expected miss for unknown regime label")
 	}
@@ -143,8 +139,6 @@ func TestValidateUnifiedRegimeClose_Errors(t *testing.T) {
 }
 
 func TestUnifiedRegimeScalarParams_ShapeMatchesScalarConfig(t *testing.T) {
-	// The selected scalar params must be exactly the shape the scalar
-	// tiered_tp_atr machinery consumes: {"tp_tiers": [...], "atr_source": ...}.
 	scalar, _, _ := unifiedRegimeScalarParams(unifiedBlock(), "ranging")
 	want := map[string]interface{}{
 		"atr_source": "live",
@@ -158,10 +152,6 @@ func TestUnifiedRegimeScalarParams_ShapeMatchesScalarConfig(t *testing.T) {
 	}
 }
 
-// TestUnifiedRegimeSLFolding verifies #841 2b SL folding: the on-chain
-// protection plan resolves the per-regime stop_loss_atr from the unified close
-// block, and EffectiveStopLossPct defers (returns 0) instead of using the
-// max-drawdown fallback.
 func TestUnifiedRegimeSLFolding(t *testing.T) {
 	tiers := func(a, b float64) []interface{} {
 		return []interface{}{
@@ -187,7 +177,6 @@ func TestUnifiedRegimeSLFolding(t *testing.T) {
 	if !strategyUsesUnifiedRegimeClose(sc) {
 		t.Fatal("strategyUsesUnifiedRegimeClose = false, want true")
 	}
-	// EffectiveStopLossPct must defer (0), not fall through to MaxDrawdownPct.
 	if got := EffectiveStopLossPct(sc); got != 0 {
 		t.Fatalf("EffectiveStopLossPct = %g, want 0 (deferred, not max-drawdown fallback)", got)
 	}
@@ -209,9 +198,6 @@ func TestUnifiedRegimeSLFolding(t *testing.T) {
 	}
 }
 
-// TestValidateRegimeATRConfig_UnifiedBlockAccepted verifies the #841 2b gate:
-// a unified per-regime close config validates (no longer rejected as "missing
-// tiers"), and a malformed one surfaces the unified validation error.
 func TestValidateRegimeATRConfig_UnifiedBlockAccepted(t *testing.T) {
 	mkCfg := func(params map[string]interface{}) *Config {
 		return &Config{
@@ -233,7 +219,6 @@ func TestValidateRegimeATRConfig_UnifiedBlockAccepted(t *testing.T) {
 		t.Fatalf("valid unified config rejected: %v", errs)
 	}
 
-	// Drop a required label → unified validator should fire, not "missing tiers".
 	bad := unifiedBlock()
 	delete(bad[regimeClassifierKey].(map[string]interface{}), "ranging")
 	errs := validateRegimeATRConfig(mkCfg(bad))
@@ -246,8 +231,6 @@ func TestValidateRegimeATRConfig_UnifiedBlockAccepted(t *testing.T) {
 	}
 }
 
-// TestValidateUnifiedCloseSoleOwner verifies #841 2b sole-owner enforcement: a
-// unified per-regime close may not coexist with a strategy-level stop field.
 func TestValidateUnifiedCloseSoleOwner(t *testing.T) {
 	mk := func() StrategyConfig {
 		return StrategyConfig{
@@ -255,11 +238,9 @@ func TestValidateUnifiedCloseSoleOwner(t *testing.T) {
 			CloseStrategy: &StrategyRef{Name: "tiered_tp_atr_live_regime", Params: unifiedBlock()},
 		}
 	}
-	// Clean: no strategy-level stop → no errors.
 	if errs := validateUnifiedCloseSoleOwner(mk(), "s"); len(errs) > 0 {
 		t.Fatalf("unexpected errors: %v", errs)
 	}
-	// Conflict: strategy-level stop_loss_atr_mult set → rejected.
 	sc := mk()
 	m := 1.5
 	sc.StopLossATRMult = &m
@@ -267,16 +248,12 @@ func TestValidateUnifiedCloseSoleOwner(t *testing.T) {
 	if len(errs) == 0 || !strings.Contains(errs[0], "stop_loss_atr_mult is not allowed alongside a unified per-regime close") {
 		t.Fatalf("expected sole-owner rejection, got: %v", errs)
 	}
-	// Non-unified strategy → helper is a no-op.
 	plain := StrategyConfig{ID: "p", Type: "perps", Platform: "hyperliquid", StopLossATRMult: &m}
 	if errs := validateUnifiedCloseSoleOwner(plain, "p"); len(errs) > 0 {
 		t.Fatalf("non-unified strategy should not trip sole-owner: %v", errs)
 	}
 }
 
-// TestUnifiedCloseParamsEqualForReload verifies #841 2b hot-reload gating: a
-// changed (or added/removed) unified per-regime close block is detected so the
-// reload validator can reject it while a position is open.
 func TestUnifiedCloseParamsEqualForReload(t *testing.T) {
 	mk := func(params map[string]interface{}) StrategyConfig {
 		return StrategyConfig{CloseStrategy: &StrategyRef{Name: "tiered_tp_atr_live_regime", Params: params}}
@@ -285,25 +262,19 @@ func TestUnifiedCloseParamsEqualForReload(t *testing.T) {
 	if !unifiedCloseParamsEqualForReload(a, mk(unifiedBlock())) {
 		t.Fatal("identical unified blocks should compare equal")
 	}
-	// Change a tier multiple → not equal.
 	changed := unifiedBlock()
 	changed[regimeClassifierKey].(map[string]interface{})["ranging"].(map[string]interface{})["tp_tiers"].([]interface{})[0].(map[string]interface{})["atr_multiple"] = 9.9
 	if unifiedCloseParamsEqualForReload(a, mk(changed)) {
 		t.Fatal("changed tier multiple should compare unequal")
 	}
-	// Remove the unified close entirely → not equal.
 	if unifiedCloseParamsEqualForReload(a, StrategyConfig{}) {
 		t.Fatal("removing the unified close should compare unequal")
 	}
-	// Two non-unified strategies → both nil → equal (no false positive).
 	if !unifiedCloseParamsEqualForReload(StrategyConfig{}, StrategyConfig{}) {
 		t.Fatal("two non-unified strategies should compare equal")
 	}
 }
 
-// unifiedCompositeBlock is a 9-label composite unified block keyed on bare
-// ranging_directional (no _up/_down keys) — the pre-#1124 shape that the
-// #1124 family rule must keep valid and keep resolving for _up/_down stamps.
 func unifiedCompositeBlock() map[string]interface{} {
 	tiers := func(a, b float64) []interface{} {
 		return []interface{}{
@@ -324,10 +295,6 @@ func unifiedCompositeBlock() map[string]interface{} {
 	}
 }
 
-// TestValidateUnifiedRegimeClose_CompositeBareDirectionalCoversSubLabels:
-// the #1124 family rule — a bare ranging_directional covers its _up/_down
-// sub-labels for exhaustiveness, so the pre-#1124 bare-only shape still loads
-// under the 9-label composite vocabulary.
 func TestValidateUnifiedRegimeClose_CompositeBareDirectionalCoversSubLabels(t *testing.T) {
 	labels := regimeLabelsForClassifier(regimeClassifierComposite)
 	if errs := validateUnifiedRegimeClose(unifiedCompositeBlock(), labels, "close.params"); len(errs) > 0 {
@@ -335,10 +302,6 @@ func TestValidateUnifiedRegimeClose_CompositeBareDirectionalCoversSubLabels(t *t
 	}
 }
 
-// TestValidateUnifiedRegimeClose_CompositeSubLabelsWithoutBareRejected:
-// sub-labels-only (no bare parent) is still non-exhaustive because the
-// producer emits bare ranging_directional at exactly return_eff == 0. The
-// rule is one-directional: subs never satisfy the bare requirement.
 func TestValidateUnifiedRegimeClose_CompositeSubLabelsWithoutBareRejected(t *testing.T) {
 	labels := regimeLabelsForClassifier(regimeClassifierComposite)
 	m := unifiedCompositeBlock()
@@ -356,11 +319,6 @@ func TestValidateUnifiedRegimeClose_CompositeSubLabelsWithoutBareRejected(t *tes
 	}
 }
 
-// TestUnifiedRegimeScalarParams_SubLabelFallsBackToBare: a _up/_down stamp
-// resolves to the bare ranging_directional block at runtime, returning its
-// SL and TP ladder (the sole-owner safety guarantee — no naked position). An
-// explicit sub-label key wins over bare on exact match, while the sibling in
-// the same block still falls back to bare (one-directional rule).
 func TestUnifiedRegimeScalarParams_SubLabelFallsBackToBare(t *testing.T) {
 	for _, stamp := range []string{"ranging_directional_up", "ranging_directional_down"} {
 		scalar, sl, ok := unifiedRegimeScalarParams(unifiedCompositeBlock(), stamp)
@@ -375,7 +333,6 @@ func TestUnifiedRegimeScalarParams_SubLabelFallsBackToBare(t *testing.T) {
 		}
 	}
 
-	// Explicit _up key wins over bare on exact match; _down still falls back.
 	m := unifiedCompositeBlock()
 	tr := m[regimeClassifierKey].(map[string]interface{})
 	tr["ranging_directional_up"] = map[string]interface{}{"stop_loss_atr": 0.9, "tp_tiers": []interface{}{
@@ -390,10 +347,6 @@ func TestUnifiedRegimeScalarParams_SubLabelFallsBackToBare(t *testing.T) {
 	}
 }
 
-// TestUnifiedRegimeSLFolding_SubLabelStampPlacesSL: end-to-end #1124 safety —
-// a composite unified close keyed on bare ranging_directional (the sole SL
-// owner) places an SL via the on-chain protection plan when the producer
-// stamps _up/_down. Without the bare fallback this would be a naked position.
 func TestUnifiedRegimeSLFolding_SubLabelStampPlacesSL(t *testing.T) {
 	sc := StrategyConfig{
 		ID: "hl-unified-sub", Platform: "hyperliquid", Type: "perps",

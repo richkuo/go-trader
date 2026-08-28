@@ -1,12 +1,3 @@
-"""Tests for the #1165 regime-gate driver plumbing (pure helpers, no data
-access).
-
-The load-bearing property: every #1165 candidate carries regime state, and
-``candidate_leg_kwargs`` is the single place it is threaded into run_leg — a
-driver that dropped ``allowed_regimes`` / ``regime_windows_spec`` /
-``profile_allocation`` would silently score the UNGATED entry on the
-continuous audit window (a plausible wrong number, not an error).
-"""
 
 import importlib.util
 import os
@@ -16,7 +7,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..",
                                 "shared_tools"))
 
-from eval_windows import validate_candidate  # noqa: E402
+from eval_windows import validate_candidate
 
 _COMMON_PATH = os.path.join(
     os.path.dirname(__file__), "..", "candidates", "breakout_1165",
@@ -42,15 +33,12 @@ def test_candidate_leg_kwargs_threads_all_regime_state():
     assert kw["regime_windows_spec"]["medium"]["adx_threshold"] == 25.0
     assert kw["profile_allocation"]["window_spec"]["period"] == 14
     assert kw["direction"] == "long"
-    # Frozen close stack: nothing may inject a stop the shortlist doesn't own.
     assert kw["close_strategies"] is None
     assert kw["stop_loss_atr_mult"] is None
     assert kw["trailing_stop_atr_mult"] is None
 
 
 def test_candidate_leg_kwargs_defaults_direction_long():
-    # #996: with direction unset the engine path would open shorts on the
-    # breakout's raw signal=-1 — the default must be the pinned long leg.
     assert dc.candidate_leg_kwargs({"name": "breakout"})["direction"] == "long"
 
 
@@ -62,21 +50,16 @@ def test_gate_grid_labels_unique_and_specs_validate():
     for c in grid:
         spec = {k: v for k, v in c.items() if k != "label"}
         spec["name"] = "breakout"
-        validate_candidate(dict(spec))  # raises on malformed candidates
+        validate_candidate(dict(spec))
 
 
 def test_not_down_sets_use_bare_ranging_directional():
-    # #1124 bare-covers-subs: the bare label gates both _up and _down; listing
-    # the subs alongside it would be redundant, listing only one sub would
-    # silently gate out the other.
     assert "ranging_directional" in dc.COMP_NOT_DOWN
     assert "ranging_directional_up" not in dc.COMP_NOT_DOWN
     assert "ranging_directional_down" not in dc.COMP_NOT_DOWN
 
 
 def test_profile_grid_maps_every_composite_label():
-    # _ProfileSwitcher holds the active profile on unknown labels (fail-open),
-    # so the composite M4 candidate must map all nine labels explicitly.
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..",
                                     "shared_tools"))
     from regime import VALID_LABELS_COMPOSITE
@@ -89,9 +72,6 @@ def test_profile_grid_maps_every_composite_label():
 
 
 def test_profile_off_set_emits_no_entries():
-    # The "off" profile zeroes the entry list via an unreachable expansion
-    # multiple; the frozen exit survives because the switch is flat-only.
     assert dc.PARAM_SET_OFF["atr_multiplier"] >= 100.0
-    # "selective" raises the bar without zeroing it.
     assert dc.PARAM_SET_SELECTIVE["atr_multiplier"] > 1.5
     assert dc.PARAM_SET_SELECTIVE["lookback"] > 20

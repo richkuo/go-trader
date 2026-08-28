@@ -1,9 +1,3 @@
-"""#1411 Hurst entry gate — backtest parity tests.
-
-Covers the state machine, the sizing formula, the look-ahead invariant, the
-load-time rejections, and the default-off guarantee that an absent block leaves
-every baseline byte-identical.
-"""
 
 import importlib.util
 import json
@@ -24,8 +18,6 @@ for _p in (str(_HERE), str(_ROOT), str(_ROOT / "shared_tools")):
 
 
 def _load(name: str, relpath: str):
-    """Load by explicit path — never a bare import of an ambiguous name
-    (CLAUDE.md testing rule; CI runs pytest with -n auto)."""
     spec = importlib.util.spec_from_file_location(name, str(_ROOT / relpath))
     mod = importlib.util.module_from_spec(spec)
     sys.modules[name] = mod
@@ -34,9 +26,6 @@ def _load(name: str, relpath: str):
 
 
 hg = _load("bt_hurst_gate_under_test", "backtest/hurst_gate.py")
-
-
-# ─── Fixtures ────────────────────────────────────────────────────────────────
 
 
 def _frame(n: int = 400, seed: int = 1411) -> pd.DataFrame:
@@ -55,15 +44,12 @@ def _frame(n: int = 400, seed: int = 1411) -> pd.DataFrame:
     )
 
 
-# ─── State machine parity with scheduler/hurst_gate.go ───────────────────────
-
-
 def test_min_only_hysteresis_sequence():
     gate = hg.HurstGate({"enabled": True, "min": 0.55, "disarm_min": 0.50})
     assert gate.advance(0.40) == hg.HURST_STATE_DISARMED
-    assert gate.advance(0.52) == hg.HURST_STATE_DISARMED  # inside the gap
+    assert gate.advance(0.52) == hg.HURST_STATE_DISARMED
     assert gate.advance(0.55) == hg.HURST_STATE_ARMED
-    assert gate.advance(0.51) == hg.HURST_STATE_ARMED  # armed survives the dip
+    assert gate.advance(0.51) == hg.HURST_STATE_ARMED
     assert gate.advance(0.4999) == hg.HURST_STATE_DISARMED
 
 
@@ -85,7 +71,6 @@ def test_unset_disarm_collapses_onto_the_arm_bound():
 
 @pytest.mark.parametrize("prior", [hg.HURST_STATE_UNKNOWN, hg.HURST_STATE_ARMED, hg.HURST_STATE_DISARMED])
 def test_nan_never_transitions_state(prior):
-    """#1410 NaN policy: unknown is never 0.5; it neither arms nor disarms."""
     gate = hg.HurstGate({"enabled": True, "min": 0.55})
     gate.state = prior
     assert gate.advance(float("nan")) == prior
@@ -93,15 +78,11 @@ def test_nan_never_transitions_state(prior):
 
 
 def test_readings_above_one_stay_coherent():
-    """DFA reads ~2.0 on a near-smooth series; the machine must not assume (0,1)."""
     momentum = hg.HurstGate({"enabled": True, "min": 0.55})
     assert momentum.advance(2.0033) == hg.HURST_STATE_ARMED
     reversion = hg.HurstGate({"enabled": True, "max": 0.45})
     reversion.state = hg.HURST_STATE_ARMED
     assert reversion.advance(2.0033) == hg.HURST_STATE_DISARMED
-
-
-# ─── Hold decision ───────────────────────────────────────────────────────────
 
 
 def test_disabled_gate_is_completely_inert():
@@ -126,14 +107,9 @@ def test_fail_open_admits_unknown_h():
 
 
 def test_known_disarmed_holds_regardless_of_position():
-    """A KNOWN out-of-band reading is not flat-only: the caller's
-    position-increasing classification is what lets closes through."""
     gate = hg.HurstGate({"enabled": True, "min": 0.55})
     blocked, _ = gate.step(0.20, flat=False)
     assert blocked
-
-
-# ─── Sizing ──────────────────────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize(
@@ -154,9 +130,6 @@ def test_size_multiplier_matches_the_go_formula(h, floor, want):
 
 
 def test_size_multiplier_never_exceeds_one():
-    """The issue's formula only ever SHRINKS an open. The #1410 study swept a
-    form that can reach 1.5; the issue's formula governs, so this is a hard
-    invariant on both engines."""
     gate = hg.HurstGate({"enabled": True, "mode": "size"})
     for h in np.linspace(0.0, 3.0, 400):
         assert gate.size_multiplier(float(h)) <= 1.0
@@ -167,7 +140,6 @@ def test_size_mode_never_holds_on_a_known_reading():
     blocked, mult = gate.step(0.50, flat=True)
     assert not blocked
     assert mult == pytest.approx(hg.HURST_DEFAULT_SIZE_FLOOR)
-    # ...but an unknown reading under fail-closed still holds, flat-only.
     gate2 = hg.HurstGate({"enabled": True, "mode": "size", "on_failure": "closed"})
     assert gate2.step(float("nan"), flat=True)[0]
     gate3 = hg.HurstGate({"enabled": True, "mode": "size", "on_failure": "closed"})
@@ -178,9 +150,6 @@ def test_gate_mode_never_scales():
     gate = hg.HurstGate({"enabled": True, "min": 0.55})
     for h in (0.2, 0.6, float("nan")):
         assert gate.step(h, flat=True)[1] == 1.0
-
-
-# ─── Rolling series + look-ahead ─────────────────────────────────────────────
 
 
 def test_rolling_hurst_warmup_is_nan_and_values_are_rounded():
@@ -195,7 +164,6 @@ def test_rolling_hurst_warmup_is_nan_and_values_are_rounded():
 
 
 def test_rolling_hurst_uses_only_trailing_closes():
-    """Look-ahead: the value at bar i must not change when FUTURE bars change."""
     df = _frame(n=260)
     base = hg.rolling_hurst(df["close"], 200)
     mutated = df.copy()
@@ -205,7 +173,6 @@ def test_rolling_hurst_uses_only_trailing_closes():
 
 
 def test_decision_series_lags_one_bar():
-    """A signal at bar N must read H computed through bar N-1."""
     df = _frame(n=260)
     raw = hg.rolling_hurst(df["close"], 200)
     decision = raw.shift(1)
@@ -216,18 +183,13 @@ def test_decision_series_lags_one_bar():
 
 
 def test_live_frame_bars_matches_the_go_fetch_depth():
-    # scheduler/regime_multi_window.go: max(200, 2*maxPeriod - 1 + 10)
     assert hg.hurst_live_frame_bars(None, 14) == 200
     assert hg.hurst_live_frame_bars({"medium": {"period": 20}}, 14) == 200
     assert hg.hurst_live_frame_bars({"long": {"period": 150}}, 14) == 2 * 150 - 1 + 10
     assert hg.hurst_live_frame_bars({"a": {"period": 30}, "b": {"period": 200}}, 14) == 409
 
 
-# ─── parity_diff frame depth ─────────────────────────────────────────────────
-
-
 def _parity_frame_hurst(windows_spec, *, period: int = 150, n: int = 420):
-    """Run compute_parity_frame with a hurst_gate and return the H column."""
     pdiff = _load("bt_parity_diff_under_test", "backtest/parity_diff.py")
     df = _frame(n=n)
     cfg = pdiff.ParityConfig(
@@ -242,18 +204,9 @@ def _parity_frame_hurst(windows_spec, *, period: int = 150, n: int = 420):
 
 
 def test_parity_diff_reads_hurst_over_the_engines_frame_depth():
-    """The parity tool must read H over the SAME frame length as the engine.
-
-    The Backtester passes ``self.regime_windows_spec`` to
-    ``hurst_live_frame_bars``, and the live fetch depth is the max period over
-    ALL configured windows. Computing the depth from ``regime_period`` alone
-    would give 200 bars here instead of 309, so every ``bt_hurst`` value would
-    be measured over a window neither engine uses and the tool would report
-    disagreements that do not exist.
-    """
     spec = {"long": {"period": 150, "classifier": "composite"}}
     depth = hg.hurst_live_frame_bars(spec, 14)
-    assert depth == 309  # 2*150 - 1 + 10, above the 200 floor
+    assert depth == 309
 
     df, frame = _parity_frame_hurst(spec)
     expected = hg.rolling_hurst(df["close"], depth).shift(1)
@@ -270,14 +223,11 @@ def test_parity_diff_reads_hurst_over_the_engines_frame_depth():
             compared += 1
     assert compared, "the fixture must produce at least one defined H"
 
-    # The two depths genuinely differ on this fixture, so the assertion above
-    # could not have passed against the regime_period-only depth.
     warm = [ts for ts in frame["ts"] if pd.isna(expected.loc[ts]) and not pd.isna(stale.loc[ts])]
     assert warm, "fixture must contain a bar where the two depths disagree"
 
 
 def test_parity_diff_single_window_default_stays_at_two_hundred_bars():
-    """The default period-14 case must not move off the 200-bar floor."""
     assert hg.hurst_live_frame_bars(None, 14) == 200
     df, frame = _parity_frame_hurst(None)
     expected = hg.rolling_hurst(df["close"], 200).shift(1)
@@ -291,7 +241,6 @@ def test_parity_diff_single_window_default_stays_at_two_hundred_bars():
 
 
 def test_parity_config_carries_the_resolved_windows_spec_and_hurst_block():
-    """A non-primary window with the largest period still sets the depth."""
     pdiff = _load("bt_parity_diff_under_test", "backtest/parity_diff.py")
     cfg = pdiff.ParityConfig(
         strategy_name="momentum",
@@ -301,11 +250,7 @@ def test_parity_config_carries_the_resolved_windows_spec_and_hurst_block():
         },
     )
     assert hg.hurst_live_frame_bars(cfg.regime_windows_spec, cfg.regime_period) == 249
-    # Default construction leaves it absent, so the ungated baseline is unmoved.
     assert pdiff.ParityConfig(strategy_name="momentum").regime_windows_spec is None
-
-
-# ─── Validation ──────────────────────────────────────────────────────────────
 
 
 def test_validation_rejects_bad_vocabulary():
@@ -331,7 +276,6 @@ def test_validation_enforces_bound_ordering_and_range():
     for bad in ({"min": 0.0}, {"min": 1.0}, {"max": 0.0}, {"max": 1.0}):
         with pytest.raises(ValueError, match=r"\(0, 1\) exclusive"):
             hg.validate_hurst_gate_config(bad)
-    # equal bounds are legal — hysteresis collapses onto the arm bound
     hg.validate_hurst_gate_config({"min": 0.55, "disarm_min": 0.55})
 
 
@@ -347,13 +291,8 @@ def test_validation_enforces_mode_scoping():
 
 
 def test_validation_runs_even_when_disabled():
-    """A parked-but-broken block fails at edit time, not the first time it is
-    flipped on — the validateHedgeConfigs discipline."""
     with pytest.raises(ValueError):
         hg.validate_hurst_gate_config({"enabled": False, "mode": "bogus"})
-
-
-# ─── run_backtest load-time rejections ───────────────────────────────────────
 
 
 def _write_cfg(tmp_path, strategy_extra: dict, regime: dict) -> str:
@@ -400,7 +339,6 @@ def test_backtest_accepts_a_primary_composite_window(tmp_path, load_strategy_con
     loaded = load_strategy_config(path, "s1")
     assert loaded["hurst_gate"]["enabled"] is True
     assert loaded["hurst_gate"]["window_key"] == "medium"
-    # on_failure resolves through the same precedence as the Go accessor
     assert loaded["hurst_gate"]["on_failure"] == "open"
 
 
@@ -408,7 +346,6 @@ def test_backtest_resolves_global_on_failure_default(tmp_path, load_strategy_con
     regime = dict(_COMPOSITE_REGIME, hurst_gate_on_failure="closed")
     path = _write_cfg(tmp_path, {"hurst_gate": {"enabled": True, "min": 0.55}}, regime)
     assert load_strategy_config(path, "s1")["hurst_gate"]["on_failure"] == "closed"
-    # ...and a per-strategy value wins over it
     path = _write_cfg(
         tmp_path, {"hurst_gate": {"enabled": True, "min": 0.55, "on_failure": "open"}}, regime
     )
@@ -468,9 +405,6 @@ def test_backtest_rejects_invalid_bounds(tmp_path, load_strategy_config):
 
 
 def test_backtest_passes_through_a_disabled_block(tmp_path, load_strategy_config):
-    """Parking a DISABLED block must not make a strategy unbacktestable, and it
-    must leave the run byte-identical to having no block at all — even when the
-    surrounding regime config could never support the gate."""
     path = _write_cfg(
         tmp_path,
         {"hurst_gate": {"enabled": False, "min": 0.55}},
@@ -482,9 +416,6 @@ def test_backtest_passes_through_a_disabled_block(tmp_path, load_strategy_config
 def test_backtest_absent_block_is_none(tmp_path, load_strategy_config):
     path = _write_cfg(tmp_path, {}, _COMPOSITE_REGIME)
     assert load_strategy_config(path, "s1")["hurst_gate"] is None
-
-
-# ─── Engine integration ──────────────────────────────────────────────────────
 
 
 @pytest.fixture(scope="module")
@@ -501,8 +432,6 @@ def _run(Backtester, df, **kwargs):
         **kwargs,
     )
     work = df.copy()
-    # Deterministic alternating signal so entries are frequent enough that a
-    # gate/multiplier difference is visible.
     sig = np.zeros(len(work))
     sig[50::40] = 1
     sig[70::40] = -1
@@ -529,7 +458,6 @@ def test_size_mode_shrinks_exposure_relative_to_the_ungated_run(Backtester):
     base_trades = base.get("trades") or []
     scaled_trades = scaled.get("trades") or []
     assert base_trades and scaled_trades
-    # Every scaled entry commits no more than the unscaled one.
     for b, s in zip(base_trades, scaled_trades):
         assert abs(float(s["shares"])) <= abs(float(b["shares"])) + 1e-9
     assert any(
@@ -550,8 +478,6 @@ def test_gate_mode_can_only_remove_entries_never_add_them(Backtester):
 
 
 def test_gate_mode_fail_closed_before_warmup_blocks_early_entries(Backtester):
-    """Before the rolling window fills, H is unknown. Under fail-closed that
-    must hold fresh opens; under fail-open it must not."""
     df = _frame(n=400)
     closed = _run(
         Backtester,
@@ -566,17 +492,7 @@ def test_gate_mode_fail_closed_before_warmup_blocks_early_entries(Backtester):
     assert closed["total_trades"] <= opened["total_trades"]
 
 
-# ─── CLI seam ────────────────────────────────────────────────────────────────
-
-
 def test_hurst_gate_is_in_the_config_cli_allowlist():
-    """Regression: ``run_backtest.py --config`` copies only an explicit
-    allowlist of resolved live-config keys into the Backtester kwargs. A key
-    missing from that list is dropped SILENTLY — ``load_strategy_config``
-    resolves the gate, every unit test passes, and the run still reports
-    entries the live daemon would have held. Pin the entry so the seam cannot
-    regress.
-    """
     source = (_ROOT / "backtest" / "run_backtest.py").read_text()
     stop_keys_start = source.index("stop_keys = (")
     stop_keys_block = source[stop_keys_start : source.index("live_stop_kwargs = {", stop_keys_start)]
@@ -587,37 +503,14 @@ def test_hurst_gate_is_in_the_config_cli_allowlist():
 
 
 def test_run_single_backtest_accepts_the_hurst_gate_kwarg():
-    """The allowlist entry is only useful if the receiving signature has the
-    parameter — otherwise the CLI raises TypeError on every gated config."""
     import inspect
 
     rb = _load("bt_run_backtest_sig_check", "backtest/run_backtest.py")
     assert "hurst_gate" in inspect.signature(rb.run_single_backtest).parameters
 
 
-# ─── Scale-in parity (#1276 × #1411) ─────────────────────────────────────────
-#
-# A scale-in add INCREASES an open position, so live applies both gate arms to
-# it:
-#
-#   * the hold — pausedBlocksSignal classifies a same-side signal on an open
-#     position as position-increasing (scheduler/pause.go), so a disarmed gate
-#     zeroes result.Signal BEFORE the scale-in block runs (scheduler/main.go)
-#     and perpsScaleInDecision then reports "not a same-direction add";
-#   * the size multiplier — scaleInAddQty = q * hurstDecision.OpenSizeMult()
-#     (scheduler/main.go), applied to the DECIDED quantity so an explicit
-#     scale_in.add_notional_usd is scaled too.
-#
-# These tests drive a DETERMINISTIC H series so the arm/disarm transition and
-# the multiplier are exact rather than incidental to a random frame.
-
-
 @pytest.fixture()
 def hurst_module():
-    """Pin backtest/hurst_gate.py under the exact name backtester.py imports at
-    run time (``from hurst_gate import ...`` inside ``run``), so a test can
-    drive the H series deterministically. Registered by explicit path rather
-    than bare-imported — CI runs pytest with ``-n auto`` (CLAUDE.md)."""
     previous = sys.modules.get("hurst_gate")
     mod = _load("hurst_gate", "backtest/hurst_gate.py")
     yield mod
@@ -628,12 +521,6 @@ def hurst_module():
 
 
 def _pin_hurst(monkeypatch, hurst_module, series_fn):
-    """Replace the rolling estimator with a caller-supplied H series.
-
-    The backtester still applies its own ``.shift(1)``, so ``series_fn``
-    returns the UNSHIFTED per-bar readings and the one-bar look-ahead lag stays
-    under test: a decision at bar N reads H through bar N-1.
-    """
 
     def fake_rolling_hurst(close, window):
         return pd.Series(series_fn(len(close)), index=close.index, dtype=float)
@@ -658,22 +545,12 @@ def _run_scale_in(Backtester, df, signal, scale_in=None, **kwargs):
 
 
 def _hold_then_add_signal(n: int, open_bar: int) -> np.ndarray:
-    """Open once, then re-assert the same direction on every later bar so each
-    of those bars is a scale-in add candidate."""
     sig = np.zeros(n)
     sig[open_bar:] = 1.0
     return sig
 
 
 def test_gate_mode_holds_scale_in_adds_once_disarmed(Backtester, hurst_module, monkeypatch):
-    """Must survive (1): mode="gate" disarmed for the rest of the run with
-    allow_scale_in=True — the adds must STOP, not continue at the ungated rate.
-
-    Before #1411's scale-in arm the four ``_try_scale_in_add`` call sites were
-    gated only on ``allow_scale_in`` and the signal, so a permanently disarmed
-    gate reported the full ungated add stream while live would have held every
-    one of them.
-    """
     df = _frame(n=400)
     disarm_at = 200
     _pin_hurst(
@@ -692,27 +569,15 @@ def test_gate_mode_holds_scale_in_adds_once_disarmed(Backtester, hurst_module, m
         "a disarmed gate must hold scale-in adds, exactly as pausedBlocksSignal "
         "holds a same-side signal on an open position live (#1411)"
     )
-    # Sharper than "fewer": pin exactly which bars still add. The engine
-    # shift(1)s the signal (a signal at bar N fills at N+1), so the OPEN fills
-    # at 101 and every later signalled bar is an add candidate. H is shifted
-    # once more, so bar i reads H[i-1]: the last armed decision is bar 200.
     open_fill_bar = 100 + 1
-    last_armed_bar = disarm_at  # reads H[disarm_at - 1], still 0.80
+    last_armed_bar = disarm_at
     assert gated["scale_in_adds"] == last_armed_bar - open_fill_bar
     assert gated["scale_in_added_notional_usd"] < ungated["scale_in_added_notional_usd"]
 
 
 def test_size_mode_scales_scale_in_adds_by_the_multiplier(Backtester, hurst_module, monkeypatch):
-    """Must survive (2): mode="size" with a low size_floor and
-    allow_scale_in=True — the added notional must shrink by EXACTLY the
-    multiplier, and the same adds must still fire (size mode never gates).
-
-    Also pins that an explicit ``add_notional_usd`` is scaled, mirroring live's
-    decision to multiply the DECIDED quantity rather than defOpenNotional.
-    """
     df = _frame(n=400)
     _pin_hurst(monkeypatch, hurst_module, lambda n: [0.53] * n)
-    # clamp(|0.53 - 0.5| / 0.15, 0.05, 1.0) == 0.2
     expected_mult = 0.2
     sig = _hold_then_add_signal(len(df), open_bar=100)
 
@@ -732,24 +597,14 @@ def test_size_mode_scales_scale_in_adds_by_the_multiplier(Backtester, hurst_modu
 
 
 def test_open_bar_multiplier_never_leaks_into_later_adds(Backtester, hurst_module, monkeypatch):
-    """The DEFAULT per-add notional is the backtest image of live's
-    ``defOpenNotional``, which carries NO Hurst multiplier: live recomputes it
-    each cycle from cash/leverage and scales only the decided quantity.
-
-    Freezing the SCALED first leg would bake the OPEN bar's multiplier into
-    every later add for the whole life of the position, and then shrink it a
-    second time by the current bar's multiplier. Pin that an add taken at
-    m=1.0 is identical whether the position was opened at m=0.2 or at m=1.0.
-    """
     df = _frame(n=400)
     open_bar, recover_at = 100, 200
     sig = np.zeros(len(df))
-    sig[open_bar] = 1.0                      # open only
-    sig[recover_at + 5: recover_at + 8] = 1.0  # adds, all after H recovered
+    sig[open_bar] = 1.0
+    sig[recover_at + 5: recover_at + 8] = 1.0
     gate = {"enabled": True, "mode": "size", "size_floor": 0.05}
-    scale_cfg = {"max_adds": 10}  # no add_notional_usd -> DEFAULT per-add size
+    scale_cfg = {"max_adds": 10}
 
-    # clamp(|0.53-0.5|/0.15, .05, 1) == 0.2 ; clamp(|0.80-0.5|/0.15, .05, 1) == 1.0
     _pin_hurst(
         monkeypatch, hurst_module,
         lambda n: [0.53] * recover_at + [0.80] * (n - recover_at),
@@ -769,9 +624,6 @@ def test_open_bar_multiplier_never_leaks_into_later_adds(Backtester, hurst_modul
 
 
 def test_armed_gate_leaves_scale_in_adds_byte_identical(Backtester, hurst_module, monkeypatch):
-    """Must survive (3), gate half: an ARMED gate must not touch adds at all.
-    ``mode="gate"`` never scales, so both the count and the notional match the
-    ungated run exactly."""
     df = _frame(n=400)
     _pin_hurst(monkeypatch, hurst_module, lambda n: [0.80] * n)
     sig = _hold_then_add_signal(len(df), open_bar=100)
@@ -788,8 +640,6 @@ def test_armed_gate_leaves_scale_in_adds_byte_identical(Backtester, hurst_module
 
 
 def test_absent_hurst_gate_leaves_the_scale_in_baseline_byte_identical(Backtester):
-    """Must survive (3), default-off half: with no gate (or a disabled block)
-    the scale-in path must be bit-for-bit what it was before #1411."""
     df = _frame(n=400)
     sig = _hold_then_add_signal(len(df), open_bar=100)
     base = _run_scale_in(Backtester, df, sig)
@@ -804,12 +654,6 @@ def test_absent_hurst_gate_leaves_the_scale_in_baseline_byte_identical(Backteste
 
 
 def test_scale_in_hurst_arms_live_inside_the_add_helper():
-    """Wiring inventory: both Hurst arms must sit INSIDE ``_try_scale_in_add``,
-    never at its call sites. There are four sites today (two on the open/close
-    registry path, two on the plain-signal path); centralising the arms means a
-    fifth site added later inherits the gate instead of silently bypassing it —
-    which is exactly how the adds escaped the gate in the first place.
-    """
     source = (_ROOT / "backtest" / "backtester.py").read_text()
     start = source.index("def _try_scale_in_add(")
     body = source[start: source.index("\n        for i, (idx, row) in enumerate(", start)]

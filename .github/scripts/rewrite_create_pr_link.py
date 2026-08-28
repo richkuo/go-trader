@@ -1,15 +1,3 @@
-"""Rewrite the "Create PR" link inside a claude[bot] comment so the prefilled
-PR body ends with our model/effort footer instead of the default
-"Generated with [Claude Code](...)" attribution.
-
-As a CLI, reads the comment body from $BODY_IN and the footer text from
-$FOOTER_TEXT and prints the rewritten comment body to stdout. Importable as
-rewrite_create_pr_link(body, footer) for callers that already hold both
-(compose_claude_comment.py).
-
-Idempotent: any existing LLM footer in the prefilled body= param is stripped
-before the authoritative footer is appended (via strip_llm_footer.strip_llm_footer).
-"""
 
 import os
 import re

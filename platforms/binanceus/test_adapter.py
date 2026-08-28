@@ -1,4 +1,3 @@
-"""Tests for BinanceUSExchangeAdapter — mock ccxt to avoid live API calls."""
 
 import sys
 import os
@@ -6,7 +5,6 @@ import importlib.util
 import pytest
 from unittest.mock import MagicMock, patch
 
-# Load binanceus adapter by file path to avoid module name collisions
 _adapter_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "adapter.py")
 _shared_tools = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'shared_tools'))
 if _shared_tools not in sys.path:
@@ -20,7 +18,6 @@ BinanceUSExchangeAdapter = _mod.BinanceUSExchangeAdapter
 
 @pytest.fixture
 def mock_exchange():
-    """Provide a mock ccxt exchange and patch it into the adapter module."""
     mock_ex = MagicMock()
     original = _mod._get_ccxt_exchange
     _mod._get_ccxt_exchange = lambda: mock_ex
@@ -28,15 +25,11 @@ def mock_exchange():
     _mod._get_ccxt_exchange = original
 
 
-# ─── Properties ────────────────────────────────────
-
 class TestProperties:
     def test_name(self):
         adapter = BinanceUSExchangeAdapter()
         assert adapter.name == "binanceus"
 
-
-# ─── Spot Price ────────────────────────────────────
 
 class TestSpotPrice:
     def test_get_spot_price(self, mock_exchange):
@@ -59,8 +52,6 @@ class TestSpotPrice:
         mock_exchange.fetch_ticker.side_effect = Exception("fail")
         assert adapter.get_spot_price("BTC") == 0.0
 
-
-# ─── Vol Metrics ───────────────────────────────────
 
 class TestVolMetrics:
     def test_get_vol_metrics(self, mock_exchange):
@@ -86,8 +77,6 @@ class TestVolMetrics:
         assert vol == 0.60
         assert iv_rank == 50.0
 
-
-# ─── Options Not Supported ─────────────────────────
 
 class TestOptionsNotSupported:
     def test_get_real_expiry_raises(self):

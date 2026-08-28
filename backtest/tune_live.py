@@ -1,47 +1,4 @@
 #!/usr/bin/env python3
-"""#1338: One-command tuning pipeline for LIVE strategies.
-
-Every piece needed to retune a deployed strategy already exists — walk-forward
-parameter search (``optimizer.walk_forward_optimize``), the M-harness promotion
-gate under one Benjamini-Hochberg correction (``auto_suggest``), and a config
-loader that resolves a strategy's exact live effective parameters
-(``run_backtest.load_strategy_config``). Nothing connected them, so systematic
-tuning of the live fleet never happened and deployed parameters went stale.
-
-This driver connects them. For each (or one named) strategy in a live config it:
-
-  1. Resolves the exact live baseline — open name + effective open params +
-     effective close stack + direction + regime gate — by REUSING
-     ``load_strategy_config`` (never reimplementing config resolution). The live
-     baseline is always candidate zero, the incumbent every survivor must beat.
-  2. Generates a bounded candidate neighborhood around each tunable open param
-     (registry ``constraints`` respected), unioned with the strategy's
-     ``DEFAULT_PARAM_RANGES`` row; operator ``--param`` / ``--overrides`` replace
-     or freeze specific params, validated fail-loud.
-  3. Stage 1 — walk-forward search over the neighborhood, pruned to OOS-stable
-     survivors. Short-direction strategies skip stage 1 (the warmup seeder is
-     long-only) and send the full neighborhood to stage 2; bidirectional
-     strategies DO run stage 1 with ``direction="both"``.
-  4. Stage 2 — the survivors go through the M-harness gate via ``auto_suggest``
-     under a SELECTION-AWARE correction: (a) stage-1 search data is sliced to end
-     strictly before the earliest stage-2 evidence window (disjoint evidence),
-     and (b) the BH family size is the searched count N, not the survivor count
-     (``correction.family_size``, the #1338 auto_suggest extension).
-  5. Emits a versioned, machine-consumable artifact (ranked verdicts, per-survivor
-     config patches, the full recorded baseline) plus a progress JSON — the
-     #1339-#1341 dashboard consumes these, so the layout is stable and schema-
-     versioned.
-
-SUGGEST-ONLY — HARD BOUNDARY (same invariant as #1210). This tool NEVER writes a
-live config, a default, or a PR, and never shells git/gh. It emits a ranked
-report; a human makes every promotion call.
-
-Usage:
-  uv run --no-sync python backtest/tune_live.py --config <cfg> [--strategy <id>] \\
-      [--registry auto|spot|futures] [--datasets BTC/USDT:1h] [--windows is,oos] \\
-      [--param fast_period=10,15,20] [--overrides overrides.json] \\
-      [--out-dir DIR] [--json OUT.json] [--jobs 4] [--dry-run]
-"""
 from __future__ import annotations
 
 import argparse
@@ -58,77 +15,48 @@ for _p in (_THIS_DIR, os.path.join(_REPO, "shared_tools")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-import auto_suggest  # noqa: E402
-from data_fetcher import load_cached_data  # noqa: E402 (module-level: tests patch tune_live.load_cached_data)
-from eval_windows import WINDOWS as M1_WINDOWS, PLATFORM as DATA_PLATFORM, FEE_PLATFORM  # noqa: E402
-from optimizer import DEFAULT_PARAM_RANGES, generate_param_grid, walk_forward_optimize  # noqa: E402
-from registry_loader import load_registry, registry_for_strategy_type  # noqa: E402
-from run_backtest import (  # noqa: E402
+import auto_suggest
+from data_fetcher import load_cached_data
+from eval_windows import WINDOWS as M1_WINDOWS, PLATFORM as DATA_PLATFORM, FEE_PLATFORM
+from optimizer import DEFAULT_PARAM_RANGES, generate_param_grid, walk_forward_optimize
+from registry_loader import load_registry, registry_for_strategy_type
+from run_backtest import (
     FUNDING_COLUMN_STRATEGIES,
     _attach_funding_if_needed,
     load_strategy_config,
 )
 
-# Downstream consumers (#1339-#1341) read this schema; bump on any layout change.
-# v2 (#1386): each ranked strategy result carries promotion_baseline (raw
-# open_strategy / user_defaults / user_close_defaults + presence bits).
 SCHEMA_VERSION = 2
 ISSUE = 1338
 
-DEFAULT_SINCE = "2019-01-01"          # stage-1 history start (sliced to end before stage 2)
-DEFAULT_STAGE2_WINDOWS = ["is", "oos"]  # M1 audit protocol windows (eval_windows.WINDOWS)
+DEFAULT_SINCE = "2019-01-01"
+DEFAULT_STAGE2_WINDOWS = ["is", "oos"]
 DEFAULT_ALPHA = 0.05
 DEFAULT_SPLITS = 5
 DEFAULT_CAPITAL = 1000.0
 DEFAULT_METRIC = "sharpe_ratio"
-# Stage-1 slice must leave at least this many bars, else walk-forward cannot form
-# even one usable fold (window_size >= 50 per split) — refuse loudly instead.
 MIN_STAGE1_BARS = 50 * DEFAULT_SPLITS
-# Cap on stage-2 CANDIDATE count (not the searched family N). Guards the
-# stage-1-skipped path (short / composite regime), where the whole neighborhood
-# becomes candidates — a silent 200-M1-run storm reads as "covered everything".
-# Refuse loudly and tell the operator to narrow with --param/--overrides.
 DEFAULT_MAX_CANDIDATES = 64
 
-STAGE2_HARNESSES = ["m1_noise", "m1", "m3", "m5"]  # "mc" opt-in only (#1316), advisory (#1295)
+STAGE2_HARNESSES = ["m1_noise", "m1", "m3", "m5"]
 
 FOOTER = ("Suggest-only. tune_live never wrote a config, a live default, or a "
           "PR — every ranked patch is a proposal a human must promote.")
 
-# #1338 review (judgment call): the artifact is ALWAYS written and is the
-# authoritative per-strategy result — a poller parses it regardless of exit code.
-# The exit code is only a coarse signal for a scheduler/CI consumer (#1339-#1341):
-# 0 when the run produced at least one usable result OR only benignly declined
-# strategies; non-zero when the fleet ran but EVERY strategy failed. So a naive
-# `if rc: alert` catches a total wipeout without tripping on a partial-success
-# fleet. A benign skip (a strategy the tuner correctly declined as unsupported)
-# is NOT a failure.
 _PRODUCTIVE_STATUSES = frozenset({"ranked", "dry_run"})
 _BENIGN_SKIP_STATUSES = frozenset({"unsupported"})
 
-# Live resolution fields the backtest candidate / walk-forward shapes cannot
-# express faithfully. A strategy carrying any of these is skipped with the
-# reason surfaced — never backtested against a DIFFERENT close/sizing than live.
 _UNSUPPORTED_STOP_OWNERS = (
-    "stop_loss_atr_regime", "trailing_stop_atr_regime",  # regime stop owners
-    "stop_loss_pct", "trailing_stop_pct", "stop_loss_margin_pct",  # pct stops
+    "stop_loss_atr_regime", "trailing_stop_atr_regime",
+    "stop_loss_pct", "trailing_stop_pct", "stop_loss_margin_pct",
 )
 
 
-# ===========================================================================
-# Pure — value coercion + neighborhood generation (unit-tested, no data access)
-# ===========================================================================
-
 def _is_number(v) -> bool:
-    """A tunable numeric value: int/float but NOT bool (a 0/1 toggle is a
-    category, not a magnitude — perturbing it is meaningless)."""
     return isinstance(v, (int, float)) and not isinstance(v, bool)
 
 
 def coerce_scalar(raw: str):
-    """Parse a CLI/override scalar into its natural type: int, then float, then
-    bool, else the trimmed string. ``--param confirm=1,2`` yields ints so the
-    values land in the grid with the same type the registry default carries."""
     s = str(raw).strip()
     try:
         return int(s)
@@ -145,10 +73,6 @@ def coerce_scalar(raw: str):
 
 
 def perturb_numeric(value, step_frac: float, n_steps: int) -> list:
-    """Bounded neighborhood offsets around ``value`` (excluding it): ``n_steps``
-    on each side at a ``step_frac`` relative step. Ints step by whole units
-    (>=1); floats step multiplicatively. A zero value is a disabled/neutral
-    sentinel (several params use 0 to mean "off") — never perturbed."""
     if not _is_number(value) or value == 0 or n_steps <= 0 or step_frac <= 0:
         return []
     out = []
@@ -166,17 +90,10 @@ def perturb_numeric(value, step_frac: float, n_steps: int) -> list:
 
 def param_neighborhood(live_value, default_range, step_frac: float,
                        n_steps: int) -> list:
-    """Candidate values for one tunable param: the live value (always — the
-    incumbent must be in the grid), unioned with the strategy's
-    ``DEFAULT_PARAM_RANGES`` row (when present) and a bounded perturbation around
-    the live value. Numeric lists sort ascending; a categorical param (e.g.
-    ``session``) preserves insertion order and is never perturbed."""
     vals = [live_value]
     if default_range:
         vals.extend(default_range)
     vals.extend(perturb_numeric(live_value, step_frac, n_steps))
-    # Dedup preserving first-seen order (categorical safety), then sort when the
-    # whole set is homogeneously numeric.
     uniq = list(dict.fromkeys(vals))
     if all(_is_number(v) for v in uniq):
         uniq = sorted(uniq)
@@ -184,27 +101,12 @@ def param_neighborhood(live_value, default_range, step_frac: float,
 
 
 def effective_params(config_params: dict, default_params: dict) -> dict:
-    """The value the live strategy actually runs for every registry param: the
-    config value where set, else the (platform-merged) registry default. This is
-    the search universe — every param is passed to walk-forward at this value
-    (or a swept override), so a config value that differs from the registry
-    default is never silently replaced by the default mid-fold."""
     return {p: config_params.get(p, dv) for p, dv in default_params.items()}
 
 
 def build_search_grid(eff_params: dict, default_row: dict, override_grids: dict,
                       frozen: set, step_frac: float, n_steps: int,
                       value_ok) -> dict:
-    """The walk-forward ``param_ranges`` grid: ``{param: [values]}`` over EVERY
-    registry param (so each is threaded at its effective value or a sweep).
-
-    Searched dimensions = keys of ``DEFAULT_PARAM_RANGES[name]`` plus operator
-    overrides, minus frozen params — the curated tunable set, which bounds the
-    combinatorial blow-up. Every other param is pinned to its effective value
-    (single-value grid entry). ``value_ok(param, value) -> bool`` drops
-    auto-derived neighborhood values that violate a single-parameter registry
-    constraint; the live value is ALWAYS kept (it is live-valid by construction).
-    Override value lists are used verbatim (already validated loudly upstream)."""
     searched = (set(default_row) | set(override_grids)) - set(frozen)
     grid = {}
     for param, eff_val in eff_params.items():
@@ -221,20 +123,13 @@ def build_search_grid(eff_params: dict, default_row: dict, override_grids: dict,
 
 
 def grid_size(grid: dict) -> int:
-    """Cartesian size of a ``{param: [values]}`` grid (the searched count N)."""
     n = 1
     for values in grid.values():
         n *= max(1, len(values))
     return n
 
 
-# ===========================================================================
-# Pure — operator override resolution (fail-loud), disjoint windows, patches
-# ===========================================================================
-
 def parse_cli_param_grids(param_args: list) -> dict:
-    """Parse repeatable ``--param name=v1,v2,...`` flags into
-    ``{name: [coerced values]}``. Raises on a malformed spec or an empty list."""
     out = {}
     for raw in param_args or []:
         if "=" not in raw:
@@ -253,18 +148,6 @@ def parse_cli_param_grids(param_args: list) -> dict:
 def resolve_overrides(strategy_id: str, cli_param_grids: dict,
                       overrides_map: dict, known_params: set,
                       check_value) -> tuple:
-    """Merge CLI + file overrides for one strategy into ``(override_grids,
-    frozen)``, validated FAIL-LOUD.
-
-    - ``cli_param_grids``: ``{param: [values]}`` from ``--param`` (single-strategy
-      runs; the caller rejects --param on a fleet run).
-    - ``overrides_map``: ``{strategy_id: {"params": {param: [values]},
-      "freeze": [param, ...]}}`` from ``--overrides`` (fleet runs).
-    An overridden param's value list REPLACES its auto neighborhood; a frozen
-    param is pinned to its live value and excluded from search. Unknown param
-    names and constraint-violating override values are refused loudly (never
-    silently ignored). ``check_value(param, value)`` raises ValueError on a
-    value that violates a single-parameter registry constraint."""
     entry = dict((overrides_map or {}).get(strategy_id) or {})
     file_params = dict(entry.get("params") or {})
     frozen = set(entry.get("freeze") or [])
@@ -280,7 +163,7 @@ def resolve_overrides(strategy_id: str, cli_param_grids: dict,
                 f"{strategy_id}: override {param!r} must be a non-empty list "
                 f"of values")
         for v in values:
-            check_value(param, v)  # raises on constraint violation
+            check_value(param, v)
         override_grids[param] = list(values)
 
     bad_frozen = frozen - known_params
@@ -298,10 +181,6 @@ def resolve_overrides(strategy_id: str, cli_param_grids: dict,
 
 
 def earliest_stage2_start(stage2_windows: list, windows_table: dict) -> str:
-    """The earliest start date across the configured stage-2 evidence windows.
-    Stage-1 search data must end strictly before this so the two stages never
-    share a bar (selection-aware inference safeguard a). Raises on an unknown
-    window name (mirrors auto_suggest's window validation)."""
     starts = []
     for w in stage2_windows:
         if w not in windows_table:
@@ -314,19 +193,12 @@ def earliest_stage2_start(stage2_windows: list, windows_table: dict) -> str:
 
 
 def param_changes(candidate_params: dict, baseline_eff: dict) -> dict:
-    """The params where a candidate differs from the live effective baseline —
-    the human-readable delta shown next to each proposed patch."""
     return {p: v for p, v in candidate_params.items()
             if baseline_eff.get(p) != v}
 
 
 def build_patch(strategy_id: str, open_name: str, candidate_params: dict,
                 baseline_eff: dict) -> dict:
-    """A ready-to-review config patch for one survivor. The patch REPLACES
-    ``open_strategy.params`` with the full proposed set (so applying it is a
-    single canonical assignment, which #1341's apply flow resolves); the delta
-    vs live is recorded separately for the reader. Suggest-only — this is data,
-    not an applied change."""
     return {
         "strategy_id": strategy_id,
         "open_strategy": {"name": open_name, "params": dict(candidate_params)},
@@ -335,10 +207,6 @@ def build_patch(strategy_id: str, open_name: str, candidate_params: dict,
 
 
 def build_candidate(open_name: str, params: dict, resolution: dict) -> dict:
-    """An auto_suggest / eval_windows open-candidate dict carrying the live close
-    stack, direction and regime gate around a parameter set. Only the fields the
-    backtest candidate shape faithfully expresses are emitted (support is gated
-    upstream by ``unsupported_reason``)."""
     cand = {
         "name": open_name,
         "params": dict(params),
@@ -351,20 +219,10 @@ def build_candidate(open_name: str, params: dict, resolution: dict) -> dict:
         cand["stop_loss_atr_mult"] = resolution["stop_loss_atr_mult"]
     if resolution.get("trailing_stop_atr_mult") is not None:
         cand["trailing_stop_atr_mult"] = resolution["trailing_stop_atr_mult"]
-    # #1343 re-review: the regime surface is copied only when the gate is
-    # ACTIVE live (regime.enabled). A dormant gate — allowed_regimes with
-    # regime.enabled=false, the exact state /apply-regime-gate reactivates —
-    # is UNGATED live and in stage 1 (the Backtester gates only when
-    # regime_enabled AND allowed_regimes), so stage 2 must not force-activate
-    # it (eval_windows turns the gate on whenever allowed_regimes is present).
     if resolution.get("regime_enabled"):
         if resolution.get("allowed_regimes"):
             cand["allowed_regimes"] = list(resolution["allowed_regimes"])
             if not resolution.get("regime_windows_spec"):
-                # Thread the live ADX lookback so stage 2 gates on the exact
-                # regime state the strategy runs, not the harness 14/20
-                # defaults. A windows spec owns its own classifier/lookback,
-                # so the legacy fields are emitted only on the legacy path.
                 cand["regime_period"] = int(
                     resolution.get("regime_period") or 14)
                 cand["regime_adx_threshold"] = float(
@@ -376,15 +234,6 @@ def build_candidate(open_name: str, params: dict, resolution: dict) -> dict:
 
 
 def unsupported_reason(resolution: dict) -> str | None:
-    """Why the tuner cannot faithfully backtest this live resolution, or None.
-
-    The backtest candidate / walk-forward shapes express a scalar ATR stop (or
-    no stop) plus standard close refs, long/short/both, and a regime entry gate.
-    Regime/pct stop owners, per-regime directional policy, profile allocation,
-    signal inversion, and the alternative sizing modes have no faithful bar-level
-    replay here — backtesting them against a scalar-stop approximation would
-    silently diverge from live, so the strategy is skipped with the reason
-    surfaced instead."""
     for key in _UNSUPPORTED_STOP_OWNERS:
         if resolution.get(key) not in (None, 0, 0.0):
             return f"unsupported_stop:{key}"
@@ -398,34 +247,14 @@ def unsupported_reason(resolution: dict) -> str | None:
         return "unsupported_risk_per_trade_pct"
     if resolution.get("allow_scale_in"):
         return "unsupported_allow_scale_in"
-    # #1338 review finding 3: atr_method changes EntryATR + stop-loss geometry,
-    # but neither walk_forward_optimize nor eval_windows threads it — both replay
-    # under simple ATR. A wilder-ATR strategy tuned here would be measured under
-    # the wrong ATR math (the exact silent divergence this gate prevents). Skip
-    # rather than tune against a different geometry than live.
     if str(resolution.get("atr_method") or "simple").strip().lower() not in ("", "simple"):
         return f"unsupported_atr_method:{resolution.get('atr_method')}"
-    # regime_gate_on_failure="closed" holds fresh opens on an EMPTY regime label
-    # (warmup / store failure); the backtest engines default it to "open" and it
-    # is not threaded through either stage, so a "closed" live strategy would be
-    # tuned under a fail-open entry gate. Protective mechanism — skip.
     if str(resolution.get("regime_gate_on_failure") or "open").strip().lower() == "closed":
         return "unsupported_regime_gate_on_failure_closed"
     return None
 
 
 def stage1_skip_reason(resolution: dict) -> str | None:
-    """Why stage-1 walk-forward search must be skipped (the full neighborhood
-    then goes straight to stage 2, which models these faithfully), or None.
-
-    - ``direction='short'``: the walk-forward warmup seeder is long-only and
-      would carry a phantom long into the short run (optimizer rejects it too).
-    - an ACTIVE composite regime gate (``regime.enabled`` +
-      ``regime_windows_spec``): walk-forward models only the legacy
-      single-lookback ADX regime, so it cannot reproduce the composite entry
-      gate — eval_windows (stage 2) can. A dormant spec (enabled=false) gates
-      nothing live, so walk-forward's ungated replay is faithful.
-    """
     if (resolution.get("direction") or "long") == "short":
         return "short_direction_long_only_seeder"
     if (resolution.get("regime_enabled")
@@ -434,17 +263,8 @@ def stage1_skip_reason(resolution: dict) -> str | None:
     return None
 
 
-# ===========================================================================
-# I/O — config enumeration, stage 1, stage 2, orchestration
-# ===========================================================================
-
 def config_strategy_entries(config_path: str,
                             only_id: str | list[str] | None) -> list:
-    """Return ``[(strategy_id, symbol, timeframe, registry), ...]`` in config
-    or requested order. Registry selection is derived from each strategy's
-    live type so a mixed spot/futures fleet never shares one accidental default.
-    Missing-id and pre-v15 validation remains with ``load_strategy_config`` per
-    strategy so its richer rejection text surfaces."""
     with open(config_path) as fh:
         cfg = json.load(fh)
     strategies = cfg.get("strategies") or []
@@ -468,13 +288,6 @@ def config_strategy_entries(config_path: str,
         sid = sc.get("id")
         args = sc.get("args") or []
         symbol = str(args[1]) if len(args) > 1 else None
-        # The strategy TRADES on args[2]; regime.timeframe is a SEPARATE
-        # classification axis that load_strategy_config threads independently
-        # (#1338 review). Substituting it for the trade interval would fetch and
-        # replay stage 1 + every stage-2 dataset on the wrong candle interval —
-        # the open-strategy indicators and tuned params would be computed on the
-        # regime interval, not the one the strategy trades. Always use args[2];
-        # a regime-timeframe mismatch is handled downstream as unsupported.
         timeframe = str(args[2]) if len(args) > 2 else None
         registry = registry_for_strategy_type(sc.get("type"))
         out.append((sid, symbol, timeframe, registry))
@@ -485,11 +298,6 @@ def run_stage1(open_name: str, grid: dict, resolution: dict, symbol: str,
                timeframe: str, registry: str, stage2_start: str,
                n_splits: int, capital: float, metric: str,
                verbose: bool) -> dict:
-    """Walk-forward search over ``grid`` on data ending STRICTLY before
-    ``stage2_start`` (disjoint evidence). Returns ``{"survivors": [param dicts],
-    "n_folds", "n_bars"}`` or ``{"error": reason}``. Raises ValueError with a
-    clear message when the disjoint slice leaves no usable data (never silently
-    runs stage 1 on an empty/tiny frame)."""
     df = load_cached_data(symbol, timeframe, exchange_id=DATA_PLATFORM,
                           start_date=DEFAULT_SINCE)
     if df is None or df.empty:
@@ -524,8 +332,6 @@ def run_stage1(open_name: str, grid: dict, resolution: dict, symbol: str,
     )
     if summary.get("error"):
         return {"error": summary["error"], "n_bars": int(len(df))}
-    # OOS-stable survivors: the distinct best_params that won at least one fold's
-    # out-of-sample validation, deduped by canonical JSON.
     seen, survivors = set(), []
     for w in summary.get("window_results") or []:
         bp = w.get("best_params")
@@ -545,9 +351,6 @@ def run_stage1(open_name: str, grid: dict, resolution: dict, symbol: str,
 def write_stage2_spec(spec_path: str, study: str, registry: str,
                       stage2_windows: list, stage2_datasets: list, alpha: float,
                       family_size: int, candidates: list) -> None:
-    """Emit the generated ``suggest.json`` the driver hands to auto_suggest. The
-    ``correction.family_size`` is the searched count N (#1338): the BH family is
-    corrected against everything stage 1 searched, not just the survivors."""
     spec = {
         "study": study,
         "registry": registry,
@@ -563,10 +366,6 @@ def write_stage2_spec(spec_path: str, study: str, registry: str,
 
 
 def run_stage2(spec_path: str, out_json: str, out_dir: str, jobs: int) -> dict:
-    """Drive auto_suggest over the generated spec and return its artifact dict.
-    Isolated so tests can monkeypatch it. auto_suggest returns non-zero only when
-    a GATE harness run failed — the artifact is still written (with run_failed
-    verdicts), so we read it regardless and record the exit code."""
     rc = auto_suggest.main([
         "--spec", spec_path, "--json", out_json,
         "--out-dir", os.path.join(out_dir, "harness_runs"),
@@ -583,8 +382,6 @@ def _progress_path(out_dir: str) -> str:
 
 
 def write_json_atomic(path: str, payload: dict) -> None:
-    """Replace one JSON artifact atomically so API polling never observes a
-    partially-written progress/result document."""
     directory = os.path.dirname(os.path.abspath(path))
     os.makedirs(directory, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(prefix=".tune-live-", suffix=".json",
@@ -604,9 +401,6 @@ def write_json_atomic(path: str, payload: dict) -> None:
 
 
 def write_progress(out_dir: str, payload: dict) -> None:
-    """Structured progress a poller reads instead of parsing stdout (#1339). No
-    wall-clock timestamp — the artifact and progress stay reproducible/testable;
-    phase + strategy index + candidate counts are the poll signal."""
     payload = {"schema_version": SCHEMA_VERSION, "tool": "tune_live", **payload}
     write_json_atomic(_progress_path(out_dir), payload)
 
@@ -614,13 +408,9 @@ def write_progress(out_dir: str, payload: dict) -> None:
 def tune_strategy(config_path: str, strategy_id: str, symbol: str,
                   timeframe: str, registry: str, reg_mod, args,
                   overrides_map: dict, out_dir: str) -> dict:
-    """Tune one strategy end-to-end. Never raises for a strategy-specific
-    problem — records a ``status`` and returns, so a fleet run continues."""
     result = {"strategy_id": strategy_id, "symbol": symbol,
               "timeframe": timeframe, "notes": []}
 
-    # 1. Resolve the live baseline (REUSE the config loader; inherit its v15 gate
-    #    and rich rejection text). A load failure is per-strategy, not fatal.
     try:
         resolution = load_strategy_config(
             config_path, strategy_id,
@@ -633,12 +423,10 @@ def tune_strategy(config_path: str, strategy_id: str, symbol: str,
         return result
 
     open_name = resolution["open_strategy"]["name"]
-    baseline_params = dict(resolution["open_strategy"]["params"])  # byte-match parity
+    baseline_params = dict(resolution["open_strategy"]["params"])
     result["open_strategy"] = open_name
     result["direction"] = resolution.get("direction")
     result["baseline_params"] = baseline_params
-    # #1386: raw promotion baseline from the same load — pop so it never
-    # leaks into Backtester kwargs if a later stage spreads resolution.
     result["promotion_baseline"] = resolution.pop("promotion_baseline")
     result["close_strategies"] = copy.deepcopy(resolution.get("close_strategies") or [])
     result["stop_owner"] = {
@@ -661,12 +449,6 @@ def tune_strategy(config_path: str, strategy_id: str, symbol: str,
         result["reason"] = reason
         return result
 
-    # #1338 review finding 1: when regime is enabled and its classification
-    # timeframe differs from the trade interval (args[2]), neither stage can
-    # thread a separate regime timeframe — the regime column would be classified
-    # on the trade candles instead of the live regime interval. Skip rather than
-    # gate/replay on the wrong regime interval (mirrors the composite-regime
-    # skip). regime-disabled or matching-timeframe strategies are unaffected.
     regime_tf = str(resolution.get("regime_timeframe") or "").strip().lower()
     if (resolution.get("regime_enabled") and regime_tf
             and regime_tf != str(timeframe).strip().lower()):
@@ -674,7 +456,6 @@ def tune_strategy(config_path: str, strategy_id: str, symbol: str,
         result["reason"] = f"unsupported_regime_timeframe_mismatch:{regime_tf}!={timeframe}"
         return result
 
-    # 2. Effective params + candidate neighborhood.
     if open_name not in reg_mod.STRATEGY_REGISTRY:
         result["status"] = "unknown_open_strategy"
         result["error"] = (f"open strategy {open_name!r} not in {registry} "
@@ -706,14 +487,6 @@ def tune_strategy(config_path: str, strategy_id: str, symbol: str,
     default_row = dict(DEFAULT_PARAM_RANGES.get(open_name) or {})
     grid = build_search_grid(eff, default_row, override_grids, frozen,
                              args.step_frac, args.neighborhood_steps, _value_ok)
-    # #1343 re-review (optional): drop cross-parameter-constraint-invalid
-    # combos (e.g. fast_period >= slow_period) up front, mirroring what the
-    # stage-1 walk-forward retains — it skips them per-fold via
-    # _EXPECTED_FOLD_ERRORS, so they can never survive to stage 2 on the run
-    # path. Filtering BEFORE n_searched keeps the BH family equal to the
-    # hypotheses actually testable on BOTH paths, and keeps guaranteed-invalid
-    # combos from consuming --max-candidates or spawning run_failed stage-2
-    # legs on the stage-1-skip path.
     grid_combos = []
     n_invalid = 0
     for sp in generate_param_grid(grid):
@@ -726,17 +499,6 @@ def tune_strategy(config_path: str, strategy_id: str, symbol: str,
         result["notes"].append(
             f"{n_invalid} constraint-invalid grid combination(s) dropped "
             f"before search")
-    # #1338 review finding 2: the BH family must cover EVERY stage-2 candidate,
-    # including the always-present baseline (candidate zero). The baseline is a
-    # searched grid point iff its grid-restricted projection is one of the
-    # (valid) combos — true for auto-neighborhoods (build_search_grid always
-    # keeps the live value) but NOT when an operator override REPLACES a
-    # param's grid with a list that excludes the live value. When the baseline
-    # is an extra hypothesis, N must be len(combos) + 1, else stage 2 produces
-    # one more p-value than family_size and trips auto_suggest's
-    # `family_size >= len(tests)` guard (deterministic on any stage-1-skipped
-    # strategy). No blanket inflation in the normal case — the +1 fires only
-    # when the baseline is truly extra.
     baseline_in_grid = {p: eff.get(p) for p in grid} in grid_combos
     n_searched = len(grid_combos) + (0 if baseline_in_grid else 1)
     result["searched_family_size"] = n_searched
@@ -746,10 +508,6 @@ def tune_strategy(config_path: str, strategy_id: str, symbol: str,
             "no DEFAULT_PARAM_RANGES row and no overrides — only the live "
             "baseline is evaluated; pass --param/--overrides to search")
 
-    # 3. Stage 1 — walk-forward search. Skipped when it cannot faithfully model
-    #    the live entry universe (short direction / composite regime gate) or in
-    #    --dry-run: the FULL neighborhood then becomes the stage-2 candidate set
-    #    (grid_combos holds the constraint-valid full param dicts).
     stage2_start = earliest_stage2_start(args.windows, M1_WINDOWS)
     skip_reason = "dry_run" if args.dry_run else stage1_skip_reason(resolution)
     if skip_reason:
@@ -777,15 +535,13 @@ def tune_strategy(config_path: str, strategy_id: str, symbol: str,
                             "n_survivors": len(s1["survivors"])}
         survivor_params = s1["survivors"]
 
-    # 4. Assemble stage-2 candidates: baseline (candidate zero) + survivors,
-    #    deduped so a survivor equal to the incumbent is not double-counted.
     baseline_cand = build_candidate(open_name, baseline_params, resolution)
     candidates = [{"key": "baseline", "candidate": baseline_cand,
                    "hypothesis": "live incumbent"}]
     baseline_key = json.dumps({p: eff[p] for p in eff}, sort_keys=True, default=str)
     seen_keys = {baseline_key}
     for i, sp in enumerate(survivor_params):
-        full = {**eff, **sp}  # survivor over the effective baseline
+        full = {**eff, **sp}
         key = json.dumps(full, sort_keys=True, default=str)
         if key in seen_keys:
             continue
@@ -804,7 +560,6 @@ def tune_strategy(config_path: str, strategy_id: str, symbol: str,
         return result
     result["n_candidates"] = len(candidates)
 
-    # 5. Stage 2 — drive auto_suggest with a SELECTION-AWARE family size = N.
     stage2_datasets = args.datasets or [f"{symbol}:{timeframe}"]
     spec_path = os.path.join(out_dir, f"suggest.{strategy_id}.json")
     stage2_json = os.path.join(out_dir, f"stage2.{strategy_id}.json")
@@ -817,12 +572,11 @@ def tune_strategy(config_path: str, strategy_id: str, symbol: str,
         return result
     try:
         report = run_stage2(spec_path, stage2_json, out_dir, args.jobs)
-    except Exception as exc:  # noqa: BLE001 — a stage-2 failure is per-strategy
+    except Exception as exc:
         result["status"] = "stage2_failed"
         result["error"] = f"{type(exc).__name__}: {exc}"
         return result
 
-    # 6. Rank survivors + emit patches.
     result["status"] = "ranked"
     result["correction"] = report.get("correction")
     result["stage2_exit_code"] = report.get("_exit_code")
@@ -846,7 +600,7 @@ def tune_strategy(config_path: str, strategy_id: str, symbol: str,
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    p = argparse.ArgumentParser()
     p.add_argument("--config", required=True, help="Path to a live go-trader config.json")
     p.add_argument("--strategy", action="append", default=None,
                    help="Strategy id to tune; repeat for a subset (default: every strategy in the config)")
@@ -906,7 +660,6 @@ def main(argv=None) -> int:
     if args.param and len(entries) > 1:
         raise SystemExit("--param applies to a single strategy; use --strategy "
                          "<id>, or --overrides <file> for a fleet run")
-    # Validate window names up front (loud, before any work).
     earliest_stage2_start(args.windows, M1_WINDOWS)
 
     overrides_map = {}
@@ -916,8 +669,6 @@ def main(argv=None) -> int:
         if not isinstance(overrides_map, dict):
             raise SystemExit("--overrides file must be a JSON object "
                              "{strategy_id: {...}}")
-        # Reject an override keyed to a strategy id the config does not define —
-        # a silently-ignored override reads as "applied" when it never ran.
         all_ids = {sid for sid, _, _, _ in config_strategy_entries(config_path, None)}
         unknown_ids = set(overrides_map) - all_ids
         if unknown_ids:
@@ -970,12 +721,6 @@ def main(argv=None) -> int:
     write_json_atomic(json_out, artifact)
     print(f"\nwrote {json_out}")
     print(FOOTER)
-    # Exit-code contract (see _PRODUCTIVE_STATUSES): the artifact always carries
-    # every per-strategy status; the code is non-zero only on a total wipeout —
-    # the fleet ran but no strategy produced a usable result and at least one
-    # failed. A partially-successful fleet (any ranked strategy) or an all-benign
-    # one (only unsupported skips) stays 0. Hard usage errors already raised a
-    # non-zero SystemExit above, before the artifact was written.
     productive = sum(1 for r in results if r.get("status") in _PRODUCTIVE_STATUSES)
     benign = sum(1 for r in results if r.get("status") in _BENIGN_SKIP_STATUSES)
     failed = len(results) - productive - benign

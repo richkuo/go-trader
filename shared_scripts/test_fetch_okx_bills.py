@@ -1,11 +1,3 @@
-"""Tests for fetch_okx_bills.py — OKX account-bills fetcher feeding the #1105
-exchange-sourced cash-flow journal (shadow phase / Phase 3a of #1100).
-
-The journal reconstructs the wallet TOTAL from this feed, so the script must
-relay the adapter's bills + cap flag truthfully and emit a JSON envelope on
-every path (success and error), exit 1 on error — the Go-side parser reads the
-envelope regardless of exit code.
-"""
 
 import builtins
 import importlib.util
@@ -19,12 +11,6 @@ import pytest
 
 
 def _run_script(bills_or_exc, capped=False, is_live=True, argv=None):
-    """Invoke fetch_okx_bills.main() with a mocked adapter.
-
-    bills_or_exc may be a list of bill dicts (returned by
-    adapter.get_account_bills as (bills, capped)) or an Exception. Returns
-    (parsed_stdout_json, exit_code).
-    """
     script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                "fetch_okx_bills.py")
     spec = importlib.util.spec_from_file_location("fetch_okx_bills", script_path)

@@ -1,12 +1,3 @@
-"""Tests for indicators_core.py (#1281) — shared Wilder RSI / true-range / ATR
-math plus the registration-time parameter-constraint layer.
-
-The equivalence tests pin the shared functions against verbatim copies of the
-inline blocks they replaced (byte-identical series, including the rounded vs
-unrounded split and per-site ``min_periods`` overrides). Any numeric change —
-e.g. the #1277 Wilder-RMA standardization — must update these references
-deliberately, never silently.
-"""
 
 import importlib.util
 import inspect
@@ -41,7 +32,6 @@ def _load_by_path(name, path):
 
 
 def _ohlcv(scale=1.0, n=300, seed=7):
-    """Random-walk OHLCV; scale=200 exercises the ATR >= 100 rounding branch."""
     rng = np.random.RandomState(seed)
     close = scale * (100 + np.cumsum(rng.randn(n) * scale))
     high = close + np.abs(rng.randn(n)) * scale
@@ -54,11 +44,7 @@ def _ohlcv(scale=1.0, n=300, seed=7):
     )
 
 
-# --- Verbatim references: the inline blocks the shared module replaced -------
-
-
 def _ref_standard_atr(df, period):
-    """shared_tools/atr.py:standard_atr + the _inline_atr copies (rounded)."""
     high = df["high"].astype(float)
     low = df["low"].astype(float)
     prev_close = df["close"].astype(float).shift(1)
@@ -71,7 +57,6 @@ def _ref_standard_atr(df, period):
 
 
 def _ref_unrounded_atr(df, period):
-    """registry.py supertrend/squeeze/order_blocks + sweep_squeeze_combo copies."""
     tr = pd.concat([
         df["high"] - df["low"],
         (df["high"] - df["close"].shift(1)).abs(),
@@ -81,7 +66,6 @@ def _ref_unrounded_atr(df, period):
 
 
 def _ref_chart_patterns_atr(highs, lows, close):
-    """chart_patterns.py copy: min_periods=1, unrounded."""
     tr = pd.concat([
         highs - lows,
         (highs - close.shift(1)).abs(),
@@ -91,7 +75,6 @@ def _ref_chart_patterns_atr(highs, lows, close):
 
 
 def _ref_consolidation_research_atr(df, period):
-    """backtest/consolidation_research.py copy: min_periods=1, rounded."""
     high, low, close = df["high"], df["low"], df["close"]
     prev_close = close.shift(1)
     tr = pd.concat(
@@ -103,7 +86,6 @@ def _ref_consolidation_research_atr(df, period):
 
 
 def _ref_tr_native_atr(high, low, close, period):
-    """regime_adaptive_htf.py tr_native copy (the variant-named 20th site)."""
     tr_native = pd.concat([
         high - low,
         (high - close.shift(1)).abs(),
@@ -114,7 +96,6 @@ def _ref_tr_native_atr(high, low, close, period):
 
 
 def _ref_wilder_rsi(close, period):
-    """The Wilder-RSI block inlined in 8 files."""
     delta = close.diff()
     gain = delta.clip(lower=0)
     loss = (-delta).clip(lower=0)
@@ -122,9 +103,6 @@ def _ref_wilder_rsi(close, period):
     avg_loss = loss.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
-
-
-# --- Equivalence: shared functions reproduce every replaced variant ----------
 
 
 @pytest.mark.parametrize("scale", [0.5, 1.0, 200.0])
@@ -210,8 +188,8 @@ def test_wilder_rsi_matches_reference(period):
 def test_wilder_rsi_extremes_and_warmup():
     rising = pd.Series(np.linspace(1, 10, 20))
     rsi = wilder_rsi(rising, 3)
-    assert rsi.iloc[:2].isna().all()  # warmup window is NaN, not 50/0
-    assert (rsi.iloc[3:] == 100.0).all()  # no losses -> 100
+    assert rsi.iloc[:2].isna().all()
+    assert (rsi.iloc[3:] == 100.0).all()
     falling = pd.Series(np.linspace(10, 1, 20))
     assert (wilder_rsi(falling, 3).iloc[3:] == 0.0).all()
 
@@ -238,9 +216,6 @@ def test_out_of_tree_consumers_delegate_to_shared_module():
     pd.testing.assert_series_equal(
         research.true_range(df), true_range(df), check_exact=True
     )
-
-
-# --- Parameter constraints (#1281) -------------------------------------------
 
 
 def _load_registry():
@@ -275,7 +250,6 @@ def test_constraint_violations_raise_valueerror_naming_strategy():
 def test_zero_disable_sentinels_stay_accepted():
     reg = _load_registry()
     df = _df()
-    # Documented 0 = "disabled" params must not be rejected.
     reg.STRATEGIES["anchored_vwap"]["fn"](df, gate_rsi_period=0, gate_ema_period=0)
     reg.STRATEGIES["regime_adaptive"]["fn"](df, slow_trend_lookback=0)
     reg.STRATEGIES["session_breakout"]["fn"](df, atr_multiplier=0.0)
@@ -288,7 +262,6 @@ def test_all_default_params_satisfy_their_declared_constraints():
     for name, entry in reg.STRATEGIES.items():
         if not entry["constraints"]:
             continue
-        # Calling with pure defaults must never trip a constraint.
         entry["fn"](df)
 
 
@@ -311,20 +284,14 @@ def test_apply_strategy_shim_path_validates():
     with pytest.raises(ValueError, match="constraint"):
         strategies.apply_strategy("mean_reversion", _df(),
                                   {"entry_std": 1.0, "exit_std": 1.0})
-    # Valid overrides still run.
     out = strategies.apply_strategy("mean_reversion", _df(),
                                     {"entry_std": 2.0, "exit_std": 0.5})
     assert "signal" in out.columns
 
 
-# --- #1338 standalone param validation (no strategy run) --------------------
-
-
 def test_validate_params_checks_without_running_and_matches_wrapper():
     reg = _load_registry()
-    # Valid overlay passes silently.
     reg.validate_params("sma_crossover", {"fast_period": 10, "slow_period": 40})
-    # Single-param violation raises the SAME message shape the wrapper produces.
     with pytest.raises(ValueError) as exc:
         reg.validate_params("sma_crossover", {"fast_period": -1})
     assert "sma_crossover" in str(exc.value) and "constraint" in str(exc.value)
@@ -332,8 +299,6 @@ def test_validate_params_checks_without_running_and_matches_wrapper():
 
 def test_validate_params_catches_cross_param_against_defaults():
     reg = _load_registry()
-    # fast_period=100 with the default slow_period=50 violates fast < slow, even
-    # though slow was not supplied — the omitted operand resolves to its default.
     with pytest.raises(ValueError, match="fast_period < slow_period"):
         reg.validate_params("sma_crossover", {"fast_period": 100})
 
@@ -346,12 +311,8 @@ def test_validate_params_unknown_strategy_raises():
 
 def test_validate_param_value_single_param_only():
     reg = _load_registry()
-    # A single-param literal constraint (fast_period > 0) is enforced...
     with pytest.raises(ValueError, match="constraint"):
         reg.validate_param_value("sma_crossover", "fast_period", -1)
-    # ...but a cross-param constraint (fast < slow) is deliberately NOT enforced
-    # here, so a large value that only violates fast<slow passes (the sweep's
-    # per-combo wrapper enforces the cross-param rule).
     reg.validate_param_value("sma_crossover", "fast_period", 100)
 
 
@@ -381,7 +342,7 @@ def test_wrapper_signature_stays_transparent():
     reg = _load_registry()
     fn = reg.STRATEGIES["mean_reversion"]["fn"]
     params = inspect.signature(fn).parameters
-    assert "entry_std" in params and "df" in params  # functools.wraps + __wrapped__
+    assert "entry_std" in params and "df" in params
 
 
 def test_unparseable_constraint_fails_at_registration():
@@ -410,8 +371,6 @@ def test_constraint_unknown_rhs_param_fails_at_registration():
 
 def test_constraint_variant_only_param_is_accepted():
     reg = _load_registry()
-    # "e" only exists in the futures variant's default_params — must not be
-    # treated as unknown at registration.
     reg.register(
         "_variant_param",
         "x",
@@ -430,12 +389,6 @@ def test_constraint_numeric_literal_rhs_is_accepted():
 
 
 def test_optimizer_treats_constraint_violation_as_skippable():
-    # The walk-forward fold loop catches _EXPECTED_FOLD_ERRORS around
-    # apply_strategy and skips the combo; the constraint ValueError must be in
-    # that set so sweeps containing invalid combos (e.g. mean_reversion
-    # entry_std=1.0 x exit_std=1.0) degrade to a skip instead of crashing.
-    # optimizer.py needs backtest/ on sys.path for its own imports
-    # (registry_loader, backtester) — mirror run_backtest.py's wiring.
     sys.path.insert(0, os.path.join(_ROOT, "backtest"))
     try:
         optimizer = _load_by_path(
@@ -446,17 +399,8 @@ def test_optimizer_treats_constraint_violation_as_skippable():
     assert ValueError in optimizer._EXPECTED_FOLD_ERRORS
 
 
-# --- #1277: Wilder RMA method -------------------------------------------------
-
-
 def _ref_wilder_atr(df, period):
-    """Hand-computed Wilder RMA recursion, independent of pandas ewm.
-
-    y[0] = tr[0]; y[t] = y[t-1] + (tr[t] - y[t-1]) / period — the exact
-    recurrence ewm(alpha=1/period, adjust=False) implements. Warmup rows
-    (< period-1 TR observations) are NaN, mirroring min_periods=period.
-    """
-    tr = _ref_unrounded_atr(df, 1)  # rolling(1).mean() == raw true range
+    tr = _ref_unrounded_atr(df, 1)
     out = []
     prev = None
     for v in tr:
@@ -477,14 +421,10 @@ def test_wilder_atr_matches_hand_computed_rma(scale, period):
 
 
 def test_wilder_atr_never_integer_rounds():
-    # scale=200 puts ATR well above 100 — the simple path integer-rounds
-    # there (#887); wilder must return full precision regardless of
-    # round_large.
     df = _ohlcv(200.0)
     got = atr_sma(df, 14, method="wilder").dropna()
     assert (got >= 100).any()
     assert (got != got.round(0)).any(), "wilder output looks integer-rounded"
-    # round_large is a simple-path knob; it must not change wilder output.
     got_flag_off = atr_sma(df, 14, method="wilder", round_large=False).dropna()
     pd.testing.assert_series_equal(got, got_flag_off, check_exact=True)
 
@@ -494,14 +434,11 @@ def test_wilder_atr_warmup_and_min_periods():
     got = atr_sma(df, 14, method="wilder")
     assert got.iloc[:13].isna().all()
     assert not pd.isna(got.iloc[13])
-    # Explicit min_periods override is honored on the wilder path too.
     early = atr_sma(df, 14, method="wilder", min_periods=1)
     assert not pd.isna(early.iloc[0])
 
 
 def test_wilder_differs_from_simple():
-    # Regression guard that the method parameter actually switches the math —
-    # if a refactor silently ignored it, this fails.
     df = _ohlcv(1.0)
     simple = atr_sma(df, 14).dropna()
     wilder = atr_sma(df, 14, method="wilder").dropna()
@@ -541,21 +478,10 @@ def test_standard_atr_reexport_threads_wilder():
         atr_sma(df, 14, method="wilder"),
         check_exact=True,
     )
-    # latest_atr threads the method: on a >=100-ATR frame the simple value is
-    # integer-rounded and the wilder one is not, so they must differ.
     assert atr_mod.latest_atr(df, method="wilder") != atr_mod.latest_atr(df)
 
 
-# --- Hurst exponent (#1409) ---------------------------------------------------
-
-
 def _ar1_log_price_series(n, phi, seed, drift=0.0, scale=100.0):
-    """Cumulative log-price walk from an AR(1) increment process.
-
-    phi > 0 makes increments positively autocorrelated (persistent/trending);
-    phi < 0 makes them negatively autocorrelated (mean-reverting); phi == 0
-    is a plain Gaussian random walk.
-    """
     rng = np.random.RandomState(seed)
     eps = rng.randn(n)
     steps = np.zeros(n)
@@ -584,7 +510,7 @@ def test_hurst_mean_reverting_series_below_half():
 
 
 def test_hurst_insufficient_data_returns_nan():
-    close = pd.Series(np.linspace(100.0, 110.0, HURST_DFA_MIN_POINTS))  # one short of the floor
+    close = pd.Series(np.linspace(100.0, 110.0, HURST_DFA_MIN_POINTS))
     assert np.isnan(hurst_exponent(close))
 
 
@@ -625,18 +551,7 @@ def test_hurst_custom_min_points():
     assert not np.isnan(hurst_exponent(close, min_points=50))
 
 
-# --- Short-scale null-distribution bias (#1419 review) ------------------------
-#
-# DFA carries a known small upward bias on memoryless (Gaussian random walk) data
-# at short segment scales -- see the caveat in `hurst_exponent`'s docstring. These
-# regression-test the mitigation (`_HURST_DFA_MIN_SCALE` raised from 4 to 8) rather
-# than any specific mean value, so they stay valid if the floor is tuned further.
-
-
 def test_hurst_random_walk_mean_near_half_at_live_frame_size():
-    """At n=200 (the live `check_regime.py --ohlcv-limit` default), the estimator's
-    OWN mean over many independent random walks must sit close to the true H=0.5 --
-    not the ~0.54 the review measured before the min-scale fix."""
     values = [
         hurst_exponent(_ar1_log_price_series(201, phi=0.0, seed=100 + i))
         for i in range(200)
@@ -648,8 +563,6 @@ def test_hurst_random_walk_mean_near_half_at_live_frame_size():
 
 
 def test_hurst_random_walk_mean_near_half_at_enriched_column_frame_size():
-    """Same null-mean check at n=101 -- the exact per-bar segment length
-    `backtest/regime_enriched_features._hurst_column` uses (HURST_DFA_MIN_POINTS+1)."""
     values = [
         hurst_exponent(_ar1_log_price_series(HURST_DFA_MIN_POINTS + 1, phi=0.0, seed=200 + i))
         for i in range(200)
@@ -660,18 +573,7 @@ def test_hurst_random_walk_mean_near_half_at_enriched_column_frame_size():
     assert abs(mean_h - 0.5) < 0.03, mean_h
 
 
-# --- Null-distribution spread pinned to the docstring caveat (#1419 review) ---
-#
-# The mean-only tests above don't catch an understated spread: a reading can sit
-# well outside a narrow claimed sd while the *mean* over many draws still looks
-# fine. These regression-pin the empirical sd/percentiles the docstring caveat
-# now cites, using 1000-trial samples (same order as the review's own re-measure)
-# and seeds disjoint from the mean tests above so the two don't share draws.
-
-
 def test_hurst_random_walk_sd_within_caveat_at_live_frame_size():
-    """At n=201, the null-distribution sd must stay close to the ~0.08 the
-    docstring caveat cites -- not silently drift to the wider n=101 figure."""
     values = [
         hurst_exponent(_ar1_log_price_series(201, phi=0.0, seed=10_000 + i))
         for i in range(1000)
@@ -683,10 +585,6 @@ def test_hurst_random_walk_sd_within_caveat_at_live_frame_size():
 
 
 def test_hurst_random_walk_sd_within_caveat_at_enriched_column_frame_size():
-    """At n=101 -- the exact frame `regime_enriched_features` computes at -- the
-    null-distribution sd must stay close to the ~0.12 the docstring caveat cites.
-    A caveat claiming the tighter n=201 spread here would understate how often a
-    memoryless draw reads well above the 0.50-0.55 'no memory' band."""
     values = [
         hurst_exponent(_ar1_log_price_series(HURST_DFA_MIN_POINTS + 1, phi=0.0, seed=20_000 + i))
         for i in range(1000)
@@ -698,10 +596,6 @@ def test_hurst_random_walk_sd_within_caveat_at_enriched_column_frame_size():
 
 
 def test_hurst_random_walk_high_percentile_exceeds_no_memory_band_at_enriched_column_frame_size():
-    """At n=101, the docstring warns a single reading above 0.55 -- even above
-    0.7 -- is not reliable evidence of persistence on its own. Pin that: the 95th
-    percentile of memoryless draws must sit meaningfully above 0.55, matching the
-    caveat's ~0.72 figure within a wide tolerance."""
     values = [
         hurst_exponent(_ar1_log_price_series(HURST_DFA_MIN_POINTS + 1, phi=0.0, seed=30_000 + i))
         for i in range(1000)
@@ -713,10 +607,6 @@ def test_hurst_random_walk_high_percentile_exceeds_no_memory_band_at_enriched_co
 
 
 def test_hurst_dfa_fluctuation_vectorization_matches_naive_per_segment_polyfit():
-    """#1419 review perf fix: `_hurst_dfa_fluctuation` now fits every segment at a
-    scale with one batched pseudo-inverse product instead of one `np.polyfit` call
-    per segment. Regression-pin it against the original naive per-segment-polyfit
-    reference implementation across a range of profile lengths and scales."""
     from indicators_core import _hurst_dfa_fluctuation
 
     def naive_fluctuation(profile, scale):

@@ -6,28 +6,9 @@ import (
 	"time"
 )
 
-// #1449 review round 3 — the UPWARD direction of an untrusted equity reading.
-//
-// Round 2 closed the fail-open direction: an untrusted total that OVERSTATES
-// equity can no longer mask a loss, because the measured drawdown is floored at
-// the last recorded reading. The opposite direction stayed open. An untrusted
-// total that UNDERSTATES equity inflates the drawdown, and nothing stopped that
-// inflated number from latching the portfolio and flattening the whole book —
-// manual and spot included — off a total the same cycle already flagged as
-// substituted or aged.
-//
-// The fix is a DEFERRAL with an escalation deadline, not a veto. These tests
-// pin both halves, because each one alone is a hole: a veto disarms the only
-// full-book protection for as long as a balance endpoint stays down, and no
-// deferral at all is the spurious flatten the finding reported.
-
-// TestUntrustedEquity_OverLimitLatchIsDeferredNotVetoed covers the reviewer's
-// three must-survive cases.
 func TestUntrustedEquity_OverLimitLatchIsDeferredNotVetoed(t *testing.T) {
-	cfg := review1449Config() // 25% limit, warn band at 15%
+	cfg := review1449Config()
 
-	// (a) Untrusted cycle, real equity healthy, but the substituted total
-	// reads a 40% drawdown. The book must stay open.
 	prs := &PortfolioRiskState{PeakValue: 10000}
 	allowed, _, warning, reason := checkPortfolioRiskWithEquityAvailability(prs, cfg, 6000, 0, 0, 0, true, false)
 	if !allowed || prs.KillSwitchActive {
@@ -42,19 +23,13 @@ func TestUntrustedEquity_OverLimitLatchIsDeferredNotVetoed(t *testing.T) {
 	if !strings.Contains(reason, "DEFERRED") {
 		t.Errorf("the warn reason must name the deferral; got %q", reason)
 	}
-	// The reading itself is the real measurement, not a clamped one: the
-	// operator must see the 40%, and the deferral is recorded separately.
 	if prs.CurrentDrawdownPct != 40 {
 		t.Errorf("a deferred cycle must persist its own measurement; got %.1f want 40", prs.CurrentDrawdownPct)
 	}
-	// Entering the deferral is an auditable transition.
 	if n := countKillSwitchEvents(prs, "latch_deferred"); n != 1 {
 		t.Errorf("expected exactly one latch_deferred event on entry; got %d", n)
 	}
 
-	// A second untrusted cycle inside the window must not re-stamp the start
-	// (that would push the deadline out forever) and must not add a second
-	// event.
 	firstSince := prs.UntrustedOverLimitSince
 	if allowed, _, _, _ = checkPortfolioRiskWithEquityAvailability(prs, cfg, 6000, 0, 0, 0, true, false); !allowed {
 		t.Fatal("second untrusted cycle inside the window must still be deferred")
@@ -66,8 +41,6 @@ func TestUntrustedEquity_OverLimitLatchIsDeferredNotVetoed(t *testing.T) {
 		t.Errorf("the deferral event must fire once per window, not per cycle; got %d", n)
 	}
 
-	// (b) A genuine TRUSTED measurement above the limit latches immediately —
-	// the deferral must never delay a real one.
 	trusted := &PortfolioRiskState{PeakValue: 10000}
 	allowed, _, _, reason = checkPortfolioRiskWithEquityAvailability(trusted, cfg, 6000, 0, 0, 0, true, true)
 	if allowed || !trusted.KillSwitchActive {
@@ -80,8 +53,6 @@ func TestUntrustedEquity_OverLimitLatchIsDeferredNotVetoed(t *testing.T) {
 		t.Errorf("a trusted latch reason must not claim an untrusted basis; got %q", reason)
 	}
 
-	// (c) A sustained run of untrusted over-limit cycles must reach protection
-	// rather than defer forever. Age the window past the deadline.
 	aged := &PortfolioRiskState{
 		PeakValue:               10000,
 		UntrustedOverLimitSince: time.Now().UTC().Add(-untrustedEquityLatchDeferral - time.Minute),
@@ -98,12 +69,6 @@ func TestUntrustedEquity_OverLimitLatchIsDeferredNotVetoed(t *testing.T) {
 	}
 }
 
-// TestUntrustedEquity_DeferralWindowClearsOnEveryNonQualifyingCycle pins the
-// inverse of the reported scenario. The window must measure an UNBROKEN run:
-// if any intervening cycle is trusted, or reads at or below the limit, or has
-// the equity guard unarmed, the clock restarts. Otherwise a book that dips
-// over the limit for one cycle a day would accumulate toward an escalation it
-// never earned.
 func TestUntrustedEquity_DeferralWindowClearsOnEveryNonQualifyingCycle(t *testing.T) {
 	cfg := review1449Config()
 
@@ -115,38 +80,26 @@ func TestUntrustedEquity_DeferralWindowClearsOnEveryNonQualifyingCycle(t *testin
 		return prs
 	}
 
-	// A trusted cycle that reads healthy clears the window.
 	prs := openWindow()
 	if _, _, _, _ = checkPortfolioRiskWithEquityAvailability(prs, cfg, 10000, 0, 0, 0, true, true); !prs.UntrustedOverLimitSince.IsZero() {
 		t.Error("a trusted cycle must clear the deferral window")
 	}
 
-	// An untrusted cycle back at or below the limit clears it too. The floor
-	// holds the reading at the clamped 25%, which is NOT above the limit, so
-	// the strict > that governs the latch also governs the window.
 	prs = openWindow()
 	if _, _, _, _ = checkPortfolioRiskWithEquityAvailability(prs, cfg, 10000, 0, 0, 0, true, false); !prs.UntrustedOverLimitSince.IsZero() {
 		t.Errorf("an untrusted cycle at the clamped limit must clear the window (reading %.1f)", prs.CurrentDrawdownPct)
 	}
 
-	// Equity guard unarmed: the equity arm is not the one that can latch, so
-	// it cannot be accumulating toward an escalation either.
 	prs = openWindow()
 	if _, _, _, _ = checkPortfolioRiskWithEquityAvailability(prs, cfg, 6000, 0, 0, 0, false, false); !prs.UntrustedOverLimitSince.IsZero() {
 		t.Error("an unarmed equity guard must clear the deferral window")
 	}
 }
 
-// TestUntrustedEquity_DeferralDoesNotDisarmTheMarginArm pins that the deferral
-// is scoped to the equity arm. On the equityAvailable == false path margin owns
-// the latch (#1448) and nothing about an untrusted equity reading may weaken
-// it — that path is the standing backstop the deferral leans on.
 func TestUntrustedEquity_DeferralDoesNotDisarmTheMarginArm(t *testing.T) {
 	cfg := review1449Config()
 	prs := &PortfolioRiskState{PeakValue: 10000}
 
-	// Equity unavailable (pooled wallet with no trustworthy balance), margin
-	// drawdown 40% on $100 of deployed margin.
 	allowed, _, _, reason := checkPortfolioRiskWithEquityAvailability(prs, cfg, 0, 0, 40, 100, false, false)
 	if allowed || !prs.KillSwitchActive {
 		t.Fatal("the margin arm must still latch when the equity guard is unarmed")
@@ -159,10 +112,6 @@ func TestUntrustedEquity_DeferralDoesNotDisarmTheMarginArm(t *testing.T) {
 	}
 }
 
-// TestUntrustedEquity_DeferralWindowSurvivesReset pins that every reset path
-// clears the window. A window left set across a reset would let the next
-// untrusted over-limit cycle escalate straight to a latch, skipping the whole
-// deferral the operator was just told about.
 func TestUntrustedEquity_DeferralWindowSurvivesReset(t *testing.T) {
 	since := time.Now().UTC().Add(-time.Minute)
 
@@ -183,10 +132,6 @@ func TestUntrustedEquity_DeferralWindowSurvivesReset(t *testing.T) {
 	}
 }
 
-// TestUntrustedEquity_DegenerateLimitKeepsExistingMeaning pins that a
-// non-positive MaxDrawdownPct is untouched. It already means "latch on any
-// drawdown"; deferring that would silently redefine the degenerate config
-// instead of leaving it alone, exactly as the priorEquityDD clamp does.
 func TestUntrustedEquity_DegenerateLimitKeepsExistingMeaning(t *testing.T) {
 	cfg := &PortfolioRiskConfig{MaxDrawdownPct: 0, WarnThresholdPct: 60}
 	prs := &PortfolioRiskState{PeakValue: 10000}
@@ -200,10 +145,6 @@ func TestUntrustedEquity_DegenerateLimitKeepsExistingMeaning(t *testing.T) {
 	}
 }
 
-// TestPortfolioWarningMessage_NamesTheDeferredLatch pins the operator surface.
-// With the deferral active the equity distance is 0.0%, which on every other
-// path means "a flatten is imminent". Printing the bare number there would
-// send an operator to intervene against a close that is not coming.
 func TestPortfolioWarningMessage_NamesTheDeferredLatch(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{},

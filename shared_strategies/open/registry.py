@@ -1,20 +1,3 @@
-"""Unified strategy registry — single source of truth for spot + futures.
-
-Each strategy is registered once via ``@register`` with a ``platforms`` tuple
-and, when the spot and futures flavors differ, a ``variants`` dict carrying
-per-platform ``description`` / ``default_params`` overrides.
-
-``shared_strategies/open/spot/strategies.py`` and
-``shared_strategies/open/futures/strategies.py``
-are thin shims that call ``build_registry("spot")`` / ``build_registry("futures")``
-to materialize a platform-filtered view with the same shape as the legacy
-``STRATEGY_REGISTRY`` dict. Deprecated strategies may stay registered so
-explicit existing configs remain loadable while discovery/list-json hides them.
-
-Per-platform ordering is explicit in ``PLATFORM_ORDER`` at the bottom of this
-file. ``DISCOVERY_HIDDEN_STRATEGIES`` entries keep that canonical order for
-explicit loads but are omitted from ``--list-json`` discovery.
-"""
 
 import functools
 import inspect
@@ -26,13 +9,10 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-# Strategy core modules live at several paths; wire them all up so
-# ``from indicators import sma, ema`` etc. keep working regardless of which
-# shim loaded this module.
 _THIS_DIR = os.path.dirname(__file__)
 for _p in (
-    os.path.join(_THIS_DIR, "spot"),  # indicators.py
-    _THIS_DIR,                         # amd_ifvg, chart_patterns, …
+    os.path.join(_THIS_DIR, "spot"),
+    _THIS_DIR,
 ):
     if _p not in sys.path:
         sys.path.insert(0, _p)
@@ -67,21 +47,8 @@ from analog_retrieval import analog_retrieval_core
 
 VALID_PLATFORMS: Tuple[str, ...] = ("spot", "futures")
 
-# name -> {fn, description, default_params, platforms, variants}
 STRATEGIES: Dict[str, Dict[str, Any]] = {}
 
-# Strategies the M5 fee audit (#999, docs/research/fee-audit-m5.md) assigned
-# the `deprecate` verdict: gross edge <= 0 on every measured leg, so no
-# selectivity/fee tuning can salvage them. Each carries
-# ``edge_status="deprecated_m5"`` in its registry entry and is quarantined
-# from discovery via DISCOVERY_HIDDEN_STRATEGIES below (#1275). They stay
-# registered so explicit configs keep loading and backtests keep running.
-# The operator warning lives on the Go side only (scheduler/edge_status.go
-# mirrors this roster as m5DeprecatedEdgeStrategies — keep the two rosters
-# identical): a startup [config] line + one-time owner DM, acknowledged via
-# per-strategy `allow_deprecated: true`. Per-cycle Python warnings were
-# deliberately dropped — check scripts run once per trade cycle, so a print
-# here would repeat unbounded and could never see the Go-side ack.
 M5_DEPRECATED_EDGE_STRATEGIES = frozenset({
     "adx_trend",
     "amd_ifvg",
@@ -117,8 +84,6 @@ M5_DEPRECATED_EDGE_STRATEGIES = frozenset({
     "vwap_reversion",
 })
 
-# Strategies kept loadable for existing configs/backtests but hidden from
-# discovery surfaces such as --list-json and generated defaults.
 DISCOVERY_HIDDEN_STRATEGIES = frozenset({
     "amd_ifvg",
     "analog_retrieval",
@@ -128,23 +93,6 @@ DISCOVERY_HIDDEN_STRATEGIES = frozenset({
     "vol_momentum",
 }) | M5_DEPRECATED_EDGE_STRATEGIES
 
-
-# --- Declarative parameter constraints (#1281) -----------------------------
-#
-# Each constraint is a string ``"<param> <op> <param-or-literal>"`` with op in
-# {<, <=, >, >=}, declared per strategy via ``@register(..., constraints=[...])``
-# next to ``default_params``. The registered fn is wrapped so every call path
-# (spot/futures shims' ``apply_strategy``, check scripts, backtester, direct
-# calls) validates the *effective* parameters — declared defaults overlaid with
-# whatever the caller passed — and raises ``ValueError`` naming the strategy,
-# the constraint, and the offending values. Failures surface through the
-# existing subprocess JSON-error contract, so a bad config fails loudly at
-# check/backtest time instead of trading on garbage signals.
-#
-# Only declare constraints a parameter must ALWAYS satisfy: several params use
-# 0 as a documented "disabled" sentinel (e.g. ``gate_rsi_period``,
-# ``slow_trend_lookback``, ``htf_gate_factor``, session_breakout's
-# ``atr_multiplier``) and must NOT get a blanket positivity constraint.
 
 _CONSTRAINT_RE = re.compile(
     r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*(<=|>=|<|>)\s*"
@@ -170,17 +118,11 @@ def _parse_constraint(name: str, expr: str) -> Tuple[str, str, Any]:
     try:
         rhs = float(rhs)
     except ValueError:
-        pass  # rhs is a parameter name
+        pass
     return lhs, op, rhs
 
 
 def _effective_params(fn, default_params: dict, args: tuple, kwargs: dict) -> dict:
-    """Declared defaults overlaid with the caller's bound arguments.
-
-    Handles both explicit signatures and ``def x_strategy(df, **params)``
-    wrappers (the VAR_KEYWORD dict is flattened). Binding errors fall through —
-    the real call will raise the natural TypeError.
-    """
     effective = dict(default_params)
     try:
         bound = inspect.signature(fn).bind_partial(*args, **kwargs)
@@ -198,10 +140,6 @@ def _effective_params(fn, default_params: dict, args: tuple, kwargs: dict) -> di
 
 
 def _enforce_parsed_constraints(name: str, effective: dict, parsed: list) -> None:
-    """Raise ``ValueError`` if ``effective`` violates any of the pre-parsed
-    constraints. Pure — the single source of truth for constraint semantics,
-    shared by the call-time wrapper (``_validated``) and the standalone
-    validator (``validate_params``, #1338) so both reject identically."""
     for expr, (lhs, op, rhs) in parsed:
         if lhs not in effective:
             continue
@@ -228,8 +166,6 @@ def _enforce_parsed_constraints(name: str, effective: dict, parsed: list) -> Non
 
 
 def _validated(name: str, fn, default_params: dict, constraints: Tuple[str, ...]):
-    """Wrap ``fn`` to enforce ``constraints`` on every call (functools.wraps
-    keeps the signature transparent for ``strip_unsupported_position_context``)."""
     parsed = [(expr, _parse_constraint(name, expr)) for expr in constraints]
 
     @functools.wraps(fn)
@@ -243,18 +179,6 @@ def _validated(name: str, fn, default_params: dict, constraints: Tuple[str, ...]
 
 def validate_params(name: str, params: dict,
                     default_params: Optional[dict] = None) -> None:
-    """Validate ``params`` (overlaid on the strategy's defaults) against
-    ``name``'s declared constraints WITHOUT running the strategy — raising
-    ``ValueError`` with the same message the call-time wrapper produces.
-
-    ``default_params`` overrides the base defaults; pass the platform-merged
-    set from ``build_registry`` so cross-parameter constraints (e.g.
-    ``fast_period < slow_period``) resolve any omitted operand to the value the
-    live strategy would actually see. Added for #1338: the live tuner validates
-    every operator-supplied override value up front, so a constraint-violating
-    grid fails loudly at planning time rather than deep inside a walk-forward
-    fold. Reuses the same parser/ops/checker as the wrapper — no duplicate
-    constraint semantics."""
     entry = STRATEGIES.get(name)
     if entry is None:
         raise ValueError(
@@ -267,17 +191,6 @@ def validate_params(name: str, params: dict,
 
 
 def validate_param_value(name: str, param: str, value) -> None:
-    """Validate a SINGLE override ``value`` for ``param`` against only the
-    constraints that reference ``param`` against a numeric literal (e.g.
-    ``period > 0``), raising ``ValueError`` on violation (#1338).
-
-    Cross-parameter constraints (``fast_period < slow_period``) are deliberately
-    NOT enforced here — they depend on the full parameter combination, which the
-    live tuner sweeps and the strategy wrapper (``_validated``) rejects per-combo
-    at fold time. This is the ``constraints for that param`` check the tuner runs
-    on every operator-supplied override value, so an out-of-range value is
-    refused loudly at planning time rather than silently skipped mid-sweep.
-    Reuses the same parser/checker as the wrapper — no duplicate semantics."""
     entry = STRATEGIES.get(name)
     if entry is None:
         raise ValueError(
@@ -300,16 +213,6 @@ def register(
     backtest_only: bool = False,
     constraints: Optional[List[str]] = None,
 ):
-    """Register a strategy once.
-
-    ``variants`` maps platform -> {"description": ..., "default_params": {...}}
-    for per-platform overrides. Variant ``default_params`` is merged on top of
-    the base ``default_params`` (variant wins on key collision).
-
-    ``backtest_only`` marks offline research strategies: kept resolvable for
-    ``run_backtest.py`` / the M1 harness, but every live check script refuses
-    to evaluate them (#1138). Pair it with ``DISCOVERY_HIDDEN_STRATEGIES``.
-    """
     if name in STRATEGIES:
         raise ValueError(f"Strategy '{name}' is already registered")
     platforms = tuple(platforms)
@@ -329,12 +232,6 @@ def register(
         )
 
     constraint_list = tuple(constraints or ())
-    # Parse eagerly so a typo in a constraint fails at import time, not on the
-    # first strategy call. Also validate that every referenced parameter name
-    # (lhs, and rhs when it's a param name rather than a numeric literal)
-    # actually exists in default_params (base + variant overrides) — otherwise
-    # the runtime wrapper's `if lhs not in effective: continue` / `.get(rhs)`
-    # guards silently skip the constraint forever.
     known_params = set(default_params)
     for _variant in variants.values():
         known_params |= set(_variant.get("default_params", {}))
@@ -357,9 +254,6 @@ def register(
             "platforms": platforms,
             "variants": variants,
             "backtest_only": bool(backtest_only),
-            # #1275: evidence-status flag; "deprecated_m5" marks a documented
-            # negative-gross-edge verdict (roster is the module-level set so
-            # the quarantine has a single canonical source).
             "edge_status": (
                 "deprecated_m5" if name in M5_DEPRECATED_EDGE_STRATEGIES else None
             ),
@@ -370,12 +264,6 @@ def register(
 
 
 def build_registry(platform: str, *, include_hidden: bool = False) -> Dict[str, Dict[str, Any]]:
-    """Return a fresh ``{name: {fn, description, default_params}}`` dict
-    filtered to ``platform`` and in the order declared in ``PLATFORM_ORDER``.
-
-    Variant overrides are applied so callers see the platform-specific
-    description and merged defaults.
-    """
     if platform not in VALID_PLATFORMS:
         raise ValueError(
             f"Unknown platform {platform!r}; expected one of {VALID_PLATFORMS}"
@@ -408,20 +296,11 @@ def build_registry(platform: str, *, include_hidden: bool = False) -> Dict[str, 
                 **entry["default_params"],
                 **variant.get("default_params", {}),
             },
-            # #1338: expose the declared constraints on the platform view so the
-            # live tuner can validate neighborhood/override values against them
-            # (via validate_params) without reaching into the private STRATEGIES
-            # table. Additive — existing consumers ignore the extra key.
             "constraints": entry["constraints"],
             "backtest_only": entry.get("backtest_only", False),
             "edge_status": entry.get("edge_status"),
         }
     return out
-
-
-# ─────────────────────────────────────────────
-# Strategy implementations
-# ─────────────────────────────────────────────
 
 
 @register(
@@ -627,7 +506,6 @@ def triple_ema_bidir_strategy(df: pd.DataFrame, short_period: int = 8, mid_perio
     bullish = (result["ema_short"] > result["ema_mid"]) & (result["ema_mid"] > result["ema_long"])
     bearish = (result["ema_short"] < result["ema_mid"]) & (result["ema_mid"] < result["ema_long"])
     result["position"] = np.where(bullish, 1, np.where(bearish, -1, 0))
-    # A direct bullish→bearish flip yields diff == -2; clamp so downstream sees {-1, 0, 1}.
     result["signal"] = result["position"].diff().clip(-1, 1)
     return result
 
@@ -654,8 +532,6 @@ def tema_cross_strategy(df: pd.DataFrame, short_period: int = 5, mid_period: int
     bearish_cross = (result["ema_short"] < result["ema_mid"]) & (
         result["ema_short"].shift(1) >= result["ema_mid"].shift(1)
     )
-    # Position persists between cross events: enter long on bullish cross while uptrend,
-    # exit on the next bearish cross. Forward-fill carries the state across silent bars.
     raw = pd.Series(np.nan, index=result.index)
     raw[uptrend & bullish_cross] = 1
     raw[bearish_cross] = 0
@@ -688,15 +564,12 @@ def tema_cross_bd_strategy(df: pd.DataFrame, short_period: int = 5, mid_period: 
     bearish_cross = (result["ema_short"] < result["ema_mid"]) & (
         result["ema_short"].shift(1) >= result["ema_mid"].shift(1)
     )
-    # Position persists between cross events; opposite-direction cross with confirming
-    # trend flips the position, otherwise it flattens on the unconfirmed cross.
     raw = pd.Series(np.nan, index=result.index)
     raw[uptrend & bullish_cross] = 1
     raw[downtrend & bearish_cross] = -1
     raw[(~uptrend) & bullish_cross] = 0
     raw[(~downtrend) & bearish_cross] = 0
     result["position"] = raw.ffill().fillna(0).astype(int)
-    # A direct long→short flip yields diff == -2; clamp so downstream sees {-1, 0, 1}.
     result["signal"] = result["position"].diff().fillna(0).clip(-1, 1).astype(int)
     return result
 
@@ -726,13 +599,9 @@ def rsi_macd_combo_strategy(df: pd.DataFrame,
     result["macd_line"] = ema_fast - ema_slow
     result["macd_signal_line"] = ema(result["macd_line"], macd_signal)
     result["signal"] = 0
-    # Buy: MACD bullish cross AND RSI below rsi_long_max (default 50 = not already overbought).
-    # Lower rsi_long_max to require a more oversold RSI before longing.
     macd_bull = (result["macd_line"] > result["macd_signal_line"]) & (result["macd_line"].shift(1) <= result["macd_signal_line"].shift(1))
     rsi_ok = result["rsi"] < rsi_long_max
     result.loc[macd_bull & rsi_ok, "signal"] = 1
-    # Sell: MACD bearish cross AND RSI above rsi_short_min (default 50 = not already oversold).
-    # Lower rsi_short_min to allow shorts deeper into a downtrend.
     macd_bear = (result["macd_line"] < result["macd_signal_line"]) & (result["macd_line"].shift(1) >= result["macd_signal_line"].shift(1))
     rsi_high = result["rsi"] > rsi_short_min
     result.loc[macd_bear & rsi_high, "signal"] = -1
@@ -790,9 +659,6 @@ def supertrend_strategy(df: pd.DataFrame, atr_period: int = 10, multiplier: floa
     final_lower = basic_lower.copy()
     direction = pd.Series(0, index=result.index, dtype=int)
 
-    # Seed the recursion from the first non-NaN ATR row; the rolling ATR is NaN
-    # for the first atr_period-1 bars and NaN comparisons are always False, so
-    # starting at i=1 would carry NaN bands forward forever and never emit a signal.
     atr_valid = atr.notna().to_numpy()
     if not atr_valid.any():
         result["supertrend"] = np.nan
@@ -877,10 +743,6 @@ def ichimoku_cloud_strategy(df: pd.DataFrame, tenkan_period: int = 9, kijun_peri
     ],
 )
 def pairs_spread_strategy(df: pd.DataFrame, lookback: int = 30, entry_z: float = 2.0, exit_z: float = 0.5) -> pd.DataFrame:
-    """
-    Stat arb / pairs trading on spread. Requires 'close_b' column for the second asset.
-    If 'close_b' is not present, uses close price ratio to its own rolling mean (self-mean-reversion).
-    """
     result = df.copy()
     if "close_b" in result.columns:
         result["spread"] = result["close"] / result["close_b"]
@@ -988,9 +850,6 @@ def atr_breakout_strategy(df: pd.DataFrame, atr_period: int = 14, multiplier: fl
     "amd_ifvg",
     "AMD+IFVG \u2014 ICT Accumulation-Manipulation-Distribution with Implied Fair Value Gap (15m, session-aware)",
     {
-        # Canonical ICT killzones in civil (DST-aware) time, anchored to
-        # session_tz: Asian range 20:00-00:00 ET (accumulation), London open
-        # kill zone 02:00-05:00 ET (manipulation). See amd_ifvg.py.
         "asian_start_hour": 20, "asian_end_hour": 0,
         "london_start_hour": 2, "london_end_hour": 5,
         "min_ifvg_pct": 0.05, "sweep_threshold_pct": 0.01,
@@ -1057,7 +916,6 @@ def order_blocks_strategy(df: pd.DataFrame,
 
     signal = np.zeros(n, dtype=int)
 
-    # Track active order blocks as tuples: (type, ob_high, ob_low, birth_idx, touched)
     active_obs = []
 
     for i in range(1, n):
@@ -1148,8 +1006,6 @@ def vwap_reversion_strategy(df: pd.DataFrame, entry_std: float = 1.5, exit_std: 
     {
         "pivot_lookback": 5, "tolerance": 0.03, "vol_multiplier": 1.5,
         "vol_period": 20,
-        # #982 HTF trend gate \u2014 default-off (0 disables; >1 gates pattern
-        # signals against the resampled-in-frame HTF EMA trend).
         "htf_gate_factor": 0, "htf_gate_mode": "veto",
         "htf_gate_ema_fast": 20, "htf_gate_ema_slow": 40,
     },
@@ -1184,7 +1040,7 @@ def parabolic_sar_strategy(df: pd.DataFrame, iaf: float = 0.02, af_step: float =
     close = result["close"].values
     n = len(close)
     sar = np.zeros(n)
-    trend = np.zeros(n, dtype=int)  # 1 = uptrend, -1 = downtrend
+    trend = np.zeros(n, dtype=int)
     af = np.zeros(n)
     ep = np.zeros(n)
 
@@ -1193,7 +1049,7 @@ def parabolic_sar_strategy(df: pd.DataFrame, iaf: float = 0.02, af_step: float =
         result["signal"] = 0
         return result
 
-    trend[0] = 1  # neutral default; avoids look-ahead bias from peeking at close[1] (#104)
+    trend[0] = 1
     if trend[0] == 1:
         sar[0] = low[0]
         ep[0] = high[0]
@@ -1285,17 +1141,10 @@ def adx_trend_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return adx_trend_core(df, **params)
 
 
-# Trailing window for the delta_neutral_funding average, in days. Named "7d" in
-# the strategy description and the live scalar (avg_funding_rate_7d); kept as a
-# module constant rather than a registered param so the registry's --list-json
-# output (and Go's discoverStrategies) stays byte-identical (#988).
 _DELTA_FUNDING_WINDOW_DAYS = 7.0
 
 
 def _funding_window_bars(index: pd.Index) -> int:
-    """Bars spanning the funding window, inferred from the index spacing so the
-    average is the same ~7 days regardless of timeframe (168 1h bars, 42 4h
-    bars). Falls back to hourly when spacing can't be inferred."""
     bar_hours = 1.0
     if isinstance(index, pd.DatetimeIndex) and len(index) >= 2:
         deltas = index.to_series().diff().dropna()
@@ -1319,21 +1168,6 @@ def delta_neutral_funding_strategy(df: pd.DataFrame,
                                    drift_threshold: float = 2.0,
                                    current_funding_rate: float = 0.0,
                                    avg_funding_rate_7d: float = 0.0) -> pd.DataFrame:
-    """SHORT the perp to collect funding when the trailing 7d-average funding
-    rate is rich; exit when it decays. Positive funding = longs pay shorts (#102).
-
-    Two input paths:
-
-    * **Backtest** — when a per-bar ``funding_rate`` column is attached (#988,
-      ``FUNDING_COLUMN_STRATEGIES``), the trailing average is computed from it
-      and a *per-bar* signal series is emitted, so the engine can replay
-      entries/exits across the whole window. The 7d window is converted to a
-      bar count from the index spacing (timeframe-correct) and requires a full
-      window before any signal (warmup → 0), mirroring the live 7d average.
-    * **Live / paper** — when no column is present, the scalar
-      ``avg_funding_rate_7d`` injected by ``check_hyperliquid.py`` drives a
-      single decision on the latest bar (unchanged behavior).
-    """
     result = df.copy()
     result["delta_drift_pct"] = 0.0
     result["rebalance_needed"] = 0.0
@@ -1346,11 +1180,11 @@ def delta_neutral_funding_strategy(df: pd.DataFrame,
         avg = funding.rolling(window_bars, min_periods=window_bars).mean()
         result["funding_rate"] = funding
         result["avg_funding_7d"] = avg
-        result["funding_apy"] = avg * 24 * 365 * 100  # HL funding is hourly
+        result["funding_apy"] = avg * 24 * 365 * 100
         sig = pd.Series(0, index=result.index, dtype=int)
-        sig[avg > entry_threshold] = -1   # enter / hold short to collect
-        sig[avg < exit_threshold] = 1     # exit short
-        sig[avg.isna()] = 0               # warmup / missing funding → no signal
+        sig[avg > entry_threshold] = -1
+        sig[avg < exit_threshold] = 1
+        sig[avg.isna()] = 0
         result["signal"] = sig.values
         return result
 
@@ -1362,9 +1196,9 @@ def delta_neutral_funding_strategy(df: pd.DataFrame,
     if avg == 0.0:
         return result
     if avg > entry_threshold:
-        result.iloc[-1, result.columns.get_loc("signal")] = -1  # enter short
+        result.iloc[-1, result.columns.get_loc("signal")] = -1
     elif avg < exit_threshold:
-        result.iloc[-1, result.columns.get_loc("signal")] = 1   # exit short
+        result.iloc[-1, result.columns.get_loc("signal")] = 1
     return result
 
 
@@ -1579,8 +1413,6 @@ def momentum_pro_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
         "adx_period": 14, "adx_max": 25.0,
         "rsi_period": 14, "rsi_oversold": 30.0, "rsi_overbought": 70.0,
         "confirm_window": 3,
-        # #981 additional entry triggers — default-off (1 enables; both stay
-        # behind the ADX no-trend gate + RSI-extreme evidence).
         "touch_entry": 0, "turn_entry": 0,
     },
     constraints=[
@@ -1747,10 +1579,6 @@ def regime_adaptive_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
         "slow_veto_threshold": 0.05,
         "allow_short": False,
     },
-    # No bidirectional futures variant (unlike regime_adaptive/vol_momentum):
-    # allow_short=True benchmarked at OOS mean Sharpe -1.68 vs -0.32 long-only
-    # (short fades of range tops get run over by squeezes). Long/flat on
-    # perps; allow_short stays sweepable.
     constraints=[
         "htf_factor > 0",
         "period > 0",
@@ -1773,12 +1601,6 @@ def hold_strategy(df: pd.DataFrame) -> pd.DataFrame:
     result["signal"] = 0
     return result
 
-
-# ─────────────────────────────────────────────
-# Per-platform display order.
-# These lists preserve canonical registration order. Deprecated strategies may
-# remain here when hidden from discovery, so explicit configs keep resolving.
-# ─────────────────────────────────────────────
 
 PLATFORM_ORDER: Dict[str, List[str]] = {
     "spot": [

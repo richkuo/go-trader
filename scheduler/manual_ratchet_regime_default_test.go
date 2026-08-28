@@ -7,15 +7,6 @@ import (
 	"testing"
 )
 
-// #1115: type=manual HL strategies default their close evaluator to
-// trailing_tp_ratchet_regime when regime detection is enabled and a default
-// per-regime trail block resolves for the active classifier vocabulary, falling
-// back to tiered_tp_atr_live otherwise. The synthesized trailing_stop_atr_regime
-// block becomes the SL owner (no scalar stop_loss_atr_mult conflict), and the
-// position opens with an armed initial SL (no naked window). These tests cover
-// both modes, both classifier vocabularies, the override-wins cases, and the
-// no-naked-SL invariant (a resolvable opening trail for every active label).
-
 func writeRatchetRegimeTestConfig(t *testing.T, dir, body string) string {
 	t.Helper()
 	cfgPath := filepath.Join(dir, "config.json")
@@ -34,8 +25,6 @@ func manualStrategyByID(cfg *Config, id string) (StrategyConfig, bool) {
 	return StrategyConfig{}, false
 }
 
-// Regime DISABLED: unchanged behavior — tiered_tp_atr_live + scalar manual SL,
-// and no synthesized regime trail block.
 func TestManualDefault_RegimeDisabled_KeepsTieredTPATRLive(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{
@@ -69,9 +58,6 @@ func TestManualDefault_RegimeDisabled_KeepsTieredTPATRLive(t *testing.T) {
 	}
 }
 
-// Regime ENABLED (ADX): defaults to trailing_tp_ratchet_regime with a synthesized
-// 3-label trail block, no scalar SL, and passes the full validation pipeline. The
-// no-naked invariant: every active label resolves a positive opening trail.
 func TestManualDefault_RegimeADX_SelectsRatchetRegime(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "state.db")
@@ -107,7 +93,6 @@ func TestManualDefault_RegimeADX_SelectsRatchetRegime(t *testing.T) {
 	if block == nil || len(block.TrendRegime) != 3 {
 		t.Fatalf("trailing_stop_atr_regime must resolve to 3 ADX labels, got %#v", block)
 	}
-	// No-naked invariant: an opening trail resolves for every active ADX label.
 	for _, label := range []string{"trending_up", "trending_down", "ranging"} {
 		if v, ok := resolveRegimeATR(*block, label); !ok || v <= 0 {
 			t.Fatalf("opening trail for %q = (%g, %v), want positive", label, v, ok)
@@ -115,9 +100,6 @@ func TestManualDefault_RegimeADX_SelectsRatchetRegime(t *testing.T) {
 	}
 }
 
-// Regime ENABLED (composite): defaults to trailing_tp_ratchet_regime with a
-// synthesized 7-label trail block; every composite label resolves a positive
-// opening trail and the config validates.
 func TestManualDefault_RegimeComposite_SelectsRatchetRegime(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "state.db")
@@ -170,8 +152,6 @@ func TestManualDefault_RegimeComposite_SelectsRatchetRegime(t *testing.T) {
 	}
 }
 
-// Override-wins: an explicit close_strategy on a regime-enabled config is
-// preserved (the ratchet default never overrides operator intent).
 func TestManualDefault_ExplicitCloseStrategyWins(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "state.db")
@@ -203,9 +183,6 @@ func TestManualDefault_ExplicitCloseStrategyWins(t *testing.T) {
 	}
 }
 
-// Override-wins (stop field): an explicit scalar stop on a regime-enabled config
-// (with no close_strategy) keeps tiered_tp_atr_live so the operator's stop is not
-// invalidated by the ratchet's no-scalar-stop rule.
 func TestManualDefault_ExplicitStopFieldKeepsTiered(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "state.db")
@@ -243,8 +220,6 @@ func TestManualDefault_ExplicitStopFieldKeepsTiered(t *testing.T) {
 	}
 }
 
-// Operator-tunable: user_defaults.manual.trailing_stop_atr_regime supplies the
-// per-regime opening trail in place of the use_defaults baseline.
 func TestManualDefault_ManualDefaultsTrailBlockOverride(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "state.db")
@@ -296,8 +271,6 @@ func TestManualDefault_ManualDefaultsTrailBlockOverride(t *testing.T) {
 	}
 }
 
-// The user_defaults.manual override block must not alias across strategies: each
-// adopting strategy resolves an independent copy (cloneRegimeATRBlock).
 func TestManualDefault_ManualDefaultsTrailBlockNotAliased(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "state.db")
@@ -336,11 +309,6 @@ func TestManualDefault_ManualDefaultsTrailBlockNotAliased(t *testing.T) {
 	}
 }
 
-// The no-naked invariant lives in the pure resolve-or-fallback decision: a
-// manual-open under trailing_tp_ratchet_regime must ALWAYS arm a strictly-positive
-// SL distance — the per-regime trail when the label resolves one, else the
-// protective configured fallback. (The subprocess regime read is split out into the
-// impure resolveManualRatchetRegimeLabel; this tests the safety-critical branch.)
 func TestManualRatchetOpeningTrailOrFallback(t *testing.T) {
 	block := &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{
 		"trending_up": {ATR: 2.5},
@@ -368,7 +336,6 @@ func TestManualRatchetOpeningTrailOrFallback(t *testing.T) {
 				t.Fatalf("manualRatchetOpeningTrailOrFallback(%v, %q, %g) = (%g, %v), want (%g, %v)",
 					tc.block, tc.label, tc.fallback, mult, fellBack, tc.wantMult, tc.wantFellBk)
 			}
-			// Invariant: the armed distance is NEVER <= 0 (never naked).
 			if mult <= 0 {
 				t.Fatalf("armed mult = %g, must be strictly positive (no-naked invariant)", mult)
 			}
@@ -376,10 +343,6 @@ func TestManualRatchetOpeningTrailOrFallback(t *testing.T) {
 	}
 }
 
-// A position opened under a tiered-TP close (resting TP OIDs) whose strategy now
-// resolves to the trailing ratchet is the #1115 close-evaluator drift that the
-// daemon must alert on. A ratchet-opened position (no TP OIDs) and a still-tiered
-// strategy must NOT trip it.
 func TestManualCloseEvaluatorDriftedFromTPs(t *testing.T) {
 	ratchet := StrategyConfig{CloseStrategy: &StrategyRef{Name: trailingTPRatchetRegimeCloseName}}
 	tiered := StrategyConfig{CloseStrategy: &StrategyRef{Name: "tiered_tp_atr_live"}}

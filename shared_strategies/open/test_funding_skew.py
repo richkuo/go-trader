@@ -1,4 +1,3 @@
-"""Tests for funding_skew.py — funding-crowding entries with price confirmation (#960)."""
 
 import numpy as np
 import pandas as pd
@@ -19,8 +18,6 @@ def make_ohlcv(closes, noise=0.5, tz="UTC"):
 
 
 def make_short_squeeze():
-    """Quiet funding, then a deep negative spike (crowded shorts) at bars
-    250–270 while price turns up — the long-entry setup."""
     n = 400
     rng = np.random.RandomState(3)
     closes = 100 + np.cumsum(rng.randn(n)) * 0.05
@@ -58,7 +55,6 @@ def test_empty_df_is_safe():
 
 
 def test_no_funding_data_stays_flat():
-    """Missing funding (no column, no records) is fail-safe: zero entries."""
     df = make_short_squeeze().drop(columns=["funding_rate"])
     out = funding_skew_core(df, funding_window=96, z_entry=1.5, confirm_ema=20)
     assert (out["position"] == 0).all()
@@ -88,8 +84,6 @@ def test_allow_short_false_blocks_shorts():
 
 
 def test_price_confirmation_required():
-    """Same crowded-short funding spike but price keeps falling (below EMA)
-    → no long entry; funding alone is never enough."""
     df = make_short_squeeze()
     closes = df["close"].values.copy()
     closes[245:300] = closes[245] - np.linspace(0, 6, 55)
@@ -100,17 +94,13 @@ def test_price_confirmation_required():
 
 
 def test_min_abs_rate_floor_blocks_noise_extremes():
-    """A z-extreme inside the near-zero noise band (|rate| below the floor)
-    must not register as a crowd."""
     df = make_short_squeeze()
-    df["funding_rate"] = df["funding_rate"] / 100.0  # spike now ~-8e-7
+    df["funding_rate"] = df["funding_rate"] / 100.0
     out = funding_skew_core(df, funding_window=96, z_entry=1.5, confirm_ema=20)
     assert (out["position"] == 0).all()
 
 
 def test_funding_records_match_column():
-    """The live-path records shape must produce identical signals to the
-    backtest-path column shape."""
     df = make_short_squeeze()
     recs = [{"rate": float(df["funding_rate"].iloc[i]),
              "time": int(df.index[i].timestamp() * 1000)} for i in range(len(df))]
@@ -121,8 +111,6 @@ def test_funding_records_match_column():
 
 
 def test_records_alignment_is_backward_only():
-    """A funding record stamped after a bar's timestamp must not be visible
-    to that bar."""
     df = make_ohlcv([100.0] * 5).drop(columns=[], errors="ignore")
     recs = [{"rate": 5e-5, "time": int(df.index[2].timestamp() * 1000) + 1}]
     out = funding_skew_core(df, funding_records=recs)
@@ -131,8 +119,6 @@ def test_records_alignment_is_backward_only():
 
 
 def test_tz_naive_index_matches_utc():
-    """Backtest OHLCV (tz-naive binance data) must align identically to the
-    tz-aware live path — naive indexes are interpreted as UTC."""
     df = make_short_squeeze()
     naive = df.copy()
     naive.index = naive.index.tz_localize(None)

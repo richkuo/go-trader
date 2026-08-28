@@ -1,26 +1,4 @@
 #!/usr/bin/env python3
-"""LLM multi-agent entry analysis (#1137, TradingAgents-inspired).
-
-Invoked by the Go scheduler AFTER a fresh position-open is confirmed, on a
-dedicated async lane (never the shared trading-subprocess semaphore). Purely
-advisory: the output is commentary posted to the strategy's Discord/Telegram
-channel plus a one-word verdict persisted for diagnostics. It never gates,
-sizes, or closes anything — an error here exits 1 and Go posts nothing.
-
-Pipeline: analysts (technical from the open cycle's indicators + OHLCV,
-derivatives from funding rates) -> bounded bull/bear debate -> judge verdict.
-Every topic is ELI18 and word-capped; Go re-enforces the cap server-side.
-
-Contract (mirrors the check-script conventions):
-    stdin:  one JSON object (see Go's llmReviewInput)
-    stdout: one JSON object {verdict, rationale, per_analyst, model} on
-            success, {"error": ...} on failure; exit 1 on error
-    --probe-only: print {"status": "ok"} and exit 0 before any stdin/env/
-            network access (startup deploy-mismatch probe)
-
-The Anthropic API is called via urllib (no SDK dependency); the key comes
-from ANTHROPIC_API_KEY.
-"""
 
 import json
 import os
@@ -28,8 +6,6 @@ import sys
 import urllib.error
 import urllib.request
 
-# shared_tools for parity with other scripts' import layout (not strictly
-# required today; keeps adapter/sys.path conventions available).
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "shared_tools"))
 
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
@@ -52,8 +28,6 @@ STYLE_RULES = (
 
 
 def truncate_to_word_cap(text, cap):
-    """Hard-cap text at `cap` words (whitespace-normalizing); append an
-    ellipsis when truncating. Mirrors Go's truncateToWordCap."""
     words = str(text or "").split()
     if len(words) <= cap:
         return " ".join(words)
@@ -61,8 +35,6 @@ def truncate_to_word_cap(text, cap):
 
 
 def summarize_ohlcv(candles):
-    """Reduce raw [ts, o, h, l, c, v] rows to a compact stats dict the
-    technical analyst can reason over. Returns None when unusable."""
     closes = []
     highs = []
     lows = []
@@ -96,10 +68,6 @@ def summarize_ohlcv(candles):
 
 
 def load_platform_adapter(platform):
-    """Load platforms/<platform>/adapter.py and instantiate its
-    *ExchangeAdapter class (public methods only, mirroring check scripts).
-    Returns None when the platform has no adapter or loading fails — analysts
-    degrade to 'data unavailable' instead of erroring the pipeline."""
     if not platform:
         return None
     base = os.path.join(os.path.dirname(__file__), "..", "platforms", platform)
@@ -109,9 +77,6 @@ def load_platform_adapter(platform):
     try:
         import importlib.util
 
-        # Platform dir first on sys.path: HL's adapter does `from adapter
-        # import ...`-adjacent local imports and must not collide with the
-        # hyperliquid SDK package.
         sys.path.insert(0, base)
         spec = importlib.util.spec_from_file_location(f"{platform}_adapter_llm_review", path)
         mod = importlib.util.module_from_spec(spec)
@@ -125,10 +90,6 @@ def load_platform_adapter(platform):
 
 
 def gather_market_context(ctx):
-    """Best-effort market data for the analysts. Every fetch is wrapped: a
-    failure yields None for that block, never a pipeline error. On Hyperliquid
-    the OHLCV call rides the shared /tmp disk cache (60s TTL) — dispatched
-    right after the open, this is a cache read, not a refetch."""
     adapter = load_platform_adapter(ctx.get("platform"))
     symbol = ctx.get("symbol") or ""
     coin = symbol.split("/")[0] if "/" in symbol else symbol
@@ -157,9 +118,6 @@ def gather_market_context(ctx):
 
 
 def build_llm_call(model, api_url=ANTHROPIC_API_URL, timeout=PER_CALL_TIMEOUT_S):
-    """Return llm_call(system, user) -> str against the Anthropic Messages
-    API. Raises on missing key or HTTP/parse failure (pipeline fails closed:
-    Go logs and posts nothing)."""
     api_key = os.environ.get(API_KEY_ENV, "")
     if not api_key:
         raise RuntimeError(f"{API_KEY_ENV} is not set")
@@ -201,11 +159,7 @@ def entry_summary(ctx):
 
 
 def parse_judge_output(text, word_cap):
-    """Parse the judge's reply into (verdict, rationale). Prefers strict JSON;
-    falls back to scanning for a verdict keyword. Raises when no verdict can
-    be extracted (fail closed — never invent a read)."""
     raw = str(text or "").strip()
-    # Strip a markdown fence if the model wrapped its JSON.
     if raw.startswith("```"):
         raw = raw.strip("`")
         if raw.startswith("json"):
@@ -228,9 +182,6 @@ def parse_judge_output(text, word_cap):
 
 def run_pipeline(ctx, market, llm_call, max_debate_rounds=DEFAULT_MAX_DEBATE_ROUNDS,
                  word_cap=DEFAULT_WORD_CAP):
-    """Analysts -> bounded bull/bear debate -> judge. llm_call is injected so
-    tests run without network. Returns the output dict (verdict, rationale,
-    per_analyst)."""
     style = STYLE_RULES.format(cap=word_cap)
     entry = entry_summary(ctx)
 
@@ -307,7 +258,7 @@ def main():
         out = run_pipeline(ctx, market, llm_call, max_debate_rounds=rounds, word_cap=word_cap)
         print(json.dumps(out))
         return 0
-    except Exception as e:  # noqa: BLE001 — subprocess contract: JSON even on error
+    except Exception as e:
         print(json.dumps({"error": f"{type(e).__name__}: {e}"}))
         return 1
 

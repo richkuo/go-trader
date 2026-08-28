@@ -1,11 +1,4 @@
 #!/usr/bin/env python3
-"""
-Options strategy backtester.
-Replays vol_mean_reversion (and other options strategies) against historical spot data.
-Uses Black-Scholes for premium estimation and simulates expiry settlement.
-
-Usage: python3 backtest_options.py [--strategy vol_mean_reversion] [--underlying BTC] [--since 2023-01-01] [--capital 1000]
-"""
 
 import os
 import sys
@@ -14,15 +7,10 @@ import argparse
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Tuple
 
-# Use the same BS pricing used by live adapters (shared_tools/pricing.py) so
-# backtest premium ≡ live adapter fallback premium on identical inputs.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
-from pricing import bs_price, bs_price_and_greeks  # type: ignore
+from pricing import bs_price, bs_price_and_greeks
 
 
-# Deribit strike-grid granularity per underlying. Matches the fallback in
-# platforms/deribit/adapter.py:get_real_strike — BTC rounds to the nearest
-# $1000; everything else (ETH, SOL, DOGE, ...) rounds to the nearest $50.
 ADAPTER_STRIKE_STEP = {
     "BTC": 1000.0,
 }
@@ -30,33 +18,15 @@ DEFAULT_STRIKE_STEP = 50.0
 
 
 def adapter_strike(underlying: str, target_strike: float) -> float:
-    """Round ``target_strike`` to the nearest listed strike for ``underlying``.
-
-    Unknown underlyings use the $50 default — same behavior as the live
-    Deribit adapter, which only special-cases BTC.
-    """
     step = ADAPTER_STRIKE_STEP.get(underlying.upper(), DEFAULT_STRIKE_STEP)
     return round(target_strike / step) * step
 
 
-# USDT-quoted venues only — Coinbase/Kraken primarily list USD (BTC-USD,
-# XBT/USD) so ``{UNDERLYING}/USDT`` would pass the guard and then fail at
-# fetch_ohlcv with an unknown-symbol error. Add a quote-map here if we ever
-# want to support USD-quoted venues.
 SUPPORTED_UNDERLYING_EXCHANGES = ("binanceus", "binance", "okx")
 
 
 def fetch_historical_data(underlying: str, since: str, timeframe: str = "1d",
                           exchange_name: str = "binanceus") -> list:
-    """Fetch historical OHLCV data from a CCXT exchange (default BinanceUS).
-
-    Options live on Deribit / OKX / IBKR / Robinhood, but we use a spot
-    exchange here only to fetch the *underlying* price series for premium
-    pricing. ``exchange_name`` lets callers pick a non-BinanceUS source
-    when BinanceUS is geo-blocked or missing the symbol; unknown or
-    non-USDT-quoted exchanges fall back to BinanceUS with a warning
-    (issue #304 L2).
-    """
     import ccxt
     if exchange_name not in SUPPORTED_UNDERLYING_EXCHANGES:
         print(f"[warn] unknown --exchange '{exchange_name}', falling back to binanceus. "
@@ -85,22 +55,12 @@ def fetch_historical_data(underlying: str, since: str, timeframe: str = "1d",
 
 def black_scholes_price(spot: float, strike: float, dte_days: float, vol: float,
                          risk_free: float = 0.05, option_type: str = "call") -> float:
-    """Back-compat wrapper; new code should call ``bs_price_and_greeks``."""
     return bs_price(spot, strike, dte_days, vol, risk_free, option_type)
 
 
 def calc_historical_vol(closes: list, window: int = 14) -> float:
-    """Annualized historical volatility from daily closes.
-
-    Uses log returns (correct for multiplicative price processes) and
-    population variance around the sample mean. The previous implementation
-    used simple returns with ``sum(r**2) / n`` — the latter is the mean of
-    squared returns, which equals variance only when the mean return is
-    exactly zero. For crypto over short windows that assumption is false,
-    inflating vol and overpricing every Black-Scholes premium.
-    """
     if len(closes) < window + 1:
-        return 0.5  # default 50%
+        return 0.5
 
     log_returns = [
         math.log(closes[i] / closes[i - 1]) for i in range(-window, 0)
@@ -112,18 +72,6 @@ def calc_historical_vol(closes: list, window: int = 14) -> float:
 
 def calc_iv_rank(closes: list, recent_window: int = 14,
                   lookback_days: int = 60) -> float:
-    """IV rank — percentile of current realised vol within a trailing window.
-
-    Defined as ``(current - min) / (max - min) * 100`` over the past
-    ``lookback_days`` days of rolling ``recent_window``-day realised vol,
-    matching the shape of ``adapter.get_iv_rank()`` in the live
-    ``VolMeanReversionStrategy``.
-
-    The previous implementation returned ``(recent / hist) * 50`` — an IV
-    *ratio* halved and clipped, which reached 100 whenever recent vol was
-    merely 2× historical vol rather than at a true lookback high. That
-    triggered strangles at entirely different moments than live.
-    """
     if len(closes) < recent_window + lookback_days + 1:
         return 50.0
 
@@ -148,7 +96,6 @@ def calc_iv_rank(closes: list, recent_window: int = 14,
 
     lo, hi = min(history), max(history)
     if hi - lo <= 1e-12:
-        # Degenerate range — rank is ill-defined, return neutral.
         return 50.0
 
     rank = (current - lo) / (hi - lo) * 100.0
@@ -159,27 +106,24 @@ class OptionPosition:
     def __init__(self, option_type: str, action: str, strike: float, expiry_idx: int,
                  premium: float, premium_usd: float, opened_idx: int,
                  greeks: Optional[dict] = None):
-        self.option_type = option_type  # "call" or "put"
-        self.action = action            # "buy" or "sell"
+        self.option_type = option_type
+        self.action = action
         self.strike = strike
-        self.expiry_idx = expiry_idx    # index in candle array when this expires
-        self.premium = premium          # as fraction of spot
+        self.expiry_idx = expiry_idx
+        self.premium = premium
         self.premium_usd = premium_usd
         self.opened_idx = opened_idx
         self.greeks = greeks or {"delta": 0.0, "gamma": 0.0, "theta": 0.0, "vega": 0.0}
     
     def settlement_pnl(self, spot_at_expiry: float) -> float:
-        """Calculate P&L at expiry."""
         if self.option_type == "call":
             intrinsic = max(spot_at_expiry - self.strike, 0)
         else:
             intrinsic = max(self.strike - spot_at_expiry, 0)
         
         if self.action == "sell":
-            # Sold option: collected premium, owe intrinsic
             return self.premium_usd - intrinsic
         else:
-            # Bought option: paid premium, receive intrinsic
             return intrinsic - self.premium_usd
 
 
@@ -188,16 +132,12 @@ class OptionsBacktester:
                  check_interval: int = 1):
         self.initial_capital = initial_capital
         if max_positions < 2:
-            # Strangles and straddles open two legs simultaneously; with only
-            # one slot the second leg is silently skipped, leaving a naked
-            # call/put. Reject upfront rather than producing wrong results
-            # (issue #304 M4).
             raise ValueError(
                 f"max_positions must be >= 2 for two-legged options "
                 f"strategies (strangle/straddle); got {max_positions}"
             )
         self.max_positions = max_positions
-        self.check_interval = check_interval  # days between checks
+        self.check_interval = check_interval
         self.cash = initial_capital
         self.positions: List[OptionPosition] = []
         self.trade_log: List[dict] = []
@@ -210,7 +150,6 @@ class OptionsBacktester:
         self.total_settlement_loss = 0
     
     def run_vol_mean_reversion(self, candles: list, underlying: str) -> dict:
-        """Backtest vol_mean_reversion strategy on historical data."""
         closes = [c[4] for c in candles]
         dates = [datetime.utcfromtimestamp(c[0] / 1000).strftime("%Y-%m-%d") for c in candles]
         
@@ -221,14 +160,13 @@ class OptionsBacktester:
         print(f"  Check interval: every {self.check_interval} day(s)")
         print()
         
-        lookback = 90  # need 90 days of history for vol calc
+        lookback = 90
         
         for i in range(lookback, len(candles), self.check_interval):
             spot = closes[i]
             date = dates[i]
             hist_closes = closes[max(0, i-90):i+1]
             
-            # Check for expired positions
             expired = [p for p in self.positions if p.expiry_idx <= i]
             for pos in expired:
                 spot_at_expiry = closes[min(pos.expiry_idx, len(closes)-1)]
@@ -260,14 +198,11 @@ class OptionsBacktester:
             
             self.positions = [p for p in self.positions if p.expiry_idx > i]
             
-            # Calculate IV rank
             iv_rank = calc_iv_rank(hist_closes)
             hist_vol = calc_historical_vol(hist_closes)
             
-            # Strategy logic
             if len(self.positions) < self.max_positions:
                 if iv_rank > 75:
-                    # High IV → sell strangle on the adapter's listed-strike grid.
                     call_strike = adapter_strike(underlying, spot * 1.10)
                     put_strike = adapter_strike(underlying, spot * 0.90)
                     dte = 30
@@ -286,7 +221,7 @@ class OptionsBacktester:
                             call_premium / spot, call_premium, i, greeks=call_greeks,
                         )
                         self.positions.append(pos_call)
-                        self.cash += call_premium  # collect premium upfront
+                        self.cash += call_premium
                         self.total_premium_collected += call_premium
                         self.trade_log.append({
                             "date": date,
@@ -325,7 +260,6 @@ class OptionsBacktester:
                         })
 
                 elif iv_rank < 25:
-                    # Low IV → buy straddle at the ATM listed strike.
                     strike = adapter_strike(underlying, spot)
                     dte = 30
                     expiry_idx = min(i + dte, len(candles) - 1)
@@ -338,7 +272,7 @@ class OptionsBacktester:
                     )
 
                     total_cost = call_premium + put_premium
-                    if total_cost <= self.cash * 0.5:  # don't spend more than 50% on one trade
+                    if total_cost <= self.cash * 0.5:
                         if len(self.positions) < self.max_positions:
                             pos_call = OptionPosition(
                                 "call", "buy", strike, expiry_idx,
@@ -383,7 +317,6 @@ class OptionsBacktester:
                                 "delta": put_greeks["delta"],
                             })
             
-            # Mark-to-market for equity curve
             mtm = self.cash
             for pos in self.positions:
                 days_left = max(pos.expiry_idx - i, 0)
@@ -392,13 +325,12 @@ class OptionsBacktester:
                     option_type=pos.option_type,
                 )
                 if pos.action == "sell":
-                    mtm -= current_price  # liability
+                    mtm -= current_price
                 else:
-                    mtm += current_price  # asset
+                    mtm += current_price
             
             self.equity_curve.append((date, round(mtm, 2)))
         
-        # Force-expire remaining positions at last price
         final_spot = closes[-1]
         final_date = dates[-1]
         for pos in self.positions:
@@ -424,7 +356,6 @@ class OptionsBacktester:
         return self._generate_report(underlying, dates[0], dates[-1], closes[0], closes[-1])
     
     def _elapsed_days(self) -> int:
-        """Calendar days between first and last equity-curve timestamps."""
         if len(self.equity_curve) < 2:
             return 0
         first = datetime.strptime(self.equity_curve[0][0], "%Y-%m-%d")
@@ -433,14 +364,11 @@ class OptionsBacktester:
 
     def _generate_report(self, underlying: str, start_date: str, end_date: str,
                           start_price: float, end_price: float) -> dict:
-        """Generate backtest results report."""
         final_value = self.cash
         total_return = (final_value - self.initial_capital) / self.initial_capital * 100
         
-        # Buy and hold comparison
         buy_hold_return = (end_price - start_price) / start_price * 100
         
-        # Drawdown
         peak = self.initial_capital
         max_dd = 0
         for _, equity in self.equity_curve:
@@ -450,14 +378,8 @@ class OptionsBacktester:
             if dd > max_dd:
                 max_dd = dd
         
-        # Win rate
         win_rate = (self.winning_trades / self.total_trades * 100) if self.total_trades > 0 else 0
         
-        # Annualized return — use elapsed calendar days between the first
-        # and last equity-curve dates, NOT len(equity_curve). With
-        # check_interval=7 the curve only samples weekly, so a 1-year run
-        # would report days=52 → years=0.14 → wildly inflated annualized
-        # return (issue #304 M5).
         days = self._elapsed_days()
         years = days / 365.0
         if years > 0 and final_value > 0:
@@ -465,9 +387,6 @@ class OptionsBacktester:
         else:
             ann_return = 0
 
-        # Sharpe ratio — annualized using the actual periods-per-year of the
-        # equity-curve sampling rate (1 / check_interval per day), not the
-        # hardcoded 365 that assumes daily samples (issue #304 M3).
         sample_periods_per_year = 365.0 / max(self.check_interval, 1)
         if len(self.equity_curve) > 1:
             daily_returns = []
@@ -512,7 +431,6 @@ class OptionsBacktester:
 
 
 def print_report(report: dict, trade_log: list, equity_curve: list, verbose: bool = False):
-    """Pretty-print backtest results."""
     print("\n" + "=" * 60)
     print(f"  OPTIONS BACKTEST: {report['strategy']} on {report['underlying']}")
     print("=" * 60)
@@ -545,7 +463,6 @@ def print_report(report: dict, trade_log: list, equity_curve: list, verbose: boo
                 print(f"  [{t['date']}] {tag} {t['action']} {t['type']} strike=${t['strike']:,.0f} "
                       f"spot=${t['spot_at_expiry']:,.0f} P&L=${t['pnl']:+,.2f}")
     
-    # Mini equity curve (sample 20 points)
     if equity_curve:
         print("\n--- Equity Curve (sampled) ---")
         step = max(1, len(equity_curve) // 20)
@@ -554,7 +471,6 @@ def print_report(report: dict, trade_log: list, equity_curve: list, verbose: boo
             bar_len = max(0, int((eq / report['initial_capital'] - 0.5) * 40))
             bar = "█" * min(bar_len, 50)
             print(f"  {date}  ${eq:>10,.2f}  {bar}")
-        # Always show last
         if len(equity_curve) > 1:
             date, eq = equity_curve[-1]
             bar_len = max(0, int((eq / report['initial_capital'] - 0.5) * 40))

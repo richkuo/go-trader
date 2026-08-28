@@ -1,7 +1,3 @@
-"""Unit tests for strip_llm_footer.py.
-
-Run: python3 .github/scripts/test_strip_llm_footer.py
-"""
 
 import sys
 import os

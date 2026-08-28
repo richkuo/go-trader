@@ -1,7 +1,3 @@
-"""#1085: the certification producer's pure gate (regime_1076_certify.certify).
-
-Tests the global-correction + sign-alignment + held-out-forward gate over
-synthetic premise-screen rows — no data access."""
 import json
 import os
 import sys
@@ -10,7 +6,7 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "research")))
 
-import regime_1076_certify as certify_mod  # noqa: E402
+import regime_1076_certify as certify_mod
 
 GEN_AT = datetime(2026, 6, 19, tzinfo=timezone.utc)
 
@@ -43,7 +39,6 @@ def test_surviving_aligned_heldout_row_is_certified():
 
 
 def test_historical_window_not_certified():
-    # Same strong row but in a historical window → not held-out-forward.
     art = certify_mod.certify([_row(window="2024")], generated_at=GEN_AT)
     assert art["certified"] == []
 
@@ -54,7 +49,6 @@ def test_wrong_signed_not_certified():
 
 
 def test_non_significant_not_certified():
-    # A large p-value should not survive global BH even alone.
     art = certify_mod.certify([_row(p=0.9)], generated_at=GEN_AT)
     assert art["certified"] == []
 
@@ -66,12 +60,9 @@ def test_composite_sublabel_maps_to_canonical():
     assert art["certified"][0]["states"] == {"trending_down": "short"}
 
 
-# ==========================================================================
-# #1443 — criteria provenance, family integrity, per-cell verdicts
-# ==========================================================================
-import pytest  # noqa: E402
+import pytest
 
-import regime_1076_directional_premise as premise_mod  # noqa: E402
+import regime_1076_directional_premise as premise_mod
 
 FULL_UNIVERSE = dict(
     symbols=premise_mod.DEFAULT_SYMBOLS,
@@ -82,10 +73,7 @@ FULL_UNIVERSE = dict(
 )
 
 
-# -------------------------------------------------------------- criteria
 def test_screened_family_size_counts_directional_rows_only():
-    # A ranging row is not part of the directional BH family and must not
-    # inflate the recorded family size.
     rows = [_row(), _row(symbol="ETH/USDT"),
             _row(state="ranging", policy_dir=0, sign_aligned=False)]
     art = certify_mod.certify(rows, generated_at=GEN_AT)
@@ -114,8 +102,6 @@ def test_provenance_keys_pass_through_and_nest_under_criteria():
     assert c["permutation_p_floor"] == pytest.approx(1 / 30001)
     assert c["universe"]["symbols"] == list(premise_mod.DEFAULT_SYMBOLS)
     assert c["universe"]["horizons"] == list(premise_mod.DEFAULT_HORIZONS)
-    # The Go loader parses with DisallowUnknownFields and only `criteria` is a
-    # free-form map, so NO new key may appear at the top level.
     assert set(art) == {"schema_version", "generated_at", "generator",
                         "source_evidence", "criteria", "default_ttl_days",
                         "certified"}
@@ -127,7 +113,6 @@ def test_permutation_p_floor_arithmetic():
     assert certify_mod.permutation_p_floor(30000) == pytest.approx(1 / 30001)
 
 
-# ------------------------------------------------------- family integrity
 def test_family_is_superset_true_for_the_default_universe():
     assert certify_mod.family_is_superset(**FULL_UNIVERSE)
 
@@ -143,7 +128,6 @@ def test_family_is_superset_true_when_a_symbol_is_added():
 
 
 def test_family_is_superset_ignores_the_exchange_suffix():
-    # Sourcing a default symbol elsewhere still covers that axis value.
     assert certify_mod.family_is_superset(
         symbols=("BTC/USDT@kraken", "ETH/USDT", "SOL/USDT"),
         timeframes=premise_mod.DEFAULT_TIMEFRAMES,
@@ -167,7 +151,6 @@ def test_family_is_superset_skips_horizons_when_not_supplied():
 
 
 def test_narrowed_run_refuses_to_write_the_repo_artifact():
-    # The gate fires BEFORE any data access, so this never touches the cache.
     with pytest.raises(SystemExit) as exc:
         certify_mod.main(["--symbols", "ETH/USDT", "--timeframes", "1h",
                           "--classifiers", "composite"])
@@ -175,9 +158,6 @@ def test_narrowed_run_refuses_to_write_the_repo_artifact():
 
 
 def test_narrowed_run_may_write_a_research_artifact_elsewhere(tmp_path, monkeypatch):
-    # Same narrowed universe, but writing OUTSIDE the repo artifact: allowed,
-    # with the narrowing warned about and recorded. premise.run is substituted so
-    # this stays a pure test.
     monkeypatch.setattr(premise_mod, "run", lambda *a, **k: [_row(symbol="ETH/USDT")])
     out = tmp_path / "research_artifact.json"
     report = tmp_path / "research_report.json"
@@ -188,7 +168,6 @@ def test_narrowed_run_may_write_a_research_artifact_elsewhere(tmp_path, monkeypa
     assert rc == 0
     art = json.loads(out.read_text())
     assert art["schema_version"] == 1
-    # Narrowed on purpose: the recorded universe makes that inspectable later.
     assert art["criteria"]["universe"]["symbols"] == ["ETH/USDT"]
     assert art["criteria"]["screened_family_size"] == 1
     assert json.loads(report.read_text())["cell_verdicts"][0]["verdict"] == (
@@ -196,11 +175,6 @@ def test_narrowed_run_may_write_a_research_artifact_elsewhere(tmp_path, monkeypa
 
 
 def test_repo_artifact_run_over_the_full_family_is_allowed(tmp_path, monkeypatch):
-    # The inverse of the refusal above: a superset universe writing the repo
-    # artifact path proceeds. Guards against a guard that refuses everything.
-    # The screen returns a directional row that FAILS the gate, so the run is a
-    # legitimate negative result rather than a degenerate one (see the
-    # zero-coverage test below) and must still write with exit 0.
     monkeypatch.setattr(premise_mod, "run", lambda *a, **k: [_row(p=0.9)])
     monkeypatch.setattr(certify_mod, "DEFAULT_ARTIFACT", str(tmp_path / "art.json"))
     rc = certify_mod.main([
@@ -211,7 +185,6 @@ def test_repo_artifact_run_over_the_full_family_is_allowed(tmp_path, monkeypatch
     assert json.loads((tmp_path / "art.json").read_text())["certified"] == []
 
 
-# ---------------------------------------------------------- cell verdicts
 def test_cell_verdict_certified_matches_the_artifact():
     rows = [_row()]
     v = certify_mod.cell_verdicts(rows)[("BTC", "1h", "composite")]
@@ -222,7 +195,6 @@ def test_cell_verdict_certified_matches_the_artifact():
 
 
 def test_cell_verdict_reports_the_bh_bar_it_missed():
-    # 200 weak rows: the best one is nowhere near the rank-1 critical value.
     rows = [_row(symbol="ETH/USDT", p=0.30 + i * 0.001) for i in range(200)]
     v = certify_mod.cell_verdicts(rows)[("ETH", "1h", "composite")]
     assert v["verdict"] == certify_mod.VERDICT_FAILS_GLOBAL_BH
@@ -233,8 +205,6 @@ def test_cell_verdict_reports_the_bh_bar_it_missed():
 
 
 def test_cell_verdict_wrong_signed_outranks_the_held_out_check():
-    # Strong and BH-surviving, but the separation points against the policy bet:
-    # the binding failure is the sign, not the window.
     rows = [_row(sign_aligned=False, window="2024")]
     v = certify_mod.cell_verdicts(rows)[("BTC", "1h", "composite")]
     assert v["verdict"] == certify_mod.VERDICT_WRONG_SIGNED
@@ -262,7 +232,6 @@ def test_cell_verdicts_cover_every_screened_cell_not_only_certified_ones():
     v = certify_mod.cell_verdicts(rows)
     assert set(v) == {("BTC", "1h", "composite"), ("ETH", "1h", "composite"),
                       ("HYPE", "1h", "composite")}
-    # The BH family is the whole run, so every cell reports the same denominator.
     assert {e["global_bh_family_size"] for e in v.values()} == {3}
 
 
@@ -274,9 +243,6 @@ def test_cell_verdict_best_row_records_the_data_source():
 
 
 def test_cell_verdicts_handle_repeated_and_equal_row_objects():
-    # Rows are matched to BH ranks by POSITION in the family. Equal-valued rows —
-    # or literally the same dict passed twice — must each occupy their own slot,
-    # otherwise a cell's reported bar belongs to a different hypothesis.
     shared = _row(symbol="ETH/USDT", p=0.4)
     rows = [shared, shared, _row(symbol="ETH/USDT", p=0.4), _row(p=0.001)]
     v = certify_mod.cell_verdicts(rows)
@@ -292,23 +258,19 @@ def test_bh_ranks_give_tied_p_values_the_same_bar():
     assert ranks[1][1] == pytest.approx(0.05 * 1 / 3)
 
 
-# ------------------------------------------- baseline data sources (review)
 def test_baseline_source_violations_is_empty_on_the_baseline_venue():
-    # Explicitly naming the baseline venue is the SAME source, so it must pass.
     sources = {"BTC/USDT": "binanceus", "ETH/USDT": "binanceus",
                "SOL/USDT": "binanceus"}
     assert certify_mod.baseline_source_violations(sources, "binanceus") == {}
 
 
 def test_baseline_source_violations_ignores_added_symbols():
-    # An ADDED symbol carrying its own venue is the whole point of SYMBOL@exchange.
     sources = {"BTC/USDT": "binanceus", "ETH/USDT": "binanceus",
                "SOL/USDT": "binanceus", "HYPE/USDC:USDC": "hyperliquid"}
     assert certify_mod.baseline_source_violations(sources, "binanceus") == {}
 
 
 def test_baseline_source_violations_reports_every_repointed_default():
-    # Two at once: the guard must name both, not stop at the first it finds.
     sources = {"BTC/USDT": "kraken", "ETH/USDT": "coinbase",
                "SOL/USDT": "binanceus"}
     assert certify_mod.baseline_source_violations(sources, "binanceus") == {
@@ -316,7 +278,6 @@ def test_baseline_source_violations_reports_every_repointed_default():
 
 
 def test_repointed_baseline_refuses_to_write_the_repo_artifact(monkeypatch):
-    # Full-width family, so ONLY the source check can be refusing here.
     with pytest.raises(SystemExit) as exc:
         certify_mod.main(["--symbols", "BTC/USDT@kraken,ETH/USDT,SOL/USDT"])
     assert "repointed baseline" in str(exc.value)
@@ -332,10 +293,7 @@ def test_repointed_baseline_may_be_written_elsewhere(tmp_path, monkeypatch):
     assert json.loads(out.read_text())["criteria"]["data_sources"]["BTC/USDT"] == "kraken"
 
 
-# --------------------------------------------- repo run report (review)
 def test_narrowed_run_refuses_when_only_the_report_targets_the_repo(monkeypatch):
-    # --out is redirected but --report-out still defaults to the COMMITTED run
-    # report, which is this issue's evidence for the negative result.
     with pytest.raises(SystemExit) as exc:
         certify_mod.main(["--symbols", "BTC/USDT", "--timeframes", "1h",
                           "--classifiers", "composite",
@@ -365,7 +323,6 @@ def test_full_width_run_writes_both_repo_defaults(tmp_path, monkeypatch):
     assert art.exists() and rep.exists()
 
 
-# ------------------------------------------------ degenerate runs (review)
 def test_zero_coverage_run_refuses_and_leaves_the_artifact_untouched(tmp_path, monkeypatch):
     monkeypatch.setattr(premise_mod, "run", lambda *a, **k: [])
     art = tmp_path / "art.json"
@@ -375,12 +332,10 @@ def test_zero_coverage_run_refuses_and_leaves_the_artifact_untouched(tmp_path, m
         certify_mod.main(["--symbols", ",".join(premise_mod.DEFAULT_SYMBOLS),
                           "--report-out", ""])
     assert "NO directional rows" in str(exc.value)
-    # A refusal must never half-write: the pre-existing file is byte-identical.
     assert json.loads(art.read_text()) == {"sentinel": True}
 
 
 def test_under_resolved_run_refuses_the_repo_artifact(tmp_path, monkeypatch):
-    # 400 directional rows at n_perm=500: p-floor 1/501 sits far above q/400.
     monkeypatch.setattr(premise_mod, "run",
                         lambda *a, **k: [_row(p=0.5) for _ in range(400)])
     monkeypatch.setattr(certify_mod, "DEFAULT_ARTIFACT", str(tmp_path / "art.json"))
@@ -392,7 +347,6 @@ def test_under_resolved_run_refuses_the_repo_artifact(tmp_path, monkeypatch):
 
 
 def test_degenerate_research_run_written_elsewhere_is_allowed(tmp_path, monkeypatch):
-    # Nothing repo-tracked is targeted, so research stays free.
     monkeypatch.setattr(premise_mod, "run", lambda *a, **k: [])
     out = tmp_path / "research.json"
     rc = certify_mod.main(["--symbols", "BTC/USDT", "--timeframes", "1h",
@@ -404,8 +358,6 @@ def test_degenerate_research_run_written_elsewhere_is_allowed(tmp_path, monkeypa
 
 
 def test_allow_degenerate_run_is_separate_from_allow_narrowed_family(tmp_path, monkeypatch):
-    # Narrowing must NOT also unlock overwriting the live artifact from a run
-    # that measured nothing.
     monkeypatch.setattr(premise_mod, "run", lambda *a, **k: [])
     monkeypatch.setattr(certify_mod, "DEFAULT_ARTIFACT", str(tmp_path / "art.json"))
     with pytest.raises(SystemExit) as exc:
@@ -423,12 +375,10 @@ def test_allow_degenerate_run_is_separate_from_allow_narrowed_family(tmp_path, m
 
 
 def test_n_perm_default_resolves_the_full_screen():
-    # The default must be able to certify at full-screen family sizes.
     n_perm = certify_mod.build_parser().parse_args([]).n_perm
     assert certify_mod.permutation_p_floor(n_perm) <= 0.05 / 1319
 
 
-# ---------------------------------------------- one asset, one series (review)
 def test_cert_asset_collisions_flags_two_venues_for_one_asset():
     got = certify_mod.cert_asset_collisions(
         premise_mod.parse_symbols_arg("BTC/USDT,BTC/USDC:USDC@hyperliquid"))
@@ -447,28 +397,24 @@ def test_colliding_assets_refuse_before_any_data_access():
     assert "normalize to the same certification asset" in str(exc.value)
 
 
-# ------------------------------------------- BH step-up consistency (review)
 def test_step_up_cutoff_is_none_when_the_family_rejects_nothing():
     assert certify_mod.bh_step_up_cutoff([0.3, 0.4, 0.5], 0.05) is None
     assert certify_mod.bh_step_up_cutoff([], 0.05) is None
 
 
 def test_step_up_cutoff_reports_the_bar_the_family_cleared():
-    # m=2, q=0.05: per-rank bars are 0.025 and 0.05. Rank 1 (0.04) misses its own
-    # bar, rank 2 (0.041) clears 0.05, so BH steps up and rejects BOTH.
     assert certify_mod.bh_step_up_cutoff([0.04, 0.041], 0.05) == pytest.approx(0.05)
 
 
 def test_reported_bar_never_contradicts_the_verdict():
-    # The defect this fixes: certified cells whose min_p exceeded the printed bar.
     rows = [_row(symbol="BTC/USDT", p=0.04), _row(symbol="ETH/USDT", p=0.041)]
     v = certify_mod.cell_verdicts(rows, fdr_q=0.05)
     for entry in v.values():
         assert entry["verdict"] == certify_mod.VERDICT_CERTIFIED
         assert entry["min_p_value"] <= entry["bh_threshold"]
     btc = v[("BTC", "1h", "composite")]
-    assert btc["bh_rank_threshold"] == pytest.approx(0.025)   # its own per-rank bar
-    assert btc["bh_step_up_cutoff"] == pytest.approx(0.05)    # what BH actually applied
+    assert btc["bh_rank_threshold"] == pytest.approx(0.025)
+    assert btc["bh_step_up_cutoff"] == pytest.approx(0.05)
 
 
 def test_tied_p_values_straddling_the_cut_report_one_consistent_bar():
@@ -482,20 +428,12 @@ def test_tied_p_values_straddling_the_cut_report_one_consistent_bar():
 
 
 def test_failing_family_keeps_the_per_rank_bar():
-    # Must-survive: with nothing rejected there is no cutoff, so the honest
-    # "how far short did it fall" stays each row's own per-rank critical value.
     rows = [_row(symbol="ETH/USDT", p=0.30 + i * 0.001) for i in range(200)]
     v = certify_mod.cell_verdicts(rows)[("ETH", "1h", "composite")]
     assert v["bh_step_up_cutoff"] is None
     assert v["bh_threshold"] == pytest.approx(0.05 / 200)
     assert v["bh_threshold"] == v["bh_rank_threshold"]
 
-
-# --- #1443 review round 2: the displayed best_row must not contradict its own
-# verdict. The verdict is decided by nested filters; the row shown as its
-# evidence is drawn from the deepest tier the cell reached, never from the whole
-# directional set. Every case below puts the cell's globally lowest-p row in a
-# SHALLOWER tier than the one the verdict names.
 
 def test_certified_cell_does_not_display_a_wrong_signed_best_row():
     rows = [_row(p=1e-6, sign_aligned=False), _row(p=1e-5, sign_aligned=True)]
@@ -504,7 +442,6 @@ def test_certified_cell_does_not_display_a_wrong_signed_best_row():
     assert v["best_row"]["sign_aligned"] is True
     assert v["best_row"]["p_value"] == 1e-5
     assert v["best_row_basis"] == certify_mod.BASIS_CERTIFIED_HELD_OUT
-    # The cell minimum keeps its literal meaning — it is not the displayed row.
     assert v["min_p_value"] == 1e-6
 
 
@@ -517,8 +454,6 @@ def test_certified_cell_does_not_display_a_historical_window_best_row():
 
 
 def test_not_held_out_cell_displays_an_aligned_row():
-    # Verdict says the cell survived BH and alignment but missed held-out
-    # forward; showing the wrong-signed minimum as its evidence contradicts that.
     rows = [_row(p=1e-6, window="2024", sign_aligned=False),
             _row(p=1e-5, window="2024", sign_aligned=True)]
     v = certify_mod.cell_verdicts(rows)[("BTC", "1h", "composite")]
@@ -536,7 +471,6 @@ def test_wrong_signed_cell_displays_a_surviving_row():
 
 
 def test_single_row_cells_display_that_row_unchanged():
-    # The pre-existing shape: one directional row per cell, at every verdict.
     for row, verdict in ((_row(p=1e-6), certify_mod.VERDICT_CERTIFIED),
                          (_row(p=1e-6, window="2024"),
                           certify_mod.VERDICT_NOT_HELD_OUT),
@@ -549,8 +483,6 @@ def test_single_row_cells_display_that_row_unchanged():
 
 
 def test_failing_cell_still_displays_its_globally_lowest_p_row():
-    # Nothing passed, so "how far short did it fall" is the whole directional
-    # set — the reported basis and the committed run report both say so.
     rows = [_row(p=0.5), _row(p=0.9)]
     v = certify_mod.cell_verdicts(rows)[("BTC", "1h", "composite")]
     assert v["verdict"] == certify_mod.VERDICT_FAILS_GLOBAL_BH

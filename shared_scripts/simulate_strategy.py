@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""Replay strategy signals over dashboard candles for what-if preview (#811)."""
 
 from __future__ import annotations
 
@@ -17,11 +16,11 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "shared_tools"))
 sys.path.insert(0, os.path.join(ROOT, "backtest"))
 
-from atr import ensure_atr_indicator  # noqa: E402
-from regime import normalize_regime_gate_on_failure  # noqa: E402
-from backtester import Backtester  # noqa: E402
-from registry_loader import load_registry, registry_for_strategy_type  # noqa: E402
-from run_backtest import _apply_htf_filter_to_df  # noqa: E402
+from atr import ensure_atr_indicator
+from regime import normalize_regime_gate_on_failure
+from backtester import Backtester
+from registry_loader import load_registry, registry_for_strategy_type
+from run_backtest import _apply_htf_filter_to_df
 
 
 def _fee_platform(platform: str, strategy_type: str) -> str:
@@ -35,15 +34,6 @@ def _fee_platform(platform: str, strategy_type: str) -> str:
 
 
 def _resolve_gate_on_failure(cfg: Dict[str, Any], regime_cfg: Dict[str, Any]) -> str:
-    """#1278/#1300: resolve the entry-gate failure policy for the tuner path.
-
-    Per-strategy ``regime_gate_on_failure`` wins over the global
-    ``regime.gate_on_failure``, else the ``"open"`` default. Both surfaces are
-    validated independently via the shared ``normalize_regime_gate_on_failure``
-    SSoT so a garbage global value raises even when a valid per-strategy
-    override would otherwise short-circuit past it (mirroring Go validateConfig
-    rejecting unknown values on each surface).
-    """
     per_raw = str(cfg.get("regime_gate_on_failure") or "").strip().lower()
     glob_gate = normalize_regime_gate_on_failure(regime_cfg.get("gate_on_failure"))
     return normalize_regime_gate_on_failure(per_raw) if per_raw else glob_gate
@@ -177,17 +167,11 @@ def _simulate_one(cfg: dict, candles: List[dict]) -> List[dict]:
     merged_params = {**defaults, **params}
 
     df_signals = reg.apply_strategy(open_name, df, merged_params)
-    # #842: a strategy has a single close_strategy ref; still accept the legacy
-    # close_strategies array (length <=1 after the collapse). The Backtester's
-    # close_strategies= list interface is fed the 0-or-1 element list.
     single_close = cfg.get("close_strategy")
     if isinstance(single_close, dict) and single_close.get("name"):
         close_refs = [dict(single_close)]
     else:
         legacy = cfg.get("close_strategies") or []
-        # Match the live Go loader (#842): the array collapsed to a single
-        # close_strategy, so reject a len>1 legacy array instead of previewing
-        # it under the old max-fraction semantics the scheduler no longer runs.
         if len(legacy) > 1:
             raise ValueError(
                 f"{len(legacy)} close_strategies supplied; the array model was "
@@ -197,10 +181,6 @@ def _simulate_one(cfg: dict, candles: List[dict]) -> List[dict]:
             )
         close_refs = [dict(r) for r in legacy]
     if close_refs:
-        # #1277: Go stamps the RESOLVED atr_method (per-strategy > global >
-        # simple) into each simulate payload so the preview's injected ATR
-        # matches the live cycle's --atr-method. ensure_atr_indicator
-        # validates the vocabulary (fails loud on an unknown value).
         df_signals = ensure_atr_indicator(
             df_signals, method=str(cfg.get("atr_method") or "simple")
         )
@@ -211,8 +191,6 @@ def _simulate_one(cfg: dict, candles: List[dict]) -> List[dict]:
     regime_cfg = dict(cfg.get("regime") or {})
     regime_enabled = bool(regime_cfg.get("enabled"))
     allowed = list(cfg.get("allowed_regimes") or [])
-    # #1278: entry-gate failure policy — per-strategy field over the global
-    # regime.gate_on_failure default, mirroring the live resolution order.
     gate_on_failure = _resolve_gate_on_failure(cfg, regime_cfg)
 
     bt = Backtester(

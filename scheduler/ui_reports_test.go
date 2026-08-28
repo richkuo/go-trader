@@ -35,21 +35,17 @@ func TestStrategyAuditPageRendersData(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rr.Code)
 	}
 	body := rr.Body.String()
-	// Single-source-of-truth: numbers in the page must come from the Go struct,
-	// so spot-check representative top, bottom, and verdict rows.
-	// Note: html/template escapes "+" to the &#43; entity in text nodes (renders as
-	// "+" in-browser), so positive-edge values are asserted without the sign.
 	for _, want := range []string{
 		"squeeze_momentum", "0.03", "47.9",
 		"vwap_reversion", "-59.5", "-10.9",
 		"verdict-keep", "verdict-deprecate", "verdict-bug", "verdict-na",
 		"Multi-timeframe confluence", "tag-confirm", "tag-cut", "tag-blocked",
-		"supertrend", // bug callout
+		"supertrend",
 		"short leg failed held-outs",
 		"M5 gross &lt;= 0",
-		"short leg failed bull-year held-outs", // #1031 session_breakout
-		"NY-anchored ICT killzones",            // #1023 amd_ifvg
-		"no gate/profile clears protocol OOS",  // #985 donchian_breakout ("+ held-outs" tail omitted: "+" renders as &#43;)
+		"short leg failed bull-year held-outs",
+		"NY-anchored ICT killzones",
+		"no gate/profile clears protocol OOS",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("audit page missing %q", want)
@@ -73,7 +69,6 @@ func TestStrategyAuditDatasetIntegrity(t *testing.T) {
 		if !validVerdict[r.Verdict] {
 			t.Errorf("row %s has invalid verdict class %q", r.Strategy, r.Verdict)
 		}
-		// Unmeasured rows (0 trades) must not claim a vs-B&H edge.
 		if r.Trades == 0 && r.HasVsBH {
 			t.Errorf("row %s has 0 trades but claims a vs-B&H value", r.Strategy)
 		}

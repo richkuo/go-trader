@@ -11,8 +11,6 @@ import (
 	"time"
 )
 
-// --- fixtures --------------------------------------------------------------
-
 func hlBatchStrategy(id, name, symbol, timeframe string, opts ...func(*StrategyConfig)) StrategyConfig {
 	sc := StrategyConfig{
 		ID:           id,
@@ -64,8 +62,6 @@ func resetFailureTrackers(t *testing.T) {
 	})
 }
 
-// --- grouping --------------------------------------------------------------
-
 func TestPartitionHyperliquidBatchGroups(t *testing.T) {
 	cfg := &Config{}
 	due := []StrategyConfig{
@@ -74,22 +70,18 @@ func TestPartitionHyperliquidBatchGroups(t *testing.T) {
 		hlBatchStrategy("hl-btc-4h", "breakout", "BTC", "4h"),
 		hlBatchStrategy("hl-eth-a", "breakout", "ETH", "1h"),
 		hlBatchStrategy("hl-eth-b", "momentum_pro", "ETH", "1h"),
-		// Different resolved ATR method: same coin and timeframe, different key.
 		hlBatchStrategy("hl-btc-wilder", "breakout", "BTC", "1h", func(sc *StrategyConfig) {
 			sc.ATRMethod = "wilder"
 		}),
-		// Excluded: a forked check script the batch mode may not implement.
 		hlBatchStrategy("hl-btc-custom", "breakout", "BTC", "1h", func(sc *StrategyConfig) {
 			sc.Script = "shared_scripts/check_hyperliquid_custom.py"
 		}),
-		// Excluded: not HL perps.
 		{ID: "okx-btc", Type: "perps", Platform: "okx", Script: hyperliquidCheckScript,
 			Args: []string{"breakout", "BTC", "1h", "--mode=paper"}},
 		{ID: "spot-btc", Type: "spot", Platform: "binanceus", Script: "shared_scripts/check_strategy.py",
 			Args: []string{"breakout", "BTC/USDT", "1h"}},
 		{ID: "manual-btc", Type: "manual", Platform: "hyperliquid", Script: hyperliquidCheckScript,
 			Args: []string{"hold", "BTC", "1h", "--mode=live"}},
-		// Excluded: an argv shape the slot builder does not know how to carry.
 		hlBatchStrategy("hl-btc-extra", "breakout", "BTC", "1h", func(sc *StrategyConfig) {
 			sc.Args = append(sc.Args, "--params", `{"lookback":30}`)
 		}),
@@ -146,7 +138,7 @@ func TestPartitionBatchesExactlyTheDueSet(t *testing.T) {
 		hlBatchStrategy("hl-b", "momentum_pro", "BTC", "1h"),
 		hlBatchStrategy("hl-not-due", "breakout", "BTC", "1h"),
 	}
-	due := all[:2] // hl-not-due's interval has not elapsed.
+	due := all[:2]
 	groups := partitionHyperliquidBatchGroups(due, &Config{})
 	if len(groups) != 1 {
 		t.Fatalf("groups = %d, want 1", len(groups))
@@ -157,8 +149,6 @@ func TestPartitionBatchesExactlyTheDueSet(t *testing.T) {
 }
 
 func TestPartitionTakesNoLocks(t *testing.T) {
-	// Grouping must be pure: hold the state write lock and assert the
-	// partition still completes. A partition that reached for mu would hang.
 	var mu sync.RWMutex
 	mu.Lock()
 	defer mu.Unlock()
@@ -219,8 +209,6 @@ func TestHyperliquidBatchArgsSupported(t *testing.T) {
 	}
 }
 
-// --- slot construction mirrors the per-strategy argv ------------------------
-
 func TestSlotCarriesEveryNonKeyArgument(t *testing.T) {
 	rc := &RegimeConfig{Enabled: true}
 	sc := hlBatchStrategy("hl-a", "breakout", "BTC", "1h", func(sc *StrategyConfig) {
@@ -252,7 +240,6 @@ func TestSlotCarriesEveryNonKeyArgument(t *testing.T) {
 		t.Fatalf("PositionCtx = %v, want %v", slot.PositionCtx, want)
 	}
 
-	// The refs blob must equal the one the per-strategy argv carries.
 	refsArgs, err := buildStrategyRefsArg(strategyConfigWithOnChainProtectionFilter(sc))
 	if err != nil {
 		t.Fatalf("buildStrategyRefsArg: %v", err)
@@ -265,8 +252,6 @@ func TestSlotCarriesEveryNonKeyArgument(t *testing.T) {
 func TestSlotOmitsPositionFieldsExactlyLikeTheArgvBuilder(t *testing.T) {
 	rc := &RegimeConfig{Enabled: true}
 	sc := hlBatchStrategy("hl-a", "breakout", "BTC", "1h")
-	// Zero floats are skipped by appendPositionFloatArg, so the slot must omit
-	// them too — otherwise Python would see 0.0 where argparse gave it None.
 	posCtx := PositionCtx{Side: "short", AvgCost: 0, Quantity: 0, EntryATR: 4}
 	slot, err := buildHyperliquidBatchSlot(sc, posCtx, rc)
 	if err != nil {
@@ -277,8 +262,6 @@ func TestSlotOmitsPositionFieldsExactlyLikeTheArgvBuilder(t *testing.T) {
 		t.Fatalf("PositionCtx = %v, want %v", slot.PositionCtx, want)
 	}
 
-	// A strategy that uses neither an open ref nor a close ref gets no
-	// position context at all, matching appendOpenCloseArgs' early return.
 	plain := hlBatchStrategy("hl-plain", "breakout", "BTC", "1h", func(sc *StrategyConfig) {
 		sc.OpenStrategy = StrategyRef{}
 	})
@@ -331,7 +314,6 @@ func TestSharedArgsCarryOnlyKeyAndSharedFlags(t *testing.T) {
 			t.Fatalf("shared argv %q missing %q", joined, want)
 		}
 	}
-	// Nothing per-slot may leak into the shared argv.
 	for _, banned := range []string{"--position-", "--strategy-refs", "--htf-filter", "--regime-atr-window", "--mode"} {
 		if strings.Contains(joined, banned) {
 			t.Fatalf("shared argv %q leaked per-slot flag %q", joined, banned)
@@ -341,8 +323,6 @@ func TestSharedArgsCarryOnlyKeyAndSharedFlags(t *testing.T) {
 		t.Fatalf("mark price must be omitted when the cycle has no mid: %q", noMark)
 	}
 }
-
-// --- response parsing ------------------------------------------------------
 
 func TestBatchSlotsParseThroughTheHyperliquidResultContract(t *testing.T) {
 	single := `{"strategy":"breakout","symbol":"BTC","timeframe":"1h","signal":1,"price":109000.12,
@@ -373,8 +353,6 @@ func TestParseBatchOutputRejectsGarbage(t *testing.T) {
 		t.Fatal("expected a parse error")
 	}
 }
-
-// --- dispatch, isolation and failure semantics ------------------------------
 
 func hlBatchTwoMemberInput(t *testing.T) ([]hlBatchGroupInput, *Config) {
 	t.Helper()
@@ -449,14 +427,10 @@ func TestBatchSlotErrorIsolatesOneMember(t *testing.T) {
 		t.Fatalf("healthy peer disturbed: %+v", good)
 	}
 	bad, _ := results.lookup("hl-b")
-	// The error payload must NOT survive as a Result: a zero-signal error
-	// object read as a decision would look like a legitimate hold.
 	if bad.Result != nil || bad.Err != "boom in this slot" || bad.Mode != scriptFailureError {
 		t.Fatalf("failing slot outcome = %+v", bad)
 	}
 
-	// The failing slot must take the per-strategy soft-error branch, and only
-	// that strategy's tracker may move.
 	sc := hlBatchStrategy("hl-b", "momentum_pro", "BTC", "1h")
 	res, _, _, ok := finishHyperliquidCheck(&sc, nil, PositionCtx{}, nil, nil, hlBatchTestLogger(),
 		bad.Result, bad.Stderr, bad.Err, bad.Mode)
@@ -471,14 +445,6 @@ func TestBatchSlotErrorIsolatesOneMember(t *testing.T) {
 	}
 }
 
-// TestSharedStateFailureLeavesMembersAsMisses pins the review finding that a
-// batch-path fault must not blank protective maintenance. A cached failure
-// outcome made finishHyperliquidCheck return ok=false for every member, and
-// the dispatch loop's `} else if ...; ok {` encloses close evaluation, the
-// trailing-SL cancel+replace, the ratchet, protection sync and hedge sync — so
-// one shared-state fault froze all of it for the whole coin, for up to three
-// cycles. Members must instead stay MISSES so each takes its own spawn in the
-// same cycle.
 func TestSharedStateFailureLeavesMembersAsMisses(t *testing.T) {
 	resetBatchFallback(t)
 	resetFailureTrackers(t)
@@ -496,16 +462,11 @@ func TestSharedStateFailureLeavesMembersAsMisses(t *testing.T) {
 			t.Fatalf("%s member tracker moved on a shared outage: %d", id, count)
 		}
 	}
-	// The group identity carries the streak instead.
 	if _, count := scriptFailureTracker.Clear(hlBatchAlertConfig(inputs[0].Key).ID); count != 1 {
 		t.Fatalf("group tracker count = %d, want 1", count)
 	}
 }
 
-// TestSharedStateTimeoutLeavesMembersAsMisses is the same contract for the
-// deadline case the batch newly concentrates: N slots blowing the single
-// shared timeout that each strategy used to get to itself must still leave
-// every member free to run its own check this cycle.
 func TestSharedStateTimeoutLeavesMembersAsMisses(t *testing.T) {
 	resetBatchFallback(t)
 	resetFailureTrackers(t)
@@ -521,9 +482,6 @@ func TestSharedStateTimeoutLeavesMembersAsMisses(t *testing.T) {
 	}
 }
 
-// TestUnparseableEnvelopeLeavesMembersAsMisses covers the OOM-killed child:
-// empty stdout, no envelope. Same contract — every member falls through to its
-// own spawn rather than losing the cycle.
 func TestUnparseableEnvelopeLeavesMembersAsMisses(t *testing.T) {
 	resetBatchFallback(t)
 	resetFailureTrackers(t)
@@ -542,7 +500,6 @@ func TestUnparseableEnvelopeLeavesMembersAsMisses(t *testing.T) {
 func TestSharedStateFailureDoesNotFalselyClearAMemberStreak(t *testing.T) {
 	resetBatchFallback(t)
 	resetFailureTrackers(t)
-	// hl-a is already failing on its own account.
 	scriptFailureTracker.Record("hl-a", "prior failure", time.Now().UTC())
 	inputs, cfg := hlBatchTwoMemberInput(t)
 	stubBatchCheck(t, func(string, []string, []byte) (*HyperliquidBatchResult, string, error) {
@@ -552,25 +509,18 @@ func TestSharedStateFailureDoesNotFalselyClearAMemberStreak(t *testing.T) {
 	if out, ok := results.lookup("hl-a"); ok {
 		t.Fatalf("hl-a must be a map miss after a shared-state failure, got %+v", out)
 	}
-	// The batch path neither recorded nor cleared the member's own streak; the
-	// member's spawn this cycle is what will move it, exactly as on the
-	// unbatched path.
 	if _, count := scriptFailureTracker.Clear("hl-a"); count != 1 {
 		t.Fatalf("prior member streak = %d, want it preserved at 1", count)
 	}
 }
 
-// A missing or duplicated slot is a batching-PROTOCOL fault, so the member must
-// be left a map MISS and run its own check this cycle. Caching it as a crash
-// would return ok=false downstream and blank close evaluation, the trailing-SL
-// cancel+replace, the ratchet, protection sync and hedge sync for that member.
 func TestMissingOrDuplicateSlotLeavesThatMemberAMiss(t *testing.T) {
 	resetBatchFallback(t)
 	resetFailureTrackers(t)
 	inputs, cfg := hlBatchTwoMemberInput(t)
 	stubBatchCheck(t, func(string, []string, []byte) (*HyperliquidBatchResult, string, error) {
 		out := batchOK("hl-a")
-		out.Results = append(out.Results, out.Results[0]) // duplicate hl-a, hl-b missing
+		out.Results = append(out.Results, out.Results[0])
 		return out, "", nil
 	})
 	results := runHyperliquidBatchGroups(inputs, cfg, nil, nil)
@@ -583,14 +533,12 @@ func TestMissingOrDuplicateSlotLeavesThatMemberAMiss(t *testing.T) {
 	}
 }
 
-// Drift that keeps repeating must trip the group's safety valve rather than
-// paying for a batch call that cannot account for its members, forever.
 func TestRepeatedSlotDriftTripsTheFallback(t *testing.T) {
 	resetBatchFallback(t)
 	resetFailureTrackers(t)
 	inputs, cfg := hlBatchTwoMemberInput(t)
 	stubBatchCheck(t, func(string, []string, []byte) (*HyperliquidBatchResult, string, error) {
-		return batchOK("hl-a"), "", nil // hl-b never accounted for
+		return batchOK("hl-a"), "", nil
 	})
 	key := inputs[0].Key
 	for i := 1; i <= hlBatchSharedFailureFallbackThreshold; i++ {
@@ -605,9 +553,6 @@ func TestRepeatedSlotDriftTripsTheFallback(t *testing.T) {
 	}
 }
 
-// A genuine per-slot error payload is the strategy's own script failing, not a
-// batching fault: it must stay a cached soft error, or every strategy error
-// would re-spawn and double the process count.
 func TestSlotErrorPayloadStaysACachedSoftError(t *testing.T) {
 	resetBatchFallback(t)
 	resetFailureTrackers(t)
@@ -631,8 +576,6 @@ func TestSlotErrorPayloadStaysACachedSoftError(t *testing.T) {
 	}
 }
 
-// The batch call's stderr is the GROUP's combined output. Stamping it on every
-// member replays one peer's traceback under N healthy strategy identities.
 func TestGroupStderrIsNotStampedOnHealthyMembers(t *testing.T) {
 	resetBatchFallback(t)
 	resetFailureTrackers(t)
@@ -667,15 +610,11 @@ func TestGroupStderrIsNotStampedOnHealthyMembers(t *testing.T) {
 }
 
 func TestBatchTimeoutStaysTransient(t *testing.T) {
-	// Batching concentrates N strategies under one deadline; the timeout text
-	// must still classify transient so it does not trip the 3-strike alert.
 	err := &pythonScriptTimeoutError{d: hlBatchTimeout}
 	if !scriptFailureErrorIsTransient(err.Error()) {
 		t.Fatalf("batch timeout %q must classify transient", err.Error())
 	}
 }
-
-// --- fallback safety valve --------------------------------------------------
 
 func TestSharedFailureFallbackAfterThreeStrikes(t *testing.T) {
 	resetBatchFallback(t)
@@ -731,8 +670,6 @@ func TestPrePassSkipsAFallenBackGroup(t *testing.T) {
 		t.Fatalf("batch subprocess called %d times while in fallback", calls)
 	}
 }
-
-// --- pre-pass negative criteria --------------------------------------------
 
 func TestPrePassNeverBatchesASingleMemberGroup(t *testing.T) {
 	resetBatchFallback(t)
@@ -794,7 +731,6 @@ func TestSnapshotSkipsStrategiesWithNoState(t *testing.T) {
 	}
 	groups := partitionHyperliquidBatchGroups(due, cfg)
 	var mu sync.RWMutex
-	// Only one member has state, so the group drops below two and is not batched.
 	inputs := snapshotHyperliquidBatchGroups(groups, hlBatchTestState("hl-a"), &mu, cfg, nil)
 	if len(inputs) != 0 {
 		t.Fatalf("inputs = %+v, want none", inputs)
@@ -825,14 +761,11 @@ func TestSnapshotReadsPositionsUnderTheReadLock(t *testing.T) {
 	if inputs[0].MarkPrice != 25_000 {
 		t.Fatalf("MarkPrice = %v", inputs[0].MarkPrice)
 	}
-	// The read lock must have been released before returning.
 	if !mu.TryLock() {
 		t.Fatal("snapshot did not release the read lock")
 	}
 	mu.Unlock()
 }
-
-// --- consumption inside runHyperliquidCheck ---------------------------------
 
 func TestRunHyperliquidCheckConsumesTheCachedSlot(t *testing.T) {
 	resetFailureTrackers(t)
@@ -848,24 +781,14 @@ func TestRunHyperliquidCheckConsumesTheCachedSlot(t *testing.T) {
 	batch.put("hl-a", hlBatchMemberOutcome{Result: cached, Fingerprint: fp})
 
 	got, signalStr, price, ok := runHyperliquidCheck(&sc, prices, posCtx, nil, "simple", nil, hlBatchTestLogger(), batch)
-	// The dispatch path re-stamps the cycle mark on a COPY, so identity is not
-	// the contract — the decision reaching the caller is.
 	if !ok || got == nil || !reflect.DeepEqual(*got, *cached) || price != 25_000 || signalStr != signalLabel(1) {
 		t.Fatalf("batched consumption = (%v, %q, %v, %v)", got, signalStr, price, ok)
 	}
 }
 
-// TestRoundedPriceWriteBackKeepsPeersBatched pins the review finding that
-// made the batch strictly more expensive than no batch. check_hyperliquid.py
-// emits round(price, 2) and the dispatch loop writes that value back into the
-// cycle's price map, so folding the mark into the slot fingerprint meant the
-// FIRST member of a group invalidated every other one: the cycle paid for the
-// batch and then re-spawned N-1 checks. Any coin whose mid carries more than
-// two decimals hit this, which is everything but the high-priced ones the
-// benchmark and the smoke test happened to use.
 func TestRoundedPriceWriteBackKeepsPeersBatched(t *testing.T) {
 	resetFailureTrackers(t)
-	const rawMid = 0.34567 // a low-priced coin: round(mid, 2) != mid
+	const rawMid = 0.34567
 	scA := hlBatchStrategy("hl-a", "breakout", "DOGE", "1h")
 	scB := hlBatchStrategy("hl-b", "momentum_pro", "DOGE", "1h")
 	posCtx := PositionCtx{Side: "long", Quantity: 1.5, AvgCost: 0.3, EntryATR: 0.01}
@@ -873,7 +796,6 @@ func TestRoundedPriceWriteBackKeepsPeersBatched(t *testing.T) {
 
 	batch := &hlBatchCycleResults{}
 	for _, sc := range []StrategyConfig{scA, scB} {
-		// The pre-pass snapshots the fingerprint against the UNROUNDED mid.
 		fp, err := hyperliquidBatchSlotFingerprint(sc, posCtx, nil)
 		if err != nil {
 			t.Fatalf("fingerprint %s: %v", sc.ID, err)
@@ -887,8 +809,6 @@ func TestRoundedPriceWriteBackKeepsPeersBatched(t *testing.T) {
 		})
 	}
 
-	// Member 1 consumes its slot and the dispatch loop writes the reported
-	// (rounded) price back, exactly as main.go does.
 	_, _, priceA, okA := runHyperliquidCheck(&scA, prices, posCtx, nil, "simple", nil, hlBatchTestLogger(), batch)
 	if !okA {
 		t.Fatal("member 1 must consume its cached slot")
@@ -898,7 +818,6 @@ func TestRoundedPriceWriteBackKeepsPeersBatched(t *testing.T) {
 		t.Fatalf("fixture no longer exercises the rounding write-back: %v", priceA)
 	}
 
-	// Member 2 must STILL hit its cached slot despite the rewritten map.
 	resB, _, priceB, okB := runHyperliquidCheck(&scB, prices, posCtx, nil, "simple", nil, hlBatchTestLogger(), batch)
 	if !okB || resB == nil {
 		t.Fatal("member 2 lost its cached slot to the rounded price write-back")
@@ -908,10 +827,6 @@ func TestRoundedPriceWriteBackKeepsPeersBatched(t *testing.T) {
 	}
 }
 
-// TestBatchedMemberReportsDispatchTimeMark checks the other half of the same
-// fix: with the mark out of the fingerprint, the cached decision must adopt
-// the cycle's CURRENT mark rather than the pre-pass one, rounded exactly as
-// check_hyperliquid.py would round it so the two lanes report the same price.
 func TestBatchedMemberReportsDispatchTimeMark(t *testing.T) {
 	resetFailureTrackers(t)
 	sc := hlBatchStrategy("hl-a", "breakout", "BTC", "1h")
@@ -931,14 +846,11 @@ func TestBatchedMemberReportsDispatchTimeMark(t *testing.T) {
 	if price != 26_000.57 || got.Price != 26_000.57 {
 		t.Fatalf("dispatch-time mark not adopted: price=%v result.Price=%v", price, got.Price)
 	}
-	// The cached slot itself must not be mutated by the price adoption.
 	if cached.Price != 25_000 {
 		t.Fatalf("cached slot mutated: %v", cached.Price)
 	}
 }
 
-// TestWholeNumberMarkStillBatches is the BTC case the original benchmark used:
-// a mid that survives round(mid, 2) unchanged must batch just as before.
 func TestWholeNumberMarkStillBatches(t *testing.T) {
 	resetFailureTrackers(t)
 	sc := hlBatchStrategy("hl-a", "breakout", "BTC", "1h")
@@ -958,9 +870,6 @@ func TestWholeNumberMarkStillBatches(t *testing.T) {
 	}
 }
 
-// TestFailedSlotIsNotResurrectedByThePricePath guards the price adoption
-// against reviving an error outcome: Result stays nil, so the member takes the
-// failure branch and never reads a zero-signal payload as a hold.
 func TestFailedSlotIsNotResurrectedByThePricePath(t *testing.T) {
 	resetFailureTrackers(t)
 	sc := hlBatchStrategy("hl-a", "breakout", "BTC", "1h")
@@ -978,9 +887,6 @@ func TestFailedSlotIsNotResurrectedByThePricePath(t *testing.T) {
 }
 
 func TestRunHyperliquidCheckRefusesToDecideOnAFailedSlot(t *testing.T) {
-	// A slot error payload carries signal 0. If it reached the dispatch loop
-	// as a Result, the strategy would run its whole downstream block on a
-	// fabricated hold instead of skipping the cycle.
 	resetBatchFallback(t)
 	resetFailureTrackers(t)
 	inputs, cfg := hlBatchTwoMemberInput(t)
@@ -988,9 +894,6 @@ func TestRunHyperliquidCheckRefusesToDecideOnAFailedSlot(t *testing.T) {
 		out := batchOK("hl-a")
 		out.Results = append(out.Results, HyperliquidBatchSlotResult{
 			ID: "hl-b",
-			// The real slot-error payload: signal 0, price 0, symbol set. The
-			// cycle's mid would resolve the price, so a Result that survived
-			// here would read as a perfectly ordinary HOLD decision.
 			HyperliquidResult: HyperliquidResult{
 				Strategy: "momentum_pro", Symbol: "BTC", Timeframe: "1h",
 				Signal: 0, Price: 0, Error: "slot blew up",
@@ -1029,9 +932,6 @@ func TestRunHyperliquidCheckRejectsAStaleCachedSlot(t *testing.T) {
 		Fingerprint: fp,
 	})
 
-	// The position was partially closed between the snapshot and this
-	// strategy's own iteration, so the cached decision is not about the
-	// current state and must be discarded.
 	moved := snapshotCtx
 	moved.Quantity = 0.5
 	if fpMoved, _ := hyperliquidBatchSlotFingerprint(sc, moved, nil); fpMoved == fp {
@@ -1040,13 +940,6 @@ func TestRunHyperliquidCheckRejectsAStaleCachedSlot(t *testing.T) {
 	_ = prices
 }
 
-// --- the #1431 replay choke points -----------------------------------------
-
-// TestReplayChokePointsSeeIdenticalResults drives the paper-side suppression
-// arm (main.go's replayMirrorPaperActive + pausedBlocksSignal gate) with a
-// decision that came from a batched slot and with the same decision from the
-// per-strategy path. Both must gate identically for an open, a scale-in and a
-// full close, because the batch only replaces the subprocess.
 func TestReplayChokePointsSeeIdenticalResults(t *testing.T) {
 	resetFailureTrackers(t)
 	paper := hlBatchStrategy("hl-mirror", "breakout", "BTC", "1h", func(sc *StrategyConfig) {
@@ -1099,8 +992,6 @@ func TestReplayChokePointsSeeIdenticalResults(t *testing.T) {
 				t.Fatal("batched slot did not produce a decision")
 			}
 
-			// The per-strategy path funnels the same parsed result through the
-			// same finishing pipeline.
 			scDirect := paper
 			direct := tc.result
 			fromDirect, _, _, ok := finishHyperliquidCheck(&scDirect, prices, tc.posCtx, nil, nil, hlBatchTestLogger(),
@@ -1120,8 +1011,6 @@ func TestReplayChokePointsSeeIdenticalResults(t *testing.T) {
 		})
 	}
 }
-
-// --- alerts ----------------------------------------------------------------
 
 func TestBatchSharedStateAlertRendersDistinctly(t *testing.T) {
 	key := hlBatchKey{DataPlatform: "hyperliquid", Symbol: "BTC", Timeframe: "1h", OhlcvLimit: 200, ATRMethod: "simple"}

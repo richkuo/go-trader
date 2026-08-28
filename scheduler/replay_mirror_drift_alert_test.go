@@ -6,10 +6,6 @@ import (
 	"time"
 )
 
-// #1436 — throttled owner DMs on paper book-drift skips. These tests mutate
-// the package-level replayDriftAlerts / replayDriftWarn / replayMirrorProgress
-// maps; no t.Parallel().
-
 func replayHoldingETH() *Position {
 	return &Position{Symbol: "ETH", Quantity: 0.5, InitialQuantity: 0.5, AvgCost: 1900, Side: "long", Multiplier: 1}
 }
@@ -64,7 +60,6 @@ func TestReplayDriftTracker_WindowExpiryRefires(t *testing.T) {
 }
 
 func TestReplayDriftTracker_TenthEventDoesNotBypassWindow(t *testing.T) {
-	// Invariant: must not inherit shouldNotifyDrainFailure's every-10th cadence.
 	tr := &replayDriftTracker{}
 	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
 	if !tr.Record("s1", replayDriftKindOpenWhileHolding, now) {
@@ -155,8 +150,6 @@ func TestMirrorReplayDriftDM_HighWaterRemarkDoesNotFire(t *testing.T) {
 	if trades != 0 || len(applied) != 1 {
 		t.Fatalf("first pass trades=%d applied=%v, want 0/1", trades, applied)
 	}
-	// Empty the throttle so a re-Record WOULD fire — proving the high-water
-	// path never Records, rather than the window suppressing a second Record.
 	replayDriftAlerts.reset()
 	applied, trades, _, dms = applyReplayedLiveDecisions(sc, s, pending, 1908.0, replayTestResult(), &Config{}, logger)
 	if trades != 0 || len(applied) != 1 {
@@ -229,7 +222,7 @@ func TestMirrorReplayDriftDM_NilHookStillMarks(t *testing.T) {
 		t.Fatalf("nil hook trades=%d applied=%v — row must still be marked", trades, applied)
 	}
 	requireOneDriftDM(t, dms, replayDriftKindOpenWhileHolding)
-	sendReplayDriftWarns(dms) // hook still nil — must not panic
+	sendReplayDriftWarns(dms)
 }
 
 func TestMirrorReplayDriftDM_ApplyDoesNotInvokeHook(t *testing.T) {

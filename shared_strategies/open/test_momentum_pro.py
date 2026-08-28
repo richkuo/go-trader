@@ -1,4 +1,3 @@
-"""Tests for momentum_pro.py — trend-pullback momentum strategy."""
 
 import numpy as np
 import pandas as pd
@@ -18,25 +17,19 @@ def make_ohlcv(opens, highs, lows, closes, volume):
 
 
 def build_uptrend_with_pullback():
-    """Stacked-EMA uptrend, a pullback that tags EMA(fast), then a resumption
-    bar that breaks the prior high on high volume."""
     n = 260
-    # Steady uptrend to stack the EMAs and build ADX.
     closes = list(np.linspace(100, 200, n - 6))
-    # Pullback: three down bars dipping toward the fast EMA.
     base = closes[-1]
     closes += [base - 4, base - 7, base - 9]
-    # Resumption: strong up bar that breaks the prior bar's high.
     closes += [base - 4, base + 6, base + 12]
     closes = np.array(closes, dtype=float)
     n = len(closes)
     highs = closes + 1.0
     lows = closes - 1.0
     opens = closes - 0.3
-    # Make the pullback lows actually reach down (so low <= ema_fast can hold).
     vol = np.full(n, 100.0)
     vol[-1] = 100.0
-    vol[-2] = 500.0  # volume spike on the resumption bar
+    vol[-2] = 500.0
     return make_ohlcv(opens, highs, lows, closes, vol)
 
 
@@ -70,14 +63,12 @@ def test_uptrend_pullback_fires_long():
 
 
 def test_volume_gate_blocks_when_unmet():
-    """A volume multiplier no bar can satisfy must suppress all entries."""
     df = build_uptrend_with_pullback()
     out = momentum_pro_core(df, vol_mult=1e6)
     assert (out["signal"] == 0).all()
 
 
 def test_flat_market_no_signal():
-    """No trend (flat) → ADX gate keeps it out."""
     n = 260
     closes = np.full(n, 100.0) + np.random.RandomState(0).randn(n) * 0.05
     df = make_ohlcv(closes - 0.3, closes + 0.5, closes - 0.5, closes, np.full(n, 100.0))
@@ -86,13 +77,11 @@ def test_flat_market_no_signal():
 
 
 def test_downtrend_pullback_fires_short():
-    """Mirror image: stacked bearish EMAs, a rally to EMA(fast), then a
-    breakdown through the prior low."""
     n = 260
     closes = list(np.linspace(200, 100, n - 6))
     base = closes[-1]
-    closes += [base + 4, base + 7, base + 9]      # rally up into resistance
-    closes += [base + 4, base - 6, base - 12]     # breakdown
+    closes += [base + 4, base + 7, base + 9]
+    closes += [base + 4, base - 6, base - 12]
     closes = np.array(closes, dtype=float)
     n = len(closes)
     highs = closes + 1.0
@@ -103,9 +92,6 @@ def test_downtrend_pullback_fires_short():
     df = make_ohlcv(opens, highs, lows, closes, vol)
     out = momentum_pro_core(df, vol_mult=1.2)
     assert (out["signal"] == -1).any(), "expected a short entry on the breakdown bar"
-
-
-# ─── #980: volatility-targeted entry sizing (default OFF) ────────────────────
 
 
 def test_vol_target_off_by_default_no_entry_fraction_column():
@@ -129,8 +115,6 @@ def test_vol_target_never_changes_signals():
 
 
 def test_vol_target_emits_fraction_scaled_by_atr():
-    # Flat bars: high-low = 2 around close 100 → TR 2, ATR 2, ATR/close 0.02.
-    # Target 0.01 → fraction 0.5 once the ATR window is warm.
     n = 260
     closes = np.full(n, 100.0)
     df = make_ohlcv(closes, closes + 1.0, closes - 1.0, closes,

@@ -26,14 +26,12 @@ func TestParseRegimeATRBlock_UseDefaultsExpandsToBaseline(t *testing.T) {
 			t.Fatalf("default %s.atr must be > 0, got %g", label, entry.ATR)
 		}
 	}
-	// ranging should differ from trending_up per baseline table.
 	if got.TrendRegime["ranging"].ATR == got.TrendRegime["trending_up"].ATR {
 		t.Fatalf("ranging should differ from trending_up in stop_loss defaults")
 	}
 }
 
 func TestParseRegimeATRBlock_RejectsBareLabelKeys(t *testing.T) {
-	// Bare labels without the trend_regime wrapper must be rejected.
 	raw := map[string]interface{}{
 		"trending_up":   map[string]interface{}{"atr_multiple": 2.0},
 		"trending_down": map[string]interface{}{"atr_multiple": 2.0},
@@ -43,7 +41,6 @@ func TestParseRegimeATRBlock_RejectsBareLabelKeys(t *testing.T) {
 	if len(errs) == 0 {
 		t.Fatalf("expected errors for bare label keys")
 	}
-	// At least one error should mention the classifier wrapper.
 	found := false
 	for _, e := range errs {
 		if strings.Contains(e, regimeClassifierKey) || strings.Contains(e, "unknown key") {
@@ -142,15 +139,14 @@ func TestResolveRegimeATR_ReturnsLabeledMultiplier(t *testing.T) {
 }
 
 func TestDefaultRegimeTPTiersForRegime(t *testing.T) {
-	// #870: per-group ragged ladders (ranging=2, choppy=3, clean=4 tiers).
 	cases := []struct {
 		regime    string
 		wantMults []float64
 	}{
 		{"ranging", []float64{0.5, 1.0}},
 		{"ranging_quiet", []float64{0.5, 1.0}},
-		{"trending_up", []float64{1.5, 3.0, 5.0}},          // ADX trend → choppy group
-		{"trending_down_choppy", []float64{1.5, 3.0, 5.0}}, // composite choppy
+		{"trending_up", []float64{1.5, 3.0, 5.0}},
+		{"trending_down_choppy", []float64{1.5, 3.0, 5.0}},
 		{"trending_up_clean", []float64{2.5, 4.0, 5.5, 7.0}},
 	}
 	for _, tc := range cases {
@@ -195,7 +191,6 @@ func TestStrategyTPTiersForRegime_RegimeAwareNeedsRegime(t *testing.T) {
 		Platform:      "hyperliquid",
 		CloseStrategy: &StrategyRef{Name: "tiered_tp_atr_regime", Params: map[string]interface{}{"use_defaults": true}},
 	}
-	// Empty regime → nil so the protection loop defers TP placement.
 	if tiers := strategyTPTiersForRegime(sc, ""); len(tiers) != 0 {
 		t.Fatalf("regime-aware without pos.Regime must return nil, got %v", tiers)
 	}
@@ -284,12 +279,6 @@ func TestValidateRegimeATRConfig_RequiresRegimeEnabled(t *testing.T) {
 	}
 }
 
-// TestLoadConfig_RegimeBlockSkipsDefaultStopLossATRMult is the regression
-// test for review #735.1 — a config that opts into stop_loss_atr_regime
-// must NOT also receive the scalar auto-default StopLossATRMult, because
-// validateRegimeATRConfig would then fire a false mutex error. The fix
-// gates the default loop on IsConfigured() (which is raw-aware) instead
-// of IsZero() (which only knows the resolved fields).
 func TestLoadConfig_RegimeBlockSkipsDefaultStopLossATRMult(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")
@@ -331,10 +320,6 @@ func TestLoadConfig_RegimeBlockSkipsDefaultStopLossATRMult(t *testing.T) {
 	}
 }
 
-// TestValidateHotReloadStateCompatible_BlocksRegimeShapeChangeWhileOpen
-// covers review #735.4 — flipping scalar↔regime, or mutating the regime
-// shape itself, must be rejected when a position is open so the resting
-// on-chain trigger isn't orphaned under a new distance regime.
 func TestValidateHotReloadStateCompatible_BlocksRegimeShapeChangeWhileOpen(t *testing.T) {
 	mkOld := func() StrategyConfig {
 		return StrategyConfig{
@@ -366,7 +351,6 @@ func TestValidateHotReloadStateCompatible_BlocksRegimeShapeChangeWhileOpen(t *te
 	mkCfg := func(sc StrategyConfig) *Config {
 		return &Config{Strategies: []StrategyConfig{sc}}
 	}
-	// Scalar↔regime mode flip with open position: REJECTED.
 	old := mkOld()
 	mult := 2.0
 	ns := old
@@ -376,11 +360,9 @@ func TestValidateHotReloadStateCompatible_BlocksRegimeShapeChangeWhileOpen(t *te
 	if err == nil || !strings.Contains(err.Error(), "stop_loss_atr_regime mode changed") {
 		t.Fatalf("expected mode-change rejection with open position, got: %v", err)
 	}
-	// Same flip while flat: ACCEPTED.
 	if err := validateHotReloadStateCompatible(mkCfg(old), mkCfg(ns), flatState); err != nil {
 		t.Fatalf("flat-position hot reload should be accepted, got: %v", err)
 	}
-	// Shape change (use_defaults → explicit values) with open position: REJECTED.
 	ns2 := mkOld()
 	ns2.StopLossATRRegime = &RegimeATRBlock{
 		TrendRegime: map[string]RegimeATREntry{
@@ -397,8 +379,6 @@ func TestValidateHotReloadStateCompatible_BlocksRegimeShapeChangeWhileOpen(t *te
 }
 
 func TestRegimeATRBlock_IsConfigured(t *testing.T) {
-	// IsConfigured is the raw-aware predicate used by LoadConfig's defaults
-	// loop before ResolveSurface runs (review #735.1).
 	var nilBlock *RegimeATRBlock
 	if nilBlock.IsConfigured() {
 		t.Fatalf("nil block should not be configured")
@@ -444,8 +424,6 @@ func TestValidateRegimeATRConfig_RejectsScalarRegimeMutex(t *testing.T) {
 	}
 }
 
-// TestParseRegimeATRBlock_AtrMultipleCanonical locks in the #841 canonical
-// trigger key after v15 dropped the legacy "atr" alias.
 func TestParseRegimeATRBlock_AtrMultipleCanonical(t *testing.T) {
 	block := map[string]interface{}{
 		regimeClassifierKey: map[string]interface{}{
@@ -474,7 +452,6 @@ func TestParseRegimeATRBlock_AtrMultipleCanonical(t *testing.T) {
 		t.Fatal("legacy atr key should be rejected")
 	}
 
-	// Both keys in one entry → ambiguous, rejected.
 	both := map[string]interface{}{
 		regimeClassifierKey: map[string]interface{}{
 			"trending_up":   map[string]interface{}{"atr_multiple": 2.0, "atr": 9.0},
@@ -488,11 +465,6 @@ func TestParseRegimeATRBlock_AtrMultipleCanonical(t *testing.T) {
 	}
 }
 
-// TestValidateRegimeATRConfig_RegimeOwnerMutexAllPairs pins the #1234 audit
-// invariant that each regime stop block is mutually exclusive with EVERY other
-// stop-loss owner — all nine regime-involving pairs, not just the two that had
-// bespoke regression tests. Losing any pair silently allows two owners to arm
-// competing stops on the same position.
 func TestValidateRegimeATRConfig_RegimeOwnerMutexAllPairs(t *testing.T) {
 	pf := func(v float64) *float64 { return &v }
 	regimeBlock := func() *RegimeATRBlock { return &RegimeATRBlock{raw: adx3StateATR(2.0)} }

@@ -1,8 +1,3 @@
-"""
-IBKR ExchangeAdapter — implements ExchangeAdapter for CME crypto options.
-Uses Black-Scholes for premium estimation (paper trading / fallback).
-Live trading requires IBKRPaperAdapter from paper_adapter.py and TWS connection.
-"""
 
 import sys
 import os as _os
@@ -14,16 +9,14 @@ sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '
 
 from pricing import bs_price_and_greeks
 
-# CME contract specs: interval = minimum strike increment, multiplier = contract size
 CME_SPECS = {
-    "BTC": {"interval": 1000, "multiplier": 0.1},  # Micro Bitcoin
-    "ETH": {"interval": 50,   "multiplier": 0.5},  # Micro Ether
+    "BTC": {"interval": 1000, "multiplier": 0.1},
+    "ETH": {"interval": 50,   "multiplier": 0.5},
 }
 DEFAULT_SPECS = {"interval": 100, "multiplier": 1.0}
 
 
 def _get_spot_price(underlying: str) -> float:
-    """Fetch spot price via ccxt Binance US."""
     import ccxt
     exchange = ccxt.binanceus({"enableRateLimit": True})
     for suffix in ("/USDT", "/USD"):
@@ -38,7 +31,6 @@ def _get_spot_price(underlying: str) -> float:
 
 
 def _calc_vol_and_iv_rank(underlying: str) -> Tuple[float, float]:
-    """Compute historical vol and IV rank from OHLCV data."""
     try:
         import ccxt
         exchange = ccxt.binanceus({"enableRateLimit": True})
@@ -54,7 +46,6 @@ def _calc_vol_and_iv_rank(underlying: str) -> Tuple[float, float]:
         variance = sum((r - mean) ** 2 for r in returns[-w:]) / w
         vol = math.sqrt(variance) * math.sqrt(365)
 
-        # IV rank (rolling HV comparison)
         hvs = []
         for i in range(len(returns) - w + 1):
             chunk = returns[i:i + w]
@@ -75,10 +66,6 @@ def _calc_vol_and_iv_rank(underlying: str) -> Tuple[float, float]:
 
 
 class IBKRExchangeAdapter:
-    """
-    ExchangeAdapter for IBKR/CME crypto options.
-    Uses CME-aligned strikes and Black-Scholes for all premium estimates.
-    """
 
     @property
     def name(self) -> str:
@@ -91,13 +78,11 @@ class IBKRExchangeAdapter:
         return _calc_vol_and_iv_rank(underlying)
 
     def get_real_expiry(self, underlying: str, target_dte: int) -> Tuple[str, int]:
-        """Return synthetic expiry at exactly target_dte days from now."""
         expiry_dt = datetime.now(timezone.utc) + timedelta(days=target_dte)
         return expiry_dt.strftime("%Y-%m-%d"), target_dte
 
     def get_real_strike(self, underlying: str, expiry: str,
                         option_type: str, target_strike: float) -> float:
-        """Return CME-aligned strike closest to target."""
         specs = CME_SPECS.get(underlying.upper(), DEFAULT_SPECS)
         interval = specs["interval"]
         return round(target_strike / interval) * interval
@@ -105,9 +90,8 @@ class IBKRExchangeAdapter:
     def get_premium_and_greeks(self, underlying: str, option_type: str,
                                 strike: float, expiry: str, dte: float,
                                 spot: float, vol: float) -> Tuple[float, float, dict]:
-        """Estimate premium using Black-Scholes. Returns (mark_pct, premium_usd, greeks)."""
         if vol <= 0:
-            vol = 0.80  # crypto default
+            vol = 0.80
         price_usd, greeks = bs_price_and_greeks(spot, strike, dte, vol, option_type=option_type)
         mark_pct = (price_usd / spot) if spot > 0 else 0.0
         return round(mark_pct, 6), round(price_usd, 2), greeks

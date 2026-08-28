@@ -1,4 +1,3 @@
-"""Tests for OKXExchangeAdapter — mock ccxt to avoid live API calls."""
 
 import sys
 import os
@@ -6,13 +5,11 @@ import importlib.util
 import pytest
 from unittest.mock import MagicMock, patch
 
-# Load okx adapter by file path to avoid module name collisions
 _adapter_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "adapter.py")
 _shared_tools = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'shared_tools'))
 if _shared_tools not in sys.path:
     sys.path.insert(0, _shared_tools)
 
-# Load the module once to get the class reference
 _spec = importlib.util.spec_from_file_location("okx_adapter", _adapter_path)
 _mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_mod)
@@ -21,12 +18,10 @@ OKXExchangeAdapter = _mod.OKXExchangeAdapter
 
 @pytest.fixture
 def adapter():
-    """Create OKXExchangeAdapter in paper mode with a mocked ccxt exchange."""
     mock_ex = MagicMock()
     with patch.dict(os.environ, {}, clear=False):
         for key in ("OKX_API_KEY", "OKX_API_SECRET", "OKX_PASSPHRASE", "OKX_SANDBOX"):
             os.environ.pop(key, None)
-        # Patch ccxt.okx in the loaded module so __init__ uses our mock
         orig_ccxt_okx = _mod.ccxt.okx
         _mod.ccxt.okx = MagicMock(return_value=mock_ex)
         try:
@@ -35,8 +30,6 @@ def adapter():
             _mod.ccxt.okx = orig_ccxt_okx
     return a, mock_ex
 
-
-# ─── Properties ────────────────────────────────────
 
 class TestProperties:
     def test_name(self, adapter):
@@ -64,8 +57,6 @@ class TestProperties:
             assert a.is_live is True
             assert a.mode == "live"
 
-
-# ─── Market Data ───────────────────────────────────
 
 class TestMarketData:
     def test_get_spot_price(self, adapter):
@@ -153,8 +144,6 @@ class TestMarketData:
         assert a.get_funding_history("BTC") == []
 
 
-# ─── Order Execution ──────────────────────────────
-
 class TestOrderExecution:
     def test_market_open_paper_raises(self, adapter):
         a, _ = adapter
@@ -217,19 +206,14 @@ class TestOrderExecution:
         mock_ex.create_market_order.side_effect = [{"id": "aaa"}, {"id": "bbb"}]
         result = a.market_close("BTC")
         assert mock_ex.create_market_order.call_count == 2
-        # Verify first call closes the long (sell side)
         first_call = mock_ex.create_market_order.call_args_list[0]
-        assert first_call[0][1] == "sell"  # close long = sell
+        assert first_call[0][1] == "sell"
         assert first_call[0][2] == 1.5
-        # Verify second call closes the short (buy side)
         second_call = mock_ex.create_market_order.call_args_list[1]
-        assert second_call[0][1] == "buy"  # close short = buy
+        assert second_call[0][1] == "buy"
         assert second_call[0][2] == 0.8
-        # Returns first result
         assert result == {"id": "aaa"}
 
-
-# ─── Options Protocol ──────────────────────────────
 
 class TestOptionsProtocol:
     def test_get_vol_metrics(self, adapter):
@@ -314,20 +298,17 @@ class TestOptionsProtocol:
         assert strike == 68000.0
 
     def test_get_premium_and_greeks_fallback(self, adapter):
-        """When live quote fails and BS import has arg mismatch, returns zeros."""
         a, mock_ex = adapter
         mock_ex.markets = {}
         mock_ex.load_markets.return_value = {}
         pct, usd, greeks = a.get_premium_and_greeks(
             "BTC", "call", 70000, "2026-05-01", 30, 67000, 0.6
         )
-        # Returns a valid tuple (may be zeros if BS fallback also fails)
         assert isinstance(pct, float)
         assert isinstance(usd, float)
         assert "delta" in greeks
 
     def test_get_premium_and_greeks_live_quote(self, adapter):
-        """When a matching option market exists, returns live quote data."""
         a, mock_ex = adapter
         from datetime import datetime, timezone, timedelta
         now = datetime.now(timezone.utc)
@@ -359,11 +340,8 @@ class TestOptionsProtocol:
         assert greeks["delta"] == 0.45
 
 
-# ─── #1105 account bills + coherent equity/uPnL (cash-flow journal) ─────────
-
 def _ledger_entry(bill_id, ts, balchg="1", ccy="USDT", btype="2", sub="",
                   pnl="0", fee="0", inst="BTC-USDT-SWAP", trade="t1"):
-    """A ccxt fetch_ledger entry carrying a raw OKX bill in `info`."""
     return {
         "id": bill_id,
         "timestamp": ts,
@@ -431,7 +409,7 @@ class TestGetAccountEquityAndUPnL:
         }
         eq, upnl = a.get_account_equity_and_upnl()
         assert eq == 1000.0
-        assert upnl == 100.0  # eq - cashBal, one coherent snapshot
+        assert upnl == 100.0
 
     def test_missing_cash_bal_defaults_upnl_zero(self, adapter):
         a, mock_ex = adapter
@@ -462,43 +440,38 @@ class TestGetAccountBills:
     def test_full_page_advances_with_overlap_not_plus_one(self, adapter):
         a, mock_ex = adapter
         a._is_live = True
-        page1 = [_ledger_entry(f"p1-{i}", 100 + i, "1") for i in range(100)]  # ts 100..199
-        page2 = [_ledger_entry("p2-0", 500, "2")]  # short → stop
+        page1 = [_ledger_entry(f"p1-{i}", 100 + i, "1") for i in range(100)]
+        page2 = [_ledger_entry("p2-0", 500, "2")]
         mock_ex.fetch_ledger.side_effect = [page1, page2]
         bills, capped = a.get_account_bills(since_ms=0, page_limit=100)
         assert capped is False
         assert len(bills) == 101
         assert mock_ex.fetch_ledger.call_count == 2
-        # Overlap: next cursor is the page's last ts (199), NOT last_ts + 1.
         assert mock_ex.fetch_ledger.call_args_list[1].kwargs["since"] == 199
 
     def test_same_ms_straddle_across_page_boundary_is_captured(self, adapter):
         a, mock_ex = adapter
         a._is_live = True
-        # page1 fills exactly 100 entries, the last (p-99) at ts=199. A SECOND bill
-        # at ts=199 (p-100) falls beyond the cut. cursor=199 (overlap) re-fetches it.
-        page1 = [_ledger_entry(f"p-{i}", 100 + i, "1") for i in range(100)]  # p-99 @ 199
-        page2 = [_ledger_entry("p-99", 199, "1"),       # dup (deduped)
-                 _ledger_entry("p-100", 199, "1"),      # the straddling bill
-                 _ledger_entry("p-105", 205, "1")]      # short page → stop
+        page1 = [_ledger_entry(f"p-{i}", 100 + i, "1") for i in range(100)]
+        page2 = [_ledger_entry("p-99", 199, "1"),
+                 _ledger_entry("p-100", 199, "1"),
+                 _ledger_entry("p-105", 205, "1")]
         mock_ex.fetch_ledger.side_effect = [page1, page2]
         bills, capped = a.get_account_bills(since_ms=0, page_limit=100)
         ids = [b["bill_id"] for b in bills]
-        assert "p-100" in ids                      # same-ms straddler NOT skipped
-        assert ids.count("p-99") == 1              # dedup absorbed the overlap
+        assert "p-100" in ids
+        assert ids.count("p-99") == 1
         assert capped is False
 
     def test_same_ms_block_larger_than_page_fails_closed(self, adapter):
         a, mock_ex = adapter
         a._is_live = True
-        # Every bill shares ts=100 and the page is always full → cannot advance by
-        # timestamp without dropping the tail, so the adapter caps (fail closed).
         page = [_ledger_entry(f"x-{i}", 100, "1") for i in range(10)]
-        mock_ex.fetch_ledger.return_value = page  # same full page every call
+        mock_ex.fetch_ledger.return_value = page
         bills, capped = a.get_account_bills(since_ms=0, page_limit=10, max_bills=10000)
         assert capped is True
         assert len(bills) == 10
-        assert mock_ex.fetch_ledger.call_count == 2  # second call detects no progress
+        assert mock_ex.fetch_ledger.call_count == 2
 
     def test_capped_on_max_bills_truncates_oldest_prefix(self, adapter):
         a, mock_ex = adapter
@@ -528,16 +501,8 @@ class TestGetAccountBills:
         assert "d-new" in ids and ids.count("d-99") == 1
 
     def test_loop_budget_exhaustion_reports_capped(self, adapter):
-        # A backlog larger than the iteration budget, with same-ms clustering so
-        # the overlap re-read makes net-new-per-page < page_limit. The loop must
-        # exhaust its budget and report capped=True (NOT fall through to False with
-        # an incomplete prefix that the Go journal would treat as complete).
         a, mock_ex = adapter
         a._is_live = True
-        # 400 bills, 2 per ms (ts 0,0,1,1,2,2,...,199,199); page_limit 10,
-        # max_bills 100 → budget = 100//10 + 2 = 12 iterations. Overlap nets ~8
-        # new/page, so 12 pages can't reach 100 → budget runs out while the feed
-        # still has bills, below the max_bills cap.
         all_bills = [_ledger_entry(f"x-{i}", i // 2, "1") for i in range(400)]
 
         def side_effect(*args, **kwargs):
@@ -548,14 +513,12 @@ class TestGetAccountBills:
         mock_ex.fetch_ledger.side_effect = side_effect
         bills, capped = a.get_account_bills(since_ms=0, page_limit=10, max_bills=100)
         assert capped is True, "budget exhaustion must report capped=True, not False"
-        assert len(bills) < 400  # an incomplete prefix, correctly flagged
+        assert len(bills) < 400
 
     def test_drained_distinct_ts_not_spuriously_capped(self, adapter):
-        # The inverse: a fully-drained feed of distinct timestamps that exits on a
-        # short page must stay capped=False (no spurious cap from the for…else).
         a, mock_ex = adapter
         a._is_live = True
-        all_bills = [_ledger_entry(f"d-{i}", 100 + i, "1") for i in range(25)]  # < max_bills
+        all_bills = [_ledger_entry(f"d-{i}", 100 + i, "1") for i in range(25)]
 
         def side_effect(*args, **kwargs):
             since = kwargs.get("since", 0)
@@ -565,4 +528,4 @@ class TestGetAccountBills:
         mock_ex.fetch_ledger.side_effect = side_effect
         bills, capped = a.get_account_bills(since_ms=0, page_limit=10, max_bills=100)
         assert capped is False
-        assert len(bills) == 25  # whole feed drained
+        assert len(bills) == 25

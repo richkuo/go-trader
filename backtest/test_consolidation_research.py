@@ -1,4 +1,3 @@
-"""Tests for the consolidation characterization study (synthetic, no network)."""
 
 import os
 import sys
@@ -8,7 +7,7 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from consolidation_research import (  # noqa: E402
+from consolidation_research import (
     Episode,
     detect_range_containment,
     detect_regression_flatness,
@@ -60,14 +59,13 @@ def test_flat_box_detected_and_measured():
     assert abs(box["mid"] - 100.0) < 0.1
 
     shape = measure_shape(df, ep)
-    # flat box: both edge slopes near zero.
     assert abs(shape["top_edge_slope"]) < 1e-3
     assert abs(shape["bottom_edge_slope"]) < 1e-3
 
 
 def test_contracting_triangle_shape():
     n = 24
-    span = np.linspace(3.0, 0.3, n)  # converging
+    span = np.linspace(3.0, 0.3, n)
     level = 100.0
     highs = level + span
     lows = level - span
@@ -75,14 +73,12 @@ def test_contracting_triangle_shape():
     df = _candles(highs, lows, closes)
     ep = Episode(start_idx=0, end_idx=n, method="t")
     shape = measure_shape(df, ep)
-    # width contracts -> ratio < 1; top edge falls, bottom edge rises.
     assert shape["width_contraction"] < 1.0
     assert shape["top_edge_slope"] < 0
     assert shape["bottom_edge_slope"] > 0
 
 
 def test_escape_candle_flagged_upward():
-    # 12 quiet bars then a large up candle.
     quiet_h = [100.4] * 12
     quiet_l = [99.6] * 12
     quiet_c = [100.0] * 12
@@ -123,14 +119,12 @@ def test_no_escape_when_episode_runs_to_end():
 
 
 def test_regression_flatness_detects_flat_run():
-    # flat noisy run then a steep ramp.
     flat = np.full(16, 100.0) + np.random.RandomState(0).normal(0, 0.05, 16)
     ramp = np.linspace(100.5, 130.0, 16)
     closes = np.concatenate([flat, ramp])
     df = _candles(closes + 0.1, closes - 0.1, closes)
     eps = detect_regression_flatness(df, min_bars=8)
     assert eps, "should detect the flat run"
-    # the flat segment should sit in the first half.
     assert eps[0].start_idx < 16
 
 
@@ -141,12 +135,10 @@ def test_volatility_contraction_runs():
     closes = np.concatenate([wide, tight])
     df = _candles(closes + 0.2, closes - 0.2, closes)
     eps = detect_volatility_contraction(df, min_bars=8, bb_period=20)
-    # tight tail should produce at least one episode.
     assert isinstance(eps, list)
 
 
 def test_detector_cache_matches_uncached():
-    # A sweep-like series with a couple of ranges and moves.
     rng = np.random.RandomState(3)
     seg1 = 100 + rng.normal(0, 0.2, 30)
     ramp = np.linspace(100, 115, 20)
@@ -155,9 +147,7 @@ def test_detector_cache_matches_uncached():
     df = _candles(closes + 0.3, closes - 0.3, closes)
 
     cache = {}
-    # Vary only box_width_pct (range_containment param); other detectors depend
-    # on min_bars/flatness/bandwidth, so they must be reused from cache.
-    for bwp in (0.02, 0.03, 0.02):  # repeat 0.02 to exercise a cache hit
+    for bwp in (0.02, 0.03, 0.02):
         params = {"min_bars": 8, "box_width_pct": bwp, "bandwidth_threshold": 0.7,
                   "flatness_slope": 0.0006, "flatness_residual": 0.02,
                   "escape_k": 1.5, "atr_period": 14}
@@ -169,28 +159,20 @@ def test_detector_cache_matches_uncached():
             b = [(e.start_idx, e.end_idx) for e in res_cached[name]]
             assert a == b, f"{name} episodes differ with cache at bwp={bwp}"
         pd.testing.assert_frame_equal(bench_uncached, bench_cached)
-    # cache should hold the two distinct range_containment keys + 1 each for the
-    # two cache-independent detectors (min_bars constant across cells).
     assert len(cache) >= 3
 
 
 def test_classify_pattern_named_shapes():
-    # rectangle: both edges flat
     assert classify_pattern({"top_edge_travel": 0.05,
                              "bottom_edge_travel": -0.05}) == "rectangle"
-    # ascending triangle: flat top, rising bottom
     assert classify_pattern({"top_edge_travel": 0.1,
                              "bottom_edge_travel": 0.6}) == "ascending_triangle"
-    # descending triangle: falling top, flat bottom
     assert classify_pattern({"top_edge_travel": -0.6,
                              "bottom_edge_travel": 0.05}) == "descending_triangle"
-    # symmetrical triangle: converging
     assert classify_pattern({"top_edge_travel": -0.6,
                              "bottom_edge_travel": 0.6}) == "symmetrical_triangle"
-    # broadening: diverging
     assert classify_pattern({"top_edge_travel": 0.6,
                              "bottom_edge_travel": -0.6}) == "broadening"
-    # wedges
     assert classify_pattern({"top_edge_travel": 0.6,
                              "bottom_edge_travel": 0.6}) == "rising_wedge"
     assert classify_pattern({"top_edge_travel": -0.6,
@@ -208,18 +190,16 @@ def test_classify_pattern_via_measure_shape_on_triangle():
 
 
 def test_volume_profile_poc_and_value_area():
-    # Concentrate volume in the middle of a flat box -> POC near mid, VA inside box.
     n = 30
     level = 100.0
     highs = np.full(n, 100.5)
     lows = np.full(n, 99.5)
     closes = np.full(n, level)
-    # heavy volume on bars sitting at the mid, light at the edges
     closes[:5] = 100.4
     closes[-5:] = 99.6
     df = _candles(highs, lows, closes)
     df["volume"] = [1.0] * n
-    df.iloc[10:20, df.columns.get_loc("volume")] = 50.0  # mid-heavy
+    df.iloc[10:20, df.columns.get_loc("volume")] = 50.0
     from consolidation_research import Episode
     vp = measure_volume_profile(df, Episode(0, n, "t"), bins=10)
     assert 99.5 <= vp["poc"] <= 100.5

@@ -1,28 +1,4 @@
 #!/usr/bin/env python3
-"""Entry-condition split for the #1054 regime_adaptive_htf M1 noise verdict.
-
-Step 3 of the issue asks, IF the gross edge survives the noise check, which
-entry/regime condition produces the positive-gross trades. The edge did not
-survive (backtest/gross_edge_noise.py: permutation p=0.39 on the M5 slices,
-NO_POSITIVE_EDGE pooled across all five windows), so this split is
-DESCRIPTIVE evidence for the deprecate write-up, not a selectivity search:
-it shows the trade universe has essentially one entry condition
-(ranging_volatile fades), i.e. there is no second regime axis a selectivity
-knob could isolate without slicing a 37-trade sample below any defensible
-inference bar.
-
-Method: re-runs the fee audit's zero-friction gross legs through
-``eval_windows.run_leg(keep_trades=True)`` (harness-identical trade universe),
-re-applies the strategy to the same cached slice to recover its own
-``rah_label`` / ``rah_raw_label`` columns, and joins each trade to the label
-at its SIGNAL bar — the bar strictly before the entry fill, per the engine's
-signal-at-N-fills-at-N+1 contract (the fill bar's label can already have
-flipped; joining there would misattribute boundary entries).
-
-Run from repo root:
-  uv run --no-sync python backtest/candidates/rahtf_1054/entry_condition_split.py \\
-      --json backtest/candidates/rahtf_1054/entry_condition_split.json
-"""
 
 from __future__ import annotations
 
@@ -39,7 +15,7 @@ if _BACKTEST_DIR not in sys.path:
     sys.path.insert(0, _BACKTEST_DIR)
 sys.path.insert(0, os.path.join(_BACKTEST_DIR, "..", "shared_tools"))
 
-from eval_windows import (  # noqa: E402  (path bootstrap above)
+from eval_windows import (
     DATASETS,
     DEFAULT_CAPITAL,
     WINDOWS,
@@ -48,17 +24,10 @@ from eval_windows import (  # noqa: E402  (path bootstrap above)
 )
 
 STRATEGY = "regime_adaptive_htf"
-DEFAULT_WINDOWS = ("is", "oos")  # the M5 screen slices under adjudication
+DEFAULT_WINDOWS = ("is", "oos")
 
 
 def signal_bar_labels(df_signals, entry_dates: List[str]) -> List[dict]:
-    """Label each entry with rah_label/rah_raw_label at its SIGNAL bar.
-
-    The engine fills a bar-N signal at bar N+1's open, so the entry decision
-    was gated on bar N's confirmed label — one index position before the
-    trade's ``entry_date``. A fill at the first bar (no prior bar) or an
-    entry_date missing from the index labels as "?" rather than guessing.
-    """
     import pandas as pd
 
     out = []
@@ -76,7 +45,6 @@ def signal_bar_labels(df_signals, entry_dates: List[str]) -> List[dict]:
 
 
 def split_stats(samples: List[dict], key: str) -> dict:
-    """Mean/count/positive-count of per-trade gross returns grouped by key."""
     groups = defaultdict(list)
     for s in samples:
         groups[s[key]].append(s["pnl_pct"])
@@ -126,7 +94,7 @@ def collect(window_names: List[str]) -> List[dict]:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    p = argparse.ArgumentParser()
     p.add_argument("--windows", default=",".join(DEFAULT_WINDOWS))
     p.add_argument("--json", default=None, dest="json_out")
     args = p.parse_args(argv)

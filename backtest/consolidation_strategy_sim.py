@@ -1,28 +1,3 @@
-"""
-Consolidation Range strategy simulator (research-grade, look-ahead safe).
-
-Runs the consolidation_range entry/exit rules over historical candles WITHOUT
-wiring the full open/close strategy into the scheduler, so we can measure the
-edge (and the drift filter's effect) before committing to the Go/Python build.
-
-Logic (matches the strategy spec, config A geometry close):
-  - Box = trailing `min_bars` window whose high-low span is within `box_width_pct`
-    of mid (computed from PAST bars only).
-  - Entry near an edge: long if close is in the bottom `edge_entry_frac` of the
-    box, short if in the top. Fill at NEXT bar open (no look-ahead).
-  - Drift veto: net edge drift (top+bottom linear-fit travel over the window, as a
-    fraction of box height) > drift_threshold suppresses shorts; < -threshold
-    suppresses longs. Toggle with --no-drift-filter.
-  - Exit: TP1 = box mean (close 50%), TP2 = opposite edge (close rest),
-    SL = stop_atr_mult x ATR beyond the entry-side edge. Same-bar SL-before-TP
-    (pessimistic). Time-stop at max_hold bars -> market exit.
-  - PnL measured in R (risk = entry-to-SL distance); 1R risked per trade.
-
-Usage:
-  uv run --no-sync python backtest/consolidation_strategy_sim.py \
-      --symbol BTC/USDT --timeframe 1h --since 2021-01-01 \
-      --box-width-pct 0.02 --min-bars 12
-"""
 
 import argparse
 import os
@@ -34,7 +9,7 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "shared_tools"))
 
-from consolidation_research import atr, _linfit_slope  # noqa: E402
+from consolidation_research import atr, _linfit_slope
 
 
 def _trailing_box(highs, lows, i, win):
@@ -73,17 +48,16 @@ def simulate(df, params, regime=None):
             continue
         if regime_filter and regime is not None and regime[i] != "ranging":
             i += 1
-            continue  # only open in a ranging regime (allowed_regimes=["ranging"])
+            continue
 
-        pos = (closes[i] - bottom) / height  # 0=bottom, 1=top
-        # net drift over the window as a fraction of box height
+        pos = (closes[i] - bottom) / height
         drift = (_linfit_slope(seg_h) + _linfit_slope(seg_l)) * win / height
 
         direction = 0
         if pos <= edge:
-            direction = 1  # long at bottom
+            direction = 1
         elif pos >= 1 - edge:
-            direction = -1  # short at top
+            direction = -1
 
         if direction == 0:
             i += 1
@@ -91,12 +65,11 @@ def simulate(df, params, regime=None):
         if drift_filter:
             if drift > drift_thr and direction == -1:
                 i += 1
-                continue  # don't short an up-drifting box
+                continue
             if drift < -drift_thr and direction == 1:
                 i += 1
-                continue  # don't long a down-drifting box
+                continue
 
-        # Enter at next bar open.
         entry = opens[i + 1]
         risk = stop_mult * atr_arr[i]
         if risk <= 0:
@@ -107,20 +80,19 @@ def simulate(df, params, regime=None):
         else:
             sl, tp1, tp2 = top + risk, mid, bottom
 
-        # hybrid: after TP1 at mean, trail the runner instead of capping at tp2.
         hybrid = params.get("exit_mode", "geometry") == "hybrid"
         trail_unit = params.get("trail_atr_mult", 1.5) * atr_arr[i]
-        f = params.get("tp1_frac", 0.5)  # fraction scaled out at the mean (0 = full trail)
-        filled_tp1 = (f <= 0.0)  # if no TP1 leg, treat as already past it
+        f = params.get("tp1_frac", 0.5)
+        filled_tp1 = (f <= 0.0)
         realized_r = 0.0
         exit_idx = None
-        hwm = entry  # high-water mark for the trailing runner (long); low-water for short
-        run_frac = (1.0 - f)  # remaining size after the TP1 scale-out
+        hwm = entry
+        run_frac = (1.0 - f)
         for j in range(i + 1, min(i + 1 + max_hold, n)):
             hi, lo = highs[j], lows[j]
             if direction == 1:
                 run_stop = (hwm - trail_unit) if (filled_tp1 and hybrid) else sl
-                if lo <= run_stop:  # SL / trailing stop first (pessimistic)
+                if lo <= run_stop:
                     realized_r += (run_frac if filled_tp1 else 1.0) * (run_stop - entry) / risk
                     exit_idx = j
                     break
@@ -131,8 +103,8 @@ def simulate(df, params, regime=None):
                 if filled_tp1:
                     hwm = max(hwm, hi)
                     if hybrid:
-                        continue  # let the runner trail; no fixed tp2 cap
-                if hi >= tp2:  # geometry mode: cap runner at opposite edge
+                        continue
+                if hi >= tp2:
                     realized_r += (run_frac if filled_tp1 else 1.0) * (tp2 - entry) / risk
                     exit_idx = j
                     break
@@ -154,14 +126,12 @@ def simulate(df, params, regime=None):
                     realized_r += (run_frac if filled_tp1 else 1.0) * (entry - tp2) / risk
                     exit_idx = j
                     break
-        if exit_idx is None:  # time-stop: market exit at last bar's close
+        if exit_idx is None:
             exit_idx = min(i + max_hold, n - 1)
             last = closes[exit_idx]
             frac = run_frac if filled_tp1 else 1.0
             realized_r += frac * ((last - entry) if direction == 1 else (entry - last)) / risk
 
-        # Trading cost: ~2 sides of turnover (1 in, 1 out across scale-outs) at
-        # cost_bps per side, expressed in R via risk distance.
         cost_bps = params.get("cost_bps", 0.0)
         cost_r = (2.0 * (cost_bps / 10000.0) * entry / risk) if cost_bps else 0.0
         realized_r -= cost_r
@@ -171,7 +141,7 @@ def simulate(df, params, regime=None):
             "r": realized_r, "hit_tp1": filled_tp1,
             "bars_held": exit_idx - (i + 1),
         })
-        i = exit_idx + 1  # no overlapping trades
+        i = exit_idx + 1
 
     return pd.DataFrame(trades)
 
@@ -238,7 +208,6 @@ def main(argv=None):
         "max_hold": args.max_hold or args.min_bars * 3,
     }
     rows = []
-    # (label, drift_filter, regime_filter, exit_mode)
     matrix = [
         ("geometry: baseline", False, False, "geometry"),
         ("geometry: drift only", True, False, "geometry"),

@@ -1,18 +1,4 @@
 #!/usr/bin/env python3
-"""
-TopStep live account-balance fetcher (issue #1106 — exchange-sourced cash-flow
-journal, shadow phase / Phase 4 of #1100).
-
-Emits the USD account equity (settled cash + unrealized PnL) for the configured
-TopStep account, plus the unrealized-PnL component from the SAME read, so the Go
-cash-flow journal reconciles a coherent equity/uPnL snapshot (no intra-cycle
-jitter). Mirrors fetch_okx_balance.py.
-
-Requires TOPSTEP_API_KEY / TOPSTEP_API_SECRET / TOPSTEP_ACCOUNT_ID. Output:
-``{"balance": 1234.56, "unrealized_pnl": 5.0, "platform": "topstep",
-  "timestamp": ..., "error": "..."}``
-where ``balance`` is the USD equity and ``unrealized_pnl`` is equity − cashBalance.
-"""
 
 import json
 import os

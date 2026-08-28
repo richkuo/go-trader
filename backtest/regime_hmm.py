@@ -1,5 +1,3 @@
-# backtest/regime_hmm.py
-"""Label-anchored Gaussian HMM: closed-form fit + causal forward-filter (#1065)."""
 from __future__ import annotations
 import numpy as np
 
@@ -32,17 +30,13 @@ def fit_label_anchored_hmm(features, labels, states, *, filter_window,
         zs = z[y == s]
         if len(zs) >= 2:
             em_mean, em_var = zs.mean(0), zs.var(0)
-        else:  # degenerate: anchor at standardized origin, unit variance (flagged by n)
+        else:
             em_mean, em_var = np.zeros(z.shape[1]), np.ones(z.shape[1])
         em_var = np.maximum(em_var, var_floor)
         emissions.append({"mean": em_mean.tolist(), "var": em_var.tolist(), "n": int(len(zs))})
     si = {s: i for i, s in enumerate(states)}
     k = len(states)
     A = np.full((k, k), float(laplace))
-    # Transition counts only between bars adjacent in the ORIGINAL series AND both retained
-    # (non-NaN features). The old NaN-dropped zip spliced a mid-series NaN (low-ATR) bar's
-    # pre- and post-NaN neighbours into a spurious adjacency; pairs spanning a dropped bar
-    # are now skipped so the fitted transition matrix matches true bar-to-bar dynamics (#1078).
     for i in range(len(mask) - 1):
         if mask[i] and mask[i + 1]:
             A[si[labels[i]], si[labels[i + 1]]] += 1.0
@@ -83,15 +77,14 @@ def forward_filter_labels(features: np.ndarray, model: dict):
         seen = False
         for t in range(lo, i + 1):
             x = features[t]
-            # predict: alpha'_j = logsumexp_i(alpha_i + log_A[i,j])
             pred = np.array([_logsumexp(alpha + log_A[:, j]) for j in range(k)])
             if np.isnan(x).any():
-                alpha = pred  # carry: transition only, no emission
+                alpha = pred
                 continue
             z = (x - mean) / std
             log_emit = -0.5 * (np.log(2 * np.pi * em_var) + (z - em_mean) ** 2 / em_var).sum(1)
             alpha = pred + log_emit
-            alpha -= _logsumexp(alpha)  # normalize
+            alpha -= _logsumexp(alpha)
             seen = True
         if seen:
             j = int(np.argmax(alpha))

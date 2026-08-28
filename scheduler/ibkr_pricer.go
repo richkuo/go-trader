@@ -7,8 +7,6 @@ import (
 	"time"
 )
 
-// IBKRPricer implements OptionPricer using Black-Scholes for IBKR/CME crypto options.
-// Uses spot prices from the cycle's price cache rather than live API calls.
 type IBKRPricer struct {
 	spotPrices map[string]float64
 }
@@ -19,7 +17,6 @@ func NewIBKRPricer(spotPrices map[string]float64) *IBKRPricer {
 
 func (p *IBKRPricer) Name() string { return "ibkr" }
 
-// FetchSpotPrice looks up the spot price from the cached prices map.
 func (p *IBKRPricer) FetchSpotPrice(underlying string) (float64, error) {
 	upper := strings.ToUpper(underlying)
 	for _, suffix := range []string{"/USD", "/USDT", "/USDC"} {
@@ -30,8 +27,6 @@ func (p *IBKRPricer) FetchSpotPrice(underlying string) (float64, error) {
 	return 0, fmt.Errorf("no spot price cached for %s", underlying)
 }
 
-// GetOptionPriceFull prices an option using Black-Scholes with default vol (30%).
-// Returns (markPrice in underlying terms, spotPrice in USD, Greeks, error).
 func (p *IBKRPricer) GetOptionPriceFull(underlying, optionType string, strike float64, expiry string) (float64, float64, OptGreeks, error) {
 	spot, err := p.FetchSpotPrice(underlying)
 	if err != nil {
@@ -48,8 +43,8 @@ func (p *IBKRPricer) GetOptionPriceFull(underlying, optionType string, strike fl
 	}
 	T := dte / 365.0
 
-	const vol = 0.80 // crypto default implied vol (80%)
-	const r = 0.05   // risk-free rate
+	const vol = 0.80
+	const r = 0.05
 
 	price, delta, gamma, vega, theta := bsPrice(spot, strike, T, r, vol, strings.ToLower(optionType))
 
@@ -60,7 +55,6 @@ func (p *IBKRPricer) GetOptionPriceFull(underlying, optionType string, strike fl
 		Vega:  vega,
 	}
 
-	// Deribit convention: mark price expressed as fraction of underlying spot.
 	markPrice := 0.0
 	if spot > 0 {
 		markPrice = price / spot
@@ -69,7 +63,6 @@ func (p *IBKRPricer) GetOptionPriceFull(underlying, optionType string, strike fl
 	return markPrice, spot, greeks, nil
 }
 
-// bsPrice computes Black-Scholes option price and Greeks.
 func bsPrice(S, K, T, r, sigma float64, optionType string) (price, delta, gamma, vega, theta float64) {
 	if T <= 0 || sigma <= 0 || S <= 0 || K <= 0 {
 		return 0, 0, 0, 0, 0

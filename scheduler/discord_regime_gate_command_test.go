@@ -8,13 +8,6 @@ import (
 	"testing"
 )
 
-// ─── #1205: /apply-regime-gate interactive command ──────────────────────────
-//
-// These tests pin the pure helpers behind the interactive Discord command:
-// preset lookup, type eligibility, selection parsing, the config mutation, and
-// — most importantly — that the written config still passes the real validator
-// (LoadConfigForProbe) and reloads to the exact #1197 comp_up_clean_p21 shape.
-
 func TestRegimeGatePresetLookup(t *testing.T) {
 	p, ok := regimeGatePresetByName("comp_up_clean_p21")
 	if !ok {
@@ -26,7 +19,6 @@ func TestRegimeGatePresetLookup(t *testing.T) {
 	if len(p.AllowedRegimes) != 1 || p.AllowedRegimes[0] != "trending_up_clean" {
 		t.Errorf("preset allowed_regimes mismatch: %v", p.AllowedRegimes)
 	}
-	// Case/space-insensitive.
 	if _, ok := regimeGatePresetByName("  Comp_Up_Clean_P21 "); !ok {
 		t.Error("lookup should be case/space-insensitive")
 	}
@@ -84,13 +76,8 @@ func TestParseRegimeGateSelection(t *testing.T) {
 	}
 }
 
-// applyRegimeGateToRoot must add the composite window and set the strategy's
-// gate fields, and the result must pass the real validator and reload to the
-// canonical #1197 shape.
 func TestApplyRegimeGateToRoot_RoundTripValidates(t *testing.T) {
 	preset, _ := regimeGatePresetByName(defaultRegimeGatePresetName)
-	// Reuse minimalConfigJSON but make the perps strategy a gateable type
-	// (it already is: "perps"). Point the gate at hl-momentum-eth.
 	root := rootFromJSON(t, minimalConfigJSON)
 	if err := applyRegimeGateToRoot(root, "hl-momentum-eth", preset); err != nil {
 		t.Fatalf("applyRegimeGateToRoot: %v", err)
@@ -130,7 +117,6 @@ func TestApplyRegimeGateToRoot_RoundTripValidates(t *testing.T) {
 	if !found {
 		t.Fatal("target strategy missing after reload")
 	}
-	// The untouched spot strategy must keep no gate.
 	for _, sc := range cfg.Strategies {
 		if sc.ID == "sma-btc" && (sc.RegimeGateWindow != "" || len(sc.AllowedRegimes) != 0) {
 			t.Errorf("untouched strategy gained a gate: %+v", sc)
@@ -138,16 +124,13 @@ func TestApplyRegimeGateToRoot_RoundTripValidates(t *testing.T) {
 	}
 }
 
-// An ineligible strategy type must be refused by the mutation itself
-// (defense-in-depth beyond the picker filter).
 func TestApplyRegimeGateToRoot_RejectsIneligibleType(t *testing.T) {
 	preset, _ := regimeGatePresetByName(defaultRegimeGatePresetName)
 	root := rootFromJSON(t, minimalConfigJSON)
-	err := applyRegimeGateToRoot(root, "sma-btc", preset) // spot
+	err := applyRegimeGateToRoot(root, "sma-btc", preset)
 	if err == nil {
 		t.Fatal("gating a spot strategy must be refused")
 	}
-	// The config must be untouched: no regime block added.
 	if _, ok := root["regime"]; ok {
 		t.Error("regime block must not be added when the mutation is refused")
 	}
@@ -161,8 +144,6 @@ func TestApplyRegimeGateToRoot_UnknownStrategy(t *testing.T) {
 	}
 }
 
-// Re-applying the same gate is idempotent: an already-present matching window is
-// left alone and the config still validates.
 func TestApplyRegimeGateToRoot_IdempotentReapply(t *testing.T) {
 	preset, _ := regimeGatePresetByName(defaultRegimeGatePresetName)
 	root := rootFromJSON(t, minimalConfigJSON)
@@ -179,12 +160,9 @@ func TestApplyRegimeGateToRoot_IdempotentReapply(t *testing.T) {
 	}
 }
 
-// A pre-existing window under the preset's key with a conflicting spec must be
-// refused rather than clobbered — other strategies may reference it.
 func TestEnsureRegimeGateWindow_RefusesConflictingExistingWindow(t *testing.T) {
 	preset, _ := regimeGatePresetByName(defaultRegimeGatePresetName)
 	root := rootFromJSON(t, minimalConfigJSON)
-	// Seed regime.windows.comp_p21 as an ADX window (bare-int shorthand).
 	root["regime"] = json.RawMessage(`{"enabled":true,"windows":{"comp_p21":14}}`)
 	err := ensureRegimeGateWindow(root, preset)
 	if err == nil {
@@ -192,7 +170,6 @@ func TestEnsureRegimeGateWindow_RefusesConflictingExistingWindow(t *testing.T) {
 	}
 }
 
-// A pre-existing window that already matches the preset spec is accepted.
 func TestEnsureRegimeGateWindow_AcceptsMatchingExistingWindow(t *testing.T) {
 	preset, _ := regimeGatePresetByName(defaultRegimeGatePresetName)
 	root := rootFromJSON(t, minimalConfigJSON)
@@ -200,7 +177,6 @@ func TestEnsureRegimeGateWindow_AcceptsMatchingExistingWindow(t *testing.T) {
 	if err := ensureRegimeGateWindow(root, preset); err != nil {
 		t.Fatalf("matching existing window should be accepted: %v", err)
 	}
-	// enabled must be flipped on.
 	var regime map[string]json.RawMessage
 	_ = json.Unmarshal(root["regime"], &regime)
 	var enabled bool
@@ -210,9 +186,6 @@ func TestEnsureRegimeGateWindow_AcceptsMatchingExistingWindow(t *testing.T) {
 	}
 }
 
-// Applying alongside an existing ADX "medium" window (the realistic deployment
-// shape from regime_comp_up_clean_gate_test.go) must keep the ADX window and
-// validate.
 func TestApplyRegimeGateToRoot_AlongsideExistingADXWindow(t *testing.T) {
 	preset, _ := regimeGatePresetByName(defaultRegimeGatePresetName)
 	root := rootFromJSON(t, minimalConfigJSON)
@@ -237,18 +210,6 @@ func TestApplyRegimeGateToRoot_AlongsideExistingADXWindow(t *testing.T) {
 	}
 }
 
-// ─── #1205 review: enabling regime detection must surface the blast radius ───
-//
-// Wiring a gate onto one strategy flips regime.enabled on for the whole config,
-// which silently activates every OTHER strategy that already carries a dormant
-// allowed_regimes gate. These tests pin that the confirm prompt lists that blast
-// radius (and only when the flip actually happens).
-
-// When the apply flips regime.enabled false→true, every OTHER strategy carrying
-// allowed_regimes is newly activated and must be listed — whether via a
-// regime_gate_window or the legacy single-lookback gate (allowed_regimes with no
-// window). The target itself, empty allowed_regimes, and ungated strategies are
-// excluded.
 func TestRegimeGateSideEffectStrategies_FlipActivatesOthers(t *testing.T) {
 	root := rootFromJSON(t, `{
 	  "regime": {"enabled": false, "windows": {"comp_p21": {"classifier": "composite", "period": 21}}},
@@ -264,14 +225,12 @@ func TestRegimeGateSideEffectStrategies_FlipActivatesOthers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("regimeGateSideEffectStrategies: %v", err)
 	}
-	want := []string{"gated-legacy", "gated-window"} // sorted; excludes target/empty/none
+	want := []string{"gated-legacy", "gated-window"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %v, want %v", got, want)
 	}
 }
 
-// Must-survive (1): when regime detection is already enabled there is no flip, so
-// no strategy is newly activated and the prompt must not falsely warn.
 func TestRegimeGateSideEffectStrategies_AlreadyEnabledNoWarn(t *testing.T) {
 	root := rootFromJSON(t, `{
 	  "regime": {"enabled": true, "windows": {"comp_p21": {"classifier": "composite", "period": 21}}},
@@ -289,8 +248,6 @@ func TestRegimeGateSideEffectStrategies_AlreadyEnabledNoWarn(t *testing.T) {
 	}
 }
 
-// An absent regime block reads as disabled, so the flip still happens and other
-// gated strategies are activated.
 func TestRegimeGateSideEffectStrategies_AbsentRegimeBlockActivates(t *testing.T) {
 	root := rootFromJSON(t, `{
 	  "strategies": [
@@ -310,7 +267,6 @@ func TestRegimeGateSideEffectStrategies_AbsentRegimeBlockActivates(t *testing.T)
 func TestBuildRegimeGateConfirmMessage(t *testing.T) {
 	preset, _ := regimeGatePresetByName(defaultRegimeGatePresetName)
 
-	// No side effects → the warning block must be absent.
 	msg := buildRegimeGateConfirmMessage(preset, "hl-momentum-eth", nil)
 	if strings.Contains(msg, "also activates") {
 		t.Errorf("no side effects but warning present:\n%s", msg)
@@ -321,7 +277,6 @@ func TestBuildRegimeGateConfirmMessage(t *testing.T) {
 		}
 	}
 
-	// Side effects → the warning lists the other strategies and their count.
 	msg = buildRegimeGateConfirmMessage(preset, "hl-momentum-eth", []string{"gated-legacy", "gated-window"})
 	for _, want := range []string{"also activates", "2 other", "`gated-legacy`", "`gated-window`"} {
 		if !strings.Contains(msg, want) {
@@ -330,33 +285,16 @@ func TestBuildRegimeGateConfirmMessage(t *testing.T) {
 	}
 }
 
-// Must-survive (3): a strategy newly gated by the regime flip must still manage
-// an open position it already holds — regimeBlocksOpen short-circuits on
-// posQty>0 regardless of the (dis)allowed regime, so only fresh entries are
-// gated. This backs the "Open positions are unaffected" claim in the prompt.
 func TestRegimeGateDoesNotBlockOpenPositionManagement(t *testing.T) {
 	allowed := []string{"trending_up_clean"}
-	// Sanity: a disallowed current regime blocks a fresh entry (flat).
 	if !regimeBlocksOpen(allowed, "ranging", 0, false) {
 		t.Fatal("a disallowed regime must block a fresh entry (posQty=0)")
 	}
-	// With an open position it must NOT block — management passes through.
 	if regimeBlocksOpen(allowed, "ranging", 1.5, false) {
 		t.Error("a newly-activated gate must not block management of an open position")
 	}
 }
 
-// ─── #1206 review: the confirm-time blast radius must be re-verified, not
-// trusted stale, immediately before the write ────────────────────────────────
-//
-// The confirm message's blast-radius list is computed once, before the (up to
-// 60s) confirm wait. regimeGateBlastRadiusGrew is what the handler calls right
-// before the write to decide whether a concurrent edit during that wait
-// invalidated what the operator agreed to.
-
-// Must-survive (1): a concurrent edit adds allowed_regimes to a strategy the
-// operator was never shown — the fresh set gains an id, which must be
-// reported as growth so the handler refuses the write.
 func TestRegimeGateBlastRadiusGrew_ConcurrentAddIsGrowth(t *testing.T) {
 	shown := []string{"gated-window"}
 	fresh := []string{"gated-window", "surprise-strategy"}
@@ -366,9 +304,6 @@ func TestRegimeGateBlastRadiusGrew_ConcurrentAddIsGrowth(t *testing.T) {
 	}
 }
 
-// Must-survive (2): a concurrent edit removes allowed_regimes from a
-// previously-listed strategy — fresh shrinks relative to shown, which must
-// NOT be treated as growth (the write must still proceed).
 func TestRegimeGateBlastRadiusGrew_ConcurrentRemovalIsNotGrowth(t *testing.T) {
 	shown := []string{"gated-legacy", "gated-window"}
 	fresh := []string{"gated-window"}
@@ -377,20 +312,14 @@ func TestRegimeGateBlastRadiusGrew_ConcurrentRemovalIsNotGrowth(t *testing.T) {
 	}
 }
 
-// Must-survive (3): regime detection itself gets enabled by a concurrent edit
-// during the confirm wait, turning what was a real flip (shown non-empty)
-// into a no-op (fresh empty, since regimeGateSideEffectStrategies returns nil
-// once already enabled). That is a shrink to empty, not growth — the write
-// must still proceed with the now-safe (no-op) flip.
 func TestRegimeGateBlastRadiusGrew_ConcurrentEnableCollapsesToNoGrowth(t *testing.T) {
 	shown := []string{"gated-legacy", "gated-window"}
-	var fresh []string // regime.enabled flipped true meanwhile → no side effect
+	var fresh []string
 	if got := regimeGateBlastRadiusGrew(fresh, shown); len(got) != 0 {
 		t.Errorf("a concurrent enable collapsing the flip to a no-op must not be growth, got %v", got)
 	}
 }
 
-// Baseline: an unchanged blast radius is never reported as growth.
 func TestRegimeGateBlastRadiusGrew_UnchangedIsNotGrowth(t *testing.T) {
 	shown := []string{"gated-legacy", "gated-window"}
 	fresh := []string{"gated-legacy", "gated-window"}

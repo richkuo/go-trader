@@ -1,41 +1,3 @@
-"""#1411 Hurst entry gate — backtest-side parity implementation.
-
-This module mirrors ``scheduler/hurst_gate.go`` bar-for-bar so a config that
-gates or scales live does the same thing in backtest. Everything here is a pure
-function of the config plus a rolling Hurst series; the Backtester owns the
-per-bar loop.
-
-PARITY CONTRACT (each item is asserted by tests)
-
-  1. Estimator. H comes from ``hurst_exponent`` in
-     ``shared_strategies/open/indicators_core.py`` — the #1409 single source of
-     truth. It is never reimplemented here.
-
-  2. Frame length. Live computes H over the FULL fetched regime frame, whose
-     depth is ``max(200, 2*max_period - 1 + 10)`` (``regimeOhlcvBaseLimit`` /
-     ``regimeOhlcvMargin`` in scheduler/regime_multi_window.go). The rolling
-     window here uses the identical formula so both sides see the same number
-     of closes.
-
-  3. Look-ahead. The rolling value at bar i uses closes ``[i-W+1, i]``. The
-     DECISION series is that series shifted one bar, so a signal evaluated at
-     bar N reads H computed through bar N-1 — the same one-bar lag the live
-     label gate carries (the live regime column is shifted identically), and
-     the fill still lands at N+1's open.
-
-  4. NaN policy. A NaN reading is UNKNOWN, never 0.5. It neither arms nor
-     disarms; the state simply holds. ``on_failure`` decides whether a fresh
-     open is admitted while H is unknown, and that arm is FLAT-ONLY.
-
-  5. Formula. mode=size uses the ISSUE's ``clamp(|H-0.5|/0.15, floor, 1.0)``.
-     The #1410 calibration study swept a different form
-     (``clamp(1 + gain*e, 0, 1.5)``, which can exceed 1.0); that study shipped
-     no recommendation, so the issue's formula governs on both sides.
-
-  6. Range. The CONFIG bounds are validated to (0, 1) exclusive, but the
-     RUNTIME metric is not bounded above — DFA reads ~2.0 on a near-smooth
-     series. Both comparators stay correct for any finite H.
-"""
 
 from __future__ import annotations
 
@@ -51,7 +13,6 @@ _REPO_ROOT = os.path.join(os.path.dirname(__file__), "..")
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-# Mirrors scheduler/hurst_gate.go.
 HURST_GATE_MODE_GATE = "gate"
 HURST_GATE_MODE_SIZE = "size"
 HURST_ON_FAILURE_OPEN = "open"
@@ -61,11 +22,9 @@ HURST_STATE_UNKNOWN = ""
 HURST_STATE_ARMED = "armed"
 HURST_STATE_DISARMED = "disarmed"
 
-# scheduler/hurst_gate.go: hurstSizeSpan / hurstDefaultSizeFloor.
 HURST_SIZE_SPAN = 0.15
 HURST_DEFAULT_SIZE_FLOOR = 0.25
 
-# scheduler/regime_multi_window.go: regimeOhlcvBaseLimit / regimeOhlcvMargin.
 REGIME_OHLCV_BASE_LIMIT = 200
 REGIME_OHLCV_MARGIN = 10
 
@@ -73,7 +32,6 @@ _hurst_exponent_fn = None
 
 
 def _hurst_exponent(close: pd.Series) -> float:
-    """#1409 SSoT estimator, imported lazily so the module stays cheap."""
     global _hurst_exponent_fn
     if _hurst_exponent_fn is None:
         from shared_strategies.open.indicators_core import hurst_exponent
@@ -83,7 +41,6 @@ def _hurst_exponent(close: pd.Series) -> float:
 
 
 def hurst_live_frame_bars(windows_spec: Optional[dict], regime_period: int = 14) -> int:
-    """Reproduce the live regime OHLCV fetch depth (see PARITY CONTRACT item 2)."""
     max_period = int(regime_period or 14)
     for spec in (windows_spec or {}).values():
         try:
@@ -95,7 +52,6 @@ def hurst_live_frame_bars(windows_spec: Optional[dict], regime_period: int = 14)
 
 
 def normalize_hurst_mode(value) -> str:
-    """Validate a hurst_gate.mode value. Empty defaults to "gate"."""
     raw = str(value or "").strip().lower()
     if raw == "":
         return HURST_GATE_MODE_GATE
@@ -108,7 +64,6 @@ def normalize_hurst_mode(value) -> str:
 
 
 def normalize_hurst_on_failure(value) -> str:
-    """Validate a hurst on_failure value. Empty defaults to "open"."""
     raw = str(value or "").strip().lower()
     if raw == "":
         return HURST_ON_FAILURE_OPEN
@@ -121,15 +76,6 @@ def normalize_hurst_on_failure(value) -> str:
 
 
 def rolling_hurst(close: pd.Series, window: int) -> pd.Series:
-    """Rolling H over a trailing ``window`` of closes.
-
-    Bars with fewer than ``window`` prior observations are NaN — genuinely
-    unknown, exactly as a live process is at start-up before its fetch depth is
-    covered. Never back-filled and never defaulted to 0.5.
-
-    Rounded to 4 decimals to match ``shared_tools/regime.py``, so a bound
-    comparison lands on the same side on both engines.
-    """
     if window < 2:
         raise ValueError(f"hurst window must be >= 2, got {window}")
     values = np.full(len(close), np.nan, dtype=float)
@@ -142,7 +88,6 @@ def rolling_hurst(close: pd.Series, window: int) -> pd.Series:
 
 
 class HurstGate:
-    """Per-bar Hurst gate state machine, mirroring the Go implementation."""
 
     def __init__(self, cfg: dict):
         cfg = dict(cfg or {})
@@ -157,11 +102,8 @@ class HurstGate:
         self.size_floor = (
             floor if (floor is not None and 0 < floor <= 1.0) else HURST_DEFAULT_SIZE_FLOOR
         )
-        # Initial state is UNKNOWN, matching a live process with no persisted
-        # latch. It resolves on the first valid reading.
         self.state = HURST_STATE_UNKNOWN
 
-    # -- state machine ----------------------------------------------------
 
     def _in_arm_band(self, h: float) -> bool:
         if self.min is not None and h < self.min:
@@ -180,7 +122,6 @@ class HurstGate:
         return False
 
     def advance(self, h) -> str:
-        """Apply one observation. NaN/None holds the state (PARITY item 4)."""
         if h is None or not _is_finite(h):
             return self.state
         h = float(h)
@@ -196,22 +137,14 @@ class HurstGate:
             )
         return self.state
 
-    # -- decision ---------------------------------------------------------
 
     def size_multiplier(self, h) -> float:
-        """clamp(|H-0.5|/0.15, size_floor, 1.0); 1.0 for an unknown reading."""
         if h is None or not _is_finite(h):
             return 1.0
         m = abs(float(h) - 0.5) / HURST_SIZE_SPAN
         return min(1.0, max(self.size_floor, m))
 
     def step(self, h, flat: bool) -> tuple[bool, float]:
-        """Advance one bar and return ``(blocks_entry, size_multiplier)``.
-
-        ``flat`` scopes the fail-closed arm: an unknown reading under
-        ``on_failure="closed"`` holds only a FRESH open, never management of an
-        open position (the #1278 ``regimeBlocksOpen`` shape).
-        """
         if not self.enabled:
             return False, 1.0
         known = h is not None and _is_finite(h)
@@ -245,11 +178,6 @@ def _is_finite(v) -> bool:
 
 
 def validate_hurst_gate_config(cfg: dict, prefix: str = "hurst_gate") -> None:
-    """Reject an unusable block, mirroring Go ``validateHurstGateBounds``.
-
-    Runs even when ``enabled`` is false so a parked-but-broken block fails at
-    edit time rather than the first time it is switched on.
-    """
     cfg = dict(cfg or {})
     mode = normalize_hurst_mode(cfg.get("mode"))
     normalize_hurst_on_failure(cfg.get("on_failure"))
@@ -279,8 +207,6 @@ def validate_hurst_gate_config(cfg: dict, prefix: str = "hurst_gate") -> None:
                 )
         return
 
-    # Dependency rules first: they name a more specific cause than the generic
-    # "no band configured" message below, which would otherwise mask them.
     if bounds["disarm_min"] is not None:
         if bounds["min"] is None:
             raise ValueError(

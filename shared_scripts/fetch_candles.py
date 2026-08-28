@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""Fetch OHLCV candles for the embedded scheduler dashboard."""
 
 import argparse
 import json

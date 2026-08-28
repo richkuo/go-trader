@@ -9,13 +9,6 @@ import (
 	"testing"
 )
 
-// #1411 wiring + config-validation inventory.
-//
-// The source-scan tests follow the notional_cap_test.go precedent: they read
-// scheduler/main.go and assert that every regime-gated dispatch group carries a
-// Hurst arm. A seventh dispatch site added later without one fails here rather
-// than silently shipping a gate that covers five platforms out of six.
-
 func readMainSource(t *testing.T) string {
 	t.Helper()
 	b, err := os.ReadFile("main.go")
@@ -42,10 +35,6 @@ func TestHurstGateWiredAtEveryRegimeGatedDispatchSite(t *testing.T) {
 }
 
 func TestHurstGateArmImmediatelyFollowsTheLabelGate(t *testing.T) {
-	// The Hurst gate is layered ON TOP of the label gate: each advanceHurstGate
-	// call must sit after its group's applyRegimeGate, with no other dispatch
-	// group in between. Verified positionally so a future edit cannot move a
-	// Hurst arm into the wrong platform arm.
 	src := readMainSource(t)
 	gateRe := regexp.MustCompile(`applyRegimeGate\(sc, storeRegime, cfg\.Regime, ([A-Za-z.]+)\)`)
 	hurstRe := regexp.MustCompile(`advanceHurstGate\(sc, storeRegime, cfg\.Regime, stratState, &mu, ([A-Za-z.]+)\)`)
@@ -70,9 +59,6 @@ func TestHurstGateArmImmediatelyFollowsTheLabelGate(t *testing.T) {
 }
 
 func TestHurstGateNeverGatesManagementPaths(t *testing.T) {
-	// A negative inventory: the Hurst decision must never appear as a
-	// precondition on any management path. Those paths keep an open position
-	// protected and the gate must never be able to strand them.
 	src := readMainSource(t)
 	forbidden := []string{
 		"hurstDecision.Holds && hyperliquidIsLive",
@@ -86,7 +72,6 @@ func TestHurstGateNeverGatesManagementPaths(t *testing.T) {
 			t.Fatalf("the Hurst gate must never gate a management path; found %q (#1411)", f)
 		}
 	}
-	// Every use of the hold flag must be paired with pausedBlocksSignal.
 	for _, line := range strings.Split(src, "\n") {
 		if strings.Contains(line, "hurstDecision.Holds") && !strings.Contains(line, "pausedBlocksSignal(") {
 			t.Fatalf("unclassified use of hurstDecision.Holds: %q", strings.TrimSpace(line))
@@ -95,43 +80,19 @@ func TestHurstGateNeverGatesManagementPaths(t *testing.T) {
 }
 
 func TestHurstGateSizesTheScaleInAddQuantity(t *testing.T) {
-	// #873 x #1411: a scale-in add INCREASES an open position, so both gate
-	// arms must reach it.
-	//
-	// The HOLD arm reaches it for free: pausedBlocksSignal classifies a
-	// same-side signal on an open position as position-increasing (asserted
-	// behaviourally in TestHurstHoldOnlyBlocksPositionIncreasingSignals), the
-	// dispatch arm zeroes result.Signal, and the scale-in block below only runs
-	// on a surviving signal.
-	//
-	// The SIZE arm is explicit, and is pinned here because
-	// backtest/backtester.py mirrors it inside _try_scale_in_add — the two
-	// engines must not drift apart, or a --config run reports adds the daemon
-	// would have shrunk or held.
 	src := readMainSource(t)
 	if !strings.Contains(src, "scaleInAddQty = q * hurstDecision.OpenSizeMult()") {
 		t.Fatal("the scale-in add quantity must be scaled by the Hurst multiplier — without it a mode=size gate shrinks fresh opens but leaves adds full-size (#1411)")
 	}
-	// The multiplier scales the DECIDED quantity, never the default notional:
-	// perpsScaleInDecision evaluates max_adds / max_added_notional_usd /
-	// add_spacing_atr on the UNSCALED intent (shrinking after can only leave
-	// those caps satisfied), and an explicit scale_in.add_notional_usd must be
-	// scaled too.
 	if regexp.MustCompile(`defOpenNotional\s*:?=[^\n]*OpenSizeMult`).MatchString(src) {
 		t.Fatal("the Hurst multiplier must scale the decided add quantity, not defOpenNotional — scaling the default would leave an explicit scale_in.add_notional_usd ungated and would move the caps off the unscaled intent (#1411)")
 	}
-	// The hold reaches the add path only because the scale-in block is gated on
-	// a surviving signal. Loosening that guard would let a disarmed gate keep
-	// adding.
 	if !strings.Contains(src, `if result.Signal != 0 && sc.Type == "perps" && sc.AllowScaleIn {`) {
 		t.Fatal("the scale-in block must stay gated on result.Signal != 0 — that is what makes the Hurst hold reach a scale-in add (#1411)")
 	}
 }
 
 func TestLabelGateSemanticsUntouchedByHurstGate(t *testing.T) {
-	// The regime label gate must be byte-identical with and without a
-	// hurst_gate block: applyRegimeGate takes no Hurst input and
-	// regimeBlocksOpen's behavior is unchanged.
 	sc := StrategyConfig{ID: "s", AllowedRegimes: []string{"trending_up"}}
 	rc := hurstTestRegimeConfig(regimeClassifierComposite)
 	payload := hurstPayload("medium", 0.20, true)
@@ -143,10 +104,6 @@ func TestLabelGateSemanticsUntouchedByHurstGate(t *testing.T) {
 		t.Fatalf("adding a hurst_gate changed the label gate: (%q,%v) -> (%q,%v)", labelOnly, blockedOnly, labelWith, blockedWith)
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Config validation
-// ---------------------------------------------------------------------------
 
 func hurstValidationConfig(rc *RegimeConfig, sc StrategyConfig) *Config {
 	return &Config{Regime: rc, Strategies: []StrategyConfig{sc}}
@@ -171,18 +128,14 @@ func TestValidateHurstGateAcceptsAWellFormedBlock(t *testing.T) {
 }
 
 func TestValidateHurstGateRejectsNonCompositeWindow(t *testing.T) {
-	// The load-bearing check: only latest_regime_composite emits
-	// metrics["hurst"], so an adx window would leave H permanently absent.
 	cfg := hurstValidationConfig(hurstTestRegimeConfig(regimeClassifierADX),
 		hurstStrategy(&HurstGateConfig{Enabled: true, Min: hfp(0.55)}))
 	assertHurstErrContains(t, validateHurstGateConfigs(cfg), "emitted ONLY by the \"composite\" classifier")
 
-	// An empty classifier defaults to adx and must be rejected the same way.
 	rc := &RegimeConfig{Enabled: true, Windows: RegimeWindowsMap{"medium": RegimeWindowSpec{Period: 20}}}
 	cfg = hurstValidationConfig(rc, hurstStrategy(&HurstGateConfig{Enabled: true, Min: hfp(0.55)}))
 	assertHurstErrContains(t, validateHurstGateConfigs(cfg), "emitted ONLY by the \"composite\" classifier")
 
-	// Mixed windows: pointing at the composite one is fine, at the adx one is not.
 	mixed := &RegimeConfig{Enabled: true, Windows: RegimeWindowsMap{
 		"medium": RegimeWindowSpec{Classifier: regimeClassifierComposite, Period: 20},
 		"short":  RegimeWindowSpec{Classifier: regimeClassifierADX, Period: 10},
@@ -197,20 +150,14 @@ func TestValidateHurstGateRejectsNonCompositeWindow(t *testing.T) {
 
 func TestValidateHurstGateRejectsMissingRegimeSurface(t *testing.T) {
 	hg := &HurstGateConfig{Enabled: true, Min: hfp(0.55)}
-	// regime block absent entirely
 	assertHurstErrContains(t, validateHurstGateConfigs(hurstValidationConfig(nil, hurstStrategy(hg))), "requires regime.enabled=true")
-	// regime present but disabled
 	assertHurstErrContains(t, validateHurstGateConfigs(hurstValidationConfig(&RegimeConfig{Enabled: false}, hurstStrategy(hg))), "requires regime.enabled=true")
-	// enabled but single-window (legacy) mode
 	assertHurstErrContains(t, validateHurstGateConfigs(hurstValidationConfig(&RegimeConfig{Enabled: true, Period: 14}, hurstStrategy(hg))), "requires regime.windows")
-	// window_key naming a window that does not exist
 	missing := hurstStrategy(&HurstGateConfig{Enabled: true, Min: hfp(0.55), WindowKey: "nope"})
 	assertHurstErrContains(t, validateHurstGateConfigs(hurstValidationConfig(hurstTestRegimeConfig(regimeClassifierComposite), missing)), "not found in regime.windows")
 }
 
 func TestValidateHurstGateRunsEvenWhenDisabled(t *testing.T) {
-	// A parked-but-broken block must fail at EDIT time, not the first time an
-	// operator flips it on (the validateHedgeConfigs discipline).
 	cfg := hurstValidationConfig(hurstTestRegimeConfig(regimeClassifierComposite),
 		hurstStrategy(&HurstGateConfig{Enabled: false, Mode: "bogus", Min: hfp(1.4)}))
 	errs := validateHurstGateConfigs(cfg)
@@ -220,7 +167,6 @@ func TestValidateHurstGateRunsEvenWhenDisabled(t *testing.T) {
 
 func TestValidateHurstGateVocabulary(t *testing.T) {
 	rc := hurstTestRegimeConfig(regimeClassifierComposite)
-	// valid vocab (case/space tolerant) produces no vocab error
 	for _, mode := range []string{"", "gate", "size", " GATE ", "Size"} {
 		hg := &HurstGateConfig{Enabled: true, Mode: mode}
 		if normalizeHurstGateMode(mode) == HurstGateModeSize {
@@ -234,7 +180,6 @@ func TestValidateHurstGateVocabulary(t *testing.T) {
 	}
 	assertHurstErrContains(t, validateHurstGateConfigs(hurstValidationConfig(rc,
 		hurstStrategy(&HurstGateConfig{Enabled: true, Min: hfp(0.55), OnFailure: "halt"}))), "hurst_gate.on_failure")
-	// the GLOBAL default is validated too, even with no strategy opted in
 	badGlobal := &RegimeConfig{Enabled: true, HurstGateOnFailure: "maybe",
 		Windows: RegimeWindowsMap{"medium": RegimeWindowSpec{Classifier: regimeClassifierComposite, Period: 20}}}
 	assertHurstErrContains(t, validateHurstGateConfigs(&Config{Regime: badGlobal}), "regime.hurst_gate_on_failure")
@@ -250,11 +195,8 @@ func TestValidateHurstGateBoundOrdering(t *testing.T) {
 	check(&HurstGateConfig{Enabled: true, Min: hfp(0.7), Max: hfp(0.3)}, "must be < hurst_gate.max")
 	check(&HurstGateConfig{Enabled: true, DisarmMin: hfp(0.4)}, "disarm_min requires hurst_gate.min")
 	check(&HurstGateConfig{Enabled: true, DisarmMax: hfp(0.6)}, "disarm_max requires hurst_gate.max")
-	// A disarm bound TIGHTER than the arm bound inverts hysteresis into a
-	// flapping gate — the inverse of the intended configuration.
 	check(&HurstGateConfig{Enabled: true, Min: hfp(0.5), DisarmMin: hfp(0.6)}, "must be <= hurst_gate.min")
 	check(&HurstGateConfig{Enabled: true, Max: hfp(0.5), DisarmMax: hfp(0.4)}, "must be >= hurst_gate.max")
-	// Range: (0,1) exclusive on all four bounds.
 	for _, hg := range []*HurstGateConfig{
 		{Enabled: true, Min: hfp(0)}, {Enabled: true, Min: hfp(1)},
 		{Enabled: true, Max: hfp(0)}, {Enabled: true, Max: hfp(1)},
@@ -265,7 +207,6 @@ func TestValidateHurstGateBoundOrdering(t *testing.T) {
 			t.Fatalf("expected a range rejection for %+v", hg)
 		}
 	}
-	// Equal bounds are legal — hysteresis simply collapses onto the arm bound.
 	if errs := validateHurstGateConfigs(hurstValidationConfig(rc,
 		hurstStrategy(&HurstGateConfig{Enabled: true, Min: hfp(0.55), DisarmMin: hfp(0.55)}))); len(errs) != 0 {
 		t.Fatalf("disarm_min == min should be legal, got %v", errs)
@@ -274,18 +215,14 @@ func TestValidateHurstGateBoundOrdering(t *testing.T) {
 
 func TestValidateHurstGateModeScoping(t *testing.T) {
 	rc := hurstTestRegimeConfig(regimeClassifierComposite)
-	// size_floor belongs to mode=size only.
 	assertHurstErrContains(t, validateHurstGateConfigs(hurstValidationConfig(rc,
 		hurstStrategy(&HurstGateConfig{Enabled: true, Min: hfp(0.55), SizeFloor: hfp(0.5)}))), "size_floor only applies with mode=\"size\"")
 	for _, v := range []float64{0, -0.2, 1.5} {
 		assertHurstErrContains(t, validateHurstGateConfigs(hurstValidationConfig(rc,
 			hurstStrategy(&HurstGateConfig{Enabled: true, Mode: HurstGateModeSize, SizeFloor: hfp(v)}))), "size_floor must be in (0, 1]")
 	}
-	// ...and the arm band belongs to mode=gate only. Silently ignoring an
-	// operator's min/max under mode=size is the #704 misdiagnosis class.
 	assertHurstErrContains(t, validateHurstGateConfigs(hurstValidationConfig(rc,
 		hurstStrategy(&HurstGateConfig{Enabled: true, Mode: HurstGateModeSize, Min: hfp(0.55)}))), "has no meaning with mode=\"size\"")
-	// mode=size with no band is valid.
 	if errs := validateHurstGateConfigs(hurstValidationConfig(rc,
 		hurstStrategy(&HurstGateConfig{Enabled: true, Mode: HurstGateModeSize}))); len(errs) != 0 {
 		t.Fatalf("bare mode=size should be valid, got %v", errs)
@@ -306,10 +243,6 @@ func TestValidateHurstGateRejectsUnsupportedStrategyTypes(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Unknown-key inventory
-// ---------------------------------------------------------------------------
-
 func TestHurstGateNestedUnknownKeysRejected(t *testing.T) {
 	raw := []byte(`{"strategies":[{"id":"s1","hurst_gate":{"enabled":true,"min":0.55,"disarm":0.5}}]}`)
 	errs := validateStrategyJSONKeys(raw)
@@ -322,11 +255,9 @@ func TestHurstGateNestedUnknownKeysRejected(t *testing.T) {
 	if !found {
 		t.Fatalf("a typo inside hurst_gate must fail loudly, got %v", errs)
 	}
-	// The top-level key itself is known (reflective inventory).
 	if !knownStrategyConfigKeys()["hurst_gate"] {
 		t.Fatal("hurst_gate must be in the reflective strategy key inventory")
 	}
-	// Every declared JSON tag is in the nested inventory.
 	known := knownHurstGateKeys()
 	typ := reflect.TypeOf(HurstGateConfig{})
 	for i := 0; i < typ.NumField(); i++ {
@@ -338,7 +269,6 @@ func TestHurstGateNestedUnknownKeysRejected(t *testing.T) {
 			t.Fatalf("declared field %q missing from knownHurstGateKeys()", tag)
 		}
 	}
-	// A well-formed block passes.
 	ok := []byte(`{"strategies":[{"id":"s1","hurst_gate":{"enabled":false,"mode":"size","size_floor":0.3,"window_key":"medium","on_failure":"open","min":null,"max":null,"disarm_min":null,"disarm_max":null}}]}`)
 	if errs := validateStrategyJSONKeys(ok); len(errs) != 0 {
 		t.Fatalf("a fully-populated block must pass the key guard, got %v", errs)
@@ -359,14 +289,7 @@ func TestHurstGateJSONRoundTripsThroughStrategyConfig(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Default-off guarantees
-// ---------------------------------------------------------------------------
-
 func TestConfigExampleShipsNoHurstThresholds(t *testing.T) {
-	// The #1410 calibration study is INCONCLUSIVE and states "Do not build a
-	// Hurst entry gate on this evidence." The mechanism ships, but NO
-	// recommended thresholds do. This pins that promise.
 	b, err := os.ReadFile("config.example.json")
 	if err != nil {
 		t.Fatalf("read config.example.json: %v", err)
@@ -377,20 +300,16 @@ func TestConfigExampleShipsNoHurstThresholds(t *testing.T) {
 }
 
 func TestHurstGateIsHotReloadableIncludingWhileOpen(t *testing.T) {
-	// #1278 precedent: flat-only open gating plus order-time sizing never
-	// shifts persisted state, so SIGHUP adopts it unconditionally.
 	base := hurstStrategy(&HurstGateConfig{Enabled: true, Min: hfp(0.55)})
 	edited := hurstStrategy(&HurstGateConfig{Enabled: true, Min: hfp(0.60)})
 	if !reflect.DeepEqual(strategyRestartShape(base), strategyRestartShape(edited)) {
 		t.Fatal("a hurst_gate edit must not be flagged restart-required")
 	}
-	// The regime-level default is masked too.
 	a := &RegimeConfig{Enabled: true, HurstGateOnFailure: "open"}
 	b := &RegimeConfig{Enabled: true, HurstGateOnFailure: "closed"}
 	if !regimeConfigEqualIgnoringReloadableFields(a, b) {
 		t.Fatal("regime.hurst_gate_on_failure must be hot-reloadable")
 	}
-	// ...and it is genuinely absent from the blocked list.
 	cfg := &Config{DBFile: "x.db", Regime: a, Strategies: []StrategyConfig{base}}
 	next := &Config{DBFile: "x.db", Regime: b, Strategies: []StrategyConfig{edited}}
 	if err := validateHotReloadCompatible(cfg, next); err != nil {
@@ -413,12 +332,6 @@ func TestCloneHurstGateConfigDeepCopies(t *testing.T) {
 	}
 }
 
-// TestHurstGateIsHotReloadableIncludingWhileOpen proves the field is MASKED
-// from the restart shape. This drives the ADOPTION arm itself
-// (applyHotReloadConfig, config_reload.go) end to end, so a regression that
-// silently drops an operator's SIGHUP edit to a live entry gate fails here
-// rather than in production. Every case runs with a position OPEN, because the
-// stated while-open policy is "always adoptable" (#1278 precedent).
 func TestApplyHotReloadConfigAdoptsHurstGateWhileOpen(t *testing.T) {
 	strat := func(hg *HurstGateConfig) StrategyConfig {
 		sc := hurstStrategy(hg)
@@ -436,7 +349,6 @@ func TestApplyHotReloadConfigAdoptsHurstGateWhileOpen(t *testing.T) {
 		c.Regime.HurstGateOnFailure = globalOnFailure
 		return c
 	}
-	// A strategy holding an open position — the whole point of the policy.
 	openState := func(latch HurstGateState) *AppState {
 		return &AppState{Strategies: map[string]*StrategyState{
 			"s1": {
@@ -451,8 +363,6 @@ func TestApplyHotReloadConfigAdoptsHurstGateWhileOpen(t *testing.T) {
 		}}
 	}
 
-	// (1) A threshold edit lands on the live config while a position is open,
-	//     deep-copied rather than aliased into the freshly loaded config.
 	t.Run("threshold edit adopted with a position open", func(t *testing.T) {
 		cfg := build(&HurstGateConfig{Enabled: true, Min: hfp(0.55), DisarmMin: hfp(0.45)}, "open")
 		next := build(&HurstGateConfig{Enabled: true, Min: hfp(0.60), DisarmMin: hfp(0.50)}, "closed")
@@ -471,18 +381,12 @@ func TestApplyHotReloadConfigAdoptsHurstGateWhileOpen(t *testing.T) {
 		if !strings.Contains(joined, "hurst_gate:") || !strings.Contains(joined, "regime.hurst_gate_on_failure") {
 			t.Fatalf("both edits must be reported to the operator, got: %v", changes)
 		}
-		// cloneHurstGateConfig must have run: mutating the loaded config's
-		// pointer cannot reach through into the live one.
 		*next.Strategies[0].HurstGate.Min = 0.99
 		if *cfg.Strategies[0].HurstGate.Min != 0.60 {
 			t.Fatal("the adopted block must not alias the freshly loaded config's pointers")
 		}
 	})
 
-	// (2) An on_failure-only edit keeps the threshold tuple, so the persisted
-	//     hysteresis latch SURVIVES. Proven observably: an ARMED latch under an
-	//     H inside the hysteresis gap stays armed, whereas a discarded latch
-	//     would reset to unknown and disarm on that same reading.
 	t.Run("on_failure-only edit keeps the threshold key and the latch", func(t *testing.T) {
 		cfg := build(&HurstGateConfig{Enabled: true, Min: hfp(0.55), DisarmMin: hfp(0.45)}, "")
 		next := build(&HurstGateConfig{Enabled: true, Min: hfp(0.55), DisarmMin: hfp(0.45), OnFailure: "closed"}, "")
@@ -499,16 +403,12 @@ func TestApplyHotReloadConfigAdoptsHurstGateWhileOpen(t *testing.T) {
 		if after != before {
 			t.Fatalf("on_failure must NOT be part of the threshold key: %q -> %q", before, after)
 		}
-		// H=0.50 sits in the gap: below min (would not arm from unknown), above
-		// disarm_min (does not disarm an armed gate).
 		d := advanceHurstGate(adopted, hurstPayload("medium", 0.50, true), cfg.Regime, state.Strategies["s1"], nil, 0.5)
 		if d.State != hurstGateStateArmed || d.Holds {
 			t.Fatalf("the latch must survive an on_failure-only edit, got state=%q holds=%v", d.State, d.Holds)
 		}
 	})
 
-	// (3) A threshold edit rewrites the key, so the stale latch is DISCARDED on
-	//     the very next cycle rather than reinterpreted under the new band.
 	t.Run("threshold edit discards the stale latch on the next cycle", func(t *testing.T) {
 		cfg := build(&HurstGateConfig{Enabled: true, Min: hfp(0.55), DisarmMin: hfp(0.45)}, "")
 		next := build(&HurstGateConfig{Enabled: true, Min: hfp(0.60), DisarmMin: hfp(0.50)}, "")
@@ -519,8 +419,6 @@ func TestApplyHotReloadConfigAdoptsHurstGateWhileOpen(t *testing.T) {
 		}
 		adopted := cfg.Strategies[0]
 		ss := state.Strategies["s1"]
-		// H=0.55 is in the NEW gap: an honored ARMED latch would stay armed;
-		// a discarded latch resolves from unknown and must disarm.
 		d := advanceHurstGate(adopted, hurstPayload("medium", 0.55, true), cfg.Regime, ss, nil, 0.5)
 		if d.State != hurstGateStateDisarmed || !d.Holds {
 			t.Fatalf("a threshold edit must discard the stale ARMED latch, got state=%q holds=%v", d.State, d.Holds)

@@ -1,4 +1,3 @@
-"""Pure/core tests for the #1081 regime ATR economic gate."""
 
 import os
 import sys
@@ -15,8 +14,8 @@ for _p in (_RESEARCH, _BACKTEST, _ROOT, os.path.join(_ROOT, "shared_tools")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-import regime_1081_economic_gate as m  # noqa: E402
-from backtester import Backtester  # noqa: E402
+import regime_1081_economic_gate as m
+from backtester import Backtester
 
 
 def test_surface_arms_names_and_supported_configs():
@@ -137,7 +136,7 @@ def test_summarize_results_stop_out_rate_and_mae_by_entry():
         "total_trades": 3,
         "trades": [
             _trade("d1", "tiered_tp_atr:1.5", -0.5),
-            _trade("d1", "sl", -1.5),  # same entry; any stop leg marks the entry stopped
+            _trade("d1", "sl", -1.5),
             _trade("d2", "tiered_tp_atr:3", -0.25),
         ],
     }
@@ -145,7 +144,6 @@ def test_summarize_results_stop_out_rate_and_mae_by_entry():
     assert got["entries"] == 2
     assert got["stop_outs"] == 1
     assert got["stop_out_rate"] == pytest.approx(0.5)
-    # Per-entry MAE is min leg MAE: d1=-1.5, d2=-0.25 -> median -0.875.
     assert got["median_mae_pct"] == pytest.approx(-0.875)
     assert got["ddadj"] == pytest.approx(2.0)
 
@@ -205,7 +203,6 @@ def test_run_cell_gates_against_best_control_not_width_extreme(monkeypatch):
         if label == "regime_sl_defaults":
             return _raw_result(sharpe=1.5, ret=15.0, dd=-10.0, mae=-0.25, reason="sl")
         if label == "flat_sl_atr=5":
-            # Width extreme: lower stop-out rate, but worse risk-adjusted result.
             return _raw_result(sharpe=0.5, ret=5.0, dd=-10.0, mae=-5.0, reason="signal")
         return _raw_result(sharpe=1.0, ret=10.0, dd=-10.0, mae=-0.5, reason="sl")
 
@@ -351,7 +348,6 @@ def test_injected_raw_regime_labels_are_shifted_by_backtester_no_lookahead():
             "open": [100.0, 100.0, 100.0, 100.26, 100.26, 100.26],
             "close": [100.0, 100.0, 100.0, 100.26, 100.26, 100.26],
             "atr": [1.0] * 6,
-            # Raw open action at idx1 fills at idx2 open.
             "open_action": ["none", "long", "none", "none", "none", "none"],
         },
         index=idx,
@@ -387,9 +383,6 @@ def test_injected_raw_regime_labels_are_shifted_by_backtester_no_lookahead():
         regime_enabled=True,
     )
     result = bt.run(frame, save=False)
-    # Correct path: idx2 entry is stamped with idx1's raw "ranging" label,
-    # so the 0.25 ATR tier fires. If injection pre-shifted labels or the
-    # backtester read idx2's "trending_up" label, this would hold to the end.
     assert result["trades"][0]["exit_date"] == str(idx[4])
 
 

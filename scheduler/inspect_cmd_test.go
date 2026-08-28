@@ -191,14 +191,13 @@ func TestFormatStrategyInspectionShowsResolvedTPSource(t *testing.T) {
 			t.Errorf("output missing %q.\nfull:\n%s", want, out)
 		}
 	}
-	// Verify default markers do NOT appear for explicit fields.
 	if strings.Contains(out, "platform:            hyperliquid (default)") {
 		t.Errorf("platform was explicit but rendered as default")
 	}
 }
 
 func TestFormatStrategyInspectionMarksDefaultedFields(t *testing.T) {
-	mult := 1.0 // applied by LoadConfig default
+	mult := 1.0
 	sc := StrategyConfig{
 		ID:              "hl-tema-eth-live",
 		Type:            "perps",
@@ -206,13 +205,12 @@ func TestFormatStrategyInspectionMarksDefaultedFields(t *testing.T) {
 		Script:          "shared_scripts/check_hyperliquid.py",
 		Args:            []string{"triple_ema", "ETH", "1h"},
 		OpenStrategy:    StrategyRef{Name: "triple_ema"},
-		Leverage:        1, // LoadConfig default
-		SizingLeverage:  1, // inherited from leverage
+		Leverage:        1,
+		SizingLeverage:  1,
 		MarginMode:      "isolated",
 		MaxDrawdownPct:  50,
 		StopLossATRMult: &mult,
 	}
-	// Operator only set id/type/platform/script/args/open_strategy.
 	explicit := map[string]bool{"id": true, "type": true, "platform": true, "script": true, "args": true, "open_strategy": true}
 	out := formatStrategyInspection(sc, explicit, &Config{IntervalSeconds: 600}, nil)
 
@@ -379,8 +377,6 @@ func TestFormatStrategySummaryLineRegimeTPTierCount(t *testing.T) {
 		StopLossATRMult: &mult,
 	}
 	line := formatStrategySummaryLine(sc, nil, nil)
-	// #870: fleet default is ragged per group (2/3/4 tiers); the summary reports
-	// the fleet maximum (clean group = 4 tiers).
 	if !strings.Contains(line, "tp=tiered_tp_atr_regime[4-tier]") {
 		t.Errorf("expected 4-tier regime TP summary, got: %s", line)
 	}
@@ -435,9 +431,6 @@ func TestFormatStrategyInspectionPositionOrderDeterministic(t *testing.T) {
 	}
 }
 
-// #1048: a strategy with the circuit breaker explicitly disabled surfaces
-// "cb=off" in the startup summary so it isn't silently unprotected; an enabled
-// (default) strategy and a manual strategy (CB no-op) show nothing.
 func TestFormatStrategySummaryLineShowsCircuitBreakerOff(t *testing.T) {
 	off := false
 	disabled := StrategyConfig{
@@ -456,7 +449,6 @@ func TestFormatStrategySummaryLineShowsCircuitBreakerOff(t *testing.T) {
 		t.Errorf("default CB should not mention cb=: %s", line)
 	}
 
-	// Manual is exempt from CheckRisk — the flag is a no-op, so don't surface it.
 	manual := StrategyConfig{
 		ID: "manual-eth", Type: "manual", Platform: "hyperliquid",
 		OpenStrategy: StrategyRef{Name: "hold"}, CircuitBreaker: &off,
@@ -466,9 +458,6 @@ func TestFormatStrategySummaryLineShowsCircuitBreakerOff(t *testing.T) {
 	}
 }
 
-// #1273: non-default cb_* timing/threshold overrides on an enabled breaker
-// surface in the startup summary line, the inspect text, and the inspect JSON;
-// pure defaults show nothing extra.
 func TestStrategySurfacesShowCBOverrides(t *testing.T) {
 	dd, th, lc := 720, 3, 30
 	tuned := StrategyConfig{
@@ -501,7 +490,6 @@ func TestStrategySurfacesShowCBOverrides(t *testing.T) {
 		t.Errorf("explicit provenance flag lost: %v", out["cb_loss_streak_threshold_explicit"])
 	}
 
-	// Defaults: no override marker anywhere, JSON reports the built-in values.
 	plain := StrategyConfig{
 		ID: "spot-btc", Type: "spot", Platform: "binanceus",
 		OpenStrategy: StrategyRef{Name: "momentum"}, MaxDrawdownPct: 20,
@@ -518,7 +506,6 @@ func TestStrategySurfacesShowCBOverrides(t *testing.T) {
 			out["cb_drawdown_cooldown_minutes"], out["cb_loss_streak_threshold"], out["cb_loss_streak_cooldown_minutes"])
 	}
 
-	// Manual is exempt from CheckRisk — no CB keys at all.
 	manual := StrategyConfig{ID: "manual-eth", Type: "manual", Platform: "hyperliquid"}
 	out = buildStrategyInspectionJSON(manual, nil, nil, nil)
 	if _, ok := out["cb_loss_streak_threshold"]; ok {

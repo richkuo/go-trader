@@ -8,10 +8,6 @@ import (
 	"time"
 )
 
-// forceCloseTopStepLive unit tests — mirror the Robinhood/OKX tests. Each
-// test asserts a single branch of the decision logic so a regression
-// produces a targeted failure rather than a conflated signal (#347).
-
 func TestForceCloseTopStepLive_ClosesOwnedSymbolsOnly(t *testing.T) {
 	tsLive := []StrategyConfig{
 		{ID: "ts-momentum-es", Platform: "topstep", Type: "futures",
@@ -19,7 +15,7 @@ func TestForceCloseTopStepLive_ClosesOwnedSymbolsOnly(t *testing.T) {
 	}
 	positions := []TopStepPosition{
 		{Coin: "ES", Size: 2, AvgPrice: 5000, Side: "long"},
-		{Coin: "NQ", Size: 1, AvgPrice: 17000, Side: "long"}, // unowned
+		{Coin: "NQ", Size: 1, AvgPrice: 17000, Side: "long"},
 	}
 	var calls []string
 	closer := func(sym string) (*TopStepCloseResult, error) {
@@ -113,11 +109,6 @@ func TestForceCloseTopStepLive_CtxExpiredBeforeSubmit(t *testing.T) {
 }
 
 func TestForceCloseTopStepLive_ShortPositionClosed(t *testing.T) {
-	// Futures support bidirectional positions (unlike Robinhood crypto).
-	// A negative size (short) for an owned symbol must trigger a close —
-	// market_close flattens regardless of direction. Guards against a
-	// future refactor that copies Robinhood's Size > 0 check, which would
-	// leave shorts open on kill-switch fire.
 	tsLive := []StrategyConfig{
 		{ID: "ts-momentum-es", Platform: "topstep", Type: "futures",
 			Args: []string{"momentum", "ES", "1h", "--mode=live"}},
@@ -140,8 +131,6 @@ func TestForceCloseTopStepLive_ShortPositionClosed(t *testing.T) {
 }
 
 func TestForceCloseTopStepLive_NonFuturesStrategiesIgnored(t *testing.T) {
-	// Non-futures entries in TSLiveAll must not drive closes (type partition
-	// guard). Mirrors the options-ignored test on the Robinhood close path.
 	mixed := []StrategyConfig{
 		{ID: "hl-mom-btc", Platform: "hyperliquid", Type: "perps",
 			Args: []string{"momentum", "BTC", "1h", "--mode=live"}},
@@ -163,7 +152,6 @@ func TestForceCloseTopStepLive_NonFuturesStrategiesIgnored(t *testing.T) {
 	}
 }
 
-// SortedErrorCoins determinism — same rationale as HL / OKX / Robinhood.
 func TestTopStepLiveCloseReport_SortedErrorCoins(t *testing.T) {
 	r := TopStepLiveCloseReport{Errors: map[string]error{
 		"NQ": fmt.Errorf("e"), "ES": fmt.Errorf("e"), "CL": fmt.Errorf("e"),
@@ -179,8 +167,6 @@ func TestTopStepLiveCloseReport_SortedErrorCoins(t *testing.T) {
 		}
 	}
 }
-
-// parseTopStepCloseOutput tests — 5-case matrix mirroring HL / OKX / Robinhood.
 
 func TestParseTopStepCloseOutput_CleanSuccess(t *testing.T) {
 	stdout := []byte(`{"close":{"symbol":"ES","fill":{"avg_px":5000,"total_contracts":2,"oid":"ord-1"}},"platform":"topstep","timestamp":"2026-04-19T10:00:00Z"}`)
@@ -230,8 +216,6 @@ func TestParseTopStepCloseOutput_MalformedJSON(t *testing.T) {
 	}
 }
 
-// parseTopStepPositionsOutput tests.
-
 func TestParseTopStepPositionsOutput_CleanSuccess(t *testing.T) {
 	stdout := []byte(`{"positions":[{"coin":"ES","size":2,"avg_price":5000,"side":"long"}],"platform":"topstep","timestamp":"x"}`)
 	result, _, err := parseTopStepPositionsOutput(stdout, "", nil)
@@ -247,10 +231,6 @@ func TestParseTopStepPositionsOutput_CleanSuccess(t *testing.T) {
 }
 
 func TestParseTopStepPositionsOutput_ErrorEnvelopeLatchesSwitch(t *testing.T) {
-	// Load-bearing contract: a failed fetch must surface as err so the kill
-	// switch latches. A silent parse that returned {Positions: nil, err: nil}
-	// would look like "no positions" and clear virtual state while live
-	// exposure remained (the #341/#345/#346 bug class, now #347).
 	stdout := []byte(`{"positions":[],"platform":"topstep","timestamp":"x","error":"credentials missing"}`)
 	_, _, err := parseTopStepPositionsOutput(stdout, "", fmt.Errorf("exit 1"))
 	if err == nil {
@@ -264,8 +244,6 @@ func TestParseTopStepPositionsOutput_MalformedJSON(t *testing.T) {
 		t.Fatal("expected non-nil err on malformed JSON")
 	}
 }
-
-// --- #362 phase 4: per-strategy circuit-breaker close tests ---
 
 func TestComputeTopStepCircuitCloseQty_SolePeerFullFlatten(t *testing.T) {
 	tsLive := []StrategyConfig{
@@ -287,7 +265,6 @@ func TestComputeTopStepCircuitCloseQty_SolePeerShortFullFlatten(t *testing.T) {
 		{ID: "ts-es", Platform: "topstep", Type: "futures",
 			Args: []string{"sma", "ES", "15m", "--mode=live"}},
 	}
-	// Short position reported as negative size.
 	pos := []TopStepPosition{{Coin: "ES", Size: -2, AvgPrice: 5000, Side: "short"}}
 	q, ok := computeTopStepCircuitCloseQty("ES", "ts-es", pos, tsLive)
 	if !ok {
@@ -298,9 +275,6 @@ func TestComputeTopStepCircuitCloseQty_SolePeerShortFullFlatten(t *testing.T) {
 	}
 }
 
-// TopStep has no partial-size market_close. When two live strategies share a
-// contract, we skip the enqueue so market_close doesn't flatten the peer's
-// share on behalf of the firing strategy. Operator intervenes manually.
 func TestComputeTopStepCircuitCloseQty_MultiPeerSkipped(t *testing.T) {
 	tsLive := []StrategyConfig{
 		{ID: "ts-a", Platform: "topstep", Type: "futures",
@@ -374,7 +348,6 @@ func TestSetTopStepCircuitBreakerPending_NilAssistBails(t *testing.T) {
 		ID:        "ts-es",
 		Positions: map[string]*Position{"ES": {Side: "long", Quantity: 3}},
 	}
-	// Nil assist — simulates a TS-fetch failure at CB fire time.
 	setTopStepCircuitBreakerPending(sc, s, nil)
 	if s.RiskState.getPendingCircuitClose(PlatformPendingCloseTopStep) != nil {
 		t.Error("expected no enqueue when assist is nil (stuck-CB path will recover)")
@@ -445,9 +418,6 @@ func TestRunPendingTopStepCircuitCloses_DrainsAndClearsPending(t *testing.T) {
 	}
 }
 
-// Stuck-CB recovery (mirrors HL #356 finding 1): if TS fetch failed at CB
-// fire time, pending is nil; the drain must detect CircuitBreaker=true +
-// pending==nil + on-account position and enqueue on a later cycle.
 func TestRunPendingTopStepCircuitCloses_RecoversStuckCB(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
@@ -491,8 +461,6 @@ func TestRunPendingTopStepCircuitCloses_RecoversStuckCB(t *testing.T) {
 	}
 }
 
-// Session-gate defer: a TopStepX close that fails (outside RTH, venue error)
-// must keep the pending latched so the next cycle retries.
 func TestRunPendingTopStepCircuitCloses_CloseErrorLatchesPending(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
@@ -537,10 +505,6 @@ func TestRunPendingTopStepCircuitCloses_CloseErrorLatchesPending(t *testing.T) {
 	}
 }
 
-// If the drain runs but the on-account position already went flat between
-// enqueue and drain (operator manual close, eventual consistency), the
-// closer must NOT be called — otherwise market_close on a flat position
-// would error and latch the pending forever.
 func TestRunPendingTopStepCircuitCloses_AlreadyFlatSkipsCloserAndClears(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
@@ -570,7 +534,7 @@ func TestRunPendingTopStepCircuitCloses_AlreadyFlatSkipsCloserAndClears(t *testi
 		context.Background(),
 		state,
 		cfg,
-		nil, // no positions on account
+		nil,
 		true,
 		nil,
 		closer,
@@ -598,8 +562,6 @@ func TestRunPendingTopStepCircuitCloses_StuckCBMultiPeerSkipped(t *testing.T) {
 			},
 		},
 	}
-	// Two live peers on contract ES — computeTopStepCircuitCloseQty returns
-	// (0, false), so stuck-CB recovery must NOT reconstruct a pending.
 	cfg := []StrategyConfig{
 		{ID: "ts-a", Platform: "topstep", Type: "futures",
 			Args: []string{"sma", "ES", "15m", "--mode=live"}},
@@ -632,8 +594,6 @@ func TestRunPendingTopStepCircuitCloses_StuckCBMultiPeerSkipped(t *testing.T) {
 	}
 }
 
-// When the fetcher is needed (tsStateFetched=false) and it returns an error,
-// the drain must bail without mutating pending entries.
 func TestRunPendingTopStepCircuitCloses_FetcherErrorBails(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
@@ -677,7 +637,6 @@ func TestRunPendingTopStepCircuitCloses_FetcherErrorBails(t *testing.T) {
 	if len(calls) != 0 {
 		t.Errorf("closer should not be called when fetcher errors, got %v", calls)
 	}
-	// Pending must remain so the next cycle retries.
 	if state.Strategies["ts-es"].RiskState.getPendingCircuitClose(PlatformPendingCloseTopStep) == nil {
 		t.Error("expected pending to remain latched when fetcher errors")
 	}
@@ -776,10 +735,6 @@ func TestRunPendingTopStepCircuitCloses_RepeatedFailureThrottlesNotifier(t *test
 	}
 }
 
-// Regression: when ctxOverall trips mid-symbol-loop, the inner per-symbol
-// ctx check sets allOK=false but failedErr stays nil. The post-loop block
-// must NOT increment ConsecutiveFailures and must NOT dereference failedErr
-// (that would panic). See PR #435 review.
 func TestRunPendingTopStepCircuitCloses_CtxExpiryMidLoopDoesNotCountAsFailure(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
@@ -809,9 +764,6 @@ func TestRunPendingTopStepCircuitCloses_CtxExpiryMidLoopDoesNotCountAsFailure(t 
 	var calls []string
 	closer := func(sym string) (*TopStepCloseResult, error) {
 		calls = append(calls, sym)
-		// Cancel the budget after the first symbol succeeds so the inner
-		// ctx check fires before the second symbol — exactly the
-		// nil-failedErr-with-allOK=false branch the bug reproduces.
 		cancel()
 		return &TopStepCloseResult{Close: &TopStepClose{Symbol: sym}}, nil
 	}

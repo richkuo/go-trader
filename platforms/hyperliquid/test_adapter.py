@@ -1,4 +1,3 @@
-"""Tests for HyperliquidExchangeAdapter — mock SDK to avoid live API calls."""
 
 import sys
 import os
@@ -8,14 +7,6 @@ from unittest.mock import MagicMock, patch
 
 
 def _load_hl_adapter(mock_info_cls=None, mock_exchange_cls=None, mock_api_cls=None):
-    """Load the hyperliquid adapter with mocked SDK modules.
-
-    Mocks hyperliquid.info.Info, hyperliquid.exchange.Exchange,
-    hyperliquid.api.API, and hyperliquid.utils.error.ClientError before
-    loading adapter.py so it picks up _SDK_AVAILABLE = True. ClientError
-    must be a real Exception subclass so the adapter's except clause is
-    a valid exception type.
-    """
     info_mod = MagicMock()
     exchange_mod = MagicMock()
     api_mod = MagicMock()
@@ -58,7 +49,6 @@ def _load_hl_adapter(mock_info_cls=None, mock_exchange_cls=None, mock_api_cls=No
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
     finally:
-        # Restore original modules even if loading fails
         for name, orig in saved.items():
             if orig is None:
                 sys.modules.pop(name, None)
@@ -67,8 +57,6 @@ def _load_hl_adapter(mock_info_cls=None, mock_exchange_cls=None, mock_api_cls=No
 
     return mod
 
-
-# ─── Properties ────────────────────────────────────
 
 class TestProperties:
     def test_name(self):
@@ -96,8 +84,6 @@ class TestProperties:
             mod.HyperliquidExchangeAdapter()
 
 
-# ─── Market Data ───────────────────────────────────
-
 class TestMarketData:
     def _make_adapter(self):
         mock_info = MagicMock()
@@ -122,8 +108,6 @@ class TestMarketData:
         assert adapter.get_spot_price("XYZ") == 0.0
 
     def test_get_ohlcv(self, monkeypatch):
-        # Disable the #839 OHLCV cache so this exercises the live fetch path
-        # deterministically (no /tmp cross-run state).
         monkeypatch.setenv("GO_TRADER_HL_OHLCV_CACHE", "0")
         adapter, mock_info = self._make_adapter()
         mock_info.candles_snapshot.return_value = [
@@ -168,18 +152,13 @@ class TestMarketData:
     def test_get_ohlcv_warns_on_shortfall_below_limit(self, monkeypatch, capsys):
         monkeypatch.setenv("GO_TRADER_HL_OHLCV_CACHE", "0")
         adapter, mock_info = self._make_adapter()
-        # Window widened to limit+margin but gaps left fewer than `limit` rows.
         mock_info.candles_snapshot.return_value = [
             {"T": 1700000000000 + i * 3_600_000, "o": "100", "h": "110", "l": "90",
              "c": str(100 + i), "v": "50"}
             for i in range(3)
         ]
         result = adapter.get_ohlcv("BTC", "1h", 200)
-        assert len(result) == 3  # returned as-is, not padded
-        # Every widen returns the same 3 rows. The plateau needs TWO consecutive
-        # zero-growth widens to confirm, so it stops after 3 fetches — still
-        # bounded, NOT the full backstop ladder (#947 finding-2 + the interior-
-        # gap refinement).
+        assert len(result) == 3
         assert mock_info.candles_snapshot.call_count == 3
         err = capsys.readouterr().err
         assert "shortfall" in err
@@ -205,8 +184,6 @@ class TestMarketData:
         ]
 
     def test_get_ohlcv_extends_window_until_limit_reached(self, monkeypatch):
-        # candleSnapshot returns ~60% of the requested span (sparse gaps): the
-        # first limit+50 window is short, a wider one clears `limit` (#947).
         monkeypatch.setenv("GO_TRADER_HL_OHLCV_CACHE", "0")
         adapter, mock_info = self._make_adapter()
 
@@ -216,17 +193,13 @@ class TestMarketData:
 
         mock_info.candles_snapshot.side_effect = side_effect
         result = adapter.get_ohlcv("BTC", "1h", 200)
-        assert len(result) == 200  # trimmed to exactly limit
-        # 250→150 (short) then 500→300 (enough): exactly two fetches.
+        assert len(result) == 200
         assert mock_info.candles_snapshot.call_count == 2
         spans = [round((c.args[3] - c.args[2]) / 3_600_000)
                  for c in mock_info.candles_snapshot.call_args_list]
         assert spans == [250, 500]
 
     def test_get_ohlcv_stops_extending_on_history_plateau_and_warns(self, monkeypatch, capsys):
-        # A new listing with only 150 lifetime candles: widening past its full
-        # history returns the same count, so the loop must terminate on the
-        # plateau (NOT keep doubling to some span ceiling) and warn (#947).
         monkeypatch.setenv("GO_TRADER_HL_OHLCV_CACHE", "0")
         adapter, mock_info = self._make_adapter()
         available = 150
@@ -237,41 +210,31 @@ class TestMarketData:
 
         mock_info.candles_snapshot.side_effect = side_effect
         result = adapter.get_ohlcv("BTC", "1h", 200)
-        # 250→150 (grows), 500→150 (stale #1), 1000→150 (stale #2 → confirmed
-        # plateau): stops after 3 fetches, well short of the
-        # OHLCV_MAX_EXTEND_PASSES backstop.
         assert mock_info.candles_snapshot.call_count == 3
-        assert len(result) == 150  # full available history, still < limit
+        assert len(result) == 150
         err = capsys.readouterr().err
         assert "shortfall" in err
         assert "150 of 200" in err
 
     def test_get_ohlcv_does_not_stop_on_single_interior_gap_widen(self, monkeypatch):
-        # An interior no-trade gap makes ONE widen add zero candles, but older
-        # bars sit one more doubling back. A single dead window must NOT be
-        # mistaken for history exhaustion — the loop must keep widening and
-        # reach `limit` (#947 interior-gap refinement).
         monkeypatch.setenv("GO_TRADER_HL_OHLCV_CACHE", "0")
         adapter, mock_info = self._make_adapter()
-        # pass1=150, pass2=150 (dead window), pass3=250 (recovers past the gap).
         returns = iter([150, 150, 250])
         mock_info.candles_snapshot.side_effect = (
             lambda *a, **kw: self._gappy_candles(next(returns))
         )
         result = adapter.get_ohlcv("BTC", "1h", 200)
-        assert mock_info.candles_snapshot.call_count == 3  # did not stop at pass 2
-        assert len(result) == 200  # reached limit at pass 3, trimmed
+        assert mock_info.candles_snapshot.call_count == 3
+        assert len(result) == 200
 
     def test_get_ohlcv_extend_passes_are_bounded(self, monkeypatch):
-        # Pathological: every widen adds exactly one candle (never plateaus,
-        # never reaches `limit`). The pass backstop must cap the /info calls.
         monkeypatch.setenv("GO_TRADER_HL_OHLCV_CACHE", "0")
         adapter, mock_info = self._make_adapter()
         counter = {"n": 1}
 
         def side_effect(symbol, interval, start_ms, end_ms):
             n = counter["n"]
-            counter["n"] += 1  # strictly growing → no plateau, never hits limit
+            counter["n"] += 1
             return self._gappy_candles(n)
 
         mock_info.candles_snapshot.side_effect = side_effect
@@ -317,8 +280,6 @@ class TestMarketData:
         assert adapter.get_funding_history("BTC") == []
 
 
-# ─── Account Data ──────────────────────────────────
-
 class TestAccountData:
     def _make_adapter_with_address(self):
         mock_info = MagicMock()
@@ -356,8 +317,6 @@ class TestAccountData:
         assert adapter.get_open_positions() == []
 
 
-# ─── Order Execution ──────────────────────────────
-
 class TestOrderExecution:
     def test_market_open_paper_mode_raises(self):
         mock_info = MagicMock()
@@ -384,7 +343,6 @@ class TestOrderExecution:
         mock_exchange.market_open.return_value = {"status": "ok"}
         mod = _load_hl_adapter(mock_info_cls=mock_info_cls)
         adapter = mod.HyperliquidExchangeAdapter()
-        # Simulate live mode
         adapter._wallet = MagicMock()
         adapter._exchange = mock_exchange
         adapter._info = mock_info
@@ -422,10 +380,6 @@ class TestOrderExecution:
         mock_exchange.market_close.assert_called_once_with("BTC", None)
 
     def test_market_close_partial_size_rounds_to_sz_decimals(self):
-        # Issue #425: unrounded sz (e.g. 0.250965 from per-strategy CB sizing
-        # of a shared-wallet position) must be rounded to the asset's
-        # sz_decimals before reaching the SDK or HL rejects with
-        # `float_to_wire causes rounding`. Mirrors market_open / place_stop_loss.
         mock_info = MagicMock()
         mock_info.asset_to_sz_decimals = {"ETH": 4}
         mock_info_cls = MagicMock(return_value=mock_info)
@@ -441,8 +395,6 @@ class TestOrderExecution:
         mock_exchange.market_close.assert_called_once_with("ETH", 0.251)
 
     def test_market_close_full_close_passes_none_unchanged(self):
-        # sz=None must bypass rounding (SDK closes the full on-chain position
-        # internally). A naive round(None, ...) would raise TypeError.
         mock_info = MagicMock()
         mock_info.asset_to_sz_decimals = {"BTC": 5}
         mock_info_cls = MagicMock(return_value=mock_info)
@@ -473,11 +425,7 @@ class TestOrderExecution:
         mock_exchange.market_close.assert_not_called()
 
 
-# ─── Stop Loss / Trigger Orders (#412 / #421) ──────
-
 class TestStopLossPlacement:
-    """Coverage for place_stop_loss + cancel_trigger_order added in #412 and
-    refined for tick-size rules in #421 review point 5."""
 
     def _live_adapter(self, sz_decimals=None):
         mock_info = MagicMock()
@@ -507,7 +455,6 @@ class TestStopLossPlacement:
         sym, is_buy, sz, limit_px, order_type = args
         assert sym == "ETH"
         assert is_buy is False
-        # limit_px is below trigger_px for a sell-stop
         assert limit_px < 3000.0
         assert kwargs == {"reduce_only": True}
         assert order_type["trigger"]["tpsl"] == "sl"
@@ -518,7 +465,6 @@ class TestStopLossPlacement:
         ex.order.return_value = {"status": "ok"}
         adapter.place_stop_loss("ETH", 0.5, 3000.0, is_buy=True, limit_slippage_pct=5.0)
         _, _, _, limit_px, _ = ex.order.call_args.args
-        # limit_px is above trigger_px for a buy-stop
         assert limit_px > 3000.0
 
     def test_place_stop_loss_size_rounds_to_zero_raises(self):
@@ -532,42 +478,25 @@ class TestStopLossPlacement:
             adapter.place_stop_loss("BTC", 0.01, 0, False)
 
     def test_place_stop_loss_high_priced_asset_uses_per_asset_px_decimals(self):
-        # BTC has sz_decimals=5 → px_decimals = 6 - 5 = 1. Fixed-6-decimal
-        # rounding (the pre-#421 behavior) would produce e.g. 60000.000000;
-        # the new logic must round to ≤1 decimal, capped at 5 sig figs.
         adapter, ex, mod = self._live_adapter(sz_decimals={"BTC": 5})
         ex.order.return_value = {"status": "ok"}
-        # Use a trigger_px that would produce extra decimals after the
-        # slip-band multiplication. trigger_px = 63123.456 → after rounding
-        # to px_decimals=1 we expect 63123.5 (but capped at 5 sig figs to 63120).
         adapter.place_stop_loss("BTC", 0.001, 63123.456, is_buy=False)
         _, _, _, limit_px, order_type = ex.order.call_args.args
-        # 5-sig-fig rounding for ~63000 → tens place (63120 or 63130).
         assert limit_px == round(limit_px, 0) or limit_px == round(limit_px, -1)
         assert order_type["trigger"]["triggerPx"] == round(order_type["trigger"]["triggerPx"], 0) or \
                order_type["trigger"]["triggerPx"] == round(order_type["trigger"]["triggerPx"], -1)
 
     def test_round_perps_px_high_price(self):
-        # Direct unit test of the helper. BTC at $63500 with sz_decimals=5
-        # → px_decimals=1, but 5 sig fig cap takes priority and rounds to
-        # tens place.
-        from importlib import reload  # noqa: F401
+        from importlib import reload
         mod = _load_hl_adapter(mock_info_cls=MagicMock(return_value=MagicMock()))
-        # 63123.456 with 5 sig figs → 63123 (decimals=0)
         assert mod._round_perps_px(63123.456, sz_decimals=5) == 63123
-        # 0.123456 with 5 sig figs and sz_decimals=2 → px_decimals=4, sig_decimals=5
-        # → use min(4, 5) = 4 decimals → 0.1235
         assert mod._round_perps_px(0.123456, sz_decimals=2) == 0.1235
-        # Edge case: zero / negative passes through unchanged.
         assert mod._round_perps_px(0, sz_decimals=5) == 0
         assert mod._round_perps_px(-1.5, sz_decimals=5) == -1.5
 
     def test_round_perps_trigger_px_matches_internal_helper(self):
-        # Public wrapper must produce the same value place_stop_loss would
-        # submit, so callers can record the post-rounding price for PnL.
         adapter, _, mod = self._live_adapter(sz_decimals={"BTC": 5})
         assert adapter.round_perps_trigger_px("BTC", 63123.456) == mod._round_perps_px(63123.456, 5)
-        # Idempotent — rounding a rounded value returns the same value.
         rounded = adapter.round_perps_trigger_px("BTC", 63123.456)
         assert adapter.round_perps_trigger_px("BTC", rounded) == rounded
 
@@ -608,8 +537,6 @@ class TestStopLossPlacement:
         assert adapter.open_order_oids("ETH") == {111, 333}
 
 
-# ─── userFills Lookup (#585) ──────────────────────────
-
 class TestLookupFillFeeByOID:
     def _make_adapter(self):
         mock_info = MagicMock()
@@ -633,7 +560,7 @@ class TestLookupFillFeeByOID:
         mock_info.user_fills_by_time.return_value = [
             {"oid": 100, "fee": "0.50", "closedPnl": "1.25"},
             {"oid": 100, "fee": "0.30", "closedPnl": "0.75"},
-            {"oid": 999, "fee": "5.00", "closedPnl": "10.00"},  # different OID — ignored
+            {"oid": 999, "fee": "5.00", "closedPnl": "10.00"},
         ]
         result = adapter.lookup_fill_fee_by_oid(100, since_ms=1000)
         assert result["fee"] == pytest.approx(0.80)
@@ -651,10 +578,9 @@ class TestLookupFillFeeByOID:
 
     def test_retries_until_indexer_catches_up(self, monkeypatch):
         adapter, mock_info = self._make_adapter()
-        # First two attempts: fill not yet indexed. Third: appears.
         mock_info.user_fills_by_time.side_effect = [
             [],
-            [{"oid": 999, "fee": "1", "closedPnl": "0"}],  # different OID
+            [{"oid": 999, "fee": "1", "closedPnl": "0"}],
             [{"oid": 100, "fee": "0.65", "closedPnl": "0"}],
         ]
         sleeps = []
@@ -662,7 +588,7 @@ class TestLookupFillFeeByOID:
         result = adapter.lookup_fill_fee_by_oid(100, since_ms=1000, max_retries=4, retry_delay_s=0.1)
         assert result["fee"] == pytest.approx(0.65)
         assert mock_info.user_fills_by_time.call_count == 3
-        assert sleeps == [0.1, 0.1]  # slept between attempts 1→2 and 2→3, not after the success
+        assert sleeps == [0.1, 0.1]
 
     def test_returns_empty_after_max_retries_exhausted(self, monkeypatch):
         adapter, mock_info = self._make_adapter()
@@ -691,7 +617,6 @@ class TestLookupFillFeeByOID:
 
 
 class TestLimitOpen:
-    """Coverage for limit_open — the net-new non-reduce-only entry limit order (#883)."""
 
     def _make_adapter(self, sz_decimals=None):
         mock_info = MagicMock()
@@ -716,12 +641,10 @@ class TestLimitOpen:
     def test_alo_post_only_non_reduce_only(self):
         adapter, mock_exchange = self._make_adapter()
         adapter.limit_open("ETH", True, 0.5, 3000.0)
-        # Default tif is Alo (post-only), and the entry order is NOT reduce-only —
-        # the distinguishing property vs every other order this adapter places.
         args, kwargs = mock_exchange.order.call_args
         assert args[0] == "ETH"
-        assert args[1] is True  # is_buy
-        assert args[2] == 0.5   # size
+        assert args[1] is True
+        assert args[2] == 0.5
         assert args[4] == {"limit": {"tif": "Alo"}}
         assert kwargs.get("reduce_only") is False
 
@@ -748,8 +671,6 @@ class TestLimitOpen:
 
 
 class TestFillsSummaryByOID:
-    """Coverage for fills_summary_by_oid — cumulative size + VWAP for resting
-    limit-order fill tracking (#883)."""
 
     def _make_adapter(self):
         mock_info = MagicMock()
@@ -767,7 +688,6 @@ class TestFillsSummaryByOID:
 
     def test_sums_size_and_size_weighted_vwap(self):
         adapter, mock_info = self._make_adapter()
-        # Two partial legs of OID 100: 0.4@2000 and 0.6@2010, plus an unrelated OID.
         mock_info.user_fills_by_time.return_value = [
             {"oid": 100, "sz": "0.4", "px": "2000", "fee": "0.20"},
             {"oid": 100, "sz": "0.6", "px": "2010", "fee": "0.30"},
@@ -777,7 +697,6 @@ class TestFillsSummaryByOID:
         assert out["filled_size"] == pytest.approx(1.0)
         assert out["fee"] == pytest.approx(0.50)
         assert out["count"] == 2
-        # VWAP = (0.4*2000 + 0.6*2010) / 1.0 = 2006.0
         assert out["avg_px"] == pytest.approx(2006.0)
 
     def test_no_match_returns_empty(self, monkeypatch):
@@ -793,13 +712,10 @@ class TestFillsSummaryByOID:
 
 
 class TestFundingHistoryRange:
-    """get_funding_history_range — pagination past the ~500-record API cap (#960)."""
 
     _HOUR = 3_600_000
 
     def _paged_info(self, total_hours, page_size=500, base_ms=1_700_000_000_000):
-        """funding_history stub: returns up to page_size hourly records
-        starting at the requested time, oldest-first — the real API shape."""
         all_records = [
             {"fundingRate": str((i % 7 - 3) * 1e-5), "time": base_ms + i * self._HOUR}
             for i in range(total_hours)
@@ -849,15 +765,12 @@ class TestFundingHistoryRange:
         assert adapter.get_funding_history_range("BTC", 0) == []
 
     def test_no_progress_terminates(self):
-        """An API that keeps returning the same page must not loop forever."""
         mock_info, all_records, base = self._paged_info(total_hours=10)
         mock_info.funding_history.side_effect = lambda s, t: all_records[:5]
         adapter = self._adapter(mock_info)
         out = adapter.get_funding_history_range("BTC", base, base + 100 * self._HOUR)
         assert len(out) == 5
 
-
-# ─── Lazy Exchange init (#1128) ───────────────────
 
 class TestLazyExchangeInit:
     def _sample_meta(self):
@@ -1016,7 +929,7 @@ class TestLazyExchangeInit:
             try:
                 barrier.wait(timeout=5)
                 adapter.market_open("BTC", True, 0.5)
-            except Exception as exc:  # noqa: BLE001 - collect for assertion
+            except Exception as exc:
                 errors.append(exc)
 
         t1 = threading.Thread(target=worker)

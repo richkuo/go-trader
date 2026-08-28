@@ -1,11 +1,3 @@
-"""Regime-aware ATR multiplier resolver (#733).
-
-Pure-Python mirror of scheduler/regime_atr.go. Parses the `trend_regime`
-block that powers `tiered_tp_atr_regime`, `tiered_tp_atr_live_regime`,
-`stop_loss_atr_regime`, and `trailing_stop_atr_regime`.
-
-The Go file is the source of truth for behavior; keep this in sync.
-"""
 
 from __future__ import annotations
 
@@ -23,7 +15,6 @@ _deprecated_keys_warned: set = set()
 
 
 def _warn_deprecated_key(old: str, canonical: str) -> None:
-    """One-shot stderr deprecation notice for a legacy regime-block key (#841)."""
     if old in _deprecated_keys_warned:
         return
     _deprecated_keys_warned.add(old)
@@ -34,9 +25,6 @@ def _warn_deprecated_key(old: str, canonical: str) -> None:
 
 
 def _regime_entry_atr_raw(entry_raw: dict):
-    """Read the canonical 'atr_multiple' trigger from a per-regime entry.
-    Setting both atr_multiple and legacy 'atr' is rejected (#841).
-    Returns (raw, present, error_msg)."""
     has_canon = "atr_multiple" in entry_raw
     has_legacy = "atr" in entry_raw
     if has_canon and has_legacy:
@@ -50,28 +38,16 @@ def _regime_entry_atr_raw(entry_raw: dict):
 
 
 def close_params_are_unified_regime(params) -> bool:
-    """Report whether a close ref's params use the #841 unified per-regime block
-    (top-level ``trend_regime``) vs the legacy tier-keyed shape."""
     return isinstance(params, dict) and REGIME_CLASSIFIER_KEY in params
 
 
 def unified_regime_scalar_params(params: dict, regime: str):
-    """Select the scalar tiered-close plan for ``regime`` from a unified block.
-    Returns (scalar_params, stop_loss_atr) where scalar_params is a plain scalar
-    tiered_tp_atr config ({"tp_tiers": [...], "atr_source": ...}), or (None, 0.0)
-    when the label is absent/malformed (caller falls back). Mirrors the Go
-    unifiedRegimeScalarParams. #841 2b."""
     trend = params.get(REGIME_CLASSIFIER_KEY)
     if not isinstance(trend, dict):
         return None, 0.0
     r = (regime or "").strip()
     label = trend.get(r)
     if not isinstance(label, dict):
-        # #1124: a ranging_directional_up/_down stamp falls back to the bare
-        # ranging_directional entry (exact match wins first). The unified close
-        # is the sole SL owner, so without this fallback a bare-only block
-        # yields no SL *and* no TPs for a sub-label stamp. Mirrors
-        # unifiedRegimeScalarParams in scheduler/regime_unified.go.
         if r in ("ranging_directional_up", "ranging_directional_down"):
             label = trend.get("ranging_directional")
     if not isinstance(label, dict) or "tp_tiers" not in label:
@@ -88,7 +64,6 @@ def unified_regime_scalar_params(params: dict, regime: str):
 
 REGIME_CLASSIFIER_KEY = "trend_regime"
 
-# Mirrors canonicalTrendRegimeLabels in scheduler/regime_atr.go.
 CANONICAL_TREND_REGIME_LABELS = ("trending_up", "trending_down", "ranging")
 
 _RANGING_DIRECTIONAL_BARE = "ranging_directional"
@@ -96,15 +71,6 @@ _RANGING_DIRECTIONAL_SUBS = ("ranging_directional_up", "ranging_directional_down
 
 
 def validate_unified_regime_close(params: dict, labels=None) -> List[str]:
-    """Validate a #841 unified per-regime close block. Mirrors Go's
-    validateUnifiedRegimeClose (scheduler/regime_unified.go): the label set
-    must be exhaustive against the vocabulary (bare ``ranging_directional``
-    covers its ``_up``/``_down`` subs, #1124), every label must be an object
-    carrying ``tp_tiers`` (>=2 valid tiers) AND a positive ``stop_loss_atr``
-    — the unified close owns the SL, so a label omitting it would simulate
-    (or run) that regime with no stop loss at all. Returns a list of error
-    strings (#1228 review round 3: the backtester must reject what live
-    rejects at load, never simulate a stopless regime silently)."""
     errs: List[str] = []
     for k in params or {}:
         if k not in (REGIME_CLASSIFIER_KEY, "atr_source"):
@@ -125,9 +91,6 @@ def validate_unified_regime_close(params: dict, labels=None) -> List[str]:
     bare_directional = trend.get(_RANGING_DIRECTIONAL_BARE) is not None
     for l in label_vocab:
         if l not in trend:
-            # #1124 family rule: a present bare ranging_directional covers the
-            # _up/_down sub-labels (runtime resolves via the bare fallback in
-            # unified_regime_scalar_params).
             if bare_directional and l in _RANGING_DIRECTIONAL_SUBS:
                 continue
             errs.append(
@@ -147,9 +110,6 @@ def validate_unified_regime_close(params: dict, labels=None) -> List[str]:
                     f"unified close.{REGIME_CLASSIFIER_KEY}.{l}: unknown key {k!r} "
                     "(allowed: stop_loss_atr, tp_tiers)"
                 )
-        # stop_loss_atr is required per label: the unified close owns the SL
-        # (sole-owner rejects strategy-level stops), so a regime omitting it
-        # would run/simulate a position with no stop loss at all. #841 review.
         if "stop_loss_atr" not in lm:
             errs.append(
                 f"unified close.{REGIME_CLASSIFIER_KEY}.{l}: missing required "
@@ -179,11 +139,8 @@ def validate_unified_regime_close(params: dict, labels=None) -> List[str]:
 
 
 def _validate_unified_tier_list(raw, ctx_label: str) -> List[str]:
-    """Mirrors validateUnifiedTierList in scheduler/regime_unified.go."""
     if not isinstance(raw, list):
         return [f"{ctx_label}.tp_tiers: must be a list, got {type(raw).__name__}"]
-    # >=2 tiers matches the on-chain resolver (strategyTPTiersForRegime returns
-    # nil for <2) — on HL-live a single-tier regime would emit no TP exit.
     if len(raw) < 2:
         return [f"{ctx_label}.tp_tiers: must have at least 2 tiers, got {len(raw)}"]
     errs: List[str] = []
@@ -208,7 +165,7 @@ def _validate_unified_tier_list(raw, ctx_label: str) -> List[str]:
         if "sl_after" in item:
             try:
                 from post_tp_sl import parse_sl_after_rule, validate_sl_after_rule
-            except ImportError:  # direct-module import contexts
+            except ImportError:
                 from .post_tp_sl import parse_sl_after_rule, validate_sl_after_rule
             try:
                 rule = parse_sl_after_rule(item["sl_after"])
@@ -230,14 +187,12 @@ def _validate_unified_tier_list(raw, ctx_label: str) -> List[str]:
                 )
     return errs
 
-# regimeATRSurface equivalents — kept as string constants so the parser's
-# error messages match Go's surface-specific allowlists.
 SURFACE_STOP_LOSS = "stop_loss"
 SURFACE_TRAILING = "trailing"
 SURFACE_TP_TIER_ATR_ONLY = "tp_tier_atr_only"
 SURFACE_TP_TIER_WITH_FRAC = "tp_tier_with_frac"
-SURFACE_SL_AFTER = "sl_after"  # atr_offset variant — signed atr legal (#736)
-SURFACE_SL_AFTER_TRAIL = "sl_after_trail"  # trail_from_here variant — strictly positive atr (#736)
+SURFACE_SL_AFTER = "sl_after"
+SURFACE_SL_AFTER_TRAIL = "sl_after_trail"
 
 
 @dataclass(frozen=True)
@@ -262,17 +217,11 @@ class RegimeATRBlock:
         entry = self.trend_regime.get(r)
         if entry is not None:
             return entry
-        # #1124: a ranging_directional_up/_down stamp falls back to the bare
-        # ranging_directional entry when no explicit sub-label key is present
-        # (the back-compat shape — bare label covers the whole family). Exact
-        # match wins first, so an explicit sub key still overrides bare. Mirrors
-        # RegimeATRBlock.Resolve in scheduler/regime_atr.go.
         if r in ("ranging_directional_up", "ranging_directional_down"):
             return self.trend_regime.get("ranging_directional")
         return None
 
 
-# Mirrors regimeATRDefaults in scheduler/regime_atr.go — keep values in sync.
 REGIME_ATR_DEFAULTS_STOP_LOSS: Dict[str, RegimeATREntry] = {
     "trending_up": RegimeATREntry(atr=2.0),
     "trending_down": RegimeATREntry(atr=2.0),
@@ -283,10 +232,6 @@ REGIME_ATR_DEFAULTS_TRAILING: Dict[str, RegimeATREntry] = {
     "trending_up": RegimeATREntry(atr=2.5),
     "trending_down": RegimeATREntry(atr=2.5),
     "ranging": RegimeATREntry(atr=2.0),
-    # #870 / #1120: composite group opening trails (clean=2.5, choppy=2.25,
-    # ranging_quiet=1.0, ranging_volatile=1.25, ranging_directional*=1.5).
-    # ADX labels keep their pre-#870 values; resolve() exact-matches keys so the
-    # extra composite entries are inert for an ADX strategy.
     "trending_up_clean": RegimeATREntry(atr=2.5),
     "trending_down_clean": RegimeATREntry(atr=2.5),
     "trending_up_choppy": RegimeATREntry(atr=2.25),
@@ -294,22 +239,10 @@ REGIME_ATR_DEFAULTS_TRAILING: Dict[str, RegimeATREntry] = {
     "ranging_quiet": RegimeATREntry(atr=1.0),
     "ranging_volatile": RegimeATREntry(atr=1.25),
     "ranging_directional": RegimeATREntry(atr=1.5),
-    # #1124: directional-drift substates inherit the ranging_directional
-    # opening trail (1.5). Explicit entries are required because resolve() is a
-    # strict key lookup — without them a use_defaults block would leave these
-    # labels unresolved.
     "ranging_directional_up": RegimeATREntry(atr=1.5),
     "ranging_directional_down": RegimeATREntry(atr=1.5),
 }
 
-# #870: per-quality-group default ATR take-profit ladders. Mirrors
-# regimeTPTierGroupDefaults in scheduler/regime_atr.go. (atr_multiple,
-# cumulative_close_fraction); the final rung is coerced to 1.0 by the consumer.
-# Tier counts are ragged by design: clean lets trends run (4 rungs), choppy
-# mirrors the scalar default (3), ranging scales out fast (2).
-# #1152 evaluated a per-substate split of the collapsed ranging group with M6
-# entry-locked replay and kept the collapse — see
-# docs/research/1152-ranging-exit-geometry-m6.md.
 REGIME_TP_TIER_GROUP_DEFAULTS: Dict[str, List[Tuple[float, float]]] = {
     "clean": [(2.5, 0.25), (4.0, 0.50), (5.5, 0.75), (7.0, 1.00)],
     "choppy": [(1.5, 0.40), (3.0, 0.80), (5.0, 1.00)],
@@ -318,10 +251,6 @@ REGIME_TP_TIER_GROUP_DEFAULTS: Dict[str, List[Tuple[float, float]]] = {
 
 
 def regime_close_default_group(label: str) -> Optional[str]:
-    """Classify a classifier label into one of three default-ladder quality
-    groups (#870). Mirrors regimeCloseDefaultGroup in
-    scheduler/regime_atr.go: composite quality suffixes win, bare ADX trends
-    fall to choppy, the ranging-family maps to ranging."""
     label = (label or "").strip()
     if not label:
         return None
@@ -347,14 +276,6 @@ def _default_block_for_surface(surface: str) -> Optional[Dict[str, RegimeATREntr
 def parse_regime_atr_block(
     raw: Any, ctx_label: str, surface: str, labels: Optional[Tuple[str, ...]] = None
 ) -> Tuple[RegimeATRBlock, List[str]]:
-    """Validate + parse the `trend_regime` shape. Returns (block, errors).
-
-    Mirrors parseRegimeATRBlock in scheduler/regime_atr.go. Accepts either
-    {"use_defaults": True} or {"trend_regime": {...}}, never both.
-
-    surface controls which baseline expansion applies for use_defaults and
-    whether close_fraction is allowed inside per-regime entries.
-    """
     errs: List[str] = []
     labels = tuple(labels or CANONICAL_TREND_REGIME_LABELS)
     if raw is None:
@@ -424,12 +345,6 @@ def parse_regime_atr_block(
             f"(expected one of: {', '.join(labels)})"
         )
 
-    # #1124: a present bare `ranging_directional` covers its _up/_down sub-labels
-    # for exhaustiveness (back-compat — resolve() resolves the whole family at
-    # runtime via its bare fallback, including the return_eff==0 neutral case the
-    # producer still emits). Providing only the sub-labels without the bare label
-    # is NOT exhaustive (the neutral case would resolve to None → silent
-    # never-arm of an auto-protective exit).
     bare_directional_present = "ranging_directional" in trend_raw
     missing_labels = [
         l for l in labels
@@ -495,9 +410,6 @@ def parse_regime_atr_block(
                 f"got {atr_raw!r}"
             )
             continue
-        # sl_after atr_offset accepts signed atr (zero = breakeven, negative
-        # = SL behind entry). Every other surface requires strictly positive.
-        # See #736.
         if surface != SURFACE_SL_AFTER and atr <= 0:
             errs.append(
                 f"{ctx_label}.{REGIME_CLASSIFIER_KEY}.{label}.atr_multiple: must be > 0, "
@@ -529,8 +441,6 @@ def parse_regime_atr_block(
 
 
 def resolve_regime_atr(block: RegimeATRBlock, regime: str) -> Optional[float]:
-    """Return the ATR multiplier for the given regime label, or None when
-    the block is empty / the label is missing."""
     entry = block.resolve(regime)
     if entry is None or entry.atr <= 0:
         return None
@@ -539,13 +449,8 @@ def resolve_regime_atr(block: RegimeATRBlock, regime: str) -> Optional[float]:
 
 @dataclass
 class RegimeTierSpec:
-    """One tier of the regime-aware close evaluator. Resolved per regime
-    at runtime by ``resolve_regime_tier``."""
 
     block: RegimeATRBlock
-    # tier_close_fraction is the scalar close_fraction used when the
-    # per-regime entries omit close_fraction; None when every per-regime
-    # entry carries its own close_fraction.
     tier_close_fraction: Optional[float] = None
 
 
@@ -555,15 +460,6 @@ def parse_regime_tp_tiers(
     use_defaults: bool,
     labels: Optional[Tuple[str, ...]] = None,
 ) -> Tuple[List[RegimeTierSpec], List[str]]:
-    """Parse the tier list for tiered_tp_atr_regime / tiered_tp_atr_live_regime.
-
-    Each tier object may take one of two shapes:
-      - per-regime close_fraction: {trend_regime: {label: {atr, close_fraction}}}
-      - tier-level scalar close_fraction: {trend_regime: {label: {atr}}, close_fraction: X}
-
-    Mixing both shapes within a single tier is rejected. Mixing across tiers
-    is fine (one tier per-regime, another tier scalar).
-    """
     errs: List[str] = []
     labels = tuple(labels or CANONICAL_TREND_REGIME_LABELS)
     if use_defaults:
@@ -573,12 +469,6 @@ def parse_regime_tp_tiers(
                 "tiers (use_defaults is all-or-nothing)"
             )
             return [], errs
-        # #870: per-quality-group default ladders (clean 4 / choppy 3 / ranging
-        # 2 tiers). Build positional specs as the union across the requested
-        # labels — block[i] only carries the labels whose group defines tier i.
-        # Callers that resolve a single regime (sl_after) get exactly that
-        # group's tier count; resolve_regime_tier skips labels absent from a
-        # block. Mirrors Go's defaultRegimeTPTiersForRegime / InspectRegimeTP.
         label_ladders: Dict[str, List[Tuple[float, float]]] = {}
         max_tiers = 0
         for label in labels:
@@ -619,7 +509,6 @@ def parse_regime_tp_tiers(
             errs.append(f"{ctx_label}.tiers[{idx}]: must be an object")
             continue
 
-        # Detect shape: does any per-regime entry carry its own close_fraction?
         per_regime_has_frac = False
         trend_block = item.get(REGIME_CLASSIFIER_KEY)
         if isinstance(trend_block, dict):
@@ -647,13 +536,6 @@ def parse_regime_tp_tiers(
         surface = (
             SURFACE_TP_TIER_WITH_FRAC if per_regime_has_frac else SURFACE_TP_TIER_ATR_ONLY
         )
-        # Strip non-classifier keys we recognize at the tier level before
-        # parsing so the inner allowlist check focuses on the trend_regime
-        # block shape. Mirrors Go (scheduler/regime_atr.go): close_fraction is
-        # handled by the tier-fraction logic below and sl_after by
-        # parse_strategy_tp_sl_after_rules — without stripping sl_after, a
-        # per-tier sl_after on a regime close failed the parse AND silently
-        # never armed at fire time, since the fire path re-parses through here.
         tier_subset = {
             k: v for k, v in item.items() if k not in ("close_fraction", "sl_after")
         }
@@ -691,8 +573,6 @@ def parse_regime_tp_tiers(
 def resolve_regime_tier(
     spec: RegimeTierSpec, regime: str
 ) -> Optional[Tuple[float, float]]:
-    """Return (atr_multiple, close_fraction) for the given regime, or None
-    when the spec / label combination is missing."""
     entry = spec.block.resolve(regime)
     if entry is None or entry.atr <= 0:
         return None

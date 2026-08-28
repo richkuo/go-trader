@@ -1,51 +1,3 @@
-"""Reproducible evidence for #1095: extend the #1080 unsupervised vol-regime bake-off to fit on an
-ENRICHED feature matrix — the four canonical hand-rule inputs PLUS signals the hand-rule ignores
-(funding rate, volume z-score, a higher-timeframe range_eff) — and report whether any candidate now
-clears the same forward-volatility gate without degenerating, plus a feature-subset ABLATION that
-attributes any separation gain to a specific added feature.
-
-Why: the #1080 negative result (no unsupervised model beats the hand-rule) was produced fitting
-every candidate on exactly the hand-rule's OWN four features. Clustering can only find structure in
-its inputs, so that result is partly a consequence of the input set. This harness gives the models a
-genuine chance by feeding extra causal signals, then re-runs the #1080 gate + anti-gaming guards as
-amended by #1160 (forward-volatility separation, non-degeneracy locked from the hand-rule's worst
-window, auto-resolved permutation count, poweredness/knife-edge audit fields).
-
-ONE Bonferroni family across ablations (#1095 item 4b): every feature subset is swept inside a
-single run, and the family-wise correction divides alpha across the COMBINED structurally-eligible
-candidate count of the whole subsets x families x K grid — running subsets as separate bake-off
-calls would give each subset alpha/(its own sweep) instead of alpha/(combined sweep) and
-under-correct the crowning decision. `resolve_bakeoff_n_perm` is fed that combined count so the
-permutation resolution funds the tighter corrected alpha (#1160).
-
-Baseline at one measurement resolution (#1095 item 4c): the "canonical" subset re-runs the
-4-feature #1080 sweep inside this same family at the SAME resolved n_perm, so "enriched beats
-baseline" and the incumbent-trustworthy verdict are compared at one resolution — the merged #1080
-evidence was measured at 200 permutations with the incumbent at a knife-edge (OOS p = 10/201).
-Each subset's hand-rule baseline reports `permutation_steps_to_alpha` + `knife_edge`.
-
-#1211 UPDATE: this run abstained every verdict because gate_verdict hard-gated `ship` on the
-incumbent's own significance, which the #1095 re-measurement found unmet. #1211 re-measured that
-significance across a 24-cell window x asset family and DROPPED the incumbent-trustworthy
-precondition (gate-semantics "candidate-self-v2"); a candidate now ships on its OWN significant
-separation + non-inferiority + stability. Re-running this bake-off under v2 can now surface a
-gate-passing winner instead of a blanket abstain. See regime_1211_incumbent_baseline.py.
-
-Fairness: each subset's enriched matrix has its own NaN warmup (funding / HTF / volume), so the
-candidate AND the hand-rule baseline are BOTH scored on that subset's identical valid-bar mask —
-gate_verdict then compares like-for-like retained bars. Non-degeneracy thresholds stay locked from
-the CANONICAL hand-rule (the incumbent the candidate must beat).
-
-Run (needs the OHLCV cache; funding cache/network optional — funding-bearing subsets that can't be
-built are reported "unavailable", never fit on nothing):
-
-    uv run --no-sync python backtest/research/regime_1095_enriched_vol_model.py
-    uv run --no-sync python backtest/research/regime_1095_enriched_vol_model.py \
-        --symbol ETH/USDT --timeframe 1h --json /tmp/regime_1095_eth.json
-
-Parameterized by --symbol/--timeframe (so #1083 multi-asset can reuse it). Read-only; no live or Go
-path touched. Live wiring of an enriched model is #1074, not solved here (see LIVE_WIRING_DELTA).
-"""
 from __future__ import annotations
 import os, sys
 
@@ -71,12 +23,8 @@ from regime_enriched_features import (CANONICAL_COLUMNS, ENRICHED_COLUMNS,
                                       canonical_indices_for, decode_with_model)
 
 DEFAULT_WINDOWS = ("is", "oos", "2023", "2024", "2025H1")
-MIN_VALID_BARS = 50  # below this a subset's matrix is too warmed-out to fit/score -> "unavailable"
+MIN_VALID_BARS = 50
 
-# Feature subsets swept — ONE Bonferroni family (item 4b). Every subset keeps the canonical four
-# FIRST so states still name from them. "canonical" reproduces the #1080 4-feature sweep inside
-# this family at the same resolved n_perm (item 4c); each single-feature arm isolates one added
-# signal; "all_enriched" stacks them. The ablation reads separation gain across these arms.
 SUBSETS = {
     "canonical": list(CANONICAL_COLUMNS),
     "funding": CANONICAL_COLUMNS + ["funding_rate"],
@@ -87,10 +35,6 @@ SUBSETS = {
 
 
 def _load_1080():
-    """Reuse #1080's selection machinery as the single source of truth for the family-wise
-    correction: bonferroni_alpha / bonferroni_denominator / select_winner, the #1160
-    resolve_bakeoff_n_perm + structural-eligibility policy, and the knife-edge audit helpers —
-    plus its canonical hand-rule streams for the non-degeneracy thresholds."""
     path = os.path.join(_THIS_DIR, "regime_1080_unsupervised_vol_model.py")
     spec = importlib.util.spec_from_file_location("regime_1080_for_1095", path)
     mod = importlib.util.module_from_spec(spec)
@@ -100,11 +44,6 @@ def _load_1080():
 
 def combined_family_plan(subset_names, families, k_range, thresholds, *,
                          ineligible_reason_fn):
-    """The ONE-family grid of item 4b: every (subset, family, k) cell swept in this run, its
-    structural-ineligibility reason (k below the incumbent-derived min_active_labels floor can
-    never pass non-degeneracy — #1160), and the COMBINED structurally-eligible denominator the
-    Bonferroni correction and the permutation resolution must both be fed. Pure (no data access)
-    so the under-correction regression can test it directly."""
     plan = [(sub, family, k) for sub in subset_names for family in families for k in k_range]
     reasons = {cell: ineligible_reason_fn(cell[2], thresholds) for cell in plan}
     denominator = sum(1 for cell in plan if not reasons[cell])
@@ -112,13 +51,11 @@ def combined_family_plan(subset_names, families, k_range, thresholds, *,
 
 
 def _funding_for_window(coin, window):
-    """Hyperliquid funding history covering a window; None on any failure (no cache/network in CI)
-    so funding-bearing subsets degrade to 'unavailable' rather than crashing the sweep."""
     try:
         from funding_fetcher import load_cached_funding
         start, end = WINDOWS[window]
         return load_cached_funding(coin, start, end)
-    except Exception:  # noqa: BLE001 — research harness must not die on a funding miss
+    except Exception:
         return None
 
 
@@ -131,8 +68,6 @@ def _enriched(symbol, timeframe, window, period, th, columns, funding, *, htf_mu
 
 
 def _score(df, labels, mat, *, n_perm, seed, target="volatility"):
-    """Score a label stream on the enriched subset's mask (mat carries the NaN warmup that defines
-    which bars both arms are judged on) at the run's resolved permutation count."""
     return score_labels(df["close"].to_numpy(), labels, mat.to_numpy(dtype=float), target=target,
                         n_perm=n_perm, seed=seed)
 
@@ -151,18 +86,13 @@ def run_bakeoff(symbol="BTC/USDT", timeframe="1h", *, in_sample="is", held_out="
     th = dict(_DEFAULT_COMPOSITE_THRESHOLDS)
     coin = symbol.split("/")[0]
 
-    # Non-degeneracy thresholds: locked from the CANONICAL incumbent's worst window (anti-gaming),
-    # identical reference for every subset (#1080's helper).
     hr_streams = m1080._handrule_streams(symbol, timeframe, eval_windows, period, th)
     thresholds = rvm.derive_thresholds(list(hr_streams.values()))
 
     all_windows = list(dict.fromkeys((in_sample, held_out, *eval_windows)))
     funding_by_window = {w: _funding_for_window(coin, w) for w in all_windows}
 
-    # Build every subset's matrix for every eval window ONCE (the composite loop is the slow
-    # part), and decide availability BEFORE the family/K sweep so the combined denominator and
-    # the resolved n_perm reflect exactly the candidates that will actually be scored.
-    built = {}           # sub_name -> {window: (df, mat)}
+    built = {}
     subset_status = {}
     for sub_name, columns in subsets.items():
         needs_funding = "funding_rate" in columns
@@ -180,10 +110,6 @@ def run_bakeoff(symbol="BTC/USDT", timeframe="1h", *, in_sample="is", held_out="
         subset_status[sub_name] = "ok"
         built[sub_name] = wins
 
-    # ONE Bonferroni family across ablations (#1095 item 4b): the correction and the permutation
-    # resolution are both computed over the COMBINED structurally-eligible count of every subset
-    # actually swept — never per-subset. Ineligible cells are still scored for evidence but
-    # excluded from the denominator, and never silently (#1160).
     plan, ineligible_reasons, denominator = combined_family_plan(
         list(built), families, k_range, thresholds,
         ineligible_reason_fn=m1080.structurally_ineligible_reason)
@@ -201,9 +127,6 @@ def run_bakeoff(symbol="BTC/USDT", timeframe="1h", *, in_sample="is", held_out="
           f"{len(plan)} swept candidates (ONE family across all "
           f"{len(built)} available feature subsets)", file=sys.stderr)
 
-    # Hand-rule baseline per subset, scored on THIS subset's held-out mask at the resolved n_perm
-    # (fair like-for-like). The "canonical" entry is the #1080 4-feature negative result
-    # re-measured at this run's resolution (#1095 item 4c), with the knife-edge audit fields.
     handrule = {}
     for sub_name, wins in built.items():
         held_df, held_mat = wins[held_out]
@@ -227,9 +150,6 @@ def run_bakeoff(symbol="BTC/USDT", timeframe="1h", *, in_sample="is", held_out="
         wins = built[sub_name]
         fit_df, fit_mat = wins[in_sample]
         held_df, held_mat = wins[held_out]
-        # Source the fit-feature names (and the canonical positions the naming path reads) from
-        # the BUILT matrix's actual columns — the builder re-orders any requested list to the
-        # canonical-first global order, so the requested list is not authoritative.
         columns = list(fit_mat.columns)
         cidx = canonical_indices_for(columns)
         model = rvm.fit_unsupervised(fit_mat.to_numpy(dtype=float), family=family, k=k,
@@ -268,8 +188,6 @@ def run_bakeoff(symbol="BTC/USDT", timeframe="1h", *, in_sample="is", held_out="
                                   and c["model_p_value"] <= alpha)
     winner = m1080.select_winner(candidates)
 
-    # Ablation: best held-out separation per subset among non-degenerate candidates, and the gain
-    # over the canonical arm — attributes any improvement to the added feature(s).
     ablation = {}
     for sub_name in subsets:
         elig = [c for c in candidates if c["subset"] == sub_name and c["non_degenerate_all"]]
@@ -305,8 +223,6 @@ def run_bakeoff(symbol="BTC/USDT", timeframe="1h", *, in_sample="is", held_out="
         "min_achievable_p_value": 1.0 / (n_perm + 1),
         "non_degeneracy_thresholds": vars(thresholds),
         "subset_status": subset_status,
-        # Per-subset incumbent baseline at THIS run's n_perm; "canonical" is the #1080 4-feature
-        # negative result re-baselined at the same measurement resolution (#1095 4c).
         "handrule_held_out": {s: h["report"] for s, h in handrule.items()},
         "baseline_note": (
             "the merged #1080 evidence was measured at n_perm=200 with the incumbent at a "

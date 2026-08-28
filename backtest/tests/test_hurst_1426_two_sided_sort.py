@@ -1,18 +1,3 @@
-"""#1426: pure helpers of the TWO-SIDED Hurst sorting study.
-
-Covers the one thing this study changes and the guarantees that change has to
-carry: the doubled-tail p definition, that a REVERSED effect is detected rather
-than ignored, that no one-sided p-value function is reachable from the
-confirmatory path, that the detection limit is symmetric, that the validity gate
-reads a magnitude on the confirmatory family's OWN rows, that the verdict
-machinery cannot produce a recommendation, and that the live-evidence contract
-path stays with #1424. The EMPIRICAL result of the study is asserted only where
-the committed artifact pins what the run actually measured.
-
-Imported the same way the #1410, #1422 and #1424 test modules import theirs
-(explicit research/ on sys.path, unambiguous module name — safe under the #1304
-`-n auto` parallel run).
-"""
 import json
 import os
 import sys
@@ -24,10 +9,10 @@ import pytest
 sys.path.insert(0, os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "research")))
 
-import hurst_1426_two_sided_sort as study  # noqa: E402
-import hurst_1424_gate_resolution as study1424  # noqa: E402
-import hurst_1422_gate_power as study1422  # noqa: E402
-import hurst_1410_gate_calibration as study1410  # noqa: E402
+import hurst_1426_two_sided_sort as study
+import hurst_1424_gate_resolution as study1424
+import hurst_1422_gate_power as study1422
+import hurst_1410_gate_calibration as study1410
 
 _MR = "mean_reversion"
 CONTRACT = os.path.join(os.path.dirname(study._DEFAULT_REPORT_OUT),
@@ -59,32 +44,15 @@ def _trade(symbol="BTC/USDT", timeframe="1h", window="2021", day=0, pnl=1.0,
 
 
 def _rotatable_pool(n=60):
-    """Trades spread over enough calendar time on two datasets to host a
-    rotation, so the cluster null is testable."""
     return ([_trade(day=i * 5) for i in range(n)]
             + [_trade(symbol="ETH/USDT", day=i * 5) for i in range(n)])
 
 
 def _random_mask(n, seed=7):
-    """A RANDOM label vector, never an alternating one.
-
-    An alternating vector is a fixed point of an even circular rotation, so the
-    inherited cluster null degenerates on it: half the draws reproduce the
-    observed statistic exactly and half reproduce its mirror image, which drives
-    any two-sided p straight to 1 whatever the effect. A test built on that
-    construction would prove nothing about two-sidedness.
-    """
     return list(np.random.default_rng(seed).random(n) < 0.5)
 
 
-# ---------------------------------------------------------------------------
-# The doubled-tail definition.
-# ---------------------------------------------------------------------------
-
 def test_doubled_tail_formula_is_the_pre_registered_one():
-    # p2 = min(1, 2 * min(p_ge, p_le)), each tail with the add-one convention.
-    # The result is rounded to 6 decimals, exactly as every inherited p is, so
-    # the comparison carries an absolute tolerance rather than a relative one.
     assert study.doubled_tail_p(0, 999, 999) == pytest.approx(2.0 / 1000.0,
                                                               abs=1e-6)
     assert study.doubled_tail_p(999, 0, 999) == pytest.approx(2.0 / 1000.0,
@@ -104,14 +72,10 @@ def test_doubled_tail_is_untestable_without_draws():
 
 
 def test_the_smallest_reachable_p_is_two_over_draws_plus_one():
-    # The floor the MDE's resolvability check has to use. One over n+1 would be
-    # the ONE-sided floor and would let an underpowered run publish "no power".
     assert study.doubled_tail_p(0, 1999, 1999) == pytest.approx(2.0 / 2000.0)
 
 
 def test_both_tails_are_counted_over_surviving_draws_not_the_request():
-    # A cluster rotation discards draws that collapse the split. Dividing by the
-    # REQUESTED count would inflate the denominator and shrink both tails.
     trades = _rotatable_pool(40)
     mask = _random_mask(80)
     values = [1.0 if m else 0.0 for m in mask]
@@ -122,13 +86,7 @@ def test_both_tails_are_counted_over_surviving_draws_not_the_request():
         study.doubled_tail_p(0, out["n_draws"], out["n_draws"]), abs=0.05)
 
 
-# ---------------------------------------------------------------------------
-# Two-sidedness: a reversed effect is a FINDING, not a blind spot.
-# ---------------------------------------------------------------------------
-
 def _reversed_pool():
-    """A pool in which the SUPPRESSED side did much better — #1424's blind
-    spot, reproduced synthetically."""
     trades = _rotatable_pool(60)
     mask = _random_mask(120)
     values = [1.0 if m else 0.0 for m in mask]
@@ -141,7 +99,6 @@ def test_a_reversed_effect_is_detected_by_the_two_sided_cluster_null():
         trades, values, mask, n_perm=2000, seed=1426)["p"]
     two = study.two_sided_cluster_permutation_pvalue_group_diff(
         trades, values, mask, n_perm=2000, seed=1426)["p"]
-    # This IS the issue: the one-sided null cannot see it at any magnitude.
     assert one > 0.9
     assert two <= study.ALPHA
 
@@ -155,7 +112,6 @@ def test_a_reversed_effect_is_detected_by_the_two_sided_free_shuffle():
 
 
 def test_a_forward_effect_is_still_detected():
-    # Symmetry must not cost the direction the predecessors could already see.
     trades = _rotatable_pool(60)
     mask = _random_mask(120)
     values = [0.0 if m else 1.0 for m in mask]
@@ -176,12 +132,9 @@ def test_null_data_is_not_flagged_by_either_two_sided_function():
 
 
 def test_a_reversed_sizing_pairing_is_detected():
-    # The sizing arm's blind spot: a multiplier rule that systematically weights
-    # the WORSE trades up. One-sided, that is invisible.
     trades = _rotatable_pool(60)
     rng = np.random.default_rng(3)
     rets = list(rng.normal(0.0, 1.0, size=120))
-    # Multipliers anti-correlated with the returns.
     mults = [2.0 if r < 0 else 0.5 for r in rets]
     assert study1410.permutation_pvalue_weighted(
         rets, mults, n_perm=2000, seed=1426) > 0.9
@@ -203,7 +156,7 @@ def test_the_two_sided_functions_keep_the_untestable_semantics():
 
 
 def test_a_pool_too_short_to_rotate_is_untestable_not_insignificant():
-    trades = [_trade(day=i) for i in range(6)]          # ~6 days of span
+    trades = [_trade(day=i) for i in range(6)]
     out = study.two_sided_cluster_permutation_pvalue_group_diff(
         trades, [1.0] * 6, [True, False] * 3, n_perm=100, seed=1426)
     assert out["p"] is None
@@ -211,18 +164,12 @@ def test_a_pool_too_short_to_rotate_is_untestable_not_insignificant():
 
 
 def test_the_cluster_null_reuses_1422s_rotation_internals():
-    # The sampling scheme must stay byte-identical to the predecessors'; only
-    # the tail accounting is this study's.
     assert study.cluster_rotation_offsets is study1422.cluster_rotation_offsets
     assert study.rotation_shift_counts is study1422.rotation_shift_counts
     assert study._rotate_values is study1422._rotate_values
     assert study._admissible_offsets is study1422._admissible_offsets
     assert study.usable_cluster_rows is study1422.usable_cluster_rows
 
-
-# ---------------------------------------------------------------------------
-# Unreachability: no one-sided p may be called from the confirmatory path.
-# ---------------------------------------------------------------------------
 
 _ONE_SIDED = (
     (study1410, "permutation_pvalue_group_diff"),
@@ -241,8 +188,6 @@ _ONE_SIDED = (
 
 @pytest.fixture()
 def one_sided_is_a_landmine(monkeypatch):
-    """Make every one-sided estimator raise, in every module this study can
-    reach it through."""
     def _boom(*_a, **_kw):
         raise AssertionError("a one-sided p-value function was reached from the "
                              "two-sided confirmatory path")
@@ -252,20 +197,10 @@ def one_sided_is_a_landmine(monkeypatch):
     return _boom
 
 
-# `measure_detection_limits` scores the #1410 and exploratory pools against a
-# family size of 30, whose rank-1 bar is alpha/30. The two-sided floor of
-# 2/(n+1) has to clear that bar or the estimator refuses loudly, so a sweep
-# test cannot use a token draw count.
 _SWEEP_N_PERM = int(np.ceil(2.0 / (study.ALPHA / 30.0)))
 
 
 def _pooled_for_sweep():
-    """A synthetic primary-cohort pool carrying a LARGE effect.
-
-    The size is deliberate: the detection-limit scan stops at the first grid
-    point that clears the bar, so an effect visible at zero injection keeps
-    these unreachability tests fast even at the draw count above.
-    """
     cid = study.PRIMARY_CONFIG_ID
     rows = []
     mask = _random_mask(80, seed=11)
@@ -304,12 +239,10 @@ def test_the_two_sided_mde_never_reaches_a_one_sided_p(one_sided_is_a_landmine):
         cluster=False, n_perm=200)
 
 
-def test_stage_0_is_the_deliberately_inherited_one_sided_exception():
-    # Kept one-sided ON PURPOSE so the verdict recorded against #1412 stays
-    # comparable across studies. Documented, not accidental.
-    assert study.joint_separation_verdict.__doc__
-    assert "ONE-SIDED" in study.joint_separation_verdict.__doc__
-    assert "#1412" in study.joint_separation_verdict.__doc__
+def test_stage_0_is_the_deliberately_inherited_one_sided_exception(monkeypatch):
+    sentinel = object()
+    monkeypatch.setattr(study1422, "joint_separation_verdict", lambda *a, **k: sentinel)
+    assert study.joint_separation_verdict([], 512) is sentinel
 
 
 def test_stage_0_is_never_called_from_the_confirmatory_path(monkeypatch):
@@ -326,10 +259,6 @@ def test_stage_0_is_never_called_from_the_confirmatory_path(monkeypatch):
     study.decide_recommendation(cfgs, mde)
 
 
-# ---------------------------------------------------------------------------
-# The detection limit is symmetric.
-# ---------------------------------------------------------------------------
-
 def _mde_inputs(n=120, seed=1426):
     rng = np.random.default_rng(seed)
     trades = _rotatable_pool(n // 2)
@@ -340,7 +269,6 @@ def _mde_inputs(n=120, seed=1426):
 
 def _single_direction_limit(values, mask, sign, *, grid_step=0.05, grid_max=1.0,
                             n_perm=1000):
-    """The limit if only ``sign``'s injection were scored."""
     vals = np.asarray(values, dtype=float)
     m = np.asarray(mask, dtype=bool)
     bar = study._rank1_threshold(1, study.ALPHA)
@@ -362,8 +290,6 @@ def test_the_two_sided_limit_is_the_max_over_the_two_directions():
     up = _single_direction_limit(values, mask, +1.0)
     down = _single_direction_limit(values, mask, -1.0)
     assert None not in (both, up, down)
-    # Taking the MINIMUM would publish the easier direction as the test's
-    # resolution — the one-sided error in a new costume.
     assert both == max(up, down)
 
 
@@ -385,15 +311,12 @@ def test_an_injection_of_the_published_limit_is_detected_pointing_either_way():
 def test_the_resolvability_floor_is_two_over_n_plus_one():
     trades, values, mask = _mde_inputs(n=60)
     bar = study._rank1_threshold(1, study.ALPHA)
-    # 2/(38+1) = 0.0513 > 0.05, so it must refuse loudly.
     with pytest.raises(ValueError) as exc:
         study.two_sided_min_detectable_effect_on_grid(
             trades, values, mask, 1, grid_step=0.5, grid_max=0.5,
             refine_step=0.5, cluster=False, n_perm=38)
     assert "cannot resolve" in str(exc.value)
     assert "TWO-SIDED" in str(exc.value)
-    # 2/(39+1) = 0.05 <= 0.05, so it must be accepted. The ONE-sided floor
-    # 1/(38+1) would have accepted the refused case, which is the bug.
     assert 1.0 / 39.0 <= bar < 2.0 / 39.0
     study.two_sided_min_detectable_effect_on_grid(
         trades, values, mask, 1, grid_step=0.5, grid_max=0.5, refine_step=0.5,
@@ -448,17 +371,8 @@ def test_detection_limits_report_a_row_matched_zero_injection_p():
     assert mde["two_sided"] is True
 
 
-# ---------------------------------------------------------------------------
-# The validity gate.
-# ---------------------------------------------------------------------------
-
 def _mde(mom_limit=0.05, mom_sep=0.09, mr_limit=0.05, mr_sep=0.02, p0=0.4,
          pooled=None, **extra):
-    """An `mde` payload shaped like the real one.
-
-    `pooled` defaults to something the gate must IGNORE, so a test that passes
-    only because the gate read the pooled number fails loudly.
-    """
     out = {
         "by_family_cluster": {study.PRIMARY_FAMILY: mom_limit, _MR: mr_limit},
         "by_family_separation": {study.PRIMARY_FAMILY: mom_sep, _MR: mr_sep},
@@ -481,21 +395,14 @@ def test_the_gate_passes_on_a_positive_separation_above_the_limit():
 
 
 def test_the_gate_passes_on_a_NEGATIVE_separation_above_the_limit():
-    # THE point of #1426. #1424 refused this case because its null could not
-    # test that direction; here the null and the injection are both symmetric,
-    # so the magnitude comparison is legitimate and the reversal is a finding.
     gate = study.validity_gate(_mde(mom_limit=0.01, mom_sep=-0.30))
     assert gate["passed"] is True
     assert gate["mode"] == study.MODE_OK
-    # And #1424, on the very same numbers, must still refuse — the two studies
-    # differ exactly here and nowhere else.
     assert study1424.validity_gate(_mde(mom_limit=0.01, mom_sep=-0.30))[
         "passed"] is False
 
 
 def test_the_gate_preserves_the_sign_it_passed_on():
-    # A magnitude comparison must never erase the direction: which way the
-    # effect points is what a reader needs to know.
     gate = study.validity_gate(_mde(mom_limit=0.01, mom_sep=-0.30))
     assert gate["largest_separation"] == pytest.approx(-0.30)
 
@@ -522,9 +429,6 @@ def test_the_gate_fails_closed_with_no_separation_at_all():
 
 
 def test_the_gate_reads_the_confirmatory_familys_own_rows_not_the_pool():
-    # Inherited from #1424 finding 1, and it must survive the change of
-    # direction: the pooled limit spans BOTH families and resolves a smaller
-    # effect purely by holding more trades.
     gate = study.validity_gate(_mde(mom_limit=0.05, mom_sep=0.009,
                                     mr_limit=0.05, mr_sep=0.008, pooled=0.004))
     assert gate["passed"] is False
@@ -563,10 +467,6 @@ def test_the_gate_marks_itself_two_sided():
     assert study.validity_gate(_mde())["two_sided"] is True
 
 
-# ---------------------------------------------------------------------------
-# The verdict: mechanical, and structurally unable to recommend.
-# ---------------------------------------------------------------------------
-
 def _passing_cfg(**over):
     cfg = {
         "config_id": study.PRIMARY_CONFIG_ID, "cohort": study.COHORT_PRIMARY,
@@ -590,7 +490,6 @@ def _passing_cfg(**over):
 
 
 def test_this_module_defines_no_configuration_verdict():
-    # Option 2's cost, enforced by absence rather than by a branch nobody takes.
     assert not hasattr(study, "VERDICT_CONFIG")
     assert "config" not in study.VERDICT_LABELS
 
@@ -663,7 +562,7 @@ def test_an_untestable_confirmatory_p_is_not_significance():
 
 def test_the_confirmatory_p_is_the_row_matched_one_not_the_pool():
     mde = _mde(p0=0.9)
-    mde["pooled_primary_cluster_p0"] = 0.001      # must be ignored
+    mde["pooled_primary_cluster_p0"] = 0.001
     assert study.confirmatory_p(mde) == pytest.approx(0.9)
     assert study.decide_recommendation([], mde)["significant"] is False
 
@@ -689,10 +588,6 @@ def test_the_cohort_option_is_declared_as_data():
     assert study.SIBLING_DEFERRAL == (1427, 1428)
     assert study.TWO_SIDED is True
 
-
-# ---------------------------------------------------------------------------
-# Report rendering.
-# ---------------------------------------------------------------------------
 
 _FAILING_MDE = _mde(mom_limit=0.02, mom_sep=-0.005, p0=0.71,
                     pooled_primary_cluster=0.008, pooled_primary_free=0.006,
@@ -817,7 +712,6 @@ def test_largest_magnitude_signed_prefers_size_and_keeps_the_sign():
         pytest.approx(0.40)
     assert study._largest_magnitude_signed({}) is None
     assert study._largest_magnitude_signed({"a|512": None}) is None
-    # A tie in magnitude resolves to the POSITIVE value, deterministically.
     assert study._largest_magnitude_signed({"a|512": 0.3, "b|512": -0.3}) == \
         pytest.approx(0.3)
 
@@ -834,19 +728,12 @@ def test_the_report_names_the_numbers_the_gate_actually_reads():
 
 
 def test_the_report_explains_why_a_magnitude_comparison_is_legitimate_here():
-    # The single most dangerous thing a reader could take from this study is
-    # that #1424's directional gate was merely over-strict.
     text = study.report_from_payload(_render_payload())
     assert "That is not a relaxation" in text
     assert "must restore the signed comparison in the same change" in text
 
 
 def test_the_pre_registered_draw_count_resolves_the_binding_bar():
-    # The BINDING constraint is not the confirmatory family's bar. The #1410 and
-    # exploratory pools are scored against a family of 30, so their rank-1 bar
-    # is alpha/30 — an order of magnitude tighter — and doubling the tail
-    # doubles the draws needed to reach it. A count that sufficed for #1424 can
-    # therefore fail loudly here, which is the whole point of the guard.
     binding = study.ALPHA / 30.0
     confirmatory = study.ALPHA / study.PRIMARY_FAMILY_SIZE
     assert binding < confirmatory
@@ -862,10 +749,6 @@ def test_the_report_names_the_binding_bar_rather_than_the_easier_one():
 
 
 def test_the_prediction_does_not_promise_a_bound_it_cannot_deliver():
-    # A failed validity gate carries NO bound, in either direction. Predicting
-    # INCONCLUSIVE *and* a both-directions bound would predict two outcomes that
-    # cannot co-occur, and it would oversell what a symmetric test buys: it
-    # removes the blind spot, it does not add power.
     text = study.KEY_RISK_PREDICTION
     assert "INCONCLUSIVE" in text
     assert "NO bound" in text
@@ -874,8 +757,6 @@ def test_the_prediction_does_not_promise_a_bound_it_cannot_deliver():
 
 
 def test_only_a_passing_gate_ever_claims_a_bound():
-    # The structural version of the above: the bound language must appear on the
-    # resolved-null path and nowhere else.
     bound = study.decide_recommendation(
         [], _mde(p0=0.9, mom_limit=0.01, mom_sep=-0.30))
     assert bound["verdict"] == study.VERDICT_RESOLVED_NULL
@@ -899,10 +780,6 @@ def test_the_recommendation_only_claims_the_bound_when_the_gate_passed():
     assert "bounds any sorting effect in BOTH directions" not in failing
     assert "carries no bound" in failing
 
-
-# ---------------------------------------------------------------------------
-# Contract-path and committed-artifact protections.
-# ---------------------------------------------------------------------------
 
 def test_1426_does_not_default_to_the_contract_path():
     assert os.path.basename(study._DEFAULT_REPORT_OUT) == \
@@ -936,8 +813,6 @@ def test_the_contract_refusal_survives_render_only(tmp_path):
 
 
 def test_the_contract_refusal_is_checked_before_every_other_refusal(tmp_path):
-    # A scoped run aimed at the contract path must report the DEFERRAL, not the
-    # scoping complaint — otherwise fixing the scope would appear to unlock it.
     with pytest.raises(SystemExit) as exc:
         study.main(["--only", "momentum", "--report-out", CONTRACT,
                     "--json-out", str(tmp_path / "scoped.json")])
@@ -1060,10 +935,6 @@ def test_fetch_only_may_be_scoped_to_the_venues_that_need_it(monkeypatch):
 
 
 def test_the_registry_row_records_the_deferral_and_the_two_sidedness():
-    # docs/backtesting-registry.md is the harness map, and CLAUDE.md requires a
-    # row in the same PR that adds a harness. The row has to carry the two facts
-    # #1427 and #1428 will read off it: this study is two-sided, and it does NOT
-    # own the contract path.
     path = os.path.join(os.path.dirname(study.__file__), "..", "..", "docs",
                         "backtesting-registry.md")
     with open(os.path.abspath(path)) as fh:
@@ -1074,10 +945,6 @@ def test_the_registry_row_records_the_deferral_and_the_two_sidedness():
     assert "DEFERS" in row and "hurst_gate_calibration.md" in row
     assert "#1427" in row and "#1428" in row
 
-
-# ---------------------------------------------------------------------------
-# Inherited invariants that must not drift.
-# ---------------------------------------------------------------------------
 
 def test_the_estimator_is_the_1409_ssot_and_is_never_reimplemented():
     assert study.rolling_hurst is study1410.rolling_hurst
@@ -1127,22 +994,12 @@ def test_the_seed_is_the_issue_number():
     assert study.SEED == study.ISSUE == 1426
 
 
-# ---------------------------------------------------------------------------
-# The committed artifacts. These pin what the run ACTUALLY measured — they do
-# not assume the prediction.
-# ---------------------------------------------------------------------------
-
 def _committed():
     with open(study._DEFAULT_JSON_OUT) as fh:
         return json.load(fh)
 
 
 def test_the_committed_decision_is_what_the_current_rule_produces():
-    # The verdict, the gate and the justification are a PURE function of
-    # (configs, mde), both of which the committed payload carries. Pinning that
-    # equality stops a stale or hand-edited JSON publishing a verdict today's
-    # rule would not reach — the failure is silent, because `--render-only`
-    # renders the STORED decision.
     payload = _committed()
     fresh = study.decision_payload(
         study.decide_recommendation(payload["configs"], payload["mde"]))
@@ -1189,9 +1046,6 @@ def test_the_committed_gate_is_two_sided_and_row_matched():
 
 
 def test_the_committed_limit_is_not_below_1424s_one_sided_limit():
-    # A two-sided test costs power against a one-sided one at the same alpha,
-    # so this study's limit can only be at or above #1424's. A committed limit
-    # BELOW it would mean the doubling was lost somewhere.
     payload = _committed()
     mine = payload["mde"]["by_family_cluster"][study.PRIMARY_FAMILY]
     with open(study1424._DEFAULT_JSON_OUT) as fh:

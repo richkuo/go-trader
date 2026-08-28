@@ -1,121 +1,4 @@
 #!/usr/bin/env python3
-"""#1426: does Hurst at entry SORT trades in EITHER direction? — report only.
-
-Three studies have now tested one hypothesis: for momentum-style entries,
-trades taken at high Hurst persistence are better than trades taken at low
-persistence. #1410 could not resolve it, #1422 could not resolve it, and #1424
-could not resolve it either — but #1424 measured WHY, and what it measured is
-the reason this study exists.
-
-On #1424's confirmatory family (``momentum``, 7,992 rows) the row-matched
-detection limit is 0.013 efficiency units and the observed separation on those
-SAME rows is -0.005. ``_separation`` is ``mean(kept) - mean(suppressed)`` and
-every null and every injection in that study is ONE-SIDED in that orientation,
-so it can only ever reject "the suppressed trades were WORSE". A NEGATIVE
-separation says the trades the gate would have SUPPRESSED did BETTER — the one
-direction that design cannot detect at any magnitude. The observation is
-therefore unusable: neither a rejection nor a confirmation, and #1424's own
-report says so.
-
-More data does not fix that. The TEST points one way while the data points the
-other. This study changes the direction of the inference and nothing else.
-
-TWO-SIDED INFERENCE, pre-registered
------------------------------------
-Every p-value on the confirmatory path is a DOUBLED ONE-TAILED permutation p:
-
-    p2 = min(1, 2 * min(p_ge, p_le))
-
-with each tail carrying the add-one convention over the SAME draws
-(``p_ge = (1 + #{stat >= obs}) / (draws + 1)``, ``p_le`` symmetrically). The
-doubled-tail form is used rather than ``|stat| >= |obs|`` because the group-diff
-null is not exactly symmetric under unequal group sizes, and the weighted
-(sizing) statistic is not centred at zero at all; the doubled tail is
-valid-conservative for both, uniformly. The smallest reachable p is therefore
-``2 / (draws + 1)``, and the detection-limit search checks THAT floor rather
-than ``1 / (n + 1)`` — a run that cannot resolve its own bar must fail loud
-instead of publishing "no power".
-
-The detection limit injects BOTH directions at each grid point and takes
-``p(d) = max(p2(+d), p2(-d))``, so the published limit describes an effect this
-design could see WHICHEVER WAY it points. The validity gate may therefore
-compare the MAGNITUDE of the separation — legitimate ONLY because the null and
-the injection underneath it are now symmetric, which inverts #1424's directional
-rationale for exactly the reason #1424 gave for keeping it. The gate stays
-ROW-MATCHED on the confirmatory family: both numbers come from ``by_family_*``,
-measured on the identical rows. ``MODE_REVERSED`` ceases to exist, because a
-symmetric test has no untested direction; the SIGNED separation is preserved
-everywhere so the direction of any finding is always reportable.
-
-COHORT DECISION: OPTION 2 — EXPLORATORY-ONLY, FULL POOL
-------------------------------------------------------
-The issue required one of two honest routes to be chosen and its cost stated.
-Option 1 (reserve rows #1424 never scored, and make those the confirmatory
-cohort) is not available in this repository, and #1424's own committed
-artifacts are the evidence:
-
-  * The CALENDAR is exhausted. #1424's pre-registered windows run from ``2013``
-    to ``oos = (2026-01-01, None)`` — open-ended through the tape at run time.
-    Its artifacts merged 2026-08-10, so the only unscored calendar tape is a
-    handful of days.
-  * The VENUES are exhausted. #1424's committed ``FEASIBILITY_PROBES`` record
-    binance-global (HTTP 451), Kraken (no deep ``since``), TopStep (no ``since``
-    at all) and IBKR (no OHLCV surface) as INFEASIBLE, and Bitstamp's non-BTC
-    pairs as empty before 2017. Any remaining unscored (venue, window) cell for
-    a scored base asset is the SAME market's tape — precisely what #1424's
-    ``_assert_window_ownership`` matrix exists to forbid counting twice.
-  * A reserved cohort could not see the effect anyway. Effective N is set by
-    independent CALENDAR CLUSTERS, not by row count, so any strict subset of
-    #1424's pool — or new symbols over already-scored years, which add
-    correlated rows on the same clusters — carries a strictly WORSE limit than
-    the 0.013 measured on the full 7,992-row family. Option 1 would buy a
-    pre-registration that is guaranteed inconclusive: a pre-registration in
-    name only, which is the failure mode the issue names.
-
-So this study takes Option 2. THE COST, stated plainly and enforced
-mechanically: no confirmatory claim of any kind is available from this run.
-``decide_recommendation`` has no winner branch and no ``VERDICT_CONFIG``
-constant exists in this module; every verdict string carries the exploratory-only
-sentence; nothing here can recommend a threshold. That cost is affordable only
-because the study is report-only and #1411's ``hurst_gate`` stays default-off
-regardless.
-
-REPORT-PATH CONTRACT: THIS STUDY DEFERS
----------------------------------------
-An exploratory-only study cannot be the live evidence behind a shipping gate.
-``backtest/research/hurst_gate_calibration.md`` is what ``scheduler/hurst_gate.go``,
-``docs/ARCHITECTURE.md`` and #1412's Stage 0 cite, and #1424's confirmatory
-apparatus remains the best confirmatory evidence in the repository. This study
-therefore takes the "does not supersede" branch of the precedent #1424 set for
-#1422: its render lives at its own issue-numbered file, and ``main`` REFUSES the
-contract path unconditionally, naming #1424 as its owner. #1424's script, its
-tests and the contract file itself are untouched by this work.
-
-The supersede clause is shared with #1427 and #1428, and at most one of the
-three open studies may claim the contract path. #1426 DEFERS; the clause remains
-available to #1427 and #1428.
-
-REPORT-ONLY. Zero scheduler, config, gating, sizing or live-path changes. The
-gate and size arms are OFFLINE SIMULATIONS.
-
-Method
-------
-Inherited VERBATIM from #1424 (which inherits from #1422 and #1410) unless named
-above: the #1409 ``hurst_exponent`` SSoT and its rolling look-ahead convention,
-the NaN policy, the datasets, the windows and their ownership matrix, the
-cohorts, the signed fixed-horizon efficiency target, the shared calendar
-rotation null's internals, effective N, the coverage density floor, the dedup
-rule, the warm-up audit, the harness-identity mirror, the acceptance rule and
-the joint ADX x Hurst section. What changes is the DIRECTION of the inference,
-and only that.
-
-Usage
------
-  uv run --no-sync python backtest/research/hurst_1426_two_sided_sort.py \
-      --jobs 8 --write-report --out-dir /tmp/hurst1426
-  uv run --no-sync python backtest/research/hurst_1426_two_sided_sort.py --render-only
-  uv run --no-sync python backtest/research/hurst_1426_two_sided_sort.py --fetch-only
-"""
 
 import argparse
 import json
@@ -133,26 +16,21 @@ for _p in (_THIS_DIR, _BACKTEST, _ROOT, os.path.join(_ROOT, "shared_tools")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-import numpy as np  # noqa: E402
-import pandas as pd  # noqa: E402
+import numpy as np
+import pandas as pd
 
-from eval_windows import (  # noqa: E402  (sys.path bootstrap must run first)
+from eval_windows import (
     DEFAULT_CAPITAL,
     FEE_PLATFORM,
     PLATFORM,
     dataset_key,
 )
-from regime_stats import benjamini_hochberg  # noqa: E402
+from regime_stats import benjamini_hochberg
 
-# The three predecessor studies are the SSoT for every helper this study did
-# not have to change. Imported by unambiguous module name off research/ on
-# sys.path — the pattern the #1410, #1422 and #1424 test modules use, and the
-# one that stays safe under the #1304 `pytest -n auto` parallel run.
-import hurst_1410_gate_calibration as study1410  # noqa: E402
-import hurst_1422_gate_power as study1422  # noqa: E402
-import hurst_1424_gate_resolution as study1424  # noqa: E402
+import hurst_1410_gate_calibration as study1410
+import hurst_1422_gate_power as study1422
+import hurst_1424_gate_resolution as study1424
 
-# --- #1410 (estimator, buckets, gate/size mechanics) -----------------------
 bucket_label = study1410.bucket_label
 cache_entry_is_usable = study1410.cache_entry_is_usable
 cache_meta = study1410.cache_meta
@@ -186,7 +64,6 @@ CONFIG_ID_SEP = study1410.CONFIG_ID_SEP
 gate_config_id = study1410.gate_config_id
 size_config_id = study1410.size_config_id
 
-# --- #1422 (cluster rotation internals, effective N, coverage) -------------
 adx_entry_stamp = study1422.adx_entry_stamp
 anti_signal_side = study1422.anti_signal_side
 cluster_rotation_offsets = study1422.cluster_rotation_offsets
@@ -213,10 +90,6 @@ MIN_OFFSET_DAYS = study1422.MIN_OFFSET_DAYS
 MIN_WINDOW_BAR_FRACTION = study1422.MIN_WINDOW_BAR_FRACTION
 NO_JOINT_SEPARATION = study1422.NO_JOINT_SEPARATION
 
-# --- #1424 (design, data, targets, economics — inherited VERBATIM) ---------
-# Every one of these is imported rather than restated. A drift in #1424 must
-# fail loud here, exactly as #1424 inherits #1422's windows rather than
-# redefining them.
 base_asset = study1424.base_asset
 bucket_tables = study1424.bucket_tables
 build_leg = study1424.build_leg
@@ -242,9 +115,6 @@ _fmt = study1424._fmt
 _fmt_family_seps = study1424._fmt_family_seps
 _fmt_p = study1424._fmt_p
 _fmt_signed = study1424._fmt_signed
-# `_largest_signed` is deliberately NOT inherited: it takes `max` over SIGNED
-# values, which is the right power question only for a one-sided test.
-# `_largest_magnitude_signed` below is this study's symmetric replacement.
 _render_bucket_table = study1424._render_bucket_table
 _render_joint_table = study1424._render_joint_table
 _sweep_grid = study1424._sweep_grid
@@ -296,17 +166,10 @@ WINDOW_OWNER = study1424.WINDOW_OWNER
 _JSON_1410 = study1424._JSON_1410
 _JSON_1424 = study1424._DEFAULT_JSON_OUT
 
-# ---------------------------------------------------------------------------
-# Pre-registered design constants. Fixed before the sweep ran; serialized
-# verbatim into the JSON and the report so a reader can tell the verdict was
-# not tuned after seeing the numbers.
-# ---------------------------------------------------------------------------
 SCHEMA_VERSION = 1
 ISSUE = 1426
-SEED = ISSUE  # 1426 — fixed so a re-run reproduces every p-value
+SEED = ISSUE
 
-# Option 2, declared as data so the payload and the report cannot disagree with
-# the docstring.
 COHORT_OPTION = "exploratory_only_full_pool"
 CONTRACT_PATH_CLAIMED = False
 SIBLING_DEFERRAL = (1427, 1428)
@@ -375,8 +238,6 @@ KEY_RISK_PREDICTION = (
     "predicting two things that cannot both happen. It is a PREDICTION and not "
     "a requirement: the machinery below decides.")
 
-# Verdict vocabulary. There is deliberately NO `VERDICT_CONFIG` in this module:
-# under Option 2 a recommendation is not merely unlikely, it is unreachable.
 VERDICT_SORT_DETECTED = "sort_detected"
 VERDICT_RESOLVED_NULL = "resolved_null"
 VERDICT_INCONCLUSIVE = "inconclusive"
@@ -387,52 +248,22 @@ VERDICT_LABELS = {
     VERDICT_INCONCLUSIVE: "INCONCLUSIVE",
 }
 
-# The sentence every verdict carries. Pinned by test: under Option 2 no
-# outcome, not even a significant one, may read as confirmatory.
 EXPLORATORY_ONLY_SENTENCE = (
     "This study is EXPLORATORY-ONLY (Option 2): the sign it tests was seen "
     "before the design was fixed, so no confirmatory claim is available from "
     "it, no configuration can win, and no threshold ships.")
 
-# Gate outcome modes. `MODE_REVERSED` does not exist here: with a symmetric
-# test there is no untested direction for a separation to point in.
 MODE_OK = "ok"
 MODE_BELOW_LIMIT = "below_limit"
 MODE_UNRESOLVABLE = "unresolvable"
 MODE_NO_SEPARATION = "no_separation"
 
 _DEFAULT_JSON_OUT = os.path.join(_THIS_DIR, "hurst_1426_two_sided_sort.json")
-# NOT the contract path. #1424 owns that; `main` refuses it unconditionally.
 _DEFAULT_REPORT_OUT = os.path.join(_THIS_DIR, "hurst_1426_two_sided_sort.md")
 _CONTRACT_REPORT_OUT = os.path.join(_THIS_DIR, CONTRACT_REPORT_BASENAME)
 
 
-# ---------------------------------------------------------------------------
-# Two-sided nulls. Every p on the confirmatory path comes from one of these
-# four functions; the one-sided predecessors are never called from here.
-# ---------------------------------------------------------------------------
-
 def doubled_tail_p(n_ge: int, n_le: int, draws: int) -> Optional[float]:
-    """The pre-registered two-sided p from one draw set's two tail counts.
-
-    ``p_ge = (1 + n_ge) / (draws + 1)``, ``p_le`` symmetrically, and
-    ``p2 = min(1, 2 * min(p_ge, p_le))``.
-
-    The doubled tail is used rather than the ``|stat| >= |obs|`` form because
-    neither statistic this study tests is guaranteed symmetric under its own
-    null: the group difference is not, under unequal group sizes, and the
-    weighted (sizing) statistic is not even centred at zero. Doubling the
-    smaller tail is valid-conservative for BOTH, uniformly, which is what lets
-    one definition serve every arm.
-
-    Both tails MUST be counted over ``draws`` — the draws the null actually
-    produced — and never over the requested ``n_perm``. A cluster rotation
-    discards draws that collapse the split, so using the request would inflate
-    the denominator and shrink both tails without saying so.
-
-    Returns None when the null produced no draws at all: untestable, never
-    "not significant".
-    """
     draws = int(draws)
     if draws <= 0:
         return None
@@ -445,15 +276,6 @@ def two_sided_permutation_pvalue_group_diff(values: Sequence[float],
                                             suppressed: Sequence[bool],
                                             n_perm: int = N_PERM,
                                             seed: int = SEED) -> Optional[float]:
-    """Two-sided free-shuffle p for "the two groups differ AT ALL".
-
-    Statistic and null are #1410's verbatim — ``mean(kept) - mean(suppressed)``
-    under a label shuffle — with BOTH tails counted, so an effect in which the
-    SUPPRESSED side did better is detected rather than ignored. That blind spot
-    is the whole reason this study exists.
-
-    Returns None when either group is empty (no testable contrast).
-    """
     vals = np.asarray(values, dtype=float)
     mask = np.asarray(suppressed, dtype=bool)
     if vals.shape != mask.shape:
@@ -486,15 +308,6 @@ def two_sided_permutation_pvalue_weighted(returns: Sequence[float],
                                           multipliers: Sequence[float],
                                           n_perm: int = N_PERM,
                                           seed: int = SEED) -> Optional[float]:
-    """Two-sided free-shuffle p for "this multiplier PAIRING differs at all".
-
-    #1410's statistic and null — ``mean(m_i * r_i)`` under a multiplier shuffle,
-    which keeps both marginals fixed and tests only the pairing — with both
-    tails counted. A sizing rule that systematically weights the WORSE trades up
-    is a finding here; under the one-sided form it was invisible.
-
-    Returns None when the multipliers carry no variation (nothing to shuffle).
-    """
     rets = np.asarray(returns, dtype=float)
     mults = np.asarray(multipliers, dtype=float)
     if rets.shape != mults.shape:
@@ -511,8 +324,6 @@ def two_sided_permutation_pvalue_weighted(returns: Sequence[float],
     tile = np.broadcast_to(mults, (chunk_size, n))
     while remaining > 0:
         take = min(chunk_size, remaining)
-        # rng.permuted shuffles each row independently in O(n) — the same call
-        # #1410 makes, so the null is identical and only the accounting differs.
         shuffled = rng.permuted(np.array(tile[:take], copy=True), axis=1)
         stats = (shuffled * rets).mean(axis=1)
         ge += int(np.count_nonzero(stats >= observed))
@@ -527,19 +338,6 @@ def two_sided_cluster_permutation_pvalue_group_diff(
         suppressed: Sequence[bool],
         n_perm: int = N_PERM,
         seed: int = SEED) -> dict:
-    """Two-sided cluster p for "the two groups differ AT ALL".
-
-    The null is #1422's shared circular CALENDAR rotation, reused through its
-    own internals (``usable_cluster_rows``, ``cluster_rotation_offsets``,
-    ``_admissible_offsets``, ``rotation_shift_counts``, ``_rotate_values``) so
-    the sampling scheme stays byte-identical to the predecessors'. Only the
-    accounting changes: both tails are counted, over the draws that survived.
-
-    Same return shape as #1422's one-sided variant, so every caller and every
-    report column keeps working. ``p`` is None when the pool cannot host a
-    rotation at all; the caller must treat that as untestable, never as "not
-    significant".
-    """
     vals = np.asarray(values, dtype=float)
     mask = np.asarray(suppressed, dtype=bool)
     if vals.shape != mask.shape or len(trades) != vals.size:
@@ -609,12 +407,6 @@ def two_sided_cluster_permutation_pvalue_weighted(
         multipliers: Sequence[float],
         n_perm: int = N_PERM,
         seed: int = SEED) -> dict:
-    """Two-sided cluster p for "this multiplier PAIRING differs at all".
-
-    #1422's rotation applied to the multiplier vector, with both tails counted
-    over the surviving draws. Both marginals stay fixed, so only the pairing is
-    tested — and now a pairing that is systematically WRONG is detectable.
-    """
     rets = np.asarray(returns, dtype=float)
     mults = np.asarray(multipliers, dtype=float)
     if rets.shape != mults.shape or len(trades) != rets.size:
@@ -634,8 +426,6 @@ def two_sided_cluster_permutation_pvalue_weighted(
     trades = [trades[i] for i in idx]
     rets = rets[idx]
     mults = mults[idx]
-    # Checked AFTER the exclusion, exactly as #1422 does: variation the dropped
-    # rows carried is not variation this test can use.
     if float(np.ptp(mults)) == 0.0:
         return {"p": None, "n_draws": 0, "excluded_datasets": excluded,
                 "n_scored": rets.size, "n_excluded_trades": n_excluded,
@@ -674,10 +464,6 @@ def two_sided_cluster_permutation_pvalue_weighted(
             "offset_range": [int(lo), int(hi)]}
 
 
-# ---------------------------------------------------------------------------
-# Two-sided detection limits.
-# ---------------------------------------------------------------------------
-
 def two_sided_min_detectable_effect_on_grid(trades: Sequence[dict],
                                             values: Sequence[float],
                                             suppressed: Sequence[bool],
@@ -690,32 +476,6 @@ def two_sided_min_detectable_effect_on_grid(trades: Sequence[dict],
                                             n_perm: int = N_PERM_MDE,
                                             seed: int = SEED,
                                             alpha: float = ALPHA) -> Optional[float]:
-    """#1424's detection-limit search made SYMMETRIC.
-
-    At each grid point ``d`` the injection is applied in BOTH directions — the
-    suppressed values shifted DOWN by ``d`` (which raises
-    ``mean(kept) - mean(suppressed)``) and then UP by ``d`` (which lowers it) —
-    and the grid point is scored by ``p(d) = max(p2(+d), p2(-d))``. Taking the
-    MAXIMUM is what makes the published limit describe a genuinely symmetric
-    test: it is the smallest effect this design would catch WHICHEVER WAY it
-    points, so the validity gate may compare a magnitude against it.
-
-    Taking the minimum instead would publish the easier of the two directions
-    as if it were the test's resolution, which is the same error in a new
-    costume: a bound that only holds for effects pointing one way.
-
-    Either direction untestable (``None``) means no symmetric limit exists at
-    that grid point, so the point does not clear the bar.
-
-    Returns None when even the largest grid point cannot clear the bar. RAISES
-    when the permutation count cannot RESOLVE that bar: with the doubled-tail
-    convention the smallest reachable p is ``2 / (n_perm + 1)``, NOT
-    ``1 / (n_perm + 1)``. A run below that floor would find every effect
-    undetectable and publish "no power" when the truth is "no permutations",
-    and that failure must be loud. The floor is checked against the REQUESTED
-    draw count, which is optimistic for a cluster null that discards collapsing
-    rotations; the surviving-draw count is what each p-value itself divides by.
-    """
     vals = np.asarray(values, dtype=float)
     mask = np.asarray(suppressed, dtype=bool)
     bar = _rank1_threshold(family_size, alpha)
@@ -770,11 +530,6 @@ def two_sided_min_detectable_effect_on_grid(trades: Sequence[dict],
 
 def two_sided_min_detectable_effect_eff(trades, values, suppressed, family_size,
                                         **kw):
-    """Two-sided detection limit on the PRIMARY target, in efficiency units.
-
-    #1424's grid verbatim, so the two studies' limits stay directly comparable
-    and the only difference a reader has to account for is the symmetry.
-    """
     return two_sided_min_detectable_effect_on_grid(
         trades, values, suppressed, family_size,
         grid_step=MDE_EFF_GRID_STEP, grid_max=MDE_EFF_GRID_MAX,
@@ -783,7 +538,6 @@ def two_sided_min_detectable_effect_eff(trades, values, suppressed, family_size,
 
 def two_sided_min_detectable_effect_pp(trades, values, suppressed, family_size,
                                        **kw):
-    """Two-sided detection limit on the CONTINUITY target, in pp of net return."""
     return two_sided_min_detectable_effect_on_grid(
         trades, values, suppressed, family_size,
         grid_step=MDE_PP_GRID_STEP, grid_max=MDE_PP_GRID_MAX,
@@ -792,20 +546,6 @@ def two_sided_min_detectable_effect_pp(trades, values, suppressed, family_size,
 
 def measure_detection_limits(pooled: dict, hurst_windows: Sequence[int],
                              n_perm: int, seed: int) -> dict:
-    """What this design could have detected IN EITHER DIRECTION, on both targets.
-
-    #1424's function with every call site swapped to the two-sided estimator and
-    the two-sided null. The three pools, the split rule, the row-matched
-    ``by_family_*`` block and the pool-matched separations are kept VERBATIM —
-    the row matching is what makes the gate's comparison honest and it is
-    orthogonal to the direction of the test.
-
-    One block is added: ``by_family_cluster_p0``, the ZERO-INJECTION two-sided
-    cluster p on each family's own row-matched slice. Under Option 2 that number
-    IS the study's answer to "does H sort these trades at all", so it is a
-    first-class field rather than something a reader has to reconstruct from the
-    pooled row.
-    """
     out: dict = {"by_family_cluster": {}, "by_family_cluster_return": {},
                  "by_family_separation": {}, "by_family_separation_return": {},
                  "by_family_cluster_p0": {}, "by_family_cluster_return_p0": {},
@@ -824,8 +564,6 @@ def measure_detection_limits(pooled: dict, hurst_windows: Sequence[int],
         return rows
 
     def _split(rows, family: str):
-        # The suppressed side is the FAMILY'S OWN anti-signal bucket, so the
-        # injected edge sits exactly where that family's gate claims one lives.
         sense = FAMILY_SENSE[family]
         keep, values, returns, mask = [], [], [], []
         for t in rows:
@@ -870,21 +608,11 @@ def measure_detection_limits(pooled: dict, hurst_windows: Sequence[int],
                     two_sided_min_detectable_effect_pp(
                         fam_rows, fam_rets, fam_mask, family_size, cluster=True,
                         n_perm=n_perm, seed=seed)
-                # The separation the validity gate reads must come from the
-                # EXACT rows its limit was measured on. `usable_cluster_rows` is
-                # applied per family here and pool-wide below, and the two need
-                # not agree: a dataset whose trades span enough calendar time
-                # inside the COMBINED pool can fall short inside one family's
-                # slice. Storing the family's own separation is what makes the
-                # gate row-matched by construction rather than by coincidence.
                 out["by_family_separation"][family] = _separation(
                     fam_vals, fam_mask)
                 out["by_family_separation_return"][family] = _separation(
                     fam_rets, fam_mask)
                 out["by_family_n"][family] = len(fam_rows)
-                # The zero-injection two-sided p on those same rows: under
-                # Option 2 this is the study's actual answer, so it is measured
-                # ROW-MATCHED beside the limit rather than borrowed from a pool.
                 if fam_rows and 0 < int(np.sum(fam_mask)) < len(fam_mask):
                     out["by_family_cluster_p0"][family] = (
                         two_sided_cluster_permutation_pvalue_group_diff(
@@ -898,8 +626,6 @@ def measure_detection_limits(pooled: dict, hurst_windows: Sequence[int],
                     out["by_family_cluster_p0"][family] = None
                     out["by_family_cluster_return_p0"][family] = None
 
-        # The cluster null defines this pool's usable sample. Apply it ONCE to
-        # every number printed beside it.
         idx, _ = usable_cluster_rows(rows_all)
         rows_all = [rows_all[i] for i in idx]
         vals_all = [vals_all[i] for i in idx]
@@ -958,53 +684,7 @@ def measure_detection_limits(pooled: dict, hurst_windows: Sequence[int],
     return out
 
 
-# ---------------------------------------------------------------------------
-# The validity gate and the (deliberately recommendation-free) decision.
-# ---------------------------------------------------------------------------
-
 def validity_gate(mde: dict) -> dict:
-    """The pre-registered validity gate, in efficiency units, SYMMETRIC.
-
-    This study is VALID only when the measured two-sided cluster-null detection
-    limit on the CONFIRMATORY FAMILY's own rows falls at or below the MAGNITUDE
-    of that same family's observed separation on the same statistic.
-
-    Two properties are load-bearing.
-
-    ROW-MATCHED, unchanged from #1424 and for its reason. Both numbers come from
-    ``by_family_*``, measured on the identical row set (``PRIMARY_FAMILY``'s
-    slice of the primary cohort, after the cluster null's own usability filter).
-    The pooled primary limit is measured on BOTH families' rows and is therefore
-    a different sample: reading it against one family's separation is the
-    whole-study-versus-sub-cohort mismatch the pool-matched tables exist to
-    prevent, and it biases the gate toward passing because a larger pool
-    resolves a smaller effect. Making the test symmetric changes nothing about
-    this, so nothing about it changes here.
-
-    MAGNITUDE, and this IS the change. #1424 compared the SIGNED separation
-    because its nulls and its injection were one-sided in the
-    ``mean(kept) - mean(suppressed)`` orientation, so a negative value pointed
-    the way that design could not detect at any size and no limit spoke to it.
-    Here the null is two-sided and the injection is applied in BOTH directions
-    with the limit taken as the harder of the two, so the limit describes an
-    effect this design could catch whichever way it points. Comparing
-    ``abs(separation)`` is therefore legitimate — and it is legitimate ONLY
-    because of that. A future edit that makes any p on this path one-sided again
-    must restore the signed comparison in the same change.
-
-    The SIGN is still preserved and reported. ``largest_separation`` carries it,
-    so a passing gate on a negative separation says plainly that the SUPPRESSED
-    trades did better — which under this design is a finding rather than a blind
-    spot. There is no ``MODE_REVERSED``: a symmetric test has no untested
-    direction.
-
-    The gate is evaluated on ``PRIMARY_FAMILY`` alone because that is the family
-    the single hypothesis belongs to. Another family's larger separation is not
-    evidence about this test's power.
-
-    When the gate fails, no null this study measures bounds anything, and the
-    verdict must say so.
-    """
     family = PRIMARY_FAMILY
     limit = (mde.get("by_family_cluster") or {}).get(family)
     sep = (mde.get("by_family_separation") or {}).get(family)
@@ -1030,14 +710,6 @@ def validity_gate(mde: dict) -> dict:
 
 
 def _direction_phrase(separation: float) -> str:
-    """Which way a separation points, in words.
-
-    ``_separation`` is ``mean(kept) - mean(suppressed)``, so a POSITIVE value
-    means the trades the gate would KEEP did better and a negative one means the
-    trades it would SUPPRESS did. Under a two-sided test both are findings, and
-    the verdict has to name which one it found rather than printing a magnitude
-    a reader has to decode.
-    """
     return ("the KEPT trades did better, the direction the gate's own "
             "hypothesis claims" if float(separation) >= 0 else
             "the SUPPRESSED trades did better, the OPPOSITE of the gate's own "
@@ -1045,29 +717,10 @@ def _direction_phrase(separation: float) -> str:
 
 
 def confirmatory_p(mde: dict) -> Optional[float]:
-    """The two-sided zero-injection cluster p on the confirmatory family's rows.
-
-    Row-matched by construction: ``measure_detection_limits`` computes it on the
-    same slice it measures the limit and the separation on. Reading the POOLED
-    p instead would answer a different question on a different sample, which is
-    the mismatch the row-matched block exists to prevent.
-    """
     return (mde.get("by_family_cluster_p0") or {}).get(PRIMARY_FAMILY)
 
 
 def decide_recommendation(configs: Sequence[dict], mde: dict) -> dict:
-    """Mechanically derive the verdict. THERE IS NO RECOMMENDATION BRANCH.
-
-    Under Option 2 (see ``COHORT_DECISION_STATEMENT``) this study is
-    exploratory-only, so no configuration can win however well it scores. The
-    families block still reports how many configs were tested and how many would
-    have passed #1424's acceptance rule — that is informative — but ``winner`` is
-    unconditionally None and no code path sets it. A test pins that.
-
-    Three verdicts, decided by two mechanical facts: whether the confirmatory
-    two-sided cluster p clears the rank-1 Benjamini-Hochberg bar (family size 1,
-    so the bar is alpha), and whether the validity gate passed.
-    """
     gate = validity_gate(mde)
     p_conf = confirmatory_p(mde)
     bar = _rank1_threshold(PRIMARY_FAMILY_SIZE, ALPHA)
@@ -1079,9 +732,6 @@ def decide_recommendation(configs: Sequence[dict], mde: dict) -> dict:
         own = [c for c in primary if c.get("family") == family]
         n_passing = sum(1 for c in own if config_verdict(c)[0])
         families[family] = {
-            # Structurally None. Under Option 2 a passing config is a
-            # description of the data and never a recommendation, so there is
-            # no branch that could fill this in.
             "winner": None,
             "n_tested": len(own),
             "n_passing": n_passing,
@@ -1150,9 +800,6 @@ def decide_recommendation(configs: Sequence[dict], mde: dict) -> dict:
         "confirmatory_p": p_conf,
         "confirmatory_bar": bar,
         "significant": bool(significant),
-        # #1424 reported whether its pre-registered key risk HELD. The same
-        # field here answers this study's own prediction: a bound in both
-        # directions was obtained exactly when the gate passed.
         "key_risk_held": bool(gate["passed"]),
         "cohort_option": COHORT_OPTION,
         "justification": (
@@ -1168,15 +815,6 @@ def decide_recommendation(configs: Sequence[dict], mde: dict) -> dict:
 
 
 def decision_payload(decision: dict) -> dict:
-    """The committed JSON's `decision` block, from a live decision dict.
-
-    Mirrors #1424's projection so ``--render-only`` and the scoring run render
-    identically, and so the committed block is always exactly
-    ``decision_payload(decide_recommendation(configs, mde))`` — a test pins that
-    equality, which is what stops a hand-edited or stale JSON publishing a
-    verdict the current rule would not reach. ``winner`` is carried for shape
-    only and is always None here.
-    """
     return {
         "verdict": decision["verdict"],
         "justification": decision["justification"],
@@ -1194,21 +832,8 @@ def decision_payload(decision: dict) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
-# The config sweep. #1424's, with every p call site two-sided.
-# ---------------------------------------------------------------------------
-
 def build_configs(legs: Sequence[dict], pooled: dict, hurst_windows: Sequence[int],
                   rho_by_symbol: dict, n_perm: int, seed: int) -> list:
-    """Every swept config in both cohorts, on both targets, with economics.
-
-    #1424's sweep with the FOUR p-value call sites — raw and cluster, group-diff
-    and weighted, on the primary target and on the continuity target — swapped
-    to their two-sided counterparts. Everything else is inherited: the row set
-    (rows carrying a defined primary target that the cluster null can also
-    rotate, so both targets describe ONE pool), the economics window rows, the
-    effective-N floors and the config shell.
-    """
     configs = []
     for cohort in (COHORT_PRIMARY, COHORT_EXPLORATORY):
         for family, mode, hw, arm, disarm, gain in _sweep_grid(cohort, hurst_windows):
@@ -1256,8 +881,6 @@ def build_configs(legs: Sequence[dict], pooled: dict, hurst_windows: Sequence[in
                 cfg["p_cluster_return"] = \
                     two_sided_cluster_permutation_pvalue_weighted(
                         sub, returns, mults, n_perm=n_perm, seed=seed).get("p")
-                # A sizing config's "suppressed" analogue is the down-weighted
-                # side (m < 1); the same volume floors then apply unchanged.
                 sup_rows = [t for t, m in zip(sub, mults) if m < 1.0]
                 kept_rows = [t for t, m in zip(sub, mults) if m >= 1.0]
                 down = [m < 1.0 for m in mults]
@@ -1283,18 +906,8 @@ def build_configs(legs: Sequence[dict], pooled: dict, hurst_windows: Sequence[in
 
 
 def apply_bh_by_cohort(configs: Sequence[dict], alpha: float = ALPHA) -> None:
-    """Benjamini-Hochberg over the PRIMARY TARGET's two-sided cluster p, per
-    cohort.
-
-    Direction-agnostic and therefore inherited unchanged in substance: BH reads
-    p-values and does not care how they were produced. The primary and
-    exploratory families never share a denominator, and with one primary
-    hypothesis the primary denominator stays 1.
-    """
     for cohort in (COHORT_PRIMARY, COHORT_EXPLORATORY):
         own = [c for c in configs if c.get("cohort") == cohort]
-        # RESET, never setdefault: a stale True from an earlier pass must not
-        # survive a correction that would not grant it.
         for cfg in own:
             cfg["bh_reject"] = False
         testable = [c for c in own if c.get("p_cluster") is not None]
@@ -1308,41 +921,11 @@ def apply_bh_by_cohort(configs: Sequence[dict], alpha: float = ALPHA) -> None:
 
 def joint_separation_verdict(trades: Sequence[dict], hurst_window: int,
                              n_perm: int = N_PERM, seed: int = SEED) -> dict:
-    """#1412 Stage 0, inherited from #1422 VERBATIM — and therefore ONE-SIDED.
-
-    This is the study's single deliberate exception to two-sidedness, and it is
-    disclosed in the report rather than buried. Stage 0 asks an ECONOMIC
-    question on NET RETURN, #1422 discharged it on that statistic and #1424
-    re-discharged it on a larger pool with the same one-sided function. Its
-    whole value is that the verdict recorded against #1412 stays comparable
-    across studies; re-running it two-sided would produce a number that cannot
-    be compared with the one already on the record.
-
-    It sits OUTSIDE the confirmatory path. Nothing in ``build_configs``,
-    ``measure_detection_limits``, ``validity_gate`` or ``decide_recommendation``
-    calls it, and a test pins that.
-    """
     return study1422.joint_separation_verdict(trades, hurst_window,
                                               n_perm=n_perm, seed=seed)
 
 
-# ---------------------------------------------------------------------------
-# Report rendering. `## Recommendation` is always the FINAL section and is a
-# mechanical render of decide_recommendation — never hand-written.
-# ---------------------------------------------------------------------------
-
 def _largest_magnitude_signed(seps: dict):
-    """The separation with the LARGEST MAGNITUDE on a pool, sign attached.
-
-    #1424's `_largest_signed` takes `max` over the SIGNED values, because its
-    power question was "could the design have detected the largest effect
-    pointing the way its one-sided null can reject". A symmetric test has no
-    such preferred direction, so the power question becomes "the largest effect
-    pointing ANY way" — the largest magnitude. The SIGN is kept on the returned
-    value, because it is what says which way the finding points; returning
-    `abs()` would hide a reversal behind a number that reads like a
-    confirmation.
-    """
     values = [float(v) for v in (seps or {}).values() if v is not None]
     if not values:
         return None
@@ -1363,15 +946,6 @@ def _render_gate_sentence(gate: dict) -> str:
 
 
 def _render_config_table(cfgs: Sequence[dict], protocol: Sequence[str]) -> list:
-    """#1424's config table with the p columns labelled TWO-SIDED.
-
-    Written out rather than inherited for one reason: a column headed
-    `cluster p` that silently changed meaning between two studies whose reports
-    sit side by side is exactly the kind of drift this report exists to prevent.
-    The `Verdict` column still applies #1424's acceptance rule verbatim, so a
-    reader can see which configs WOULD have passed it — while the Recommendation
-    section states that none of them can win here.
-    """
     head = ("| Config | Mode | W | Pooled N (eff) | sup/kept eff | separation "
             "(eff, signed) | 2-sided free p | 2-sided cluster p | "
             "2-sided cluster p (net ret) | BH sig |")
@@ -1409,7 +983,6 @@ def _render_config_table(cfgs: Sequence[dict], protocol: Sequence[str]) -> list:
 
 def render_recommendation(decision: dict, mde: dict,
                           configs: Sequence[dict] = ()) -> str:
-    """The final section. Mechanical, and structurally unable to recommend."""
     gate = decision.get("validity_gate") or validity_gate(mde)
     lines = ["## Recommendation", ""]
     lines.append(VERDICT_LABELS.get(decision["verdict"],
@@ -1477,7 +1050,6 @@ def render_recommendation(decision: dict, mde: dict,
 
 
 def render_report(payload: dict) -> str:
-    """Full Markdown report. `## Recommendation` is guaranteed to be last."""
     pre = payload["pre_registered"]
     run = payload["run_summary"]
     cfgs = payload["configs"]
@@ -2024,16 +1596,10 @@ def render_report(payload: dict) -> str:
 
 
 def report_from_payload(payload: dict) -> str:
-    """Render straight from a committed JSON (the ``--render-only`` path)."""
     return render_report(payload)
 
 
-# ---------------------------------------------------------------------------
-# CLI.
-# ---------------------------------------------------------------------------
-
 def _parse_datasets(raw: Optional[str]) -> list:
-    """``[EXCHANGE=]SYMBOL:TIMEFRAME`` triples — #1424's parser, inherited."""
     return study1424._parse_datasets(raw)
 
 
@@ -2042,17 +1608,6 @@ def _parse_windows(raw: Optional[str]) -> list:
 
 
 def inference_deviations(args) -> list:
-    """Every way this run's INFERENCE differs from the pre-registered design.
-
-    Narrowing the data is only one way to produce a different study, and it is
-    the visible one — a scoped report is obviously partial. A run that keeps
-    every dataset but weakens the inference (fewer permutation draws, a
-    different seed) or skips the harness-identity verification is just as far
-    from the design and far more dangerous, because the report's shape reveals
-    nothing: the tables are full and the numbers look complete.
-
-    A value stated EXPLICITLY at its pre-registered setting is not a deviation.
-    """
     out = []
     if args.n_perm != N_PERM:
         out.append(f"--n-perm {args.n_perm} (pre-registered {N_PERM})")
@@ -2068,7 +1623,7 @@ def inference_deviations(args) -> list:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    p = argparse.ArgumentParser()
     p.add_argument("--jobs", type=int, default=4, help="worker threads")
     p.add_argument("--out-dir", default=None,
                    help="optional dir for the rolling-Hurst npz cache")
@@ -2098,11 +1653,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         "runs no backtests")
     args = p.parse_args(argv)
 
-    # #1426 DEFERS the live-evidence contract path and may never write it — not
-    # from a complete run, not from --render-only, not from an explicit
-    # --report-out. This study is exploratory-only, so its render cannot be the
-    # evidence a shipping gate cites. Checked FIRST, before any other refusal,
-    # so no combination of flags can route around it.
     if (os.path.abspath(args.report_out)
             == os.path.abspath(_CONTRACT_REPORT_OUT)):
         raise SystemExit(
@@ -2112,9 +1662,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             f"{_DEFAULT_REPORT_OUT}. The supersede clause remains available to "
             f"{' and '.join('#' + str(n) for n in SIBLING_DEFERRAL)}.")
 
-    # The committed JSON and the committed report describe the design as
-    # pre-registered. A scoped debug run produces a different study, so it may
-    # not occupy either path.
     scope = {
         "only": args.only,
         "datasets": args.datasets,
@@ -2124,8 +1671,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     scope["complete"] = not any(v for v in scope.values())
     deviations = inference_deviations(args)
     scope["pre_registered_inference"] = not deviations
-    # --fetch-only writes neither artifact, so scoping it to the venues that
-    # actually need a backfill must not be refused.
     if (not scope["complete"] or deviations) and not args.fetch_only:
         narrowed = ", ".join(
             [f"--{k.replace('_', '-')} {v}" for k, v in scope.items()
@@ -2150,8 +1695,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         is_committed = (os.path.abspath(args.report_out)
                         == os.path.abspath(_DEFAULT_REPORT_OUT))
         if is_committed:
-            # Fail closed: a payload with no scope stamp cannot prove it came
-            # from a complete run.
             stamp = ((payload.get("run_summary") or {}).get("scope") or {})
             if not stamp.get("complete"):
                 raise SystemExit(
@@ -2191,10 +1734,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     hurst_windows = (tuple(int(t) for t in args.hurst_windows.split(","))
                      if args.hurst_windows else HURST_WINDOWS)
 
-    # The pinned hypothesis is #1424's, derived mechanically from the committed
-    # #1410 evidence. Verify the two still agree before anything is scored: a
-    # regenerated #1410 JSON that moves the argmin must fail loud rather than
-    # silently swap the hypothesis this study re-tests.
     resolved = resolve_primary_config_id(_JSON_1410)
     if resolved != PRIMARY_CONFIG_ID:
         raise SystemExit(
@@ -2219,7 +1758,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         try:
             frames[dataset] = load_cached_data(symbol, timeframe,
                                                exchange_id=exchange_id)
-        except Exception as exc:  # pragma: no cover - network dependent
+        except Exception as exc:
             print(f"[1426] load FAILED for {exchange_id} "
                   f"{dataset_key(symbol, timeframe)}: {exc}")
             frames[dataset] = pd.DataFrame()
@@ -2336,9 +1875,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         pooled.setdefault(family, [])
         raw_counts.setdefault(family, 0)
 
-    # Structural guarantee, inherited from #1424: no primary-cohort trade may
-    # come from a cell #1410 scored, because the pinned hypothesis was chosen by
-    # reading #1410's p-values.
     for family in FAMILIES:
         for t in pooled[family]:
             if t["cohort"] != COHORT_PRIMARY:
@@ -2388,7 +1924,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "sizing": {"gains": list(SIZING_GAINS), "clamp_lo": SIZING_CLAMP_LO,
                        "clamp_hi": SIZING_CLAMP_HI,
                        "nan_multiplier": SIZING_NAN_MULTIPLIER},
-            # --- what #1426 fixes, declared as data --------------------------
             "two_sided": TWO_SIDED,
             "two_sided_p_definition": TWO_SIDED_P_DEFINITION,
             "cohort_option": COHORT_OPTION,
@@ -2400,7 +1935,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 "the joint ADX x Hurst Stage 0 verdict is inherited from #1422 "
                 "one-sided on net return, so the verdict recorded against #1412 "
                 "stays comparable; it sits outside the confirmatory path"),
-            # --- inherited from #1424 ----------------------------------------
             "primary_config_id": PRIMARY_CONFIG_ID,
             "primary_config_ids": list(PRIMARY_CONFIG_IDS),
             "primary_family_size": PRIMARY_FAMILY_SIZE,

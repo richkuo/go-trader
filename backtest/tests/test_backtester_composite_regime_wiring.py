@@ -1,19 +1,3 @@
-"""#1058: the Backtester CLASSIFIES composite (9-state) regime labels from OHLCV
-when threaded a ``regime_windows_spec``, and feeds those substate labels to the
-entry gate AND the close evaluator's position regime.
-
-The sibling ``test_backtester_composite_regime.py`` covers the entry GATE with a
-*pre-supplied* ``regime`` column — it never exercises the backtester computing
-composite labels itself. These tests cover the new wiring: ``ensure_regime_columns``
-threaded with the live ``regime.windows`` spec, picking the PRIMARY window
-(medium-first) exactly as the live regime store's ``regime_from_injected_payload``
-does, so ``_run_position_regime`` (the label close evaluators consume) carries the
-composite substate instead of the ADX 3-state label.
-
-Ground truth for the per-bar labels is the SAME ``ensure_regime_columns`` call the
-backtester makes internally, so assertions track the classifier instead of
-hard-coding synthetic-OHLCV buckets.
-"""
 import sys
 import pathlib
 import json
@@ -38,8 +22,6 @@ COMPOSITE_SPEC = {"medium": {"classifier": "composite", "period": 20}}
 
 
 def _mixed_regime_ohlcv(n: int = 160, seed: int = 1) -> pd.DataFrame:
-    """Chop for the first half, clean uptrend for the second — guarantees a mix
-    of composite substates (ranging_* and trending_*) within one series."""
     idx = pd.date_range("2024-01-01", periods=n, freq="D")
     rng = np.random.default_rng(seed)
     close = np.empty(n)
@@ -54,8 +36,6 @@ def _mixed_regime_ohlcv(n: int = 160, seed: int = 1) -> pd.DataFrame:
 
 
 def _ground_truth_labels(df: pd.DataFrame, spec=COMPOSITE_SPEC) -> pd.Series:
-    """The exact per-bar bar-close labels the backtester computes internally:
-    the same ``ensure_regime_columns`` + windows_spec (medium-first primary)."""
     truth = df.copy()
     ensure_regime_columns(truth, windows_spec=spec)
     return truth["regime"]
@@ -68,26 +48,14 @@ def _buy_at(df: pd.DataFrame, bar: int) -> pd.DataFrame:
     return out
 
 
-# ─── The classifier the backtester threads is composite, not ADX ─────────────
-
-
 def test_windows_spec_computes_composite_substates_from_ohlcv():
     labels = set(_ground_truth_labels(_mixed_regime_ohlcv()).unique())
-    # Every emitted label is from the 9-state composite vocabulary…
     assert labels <= VALID_LABELS_COMPOSITE
-    # …and the ADX (3-state) and composite vocabularies are disjoint, so a
-    # composite substate could never be produced by the legacy ADX path.
     assert labels & VALID_LABELS_ADX == set()
     assert labels, "expected non-empty composite labels"
 
 
-# ─── Close-evaluator position regime carries the composite substate ──────────
-
-
 def test_position_regime_is_composite_substate():
-    """``_run_position_regime`` is the label fed to close evaluators
-    (``position_regime=`` in the per-bar loop). With a composite windows_spec it
-    must be the substate computed at the open bar — not an ADX label."""
     df = _mixed_regime_ohlcv()
     truth = _ground_truth_labels(df)
     entry = 130
@@ -98,32 +66,23 @@ def test_position_regime_is_composite_substate():
         regime_enabled=True, regime_windows_spec=COMPOSITE_SPEC,
     )
     result = bt.run(_buy_at(df, entry), save=False)
-    assert result["total_trades"] == 1  # opened, held to the end
-    # Signal at bar N fills at N+1, stamping bar N's regime (shift parity).
+    assert result["total_trades"] == 1
     assert bt._run_position_regime == expected
     assert bt._run_position_regime in VALID_LABELS_COMPOSITE
 
 
 def test_default_path_stays_adx_without_windows_spec():
-    """No windows_spec → the legacy single-lookback ADX path is unchanged: the
-    stamped position regime is a 3-state ADX label, never a composite substate."""
     df = _mixed_regime_ohlcv()
     bt = Backtester(
         initial_capital=1000, commission_pct=0, slippage_pct=0,
-        regime_enabled=True,  # regime_windows_spec defaults to None
+        regime_enabled=True,
     )
     bt.run(_buy_at(df, 130), save=False)
     assert bt._run_position_regime in VALID_LABELS_ADX
     assert bt._run_position_regime not in VALID_LABELS_COMPOSITE
 
 
-# ─── The computed composite label gates entries ──────────────────────────────
-
-
 def test_composite_gate_allows_matching_blocks_mismatching():
-    """The backtester gates entries on the COMPUTED composite label: an
-    allowed_regimes naming the entry bar's substate permits the fill; naming a
-    different substate blocks it."""
     df = _mixed_regime_ohlcv()
     truth = _ground_truth_labels(df)
     entry = 130
@@ -146,17 +105,9 @@ def test_composite_gate_allows_matching_blocks_mismatching():
     assert bt_no.run(_buy_at(df, entry), save=False)["total_trades"] == 0
 
 
-# ─── Look-ahead: the gate reads the DECISION bar's label, never the fill bar's ─
-
-
 def test_composite_label_respects_lookahead_shift():
-    """The composite label is consumed under the same N→N+1 shift as ADX: the
-    position regime is stamped from the entry-DECISION bar (N), so a label that
-    changes between bar N and the fill bar N+1 proves no look-ahead."""
     df = _mixed_regime_ohlcv()
     truth = _ground_truth_labels(df)
-    # A bar whose composite label differs from the next bar's — reading the
-    # wrong bar would stamp a different regime.
     entry = next(
         i for i in range(60, len(df) - 2)
         if truth.iloc[i] != truth.iloc[i + 1]
@@ -175,14 +126,10 @@ def test_composite_label_respects_lookahead_shift():
     assert bt._run_position_regime != fill_label
 
 
-# ─── run_backtest._resolve_regime_windows_spec: config → normalized spec ──────
-
-
 def test_resolve_windows_spec_none_when_disabled_or_no_windows():
     assert run_backtest._resolve_regime_windows_spec(None) is None
     assert run_backtest._resolve_regime_windows_spec({}) is None
     assert run_backtest._resolve_regime_windows_spec({"enabled": False, "windows": {"medium": 20}}) is None
-    # Enabled but no windows → None (legacy single-lookback ADX path handles it).
     assert run_backtest._resolve_regime_windows_spec({"enabled": True, "period": 14}) is None
 
 
@@ -194,23 +141,19 @@ def test_resolve_windows_spec_composite_medium():
     assert spec is not None
     assert spec["medium"]["classifier"] == "composite"
     assert spec["medium"]["period"] == 30
-    # Composite thresholds default-merged to the shared defaults.
     assert spec["medium"]["thresholds"] == _DEFAULT_COMPOSITE_THRESHOLDS
 
 
 def test_resolve_windows_spec_adx_inherits_top_level_threshold_and_period():
-    """resolvedForEmit parity: an ADX window missing adx_threshold/period inherits
-    the top-level regime.adx_threshold / regime.period (Go RegimeWindowSpec)."""
     spec = run_backtest._resolve_regime_windows_spec({
         "enabled": True,
         "period": 21,
         "adx_threshold": 28.0,
-        # Bare int = ADX shorthand; an explicit object missing period/threshold.
         "windows": {"medium": {"classifier": "adx"}},
     })
     assert spec["medium"]["classifier"] == "adx"
-    assert spec["medium"]["period"] == 21        # inherited from top-level period
-    assert spec["medium"]["adx_threshold"] == 28.0  # inherited from top-level adx_threshold
+    assert spec["medium"]["period"] == 21
+    assert spec["medium"]["adx_threshold"] == 28.0
 
 
 def test_resolve_windows_spec_keeps_explicit_window_values():
@@ -222,9 +165,6 @@ def test_resolve_windows_spec_keeps_explicit_window_values():
     })
     assert spec["short"]["period"] == 7
     assert spec["short"]["adx_threshold"] == 30.0
-
-
-# ─── load_strategy_config threads regime_windows_spec from --config ──────────
 
 
 def _write_config(tmp_path, cfg):
@@ -282,12 +222,6 @@ def test_load_strategy_config_no_windows_yields_none(tmp_path):
 
 
 def test_regime_timeframe_override_aligns_without_lookahead(monkeypatch):
-    """``load_cached_data`` indexes each HTF candle by its OPEN time, so a
-    candle's label (derived from its full OHLC) isn't actually known until
-    the candle CLOSES — i.e. at the next HTF row's open. An LTF bar that
-    falls inside a still-forming HTF candle must never see that candle's
-    label; it should see the PRIOR (already-closed) candle's label, or ""
-    if none has closed yet."""
     trade = pd.DataFrame(
         {"open": [100.0, 101.0, 102.0, 103.0],
          "high": [101.0, 102.0, 103.0, 104.0],
@@ -295,10 +229,10 @@ def test_regime_timeframe_override_aligns_without_lookahead(monkeypatch):
          "close": [100.0, 101.0, 102.0, 103.0],
          "volume": [1000.0] * 4},
         index=pd.to_datetime([
-            "2024-01-01 12:00:00+00:00",  # inside row0's (still-open) candle
-            "2024-01-02 12:00:00+00:00",  # row0 closed (at row1's open); inside row1's candle
-            "2024-01-03 11:00:00+00:00",  # still inside row1's (still-open) candle
-            "2024-01-03 12:00:00+00:00",  # row1 closed exactly here (row2's open)
+            "2024-01-01 12:00:00+00:00",
+            "2024-01-02 12:00:00+00:00",
+            "2024-01-03 11:00:00+00:00",
+            "2024-01-03 12:00:00+00:00",
         ]),
     )
     regime_source = pd.DataFrame(
@@ -342,17 +276,11 @@ def test_regime_timeframe_override_aligns_without_lookahead(monkeypatch):
     )
 
     assert out is not None
-    # row0's label never leaks before it closes (Jan2 00:00); row2's label
-    # never appears at all (it never closes within this trade index).
     assert out["regime"].tolist() == ["", "macro_row0", "macro_row0", "macro_row1"]
     assert out["adx"].tolist() == [0.0, 11.0, 11.0, 19.0]
 
 
 def test_profile_label_series_cross_timeframe_aligns_without_lookahead(monkeypatch):
-    """Same open-vs-close-time leak as ``_aligned_regime_columns`` above, for
-    the ``_profile_label_series`` cross-timeframe branch (#998 profile
-    allocation read at a different ``regime.timeframe`` than the trade
-    bars)."""
     trade_index = pd.to_datetime([
         "2024-01-01 12:00:00+00:00",
         "2024-01-02 12:00:00+00:00",
@@ -393,9 +321,6 @@ def test_profile_label_series_cross_timeframe_aligns_without_lookahead(monkeypat
     assert out.tolist() == ["", "macro_row0", "macro_row0", "macro_row1"]
 
 
-# ─── CLI: --regime-windows-spec-json parsing + rejections ────────────────────
-
-
 def _run_main(monkeypatch, argv):
     monkeypatch.setattr(sys, "argv", ["run_backtest.py", *argv])
     return run_backtest.main()
@@ -427,9 +352,6 @@ def test_cli_rejects_windows_spec_with_config(monkeypatch, tmp_path):
 
 
 def test_cli_by_name_threads_windows_spec_to_backtester(monkeypatch):
-    """End-to-end: --regime-windows-spec-json on a by-name single backtest must
-    reach the Backtester constructor (parse → main → run_single_backtest →
-    Backtester), not stop at argparse."""
     seen = {}
 
     class SpyBacktester:
@@ -468,11 +390,6 @@ def test_cli_by_name_threads_windows_spec_to_backtester(monkeypatch):
     assert spec["medium"]["period"] == 20
 
 
-# ─── --allowed-regimes vocabulary tracks the primary window's classifier ──────
-# (#1058 review: composite primary → 9-state gate labels; ADX primary → 3 labels.
-# The gate must be expressible through the SAME surface that computes the label.)
-
-
 _ADX_SPEC = {"medium": {"classifier": "adx", "period": 14}}
 _COMPOSITE_PRIMARY_WITH_ADX = {
     "medium": {"classifier": "composite", "period": 30},
@@ -491,7 +408,6 @@ def test_primary_classifier_medium_first():
 
 
 def test_primary_classifier_mixed_spec_uses_medium_not_other_window():
-    # Must-survive (c): medium is the primary even when an ADX window coexists.
     assert run_backtest._primary_window_classifier(
         _COMPOSITE_PRIMARY_WITH_ADX) == "composite"
 
@@ -503,19 +419,16 @@ def test_primary_classifier_no_medium_uses_sorted_first():
 
 
 def test_validate_accepts_adx_label_no_spec():
-    # Preserves the old argparse choices behavior for the legacy ADX path.
     run_backtest._validate_allowed_regimes_vocabulary(["trending_up", "ranging"], None)
 
 
 def test_validate_accepts_composite_label_with_composite_spec():
-    # Must-survive (a): composite gate label with a composite primary is valid.
     run_backtest._validate_allowed_regimes_vocabulary(["ranging_quiet"], COMPOSITE_SPEC)
     run_backtest._validate_allowed_regimes_vocabulary(
         ["trending_up_clean", "ranging_directional"], COMPOSITE_SPEC)
 
 
 def test_validate_rejects_composite_label_without_spec():
-    # Must-survive (b): the inverse — ADX primary must NOT accept composite labels.
     with pytest.raises(SystemExit):
         run_backtest._validate_allowed_regimes_vocabulary(["ranging_quiet"], None)
     with pytest.raises(SystemExit):
@@ -523,8 +436,6 @@ def test_validate_rejects_composite_label_without_spec():
 
 
 def test_validate_rejects_bare_adx_label_with_composite_primary():
-    # Must-survive (c): a composite classifier never emits bare "trending_up",
-    # so gating on it would silently block every entry — reject loudly.
     with pytest.raises(SystemExit):
         run_backtest._validate_allowed_regimes_vocabulary(["trending_up"], COMPOSITE_SPEC)
     with pytest.raises(SystemExit):
@@ -543,15 +454,12 @@ def test_validate_noop_on_empty():
 
 
 def test_validate_compound_partial_invalid_rejects():
-    # One valid + one invalid → reject (graded by the weakest member).
     with pytest.raises(SystemExit):
         run_backtest._validate_allowed_regimes_vocabulary(
             ["ranging_quiet", "trending_up"], COMPOSITE_SPEC)
 
 
 def test_cli_composite_label_reaches_backtester_with_spec(monkeypatch):
-    """Must-survive (a) end-to-end: --allowed-regimes <composite> no longer
-    argparse-rejects when a composite spec is supplied; it threads through."""
     seen = {}
 
     class SpyBacktester:
@@ -592,8 +500,6 @@ def test_cli_composite_label_reaches_backtester_with_spec(monkeypatch):
 
 
 def test_cli_composite_label_rejected_without_spec(monkeypatch):
-    """Must-survive (b) end-to-end: composite label on an ADX (no-spec) by-name
-    backtest is rejected by our validator (not silently accepted)."""
     with pytest.raises(SystemExit):
         _run_main(monkeypatch, [
             "--mode", "single", "--strategy", "sma_crossover",
@@ -602,18 +508,9 @@ def test_cli_composite_label_rejected_without_spec(monkeypatch):
         ])
 
 
-# ─── --config path enforces the SAME vocabulary check (#1058 review 2) ────────
-# The backtester reads config JSON directly and never runs the Go
-# validateStrategyRegimeVocabulary, so the --config path must validate the
-# config-threaded (allowed_regimes, regime_windows_spec) pair itself — else a
-# hand-edited config silently blocks every entry (0-trade run).
-
-
 def _config_with_regime(tmp_path, *, classifier, allowed_regimes=None):
     strat = {
         "id": "hl-temacb-btc", "type": "perps", "platform": "hyperliquid",
-        # sma_crossover (a registry strategy) so the accept-path tests reach the
-        # Backtester; the open name is irrelevant to the vocabulary check itself.
         "open_strategy": {"name": "sma_crossover"},
         "close_strategy": {"name": "tiered_tp_atr", "params": {"tp_tiers": [
             {"atr_multiple": 2.0, "close_fraction": 1.0}]}},
@@ -631,8 +528,6 @@ def _config_with_regime(tmp_path, *, classifier, allowed_regimes=None):
 
 
 def test_config_rejects_adx_label_under_composite_primary(monkeypatch, tmp_path):
-    # Must-survive (a): composite primary window + config allowed_regimes holding
-    # a bare ADX label → reject, not a silent 0-trade run.
     cfg = _config_with_regime(tmp_path, classifier="composite", allowed_regimes=["ranging"])
     with pytest.raises(SystemExit):
         _run_main(monkeypatch, [
@@ -641,8 +536,6 @@ def test_config_rejects_adx_label_under_composite_primary(monkeypatch, tmp_path)
 
 
 def test_config_rejects_composite_label_under_adx_primary(monkeypatch, tmp_path):
-    # Must-survive (b): inverse — ADX primary + config allowed_regimes holding a
-    # composite substate → reject.
     cfg = _config_with_regime(tmp_path, classifier="adx", allowed_regimes=["ranging_quiet"])
     with pytest.raises(SystemExit):
         _run_main(monkeypatch, [
@@ -677,7 +570,6 @@ def _spy_backtester_seen(monkeypatch, df):
 
 
 def test_config_matching_composite_label_runs(monkeypatch, tmp_path):
-    # Composite primary + matching composite label → no false rejection; threads.
     df = pd.DataFrame(
         {"open": [100.0] * 60, "high": [101.0] * 60, "low": [99.0] * 60,
          "close": [100.0] * 60, "volume": [1000.0] * 60},
@@ -693,7 +585,6 @@ def test_config_matching_composite_label_runs(monkeypatch, tmp_path):
 
 
 def test_config_absent_allowed_regimes_runs(monkeypatch, tmp_path):
-    # Must-survive (c): empty/absent allowed_regimes must NOT be falsely rejected.
     df = pd.DataFrame(
         {"open": [100.0] * 60, "high": [101.0] * 60, "low": [99.0] * 60,
          "close": [100.0] * 60, "volume": [1000.0] * 60},
@@ -708,16 +599,7 @@ def test_config_absent_allowed_regimes_runs(monkeypatch, tmp_path):
     assert seen["regime_windows_spec"]["medium"]["classifier"] == "composite"
 
 
-# ─── Regime-keyed exit consumers resolve composite labels (#1058 review 3) ────
-# The composite label now feeds _run_position_regime, so the regime-keyed
-# stop_loss_atr_regime / trailing_stop_atr_regime / sl_after blocks must validate
-# and resolve against the PRIMARY window's classifier vocabulary — mirroring live
-# regimeLabelsForStrategyWindow -> parseRegimeATRBlock. Else a composite-keyed
-# block is falsely rejected, and an ADX-keyed block silently resolves to the
-# default stop under a composite stamp.
-
-
-from backtester import _regime_primary_labels  # noqa: E402
+from backtester import _regime_primary_labels
 
 _COMPOSITE_SL_BLOCK = {"trend_regime": {
     "trending_up_clean": {"atr_multiple": 2.0},
@@ -744,10 +626,8 @@ _COMPOSITE_TRAIL_BLOCK = {"trend_regime": {
 def test_regime_primary_labels_helper():
     labels = _regime_primary_labels(COMPOSITE_SPEC)
     assert set(labels) == set(VALID_LABELS_COMPOSITE)
-    # ADX-primary and no-spec both fall back to the canonical ADX default (None).
     assert _regime_primary_labels({"medium": {"classifier": "adx", "period": 14}}) is None
     assert _regime_primary_labels(None) is None
-    # Mixed spec: primary is medium (composite) even with an ADX sibling window.
     assert set(_regime_primary_labels({
         "medium": {"classifier": "composite", "period": 30},
         "short": {"classifier": "adx", "period": 7},
@@ -761,27 +641,20 @@ def _bt_with_sl_regime(spec, block, *, trailing=False):
 
 
 def test_composite_keyed_sl_regime_parses_and_resolves():
-    # Must-survive (a): composite primary + exhaustive composite-keyed SL block
-    # parses and resolves per substate (not rejected, not defaulted).
     bt = _bt_with_sl_regime(COMPOSITE_SPEC, _COMPOSITE_SL_BLOCK)
     assert bt._stop_loss_regime_block.resolve("ranging_quiet").atr == 1.2
     assert bt._stop_loss_regime_block.resolve("trending_up_clean").atr == 2.0
 
 
 def test_composite_primary_adx_keyed_sl_regime_rejects():
-    # Must-survive (b): ADX-keyed block under a composite primary is rejected
-    # loudly — never a silent fall-back to the default stop.
     with pytest.raises(ValueError) as exc:
         _bt_with_sl_regime(COMPOSITE_SPEC, _ADX_SL_BLOCK)
     msg = str(exc.value)
     assert "unknown regime label" in msg
-    # The message names the composite vocabulary, not the misleading ADX one.
     assert "ranging_quiet" in msg or "trending_up_clean" in msg
 
 
 def test_adx_primary_adx_keyed_sl_regime_byte_identical():
-    # Must-survive (c): ADX primary + ADX-keyed and the legacy no-spec path both
-    # resolve the 3 ADX labels exactly as before.
     bt_adx = _bt_with_sl_regime({"medium": {"classifier": "adx", "period": 14}}, _ADX_SL_BLOCK)
     assert bt_adx._stop_loss_regime_block.resolve("ranging").atr == 1.5
     bt_legacy = _bt_with_sl_regime(None, _ADX_SL_BLOCK)
@@ -789,15 +662,11 @@ def test_adx_primary_adx_keyed_sl_regime_byte_identical():
 
 
 def test_composite_primary_adx_keyed_sl_regime_does_not_silently_default():
-    # The pre-fix bug: ADX-keyed block under composite parsed, then resolve of the
-    # composite stamp returned None → default stop. Assert it now raises instead
-    # of producing a block that silently misses on every composite label.
     with pytest.raises(ValueError):
         _bt_with_sl_regime(COMPOSITE_SPEC, _ADX_SL_BLOCK)
 
 
 def test_composite_keyed_trailing_regime_parses_and_resolves():
-    # Same guarantee on the trailing-stop surface.
     bt = _bt_with_sl_regime(COMPOSITE_SPEC, _COMPOSITE_TRAIL_BLOCK, trailing=True)
     assert bt._trailing_stop_regime_block.resolve("ranging_quiet").atr == 1.7
 
@@ -808,9 +677,6 @@ def test_composite_primary_adx_keyed_trailing_rejects():
 
 
 def test_validator_accepts_composite_sl_with_sl_after():
-    # Exercises validate_post_tp_stop_loss_rules' threaded labels: a composite SL
-    # block paired with a tiered close carrying sl_after must NOT be falsely
-    # rejected (the validator re-parses stop_loss_atr_regime with the labels).
     close_ref = {"name": "tiered_tp_atr", "params": {
         "tp_tiers": [
             {"atr_multiple": 2.0, "close_fraction": 0.5},
@@ -825,11 +691,6 @@ def test_validator_accepts_composite_sl_with_sl_after():
     )
     assert bt._stop_loss_regime_block.resolve("ranging_volatile").atr == 1.5
 
-
-# ─── tiered_tp_atr_regime tier vocabulary validated at load (#1058 review 4) ──
-# A tier set keyed by labels the primary classifier can never emit must be
-# rejected at construction (mirroring live regime_atr.go parseRegimeTPTiers),
-# not silently no-op every take-profit tier at runtime.
 
 _ADX_TP_LABELS = ["trending_up", "trending_down", "ranging"]
 _COMPOSITE_TP_LABELS = list(VALID_LABELS_COMPOSITE)
@@ -853,8 +714,6 @@ def _bt_with_tiered_regime(spec, labels):
 
 
 def test_composite_keyed_tiered_tp_resolves():
-    # Must-survive (c): composite primary + composite-keyed tiers → constructs and
-    # the per-substate close fractions resolve.
     bt = _bt_with_tiered_regime(COMPOSITE_SPEC, _COMPOSITE_TP_LABELS)
     fr = bt._sl_mod.parse_tp_tier_close_fractions(
         [_regime_tiered_ref(_COMPOSITE_TP_LABELS)], regime="ranging_quiet")
@@ -862,24 +721,18 @@ def test_composite_keyed_tiered_tp_resolves():
 
 
 def test_composite_primary_adx_keyed_tiered_tp_rejects():
-    # Must-survive (a): ADX-keyed tiers under a composite primary → reject at load,
-    # never a silent 0-TP run.
     with pytest.raises(ValueError) as exc:
         _bt_with_tiered_regime(COMPOSITE_SPEC, _ADX_TP_LABELS)
     assert "tiered-TP" in str(exc.value) and "unknown regime label" in str(exc.value)
 
 
 def test_adx_primary_composite_keyed_tiered_tp_rejects():
-    # Must-survive (b): inverse — composite-keyed tiers under an ADX primary →
-    # reject, not a silent no-op.
     with pytest.raises(ValueError):
         _bt_with_tiered_regime({"medium": {"classifier": "adx", "period": 14}},
                                _COMPOSITE_TP_LABELS)
 
 
 def test_adx_keyed_tiered_tp_byte_identical():
-    # Must-survive (c): ADX primary + ADX-keyed and legacy no-spec + ADX-keyed
-    # both construct and resolve exactly as before.
     bt_adx = _bt_with_tiered_regime({"medium": {"classifier": "adx", "period": 14}},
                                     _ADX_TP_LABELS)
     assert bt_adx._sl_mod.parse_tp_tier_close_fractions(
@@ -890,10 +743,6 @@ def test_adx_keyed_tiered_tp_byte_identical():
 
 
 def test_validate_regime_tiered_tp_labels_helper():
-    # Direct unit on the shared-module validator: labels=None (legacy) accepts ADX
-    # keys; composite labels reject ADX keys; composite labels accept composite.
-    # Reach the close module via a constructed Backtester so the close-strategies
-    # path is on sys.path regardless of test ordering.
     _sl = _bt_with_tiered_regime(None, _ADX_TP_LABELS)._sl_mod
     assert _sl.validate_regime_tiered_tp_labels([_regime_tiered_ref(_ADX_TP_LABELS)]) == []
     assert _sl.validate_regime_tiered_tp_labels(
@@ -902,20 +751,12 @@ def test_validate_regime_tiered_tp_labels_helper():
     assert _sl.validate_regime_tiered_tp_labels(
         [_regime_tiered_ref(_COMPOSITE_TP_LABELS)],
         labels=_COMPOSITE_TP_LABELS) == []
-    # A non-regime close ref is ignored (no false positive).
     assert _sl.validate_regime_tiered_tp_labels(
         [{"name": "tiered_tp_atr", "params": {"tp_tiers": [
             {"atr_multiple": 2.0, "close_fraction": 0.5},
             {"atr_multiple": 3.0, "close_fraction": 1.0}]}}],
         labels=_COMPOSITE_TP_LABELS) == []
 
-
-# --- Missing-label exhaustiveness (#1058 review 5) ----------------------------
-# Live rejects a non-exhaustive per-tier trend_regime block: parseRegimeATRBlock
-# ("missing required regime labels … must be exhaustive — no silent fallback"),
-# invoked per tier from parseRegimeTPTiers. The backtester must match — a
-# partially-keyed tier passes the unknown-label arm but, left unchecked, makes
-# resolve_regime_tier silently no-op TP on every un-keyed substate.
 
 def _partial_tiered_ref(labels, omit):
     kept = [l for l in labels if l != omit]
@@ -931,8 +772,6 @@ def _bt_with_tiered_ref(spec, ref):
 
 
 def test_composite_primary_non_exhaustive_tiered_tp_rejects():
-    # Composite primary + composite-keyed tiers omitting one substate → reject at
-    # load, never a silent no-op on the omitted substate.
     ref = _partial_tiered_ref(_COMPOSITE_TP_LABELS, "ranging_directional")
     with pytest.raises(ValueError) as exc:
         _bt_with_tiered_ref(COMPOSITE_SPEC, ref)
@@ -943,8 +782,6 @@ def test_composite_primary_non_exhaustive_tiered_tp_rejects():
 
 
 def test_adx_primary_non_exhaustive_tiered_tp_rejects():
-    # Inverse vocabulary: ADX primary (legacy no-spec, labels=None) + ADX-keyed
-    # tiers omitting one of the 3 labels → still rejected as non-exhaustive.
     ref = _partial_tiered_ref(_ADX_TP_LABELS, "ranging")
     with pytest.raises(ValueError) as exc:
         _bt_with_tiered_ref(None, ref)
@@ -954,21 +791,16 @@ def test_adx_primary_non_exhaustive_tiered_tp_rejects():
 
 
 def test_validate_regime_tiered_tp_labels_exhaustiveness_unit():
-    # Direct unit on the missing-label arm and the use_defaults exemption.
     _sl = _bt_with_tiered_regime(None, _ADX_TP_LABELS)._sl_mod
-    # Composite vocabulary, tier omits one composite substate → flagged missing.
     errs = _sl.validate_regime_tiered_tp_labels(
         [_partial_tiered_ref(_COMPOSITE_TP_LABELS, "ranging_volatile")],
         labels=_COMPOSITE_TP_LABELS)
     assert errs and any("missing required regime labels" in e for e in errs)
     assert any("ranging_volatile" in e for e in errs)
-    # A tier-level use_defaults carries no operator keys → exempt (expands to the
-    # full vocabulary at the resolver, mirroring live's early-return).
     use_defaults_ref = {"name": "tiered_tp_atr_regime", "params": {"tp_tiers": [
         {"use_defaults": True, "close_fraction": 1.0}]}}
     assert _sl.validate_regime_tiered_tp_labels(
         [use_defaults_ref], labels=_COMPOSITE_TP_LABELS) == []
-    # Exhaustive composite tiers still accepted (no false positive from the arm).
     assert _sl.validate_regime_tiered_tp_labels(
         [_regime_tiered_ref(_COMPOSITE_TP_LABELS)],
         labels=_COMPOSITE_TP_LABELS) == []

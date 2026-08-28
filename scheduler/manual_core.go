@@ -1,43 +1,16 @@
 package main
 
-// #1257 (Phase 4 of #1229): shared manual-action cores.
-//
-// The manual CLI commands (manual-open/add/close, force-close,
-// manual-update-sl/cancel-sl) and the dashboard trade-action endpoints
-// (ui_trade_actions.go) execute the SAME code paths — the cores below. The
-// CLI wrappers in manual.go / manual_sl.go keep flag parsing and printing;
-// the UI handlers keep HTTP plumbing and the confirm-nonce check. Every
-// fail-closed guard (kill switch, pending CB close, ownership,
-// manualSLAutoManaged, pendingSLActionExists, force-close scope) lives here
-// exactly once so neither caller can bypass it.
-//
-// Cores never print: they collect ordered operator-facing lines in the result
-// (the CLI wrapper replays them to stdout/stderr; the UI joins them into the
-// HTTP response) and return a *manualCoreError whose message matches the old
-// CLI stderr text. warnNotifier calls stay inline because the notification
-// must fire at event time regardless of caller.
-//
-// On-chain side effects go only through the injected exec funcs, which
-// default to the existing RunHyperliquid* helpers (runPythonSideEffect lane)
-// — no new Python spawning path. Injection exists so Go tests never spawn
-// Python.
-
 import (
 	"fmt"
 	"strings"
 	"time"
 )
 
-// manualOutputLine is one operator-facing line emitted by a core, tagged with
-// the stream the CLI wrapper should replay it on.
 type manualOutputLine struct {
 	stderr bool
 	text   string
 }
 
-// manualCoreResult accumulates ordered output plus the queued outcome. It is
-// always returned (even alongside an error) so lines emitted before a failure
-// — e.g. a "Filled:" line before a queue-insert error — are never lost.
 type manualCoreResult struct {
 	lines  []manualOutputLine
 	queued bool
@@ -51,7 +24,6 @@ func (r *manualCoreResult) errf(format string, args ...interface{}) {
 	r.lines = append(r.lines, manualOutputLine{stderr: true, text: fmt.Sprintf(format, args...)})
 }
 
-// uiMessage joins the stdout lines for the HTTP response body.
 func (r *manualCoreResult) uiMessage() string {
 	var out []string
 	for _, l := range r.lines {
@@ -62,8 +34,6 @@ func (r *manualCoreResult) uiMessage() string {
 	return strings.Join(out, "\n")
 }
 
-// manualCoreError preserves the CLI error text and exit-code class
-// (usage=2, failure=1).
 type manualCoreError struct {
 	usage bool
 	msg   string
@@ -79,7 +49,6 @@ func manualFailf(format string, args ...interface{}) error {
 	return &manualCoreError{msg: fmt.Sprintf(format, args...)}
 }
 
-// manualCoreExitCode maps a core error back to the CLI exit code.
 func manualCoreExitCode(err error) int {
 	if ce, ok := err.(*manualCoreError); ok && ce.usage {
 		return 2
@@ -87,51 +56,30 @@ func manualCoreExitCode(err error) int {
 	return 1
 }
 
-// manualStateView is the read-only state snapshot a core needs. The CLI
-// builds it from a fresh LoadStateWithDB read; the daemon builds it from the
-// live in-memory AppState under ss.mu.RLock (released before the core runs
-// any subprocess, per the 6-phase lock pattern).
 type manualStateView struct {
-	KillSwitch     bool
-	HasStrategy    bool
-	PendingCBClose bool
-	DailyLossHold  bool   // #1269: portfolio daily loss limit tripped — position-increasing manual actions refuse
-	DailyLossNote  string // #1269: one-line detail for the refusal message (set iff DailyLossHold)
-	NotionalHold   bool   // #1344: portfolio gross notional cap breached — position-increasing manual actions refuse
-	NotionalNote   string // #1344: one-line detail for the refusal message (set iff NotionalHold)
-	// #1270: same-direction exposure cap — both arms. The bucket arm sums at
-	// AvgCost (no live feed on this path); the concentration arm evaluates
-	// against the displayStrategyValue basis (see manualExposureCapStatus), so
-	// a concentration-only config still protects manual entries. Guard sites
-	// call exposureCapManualEntryBlock(ExposureCap, ExposureCapAsset, side).
+	KillSwitch       bool
+	HasStrategy      bool
+	PendingCBClose   bool
+	DailyLossHold    bool
+	DailyLossNote    string
+	NotionalHold     bool
+	NotionalNote     string
 	ExposureCap      ExposureCapStatus
-	ExposureCapAsset string    // computeAssetDeltas key for this strategy (extractAsset)
-	Pos              *Position // copy; nil when no open position for the symbol
+	ExposureCapAsset string
+	Pos              *Position
 }
 
 func manualStateViewFromState(cfg *Config, state *AppState, strategyID, symbol string) manualStateView {
 	v := manualStateView{KillSwitch: state.PortfolioRisk.KillSwitchActive}
-	// #1269: manual opens/adds are CLI/dashboard-driven, not dispatch-loop
-	// signals, so the daily loss limit is enforced here — next to the
-	// kill-switch and pending-CB guards — instead of at the six
-	// pausedBlocksSignal sites (which never see type=manual entries).
 	if cfg != nil {
 		if st := evaluateDailyLossLimit(cfg.PortfolioRisk, state.Strategies, cfg.Strategies, time.Now().UTC()); st.Tripped {
 			v.DailyLossHold = true
 			v.DailyLossNote = dailyLossHoldDetail(st)
 		}
-		// #1344: gross notional cap — manual opens/adds are CLI/dashboard-driven,
-		// not dispatch-loop signals, so the hold is enforced here next to the
-		// kill-switch / daily-loss / exposure-cap guards. nil prices → AvgCost
-		// inside PortfolioNotional (same fallback the exposure-cap manual path uses).
 		if held, detail := evaluateNotionalCapHold(cfg.PortfolioRisk, state.Strategies, nil); held {
 			v.NotionalHold = true
 			v.NotionalNote = detail
 		}
-		// #1270: same-direction exposure cap, both arms. nil prices →
-		// positions value at AvgCost (this path has no live price feed); the
-		// concentration basis comes from manualExposureCapStatus so a
-		// concentration-only config is enforced here too, not silently inert.
 		v.ExposureCap = manualExposureCapStatus(cfg, state)
 		for _, sc := range cfg.Strategies {
 			if sc.ID == strategyID {
@@ -155,37 +103,22 @@ func manualStateViewFromState(cfg *Config, state *AppState, strategyID, symbol s
 	return v
 }
 
-// manualCoreDeps carries the explicit dependencies both callers provide, plus
-// injectable on-chain exec seams (defaults = the real RunHyperliquid*
-// helpers) so tests never spawn Python.
 type manualCoreDeps struct {
 	cfg      *Config
 	stateDB  *StateDB
 	notifier *MultiNotifier
 
-	// loadState returns the current state view for strategyID+symbol.
 	loadState func(strategyID, symbol string) (manualStateView, error)
 
 	execute     func(script, symbol, side string, size, stopLossPct float64, cancelStopLossOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error)
 	updateSL    func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error)
 	cancelOrder func(script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error)
 	fetchMids   manualMarkFetcher
-	closer      HyperliquidLiveCloser // force-close only
+	closer      HyperliquidLiveCloser
 
-	// lockManualActions takes the cross-process manual-action lock, returning a
-	// release closure to defer. It makes a core's guard-check → on-chain submit
-	// → pending-row insert atomic against every OTHER process/caller sharing the
-	// state DB (a CLI racing the dashboard, or two concurrent CLIs) — see
-	// acquireManualActionFileLock. Production constructors always set it; it is
-	// nil only in bare-struct test deps (single-goroutine, no cross-process
-	// race), where acquireManualActionLock degrades to a no-op.
 	lockManualActions func() (release func(), err error)
 }
 
-// acquireManualActionLock takes the cross-process manual-action lock via the
-// injected dep, or a no-op when unset (bare test deps). The returned closure
-// releases the lock and must be deferred by the caller for the whole span
-// through the pending-row insert.
 func (d manualCoreDeps) acquireManualActionLock() (func(), error) {
 	if d.lockManualActions == nil {
 		return func() {}, nil
@@ -193,8 +126,6 @@ func (d manualCoreDeps) acquireManualActionLock() (func(), error) {
 	return d.lockManualActions()
 }
 
-// newCLIManualCoreDeps builds deps for the standalone CLI process: state is
-// read from the shared SQLite DB.
 func newCLIManualCoreDeps(cfg *Config, stateDB *StateDB, notifier *MultiNotifier) manualCoreDeps {
 	d := newManualCoreDeps(cfg, stateDB, notifier)
 	d.loadState = func(strategyID, symbol string) (manualStateView, error) {
@@ -223,7 +154,6 @@ func newManualCoreDeps(cfg *Config, stateDB *StateDB, notifier *MultiNotifier) m
 	}
 }
 
-// lookupManualStrategy is the silent core behind findManualStrategy.
 func lookupManualStrategy(cfg *Config, id string) (StrategyConfig, error) {
 	for _, sc := range cfg.Strategies {
 		if sc.ID == id {
@@ -236,8 +166,6 @@ func lookupManualStrategy(cfg *Config, id string) (StrategyConfig, error) {
 	return StrategyConfig{}, manualFailf("error: strategy %q not found in config", id)
 }
 
-// lookupForceCloseStrategy is the silent core behind findForceCloseStrategy:
-// force-close stays live-HL-perps-only (#1140).
 func lookupForceCloseStrategy(cfg *Config, id string) (StrategyConfig, string, error) {
 	for _, sc := range cfg.Strategies {
 		if sc.ID != id {
@@ -280,27 +208,6 @@ func refuseIfRestingLimitOrderQueued(stateDB *StateDB, cmdName, strategyID, symb
 	return nil
 }
 
-// refuseIfPositionActionQueued fails closed when any position-changing action
-// (open/add/close — force-close queues its fill as a "close" row) for
-// strategyID+symbol is still un-drained in pending_manual_actions, OR when a
-// resting manual limit-open for the same strategy+symbol exists in
-// pending_limit_orders (#1261). It is the core-level twin of the UI handler's
-// double-fire guard (ui_trade_actions.go): between an action submitting
-// on-chain and the scheduler draining/adopting its row, a second submit from ANY
-// caller (a rapid CLI re-run, a future core caller) fires a real order the
-// in-memory accounting cannot see yet — doubling/flipping the position (a sized
-// manual close is a regular non-reduce-only order) and orphaning it on drain
-// (#1009 corrupt close).
-// Symmetric with resolveManualSLTargetCore's refusal (#1260 review 5) and
-// runManualLimitOpen's resting-order placement guard (#1261) so no queued row
-// references a position another queued row will delete, reshape, or create
-// first. Callers skip it on --record-only / --dry-run (those place no new
-// on-chain order; --record-only/re-register must stay usable) and key it on the
-// SAME symbol the core writes into the queued row (forceCloseCore uses the
-// args-derived sym, not the empty perps sc.Symbol). Fail closed on a check
-// error. manual-add/manual-close call
-// clearRestingLimitRemainderForPositionAction first, so a partial limit fill can
-// still be averaged/flattened after the unfilled remainder is proven off-book.
 func refuseIfPositionActionQueued(d manualCoreDeps, cmdName, strategyID, symbol string) error {
 	if err := refuseIfPendingManualPositionAction(d.stateDB, cmdName, strategyID, symbol); err != nil {
 		return err
@@ -337,20 +244,6 @@ func limitStatusForOID(res *HyperliquidLimitStatusResult, oid int64) (Hyperliqui
 	return HyperliquidLimitOrderStatus{}, false
 }
 
-// clearRestingLimitRemainderForPositionAction cancels a resting manual limit
-// remainder so an owned partial-fill position can be flattened/averaged in one
-// step. It returns the confirmed cumulative filled size and volume-weighted
-// average price of every order it cleared — the authoritative, currently-adopted
-// position size a caller must size its flatten against. That number matters
-// because the caller's own state snapshot can lag: reconcilePendingLimitOrders
-// persists a newly-adopted fill's watermark (UpdatePendingLimitOrderFill) BEFORE
-// the grown in-memory position is flushed to the DB (end-of-cycle SaveState) and
-// does NOT hold the manual-action lock, so a snapshot taken mid-fill undercounts
-// the position. Because the unadopted-fill guard below proves the exchange fill
-// equals the tracked watermark (fully adopted) and the placement guard proves
-// the position is composed solely of this order's fills, the cleared cumulative
-// fill IS the true position size in this window. Returns (0, 0, nil) when no
-// remainder rests.
 func clearRestingLimitRemainderForPositionAction(d manualCoreDeps, res *manualCoreResult, sc StrategyConfig, cmdName, strategyID, symbol string) (float64, float64, error) {
 	orders, err := pendingLimitOrdersForStrategySymbol(d.stateDB, strategyID, symbol)
 	if err != nil {
@@ -408,10 +301,6 @@ func clearRestingLimitRemainderForPositionAction(d manualCoreDeps, res *manualCo
 		if err := d.stateDB.DeletePendingLimitOrder(o.ID); err != nil {
 			return 0, 0, manualFailf("error: cancelled limit order for %s/%s (oid=%d) is off-book but the queue row could not be cleared (%v) — refusing %s so the scheduler can finalize it safely", strategyID, o.Symbol, o.OrderOID, err, cmdName)
 		}
-		// Off-book with its full cumulative fill adopted (the guard above proved
-		// st.FilledSize <= watermark). Accumulate it as this order's authoritative
-		// contribution to the tracked position; mirror reconcile's avg-price
-		// fallback to the limit price when the fills poll returns no VWAP.
 		fillPx := st.AvgPx
 		if fillPx <= 0 {
 			fillPx = o.LimitPrice
@@ -427,12 +316,9 @@ func clearRestingLimitRemainderForPositionAction(d manualCoreDeps, res *manualCo
 	return clearedQty, clearedAvgPx, nil
 }
 
-// ---------------------------------------------------------------------------
-// manual-open
-
 type manualOpenInputs struct {
 	StrategyID string
-	Side       string // "" → user_defaults.manual.side / "long"
+	Side       string
 	Size       float64
 	Notional   float64
 	Margin     float64
@@ -444,9 +330,6 @@ type manualOpenInputs struct {
 	DryRun     bool
 }
 
-// resolveManualOpenSide applies the config-default side and validates it
-// against the strategy's direction enum. Shared by the market core and the
-// #883 resting-limit CLI path.
 func resolveManualOpenSide(cfg *Config, sc StrategyConfig, side string) (string, string, error) {
 	side = strings.ToLower(strings.TrimSpace(side))
 	if side == "" {
@@ -468,10 +351,6 @@ func resolveManualOpenSide(cfg *Config, sc StrategyConfig, side string) (string,
 	return side, openSide, nil
 }
 
-// validateManualSizing enforces the one-of-{size,notional,margin} rule,
-// defaulting to the configured margin when nothing was passed (market and
-// add paths). Returns the (possibly defaulted) margin plus whether the
-// default kicked in, so the caller can emit the CLI note.
 func validateManualSizing(cfg *Config, size, notional, margin float64, recordOnly bool) (float64, bool, error) {
 	sizingInputs := countSizingFlags(size, notional, margin)
 	defaulted := false
@@ -489,9 +368,6 @@ func validateManualSizing(cfg *Config, size, notional, margin float64, recordOnl
 	return margin, defaulted, nil
 }
 
-// manualOpenCore is the shared market-order open path behind
-// `go-trader manual-open` and POST /api/strategies/{id}/open. The #883
-// resting-limit path stays in the CLI wrapper (fire-and-exit, own function).
 func manualOpenCore(d manualCoreDeps, sc StrategyConfig, in manualOpenInputs) (*manualCoreResult, error) {
 	res := &manualCoreResult{}
 	strategyID := in.StrategyID
@@ -520,7 +396,6 @@ func manualOpenCore(d manualCoreDeps, sc StrategyConfig, in manualOpenInputs) (*
 		}
 	}
 
-	// Fix #4: guard against placing into a kill-switched or CB-pending account.
 	if !in.DryRun {
 		view, loadErr := d.loadState(strategyID, sc.Symbol)
 		if loadErr != nil {
@@ -535,15 +410,9 @@ func manualOpenCore(d manualCoreDeps, sc StrategyConfig, in manualOpenInputs) (*
 			if view.DailyLossHold {
 				return res, manualFailf("error: %s — manual-open blocked until UTC rollover (closes and SL edits are unaffected)", view.DailyLossNote)
 			}
-			// #1344: a manual open grows gross notional — refuse while over cap
-			// (closes and SL edits are unaffected).
 			if view.NotionalHold {
 				return res, manualFailf("error: %s — manual-open blocked (closes and SL edits are unaffected)", view.NotionalNote)
 			}
-			// #1270: a manual open increases exposure in `side`'s direction —
-			// refuse while that direction's bucket is capped or this asset is
-			// over-concentrated in that direction (the other direction,
-			// closes, and SL edits are unaffected).
 			if blocked, why := exposureCapManualEntryBlock(view.ExposureCap, view.ExposureCapAsset, side); blocked {
 				return res, manualFailf("error: %s — manual-open (%s) blocked (closes and SL edits are unaffected)", why, side)
 			}
@@ -553,15 +422,7 @@ func manualOpenCore(d manualCoreDeps, sc StrategyConfig, in manualOpenInputs) (*
 		}
 	}
 
-	// #1260 review: refuse a second open while a position-changing action is
-	// already queued for this strategy+symbol (a re-fired open doubles the
-	// position). The UI handler guards this too under tradeActionMu; this covers
-	// the CLI + any future core caller. Skip --record-only / --dry-run (no new
-	// on-chain order). Runs before the sizing mid-fetch so a refusal is cheap.
 	if !in.RecordOnly && !in.DryRun {
-		// Hold the cross-process lock from before the guard READ through the
-		// pending-row INSERT (function-scoped defer), so a CLI racing the
-		// dashboard (or two CLIs) can't both observe no-pending and both fire.
 		unlock, lockErr := d.acquireManualActionLock()
 		if lockErr != nil {
 			return res, manualFailf("error: %v — refusing to avoid double-firing an on-chain order", lockErr)
@@ -572,7 +433,6 @@ func manualOpenCore(d manualCoreDeps, sc StrategyConfig, in manualOpenInputs) (*
 		}
 	}
 
-	// ATR plausibility guard: mirror stampEntryATRIfOpened's 50%-of-AvgCost check.
 	entryATR := in.ATR
 	if in.RecordOnly && entryATR > 0 && in.FillPrice > 0 && entryATR > 0.5*in.FillPrice {
 		return res, manualFailf("error: --atr %.4f exceeds 50%% of fill price %.4f (plausibility guard)", entryATR, in.FillPrice)
@@ -585,7 +445,6 @@ func manualOpenCore(d manualCoreDeps, sc StrategyConfig, in manualOpenInputs) (*
 
 	script := sc.Script
 
-	// #711: --margin/--notional need a price reference (HL mid) to resolve qty.
 	var resolvedOrderSize, sizingMark float64
 	var sizingFailed bool
 	if !in.RecordOnly {
@@ -616,13 +475,11 @@ func manualOpenCore(d manualCoreDeps, sc StrategyConfig, in manualOpenInputs) (*
 	}
 
 	if in.RecordOnly {
-		// Operator already placed the fill on the exchange UI.
 		fillQty = in.Size
 		resolvedFillPrice = in.FillPrice
 		if entryATR > 0 && entryATR > 0.5*resolvedFillPrice {
 			return res, manualFailf("error: --atr %.4f exceeds 50%% of fill price %.4f (plausibility guard)", entryATR, resolvedFillPrice)
 		}
-		// --record-only does not auto-arm the SL trigger.
 		if in.SLATRMult > 0 || in.SLPct > 0 || (sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0) {
 			res.errf("warning: --record-only does not arm a stop-loss trigger automatically — place the SL manually on the HL UI")
 		}
@@ -657,7 +514,6 @@ func manualOpenCore(d manualCoreDeps, sc StrategyConfig, in manualOpenInputs) (*
 			fillQty = resolveManualSize(in.Size, in.Notional, in.Margin, resolvedFillPrice, sc.Leverage)
 		}
 
-		// Post-fill ATR plausibility guard.
 		if entryATR > 0 && resolvedFillPrice > 0 && entryATR > 0.5*resolvedFillPrice {
 			res.errf("warning: --atr %.4f exceeds 50%% of fill price %.4f — EntryATR will not be stamped", entryATR, resolvedFillPrice)
 			entryATR = 0
@@ -673,12 +529,9 @@ func manualOpenCore(d manualCoreDeps, sc StrategyConfig, in manualOpenInputs) (*
 		effectiveATRMult = *sc.StopLossATRMult
 	}
 
-	// #1115: resolve the per-regime opening trail for a ratchet-regime manual so
-	// the position never opens NAKED until the daemon's trailing walker runs.
 	ratchetFallbackNormalizePending := false
 	if effectiveATRMult == 0 && !in.RecordOnly && strategyUsesTrailingTPRatchetClose(sc) &&
 		sc.TrailingStopATRRegime != nil && sc.TrailingStopATRRegime.IsConfigured() {
-		// Impure step: read the current regime label (spawns the regime subprocess).
 		label := resolveManualRatchetRegimeLabel(sc, cfg, notifier)
 		mult, fellBack := manualRatchetOpeningTrailOrFallback(sc.TrailingStopATRRegime, label, cfg.resolveManualRatchetFallbackATRMult())
 		effectiveATRMult = mult
@@ -690,8 +543,6 @@ func manualOpenCore(d manualCoreDeps, sc StrategyConfig, in manualOpenInputs) (*
 		}
 	}
 
-	// When --atr is omitted, fetch ATR like stampEntryATRIfOpened (#689); on
-	// fetch failure fall back to the leverage-aware heuristic.
 	if !in.RecordOnly && entryATR == 0 {
 		needsATRProtection := effectiveATRMult > 0 || strategyUsesTieredTPATRClose(sc)
 		if needsATRProtection {
@@ -721,7 +572,6 @@ func manualOpenCore(d manualCoreDeps, sc StrategyConfig, in manualOpenInputs) (*
 		}
 	}
 
-	// Arm ATR-based stop-loss after fill.
 	var stopLossOID int64
 	var stopLossTriggerPx float64
 
@@ -748,7 +598,6 @@ func manualOpenCore(d manualCoreDeps, sc StrategyConfig, in manualOpenInputs) (*
 		}
 	}
 
-	// Place TP[n] reduce-only orders inline immediately after the fill.
 	var tpOIDs []int64
 	if !in.RecordOnly && strategyUsesTieredTPATRClose(sc) && entryATR > 0 {
 		oids, warn, err := placeManualProtectionInline(sc, side, fillQty, resolvedFillPrice, entryATR, effectiveATRMult, stopLossOID)
@@ -781,9 +630,6 @@ func manualOpenCore(d manualCoreDeps, sc StrategyConfig, in manualOpenInputs) (*
 		CreatedAt:                       time.Now().UTC(),
 	}
 	if err := d.stateDB.InsertPendingManualAction(action); err != nil {
-		// On-chain fill (and SL/TPs) succeeded but the queue insert failed.
-		// Skip cleanup in --record-only: the operator's pre-existing fill is
-		// theirs to manage; we never placed those on-chain orders.
 		if in.RecordOnly {
 			return res, manualFailf("error queuing action: %v", err)
 		}
@@ -806,9 +652,6 @@ func manualOpenCore(d manualCoreDeps, sc StrategyConfig, in manualOpenInputs) (*
 	return res, nil
 }
 
-// ---------------------------------------------------------------------------
-// manual-add
-
 type manualAddInputs struct {
 	StrategyID string
 	Size       float64
@@ -819,8 +662,6 @@ type manualAddInputs struct {
 	DryRun     bool
 }
 
-// manualAddCore is the shared scale-in path behind `go-trader manual-add`
-// (#873) and POST /api/strategies/{id}/add.
 func manualAddCore(d manualCoreDeps, sc StrategyConfig, in manualAddInputs) (*manualCoreResult, error) {
 	res := &manualCoreResult{}
 	strategyID := in.StrategyID
@@ -842,8 +683,6 @@ func manualAddCore(d manualCoreDeps, sc StrategyConfig, in manualAddInputs) (*ma
 		}
 	}
 
-	// An add requires the position to already exist — same kill-switch /
-	// CB-pending guards as manual-open.
 	view, loadErr := d.loadState(strategyID, sc.Symbol)
 	if loadErr != nil {
 		return res, manualFailf("error: could not load state to locate the open position: %v", loadErr)
@@ -864,14 +703,9 @@ func manualAddCore(d manualCoreDeps, sc StrategyConfig, in manualAddInputs) (*ma
 	if pos == nil {
 		return res, manualFailf("error: no open position for %s/%s; open one first with manual-open", strategyID, sc.Symbol)
 	}
-	// #1344: an add grows gross notional — refuse while over cap (closes and
-	// SL edits are unaffected).
 	if view.NotionalHold {
 		return res, manualFailf("error: %s — manual-add blocked (closes and SL edits are unaffected)", view.NotionalNote)
 	}
-	// #1270: an add grows exposure in the position's direction — refuse while
-	// that direction's bucket is capped or this asset is over-concentrated in
-	// that direction (closes and SL edits are unaffected).
 	addDir := "long"
 	if pos.Side == "short" {
 		addDir = "short"
@@ -883,23 +717,12 @@ func manualAddCore(d manualCoreDeps, sc StrategyConfig, in manualAddInputs) (*ma
 		res.errf("%s", exposureCapPVBasisMissWarning)
 	}
 
-	// #1260 review: refuse a scale-in while a position-changing action is queued
-	// for this strategy+symbol — an add fired while a close is queued fires a
-	// real buy that the drain orphans (the close applies first, deletes the
-	// position, then the add row fails every cycle). Skip --record-only /
-	// --dry-run. Runs before the sizing mid-fetch so a refusal is cheap.
 	if !in.RecordOnly && !in.DryRun {
-		// Cross-process lock held from before the guard READ through the
-		// pending-row INSERT (see manualOpenCore).
 		unlock, lockErr := d.acquireManualActionLock()
 		if lockErr != nil {
 			return res, manualFailf("error: %v — refusing to avoid double-firing an on-chain order", lockErr)
 		}
 		defer unlock()
-		// The add's on-chain order size comes from the sizing flags, not the
-		// position snapshot, and the daemon blends it into the live in-memory
-		// position — so an add is never mis-sized by a stale snapshot and the
-		// confirmed cleared fill is not needed here (unlike manual-close below).
 		if _, _, err := clearRestingLimitRemainderForPositionAction(d, res, sc, "manual-add", strategyID, sc.Symbol); err != nil {
 			return res, err
 		}
@@ -941,9 +764,6 @@ func manualAddCore(d manualCoreDeps, sc StrategyConfig, in manualAddInputs) (*ma
 		fillQty = in.Size
 		resolvedFillPrice = in.FillPrice
 	} else {
-		// Add order: same-side market order. No SL pct, no cancel OID, and NO
-		// margin-mode/leverage (HL rejects update_leverage on an open position);
-		// the post-add protection sync re-sizes SL + un-cleared TPs.
 		execResult, execStderr, execErr := d.execute(
 			sc.Script, sc.Symbol, addSide,
 			resolvedOrderSize,
@@ -995,17 +815,12 @@ func manualAddCore(d manualCoreDeps, sc StrategyConfig, in manualAddInputs) (*ma
 	return res, nil
 }
 
-// ---------------------------------------------------------------------------
-// manual-close
-
 type manualCloseInputs struct {
 	StrategyID string
-	Qty        float64 // 0 = full position
+	Qty        float64
 	DryRun     bool
 }
 
-// manualCloseCore is the shared close path behind `go-trader manual-close`
-// and POST /api/strategies/{id}/close.
 func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) (*manualCoreResult, error) {
 	res := &manualCoreResult{}
 	strategyID := in.StrategyID
@@ -1022,11 +837,6 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 		return res, manualFailf("error: position %s/%s is owned by %q, not %q", strategyID, sc.Symbol, pos.OwnerStrategyID, strategyID)
 	}
 
-	// Dry-run is advisory: it reports against the current snapshot and neither
-	// takes the manual-action lock nor cancels/reconciles any resting limit
-	// remainder (cancelling would be a real on-chain side effect). The --qty
-	// bounds are checked against the snapshot here; the live path below resolves
-	// the true size under the lock and re-checks against it.
 	if in.DryRun {
 		dryCloseSide := "sell"
 		if pos.Side == "short" {
@@ -1044,43 +854,17 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 		return res, nil
 	}
 
-	// Cross-process lock: held (function-scoped defer, past the dry-run return
-	// above) from before the guard READS below through the pending-row INSERT,
-	// so a CLI racing the dashboard (or two CLIs) can't both pass and both fire.
 	unlock, lockErr := d.acquireManualActionLock()
 	if lockErr != nil {
 		return res, manualFailf("error: %v — refusing to avoid double-firing an on-chain order", lockErr)
 	}
 	defer unlock()
 
-	// #1260 review: refuse a second close while a position-changing action is
-	// queued for this strategy+symbol. A re-fired sized manual close is a regular
-	// non-reduce-only order (it can flip into an opposite position), and the
-	// queued close row would double-decrement the position on drain (#1009
-	// corrupt close). Applies to full AND partial close. The UI handler guards
-	// this too; this covers the CLI + any future core caller.
 	clearedQty, clearedAvgPx, err := clearRestingLimitRemainderForPositionAction(d, res, sc, "manual-close", strategyID, sc.Symbol)
 	if err != nil {
 		return res, err
 	}
-	// Resolve the true, currently-adopted position size UNDER THE LOCK. `pos`
-	// above was read by loadState BEFORE the lock, and the daemon's
-	// reconcilePendingLimitOrders adopts limit fills and flushes+deletes their
-	// rows WITHOUT holding the manual-action lock — so between our loadState and
-	// here it can supersede that snapshot. The global lock can be held for seconds
-	// by a concurrent manual/dashboard op, widening this window enough for a
-	// same-strategy+symbol resting limit to fully fill and drain.
 	if clearedQty > 0 {
-		// A resting remainder was present: clearResting cancelled it and read the
-		// authoritative cumulative fill straight from the exchange (the placement
-		// guard proves the position is solely this order's fills), so clearedQty IS
-		// the true size. state.db is NOT authoritative here — the daemon has not
-		// yet processed the cancel we just issued — so grow the snapshot up to
-		// clearedQty (and its cumulative VWAP) rather than re-reading. Critical on
-		// a shared coin, where closeFullPosition is false and a sized close of the
-		// stale (smaller) qty would leave an untracked residual after the daemon
-		// books flat, and so the queued close quantity + realized PnL match the
-		// true size and cost.
 		if clearedQty > pos.Quantity+limitFillEpsilon {
 			staleQty := pos.Quantity
 			pos.Quantity = clearedQty
@@ -1091,18 +875,6 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 				strategyID, sc.Symbol, staleQty, pos.Quantity)
 		}
 	} else {
-		// No resting remainder for this strategy+symbol under the lock. The
-		// pre-lock snapshot may still be stale: the daemon can adopt a terminal
-		// limit fill and flush+delete its row (without the manual-action lock)
-		// between our loadState and this point, so clearResting finds nothing yet
-		// the on-chain position already grew. But flush-before-delete
-		// (reconcilePendingLimitOrders) guarantees "terminal row absent ⇒ state.db
-		// reflects the adopted fill," and no NEW resting row can appear while we
-		// hold the lock (manual limit-open takes it too). So a fresh re-read under
-		// the lock IS the true, currently-adopted size — re-read before sizing so a
-		// shared-coin close never flattens a stale (smaller) snapshot and leaks an
-		// untracked residual, and so the --qty bound below validates against the
-		// true size (#1263 review-4).
 		refreshed, rerr := d.loadState(strategyID, sc.Symbol)
 		if rerr != nil {
 			return res, manualFailf("Failed to re-load state: %v", rerr)
@@ -1116,23 +888,11 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 		pos = refreshed.Pos
 	}
 
-	// Close side, keyed off the RESOLVED position (a limit fill cannot flip side
-	// and a flip needs the lock we hold, so this is stable — but recompute it here
-	// so no field survives from the possibly-replaced pre-lock snapshot).
 	closeSide := "sell"
 	if pos.Side == "short" {
 		closeSide = "buy"
 	}
 
-	// Operator intent, evaluated against the RESOLVED position size (not the
-	// pre-lock snapshot): --qty omitted (or equal to the full position) is a full
-	// close; any smaller value is a partial close. Checking after the resolution
-	// above means an explicit --qty matching the true, already-adopted size is
-	// accepted instead of being wrongly refused against a stale smaller snapshot
-	// (#1263 review-3/4), and the bounds error reports the true size. An explicit
-	// --qty is never scaled up to the resolved size — only an omitted (or
-	// within-lot-of-full) --qty flattens the resolved position — so a partial
-	// close never removes more than the operator asked for.
 	closeQty := pos.Quantity
 	intentFullClose := true
 	if in.Qty > 0 {
@@ -1140,7 +900,6 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 			return res, manualFailf("error: --qty %.6f exceeds open position %.6f", in.Qty, pos.Quantity)
 		}
 		closeQty = in.Qty
-		// Within 0.0001 (typical HL lot size) is treated as full close.
 		if pos.Quantity-in.Qty > 0.0001 {
 			intentFullClose = false
 		}
@@ -1149,10 +908,6 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 		return res, err
 	}
 
-	// #1052 review: refuse a full close while an SL edit for this position is
-	// still un-drained (the new SL OID lives only in the queued action; a full
-	// close would cancel the stale OID and orphan the new stop-loss on-chain).
-	// Fail closed on a check error. Partial close leaves the SL resting.
 	if intentFullClose {
 		if pending, perr := pendingSLActionExists(d.stateDB, strategyID, sc.Symbol); perr != nil {
 			return res, manualFailf("error: could not check for queued stop-loss edits (%v) — refusing the full close to avoid orphaning an on-chain order; retry once the scheduler is reachable", perr)
@@ -1161,7 +916,6 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 		}
 	}
 
-	// Fix #2: only cancel the SL on a full close; leave it resting on partial close.
 	cancelOID := int64(0)
 	if intentFullClose {
 		cancelOID = pos.StopLossOID
@@ -1189,7 +943,6 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 	if execResult.Error != "" {
 		return res, manualFailf("error from HL: %s", execResult.Error)
 	}
-	// Cancel failures are non-fatal but leave reduce-only OIDs resting on-chain.
 	if execResult.CancelStopLossError != "" {
 		res.errf("warning: manual close cancel failed (non-fatal) for %s/%s: %s (sl_oid=%d tp_oids=%v) — verify HL on-chain triggers",
 			strategyID, sc.Symbol, execResult.CancelStopLossError, cancelOID, extraCancelOIDs)
@@ -1240,18 +993,12 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 	return res, nil
 }
 
-// ---------------------------------------------------------------------------
-// force-close
-
 type forceCloseInputs struct {
 	StrategyID string
-	Qty        float64 // 0 = full strategy position
+	Qty        float64
 	DryRun     bool
 }
 
-// forceCloseCore is the shared live-HL-perps close path behind
-// `go-trader force-close` (#1140) and POST /api/strategies/{id}/force-close.
-// sym comes from lookupForceCloseStrategy.
 func forceCloseCore(d manualCoreDeps, sc StrategyConfig, sym string, in forceCloseInputs) (*manualCoreResult, error) {
 	res := &manualCoreResult{}
 	strategyID := in.StrategyID
@@ -1294,12 +1041,6 @@ func forceCloseCore(d manualCoreDeps, sc StrategyConfig, sym string, in forceClo
 		closeSide = "buy"
 	}
 
-	// Cross-process lock held (function-scoped defer) from before the guard
-	// READS — the full-close SL check just below AND refuseIfPositionActionQueued
-	// further down — through the pending-row INSERT, so a CLI racing the
-	// dashboard, or a concurrent SL edit, can't interleave the check and submit.
-	// Placed before the SL read (which precedes the dry-run return); a dry-run
-	// neither submits nor inserts, so it needs no lock.
 	if !in.DryRun {
 		unlock, lockErr := d.acquireManualActionLock()
 		if lockErr != nil {
@@ -1342,12 +1083,6 @@ func forceCloseCore(d manualCoreDeps, sc StrategyConfig, sym string, in forceClo
 		return res, nil
 	}
 
-	// #1260 review: refuse a second force-close while a position-changing action
-	// (open/add/close) is queued for this strategy+symbol. force-close is
-	// reduce-only + fill-based-qty so a double-fire is bounded, but keep the
-	// guard symmetric with the other cores and block an add/close queued behind
-	// it. Key on the args-derived sym the queued row uses (perps sc.Symbol is
-	// empty).
 	if err := refuseIfPositionActionQueued(d, "force-close", strategyID, sym); err != nil {
 		return res, err
 	}
@@ -1440,23 +1175,10 @@ func forceCloseCore(d manualCoreDeps, sc StrategyConfig, sym string, in forceClo
 	res.queued = true
 	res.outf("Queued: force-close will be reflected in the dashboard after the next scheduler cycle.")
 
-	// #1159: a force-close that flattens only the primary leaves the hedge as
-	// naked INVERSE exposure until the next scheduler cycle reconciles it. On a
-	// long strategy interval that is minutes of unintended directional risk
-	// created by an operator's emergency action — so close the matching share
-	// of the hedge now, in the same command.
-	//
-	// Failures here are reported but do not fail the command: the primary is
-	// already closed on-chain and its pending row is committed. Hedge sync is
-	// the backstop and will converge the leg on the next cycle.
 	forceCloseCoupledHedgeLeg(d, sc, res, strategyID, sym, filledQty, pos.Quantity, actualFullClose)
 	return res, nil
 }
 
-// forceCloseCoupledHedgeLeg submits and queues the hedge-side counterpart of a
-// manual force-close. Reduces the hedge by the SAME FRACTION the primary lost
-// (or closes it entirely when the primary was fully closed), matching the
-// proportional-reduce rule the scheduler's hedge reconciler uses.
 func forceCloseCoupledHedgeLeg(d manualCoreDeps, sc StrategyConfig, res *manualCoreResult, strategyID, primarySym string, primaryClosedQty, primaryQtyBefore float64, primaryFullClose bool) {
 	if !HedgeEnabled(sc) || d.closer == nil {
 		return
@@ -1484,8 +1206,6 @@ func forceCloseCoupledHedgeLeg(d manualCoreDeps, sc StrategyConfig, res *manualC
 			fraction = 1
 		}
 		closeQty = hPos.Quantity * fraction
-		// A residual below HL's minimum order notional could never be closed
-		// by a later reduce, so collapse it into a full close instead.
 		fullClose = hPos.Quantity-closeQty <= 1e-9
 		if closeQty <= 1e-9 {
 			return
@@ -1501,7 +1221,6 @@ func forceCloseCoupledHedgeLeg(d manualCoreDeps, sc StrategyConfig, res *manualC
 		closeQty = hPos.Quantity
 	}
 
-	// No cancel OIDs: a phase-1 hedge leg carries no resting protection.
 	result, execErr := d.closer(hCoin, partialSz, nil)
 	if execErr != nil {
 		res.errf("CRITICAL: force-close of the coupled hedge leg on %s failed: %v — the hedge is now OVERSIZED against %s. The scheduler will reconcile it next cycle; verify on-chain.", hCoin, execErr, primarySym)
@@ -1553,16 +1272,8 @@ func forceCloseCoupledHedgeLeg(d manualCoreDeps, sc StrategyConfig, res *manualC
 		FillFee:         fill.Fee,
 		ExchangeOrderID: oid,
 		RealizedPnL:     pnl,
-		// #1159 (review round 2): mark full ONLY when the leg actually drained.
-		// `fullClose` is the operator's INTENT (the primary was fully closed);
-		// a reduce-only hedge close can still short-fill. Booking a short fill
-		// as full makes the drain delete the virtual leg — erasing its
-		// HedgeFor stamp while inverse exposure remains on-chain — and nothing
-		// recovers it: runHedgeSync sees primary-flat + no leg and does
-		// nothing, while reconcileHyperliquidHedgeLeg refuses to adopt the now
-		// unstamped position. Mirrors the primary path's actualFullClose.
-		IsFullClose: hPos.Quantity-filled <= 1e-9,
-		CreatedAt:   time.Now().UTC(),
+		IsFullClose:     hPos.Quantity-filled <= 1e-9,
+		CreatedAt:       time.Now().UTC(),
 	}
 	if err := d.stateDB.InsertPendingManualAction(action); err != nil {
 		res.errf("CRITICAL: the %s hedge leg was closed ON-CHAIN but queuing its bookkeeping row failed: %v — virtual state now overstates the hedge. Run the scheduler to reconcile.", hCoin, err)
@@ -1571,19 +1282,13 @@ func forceCloseCoupledHedgeLeg(d manualCoreDeps, sc StrategyConfig, res *manualC
 	res.outf("Force-closed coupled hedge: %.6f %s @ $%.4f | PnL=$%.2f (fee=$%.4f)", filled, hCoin, fill.AvgPx, pnl, fill.Fee)
 }
 
-// ---------------------------------------------------------------------------
-// manual-update-sl / manual-cancel-sl (#1050)
-
 type manualSLInputs struct {
 	StrategyID string
-	Symbol     string  // "" → strategy's configured symbol
-	Trigger    float64 // update-sl only
+	Symbol     string
+	Trigger    float64
 	DryRun     bool
 }
 
-// resolveManualSLTargetCore runs the shared SL-edit guards (kill switch,
-// pending CB close, ownership, manualSLAutoManaged, pendingSLActionExists —
-// all fail-closed) and returns the position snapshot + resolved symbol.
 func resolveManualSLTargetCore(d manualCoreDeps, sc StrategyConfig, cmdName, strategyID, symbolFlag string) (*Position, string, error) {
 	symbol := strings.ToUpper(strings.TrimSpace(symbolFlag))
 	if symbol == "" {
@@ -1598,8 +1303,6 @@ func resolveManualSLTargetCore(d manualCoreDeps, sc StrategyConfig, cmdName, str
 		return nil, "", manualFailf("Failed to load state: %v", err)
 	}
 
-	// Removing/moving protection during a portfolio flatten or a pending
-	// circuit-breaker close is unsafe and pointless — mirror manual-open's guards.
 	if view.KillSwitch {
 		return nil, "", manualFailf("error: portfolio kill switch is active — %s blocked", cmdName)
 	}
@@ -1615,25 +1318,16 @@ func resolveManualSLTargetCore(d manualCoreDeps, sc StrategyConfig, cmdName, str
 		return nil, "", manualFailf("error: position %s/%s is owned by %q, not %q", strategyID, symbol, pos.OwnerStrategyID, strategyID)
 	}
 
-	// Block when the strategy's automated protection would revert the edit on
-	// the next cycle.
 	if managed, reason := manualSLAutoManaged(sc, pos); managed {
 		return nil, "", manualFailf("error: %s for %s/%s — a manual stop-loss edit would be reverted on the next scheduler cycle.\n       To manage the stop-loss manually, opt the strategy out of auto-protection (set stop_loss_atr_mult: 0 and remove any trailing close).", reason, strategyID, symbol)
 	}
 
-	// Refuse a second SL edit while a prior one is still un-drained (#1052
-	// review) — fail closed: a check error blocks the edit.
 	if pending, err := pendingSLActionExists(d.stateDB, strategyID, symbol); err != nil {
 		return nil, "", manualFailf("error: could not check for queued stop-loss edits (%v) — refusing to avoid orphaning an on-chain order; retry once the scheduler is reachable", err)
 	} else if pending {
 		return nil, "", manualFailf("error: a stop-loss edit for %s/%s is already queued and not yet applied — run the scheduler (`--once`) or wait for the next cycle before editing again (a second edit now would orphan the first stop-loss on-chain)", strategyID, symbol)
 	}
 
-	// Symmetric with the close cores' pendingSLActionExists refusal (#1260
-	// review 5): a queued close/open/add means the position this edit targets
-	// may be deleted (or reshaped) before the edit's row drains — the edit
-	// would fire a redundant on-chain order against a flat position and leave
-	// a permanently-stuck pending row. Fail closed on a check error.
 	if pending, err := pendingManualActionExists(d.stateDB, strategyID, symbol, "open", "add", "close"); err != nil {
 		return nil, "", manualFailf("error: could not check for queued position actions (%v) — refusing to avoid orphaning an on-chain order; retry once the scheduler is reachable", err)
 	} else if pending {
@@ -1643,8 +1337,6 @@ func resolveManualSLTargetCore(d manualCoreDeps, sc StrategyConfig, cmdName, str
 	return pos, symbol, nil
 }
 
-// manualUpdateSLCore is the shared cancel-then-queue SL move behind
-// `go-trader manual-update-sl` and POST /api/strategies/{id}/update-sl.
 func manualUpdateSLCore(d manualCoreDeps, sc StrategyConfig, in manualSLInputs) (*manualCoreResult, error) {
 	res := &manualCoreResult{}
 	strategyID := in.StrategyID
@@ -1652,11 +1344,6 @@ func manualUpdateSLCore(d manualCoreDeps, sc StrategyConfig, in manualSLInputs) 
 		return res, manualUsagef("error: --trigger must be > 0")
 	}
 
-	// Cross-process lock held (function-scoped defer) from before the guard
-	// READS inside resolveManualSLTargetCore (pending SL + pending position
-	// checks) through the pending-row INSERT, so an SL edit racing a
-	// close/open/add across processes can't interleave. Dry-run neither submits
-	// nor inserts, so it needs no lock.
 	if !in.DryRun {
 		unlock, lockErr := d.acquireManualActionLock()
 		if lockErr != nil {
@@ -1670,8 +1357,6 @@ func manualUpdateSLCore(d manualCoreDeps, sc StrategyConfig, in manualSLInputs) 
 		return res, err
 	}
 
-	// Best-effort immediate-fill guard: a trigger on the wrong side of the mark
-	// fires the moment it is placed. A failed mark fetch does not block.
 	mark := 0.0
 	if mids, err := d.fetchMids([]string{symbol}); err == nil {
 		mark = mids[symbol]
@@ -1693,20 +1378,15 @@ func manualUpdateSLCore(d manualCoreDeps, sc StrategyConfig, in manualSLInputs) 
 		res.errf("SL update stderr: %s", slStderr)
 	}
 	if slErr != nil {
-		// Subprocess failure — the cancel may have run before the failure; the
-		// operator must verify on-chain.
 		return res, manualFailf("error updating stop-loss: %v — the old stop-loss may have been cancelled without a replacement; verify protection on the HL UI before retrying.", slErr)
 	}
 	if slResult.Error != "" {
 		return res, manualFailf("error from HL: %s", slResult.Error)
 	}
 	if slResult.StopLossFilledImmediately {
-		// The new trigger fired on placement; the position closed on-chain. Do
-		// NOT queue an update-sl — the next reconcile cycle books the close.
 		return res, manualFailf("error: stop-loss filled immediately on placement — position closed on-chain; reconcile will adopt the close. Do not retry.")
 	}
 	if slResult.StopLossOID == 0 {
-		// Placement returned no OID without raising. Distinguish naked from safe.
 		if slPlacementFailureLeftNaked(slResult.CancelStopLossSucceeded, pos.StopLossOID) {
 			return res, manualFailf("CRITICAL: stop-loss placement failed after the old order was removed (%s) — the position is now UNPROTECTED on-chain. Re-arm immediately (manual-update-sl) or close the position.", slResult.StopLossError)
 		}
@@ -1739,15 +1419,10 @@ func manualUpdateSLCore(d manualCoreDeps, sc StrategyConfig, in manualSLInputs) 
 	return res, nil
 }
 
-// manualCancelSLCore is the shared SL removal behind
-// `go-trader manual-cancel-sl` and POST /api/strategies/{id}/cancel-sl.
 func manualCancelSLCore(d manualCoreDeps, sc StrategyConfig, in manualSLInputs) (*manualCoreResult, error) {
 	res := &manualCoreResult{}
 	strategyID := in.StrategyID
 
-	// Cross-process lock held (function-scoped defer) from before the guard
-	// READS inside resolveManualSLTargetCore through the pending-row INSERT (see
-	// manualUpdateSLCore). Dry-run neither submits nor inserts.
 	if !in.DryRun {
 		unlock, lockErr := d.acquireManualActionLock()
 		if lockErr != nil {

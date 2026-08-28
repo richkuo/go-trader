@@ -1,29 +1,4 @@
 #!/usr/bin/env python3
-"""Fee-drag screen for the #1165 shortlist (README fee-gate step).
-
-breakout's audit economics are fee-marginal: the M5 screen (#999,
-docs/research/fee-audit-m5.md) measured gross +5.28%/leg vs net -1.54%/leg —
-6.82pp of friction drag over 260 trades (44.3/yr) at ~0.31%/leg. A regime
-gate that only removes losing entries should CUT trades (unlike the #984
-close stacks, which added legs), but a gate that fragments trend-holds into
-re-entries pays the same churn tax. This driver re-runs each candidate twice
-per audit dataset on the continuous audit window — default friction vs zero
-friction (the documented #999 overrides: ``commission_pct=0.0,
-slippage_pct=0.0``) — and reports the gross/net split, drag in percentage
-points, and annualized trade rate, per candidate and vs baseline.
-
-Every leg threads the candidate's regime state via
-driver_common.candidate_leg_kwargs (a gated candidate would otherwise
-silently score ungated). ``summarize_fee_drag`` is imported from the #984
-twin — same aggregation, unit-tested in
-backtest/tests/test_breakout_984_fee_drag.py.
-
-Run from repo root:
-  uv run --no-sync python backtest/candidates/breakout_1165/fee_drag.py \
-      [--start 2025-06-10] [--end YYYY-MM-DD] \
-      [--candidates baseline.json,...] \
-      [--json backtest/candidates/breakout_1165/fee_drag_shortlist.json]
-"""
 
 import argparse
 import importlib.util
@@ -33,16 +8,15 @@ import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
-sys.path.insert(0, os.path.join(_HERE, "..", ".."))          # backtest/
+sys.path.insert(0, os.path.join(_HERE, "..", ".."))
 sys.path.insert(0, os.path.join(_HERE, "..", "..", "..", "shared_tools"))
 
-from driver_common import candidate_leg_kwargs                 # noqa: E402
+from driver_common import candidate_leg_kwargs
 
 DEFAULT_CANDIDATES = "baseline.json"
 
 
 def _load_984_fee_drag():
-    """The #984 twin is a script, not a package module — load it by path."""
     path = os.path.join(_HERE, "..", "breakout_984", "fee_drag.py")
     spec = importlib.util.spec_from_file_location("breakout_984_fee_drag", path)
     mod = importlib.util.module_from_spec(spec)

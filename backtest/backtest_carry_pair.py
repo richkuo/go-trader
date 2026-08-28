@@ -1,45 +1,4 @@
 #!/usr/bin/env python3
-"""Hedged funding-carry pair backtester (#1326).
-
-Simulates the structure `delta_neutral_funding` actually runs live — SHORT the
-perp to collect funding while holding an equal-notional SPOT long as the delta
-offset — so the strategy can finally earn a real edge verdict. The existing
-Backtester holds exactly one leg, so its result for this strategy is dominated
-by the naked short's price PnL (e.g. SOL 2023 legs ≈ −30%), precisely the
-component the live spot hedge is designed to cancel (#1280,
-docs/research/1280-edge-verdicts.md). This harness books both legs, so what
-survives is net-of-fees funding carry.
-
-Design (mirrors backtest_pairs.py's two-leg accounting, no live path):
-- Perp SHORT leg: isolated margin (`leverage`/`maintenance_margin`), per-fill
-  taker fee, per-bar funding booked from the #988 `funding_accrual` series
-  (short receives when accrual is positive), isolated-margin liquidation with
-  the loss capped at the margin posted (gap-through cap, HL isolated mode).
-- Spot LONG leg: fully funded (cash outlay = notional), NO funding, NO leverage,
-  NO liquidation — it can only lose its notional, which the account already
-  holds as cash.
-- Entry/exit come from the SAME registry signal the live strategy emits
-  (`reg.apply_strategy("delta_neutral_funding", ...)`): signal −1 opens/holds
-  the pair, +1 closes it, 0 holds. So the harness adjudicates exactly the
-  entries live would take, including the full-7d-window warmup.
-- Delta drift is computed HERE from the two legs' notionals — the registry's
-  `delta_drift_pct`/`rebalance_needed` columns are hardcoded 0.0 placeholders
-  (registry.py:1275-1276), so only `drift_threshold` is reused. When drift
-  exceeds `drift_threshold` the SPOT leg is traded back to the perp notional at
-  the next bar open, paying a fee.
-
-Look-ahead contract mirrors backtest_pairs.py (#730/#731): a signal at bar N
-fills at bar N+1 open; funding/marks use closed-bar values.
-
-Not for live execution:
-- Basis is unmodeled by default: both legs mark on the SAME cached close series,
-  so a perfect single-series hedge cancels price PnL exactly and drift stays 0
-  (rebalances=0) — the harness then measures pure carry minus costs, the ideal
-  delta-neutral reading. Pass `--perp-symbol` to mark the perp leg on a second
-  cached series (a real perp/spot basis), which drives genuine tracking drift
-  and exercises rebalancing.
-- Quantities are not rounded to exchange lot/tick size.
-"""
 
 from __future__ import annotations
 
@@ -57,10 +16,7 @@ import pandas as pd
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "shared_tools"))
 
-# Reuse the audit constants/pure helpers rather than redefining them, so the
-# dataset/window universe and the liquidated-metric floors stay in lockstep
-# with eval_windows / backtester (tests assert the equality).
-from eval_windows import (  # noqa: E402
+from eval_windows import (
     DATASETS,
     WINDOWS,
     PLATFORM,
@@ -69,27 +25,15 @@ from eval_windows import (  # noqa: E402
     dataset_key,
     parse_dataset_arg,
 )
-from backtester import LIQUIDATED_METRIC_FLOOR  # noqa: E402
+from backtester import LIQUIDATED_METRIC_FLOOR
 
 STRATEGY_NAME = "delta_neutral_funding"
 
-# Hyperliquid base-tier taker fee (0.045%/side), matching backtester.PLATFORM_FEE_PCT
-# ["hyperliquid"] and eval_windows FEE_PLATFORM — audits price the fees we pay.
 DEFAULT_FEE_PCT = 0.00045
 
 
-# ---------------------------------------------------------------------------
-# Pure helpers (no I/O; unit-tested without data access).
-# ---------------------------------------------------------------------------
-
 def delta_drift_pct(qty_perp: float, mark_perp: float,
                     qty_spot: float, mark_spot: float) -> float:
-    """Delta drift as a percentage of the perp (hedge-anchor) notional.
-
-    The two legs open at equal notional; they drift apart when their marks
-    diverge (perp/spot basis) or after a leg is re-sized. Anchored on the perp
-    notional because the perp is the funding-bearing leg the spot hedges.
-    """
     perp_notional = qty_perp * mark_perp
     if perp_notional <= 0:
         return 0.0
@@ -99,39 +43,24 @@ def delta_drift_pct(qty_perp: float, mark_perp: float,
 
 def rebalance_spot_qty(qty_perp: float, mark_perp: float,
                        mark_spot: float) -> tuple:
-    """Spot qty that restores notional parity with the perp leg, plus the
-    traded notional (for the rebalance fee). Marks are next-bar-open fills."""
     if mark_spot <= 0:
         return 0.0, 0.0
     target_qty_spot = qty_perp * mark_perp / mark_spot
-    return target_qty_spot, 0.0  # traded notional filled in by caller vs old qty
+    return target_qty_spot, 0.0
 
 
 def liquidation_loss(notional: float, leverage: float,
                      maintenance_margin: float) -> float:
-    """Dollar loss on an isolated leg that triggers liquidation:
-    (1/leverage − maintenance_margin) × notional. Same math as
-    backtest_pairs._liquidation_loss, duplicated here so the carry harness
-    stays a standalone module."""
     return notional * (1.0 / leverage - maintenance_margin)
 
 
 def dd_adjusted_return(return_pct: float, max_dd_pct: float) -> float:
-    """DDadj = return / |max drawdown| (#963); 0.0 when there is no drawdown
-    (an untraded/flat leg carries no risk denominator)."""
     if not max_dd_pct:
         return 0.0
     return return_pct / abs(max_dd_pct)
 
 
 def leg_from_carry_results(results: "CarryResults") -> dict:
-    """Collapse a CarryResults to the per-leg metrics the verdict reports.
-
-    ``funding_share`` decomposes the net edge: funding as a fraction of the
-    gross magnitude (|price| + |funding| + fees), so a healthy verdict is
-    visibly carry-driven, not residual price. A liquidated account (#1005)
-    floors ddadj and Sharpe so a dead account always sorts below any survivor.
-    """
     ret = results.total_return_pct
     dd = results.max_drawdown_pct
     liquidated = results.account_liquidated
@@ -156,12 +85,6 @@ def leg_from_carry_results(results: "CarryResults") -> dict:
 
 
 def aggregate_legs(legs: dict) -> dict:
-    """Per-window summary across datasets: {dataset_key: leg | None} -> means.
-
-    ``degenerate`` uses the #976 majority-must-trade rule (a window where most
-    legs never opened a pair is not a real result). Means are taken over legs
-    that ran (non-None); totals sum funding/fees across the window.
-    """
     present = {ds: leg for ds, leg in legs.items() if leg is not None}
     if not present:
         return {"datasets": 0, "traded_datasets": 0, "degenerate": True,
@@ -185,17 +108,6 @@ def aggregate_legs(legs: dict) -> dict:
 
 
 def carry_verdict(window_summaries: dict) -> str:
-    """Recorded label from the per-window summaries (M5 salvage-verdict style).
-
-    A funding-carry structure is not competing with directional incumbents, so
-    this is an ABSOLUTE carry-vs-cost verdict, not an incumbent-relative bar:
-
-    - ``no_trades``  — no window opened a pair anywhere.
-    - ``deprecate``  — net carry ≤ 0 across the traded windows (fees eat it).
-    - ``healthy``    — net return > 0 in a MAJORITY of traded, non-degenerate
-                       windows with no account-level liquidation.
-    - ``marginal``   — everything else (mixed, thin, or a liquidation appeared).
-    """
     traded = [s for s in window_summaries.values()
               if s.get("traded_datasets", 0) > 0 and not s.get("degenerate")]
     if not traded:
@@ -211,8 +123,6 @@ def carry_verdict(window_summaries: dict) -> str:
 
 
 def bar_hours_from_index(index: pd.Index, default: float = 1.0) -> float:
-    """Median spacing of a DatetimeIndex in hours (timeframe-correct Sharpe /
-    funding). Falls back to ``default`` on a non-datetime or single-bar index."""
     try:
         deltas = pd.Series(index).diff().dropna()
         if len(deltas):
@@ -224,13 +134,8 @@ def bar_hours_from_index(index: pd.Index, default: float = 1.0) -> float:
     return default
 
 
-# ---------------------------------------------------------------------------
-# Engine.
-# ---------------------------------------------------------------------------
-
 @dataclass
 class CarryEpisode:
-    """One open→close hedged-pair episode."""
     entry_bar: int
     entry_time: pd.Timestamp
     entry_perp: float
@@ -241,10 +146,10 @@ class CarryEpisode:
     margin_perp: float
     exit_bar: Optional[int] = None
     exit_time: Optional[pd.Timestamp] = None
-    price_pnl: float = 0.0       # perp short + spot long price PnL (marked)
-    funding: float = 0.0         # cumulative funding carry (perp leg only)
-    fees: float = 0.0            # entry + exit + rebalance fees
-    realized_spot_pnl: float = 0.0  # PnL locked in on spot units sold at a rebalance
+    price_pnl: float = 0.0
+    funding: float = 0.0
+    fees: float = 0.0
+    realized_spot_pnl: float = 0.0
     rebalances: int = 0
     exit_reason: str = ""
 
@@ -316,9 +221,6 @@ class CarryPairBacktester:
         else:
             self.bars_per_year = int(bars_per_year)
 
-        # Capital sufficiency: the spot leg is fully funded (base_notional cash)
-        # and the perp leg posts base_notional/leverage margin. Warn (don't
-        # reject) if that exceeds capital, so a stress config still runs.
         needed = self.base_notional + self.base_notional / self.leverage
         if needed > self.initial_capital:
             print(
@@ -329,9 +231,6 @@ class CarryPairBacktester:
             )
 
     def run(self, df: pd.DataFrame) -> CarryResults:
-        """df needs `open`/`close` and a `signal` column. `funding_accrual`
-        (per-bar carry, #988) and an optional `perp_close`/`perp_open` (basis
-        mode) are used when present; missing funding accrues 0."""
         for col in ("open", "close", "signal"):
             if col not in df.columns:
                 raise ValueError(f"input needs a '{col}' column")
@@ -339,8 +238,6 @@ class CarryPairBacktester:
         signal = df["signal"].to_numpy()
         spot_open = df["open"].to_numpy(dtype=float)
         spot_close = df["close"].to_numpy(dtype=float)
-        # Perp marks default to the spot series (single-series hedge); basis
-        # mode overrides with a second cached series aligned to the same index.
         perp_open = (df["perp_open"].to_numpy(dtype=float)
                      if "perp_open" in df.columns else spot_open)
         perp_close = (df["perp_close"].to_numpy(dtype=float)
@@ -360,32 +257,15 @@ class CarryPairBacktester:
             if pos is not None:
                 mark_perp = perp_close[i]
                 mark_spot = spot_close[i]
-                # Short perp: profit when price falls. Long spot: profit when
-                # price rises. In single-series mode these cancel exactly. The
-                # spot leg carries realized PnL locked in at prior rebalances
-                # (average-cost accounting) plus the open qty marked vs entry.
                 pos.price_pnl = (pos.qty_perp * (pos.entry_perp - mark_perp)
                                  + pos.realized_spot_pnl
                                  + pos.qty_spot * (mark_spot - pos.entry_spot))
-                # Funding booked on the perp (short) leg only: receive when
-                # accrual > 0 (longs pay shorts). Timeframe-correct via #988.
-                # accrual[j] covers (T_{j-1}, T_j]; the pair filled at open[j] =
-                # T_{entry_bar}, so a newly-opened position first accrues over
-                # the NEXT full bar (i > entry_bar), never the pre-entry interval
-                # accrual[entry_bar] — matching backtester.py:2425. The exit
-                # bar's funding is booked in the signal-exit branch below (which
-                # this loop never marks) or is already covered here
-                # (liquidation/end-of-data both mark the exit bar in this loop).
                 if i > pos.entry_bar:
                     bars_funded += self._book_funding_bar(pos, i, mark_perp, accrual)
 
-                # Isolated-margin liquidation on the perp leg only. The spot
-                # leg is fully funded and cannot be liquidated.
                 perp_loss = -(pos.qty_perp * (pos.entry_perp - mark_perp))
                 if perp_loss >= liquidation_loss(pos.notional_perp, self.leverage,
                                                  self.maintenance_margin):
-                    # Cap the perp loss at posted margin (isolated mode). The
-                    # spot leg's offsetting gain is still credited in full.
                     capped_perp = -min(perp_loss, pos.margin_perp)
                     spot_pnl = (pos.realized_spot_pnl
                                 + pos.qty_spot * (mark_spot - pos.entry_spot))
@@ -411,11 +291,6 @@ class CarryPairBacktester:
                     pos = self._open_pair(i + 1, perp_open, spot_open, df.index)
             else:
                 if sig == 1:
-                    # Signal exit fills at bar i+1, which this loop never marks
-                    # (pos is cleared here), so book that bar's funding — the
-                    # final held interval (T_{exit_bar-1}, T_{exit_bar}] — now.
-                    # Value it at the bar close, like every other funded bar
-                    # (mark loop) and backtester.py:2425 — not the fill/open.
                     exit_bar = i + 1
                     if exit_bar > pos.entry_bar:
                         bars_funded += self._book_funding_bar(
@@ -426,8 +301,6 @@ class CarryPairBacktester:
                     episodes.append(pos)
                     pos = None
                 else:
-                    # Still hedged: rebalance the spot leg back to parity if the
-                    # legs have drifted past the threshold. Fill at next open.
                     self._maybe_rebalance(pos, i + 1, perp_open, spot_open)
 
         if pos is not None:
@@ -441,8 +314,6 @@ class CarryPairBacktester:
 
     def _book_funding_bar(self, ep: CarryEpisode, bar_idx: int, mark_perp: float,
                           accrual) -> int:
-        """Book one bar's perp-leg funding at ``mark_perp``; return 1 if a
-        nonzero, non-NaN accrual was booked (for the bars_funded counter)."""
         acc = accrual[bar_idx]
         if math.isnan(acc) or acc == 0.0:
             return 0
@@ -492,14 +363,6 @@ class CarryPairBacktester:
         target_qty_spot, _ = rebalance_spot_qty(ep.qty_perp, mark_perp, mark_spot)
         delta = target_qty_spot - ep.qty_spot
         traded_notional = abs(delta) * mark_spot
-        # Average-cost accounting so the spot leg's total PnL (realized +
-        # unrealized) is invariant to when/how often it rebalances:
-        #   sell (delta<0): lock in PnL on the sold units at their entry cost;
-        #     the units that remain keep the original entry_spot.
-        #   buy  (delta>0): blend entry_spot toward mark_spot so the new units
-        #     are priced from their actual purchase price, not the old entry.
-        # Without this, both PnL sites price the post-rebalance qty against the
-        # unchanged entry_spot and silently drop/misattribute earned PnL.
         if delta < 0:
             ep.realized_spot_pnl += (-delta) * (mark_spot - ep.entry_spot)
         elif delta > 0:
@@ -514,8 +377,6 @@ class CarryPairBacktester:
                    index: pd.Index, perp_liquidations: int,
                    bars_funded: int) -> CarryResults:
         eq = pd.Series(equity_curve, index=index).ffill().fillna(self.initial_capital)
-        # #1005 sticky liquidation floor: once account equity hits ≤ 0, floor it
-        # at 0 from that bar on (a negative-base pct_change inverts Sharpe sign).
         account_liquidated = bool((eq <= 0).any())
         if account_liquidated:
             bust = eq.le(0).idxmax()
@@ -530,7 +391,6 @@ class CarryPairBacktester:
         max_dd = float(dd.min()) if len(dd.dropna()) else 0.0
         final_equity = float(eq.iloc[-1]) if len(eq) else self.initial_capital
         if account_liquidated:
-            # Floor the reported metrics like eval_windows/backtester do.
             total_return_pct = -LIQUIDATED_METRIC_FLOOR
             max_dd = -1.0
         else:
@@ -554,10 +414,6 @@ class CarryPairBacktester:
         )
 
 
-# ---------------------------------------------------------------------------
-# I/O layer.
-# ---------------------------------------------------------------------------
-
 def run_carry_leg(reg, symbol: str, timeframe: str, window: tuple,
                   params: Optional[dict] = None,
                   capital: float = DEFAULT_CAPITAL,
@@ -567,14 +423,7 @@ def run_carry_leg(reg, symbol: str, timeframe: str, window: tuple,
                   perp_fee_pct: float = DEFAULT_FEE_PCT,
                   spot_fee_pct: float = DEFAULT_FEE_PCT,
                   perp_symbol: Optional[str] = None) -> Optional[dict]:
-    """Load one (symbol, timeframe, window) leg, attach funding, run the engine.
-
-    Reuses run_backtest._attach_funding_if_needed (the #988 coverage-store path
-    eval_windows uses) so the `funding_rate` signal input and the
-    `funding_accrual` carry match a live/M1 run bar-for-bar. Returns the pure
-    leg dict, or None if the window has no data.
-    """
-    import pandas as pd  # noqa: F811 (local import mirrors eval_windows.run_leg)
+    import pandas as pd
     from data_fetcher import load_cached_data
     from run_backtest import _attach_funding_if_needed
 
@@ -583,8 +432,6 @@ def run_carry_leg(reg, symbol: str, timeframe: str, window: tuple,
                           start_date=start, end_date=end)
     if df.empty:
         return None
-    # Half-open [start, end) slice so adjacent audit windows never double-count
-    # the boundary bar (same convention as eval_windows.run_leg).
     if end is not None:
         df = df[df.index < pd.Timestamp(end)]
         if df.empty:
@@ -633,10 +480,6 @@ def run_carry_leg(reg, symbol: str, timeframe: str, window: tuple,
         leg["span_days"] = None
     return leg
 
-
-# ---------------------------------------------------------------------------
-# Reporting.
-# ---------------------------------------------------------------------------
 
 def _fmt(v, width=9, prec=2):
     if v is None:
@@ -698,10 +541,6 @@ def format_summary(window_summaries: dict, verdict: str) -> str:
                  f"single-series mode)")
     return "\n".join(lines)
 
-
-# ---------------------------------------------------------------------------
-# CLI.
-# ---------------------------------------------------------------------------
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(

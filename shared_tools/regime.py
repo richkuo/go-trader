@@ -1,13 +1,3 @@
-"""Market regime detection for go-trader check scripts.
-
-Supports per-window classifiers (#795):
-  adx       — 3-state Wilder ADX + DI (default)
-  composite — 9-state return/ADX/range tuple
-
-Usage in check scripts (after data fetch and before apply_strategy):
-
-    from regime import prepare_check_regime, parse_regime_windows_spec_json
-"""
 
 from __future__ import annotations
 
@@ -18,12 +8,12 @@ import pandas as pd
 
 try:
     from .atr import standard_atr
-except ImportError:  # pragma: no cover - exercised by check-script style imports
+except ImportError:
     from atr import standard_atr
 
 try:
     from shared_strategies.open.adx_trend import _compute_adx_components
-except ImportError:  # pragma: no cover - supports direct shared_tools/regime.py imports
+except ImportError:
     import importlib.util
     from pathlib import Path
 
@@ -39,7 +29,7 @@ except ImportError:  # pragma: no cover - supports direct shared_tools/regime.py
 
 try:
     from shared_strategies.open.indicators_core import hurst_exponent
-except ImportError:  # pragma: no cover - supports direct shared_tools/regime.py imports
+except ImportError:
     import importlib.util
     from pathlib import Path
 
@@ -58,11 +48,8 @@ except ImportError:  # pragma: no cover - supports direct shared_tools/regime.py
 CLASSIFIER_ADX = "adx"
 CLASSIFIER_COMPOSITE = "composite"
 
-# Preferred multi-window name for strategy_params primary snapshot (#792).
-# When absent, the lexicographically first window name is used.
 REGIME_PRIMARY_WINDOW_KEY = "medium"
 
-# ADX persistence in composite uses a capped lookback; return/range use the full window period.
 COMPOSITE_ADX_PERIOD_CAP = 14
 
 VALID_LABELS_ADX = frozenset({"trending_up", "trending_down", "ranging"})
@@ -74,27 +61,15 @@ VALID_LABELS_COMPOSITE = frozenset({
     "ranging_quiet",
     "ranging_volatile",
     "ranging_directional",
-    # #1124: directional-drift ranging substates. map_composite_label names the
-    # drift via return_eff's sign; bare ranging_directional stays valid for the
-    # exactly-zero case.
     "ranging_directional_up",
     "ranging_directional_down",
 })
-# Back-compat alias for ADX-only callers
 _VALID_LABELS = VALID_LABELS_ADX
 
-# #1124: the bare `ranging_directional` label is the parent of the directional
-# family — the producer emits the bare label only at exactly return_eff == 0
-# (rare on real price data) and the `_up`/`_down` sub-labels for any non-zero
-# drift. The family rule is one-directional for entry gates and exhaustiveness:
-# a bare `ranging_directional` covers its `_up`/`_down` sub-labels, never the
-# reverse. Mirrors the Go regimeDirectionalBare / regimeDirectionalSubs.
 RANGING_DIRECTIONAL_BARE = "ranging_directional"
 RANGING_DIRECTIONAL_SUBS = frozenset({"ranging_directional_up", "ranging_directional_down"})
 
 
-# #1278: entry-gate failure policies for an empty/unavailable regime label.
-# Mirrors the Go RegimeGateOnFailureOpen/Closed constants.
 REGIME_GATE_ON_FAILURE_OPEN = "open"
 REGIME_GATE_ON_FAILURE_CLOSED = "closed"
 VALID_REGIME_GATE_ON_FAILURE = frozenset({
@@ -104,12 +79,6 @@ VALID_REGIME_GATE_ON_FAILURE = frozenset({
 
 
 def normalize_regime_gate_on_failure(value) -> str:
-    """Canonicalize a ``regime_gate_on_failure`` value (#1278).
-
-    Empty/None resolves to the ``"open"`` default (the legacy #879 fail-open
-    behavior); unknown values raise so a typo can't silently fail open —
-    mirroring the Go ``parseRegimeGateOnFailure`` load-time rejection.
-    """
     v = str(value or "").strip().lower()
     if not v:
         return REGIME_GATE_ON_FAILURE_OPEN
@@ -121,19 +90,6 @@ def normalize_regime_gate_on_failure(value) -> str:
 
 
 def regime_label_allows_entry(allowed, current: str, on_failure: str = "open") -> bool:
-    """#1124 entry-gate family match.
-
-    True when ``current`` is explicitly in ``allowed`` OR when ``current`` is a
-    directional sub-label (``_up``/``_down``) and the bare ``ranging_directional``
-    parent is in ``allowed``. Expansion is one-directional (bare→subs), so an
-    operator listing an explicit ``_up`` still gates out ``_down``. Empty
-    ``allowed`` (no gate configured) always allows entry.
-
-    #1278: an empty ``current`` (no regime available) resolves per
-    ``on_failure`` — ``"open"`` (default) allows the entry, matching the legacy
-    Go ``regimeAllowsEntry`` fail-open contract; ``"closed"`` blocks it when a
-    gate is configured, matching Go ``regimeBlocksOpen``'s fail-closed arm.
-    """
     if not allowed:
         return True
     if not current:
@@ -172,11 +128,6 @@ def normalize_composite_thresholds(
     *,
     with_defaults: bool = True,
 ) -> dict[str, float]:
-    """Return canonical composite thresholds.
-
-    Canonical keys are return_eff/range_eff. Deprecated return_pct/range_pct are
-    accepted as aliases; canonical keys win when both are present.
-    """
     raw = dict(thresholds or {})
     allowed = set(_DEFAULT_COMPOSITE_THRESHOLDS) | set(_COMPOSITE_THRESHOLD_ALIASES)
     unknown = sorted(str(k) for k in raw if k not in allowed)
@@ -220,12 +171,6 @@ def _window_slice(df: pd.DataFrame, period: int) -> pd.DataFrame:
 
 
 def _atr_at_end(df: pd.DataFrame, period: int) -> float:
-    # #1277: regime classification is PINNED to method="simple" — the
-    # composite thresholds and the #1085 directional certifications were
-    # calibrated on simple-mean atr_pct, so the config-gated atr_method
-    # cutover (stop/TP geometry) deliberately does NOT flow into regime
-    # labels. Re-run the bounded-window/regime-promotion validation before
-    # ever switching this to wilder.
     atr_series = standard_atr(df, period=period, method="simple")
     atr_val = atr_series.iloc[-1] if not atr_series.empty else float("nan")
     try:
@@ -236,18 +181,12 @@ def _atr_at_end(df: pd.DataFrame, period: int) -> float:
 
 
 def _composite_efficiency_metrics(window: pd.DataFrame, atr_val: float, period: int) -> dict:
-    """ATR-efficiency metrics for one window (shared by live + backtest paths).
-
-    `atr_val` is the per-bar ATR; the window spans `period` bars, so the
-    straight-line ATR travel denominator is atr_val * period.
-    """
     denom = atr_val * period
     close_end = float(window["close"].iloc[-1])
     close_start = float(window["close"].iloc[0])
     net = close_end - close_start
     hi = float(window["high"].max())
     lo = float(window["low"].min())
-    # Kaufman efficiency ratio: net travel / summed bar-to-bar travel ∈ [0, 1].
     path = float(window["close"].diff().abs().sum())
     return {
         "return_eff": net / denom if denom > 0 else 0.0,
@@ -264,15 +203,6 @@ def map_composite_label(
     efficiency: float,
     thresholds: dict[str, float],
 ) -> str:
-    """Map the composite metric tuple to one of seven labels (#795).
-
-    Inputs are ATR-efficiency normalized so the thresholds are unit-consistent:
-      return_eff — window net move / (per-bar ATR * period), signed, ~[-1, 1]
-      range_eff  — window high-low / (per-bar ATR * period), ~[0, 1]
-      efficiency — Kaufman efficiency ratio |net move| / summed bar-to-bar
-                   travel, ∈ [0, 1]; high = clean directional move, low = chop.
-    `adx_val` corroborates the efficiency-based clean/choppy split.
-    """
     thresholds = normalize_composite_thresholds(thresholds)
     ret_th = float(thresholds["return_eff"])
     range_th = float(thresholds["range_eff"])
@@ -289,14 +219,7 @@ def map_composite_label(
         if up:
             return "trending_up_clean" if clean else "trending_up_choppy"
         return "trending_down_clean" if clean else "trending_down_choppy"
-    # No decisive net move → ranging family.
     if high_adx:
-        # Directional pressure without net follow-through (#1124). return_eff's
-        # sign names the drift so the label carries direction, mirroring the
-        # trending family's _up/_down split. Bare ranging_directional is the
-        # producer-side fallback for the exactly-zero case (a common path here,
-        # since big_move is false so return_eff is frequently near zero) — so
-        # back-compat lives in this SSoT, not in each downstream resolver.
         if return_eff > 0:
             return "ranging_directional_up"
         if return_eff < 0:
@@ -317,8 +240,6 @@ def latest_regime_composite(
         return {**_DEFAULT_RESULT, "metrics": dict(_DEFAULT_METRICS), "classifier": CLASSIFIER_COMPOSITE}
 
     window = _window_slice(df, period)
-    # Numerators span the full window; ATR-efficiency divides by the window's
-    # straight-line ATR travel (per-bar ATR * period) so thresholds are unit-consistent.
     atr_val = _atr_at_end(df, period)
     if atr_val <= 0:
         return {
@@ -344,24 +265,6 @@ def latest_regime_composite(
         "efficiency": round(eff["efficiency"], 4),
         "atr_pct": round(atr_val / close_end * 100.0, 4) if close_end else 0.0,
     }
-    # #1409: Hurst exponent, over the FULL fetched frame (not the
-    # period-length `window` slice above) — DFA needs ~100 points, well above
-    # the 14-50 bar composite window. Omit the key entirely on NaN
-    # (insufficient data / degenerate series) rather than serialize NaN:
-    # json.dumps writes bare NaN, and Go's json.Unmarshal into
-    # map[string]float64 rejects that token, which would fail the whole
-    # RegimePayload parse.
-    #
-    # #1411 REVOKES the #1409 advisory-only invariant for gating and sizing.
-    # This metric is now a DECLARED INPUT to the Go-side `hurst_gate`
-    # (scheduler/hurst_gate.go): it can hold position-increasing signals and
-    # scale open size on strategies that explicitly opt in. It stays advisory
-    # for classification — `map_composite_label` still never reads it, and no
-    # composite threshold, label, or score depends on it.
-    #
-    # ONLY this composite path emits the key. The default adx classifier
-    # (`latest_regime` below) never does, which is why the Go side rejects at
-    # config load any hurst_gate pointed at a non-composite window.
     hurst_val = hurst_exponent(df["close"])
     if pd.notna(hurst_val):
         metrics["hurst"] = round(hurst_val, 4)
@@ -379,7 +282,6 @@ def classify_window(
     *,
     default_adx_threshold: float = 20.0,
 ) -> dict:
-    """Run the configured classifier for one window spec."""
     norm = _normalize_spec(spec, default_adx_threshold=default_adx_threshold)
     if norm["classifier"] == CLASSIFIER_COMPOSITE:
         snap = latest_regime_composite(df, norm["period"], norm.get("thresholds"))
@@ -394,7 +296,6 @@ def compute_regime(
     period: int = 14,
     adx_threshold: float = 20.0,
 ) -> pd.DataFrame:
-    """Add ADX regime columns to a copy of df."""
     result = df.copy()
     n = len(result)
 
@@ -445,11 +346,6 @@ def compute_regime_composite(
     period: int,
     thresholds: dict[str, float] | None = None,
 ) -> pd.DataFrame:
-    """Per-bar composite labels for backtests (#795).
-
-    Uses a rolling Python loop (not vectorized). ADX persistence uses
-    COMPOSITE_ADX_PERIOD_CAP; return/range/ATR normalization use the full window period.
-    """
     th = normalize_composite_thresholds(thresholds)
     result = df.copy()
     n = len(result)
@@ -467,7 +363,6 @@ def compute_regime_composite(
     result["plus_di"] = adx_df["plus_di"].values
     result["minus_di"] = adx_df["minus_di"].values
 
-    # #1277: pinned to simple — see _atr_at_end.
     atr_series = standard_atr(result, period=period, method="simple")
     for i in range(period, n):
         window = result.iloc[i - period + 1 : i + 1]
@@ -487,13 +382,6 @@ def composite_feature_matrix(
     period: int,
     thresholds: dict[str, float] | None = None,
 ) -> pd.DataFrame:
-    """Per-bar composite feature tuple (return_eff, range_eff, efficiency, adx).
-
-    Additive, offline-only (#1065 PR1). Mirrors compute_regime_composite's loop
-    but emits the features map_composite_label consumes instead of the label, so
-    an offline model fits on byte-consistent inputs. Warmup (i < period) and
-    atr<=0 bars are NaN.
-    """
     th = normalize_composite_thresholds(thresholds)
     cols = ["return_eff", "range_eff", "efficiency", "adx"]
     out = pd.DataFrame(float("nan"), index=df.index, columns=cols)
@@ -502,7 +390,6 @@ def composite_feature_matrix(
         return out
     adx_period = min(period, COMPOSITE_ADX_PERIOD_CAP)
     adx_df = compute_regime(df, period=adx_period, adx_threshold=th["adx"])
-    # #1277: pinned to simple — see _atr_at_end.
     atr_series = standard_atr(df, period=period, method="simple")
     for i in range(period, n):
         window = df.iloc[i - period + 1 : i + 1]
@@ -635,17 +522,6 @@ def regime_from_injected_payload(
     *,
     atr_window: str = "",
 ) -> tuple[dict | str, str, dict]:
-    """Resolve the (stdout_regime, live_regime, strategy_regime) triple from a
-    Go-injected precomputed payload (#879) instead of computing inline.
-
-    `raw` is the --regime-payload-json value: the multi-window snapshot map the
-    Go scheduler's global regime store holds for this strategy's signature
-    (same shape compute_multi_regime returns). Empty/blank/invalid payloads —
-    including the deliberate empty injection after a regime-subprocess failure
-    — resolve to the disabled triple so every consumer falls back to its
-    existing empty-case behavior (entry gate fails open, status shows
-    regime=-). There is NO inline recompute fallback by design.
-    """
     disabled = {"regime": "", "score": 0.0, "metrics": dict(_DEFAULT_METRICS)}
     text = str(raw or "").strip()
     if not text:
@@ -669,8 +545,6 @@ def regime_from_injected_payload(
     if not windows:
         return "", "", disabled
 
-    # Primary/atr selection mirrors prepare_check_regime's multi branch: the
-    # payload keys are exactly the windows-spec keys the Go side resolved.
     primary_key = (
         REGIME_PRIMARY_WINDOW_KEY
         if REGIME_PRIMARY_WINDOW_KEY in windows
@@ -697,9 +571,6 @@ def prepare_check_regime(
     disabled = {"regime": "", "score": 0.0, "metrics": dict(_DEFAULT_METRICS)}
     if not regime_enabled:
         return "", "", disabled
-    # #879: when the Go scheduler injects the precomputed global-store payload,
-    # never recompute inline — even when the injected payload is empty (that is
-    # the explicit fail-open signal after a regime-subprocess failure).
     if injected_payload_json is not None:
         return regime_from_injected_payload(injected_payload_json, atr_window=atr_window)
 
@@ -727,7 +598,6 @@ def prepare_check_regime(
 
 
 def parse_regime_windows_spec_json(raw: str | None) -> dict[str, dict[str, Any]] | None:
-    """Parse --regime-windows-spec-json from Go (#795). Bare ints → ADX specs."""
     if raw is None:
         return None
     text = str(raw).strip()
@@ -755,7 +625,6 @@ def parse_regime_windows_spec_json(raw: str | None) -> dict[str, dict[str, Any]]
 
 
 def parse_regime_windows_json(raw: str | None) -> dict[str, int] | None:
-    """Legacy int-only windows JSON (#792). Prefer parse_regime_windows_spec_json."""
     spec = parse_regime_windows_spec_json(raw)
     if spec is None:
         return None
@@ -772,7 +641,6 @@ def ensure_regime_columns(
     windows_spec: dict[str, dict[str, Any]] | None = None,
     gate_window: str = "",
 ) -> pd.DataFrame:
-    """Inject regime columns in-place for backtests (#737/#795)."""
     if all(col in df.columns for col in _REGIME_COLUMNS):
         return df
 

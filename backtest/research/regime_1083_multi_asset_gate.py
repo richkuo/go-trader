@@ -1,16 +1,3 @@
-"""Multi-asset breadth gate for regime-volatility promotion (#1083).
-
-This is a thin research-layer orchestrator over the two single-cell gates:
-
-  1. #1080 ``run_bakeoff`` selects a gate-passing volatility-state model for one
-     (symbol, timeframe) cell.
-  2. The selected family/K is refit on that same cell's in-sample window and
-     passed to #1081 ``run_gate`` for regime-conditioned ATR economics.
-
-No gate logic lives here. This wrapper owns only the audit-universe loop, the
-per-cell model handoff, failure reporting, JSON output, and the promotion
-aggregation rule.
-"""
 from __future__ import annotations
 
 import argparse
@@ -26,15 +13,15 @@ for _p in (_THIS_DIR, _BACKTEST, _ROOT, os.path.join(_ROOT, "shared_tools")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from data_fetcher import load_cached_data  # noqa: E402
-from eval_windows import DATASETS, DEFAULT_CAPITAL, PLATFORM, WINDOWS  # noqa: E402
-from regime import _DEFAULT_COMPOSITE_THRESHOLDS, composite_feature_matrix  # noqa: E402
-import regime_vol_model as rvm  # noqa: E402
-from regime_1080_unsupervised_vol_model import (  # noqa: E402
+from data_fetcher import load_cached_data
+from eval_windows import DATASETS, DEFAULT_CAPITAL, PLATFORM, WINDOWS
+from regime import _DEFAULT_COMPOSITE_THRESHOLDS, composite_feature_matrix
+import regime_vol_model as rvm
+from regime_1080_unsupervised_vol_model import (
     DEFAULT_WINDOWS as BAKEOFF_DEFAULT_WINDOWS,
     run_bakeoff,
 )
-from regime_1081_economic_gate import (  # noqa: E402
+from regime_1081_economic_gate import (
     DEFAULT_DIRECTION,
     DEFAULT_GATE_WINDOWS,
     DEFAULT_REGISTRY,
@@ -54,7 +41,6 @@ def dataset_label(symbol: str, timeframe: str) -> str:
 
 
 def parse_datasets(raw: str | Iterable[str] | None) -> list[Dataset]:
-    """Parse ``BTC/USDT:1h,ETH/USDT:4h``; empty means eval_windows.DATASETS."""
     if raw is None:
         return list(DATASETS)
     if isinstance(raw, str):
@@ -127,7 +113,6 @@ def fit_selected_model(
     filter_window: int,
     seed: int,
 ) -> dict:
-    """Refit the #1080-selected model so #1081 can consume the actual artifact."""
     family = str(winner.get("family") or "").strip()
     k = int(winner.get("k") or 0)
     if not family or k < 2:
@@ -247,7 +232,7 @@ def run_cell(
         row["economic_report"] = economic
         row["pass"] = bool(economic.get("summary", {}).get("pass"))
         return row
-    except Exception as exc:  # noqa: BLE001 - per-cell failure must be reported, not skipped.
+    except Exception as exc:
         row["error"] = f"{type(exc).__name__}: {exc}"
         row["blocking_reasons"].append(row["error"])
         return row
@@ -261,28 +246,10 @@ def _row_symbol(row: dict) -> str:
     return dataset.split(" ", 1)[0] if dataset else "?"
 
 
-# Mirrors the data-absence marker regime_1081_economic_gate sets on a window
-# that has no cached data (it swallows the gap into a pass=False row rather than
-# raising). If that wording ever drifts, the match below simply stops firing and
-# the cell falls back to the prior ``fail`` classification — an audit-accuracy
-# regression, never a verdict/safety change.
 _ECONOMIC_NO_DATA_MARKER = "no cached data"
 
 
 def _economic_failure_is_data_gap_only(economic_report: dict) -> bool:
-    """True iff a non-passing #1081 report's gate-window blocks are ALL missing-
-    data gaps — i.e. no candidate ever ran to a verdict on a data-bearing gate
-    window.
-
-    #1081 does not raise on a missing window; it returns a normal ``pass=False``
-    report carrying a row with ``error='no cached data'``. Without this, the
-    #1083 cell would read as a genuine economic ``fail`` when the data was simply
-    absent. Safety constraint: if ANY gate window ran to a real (error-free)
-    non-passing verdict, that is genuine negative evidence and the cell must stay
-    ``fail`` even when another gate window is data-gapped. Degenerate-label or
-    per-cell economic exceptions on data-bearing windows also stay ``fail`` (only
-    an explicit data gap is inconclusive).
-    """
     gate_windows = set(economic_report.get("gate_windows", []))
     non_passing = [
         r for r in economic_report.get("rows", [])
@@ -290,29 +257,12 @@ def _economic_failure_is_data_gap_only(economic_report: dict) -> bool:
     ]
     if not non_passing:
         return False
-    # An error-free non-passing gate row is a real economic rejection.
     if any(not r.get("error") for r in non_passing):
         return False
     return any(_ECONOMIC_NO_DATA_MARKER in str(r.get("error", "")) for r in non_passing)
 
 
 def _cell_outcome(row: dict) -> str:
-    """Classify a cell as ``pass`` / ``fail`` / ``inconclusive``.
-
-    - ``pass``: cleared both #1080 model selection and #1081 ATR economics.
-    - ``fail``: the methodology ran on real data but did not clear — no #1080
-      gate-passing model, or a genuine #1081 economic rejection (a candidate did
-      not beat the flat control on a data-bearing gate window). Degenerate-label
-      and per-cell economic exceptions on data-bearing windows also stay ``fail``.
-      Genuine negative evidence about generalization on that cell.
-    - ``inconclusive``: the cell could not be evaluated on real data — either a
-      #1083-stage exception (in-sample data gap / loader-IO error, funneled into
-      ``row['error']``), OR an #1081 economic failure whose gate-window blocks are
-      ALL missing-data gaps (no candidate ran to a verdict). Absence of evidence,
-      not evidence of absence: must NOT count as a failure (a data gap would
-      otherwise masquerade as a model that does not generalize) and must NOT
-      substitute for a pass.
-    """
     if row.get("pass"):
         return "pass"
     if row.get("error"):
@@ -325,46 +275,6 @@ def _cell_outcome(row: dict) -> str:
 
 def summarize(rows: list[dict], *, min_pass_cells: int,
               min_pass_symbols: Optional[int] = None) -> dict:
-    """Aggregate per-cell results into a structured breadth verdict.
-
-    Promotion is a *generalization* claim, and the safe default is NOT promoting
-    (live stays on flat ATR sizing), so the gate is fail-closed on two
-    orthogonal breadth axes, BOTH of which must clear:
-
-    1. **Cell breadth** — at least ``min_pass_cells`` cells pass. This tolerates
-       a minority of genuine failures (one bad cell must not veto an otherwise
-       broad pass — that would make the knob inert), but it is a hard floor:
-       ``min_pass_cells > total`` blocks.
-    2. **Cross-asset breadth** — the passing cells must span at least
-       ``min_pass_symbols`` distinct symbols (default ``min(2, #symbols in the
-       panel)``), so a model that merely racks up passes on one asset's several
-       timeframes cannot be promoted as a *general* regime classifier. An
-       explicit floor above the panel's symbol count blocks (unsatisfiable →
-       fail-closed, mirroring the cell floor).
-
-    ``inconclusive`` cells (per-cell exceptions / missing data) never count as a
-    ``fail`` and never count as a ``pass`` — on the cell-breadth axis they neither
-    help nor hurt. They are also never allowed to *lower* a breadth floor: the
-    cross-asset floor is derived from the panel's full symbol roster
-    (``min(2, #panel symbols)``), so a symbol whose cells are all inconclusive
-    still counts toward ``required_symbols`` while contributing no passing symbol.
-    This is deliberately fail-closed — a data gap must not make promotion easier.
-    Consequence: on a 2-symbol panel where one symbol is wholly inconclusive,
-    ``required_symbols == 2`` but at most one symbol can pass, so the gate blocks;
-    on the default 3-symbol panel the floor caps at 2, so one wholly-inconclusive
-    symbol still leaves promotion reachable.
-
-    Per-non-pass-cell reasons are diagnostics (``cell_diagnostics``, tagged by
-    outcome). They are promoted into ``blocking_reasons`` only when a breadth
-    floor is missed, where they are the actionable cause.
-
-    Raises ``ValueError`` if any breadth floor is non-positive: ``len(passed) >=
-    k`` is vacuously true for ``k <= 0``, so a misconfigured floor (e.g. a wrapper
-    computing ``len(datasets) - tolerance`` into negative territory) would
-    green-light promoting a model that cleared no cell. The verdict must be
-    reachable as ``True`` only when at least one genuine cell passed, so the floor
-    is enforced at the decision boundary, not only at the CLI.
-    """
     if min_pass_cells < 1:
         raise ValueError(f"min_pass_cells must be >= 1, got {min_pass_cells}")
     if min_pass_symbols is not None and min_pass_symbols < 1:
@@ -445,10 +355,6 @@ def run_multi_asset_gate(
     fit_model_fn: Callable[..., dict] = fit_selected_model,
     economic_gate_fn: Callable[..., dict] = run_gate,
 ) -> dict:
-    # Materialize every swept iterable once: each is re-consumed per cell (via
-    # tuple(...) in run_cell) and again for the report metadata below, so a
-    # one-shot generator would empty after the first cell, silently starving
-    # cells 2..N and blanking the report. datasets was already materialized.
     datasets = list(datasets)
     bakeoff_windows = list(bakeoff_windows)
     economic_windows = list(economic_windows)
@@ -614,10 +520,6 @@ def main(argv=None) -> int:
         raise SystemExit(
             f"unknown families {bad_families}; known: {sorted(rvm.FITTERS)}"
         )
-    # Every enumerated sweep input must be non-empty for any cell to be
-    # evaluable; an empty list would otherwise burn per-cell data loads only to
-    # mislabel the result "no #1080 gate-passing model" / "no gate-window rows".
-    # Reject up front, mirroring parse_datasets' non-empty guard.
     for flag, values in (
         ("--families", families),
         ("--k-range", k_range),
@@ -666,8 +568,6 @@ def main(argv=None) -> int:
             json.dump(report, fh, indent=2, default=float)
             fh.write("\n")
     print(format_report(report))
-    # When run interactively, include the detailed #1081 table for any failing cell
-    # that reached the economic gate; this keeps the top matrix concise but actionable.
     for row in report.get("rows", []):
         econ = row.get("economic_report")
         if econ and not row.get("pass"):

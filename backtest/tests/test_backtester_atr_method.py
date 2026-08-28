@@ -1,7 +1,3 @@
-"""#1277: atr_method threading — Backtester validation, the injected
-standard-ATR series, and load_strategy_config resolution (per-strategy over
-global over "simple"), mirroring Go resolveATRMethod.
-"""
 import json
 import pathlib
 import sys
@@ -41,9 +37,6 @@ def _base_config(global_atr=None, strategy_atr=None):
     return cfg
 
 
-# --- Backtester construction ---------------------------------------------------
-
-
 def test_backtester_rejects_unknown_atr_method():
     with pytest.raises(ValueError, match="atr_method"):
         Backtester(atr_method="rma")
@@ -64,12 +57,7 @@ def test_backtester_default_is_simple():
     assert Backtester().atr_method == "simple"
 
 
-# --- injected ATR series ---------------------------------------------------------
-
-
 def _big_ohlcv(n=80, seed=3):
-    """BTC-scale frame (ATR > 100) where simple integer-rounds and wilder
-    doesn't, so the two methods provably diverge."""
     rng = np.random.default_rng(seed)
     close = 50_000 + np.cumsum(rng.normal(0, 300, n))
     high = close + rng.uniform(100, 500, n)
@@ -85,10 +73,6 @@ def _big_ohlcv(n=80, seed=3):
 
 
 def test_wilder_changes_stamped_entry_atr():
-    """The injected standard-ATR series (used to stamp entry_atr for scalar
-    ATR stops when the strategy emits no `atr` column) must follow the
-    method — a wilder run on a BTC-scale frame stamps an unrounded RMA value,
-    diverging from the simple run's integer-rounded one."""
     df = _big_ohlcv()
     results = {}
     for method in ("simple", "wilder"):
@@ -97,17 +81,10 @@ def test_wilder_changes_stamped_entry_atr():
         trades = res["trades"]
         assert trades, f"{method}: expected at least one trade"
         results[method] = res
-    # Same entry universe, different stop geometry source: the two runs'
-    # engines saw different ATR series. Assert via the exit prices/pnl
-    # diverging OR equity paths diverging — byte-identical outcomes would
-    # mean the method never reached the injection site.
     assert (
         results["simple"]["trades"] != results["wilder"]["trades"]
         or results["simple"]["metrics"] != results["wilder"]["metrics"]
     )
-
-
-# --- load_strategy_config resolution ---------------------------------------------
 
 
 def test_config_default_resolves_simple(tmp_path):
@@ -136,8 +113,6 @@ def test_config_rejects_unknown_global_atr_method(tmp_path):
 
 
 def test_config_rejects_unknown_per_strategy_even_with_valid_global(tmp_path):
-    # Both surfaces validate independently — a valid global must not mask a
-    # garbage per-strategy value (mirrors Go validateConfig).
     with pytest.raises(ValueError, match="atr_method"):
         run_backtest.load_strategy_config(
             _write_config(tmp_path, _base_config(global_atr="simple", strategy_atr="bogus")),

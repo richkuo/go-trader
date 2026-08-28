@@ -1,19 +1,3 @@
-"""
-Consolidation characterization study (offline research).
-
-Scans historical OHLCV for one symbol+timeframe, segments consolidation
-("range") periods three different ways, benchmarks the detectors against each
-other, measures each episode (duration, box geometry, shape metrics), sizes the
-breakout candle under three definitions, correlates shape against breakout
-behavior, and writes a per-episode table, an aggregate summary, and charts.
-
-Research only — no live-strategy / scheduler / registry wiring.
-
-Usage:
-    uv run --no-sync python backtest/consolidation_research.py \
-        --symbol BTC/USDT --timeframe 1h --since 2023-01-01 \
-        --exchange-id binanceus --out-dir <dir>
-"""
 
 import argparse
 import csv
@@ -28,31 +12,19 @@ from typing import Callable, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-# shared_tools carries the data fetcher (same wiring as run_backtest.py).
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "shared_tools"))
-
-
-# --------------------------------------------------------------------------- #
-# Core data structures
-# --------------------------------------------------------------------------- #
 
 
 @dataclass
 class Episode:
-    """A detected consolidation period as a half-open bar range [start, end)."""
 
     start_idx: int
-    end_idx: int  # exclusive
+    end_idx: int
     method: str = ""
 
     @property
     def n_bars(self) -> int:
         return self.end_idx - self.start_idx
-
-
-# --------------------------------------------------------------------------- #
-# Indicators
-# --------------------------------------------------------------------------- #
 
 
 _INDICATORS_CORE_PATH = os.path.join(
@@ -71,20 +43,10 @@ def true_range(df: pd.DataFrame) -> pd.Series:
 
 
 def atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
-    # Mirror production standard_atr (#887) via the shared module (#1281):
-    # whole-number round only for BTC-scale assets (ATR >= 100) so research
-    # geometry matches the live stamped ATR. min_periods=1 is deliberate here
-    # (research warmup semantics, unchanged).
     return _indicators_core.atr_sma(df, period, min_periods=1)
 
 
-# --------------------------------------------------------------------------- #
-# Detectors:  df + params -> list[Episode]   (pure)
-# --------------------------------------------------------------------------- #
-
-
 def _coalesce_mask(mask: np.ndarray, min_bars: int, method: str) -> List[Episode]:
-    """Turn a boolean per-bar 'in consolidation' mask into episodes."""
     episodes: List[Episode] = []
     n = len(mask)
     i = 0
@@ -108,9 +70,6 @@ def detect_range_containment(
     atr_period: int = 14,
     **_: object,
 ) -> List[Episode]:
-    """A bar is 'in range' when the rolling high-low span over the trailing
-    ``min_bars`` window stays within ``box_width_pct`` of the window's mid price.
-    """
     high, low, close = df["high"], df["low"], df["close"]
     roll_hi = high.rolling(window=min_bars, min_periods=min_bars).max()
     roll_lo = low.rolling(window=min_bars, min_periods=min_bars).min()
@@ -128,9 +87,6 @@ def detect_volatility_contraction(
     bb_std: float = 2.0,
     **_: object,
 ) -> List[Episode]:
-    """A bar is 'in range' when Bollinger bandwidth is below ``bandwidth_threshold``
-    times its own trailing-median bandwidth (a relative squeeze).
-    """
     close = df["close"]
     mid = close.rolling(window=bb_period, min_periods=bb_period).mean()
     std = close.rolling(window=bb_period, min_periods=bb_period).std()
@@ -147,10 +103,6 @@ def detect_regression_flatness(
     flatness_residual: float = 0.02,
     **_: object,
 ) -> List[Episode]:
-    """A bar is 'in range' when a rolling linear fit of close over the trailing
-    ``min_bars`` window has |slope| (normalized per-bar return) below
-    ``flatness_slope`` AND normalized residual scatter below ``flatness_residual``.
-    """
     close = df["close"].to_numpy(dtype=float)
     n = len(close)
     x = np.arange(min_bars, dtype=float)
@@ -178,10 +130,6 @@ DETECTORS: Dict[str, Callable[..., List[Episode]]] = {
     "regression_flatness": detect_regression_flatness,
 }
 
-# Params each detector's *detection* actually depends on. Used to cache episode
-# lists across sweep cells: when only the box params change, the (slow)
-# regression-flatness and volatility detectors are reused instead of recomputed.
-# (escape_k / atr_period affect scoring, not detection, so they are excluded.)
 DETECTOR_PARAM_KEYS: Dict[str, Tuple[str, ...]] = {
     "range_containment": ("min_bars", "box_width_pct"),
     "volatility_contraction": ("min_bars", "bandwidth_threshold"),
@@ -191,11 +139,6 @@ DETECTOR_PARAM_KEYS: Dict[str, Tuple[str, ...]] = {
 
 def _detector_cache_key(name: str, params: dict):
     return (name,) + tuple(params.get(k) for k in DETECTOR_PARAM_KEYS.get(name, ()))
-
-
-# --------------------------------------------------------------------------- #
-# Per-episode measurement
-# --------------------------------------------------------------------------- #
 
 
 def measure_box(df: pd.DataFrame, ep: Episode) -> Dict[str, float]:
@@ -238,20 +181,16 @@ def measure_shape(df: pd.DataFrame, ep: Episode) -> Dict[str, float]:
     top_slope = _linfit_slope(highs) / norm
     bottom_slope = _linfit_slope(lows) / norm
 
-    # Edge travel: how far each edge moved across the whole episode, as a fraction
-    # of box height. Scale-free; used to classify named patterns.
     box_height = float(highs.max() - lows.min())
     n = len(seg)
     top_travel = (_linfit_slope(highs) * n / box_height) if box_height else 0.0
     bottom_travel = (_linfit_slope(lows) * n / box_height) if box_height else 0.0
 
-    # width contraction: mean span of first third vs last third.
     third = max(1, len(seg) // 3)
     start_w = float((highs[:third] - lows[:third]).mean())
     end_w = float((highs[-third:] - lows[-third:]).mean())
     contraction = end_w / start_w if start_w else float("nan")
 
-    # time-in-zone skew: fraction of bars whose close sits in top/mid/bottom third.
     top, bottom = highs.max(), lows.min()
     span = top - bottom
     if span > 0:
@@ -274,17 +213,10 @@ def measure_shape(df: pd.DataFrame, ep: Episode) -> Dict[str, float]:
     }
 
 
-# Edge moved less than this fraction of box height across the episode => "flat".
 _PATTERN_FLAT_THRESHOLD = 0.25
 
 
 def classify_pattern(shape: Dict[str, float]) -> str:
-    """Classify an episode into a named chart pattern from its edge travel.
-
-    Uses the standard consolidation taxonomy: rectangle, ascending/descending/
-    symmetrical triangle, rising/falling wedge, broadening. `flat` = an edge that
-    moved < _PATTERN_FLAT_THRESHOLD of the box height across the episode.
-    """
     t = shape.get("top_edge_travel", 0.0)
     b = shape.get("bottom_edge_travel", 0.0)
     flat = _PATTERN_FLAT_THRESHOLD
@@ -304,23 +236,15 @@ def classify_pattern(shape: Dict[str, float]) -> str:
     if ts == "up" and bs == "down":
         return "broadening"
     if ts == "up" and bs == "up":
-        return "rising_wedge"  # incl. up-channel
+        return "rising_wedge"
     if ts == "down" and bs == "down":
-        return "falling_wedge"  # incl. down-channel
-    # one edge flat, other diverging.
+        return "falling_wedge"
     return "rectangle_drift"
 
 
 def measure_volume_profile(
     df: pd.DataFrame, ep: Episode, bins: int = 24, value_area_frac: float = 0.70
 ) -> Dict[str, float]:
-    """Volume-profile stats for an episode (Market Profile / Wyckoff lens).
-
-    Bins the box price range, accumulates each bar's volume at its typical price,
-    and reports the Point of Control (POC, highest-volume price), the Value Area
-    high/low (VAH/VAL, the band holding ``value_area_frac`` of volume around POC),
-    and where the POC sits within the box (0=bottom, 1=top).
-    """
     seg = df.iloc[ep.start_idx : ep.end_idx]
     out = {
         "poc": float("nan"), "vah": float("nan"), "val": float("nan"),
@@ -347,7 +271,6 @@ def measure_volume_profile(
     out["poc"] = float(centers[poc_bin])
     out["poc_position"] = (out["poc"] - bottom) / (top - bottom)
 
-    # Expand outward from the POC bin until value_area_frac of volume is covered.
     lo = hi = poc_bin
     covered = hist[poc_bin]
     target = value_area_frac * total
@@ -373,11 +296,6 @@ def measure_escape_candle(
     escape_k: float = 1.5,
     edge_margin_pct: float = 0.002,
 ) -> Dict[str, float]:
-    """Characterize the first candle after the episode under three definitions.
-
-    Returns the escape candle's true range in price + which definitions it
-    satisfies, plus the breakout direction (sign of the escape candle).
-    """
     seg = df.iloc[ep.start_idx : ep.end_idx]
     n = len(df)
     out: Dict[str, float] = {
@@ -418,25 +336,13 @@ def measure_escape_candle(
         out["escape_by_edge"] = 1.0
         out["breakout_direction"] = -1.0
     else:
-        # direction from where price went next bar relative to the box mid.
         out["breakout_direction"] = 1.0 if close >= (top + bottom) / 2 else -1.0
     return out
-
-
-# --------------------------------------------------------------------------- #
-# Detector benchmark
-# --------------------------------------------------------------------------- #
 
 
 def benchmark_detectors(
     df: pd.DataFrame, params: dict, detector_cache: Optional[dict] = None
 ) -> Tuple[Dict[str, List[Episode]], pd.DataFrame]:
-    """Run all detectors, score each on coverage / tightness / false-break rate.
-
-    ``detector_cache`` (optional, caller-owned) memoizes episode lists across
-    calls keyed by each detector's own detection params, so a sweep that varies
-    only one detector's params doesn't recompute the others every cell.
-    """
     atr_series = atr(df, params.get("atr_period", 14))
     median_tr = float(true_range(df).median()) or 1.0
     results: Dict[str, List[Episode]] = {}
@@ -465,7 +371,6 @@ def benchmark_detectors(
             widths.append(box["width_pct"])
             durations.append(ep.n_bars)
             esc = measure_escape_candle(df, ep, atr_series, params.get("escape_k", 1.5))
-            # false break: flagged escape candle barely larger than in-range noise.
             if esc["escape_by_edge"] == 0.0 and esc["escape_by_atr"] == 0.0:
                 false_breaks += 1
         rows.append(
@@ -479,7 +384,6 @@ def benchmark_detectors(
             }
         )
     bench = pd.DataFrame(rows)
-    # Primary = most episodes with a real escape (lowest false-break), tie-break tightness.
     if not bench.empty:
         bench["score"] = (
             (1 - bench["false_break_rate"].fillna(1.0))
@@ -487,11 +391,6 @@ def benchmark_detectors(
             / (1 + bench["avg_width_pct"].fillna(1.0))
         )
     return results, bench
-
-
-# --------------------------------------------------------------------------- #
-# Shape vs breakout correlation
-# --------------------------------------------------------------------------- #
 
 
 def correlate_shape_breakout(episodes_df: pd.DataFrame) -> Dict[str, object]:
@@ -521,11 +420,9 @@ def correlate_shape_breakout(episodes_df: pd.DataFrame) -> Dict[str, object]:
             if len(valid) < 3:
                 continue
             out["pearson"][tname][m] = float(valid[m].corr(valid["t"]))
-            # Spearman = Pearson on ranks (avoids a scipy dependency).
             out["spearman"][tname][m] = float(
                 valid[m].rank().corr(valid["t"].rank())
             )
-    # grouped: median escape size by contraction tercile.
     wc = episodes_df.dropna(subset=["width_contraction", "escape_k_vs_atr"])
     if len(wc) >= 6:
         try:
@@ -538,7 +435,6 @@ def correlate_shape_breakout(episodes_df: pd.DataFrame) -> Dict[str, object]:
         except (ValueError, IndexError):
             pass
 
-    # Named-pattern breakdown: count, breakout up-rate, median escape size.
     if "pattern" in episodes_df:
         pats = {}
         for name, g in episodes_df.groupby("pattern"):
@@ -550,11 +446,6 @@ def correlate_shape_breakout(episodes_df: pd.DataFrame) -> Dict[str, object]:
             }
         out["patterns"] = pats
     return out
-
-
-# --------------------------------------------------------------------------- #
-# Assemble per-episode table
-# --------------------------------------------------------------------------- #
 
 
 def build_episode_table(
@@ -583,11 +474,6 @@ def build_episode_table(
     return pd.DataFrame(rows)
 
 
-# --------------------------------------------------------------------------- #
-# Reporting
-# --------------------------------------------------------------------------- #
-
-
 def render_report(
     df: pd.DataFrame,
     bench: pd.DataFrame,
@@ -602,7 +488,6 @@ def render_report(
     os.makedirs(out_dir, exist_ok=True)
     paths: Dict[str, str] = {}
 
-    # Per-episode table.
     csv_path = os.path.join(out_dir, "episodes.csv")
     episodes_df.to_csv(csv_path, index=False)
     paths["episodes_csv"] = csv_path
@@ -611,7 +496,6 @@ def render_report(
     episodes_df.to_json(json_path, orient="records", date_format="iso", indent=2)
     paths["episodes_json"] = json_path
 
-    # Aggregate summary.
     summary = {
         "symbol": symbol,
         "timeframe": timeframe,
@@ -643,7 +527,6 @@ def render_report(
         json.dump(summary, f, indent=2, default=str)
     paths["summary_json"] = summary_path
 
-    # Charts.
     paths.update(
         _render_charts(df, episodes, episodes_df, out_dir, symbol, timeframe)
     )
@@ -659,7 +542,6 @@ def _render_charts(df, episodes, episodes_df, out_dir, symbol, timeframe):
 
     paths = {}
 
-    # Price with boxes + breakout markers.
     fig, ax = plt.subplots(figsize=(16, 7))
     ax.plot(df.index, df["close"], color="#222", lw=0.6, label="close")
     for ep in episodes:
@@ -690,7 +572,6 @@ def _render_charts(df, episodes, episodes_df, out_dir, symbol, timeframe):
     if episodes_df.empty:
         return paths
 
-    # Distribution histograms.
     fig, axes = plt.subplots(1, 3, figsize=(16, 4))
     for ax, col, title in zip(
         axes,
@@ -708,7 +589,6 @@ def _render_charts(df, episodes, episodes_df, out_dir, symbol, timeframe):
     plt.close(fig)
     paths["chart_distributions"] = p
 
-    # Shape vs breakout scatter.
     fig, ax = plt.subplots(figsize=(8, 6))
     sub = episodes_df.dropna(subset=["width_contraction", "escape_k_vs_atr"])
     if len(sub):
@@ -727,10 +607,6 @@ def _render_charts(df, episodes, episodes_df, out_dir, symbol, timeframe):
     return paths
 
 
-# --------------------------------------------------------------------------- #
-# Runs-CSV tracking (auto-append one row per detector method)
-# --------------------------------------------------------------------------- #
-
 RUNS_CSV_COLUMNS = [
     "run_id", "date", "symbol", "timeframe", "since", "bars", "method",
     "is_primary", "n_episodes", "avg_bars", "avg_width_pct", "false_break_rate",
@@ -739,7 +615,6 @@ RUNS_CSV_COLUMNS = [
     "takeaway",
 ]
 
-# Which detector params to record in the per-method `params` cell.
 _METHOD_PARAM_KEYS = {
     "range_containment": ["min_bars", "box_width_pct", "escape_k", "atr_period"],
     "volatility_contraction": ["bandwidth_threshold", "escape_k"],
@@ -748,7 +623,6 @@ _METHOD_PARAM_KEYS = {
 
 
 def next_run_id(runs_csv: str) -> str:
-    """Return a zero-padded run id one greater than the max numeric id on file."""
     max_id = 0
     if os.path.exists(runs_csv):
         with open(runs_csv, newline="") as f:
@@ -775,11 +649,6 @@ def append_runs_csv(
     res: Dict[str, object],
     only_methods: Optional[List[str]] = None,
 ) -> None:
-    """Append one row per detector method to the runs CSV (header on first write).
-
-    ``only_methods`` restricts which detector rows are written (e.g. a sweep that
-    only cares about ``range_containment``).
-    """
     bench = res["benchmark"]
     primary = res["primary_method"]
     edf = res["episodes_df"]
@@ -825,7 +694,7 @@ def append_runs_csv(
             ),
             "params": params,
             "out_dir": args.out_dir,
-            "takeaway": "",  # filled in by hand after reviewing the run
+            "takeaway": "",
         })
 
     os.makedirs(os.path.dirname(runs_csv) or ".", exist_ok=True)
@@ -835,11 +704,6 @@ def append_runs_csv(
         if write_header:
             w.writeheader()
         w.writerows(rows)
-
-
-# --------------------------------------------------------------------------- #
-# CLI
-# --------------------------------------------------------------------------- #
 
 
 def run(

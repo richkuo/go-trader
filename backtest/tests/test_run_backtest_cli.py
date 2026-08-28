@@ -1,7 +1,3 @@
-"""CLI wiring: ``--platform`` and ``--registry`` must flow from argparse
-through to the constructed Backtester. Without this, a future refactor
-that drops ``platform=args.platform`` would silently regress to BinanceUS
-fees and every existing Backtester-level test would still pass."""
 import pandas as pd
 import pytest
 
@@ -33,15 +29,13 @@ def test_build_parser_rejects_unknown_registry():
 
 
 def test_run_single_backtest_threads_platform_to_backtester(monkeypatch):
-    """Stand in for Backtester and load_cached_data so we can observe the
-    platform argument that actually reaches the constructor."""
     seen = {}
 
     class SpyBacktester:
         def __init__(self, initial_capital, platform="binanceus", **kwargs):
             seen["platform"] = platform
             seen["capital"] = initial_capital
-            self.commission_pct = 0.123  # nonsense marker
+            self.commission_pct = 0.123
 
         def run(self, df, **kwargs):
             return {
@@ -94,11 +88,6 @@ def test_run_single_backtest_threads_platform_to_backtester(monkeypatch):
 
 
 def test_backtester_imports_under_script_style_sys_path(tmp_path):
-    """Script-style invocation (`python backtest/run_backtest.py`) puts only
-    backtest/ on sys.path. Backtester.__init__ unconditionally loads
-    post_tp_sl.py, whose absolute `shared_strategies.close...` import needs the
-    repo root — backtester.py must insert it itself (pytest masks the gap by
-    inserting the root during shared_strategies package collection)."""
     import os
     import subprocess
     import sys
@@ -137,12 +126,6 @@ def test_build_parser_rejects_unknown_optimize_metric():
     parser = run_backtest._build_parser()
     with pytest.raises(SystemExit):
         parser.parse_args(["--optimize-metric", "alpha_decay"])
-
-
-# ─── #989 review: --direction must reach every mode, not just optimize ───────
-# Invariant: every backtest CLI surface either honors the requested entry
-# direction or rejects it loudly — a requested short leg is never silently
-# scored as long/flat.
 
 
 def _spy_single(monkeypatch):
@@ -188,8 +171,6 @@ def test_multi_mode_threads_direction(monkeypatch):
 
 
 def test_direction_both_without_close_rejected_before_running(monkeypatch):
-    # "both" cannot run on the plain single-leg path; naive forwarding would
-    # bypass the loader's rejection and silently score long/flat.
     seen = _spy_single(monkeypatch)
     monkeypatch.setattr("sys.argv", [
         "run_backtest.py", "--mode", "single",
@@ -214,9 +195,6 @@ def test_direction_both_with_close_strategy_threads_through(monkeypatch):
 
 
 def test_direction_short_rejected_in_optimize_mode(monkeypatch):
-    # PR #1004 review: the walk-forward warmup seeder is long-only, so
-    # optimize mode cannot measure the short leg faithfully — reject at the
-    # CLI before any data fetch, with or without a close-stack sweep.
     seen = {}
     monkeypatch.setattr(run_backtest, "run_walk_forward",
                         lambda *a, **kw: seen.setdefault("hit", True))
@@ -232,10 +210,6 @@ def test_direction_short_rejected_in_optimize_mode(monkeypatch):
 
 
 def test_direction_both_with_default_sweep_grid_rejected(monkeypatch):
-    # PR #1004 review: the default --sweep-close grid always contains
-    # no-close baseline stacks, which run the plain single-leg path and
-    # cannot model "both" — reject before any data fetch instead of
-    # tracebacking inside walk_forward_optimize.
     seen = {}
     monkeypatch.setattr(run_backtest, "run_walk_forward",
                         lambda *a, **kw: seen.setdefault("hit", True))
@@ -251,8 +225,6 @@ def test_direction_both_with_default_sweep_grid_rejected(monkeypatch):
 
 def test_direction_both_with_close_only_stacks_json_reaches_walk_forward(
         monkeypatch, tmp_path):
-    # "both" is legitimate in optimize mode when every swept stack carries a
-    # close evaluator (engine path on every stack).
     import json
     specs = tmp_path / "stacks.json"
     specs.write_text(json.dumps([
@@ -277,9 +249,6 @@ def test_direction_both_with_close_only_stacks_json_reaches_walk_forward(
 
 
 def test_run_walk_forward_threads_close_stack_grid(monkeypatch):
-    """The close-stack grid, metric, and direction must reach
-    walk_forward_optimize — a dropped kwarg silently degrades #996 sweeps to
-    a fixed-close run."""
     seen = {}
 
     def spy_wfo(df, strategy_name, param_ranges, **kwargs):

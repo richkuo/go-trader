@@ -1,21 +1,3 @@
-"""Economic walk-forward gate for regime-conditioned ATR sizing (#1081).
-
-This is the money-side complement to the regime-model separation gates:
-does a regime label stream improve held-out trading outcomes when ATR-sized
-SL/TP exits are conditioned on that label, compared with flat ATR sizing?
-
-The harness is read-only. It imports the audit windows/datasets from
-``eval_windows.py``, applies one open strategy, injects a causal regime label
-stream into ``df["regime"]``, then runs paired flat-vs-regime ATR exit configs
-through ``Backtester``. The backtester owns fills, fees, slippage, position
-telemetry, and the existing N -> N+1 signal/regime shift.
-
-Usage:
-
-    uv run --no-sync python backtest/research/regime_1081_economic_gate.py
-    uv run --no-sync python backtest/research/regime_1081_economic_gate.py \
-        --model-json /tmp/regime_1080_btc.json --json /tmp/regime_1081.json
-"""
 from __future__ import annotations
 
 import argparse
@@ -35,18 +17,18 @@ for _p in (_THIS_DIR, _BACKTEST, _ROOT, os.path.join(_ROOT, "shared_tools")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from atr import ensure_atr_indicator  # noqa: E402
-from backtester import Backtester  # noqa: E402
-from data_fetcher import load_cached_data  # noqa: E402
-from eval_windows import DEFAULT_CAPITAL, PLATFORM, WINDOWS, dd_adjusted_return  # noqa: E402
-from registry_loader import load_registry  # noqa: E402
-from regime import (  # noqa: E402
+from atr import ensure_atr_indicator
+from backtester import Backtester
+from data_fetcher import load_cached_data
+from eval_windows import DEFAULT_CAPITAL, PLATFORM, WINDOWS, dd_adjusted_return
+from registry_loader import load_registry
+from regime import (
     VALID_LABELS_COMPOSITE,
     _DEFAULT_COMPOSITE_THRESHOLDS,
     composite_feature_matrix,
     compute_regime_composite,
 )
-from regime_hmm import forward_filter_labels  # noqa: E402
+from regime_hmm import forward_filter_labels
 
 
 DEFAULT_SYMBOL = "BTC/USDT"
@@ -133,11 +115,6 @@ def parse_float_csv(raw: str | Iterable[float] | None) -> list[float]:
 
 
 def _has_regime_sl_after(obj) -> bool:
-    """Return true when a close params tree contains regime-aware sl_after.
-
-    Backtester currently rejects regime-aware sl_after parity, so this harness
-    fails closed before a run can produce deceptively partial economic evidence.
-    """
     if isinstance(obj, dict):
         sl_after = obj.get("sl_after")
         if isinstance(sl_after, dict) and "trend_regime" in sl_after:
@@ -455,8 +432,6 @@ def compare_summaries(control: dict, candidate: dict, *, min_sharpe_delta: float
         reasons.append("stop-out rate unavailable")
     elif deltas["stop_out_rate"] > max_stop_rate_delta:
         reasons.append("candidate stop-out rate is worse than flat control")
-    # MAE is signed: closer to zero is less adverse, so candidate-control should
-    # be non-negative unless the caller intentionally allows a tolerance.
     if deltas["median_mae_pct"] is None:
         reasons.append("MAE telemetry unavailable")
     elif deltas["median_mae_pct"] < min_mae_delta:
@@ -557,8 +532,6 @@ def _strategy_frame(registry: str, strategy: str, df, params: Optional[dict]):
         raise ValueError(f"unknown strategy {strategy!r} in registry {registry!r}")
     strategy_params = dict(params if params is not None else spec["default_params"])
     frame = reg.apply_strategy(strategy, df, strategy_params)
-    # Every #1081 surface is ATR-sized. Injecting ATR here prevents no-op stops
-    # for open strategies that do not emit an atr column themselves.
     frame = ensure_atr_indicator(frame)
     return frame, strategy_params
 
@@ -666,7 +639,7 @@ def run_gate(
                         control_grids=control_grids,
                     )
                     cell.update({"window": window, "label_source": source})
-                except Exception as exc:  # fail closed, report the blocked cell
+                except Exception as exc:
                     cell = {
                         "window": window,
                         "label_source": source,

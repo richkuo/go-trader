@@ -5,8 +5,6 @@ import (
 	"strings"
 )
 
-// needsV15CloseMigration reports whether the on-disk config still carries
-// pre-v15 close-strategy keys that MigrateConfig rewrites (#841).
 func needsV15CloseMigration(data []byte) bool {
 	var meta struct {
 		ConfigVersion int `json:"config_version"`
@@ -17,9 +15,6 @@ func needsV15CloseMigration(data []byte) bool {
 	return true
 }
 
-// normalizeDeprecatedCloseRef rewrites in-memory close refs that use deprecated
-// evaluator names. Disk migration handles persisted configs; this covers
-// hand-edited JSON and hot-reload paths that bypass MigrateConfig.
 func normalizeDeprecatedCloseRef(ref *StrategyRef) {
 	if ref == nil {
 		return
@@ -54,8 +49,6 @@ func normalizeDeprecatedCloseRef(ref *StrategyRef) {
 	ref.Params = out
 }
 
-// migrateV15CloseKeys rewrites close-strategy params to the canonical #841 shape
-// and bumps strategies that still use tp_at_pct to tiered_tp_pct.
 func migrateV15CloseKeys(raw map[string]interface{}) {
 	defaultSL := DefaultStopLossATRMult
 	if v, ok := raw["default_stop_loss_atr_mult"].(float64); ok && v > 0 {
@@ -114,23 +107,15 @@ func canonicalizeRegimeBlock(raw interface{}) map[string]interface{} {
 		for ek, ev := range lm {
 			switch ek {
 			case "atr", "multiple", "atr_multiple", "fraction":
-				// Resolved below with explicit precedence — folding aliases
-				// inside a map-range made the survivor depend on Go's
-				// randomized iteration order when two legacy aliases were
-				// both set.
 			default:
 				labelOut[ek] = ev
 			}
 		}
-		// Deterministic alias precedence: canonical atr_multiple wins, then
-		// legacy "atr", then legacy "multiple".
 		for _, key := range []string{"multiple", "atr", "atr_multiple"} {
 			if v, ok := lm[key]; ok {
 				labelOut["atr_multiple"] = v
 			}
 		}
-		// close_fraction (canonical, copied in the default arm above) wins
-		// over the legacy "fraction" alias.
 		if v, ok := lm["fraction"]; ok {
 			if _, has := labelOut["close_fraction"]; !has {
 				labelOut["close_fraction"] = v
@@ -151,10 +136,6 @@ func scalarStopLossFromStrategy(sc map[string]interface{}, fallback float64) flo
 	return fallback
 }
 
-// migrateV15StripStrategyStopOwners removes strategy-level stop fields after a
-// legacy regime close folds into a unified block. The unified close owns SL
-// via per-regime stop_loss_atr; leaving scalar/regime siblings behind fails
-// validateUnifiedCloseSoleOwner on startup (#841).
 func migrateV15StripStrategyStopOwners(sc map[string]interface{}) {
 	for _, key := range []string{
 		"stop_loss_atr_mult",
@@ -247,9 +228,6 @@ func v15TierListRaw(params map[string]interface{}) (interface{}, bool) {
 	return nil, false
 }
 
-// canonicalizeTrailingRatchetRegimeParams preserves the regime→tier-list map
-// shape for trailing_tp_ratchet_regime (#844). The generic canonicalizeTierList
-// path only accepts []interface{} and would wipe a keyed table.
 func canonicalizeTrailingRatchetRegimeParams(params map[string]interface{}) map[string]interface{} {
 	out := make(map[string]interface{}, len(params))
 	for k, v := range params {

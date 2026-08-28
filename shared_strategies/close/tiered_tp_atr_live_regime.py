@@ -1,13 +1,3 @@
-"""Regime-aware tiered ATR take-profit (re-resolved per tick) — #733.
-
-Multipliers AND ATR are re-resolved every cycle:
-  - regime comes from ``market["regime"]`` (the live classifier output),
-  - ATR comes from ``market["atr"]`` (with fallback to ``position["entry_atr"]``).
-
-Virtual-only — HL on-chain reduce-only TP placement uses the frozen variant
-(``tiered_tp_atr_regime``) because on-chain prices can't follow a moving
-regime classification.
-"""
 
 from __future__ import annotations
 
@@ -39,8 +29,6 @@ def evaluate(position: dict, market: dict, params: dict) -> dict:
     if atr_source not in ("live", "entry"):
         atr_source = "live"
 
-    # Live regime preferred; fall back to the frozen position regime so a
-    # regime-classifier outage doesn't disarm the evaluator mid-position.
     regime = str(market.get("regime", "") or "").strip()
     regime_source = "live"
     if not regime:
@@ -74,8 +62,5 @@ def evaluate(position: dict, market: dict, params: dict) -> dict:
         return {"close_fraction": 0.0, "reason": "noop:already_taken"}
     return {
         "close_fraction": close_fraction,
-        # Reason carries both ATR source (live/entry/entry_fallback) and
-        # regime source (live/frozen) so an operator tracing a fire knows
-        # which classifier path produced the tier (review #735.7).
         "reason": f"tiered_tp_atr_live_regime:atr={atr_label}:regime={regime_source}:{regime}:{multiple:g}",
     }

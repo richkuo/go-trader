@@ -1,19 +1,3 @@
-"""Z-score target close evaluator (#997 M3 — fade/stretch exit tuning).
-
-Default-off mean-reversion exit: closes the whole position when price has
-stretched to ``z_target`` standard deviations in the position's favour
-(long → close at high z, short → close at low z). Targets fade-style entries
-whose returns bleed when the snap-back exit is left to the open signal — the
-classic "took profit too late on the reversion" giveback.
-
-``lookback == 0`` (the registry default) is an explicit no-op. The rolling
-z-score itself is computed upstream by the backtester (same closed-bar →
-next-open-fill contract as ATR) and handed in via ``market["zscore"]``; the
-``lookback`` param here only declares the window so the engine knows to compute
-it. It is NOT supplied by the live check scripts yet — live wiring is deferred
-(see #997); until then a live config referencing ``zscore_target`` fails safe
-with ``noop:missing_zscore``.
-"""
 
 from __future__ import annotations
 
@@ -43,7 +27,7 @@ def evaluate(position: dict, market: dict, params: dict) -> dict:
         zscore = float(market.get("zscore"))
     except (TypeError, ValueError):
         return {"close_fraction": 0.0, "reason": "noop:missing_zscore"}
-    if zscore != zscore:  # NaN warmup bar
+    if zscore != zscore:
         return {"close_fraction": 0.0, "reason": "noop:missing_zscore"}
 
     if side == "long":

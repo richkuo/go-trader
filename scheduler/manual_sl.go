@@ -7,10 +7,6 @@ import (
 	"strings"
 )
 
-// manualActionRecordsTrade reports whether a drained PendingManualAction appends
-// exactly one trade to TradeHistory (so drainPendingManualActions can align the
-// sendTradeAlerts tail slice). Position-changing fills do; SL-only edits
-// (#1050 update-sl/cancel-sl) do not.
 func manualActionRecordsTrade(action string) bool {
 	switch action {
 	case "open", "close", "add":
@@ -20,28 +16,7 @@ func manualActionRecordsTrade(action string) bool {
 	}
 }
 
-// manualSLAutoManaged reports whether sc's automated protection would re-pin or
-// re-arm a manually-edited stop-loss on the next scheduler cycle, making a
-// manual SL edit ineffective (#1050). Returns a human-readable reason when true.
-//
-// A manual SL edit is only coherent on a strategy that has opted out of
-// auto-protection (e.g. stop_loss_atr_mult: 0, no trailing/regime close) —
-// otherwise the per-cycle protection sync overwrites the operator's trigger.
-//
-// The check has two layers. First a resolved-value pass catches the scalar
-// stop_loss_atr_mult and any regime SL/trailing that already resolves to a
-// positive multiplier at command time. Second a configuration-presence pass
-// catches regime-resolved SL owners (#733 stop_loss_atr_regime /
-// trailing_stop_atr_regime, #841 unified regime close) whose label is
-// transiently the #879 fail-open "-" at command time: those resolve to a zero
-// multiplier in the first pass and would otherwise slip through, yet a later
-// regime resolution plus a force-SL-replace cycle re-pins the trigger. Because
-// this is an auto-protective path, judge those by configuration presence, not
-// by the multiplier the label happens to resolve to at the instant the command
-// runs.
 func manualSLAutoManaged(sc StrategyConfig, pos *Position) (bool, string) {
-	// #1450 liquidationPx=0: this is a read-only "is an ATR stop armed?"
-	// question, not a placement, so no clamp applies.
 	if plan, ok := buildHyperliquidProtectionPlan(sc, pos, 0); ok && plan.StopLossATRMult > 0 {
 		return true, fmt.Sprintf("an ATR stop-loss is armed (effective stop_loss_atr_mult=%g)", plan.StopLossATRMult)
 	}
@@ -60,12 +35,6 @@ func manualSLAutoManaged(sc StrategyConfig, pos *Position) (bool, string) {
 	return false, ""
 }
 
-// slTriggerWouldFillImmediately reports whether a stop-loss placed at triggerPx
-// for the given side would fire instantly against the current mark: a long SL
-// must sit strictly below the mark, a short SL strictly above. A non-positive
-// mark (failed fetch) or trigger returns false so a transient mark-fetch
-// failure never blocks a legitimate ratchet — the Python side is the final
-// arbiter via StopLossFilledImmediately.
 func slTriggerWouldFillImmediately(side string, triggerPx, mark float64) bool {
 	if mark <= 0 || triggerPx <= 0 {
 		return false
@@ -79,20 +48,10 @@ func slTriggerWouldFillImmediately(side string, triggerPx, mark float64) bool {
 	return false
 }
 
-// slPlacementFailureLeftNaked reports whether a no-OID stop-loss placement
-// failure left the position unprotected on-chain (#1052 review): true when the
-// old order was cancelled (cancelSucceeded) or there was none to begin with
-// (oldOID == 0); false when the cancel did not run, so the previous stop-loss
-// is still resting and the position remains protected.
 func slPlacementFailureLeftNaked(cancelSucceeded bool, oldOID int64) bool {
 	return cancelSucceeded || oldOID == 0
 }
 
-// pendingSLActionExists reports whether an un-drained update-sl/cancel-sl action
-// is already queued for strategy+symbol (#1052 review). A second SL edit before
-// the daemon drains the first would read the stale pre-edit OID from state.db
-// and orphan the first edit's resting order on-chain, so the caller must refuse
-// until the queue drains.
 func pendingSLActionExists(stateDB *StateDB, strategyID, symbol string) (bool, error) {
 	actions, err := stateDB.LoadPendingManualActions()
 	if err != nil {
@@ -109,10 +68,6 @@ func pendingSLActionExists(stateDB *StateDB, strategyID, symbol string) (bool, e
 	return false, nil
 }
 
-// runManualUpdateSL implements `go-trader manual-update-sl <strategy-id>
-// --trigger N [--symbol Y]` (#1050). It cancel-then-places the on-chain
-// stop-loss at the new trigger and queues an update-sl action the scheduler
-// adopts on its next cycle (no direct state.db write).
 func runManualUpdateSL(args []string) int {
 	fs := flag.NewFlagSet("manual-update-sl", flag.ContinueOnError)
 	configPath := fs.String("config", "scheduler/config.json", "Path to config file")
@@ -155,9 +110,6 @@ func runManualUpdateSL(args []string) int {
 	return printManualCoreOutcome(res, coreErr)
 }
 
-// runManualCancelSL implements `go-trader manual-cancel-sl <strategy-id>
-// [--symbol Y]` (#1050). It cancels the on-chain stop-loss OID and queues a
-// cancel-sl action the scheduler adopts on its next cycle.
 func runManualCancelSL(args []string) int {
 	fs := flag.NewFlagSet("manual-cancel-sl", flag.ContinueOnError)
 	configPath := fs.String("config", "scheduler/config.json", "Path to config file")

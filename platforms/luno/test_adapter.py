@@ -1,4 +1,3 @@
-"""Tests for LunoExchangeAdapter — mock ccxt to avoid live API calls."""
 
 import sys
 import os
@@ -6,7 +5,6 @@ import importlib.util
 import pytest
 from unittest.mock import MagicMock, patch
 
-# Load luno adapter by file path to avoid module name collisions
 _adapter_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "adapter.py")
 _shared_tools = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'shared_tools'))
 if _shared_tools not in sys.path:
@@ -20,7 +18,6 @@ LunoExchangeAdapter = _mod.LunoExchangeAdapter
 
 @pytest.fixture
 def mock_exchange():
-    """Provide a mock ccxt exchange and patch it into the adapter module."""
     mock_ex = MagicMock()
     original = _mod._get_ccxt_exchange
     _mod._get_ccxt_exchange = lambda: mock_ex
@@ -28,15 +25,11 @@ def mock_exchange():
     _mod._get_ccxt_exchange = original
 
 
-# ─── Properties ────────────────────────────────────
-
 class TestProperties:
     def test_name(self):
         adapter = LunoExchangeAdapter()
         assert adapter.name == "luno"
 
-
-# ─── Spot Price ────────────────────────────────────
 
 class TestSpotPrice:
     def test_get_spot_price_zar(self, mock_exchange):
@@ -62,12 +55,9 @@ class TestSpotPrice:
         assert adapter.get_spot_price("BTC") == 0.0
 
 
-# ─── Vol Metrics ───────────────────────────────────
-
 class TestVolMetrics:
     def test_get_vol_metrics(self, mock_exchange):
         adapter = LunoExchangeAdapter()
-        # Use volatile data: alternating +-5% swings so vol is non-trivial
         import math
         base = 1200000
         closes = [base * (1 + 0.05 * ((-1) ** i)) for i in range(90)]
@@ -96,7 +86,6 @@ class TestVolMetrics:
         base = 1200000
         closes = [base * (1 + 0.05 * ((-1) ** i)) for i in range(90)]
         candles = [[i * 86400000, c * 0.99, c * 1.01, c * 0.98, c, 100] for i, c in enumerate(closes)]
-        # First quote (ZAR) fails, second (GBP) succeeds
         mock_exchange.fetch_ohlcv.side_effect = [
             Exception("not found"),
             candles,
@@ -104,8 +93,6 @@ class TestVolMetrics:
         vol, iv_rank = adapter.get_vol_metrics("BTC")
         assert vol > 0
 
-
-# ─── Options Not Supported ─────────────────────────
 
 class TestOptionsNotSupported:
     def test_get_real_expiry_raises(self):

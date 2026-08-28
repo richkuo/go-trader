@@ -16,14 +16,6 @@ var (
 	hlTrailingUpdateLocks   = make(map[string]*sync.Mutex)
 )
 
-// hyperliquidProtectionPositionSnapshot builds an isolated, lock-free copy of a
-// Position for the HL perps trailing/fixed protection walkers. It deliberately
-// carries the full protection surface — regime label + windows, the frozen risk
-// anchor, and post-TP/regime transition state — so effectiveTrailingStopPct can
-// resolve a regime-keyed distance (trailing_stop_atr_regime) and the frozen
-// #873 anchor off the snapshot. The earlier partial snapshot dropped the regime
-// fields, which left paper regime trailing SLs unarmed (#1015). RegimeWindows is
-// deep-copied so the lock-free walker never reads a map the main loop may mutate.
 func hyperliquidProtectionPositionSnapshot(pos *Position) *Position {
 	if pos == nil {
 		return nil
@@ -59,11 +51,6 @@ func lockHyperliquidTrailingUpdate(symbol string) func() {
 	return m.Unlock
 }
 
-// hlSLEffectiveQty returns the quantity to use for stop-loss placement.
-// When the on-chain position is smaller than the virtual position (e.g.
-// after a manual TP reduced the position without the bot's knowledge),
-// the on-chain qty is used to avoid placing an oversized reduce-only order
-// that HL would reject (#621). Returns (virtualQty, false) when no cap applies.
 func hlSLEffectiveQty(symbol string, virtualQty float64, onChainQtyMap map[string]float64) (float64, bool) {
 	if onChainQty, ok := onChainQtyMap[symbol]; ok && onChainQty > 1e-9 && onChainQty < virtualQty-1e-9 {
 		return onChainQty, true
@@ -71,29 +58,6 @@ func hlSLEffectiveQty(symbol string, virtualQty float64, onChainQtyMap map[strin
 	return virtualQty, false
 }
 
-// effectiveTrailingStopPct returns the per-position trailing-stop distance as a
-// price-% (e.g. 3.0 == 3%). HL perps only, except manual strategies that
-// explicitly use trailing_tp_ratchet*.
-//
-// Resolution order:
-//   - explicit TrailingStopPct (fixed distance) wins; explicit 0 disables.
-//   - TrailingStopATRMult derives the distance from the position's EntryATR
-//     and AvgCost: pct = mult * entry_atr / avg_cost * 100, capped at
-//     MaxAutoStopLossPct so a volatile coin (e.g. mult=3 on a 30%-of-price
-//     ATR coin) cannot produce a long-side trigger price <= 0 that HL would
-//     silently reject (review of #505). Returns 0 if pos is nil or
-//     EntryATR / AvgCost is missing — the trailing loop will simply no-op
-//     until stampEntryATRIfOpened populates the position on the cycle after
-//     the open fills.
-//
-// Mutability: EntryATR is stamped once at position open and never re-read,
-// so the EntryATR/AvgCost inputs are fixed for the life of the position.
-// However, the TrailingStopATRMult value itself IS hot-reloadable — bumping
-// the multiplier mid-position via SIGHUP will alter the derived distance on
-// the next trailing cycle. Only the nil↔positive *mode* toggle is blocked
-// while open (see config_reload.go's state-compat check). Operators who
-// expect a strictly fixed distance for the life of a position should not
-// edit the multiplier while a position is active.
 func effectiveTrailingStopPct(sc StrategyConfig, pos *Position) float64 {
 	if sc.Platform != "hyperliquid" {
 		return 0
@@ -101,20 +65,12 @@ func effectiveTrailingStopPct(sc StrategyConfig, pos *Position) float64 {
 	switch sc.Type {
 	case "perps":
 	case "manual":
-		// Manual strategies only run the on-chain trailing walker when the
-		// close evaluator is trailing_tp_ratchet* (#844). Other manual configs
-		// (e.g. tiered_tp_atr_live) keep the historical no-trailing behavior.
 		if !strategyUsesTrailingTPRatchetClose(sc) {
 			return 0
 		}
 	default:
 		return 0
 	}
-	// #708: Post-TP trailing transition — `sl_after: trail_from_here` stamps
-	// pos.PostTPTrailingATRMult when a TP tier fires. From that point the
-	// trailing walker takes over with the stamped distance, even though the
-	// strategy itself doesn't have sc.TrailingStop* configured (the validator
-	// blocks combining sl_after with strategy-level trailing).
 	if pos != nil && pos.PostTPTrailingATRMult != nil && *pos.PostTPTrailingATRMult > 0 {
 		if pos.EntryATR <= 0 || pos.AvgCost <= 0 {
 			return 0
@@ -141,12 +97,6 @@ func effectiveTrailingStopPct(sc StrategyConfig, pos *Position) float64 {
 		}
 		return pct
 	}
-	// #733: regime-aware trailing distance. Resolved once at first cycle
-	// after open against pos.Regime, then frozen for the life of the position
-	// (callers re-derive each cycle from the same pos.Regime so it stays
-	// invariant — the only way it would change is if a hot-reload pointed
-	// the regime block at a different shape, which validateHotReloadStateCompatible
-	// blocks while open).
 	if sc.TrailingStopATRRegime != nil && !sc.TrailingStopATRRegime.IsZero() {
 		if pos == nil || pos.EntryATR <= 0 || pos.AvgCost <= 0 || positionATRRegimeLabel(pos, sc) == "" {
 			return 0
@@ -164,27 +114,12 @@ func effectiveTrailingStopPct(sc StrategyConfig, pos *Position) float64 {
 	return 0
 }
 
-// atrMultMissingEntryATR reports whether sc is configured for ATR-derived
-// trailing stops but the open position is missing the EntryATR/AvgCost inputs
-// needed to derive a trigger distance. The trailing loop uses this to surface
-// a one-shot operator alert when stampEntryATRIfOpened never fired (e.g. the
-// open strategy did not emit an "atr" indicator), so the position cannot run
-// indefinitely without exchange-side protection (#505 review).
-//
-// Returns false when an explicit TrailingStopPct > 0 is set alongside
-// TrailingStopATRMult — in that case the fixed-pct trailing path arms the
-// trigger and the ATR mult is ignored (validation enforces exclusivity, so
-// this branch is unreachable for StopLossATRMult strategies).
-//
-// Includes the fixed-distance StopLossATRMult variant (#562): same EntryATR
-// dependency, same alerting story.
 func atrMultMissingEntryATR(sc StrategyConfig, pos *Position) bool {
 	if sc.Platform != "hyperliquid" || sc.Type != "perps" {
 		return false
 	}
 	wantsTrailing := sc.TrailingStopATRMult != nil && *sc.TrailingStopATRMult > 0
 	wantsFixed := sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0
-	// #733: regime-aware SL/trailing have the same EntryATR dependency.
 	wantsRegimeFixed := sc.StopLossATRRegime != nil && !sc.StopLossATRRegime.IsZero()
 	wantsRegimeTrailing := sc.TrailingStopATRRegime != nil && !sc.TrailingStopATRRegime.IsZero()
 	if !wantsTrailing && !wantsFixed && !wantsRegimeFixed && !wantsRegimeTrailing {
@@ -199,36 +134,16 @@ func atrMultMissingEntryATR(sc StrategyConfig, pos *Position) bool {
 	return pos.EntryATR <= 0 || pos.AvgCost <= 0
 }
 
-// effectiveFixedStopLossATRPct returns the per-position fixed (non-trailing)
-// stop loss distance as a price-% derived from StopLossATRMult * EntryATR /
-// AvgCost. HL perps only.
-//
-// Returns 0 when sc is non-HL-perps, StopLossATRMult is nil/<=0, or the
-// position is missing EntryATR / AvgCost — the arming step will simply
-// no-op until stampEntryATRIfOpened populates the position on the cycle
-// after the open fills. The derived price-% is capped at MaxAutoStopLossPct
-// to mirror trailing_stop_atr_mult so an extreme volatility window can't
-// produce a long-side trigger price <= 0.
-//
-// Once a position is armed (StopLossTriggerPx > 0), callers should not
-// re-derive a new trigger from this helper — the trigger is fixed for the
-// life of the position. See hyperliquidArmFixedATRStopLossLive /
-// runHyperliquidFixedATRStopLossPaper for the one-shot arming gate.
 func effectiveFixedStopLossATRPct(sc StrategyConfig, pos *Position) float64 {
 	if sc.Platform != "hyperliquid" || sc.Type != "perps" {
 		return 0
 	}
 	mult := 0.0
 	if v, ok := unifiedCloseStopLossATR(sc, positionATRRegimeLabel(pos, sc)); ok {
-		// #841 2b: unified close owns the per-regime SL distance.
 		mult = v
 	} else if sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0 {
 		mult = *sc.StopLossATRMult
 	} else if sc.StopLossATRRegime != nil && !sc.StopLossATRRegime.IsZero() {
-		// #733: regime-resolved fixed SL distance. pos.Regime is stamped on
-		// the first cycle after open; until then this returns 0 and arming
-		// is deferred to the next cycle (same deferral semantics as the
-		// scalar variant waiting on EntryATR).
 		if pos == nil || positionATRRegimeLabel(pos, sc) == "" {
 			return 0
 		}
@@ -251,18 +166,11 @@ func effectiveFixedStopLossATRPct(sc StrategyConfig, pos *Position) float64 {
 	return pct
 }
 
-// fixedStopLossATRTriggerPx returns the fixed trigger price for a position
-// using StopLossATRMult. Long: AvgCost - mult*EntryATR; short: AvgCost +
-// mult*EntryATR (clamped via the MaxAutoStopLossPct distance cap).
-// Returns 0 if not armable.
 func fixedStopLossATRTriggerPx(sc StrategyConfig, side string, pos *Position) float64 {
 	pct := effectiveFixedStopLossATRPct(sc, pos)
 	if pct <= 0 || pos == nil || pos.AvgCost <= 0 {
 		return 0
 	}
-	// #873: the fixed ATR trigger is anchored to the FROZEN entry
-	// (riskAnchorPrice), not the blended AvgCost, so a scale-in never shifts
-	// the operator's original stop geometry.
 	anchor := pos.riskAnchorPrice()
 	switch side {
 	case "long":
@@ -273,23 +181,6 @@ func fixedStopLossATRTriggerPx(sc StrategyConfig, side string, pos *Position) fl
 	return 0
 }
 
-// runHyperliquidFixedATRStopLossPaper arms a fixed (non-trailing) ATR-derived
-// stop loss for a paper-mode HL perps position. Mirrors the live arming
-// semantics (one-shot placement on the cycle after open) but evaluates breach
-// in scheduler state instead of resting an order on Hyperliquid.
-//
-// Returns:
-//
-//	newTrigger — non-zero when the trigger should be set on the position
-//	             (only on the initial arming cycle; subsequent calls return 0).
-//	breach     — true when mark has crossed the existing trigger and the
-//	             caller should record a synthetic close.
-//	breachPx   — trigger price at which the synthetic close should book.
-//
-// Multi-strategy / partial-close note: each strategy's StrategyState.Positions
-// is isolated, so a single strategy's breach closes only that strategy's
-// virtual quantity. Peer strategies on the same coin retain their independent
-// virtual exposure.
 func runHyperliquidFixedATRStopLossPaper(sc StrategyConfig, side string, pos *Position, mark, currentTrigger float64) (newTrigger float64, breach bool, breachPx float64) {
 	if sc.StopLossATRMult == nil || *sc.StopLossATRMult <= 0 {
 		return 0, false, 0
@@ -310,12 +201,6 @@ func runHyperliquidFixedATRStopLossPaper(sc StrategyConfig, side string, pos *Po
 	return tp, false, 0
 }
 
-// hyperliquidArmFixedATRStopLossLive places a fixed (non-trailing) reduce-only
-// stop-loss trigger on Hyperliquid for the given position. One-shot: callers
-// must skip when pos.StopLossOID > 0 (already armed) or the position is
-// missing EntryATR. Returns the StopLossUpdateResult and ok=true on success
-// (including when the trigger fills immediately at submit). ok=false signals
-// the caller should NOT mutate state.
 func hyperliquidArmFixedATRStopLossLive(sc StrategyConfig, symbol, side string, qty float64, triggerPx float64, notifier *MultiNotifier, logger *StrategyLogger) (*HyperliquidStopLossUpdateResult, bool) {
 	if triggerPx <= 0 || qty <= 0 {
 		return nil, true
@@ -363,22 +248,12 @@ func hyperliquidArmFixedATRStopLossLive(sc StrategyConfig, symbol, side string, 
 	return result, true
 }
 
-// atrMultMissingEntryATRWarned throttles missing-EntryATR alerts to one per
-// (strategy, symbol). Keys are reset by clearATRMultMissingEntryATRWarning
-// when a position closes (so a future re-open can re-warn if the bug
-// persists) and on hot-reload when the strategy disables ATR-mult.
 var atrMultMissingEntryATRWarned sync.Map
 
 func atrMultMissingEntryATRKey(strategyID, symbol string) string {
 	return strategyID + ":" + symbol
 }
 
-// notifyATRMultMissingEntryATROnce emits a WARN log + notifier alert the
-// first time we observe an ATR-mult-configured strategy with a position that
-// lacks the EntryATR input. Repeated cycles for the same (strategy, symbol)
-// are suppressed so the alert channel is not flooded; downstream operators
-// see a single, clear notice that the position is running without
-// exchange-side protection.
 func notifyATRMultMissingEntryATROnce(sc StrategyConfig, symbol string, notifier *MultiNotifier, logger *StrategyLogger) {
 	key := atrMultMissingEntryATRKey(sc.ID, symbol)
 	if _, loaded := atrMultMissingEntryATRWarned.LoadOrStore(key, struct{}{}); loaded {
@@ -395,19 +270,10 @@ func notifyATRMultMissingEntryATROnce(sc StrategyConfig, symbol string, notifier
 	}
 }
 
-// clearATRMultMissingEntryATRWarning drops the throttle key for a
-// (strategy, symbol) so the next missing-EntryATR observation re-warns.
-// Callers should invoke this on position close so a future re-open that
-// hits the same missing-ATR bug is not silently suppressed.
 func clearATRMultMissingEntryATRWarning(strategyID, symbol string) {
 	atrMultMissingEntryATRWarned.Delete(atrMultMissingEntryATRKey(strategyID, symbol))
 }
 
-// clearATRMultMissingEntryATRWarningOnHLPerpsClose is a no-op shortcut for
-// non-HL-perps state. Position-close call sites in shared code (e.g.
-// ExecutePerpsSignalWithLeverage close-long/short, forceCloseAllPositions) live on a
-// path that may run for spot or futures strategies as well; this helper
-// avoids spraying platform/type checks at every call site.
 func clearATRMultMissingEntryATRWarningOnHLPerpsClose(s *StrategyState, symbol string) {
 	if s == nil || s.Platform != "hyperliquid" || s.Type != "perps" {
 		return
@@ -415,10 +281,6 @@ func clearATRMultMissingEntryATRWarningOnHLPerpsClose(s *StrategyState, symbol s
 	clearATRMultMissingEntryATRWarning(s.ID, symbol)
 }
 
-// clearATRMultMissingEntryATRWarningsForStrategy drops every throttle key
-// belonging to strategyID. Used by hot-reload when the operator disables
-// trailing_stop_atr_mult — the throttle should not survive into the next
-// configuration regime, since the alert logic no longer applies.
 func clearATRMultMissingEntryATRWarningsForStrategy(strategyID string) {
 	prefix := strategyID + ":"
 	atrMultMissingEntryATRWarned.Range(func(k, _ any) bool {
@@ -433,10 +295,6 @@ func clearATRMultMissingEntryATRWarningsForStrategy(strategyID string) {
 	})
 }
 
-// tieredTPATRMissingEntryATR reports whether sc is configured with tiered_tp_atr
-// as a close strategy but the open position has no EntryATR stamped yet. Unlike
-// the ATR-mult trailing check this is platform-agnostic: tiered_tp_atr runs on
-// any platform that supports composed close strategies.
 func tieredTPATRMissingEntryATR(sc StrategyConfig, pos *Position) bool {
 	hasTieredTP := false
 	for _, ref := range sc.closeRefs() {
@@ -454,10 +312,6 @@ func tieredTPATRMissingEntryATR(sc StrategyConfig, pos *Position) bool {
 	return pos.EntryATR <= 0 && pos.AvgCost > 0
 }
 
-// notifyTieredTPATRMissingEntryATROnce emits a WARN log + notifier alert the
-// first time a tiered_tp_atr close strategy is observed on a position that
-// has no EntryATR. Uses the same throttle map as the ATR-mult trailing alert
-// so a single key per (strategy, symbol) suppresses both variants.
 func notifyTieredTPATRMissingEntryATROnce(sc StrategyConfig, symbol string, notifier *MultiNotifier, logger *StrategyLogger) {
 	key := atrMultMissingEntryATRKey(sc.ID, symbol)
 	if _, loaded := atrMultMissingEntryATRWarned.LoadOrStore(key, struct{}{}); loaded {
@@ -481,43 +335,11 @@ func effectiveTrailingStopMinMovePct(sc StrategyConfig) float64 {
 	return defaultTrailingStopMinMovePct
 }
 
-// trailingReplacePolicy carries the per-call overrides to the walker's default
-// replacement rule ("replace only on a FAVORABLE trigger move that clears the
-// trailing_stop_min_move_pct debounce"). Both overrides are event-gated by the
-// caller, so neither can produce per-cycle cancel+replace churn.
 type trailingReplacePolicy struct {
-	// forceResize (#873) replaces at the EXISTING trigger when the walker would
-	// otherwise not replace, so the reduce-only SL covers the size a scale-in
-	// just added. Live-only; the paper walker rests no order to resize.
 	forceResize bool
 
-	// ratchetTightened (#1416) drops the min-move debounce for this one call.
-	//
-	// Why the debounce is wrong here: it exists to suppress churn from tiny
-	// high-water drifts at a CONSTANT trail distance. A ratchet tier instead
-	// shrinks the distance itself, and the resulting trigger shift is only
-	// Δmult × EntryATR / anchor — on a coin whose ATR is well under 1% of
-	// price, a whole tier step lands below the 0.5% default and the tightened
-	// stop silently never reaches the exchange, while the ratchet DM still
-	// reports the tighter trail. Worse, candidateTrigger is recomputed from the
-	// same high-water every later cycle, so the drop persists until price makes
-	// a materially new high — exactly the retrace the ratchet exists to cover.
-	//
-	// Direction is still gated: only a FAVORABLE candidate replaces, so a
-	// forced tighten can never widen the stop on either side.
 	ratchetTightened bool
 
-	// liquidationPx (#1450) is the exchange-reported liquidation price for this
-	// coin from the CURRENT cycle's clearinghouseState snapshot, or 0 when
-	// unknown. When positive, the walker clamps a candidate (or an unchanged
-	// resting) trigger that sits past liquidation to just inside it, and
-	// bypasses the min-move debounce so the tighten actually lands — the same
-	// rationale as ratchetTightened. Direction is favorable-only, so the clamp
-	// can never widen a stop.
-	//
-	// LIVE ONLY. The paper walker ignores this field: paper has no real account
-	// and no liquidation price, so every live call site threads the map value
-	// while paper call sites leave it 0.
 	liquidationPx float64
 }
 
@@ -572,9 +394,6 @@ func computeTrailingStopUpdateInternal(side string, mark, highWater, trailingPct
 		}
 		return candidateHighWater, 0, false
 	}
-	// #1416: a ratchet tightened the trail distance this cycle — replace at the
-	// newly computed (strictly favorable) trigger no matter how small the shift.
-	// The epsilon keeps a float-noise "move" from costing a cancel+replace.
 	if bypassMinMove && math.Abs(candidateTrigger-currentTrigger) > 1e-9 {
 		return candidateHighWater, candidateTrigger, true
 	}
@@ -585,13 +404,6 @@ func computeTrailingStopUpdateInternal(side string, mark, highWater, trailingPct
 	return candidateHighWater, 0, false
 }
 
-// trailingStopBreached reports whether mark has crossed the unfavorable side
-// of currentTrigger for a position with the given side. Returns false when
-// currentTrigger <= 0 (no trigger armed yet — initial cycles set one up
-// before any breach can occur) or mark <= 0. Side must be "long" or "short".
-//
-// Used by the paper-mode trailing-stop loop to evaluate breaches in scheduler
-// state (live mode delegates breach evaluation to the exchange trigger order).
 func trailingStopBreached(side string, mark, currentTrigger float64) bool {
 	if mark <= 0 || currentTrigger <= 0 {
 		return false
@@ -605,36 +417,6 @@ func trailingStopBreached(side string, mark, currentTrigger float64) bool {
 	return false
 }
 
-// runHyperliquidTrailingStopPaper computes the per-cycle trailing-stop
-// decision for a paper-mode HL perps position. Mirrors the live path's
-// semantics (effectiveTrailingStopPct distance, side-aware high-water,
-// min-move debounce on trigger replacement) but evaluates breaches in
-// scheduler state instead of resting an order on Hyperliquid.
-//
-// Decision order:
-//   - If the existing trigger has been breached by the current mark, signal
-//     a synthetic close at the trigger price. The mark/trigger spread within
-//     a single cycle is treated as exchange-trigger semantics (fill at the
-//     trigger price) so paper PnL matches live behavior on a normal fill.
-//   - Otherwise, advance the high-water mark and (when the favorable move
-//     clears the min-move debounce) emit a new trigger price for the caller
-//     to persist on Position.StopLossTriggerPx.
-//
-// Returns:
-//
-//	newHighWater — the (possibly advanced) high-water mark to persist.
-//	newTrigger   — non-zero only when the trigger should be replaced.
-//	breach       — true when the caller should record a synthetic close.
-//	breachPx     — trigger price at which the synthetic close should be booked.
-//
-// Multi-strategy / partial-close note: each strategy's StrategyState.Positions
-// is isolated in scheduler state, so a single strategy's breach closes only
-// that strategy's virtual quantity. Peer strategies on the same coin retain
-// their independent virtual exposure and run their own trailing loops.
-//
-// policy carries the #1416 ratchet-tighten bypass of the min-move debounce.
-// policy.forceResize is ignored here: paper rests no exchange order, so there
-// is nothing to re-size.
 func runHyperliquidTrailingStopPaper(sc StrategyConfig, side string, pos *Position, mark, highWater, currentTrigger float64, policy trailingReplacePolicy) (newHighWater, newTrigger float64, breach bool, breachPx float64) {
 	trailingPct := effectiveTrailingStopPct(sc, pos)
 	if trailingPct <= 0 || mark <= 0 {
@@ -645,9 +427,6 @@ func runHyperliquidTrailingStopPaper(sc StrategyConfig, side string, pos *Positi
 	}
 	avgCost := 0.0
 	if pos != nil {
-		// #873: seed the trailing high-water from the FROZEN entry so a
-		// scale-in before the first favorable move doesn't reset the trail
-		// to the blended average.
 		avgCost = pos.riskAnchorPrice()
 	}
 	if highWater <= 0 {
@@ -661,35 +440,6 @@ func runHyperliquidTrailingStopPaper(sc StrategyConfig, side string, pos *Positi
 	return nhw, 0, false, 0
 }
 
-// applyTrailingStopUpdateResult applies a runHyperliquidTrailingStopUpdate
-// outcome to the live position. The caller MUST hold the state write lock.
-// Both the perps and the manual trailing_tp_ratchet dispatches route through
-// this single helper so they can never diverge on the three slUpdate outcomes:
-//
-//  1. immediate fill — the replacement trigger filled on placement; book a
-//     "trailing_stop_loss_immediate" close now (returns immediateFill=true with
-//     the fill price) instead of leaving it for a later reconcile to pick up as
-//     a delayed, mislabeled hl_sync_external close;
-//  2. resting replacement — update the position's OID + trigger;
-//  3. cancel-without-rest — the old OID was cancelled but no replacement
-//     rested; clear the stale OID/trigger.
-//
-// expectedSide guards against a side flip between snapshot and lock; prevSLOID
-// is the OID captured before the update (used to confirm the cancel applies to
-// the OID we expected to replace).
-//
-// closeReason is the persisted Trade.CloseReason for an immediate fill. The
-// persisted reason must name the mechanism that PLACED the order that filled —
-// the #1456 review caught the liquidation-guard audit booking its closes as
-// "trailing_stop_loss_immediate" while its operator DM said LIQUIDATION-CLAMP,
-// so a stop_loss_pct owner re-armed by the audit read back in history as a
-// trailing-stop exit. Walker callers pass "trailing_stop_loss_immediate"; the
-// audit passes "liquidation_clamp_sl_immediate".
-//
-// placedQty (#1456 review round 19 Optional 2) is the quantity the placement
-// was actually SIZED to (hlSLEffectiveQty's on-chain cap) so a submit fill
-// books the quantity the exchange clipped to, never more; 0 means unknown and
-// keeps the legacy full-quantity booking.
 func applyTrailingStopUpdateResult(s *StrategyState, symbol, expectedSide string, prevSLOID int64, newHighWater float64, updateConfirmed bool, slUpdate *HyperliquidStopLossUpdateResult, closeReason string, logger *StrategyLogger, placedQty float64) (immediateFill bool, fillPx float64) {
 	if s == nil {
 		return false, 0
@@ -714,11 +464,6 @@ func applyTrailingStopUpdateResult(s *StrategyState, symbol, expectedSide string
 	case slUpdate.StopLossFilledImmediately && slUpdate.StopLossTriggerPx > 0:
 		pos.RatchetFallbackNormalizePending = false
 		if recordPerpsStopLossCloseQty(s, symbol, placedQty, slUpdate.StopLossTriggerPx, closeReason, logger) {
-			// A partial booking (placedQty below the recorded quantity, the
-			// round-19 shape) leaves a residue position whose protection
-			// fields point at the order that just FIRED. Clear them so the
-			// residue re-arms from the empty-OID path on its next cycle; a
-			// full booking deletes the position and finds nothing here.
 			if residue, ok := s.Positions[symbol]; ok && residue != nil && residue.Quantity > 0 {
 				residue.StopLossOID = 0
 				residue.StopLossTriggerPx = 0
@@ -734,34 +479,6 @@ func applyTrailingStopUpdateResult(s *StrategyState, symbol, expectedSide string
 			logger.Info("Trailing SL trigger updated oid=%d @ $%.4f", slUpdate.StopLossOID, slUpdate.StopLossTriggerPx)
 		}
 	case slUpdate.StopLossOutcomeUnknown:
-		// #1456 review round 16: the cancel landed but the replacement's
-		// OUTCOME could not be read (unreadable status entry / post-submit
-		// exception, unresolvable by the open-order diff). The order may be
-		// resting untracked.
-		//
-		// Clearing everything here was the original compound hazard: the
-		// position then read as Unprotected (StopLossOID == 0 &&
-		// StopLossTriggerPx <= 0), so the next audit re-armed a static-scalar
-		// owner and the walker re-armed a trailing owner from currentTrigger
-		// <= 0 — placing a SECOND reduce-only stop while the first one's OID
-		// had never been recorded.
-		//
-		// Rounds 18/19 settled the shape for BOTH fresh placements AND
-		// tightens: record the REQUESTED trigger with the OID left at 0.
-		// Keeping a tightened position's OLD OID instead (round 16's "keep")
-		// pointed it at an order this very call had CANCELLED, with the old
-		// past-liquidation trigger — so every later cycle re-cancelled the
-		// dead OID and placed again, stacking one more untracked stop per
-		// unreadable outcome. With {OID: 0, trigger: requested} every placement
-		// queue closes: the audit reads the candidate armed-at-a-reachable-
-		// trigger and reports it without acting, buildHyperliquidProtectionPlan
-		// suppresses its SL leg, and the fixed-ATR arm site requires a clean
-		// slate. A trailing owner still heals on its own next legitimate
-		// min-move replace, which places ONE order at a readable outcome and
-		// records it. A duplicate reduce-only stop clips to the netted
-		// position and no-ops once flat (#621 cap), so the worst case of the
-		// residue is bounded — mirroring the accepted protection-sync
-		// semantics (hlProtectionStopOutcomeUnknown).
 		if pos.StopLossOID == prevSLOID {
 			pos.StopLossOID = 0
 		}
@@ -784,14 +501,6 @@ func applyTrailingStopUpdateResult(s *StrategyState, symbol, expectedSide string
 	return false, 0
 }
 
-// runHyperliquidTrailingStopUpdate evaluates the per-cycle trailing-stop
-// update for an HL perps position. pos is the caller's snapshot of the
-// position fields needed for trailing math (AvgCost, EntryATR — held
-// outside the state mutex so the subprocess call below can run without
-// blocking other strategies). The pointer is taken by value semantics; the
-// helper only reads, never writes through it.
-// policy selects the per-call overrides to the default replacement rule: the
-// #873 scale-in resize and the #1416 ratchet-tighten min-move bypass.
 func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qty float64, pos *Position, mark, highWater, currentTrigger float64, currentOID int64, policy trailingReplacePolicy, notifier *MultiNotifier, logger *StrategyLogger) (float64, *HyperliquidStopLossUpdateResult, bool) {
 	trailingPct := effectiveTrailingStopPct(sc, pos)
 	if trailingPct <= 0 || qty <= 0 || mark <= 0 {
@@ -799,9 +508,6 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 	}
 	avgCost := 0.0
 	if pos != nil {
-		// #873: seed the trailing high-water from the FROZEN entry so a
-		// scale-in before the first favorable move doesn't reset the trail
-		// to the blended average.
 		avgCost = pos.riskAnchorPrice()
 	}
 	if highWater <= 0 {
@@ -810,51 +516,15 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 	allowOneShotWiden := pos != nil && pos.RatchetFallbackNormalizePending
 	newHighWater, newTrigger, replace := computeTrailingStopUpdateInternal(side, mark, highWater, trailingPct, effectiveTrailingStopMinMovePct(sc), currentTrigger, allowOneShotWiden, policy.ratchetTightened)
 	if policy.forceResize && !replace {
-		// #873: a scale-in grew the position; the resting trailing SL still
-		// covers only the pre-add size. Force a cancel+replace so the reduce-only
-		// SL covers the new total. Fall through to the computed trigger when
-		// nothing is resting (currentTrigger==0).
 		replace = true
 		if currentTrigger > 0 {
 			newTrigger = currentTrigger
-			// A forced resize cancels and re-places the order regardless, so it
-			// must never re-arm a trigger LOOSER than the current trail distance
-			// implies. Re-run the decision with the debounce off and adopt the
-			// result when it is strictly favorable: the debounce exists to avoid
-			// order churn, and there is no churn to avoid on a replace we are
-			// already making. This is what keeps a ratchet tighten that an
-			// earlier cycle stamped but could not place — e.g. deferred by the
-			// #621 capped-qty guard above — from being re-frozen at the old wide
-			// trigger (#1416).
 			if _, tighter, ok := computeTrailingStopUpdateInternal(side, mark, highWater, trailingPct, effectiveTrailingStopMinMovePct(sc), currentTrigger, allowOneShotWiden, true); ok && tighter > 0 {
 				newTrigger = tighter
 			}
 		}
 	}
-	// #1450: a stop past the exchange liquidation price can never fill — HL
-	// force-closes first. Clamp it to just INSIDE liquidation and place it,
-	// bypassing the min-move debounce so the tighten actually reaches the
-	// exchange. Two cases are covered:
-	//
-	//   - replace==true: the walker's own candidate is past liquidation.
-	//   - replace==false: the walker sees no reason to move, but the RESTING
-	//     trigger is itself past liquidation (e.g. armed on the open cycle,
-	//     before the exchange reported a liquidation price). This is the heal.
-	//
-	// The clamp is strictly tightening in both cases, so it can never widen a
-	// stop, and it never returns 0 for a positive input — protection is never
-	// removed by this path.
-	// clampOutcome is what the deferred alert reports. It starts at "deferred"
-	// (nothing was cancelled, the ORIGINAL stop is still resting) and is only
-	// moved to "clamped" by a placement that actually RESTS or FILLS, or to
-	// "protection lost" by a cancel that landed with nothing behind it. A
-	// cancel-succeeded-placement-rejected cycle must never read as a clamp: the
-	// operator would be told the stop was tightened while the position has no
-	// exchange-side stop at all. Same invariant hlLiquidationClampReplace
-	// enforces for the audit.
 	clampOutcome := hlLiquidationActionReplaceDeferred
-	// #1456 review round 7: set only when the LIQUIDATION clamp forced this
-	// cancel+replace. An ordinary trailing move keeps today's no-retry behavior.
 	clampTriggered := false
 	if policy.liquidationPx > 0 {
 		offending := newTrigger
@@ -865,9 +535,6 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 			newTrigger = clamped
 			replace = true
 			clampTriggered = true
-			// The alert is deferred so it reports what ACTUALLY happened, and so
-			// it drains after lockHyperliquidTrailingUpdate releases — defers run
-			// LIFO and that lock is taken below.
 			defer func() {
 				notifyHLStopPastLiquidation(sc, symbol, side, offending, clamped, policy.liquidationPx, clampOutcome, notifier, logger, time.Now().UTC())
 			}()
@@ -899,13 +566,6 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 		return highWater, result, false
 	}
 	if result.Error != "" {
-		// #1456 review round 10: the subprocess raised AFTER the old trigger was
-		// cancelled (e.g. trigger rounding outside the placement try) — the
-		// payload still carries CancelStopLossSucceeded. Reading this as "replace
-		// deferred" told the operator the ORIGINAL stop was still resting while
-		// nothing was, and skipped the in-cycle retry. Fall through to the normal
-		// interpretation: state clears via applyTrailingStopUpdateResult, the
-		// clamp retry below runs, and the alert names protection lost.
 		logger.Error("Trailing SL update returned error AFTER the old trigger was cancelled (%s) — treating as cancel-landed", result.Error)
 	}
 	if result.OpenOrderCheckError != "" {
@@ -920,8 +580,6 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 	}
 	if result.StopLossFilledExternally {
 		logger.Warn("Trailing SL OID=%d already filled on-chain for %s — reconciler will book the close", currentOID, symbol)
-		// The old order just FILLED — the deferred alert must not claim it is
-		// still resting (#1456 review).
 		clampOutcome = hlLiquidationActionFilledOnChain
 		return highWater, result, false
 	}
@@ -952,34 +610,13 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 	if result.StopLossFilledImmediately {
 		logger.Warn("Trailing SL trigger filled at submit for %s — position is flat on-chain", symbol)
 	}
-	// A REPLACEMENT is resting (or filled at submit) only on these two shapes.
-	// CancelStopLossSucceeded alone means the old trigger was deleted and
-	// nothing took its place — the position is naked.
 	restingConfirmed := (result.StopLossOID > 0) ||
 		(result.StopLossFilledImmediately && result.StopLossTriggerPx > 0)
-	// A fill at submit ended the cycle FLAT — the alert must say the position
-	// exited, never that a stop was tightened onto an order no position needs
-	// (#1456 review).
 	filledAtSubmit := result.StopLossFilledImmediately && result.StopLossTriggerPx > 0
-	// updateConfirmed still includes the cancel-without-rest shape: state must
-	// stop pointing at an OID that no longer exists (applyTrailingStopUpdateResult
-	// zeroes it), which is also what makes the walker re-arm from nothing on its
-	// next run. It is a STATE signal, never an operator-facing success signal.
 	updateConfirmed := restingConfirmed || result.CancelStopLossSucceeded
 	if !updateConfirmed {
 		return highWater, result, false
 	}
-	// #1456 review round 7: the clamp branch CANCELLED a resting stop; if the
-	// replacement did not rest, retry ONCE in the same cycle — the same
-	// guarantee the audit enforces for its own strips. Recovery otherwise waits
-	// for this strategy's next due Signal == 0 cycle. Nothing rests on the book
-	// in this shape (that is what CancelStopLossSucceeded-without-rest means),
-	// so the fresh placement cannot duplicate an order. We already hold this
-	// coin's trailing-update lock, so the lock-free place primitive is used.
-	// StopLossOutcomeUnknown excludes the unreadable-placement shapes: the
-	// first submission may be resting, so a fresh placement here could stack a
-	// second untracked reduce-only stop (#1456 review round 11). Only a
-	// positively rejected placement retries.
 	retryOutcomeUnknown := false
 	if result.CancelStopLossSucceeded && !restingConfirmed && clampTriggered && !result.StopLossOutcomeUnknown {
 		retryResult, retryOutcome := hlLiquidationPlaceFresh(sc.Script, symbol, side, qty, newTrigger, logger)
@@ -989,11 +626,6 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 			filledAtSubmit = result.StopLossFilledImmediately && result.StopLossTriggerPx > 0
 			restingConfirmed = !filledAtSubmit && result.StopLossOID > 0
 		case hlReplaceOutcomeUnknown:
-			// #1456 review round 17 (Needs Fixing 1): the RETRY's own outcome
-			// is unreadable — it may be resting. Adopt the retry payload so
-			// applyTrailingStopUpdateResult KEEPS recorded stop state (never a
-			// next-cycle re-arm while an untracked order may exist), and report
-			// outcome-unknown instead of "NO exchange-side stop".
 			result = retryResult
 			retryOutcomeUnknown = true
 		}
@@ -1004,14 +636,8 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 	case restingConfirmed:
 		clampOutcome = hlLiquidationActionClamped
 	case retryOutcomeUnknown:
-		// #1456 review round 19 (Optional 3): the RETRY was a fresh placement —
-		// nothing was cancelled by it, so the "old trigger was CANCELLED"
-		// wording would describe an action never performed.
 		clampOutcome = hlLiquidationActionPlacementUnknown
 	case result.CancelStopLossSucceeded && result.StopLossOutcomeUnknown:
-		// #1456 review round 16: the replacement may be resting. Reporting
-		// "protection lost" here asserts a fact nobody measured, and its
-		// recovery sentence promises a re-place that must not happen.
 		clampOutcome = hlLiquidationActionOutcomeUnknown
 	case result.CancelStopLossSucceeded:
 		clampOutcome = hlLiquidationActionProtectionLost

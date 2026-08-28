@@ -1,37 +1,3 @@
-"""Reproducible evidence for #1080: a genuinely UNSUPERVISED volatility-state regime model
-(HMM/GMM/k-means candidates) learned from the composite feature matrix, mapped to the 7
-composite labels, selected by a walk-forward bake-off against the #1078 forward-volatility gate.
-
-Each candidate (family x latent-count K) is fit on the in-sample window, decoded causally on
-the held-out window, scored on forward VOLATILITY separation + stability, run through
-regime_calibrate.gate_verdict, and checked for non-degeneracy on every eval window. The winner
-is the highest held-out separation among gate-passing, non-degenerate candidates.
-
-Run (needs the OHLCV cache reachable from shared_tools/):
-
-    uv run --no-sync python backtest/research/regime_1080_unsupervised_vol_model.py
-    uv run --no-sync python backtest/research/regime_1080_unsupervised_vol_model.py \
-        --symbol ETH/USDT --timeframe 1h --json /tmp/regime_1080_eth.json
-
-Parameterized by --symbol/--timeframe so #1083 (multi-asset) can reuse it. Read-only;
-no live or Go path touched. Economic payoff (vs flat-ATR) is #1081, not decided here.
-
-EVIDENCE STATUS (downgraded, #1095 item 4c / PR #1168): the OOS run reported below measured
-the hand-rule incumbent at p=10/201~=0.0498 with n_perm=200 -- a knife-edge pass, flagged as
-such by this script's own knife_edge/permutation_steps_to_alpha audit fields (added in #1160).
-Re-measured at n_perm=1799 in #1095, the incumbent's OOS forward-volatility separation is NOT
-significant: p=0.105 (canonical/funding/volume masks) / p=0.113 (htf/all_enriched masks),
-knife_edge=false. RESOLVED by #1211 (gate-semantics v2): the incumbent's separation was
-re-measured across a 24-cell window x asset family
-(backtest/research/regime_1211_incumbent_baseline.py); it is strong on 1h fixed held-out windows
-but does NOT clear a family-corrected bar overall (11/24 significant at alpha/24, n_perm=1799),
-and the rolling OOS window it was keyed on flips sign across snapshots. So gate_verdict's
-incumbent-trustworthy check was DROPPED as a ship precondition (`gate_semantics`
-"candidate-self-v2 (#1211)"): a candidate now promotes on its OWN significant separation +
-non-inferiority + stability, not on the incumbent's significance. Runtime behavior DID change --
-the bake-off can now surface a gate-passing winner instead of abstaining every verdict. Do not
-treat the original p=0.0498 as replicating.
-"""
 from __future__ import annotations
 import math
 import os, sys
@@ -54,32 +20,18 @@ import regime_vol_model as rvm
 
 DEFAULT_WINDOWS = ("is", "oos", "2023", "2024", "2025H1")
 
-# Auto-resolved permutation-count floor (#1160): the corrected alpha must be ACHIEVABLE by the
-# permutation statistic that is thresholded against it, with headroom — 200 permutations bottom
-# out at p = 1/201 ~ 0.005 > 0.05/18, making the eligibility arm unsatisfiable by construction.
 DEFAULT_BAKEOFF_MIN_N_PERM = 1000
 
 
 def bonferroni_alpha(n_candidates):
-    """Family-wise significance threshold for a sweep of n_candidates: SIGNIFICANCE_ALPHA split
-    across every candidate independently tested against the gate's significance arm. Bounds the
-    chance that SOME candidate clears significance by luck as the sweep widens (#1083)."""
     return SIGNIFICANCE_ALPHA / max(1, int(n_candidates))
 
 
 def min_n_perm_for_alpha(alpha):
-    """Smallest n_perm whose minimum achievable block-shuffle p-value, (0+1)/(n_perm+1),
-    is <= alpha."""
     return max(1, math.ceil(1.0 / float(alpha)) - 1)
 
 
 def resolve_bakeoff_n_perm(n_candidates, requested=None):
-    """Pick (or validate) the permutation count so the Bonferroni-corrected alpha is achievable
-    by the statistic thresholded against it (#1160). Default: at least
-    DEFAULT_BAKEOFF_MIN_N_PERM and at least 2x resolution headroom below the corrected alpha
-    (min achievable p <= alpha/2). An explicit request below the achievability floor raises —
-    the harness must fail loudly instead of emitting a false honest-negative from a sweep whose
-    eligibility arm no candidate can satisfy."""
     alpha = bonferroni_alpha(n_candidates)
     floor = min_n_perm_for_alpha(alpha)
     if requested is None:
@@ -95,29 +47,17 @@ def resolve_bakeoff_n_perm(n_candidates, requested=None):
 
 
 def permutation_steps_to_alpha(p_value, n_perm, alpha=SIGNIFICANCE_ALPHA):
-    """How many additional as-or-more-extreme permutations the p-value could absorb before
-    crossing alpha. 0 = knife-edge (one more extreme permutation under a different seed flips
-    the verdict); negative = already above alpha."""
     scale = int(n_perm) + 1
-    count = int(round(float(p_value) * scale))          # (ge+1) recovered from the reported p
+    count = int(round(float(p_value) * scale))
     limit = int(math.floor(float(alpha) * scale + 1e-9))
     return limit - count
 
 
 def verdict_knife_edge(steps):
-    """True when the trustworthy/abstain verdict sits within one permutation step of alpha on
-    EITHER side: steps 0 / -1 flip on a single as-or-more-extreme permutation (one added /
-    one removed under a different seed), steps 1 is a single step from the boundary itself.
-    A one-sided check would report an abstain-by-one incumbent as a comfortable abstain —
-    understating exactly the fragility this flag exists to surface."""
     return abs(int(steps)) <= 1
 
 
 def structurally_ineligible_reason(k, thresholds):
-    """A k-latent candidate emits at most k distinct label names, so below the incumbent-derived
-    min_active_labels floor it can NEVER pass non-degeneracy — it is still scored for evidence,
-    but must not inflate the family-wise denominator (#1160). Returns None when the candidate is
-    structurally eligible."""
     if int(k) < int(thresholds.min_active_labels):
         return (f"k={int(k)} can emit at most {int(k)} distinct labels < min_active_labels="
                 f"{int(thresholds.min_active_labels)}: non-degeneracy is unsatisfiable")
@@ -125,21 +65,10 @@ def structurally_ineligible_reason(k, thresholds):
 
 
 def bonferroni_denominator(candidates):
-    """Number of structurally ELIGIBLE candidates — the family-wise correction divides alpha
-    only across candidates that could actually be selected. Structurally ineligible ones
-    (k below the non-degeneracy floor) contribute zero false-selection probability, so counting
-    them would shrink alpha without bounding anything (#1160)."""
     return sum(1 for c in candidates if not c.get("structurally_ineligible"))
 
 
 def select_winner(candidates):
-    """Eligible = structurally eligible AND gate ship AND non-degenerate on every eval window
-    AND the model's forward-vol p-value clears the BONFERRONI-corrected threshold (alpha /
-    number of structurally eligible candidates swept — see bonferroni_denominator). The gate's
-    own significance arm uses the raw per-candidate alpha; across an 18+ candidate sweep
-    ~1-in-20 clears it by chance, so the family-wise correction is what keeps the SELECTION's
-    false-positive rate bounded. Winner = max held-out model_kruskal_h, stability_gain as
-    tiebreak. Returns None when none are eligible."""
     if not candidates:
         return None
     alpha = bonferroni_alpha(bonferroni_denominator(candidates))
@@ -180,11 +109,6 @@ def run_bakeoff(symbol="BTC/USDT", timeframe="1h", *, in_sample="is", held_out="
     th = dict(_DEFAULT_COMPOSITE_THRESHOLDS)
     hr_streams = _handrule_streams(symbol, timeframe, eval_windows, period, th)
     thresholds = rvm.derive_thresholds(list(hr_streams.values()))
-    # Denominator policy (#1160): every (family, k) cell is fit and scored for evidence, but the
-    # family-wise correction divides alpha only across STRUCTURALLY ELIGIBLE candidates — a k
-    # below the incumbent-derived min_active_labels floor can never pass non-degeneracy, so it
-    # contributes zero false-selection probability. Never silent: ineligible cells are logged to
-    # stderr and stamped into the report.
     plan = [(family, k) for family in families for k in k_range]
     ineligible_reasons = {cell: structurally_ineligible_reason(cell[1], thresholds)
                           for cell in plan}
@@ -256,10 +180,6 @@ def run_bakeoff(symbol="BTC/USDT", timeframe="1h", *, in_sample="is", held_out="
                               "p_value": hr_p,
                               "transition_rate": hr_tr,
                               "abstained": bool(hr_p > SIGNIFICANCE_ALPHA),
-                              # Knife-edge visibility (#1160): additional as-or-more-extreme
-                              # permutations the incumbent p could absorb before the
-                              # trustworthy/abstain verdict flips (0 = next one flips it;
-                              # negative = already abstained, -1 by a single permutation).
                               "permutation_steps_to_alpha": int(incumbent_steps),
                               "knife_edge": bool(verdict_knife_edge(incumbent_steps))},
         "candidates": candidates,

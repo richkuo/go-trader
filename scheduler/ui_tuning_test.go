@@ -513,7 +513,6 @@ func TestLoadPersistedRunsSkipsMalformedDirectories(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// (a) enqueue crash window: directory exists with spec.json only.
 	orphanID := "20260718T000001000000000Z-orphan1"
 	orphanDir := filepath.Join(mgr.rootDir, orphanID)
 	if err := os.Mkdir(orphanDir, 0o700); err != nil {
@@ -525,7 +524,6 @@ func TestLoadPersistedRunsSkipsMalformedDirectories(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// (b) truncated / syntactically corrupt run.json.
 	corruptID := "20260718T000002000000000Z-corrupt"
 	corruptDir := filepath.Join(mgr.rootDir, corruptID)
 	if err := os.Mkdir(corruptDir, 0o700); err != nil {
@@ -535,7 +533,6 @@ func TestLoadPersistedRunsSkipsMalformedDirectories(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// (c) record ID disagrees with directory name.
 	mismatchID := "20260718T000003000000000Z-mismatc"
 	mismatchDir := filepath.Join(mgr.rootDir, mismatchID)
 	if err := os.Mkdir(mismatchDir, 0o700); err != nil {
@@ -550,7 +547,6 @@ func TestLoadPersistedRunsSkipsMalformedDirectories(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Invalid status should also be skipped without taking down recovery.
 	badStatusID := "20260718T000004000000000Z-badstat"
 	badStatusDir := filepath.Join(mgr.rootDir, badStatusID)
 	if err := os.Mkdir(badStatusDir, 0o700); err != nil {
@@ -684,7 +680,6 @@ func TestTuningRunManagerPrunesOldestTerminalOverCap(t *testing.T) {
 		seedTuningTerminalRun(t, root, s.id, s.status, base.Add(time.Duration(i)*time.Hour))
 	}
 
-	// Spec-only orphan must stay skippable (never entered m.runs).
 	orphanID := "20260702T050000000000000Z-orphan99"
 	orphanDir := filepath.Join(root, orphanID)
 	if err := os.Mkdir(orphanDir, 0o700); err != nil {
@@ -747,8 +742,6 @@ func TestTuningRunManagerNeverPrunesQueuedOrRunning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Inject live in-flight records after load (startup would rewrite them to
-	// interrupted). Cap=1 must still preserve both active entries.
 	for _, rec := range []tuningRunRecord{
 		{ID: "20260705T030000000000000Z-queued01", Status: tuningRunQueued,
 			StrategyIDs: []string{"spot-a"}, CreatedAt: base.Add(3 * time.Hour)},
@@ -937,7 +930,6 @@ func TestTuningRunManagerPrefersResultsOverNewerEmptyReject(t *testing.T) {
 	}
 	completedID := "20260706T000000000000000Z-withres1"
 	rejectedID := "20260706T120000000000000Z-rejected"
-	// Older completed run that produced results; newer queue-full reject with none.
 	seedTuningTerminalRun(t, root, completedID, tuningRunCompleted,
 		time.Date(2026, 7, 6, 0, 0, 0, 0, time.UTC))
 	seedTuningTerminalRunNoResults(t, root, rejectedID, tuningRunRejected,
@@ -976,7 +968,6 @@ func TestTuningRunManagerPrefersResultsOverNewerInterrupted(t *testing.T) {
 	if err := writeTuningJSON(filepath.Join(root, completedID, tuningRunRecordFile), rec); err != nil {
 		t.Fatal(err)
 	}
-	// Restart-interrupted: fresh CompletedAt, no results artifact.
 	seedTuningTerminalRunNoResults(t, root, interruptedID, tuningRunInterrupted,
 		time.Date(2026, 7, 7, 1, 0, 0, 0, time.UTC),
 		time.Date(2026, 7, 8, 0, 0, 0, 0, time.UTC))

@@ -1,11 +1,3 @@
-"""Unit tests for the trade-order Monte Carlo resampler (#1274).
-
-The statistics layer is pure (lists of floats / plain dicts, stdlib-only,
-seeded) so it is tested without data access — same architecture as
-test_gross_edge_noise. The 3-trade permutation case is hand-enumerable: every
-ordering's max drawdown is computed independently and the resampled
-distribution must stay inside that enumerated set.
-"""
 
 import itertools
 import json
@@ -15,10 +7,6 @@ import pytest
 import eval_windows as ew
 import monte_carlo as mc
 
-
-# ---------------------------------------------------------------------------
-# equity_path_stats
-# ---------------------------------------------------------------------------
 
 def test_equity_path_empty():
     assert mc.equity_path_stats([]) == (0.0, 0.0)
@@ -31,15 +19,12 @@ def test_equity_path_all_winners_has_zero_dd():
 
 
 def test_equity_path_hand_computed_dd():
-    # 1.0 -> 1.10 (peak) -> 0.88 (dd 20%) -> 0.968 (final -3.2%)
     dd, final = mc.equity_path_stats([10.0, -20.0, 10.0])
     assert dd == pytest.approx(20.0)
     assert final == pytest.approx(-3.2)
 
 
 def test_equity_path_bust_is_sticky_floor():
-    # -100% trade zeroes the account; #1005 convention: DD 100, final -100,
-    # later winners never resurrect it.
     dd, final = mc.equity_path_stats([-100.0, 50.0])
     assert (dd, final) == (100.0, -100.0)
 
@@ -48,10 +33,6 @@ def test_equity_path_dd_positive_magnitude():
     dd, _ = mc.equity_path_stats([-10.0])
     assert dd == pytest.approx(10.0)
 
-
-# ---------------------------------------------------------------------------
-# percentile / smoothing / block length
-# ---------------------------------------------------------------------------
 
 def test_percentile_empty_none_and_interpolation():
     assert mc.percentile([], 50) is None
@@ -71,21 +52,14 @@ def test_auto_block_len():
     assert mc.auto_block_len(28) == 4
 
 
-# ---------------------------------------------------------------------------
-# permute scheme — hand-enumerable 3-trade case
-# ---------------------------------------------------------------------------
-
 def test_permutation_dds_stay_in_enumerated_set():
     trades = [10.0, -20.0, 5.0]
     enumerated = {round(mc.equity_path_stats(list(p))[0], 4)
                   for p in itertools.permutations(trades)}
     stats = mc.resample_stats(trades, "permute", n_paths=500, seed=42)
-    # Every reported percentile is a value from (or interpolated within) the
-    # enumerated distribution's range.
     dd_vals = stats["max_dd_pct_percentiles"]
     assert min(enumerated) <= dd_vals["p5"] <= dd_vals["p50"] \
         <= dd_vals["p95"] <= max(enumerated)
-    # Final return is order-invariant under permutation (same multiset).
     fr = stats["final_return_pct_percentiles"]
     expected_final = mc.equity_path_stats(trades)[1]
     assert fr["p5"] == pytest.approx(expected_final, abs=1e-4)
@@ -101,12 +75,8 @@ def test_permutation_per_path_dds_match_enumeration_exactly():
     seen = {round(mc.equity_path_stats(mc.permuted_path(trades, rng))[0], 6)
             for _ in range(300)}
     assert seen <= enumerated
-    assert seen == enumerated  # 300 draws over 6 orderings covers all
+    assert seen == enumerated
 
-
-# ---------------------------------------------------------------------------
-# block scheme
-# ---------------------------------------------------------------------------
 
 def test_block_path_preserves_circular_contiguity():
     values = [1.0, 2.0, 3.0, 4.0, 5.0]
@@ -117,8 +87,6 @@ def test_block_path_preserves_circular_contiguity():
     for _ in range(50):
         path = mc.block_bootstrap_path(values, 2, rng)
         assert len(path) == len(values)
-        # Each drawn block of 2 is a circularly-adjacent pair; pairs at even
-        # offsets within the path are whole blocks (last may be truncated).
         for i in range(0, len(path) - 1, 2):
             assert (path[i], path[i + 1]) in adjacent
 
@@ -140,10 +108,6 @@ def test_block_scheme_auto_len_recorded():
                               block_len=5)
     assert stats["block_len"] == 5
 
-
-# ---------------------------------------------------------------------------
-# resample_stats — determinism, degenerate inputs, smoothing
-# ---------------------------------------------------------------------------
 
 def test_resample_stats_deterministic_under_seed():
     trades = [3.0, -2.0, 1.5, -4.0, 2.2, 0.7, -1.1]
@@ -176,7 +140,6 @@ def test_all_winner_series_reports_smoothed_floor():
 
 
 def test_certain_breach_smoothed_below_one():
-    # Every ordering of a single -50% trade breaches a 25% threshold.
     s = mc.resample_stats([-50.0], "permute", n_paths=100, seed=1,
                           kill_switch_pct=25.0)
     assert s["p_dd_ge_kill_switch"] == pytest.approx(101 / 101)
@@ -188,17 +151,12 @@ def test_unknown_scheme_rejected():
         mc.resample_stats([1.0], "bogus")
 
 
-# ---------------------------------------------------------------------------
-# trade_returns / trades_from_json_payload
-# ---------------------------------------------------------------------------
-
 def _trade(pnl_pct, shares=2.0, entry_price=100.0, pnl=None):
     return {"pnl_pct": pnl_pct, "shares": shares, "entry_price": entry_price,
             "pnl": pnl}
 
 
 def test_trade_returns_net_deducts_fees():
-    # Gross +5% on 200 notional = +10 gross; net pnl 8 after fees -> +4%.
     vals = mc.trade_returns([_trade(5.0, pnl=8.0)])
     assert vals == [pytest.approx(4.0)]
 
@@ -231,10 +189,6 @@ def test_payload_dict_and_list_forms():
         mc.trades_from_json_payload("nope")
 
 
-# ---------------------------------------------------------------------------
-# resolve_kill_switch_pct — mirror of config.go's hierarchy
-# ---------------------------------------------------------------------------
-
 def _cfg(strategies, platforms=None):
     return {"strategies": strategies, "platforms": platforms or {}}
 
@@ -258,7 +212,6 @@ def test_kill_switch_type_defaults():
 
 
 def test_kill_switch_platform_inferred_from_id_prefix():
-    # hl- prefix -> hyperliquid platform risk override applies.
     cfg = _cfg([{"id": "hl-btc-x", "type": "perps"}],
                {"hyperliquid": {"risk": {"max_drawdown_pct": 18.0}}})
     assert mc.resolve_kill_switch_pct(cfg, "hl-btc-x") == 18.0
@@ -268,10 +221,6 @@ def test_kill_switch_missing_strategy_raises():
     with pytest.raises(ValueError):
         mc.resolve_kill_switch_pct(_cfg([]), "ghost")
 
-
-# ---------------------------------------------------------------------------
-# trade_samples_from_results — additive pnl_pct_net key (#1274)
-# ---------------------------------------------------------------------------
 
 def test_trade_samples_carry_net_return():
     results = {"trades": [{"entry_date": "2025-01-01", "pnl_pct": 5.0,
@@ -287,10 +236,6 @@ def test_trade_samples_net_falls_back_to_gross():
     samples = ew.trade_samples_from_results(results)
     assert samples[0]["pnl_pct_net"] == 5.0
 
-
-# ---------------------------------------------------------------------------
-# CLI end-to-end on a trades-JSON file (no data cache needed)
-# ---------------------------------------------------------------------------
 
 def test_cli_deterministic_byte_identical_json(tmp_path, capsys):
     trades = [{"entry_date": "2025-01-01", "pnl_pct": 3.0, "shares": 1.0,
@@ -308,7 +253,7 @@ def test_cli_deterministic_byte_identical_json(tmp_path, capsys):
                       "--n-paths", "300", "--json", str(out)])
         assert rc == 0
         outs.append(out.read_bytes())
-    assert outs[0] == outs[1]  # byte-identical under the same seed
+    assert outs[0] == outs[1]
     payload = json.loads(outs[0])
     assert {b["scheme"] for b in payload["schemes"]} == set(mc.SCHEMES)
     assert payload["kill_switch_pct"] == mc.DEFAULT_KILL_SWITCH_PCT
@@ -349,11 +294,6 @@ def test_cli_empty_trades_no_crash(tmp_path, capsys):
     assert rc == 0
     assert "nothing to resample" in capsys.readouterr().out
 
-
-# ---------------------------------------------------------------------------
-# CLI numeric/enum arg guards — malformed input exits cleanly (SystemExit),
-# never a raw IndexError/TypeError (review on #1293).
-# ---------------------------------------------------------------------------
 
 def _valid_trades_json(tmp_path):
     src = tmp_path / "results.json"
@@ -434,13 +374,6 @@ def test_cli_rejects_trades_json_bare_number(tmp_path):
         mc.main(["--trades-json", str(src)])
 
 
-# ---------------------------------------------------------------------------
-# Malformed-CLI-input sub-cases (review on #1293): --config / --trades-json
-# missing or invalid, --params invalid JSON, bad --dataset, and trade dicts
-# missing pnl_pct — all must SystemExit with an actionable message, never an
-# unhandled traceback.
-# ---------------------------------------------------------------------------
-
 def test_cli_config_missing_file_exits_cleanly(tmp_path):
     src = _valid_trades_json(tmp_path)
     with pytest.raises(SystemExit):
@@ -488,8 +421,6 @@ def test_trade_returns_missing_pnl_pct_gross_raises_value_error():
 
 
 def test_trade_returns_missing_pnl_pct_net_fallback_raises_value_error():
-    # No notional (shares=0) forces the net-fallback-to-pnl_pct path, which
-    # is also missing pnl_pct here.
     trade = {"shares": 0.0, "entry_price": 0.0, "pnl": 8.0}
     with pytest.raises(ValueError, match="pnl_pct"):
         mc.trade_returns([trade], returns="net")
@@ -502,10 +433,6 @@ def test_cli_trades_json_missing_pnl_pct_exits_cleanly(tmp_path):
     with pytest.raises(SystemExit):
         mc.main(["--trades-json", str(src)])
 
-
-# ---------------------------------------------------------------------------
-# #1295 — candidate fidelity: resample the candidate, not the bare strategy
-# ---------------------------------------------------------------------------
 
 class _FakeReg:
     STRATEGY_REGISTRY = {"squeeze_momentum": {"default_params": {}}}
@@ -530,9 +457,6 @@ def _rich_candidate():
 
 
 def test_run_candidate_leg_threads_the_whole_candidate_into_run_leg(monkeypatch):
-    # The #1295 regression: a resampler that hand-picks name/params/direction
-    # silently scores an UNGATED, default-close strategy — different numbers,
-    # same-looking column. Every modelable field must reach run_leg.
     seen = {}
 
     def fake_run_leg(reg, name, params, symbol, timeframe, window, **kw):
@@ -560,7 +484,7 @@ def test_run_candidate_leg_applies_the_validated_long_direction_default(monkeypa
                         lambda *a, **kw: seen.update(kw) or {"trade_samples": []})
     ew.run_candidate_leg(_FakeReg, {"name": "squeeze_momentum"}, "BTC/USDT",
                          "1h", ("2025-06-10", None))
-    assert seen["direction"] == "long"      # #996: validated default = executed
+    assert seen["direction"] == "long"
 
 
 def _patch_leg(monkeypatch, leg):
@@ -582,7 +506,7 @@ def test_run_candidate_leg_trades_delegates_and_returns_net_series(monkeypatch):
 
     vals = mc.run_candidate_leg_trades(_rich_candidate(), "spot",
                                        "BTC/USDT:1h", "is", 1000.0, "net")
-    assert vals == [1.5, -1.4]                       # pnl_pct_net
+    assert vals == [1.5, -1.4]
     assert captured["cand"]["allowed_regimes"] == ["trending_up_clean"]
     assert (captured["symbol"], captured["timeframe"]) == ("BTC/USDT", "1h")
     assert captured["kw"]["keep_trades"] is True
@@ -604,10 +528,6 @@ def test_default_dataset_args_matches_the_eval_windows_audit_six():
     assert len(mc.default_dataset_args()) == 6
 
 
-# ---------------------------------------------------------------------------
-# #1295 — multi-leg mode
-# ---------------------------------------------------------------------------
-
 def _write_candidate(tmp_path, **over):
     cand = {"name": "squeeze_momentum", "direction": "long"}
     cand.update(over)
@@ -625,7 +545,7 @@ def test_multileg_payload_has_one_block_per_window_dataset_pair(monkeypatch, tmp
                   "--json", str(out)])
     assert rc == 0
     payload = json.loads(out.read_text())
-    assert "legs" in payload and "observed" not in payload   # fan shape
+    assert "legs" in payload and "observed" not in payload
     assert len(payload["legs"]) == 4
     assert {(l["window"], l["dataset"]) for l in payload["legs"]} == {
         ("is", "BTC/USDT 1h"), ("is", "ETH/USDT 4h"),
@@ -672,7 +592,7 @@ def test_multileg_records_a_no_data_leg_without_aborting_the_fan(monkeypatch, tm
     rc = mc.main(["--candidate-json", str(_write_candidate(tmp_path)),
                   "--windows", "is", "--datasets", "BTC/USDT:1h,ETH/USDT:4h",
                   "--n-paths", "20", "--json", str(out)])
-    assert rc == 0                                   # one bad leg != a failure
+    assert rc == 0
     legs = json.loads(out.read_text())["legs"]
     assert [l["status"] for l in legs] == ["no_data", "ok"]
     assert legs[0]["schemes"] == [] and legs[0]["observed"] is None
@@ -695,8 +615,6 @@ def test_multileg_bare_strategy_source_also_fans(monkeypatch, tmp_path):
                     "--json", str(out)]) == 0
     assert len(json.loads(out.read_text())["legs"]) == 1
 
-
-# ---- CLI guards -----------------------------------------------------------
 
 def test_cli_rejects_three_way_source_ambiguity(tmp_path):
     with pytest.raises(SystemExit, match="exactly one trade source"):
@@ -733,8 +651,6 @@ def test_cli_rejects_an_invalid_candidate_json(tmp_path):
 
 
 def test_single_leg_payload_shape_is_unchanged_by_1295(monkeypatch, tmp_path):
-    # Regression guard: the pre-#1295 single-dataset CLI keeps its flat payload
-    # (observed + schemes at the top level, no "legs" key) and its defaults.
     import registry_loader
     monkeypatch.setattr(registry_loader, "load_registry", lambda r: _FakeReg)
     seen = {}
@@ -751,5 +667,5 @@ def test_single_leg_payload_shape_is_unchanged_by_1295(monkeypatch, tmp_path):
     assert "legs" not in payload
     assert set(payload["observed"]) == {"max_dd_pct", "final_return_pct"}
     assert payload["n_trades"] == 2
-    assert seen["symbol"] == "BTC/USDT"      # --dataset default preserved
-    assert seen["direction"] is None         # bare strategy: unchanged, not "long"
+    assert seen["symbol"] == "BTC/USDT"
+    assert seen["direction"] is None

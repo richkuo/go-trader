@@ -1,40 +1,9 @@
 #!/usr/bin/env bash
-# Atomic update with pre-flight probe, staging build, atomic binary swap,
-# post-restart verification, and rollback (#682). #764: extra go(1) lookup
-# paths + ExecStart vs swap-target warning before systemd restart. #766:
-# RESTART_MODE=signal (explicit) for bare-process + pidfile deployments.
-# #785: systemd mode falls back to signal restart when unit missing (exit 5).
-# #790: --rsync-from safe tree sync; warn on missing systemd EnvironmentFile.
-#   --rsync-from preserves deployment .git/ (not copied from source) so rollback
-#   git reset --hard still targets the deployment repo's pre-sync SHA.
-# #1055: --all batch = UNION of ACTIVE go-trader systemd units' WorkingDirectory
-#   (layout-independent) and the <root>/go-trader-*/ glob, so neither a scattered
-#   systemd deployment nor a signal-mode/unloaded one under the glob root silently
-#   leaves the batch. Auto-discovery is active-only (never starts a stopped unit).
-#   An explicit --update-all-root / GO_TRADER_UPDATE_ALL_ROOT pins the glob root.
-#
-# Phases:
-#   preflight  — git/uv/go sanity checks
-#   rsync      — optional --rsync-from (replaces pull)
-#   pull       — git pull --ff-only
-#   sync       — uv sync
-#   build      — go build to go-trader.new (live binary untouched)
-#   probe      — go-trader.new probe against the just-synced Python
-#   swap       — atomic mv: live binary -> .prev, staged -> live
-#   restart    — systemd unit, or signal/kill + wrapper (explicit or #785 fallback)
-#   verify     — wait active (systemd) or /health + PID freshness
-#   rollback   — restore .prev on verify failure
-#
-# Use --restart (or RESTART=1) to restart after a successful build
-# AND verify the running process matches the just-built version. Without
-# --restart the script stops after swap; the caller (scheduler/updater.go's
-# applyUpgrade) handles its own restart via restartSelf.
 
 set -euo pipefail
 
 THIS_SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 THIS_SCRIPT="${THIS_SCRIPT_DIR}/$(basename "${BASH_SOURCE[0]}")"
-# shellcheck source=update_helpers.sh
 source "${THIS_SCRIPT_DIR}/update_helpers.sh"
 orig_argv=("$@")
 
@@ -86,7 +55,6 @@ while [[ $# -gt 0 ]]; do
                 echo "$1 requires a directory path" >&2
                 exit 2
             fi
-            # Value is applied when processing --all from orig_argv (must parse here so argv is not rejected).
             shift 2
             ;;
         --update-all-root=*)
@@ -257,9 +225,7 @@ signal_launch_wrapper() {
     if [[ ! -x "$run_sh" ]]; then
         fail "GO_TRADER_RUN_SH ($run_sh) is not executable"
     fi
-    # Detach like a normal nohup deployment; wrapper must write GO_TRADER_PIDFILE with the trader PID.
     setsid nohup bash "$run_sh" >>"$signal_log_out" 2>&1 &
-    # Brief yield only; pidfile freshness is enforced by verify / rollback polls (not this sleep).
     sleep 1
 }
 
@@ -332,8 +298,6 @@ signal_kill_pidfile_process_then_respawn() {
     else
         echo "[update] signal: no live pid in $pidfile (cur=${cur:-empty}) — starting wrapper anyway" >&2
     fi
-    # The pidfile may not name the failed new process (it can survive on a
-    # fallback port); sweep this instance's strays before respawning (#850).
     signal_sweep_stray_instance_procs
     signal_launch_wrapper "$run_sh"
 }
@@ -410,9 +374,6 @@ run_rsync_from() {
         --exclude="${db_excl}*"
         --exclude='trading_bot.db*'
     )
-    # Extension-based DB protection (#1012): any *.db (+ SQLite sidecar/lock) at
-    # any path survives --delete, even if it isn't the config-resolved db_file.
-    # db_excl above stays as belt-and-suspenders for non-.db-suffixed DB paths.
     local db_glob
     while IFS= read -r db_glob; do
         [[ -n "$db_glob" ]] && rsync_excludes+=(--exclude="$db_glob")
@@ -453,11 +414,6 @@ warn_execstart_vs_swap() {
     fi
 }
 
-# Return 0 when a systemd unit is active AND its ExecStart binary resolves to
-# this deployment's ./go-trader. Used to redirect an explicit signal-mode restart
-# through systemctl so we never spawn an out-of-cgroup duplicate (#850). The
-# ExecStart match avoids false-positives across sibling worktrees that each run
-# their own active unit. Conservative: any unreadable input falls through to 1.
 systemd_unit_manages_this_instance() {
     local unit="$1"
     command -v systemctl >/dev/null 2>&1 || return 1
@@ -474,11 +430,6 @@ systemd_unit_manages_this_instance() {
     [[ "$(update_signal_redirect_decision "$active_state" "$bin_abs" "$swap_res")" == "redirect" ]]
 }
 
-# Rollback hygiene (#850): SIGTERM (escalating to SIGKILL via signal_wait_pid_exit)
-# any go-trader process whose cwd is this deployment dir, i.e. one sharing this
-# instance's state DB — e.g. a failed new process still alive on a bindWithFallback
-# port. Runs before the wrapper respawn so a rollback cycle ends with exactly one
-# live process. cwd-matching spares other worktrees' traders. Linux/signal-only.
 signal_sweep_stray_instance_procs() {
     [[ -d /proc ]] || return 0
     local repo_abs
@@ -575,22 +526,13 @@ verify_cur_restart_pid() {
     fi
 }
 
-# --- begin single-repo update body (also invoked per dir for --all) ---
 
 begin_phase preflight
 
 repo_root=$(git rev-parse --show-toplevel)
 cd "$repo_root"
 
-# The --all coordinator only fans out to per-deployment child update.sh runs (each
-# does its own uv/go preflight + build), so it must reach discovery/dispatch WITHOUT
-# the build toolchain on the coordinator host (#1055 review): the CI go-job has no
-# uv, and a thin coordinator may carry only git + systemd. Dispatch BEFORE the uv/go
-# checks below, which gate the single-repo build path only.
 if [[ "$update_all" == "1" ]]; then
-    # scan_root drives the legacy go-trader-*/ glob fallback. An explicit override
-    # (env or --update-all-root) means the operator is pinning the batch root, so we
-    # honor the glob and skip systemd auto-discovery (keeps that flow unchanged, #1055).
     scan_root="$(trim_space "${GO_TRADER_UPDATE_ALL_ROOT:-}")"
     scan_root_explicit=0
     if [[ -n "$scan_root" ]]; then
@@ -622,15 +564,6 @@ if [[ "$update_all" == "1" ]]; then
         fi
         child_args+=("$a")
     done
-    # Build the deployment batch by UNIONing two sources, so no deployment the
-    # operator expects --all to cover silently leaves the batch (#1055 review):
-    #   - systemd: ACTIVE go-trader units' WorkingDirectory (canonical, layout-
-    #     independent, even across different parent dirs).
-    #   - glob: $scan_root/go-trader-*/ (the pre-#1055 behavior), which still catches
-    #     a signal-mode or not-currently-loaded deployment living under the glob root
-    #     that active-unit discovery alone would miss.
-    # An explicit --update-all-root / GO_TRADER_UPDATE_ALL_ROOT pins the glob root and
-    # SUPPRESSES systemd discovery, keeping that documented flow unchanged.
     declare -a discovered=()
     declare -a discovery_sources=()
     if [[ "$scan_root_explicit" != "1" ]]; then
@@ -654,11 +587,6 @@ if [[ "$update_all" == "1" ]]; then
     if [[ ${#discovered[@]} -eq 0 ]]; then
         fail "no deployments found: no ACTIVE go-trader systemd units (systemctl absent or none active) and no directories match $scan_root/go-trader-*/ (batch root: $scan_root). Set --update-all-root <dir> / GO_TRADER_UPDATE_ALL_ROOT, or start the deployments' systemd units."
     fi
-    # Canonicalize each dir to its physical path BEFORE de-duping, so a systemd
-    # WorkingDirectory and a glob hit that resolve to the same directory (via a
-    # symlink, /./ or //) collapse to one entry — otherwise that one live deployment
-    # would be updated and restarted twice (#1055 review). De-dupe + sort for stable
-    # operator output; genuinely distinct physical dirs are preserved.
     declare -a canon=()
     for d in "${discovered[@]}"; do
         canon+=("$(canonicalize_deployment_dir "$d")")
@@ -672,10 +600,6 @@ if [[ "$update_all" == "1" ]]; then
     fail_count=0
     skip_count=0
     update_count=0
-    # Every counted dir that is skipped is reported with a reason, so the announced
-    # count above reconciles with what actually updates (#1055 review). Systemd
-    # discovery can surface dirs with no deployment (e.g. the primary unit's source
-    # repo, which has no scheduler/config.json); they must not vanish silently.
     for d in "${all_dirs[@]}"; do
         if [[ ! -d "$d" ]]; then
             echo "[update] --all: skipping $d (no longer a directory)" >&2
@@ -706,8 +630,6 @@ if [[ "$update_all" == "1" ]]; then
     exit 0
 fi
 
-# Build-toolchain preflight: gates the single-repo update path only (the --all
-# coordinator dispatched above without it; each child re-runs this in its own dir).
 if ! command -v uv >/dev/null 2>&1; then
     fail "uv not on PATH — install uv first (see CLAUDE.md → Setup)"
 fi
@@ -817,12 +739,10 @@ if [[ "$restart" == "1" && "$restart_mode" == "signal" ]]; then
         echo "[update] signal: warning: process cwd ($proc_cwd) != repo root ($repo_abs)" >&2
     fi
 else
-    # systemd MainPID (or best-effort when --restart off — same capture for restart=0 vs systemd restart=1)
     prev_main_pid=$(systemctl show -p MainPID --value "$service_unit" 2>/dev/null || echo "")
     if [[ "$prev_main_pid" == "0" ]]; then
         prev_main_pid=""
     fi
-    # Bare-process deploys may have no unit; keep pidfile pid for #785 signal fallback + verify.
     if [[ -z "$prev_main_pid" && "$restart" == "1" ]]; then
         prev_main_pid=$(signal_read_pidfile "$go_trader_pidfile" || true)
     fi
@@ -837,10 +757,6 @@ if [[ -n "$rsync_from" ]]; then
     end_phase
 else
     begin_phase pull
-    # DB protection on the pull path (#1012): a fast-forward only advances tracked
-    # files. Every *.db is gitignored (untracked), and git never overwrites or
-    # deletes untracked/ignored files on a fast-forward, so state DBs at any path
-    # survive `pull --ff-only` unchanged — the guarantee is explicit, not incidental.
     git pull --ff-only
     post_pull_sha=$(git rev-parse HEAD 2>/dev/null || echo "")
     if [[ -n "$pre_pull_sha" && -n "$post_pull_sha" && "$pre_pull_sha" != "$post_pull_sha" ]]; then
@@ -885,10 +801,6 @@ fi
 mv -f ./go-trader.new ./go-trader
 end_phase
 
-# #1051: refresh the auto-generated agent capability doc from the freshly
-# swapped binary. Best-effort — a doc-generation failure must never fail or
-# roll back a deploy. Writes AGENTS.generated.md (NOT AGENTS.md, a symlink to
-# the hand-maintained CLAUDE.md).
 begin_phase agent-info
 agent_info_cfg=()
 [[ -f scheduler/config.json ]] && agent_info_cfg=(--config scheduler/config.json)

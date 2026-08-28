@@ -6,12 +6,8 @@ import (
 	"strings"
 )
 
-// runHLSyncProtectionFn is a package var so tests can stub without spawning Python.
 var runHLSyncProtectionFn = RunHyperliquidSyncProtection
 
-// formatProtectionSyncWarnings extracts per-field error strings from a
-// HyperliquidProtectionSyncResult into a flat slice. Prefers the tiered
-// TPErrors slice; falls back to legacy TP1Error/TP2Error scalar fields.
 func formatProtectionSyncWarnings(result *HyperliquidProtectionSyncResult) []string {
 	var warns []string
 	if result.StopLossError != "" {
@@ -43,9 +39,6 @@ func formatProtectionSyncWarnings(result *HyperliquidProtectionSyncResult) []str
 	return warns
 }
 
-// computeFallbackATR returns a leverage-aware ATR fallback of 0.1*fillPrice/leverage,
-// representing a price move that risks 10% of deployed margin at 1× ATR. Returns
-// ok=false when leverage or fillPrice are not positive (caller must warn naked).
 func computeFallbackATR(fillPrice, leverage float64) (float64, bool) {
 	if leverage <= 0 || fillPrice <= 0 {
 		return 0, false
@@ -53,10 +46,6 @@ func computeFallbackATR(fillPrice, leverage float64) (float64, bool) {
 	return 0.1 * fillPrice / leverage, true
 }
 
-// placeManualProtectionInline calls --sync-protection inline after a manual fill
-// and returns the placed TP OIDs. Returns (nil, "", nil) when no tiers are configured
-// without spawning Python. A non-empty warnMsg signals a partial failure (position
-// remains open; caller should warn but not abort).
 func placeManualProtectionInline(
 	sc StrategyConfig,
 	side string,
@@ -88,21 +77,10 @@ func placeManualProtectionInline(
 	return result.TPOIDs, strings.Join(formatProtectionSyncWarnings(result), "; "), nil
 }
 
-// manualOpenCleanupCloseFn is the close path used by attemptManualOpenCleanup.
-// Exposed as a package var so tests can stub without spawning Python (#634).
 var manualOpenCleanupCloseFn = func(symbol string, partialSz *float64, cancelOIDs []int64) (*HyperliquidCloseResult, string, error) {
 	return RunHyperliquidClose(hyperliquidLiveCloseScript, symbol, partialSz, cancelOIDs)
 }
 
-// attemptManualOpenCleanup tries to flatten a position that was just opened by
-// manual-open and cancel its protective triggers, after a fatal error
-// (typically pending-action queue insert failure) prevented the scheduler from
-// adopting the position. Without this, the next reconcile cycle would see an
-// unowned on-chain position with orphaned reduce-only SL/TP orders (#634).
-//
-// Sized to fillQty (not the full on-chain position) so a peer manual/perps
-// position on the same coin is preserved. Returns (cleanedUp, msg) where msg
-// is suitable for inclusion in an operator notification.
 func attemptManualOpenCleanup(symbol string, fillQty float64, stopLossOID int64, tpOIDs []int64) (bool, string) {
 	cancelOIDs := make([]int64, 0, 1+len(tpOIDs))
 	if stopLossOID > 0 {
@@ -131,8 +109,6 @@ func attemptManualOpenCleanup(symbol string, fillQty float64, stopLossOID int64,
 	return true, "position flattened and orphan triggers cancelled"
 }
 
-// warnNotifier writes msg to stderr and, when the notifier has backends, also
-// broadcasts to all channels and fires an owner DM.
 func warnNotifier(notifier *MultiNotifier, msg string) {
 	fmt.Fprintln(os.Stderr, "[WARN] "+msg)
 	if notifier != nil && notifier.HasBackends() {

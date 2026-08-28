@@ -1,13 +1,3 @@
-"""Aggregate the #1076 scope-1 battery JSON dumps and apply ONE global multiple-comparisons
-correction across the entire (classifier, asset, timeframe, window, horizon, state) family.
-
-per_state_significance corrects FDR only within a single cell; each separate battery run
-corrects only within its own universe. The honest family-wide screen pools every directional
-test from every dump and corrects once. Run after the battery dumps exist:
-
-    uv run --no-sync python backtest/research/regime_1076_aggregate.py \
-        /tmp/wf1076_core.json /tmp/wf1076_btc_extra.json /tmp/wf1076_alt4h.json
-"""
 from __future__ import annotations
 import json
 import os

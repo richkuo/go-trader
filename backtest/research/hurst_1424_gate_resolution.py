@@ -1,73 +1,4 @@
 #!/usr/bin/env python3
-"""#1424: Hurst entry-gate RESOLUTION study — report only.
-
-The #1422 power study (``hurst_1422_gate_power.py``) returned ``INCONCLUSIVE``
-because of POWER and not because of an absent signal. Its primary cohort
-resolved 0.96 pp per trade under the cluster null while the largest anti-signal
-separation on those same rows was 0.37 pp. A null measured under a limit ABOVE
-the separation bounds the edge from above and says nothing at all about a
-smaller one, so the question "does Hurst carry a usable edge" stayed open and
-that design could not close it.
-
-This successor exists to make its OWN null readable. It lowers the detection
-limit by three independent, pre-registered routes that combine:
-
-1. ONE pre-registered primary hypothesis instead of four. The rank-1
-   Benjamini-Hochberg bar moves from ``alpha/4`` to ``alpha``. The pick is
-   derived MECHANICALLY as the smallest raw p in the COMMITTED #1410 JSON —
-   evidence that never read one bar of the tape #1422 scored for the first
-   time, which is what lets the primary cohort here include #1422's primary
-   cells as well as the new pre-2020 ones. The cost is stated plainly: this
-   study tests ONE gate design and cannot rank alternatives.
-2. More INDEPENDENT calendar clusters. Effective N is set by how many
-   independent calendar spans a pool holds, not by trade count, so this adds
-   pre-2020 history from two venues whose tape the ``binanceus`` cache does not
-   reach: Bitstamp BTC/USD back to 2013 and Coinbase Exchange BTC/ETH/LTC back
-   to 2016. Every (base asset, calendar window) cell has exactly ONE owning
-   venue, asserted, so no calendar span is ever counted twice.
-3. A lower-variance primary target. Per-trade net return is the noisiest target
-   available. The pre-registered inference statistic becomes SIGNED FIXED-HORIZON
-   EFFICIENCY, bounded in ``[-1, 1]``, which removes the fat tail. It is an
-   OUTCOME, exactly as PnL is, so no look-ahead invariant moves. A win on it is
-   evidence about the MECHANISM and is not by itself a licence to ship a gate —
-   the acceptance rule still requires the net-return economics to clear.
-
-VALIDITY GATE, pre-registered and mechanical. This study is valid only when the
-measured cluster-null detection limit on its primary cohort, in efficiency
-units, falls BELOW that same cohort's pool-matched observed separation on that
-same statistic. When it does not, the report says so plainly and the verdict
-stays a power statement — never an assertion about the market.
-
-REPORT-PATH CONTRACT. This study OWNS ``backtest/research/hurst_gate_calibration.md``
-— the live-evidence path cited by ``scheduler/hurst_gate.go``,
-``docs/ARCHITECTURE.md`` and #1412's Stage 0 gate. #1422's own render now lives
-at ``hurst_1422_gate_power.md`` and #1410's at ``hurst_1410_gate_calibration.md``;
-neither study may write this path again.
-
-REPORT-ONLY. Zero scheduler, config, gating, sizing, or live-path changes. The
-gate and size arms are OFFLINE SIMULATIONS. #1411's ``hurst_gate`` ships
-default-off with no recommended thresholds and is untouched by this study;
-whether that stays true is what the Recommendation section decides.
-
-Method
-------
-Inherited verbatim from #1422 unless named here: the #1409 ``hurst_exponent``
-SSoT, the rolling-H look-ahead convention, the NaN policy, the shared circular
-calendar-rotation null, effective N, the coverage density floor, the dedup rule,
-the harness-identity mirror against ``eval_windows.run_leg``, and the joint
-ADX x Hurst section.
-
-What is new: the venue-qualified dataset identity and its window-ownership
-matrix, the signed-efficiency primary target, the single-hypothesis primary
-family, the 4-window primary economics protocol, and the validity gate.
-
-Usage
------
-  uv run --no-sync python backtest/research/hurst_1424_gate_resolution.py \
-      --jobs 8 --write-report --out-dir /tmp/hurst1424
-  uv run --no-sync python backtest/research/hurst_1424_gate_resolution.py --render-only
-  uv run --no-sync python backtest/research/hurst_1424_gate_resolution.py --fetch-only
-"""
 
 import argparse
 import json
@@ -86,10 +17,10 @@ for _p in (_THIS_DIR, _BACKTEST, _ROOT, os.path.join(_ROOT, "shared_tools")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-import numpy as np  # noqa: E402
-import pandas as pd  # noqa: E402
+import numpy as np
+import pandas as pd
 
-from eval_windows import (  # noqa: E402  (sys.path bootstrap must run first)
+from eval_windows import (
     DATASETS as AUDIT_DATASETS,
     DEFAULT_CAPITAL,
     FEE_PLATFORM,
@@ -101,16 +32,11 @@ from eval_windows import (  # noqa: E402  (sys.path bootstrap must run first)
     leg_from_results,
     run_leg,
 )
-from regime_stats import benjamini_hochberg  # noqa: E402
+from regime_stats import benjamini_hochberg
 
-# The two predecessor studies are the SSoT for every helper this study did not
-# have to change. Imported by unambiguous module name off research/ on sys.path
-# — the pattern the #1410 and #1422 test modules use, and the one that stays
-# safe under the #1304 `pytest -n auto` parallel run.
-import hurst_1410_gate_calibration as study1410  # noqa: E402
-import hurst_1422_gate_power as study1422  # noqa: E402
+import hurst_1410_gate_calibration as study1410
+import hurst_1422_gate_power as study1422
 
-# --- #1410 (estimator, buckets, gate/size mechanics) -----------------------
 bucket_label = study1410.bucket_label
 cache_entry_is_usable = study1410.cache_entry_is_usable
 cache_meta = study1410.cache_meta
@@ -149,7 +75,6 @@ gate_config_id = study1410.gate_config_id
 size_config_id = study1410.size_config_id
 _MIRRORED_LEG_KEYS = study1410._MIRRORED_LEG_KEYS
 
-# --- #1422 (cluster null, effective N, coverage, MDE machinery) ------------
 adx_entry_stamp = study1422.adx_entry_stamp
 anti_signal_side = study1422.anti_signal_side
 cluster_permutation_pvalue_group_diff = study1422.cluster_permutation_pvalue_group_diff
@@ -178,31 +103,13 @@ MIN_OFFSET_DAYS = study1422.MIN_OFFSET_DAYS
 MIN_WINDOW_BAR_FRACTION = study1422.MIN_WINDOW_BAR_FRACTION
 NO_JOINT_SEPARATION = study1422.NO_JOINT_SEPARATION
 
-# ---------------------------------------------------------------------------
-# Pre-registered design constants. Fixed before the sweep ran; serialized
-# verbatim into the JSON and the report so a reader can tell the Recommendation
-# was not tuned after seeing the numbers.
-# ---------------------------------------------------------------------------
 SCHEMA_VERSION = 1
 ISSUE = 1424
-SEED = ISSUE  # 1424 — fixed so a re-run reproduces every p-value
+SEED = ISSUE
 
-# --- Route 1: ONE pre-registered primary hypothesis ------------------------
-# Derived MECHANICALLY as argmin(p_raw) over ALL configs in the committed #1410
-# JSON, and pinned here so a regenerated #1410 JSON can never silently swap the
-# pre-registration. `resolve_primary_config_id` re-derives it at run time and
-# `main` asserts the two agree before a single leg is scored.
-#
-# Selecting on #1410's outcomes is legitimate for a cohort disjoint from the
-# data those outcomes came from. That is why the primary cohort below may
-# include #1422's primary cells as well as the new pre-2020 ones: the pick
-# never read either. What it DID read is disclosed as an interim look.
 PRIMARY_CONFIG_ID = "momentum/gate/W512/arm0.52/dis0.48"
 PRIMARY_CONFIG_IDS = (PRIMARY_CONFIG_ID,)
-# The Benjamini-Hochberg denominator for the confirmatory family. One.
 PRIMARY_FAMILY_SIZE = len(PRIMARY_CONFIG_IDS)
-# The family that hypothesis belongs to. `mean_reversion` is EXPLORATORY-ONLY
-# in this study and can never produce a recommendation.
 PRIMARY_FAMILY = PRIMARY_CONFIG_ID.split(CONFIG_ID_SEP)[0]
 
 INTERIM_LOOK_DISCLOSURE = (
@@ -226,13 +133,9 @@ KEY_RISK_PREDICTION = (
     "may therefore confirm a null; if it does, that outcome closes the "
     "question as 'no usable Hurst edge at or above the new limit'.")
 
-# --- Route 2: more independent calendar clusters ---------------------------
 BITSTAMP = "bitstamp"
 COINBASE = "coinbaseexchange"
 
-# Recorded feasibility probes. Run read-only against each candidate source
-# BEFORE the design was frozen, so the report can state which routes were
-# options and which were not, instead of quietly omitting the ones that failed.
 FEASIBILITY_PROBES = (
     {
         "source": "bitstamp (ccxt)",
@@ -285,26 +188,14 @@ FEASIBILITY_PROBES = (
     },
 )
 
-# Per-page candle caps, measured above. `fetch_full_history` advances by the
-# LAST RETURNED candle, so a short page is safe; passing the real cap only
-# stops an oversized request being rejected outright.
 FETCH_PAGE_LIMIT = {PLATFORM: 500, BITSTAMP: 1000, COINBASE: 300}
 
-# Per-venue history floors. Each is early enough to give the deepest Hurst
-# window its required lead before that venue's earliest owned window.
 HISTORY_SINCE = {
-    PLATFORM: study1422.HISTORY_SINCE,   # "2020-01-01", #1422's floor verbatim
+    PLATFORM: study1422.HISTORY_SINCE,
     BITSTAMP: "2012-06-01",
     COINBASE: "2015-08-01",
 }
 
-# Per-DATASET overrides, set to each pair's MEASURED first candle. This is not
-# cosmetic: `fetch_full_history` stops at the first empty page, and a venue
-# answers a request before a pair's listing with an empty page. A single
-# venue-wide floor earlier than the latest-listed pair therefore backfills
-# NOTHING for that pair, silently, and the study would score whatever the cache
-# already held. Every floor here was measured, and the coverage audit still has
-# the last word on which cells are scoreable.
 DATASET_HISTORY_SINCE = {
     (COINBASE, "BTC/USD", "1h"): "2015-08-01",
     (COINBASE, "ETH/USD", "1h"): "2016-06-01",
@@ -313,16 +204,12 @@ DATASET_HISTORY_SINCE = {
 
 
 def history_since_for(dataset: tuple) -> str:
-    """The backfill floor for one dataset: its own measured listing date, else
-    its venue's default."""
     dataset = tuple(dataset)
     override = DATASET_HISTORY_SINCE.get(dataset)
     if override:
         return override
     return HISTORY_SINCE.get(dataset[0], study1422.HISTORY_SINCE)
 
-# The eight PRE-2020 windows this study adds. All are strictly before
-# 2020-07-01, which is what makes "new venue implies primary cohort" sound.
 PRE2020_WINDOWS = {
     "2013":   ("2013-01-01", "2014-01-01"),
     "2014":   ("2014-01-01", "2015-01-01"),
@@ -333,9 +220,6 @@ PRE2020_WINDOWS = {
     "2019":   ("2019-01-01", "2020-01-01"),
     "2020H1": ("2020-01-01", "2020-07-01"),
 }
-# #1422's eight windows are reused VERBATIM from that module — never redefined
-# here, so a drift there fails loud below instead of silently rescoring the
-# inherited cells on different spans.
 WINDOWS = dict(study1422.WINDOWS)
 for _k, _v in PRE2020_WINDOWS.items():
     if _k in WINDOWS:
@@ -344,13 +228,8 @@ for _k, _v in PRE2020_WINDOWS.items():
 
 WINDOW_ORDER = tuple(sorted(WINDOWS, key=lambda w: (WINDOWS[w][0], w)))
 
-# The base symbols #1410 scored, inherited so the exploratory cohort keeps its
-# meaning.
 AUDIT_SYMBOLS = study1422.AUDIT_SYMBOLS
 
-# Datasets are (exchange_id, symbol, timeframe) TRIPLES here. #1422's 21
-# binanceus datasets are inherited verbatim; the new-venue ones are the
-# feasibility-verified pre-2020 sources.
 BINANCEUS_DATASETS = [(PLATFORM, s, t) for (s, t) in study1422.DATASETS]
 NEW_VENUE_DATASETS = [
     (BITSTAMP, "BTC/USD", "1h"),
@@ -365,10 +244,6 @@ BITSTAMP_WINDOWS = ("2013", "2014", "2015")
 COINBASE_WINDOWS = ("2016", "2017", "2018", "2019", "2020H1")
 BINANCEUS_WINDOWS = tuple(study1422.WINDOW_ORDER)
 
-# WINDOW OWNERSHIP MATRIX. Exactly one venue owns each (base asset, window)
-# cell, so no calendar span is ever scored twice through two venues' tape.
-# Asserted at import by `_assert_window_ownership`; a future edit that breaks
-# it fails loud rather than silently double-counting a year.
 DATASET_WINDOWS = {}
 for _ds in BINANCEUS_DATASETS:
     DATASET_WINDOWS[_ds] = BINANCEUS_WINDOWS
@@ -376,15 +251,6 @@ for _ds in NEW_VENUE_DATASETS:
     DATASET_WINDOWS[_ds] = (BITSTAMP_WINDOWS if _ds[0] == BITSTAMP
                             else COINBASE_WINDOWS)
 
-# --- Route 3: the lower-variance primary target ----------------------------
-# Signed fixed-horizon Kaufman efficiency. For a trade FILLED at bar i in
-# direction d, over K bars: d * (close[i+K] - close[i]) divided by the summed
-# absolute bar-to-bar path over the same span. Bounded in [-1, 1] by
-# construction (the numerator's magnitude can never exceed the path), which is
-# exactly what removes the fat tail per-trade net return carries.
-#
-# It is an OUTCOME, like PnL. Nothing about H's or ADX's look-ahead convention
-# changes: both still read strictly closed bars before the fill.
 VERDICT_CONFIG = "config"
 VERDICT_RESOLVED_NULL = "resolved_null"
 VERDICT_INCONCLUSIVE = "inconclusive"
@@ -394,11 +260,6 @@ VERDICT_LABELS = {
     VERDICT_INCONCLUSIVE: "INCONCLUSIVE",
 }
 
-# WHY the validity gate landed where it did. The Recommendation's wording keys
-# on this, because the failure modes carry DIFFERENT claims: a separation that
-# is merely too small leaves a bound from above, while one pointing the way the
-# one-sided design cannot test leaves no bound at all. Gluing one mode's
-# sentence onto the other would publish a bound the run never measured.
 MODE_OK = "ok"
 MODE_BELOW_LIMIT = "below_limit"
 MODE_REVERSED = "reversed"
@@ -407,101 +268,50 @@ MODE_NO_SEPARATION = "no_separation"
 
 PRIMARY_TARGET = "signed_fixed_horizon_efficiency"
 CONTINUITY_TARGET = "pnl_pct_net"
-HORIZON_HOURS = 96            # four days, the same order as a held position
-EFFICIENCY_EPS = 1e-12        # a dead-flat span yields 0, never a division error
+HORIZON_HOURS = 96
+EFFICIENCY_EPS = 1e-12
 
-# --- Inference -------------------------------------------------------------
-N_PERM = study1422.N_PERM             # 10000
-N_PERM_MDE = study1422.N_PERM_MDE     # 2000
-ALPHA = study1422.ALPHA               # 0.05
-JOINT_ALPHA = study1422.JOINT_ALPHA   # ALPHA / len(FAMILIES)
+N_PERM = study1422.N_PERM
+N_PERM_MDE = study1422.N_PERM_MDE
+ALPHA = study1422.ALPHA
+JOINT_ALPHA = study1422.JOINT_ALPHA
 
-# Minimum-detectable-effect search grid IN EFFICIENCY UNITS. Coarse pass then
-# one refinement, exactly #1422's shape; only the units and the step sizes
-# differ, because the target is bounded in [-1, 1] rather than measured in
-# percentage points. The coarse step is 0.02 rather than the 0.002 the plan
-# sketched: `min_detectable_effect` scans upward and stops at the first grid
-# point that clears the bar, so a 0.002 step would make the run cost scale with
-# the answer's magnitude, and the 0.001 refinement recovers the same final
-# RESOLUTION at a bounded cost of at most 46 permutation batches.
 MDE_EFF_GRID_STEP = 0.02
 MDE_EFF_GRID_MAX = 0.5
 MDE_EFF_REFINE_STEP = 0.001
-# The net-return grid is #1422's verbatim, so the two studies' continuity
-# limits stay directly comparable.
 MDE_PP_GRID_STEP = study1422.MDE_GRID_STEP
 MDE_PP_GRID_MAX = study1422.MDE_GRID_MAX
 MDE_PP_REFINE_STEP = study1422.MDE_REFINE_STEP
 
-# --- Decision floors and economics ----------------------------------------
-MIN_SUPPRESSED_EFFECTIVE = study1422.MIN_SUPPRESSED_EFFECTIVE   # 20.0
-MIN_KEPT_EFFECTIVE = study1422.MIN_KEPT_EFFECTIVE               # 30.0
-RETURN_TOLERANCE_PP = study1422.RETURN_TOLERANCE_PP             # 1.0
-RETURN_TOLERANCE_FRAC = study1422.RETURN_TOLERANCE_FRAC         # 0.1
-HELD_OUT_MIN_FRACTION = study1422.HELD_OUT_MIN_FRACTION         # 2/3
-HELD_OUT_MIN_WINDOWS = study1422.HELD_OUT_MIN_WINDOWS           # 3
+MIN_SUPPRESSED_EFFECTIVE = study1422.MIN_SUPPRESSED_EFFECTIVE
+MIN_KEPT_EFFECTIVE = study1422.MIN_KEPT_EFFECTIVE
+RETURN_TOLERANCE_PP = study1422.RETURN_TOLERANCE_PP
+RETURN_TOLERANCE_FRAC = study1422.RETURN_TOLERANCE_FRAC
+HELD_OUT_MIN_FRACTION = study1422.HELD_OUT_MIN_FRACTION
+HELD_OUT_MIN_WINDOWS = study1422.HELD_OUT_MIN_WINDOWS
 
-# Primary economics protocol: two bull years and two bear years, so a winner
-# cannot be a one-regime artifact. #1422 required EVERY protocol window to
-# hold; with four windows spanning two market characters that would be a
-# harsher bar than the evidence warrants, so the pre-registered rule is 3 of
-# the 4 THAT CARRY LEGS, with at least 3 carrying legs for the check to be
-# testable at all.
 PRIMARY_PROTOCOL_WINDOWS = ("2017", "2018", "2021", "2022")
 PRIMARY_PROTOCOL_MIN_WINDOWS = 3
 PRIMARY_HELD_OUT_WINDOWS = tuple(
     w for w in WINDOW_ORDER if w not in PRIMARY_PROTOCOL_WINDOWS)
-# The exploratory arm keeps #1410's split byte-identical.
 EXPLORATORY_PROTOCOL_WINDOWS = tuple(AUDIT_PROTOCOL_WINDOWS)
 EXPLORATORY_PROTOCOL_MIN_WINDOWS = len(EXPLORATORY_PROTOCOL_WINDOWS)
 EXPLORATORY_HELD_OUT_WINDOWS = tuple(AUDIT_HELD_OUT_WINDOWS)
 
 _DEFAULT_JSON_OUT = os.path.join(_THIS_DIR, "hurst_1424_gate_resolution.json")
-# The live-evidence contract path. #1412 Stage 0, scheduler/hurst_gate.go and
-# docs/ARCHITECTURE.md all read this file. This study owns it.
 _DEFAULT_REPORT_OUT = os.path.join(_THIS_DIR, "hurst_gate_calibration.md")
 _JSON_1410 = os.path.join(_THIS_DIR, "hurst_1410_gate_calibration.json")
 
 
-# ---------------------------------------------------------------------------
-# Dataset identity. A venue-qualified symbol, because two venues list the same
-# pair.
-# ---------------------------------------------------------------------------
-
 def qualified_symbol(exchange_id: str, symbol: str) -> str:
-    """The symbol label this study pools trades under.
-
-    ``binanceus`` keeps the PLAIN symbol, so every inherited comparison —
-    ``AUDIT_SYMBOLS`` membership, the ``D_1410`` cell set, #1422's own cohort
-    rule — keeps working byte-identically on the inherited datasets. Any other
-    venue is suffixed, because Bitstamp's ``BTC/USD`` and Coinbase's
-    ``BTC/USD`` are DIFFERENT tapes and must never merge into one rotation
-    cluster, one dedup key, or one effective-N group.
-    """
     return symbol if exchange_id == PLATFORM else f"{symbol}@{exchange_id}"
 
 
 def base_asset(symbol: str) -> str:
-    """The base asset of a (possibly venue-qualified) symbol.
-
-    ``BTC/USDT``, ``BTC/USD`` and ``BTC/USD@bitstamp`` are all ``BTC`` — one
-    asset whose tape is one tape whatever the quote currency or the venue.
-    """
     return str(symbol).split("@", 1)[0].split("/", 1)[0].strip().upper()
 
 
 def _assert_window_ownership(dataset_windows: dict) -> dict:
-    """Exactly one venue may own each (base asset, window) cell.
-
-    This is the assertion that lets the pool add pre-2020 venues without
-    double-counting a calendar span. Bitstamp BTC 2013-2015, Coinbase BTC
-    2016-2020H1 and Binance.US BTC 2020H2-onward are three disjoint stretches of
-    ONE asset's history; scoring two venues over the same year would put the
-    same market twice into a null whose whole job is to count independent
-    calendar clusters.
-
-    Returns ``{f"{asset}|{window}": exchange_id}`` for the report.
-    """
     owner: dict = {}
     for (exchange_id, symbol, _tf), windows in sorted(dataset_windows.items()):
         asset = base_asset(symbol)
@@ -522,9 +332,6 @@ def _assert_window_ownership(dataset_windows: dict) -> dict:
 
 WINDOW_OWNER = _assert_window_ownership(DATASET_WINDOWS)
 
-# "New venue implies primary cohort" is only sound while every new-venue window
-# ends before #1422's earliest primary window begins. Assert it rather than
-# trust the table above.
 _PRIMARY_FLOOR = pd.Timestamp("2020-07-01")
 for _w in set(BITSTAMP_WINDOWS) | set(COINBASE_WINDOWS):
     if pd.Timestamp(WINDOWS[_w][1]) > _PRIMARY_FLOOR:
@@ -533,31 +340,8 @@ for _w in set(BITSTAMP_WINDOWS) | set(COINBASE_WINDOWS):
             f"is not automatically primary; re-derive cell_cohort first")
 
 
-# ---------------------------------------------------------------------------
-# Pure helpers (unit-tested without data access).
-# ---------------------------------------------------------------------------
-
 def cell_cohort(exchange_id: str, symbol: str, timeframe: str,
                 window_name: str) -> str:
-    """Which inference cohort one (dataset, window) cell belongs to.
-
-    PRIMARY iff the cell's tape was NOT read by the evidence that selected the
-    primary hypothesis. That evidence is the committed #1410 JSON and nothing
-    else, so:
-
-      * every new-venue cell is primary — #1410 never saw a Bitstamp or
-        Coinbase bar, and (asserted above) every such window is pre-2020H2;
-      * a ``binanceus`` cell is primary when its window or its symbol is one
-        #1410 never scored — #1422's rule verbatim, which is deliberately
-        COARSER than the (dataset, window) grid: BTC 2h over a #1410 window is
-        the same tape resampled and stays exploratory.
-
-    The #1422 primary cells are therefore primary HERE too. That is the whole
-    of Route 1's dividend and it is legitimate for one reason only: the
-    hypothesis was picked from #1410's p-values, which never read those cells.
-    What #1422 published ABOUT those cells was seen, and that interim look is
-    disclosed in ``INTERIM_LOOK_DISCLOSURE`` rather than hidden.
-    """
     if window_name not in WINDOWS:
         raise ValueError(f"unknown window {window_name!r}")
     if exchange_id != PLATFORM:
@@ -568,14 +352,6 @@ def cell_cohort(exchange_id: str, symbol: str, timeframe: str,
 
 
 def horizon_bars(timeframe: str, horizon_hours: int = HORIZON_HOURS) -> int:
-    """Bars in the fixed efficiency horizon for one timeframe.
-
-    The horizon is fixed in CALENDAR time, not in bars, so a 1h and a 4h
-    dataset measure follow-through over the same four days and their efficiency
-    values are directly poolable. A timeframe coarser than the horizon would
-    make the target meaningless and raises instead of silently rounding to one
-    bar.
-    """
     minutes = timeframe_minutes(timeframe)
     total = int(horizon_hours) * 60
     if minutes <= 0 or minutes > total:
@@ -586,19 +362,6 @@ def horizon_bars(timeframe: str, horizon_hours: int = HORIZON_HOURS) -> int:
 
 
 def signed_efficiency(closes, pos: int, k: int, direction: int) -> Optional[float]:
-    """Signed fixed-horizon Kaufman efficiency for one fill, or None.
-
-    ``d * (close[pos+k] - close[pos]) / (sum |close[j+1] - close[j]| + eps)``
-    over ``j`` in ``[pos, pos+k)``. The numerator's magnitude can never exceed
-    the denominator's path, so the result is bounded in ``[-1, 1]`` — that
-    bound is the entire point of the target, and it is what lets the same rows
-    resolve a smaller effect than per-trade net return can.
-
-    Returns None when the horizon runs off the end of the scored slice. Such a
-    trade is EXCLUDED from the contrast and counted in the report, never
-    silently truncated to a shorter horizon (which would mix two different
-    statistics in one pool).
-    """
     arr = np.asarray(closes, dtype=float)
     i = int(pos)
     k = int(k)
@@ -615,13 +378,6 @@ def signed_efficiency(closes, pos: int, k: int, direction: int) -> Optional[floa
 
 
 def trade_direction(side) -> int:
-    """+1 for a long fill, -1 for a short one.
-
-    Raises on anything else. A silent default would flip the sign of the
-    primary target for a whole leg, which is the one error this study could
-    not detect downstream — an inverted contrast reads exactly like a real
-    anti-signal.
-    """
     label = str(side or "").strip().lower()
     if label == "long":
         return 1
@@ -642,20 +398,6 @@ def min_detectable_effect_on_grid(trades: Sequence[dict],
                                   n_perm: int = N_PERM_MDE,
                                   seed: int = SEED,
                                   alpha: float = ALPHA) -> Optional[float]:
-    """#1422's detection-limit search, parameterized on the injection grid.
-
-    Identical machinery — a deterministic shift of every SUPPRESSED value by
-    ``d``, a coarse upward scan, then one refinement pass, scored against the
-    rank-1 Benjamini-Hochberg bar — with the grid supplied by the caller so the
-    same estimator serves the bounded efficiency target and the percentage-point
-    continuity target without either borrowing the other's units.
-
-    Returns None when even the largest grid point cannot clear the bar. Raises
-    when the permutation count cannot RESOLVE that bar: with the add-one
-    convention the smallest reachable p is ``1/(n_perm+1)``, so too few draws
-    would make every effect look undetectable and publish "no power" when the
-    truth is "no permutations". That failure must be loud.
-    """
     vals = np.asarray(values, dtype=float)
     mask = np.asarray(suppressed, dtype=bool)
     bar = _rank1_threshold(family_size, alpha)
@@ -702,7 +444,6 @@ def min_detectable_effect_on_grid(trades: Sequence[dict],
 
 
 def min_detectable_effect_eff(trades, values, suppressed, family_size, **kw):
-    """Detection limit on the PRIMARY target, in efficiency units."""
     return min_detectable_effect_on_grid(
         trades, values, suppressed, family_size,
         grid_step=MDE_EFF_GRID_STEP, grid_max=MDE_EFF_GRID_MAX,
@@ -710,7 +451,6 @@ def min_detectable_effect_eff(trades, values, suppressed, family_size, **kw):
 
 
 def min_detectable_effect_pp(trades, values, suppressed, family_size, **kw):
-    """Detection limit on the CONTINUITY target, in pp of net return."""
     return min_detectable_effect_on_grid(
         trades, values, suppressed, family_size,
         grid_step=MDE_PP_GRID_STEP, grid_max=MDE_PP_GRID_MAX,
@@ -719,14 +459,6 @@ def min_detectable_effect_pp(trades, values, suppressed, family_size, **kw):
 
 def protocol_verdict(windows: dict, protocol_names: Sequence[str],
                      min_windows: int) -> tuple:
-    """(passed, n_holding, n_with_legs, reasons) for the protocol-window rule.
-
-    A protocol window HOLDS when its mean drawdown magnitude falls, its chop
-    loss falls, and the return give-up stays inside the tolerance. The rule
-    needs ``min_windows`` of the windows that CARRY LEGS to hold, and at least
-    ``min_windows`` of them to carry legs at all — otherwise the check is
-    untestable and fails closed rather than passing on a thin sample.
-    """
     reasons = []
     with_legs = [n for n in protocol_names
                  if (windows.get(n) or {}).get("n_legs")]
@@ -761,32 +493,14 @@ def protocol_verdict(windows: dict, protocol_names: Sequence[str],
             f"holds on only {holding}/{len(with_legs)} protocol windows with "
             f"legs (need {int(min_windows)})")
         return False, holding, len(with_legs), reasons
-    # Every failure the loop above recorded is subsumed by the count rule the
-    # config just cleared, so a passing config carries no reasons.
     return True, holding, len(with_legs), []
 
 
 def held_out_verdict(windows: dict, held_out_names: Sequence[str]) -> tuple:
-    """#1422's held-out drawdown rule, unchanged: 2/3 of the leg-carrying
-    windows must not degrade, with at least ``HELD_OUT_MIN_WINDOWS`` of them."""
     return study1422.held_out_verdict(windows, held_out_names)
 
 
 def config_verdict(cfg: dict) -> tuple:
-    """Pure accept/reject for one swept config. Returns ``(passed, reasons)``.
-
-    #1422's rule shape with two deliberate changes, both pre-registered:
-
-      * SIGNIFICANCE reads the cluster p on the PRIMARY TARGET (efficiency).
-        That is Route 3: the mechanism question is asked on the statistic the
-        design can actually resolve.
-      * ECONOMICS still read NET RETURN, on the 3-of-4 protocol rule and the
-        unchanged held-out rule. A bounded-variance win is mechanism evidence
-        and never on its own a licence to ship a gate — the money has to be
-        there too.
-
-    An untestable cluster p (None) fails closed, exactly as in #1422.
-    """
     reasons = []
     if float(cfg.get("n_suppressed_effective") or 0.0) < MIN_SUPPRESSED_EFFECTIVE:
         reasons.append(
@@ -820,7 +534,6 @@ def config_verdict(cfg: dict) -> tuple:
 
 
 def protocol_dd_reduction(cfg: dict) -> float:
-    """Pooled protocol-window drawdown reduction, positive = better."""
     windows = cfg.get("windows") or {}
     total = 0.0
     for name in cfg.get("protocol_windows") or ():
@@ -831,38 +544,6 @@ def protocol_dd_reduction(cfg: dict) -> float:
 
 
 def validity_gate(mde: dict) -> dict:
-    """The pre-registered validity gate, in efficiency units.
-
-    This study is VALID only when the measured cluster-null detection limit on
-    the CONFIRMATORY FAMILY's own rows falls at or below that same family's
-    observed separation on the same statistic.
-
-    Two properties are load-bearing and neither is optional:
-
-    ROW-MATCHED. Both numbers come from `by_family_*`, measured on the identical
-    row set (`PRIMARY_FAMILY`'s slice of the primary cohort, after the cluster
-    null's own usability filter). The pooled primary limit is measured on BOTH
-    families' rows and is therefore a different sample: reading it against one
-    family's separation is exactly the whole-study-vs-sub-cohort mismatch the
-    pool-matched tables exist to prevent, and it biases the gate toward passing
-    because a larger pool resolves a smaller effect.
-
-    DIRECTIONAL. `_separation` is `mean(kept) - mean(suppressed)` and both the
-    permutation nulls and the injection in `min_detectable_effect_on_grid` are
-    ONE-SIDED in that same orientation — they can only ever reject "suppressed
-    trades are WORSE". A NEGATIVE separation means the suppressed side did
-    BETTER, which is the direction the test cannot detect at any magnitude. The
-    gate therefore compares the SIGNED separation and never its magnitude;
-    crediting `abs()` would let a reversed effect upgrade the verdict from a
-    power statement to a market statement on evidence that does not exist.
-
-    The gate is evaluated on `PRIMARY_FAMILY` alone because that is the family
-    the single pre-registered hypothesis belongs to. Another family's larger
-    separation is not evidence about the confirmatory test's power.
-
-    When the gate fails, no null this study measures is a statement about the
-    market, and the Recommendation must say so.
-    """
     family = PRIMARY_FAMILY
     limit = (mde.get("by_family_cluster") or {}).get(family)
     sep = (mde.get("by_family_separation") or {}).get(family)
@@ -895,12 +576,6 @@ def validity_gate(mde: dict) -> dict:
 
 
 def decide_recommendation(configs: Sequence[dict], mde: dict) -> dict:
-    """Mechanically derive the Recommendation.
-
-    ONLY primary-cohort configs can win. The exploratory grid is reported for
-    completeness and can never produce a recommendation, because its hypotheses
-    were selected by reading the same data they are scored on.
-    """
     gate = validity_gate(mde)
     primary = [c for c in configs if c.get("cohort") == COHORT_PRIMARY]
     families = {}
@@ -931,10 +606,6 @@ def decide_recommendation(configs: Sequence[dict], mde: dict) -> dict:
     best_text = (f" The primary hypothesis reached cluster p={best[0]:.4f} "
                  f"(`{best[1]}`) on the primary target." if best else "")
 
-    # The KEY RISK #1424 was required to state before the run: a
-    # better-powered design may simply confirm the null, and that outcome is
-    # the ANSWER rather than a request for more data. It only "held" when the
-    # design could actually see an effect the size its own buckets show.
     key_risk_held = bool(gate["passed"])
 
     if gate["passed"]:
@@ -950,10 +621,6 @@ def decide_recommendation(configs: Sequence[dict], mde: dict) -> dict:
             f"rather than H sorting trades within them — is what the run found. "
             f"This closes the question rather than licensing a fourth study.")
     else:
-        # The trailing clause has to FOLLOW from the reason. A separation that
-        # is merely too small and one that points the untested way fail the
-        # gate for different reasons, and gluing the size sentence onto the
-        # direction sentence would state a bound the run never measured.
         if gate["reason"]:
             head = gate["reason"]
             tail = (
@@ -978,11 +645,6 @@ def decide_recommendation(configs: Sequence[dict], mde: dict) -> dict:
               "that no edge exists.")
 
     return {
-        # The verdict WORD is itself mechanical. A null measured by a design
-        # that could see the effect its buckets show is a RESOLVED NULL and an
-        # answer; the same null under a design that could not is merely
-        # inconclusive. Printing one word for both is what made #1410's and
-        # #1422's outcomes look alike when they were not.
         "verdict": VERDICT_RESOLVED_NULL if gate["passed"] else VERDICT_INCONCLUSIVE,
         "families": families,
         "validity_gate": gate,
@@ -997,26 +659,13 @@ def decide_recommendation(configs: Sequence[dict], mde: dict) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
-# Coverage, correlations.
-# ---------------------------------------------------------------------------
-
 def owned_windows(dataset: tuple, window_names: Sequence[str]) -> list:
-    """The windows this dataset OWNS, intersected with the requested set."""
     owned = DATASET_WINDOWS.get(tuple(dataset)) or ()
     return [w for w in window_names if w in owned]
 
 
 def coverage_audit(frames: dict, window_names: Sequence[str],
                    hurst_windows: Sequence[int]) -> dict:
-    """Which (dataset, window) cells the cache can actually support.
-
-    #1422's audit with one addition: a dataset is only ever measured against
-    the windows it OWNS. A cell no venue owns is not "dropped for lack of
-    data" — it was never in the design, and reporting it as a drop would bury
-    the real drops (a late listing, a delisting gap) under dozens of
-    by-construction absences.
-    """
     need_lead = max((required_lead_bars(hw) for hw in hurst_windows), default=0)
     last_bars = [f.index[-1] for f in frames.values()
                  if f is not None and not f.empty]
@@ -1070,8 +719,6 @@ def coverage_audit(frames: dict, window_names: Sequence[str],
 
 def scored_warmup_leads(frames: dict, coverage: dict,
                         scored_windows: Sequence[str]) -> dict:
-    """Warm-up lead per dataset, measured against the windows IT ACTUALLY
-    SCORES — #1422's rule, on venue-qualified keys."""
     leads = {}
     for dataset, frame in frames.items():
         if frame is None or frame.empty:
@@ -1088,17 +735,6 @@ def scored_warmup_leads(frames: dict, coverage: dict,
 
 
 def symbol_return_correlations(frames: dict) -> dict:
-    """Daily-log-return correlation between VENUE-QUALIFIED symbols.
-
-    Same shape as #1422's, with one pre-registered override: two symbols
-    sharing a BASE ASSET take 1.0, whatever their quote currency or venue.
-    ``BTC/USD`` on Bitstamp and ``BTC/USDT`` on Binance.US are one market, so
-    crediting them a measured correlation below 1 — or, worse, no measurement
-    at all where their spans do not overlap — would hand the effective-N
-    estimator independence that does not exist. The estimator's own default for
-    an unknown pair is already 1.0; this makes the same choice explicit and
-    testable rather than incidental.
-    """
     finest = {}
     for dataset, frame in sorted(frames.items()):
         if frame is None or frame.empty:
@@ -1139,17 +775,7 @@ def symbol_return_correlations(frames: dict) -> dict:
     return out
 
 
-# ---------------------------------------------------------------------------
-# Engine arms.
-# ---------------------------------------------------------------------------
-
 def trade_samples_with_side(results: dict) -> list:
-    """``trade_samples_with_span`` plus the fill SIDE.
-
-    The primary target is SIGNED, so it needs the direction the fill took. The
-    shared helper does not carry it; every other field is produced by that
-    helper so the two can never diverge.
-    """
     sides = [t.get("side") for t in (results.get("trades") or [])]
     out = trade_samples_with_span(results)
     if len(sides) != len(out):
@@ -1163,13 +789,6 @@ def trade_samples_with_side(results: dict) -> list:
 
 def _run_arm(reg, name: str, symbol: str, timeframe: str, df: pd.DataFrame,
              armed, overrides: dict) -> Optional[dict]:
-    """One Backtester run on a pre-sliced frame, optionally entry-masked.
-
-    #1422's arm verbatim, re-implemented only so the leg carries the fill side
-    the primary target needs. Kwargs mirror ``eval_windows.run_leg``'s
-    no-regime, no-profile path exactly; every leg additionally verifies its
-    ungated arm against ``run_leg`` itself, so the mirror cannot drift silently.
-    """
     from atr import ensure_atr_indicator
     from backtester import Backtester
     from run_backtest import FUNDING_COLUMN_STRATEGIES
@@ -1232,11 +851,6 @@ def _leg_metrics(leg: Optional[dict]) -> dict:
 def build_leg(reg, family: str, exemplar: str, dataset: tuple,
               window_name: str, full: pd.DataFrame, hurst_by_window: dict,
               adx_stamp: pd.Series, verify_mirror: bool = True) -> Optional[dict]:
-    """Every arm for one (exemplar, dataset, window) cell.
-
-    #1422's ``build_leg`` plus the venue-qualified identity and the per-trade
-    primary-target stamp.
-    """
     exchange_id, symbol, timeframe = dataset
     qsym = qualified_symbol(exchange_id, symbol)
     window = WINDOWS[window_name]
@@ -1355,17 +969,7 @@ def build_leg(reg, family: str, exemplar: str, dataset: tuple,
     }
 
 
-# ---------------------------------------------------------------------------
-# Aggregation.
-# ---------------------------------------------------------------------------
-
 def bucket_tables(trades: Sequence[dict], hurst_window: int) -> dict:
-    """Part A: per-bucket outcome table over an already-deduped trade pool.
-
-    #1422's table plus the PRIMARY TARGET's mean and its row count, so the
-    separation the validity gate adjudicates is visible in the same table the
-    economics are read from.
-    """
     by_bucket = {b: {"ret": [], "eff": []} for b in BUCKETS}
     for t in trades:
         row = by_bucket[bucket_label((t.get("h") or {}).get(hurst_window))]
@@ -1392,20 +996,11 @@ def bucket_tables(trades: Sequence[dict], hurst_window: int) -> dict:
 
 
 def joint_adx_hurst_table(trades: Sequence[dict], hurst_window: int) -> dict:
-    """Part D: the ADX-level x Hurst-level cell table for one family."""
     return study1422.joint_adx_hurst_table(trades, hurst_window)
 
 
 def joint_separation_verdict(trades: Sequence[dict], hurst_window: int,
                              n_perm: int = N_PERM, seed: int = SEED) -> dict:
-    """#1412 Stage 0, on NET RETURN and on the expanded pool.
-
-    Deliberately NOT moved to the primary target. Stage 0 asks an ECONOMIC
-    question — is high-ADX + low-H materially worse for these entries — and
-    #1422 discharged it on net return. Re-running it on a different statistic
-    would produce a verdict that cannot be compared with the one already
-    recorded against #1412.
-    """
     return study1422.joint_separation_verdict(trades, hurst_window,
                                               n_perm=n_perm, seed=seed)
 
@@ -1417,7 +1012,6 @@ def _cohort_legs(legs: Sequence[dict], family: str, cohort: str) -> list:
 
 def _window_rows_gate(legs: Sequence[dict], family: str, cohort: str,
                       config_id: str) -> dict:
-    """Per-window mean deltas for a gate config, over that cohort's legs only."""
     rows = {}
     own = _cohort_legs(legs, family, cohort)
     for wname in WINDOW_ORDER:
@@ -1449,7 +1043,6 @@ def _window_rows_gate(legs: Sequence[dict], family: str, cohort: str,
 
 def _window_rows_size(legs: Sequence[dict], family: str, cohort: str,
                       hurst_window: int, gain: float) -> dict:
-    """Per-window mean deltas for a sizing config, over that cohort's legs only."""
     sense = FAMILY_SENSE[family]
     rows = {}
     own = _cohort_legs(legs, family, cohort)
@@ -1518,13 +1111,6 @@ def _config_shell(family: str, cohort: str, mode: str, hw: int,
 
 
 def _sweep_grid(cohort: str, hurst_windows: Sequence[int]) -> list:
-    """(family, mode, hw, arm, disarm, gain) tuples this cohort tests.
-
-    PRIMARY tests the ONE pinned hypothesis; EXPLORATORY tests the full #1410
-    grid. The two lists are disjoint by construction, which is what keeps their
-    Benjamini-Hochberg denominators from ever merging — and the primary
-    denominator of exactly 1 is Route 1's entire dividend.
-    """
     grid = []
     for family in FAMILIES:
         for hw in hurst_windows:
@@ -1542,26 +1128,12 @@ def _sweep_grid(cohort: str, hurst_windows: Sequence[int]) -> list:
 
 
 def _target_rows(trades: Sequence[dict]) -> tuple:
-    """``(rows, n_missing)`` — rows carrying a defined primary target.
-
-    Applied BEFORE the cluster-usability filter, because dropping
-    horizon-truncated rows can shorten a dataset's scored span and therefore
-    change whether that dataset can host a rotation at all. Doing it the other
-    way round would decide rotatability on rows the contrast never scores.
-    """
     rows = [t for t in trades if t.get("efficiency") is not None]
     return rows, len(trades) - len(rows)
 
 
 def build_configs(legs: Sequence[dict], pooled: dict, hurst_windows: Sequence[int],
                   rho_by_symbol: dict, n_perm: int, seed: int) -> list:
-    """Every swept config in both cohorts, on both targets, with economics.
-
-    Both targets are scored on ONE row set — the rows carrying a defined
-    primary target that the cluster null can also rotate. A continuity p-value
-    measured on a different sample than the verdict's p-value would describe a
-    different study.
-    """
     configs = []
     for cohort in (COHORT_PRIMARY, COHORT_EXPLORATORY):
         for family, mode, hw, arm, disarm, gain in _sweep_grid(cohort, hurst_windows):
@@ -1604,8 +1176,6 @@ def build_configs(legs: Sequence[dict], pooled: dict, hurst_windows: Sequence[in
                     returns, mults, n_perm=n_perm, seed=seed)
                 cfg["p_cluster_return"] = cluster_permutation_pvalue_weighted(
                     sub, returns, mults, n_perm=n_perm, seed=seed).get("p")
-                # A sizing config's "suppressed" analogue is the down-weighted
-                # side (m < 1); the same volume floors then apply unchanged.
                 sup_rows = [t for t, m in zip(sub, mults) if m < 1.0]
                 kept_rows = [t for t, m in zip(sub, mults) if m >= 1.0]
                 cfg["windows"] = _window_rows_size(legs, family, cohort, hw, gain)
@@ -1628,16 +1198,8 @@ def build_configs(legs: Sequence[dict], pooled: dict, hurst_windows: Sequence[in
 
 
 def apply_bh_by_cohort(configs: Sequence[dict], alpha: float = ALPHA) -> None:
-    """Benjamini-Hochberg over the PRIMARY TARGET's cluster p, per cohort.
-
-    The primary and exploratory families never share a denominator. With one
-    pre-registered primary hypothesis the primary denominator is 1, so its
-    rank-1 bar is alpha rather than alpha/4 — Route 1, applied.
-    """
     for cohort in (COHORT_PRIMARY, COHORT_EXPLORATORY):
         own = [c for c in configs if c.get("cohort") == cohort]
-        # RESET, never setdefault: a stale True from an earlier pass must not
-        # survive a correction that would not grant it.
         for cfg in own:
             cfg["bh_reject"] = False
         testable = [c for c in own if c.get("p_cluster") is not None]
@@ -1649,19 +1211,8 @@ def apply_bh_by_cohort(configs: Sequence[dict], alpha: float = ALPHA) -> None:
             cfg["bh_reject"] = bool(flag)
 
 
-# ---------------------------------------------------------------------------
-# Detection limits.
-# ---------------------------------------------------------------------------
-
 def measure_detection_limits(pooled: dict, hurst_windows: Sequence[int],
                              n_perm: int, seed: int) -> dict:
-    """What this design could have detected, on BOTH targets.
-
-    Three pools under one injection model: #1410's own cells (30 hypotheses),
-    this study's primary cohort (ONE hypothesis), and its exploratory grid
-    (30). Each pool's separations, limits and zero-injection p-values are
-    measured on the SAME rows, so the validity gate compares like with like.
-    """
     out: dict = {"by_family_cluster": {}, "by_family_cluster_return": {},
                  "by_family_separation": {}, "by_family_separation_return": {},
                  "by_family_n": {}}
@@ -1679,8 +1230,6 @@ def measure_detection_limits(pooled: dict, hurst_windows: Sequence[int],
         return rows
 
     def _split(rows, family: str):
-        # The suppressed side is the FAMILY'S OWN anti-signal bucket, so the
-        # injected edge sits exactly where that family's gate claims one lives.
         sense = FAMILY_SENSE[family]
         keep, values, returns, mask = [], [], [], []
         for t in rows:
@@ -1723,22 +1272,12 @@ def measure_detection_limits(pooled: dict, hurst_windows: Sequence[int],
                 out["by_family_cluster_return"][family] = min_detectable_effect_pp(
                     fam_rows, fam_rets, fam_mask, family_size, cluster=True,
                     n_perm=n_perm, seed=seed)
-                # The separation the validity gate reads must come from the
-                # EXACT rows its limit was measured on. `usable_cluster_rows`
-                # is applied per family here and pool-wide below, and the two
-                # need not agree: a dataset whose trades span enough calendar
-                # time inside the COMBINED pool can fall short inside one
-                # family's slice. Storing the family's own separation is what
-                # makes the gate's comparison row-matched by construction
-                # rather than by coincidence.
                 out["by_family_separation"][family] = _separation(
                     fam_vals, fam_mask)
                 out["by_family_separation_return"][family] = _separation(
                     fam_rets, fam_mask)
                 out["by_family_n"][family] = len(fam_rows)
 
-        # The cluster null defines this pool's usable sample. Apply it ONCE to
-        # every number printed beside it.
         idx, _ = usable_cluster_rows(rows_all)
         rows_all = [rows_all[i] for i in idx]
         vals_all = [vals_all[i] for i in idx]
@@ -1794,11 +1333,6 @@ def measure_detection_limits(pooled: dict, hurst_windows: Sequence[int],
     return out
 
 
-# ---------------------------------------------------------------------------
-# Report rendering. `## Recommendation` is always the FINAL section and is a
-# mechanical render of decide_recommendation — never hand-written.
-# ---------------------------------------------------------------------------
-
 def _fmt(value, digits: int = 2, suffix: str = "") -> str:
     if value is None:
         return "-"
@@ -1808,15 +1342,6 @@ def _fmt(value, digits: int = 2, suffix: str = "") -> str:
 
 
 def _fmt_signed(value, digits: int = 2) -> str:
-    """Render a separation WITH its sign, or `-` when it does not exist.
-
-    The sign is not cosmetic. `_separation` is `mean(kept) - mean(suppressed)`
-    and every null and injection in this study is one-sided in that same
-    orientation, so a negative value is an effect pointing the way the design
-    cannot detect. Printing the magnitude alone hides a reversed hypothesis
-    behind a number that reads like a weak confirmation of it. None must never
-    collapse to `0`, which would read as a measured absence of separation.
-    """
     if value is None:
         return "-"
     if isinstance(value, float) and not math.isfinite(value):
@@ -1834,12 +1359,6 @@ def _fmt_family_seps(seps: dict, digits: int = 2) -> str:
 
 
 def _largest_signed(seps: dict):
-    """The most favourable separation in the TESTED direction, or None.
-
-    `max` on the signed values, never on their magnitudes: the pool's power
-    question is whether the design could have detected the largest effect
-    pointing the way its one-sided null can reject.
-    """
     values = [float(v) for v in (seps or {}).values() if v is not None]
     return max(values) if values else None
 
@@ -1849,13 +1368,6 @@ def _fmt_p(value) -> str:
 
 
 def _resolve_winner(winner, configs: Sequence[dict]):
-    """The winner as a full config dict, whether it arrived live or via JSON.
-
-    ``decide_recommendation`` hands the live path the config itself; the
-    committed payload stores only its id. Re-hydrating here is what keeps
-    ``--render-only`` byte-identical with the scoring run on the one branch
-    that reads a winner's own numbers.
-    """
     if winner is None or isinstance(winner, dict):
         return winner
     for cfg in configs or ():
@@ -2086,7 +1598,6 @@ def _render_joint_table(table: dict) -> list:
 
 
 def render_report(payload: dict) -> str:
-    """Full Markdown report. `## Recommendation` is guaranteed to be last."""
     pre = payload["pre_registered"]
     run = payload["run_summary"]
     cfgs = payload["configs"]
@@ -2665,24 +2176,10 @@ def render_report(payload: dict) -> str:
 
 
 def report_from_payload(payload: dict) -> str:
-    """Render straight from a committed JSON (the ``--render-only`` path)."""
     return render_report(payload)
 
 
-# ---------------------------------------------------------------------------
-# Data acquisition.
-# ---------------------------------------------------------------------------
-
 def ensure_min_history(datasets: Sequence[tuple]) -> dict:
-    """Backfill each dataset to its venue's history floor.
-
-    ``load_cached_data`` fetches ONLY when the cached slice comes back empty,
-    so a 2013 request against a 2020-start cache silently returns 2020+ rows and
-    never backfills. This calls ``fetch_full_history(..., store=True)``
-    explicitly with that venue's measured page cap; ``store_ohlcv`` upserts, so
-    re-running is a no-op. A venue that never listed a pair fails here and the
-    coverage audit drops its cells — one missing symbol never aborts the study.
-    """
     from data_fetcher import fetch_full_history
     report = {}
     for dataset in datasets:
@@ -2695,16 +2192,12 @@ def ensure_min_history(datasets: Sequence[tuple]) -> dict:
                                     exchange_id=exchange_id, store=True,
                                     limit=limit)
             if df.empty:
-                # An empty backfill is never "fine": it means the floor sits
-                # before the pair's listing and the fetch stopped on the first
-                # empty page. Say so loudly here — the coverage audit would
-                # otherwise report it as an ordinary data gap much later.
                 print(f"[1424] backfill returned NO BARS for {key} since "
                       f"{since}; the history floor is probably before this "
                       f"pair's listing date", flush=True)
             report[key] = {"ok": bool(len(df)), "bars": int(len(df)),
                            "since": since}
-        except Exception as exc:  # pragma: no cover - network dependent
+        except Exception as exc:
             report[key] = {"ok": False, "since": since,
                            "error": f"{type(exc).__name__}: {exc}"}
             print(f"[1424] backfill FAILED for {key}: {exc}", flush=True)
@@ -2740,17 +2233,6 @@ def _parse_windows(raw: Optional[str]) -> list:
 
 
 def resolve_primary_config_id(json_path: str) -> str:
-    """argmin(p_raw) over ALL configs in the committed #1410 JSON.
-
-    Returned for the assertion against ``PRIMARY_CONFIG_ID``: the pinned value
-    is what the pre-registration promises, and this is what the data actually
-    says. A regenerated #1410 JSON that moves the argmin fails loud instead of
-    silently swapping the single confirmatory hypothesis.
-
-    Note what this DOES NOT read: #1422's outcomes. The pick must come from
-    #1410's evidence alone, because the primary cohort here includes cells
-    #1422 scored.
-    """
     with open(json_path) as fh:
         payload = json.load(fh)
     best = None
@@ -2766,15 +2248,6 @@ def resolve_primary_config_id(json_path: str) -> str:
 
 
 def decision_payload(decision: dict) -> dict:
-    """The committed JSON's `decision` block, from a live decision dict.
-
-    The live dict carries full config dicts under `families[*].winner`; the
-    committed shape stores the winner's id and `--render-only` rehydrates it.
-    One function owns the projection so the committed block is always exactly
-    `decision_payload(decide_recommendation(configs, mde))` — a test pins that
-    equality, which is what keeps a hand-edited or stale JSON from publishing a
-    verdict the current rule would not produce.
-    """
     return {
         "verdict": decision["verdict"],
         "justification": decision["justification"],
@@ -2789,18 +2262,6 @@ def decision_payload(decision: dict) -> dict:
 
 
 def inference_deviations(args) -> list:
-    """Every way this run's INFERENCE differs from the pre-registered design.
-
-    Narrowing the data is only one way to produce a different study, and it is
-    the visible one — a scoped report is obviously partial. A run that keeps
-    every dataset but weakens the inference (fewer permutation draws, a
-    different seed) or skips the harness-identity verification is just as far
-    from the pre-registration and far more dangerous, because the report's
-    shape reveals nothing: the tables are full and the numbers look complete.
-
-    A value stated EXPLICITLY at its pre-registered setting is not a deviation.
-    It is the same run, spelled out.
-    """
     out = []
     if args.n_perm != N_PERM:
         out.append(f"--n-perm {args.n_perm} (pre-registered {N_PERM})")
@@ -2816,7 +2277,7 @@ def inference_deviations(args) -> list:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    p = argparse.ArgumentParser()
     p.add_argument("--jobs", type=int, default=4, help="worker threads")
     p.add_argument("--out-dir", default=None,
                    help="optional dir for the rolling-Hurst npz cache")
@@ -2846,9 +2307,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         "runs no backtests")
     args = p.parse_args(argv)
 
-    # The committed JSON and the contract report describe the PRE-REGISTERED
-    # design. A scoped debug run produces a different study, so it may not
-    # occupy either path.
     scope = {
         "only": args.only,
         "datasets": args.datasets,
@@ -2856,17 +2314,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "hurst_windows": args.hurst_windows,
     }
     scope["complete"] = not any(v for v in scope.values())
-    # NARROWING the data is only one way to produce a different study. A run
-    # that keeps every dataset but weakens the INFERENCE (fewer permutation
-    # draws, a different seed) or skips the harness-identity VERIFICATION is
-    # just as far from the pre-registered design, and it is worse than a scoped
-    # run because nothing in the report's shape reveals it: the numbers still
-    # look complete. `--seed` stated explicitly at its pre-registered value is
-    # not a deviation — it is the same run, spelled out.
     deviations = inference_deviations(args)
     scope["pre_registered_inference"] = not deviations
-    # --fetch-only writes neither artifact, so scoping it to the venues that
-    # actually need a backfill must not be refused.
     if (not scope["complete"] or deviations) and not args.fetch_only:
         narrowed = ", ".join(
             [f"--{k.replace('_', '-')} {v}" for k, v in scope.items()
@@ -2891,8 +2340,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         is_contract = (os.path.abspath(args.report_out)
                        == os.path.abspath(_DEFAULT_REPORT_OUT))
         if is_contract:
-            # Fail closed: a payload with no scope stamp cannot prove it came
-            # from a complete run.
             stamp = ((payload.get("run_summary") or {}).get("scope") or {})
             if not stamp.get("complete"):
                 raise SystemExit(
@@ -2932,8 +2379,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     hurst_windows = (tuple(int(t) for t in args.hurst_windows.split(","))
                      if args.hurst_windows else HURST_WINDOWS)
 
-    # The single primary hypothesis is pre-registered; verify the committed
-    # #1410 evidence still yields exactly it before anything is scored.
     resolved = resolve_primary_config_id(_JSON_1410)
     if resolved != PRIMARY_CONFIG_ID:
         raise SystemExit(
@@ -2958,7 +2403,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         try:
             frames[dataset] = load_cached_data(symbol, timeframe,
                                                exchange_id=exchange_id)
-        except Exception as exc:  # pragma: no cover - network dependent
+        except Exception as exc:
             print(f"[1424] load FAILED for {exchange_id} "
                   f"{dataset_key(symbol, timeframe)}: {exc}")
             frames[dataset] = pd.DataFrame()
@@ -3075,9 +2520,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         pooled.setdefault(family, [])
         raw_counts.setdefault(family, 0)
 
-    # Structural guarantee, not a promise: no primary trade may come from a
-    # cell #1410 scored. Without this the primary hypothesis — chosen by
-    # reading #1410's p-values — would be scored on its own selection data.
     for family in FAMILIES:
         for t in pooled[family]:
             if t["cohort"] != COHORT_PRIMARY:

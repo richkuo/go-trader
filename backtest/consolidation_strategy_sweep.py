@@ -1,19 +1,3 @@
-"""
-Consolidation Range strategy parameter sweep with in-sample / out-of-sample split.
-
-Grid-searches the strategy's exit/entry params on ONE asset, but guards against
-curve-fitting by splitting each config's trades by date: tune on the in-sample
-(IS) period, validate on the out-of-sample (OOS) period. A config that only looks
-good IS is overfit; one that holds OOS is more likely real.
-
-Fixed: exit_mode=hybrid (the only thing with any edge). Swept: stop_atr_mult,
-trail_atr_mult, edge_entry_frac, tp1_frac, drift_filter.
-
-Usage:
-  uv run --no-sync python backtest/consolidation_strategy_sweep.py \
-      --symbol BTC/USDT --timeframe 4h --box-width-pct 0.05 --min-bars 16 \
-      --since 2021-01-01 --cost-bps 1 --split-frac 0.6
-"""
 
 import argparse
 import itertools
@@ -26,7 +10,7 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "shared_tools"))
 
-from consolidation_strategy_sim import simulate, stats  # noqa: E402
+from consolidation_strategy_sim import simulate, stats
 
 GRID = {
     "stop_atr_mult": [0.75, 1.0, 1.5, 2.0],
@@ -38,7 +22,6 @@ GRID = {
 
 
 def walk_forward(df, regime, params, n_bars, folds):
-    """Return per-fold stats for one config across `folds` contiguous windows."""
     t = simulate(df, params, regime)
     edges = np.linspace(0, n_bars, folds + 1, dtype=int)
     out = []
@@ -111,8 +94,6 @@ def main(argv=None):
         print("no configs met the OOS trade minimum.")
         return 0
     res = pd.DataFrame(rows)
-    # Rank by OOS expectancy, but only among configs profitable IN-SAMPLE too
-    # (a config negative IS that looks good OOS is just noise).
     robust = res[(res["IS_exp"] > 0) & (res["OOS_exp"] > 0)].copy()
     print(f"=== {args.symbol} {args.timeframe} — {len(res)} configs tested, "
           f"{len(robust)} positive BOTH in- and out-of-sample ===\n")

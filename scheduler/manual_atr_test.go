@@ -42,8 +42,6 @@ func TestParseHyperliquidFetchATROutput_RunError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error on runErr")
 	}
-	// fetchManualEntryATR weaves stderr into the message; the parser must
-	// surface stderr in its returned error so that contract is satisfiable.
 	if !strings.Contains(err.Error(), "missing python") {
 		t.Errorf("error should include stderr; got %q", err.Error())
 	}
@@ -122,9 +120,6 @@ func TestResolveManualATRTimeframe(t *testing.T) {
 	}
 }
 
-// TestFetchManualEntryATR_EmptyTimeframeDefaultsTo1h asserts that an unset
-// timeframe no longer fails closed at the guard but defaults to "1h" and is
-// passed through to the fetch. Stubbed so it never spawns Python.
 func TestFetchManualEntryATR_EmptyTimeframeDefaultsTo1h(t *testing.T) {
 	prev := runHyperliquidFetchATRFn
 	defer func() { runHyperliquidFetchATRFn = prev }()
@@ -133,7 +128,7 @@ func TestFetchManualEntryATR_EmptyTimeframeDefaultsTo1h(t *testing.T) {
 		gotTimeframe = timeframe
 		return &HyperliquidFetchATRResult{ATR: 18.0, Candles: 200}, "", nil
 	}
-	sc := StrategyConfig{Script: "check.py", Symbol: "ETH"} // Timeframe unset
+	sc := StrategyConfig{Script: "check.py", Symbol: "ETH"}
 	atr, msg, ok := fetchManualEntryATR(sc, nil)
 	if !ok {
 		t.Fatalf("ok=false msg=%s; empty timeframe should default to 1h, not fail closed", msg)

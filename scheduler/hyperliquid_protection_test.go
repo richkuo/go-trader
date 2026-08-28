@@ -33,12 +33,10 @@ func TestBuildHyperliquidProtectionPlanUsesDefaultTieredATR(t *testing.T) {
 	if plan.StopLossATRMult != 1 {
 		t.Errorf("StopLossATRMult = %g, want 1", plan.StopLossATRMult)
 	}
-	// #870: default ladder retuned to a patient 3-rung 1.5×/3×/5× (40/80/100%).
 	wantTiers := []hlProtectionTier{{Multiple: 1.5, Fraction: 0.4}, {Multiple: 3, Fraction: 0.8}, {Multiple: 5, Fraction: 1}}
 	if !reflect.DeepEqual(plan.Tiers, wantTiers) {
 		t.Errorf("tiers = %+v, want %+v", plan.Tiers, wantTiers)
 	}
-	// 3-tier default pads the 2 existing OIDs with a fresh 0 slot (#870).
 	if !reflect.DeepEqual(plan.TPOIDs, []int64{101, 202, 0}) {
 		t.Errorf("TP OIDs = %v, want [101 202 0]", plan.TPOIDs)
 	}
@@ -74,11 +72,6 @@ func TestBuildHyperliquidProtectionPlanManualStrategy(t *testing.T) {
 	}
 }
 
-// TestApplyHyperliquidProtectionSyncPreservesExistingOIDs verifies the
-// "OID still resting" branch of run_sync_protection: when the result echoes
-// the existing OID back (via open_orders verification), pos.TPOIDs
-// must remain set. A bug where the apply path overwrote with 0 would lose
-// the OID and trigger a duplicate-place on the next cycle.
 func TestApplyHyperliquidProtectionSyncPreservesExistingOIDs(t *testing.T) {
 	pos := &Position{
 		Symbol:      "ETH",
@@ -99,10 +92,6 @@ func TestApplyHyperliquidProtectionSyncPreservesExistingOIDs(t *testing.T) {
 	}
 }
 
-// TestApplyHyperliquidProtectionSyncRetainsOnZeroFields covers the case
-// where the Python side couldn't fetch open_orders (so it omits OID fields
-// from the result) — pos.TPOIDs must NOT be cleared, otherwise the
-// next cycle would re-place against an OID that's still resting.
 func TestApplyHyperliquidProtectionSyncRetainsOnZeroFields(t *testing.T) {
 	pos := &Position{Symbol: "ETH", StopLossOID: 11, TPOIDs: []int64{22, 33}}
 	applyHyperliquidProtectionSync(pos, &HyperliquidProtectionSyncResult{
@@ -113,17 +102,12 @@ func TestApplyHyperliquidProtectionSyncRetainsOnZeroFields(t *testing.T) {
 	}
 }
 
-// TestApplyHyperliquidProtectionSyncClearsFilledExternally is the over-close
-// guard: when the Python side detected the OID actually filled on-chain
-// (via userFills), the apply path must clear the filled TP OID so the next cycle
-// does not re-place against stale virtual qty (#604 review #1).
 func TestApplyHyperliquidProtectionSyncClearsFilledExternally(t *testing.T) {
 	pos := &Position{Symbol: "ETH", StopLossOID: 11, TPOIDs: []int64{22, 33}}
 	applyHyperliquidProtectionSync(pos, &HyperliquidProtectionSyncResult{
 		StopLossFilledExternally: true,
 		TPFilledExternally:       []bool{true, false},
-		// TP2 still resting in this scenario.
-		TPOIDs: []int64{0, 33},
+		TPOIDs:                   []int64{0, 33},
 	}, nil)
 	if pos.StopLossOID != 0 {
 		t.Errorf("StopLossOID = %d, want 0 (cleared because filled externally)", pos.StopLossOID)
@@ -133,10 +117,6 @@ func TestApplyHyperliquidProtectionSyncClearsFilledExternally(t *testing.T) {
 	}
 }
 
-// #716 item 2 — applyHyperliquidProtectionSync must record TPArmedTiers[i]=true
-// whenever Python returns a positive OID for tier i, so a future cycle that
-// observes OID=0 there can distinguish "filled" from "never armed". A filled
-// tier (TPFilledExternally=true) is also armed by definition.
 func TestApplyHyperliquidProtectionSyncStampsTPArmedTiers(t *testing.T) {
 	t.Run("positive OIDs stamp armed", func(t *testing.T) {
 		pos := &Position{Symbol: "ETH"}
@@ -182,7 +162,6 @@ func TestApplyHyperliquidProtectionSyncStampsTPArmedTiers(t *testing.T) {
 	})
 }
 
-// #843: surplus tier-count-shrink cancel outcomes update pos.TPOIDs.
 func TestApplySurplusTPCancelOutcome(t *testing.T) {
 	t.Run("re-appends failed surplus OID", func(t *testing.T) {
 		pos := &Position{Symbol: "ETH", TPOIDs: []int64{10, 20}, TPArmedTiers: []bool{true, true}}
@@ -230,9 +209,6 @@ func TestApplySurplusTPCancelOutcome(t *testing.T) {
 	})
 }
 
-// #842: the close array collapsed to a single close ref. On HL live, a tiered
-// ATR close that also places on-chain TPs is dropped from the Python check
-// (the ladder is placed on-chain); non-tiered or paper closes are kept.
 func TestStrategyConfigWithOnChainProtectionFilter(t *testing.T) {
 	mult := 1.0
 	hlLiveArgs := []string{"bollinger_bands", "ETH", "30m", "--mode=live"}
@@ -240,7 +216,7 @@ func TestStrategyConfigWithOnChainProtectionFilter(t *testing.T) {
 	cases := []struct {
 		name    string
 		sc      StrategyConfig
-		dropped bool // close ref nil'd after filter
+		dropped bool
 	}{
 		{
 			name: "tiered_tp_atr_live live → dropped (placed on-chain)",
@@ -313,13 +289,7 @@ func TestStrategyConfigWithOnChainProtectionFilter(t *testing.T) {
 	}
 }
 
-// TestCloseStrategiesSuppressedMatchesTieredTPATRClose enforces that
-// closeStrategiesSuppressedByOnChainProtection and strategyUsesTieredTPATRClose
-// stay in sync. If a new ATR-tiered close evaluator is added to the suppression
-// set without updating strategyUsesTieredTPATRClose (or vice versa), this test
-// fails immediately.
 func TestCloseStrategiesSuppressedMatchesTieredTPATRClose(t *testing.T) {
-	// Every name in the suppression set must be recognized by strategyUsesTieredTPATRClose.
 	for name := range closeStrategiesSuppressedByOnChainProtection {
 		sc := StrategyConfig{CloseStrategy: &StrategyRef{Name: name}}
 		if !strategyUsesTieredTPATRClose(sc) {
@@ -327,7 +297,6 @@ func TestCloseStrategiesSuppressedMatchesTieredTPATRClose(t *testing.T) {
 		}
 	}
 
-	// A config with a non-suppressed close must return false.
 	sc := StrategyConfig{CloseStrategy: &StrategyRef{Name: "tiered_tp_pct"}}
 	if strategyUsesTieredTPATRClose(sc) {
 		t.Error("strategyUsesTieredTPATRClose returned true for a non-suppressed close strategy")
@@ -354,7 +323,7 @@ func TestFloatFromAnyCheckedRejectsStrings(t *testing.T) {
 
 func TestParseHLProtectionTiersSkipsInvalidValues(t *testing.T) {
 	raw := []interface{}{
-		map[string]interface{}{"atr_multiple": "1.5", "close_fraction": 0.5}, // string rejected
+		map[string]interface{}{"atr_multiple": "1.5", "close_fraction": 0.5},
 		map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 1.0},
 	}
 	tiers := parseHLProtectionTiers(raw)
@@ -484,8 +453,6 @@ func TestHyperliquidProtectionTiersPreservesDuplicateMultipleOrder(t *testing.T)
 	}
 }
 
-// withStubbedSyncHyperliquidProtection swaps in a fake protection sync for the
-// duration of the test, restoring the original on cleanup.
 func withStubbedSyncHyperliquidProtection(
 	t *testing.T,
 	stub func(sc StrategyConfig, plan hlProtectionPlan, notifier *MultiNotifier, logger *StrategyLogger, reconcileFillHintsJSON []byte) (*HyperliquidProtectionSyncResult, bool),
@@ -536,9 +503,6 @@ func TestRunHyperliquidProtectionSyncManualAppliesOIDs(t *testing.T) {
 	}
 }
 
-// TestRunHyperliquidProtectionSyncSkipsWhenNoPlan verifies the early exit when
-// buildHyperliquidProtectionPlan returns ok=false (e.g. position EntryATR=0).
-// The subprocess MUST NOT run.
 func TestRunHyperliquidProtectionSyncSkipsWhenNoPlan(t *testing.T) {
 	sc := StrategyConfig{
 		ID: "hl-manual-eth", Type: "manual", Platform: "hyperliquid",
@@ -563,11 +527,6 @@ func TestRunHyperliquidProtectionSyncSkipsWhenNoPlan(t *testing.T) {
 	}
 }
 
-// TestRunHyperliquidProtectionSyncSkipsApplyAfterExternalClose verifies the
-// post-subprocess re-validation: if the position was flattened or flipped
-// while the subprocess was in flight, the OID apply MUST be skipped (otherwise
-// we'd write protection OIDs onto state that no longer matches the on-chain
-// position).
 func TestRunHyperliquidProtectionSyncSkipsApplyAfterExternalClose(t *testing.T) {
 	mult := 1.5
 	sc := StrategyConfig{
@@ -583,7 +542,6 @@ func TestRunHyperliquidProtectionSyncSkipsApplyAfterExternalClose(t *testing.T) 
 		},
 	}
 	withStubbedSyncHyperliquidProtection(t, func(_ StrategyConfig, _ hlProtectionPlan, _ *MultiNotifier, _ *StrategyLogger, _ []byte) (*HyperliquidProtectionSyncResult, bool) {
-		// Simulate an external close racing the subprocess.
 		state.Positions["ETH"].Quantity = 0
 		return &HyperliquidProtectionSyncResult{StopLossOID: 999, TPOIDs: []int64{111}}, true
 	})
@@ -598,9 +556,6 @@ func TestRunHyperliquidProtectionSyncSkipsApplyAfterExternalClose(t *testing.T) 
 	}
 }
 
-// TestRunHyperliquidProtectionSyncStampsTradeInDB regresses #625: when
-// protection sync places the SL post-open, the SQLite trade row's
-// stop_loss_trigger_px must be backfilled (not just the in-memory TradeHistory).
 func TestRunHyperliquidProtectionSyncStampsTradeInDB(t *testing.T) {
 	mult := 1.5
 	sc := StrategyConfig{
@@ -680,14 +635,12 @@ func TestBuildHyperliquidProtectionPlanPadsTPArmedTiers(t *testing.T) {
 	if !ok {
 		t.Fatal("expected plan ok=true")
 	}
-	// #870: 3-tier default pads the 2-element armed/OID slices with a fresh slot.
 	if want := []bool{true, true, false}; !reflect.DeepEqual(plan.TPArmedTiers, want) {
 		t.Errorf("TPArmedTiers = %v, want %v", plan.TPArmedTiers, want)
 	}
 	if want := []int64{0, 300, 0}; !reflect.DeepEqual(plan.TPOIDs, want) {
 		t.Errorf("TPOIDs = %v, want %v", plan.TPOIDs, want)
 	}
-	// Shorter TPArmedTiers slice pads with false (#749 / #716 contract).
 	pos.TPArmedTiers = []bool{true}
 	plan, ok = buildHyperliquidProtectionPlan(sc, pos, 0)
 	if !ok {
@@ -796,7 +749,7 @@ func TestTieredTPATRPricesForRegimeUsesFleetDefaults(t *testing.T) {
 		},
 	}
 	got := tieredTPATRPricesForRegime(sc, "long", 100, 10, "trending_up")
-	want := []float64{115, 130, 150} // #870: ADX trending_up → choppy group (1.5×/3×/5× ATR)
+	want := []float64{115, 130, 150}
 	if len(got) != len(want) {
 		t.Fatalf("len(prices)=%d, want %d; got=%v", len(got), len(want), got)
 	}
@@ -810,9 +763,6 @@ func TestTieredTPATRPricesForRegimeUsesFleetDefaults(t *testing.T) {
 	}
 }
 
-// TestStrategyTPTiersForRegime_UnifiedBlock verifies the #841 2b wiring: a
-// unified per-regime close ref resolves to the active regime's own scalar
-// ladder via select-then-scalar, and different regimes yield different ladders.
 func TestStrategyTPTiersForRegime_UnifiedBlock(t *testing.T) {
 	sc := StrategyConfig{
 		ID:       "hl-unified-eth",
@@ -855,19 +805,11 @@ func TestStrategyTPTiersForRegime_UnifiedBlock(t *testing.T) {
 	if len(rng) != 2 || rng[0].Multiple != 1.0 || rng[1].Multiple != 2.0 {
 		t.Fatalf("ranging tiers = %+v, want [1,2]", rng)
 	}
-	// Empty/unknown regime → no tiers this cycle (SL-only, retried next cycle).
 	if got := strategyTPTiersForRegime(sc, ""); got != nil {
 		t.Fatalf("empty regime tiers = %+v, want nil", got)
 	}
 }
 
-// TestRatchetExcludedFromOnChainTPGates pins the #1234 audit invariant that
-// the trailing-TP ratchet evaluators place NO on-chain take-profits: they must
-// stay out of all three on-chain-TP gates. Adding either name to
-// isTieredTPATRCloseName, strategyUsesTieredTPATRClose, or the
-// closeStrategiesSuppressedByOnChainProtection set would suppress the
-// in-process ratchet evaluator (or place unintended on-chain TPs) and defeat
-// the let-it-ride trailing stop.
 func TestRatchetExcludedFromOnChainTPGates(t *testing.T) {
 	for _, name := range []string{"trailing_tp_ratchet", "trailing_tp_ratchet_regime"} {
 		if isTieredTPATRCloseName(name) {
@@ -886,9 +828,6 @@ func TestRatchetExcludedFromOnChainTPGates(t *testing.T) {
 	}
 }
 
-// TestBuildHyperliquidProtectionPlanAnchorsToRiskAnchorPrice pins the #873
-// invariant at the protection-plan layer: after a scale-in, SL/TP trigger
-// geometry anchors to the FROZEN RiskAnchorPrice, never the blended AvgCost.
 func TestBuildHyperliquidProtectionPlanAnchorsToRiskAnchorPrice(t *testing.T) {
 	mult := 1.0
 	sc := StrategyConfig{
@@ -901,8 +840,8 @@ func TestBuildHyperliquidProtectionPlanAnchorsToRiskAnchorPrice(t *testing.T) {
 	pos := &Position{
 		Symbol:          "ETH",
 		Quantity:        3,
-		AvgCost:         3050, // blended by a scale-in add
-		RiskAnchorPrice: 2900, // frozen at the original open
+		AvgCost:         3050,
+		RiskAnchorPrice: 2900,
 		EntryATR:        50,
 		Side:            "long",
 	}
@@ -918,10 +857,6 @@ func TestBuildHyperliquidProtectionPlanAnchorsToRiskAnchorPrice(t *testing.T) {
 	}
 }
 
-// #1456 review round 9 (Needs Fixing): a force-replace whose cancel LANDED but
-// whose replacement did NOT rest must not leave pos.StopLossOID/TriggerPx
-// pointing at a dead order — state would claim protection that no longer
-// exists, for fixed/regime/unified-ATR owners the #1450 audit cannot re-arm.
 func TestApplyHyperliquidProtectionSyncClearsDeadSLOnCancelLandedPlaceFailed(t *testing.T) {
 	pos := &Position{Symbol: "ETH", StopLossOID: 5150, StopLossTriggerPx: 2325}
 	applyHyperliquidProtectionSync(pos, &HyperliquidProtectionSyncResult{
@@ -933,8 +868,6 @@ func TestApplyHyperliquidProtectionSyncClearsDeadSLOnCancelLandedPlaceFailed(t *
 	}
 }
 
-// Must-survive (c): cancel AND placement both succeed keeps working exactly as
-// before — the new OID and its trigger overwrite state; no clearing.
 func TestApplyHyperliquidProtectionSyncForceReplaceSuccessUnchanged(t *testing.T) {
 	pos := &Position{Symbol: "ETH", StopLossOID: 5150, StopLossTriggerPx: 2325}
 	applyHyperliquidProtectionSync(pos, &HyperliquidProtectionSyncResult{
@@ -946,8 +879,6 @@ func TestApplyHyperliquidProtectionSyncForceReplaceSuccessUnchanged(t *testing.T
 		t.Errorf("SL = oid %d @ %g, want 6000 @ 2300 from the successful replacement", pos.StopLossOID, pos.StopLossTriggerPx)
 	}
 
-	// A FAILED cancel never sets the flag: the old order may still be resting,
-	// so state must keep it recorded.
 	pos2 := &Position{Symbol: "ETH", StopLossOID: 5150, StopLossTriggerPx: 2325}
 	applyHyperliquidProtectionSync(pos2, &HyperliquidProtectionSyncResult{
 		StopLossError: "force replace cancel: timeout",
@@ -957,9 +888,6 @@ func TestApplyHyperliquidProtectionSyncForceReplaceSuccessUnchanged(t *testing.T
 	}
 }
 
-// The critical-alert predicate: only cancel-landed + nothing-resting reads as
-// lost protection. A landed replacement or an at-submit fill is protection
-// working.
 func TestHLProtectionLostExchangeStop(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -979,10 +907,6 @@ func TestHLProtectionLostExchangeStop(t *testing.T) {
 	}
 }
 
-// #1456 review round 11 (Optional 2): a protection-sync placement that FILLED
-// AT SUBMIT has flattened the position on-chain — it must be booked as a
-// realized close at the trigger price on the same cycle, with no stale
-// StopLossTriggerPx left behind.
 func TestRunHyperliquidProtectionSyncBooksFillAtSubmit(t *testing.T) {
 	mult := 1.5
 	sc := StrategyConfig{
@@ -1014,7 +938,6 @@ func TestRunHyperliquidProtectionSyncBooksFillAtSubmit(t *testing.T) {
 	}
 }
 
-// Must-survive (c): a placement that simply RESTS books nothing.
 func TestRunHyperliquidProtectionSyncRestingPlacementBooksNoClose(t *testing.T) {
 	mult := 1.5
 	sc := StrategyConfig{
@@ -1043,18 +966,11 @@ func TestRunHyperliquidProtectionSyncRestingPlacementBooksNoClose(t *testing.T) 
 	}
 }
 
-// #1456 review round 15 (Optional 1): an unreadable placement response is
-// OUTCOME UNKNOWN, never a rejection. Clearing recorded state on that shape
-// raised a false "the position has NO exchange-side stop" CRITICAL and let the
-// next sync's empty-OID path rest a second, untracked full-size reduce-only
-// stop on the same position.
 func TestProtectionSyncOutcomeUnknownDefersInsteadOfClearing(t *testing.T) {
 	newPos := func() *Position {
 		return &Position{Symbol: "ETH", Side: "long", Quantity: 1, AvgCost: 2000, EntryATR: 25, StopLossOID: 111, StopLossTriggerPx: 1850}
 	}
 
-	// (a) cancel lands, placement outcome unreadable while the order really
-	// rested: recorded OID/trigger untouched, no lost-stop CRITICAL.
 	unknown := &HyperliquidProtectionSyncResult{CancelStopLossSucceeded: true, StopLossOutcomeUnknown: true, StopLossError: "place_stop_loss returned no usable status"}
 	if hlProtectionLostExchangeStop(unknown) {
 		t.Errorf("outcome-unknown classified as protection lost — that CRITICAL would be false")
@@ -1068,8 +984,6 @@ func TestProtectionSyncOutcomeUnknownDefersInsteadOfClearing(t *testing.T) {
 		t.Errorf("outcome-unknown cleared recorded state: OID %d trigger %.2f, want 111 / 1850", pos.StopLossOID, pos.StopLossTriggerPx)
 	}
 
-	// (b) cancel lands, placement positively REJECTED: cleared and re-placed
-	// exactly as before this change.
 	rejected := &HyperliquidProtectionSyncResult{CancelStopLossSucceeded: true, StopLossError: "place_stop_loss SDK error: insufficient margin"}
 	if !hlProtectionLostExchangeStop(rejected) {
 		t.Errorf("a positively rejected placement must still read as protection lost")
@@ -1083,9 +997,6 @@ func TestProtectionSyncOutcomeUnknownDefersInsteadOfClearing(t *testing.T) {
 		t.Errorf("rejected placement left stale state: OID %d trigger %.2f, want 0 / 0", pos.StopLossOID, pos.StopLossTriggerPx)
 	}
 
-	// (c) cancel lands and the replacement rests — unchanged. The Python side
-	// resolves an unreadable response to a resting OID by open-order diff, so
-	// this is the shape that reaches Go in the common case.
 	rested := &HyperliquidProtectionSyncResult{CancelStopLossSucceeded: true, StopLossOID: 222, StopLossTriggerPx: 1900}
 	if hlProtectionLostExchangeStop(rested) || hlProtectionStopOutcomeUnknown(rested) {
 		t.Errorf("a resting replacement must raise neither alert")
@@ -1096,8 +1007,6 @@ func TestProtectionSyncOutcomeUnknownDefersInsteadOfClearing(t *testing.T) {
 		t.Errorf("resting replacement not adopted: OID %d trigger %.2f, want 222 / 1900", pos.StopLossOID, pos.StopLossTriggerPx)
 	}
 
-	// An outcome-unknown result that also carries a resting OID is a normal
-	// placement — the OID wins and neither alert fires.
 	both := &HyperliquidProtectionSyncResult{CancelStopLossSucceeded: true, StopLossOID: 333, StopLossOutcomeUnknown: true}
 	if hlProtectionLostExchangeStop(both) || hlProtectionStopOutcomeUnknown(both) {
 		t.Errorf("a resolved placement must raise neither alert")

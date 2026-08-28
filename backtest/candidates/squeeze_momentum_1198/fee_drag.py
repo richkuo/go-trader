@@ -1,31 +1,4 @@
 #!/usr/bin/env python3
-"""Fee-drag screen for the #1198 squeeze_momentum shortlist (README fee-gate
-step).
-
-squeeze_momentum's audit economics are fee-negative: the M5 screen (#999,
-docs/research/fee-audit-m5.md) measured gross -0.29%/leg vs net -3.69%/leg on
-spot — the strategy loses money gross AND the friction makes it worse. A regime
-gate that only removes losing entries should CUT trades (unlike the #983 close
-stacks, which added legs), but a gate that fragments the setups into
-re-entries pays the same churn tax. This driver re-runs each candidate twice
-per audit dataset on the continuous audit window — default friction vs zero
-friction (the documented #999 overrides: ``commission_pct=0.0,
-slippage_pct=0.0``) — and reports the gross/net split, drag in percentage
-points, and annualized trade rate, per candidate and vs baseline.
-
-Every leg threads the candidate's regime state via
-driver_common.candidate_leg_kwargs (a gated candidate would otherwise silently
-score ungated). ``summarize_fee_drag`` is imported from this directory's
-driver_common (inlined there — see its docstring — so the study is
-self-contained rather than reaching into a twin directory as #1165 reached
-into breakout_984).
-
-Run from repo root:
-  uv run --no-sync python backtest/candidates/squeeze_momentum_1198/fee_drag.py \
-      [--start 2025-06-10] [--end YYYY-MM-DD] \
-      [--candidates baseline.json,...] \
-      [--json backtest/candidates/squeeze_momentum_1198/fee_drag_shortlist.json]
-"""
 
 import argparse
 import json
@@ -34,10 +7,10 @@ import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
-sys.path.insert(0, os.path.join(_HERE, "..", ".."))          # backtest/
+sys.path.insert(0, os.path.join(_HERE, "..", ".."))
 sys.path.insert(0, os.path.join(_HERE, "..", "..", "..", "shared_tools"))
 
-from driver_common import candidate_leg_kwargs, summarize_fee_drag  # noqa: E402
+from driver_common import candidate_leg_kwargs, summarize_fee_drag
 
 DEFAULT_CANDIDATES = "baseline.json"
 

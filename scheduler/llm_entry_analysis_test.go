@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-// --- config: parse, defaults, validation, unknown-key guard ---
-
 func TestLLMEntryAnalysisConfigParseAndDefaults(t *testing.T) {
 	var sc StrategyConfig
 	if sc.LLMEntryAnalysisEnabled() {
@@ -20,7 +18,6 @@ func TestLLMEntryAnalysisConfigParseAndDefaults(t *testing.T) {
 	if p.Model != llmEntryAnalysisDefaultModel || p.MaxDebateRounds != llmEntryAnalysisDefaultRounds || p.Timeout != llmEntryAnalysisDefaultTimeoutS*time.Second {
 		t.Fatalf("defaults wrong: %+v", p)
 	}
-	// Routing defaults: DM on, channel off.
 	if !p.NotifyDM || p.NotifyChannel {
 		t.Fatalf("routing defaults wrong: dm=%t channel=%t (want dm=true channel=false)", p.NotifyDM, p.NotifyChannel)
 	}
@@ -36,22 +33,17 @@ func TestLLMEntryAnalysisConfigParseAndDefaults(t *testing.T) {
 	}
 }
 
-// Routing is per-strategy: DM defaults on, channel defaults off, both
-// overridable independently. The resolved gates are snapshotted into Params.
 func TestLLMEntryAnalysisNotifyRouting(t *testing.T) {
-	// nil block -> defaults (dm on, channel off).
 	var sc StrategyConfig
 	if !sc.llmNotifyDM() || sc.llmNotifyChannel() {
 		t.Fatalf("nil block: dm=%t channel=%t (want dm=true channel=false)", sc.llmNotifyDM(), sc.llmNotifyChannel())
 	}
 
-	// Explicit block, fields unset -> same defaults.
 	sc.LLMEntryAnalysis = &LLMEntryAnalysisConfig{Enabled: true}
 	if !sc.llmNotifyDM() || sc.llmNotifyChannel() {
 		t.Fatalf("unset fields: dm=%t channel=%t (want dm=true channel=false)", sc.llmNotifyDM(), sc.llmNotifyChannel())
 	}
 
-	// Independent overrides: DM off, channel on.
 	off, on := false, true
 	sc.LLMEntryAnalysis = &LLMEntryAnalysisConfig{Enabled: true, NotifyDM: &off, NotifyChannel: &on}
 	if sc.llmNotifyDM() || !sc.llmNotifyChannel() {
@@ -62,7 +54,6 @@ func TestLLMEntryAnalysisNotifyRouting(t *testing.T) {
 		t.Fatalf("params snapshot: dm=%t channel=%t (want dm=false channel=true)", p.NotifyDM, p.NotifyChannel)
 	}
 
-	// Both off is legal (analysis still stamps the verdict, just posts nothing).
 	sc.LLMEntryAnalysis = &LLMEntryAnalysisConfig{Enabled: true, NotifyDM: &off, NotifyChannel: &off}
 	if sc.llmNotifyDM() || sc.llmNotifyChannel() {
 		t.Fatalf("both off: dm=%t channel=%t (want both false)", sc.llmNotifyDM(), sc.llmNotifyChannel())
@@ -93,8 +84,6 @@ func TestValidateLLMEntryAnalysisBounds(t *testing.T) {
 	}
 }
 
-// llm_entry_analysis is a declared StrategyConfig field, so the #704
-// unknown-key guard must accept it (and still flag typos inside strategies).
 func TestLLMEntryAnalysisKeyKnownToUnknownKeyGuard(t *testing.T) {
 	raw := []byte(`{"strategies":[{"id":"a","llm_entry_analysis":{"enabled":true}}]}`)
 	if errs := validateStrategyJSONKeys(raw); len(errs) != 0 {
@@ -105,8 +94,6 @@ func TestLLMEntryAnalysisKeyKnownToUnknownKeyGuard(t *testing.T) {
 		t.Fatalf("typo must be flagged: %v", errs)
 	}
 }
-
-// --- word cap + output parsing ---
 
 func TestTruncateToWordCap(t *testing.T) {
 	if got := truncateToWordCap("one two three", 5); got != "one two three" {
@@ -121,7 +108,6 @@ func TestTruncateToWordCap(t *testing.T) {
 	}
 	long := strings.Repeat("word ", 100)
 	fields := strings.Fields(truncateToWordCap(long, llmEntryAnalysisWordCap))
-	// cap words + the ellipsis marker
 	if len(fields) != llmEntryAnalysisWordCap+1 {
 		t.Fatalf("capped length = %d, want %d", len(fields), llmEntryAnalysisWordCap+1)
 	}
@@ -158,8 +144,6 @@ func TestParseLLMEntryAnalysisOutput(t *testing.T) {
 	}
 }
 
-// --- dispatch predicate ---
-
 func llmTestStrategyConfig(enabled bool) StrategyConfig {
 	sc := StrategyConfig{
 		ID: "hl-btc", Type: "perps", Platform: "hyperliquid",
@@ -191,7 +175,6 @@ func TestQueueLLMEntryAnalysisIfOpened(t *testing.T) {
 	}
 	defer func() { llmEntryAnalysisEnqueue = nil }()
 
-	// Fresh open (1 trade, open leg): dispatches once with the snapshot.
 	s := llmTestState()
 	queueLLMEntryAnalysisIfOpened(llmTestStrategyConfig(true), s, "BTC", 1, openTrade, indicators)
 	if len(jobs) != 1 {
@@ -206,13 +189,11 @@ func TestQueueLLMEntryAnalysisIfOpened(t *testing.T) {
 		t.Fatal("dispatch must set the idempotency marker")
 	}
 
-	// Same position again (e.g. a later cycle): idempotent, no second job.
 	queueLLMEntryAnalysisIfOpened(llmTestStrategyConfig(true), s, "BTC", 1, openTrade, indicators)
 	if len(jobs) != 1 {
 		t.Fatalf("marker must suppress re-dispatch, got %d jobs", len(jobs))
 	}
 
-	// Flip (close+open = 2 legs): excluded.
 	s2 := llmTestState()
 	queueLLMEntryAnalysisIfOpened(llmTestStrategyConfig(true), s2, "BTC", 2, openTrade, indicators)
 	if len(jobs) != 1 {
@@ -222,19 +203,16 @@ func TestQueueLLMEntryAnalysisIfOpened(t *testing.T) {
 		t.Fatal("flip must not set the marker")
 	}
 
-	// Close leg (no open trade): excluded.
 	queueLLMEntryAnalysisIfOpened(llmTestStrategyConfig(true), llmTestState(), "BTC", 1, nil, indicators)
 	if len(jobs) != 1 {
 		t.Fatal("close leg must not dispatch")
 	}
 
-	// Not opted in: excluded.
 	queueLLMEntryAnalysisIfOpened(llmTestStrategyConfig(false), llmTestState(), "BTC", 1, openTrade, indicators)
 	if len(jobs) != 1 {
 		t.Fatal("disabled strategy must not dispatch")
 	}
 
-	// No position for the symbol: excluded.
 	queueLLMEntryAnalysisIfOpened(llmTestStrategyConfig(true), &StrategyState{ID: "hl-btc", Positions: map[string]*Position{}}, "BTC", 1, openTrade, indicators)
 	if len(jobs) != 1 {
 		t.Fatal("missing position must not dispatch")
@@ -244,14 +222,11 @@ func TestQueueLLMEntryAnalysisIfOpened(t *testing.T) {
 func TestQueueLLMEntryAnalysisNilHookNoOp(t *testing.T) {
 	llmEntryAnalysisEnqueue = nil
 	s := llmTestState()
-	// Must not panic and must not set the marker (subcommands/tests without a worker).
 	queueLLMEntryAnalysisIfOpened(llmTestStrategyConfig(true), s, "BTC", 1, &Trade{}, nil)
 	if s.Positions["BTC"].LLMAnalysisRequested {
 		t.Fatal("nil hook must not set the marker")
 	}
 }
-
-// --- worker ---
 
 func TestLLMEntryAnalysisWorkerProcess(t *testing.T) {
 	var stamped []string
@@ -268,7 +243,6 @@ func TestLLMEntryAnalysisWorkerProcess(t *testing.T) {
 		t.Fatalf("success must stamp+notify: stamped=%v notified=%d", stamped, len(notified))
 	}
 
-	// Failure: zero output — no stamp, no post.
 	stamped, notified = nil, nil
 	w.runner = func(ctx context.Context, job llmEntryAnalysisJob) (*LLMEntryAnalysisResult, error) {
 		return nil, fmt.Errorf("timeout")
@@ -291,8 +265,6 @@ func TestLLMEntryAnalysisWorkerQueueFull(t *testing.T) {
 	}
 }
 
-// --- digest formatting ---
-
 func TestFormatLLMEntryAnalysisDigestSortedAndLabeled(t *testing.T) {
 	job := llmEntryAnalysisJob{StrategyID: "hl-btc", Symbol: "BTC", Side: "long", EntryPrice: 50000, IsLive: true}
 	res := &LLMEntryAnalysisResult{
@@ -306,17 +278,11 @@ func TestFormatLLMEntryAnalysisDigestSortedAndLabeled(t *testing.T) {
 	if !strings.Contains(msg, "**Verdict: MIXED**") || !strings.Contains(msg, "cuts both ways") {
 		t.Fatalf("verdict line wrong: %q", msg)
 	}
-	// Map iteration is randomized; the digest must be deterministic (sorted keys).
 	if strings.Index(msg, "derivatives:") > strings.Index(msg, "technical:") {
 		t.Fatalf("analyst topics not sorted: %q", msg)
 	}
 }
 
-// TestFormatLLMEntryAnalysisDigestPlainTextOmitsMarkdown guards #1208 review
-// feedback: a plainText route (e.g. Telegram, notifier.go plainText:true)
-// must not receive literal "**" bold markers, matching how sendTradeAlerts
-// swaps FormatTradeDM for FormatTradeDMPlain on the canonical trade-alert
-// path (main.go:3172). A markdown route must still get the bold verdict.
 func TestFormatLLMEntryAnalysisDigestPlainTextOmitsMarkdown(t *testing.T) {
 	job := llmEntryAnalysisJob{StrategyID: "hl-btc", Symbol: "BTC", Side: "long", EntryPrice: 50000, IsLive: true}
 	res := &LLMEntryAnalysisResult{Verdict: "bullish", Rationale: "clean breakout"}
@@ -335,8 +301,6 @@ func TestFormatLLMEntryAnalysisDigestPlainTextOmitsMarkdown(t *testing.T) {
 	}
 }
 
-// --- verdict persistence: position -> diagnostics row -> SQLite ---
-
 func TestCaptureTradeDiagnosticsCarriesLLMVerdict(t *testing.T) {
 	var rows []*TradeDiagnosticsRow
 	tradeDiagnosticsRecorder = func(row *TradeDiagnosticsRow) error {
@@ -352,7 +316,6 @@ func TestCaptureTradeDiagnosticsCarriesLLMVerdict(t *testing.T) {
 		t.Fatalf("verdict must reach the diagnostics row: %+v", rows)
 	}
 
-	// No verdict (analysis off/failed/unfinished): stays nil -> SQL NULL.
 	rows = nil
 	pos.LLMVerdict = ""
 	captureTradeDiagnostics(s, pos, 51000, 100, "signal", time.Now().UTC())
@@ -389,8 +352,6 @@ func TestInsertTradeDiagnosticsWritesLLMVerdict(t *testing.T) {
 	}
 }
 
-// --- position persistence round-trip ---
-
 func TestPositionLLMFieldsPersistRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
 	sdb, err := OpenStateDB(path)
@@ -421,8 +382,6 @@ func TestPositionLLMFieldsPersistRoundTrip(t *testing.T) {
 	}
 }
 
-// --- hot reload: notification-only, reloadable while a position is open ---
-
 func TestApplyHotReloadConfig_LLMEntryAnalysisWhileOpen(t *testing.T) {
 	base := func(block *LLMEntryAnalysisConfig) []StrategyConfig {
 		return []StrategyConfig{{
@@ -445,7 +404,6 @@ func TestApplyHotReloadConfig_LLMEntryAnalysisWhileOpen(t *testing.T) {
 		}}
 	}
 
-	// off (nil) -> on while open: accepted, applied, logged.
 	cfg := minimalReloadConfig(base(nil))
 	next := minimalReloadConfig(base(&LLMEntryAnalysisConfig{Enabled: true, TimeoutS: 60}))
 	changes, err := applyHotReloadConfig(cfg, next, openState(), nil, nil)
@@ -459,7 +417,6 @@ func TestApplyHotReloadConfig_LLMEntryAnalysisWhileOpen(t *testing.T) {
 		t.Fatalf("expected an llm_entry_analysis change entry, got %v", changes)
 	}
 
-	// on -> off while open: accepted.
 	cfg = minimalReloadConfig(base(&LLMEntryAnalysisConfig{Enabled: true}))
 	next = minimalReloadConfig(base(nil))
 	if _, err := applyHotReloadConfig(cfg, next, openState(), nil, nil); err != nil {

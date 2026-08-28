@@ -5,48 +5,14 @@ import (
 	"sync"
 )
 
-// ratchetTightenReplacePolicy is the walker policy every ratchet→walker
-// dispatch uses on a cycle where applyTrailingTPRatchet* returned a non-nil
-// alert (i.e. a tier STRICTLY tightened the trail). It drops the min-move
-// debounce so the newly stamped, tighter trigger reaches the exchange the same
-// cycle instead of being discarded whenever Δmult × EntryATR / anchor lands
-// under trailing_stop_min_move_pct (#1416).
-//
-// Bounded by construction: a tier alerts at most once (SLAdjustedTiersProcessed
-// advances past it), so this can never turn into per-cycle cancel+replace churn.
 var ratchetTightenReplacePolicy = trailingReplacePolicy{ratchetTightened: true}
 
-// runTrailingStopUpdateAfterRatchetTighten re-runs the trailing walker on the
-// SAME cycle a ratchet tier tightened during execute (#1416).
-//
-// Why this exists: the perps manage path (ratchet → re-snapshot → walker) is
-// gated on result.Signal == 0. A scale-out ratchet tier emits close_fraction > 0,
-// so that path is skipped; execute books the partial close and
-// applyTrailingTPRatchetToPosition stamps the tighter PostTPTrailingATRMult
-// afterward — but nothing replaces the resting SL until a later Signal==0
-// cycle. That leaves the residual under-protected at the OLD wider trigger for
-// up to a full strategy interval (and unbounded if every later cycle also
-// emits a close signal).
-//
-// Mirrors the manual manage sequence (ratchet then walker) and the #885/#882
-// same-cycle walker pattern: live cancel+replace runs OUTSIDE mu via
-// runHyperliquidTrailingStopUpdate; paper advances the virtual trigger via
-// runHyperliquidTrailingStopPaper. Caller gates on a non-nil tighten alert so
-// trail-only / no-op ratchet cycles don't pay an extra walker pass.
-//
-// Partial-close on-chain qty: the Phase-1 reconcile snapshot is pre-close
-// (larger than residual). hlSLEffectiveQty takes min(virtual, on-chain), so the
-// residual virtual qty wins — never oversized relative to what's left.
 func runTrailingStopUpdateAfterRatchetTighten(
 	sc StrategyConfig,
 	stratState *StrategyState,
 	symbol string,
 	mark float64,
 	hlOnChainAbsQty map[string]float64,
-	// #1450: coin -> current-cycle exchange liquidation price; a missing or
-	// non-positive entry means "unknown" and the walker skips the clamp. The
-	// companion net-side map (#1456 review) gates the read on this position's
-	// side matching the on-chain NET side.
 	hlLiquidationPx map[string]float64,
 	hlNetSideByCoin map[string]string,
 	mu *sync.RWMutex,
@@ -79,9 +45,6 @@ func runTrailingStopUpdateAfterRatchetTighten(
 		if capped && logger != nil {
 			logger.Warn("ratchet same-cycle trailing SL: virtual qty %.6f > on-chain %.6f for %s; capping (#621)", qty, slEffectiveQty, symbol)
 		}
-		// #1450: the shared ratchetTightenReplacePolicy is a package-level var;
-		// copy it per call so the coin's liquidation price never leaks across
-		// strategies.
 		livePolicy := ratchetTightenReplacePolicy
 		livePolicy.liquidationPx = hlLiquidationPxForSide(hlLiquidationPx, hlNetSideByCoin, symbol, side)
 		newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(
@@ -94,8 +57,6 @@ func runTrailingStopUpdateAfterRatchetTighten(
 		return 0, ""
 	}
 
-	// Paper (#532): no exchange trigger; advance the virtual HWM/trigger with the
-	// tightened PostTPTrailingATRMult already stamped by the ratchet.
 	newHighWater, newTrigger, breach, breachPx := runHyperliquidTrailingStopPaper(sc, side, &posSnap, mark, highWater, triggerPx, ratchetTightenReplacePolicy)
 	mu.Lock()
 	defer mu.Unlock()

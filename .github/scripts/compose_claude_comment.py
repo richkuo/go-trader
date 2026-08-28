@@ -1,17 +1,3 @@
-"""Compose the authoritative body for a claude[bot] comment.
-
-Single source of truth for the model-id display names, the LLM footer, and
-the workflow status note that both claude.yml patch steps (success footer and
-cancellation/failure note) append. As a CLI, reads the current comment body
-from $BODY_IN plus $MODEL_ID, $EFFORT, $CLAUDE_HARNESS, and optional
-$STATUS_NOTE; prints the recomposed body to stdout.
-
-Idempotent: a stale LLM footer (Claude guesses the effort; the workflow is
-authoritative) and any previous workflow status note are stripped before the
-fresh note and footer are appended, so retries and repeated failures never
-stack. The "Create PR" link's prefilled body= param is rewritten to end with
-the same footer (see rewrite_create_pr_link.py).
-"""
 
 import os
 import re
@@ -46,8 +32,6 @@ def compose(
         f"---\nLLM: {model_display_name(model_id)}"
         f" | {effort or 'unknown'} | Harness: {harness}"
     )
-    # body is empty when composing a standalone status comment (ON_MISS=post
-    # in patch_claude_comment.sh) — omit it so the note leads the comment.
     parts = [body] if body else []
     if status_note:
         parts.append(status_note)

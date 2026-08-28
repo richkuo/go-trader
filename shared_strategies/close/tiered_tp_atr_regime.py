@@ -1,12 +1,3 @@
-"""Regime-aware tiered ATR take-profit (frozen at open) — #733.
-
-Multipliers are resolved once at position open via ``position["regime"]``
-(the regime stamped on the Go-side Position) and frozen for the lifetime
-of the position. Compatible with HL on-chain reduce-only TP placement
-because the tier prices are determined when the order is armed.
-
-For per-bar re-resolution see :mod:`tiered_tp_atr_live_regime`.
-"""
 
 from __future__ import annotations
 
@@ -32,16 +23,6 @@ from regime_atr import (
 def _resolve_tiers_for_regime(
     params: dict, regime: str
 ) -> Tuple[List[Tuple[float, float]], List[str]]:
-    """Walk the configured tier specs and return concrete
-    [(atr_multiple, cumulative_close_fraction)] for the given regime label.
-
-    Returns (tiers, errors). Errors are returned as strings so the caller
-    can surface them — the live runtime should never see errors here (the
-    Go config loader validates at startup), but tests and the backtester
-    rely on this helper to mirror parser semantics.
-    """
-    # #841 2b: unified per-regime block — select this regime's scalar ladder and
-    # build the cumulative (atr_multiple, close_fraction) list directly.
     if close_params_are_unified_regime(params):
         scalar, _ = unified_regime_scalar_params(params, regime)
         if scalar is None:
@@ -66,11 +47,6 @@ def _resolve_tiers_for_regime(
     use_defaults = bool(params.get("use_defaults"))
     raw_tiers = tier_list_from_params(params)
     if use_defaults and raw_tiers is None:
-        # #870: resolve the per-quality-group default ladder for the stamped
-        # regime directly. The ragged tier counts (clean 4 / choppy 3 / ranging
-        # 2) can't round-trip the positional spec union when the evaluator is
-        # invoked with the default ADX vocabulary, and the regime here may be a
-        # composite label. Mirrors Go's defaultRegimeTPTiersForRegime.
         group = regime_close_default_group(regime)
         ladder = REGIME_TP_TIER_GROUP_DEFAULTS.get(group) if group else None
         if not ladder:
@@ -95,7 +71,6 @@ def _resolve_tiers_for_regime(
 
     resolved.sort(key=lambda p: p[0])
     if resolved:
-        # Final tier always 1.0 — matches live strategyTPTiers contract.
         atr, _ = resolved[-1]
         resolved[-1] = (atr, 1.0)
     return resolved, []

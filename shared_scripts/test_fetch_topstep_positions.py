@@ -1,13 +1,3 @@
-"""Tests for fetch_topstep_positions.py — live-account position fetcher
-used by the portfolio kill switch (#347).
-
-Critical invariant: auth / network failures on TopStepX MUST produce an
-error envelope (exit 1, "error" key populated, positions empty). If the
-script silently reports an empty position list on a transient 5xx or an
-expired token, the kill switch would clear virtual state while live CME
-exposure survived — the exact #341/#342 bug class this feature is meant
-to close, just shifted into the fetch path.
-"""
 
 import builtins
 import importlib.util
@@ -21,12 +11,6 @@ import pytest
 
 
 def _run_script(positions_or_exc, is_live=True, use_raise=True):
-    """Invoke fetch_topstep_positions.main() with a mocked adapter.
-
-    positions_or_exc may be either a list (returned by
-    adapter.get_open_positions_raise) or an Exception. Returns
-    (parsed_stdout_json, exit_code).
-    """
     script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                "fetch_topstep_positions.py")
     spec = importlib.util.spec_from_file_location("fetch_topstep_positions", script_path)
@@ -87,8 +71,6 @@ class TestSuccess:
         assert "error" not in out
 
     def test_short_position_size_is_negative(self):
-        """Short positions must carry a negative signed size so the Go
-        kill switch parser can infer direction identically to HL/OKX."""
         out, code = _run_script([
             {"symbol": "NQ", "quantity": -1, "avg_price": 18000.0, "side": "short"},
         ])
@@ -117,10 +99,6 @@ class TestFailurePaths:
         assert "TOPSTEP_API_KEY" in out["error"]
 
     def test_exchange_raises_401(self):
-        """Auth failure (rotated/revoked token) must surface as an error
-        envelope, not an empty success. Regression guard for the review
-        comment on PR #351: the old code called the soft-fail
-        get_open_positions() which swallowed every exception."""
         out, code = _run_script(RuntimeError("401 Unauthorized"))
         assert code == 1
         assert "401" in out["error"]
@@ -139,11 +117,6 @@ class TestFailurePaths:
         assert out["positions"] == []
 
     def test_uses_raise_variant_not_soft_fail(self):
-        """The script MUST call get_open_positions_raise (re-raises on
-        failure) rather than get_open_positions (returns []). If a future
-        refactor switches back to the soft-fail method, this test will
-        catch it because the raise-variant mock will be untouched and
-        the exception never fires."""
         script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                    "fetch_topstep_positions.py")
         spec = importlib.util.spec_from_file_location("fetch_topstep_positions", script_path)

@@ -42,12 +42,6 @@ func TestRegimePayload_UnmarshalMultiWindow(t *testing.T) {
 	}
 }
 
-// TestRegimePayload_LabelDefaultWindowNoExplicitWindows is the #797 regression:
-// with regime.enabled=true and no explicit regime.windows, the check script
-// emits a single-window payload keyed by "default". The default selector
-// (empty / "default") must resolve that literal key instead of no-op'ing to an
-// empty label, which previously disabled both regime_directional_policy and the
-// allowed_regimes gate on live entries.
 func TestRegimePayload_LabelDefaultWindowNoExplicitWindows(t *testing.T) {
 	var p RegimePayload
 	if err := json.Unmarshal([]byte(`{"default":{"regime":"trending_down","score":0.9}}`), &p); err != nil {
@@ -56,7 +50,7 @@ func TestRegimePayload_LabelDefaultWindowNoExplicitWindows(t *testing.T) {
 	if !p.MultiMode {
 		t.Fatal("expected multi-window payload for default-keyed result")
 	}
-	rc := &RegimeConfig{Enabled: true} // no explicit Windows — issue config shape
+	rc := &RegimeConfig{Enabled: true}
 	for _, key := range []string{"", "default", "DEFAULT"} {
 		if got := p.Label(key, rc); got != "trending_down" {
 			t.Fatalf("Label(%q) = %q, want trending_down", key, got)
@@ -67,9 +61,6 @@ func TestRegimePayload_LabelDefaultWindowNoExplicitWindows(t *testing.T) {
 	}
 }
 
-// TestRegimeDirectionalPolicy_DefaultWindowResolves wires the full flat-entry
-// resolution path from #797: default-keyed payload + no explicit windows +
-// regime_directional_policy must flip a long base config to short+invert.
 func TestRegimeDirectionalPolicy_DefaultWindowResolves(t *testing.T) {
 	var p RegimePayload
 	if err := json.Unmarshal([]byte(`{"default":{"regime":"trending_down"}}`), &p); err != nil {
@@ -101,10 +92,6 @@ func TestRegimeDirectionalPolicy_DefaultWindowResolves(t *testing.T) {
 	}
 }
 
-// TestRegimeGate_DefaultWindowBlocks covers the second #797 consumer: the
-// allowed_regimes gate shares RegimePayload.Label, so a default-keyed payload
-// with no explicit windows must still produce a non-empty label and block an
-// entry whose regime is not allowed (previously failed open).
 func TestRegimeGate_DefaultWindowBlocks(t *testing.T) {
 	var p RegimePayload
 	if err := json.Unmarshal([]byte(`{"default":{"regime":"trending_down"}}`), &p); err != nil {
@@ -120,7 +107,6 @@ func TestRegimeGate_DefaultWindowBlocks(t *testing.T) {
 	if !blocked {
 		t.Fatalf("expected gate to block trending_down entry (allowed=trending_up); gateLabel=%q", gateLabel)
 	}
-	// Allowed regime must pass.
 	scAllowed := StrategyConfig{AllowedRegimes: []string{"trending_down"}}
 	if _, blocked := applyRegimeGate(scAllowed, p, rc, 0); blocked {
 		t.Fatal("expected trending_down entry to pass when allowed")
@@ -181,13 +167,10 @@ func TestValidateRegimeWindowsConfig_RejectsReservedWindowName(t *testing.T) {
 	}
 }
 
-// #1189: the operator-facing display label must match the strategy's
-// configured gate window, not the shared-default window used for
-// stratState.Regime.
 func TestStrategyDisplayRegimeLabel_UsesGateWindowOverride(t *testing.T) {
 	sc := StrategyConfig{RegimeGateWindow: "composite_long"}
 	st := &StrategyState{
-		Regime: "ranging", // shared-default ("medium") window label
+		Regime: "ranging",
 		RegimeWindows: map[string]string{
 			"medium":         "ranging",
 			"composite_long": "trending_down_choppy",
@@ -199,7 +182,7 @@ func TestStrategyDisplayRegimeLabel_UsesGateWindowOverride(t *testing.T) {
 }
 
 func TestStrategyDisplayRegimeLabel_FallsBackWhenGateWindowUnset(t *testing.T) {
-	sc := StrategyConfig{} // no regime_gate_window override
+	sc := StrategyConfig{}
 	st := &StrategyState{
 		Regime:        "ranging",
 		RegimeWindows: map[string]string{"medium": "ranging", "composite_long": "trending_down_choppy"},
@@ -213,7 +196,7 @@ func TestStrategyDisplayRegimeLabel_FallsBackWhenWindowLabelMissing(t *testing.T
 	sc := StrategyConfig{RegimeGateWindow: "composite_long"}
 	st := &StrategyState{
 		Regime:        "ranging",
-		RegimeWindows: map[string]string{"medium": "ranging"}, // composite_long not populated yet
+		RegimeWindows: map[string]string{"medium": "ranging"},
 	}
 	if got := strategyDisplayRegimeLabel(st, sc, nil); got != "ranging" {
 		t.Fatalf("strategyDisplayRegimeLabel = %q, want ranging (fallback, gate label not yet captured)", got)
@@ -227,13 +210,8 @@ func TestStrategyDisplayRegimeLabel_NilStratState(t *testing.T) {
 	}
 }
 
-// #1189 regression: a strategy that overrides ONLY regime_gate_window must
-// keep resolving its ATR/directional fallbacks (and therefore the #822
-// orphan-close and dynamic-regime-close tier resolution) from the shared
-// stratState.Regime — strategyDisplayRegimeLabel must never be substituted
-// into those call sites.
 func TestStrategyDisplayRegimeLabel_DoesNotAffectATRDirectionalFallbacks(t *testing.T) {
-	sc := StrategyConfig{RegimeGateWindow: "composite_long"} // ATR/directional windows left unset
+	sc := StrategyConfig{RegimeGateWindow: "composite_long"}
 	st := &StrategyState{
 		Regime: "ranging",
 		RegimeWindows: map[string]string{

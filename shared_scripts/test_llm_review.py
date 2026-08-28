@@ -1,8 +1,3 @@
-"""Tests for llm_review.py (#1137) — pipeline logic with an injected LLM,
-word-cap enforcement, judge parsing, and the subprocess/probe contract.
-Not in pyproject testpaths; invoke explicitly:
-    uv run --no-sync python -m pytest shared_scripts/test_llm_review.py
-"""
 
 import importlib.util
 import json
@@ -96,7 +91,7 @@ class TestJudgeParsing:
     def test_rationale_capped(self, mod):
         long = " ".join(["w"] * 100)
         _, r = mod.parse_judge_output(json.dumps({"verdict": "mixed", "rationale": long}), 10)
-        assert len(r.split()) == 11  # 10 words + ellipsis
+        assert len(r.split()) == 11
 
 
 class TestPipeline:
@@ -105,7 +100,7 @@ class TestPipeline:
             calls.append((system, user))
             if "risk manager" in system:
                 return '{"verdict": "bullish", "rationale": "momentum and funding both lean up"}'
-            return "short note " + " ".join(["pad"] * 80)  # over-cap on purpose
+            return "short note " + " ".join(["pad"] * 80)
         return llm_call
 
     def test_full_pipeline_with_debate(self, mod):
@@ -115,10 +110,8 @@ class TestPipeline:
         assert out["verdict"] == "bullish"
         assert out["rationale"]
         assert set(out["per_analyst"]) == {"technical", "derivatives"}
-        # Every topic obeys the cap (55 words + ellipsis marker at most).
         for note in list(out["per_analyst"].values()) + [out["rationale"]]:
             assert len(note.split()) <= 56
-        # 2 analysts + 2 rounds x (bull+bear) + judge = 7 calls
         assert len(calls) == 7
 
     def test_zero_rounds_skips_debate(self, mod):
@@ -126,7 +119,6 @@ class TestPipeline:
         market = {"ohlcv_summary": None, "funding": None}
         out = mod.run_pipeline(CTX, market, self._fake_llm(calls), max_debate_rounds=0, word_cap=55)
         assert out["verdict"] == "bullish"
-        # funding unavailable -> derivatives analyst skipped; technical + judge only
         assert set(out["per_analyst"]) == {"technical"}
         assert len(calls) == 2
 

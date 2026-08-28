@@ -1,19 +1,3 @@
-"""Evidence-gated directional certification — backtest consumer (#1085).
-
-Mirror of scheduler/regime_directional_certification.go for backtest/live PARITY:
-the backtester must honor regime_directional_policy only where the SAME
-per-(asset, timeframe, classifier) certification passes that the live daemon
-checks, so a backtest can never show a directional edge the live path suppresses.
-
-Single source of truth for the statistical test is the Python research harness
-(regime_1076_certify.py), which emits the artifact consumed here AND by Go. The
-artifact currently certifies NOTHING (#1076 negative result), so every
-directional policy is default-off in both backtest and live.
-
-Fail-closed: a missing/malformed/expired certification yields "not certified"
-(base direction), never a wrong-side bet. Keep normalize_cert_asset and the key
-shape byte-identical to the Go side.
-"""
 from __future__ import annotations
 
 import json
@@ -27,9 +11,6 @@ CERT_PATH_ENV = "GO_TRADER_DIRECTIONAL_CERT_PATH"
 
 
 def normalize_cert_asset(symbol: str) -> str:
-    """Reduce a symbol to its base asset: strip a quote/perp suffix, upper-case.
-    "BTC/USDT" -> "BTC", "btc" -> "BTC", "BTC-PERP" -> "BTC". Mirrors the Go
-    normalizeCertAsset so both sides key identically."""
     s = (symbol or "").strip().upper()
     if not s:
         return ""
@@ -57,10 +38,6 @@ def cert_path(path: Optional[str] = None) -> str:
 
 
 def load_certifications(path: Optional[str] = None) -> dict:
-    """Load the artifact into a {cert_key: entry} index. Fail-closed: a missing
-    or malformed artifact yields an empty index (nothing certified) with a
-    stderr warning — never an exception that would break an unrelated backtest,
-    mirroring the live daemon's fail-closed load."""
     p = cert_path(path)
     try:
         with open(p) as fh:
@@ -99,8 +76,6 @@ def is_directional_certified(
     certs: dict, asset: str, timeframe: str, classifier: str,
     now: Optional[datetime] = None,
 ) -> bool:
-    """True iff (asset, timeframe, classifier) has a present, non-expired
-    certification. Fail-closed everywhere else."""
     entry = certs.get(_cert_key(asset, timeframe, classifier))
     if not entry:
         return False
@@ -118,14 +93,6 @@ def certified_states(
     certs: dict, asset: str, timeframe: str, classifier: str,
     now: Optional[datetime] = None,
 ) -> Optional[dict]:
-    """Return the certified PER-STATE direction map ({regime_label: "long"/"short"})
-    when (asset, timeframe, classifier) has a present, non-expired certification;
-    else None (default-off -> base direction). Mirrors Go
-    DirectionalCertSet.Certified so the backtester can gate the directional policy
-    PER STATE exactly as live does — a state whose configured side contradicts the
-    certified sign falls to base, not just an all-or-nothing cell check. A present
-    certification with a missing/non-dict states map yields {} (certifies no
-    state)."""
     entry = certs.get(_cert_key(asset, timeframe, classifier))
     if not entry:
         return None
@@ -141,10 +108,6 @@ def certified_states(
 
 
 def backtest_classifier(regime_windows_spec: Optional[dict]) -> str:
-    """The regime classifier the BACKTESTER applies for an ad-hoc (by-name) run:
-    composite when a regime_windows_spec is configured (#1058), else legacy ADX.
-    For a --config run prefer config_directional_classifier, which matches the
-    LIVE directional-window classifier exactly (#1085 parity)."""
     return "composite" if regime_windows_spec else "adx"
 
 
@@ -154,15 +117,6 @@ def _normalize_window_key(name: str) -> str:
 
 def config_directional_classifier(regime_cfg: Optional[dict],
                                   sc: Optional[dict]) -> str:
-    """Resolve the DIRECTIONAL window's classifier from a live config exactly as
-    Go does (regimeClassifierForWindow(rc, resolveStrategyRegimeWindow(sc,
-    "directional", rc))), so the backtest certification KEY matches the live key
-    for multi-window directional configs (#1085 parity). Mirrors:
-      - no regime.windows  -> "adx" (legacy single-lookback)
-      - regime_directional_window names a window -> that window's classifier
-      - unset/"default"     -> primary window ("medium" if present, else first
-                               sorted name)
-      - a window's blank classifier defaults to "adx" (effectiveClassifier)."""
     windows = (regime_cfg or {}).get("windows") or {}
     if not windows:
         return "adx"

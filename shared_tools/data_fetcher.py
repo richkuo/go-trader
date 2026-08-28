@@ -1,7 +1,3 @@
-"""
-Data fetching layer — historical and real-time OHLCV from Binance via ccxt.
-Uses public API only (no API keys needed for market data).
-"""
 
 import time
 from typing import Optional
@@ -14,7 +10,6 @@ from storage import store_ohlcv, load_ohlcv
 
 
 def get_exchange(exchange_id: str = "binanceus") -> ccxt.Exchange:
-    """Get a ccxt exchange instance (public, no auth)."""
     exchange_class = getattr(ccxt, exchange_id)
     exchange = exchange_class({
         "enableRateLimit": True,
@@ -30,20 +25,6 @@ def fetch_ohlcv(
     exchange_id: str = "binanceus",
     store: bool = True,
 ) -> pd.DataFrame:
-    """
-    Fetch OHLCV candles from exchange.
-
-    Args:
-        symbol: Trading pair (e.g., 'BTC/USDT')
-        timeframe: Candle interval ('1m','5m','15m','1h','4h','1d','1w')
-        since: Start date as ISO string (e.g., '2023-01-01')
-        limit: Max candles per request (exchange limit usually 500-1000)
-        exchange_id: Exchange name for ccxt
-        store: Whether to persist to SQLite
-
-    Returns:
-        DataFrame with columns: timestamp, open, high, low, close, volume
-    """
     exchange = get_exchange(exchange_id)
 
     since_ts = None
@@ -74,27 +55,6 @@ def fetch_full_history(
     store: bool = True,
     limit: int = 500,
 ) -> pd.DataFrame:
-    """
-    Fetch complete historical data by paginating through exchange API.
-    Handles rate limits automatically via ccxt.
-
-    Args:
-        symbol: Trading pair
-        timeframe: Candle interval
-        since: Start date as ISO string
-        exchange_id: Exchange name
-        store: Whether to persist to SQLite
-        limit: Candles requested per page. Venues differ (Coinbase Exchange
-            caps a granularity request at 300 candles, Bitstamp serves 1000),
-            and the loop advances by the LAST RETURNED candle rather than by a
-            fixed step, so a page shorter than `limit` is already safe. Callers
-            that know a venue's cap pass it so a rejected oversized request
-            never truncates a backfill. Default 500 keeps every existing
-            caller byte-identical.
-
-    Returns:
-        Complete DataFrame of OHLCV data
-    """
     exchange = get_exchange(exchange_id)
     since_ts = exchange.parse8601(since + "T00:00:00Z")
     now_ts = exchange.milliseconds()
@@ -102,7 +62,6 @@ def fetch_full_history(
     all_candles = []
     current_since = since_ts
 
-    # Timeframe to milliseconds mapping for pagination
     tf_ms = {
         "1m": 60_000, "5m": 300_000, "15m": 900_000,
         "1h": 3_600_000, "4h": 14_400_000,
@@ -141,13 +100,11 @@ def fetch_full_history(
 
         all_candles.extend(candles)
 
-        # Move to after the last candle
         last_ts = candles[-1][0]
         if last_ts == current_since:
-            break  # No progress, we're done
+            break
         current_since = last_ts + tf_ms.get(timeframe, 86_400_000)
 
-        # Be nice to the API
         time.sleep(exchange.rateLimit / 1000)
 
     if not all_candles:
@@ -177,9 +134,6 @@ def load_cached_data(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
 ) -> pd.DataFrame:
-    """
-    Load data from SQLite cache. Falls back to fetching if empty.
-    """
     start_ts = None
     end_ts = None
     if start_date:
@@ -198,7 +152,6 @@ def load_cached_data(
 
 
 if __name__ == "__main__":
-    # Quick test: fetch recent BTC/USDT daily candles
     df = fetch_ohlcv("BTC/USDT", "1d", limit=30)
     print(f"\nFetched {len(df)} candles:")
     print(df.tail())

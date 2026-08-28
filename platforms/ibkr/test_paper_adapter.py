@@ -1,4 +1,3 @@
-"""Tests for IBKR paper_adapter.py — Black-Scholes, contracts, and IBKRPaperAdapter."""
 
 import sys
 import os
@@ -8,7 +7,6 @@ import pytest
 from unittest.mock import MagicMock, patch
 from datetime import datetime, timezone, timedelta
 
-# Load ibkr paper_adapter by file path to avoid module name collisions
 _pa_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "paper_adapter.py")
 _spec = importlib.util.spec_from_file_location("ibkr_paper_adapter", _pa_path)
 _mod = importlib.util.module_from_spec(_spec)
@@ -22,8 +20,6 @@ IBKRConnection = _mod.IBKRConnection
 get_spot_price_ibkr = _mod.get_spot_price_ibkr
 calc_vol_and_iv_rank = _mod.calc_vol_and_iv_rank
 
-
-# ─── Black-Scholes ─────────────────────────────────
 
 class TestBlackScholes:
     def test_call_price_positive(self):
@@ -43,12 +39,12 @@ class TestBlackScholes:
         assert abs((call - put) - parity) < 0.01
 
     def test_at_expiry(self):
-        assert black_scholes(110, 100, 0, 0.3) == 10  # intrinsic for call
+        assert black_scholes(110, 100, 0, 0.3) == 10
         assert black_scholes(90, 100, 0, 0.3, option_type="put") == 10
 
     def test_zero_vol(self):
         price = black_scholes(110, 100, 30, 0.0)
-        assert price == 10  # intrinsic
+        assert price == 10
 
     def test_zero_spot(self):
         price = black_scholes(0, 100, 30, 0.3)
@@ -89,8 +85,6 @@ class TestNormCdf:
         assert norm_cdf(-5) < 0.001
 
 
-# ─── IBKRPaperAdapter ──────────────────────────────
-
 class TestIBKRPaperAdapter:
     def test_multiplier_btc(self):
         adapter = IBKRPaperAdapter()
@@ -107,7 +101,7 @@ class TestIBKRPaperAdapter:
     def test_contract_value(self):
         adapter = IBKRPaperAdapter()
         value = adapter.get_contract_value("BTC", 67000)
-        assert value == 6700.0  # 67000 * 0.1
+        assert value == 6700.0
 
     def test_estimate_premium_call(self):
         adapter = IBKRPaperAdapter()
@@ -128,7 +122,6 @@ class TestIBKRPaperAdapter:
         assert len(result["strikes"]) > 0
         assert result["underlying"] == "BTC"
         assert result["interval"] == 1000
-        # Strikes should be around spot
         assert any(s < 67000 for s in result["strikes"])
         assert any(s > 67000 for s in result["strikes"])
 
@@ -141,14 +134,10 @@ class TestIBKRPaperAdapter:
         adapter = IBKRPaperAdapter()
         expiries = adapter.get_available_expiries(days_out=90)
         assert len(expiries) > 0
-        # All should be valid dates
         for exp in expiries:
             datetime.strptime(exp, "%Y-%m-%d")
-        # Should be sorted
         assert expiries == sorted(expiries)
 
-
-# ─── IBKRConnection ────────────────────────────────
 
 class TestIBKRConnection:
     def test_init(self):
@@ -157,8 +146,6 @@ class TestIBKRConnection:
         assert conn.port == 4002
         assert conn.is_connected() is False
 
-
-# ─── Convenience Functions ─────────────────────────
 
 class TestConvenienceFunctions:
     def test_get_spot_price_ibkr(self):

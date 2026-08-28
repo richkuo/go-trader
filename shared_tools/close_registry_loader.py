@@ -1,4 +1,3 @@
-"""Load the close strategy registry without relying on ambiguous sys.path imports."""
 
 from __future__ import annotations
 
@@ -43,9 +42,6 @@ def list_strategies() -> list[str]:
 
 
 def list_strategies_detailed() -> list[dict]:
-    """Full catalog for operator-facing surfaces (#1203): one dict per
-    registered evaluator with its description, default params, and supported
-    platforms. Sorted by name so output is deterministic across runs."""
     registry = _load_registry().STRATEGIES
     return [
         {
@@ -65,7 +61,7 @@ if __name__ == "__main__":
     if "--list-json" in sys.argv:
         try:
             print(json.dumps(list_strategies_detailed()))
-        except Exception as exc:  # subprocess contract: JSON to stdout even on error
+        except Exception as exc:
             print(json.dumps({"error": str(exc)}))
             sys.exit(1)
     else:

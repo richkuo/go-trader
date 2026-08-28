@@ -47,18 +47,15 @@ func TestCheckStatePresence(t *testing.T) {
 	liveCfg := []StrategyConfig{{ID: "hl-x", Args: []string{"--mode=live"}}}
 	paperCfg := []StrategyConfig{{ID: "hl-x", Args: []string{"--mode=paper"}}}
 
-	// Missing DB + live → warns.
 	missing := filepath.Join(dir, "missing.db")
 	if got := CheckStatePresence(missing, liveCfg); !strings.Contains(got, "CRITICAL") {
 		t.Fatalf("expected CRITICAL warning for missing live DB, got %q", got)
 	}
 
-	// Missing DB + paper-only → no warning.
 	if got := CheckStatePresence(missing, paperCfg); got != "" {
 		t.Fatalf("expected no warning for paper-only, got %q", got)
 	}
 
-	// Existing DB + live → no warning.
 	existing := filepath.Join(dir, "state.db")
 	if err := os.WriteFile(existing, nil, 0644); err != nil {
 		t.Fatalf("setup: %v", err)

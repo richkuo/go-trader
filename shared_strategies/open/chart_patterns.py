@@ -1,14 +1,3 @@
-"""
-Chart Pattern Recognition — algorithmic detection of classic chart patterns.
-
-Detects reversal patterns (Double Top/Bottom, Head & Shoulders, Triple Top/Bottom)
-and continuation patterns (Bull/Bear Flag, Triangles, Cup & Handle) using swing
-high/low pivot detection with volume confirmation.
-
-Each detector returns a list of PatternMatch instances. The chart_pattern_core()
-orchestrator runs all detectors, filters by volume confirmation, and produces a
-signal column (1 = buy, -1 = sell, 0 = hold).
-"""
 
 from dataclasses import dataclass
 import numpy as np
@@ -21,31 +10,18 @@ from mtf_confluence import _project_to_native, _resample_htf
 
 @dataclass
 class PatternMatch:
-    pattern: str       # e.g. "double_top", "head_shoulders"
-    signal: int        # +1 or -1
-    bar_index: int     # index where pattern completes (breakout bar)
-    neckline: float    # neckline / breakout level
-    confidence: float  # 0-1 score
+    pattern: str
+    signal: int
+    bar_index: int
+    neckline: float
+    confidence: float
 
-
-# ─────────────────────────────────────────────
-# Foundation: Swing Point Detection
-# ─────────────────────────────────────────────
 
 def find_swing_points(
     highs: pd.Series,
     lows: pd.Series,
     lookback: int = 5,
 ) -> tuple:
-    """
-    ZigZag-style swing high/low detection.
-
-    A swing high at bar i: high[i] is the max of highs[i-lookback : i+lookback+1].
-    A swing low at bar i:  low[i]  is the min of lows[i-lookback : i+lookback+1].
-
-    Returns (swing_highs, swing_lows) as Series with NaN where no swing point
-    exists and the price level where one does.
-    """
     window = 2 * lookback + 1
     roll_max = highs.rolling(window=window, center=True).max()
     roll_min = lows.rolling(window=window, center=True).min()
@@ -53,7 +29,6 @@ def find_swing_points(
     swing_highs = highs.where(highs == roll_max, other=np.nan)
     swing_lows = lows.where(lows == roll_min, other=np.nan)
 
-    # Remove flat-top duplicates: keep only the first occurrence in each plateau.
     sh_mask = swing_highs.notna()
     sh_groups = (~sh_mask).cumsum()
     first_in_group = sh_mask & (~sh_mask.shift(1, fill_value=True))
@@ -68,15 +43,8 @@ def find_swing_points(
 
 
 def _get_swing_indices(swing_series: pd.Series) -> list[int]:
-    """Return sorted list of integer positions (not index labels) where swing
-    points exist. Positions are suitable for use with `.iloc[]` regardless of
-    the underlying index type (RangeIndex, DatetimeIndex, etc.)."""
     return np.where(swing_series.notna())[0].tolist()
 
-
-# ─────────────────────────────────────────────
-# Volume Confirmation
-# ─────────────────────────────────────────────
 
 def volume_confirmed(
     volume: pd.Series,
@@ -84,18 +52,13 @@ def volume_confirmed(
     vol_period: int = 20,
     vol_multiplier: float = 1.5,
 ) -> bool:
-    """True if volume at `index` exceeds vol_multiplier * avg over preceding vol_period bars."""
     if index < vol_period:
-        return True  # not enough history — allow
+        return True
     avg_vol = volume.iloc[index - vol_period:index].mean()
     if avg_vol <= 0:
         return True
     return volume.iloc[index] > vol_multiplier * avg_vol
 
-
-# ─────────────────────────────────────────────
-# Pattern Detectors — Reversal
-# ─────────────────────────────────────────────
 
 def detect_double_top(
     highs: pd.Series, lows: pd.Series, close: pd.Series,
@@ -103,14 +66,6 @@ def detect_double_top(
     tolerance: float = 0.03,
     lookback: int = 5,
 ) -> list:
-    """Two consecutive swing highs within tolerance; break below intervening low.
-
-    The breakout bar must come at least ``lookback + 1`` bars after the second
-    peak — a swing high at bar k is confirmed using a centered
-    [k-lookback, k+lookback] window and is not observable until bar k+lookback
-    has closed. Starting the search at h2_bar+1 would consume a swing the
-    market hasn't confirmed yet (look-ahead).
-    """
     matches = []
     sh_idx = _get_swing_indices(swing_highs)
     sl_idx = _get_swing_indices(swing_lows)
@@ -121,19 +76,15 @@ def detect_double_top(
         h1_bar, h2_bar = sh_idx[i], sh_idx[i + 1]
         h1, h2 = swing_highs.iloc[h1_bar], swing_highs.iloc[h2_bar]
 
-        # Peaks within tolerance
         if abs(h1 - h2) / max(h1, 1e-9) > tolerance:
             continue
 
-        # Find intervening swing low (neckline)
         between_lows = [s for s in sl_idx if h1_bar < s < h2_bar]
         if not between_lows:
             continue
         neckline_bar = min(between_lows, key=lambda s: swing_lows.iloc[s])
         neckline = swing_lows.iloc[neckline_bar]
 
-        # Find breakout: first close below neckline after second peak's
-        # confirmation bar (h2_bar + lookback).
         for j in range(h2_bar + lookback + 1, len(close)):
             if close.iloc[j] < neckline:
                 matches.append(PatternMatch(
@@ -151,11 +102,6 @@ def detect_double_bottom(
     tolerance: float = 0.03,
     lookback: int = 5,
 ) -> list:
-    """Two consecutive swing lows within tolerance; break above intervening high.
-
-    Breakout bar must come at least ``lookback + 1`` bars after the second
-    trough's confirmation window (see ``detect_double_top``).
-    """
     matches = []
     sl_idx = _get_swing_indices(swing_lows)
     sh_idx = _get_swing_indices(swing_highs)
@@ -192,7 +138,6 @@ def detect_triple_top(
     tolerance: float = 0.03,
     lookback: int = 5,
 ) -> list:
-    """Three consecutive swing highs within tolerance; break below lowest intervening low."""
     matches = []
     sh_idx = _get_swing_indices(swing_highs)
     sl_idx = _get_swing_indices(swing_lows)
@@ -231,7 +176,6 @@ def detect_triple_bottom(
     tolerance: float = 0.03,
     lookback: int = 5,
 ) -> list:
-    """Three consecutive swing lows within tolerance; break above highest intervening high."""
     matches = []
     sl_idx = _get_swing_indices(swing_lows)
     sh_idx = _get_swing_indices(swing_highs)
@@ -270,7 +214,6 @@ def detect_head_and_shoulders(
     tolerance: float = 0.03,
     lookback: int = 5,
 ) -> list:
-    """Three swing highs where middle is highest and shoulders are within tolerance."""
     matches = []
     sh_idx = _get_swing_indices(swing_highs)
     sl_idx = _get_swing_indices(swing_lows)
@@ -283,14 +226,11 @@ def detect_head_and_shoulders(
         head = swing_highs.iloc[head_bar]
         rs = swing_highs.iloc[rs_bar]
 
-        # Head must be highest
         if head <= ls or head <= rs:
             continue
-        # Shoulders approximately equal
         if abs(ls - rs) / max(ls, 1e-9) > tolerance:
             continue
 
-        # Neckline: average of the two troughs between the three peaks
         between_lows = [s for s in sl_idx if ls_bar < s < rs_bar]
         if not between_lows:
             continue
@@ -313,7 +253,6 @@ def detect_inverse_head_and_shoulders(
     tolerance: float = 0.03,
     lookback: int = 5,
 ) -> list:
-    """Three swing lows where middle is lowest and shoulders are within tolerance."""
     matches = []
     sl_idx = _get_swing_indices(swing_lows)
     sh_idx = _get_swing_indices(swing_highs)
@@ -347,14 +286,10 @@ def detect_inverse_head_and_shoulders(
     return matches
 
 
-# ─────────────────────────────────────────────
-# Pattern Detectors — Continuation (Flags)
-# ─────────────────────────────────────────────
-
 def _detect_flag(
     highs: pd.Series, lows: pd.Series, close: pd.Series, volume: pd.Series,
     swing_highs: pd.Series, swing_lows: pd.Series,
-    direction: int,  # +1 for bull flag, -1 for bear flag
+    direction: int,
     pole_min_bars: int = 5,
     pole_max_bars: int = 20,
     flag_min_bars: int = 5,
@@ -362,34 +297,22 @@ def _detect_flag(
     pole_atr_mult: float = 2.0,
     lookback: int = 5,
 ) -> list:
-    """
-    Detect flag pattern in the given direction.
-
-    Bull flag (+1): strong rally (pole) followed by a slight downward consolidation
-    (flag), then breakout above the flag's upper boundary.
-
-    Bear flag (-1): strong drop (pole) followed by a slight upward consolidation
-    (flag), then breakdown below the flag's lower boundary.
-    """
     matches = []
     n = len(close)
     if n < pole_min_bars + flag_min_bars + 10:
         return matches
 
-    # Compute ATR for pole strength measurement
     atr = atr_sma_series(highs, lows, close, 14, round_large=False, min_periods=1)
 
     sh_idx = _get_swing_indices(swing_highs)
     sl_idx = _get_swing_indices(swing_lows)
 
     if direction == 1:
-        # Bull flag: look for swing highs as potential pole tops
         for peak_bar in sh_idx:
             if peak_bar < pole_min_bars or peak_bar >= n - flag_min_bars:
                 continue
             peak_price = swing_highs.iloc[peak_bar]
 
-            # Find pole start: the low before the peak
             pole_start = max(0, peak_bar - pole_max_bars)
             segment = close.iloc[pole_start:peak_bar]
             if len(segment) == 0:
@@ -401,25 +324,19 @@ def _detect_flag(
             if atr.iloc[peak_bar] > 0 and pole_move < pole_atr_mult * atr.iloc[peak_bar]:
                 continue
 
-            # Find flag: consolidation after the peak
             flag_end = min(peak_bar + flag_max_bars, n - 1)
             flag_segment = close.iloc[peak_bar:flag_end + 1]
             if len(flag_segment) < flag_min_bars:
                 continue
 
-            # Flag should slope downward or sideways (not continuing up)
             flag_highs = highs.iloc[peak_bar:flag_end + 1]
             flag_lows = lows.iloc[peak_bar:flag_end + 1]
             flag_high_level = flag_highs.max()
             flag_low_level = flag_lows.min()
 
-            # Flag range should be less than half the pole
             if (flag_high_level - flag_low_level) > 0.5 * pole_move:
                 continue
 
-            # Breakout: close above the flag high. The peak swing is only
-            # confirmable after peak_bar + lookback closes, so enforce the
-            # later of (flag_min_bars, lookback + 1).
             breakout_start = peak_bar + max(flag_min_bars, lookback + 1)
             for j in range(breakout_start, min(flag_end + 1, n)):
                 if close.iloc[j] > flag_high_level:
@@ -430,7 +347,6 @@ def _detect_flag(
                     break
 
     else:
-        # Bear flag: look for swing lows as potential pole bottoms
         for trough_bar in sl_idx:
             if trough_bar < pole_min_bars or trough_bar >= n - flag_min_bars:
                 continue
@@ -490,12 +406,7 @@ def detect_bear_flag(
     return _detect_flag(highs, lows, close, volume, swing_highs, swing_lows, direction=-1, lookback=lookback)
 
 
-# ─────────────────────────────────────────────
-# Pattern Detectors — Triangles
-# ─────────────────────────────────────────────
-
 def _fit_slope(indices: list, values: list) -> float:
-    """Simple linear regression slope. Returns 0 if fewer than 2 points."""
     if len(indices) < 2:
         return 0.0
     x = np.array(indices, dtype=float)
@@ -511,18 +422,11 @@ def _fit_slope(indices: list, values: list) -> float:
 def _detect_triangle(
     highs: pd.Series, lows: pd.Series, close: pd.Series,
     swing_highs: pd.Series, swing_lows: pd.Series,
-    pattern_type: str,  # "ascending", "descending", "symmetrical"
+    pattern_type: str,
     tolerance: float = 0.03,
     min_points: int = 4,
     lookback: int = 5,
 ) -> list:
-    """
-    Detect triangle patterns using linear regression on swing points.
-
-    Ascending: flat resistance (slope ~0), rising support (slope > 0). Signal +1.
-    Descending: flat support (slope ~0), declining resistance (slope < 0). Signal -1.
-    Symmetrical: converging lines (resistance slope < 0, support slope > 0). Signal = breakout direction.
-    """
     matches = []
     sh_idx = _get_swing_indices(swing_highs)
     sl_idx = _get_swing_indices(swing_lows)
@@ -532,13 +436,11 @@ def _detect_triangle(
     if len(sh_idx) + len(sl_idx) < min_points:
         return matches
 
-    # Use a sliding window of the last N swing points
     window_sizes = [4, 6, 8]
     for ws in window_sizes:
         if len(sh_idx) < ws // 2 or len(sl_idx) < ws // 2:
             continue
 
-        # Take the most recent swing points
         recent_sh = sh_idx[-(ws // 2):]
         recent_sl = sl_idx[-(ws // 2):]
 
@@ -548,18 +450,14 @@ def _detect_triangle(
         resistance_slope = _fit_slope(recent_sh, sh_values)
         support_slope = _fit_slope(recent_sl, sl_values)
 
-        # Normalize slopes by average price level
         avg_price = (np.mean(sh_values) + np.mean(sl_values)) / 2
         if avg_price <= 0:
             continue
         norm_r_slope = resistance_slope / avg_price
         norm_s_slope = support_slope / avg_price
 
-        flat_threshold = 0.0001  # slope per bar, normalized
+        flat_threshold = 0.0001
 
-        # The latest swing in the triangle is only confirmed lookback bars
-        # after it occurs, so the earliest legitimate breakout bar is
-        # triangle_end + lookback + 1.
         triangle_end = max(recent_sh[-1], recent_sl[-1])
         breakout_start = triangle_end + lookback + 1
         breakout_end = min(triangle_end + 20, len(close))
@@ -569,7 +467,6 @@ def _detect_triangle(
                 continue
             if norm_s_slope <= flat_threshold:
                 continue
-            # Breakout above resistance
             resistance_level = np.mean(sh_values)
             for j in range(breakout_start, breakout_end):
                 if close.iloc[j] > resistance_level:
@@ -596,7 +493,6 @@ def _detect_triangle(
         elif pattern_type == "symmetrical":
             if norm_r_slope >= -flat_threshold or norm_s_slope <= flat_threshold:
                 continue
-            # Lines must be converging
             mid_level = avg_price
             for j in range(breakout_start, breakout_end):
                 upper = np.mean(sh_values) + resistance_slope * (j - np.mean(recent_sh))
@@ -644,20 +540,12 @@ def detect_symmetrical_triangle(
     return _detect_triangle(highs, lows, close, swing_highs, swing_lows, "symmetrical", tolerance, lookback=lookback)
 
 
-# ─────────────────────────────────────────────
-# Pattern Detectors — Cup & Handle
-# ─────────────────────────────────────────────
-
 def detect_cup_and_handle(
     highs: pd.Series, lows: pd.Series, close: pd.Series,
     swing_highs: pd.Series, swing_lows: pd.Series,
     tolerance: float = 0.03,
     lookback: int = 5,
 ) -> list:
-    """
-    Cup & Handle: U-shaped bottom with left/right rims at similar height,
-    followed by a small pullback (handle), then breakout above the rim.
-    """
     matches = []
     sh_idx = _get_swing_indices(swing_highs)
     sl_idx = _get_swing_indices(swing_lows)
@@ -668,41 +556,33 @@ def detect_cup_and_handle(
         left_rim_bar = sh_idx[i]
         left_rim = swing_highs.iloc[left_rim_bar]
 
-        # Find a swing low between left rim and a later swing high (cup bottom)
         for j_idx in range(i + 1, len(sh_idx)):
             right_rim_bar = sh_idx[j_idx]
             right_rim = swing_highs.iloc[right_rim_bar]
 
-            # Rims should be approximately equal
             if abs(left_rim - right_rim) / max(left_rim, 1e-9) > tolerance:
                 continue
 
-            # Find the deepest swing low between the rims (cup bottom)
             cup_lows = [s for s in sl_idx if left_rim_bar < s < right_rim_bar]
             if not cup_lows:
                 continue
             cup_bottom_bar = min(cup_lows, key=lambda s: swing_lows.iloc[s])
             cup_bottom = swing_lows.iloc[cup_bottom_bar]
 
-            # Cup should have meaningful depth (at least 10% of rim height)
             rim_avg = (left_rim + right_rim) / 2
             cup_depth = rim_avg - cup_bottom
             if cup_depth / max(rim_avg, 1e-9) < 0.10:
                 continue
 
-            # Look for handle: a small pullback after right rim
             handle_end = min(right_rim_bar + 20, len(close))
             if handle_end <= right_rim_bar + 2:
                 continue
             handle_segment = close.iloc[right_rim_bar:handle_end]
             handle_low = handle_segment.min()
 
-            # Handle should not drop below half the cup depth
             if (rim_avg - handle_low) > 0.5 * cup_depth:
                 continue
 
-            # Breakout above rim — right rim swing only confirmable
-            # ``lookback`` bars after right_rim_bar.
             breakout_level = max(left_rim, right_rim)
             for k in range(right_rim_bar + lookback + 1, min(handle_end + 10, len(close))):
                 if close.iloc[k] > breakout_level:
@@ -713,14 +593,10 @@ def detect_cup_and_handle(
                     break
 
             if matches and matches[-1].pattern == "cup_and_handle":
-                break  # found one cup & handle from this left rim
+                break
 
     return matches
 
-
-# ─────────────────────────────────────────────
-# HTF Trend Gate (#982)
-# ─────────────────────────────────────────────
 
 _HTF_GATE_MODES = ("veto", "align")
 
@@ -731,16 +607,6 @@ def _htf_gate_trend(
     ema_fast: int = 20,
     ema_slow: int = 40,
 ) -> pd.Series:
-    """Higher-timeframe trend visible at each native bar (1 up, -1 down, 0).
-
-    Reuses the ``mtf_confluence`` (#963) resample machinery and its
-    anti-look-ahead contract: an HTF bucket is only readable from the native
-    bar at which the bucket has fully closed, so the trend at bar N never
-    depends on bars after N. Trend is up when the HTF EMA(fast) of bucket
-    closes sits above EMA(slow), down when below; neutral (0) until
-    ``ema_slow`` buckets have accrued (EMA warmup) and before the first
-    bucket close is visible.
-    """
     htf, visible_at = _resample_htf(df, htf_factor)
     if len(htf) == 0:
         return pd.Series(0, index=df.index, dtype=int)
@@ -759,11 +625,6 @@ def _htf_gate_trend(
     )
 
 
-# ─────────────────────────────────────────────
-# Orchestrator
-# ─────────────────────────────────────────────
-
-# Detectors that need volume as an extra arg
 _VOLUME_DETECTORS = {"bull_flag", "bear_flag"}
 
 _ALL_DETECTORS = {
@@ -793,25 +654,6 @@ def chart_pattern_core(
     htf_gate_ema_fast: int = 20,
     htf_gate_ema_slow: int = 40,
 ) -> pd.DataFrame:
-    """
-    Run all pattern detectors on OHLCV data. Produces a 'signal' column:
-    1 = bullish pattern confirmed, -1 = bearish, 0 = no pattern.
-
-    HTF trend gate (#982, default-off): when ``htf_gate_factor`` > 1 the
-    native frame is resampled to ``htf_gate_factor`` × the native bar (no
-    extra data fetch; closed buckets only, same anti-look-ahead contract as
-    ``mtf_confluence``) and pattern signals are filtered against the HTF
-    EMA(fast)/EMA(slow) trend:
-
-    - ``htf_gate_mode="veto"``: block only counter-trend signals (+1 in an
-      HTF downtrend, -1 in an HTF uptrend); a neutral/warmup trend passes
-      everything — the same semantics as the live DSL ``htf_filter``.
-    - ``htf_gate_mode="align"``: require agreement (+1 only in an uptrend,
-      -1 only in a downtrend); neutral blocks.
-
-    ``htf_gate_factor`` <= 1 disables the gate entirely and the output is
-    bit-identical to the pre-#982 strategy.
-    """
     if htf_gate_mode not in _HTF_GATE_MODES:
         raise ValueError(
             f"htf_gate_mode must be one of {_HTF_GATE_MODES}, got {htf_gate_mode!r}"
@@ -845,15 +687,11 @@ def chart_pattern_core(
             )
         all_matches.extend(matches)
 
-    # Apply volume confirmation and write signals
     for match in all_matches:
         idx = match.bar_index
         if 0 <= idx < n and volume_confirmed(result["volume"], idx, vol_period, vol_multiplier):
             result.iloc[idx, result.columns.get_loc("signal")] = match.signal
 
-    # HTF trend gate (#982): filter confirmed pattern signals against the
-    # higher-timeframe trend. Applied after volume confirmation so the gate
-    # sees exactly the signals the strategy would otherwise emit.
     if htf_gate_factor and int(htf_gate_factor) > 1:
         trend = _htf_gate_trend(
             result, int(htf_gate_factor), htf_gate_ema_fast, htf_gate_ema_slow
@@ -862,7 +700,7 @@ def chart_pattern_core(
         sig = result["signal"]
         if htf_gate_mode == "align":
             blocked = ((sig == 1) & (trend != 1)) | ((sig == -1) & (trend != -1))
-        else:  # veto
+        else:
             blocked = ((sig == 1) & (trend == -1)) | ((sig == -1) & (trend == 1))
         result.loc[blocked, "signal"] = 0
 

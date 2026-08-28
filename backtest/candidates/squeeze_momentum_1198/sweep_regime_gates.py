@@ -1,36 +1,4 @@
 #!/usr/bin/env python3
-"""IS-window regime-gate screen for squeeze_momentum (#1198, M4 on a frozen
-entry).
-
-Both #1165 arms in one screen, re-run against squeeze_momentum (#983, same
-"DD is regime exposure, not exit quality" verdict, -58.5% worst DD). Entry AND
-close stack frozen (registry-default params, open-signal-as-close, no SL/TP —
-the only protocol IS+OOS pass per #983/#984): Arm A gates WHEN the entry may
-fire (`allowed_regimes` over the legacy ADX and composite 9-state classifiers
-via `regime_windows_spec`), Arm B moves the regime response into the position
-(#998 two-profile allocation, flat-only switch). Scores every candidate on the
-six audit datasets over the protocol IS window via the M1 harness
-(eval_windows.run_leg, audit-identical fees/slippage), ranked by mean
-DD-adjusted return. Selection happens HERE (IS only); the shortlist is then
-judged once on protocol OOS + held-out windows through validate_shortlist.py.
-
-squeeze_momentum emits signal=-1 on downside squeeze releases without being in
-bidirectionalPerpsStrategies, so every leg pins direction="long" (#996, same
-as the #983 close-stack sweep); the -1 stays the (frozen) exit on the plain
-long/flat path. The regime gate blocks entries only — closes always execute —
-and the M4 switch commits only from flat, so an open position keeps its
-opening profile's exit until it closes.
-
-Registry is SPOT (squeeze_momentum's #983 baseline + M5 fee audit registry —
-see driver_common.py). The four #1165 drivers were strategy-parameterized
-(--strategy/--registry/--direction) for exactly this re-run; only the M4
-"off"/"selective" param sets in driver_common.py are strategy-specific.
-
-Run from repo root:
-  uv run --no-sync python backtest/candidates/squeeze_momentum_1198/sweep_regime_gates.py \
-      [--window is] [--comp-plateau-allowed trending_up_clean] \
-      [--json backtest/candidates/squeeze_momentum_1198/sweep_is.json]
-"""
 
 import argparse
 import json
@@ -40,12 +8,12 @@ import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
-sys.path.insert(0, os.path.join(_HERE, "..", ".."))          # backtest/
+sys.path.insert(0, os.path.join(_HERE, "..", ".."))
 sys.path.insert(0, os.path.join(_HERE, "..", "..", "..", "shared_tools"))
 
-from eval_windows import (DATASETS, WINDOWS, dataset_key, run_leg,  # noqa: E402
+from eval_windows import (DATASETS, WINDOWS, dataset_key, run_leg,
                           validate_candidate)
-from driver_common import (build_composite_period_plateau,  # noqa: E402
+from driver_common import (build_composite_period_plateau,
                            build_gate_grid, build_gate_threshold_plateau,
                            build_profile_grid, candidate_leg_kwargs)
 

@@ -1,17 +1,3 @@
-"""Regime default tables must agree across Go and Python mirrors (#1120).
-
-The system-default geometry for regime-aware stops/trails and regime close
-evaluators lives in paired Go constants and Python mirrors:
-
-  • ``regimeATRDefaults`` / ``REGIME_ATR_DEFAULTS_*`` — opening trail + SL
-  • ``ratchetTierGroupDefaults`` / ``DEFAULT_RATCHET_TIERS_BY_GROUP``
-  • ``regimeTPTierGroupDefaults`` / ``REGIME_TP_TIER_GROUP_DEFAULTS``
-
-A retune that updates one side but misses the other silently desyncs live
-on-chain protection from paper/backtest. This test pins the literals and
-cross-checks Go scrape vs Python import (same pattern as
-``test_default_tier_ladders.py``).
-"""
 from __future__ import annotations
 
 import importlib.util
@@ -26,7 +12,6 @@ _CLOSE_DIR = os.path.join(_REPO_ROOT, "shared_strategies", "close")
 _REGIME_ATR_GO = os.path.join(_REPO_ROOT, "scheduler", "regime_atr.go")
 _TRAILING_RATCHET_GO = os.path.join(_REPO_ROOT, "scheduler", "trailing_tp_ratchet.go")
 
-# #1120 retuned composite opening trails (ADX labels unchanged).
 EXPECTED_TRAILING_ATR = {
     "trending_up": 2.5,
     "trending_down": 2.5,
@@ -113,7 +98,7 @@ def _go_regime_atr_trailing() -> dict[str, float]:
 def _go_regime_atr_stop_loss() -> dict[str, float]:
     text = open(_REGIME_ATR_GO, encoding="utf-8").read()
     body = re.search(
-        r"StopLoss:\s*map\[string\]RegimeATREntry\s*\{(.*?)\n\t\},\n\t// #870",
+        r"StopLoss:\s*map\[string\]RegimeATREntry\s*\{(.*?)\},\s*\n\s*Trailing:",
         text,
         re.DOTALL,
     )
@@ -134,7 +119,6 @@ def _go_ratchet_tiers() -> dict[str, tuple]:
     assert body, "ratchetTierGroupDefaults not found"
     out: dict[str, tuple] = {}
     chunks = re.split(r'\n\t"([^"]+)":\s*\{', body.group(1))
-    # chunks[0] is empty prefix; then alternating name, content
     i = 1
     while i + 1 < len(chunks):
         group = chunks[i]

@@ -12,7 +12,6 @@ import (
 	"time"
 )
 
-// TestResolveManualSize checks the three sizing modes.
 func TestResolveManualSize(t *testing.T) {
 	cases := []struct {
 		size, notional, margin, price, leverage float64
@@ -21,8 +20,8 @@ func TestResolveManualSize(t *testing.T) {
 		{size: 0.5, notional: 0, margin: 0, price: 2000, leverage: 10, want: 0.5},
 		{size: 0, notional: 1000, margin: 0, price: 2000, leverage: 10, want: 0.5},
 		{size: 0, notional: 0, margin: 100, price: 2000, leverage: 10, want: 0.5},
-		{size: 0, notional: 0, margin: 0, price: 2000, leverage: 10, want: 0}, // no input
-		{size: 0, notional: 500, margin: 0, price: 0, leverage: 10, want: 0},  // price=0
+		{size: 0, notional: 0, margin: 0, price: 2000, leverage: 10, want: 0},
+		{size: 0, notional: 500, margin: 0, price: 0, leverage: 10, want: 0},
 	}
 	for _, c := range cases {
 		got := resolveManualSize(c.size, c.notional, c.margin, c.price, c.leverage)
@@ -60,7 +59,6 @@ func TestOpenTradeSide(t *testing.T) {
 	}
 }
 
-// TestApplyManualActionOpen verifies that an open action creates a Position and Trade.
 func TestApplyManualActionOpen(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
@@ -165,7 +163,6 @@ func TestApplyManualActionOpen(t *testing.T) {
 	}
 }
 
-// TestApplyManualActionClose verifies that a close action records a closing trade and removes the position.
 func TestApplyManualActionClose(t *testing.T) {
 	openAt := time.Now().UTC().Add(-time.Hour)
 	state := &AppState{
@@ -187,7 +184,7 @@ func TestApplyManualActionClose(t *testing.T) {
 						OpenedAt:        openAt,
 					},
 				},
-				Cash: 9000, // after open deduction
+				Cash: 9000,
 			},
 		},
 	}
@@ -219,7 +216,7 @@ func TestApplyManualActionClose(t *testing.T) {
 		Quantity:    0.5,
 		FillPrice:   2100,
 		FillFee:     0.7,
-		RealizedPnL: 49.3, // 0.5*(2100-2000) - 0.7
+		RealizedPnL: 49.3,
 		IsFullClose: true,
 		CreatedAt:   now,
 	}
@@ -251,7 +248,6 @@ func TestApplyManualActionClose(t *testing.T) {
 	}
 }
 
-// TestApplyManualActionPartialClose verifies that partial close decrements quantity without removing the position.
 func TestApplyManualActionPartialClose(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
@@ -287,7 +283,7 @@ func TestApplyManualActionPartialClose(t *testing.T) {
 		Action:      "close",
 		Symbol:      "ETH",
 		Side:        "sell",
-		Quantity:    0.4, // partial
+		Quantity:    0.4,
 		FillPrice:   2100,
 		RealizedPnL: 40,
 		CreatedAt:   time.Now().UTC(),
@@ -354,9 +350,6 @@ func TestApplyManualActionCloseRejectsOwnerMismatch(t *testing.T) {
 	}
 }
 
-// TestApplyManualAction99PercentPartialNotCollapsedToFull verifies that a
-// deliberate ~99% partial close is NOT collapsed into a full close (the prior
-// 0.99 relative tolerance would silently delete the residual dust).
 func TestApplyManualAction99PercentPartialNotCollapsedToFull(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
@@ -392,10 +385,10 @@ func TestApplyManualAction99PercentPartialNotCollapsedToFull(t *testing.T) {
 		Action:      "close",
 		Symbol:      "ETH",
 		Side:        "sell",
-		Quantity:    0.495, // 99% of 0.5 — exactly at the prior tolerance boundary
+		Quantity:    0.495,
 		FillPrice:   2100,
 		RealizedPnL: 49.0,
-		IsFullClose: false, // explicit partial-close intent
+		IsFullClose: false,
 		CreatedAt:   time.Now().UTC(),
 	}
 	if err := applyManualAction(state, nil, scByID, a); err != nil {
@@ -419,7 +412,6 @@ func abs(x float64) float64 {
 	return x
 }
 
-// TestDrainPendingManualActions verifies the queue drain applies actions and cleans up.
 func TestDrainPendingManualActions(t *testing.T) {
 	db, err := OpenStateDB(":memory:")
 	if err != nil {
@@ -465,8 +457,6 @@ func TestDrainPendingManualActions(t *testing.T) {
 		t.Errorf("pos.Quantity = %g, want 0.5", pos.Quantity)
 	}
 
-	// #880: drain returns one alert (1 trade) so the caller fires sendTradeAlerts
-	// outside the state write lock.
 	if len(alerts) != 1 {
 		t.Fatalf("expected 1 manual alert, got %d", len(alerts))
 	}
@@ -480,17 +470,12 @@ func TestDrainPendingManualActions(t *testing.T) {
 		t.Error("alert ss should point at the drained strategy state")
 	}
 
-	// Queue should be empty after drain.
 	remaining, _ := db.LoadPendingManualActions()
 	if len(remaining) != 0 {
 		t.Errorf("expected empty queue after drain, got %d rows", len(remaining))
 	}
 }
 
-// TestDrainPendingManualActionsAlerts verifies the #880 alert-collection
-// contract: drain aggregates the per-strategy trade count, the returned ss/trades
-// align with TradeHistory so sendTradeAlerts alerts the correct tail slice, and a
-// failed apply contributes no alert.
 func TestDrainPendingManualActionsAlerts(t *testing.T) {
 	db, err := OpenStateDB(":memory:")
 	if err != nil {
@@ -498,8 +483,8 @@ func TestDrainPendingManualActionsAlerts(t *testing.T) {
 	}
 	defer db.Close()
 
-	openID := "hl-manual-eth-live"  // open then full close → 2 trades, 0 open positions
-	otherID := "hl-manual-btc-live" // single open → 1 trade
+	openID := "hl-manual-eth-live"
+	otherID := "hl-manual-btc-live"
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
 			openID:  {ID: openID, Platform: "hyperliquid", Type: "manual", Positions: map[string]*Position{}, Cash: 10000},
@@ -516,13 +501,9 @@ func TestDrainPendingManualActionsAlerts(t *testing.T) {
 	defer func() { tradeRecorder = origRecorder }()
 
 	now := time.Now().UTC()
-	// A close with no open position fails to apply → no alert, no trade.
-	// Inserted first so its id sits below maxDrained and it's still cleaned up.
 	_ = db.InsertPendingManualAction(PendingManualAction{StrategyID: otherID, Action: "close", Symbol: "DOGE", Side: "long", Quantity: 1, FillPrice: 0.1, IsFullClose: true, CreatedAt: now})
-	// ETH: open then full close (2 trades on one strategy).
 	_ = db.InsertPendingManualAction(PendingManualAction{StrategyID: openID, Action: "open", Symbol: "ETH", Side: "long", Quantity: 0.5, FillPrice: 2000, FillFee: 0.7, EntryATR: 50, CreatedAt: now})
 	_ = db.InsertPendingManualAction(PendingManualAction{StrategyID: openID, Action: "close", Symbol: "ETH", Side: "long", Quantity: 0.5, FillPrice: 2100, FillFee: 0.7, RealizedPnL: 49.3, IsFullClose: true, CreatedAt: now})
-	// BTC: single open (1 trade).
 	_ = db.InsertPendingManualAction(PendingManualAction{StrategyID: otherID, Action: "open", Symbol: "BTC", Side: "short", Quantity: 0.01, FillPrice: 60000, FillFee: 0.3, EntryATR: 500, CreatedAt: now})
 
 	alerts := drainPendingManualActions(state, cfg, db)
@@ -540,16 +521,12 @@ func TestDrainPendingManualActionsAlerts(t *testing.T) {
 	if got := byID[otherID].trades; got != 1 {
 		t.Errorf("%s alert trades = %d, want 1 (failed DOGE close excluded)", otherID, got)
 	}
-	// trades must not exceed the strategy's TradeHistory length, else
-	// sendTradeAlerts would slice a negative start.
 	for _, a := range alerts {
 		if a.trades > len(a.ss.TradeHistory) {
 			t.Errorf("%s alert trades=%d exceeds TradeHistory len=%d", a.sc.ID, a.trades, len(a.ss.TradeHistory))
 		}
 	}
 
-	// All non-failing rows drained and deleted; the failed DOGE close is also
-	// deleted (it sits below maxDrained), matching existing drain semantics.
 	remaining, _ := db.LoadPendingManualActions()
 	if len(remaining) != 0 {
 		t.Errorf("expected empty queue after drain, got %d rows", len(remaining))
@@ -1134,16 +1111,6 @@ func TestRunForceCloseQueuesPerpsClose(t *testing.T) {
 	}
 }
 
-// TestManualCoresGuardPositionDoubleFire pins the #1260 review-6 hardening: the
-// position-changing cores (manual-open/add/close, force-close) — not just the
-// UI handler — refuse a submit while a position-changing action for the same
-// strategy+symbol is still un-drained, so a rapid CLI re-run (or any future
-// core caller) cannot double-fire an on-chain order. A shared-coin manual close
-// is a sized, non-reduce-only order that a re-click could flip; the queued row
-// would also double-decrement on drain (#1009). Covers: same-action double
-// close, cross-class add-while-close-queued, force-close-while-close-queued,
-// strategy-scoped keying (a peer's queued action never blocks), --record-only
-// bypass, and a legitimate action passing once the row has drained.
 func TestManualCoresGuardPositionDoubleFire(t *testing.T) {
 	t.Setenv("HYPERLIQUID_SECRET_KEY", "test-secret")
 	dir := t.TempDir()
@@ -1160,14 +1127,9 @@ func TestManualCoresGuardPositionDoubleFire(t *testing.T) {
 			{ID: "hl-manual-eth", Type: "manual", Platform: "hyperliquid", Symbol: "ETH",
 				Script: "shared_scripts/check_hyperliquid.py",
 				Args:   []string{"hold", "ETH", "1h", "--mode=live"}, Capital: 1000, Leverage: 2},
-			// Shared-coin manual peer: makes a manual close a sized,
-			// non-reduce-only order and lets us prove a peer's queued action
-			// never blocks this strategy (strategy-scoped keying).
 			{ID: "hl-manual-eth-peer", Type: "manual", Platform: "hyperliquid", Symbol: "ETH",
 				Script: "shared_scripts/check_hyperliquid.py",
 				Args:   []string{"hold", "ETH", "1h", "--mode=live"}, Capital: 1000, Leverage: 2},
-			// Production-shaped live perps (no symbol field; coin in args[1]) for
-			// the force-close core guard.
 			{ID: "hl-perps-eth", Type: "perps", Platform: "hyperliquid",
 				Script: "shared_scripts/check_hyperliquid.py",
 				Args:   []string{"tcross", "ETH", "1h", "--mode=live"}, Capital: 1000, Leverage: 2},
@@ -1201,8 +1163,6 @@ func TestManualCoresGuardPositionDoubleFire(t *testing.T) {
 		t.Fatalf("lookup perps: %v", err)
 	}
 
-	// firingDeps executes and records the fill; failLoudDeps fails the test if
-	// any venue seam is touched (proving a guarded action never reached it).
 	firingDeps := func(fired *int) manualCoreDeps {
 		d := newCLIManualCoreDeps(cfg, db, nil)
 		d.fetchMids = func(coins []string) (map[string]float64, error) { return map[string]float64{"ETH": 2000}, nil }
@@ -1232,8 +1192,6 @@ func TestManualCoresGuardPositionDoubleFire(t *testing.T) {
 		return err != nil && strings.Contains(err.Error(), "already submitted")
 	}
 
-	// (1) First (partial, sized) manual close fires the venue and queues a
-	// "close" row.
 	fired := 0
 	if _, err := manualCloseCore(firingDeps(&fired), manualSC, manualCloseInputs{StrategyID: "hl-manual-eth", Qty: 0.2}); err != nil {
 		t.Fatalf("first close: %v", err)
@@ -1246,27 +1204,18 @@ func TestManualCoresGuardPositionDoubleFire(t *testing.T) {
 		t.Fatalf("after first close rows = %+v", rows)
 	}
 
-	// (2) Second close before the drain -> refused, venue NOT re-fired.
 	if _, err := manualCloseCore(failLoudDeps(), manualSC, manualCloseInputs{StrategyID: "hl-manual-eth", Qty: 0.2}); !guardRefusal(err) {
 		t.Fatalf("second close err = %v, want double-fire refusal", err)
 	}
 
-	// (3) Cross-class: manual-add while the close is queued -> refused, no
-	// orphaned buy.
 	if _, err := manualAddCore(failLoudDeps(), manualSC, manualAddInputs{StrategyID: "hl-manual-eth", Margin: 50}); !guardRefusal(err) {
 		t.Fatalf("add-while-close-queued err = %v, want refusal", err)
 	}
 
-	// (4) --record-only bypasses the guard (no new on-chain order; re-register
-	// must stay usable) even with the close still queued — the venue is never
-	// touched and the action is not refused.
 	if _, err := manualAddCore(failLoudDeps(), manualSC, manualAddInputs{StrategyID: "hl-manual-eth", Size: 0.1, FillPrice: 2000, RecordOnly: true}); err != nil {
 		t.Fatalf("record-only add must bypass the guard, got %v", err)
 	}
 
-	// (5) force-close while a close is queued for the SAME perps strategy ->
-	// refused, closer never called. Queue the row under the args-derived symbol
-	// the core writes.
 	if err := db.InsertPendingManualAction(PendingManualAction{
 		StrategyID: "hl-perps-eth", Action: "close", Symbol: perpsSym, Side: "sell",
 		Quantity: 0.4, FillPrice: 2100, IsFullClose: true, CreatedAt: time.Now().UTC(),
@@ -1277,10 +1226,6 @@ func TestManualCoresGuardPositionDoubleFire(t *testing.T) {
 		t.Fatalf("force-close-while-close-queued err = %v, want refusal", err)
 	}
 
-	// (6) A peer strategy's queued action never blocks this strategy. Clear the
-	// queue (simulating the drain of every prior row, incl. the record-only add),
-	// then queue ONLY the peer's close for the same coin — hl-manual-eth's close
-	// must still proceed (strategy-scoped keying).
 	if all, _ := db.LoadPendingManualActions(); len(all) > 0 {
 		if err := db.DeletePendingManualActionsThrough(all[len(all)-1].ID); err != nil {
 			t.Fatalf("clear queue: %v", err)
@@ -1301,17 +1246,6 @@ func TestManualCoresGuardPositionDoubleFire(t *testing.T) {
 	}
 }
 
-// TestManualActionLockPreventsCrossProcessDoubleFire proves the cross-process
-// manual-action file lock (acquireManualActionFileLock) closes the residual gap
-// the in-process tradeActionMu cannot: a second caller sharing the state DB (a
-// CLI racing the dashboard, or two concurrent CLIs) is blocked from running its
-// double-fire guard while the first caller sits in the vulnerable window BETWEEN
-// its guard check and its pending-row insert — the exact span in which the
-// pending row does not yet exist. Two goroutines opening independent fds on the
-// same lock file contend under flock() just as two OS processes would. Without
-// the lock the second close would observe no-pending during the first's on-chain
-// submit and fire a second, position-flipping order; with it the second blocks,
-// then the guard refuses it once the first's row lands.
 func TestManualActionLockPreventsCrossProcessDoubleFire(t *testing.T) {
 	t.Setenv("HYPERLIQUID_SECRET_KEY", "test-secret")
 	dir := t.TempDir()
@@ -1352,8 +1286,6 @@ func TestManualActionLockPreventsCrossProcessDoubleFire(t *testing.T) {
 	enteredSubmit := make(chan struct{})
 	releaseSubmit := make(chan struct{})
 
-	// A holds the lock across a blocked on-chain submit — its pending row is not
-	// inserted until the test releases it.
 	depsA := newCLIManualCoreDeps(cfg, db, nil)
 	depsA.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
 		atomic.AddInt32(&aFired, 1)
@@ -1362,7 +1294,6 @@ func TestManualActionLockPreventsCrossProcessDoubleFire(t *testing.T) {
 		return &HyperliquidExecuteResult{Execution: &HyperliquidExecution{Fill: &HyperliquidFill{AvgPx: 2100, TotalSz: size, OID: 4242, Fee: 1.0}}}, "", nil
 	}
 
-	// B: reaching its venue seam at all is the double-fire the lock must prevent.
 	depsB := newCLIManualCoreDeps(cfg, db, nil)
 	depsB.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
 		atomic.AddInt32(&bFired, 1)
@@ -1377,7 +1308,6 @@ func TestManualActionLockPreventsCrossProcessDoubleFire(t *testing.T) {
 		aDone <- e
 	}()
 
-	// Wait until A holds the lock and is parked mid-submit (row NOT yet written).
 	select {
 	case <-enteredSubmit:
 	case e := <-aDone:
@@ -1392,9 +1322,6 @@ func TestManualActionLockPreventsCrossProcessDoubleFire(t *testing.T) {
 		bDone <- e
 	}()
 
-	// While A holds the lock, B must not complete — it is blocked acquiring the
-	// file lock, well before its venue seam. Completing (or firing) here means the
-	// cross-process guard failed.
 	select {
 	case e := <-bDone:
 		t.Fatalf("second close completed while the first held the manual-action lock (err=%v, bFired=%d) — cross-process double-fire", e, atomic.LoadInt32(&bFired))
@@ -1404,8 +1331,6 @@ func TestManualActionLockPreventsCrossProcessDoubleFire(t *testing.T) {
 		t.Fatalf("second close fired on-chain %d time(s) while the first held the lock — double-fire", n)
 	}
 
-	// Release A: it inserts its pending "close" row and drops the lock. B then
-	// acquires, re-runs the guard, sees the row, and refuses without firing.
 	close(releaseSubmit)
 
 	if e := <-aDone; e != nil {
@@ -1428,9 +1353,6 @@ func TestManualActionLockPreventsCrossProcessDoubleFire(t *testing.T) {
 	}
 }
 
-// TestAcquireManualActionFileLock covers the lock primitive directly: in-memory
-// DBs are per-process and take a no-op lock, while a real path serializes a
-// second acquire behind the first until it releases.
 func TestAcquireManualActionFileLock(t *testing.T) {
 	for _, p := range []string{":memory:", "", "file::memory:?cache=shared"} {
 		rel, err := acquireManualActionFileLock(p)
@@ -1440,7 +1362,7 @@ func TestAcquireManualActionFileLock(t *testing.T) {
 		if rel == nil {
 			t.Fatalf("acquireManualActionFileLock(%q) returned nil release", p)
 		}
-		rel() // no-op release must not panic
+		rel()
 	}
 
 	dbPath := filepath.Join(t.TempDir(), "state.db")
@@ -1459,7 +1381,6 @@ func TestAcquireManualActionFileLock(t *testing.T) {
 		got <- acq{r, e}
 	}()
 
-	// The second acquire must not succeed while the first holds the lock.
 	select {
 	case a := <-got:
 		if a.rel != nil {
@@ -1469,7 +1390,7 @@ func TestAcquireManualActionFileLock(t *testing.T) {
 	case <-time.After(200 * time.Millisecond):
 	}
 
-	rel1() // release; the blocked acquire should now proceed
+	rel1()
 	select {
 	case a := <-got:
 		if a.err != nil {
@@ -1788,10 +1709,6 @@ func TestRunForceCloseQueuesActualFillQuantity(t *testing.T) {
 	}
 }
 
-// TestManualPositionOwnedByStrategy covers the owner guard the CLI runManualClose
-// path, the drain path (applyManualAction), and the main-loop manual case all
-// share. Empty OwnerStrategyID is intentionally treated as owned for backward
-// compat with positions opened pre-#569 / discovered by the reconciler.
 func TestManualPositionOwnedByStrategy(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -1814,8 +1731,6 @@ func TestManualPositionOwnedByStrategy(t *testing.T) {
 	}
 }
 
-// TestPendingManualActionOpenFieldsRoundtrip verifies that open-only fields survive
-// an InsertPendingManualAction → LoadPendingManualActions round-trip (#632/#1121).
 func TestPendingManualActionOpenFieldsRoundtrip(t *testing.T) {
 	db, err := OpenStateDB(":memory:")
 	if err != nil {
@@ -1855,8 +1770,6 @@ func TestPendingManualActionOpenFieldsRoundtrip(t *testing.T) {
 	}
 }
 
-// TestApplyManualAction_OpenSetsProtectionFields verifies that applyManualAction
-// stamps open-only protection fields onto the materialised position (#632/#1121).
 func TestApplyManualAction_OpenSetsProtectionFields(t *testing.T) {
 	db, err := OpenStateDB(":memory:")
 	if err != nil {
@@ -1914,28 +1827,18 @@ func TestApplyManualAction_OpenSetsProtectionFields(t *testing.T) {
 	}
 }
 
-// TestDefaultManualMarginUSD pins the implicit --margin value used when
-// manual-open is invoked without a sizing flag (#691). Bumping this default
-// changes operator-visible behavior — update intentionally and in step with
-// CLAUDE.md.
 func TestDefaultManualMarginUSD(t *testing.T) {
 	if defaultManualMarginUSD != 50.0 {
 		t.Errorf("defaultManualMarginUSD = %g, want 50.0", defaultManualMarginUSD)
 	}
 }
 
-// TestDefaultManualStopLossATRMult pins the implicit stop_loss_atr_mult for
-// HL type=manual strategies (#691). Distinct from DefaultStopLossATRMult (1.0)
-// so non-manual perps strategies keep their tighter default.
 func TestDefaultManualStopLossATRMult(t *testing.T) {
 	if defaultManualStopLossATRMult != 2.0 {
 		t.Errorf("defaultManualStopLossATRMult = %g, want 2.0", defaultManualStopLossATRMult)
 	}
 }
 
-// TestCollectBoolFlagNames verifies the helper returns only bool-typed flags.
-// reorderArgsForPositional relies on this distinction to avoid consuming the
-// positional arg as a value-flag's value.
 func TestCollectBoolFlagNames(t *testing.T) {
 	fs := flag.NewFlagSet("t", flag.ContinueOnError)
 	fs.Bool("flag-a", false, "")
@@ -1949,10 +1852,6 @@ func TestCollectBoolFlagNames(t *testing.T) {
 	}
 }
 
-// TestReorderArgsForPositional verifies that flags placed after the positional
-// strategy-id are still parsed correctly — the bug from #711 where
-// `manual-open manual-eth --side long --margin 50` failed because stdlib
-// flag.Parse stops at the first non-flag arg.
 func TestReorderArgsForPositional(t *testing.T) {
 	openBoolFlags := map[string]bool{"record-only": true, "dry-run": true}
 	closeBoolFlags := map[string]bool{"dry-run": true}
@@ -2021,8 +1920,6 @@ func TestReorderArgsForPositional(t *testing.T) {
 	}
 }
 
-// TestResolveManualOpenOrderSize covers the post-#711 sizing path that fetches
-// the HL mark price before resolving --margin/--notional to a coin qty.
 func TestResolveManualOpenOrderSize(t *testing.T) {
 	sc := StrategyConfig{
 		ID:       "hl-manual-eth-live",
@@ -2055,7 +1952,6 @@ func TestResolveManualOpenOrderSize(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		// 50 margin * 10 leverage / 2000 price = 0.25 ETH
 		if fmt.Sprintf("%.6f", qty) != "0.250000" || mark != 2000 {
 			t.Errorf("got qty=%g mark=%g; want qty=0.25 mark=2000", qty, mark)
 		}
@@ -2122,10 +2018,6 @@ func TestResolveManualOpenOrderSize(t *testing.T) {
 	})
 }
 
-// TestManualCloseEval_FlatShortCircuits covers the flat early-return: no open
-// position means no subprocess spawn and ok=true. (#879 moved the live regime
-// off this eval's return — the dispatch reads the global regime store, which
-// is what gives FLAT manual strategies a live regime at all.)
 func TestManualCloseEval_FlatShortCircuits(t *testing.T) {
 	sc := StrategyConfig{ID: "hl-manual-eth-live", Type: "manual", Platform: "hyperliquid", Symbol: "ETH"}
 	ss := &StrategyState{ID: sc.ID, Positions: map[string]*Position{}}
@@ -2140,12 +2032,6 @@ func TestManualCloseEval_FlatShortCircuits(t *testing.T) {
 	}
 }
 
-// TestManualStampRegimeOnPosition is the #872 regression: manual positions have
-// no open signal, so the per-cycle close-eval is the only place to stamp the
-// regime onto the position. The manual dispatch feeds the runManualCloseEval
-// payload into stampPositionRegimeIfOpened; verify it stamps exactly once and
-// never overwrites a label already set, and that an empty payload (regime
-// disabled / no classifier output) leaves the position unstamped.
 func TestManualStampRegimeOnPosition(t *testing.T) {
 	rc := &RegimeConfig{Enabled: true, Period: 14, ADXThreshold: 20}
 	sc := StrategyConfig{ID: "hl-manual-eth-live", Type: "manual", Platform: "hyperliquid", Symbol: "ETH"}
@@ -2167,7 +2053,6 @@ func TestManualStampRegimeOnPosition(t *testing.T) {
 		}
 	}
 
-	// Fresh position (empty regime) gets stamped from the cycle's payload.
 	ss := newState("")
 	stampPositionRegimeIfOpened(ss, sc.Symbol, RegimePayload{Legacy: "trending_up"}, sc, rc)
 	if got := ss.Positions["ETH"].Regime; got != "trending_up" {
@@ -2177,16 +2062,11 @@ func TestManualStampRegimeOnPosition(t *testing.T) {
 		t.Errorf("expected default window label trending_up, got %q", got)
 	}
 
-	// Idempotent: a later close-eval cycle with a different regime must not
-	// overwrite the frozen-at-first-observation label.
 	stampPositionRegimeIfOpened(ss, sc.Symbol, RegimePayload{Legacy: "ranging"}, sc, rc)
 	if got := ss.Positions["ETH"].Regime; got != "trending_up" {
 		t.Errorf("regime must not be overwritten once set, got %q", got)
 	}
 
-	// Empty payload (regime disabled or no classifier output) leaves the
-	// position unstamped — record-only behaves identically since both paths
-	// run the same helper.
 	ssEmpty := newState("")
 	stampPositionRegimeIfOpened(ssEmpty, sc.Symbol, RegimePayload{}, sc, rc)
 	if got := ssEmpty.Positions["ETH"].Regime; got != "" {

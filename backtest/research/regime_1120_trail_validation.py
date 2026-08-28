@@ -1,10 +1,4 @@
 #!/usr/bin/env python3
-"""#1120: compare incumbent vs proposed regime opening-trail defaults.
-
-Runs trailing_tp_ratchet_regime + use_defaults ratchet tiers with explicit
-trailing_stop_atr_regime trend_regime blocks (current system table vs MC-
-derived proposal) on the audit BTC 1h OOS window. Emits JSON for PR rationale.
-"""
 from __future__ import annotations
 
 import json

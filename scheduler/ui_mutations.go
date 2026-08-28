@@ -1,15 +1,5 @@
 package main
 
-// #1256 (Phase 3 of #1229): low-risk dashboard mutations — per-strategy
-// pause/unpause, per-strategy and global notify_ratchet_triggers toggles.
-//
-// Security model (#1229): loopback-only bind + requireSameOrigin on every
-// POST; status_token enforced only when configured (requireMutatingAPIAuth).
-// Every config write goes through the guarded paths shared with the tuner and
-// Discord — applyStrategyConfigPatch / writeValidatedConfigRoot on
-// configWriteMu — then signals a SIGHUP hot-reload (both fields are
-// hot-reloadable always, including while a position is open: #1150/#1118).
-
 import (
 	"encoding/json"
 	"fmt"
@@ -24,9 +14,6 @@ type uiMutationResponse struct {
 	Message string `json:"message"`
 }
 
-// uiMutationGuards runs the shared preamble for every #1256 mutating
-// endpoint: POST-only, mutating auth, JSON content type, same-origin, and a
-// wired config path. Returns false after writing the error response.
 func (ss *StatusServer) uiMutationGuards(w http.ResponseWriter, r *http.Request) bool {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -48,7 +35,6 @@ func (ss *StatusServer) uiMutationGuards(w http.ResponseWriter, r *http.Request)
 	return true
 }
 
-// readUIMutationBody reads and parses a small JSON object body.
 func readUIMutationBody(w http.ResponseWriter, r *http.Request) (map[string]json.RawMessage, bool) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<16))
 	if err != nil {
@@ -67,10 +53,6 @@ func readUIMutationBody(w http.ResponseWriter, r *http.Request) (map[string]json
 	return obj, true
 }
 
-// triggerConfigReload signals the SIGHUP hot-reload path after a successful
-// config write and returns the operator-facing apply message. The write has
-// already landed; a failed signal only means the change waits for a manual
-// SIGHUP or restart, so it degrades to a warning instead of an error.
 func (ss *StatusServer) triggerConfigReload() string {
 	if ss.reloadConfig == nil {
 		return "Config written. Send SIGHUP or restart to apply."
@@ -81,9 +63,6 @@ func (ss *StatusServer) triggerConfigReload() string {
 	return "Applied via SIGHUP hot-reload; effective next cycle."
 }
 
-// applyUIStrategyOverrides funnels a #1256 override set through the same
-// guarded patch path as the tuner (applyStrategyConfigPatch on configWriteMu)
-// and then signals the hot-reload. Returns the apply message.
 func (ss *StatusServer) applyUIStrategyOverrides(w http.ResponseWriter, id string, overrides map[string]json.RawMessage) (string, bool) {
 	sc, ok := ss.strategyConfig(id)
 	if !ok {
@@ -106,10 +85,6 @@ func (ss *StatusServer) applyUIStrategyOverrides(w http.ResponseWriter, id strin
 	return ss.triggerConfigReload(), true
 }
 
-// handleAPIStrategyPause handles POST /api/strategies/{id}/pause with body
-// {"paused": true|false}. Pause is hot-reloadable always, including while a
-// position is open (#1150) — pausing never strands protection, it only holds
-// position-increasing signals from the next cycle.
 func (ss *StatusServer) handleAPIStrategyPause(w http.ResponseWriter, r *http.Request, id string) {
 	if !ss.uiMutationGuards(w, r) {
 		return
@@ -139,10 +114,6 @@ func (ss *StatusServer) handleAPIStrategyPause(w http.ResponseWriter, r *http.Re
 	writeJSON(w, uiMutationResponse{OK: true, Message: fmt.Sprintf("Strategy %s %s. %s", id, verb, msg)})
 }
 
-// handleAPIStrategyNotifications handles POST
-// /api/strategies/{id}/notifications with body
-// {"notify_ratchet_triggers": true|false|null} — null clears the per-strategy
-// override so the strategy inherits the global default (#1118).
 func (ss *StatusServer) handleAPIStrategyNotifications(w http.ResponseWriter, r *http.Request, id string) {
 	if !ss.uiMutationGuards(w, r) {
 		return
@@ -173,11 +144,6 @@ type uiConfigNotificationsResponse struct {
 	Message               string `json:"message,omitempty"`
 }
 
-// handleAPIConfigNotifications serves the GLOBAL notify_ratchet_triggers
-// default (#1110). GET reports the configured value (null = built-in enabled)
-// plus the effective boolean; POST {"notify_ratchet_triggers": bool|null}
-// patches the config root through writeValidatedConfigRoot on configWriteMu
-// (null deletes the key, restoring the built-in enabled default).
 func (ss *StatusServer) handleAPIConfigNotifications(w http.ResponseWriter, r *http.Request) {
 	if ss.rejectIfDraining(w) {
 		return
@@ -234,8 +200,6 @@ func (ss *StatusServer) handleAPIConfigNotifications(w http.ResponseWriter, r *h
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	// Mirror the write so a GET right after the POST reflects it even before
-	// the SIGHUP reload lands (SetConfigContext refreshes it again on reload).
 	ss.strategiesMu.Lock()
 	ss.globalNotifyRatchet = v
 	ss.strategiesMu.Unlock()

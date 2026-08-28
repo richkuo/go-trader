@@ -1,16 +1,3 @@
-"""
-Sweep Squeeze Combo — 2-of-3 consensus strategy.
-
-Combines liquidity sweeps, squeeze momentum, and stochastic RSI into a single
-strategy that fires only when at least 2 of 3 sub-signals agree on direction.
-
-Designed for 10-minute candles where liquidity sweeps catch stop hunts,
-squeeze momentum detects volatility breakouts, and stochastic RSI confirms
-oversold/overbought reversals.
-
-Buy:  2+ sub-strategies signal buy on the same candle
-Sell: 2+ sub-strategies signal sell on the same candle
-"""
 
 import numpy as np
 import pandas as pd
@@ -36,7 +23,6 @@ def _squeeze_signals(
     kc_mult: float = 1.5,
     mom_lookback: int = 12,
 ) -> pd.Series:
-    """Return squeeze momentum signal series: 1 (buy), -1 (sell), 0 (hold)."""
     result = df.copy()
     bb_mid = _sma(result["close"], bb_period)
     bb_stddev = result["close"].rolling(window=bb_period).std()
@@ -67,7 +53,7 @@ def _squeeze_signals(
 
     squeeze_mom = delta.rolling(window=mom_lookback).apply(_linreg_last, raw=True)
 
-    squeeze_fired = (~squeeze_on) & (squeeze_on.shift(1) == True)  # noqa: E712
+    squeeze_fired = (~squeeze_on) & (squeeze_on.shift(1) == True)
     mom_pos_rising = (squeeze_mom > 0) & (squeeze_mom > squeeze_mom.shift(1))
     mom_neg_falling = (squeeze_mom < 0) & (squeeze_mom < squeeze_mom.shift(1))
 
@@ -86,7 +72,6 @@ def _stoch_rsi_signals(
     overbought: float = 80,
     oversold: float = 20,
 ) -> pd.Series:
-    """Return stochastic RSI signal series: 1 (buy), -1 (sell), 0 (hold)."""
     close = df["close"]
     rsi = wilder_rsi(close, rsi_period)
 
@@ -122,29 +107,15 @@ def sweep_squeeze_combo_core(
     oversold: float = 20,
     min_agree: int = 2,
 ) -> pd.DataFrame:
-    """
-    Consensus strategy: fires when at least `min_agree` of 3 sub-strategies
-    (liquidity sweeps, squeeze momentum, stochastic RSI) agree on direction.
-
-    Parameters
-    ----------
-    swing_lookback : lookback for liquidity sweep swing detection (default 10)
-    min_agree : minimum sub-signals that must agree (default 2)
-    Other params : forwarded to respective sub-strategies
-    """
     result = df.copy()
 
-    # Sub-strategy 1: liquidity sweeps
     ls_result = liquidity_sweep_core(df, swing_lookback=swing_lookback, confirmation=confirmation)
     ls_signal = ls_result["signal"]
 
-    # Sub-strategy 2: squeeze momentum
     sq_signal = _squeeze_signals(df, bb_period, bb_std, kc_period, kc_mult, mom_lookback)
 
-    # Sub-strategy 3: stochastic RSI
     sr_signal = _stoch_rsi_signals(df, rsi_period, stoch_period, k_smooth, d_smooth, overbought, oversold)
 
-    # Count agreements
     buy_votes = (ls_signal == 1).astype(int) + (sq_signal == 1).astype(int) + (sr_signal == 1).astype(int)
     sell_votes = (ls_signal == -1).astype(int) + (sq_signal == -1).astype(int) + (sr_signal == -1).astype(int)
 
@@ -152,7 +123,6 @@ def sweep_squeeze_combo_core(
     result.loc[buy_votes >= min_agree, "signal"] = 1
     result.loc[sell_votes >= min_agree, "signal"] = -1
 
-    # Expose sub-signals as indicators for debugging
     result["ls_signal"] = ls_signal.values
     result["sq_signal"] = sq_signal.values
     result["sr_signal"] = sr_signal.values

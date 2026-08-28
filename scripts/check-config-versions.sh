@@ -1,34 +1,9 @@
 #!/usr/bin/env bash
-# check-config-versions.sh — READ-ONLY fleet audit of config_version (#1285).
-#
-# Prints one line per deployment (source, config path, config_version) and a
-# verdict against the migration floor. This produces the blocking-gate artifact
-# for pruning migration handlers: run it on the production host and record its
-# full output in the PR BEFORE raising MinSupportedConfigVersion. The script
-# never writes anything — no config rewrite, no daemon interaction.
-#
-# Usage:
-#   bash scripts/check-config-versions.sh                    # auto-discover active systemd deployments (#1055)
-#   bash scripts/check-config-versions.sh /opt/go-trader ... # audit explicit deployment dirs instead
-#
-# Discovery mirrors update.sh --all: active go-trader systemd units, reading
-# each unit's ExecStart --config path (the #1056 out-of-tree location) and
-# falling back to <WorkingDirectory>/scheduler/config.json (the transition
-# symlink, or the legacy in-tree file).
-#
-# Exit codes:
-#   0 — every deployment readable and at/above the floor (fleet verified)
-#   1 — at least one deployment below the floor, unreadable, or missing
-#   2 — nothing to audit (an empty audit is NOT a verified fleet)
 set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-# shellcheck source=update_helpers.sh
 source "${SCRIPT_DIR}/update_helpers.sh"
 
-# The floor is read from the Go source so the audit can never drift from the
-# binary's MinSupportedConfigVersion; 13 is the #1285 fallback for a copy of
-# this script run outside a checkout.
 read_floor_from_source() {
     local src="${SCRIPT_DIR}/../scheduler/config_migration.go" v=""
     if [[ -f "$src" ]]; then
@@ -38,9 +13,6 @@ read_floor_from_source() {
 }
 MIN_SUPPORTED_CONFIG_VERSION=$(read_floor_from_source)
 
-# Echo the config_version of a JSON config, or a diagnostic token:
-# "missing-file", "missing-key" (version-less config — loads as current shape),
-# or "unreadable" (broken JSON / permissions).
 read_config_version() {
     local path="$1"
     if [[ ! -e "$path" ]]; then
@@ -79,9 +51,6 @@ report_row() {
             bad=$((bad + 1))
             ;;
         missing-key)
-            # Version-less configs are hand-authored current-shape files; the
-            # daemon stamps CurrentConfigVersion on first run. Not a floor
-            # violation, but surfaced so the operator can eyeball it.
             verdict="OK (version-less; stamped on next daemon start)"
             ;;
         *)

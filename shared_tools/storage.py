@@ -1,6 +1,3 @@
-"""
-SQLite storage layer for price data and backtest results.
-"""
 
 import sqlite3
 import json
@@ -23,15 +20,8 @@ def _resolve_default_db_path() -> str:
     return os.path.abspath(os.path.expanduser(configured))
 
 
-# Read once at import so every default argument below resolves to the same
-# process-wide cache. The scheduler's tuning lane points this at StateDirectory;
-# ordinary CLI users retain the historical checkout-local default.
 DB_PATH = _resolve_default_db_path()
 
-# Paths whose schema has already been ensured this process. Lets us create
-# tables lazily on first real use instead of at import time — importing this
-# module must stay side-effect free so it works under read-only sandboxes
-# (e.g. systemd ProtectSystem=strict during the startup probe).
 _SCHEMA_READY: set = set()
 
 
@@ -53,7 +43,6 @@ def get_connection(db_path: str = DB_PATH) -> sqlite3.Connection:
 
 
 def init_db(db_path: str = DB_PATH):
-    """Create tables if they don't exist."""
     conn = _connect(db_path)
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS ohlcv (
@@ -122,14 +111,6 @@ def init_db(db_path: str = DB_PATH):
 
 
 def _migrate_funding_coverage_to_intervals(conn: sqlite3.Connection):
-    """#1176: migrate a pre-interval funding_coverage table (one row per
-    (exchange, coin), widened by min/max union) to the interval-set schema.
-    Existing rows are DROPPED, not carried over: a min/max-unioned row may
-    claim never-fetched middles as covered (that is exactly the bug — it
-    manufactured the 2024 BTC funding hole), and there is no way to tell
-    which parts of the range were actually fetched. Refetching is the only
-    safe recovery; the rates themselves are untouched. Idempotent: the check
-    keys off the old schema's UNIQUE(exchange, coin) constraint."""
     row = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='funding_coverage'"
     ).fetchone()
@@ -137,7 +118,7 @@ def _migrate_funding_coverage_to_intervals(conn: sqlite3.Connection):
         return
     normalized = row[0].lower().replace(" ", "").replace("\n", "")
     if "unique(exchange,coin)" not in normalized:
-        return  # already the interval schema (UNIQUE(exchange, coin, start_ts))
+        return
     conn.executescript("""
         DROP TABLE funding_coverage;
         CREATE TABLE funding_coverage (
@@ -152,10 +133,6 @@ def _migrate_funding_coverage_to_intervals(conn: sqlite3.Connection):
 
 def store_ohlcv(df: pd.DataFrame, exchange: str, symbol: str, timeframe: str,
                 db_path: str = DB_PATH):
-    """
-    Store OHLCV dataframe. df must have columns: timestamp, open, high, low, close, volume.
-    timestamp should be Unix ms.
-    """
     conn = get_connection(db_path)
     rows = []
     for _, row in df.iterrows():
@@ -178,7 +155,6 @@ def store_ohlcv(df: pd.DataFrame, exchange: str, symbol: str, timeframe: str,
 def load_ohlcv(exchange: str, symbol: str, timeframe: str,
                start_ts: Optional[int] = None, end_ts: Optional[int] = None,
                db_path: str = DB_PATH) -> pd.DataFrame:
-    """Load OHLCV data from DB into a DataFrame."""
     conn = get_connection(db_path)
     query = "SELECT timestamp, open, high, low, close, volume FROM ohlcv WHERE exchange=? AND symbol=? AND timeframe=?"
     params = [exchange, symbol, timeframe]
@@ -203,7 +179,6 @@ def load_ohlcv(exchange: str, symbol: str, timeframe: str,
 
 def store_funding_rates(records: list, exchange: str, coin: str,
                         db_path: str = DB_PATH):
-    """Store funding-rate snapshots: list of {"rate": float, "time": int(ms)}."""
     if not records:
         return
     conn = get_connection(db_path)
@@ -220,8 +195,6 @@ def load_funding_rates(exchange: str, coin: str,
                        start_ts: Optional[int] = None,
                        end_ts: Optional[int] = None,
                        db_path: str = DB_PATH) -> pd.DataFrame:
-    """Load funding rates as a DataFrame(timestamp, rate) with a UTC
-    DatetimeIndex, oldest first."""
     conn = get_connection(db_path)
     query = "SELECT timestamp, rate FROM funding_rates WHERE exchange=? AND coin=?"
     params = [exchange, coin]
@@ -242,11 +215,6 @@ def load_funding_rates(exchange: str, coin: str,
 
 def load_funding_coverage(exchange: str, coin: str,
                           db_path: str = DB_PATH) -> list:
-    """Return the DISJOINT [start_ts, end_ts] intervals already fetched from
-    the API for this coin, sorted ascending ([] when never fetched). Distinct
-    from the stored rates themselves: a coin listed mid-range has rates
-    starting later than the fetched-from point, and only the coverage
-    intervals prove nothing earlier exists to fetch."""
     conn = get_connection(db_path)
     rows = conn.execute(
         "SELECT start_ts, end_ts FROM funding_coverage WHERE exchange=? AND coin=?"
@@ -260,11 +228,6 @@ def load_funding_coverage(exchange: str, coin: str,
 def store_funding_coverage(exchange: str, coin: str,
                            start_ts: int, end_ts: int,
                            db_path: str = DB_PATH):
-    """Record that [start_ts, end_ts] has been fetched. Coverage is a set of
-    DISJOINT intervals: the new range merges only with intervals it overlaps
-    or touches — NEVER min/max across disjoint fetches (#1176: that unioned an
-    early historical fetch and a recent fetch into one row that falsely
-    claimed the never-fetched middle as covered)."""
     intervals = load_funding_coverage(exchange, coin, db_path=db_path)
     intervals.append((int(start_ts), int(end_ts)))
     intervals.sort()
@@ -287,7 +250,6 @@ def store_funding_coverage(exchange: str, coin: str,
 
 
 def store_backtest_result(result: dict, db_path: str = DB_PATH):
-    """Store a backtest result dict."""
     conn = get_connection(db_path)
     conn.execute("""
         INSERT INTO backtest_results
@@ -321,7 +283,6 @@ def store_backtest_result(result: dict, db_path: str = DB_PATH):
 
 def get_backtest_results(strategy_name: Optional[str] = None,
                          db_path: str = DB_PATH) -> pd.DataFrame:
-    """Retrieve backtest results."""
     conn = get_connection(db_path)
     query = "SELECT * FROM backtest_results"
     params = []

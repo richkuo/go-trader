@@ -1,20 +1,9 @@
-"""Post-TP stop-loss adjustment helpers (`sl_after` rules).
-
-Pure-Python mirror of scheduler/post_tp_sl.go. Used by the backtester (#709)
-to simulate the same SL bumps the live HL/manual paths do after a tiered TP
-fills. The Go file is the source of truth for behavior; keep this in sync.
-"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-# Absolute import (not relative) so this module loads cleanly under
-# importlib.util.spec_from_file_location — the backtester tests use that
-# loader to sidestep the open/close registry.py name collision, and
-# relative imports require a parent-package context that the loader
-# doesn't set up.
 from shared_strategies.close.regime_atr import (
     CANONICAL_TREND_REGIME_LABELS,
     REGIME_CLASSIFIER_KEY,
@@ -36,11 +25,6 @@ _TIERED_TP_NAMES = (
     "tiered_tp_atr_live_regime",
 )
 
-# Canonical fallback tier ladder when a tiered_tp_atr* close ref omits explicit
-# tiers. MUST stay in sync with the Go source of truth
-# `defaultHLProtectionTiers()` in scheduler/hyperliquid_protection.go
-# (#870: 1.5×/3×/5× @ 40%/80%/100%); tp_atr_fraction derives its firing-tier
-# multiple from it.
 _DEFAULT_SCALAR_TP_TIERS: Tuple[Tuple[float, float], ...] = (
     (1.5, 0.40),
     (3.0, 0.80),
@@ -57,8 +41,6 @@ class RegimeFloatBlock:
         v = self.trend_regime.get(r)
         if v is not None:
             return v
-        # #1124: sub-label stamp falls back to the bare ranging_directional entry
-        # (exact match wins first, so an explicit sub key still overrides bare).
         if r in ("ranging_directional_up", "ranging_directional_down"):
             return self.trend_regime.get("ranging_directional")
         return None
@@ -66,17 +48,10 @@ class RegimeFloatBlock:
 
 @dataclass(frozen=True)
 class SLAfterRule:
-    """Typed sl_after rule. ``kind=""`` means the empty / no-op rule.
-
-    ``atr_regime`` / ``trail_atr_regime`` are set instead of the scalar
-    multiplier when the operator wrote a ``trend_regime`` block (#736);
-    the backtester resolves them per regime at fire time (live behavior
-    lives in scheduler/post_tp_sl.go).
-    """
 
     kind: str = ""
-    atr_mult: float = 0.0  # signed; +N moves toward profit (long: above avg)
-    trail_atr_mult: float = 0.0  # > 0 for trail_from_here
+    atr_mult: float = 0.0
+    trail_atr_mult: float = 0.0
     atr_regime: Optional[RegimeATRBlock] = None
     trail_atr_regime: Optional[RegimeATRBlock] = None
     tp_atr_fraction: float = 0.0
@@ -95,11 +70,6 @@ class SLAfterRule:
     def resolve_for_regime(
         self, regime: str, tier_multiple: float = 0.0,
     ) -> Optional["SLAfterRule"]:
-        """Collapse a regime-aware rule to its scalar form for the given
-        regime label. Returns None when the rule is regime-aware but the
-        label is missing (caller should defer). Scalar rules pass through
-        unchanged. Mirrors Go's SLAfterRule.resolveForRegime.
-        """
         if self.kind == "atr_offset" and self.atr_regime is not None:
             entry = self.atr_regime.resolve(regime)
             if entry is None:
@@ -130,8 +100,6 @@ class SLAfterRule:
 
 @dataclass
 class TierSLAfterRules:
-    """Strategy-level default + per-tier overrides, aligned with the parsed
-    tiers (ascending by ``atr_multiple``)."""
 
     default: SLAfterRule = field(default_factory=SLAfterRule)
     per_tier: List[SLAfterRule] = field(default_factory=list)
@@ -180,23 +148,6 @@ def parse_sl_after_rule(
     raw: Any,
     labels: Optional[Iterable[str]] = CANONICAL_TREND_REGIME_LABELS,
 ) -> SLAfterRule:
-    """Parse the raw value found at ``params["sl_after"]`` (or inside a tier).
-
-    Mirrors ``parseSLAfterRule`` in scheduler/post_tp_sl.go. Accepts:
-
-      * ``None`` / ``""``                                  → empty rule
-      * ``"breakeven"``                                    → breakeven
-      * ``{"atr_mult": 0.25}``                             → atr_offset scalar
-      * ``{"trend_regime": {<labels>}}``                   → atr_offset regime (#736)
-      * ``{"trail_from_here": {"atr_mult": 1.0}}``         → trail_from_here scalar
-      * ``{"trail_from_here": {"trend_regime": {...}}}``   → trail_from_here regime (#736)
-      * ``{"kind": "atr_offset", "atr_mult": ...}``
-      * ``{"kind": "atr_offset", "trend_regime": {...}}``  → atr_offset regime, explicit kind
-      * ``{"kind": "trail_from_here", "atr_mult": ...}``
-      * ``{"kind": "trail_from_here", "trend_regime": {...}}``
-
-    Raises ``ValueError`` on malformed shapes.
-    """
     if raw is None:
         return SLAfterRule()
     if isinstance(raw, str):
@@ -246,11 +197,7 @@ def parse_sl_after_rule(
     )
 
 
-# Scalar-form keys that conflict with a regime block on the atr_offset
-# variant. trail_atr_mult here is a misplaced field, surfaced loudly.
 _SCALAR_MULT_KEYS_ATR_OFFSET = ("atr_mult", "atr_offset", "trail_atr_mult")
-# Scalar-form keys that conflict with a regime block on the trail_from_here
-# variant. atr_offset here is a misplaced field.
 _SCALAR_MULT_KEYS_TRAIL = ("atr_mult", "trail_atr_mult", "atr_offset")
 
 
@@ -259,9 +206,6 @@ def _parse_sl_after_atr_offset(
     ctx_label: str,
     labels: Optional[Iterable[str]] = None,
 ) -> SLAfterRule:
-    """Parse the atr_offset variant — scalar (atr_mult/atr_offset) or regime
-    (trend_regime/use_defaults). Multi-label regime errors join with '; '
-    so callers that surface a single error per field stay compatible."""
     has_trend = REGIME_CLASSIFIER_KEY in m
     has_use_defaults = "use_defaults" in m
     if has_trend or has_use_defaults:
@@ -299,9 +243,6 @@ def _parse_sl_after_trail_from_here(
     ctx_label: str,
     labels: Optional[Iterable[str]] = None,
 ) -> SLAfterRule:
-    """Parse the trail_from_here variant — scalar (atr_mult/trail_atr_mult)
-    or regime (trend_regime/use_defaults). Regime form uses
-    SURFACE_SL_AFTER_TRAIL so per-label atr must be strictly positive."""
     has_trend = REGIME_CLASSIFIER_KEY in m
     has_use_defaults = "use_defaults" in m
     if "tp_atr_fraction" in m:
@@ -397,9 +338,6 @@ def _parse_regime_float_block(
             f"{ctx_label}.{REGIME_CLASSIFIER_KEY}: unknown regime label {label!r} "
             f"(expected one of: {', '.join(labels)})"
         )
-    # #1124: bare `ranging_directional` covers its _up/_down sub-labels for
-    # exhaustiveness (back-compat — resolve() resolves the family via its bare
-    # fallback). Sub-labels-only (no bare parent) is still flagged.
     missing = [
         label for label in labels
         if label not in trend_raw
@@ -466,8 +404,6 @@ def _labels_for_regime_tiers(
 
 
 def validate_sl_after_rule(rule: SLAfterRule) -> None:
-    """Sanity-check a parsed rule. Raises ``ValueError`` on bad shapes; the
-    empty rule passes silently."""
     if rule.kind == "":
         return
     if rule.kind == "breakeven":
@@ -517,10 +453,6 @@ def validate_sl_after_rule(rule: SLAfterRule) -> None:
 
 
 def _format_atr_offset_mode(mult: float) -> str:
-    """Mirror Go ``formatATROffsetMode`` so logs/audits read identically.
-    Preserves operator intent: ``{atr_mult: 0}`` renders ``atr+0``, never
-    collapses to ``breakeven`` (that string is reserved for explicit
-    ``kind="breakeven"``)."""
     sign = "+"
     abs_m = mult
     if mult < 0:
@@ -530,7 +462,6 @@ def _format_atr_offset_mode(mult: float) -> str:
 
 
 def _format_g(value: float) -> str:
-    """Mimic Go's ``%g`` for a non-negative float — strips trailing zeros."""
     text = f"{value:g}"
     return text
 
@@ -542,15 +473,6 @@ def compute_post_tp_stop_loss_trigger(
     entry_atr: float,
     current_mark: float,
 ) -> Tuple[float, str, bool]:
-    """Return ``(trigger_px, mode, ok)`` for a post-TP SL bump.
-
-    ``ok=False`` when inputs are insufficient (rule needs ATR but it's
-    missing, unknown side, etc.). The caller is responsible for the
-    "never worse than current SL" clamp; this returns the rule's natural
-    target. For ``trail_from_here`` the returned price is the initial
-    trailing trigger seeded at ``current_mark``; subsequent walking is the
-    walker's job.
-    """
     side_lower = (side or "").strip().lower()
     if side_lower not in ("long", "short"):
         return 0.0, "", False
@@ -595,19 +517,6 @@ def parse_strategy_tp_sl_after_rules(
     regime: Optional[str] = None,
     labels: Optional[Iterable[str]] = None,
 ) -> Tuple[TierSLAfterRules, List[str]]:
-    """Walk the strategy's close refs and extract the strategy-level default
-    and per-tier sl_after rules from the first ``tiered_tp_atr*`` entry.
-
-    Returns ``(rules, errs)``. Errors describe individual malformed fields;
-    the parser still returns whatever it could so the caller can surface the
-    problems at config-load time without losing the rest of the config.
-
-    When the first tiered ref is ``tiered_tp_atr_regime`` /
-    ``tiered_tp_atr_live_regime``, per-tier ``sl_after`` alignment uses the
-    tier's ATR multiple **resolved for the given regime label** (same order as
-    ``parse_tp_tier_close_fractions``). Pass ``regime=None`` at static load
-    time to skip per-tier extraction (defaults still parse).
-    """
     rules = TierSLAfterRules()
     errs: List[str] = []
     if not _strategy_uses_tiered_tp_atr_close(close_refs):
@@ -740,23 +649,6 @@ def validate_post_tp_stop_loss_rules(
     strategy_type: str = "perps",
     labels: Optional[Iterable[str]] = None,
 ) -> List[str]:
-    """Mirror ``validatePostTPStopLossRulesWithLabels`` in scheduler/post_tp_sl.go.
-
-    Conditions enforced:
-      - shape/field-level errors from parsing
-      - reject sl_after on non-tiered_tp_atr* close refs (silent no-op in
-        live, so we fail loud at load)
-      - reject combination with a strategy-level trailing stop
-      - require a fixed stop-loss to adjust
-      - reject trail_from_here on manual strategies (perps-only in v1)
-
-    ``labels`` is the regime vocabulary the strategy's primary/ATR window
-    classifier emits (#1058): live threads ``regimeLabelsForStrategyWindow`` here
-    so a composite-keyed ``stop_loss_atr_regime`` / ``sl_after`` block validates
-    against the 7-state substates instead of the 3 ADX labels. ``None`` keeps the
-    legacy ADX behavior byte-identical (``parse_regime_atr_block`` defaults to the
-    canonical ADX labels; ``parse_strategy_tp_sl_after_rules`` infers from keys).
-    """
     close_refs = list(close_refs)
     rules, parse_errs = parse_strategy_tp_sl_after_rules(close_refs, labels=labels)
     out: List[str] = list(parse_errs)
@@ -831,35 +723,6 @@ def validate_regime_tiered_tp_labels(
     close_refs: Iterable[dict],
     labels: Optional[Iterable[str]] = None,
 ) -> List[str]:
-    """Validate ``tiered_tp_atr_regime`` / ``tiered_tp_atr_live_regime`` tier-key
-    vocabularies against the strategy's primary-window classifier ``labels`` (#1058).
-
-    Mirrors the intent of the live config-load check in scheduler/regime_atr.go
-    (``parseRegimeTPTiers`` keyed by ``regimeLabelsForStrategyWindow``): a tier's
-    ``trend_regime`` block keyed by labels the primary window's classifier can
-    never emit — an ADX-keyed tier under a composite primary window, or the
-    inverse — is rejected loudly at load. Without it the backtester's
-    ``parse_tp_tier_close_fractions`` infers labels from the tier keys and then
-    ``resolve_regime_tier`` silently misses on every stamped label, disabling all
-    take-profit tiers (a 0-TP run that reads as "never hit TP", not "bad config").
-
-    Guards the tier-key VOCABULARY only — by inspecting each tier's
-    ``trend_regime`` keys, never re-parsing tier shape/count/sibling keys
-    (``sl_after``, ``tp_atr_fraction``, scalar ``close_fraction``), which the
-    backtester's existing machinery and the HL-live-only guards already handle.
-    Each per-regime tier must be EXHAUSTIVE over the expected vocabulary: a key
-    the classifier can never emit is flagged as unknown, and an omitted label is
-    flagged as missing — mirroring live ``parseRegimeATRBlock`` (regime_atr.go),
-    which rejects a non-exhaustive ``trend_regime`` block per tier ("must be
-    exhaustive — no silent fallback"). Without the missing-label arm a
-    composite-primary config with a partially-keyed tier passes the backtester
-    but is rejected live, and ``resolve_regime_tier`` silently no-ops TP on every
-    un-keyed substate. A tier-level ``use_defaults`` expands to the full
-    vocabulary at the resolver, so it is exempt (like live's early-return).
-    ``labels=None`` resolves to the canonical 3 ADX labels, so the ADX/legacy
-    path is byte-identical AND an ADX-primary strategy still rejects
-    composite-keyed tiers (must-survive (b)). Returns error strings (empty=valid).
-    """
     expected = set(labels) if labels is not None else set(CANONICAL_TREND_REGIME_LABELS)
     errs: List[str] = []
     for ref in close_refs:
@@ -868,8 +731,6 @@ def validate_regime_tiered_tp_labels(
             continue
         params = ref.get("params") or {}
         if bool(params.get("use_defaults")):
-            # Baseline ladder carries no operator-supplied keys to mis-vocabulary;
-            # validated at the default-tier resolver, like live.
             continue
         tiers_raw = tier_list_from_params(params)
         if not isinstance(tiers_raw, list):
@@ -878,9 +739,6 @@ def validate_regime_tiered_tp_labels(
             if not isinstance(tier, dict):
                 continue
             if bool(tier.get("use_defaults")):
-                # Tier-level use_defaults expands to the full vocabulary at the
-                # resolver (mirrors live parseRegimeATRBlock early-return) — no
-                # operator-supplied keys to mis-vocabulary or omit.
                 continue
             block = tier.get(REGIME_CLASSIFIER_KEY)
             if not isinstance(block, dict):
@@ -890,11 +748,6 @@ def validate_regime_tiered_tp_labels(
                     f"{name}.tiers[{i}].{REGIME_CLASSIFIER_KEY}: unknown regime "
                     f"label {key!r} (expected one of: {', '.join(sorted(expected))})"
                 )
-            # #1124: a present bare `ranging_directional` covers its _up/_down
-            # sub-labels for exhaustiveness (back-compat — the bare label
-            # resolves the whole family at runtime, including the return_eff==0
-            # neutral case the producer still emits). Providing only the
-            # sub-labels without the bare label is NOT exhaustive.
             bare_directional_present = "ranging_directional" in block
             missing = [
                 label for label in sorted(expected)
@@ -917,21 +770,6 @@ def parse_tp_tier_close_fractions(
     close_refs: Iterable[dict],
     regime: Optional[str] = None,
 ) -> List[float]:
-    """Return cumulative ``close_fraction`` values for the strategy's
-    ``tiered_tp_atr*`` close ref (sorted by ascending ``atr_multiple``).
-
-    Used by the backtester (#709, #737) to detect which tier just fired by
-    comparing the post-bar ``closed_qty / initial_qty`` ratio against the
-    cumulative thresholds. Returns an empty list when no tiered ATR ref is
-    configured. Final-tier close_fraction is coerced to 1.0 to match the
-    live ``strategyTPTiers`` behavior.
-
-    For ``tiered_tp_atr_regime`` / ``tiered_tp_atr_live_regime``, pass the
-    stamped position regime label so per-regime ATR multiples resolve to the
-    same tier ordering used by the close evaluators. With ``regime=None`` or
-    an empty label, regime-aware refs return ``[]`` (caller re-parses at
-    open with a concrete label).
-    """
     for ref in close_refs:
         name = (ref.get("name") or "").strip().lower()
         if name not in _TIERED_TP_NAMES:
@@ -987,7 +825,6 @@ def parse_tp_tier_close_fractions(
             return []
         pairs.sort(key=lambda p: p[0])
         out = [p[1] for p in pairs]
-        # Coerce final tier to 1.0 so detection matches live behavior.
         if out:
             out[-1] = 1.0
         return out
@@ -1000,15 +837,6 @@ def find_highest_cleared_tier(
     from_idx: int = 0,
     epsilon: float = 1e-9,
 ) -> int:
-    """Return the highest tier index ``i >= from_idx`` whose cumulative
-    threshold has been satisfied by ``closed_ratio``. Returns ``-1`` when
-    no tier has cleared in that range.
-
-    Mirrors ``findHighestClearedTier`` in scheduler/post_tp_sl.go but
-    operates on cumulative close-fractions instead of OID slots — the
-    backtester doesn't have OIDs, so we infer "tier filled" from the
-    fraction of initial quantity that's been closed so far.
-    """
     if from_idx < 0:
         from_idx = 0
     highest = -1

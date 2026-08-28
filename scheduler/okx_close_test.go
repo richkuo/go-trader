@@ -9,11 +9,6 @@ import (
 	"time"
 )
 
-// forceCloseOKXLive unit tests — mirror the HL tests in
-// hyperliquid_balance_test.go (TestForceCloseHyperliquidLive_*). Each
-// test asserts a single branch of the decision logic so a regression
-// produces a targeted failure rather than a conflated ambiguous signal.
-
 func TestForceCloseOKXLive_ClosesOwnedCoinsOnly(t *testing.T) {
 	okxLive := []StrategyConfig{
 		{ID: "okx-btc", Platform: "okx", Type: "perps",
@@ -21,7 +16,7 @@ func TestForceCloseOKXLive_ClosesOwnedCoinsOnly(t *testing.T) {
 	}
 	positions := []OKXPosition{
 		{Coin: "BTC", Size: 0.01, Side: "long"},
-		{Coin: "SOL", Size: 50, Side: "long"}, // unowned: no configured strategy
+		{Coin: "SOL", Size: 50, Side: "long"},
 	}
 	var calls []string
 	closer := func(sym string, partialSz *float64) (*OKXCloseResult, error) {
@@ -40,10 +35,6 @@ func TestForceCloseOKXLive_ClosesOwnedCoinsOnly(t *testing.T) {
 	if len(report.ClosedCoins) != 1 || report.ClosedCoins[0] != "BTC" {
 		t.Errorf("ClosedCoins = %v, want [BTC]", report.ClosedCoins)
 	}
-	// Unowned positions must be surfaced via Unconfigured so the kill-switch
-	// plan can latch for manual intervention (dedup: single source of truth
-	// for the traded-coins partition lives in forceCloseOKXLive, not the
-	// plan builder).
 	if len(report.Unconfigured) != 1 || report.Unconfigured[0].Coin != "SOL" {
 		t.Errorf("Unconfigured = %v, want [SOL]", report.Unconfigured)
 	}
@@ -70,9 +61,6 @@ func TestForceCloseOKXLive_CloseErrorLatches(t *testing.T) {
 }
 
 func TestForceCloseOKXLive_ZeroSizeMarkedAlreadyFlat(t *testing.T) {
-	// Defense-in-depth: fetcher filters size==0 upstream, but if it ever
-	// loosens we must not submit a zero-size order (OKX would reject it
-	// and the kill switch would latch on a false failure).
 	okxLive := []StrategyConfig{
 		{ID: "okx-btc", Platform: "okx", Type: "perps",
 			Args: []string{"sma", "BTC", "1h", "--mode=live"}},
@@ -98,9 +86,6 @@ func TestForceCloseOKXLive_ZeroSizeMarkedAlreadyFlat(t *testing.T) {
 }
 
 func TestForceCloseOKXLive_CtxExpiredBeforeSubmit(t *testing.T) {
-	// When the overall budget expires, remaining coins must be flagged as
-	// errors so the kill switch latches and retries next cycle — rather
-	// than silently skipping them and clearing virtual state.
 	okxLive := []StrategyConfig{
 		{ID: "okx-btc", Platform: "okx", Type: "perps",
 			Args: []string{"sma", "BTC", "1h", "--mode=live"}},
@@ -125,10 +110,6 @@ func TestForceCloseOKXLive_CtxExpiredBeforeSubmit(t *testing.T) {
 }
 
 func TestForceCloseOKXLive_SpotStrategiesIgnored(t *testing.T) {
-	// Spot strategies live in OKXLiveAllSpot and must NOT appear in the
-	// perps close loop — forceCloseOKXLive should not attempt to "close"
-	// spot coins. Guards against a future refactor that flattens the
-	// perps/spot partition and triggers unsafe sell-all behavior.
 	mixed := []StrategyConfig{
 		{ID: "okx-btc-spot", Platform: "okx", Type: "spot",
 			Args: []string{"sma", "BTC", "1h", "--mode=live", "--inst-type=spot"}},
@@ -150,10 +131,6 @@ func TestForceCloseOKXLive_SpotStrategiesIgnored(t *testing.T) {
 	}
 }
 
-// Adapter-side AlreadyFlat: closer returns success with already_flat=true
-// (eventual-consistency window between Go-side fetch and adapter submit).
-// The coin must land in AlreadyFlat, NOT ClosedCoins, so operator messaging
-// distinguishes "we sent a close order" from "nothing to close" (#350).
 func TestForceCloseOKXLive_AdapterAlreadyFlatRoutedCorrectly(t *testing.T) {
 	okxLive := []StrategyConfig{
 		{ID: "okx-btc", Platform: "okx", Type: "perps",
@@ -185,10 +162,6 @@ func TestForceCloseOKXLive_AdapterAlreadyFlatRoutedCorrectly(t *testing.T) {
 	}
 }
 
-// SortedErrorCoins determinism — same rationale as HL
-// (HyperliquidLiveCloseReport.SortedErrorCoins): Go map iteration is
-// randomized and the Discord output must be byte-stable across calls for
-// operator triage.
 func TestOKXLiveCloseReport_SortedErrorCoins(t *testing.T) {
 	r := OKXLiveCloseReport{Errors: map[string]error{
 		"SOL": fmt.Errorf("e"), "BTC": fmt.Errorf("e"), "ETH": fmt.Errorf("e"),
@@ -204,13 +177,6 @@ func TestOKXLiveCloseReport_SortedErrorCoins(t *testing.T) {
 		}
 	}
 }
-
-// ─────────────────────────────────────────────────────────────────────
-// Per-strategy circuit-breaker close (phase 2 of #357, issue #360).
-// Mirrors the HL coverage in hyperliquid_balance_test.go — sizing math,
-// stuck-CB recovery, and clear-on-success are the three load-bearing
-// invariants for per-strategy CB on shared OKX wallets.
-// ─────────────────────────────────────────────────────────────────────
 
 func TestComputeOKXCircuitCloseQty_SoleOwnerFullSzi(t *testing.T) {
 	okxLive := []StrategyConfig{
@@ -245,12 +211,6 @@ func TestComputeOKXCircuitCloseQty_Shared50_50(t *testing.T) {
 	}
 }
 
-// Mixed-units weight normalization: when peers on a shared coin declare
-// weights in different fields (fractional CapitalPct vs absolute Capital),
-// the sum is nonsensical. Fall back to equal weights so the firing strategy
-// still gets a meaningful share. Mirrors the HL invariant (#356 review
-// finding 3) — regression here would silently collapse OKX shared-coin
-// closes to near-zero reduce-only orders.
 func TestComputeOKXCircuitCloseQty_MixedUnitsFallsBackToEqualWeights(t *testing.T) {
 	okxLive := []StrategyConfig{
 		{ID: "okx-a", Platform: "okx", Type: "perps", CapitalPct: 0.5,
@@ -263,7 +223,6 @@ func TestComputeOKXCircuitCloseQty_MixedUnitsFallsBackToEqualWeights(t *testing.
 	if !ok {
 		t.Fatal("expected ok")
 	}
-	// With equal 1.0/1.0 fallback, okx-a gets half of |size| = 0.25.
 	want := 0.25
 	if math.Abs(q-want) > 1e-9 {
 		t.Errorf("qty=%.6f want %.6f (equal-weight fallback on mixed units)", q, want)
@@ -282,12 +241,6 @@ func TestComputeOKXCircuitCloseQty_NoPositionReturnsFalse(t *testing.T) {
 	}
 }
 
-// Recovery after OKX-fetch-fail at CB fire time. When the position fetch
-// fails on the cycle a CB first fires, setOKXCircuitBreakerPending bails on
-// the nil assist and the pending close is never set. Subsequent cycles must
-// detect the stuck state (CB active, pending nil, live OKX perps, non-zero
-// on-chain position) and reconstruct the pending so the reduce-only close
-// eventually fires. Mirror of the HL recovery test.
 func TestRunPendingOKXCircuitCloses_RecoversStuckCB(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
@@ -339,9 +292,6 @@ func TestRunPendingOKXCircuitCloses_RecoversStuckCB(t *testing.T) {
 	}
 }
 
-// If the stuck-CB strategy has no on-chain position (e.g. operator already
-// closed it manually), recovery must be a no-op rather than submitting a
-// zero-size order.
 func TestRunPendingOKXCircuitCloses_StuckCBNoOnChainPositionIsNoOp(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
@@ -438,8 +388,6 @@ func TestRunPendingOKXCircuitCloses_ClearsOnSuccess(t *testing.T) {
 	}
 }
 
-// On closer failure, pending must NOT be cleared — the kill switch latches
-// and retries next cycle. Same contract as the HL drain.
 func TestRunPendingOKXCircuitCloses_PendingPreservedOnFailure(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
@@ -481,9 +429,6 @@ func TestRunPendingOKXCircuitCloses_PendingPreservedOnFailure(t *testing.T) {
 	}
 }
 
-// When a pending entry references a strategy that is no longer configured as
-// live OKX perps (e.g. operator removed it from config between cycles), drain
-// must silently clear the stale entry and not submit any close.
 func TestRunPendingOKXCircuitCloses_StaleStrategyClearsPending(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
@@ -527,8 +472,6 @@ func TestRunPendingOKXCircuitCloses_StaleStrategyClearsPending(t *testing.T) {
 	}
 }
 
-// setOKXCircuitBreakerPending enqueues for a live OKX perps strategy with
-// an open virtual position and non-zero on-chain position.
 func TestSetOKXCircuitBreakerPending_EnqueuesForLivePerps(t *testing.T) {
 	sc := StrategyConfig{ID: "okx-a", Platform: "okx", Type: "perps",
 		Args: []string{"sma", "ETH", "1h", "--mode=live"}}
@@ -552,8 +495,6 @@ func TestSetOKXCircuitBreakerPending_EnqueuesForLivePerps(t *testing.T) {
 	}
 }
 
-// Paper-mode OKX strategies must NOT enqueue a pending close — kill switch
-// is meaningful only against live exposure.
 func TestSetOKXCircuitBreakerPending_SkipsPaperMode(t *testing.T) {
 	sc := StrategyConfig{ID: "okx-paper", Platform: "okx", Type: "perps",
 		Args: []string{"sma", "ETH", "1h"}}
@@ -573,8 +514,6 @@ func TestSetOKXCircuitBreakerPending_SkipsPaperMode(t *testing.T) {
 	}
 }
 
-// Nil assist (e.g. OKX fetch failed this cycle) must no-op so the stuck-CB
-// recovery path in runPendingOKXCircuitCloses can reconstruct later.
 func TestSetOKXCircuitBreakerPending_NilAssistIsNoOp(t *testing.T) {
 	sc := StrategyConfig{ID: "okx-a", Platform: "okx", Type: "perps",
 		Args: []string{"sma", "ETH", "1h", "--mode=live"}}
@@ -586,9 +525,6 @@ func TestSetOKXCircuitBreakerPending_NilAssistIsNoOp(t *testing.T) {
 	}
 }
 
-// Parser for fetch_okx_balance.py must surface any error (exit nonzero,
-// populated error field, or unparseable) as non-nil error so the
-// shared-wallet auto-clear path preserves the kill switch on uncertainty.
 func TestParseOKXBalanceOutput_CleanSuccess(t *testing.T) {
 	stdout := []byte(`{"balance":1234.56,"platform":"okx","timestamp":"2026-04-20T00:00:00Z"}`)
 	r, _, err := parseOKXBalanceOutput(stdout, "", nil)
@@ -608,9 +544,6 @@ func TestParseOKXBalanceOutput_ErrorEnvelopeSurfacesAsErr(t *testing.T) {
 	}
 }
 
-// TestRunPendingOKXCircuitCloses_FailureIncrementsCountAndNotifies verifies that
-// a single failed close attempt increments ConsecutiveFailures to 1 and fires the
-// notifier exactly once (#427).
 func TestRunPendingOKXCircuitCloses_FailureIncrementsCountAndNotifies(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
@@ -661,8 +594,6 @@ func TestRunPendingOKXCircuitCloses_FailureIncrementsCountAndNotifies(t *testing
 	}
 }
 
-// TestRunPendingOKXCircuitCloses_RepeatedFailureThrottlesNotifier verifies that
-// failures 2–9 do not fire the notifier (throttle suppresses repeats).
 func TestRunPendingOKXCircuitCloses_RepeatedFailureThrottlesNotifier(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
@@ -672,7 +603,7 @@ func TestRunPendingOKXCircuitCloses_RepeatedFailureThrottlesNotifier(t *testing.
 					PendingCircuitCloses: map[string]*PendingCircuitClose{
 						PlatformPendingCloseOKX: {
 							Symbols:             []PendingCircuitCloseSymbol{{Symbol: "ETH", Size: 0.1}},
-							ConsecutiveFailures: 1, // first failure already recorded
+							ConsecutiveFailures: 1,
 						},
 					},
 				},
@@ -689,7 +620,6 @@ func TestRunPendingOKXCircuitCloses_RepeatedFailureThrottlesNotifier(t *testing.
 	}
 	var dmMsgs []string
 	ownerDM := func(msg string) { dmMsgs = append(dmMsgs, msg) }
-	// Force LastNotifiedAt to just now so hourly gate doesn't fire.
 	state.Strategies["okx-a"].RiskState.PendingCircuitCloses[PlatformPendingCloseOKX].LastNotifiedAt = time.Now()
 
 	runPendingOKXCircuitCloses(
@@ -710,8 +640,6 @@ func TestRunPendingOKXCircuitCloses_RepeatedFailureThrottlesNotifier(t *testing.
 	}
 }
 
-// TestRunPendingOKXCircuitCloses_TenthFailureNotifies verifies that failure #10
-// fires the notifier (every-10th cadence).
 func TestRunPendingOKXCircuitCloses_TenthFailureNotifies(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
@@ -761,12 +689,6 @@ func TestRunPendingOKXCircuitCloses_TenthFailureNotifies(t *testing.T) {
 	}
 }
 
-// Regression: when ctxOverall trips mid-symbol-loop (e.g. previous symbol's
-// closer consumed the budget), the inner per-symbol ctx check sets
-// allOK=false but failedErr stays nil. The post-loop block must NOT
-// increment ConsecutiveFailures and must NOT dereference failedErr (that
-// would panic). Mirrors the HL drain's `drainError` flag semantic and the
-// RH drain's `else if failedErr != nil` guard. See PR #435 review.
 func TestRunPendingOKXCircuitCloses_CtxExpiryMidLoopDoesNotCountAsFailure(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
@@ -796,9 +718,6 @@ func TestRunPendingOKXCircuitCloses_CtxExpiryMidLoopDoesNotCountAsFailure(t *tes
 	var calls []string
 	closer := func(sym string, partialSz *float64) (*OKXCloseResult, error) {
 		calls = append(calls, sym)
-		// First closer call succeeds AND cancels the budget so the inner
-		// ctx check fires before the second symbol runs — exactly the
-		// nil-failedErr-with-allOK=false branch the bug reproduces.
 		cancel()
 		return &OKXCloseResult{Close: &OKXClose{Symbol: sym}}, nil
 	}

@@ -1,30 +1,4 @@
 #!/usr/bin/env python3
-"""
-Page through Hyperliquid userFills history and emit an OID-keyed map of real
-exchange fees and closed PnL.
-
-Used by `go-trader backfill hl-fees` (issue #589) to replay live fills against
-the trades table and rewrite `exchange_fee` / `realized_pnl` for rows that were
-written before #587 — when HL's order placement response did not surface the
-real fee.
-
-Args:
-    --since-ms <int>: lower bound (ms epoch) for the userFills query
-    [--end-ms <int>]: upper bound (defaults to "now")
-
-Stdout (always JSON):
-    {
-        "by_oid": {"<oid>": {"coin": str, "fee": float, "closed_pnl": float,
-                             "count": int, "qty": float, "px": float,
-                             "first_time_ms": int, "last_time_ms": int}, ...},
-        "fill_count": int,
-        "page_count": int,
-        "account_address": "0x...",
-        "error": ""
-    }
-
-Exits 1 on error (stdout still contains a JSON envelope with "error" set).
-"""
 
 import argparse
 import json
@@ -37,9 +11,6 @@ import traceback
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "platforms", "hyperliquid"))
 
 
-# HL's user_fills_by_time returns at most ~2000 rows per call; we page forward
-# from the last fill's `time` field. PAGE_LIMIT_HARD caps total requests so a
-# pathological response (e.g. a stuck cursor) can't loop forever.
 PAGE_LIMIT_HARD = 200
 
 
@@ -110,9 +81,6 @@ def main():
             "error": "HYPERLIQUID_ACCOUNT_ADDRESS not set (and no HYPERLIQUID_SECRET_KEY to derive it)",
         }, exit_code=1)
 
-    # Aggregate across pages: a single market order can fragment into multiple
-    # partial fills, all sharing the same OID — sum fee + closedPnl across
-    # those rows so the OID-keyed map gives the true total.
     by_oid: dict = {}
     fill_count = 0
     page_count = 0
@@ -136,16 +104,9 @@ def main():
         if not isinstance(page, list) or not page:
             break
 
-        # Track which fills we already consumed at the exact cursor_ms
-        # boundary so a partial fill landing on the same ms as the cursor
-        # isn't double counted on the next loop (HL's API is inclusive on
-        # the lower bound). When we advance the cursor below, we re-seed
-        # this set with the rows from this page that landed exactly on the
-        # new cursor — those will reappear in the next response and need
-        # to be skipped.
         next_cursor = cursor_ms
         new_in_page = 0
-        page_rows = []  # parsed (ts, dedup_key) pairs for boundary re-seeding
+        page_rows = []
 
         for f in page:
             if not isinstance(f, dict):
@@ -153,8 +114,6 @@ def main():
             oid = _safe_int(f.get("oid"))
             ts = _safe_int(f.get("time"))
             tid = f.get("tid")
-            # Dedup key — within one ms bucket, HL's tid (trade id) uniquely
-            # identifies a leg; fall back to (oid, sz, px) when tid is absent.
             dedup_key = (ts, oid, tid if tid is not None else (
                 _safe_float(f.get("sz")), _safe_float(f.get("px"))))
             if ts == cursor_ms and dedup_key in seen_first_ts_at_cursor:
@@ -176,9 +135,6 @@ def main():
                              "last_time_ms": ts if ts > 0 else 0}
                     by_oid[key] = entry
                 elif coin and entry.get("coin") and coin != entry.get("coin"):
-                    # OIDs should be per-order/per-coin. If the indexer ever
-                    # emits contradictory coin metadata, blank it so downstream
-                    # coin+qty matchers fail closed instead of guessing.
                     entry["coin"] = ""
                 elif coin and not entry.get("coin"):
                     entry["coin"] = coin
@@ -190,9 +146,6 @@ def main():
                     last = _safe_int(entry.get("last_time_ms"))
                     entry["first_time_ms"] = ts if first <= 0 else min(first, ts)
                     entry["last_time_ms"] = max(last, ts)
-                # Size-weighted average fill price across partial fills of the
-                # same OID (#954 `backfill trade-ledger` rewrites trades.price
-                # from this). Finalized into "px" before emit.
                 sz = _safe_float(f.get("sz"))
                 entry["qty"] += sz
                 entry["_px_num"] += sz * _safe_float(f.get("px"))
@@ -201,27 +154,13 @@ def main():
             if ts > next_cursor:
                 next_cursor = ts
 
-        # No new rows means we're done (cursor stuck on rows we've already
-        # consumed at this ms).
         if new_in_page == 0:
             break
 
-        # Advance cursor. If next_cursor moved forward, re-seed the dedup
-        # set with the boundary rows from this page that share the new
-        # cursor's timestamp — HL's user_fills_by_time is inclusive on the
-        # lower bound, so those rows will reappear in the next response.
         if next_cursor > cursor_ms:
             seen_first_ts_at_cursor = {dk for (ts, dk) in page_rows if ts == next_cursor}
             cursor_ms = next_cursor
         else:
-            # HL returned a full page all at the same ms — push past it to
-            # avoid an infinite loop. Trade-off: any leg landing on
-            # next_cursor + 0 (same ms as the cursor we just exhausted) that
-            # was NOT in this page is dropped, in exchange for guaranteed
-            # forward progress. In practice HL caps pages at ~2000 rows and
-            # same-ms full pages essentially never occur for a single
-            # account, so the data-loss risk is vanishingly small relative
-            # to the cost of looping forever on a stuck cursor.
             cursor_ms = next_cursor + 1
             seen_first_ts_at_cursor = set()
 

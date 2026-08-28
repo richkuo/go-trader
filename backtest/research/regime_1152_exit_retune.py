@@ -1,39 +1,4 @@
 #!/usr/bin/env python3
-"""#1152: M6 entry-locked retune of the ranging ratchet ladders + B2 ranging TP group.
-
-#1120 / PR #1149 retuned only the opening-trail table and explicitly deferred the
-per-substate ratchet tier ladders (`ratchetTierGroupDefaults` /
-`DEFAULT_RATCHET_TIERS_BY_GROUP`) and the collapsed B2 ranging TP group
-(`regimeTPTierGroupDefaults["ranging"]` / `REGIME_TP_TIER_GROUP_DEFAULTS`)
-because the bar-level harness cannot isolate per-substate exit geometry — see
-`regime_1120_trail_validation.json:ratchet_tp_note`.
-
-This driver runs the deferred validation with the M6 harness
-(`backtest/exit_policy_ab.py`, #1066): incumbent-relative, entry-locked
-per-entry replay, regime-attributed paired ΔPnL, across the audit datasets and
-walk-forward windows. Each run gates entries to ONE composite ranging substate
-(the gate and the position-regime stamp share the same shifted label series, so
-every paired entry exercises exactly the ladder under test):
-
-- Ratchet runs: incumbent = `trailing_tp_ratchet_regime {use_defaults}` (the
-  shipped per-group ladder) + `trailing_stop_atr_regime {use_defaults}` opening
-  trails; candidate = the same evaluator with an explicit regime-keyed
-  `tp_tiers` carrying only the gated substate's candidate ladder (stops
-  inherited, so the A/B isolates the ladder change).
-- B2 runs: incumbent = `tiered_tp_atr_regime {use_defaults}` (the collapsed
-  2-rung ranging ladder) + a fixed scalar SL; candidate = scalar
-  `tiered_tp_atr` with the substate-differentiated ladder. A scalar candidate
-  is exact here because the run is gated to a single substate — every entry is
-  stamped with that substate, so "regime-keyed ladder for S" ≡ "scalar ladder".
-
-Usage:
-  uv run --no-sync python backtest/research/regime_1152_exit_retune.py \
-      [--jobs 4] [--out-dir /tmp/regime_1152_runs] [--only KEY[,KEY…]] \
-      [--windows is,oos] [--datasets BTC/USDT:1h,…]
-
-Writes per-run harness JSON to --out-dir and the committed aggregate to
-backtest/research/regime_1152_exit_retune.json.
-"""
 from __future__ import annotations
 
 import argparse
@@ -50,11 +15,6 @@ _CONFIG_RATCHET = os.path.join(_THIS_DIR, "regime_1152_config_ratchet.json")
 _CONFIG_B2 = os.path.join(_THIS_DIR, "regime_1152_config_b2.json")
 _AGGREGATE_OUT = os.path.join(_THIS_DIR, "regime_1152_exit_retune.json")
 
-# Two entry styles so a ladder verdict is never an artifact of one open
-# strategy's entry timing: squeeze_momentum (breakout/momentum — the #1120
-# lineage) and mean_reversion (band-reversion — the entry style that actually
-# fires inside ranging_quiet, where squeeze_momentum produced ZERO gated
-# entries across all six audit datasets).
 OPENS = {
     "sq": {
         "open": "squeeze_momentum",
@@ -80,12 +40,6 @@ def _tp(mult: float, frac: float) -> dict:
 
 
 def _ratchet_candidate(labels: list[str], ladder: list[dict]) -> str:
-    """Regime-keyed explicit tp_tiers for trailing_tp_ratchet_regime.
-
-    The evaluator resolves explicit tables by EXACT label match (no #1124 bare
-    fallback in trailing_tp_ratchet.resolve_tiers_for_regime), so the
-    directional family needs the bare label AND both _up/_down keys.
-    """
     return json.dumps([{
         "name": "trailing_tp_ratchet_regime",
         "params": {"tp_tiers": {lab: ladder for lab in labels}},
@@ -100,8 +54,6 @@ _DIRECTIONAL_LABELS = [
     "ranging_directional", "ranging_directional_up", "ranging_directional_down",
 ]
 
-# Incumbent ladders under test (mirrors ratchetTierGroupDefaults /
-# REGIME_TP_TIER_GROUP_DEFAULTS at HEAD; recorded here for the artifact):
 INCUMBENTS = {
     "ratchet.ranging_quiet": [
         _rung(0.75, 0.40, 1.0), _rung(1.5, 0.80, 0.75), _rung(2.0, 1.00, 0.75)],
@@ -114,7 +66,6 @@ INCUMBENTS = {
 }
 
 RUNS: list[dict] = [
-    # --- Ratchet ladders, per substate (#1120 goals 1–2) ------------------
     {
         "key": "rq_volatile_geometry",
         "experiment": "ratchet", "substate": "ranging_quiet",
@@ -170,7 +121,6 @@ RUNS: list[dict] = [
         "hypothesis": "directional drift rewards an even lighter early "
                       "scale-out (15/35/60) — more runner",
     },
-    # --- B2 ranging TP group: substate differentiation (#1120 goal 2) -----
     {
         "key": "b2_rq_wider",
         "experiment": "b2", "substate": "ranging_quiet",
@@ -246,14 +196,6 @@ def _run_one(open_key: str, run: dict, out_dir: str, windows: str,
 
 
 def _window_rollup(payload: dict) -> dict:
-    """Per window: paired-N-weighted mean Δnet/e + per-dataset direction votes.
-
-    The harness is the SSoT for per-dataset statistics (Wilcoxon/sign/bootstrap
-    on the raw per-entry deltas); raw deltas are not exported, so the pooled
-    number here is the paired-N-weighted mean of per-dataset means — the same
-    aggregation the harness's own summary table prints — plus a vote count of
-    datasets by delta sign and how many are individually significant.
-    """
     out = {}
     for wname, results in (payload.get("results") or {}).items():
         deltas, votes_pos, votes_neg, sig_pos, sig_neg, n_paired = [], 0, 0, 0, 0, 0
@@ -286,10 +228,6 @@ def _window_rollup(payload: dict) -> dict:
 
 
 def _verdict(rollup: dict) -> str:
-    """Promotion gate: candidate must be positive on BOTH is and oos pooled
-    Δnet/e with at least one individually significant dataset and no
-    significant contradiction; anything else is a negative/inconclusive
-    result for the candidate (the incumbent stands)."""
     is_w, oos_w = rollup.get("is") or {}, rollup.get("oos") or {}
     pooled_is = is_w.get("pooled_delta_net_pct_per_entry")
     pooled_oos = oos_w.get("pooled_delta_net_pct_per_entry")
@@ -305,7 +243,7 @@ def _verdict(rollup: dict) -> str:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap = argparse.ArgumentParser()
     ap.add_argument("--jobs", type=int, default=4)
     ap.add_argument("--out-dir", default=os.path.join(_THIS_DIR, "regime_1152_runs"))
     ap.add_argument("--only", default=None, help="comma list of run keys")

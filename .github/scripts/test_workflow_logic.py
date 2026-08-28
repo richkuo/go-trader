@@ -1,25 +1,3 @@
-"""Regression tests pinning the security-critical routing shell in claude.yml.
-
-The push-access boundary of the @claude workflow lives in two hand-written
-shell steps inside .github/workflows/claude.yml:
-
-  - verify_invocation — decides whether a comment is a real @claude invocation,
-    and (for claude[bot]'s own comments) whether it is the exact one-line
-    "@claude review" self-trigger vs. review output that merely quotes @claude.
-  - classify_mode — routes an invocation to the read-only `review` job or the
-    push-capable `implement` job.
-
-This repo is PUBLIC, so an author-association misjudgment here would let an
-external contributor's comment reach a push-capable run; a later edit could
-silently widen the write path. This test pins every documented outcome. Like
-test_patch_claude_comment.py it does NOT re-implement the logic (a copy would
-drift and never catch a workflow edit) — it EXTRACTS the real `run:` block out
-of the workflow YAML and executes it in a bash subprocess with injected env,
-so a change to the workflow is what the test runs against.
-
-Run under pytest (this repo's test runner):
-  uv run pytest .github/scripts/test_workflow_logic.py
-"""
 
 import os
 import re
@@ -32,7 +10,6 @@ CLAUDE_YML = os.path.abspath(os.path.join(HERE, "..", "workflows", "claude.yml")
 VERIFY_STEP = "Verify @claude is an actual invocation (not in a code block or example)"
 CLASSIFY_MODE_STEP = "Classify invocation route (review, implement, or fix-pr)"
 
-# A PR issue_comment carries a non-empty pull_request.url; an issue comment does not.
 PR_URL = "https://api.github.com/repos/o/r/pulls/5"
 
 
@@ -42,7 +19,6 @@ def _read(path):
 
 
 def extract_step_run_block(yml_text, step_name):
-    """Return the dedented body of a step's `run: |` block, verbatim from the YAML."""
     lines = yml_text.split("\n")
     name_pat = re.compile(r"^(\s*)- name:\s*" + re.escape(step_name) + r"\s*$")
     start = None
@@ -94,9 +70,6 @@ def extract_step_run_block(yml_text, step_name):
 
 
 def _run_block(script, env_overrides, output_key):
-    """Execute an extracted run block with injected env; return the last value it
-    wrote to GITHUB_OUTPUT under output_key (the real value is written after any
-    attacker-controlled heredoc body, so last-wins is the authoritative one)."""
     with tempfile.TemporaryDirectory() as d:
         out_path = os.path.join(d, "github_output")
         open(out_path, "w").close()
@@ -148,11 +121,7 @@ def run_verify_invocation(event_name, body, trigger_actor="someuser"):
     )
 
 
-# --- classify_mode routing (review vs. push-capable implement/fix-pr) ---
-
 def test_trusted_member_pr_comment_no_review_word_is_fix_pr():
-    # Consolidated routing: any non-"review" @claude comment on a
-    # trusted-author PR runs the review-reconciliation playbook in place.
     assert run_classify_mode(
         "issue_comment", "@claude correct the lint error", pr_url=PR_URL, pr_author_assoc="MEMBER"
     ) == "fix-pr"
@@ -165,8 +134,6 @@ def test_trusted_owner_pr_comment_is_fix_pr():
 
 
 def test_claude_bot_authored_pr_is_fix_pr():
-    # work-on-issue PRs are authored by claude[bot] (association NONE) — the login
-    # check, not the association, must admit them.
     assert run_classify_mode(
         "issue_comment", "@claude address the feedback", pr_url=PR_URL,
         pr_author_assoc="NONE", pr_author_login="claude[bot]"
@@ -174,8 +141,6 @@ def test_claude_bot_authored_pr_is_fix_pr():
 
 
 def test_external_author_pr_comment_is_review_only():
-    # PUBLIC repo: an external/fork-authored PR (association NONE) never earns
-    # push, even from a trusted commenter (the job trigger already gated it).
     assert run_classify_mode(
         "issue_comment", "@claude fix the lint error", pr_url=PR_URL, pr_author_assoc="NONE"
     ) == "review"
@@ -206,17 +171,12 @@ def test_review_and_fix_loses_push_on_purpose():
 
 
 def test_review_word_later_in_sentence_no_longer_forces_review():
-    # Keyword routing: only the FIRST word after @claude counts, so an
-    # instruction that merely mentions review keeps the push-capable
-    # review-fixing route.
     assert run_classify_mode(
         "issue_comment", "@claude fix the review comments", pr_url=PR_URL, pr_author_assoc="MEMBER"
     ) == "fix-pr"
 
 
 def test_fix_keyword_routes_to_fix_pr():
-    # "fix" is no longer a special keyword — it lands on fix-pr like any
-    # other non-review trusted-PR comment.
     assert run_classify_mode(
         "issue_comment", "@claude fix", pr_url=PR_URL, pr_author_assoc="MEMBER"
     ) == "fix-pr"
@@ -229,29 +189,24 @@ def test_fix_keyword_after_model_shorthand_routes_to_fix_pr():
 
 
 def test_old_fix_pr_spelling_routes_to_fix_pr():
-    # The old trigger spelling routes like any non-review ask now.
     assert run_classify_mode(
         "issue_comment", "@claude fix-pr", pr_url=PR_URL, pr_author_assoc="MEMBER"
     ) == "fix-pr"
 
 
 def test_fix_keyword_untrusted_pr_author_is_review_only():
-    # Must survive: the fix keyword never earns push over an
-    # external-author PR — fail-closed to read-only review (PUBLIC repo).
     assert run_classify_mode(
         "issue_comment", "@claude fix", pr_url=PR_URL, pr_author_assoc="NONE"
     ) == "review"
 
 
 def test_fix_keyword_on_plain_issue_is_implement():
-    # No PR context: the issue path wins before keyword routing.
     assert run_classify_mode(
         "issue_comment", "@claude fix", pr_url="", pr_author_assoc="MEMBER"
     ) == "implement"
 
 
 def test_fix_keyword_on_inline_review_surface_stays_review():
-    # PR-review surfaces are always read-only regardless of keyword.
     assert run_classify_mode(
         "pull_request_review_comment", "@claude fix", pr_url=PR_URL, pr_author_assoc="OWNER"
     ) == "review"
@@ -276,7 +231,6 @@ def test_issues_event_is_implement():
 
 
 def test_docs_release_flow_routes_to_implement_even_on_pr():
-    # A resolved docs/release FLOW wins before PR routing.
     assert run_classify_mode(
         "issue_comment", "@claude sync-docs", pr_url=PR_URL,
         pr_author_assoc="MEMBER", flow="sync-docs"
@@ -284,21 +238,16 @@ def test_docs_release_flow_routes_to_implement_even_on_pr():
 
 
 def test_issue_comment_on_issue_is_implement():
-    # No PR_URL: an issue_comment on a plain issue is the issue-workflow path.
     assert run_classify_mode(
         "issue_comment", "@claude implement this", pr_url="", pr_author_assoc="MEMBER"
     ) == "implement"
 
-
-# --- verify_invocation claude[bot] self-trigger guard ---
 
 def test_exact_one_line_self_trigger_fires():
     assert run_verify_invocation("issue_comment", "@claude review", "claude[bot]") == "true"
 
 
 def test_leading_blank_line_still_fires():
-    # The regression this fix targets: a leading blank line used to leave a
-    # newline that failed the one-line count, silently suppressing self-review.
     assert run_verify_invocation("issue_comment", "\n@claude review", "claude[bot]") == "true"
 
 
@@ -319,8 +268,6 @@ def test_effort_token_self_trigger_fires():
 
 
 def test_second_nonblank_line_does_not_fire():
-    # Must survive: the fix must not accept a genuinely multi-line body whose
-    # first line is the trigger — that is the loop-prevention boundary.
     assert run_verify_invocation(
         "issue_comment", "@claude review\nplease also fix the flaky test", "claude[bot]"
     ) == "false"

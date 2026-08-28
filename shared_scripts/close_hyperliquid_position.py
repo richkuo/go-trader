@@ -1,38 +1,4 @@
 #!/usr/bin/env python3
-"""
-Hyperliquid emergency position close script (issue #341).
-
-Submits a reduce-only market close for a single coin via the HL SDK's
-`market_close`. Used by the portfolio kill switch in the Go scheduler to
-liquidate on-chain exposure regardless of which strategy "owns" the
-position — including shared coins where per-strategy reconciliation
-deliberately does not overwrite virtual quantities (#258), so virtual
-state can diverge from the on-chain net.
-
-Usage:
-    close_hyperliquid_position.py --symbol=ETH --mode=live
-    close_hyperliquid_position.py --symbol=ETH --mode=live --sz=0.25
-    close_hyperliquid_position.py --symbol=ETH --mode=live --cancel-stop-loss-oid=123
-    close_hyperliquid_position.py --symbol=ETH --mode=live --cancel-stop-loss-oid=123 --cancel-stop-loss-oid=456
-
-Optional ``--sz`` submits a partial reduce-only close (coin units). Omit for
-full position close (portfolio kill switch and sole-owner circuit breakers).
-
-Optional ``--cancel-stop-loss-oid`` (repeatable) cancels resting trigger orders BEFORE
-the close fires. Used by per-strategy circuit breakers and the portfolio
-kill switch to free the trigger slot from `Position.StopLossOID` so the
-SL doesn't sit orphaned on HL's book consuming one of the account-wide
-1000 open-order cap slots (scales to 5000 with volume; #421 review point 1,
-#479). Cancel failures are non-fatal
-(SL may have already triggered on-chain) and is surfaced as
-``cancel_stop_loss_error`` in the JSON envelope.
-
-Live mode is required (kill switch is meaningful only against real
-positions). Stdout is always a single JSON envelope: `{"close": ..., "platform": ...,
-"timestamp": ..., "error": "..."}`. The Go caller (`RunHyperliquidClose`)
-prefers the JSON `error` field over the exit code, but exit 1 is also set
-on every error path so a malformed-JSON crash still surfaces as failure.
-"""
 
 import argparse
 import json
@@ -90,16 +56,10 @@ def main():
     try:
         from adapter import HyperliquidExchangeAdapter
         adapter = HyperliquidExchangeAdapter()
-        # Default behavior preserves kill-switch / circuit-close semantics:
-        # cancel stale triggers before flattening so successful full closes do
-        # not leave trigger slots burning on HL's account-wide order cap. The
-        # force-close CLI opts into post-fill cancel so a failed close never
-        # leaves the still-open position naked while Go still tracks old OIDs.
         if not args.cancel_protection_after_close:
             cancel_err, cancel_succeeded, cancel_succeeded_oids, cancel_failed_oids = _cancel_trigger_orders(
                 adapter, args.symbol, args.cancel_stop_loss_oid
             )
-        # Bound the userFills lookup window for the post-close fee query (#585).
         fills_since_ms = int(time.time() * 1000) - 10_000
         result = adapter.market_close(args.symbol, args.sz)
     except Exception as e:
@@ -108,12 +68,6 @@ def main():
                     cancel_succeeded_oids=cancel_succeeded_oids, cancel_failed_oids=cancel_failed_oids)
         return
 
-    # SDK reduce-only close response shape mirrors market_open:
-    # {"status": "ok", "response": {"type": "order", "data": {"statuses": [...]}}}
-    # The kill switch must NEVER report success unless the order actually
-    # filled on-chain — silently treating a "resting" or per-status "error"
-    # entry as success would clear virtual state while exposure remains
-    # (the original #341 failure mode shifted into the Python layer).
 
     if not isinstance(result, dict):
         _emit_error(args.symbol, f"unexpected SDK response type {type(result).__name__}: {result!r}",
@@ -121,7 +75,6 @@ def main():
                     cancel_succeeded_oids=cancel_succeeded_oids, cancel_failed_oids=cancel_failed_oids)
         return
 
-    # Outer status must be "ok" or absent — anything else is an SDK rejection.
     outer_status = result.get("status")
     if outer_status not in (None, "ok"):
         _emit_error(args.symbol, f"sdk status={outer_status!r}: {result}",
@@ -131,16 +84,7 @@ def main():
 
     statuses = result.get("response", {}).get("data", {}).get("statuses", [])
 
-    # Empty statuses == HL had nothing to close (already flat). Treat as success
-    # with empty fill so the kill switch can release the latch when on-chain is
-    # genuinely flat — this complements the szi==0 filter in fetchHyperliquidState
-    # for the eventual-consistency window where on-chain just-flattened between
-    # the Go-side fetch and our submit.
     if not statuses:
-        # Set already_flat=True so the Go side routes this through the
-        # AlreadyFlat report slice rather than ClosedCoins — operator
-        # messaging must distinguish "we sent a close order" from
-        # "nothing to close" (#350).
         _emit_success(args.symbol, fill={}, already_flat=True,
                       cancel_err=cancel_err, cancel_succeeded=cancel_succeeded,
                       cancel_succeeded_oids=cancel_succeeded_oids, cancel_failed_oids=cancel_failed_oids)
@@ -148,17 +92,12 @@ def main():
 
     first = statuses[0]
 
-    # Per-status error (e.g. "order has zero size", "no position", rate limit).
-    # Surface so the kill switch latches and retries next cycle.
     if "error" in first:
         _emit_error(args.symbol, f"per-status error: {first['error']}",
                     cancel_err=cancel_err, cancel_succeeded=cancel_succeeded,
                     cancel_succeeded_oids=cancel_succeeded_oids, cancel_failed_oids=cancel_failed_oids)
         return
 
-    # "resting" means a limit order is sitting on the book — for market_close
-    # this should never happen (market orders fill or fail), but guard anyway.
-    # Not "filled" => not closed => kill switch must NOT release the latch.
     if "filled" not in first:
         _emit_error(args.symbol, f"close not filled (status keys={list(first.keys())}): {first}",
                     cancel_err=cancel_err, cancel_succeeded=cancel_succeeded,
@@ -177,15 +116,10 @@ def main():
     oid = filled.get("oid")
     if oid is not None:
         fill["oid"] = int(oid)
-    # HL placeOrder/market_close response omits `fee`; keep the read for
-    # forward-compat then overwrite via userFills (#585).
     fee = filled.get("fee")
     if fee is not None:
         fill["fee"] = float(fee)
 
-    # Look up the real fee + closedPnl via the userFills indexer endpoint.
-    # Aggregates across partial fills sharing the OID. Failures are non-fatal
-    # — Go falls back to the modeled fee.
     if fill.get("oid"):
         try:
             lookup = adapter.lookup_fill_fee_by_oid(fill["oid"], fills_since_ms)

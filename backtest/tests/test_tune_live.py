@@ -1,13 +1,3 @@
-"""#1338: tests for the live-strategy tuning pipeline (backtest/tune_live.py).
-
-Pure helpers (neighborhood generation, override merge/validate, window
-partitioning, patch emission) are exercised without data access, matching the
-auto_suggest pure-core convention. Integration paths monkeypatch
-``load_cached_data`` (a synthetic frame) and ``run_stage2`` (a canned
-auto_suggest report) so no market data or M-harness subprocess is needed —
-mirroring the eval_windows / run_backtest test recipe. The selection-aware
-statistics (disjoint stage-1 slice, BH family size = searched N) are asserted
-directly."""
 import json
 import os
 import types
@@ -20,10 +10,6 @@ import auto_suggest
 import tune_live as tl
 from registry_loader import load_registry
 
-
-# ==========================================================================
-# Fixtures / builders
-# ==========================================================================
 
 def _synthetic_df(start="2019-01-01", end="2026-03-01", freq="1D"):
     idx = pd.date_range(start, end, freq=freq)
@@ -67,8 +53,6 @@ def _make_args(**over):
 
 
 def _canned_stage2(spec_path, out_json, out_dir, jobs, survivor_key="cand_0"):
-    """A stand-in for run_stage2: reads the generated spec and returns an
-    auto_suggest-shaped report marking one candidate a survivor."""
     with open(spec_path) as fh:
         spec = json.load(fh)
     ranked = []
@@ -86,10 +70,6 @@ def _canned_stage2(spec_path, out_json, out_dir, jobs, survivor_key="cand_0"):
     }
 
 
-# ==========================================================================
-# 1. Pure — value coercion + neighborhood generation
-# ==========================================================================
-
 @pytest.mark.parametrize("raw,expected", [
     ("10", 10), ("1.5", 1.5), ("true", True), ("false", False),
     ("us_open", "us_open"), ("-3", -3),
@@ -100,25 +80,23 @@ def test_coerce_scalar(raw, expected):
 
 
 def test_perturb_numeric_int_and_float():
-    assert sorted(tl.perturb_numeric(20, 0.25, 1)) == [15, 25]      # step=5
+    assert sorted(tl.perturb_numeric(20, 0.25, 1)) == [15, 25]
     assert tl.perturb_numeric(0.5, 0.25, 1) == [0.375, 0.625]
-    # zero sentinel and n_steps=0 → no perturbation
     assert tl.perturb_numeric(0, 0.25, 2) == []
     assert tl.perturb_numeric(20, 0.25, 0) == []
-    # bool is not perturbed (it is a category, not a magnitude)
     assert tl.perturb_numeric(True, 0.25, 2) == []
 
 
 def test_param_neighborhood_includes_live_and_range_sorted():
     n = tl.param_neighborhood(18, [10, 15, 20, 25], 0.25, 0)
-    assert n == [10, 15, 18, 20, 25]           # live value injected, sorted
+    assert n == [10, 15, 18, 20, 25]
     assert 18 in n
 
 
 def test_param_neighborhood_categorical_preserves_and_no_perturb():
     n = tl.param_neighborhood("us_open", ["asian", "us_open", "us_close"], 0.25, 2)
     assert set(n) == {"asian", "us_open", "us_close"}
-    assert n[0] == "us_open"                    # live value first (insertion order)
+    assert n[0] == "us_open"
 
 
 def test_effective_params_config_over_defaults():
@@ -132,15 +110,14 @@ def test_build_search_grid_searched_frozen_override():
     grid = tl.build_search_grid(
         eff, default_row, override_grids={"slow_period": [45, 55]},
         frozen={"fast_period"}, step_frac=0.25, n_steps=0, value_ok=lambda p, v: True)
-    assert grid["fast_period"] == [18]          # frozen → pinned to live
-    assert grid["slow_period"] == [45, 55]      # override replaces neighborhood
-    assert grid["extra"] == [7]                 # not in default_row → pinned
+    assert grid["fast_period"] == [18]
+    assert grid["slow_period"] == [45, 55]
+    assert grid["extra"] == [7]
 
 
 def test_build_search_grid_value_ok_filters_but_keeps_live():
     eff = {"fast_period": 18}
     default_row = {"fast_period": [10, 15, 20, 25]}
-    # value_ok rejects everything; the live value 18 must still survive.
     grid = tl.build_search_grid(eff, default_row, {}, set(), 0.25, 0,
                                 value_ok=lambda p, v: False)
     assert grid["fast_period"] == [18]
@@ -149,10 +126,6 @@ def test_build_search_grid_value_ok_filters_but_keeps_live():
 def test_grid_size():
     assert tl.grid_size({"a": [1, 2, 3], "b": [1, 2], "c": [9]}) == 6
 
-
-# ==========================================================================
-# 2. Pure — override resolution (fail-loud), windows, patches, candidates
-# ==========================================================================
 
 def _check_value(reg):
     return lambda p, v: reg.validate_param_value("sma_crossover", p, v)
@@ -208,7 +181,6 @@ def test_resolve_overrides_frozen_unknown_refused():
 
 def test_earliest_stage2_start_and_unknown_window():
     assert tl.earliest_stage2_start(["is", "oos"], tl.M1_WINDOWS) == "2025-06-10"
-    # a held-out window pulls the disjoint boundary earlier
     assert tl.earliest_stage2_start(["2023", "is"], tl.M1_WINDOWS) == "2023-01-01"
     with pytest.raises(ValueError, match="unknown stage-2 window"):
         tl.earliest_stage2_start(["is", "nope"], tl.M1_WINDOWS)
@@ -239,15 +211,11 @@ def test_build_candidate_carries_close_direction_stops():
     assert cand["close_strategies"][0]["name"] == "tiered_tp_atr"
     assert cand["stop_loss_atr_mult"] == 2.0
     assert cand["allowed_regimes"] == ["trending_up"]
-    # Live lookback defaults are made explicit so stage 2 can never drift.
     assert cand["regime_period"] == 14
     assert cand["regime_adx_threshold"] == 20.0
 
 
 def test_build_candidate_dormant_gate_not_copied():
-    # #1343 re-review: allowed_regimes with regime.enabled=false (the state
-    # /apply-regime-gate reactivates) is UNGATED live and in stage 1 —
-    # stage 2 must not force-activate it via a bare allowed_regimes copy.
     resolution = {
         "strategy_type": "perps", "direction": "long",
         "allowed_regimes": ["trending_up"], "regime_enabled": False,
@@ -261,9 +229,6 @@ def test_build_candidate_dormant_gate_not_copied():
 
 
 def test_build_candidate_threads_live_adx_lookback():
-    # #1343 re-review: a non-default regime.period / adx_threshold must reach
-    # stage 2, else eval_windows gates on ADX(14, 20) while live and stage 1
-    # gate on the configured lookback.
     resolution = {
         "regime_enabled": True, "allowed_regimes": ["trending_up"],
         "regime_period": 21, "regime_adx_threshold": 25.0,
@@ -272,14 +237,11 @@ def test_build_candidate_threads_live_adx_lookback():
     assert cand["allowed_regimes"] == ["trending_up"]
     assert cand["regime_period"] == 21
     assert cand["regime_adx_threshold"] == 25.0
-    # The emitted candidate must pass the stage-2 schema it feeds.
     import eval_windows as ew
     assert ew.validate_candidate(dict(cand))
 
 
 def test_build_candidate_composite_gate_owns_lookback():
-    # An active composite gate carries its windows spec; the legacy lookback
-    # fields must NOT ride along (validate_candidate rejects the mix).
     spec = {"primary": {"classifier": "composite", "period": 14}}
     resolution = {
         "regime_enabled": True, "allowed_regimes": ["trending_up"],
@@ -333,10 +295,6 @@ def test_stage1_skip_reason(resolution, expected):
     assert tl.stage1_skip_reason(resolution) == expected
 
 
-# ==========================================================================
-# 3. Integration — baseline parity, selection-aware family size, artifact
-# ==========================================================================
-
 def test_baseline_params_byte_match_load_strategy_config(tmp_path):
     from run_backtest import load_strategy_config
     cfg = _sma_config(params={"fast_period": 18, "slow_period": 47})
@@ -355,25 +313,21 @@ def test_stage2_spec_family_size_is_searched_N_not_survivor_count(tmp_path, monk
     res = tl.tune_strategy(path, "spot-sma-btc", "BTC/USDT", "1d", "spot",
                            load_registry("spot"), _make_args(), {}, str(tmp_path))
     assert res["status"] == "ranked"
-    # searched N = grid size (5 fast x 4 slow = 20 for live fast=18 in [10,15,20,25])
     n = res["searched_family_size"]
     assert n == 20
-    # far more than the stage-2 candidate count (baseline + few survivors)
     assert res["n_candidates"] < n
     spec = json.loads((tmp_path / "suggest.spot-sma-btc.json").read_text())
-    assert spec["correction"]["family_size"] == n     # BH corrects against N
+    assert spec["correction"]["family_size"] == n
     assert spec["harnesses"] == ["m1_noise", "m1", "m3", "m5"]
 
 
 def test_generated_candidates_pass_auto_suggest_load_spec(tmp_path):
-    # A dry run emits the full-neighborhood spec; auto_suggest.load_spec must
-    # accept every generated candidate (validate_candidate) without error.
     path = _write_config(tmp_path, _sma_config())
     tl.tune_strategy(path, "spot-sma-btc", "BTC/USDT", "1d", "spot",
                      load_registry("spot"), _make_args(dry_run=True), {}, str(tmp_path))
     spec_path = tmp_path / "suggest.spot-sma-btc.json"
     raw = json.loads(spec_path.read_text())
-    spec = auto_suggest.load_spec(raw, str(tmp_path))    # raises on a bad candidate
+    spec = auto_suggest.load_spec(raw, str(tmp_path))
     assert spec["correction"]["family_size"] == raw["correction"]["family_size"]
     assert spec["candidates"][0]["key"] == "baseline"
 
@@ -421,7 +375,6 @@ def test_full_main_writes_versioned_artifact_and_progress(tmp_path, monkeypatch)
     surv = s["survivors"]
     assert surv and "patch" in surv[0]
     assert surv[0]["patch"]["open_strategy"]["name"] == "sma_crossover"
-    # progress JSON is machine-consumable and reaches "done"
     prog = json.loads((tmp_path / "tune_live.progress.json").read_text())
     assert prog["schema_version"] == 2
     assert prog["schema_version"] == tl.SCHEMA_VERSION
@@ -429,10 +382,9 @@ def test_full_main_writes_versioned_artifact_and_progress(tmp_path, monkeypatch)
 
 
 def test_promotion_baseline_raw_fidelity_with_user_defaults(tmp_path):
-    """#1386: baseline stores file blocks verbatim — no close injection leak."""
     open_block = {
         "name": "sma_crossover",
-        "params": {"fast_period": 18},  # slow_period omitted → registry fills eff
+        "params": {"fast_period": 18},
     }
     user_defaults = {
         "close": {
@@ -470,20 +422,15 @@ def test_promotion_baseline_raw_fidelity_with_user_defaults(tmp_path):
     assert baseline["user_defaults"] == file_cfg["user_defaults"]
     assert baseline["open_strategy_present"] is True
     assert baseline["user_defaults_present"] is True
-    # No injected close data inside the baseline — close injection lives on
-    # close_strategies / stop_owner evidence fields only.
     assert baseline["open_strategy"]["params"] == res["baseline_params"]
-    # Registry defaults fill omitted keys in effective_params, not baseline.
     defaults = load_registry("spot").STRATEGY_REGISTRY["sma_crossover"]["default_params"]
     eff = tl.effective_params(res["baseline_params"], defaults)
     assert "slow_period" in eff and "slow_period" not in res["baseline_params"]
-    # Injected close lands on evidence, not on the raw baseline.
     assert res["close_strategies"][0]["params"].get("tp_tiers") is not None
     assert baseline["user_defaults"] == user_defaults
 
 
 def test_promotion_baseline_presence_matrix(tmp_path):
-    """#1386: absent → null+false; empty object → {}+true; legacy-only captured."""
     from run_backtest import load_strategy_config
 
     def _load(subdir, cfg, sid, **kw):
@@ -492,7 +439,6 @@ def test_promotion_baseline_presence_matrix(tmp_path):
         return load_strategy_config(_write_config(d, cfg), sid,
                                     include_promotion_baseline=True, **kw)
 
-    # Absent open_strategy key (args-form) → null + false; name still resolves.
     kwargs = _load("args", {
         "config_version": 15,
         "strategies": [{
@@ -504,9 +450,8 @@ def test_promotion_baseline_presence_matrix(tmp_path):
     _assert_complete_promotion_baseline(b)
     assert b["open_strategy"] is None and b["open_strategy_present"] is False
     assert b["user_defaults"] is None and b["user_defaults_present"] is False
-    assert kwargs["open_strategy"]["name"] == "sma_crossover"  # resolved
+    assert kwargs["open_strategy"]["name"] == "sma_crossover"
 
-    # Empty-object user_defaults → {} + true.
     b = _load("empty_ud", {
         "config_version": 15,
         "user_defaults": {},
@@ -518,7 +463,6 @@ def test_promotion_baseline_presence_matrix(tmp_path):
     }, "spot-empty-ud")["promotion_baseline"]
     assert b["user_defaults"] == {} and b["user_defaults_present"] is True
 
-    # Present-but-null open_strategy → null + true (key present).
     b = _load("null_open", {
         "config_version": 15,
         "strategies": [{
@@ -529,7 +473,6 @@ def test_promotion_baseline_presence_matrix(tmp_path):
     }, "spot-null-open")["promotion_baseline"]
     assert b["open_strategy"] is None and b["open_strategy_present"] is True
 
-    # Args-form with empty open_strategy.name — raw stores empty name, not resolved.
     kwargs = _load("empty_name", {
         "config_version": 15,
         "strategies": [{
@@ -542,7 +485,6 @@ def test_promotion_baseline_presence_matrix(tmp_path):
     assert b["open_strategy"] == {"name": "", "params": {"fast_period": 18}}
     assert kwargs["open_strategy"]["name"] == "sma_crossover"
 
-    # Legacy-only user_close_defaults — canonical absent, legacy present.
     legacy = {
         "trailing_tp_ratchet": {
             "tp_tiers": [
@@ -571,7 +513,6 @@ def test_promotion_baseline_presence_matrix(tmp_path):
 
 
 def test_promotion_baseline_opt_in_spread_contract(tmp_path):
-    """#1386 Finding 1: without the flag, no promotion_baseline key (Backtester-safe)."""
     from run_backtest import load_strategy_config
     path = _write_config(tmp_path, _sma_config())
     kwargs = load_strategy_config(path, "spot-sma-btc")
@@ -583,7 +524,6 @@ def test_promotion_baseline_opt_in_spread_contract(tmp_path):
 
 
 def test_promotion_baseline_deepcopy_no_alias(tmp_path):
-    """#1386: mutating the baseline must not touch other resolution fields."""
     from run_backtest import load_strategy_config
     path = _write_config(tmp_path, _sma_config(
         params={"fast_period": 18, "slow_period": 50}))
@@ -594,7 +534,6 @@ def test_promotion_baseline_deepcopy_no_alias(tmp_path):
     baseline["open_strategy"]["name"] = "mutated"
     assert kwargs["open_strategy"]["params"]["fast_period"] == 18
     assert kwargs["open_strategy"]["name"] == "sma_crossover"
-    # Result-side: tune_strategy also deepcopies via the loader capture.
     res = tl.tune_strategy(path, "spot-sma-btc", "BTC/USDT", "1d", "spot",
                            load_registry("spot"), _make_args(dry_run=True), {},
                            str(tmp_path))
@@ -602,15 +541,10 @@ def test_promotion_baseline_deepcopy_no_alias(tmp_path):
     assert res["baseline_params"]["fast_period"] == 18
 
 
-# ==========================================================================
-# 4. Integration — skip / failure / refusal paths
-# ==========================================================================
-
 def test_dry_run_emits_spec_without_running_stage2(tmp_path, monkeypatch):
     def _boom(*a, **k):
         raise AssertionError("run_stage2 must not run in --dry-run")
     monkeypatch.setattr(tl, "run_stage2", _boom)
-    # load_cached_data must ALSO not be touched in dry-run (no stage 1).
     monkeypatch.setattr(tl, "load_cached_data",
                         lambda *a, **k: (_ for _ in ()).throw(
                             AssertionError("no data fetch in --dry-run")))
@@ -624,8 +558,6 @@ def test_dry_run_emits_spec_without_running_stage2(tmp_path, monkeypatch):
 
 
 def test_stage1_failed_marks_and_fleet_continues(tmp_path, monkeypatch):
-    # walk-forward errors for sma, succeeds for ema → sma is stage1_failed, ema
-    # is ranked, and BOTH appear (the fleet run did not abort).
     monkeypatch.setattr(tl, "load_cached_data", lambda *a, **k: _synthetic_df())
     monkeypatch.setattr(tl, "run_stage2", _canned_stage2)
 
@@ -653,7 +585,6 @@ def test_stage1_failed_marks_and_fleet_continues(tmp_path, monkeypatch):
 
 def test_short_direction_skips_stage1(tmp_path, monkeypatch):
     monkeypatch.setattr(tl, "run_stage2", _canned_stage2)
-    # data must NOT be fetched — stage 1 is skipped for a short strategy.
     monkeypatch.setattr(tl, "load_cached_data",
                         lambda *a, **k: (_ for _ in ()).throw(
                             AssertionError("short skips stage 1 — no data fetch")))
@@ -668,17 +599,11 @@ def test_short_direction_skips_stage1(tmp_path, monkeypatch):
     assert res["status"] == "ranked"
     assert res["stage1"]["ran"] is False
     assert res["stage1"]["skipped_reason"] == "short_direction_long_only_seeder"
-    # full neighborhood became the candidate set
     assert res["n_candidates"] == res["searched_family_size"]
-    # no cross-param-invalid combos in this grid → nothing dropped, no note
     assert not any("constraint-invalid" in n for n in res["notes"])
 
 
 def test_constraint_invalid_combos_dropped_on_skip_path(tmp_path, monkeypatch):
-    # #1343 re-review optional: an operator --param grid sweeping BOTH operands
-    # of fast_period < slow_period on a stage-1-skipped (short) strategy must
-    # not send guaranteed-invalid combos to stage 2, count them in the BH N,
-    # or let them consume --max-candidates.
     monkeypatch.setattr(tl, "run_stage2", _canned_stage2)
     monkeypatch.setattr(tl, "load_cached_data",
                         lambda *a, **k: (_ for _ in ()).throw(
@@ -694,10 +619,7 @@ def test_constraint_invalid_combos_dropped_on_skip_path(tmp_path, monkeypatch):
     res = tl.tune_strategy(path, "hl-sma-short", "BTC/USDT", "1d", "spot",
                            load_registry("spot"), args, {}, str(tmp_path))
     assert res["status"] == "ranked"
-    # 3 of the 6 cartesian combos violate fast_period < slow_period
     assert any("3 constraint-invalid" in n for n in res["notes"])
-    # baseline (18/50) is off the overridden fast axis → +1 extra hypothesis;
-    # N counts only the 3 valid combos, not the cartesian 6
     assert res["searched_family_size"] == 4
     assert res["n_candidates"] == 4
     spec = json.loads((tmp_path / "suggest.hl-sma-short.json").read_text())
@@ -707,9 +629,6 @@ def test_constraint_invalid_combos_dropped_on_skip_path(tmp_path, monkeypatch):
 
 
 def test_constraint_invalid_combos_dropped_from_auto_neighborhood(tmp_path, monkeypatch):
-    # Auto-neighborhood variant: a live baseline whose fast/slow sweeps overlap
-    # (fast up-steps reach the slow down-steps) produces cross-invalid combos;
-    # none may reach stage 2 and the BH N must count only the valid ones.
     monkeypatch.setattr(tl, "run_stage2", _canned_stage2)
     monkeypatch.setattr(tl, "load_cached_data",
                         lambda *a, **k: (_ for _ in ()).throw(
@@ -727,8 +646,6 @@ def test_constraint_invalid_combos_dropped_from_auto_neighborhood(tmp_path, monk
                            {}, str(tmp_path))
     assert res["status"] == "ranked"
     assert any("constraint-invalid" in n for n in res["notes"])
-    # baseline is always on an auto-neighborhood grid and live-valid → no +1,
-    # and every candidate (baseline + valid combos) satisfies the constraint
     assert res["n_candidates"] == res["searched_family_size"]
     spec = json.loads((tmp_path / "suggest.hl-sma-short.json").read_text())
     for c in spec["candidates"]:
@@ -763,8 +680,6 @@ def test_bidirectional_runs_stage1_with_direction_both(tmp_path, monkeypatch):
 
 
 def test_disjoint_slice_no_data_refuses(monkeypatch):
-    # A frame that begins after the earliest stage-2 window start leaves too few
-    # disjoint bars → loud refusal, never a silent overlap.
     small = pd.DataFrame(
         {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 1000.0},
         index=pd.date_range("2025-05-20", "2026-01-01", freq="1D"))
@@ -787,8 +702,6 @@ def test_pre_v15_config_error_status(tmp_path):
 
 
 def test_config_strategy_entries_uses_trade_timeframe_not_regime(tmp_path):
-    # #1338 review finding 1: the strategy trades on args[2] (4h); a global
-    # regime.timeframe (1d) must NOT become the trade interval.
     cfg = {"config_version": 15, "regime": {"enabled": True, "timeframe": "1d"},
            "strategies": [{"id": "s", "type": "spot",
                            "args": ["sma_crossover", "BTC/USDT", "4h"],
@@ -885,8 +798,6 @@ def test_main_explicit_registry_overrides_whole_mixed_run(
 
 
 def test_regime_timeframe_mismatch_skipped_unsupported(tmp_path):
-    # regime enabled with regime.timeframe (1d) != trade tf (4h) → neither stage
-    # can thread a separate regime interval → unsupported, never a tf swap.
     cfg = {"config_version": 15,
            "regime": {"enabled": True, "timeframe": "1d", "period": 14},
            "strategies": [{"id": "hl-sma", "type": "perps", "platform": "hyperliquid",
@@ -902,8 +813,6 @@ def test_regime_timeframe_mismatch_skipped_unsupported(tmp_path):
 
 
 def test_regime_disabled_stale_timeframe_still_supported(tmp_path):
-    # regime.enabled=false with a stale regime.timeframe present must NOT skip —
-    # the trade tf (args[2]) governs and there is no active regime interval.
     cfg = {"config_version": 15,
            "regime": {"enabled": False, "timeframe": "1d"},
            "strategies": [{"id": "s", "type": "spot",
@@ -913,14 +822,11 @@ def test_regime_disabled_stale_timeframe_still_supported(tmp_path):
     res = tl.tune_strategy(path, "s", "BTC/USDT", "4h", "spot",
                            load_registry("spot"), _make_args(dry_run=True), {},
                            str(tmp_path))
-    assert res["status"] == "dry_run"       # not skipped
+    assert res["status"] == "dry_run"
 
 
 @pytest.mark.parametrize("atr_key,atr_val", [("atr_method", "wilder")])
 def test_wilder_atr_method_skipped_unsupported(tmp_path, atr_key, atr_val):
-    # #1338 review finding 3: a wilder-ATR strategy can't be replayed under the
-    # simple-ATR engines — skip rather than tune on the wrong geometry. Set it
-    # globally so no per-strategy override is needed.
     cfg = {"config_version": 15, atr_key: atr_val,
            "strategies": [{"id": "hl-sma", "type": "perps", "platform": "hyperliquid",
                            "args": ["sma_crossover", "BTC/USDT", "1d"],
@@ -934,9 +840,7 @@ def test_wilder_atr_method_skipped_unsupported(tmp_path, atr_key, atr_val):
 
 
 def test_all_failed_fleet_returns_nonzero(tmp_path):
-    # #1338 review (judgment call): a fleet where EVERY strategy fails must exit
-    # non-zero so a scheduler/CI consumer catches a total wipeout.
-    cfg = {"config_version": 13,   # pre-v15 → config_error for both
+    cfg = {"config_version": 13,
            "strategies": [
                {"id": "a", "type": "spot", "args": ["sma_crossover", "BTC/USDT", "1d"],
                 "open_strategy": {"name": "sma_crossover", "params": {}}},
@@ -952,8 +856,6 @@ def test_all_failed_fleet_returns_nonzero(tmp_path):
 
 
 def test_mixed_fleet_with_one_success_returns_zero(tmp_path, monkeypatch):
-    # One good strategy + one failing one → exit 0 (partial success; the artifact
-    # carries the per-strategy statuses).
     monkeypatch.setattr(tl, "load_cached_data", lambda *a, **k: _synthetic_df())
     monkeypatch.setattr(tl, "run_stage2", _canned_stage2)
     cfg = {"config_version": 15, "strategies": [
@@ -973,8 +875,6 @@ def test_mixed_fleet_with_one_success_returns_zero(tmp_path, monkeypatch):
 
 
 def test_all_benign_skip_fleet_returns_zero(tmp_path):
-    # A fleet of only benignly-declined (unsupported) strategies is not a
-    # failure — nothing went wrong, there was just nothing to tune.
     cfg = {"config_version": 15, "strategies": [{
         "id": "hl-sma", "type": "perps", "platform": "hyperliquid",
         "args": ["sma_crossover", "BTC/USDT", "1d"], "stop_loss_pct": 0.05,
@@ -1010,11 +910,6 @@ def test_overrides_unknown_strategy_id_refused(tmp_path):
 
 
 def test_override_grid_counts_toward_searched_family(tmp_path, monkeypatch):
-    # An operator override REPLACES the param's neighborhood and its values are
-    # counted in the searched family N exactly like auto-derived ones. Because
-    # this override EXCLUDES the live value (fast=18, slow=50), the baseline is
-    # an extra candidate not on the grid, so N = grid (6) + 1 baseline = 7
-    # (#1338 review finding 2).
     monkeypatch.setattr(tl, "load_cached_data", lambda *a, **k: _synthetic_df())
     monkeypatch.setattr(tl, "run_stage2", _canned_stage2)
     path = _write_config(tmp_path, _sma_config())
@@ -1022,23 +917,16 @@ def test_override_grid_counts_toward_searched_family(tmp_path, monkeypatch):
     res = tl.tune_strategy(path, "spot-sma-btc", "BTC/USDT", "1d", "spot",
                            load_registry("spot"), args, {}, str(tmp_path))
     assert res["status"] == "ranked"
-    # override grids: fast {10,12,14} x slow {40,60} = 6, + baseline = 7
     assert res["searched_family_size"] == 7
     assert res["neighborhood"]["fast_period"] == [10, 12, 14]
 
 
 def test_family_size_covers_baseline_against_real_bh_guard(tmp_path, monkeypatch):
-    # #1338 review finding 2 regression: a live-EXCLUDING override on a
-    # stage-1-skipped (short) strategy makes the baseline an extra stage-2
-    # candidate. The emitted family_size must cover every candidate so the REAL
-    # auto_suggest BH guard (family_size >= len(pvals)) does not trip. Stage 2 is
-    # stubbed to actually invoke that guard with one p-value per candidate.
     def stage2_with_real_guard(spec_path, out_json, out_dir, jobs):
         spec = json.loads(open(spec_path).read())
         fam = spec["correction"]["family_size"]
         n_cand = len(spec["candidates"])
         assert fam >= n_cand, f"family_size {fam} < candidate count {n_cand}"
-        # one primary p-value per candidate — the worst case; must NOT raise
         auto_suggest.apply_family_correction(
             [{"p": 0.5} for _ in range(n_cand)], 0.05, family_size=fam)
         ranked = [{"key": c["key"], "verdict": "incumbent_stands",
@@ -1053,17 +941,14 @@ def test_family_size_covers_baseline_against_real_bh_guard(tmp_path, monkeypatch
         "open_strategy": {"name": "rsi", "params": {"period": 14}},
     }]}
     path = _write_config(tmp_path, cfg)
-    # override EXCLUDES the live period=14 → baseline is an extra candidate
     args = _make_args(param=["period=10,20,28"])
     res = tl.tune_strategy(path, "hl-rsi-short", "BTC/USDT", "1d", "spot",
                            load_registry("spot"), args, {}, str(tmp_path))
-    assert res["status"] == "ranked"        # did not die on the BH guard
+    assert res["status"] == "ranked"
     assert res["searched_family_size"] >= res["n_candidates"]
 
 
 def test_too_many_candidates_refused(tmp_path):
-    # A wide override grid past the cap is refused loudly (never silently
-    # truncated) — the operator is told to narrow.
     path = _write_config(tmp_path, _sma_config())
     args = _make_args(dry_run=True, max_candidates=3,
                       param=["fast_period=10,15,20,25", "slow_period=40,50,60,80"])

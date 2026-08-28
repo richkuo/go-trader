@@ -257,9 +257,6 @@ def test_tp_at_pct_position_aware_close_handles_missing_and_hit():
 
 
 def test_evaluate_open_close_injects_avwap_from_open_result():
-    # #1196: the open strategy's `avwap` column (last bar) is exposed to close
-    # evaluators as market["avwap"] so avwap_stop exits against the same line
-    # the entry was built on.
     captured = []
     df = pd.DataFrame({"close": [100, 106]})
 
@@ -290,7 +287,6 @@ def test_evaluate_open_close_injects_avwap_from_open_result():
         market_ctx=caller_market,
     )
     assert captured == [{"mark_price": 106, "avwap": 101.5}]
-    # The caller's market_ctx dict is never mutated.
     assert caller_market == {"mark_price": 106}
 
 
@@ -331,11 +327,6 @@ def test_evaluate_open_close_skips_avwap_when_nan_or_absent():
     )
     assert captured == [{"mark_price": 106}, {"mark_price": 106}]
 
-
-# --------------------------------------------------------------------------
-# #1196 review: warn once when avwap_stop is configured but no usable avwap
-# context is ever produced by the open strategy (the exit can never fire).
-# --------------------------------------------------------------------------
 
 _AVWAP_WARN_MARK = "avwap_stop"
 
@@ -409,11 +400,9 @@ def test_reject_backtest_only_strategies_validates_and_refuses():
             return {"backtest_only": True}
         raise ValueError(f"Unknown strategy: {name}")
 
-    # Existence validation is preserved for normal entries…
     reject_backtest_only_strategies(["normal"], get_strategy)
     with pytest.raises(ValueError, match="Unknown strategy: missing"):
         reject_backtest_only_strategies(["missing"], get_strategy)
-    # …and a backtest_only entry fails closed on the live path (#1138).
     with pytest.raises(ValueError, match="backtest_only"):
         reject_backtest_only_strategies(["normal", "research"], get_strategy)
 
@@ -429,8 +418,6 @@ def test_validate_close_strategy_names_rejects_backtest_only_open_fallback():
     def get_close_strategy(name):
         raise ValueError("close missing")
 
-    # The open-as-close fallback is a live path — backtest_only entries are
-    # refused there too (#1138), with the same loud ValueError.
     with pytest.raises(ValueError, match="backtest_only"):
         validate_close_strategy_names(
             ["research_open"], get_open_strategy, get_close_strategy

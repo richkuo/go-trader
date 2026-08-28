@@ -8,9 +8,6 @@ import (
 	"time"
 )
 
-// #1411 Hurst entry gate + persistence-scaled sizing.
-
-// hfp is a local float64-pointer helper (risk_sizing_test.go owns `fp`).
 func hfp(v float64) *float64 { return &v }
 
 func hurstTestRegimeConfig(classifier string) *RegimeConfig {
@@ -35,10 +32,6 @@ func hurstStrategy(hg *HurstGateConfig) StrategyConfig {
 	return StrategyConfig{ID: "s1", Type: "perps", Platform: "hyperliquid", HurstGate: hg}
 }
 
-// ---------------------------------------------------------------------------
-// Accessor precedence (#1278 mirror)
-// ---------------------------------------------------------------------------
-
 func TestResolveHurstGateOnFailurePrecedence(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -61,7 +54,6 @@ func TestResolveHurstGateOnFailurePrecedence(t *testing.T) {
 			}
 		})
 	}
-	// No block at all still resolves, and never panics on a nil regime config.
 	if got := resolveHurstGateOnFailure(StrategyConfig{ID: "x"}, nil); got != HurstGateOnFailureOpen {
 		t.Fatalf("nil config: got %q want open", got)
 	}
@@ -83,33 +75,24 @@ func TestResolveHurstGateWindowFallsBackToGateWindow(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// State machine
-// ---------------------------------------------------------------------------
-
 func TestHurstStateMachineHysteresisMinOnly(t *testing.T) {
 	hg := &HurstGateConfig{Enabled: true, Min: hfp(0.55), DisarmMin: hfp(0.50)}
-	// unknown -> below arm band -> disarmed
 	st := advanceHurstState(hg, hurstGateStateUnknown, 0.40, true)
 	if st != hurstGateStateDisarmed {
 		t.Fatalf("first reading below min should disarm, got %q", st)
 	}
-	// disarmed stays disarmed inside the hysteresis gap (>= disarm, < arm)
 	st = advanceHurstState(hg, st, 0.52, true)
 	if st != hurstGateStateDisarmed {
 		t.Fatalf("0.52 is inside the gap and must not re-arm, got %q", st)
 	}
-	// crossing the arm bound re-arms
 	st = advanceHurstState(hg, st, 0.55, true)
 	if st != hurstGateStateArmed {
 		t.Fatalf("H at the arm bound should arm, got %q", st)
 	}
-	// armed survives a dip into the gap — this is the whole point of hysteresis
 	st = advanceHurstState(hg, st, 0.51, true)
 	if st != hurstGateStateArmed {
 		t.Fatalf("armed must survive a dip above disarm_min, got %q", st)
 	}
-	// crossing the disarm bound disarms
 	st = advanceHurstState(hg, st, 0.4999, true)
 	if st != hurstGateStateDisarmed {
 		t.Fatalf("below disarm_min should disarm, got %q", st)
@@ -181,8 +164,6 @@ func TestHurstStateMachineAbsentHNeverTransitions(t *testing.T) {
 	}
 }
 
-// The metric is not bounded to (0,1) — DFA reads ~2.0 on a smooth ramp — so the
-// machine must stay coherent above 1.
 func TestHurstStateMachineHandlesReadingsAboveOne(t *testing.T) {
 	minOnly := &HurstGateConfig{Enabled: true, Min: hfp(0.55)}
 	if got := advanceHurstState(minOnly, hurstGateStateUnknown, 2.0033, true); got != hurstGateStateArmed {
@@ -193,10 +174,6 @@ func TestHurstStateMachineHandlesReadingsAboveOne(t *testing.T) {
 		t.Fatalf("H=2.0033 is above max and must disarm a mean-reversion gate, got %q", got)
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Threshold key
-// ---------------------------------------------------------------------------
 
 func TestHurstThresholdKeyChangesWithEveryBoundAndWindow(t *testing.T) {
 	base := &HurstGateConfig{Enabled: true, Min: hfp(0.55), Max: hfp(0.80), DisarmMin: hfp(0.50), DisarmMax: hfp(0.85)}
@@ -222,7 +199,6 @@ func TestHurstThresholdKeyChangesWithEveryBoundAndWindow(t *testing.T) {
 	if hurstGateThresholdKey(base, "long") == baseKey {
 		t.Fatal("changing the window must change the threshold key")
 	}
-	// mode/on_failure/size_floor alter the decision, never the state series.
 	withMode := *base
 	withMode.Mode = HurstGateModeGate
 	withMode.OnFailure = "closed"
@@ -235,7 +211,6 @@ func TestHurstThresholdKeyChangesWithEveryBoundAndWindow(t *testing.T) {
 func TestHurstThresholdChangeDiscardsPersistedLatch(t *testing.T) {
 	rc := hurstTestRegimeConfig(regimeClassifierComposite)
 	sc := hurstStrategy(&HurstGateConfig{Enabled: true, Min: hfp(0.55)})
-	// A stale latch that says "disarmed" under a DIFFERENT threshold tuple.
 	prior := HurstGateState{Key: "stale-key", State: hurstGateStateDisarmed, Observed: true}
 	d := evaluateHurstGate(sc, hurstPayload("medium", 0.60, true), rc, prior, 0)
 	if d.State != hurstGateStateArmed {
@@ -244,7 +219,6 @@ func TestHurstThresholdChangeDiscardsPersistedLatch(t *testing.T) {
 	if d.Holds {
 		t.Fatal("an in-band reading under fresh thresholds must not hold")
 	}
-	// Same key: the latch IS honored.
 	prior.Key = d.Key
 	prior.State = hurstGateStateDisarmed
 	d2 := evaluateHurstGate(sc, hurstPayload("medium", 0.52, true), rc, prior, 0)
@@ -252,10 +226,6 @@ func TestHurstThresholdChangeDiscardsPersistedLatch(t *testing.T) {
 		t.Fatalf("matching key must honor the disarmed latch, got state=%q holds=%v", d2.State, d2.Holds)
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Decision: gate mode
-// ---------------------------------------------------------------------------
 
 func TestEvaluateHurstGateDisabledIsInert(t *testing.T) {
 	rc := hurstTestRegimeConfig(regimeClassifierComposite)
@@ -282,12 +252,10 @@ func TestEvaluateHurstGateFailClosedIsFlatOnly(t *testing.T) {
 	if !flat.Holds {
 		t.Fatal("fail-closed with unknown H must hold a FRESH open")
 	}
-	// The inverse case: an OPEN position is management, never held.
 	open := evaluateHurstGate(sc, absent, rc, HurstGateState{}, 1.5)
 	if open.Holds {
 		t.Fatal("fail-closed must never hold while a position is open (posQty>0 management)")
 	}
-	// And fail-open admits in both.
 	scOpen := hurstStrategy(&HurstGateConfig{Enabled: true, Min: hfp(0.55), OnFailure: "open"})
 	for _, qty := range []float64{0, 1.5} {
 		if evaluateHurstGate(scOpen, absent, rc, HurstGateState{}, qty).Holds {
@@ -299,9 +267,6 @@ func TestEvaluateHurstGateFailClosedIsFlatOnly(t *testing.T) {
 func TestEvaluateHurstGateKnownDisarmedHoldsRegardlessOfPosition(t *testing.T) {
 	rc := hurstTestRegimeConfig(regimeClassifierComposite)
 	sc := hurstStrategy(&HurstGateConfig{Enabled: true, Min: hfp(0.55)})
-	// A KNOWN out-of-band reading holds even with a position open: the
-	// dispatch-site pausedBlocksSignal is what scopes it to adds and flips,
-	// letting closes through. This is deliberately NOT flat-only.
 	d := evaluateHurstGate(sc, hurstPayload("medium", 0.20, true), rc, HurstGateState{}, 3.0)
 	if !d.Holds {
 		t.Fatal("a known out-of-band reading must hold position-increasing signals even while open")
@@ -314,7 +279,6 @@ func TestEvaluateHurstGateKnownDisarmedHoldsRegardlessOfPosition(t *testing.T) {
 func TestEvaluateHurstGateWrongWindowYieldsUnknownH(t *testing.T) {
 	rc := hurstTestRegimeConfig(regimeClassifierComposite)
 	sc := hurstStrategy(&HurstGateConfig{Enabled: true, Min: hfp(0.55), WindowKey: "long", OnFailure: "closed"})
-	// Payload carries only "medium"; the gate reads "long".
 	d := evaluateHurstGate(sc, hurstPayload("medium", 0.90, true), rc, HurstGateState{}, 0)
 	if d.HKnown {
 		t.Fatal("reading the wrong window must not pick up another window's hurst")
@@ -333,28 +297,23 @@ func TestHurstFromPayloadRejectsNonFinite(t *testing.T) {
 			t.Fatalf("non-finite %v must read as unknown", v)
 		}
 	}
-	// A legacy (non-multi-window) payload can never carry a hurst metric.
 	if _, ok := hurstFromPayload(RegimePayload{Legacy: "trending_up"}, "medium"); ok {
 		t.Fatal("legacy single-label payload must read as unknown")
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Decision: size mode
-// ---------------------------------------------------------------------------
-
 func TestHurstSizeMultiplierFormulaAndClamps(t *testing.T) {
 	cases := []struct {
 		h, floor, want float64
 	}{
-		{0.500, 0.25, 0.25},  // no persistence -> floor
-		{0.5375, 0.25, 0.25}, // |e|=0.0375 -> 0.25 exactly at the floor
-		{0.575, 0.25, 0.5},   // |e|=0.075 -> 0.5
-		{0.65, 0.25, 1.0},    // |e|=0.15 -> full size
-		{0.80, 0.25, 1.0},    // beyond the span still clamps at 1.0
-		{0.35, 0.25, 1.0},    // symmetric on the mean-reverting side
-		{2.0033, 0.25, 1.0},  // above-1 reading clamps, never exceeds 1
-		{0.50, 0.9, 0.9},     // custom floor honored
+		{0.500, 0.25, 0.25},
+		{0.5375, 0.25, 0.25},
+		{0.575, 0.25, 0.5},
+		{0.65, 0.25, 1.0},
+		{0.80, 0.25, 1.0},
+		{0.35, 0.25, 1.0},
+		{2.0033, 0.25, 1.0},
+		{0.50, 0.9, 0.9},
 		{0.625, hurstDefaultSizeFloor, 0.8333333333333334},
 	}
 	for _, tc := range cases {
@@ -381,7 +340,6 @@ func TestEvaluateHurstGateSizeModeNeverHoldsOnKnownH(t *testing.T) {
 	if math.Abs(d.OpenSizeMult()-0.3) > 1e-9 {
 		t.Fatalf("H=0.5 should size at the floor, got %v", d.OpenSizeMult())
 	}
-	// Absent H + fail-closed still holds, flat-only.
 	absent := evaluateHurstGate(sc, hurstPayload("medium", 0, false), rc, HurstGateState{}, 0)
 	if !absent.Holds {
 		t.Fatal("size mode with unknown H under fail-closed must hold a fresh open")
@@ -393,7 +351,6 @@ func TestEvaluateHurstGateSizeModeNeverHoldsOnKnownH(t *testing.T) {
 	if openPos.Holds {
 		t.Fatal("size-mode fail-closed must be flat-only too")
 	}
-	// Fail-open with unknown H sizes neutrally.
 	scOpen := hurstStrategy(&HurstGateConfig{Enabled: true, Mode: HurstGateModeSize})
 	neutral := evaluateHurstGate(scOpen, hurstPayload("medium", 0, false), rc, HurstGateState{}, 0)
 	if neutral.Holds || neutral.OpenSizeMult() != 1.0 {
@@ -419,13 +376,7 @@ func TestOpenSizeMultRejectsOutOfRangeValues(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Hold classification through pausedBlocksSignal (the dispatch-site contract)
-// ---------------------------------------------------------------------------
-
 func TestHurstHoldOnlyBlocksPositionIncreasingSignals(t *testing.T) {
-	// Mirrors the six dispatch sites: hold fires only when the gate holds AND
-	// pausedBlocksSignal classifies the signal as position-increasing.
 	blocked := func(signal int, closeFraction, posQty float64, posSide string, allowsLong, allowsShort bool) bool {
 		return pausedBlocksSignal(signal, closeFraction, posQty, posSide, allowsLong, allowsShort)
 	}
@@ -455,17 +406,12 @@ func TestHurstHoldOnlyBlocksPositionIncreasingSignals(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// advanceHurstGate: locking wrapper + persistence handoff
-// ---------------------------------------------------------------------------
-
 func TestAdvanceHurstGateCommitsStateEveryCycleIncludingManageCycles(t *testing.T) {
 	rc := hurstTestRegimeConfig(regimeClassifierComposite)
 	sc := hurstStrategy(&HurstGateConfig{Enabled: true, Min: hfp(0.55), DisarmMin: hfp(0.50)})
 	st := &StrategyState{ID: "s1", Positions: map[string]*Position{}}
 	var mu sync.RWMutex
 
-	// Cycle 1: in band -> armed.
 	d := advanceHurstGate(sc, hurstPayload("medium", 0.60, true), rc, st, &mu, 0)
 	if d.State != hurstGateStateArmed || st.HurstGate.State != hurstGateStateArmed {
 		t.Fatalf("cycle 1: decision=%q persisted=%q", d.State, st.HurstGate.State)
@@ -473,17 +419,14 @@ func TestAdvanceHurstGateCommitsStateEveryCycleIncludingManageCycles(t *testing.
 	if !st.HurstGate.Observed || st.HurstGate.LastH != 0.60 {
 		t.Fatalf("expected the reading to be recorded, got %+v", st.HurstGate)
 	}
-	// Cycle 2: drop below disarm -> disarmed, and the latch persists.
 	d = advanceHurstGate(sc, hurstPayload("medium", 0.30, true), rc, st, &mu, 0)
 	if d.State != hurstGateStateDisarmed || st.HurstGate.State != hurstGateStateDisarmed {
 		t.Fatalf("cycle 2: decision=%q persisted=%q", d.State, st.HurstGate.State)
 	}
-	// Cycle 3: H unavailable — state must not move, last reading preserved.
 	d = advanceHurstGate(sc, hurstPayload("medium", 0, false), rc, st, &mu, 0)
 	if d.State != hurstGateStateDisarmed || st.HurstGate.LastH != 0.30 {
 		t.Fatalf("absent H must hold state and last reading, got %+v", st.HurstGate)
 	}
-	// A disabled gate never writes state.
 	scOff := hurstStrategy(nil)
 	before := st.HurstGate
 	advanceHurstGate(scOff, hurstPayload("medium", 0.9, true), rc, st, &mu, 0)
@@ -505,7 +448,6 @@ func TestHurstGateStateJSONRoundTrip(t *testing.T) {
 	if marshalHurstGateStateJSON(HurstGateState{}) != "" {
 		t.Fatal("an empty latch must persist as an empty column value")
 	}
-	// Garbage and unknown states degrade to unknown, never to a fabricated latch.
 	for _, raw := range []string{"", "   ", "not json", `{"state":"bogus","key":"k"}`} {
 		got := unmarshalHurstGateStateJSON(raw)
 		if got.State != hurstGateStateUnknown {
@@ -514,10 +456,6 @@ func TestHurstGateStateJSONRoundTrip(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Sizing composition
-// ---------------------------------------------------------------------------
-
 func TestPerpsOpenNotionalSizedAppliesEntryMultInNotionalMode(t *testing.T) {
 	sizing := PerpsSizing{SizingLeverage: 2, ExchangeLeverage: 5}
 	full := PerpsOpenNotionalSized(1000, 100, sizing)
@@ -525,21 +463,18 @@ func TestPerpsOpenNotionalSizedAppliesEntryMultInNotionalMode(t *testing.T) {
 	if math.Abs(half-full*0.5) > 1e-9 {
 		t.Fatalf("multiplier should halve notional: full=%v scaled=%v", full, half)
 	}
-	// Unset multiplier is byte-identical to pre-#1411 behavior.
 	if PerpsOpenNotionalSized(1000, 100, sizing) != PerpsOpenNotional(1000, 2, 5, 0) {
 		t.Fatal("zero-value EntrySizeMult must be a no-op")
 	}
 }
 
 func TestPerpsOpenNotionalSizedComposesWithRiskPerTradePct(t *testing.T) {
-	// risk mode: effective risk scales with the multiplier.
 	sizing := PerpsSizing{RiskPerTradePct: 1, RiskStopDistance: 5, ExchangeLeverage: 10}
 	full := PerpsOpenNotionalSized(10000, 100, sizing)
 	scaled := PerpsOpenNotionalSized(10000, 100, withEntrySizeMult(sizing, 0.4))
 	if math.Abs(scaled-full*0.4) > 1e-9 {
 		t.Fatalf("risk-mode notional should scale linearly: full=%v scaled=%v", full, scaled)
 	}
-	// The exchange-leverage cap still binds, and scaling stays under it.
 	tight := PerpsSizing{RiskPerTradePct: 5, RiskStopDistance: 0.01, ExchangeLeverage: 3}
 	capped := PerpsOpenNotionalSized(1000, 100, tight)
 	if math.Abs(capped-1000*3) > 1e-9 {
@@ -587,9 +522,6 @@ func TestSpotPaperOpenScalesWithMultiplierAndClosesDoNot(t *testing.T) {
 	if _, err := ExecuteSpotSignalWithFillFeeSizedDeferredOpen(scaled, 1, "BTC/USD", 100, 0, 0, "", 0, 0.5, logger); err != nil {
 		t.Fatal(err)
 	}
-	// Compare committed NOTIONAL, not quantity: ApplySlippage randomizes the
-	// fill price per call, so quantity carries that noise while
-	// qty x avgCost is exactly the budget the multiplier scaled.
 	fullPos, scaledPos := full.Positions["BTC/USD"], scaled.Positions["BTC/USD"]
 	fn := fullPos.Quantity * fullPos.AvgCost
 	sn := scaledPos.Quantity * scaledPos.AvgCost
@@ -599,7 +531,6 @@ func TestSpotPaperOpenScalesWithMultiplierAndClosesDoNot(t *testing.T) {
 	if math.Abs(sn-500) > 1e-6 {
 		t.Fatalf("half multiplier should commit half the budget: got %v want 500", sn)
 	}
-	// The close leg is never scaled: it must exit the whole position.
 	if _, err := ExecuteSpotSignalWithFillFeeSizedDeferredOpen(scaled, -1, "BTC/USD", 110, 0, 0, "", 0, 0.5, logger); err != nil {
 		t.Fatal(err)
 	}
@@ -612,13 +543,10 @@ func TestFuturesPaperOpenFloorsToZeroAndRefuses(t *testing.T) {
 	logger := silentStrategyLogger("fut-hurst")
 	spec := ContractSpec{Margin: 400, Multiplier: 1}
 	s := &StrategyState{ID: "fut-hurst", Type: "futures", Cash: 1000, Positions: map[string]*Position{}, TradeHistory: []Trade{}}
-	// 1000/400 = 2 contracts unscaled.
 	res, err := ExecuteFuturesSignalWithFillFeeSizedDeferredOpen(s, 1, "ES", 100, spec, 1, 0, 0, 0, "", 0, 1.0, logger)
 	if err != nil || res.TradesExecuted != 1 || s.Positions["ES"].Quantity != 2 {
 		t.Fatalf("expected 2 contracts, got %+v err=%v", s.Positions["ES"], err)
 	}
-	// 0.3 x 1000/400 = 0.75 -> floors to 0 -> the open is REFUSED, never
-	// rounded up to 1.
 	s2 := &StrategyState{ID: "fut-hurst", Type: "futures", Cash: 1000, Positions: map[string]*Position{}, TradeHistory: []Trade{}}
 	res2, err := ExecuteFuturesSignalWithFillFeeSizedDeferredOpen(s2, 1, "ES", 100, spec, 1, 0, 0, 0, "", 0, 0.3, logger)
 	if err != nil {
@@ -632,10 +560,6 @@ func TestFuturesPaperOpenFloorsToZeroAndRefuses(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Open-time diagnostics stamp
-// ---------------------------------------------------------------------------
-
 func TestStampHurstGateAtOpenIfOpened(t *testing.T) {
 	newState := func() *StrategyState {
 		return &StrategyState{ID: "s1", Positions: map[string]*Position{"BTC": {Symbol: "BTC", Quantity: 1}}}
@@ -646,14 +570,12 @@ func TestStampHurstGateAtOpenIfOpened(t *testing.T) {
 	if s.Positions["BTC"].HurstAtOpen != 0.62 || s.Positions["BTC"].HurstSizeMult != 0.8 {
 		t.Fatalf("size mode should stamp both, got %+v", s.Positions["BTC"])
 	}
-	// Gate mode stamps H only — there is no multiplier to attribute.
 	gated := HurstGateDecision{Active: true, Mode: HurstGateModeGate, H: 0.62, HKnown: true, SizeMult: 1.0}
 	s = newState()
 	stampHurstGateAtOpenIfOpened(s, "BTC", true, gated)
 	if s.Positions["BTC"].HurstAtOpen != 0.62 || s.Positions["BTC"].HurstSizeMult != 0 {
 		t.Fatalf("gate mode should stamp H only, got %+v", s.Positions["BTC"])
 	}
-	// Not an open, gate inactive, or H unknown -> nothing stamped.
 	s = newState()
 	stampHurstGateAtOpenIfOpened(s, "BTC", false, sized)
 	stampHurstGateAtOpenIfOpened(s, "BTC", true, HurstGateDecision{})
@@ -682,11 +604,9 @@ func TestCaptureTradeDiagnosticsCarriesHurstAndNeverWritesLLMVerdict(t *testing.
 	if captured.HurstSizeMult == nil || *captured.HurstSizeMult != 0.75 {
 		t.Fatalf("hurst_size_mult not carried: %+v", captured.HurstSizeMult)
 	}
-	// #1147 sole-writer invariant: this path never sets llm_verdict.
 	if captured.LLMVerdict != nil {
 		t.Fatalf("the hurst stamp path must never write llm_verdict, got %v", *captured.LLMVerdict)
 	}
-	// Unstamped position -> both columns stay NULL.
 	captured = nil
 	captureTradeDiagnostics(s, &Position{Symbol: "ETH", Side: "long", AvgCost: 10, Quantity: 1}, 11, 1, "signal_close", time.Now().UTC())
 	if captured.HurstAtOpen != nil || captured.HurstSizeMult != nil {
@@ -694,16 +614,9 @@ func TestCaptureTradeDiagnosticsCarriesHurstAndNeverWritesLLMVerdict(t *testing.
 	}
 }
 
-// The 0-as-unstamped sentinel rests ONLY on the lower bound: a real H is always
-// > 0, and the multiplier is clamped into [size_floor, 1.0]. It does NOT rest on
-// an upper bound — the runtime metric is not capped at 1 (RANGE NOTE in
-// hurst_gate.go: DFA reads ~2.0 on a near-smooth series). This pins the whole
-// stamp -> position -> diagnostics -> SQLite path against a future edit that
-// "tightens" any of these columns to (0, 1) on the strength of a comment.
 func TestHurstStampsAcceptReadingsAboveOne(t *testing.T) {
 	const aboveOne = 2.0033
 
-	// (1) The open-time stamp stores a >1 reading verbatim.
 	s := &StrategyState{ID: "s1", Positions: map[string]*Position{"BTC": {Symbol: "BTC", Quantity: 1}}}
 	stampHurstGateAtOpenIfOpened(s, "BTC", true, HurstGateDecision{
 		Active: true, Mode: HurstGateModeGate, H: aboveOne, HKnown: true, SizeMult: 1.0,
@@ -712,7 +625,6 @@ func TestHurstStampsAcceptReadingsAboveOne(t *testing.T) {
 		t.Fatalf("a >1 reading must stamp verbatim, got %v", got)
 	}
 
-	// (2) It copies through to the diagnostics row rather than dropping to NULL.
 	var captured *TradeDiagnosticsRow
 	prevRecorder, prevEnqueue := tradeDiagnosticsRecorder, tradeDiagnosticsEnqueue
 	tradeDiagnosticsRecorder = func(row *TradeDiagnosticsRow) error { captured = row; return nil }
@@ -723,7 +635,6 @@ func TestHurstStampsAcceptReadingsAboveOne(t *testing.T) {
 		t.Fatalf("a >1 hurst_at_open must reach trade_diagnostics unchanged, got %+v", captured)
 	}
 
-	// (3) It survives the SQLite round trip — no CHECK, no clamp.
 	db := openTestDB(t)
 	state := &AppState{Strategies: map[string]*StrategyState{
 		"s1": {
@@ -746,17 +657,12 @@ func TestHurstStampsAcceptReadingsAboveOne(t *testing.T) {
 		t.Fatalf("a >1 hurst_at_open must survive a restart, got %v", got)
 	}
 
-	// (4) The lower-bound half of the sentinel still holds: 0 means unstamped.
 	captured = nil
 	captureTradeDiagnostics(s, &Position{Symbol: "ETH", Side: "long", AvgCost: 10, Quantity: 1}, 11, 1, "signal_close", time.Now().UTC())
 	if captured.HurstAtOpen != nil || captured.HurstSizeMult != nil {
 		t.Fatal("0 must still read as unstamped")
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Status marker (display-only)
-// ---------------------------------------------------------------------------
 
 func TestHurstGateStatusMarker(t *testing.T) {
 	cases := []struct {
@@ -779,10 +685,6 @@ func TestHurstGateStatusMarker(t *testing.T) {
 		})
 	}
 }
-
-// ---------------------------------------------------------------------------
-// SQLite persistence (#1411)
-// ---------------------------------------------------------------------------
 
 func TestHurstGateLatchSurvivesRestart(t *testing.T) {
 	db := openTestDB(t)
@@ -810,7 +712,6 @@ func TestHurstGateLatchDiscardedWhenThresholdsChange(t *testing.T) {
 	db := openTestDB(t)
 	rc := hurstTestRegimeConfig(regimeClassifierComposite)
 	sc := hurstStrategy(&HurstGateConfig{Enabled: true, Min: hfp(0.55)})
-	// Persist a disarmed latch stamped under the ORIGINAL thresholds.
 	origKey := hurstGateThresholdKey(sc.HurstGate, resolveHurstGateWindow(sc, rc))
 	state := &AppState{Strategies: map[string]*StrategyState{
 		"s1": {
@@ -828,15 +729,11 @@ func TestHurstGateLatchDiscardedWhenThresholdsChange(t *testing.T) {
 	}
 	ss := loaded.Strategies["s1"]
 
-	// Restart under the SAME thresholds: the latch is honored, so an in-gap
-	// reading keeps the gate disarmed.
 	same := advanceHurstGate(sc, hurstPayload("medium", 0.50, true), rc, ss, new(sync.RWMutex), 0)
 	if same.State != hurstGateStateDisarmed || !same.Holds {
 		t.Fatalf("unchanged thresholds must honor the persisted latch, got %+v", same)
 	}
 
-	// Now the operator widens the band. The stored latch was produced under a
-	// different tuple, so it is DISCARDED — never reinterpreted.
 	ss.HurstGate = HurstGateState{Key: origKey, State: hurstGateStateDisarmed, LastH: 0.20, Observed: true}
 	edited := hurstStrategy(&HurstGateConfig{Enabled: true, Min: hfp(0.45)})
 	after := advanceHurstGate(edited, hurstPayload("medium", 0.50, true), rc, ss, new(sync.RWMutex), 0)
@@ -874,8 +771,6 @@ func TestPositionHurstStampsPersist(t *testing.T) {
 }
 
 func TestHurstMigrationsAreIdempotent(t *testing.T) {
-	// Re-opening an existing DB re-runs the migration list; the ADD COLUMN
-	// statements must tolerate the columns already existing.
 	path := t.TempDir() + "/state.db"
 	for i := 0; i < 3; i++ {
 		db, err := OpenStateDB(path)

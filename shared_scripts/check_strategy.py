@@ -1,15 +1,4 @@
 #!/usr/bin/env python3
-"""
-Stateless spot strategy check script.
-Fetches data, runs strategy, outputs JSON to stdout, exits.
-
-Usage: python3 check_strategy.py <strategy> <symbol> <timeframe> [symbol_b]
-
-  symbol_b  Optional second asset symbol for pairs_spread (e.g. ETH/USDT).
-            When provided, close prices of symbol_b are merged into the
-            dataframe as the 'close_b' column so the strategy runs proper
-            stat-arb.  Without it, pairs_spread degrades to self-mean-reversion.
-"""
 
 import sys
 import os
@@ -18,7 +7,6 @@ import math
 import traceback
 from datetime import datetime, timezone
 
-# Add parent dirs to path so we can import from strategies/ and core/
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strategies', 'open', 'spot'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
@@ -69,23 +57,14 @@ def _position_ctx(position_side):
 
 
 def main():
-    # #645: startup compatibility probe — exit 0 without running the strategy.
     if "--probe-only" in sys.argv:
         sys.exit(0)
-    # Parse optional flags from argv before positional args
     htf_filter_enabled = "--htf-filter" in sys.argv
     regime_enabled = "--regime-enabled" in sys.argv
     regime_windows_spec = parse_regime_windows_spec_json(_arg_value("--regime-windows-spec-json"))
     ohlcv_limit = int(_arg_value("--ohlcv-limit") or 200)
     regime_atr_window = (_arg_value("--regime-atr-window") or "").strip()
-    # #879: precomputed global-store regime payload; presence (even empty)
-    # disables inline regime computation. None when the flag is absent.
     regime_payload_json = _arg_value("--regime-payload-json")
-    # #1277: ATR smoothing method for the standard_atr surface (EntryATR
-    # stamping + market_ctx["atr"]). Forwarded by Go from the resolved
-    # atr_method config; "simple" is the frozen legacy default. Fails loud on
-    # an unknown value — ATR feeds live stop geometry, so a vocabulary
-    # mismatch must never silently degrade to a default.
     atr_method = (_arg_value("--atr-method") or "simple").strip().lower()
     if atr_method not in ("simple", "wilder"):
         print(json.dumps({
@@ -101,7 +80,6 @@ def main():
         idx = sys.argv.index("--params")
         if idx + 1 < len(sys.argv):
             strategy_params = json.loads(sys.argv[idx + 1])
-    # #640: --strategy-refs JSON supersedes --params/--open-strategy/--close-strategies.
     close_params_by_name = None
     strategy_refs_raw = _arg_value("--strategy-refs")
     if strategy_refs_raw:
@@ -114,7 +92,6 @@ def main():
             strategy_params = refs["open_params"]
             close_params_by_name = refs["close_params_by_name"]
     open_close_enabled = bool(open_strategy or close_strategies_raw)
-    # Filter out --flag and --params <value> (skip the arg after --params)
     filtered = []
     skip_next = False
     for a in sys.argv[1:]:
@@ -175,7 +152,6 @@ def main():
             list_close_strategies,
         )
 
-        # Warn when pairs_spread will degrade due to missing secondary symbol
         needs_pair = "pairs_spread" in configured_names
         if needs_pair and not symbol_b:
             print(
@@ -185,11 +161,9 @@ def main():
                 file=sys.stderr,
             )
 
-        # Fetch primary data
         print(f"Fetching {symbol} {timeframe}...", file=sys.stderr)
         df = fetch_ohlcv(symbol=symbol, timeframe=timeframe, limit=ohlcv_limit, store=False)
 
-        # Fetch and merge secondary data for pairs strategies
         if needs_pair and symbol_b:
             print(f"Fetching secondary {symbol_b} {timeframe}...", file=sys.stderr)
             df_b = fetch_ohlcv(symbol=symbol_b, timeframe=timeframe, limit=ohlcv_limit, store=False)
@@ -205,7 +179,6 @@ def main():
                     "error": f"No data returned for secondary symbol {symbol_b}",
                 }))
                 sys.exit(1)
-            # Inner join on datetime index so both assets have the same timestamps
             df = df.join(df_b[["close"]].rename(columns={"close": "close_b"}), how="inner")
             print(f"Merged pair: {len(df)} aligned candles ({symbol} / {symbol_b})", file=sys.stderr)
 
@@ -239,7 +212,6 @@ def main():
             atr_now = latest_atr(df, method=atr_method)
             if atr_now > 0:
                 market_ctx["atr"] = atr_now
-            # #733: live regime label for tiered_tp_atr_live_regime evaluator.
             if live_regime:
                 market_ctx["regime"] = live_regime
             evaluation = evaluate_open_close(
@@ -259,16 +231,13 @@ def main():
             result_df = evaluation.open_result_df
             signal = evaluation.open_signal
         else:
-            # Run the strategy
             result_df = apply_strategy(strategy_name, df, strategy_params)
             signal = normalize_signal(result_df.iloc[-1].get("signal", 0))
 
-        # Get the last row's signal
         ensure_atr_indicator(result_df, method=atr_method)
         last = result_df.iloc[-1]
         price = float(last["close"])
 
-        # Apply HTF trend filter if enabled (skip for funding-rate strategies — #103)
         htf_info = {}
         htf_strategy_name = open_strategy or strategy_name
         if htf_filter_enabled and htf_strategy_name != "delta_neutral_funding":
@@ -287,7 +256,6 @@ def main():
             decision = finalize_decision(evaluation, position_side, signal)
             signal = decision["signal"]
 
-        # Collect relevant indicators
         indicators = {}
         indicator_cols = [c for c in result_df.columns
                          if c not in ("open", "high", "low", "close", "close_b", "volume",
@@ -302,7 +270,6 @@ def main():
                 except (ValueError, TypeError):
                     pass
 
-        # Merge HTF indicators
         if htf_info:
             for k, v in htf_info.items():
                 if isinstance(v, (int, float)):
@@ -335,7 +302,7 @@ def main():
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "error": str(e)
         }))
-        sys.exit(1)  # Exit 1; Go will still parse the JSON error field
+        sys.exit(1)
 
 
 if __name__ == "__main__":

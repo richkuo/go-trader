@@ -7,9 +7,6 @@ import (
 	"testing"
 )
 
-// composite7StateATR builds a trend_regime raw map covering all 7 composite
-// labels with the given ATR multiplier (close_fraction omitted — SL/trailing
-// surfaces).
 func composite7StateATR(atr float64) map[string]interface{} {
 	labels := regimeLabelsForClassifier(regimeClassifierComposite)
 	tr := make(map[string]interface{}, len(labels))
@@ -19,8 +16,6 @@ func composite7StateATR(atr float64) map[string]interface{} {
 	return map[string]interface{}{"trend_regime": tr}
 }
 
-// composite7StateTier builds one tiered_tp_atr_regime tier covering all 7
-// composite labels with per-regime close_fraction.
 func composite7StateTier(atr, frac float64) map[string]interface{} {
 	labels := regimeLabelsForClassifier(regimeClassifierComposite)
 	tr := make(map[string]interface{}, len(labels))
@@ -42,10 +37,6 @@ func compositeRegimeCfg(scs ...StrategyConfig) *Config {
 	}
 }
 
-// TestValidateRegimeATRConfig_CompositeStopLossExplicit is the #802 regression:
-// an explicit 7-state stop_loss_atr_regime under a composite regime_atr_window
-// must validate cleanly (previously rejected because the resolver hardcoded the
-// ADX 3-state vocabulary).
 func TestValidateRegimeATRConfig_CompositeStopLossExplicit(t *testing.T) {
 	sc := StrategyConfig{
 		ID:                "hl-test",
@@ -62,19 +53,11 @@ func TestValidateRegimeATRConfig_CompositeStopLossExplicit(t *testing.T) {
 	if got := len(block.TrendRegime); got != 9 {
 		t.Fatalf("block must be populated with all 9 composite labels, got %d: %v", got, block.TrendRegime)
 	}
-	// Runtime SL resolution must succeed for a composite label (proves the
-	// authoritative pass populated the composite vocabulary, not ADX).
 	if v, ok := resolveRegimeATR(*block, "trending_up_clean"); !ok || v != 2.0 {
 		t.Fatalf("resolveRegimeATR(trending_up_clean) = (%g, %v), want (2.0, true)", v, ok)
 	}
 }
 
-// Regression: a per-tier sl_after on a regime-tiered close (here tp_atr_fraction
-// under a composite regime_atr_window) must validate cleanly. parseRegimeTPTiers
-// previously did not strip the sl_after sibling key before the ATR-block
-// allowlist, so the tier was rejected as `unknown key "sl_after"` at config-load
-// (and the same re-parse silently skipped arming at fire time). Surfaced while
-// adding the fire-path test for PR #836.
 func TestValidateRegimeATRConfig_CompositeSLAfterTPATRFraction(t *testing.T) {
 	tier0 := composite7StateTier(2.0, 0.5)
 	tier0["sl_after"] = map[string]interface{}{
@@ -121,8 +104,6 @@ func TestValidateRegimeATRConfig_CompositeTrailingExplicit(t *testing.T) {
 	}
 }
 
-// TestParseRegimeATRBlock_TrailingUseDefaultsComposite (#1120): fleet baseline
-// expansion for composite labels must resolve the retuned opening trails.
 func TestParseRegimeATRBlock_TrailingUseDefaultsComposite(t *testing.T) {
 	labels := regimeLabelsForClassifier(regimeClassifierComposite)
 	raw := map[string]interface{}{"use_defaults": true}
@@ -156,9 +137,6 @@ func TestParseRegimeATRBlock_TrailingUseDefaultsComposite(t *testing.T) {
 	}
 }
 
-// TestValidateRegimeATRConfig_CompositeMissingLabelRejected ensures the
-// exhaustiveness check uses the composite vocabulary: an incomplete 7-state
-// map is rejected and the error names the composite labels (not ADX).
 func TestValidateRegimeATRConfig_CompositeMissingLabelRejected(t *testing.T) {
 	raw := composite7StateATR(2.0)
 	delete(raw["trend_regime"].(map[string]interface{}), "ranging_volatile")
@@ -182,10 +160,6 @@ func TestValidateRegimeATRConfig_CompositeMissingLabelRejected(t *testing.T) {
 	}
 }
 
-// #1124: the ranging_directional family — a present bare ranging_directional
-// covers its _up/_down sub-labels for exhaustiveness, so a legacy block keyed
-// on bare only (no sub-label keys) still validates under the 9-label composite
-// vocabulary (back-compat).
 func TestValidateRegimeATRConfig_CompositeBareDirectionalCoversSubLabels(t *testing.T) {
 	raw := composite7StateATR(2.0)
 	tr := raw["trend_regime"].(map[string]interface{})
@@ -206,9 +180,6 @@ func TestValidateRegimeATRConfig_CompositeBareDirectionalCoversSubLabels(t *test
 	}
 }
 
-// #1124: sub-labels-only (no bare ranging_directional) is NOT exhaustive — the
-// producer still emits the bare label at return_eff==0, so a block missing it
-// would silently never-arm on the neutral case. Must be rejected.
 func TestValidateRegimeATRConfig_CompositeSubLabelsWithoutBareRejected(t *testing.T) {
 	raw := composite7StateATR(2.0)
 	delete(raw["trend_regime"].(map[string]interface{}), "ranging_directional")
@@ -226,11 +197,7 @@ func TestValidateRegimeATRConfig_CompositeSubLabelsWithoutBareRejected(t *testin
 	}
 }
 
-// #1124: runtime Resolve falls back from a _up/_down stamp to the bare
-// ranging_directional entry when no explicit sub-label key exists, and an
-// explicit sub-label key wins over the bare fallback (one-directional rule).
 func TestRegimeATRBlock_ResolveSubLabelFallsBackToBareAndExplicitWins(t *testing.T) {
-	// Bare-only block: subs resolve via bare fallback.
 	raw := composite7StateATR(1.5)
 	tr := raw["trend_regime"].(map[string]interface{})
 	delete(tr, "ranging_directional_up")
@@ -256,7 +223,6 @@ func TestRegimeATRBlock_ResolveSubLabelFallsBackToBareAndExplicitWins(t *testing
 		}
 	}
 
-	// Explicit _up key wins over bare; _down still falls back to bare.
 	raw2 := composite7StateATR(1.5)
 	raw2["trend_regime"].(map[string]interface{})["ranging_directional_up"] = map[string]interface{}{"atr_multiple": 0.9}
 	sc2 := StrategyConfig{
@@ -278,9 +244,6 @@ func TestRegimeATRBlock_ResolveSubLabelFallsBackToBareAndExplicitWins(t *testing
 	}
 }
 
-// TestValidateRegimeATRConfig_CompositeTPTiersExplicit covers the tier path:
-// an explicit 7-state tiered_tp_atr_regime close ref must validate under a
-// composite window.
 func TestValidateRegimeATRConfig_CompositeTPTiersExplicit(t *testing.T) {
 	sc := StrategyConfig{
 		ID:              "hl-test",
@@ -299,8 +262,6 @@ func TestValidateRegimeATRConfig_CompositeTPTiersExplicit(t *testing.T) {
 	}
 }
 
-// TestResolveRegimeTPTiers_CompositeRuntime exercises the runtime resolver: it
-// infers the vocabulary from the raw config and resolves a composite label.
 func TestResolveRegimeTPTiers_CompositeRuntime(t *testing.T) {
 	raw := []interface{}{
 		composite7StateTier(2.0, 0.5),
@@ -313,14 +274,11 @@ func TestResolveRegimeTPTiers_CompositeRuntime(t *testing.T) {
 	if tiers[0].Multiple != 2.0 || tiers[1].Multiple != 4.0 {
 		t.Fatalf("tier multiples mismatch: %v", tiers)
 	}
-	// An unknown runtime label falls back to nil (SL-only this cycle).
 	if got := resolveRegimeTPTiers(raw, "not_a_label"); got != nil {
 		t.Fatalf("unknown runtime regime should resolve to nil, got %v", got)
 	}
 }
 
-// TestStrategyTPTiersForRegime_CompositeUseDefaults covers the use_defaults
-// tier path under a composite runtime label.
 func TestStrategyTPTiersForRegime_CompositeUseDefaults(t *testing.T) {
 	sc := StrategyConfig{
 		Type:          "perps",
@@ -331,27 +289,24 @@ func TestStrategyTPTiersForRegime_CompositeUseDefaults(t *testing.T) {
 	if len(tiers) != 4 {
 		t.Fatalf("use_defaults composite clean must resolve 4 tiers, got %d: %v", len(tiers), tiers)
 	}
-	// #870: trending_up_clean → clean group (2.5/4.0/5.5/7.0, cumulative).
 	if tiers[0].Multiple != 2.5 || tiers[3].Multiple != 7.0 {
 		t.Fatalf("composite use_defaults clean baseline mismatch: %v", tiers)
 	}
 }
 
 func TestMapRegimeToBaselineFamily(t *testing.T) {
-	baseline := regimeATRDefaults.StopLoss // trending_up/down=2.0, ranging=1.5
+	baseline := regimeATRDefaults.StopLoss
 	cases := []struct {
 		label   string
 		wantATR float64
 		wantOK  bool
 	}{
-		{"trending_up", 2.0, true},          // ADX exact
-		{"ranging", 1.5, true},              // ADX exact
-		{"trending_up_clean", 2.0, true},    // composite prefix → trending_up
-		{"trending_down_choppy", 2.0, true}, // composite prefix → trending_down
-		{"ranging_quiet", 1.5, true},        // composite prefix → ranging
+		{"trending_up", 2.0, true},
+		{"ranging", 1.5, true},
+		{"trending_up_clean", 2.0, true},
+		{"trending_down_choppy", 2.0, true},
+		{"ranging_quiet", 1.5, true},
 		{"ranging_directional", 1.5, true},
-		// #1124: directional-drift substates have no explicit StopLoss entry, so
-		// they fall to the ranging family by prefix — same as bare.
 		{"ranging_directional_up", 1.5, true},
 		{"ranging_directional_down", 1.5, true},
 		{"garbage", 0, false},
@@ -363,9 +318,6 @@ func TestMapRegimeToBaselineFamily(t *testing.T) {
 		}
 	}
 
-	// #1124 regression: on the Trailing baseline the directional-drift substates
-	// must resolve to the ranging_directional trail via their EXPLICIT entries —
-	// NOT the wider 2.0 "ranging" family fallback.
 	trailing := regimeATRDefaults.Trailing
 	for _, label := range []string{"ranging_directional_up", "ranging_directional_down"} {
 		e, ok := mapRegimeToBaselineFamily(trailing, label)
@@ -381,15 +333,11 @@ func TestRegimeLabelsFromTierRaw(t *testing.T) {
 	if len(got) != 9 {
 		t.Fatalf("expected 9 inferred labels, got %d: %v", len(got), got)
 	}
-	// No per-regime keys → canonical ADX fallback.
 	if got := regimeLabelsFromTierRaw(nil); len(got) != 3 {
 		t.Fatalf("nil raw should fall back to canonical ADX (3), got %v", got)
 	}
 }
 
-// TestLoadConfig_CompositeStopLossAtrRegime is the end-to-end #802 repro: a
-// composite window with an explicit 7-state stop_loss_atr_regime must load
-// through the full validateConfig pipeline (both validation passes).
 func TestLoadConfig_CompositeStopLossAtrRegime(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")

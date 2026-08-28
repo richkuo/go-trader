@@ -1,17 +1,4 @@
 #!/usr/bin/env python3
-"""
-check_balance.py — Query wallet balance for supported platforms.
-
-Usage:
-    python3 check_balance.py --platform=okx
-
-Outputs JSON: {"balance": 1234.56}
-On error: {"balance": 0, "error": "message"}
-
-Supported platforms:
-    okx         — via CCXT (requires OKX_API_KEY, OKX_API_SECRET, OKX_PASSPHRASE)
-    robinhood   — via robin_stocks (requires ROBINHOOD_USERNAME, ROBINHOOD_PASSWORD, ROBINHOOD_TOTP_SECRET)
-"""
 
 import json
 import os
@@ -19,7 +6,6 @@ import sys
 
 
 def fetch_okx_balance():
-    """Fetch total account equity from OKX via CCXT."""
     import ccxt
 
     api_key = os.environ.get("OKX_API_KEY", "")
@@ -41,12 +27,10 @@ def fetch_okx_balance():
 
     exchange = ccxt.okx(config)
     balance = exchange.fetch_balance({"type": "trading"})
-    # CCXT returns balance['total']['USDT'] for USDT equity
     total = balance.get("total", {})
     usdt = float(total.get("USDT", 0))
     if usdt > 0:
         return usdt
-    # Fallback: check info.totalEq (OKX-specific total equity across all currencies)
     info = balance.get("info", {})
     if isinstance(info, dict):
         details = info.get("data", [{}])
@@ -58,7 +42,6 @@ def fetch_okx_balance():
 
 
 def fetch_robinhood_balance():
-    """Fetch crypto buying power from Robinhood."""
     import robin_stocks.robinhood as rh
     import pyotp
 
@@ -73,11 +56,9 @@ def fetch_robinhood_balance():
     rh.login(username, password, mfa_code=totp)
     try:
         profile = rh.profiles.load_account_profile()
-        # Crypto buying power
         buying_power = float(profile.get("crypto_buying_power", 0))
         if buying_power > 0:
             return buying_power
-        # Fallback: portfolio cash
         return float(profile.get("portfolio_cash", 0))
     finally:
         rh.logout()

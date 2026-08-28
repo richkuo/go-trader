@@ -1,10 +1,3 @@
-"""Tests for the backtest-vs-live parity diff tool (#906 D7.4).
-
-The tool's job is to detect strategies whose bar-N decision depends on the
-frame they were computed in (full-frame vectorized vs trailing live window).
-These tests prove both directions: a window-invariant strategy diffs clean,
-and a deliberately frame-dependent strategy is caught.
-"""
 
 import os
 import sys
@@ -45,9 +38,6 @@ def _ohlcv(n: int = 300, seed: int = 7) -> pd.DataFrame:
 
 
 def test_window_invariant_strategy_diffs_clean():
-    """sma_crossover at bar N only needs the trailing slow-period bars, so
-    a full window evaluation must equal the full-frame vectorized value on
-    every compared bar."""
     df = _ohlcv(260)
     frame = compute_parity_frame(
         df, "sma_crossover",
@@ -63,9 +53,6 @@ def test_window_invariant_strategy_diffs_clean():
 
 
 def test_frame_dependent_strategy_is_caught():
-    """A strategy keyed on the FULL frame's mean (classic silent-parity
-    bug: full-series normalization) must produce mismatches — the live
-    window's mean differs from the backtest frame's mean."""
     reg = load_registry("spot")
 
     def full_frame_mean_strategy(df: pd.DataFrame) -> pd.DataFrame:
@@ -92,9 +79,6 @@ def test_frame_dependent_strategy_is_caught():
 
 
 def test_regime_labels_diff_clean_per_bar():
-    """latest_regime on the trailing window must match compute_regime's
-    full-frame label on every bar — the per-bar generalization of the
-    last-bar parity test in test_backtester_regime.py."""
     df = _ohlcv(220)
     frame = compute_parity_frame(
         df, "sma_crossover",
@@ -108,9 +92,6 @@ def test_regime_labels_diff_clean_per_bar():
 
 
 def test_expanding_window_mode():
-    """window=None replays live with an ever-growing frame from bar
-    LIVE_MIN_CANDLES on; sma_crossover converges once the slow period is
-    seeded, so only the comparison start moves."""
     df = _ohlcv(120)
     frame = compute_parity_frame(
         df, "sma_crossover",
@@ -141,7 +122,6 @@ def test_window_below_live_minimum_rejected():
 
 
 def _trending_ohlcv(n: int = 260, seed: int = 11) -> pd.DataFrame:
-    """Strongly trending series so ATR-tiered TPs actually fire."""
     rng = np.random.default_rng(seed)
     close = 100.0 + np.linspace(0, 80, n) + rng.normal(0, 0.5, n)
     return pd.DataFrame({
@@ -154,10 +134,6 @@ def _trending_ohlcv(n: int = 260, seed: int = 11) -> pd.DataFrame:
 
 
 def test_close_evaluator_parity_clean_and_exercised():
-    """A registry close evaluator (tiered_tp_atr) runs through the SAME
-    close_registry_loader.evaluate on both sides with a shared position
-    context — so it must diff clean, and the test only counts if the
-    evaluator actually fired (close_fraction > 0 somewhere)."""
     df = _trending_ohlcv(260)
     frame = compute_parity_frame(
         df, "sma_crossover",
@@ -175,9 +151,6 @@ def test_close_evaluator_parity_clean_and_exercised():
 
 
 def test_composed_signal_with_close_refs_diffs_clean():
-    """With close refs the live signal is the composed finalize_decision
-    output (0 while positioned, ±1 on close); the bt side must compose
-    identically so signal never diffs on composition alone."""
     df = _trending_ohlcv(220)
     frame = compute_parity_frame(
         df, "sma_crossover",
@@ -191,7 +164,6 @@ def test_composed_signal_with_close_refs_diffs_clean():
 
 
 def test_regime_directional_policy_decision_layer_parity(monkeypatch):
-    """#1025: policy-resolved direction/invert must match live per bar."""
     import regime as regime_mod
 
     df = _ohlcv(140)
@@ -254,8 +226,6 @@ def test_regime_directional_policy_decision_layer_parity(monkeypatch):
 
 
 def test_frame_dependent_strategy_caught_with_close_refs_too():
-    """The detection guarantee must survive the close-ref code path —
-    composition and position simulation may not mask open-signal drift."""
     reg = load_registry("spot")
 
     def full_frame_mean_strategy(df: pd.DataFrame) -> pd.DataFrame:
@@ -281,8 +251,6 @@ def test_frame_dependent_strategy_caught_with_close_refs_too():
 
 
 def test_config_mode_builds_parity_config(tmp_path):
-    """--config/--strategy-id must reuse the #641 loader semantics and
-    pull symbol/timeframe/registry/regime from the live strategy entry."""
     import json as _json
     cfg_path = tmp_path / "config.json"
     cfg_path.write_text(_json.dumps({
@@ -337,9 +305,6 @@ def test_extract_fills_reports_entry_and_exit_legs():
 
 
 def test_backtest_effective_columns_are_prior_bar_inputs():
-    """backtest_effective_* must be the shift(1) inputs the engine reads —
-    i.e. the previous row's unshifted bt values (stride=1, no close refs
-    so bt_signal is the raw column)."""
     df = _ohlcv(200)
     frame = compute_parity_frame(
         df, "sma_crossover", params={"fast_period": 5, "slow_period": 15},
@@ -373,9 +338,6 @@ def _live_config_json(stype: str = "perps") -> dict:
     ("spot", "binanceus"),
 ])
 def test_config_mode_platform_autodetect(tmp_path, stype, want_platform):
-    """An unset --platform (empty string, as main passes it) must let the
-    strategy type drive the fee platform — perps/manual map to hyperliquid,
-    everything else to binanceus."""
     import json as _json
     cfg_path = tmp_path / "config.json"
     cfg_path.write_text(_json.dumps(_live_config_json(stype)))
@@ -393,9 +355,6 @@ def test_config_mode_explicit_platform_overrides_autodetect(tmp_path):
 
 
 def test_main_config_mode_fills_use_autodetected_platform(tmp_path, monkeypatch):
-    """Regression: the CLI's --platform default must not short-circuit the
-    --config auto-detect — an HL perps config run exactly as the CLI runs it
-    must reach extract_fills with platform=hyperliquid, not binanceus."""
     import json as _json
     import data_fetcher
     cfg_path = tmp_path / "config.json"
@@ -416,8 +375,6 @@ def test_main_config_mode_fills_use_autodetected_platform(tmp_path, monkeypatch)
 
 
 def test_main_zero_bars_compared_is_data_error(monkeypatch):
-    """A run whose data is shorter than the trailing window compares zero
-    bars — that is a data error (exit 2), never a CLEAN pass (exit 0)."""
     import data_fetcher
     monkeypatch.setattr(data_fetcher, "load_cached_data",
                         lambda *a, **k: _ohlcv(40))
@@ -426,11 +383,6 @@ def test_main_zero_bars_compared_is_data_error(monkeypatch):
 
 
 def test_out_of_contract_signal_rejected_loudly():
-    """A strategy emitting out-of-contract signals (0.5) must NOT diff
-    clean: the engine raises on non-integral signals while the live check
-    script truncates to 0 — a real divergence. The tool mirrors the
-    engine's strict {-1, 0, 1} rejection on both paths so the class is
-    surfaced, never normalized into a false CLEAN."""
     reg = load_registry("spot")
 
     def fractional_signal_strategy(df: pd.DataFrame) -> pd.DataFrame:
@@ -454,8 +406,6 @@ def test_out_of_contract_signal_rejected_loudly():
 
 
 def test_normalize_signal_contract():
-    """In-contract values collapse identically on both paths; NaN → 0;
-    anything else (fractional, out-of-domain integer) raises."""
     assert parity_diff._normalize_signal(np.float64(1.0)) == 1
     assert parity_diff._normalize_signal(-1) == -1
     assert parity_diff._normalize_signal(0.0) == 0
@@ -467,9 +417,6 @@ def test_normalize_signal_contract():
 
 
 def test_position_context_entry_regime_is_decision_bar_label():
-    """The scaffold must stamp the entry regime from the DECISION bar
-    (i-1), mirroring the engine's shifted-regime ``_entry_stamp`` and the
-    live label computed alongside the signal — not the fill bar's label."""
     from atr import ensure_atr_indicator
     n = 40
     df = _ohlcv(n)
@@ -483,8 +430,8 @@ def test_position_context_entry_regime_is_decision_bar_label():
     regime_full = pd.Series([f"label{i}" for i in range(n)], index=df.index)
     contexts, _ = parity_diff._simulate_position_contexts(
         bt, df, atr_full, regime_full)
-    assert contexts[9] is None  # decision bar — not yet filled
-    assert contexts[10] is not None  # fill bar: position visible end-of-bar
+    assert contexts[9] is None
+    assert contexts[10] is not None
     assert contexts[10]["regime"] == "label9", (
         "entry regime must be the decision bar's (9) label, "
         "not the fill bar's (10)"
@@ -492,10 +439,6 @@ def test_position_context_entry_regime_is_decision_bar_label():
 
 
 def test_bt_close_evaluator_uses_engine_dict_shape(monkeypatch):
-    """The backtest-side evaluator call must mirror the engine (#747):
-    ``regime`` always present (possibly empty) in BOTH dicts and
-    ``entry_atr`` always a float — even when regime is disabled and the
-    shared context omits the keys."""
     from atr import ensure_atr_indicator
     captured = {}
 
@@ -520,10 +463,6 @@ def test_bt_close_evaluator_uses_engine_dict_shape(monkeypatch):
     assert captured["position"]["entry_atr"] == 0.0
 
 def test_non_registry_close_ref_rejected_like_engine():
-    """A signal-strategy close ref has no engine path (Backtester rejects
-    unknown close names at init), so the tool must fail with the same
-    error instead of silently scoring 0 on the bt side while the live
-    fallback fully evaluates it — a manufactured mismatch."""
     df = _trending_ohlcv(120)
     with pytest.raises(ValueError, match="Unknown close strategy"):
         compute_parity_frame(
@@ -542,17 +481,13 @@ def test_non_registry_close_ref_rejected_like_engine():
 
 
 def test_entry_atr_plausibility_guard_matches_engine():
-    """The scaffold must apply the engine's _stamp_entry_atr guard: an ATR
-    above 50% of the entry price stamps 0.0 (key omitted from the shared
-    context) so ATR-requiring close evaluators no-op, matching both the
-    engine and Go's stampEntryATRIfOpened."""
     from atr import ensure_atr_indicator
     n = 40
     rng = np.random.default_rng(3)
     close = 100.0 + rng.normal(0, 0.2, n)
     df = pd.DataFrame({
         "open": close,
-        "high": close + 90.0,   # huge bar ranges → ATR ≈ 180 > 50% of price
+        "high": close + 90.0,
         "low": close - 90.0,
         "close": close,
         "volume": [1000.0] * n,
@@ -562,7 +497,7 @@ def test_entry_atr_plausibility_guard_matches_engine():
         "open_action": ["none"] * n,
         "close_fraction": [0.0] * n,
     }, index=df.index)
-    bt.iloc[19, bt.columns.get_loc("open_action")] = "long"  # fill at bar 20
+    bt.iloc[19, bt.columns.get_loc("open_action")] = "long"
     atr_full = ensure_atr_indicator(df.copy())["atr"]
     assert float(atr_full.iloc[20]) > 0.5 * float(df["close"].iloc[20])
     contexts, _ = parity_diff._simulate_position_contexts(
@@ -571,10 +506,6 @@ def test_entry_atr_plausibility_guard_matches_engine():
     assert "entry_atr" not in contexts[20]
 
 def test_position_context_avg_cost_is_fill_bar_open_with_slippage():
-    """The scaffold must open at the fill bar's OPEN adjusted by the
-    engine's default slippage (Backtester's effective_price) — not the
-    bar's close — so tier triggers ((mark - avg_cost)/entry_atr) see the
-    same entry price the engine and live would on large-bodied bars."""
     from atr import ensure_atr_indicator
     n = 40
     df = _ohlcv(n)
@@ -588,7 +519,7 @@ def test_position_context_avg_cost_is_fill_bar_open_with_slippage():
             "open_action": ["none"] * n,
             "close_fraction": [0.0] * n,
         }, index=df.index)
-        bt.iloc[19, bt.columns.get_loc("open_action")] = action  # fill @ 20
+        bt.iloc[19, bt.columns.get_loc("open_action")] = action
         contexts, _ = parity_diff._simulate_position_contexts(
             bt, df, atr_full, None)
         expected = float(df["open"].iloc[20]) * (1 + sign * slip)
@@ -597,17 +528,12 @@ def test_position_context_avg_cost_is_fill_bar_open_with_slippage():
             float(df["close"].iloc[20]))
 
 def test_registry_close_advances_quantity_ladder():
-    """The cumulative tier ladder must advance like the engine books it:
-    tier 1 fires its 0.4 ONCE, the next bar's quantity drops to 0.6 and
-    the evaluator returns 0, and tier 2 later contributes the 0.4
-    INCREMENT to the 0.8 cumulative — never a repeated cumulative value
-    that neither the engine nor live produces."""
     from atr import ensure_atr_indicator
     n = 60
     close = np.array([100.0] * 30 + [104.0] * 10 + [108.0] * 20)
     df = pd.DataFrame({
         "open": close,
-        "high": close + 1.0,   # TR = 2 → entry ATR = 2.0
+        "high": close + 1.0,
         "low": close - 1.0,
         "close": close,
         "volume": [1000.0] * n,
@@ -617,7 +543,7 @@ def test_registry_close_advances_quantity_ladder():
         "open_action": ["none"] * n,
         "close_fraction": [0.0] * n,
     }, index=df.index)
-    bt.iloc[19, bt.columns.get_loc("open_action")] = "long"  # fill @ 20
+    bt.iloc[19, bt.columns.get_loc("open_action")] = "long"
     atr_full = ensure_atr_indicator(df.copy())["atr"]
     cfg = ParityConfig(
         strategy_name="sma_crossover",
@@ -625,23 +551,15 @@ def test_registry_close_advances_quantity_ladder():
     )
     contexts, fracs = parity_diff._simulate_position_contexts(
         bt, df, atr_full, None, cfg)
-    # Bar 30: mark 104, avg_cost ~100.05, entry ATR 2 → ratio ~1.97 → tier 1.
     assert fracs[30] == pytest.approx(0.4)
-    # Bar 31: quantity decremented, already_closed=0.4 → increment is 0.
     assert contexts[31]["current_quantity"] == pytest.approx(0.6)
     assert fracs[31] == pytest.approx(0.0)
-    # Bar 40: mark 108 → ratio ~3.97 → tier 2 cumulative 0.8. The increment
-    # is 0.4 of INITIAL size, expressed as a fraction of the CURRENT 0.6
-    # position (the evaluator's contract): 0.4/0.6 = 2/3.
     assert fracs[40] == pytest.approx(2.0 / 3.0)
     assert contexts[41]["current_quantity"] == pytest.approx(0.2)
     assert fracs[41] == pytest.approx(0.0)
 
 
 def test_config_mode_injects_user_close_defaults(tmp_path):
-    """#1228: live applies user_defaults unconditionally at loadConfig, so the
-    parity replay must inject them too — otherwise the diff replays params
-    live never runs and can report CLEAN against the wrong effective config."""
     import json as _json
     cfg_path = tmp_path / "config.json"
     ladder = [
@@ -665,9 +583,6 @@ def test_config_mode_injects_user_close_defaults(tmp_path):
     assert cfg.close_refs[0]["params"].get("tp_tiers") == ladder
 
 
-# --- #1442 batched dimension --------------------------------------------------
-
-
 def _batched_cfg(**overrides) -> ParityConfig:
     cfg = ParityConfig(
         strategy_name="breakout",
@@ -683,7 +598,6 @@ def _batched_cfg(**overrides) -> ParityConfig:
 
 
 def test_batched_dimension_reports_zero_diff():
-    """#1442: a batched slot must decide exactly what a solo run decides."""
     frame = compute_parity_frame(_ohlcv(140), cfg=_batched_cfg(), window=60, stride=5)
     result = summarize(frame)
     assert result["bars_compared"] > 0
@@ -696,7 +610,6 @@ def test_batched_dimension_reports_zero_diff():
 
 
 def test_batched_dimension_zero_diff_with_close_refs_and_regime():
-    """The dimension must exercise the composed path, not only bare signals."""
     cfg = _batched_cfg(
         close_refs=[{"name": "tiered_tp_pct", "params": {"tp_tiers": [
             {"profit_pct": 0.9, "close_fraction": 1.0},
@@ -710,10 +623,6 @@ def test_batched_dimension_zero_diff_with_close_refs_and_regime():
 
 
 def test_batched_slot_reaches_the_close_evaluators_and_params():
-    """The slot the dimension feeds the evaluator must carry the composed
-    shape the scheduler sends, not the raw ``strategy_refs`` the evaluator
-    ignores — otherwise a clean report says nothing about the close
-    evaluators or any non-default open params it claims to cover."""
     from parity_diff import _hl_batch_slot, _load_hl_batch_module
     cfg = _batched_cfg(
         params={"lookback": 11},
@@ -730,15 +639,10 @@ def test_batched_slot_reaches_the_close_evaluators_and_params():
 
 
 def test_batched_close_fraction_can_be_non_zero():
-    """With a close evaluator and a real open position, both arms must be
-    able to report a non-zero close fraction — a dimension whose close
-    column is structurally pinned at 0.0 proves nothing about exits."""
     from parity_diff import _batched_bar_decisions
     df = _ohlcv(140)
     window = df.iloc[:80]
     mark = float(window["close"].iloc[-1])
-    # profit_pct is a FRACTION (0.02 == 2%), and the position below sits ~11%
-    # in profit, so the tier is genuinely hit.
     cfg = _batched_cfg(
         close_refs=[{"name": "tiered_tp_pct", "params": {"tp_tiers": [
             {"profit_pct": 0.02, "close_fraction": 1.0},
@@ -758,7 +662,6 @@ def test_batched_close_fraction_can_be_non_zero():
 
 
 def test_batched_dimension_is_off_by_default():
-    """Without --batched the frame, summary and exit code are unchanged."""
     frame = compute_parity_frame(_ohlcv(140), cfg=_batched_cfg(batched=False),
                                  window=60, stride=5)
     for column in ("solo_signal", "batch_signal", "batch_close_fraction"):
@@ -769,8 +672,6 @@ def test_batched_dimension_is_off_by_default():
 
 
 def test_batched_dimension_catches_a_divergent_slot(monkeypatch):
-    """The dimension must be able to fail: perturb the batched slot and the
-    diff has to notice, or a clean report would prove nothing."""
     cfg = _batched_cfg()
     real = parity_diff._batched_bar_decisions
 

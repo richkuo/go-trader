@@ -1,31 +1,3 @@
-"""Scope-2 (economic, isolation form) evidence for #1076: does choosing trade SIDE by the
-current regime label earn risk-adjusted PnL the regime-agnostic base does not?
-
-``regime_directional_policy`` (#779) overrides a live strategy's long/short side from the
-current regime label. Scope 1 (regime_1076_directional_premise.py) screens whether the label
-*statistically* separates forward returns. This is the economic complement: a look-ahead-safe
-regime-timing portfolio that prices the bare directional premise with no strategy-signal
-confound.
-
-Three always-in-market (or in/flat) books on identical bars, each side decided from the
-regime label known at the PRIOR bar close (mirrors the backtester's regime shift(1), #730):
-
-  policy      long in trending_up*, SHORT in trending_down*, flat (or long) in ranging*
-  long_only   long in trending_up*, flat otherwise        (isolates "short the downtrend" value)
-  buyhold     long every bar                              (regime-agnostic base)
-
-If `policy` does not beat `buyhold`/`long_only` on BOTH Sharpe and DDadj on the held-out
-forward windows (is/oos, 2025-06->2026), the regime->direction premise has no economic value
-to confer. Shorting funding cost is omitted, which FAVORS `policy` — so a `policy` loss here
-is conservative. Fees are charged on turnover (taker bps per unit side change).
-
-This is the transparent isolation; the live-faithful confirmation runs the actual Backtester +
-regime_directional_policy config (separate harness). Read-only; no live/Go path touched.
-
-    uv run --no-sync python backtest/research/regime_1076_economic_sim.py
-    uv run --no-sync python backtest/research/regime_1076_economic_sim.py \
-        --symbols BTC/USDT --timeframes 1h --classifiers adx --ranging-mode long
-"""
 from __future__ import annotations
 import os
 import sys
@@ -80,19 +52,11 @@ def _labels(df, classifier, th):
 
 
 def _book(close, decision_side, fee_rate):
-    """Equity metrics for a book. ``decision_side[t]`` is the side chosen at the CLOSE of
-    bar t from the regime known at bar t (labels[t]); it is held over the next move
-    close[t] -> close[t+1]. Mirrors the backtester's "decide at N, fill the N->N+1 move"
-    convention (#730) so the position never sees the return it is about to capture — the
-    look-ahead-free alignment that makes this consistent with the scope-1 forward-return
-    test. (Using decision_side[1:] here instead would let labels[t+1], which is computed
-    from close[t+1], pick the side for the t->t+1 move = look-ahead, and inflates Sharpe to
-    physically impossible levels.)"""
-    ret = close[1:] / close[:-1] - 1.0           # move t->t+1, indexed t in 0..N-2
-    pos = decision_side[:-1]                      # side decided at bar t, held over that move
-    prev = np.concatenate([[0.0], pos[:-1]])     # side held over the PRIOR move (flat at t=0)
+    ret = close[1:] / close[:-1] - 1.0
+    pos = decision_side[:-1]
+    prev = np.concatenate([[0.0], pos[:-1]])
     gross = pos * ret
-    turnover = np.abs(pos - prev)                # unit side change entering the move at t
+    turnover = np.abs(pos - prev)
     net = gross - turnover * fee_rate
     eq = np.cumprod(1.0 + net)
     if len(eq) == 0:
@@ -119,9 +83,6 @@ def _annualize_sharpe(book, timeframe):
 
 
 def _sides(labels, valid, ranging_mode):
-    """Per-bar DECISION side arrays: entry[t] is the side chosen at bar t's close from
-    labels[t]; _book holds it over the t->t+1 move (the 1-bar lag lives in _book). A
-    warmup/invalid bar is forced flat for all books."""
     n = len(labels)
     pol = np.zeros(n); lon = np.zeros(n); buy = np.zeros(n)
     for i in range(n):
@@ -135,7 +96,6 @@ def _sides(labels, valid, ranging_mode):
 
 
 def _mean_dwell(side):
-    """Average run length of the side series (its persistence / dwell)."""
     n = len(side)
     if n < 2:
         return 1.0
@@ -153,11 +113,6 @@ def _block_shuffle(arr, block_len, rng):
 
 
 def _placebo_pvalue(close, decision_side, timeframe, fee_rate, n_perm, seed):
-    """Block-shuffle the policy's per-bar SIDE decisions (preserving the long/short/flat mix
-    and dwell, destroying the alignment with price) and ask how often the shuffled book's
-    Sharpe matches/beats the real one. Small p => the regime label's TIMING carries economic
-    value beyond its marginal exposure; large p => the apparent edge is just the exposure mix
-    (e.g. defensive beta in a down sample), not regime->direction skill."""
     real = _book(close, decision_side, fee_rate)
     if real is None:
         return None, None
@@ -248,9 +203,6 @@ def report(rows, ranging_mode, fee_rate):
           f"/{len(oos)}")
     print()
 
-    # Placebo control: does the regime label's TIMING add economic value over its own
-    # block-shuffled null (same long/short/flat mix + dwell, randomized alignment)? Without
-    # this, "beats buyhold" in a down sample is indistinguishable from defensive beta.
     placebo_rows = [r for r in rows if r.get("placebo_p") is not None]
     if placebo_rows:
         pvals = [r["placebo_p"] for r in placebo_rows]

@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-// newOpsTestServer wires a StatusServer with real state and an optional
-// SQLite-backed StateDB for the #1231 ops-endpoint tests.
 func newOpsTestServer(t *testing.T, strategies []StrategyConfig, state *AppState, withDB bool) *StatusServer {
 	t.Helper()
 	var sdb *StateDB
@@ -29,7 +27,6 @@ func opsGet(ss *StatusServer, handler func(http.ResponseWriter, *http.Request), 
 	return w
 }
 
-// All six ops endpoints must 503 while draining — before touching state or DB.
 func TestOpsEndpointsRejectWhileDraining(t *testing.T) {
 	ss := newOpsTestServer(t, nil, NewAppState(), false)
 	shutdownDraining.Store(true)
@@ -116,9 +113,6 @@ func TestAPIDiagnosticsEmptyDB(t *testing.T) {
 	}
 }
 
-// Net PnL must come from the trades join (tradeNetPnLSQL: gross-convention
-// rows net the fee), never from the diagnostics row's own pre-fee
-// RealizedPnL. Pending rows keep null metric columns.
 func TestAPIDiagnosticsNetPnLAndPendingMetrics(t *testing.T) {
 	ss := newOpsTestServer(t, nil, NewAppState(), true)
 	sdb := ss.stateDB
@@ -126,7 +120,7 @@ func TestAPIDiagnosticsNetPnLAndPendingMetrics(t *testing.T) {
 	row := &TradeDiagnosticsRow{
 		StrategyID: "hl-btc", PositionID: "pos-1", Symbol: "BTC", Side: "long",
 		EntryPrice: 100, ExitPrice: 110, Quantity: 1,
-		RealizedPnL:   10, // PRE-FEE
+		RealizedPnL:   10,
 		OpenedAt:      time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		ClosedAt:      time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
 		MetricsStatus: diagMetricsPending,
@@ -134,7 +128,6 @@ func TestAPIDiagnosticsNetPnLAndPendingMetrics(t *testing.T) {
 	if err := sdb.InsertTradeDiagnostics(row); err != nil {
 		t.Fatalf("insert diagnostics: %v", err)
 	}
-	// Gross-convention close leg: realized_pnl=10 gross, fee=1.5 → net 8.5.
 	if err := sdb.InsertTrade("hl-btc", Trade{
 		Timestamp: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC), StrategyID: "hl-btc",
 		Symbol: "BTC", Side: "sell", Quantity: 1, Price: 110, Value: 110,
@@ -202,7 +195,6 @@ func TestAPIDiagnosticsPagingNewestFirst(t *testing.T) {
 	if resp.Total != 3 || len(resp.Rows) != 1 {
 		t.Fatalf("total=%d rows=%d, want 3/1", resp.Total, len(resp.Rows))
 	}
-	// Newest-first: offset 1 skips the Jan 4 close and returns Jan 3.
 	if want := time.Date(2026, 1, 3, 0, 0, 0, 0, time.UTC); !resp.Rows[0].ClosedAt.Equal(want) {
 		t.Errorf("closed_at = %v, want %v", resp.Rows[0].ClosedAt, want)
 	}
@@ -211,7 +203,6 @@ func TestAPIDiagnosticsPagingNewestFirst(t *testing.T) {
 func TestAPICashflowEmptyAndPopulated(t *testing.T) {
 	ss := newOpsTestServer(t, nil, NewAppState(), true)
 
-	// Empty DB: no wallets, alarm on by default.
 	w := opsGet(ss, ss.handleAPICashflow, "/api/cashflow")
 	if w.Code != http.StatusOK {
 		t.Fatalf("code = %d, want 200", w.Code)
@@ -231,9 +222,6 @@ func TestAPICashflowEmptyAndPopulated(t *testing.T) {
 		t.Error("alarm_enabled should default to true")
 	}
 
-	// Populate: an HL live-basis wallet and a shadow-only OKX wallet. The
-	// basis registry is a package-level singleton other tests may have
-	// written to — clear this wallet's slot so "unknown" is deterministic.
 	cashflowJournalBases.mu.Lock()
 	delete(cashflowJournalBases.bases, "hyperliquid/0xabc")
 	cashflowJournalBases.mu.Unlock()
@@ -280,10 +268,6 @@ func TestAPICashflowEmptyAndPopulated(t *testing.T) {
 	}
 }
 
-// The runtime basis recorded by applyCashflowJournalDriftBasis must overlay
-// structural eligibility: a transient fetch miss (Usable=false, within the
-// suppression streak) reads "pending", never "journal", even though the
-// persisted state stays live-basis-eligible.
 func TestAPICashflowRuntimeBasisOverridesEligibility(t *testing.T) {
 	ss := newOpsTestServer(t, nil, NewAppState(), true)
 	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xbasis"}
@@ -298,7 +282,6 @@ func TestAPICashflowRuntimeBasisOverridesEligibility(t *testing.T) {
 		cashflowJournalBases.mu.Unlock()
 	}()
 
-	// Transient miss: journal governs but produced no usable reading this cycle.
 	applyCashflowJournalDriftBasis(nil, key, &cashflowJournalReconcile{Key: key, Usable: false, Incomplete: false}, true)
 
 	w := opsGet(ss, ss.handleAPICashflow, "/api/cashflow")
@@ -319,7 +302,6 @@ func TestAPICashflowRuntimeBasisOverridesEligibility(t *testing.T) {
 		t.Errorf("basis = %q, want %q (transient miss must not read as the live basis)", got.Basis, cashflowBasisPending)
 	}
 
-	// Recovery: a usable reconcile flips the recorded basis to journal.
 	applyCashflowJournalDriftBasis(nil, key, &cashflowJournalReconcile{Key: key, Usable: true}, true)
 	w = opsGet(ss, ss.handleAPICashflow, "/api/cashflow")
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
@@ -400,8 +382,6 @@ func TestAPIDeadStrategies(t *testing.T) {
 	}
 }
 
-// The close-registry catalog is normally fetched from a Python subprocess;
-// seed the package cache so the handler is testable hermetically.
 func TestAPIClosingStrategiesFromCacheWithOverrides(t *testing.T) {
 	closeRegistryCatalogMu.Lock()
 	prev := closeRegistryCatalog
@@ -456,7 +436,6 @@ func TestAPICorrelation(t *testing.T) {
 	state := NewAppState()
 	ss := newOpsTestServer(t, nil, state, false)
 
-	// No snapshot yet → null.
 	w := opsGet(ss, ss.handleAPICorrelation, "/api/correlation")
 	var resp struct {
 		Correlation *CorrelationSnapshot `json:"correlation"`

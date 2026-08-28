@@ -8,15 +8,6 @@ import (
 	"strings"
 )
 
-// ui_reports.go (#956): serves the strategy-audit report as an in-dashboard HTML
-// page under a "Reports" section. The audit data lives here as Go structs — the
-// single source of truth feeding the template — so the page never drifts from the
-// numbers in the issue-956 audit comment. Loopback-only, same auth/draining posture
-// as the rest of the UI; no external assets (styling reuses /dashboard/styles.css).
-
-// auditRow is one strategy's aggregated backtest result across the 6 (symbol,
-// timeframe) runs. Verdict is a CSS class (keep|watch|deprecate|bug|na); VerdictLabel
-// is the human display text (may carry a qualifier, e.g. "watch (short leg unmeasured)").
 type auditRow struct {
 	Strategy     string
 	Registry     string
@@ -40,8 +31,6 @@ func (r auditRow) VsBHText() string {
 	return fmt.Sprintf("%+.1f", r.VsBH)
 }
 
-// VsBHSort returns a sort key that pushes the unmeasured ("—") rows to the bottom
-// of an ascending sort instead of letting a 0 interleave with real edges.
 func (r auditRow) VsBHSort() float64 {
 	if !r.HasVsBH {
 		return -1000
@@ -49,7 +38,6 @@ func (r auditRow) VsBHSort() float64 {
 	return r.VsBH
 }
 
-// oosRow is one strategy's out-of-sample check (BTC/USDT 1h, since 2026-01-01).
 type oosRow struct {
 	Strategy  string
 	ReturnPct float64
@@ -63,7 +51,6 @@ func (r oosRow) ReturnText() string { return fmt.Sprintf("%.1f", r.ReturnPct) }
 func (r oosRow) SharpeText() string { return fmt.Sprintf("%.2f", r.Sharpe) }
 func (r oosRow) EdgeText() string   { return fmt.Sprintf("%+.1f", r.EdgeVsBH) }
 
-// deprecationItem and candidateVerdict are the narrative sections of the report.
 type deprecationItem struct {
 	Strategy  string
 	Rationale string
@@ -71,11 +58,10 @@ type deprecationItem struct {
 
 type candidateVerdict struct {
 	Name    string
-	Verdict string // CONFIRM | CUT | BLOCKED
+	Verdict string
 	Body    string
 }
 
-// reportMeta describes one available report for the /reports index.
 type reportMeta struct {
 	Slug        string
 	Title       string
@@ -83,7 +69,6 @@ type reportMeta struct {
 	Generated   string
 }
 
-// strategyAuditReport is the full dataset for /reports/strategy-audit.
 type strategyAuditReport struct {
 	Meta          reportMeta
 	Method        []string
@@ -96,11 +81,8 @@ type strategyAuditReport struct {
 	Candidates    []candidateVerdict
 }
 
-// availableReports is the index registry. Add new reports here.
 var availableReports = []reportMeta{strategyAuditReportData.Meta}
 
-// strategyAuditReportData is the single source of truth for the audit page, mirroring
-// the audit comment on issue #956 (2026-06-10, backtest-only, 12-month bear window).
 var strategyAuditReportData = strategyAuditReport{
 	Meta: reportMeta{
 		Slug:        "strategy-audit",
@@ -202,8 +184,6 @@ var strategyAuditReportData = strategyAuditReport{
 	},
 }
 
-// handleReports serves the reports index (/reports) and dispatches the audit page
-// (/reports/strategy-audit). Loopback-only and drain-aware like the rest of the UI.
 func (ss *StatusServer) handleReports(w http.ResponseWriter, r *http.Request) {
 	if ss.rejectIfDraining(w) {
 		return
@@ -236,7 +216,6 @@ func (ss *StatusServer) renderHTML(w http.ResponseWriter, tmpl *template.Templat
 	w.Write(buf.Bytes())
 }
 
-// reportPageFuncs are shared template helpers.
 var reportPageFuncs = template.FuncMap{
 	"lower": strings.ToLower,
 }

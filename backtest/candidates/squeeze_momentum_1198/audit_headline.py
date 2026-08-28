@@ -1,32 +1,4 @@
 #!/usr/bin/env python3
-"""Continuous-audit-window headline for the #1198 squeeze_momentum shortlist.
-
-Runs candidate JSONs from this directory on the CONTINUOUS #956 audit window
-(2025-06-10 -> latest cache by default) via the M1 harness (eval_windows
-.run_leg, audit-identical fees/slippage) — the mandatory stitched comparison
-(the #983/#984 lesson: IS/held-out wins can evaporate, or worsen the DD, once
-the windows are stitched back together; squeeze_momentum's own #983 close
-stacks died exactly here). This window is deliberately NOT in
-eval_windows.WINDOWS: protocol scoring stays segmented (is/oos/held-out); this
-driver exists only for the stitched headline that reproduces #983's -58.5%
-worst DD baseline and measures each gate against it.
-
-Every leg threads the candidate's regime state (allowed_regimes /
-regime_windows_spec / profile_allocation) via
-driver_common.candidate_leg_kwargs — a gated candidate run without it would
-silently score the UNGATED entry here.
-
-``--end`` defaults to None (latest cache), so headline numbers drift as the
-cache DB gains bars. The artifact therefore records the requested window AND
-the effective per-dataset data range (first/last bar actually loaded) — diff
-``effective_range`` against the committed artifact before comparing numbers.
-
-Run from repo root:
-  uv run --no-sync python backtest/candidates/squeeze_momentum_1198/audit_headline.py \
-      [--start 2025-06-10] [--end YYYY-MM-DD] \
-      [--candidates baseline.json,...] \
-      [--json backtest/candidates/squeeze_momentum_1198/audit_window_headline.json]
-"""
 
 import argparse
 import json
@@ -36,18 +8,17 @@ import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
-sys.path.insert(0, os.path.join(_HERE, "..", ".."))          # backtest/
+sys.path.insert(0, os.path.join(_HERE, "..", ".."))
 sys.path.insert(0, os.path.join(_HERE, "..", "..", "..", "shared_tools"))
 
-from eval_windows import (DATASETS, dataset_key, run_leg,      # noqa: E402
+from eval_windows import (DATASETS, dataset_key, run_leg,
                           validate_candidate)
-from driver_common import candidate_leg_kwargs                 # noqa: E402
+from driver_common import candidate_leg_kwargs
 
 DEFAULT_CANDIDATES = "baseline.json"
 
 
 def effective_range(symbol, timeframe, window):
-    """First/last bar timestamps the cache actually yields for the window."""
     from data_fetcher import load_cached_data
     df = load_cached_data(symbol, timeframe,
                           start_date=window[0], end_date=window[1])

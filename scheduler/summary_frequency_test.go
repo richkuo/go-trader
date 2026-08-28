@@ -50,7 +50,6 @@ func TestShouldPostSummary_TradesForcePost(t *testing.T) {
 	now := time.Date(2026, 4, 28, 12, 0, 0, 0, time.UTC)
 	lastPost := now.Add(-10 * time.Second)
 
-	// Trades always post, regardless of cadence setting or elapsed time.
 	if !ShouldPostSummary("hourly", false, true, lastPost, now) {
 		t.Error("trades should force a post even mid-window")
 	}
@@ -91,7 +90,6 @@ func TestShouldPostSummary_LegacyContinuousPostsEveryRun(t *testing.T) {
 	now := time.Date(2026, 4, 28, 12, 0, 0, 0, time.UTC)
 	lastPost := now
 
-	// Empty freq + continuous (options/perps/futures/manual) = every channel run.
 	for i := 0; i < 5; i++ {
 		if !ShouldPostSummary("", true, false, lastPost, now.Add(time.Duration(i)*time.Second)) {
 			t.Errorf("continuous legacy default should post every run; iteration %d did not", i)
@@ -126,7 +124,6 @@ func TestShouldPostSummary_EveryAliasOverridesSpotDefault(t *testing.T) {
 	now := time.Date(2026, 4, 28, 12, 0, 0, 0, time.UTC)
 	lastPost := now
 
-	// User sets spot to "every" — should post every channel run.
 	for i := 0; i < 10; i++ {
 		if !ShouldPostSummary("every", false, false, lastPost, now.Add(time.Duration(i)*time.Second)) {
 			t.Errorf(`freq="every" should post every run; iteration %d did not`, i)
@@ -179,12 +176,9 @@ func TestShouldPostSummary_CustomDurationUsesWallClock(t *testing.T) {
 func TestShouldPostSummary_InvalidValueFallsBackToLegacy(t *testing.T) {
 	now := time.Date(2026, 4, 28, 12, 0, 0, 0, time.UTC)
 
-	// Invalid freq should fall back to the legacy default rather than crashing.
-	// Continuous legacy = every channel run.
 	if !ShouldPostSummary("nonsense", true, false, now, now.Add(time.Second)) {
 		t.Error("invalid freq + continuous should fall back to legacy every-run")
 	}
-	// Non-continuous legacy = hourly wall-clock cadence.
 	if ShouldPostSummary("nonsense", false, false, now, now.Add(time.Hour-time.Second)) {
 		t.Error("invalid freq + spot should fall back to legacy hourly cadence")
 	}

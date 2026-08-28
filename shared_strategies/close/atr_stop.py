@@ -1,20 +1,3 @@
-"""Standalone ATR stop-loss close evaluator (#997 M3 — early-reversal bleed mode).
-
-Default-off hard stop: closes the whole position when the mark moves
-``atr_mult`` ATR units against the average cost. Targets strategies whose
-losers run straight against the entry (the diagnostic's ``early_reversal``
-mode) — a tighter exit than waiting for the open signal to flip.
-
-This duplicates what the engine's scalar ``stop_loss_atr_mult`` does, but as a
-*close evaluator* so it is reachable from an ``eval_windows.py`` candidate JSON
-(the harness passes only ``close_strategies`` — engine stop kwargs are
-unreachable from a candidate) and can be scored as an independent M1 knob.
-
-``atr_mult == 0`` (the registry default) is an explicit no-op. ``atr_source``
-selects which ATR feeds the distance: ``entry`` (frozen ``Position.EntryATR``,
-the default) or ``live`` (the current bar's ATR from ``market["atr"]``) —
-mirroring the ``tiered_tp_atr`` / ``tiered_tp_atr_live`` split.
-"""
 
 from __future__ import annotations
 

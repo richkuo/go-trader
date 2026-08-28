@@ -14,18 +14,16 @@ import (
 const telegramAPIBase = "https://api.telegram.org/bot"
 const telegramMaxMessageLen = 4096
 
-// TelegramNotifier implements Notifier using the Telegram Bot API.
 type TelegramNotifier struct {
 	botToken    string
 	ownerChatID string
 	client      *http.Client
-	baseURL     string // API base URL (defaults to telegramAPIBase)
-	lastUpdate  int64  // offset for getUpdates polling
+	baseURL     string
+	lastUpdate  int64
 	mu          sync.Mutex
 	closed      bool
 }
 
-// NewTelegramNotifier creates a new Telegram bot notifier.
 func NewTelegramNotifier(botToken, ownerChatID string) (*TelegramNotifier, error) {
 	t := &TelegramNotifier{
 		botToken:    botToken,
@@ -34,7 +32,6 @@ func NewTelegramNotifier(botToken, ownerChatID string) (*TelegramNotifier, error
 		baseURL:     telegramAPIBase,
 	}
 
-	// Verify the bot token with a getMe call.
 	resp, err := t.apiCall("getMe", nil)
 	if err != nil {
 		return nil, fmt.Errorf("telegram getMe failed: %w", err)
@@ -46,14 +43,12 @@ func NewTelegramNotifier(botToken, ownerChatID string) (*TelegramNotifier, error
 	return t, nil
 }
 
-// telegramResponse is the generic Telegram Bot API response envelope.
 type telegramResponse struct {
 	OK          bool            `json:"ok"`
 	Description string          `json:"description,omitempty"`
 	Result      json.RawMessage `json:"result,omitempty"`
 }
 
-// telegramUpdate represents a single update from getUpdates.
 type telegramUpdate struct {
 	UpdateID int64           `json:"update_id"`
 	Message  *telegramMsg    `json:"message,omitempty"`
@@ -83,7 +78,6 @@ type telegramCBData struct {
 	Data    string        `json:"data"`
 }
 
-// apiCall makes a POST request to the Telegram Bot API.
 func (t *TelegramNotifier) apiCall(method string, payload interface{}) (*telegramResponse, error) {
 	url := t.baseURL + t.botToken + "/" + method
 
@@ -106,7 +100,6 @@ func (t *TelegramNotifier) apiCall(method string, payload interface{}) (*telegra
 
 	resp, err := t.client.Do(req)
 	if err != nil {
-		// Redact bot token from error to prevent leaking in logs.
 		safeMsg := strings.ReplaceAll(err.Error(), t.botToken, "[REDACTED]")
 		return nil, fmt.Errorf("telegram %s: %s", method, safeMsg)
 	}
@@ -119,7 +112,6 @@ func (t *TelegramNotifier) apiCall(method string, payload interface{}) (*telegra
 	return &result, nil
 }
 
-// SendMessage sends a message to a Telegram chat. Truncates to 4096 chars.
 func (t *TelegramNotifier) SendMessage(chatID string, content string) error {
 	if len(content) > telegramMaxMessageLen {
 		content = content[:telegramMaxMessageLen-3] + "..."
@@ -140,13 +132,10 @@ func (t *TelegramNotifier) SendMessage(chatID string, content string) error {
 	return nil
 }
 
-// SendDM sends a direct message to a user via their chat ID.
-// In Telegram, DMs and channel messages use the same sendMessage API.
 func (t *TelegramNotifier) SendDM(userID, content string) error {
 	return t.SendMessage(userID, content)
 }
 
-// AskDM sends a question to the user and polls for a reply within the timeout.
 func (t *TelegramNotifier) AskDM(userID, question string, timeout time.Duration) (string, error) {
 	sentAt := time.Now().Unix()
 
@@ -164,7 +153,7 @@ func (t *TelegramNotifier) AskDM(userID, question string, timeout time.Duration)
 		t.mu.Unlock()
 
 		remaining := time.Until(deadline)
-		pollTimeout := 10 // seconds for long-polling
+		pollTimeout := 10
 		if remaining < time.Duration(pollTimeout)*time.Second {
 			pollTimeout = int(remaining.Seconds())
 			if pollTimeout < 1 {
@@ -174,7 +163,6 @@ func (t *TelegramNotifier) AskDM(userID, question string, timeout time.Duration)
 
 		updates, err := t.getUpdates(pollTimeout)
 		if err != nil {
-			// Transient error — retry after a short wait.
 			time.Sleep(1 * time.Second)
 			continue
 		}
@@ -192,7 +180,6 @@ func (t *TelegramNotifier) AskDM(userID, question string, timeout time.Duration)
 	return "", ErrDMTimeout
 }
 
-// getUpdates polls for new messages using Telegram long polling.
 func (t *TelegramNotifier) getUpdates(timeoutSec int) ([]telegramUpdate, error) {
 	payload := map[string]interface{}{
 		"timeout": timeoutSec,
@@ -227,14 +214,12 @@ func (t *TelegramNotifier) getUpdates(timeoutSec int) ([]telegramUpdate, error) 
 	return updates, nil
 }
 
-// Close marks the notifier as closed and stops any pending polling.
 func (t *TelegramNotifier) Close() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.closed = true
 }
 
-// FormatTradeDMPlain formats a Trade into a plain-text DM (no Discord markdown).
 func FormatTradeDMPlain(sc StrategyConfig, trade Trade, mode string) string {
 	isClose := isTradeCloseDetails(trade.Details)
 

@@ -6,10 +6,6 @@ import (
 	"time"
 )
 
-// TestManualSLAutoManaged verifies the guard that blocks manual SL edits on
-// strategies whose automated protection would re-pin/re-arm the stop-loss on
-// the next cycle (#1050). A manual edit is only coherent when the strategy has
-// opted out of auto-SL.
 func TestManualSLAutoManaged(t *testing.T) {
 	basePos := func() *Position {
 		return &Position{
@@ -63,16 +59,12 @@ func TestManualSLAutoManaged(t *testing.T) {
 				Symbol:   "ETH",
 				Quantity: 1,
 				AvgCost:  2000,
-				EntryATR: 0, // no ATR -> plan returns false -> sync cannot recompute an SL
+				EntryATR: 0,
 				Side:     "long",
 			},
 			wantManage: false,
 		},
 		{
-			// #1052 review: a regime SL whose label is transiently the #879
-			// fail-open "-" resolves to a zero multiplier in the value pass, so
-			// the config-presence pass must still reject it — a later resolution
-			// + force-SL-replace cycle would re-pin the operator's trigger.
 			name:       "regime stop-loss with unresolved label rejected by config presence",
 			sc:         StrategyConfig{ID: "x", Type: "manual", Platform: "hyperliquid", Symbol: "ETH", StopLossATRRegime: regimeBlock()},
 			pos:        regimePos("-"),
@@ -130,8 +122,6 @@ func TestSLTriggerWouldFillImmediately(t *testing.T) {
 	}
 }
 
-// TestSLPlacementFailureLeftNaked verifies a no-OID placement failure is
-// classified naked only when the old stop-loss was actually removed (#1052).
 func TestSLPlacementFailureLeftNaked(t *testing.T) {
 	cases := []struct {
 		name            string
@@ -152,9 +142,6 @@ func TestSLPlacementFailureLeftNaked(t *testing.T) {
 	}
 }
 
-// TestPendingSLActionExists verifies the same-cycle orphan guard: a second SL
-// edit is detected only when an un-drained update-sl/cancel-sl action for the
-// SAME strategy+symbol is already queued (#1052).
 func TestPendingSLActionExists(t *testing.T) {
 	db, err := OpenStateDB(":memory:")
 	if err != nil {
@@ -163,7 +150,6 @@ func TestPendingSLActionExists(t *testing.T) {
 	defer db.Close()
 	now := time.Now().UTC()
 
-	// Unrelated queued actions must NOT trip the guard.
 	if err := db.InsertPendingManualAction(PendingManualAction{StrategyID: "hl-eth", Action: "open", Symbol: "ETH", Side: "long", Quantity: 1, FillPrice: 2000, CreatedAt: now}); err != nil {
 		t.Fatalf("insert open: %v", err)
 	}
@@ -175,7 +161,6 @@ func TestPendingSLActionExists(t *testing.T) {
 		t.Fatalf("expected no pending SL action for hl-eth/ETH (open + other-strategy only), got pending=%v err=%v", pending, err)
 	}
 
-	// A queued update-sl for the same strategy+symbol trips it (case-insensitive).
 	if err := db.InsertPendingManualAction(PendingManualAction{StrategyID: "hl-eth", Action: "update-sl", Symbol: "ETH", Side: "long", Quantity: 1, StopLossOID: 9, StopLossTriggerPx: 1950, CreatedAt: now}); err != nil {
 		t.Fatalf("insert same update-sl: %v", err)
 	}
@@ -183,8 +168,6 @@ func TestPendingSLActionExists(t *testing.T) {
 		t.Fatalf("expected pending SL action for hl-eth/eth, got pending=%v err=%v", pending, err)
 	}
 
-	// A queued cancel-sl is also detected (the full manual-close guard refuses
-	// for either SL action type).
 	if err := db.InsertPendingManualAction(PendingManualAction{StrategyID: "hl-sol", Action: "cancel-sl", Symbol: "SOL", Side: "long", CreatedAt: now}); err != nil {
 		t.Fatalf("insert cancel-sl: %v", err)
 	}

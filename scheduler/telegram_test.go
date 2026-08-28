@@ -10,7 +10,6 @@ import (
 	"time"
 )
 
-// newTestTelegramNotifier creates a TelegramNotifier pointing at a test server.
 func newTestTelegramNotifier(serverURL string) *TelegramNotifier {
 	return &TelegramNotifier{
 		botToken:    "test-token",
@@ -52,7 +51,6 @@ func TestTelegramNotifier_SendMessage(t *testing.T) {
 }
 
 func TestTelegramNotifier_ImplementsNotifier(t *testing.T) {
-	// Compile-time check that TelegramNotifier implements Notifier
 	var _ Notifier = (*TelegramNotifier)(nil)
 }
 
@@ -71,8 +69,6 @@ func TestTelegramNotifier_Close(t *testing.T) {
 }
 
 func TestTelegramNotifier_SendDM_IsSendMessage(t *testing.T) {
-	// In Telegram, DMs use the same API as channel messages.
-	// Verify that SendDM delegates to SendMessage by checking they use the same code path.
 	var sentChatID string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/sendMessage") {
@@ -152,7 +148,6 @@ func TestTelegramResponse_Error(t *testing.T) {
 func TestAskDMRejectsStaleMessages(t *testing.T) {
 	now := time.Now().Unix()
 
-	// Verify telegramMsg.Date unmarshals correctly from JSON.
 	msgJSON := fmt.Sprintf(`{"message_id":1,"from":{"id":999},"chat":{"id":999},"date":%d,"text":"hello"}`, now)
 	var msg telegramMsg
 	if err := json.Unmarshal([]byte(msgJSON), &msg); err != nil {
@@ -165,21 +160,17 @@ func TestAskDMRejectsStaleMessages(t *testing.T) {
 		t.Errorf("Text: got %q, want %q", msg.Text, "hello")
 	}
 
-	// Verify the timestamp guard logic: messages older than sentAt-2 should be rejected.
 	sentAt := now
-	staleDate := int64(sentAt - 60) // 60 seconds ago — clearly stale
-	freshDate := int64(sentAt + 1)  // just now — clearly fresh
-	graceDate := int64(sentAt - 1)  // 1 second before sentAt — within 2s grace window
+	staleDate := int64(sentAt - 60)
+	freshDate := int64(sentAt + 1)
+	graceDate := int64(sentAt - 1)
 
-	// Stale message should be rejected (Date < sentAt-2).
 	if staleDate >= sentAt-2 {
 		t.Errorf("expected stale message (date=%d) to fail guard (sentAt-2=%d)", staleDate, sentAt-2)
 	}
-	// Fresh message should be accepted (Date >= sentAt-2).
 	if freshDate < sentAt-2 {
 		t.Errorf("expected fresh message (date=%d) to pass guard (sentAt-2=%d)", freshDate, sentAt-2)
 	}
-	// Message within grace window should be accepted (Date >= sentAt-2).
 	if graceDate < sentAt-2 {
 		t.Errorf("expected grace-window message (date=%d) to pass guard (sentAt-2=%d)", graceDate, sentAt-2)
 	}
@@ -191,7 +182,6 @@ func TestApiCallDoesNotLeakToken(t *testing.T) {
 		client:   &http.Client{Timeout: 50 * time.Millisecond},
 		baseURL:  telegramAPIBase,
 	}
-	// Call with no server running — will fail with connection error
 	_, err := tn.apiCall("getMe", nil)
 	if err == nil {
 		t.Fatal("expected error from unreachable server")
@@ -199,13 +189,11 @@ func TestApiCallDoesNotLeakToken(t *testing.T) {
 	if strings.Contains(err.Error(), "secret-test-token-12345") {
 		t.Errorf("bot token leaked in error message: %v", err)
 	}
-	// Verify the error still contains useful diagnostic info
 	if !strings.Contains(err.Error(), "getMe") {
 		t.Errorf("error should mention the API method, got: %v", err)
 	}
 }
 
 func TestDiscordNotifier_ImplementsNotifier(t *testing.T) {
-	// Compile-time check that DiscordNotifier implements Notifier
 	var _ Notifier = (*DiscordNotifier)(nil)
 }

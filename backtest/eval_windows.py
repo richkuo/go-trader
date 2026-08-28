@@ -1,38 +1,4 @@
 #!/usr/bin/env python3
-"""
-eval_windows.py — M1 multi-window incumbent-relative validation harness (#977).
-
-One command per application issue (#979-#993): runs a candidate strategy config
-across the audit datasets and protocol/held-out windows, recomputes the
-incumbent-median bar per (window, dataset) on the identical harness, and emits
-per-dataset Sharpe / return / max-DD / DD-adjusted-return / trades, pass/fail
-verdicts, and optional plateau sweeps.
-
-Harness is audit-identical (#956/#963/#976): registry default or supplied
-params, single mode, hyperliquid fee model (#1315), long-leg signal path unless the
-candidate config supplies close refs / direction. Sharpe uses the Backtester's
-timeframe-annualized scale, the same scale on both sides of the bar.
-
-The incumbent set and window definitions are versioned HERE so bars stay
-reproducible as data accrues — change them only with a corresponding note on
-#977.
-
-Examples:
-  # Full protocol + held-out verdict table for a candidate with default params
-  uv run --no-sync python backtest/eval_windows.py --strategy regime_adaptive_htf
-
-  # Explicit params, futures registry, OOS window only
-  uv run --no-sync python backtest/eval_windows.py --strategy breakout \\
-      --registry futures --params '{"period": 20}' --windows oos
-
-  # Plateau sweep (M1 step 6) over htf_factor on the protocol OOS window
-  uv run --no-sync python backtest/eval_windows.py --strategy regime_adaptive_htf \\
-      --sweep htf_factor=4,5,6,8,10,12
-
-  # Short leg of a short-only strategy (#989: signal=-1 opens, +1 closes)
-  uv run --no-sync python backtest/eval_windows.py --strategy bear_pullback_st \\
-      --registry futures --direction short
-"""
 
 import argparse
 import itertools
@@ -45,13 +11,6 @@ from typing import List, Optional
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
-# ---------------------------------------------------------------------------
-# Versioned harness definitions (#977). The incumbent set is the #963/#976
-# eight: the #956 audit's OOS top-8 with futures-only `breakout` excluded from
-# the long-leg harness and `sma_crossover` (next-ranked "both" strategy) in its
-# slot. All eight exist byte-identical in both registries, so the bar is valid
-# for spot and futures candidates alike.
-# ---------------------------------------------------------------------------
 INCUMBENTS = [
     "momentum_pro",
     "chart_pattern",
@@ -63,7 +22,6 @@ INCUMBENTS = [
     "sma_crossover",
 ]
 
-# The six audit datasets (#956): BTC/ETH/SOL x 1h/4h.
 DATASETS = [
     ("BTC/USDT", "1h"),
     ("BTC/USDT", "4h"),
@@ -73,9 +31,6 @@ DATASETS = [
     ("SOL/USDT", "4h"),
 ]
 
-# (start, end) date strings; end=None means "latest cached bar". The protocol
-# split mirrors #963/#976 (IS since 2025-06-10, OOS since 2026-01-01); the
-# held-out windows (M1 step 7) were never used during any incumbent's design.
 WINDOWS = {
     "is":     ("2025-06-10", "2026-01-01"),
     "oos":    ("2026-01-01", None),
@@ -87,51 +42,12 @@ PROTOCOL_WINDOWS = ("is", "oos")
 HELD_OUT_WINDOWS = ("2023", "2024", "2025H1")
 
 DEFAULT_CAPITAL = 1000.0
-# Two independent platform axes (#1315 review): the fee model a harness prices
-# and the exchange whose cached OHLCV it loads must never be coupled — changing
-# one must not silently repoint the other.
-#
-# PLATFORM — the DATA-SOURCE exchange_id for cached OHLCV. Imported by the
-# regime research/promotion pipeline (regime_bounded_window_validate,
-# regime_diagnostics, regime_calibrate, regime_vol_model, the regime_10xx /
-# regime_1211 research one-shots) and passed to load_cached_data(exchange_id=…).
-# Stays "binanceus": every committed regime baseline (incl. the #1211 incumbent
-# baseline) was computed on this series. NOT the fee model.
 PLATFORM = "binanceus"
 
-# FEE_PLATFORM — the audit fee model; fixed, not a knob. Used only at the
-# Backtester platform= sites of the active M harnesses (eval_windows,
-# exit_policy_ab, exit_diagnostics; fee_audit/gross_edge_noise/auto_suggest
-# inherit). #1315: hyperliquid base-tier taker (0.045%/side + the Backtester's
-# 5 bps slippage) — live deployment is Hyperliquid perps, so audits price the
-# fees we actually pay. This encodes an explicit perps-deployment assumption
-# even for spot-audited strategies. Verdicts recorded before #1315 were graded
-# under "binanceus" (0.1%/side, ~0.3% round-trip) — see the dated annotations
-# in docs/research/. The frozen research one-shots (regime_1081/regime_1083)
-# deliberately keep their Backtester fee model on the data-source constant so
-# their committed negative-result artifacts stay reproducible under the fee
-# model they were graded with.
 FEE_PLATFORM = "hyperliquid"
 
 
-# ---------------------------------------------------------------------------
-# Pure scoring helpers (unit-tested without data access).
-# ---------------------------------------------------------------------------
-
 def trade_samples_from_results(results: dict) -> List[dict]:
-    """Per-trade ``{entry_date, pnl_pct}`` samples from a Backtester result
-    dict (#1054).
-
-    ``pnl_pct`` is computed purely from entry/exit fill prices, so on a
-    zero-friction (gross) run it is the raw per-trade price edge the M1
-    step-2 noise check adjudicates. ``pnl_pct_net`` (#1274, additive) is the
-    fee-deducted return on entry notional (Trade.pnl has both commissions
-    subtracted; falls back to the gross figure when notional is unavailable)
-    for consumers that need the real equity path, e.g. the Monte Carlo
-    trade-order resampler. ``entry_date`` rides along so callers pooling
-    overlapping windows can deduplicate the same physical entry.
-    Missing/empty trade lists yield [].
-    """
     out = []
     for t in results.get("trades") or []:
         gross = float(t["pnl_pct"])
@@ -144,27 +60,15 @@ def trade_samples_from_results(results: dict) -> List[dict]:
 
 
 def dd_adjusted_return(return_pct: float, max_dd_pct: float) -> float:
-    """DDadj = total return / |max drawdown| (#963 definition).
-
-    A leg with zero drawdown carries no risk denominator; return 0.0 so an
-    untraded leg never inflates the mean (zero-trade legs are additionally
-    flagged degenerate in score_candidate).
-    """
     if not max_dd_pct:
         return 0.0
     return return_pct / abs(max_dd_pct)
 
 
-# #1005/#1228: mirrors backtest/backtester.py LIQUIDATED_METRIC_FLOOR (kept in
-# sync by test_eval_windows). A liquidated leg reads return −100% / DD −100%,
-# so raw DDadj is −1.0 — OUTRANKING a surviving losing leg (e.g. −50% return
-# on 25% DD scores −2.0). Floor the axis like Sharpe so a dead account always
-# sorts below any survivor.
 LIQUIDATED_DDADJ_FLOOR = -100.0
 
 
 def leg_from_results(results: dict, bh_return_pct: Optional[float] = None) -> dict:
-    """Collapse a Backtester result dict to the per-leg metrics M1 reports."""
     ret = float(results["total_return_pct"])
     dd = float(results["max_drawdown_pct"])
     liquidated = bool(results.get("liquidated"))
@@ -179,20 +83,11 @@ def leg_from_results(results: dict, bh_return_pct: Optional[float] = None) -> di
         ),
         "trades": int(results["total_trades"]),
         "bh_return_pct": bh_return_pct,
-        # #1005: equity hit 0 — metrics are floored at the bust bar (return
-        # and DD read −100%); surfaced so blown legs are never silent.
         "liquidated": liquidated,
     }
 
 
 def incumbent_bars(incumbent_legs: dict) -> dict:
-    """Per-dataset incumbent-median bars (M1 step 2).
-
-    ``incumbent_legs``: {dataset_key: {incumbent_name: leg | None}}.
-    Returns {dataset_key: {"sharpe": median, "ddadj": median, "n": count}}
-    over incumbents that produced a leg; a dataset where no incumbent ran
-    yields None (no bar — the candidate leg is reported but unscored).
-    """
     bars = {}
     for ds, legs in incumbent_legs.items():
         present = [leg for leg in legs.values() if leg is not None]
@@ -208,13 +103,6 @@ def incumbent_bars(incumbent_legs: dict) -> dict:
 
 
 def score_candidate(candidate_legs: dict, bars: dict) -> dict:
-    """Verdict for one window (M1 steps 2 + 5).
-
-    Pass = candidate mean beats the mean per-dataset bar on BOTH Sharpe and
-    DDadj, across datasets where both sides ran, AND the result is not
-    degenerate (must trade on a majority of scored datasets — #976 rejected
-    zero-trade-leg passes as meaningless).
-    """
     rows = []
     for ds in candidate_legs:
         leg = candidate_legs[ds]
@@ -235,9 +123,6 @@ def score_candidate(candidate_legs: dict, bars: dict) -> dict:
     mean_bar_sharpe = statistics.mean(r["bar"]["sharpe"] for r in scored)
     mean_bar_ddadj = statistics.mean(r["bar"]["ddadj"] for r in scored)
     traded = sum(1 for r in scored if r["leg"]["trades"] > 0)
-    # Counted over `rows` (all legs), NOT `scored`, by design (#1005): a blown
-    # leg with no incumbent bar is excluded from the scored means but operators
-    # must still see every death, so this count can exceed scored_datasets.
     liquidated = sum(1 for r in rows
                      if r["leg"] is not None and r["leg"].get("liquidated"))
     degenerate = traded < math.ceil(len(scored) / 2)
@@ -267,7 +152,6 @@ def score_candidate(candidate_legs: dict, bars: dict) -> dict:
 
 
 def parse_sweep_arg(raw: str) -> tuple:
-    """Parse 'param=v1,v2,v3' into (param, [values]) with numeric coercion."""
     if "=" not in raw:
         raise ValueError(f"--sweep expects param=v1,v2,...  got: {raw!r}")
     param, _, values = raw.partition("=")
@@ -288,11 +172,6 @@ def parse_sweep_arg(raw: str) -> tuple:
 
 
 def expand_sweep(base_params: dict, sweep_specs: List[tuple]) -> List[tuple]:
-    """Cartesian product of sweep values over base params.
-
-    Returns [(label, params), ...]; label names only the swept params so the
-    plateau table stays readable.
-    """
     names = [s[0] for s in sweep_specs]
     grids = [s[1] for s in sweep_specs]
     combos = []
@@ -309,16 +188,11 @@ def dataset_key(symbol: str, timeframe: str) -> str:
 
 
 def parse_dataset_arg(raw: str) -> tuple:
-    """Parse 'BTC/USDT:1h' into (symbol, timeframe)."""
     sym, sep, tf = raw.rpartition(":")
     if not sep or not sym or not tf:
         raise ValueError(f"--datasets expects SYMBOL:TIMEFRAME, got: {raw!r}")
     return sym.strip(), tf.strip()
 
-
-# ---------------------------------------------------------------------------
-# Leg execution (I/O; everything above stays pure for tests).
-# ---------------------------------------------------------------------------
 
 def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
             window: tuple, capital: float = DEFAULT_CAPITAL,
@@ -340,48 +214,6 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
             keep_trades: bool = False,
             intrabar_resolution: str = "ohlc_walk",
             exchange_id: Optional[str] = None) -> Optional[dict]:
-    """Run one (strategy, dataset, window) leg on the audit-identical harness.
-
-    ``exchange_id`` (keyword-only, default ``None``) selects the DATA-SOURCE
-    exchange whose cached OHLCV this leg loads. ``None`` keeps
-    ``load_cached_data``'s own default, so every existing caller stays
-    byte-identical and the M1 bar remains a ``PLATFORM``-sourced series. A
-    research harness that scores tape another venue carries (the #1424 Hurst
-    study reads pre-2020 Bitstamp and Coinbase history) passes it explicitly;
-    it is the DATA axis and never the fee model (see the PLATFORM /
-    FEE_PLATFORM note above).
-
-    ``commission_pct`` / ``slippage_pct`` are keyword-only friction overrides
-    (default ``None``): with both ``None`` the harness is byte-identical to the
-    M1 scorer (platform fee + the Backtester's 5 bps slippage default). The fee
-    audit (#999) passes ``commission_pct=0.0, slippage_pct=0.0`` for the gross
-    (zero-friction) re-run. The returned leg dict carries an additive
-    ``span_days`` key (calendar span of the data slice) so callers can
-    annualize trade counts. ``keep_trades`` (#1054) additionally attaches
-    ``trade_samples`` (per-trade ``{entry_date, pnl_pct}``) so the gross-edge
-    noise check can resample the trade universe the same harness produced.
-    ``intrabar_resolution`` (#1271) selects how a same-bar SL/TP race is
-    resolved: ``"ohlc_walk"`` (default) walks the bar's O/H/L/C path; pass
-    ``"bar_close"`` to reproduce pre-#1271 documented baselines.
-
-    allowed_regimes (when provided) turns on the regime entry gate for this
-    leg; regime_enabled is forced true in that case so the Backtester injects
-    the regime column and applies the gate. Without regime_windows_spec the
-    gate classifies with the legacy single-lookback ADX; with a windows spec
-    (#985, parsed shape from parse_regime_windows_spec_json) the Backtester's
-    #1058 path classifies the PRIMARY (medium-first) window instead — composite
-    (9-state) or ADX per the spec — so composite labels can gate entries on the
-    M1 bar.
-
-    regime_directional_policy (#1166, #1025 shape {trend_regime: {label:
-    {direction, invert_signal?}}}) resolves the entry direction per bar
-    regime so directional-gated candidates can be scored on the M1 bar. It is
-    a RESEARCH-MODE surface: the leg passes the Backtester's #1085 certified
-    input explicitly (True), deliberately bypassing the default-off live
-    evidence gate for measurement — never wire a shipped certification
-    artifact through here. regime_enabled is forced true when a policy is
-    present (the Backtester rejects a policy without regime compute).
-    """
     from atr import ensure_atr_indicator
     import pandas as pd
     from data_fetcher import load_cached_data
@@ -395,14 +227,6 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
                           **load_kwargs)
     if df.empty:
         return None
-    # load_ohlcv's end bound is INCLUSIVE (timestamp <= end_ts), but M1 windows
-    # share boundaries ("is" ends where "oos" begins, "2023" where "2024"
-    # begins, ...) and gross_edge_noise documents a half-open [start, end)
-    # convention. Slice the end EXCLUSIVELY here — dropping any bar whose OPEN
-    # time equals `end` — so adjacent windows never double-count the boundary
-    # bar. We fix it at this caller rather than in load_ohlcv, whose inclusive
-    # contract other callers rely on. end=None means "latest cached bar" (no
-    # upper bound), so it is left untouched.
     if end is not None:
         df = df[df.index < pd.Timestamp(end)]
         if df.empty:
@@ -416,7 +240,6 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
     strat_params = params if params is not None else strat["default_params"]
 
     if profile_allocation:
-        # #998: per-profile signals + long-window label, then engine replays the switch.
         param_sets = profile_allocation["param_sets"]
         df_signals = None
         for p in sorted(param_sets):
@@ -436,11 +259,6 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
         if close_strategies:
             df_signals = ensure_atr_indicator(df_signals)
 
-    # Regime gate support for M1: if allowed_regimes given, enable the
-    # regime computation so the gate can filter entries on the bar. A windows
-    # spec alone also enables it (the spec exists only to pick the gate's
-    # classifier, so threading it without computing the column would be a
-    # silent no-op).
     use_regime = (regime_enabled or bool(allowed_regimes)
                   or bool(regime_windows_spec)
                   or bool(regime_directional_policy))
@@ -457,20 +275,11 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
         regime_adx_threshold=regime_adx_threshold,
         allowed_regimes=allowed_regimes,
         regime_windows_spec=regime_windows_spec,
-        # commission_pct=None keeps the Backtester's platform-derived fee — the
-        # M1 default; an explicit 0.0 (fee audit gross run) overrides it.
         commission_pct=commission_pct,
         intrabar_resolution=intrabar_resolution,
     )
-    # Only override slippage when asked; otherwise the Backtester's 5 bps
-    # default stands (passing None would zero it out via the constructor).
     if slippage_pct is not None:
         bt_kwargs["slippage_pct"] = slippage_pct
-    # #1166: keys added ONLY when a policy is present so legs without one
-    # build byte-identical Backtester kwargs. The certified override is
-    # explicit research mode — without it the #1085 evidence gate nulls the
-    # policy to base direction (matching live default-off) and the run would
-    # silently score the ungated config.
     if regime_directional_policy:
         bt_kwargs["regime_directional_policy"] = regime_directional_policy
         bt_kwargs["regime_directional_certified"] = True
@@ -493,7 +302,6 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
 def compute_incumbent_legs(reg, datasets: List[tuple], window: tuple,
                            capital: float, *,
                            intrabar_resolution: str = "ohlc_walk") -> dict:
-    """All incumbent legs for one window: {dataset_key: {name: leg|None}}."""
     out = {}
     for symbol, timeframe in datasets:
         ds = dataset_key(symbol, timeframe)
@@ -506,18 +314,6 @@ def compute_incumbent_legs(reg, datasets: List[tuple], window: tuple,
 
 
 def validate_candidate(candidate: dict) -> dict:
-    """Reject candidate configs the harness cannot faithfully model.
-
-    Mirrors the run_backtest.py --config guards: the plain signal path (no
-    close evaluator) runs one leg at a time — long/flat by default, short/flat
-    under direction="short" (#989: signal=-1 opens the short, +1 closes it).
-    direction="both" remains unmodelable there (one signal cannot open one
-    side and close the other), so it would silently score as long/flat — a
-    misleading verdict, not an error. Likewise invert_signal is
-    HL-perps/manual-only live (config.go rejects it elsewhere at startup), so
-    a candidate declaring another type must not have signals flipped on a
-    path the live daemon would refuse to load.
-    """
     if not isinstance(candidate, dict) or not candidate.get("name"):
         raise ValueError("candidate needs a 'name'")
     direction = str(candidate.get("direction") or "long").strip().lower()
@@ -541,30 +337,21 @@ def validate_candidate(candidate: dict) -> dict:
             f"invert_signal is HL-perps/manual-only (the live daemon rejects "
             f"this at startup — config.go). Remove invert_signal or declare "
             f"type perps/manual.")
-    # #996: backtester-level ATR stop owners are mutually exclusive (mirrors
-    # the live config's exclusive stop fields).
     if candidate.get("stop_loss_atr_mult") and candidate.get("trailing_stop_atr_mult"):
         raise ValueError(
             "candidate sets both stop_loss_atr_mult and "
             "trailing_stop_atr_mult; the stop owners are mutually exclusive "
             "— pick one.")
-    # #998: regime-profile allocation is backtestable; validate the block shape
-    # and require an inline window_spec so the harness can compute the label
-    # series (eval_windows has no live regime store / config).
     pal = candidate.get("profile_allocation")
     if pal:
         from backtester import _parse_profile_allocation
-        _parse_profile_allocation(pal)  # raises on bad param_sets/confirm/initial
+        _parse_profile_allocation(pal)
         if not pal.get("window_spec"):
             raise ValueError(
                 "candidate.profile_allocation needs an inline 'window_spec' "
                 "({classifier, period[, thresholds|adx_threshold]}) so the "
                 "harness can compute the switch label series.")
 
-    # #1031: allowed_regimes must be a list of str (or absent/empty).
-    # Bare string (common in hand JSON) becomes per-char list in Backtester
-    # and silently blocks every entry → 0-trade "result" instead of loud error.
-    # CLI path produces a proper list; JSON path needs this guard.
     ar = candidate.get("allowed_regimes")
     if ar is not None:
         if not isinstance(ar, list):
@@ -577,11 +364,6 @@ def validate_candidate(candidate: dict) -> dict:
         if len(ar) == 0:
             candidate.pop("allowed_regimes", None)
 
-    # #985: optional windows spec selecting the entry gate's classifier
-    # (composite 9-state or ADX) via the Backtester's #1058 primary-window
-    # path. Validated/normalized with the same parser the live config and
-    # run_backtest --config use, so a malformed spec fails loudly here
-    # instead of silently classifying with the legacy default.
     rws = candidate.get("regime_windows_spec")
     if rws is not None:
         if not isinstance(rws, dict):
@@ -590,8 +372,6 @@ def validate_candidate(candidate: dict) -> dict:
                 "{window_name: {classifier, period, ...}} (or omitted for "
                 "the legacy single-lookback ADX gate)")
         if not rws:
-            # Empty object = no spec (legacy gate), same normalization as an
-            # empty allowed_regimes list.
             candidate.pop("regime_windows_spec", None)
         else:
             from regime import parse_regime_windows_spec_json
@@ -601,14 +381,6 @@ def validate_candidate(candidate: dict) -> dict:
                 raise ValueError(f"candidate.regime_windows_spec: {exc}")
             candidate["regime_windows_spec"] = normalized
 
-    # #1166: regime_directional_policy (per-regime entry direction, #1025
-    # shape) is threadable so directional-gated candidates can be scored on
-    # the M1 bar. Normalize with the Backtester's own parser so a malformed
-    # policy fails loudly at the gate instead of deep in the leg run. Any
-    # state resolving direction='both' opens a two-sided book for that
-    # regime, which the plain signal path cannot model (the Backtester
-    # rejects it at run) — require close refs up front, mirroring the
-    # candidate-level direction='both' guard.
     rdp = candidate.get("regime_directional_policy")
     if rdp is not None:
         if not isinstance(rdp, dict):
@@ -637,17 +409,9 @@ def validate_candidate(candidate: dict) -> dict:
                     "by the Backtester (or silently mis-scored). Add "
                     "close_strategies (the open/close engine models both "
                     "sides) or drop the both-states.")
-            # Keep the full {trend_regime: ...} shape the Backtester
-            # constructor takes, with the compacted per-label entries.
             candidate["regime_directional_policy"] = {
                 "trend_regime": normalized_rdp}
 
-    # #1338: legacy single-lookback gate params, threadable so a candidate
-    # gates on the exact ADX(period, threshold) its live strategy runs
-    # instead of silently falling back to the harness 14/20 defaults. Only
-    # the legacy ADX gate reads them — a windows spec owns its own
-    # classifier/lookback, so mixing the two is ambiguous; and without a
-    # gate consumer they would be a silent no-op (#1031 style: loud reject).
     rp = candidate.get("regime_period")
     rt = candidate.get("regime_adx_threshold")
     if rp is not None or rt is not None:
@@ -679,31 +443,16 @@ def run_candidate_leg(reg, candidate: dict, symbol: str, timeframe: str,
                       window: tuple, capital: float = DEFAULT_CAPITAL, *,
                       keep_trades: bool = False,
                       intrabar_resolution: str = "ohlc_walk") -> Optional[dict]:
-    """Single source of truth for candidate-dict -> ``run_leg`` kwargs.
-
-    Every field ``validate_candidate`` accepts and the backtester can model is
-    threaded here. Callers that resample or re-score a candidate (M1's
-    ``evaluate_window``, monte_carlo's per-leg trade series) MUST go through
-    this rather than hand-picking a subset: a caller that quietly drops
-    ``close_strategies`` / ``allowed_regimes`` reports numbers for a DIFFERENT
-    strategy than the one under test, while looking correct.
-    """
     return run_leg(
         reg, candidate["name"], candidate.get("params"),
         symbol, timeframe, window, capital=capital,
         close_strategies=candidate.get("close_strategies"),
-        # The validated default ("long") must also be the EXECUTED
-        # default: with close refs and direction=None the engine path
-        # would open shorts on raw signal=-1, silently scoring a
-        # different entry universe than the long-leg harness (#996).
         direction=candidate.get("direction") or "long",
         invert_signal=bool(candidate.get("invert_signal")),
         stop_loss_atr_mult=candidate.get("stop_loss_atr_mult"),
         trailing_stop_atr_mult=candidate.get("trailing_stop_atr_mult"),
         profile_allocation=candidate.get("profile_allocation"),
         allowed_regimes=candidate.get("allowed_regimes"),
-        # #1338: gate on the candidate's own ADX lookback when it carries
-        # one; the 14/20 fallbacks match run_leg's own defaults.
         regime_period=int(candidate.get("regime_period") or 14),
         regime_adx_threshold=float(
             candidate.get("regime_adx_threshold") or 20.0),
@@ -718,14 +467,6 @@ def evaluate_window(reg, candidate: dict, datasets: List[tuple],
                     window_name: str, capital: float,
                     bars_memo: dict, *,
                     intrabar_resolution: str = "ohlc_walk") -> dict:
-    """Candidate legs + incumbent bars + verdict for one window.
-
-    ``intrabar_resolution`` (#1271) is threaded into both the incumbent and
-    candidate legs so they always share one SL/TP race-resolution mode.
-    ``bars_memo`` is keyed by window name only (not by resolution mode), so
-    a single process/invocation must run with one mode throughout — true for
-    every CLI entry point here, where the mode is fixed for the whole run.
-    """
     validate_candidate(candidate)
     window = WINDOWS[window_name]
     if window_name not in bars_memo:
@@ -746,10 +487,6 @@ def evaluate_window(reg, candidate: dict, datasets: List[tuple],
     score["bars"] = bars
     return score
 
-
-# ---------------------------------------------------------------------------
-# Reporting.
-# ---------------------------------------------------------------------------
 
 def _fmt(v, width=8, prec=2):
     if v is None:
@@ -845,10 +582,6 @@ def format_sweep_report(sweep_rows: List[dict], window_name: str) -> str:
                  "not a single-param spike.)")
     return "\n".join(lines)
 
-
-# ---------------------------------------------------------------------------
-# CLI.
-# ---------------------------------------------------------------------------
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(

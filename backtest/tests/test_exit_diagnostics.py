@@ -1,4 +1,3 @@
-"""Tests for the #997 M3 exit-quality diagnostics + backtester hold telemetry."""
 
 import math
 
@@ -8,10 +7,6 @@ import pytest
 from backtester import Backtester
 import exit_diagnostics as ed
 
-
-# --------------------------------------------------------------------------
-# Pure aggregation helpers (no data access).
-# --------------------------------------------------------------------------
 
 def _t(**kw):
     base = dict(pnl_pct=0.0, shares=10.0, entry_price=100.0, exit_price=100.0,
@@ -24,20 +19,18 @@ def _t(**kw):
 
 def test_trade_metrics_fee_and_atr_conversion():
     m = ed.trade_metrics(_t(pnl_pct=5.0, exit_price=105.0, mae_pct=-2.0))
-    # entry_fee 1 / (10*100) = 0.1%; exit_fee 1 / (10*105) ~= 0.0952%.
     assert m["fee_pct"] == pytest.approx(0.1 + 1 / (10 * 105) * 100, abs=1e-6)
     assert m["net_pct"] == pytest.approx(5.0 - m["fee_pct"], abs=1e-6)
-    # MAE 2% of entry 100 = 2.0 price units / entry_atr 2.0 = 1.0 ATR.
     assert m["mae_atr"] == pytest.approx(1.0, abs=1e-6)
 
 
 def test_classify_bleed_modes_each_mode():
     trades = [
-        _t(pnl_pct=5.0, exit_price=105.0, mfe_pct=6.0, mae_pct=-0.5),   # clean_win
-        _t(pnl_pct=1.0, exit_price=101.0, mfe_pct=8.0, mae_pct=-1.0),   # late_giveback (cap<0.5)
-        _t(pnl_pct=-4.0, exit_price=96.0, mfe_pct=0.2, mae_pct=-5.0),   # early_reversal
-        _t(pnl_pct=0.1, exit_price=100.1, mfe_pct=0.3, mae_pct=-0.2),   # fee_churn (fees>gross)
-        _t(pnl_pct=-3.0, exit_price=97.0, mfe_pct=0.7, mae_pct=-3.0),   # clean_loss (modest favourable in [0.5,1.0), then faded)
+        _t(pnl_pct=5.0, exit_price=105.0, mfe_pct=6.0, mae_pct=-0.5),
+        _t(pnl_pct=1.0, exit_price=101.0, mfe_pct=8.0, mae_pct=-1.0),
+        _t(pnl_pct=-4.0, exit_price=96.0, mfe_pct=0.2, mae_pct=-5.0),
+        _t(pnl_pct=0.1, exit_price=100.1, mfe_pct=0.3, mae_pct=-0.2),
+        _t(pnl_pct=-3.0, exit_price=97.0, mfe_pct=0.7, mae_pct=-3.0),
     ]
     modes = ed.classify_bleed_modes([ed.trade_metrics(t) for t in trades])
     assert modes["clean_win"]["count"] == 1
@@ -49,8 +42,8 @@ def test_classify_bleed_modes_each_mode():
 
 def test_fee_churn_summary_flags():
     trades = [
-        ed.trade_metrics(_t(pnl_pct=0.1, exit_price=100.1, entry_fee=1.0, exit_fee=1.0)),  # flipped
-        ed.trade_metrics(_t(pnl_pct=5.0, exit_price=105.0, entry_fee=1.0, exit_fee=1.0)),  # clean
+        ed.trade_metrics(_t(pnl_pct=0.1, exit_price=100.1, entry_fee=1.0, exit_fee=1.0)),
+        ed.trade_metrics(_t(pnl_pct=5.0, exit_price=105.0, entry_fee=1.0, exit_fee=1.0)),
     ]
     s = ed.fee_churn_summary(trades)
     assert s["trades"] == 2
@@ -79,13 +72,7 @@ def test_empty_inputs_are_safe():
     assert diag["fee_churn"] == {"trades": 0}
 
 
-# --------------------------------------------------------------------------
-# End-to-end: the backtester stamps exact hold telemetry.
-# --------------------------------------------------------------------------
-
 def test_backtester_stamps_exact_excursions():
-    # Open long at bar 1's open (=100). Held bars 1,2,3; time_stop(3) fires at
-    # bar 3 close, fills at bar 4 open (=103). Excursions span bars 1-3 only.
     idx = pd.date_range("2024-01-01", periods=6, freq="h")
     df = pd.DataFrame({
         "open":  [100, 100, 101, 102, 103, 103],
@@ -104,19 +91,15 @@ def test_backtester_stamps_exact_excursions():
     t = r["trades"][0]
     assert t["bars_held"] == 3
     assert t["exit_reason"] == "time_stop:3"
-    # MFE: max high through bar 3 = 104 -> +4%, at bar 3.
     assert t["mfe_pct"] == pytest.approx(4.0)
     assert t["bars_to_mfe"] == 3
-    # MAE: min low through bar 3 = 99 (bar 1) -> -1%, at bar 1.
     assert t["mae_pct"] == pytest.approx(-1.0)
     assert t["bars_to_mae"] == 1
     assert t["entry_atr"] == pytest.approx(2.0)
-    assert t["entry_fee"] == pytest.approx(1.0)  # 1000 * 0.001
+    assert t["entry_fee"] == pytest.approx(1.0)
 
 
 def test_atr_stop_engine_fires_at_next_open():
-    # entry at bar 1 open=100, entry_atr=2, atr_stop mult=2 -> stop at 96.
-    # bar 2 close=95 breaches -> fill at bar 3 open=95.
     idx = pd.date_range("2024-01-01", periods=5, freq="h")
     df = pd.DataFrame({
         "open":  [100, 100, 97, 95, 95],
@@ -136,9 +119,6 @@ def test_atr_stop_engine_fires_at_next_open():
 
 
 def test_zscore_target_engine_uses_closed_bar_z():
-    # A long that stretches up; zscore_target(lookback=3, z_target=1.0) closes
-    # on the first bar whose closed-bar z >= 1.0. Just assert it exits via the
-    # zscore evaluator (deterministic series, fill at next open).
     idx = pd.date_range("2024-01-01", periods=10, freq="h")
     closes = [100, 100, 100, 100, 101, 103, 108, 108, 108, 108]
     df = pd.DataFrame({

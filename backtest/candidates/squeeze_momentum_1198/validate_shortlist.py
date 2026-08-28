@@ -1,19 +1,4 @@
 #!/usr/bin/env python3
-"""Score the #1198 squeeze_momentum shortlist through the M1 harness, sharing
-incumbent bars.
-
-Equivalent to running eval_windows.py --candidate-json per candidate across all
-five windows (identical functions, identical harness — evaluate_window threads
-allowed_regimes / regime_windows_spec / profile_allocation natively) but in one
-process so the incumbent-median bars are computed once per window instead of
-once per candidate. Use the per-candidate eval_windows.py command from the
-README (with --registry spot) to reproduce any single table independently.
-
-Run from repo root:
-  uv run --no-sync python backtest/candidates/squeeze_momentum_1198/validate_shortlist.py \
-      [--candidates baseline.json,...] \
-      [--json backtest/candidates/squeeze_momentum_1198/validation.json]
-"""
 
 import argparse
 import json
@@ -21,10 +6,10 @@ import os
 import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(_HERE, "..", ".."))          # backtest/
+sys.path.insert(0, os.path.join(_HERE, "..", ".."))
 sys.path.insert(0, os.path.join(_HERE, "..", "..", "..", "shared_tools"))
 
-from eval_windows import (DATASETS, WINDOWS, evaluate_window,   # noqa: E402
+from eval_windows import (DATASETS, WINDOWS, evaluate_window,
                           format_summary, format_window_report)
 
 CANDIDATES = [

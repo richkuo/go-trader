@@ -11,13 +11,9 @@ func TestTradeAlertCloseSourceClassification(t *testing.T) {
 		want    string
 	}{
 		{"Stop loss close ETH, PnL: $-22.45 (fee $1.10)", "exchange SL"},
-		// #716 item 4: paper / trailing variants classify distinctly so an
-		// operator doesn't see a paper-mode trailing SL labeled "exchange SL".
 		{"Paper trailing SL close ETH, PnL: $-22.45 (fee $1.10)", "paper trailing SL"},
 		{"Trailing SL close ETH, PnL: $-22.45 (fee $1.10)", "trailing SL"},
 		{"Paper SL close ETH, PnL: $-22.45 (fee $1.10)", "paper SL"},
-		// #1450 round 13: the liquidation-guard's clamp closes carry their own
-		// prefix and must not fall through to an empty Source line.
 		{"Liquidation-clamp SL close ETH, PnL: $-22.45 (fee $1.10)", "liquidation-clamp SL"},
 		{"TP1 fill close, PnL: $34.35 (fee $1.23)", "exchange TP1"},
 		{"TP2 fill close, PnL: $50.00 (fee $1.50)", "exchange TP2"},
@@ -26,7 +22,7 @@ func TestTradeAlertCloseSourceClassification(t *testing.T) {
 		{"External partial close @ mark $3077", "external (peer / manual UI, partial)"},
 		{"Close long, PnL: $34.35 (fee $1.23)", "close-strategy exit"},
 		{"Close short, PnL: $12.50 (fee $1.23)", "close-strategy exit"},
-		{"Partial-close long ETH, PnL: $12.34 (fee $0.05)", ""}, // partial-close from signal: not a trigger, no annotation
+		{"Partial-close long ETH, PnL: $12.34 (fee $0.05)", ""},
 		{"", ""},
 	}
 	for _, c := range cases {

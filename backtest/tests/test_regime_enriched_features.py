@@ -1,10 +1,3 @@
-"""Tests for the #1095 enriched feature matrix and the fit/decode column-order contract.
-
-Covers: canonical-first column order, causal joins (look-ahead regression mirroring
-test_backtester_lookahead.py — future bars never change a past feature row), funding backward-only,
-HTF causal alignment, the fit<->decode column-order contract, and the decouple of fit-features from
-naming-features (states named from the four canonical columns regardless of extra dims or position).
-"""
 import os
 import sys
 
@@ -24,11 +17,9 @@ import regime_vol_model as rvm
 
 
 def _synthetic_ohlcv(n=600, seed=0):
-    """Hourly OHLCV with a DatetimeIndex, alternating trending/ranging segments so the canonical
-    composite features are non-degenerate, plus a volume series with regime-correlated bursts."""
     rng = np.random.default_rng(seed)
     idx = pd.date_range("2022-01-01", periods=n, freq="1h")
-    drift = np.where((np.arange(n) // 50) % 2 == 0, 0.002, 0.0)   # alternating trend/range blocks
+    drift = np.where((np.arange(n) // 50) % 2 == 0, 0.002, 0.0)
     rets = drift + rng.normal(0, 0.01, size=n)
     close = 100 * np.cumprod(1 + rets)
     high = close * (1 + np.abs(rng.normal(0, 0.004, size=n)))
@@ -41,15 +32,11 @@ def _synthetic_ohlcv(n=600, seed=0):
 
 
 def _synthetic_funding(idx, seed=1):
-    """Hourly funding (timestamp ms, rate) covering [first_bar, last_bar], first snapshot exactly on
-    the first bar so the column is not all-NaN."""
     rng = np.random.default_rng(seed)
-    ts = (idx.as_unit("ns").asi8 // 1_000_000).astype("int64")   # -> epoch ms
+    ts = (idx.as_unit("ns").asi8 // 1_000_000).astype("int64")
     rate = rng.normal(0.0001, 0.00005, size=len(idx))
     return pd.DataFrame({"timestamp": ts, "rate": rate})
 
-
-# ---------------------------------------------------------------- column contract / ordering
 
 def test_canonical_columns_lead_enriched_set():
     assert ref.ENRICHED_COLUMNS[:4] == ref.CANONICAL_COLUMNS
@@ -68,7 +55,6 @@ def test_builder_full_matrix_columns_and_order():
 def test_subset_selection_preserves_canonical_first_order():
     df = _synthetic_ohlcv()
     fund = _synthetic_funding(df.index)
-    # request out of order; builder must re-order to canonical-first global order
     mat = ref.enriched_feature_matrix(df, period=48, funding=fund,
                                       columns=["htf_range_eff", "adx", "return_eff",
                                                "funding_rate", "range_eff", "efficiency"])
@@ -84,14 +70,11 @@ def test_builder_rejects_unknown_column():
 
 def test_canonical_indices_for():
     assert ref.canonical_indices_for(ref.ENRICHED_COLUMNS) == (0, 1, 2, 3)
-    # canonical not first -> indices track their real positions
     cols = ["funding_rate", "return_eff", "range_eff", "efficiency", "adx"]
     assert ref.canonical_indices_for(cols) == (1, 2, 3, 4)
     with pytest.raises(ValueError, match="missing"):
-        ref.canonical_indices_for(["return_eff", "range_eff", "adx"])  # efficiency missing
+        ref.canonical_indices_for(["return_eff", "range_eff", "adx"])
 
-
-# ---------------------------------------------------------------- look-ahead invariants
 
 def test_enriched_matrix_is_causal_future_bars_do_not_change_past_rows():
     df = _synthetic_ohlcv(n=600)
@@ -99,7 +82,6 @@ def test_enriched_matrix_is_causal_future_bars_do_not_change_past_rows():
     base = ref.enriched_feature_matrix(df, period=48, funding=fund, htf_multiple=4)
     t = 400
     mutated = df.copy()
-    # blow up every bar AFTER t (prices and volume); past rows must be byte-identical
     mutated.iloc[t + 1:, mutated.columns.get_loc("close")] *= 3.0
     mutated.iloc[t + 1:, mutated.columns.get_loc("high")] *= 3.0
     mutated.iloc[t + 1:, mutated.columns.get_loc("low")] *= 3.0
@@ -113,15 +95,13 @@ def test_enriched_matrix_is_causal_future_bars_do_not_change_past_rows():
 
 def test_funding_column_is_backward_only():
     df = _synthetic_ohlcv(n=120)
-    # one funding snapshot at bar 60, value 0.005; bars < 60 see the prior (none -> NaN/earlier),
-    # bars >= 60 see 0.005 until any later snapshot. Build a sparse funding series.
     idx = df.index
     ts = (idx.as_unit("ns").asi8 // 1_000_000).astype("int64")
     fund = pd.DataFrame({"timestamp": [ts[0], ts[60]], "rate": [0.001, 0.005]})
     mat = ref.enriched_feature_matrix(df, period=24, funding=fund, columns=ref.CANONICAL_COLUMNS + ["funding_rate"])
     fr = mat["funding_rate"].to_numpy()
-    assert fr[59] == pytest.approx(0.001)    # before the bar-60 snapshot -> still the bar-0 value
-    assert fr[60] == pytest.approx(0.005)    # at/after the snapshot
+    assert fr[59] == pytest.approx(0.001)
+    assert fr[60] == pytest.approx(0.005)
     assert fr[100] == pytest.approx(0.005)
 
 
@@ -130,8 +110,6 @@ def test_htf_feature_does_not_leak_in_progress_bar():
     mat = ref.enriched_feature_matrix(df, period=20, columns=ref.CANONICAL_COLUMNS + ["htf_range_eff"],
                                       htf_multiple=4)
     htf = mat["htf_range_eff"].to_numpy()
-    # mutate only the LAST base bar's high (still inside the final, not-yet-closed HTF bucket);
-    # no earlier base row's htf value may move.
     mutated = df.copy()
     mutated.iloc[-1, mutated.columns.get_loc("high")] *= 5.0
     htf2 = ref.enriched_feature_matrix(mutated, period=20,
@@ -145,9 +123,8 @@ def test_volume_z_is_trailing_and_warmup_nan():
     mat = ref.enriched_feature_matrix(df, period=48, columns=ref.CANONICAL_COLUMNS + ["volume_z"],
                                       vol_window=24)
     vz = mat["volume_z"].to_numpy()
-    assert np.isnan(vz[:23]).all()            # fewer than `vol_window` observations -> NaN
-    assert np.isfinite(vz[23])                # first full trailing window defined
-    # recompute the z-score at one bar by hand from the trailing window
+    assert np.isnan(vz[:23]).all()
+    assert np.isfinite(vz[23])
     vol = df["volume"].to_numpy()
     i = 100
     w = vol[i - 23: i + 1]
@@ -160,9 +137,8 @@ def test_hurst_column_is_trailing_and_warmup_nan():
     mat = ref.enriched_feature_matrix(df, period=48, columns=ref.CANONICAL_COLUMNS + ["hurst"],
                                       hurst_window=100)
     h = mat["hurst"].to_numpy()
-    assert np.isnan(h[:100]).all()   # fewer than `hurst_window` observations -> NaN
-    assert np.isfinite(h[100])       # first full trailing window (101 closes) is defined
-    # recompute by hand from the SSoT estimator over the same trailing window
+    assert np.isnan(h[:100]).all()
+    assert np.isfinite(h[100])
     from indicators_core import hurst_exponent
     close = df["close"].to_numpy()
     i = 200
@@ -171,9 +147,6 @@ def test_hurst_column_is_trailing_and_warmup_nan():
 
 
 def test_hurst_column_uses_own_window_independent_of_period():
-    """#1409: hurst must NOT inherit `period` (14-50 bars live) as its window -- that would put it
-    below the ~100-point DFA floor and make it NaN almost every live cycle. Two calls with the
-    SAME hurst_window but different `period` must produce the identical hurst column."""
     df = _synthetic_ohlcv(n=300)
     mat_a = ref.enriched_feature_matrix(df, period=20, columns=ref.CANONICAL_COLUMNS + ["hurst"],
                                         hurst_window=100)
@@ -200,8 +173,6 @@ def test_hurst_extra_column_appended_after_canonical_block():
     assert "hurst" in ref.ENRICHED_EXTRA_COLUMNS
 
 
-# ---------------------------------------------------------------- fit / decode contract
-
 def test_fit_unsupervised_enriched_schema_and_decode():
     from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH, VALID_LABELS_COMPOSITE
     df = _synthetic_ohlcv()
@@ -213,9 +184,9 @@ def test_fit_unsupervised_enriched_schema_and_decode():
                                  canonical_indices=ref.canonical_indices_for(cols))
     assert model["features"] == list(cols)
     assert model["canonical_indices"] == [0, 1, 2, 3]
-    assert len(model["feature_means"]) == len(cols)             # ALL dims carried
+    assert len(model["feature_means"]) == len(cols)
     assert all(len(e["mean"]) == len(cols) for e in model["emissions"])
-    assert all(s in VALID_LABELS_COMPOSITE for s in model["states"])  # named from canonical only
+    assert all(s in VALID_LABELS_COMPOSITE for s in model["states"])
     labels, conf = ref.decode_with_model(mat, model)
     assert len(labels) == len(mat)
     valid = ~np.isnan(mat.to_numpy(dtype=float)).any(1)
@@ -227,7 +198,7 @@ def test_fit_unsupervised_rejects_feature_name_count_mismatch():
     feats = np.random.default_rng(0).normal(size=(300, 5))
     with pytest.raises(ValueError, match="columns but feature_names lists"):
         rvm.fit_unsupervised(feats, family="kmeans", k=3, filter_window=16, thresholds=dict(TH),
-                             feature_names=["a", "b", "c"])  # 5 cols vs 3 names
+                             feature_names=["a", "b", "c"])
 
 
 def test_decode_contract_rejects_column_reorder():
@@ -247,8 +218,6 @@ def test_decode_contract_rejects_column_reorder():
 
 
 def test_column_order_is_load_bearing_for_labels():
-    # Decoding the SAME bars in a different column order changes labels — proves the contract
-    # guards a real correctness hazard (forward_filter_labels is positional).
     from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH
     from regime_hmm import forward_filter_labels
     df = _synthetic_ohlcv()
@@ -260,31 +229,26 @@ def test_column_order_is_load_bearing_for_labels():
                                  canonical_indices=(0, 1, 2, 3))
     correct, _ = forward_filter_labels(mat.to_numpy(dtype=float), model)
     swapped = mat[["adx", "range_eff", "efficiency", "return_eff", "funding_rate",
-                   "volume_z", "htf_range_eff", "hurst"]]  # return_eff <-> adx swapped (very different scale)
+                   "volume_z", "htf_range_eff", "hurst"]]
     wrong, _ = forward_filter_labels(swapped.to_numpy(dtype=float), model)
     valid = ~np.isnan(mat.to_numpy(dtype=float)).any(1)
     assert list(np.asarray(correct)[valid]) != list(np.asarray(wrong)[valid])
 
 
-# ---------------------------------------------------------------- naming decoupled from fit dims
-
 def test_naming_ignores_extra_dims_given_same_canonical_centroids():
     from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH
     mean = np.zeros(6); std = np.ones(6)
-    # two states: identical in canonical cols 0..3, differ only in the extra cols 4,5
     em_a = np.array([[0.0, 0.02, 0.1, 8.0, 0.0, 0.0],
                      [0.4, 0.5, 0.9, 40.0, 0.0, 0.0]], dtype=float)
-    em_b = em_a.copy(); em_b[:, 4:] = 99.0     # extra dims wildly different
+    em_b = em_a.copy(); em_b[:, 4:] = 99.0
     names_a, _ = rvm.map_latent_to_names(em_a, mean, std, dict(TH), canonical_indices=(0, 1, 2, 3))
     names_b, _ = rvm.map_latent_to_names(em_b, mean, std, dict(TH), canonical_indices=(0, 1, 2, 3))
-    assert names_a == names_b                  # extra signals shape geometry, not the label
+    assert names_a == names_b
 
 
 def test_naming_with_canonical_columns_not_first():
-    # canonical block placed AFTER an extra column; correct canonical_indices still names right.
     from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH
     mean = np.zeros(5); std = np.ones(5)
-    # layout: [funding, return_eff, range_eff, efficiency, adx]
     em = np.array([[0.0, 0.0, 0.02, 0.1, 8.0],
                    [0.0, 0.4, 0.5, 0.9, 40.0]], dtype=float)
     names, _ = rvm.map_latent_to_names(em, mean, std, dict(TH), canonical_indices=(1, 2, 3, 4))
@@ -292,7 +256,6 @@ def test_naming_with_canonical_columns_not_first():
 
 
 def test_map_latent_to_names_default_indices_unchanged_for_canonical_only():
-    # regression: the 4-column legacy path (default canonical_indices) is byte-identical.
     from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH
     mean = np.zeros(4); std = np.ones(4)
     em = np.array([[0.0, 0.0, 0.1, 0.0], [0.5, 0.5, 0.9, 40.0]], dtype=float)
@@ -300,8 +263,6 @@ def test_map_latent_to_names_default_indices_unchanged_for_canonical_only():
     assert names == ["ranging_quiet", "trending_up_clean"]
     assert mapping["1"]["centroid_raw"] == [0.5, 0.5, 0.9, 40.0]
 
-
-# ---------------------------------------------------------------- one Bonferroni family (4b)
 
 def _load_research(mod_name, filename):
     import importlib.util
@@ -313,9 +274,6 @@ def _load_research(mod_name, filename):
 
 
 def test_combined_family_plan_spans_all_subsets():
-    """#1095 4b: the Bonferroni denominator is the COMBINED structurally-eligible count of the
-    whole subsets x families x K grid — never a per-subset count — and ineligible cells (k below
-    the incumbent floor, #1160) are excluded per cell with their reason recorded."""
     m95 = _load_research("regime_1095_plan", "regime_1095_enriched_vol_model.py")
     m80 = _load_research("regime_1080_plan", "regime_1080_unsupervised_vol_model.py")
     th = rvm.NonDegeneracyThresholds(min_active_labels=4, max_occupancy=0.9,
@@ -324,34 +282,26 @@ def test_combined_family_plan_spans_all_subsets():
     plan, reasons, denom = m95.combined_family_plan(
         subsets, ("kmeans", "hmm"), range(3, 6), th,
         ineligible_reason_fn=m80.structurally_ineligible_reason)
-    assert len(plan) == 3 * 2 * 3                       # every (subset, family, k) cell swept
-    assert denom == 3 * 2 * 2                           # k=3 ineligible everywhere; k=4,5 count
-    assert reasons[("volume", "kmeans", 3)]             # reason recorded per cell
+    assert len(plan) == 3 * 2 * 3
+    assert denom == 3 * 2 * 2
+    assert reasons[("volume", "kmeans", 3)]
     assert reasons[("volume", "kmeans", 4)] is None
-    # separate per-subset calls would each correct over only their own sweep -> looser alpha
     per_subset = 2 * 2
     assert m80.bonferroni_alpha(denom) < m80.bonferroni_alpha(per_subset)
 
 
 def test_combined_family_funds_the_tighter_alpha():
-    """#1095 4b: resolve_bakeoff_n_perm must be fed the COMBINED count — an n_perm adequate for
-    one subset's sweep is rejected for the combined family, and the auto-resolved count rises to
-    keep the tighter corrected alpha achievable."""
     m80 = _load_research("regime_1080_nperm", "regime_1080_unsupervised_vol_model.py")
-    combined = 5 * 3 * 2      # 5 subsets x 3 families x 2 eligible k
+    combined = 5 * 3 * 2
     per_subset = 3 * 2
     resolved_combined = m80.resolve_bakeoff_n_perm(combined)
     resolved_single = m80.resolve_bakeoff_n_perm(per_subset)
-    assert resolved_combined > resolved_single          # resolution scales with the family size
-    assert 1.0 / (resolved_combined + 1) <= m80.bonferroni_alpha(combined) / 2.0  # headroom holds
-    # n_perm=300 satisfies a 6-candidate family (floor 119) but NOT the 30-candidate combined
-    # family (floor 599): under-correcting by splitting the runs is exactly what this rejects.
+    assert resolved_combined > resolved_single
+    assert 1.0 / (resolved_combined + 1) <= m80.bonferroni_alpha(combined) / 2.0
     assert m80.resolve_bakeoff_n_perm(per_subset, requested=300) == 300
     with pytest.raises(ValueError, match="cannot satisfy the Bonferroni-corrected alpha"):
         m80.resolve_bakeoff_n_perm(combined, requested=300)
 
-
-# ---------------------------------------------------------------- harness smoke (skips without data)
 
 def test_enriched_bakeoff_smoke_if_data_available():
     try:
@@ -360,13 +310,11 @@ def test_enriched_bakeoff_smoke_if_data_available():
                                  subsets={"canonical": list(ref.CANONICAL_COLUMNS),
                                           "volume": ref.CANONICAL_COLUMNS + ["volume_z"]},
                                  eval_windows=("is", "oos"), n_perm=200)
-    except Exception as e:  # noqa: BLE001 — no cached OHLCV in CI -> skip, not fail
+    except Exception as e:
         pytest.skip(f"no cached OHLCV / data path unavailable: {e}")
     assert "ablation" in report and "candidates" in report
     assert report["ablation"]["canonical"]["status"] in ("ok", "unavailable")
     assert "live_wiring_delta" in report
-    # #1160 / #1095 4b+4c audit surface: combined denominator, resolved n_perm, and the
-    # per-subset incumbent knife-edge fields must be stamped.
     assert report["n_perm"] == 200
     assert report["bonferroni_denominator"] == sum(
         1 for c in report["candidates"] if not c["structurally_ineligible"])

@@ -1,12 +1,3 @@
-"""Tests for fetch_okx_positions.py — live-account position fetcher used
-by the portfolio kill switch (#345).
-
-The kill switch's flat-confirmation depends on this script reporting every
-open perps position truthfully. A regression that drops a position from
-the output would cause the switch to release its latch while on-chain
-exposure remained — the exact #345 failure mode shifted into the Python
-layer.
-"""
 
 import builtins
 import importlib.util
@@ -20,12 +11,6 @@ import pytest
 
 
 def _run_script(positions_or_exc, is_live=True):
-    """Invoke fetch_okx_positions.main() with a mocked adapter.
-
-    positions_or_exc may be either a list (returned by
-    adapter._exchange.fetch_positions) or an Exception. Returns
-    (parsed_stdout_json, exit_code).
-    """
     script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                "fetch_okx_positions.py")
     spec = importlib.util.spec_from_file_location("fetch_okx_positions", script_path)
@@ -85,9 +70,6 @@ class TestSuccess:
         assert p["entry_price"] == 42000.5
 
     def test_short_position_size_is_negative(self):
-        """Short positions must be encoded with a negative signed size to
-        mirror HLPosition — the Go-side forceCloseOKXLive treats size==0
-        as already-flat and size!=0 as something to close."""
         out, code = _run_script([
             {"symbol": "ETH/USDT:USDT", "contracts": "0.5", "side": "short",
              "entryPrice": "3000"},
@@ -97,10 +79,6 @@ class TestSuccess:
         assert out["positions"][0]["side"] == "short"
 
     def test_zero_size_filtered(self):
-        """ccxt sometimes returns stale zero-contract entries. They must
-        be filtered — passing a zero-size position to the Go side would
-        trigger the AlreadyFlat defense-in-depth branch but also pollute
-        the report's coin list."""
         out, code = _run_script([
             {"symbol": "BTC/USDT:USDT", "contracts": "0", "side": "long"},
         ])

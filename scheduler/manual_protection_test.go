@@ -13,13 +13,13 @@ func TestComputeFallbackATR(t *testing.T) {
 		wantATR   float64
 		wantOK    bool
 	}{
-		{2500, 20, 12.5, true}, // issue worked example: ETH @ $2500, 20× lev
-		{100, 10, 1.0, true},   // basic
-		{100, 0, 0, false},     // leverage == 0
-		{100, -1, 0, false},    // leverage < 0
-		{0, 10, 0, false},      // fillPrice == 0
-		{-1, 10, 0, false},     // fillPrice < 0
-		{2500, 1, 250, true},   // 1× leverage → 10% of price
+		{2500, 20, 12.5, true},
+		{100, 10, 1.0, true},
+		{100, 0, 0, false},
+		{100, -1, 0, false},
+		{0, 10, 0, false},
+		{-1, 10, 0, false},
+		{2500, 1, 250, true},
 	}
 	for _, c := range cases {
 		got, ok := computeFallbackATR(c.fillPrice, c.leverage)
@@ -36,7 +36,7 @@ func TestPlaceManualProtectionInline_NoTiers(t *testing.T) {
 	sc := StrategyConfig{
 		Type:          "manual",
 		Platform:      "hyperliquid",
-		CloseStrategy: &StrategyRef{Name: "tp_at_pct"}, // not tiered_tp_atr*
+		CloseStrategy: &StrategyRef{Name: "tp_at_pct"},
 	}
 	oids, warn, err := placeManualProtectionInline(sc, "long", 0.8, 2500, 12.5, 1.0, 0)
 	if err != nil {
@@ -81,12 +81,9 @@ func TestPlaceManualProtectionInline_TPErrorsSurface(t *testing.T) {
 }
 
 func TestWarnNotifier_NilNotifier(t *testing.T) {
-	// Should not panic when notifier is nil.
 	warnNotifier(nil, "test warning")
 }
 
-// TestAttemptManualOpenCleanup_Success covers the happy path: queue insert
-// failed, cleanup close succeeded, SL+TPs cancelled in one shot.
 func TestAttemptManualOpenCleanup_Success(t *testing.T) {
 	orig := manualOpenCleanupCloseFn
 	defer func() { manualOpenCleanupCloseFn = orig }()
@@ -116,9 +113,6 @@ func TestAttemptManualOpenCleanup_Success(t *testing.T) {
 	}
 }
 
-// TestAttemptManualOpenCleanup_CloseFails covers the worst-case path where the
-// recovery close itself fails — operator must be alerted that intervention is
-// required because both fill ownership and cleanup failed.
 func TestAttemptManualOpenCleanup_CloseFails(t *testing.T) {
 	orig := manualOpenCleanupCloseFn
 	defer func() { manualOpenCleanupCloseFn = orig }()
@@ -136,9 +130,6 @@ func TestAttemptManualOpenCleanup_CloseFails(t *testing.T) {
 	}
 }
 
-// TestAttemptManualOpenCleanup_CancelStopLossError: position closed but the
-// inline trigger cancel reported an error — partial success: position is
-// flat (good) but some triggers may persist (operator should verify).
 func TestAttemptManualOpenCleanup_CancelStopLossError(t *testing.T) {
 	orig := manualOpenCleanupCloseFn
 	defer func() { manualOpenCleanupCloseFn = orig }()
@@ -156,9 +147,6 @@ func TestAttemptManualOpenCleanup_CancelStopLossError(t *testing.T) {
 	}
 }
 
-// TestAttemptManualOpenCleanup_FiltersZeroOIDs: zero/unset OIDs must not be
-// passed to the cancel list — close_hyperliquid_position.py would otherwise
-// reject the request.
 func TestAttemptManualOpenCleanup_FiltersZeroOIDs(t *testing.T) {
 	orig := manualOpenCleanupCloseFn
 	defer func() { manualOpenCleanupCloseFn = orig }()
@@ -169,15 +157,12 @@ func TestAttemptManualOpenCleanup_FiltersZeroOIDs(t *testing.T) {
 		return &HyperliquidCloseResult{}, "", nil
 	}
 
-	// SL OID = 0 (not placed) and one TP OID = 0 (placement failed for one tier).
 	attemptManualOpenCleanup("ETH", 0.8, 0, []int64{0, 67891})
 	if len(gotCancelOIDs) != 1 || gotCancelOIDs[0] != 67891 {
 		t.Errorf("cancelOIDs should filter zeros; got %v want [67891]", gotCancelOIDs)
 	}
 }
 
-// TestAttemptManualOpenCleanup_NilResultNoError: a broken stub returning
-// (nil, "", nil) must not report false success — guarded by the nil check.
 func TestAttemptManualOpenCleanup_NilResultNoError(t *testing.T) {
 	orig := manualOpenCleanupCloseFn
 	defer func() { manualOpenCleanupCloseFn = orig }()

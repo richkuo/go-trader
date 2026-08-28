@@ -1,12 +1,5 @@
 package main
 
-// #1273 — per-strategy circuit-breaker timing/threshold overrides. These tests
-// pin the acceptance criteria: omitted fields reproduce the historical
-// hardcoded behavior bit-for-bit, overrides move the firing threshold and both
-// latch durations, the #1048 suppression warning resolves the same threshold
-// as the firing arm, and reason-string classification survives non-default
-// thresholds.
-
 import (
 	"bytes"
 	"fmt"
@@ -15,9 +8,6 @@ import (
 	"time"
 )
 
-// #1273: omitting all three cb_* override fields reproduces the historical
-// hardcoded behavior exactly — the loss-streak arm fires at 5 losses and
-// latches 1h, the drawdown arm latches 24h.
 func TestCheckRisk_CBTimingDefaultsPreserved(t *testing.T) {
 	newState := func(losses int) *StrategyState {
 		return &StrategyState{
@@ -36,13 +26,11 @@ func TestCheckRisk_CBTimingDefaultsPreserved(t *testing.T) {
 	}
 	sc := &StrategyConfig{ID: "cb-timing-defaults", Type: "spot"}
 
-	// 4 losses: below the default threshold — no fire.
 	s := newState(4)
 	if allowed, reason := CheckRisk(sc, s, PortfolioValue(s, nil), nil, nil, nil); !allowed {
 		t.Fatalf("4 losses should not fire the default 5-loss breaker (reason=%q)", reason)
 	}
 
-	// 5 losses: fires with the RiskReasonConsecutiveLosses prefix and a 1h latch.
 	s = newState(5)
 	before := time.Now().UTC()
 	allowed, reason := CheckRisk(sc, s, PortfolioValue(s, nil), nil, nil, nil)
@@ -54,7 +42,6 @@ func TestCheckRisk_CBTimingDefaultsPreserved(t *testing.T) {
 	}
 	assertCBLatchDuration(t, s, before, time.Hour)
 
-	// Drawdown arm: 60% > 50% fires and latches 24h.
 	s = newState(0)
 	before = time.Now().UTC()
 	if allowed, _ := CheckRisk(sc, s, 4000, nil, nil, nil); allowed {
@@ -63,9 +50,6 @@ func TestCheckRisk_CBTimingDefaultsPreserved(t *testing.T) {
 	assertCBLatchDuration(t, s, before, 24*time.Hour)
 }
 
-// #1273: per-strategy overrides move the loss-streak threshold and both latch
-// durations, and the fired reason names the actual count and threshold while
-// keeping the RiskReasonConsecutiveLosses prefix for classification.
 func TestCheckRisk_CBOverridesHonored(t *testing.T) {
 	intp := func(v int) *int { return &v }
 	newState := func(losses int) *StrategyState {
@@ -84,7 +68,6 @@ func TestCheckRisk_CBOverridesHonored(t *testing.T) {
 		}
 	}
 
-	// Lower threshold + shorter loss cooldown: fires at 3 with a 30m latch.
 	sc := &StrategyConfig{
 		ID: "cb-overrides", Type: "spot",
 		CBLossStreakThreshold:       intp(3),
@@ -105,14 +88,12 @@ func TestCheckRisk_CBOverridesHonored(t *testing.T) {
 	}
 	assertCBLatchDuration(t, s, before, 30*time.Minute)
 
-	// Higher threshold: the historical default streak of 5 does NOT fire.
 	sc = &StrategyConfig{ID: "cb-overrides", Type: "spot", CBLossStreakThreshold: intp(8)}
 	s = newState(5)
 	if allowed, reason := CheckRisk(sc, s, PortfolioValue(s, nil), nil, nil, nil); !allowed {
 		t.Fatalf("5 losses should not fire a threshold-8 breaker (reason=%q)", reason)
 	}
 
-	// Drawdown cooldown override: latches 12h instead of 24h.
 	sc = &StrategyConfig{ID: "cb-overrides", Type: "spot", CBDrawdownCooldownMinutes: intp(720)}
 	s = newState(0)
 	before = time.Now().UTC()
@@ -122,9 +103,6 @@ func TestCheckRisk_CBOverridesHonored(t *testing.T) {
 	assertCBLatchDuration(t, s, before, 12*time.Hour)
 }
 
-// assertCBLatchDuration checks that the latch set by CheckRisk expires ~want
-// after the call started (CheckRisk stamps its own time.Now, so allow slop for
-// scheduling between `before` and the stamp).
 func assertCBLatchDuration(t *testing.T, s *StrategyState, before time.Time, want time.Duration) {
 	t.Helper()
 	if !s.RiskState.CircuitBreaker {
@@ -136,9 +114,6 @@ func assertCBLatchDuration(t *testing.T, s *StrategyState, before time.Time, wan
 	}
 }
 
-// #1273: the #1048 suppression warning resolves the loss-streak threshold
-// through the same accessor as the firing arm — a tuned threshold moves both
-// in lockstep so the warning can neither under- nor over-report.
 func TestRecordCircuitBreakerSuppression_ThresholdMatchesFiringArm(t *testing.T) {
 	off := false
 	intp := func(v int) *int { return &v }
@@ -166,8 +141,6 @@ func TestRecordCircuitBreakerSuppression_ThresholdMatchesFiringArm(t *testing.T)
 		return allowed, buf.String()
 	}
 
-	// Disabled CB + threshold 3 + exactly 3 losses: the arm WOULD fire, so the
-	// suppression warning must trip at the same streak length.
 	allowed, out := run("cb-suppress-th3", 3, intp(3))
 	if !allowed {
 		t.Fatal("disabled CB must never halt")
@@ -176,8 +149,6 @@ func TestRecordCircuitBreakerSuppression_ThresholdMatchesFiringArm(t *testing.T)
 		t.Fatalf("threshold-3 suppression warning missing from: %s", out)
 	}
 
-	// Disabled CB + threshold 8 + 5 losses (the historical default): the arm
-	// would NOT fire, so no warning either.
 	allowed, out = run("cb-suppress-th8", 5, intp(8))
 	if !allowed {
 		t.Fatal("disabled CB must never halt")
@@ -187,9 +158,6 @@ func TestRecordCircuitBreakerSuppression_ThresholdMatchesFiringArm(t *testing.T)
 	}
 }
 
-// #1273: loss-streak reason strings carry the fired count/threshold after the
-// RiskReasonConsecutiveLosses prefix; every classifier matches on the prefix,
-// so routing survives non-default thresholds.
 func TestLossStreakReasonClassification_NonDefaultThreshold(t *testing.T) {
 	reason := fmt.Sprintf("%s (3 in a row, threshold 3)", RiskReasonConsecutiveLosses)
 	if !isFreshPerStrategyCircuitBreaker(reason) {
@@ -206,8 +174,6 @@ func TestLossStreakReasonClassification_NonDefaultThreshold(t *testing.T) {
 	}
 }
 
-// #1273: the alert block's "Consecutive loss run" counter reads the strategy's
-// configured threshold, not a hardcoded /5.
 func TestFormatPerStrategyCircuitBreakerBlock_LossRunUsesConfiguredThreshold(t *testing.T) {
 	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
 	th := 3

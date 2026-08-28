@@ -1,28 +1,4 @@
 #!/usr/bin/env python3
-"""
-TopStep live trade-fills fetcher (issue #1106 — exchange-sourced cash-flow
-journal, shadow phase / Phase 4 of #1100).
-
-Emits every settled TopStep trade fill since a cursor timestamp. A TopStep fill
-carries a GROSS realized PnL (0 for entry fills) and a separately-reported
-commission; the Go cash-flow journal computes each fill's settled-cash delta as
-realized-PnL-gross minus commission (mirroring Hyperliquid's userFills, NOT OKX's
-pre-netted balChg). This single feed is the settled-cash-flow source the journal
-reconstructs the wallet equity from.
-
-Thin pump: all mapping / summing / fail-closed logic lives in tested Go
-(topstep_cashflow_journal.go); this script only pages fills via the adapter and
-shapes them to JSON.
-
-Usage:
-    fetch_topstep_fills.py --since-ms <int>
-
-Requires TOPSTEP_API_KEY / TOPSTEP_API_SECRET / TOPSTEP_ACCOUNT_ID. Output:
-``{"fills": [{"fill_id","ts_ms","symbol","kind","realized_pnl","fee"}, ...],
-  "capped": false, "platform": "topstep", "timestamp": ...}``
-Fills are oldest-first; ``capped`` is true when the adapter hit its page limit
-before exhausting the feed (the Go journal treats that cycle as not-usable).
-"""
 
 import argparse
 import json

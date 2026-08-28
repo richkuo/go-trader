@@ -1,11 +1,3 @@
-"""Close-stack co-optimization (#996): walk_forward_optimize sweeps complete
-exit configurations (close-evaluator refs + the exclusive ATR stop owners)
-jointly with the open-param grid, so selection picks (entry, exit) pairs.
-
-Also regression-covers the pre-#996 silent no-op: the optimize path never
-injected an `atr` column, so a tiered_tp_atr close ref threaded through
-walk_forward_optimize ran with entry_atr=0 and never fired a TP.
-"""
 import json
 
 import numpy as np
@@ -50,18 +42,13 @@ WIDE_LADDER = [
 ]
 
 
-# ---------------------------------------------------------------------------
-# generate_close_stack_grid
-# ---------------------------------------------------------------------------
-
 def test_grid_expands_cartesian_per_spec():
     grid = generate_close_stack_grid([
         {"close": {"name": "tiered_tp_atr",
                    "params": {"tp_tiers": [TIGHT_LADDER, WIDE_LADDER]}},
          "stop_loss_atr_mult": [None, 2.0]},
     ])
-    assert len(grid) == 4  # 2 ladders x 2 stop values
-    # Ladders are swept as whole candidates, structure preserved.
+    assert len(grid) == 4
     ladders = [g["close_strategies"][0]["params"]["tp_tiers"] for g in grid]
     assert TIGHT_LADDER in ladders and WIDE_LADDER in ladders
     sl_values = {g["stop_loss_atr_mult"] for g in grid}
@@ -84,7 +71,6 @@ def test_grid_dedupes_identical_stacks_across_specs():
         {"close": None},
         {"close": None, "stop_loss_atr_mult": [None, 1.5]},
     ])
-    # The (no close, no stop) combo appears in both specs — kept once.
     assert len(grid) == 2
 
 
@@ -106,7 +92,7 @@ def test_grid_rejects_non_list_param_candidates():
     with pytest.raises(ValueError, match="non-empty list"):
         generate_close_stack_grid([
             {"close": {"name": "tiered_tp_atr",
-                       "params": {"tp_tiers": TIGHT_LADDER}}},  # ladder, not list-of-ladders
+                       "params": {"tp_tiers": TIGHT_LADDER}}},
         ])
 
 
@@ -134,10 +120,6 @@ def test_close_stack_label_is_compact():
     assert grid[0]["label"] == "tiered_tp_atr[0.5x:0.5,1x:1] sl_atr=2"
 
 
-# ---------------------------------------------------------------------------
-# _result_metric
-# ---------------------------------------------------------------------------
-
 def test_result_metric_reads_plain_keys():
     assert _result_metric({"sharpe_ratio": 1.5}, "sharpe_ratio") == 1.5
 
@@ -146,16 +128,10 @@ def test_result_metric_dd_adjusted_return():
     assert _result_metric(
         {"total_return_pct": 30.0, "max_drawdown_pct": -15.0},
         "dd_adjusted_return") == pytest.approx(2.0)
-    # Zero-DD legs score 0.0 (eval_windows.dd_adjusted_return parity) so an
-    # untraded combo never outranks a traded one.
     assert _result_metric(
         {"total_return_pct": 10.0, "max_drawdown_pct": 0.0},
         "dd_adjusted_return") == 0.0
 
-
-# ---------------------------------------------------------------------------
-# walk_forward_optimize joint sweep
-# ---------------------------------------------------------------------------
 
 def test_joint_sweep_reports_best_close_stack():
     df = _trending_ohlc()
@@ -192,8 +168,6 @@ def test_joint_sweep_rejects_fixed_close_kwargs():
 
 
 def test_joint_sweep_rejects_invalid_stack_loudly():
-    """Invalid stacks must fail at Backtester construction, not be silently
-    skipped inside the fold loop (trailing_tp_ratchet needs a trailing mult)."""
     df = _trending_ohlc()
     grid = [{
         "label": "bad ratchet",
@@ -209,9 +183,6 @@ def test_joint_sweep_rejects_invalid_stack_loudly():
 
 
 def test_tiered_tp_atr_actually_fires_in_optimize_path():
-    """Regression (#996): the optimize path must inject `atr` so tiered_tp_atr
-    stamps entry_atr and fires TPs. Pre-fix, the evaluator silently no-oped and
-    a tight-TP stack scored identically to the baseline."""
     df = _trending_ohlc(seed=11)
     grid = generate_close_stack_grid([
         {"close": None},
@@ -235,18 +206,12 @@ def test_tiered_tp_atr_actually_fires_in_optimize_path():
                       for w in baseline["window_results"])
     tp_trades = sum(w["test_result"]["total_trades"]
                     for w in tight_tp["window_results"])
-    # A 0.5-ATR first tier on daily bars with ~1.5% vol fires almost
-    # immediately — the tight-TP stack must produce a different (richer)
-    # trade record than open-signal-as-close. Identical records mean the
-    # evaluator never saw an ATR column (the pre-fix silent no-op).
     assert tp_trades > base_trades, (
         f"tiered_tp_atr produced the same trade count as baseline "
         f"({tp_trades} vs {base_trades}) — entry_atr was never stamped")
 
 
 def test_fixed_close_path_unchanged_and_atr_injected():
-    """The pre-existing fixed close_strategies kwarg still works, now with ATR
-    injection so the evaluator actually fires."""
     df = _trending_ohlc(seed=11)
     result = walk_forward_optimize(
         df, "sma_crossover", {"fast_period": [10], "slow_period": [40]},
@@ -278,8 +243,6 @@ def test_dd_adjusted_metric_selects_and_reports():
 
 
 def test_stack_specs_survive_json_round_trip():
-    """--close-stacks-json feeds specs through json.load — the expansion must
-    treat null as None for stop values."""
     specs = json.loads(json.dumps([
         {"close": {"name": "tiered_tp_atr",
                    "params": {"tp_tiers": [TIGHT_LADDER]}},
@@ -289,13 +252,6 @@ def test_stack_specs_survive_json_round_trip():
     assert len(grid) == 2
     assert {g["stop_loss_atr_mult"] for g in grid} == {None, 1.5}
 
-
-# ---------------------------------------------------------------------------
-# Entry-universe consistency: close refs activate the open/close engine where
-# raw signal=-1 OPENS a short, while the no-close baseline stack runs the
-# structurally long/flat plain path. The sweep must hold the entry side
-# constant (default: long) or the stacks score different universes.
-# ---------------------------------------------------------------------------
 
 def test_joint_sweep_defaults_to_long_universe():
     df = _trending_ohlc(seed=11)
@@ -328,11 +284,6 @@ def test_joint_sweep_rejects_short_universe_with_no_close_stack():
 
 
 def test_optimize_rejects_short_direction_with_no_close_ref():
-    # PR #1004 review: direction=short is rejected wholesale — the warmup
-    # seeder (warmup_exit_long_entry) is long-only, so walk-forward cannot
-    # measure the short leg faithfully. The error must state that true
-    # reason, not the stale "plain path cannot open shorts" claim (#989
-    # made the plain path open shorts under direction=short).
     df = _trending_ohlc()
     with pytest.raises(ValueError, match="warmup seeder"):
         walk_forward_optimize(
@@ -342,10 +293,6 @@ def test_optimize_rejects_short_direction_with_no_close_ref():
 
 
 def test_optimize_rejects_short_direction_even_with_close_refs():
-    # PR #1004 review must-survive: close-evaluator-only stacks pass the
-    # "both" stack guard, but the long-only warmup seeder would still carry
-    # a phantom long into a short engine run — short is rejected regardless
-    # of the close stack.
     df = _trending_ohlc()
     with pytest.raises(ValueError, match="warmup seeder"):
         walk_forward_optimize(
@@ -367,8 +314,6 @@ def test_optimize_rejects_short_direction_even_with_close_refs():
 
 
 def test_optimize_both_direction_with_fixed_close_ref_runs():
-    # Inverse case: a fixed --close-strategy activates the open/close engine,
-    # which legitimately opens both sides — the guard must not over-reject.
     df = _trending_ohlc()
     result = walk_forward_optimize(
         df, "sma_crossover", {"fast_period": [10], "slow_period": [40]},
@@ -380,8 +325,6 @@ def test_optimize_both_direction_with_fixed_close_ref_runs():
 
 
 def test_optimize_long_direction_with_no_close_ref_runs():
-    # Boundary: explicit long with no close ref is the structurally-valid
-    # default and must keep running long/flat unchanged.
     df = _trending_ohlc()
     result = walk_forward_optimize(
         df, "sma_crossover", {"fast_period": [10], "slow_period": [40]},
@@ -393,8 +336,6 @@ def test_optimize_long_direction_with_no_close_ref_runs():
 
 
 def test_result_metric_dd_adjusted_return_floors_liquidated():
-    # #1228: a blown-up combo's raw DDadj (−100/|−100| = −1.0) would outrank a
-    # surviving loser (−60%/30% DD = −2.0); the floor keeps dead combos last.
     blown = _result_metric(
         {"total_return_pct": -100.0, "max_drawdown_pct": -100.0,
          "liquidated": True},

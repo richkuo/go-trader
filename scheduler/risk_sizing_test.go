@@ -9,20 +9,16 @@ import (
 
 func fp(v float64) *float64 { return &v }
 
-// #1268 — the core invariant: with risk_per_trade_pct set, two strategies
-// with different stop distances on the same equity open positions whose
-// qty × stop_distance dollar risk is EQUAL.
 func TestPerpsRiskBasedNotionalConstantDollarRisk(t *testing.T) {
-	cash, price, riskPct := 1000.0, 2000.0, 1.0 // risk $10/trade
-	wideDist := 60.0                            // e.g. 3.0×ATR(20)
-	tightDist := 20.0                           // e.g. 1.0×ATR(20)
+	cash, price, riskPct := 1000.0, 2000.0, 1.0
+	wideDist := 60.0
+	tightDist := 20.0
 
 	wide := PerpsRiskBasedNotional(cash, price, riskPct, wideDist, 10)
 	tight := PerpsRiskBasedNotional(cash, price, riskPct, tightDist, 10)
 	if wide <= 0 || tight <= 0 {
 		t.Fatalf("expected positive notionals, got wide=%g tight=%g", wide, tight)
 	}
-	// qty = notional / price; dollar risk = qty × dist.
 	wideRisk := wide / price * wideDist
 	tightRisk := tight / price * tightDist
 	if math.Abs(wideRisk-10) > 1e-9 || math.Abs(tightRisk-10) > 1e-9 {
@@ -33,15 +29,11 @@ func TestPerpsRiskBasedNotionalConstantDollarRisk(t *testing.T) {
 	}
 }
 
-// #1268 — the derived notional never exceeds cash × exchange_leverage.
 func TestPerpsRiskBasedNotionalExchangeCap(t *testing.T) {
-	// risk $10 with a $1 stop distance at price $2000 wants $20k notional;
-	// cash $1000 × 5x leverage caps it at $5000.
 	got := PerpsRiskBasedNotional(1000, 2000, 1.0, 1.0, 5)
 	if got != 5000 {
 		t.Fatalf("notional = %g, want 5000 (cash × exchange_leverage cap)", got)
 	}
-	// Leverage <= 0 normalizes to 1x.
 	got = PerpsRiskBasedNotional(1000, 2000, 1.0, 1.0, 0)
 	if got != 1000 {
 		t.Fatalf("notional = %g, want 1000 (1x cap when exchangeLeverage<=0)", got)
@@ -204,12 +196,10 @@ func TestPerpsSizingFor(t *testing.T) {
 	if s.ExchangeLeverage != 5 {
 		t.Fatalf("exchange leverage = %g, want 5", s.ExchangeLeverage)
 	}
-	// No ATR in the payload → unresolved, distance 0, reason carried.
 	s = PerpsSizingFor(sc, 2000, 0)
 	if s.RiskStopDistance != 0 || s.RiskStopUnresolved == "" {
 		t.Fatalf("unresolved sizing = %+v, want dist=0 with reason", s)
 	}
-	// Config without the field resolves to pure notional sizing.
 	sc.RiskPerTradePct = nil
 	s = PerpsSizingFor(sc, 2000, 15)
 	if s.RiskPerTradePct != 0 || s.RiskStopDistance != 0 {
@@ -289,8 +279,6 @@ func TestValidateRiskPerTradePct(t *testing.T) {
 	})
 }
 
-// #1268 — live sizer in risk mode: constant dollar risk, fail-closed fresh
-// open, flip degrade to close-only, and closes never blocked.
 func TestPerpsLiveOrderSizeRiskMode(t *testing.T) {
 	riskSizing := func(dist float64) PerpsSizing {
 		s := PerpsSizing{ExchangeLeverage: 1, RiskPerTradePct: 1.0, RiskStopDistance: dist}
@@ -300,7 +288,6 @@ func TestPerpsLiveOrderSizeRiskMode(t *testing.T) {
 		return s
 	}
 	t.Run("fresh open sizes qty from stop distance", func(t *testing.T) {
-		// cash $1000, risk 1% = $10; dist $20 → qty 0.5; dist $60 → qty 1/6.
 		size1, ok1, _ := perpsLiveOrderSize(1, 2000, 1000, 0, 0, riskSizing(20), "", DirectionLong, 0)
 		size2, ok2, _ := perpsLiveOrderSize(1, 2000, 1000, 0, 0, riskSizing(60), "", DirectionLong, 0)
 		if !ok1 || !ok2 {
@@ -332,21 +319,17 @@ func TestPerpsLiveOrderSizeRiskMode(t *testing.T) {
 		}
 	})
 	t.Run("exchange cap bounds the flip open leg", func(t *testing.T) {
-		// dist $1 wants $20k notional; 1x leverage caps at post-close cash.
 		size, ok, _ := perpsLiveOrderSize(1, 2000, 1000, 0.1, 2000, riskSizing(1), "short", DirectionBoth, 0)
 		if !ok {
 			t.Fatal("flip must size")
 		}
-		newSide := size - 0.1 // flip order = posQty + newSize
+		newSide := size - 0.1
 		if notional := newSide * 2000; notional > 1000+1e-9 {
 			t.Fatalf("new-side notional %g exceeds cash × 1x cap", notional)
 		}
 	})
 }
 
-// #1268 — paper executor in risk mode: equal dollar risk across differing
-// stops, fail-closed skip leaves state untouched, and legacy behavior stays
-// byte-identical when the field is unset.
 func TestExecutePerpsSignalRiskMode(t *testing.T) {
 	logger := &StrategyLogger{stratID: "test", writer: os.Stdout}
 	mkState := func() *StrategyState {
@@ -355,8 +338,6 @@ func TestExecutePerpsSignalRiskMode(t *testing.T) {
 			Cash: 1000, Positions: map[string]*Position{},
 		}
 	}
-	// 2x exchange leverage keeps the cash × leverage cap from binding on the
-	// tight-stop case (slippage nudges the wanted notional just past 1× cash).
 	riskSizing := func(dist float64) PerpsSizing {
 		s := PerpsSizing{ExchangeLeverage: 2, RiskPerTradePct: 1.0, RiskStopDistance: dist}
 		if dist <= 0 {
@@ -377,8 +358,6 @@ func TestExecutePerpsSignalRiskMode(t *testing.T) {
 		if pt == nil || pw == nil {
 			t.Fatal("both opens must create positions")
 		}
-		// qty = budget/execPrice and budget = riskDollars/dist × execPrice, so
-		// qty × dist = riskDollars exactly, independent of slippage.
 		if math.Abs(pt.Quantity*20-10) > 1e-9 || math.Abs(pw.Quantity*60-10) > 1e-9 {
 			t.Fatalf("dollar risk must be $10: tight=%g wide=%g", pt.Quantity*20, pw.Quantity*60)
 		}
@@ -416,7 +395,6 @@ func TestExecutePerpsSignalRiskMode(t *testing.T) {
 		if pos == nil || pos.Side != "long" {
 			t.Fatalf("expected flipped long, got %+v", pos)
 		}
-		// New side risks 1% of post-close cash (short closed in profit).
 		if riskDollars := pos.Quantity * 20; math.Abs(riskDollars-s.Cash*0.01) > s.Cash*0.01*0.01 {
 			t.Fatalf("flip risk %g must be ~1%% of post-close cash %g", riskDollars, s.Cash)
 		}
@@ -430,18 +408,12 @@ func TestExecutePerpsSignalRiskMode(t *testing.T) {
 		if pos == nil {
 			t.Fatal("expected position")
 		}
-		// ApplySlippage is randomized, so assert via the stamped fill price:
-		// notional must be exactly cash × sizing_leverage.
 		if notional := pos.Quantity * pos.AvgCost; math.Abs(notional-5000) > 1e-6 {
 			t.Fatalf("legacy sizing notional = %g, want 5000 (cash × sizing_leverage)", notional)
 		}
 	})
 }
 
-// #1268 — full load path: a risk-mode strategy with NO stop fields acquires
-// the default_stop_loss_atr_mult owner BEFORE validation runs (ordering the
-// validator depends on), and the mutual-exclusion rejects fire through
-// LoadConfig with the strategy id.
 func TestRiskPerTradePct_LoadConfigEndToEnd(t *testing.T) {
 	dir := t.TempDir()
 	t.Run("default stop owner materializes before validation", func(t *testing.T) {
@@ -487,8 +459,6 @@ func TestRiskPerTradePct_LoadConfigEndToEnd(t *testing.T) {
 	})
 }
 
-// #1268 — init --json surface: perpsRiskPerTradePct emits risk_per_trade_pct
-// and suppresses the sizing_leverage field (mutual exclusion).
 func TestGenerateConfig_RiskPerTradePct(t *testing.T) {
 	opts := baseOpts()
 	opts.EnableSpot = false
@@ -509,18 +479,12 @@ func TestGenerateConfig_RiskPerTradePct(t *testing.T) {
 		t.Fatalf("sizing_leverage = %g, want 0 (suppressed under risk mode)", sc.SizingLeverage)
 	}
 	if err := validateConfig(cfg, true); err == nil {
-		// generateConfig emits no stop field; the daemon's LoadConfig
-		// materializes the default stop owner before validation. Direct
-		// validateConfig on the raw generated config is therefore expected
-		// to fail on the missing stop owner and NOTHING else.
 		t.Log("validateConfig passed — a stop owner was emitted directly")
 	} else if !strings.Contains(err.Error(), "resolvable at sizing time") {
 		t.Fatalf("unexpected validation error: %v", err)
 	}
 }
 
-// #1268 — hot reload: risk↔notional mode switches are blocked while a
-// position is open; value tweaks and flat-state switches pass.
 func TestValidateHotReloadStateCompatible_RiskPerTradePctModeSwitch(t *testing.T) {
 	mkSC := func(risk *float64, sizingLev float64) StrategyConfig {
 		return StrategyConfig{
@@ -546,21 +510,17 @@ func TestValidateHotReloadStateCompatible_RiskPerTradePctModeSwitch(t *testing.T
 			"hl-x": {ID: "hl-x", Positions: map[string]*Position{}},
 		},
 	}
-	// notional → risk while open: REJECTED.
 	err := validateHotReloadStateCompatible(mkCfg(mkSC(nil, 2)), mkCfg(mkSC(fp(1.0), 0)), openState)
 	if err == nil || !strings.Contains(err.Error(), "risk_per_trade_pct sizing mode changed") {
 		t.Fatalf("expected mode-switch rejection while open, got: %v", err)
 	}
-	// risk → notional while open: REJECTED.
 	err = validateHotReloadStateCompatible(mkCfg(mkSC(fp(1.0), 0)), mkCfg(mkSC(nil, 2)), openState)
 	if err == nil || !strings.Contains(err.Error(), "risk_per_trade_pct sizing mode changed") {
 		t.Fatalf("expected mode-switch rejection while open, got: %v", err)
 	}
-	// Same switch while flat: ACCEPTED.
 	if err := validateHotReloadStateCompatible(mkCfg(mkSC(nil, 2)), mkCfg(mkSC(fp(1.0), 0)), flatState); err != nil {
 		t.Fatalf("flat mode switch must pass, got: %v", err)
 	}
-	// Value tweak while open: ACCEPTED.
 	if err := validateHotReloadStateCompatible(mkCfg(mkSC(fp(1.0), 0)), mkCfg(mkSC(fp(2.0), 0)), openState); err != nil {
 		t.Fatalf("value tweak while open must pass, got: %v", err)
 	}

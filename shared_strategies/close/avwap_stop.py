@@ -1,24 +1,3 @@
-"""AVWAP loss-of-line close evaluator (#1196).
-
-Exits the whole position when the mark breaches the anchored VWAP by
-``buffer_atr_mult`` ATR units on the losing side (long: below the line,
-short: above it). The line is the *live re-anchored* AVWAP — the same
-``avwap`` column the AVWAP-family open strategies compute — injected into
-``market["avwap"]`` by the composition layer (live) and the backtester, both
-reading the open strategy's own result so entry and exit track one line.
-
-Anchor semantics (#1196 spec-gate 1): live re-anchor, not frozen-at-entry.
-A frozen anchor cannot be recomputed once the anchor bar ages out of the
-bounded OHLCV fetch window, and would track a different line than the open
-strategy's own view; re-anchoring keeps exit and entry on the same line.
-
-``buffer_atr_mult == 0`` exits exactly at a line touch and needs no ATR.
-``atr_source`` selects the buffer's ATR: ``live`` (the current bar's
-``market["atr"]``, the default — the buffer scales with current volatility
-like the re-anchored line itself) or ``entry`` (frozen ``Position.EntryATR``).
-Missing avwap/ATR context fails safe (no-op) — the engine stop-loss still
-protects the position.
-"""
 
 from __future__ import annotations
 

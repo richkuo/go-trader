@@ -1,37 +1,4 @@
 #!/usr/bin/env python3
-"""Supplementary IS-window close-stack screens for #984 (README step 2).
-
-Screens beyond the #996 default grid (sweep_close_stacks.py), each a
-frozen-entry breakout leg on the six audit datasets via the M1 harness
-(eval_windows.run_leg). Selection-window only — survivors are judged on
-protocol OOS + held-out windows through eval_windows.py / validate_shortlist.
-
-  --screen sweep2    ladder plateau (tight/runner), wide trails (4/5 ATR),
-                     time stops (100/150/200 bars), ladder+wide-stop combos
-                     -> sweep2_is.json
-  --screen timestop  time_stop max_bars plateau 75..400 -> timestop_plateau_is.json
-  --screen ratchet   trailing_tp_ratchet, default + clean-group (wide) rungs
-                     x opening trail 3/4/5 ATR -> ratchet_screen_is.json
-                     (wide rungs start at 3.0 ATR, so an opening trail of 3
-                     never fires a rung before the trail itself — wide is
-                     screened at trails 4/5 only)
-  --screen atrstop   atr_stop evaluator plateau, atr_mult 2..5 x atr_source
-                     entry/live -> atrstop_plateau_is.json. Unlike the
-                     backtester-level stop (plain path, breakdown exit kept),
-                     atr_stop is a close ref: it engages the engine path and
-                     REPLACES the signal exit — screening both families is
-                     the point (breakout's -1 breakdown is its baseline exit).
-  --screen zscore    zscore_target stretch exits (z 1.5/2/2.5/3 at lookback
-                     20/50) -> zscore_screen_is.json
-
-Every output row embeds the full stack spec, so the artifact is
-self-describing without this file or the README.
-
-Run from repo root:
-  uv run --no-sync python backtest/candidates/breakout_984/sweep_supplementary.py \
-      --screen sweep2 [--window is] \
-      [--json backtest/candidates/breakout_984/sweep2_is.json]
-"""
 
 import argparse
 import json
@@ -40,13 +7,12 @@ import statistics
 import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(_HERE, "..", ".."))          # backtest/
+sys.path.insert(0, os.path.join(_HERE, "..", ".."))
 sys.path.insert(0, os.path.join(_HERE, "..", "..", "..", "shared_tools"))
-# trailing_tp_ratchet.py imports its sibling _helpers at evaluate time.
 sys.path.insert(0, os.path.join(_HERE, "..", "..", "..",
                                 "shared_strategies", "close"))
 
-from eval_windows import DATASETS, WINDOWS, run_leg  # noqa: E402
+from eval_windows import DATASETS, WINDOWS, run_leg
 
 STRATEGY = "breakout"
 
@@ -60,8 +26,6 @@ L_RUN = [{"atr_multiple": 2.0, "close_fraction": 0.33},
          {"atr_multiple": 4.0, "close_fraction": 0.66},
          {"atr_multiple": 6.0, "close_fraction": 1.0}]
 
-# trailing_tp_ratchet rungs: trail-only (close_fraction 0), mirroring the
-# live DEFAULT_RATCHET_TIERS / clean-group ladders.
 R_DEF = [{"atr_multiple": 2.0, "trailing_mult_after": 1.5, "close_fraction": 0.0},
          {"atr_multiple": 2.5, "trailing_mult_after": 1.0, "close_fraction": 0.0},
          {"atr_multiple": 3.0, "trailing_mult_after": 0.8, "close_fraction": 0.0}]

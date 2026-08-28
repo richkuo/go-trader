@@ -1,10 +1,5 @@
 package main
 
-// #1236: class-level audit tests for config validation and migration —
-// compound stop-owner rejections, mixed legacy+canonical close keys,
-// newer-version (downgrade) migration behavior, deterministic v15 legacy
-// alias folding, and flat-vs-open hot-reload symmetry.
-
 import (
 	"encoding/json"
 	"os"
@@ -15,9 +10,6 @@ import (
 
 func auditFloatPtr(v float64) *float64 { return &v }
 
-// Compound case: ALL five scalar stop owners set at once on one HL perps
-// strategy. Every pairwise mutex must still fire — a fix that only checks
-// pairs in isolation could short-circuit after the first conflict.
 func TestConfigValidationCompoundAllScalarStopOwnersRejected(t *testing.T) {
 	cfg := Config{
 		Strategies: []StrategyConfig{{
@@ -48,8 +40,6 @@ func TestConfigValidationCompoundAllScalarStopOwnersRejected(t *testing.T) {
 	}
 }
 
-// Compound case: scalar ATR stop plus BOTH per-regime stop blocks. Each
-// regime owner must be independently rejected against the scalar owner.
 func TestConfigValidationCompoundScalarPlusRegimeStopOwnersRejected(t *testing.T) {
 	raw := []byte(`{
 		"id": "hl-eth", "type": "perps", "platform": "hyperliquid",
@@ -82,9 +72,6 @@ func TestConfigValidationCompoundScalarPlusRegimeStopOwnersRejected(t *testing.T
 	}
 }
 
-// Mixed legacy+canonical: an explicit close_strategy wins over a legacy
-// close_strategies array — even a len>1 array — and the config stays valid
-// (the len>1 reject only applies when no canonical key is present).
 func TestUnmarshalStrategyConfigCanonicalCloseWinsOverLegacyArray(t *testing.T) {
 	raw := []byte(`{
 		"id": "s", "type": "spot", "script": "check.py", "capital": 100,
@@ -108,7 +95,6 @@ func TestUnmarshalStrategyConfigCanonicalCloseWinsOverLegacyArray(t *testing.T) 
 	}
 }
 
-// Inverse: without a canonical key, the len>1 legacy array is still rejected.
 func TestUnmarshalStrategyConfigLegacyArrayLenTwoStillRejected(t *testing.T) {
 	raw := []byte(`{
 		"id": "s", "type": "spot", "script": "check.py", "capital": 100,
@@ -126,17 +112,11 @@ func TestUnmarshalStrategyConfigLegacyArrayLenTwoStillRejected(t *testing.T) {
 	}
 }
 
-// Downgrade attempt: running MigrateConfig against a config stamped NEWER
-// than CurrentConfigVersion must not run any versioned removal/translation
-// step (no data loss) — it only restamps config_version. Locks the current
-// contract so a future refactor can't silently start stripping fields it
-// doesn't recognize.
 func TestMigrateConfigNewerVersionPreservesAllFields(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
 	src := map[string]interface{}{
 		"config_version": CurrentConfigVersion + 1,
-		// Fields the v6/v8 removal steps would strip on an old config:
 		"discord": map[string]interface{}{
 			"spot_summary_freq": "hourly",
 		},
@@ -173,10 +153,6 @@ func TestMigrateConfigNewerVersionPreservesAllFields(t *testing.T) {
 	}
 }
 
-// v15 legacy alias folding must be deterministic when two legacy aliases
-// ("atr" and "multiple") are both set with different values — the survivor
-// must not depend on Go map iteration order. Precedence: atr_multiple >
-// atr > multiple.
 func TestCanonicalizeRegimeBlockAliasPrecedenceDeterministic(t *testing.T) {
 	for i := 0; i < 50; i++ {
 		block := map[string]interface{}{
@@ -194,7 +170,6 @@ func TestCanonicalizeRegimeBlockAliasPrecedenceDeterministic(t *testing.T) {
 			t.Fatalf("iteration %d: legacy alias fold nondeterministic or wrong precedence: got %v, want 2.0 (atr > multiple)", i, label["atr_multiple"])
 		}
 	}
-	// Canonical always wins over both legacy aliases.
 	block := map[string]interface{}{
 		"trend_regime": map[string]interface{}{
 			"trending": map[string]interface{}{
@@ -209,7 +184,6 @@ func TestCanonicalizeRegimeBlockAliasPrecedenceDeterministic(t *testing.T) {
 	if label["atr_multiple"] != 1.5 {
 		t.Fatalf("canonical atr_multiple should win over legacy aliases, got %v", label["atr_multiple"])
 	}
-	// Legacy "fraction" fills close_fraction only when canonical is absent.
 	block = map[string]interface{}{
 		"trend_regime": map[string]interface{}{
 			"trending": map[string]interface{}{
@@ -225,8 +199,6 @@ func TestCanonicalizeRegimeBlockAliasPrecedenceDeterministic(t *testing.T) {
 	}
 }
 
-// Flat-vs-open symmetry: leverage is rejected while open (existing test);
-// the same change while flat must apply cleanly.
 func TestApplyHotReloadConfigAllowsLeverageChangeWhenFlat(t *testing.T) {
 	cfg := minimalReloadConfig([]StrategyConfig{{
 		ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py",

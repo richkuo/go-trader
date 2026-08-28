@@ -1,15 +1,3 @@
-"""Tests for patch_claude_comment.sh — bot-login + run-id selection (#1178).
-
-The review job binds the agent to the job-scoped token, so its comments post
-as github-actions[bot] instead of claude[bot]. The patch script must select
-the latest comment authored by $BOT_LOGIN (default claude[bot]) rather than a
-hard-coded login. github-actions[bot] is a shared author (any workflow can
-post as it), so when $RUN_ID is set the selection is further constrained to
-the action's own tracking comment, which embeds the /actions/runs/<run_id>
-link — never another workflow's comment. gh is stubbed with a fake executable
-on PATH; the script's comment recomposition (compose_claude_comment.py) runs
-for real.
-"""
 
 from __future__ import annotations
 
@@ -55,10 +43,6 @@ COMMENTS_PAGE = [
     ]
 ]
 
-# Branch on argv with `case`, not `printf | grep -q`: under `set -o pipefail`,
-# grep -q closes the pipe early and printf can SIGPIPE/EPIPE under load,
-# making a matched --paginate/--method branch fall through to the single-
-# comment GET stub (#1389).
 FAKE_GH = """#!/usr/bin/env bash
 # Fake gh for tests: a --paginate fetch prints the canned comments page; a
 # --method call (PATCH/POST) records its argv (one arg per line) and prints
@@ -128,8 +112,6 @@ def run_patch_script(tmp_path, extra_env, single_comment=None) -> PatchScriptRes
             "CLAUDE_HARNESS": "anthropics/claude-code-action@v1",
         }
     )
-    # The TARGET_COMMENT_ID path fetches one comment by id (a non-paginate,
-    # non-method GET); stub its response when a test needs that path.
     if single_comment is not None:
         single = tmp_path / "single.json"
         single.write_text(json.dumps(single_comment))
@@ -158,17 +140,11 @@ def test_default_bot_login_patches_claude_bot_comment(tmp_path):
 
 
 def test_bot_login_override_without_run_id_takes_latest_by_author(tmp_path):
-    # Documents the collision the RUN_ID filter exists to prevent: without it,
-    # the newest github-actions[bot] comment wins even if another workflow
-    # authored it.
     patched = run_patch_script(tmp_path, {"BOT_LOGIN": "github-actions[bot]"})
     patched.assert_log_contains("repos/richkuo/go-trader/issues/comments/404")
 
 
 def test_run_id_selects_own_comment_despite_newer_same_author(tmp_path):
-    # Must survive: a second, unrelated github-actions[bot] comment updated
-    # after the review comment (id 404, run 999) — the run-id filter pins the
-    # selection to this run's tracking comment (id 202, run 222).
     patched = run_patch_script(
         tmp_path, {"BOT_LOGIN": "github-actions[bot]", "RUN_ID": "222"}
     )
@@ -177,15 +153,12 @@ def test_run_id_selects_own_comment_despite_newer_same_author(tmp_path):
 
 
 def test_run_id_without_match_is_a_clean_noop(tmp_path):
-    # Must survive: no comment from this run — never fall back to another
-    # author-matching comment (that would stamp a foreign workflow's comment).
     run_patch_script(
         tmp_path, {"BOT_LOGIN": "github-actions[bot]", "RUN_ID": "555"}
     ).assert_clean_noop("github-actions[bot]")
 
 
 def test_run_id_match_is_not_a_prefix_match(tmp_path):
-    # Run 22 must not match /actions/runs/222.
     run_patch_script(
         tmp_path, {"BOT_LOGIN": "github-actions[bot]", "RUN_ID": "22"}
     ).assert_clean_noop("github-actions[bot]")
@@ -203,9 +176,6 @@ def test_no_matching_comment_is_a_clean_noop(tmp_path):
 
 
 def test_on_miss_post_creates_new_status_comment(tmp_path):
-    # Must survive: uv sync / checkout failing before the tracking comment
-    # exists — the failure note must still surface in the thread, as a NEW
-    # comment (never misattributed to an older run's comment).
     patched = run_patch_script(
         tmp_path,
         {
@@ -242,7 +212,6 @@ def test_on_miss_post_still_patches_when_own_comment_exists(tmp_path):
 
 
 def test_on_miss_post_without_status_note_is_a_noop(tmp_path):
-    # A footer-only comment with no status note is pure noise — don't post it.
     run_patch_script(
         tmp_path,
         {"BOT_LOGIN": "github-actions[bot]", "RUN_ID": "555", "ON_MISS": "post"},
@@ -250,8 +219,6 @@ def test_on_miss_post_without_status_note_is_a_noop(tmp_path):
 
 
 def test_select_only_emits_run_matched_comment_id_without_patching(tmp_path):
-    # The pre-revise capture step resolves the primary comment (id 202, run 222)
-    # to stdout and must never patch — SELECT_ONLY leaves the log empty.
     result = run_patch_script(
         tmp_path,
         {"BOT_LOGIN": "github-actions[bot]", "RUN_ID": "222", "SELECT_ONLY": "1"},
@@ -266,8 +233,6 @@ def test_select_only_emits_run_matched_comment_id_without_patching(tmp_path):
 
 
 def test_select_only_emits_empty_string_on_miss(tmp_path):
-    # No comment from this run — capture emits nothing so the footer step falls
-    # back to its own selection instead of pinning a wrong id.
     result = run_patch_script(
         tmp_path,
         {"BOT_LOGIN": "github-actions[bot]", "RUN_ID": "555", "SELECT_ONLY": "1"},
@@ -282,10 +247,6 @@ def test_select_only_emits_empty_string_on_miss(tmp_path):
 
 
 def test_target_comment_id_patches_that_comment_bypassing_selection(tmp_path):
-    # The footer step pins the captured primary comment id and patches it
-    # directly — never the newer revise-pass comment that a run-id +
-    # latest-by-updated_at select would otherwise win. Proven by pinning id 202
-    # while the default claude[bot] selection would have chosen id 101.
     single = {
         "id": 202,
         "user": {"login": "claude[bot]"},
@@ -305,7 +266,6 @@ def test_target_comment_id_patches_that_comment_bypassing_selection(tmp_path):
 
 
 def test_fake_gh_stub_has_no_printf_grep_pipelines():
-    # #1389 acceptance: branch dispatch must not use printf|grep (pipefail+EPIPE).
     assert "| grep" not in FAKE_GH
     assert "grep -q" not in FAKE_GH
     assert 'case " $* "' in FAKE_GH

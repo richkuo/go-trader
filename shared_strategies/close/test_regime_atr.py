@@ -1,4 +1,3 @@
-"""Tests for the regime-aware ATR resolver and close evaluators (#733)."""
 
 from __future__ import annotations
 
@@ -45,7 +44,6 @@ def test_use_defaults_expands(regime_atr):
 
 
 def test_trailing_use_defaults_composite(regime_atr):
-    # #1120: fleet baseline must resolve retuned composite opening trails.
     block, errs = regime_atr.parse_regime_atr_block(
         {"use_defaults": True}, "trailing_stop_atr_regime", regime_atr.SURFACE_TRAILING
     )
@@ -130,7 +128,6 @@ def test_tier_mixed_shape_rejected(regime_atr):
 
 
 def test_evaluate_use_defaults_frozen(tiered_regime):
-    # tier1 ranging: atr=1.5, cf=0.5 — should fire at +1.5×ATR profit
     position = {
         "side": "long",
         "avg_cost": 100.0,
@@ -139,7 +136,7 @@ def test_evaluate_use_defaults_frozen(tiered_regime):
         "entry_atr": 2.0,
         "regime": "ranging",
     }
-    market = {"mark_price": 103.0}  # +3.0 profit = 1.5× ATR
+    market = {"mark_price": 103.0}
     result = tiered_regime.evaluate(position, market, {"use_defaults": True})
     assert result["close_fraction"] > 0
     assert "ranging" in result["reason"]
@@ -152,7 +149,6 @@ def test_evaluate_missing_regime_noop(tiered_regime):
         "current_quantity": 1.0,
         "initial_quantity": 1.0,
         "entry_atr": 2.0,
-        # no regime stamped
     }
     market = {"mark_price": 105.0}
     result = tiered_regime.evaluate(position, market, {"use_defaults": True})
@@ -161,7 +157,6 @@ def test_evaluate_missing_regime_noop(tiered_regime):
 
 
 def test_atr_multiple_canonical_only(regime_atr):
-    """#841 v15: only atr_multiple is accepted in regime blocks."""
     block_raw = {
         regime_atr.REGIME_CLASSIFIER_KEY: {
             "trending_up": {"atr_multiple": 2.0},
@@ -201,8 +196,6 @@ def test_atr_multiple_canonical_only(regime_atr):
     assert errs, "expected error when both atr_multiple and atr are set"
 
 
-# #1124: ranging_directional family — bare label covers _up/_down for
-# exhaustiveness; sub-labels-only is rejected; runtime resolve falls back.
 _COMPOSITE_LABELS_1124 = (
     "trending_up_clean",
     "trending_up_choppy",
@@ -225,23 +218,18 @@ def _composite_block_atr(atr, omit=()):
 
 
 def test_composite_bare_directional_covers_sublabels(regime_atr):
-    # Bare ranging_directional present, no _up/_down keys → the bare label covers
-    # the sub-labels → validates (back-compat).
     raw = _composite_block_atr(1.5, omit=("ranging_directional_up", "ranging_directional_down"))
     block, errs = regime_atr.parse_regime_atr_block(
         raw, "stop_loss_atr_regime", regime_atr.SURFACE_STOP_LOSS,
         labels=_COMPOSITE_LABELS_1124,
     )
     assert errs == [], errs
-    # Runtime: a _up/_down stamp resolves via the bare fallback.
     assert block.resolve("ranging_directional").atr == 1.5
     assert block.resolve("ranging_directional_up").atr == 1.5
     assert block.resolve("ranging_directional_down").atr == 1.5
 
 
 def test_composite_sublabels_without_bare_rejected(regime_atr):
-    # Sub-labels present but bare ranging_directional omitted → NOT exhaustive
-    # (the producer still emits the bare label at return_eff==0).
     raw = _composite_block_atr(1.5, omit=("ranging_directional",))
     _, errs = regime_atr.parse_regime_atr_block(
         raw, "stop_loss_atr_regime", regime_atr.SURFACE_STOP_LOSS,
@@ -253,7 +241,6 @@ def test_composite_sublabels_without_bare_rejected(regime_atr):
 
 
 def test_composite_explicit_sublabel_wins_over_bare(regime_atr):
-    # When an explicit sub-label key is present, it wins over the bare fallback.
     raw = _composite_block_atr(1.5)
     raw[regime_atr.REGIME_CLASSIFIER_KEY]["ranging_directional_up"] = {"atr_multiple": 0.9}
     block, errs = regime_atr.parse_regime_atr_block(
@@ -262,13 +249,10 @@ def test_composite_explicit_sublabel_wins_over_bare(regime_atr):
     )
     assert errs == [], errs
     assert block.resolve("ranging_directional_up").atr == 0.9
-    assert block.resolve("ranging_directional_down").atr == 1.5  # bare fallback
+    assert block.resolve("ranging_directional_down").atr == 1.5
 
 
 def test_tier_sl_after_sibling_stripped_before_atr_parse(regime_atr):
-    # #1228 parity: Go strips both close_fraction AND sl_after before the
-    # ATR-block allowlist parse (scheduler/regime_atr.go). A per-tier
-    # sl_after on a regime TP tier must not trip the unknown-key check.
     raw_tiers = [
         {
             regime_atr.REGIME_CLASSIFIER_KEY: {
@@ -294,10 +278,6 @@ def test_tier_sl_after_sibling_stripped_before_atr_parse(regime_atr):
 
 
 def test_unified_scalar_params_bare_covers_directional_subs(regime_atr):
-    # #1124/#1228 review: a bare-only unified block must resolve for a
-    # ranging_directional_up/_down stamp (mirrors Go unifiedRegimeScalarParams
-    # — the unified close is the sole SL owner, so a miss means no SL AND no
-    # TPs for the sub-label stamp).
     params = {
         "trend_regime": {
             "ranging_directional": {
@@ -329,7 +309,6 @@ def test_unified_scalar_params_explicit_sub_wins_over_bare(regime_atr):
         params, "ranging_directional_up")
     assert scalar["tp_tiers"][0]["atr_multiple"] == 4.0
     assert sl == 0.9
-    # The sibling sub still rides the bare entry.
     _, sl_down = regime_atr.unified_regime_scalar_params(
         params, "ranging_directional_down")
     assert sl_down == 1.5
@@ -342,7 +321,6 @@ def test_unified_scalar_params_no_bare_no_sub_misses(regime_atr):
     scalar, sl = regime_atr.unified_regime_scalar_params(
         params, "ranging_directional_up")
     assert scalar is None and sl == 0.0
-    # Bare never covers non-family labels either.
     scalar, sl = regime_atr.unified_regime_scalar_params(
         {"trend_regime": {"ranging_directional": {
             "tp_tiers": [], "stop_loss_atr": 1.0}}}, "trending_down")
@@ -365,8 +343,6 @@ def test_validate_unified_regime_close_accepts_valid_block(regime_atr):
 
 
 def test_validate_unified_regime_close_requires_positive_sl(regime_atr):
-    # #1228 round 3 — mirrors scheduler/regime_unified.go: stop_loss_atr is
-    # required per label and must be > 0 (the unified close owns the SL).
     p = _unified_params_1228()
     del p["trend_regime"]["trending_up"]["stop_loss_atr"]
     errs = regime_atr.validate_unified_regime_close(p)
@@ -399,7 +375,6 @@ def test_validate_unified_regime_close_bare_covers_subs(regime_atr):
         "ranging_quiet": {"tp_tiers": far, "stop_loss_atr": 1.0},
     }}
     assert regime_atr.validate_unified_regime_close(p, labels=labels) == []
-    # Without the bare entry the subs are genuinely missing.
     del p["trend_regime"]["ranging_directional"]
     errs = regime_atr.validate_unified_regime_close(p, labels=labels)
     assert any("ranging_directional_up" in e for e in errs)

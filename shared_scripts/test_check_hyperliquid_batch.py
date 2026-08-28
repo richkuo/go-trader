@@ -1,13 +1,3 @@
-"""Tests for the #1442 batched Hyperliquid signal check.
-
-Covers the split of run_signal_check into build_shared_signal_state +
-evaluate_signal_slot, the --batch-check wire contract, decision parity between
-a batched slot and its solo evaluation, per-slot error isolation, the
-shared-state sentinel, and the shared-frame / fetch memo invariants.
-
-Not in the pytest testpaths (see CLAUDE.md -> Testing); invoke explicitly:
-    uv run --no-sync python -m pytest shared_scripts/test_check_hyperliquid_batch.py
-"""
 
 import importlib.util
 import io
@@ -24,11 +14,6 @@ SCRIPT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "check_hy
 
 
 def _load_check_module():
-    """Load check_hyperliquid.py under a private module name.
-
-    A unique name keeps the module out of the way of the ambiguous top-level
-    names the script itself puts on sys.path (#1304 test-isolation rule).
-    """
     spec = importlib.util.spec_from_file_location("_check_hyperliquid_batch_under_test", SCRIPT_PATH)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -41,7 +26,6 @@ def mod():
 
 
 def _candles(n=160, start_ms=1_700_000_000_000, step_ms=3_600_000):
-    """Deterministic candle fixture: a gentle uptrend with a mid-window dip."""
     out = []
     price = 100.0
     for i in range(n):
@@ -54,7 +38,6 @@ def _candles(n=160, start_ms=1_700_000_000_000, step_ms=3_600_000):
 
 
 class FakeAdapter:
-    """Records calls so the memo invariants can be asserted."""
 
     def __init__(self, candles=None, spot_price=0.0, ohlcv_error=None):
         self._candles = candles if candles is not None else _candles()
@@ -121,9 +104,6 @@ def _strip_volatile(result):
     return out
 
 
-# --- decision parity -------------------------------------------------------
-
-
 SLOT_MATRIX = [
     _slot("hl-a", "breakout"),
     _slot("hl-b", "momentum_pro", mode="live"),
@@ -140,7 +120,6 @@ SLOT_MATRIX = [
 
 
 def test_batched_slots_match_their_solo_evaluation(mod):
-    """Every batched slot's decision equals evaluating it alone (AC: parity)."""
     batch_adapter = FakeAdapter()
     envelope, exit_code = mod.run_batch_signal_check(
         "BTC", "1h", SLOT_MATRIX,
@@ -158,7 +137,6 @@ def test_batched_slots_match_their_solo_evaluation(mod):
 
 
 def test_slot_timestamps_are_rfc3339(mod):
-    """Timestamps are excluded from the parity comparison, so validate them here."""
     from datetime import datetime
 
     envelope, _ = mod.run_batch_signal_check(
@@ -169,7 +147,6 @@ def test_slot_timestamps_are_rfc3339(mod):
 
 
 def test_heterogeneous_slots_keep_their_own_values(mod):
-    """Slots that differ off-key still batch and still get their own inputs."""
     envelope, exit_code = mod.run_batch_signal_check(
         "BTC", "1h", SLOT_MATRIX, mark_price=25_000.0, adapter=FakeAdapter())
     assert exit_code == 0
@@ -178,7 +155,6 @@ def test_heterogeneous_slots_keep_their_own_values(mod):
     assert by_id["hl-b"]["mode"] == "live"
     assert by_id["hl-a"]["strategy"] == "breakout"
     assert by_id["hl-b"]["strategy"] == "momentum_pro"
-    # The position-carrying slot is the only one that can report a close.
     assert by_id["hl-c"]["close_fraction"] >= 0.0
     assert by_id["hl-a"].get("close_fraction", 0.0) == 0.0
 
@@ -199,11 +175,7 @@ def test_spot_price_fallback_used_once_when_mark_absent(mod):
         assert result["price"] == 31_337.0
 
 
-# --- shared-frame and memo invariants --------------------------------------
-
-
 def test_slot_cannot_mutate_the_shared_frame(mod):
-    """A strategy that annotates its input frame must not leak into a peer."""
     adapter = FakeAdapter()
     shared = _shared(mod, adapter)
     base_columns = list(shared["df"].columns)
@@ -254,9 +226,6 @@ def test_funding_fetches_are_memoized_across_slots(mod):
     assert len(envelope["results"]) == 2
 
 
-# --- error isolation and the shared-state sentinel -------------------------
-
-
 def test_one_failing_slot_does_not_disturb_its_peers(mod):
     slots = [
         _slot("hl-ok-1", "breakout"),
@@ -304,9 +273,6 @@ def test_build_shared_signal_state_raises_typed_errors(mod):
         mod.build_shared_signal_state("BTC", "1h")
 
 
-# --- stdin envelope parsing ------------------------------------------------
-
-
 def test_parse_batch_slots_accepts_the_documented_envelope(mod):
     raw = json.dumps({"v": 1, "slots": [
         {"id": "hl-a", "strategy": "breakout",
@@ -333,9 +299,6 @@ def test_parse_batch_slots_rejects_bad_envelopes(mod, payload, fragment):
     with pytest.raises(ValueError) as exc:
         mod.parse_batch_slots(json.dumps(payload))
     assert fragment in str(exc.value)
-
-
-# --- argv / stdout wire contract -------------------------------------------
 
 
 def _run_main(mod, monkeypatch, argv, stdin_text, adapter):
@@ -372,7 +335,6 @@ def test_batch_check_argv_returns_the_documented_json(mod, monkeypatch):
     assert envelope["error"] == "" and envelope["error_scope"] == ""
     assert [r["id"] for r in envelope["results"]] == ["hl-a", "hl-b"]
     for result in envelope["results"]:
-        # Fields the Go HyperliquidResult contract reads.
         for key in ("strategy", "symbol", "timeframe", "signal", "price",
                     "indicators", "mode", "platform", "timestamp"):
             assert key in result
@@ -393,7 +355,7 @@ def test_batch_check_rejects_a_malformed_stdin_envelope(mod, monkeypatch):
 
 def test_batch_check_probe_only_exits_before_reading_stdin(mod, monkeypatch):
     class ExplodingStdin:
-        def read(self):  # pragma: no cover - must never be reached
+        def read(self):
             raise AssertionError("--probe-only must not read stdin")
 
     monkeypatch.setattr(sys, "argv", ["check_hyperliquid.py", "--batch-check",
@@ -425,8 +387,6 @@ def test_single_strategy_insufficient_data_shape_is_unchanged(mod, monkeypatch):
     assert code == 1
     result = json.loads(out)
     assert result["error"] == "Insufficient data: 12 candles"
-    # The legacy short-history payload carries no "regime" key; the generic
-    # exception payload does. Keep them distinguishable.
     assert "regime" not in result
 
 
@@ -442,9 +402,6 @@ def test_single_strategy_error_shape_is_unchanged(mod, monkeypatch):
     assert result["signal"] == 0
 
 
-# --- prebuilt-frame entry point (backtest parity tooling) -------------------
-
-
 def test_shared_state_accepts_a_prebuilt_frame_without_an_adapter(mod):
     df = mod._make_dataframe(_candles())
     shared = mod.build_shared_signal_state("BTC", "1h", df=df, atr_method="simple")
@@ -455,17 +412,7 @@ def test_shared_state_accepts_a_prebuilt_frame_without_an_adapter(mod):
     assert math.isfinite(result["price"])
 
 
-# --- futures registry resolution -------------------------------------------
-
-
 def test_futures_registry_fast_path_rejects_the_spot_registry(mod, monkeypatch):
-    """The fast path must identify the module by FILE, not by a function name.
-
-    shared_strategies/open/spot/strategies.py also defines apply_strategy, so a
-    hasattr check accepts the spot registry whenever sys.modules["strategies"]
-    is already the spot shim — the in-process case (parity_diff --batched,
-    pytest -n auto) this helper exists to survive.
-    """
     spot_path = os.path.join(
         os.path.dirname(os.path.abspath(mod.__file__)),
         "..", "shared_strategies", "open", "spot", "strategies.py")
@@ -480,7 +427,6 @@ def test_futures_registry_fast_path_rejects_the_spot_registry(mod, monkeypatch):
 
 
 def test_futures_registry_fast_path_rejects_a_registry_without_a_file(mod, monkeypatch):
-    """A namespace-y or synthesized `strategies` must not be accepted either."""
     stub = types.ModuleType("strategies")
     stub.apply_strategy = lambda *a, **k: None
     monkeypatch.setitem(sys.modules, "strategies", stub)
@@ -490,7 +436,6 @@ def test_futures_registry_fast_path_rejects_a_registry_without_a_file(mod, monke
 
 
 def test_futures_registry_fast_path_accepts_the_futures_registry(mod, monkeypatch):
-    """A subprocess where sys.path ordering already resolved it must not regress."""
     futures_stub = types.ModuleType("strategies")
     futures_stub.__file__ = mod.FUTURES_STRATEGIES_PATH
     futures_stub.apply_strategy = lambda *a, **k: None

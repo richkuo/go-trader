@@ -1,4 +1,3 @@
-"""#1134/#1135: user_defaults.regime_atr parity with the Go loader."""
 
 from __future__ import annotations
 
@@ -12,7 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "backtest"))
 sys.path.insert(0, str(REPO_ROOT / "shared_strategies" / "close"))
 
-from run_backtest import (  # noqa: E402
+from run_backtest import (
     _apply_user_close_defaults,
     _validate_user_close_defaults_regime_atr,
     load_strategy_config,

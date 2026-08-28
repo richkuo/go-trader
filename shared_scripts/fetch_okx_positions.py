@@ -1,24 +1,4 @@
 #!/usr/bin/env python3
-"""
-OKX live positions fetcher (issue #345).
-
-Fetches every open OKX perpetual swap position on the account and emits a
-JSON list to stdout. Used by the portfolio kill switch in the Go scheduler
-to decide which coins need reduce-only closes — mirrors
-``fetchHyperliquidState`` but via Python subprocess since OKX position
-queries require authenticated API access (no public endpoint equivalent).
-
-Scope: swap (perps) only. OKX spot balances are NOT surfaced — the kill
-switch has no automated spot close path (see ``close_okx_position.py``).
-
-Usage:
-    fetch_okx_positions.py
-
-Requires OKX_API_KEY / OKX_API_SECRET / OKX_PASSPHRASE. Output:
-``{"positions": [{"coin": "BTC", "size": 0.334, "entry_price": 42000.5,
-  "side": "long"}, ...], "platform": "okx", "timestamp": ...}``
-Size is signed (positive = long, negative = short) to mirror HLPosition.
-"""
 
 import json
 import os
@@ -45,7 +25,6 @@ def main():
 
     positions = []
     for p in raw or []:
-        # ccxt unified position shape: {symbol, contracts, side, entryPrice, ...}
         try:
             contracts = float(p.get("contracts") or 0)
         except (TypeError, ValueError):
@@ -53,22 +32,16 @@ def main():
         if contracts == 0:
             continue
         symbol = p.get("symbol") or ""
-        # OKX swap symbols look like "BTC/USDT:USDT" — strip to coin.
         coin = symbol.split("/", 1)[0] if "/" in symbol else symbol
         if not coin:
             continue
         side = (p.get("side") or "").lower()
-        # Encode side into signed size so Go side can mirror HLPosition semantics.
         signed_size = -contracts if side == "short" else contracts
         entry_price = 0.0
         try:
             entry_price = float(p.get("entryPrice") or 0)
         except (TypeError, ValueError):
             pass
-        # #918: exchange-reported unrealized P&L so the scheduler can attribute
-        # real position P&L to the owning strategy in shared-wallet
-        # reconciliation instead of modeling it from a fetched mark. ccxt
-        # exposes it as `unrealizedPnl`; absent/None → 0.0.
         unrealized_pnl = 0.0
         try:
             unrealized_pnl = float(p.get("unrealizedPnl") or 0)

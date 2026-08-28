@@ -1,4 +1,3 @@
-"""Tests for Deribit adapters — DeribitOptionsAdapter and DeribitExchangeAdapter."""
 
 import sys
 import os
@@ -8,12 +7,10 @@ import pytest
 from unittest.mock import MagicMock, patch
 from datetime import datetime, timedelta
 
-# Load the deribit adapter by file path to avoid module name collisions
 _adapter_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "adapter.py")
 _spec = importlib.util.spec_from_file_location("deribit_adapter", _adapter_path,
     submodule_search_locations=[os.path.dirname(_adapter_path)])
 _mod = importlib.util.module_from_spec(_spec)
-# Ensure shared_tools is importable for pricing.py
 _shared_tools = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'shared_tools')
 if _shared_tools not in sys.path:
     sys.path.insert(0, os.path.abspath(_shared_tools))
@@ -34,8 +31,6 @@ DeribitOptionsAdapter = _mod.DeribitOptionsAdapter
 DeribitExchangeAdapter = _mod.DeribitExchangeAdapter
 
 
-# ─── Black-Scholes Pricing ────────────────────────
-
 class TestBlackScholes:
     def test_call_price_positive(self):
         price = bs_price(100, 100, 0.5, RISK_FREE_RATE, 0.3, OptionType.CALL)
@@ -46,7 +41,6 @@ class TestBlackScholes:
         assert price > 0
 
     def test_call_put_parity(self):
-        """C - P = S - K * exp(-rT)"""
         S, K, T, r, sigma = 100, 100, 0.5, RISK_FREE_RATE, 0.3
         call = bs_price(S, K, T, r, sigma, OptionType.CALL)
         put = bs_price(S, K, T, r, sigma, OptionType.PUT)
@@ -55,10 +49,9 @@ class TestBlackScholes:
 
     def test_deep_itm_call(self):
         price = bs_price(200, 100, 0.5, RISK_FREE_RATE, 0.3, OptionType.CALL)
-        assert price > 97  # at least intrinsic
+        assert price > 97
 
     def test_at_expiry_call(self):
-        # T=0: intrinsic only
         assert bs_price(110, 100, 0, RISK_FREE_RATE, 0.3, OptionType.CALL) == 10
         assert bs_price(90, 100, 0, RISK_FREE_RATE, 0.3, OptionType.CALL) == 0
 
@@ -68,7 +61,7 @@ class TestBlackScholes:
 
     def test_zero_vol_call(self):
         price = bs_price(110, 100, 0.5, RISK_FREE_RATE, 0.0, OptionType.CALL)
-        assert price == 10  # intrinsic
+        assert price == 10
 
 
 class TestBSGreeks:
@@ -99,7 +92,6 @@ class TestBSGreeks:
 
 class TestImpliedVolatility:
     def test_round_trip(self):
-        """BS price -> IV -> should recover original vol."""
         S, K, T, r, sigma = 100, 100, 0.5, RISK_FREE_RATE, 0.3
         price = bs_price(S, K, T, r, sigma, OptionType.CALL)
         iv = implied_volatility(price, S, K, T, r, OptionType.CALL)
@@ -111,8 +103,6 @@ class TestImpliedVolatility:
     def test_zero_time(self):
         assert implied_volatility(5, 100, 100, 0, RISK_FREE_RATE, OptionType.CALL) == 0.0
 
-
-# ─── Data Classes ──────────────────────────────────
 
 class TestOptionContract:
     def test_mid_price(self):
@@ -207,8 +197,6 @@ class TestGreeksDataclass:
         assert d["iv"] == 0.3
 
 
-# ─── DeribitOptionsAdapter ─────────────────────────
-
 class TestDeribitOptionsAdapter:
     def test_initial_state(self):
         with patch("ccxt.deribit"):
@@ -250,8 +238,6 @@ class TestDeribitOptionsAdapter:
             assert adapter.close_position("nonexistent") is None
 
 
-# ─── DeribitExchangeAdapter ────────────────────────
-
 class TestDeribitExchangeAdapter:
     def test_name(self):
         adapter = DeribitExchangeAdapter()
@@ -276,7 +262,6 @@ class TestDeribitExchangeAdapter:
 
     def test_get_real_expiry_fallback(self):
         adapter = DeribitExchangeAdapter()
-        # When utils import fails, should return synthetic expiry
         with patch.dict(sys.modules, {"utils": None}):
             expiry, dte = adapter.get_real_expiry("BTC", 30)
             assert dte == 30
@@ -287,13 +272,13 @@ class TestDeribitExchangeAdapter:
         adapter = DeribitExchangeAdapter()
         with patch.dict(sys.modules, {"utils": None}):
             strike = adapter.get_real_strike("BTC", "2026-05-01", "call", 67500)
-            assert strike == 68000  # round to nearest 1000
+            assert strike == 68000
 
     def test_get_real_strike_fallback_eth(self):
         adapter = DeribitExchangeAdapter()
         with patch.dict(sys.modules, {"utils": None}):
             strike = adapter.get_real_strike("ETH", "2026-05-01", "call", 3475)
-            assert strike == 3500  # round to nearest 50
+            assert strike == 3500
 
     def test_get_premium_and_greeks_bs_fallback(self):
         adapter = DeribitExchangeAdapter()

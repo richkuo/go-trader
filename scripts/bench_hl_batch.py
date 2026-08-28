@@ -1,33 +1,4 @@
 #!/usr/bin/env python3
-"""Batched vs unbatched Hyperliquid check benchmark (#1442).
-
-Measures what the batched lane actually costs against what N sequential
-per-strategy checks cost, on the SAME host, the SAME configuration and the
-SAME candles. No speedup may be claimed without this artifact, and any target
-stated later has to be arithmetically reachable for the group size it names.
-
-Both arms are network-free, and the pinning lives ENTIRELY in this harness:
-the child interpreters load a generated ``sitecustomize.py`` that replaces
-``HyperliquidExchangeAdapter.get_ohlcv`` with a fixture reader, so no
-benchmark switch exists anywhere on the trading path. ``--mark-price`` is
-always supplied, so ``get_spot_price`` is never reached either. Funding-aware
-strategies are excluded from the workload for the same reason. What the arms
-differ in is exactly the thing under test:
-
-  unbatched — N sequential ``check_hyperliquid.py <strategy> <symbol> <tf>``
-              invocations, the shape the dispatch loop produces today.
-  batched   — ONE ``check_hyperliquid.py --batch-check`` invocation carrying
-              N slots on stdin.
-
-Reported per arm and per N: wall time (median and p95 over the repetitions),
-process starts, child processor time (user+system), and peak child RSS. The
-raw records are printed as JSON so the artifact in docs/benchmarks/hl_batch.md
-is a transcript rather than a summary.
-
-Usage:
-    uv run --no-sync python scripts/bench_hl_batch.py \
-        --sizes 2,5,10,20 --reps 10 --warmups 2 --json bench.json
-"""
 
 import argparse
 import json
@@ -44,8 +15,6 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 CHECK_SCRIPT = os.path.join("shared_scripts", "check_hyperliquid.py")
 PYTHON = os.path.join(".venv", "bin", "python3")
 
-# Funding-aware strategies are excluded: they reach the network regardless of
-# the candle fixture, which would measure the exchange, not the batch.
 DEFAULT_STRATEGIES = ["breakout", "momentum_pro", "mean_reversion_pro", "rsi_bb_combo"]
 
 SYMBOL = "BTC"
@@ -56,7 +25,6 @@ MARK_PRICE = "25000"
 
 
 def build_fixture(path: str, bars: int = 200) -> str:
-    """Write a deterministic candle fixture (no network, no market data licence)."""
     candles = []
     price = 25_000.0
     start_ms = 1_700_000_000_000
@@ -71,12 +39,6 @@ def build_fixture(path: str, bars: int = 200) -> str:
     return path
 
 
-# The child-side injection. Written into a temp directory that is prepended to
-# PYTHONPATH, so CPython's `site` imports it before check_hyperliquid.py runs.
-# It patches the adapter CLASS in place and pre-binds sys.modules["adapter"],
-# which is the name check_hyperliquid.py imports lazily — so the patched method
-# is the one the check actually calls. Nothing in the repository reads a
-# benchmark environment variable; the seam exists only inside this harness.
 SITECUSTOMIZE = '''
 import json
 import os
@@ -114,19 +76,11 @@ def _bench_env(fixture: str, inject_dir: str) -> dict:
     env["GO_TRADER_BENCH_FIXTURE"] = fixture
     existing = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = inject_dir + (os.pathsep + existing if existing else "")
-    # Both arms read the same pinned candles, so the #839 disk cache would only
-    # add noise; disable it so the measurement is of compute, not of cache luck.
     env["GO_TRADER_HL_OHLCV_CACHE"] = "0"
     return env
 
 
 def _verify_injection(env: dict) -> None:
-    """Fail loudly unless the child actually ran on the pinned candles.
-
-    Without this a silently-failed injection would produce a network-bound
-    benchmark that still prints plausible numbers — the artifact would be
-    wrong and nothing would say so.
-    """
     proc = subprocess.run(
         [PYTHON, CHECK_SCRIPT] + _strategy_argv(DEFAULT_STRATEGIES[0]),
         cwd=REPO_ROOT, env=env, capture_output=True, check=False,
@@ -145,14 +99,6 @@ def _verify_injection(env: dict) -> None:
 
 
 def _verify_batched_arm(env: dict) -> None:
-    """Fail loudly unless the batched arm really evaluates every slot.
-
-    The timed runs discard child output, so without this a `--batch-check`
-    child that died on a malformed envelope or an import fault would be
-    recorded as a sub-second success and published as the fast arm. This
-    preflight asserts the envelope parses and returns one clean result per
-    slot before any batched timing is taken.
-    """
     strategies = _workload(2)
     proc = subprocess.run(
         [PYTHON, CHECK_SCRIPT] + _batch_argv(),
@@ -183,7 +129,6 @@ def _verify_batched_arm(env: dict) -> None:
 
 
 def _maxrss_mb(maxrss: int) -> float:
-    """Normalize ru_maxrss to MiB. Linux reports KiB, macOS reports bytes."""
     divisor = 1024.0 * 1024.0 if sys.platform == "darwin" else 1024.0
     return round(maxrss / divisor, 1)
 
@@ -194,13 +139,6 @@ def _child_usage():
 
 
 def _run(args, stdin_text=None, env=None):
-    """Run one timed child and abort the whole benchmark if it failed.
-
-    Output stays on DEVNULL so the measurement is of compute rather than of
-    pipe drain, but the exit status is checked: a child that dies early is
-    fast for the wrong reason, and an unchecked failure would be published as
-    a speedup.
-    """
     proc = subprocess.run(
         [PYTHON, CHECK_SCRIPT] + args,
         cwd=REPO_ROOT,
@@ -283,7 +221,7 @@ def summarize(records: list) -> dict:
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser()
     parser.add_argument("--sizes", default="2,5,10,20",
                         help="comma-separated group sizes to measure")
     parser.add_argument("--reps", type=int, default=10)

@@ -1,6 +1,3 @@
-"""Options backtester must use the same strike grid and Black-Scholes
-pricing as the live Deribit adapter fallback, so backtest results are
-comparable with live deployment."""
 import math
 import os
 import re
@@ -21,38 +18,31 @@ SHARED_TOOLS = str(REPO_ROOT / "shared_tools")
 if SHARED_TOOLS not in sys.path:
     sys.path.insert(0, SHARED_TOOLS)
 
-from pricing import bs_price, bs_price_and_greeks  # type: ignore
+from pricing import bs_price, bs_price_and_greeks
 
 
 DERIBIT_ADAPTER = REPO_ROOT / "platforms" / "deribit" / "adapter.py"
 
 
-# ---------- Strike-grid parity ----------
-
 def test_btc_strikes_round_to_1000():
     assert adapter_strike("BTC", 67234) == 67000
     assert adapter_strike("BTC", 67501) == 68000
-    assert adapter_strike("BTC", 67500) == 68000  # Python round-half-even
+    assert adapter_strike("BTC", 67500) == 68000
 
 
 def test_eth_strikes_round_to_50():
     assert adapter_strike("ETH", 3412) == 3400
     assert adapter_strike("ETH", 3426) == 3450
-    assert adapter_strike("ETH", 3425) == 3400  # round-half-even
+    assert adapter_strike("ETH", 3425) == 3400
 
 
 def test_unknown_underlying_uses_50_default():
-    """Adapter fallback special-cases only BTC; everything else — including
-    SOL, DOGE, and anything new — uses $50. A backtester that silently
-    applied BTC's $1000 step to SOL@$150 would round to $0."""
     assert adapter_strike("SOL", 150) == 150
-    assert adapter_strike("SOL", 173) == 150  # round-half-even rounds to even 150
-    assert adapter_strike("DOGE", 0.2134) == 0.0  # step > target, legitimately zero
+    assert adapter_strike("SOL", 173) == 150
+    assert adapter_strike("DOGE", 0.2134) == 0.0
 
 
 def test_strike_grid_matches_adapter_source():
-    """Scrape platforms/deribit/adapter.py:get_real_strike to ensure the
-    backtest constants still match what the live adapter actually does."""
     text = DERIBIT_ADAPTER.read_text()
     match = re.search(
         r"def get_real_strike\([^)]*\)[^:]*:.*?return round\(target_strike / (\d+)\) \* (\d+)",
@@ -70,22 +60,19 @@ def test_strike_grid_matches_adapter_source():
     )
 
     btc_match = re.search(
-        r'underlying\.upper\(\) == "BTC":\s*\n\s*return round\(target_strike, (-?\d+)\)',
+        r'underlying\.upper\(\) == ["\']BTC["\']:\s*(?:\n\s*)?return round\(target_strike, (-?\d+)\)',
         text,
     )
     assert btc_match, (
         "get_real_strike BTC branch no longer matches "
         "'round(target_strike, -N)' — update scraper regex"
     )
-    # round(x, -3) rounds to nearest 1000.
     btc_digits = int(btc_match.group(1))
     assert 10 ** (-btc_digits) == int(ADAPTER_STRIKE_STEP["BTC"]), (
         f"Adapter rounds BTC to 10^{-btc_digits}, backtest uses "
         f"{ADAPTER_STRIKE_STEP['BTC']}"
     )
 
-
-# ---------- BS pricing parity ----------
 
 @pytest.mark.parametrize(
     "spot,strike,dte,vol,option_type",
@@ -109,11 +96,9 @@ def test_backtest_bs_matches_shared_pricing(spot, strike, dte, vol, option_type)
 def test_greeks_populated_on_bs_call():
     price, greeks = bs_price_and_greeks(67000, 67000, 30, 0.80, option_type="call")
     assert price > 0
-    # ATM call delta ~0.5 at 80% vol / 30d.
     assert 0.4 < greeks["delta"] < 0.7, greeks
     assert greeks["gamma"] > 0
     assert greeks["vega"] > 0
-    # Time decay — theta is per-day USD, so small negative.
     assert greeks["theta"] < 0
 
 
@@ -125,14 +110,8 @@ def test_greeks_populated_on_bs_put():
     assert greeks["theta"] < 0
 
 
-# ---------- End-to-end: strike + greeks in trade log ----------
-
 def _deterministic_candles(underlying: str = "BTC", start_price: float = 50000.0,
                             n: int = 200) -> list:
-    """Construct an OHLC path that deterministically produces high iv_rank
-    in the final window. First 150 bars are flat-ish (±0.2% alternating);
-    last 50 bars alternate ±5% to spike realised vol well above the
-    lookback max, forcing iv_rank > 75."""
     candles = []
     price = start_price
     for i in range(n):
@@ -145,9 +124,6 @@ def _deterministic_candles(underlying: str = "BTC", start_price: float = 50000.0
 
 
 def test_trade_log_entries_carry_delta_and_on_grid_strikes():
-    """Every ``open`` event must carry ``delta`` and sit on the adapter
-    strike grid so downstream analysis has the data needed to rank
-    entries by delta-neutrality and so the strikes exist on Deribit."""
     from backtest_options import OptionsBacktester
 
     candles = _deterministic_candles()

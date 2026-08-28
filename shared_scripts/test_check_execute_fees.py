@@ -1,4 +1,3 @@
-"""Tests for live execute fee extraction in platform check scripts."""
 
 import importlib.util
 import json

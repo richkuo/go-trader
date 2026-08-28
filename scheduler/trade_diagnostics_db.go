@@ -6,12 +6,6 @@ import (
 	"strings"
 )
 
-// StateDB persistence for #1147 trade diagnostics. Insert runs eagerly on the
-// close path (same cost class as InsertTrade); the metrics UPDATE runs from
-// the async worker, keyed by rowid.
-
-// InsertTradeDiagnostics persists the identity/outcome part of a diagnostics
-// row and stamps row.RowID for the follow-up metrics update.
 func (sdb *StateDB) InsertTradeDiagnostics(row *TradeDiagnosticsRow) error {
 	if sdb == nil || sdb.db == nil {
 		return fmt.Errorf("state db unavailable")
@@ -50,9 +44,6 @@ func insertTradeDiagnosticsRow(exec sqlExecer, row *TradeDiagnosticsRow) error {
 	return nil
 }
 
-// UpdateTradeDiagnosticsMetrics fills in the derived quality metrics (or just
-// the terminal metrics_status when metrics is nil — failure paths leave the
-// quality columns NULL).
 func (sdb *StateDB) UpdateTradeDiagnosticsMetrics(rowID int64, timeframe string, m *tradeQualityMetrics, status string) error {
 	if sdb == nil || sdb.db == nil {
 		return fmt.Errorf("state db unavailable")
@@ -79,8 +70,6 @@ func (sdb *StateDB) UpdateTradeDiagnosticsMetrics(rowID int64, timeframe string,
 	return nil
 }
 
-// TradeDiagnosticsRows loads diagnostics rows (all strategies when strategyID
-// is empty), oldest first.
 func (sdb *StateDB) TradeDiagnosticsRows(strategyID string) ([]TradeDiagnosticsRow, error) {
 	if sdb == nil || sdb.db == nil {
 		return nil, fmt.Errorf("state db unavailable")
@@ -104,11 +93,6 @@ func (sdb *StateDB) TradeDiagnosticsRows(strategyID string) ([]TradeDiagnosticsR
 	return scanTradeDiagnosticsRows(rows)
 }
 
-// TradeDiagnosticsRowsPage loads one page of diagnostics rows, NEWEST close
-// first, plus the total (filtered) row count — the bounded query for the
-// polled #1231 /api/diagnostics endpoint. Unlike TradeDiagnosticsRows (the
-// one-shot CLI reader), the LIMIT/OFFSET run in SQL so per-call cost tracks
-// the page size, not the lifetime table size.
 func (sdb *StateDB) TradeDiagnosticsRowsPage(strategyID string, limit, offset int) ([]TradeDiagnosticsRow, int, error) {
 	if sdb == nil || sdb.db == nil {
 		return nil, 0, fmt.Errorf("state db unavailable")
@@ -144,8 +128,6 @@ func (sdb *StateDB) TradeDiagnosticsRowsPage(strategyID string, limit, offset in
 	return out, total, nil
 }
 
-// scanTradeDiagnosticsRows scans a trade_diagnostics result set (the shared
-// column list used by TradeDiagnosticsRows and TradeDiagnosticsRowsPage).
 func scanTradeDiagnosticsRows(rows *sql.Rows) ([]TradeDiagnosticsRow, error) {
 	var out []TradeDiagnosticsRow
 	for rows.Next() {
@@ -176,10 +158,6 @@ func scanTradeDiagnosticsRows(rows *sql.Rows) ([]TradeDiagnosticsRow, error) {
 	return out, rows.Err()
 }
 
-// NetPnLForPositions is the page-scoped variant of NetPnLByPosition: it sums
-// net close-leg PnL only for the given position IDs (deduped by the caller or
-// not — the IN list tolerates duplicates), so a polled endpoint's trades scan
-// is bounded by the page, not the lifetime trade count.
 func (sdb *StateDB) NetPnLForPositions(strategyID string, positionIDs []string) (map[string]map[string]float64, error) {
 	if sdb == nil || sdb.db == nil {
 		return nil, fmt.Errorf("state db unavailable")
@@ -220,11 +198,6 @@ func (sdb *StateDB) NetPnLForPositions(strategyID string, positionIDs []string) 
 	return out, rows.Err()
 }
 
-// NetPnLByPosition sums the convention-aware NET realized PnL of close legs
-// per (strategy_id, position_id), so multi-leg exits (tiered-TP scale-outs,
-// partial closes) aggregate correctly in the report. Rows with an empty
-// position_id can't be attributed and are excluded — the report falls back to
-// the diagnostics row's own final-leg PnL for those.
 func (sdb *StateDB) NetPnLByPosition(strategyID string) (map[string]map[string]float64, error) {
 	if sdb == nil || sdb.db == nil {
 		return nil, fmt.Errorf("state db unavailable")

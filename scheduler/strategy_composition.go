@@ -8,9 +8,6 @@ import (
 	"strings"
 )
 
-// StrategyDecisionFields is the optional open/close decision metadata emitted
-// by check scripts when a strategy opts into issue #480's split entry/exit
-// model. The legacy signal field remains authoritative for execution.
 type StrategyDecisionFields struct {
 	OpenStrategy    string         `json:"open_strategy,omitempty"`
 	CloseStrategies []string       `json:"close_strategies,omitempty"`
@@ -20,31 +17,17 @@ type StrategyDecisionFields struct {
 	Regime          *RegimePayload `json:"regime,omitempty"`
 }
 
-// PositionCtx is the optional state snapshot threaded into close evaluators
-// when a strategy opts into the open/close composition model (#496).
-// Regime carries the stamped label for the strategy's ATR window so
-// regime-aware close evaluators (tiered_tp_atr_regime, #733) can resolve
-// tier multipliers without re-running the classifier.
 type PositionCtx struct {
-	Side              string
-	AvgCost           float64
-	Quantity          float64
-	InitialQuantity   float64
-	EntryATR          float64
-	Regime            string
-	DirectionalRegime string
-	RegimeWindows     map[string]string
-	Profile           string // regime-profile allocation: pos.OpenProfile frozen at open (#998)
-	// DirectionCertifiedAtOpen mirrors Position.DirectionCertifiedAtOpen (#1085):
-	// whether regime_directional_policy was certified when this open position
-	// opened. Drives the entry resolver's gate for OPEN positions so a later
-	// certification expiry/refresh never disturbs them.
-	DirectionCertifiedAtOpen bool
-	// DirectionCertifiedStatesAtOpen mirrors
-	// Position.DirectionCertifiedStatesAtOpen (#1085): the certified per-state
-	// direction map frozen at open, driving PER-STATE sign gating of the OPEN
-	// position's effective direction (a state whose config contradicts the
-	// certified sign resolves to base).
+	Side                           string
+	AvgCost                        float64
+	Quantity                       float64
+	InitialQuantity                float64
+	EntryATR                       float64
+	Regime                         string
+	DirectionalRegime              string
+	RegimeWindows                  map[string]string
+	Profile                        string
+	DirectionCertifiedAtOpen       bool
 	DirectionCertifiedStatesAtOpen map[string]string
 }
 
@@ -80,8 +63,6 @@ func validateStrategyConceptName(name string) error {
 	return nil
 }
 
-// appendOpenCloseArgs adds position-context flags. Strategy refs (open/close
-// names + per-ref params) are sent separately via buildStrategyRefsArg (#640).
 func appendOpenCloseArgs(args []string, sc StrategyConfig, pos PositionCtx) []string {
 	if !usesOpenCloseConfig(sc) {
 		return args
@@ -100,10 +81,6 @@ func appendOpenCloseArgs(args []string, sc StrategyConfig, pos PositionCtx) []st
 	return out
 }
 
-// buildStrategyRefsArg emits the --strategy-refs JSON carrying the open ref
-// and close refs (each name + params) to the Python check script (#640). Open
-// name falls back to args[0] when sc.OpenStrategy.Name is empty so legacy
-// configs that rely on the positional strategy arg keep working post-migration.
 func buildStrategyRefsArg(sc StrategyConfig) ([]string, error) {
 	openName := effectiveOpenStrategy(sc)
 	if openName == "" && sc.CloseStrategy == nil {
@@ -113,10 +90,6 @@ func buildStrategyRefsArg(sc StrategyConfig) ([]string, error) {
 	if openName != "" {
 		payload["open"] = StrategyRef{Name: openName, Params: sc.OpenStrategy.Params}
 	}
-	// #842: a strategy has a single close. The Go↔Python wire still carries a
-	// "closes" list (length ≤ 1) so the Python composition layer's generic
-	// evaluator stays unchanged; max close_fraction over one element is the
-	// element itself.
 	if refs := sc.closeRefs(); len(refs) > 0 {
 		payload["closes"] = refs
 	}
@@ -146,11 +119,6 @@ func appendRegimeArgs(args []string, regime *RegimeConfig) []string {
 	return out
 }
 
-// appendRegimePayloadArg injects the per-cycle global-store regime payload
-// (#879). Presence of the flag — even with an EMPTY value after a bundle
-// failure — tells the check script to skip inline regime computation and
-// resolve fail-open; omitting it (regime disabled / no signature) leaves the
-// script's inline path untouched for manual CLI invocations.
 func appendRegimePayloadArg(args []string, sc StrategyConfig, regime *RegimeConfig) []string {
 	raw, ok := globalRegimeStore.InjectionJSONForStrategy(sc, regime)
 	if !ok {
@@ -167,7 +135,6 @@ func appendStrategyRegimeWindowArgs(args []string, sc StrategyConfig, regime *Re
 	if key := resolveStrategyRegimeWindow(sc, "atr", regime); key != "" && key != regimeWindowDefaultKey {
 		out = append(out, "--regime-atr-window", key)
 	}
-	// Directional window is resolved Go-side from RegimePayload; not forwarded to Python.
 	return out
 }
 
@@ -183,24 +150,20 @@ func positionCtxFromPosition(pos *Position) PositionCtx {
 		return PositionCtx{}
 	}
 	return PositionCtx{
-		Side:                     pos.Side,
-		AvgCost:                  pos.AvgCost,
-		Quantity:                 pos.Quantity,
-		InitialQuantity:          pos.InitialQuantity,
-		EntryATR:                 pos.EntryATR,
-		Regime:                   pos.Regime,
-		DirectionalRegime:        pos.Regime,
-		RegimeWindows:            cloneStringMap(pos.RegimeWindows),
-		Profile:                  pos.OpenProfile,
-		DirectionCertifiedAtOpen: pos.DirectionCertifiedAtOpen,
-		// Clone so the snapshot can't alias the live position's frozen map.
+		Side:                           pos.Side,
+		AvgCost:                        pos.AvgCost,
+		Quantity:                       pos.Quantity,
+		InitialQuantity:                pos.InitialQuantity,
+		EntryATR:                       pos.EntryATR,
+		Regime:                         pos.Regime,
+		DirectionalRegime:              pos.Regime,
+		RegimeWindows:                  cloneStringMap(pos.RegimeWindows),
+		Profile:                        pos.OpenProfile,
+		DirectionCertifiedAtOpen:       pos.DirectionCertifiedAtOpen,
 		DirectionCertifiedStatesAtOpen: cloneStringMap(pos.DirectionCertifiedStatesAtOpen),
 	}
 }
 
-// formatStrategyRef renders a ref for human-readable change logs (#640). When
-// no params are set, prints just the quoted name; otherwise appends a
-// stable-key summary so reload diffs show param-only changes.
 func formatStrategyRef(ref StrategyRef) string {
 	if len(ref.Params) == 0 {
 		return strconv.Quote(ref.Name)

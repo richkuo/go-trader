@@ -9,11 +9,6 @@ import (
 	"time"
 )
 
-// #1431 — decision-log DB, write-side gating, failure alerting, config
-// validation, and hot-reload rules. Tests here swap package-level hooks
-// (decisionLogWriter, decisionLogPersistWarn, replayLiveSources) so they must
-// NOT use t.Parallel() (same caveat as tradeRecorder in state.go).
-
 func replayTestConfig(ids ...string) *Config {
 	cfg := &Config{ReplayLogPath: "/tmp/replay.db"}
 	for _, id := range ids {
@@ -29,8 +24,6 @@ func replayTestConfig(ids ...string) *Config {
 	return cfg
 }
 
-// swapReplayHooks installs capture hooks and returns the captured decisions;
-// cleanup restores the nil/disabled defaults.
 func swapReplayHooks(t *testing.T, sources *Config) *[]ReplayDecision {
 	t.Helper()
 	captured := &[]ReplayDecision{}
@@ -89,7 +82,6 @@ func TestDecisionLogDBRoundTrip(t *testing.T) {
 	if len(pending) != 4 {
 		t.Fatalf("pending for s1 = %d, want 4", len(pending))
 	}
-	// Insert order preserved (decision_id ASC), values round-trip.
 	wantTypes := []string{ReplayDecisionOpen, ReplayDecisionScaleIn, ReplayDecisionPartialClose, ReplayDecisionFullClose}
 	for i, wt := range wantTypes {
 		if pending[i].DecisionType != wt {
@@ -109,7 +101,6 @@ func TestDecisionLogDBRoundTrip(t *testing.T) {
 		t.Errorf("close_reason = %q, want hl_sync_stop_loss", pending[3].CloseReason)
 	}
 
-	// Mark the first two applied; only the rest stay pending.
 	if err := db.MarkDecisionsApplied([]int64{pending[0].DecisionID, pending[1].DecisionID}); err != nil {
 		t.Fatalf("MarkDecisionsApplied: %v", err)
 	}
@@ -121,7 +112,6 @@ func TestDecisionLogDBRoundTrip(t *testing.T) {
 		t.Fatalf("pending after mark = %+v, want partial_close+full_close", pending)
 	}
 
-	// Idempotent re-mark is a no-op.
 	if err := db.MarkDecisionsApplied(nil); err != nil {
 		t.Fatalf("MarkDecisionsApplied(nil): %v", err)
 	}
@@ -146,7 +136,6 @@ func TestRecordReplayDecisionGating(t *testing.T) {
 		t.Errorf("row mismatch: %+v", dec)
 	}
 
-	// Nil writer disables logging entirely (replay_log_path unset / tests).
 	decisionLogWriter = nil
 	recordReplayDecision(live, ReplayDecisionFullClose, "ETH", "long", 1, 100, "signal", now, 0, "")
 	if len(*captured) != 1 {
@@ -169,14 +158,12 @@ func TestRecordReplayDecisionFailureAlerting(t *testing.T) {
 	s := replayTestStrategyState("hl-live-eth")
 	now := time.Now().UTC()
 
-	// Two consecutive failures: no DM yet (threshold is 3).
 	for i := 0; i < decisionLogAlertThreshold-1; i++ {
 		recordReplayDecision(s, ReplayDecisionOpen, "ETH", "long", 1, 100, "", now, 0, "")
 	}
 	if len(warns) != 0 {
 		t.Fatalf("warns after %d failures = %d, want 0", decisionLogAlertThreshold-1, len(warns))
 	}
-	// Third consecutive failure fires exactly one DM for the streak.
 	recordReplayDecision(s, ReplayDecisionOpen, "ETH", "long", 1, 100, "", now, 0, "")
 	recordReplayDecision(s, ReplayDecisionOpen, "ETH", "long", 1, 100, "", now, 0, "")
 	if len(warns) != 1 {
@@ -185,7 +172,6 @@ func TestRecordReplayDecisionFailureAlerting(t *testing.T) {
 	if !strings.Contains(warns[0], "consecutive failures") {
 		t.Errorf("warn message missing streak note: %q", warns[0])
 	}
-	// A success resets the streak; the next streak re-alerts.
 	fail = false
 	recordReplayDecision(s, ReplayDecisionOpen, "ETH", "long", 1, 100, "", now, 0, "")
 	fail = true
@@ -213,14 +199,12 @@ func TestRecordClosedPositionWritesFullCloseDecision(t *testing.T) {
 		t.Errorf("full_close row mismatch: %+v", dec)
 	}
 
-	// Hedge legs never write: paper's state-derived reconciler mirrors them.
 	hedge := &Position{Symbol: "BTC", Quantity: 0.01, AvgCost: 65000, Side: "short", Multiplier: 1, HedgeFor: "hl-live-eth"}
 	recordClosedPosition(s, hedge, 65100, -1, "signal", now)
 	if len(*captured) != 1 {
 		t.Fatalf("hedge leg close wrote a row; captured=%d", len(*captured))
 	}
 
-	// Zero-qty residuals (phantom cleanups) carry no mirrorable exposure.
 	dust := &Position{Symbol: "SOL", Quantity: 0, AvgCost: 100, Side: "long", Multiplier: 1}
 	recordClosedPosition(s, dust, 0, 0, "hl_sync_external", now)
 	if len(*captured) != 1 {
@@ -234,14 +218,12 @@ func TestRecordPositionOpenWritesOpenAndScaleIn(t *testing.T) {
 	sc := StrategyConfig{ID: "hl-live-eth", Type: "perps", Platform: "hyperliquid"}
 	now := time.Now().UTC()
 
-	// Fresh open: position qty == trade qty.
 	pos := &Position{Symbol: "ETH", Quantity: 0.5, AvgCost: 1900, Side: "long", Multiplier: 1}
 	s.Positions["ETH"] = pos
 	openTrade := &Trade{Timestamp: now, StrategyID: s.ID, Symbol: "ETH", Side: "buy", Quantity: 0.5, Price: 1900.25}
 	if !recordPositionOpen(s, sc, openTrade, pos) {
 		t.Fatal("recordPositionOpen returned false")
 	}
-	// Scale-in add: position qty already grown past the trade qty.
 	pos.Quantity = 0.75
 	addTrade := &Trade{Timestamp: now.Add(time.Minute), StrategyID: s.ID, Symbol: "ETH", Side: "buy", Quantity: 0.25, Price: 1895.0}
 	recordPositionOpen(s, sc, addTrade, pos)
@@ -256,7 +238,6 @@ func TestRecordPositionOpenWritesOpenAndScaleIn(t *testing.T) {
 		t.Errorf("scale_in row mismatch: %+v", (*captured)[1])
 	}
 
-	// Hedge leg opens never write.
 	hedgePos := &Position{Symbol: "BTC", Quantity: 0.01, AvgCost: 65000, Side: "short", Multiplier: 1, HedgeFor: "hl-live-eth"}
 	hedgeTrade := &Trade{Timestamp: now, StrategyID: s.ID, Symbol: "BTC", Side: "sell", Quantity: 0.01, Price: 65000}
 	recordPositionOpen(s, sc, hedgeTrade, hedgePos)
@@ -270,7 +251,6 @@ func TestBookPerpsPartialCloseWritesDecision(t *testing.T) {
 	s := replayTestStrategyState("hl-live-eth")
 	logger := silentStrategyLogger("hl-live-eth")
 
-	// True partial: remaining > 0 → partial_close row.
 	s.Positions["ETH"] = &Position{Symbol: "ETH", Quantity: 1.0, InitialQuantity: 1.0, AvgCost: 1900, Side: "long", Multiplier: 1}
 	if !bookPerpsPartialCloseWithFillFee(s, "ETH", 0.4, 1910, 0, false, "", "tiered_tp", "TP", "TP", logger) {
 		t.Fatal("partial close returned false")
@@ -282,7 +262,6 @@ func TestBookPerpsPartialCloseWritesDecision(t *testing.T) {
 		t.Errorf("partial_close row mismatch: %+v", (*captured)[0])
 	}
 
-	// Partial that zeroes the position → full_close row via recordClosedPosition.
 	if !bookPerpsPartialCloseWithFillFee(s, "ETH", 0.6, 1905, 0, false, "", "tiered_tp", "TP", "TP", logger) {
 		t.Fatal("final partial close returned false")
 	}
@@ -306,21 +285,18 @@ func TestReplaySharingValidation(t *testing.T) {
 		}
 	}
 
-	// Valid: live_mirror on HL perps with replay_log_path set.
 	cfg := base()
 	cfg.Strategies[0].ReplaySharing = "live_mirror"
 	if err := validateConfig(cfg, true); err != nil && strings.Contains(err.Error(), "replay_sharing") {
 		t.Fatalf("valid live_mirror rejected: %v", err)
 	}
 
-	// Invalid value fails loudly.
 	cfg = base()
 	cfg.Strategies[0].ReplaySharing = "mirror"
 	if err := validateConfig(cfg, true); err == nil || !strings.Contains(err.Error(), "replay_sharing must be") {
 		t.Fatalf("invalid value not rejected: %v", err)
 	}
 
-	// Non-HL-perps scope rejected.
 	cfg = base()
 	cfg.Strategies[0].ReplaySharing = "live_mirror"
 	cfg.Strategies[0].Type = "spot"
@@ -328,7 +304,6 @@ func TestReplaySharingValidation(t *testing.T) {
 		t.Fatalf("spot scope not rejected: %v", err)
 	}
 
-	// Missing replay_log_path rejected.
 	cfg = base()
 	cfg.Strategies[0].ReplaySharing = "live_mirror"
 	cfg.ReplayLogPath = ""
@@ -336,7 +311,6 @@ func TestReplaySharingValidation(t *testing.T) {
 		t.Fatalf("missing replay_log_path not rejected: %v", err)
 	}
 
-	// Default (unset / "none") needs no replay_log_path.
 	cfg = base()
 	cfg.ReplayLogPath = ""
 	if err := validateConfig(cfg, true); err != nil && strings.Contains(err.Error(), "replay") {
@@ -351,7 +325,6 @@ func TestReplayLogPathHotReloadRestartRequired(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "replay_log_path changed") {
 		t.Fatalf("replay_log_path change not flagged restart-required: %v", err)
 	}
-	// Unchanged path passes this arm.
 	next.ReplayLogPath = cfg.ReplayLogPath
 	if err := validateHotReloadCompatible(cfg, next); err != nil && strings.Contains(err.Error(), "replay_log_path") {
 		t.Fatalf("unchanged replay_log_path rejected: %v", err)
@@ -367,17 +340,14 @@ func TestReplaySharingHotReloadFlatOnly(t *testing.T) {
 	ss.Positions["ETH"] = &Position{Symbol: "ETH", Quantity: 0.5, AvgCost: 1900, Side: "long", Multiplier: 1}
 	state.Strategies["s1"] = ss
 
-	// Toggle while open: refused.
 	err := validateHotReloadStateCompatible(mk("none"), mk("live_mirror"), state)
 	if err == nil || !strings.Contains(err.Error(), "replay_sharing changed with open positions") {
 		t.Fatalf("toggle while open not refused: %v", err)
 	}
-	// Toggle while flat: allowed.
 	ss.Positions = map[string]*Position{}
 	if err := validateHotReloadStateCompatible(mk("none"), mk("live_mirror"), state); err != nil {
 		t.Fatalf("toggle while flat refused: %v", err)
 	}
-	// Unset and "none" are the same value — no spurious block.
 	ss.Positions["ETH"] = &Position{Symbol: "ETH", Quantity: 0.5, AvgCost: 1900, Side: "long", Multiplier: 1}
 	if err := validateHotReloadStateCompatible(mk(""), mk("none"), state); err != nil {
 		t.Fatalf("unset->none alias refused: %v", err)
@@ -385,8 +355,6 @@ func TestReplaySharingHotReloadFlatOnly(t *testing.T) {
 }
 
 func TestReplaySharingMaskedFromRestartShape(t *testing.T) {
-	// A pure replay_sharing toggle must not trip the restart-required
-	// immutable-fields DeepEqual — the flat-only state-compat gate owns it.
 	cfg := &Config{Strategies: []StrategyConfig{{ID: "s1", Type: "perps", Platform: "hyperliquid", ReplaySharing: "none"}}}
 	next := &Config{Strategies: []StrategyConfig{{ID: "s1", Type: "perps", Platform: "hyperliquid", ReplaySharing: "live_mirror"}}}
 	if err := validateHotReloadCompatible(cfg, next); err != nil {
@@ -395,8 +363,6 @@ func TestReplaySharingMaskedFromRestartShape(t *testing.T) {
 }
 
 func TestReplaySharingUnknownKeyGuardAcceptsField(t *testing.T) {
-	// The strategies-array unknown-key guard is reflective; replay_sharing is
-	// a declared StrategyConfig field and must NOT be flagged.
 	raw := []byte(`{"strategies":[{"id":"s1","type":"perps","platform":"hyperliquid","replay_sharing":"live_mirror"}]}`)
 	for _, e := range validateStrategyJSONKeys(raw) {
 		if strings.Contains(e, "replay_sharing") {
@@ -435,10 +401,7 @@ func TestReplaySourceAndMirrorPredicates(t *testing.T) {
 	}
 }
 
-// ─── review-round-1 regression tests (stamps, index, legacy migration) ──────
-
 func TestDecisionLogEntryATRRegimeRoundTrip(t *testing.T) {
-	// Review optional 1: open/scale_in rows persist live's open-time stamps.
 	db, err := OpenDecisionLogDB(filepath.Join(t.TempDir(), "replay.db"))
 	if err != nil {
 		t.Fatalf("OpenDecisionLogDB: %v", err)
@@ -466,8 +429,6 @@ func TestDecisionLogEntryATRRegimeRoundTrip(t *testing.T) {
 }
 
 func TestDecisionLogMigratesLegacySchema(t *testing.T) {
-	// A replay DB created before the entry_atr/regime columns existed must be
-	// brought forward by OpenDecisionLogDB (idempotent ALTERs), not fail.
 	path := filepath.Join(t.TempDir(), "replay.db")
 	legacy, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -510,7 +471,6 @@ func TestDecisionLogMigratesLegacySchema(t *testing.T) {
 }
 
 func TestDecisionLogPendingIndexExists(t *testing.T) {
-	// Review optional 2: the per-cycle pending read must be index-covered.
 	db, err := OpenDecisionLogDB(filepath.Join(t.TempDir(), "replay.db"))
 	if err != nil {
 		t.Fatalf("OpenDecisionLogDB: %v", err)
@@ -524,8 +484,6 @@ func TestDecisionLogPendingIndexExists(t *testing.T) {
 }
 
 func TestReplayMirrorWatermarkStateRoundTrip(t *testing.T) {
-	// Review finding 1: the watermark persists with the strategy row so a
-	// post-crash reload re-marks instead of re-applying.
 	sdb, err := OpenStateDB(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatalf("OpenStateDB: %v", err)
@@ -552,13 +510,6 @@ func TestReplayMirrorWatermarkStateRoundTrip(t *testing.T) {
 	}
 }
 
-// #1456 review round 12 (Optional): an open whose position is closed later in
-// the SAME cycle (submit-fill SL from the post-trade protection sync, the
-// ratchet-tighten walker, or the #885 inline arm) must still journal its
-// open/scale_in replay decision — and BEFORE the full_close row. The dispatch
-// now calls recordPositionOpen immediately after the deferred-open execute leg,
-// before any closer runs; this pins the ordering contract that makes that
-// hoist load-bearing.
 func TestRecordPositionOpenBeforeSameCycleCloseJournalsOpenThenClose(t *testing.T) {
 	sc := replayTestConfig("hl-live-eth").Strategies[0]
 	state := replayTestStrategyState("hl-live-eth")
@@ -576,7 +527,6 @@ func TestRecordPositionOpenBeforeSameCycleCloseJournalsOpenThenClose(t *testing.
 	if !recordPositionOpen(state, sc, trade, pos) {
 		t.Fatal("recordPositionOpen must succeed")
 	}
-	// The same-cycle submit-fill close then deletes the position.
 	if !recordPerpsStopLossClose(state, "ETH", 2318.5, "protection_sync_sl_immediate", nil) {
 		t.Fatal("close booking must succeed")
 	}

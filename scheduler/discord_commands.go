@@ -13,15 +13,8 @@ import (
 	"github.com/bwmarrin/discordgo"
 )
 
-// commandPrefix namespaces every Discord slash command away from other bots in
-// the same guild (#891). It is the bot's wire name only: slashCommands() builds
-// each registered command as commandPrefix+<id>, and interactionCreate strips it
-// back to the bare <id> before auth/dispatch, so readOnlyCommandNames,
-// opsCommandNames, and the dispatch switch all keep operating on bare command
-// IDs. Keep the prefix defined here as the single source of truth.
 const commandPrefix = "go-trader-"
 
-// readOnlyCommandNames are usable in a guild or in DMs by anyone.
 var readOnlyCommandNames = map[string]bool{
 	"status":             true,
 	"health":             true,
@@ -34,11 +27,6 @@ var readOnlyCommandNames = map[string]bool{
 	"closing-strategies": true,
 }
 
-// opsCommandNames mutate state, run heavy work, or expose operator-sensitive
-// output; restricted to the owner in a DM. `logs` is here (not read-only)
-// because journalctl can carry wallet addresses and error payloads. The #868
-// mutating set (config/add-strategy/remove-strategy/add-platform/paper-to-live)
-// changes the config file, so it gets the same owner-DM-only gate.
 var opsCommandNames = map[string]bool{
 	"restart":              true,
 	"backtest":             true,
@@ -53,9 +41,6 @@ var opsCommandNames = map[string]bool{
 	"clear-cash-reconcile": true,
 }
 
-// authorizeCommand decides whether invokerID may run command `name`. Read-only
-// commands are always allowed. Ops commands require the invoker to be the owner
-// AND the interaction to be a DM (guildID == ""). Returns (false, reason) on deny.
 func authorizeCommand(name, invokerID, guildID, ownerID string) (bool, string) {
 	if readOnlyCommandNames[name] {
 		return true, ""
@@ -75,8 +60,6 @@ func authorizeCommand(name, invokerID, guildID, ownerID string) (bool, string) {
 	return false, fmt.Sprintf("unknown command: %s", name)
 }
 
-// interactionUserID extracts the invoking user's ID from either a guild
-// (i.Member.User) or DM (i.User) interaction.
 func interactionUserID(i *discordgo.InteractionCreate) string {
 	if i.Member != nil && i.Member.User != nil {
 		return i.Member.User.ID
@@ -87,7 +70,6 @@ func interactionUserID(i *discordgo.InteractionCreate) string {
 	return ""
 }
 
-// sortedAppStateIDs returns the strategy IDs of state in deterministic order.
 func sortedAppStateIDs(state *AppState) []string {
 	ids := make([]string, 0, len(state.Strategies))
 	for id := range state.Strategies {
@@ -97,7 +79,6 @@ func sortedAppStateIDs(state *AppState) []string {
 	return ids
 }
 
-// strategyPlatformLabel returns a human label for grouping (platform, else type).
 func strategyPlatformLabel(s *StrategyState) string {
 	if s.Platform != "" {
 		return s.Platform
@@ -105,7 +86,6 @@ func strategyPlatformLabel(s *StrategyState) string {
 	return s.Type
 }
 
-// positionMultiplier returns the PnL multiplier for a position (1 for spot).
 func positionMultiplier(p *Position) float64 {
 	if p.Multiplier > 0 {
 		return p.Multiplier
@@ -113,7 +93,6 @@ func positionMultiplier(p *Position) float64 {
 	return 1
 }
 
-// formatHealthResponse summarizes daemon liveness. `now` is injected for tests.
 func formatHealthResponse(lastCycle time.Time, cycleCount int, version string, now time.Time) string {
 	var sb strings.Builder
 	sb.WriteString("**go-trader health**\n")
@@ -134,7 +113,6 @@ func formatHealthResponse(lastCycle time.Time, cycleCount int, version string, n
 	return sb.String()
 }
 
-// formatStatusResponse builds a portfolio-wide one-line status. Call under RLock.
 func formatStatusResponse(state *AppState, prices map[string]float64) string {
 	var cash float64
 	posCount, trades := 0, 0
@@ -163,9 +141,8 @@ func formatStatusResponse(state *AppState, prices map[string]float64) string {
 	return line + "\n**CASH RECONCILE REQUIRED:** " + strings.Join(reconcileIDs, ", ")
 }
 
-// formatPositionsResponse lists open positions grouped by platform. Call under RLock.
 func formatPositionsResponse(state *AppState, prices map[string]float64) string {
-	lines := map[string][]string{} // platform -> position lines
+	lines := map[string][]string{}
 	platforms := []string{}
 	for _, id := range sortedAppStateIDs(state) {
 		s := state.Strategies[id]
@@ -206,7 +183,6 @@ func formatPositionsResponse(state *AppState, prices map[string]float64) string 
 	return strings.TrimRight(sb.String(), "\n")
 }
 
-// formatPnLResponse reports total / per-platform / per-strategy P&L. Call under RLock.
 func formatPnLResponse(state *AppState, prices map[string]float64) string {
 	type agg struct {
 		pnl, capital float64
@@ -262,10 +238,6 @@ func formatPnLResponse(state *AppState, prices map[string]float64) string {
 	return strings.TrimRight(sb.String(), "\n")
 }
 
-// formatPnLPercent renders an undefined marker whenever the numerator includes
-// pooled performance: pooled strategies intentionally have no allocated
-// baseline, so dividing their PnL by zero or by another strategy's capital is
-// not a return. Allocated-only zero-capital rows retain the legacy +0.00%.
 func formatPnLPercent(pnl, capital float64, includesPool bool) string {
 	if includesPool {
 		return "—"
@@ -277,7 +249,6 @@ func formatPnLPercent(pnl, capital float64, includesPool bool) string {
 	return fmt.Sprintf("%+.2f%%", pct)
 }
 
-// formatCircuitBreakersResponse lists open per-strategy breakers + portfolio kill switch. Call under RLock.
 func formatCircuitBreakersResponse(state *AppState, now time.Time) string {
 	var lines []string
 	for _, id := range sortedAppStateIDs(state) {
@@ -301,11 +272,6 @@ func formatCircuitBreakersResponse(state *AppState, now time.Time) string {
 	if state.PortfolioRisk.KillSwitchActive {
 		sb.WriteString(fmt.Sprintf("🛑 Portfolio kill switch ACTIVE (drawdown %.2f%%)\n", state.PortfolioRisk.CurrentDrawdownPct))
 	}
-	// #1449 review round 3: the book is over the drawdown limit and the only
-	// reason it is still open is that the measurement came from an untrusted
-	// total. An operator asking what is protecting the account right now needs
-	// to see that the full-book latch is pending, and that per-strategy
-	// breakers are carrying the load until it resolves.
 	if !state.PortfolioRisk.KillSwitchActive && !state.PortfolioRisk.UntrustedOverLimitSince.IsZero() {
 		sb.WriteString(fmt.Sprintf("⚠️ Portfolio latch DEFERRED: equity drawdown %.2f%% is over the limit on an untrusted total (since %s); escalates %s unless a trusted measurement lands first\n",
 			state.PortfolioRisk.CurrentDrawdownPct,
@@ -323,7 +289,6 @@ func formatCircuitBreakersResponse(state *AppState, now time.Time) string {
 	return strings.TrimRight(sb.String(), "\n")
 }
 
-// formatDeadStrategiesResponse lists strategies that have never opened a position. Call under RLock.
 func formatDeadStrategiesResponse(state *AppState, lifetime map[string]LifetimeTradeStats) string {
 	var dead []string
 	for _, id := range sortedAppStateIDs(state) {
@@ -337,7 +302,6 @@ func formatDeadStrategiesResponse(state *AppState, lifetime map[string]LifetimeT
 	return fmt.Sprintf("**Dead strategies (0 positions opened) — %d**\n%s", len(dead), strings.Join(dead, "\n"))
 }
 
-// formatCorrelationResponse renders the latest correlation/concentration snapshot.
 func formatCorrelationResponse(snap *CorrelationSnapshot) string {
 	if snap == nil {
 		return "No correlation snapshot yet (computed during the trading cycle)."
@@ -370,8 +334,6 @@ func formatCorrelationResponse(snap *CorrelationSnapshot) string {
 	return strings.TrimRight(sb.String(), "\n")
 }
 
-// formatLeaderboardResponse ranks all strategies by PnL% (descending), top N.
-// Reuses newLeaderboardEntry for per-strategy metrics. Call under RLock.
 func formatLeaderboardResponse(cfg *Config, state *AppState, prices map[string]float64, lifetime map[string]LifetimeTradeStats, topN int) string {
 	if topN <= 0 {
 		topN = 5
@@ -399,9 +361,6 @@ func formatLeaderboardResponse(cfg *Config, state *AppState, prices map[string]f
 	return strings.TrimRight(sb.String(), "\n")
 }
 
-// parseBacktestSummary extracts headline metrics from run_backtest.py's
-// single-mode text report (backtest/reporter.py::format_single_report).
-// Missing labels render as "—" so a partial report still produces output.
 func parseBacktestSummary(report string) string {
 	lines := strings.Split(report, "\n")
 	grab := func(label string) string {
@@ -416,16 +375,10 @@ func parseBacktestSummary(report string) string {
 		grab("Total Return:"), grab("Sharpe Ratio:"), grab("Max Drawdown:"), grab("Total Trades:"), grab("Win Rate:"))
 }
 
-// dmContext restricts a command to DMs with the bot (used for ops commands).
 func dmContext() *[]discordgo.InteractionContextType {
 	return &[]discordgo.InteractionContextType{discordgo.InteractionContextBotDM}
 }
 
-// slashCommands returns the full set of application commands to register globally.
-// slashCommands builds the registered command set. Every top-level Name carries
-// commandPrefix (#891) so the bot's commands are namespaced in shared guilds;
-// interactionCreate strips the prefix back to the bare ID for auth/dispatch.
-// Subcommand and option names are not prefixed — only the top-level command.
 func slashCommands() []*discordgo.ApplicationCommand {
 	return []*discordgo.ApplicationCommand{
 		{Name: commandPrefix + "status", Description: "Live portfolio status (cash, positions, value, regime)"},
@@ -453,7 +406,6 @@ func slashCommands() []*discordgo.ApplicationCommand {
 			{Type: discordgo.ApplicationCommandOptionString, Name: "symbol", Description: "Symbol, e.g. BTC/USDT", Required: true},
 			{Type: discordgo.ApplicationCommandOptionString, Name: "timeframe", Description: "Timeframe (default 1h)"},
 		}},
-		// Mutating ops — owner-DM-only (#868). Restricted by Contexts; re-checked in the handler.
 		{Name: commandPrefix + "config", Description: "Show or change configuration (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
 			{Type: discordgo.ApplicationCommandOptionSubCommand, Name: "show", Description: "Show the current config (secrets redacted)"},
 			{Type: discordgo.ApplicationCommandOptionSubCommand, Name: "set", Description: "Set a config key", Options: []*discordgo.ApplicationCommandOption{
@@ -484,9 +436,6 @@ func slashCommands() []*discordgo.ApplicationCommand {
 	}
 }
 
-// RegisterSlashCommands stores the data references the handlers need, attaches the
-// interaction handler, and registers commands globally. Non-fatal on failure: the
-// caller logs/DMs and the daemon keeps running.
 func (d *DiscordNotifier) RegisterSlashCommands(ss *StatusServer, cfg *Config) error {
 	if d == nil || d.session == nil {
 		return fmt.Errorf("discord session not initialized")
@@ -504,14 +453,11 @@ func (d *DiscordNotifier) RegisterSlashCommands(ss *StatusServer, cfg *Config) e
 	return nil
 }
 
-// interactionCreate is the gateway handler for slash commands.
 func (d *DiscordNotifier) interactionCreate(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if i.Type != discordgo.InteractionApplicationCommand {
 		return
 	}
 	data := i.ApplicationCommandData()
-	// Commands register under commandPrefix (#891); strip it to the bare command
-	// ID so auth + dispatch below operate on the unprefixed names.
 	name := strings.TrimPrefix(data.Name, commandPrefix)
 	ok, reason := authorizeCommand(name, interactionUserID(i), i.GuildID, d.ownerID)
 	if !ok {
@@ -519,9 +465,6 @@ func (d *DiscordNotifier) interactionCreate(s *discordgo.Session, i *discordgo.I
 		return
 	}
 	switch name {
-	// Mark-fetching read-only commands: fetchLiveMarkPrices spawns a Python
-	// subprocess + venue HTTP, which can exceed Discord's 3s deadline — so ACK
-	// first (deferred), then deliver the built response via a follow-up.
 	case "status":
 		d.respondReadOnlyDeferred(s, i, d.buildDiscordStatus)
 	case "positions":
@@ -531,7 +474,6 @@ func (d *DiscordNotifier) interactionCreate(s *discordgo.Session, i *discordgo.I
 	case "leaderboard":
 		top := optionInt(data.Options, "top", 5)
 		d.respondReadOnlyDeferred(s, i, func() string { return d.buildLeaderboard(top) })
-	// Fast read-only commands (no live-mark fetch): answer inline within 3s.
 	case "health":
 		d.respondReadOnlyInline(s, i, d.buildHealth())
 	case "circuit-breakers":
@@ -542,7 +484,6 @@ func (d *DiscordNotifier) interactionCreate(s *discordgo.Session, i *discordgo.I
 		d.respondReadOnlyInline(s, i, d.buildCorrelation())
 	case "closing-strategies":
 		d.handleClosingStrategies(s, i)
-	// Ops (owner DM only).
 	case "logs":
 		respondText(s, i, runLogs(optionInt(data.Options, "n", 50)))
 	case "restart":
@@ -551,7 +492,6 @@ func (d *DiscordNotifier) interactionCreate(s *discordgo.Session, i *discordgo.I
 		d.handleBacktest(s, i, data)
 	case "report-an-issue":
 		d.handleReport(s, i, data)
-	// Mutating ops (#868) — owner DM only.
 	case "config":
 		sub, subOpts := subcommandOptions(data)
 		switch sub {
@@ -579,7 +519,6 @@ func (d *DiscordNotifier) interactionCreate(s *discordgo.Session, i *discordgo.I
 	}
 }
 
-// optionInt reads an integer option by name, with a default and a 1..200 clamp.
 func optionInt(opts []*discordgo.ApplicationCommandInteractionDataOption, name string, def int) int {
 	for _, o := range opts {
 		if o.Name == name && o.Type == discordgo.ApplicationCommandOptionInteger {
@@ -596,7 +535,6 @@ func optionInt(opts []*discordgo.ApplicationCommandInteractionDataOption, name s
 	return def
 }
 
-// optionString reads a string option by name with a default.
 func optionString(opts []*discordgo.ApplicationCommandInteractionDataOption, name, def string) string {
 	for _, o := range opts {
 		if o.Name == name && o.Type == discordgo.ApplicationCommandOptionString {
@@ -608,15 +546,12 @@ func optionString(opts []*discordgo.ApplicationCommandInteractionDataOption, nam
 	return def
 }
 
-// truncateForDiscord caps content to Discord's 2000-char message limit, cutting
-// on a rune boundary so multibyte glyphs (the 🛑/⚠️ emoji in some replies) are
-// never split into an invalid trailing byte.
 func truncateForDiscord(s string) string {
 	const max = 2000
 	if len(s) <= max {
 		return s
 	}
-	cut := max - 3 // reserve 3 bytes for the "..." ellipsis
+	cut := max - 3
 	for cut > 0 && !utf8.RuneStart(s[cut]) {
 		cut--
 	}
@@ -640,9 +575,6 @@ func respondEphemeral(s *discordgo.Session, i *discordgo.InteractionCreate, cont
 	})
 }
 
-// readOnlyReplyFlags returns MessageFlagsEphemeral when discord.ephemeral_replies
-// is set, else 0 (public in-channel). Applies to read-only command replies only;
-// ops replies are DM-only, where the ephemeral flag has no effect.
 func (d *DiscordNotifier) readOnlyReplyFlags() discordgo.MessageFlags {
 	if d.cfg != nil && d.cfg.Discord.EphemeralReplies {
 		return discordgo.MessageFlagsEphemeral
@@ -650,8 +582,6 @@ func (d *DiscordNotifier) readOnlyReplyFlags() discordgo.MessageFlags {
 	return 0
 }
 
-// respondReadOnlyInline answers a fast read-only command immediately (no live-mark
-// fetch), honoring the ephemeral-replies config flag.
 func (d *DiscordNotifier) respondReadOnlyInline(s *discordgo.Session, i *discordgo.InteractionCreate, content string) {
 	if content == "" {
 		content = "(no output)"
@@ -662,10 +592,6 @@ func (d *DiscordNotifier) respondReadOnlyInline(s *discordgo.Session, i *discord
 	})
 }
 
-// respondReadOnlyDeferred ACKs within Discord's 3s window, then runs the (slow,
-// live-mark-fetching) builder and delivers the result via a follow-up. Without
-// this, /status, /positions, /pnl, and /leaderboard would miss the deadline
-// because fetchLiveMarkPrices spawns a Python subprocess and venue HTTP calls.
 func (d *DiscordNotifier) respondReadOnlyDeferred(s *discordgo.Session, i *discordgo.InteractionCreate, build func() string) {
 	flags := d.readOnlyReplyFlags()
 	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
@@ -682,19 +608,16 @@ func (d *DiscordNotifier) respondReadOnlyDeferred(s *discordgo.Session, i *disco
 	})
 }
 
-// buildReadOnly runs a (state, prices) builder under RLock with live prices.
 func (d *DiscordNotifier) buildReadOnly(fn func(*AppState, map[string]float64) string) string {
 	if d.ss == nil {
 		return "status server not wired"
 	}
-	prices := d.ss.fetchLiveMarkPrices() // must run without holding mu
+	prices := d.ss.fetchLiveMarkPrices()
 	d.ss.mu.RLock()
 	defer d.ss.mu.RUnlock()
 	return fn(d.ss.state, prices)
 }
 
-// buildDiscordStatus is the /status slash-command builder: portfolio summary plus
-// any uncertified/expired regime_directional_policy notes (#1157).
 func (d *DiscordNotifier) buildDiscordStatus() string {
 	if d.ss == nil || d.cfg == nil {
 		return "status server not wired"
@@ -714,8 +637,6 @@ func (d *DiscordNotifier) buildDiscordStatus() string {
 	return base
 }
 
-// pausedStrategiesNote lists paused strategies (#1150) for /status. Empty
-// string when none are paused. IDs are sorted for stable operator output.
 func pausedStrategiesNote(strategies []StrategyConfig) string {
 	var paused []string
 	for _, sc := range strategies {
@@ -730,10 +651,6 @@ func pausedStrategiesNote(strategies []StrategyConfig) string {
 	return fmt.Sprintf("\n⏸️ paused: %s", strings.Join(paused, ", "))
 }
 
-// hedgeStatusNote lists auto-managed correlated hedge legs (#1159) for
-// /status so an operator never mistakes a hedge position for an unmanaged one.
-// Empty when no strategy has a hedge enabled. Caller must hold the state read
-// lock; IDs are sorted for stable output.
 func hedgeStatusNote(strategies []StrategyConfig, state *AppState) string {
 	type row struct {
 		id   string
@@ -822,11 +739,6 @@ func (d *DiscordNotifier) buildCorrelation() string {
 	return formatCorrelationResponse(d.ss.state.CorrelationSnapshot)
 }
 
-// handleClosingStrategies answers /closing-strategies (#1203) with the full
-// close-evaluator catalog. Deferred + multi-followup because the first call
-// after startup spawns the close-registry subprocess (cached after that, see
-// fetchCloseRegistryCatalog) and the catalog may span more than one Discord
-// message.
 func (d *DiscordNotifier) handleClosingStrategies(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	flags := d.readOnlyReplyFlags()
 	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
@@ -841,9 +753,6 @@ func (d *DiscordNotifier) handleClosingStrategies(s *discordgo.Session, i *disco
 		})
 		return
 	}
-	// cfg.UserDefaults is a hot-reloadable field mutated under d.ss.mu.Lock()
-	// on SIGHUP (config_reload.go); hold the read lock across the format call
-	// (not across the subprocess above, which can run up to scriptTimeout).
 	var pages []string
 	if d.ss == nil {
 		pages = formatClosingStrategiesResponse(d.cfg, entries)
@@ -860,7 +769,6 @@ func (d *DiscordNotifier) handleClosingStrategies(s *discordgo.Session, i *disco
 	}
 }
 
-// lifetimeStats fetches per-strategy lifetime stats from SQLite (independent of mu).
 func (d *DiscordNotifier) lifetimeStats() map[string]LifetimeTradeStats {
 	if d.ss == nil || d.ss.stateDB == nil {
 		return nil
@@ -872,7 +780,6 @@ func (d *DiscordNotifier) lifetimeStats() map[string]LifetimeTradeStats {
 	return stats
 }
 
-// runLogs returns the last n journalctl lines for the go-trader unit.
 func runLogs(n int) string {
 	out, err := exec.Command("journalctl", "-u", "go-trader", "-n", strconv.Itoa(n), "--no-pager").CombinedOutput()
 	if err != nil {
@@ -885,27 +792,22 @@ func runLogs(n int) string {
 	return "```\n" + body + "\n```"
 }
 
-// deferAck acknowledges an interaction so the bot has 15 minutes to follow up.
 func deferAck(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
 	})
 }
 
-// handleRestart restarts the systemd service. Best-effort follow-up: the process
-// is replaced by systemd, so the confirmation may not arrive — that is expected.
 func (d *DiscordNotifier) handleRestart(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	deferAck(s, i)
 	_, _ = s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
 		Content: "Restarting go-trader service… (this instance will go offline; the new one resumes the cycle)",
 	})
-	// Fire-and-forget; this process is about to be replaced.
 	go func() {
 		_ = restartSelf()
 	}()
 }
 
-// handleBacktest runs run_backtest.py and replies with a summary plus the full report file.
 func (d *DiscordNotifier) handleBacktest(s *discordgo.Session, i *discordgo.InteractionCreate, data discordgo.ApplicationCommandInteractionData) {
 	strategy := optionString(data.Options, "strategy", "")
 	symbol := optionString(data.Options, "symbol", "")
@@ -913,9 +815,6 @@ func (d *DiscordNotifier) handleBacktest(s *discordgo.Session, i *discordgo.Inte
 	deferAck(s, i)
 
 	args := []string{"--strategy", strategy, "--symbol", symbol, "--timeframe", timeframe, "--mode", "single"}
-	// Holds one of the 4 pythonSemaphore slots (executor.go) for up to 5 min —
-	// i.e. 25% of the Python concurrency the trading loop shares. Acceptable
-	// because /backtest is owner-gated and can't be spammed by guild members.
 	stdout, stderr, err := runPythonWithTimeout(shutdownReadOnlyCtx, "backtest/run_backtest.py", args, nil, 5*time.Minute)
 	report := string(stdout)
 	if err != nil {

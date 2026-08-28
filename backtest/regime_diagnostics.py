@@ -1,4 +1,3 @@
-"""7-state regime quality diagnostics (#1065 PR1). Pure scorers; CLI at bottom."""
 from __future__ import annotations
 import os, sys
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -12,9 +11,6 @@ for _p in (_ROOT, os.path.join(_ROOT, "shared_tools")):
 import numpy as np
 from regime_stats import kruskal_h, benjamini_hochberg
 
-# Composite period used for the hand-rule incumbent (run_window with model=None) and as the
-# fallback when a fitted model omits "period". Single source so downstream gate/re-validation
-# harnesses (regime_calibrate, regime_bounded_window_validate #1082) stay aligned with it.
 DEFAULT_PERIOD = 48
 
 
@@ -27,14 +23,6 @@ def forward_returns(close: np.ndarray, horizon: int) -> np.ndarray:
 
 
 def forward_realized_vol(close: np.ndarray, horizon: int) -> np.ndarray:
-    """Cumulative realized volatility over the FORWARD `horizon` bars.
-
-    For bar i: sqrt(sum of squared 1-bar log returns over bars (i, i+horizon]).
-    The last `horizon` bars are NaN (no full forward window). This is the signal the
-    ATR-scaled SL/TP ladders actually consume, and the target #1073/PR #1077 showed the
-    composite classifier separates strongly — so it is the gate's separation axis (#1078).
-    Single definition shared with the #1073 research script.
-    """
     close = np.asarray(close, dtype=float)
     n = len(close)
     out = np.full(n, np.nan)
@@ -47,9 +35,6 @@ def forward_realized_vol(close: np.ndarray, horizon: int) -> np.ndarray:
     return out
 
 
-# Forward-target registry: the variable whose between-state separation the gate scores.
-# "returns" is the directional axis (#1073/#1076 reproductions); "volatility" is the
-# axis the regime really carries and the one the gate is re-founded on (#1078).
 FORWARD_TARGETS = {"returns": forward_returns, "volatility": forward_realized_vol}
 
 
@@ -124,11 +109,6 @@ def block_shuffle_pvalue(labels, fwd, block_len, n_perm=200, seed=0) -> dict:
 
 
 def per_state_significance(labels, fwd, block_len, n_perm=200, seed=0) -> dict:
-    """Per-state forward-return significance with Benjamini-Hochberg FDR correction.
-
-    Returns {state: {"gap": float, "p_value": float, "fdr_reject": bool}}.
-    States with no in-group or no out-group bars are skipped.
-    """
     labels = np.asarray(labels, dtype=object)
     fwd = np.asarray(fwd, dtype=float)
     valid = ~np.isnan(fwd)
@@ -217,17 +197,12 @@ def score_labels(close, labels, features, horizons=(1, 4, 12), block_mult=3, see
         fwd_fn = FORWARD_TARGETS[target]
     except KeyError:
         raise ValueError(f"unknown forward target {target!r}; known: {sorted(FORWARD_TARGETS)}")
-    # Identical NaN-mask on both label streams: warmup + low-ATR bars (NaN feature rows)
-    # are excluded from coverage/stability/separation so neither the hand-rule's
-    # ranging_quiet nor the model's default_label for those bars biases the comparison.
     valid = ~np.isnan(features).any(axis=1)
     vlabels = labels[valid]
     st = stability(vlabels)
     mean_dwell = float(np.mean(list(st["mean_dwell"].values()))) if st["mean_dwell"] else 1.0
     out = {"target": target, "coverage": coverage(vlabels), "stability": st, "horizons": {}}
     for h in horizons:
-        # Forward target (returns or realized vol) computed on the FULL close (index-aligned);
-        # then subset by valid so each retained bar keeps its true h-ahead value.
         fwd_full = fwd_fn(close, h)
         fwd = fwd_full[valid]
         block_len = max(int(block_mult * mean_dwell), h)
@@ -239,7 +214,6 @@ def score_labels(close, labels, features, horizons=(1, 4, 12), block_mult=3, see
             "per_state_fdr": per_state_significance(vlabels, fwd, block_len, n_perm=n_perm,
                                                     seed=seed),
         }
-    # flat aliases for the pre-registered primary (h=4)
     if "h4" in out["horizons"]:
         out["h4"] = out["horizons"]["h4"]
     return out

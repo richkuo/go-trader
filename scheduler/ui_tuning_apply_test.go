@@ -131,7 +131,6 @@ func newTuningApplyServer(t *testing.T, configPath string) (*StatusServer, *tuni
 	ss := NewStatusServer(nil, nil, "", []StrategyConfig{{ID: "spot-a"}, {ID: "spot-b"}}, nil)
 	ss.configPath = configPath
 	ss.tuning = mgr
-	// Neutralize production SIGHUP so apply tests do not signal this process.
 	ss.reloadConfig = func() error { return nil }
 	return ss, mgr
 }
@@ -174,7 +173,6 @@ func defaultApplyArtifacts(openA map[string]any) map[string]any {
 			}),
 		},
 	}
-	// Fix strategy_id inside spot-b's patch.
 	ranked := stratB["ranked"].([]any)
 	row := ranked[0].(map[string]any)
 	patch := row["patch"].(map[string]any)
@@ -286,7 +284,7 @@ func TestTuningApplyAuthAndSameOrigin(t *testing.T) {
 		t.Fatal("auth failures must not write config")
 	}
 
-	rr := postTuningApply(ss, body, "secret", "", "localhost:8099") // absent Origin accepted
+	rr := postTuningApply(ss, body, "secret", "", "localhost:8099")
 	if rr.Code != http.StatusOK {
 		t.Fatalf("absent origin status = %d body=%s", rr.Code, rr.Body.String())
 	}
@@ -427,7 +425,6 @@ func TestTuningApplyIdempotentAndCrashRecovery(t *testing.T) {
 	seedCompletedTuningRun(t, mgr, runID, defaultApplyArtifacts(nil))
 	body := `{"run_id":"` + runID + `","strategy_id":"spot-a","suggestion_key":"cand_1"}`
 
-	// Crash before config write: pending journal, config untouched → retry applies.
 	patch := json.RawMessage(`{"name":"sma_crossover","params":{"fast":20,"slow":50}}`)
 	hash, err := patchSHA256(patch)
 	if err != nil {
@@ -444,7 +441,6 @@ func TestTuningApplyIdempotentAndCrashRecovery(t *testing.T) {
 		t.Fatalf("pending retry status=%d body=%s", rr.Code, rr.Body.String())
 	}
 
-	// Crash after config write but before finalization: target equals patch → finalize.
 	configPath2 := writeTuningApplyTestConfig(t, t.TempDir(), nil)
 	ss2, mgr2 := newTuningApplyServer(t, configPath2)
 	runID2 := "20260720T120000000000000Z-appyfin"
@@ -464,14 +460,12 @@ func TestTuningApplyIdempotentAndCrashRecovery(t *testing.T) {
 		t.Fatalf("finalize pending status=%d body=%s", rr.Code, rr.Body.String())
 	}
 	after, _ := os.ReadFile(configPath2)
-	// Validated writer may re-indent; semantic equality is the invariant.
 	rootAfter, _ := readConfigRootMap(configPath2)
 	live, present, err := extractLiveOpenStrategy(rootAfter, "spot-a")
 	if err != nil || !present || !canonicalJSONEqual(live, patch) {
 		t.Fatalf("finalize changed semantics: present=%v live=%s before_len=%d after_len=%d", present, live, len(before), len(after))
 	}
 
-	// Idempotent double-apply.
 	rr = postTuningApply(ss2, `{"run_id":"`+runID2+`","strategy_id":"spot-a","suggestion_key":"cand_1"}`, "", "", "localhost")
 	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), tuningReasonAlreadyApplied) {
 		t.Fatalf("double apply status=%d body=%s", rr.Code, rr.Body.String())
@@ -496,7 +490,6 @@ func TestTuningApplyJournalSurvivesPrune(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("apply status=%d body=%s", rr.Code, rr.Body.String())
 	}
-	// Seed a newer terminal run and prune the applied one away.
 	newer := "20260720T130000000000000Z-appynew"
 	seedCompletedTuningRun(t, mgr, newer, defaultApplyArtifacts(nil))
 	mgr.pruneRetainedRuns()
@@ -511,7 +504,6 @@ func TestTuningApplyJournalSurvivesPrune(t *testing.T) {
 		t.Fatalf("journal record lost: ok=%v rec=%+v err=%v", ok, rec, err)
 	}
 
-	// Pruned run + applied journal → idempotent already_applied, no write.
 	beforeApplied, _ := os.ReadFile(configPath)
 	rr = postTuningApply(ss, `{"run_id":"`+runID+`","strategy_id":"spot-a","suggestion_key":"cand_1"}`, "", "", "localhost")
 	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), tuningReasonAlreadyApplied) {
@@ -522,7 +514,6 @@ func TestTuningApplyJournalSurvivesPrune(t *testing.T) {
 		t.Fatal("pruned applied retry must not rewrite config")
 	}
 
-	// Pending + pruned run → manual_review, no config write.
 	configPath2 := writeTuningApplyTestConfig(t, t.TempDir(), nil)
 	ss2, mgr2 := newTuningApplyServer(t, configPath2)
 	pendingID := "20260720T140000000000000Z-appypend"
@@ -588,7 +579,6 @@ func TestTuningApplySerializesWithConfigWriteMu(t *testing.T) {
 		t.Fatal(err)
 	}
 	rr := <-done
-	// After the racing write, baseline (no user_defaults → present) has drifted.
 	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), tuningReasonBaselineDrift) {
 		t.Fatalf("loser should see drift, got %d %s", rr.Code, rr.Body.String())
 	}
@@ -631,8 +621,6 @@ func TestTuningEligibilityOverlayLoadsJournalOnce(t *testing.T) {
 	ss.statusToken = "secret"
 	runID := "20260720T120000000000000Z-appyonce"
 	seedCompletedTuningRun(t, mgr, runID, defaultApplyArtifacts(nil))
-	// Seed a journal entry so the load path is exercised (missing file also
-	// loads once, but an existing file matches the polled production case).
 	if err := mgr.upsertPromotion(tuningPromotionRecord{
 		RunID: runID, StrategyID: "spot-a", SuggestionKey: "cand_1",
 		State: tuningPromoApplied, PatchHash: "abc", CreatedAt: mgr.now(),
@@ -666,7 +654,6 @@ func TestTuningEligibilityOverlayLoadsJournalOnce(t *testing.T) {
 	if cand1["apply_eligibility"] != tuningEligAlreadyApplied {
 		t.Fatalf("cand_1 eligibility = %#v, want already_applied", cand1["apply_eligibility"])
 	}
-	// Missing journal still overlays correctly (second GET after clearing hook file).
 	loads.Store(0)
 	if err := os.Remove(mgr.promotionsPath()); err != nil {
 		t.Fatal(err)
@@ -693,7 +680,6 @@ func TestTuningApplySignalsReloadOnSuccessNotRefusal(t *testing.T) {
 	seedCompletedTuningRun(t, mgr, runID, defaultApplyArtifacts(nil))
 	body := `{"run_id":"` + runID + `","strategy_id":"spot-a","suggestion_key":"cand_1"}`
 
-	// Refusal paths must never signal.
 	rr := postTuningApply(ss, `{"run_id":"`+runID+`","strategy_id":"spot-a","suggestion_key":"baseline"}`, "", "", "localhost")
 	if rr.Code == http.StatusOK {
 		t.Fatal("baseline row should be refused")
@@ -713,7 +699,6 @@ func TestTuningApplySignalsReloadOnSuccessNotRefusal(t *testing.T) {
 		t.Fatalf("apply response missing reload message: %s", rr.Body.String())
 	}
 
-	// Idempotent retry of applied must not signal again.
 	rr = postTuningApply(ss, body, "", "", "localhost")
 	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), tuningReasonAlreadyApplied) {
 		t.Fatalf("idempotent retry status=%d body=%s", rr.Code, rr.Body.String())
@@ -722,7 +707,6 @@ func TestTuningApplySignalsReloadOnSuccessNotRefusal(t *testing.T) {
 		t.Fatalf("idempotent applied retry re-signaled: count=%d", reloads.Load())
 	}
 
-	// Crash-recovery finalize (pending + config already equals patch) must signal.
 	configPath2 := writeTuningApplyTestConfig(t, t.TempDir(), nil)
 	ss2, mgr2 := newTuningApplyServer(t, configPath2)
 	var reloads2 atomic.Int32
@@ -772,8 +756,6 @@ func TestTuningApplyStrategyRemovedSettlesManualReview(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Simulate concurrent remove-strategy between pre-check and locked write:
-	// pending already exists, live config no longer has spot-a.
 	root, err := readConfigRootMap(configPath)
 	if err != nil {
 		t.Fatal(err)
@@ -805,7 +787,6 @@ func TestTuningApplyStrategyRemovedSettlesManualReview(t *testing.T) {
 		t.Fatalf("journal state=%q ok=%v err=%v, want manual_review", rec.State, ok, err)
 	}
 
-	// Retry of manual_review stays refused — never silently applies.
 	rr = postTuningApply(ss, body, "", "", "localhost")
 	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), tuningReasonManualReview) {
 		t.Fatalf("manual_review retry status=%d body=%s", rr.Code, rr.Body.String())
@@ -833,7 +814,6 @@ func TestTuningApplyTransientErrorLeavesPending(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Transient: corrupt config so the recover path fails before identity checks.
 	if err := os.WriteFile(configPath, []byte("{"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -866,8 +846,6 @@ func TestTuningEligibilityOverlayCachesLiveBaselinePerStrategy(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("detail status=%d body=%s", w.Code, w.Body.String())
 	}
-	// defaultApplyArtifacts has 2 strategies; ranked rows per strategy > 1.
-	// One extract per strategy id — not one per ranked row.
 	if got := extracts.Load(); got != 2 {
 		t.Fatalf("live baseline extracts = %d, want 2 (one per strategy)", got)
 	}

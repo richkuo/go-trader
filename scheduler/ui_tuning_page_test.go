@@ -76,10 +76,7 @@ func TestTuningStaticAppWiresRunAndLiveConfigAPIs(t *testing.T) {
 		`baseline-drifted`,
 		`baseline-unknown`,
 		`BH-adjusted`,
-		`Always re-read live config at render time`,
-		`memoized server-side`,
 		`detailReloadPending`,
-		`Defer clearing until replacement content is ready`,
 		`apply_eligibility`,
 		`Apply tuning suggestion`,
 		`open-as-close`,
@@ -148,21 +145,17 @@ assert.strictEqual(logic.baselineState(
   {name: "sma", params: {fast: 10}}
 ), "drifted");
 
-// Raw empty baseline vs Go-merged live params (common args-form) is current
-// once defaults are applied to both sides — not drifted.
 const defaults = {fast: 10, slow: 50};
 assert.strictEqual(logic.baselineState(
   {open_strategy: "sma", baseline_params: {}},
   {name: "sma", params: {fast: 10, slow: 50}},
   defaults
 ), "current");
-// Explicit override recorded at run start still matches merged live.
 assert.strictEqual(logic.baselineState(
   {open_strategy: "sma", baseline_params: {fast: 11}},
   {name: "sma", params: {fast: 11, slow: 50}},
   defaults
 ), "current");
-// Genuine post-run live edit still reports drifted.
 assert.strictEqual(logic.baselineState(
   {open_strategy: "sma", baseline_params: {}},
   {name: "sma", params: {fast: 11, slow: 50}},

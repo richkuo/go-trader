@@ -1,59 +1,4 @@
 #!/usr/bin/env python3
-"""fee_audit.py — registry-wide trade-count x fee-drag selectivity screen (#999 M5).
-
-The cheapest possible triage before any M1 effort is spent on a strategy: does
-its edge survive its own churn? At the hyperliquid audit fee model (#1315:
-base-tier 0.045% taker per side + 5 bps slippage, ~0.19% round-trip), a
-strategy that fires hundreds of times/year still pays tens of percent of
-capital in fees, while passing incumbents trade 0-8 times per window. This
-screen makes that arithmetic explicit and reproducible. (Verdicts recorded
-before #1315 used the binanceus model — 0.1%/side, ~0.3% round-trip.)
-
-For every registered strategy on the audit datasets/windows it runs each leg
-TWICE on the eval_windows.py harness (#994):
-
-  - net  leg: the audit-identical fee model (platform fee + 5 bps slippage);
-  - gross leg: the SAME signals with commission AND slippage zeroed.
-
-Signals are computed before the Backtester sees the frame and the long/flat
-path is all-in/all-out, so the two runs produce identical trade counts — the
-gross/net gap is pure friction drag, isolated per strategy.
-
-The salvage test then sorts strategies into:
-
-  - deprecate    — gross return is ALSO <= 0; no selectivity filter can save a
-                   strategy with no positive edge to begin with.
-  - graduate_m1  — gross > 0 but net <= 0; a real edge exists under the churn,
-                   so the strategy graduates to an M1 application with "raise
-                   selectivity" as the mechanism (#991/#992/#993 etc.).
-  - healthy      — net > 0; edge already survives fees (the incumbent tier).
-  - unscreened_short — short-capable (bidirectional / allow_short): the default
-                   plain long/flat harness drops short entries, so a
-                   non-positive long leg cannot justify deprecate/no_trades;
-                   run again with --direction short to measure that leg. (A
-                   positive long edge still graduates/passes, flagged
-                   long-leg-only.)
-  - no_trades    — never fired on the audit slices; unscored.
-
-Output is ranked by fee drag and committed as a markdown table so the verdict
-is reproducible.
-
-All aggregation/ranking/rendering logic is pure (operates on plain dicts) and
-unit-tested without data access — same architecture as eval_windows.py /
-exit_diagnostics.py.
-
-Usage:
-  # full registry-wide screen, committed report
-  uv run --no-sync python backtest/fee_audit.py --markdown docs/research/fee-audit-m5.md
-
-  # a focused subset on one dataset/window (fast path)
-  uv run --no-sync python backtest/fee_audit.py \
-      --strategies vwap_reversion,macd,sma_crossover --windows oos --datasets BTC/USDT:4h
-
-  # focused short-leg screen for a short-only strategy (#990)
-  uv run --no-sync python backtest/fee_audit.py \
-      --registry futures --strategies vwap_rejection_st --direction short
-"""
 
 from __future__ import annotations
 
@@ -68,7 +13,7 @@ _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _THIS_DIR not in sys.path:
     sys.path.insert(0, _THIS_DIR)
 
-from eval_windows import (  # noqa: E402  (path bootstrap above)
+from eval_windows import (
     DATASETS,
     DEFAULT_CAPITAL,
     FEE_PLATFORM,
@@ -78,19 +23,8 @@ from eval_windows import (  # noqa: E402  (path bootstrap above)
     run_leg,
 )
 
-# `hold` always emits signal=0 by design (never trades); screening it is noise.
 SKIP_STRATEGIES = {"hold"}
 
-# Strategies that emit signal=-1 as a SHORT ENTRY (not just a long exit). The
-# plain long/flat backtest path drops short entries silently (backtester.py:
-# 1712), so a `deprecate`/`no_trades` verdict on one of these would assert more
-# than the harness measured — the short half is simply unscreened. This mirrors
-# scheduler/init.go `bidirectionalPerpsStrategies` (the live source of truth);
-# test_fee_audit::test_live_bidirectional_set_matches_go_source parses init.go
-# and fails if the two drift, so the set cannot go silently stale. For the
-# three names carrying an `allow_short` gate (mtf_confluence / vol_momentum /
-# regime_adaptive — long-only spot variant, short-capable futures variant) the
-# per-variant `allow_short` flag decides; the rest short unconditionally.
 LIVE_BIDIRECTIONAL_STRATEGIES = frozenset({
     "triple_ema_bidir", "tema_cross_bd", "session_breakout", "donchian_breakout",
     "chart_pattern", "liquidity_sweeps", "bear_pullback_st", "vwap_rejection_st",
@@ -99,22 +33,13 @@ LIVE_BIDIRECTIONAL_STRATEGIES = frozenset({
     "anchored_vwap_channel", "anchored_vwap_reversion", "atr_band_revert",
 })
 
-# The #956/#963 protocol windows; held-out windows overlap `is` and would
-# double-count trades, so the screen defaults to the disjoint protocol pair.
 DEFAULT_WINDOWS = ("is", "oos")
 
 YEAR_DAYS = 365.25
 
-# `unscreened_short` sits between graduate and healthy in salvage interest: the
-# strategy emitted short entries the plain long/flat harness silently dropped,
-# so a `deprecate`/`no_trades` claim would assert more than was measured.
 VERDICT_ORDER = ("deprecate", "graduate_m1", "healthy", "unscreened_short",
                  "no_trades")
 
-
-# ---------------------------------------------------------------------------
-# Pure helpers (unit-tested without data access).
-# ---------------------------------------------------------------------------
 
 def _mean(values: List[float]) -> Optional[float]:
     vals = [v for v in values if v is not None]
@@ -122,17 +47,6 @@ def _mean(values: List[float]) -> Optional[float]:
 
 
 def strategy_is_short_capable(default_params: Optional[dict], name: str) -> bool:
-    """Does this strategy variant open shorts the long/flat harness can't see?
-
-    Short-capability is strategy metadata, NOT recoverable from the raw signal
-    series (a long-only crossover and a bidirectional strategy both encode
-    bearishness as ``signal == -1``). So we key off the live bidirectional set
-    (LIVE_BIDIRECTIONAL_STRATEGIES, mirrored from init.go). A name carrying an
-    ``allow_short`` flag is gated by that per-variant flag — the spot variant
-    (allow_short False) is genuinely long-only and fully measured, the futures
-    variant (allow_short True) is short-capable; a bidirectional name with no
-    such flag shorts unconditionally.
-    """
     if name not in LIVE_BIDIRECTIONAL_STRATEGIES:
         return False
     dp = default_params or {}
@@ -143,11 +57,6 @@ def strategy_is_short_capable(default_params: Optional[dict], name: str) -> bool
 
 def trades_per_year(total_trades: int, total_span_days: float,
                     year_days: float = YEAR_DAYS) -> Optional[float]:
-    """Annualized trade rate over the summed calendar span of the scored legs.
-
-    Returns None when the span is missing/zero so a no-data strategy never
-    divides by zero or reports a fabricated rate.
-    """
     if not total_span_days or total_span_days <= 0:
         return None
     return total_trades / (total_span_days / year_days)
@@ -156,20 +65,6 @@ def trades_per_year(total_trades: int, total_span_days: float,
 def salvage_verdict(total_trades: int, mean_gross: Optional[float],
                     mean_net: Optional[float],
                     short_unmeasured: bool = False) -> str:
-    """The #999 salvage test (see module docstring).
-
-    gross <= 0 dominates: a strategy with no positive zero-fee edge cannot be
-    rescued by raising selectivity, so it is a deprecation candidate regardless
-    of how negative its net return is.
-
-    ``short_unmeasured`` guards the verdict's honesty: the plain long/flat
-    harness silently drops short entries (eval_windows.count_dropped_short_
-    entries), so for a strategy that wanted to short, a non-positive *measured*
-    long leg cannot justify `deprecate`/`no_trades` — the short half is simply
-    unknown. Such rows become `unscreened_short`. A positive long edge is a
-    real finding even with the short half unmeasured, so `graduate_m1` /
-    `healthy` still stand (the report flags them as long-leg-only).
-    """
     if total_trades == 0 or mean_gross is None:
         return "unscreened_short" if short_unmeasured else "no_trades"
     if mean_gross <= 0:
@@ -182,14 +77,6 @@ def salvage_verdict(total_trades: int, mean_gross: Optional[float],
 def aggregate_strategy(strategy: str, registry_label: str,
                        leg_results: List[dict],
                        short_capable: bool = False) -> dict:
-    """Collapse one strategy's per-leg net/gross results into a screen row.
-
-    ``leg_results`` entries are dicts with either ``error`` set or the keys
-    ``trades`` / ``span_days`` / ``net_ret`` / ``gross_ret`` / ``net_sharpe``.
-    Errored or no-data legs are excluded from the aggregates (and counted).
-    Means are taken per-leg (each window x dataset counts once), matching how
-    eval_windows reports across the slices.
-    """
     data_legs = [l for l in leg_results
                  if l.get("error") is None and l.get("net_ret") is not None]
     errors = [l for l in leg_results if l.get("error") is not None]
@@ -206,9 +93,6 @@ def aggregate_strategy(strategy: str, registry_label: str,
     fee_drag = (mean_gross - mean_net) if (mean_gross is not None
                                            and mean_net is not None) else None
     tpy = trades_per_year(total_trades, total_span)
-    # fee_drag is a per-LEG mean (pp); total_trades sums across all legs, so a
-    # unit-consistent per-trade rate must scale the numerator over the same set
-    # of legs: total drag (mean x n_legs) / total trades. (#1003 review.)
     drag_per_trade = ((fee_drag * n_legs) / total_trades
                       if (fee_drag is not None and total_trades) else None)
     verdict = salvage_verdict(total_trades, mean_gross, mean_net, short_unmeasured)
@@ -234,17 +118,9 @@ def aggregate_strategy(strategy: str, registry_label: str,
 
 
 def rank_rows(rows: List[dict]) -> List[dict]:
-    """Sort by fee drag descending; no_trades rows last, then by name.
-
-    A larger positive fee drag = a strategy bleeding more of its gross edge to
-    churn, so it sits at the top of the screen where the salvage decision
-    matters most.
-    """
     def key(r):
         no_trades = r["verdict"] == "no_trades"
         drag = r["fee_drag_pp"] if r["fee_drag_pp"] is not None else float("-inf")
-        # registry tiebreak so a name screened on both registries (#1003)
-        # orders deterministically rather than by dict insertion.
         return (no_trades, -drag, r["strategy"], r.get("registry", ""))
 
     return sorted(rows, key=key)
@@ -264,7 +140,6 @@ def _md_num(v, prec: int = 2) -> str:
 
 
 def render_markdown(ranked: List[dict], meta: dict) -> str:
-    """Render the committed report table + footer sections."""
     lines = [
         "# Fee-aware selectivity audit (#999 M5)",
         "",
@@ -378,39 +253,24 @@ def render_markdown(ranked: List[dict], meta: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
-# ---------------------------------------------------------------------------
-# Leg execution (I/O; everything above stays pure).
-# ---------------------------------------------------------------------------
-
 def screen_leg(reg, name: str, symbol: str, timeframe: str,
                window: tuple, capital: float,
                direction: Optional[str] = None) -> Optional[dict]:
-    """Run the net + gross legs for one (strategy, dataset, window).
-
-    Returns None when the net leg has no data; an ``{"error": ...}`` dict when
-    a leg raises; otherwise the paired net/gross metrics. One bad leg never
-    aborts the registry-wide screen.
-    """
     try:
         net = run_leg(reg, name, None, symbol, timeframe, window,
                       capital=capital, direction=direction)
-    except Exception as exc:  # noqa: BLE001 — one strategy must not kill the run
+    except Exception as exc:
         return {"dataset": dataset_key(symbol, timeframe), "error": f"net: {exc}"}
     if net is None:
-        return None  # no data on this slice
+        return None
     try:
         gross = run_leg(reg, name, None, symbol, timeframe, window,
                         capital=capital, direction=direction,
                         commission_pct=0.0, slippage_pct=0.0)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return {"dataset": dataset_key(symbol, timeframe), "error": f"gross: {exc}"}
     if gross is None:
         return None
-    # The net and gross runs must execute the IDENTICAL trade sequence for the
-    # gap to be pure friction drag. A count mismatch (e.g. a cold-cache
-    # fallback ran the legs on different data slices, or a future fill rule
-    # turned out to be fee/slippage-sensitive) makes the drag meaningless —
-    # demote to an error leg rather than report a garbage row. (#1003 review.)
     if int(net["trades"]) != int(gross["trades"]):
         return {
             "dataset": dataset_key(symbol, timeframe),
@@ -426,8 +286,6 @@ def screen_leg(reg, name: str, symbol: str, timeframe: str,
         "net_ret": net["return_pct"],
         "gross_ret": gross["return_pct"],
         "net_sharpe": net["sharpe"],
-        # #1005: either run blew the account (equity hit 0; metrics floored
-        # at the bust bar) — surfaced so blown legs are never silent.
         "liquidated": bool(net.get("liquidated") or gross.get("liquidated")),
     }
 
@@ -435,7 +293,6 @@ def screen_leg(reg, name: str, symbol: str, timeframe: str,
 def screen_strategy(reg, name: str, registry_label: str, datasets: List[tuple],
                     window_names: List[str], capital: float,
                     direction: Optional[str] = None) -> dict:
-    """All legs for one strategy across the windows/datasets → aggregated row."""
     leg_results = []
     for wname in window_names:
         window = WINDOWS[wname]
@@ -460,27 +317,11 @@ def _default_params(reg, name) -> Optional[dict]:
 
 def enumerate_targets(registry_choice: str,
                       subset: Optional[List[str]] = None) -> List[tuple]:
-    """Resolve (name, registry_label, reg_module) targets for the screen.
-
-    For ``both`` a strategy present in spot is screened on the spot registry;
-    futures-only names are appended on the futures registry. A shared name
-    whose futures ``default_params`` differ materially from spot (e.g.
-    ``momentum`` threshold 3.0 vs 5.0, ``allow_short`` flips) is a distinct
-    configuration — the screen's whole subject is trade frequency — so it is
-    screened on BOTH registries (two rows, distinct ``registry`` labels)
-    rather than silently collapsed to the spot variant. Byte-identical shared
-    names yield a single (spot) row. ``subset`` (the optional --strategies
-    list) filters by name after resolution. (#1003 review.)
-    """
     from registry_loader import load_registry
 
     targets: List[tuple] = []
     seen = set()
     spot_reg = None
-    # #1275: enumerate the FULL registry (STRATEGY_REGISTRY includes
-    # discovery-hidden names), not list_strategies() — the audit is the tool
-    # that produces quarantine verdicts, so it must keep re-screening
-    # quarantined strategies; a discovery-only sweep could never revisit them.
     if registry_choice in ("spot", "both"):
         spot_reg = load_registry("spot")
         for n in spot_reg.STRATEGY_REGISTRY:
@@ -494,8 +335,6 @@ def enumerate_targets(registry_choice: str,
             if n in SKIP_STRATEGIES:
                 continue
             if registry_choice == "both" and n in seen:
-                # Collapse only when the futures config is byte-identical to
-                # spot; a materially different variant is screened on its own.
                 if _default_params(spot_reg, n) == _default_params(fut_reg, n):
                     continue
             targets.append((n, "futures", fut_reg))
@@ -569,7 +408,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     ranked = rank_rows(rows)
     counts = verdict_counts(ranked)
 
-    # Console summary.
     print(f"\n{'#':>3}  {'strategy':<22} {'reg':<7} {'trades':>7} {'tr/yr':>7} "
           f"{'gross%':>8} {'net%':>8} {'drag(pp)':>9}  verdict")
     for i, r in enumerate(ranked, 1):

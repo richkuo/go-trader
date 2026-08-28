@@ -1,4 +1,3 @@
-"""Tests for futures/strategies.py — all registered futures strategies."""
 
 import importlib.util
 import numpy as np
@@ -7,16 +6,13 @@ import pytest
 
 import sys, os
 
-# Import futures strategies module explicitly to avoid collision with spot/strategies.py
 _futures_dir = os.path.dirname(os.path.abspath(__file__))
 _spot_dir = os.path.join(_futures_dir, '..', 'spot')
 _shared_dir = os.path.join(_futures_dir, '..')
 
-# Add spot and shared to path for indicators/amd_ifvg/chart_patterns imports
 sys.path.insert(0, _spot_dir)
 sys.path.insert(0, _shared_dir)
 
-# Load the futures strategies module by file path to avoid name collision
 _spec = importlib.util.spec_from_file_location(
     "futures_strategies", os.path.join(_futures_dir, "strategies.py"))
 _mod = importlib.util.module_from_spec(_spec)
@@ -27,7 +23,6 @@ apply_strategy = _mod.apply_strategy
 list_strategies = _mod.list_strategies
 get_strategy = _mod.get_strategy
 
-# Load conftest helpers via file path so imports work regardless of CWD
 _conftest_spec = importlib.util.spec_from_file_location(
     "conftest_helpers", os.path.join(_shared_dir, "conftest.py"))
 _conftest_mod = importlib.util.module_from_spec(_conftest_spec)
@@ -40,20 +35,14 @@ make_flat = _conftest_mod.make_flat
 make_volatile = _conftest_mod.make_volatile
 
 
-# ─── Registry ───────────────────────────────
-
 class TestFuturesRegistry:
     def test_strategies_registered(self):
         names = list_strategies()
         assert len(names) >= 10
-        # Spot-check a few discovery-visible strategies
         for expected in ["breakout", "delta_neutral_funding",
                          "mean_reversion_pro", "momentum_pro",
                          "anchored_vwap", "chart_pattern"]:
             assert expected in names, f"{expected} not registered"
-        # #1275: M5-deprecated names leave discovery but stay registered so
-        # explicit configs and backtests keep resolving them (#1282 added the
-        # futures names below the first row).
         for quarantined in ["sma_crossover", "ema_crossover", "bollinger_bands",
                             "volume_weighted", "triple_ema", "rsi_macd_combo",
                             "momentum", "mean_reversion", "rsi", "macd",
@@ -76,8 +65,6 @@ class TestFuturesRegistry:
         assert "signal" in result.columns
 
 
-# ─── Helpers ────────────────────────────────
-
 def _run(name, closes, params=None, volume=None, index=None):
     df = make_ohlcv(closes, volume=volume, index=index)
     return apply_strategy(name, df, params)
@@ -88,11 +75,8 @@ def _valid_signals(result):
     assert set(signals.unique()).issubset({-1.0, 0.0, 1.0})
 
 
-# ─── SMA Crossover ─────────────────────────
-
 class TestSMACrossover:
     def test_buy_signal(self):
-        # Trending up should produce buy signal when fast crosses above slow
         closes = list(np.linspace(120, 80, 60)) + list(np.linspace(80, 140, 60))
         result = _run("sma_crossover", closes)
         _valid_signals(result)
@@ -104,8 +88,6 @@ class TestSMACrossover:
         result = _run("sma_crossover", make_flat(80))
         assert (result["signal"].dropna() == 0).all()
 
-
-# ─── EMA Crossover ─────────────────────────
 
 class TestEMACrossover:
     def test_buy_signal(self):
@@ -121,11 +103,8 @@ class TestEMACrossover:
         assert (result["signal"].dropna() == 0).all()
 
 
-# ─── Bollinger Bands ───────────────────────
-
 class TestBollingerBands:
     def test_buy_signal(self):
-        # Flat → sharp dip → recovery forces price below lower band then cross back up
         closes = list(np.full(30, 100.0)) + list(np.linspace(100, 80, 10)) + list(np.linspace(80, 105, 10))
         result = _run("bollinger_bands", closes)
         assert "bb_middle" in result.columns
@@ -139,14 +118,11 @@ class TestBollingerBands:
         assert (result["signal"] == 0).all()
 
 
-# ─── Volume Weighted ──────────────────────
-
 class TestVolumeWeighted:
     def test_buy_signal(self):
-        # Down → up crossover with volume spike at the crossover point
         closes = list(np.linspace(120, 80, 30)) + list(np.linspace(80, 130, 30))
         volume = [100.0] * 60
-        volume[35] = 500.0  # spike volume at the crossover bar
+        volume[35] = 500.0
         volume[36] = 500.0
         result = _run("volume_weighted", closes, volume=volume)
         assert "price_sma" in result.columns
@@ -158,8 +134,6 @@ class TestVolumeWeighted:
         result = _run("volume_weighted", make_flat(40))
         assert (result["signal"] == 0).all()
 
-
-# ─── Triple EMA ───────────────────────────
 
 class TestTripleEMA:
     def test_buy_signal(self):
@@ -175,8 +149,6 @@ class TestTripleEMA:
         result = _run("triple_ema", make_flat(80))
         assert (result["signal"].dropna() == 0).all()
 
-
-# ─── Triple EMA Bidirectional ─────────────
 
 class TestTripleEMABidir:
     def test_uptrend_enters_long(self):
@@ -198,9 +170,6 @@ class TestTripleEMABidir:
         assert (result["signal"].dropna() == 0).all()
 
     def test_direct_flip_signal_clamped(self):
-        # Strong uptrend then strong downtrend — EMAs should flip from bullish to bearish
-        # stack with no flat-stack bars in between. The raw diff would be -2 on the flip
-        # bar; the strategy must clamp it to -1.
         closes = list(make_trending_up(80, start=100, step=1.0)) + list(
             make_trending_down(80, start=180, step=1.0)
         )
@@ -210,16 +179,12 @@ class TestTripleEMABidir:
         assert result["signal"].max() <= 1
 
     def test_custom_params_applied(self):
-        # Override periods — strategy must accept and use them (checked indirectly via
-        # ema columns differing from defaults on same input).
         closes = make_trending_up(60)
         default = _run("triple_ema_bidir", closes)
         custom = _run("triple_ema_bidir", closes,
                       params={"short_period": 3, "mid_period": 10, "long_period": 30})
         assert not default["ema_short"].equals(custom["ema_short"])
 
-
-# ─── RSI MACD Combo ──────────────────────
 
 class TestRSIMACDCombo:
     def test_buy_signal(self):
@@ -232,18 +197,12 @@ class TestRSIMACDCombo:
         assert (result["signal"] == 1).any() or (result["signal"] == -1).any()
 
     def test_default_gate_preserves_legacy_behavior(self):
-        # The default rsi_short_min / rsi_long_max values (50) must match the
-        # pre-PR hard-coded gates. A straight down-then-up series should still
-        # produce at least one -1 signal with defaults.
         closes = list(np.linspace(80, 140, 60)) + list(np.linspace(140, 80, 60))
         result = _run("rsi_macd_combo", closes)
         _valid_signals(result)
         assert (result["signal"] == -1).any()
 
     def test_loosened_short_gate_catches_more_shorts(self):
-        # Series: rally → sharp drop (first MACD bearish cross at high RSI) → small
-        # bounce → extended drop (second bearish cross, now at low RSI). Default
-        # gate (rsi_short_min=50) blocks the second cross; permissive gate catches both.
         closes = (list(np.linspace(80, 160, 50)) +
                   list(np.linspace(160, 100, 20)) +
                   list(np.linspace(100, 115, 15)) +
@@ -256,9 +215,6 @@ class TestRSIMACDCombo:
             "loosening rsi_short_min must allow more short signals"
 
     def test_loosened_long_gate_catches_more_longs(self):
-        # Symmetric pattern: crash → sharp rally (first cross at low RSI) → dip →
-        # extended rally (second bullish cross at higher RSI). Permissive gate
-        # (rsi_long_max=100) should catch at least as many longs as default.
         closes = (list(np.linspace(140, 70, 50)) +
                   list(np.linspace(70, 130, 20)) +
                   list(np.linspace(130, 115, 15)) +
@@ -270,7 +226,6 @@ class TestRSIMACDCombo:
         assert (loose["signal"] == 1).sum() >= (strict["signal"] == 1).sum()
 
     def test_params_forwarded_via_apply_strategy(self):
-        # Sanity: the new params propagate through apply_strategy without error.
         closes = make_trending_down(80)
         result = _run("rsi_macd_combo", closes,
                       params={"rsi_short_min": 30, "rsi_long_max": 70})
@@ -281,8 +236,6 @@ class TestRSIMACDCombo:
         result = _run("rsi_macd_combo", make_flat(80))
         assert (result["signal"] == 0).all()
 
-
-# ─── Momentum ───────────────────────────────
 
 class TestMomentum:
     def test_buy_signal(self):
@@ -303,8 +256,6 @@ class TestMomentum:
         assert (result["signal"] == 0).all()
 
 
-# ─── Mean Reversion ─────────────────────────
-
 class TestMeanReversion:
     def test_buy_on_dip(self):
         closes = (
@@ -321,8 +272,6 @@ class TestMeanReversion:
         assert (result["signal"] == 0).all()
 
 
-# ─── RSI ────────────────────────────────────
-
 class TestRSI:
     def test_produces_rsi_column(self):
         closes = make_volatile(80, amplitude=10)
@@ -335,8 +284,6 @@ class TestRSI:
         result = _run("rsi", make_flat(50))
         assert (result["signal"] == 0).all()
 
-
-# ─── MACD ───────────────────────────────────
 
 class TestMACD:
     def test_bullish_cross(self):
@@ -352,11 +299,8 @@ class TestMACD:
         assert (result["signal"] == -1).any()
 
 
-# ─── Breakout ───────────────────────────────
-
 class TestBreakout:
     def test_upside_breakout(self):
-        # Range-bound then break above
         closes = list(np.linspace(100, 105, 30)) + [120, 122, 125, 128, 130]
         result = _run("breakout", closes)
         _valid_signals(result)
@@ -367,8 +311,6 @@ class TestBreakout:
         result = _run("breakout", make_flat(40))
         assert (result["signal"] == 0).all()
 
-
-# ─── Stochastic RSI ─────────────────────────
 
 class TestStochRSI:
     def test_columns(self):
@@ -382,8 +324,6 @@ class TestStochRSI:
         result = _run("stoch_rsi", make_flat(80))
         assert "signal" in result.columns
 
-
-# ─── Supertrend ─────────────────────────────
 
 class TestSupertrend:
     def test_output_columns(self):
@@ -400,8 +340,6 @@ class TestSupertrend:
         assert set(dirs.unique()).issubset({-1, 0, 1})
 
 
-# ─── Squeeze Momentum ──────────────────────
-
 class TestSqueezeMomentum:
     def test_columns(self):
         closes = make_volatile(100, amplitude=10)
@@ -415,8 +353,6 @@ class TestSqueezeMomentum:
         assert (result["signal"] == 0).all()
 
 
-# ─── Ichimoku Cloud ─────────────────────────
-
 class TestIchimokuCloud:
     def test_columns(self):
         closes = make_trending_up(120)
@@ -429,8 +365,6 @@ class TestIchimokuCloud:
         assert (result["signal"] == 0).all()
 
 
-# ─── ATR Breakout ───────────────────────────
-
 class TestATRBreakout:
     def test_upside_breakout(self):
         closes = list(np.linspace(100, 100, 30)) + list(np.linspace(100, 130, 10))
@@ -442,8 +376,6 @@ class TestATRBreakout:
         assert (result["signal"] == 0).all()
 
 
-# ─── Heikin Ashi EMA ────────────────────────
-
 class TestHeikinAshiEMA:
     def test_columns(self):
         closes = make_trending_up(80)
@@ -452,8 +384,6 @@ class TestHeikinAshiEMA:
             assert col in result.columns
         _valid_signals(result)
 
-
-# ─── Order Blocks ───────────────────────────
 
 class TestOrderBlocks:
     def test_flat_no_signal(self):
@@ -466,8 +396,6 @@ class TestOrderBlocks:
         _valid_signals(result)
 
 
-# ─── VWAP Reversion ─────────────────────────
-
 class TestVWAPReversion:
     def test_with_datetime_index(self):
         n = 100
@@ -477,8 +405,6 @@ class TestVWAPReversion:
         assert "vwap" in result.columns
         _valid_signals(result)
 
-
-# ─── Parabolic SAR ──────────────────────────
 
 class TestParabolicSAR:
     def test_buy_signal(self):
@@ -499,13 +425,10 @@ class TestParabolicSAR:
         assert (result["signal"] == 0).all()
 
 
-# ─── Delta Neutral Funding ──────────────────
-
 class TestDeltaNeutralFunding:
     def test_entry_on_high_funding(self):
         result = _run("delta_neutral_funding", make_flat(20),
                        {"avg_funding_rate_7d": 0.0005, "entry_threshold": 0.0001})
-        # Positive funding → SHORT perp to collect (#102)
         assert result["signal"].iloc[-1] == -1
 
     def test_exit_on_low_funding(self):
@@ -518,9 +441,6 @@ class TestDeltaNeutralFunding:
                        {"avg_funding_rate_7d": 0.0})
         assert (result["signal"] == 0).all()
 
-    # ── #988: per-bar funding-column path (backtest) ──
-    # A 4h DatetimeIndex makes the 7d window 42 bars, so warmup is the first 41
-    # bars; signals begin at bar 41.
 
     @staticmethod
     def _series_df(funding_values, freq="4h"):
@@ -531,28 +451,26 @@ class TestDeltaNeutralFunding:
         return df
 
     def test_series_shorts_after_full_window_when_funding_rich(self):
-        df = self._series_df([0.0005] * 60)  # > entry_threshold every hour
+        df = self._series_df([0.0005] * 60)
         out = apply_strategy("delta_neutral_funding", df,
                              {"entry_threshold": 0.0001, "exit_threshold": 0.00005})
-        assert (out["signal"].iloc[:41] == 0).all()   # warmup, no full window yet
+        assert (out["signal"].iloc[:41] == 0).all()
         assert out["signal"].iloc[41] == -1
         assert out["signal"].iloc[-1] == -1
 
     def test_series_exits_when_funding_cheap(self):
-        df = self._series_df([0.00003] * 60)  # < exit_threshold
+        df = self._series_df([0.00003] * 60)
         out = apply_strategy("delta_neutral_funding", df,
                              {"entry_threshold": 0.0001, "exit_threshold": 0.00005})
         assert out["signal"].iloc[-1] == 1
 
     def test_series_holds_in_hysteresis_band(self):
-        df = self._series_df([0.00007] * 60)  # between exit and entry
+        df = self._series_df([0.00007] * 60)
         out = apply_strategy("delta_neutral_funding", df,
                              {"entry_threshold": 0.0001, "exit_threshold": 0.00005})
         assert (out["signal"] == 0).all()
 
     def test_series_warmup_waits_for_full_window_of_real_data(self):
-        # NaN funding (pre-listing) for the first 10 bars, then rich funding.
-        # A full 42-bar non-NaN window completes at bar 10+41 = 51.
         df = self._series_df([np.nan] * 10 + [0.0005] * 50)
         out = apply_strategy("delta_neutral_funding", df,
                              {"entry_threshold": 0.0001, "exit_threshold": 0.00005})
@@ -560,8 +478,6 @@ class TestDeltaNeutralFunding:
         assert out["signal"].iloc[51] == -1
 
     def test_series_column_overrides_live_scalar(self):
-        # Presence of the per-bar column takes the series path even if a live
-        # scalar avg is also supplied (the scalar is the live-only input).
         df = self._series_df([0.0005] * 60)
         out = apply_strategy("delta_neutral_funding", df,
                              {"avg_funding_rate_7d": 0.0})
@@ -573,8 +489,6 @@ class TestDeltaNeutralFunding:
         assert set(out["signal"].unique()).issubset({-1, 0, 1})
 
 
-# ─── Chart Pattern (wrapper) ────────────────
-
 class TestChartPattern:
     def test_returns_signal(self):
         closes = list(np.linspace(90, 110, 50)) + list(np.linspace(110, 90, 50))
@@ -582,8 +496,6 @@ class TestChartPattern:
         assert "signal" in result.columns
         _valid_signals(result)
 
-
-# ─── Liquidity Sweeps (wrapper) ─────────────
 
 class TestLiquiditySweeps:
     def test_returns_signal(self):
@@ -593,12 +505,9 @@ class TestLiquiditySweeps:
         _valid_signals(result)
 
 
-# ─── AMD+IFVG ──────────────────────────────
-
 class TestAMDIFVG:
     def test_returns_signal_column(self):
-        """AMD+IFVG should return signal column with datetime index."""
-        n = 96  # 24 hours of 15-min candles
+        n = 96
         idx = pd.date_range("2024-01-01", periods=n, freq="15min")
         closes = make_volatile(n, center=100, amplitude=5)
         result = _run("amd_ifvg", closes, index=idx)
@@ -608,20 +517,16 @@ class TestAMDIFVG:
         assert "asian_low" in result.columns
 
     def test_short_data_no_signal(self):
-        """Less than 3 bars should return all zeros."""
         idx = pd.date_range("2024-01-01", periods=2, freq="15min")
         result = _run("amd_ifvg", [100.0, 101.0], index=idx)
         assert (result["signal"] == 0).all()
 
     def test_no_crash_flat(self):
-        """Flat data with datetime index should not crash."""
         n = 96
         idx = pd.date_range("2024-01-01", periods=n, freq="15min")
         result = _run("amd_ifvg", make_flat(n), index=idx)
         assert "signal" in result.columns
 
-
-# ─── Edge Cases ─────────────────────────────
 
 class TestEdgeCases:
     @pytest.mark.parametrize("name", [

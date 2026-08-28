@@ -5,45 +5,6 @@ import (
 	"sync"
 )
 
-// armTrailingStopAtOpenNow places the initial TRAILING stop-loss on the SAME
-// cycle as a fresh open (or the open side of a flip), closing the #885 naked
-// window. The non-trailing ATR/regime/unified SL owners are already armed this
-// cycle by the post-trade protection sync (buildHyperliquidProtectionPlan
-// derives their trigger from the just-stamped EntryATR/Regime), and the scalar
-// owners (stop_loss_pct, stop_loss_margin_pct, trailing_stop_pct) are placed
-// inline at the execute order because EffectiveStopLossPct returns a positive
-// pct for them. The ATR-trailing owners (trailing_stop_atr_mult /
-// trailing_stop_atr_regime) are the gap: EffectiveStopLossPct defers to 0 (the
-// distance needs per-position EntryATR) and buildHyperliquidProtectionPlan never
-// reads the trailing fields, so the only path that arms them is the Signal==0
-// trailing walker — which first fires the cycle AFTER open. On a long strategy
-// interval that leaves the whole position with no exchange-side stop for up to a
-// full interval.
-//
-// Correctness over a single steady-state path: it reuses the exact walker
-// primitive (runHyperliquidTrailingStopUpdate) and result handler
-// (applyTrailingStopUpdateResult) the next-cycle walker uses, so the inline
-// trigger comes from the identical formula and code path the deferred arming
-// would have used — the only difference is this cycle's mark vs. the next
-// cycle's, and arming sooner is strictly safer. One stop-placement
-// implementation means the two can't drift. A fresh position carries
-// currentTrigger==0/currentOID==0, so the primitive computes the initial
-// trigger from a max(AvgCost, mark)-seeded high-water (the walker's own ratchet,
-// so positive open slippage is handled the same way) and rests a new SL without
-// needing forceResize.
-//
-// Idempotent and tightly scoped: it no-ops unless the position is a live
-// trailing owner with NO resting SL (StopLossOID==0 && StopLossTriggerPx==0).
-// That guard is what keeps it from double-placing on scalar trailing_stop_pct
-// (inline OID already stamped at the execute order, main.go), on fixed/regime
-// ATR (OID stamped by the post-trade sync), and on partial-close legs (the
-// reduce-only SL keeps resting). It also means the post-open walker no-ops next
-// cycle because the SL already exists.
-//
-// The #621 size cap uses the on-chain qty corrected with the just-confirmed open
-// fill (the per-cycle reconcile snapshot predates this open); if still capped
-// (e.g. shared-coin reconcile lag) it defers to the next walker cycle rather
-// than rest an undersized stop — never worse than the pre-#885 deferred path.
 func armTrailingStopAtOpenNow(
 	sc StrategyConfig,
 	stratState *StrategyState,
@@ -64,10 +25,6 @@ func armTrailingStopAtOpenNow(
 		mu.RUnlock()
 		return 0, ""
 	}
-	// Only arm when no SL is resting yet. A fresh open / flip-open leaves
-	// StopLossOID==0 and StopLossTriggerPx==0; anything else (scalar SL placed
-	// inline, fixed/regime SL placed by the sync, a partial close keeping its
-	// reduce-only SL) is already protected and must not be double-placed.
 	if pos.StopLossOID != 0 || pos.StopLossTriggerPx != 0 {
 		mu.RUnlock()
 		return 0, ""
@@ -76,8 +33,6 @@ func armTrailingStopAtOpenNow(
 	posSnap := *pos
 	mu.RUnlock()
 
-	// #621 size cap with the on-chain qty corrected for the just-confirmed open
-	// fill (the Phase-1 reconcile snapshot predates this open).
 	grownOnChain := map[string]float64{symbol: preOpenOnChainAbsQty[symbol] + filledQty}
 	slEffectiveQty, capped := hlSLEffectiveQty(symbol, posSnap.Quantity, grownOnChain)
 	if capped {
@@ -85,13 +40,6 @@ func armTrailingStopAtOpenNow(
 		return 0, ""
 	}
 
-	// currentTrigger==0 / currentOID==0: the primitive computes the initial
-	// trigger and rests a fresh SL (no forceResize needed).
-	//
-	// #1450: the policy carries no liquidationPx. This is a FRESH open — the
-	// Phase-1 clearinghouseState snapshot predates the position, so Hyperliquid
-	// has not reported a liquidation price for it yet and there is nothing to
-	// compare against. The next cycle's audit and walker heal it.
 	newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, symbol, side, slEffectiveQty, &posSnap, mark, 0, 0, 0, trailingReplacePolicy{}, notifier, logger)
 	mu.Lock()
 	defer mu.Unlock()

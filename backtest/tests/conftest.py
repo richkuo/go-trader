@@ -1,4 +1,3 @@
-"""Make backtest/ modules importable from backtest/tests/."""
 import os
 import sys
 

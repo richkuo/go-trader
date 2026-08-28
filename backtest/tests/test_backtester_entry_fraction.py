@@ -1,13 +1,3 @@
-"""#980: per-bar ``entry_fraction`` entry sizing.
-
-A strategy-emitted ``entry_fraction`` column in (0, 1] scales the notional
-committed at open; the remainder stays as a cash reserve. The column is a
-decision input, so it shifts forward one bar with the signal. Absent column,
-NaN values, and fraction 1.0 are all byte-identical to today's full-notional
-behavior. These tests pin: long/short plain-path math, the open/close engine
-path, next-bar-open shift alignment, validation, NaN semantics, and the
-reserve-preserving (additive) close/SL fills.
-"""
 import sys
 import pathlib
 
@@ -50,13 +40,7 @@ def _run(df, **kw):
                   timeframe="1d", save=False)
 
 
-# ─── Plain-path mechanics ─────────────────────────────────────────────────────
-
-
 def test_long_fractional_entry_commits_fraction_and_keeps_reserve():
-    # Signal bar 0 fills bar 1 open (100) at fraction 0.5: 5000 invested,
-    # 50 shares, 5000 reserve. Close signal bar 2 fills bar 3 open (120):
-    # proceeds 6000 land ON TOP of the reserve.
     closes = [100, 100, 120, 120, 120]
     signals = [1, 0, -1, 0, 0]
     res = _run(_df(closes, signals, entry_fraction=[0.5] * 5))
@@ -66,8 +50,6 @@ def test_long_fractional_entry_commits_fraction_and_keeps_reserve():
 
 
 def test_short_fractional_entry_commits_fraction_and_keeps_reserve():
-    # direction="short": margin 5000 → 50 shares short at 100, cash
-    # 10000 - 5000 + 2*5000 = 15000; cover at 80 costs 4000 → 11000.
     closes = [100, 100, 80, 80, 80]
     signals = [-1, 0, 1, 0, 0]
     res = _run(_df(closes, signals, entry_fraction=[0.5] * 5),
@@ -79,8 +61,6 @@ def test_short_fractional_entry_commits_fraction_and_keeps_reserve():
 
 
 def test_entry_fraction_uses_signal_bar_value_not_fill_bar():
-    # The column shifts with the signal: the bar-0 signal fills at bar 1's
-    # open using bar 0's fraction (0.25 → 25 shares), never bar 1's (0.75).
     closes = [100, 100, 100, 100]
     signals = [1, 0, -1, 0]
     res = _run(_df(closes, signals, entry_fraction=[0.25, 0.75, 0.75, 0.75]))
@@ -110,8 +90,6 @@ def test_nan_entry_fraction_means_full_notional():
 
 
 def test_compounding_reuses_reserve_plus_proceeds():
-    # Round trip 1 at fraction 0.5 (flat price): cash back to 10000. Round
-    # trip 2 re-commits half of the FULL 10000 — the reserve rejoined the pool.
     closes = [100, 100, 100, 100, 100, 100, 100]
     signals = [1, 0, -1, 1, 0, -1, 0]
     res = _run(_df(closes, signals, entry_fraction=[0.5] * 7))
@@ -120,33 +98,20 @@ def test_compounding_reuses_reserve_plus_proceeds():
     assert res["final_capital"] == pytest.approx(10000.0)
 
 
-# ─── Reserve-preserving close fills ───────────────────────────────────────────
-
-
 def test_signal_close_preserves_reserve():
-    # Regression for the historical ``cash = proceeds - commission``
-    # overwrite on the plain-path long close: with a 0.5 entry the 5000
-    # reserve must survive the close, not be replaced by the proceeds.
     closes = [100, 100, 90, 90, 90]
     signals = [1, 0, -1, 0, 0]
     res = _run(_df(closes, signals, entry_fraction=[0.5] * 5))
-    # 50 shares closed at 90 → 4500 proceeds + 5000 reserve.
     assert res["final_capital"] == pytest.approx(9500.0)
 
 
 def test_standalone_stop_fill_preserves_reserve():
-    # Same regression on the standalone-stop fill: SL at -10% from 100
-    # triggers on bar 3's close (85) and fills bar 4's open (85);
-    # 50 * 85 = 4250 proceeds + 5000 reserve.
     closes = [100, 100, 95, 85, 85, 85]
     signals = [1, 0, 0, 0, 0, 0]
     res = _run(_df(closes, signals, entry_fraction=[0.5] * 6),
                stop_loss_pct=0.10)
     assert res["total_trades"] == 1
     assert res["final_capital"] == pytest.approx(9250.0)
-
-
-# ─── Open/close engine path ───────────────────────────────────────────────────
 
 
 def test_engine_path_long_fractional_entry():
@@ -185,11 +150,7 @@ def test_engine_path_short_fractional_entry():
     assert res["total_trades"] == 1
     assert res["trades"][0]["side"] == "short"
     assert res["trades"][0]["shares"] == pytest.approx(5.0)
-    # 1000 - 500 margin + 2*500 proceeds = 1500; cover at 80 costs 400.
     assert res["final_capital"] == pytest.approx(1100.0)
-
-
-# ─── Validation ───────────────────────────────────────────────────────────────
 
 
 def test_zero_entry_fraction_rejected():

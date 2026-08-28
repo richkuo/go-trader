@@ -2,60 +2,40 @@ package main
 
 import "math/rand"
 
-// Fee rates for different exchange types
 const (
-	// Binance US spot trading fees (taker fee)
-	BinanceSpotFeePct = 0.001 // 0.1% taker fee
+	BinanceSpotFeePct = 0.001
 
-	// Deribit options fees (maker/taker)
-	DeribitOptionFeePct = 0.0003 // 0.03% of contract value
+	DeribitOptionFeePct = 0.0003
 
-	// IBKR options fees (per contract, CME Micro)
-	IBKROptionFeeFixed = 0.25 // $0.25 per contract (CME Micro fee)
+	IBKROptionFeeFixed = 0.25
 
-	// Hyperliquid perps fees, base tier (no volume-tier or staking discount —
-	// the conservative bound), per the official schedule:
-	// https://hyperliquid.gitbook.io/hyperliquid-docs/trading/fees (#1315).
-	// Taker is the modeled-fee fallback wherever the real userFills fee is
-	// unavailable. Maker exists for surfaces that knowingly model a
-	// maker-priced fill; the TP-fill fallback in bookPerpsCloseWithFillFee
-	// deliberately stays on taker (see the comment there).
-	HyperliquidTakerFeePct = 0.00045 // 0.045% taker fee
-	HyperliquidMakerFeePct = 0.00015 // 0.015% maker fee
+	HyperliquidTakerFeePct = 0.00045
+	HyperliquidMakerFeePct = 0.00015
 
-	// Luno spot taker fee (base rate; volume-tiered down to 0.03%)
-	LunoTakerFeePct = 0.01 // 1.00% taker fee
+	LunoTakerFeePct = 0.01
 
-	// Robinhood options regulatory fee (per contract)
-	RobinhoodOptionFeeFixed = 0.03 // $0.03/contract (SEC/FINRA regulatory fee)
+	RobinhoodOptionFeeFixed = 0.03
 
-	// OKX trading fees (standard tier)
-	OKXSpotTakerFeePct  = 0.001  // 0.1% taker fee
-	OKXPerpsTakerFeePct = 0.0005 // 0.05% taker fee
-	OKXOptionFeePct     = 0.0003 // 0.03% of contract value
+	OKXSpotTakerFeePct  = 0.001
+	OKXPerpsTakerFeePct = 0.0005
+	OKXOptionFeePct     = 0.0003
 
-	// Slippage simulation (random +/- this pct)
-	SlippagePct = 0.0005 // 0.05% (5 basis points)
+	SlippagePct = 0.0005
 )
 
-// ApplySlippage simulates price slippage between signal and execution
 func ApplySlippage(price float64) float64 {
-	// Random slippage between -0.05% and +0.05%
 	slippage := (rand.Float64()*2 - 1) * SlippagePct
 	return price * (1 + slippage)
 }
 
-// CalculateSpotFee calculates trading fee for spot trade (BinanceUS default).
 func CalculateSpotFee(value float64) float64 {
 	return value * BinanceSpotFeePct
 }
 
-// CalculateHyperliquidFee calculates trading fee for Hyperliquid perps.
 func CalculateHyperliquidFee(notionalUSD float64) float64 {
 	return notionalUSD * HyperliquidTakerFeePct
 }
 
-// CalculatePlatformSpotFee dispatches spot fee calculation based on platform.
 func CalculatePlatformSpotFee(platform string, value float64) float64 {
 	switch platform {
 	case "hyperliquid":
@@ -63,7 +43,7 @@ func CalculatePlatformSpotFee(platform string, value float64) float64 {
 	case "luno":
 		return value * LunoTakerFeePct
 	case "robinhood":
-		return 0 // Robinhood charges no crypto commission
+		return 0
 	case "okx":
 		return value * OKXSpotTakerFeePct
 	case "okx-perps":
@@ -73,22 +53,18 @@ func CalculatePlatformSpotFee(platform string, value float64) float64 {
 	}
 }
 
-// CalculateDeribitOptionFee calculates trading fee for Deribit options
 func CalculateDeribitOptionFee(premiumUSD float64) float64 {
 	return premiumUSD * DeribitOptionFeePct
 }
 
-// CalculateIBKROptionFee calculates trading fee for IBKR/CME options
 func CalculateIBKROptionFee(quantity float64) float64 {
 	return quantity * IBKROptionFeeFixed
 }
 
-// CalculateRobinhoodOptionFee calculates trading fee for Robinhood options.
 func CalculateRobinhoodOptionFee(quantity float64) float64 {
 	return quantity * RobinhoodOptionFeeFixed
 }
 
-// CalculateOptionFee dispatches to the appropriate fee calculator based on platform.
 func CalculateOptionFee(platform string, premiumUSD, quantity float64) float64 {
 	switch platform {
 	case "ibkr":
@@ -102,12 +78,10 @@ func CalculateOptionFee(platform string, premiumUSD, quantity float64) float64 {
 	}
 }
 
-// CalculateFuturesFee calculates per-contract fee for futures trades.
 func CalculateFuturesFee(contracts int, feePerContract float64) float64 {
 	return float64(contracts) * feePerContract
 }
 
-// CalculatePlatformFuturesFee reads fee from strategy config and calculates total fee.
 func CalculatePlatformFuturesFee(sc StrategyConfig, contracts int) float64 {
 	if sc.FuturesConfig != nil && sc.FuturesConfig.FeePerContract > 0 {
 		return CalculateFuturesFee(contracts, sc.FuturesConfig.FeePerContract)

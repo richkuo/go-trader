@@ -1,18 +1,3 @@
-"""#1424: pure helpers of the Hurst gate RESOLUTION study.
-
-Covers the three routes that lower the detection limit and the machinery that
-decides what the result MEANS: the single-hypothesis primary family and its
-Benjamini-Hochberg denominator, the venue-qualified dataset identity and the
-window-ownership matrix that stops a calendar span being counted twice, the
-signed fixed-horizon efficiency target, the 3-of-4 protocol rule, the validity
-gate, and the report/contract-path protections. The EMPIRICAL result of the
-study is never asserted here — only the machinery that turns numbers into a
-verdict.
-
-Imported the same way the #1410 and #1422 test modules import theirs (explicit
-research/ on sys.path, unambiguous module name — safe under the #1304
-`-n auto` parallel run).
-"""
 import json
 import math
 import os
@@ -25,9 +10,9 @@ import pytest
 sys.path.insert(0, os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "research")))
 
-import hurst_1424_gate_resolution as study  # noqa: E402
-import hurst_1422_gate_power as study1422  # noqa: E402
-import hurst_1410_gate_calibration as study1410  # noqa: E402
+import hurst_1424_gate_resolution as study
+import hurst_1422_gate_power as study1422
+import hurst_1410_gate_calibration as study1410
 
 DAY_NS = 86_400_000_000_000
 
@@ -56,21 +41,12 @@ def _trade(symbol="BTC/USDT", timeframe="1h", window="2021", day=0, pnl=1.0,
     }
 
 
-# ---------------------------------------------------------------------------
-# Route 1 — the single pre-registered primary hypothesis.
-# ---------------------------------------------------------------------------
-
 def test_primary_hypothesis_is_the_committed_1410_argmin():
-    # The pre-registration is only meaningful while the pinned id and the
-    # committed evidence agree. A regenerated #1410 JSON that moves the argmin
-    # must fail loud, never swap the confirmatory hypothesis silently.
     assert study.resolve_primary_config_id(study._JSON_1410) == \
         study.PRIMARY_CONFIG_ID
 
 
 def test_primary_pick_never_reads_the_1422_outcomes(tmp_path):
-    # Selection hygiene: the pick must come from #1410's evidence alone,
-    # because the primary cohort here INCLUDES cells #1422 scored.
     stub = tmp_path / "stub_1410.json"
     stub.write_text(json.dumps({"configs": [
         {"config_id": "mean_reversion/gate/W128/arm0.4/dis0.48", "p_raw": 0.9},
@@ -84,7 +60,6 @@ def test_primary_pick_never_reads_the_1422_outcomes(tmp_path):
 def test_primary_family_size_is_one_and_moves_the_rank1_bar():
     assert study.PRIMARY_FAMILY_SIZE == 1
     assert len(study.PRIMARY_CONFIG_IDS) == 1
-    # Route 1's whole dividend: the rank-1 bar is alpha, not alpha/4.
     assert study._rank1_threshold(study.PRIMARY_FAMILY_SIZE) == pytest.approx(study.ALPHA)
     assert study._rank1_threshold(4) == pytest.approx(study.ALPHA / 4.0)
 
@@ -99,7 +74,6 @@ def test_sweep_grid_primary_is_exactly_the_pinned_hypothesis():
 
 
 def test_mean_reversion_is_exploratory_only():
-    # Route 1's stated cost, asserted rather than trusted to prose.
     assert study.PRIMARY_FAMILY == "momentum"
     grid = study._sweep_grid(study.COHORT_EXPLORATORY, study.HURST_WINDOWS)
     families = {f for f, *_ in grid}
@@ -115,7 +89,6 @@ def test_bh_denominator_is_per_cohort_and_primary_is_one():
         {"cohort": study.COHORT_EXPLORATORY, "p_cluster": 0.04},
     ] + [{"cohort": study.COHORT_EXPLORATORY, "p_cluster": 0.9} for _ in range(29)]
     study.apply_bh_by_cohort(cfgs)
-    # alpha/1 = 0.05 clears 0.04; alpha/30 = 0.00167 does not.
     assert cfgs[0]["bh_reject"] is True
     assert cfgs[1]["bh_reject"] is False
 
@@ -126,14 +99,7 @@ def test_bh_reject_is_reset_not_merely_set():
     assert cfgs[0]["bh_reject"] is False
 
 
-# ---------------------------------------------------------------------------
-# Route 2 — venue identity, window ownership, correlation.
-# ---------------------------------------------------------------------------
-
 def test_binanceus_symbols_keep_their_plain_identity():
-    # Every inherited comparison (AUDIT_SYMBOLS, D_1410, #1422's cohort rule)
-    # keys on the plain symbol, so qualifying it would silently reclassify the
-    # whole inherited pool.
     assert study.qualified_symbol("binanceus", "BTC/USDT") == "BTC/USDT"
     assert study.qualified_symbol("bitstamp", "BTC/USD") == "BTC/USD@bitstamp"
     assert study.qualified_symbol("coinbaseexchange", "ETH/USD") == \
@@ -153,8 +119,6 @@ def test_base_asset_ignores_quote_and_venue():
 
 
 def test_exactly_one_venue_owns_each_asset_window_cell():
-    # Import already asserted this; re-assert on the built matrix so a future
-    # dataset addition cannot pass by editing the table and the assert together.
     seen = {}
     for (exchange_id, symbol, _tf), windows in study.DATASET_WINDOWS.items():
         for window in windows:
@@ -166,14 +130,13 @@ def test_exactly_one_venue_owns_each_asset_window_cell():
 
 def test_window_ownership_collision_raises():
     clashing = dict(study.DATASET_WINDOWS)
-    clashing[("bitstamp", "BTC/USD", "1h")] = ("2013", "2021")   # binanceus owns 2021
+    clashing[("bitstamp", "BTC/USD", "1h")] = ("2013", "2021")
     with pytest.raises(AssertionError) as exc:
         study._assert_window_ownership(clashing)
     assert "ownership collision" in str(exc.value)
 
 
 def test_every_new_venue_window_is_pre_2020h2():
-    # This is what makes "new venue implies primary cohort" sound.
     floor = pd.Timestamp("2020-07-01")
     for window in set(study.BITSTAMP_WINDOWS) | set(study.COINBASE_WINDOWS):
         assert pd.Timestamp(study.WINDOWS[window][1]) <= floor
@@ -191,10 +154,8 @@ def test_new_venue_cells_are_primary_and_1410_cells_stay_exploratory():
 
 
 def test_a_resampled_audit_tape_stays_exploratory():
-    # BTC 2h over a #1410 window is the same tape at a different granularity.
     assert study.cell_cohort("binanceus", "BTC/USDT", "2h", "is") == \
         study.COHORT_EXPLORATORY
-    # A symbol #1410 never scored is primary in the same window.
     assert study.cell_cohort("binanceus", "BNB/USDT", "1h", "is") == \
         study.COHORT_PRIMARY
 
@@ -215,14 +176,11 @@ def test_same_base_asset_is_credited_full_correlation():
         frames[ds] = pd.DataFrame({"close": close}, index=idx)
     rho = study.symbol_return_correlations(frames)
     assert rho[("BTC/USD@bitstamp", "BTC/USDT")] == 1.0
-    # Two DIFFERENT assets get their measured correlation, not a forced 1.0.
     measured = rho.get(("BTC/USDT", "ETH/USDT"))
     assert measured is not None and measured != 1.0
 
 
 def test_full_correlation_survives_into_effective_n():
-    # The point of the rho override: BTC on two venues must never read as two
-    # independent markets when their trades overlap.
     rho = {("BTC/USD@bitstamp", "BTC/USDT"): 1.0}
     overlapping = [
         _trade(symbol="BTC/USD@bitstamp", exchange="bitstamp", window="2013", day=0,
@@ -237,28 +195,22 @@ def test_coverage_audit_never_reports_an_unowned_cell_as_dropped():
     frames = {("bitstamp", "BTC/USD", "1h"):
               pd.DataFrame({"close": np.arange(50.0)}, index=idx)}
     cov = study.coverage_audit(frames, ["2013", "2021"], [128])
-    assert cov["n_unowned"] == 1                       # bitstamp does not own 2021
+    assert cov["n_unowned"] == 1
     assert all(d["window"] == "2013" for d in cov["dropped"])
     assert "BTC/USD@bitstamp 1h|2021" not in cov["cells"]
 
 
 def test_fetch_page_limits_match_the_recorded_probes():
-    # Coinbase rejects anything above 300 per granularity request; passing 500
-    # there truncates a backfill silently.
     assert study.FETCH_PAGE_LIMIT["coinbaseexchange"] == 300
     assert study.FETCH_PAGE_LIMIT["bitstamp"] == 1000
     assert study.FETCH_PAGE_LIMIT["binanceus"] == 500
 
 
 def test_each_dataset_carries_its_own_measured_history_floor():
-    # A venue-wide floor earlier than the latest-listed pair backfills NOTHING
-    # for that pair: the fetch stops on the first empty page. The floors are
-    # per dataset for exactly that reason.
     assert study.history_since_for(("coinbaseexchange", "ETH/USD", "1h")) == \
         "2016-06-01"
     assert study.history_since_for(("coinbaseexchange", "LTC/USD", "1h")) == \
         "2016-09-01"
-    # A dataset with no override falls back to its venue default.
     assert study.history_since_for(("bitstamp", "BTC/USD", "4h")) == \
         study.HISTORY_SINCE["bitstamp"]
     assert study.history_since_for(("binanceus", "BTC/USDT", "1h")) == \
@@ -266,21 +218,17 @@ def test_each_dataset_carries_its_own_measured_history_floor():
 
 
 def test_every_new_venue_floor_precedes_its_earliest_owned_window():
-    # A floor at or after the first owned window start leaves no warm-up lead,
-    # so that cell could only ever be dropped.
     for dataset, windows in study.DATASET_WINDOWS.items():
         if dataset[0] == study.PLATFORM:
             continue
         first = min(pd.Timestamp(study.WINDOWS[w][0]) for w in windows)
         floor = pd.Timestamp(study.history_since_for(dataset))
-        # ETH and LTC list mid-2016 and lose their `2016` cell by design; every
-        # dataset must still reach SOME owned window with lead to spare.
         latest = max(pd.Timestamp(study.WINDOWS[w][0]) for w in windows)
         assert floor < latest, (dataset, floor, first)
 
 
 def test_empty_backfill_is_reported_as_not_ok(monkeypatch, capsys):
-    import data_fetcher  # noqa: WPS433 - resolved through the study's sys.path
+    import data_fetcher
 
     monkeypatch.setattr(data_fetcher, "fetch_full_history",
                         lambda *a, **kw: pd.DataFrame())
@@ -296,10 +244,6 @@ def test_infeasible_routes_are_recorded_not_omitted():
     assert any("ibkr" in s.lower() for s in sources)
     assert {v for v in sources.values()} == {"USED", "INFEASIBLE"}
 
-
-# ---------------------------------------------------------------------------
-# Route 3 — the signed fixed-horizon efficiency target.
-# ---------------------------------------------------------------------------
 
 def test_horizon_is_fixed_in_calendar_time_across_timeframes():
     assert study.horizon_bars("1h") * 60 == study.HORIZON_HOURS * 60
@@ -336,7 +280,6 @@ def test_efficiency_is_bounded_by_plus_minus_one():
 def test_efficiency_returns_none_past_the_slice_end_rather_than_truncating():
     closes = np.array([100.0, 101.0, 102.0])
     assert study.signed_efficiency(closes, 1, 4, 1) is None
-    # Exactly enough bars is fine; one short is not.
     assert study.signed_efficiency(closes, 0, 2, 1) is not None
     assert study.signed_efficiency(closes, 1, 2, 1) is None
 
@@ -367,13 +310,11 @@ def test_target_rows_drop_horizon_truncated_trades_and_count_them():
 
 
 def test_target_filter_runs_before_the_cluster_usability_filter():
-    # A dataset whose only long-span rows are horizon-truncated must not be
-    # judged rotatable on rows the contrast never scores.
     rows = [_trade(symbol="XRP/USDT", day=0, eff=0.1),
             _trade(symbol="XRP/USDT", day=400, eff=None)]
     kept, _ = study._target_rows(rows)
     idx, excluded = study.usable_cluster_rows(kept)
-    assert excluded == ["XRP/USDT 1h"]      # 0-day span once truncation is applied
+    assert excluded == ["XRP/USDT 1h"]
     assert idx == []
 
 
@@ -400,10 +341,6 @@ def test_nan_h_still_gets_its_own_bucket():
     assert table[study.BUCKET_NAN]["trades"] == 1
     assert table["0.50-0.55"]["trades"] == 0
 
-
-# ---------------------------------------------------------------------------
-# The detection-limit estimator on a caller-supplied grid.
-# ---------------------------------------------------------------------------
 
 def _spread_trades(n=60, symbol="BTC/USDT"):
     return [_trade(symbol=symbol, day=i * 5, hold_days=1) for i in range(n)]
@@ -458,8 +395,6 @@ def test_pp_grid_is_1422s_verbatim_so_the_two_studies_stay_comparable():
 
 
 def test_mde_shrinks_as_the_family_denominator_shrinks():
-    # Route 1 has to actually pay: the same rows must resolve a SMALLER effect
-    # under a denominator of 1 than under one of 30.
     rng = np.random.default_rng(1424)
     trades = _spread_trades(120)
     values = list(rng.normal(0.0, 0.3, size=120))
@@ -473,10 +408,6 @@ def test_mde_shrinks_as_the_family_denominator_shrinks():
     assert one is not None and thirty is not None
     assert one <= thirty
 
-
-# ---------------------------------------------------------------------------
-# Economics — the 3-of-4 protocol rule and the unchanged held-out rule.
-# ---------------------------------------------------------------------------
 
 def _win(dd=-1.0, chop=-1.0, ret_g=10.0, ret_u=10.0, legs=1):
     return {"n_legs": legs, "dd_delta": dd, "chop_delta": chop,
@@ -514,7 +445,7 @@ def test_protocol_rule_enforces_the_return_give_up_tolerance():
                "2022": _win(ret_g=-100.0, ret_u=100.0)}
     ok, holding, _w, _r = study.protocol_verdict(
         windows, study.PRIMARY_PROTOCOL_WINDOWS, study.PRIMARY_PROTOCOL_MIN_WINDOWS)
-    assert ok and holding == 3     # the give-up window is the one that fails
+    assert ok and holding == 3
 
 
 def test_exploratory_protocol_rule_still_requires_every_window():
@@ -538,10 +469,6 @@ def test_primary_protocol_spans_two_bull_and_two_bear_years():
     assert study.PRIMARY_PROTOCOL_WINDOWS == ("2017", "2018", "2021", "2022")
     assert study.PRIMARY_PROTOCOL_MIN_WINDOWS == 3
 
-
-# ---------------------------------------------------------------------------
-# config_verdict — significance on the primary target, economics on net return.
-# ---------------------------------------------------------------------------
 
 def _cfg(**over):
     cfg = {
@@ -589,8 +516,6 @@ def test_untestable_cluster_p_fails_closed():
 
 
 def test_significance_reads_the_primary_target_not_net_return():
-    # A config significant on net return but NOT on the primary target must
-    # fail — the verdict's statistic is pre-registered and is the bounded one.
     ok, reasons = study.config_verdict(
         _cfg(bh_reject=False, p_cluster=0.4, p_cluster_return=0.0001))
     assert not ok
@@ -605,7 +530,6 @@ def test_effective_volume_floors_bind_not_nominal_counts():
 
 
 def test_economics_still_read_net_return():
-    # Route 3 buys significance on a bounded statistic; it never buys the money.
     windows = {w: _win() for w in study.PRIMARY_PROTOCOL_WINDOWS}
     windows["2017"] = _win(dd=+5.0)
     windows["2018"] = _win(dd=+5.0)
@@ -615,20 +539,11 @@ def test_economics_still_read_net_return():
     assert any("drawdown not reduced" in r for r in reasons)
 
 
-# ---------------------------------------------------------------------------
-# The validity gate — the mechanism that decides what a null MEANS.
-# ---------------------------------------------------------------------------
-
 _MR = "mean_reversion"
 
 
 def _mde(mom_limit=0.05, mom_sep=0.09, mr_limit=0.05, mr_sep=0.02,
          pooled=None, **extra):
-    """An `mde` payload shaped like the real one.
-
-    `pooled` defaults to something the gate must IGNORE, so any test that
-    passes only because the gate read the pooled number fails loudly.
-    """
     out = {
         "by_family_cluster": {study.PRIMARY_FAMILY: mom_limit, _MR: mr_limit},
         "by_family_separation": {study.PRIMARY_FAMILY: mom_sep, _MR: mr_sep},
@@ -656,12 +571,6 @@ def test_validity_gate_fails_when_the_separation_sits_under_the_limit():
 
 
 def test_validity_gate_reads_the_confirmatory_familys_own_rows_not_the_pool():
-    # #1425 review, finding 1. The pooled primary limit spans BOTH families, so
-    # it resolves a smaller effect purely by holding more trades. Reading it
-    # against one family's separation makes the gate easier to pass than its own
-    # row-matched rule allows. Here the pooled limit (0.004) sits under the
-    # largest per-family separation (0.009) while EVERY family's own limit stays
-    # above its own separation — the gate must FAIL.
     gate = study.validity_gate(_mde(mom_limit=0.05, mom_sep=0.009,
                                     mr_limit=0.05, mr_sep=0.008, pooled=0.004))
     assert gate["passed"] is False
@@ -669,9 +578,6 @@ def test_validity_gate_reads_the_confirmatory_familys_own_rows_not_the_pool():
 
 
 def test_validity_gate_is_unchanged_when_the_pool_holds_one_family():
-    # When the pool contains only the confirmatory family, pooled and
-    # per-family rows coincide and the verdict must be identical to the
-    # two-family case carrying the same confirmatory numbers.
     both = study.validity_gate(_mde(mom_limit=0.05, mom_sep=0.09))
     alone = study.validity_gate({
         "by_family_cluster": {study.PRIMARY_FAMILY: 0.05},
@@ -687,9 +593,6 @@ def test_validity_gate_is_unchanged_when_the_pool_holds_one_family():
 
 
 def test_validity_gate_never_borrows_the_other_familys_limit():
-    # The confirmatory family's limit is unresolvable while the other family's
-    # resolves comfortably. Borrowing it would publish a limit measured on rows
-    # the confirmatory hypothesis was never scored on.
     gate = study.validity_gate(_mde(mom_limit=None, mom_sep=0.09,
                                     mr_limit=0.001, mr_sep=0.5))
     assert gate["passed"] is False
@@ -698,10 +601,6 @@ def test_validity_gate_never_borrows_the_other_familys_limit():
 
 
 def test_validity_gate_refuses_a_separation_pointing_the_untested_way():
-    # #1425 review, finding 2. Both nulls and the injection are one-sided in the
-    # mean(kept) - mean(suppressed) orientation, so a NEGATIVE separation is an
-    # effect the design cannot detect at ANY magnitude. A large one must not
-    # pass the gate just because a small limit sits under its absolute value.
     gate = study.validity_gate(_mde(mom_limit=0.01, mom_sep=-0.30))
     assert gate["passed"] is False
     assert gate["largest_separation"] == pytest.approx(-0.30)
@@ -716,9 +615,6 @@ def test_validity_gate_refuses_when_every_family_points_the_untested_way():
 
 
 def test_validity_gate_decides_on_direction_not_the_larger_magnitude():
-    # momentum is positive and clears its own limit; mean_reversion is negative
-    # and larger in magnitude. The gate belongs to the confirmatory family, so
-    # it PASSES on momentum's directional separation.
     gate = study.validity_gate(_mde(mom_limit=0.02, mom_sep=0.05,
                                     mr_limit=0.02, mr_sep=-0.40))
     assert gate["passed"] is True
@@ -739,8 +635,6 @@ def test_validity_gate_fails_closed_with_no_separation_at_all():
 
 
 def test_gate_is_never_read_against_a_mismatched_pool():
-    # Reading the exploratory pool's larger separation against the primary
-    # pool's limit is the exact mistake the pool-matched table exists to stop.
     mde = _mde(mom_limit=0.20, mom_sep=0.09)
     mde["observed_separation_by_pool"]["exploratory"] = {
         f"{study.PRIMARY_FAMILY}|512": 0.90}
@@ -748,8 +642,6 @@ def test_gate_is_never_read_against_a_mismatched_pool():
 
 
 def test_a_reversed_separation_never_closes_the_question():
-    # The end-to-end version of finding 2: a reversed effect must not reach the
-    # RESOLVED-NULL verdict or its "closes the question" language.
     decision = study.decide_recommendation(
         [], _mde(mom_limit=0.001, mom_sep=-0.40))
     assert decision["verdict"] == study.VERDICT_INCONCLUSIVE
@@ -757,10 +649,6 @@ def test_a_reversed_separation_never_closes_the_question():
     assert "closes the question" not in decision["justification"]
     assert "OPPOSITE" in decision["justification"]
 
-
-# ---------------------------------------------------------------------------
-# decide_recommendation — the verdict word is itself mechanical.
-# ---------------------------------------------------------------------------
 
 _PASSING_MDE = _mde(mom_limit=0.05, mom_sep=0.09)
 _FAILING_MDE = _mde(mom_limit=0.20, mom_sep=0.09)
@@ -800,10 +688,6 @@ def test_a_passing_primary_config_produces_a_recommendation():
         study.PRIMARY_CONFIG_ID
     assert decision["families"]["mean_reversion"]["n_tested"] == 0
 
-
-# ---------------------------------------------------------------------------
-# Report rendering and the contract-path protections.
-# ---------------------------------------------------------------------------
 
 def _render_payload(decision=None, mde=None, configs=None):
     mde = dict(mde or _FAILING_MDE)
@@ -886,12 +770,6 @@ def test_report_pairs_each_pools_limit_with_its_own_separation():
     assert "Resolvable?" in text
 
 
-# ---------------------------------------------------------------------------
-# Signed separations. #1425 review, optional finding 1: a magnitude-only render
-# hides a hypothesis pointing backwards behind a number that reads like a weak
-# confirmation of it.
-# ---------------------------------------------------------------------------
-
 def test_equal_magnitudes_of_opposite_sign_render_differently():
     assert study._fmt_signed(0.005, 3) != study._fmt_signed(-0.005, 3)
     assert study._fmt_signed(0.005, 3) == "+0.005"
@@ -905,8 +783,6 @@ def test_a_missing_separation_renders_as_a_dash_never_as_zero():
 
 
 def test_largest_signed_prefers_the_tested_direction():
-    # max on the SIGNED values: a big reversed effect is not the pool's most
-    # detectable one, it is the one the design cannot detect at all.
     assert study._largest_signed({"a|512": 0.01, "b|512": -0.30}) == \
         pytest.approx(0.01)
     assert study._largest_signed({"a|512": -0.05, "b|512": -0.30}) == \
@@ -931,10 +807,6 @@ def test_the_pool_tables_flag_a_reversed_pool_rather_than_resolving_it():
 
 
 def test_the_key_risk_paragraph_matches_the_reason_the_gate_failed():
-    # A reversed separation and a merely-too-small one fail the gate for
-    # different reasons and license different claims. The "would have been
-    # caught, and none was" bound is only true of the second, so publishing it
-    # under a reversed result would state a bound the run never measured.
     reversed_text = study.report_from_payload(
         _render_payload(mde=_mde(mom_limit=0.01, mom_sep=-0.30)))
     assert "points the OTHER WAY" in reversed_text
@@ -949,8 +821,6 @@ def test_the_report_names_the_two_numbers_the_gate_actually_reads():
     text = study.report_from_payload(_render_payload())
     assert "The two numbers the validity gate actually reads" in text
     assert "Reads the gate?" in text
-    # The pooled row and the confirmatory-family row must both be visible, so a
-    # reader can see they are different samples.
     assert "this study, primary cohort" in text
 
 
@@ -973,8 +843,6 @@ def test_report_never_licenses_a_threshold_on_a_null():
 
 
 def test_render_only_rehydrates_a_winner_stored_as_an_id():
-    # The committed payload stores only the winner's id; the recommendation
-    # branch reads that winner's own numbers, so --render-only must resolve it.
     winner = _cfg()
     decision = study.decide_recommendation([winner], _PASSING_MDE)
     live = study.render_recommendation(decision, _PASSING_MDE, [winner])
@@ -995,16 +863,7 @@ def test_render_only_raises_when_a_named_winner_is_absent():
         study._resolve_winner("momentum/gate/W512/arm0.52/dis0.48", [])
 
 
-# ---------------------------------------------------------------------------
-# The committed JSON and the contract report belong to the full design.
-# ---------------------------------------------------------------------------
-
 def test_the_committed_decision_is_what_the_current_rule_produces():
-    # The verdict, the validity gate and the justification are a PURE function
-    # of (configs, mde), both of which the committed payload carries. Pinning
-    # that equality is what stops a stale or hand-edited JSON from publishing a
-    # verdict today's acceptance rule would not reach — the failure mode is
-    # silent, because `--render-only` renders the STORED decision.
     with open(study._DEFAULT_JSON_OUT) as fh:
         payload = json.load(fh)
     fresh = study.decision_payload(
@@ -1013,8 +872,6 @@ def test_the_committed_decision_is_what_the_current_rule_produces():
 
 
 def test_the_committed_run_reports_a_reversed_confirmatory_separation():
-    # The live evidence's headline fact, pinned so a future edit cannot quietly
-    # turn a reversed separation back into a magnitude.
     with open(study._DEFAULT_JSON_OUT) as fh:
         payload = json.load(fh)
     gate = payload["decision"]["validity_gate"]
@@ -1033,8 +890,6 @@ def test_1424_owns_the_contract_path():
 
 
 def test_no_predecessor_study_still_defaults_to_the_contract_path():
-    # The regression this guards: a --render-only of a superseded study
-    # silently reverting the live evidence to its old verdict.
     for module in (study1410, study1422):
         assert os.path.basename(module._DEFAULT_REPORT_OUT) != \
             "hurst_gate_calibration.md"
@@ -1068,9 +923,6 @@ def test_every_scoping_flag_protects_the_contract_report(tmp_path, flag, value):
 
 
 @pytest.mark.parametrize("argv,needle", [
-    # #1425 review, optional finding 3. Narrowing the DATA is only one way to
-    # produce a different study; weakening the inference or skipping the
-    # verification is worse, because the report still looks complete.
     (["--n-perm-mde", "200"], "--n-perm-mde 200"),
     (["--n-perm", "200"], "--n-perm 200"),
     (["--seed", "7"], "--seed 7"),
@@ -1096,8 +948,6 @@ class _Args:
 
 
 def test_stating_the_pre_registered_settings_explicitly_is_not_a_deviation():
-    # The same run, spelled out, must stay allowed — otherwise the guard
-    # punishes being explicit about the pre-registration.
     assert study.inference_deviations(_Args()) == []
     assert study.inference_deviations(
         _Args(seed=study.SEED, n_perm=study.N_PERM,
@@ -1163,10 +1013,6 @@ def test_dataset_arg_defaults_to_the_binanceus_venue():
         [("coinbaseexchange", "ETH/USD", "1h")]
 
 
-# ---------------------------------------------------------------------------
-# Inherited invariants that must not drift.
-# ---------------------------------------------------------------------------
-
 def test_the_estimator_is_the_1409_ssot_and_is_never_reimplemented():
     assert study.rolling_hurst is study1410.rolling_hurst
     source = open(study.__file__).read()
@@ -1185,9 +1031,10 @@ def test_the_1422_windows_are_reused_rather_than_redefined():
         assert study.WINDOWS[name] == span
 
 
-def test_stage_0_is_scored_on_net_return_so_it_stays_comparable():
-    assert study.joint_separation_verdict.__doc__
-    assert "NET RETURN" in study.joint_separation_verdict.__doc__
+def test_stage_0_is_scored_on_net_return_so_it_stays_comparable(monkeypatch):
+    sentinel = object()
+    monkeypatch.setattr(study1422, "joint_separation_verdict", lambda *a, **k: sentinel)
+    assert study.joint_separation_verdict([], 512) is sentinel
 
 
 def test_look_ahead_shifts_are_the_inherited_ones():

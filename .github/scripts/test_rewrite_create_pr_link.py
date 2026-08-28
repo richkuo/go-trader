@@ -1,11 +1,3 @@
-"""Unit tests for rewrite_create_pr_link.py.
-
-Invokes the script as a subprocess with BODY_IN/FOOTER_TEXT env vars and
-asserts the rewritten stdout — covers the default-attribution replacement,
-fallback append, no-link no-op, and multi-link cases.
-
-Run: python3 .github/scripts/test_rewrite_create_pr_link.py
-"""
 
 import os
 import subprocess
@@ -29,7 +21,6 @@ def run(body_in, footer=FOOTER):
 
 
 def extract_body_param(markdown):
-    """Pull the `body=` query param out of the first Create-PR link."""
     start = markdown.index("(https://github.com/")
     end = markdown.index(")", start)
     url = markdown[start + 1 : end]
@@ -87,13 +78,9 @@ class RewriteCreatePRLinkTest(unittest.TestCase):
         comment = f"first {link} and second {link}"
 
         out = run(comment)
-        # `LLM:` appears URL-encoded inside the `body=` param —
-        # decode the whole output to count occurrences across both links.
         self.assertEqual(urllib.parse.unquote(out).count("LLM:"), 2)
 
     def test_replaces_stale_llm_footer_in_prefilled_body(self):
-        """Simulates Claude having written a wrong effort into the PR body.
-        The rewriter must replace it, not append a second footer."""
         stale_footer = "---\nLLM: Claude Opus 4.7 (1M) | medium"
         pr_body = f"## Summary\n- did a thing\n\n{stale_footer}"
         encoded = urllib.parse.quote(pr_body, safe="")
@@ -107,7 +94,6 @@ class RewriteCreatePRLinkTest(unittest.TestCase):
         self.assertIn("## Summary", new_body)
 
     def test_idempotent(self):
-        """Running twice produces the same result as running once."""
         pr_body = "## Summary"
         encoded = urllib.parse.quote(pr_body, safe="")
         comment = f"[x](https://github.com/owner/repo/compare/main...feat?quick_pull=1&body={encoded})"

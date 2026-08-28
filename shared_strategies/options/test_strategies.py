@@ -1,8 +1,3 @@
-"""Tests for options/strategies.py — options strategy registry and evaluation logic.
-
-Options strategies are class-based and depend on DeribitOptionsAdapter + OptionsRiskManager.
-We mock the adapter and risk manager to test strategy logic in isolation.
-"""
 
 import sys, os
 sys.path.insert(0, os.path.dirname(__file__))
@@ -28,10 +23,7 @@ from strategies import (
 )
 
 
-# ─── Fixtures ───────────────────────────────
-
 def _make_adapter():
-    """Create a mock DeribitOptionsAdapter."""
     adapter = MagicMock()
     adapter.get_portfolio_value.return_value = 100_000.0
     adapter.get_positions.return_value = {}
@@ -44,14 +36,11 @@ def _make_adapter():
 
 
 def _make_risk():
-    """Create a real OptionsRiskManager with default config."""
     return OptionsRiskManager(OptionsRiskConfig())
 
 
 def _make_contract(strike=50000.0, dte=30, option_type=OptionType.CALL,
                     underlying="BTC"):
-    """Create an OptionContract. usd_price is derived from mid_price * spot_price."""
-    # Set bid/ask so mid_price = 0.04, and spot_price = 50000 => usd_price = 2000
     return OptionContract(
         symbol=f"BTC-{strike}-C" if option_type == OptionType.CALL else f"BTC-{strike}-P",
         underlying=underlying,
@@ -84,8 +73,6 @@ def _make_position(pid="pos1", underlying="BTC", option_type=OptionType.CALL,
     return pid, pos
 
 
-# ─── Registry ───────────────────────────────
-
 class TestOptionsRegistry:
     def test_strategies_registered(self):
         names = list_options_strategies()
@@ -105,8 +92,6 @@ class TestOptionsRegistry:
         assert isinstance(strat, MomentumOptionsStrategy)
 
 
-# ─── Momentum Options ──────────────────────
-
 class TestMomentumOptions:
     def test_no_signal_returns_none(self):
         adapter = _make_adapter()
@@ -114,7 +99,6 @@ class TestMomentumOptions:
         strat = MomentumOptionsStrategy(adapter, risk, roc_period=14, threshold=5.0,
                                          target_dte=37, profit_target_pct=50.0,
                                          stop_loss_pct=30.0, position_size_pct=3.0)
-        # Mock _get_momentum_signal to return 0
         with patch.object(strat, '_get_momentum_signal', return_value=0):
             actions = strat.evaluate("BTC")
         assert len(actions) == 1
@@ -218,8 +202,6 @@ class TestMomentumOptions:
         assert "expiry" in actions[0]["reason"].lower()
 
 
-# ─── Volatility Mean Reversion ──────────────
-
 class TestVolMeanReversion:
     def test_high_iv_sells_strangle(self):
         adapter = _make_adapter()
@@ -310,8 +292,6 @@ class TestVolMeanReversion:
         assert "expiry" in actions[0]["reason"].lower()
 
 
-# ─── Protective Puts ────────────────────────
-
 class TestProtectivePuts:
     def test_buys_otm_put(self):
         adapter = _make_adapter()
@@ -363,8 +343,6 @@ class TestProtectivePuts:
         assert len(actions) == 1
         assert actions[0]["type"] == "roll"
 
-
-# ─── Covered Calls ──────────────────────────
 
 class TestCoveredCalls:
     def test_sells_otm_call(self):
@@ -431,16 +409,11 @@ class TestCoveredCalls:
         assert "DTE" in actions[0]["reason"]
 
 
-# ─── Risk-blocked trades ────────────────────
-
 class TestRiskBlocking:
     def test_momentum_blocked_by_risk(self):
         adapter = _make_adapter()
         risk = _make_risk()
-        # Set max_positions to 0 to block
         risk.config.max_positions = 0
-        # Need to return positions to trigger the position check before risk check
-        # Actually: the risk check happens after find_options, so mock those
         contract = _make_contract()
         adapter.find_options.return_value = [contract]
         adapter.enrich_contract.return_value = contract
@@ -451,7 +424,6 @@ class TestRiskBlocking:
                                          stop_loss_pct=30.0, position_size_pct=3.0)
         with patch.object(strat, '_get_momentum_signal', return_value=1):
             actions = strat.evaluate("BTC")
-        # Risk should block since max_positions=0
         assert actions[0]["type"] == "none"
         assert "Risk blocked" in actions[0]["reason"]
 

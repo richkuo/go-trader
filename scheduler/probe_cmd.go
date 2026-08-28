@@ -6,11 +6,6 @@ import (
 	"os"
 )
 
-// runProbe is the `go-trader probe` subcommand: load the config, invoke each
-// configured check script with --probe-only, and exit non-zero on failure.
-// scripts/update.sh calls this on a freshly built binary against the freshly
-// synced Python *before* swapping the live binary, so a binary/Python argv
-// mismatch aborts the update with the live binary still running.
 func runProbe(args []string) int {
 	fs := flag.NewFlagSet("probe", flag.ContinueOnError)
 	configPath := fs.String("config", "scheduler/config.json", "Path to config file")

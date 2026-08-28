@@ -1,9 +1,3 @@
-"""Tests for backtest/eval_windows.py (#977 M1 harness) — pure scoring layer.
-
-Leg execution (run_leg) is exercised end-to-end against the Backtester with a
-synthetic frame; everything else (bars, verdicts, sweeps, parsing) is tested
-without data access.
-"""
 import math
 
 import numpy as np
@@ -19,25 +13,15 @@ def _leg(sharpe, ddadj=0.0, trades=5, return_pct=-1.0, max_dd_pct=-10.0):
             "bh_return_pct": -30.0}
 
 
-# ---------------------------------------------------------------------------
-# dd_adjusted_return
-# ---------------------------------------------------------------------------
-
 def test_ddadj_definition():
-    # #963: DDadj = return / |max DD|
     assert ew.dd_adjusted_return(-10.0, -50.0) == pytest.approx(-0.2)
     assert ew.dd_adjusted_return(5.0, -2.5) == pytest.approx(2.0)
 
 
 def test_ddadj_zero_drawdown_is_zero():
-    # No drawdown (typically zero-trade leg) must not inflate the mean.
     assert ew.dd_adjusted_return(0.0, 0.0) == 0.0
     assert ew.dd_adjusted_return(12.0, 0.0) == 0.0
 
-
-# ---------------------------------------------------------------------------
-# leg_from_results
-# ---------------------------------------------------------------------------
 
 def test_leg_from_results_collapses_backtester_dict():
     results = {"total_return_pct": -12.5, "max_drawdown_pct": -25.0,
@@ -50,10 +34,6 @@ def test_leg_from_results_collapses_backtester_dict():
     assert leg["trades"] == 17
     assert leg["bh_return_pct"] == -44.3
 
-
-# ---------------------------------------------------------------------------
-# incumbent_bars
-# ---------------------------------------------------------------------------
 
 def test_incumbent_bars_per_dataset_median():
     legs = {
@@ -75,16 +55,10 @@ def test_incumbent_bars_skips_missing_legs_and_empty_datasets():
         "SOL/USDT 4h": {"a": None, "b": None},
     }
     bars = ew.incumbent_bars(legs)
-    # median over the two present legs only
     assert bars["BTC/USDT 1h"]["sharpe"] == pytest.approx(-2.0)
     assert bars["BTC/USDT 1h"]["n"] == 2
-    # no incumbent ran → no bar for that dataset
     assert bars["SOL/USDT 4h"] is None
 
-
-# ---------------------------------------------------------------------------
-# score_candidate
-# ---------------------------------------------------------------------------
 
 def _bars(sharpe=-1.0, ddadj=-0.5, datasets=("d1", "d2", "d3", "d4")):
     return {ds: {"sharpe": sharpe, "ddadj": ddadj, "n": 8} for ds in datasets}
@@ -102,15 +76,12 @@ def test_score_pass_when_means_beat_bar_on_both_metrics():
 
 
 def test_score_fail_when_only_one_metric_beats_bar():
-    # Sharpe beats the bar, DDadj does not → fail (the #955 bar is BOTH).
     legs = {ds: _leg(-0.3, ddadj=-0.9) for ds in ("d1", "d2", "d3", "d4")}
     score = ew.score_candidate(legs, _bars(ddadj=-0.5))
     assert score["verdict"] == "fail"
 
 
 def test_score_degenerate_zero_trade_majority_rejected():
-    # Means beat the bar, but 3/4 legs never traded — #976 rejects these
-    # (htf_factor 5/8 cleared the bar while going zero-trade on 4/6 datasets).
     legs = {
         "d1": _leg(-0.3, ddadj=-0.2, trades=4),
         "d2": _leg(0.0, ddadj=0.0, trades=0),
@@ -123,7 +94,6 @@ def test_score_degenerate_zero_trade_majority_rejected():
 
 
 def test_score_trading_exactly_half_is_not_degenerate():
-    # boundary: ceil(4/2)=2 traded datasets suffice
     legs = {
         "d1": _leg(-0.3, ddadj=-0.2, trades=4),
         "d2": _leg(-0.3, ddadj=-0.2, trades=1),
@@ -138,11 +108,11 @@ def test_score_trading_exactly_half_is_not_degenerate():
 def test_score_unscored_datasets_excluded_from_means():
     legs = {
         "d1": _leg(-0.3, ddadj=-0.2),
-        "d2": None,                      # candidate had no data
+        "d2": None,
         "d3": _leg(-0.5, ddadj=-0.3),
     }
     bars = _bars(datasets=("d1", "d3"))
-    bars["d2"] = None                    # incumbents had no data either
+    bars["d2"] = None
     score = ew.score_candidate(legs, bars)
     assert score["scored_datasets"] == 2
     assert score["mean_sharpe"] == pytest.approx(-0.4)
@@ -152,10 +122,6 @@ def test_score_no_data_verdict():
     score = ew.score_candidate({"d1": None}, {"d1": None})
     assert score["verdict"] == "no data"
 
-
-# ---------------------------------------------------------------------------
-# sweep helpers
-# ---------------------------------------------------------------------------
 
 def test_parse_sweep_arg_coerces_numbers():
     assert ew.parse_sweep_arg("period=10,14,20") == ("period", [10, 14, 20])
@@ -182,10 +148,6 @@ def test_expand_sweep_cartesian_preserves_base_params():
         assert "a" in params and params["b"] == "x"
 
 
-# ---------------------------------------------------------------------------
-# dataset / window definitions
-# ---------------------------------------------------------------------------
-
 def test_parse_dataset_arg():
     assert ew.parse_dataset_arg("BTC/USDT:1h") == ("BTC/USDT", "1h")
     with pytest.raises(ValueError):
@@ -193,25 +155,16 @@ def test_parse_dataset_arg():
 
 
 def test_versioned_definitions_match_protocol():
-    # #963/#976 incumbent eight — breakout excluded (futures-only on the
-    # long-leg harness), sma_crossover in its slot.
     assert len(ew.INCUMBENTS) == 8
     assert "breakout" not in ew.INCUMBENTS
     assert "sma_crossover" in ew.INCUMBENTS
-    # six audit datasets, five windows, protocol + held-out partition exact
     assert len(ew.DATASETS) == 6
     assert set(ew.PROTOCOL_WINDOWS) | set(ew.HELD_OUT_WINDOWS) == set(ew.WINDOWS)
     assert ew.WINDOWS["is"] == ("2025-06-10", "2026-01-01")
     assert ew.WINDOWS["oos"] == ("2026-01-01", None)
-    # held-out windows are bounded (never run to "latest" — they must stay
-    # frozen as data accrues)
     for w in ew.HELD_OUT_WINDOWS:
         assert ew.WINDOWS[w][1] is not None
 
-
-# ---------------------------------------------------------------------------
-# run_leg end-to-end on a synthetic frame (no network/cache access)
-# ---------------------------------------------------------------------------
 
 class _FakeRegistry:
     STRATEGY_REGISTRY = {"alternator": {"default_params": {"period": 2},
@@ -225,8 +178,8 @@ class _FakeRegistry:
     def apply_strategy(name, df, params):
         out = df.copy()
         sig = np.zeros(len(out), dtype=int)
-        sig[10::20] = 1   # buy
-        sig[20::20] = -1  # sell
+        sig[10::20] = 1
+        sig[20::20] = -1
         out["signal"] = sig
         return out
 
@@ -252,7 +205,6 @@ def test_run_leg_returns_leg_metrics(monkeypatch):
     for key in ("sharpe", "return_pct", "max_dd_pct", "ddadj",
                 "trades", "bh_return_pct"):
         assert key in leg
-    # B&H over the synthetic frame: close[-1] vs close[0]
     expected_bh = (df["close"].iloc[-1] - df["close"].iloc[0]) / df["close"].iloc[0] * 100
     assert leg["bh_return_pct"] == pytest.approx(expected_bh, abs=0.01)
 
@@ -266,9 +218,6 @@ def test_run_leg_empty_data_returns_none(monkeypatch):
 
 
 def test_run_leg_threads_stop_loss_atr_mult(monkeypatch):
-    """#996: candidate stop owners must reach the Backtester — a paper-thin
-    stop forces stopped-out exits, so the leg must differ from the unstopped
-    run (acceptance without threading would leave them identical)."""
     df = _synthetic_df(n=240)
     import data_fetcher
     monkeypatch.setattr(data_fetcher, "load_cached_data",
@@ -285,20 +234,14 @@ def test_run_leg_threads_stop_loss_atr_mult(monkeypatch):
 
 
 def test_run_leg_threads_allowed_regimes_and_blocks_entries(monkeypatch):
-    """#1031 / M1: allowed_regimes (bear gate etc) must reach Backtester via
-    eval_windows run_leg so gated short candidates can be scored on the
-    incumbent-relative bar. When bar regime never matches allowed set, entries
-    are suppressed while closes (none here) would still be honored."""
     df = _synthetic_df(n=240)
     df = df.copy()
-    df["regime"] = "trending_up"  # deliberately not in the allowed set below
+    df["regime"] = "trending_up"
     import data_fetcher
     monkeypatch.setattr(data_fetcher, "load_cached_data",
                         lambda *a, **k: df, raising=True)
-    # No gate: fake signals should produce trades
     plain = ew.run_leg(_FakeRegistry(), "alternator", None, "BTC/USDT", "1h",
                        ("2026-01-01", None))
-    # Gate to non-matching regime(s): entries blocked
     gated = ew.run_leg(_FakeRegistry(), "alternator", None, "BTC/USDT", "1h",
                        ("2026-01-01", None), allowed_regimes=["trending_down"])
     assert plain is not None and plain.get("trades", 0) > 0
@@ -308,21 +251,12 @@ def test_run_leg_threads_allowed_regimes_and_blocks_entries(monkeypatch):
         "was never in the allowed set")
 
 
-# ---------------------------------------------------------------------------
-# validate_candidate — entry transforms must be modeled faithfully or rejected
-# (mirrors run_backtest.py --config guards; review finding on PR #994)
-# ---------------------------------------------------------------------------
-
 def test_validate_candidate_allows_short_without_close_refs():
-    # #989: direction="short" no longer needs close refs — the Backtester's
-    # short/flat plain path models it (signal=-1 opens, +1 closes).
     c = {"name": "x", "direction": "short"}
     assert ew.validate_candidate(c) is c
 
 
 def test_validate_candidate_rejects_both_without_close_refs():
-    # "both" is the sneakier case: _apply_direction_invert never masks it,
-    # so without this guard it runs long/flat with zero indication.
     with pytest.raises(ValueError, match="silently dropped"):
         ew.validate_candidate({"name": "x", "direction": "both"})
 
@@ -334,7 +268,6 @@ def test_validate_candidate_allows_short_with_close_refs():
 
 
 def test_validate_candidate_invert_signal_gated_by_type():
-    # default type is perps → allowed; declared non-perps type → rejected
     assert ew.validate_candidate({"name": "x", "invert_signal": True})
     assert ew.validate_candidate(
         {"name": "x", "invert_signal": True, "type": "manual"})
@@ -351,8 +284,6 @@ def test_validate_candidate_rejects_bogus_direction_and_missing_name():
 
 
 def test_validate_candidate_accepts_allowed_regimes():
-    # allowed_regimes is a pass-through for the entry gate on the M1 bar path
-    # (#1031); validate_candidate should not reject it.
     c = {"name": "x", "allowed_regimes": ["trending_down"]}
     assert ew.validate_candidate(c) is c
     c2 = {"name": "x", "direction": "short",
@@ -360,26 +291,20 @@ def test_validate_candidate_accepts_allowed_regimes():
           "allowed_regimes": ["ranging", "trending_down"]}
     assert ew.validate_candidate(c2) is c2
 
-    # empty list = no gate (valid, treated as allow-all downstream)
     c3 = {"name": "x", "allowed_regimes": []}
     assert ew.validate_candidate(c3) is c3
-    assert "allowed_regimes" not in c3  # normalized away
+    assert "allowed_regimes" not in c3
 
 
 def test_validate_candidate_accepts_legacy_regime_lookback():
-    # #1338: regime_period / regime_adx_threshold are threadable so a tuned
-    # candidate gates on the exact ADX(period, threshold) its live strategy
-    # runs, not the harness 14/20 defaults.
     c = {"name": "x", "allowed_regimes": ["trending_up"],
          "regime_period": 21, "regime_adx_threshold": 25.0}
     assert ew.validate_candidate(c) is c
 
 
 def test_validate_candidate_rejects_bad_regime_lookback():
-    # Without a gate consumer the fields would be a silent no-op.
     with pytest.raises(ValueError, match="gate consumer"):
         ew.validate_candidate({"name": "x", "regime_period": 21})
-    # A windows spec owns its own classifier/lookback — mixing is ambiguous.
     with pytest.raises(ValueError, match="windows spec owns"):
         ew.validate_candidate({
             "name": "x", "allowed_regimes": ["trending_up"],
@@ -399,8 +324,6 @@ def test_validate_candidate_rejects_bad_regime_lookback():
 
 
 def test_run_candidate_leg_threads_regime_lookback(monkeypatch):
-    # run_candidate_leg is the single candidate-dict -> run_leg translation;
-    # a dropped lookback here silently gates on ADX(14, 20) (#1338).
     seen = {}
 
     def fake_run_leg(reg, name, params, symbol, timeframe, window, **kw):
@@ -414,7 +337,6 @@ def test_run_candidate_leg_threads_regime_lookback(monkeypatch):
                          ("2026-01-01", None))
     assert seen["regime_period"] == 21
     assert seen["regime_adx_threshold"] == 25.0
-    # Absent fields fall back to run_leg's own defaults.
     seen.clear()
     ew.run_candidate_leg(_FakeRegistry(), {"name": "x"}, "BTC/USDT", "1h",
                          ("2026-01-01", None))
@@ -423,25 +345,14 @@ def test_run_candidate_leg_threads_regime_lookback(monkeypatch):
 
 
 def test_validate_candidate_rejects_malformed_allowed_regimes():
-    # Bare string (common JSON mistake) must be rejected loudly, not become
-    # a list of chars that silently gates everything to 0 trades.
     with pytest.raises(ValueError, match="list of strings"):
         ew.validate_candidate({"name": "x", "allowed_regimes": "trending_down"})
 
-    # Non-string elements also bad.
     with pytest.raises(ValueError, match="strings"):
         ew.validate_candidate({"name": "x", "allowed_regimes": ["trending_down", 123]})
 
 
 def test_run_leg_threads_regime_windows_spec_composite_gate(monkeypatch):
-    """#985: a composite windows spec must reach the Backtester so composite
-    labels can gate entries on the M1 bar. With the spec threaded, the
-    Backtester classifies the primary window as composite (#1058) — a gate
-    allowing only an ADX-vocabulary label that composite never emits
-    ("trending_up") must then block every entry. Without threading, the
-    legacy ADX classifier would emit exactly that label on trending stretches
-    and the leg would keep trading — so an identical-trade result here means
-    the spec never reached the engine."""
     df = _synthetic_df(n=240)
     import data_fetcher
     monkeypatch.setattr(data_fetcher, "load_cached_data",
@@ -461,14 +372,11 @@ def test_run_leg_threads_regime_windows_spec_composite_gate(monkeypatch):
 
 
 def test_validate_candidate_normalizes_regime_windows_spec():
-    # Valid spec: normalized through parse_regime_windows_spec_json (bare int
-    # → ADX spec), kept on the candidate.
     c = {"name": "x", "regime_windows_spec": {"medium": 14}}
     assert ew.validate_candidate(c) is c
     assert c["regime_windows_spec"]["medium"]["classifier"] == "adx"
     assert c["regime_windows_spec"]["medium"]["period"] == 14
 
-    # Composite spec passes through with its classifier intact.
     c2 = {"name": "x",
           "regime_windows_spec": {"medium": {"classifier": "composite",
                                              "period": 14}},
@@ -476,31 +384,25 @@ def test_validate_candidate_normalizes_regime_windows_spec():
     assert ew.validate_candidate(c2) is c2
     assert c2["regime_windows_spec"]["medium"]["classifier"] == "composite"
 
-    # Empty dict = no spec (normalized away, legacy gate).
     c3 = {"name": "x", "regime_windows_spec": {}}
     assert ew.validate_candidate(c3) is c3
     assert "regime_windows_spec" not in c3
 
 
 def test_validate_candidate_rejects_malformed_regime_windows_spec():
-    # Non-dict shapes fail loudly instead of silently classifying legacy.
     with pytest.raises(ValueError, match="regime_windows_spec"):
         ew.validate_candidate({"name": "x", "regime_windows_spec": "medium"})
 
-    # Reserved window name (parser rule) surfaces through the candidate guard.
     with pytest.raises(ValueError, match="reserved"):
         ew.validate_candidate(
             {"name": "x", "regime_windows_spec": {"regime": 14}})
 
-    # Malformed inner spec (non-int, non-object) rejected by the parser.
     with pytest.raises(ValueError, match="regime_windows_spec"):
         ew.validate_candidate(
             {"name": "x", "regime_windows_spec": {"medium": "fast"}})
 
 
 def test_validate_candidate_stop_owners_mutually_exclusive():
-    # #996: one ATR stop owner is fine; both together mirror the live
-    # config's exclusive stop fields and are rejected.
     assert ew.validate_candidate({"name": "x", "stop_loss_atr_mult": 2.0})
     assert ew.validate_candidate({"name": "x", "trailing_stop_atr_mult": 2.5})
     with pytest.raises(ValueError, match="mutually exclusive"):
@@ -509,21 +411,12 @@ def test_validate_candidate_stop_owners_mutually_exclusive():
 
 
 def test_evaluate_window_validates_before_any_work():
-    # Bad candidate must fail at the gate — reg=None proves nothing ran.
     with pytest.raises(ValueError, match="silently dropped"):
         ew.evaluate_window(None, {"name": "x", "direction": "both"},
                            [("BTC/USDT", "1h")], "oos", 1000.0, {})
 
 
-# ---------------------------------------------------------------------------
-# #1166: regime_directional_policy threading (M1 directional-gate candidates)
-# ---------------------------------------------------------------------------
-
 def test_validate_candidate_accepts_regime_directional_policy():
-    # Valid #1025-shaped policy: normalized through the Backtester's own
-    # parser (invert_signal defaulted, unknown keys rejected there) and kept
-    # on the candidate in the full {trend_regime: ...} shape the Backtester
-    # constructor takes.
     c = {"name": "x", "direction": "both",
          "close_strategies": [{"name": "atr_stop",
                                "params": {"atr_mult": 2.0}}],
@@ -534,23 +427,19 @@ def test_validate_candidate_accepts_regime_directional_policy():
     assert c["regime_directional_policy"]["trend_regime"]["trending_up"] == {
         "direction": "long", "invert_signal": False}
 
-    # Empty dict = no policy (normalized away, like allowed_regimes/spec).
     c2 = {"name": "x", "regime_directional_policy": {}}
     assert ew.validate_candidate(c2) is c2
     assert "regime_directional_policy" not in c2
 
 
 def test_validate_candidate_rejects_malformed_regime_directional_policy():
-    # Non-dict shapes fail loudly.
     with pytest.raises(ValueError, match="regime_directional_policy"):
         ew.validate_candidate(
             {"name": "x", "regime_directional_policy": "trending_up"})
-    # Missing trend_regime wrapper (the #1025 shape) surfaces the parser error.
     with pytest.raises(ValueError, match="trend_regime"):
         ew.validate_candidate(
             {"name": "x", "regime_directional_policy": {
                 "trending_up": {"direction": "long"}}})
-    # Bad direction value rejected by the parser.
     with pytest.raises(ValueError, match="regime_directional_policy"):
         ew.validate_candidate(
             {"name": "x", "regime_directional_policy": {"trend_regime": {
@@ -558,9 +447,6 @@ def test_validate_candidate_rejects_malformed_regime_directional_policy():
 
 
 def test_validate_candidate_rejects_both_state_policy_without_close_refs():
-    # A both-state resolves a two-sided book for that regime; the plain
-    # signal path cannot model it (Backtester rejects at run) — fail at the
-    # gate, mirroring the direction='both' guard.
     with pytest.raises(ValueError, match="close_strategies"):
         ew.validate_candidate(
             {"name": "x", "regime_directional_policy": {"trend_regime": {
@@ -568,9 +454,6 @@ def test_validate_candidate_rejects_both_state_policy_without_close_refs():
 
 
 def test_run_leg_omits_policy_kwargs_without_policy(monkeypatch):
-    """#1166 regression: legs without a directional policy must build
-    byte-identical Backtester kwargs — the new keys are only ever added when
-    a policy is present, so existing candidates cannot change behavior."""
     df = _synthetic_df()
     import data_fetcher
     monkeypatch.setattr(data_fetcher, "load_cached_data",
@@ -592,11 +475,6 @@ def test_run_leg_omits_policy_kwargs_without_policy(monkeypatch):
 
 
 def test_run_leg_threads_regime_directional_policy_research_certified(monkeypatch):
-    """#1166: the policy must reach the Backtester with the EXPLICIT
-    research-mode certified override (else the #1085 evidence gate nulls it
-    to base direction — matching live default-off — and the measurement
-    silently scores the ungated config), and regime compute must be forced
-    on (the Backtester rejects a policy with regime_enabled=False)."""
     df = _synthetic_df()
     df = df.copy()
     df["regime"] = "trending_up"
@@ -624,11 +502,6 @@ def test_run_leg_threads_regime_directional_policy_research_certified(monkeypatc
 
 
 def test_run_leg_policy_switches_plain_path_side(monkeypatch):
-    """#1166 behavioral: with every bar classified trending_up and a
-    trending_up→short policy, the plain path runs the short/flat mirror for
-    those bars instead of long/flat — the leg must differ from the ungated
-    long run. Identical legs mean the policy never reached the engine (or
-    the #1085 gate nulled it because the certified override was dropped)."""
     df = _synthetic_df(n=240)
     df = df.copy()
     df["regime"] = "trending_up"
@@ -650,7 +523,6 @@ def test_run_leg_policy_switches_plain_path_side(monkeypatch):
 
 
 def test_evaluate_window_threads_regime_directional_policy(monkeypatch):
-    """#1166: the candidate key must flow evaluate_window → run_leg."""
     seen = {}
 
     def _fake_run_leg(reg, name, params, symbol, timeframe, window, **kwargs):
@@ -669,6 +541,5 @@ def test_evaluate_window_threads_regime_directional_policy(monkeypatch):
                                   "params": {"atr_mult": 2.0}}],
             "regime_directional_policy": policy}
     ew.evaluate_window(None, cand, [("BTC/USDT", "1h")], "oos", 1000.0, {})
-    # validate_candidate normalizes (invert_signal defaulted) and re-wraps.
     assert seen.get("regime_directional_policy") == {"trend_regime": {
         "trending_up": {"direction": "long", "invert_signal": False}}}

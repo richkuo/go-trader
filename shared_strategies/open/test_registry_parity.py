@@ -1,13 +1,3 @@
-"""Parity tests for ``shared_strategies/open/registry.py``.
-
-These guard the invariants that make the unified registry safe:
-
-* Every strategy advertises at least one valid platform.
-* ``variants`` overrides only reference platforms the strategy is tagged for.
-* No name is registered twice.
-* Every strategy exposed by a shim applies cleanly on synthetic OHLCV data
-  and returns a DataFrame with a ``signal`` column.
-"""
 
 import importlib.util
 import os
@@ -68,11 +58,9 @@ def test_variants_subset_of_platforms(registry):
 
 
 def test_no_duplicate_registration(registry):
-    # ``register`` raises if the same name is registered twice; this test
-    # guards against a future refactor relaxing that check.
     with pytest.raises(ValueError, match="already registered"):
         @registry.register("sma_crossover", "dup", {})
-        def _():  # pragma: no cover
+        def _():
             return None
 
 
@@ -102,17 +90,11 @@ def test_build_registry_rejects_unknown_platform(registry):
 
 
 def _skip_funding(name: str) -> bool:
-    # delta_neutral_funding requires funding-rate params injected at runtime
-    # (check_hyperliquid / check_okx do this) and returns zeros otherwise,
-    # which is exactly what we'd want this smoke test to exercise. Keep it in.
     return False
 
 
 def _apply_each(shim, helpers):
     import pandas as pd
-    # Some strategies (amd_ifvg, vwap_reversion) need a DatetimeIndex for
-    # session/day bucketing \u2014 supply one at 15-minute granularity so every
-    # strategy lands in a valid code path.
     idx = pd.date_range("2024-01-01", periods=200, freq="15min")
     df = helpers.make_ohlcv(helpers.make_trending_up(200), index=idx)
     for name in shim.list_strategies():
@@ -132,7 +114,6 @@ def test_shims_produce_independent_registries(spot_shim, futures_shim):
     assert spot_shim.STRATEGY_REGISTRY is not futures_shim.STRATEGY_REGISTRY
     assert "tp_at_pct" not in spot_shim.STRATEGY_REGISTRY
     assert "tp_at_pct" not in futures_shim.STRATEGY_REGISTRY
-    # Spot-only vs futures-only
     assert "pairs_spread" in spot_shim.STRATEGY_REGISTRY
     assert "pairs_spread" not in futures_shim.STRATEGY_REGISTRY
     assert "breakout" not in spot_shim.STRATEGY_REGISTRY
@@ -153,15 +134,11 @@ def test_deprecated_range_scalper_hidden_but_loadable(spot_shim, futures_shim, c
 
 
 def test_deprecated_session_breakout_hidden_but_loadable(spot_shim, futures_shim, conftest_helpers):
-    # #1031: futures-only short leg deprecated. Hidden from discovery but kept
-    # registered so explicit existing configs/backtests still resolve it.
     import pandas as pd
     assert "session_breakout" not in futures_shim.list_strategies()
     assert "session_breakout" in futures_shim.STRATEGY_REGISTRY
-    # session_breakout is futures-only — never present on the spot shim at all.
     assert "session_breakout" not in spot_shim.list_strategies()
     assert "session_breakout" not in spot_shim.STRATEGY_REGISTRY
-    # Needs a DatetimeIndex (session/hour bucketing).
     idx = pd.date_range("2024-01-01", periods=200, freq="15min")
     df = conftest_helpers.make_ohlcv(conftest_helpers.make_trending_up(200), index=idx)
     result = futures_shim.apply_strategy("session_breakout", df)
@@ -169,8 +146,6 @@ def test_deprecated_session_breakout_hidden_but_loadable(spot_shim, futures_shim
 
 
 def test_deprecated_vol_momentum_hidden_but_loadable(spot_shim, futures_shim, conftest_helpers):
-    # #1021: static M1 failed held-out stress. Hidden from discovery but kept
-    # registered so explicit existing configs/backtests still resolve it.
     for shim in (spot_shim, futures_shim):
         assert "vol_momentum" not in shim.list_strategies()
         assert "vol_momentum" in shim.STRATEGY_REGISTRY
@@ -183,10 +158,6 @@ def test_deprecated_vol_momentum_hidden_but_loadable(spot_shim, futures_shim, co
 
 
 def test_deprecated_donchian_breakout_hidden_but_loadable(spot_shim, futures_shim, conftest_helpers):
-    # #985: full M1 (long + short legs, ADX + composite regime gates, M4 dual
-    # profile) — no mechanism clears protocol OOS AND the held-out windows
-    # (best: gated short at 1/3). Hidden from discovery but kept registered so
-    # explicit existing configs/backtests still resolve it (both registries).
     for shim in (spot_shim, futures_shim):
         assert "donchian_breakout" not in shim.list_strategies()
         assert "donchian_breakout" in shim.STRATEGY_REGISTRY
@@ -196,13 +167,7 @@ def test_deprecated_donchian_breakout_hidden_but_loadable(spot_shim, futures_shi
 
 
 def test_deprecated_amd_ifvg_hidden_but_loadable(spot_shim, futures_shim, conftest_helpers):
-    # #1023: DST/session-timing corrected (NY-anchored ICT killzones) and
-    # rebaselined at the designed 15m timeframe; the corrected baseline passes
-    # protocol OOS but fails the 2023/2024 held-out years on both 15m and
-    # 1h/4h. Hidden from discovery but kept registered so explicit existing
-    # configs/backtests still resolve it.
     import pandas as pd
-    # Needs a DatetimeIndex (session/hour bucketing reads index.hour).
     idx = pd.date_range("2024-01-01", periods=200, freq="15min")
     df = conftest_helpers.make_ohlcv(conftest_helpers.make_trending_up(200), index=idx)
     for shim in (spot_shim, futures_shim):
@@ -210,7 +175,6 @@ def test_deprecated_amd_ifvg_hidden_but_loadable(spot_shim, futures_shim, confte
         assert "amd_ifvg" in shim.STRATEGY_REGISTRY
         result = shim.apply_strategy("amd_ifvg", df)
         assert "signal" in result.columns
-    # Defaults are the canonical ICT killzones in DST-aware civil time.
     p = spot_shim.STRATEGY_REGISTRY["amd_ifvg"]["default_params"]
     assert p["session_tz"] == "America/New_York"
     assert (p["asian_start_hour"], p["asian_end_hour"]) == (20, 0)
@@ -218,21 +182,16 @@ def test_deprecated_amd_ifvg_hidden_but_loadable(spot_shim, futures_shim, confte
 
 
 def test_momentum_variant_overrides_threshold(spot_shim, futures_shim):
-    # The only non-description default_params override; spot uses 5.0, futures 3.0.
     assert spot_shim.STRATEGY_REGISTRY["momentum"]["default_params"]["threshold"] == 5.0
     assert futures_shim.STRATEGY_REGISTRY["momentum"]["default_params"]["threshold"] == 3.0
 
 
 def test_variant_descriptions_land_on_the_right_platform(spot_shim, futures_shim):
-    # Sanity spot-check a variant-bearing strategy description.
     assert "buy at oversold" in spot_shim.STRATEGY_REGISTRY["rsi"]["description"]
     assert "for futures" in futures_shim.STRATEGY_REGISTRY["rsi"]["description"]
 
 
 def test_backtest_only_analog_retrieval_hidden_but_loadable(spot_shim, futures_shim, conftest_helpers):
-    # #1138: offline research strategy — hidden from discovery, kept loadable
-    # for backtests, and flagged backtest_only so live check scripts refuse it
-    # (reject_backtest_only_strategies in shared_tools/strategy_composition.py).
     for shim in (spot_shim, futures_shim):
         assert "analog_retrieval" not in shim.list_strategies()
         assert "analog_retrieval" in shim.STRATEGY_REGISTRY
@@ -240,7 +199,6 @@ def test_backtest_only_analog_retrieval_hidden_but_loadable(spot_shim, futures_s
         df = conftest_helpers.make_ohlcv(conftest_helpers.make_trending_up(80))
         result = shim.apply_strategy("analog_retrieval", df)
         assert "signal" in result.columns
-        # 80 bars is far below the strategy's index warmup — never fires.
         assert (result["signal"] == 0).all()
 
 
@@ -251,9 +209,6 @@ def test_backtest_only_flag_defaults_false_for_all_other_strategies(registry):
             assert entry["backtest_only"] is (name == "analog_retrieval"), name
 
 
-# #999/#1275: the M5 fee-audit `deprecate` roster (docs/research/fee-audit-m5.md
-# verdict table) — duplicated here on purpose so a registry edit that drops or
-# adds a name fails loudly against the documented evidence.
 M5_DEPRECATE_VERDICT_NAMES = frozenset({
     "adx_trend",
     "amd_ifvg",
@@ -291,8 +246,6 @@ M5_DEPRECATE_VERDICT_NAMES = frozenset({
 
 
 def test_m5_deprecated_roster_matches_fee_audit_verdicts(registry):
-    # #1275: the quarantine set equals the documented M5 deprecate verdicts,
-    # every name is actually registered, and all are hidden from discovery.
     assert registry.M5_DEPRECATED_EDGE_STRATEGIES == M5_DEPRECATE_VERDICT_NAMES
     unknown = registry.M5_DEPRECATED_EDGE_STRATEGIES - set(registry.STRATEGIES)
     assert not unknown, f"quarantined names not registered: {sorted(unknown)}"
@@ -300,9 +253,6 @@ def test_m5_deprecated_roster_matches_fee_audit_verdicts(registry):
 
 
 def test_edge_status_flag_matches_quarantine_roster(registry):
-    # Every registered entry carries edge_status: "deprecated_m5" exactly for
-    # the quarantined names, None everywhere else — including in the
-    # build_registry views the shims/check scripts consume.
     for name, entry in registry.STRATEGIES.items():
         expected = "deprecated_m5" if name in registry.M5_DEPRECATED_EDGE_STRATEGIES else None
         assert entry["edge_status"] == expected, name
@@ -314,9 +264,6 @@ def test_edge_status_flag_matches_quarantine_roster(registry):
 
 
 def test_m5_deprecated_strategies_hidden_but_loadable(spot_shim, futures_shim, conftest_helpers):
-    # #1275: quarantined names leave discovery (list_strategies / --list-json)
-    # on every platform that registers them, but stay loadable for explicit
-    # configs and backtests — spot-check macd end to end.
     for shim in (spot_shim, futures_shim):
         listed = set(shim.list_strategies())
         for name in shim.STRATEGY_REGISTRY:

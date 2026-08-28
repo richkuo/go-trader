@@ -17,10 +17,6 @@
     return !!object && Object.prototype.hasOwnProperty.call(object, key);
   }
 
-  // A survivor patch from #1339 is a full open_strategy.params replacement,
-  // so omitted live keys are genuine removals. Ranked rows without a patch are
-  // evidence snapshots (the baseline may contain only explicit live params),
-  // so only their own keys are eligible for display as changes.
   function tuningParamDiff(row, current) {
     const patchOpen = row && row.patch && row.patch.open_strategy;
     const replacement = !!patchOpen && hasOwn(patchOpen, "params") &&
@@ -36,15 +32,6 @@
     return { keys: keys, proposed: proposed, replacement: replacement };
   }
 
-  // Drift is a three-state claim. Missing metadata is not evidence of change;
-  // an empty baseline_params object is still known metadata and must compare.
-  //
-  // Both sides must be effective-parameter sets (registry defaults merged under
-  // explicit overrides). /api/strategies/<id>/config already merges into
-  // open_strategy.params (buildUIStrategyConfig), but tune_live stores
-  // baseline_params as the RAW unmerged config dict — so defaults must be
-  // merged onto baseline before comparing, or common args-form strategies
-  // (empty explicit params) false-fire as "drifted".
   function tuningBaselineState(result, currentOpen, defaultParams) {
     const hasOpenName = !!result && typeof result.open_strategy === "string" &&
       result.open_strategy.trim() !== "";
@@ -61,17 +48,12 @@
       : "drifted";
   }
 
-  // Decide how loadRunDetail should treat a call while another fetch may be
-  // in flight. "start" begins a fetch; "skip" ignores a duplicate for the same
-  // run; "queue" remembers that the selected run changed and must load after
-  // the in-flight fetch finishes (so a click is never silently dropped).
   function tuningDetailLoadAction(activeRunID, detailLoading, loadingRunID) {
     if (!activeRunID) return "idle";
     if (!detailLoading) return "start";
     return loadingRunID === activeRunID ? "skip" : "queue";
   }
 
-  // Map server apply_eligibility to button enabled/label/reason for /tuning.
   function tuningApplyButtonState(eligibility, appliedAt) {
     switch (eligibility) {
       case "eligible":
@@ -115,9 +97,6 @@
     }
   }
 
-  // Build the Apply confirmation copy. When the strategy is in a trade and has
-  // no separate close strategy, open-as-close means the promoted params also
-  // change live exit evaluation — warn advisory-only (never a gate).
   function tuningApplyConfirmMessage(strategyID, suggestionKey, config) {
     var msg = "Apply tuning suggestion " + suggestionKey +
       " to strategy " + strategyID + "? This replaces the live open strategy parameters.";
@@ -277,7 +256,7 @@
       try {
         sessionStorage.removeItem(SIDEBAR_STORAGE_KEY);
       } catch (_err) {
-        /* sessionStorage unavailable */
+
       }
       return;
     }
@@ -305,7 +284,7 @@
         sessionStorage.removeItem(SIDEBAR_STORAGE_KEY);
       }
     } catch (_err) {
-      /* sessionStorage unavailable */
+
     }
   }
 
@@ -866,12 +845,6 @@
         }
         return;
       }
-      // Always re-read live config at render time (including automatic poll cycles).
-      // Caching the whole response across polls left diffs/baseline banners stale
-      // after hot-reloads. Registry default_params are memoized server-side inside
-      // /api/strategies/<id>/config so these polls stay off pythonSemaphore.
-      // Defer clearing until replacement content is ready so poll ticks do not
-      // blank already-visible diffs/evidence while config fetches are in flight.
       const liveConfigs = {};
       const liveErrors = {};
       await Promise.all(strategies.map(async function (result) {
@@ -1203,7 +1176,6 @@
           drawSparkline(button.querySelector(".strategy-sparkline"), points);
         }
       } catch (_err) {
-        // Sidebar sparklines are best-effort; ignore per-strategy failures.
       }
     }));
   }
@@ -1342,7 +1314,6 @@
     refreshGlobalNotifications().catch(function () {});
   }
 
-  // #1256 low-risk mutation controls: pause/unpause + ratchet-alert toggles.
   function setControlsMessage(text) {
     if (!els.controlsMessage) return;
     els.controlsMessage.textContent = text || "";
@@ -1419,7 +1390,6 @@
     }
   }
 
-  // #1257 trade actions: server-issued confirm nonce + typed confirmation.
   function setTradeMessage(text) {
     if (!els.tradeMessage) return;
     els.tradeMessage.textContent = text || "";
@@ -1438,9 +1408,6 @@
     return !!strat && strat.type === "perps" && strat.platform === "hyperliquid";
   }
 
-  // updateTradePanel shows the action surface matching the active strategy:
-  // manual-open form for flat manual strategies, add/close/SL forms while a
-  // position is open, force-close for HL perps.
   function updateTradePanel(status) {
     if (!els.tradePanel) return;
     const strat = activeStrategyMeta();
@@ -1466,10 +1433,6 @@
     }
   }
 
-  // confirmTradeAction runs the full #1257 flow: POST /api/confirm for a
-  // nonce bound to (action, strategy, params), require the operator to type
-  // the server-issued phrase, then POST the action with the nonce. The
-  // response message is the queued outcome reported by the manual core.
   async function confirmTradeAction(action, params) {
     if (!state.activeID) return;
     setTradeMessage("");
@@ -1501,8 +1464,6 @@
     }
   }
 
-  // showTradeConfirmDialog resolves true only when the operator typed the
-  // exact confirm phrase and pressed Confirm.
   function showTradeConfirmDialog(confirm) {
     return new Promise(function (resolve) {
       if (!els.tradeConfirmDialog || typeof els.tradeConfirmDialog.showModal !== "function") {
@@ -1577,10 +1538,6 @@
     return confirmTradeAction("cancel-sl", {});
   }
 
-  // #1258 structural mutations: same confirm-nonce + typed-confirmation flow
-  // as trade actions, but the endpoints and target routing differ (add-strategy
-  // has no existing target). All four are restart-required config writes; the
-  // server restarts only when params.restart is confirmed true.
   function setStructuralMessage(text, el) {
     const target = el || els.structuralMessage;
     if (!target) return;
@@ -1588,9 +1545,6 @@
     target.hidden = !text;
   }
 
-  // updateStructuralPanel shows the structural surface for the active
-  // strategy: remove for all, paper→live + regime gate for perps/futures
-  // (server re-validates eligibility either way).
   function updateStructuralPanel() {
     if (!els.structuralPanel) return;
     const strat = activeStrategyMeta();
@@ -1601,8 +1555,6 @@
     if (els.applyRegimeGateButton) els.applyRegimeGateButton.hidden = !gateable;
   }
 
-  // confirmStructuralAction mirrors confirmTradeAction with an explicit
-  // endpoint URL and strategy id ("" for add-strategy).
   async function confirmStructuralAction(action, strategyID, params, url, messageEl) {
     setStructuralMessage("", messageEl);
     let confirm;
@@ -1968,7 +1920,6 @@
     }
     const dir = status.effective_direction || "-";
     const cert = status.directional_certification_status || "";
-    // #1085/#1157: uncertified/expired cells run DEFAULT-OFF (BASE direction).
     if (cert && cert !== "certified") {
       return dir + " (" + cert.toUpperCase() + " → default-off)";
     }
@@ -2052,8 +2003,6 @@
       escapeHTML(side || "-") + '</span><span>' + escapeHTML(detail) + '</span><span>' + positionActionButtons() + '</span></div>';
   }
 
-  // positionActionButtons renders the #1257 per-row actions for eligible
-  // strategies; every button funnels through the confirm-nonce dialog.
   function positionActionButtons() {
     const strat = activeStrategyMeta();
     const buttons = [];
@@ -2127,9 +2076,6 @@
     els.positions.innerHTML = '<div class="position-row"><span>Table view</span><span>Select a row for detail</span></div>';
   }
 
-  // ── Risk / regime-store / transitions panels (#1230) ─────────────────────
-  // All three are best-effort: a failing source renders a "-" placeholder and
-  // never breaks the rest of the page (#879 fail-open convention).
 
   function panelFallback(el, text) {
     if (el) {
@@ -2237,9 +2183,6 @@
     }
   }
 
-  // ── Ops panels (#1231): leaderboard / diagnostics / cashflow / correlation /
-  // dead strategies / close evaluators. Rendered in table view; every panel is
-  // best-effort — a failing endpoint renders "-" and never breaks the page.
 
   function opsPnlClass(v) {
     return v > 0 ? "pnl-pos" : v < 0 ? "pnl-neg" : "";
@@ -2250,8 +2193,6 @@
     try {
       const resp = await getJSON("/api/leaderboard");
       const entries = resp.entries || [];
-      // Restore the friendly empty copy — a prior error cycle may have
-      // mutated this node to "-", and it must reflect the latest fetch.
       els.leaderboardEmpty.textContent = "No strategies to rank";
       els.leaderboardEmpty.hidden = entries.length > 0;
       els.leaderboardBody.innerHTML = entries.map(function (e, i) {
@@ -2273,7 +2214,6 @@
   }
 
   function diagPct(v) {
-    // NULL metrics (status != ok) render as pending per #1147 semantics.
     return v === null || v === undefined ? "…" : fmtPct(v);
   }
 
@@ -2321,9 +2261,6 @@
       }
       (resp.wallets || []).forEach(function (wallet) {
         const label = wallet.platform + "/" + wallet.account;
-        // Badge keys off the RUNTIME basis (what actually drove this cycle's
-        // drift alarm), not structural eligibility — eligibility alone can
-        // overclaim during a transient fetch miss.
         let badge;
         if (wallet.shadow_only) {
           badge = '<span class="ops-badge ops-badge--shadow" title="Shadow-only journal — never the live drift basis (#1100)">shadow-only</span>';

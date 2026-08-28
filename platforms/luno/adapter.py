@@ -1,14 +1,3 @@
-"""
-Luno ExchangeAdapter — thin ccxt wrapper for spot trading only.
-Options methods raise NotImplementedError (Luno is spot-only).
-
-Environment variables:
-    LUNO_API_KEY     — Luno API key (required for live trading)
-    LUNO_API_SECRET  — Luno API secret (required for live trading)
-
-Supported regions: South Africa, UK, Europe, SE Asia, Nigeria.
-Base fees: 0% maker / 1.00% taker (volume-tiered).
-"""
 
 import sys
 import os as _os
@@ -17,7 +6,6 @@ from typing import Tuple
 
 sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..', '..', 'shared_tools'))
 
-# Quote currencies to try when resolving a Luno price, in preference order.
 _LUNO_QUOTE_CURRENCIES = ["ZAR", "GBP", "EUR", "MYR", "NGN"]
 
 
@@ -33,17 +21,12 @@ def _get_ccxt_exchange():
 
 
 class LunoExchangeAdapter:
-    """
-    ExchangeAdapter for Luno — spot trading only.
-    Provides spot price and vol metrics; options methods are not supported.
-    """
 
     @property
     def name(self) -> str:
         return "luno"
 
     def get_spot_price(self, underlying: str) -> float:
-        """Fetch current spot price for underlying via Luno."""
         exchange = _get_ccxt_exchange()
         for quote in _LUNO_QUOTE_CURRENCIES:
             try:
@@ -56,7 +39,6 @@ class LunoExchangeAdapter:
         return 0.0
 
     def get_vol_metrics(self, underlying: str) -> Tuple[float, float]:
-        """Compute 14-day historical vol and IV rank from daily OHLCV."""
         try:
             exchange = _get_ccxt_exchange()
             ohlcv = None

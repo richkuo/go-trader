@@ -25,10 +25,10 @@ def test_feature_matrix_reproduces_handrule_labels():
     feats = composite_feature_matrix(df, period, th)
     labels = compute_regime_composite(df, period=period, thresholds=th)["regime"]
     assert list(feats.columns) == ["return_eff", "range_eff", "efficiency", "adx"]
-    assert feats.iloc[:period].isna().all().all()  # warmup is NaN
+    assert feats.iloc[:period].isna().all().all()
     for i in range(period, len(df)):
         row = feats.iloc[i]
         if row.isna().any():
-            continue  # atr<=0 bar: labeler leaves default, matrix is NaN — consistent
+            continue
         got = map_composite_label(row["return_eff"], row["adx"], row["range_eff"], row["efficiency"], th)
         assert got == labels.iloc[i], f"bar {i}: {got} != {labels.iloc[i]}"

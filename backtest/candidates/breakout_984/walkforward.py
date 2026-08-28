@@ -1,17 +1,4 @@
 #!/usr/bin/env python3
-"""M2 walk-forward fold stability for #984 (README step 3).
-
-walk_forward_optimize (#996) with the breakout open params FROZEN (singleton
-ranges from futures-registry defaults) and the 25-stack default close grid,
-selecting by dd_adjusted_return — so the only thing each train fold picks is
-the close stack. 5 folds over 2023-01-01 -> 2026-01-01 on BTC/ETH/SOL 1h.
-direction="long" is pinned (breakout emits signal=-1 breakdowns; the engine
-path would open shorts on raw -1, #996).
-
-Run from repo root:
-  uv run --no-sync python backtest/candidates/breakout_984/walkforward.py \
-      [--json backtest/candidates/breakout_984/walkforward_folds.json]
-"""
 
 import argparse
 import collections
@@ -20,10 +7,10 @@ import os
 import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(_HERE, "..", ".."))          # backtest/
+sys.path.insert(0, os.path.join(_HERE, "..", ".."))
 sys.path.insert(0, os.path.join(_HERE, "..", "..", "..", "shared_tools"))
 
-from optimizer import (DEFAULT_CLOSE_STACK_SPECS,             # noqa: E402
+from optimizer import (DEFAULT_CLOSE_STACK_SPECS,
                        generate_close_stack_grid, walk_forward_optimize)
 
 STRATEGY = "breakout"

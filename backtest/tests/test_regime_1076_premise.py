@@ -1,7 +1,3 @@
-"""#1443: the premise screen's pure symbol-spec / window-clip / coverage helpers.
-
-No data access: the one test that exercises ``_load`` substitutes a fake loader
-so the fetch-fallback overflow it guards against is reproducible offline."""
 import os
 import sys
 
@@ -12,18 +8,14 @@ import pytest
 sys.path.insert(0, os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "research")))
 
-import regime_1076_directional_premise as premise  # noqa: E402
+import regime_1076_directional_premise as premise
 
 
-# --------------------------------------------------------------------------
-# parse_symbol_spec / parse_symbols_arg
-# --------------------------------------------------------------------------
 def test_bare_symbol_has_no_exchange():
     assert premise.parse_symbol_spec("BTC/USDT") == ("BTC/USDT", None)
 
 
 def test_ccxt_perp_symbol_splits_on_the_last_at():
-    # The symbol itself carries "/" and ":"; only the trailing @ is the source.
     assert premise.parse_symbol_spec("HYPE/USDC:USDC@hyperliquid") == (
         "HYPE/USDC:USDC", "hyperliquid")
 
@@ -35,8 +27,6 @@ def test_spec_whitespace_is_trimmed():
 
 @pytest.mark.parametrize("spec", ["", "   ", "@hyperliquid", "BTC/USDT@", "BTC/USDT@   "])
 def test_malformed_specs_raise(spec):
-    # A typo must never silently fall back to the default source: a screen run on
-    # the wrong series would look completely normal in the output.
     with pytest.raises(ValueError):
         premise.parse_symbol_spec(spec)
 
@@ -65,8 +55,6 @@ def test_normalize_symbol_specs_accepts_both_forms():
 
 
 def test_normalize_symbol_specs_does_not_reparse_bare_strings():
-    # run() takes plain strings from existing callers; an "@" inside one of those
-    # is part of the symbol, not a source override.
     assert premise.normalize_symbol_specs(["A@B"]) == (("A@B", None),)
 
 
@@ -77,9 +65,6 @@ def test_resolve_data_sources_fills_platform_for_unmapped_symbols():
                        "HYPE/USDC:USDC": "hyperliquid"}
 
 
-# --------------------------------------------------------------------------
-# _clip_window
-# --------------------------------------------------------------------------
 def _frame(start, periods, freq="1h"):
     idx = pd.date_range(start, periods=periods, freq=freq)
     return pd.DataFrame({"open": 1.0, "high": 1.0, "low": 1.0,
@@ -87,10 +72,9 @@ def _frame(start, periods, freq="1h"):
 
 
 def test_clip_window_trims_both_ends_inclusive_of_end():
-    df = _frame("2023-12-30", 120)          # 2023-12-30 .. 2024-01-03
+    df = _frame("2023-12-30", 120)
     out = premise._clip_window(df, "2023-01-01", "2024-01-01")
     assert out.index.min() == pd.Timestamp("2023-12-30")
-    # end is inclusive, matching storage.load_ohlcv's `timestamp <= end_ts`
     assert out.index.max() == pd.Timestamp("2024-01-01 00:00:00")
 
 
@@ -117,11 +101,7 @@ def test_clip_window_rejects_a_non_datetime_index():
         premise._clip_window(df, "2023-01-01", "2024-01-01")
 
 
-# --------------------------------------------------------------------------
-# _load — the regression this guard exists for
-# --------------------------------------------------------------------------
 def _price_frame(start, periods):
-    """A wandering price series long enough to clear the composite warmup."""
     rng = np.random.default_rng(7)
     idx = pd.date_range(start, periods=periods, freq="1h")
     close = 100.0 * np.exp(np.cumsum(rng.normal(0, 0.002, periods)))
@@ -131,12 +111,7 @@ def _price_frame(start, periods):
 
 
 def test_load_clips_a_fetch_fallback_frame_to_the_requested_window(monkeypatch):
-    """load_cached_data's empty-cache fallback fetches from ``since=start_date``
-    and returns the WHOLE history unsliced. For an asset listed after a window
-    (HYPE against "2023") that would screen later data under the earlier
-    window's label. Without the clip in _load this test sees the full frame."""
     start, end = premise.WINDOWS["2023"]
-    # Listing starts inside 2023 but the frame runs two years past the window end.
     full = _price_frame("2023-11-01", 24 * 400)
     assert full.index.max() > pd.Timestamp(end)
     monkeypatch.setattr(premise, "load_cached_data",
@@ -148,8 +123,8 @@ def test_load_clips_a_fetch_fallback_frame_to_the_requested_window(monkeypatch):
     assert d is not None
     in_window = int(((full.index >= pd.Timestamp(start))
                      & (full.index <= pd.Timestamp(end))).sum())
-    assert in_window < len(full)                 # the overflow is real
-    assert d["n_bars"] <= in_window              # only in-window bars were labeled
+    assert in_window < len(full)
+    assert d["n_bars"] <= in_window
     assert len(d["close"]) == in_window
 
 
@@ -181,8 +156,6 @@ def test_load_defaults_to_platform_when_no_exchange_is_mapped(monkeypatch):
 
 
 def test_load_returns_none_for_a_window_the_asset_predates(monkeypatch):
-    # HYPE against "2023": the fetch fallback hands back post-listing data, the
-    # clip empties it, and the existing bar-count guard drops the cell.
     monkeypatch.setattr(premise, "load_cached_data",
                         lambda *a, **k: _price_frame("2024-11-01", 24 * 300))
     assert premise._load("HYPE/USDC:USDC", "1h", "2023", "composite",
@@ -190,9 +163,6 @@ def test_load_returns_none_for_a_window_the_asset_predates(monkeypatch):
                          exchange="hyperliquid") is None
 
 
-# --------------------------------------------------------------------------
-# coverage_table
-# --------------------------------------------------------------------------
 def _row(symbol="HYPE/USDC:USDC", timeframe="1h", window="oos",
          classifier="composite", source="hyperliquid", n_bars=1200):
     return {"classifier": classifier, "symbol": symbol, "source": source,
@@ -222,16 +192,11 @@ def test_coverage_table_is_sorted_and_splits_windows():
 
 
 def test_coverage_table_omits_windows_that_contributed_nothing():
-    # The absence IS the signal: a window with no rows never appears, and the
-    # report diffs the table against the requested grid to name it.
     cov = premise.coverage_table([_row(window="oos")])
     assert [e["window"] for e in cov] == ["oos"]
 
 
 def test_parse_symbols_arg_rejects_a_repeated_symbol():
-    # Every symbol-keyed surface downstream is a dict, so the two entries would
-    # merge — resolve_data_sources keeping only the last exchange, coverage_table
-    # blending both series into one cell — while both still inflate the family.
     with pytest.raises(ValueError, match="duplicate symbol"):
         premise.parse_symbols_arg("BTC/USDT,ETH/USDT,BTC/USDT@kraken")
 

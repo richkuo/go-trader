@@ -6,8 +6,6 @@ import (
 	"time"
 )
 
-// --- shouldNotifyDrainFailure ---
-
 func TestShouldNotifyDrainFailure_FirstFailure_Notifies(t *testing.T) {
 	if !shouldNotifyDrainFailure(1, time.Time{}, time.Now()) {
 		t.Error("expected notify on first failure")
@@ -35,19 +33,12 @@ func TestShouldNotifyDrainFailure_EveryTenthNotifies(t *testing.T) {
 func TestShouldNotifyDrainFailure_HourlyEvenIfNotMod10(t *testing.T) {
 	withAlertThrottleInterval(t, time.Hour)
 	notifiedAt := time.Now()
-	// count=5, not mod 10, but >1 hour since last notify
 	if !shouldNotifyDrainFailure(5, notifiedAt, notifiedAt.Add(61*time.Minute)) {
 		t.Error("expected notify when >1 hour since last notify")
 	}
 }
 
 func TestShouldNotifyDrainFailure_ZeroLastNotifiedAt_FirstNotifiesMidSuppressed(t *testing.T) {
-	// zero LastNotifiedAt means no notification has ever fired. count==1 must
-	// always notify (first-failure path). The hourly path explicitly skips
-	// IsZero so count==5 with zero time is suppressed — by design, since in
-	// practice count > 1 implies a previous notification already set the
-	// timestamp; a stale zero-time at count > 1 would mean some other path
-	// reset the count without notifying, so we keep the throttle quiet.
 	if !shouldNotifyDrainFailure(1, time.Time{}, time.Now()) {
 		t.Error("count==1 with zero LastNotifiedAt must notify")
 	}
@@ -55,8 +46,6 @@ func TestShouldNotifyDrainFailure_ZeroLastNotifiedAt_FirstNotifiesMidSuppressed(
 		t.Error("count==5 with zero LastNotifiedAt must be suppressed (not mod 10, IsZero blocks hourly)")
 	}
 }
-
-// --- LiveExecFailureThrottle ---
 
 func TestLiveExecFailureThrottle_FirstFailureNotifies(t *testing.T) {
 	th := &LiveExecFailureThrottle{}
@@ -72,12 +61,10 @@ func TestLiveExecFailureThrottle_FirstFailureNotifies(t *testing.T) {
 func TestLiveExecFailureThrottle_RepeatsThrottled(t *testing.T) {
 	th := &LiveExecFailureThrottle{}
 	now := time.Now()
-	// First call notifies.
 	notify, _ := th.Record("k1", "err", now)
 	if !notify {
 		t.Fatal("first call must notify")
 	}
-	// Second through ninth — should suppress.
 	for i := 2; i <= 9; i++ {
 		notify, count := th.Record("k1", "err", now.Add(time.Minute))
 		if notify {
@@ -104,8 +91,7 @@ func TestLiveExecFailureThrottle_DifferentErrorSigReNotifies(t *testing.T) {
 	th := &LiveExecFailureThrottle{}
 	now := time.Now()
 	th.Record("k1", "error-type-A", now)
-	th.Record("k1", "error-type-A", now.Add(time.Minute)) // suppressed
-	// New error type — must re-notify regardless of count.
+	th.Record("k1", "error-type-A", now.Add(time.Minute))
 	notify, count := th.Record("k1", "error-type-B", now.Add(2*time.Minute))
 	if !notify {
 		t.Error("new error signature must re-notify fresh")
@@ -135,15 +121,13 @@ func TestLiveExecFailureThrottle_HourlyAlert(t *testing.T) {
 	withAlertThrottleInterval(t, time.Hour)
 	th := &LiveExecFailureThrottle{}
 	now := time.Now()
-	th.Record("k1", "err", now)                                  // notified
-	th.Record("k1", "err", now.Add(30*time.Minute))              // suppressed
-	notify, _ := th.Record("k1", "err", now.Add(65*time.Minute)) // hourly fire
+	th.Record("k1", "err", now)
+	th.Record("k1", "err", now.Add(30*time.Minute))
+	notify, _ := th.Record("k1", "err", now.Add(65*time.Minute))
 	if !notify {
 		t.Error("expected hourly alert after 65 minutes")
 	}
 }
-
-// --- formatters ---
 
 func TestFormatLiveExecFailureAlert_IncludesAllFields(t *testing.T) {
 	msg := formatLiveExecFailureAlert("hl-tema-btc", "hyperliquid", "open", "BTC", "float_to_wire", 1)

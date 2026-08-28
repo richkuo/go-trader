@@ -7,8 +7,6 @@ import (
 	"testing"
 )
 
-// Regime flip: short opened under trending_down is force-closed once current
-// regime is trending_up — intentional #822 behavior, not #779 hold-on-transition.
 func TestPerpsRegimeDirectionOrphanConflict_RegimeFlip(t *testing.T) {
 	sc := StrategyConfig{
 		ID:        "hl-test",
@@ -29,14 +27,11 @@ func TestPerpsRegimeDirectionOrphanConflict_RegimeFlip(t *testing.T) {
 		Regime: "trending_up",
 		Positions: map[string]*Position{
 			"BTC": {
-				Symbol:          "BTC",
-				Quantity:        0.01,
-				Side:            "short",
-				OwnerStrategyID: sc.ID,
-				Regime:          "trending_down",
-				// #1085: opened under a certified policy → the regime-flip auto-close
-				// resolves via the policy (not base), so this tests the genuine #822
-				// flip rather than a base-direction coincidence.
+				Symbol:                         "BTC",
+				Quantity:                       0.01,
+				Side:                           "short",
+				OwnerStrategyID:                sc.ID,
+				Regime:                         "trending_down",
 				DirectionCertifiedAtOpen:       true,
 				DirectionCertifiedStatesAtOpen: map[string]string{"trending_up": DirectionLong, "trending_down": DirectionShort, "ranging": DirectionLong},
 			},
@@ -71,13 +66,11 @@ func TestPerpsRegimeDirectionOrphanConflict_HoldStampedNoConflict(t *testing.T) 
 		Regime: "trending_down",
 		Positions: map[string]*Position{
 			"BTC": {
-				Symbol:          "BTC",
-				Quantity:        0.01,
-				Side:            "short",
-				OwnerStrategyID: sc.ID,
-				Regime:          "trending_down",
-				// #1085: certified-at-open → rides under the policy (short in
-				// trending_down) without conflict while the regime holds.
+				Symbol:                         "BTC",
+				Quantity:                       0.01,
+				Side:                           "short",
+				OwnerStrategyID:                sc.ID,
+				Regime:                         "trending_down",
 				DirectionCertifiedAtOpen:       true,
 				DirectionCertifiedStatesAtOpen: map[string]string{"trending_up": DirectionLong, "trending_down": DirectionShort, "ranging": DirectionLong},
 			},
@@ -88,11 +81,6 @@ func TestPerpsRegimeDirectionOrphanConflict_HoldStampedNoConflict(t *testing.T) 
 	}
 }
 
-// #1085: an UNCERTIFIED/legacy open position (no DirectionCertifiedAtOpen stamp)
-// resolves through the evidence gate to BASE direction, so a side opposing base
-// is an orphan — the intended from-flat migration. A later certification expiry
-// must NOT cause this for a position that opened certified (covered by the
-// stamped tests above).
 func TestPerpsRegimeDirectionOrphanConflict_UncertifiedResolvesToBase(t *testing.T) {
 	sc := StrategyConfig{
 		ID:        "hl-test",
@@ -108,8 +96,6 @@ func TestPerpsRegimeDirectionOrphanConflict_UncertifiedResolvesToBase(t *testing
 			},
 		},
 	}
-	// Current regime trending_down (policy would say short), but the position is
-	// uncertified → base direction (long) governs → short conflicts → orphan.
 	ss := &StrategyState{
 		ID:     sc.ID,
 		Regime: "trending_down",
@@ -120,7 +106,6 @@ func TestPerpsRegimeDirectionOrphanConflict_UncertifiedResolvesToBase(t *testing
 				Side:            "short",
 				OwnerStrategyID: sc.ID,
 				Regime:          "trending_down",
-				// DirectionCertifiedAtOpen defaults false (legacy/uncertified).
 			},
 		},
 	}
@@ -276,9 +261,6 @@ func TestRunRegimeDirectionOrphanCloses_AlreadyFlatLeavesVirtual(t *testing.T) {
 	}
 }
 
-// #1085 req 1: a shared-coin conflicting position must NOT be auto-closed
-// (reduce-only would touch live peers) — it is surfaced to the operator for
-// manual close, never silently flipped.
 func TestRunRegimeDirectionOrphanCloses_SharedCoinSurfacesNoAutoClose(t *testing.T) {
 	scA := StrategyConfig{
 		ID: "hl-a", Type: "perps", Platform: "hyperliquid",
@@ -336,32 +318,21 @@ func TestPerpsRegimeDirectionOrphanConflict_SkipsPaper(t *testing.T) {
 	}
 }
 
-// #1085 review-finding fix (orphan path): a position that opened CERTIFIED must
-// not be force-closed merely because the CURRENT regime's configured side
-// contradicts the certified sign for that state. The per-state gate resolves a
-// sign-contradicting current state to BASE, so the orphan check keys on base —
-// never the un-evidenced (counter-certified) configured side. Without the fix,
-// the open-time cell-level bool let the contradicting policy direction govern,
-// spuriously closing a position that conflicts only with a side the evidence
-// refutes.
 func TestPerpsRegimeDirectionOrphanConflict_SignContradictionResolvesToBase(t *testing.T) {
 	sc := StrategyConfig{
 		ID:        "hl-test",
 		Type:      "perps",
 		Platform:  "hyperliquid",
 		Args:      []string{"vwap", "BTC", "1h", "--mode=live"},
-		Direction: DirectionLong, // base = long
+		Direction: DirectionLong,
 		RegimeDirectionalPolicy: &RegimeDirectionalPolicy{
 			TrendRegime: map[string]RegimeDirectionalEntry{
-				"trending_down": {Direction: DirectionShort}, // operator wants short here
+				"trending_down": {Direction: DirectionShort},
 				"trending_up":   {Direction: DirectionLong},
 				"ranging":       {Direction: DirectionLong},
 			},
 		},
 	}
-	// Current regime trending_down, but the certified evidence for trending_down
-	// is LONG (opposite the configured short) → trending_down is NOT honored →
-	// base (long) governs. A long position therefore does NOT conflict.
 	ss := &StrategyState{
 		ID:     sc.ID,
 		Regime: "trending_down",
@@ -374,7 +345,7 @@ func TestPerpsRegimeDirectionOrphanConflict_SignContradictionResolvesToBase(t *t
 				Regime:                   "trending_down",
 				DirectionCertifiedAtOpen: true,
 				DirectionCertifiedStatesAtOpen: map[string]string{
-					"trending_down": DirectionLong, // contradicts config short
+					"trending_down": DirectionLong,
 					"trending_up":   DirectionLong,
 					"ranging":       DirectionLong,
 				},

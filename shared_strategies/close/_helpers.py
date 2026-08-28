@@ -1,4 +1,3 @@
-"""Shared helpers for position-aware close evaluators."""
 
 from __future__ import annotations
 
@@ -8,7 +7,6 @@ _deprecated_close_keys_warned: set[str] = set()
 
 
 def warn_deprecated_close_key(old: str, canonical: str) -> None:
-    """Emit a one-shot stderr deprecation notice for a legacy close-config key (#841)."""
     token = f"{old}->{canonical}"
     if token in _deprecated_close_keys_warned:
         return
@@ -20,7 +18,6 @@ def warn_deprecated_close_key(old: str, canonical: str) -> None:
 
 
 def tier_list_from_params(params: dict):
-    """Return the take-profit tier list from close params via ``tp_tiers`` (#841)."""
     if not isinstance(params, dict):
         return None
     return params.get("tp_tiers")

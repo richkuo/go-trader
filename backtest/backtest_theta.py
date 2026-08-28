@@ -1,10 +1,4 @@
 #!/usr/bin/env python3
-"""
-Backtest theta harvesting strategies.
-Compares: conservative (60% target) vs aggressive (40% target) vs no theta harvest (hold to expiry).
-
-Usage: python3 backtest_theta.py [--underlying BTC] [--since 2023-01-01] [--capital 1000]
-"""
 
 import sys
 import math
@@ -23,7 +17,7 @@ class ThetaHarvestBacktester:
                  min_dte_close: float = 0, label: str = ""):
         self.initial_capital = initial_capital
         self.max_positions = max_positions
-        self.profit_target_pct = profit_target_pct  # 0 = disabled (hold to expiry)
+        self.profit_target_pct = profit_target_pct
         self.stop_loss_pct = stop_loss_pct
         self.min_dte_close = min_dte_close
         self.label = label
@@ -42,13 +36,11 @@ class ThetaHarvestBacktester:
 
     def _check_early_exit(self, pos: OptionPosition, spot: float, current_idx: int,
                           hist_vol: float, date: str) -> bool:
-        """Check if a position should be closed early. Returns True if closed."""
         if pos.action != "sell":
             return False
 
         days_left = max(pos.expiry_idx - current_idx, 0)
         
-        # Current option price (what it would cost to buy back)
         current_price = black_scholes_price(spot, pos.strike, days_left, hist_vol,
                                             option_type=pos.option_type)
         
@@ -56,13 +48,11 @@ class ThetaHarvestBacktester:
         if entry_premium <= 0:
             return False
 
-        # Profit captured = premium collected - cost to buy back
         profit_usd = entry_premium - current_price
         profit_pct = (profit_usd / entry_premium) * 100
 
-        # Profit target
         if self.profit_target_pct > 0 and profit_pct >= self.profit_target_pct:
-            self.cash -= current_price  # buy back
+            self.cash -= current_price
             pnl = profit_usd
             self.total_trades += 1
             self.early_closes += 1
@@ -83,7 +73,6 @@ class ThetaHarvestBacktester:
             })
             return True
 
-        # Stop loss
         if self.stop_loss_pct > 0 and profit_pct < 0:
             loss_pct = -profit_pct
             if loss_pct >= self.stop_loss_pct:
@@ -105,7 +94,6 @@ class ThetaHarvestBacktester:
                 })
                 return True
 
-        # DTE floor
         if self.min_dte_close > 0 and days_left <= self.min_dte_close:
             self.cash -= current_price
             pnl = entry_premium - current_price
@@ -130,7 +118,6 @@ class ThetaHarvestBacktester:
         return False
 
     def run(self, candles: list, underlying: str) -> dict:
-        """Backtest vol_mean_reversion with theta harvesting."""
         closes = [c[4] for c in candles]
         dates = [datetime.utcfromtimestamp(c[0] / 1000).strftime("%Y-%m-%d") for c in candles]
         
@@ -142,11 +129,9 @@ class ThetaHarvestBacktester:
             hist_closes = closes[max(0, i-90):i+1]
             hist_vol = calc_historical_vol(hist_closes)
 
-            # Check early exits first
             remaining = []
             for pos in self.positions:
                 if pos.expiry_idx <= i:
-                    # Expired
                     spot_at_expiry = closes[min(pos.expiry_idx, len(closes)-1)]
                     pnl = pos.settlement_pnl(spot_at_expiry)
                     self.cash += pnl
@@ -162,12 +147,11 @@ class ThetaHarvestBacktester:
                         "cash_after": round(self.cash, 2),
                     })
                 elif self._check_early_exit(pos, spot, i, hist_vol, date):
-                    pass  # already handled in _check_early_exit
+                    pass
                 else:
                     remaining.append(pos)
             self.positions = remaining
 
-            # Open new positions (same logic as vol_mean_reversion)
             iv_rank = calc_iv_rank(hist_closes)
             
             if len(self.positions) < self.max_positions and iv_rank > 75:
@@ -226,7 +210,6 @@ class ThetaHarvestBacktester:
                         self.cash -= put_premium
                         self.total_premium_paid += put_premium
 
-            # Mark-to-market
             mtm = self.cash
             for pos in self.positions:
                 days_left = max(pos.expiry_idx - i, 0)
@@ -238,10 +221,6 @@ class ThetaHarvestBacktester:
                     mtm += current_price
             self.equity_curve.append((date, round(mtm, 2)))
 
-        # Force-close remaining — mirror backtest_options.py:303-321 so the
-        # trade log records the terminal closes; previously these positions
-        # were settled into cash but never appended to ``trade_log``, so
-        # verbose output silently omitted them (issue #304 L5).
         final_spot = closes[-1]
         final_date = dates[-1]
         for pos in self.positions:
@@ -282,20 +261,10 @@ class ThetaHarvestBacktester:
 
         win_rate = (self.winning_trades / self.total_trades * 100) if self.total_trades > 0 else 0
 
-        # DAILY-SAMPLING CONSTRAINT: this metrics block assumes one equity-curve
-        # point per calendar day. That holds because ``main`` always feeds
-        # ``fetch_historical_data`` which returns 1d candles, and ``run`` appends
-        # exactly one equity point per candle. So ``len(self.equity_curve)`` IS the
-        # day count, and the ``sqrt(365)`` Sharpe annualization below is correct.
-        # If this backtester is ever switched to a sub-daily timeframe, replace
-        # ``days = len(...)`` with calendar-day elapsed and ``sqrt(365)`` with
-        # ``sqrt(periods_per_year(timeframe))`` — mirror backtest_options.py's
-        # ``_elapsed_days`` / ``periods_per_year`` approach. See issue #944.
         days = len(self.equity_curve)
         years = days / 365
         ann_return = ((final_value / self.initial_capital) ** (1 / years) - 1) * 100 if years > 0 and final_value > 0 else 0
 
-        # Sharpe
         sharpe = 0
         if len(self.equity_curve) > 1:
             rets = []
@@ -307,7 +276,6 @@ class ThetaHarvestBacktester:
             if rets:
                 avg = sum(rets) / len(rets)
                 std = math.sqrt(sum((r - avg)**2 for r in rets) / len(rets))
-                # sqrt(365): daily returns → annualized (see daily-sampling note above).
                 sharpe = (avg / std * math.sqrt(365)) if std > 0 else 0
 
         return {
@@ -337,7 +305,6 @@ class ThetaHarvestBacktester:
 
 
 def print_comparison(reports: list):
-    """Print side-by-side comparison."""
     print("\n" + "=" * 80)
     print("  THETA HARVESTING BACKTEST COMPARISON")
     print("=" * 80)
@@ -345,7 +312,6 @@ def print_comparison(reports: list):
     print(f"  Buy & Hold: {reports[0]['buy_hold_return_pct']:+.2f}%")
     print()
 
-    # Header
     labels = [r['label'] for r in reports]
     header = f"{'Metric':<28}" + "".join(f"{l:>17}" for l in labels)
     print(header)
@@ -374,7 +340,6 @@ def print_comparison(reports: list):
 
     print("=" * 80)
 
-    # Winner
     best = max(reports, key=lambda r: r['sharpe_ratio'])
     print(f"\n  🏆 Best risk-adjusted: {best['label']} (Sharpe {best['sharpe_ratio']:.2f})")
     best_return = max(reports, key=lambda r: r['total_return_pct'])

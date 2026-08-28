@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""Return open-strategy default params for the dashboard tuner (#811)."""
 
 import argparse
 import json
@@ -9,7 +8,7 @@ import sys
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(ROOT, "backtest"))
 
-from registry_loader import load_registry, registry_for_strategy_type  # noqa: E402
+from registry_loader import load_registry, registry_for_strategy_type
 
 
 def main() -> None:
