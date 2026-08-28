@@ -44,6 +44,10 @@ COMMENTS_PAGE = [
 ]
 
 FAKE_GH = """#!/usr/bin/env bash
+# Fake gh for tests: a --paginate fetch prints the canned comments page; a
+# --method call (PATCH/POST) records its argv (one arg per line) and prints
+# nothing; a bare `gh api repos/.../issues/comments/<id>` GET (the
+# TARGET_COMMENT_ID path) prints the canned single comment.
 set -euo pipefail
 case " $* " in
   *" --paginate "*)

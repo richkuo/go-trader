@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import ast
+import io
 import os
 import re
 import subprocess
 import sys
+import tokenize
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,6 +30,7 @@ SKIP_FILE_SUFFIXES = {
 
 SKIP_FILE_NAMES = {
     "charts.bundle.js",
+    "lightweight-charts.standalone.production.js",
 }
 
 SOURCE_SUFFIXES = {
@@ -42,6 +45,15 @@ SOURCE_SUFFIXES = {
     ".toml",
     ".md",
 }
+
+def has_license_banner(raw: bytes) -> bool:
+    try:
+        head = raw[:4096].decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    stripped = head.lstrip("\ufeff \t\r\n")
+    return stripped.startswith("/*!") and "@license" in stripped[:500]
+
 
 def git_show_main(rel: str) -> bytes | None:
     try:
@@ -201,35 +213,33 @@ def _docstring_only_body(node: ast.AST) -> bool:
     val = first.value
     return isinstance(val, ast.Constant) and isinstance(val.value, str)
 
-def strip_python(source: str) -> str:
+def _strip_python_docstrings(source: str) -> str:
     lines = source.splitlines(keepends=True)
-    delete = set()
+    delete: set[int] = set()
     replace: dict[int, str] = {}
     try:
         tree = ast.parse(source)
     except SyntaxError:
-        tree = None
-    if tree is not None:
-        nodes: list[ast.AST] = []
-        if isinstance(tree, ast.Module):
-            nodes.append(tree)
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                nodes.append(node)
-        seen: set[tuple[int, int]] = set()
-        for node in nodes:
-            r = _docstring_line_range(node, lines)
-            if not r or r in seen:
-                continue
-            seen.add(r)
-            start, end = r
-            if isinstance(node, ast.Module) or not _docstring_only_body(node):
-                delete.update(range(start, end + 1))
-                continue
-            indent = _leading_indent(lines[start])
-            replace[start] = f"{indent}pass\n"
-            delete.update(range(start + 1, end + 1))
-
+        return source
+    nodes: list[ast.AST] = []
+    if isinstance(tree, ast.Module):
+        nodes.append(tree)
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            nodes.append(node)
+    seen: set[tuple[int, int]] = set()
+    for node in nodes:
+        r = _docstring_line_range(node, lines)
+        if not r or r in seen:
+            continue
+        seen.add(r)
+        start, end = r
+        if isinstance(node, ast.Module) or not _docstring_only_body(node):
+            delete.update(range(start, end + 1))
+            continue
+        indent = _leading_indent(lines[start])
+        replace[start] = f"{indent}pass\n"
+        delete.update(range(start + 1, end + 1))
     out_lines: list[str] = []
     for idx, line in enumerate(lines):
         if idx in replace:
@@ -237,17 +247,161 @@ def strip_python(source: str) -> str:
             continue
         if idx in delete:
             continue
-        if "#" not in line:
-            out_lines.append(line)
+        out_lines.append(line)
+    return "".join(out_lines)
+
+
+def _line_start_offsets(source: str) -> list[int]:
+    offsets = [0]
+    for i, ch in enumerate(source):
+        if ch == "\n":
+            offsets.append(i + 1)
+    return offsets
+
+
+def _strip_python_hash_comments_tokenize(source: str) -> str | None:
+    try:
+        tokens = list(tokenize.generate_tokens(io.StringIO(source).readline))
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        return None
+    offsets = _line_start_offsets(source)
+    n = len(source)
+
+    def pos_offset(lineno: int, col: int) -> int:
+        if lineno < 1 or lineno - 1 >= len(offsets):
+            return n
+        off = offsets[lineno - 1] + col
+        return n if off > n else off
+
+    delete_ranges: list[tuple[int, int]] = []
+    for tok in tokens:
+        if tok.type != tokenize.COMMENT:
             continue
-        stripped = line.lstrip()
-        if stripped.startswith("#!"):
-            out_lines.append(line)
+        if tok.string.startswith("#!") and tok.start == (1, 0):
             continue
-        if stripped.startswith("#"):
+        start = pos_offset(tok.start[0], tok.start[1])
+        end = pos_offset(tok.end[0], tok.end[1])
+        line_start = offsets[tok.start[0] - 1] if tok.start[0] >= 1 else 0
+        before = source[line_start:start]
+        if before.strip() == "":
+            if tok.start[0] < len(offsets):
+                next_line = offsets[tok.start[0]] if tok.start[0] < len(offsets) else n
+                delete_ranges.append((line_start, next_line))
+            else:
+                delete_ranges.append((line_start, n))
+        else:
+            trimmed = start
+            while trimmed > line_start and source[trimmed - 1] in " \t":
+                trimmed -= 1
+            delete_ranges.append((trimmed, end))
+    if not delete_ranges:
+        return source
+    parts: list[str] = []
+    cursor = 0
+    for a, b in sorted(delete_ranges):
+        if a < cursor:
             continue
-        out_lines.append(_strip_python_inline_hash(line))
-    return collapse_blank_lines("".join(out_lines))
+        parts.append(source[cursor:a])
+        cursor = b
+    parts.append(source[cursor:])
+    return "".join(parts)
+
+
+def _update_python_string_state(
+    line: str,
+    in_single: bool,
+    in_double: bool,
+    in_triple_single: bool,
+    in_triple_double: bool,
+) -> tuple[bool, bool, bool, bool]:
+    escape = False
+    i = 0
+    while i < len(line):
+        if escape:
+            escape = False
+            i += 1
+            continue
+        ch = line[i]
+        if in_single or in_double or in_triple_single or in_triple_double:
+            if ch == "\\" and (in_single or in_double):
+                escape = True
+                i += 1
+                continue
+            if in_triple_single and line.startswith("'''", i):
+                in_triple_single = False
+                i += 3
+                continue
+            if in_triple_double and line.startswith('"""', i):
+                in_triple_double = False
+                i += 3
+                continue
+            if in_single and ch == "'":
+                in_single = False
+            elif in_double and ch == '"':
+                in_double = False
+            i += 1
+            continue
+        if line.startswith("'''", i):
+            in_triple_single = True
+            i += 3
+            continue
+        if line.startswith('"""', i):
+            in_triple_double = True
+            i += 3
+            continue
+        if ch == "'":
+            in_single = True
+            i += 1
+            continue
+        if ch == '"':
+            in_double = True
+            i += 1
+            continue
+        i += 1
+    return in_single, in_double, in_triple_single, in_triple_double
+
+
+def _strip_python_hash_comments_linewise(source: str) -> str:
+    in_single = in_double = in_triple_single = in_triple_double = False
+    out: list[str] = []
+    for line in source.splitlines(keepends=True):
+        in_string = in_single or in_double or in_triple_single or in_triple_double
+        if in_string:
+            out.append(line)
+        else:
+            stripped = line.lstrip()
+            if stripped.startswith("#!"):
+                out.append(line)
+            elif stripped.startswith("#"):
+                in_single, in_double, in_triple_single, in_triple_double = (
+                    _update_python_string_state(
+                        line, in_single, in_double, in_triple_single, in_triple_double
+                    )
+                )
+                continue
+            elif "#" in line:
+                out.append(_strip_python_inline_hash(line))
+            else:
+                out.append(line)
+        in_single, in_double, in_triple_single, in_triple_double = (
+            _update_python_string_state(
+                line, in_single, in_double, in_triple_single, in_triple_double
+            )
+        )
+    return "".join(out)
+
+
+def _strip_python_hash_comments(source: str) -> str:
+    tokenized = _strip_python_hash_comments_tokenize(source)
+    if tokenized is not None:
+        return tokenized
+    return _strip_python_hash_comments_linewise(source)
+
+
+def strip_python(source: str) -> str:
+    text = _strip_python_docstrings(source)
+    text = _strip_python_hash_comments(text)
+    return collapse_blank_lines(text)
 
 def _strip_python_inline_hash(line: str) -> str:
     in_single = False
@@ -344,6 +498,17 @@ def strip_js_css_html(source: str) -> str:
                 in_str = None
             i += 1
             continue
+        if source.startswith("/*!", i):
+            end = source.find("*/", i + 3)
+            if end == -1:
+                for c in source[i:]:
+                    append(c)
+                i = n
+            else:
+                for c in source[i : end + 2]:
+                    append(c)
+                i = end + 2
+            continue
         if source.startswith("/*", i):
             line_start = source.rfind("\n", 0, i) + 1
             before = source[line_start:i].strip()
@@ -417,6 +582,11 @@ def apply_post_strip_fixes() -> int:
     patches: list[tuple[str, str, str]] = [
         (
             "shared_scripts/test_regime_wiring.py",
+            "from regime import latest_regime, latest_regime_composite\n",
+            "from regime import latest_regime, latest_regime_composite, map_composite_label\n",
+        ),
+        (
+            "shared_scripts/test_regime_wiring.py",
             """def test_1409_advisory_only_comment_was_revoked_for_gating_and_sizing():
     source = (_SHARED_TOOLS / "regime.py").read_text()
     assert "never read by\\n    # map_composite_label, gating, or sizing" not in source
@@ -429,7 +599,14 @@ def apply_post_strip_fixes() -> int:
 
 
 def test_regime_label_string_is_safe_for_output_field():""",
-            "def test_regime_label_string_is_safe_for_output_field():",
+            """def test_map_composite_label_does_not_reference_hurst():
+    import inspect
+    body = inspect.getsource(map_composite_label)
+    assert body is not None
+    assert "hurst" not in body
+
+
+def test_regime_label_string_is_safe_for_output_field():""",
         ),
         (
             "backtest/tests/test_hurst_1424_gate_resolution.py",
@@ -523,8 +700,14 @@ def main() -> int:
         baseline = git_show_main(rel)
         if baseline is None:
             baseline = (ROOT / rel).read_bytes()
-        stripped = strip_file(rel, baseline)
         current = (ROOT / rel).read_bytes()
+        if has_license_banner(baseline):
+            if current != baseline:
+                (ROOT / rel).write_bytes(baseline)
+                changed += 1
+                print(rel)
+            continue
+        stripped = strip_file(rel, baseline)
         if stripped != current:
             (ROOT / rel).write_bytes(stripped)
             changed += 1

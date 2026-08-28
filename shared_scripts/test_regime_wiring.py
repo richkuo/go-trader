@@ -11,7 +11,7 @@ _SHARED_TOOLS = pathlib.Path(__file__).parent.parent / "shared_tools"
 if str(_SHARED_TOOLS) not in sys.path:
     sys.path.insert(0, str(_SHARED_TOOLS))
 
-from regime import latest_regime, latest_regime_composite
+from regime import latest_regime, latest_regime_composite, map_composite_label
 
 _SHARED_STRATEGIES_TOOLS = str(_SHARED_TOOLS)
 
@@ -106,6 +106,12 @@ def test_hurst_survives_the_go_metrics_map_contract():
         assert not isinstance(value, bool), key
         assert np.isfinite(value), key
 
+
+def test_map_composite_label_does_not_reference_hurst():
+    import inspect
+    body = inspect.getsource(map_composite_label)
+    assert body is not None
+    assert "hurst" not in body
 
 
 def test_regime_label_string_is_safe_for_output_field():
