@@ -1197,7 +1197,7 @@ func tradeAlertExtras(sc StrategyConfig, trade Trade, isClose bool) []string {
 		extras = append(extras, fmt.Sprintf("TP%d: $%s (%gx)", i+1, fmtComma2(tp), tiers[i].Multiple))
 	}
 	if !isClose && len(tps) == 0 && trade.EntryATR > 0 && trade.Price > 0 &&
-		!isScaleInTradeDetails(trade.Details) && !strategyUsesNonDefaultATRWindow(sc) {
+		trade.TradeType != scaleInTradeType && !strategyUsesNonDefaultATRWindow(sc) {
 		if ratchetTiers := trailingRatchetTiersForRegime(sc, trade.Regime); len(ratchetTiers) > 0 {
 			if trail := tradeAlertInitialTrailMult(sc, trade); trail > 0 {
 				extras = append(extras, fmt.Sprintf("Ratchet: 0/%d | Trail: %gx", len(ratchetTiers), trail))
@@ -1212,10 +1212,6 @@ func tradeAlertExtras(sc StrategyConfig, trade Trade, isClose bool) []string {
 		}
 	}
 	return extras
-}
-
-func isScaleInTradeDetails(details string) bool {
-	return strings.HasPrefix(details, "Scale-in ")
 }
 
 func strategyUsesNonDefaultATRWindow(sc StrategyConfig) bool {

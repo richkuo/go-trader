@@ -2710,6 +2710,7 @@ func TestFormatTradeDM_RatchetSuppressedOnScaleIn(t *testing.T) {
 		StopLossTriggerPx: 2440.90,
 		StopLossATRMult:   pf(2.5),
 		Regime:            "ranging",
+		TradeType:         scaleInTradeType,
 		Details:           "Scale-in long 0.100000 @ $2500.00 (add #2, new qty 0.503000, avg $2485.50, fee $0.05)",
 	}
 	msg := FormatTradeDM(sc, trade, "live")
@@ -2723,6 +2724,82 @@ func TestFormatTradeDM_RatchetSuppressedOnScaleIn(t *testing.T) {
 	}
 	if !strings.Contains(msg, "ATR: $23.64") {
 		t.Errorf("ATR should still surface on scale-in DM, got:\n%s", msg)
+	}
+}
+
+func TestFormatTradeDM_RatchetSuppressedOnManualScaleIn(t *testing.T) {
+	pf := func(v float64) *float64 { return &v }
+	sc := StrategyConfig{
+		ID:            "hl-vwap-eth-60",
+		Platform:      "hyperliquid",
+		Type:          "perps",
+		CloseStrategy: &StrategyRef{Name: "trailing_tp_ratchet_regime", Params: map[string]interface{}{"use_defaults": true}},
+		TrailingStopATRRegime: &RegimeATRBlock{
+			UseDefaults: false,
+			TrendRegime: map[string]RegimeATREntry{
+				"ranging": {ATR: 2.5},
+			},
+		},
+	}
+	trade := Trade{
+		Symbol:            "ETH",
+		Side:              "buy",
+		Quantity:          0.1,
+		Price:             2500,
+		Value:             250,
+		EntryATR:          23.64,
+		StopLossTriggerPx: 2440.90,
+		StopLossATRMult:   pf(2.5),
+		Regime:            "ranging",
+		TradeType:         scaleInTradeType,
+		Details:           "manual scale-in long 0.100000 @ $2500.00 (add #2, new qty 0.503000)",
+	}
+	msg := FormatTradeDM(sc, trade, "live")
+	if strings.Contains(msg, "Ratchet:") {
+		t.Errorf("manual scale-in trade should not render ratchet block, got:\n%s", msg)
+	}
+	for _, notWant := range []string{"RT1:", "RT2:", "RT3:", "Trail:"} {
+		if strings.Contains(msg, notWant) {
+			t.Errorf("manual scale-in DM should not contain %s, got:\n%s", notWant, msg)
+		}
+	}
+}
+
+func TestFormatTradeDM_RatchetSuppressedOnManualLimitAdd(t *testing.T) {
+	pf := func(v float64) *float64 { return &v }
+	sc := StrategyConfig{
+		ID:            "hl-vwap-eth-60",
+		Platform:      "hyperliquid",
+		Type:          "perps",
+		CloseStrategy: &StrategyRef{Name: "trailing_tp_ratchet_regime", Params: map[string]interface{}{"use_defaults": true}},
+		TrailingStopATRRegime: &RegimeATRBlock{
+			UseDefaults: false,
+			TrendRegime: map[string]RegimeATREntry{
+				"ranging": {ATR: 2.5},
+			},
+		},
+	}
+	trade := Trade{
+		Symbol:            "ETH",
+		Side:              "buy",
+		Quantity:          0.1,
+		Price:             2490,
+		Value:             249,
+		EntryATR:          23.64,
+		StopLossTriggerPx: 2430.90,
+		StopLossATRMult:   pf(2.5),
+		Regime:            "ranging",
+		TradeType:         scaleInTradeType,
+		Details:           "manual limit add long 0.100000 @ $2490.00 (cumulative VWAP $2485.50)",
+	}
+	msg := FormatTradeDM(sc, trade, "live")
+	if strings.Contains(msg, "Ratchet:") {
+		t.Errorf("manual limit add should not render ratchet block, got:\n%s", msg)
+	}
+	for _, notWant := range []string{"RT1:", "RT2:", "RT3:", "Trail:"} {
+		if strings.Contains(msg, notWant) {
+			t.Errorf("manual limit add DM should not contain %s, got:\n%s", notWant, msg)
+		}
 	}
 }
 
