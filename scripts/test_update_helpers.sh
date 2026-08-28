@@ -131,6 +131,97 @@ fi
     esac
 )
 
+if ! command -v systemctl >/dev/null 2>&1; then
+    assert_eq "$(discover_deployment_unit_map)" "" \
+        "unit_map: no systemctl -> empty (parent service_unit fallback)"
+fi
+
+(
+    systemctl() {
+        case "$1" in
+            list-units)
+                local active_only=0 a
+                for a in "$@"; do [[ "$a" == "--state=active" ]] && active_only=1; done
+                printf '%s\n' \
+                    'go-trader.service           loaded active running primary' \
+                    'go-trader-live.service      loaded active running live' \
+                    'go-trader@paper-1.service   loaded active running paper-1' \
+                    'go-trader@paper-2.service   loaded active running paper-2' \
+                    'go-trader@noworkdir.service loaded active running noworkdir'
+                if [[ "$active_only" != "1" ]]; then
+                    printf '%s\n' 'go-trader@stopped.service   loaded inactive dead stopped'
+                fi
+                ;;
+            show)
+                case "$2" in
+                    go-trader.service) printf '%s\n' '/root/go-trader' ;;
+                    go-trader-live.service) printf '%s\n' '/root/.openclaw/workspace/go-trader-live' ;;
+                    go-trader@paper-1.service) printf '%s\n' '/srv/deploys/go-trader-paper-1/' ;;
+                    go-trader@paper-2.service) printf '%s\n' '/srv/deploys/go-trader-shared/' ;;
+                    go-trader@noworkdir.service) printf '%s\n' '' ;;
+                    go-trader@stopped.service) printf '%s\n' '/srv/deploys/go-trader-stopped' ;;
+                esac
+                ;;
+        esac
+    }
+    export -f systemctl 2>/dev/null || true
+    got=$(discover_deployment_unit_map)
+    want=$'/root/go-trader/|go-trader.service\n/root/.openclaw/workspace/go-trader-live/|go-trader-live.service\n/srv/deploys/go-trader-paper-1/|go-trader@paper-1.service\n/srv/deploys/go-trader-shared/|go-trader@paper-2.service'
+    assert_eq "$got" "$want" \
+        "unit_map: active-only, layout-independent, unset-WD dropped, stopped unit excluded"
+    case "$got" in
+        *go-trader-stopped*) echo "FAIL: unit_map surfaced a stopped-but-loaded unit (--state=active not applied)" >&2; exit 1 ;;
+        *go-trader@noworkdir*) echo "FAIL: unit_map surfaced an unset-WD unit (WorkingDirectory filter not applied)" >&2; exit 1 ;;
+    esac
+    canon_pair=$(printf '%s\n' "$got" | awk -F'|' '$1 == "/srv/deploys/go-trader-shared/" { print $2 }')
+    assert_eq "$canon_pair" "go-trader@paper-2.service" \
+        "unit_map: trailing-slash WD canonicalizes to physical-path+slash key"
+    collision_count=$(printf '%s\n' "$got" | awk -F'|' '{ print $1 }' | sort | uniq -d | wc -l)
+    assert_eq "$collision_count" "0" \
+        "unit_map: helper does not de-dupe; consumer must dedupe + warn"
+)
+
+(
+    link_tmp=$(mktemp -d)
+    canon_phys=$(cd "$link_tmp" && pwd -P)/
+    ln -s "$link_tmp" "${link_tmp}.link"
+    systemctl() {
+        case "$1" in
+            list-units)
+                printf '%s\n' 'go-trader-link.service loaded active running link'
+                ;;
+            show)
+                printf '%s\n' "${link_tmp}.link"
+                ;;
+        esac
+    }
+    export -f systemctl 2>/dev/null || true
+    got=$(discover_deployment_unit_map)
+    want="${canon_phys}|go-trader-link.service"
+    assert_eq "$got" "$want" \
+        "unit_map: symlink WorkingDirectory resolves to physical-path key (aliases collapse)"
+    rm -rf "$link_tmp" "${link_tmp}.link"
+)
+
+(
+    no_wd_tmp=$(mktemp -d)
+    systemctl() {
+        case "$1" in
+            list-units)
+                printf '%s\n' 'go-trader-nowd.service loaded active running nowd'
+                ;;
+            show)
+                printf '\n'
+                ;;
+        esac
+    }
+    export -f systemctl 2>/dev/null || true
+    got=$(discover_deployment_unit_map)
+    assert_eq "$got" "" \
+        "unit_map: unit with unset WorkingDirectory -> no row (miss handled by consumer)"
+    rm -rf "$no_wd_tmp"
+)
+
 canon_tmp=$(mktemp -d)
 canon_phys=$(cd "$canon_tmp" && pwd -P)/
 ln -s "$canon_tmp" "${canon_tmp}.link"

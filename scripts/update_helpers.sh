@@ -92,6 +92,28 @@ discover_deployment_dirs_from_systemd() {
     done | normalize_systemd_deployment_dirs
 }
 
+discover_deployment_unit_map() {
+    command -v systemctl >/dev/null 2>&1 || return 0
+    local -a globs=()
+    local g
+    while IFS= read -r g; do
+        [[ -n "$g" ]] && globs+=("$g")
+    done < <(update_systemd_unit_globs)
+    local -a units=()
+    local unit
+    while IFS= read -r unit; do
+        [[ -n "$unit" ]] && units+=("$unit")
+    done < <(systemctl list-units --type=service --state=active --no-legend --plain "${globs[@]}" 2>/dev/null | awk '{print $1}')
+    [[ ${#units[@]} -gt 0 ]] || return 0
+    local wd canon
+    for unit in "${units[@]}"; do
+        wd=$(systemctl show "$unit" -p WorkingDirectory --value 2>/dev/null)
+        [[ -n "$wd" ]] || continue
+        canon=$(canonicalize_deployment_dir "$wd")
+        printf '%s|%s\n' "$canon" "$unit"
+    done
+}
+
 update_execstart_config_path() {
     local execstart="$1"
     if [[ "$execstart" =~ --config=([^[:space:]\;]+) ]]; then

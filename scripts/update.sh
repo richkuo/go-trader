@@ -106,7 +106,11 @@ while [[ $# -gt 0 ]]; do
             echo "                      <root>/go-trader-*/ glob. Auto-discovery is active-only, so it never"
             echo "                      starts a stopped/failed deployment; the glob still restarts anything"
             echo "                      under <root>. --update-all-root pins the glob root (skips systemd)."
-            echo "  With --all + systemd: each child inherits GO_TRADER_SERVICE — set per-worktree env if units differ."
+            echo "  With --all + systemd: each child resolves GO_TRADER_SERVICE from the active unit that owns"
+            echo "                      that deployment's WorkingDirectory (per-dir systemd lookup). Parent"
+            echo "                      --unit / --service / GO_TRADER_SERVICE is overridden when a per-dir"
+            echo "                      unit exists; if no active unit owns a dir, the parent's service_unit"
+            echo "                      is used and a warning is logged."
             echo "  RESTART=1 env var also enables restart."
             echo "  RESTART_MODE=signal requires Linux, GO_TRADER_RUN_SH, GO_TRADER_PIDFILE (see #766)."
             echo "  systemd mode falls back to signal when the unit is not found (systemctl exit 5)."
@@ -597,6 +601,25 @@ if [[ "$update_all" == "1" ]]; then
     done < <(printf '%s\n' "${canon[@]}" | sort -u)
     discovery_source=$(IFS='+'; printf '%s' "${discovery_sources[*]}")
     echo "[update] --all: ${#all_dirs[@]} deployment dir(s) via ${discovery_source} discovery"
+    declare -A unit_for_dir=()
+    declare -a unit_map_warnings=()
+    while IFS= read -r row; do
+        [[ -n "$row" ]] || continue
+        row_canon="${row%%|*}"
+        row_unit="${row#*|}"
+        [[ -n "$row_canon" && -n "$row_unit" ]] || continue
+        if [[ -n "${unit_for_dir[$row_canon]:-}" && "${unit_for_dir[$row_canon]}" != "$row_unit" ]]; then
+            unit_map_warnings+=("$row_canon ${unit_for_dir[$row_canon]} $row_unit")
+            continue
+        fi
+        unit_for_dir["$row_canon"]="$row_unit"
+    done < <(discover_deployment_unit_map)
+    if [[ ${#unit_map_warnings[@]} -gt 0 ]]; then
+        for warn_row in "${unit_map_warnings[@]}"; do
+            read -r warn_dir warn_first warn_extra <<<"$warn_row"
+            echo "[update] --all: WARNING: multiple active systemd units own $warn_dir ($warn_first, $warn_extra); using $warn_first" >&2
+        done
+    fi
     fail_count=0
     skip_count=0
     update_count=0
@@ -611,8 +634,38 @@ if [[ "$update_all" == "1" ]]; then
             skip_count=$((skip_count + 1))
             continue
         fi
-        echo "[update] --all: $(cd "$d" && pwd)"
         update_count=$((update_count + 1))
+        mapped_unit="${unit_for_dir[$d]:-}"
+        if [[ -n "$mapped_unit" ]]; then
+            declare -a mapped_child_args=()
+            skip_next=0
+            for ((j = 0; j < ${#child_args[@]}; j++)); do
+                if [[ $skip_next -eq 1 ]]; then
+                    skip_next=0
+                    continue
+                fi
+                a="${child_args[$j]}"
+                case "$a" in
+                    --unit|--service)
+                        skip_next=1
+                        continue
+                        ;;
+                    --unit=*|--service=*)
+                        continue
+                        ;;
+                esac
+                mapped_child_args+=("$a")
+            done
+            echo "[update] --all: $(cd "$d" && pwd) -> unit $mapped_unit (auto-resolved from systemd)"
+            if (cd "$d" && GO_TRADER_SERVICE="$mapped_unit" bash "$THIS_SCRIPT" "${mapped_child_args[@]}"); then
+                :
+            else
+                echo "[update] --all: FAILED in $d" >&2
+                fail_count=$((fail_count + 1))
+            fi
+            continue
+        fi
+        echo "[update] --all: $(cd "$d" && pwd) -> unit $service_unit (no active systemd unit; falling back)"
         if (cd "$d" && bash "$THIS_SCRIPT" "${child_args[@]}"); then
             :
         else
