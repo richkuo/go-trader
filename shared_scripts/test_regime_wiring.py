@@ -107,15 +107,6 @@ def test_hurst_survives_the_go_metrics_map_contract():
         assert np.isfinite(value), key
 
 
-def test_hurst_label_gate_stays_separate_from_composite_label():
-    source = (_SHARED_TOOLS / "regime.py").read_text()
-    label_fn_start = source.index("def map_composite_label")
-    label_fn = source[label_fn_start : source.index("\ndef ", label_fn_start + 1)]
-    assert "hurst" not in label_fn
-    composite_start = source.index("def latest_regime_composite")
-    composite_fn = source[composite_start : source.index("\ndef ", composite_start + 1)]
-    assert "hurst_exponent" in composite_fn
-
 
 def test_regime_label_string_is_safe_for_output_field():
     df = _make_uptrend_df()

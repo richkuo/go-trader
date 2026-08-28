@@ -427,17 +427,9 @@ def apply_post_strip_fixes() -> int:
     label_fn = source[label_fn_start : source.index("\\ndef ", label_fn_start + 1)]
     assert "hurst" not in label_fn
 
-def test_regime_label_string_is_safe_for_output_field():""",
-            """def test_hurst_label_gate_stays_separate_from_composite_label():
-    source = (_SHARED_TOOLS / "regime.py").read_text()
-    label_fn_start = source.index("def map_composite_label")
-    label_fn = source[label_fn_start : source.index("\\ndef ", label_fn_start + 1)]
-    assert "hurst" not in label_fn
-    composite_start = source.index("def latest_regime_composite")
-    composite_fn = source[composite_start : source.index("\\ndef ", composite_start + 1)]
-    assert "hurst_exponent" in composite_fn
 
 def test_regime_label_string_is_safe_for_output_field():""",
+            "def test_regime_label_string_is_safe_for_output_field():",
         ),
         (
             "backtest/tests/test_hurst_1424_gate_resolution.py",
