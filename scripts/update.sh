@@ -638,24 +638,9 @@ if [[ "$update_all" == "1" ]]; then
         mapped_unit="${unit_for_dir[$d]:-}"
         if [[ -n "$mapped_unit" ]]; then
             declare -a mapped_child_args=()
-            skip_next=0
-            for ((j = 0; j < ${#child_args[@]}; j++)); do
-                if [[ $skip_next -eq 1 ]]; then
-                    skip_next=0
-                    continue
-                fi
-                a="${child_args[$j]}"
-                case "$a" in
-                    --unit|--service)
-                        skip_next=1
-                        continue
-                        ;;
-                    --unit=*|--service=*)
-                        continue
-                        ;;
-                esac
-                mapped_child_args+=("$a")
-            done
+            while IFS= read -r arg; do
+                [[ -n "$arg" ]] && mapped_child_args+=("$arg")
+            done < <(strip_unit_flags_from_argv "${child_args[@]}")
             echo "[update] --all: $(cd "$d" && pwd) -> unit $mapped_unit (auto-resolved from systemd)"
             if (cd "$d" && GO_TRADER_SERVICE="$mapped_unit" bash "$THIS_SCRIPT" "${mapped_child_args[@]}"); then
                 :

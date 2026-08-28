@@ -222,6 +222,54 @@ fi
     rm -rf "$no_wd_tmp"
 )
 
+assert_eq "$(strip_unit_flags_from_argv --all --unit go-trader-x --restart)" \
+    $'--all\n--restart' \
+    "strip: --unit <value> (the next token) is removed"
+assert_eq "$(strip_unit_flags_from_argv --all --service go-trader-x --restart)" \
+    $'--all\n--restart' \
+    "strip: --service <value> (the next token) is removed"
+assert_eq "$(strip_unit_flags_from_argv --all --unit=go-trader-x --restart)" \
+    $'--all\n--restart' \
+    "strip: --unit=<value> form is removed (single argv token)"
+assert_eq "$(strip_unit_flags_from_argv --all --service=go-trader-x --restart)" \
+    $'--all\n--restart' \
+    "strip: --service=<value> form is removed (single argv token)"
+assert_eq "$(strip_unit_flags_from_argv --all --unit go-trader-a --service go-trader-b --unit=go-trader-c --service=go-trader-d --restart)" \
+    $'--all\n--restart' \
+    "strip: mixed forms (space + equals) all removed"
+assert_eq "$(strip_unit_flags_from_argv --all --restart --yes)" \
+    $'--all\n--restart\n--yes' \
+    "strip: unrelated flags untouched (--yes preserved)"
+assert_eq "$(strip_unit_flags_from_argv)" "" \
+    "strip: empty input -> empty output"
+assert_eq "$(strip_unit_flags_from_argv --unit only)" "" \
+    "strip: input that is only unit flags -> empty"
+
+assert_eq "$(resolve_child_unit_override go-trader-parent go-trader-live --all --unit go-trader-x --restart)" \
+    $'go-trader-live\n--all\n--restart' \
+    "resolve: map hit picks mapped unit AND strips --unit <value> from child argv"
+assert_eq "$(resolve_child_unit_override go-trader-parent go-trader-live --all --unit=go-trader-x --restart)" \
+    $'go-trader-live\n--all\n--restart' \
+    "resolve: map hit picks mapped unit AND strips --unit=<value> from child argv"
+assert_eq "$(resolve_child_unit_override go-trader-parent go-trader-live --all --service=go-trader-x --restart)" \
+    $'go-trader-live\n--all\n--restart' \
+    "resolve: map hit strips --service=<value> from child argv"
+assert_eq "$(resolve_child_unit_override go-trader-parent go-trader-live --all --unit foo --service bar --restart)" \
+    $'go-trader-live\n--all\n--restart' \
+    "resolve: map hit strips BOTH --unit <v> and --service <v> from child argv"
+assert_eq "$(resolve_child_unit_override go-trader-parent go-trader-live --all --unit --service --unit=foo --restart)" \
+    $'go-trader-live\n--all\n--restart' \
+    "resolve: map hit strips clustered unit/service flags"
+assert_eq "$(resolve_child_unit_override go-trader-parent "" --all --unit go-trader-x --restart)" \
+    $'go-trader-parent\n--all\n--unit\ngo-trader-x\n--restart' \
+    "resolve: map MISS keeps parent's service_unit AND preserves parent's --unit <v> in child argv"
+assert_eq "$(resolve_child_unit_override go-trader-parent "" --all --unit=go-trader-x --restart)" \
+    $'go-trader-parent\n--all\n--unit=go-trader-x\n--restart' \
+    "resolve: map MISS preserves parent's --unit=<v> in child argv"
+assert_eq "$(resolve_child_unit_override go-trader-parent "" --all --restart)" \
+    $'go-trader-parent\n--all\n--restart' \
+    "resolve: map MISS without any parent unit token still inherits parent's service_unit"
+
 canon_tmp=$(mktemp -d)
 canon_phys=$(cd "$canon_tmp" && pwd -P)/
 ln -s "$canon_tmp" "${canon_tmp}.link"

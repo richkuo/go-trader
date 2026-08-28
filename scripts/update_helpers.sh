@@ -176,3 +176,39 @@ update_config_writable_directive() {
 update_db_rsync_excludes() {
     printf '%s\n' '*.db' '*.db-wal' '*.db-shm' '*.db.lock'
 }
+
+strip_unit_flags_from_argv() {
+    declare -a out=()
+    local skip_next=0
+    local a
+    for a in "$@"; do
+        if [[ "$skip_next" == "1" ]]; then
+            skip_next=0
+            continue
+        fi
+        case "$a" in
+            --unit|--service)
+                skip_next=1
+                continue
+                ;;
+            --unit=*|--service=*)
+                continue
+                ;;
+        esac
+        out+=("$a")
+    done
+    printf '%s\n' "${out[@]}"
+}
+
+resolve_child_unit_override() {
+    local parent_service_unit="$1"
+    local mapped_unit="$2"
+    shift 2
+    if [[ -n "$mapped_unit" ]]; then
+        printf '%s\n' "$mapped_unit"
+        strip_unit_flags_from_argv "$@"
+    else
+        printf '%s\n' "$parent_service_unit"
+        printf '%s\n' "$@"
+    fi
+}
