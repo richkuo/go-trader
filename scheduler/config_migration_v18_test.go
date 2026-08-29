@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -276,5 +278,112 @@ func TestPromotionBaselineIgnoresTrailStopKeySpelling(t *testing.T) {
 	}
 	if promotionBaselinesEqual(legacy, different) {
 		t.Error("normalizing the key must not mask a genuine baseline change")
+	}
+}
+
+func TestMigrationBaseVersionSurvivesLoadTimeMigration(t *testing.T) {
+	for _, onDisk := range []int{13, 14, 15, 16, 17} {
+		t.Run(fmt.Sprintf("v%d", onDisk), func(t *testing.T) {
+			cfgJSON := strings.Replace(v18LegacyStrategyConfigJSON,
+				`"config_version": 17,`, fmt.Sprintf(`"config_version": %d,`, onDisk), 1)
+			path := writeTestConfig(t, t.TempDir(), cfgJSON)
+			cfg, err := LoadConfig(path)
+			if err != nil {
+				t.Fatalf("LoadConfig: %v", err)
+			}
+			if cfg.ConfigVersion != CurrentConfigVersion {
+				t.Fatalf("ConfigVersion = %d, want %d after the load-time migration", cfg.ConfigVersion, CurrentConfigVersion)
+			}
+			if got := cfg.MigrationBaseVersion(); got != onDisk {
+				t.Fatalf("MigrationBaseVersion() = %d, want %d — main.go gates the operator notices on it, so a load-time rewrite must not erase where the operator came from", got, onDisk)
+			}
+			if got := configMigrationNotices(cfg.MigrationBaseVersion()); len(got) == 0 {
+				t.Fatalf("v%d -> v%d delivered no migration notice", onDisk, CurrentConfigVersion)
+			}
+		})
+	}
+}
+
+func TestMigrationBaseVersionCurrentConfigSendsNoNotice(t *testing.T) {
+	clean := strings.Replace(
+		strings.Replace(v18LegacyStrategyConfigJSON, `"config_version": 17,`, `"config_version": 18,`, 1),
+		legacyTrailStopATRRegimeKey, trailStopATRRegimeKey, 1)
+	path := writeTestConfig(t, t.TempDir(), clean)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if got := cfg.MigrationBaseVersion(); got != CurrentConfigVersion {
+		t.Fatalf("MigrationBaseVersion() = %d, want %d", got, CurrentConfigVersion)
+	}
+	if got := configMigrationNotices(cfg.MigrationBaseVersion()); len(got) != 0 {
+		t.Fatalf("a current-version config produced %d notice(s), want 0", len(got))
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Error("a clean v18 config must not be rewritten on load")
+	}
+}
+
+func TestMigrationBaseVersionLegacyKeyAtCurrentVersionSendsNoNotice(t *testing.T) {
+	stamped := strings.Replace(v18LegacyStrategyConfigJSON, `"config_version": 17,`, `"config_version": 18,`, 1)
+	path := writeTestConfig(t, t.TempDir(), stamped)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.Strategies[0].TrailStopATRRegime == nil || !cfg.Strategies[0].TrailStopATRRegime.IsConfigured() {
+		t.Fatal("legacy key at v18 was not adopted into TrailStopATRRegime")
+	}
+	raw := readRawConfig(t, path)
+	if _, present := rawStrategy(t, raw, 0)[legacyTrailStopATRRegimeKey]; present {
+		t.Error("legacy key survived the rename on a v18-stamped config")
+	}
+	if got := configMigrationNotices(cfg.MigrationBaseVersion()); len(got) != 0 {
+		t.Fatalf("a v18-stamped config renamed in place produced %d notice(s) — that would repeat every restart", len(got))
+	}
+}
+
+func TestConfigMigrationNoticesAreOrderedAndVersionScoped(t *testing.T) {
+	if got := configMigrationNotices(17); len(got) != 1 || got[0] != v18TrailStopRenameNotice {
+		t.Fatalf("v17 base notices = %d entries, want only the v18 notice", len(got))
+	}
+	got := configMigrationNotices(13)
+	want := []string{v14DeprecationNotice, v15DeprecationNotice, v17ATRMethodNotice, v18TrailStopRenameNotice}
+	if len(got) != len(want) {
+		t.Fatalf("v13 base notices = %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("notice[%d] out of order", i)
+		}
+	}
+	if n := len(configMigrationNotices(CurrentConfigVersion)); n != 0 {
+		t.Fatalf("current-version base produced %d notices, want 0", n)
+	}
+}
+
+func TestMigrationBaseVersionVersionlessConfigIsTreatedAsCurrentShape(t *testing.T) {
+	versionless := strings.Replace(v18LegacyStrategyConfigJSON, "\t\"config_version\": 17,\n", "", 1)
+	if strings.Contains(versionless, "config_version") {
+		t.Fatal("fixture still stamps a config_version")
+	}
+	path := writeTestConfig(t, t.TempDir(), versionless)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if got := cfg.MigrationBaseVersion(); got != CurrentConfigVersion {
+		t.Fatalf("MigrationBaseVersion() = %d, want %d — #1285 treats a version-less config as current-shape, so it must not be handed the v14/v15 upgrade notices", got, CurrentConfigVersion)
+	}
+	if n := len(configMigrationNotices(cfg.MigrationBaseVersion())); n != 0 {
+		t.Fatalf("a version-less config produced %d notice(s), want 0", n)
 	}
 }

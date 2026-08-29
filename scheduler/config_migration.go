@@ -52,6 +52,34 @@ func versionlessConfigRemovedTranslationKey(data []byte) (string, bool) {
 	return "", false
 }
 
+func rawConfigVersion(data []byte) int {
+	var meta struct {
+		ConfigVersion int `json:"config_version"`
+	}
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return 0
+	}
+	return meta.ConfigVersion
+}
+
+func configMigrationNotices(baseVersion int) []string {
+	var notices []string
+	for _, n := range []struct {
+		since  int
+		notice string
+	}{
+		{14, v14DeprecationNotice},
+		{15, v15DeprecationNotice},
+		{17, v17ATRMethodNotice},
+		{18, v18TrailStopRenameNotice},
+	} {
+		if baseVersion < n.since {
+			notices = append(notices, n.notice)
+		}
+	}
+	return notices
+}
+
 func checkRawConfigVersionSupported(data []byte) error {
 	var meta struct {
 		ConfigVersion int `json:"config_version"`
@@ -244,34 +272,25 @@ func cloneOrNewJSONMap(v interface{}) map[string]interface{} {
 	return out
 }
 
+func deliverConfigMigrationNotices(baseVersion int, notifier *MultiNotifier) {
+	for _, notice := range configMigrationNotices(baseVersion) {
+		if notifier != nil && notifier.HasOwner() {
+			notifier.SendOwnerDM(notice)
+		} else {
+			fmt.Printf("[migration] %s\n", notice)
+		}
+	}
+}
+
 func runConfigMigrationDM(cfg *Config, notifier *MultiNotifier, configPath string) {
-	fields := NewFieldsSince(cfg.ConfigVersion)
+	baseVersion := cfg.MigrationBaseVersion()
+	fields := NewFieldsSince(baseVersion)
 
 	if len(fields) == 0 {
 		if err := MigrateConfig(configPath, nil, cfg); err != nil {
 			fmt.Printf("[migration] Failed to bump config version: %v\n", err)
 		}
-		if cfg.ConfigVersion < 14 {
-			if notifier != nil && notifier.HasOwner() {
-				notifier.SendOwnerDM(v14DeprecationNotice)
-			} else {
-				fmt.Printf("[migration] %s\n", v14DeprecationNotice)
-			}
-		}
-		if cfg.ConfigVersion < 17 {
-			if notifier != nil && notifier.HasOwner() {
-				notifier.SendOwnerDM(v17ATRMethodNotice)
-			} else {
-				fmt.Printf("[migration] %s\n", v17ATRMethodNotice)
-			}
-		}
-		if cfg.ConfigVersion < 18 {
-			if notifier != nil && notifier.HasOwner() {
-				notifier.SendOwnerDM(v18TrailStopRenameNotice)
-			} else {
-				fmt.Printf("[migration] %s\n", v18TrailStopRenameNotice)
-			}
-		}
+		deliverConfigMigrationNotices(baseVersion, notifier)
 		return
 	}
 
@@ -287,18 +306,7 @@ func runConfigMigrationDM(cfg *Config, notifier *MultiNotifier, configPath strin
 		if err := MigrateConfig(configPath, values, cfg); err != nil {
 			fmt.Printf("[migration] Failed to migrate config: %v\n", err)
 		}
-		if cfg.ConfigVersion < 14 {
-			fmt.Printf("[migration] %s\n", v14DeprecationNotice)
-		}
-		if cfg.ConfigVersion < 15 {
-			fmt.Printf("[migration] %s\n", v15DeprecationNotice)
-		}
-		if cfg.ConfigVersion < 17 {
-			fmt.Printf("[migration] %s\n", v17ATRMethodNotice)
-		}
-		if cfg.ConfigVersion < 18 {
-			fmt.Printf("[migration] %s\n", v18TrailStopRenameNotice)
-		}
+		deliverConfigMigrationNotices(baseVersion, nil)
 		return
 	}
 
@@ -328,18 +336,7 @@ func runConfigMigrationDM(cfg *Config, notifier *MultiNotifier, configPath strin
 
 	notifier.SendOwnerDM("Config updated. Changes take effect next restart.")
 
-	if cfg.ConfigVersion < 14 {
-		notifier.SendOwnerDM(v14DeprecationNotice)
-	}
-	if cfg.ConfigVersion < 15 {
-		notifier.SendOwnerDM(v15DeprecationNotice)
-	}
-	if cfg.ConfigVersion < 17 {
-		notifier.SendOwnerDM(v17ATRMethodNotice)
-	}
-	if cfg.ConfigVersion < 18 {
-		notifier.SendOwnerDM(v18TrailStopRenameNotice)
-	}
+	deliverConfigMigrationNotices(baseVersion, notifier)
 }
 
 func needsV13SchemaMigration(data []byte) bool {

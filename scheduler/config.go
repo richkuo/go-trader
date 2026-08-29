@@ -167,6 +167,19 @@ type Config struct {
 	TradingViewExport        TradingViewExportConfig    `json:"tradingview_export,omitempty"`
 	UserDefaults             *UserDefaultsConfig        `json:"user_defaults,omitempty"`
 	Tuning                   *TuningConfig              `json:"tuning,omitempty"`
+
+	migrationBaseVersion    int
+	migrationBaseVersionSet bool
+}
+
+func (c *Config) MigrationBaseVersion() int {
+	if c == nil {
+		return CurrentConfigVersion
+	}
+	if c.migrationBaseVersionSet {
+		return c.migrationBaseVersion
+	}
+	return c.ConfigVersion
 }
 
 type TuningConfig struct {
@@ -791,6 +804,10 @@ func loadConfig(path string, skipLiveCredentialChecks bool) (*Config, error) {
 	if err := checkRawConfigVersionSupported(data); err != nil {
 		return nil, err
 	}
+	migrationBaseVersion := rawConfigVersion(data)
+	if migrationBaseVersion == 0 {
+		migrationBaseVersion = CurrentConfigVersion
+	}
 	if needsV13SchemaMigration(data) {
 		if err := MigrateConfig(path, nil, nil); err != nil {
 			return nil, fmt.Errorf("v13 schema migration: %w", err)
@@ -831,6 +848,8 @@ func loadConfig(path string, skipLiveCredentialChecks bool) (*Config, error) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
+	cfg.migrationBaseVersion = migrationBaseVersion
+	cfg.migrationBaseVersionSet = true
 	unknownErrs := validateStrategyJSONKeys(data)
 	unknownErrs = append(unknownErrs, validateUserDefaultsJSONKeys(data)...)
 	if len(unknownErrs) > 0 {

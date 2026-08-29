@@ -477,7 +477,7 @@ func main() {
 		}
 	}()
 
-	if cfg.ConfigVersion < CurrentConfigVersion {
+	if cfg.MigrationBaseVersion() < CurrentConfigVersion {
 		go runConfigMigrationDM(cfg, notifier, *configPath)
 	}
 
