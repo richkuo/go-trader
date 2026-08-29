@@ -132,9 +132,6 @@ func loadStrategyExplicitKeys(path string) (map[string]map[string]bool, error) {
 		if keys["close_strategies"] {
 			keys["close_strategy"] = true
 		}
-		if keys[legacyTrailStopATRRegimeKey] {
-			keys[trailStopATRRegimeKey] = true
-		}
 		out[id] = keys
 	}
 	return out, nil

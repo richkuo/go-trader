@@ -40,8 +40,6 @@ func knownJSONKeys(t reflect.Type) map[string]bool {
 func unknownKeyHint(key string) string {
 	lk := strings.ToLower(key)
 	switch {
-	case lk == legacyTrailStopATRRegimeKey:
-		return "renamed to " + trailStopATRRegimeKey + " in #1465; the v18 migration rewrites it on disk"
 	case strings.Contains(lk, "take_profit") || strings.Contains(lk, "tp_tier") || lk == "tp_tiers":
 		return "TP logic lives under close_strategy (e.g. {\"name\":\"tiered_tp_atr\",\"params\":{\"tp_tiers\":[...]}}); user_defaults.manual.tp_tiers only seeds defaults for type=manual"
 	case strings.HasPrefix(lk, "stop_loss") || strings.Contains(lk, "stoploss"):

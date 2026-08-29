@@ -96,9 +96,7 @@ func validateUserCloseDefaults(defaults CloseDefaultsMap) []string {
 			if normName == trailingTPRatchetRegimeCloseName && k == userCloseDefaultTrailStopATRRegimeKey {
 				continue
 			}
-			if k == legacyTrailStopATRRegimeKey {
-				errs = append(errs, fmt.Sprintf("user_defaults.close[%q]: unknown key %q — renamed to %q in #1465", name, k, trailStopATRRegimeKey))
-			} else if normName == trailingTPRatchetRegimeCloseName {
+			if normName == trailingTPRatchetRegimeCloseName {
 				errs = append(errs, fmt.Sprintf("user_defaults.close[%q]: unknown key %q (only tp_tiers and trail_stop_atr_regime are allowed)", name, k))
 			} else {
 				errs = append(errs, fmt.Sprintf("user_defaults.close[%q]: unknown key %q (only tp_tiers is allowed)", name, k))
@@ -178,14 +176,9 @@ func validateUserDefaultRegimeATR(entry map[string]interface{}) []string {
 		userCloseDefaultTrailStopATRRegimeKey: true,
 	}
 	for k := range entry {
-		if allowed[k] {
-			continue
+		if !allowed[k] {
+			errs = append(errs, fmt.Sprintf("user_defaults.regime_atr: unknown key %q (only stop_loss_atr_regime and trail_stop_atr_regime are allowed)", k))
 		}
-		if k == legacyTrailStopATRRegimeKey {
-			errs = append(errs, fmt.Sprintf("user_defaults.regime_atr: unknown key %q — renamed to %q in #1465", k, trailStopATRRegimeKey))
-			continue
-		}
-		errs = append(errs, fmt.Sprintf("user_defaults.regime_atr: unknown key %q (only stop_loss_atr_regime and trail_stop_atr_regime are allowed)", k))
 	}
 	if raw, ok := entry[userCloseDefaultStopLossATRRegimeKey]; ok {
 		errs = append(errs, validateUserCloseDefaultRegimeATRSubBlock(userCloseDefaultStopLossATRRegimeKey, raw, regimeSurfaceStopLoss)...)

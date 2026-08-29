@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -385,5 +386,73 @@ func TestMigrationBaseVersionVersionlessConfigIsTreatedAsCurrentShape(t *testing
 	}
 	if n := len(configMigrationNotices(cfg.MigrationBaseVersion())); n != 0 {
 		t.Fatalf("a version-less config produced %d notice(s), want 0", n)
+	}
+}
+
+const v18CleanStrategyConfigJSON = `{
+	"config_version": 17,
+	"regime": {"enabled": true, "period": 14, "adx_threshold": 20},
+	"strategies": [{
+		"id": "hl-eth-clean",
+		"type": "perps",
+		"platform": "hyperliquid",
+		"script": "shared_scripts/check_hyperliquid.py",
+		"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
+		"capital": 1000,
+		"leverage": 3,
+		"stop_loss_atr_mult": 1.5
+	}]
+}`
+
+func readOnlyConfigDir(t *testing.T, body string) string {
+	t.Helper()
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: directory permissions are not enforced")
+	}
+	dir := filepath.Join(t.TempDir(), "cfg")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	if err := os.WriteFile(filepath.Join(dir, "probe.tmp"), []byte("x"), 0o600); err == nil {
+		t.Skip("directory permissions are not enforced on this filesystem")
+	}
+	return path
+}
+
+func TestLoadConfigCleanConfigNeedsNoWriteToLoad(t *testing.T) {
+	path := readOnlyConfigDir(t, v18CleanStrategyConfigJSON)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("a sub-v18 config carrying no legacy key must load without rewriting the file, so a non-writable config path is not a boot blocker: %v", err)
+	}
+	if got := cfg.MigrationBaseVersion(); got != 17 {
+		t.Fatalf("MigrationBaseVersion() = %d, want 17 — the startup notice still has to fire", got)
+	}
+	if n := len(configMigrationNotices(cfg.MigrationBaseVersion())); n == 0 {
+		t.Error("a v17 config still owes the operator the v18 notice")
+	}
+}
+
+func TestLoadConfigLegacyKeyStillFailsLoudWhenItCannotBeRewritten(t *testing.T) {
+	path := readOnlyConfigDir(t, v18LegacyStrategyConfigJSON)
+	if _, err := LoadConfig(path); err == nil {
+		t.Fatal("a config carrying the legacy key must fail the load when the rename cannot be persisted — loading it would leave the on-disk key contradicting the running shape")
+	}
+}
+
+func TestNeedsV18MigrationIsKeyedOnTheLegacyKeyNotTheVersion(t *testing.T) {
+	if needsV18TrailStopKeyMigration([]byte(v18CleanStrategyConfigJSON)) {
+		t.Error("a sub-v18 config with no legacy key must not trigger a load-time rewrite")
+	}
+	if !needsV18TrailStopKeyMigration([]byte(v18LegacyStrategyConfigJSON)) {
+		t.Error("a config carrying the legacy key must trigger the rename")
 	}
 }

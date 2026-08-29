@@ -16,9 +16,6 @@ func needsV18TrailStopKeyMigration(data []byte) bool {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return false
 	}
-	if version, ok := raw["config_version"].(float64); !ok || int(version) < 18 {
-		return true
-	}
 	return hasLegacyTrailStopATRRegimeKey(raw)
 }
 
