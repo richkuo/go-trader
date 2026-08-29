@@ -113,7 +113,7 @@ func TestArmTrailingStopAtOpenNowRegime(t *testing.T) {
 		"trending": {ATR: 2.0},
 		"ranging":  {ATR: 1.0},
 	}}
-	sc := StrategyConfig{ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py", Args: []string{"x.py", "ETH", "1h", "--mode=live"}, TrailStopATRRegime: regimeBlock}
+	sc := StrategyConfig{ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py", Args: []string{"x.py", "ETH", "1h", "--mode=live"}, TrailingStopATRMultRegime: regimeBlock}
 	st := &StrategyState{ID: "hl-eth", Positions: map[string]*Position{
 		"ETH": {Symbol: "ETH", Side: "long", Quantity: 2, InitialQuantity: 2, AvgCost: 2000, EntryATR: 50, RiskAnchorPrice: 2000, Regime: "trending"},
 	}}

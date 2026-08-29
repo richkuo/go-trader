@@ -810,10 +810,10 @@ func TestEffectiveStopLossPct(t *testing.T) {
 		{"drawdown fallback at cap boundary", hlPerps(StrategyConfig{MaxDrawdownPct: 50, Leverage: 5}), 50},
 		{"drawdown fallback ignored when explicit set", hlPerps(StrategyConfig{StopLossPct: pf(2), MaxDrawdownPct: 10}), 2},
 		{"margin fallthrough beats drawdown", hlPerps(StrategyConfig{StopLossMarginPct: pf(20), MaxDrawdownPct: 5, Leverage: 20}), 1.0},
-		{"stop_loss_atr_regime defers, no drawdown fallback",
-			hlPerps(StrategyConfig{StopLossATRRegime: &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{"trending": {ATR: 2}}}, MaxDrawdownPct: 5, Leverage: 5}), 0},
-		{"trail_stop_atr_regime defers, no drawdown fallback",
-			hlPerps(StrategyConfig{TrailStopATRRegime: &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{"trending": {ATR: 2}}}, MaxDrawdownPct: 5, Leverage: 5}), 0},
+		{"stop_loss_atr_mult_regime defers, no drawdown fallback",
+			hlPerps(StrategyConfig{StopLossATRMultRegime: &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{"trending": {ATR: 2}}}, MaxDrawdownPct: 5, Leverage: 5}), 0},
+		{"trailing_stop_atr_mult_regime defers, no drawdown fallback",
+			hlPerps(StrategyConfig{TrailingStopATRMultRegime: &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{"trending": {ATR: 2}}}, MaxDrawdownPct: 5, Leverage: 5}), 0},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -1694,7 +1694,7 @@ func TestRunHyperliquidTrailingStopPaper_RegimeSnapshotArms(t *testing.T) {
 		Platform:           "hyperliquid",
 		Type:               "perps",
 		RegimeATRWindow:    "medium",
-		TrailStopATRRegime: regimeBlock,
+		TrailingStopATRMultRegime: regimeBlock,
 	}
 	pos := &Position{
 		AvgCost:         2100,

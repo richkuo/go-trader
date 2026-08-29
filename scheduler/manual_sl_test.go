@@ -66,19 +66,19 @@ func TestManualSLAutoManaged(t *testing.T) {
 		},
 		{
 			name:       "regime stop-loss with unresolved label rejected by config presence",
-			sc:         StrategyConfig{ID: "x", Type: "manual", Platform: "hyperliquid", Symbol: "ETH", StopLossATRRegime: regimeBlock()},
+			sc:         StrategyConfig{ID: "x", Type: "manual", Platform: "hyperliquid", Symbol: "ETH", StopLossATRMultRegime: regimeBlock()},
 			pos:        regimePos("-"),
 			wantManage: true,
 		},
 		{
 			name:       "regime stop-loss with resolved label still rejected (no regression)",
-			sc:         StrategyConfig{ID: "x", Type: "manual", Platform: "hyperliquid", Symbol: "ETH", StopLossATRRegime: regimeBlock()},
+			sc:         StrategyConfig{ID: "x", Type: "manual", Platform: "hyperliquid", Symbol: "ETH", StopLossATRMultRegime: regimeBlock()},
 			pos:        regimePos("trending"),
 			wantManage: true,
 		},
 		{
 			name:       "regime trailing stop with unresolved label rejected by config presence",
-			sc:         StrategyConfig{ID: "x", Type: "manual", Platform: "hyperliquid", Symbol: "ETH", TrailStopATRRegime: regimeBlock()},
+			sc:         StrategyConfig{ID: "x", Type: "manual", Platform: "hyperliquid", Symbol: "ETH", TrailingStopATRMultRegime: regimeBlock()},
 			pos:        regimePos("-"),
 			wantManage: true,
 		},

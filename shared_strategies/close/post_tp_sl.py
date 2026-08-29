@@ -645,7 +645,7 @@ def validate_post_tp_stop_loss_rules(
     stop_loss_margin_pct: Optional[float] = None,
     trailing_stop_atr_mult: Optional[float] = None,
     trailing_stop_pct: Optional[float] = None,
-    stop_loss_atr_regime: Optional[Any] = None,
+    stop_loss_atr_mult_regime: Optional[Any] = None,
     strategy_type: str = "perps",
     labels: Optional[Iterable[str]] = None,
 ) -> List[str]:
@@ -680,13 +680,13 @@ def validate_post_tp_stop_loss_rules(
             "trailing_stop_pct — trailing already walks the SL continuously"
         )
     blk_sl_regime, sl_regime_errs = parse_regime_atr_block(
-        stop_loss_atr_regime, "stop_loss_atr_regime", SURFACE_STOP_LOSS,
+        stop_loss_atr_mult_regime, "stop_loss_atr_mult_regime", SURFACE_STOP_LOSS,
         labels=tuple(labels) if labels is not None else None,
     )
-    if stop_loss_atr_regime is not None and sl_regime_errs:
+    if stop_loss_atr_mult_regime is not None and sl_regime_errs:
         out.extend(sl_regime_errs)
     has_regime_sl = (
-        stop_loss_atr_regime is not None
+        stop_loss_atr_mult_regime is not None
         and not blk_sl_regime.is_zero()
         and not sl_regime_errs
     )
@@ -699,7 +699,7 @@ def validate_post_tp_stop_loss_rules(
     if not has_fixed_sl:
         out.append(
             "sl_after requires a fixed stop-loss to adjust (set "
-            "stop_loss_atr_mult, stop_loss_atr_regime, stop_loss_pct, "
+            "stop_loss_atr_mult, stop_loss_atr_mult_regime, stop_loss_pct, "
             "or stop_loss_margin_pct)"
         )
     if (strategy_type or "").strip().lower() == "manual":

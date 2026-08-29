@@ -858,11 +858,11 @@ func validatePostTPStopLossRulesWithLabels(sc StrategyConfig, labels []string) [
 		out = append(out, "sl_after cannot be combined with trailing_stop_atr_mult or trailing_stop_pct — trailing already walks the SL continuously")
 	}
 	hasFixedSL := (sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0) ||
-		(sc.StopLossATRRegime != nil && !sc.StopLossATRRegime.IsZero()) ||
+		(sc.StopLossATRMultRegime != nil && !sc.StopLossATRMultRegime.IsZero()) ||
 		(sc.StopLossPct != nil && *sc.StopLossPct > 0) ||
 		(sc.StopLossMarginPct != nil && *sc.StopLossMarginPct > 0)
 	if !hasFixedSL {
-		out = append(out, "sl_after requires a fixed stop-loss to adjust (set stop_loss_atr_mult, stop_loss_atr_regime, stop_loss_pct, or stop_loss_margin_pct)")
+		out = append(out, "sl_after requires a fixed stop-loss to adjust (set stop_loss_atr_mult, stop_loss_atr_mult_regime, stop_loss_pct, or stop_loss_margin_pct)")
 	}
 	if sc.Type == "manual" {
 		if rules.Default.Kind == "trail_from_here" {

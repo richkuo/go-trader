@@ -2456,7 +2456,7 @@ func TestConfigValidationMultipleTrailingRatchetRegimeOwnersAllowed(t *testing.T
 				Capital:            1000,
 				Leverage:           5,
 				MaxDrawdownPct:     60,
-				TrailStopATRRegime: regimeTrail(),
+				TrailingStopATRMultRegime: regimeTrail(),
 				CloseStrategy:      &StrategyRef{Name: "trailing_tp_ratchet_regime", Params: map[string]interface{}{"use_defaults": true}},
 			},
 			{
@@ -2468,7 +2468,7 @@ func TestConfigValidationMultipleTrailingRatchetRegimeOwnersAllowed(t *testing.T
 				Capital:            1000,
 				Leverage:           5,
 				MaxDrawdownPct:     60,
-				TrailStopATRRegime: regimeTrail(),
+				TrailingStopATRMultRegime: regimeTrail(),
 				CloseStrategy:      &StrategyRef{Name: "trailing_tp_ratchet_regime", Params: map[string]interface{}{"use_defaults": true}},
 			},
 		},

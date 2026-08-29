@@ -39,8 +39,8 @@ func buildHyperliquidProtectionPlan(sc StrategyConfig, pos *Position, liquidatio
 		slMult = v
 	} else if sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0 {
 		slMult = *sc.StopLossATRMult
-	} else if sc.StopLossATRRegime != nil && !sc.StopLossATRRegime.IsZero() {
-		if v, ok := resolveRegimeATR(*sc.StopLossATRRegime, positionATRRegimeLabel(pos, sc)); ok {
+	} else if sc.StopLossATRMultRegime != nil && !sc.StopLossATRMultRegime.IsZero() {
+		if v, ok := resolveRegimeATR(*sc.StopLossATRMultRegime, positionATRRegimeLabel(pos, sc)); ok {
 			slMult = v
 		}
 	}

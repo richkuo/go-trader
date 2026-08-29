@@ -119,11 +119,11 @@ func perpsRiskStopOwner(sc StrategyConfig) (riskStopOwner, string) {
 	if sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0 {
 		return riskStopOwnerFixedATR, ""
 	}
-	if sc.StopLossATRRegime.IsConfigured() {
-		return riskStopOwnerNone, "stop_loss_atr_regime resolves the SL from the regime stamped after open (#733)"
+	if sc.StopLossATRMultRegime.IsConfigured() {
+		return riskStopOwnerNone, "stop_loss_atr_mult_regime resolves the SL from the regime stamped after open (#733)"
 	}
-	if sc.TrailStopATRRegime.IsConfigured() {
-		return riskStopOwnerNone, "trail_stop_atr_regime resolves the SL from the regime stamped after open (#733)"
+	if sc.TrailingStopATRMultRegime.IsConfigured() {
+		return riskStopOwnerNone, "trailing_stop_atr_mult_regime resolves the SL from the regime stamped after open (#733)"
 	}
 	if sc.TrailingStopPct != nil {
 		if *sc.TrailingStopPct > 0 {

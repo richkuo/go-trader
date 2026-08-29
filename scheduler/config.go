@@ -228,7 +228,7 @@ type ManualDefaultsConfig struct {
 	Side            string         `json:"side,omitempty"`
 	TPTiers         []ManualTPTier `json:"tp_tiers,omitempty"`
 
-	TrailStopATRRegime *RegimeATRBlock `json:"trail_stop_atr_regime,omitempty"`
+	TrailingStopATRMultRegime *RegimeATRBlock `json:"trailing_stop_atr_mult_regime,omitempty"`
 }
 
 type ManualTPTier struct {
@@ -287,19 +287,19 @@ func (c *Config) resolveManualRatchetRegimeTrailBlock(sc StrategyConfig) (*Regim
 	}
 	if sc.StopLossATRMult != nil || sc.StopLossPct != nil || sc.StopLossMarginPct != nil ||
 		sc.TrailingStopPct != nil || sc.TrailingStopATRMult != nil ||
-		sc.StopLossATRRegime.IsConfigured() || sc.TrailStopATRRegime.IsConfigured() {
+		sc.StopLossATRMultRegime.IsConfigured() || sc.TrailingStopATRMultRegime.IsConfigured() {
 		return nil, false
 	}
 	labels := regimeLabelsForStrategyWindow(sc, c.Regime, "atr")
 	if len(labels) == 0 {
 		return nil, false
 	}
-	if md := c.userDefaultsManual(); md != nil && md.TrailStopATRRegime.IsConfigured() {
-		if block := cloneRegimeATRBlock(md.TrailStopATRRegime); block != nil {
+	if md := c.userDefaultsManual(); md != nil && md.TrailingStopATRMultRegime.IsConfigured() {
+		if block := cloneRegimeATRBlock(md.TrailingStopATRMultRegime); block != nil {
 			return block, true
 		}
 	}
-	if block, ok := userCloseDefaultTrailStopATRRegime(c.userDefaultsClose()); ok {
+	if block, ok := userCloseDefaultTrailingStopATRMultRegime(c.userDefaultsClose()); ok {
 		return block, true
 	}
 	for _, label := range labels {
@@ -513,8 +513,8 @@ type StrategyConfig struct {
 	TrailingStopPct             *float64                 `json:"trailing_stop_pct,omitempty"`
 	TrailingStopATRMult         *float64                 `json:"trailing_stop_atr_mult,omitempty"`
 	StopLossATRMult             *float64                 `json:"stop_loss_atr_mult,omitempty"`
-	StopLossATRRegime           *RegimeATRBlock          `json:"stop_loss_atr_regime,omitempty"`
-	TrailStopATRRegime          *RegimeATRBlock          `json:"trail_stop_atr_regime,omitempty"`
+	StopLossATRMultRegime       *RegimeATRBlock          `json:"stop_loss_atr_mult_regime,omitempty"`
+	TrailingStopATRMultRegime   *RegimeATRBlock          `json:"trailing_stop_atr_mult_regime,omitempty"`
 	TrailingStopMinMovePct      *float64                 `json:"trailing_stop_min_move_pct,omitempty"`
 	MarginMode                  string                   `json:"margin_mode,omitempty"`
 	ThetaHarvest                *ThetaHarvestConfig      `json:"theta_harvest,omitempty"`
@@ -741,10 +741,10 @@ func EffectiveStopLossPct(sc StrategyConfig) float64 {
 	if sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0 {
 		return 0
 	}
-	if sc.StopLossATRRegime != nil && !sc.StopLossATRRegime.IsZero() {
+	if sc.StopLossATRMultRegime != nil && !sc.StopLossATRMultRegime.IsZero() {
 		return 0
 	}
-	if sc.TrailStopATRRegime != nil && !sc.TrailStopATRRegime.IsZero() {
+	if sc.TrailingStopATRMultRegime != nil && !sc.TrailingStopATRMultRegime.IsZero() {
 		return 0
 	}
 	if sc.TrailingStopPct != nil {
@@ -842,6 +842,15 @@ func loadConfig(path string, skipLiveCredentialChecks bool) (*Config, error) {
 		data, err = os.ReadFile(path)
 		if err != nil {
 			return nil, fmt.Errorf("read config after v18 trail_stop_atr_regime migration: %w", err)
+		}
+	}
+	if needsV19AtrMultRegimeRename(data) {
+		if err := MigrateConfig(path, nil, nil); err != nil {
+			return nil, fmt.Errorf("v19 atr_mult_regime key migration: %w", err)
+		}
+		data, err = os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read config after v19 atr_mult_regime migration: %w", err)
 		}
 	}
 	var cfg Config
@@ -1013,7 +1022,7 @@ func loadConfig(path string, skipLiveCredentialChecks bool) (*Config, error) {
 			if sc.Type != "perps" || sc.Platform != "hyperliquid" {
 				continue
 			}
-			if sc.StopLossPct == nil && sc.StopLossMarginPct == nil && sc.TrailingStopPct == nil && sc.TrailingStopATRMult == nil && sc.StopLossATRMult == nil && !sc.StopLossATRRegime.IsConfigured() && !sc.TrailStopATRRegime.IsConfigured() && !strategyUsesUnifiedRegimeClose(*sc) {
+			if sc.StopLossPct == nil && sc.StopLossMarginPct == nil && sc.TrailingStopPct == nil && sc.TrailingStopATRMult == nil && sc.StopLossATRMult == nil && !sc.StopLossATRMultRegime.IsConfigured() && !sc.TrailingStopATRMultRegime.IsConfigured() && !strategyUsesUnifiedRegimeClose(*sc) {
 				defaultMult := defaultStopLossATRMult
 				sc.StopLossATRMult = &defaultMult
 				fmt.Printf("[INFO] %s: applied default stop_loss_atr_mult=%g (no stop fields set; set stop_loss_atr_mult=0 or default_stop_loss_atr_mult=0 to opt out)\n", sc.ID, defaultStopLossATRMult)
@@ -1042,8 +1051,8 @@ func loadConfig(path string, skipLiveCredentialChecks bool) (*Config, error) {
 		if sc.CloseStrategy == nil {
 			if block, ok := cfg.resolveManualRatchetRegimeTrailBlock(*sc); ok {
 				sc.CloseStrategy = &StrategyRef{Name: trailingTPRatchetRegimeCloseName}
-				sc.TrailStopATRRegime = block
-				fmt.Printf("[INFO] %s: manual close defaulted to %s (regime enabled; trail_stop_atr_regime owns the per-regime trail/SL)\n", sc.ID, trailingTPRatchetRegimeCloseName)
+				sc.TrailingStopATRMultRegime = block
+				fmt.Printf("[INFO] %s: manual close defaulted to %s (regime enabled; trailing_stop_atr_mult_regime owns the per-regime trail/SL)\n", sc.ID, trailingTPRatchetRegimeCloseName)
 			} else {
 				sc.CloseStrategy = &StrategyRef{Name: "tiered_tp_atr_live"}
 				if cfg.Regime != nil && cfg.Regime.Enabled {
@@ -1053,7 +1062,7 @@ func loadConfig(path string, skipLiveCredentialChecks bool) (*Config, error) {
 				}
 			}
 		}
-		if defaultStopLossATRMult > 0 && sc.StopLossATRMult == nil && sc.StopLossPct == nil && sc.StopLossMarginPct == nil && sc.TrailingStopPct == nil && sc.TrailingStopATRMult == nil && !sc.StopLossATRRegime.IsConfigured() && !sc.TrailStopATRRegime.IsConfigured() {
+		if defaultStopLossATRMult > 0 && sc.StopLossATRMult == nil && sc.StopLossPct == nil && sc.StopLossMarginPct == nil && sc.TrailingStopPct == nil && sc.TrailingStopATRMult == nil && !sc.StopLossATRMultRegime.IsConfigured() && !sc.TrailingStopATRMultRegime.IsConfigured() {
 			defaultMult := cfg.resolveManualStopLossATRMult()
 			if defaultMult > 0 {
 				sc.StopLossATRMult = &defaultMult
@@ -1617,7 +1626,7 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 				errs = append(errs, fmt.Sprintf("%s: allow_scale_in is only supported on hyperliquid (got platform %q)", prefix, sc.Platform))
 			}
 			if sc.Type == "perps" && sc.Platform == "hyperliquid" && hyperliquidIsLive(sc.Args) && !scaleInLiveProtectionResizable(sc) {
-				errs = append(errs, fmt.Sprintf("%s: allow_scale_in on live perps requires an ATR/regime or trailing stop-loss that can be re-sized after an add — stop_loss_pct/stop_loss_margin_pct and the max_drawdown fallback cannot (set stop_loss_atr_mult, stop_loss_atr_regime, or a trailing stop)", prefix))
+				errs = append(errs, fmt.Sprintf("%s: allow_scale_in on live perps requires an ATR/regime or trailing stop-loss that can be re-sized after an add — stop_loss_pct/stop_loss_margin_pct and the max_drawdown fallback cannot (set stop_loss_atr_mult, stop_loss_atr_mult_regime, or a trailing stop)", prefix))
 			}
 		}
 		if sc.ScaleIn != nil {
@@ -1832,9 +1841,9 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 			if sc.TrailingStopATRMult != nil {
 				atrMult = *sc.TrailingStopATRMult
 			}
-			regimeTrail := sc.TrailStopATRRegime.IsConfigured()
+			regimeTrail := sc.TrailingStopATRMultRegime.IsConfigured()
 			if fixedTrailingPct <= 0 && atrMult <= 0 && !regimeTrail {
-				errs = append(errs, fmt.Sprintf("%s: trailing_stop_min_move_pct requires trailing_stop_pct > 0, trailing_stop_atr_mult > 0, or trail_stop_atr_regime", prefix))
+				errs = append(errs, fmt.Sprintf("%s: trailing_stop_min_move_pct requires trailing_stop_pct > 0, trailing_stop_atr_mult > 0, or trailing_stop_atr_mult_regime", prefix))
 			}
 		}
 

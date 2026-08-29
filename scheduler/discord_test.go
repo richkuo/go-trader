@@ -2549,7 +2549,7 @@ func TestFormatTradeDM_RatchetShowsATRAndRungTargets(t *testing.T) {
 		Platform:      "hyperliquid",
 		Type:          "perps",
 		CloseStrategy: &StrategyRef{Name: "trailing_tp_ratchet_regime", Params: map[string]interface{}{"use_defaults": true}},
-		TrailStopATRRegime: &RegimeATRBlock{
+		TrailingStopATRMultRegime: &RegimeATRBlock{
 			UseDefaults: false,
 			TrendRegime: map[string]RegimeATREntry{
 				"ranging": {ATR: 2.5},
@@ -2693,7 +2693,7 @@ func TestFormatTradeDM_RatchetSuppressedOnScaleIn(t *testing.T) {
 		Platform:      "hyperliquid",
 		Type:          "perps",
 		CloseStrategy: &StrategyRef{Name: "trailing_tp_ratchet_regime", Params: map[string]interface{}{"use_defaults": true}},
-		TrailStopATRRegime: &RegimeATRBlock{
+		TrailingStopATRMultRegime: &RegimeATRBlock{
 			UseDefaults: false,
 			TrendRegime: map[string]RegimeATREntry{
 				"ranging": {ATR: 2.5},
@@ -2734,7 +2734,7 @@ func TestFormatTradeDM_RatchetSuppressedOnManualScaleIn(t *testing.T) {
 		Platform:      "hyperliquid",
 		Type:          "perps",
 		CloseStrategy: &StrategyRef{Name: "trailing_tp_ratchet_regime", Params: map[string]interface{}{"use_defaults": true}},
-		TrailStopATRRegime: &RegimeATRBlock{
+		TrailingStopATRMultRegime: &RegimeATRBlock{
 			UseDefaults: false,
 			TrendRegime: map[string]RegimeATREntry{
 				"ranging": {ATR: 2.5},
@@ -2772,7 +2772,7 @@ func TestFormatTradeDM_RatchetSuppressedOnManualLimitAdd(t *testing.T) {
 		Platform:      "hyperliquid",
 		Type:          "perps",
 		CloseStrategy: &StrategyRef{Name: "trailing_tp_ratchet_regime", Params: map[string]interface{}{"use_defaults": true}},
-		TrailStopATRRegime: &RegimeATRBlock{
+		TrailingStopATRMultRegime: &RegimeATRBlock{
 			UseDefaults: false,
 			TrendRegime: map[string]RegimeATREntry{
 				"ranging": {ATR: 2.5},
@@ -2811,7 +2811,7 @@ func TestFormatTradeDM_RatchetSuppressedOnNonDefaultATRWindow(t *testing.T) {
 		Type:            "perps",
 		RegimeATRWindow: "daily",
 		CloseStrategy:   &StrategyRef{Name: "trailing_tp_ratchet_regime", Params: map[string]interface{}{"use_defaults": true}},
-		TrailStopATRRegime: &RegimeATRBlock{
+		TrailingStopATRMultRegime: &RegimeATRBlock{
 			UseDefaults: false,
 			TrendRegime: map[string]RegimeATREntry{
 				"ranging": {ATR: 2.5},

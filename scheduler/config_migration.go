@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-const CurrentConfigVersion = 18
+const CurrentConfigVersion = 19
 
 const MinSupportedConfigVersion = 13
 
@@ -72,6 +72,7 @@ func configMigrationNotices(baseVersion int) []string {
 		{15, v15DeprecationNotice},
 		{17, v17ATRMethodNotice},
 		{18, v18TrailStopRenameNotice},
+		{19, v19AtrMultRenameNotice},
 	} {
 		if baseVersion < n.since {
 			notices = append(notices, n.notice)
@@ -199,6 +200,12 @@ func MigrateConfig(configPath string, fieldValues map[string]string, cfg *Config
 
 	if oldVer < 18 || hasLegacyTrailStopATRRegimeKey(raw) {
 		if err := migrateV18TrailStopATRRegimeKey(raw); err != nil {
+			return err
+		}
+	}
+
+	if oldVer < 19 || hasLegacyV19AtrMultRegimeKey(raw) {
+		if err := migrateV19AtrMultRegimeKey(raw); err != nil {
 			return err
 		}
 	}

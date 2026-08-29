@@ -95,7 +95,7 @@ func TestFormatClosingStrategiesResponseRatchetRegimeSLOverride(t *testing.T) {
 					"tp_tiers": []interface{}{
 						map[string]interface{}{"atr_multiple": 1.0, "trailing_stop_mult_after": 0.5},
 					},
-					"trail_stop_atr_regime": map[string]interface{}{
+					"trailing_stop_atr_mult_regime": map[string]interface{}{
 						"use_defaults": true,
 					},
 				},
@@ -103,8 +103,8 @@ func TestFormatClosingStrategiesResponseRatchetRegimeSLOverride(t *testing.T) {
 		},
 	}
 	body := formatClosingStrategiesResponse(cfgBoth, entries)[0]
-	if !strings.Contains(body, "tp_tiers=") || !strings.Contains(body, "trail_stop_atr_regime=") {
-		t.Fatalf("expected both tp_tiers and trail_stop_atr_regime surfaced, got: %s", body)
+	if !strings.Contains(body, "tp_tiers=") || !strings.Contains(body, "trailing_stop_atr_mult_regime=") {
+		t.Fatalf("expected both tp_tiers and trailing_stop_atr_mult_regime surfaced, got: %s", body)
 	}
 	if strings.Count(body, "user_defaults.close override") != 2 {
 		t.Fatalf("expected both override keys marked as overrides, got: %s", body)
@@ -125,15 +125,15 @@ func TestFormatClosingStrategiesResponseRatchetRegimeSLOverride(t *testing.T) {
 		},
 	}
 	body = formatClosingStrategiesResponse(cfgTPOnly, entries)[0]
-	if strings.Contains(body, "trail_stop_atr_regime") {
-		t.Fatalf("no trail_stop_atr_regime configured — must not emit a spurious SL line, got: %s", body)
+	if strings.Contains(body, "trailing_stop_atr_mult_regime") {
+		t.Fatalf("no trailing_stop_atr_mult_regime configured — must not emit a spurious SL line, got: %s", body)
 	}
 	if !strings.Contains(body, "tp_tiers=") || !strings.Contains(body, "user_defaults.close override") {
 		t.Fatalf("expected tp_tiers override surfaced, got: %s", body)
 	}
 
 	body = formatClosingStrategiesResponse(&Config{}, entries)[0]
-	if strings.Contains(body, "override") || strings.Contains(body, "trail_stop_atr_regime") {
+	if strings.Contains(body, "override") || strings.Contains(body, "trailing_stop_atr_mult_regime") {
 		t.Fatalf("no user_defaults.close entry exists — must not claim any override, got: %s", body)
 	}
 }

@@ -34,7 +34,7 @@ def tiered_regime():
 
 def test_use_defaults_expands(regime_atr):
     block, errs = regime_atr.parse_regime_atr_block(
-        {"use_defaults": True}, "stop_loss_atr_regime", regime_atr.SURFACE_STOP_LOSS
+        {"use_defaults": True}, "stop_loss_atr_mult_regime", regime_atr.SURFACE_STOP_LOSS
     )
     assert errs == []
     assert block.use_defaults
@@ -45,7 +45,7 @@ def test_use_defaults_expands(regime_atr):
 
 def test_trailing_use_defaults_composite(regime_atr):
     block, errs = regime_atr.parse_regime_atr_block(
-        {"use_defaults": True}, "trail_stop_atr_regime", regime_atr.SURFACE_TRAILING
+        {"use_defaults": True}, "trailing_stop_atr_mult_regime", regime_atr.SURFACE_TRAILING
     )
     assert errs == []
     for label in ("trending_up_clean", "trending_down_clean"):
@@ -65,7 +65,7 @@ def test_rejects_bare_label_keys(regime_atr):
         "ranging": {"atr_multiple": 1.5},
     }
     _, errs = regime_atr.parse_regime_atr_block(
-        raw, "stop_loss_atr_regime", regime_atr.SURFACE_STOP_LOSS
+        raw, "stop_loss_atr_mult_regime", regime_atr.SURFACE_STOP_LOSS
     )
     assert any("trend_regime" in e or "unknown key" in e for e in errs)
 
@@ -78,7 +78,7 @@ def test_requires_exhaustive_labels(regime_atr):
         }
     }
     _, errs = regime_atr.parse_regime_atr_block(
-        raw, "stop_loss_atr_regime", regime_atr.SURFACE_STOP_LOSS
+        raw, "stop_loss_atr_mult_regime", regime_atr.SURFACE_STOP_LOSS
     )
     assert any("missing required regime labels" in e and "trending_down" in e for e in errs)
 
@@ -92,7 +92,7 @@ def test_close_fraction_rejected_on_stop_loss_surface(regime_atr):
         }
     }
     _, errs = regime_atr.parse_regime_atr_block(
-        raw, "stop_loss_atr_regime", regime_atr.SURFACE_STOP_LOSS
+        raw, "stop_loss_atr_mult_regime", regime_atr.SURFACE_STOP_LOSS
     )
     assert any("close_fraction" in e for e in errs)
 
@@ -107,7 +107,7 @@ def test_use_defaults_and_explicit_mutex(regime_atr):
         },
     }
     _, errs = regime_atr.parse_regime_atr_block(
-        raw, "stop_loss_atr_regime", regime_atr.SURFACE_STOP_LOSS
+        raw, "stop_loss_atr_mult_regime", regime_atr.SURFACE_STOP_LOSS
     )
     assert any("use_defaults is all-or-nothing" in e for e in errs)
 
@@ -165,7 +165,7 @@ def test_atr_multiple_canonical_only(regime_atr):
         }
     }
     block, errs = regime_atr.parse_regime_atr_block(
-        block_raw, "stop_loss_atr_regime", regime_atr.SURFACE_STOP_LOSS
+        block_raw, "stop_loss_atr_mult_regime", regime_atr.SURFACE_STOP_LOSS
     )
     assert errs == []
     assert block.trend_regime["trending_up"].atr == 2.0
@@ -179,7 +179,7 @@ def test_atr_multiple_canonical_only(regime_atr):
         }
     }
     _, legacy_errs = regime_atr.parse_regime_atr_block(
-        legacy, "stop_loss_atr_regime", regime_atr.SURFACE_STOP_LOSS
+        legacy, "stop_loss_atr_mult_regime", regime_atr.SURFACE_STOP_LOSS
     )
     assert legacy_errs
 
@@ -191,7 +191,7 @@ def test_atr_multiple_canonical_only(regime_atr):
         }
     }
     _, errs = regime_atr.parse_regime_atr_block(
-        both, "stop_loss_atr_regime", regime_atr.SURFACE_STOP_LOSS
+        both, "stop_loss_atr_mult_regime", regime_atr.SURFACE_STOP_LOSS
     )
     assert errs, "expected error when both atr_multiple and atr are set"
 
@@ -220,7 +220,7 @@ def _composite_block_atr(atr, omit=()):
 def test_composite_bare_directional_covers_sublabels(regime_atr):
     raw = _composite_block_atr(1.5, omit=("ranging_directional_up", "ranging_directional_down"))
     block, errs = regime_atr.parse_regime_atr_block(
-        raw, "stop_loss_atr_regime", regime_atr.SURFACE_STOP_LOSS,
+        raw, "stop_loss_atr_mult_regime", regime_atr.SURFACE_STOP_LOSS,
         labels=_COMPOSITE_LABELS_1124,
     )
     assert errs == [], errs
@@ -232,7 +232,7 @@ def test_composite_bare_directional_covers_sublabels(regime_atr):
 def test_composite_sublabels_without_bare_rejected(regime_atr):
     raw = _composite_block_atr(1.5, omit=("ranging_directional",))
     _, errs = regime_atr.parse_regime_atr_block(
-        raw, "stop_loss_atr_regime", regime_atr.SURFACE_STOP_LOSS,
+        raw, "stop_loss_atr_mult_regime", regime_atr.SURFACE_STOP_LOSS,
         labels=_COMPOSITE_LABELS_1124,
     )
     assert any(
@@ -244,7 +244,7 @@ def test_composite_explicit_sublabel_wins_over_bare(regime_atr):
     raw = _composite_block_atr(1.5)
     raw[regime_atr.REGIME_CLASSIFIER_KEY]["ranging_directional_up"] = {"atr_multiple": 0.9}
     block, errs = regime_atr.parse_regime_atr_block(
-        raw, "stop_loss_atr_regime", regime_atr.SURFACE_STOP_LOSS,
+        raw, "stop_loss_atr_mult_regime", regime_atr.SURFACE_STOP_LOSS,
         labels=_COMPOSITE_LABELS_1124,
     )
     assert errs == [], errs

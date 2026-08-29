@@ -531,9 +531,9 @@ func manualOpenCore(d manualCoreDeps, sc StrategyConfig, in manualOpenInputs) (*
 
 	ratchetFallbackNormalizePending := false
 	if effectiveATRMult == 0 && !in.RecordOnly && strategyUsesTrailingTPRatchetClose(sc) &&
-		sc.TrailStopATRRegime != nil && sc.TrailStopATRRegime.IsConfigured() {
+		sc.TrailingStopATRMultRegime != nil && sc.TrailingStopATRMultRegime.IsConfigured() {
 		label := resolveManualRatchetRegimeLabel(sc, cfg, notifier)
-		mult, fellBack := manualRatchetOpeningTrailOrFallback(sc.TrailStopATRRegime, label, cfg.resolveManualRatchetFallbackATRMult())
+		mult, fellBack := manualRatchetOpeningTrailOrFallback(sc.TrailingStopATRMultRegime, label, cfg.resolveManualRatchetFallbackATRMult())
 		effectiveATRMult = mult
 		ratchetFallbackNormalizePending = fellBack
 		if fellBack {

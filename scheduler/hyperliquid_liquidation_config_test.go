@@ -350,27 +350,27 @@ func TestHLBankruptcyBoundPreflightMatchesGoCheckLoadTimeResolution(t *testing.T
 				c.UserDefaults = &UserDefaultsConfig{Close: CloseDefaultsMap{
 					trailingTPRatchetRegimeCloseName: map[string]interface{}{
 						"tp_tiers":              ratchetRegimeUserTiers(),
-						"trail_stop_atr_regime": ratchetRegimeTrailRaw(2.25, 2.25, 1.25),
+						"trailing_stop_atr_mult_regime": ratchetRegimeTrailRaw(2.25, 2.25, 1.25),
 					},
 				}}
 			},
 			goRejects: false,
 		},
 		{
-			name: "explicit stop_loss_atr_regime owns the stop",
+			name: "explicit stop_loss_atr_mult_regime owns the stop",
 			mutate: func(c *Config) {
 				c.DefaultStopLossATRMult = floatPtr(0)
 				c.Regime = &RegimeConfig{Enabled: true, Period: 14, ADXThreshold: 20}
-				c.Strategies[0].StopLossATRRegime = regimeATRBlockFromRaw(ratchetRegimeTrailRaw(2.0, 2.0, 1.5))
+				c.Strategies[0].StopLossATRMultRegime = regimeATRBlockFromRaw(ratchetRegimeTrailRaw(2.0, 2.0, 1.5))
 			},
 			goRejects: false,
 		},
 		{
-			name: "explicit trail_stop_atr_regime owns the stop",
+			name: "explicit trailing_stop_atr_mult_regime owns the stop",
 			mutate: func(c *Config) {
 				c.DefaultStopLossATRMult = floatPtr(0)
 				c.Regime = &RegimeConfig{Enabled: true, Period: 14, ADXThreshold: 20}
-				c.Strategies[0].TrailStopATRRegime = regimeATRBlockFromRaw(ratchetRegimeTrailRaw(2.0, 2.0, 1.5))
+				c.Strategies[0].TrailingStopATRMultRegime = regimeATRBlockFromRaw(ratchetRegimeTrailRaw(2.0, 2.0, 1.5))
 			},
 			goRejects: false,
 		},

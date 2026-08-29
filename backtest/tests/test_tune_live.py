@@ -265,7 +265,7 @@ def test_stage1_skip_composite_only_when_gate_active():
 
 
 @pytest.mark.parametrize("resolution,expected", [
-    ({"stop_loss_atr_regime": {"x": 1}}, "unsupported_stop:stop_loss_atr_regime"),
+    ({"stop_loss_atr_mult_regime": {"x": 1}}, "unsupported_stop:stop_loss_atr_mult_regime"),
     ({"stop_loss_pct": 0.05}, "unsupported_stop:stop_loss_pct"),
     ({"regime_directional_policy": {"x": 1}}, "unsupported_regime_directional_policy"),
     ({"profile_allocation": {"x": 1}}, "unsupported_profile_allocation"),

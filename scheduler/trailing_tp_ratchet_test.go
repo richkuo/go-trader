@@ -338,11 +338,11 @@ func TestValidateTrailingTPRatchetClose_RejectsFixedStopLossOwners(t *testing.T)
 			want: "cannot combine with stop_loss_atr_mult",
 		},
 		{
-			name: "stop_loss_atr_regime",
+			name: "stop_loss_atr_mult_regime",
 			edit: func(sc *StrategyConfig) {
-				sc.StopLossATRRegime = &RegimeATRBlock{UseDefaults: true}
+				sc.StopLossATRMultRegime = &RegimeATRBlock{UseDefaults: true}
 			},
-			want: "cannot combine with stop_loss_atr_regime",
+			want: "cannot combine with stop_loss_atr_mult_regime",
 		},
 	}
 	for _, tc := range cases {
@@ -400,7 +400,7 @@ func TestValidateTrailingTPRatchetClose_CompositeVocabulary(t *testing.T) {
 	scOK := StrategyConfig{
 		ID: "hl-comp", Type: "perps", Platform: "hyperliquid",
 		RegimeATRWindow:    "daily",
-		TrailStopATRRegime: &RegimeATRBlock{raw: composite7StateATR(3.0)},
+		TrailingStopATRMultRegime: &RegimeATRBlock{raw: composite7StateATR(3.0)},
 		CloseStrategy: &StrategyRef{
 			Name:   "trailing_tp_ratchet_regime",
 			Params: map[string]interface{}{"tp_tiers": compositeTable(composite)},
@@ -415,7 +415,7 @@ func TestValidateTrailingTPRatchetClose_CompositeVocabulary(t *testing.T) {
 	scBad := StrategyConfig{
 		ID: "hl-comp-bad", Type: "perps", Platform: "hyperliquid",
 		RegimeATRWindow:    "daily",
-		TrailStopATRRegime: &RegimeATRBlock{raw: composite7StateATR(3.0)},
+		TrailingStopATRMultRegime: &RegimeATRBlock{raw: composite7StateATR(3.0)},
 		CloseStrategy: &StrategyRef{
 			Name:   "trailing_tp_ratchet_regime",
 			Params: map[string]interface{}{"tp_tiers": bad},
@@ -545,7 +545,7 @@ func TestValidateTrailingTPRatchetClose_DefaultRespectsInitialTrail(t *testing.T
 func TestValidateTrailingTPRatchetClose_RegimeOmittedTiersUsesDefault(t *testing.T) {
 	sc := StrategyConfig{
 		ID: "s1", Type: "perps", Platform: "hyperliquid",
-		TrailStopATRRegime: &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{
+		TrailingStopATRMultRegime: &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{
 			"trending_up":   {ATR: 2.0},
 			"trending_down": {ATR: 2.0},
 			"ranging":       {ATR: 1.5},
@@ -637,7 +637,7 @@ func TestValidateTrailingTPRatchetClose_RegimeRejectsScalarMult(t *testing.T) {
 	sc := StrategyConfig{
 		ID: "s1", Type: "perps", Platform: "hyperliquid",
 		TrailingStopATRMult: &trail,
-		TrailStopATRRegime: &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{
+		TrailingStopATRMultRegime: &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{
 			"trending_up": {ATR: 2.0}, "trending_down": {ATR: 2.0}, "ranging": {ATR: 1.5},
 		}},
 		CloseStrategy: &StrategyRef{Name: "trailing_tp_ratchet_regime", Params: map[string]interface{}{"use_defaults": true}},
@@ -659,7 +659,7 @@ func TestValidateTrailingTPRatchetClose_RegimePerKeyInitialTrail(t *testing.T) {
 	}
 	sc := StrategyConfig{
 		ID: "s1", Type: "perps", Platform: "hyperliquid",
-		TrailStopATRRegime: &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{
+		TrailingStopATRMultRegime: &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{
 			"trending_up": {ATR: 3.0}, "trending_down": {ATR: 3.0}, "ranging": {ATR: 1.0},
 		}},
 		CloseStrategy: &StrategyRef{Name: "trailing_tp_ratchet_regime", Params: map[string]interface{}{"tp_tiers": table}},
@@ -676,7 +676,7 @@ func TestValidateTrailingTPRatchetClose_RegimePerKeyInitialTrail(t *testing.T) {
 func TestValidateTrailingTPRatchetClose_ManualRegimeRatchet(t *testing.T) {
 	sc := StrategyConfig{
 		ID: "hl-man", Type: "manual", Platform: "hyperliquid",
-		TrailStopATRRegime: &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{
+		TrailingStopATRMultRegime: &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{
 			"trending_up": {ATR: 2.0}, "trending_down": {ATR: 2.0}, "ranging": {ATR: 1.5},
 		}},
 		CloseStrategy: &StrategyRef{Name: "trailing_tp_ratchet_regime", Params: map[string]interface{}{"use_defaults": true}},
@@ -761,7 +761,7 @@ func TestValidateRegimeRatchet_AllDefaultsCompositeValidates(t *testing.T) {
 	sc := StrategyConfig{
 		ID: "hl-allc", Type: "perps", Platform: "hyperliquid",
 		RegimeATRWindow:    "daily",
-		TrailStopATRRegime: &RegimeATRBlock{raw: map[string]interface{}{"use_defaults": true}},
+		TrailingStopATRMultRegime: &RegimeATRBlock{raw: map[string]interface{}{"use_defaults": true}},
 		CloseStrategy: &StrategyRef{
 			Name:   "trailing_tp_ratchet_regime",
 			Params: map[string]interface{}{"use_defaults": true},

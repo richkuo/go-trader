@@ -153,7 +153,7 @@ def test_rejects_regime_resolved_stop_owner():
     with pytest.raises(ValueError, match="regime-resolved"):
         Backtester(
             risk_per_trade_pct=1.0,
-            stop_loss_atr_regime={"use_defaults": True},
+            stop_loss_atr_mult_regime={"use_defaults": True},
         )
 
 

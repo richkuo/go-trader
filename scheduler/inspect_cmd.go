@@ -163,20 +163,20 @@ func resolveStopLoss(sc StrategyConfig, explicit map[string]bool) stopLossResolu
 			Explicit: explicit["stop_loss_atr_mult"],
 		}
 	}
-	if sc.StopLossATRRegime != nil && !sc.StopLossATRRegime.IsZero() {
+	if sc.StopLossATRMultRegime != nil && !sc.StopLossATRMultRegime.IsZero() {
 		return stopLossResolution{
-			Source:   "stop_loss_atr_regime",
+			Source:   "stop_loss_atr_mult_regime",
 			Value:    fmt.Sprintf("regime-aware fixed ATR (deferred until EntryATR + %s stamped)", regimeClassifierKey),
-			Explicit: explicit["stop_loss_atr_regime"],
-			Detail:   formatRegimeATRInspectDetail("stop_loss_atr_regime", *sc.StopLossATRRegime, explicit["stop_loss_atr_regime"]),
+			Explicit: explicit["stop_loss_atr_mult_regime"],
+			Detail:   formatRegimeATRInspectDetail("stop_loss_atr_mult_regime", *sc.StopLossATRMultRegime, explicit["stop_loss_atr_mult_regime"]),
 		}
 	}
-	if sc.TrailStopATRRegime != nil && !sc.TrailStopATRRegime.IsZero() {
+	if sc.TrailingStopATRMultRegime != nil && !sc.TrailingStopATRMultRegime.IsZero() {
 		return stopLossResolution{
-			Source:   "trail_stop_atr_regime",
+			Source:   "trailing_stop_atr_mult_regime",
 			Value:    fmt.Sprintf("regime-aware trailing ATR (deferred until EntryATR + %s stamped)", regimeClassifierKey),
-			Explicit: explicit["trail_stop_atr_regime"],
-			Detail:   formatRegimeATRInspectDetail("trail_stop_atr_regime", *sc.TrailStopATRRegime, explicit["trail_stop_atr_regime"]),
+			Explicit: explicit["trailing_stop_atr_mult_regime"],
+			Detail:   formatRegimeATRInspectDetail("trailing_stop_atr_mult_regime", *sc.TrailingStopATRMultRegime, explicit["trailing_stop_atr_mult_regime"]),
 		}
 	}
 	if sc.TrailingStopPct != nil {

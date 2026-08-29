@@ -16,9 +16,9 @@ var closeDefaultsSupported = map[string]struct{}{
 }
 
 const (
-	userCloseDefaultTrailStopATRRegimeKey = trailStopATRRegimeKey
-	userCloseDefaultStopLossATRRegimeKey  = "stop_loss_atr_regime"
-	userCloseDefaultRegimeATRKey          = "regime_atr"
+	userCloseDefaultTrailingStopATRMultRegimeKey = v19TrailingStopATRMultRegimeKey
+	userCloseDefaultStopLossATRMultRegimeKey     = v19StopLossATRMultRegimeKey
+	userCloseDefaultRegimeATRKey                 = "regime_atr"
 )
 
 func closeDefaultsTierEvaluator(name string) bool {
@@ -93,11 +93,11 @@ func validateUserCloseDefaults(defaults CloseDefaultsMap) []string {
 			if k == "tp_tiers" {
 				continue
 			}
-			if normName == trailingTPRatchetRegimeCloseName && k == userCloseDefaultTrailStopATRRegimeKey {
+			if normName == trailingTPRatchetRegimeCloseName && k == userCloseDefaultTrailingStopATRMultRegimeKey {
 				continue
 			}
 			if normName == trailingTPRatchetRegimeCloseName {
-				errs = append(errs, fmt.Sprintf("user_defaults.close[%q]: unknown key %q (only tp_tiers and trail_stop_atr_regime are allowed)", name, k))
+				errs = append(errs, fmt.Sprintf("user_defaults.close[%q]: unknown key %q (only tp_tiers and trailing_stop_atr_mult_regime are allowed)", name, k))
 			} else {
 				errs = append(errs, fmt.Sprintf("user_defaults.close[%q]: unknown key %q (only tp_tiers is allowed)", name, k))
 			}
@@ -109,8 +109,8 @@ func validateUserCloseDefaults(defaults CloseDefaultsMap) []string {
 		}
 		errs = append(errs, validateUserCloseDefaultTiers(name, tp)...)
 		if normName == trailingTPRatchetRegimeCloseName {
-			if raw, ok := entry[userCloseDefaultTrailStopATRRegimeKey]; ok {
-				errs = append(errs, validateUserCloseDefaultTrailStopATRRegime(name, raw)...)
+			if raw, ok := entry[userCloseDefaultTrailingStopATRMultRegimeKey]; ok {
+				errs = append(errs, validateUserCloseDefaultTrailingStopATRMultRegime(name, raw)...)
 			}
 		}
 	}
@@ -172,19 +172,19 @@ func validateUserDefaultRegimeATR(entry map[string]interface{}) []string {
 	}
 	var errs []string
 	allowed := map[string]bool{
-		userCloseDefaultStopLossATRRegimeKey:  true,
-		userCloseDefaultTrailStopATRRegimeKey: true,
+		userCloseDefaultStopLossATRMultRegimeKey:  true,
+		userCloseDefaultTrailingStopATRMultRegimeKey: true,
 	}
 	for k := range entry {
 		if !allowed[k] {
-			errs = append(errs, fmt.Sprintf("user_defaults.regime_atr: unknown key %q (only stop_loss_atr_regime and trail_stop_atr_regime are allowed)", k))
+			errs = append(errs, fmt.Sprintf("user_defaults.regime_atr: unknown key %q (only stop_loss_atr_mult_regime and trailing_stop_atr_mult_regime are allowed)", k))
 		}
 	}
-	if raw, ok := entry[userCloseDefaultStopLossATRRegimeKey]; ok {
-		errs = append(errs, validateUserCloseDefaultRegimeATRSubBlock(userCloseDefaultStopLossATRRegimeKey, raw, regimeSurfaceStopLoss)...)
+	if raw, ok := entry[userCloseDefaultStopLossATRMultRegimeKey]; ok {
+		errs = append(errs, validateUserCloseDefaultRegimeATRSubBlock(userCloseDefaultStopLossATRMultRegimeKey, raw, regimeSurfaceStopLoss)...)
 	}
-	if raw, ok := entry[userCloseDefaultTrailStopATRRegimeKey]; ok {
-		errs = append(errs, validateUserCloseDefaultRegimeATRSubBlock(userCloseDefaultTrailStopATRRegimeKey, raw, regimeSurfaceTrailing)...)
+	if raw, ok := entry[userCloseDefaultTrailingStopATRMultRegimeKey]; ok {
+		errs = append(errs, validateUserCloseDefaultRegimeATRSubBlock(userCloseDefaultTrailingStopATRMultRegimeKey, raw, regimeSurfaceTrailing)...)
 	}
 	return errs
 }
@@ -212,8 +212,8 @@ func validateUserCloseDefaultRegimeATRSubBlock(subKey string, raw interface{}, s
 	return errs
 }
 
-func validateUserCloseDefaultTrailStopATRRegime(name string, raw interface{}) []string {
-	ctx := fmt.Sprintf("user_defaults.close[%q].%s", name, userCloseDefaultTrailStopATRRegimeKey)
+func validateUserCloseDefaultTrailingStopATRMultRegime(name string, raw interface{}) []string {
+	ctx := fmt.Sprintf("user_defaults.close[%q].%s", name, userCloseDefaultTrailingStopATRMultRegimeKey)
 	block, ok := raw.(map[string]interface{})
 	if !ok || block == nil {
 		return []string{ctx + ": must be an object"}
@@ -257,12 +257,12 @@ func applyUserCloseDefaultsToRef(ref *StrategyRef, defaults CloseDefaultsMap) bo
 	return true
 }
 
-func userCloseDefaultTrailStopATRRegime(defaults CloseDefaultsMap) (*RegimeATRBlock, bool) {
+func userCloseDefaultTrailingStopATRMultRegime(defaults CloseDefaultsMap) (*RegimeATRBlock, bool) {
 	entry, ok := closeDefaultsEntry(defaults, trailingTPRatchetRegimeCloseName)
 	if !ok {
 		return nil, false
 	}
-	raw, ok := entry[userCloseDefaultTrailStopATRRegimeKey]
+	raw, ok := entry[userCloseDefaultTrailingStopATRMultRegimeKey]
 	if !ok || raw == nil {
 		return nil, false
 	}
@@ -317,13 +317,13 @@ func parseUserCloseDefaultRegimeATR(entry map[string]interface{}) (userCloseDefa
 	}
 	var out userCloseDefaultRegimeATRBlocks
 	found := false
-	if raw, ok := entry[userCloseDefaultStopLossATRRegimeKey]; ok && raw != nil {
+	if raw, ok := entry[userCloseDefaultStopLossATRMultRegimeKey]; ok && raw != nil {
 		if blockRaw, ok := raw.(map[string]interface{}); ok && blockRaw != nil {
 			out.stopLoss = &RegimeATRBlock{raw: cloneInterfaceMap(blockRaw)}
 			found = true
 		}
 	}
-	if raw, ok := entry[userCloseDefaultTrailStopATRRegimeKey]; ok && raw != nil {
+	if raw, ok := entry[userCloseDefaultTrailingStopATRMultRegimeKey]; ok && raw != nil {
 		if blockRaw, ok := raw.(map[string]interface{}); ok && blockRaw != nil {
 			out.trailing = &RegimeATRBlock{raw: cloneInterfaceMap(blockRaw)}
 			found = true
@@ -341,12 +341,12 @@ func applyUserCloseDefaultRegimeATR(sc *StrategyConfig, defaults map[string]inte
 		return false
 	}
 	injected := false
-	if sc.StopLossATRRegime != nil && regimeATRBlockIsUseDefaultsOnly(sc.StopLossATRRegime) && udef.stopLoss != nil {
-		sc.StopLossATRRegime = cloneRegimeATRBlock(udef.stopLoss)
+	if sc.StopLossATRMultRegime != nil && regimeATRBlockIsUseDefaultsOnly(sc.StopLossATRMultRegime) && udef.stopLoss != nil {
+		sc.StopLossATRMultRegime = cloneRegimeATRBlock(udef.stopLoss)
 		injected = true
 	}
-	if sc.TrailStopATRRegime != nil && regimeATRBlockIsUseDefaultsOnly(sc.TrailStopATRRegime) && udef.trailing != nil {
-		sc.TrailStopATRRegime = cloneRegimeATRBlock(udef.trailing)
+	if sc.TrailingStopATRMultRegime != nil && regimeATRBlockIsUseDefaultsOnly(sc.TrailingStopATRMultRegime) && udef.trailing != nil {
+		sc.TrailingStopATRMultRegime = cloneRegimeATRBlock(udef.trailing)
 		injected = true
 	}
 	return injected
@@ -377,8 +377,8 @@ func strategyHasExplicitStopOwner(sc StrategyConfig) bool {
 		sc.TrailingStopPct != nil ||
 		sc.TrailingStopATRMult != nil ||
 		sc.StopLossATRMult != nil ||
-		sc.StopLossATRRegime.IsConfigured() ||
-		sc.TrailStopATRRegime.IsConfigured() ||
+		sc.StopLossATRMultRegime.IsConfigured() ||
+		sc.TrailingStopATRMultRegime.IsConfigured() ||
 		strategyUsesUnifiedRegimeClose(sc)
 }
 
@@ -386,11 +386,11 @@ func applyUserCloseDefaultRatchetRegimeTrail(sc *StrategyConfig, defaults CloseD
 	if sc == nil || !strategyUsesTrailingTPRatchetRegimeClose(*sc) || strategyHasExplicitStopOwner(*sc) {
 		return false
 	}
-	block, ok := userCloseDefaultTrailStopATRRegime(defaults)
+	block, ok := userCloseDefaultTrailingStopATRMultRegime(defaults)
 	if !ok {
 		return false
 	}
-	sc.TrailStopATRRegime = block
+	sc.TrailingStopATRMultRegime = block
 	return true
 }
 

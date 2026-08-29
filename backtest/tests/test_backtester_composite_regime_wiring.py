@@ -635,7 +635,7 @@ def test_regime_primary_labels_helper():
 
 
 def _bt_with_sl_regime(spec, block, *, trailing=False):
-    kw = {"trail_stop_atr_regime": block} if trailing else {"stop_loss_atr_regime": block}
+    kw = {"trailing_stop_atr_mult_regime": block} if trailing else {"stop_loss_atr_mult_regime": block}
     return Backtester(initial_capital=1000.0, regime_enabled=True,
                       regime_windows_spec=spec, **kw)
 
@@ -686,7 +686,7 @@ def test_validator_accepts_composite_sl_with_sl_after():
     bt = Backtester(
         initial_capital=1000.0, regime_enabled=True,
         regime_windows_spec=COMPOSITE_SPEC,
-        stop_loss_atr_regime=_COMPOSITE_SL_BLOCK,
+        stop_loss_atr_mult_regime=_COMPOSITE_SL_BLOCK,
         close_strategies=[close_ref],
     )
     assert bt._stop_loss_regime_block.resolve("ranging_volatile").atr == 1.5

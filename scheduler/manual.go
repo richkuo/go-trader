@@ -851,7 +851,7 @@ func resolveManualRatchetRegimeLabel(sc StrategyConfig, cfg *Config, notifier *M
 	if cfg == nil || cfg.Regime == nil || !cfg.Regime.Enabled {
 		return ""
 	}
-	if !strategyUsesTrailingTPRatchetClose(sc) || sc.TrailStopATRRegime == nil || !sc.TrailStopATRRegime.IsConfigured() {
+	if !strategyUsesTrailingTPRatchetClose(sc) || sc.TrailingStopATRMultRegime == nil || !sc.TrailingStopATRMultRegime.IsConfigured() {
 		return ""
 	}
 	logger := &StrategyLogger{stratID: sc.ID, writer: os.Stderr}

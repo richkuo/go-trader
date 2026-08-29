@@ -318,7 +318,7 @@ func TestResolveStopLossRegimeFixedInspectDetail(t *testing.T) {
 	sc := StrategyConfig{
 		Type:     "perps",
 		Platform: "hyperliquid",
-		StopLossATRRegime: &RegimeATRBlock{
+		StopLossATRMultRegime: &RegimeATRBlock{
 			UseDefaults: true,
 			TrendRegime: map[string]RegimeATREntry{
 				"trending_up":   {ATR: 2.0},
@@ -327,8 +327,8 @@ func TestResolveStopLossRegimeFixedInspectDetail(t *testing.T) {
 			},
 		},
 	}
-	res := resolveStopLoss(sc, map[string]bool{"stop_loss_atr_regime": true})
-	if res.Source != "stop_loss_atr_regime" {
+	res := resolveStopLoss(sc, map[string]bool{"stop_loss_atr_mult_regime": true})
+	if res.Source != "stop_loss_atr_mult_regime" {
 		t.Fatalf("source=%q", res.Source)
 	}
 	if len(res.Detail) != 1 || !strings.Contains(res.Detail[0], "use_defaults baseline") {

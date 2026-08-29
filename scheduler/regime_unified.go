@@ -105,12 +105,12 @@ func validateUnifiedCloseSoleOwner(sc StrategyConfig, ctxLabel string) []string 
 		}
 	}
 	conflict(sc.StopLossATRMult != nil, "stop_loss_atr_mult")
-	conflict(sc.StopLossATRRegime != nil && !sc.StopLossATRRegime.IsZero(), "stop_loss_atr_regime")
+	conflict(sc.StopLossATRMultRegime != nil && !sc.StopLossATRMultRegime.IsZero(), "stop_loss_atr_mult_regime")
 	conflict(sc.StopLossPct != nil, "stop_loss_pct")
 	conflict(sc.StopLossMarginPct != nil, "stop_loss_margin_pct")
 	conflict(sc.TrailingStopATRMult != nil, "trailing_stop_atr_mult")
 	conflict(sc.TrailingStopPct != nil, "trailing_stop_pct")
-	conflict(sc.TrailStopATRRegime != nil && !sc.TrailStopATRRegime.IsZero(), "trail_stop_atr_regime")
+	conflict(sc.TrailingStopATRMultRegime != nil && !sc.TrailingStopATRMultRegime.IsZero(), "trailing_stop_atr_mult_regime")
 	return errs
 }
 

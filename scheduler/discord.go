@@ -1223,8 +1223,8 @@ func tradeAlertInitialTrailMult(sc StrategyConfig, trade Trade) float64 {
 	if sc.TrailingStopATRMult != nil && *sc.TrailingStopATRMult > 0 {
 		return *sc.TrailingStopATRMult
 	}
-	if sc.TrailStopATRRegime != nil && !sc.TrailStopATRRegime.IsZero() && trade.Regime != "" {
-		if v, ok := resolveRegimeATR(*sc.TrailStopATRRegime, trade.Regime); ok {
+	if sc.TrailingStopATRMultRegime != nil && !sc.TrailingStopATRMultRegime.IsZero() && trade.Regime != "" {
+		if v, ok := resolveRegimeATR(*sc.TrailingStopATRMultRegime, trade.Regime); ok {
 			return v
 		}
 	}

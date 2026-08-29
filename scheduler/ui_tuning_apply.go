@@ -369,6 +369,15 @@ func normalizeLegacyTrailStopKeyJSON(raw json.RawMessage) json.RawMessage {
 	return json.RawMessage(out)
 }
 
+var atrRegimeKeyRenames = []struct {
+	LegacyKey string
+	CanonKey  string
+}{
+	{legacyTrailStopATRRegimeKey, v19TrailingStopATRMultRegimeKey},
+	{trailStopATRRegimeKey, v19TrailingStopATRMultRegimeKey},
+	{v19LegacyStopLossATRRegimeKey, v19StopLossATRMultRegimeKey},
+}
+
 func normalizeLegacyTrailStopKeyValue(v any) (any, bool) {
 	switch t := v.(type) {
 	case map[string]any:
@@ -379,12 +388,20 @@ func normalizeLegacyTrailStopKeyValue(v any) (any, bool) {
 			if sub {
 				changed = true
 			}
-			if k == legacyTrailStopATRRegimeKey {
-				changed = true
-				if _, canonicalPresent := t[trailStopATRRegimeKey]; canonicalPresent {
+			renamed := false
+			for _, pair := range atrRegimeKeyRenames {
+				if k != pair.LegacyKey {
 					continue
 				}
-				out[trailStopATRRegimeKey] = nv
+				changed = true
+				renamed = true
+				if _, canonicalPresent := t[pair.CanonKey]; canonicalPresent {
+					break
+				}
+				out[pair.CanonKey] = nv
+				break
+			}
+			if renamed {
 				continue
 			}
 			out[k] = nv

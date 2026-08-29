@@ -80,7 +80,7 @@ func formatCloseRegistryEntry(e closeRegistryEntry, userClose CloseDefaultsMap) 
 	userEntry, hasUserEntry := closeDefaultsEntry(userClose, e.Name)
 	overrideKeys := []string{"tp_tiers"}
 	if strings.ToLower(strings.TrimSpace(e.Name)) == trailingTPRatchetRegimeCloseName {
-		overrideKeys = append(overrideKeys, userCloseDefaultTrailStopATRRegimeKey)
+		overrideKeys = append(overrideKeys, userCloseDefaultTrailingStopATRMultRegimeKey)
 	}
 	isOverrideKey := func(k string) bool {
 		for _, ok := range overrideKeys {

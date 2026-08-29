@@ -127,12 +127,12 @@ func TestPerpsRiskStopDistance(t *testing.T) {
 	})
 	t.Run("regime SL owner fails closed", func(t *testing.T) {
 		sc := base()
-		sc.StopLossATRRegime = &RegimeATRBlock{
+		sc.StopLossATRMultRegime = &RegimeATRBlock{
 			UseDefaults: true,
 			TrendRegime: cloneRegimeMap(regimeATRDefaults.StopLoss),
 			raw:         map[string]interface{}{"use_defaults": true},
 		}
-		if _, ok, reason := PerpsRiskStopDistance(sc, 2000, 15); ok || !strings.Contains(reason, "stop_loss_atr_regime") {
+		if _, ok, reason := PerpsRiskStopDistance(sc, 2000, 15); ok || !strings.Contains(reason, "stop_loss_atr_mult_regime") {
 			t.Fatalf("regime owner must fail closed, got ok=%v reason=%q", ok, reason)
 		}
 	})
@@ -265,7 +265,7 @@ func TestValidateRiskPerTradePct(t *testing.T) {
 	t.Run("unresolvable stop owner", func(t *testing.T) {
 		sc := base()
 		sc.StopLossATRMult = nil
-		sc.StopLossATRRegime = &RegimeATRBlock{
+		sc.StopLossATRMultRegime = &RegimeATRBlock{
 			UseDefaults: true,
 			TrendRegime: cloneRegimeMap(regimeATRDefaults.StopLoss),
 			raw:         map[string]interface{}{"use_defaults": true},

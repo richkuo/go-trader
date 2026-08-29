@@ -112,10 +112,10 @@ func hlStopLossResolvesFromMaxDrawdownFallback(sc StrategyConfig) bool {
 	if sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0 {
 		return false
 	}
-	if sc.StopLossATRRegime.IsConfigured() {
+	if sc.StopLossATRMultRegime.IsConfigured() {
 		return false
 	}
-	if sc.TrailStopATRRegime.IsConfigured() {
+	if sc.TrailingStopATRMultRegime.IsConfigured() {
 		return false
 	}
 	return sc.TrailingStopPct == nil &&

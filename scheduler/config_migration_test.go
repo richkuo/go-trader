@@ -1204,8 +1204,8 @@ func TestMigrateConfigV16UserDefaultsAliases(t *testing.T) {
 		t.Fatalf("trailing_tp_ratchet missing from user_defaults.close: %+v", closeDefaults)
 	}
 	regimeATR := userDefaults["regime_atr"].(map[string]interface{})
-	if _, ok := regimeATR["stop_loss_atr_regime"]; !ok {
-		t.Fatalf("stop_loss_atr_regime missing from user_defaults.regime_atr: %+v", regimeATR)
+	if _, ok := regimeATR["stop_loss_atr_mult_regime"]; !ok {
+		t.Fatalf("stop_loss_atr_mult_regime missing from user_defaults.regime_atr: %+v", regimeATR)
 	}
 	manual := userDefaults["manual"].(map[string]interface{})
 	if manual["margin_usd"].(float64) != 125.0 || manual["side"].(string) != "short" {

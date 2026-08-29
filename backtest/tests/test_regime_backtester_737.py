@@ -90,7 +90,7 @@ def test_tiered_tp_atr_live_regime_re_resolves_multiplier_mid_trade():
     assert result["trades"][0]["exit_date"] == str(idx[-1])
 
 
-def test_stop_loss_atr_regime_use_defaults_matches_baseline_table():
+def test_stop_loss_atr_mult_regime_use_defaults_matches_baseline_table():
     mult = regime_atr.resolve_regime_atr(
         regime_atr.parse_regime_atr_block(
             {"use_defaults": True}, "probe", regime_atr.SURFACE_STOP_LOSS,
@@ -100,7 +100,7 @@ def test_stop_loss_atr_regime_use_defaults_matches_baseline_table():
     assert mult == regime_atr.REGIME_ATR_DEFAULTS_STOP_LOSS["ranging"].atr
 
 
-def test_stop_loss_atr_regime_seeds_initial_sl_trigger_from_open_stamp():
+def test_stop_loss_atr_mult_regime_seeds_initial_sl_trigger_from_open_stamp():
     idx = pd.date_range("2024-01-01", periods=6, freq="D")
     df = pd.DataFrame(
         {
@@ -125,7 +125,7 @@ def test_stop_loss_atr_regime_seeds_initial_sl_trigger_from_open_stamp():
         commission_pct=0.0,
         slippage_pct=0.0,
         close_strategies=[close_ref],
-        stop_loss_atr_regime={"use_defaults": True},
+        stop_loss_atr_mult_regime={"use_defaults": True},
     )
     result = bt.run(df, save=False)
 
@@ -135,10 +135,10 @@ def test_stop_loss_atr_regime_seeds_initial_sl_trigger_from_open_stamp():
     assert tr["exit_price"] == 96.0
 
 
-def test_trail_stop_atr_regime_use_defaults_parses():
+def test_trailing_stop_atr_mult_regime_use_defaults_parses():
     blk, errs = regime_atr.parse_regime_atr_block(
         {"use_defaults": True},
-        "trail_stop_atr_regime",
+        "trailing_stop_atr_mult_regime",
         regime_atr.SURFACE_TRAILING,
     )
     assert not errs
@@ -150,7 +150,7 @@ def test_backtester_rejects_mutex_stop_loss_scalar_with_regime_block():
     with pytest.raises(ValueError, match="mutually exclusive"):
         Backtester(
             stop_loss_atr_mult=1.0,
-            stop_loss_atr_regime={"use_defaults": True},
+            stop_loss_atr_mult_regime={"use_defaults": True},
         )
 
 
@@ -158,7 +158,7 @@ def test_backtester_rejects_mutex_trailing_scalar_with_regime_block():
     with pytest.raises(ValueError, match="mutually exclusive"):
         Backtester(
             trailing_stop_atr_mult=1.0,
-            trail_stop_atr_regime={"use_defaults": True},
+            trailing_stop_atr_mult_regime={"use_defaults": True},
         )
 
 

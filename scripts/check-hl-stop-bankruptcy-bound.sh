@@ -13,30 +13,45 @@ scan_config() {
     python3 - "$path" <<'PY' 2>/dev/null || printf 'unreadable\n'
 import json, sys
 
-LEGACY_TRAIL_STOP_REGIME_KEY = "trailing_stop_atr_regime"
-TRAIL_STOP_REGIME_KEY = "trail_stop_atr_regime"
+LEGACY_V19_STOP_LOSS_REGIME_KEY = "stop_loss_atr_regime"
+LEGACY_V18_TRAIL_STOP_REGIME_KEY = "trail_stop_atr_regime"
+LEGACY_V17_TRAIL_STOP_REGIME_KEY = "trailing_stop_atr_regime"
+V19_STOP_LOSS_REGIME_KEY = "stop_loss_atr_mult_regime"
+V19_TRAIL_STOP_REGIME_KEY = "trailing_stop_atr_mult_regime"
+
+ATR_REGIME_KEY_RENAMES = (
+    (LEGACY_V17_TRAIL_STOP_REGIME_KEY, V19_TRAIL_STOP_REGIME_KEY),
+    (LEGACY_V18_TRAIL_STOP_REGIME_KEY, V19_TRAIL_STOP_REGIME_KEY),
+    (LEGACY_V19_STOP_LOSS_REGIME_KEY, V19_STOP_LOSS_REGIME_KEY),
+)
 
 
-def normalize_trail_stop_regime_key(node):
+def normalize_atr_regime_keys(node):
     if isinstance(node, dict):
         out = {}
         for k, v in node.items():
-            nv = normalize_trail_stop_regime_key(v)
-            if k == LEGACY_TRAIL_STOP_REGIME_KEY:
-                if TRAIL_STOP_REGIME_KEY in node:
-                    continue
-                out[TRAIL_STOP_REGIME_KEY] = nv
+            nv = normalize_atr_regime_keys(v)
+            rewritten = False
+            for legacy, canon in ATR_REGIME_KEY_RENAMES:
+                if k == legacy:
+                    if canon in node:
+                        rewritten = True
+                        break
+                    out[canon] = nv
+                    rewritten = True
+                    break
+            if rewritten:
                 continue
             out[k] = nv
         return out
     if isinstance(node, list):
-        return [normalize_trail_stop_regime_key(v) for v in node]
+        return [normalize_atr_regime_keys(v) for v in node]
     return node
 
 
 try:
     with open(sys.argv[1]) as f:
-        cfg = normalize_trail_stop_regime_key(json.load(f))
+        cfg = normalize_atr_regime_keys(json.load(f))
 except Exception:
     print("unreadable")
     sys.exit(0)
@@ -63,7 +78,7 @@ SCALAR_STOP_FIELDS = (
     "stop_loss_pct", "stop_loss_margin_pct", "trailing_stop_pct",
     "trailing_stop_atr_mult", "stop_loss_atr_mult",
 )
-REGIME_STOP_FIELDS = ("stop_loss_atr_regime", TRAIL_STOP_REGIME_KEY)
+REGIME_STOP_FIELDS = (V19_STOP_LOSS_REGIME_KEY, V19_TRAIL_STOP_REGIME_KEY)
 
 
 def uses_unified_regime_close(sc):
@@ -111,7 +126,7 @@ def user_close_default_trailing_regime(cfg):
             break
     if not isinstance(entry, dict):
         return None
-    block = entry.get(TRAIL_STOP_REGIME_KEY)
+    block = entry.get(V19_TRAIL_STOP_REGIME_KEY)
     if not isinstance(block, dict):
         return None
     return block
@@ -129,7 +144,7 @@ def resolve_stop_owners(cfg, sc):
     if uses_ratchet_regime_close(sc) and not has_explicit_stop_owner(sc):
         block = user_close_default_trailing_regime(cfg)
         if block is not None:
-            sc[TRAIL_STOP_REGIME_KEY] = block
+            sc[V19_TRAIL_STOP_REGIME_KEY] = block
     default_mult = default_stop_loss_atr_mult(cfg)
     if default_mult > 0:
         if (

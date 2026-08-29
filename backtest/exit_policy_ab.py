@@ -41,8 +41,8 @@ STOP_FIELD_KEYS = (
     "stop_loss_margin_pct",
     "trailing_stop_atr_mult",
     "trailing_stop_pct",
-    "stop_loss_atr_regime",
-    "trail_stop_atr_regime",
+    "stop_loss_atr_mult_regime",
+    "trailing_stop_atr_mult_regime",
 )
 
 
@@ -366,7 +366,7 @@ _REPLAYABLE_CLOSE_NAMES = {
     "tiered_tp_atr",
     "tiered_tp_atr_live",
     "trailing_stop_atr_mult",
-    "trail_stop_atr_regime",
+    "trailing_stop_atr_mult_regime",
     "stop_loss_atr_mult",
     "trailing_tp_ratchet",
     "trailing_tp_ratchet_regime",
@@ -576,7 +576,7 @@ _STOP_CLASS_CANDIDATE_NAMES = {
     "atr_stop",
     "stop_loss_atr_mult",
     "trailing_stop_atr_mult",
-    "trail_stop_atr_regime",
+    "trailing_stop_atr_mult_regime",
 }
 
 

@@ -66,10 +66,10 @@ func TestLoadConfigV18MigratesLegacyStrategyTrailKeyBeforeUnknownKeyValidation(t
 		t.Fatalf("LoadConfig with only the legacy key failed: %v", err)
 	}
 	sc := cfg.Strategies[0]
-	if sc.TrailStopATRRegime == nil || !sc.TrailStopATRRegime.IsConfigured() {
-		t.Fatal("TrailStopATRRegime was not populated from the legacy key")
+	if sc.TrailingStopATRMultRegime == nil || !sc.TrailingStopATRMultRegime.IsConfigured() {
+		t.Fatal("TrailingStopATRMultRegime was not populated from the legacy key")
 	}
-	if got, ok := resolveRegimeATR(*sc.TrailStopATRRegime, "ranging"); !ok || got != 2.0 {
+	if got, ok := resolveRegimeATR(*sc.TrailingStopATRMultRegime, "ranging"); !ok || got != 2.0 {
 		t.Fatalf("ranging trail = (%g, %v), want (2.0, true)", got, ok)
 	}
 
@@ -81,8 +81,8 @@ func TestLoadConfigV18MigratesLegacyStrategyTrailKeyBeforeUnknownKeyValidation(t
 	if _, present := rawSC[legacyTrailStopATRRegimeKey]; present {
 		t.Errorf("legacy key %q still on disk after migration", legacyTrailStopATRRegimeKey)
 	}
-	if _, present := rawSC[trailStopATRRegimeKey]; !present {
-		t.Errorf("canonical key %q missing on disk after migration", trailStopATRRegimeKey)
+	if _, present := rawSC[v19TrailingStopATRMultRegimeKey]; !present {
+		t.Errorf("v19 canonical key %q missing on disk after the v18→v19 chain", v19TrailingStopATRMultRegimeKey)
 	}
 }
 
@@ -144,10 +144,10 @@ func TestLoadConfigV18MigratesLegacyUserDefaultKeys(t *testing.T) {
 		t.Fatalf("LoadConfig with legacy user_defaults keys failed: %v", err)
 	}
 	sc := cfg.Strategies[0]
-	if sc.TrailStopATRRegime == nil || !sc.TrailStopATRRegime.IsConfigured() {
+	if sc.TrailingStopATRMultRegime == nil || !sc.TrailingStopATRMultRegime.IsConfigured() {
 		t.Fatal("close-default trail block was not injected")
 	}
-	if got, ok := resolveRegimeATR(*sc.TrailStopATRRegime, "ranging"); !ok || got != 1.25 {
+	if got, ok := resolveRegimeATR(*sc.TrailingStopATRMultRegime, "ranging"); !ok || got != 1.25 {
 		t.Fatalf("ranging trail = (%g, %v), want (1.25, true) from user_defaults.close", got, ok)
 	}
 
@@ -163,8 +163,8 @@ func TestLoadConfigV18MigratesLegacyUserDefaultKeys(t *testing.T) {
 	if _, present := regimeATR[legacyTrailStopATRRegimeKey]; present {
 		t.Errorf("user_defaults.regime_atr still carries %q", legacyTrailStopATRRegimeKey)
 	}
-	if _, present := regimeATR[trailStopATRRegimeKey]; !present {
-		t.Errorf("user_defaults.regime_atr missing %q", trailStopATRRegimeKey)
+	if _, present := regimeATR[v19TrailingStopATRMultRegimeKey]; !present {
+		t.Errorf("user_defaults.regime_atr missing %q", v19TrailingStopATRMultRegimeKey)
 	}
 	closes, ok := ud["close"].(map[string]interface{})
 	if !ok {
@@ -177,8 +177,8 @@ func TestLoadConfigV18MigratesLegacyUserDefaultKeys(t *testing.T) {
 	if _, present := ratchet[legacyTrailStopATRRegimeKey]; present {
 		t.Errorf("user_defaults.close entry still carries %q", legacyTrailStopATRRegimeKey)
 	}
-	if _, present := ratchet[trailStopATRRegimeKey]; !present {
-		t.Errorf("user_defaults.close entry missing %q", trailStopATRRegimeKey)
+	if _, present := ratchet[v19TrailingStopATRMultRegimeKey]; !present {
+		t.Errorf("user_defaults.close entry missing %q", v19TrailingStopATRMultRegimeKey)
 	}
 }
 
@@ -307,8 +307,8 @@ func TestMigrationBaseVersionSurvivesLoadTimeMigration(t *testing.T) {
 
 func TestMigrationBaseVersionCurrentConfigSendsNoNotice(t *testing.T) {
 	clean := strings.Replace(
-		strings.Replace(v18LegacyStrategyConfigJSON, `"config_version": 17,`, `"config_version": 18,`, 1),
-		legacyTrailStopATRRegimeKey, trailStopATRRegimeKey, 1)
+		strings.Replace(v18LegacyStrategyConfigJSON, `"config_version": 17,`, `"config_version": 19,`, 1),
+		legacyTrailStopATRRegimeKey, v19TrailingStopATRMultRegimeKey, 1)
 	path := writeTestConfig(t, t.TempDir(), clean)
 	before, err := os.ReadFile(path)
 	if err != nil {
@@ -334,30 +334,33 @@ func TestMigrationBaseVersionCurrentConfigSendsNoNotice(t *testing.T) {
 }
 
 func TestMigrationBaseVersionLegacyKeyAtCurrentVersionSendsNoNotice(t *testing.T) {
-	stamped := strings.Replace(v18LegacyStrategyConfigJSON, `"config_version": 17,`, `"config_version": 18,`, 1)
+	stamped := strings.Replace(v18LegacyStrategyConfigJSON, `"config_version": 17,`, `"config_version": 19,`, 1)
 	path := writeTestConfig(t, t.TempDir(), stamped)
 	cfg, err := LoadConfig(path)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	if cfg.Strategies[0].TrailStopATRRegime == nil || !cfg.Strategies[0].TrailStopATRRegime.IsConfigured() {
-		t.Fatal("legacy key at v18 was not adopted into TrailStopATRRegime")
+	if cfg.Strategies[0].TrailingStopATRMultRegime == nil || !cfg.Strategies[0].TrailingStopATRMultRegime.IsConfigured() {
+		t.Fatal("legacy key at v19 was not adopted into TrailingStopATRMultRegime")
 	}
 	raw := readRawConfig(t, path)
-	if _, present := rawStrategy(t, raw, 0)[legacyTrailStopATRRegimeKey]; present {
-		t.Error("legacy key survived the rename on a v18-stamped config")
+	if _, present := rawStrategy(t, raw, 0)[trailStopATRRegimeKey]; present {
+		t.Error("v18-canonical key survived the v19 rename on a v19-stamped config")
+	}
+	if _, present := rawStrategy(t, raw, 0)[v19TrailingStopATRMultRegimeKey]; !present {
+		t.Error("v19 canonical key missing after in-place rename")
 	}
 	if got := configMigrationNotices(cfg.MigrationBaseVersion()); len(got) != 0 {
-		t.Fatalf("a v18-stamped config renamed in place produced %d notice(s) — that would repeat every restart", len(got))
+		t.Fatalf("a v19-stamped config renamed in place produced %d notice(s) — that would repeat every restart", len(got))
 	}
 }
 
 func TestConfigMigrationNoticesAreOrderedAndVersionScoped(t *testing.T) {
-	if got := configMigrationNotices(17); len(got) != 1 || got[0] != v18TrailStopRenameNotice {
-		t.Fatalf("v17 base notices = %d entries, want only the v18 notice", len(got))
+	if got := configMigrationNotices(18); len(got) != 1 || got[0] != v19AtrMultRenameNotice {
+		t.Fatalf("v18 base notices = %d entries, want only the v19 notice", len(got))
 	}
 	got := configMigrationNotices(13)
-	want := []string{v14DeprecationNotice, v15DeprecationNotice, v17ATRMethodNotice, v18TrailStopRenameNotice}
+	want := []string{v14DeprecationNotice, v15DeprecationNotice, v17ATRMethodNotice, v18TrailStopRenameNotice, v19AtrMultRenameNotice}
 	if len(got) != len(want) {
 		t.Fatalf("v13 base notices = %d, want %d", len(got), len(want))
 	}

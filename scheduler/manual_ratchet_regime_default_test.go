@@ -53,8 +53,8 @@ func TestManualDefault_RegimeDisabled_KeepsTieredTPATRLive(t *testing.T) {
 	if sc.StopLossATRMult == nil || *sc.StopLossATRMult != defaultManualStopLossATRMult {
 		t.Fatalf("StopLossATRMult = %v, want %g scalar default", sc.StopLossATRMult, defaultManualStopLossATRMult)
 	}
-	if sc.TrailStopATRRegime.IsConfigured() {
-		t.Fatal("TrailStopATRRegime must not be synthesized when regime is off")
+	if sc.TrailingStopATRMultRegime.IsConfigured() {
+		t.Fatal("TrailingStopATRMultRegime must not be synthesized when regime is off")
 	}
 }
 
@@ -89,9 +89,9 @@ func TestManualDefault_RegimeADX_SelectsRatchetRegime(t *testing.T) {
 	if sc.StopLossATRMult != nil {
 		t.Fatalf("StopLossATRMult = %v, want nil (the regime block owns the SL)", *sc.StopLossATRMult)
 	}
-	block := sc.TrailStopATRRegime
+	block := sc.TrailingStopATRMultRegime
 	if block == nil || len(block.TrendRegime) != 3 {
-		t.Fatalf("trail_stop_atr_regime must resolve to 3 ADX labels, got %#v", block)
+		t.Fatalf("trailing_stop_atr_mult_regime must resolve to 3 ADX labels, got %#v", block)
 	}
 	for _, label := range []string{"trending_up", "trending_down", "ranging"} {
 		if v, ok := resolveRegimeATR(*block, label); !ok || v <= 0 {
@@ -137,9 +137,9 @@ func TestManualDefault_RegimeComposite_SelectsRatchetRegime(t *testing.T) {
 	if sc.StopLossATRMult != nil {
 		t.Fatalf("StopLossATRMult = %v, want nil", *sc.StopLossATRMult)
 	}
-	block := sc.TrailStopATRRegime
+	block := sc.TrailingStopATRMultRegime
 	if block == nil || len(block.TrendRegime) != 9 {
-		t.Fatalf("trail_stop_atr_regime must resolve to 9 composite labels, got %#v", block)
+		t.Fatalf("trailing_stop_atr_mult_regime must resolve to 9 composite labels, got %#v", block)
 	}
 	for _, label := range []string{
 		"trending_up_clean", "trending_up_choppy", "trending_down_clean",
@@ -178,7 +178,7 @@ func TestManualDefault_ExplicitCloseStrategyWins(t *testing.T) {
 	if sc.CloseStrategy == nil || sc.CloseStrategy.Name != "tiered_tp_atr_live" {
 		t.Fatalf("CloseStrategy = %v, want explicit tiered_tp_atr_live preserved", sc.CloseStrategy)
 	}
-	if sc.TrailStopATRRegime.IsConfigured() {
+	if sc.TrailingStopATRMultRegime.IsConfigured() {
 		t.Fatal("explicit close_strategy must not get a synthesized regime trail block")
 	}
 }
@@ -215,7 +215,7 @@ func TestManualDefault_ExplicitStopFieldKeepsTiered(t *testing.T) {
 	if sc.StopLossATRMult == nil || *sc.StopLossATRMult != 2.5 {
 		t.Fatalf("StopLossATRMult = %v, want explicit 2.5 preserved", sc.StopLossATRMult)
 	}
-	if sc.TrailStopATRRegime.IsConfigured() {
+	if sc.TrailingStopATRMultRegime.IsConfigured() {
 		t.Fatal("explicit stop field must not get a synthesized regime trail block")
 	}
 }
@@ -228,7 +228,7 @@ func TestManualDefault_ManualDefaultsTrailBlockOverride(t *testing.T) {
 		"regime": {"enabled": true, "period": 14, "adx_threshold": 20},
 		"user_defaults": {
 			"manual": {
-				"trail_stop_atr_regime": {
+				"trailing_stop_atr_mult_regime": {
 					"trend_regime": {
 						"trending_up": {"atr_multiple": 3.0},
 						"trending_down": {"atr_multiple": 3.0},
@@ -259,9 +259,9 @@ func TestManualDefault_ManualDefaultsTrailBlockOverride(t *testing.T) {
 	if sc.CloseStrategy == nil || sc.CloseStrategy.Name != trailingTPRatchetRegimeCloseName {
 		t.Fatalf("CloseStrategy = %v, want %s", sc.CloseStrategy, trailingTPRatchetRegimeCloseName)
 	}
-	block := sc.TrailStopATRRegime
+	block := sc.TrailingStopATRMultRegime
 	if block == nil {
-		t.Fatal("trail_stop_atr_regime must be synthesized from user_defaults.manual override")
+		t.Fatal("trailing_stop_atr_mult_regime must be synthesized from user_defaults.manual override")
 	}
 	if v, ok := resolveRegimeATR(*block, "trending_up"); !ok || v != 3.0 {
 		t.Fatalf("operator-tuned trending_up trail = (%g, %v), want (3.0, true)", v, ok)
@@ -279,7 +279,7 @@ func TestManualDefault_ManualDefaultsTrailBlockNotAliased(t *testing.T) {
 		"regime": {"enabled": true, "period": 14, "adx_threshold": 20},
 		"user_defaults": {
 			"manual": {
-				"trail_stop_atr_regime": {"use_defaults": true}
+				"trailing_stop_atr_mult_regime": {"use_defaults": true}
 			}
 		},
 		"strategies": [
@@ -296,14 +296,14 @@ func TestManualDefault_ManualDefaultsTrailBlockNotAliased(t *testing.T) {
 	}
 	eth, _ := manualStrategyByID(cfg, "hl-manual-eth")
 	btc, _ := manualStrategyByID(cfg, "hl-manual-btc")
-	if eth.TrailStopATRRegime == btc.TrailStopATRRegime {
+	if eth.TrailingStopATRMultRegime == btc.TrailingStopATRMultRegime {
 		t.Fatal("the two strategies must not share the same *RegimeATRBlock pointer")
 	}
 	for _, sc := range []StrategyConfig{eth, btc} {
 		if sc.CloseStrategy == nil || sc.CloseStrategy.Name != trailingTPRatchetRegimeCloseName {
 			t.Fatalf("%s CloseStrategy = %v, want %s", sc.ID, sc.CloseStrategy, trailingTPRatchetRegimeCloseName)
 		}
-		if v, ok := resolveRegimeATR(*sc.TrailStopATRRegime, "ranging"); !ok || v <= 0 {
+		if v, ok := resolveRegimeATR(*sc.TrailingStopATRMultRegime, "ranging"); !ok || v <= 0 {
 			t.Fatalf("%s ranging trail = (%g, %v), want positive", sc.ID, v, ok)
 		}
 	}

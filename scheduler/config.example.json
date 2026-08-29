@@ -20,7 +20,7 @@
       }
     },
     "regime_atr": {
-      "stop_loss_atr_regime": {
+      "stop_loss_atr_mult_regime": {
         "trend_regime": {
           "trending_up": { "atr_multiple": 2.0 },
           "trending_down": { "atr_multiple": 2.0 },

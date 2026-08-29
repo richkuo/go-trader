@@ -23,11 +23,11 @@ func manualSLAutoManaged(sc StrategyConfig, pos *Position) (bool, string) {
 	if effectiveTrailingStopPct(sc, pos) > 0 {
 		return true, "a trailing stop manages the stop-loss"
 	}
-	if sc.StopLossATRRegime != nil && !sc.StopLossATRRegime.IsZero() {
-		return true, "a regime-aware stop-loss (stop_loss_atr_regime) manages the stop-loss"
+	if sc.StopLossATRMultRegime != nil && !sc.StopLossATRMultRegime.IsZero() {
+		return true, "a regime-aware stop-loss (stop_loss_atr_mult_regime) manages the stop-loss"
 	}
-	if sc.TrailStopATRRegime != nil && !sc.TrailStopATRRegime.IsZero() {
-		return true, "a regime-aware trailing stop (trail_stop_atr_regime) manages the stop-loss"
+	if sc.TrailingStopATRMultRegime != nil && !sc.TrailingStopATRMultRegime.IsZero() {
+		return true, "a regime-aware trailing stop (trailing_stop_atr_mult_regime) manages the stop-loss"
 	}
 	if strategyUsesUnifiedRegimeClose(sc) {
 		return true, "a unified regime close owns the stop-loss"
