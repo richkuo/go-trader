@@ -2,7 +2,7 @@
 
 Repository: `https://github.com/richkuo/go-trader.git`
 
-Concise skill entry point for agents setting up, configuring, operating, or extending go-trader. For broader context and PR conventions, see [AGENTS.md](AGENTS.md).
+Operator runbook for agents that install, configure, run, update, and operate go-trader. Reader-facing overview: [README.md](README.md). Coding constraints and PR conventions: [CLAUDE.md](CLAUDE.md) and [AGENTS.md](AGENTS.md).
 
 Quick flow for a new server: tell OpenClaw `install https://github.com/richkuo/go-trader and init`.
 
@@ -10,17 +10,16 @@ Quick flow for a new server: tell OpenClaw `install https://github.com/richkuo/g
 
 ## Core Rules
 
-- Run git from repo root.
+- Run git from the repo root.
 - Use `/opt/homebrew/bin/go` (macOS) or `/usr/local/go/bin/go` (Linux) if `go` is not on PATH.
-- Use `uv run --no-sync python` for dev/backtest/manual CLI; Go subprocess calls (scheduler) use `.venv/bin/python3` directly — deterministic relative path after `uv sync`, no PATH config needed.
-- **Production:** bundled systemd units use `ProtectSystem=strict`; no `PATH`/`UV_CACHE_DIR` env injection needed for the scheduler since it calls `.venv/bin/python3` directly (#752/#753 reverted #748).
-- Install Python deps with `uv sync`.
-- Scheduler config: `scheduler/config.json` (start from `scheduler/config.example.json` when generating manually).
+- Use `uv run --no-sync python` for dev, backtest, and manual CLI work. The scheduler calls `.venv/bin/python3` directly, so no PATH configuration is needed for the service.
+- Install Python dependencies with `uv sync`.
+- Scheduler config: `scheduler/config.json` (start from `scheduler/config.example.json`). On deployments the real file lives outside the deploy tree at `/var/lib/go-trader[/<instance>]/config.json`.
 - State is SQLite only: default `scheduler/state.db`.
-- Never store secrets in config files — put Discord/exchange credentials in systemd environment variables.
-- Prefer `./go-trader init` for humans, `./go-trader init --json ... --output scheduler/config.json` for agents/scripts.
+- Never store secrets in config files. Put Discord and exchange credentials in systemd environment variables.
+- Prefer `./go-trader init` for humans, `./go-trader init --json … --output scheduler/config.json` for agents and scripts.
 - TradingView export: ask which strategy IDs (or all) before running.
-- **CRITICAL: ALWAYS use `scripts/update.sh` to update go-trader. NEVER manually run git pull + go build.** `update.sh` is the single source of truth for `git pull --ff-only` + `uv sync` + `go build` atomically. Manual steps cause asymmetric deploys (#642).
+- **CRITICAL: always update with `scripts/update.sh`. Never run `git pull` + `go build` by hand.** The Go binary and the Python check scripts share an argv contract, so a build at a different commit than the scripts is an asymmetric deploy.
 
 ---
 
@@ -53,7 +52,7 @@ cd go-trader
 uv sync
 ```
 
-If the repo already exists, ask whether to reconfigure, update, or fresh install before changing it.
+If the repo already exists, ask whether to reconfigure, update, or do a fresh install before changing it.
 
 Build:
 
@@ -63,112 +62,100 @@ VER=$(git describe --tags --always --dirty 2>/dev/null || echo dev)
 ./go-trader --help
 ```
 
-The `Version` ldflag appears in Discord summary titles; without it the binary reports `dev`.
-
-> Rebuilding the binary alone is unsafe after #642. The Go binary and Python check scripts share an argv contract (`--strategy-refs`, `--probe-only`, etc.); a build without `git pull` + `uv sync` from the same SHA can produce an asymmetric deploy. Use `bash scripts/update.sh` for any update past the initial install — it does pull + sync + build atomically.
+The `Version` ldflag appears in Discord summary titles; without it the binary reports `dev`. After the initial install, use `scripts/update.sh` for every rebuild.
 
 ---
 
 ## Configure
 
-Human flow:
-
 ```bash
-./go-trader init
-```
-
-Scripted flow:
-
-```bash
+./go-trader init                                                    # human flow
 ./go-trader init --json '{"assets":["BTC","ETH"],"enableSpot":true,"spotStrategies":["momentum","rsi"],"spotCapital":1000,"spotDrawdown":60}' --output scheduler/config.json
 ```
 
-The wizard covers assets, strategy groups, paper/live mode, per-strategy capital, live risk settings, Discord channels, auto-update mode. Prompts before overwriting.
+The wizard covers assets, strategy groups, paper/live mode, per-strategy capital, live risk settings, Discord channels, and auto-update mode. It prompts before overwriting.
 
-Manual config rules:
+Config skeleton and the full field list: [README.md](README.md) § Configuration Reference. Rules that govern a hand-written config:
 
 - Strategy entries need `id`, `type`, `script`, `args`, `capital`, `max_drawdown_pct`, `interval_seconds`.
-- `open_strategy` and `close_strategy` are objects of shape `{"name": "<id>", "params": {...}}` (#640/#642; the close collapsed from an array to a single ref in #842 — a legacy `close_strategies` array of length ≤1 is still read, len>1 is rejected). Per-evaluator params (e.g. `tiered_tp_atr`'s `tp_tiers`) live on the close ref, not on the strategy. Pre-v13 configs with a flat `params` map and string-typed `open_strategy`/`close_strategies` are migrated automatically on next start (synchronous, no DM); flat keys split per close-strategy ownership and everything else stays on the open ref.
-- **#841 canonical close keys:** the tier list is `tp_tiers` and each tier is `{"atr_multiple"|"profit_pct": N, "close_fraction": 0..1, "sl_after"?: {...}}`. The legacy tier-list key `tiers` is rewritten on-disk by the v15 migration (`config_migration_v15.go`) and is NOT read at runtime; per-tier legacy `atr` / `multiple` / `fraction` aliases are still read at runtime. Write the canonical names.
-- **#844 trailing_tp_ratchet / trailing_tp_ratchet_regime:** a trailing-ATR stop where each cleared TP tier tightens the trail and optionally scales out. The strategy declares a positive strategy-level `trailing_stop_atr_mult` (the initial loose trail — and the SL owner; no other stop fields allowed). The close ref's `tp_tiers` is a list (plain) or `{regime: [tiers]}` (regime form, frozen at open via `Position.Regime`, keys matched to the `regime_atr_window` classifier — 3-state adx or 9-state composite; a bare `ranging_directional` key covers its `_up`/`_down` substates). Each tier is `{atr_multiple, close_fraction?, trailing_mult_after | tp_atr_fraction}`: `close_fraction` (default `0`, cumulative target) scales out, `0` = trail-only rung; the trail tightens to `trailing_mult_after` (absolute ATR mult) **or** `tp_atr_fraction × atr_multiple` (relative) — mutually exclusive — monotonically (never loosens; the first rung must be ≤ the initial trail). Places **no on-chain TP**: partial closes ride the close evaluator, the on-chain SL rides the trailing-stop walker. Tier triggers use **entry ATR**. **Scope: HL perps + `manual`.** Backtestable. Example: `{"trailing_stop_atr_mult": 3.0, "close_strategy": {"name": "trailing_tp_ratchet", "params": {"tp_tiers": [{"atr_multiple": 1.5, "close_fraction": 0.0, "trailing_mult_after": 2.0}, {"atr_multiple": 3.0, "close_fraction": 0.3, "tp_atr_fraction": 0.33}]}}}`.
-- **#841 unified per-regime close block** (`tiered_tp_atr_regime` / `tiered_tp_atr_live_regime`): instead of a tier-keyed list, give the close ref a top-level `trend_regime` where each label owns its own plan — its stop loss and tier ladder co-located, varying freely per regime:
-  ```json
-  {"name": "tiered_tp_atr_live_regime", "params": {"trend_regime": {
-    "trending_up": {"stop_loss_atr": 1.5, "tp_tiers": [
-      {"atr_multiple": 2.0, "close_fraction": 0.5, "sl_after": {"kind": "trail_from_here", "tp_atr_fraction": 0.5}},
-      {"atr_multiple": 4.0, "close_fraction": 1.0}]},
-    "ranging": {"stop_loss_atr": 0.8, "tp_tiers": [
-      {"atr_multiple": 1.0, "close_fraction": 1.0}]}
-  }}}
-  ```
-  All regime labels must be present (exhaustive, no fallback); tier counts may differ per regime; every value under a label is a plain scalar (the regime is resolved once at the top, so `sl_after` carries no `trend_regime` sub-block). The block **owns the stop loss** via per-regime `stop_loss_atr` — declaring any strategy-level stop field (`stop_loss_atr_mult`/`stop_loss_atr_regime`/`stop_loss_pct`/`stop_loss_margin_pct`/`trailing_stop_*`) alongside it is rejected at load. The whole block is hot-reload-gated as a unit (changing it while a position is open is rejected — flatten first).
-- `discord.channels` / `telegram.channels` keys: `spot`, `options`, `hyperliquid`, `topstep`, `robinhood`, `okx`, `luno`, plus optional paper keys (e.g., `okx-paper`).
-- `summary_frequency`: same key scheme. Values: `hourly`, `daily`, `every`, `per_check`, `always`, or Go durations (`30m`, `2h`). Wall-clock cadence persisted in SQLite (`app_state.last_summary_post`); survives restart/SIGHUP.
-- **Cadence defaults:** `options`, `perps`, `futures`, and `manual` channel types post every channel run (continuous); `spot` posts hourly. Override per channel via `summary_frequency`. (#890 — `manual` added to the continuous-cadence group, matching perps behavior.)
-- Trades always force an immediate summary post regardless of cadence.
-- `discord.owner_id` from `DISCORD_OWNER_ID`; enables DM upgrade/migration prompts.
+- `open_strategy` and `close_strategy` are objects of shape `{"name": "<id>", "params": {…}}`. Per-evaluator params live on the close ref, never on the strategy. A legacy `close_strategies` array of length ≤1 is still read; length >1 is rejected at load.
+- Tier lists use `tp_tiers`; each tier is `{"atr_multiple"|"profit_pct": N, "close_fraction": 0..1, "sl_after"?: {…}}`. Per-tier legacy `atr` / `multiple` / `fraction` aliases still parse. Write the canonical names.
+- `discord.channels` / `telegram.channels` keys: `spot`, `options`, `hyperliquid`, `topstep`, `robinhood`, `okx`, `luno`, plus optional paper keys such as `okx-paper`.
+- `summary_frequency` uses the same key scheme. Values: `hourly`, `daily`, `every`, `per_check`, `always`, or a Go duration (`30m`, `2h`). The wall-clock cadence persists in SQLite and survives restart and SIGHUP. `options`, `perps`, `futures`, and `manual` post every channel run; `spot` posts hourly. A trade always forces an immediate post.
+- `discord.owner_id` comes from `DISCORD_OWNER_ID`; it enables DM upgrade and migration prompts.
 
-Live-mode risk defaults prompted by init:
+Live-mode risk defaults offered by `init`: per-strategy spot drawdown 5%, per-strategy options drawdown 10%, portfolio kill switch 25%, portfolio warn threshold 60% of the kill switch.
 
-- Per-strategy spot drawdown: 5%
-- Per-strategy options drawdown: 10%
-- Portfolio kill-switch drawdown: 25%
-- Portfolio warn threshold: 60% of kill-switch (warnings repeat every cycle while in band)
+**Unified per-regime close block** (`tiered_tp_atr_regime` / `tiered_tp_atr_live_regime`): instead of a tier-keyed list, the close ref carries a top-level `trend_regime` where each label owns its stop loss and tier ladder:
+
+```json
+{"name": "tiered_tp_atr_live_regime", "params": {"trend_regime": {
+  "trending_up": {"stop_loss_atr": 1.5, "tp_tiers": [
+    {"atr_multiple": 2.0, "close_fraction": 0.5, "sl_after": {"kind": "trail_from_here", "tp_atr_fraction": 0.5}},
+    {"atr_multiple": 4.0, "close_fraction": 1.0}]},
+  "ranging": {"stop_loss_atr": 0.8, "tp_tiers": [
+    {"atr_multiple": 1.0, "close_fraction": 1.0}]}
+}}}
+```
+
+All regime labels must be present (exhaustive, no fallback). Tier counts may differ per label. The block **owns the stop loss** through per-regime `stop_loss_atr`, so declaring any strategy-level stop field alongside it is rejected at load. The whole block is hot-reload-gated as a unit: change it while a position is open and the reload is refused. Flatten first.
+
+**Trailing-ratchet close** (`trailing_tp_ratchet` / `trailing_tp_ratchet_regime`): a trailing-ATR stop where each cleared take-profit tier tightens the trail and optionally scales out. The scalar form needs a positive strategy-level `trailing_stop_atr_mult` (the initial loose trail, and the sole stop owner). The regime form needs `trail_stop_atr_regime` instead. `tp_tiers` is a list (scalar form) or `{label: [tiers]}` (regime form, frozen at open). Each tier is `{atr_multiple, close_fraction?, trailing_mult_after | tp_atr_fraction}`: `close_fraction` (default `0`, cumulative) scales out, `0` means trail-only; the trail tightens to `trailing_mult_after` (absolute ATR multiple) **or** `tp_atr_fraction × atr_multiple` (relative), never both, and never loosens. The first rung must be ≤ the initial trail. It places **no on-chain take-profit**: partial closes ride the close evaluator, the on-chain stop rides the trailing-stop walker. Tier triggers use entry ATR. Scope: Hyperliquid perps and `type=manual`. Backtestable.
 
 ---
 
 ## Secrets
 
-Set in systemd overrides or exported env vars before installation:
+Set in systemd overrides or exported environment variables before installation:
 
 | Variable | Description |
 | --- | --- |
 | `DISCORD_BOT_TOKEN` | Discord bot token |
-| `DISCORD_OWNER_ID` | Discord user ID for DM upgrades/migrations |
+| `DISCORD_OWNER_ID` | Discord user ID for DM upgrades and migrations |
 | `STATUS_AUTH_TOKEN` | Optional bearer token for `/status` |
+| `ANTHROPIC_API_KEY` | Required only when a strategy opts into `llm_entry_analysis` |
+| `GO_TRADER_GITHUB_TOKEN` | Token for `/go-trader-report-an-issue` (falls back to `GITHUB_TOKEN`) |
 | `BINANCE_API_KEY`, `BINANCE_API_SECRET` | Binance live |
 | `HYPERLIQUID_SECRET_KEY`, `HYPERLIQUID_ACCOUNT_ADDRESS` | Hyperliquid live |
 | `TOPSTEP_API_KEY`, `TOPSTEP_API_SECRET`, `TOPSTEP_ACCOUNT_ID` | TopStep live |
 | `ROBINHOOD_USERNAME`, `ROBINHOOD_PASSWORD`, `ROBINHOOD_TOTP_SECRET` | Robinhood live |
 | `OKX_API_KEY`, `OKX_API_SECRET`, `OKX_PASSPHRASE`, `OKX_SANDBOX` | OKX live/demo |
 | `LUNO_API_KEY_ID`, `LUNO_API_KEY_SECRET` | Luno live |
-| `GO_TRADER_ALLOW_MISSING_STATE` | `1` only for genuine first-run live deployments |
-| `GO_TRADER_CASHFLOW_JOURNAL_ALARM` | `0`/`off`/`false`/`no` forces the legacy trade-ledger drift basis for HL shared wallets (default on — exchange-sourced cash-flow journal) |
+| `GO_TRADER_ALLOW_MISSING_STATE` | `1` only for a genuine first-run live deployment |
+| `GO_TRADER_CASHFLOW_JOURNAL_ALARM` | `0`/`off`/`false`/`no` forces the legacy trade-ledger drift basis for HL shared wallets (default on) |
+| `GO_TRADER_HL_BATCH` | `0`/`off`/`false`/`no` disables batched Hyperliquid signal checks |
 
 ---
 
 ## Run And Install Service
 
-Smoke test:
-
 ```bash
-./go-trader --config scheduler/config.json --once
-```
-
-Install systemd:
-
-```bash
+./go-trader --config scheduler/config.json --once     # smoke test
 mkdir -p logs
 export DISCORD_BOT_TOKEN="{token}"
 sudo bash scripts/install-service.sh
 ```
 
-The installer copies the unit, runs `daemon-reload`, enables, starts, and pre-creates `logs/` so `ProtectSystem=strict` doesn't block first-run logging.
+The installer copies the unit, runs `daemon-reload`, enables, starts, and pre-creates `logs/` so `ProtectSystem=strict` does not block first-run logging.
 
-Templated multi-instance: `sudo bash scripts/install-service.sh systemd/go-trader@.service paper-testing`. Without starting: `NO_START=1 sudo bash scripts/install-service.sh`.
+Templated multi-instance: `sudo bash scripts/install-service.sh systemd/go-trader@.service paper-testing`. Install without starting: `NO_START=1 sudo bash scripts/install-service.sh`.
 
 ```bash
 sudo systemctl start|stop|restart|status go-trader
 journalctl -u go-trader -n 100 --no-pager
 ```
 
+**Config out of the deploy tree.** Both units set `StateDirectory=go-trader[/%i]` and point `ExecStart --config` at `/var/lib/go-trader[/<instance>]/config.json`. For an existing in-tree deploy, stop the service first, then run `scripts/migrate-config-out-of-tree.sh [--instance <name>]` — it refuses while the daemon is live. `scheduler/config.json` stays as a transition symlink; a config-version migration that rewrites the file replaces that symlink with a regular in-tree file, so prefer the out-of-tree path.
+
+**Startup probe.** Every unique check script runs with `--probe-only`. A non-zero result logs, DMs the owner, and exits with code 78 (`ExitProbeFailure`). Both unit files set `RestartPreventExitStatus=78`, so the service stays down instead of crash-looping. A probe failure right after an update almost always means `shared_scripts/` was not updated or the binary was not rebuilt — rerun `scripts/update.sh`.
+
+**Graceful shutdown.** The daemon drains side-effecting subprocesses for up to 15 seconds, then SIGKILLs; state save, notifier flush, and DB close run afterwards. The unit sets `TimeoutStopSec=20`. Service-file edits need `daemon-reload`.
+
 ---
 
 ## Auto-Update
 
-`auto_update`: `off` | `daily` | `heartbeat`. When an update is found, the bot notifies active Discord channels. With `DISCORD_OWNER_ID` set, it DMs the owner; replying yes within 30 minutes runs `scripts/update.sh` (atomic git pull + uv sync + go build), saves state, and restarts.
-
-Manual update:
+`auto_update`: `off` | `daily` | `heartbeat`. When an update is found the bot notifies active Discord channels. With `DISCORD_OWNER_ID` set it DMs the owner; replying yes within 30 minutes runs `scripts/update.sh`, saves state, and restarts.
 
 ```bash
 # Systemd deploy (default)
@@ -177,262 +164,162 @@ cd /path/to/go-trader && bash scripts/update.sh --restart
 # Linux bare-process deploy (no systemd)
 cd /path/to/go-trader && bash scripts/update.sh --restart --restart-mode signal
 
-# Sync from a source clone without clobbering secrets/state/venv/binary (#791)
+# Sync from a source clone without clobbering secrets/state/venv/binary
 bash scripts/update.sh --rsync-from /path/to/source-clone --restart
 
-# Batch-update all go-trader-* siblings at once (requires --restart)
+# Batch-update every discovered deployment (requires --restart)
 bash scripts/update.sh --all --restart [--update-all-root <parent-dir>]
 ```
 
-`scripts/update.sh` is the single source of truth for `git pull --ff-only` + `uv sync` + `go build` (all three steps gated under `set -euo pipefail`). External deploy automation (Ansible, image bake, etc.) should call this script rather than reproducing the steps inline — that's how asymmetric deploys land.
+`scripts/update.sh` is the single source of truth for `git pull --ff-only` + `uv sync` + `go build`, all gated under `set -euo pipefail`. External deploy automation (Ansible, image bake) must call this script rather than reproduce the steps inline.
 
-**`--rsync-from <src>` (#791):** replaces `git pull --ff-only` with an `rsync` from a source clone into the deployment directory. Preserves `.git/`, `scheduler/config.json` (the exclude protects the file *or* the #1056 transition symlink → `/var/lib/go-trader[/<instance>]/config.json` — the real config out of the tree is never even in rsync's scope), `state.db` and WAL sidecars, `.venv/`, and the live binary; safe to use when the deployment directory has local changes or was not cloned from origin. Before the systemd restart, warns on stderr when any required `EnvironmentFile=` declared in the unit is missing (optional entries prefixed with `-` are skipped silently).
+**`--rsync-from <src>`** replaces `git pull --ff-only` with an rsync from a source clone. It preserves `.git/`, `scheduler/config.json` (or its transition symlink), `state.db` and its WAL sidecars, `.venv/`, and the live binary. Use it when the deployment directory has local changes or was not cloned from origin. Before the restart it warns on stderr about any required `EnvironmentFile=` the unit declares but the disk does not have; optional entries prefixed with `-` are skipped silently.
 
-**Signal mode** (`--restart-mode signal` / `RESTART_MODE=signal`): SIGTERMs the PID in `GO_TRADER_PIDFILE` (default `./go-trader.pid`), respawns via `GO_TRADER_RUN_SH` (default `./run.sh`), then polls `/health` + PID freshness — same verify/rollback flow as systemd mode. Generate a starter `run.sh` with `bash scripts/create-run-sh.sh`. Signal-mode env vars: `GO_TRADER_RUN_SH`, `GO_TRADER_PIDFILE`, `GO_TRADER_SIGNAL_LOG`. **Systemd→signal fallback (#786):** when `--restart-mode systemd` encounters a missing unit (systemctl exit 5), update.sh automatically retries via signal mode if `go-trader.pid` and an executable `run.sh` are present — no operator action needed for mixed-mode deployments.
+**Signal mode** (`--restart-mode signal` or `RESTART_MODE=signal`) SIGTERMs the PID in `GO_TRADER_PIDFILE` (default `./go-trader.pid`), respawns through `GO_TRADER_RUN_SH` (default `./run.sh`), then polls `/health` and PID freshness with the same verify-and-rollback flow as systemd mode. Generate a starter `run.sh` with `bash scripts/create-run-sh.sh`. Other signal-mode variables: `GO_TRADER_SIGNAL_LOG`. When systemd mode meets a missing unit (systemctl exit 5), update.sh retries in signal mode automatically if `go-trader.pid` and an executable `run.sh` are present.
 
-**Batch mode** (`--all`): **#1055** auto-discovers deployments from the systemd `WorkingDirectory` of every loaded `go-trader`/`go-trader-*`/`go-trader@*` unit (layout-independent — siblings need not share a parent dir) and runs the full update flow in each sequentially. `--update-all-root <dir>` / `GO_TRADER_UPDATE_ALL_ROOT` pins the legacy `go-trader-*/` glob and skips discovery (also the automatic fallback when `systemctl` is absent or no units load). Skipped dirs (non-dir or missing `scheduler/config.json`) are logged on stderr; a batch that updates nothing now fails loudly instead of reporting success. **#1461** per-dir systemd unit lookup: each child resolves `GO_TRADER_SERVICE` from the active unit that owns that deployment's WorkingDirectory (canonical-dir → unit map, first active unit wins on collision, parent `--unit`/`--service`/`GO_TRADER_SERVICE` is overridden when a per-dir unit exists). Dirs no active unit owns fall back to the parent's `service_unit` and log a warning — no per-worktree env setup needed.
+**Batch mode** (`--all`) discovers deployments from the systemd `WorkingDirectory` of every loaded `go-trader`, `go-trader-*`, and `go-trader@*` unit, so siblings need not share a parent directory, and runs the full flow in each one sequentially. `--update-all-root <dir>` or `GO_TRADER_UPDATE_ALL_ROOT` pins the legacy `go-trader-*/` glob and skips discovery; that is also the automatic fallback when `systemctl` is absent or no units load. Skipped directories are logged on stderr, and a batch that updates nothing fails loudly. Each child resolves `GO_TRADER_SERVICE` from the active unit that owns its `WorkingDirectory`; a directory no active unit owns falls back to the parent's service and logs a warning.
 
 Verify: `journalctl -u go-trader -f | grep -i "\[update\]"` (systemd) or `tail -f ./go-trader-signal.log` (signal mode).
+
+**Preflight audits before a fleet update:**
+
+```bash
+bash scripts/check-config-versions.sh              # every deployment at or above the supported config floor
+bash scripts/check-live-paper-config-drift.sh      # live/paper twin cadence + sizing drift
+bash scripts/check-hl-stop-bankruptcy-bound.sh     # no HL stop sits past the isolated-margin bankruptcy distance
+```
+
+Each one auto-discovers active systemd deployments and accepts explicit deployment directories instead. Each exits non-zero on a finding.
 
 ---
 
 ## Post-Update Agent Protocol
 
-When invoked after an update (manual `git pull`, auto-update restart, "I just updated" / "what changed"), walk the operator through anything new commits affect on their existing config, strategies, and open positions — and prompt before applying any opt-in. The binary's `runConfigMigrationDM` only handles fields registered in `configFieldRegistry` (≤ v3); newer config-version bumps and opt-ins land silently unless an agent surfaces them.
+When invoked after an update (manual `git pull`, auto-update restart, "I just updated", "what changed"), walk the operator through anything new commits change on their existing config, strategies, and open positions, and prompt before applying any opt-in. The binary's own migration DM only covers a small registered field set; newer config-version bumps and opt-ins land silently unless an agent surfaces them.
 
 ### Trigger
 
 Run when ANY of:
-- Operator says "I updated", "I just pulled", "what's new", or asks about migration.
-- `git log -1 --format=%cI` is newer than the running binary's version (`./go-trader --version` or `curl -s localhost:8099/health` → `version`).
-- `git status` clean and `git rev-list --count <running-version>..HEAD` > 0.
+
+- The operator says "I updated", "I just pulled", "what's new", or asks about migration.
+- `git log -1 --format=%cI` is newer than the running binary's version (`./go-trader --version`, or `curl -s localhost:8099/health` → `version`).
+- `git status` is clean and `git rev-list --count <running-version>..HEAD` > 0.
 
 ### Steps
 
-1. **Identify the diff.** `git log --oneline <running-version>..HEAD -- scheduler/ shared_scripts/ shared_strategies/ platforms/`. If running version unknown, ask the operator (or fall back to last 30 commits).
-2. **Classify** each commit:
-   - **Auto-migration** — `CurrentConfigVersion` bumped; `MigrateConfig` rewrites JSON on next start. Summarize, no prompt.
-   - **Runtime default change** — behavior shifts on existing strategies without a config edit. Prompt: confirm, or set explicit opt-out.
-   - **New opt-in field** — feature dormant until field added. Prompt per affected strategy.
-   - **Open-position constraint** — needs flat positions to apply. List affected; warn and skip until flat.
-   - **Internal/no-op** — refactors, tests, docs. Mention briefly.
-3. **Read current state.** Load `scheduler/config.json` and query `scheduler/state.db`:
+1. **Identify the diff.** `git log --oneline <running-version>..HEAD -- scheduler/ shared_scripts/ shared_strategies/ platforms/`. If the running version is unknown, ask the operator, or fall back to the last 30 commits.
+2. **Classify** each commit against the table below.
+3. **Read current state.** Load the config and query the state DB:
    ```sql
    SELECT strategy_id, symbol, quantity, side FROM positions WHERE quantity > 0;
    SELECT strategy_id, symbol, contracts, action FROM option_positions WHERE contracts > 0;
    ```
 4. **Prompt per item.** Default to no change if declined. For runtime defaults, also offer to write the explicit opt-out value.
-5. **Apply via SIGHUP-safe edits** when supported (see "Reconfiguration"); else require full restart.
-6. **Verify.** Tail logs for `[reload]`; on rejection, show reason and offer restart.
+5. **Apply through SIGHUP-safe edits** when the field supports it (see Reconfiguration); otherwise require a full restart.
+6. **Verify.** Tail the logs for `[reload]`. On rejection, show the reason and offer a restart.
 
 ### Required prompt template
 
-> Change: `<short description>` (PR #<N>)
+> Change: `<short description>`
 > Affects: `<strategy IDs>` (and any open positions: `<symbol qty side>`)
 > Default if you do nothing: `<what happens silently>`
 > Options: 1) accept the new default, 2) opt out by setting `<field> = <value>`, 3) opt in to the new feature with `<field> = <value>` (requires flat? Y/N).
 > Your choice?
 
-Never apply runtime-default changes silently when the operator hasn't been shown the affected strategies. "Auto" means automatic JSON rewrite, not automatic behavior change.
+Never apply a runtime-default change silently when the operator has not been shown the affected strategies. "Auto" means an automatic JSON rewrite, not an automatic behavior change.
 
-### Reference: known categories
+### Reference: classification table
 
-When in doubt, treat as runtime default and prompt. **Full narrative** for older commits and every archived PR bullet lives in [`docs/POST_UPDATE_HISTORY.md`](docs/POST_UPDATE_HISTORY.md). Regenerate from `git log --oneline -50` when stale.
+When in doubt, treat a commit as a runtime default and prompt. Per-release narrative for every archived entry lives in [`docs/POST_UPDATE_HISTORY.md`](docs/POST_UPDATE_HISTORY.md); regenerate a fresh candidate list from `git log --oneline -50`.
 
-**Auto-migration** (silent JSON rewrite on start — summarize, no prompt)
-- `config_version` bump + deprecated field removal via `MigrateConfig`
-- **v12→v13** (#640): co-located `open_strategy` / `close_strategy` refs; pre-v13 backtests rejected
-- **v13→v14** (#658): `allow_shorts` → `direction` enum (`long`|`short`|`both`)
-- **v15** (#841/#853): single `close_strategy`; `close_strategies` length>1 rejected at load
-- **v17→v18** (#1465): `trailing_stop_atr_regime` → `trail_stop_atr_regime` in strategy blocks and `user_defaults`; behavior unchanged. ⚠️ the on-disk rewrite replaces a still-symlinked `scheduler/config.json` (#1056) with a regular file
+| Category | How to recognize it | What to do |
+| --- | --- | --- |
+| Auto-migration | `CurrentConfigVersion` bumped; the loader rewrites the JSON on next start | Summarize. No prompt. Warn that a rewrite replaces a still-symlinked `scheduler/config.json` with a regular file |
+| Runtime default | Behavior shifts on existing strategies with no config edit | Prompt: confirm, or write the explicit opt-out |
+| New opt-in field | The feature stays dormant until the field is set | Prompt per affected strategy |
+| Open-position constraint | The change needs flat positions to apply | List affected strategies, warn, and skip until flat |
+| Internal / no-op | Refactors, tests, docs, dashboard and formatting work | Mention briefly |
 
-**Runtime default** (recent — prompts required; detail in history doc)
-- **#842/#853** single `close_strategy` — collapse multi-close configs before upgrade
-- **#954** trade-ledger PRE-FEE gross + net display; run `backfill trade-ledger --all --apply` after upgrade
-- **#1008** force-close `trade_type` relabel (`perps` not `futures`); display-only
-- **#1009** corrupt-position zero-PnL force-close; flip sizing fix under `direction=both`
-- **#1030** shared-coin aggregate fill apportionment by virtual qty
-- **#1042** `reconcile_adjustment` fee_source on model-only force-closes
-- **#1046** latched CB manage-only — trailing SL/TP ratchet continues on open HL perps
-- **#1048** per-strategy `circuit_breaker: false` opt-out (nil→enabled); hot-reloadable
-- **#1055** `update.sh --all` discovers deploy dirs from systemd `WorkingDirectory`
-- **#1058** backtest `--config` threads composite `regime.windows` (re-run old regime backtests)
-- **#1059** composite ranging ratchet ladder split (`ranging_volatile` / `ranging_directional`); on-chain SL reposition
-- **#1085** `regime_directional_policy` evidence-gated DEFAULT-OFF (empty cert artifact); per-state freeze at open; #822 orphan auto-close
-- **#1088/#1089** shared-wallet drift + SL-gap WARN throttled (hourly heartbeat)
-- **#1092** kill-switch already-flat fill repair (`kPEPE`-style coins)
-- **#1100/#1103–#1106** HL cashflow journal drives total-drift alarm; trade-ledger fail-closed fallback; `GO_TRADER_CASHFLOW_JOURNAL_ALARM=0` opts out
-- **#1115** manual close defaults to `trailing_tp_ratchet_regime` when regime on + resolvable trail; tiered-TP drift owner DM
-- **#1120** composite opening-trail `use_defaults` system table retuned: `trending_*_clean` 2.0→**2.5×ATR**, `trending_*_choppy` 2.0→**2.25×**, `ranging_volatile` 1.0→**1.25×**, `ranging_directional`/`_up`/`_down` 1.0→**1.5×** (`ranging_quiet` 1.0 + ADX labels + tier ladders unchanged). ⚠️ **On-chain**: a full restart/deploy re-expands `use_defaults` trailing blocks, so open HL-live positions on that path see their reduce-only SL **widen** on the next protection sync (SIGHUP does NOT apply it while open). Set explicit per-regime ATR to keep the old geometry.
-- **#1121** manual default SL + ratchet fallback **2.0×ATR**; `RatchetFallbackNormalizePending` one-shot widen
-- **#1131** `manual-open` ATR fetch defaults to **1h** when the strategy timeframe is unset (was: dropped to coarse heuristic). No config change; display-only nuance
-- **#1140** new operator command `force-close <id>` closes a **live HL `type=perps`** strategy position (analog of `manual-close` for automated strategies) — reduce-only, scheduler adopts the fill, records a `force_close` trade + updates RiskState PnL. See Manual Trading. No config change
-- **#1110/#1118** ratchet tier-clear owner DM; per-strategy `notify_ratchet_triggers` shadows global
-- **#1124** composite `ranging_directional` splits into `_up`/`_down` (9 labels); a bare `ranging_directional` in `allowed_regimes`/`*_atr_regime`/`regime_directional_policy` covers both subs (one-way; explicit `_up` gates out `_down`). No config change required; an explicit composite block listing the subs but omitting bare now errors at load. `regime_directional_policy` certification stays exact-match (bare does NOT certify subs)
-- **#1157** owner DM added on DEFAULT-OFF/EXPIRED `regime_directional_policy` cert lines (startup + SIGHUP, deduped by snapshot — only new lines DM'd on a state change). `/status` `effective_direction`/`effective_invert_signal` now gated through the #1085 cert check (previously showed the ungated policy resolution while flat); new `directional_certification_status` (`certified`/`expired`/`uncertified`) and `directional_certification_cell` fields; Discord `/status` gets a `directional_policy:` suffix. No config change
-- **#1137** new per-strategy `llm_entry_analysis` block (`{enabled, model, max_debate_rounds, timeout_s, notify_dm, notify_channel}`, default off) — after a fresh position-open, an async LLM analyst/debate pipeline (`shared_scripts/llm_review.py`, needs `ANTHROPIC_API_KEY`) posts a word-capped digest (DM by default, `notify_channel` opt-in for the shared channel) and stamps the verdict into `trade_diagnostics.llm_verdict` at close. Advisory only — never gates/sizes/closes; runs on its own subprocess lane (never the shared 4-slot semaphore); hot-reloadable always. No version bump
-- **#1150** new per-strategy `paused` flag (bool, default `false`) — holds position-increasing signals (fresh opens, adds, flips) while closes, trailing SL/ratchet, and protection sync keep running; hot-reloadable always, including while open. Surfaces in `[config]` startup summary, `inspect`, `/status` JSON, and Discord `/status ⏸️ paused:`
-- **#1147** new operator command `go-trader diagnostics [--strategy <id>]` — per-trade quality report (MFE/MAE/capture, regime/direction splits, sample-gated hypotheses with a ready-to-run backtest command). No config change; diagnostics-only, never blocks or alters a close.
-- **#1189** dashboard/`/status`/status-log regime label for a strategy overriding `regime_gate_window` now shows that window's live label instead of the shared-default window's. Display-only — no trading-decision change.
-- **#1190** kill-switch reset DM now includes the drawdown reason, trader-instance label, HL wallet address, and a protection-gap warning when the close plan hasn't confirmed flat. No config change.
-- **#1368** new global `kill_switch_reset_dm_timeout` (Go duration string, e.g. `"6h"`; empty→6h default) replaces the old hard-coded 30m wait on the kill-switch reset owner DM — independent of `alert_throttle_interval`; SIGHUP-reloadable. No action needed to keep the (now-longer) default wait; set explicitly to restore the old 30m.
-- **#1205** new operator command `/go-trader-apply-regime-gate` — interactively wires a named regime entry-gate preset onto a chosen flat strategy (restart-applied). See Discord Slash Commands.
-- **#1224** new `regime.transitions` block (alerting-only — never gates entries, mutates config, or touches positions); per-window transition history + bar-accurate debounce + cross-window reversal alerts; `/status` note + `GET /api/regime/transitions`. No config change required to keep prior behavior.
-- **#1229 (Phases 3–5, #1256/#1257/#1258)** dashboard gains mutating controls: pause/unpause + ratchet-notification toggles (low-risk), trade actions (close/manual edits), and structural mutations (add/remove strategy, paper-to-live, apply-regime-gate) — all behind a confirm-nonce typed-confirmation flow. No config change; operator-facing UI surface only.
-- **#1264** `/paper-to-live` now refuses while the target strategy holds an open position (was silently reachable mid-position). No config change.
-- **#1266** new global `alert_throttle` interval (6h default) coalescing repeat operator alerts. No config change to opt out of the default; tune the interval if 6h is too coarse/fine for your fleet.
-- **#1268** new opt-in per-strategy `risk_per_trade_pct` (HL perps) — fixed-fractional position sizing off the resolved stop distance. See Adjustable Settings.
-- **#1269** new `portfolio_risk.daily_max_loss_usd`/`daily_max_loss_pct` hard daily loss limit (0=off) — holds new entries until UTC rollover. See Adjustable Settings.
-- **#1270** new `portfolio_risk.max_same_direction_notional_usd`/`max_asset_concentration_pct` same-direction/asset exposure caps (0=off) — blocks new correlated opens. See Adjustable Settings.
-- **#1273** CB cooldowns/loss-streak threshold now per-strategy tunable (`cb_drawdown_cooldown_minutes`/`cb_loss_streak_threshold`/`cb_loss_streak_cooldown_minutes`); nil/omitted keeps the historical defaults. See Per-strategy table.
-- **#1275/#1402** M5-deprecated-edge roster (32 strategies) now hidden from discovery + tagged `edge=deprecated_m5` with a one-time owner DM on startup/reload for **live** strategies; `allow_deprecated: true` silences the DM (tag stays `(ack)`). **Paper** strategies (`!isLiveArgs`) auto-suppress the warning/DM by default and tag `edge=deprecated_m5(paper)`; set `"allow_deprecated": false` explicitly to keep the warning on paper. Existing live configs keep today's behavior — this is a warning surface, not a block.
-- **#1277** new `atr_method` global default + per-strategy override (`"simple"`|`"wilder"`, config v17, stamp-only — no on-disk rewrite). Default stays `"simple"`; switching a strategy to `"wilder"` is blocked while it has an open position. See Adjustable Settings.
-- **#1278** new `regime.gate_on_failure` (global) / `regime_gate_on_failure` (per-strategy) entry-gate failure policy (`"open"` default | `"closed"`). Default preserves the pre-#1278 fail-open behavior — no action needed unless opting a strategy into fail-closed. See Adjustable Settings.
-- **#1285** `MinSupportedConfigVersion` raised to 13 — a stamped `config_version<13` now fails loudly at load instead of migrating (v6–v12 handlers deleted). Fleet preflight: `bash scripts/check-config-versions.sh` (config floor) and, when live/paper twins exist, `bash scripts/check-live-paper-config-drift.sh` (#1430 cadence/sizing drift).
-- **#1315** Hyperliquid taker fee corrected 0.035%→0.045% (base tier) + new 0.015% maker constant — affects the modeled-fee fallback (`hyperliquid_fills` miss, `backfill-hl-fees`, `backfill-trade-ledger`) and every Hyperliquid-platform backtest. No config change; re-run `backfill-hl-fees`/`backfill-trade-ledger --apply` if you rely on modeled (non-exact) historical fees.
-- **#1339/#1340/#1382** new dashboard `/tuning` page + persistent `POST /api/tuning/runs` / `GET /api/tuning/runs[/<id>]` API — launches suggest-only per-strategy research retunes (`tune_live.py`) on a dedicated serial lane that survive restarts (in-flight `queued`/`running` rows become `interrupted`); the page re-reads live config on every poll so diffs/baseline banners never go stale, and it never writes config. New optional `tuning.max_retained_runs` (0/omitted = keep-all) caps retained terminal run artifacts. See Adjustable Settings.
-- **#1341/#1386** new `POST /api/tuning/apply` + dashboard Apply button — the one operator-explicit path to promote a ranked `/tuning` survivor into live config (identity triple `run_id`/`strategy_id`/`suggestion_key` only; unknown fields rejected). Refuses when the artifact predates schema v2 (`legacy_artifact`), the row isn't a survivor, or the live config has drifted from the tuner's recorded `promotion_baseline` since the run completed. A successful apply (or a crash-recovered pending finalize) triggers the same config reload as a manual edit. Every promotion — applied or refused — is journaled to `tuning_runs/promotions.json` for audit. No config change; still suggest-only until a human clicks Apply.
-- **#1408** shared-wallet pool trade budgets — 2+ live HL/OKX perps may omit `capital`/`capital_pct`/`initial_capital` when every member sets positive `margin_per_trade_usd`; mixed pooled/allocated rejected. Allocated↔pool is flat-only + restart. See Adjustable Settings.
-- **#1344** `portfolio_risk.max_notional_usd` now holds new opens/adds/flips when over the cap without skipping the strategy cycle — closes, reductions, and SL/TP maintenance keep running (same shape as pause/daily-loss/exposure). Cap changes still require restart. See Adjustable Settings.
-- **#1394/#1400** live spot fills that overshoot virtual cash are always booked (venue already filled); the strategy latches `CashReconcileRequired`, CRITICAL-alerts, and blocks further live buys until you clear via `/go-trader-clear-cash-reconcile` after books match the venue. Closes still run. No config change.
-- **#1159** new opt-in per-strategy `hedge` block — auto-managed correlated HL perps leg on a different coin, qty-event mirrored from the primary via one per-cycle reconciler; hot-reloadable only while flat (blocked while either leg open). See Adjustable Settings.
-- **#1411** new opt-in per-strategy `hurst_gate` block — standalone Hurst entry gate (`mode=gate`) or persistence-scaled sizing (`mode=size`), layered on top of `allowed_regimes`; requires composite `regime.windows`. #1424 resolution study INCONCLUSIVE with validity gate failed — no recommended thresholds in `config.example.json`. Hot-reloadable always. Backtest via `--config` (keep `hurst_gate` in `run_backtest.py`'s `stop_keys` allowlist). See Adjustable Settings.
-- **#1416** ratchet tier tighten now cancel+replaces the resting SL same cycle (incl. scale-in add cycles that also clear a tier) — one-shot bypass of `trailing_stop_min_move_pct` debounce. No config change.
-- **#1430** new fleet audit `scripts/check-live-paper-config-drift.sh` — read-only live/paper pair cadence+sizing drift check (auto-discovers active systemd deployments like `check-config-versions.sh`; pass explicit deploy dirs to override). Exit `1` when any pair drifts on `interval_seconds` or sizing fields (`leverage`, `sizing_leverage`, `margin_per_trade_usd`, `capital`, `capital_pct`, `initial_capital`); pairs whose only differences are cadence/sizing/`--mode` are sync candidates; any other field mismatch flags `SKIP` (leave alone) but cadence/sizing drift on that pair still gates exit `1`. Run before syncing live/paper twins.
-- **#1431** new opt-in live→paper decision replay — root `replay_log_path` (restart-required; shared SQLite path **outside** every deploy tree, e.g. `/var/lib/go-trader/shared/replay.db` — `go-trader@.service` grants `StateDirectory=go-trader/shared`) plus per-strategy `replay_sharing="live_mirror"` on HL perps. Live (`--mode=live`) records open/scale-in/partial/full-close decisions; paper with the **same strategy `id`** suppresses its own position-increasing signals and replays those rows onto its virtual book (full closes at paper mark, reason `replay_live_mirror`). DEFAULT-OFF (`none`). Hot-reloadable flat-only. See Adjustable Settings.
-- **#1436** paper replay mirror owner-DMs (throttled by `alert_throttle_interval`, empty→6h) on book-drift skips — open while paper already holds, scale-in while qty/side mismatched, partial-close while paper flat; close-while-flat stays INFO-only. No config change.
-- **#1444** manual (`type: manual`) HL coins now get a live mark every cycle, same as perps — before this fix a manual coin with no perps/hedge donor on the same coin priced at 0.0, silently disabling the trailing SL walker and TP ratchet. Manual positions now value at live mids in `PortfolioValue`/exposure/drawdown instead of frozen `AvgCost`. A one-shot startup migration reconciles the portfolio-risk peak so the kill switch doesn't false-fire against the old cost-basis peak on upgrade; a live mark still missing raises a throttled owner DM. No config change.
+**Config-version floor.** `MinSupportedConfigVersion` is 13. A stamped `config_version` below that fails loudly at load instead of migrating. Run `scripts/check-config-versions.sh` and confirm the whole fleet is at or above the floor before raising it again.
 
-**Internal / no ops impact** (recent — detail in history doc)
-- **#1128/#1432/#1433** HL adapter lazy `Exchange` init (fewer `/info` bursts on regime/OHLCV-only subprocesses); transient 429/rate-limit, HTTP 5xx, and `script timed out after` subprocess failures WARN-only until 15 strikes or 75m sustained — then operator DM
-- **#1442** due HL perps strategies sharing market data (same platform/symbol/timeframe/OHLCV limit/ATR method) now run one batched signal check instead of one process per strategy — same decisions, faster cycles. `GO_TRADER_HL_BATCH=0` disables. No config change.
-- **#1408 (display)** Discord category summaries drop the per-strategy Value column when shared-wallet pool budgeting is active (misleading under pool equity). PnL/% columns unchanged.
+**Opt-in fields** stay dormant until set. Adjustable Settings is the complete list, with each shape, default, and reload rule.
 
-**Opt-in field** (dormant until set — shape/detail in history doc)
-- HL stops: `trailing_stop_atr_mult`, `trail_stop_atr_regime`, `stop_loss_margin_pct`, `margin_per_trade_usd`
-- Closes: `tiered_tp_atr_live`, `trailing_tp_ratchet*`, `*_atr_regime`, `sl_after`, N-tier `params.tiers`, `avwap_stop` (#1196 — exits on a `buffer_atr_mult`-ATR breach of the anchored VWAP; virtual exit only, no on-chain trigger)
-- Regime: `regime.enabled`, `allowed_regimes`, `regime.display_windows`, `regime_directional_policy`, `regime_window_divergence`, `regime_profile_allocation`
-- Manual: `type: manual` + `manual-open`/`manual-close` CLI; `user_defaults.manual` (legacy top-level `manual_defaults` migrates on load); shares coin with HL perps (#619)
-- Alerts: `discord.trade_alert_channels`, `notify_ratchet_triggers`, `circuit_breaker`
-- Hedge: `hedge` (`{enabled, symbol, side, ratio, margin_mode, leverage}` — HL perps only, phase 1; #1159)
-- Hurst gate: `hurst_gate` (`{enabled, mode, min, max, disarm_min, disarm_max, window_key, on_failure, size_floor}` — composite window required; #1411)
-- Live→paper replay: root `replay_log_path` + per-strategy `replay_sharing` (`none` default | `live_mirror` on HL perps; #1431)
-- Open strategies: see registry / `go-trader init --list-json` (incl. hidden deprecated: `amd_ifvg`, `donchian_breakout`, `range_scalper`, `session_breakout`, `vol_momentum`)
+**Fields blocked while a position is open** (flatten first, or restart after the close):
 
-**Internal / no ops impact** — dashboard, Discord formatting, probe/shutdown hardening, backtest parity fixes, etc. → [`docs/POST_UPDATE_HISTORY.md`](docs/POST_UPDATE_HISTORY.md) § Internal
-
-**Open-position constraint**
-- `margin_mode`, exchange `leverage`, kill-switch identity changes
-- HL `trailing_stop_atr_mult` / `stop_loss_atr_mult` nil↔positive toggle blocked while open
-- `invert_signal` toggle blocked while open
-- `regime_directional_policy` add/remove/shape change blocked while open (flatten first or restart after close)
-- `regime_window_divergence` add/remove/shape change blocked while open (flatten first)
-- `hedge` add/remove/shape change blocked while either the primary or hedge leg is open (#1159)
-- `replay_sharing` toggle blocked while open (#1431 — paper book would desync from the log mid-trade)
+- `margin_mode` and exchange `leverage`
+- kill-switch identity changes
+- `stop_loss_atr_mult` / `trailing_stop_atr_mult` nil↔positive toggles, and any scalar↔regime stop flip
+- `invert_signal`
+- `regime_*_window` selectors, `regime_directional_policy`, `regime_window_divergence`, `regime_profile_allocation` shape changes
+- `hedge` add, remove, or shape change (either leg open)
+- `replay_sharing` toggle (the paper book would desync from the log mid-trade)
+- `atr_method`
+- `allow_scale_in` and the `scale_in` block
+- the unified per-regime close block, and any ratchet tier table
 
 ---
 
 ## Status
 
-Default port `8099`. Override with `--status-port <port>` or `status_port` in config. If busy, server tries next 5 ports; check logs for `[server] Status endpoint at http://localhost:<port>/status`.
+Default port `8099`. Override with `--status-port <port>` or `status_port` in config. If the port is busy the server tries the next five; the log names the one it took.
 
 ```bash
 curl -s localhost:8099/status | python3 -m json.tool
 curl -s localhost:8099/health
 curl -s localhost:8099/history
-open http://localhost:8099/dashboard   # embedded strategy charts + trade markers (#734)
+open http://localhost:8099/dashboard
 ```
 
-Dashboard JSON endpoints: `/api/strategies`, `/api/strategies/overview`, `/api/strategies/<id>/(candles|trades|status|equity|config|simulate)`. Candles/equity cached 30s. `config` (GET) and `simulate`/`config` (POST) require `status_token` + same-origin header. If `status_token` is configured, the dashboard page prompts for it and stores it in browser local storage. Don't expose the status port publicly — gate behind reverse proxy or VPN.
+Dashboard JSON endpoints: `/api/strategies`, `/api/strategies/overview`, `/api/strategies/<id>/(candles|trades|status|equity|config|simulate)`, `/api/regime/transitions`, `/api/tuning/runs[/<id>]`. Candles and equity are cached 30 seconds. `config` (GET) and `simulate`/`config` (POST) need `status_token` plus a same-origin header; when `status_token` is set the dashboard page prompts for it and keeps it in browser local storage.
 
-**Remote access via Tailscale Serve (#744):** The status HTTP server listens on loopback only (`localhost:<port>` — same as `http://127.0.0.1:<port>`). Do not rebind go-trader to `0.0.0.0` for remote dashboard use; keep each instance on loopback and front it with [Tailscale Serve](https://tailscale.com/kb/1242/tailscale-serve) (or another authenticated proxy on the machine). Example for two instances: `tailscale serve --bg --https=8443 http://127.0.0.1:8099` and `tailscale serve --bg --https=8444 http://127.0.0.1:8100` → browse `https://<node>.tailnet.ts.net:8443/dashboard` and `:8444/dashboard`. Common multi-instance port map (tune to each `status_port` in config): live `8099`, paper-testing `8100`, paper-hl-btc `8101`, paper-hl-eth `8102`, paper-hl-bnb `8103`, paper-hl-sol `8104`. **OpenClaw** (or any other agent stack) may expose its own dashboard on different ports/routes — that UI is not go-trader’s `/dashboard`.
+**Never expose the status port publicly.** The server listens on loopback only. Do not rebind to `0.0.0.0`. Front each instance with [Tailscale Serve](https://tailscale.com/kb/1242/tailscale-serve) or another authenticated proxy on the same machine — for example `tailscale serve --bg --https=8443 http://127.0.0.1:8099`, then browse `https://<node>.tailnet.ts.net:8443/dashboard`. A common multi-instance port map (match each `status_port`): live `8099`, paper-testing `8100`, then `8101`+ per paper instance. An agent stack such as OpenClaw may serve its own dashboard on other ports; that UI is not go-trader's.
 
-If Discord enabled, wait for the first cycle and verify messages in configured channels. Report success with mode, # strategies, status URL, log command.
+The dashboard also carries mutating controls behind a typed-confirmation nonce: pause/unpause and ratchet-notification toggles, trade actions (close, manual edits), and structural mutations (add/remove strategy, paper-to-live, apply-regime-gate).
+
+`/tuning` is a read-and-launch research page for suggest-only per-strategy retunes. It re-reads live config on every poll and never writes config itself; `POST /api/tuning/apply` is the only promotion path.
+
+If Discord is enabled, wait for the first cycle and confirm messages in the configured channels. Report success with mode, strategy count, status URL, and the log command.
 
 ---
 
-## Discord Slash Commands (#212)
+## Discord Slash Commands
 
-The bot registers global slash commands at startup (`scheduler/discord_commands.go`,
-wired in `main.go` via `DiscordNotifier.RegisterSlashCommands`). Global registration
-covers every guild the bot is in plus DMs; first-time command-shape changes can take up
-to ~1h to propagate.
+Global slash commands register at startup, covering every guild the bot is in plus DMs; a first-time command-shape change can take about an hour to propagate. The bot must be invited with the `applications.commands` OAuth scope in addition to `bot`. Every command carries the `go-trader-` prefix on the wire (`/go-trader-status`); authorization and dispatch operate on the bare ID. Registration failure is non-fatal — it logs and DMs the owner.
 
-**Namespacing (#891):** every command is registered under the `go-trader-` prefix
-(`commandPrefix`) so the bot's commands are unambiguous in shared guilds (e.g.
-`/go-trader-status`, `/go-trader-restart`). The prefix is the wire name only —
-`slashCommands()` builds each command as `commandPrefix+<id>` and `interactionCreate`
-strips it back to the bare `<id>` before auth/dispatch, so `readOnlyCommandNames`,
-`opsCommandNames`, and the dispatch `switch` all operate on the unprefixed IDs.
-`commandPrefix` is the single source of truth; subcommand/option names are not prefixed.
+**Read-only** — any guild or DM, anyone. They read live in-process state with no HTTP round trip. Replies are public in-channel unless `discord.ephemeral_replies: true`.
 
-**Setup:** the bot must be invited with the `applications.commands` OAuth scope (in
-addition to `bot`) for the commands to appear. No code/config change — re-invite via the
-Discord developer portal OAuth2 URL generator.
+`/go-trader-status`, `/go-trader-health`, `/go-trader-positions`, `/go-trader-pnl`, `/go-trader-leaderboard [top]`, `/go-trader-circuit-breakers`, `/go-trader-dead-strategies`, `/go-trader-correlation`, `/go-trader-closing-strategies`. The four that fetch live marks (`status`, `positions`, `pnl`, `leaderboard`) defer the ACK so they do not blow Discord's 3-second deadline.
 
-**Read-only** (usable in a guild OR a DM, by anyone):
-`/go-trader-status`, `/go-trader-health`, `/go-trader-positions`, `/go-trader-pnl`,
-`/go-trader-leaderboard [top]`, `/go-trader-circuit-breakers`, `/go-trader-dead-strategies`,
-`/go-trader-correlation`, `/go-trader-closing-strategies` (#1203 — catalogs every registered
-close evaluator: name, description, platforms, config params; marks params overridden by
-`user_defaults.close`; caches the registry after first read-only subprocess call). These read live in-process state via the
-`StatusServer` (no HTTP round-trip). The four that fetch live marks (`/go-trader-status`,
-`/go-trader-positions`, `/go-trader-pnl`, `/go-trader-leaderboard`) use a deferred ACK + follow-up so they don't blow
-Discord's 3-second interaction deadline (`fetchLiveMarkPrices` spawns a Python subprocess +
-venue HTTP); the rest answer inline. Replies are public in-channel by default; set
-`discord.ephemeral_replies: true` in config to make read-only replies ephemeral
-(visible only to the invoker).
+**Ops and mutating ops** — owner-only AND DM-only:
 
-**Ops** (owner-only AND DM-only; restricted via command `Contexts: [BotDM]` and re-checked
-in the handler by `authorizeCommand`):
-- `/go-trader-logs [n]` — last N `journalctl -u go-trader` lines. Owner-DM-only because daemon logs
-  can carry wallet addresses / error payloads (sharper exposure than P&L/positions).
-- `/go-trader-restart` — `systemctl restart go-trader` (ACKs, then this instance is replaced).
-- `/go-trader-backtest <strategy> <symbol> [timeframe]` — runs `backtest/run_backtest.py --mode single`
-  (5-min timeout via `runPythonWithTimeout` + `shutdownReadOnlyCtx`; holds one of 4
-  `pythonSemaphore` slots while running); replies with a summary and attaches the full
-  report as `backtest.txt`.
-- `/go-trader-report-an-issue <title> <body> [label]` — files a GitHub issue against `discord.report_repo`
-  (default `richkuo/go-trader`) via the REST API (`discord_report.go`: `buildIssueRequest`
-  builds the payload + a "Filed via /go-trader-report-an-issue" footer; `createGitHubIssue` POSTs and returns
-  the issue URL). Defers the ACK because the GitHub round-trip can exceed Discord's 3s
-  deadline. Token resolves from `GO_TRADER_GITHUB_TOKEN`, then `GITHUB_TOKEN`, then
-  `discord.report_github_token` (env preferred; keep the secret in `/opt/go-trader/.env`).
-  Replies that reporting is not configured when no token is set.
+| Command | What it does |
+| --- | --- |
+| `logs [n]` | The last N `journalctl -u go-trader` lines. DM-only because logs can carry wallet addresses and error payloads |
+| `restart` | `systemctl restart go-trader`; it ACKs, then this instance is replaced |
+| `backtest <strategy> <symbol> [timeframe]` | A single-mode backtest, 5-minute timeout, holding one of the four Python semaphore slots; replies with a summary and attaches the report |
+| `report-an-issue <title> <body> [label]` | Files a GitHub issue against `discord.report_repo` (default `richkuo/go-trader`). Token from `GO_TRADER_GITHUB_TOKEN`, then `GITHUB_TOKEN`, then `discord.report_github_token`; it says so when none is set |
+| `config show` | The running config with secrets redacted |
+| `config set <key> <value>` | A top-level or per-strategy field. Per-strategy keys (`strategies.<id>.<field>`) need `config_version` 13 or newer. Writes are atomic and serialized with the dashboard tuner; the reply states whether it applied through SIGHUP or a restart |
+| `add-strategy <name> <platform> <asset>` | Generates a Hyperliquid perps (always paper) or BinanceUS spot entry. The name must be a known short name |
+| `remove-strategy <id>` | Removes a strategy after an out-of-band DM confirm. Needs a restart |
+| `add-platform <name>` | Emits a setup checklist. Secrets go in the environment file, never the config |
+| `paper-to-live <strategy>` | Flips `--mode=paper` to `--mode=live` after a DM confirm. Needs a restart, and refuses while the strategy holds an open position |
+| `apply-regime-gate` | Interactive picker over type-eligible flat strategies, applies a named regime entry-gate preset, then confirms before writing. It refuses a non-flat target both before and after the confirm. The confirm lists any OTHER strategy whose dormant `allowed_regimes` gate the accompanying `regime.enabled` flip would reactivate — read that list first. Applies through a full restart |
+| `clear-cash-reconcile <strategy>` | Clears the cash-reconcile latch after you confirm virtual cash matches the venue. It never invents or adjusts cash; it only drops the block on live spot buys |
 
-**Mutating ops** (#868; owner-only AND DM-only):
-- `/go-trader-config show` — displays the running config with secrets redacted (`redactConfigForDisplay`).
-- `/go-trader-config set <key> <value>` — sets a top-level or per-strategy config field. Per-strategy keys (`strategies.<id>.<field>`) route through `applyStrategyConfigPatch` (tuner path, requires `config_version>=13`); top-level keys use `applyTopLevelConfigSet`. Writes atomic via `writeValidatedConfigRoot` (`configWriteMu` serializes with the dashboard tuner). Apply path: SIGHUP hot-reload when `applyHotReloadConfig` allows it; else `restartSelf()` (strategy add/remove, paper→live args). Reply states which path was taken.
-- `/go-trader-add-strategy <name> <platform> <asset>` — generates a new HL-perps (always `--mode=paper`) or BinanceUS-spot strategy entry. `name` must be in `knownShortNames`. New strategy includes a comment noting the default SL and recommending configuration before `/paper-to-live`.
-- `/go-trader-remove-strategy <id>` — removes a strategy from config after an out-of-band DM confirm. Requires `restartSelf()` (shape change).
-- `/go-trader-add-platform <name>` — emits a setup checklist for the requested platform (secrets live in `/opt/go-trader/.env`, never the config file).
-- `/go-trader-paper-to-live <strategy>` — flips a strategy from `--mode=paper` to `--mode=live` after an out-of-band DM confirm. Requires `restartSelf()`.
-- `/go-trader-apply-regime-gate` (#1205) — interactive: `AskDM` numbered-list picker of type-eligible (`futures`/`perps`) live/paper strategies, applies a named regime entry-gate preset (ships `comp_up_clean_p21` — composite `trending_up_clean`@period 21, #1197), then an `AskDM` confirm before writing. Refuses a non-flat target (checked before AND after the confirm). The confirm also lists any OTHER strategy whose dormant `allowed_regimes` gate gets reactivated by the accompanying `regime.enabled` flip — read that list before confirming. Applies via a full restart (adding a `regime.windows` entry is SIGHUP-rejected).
-- `/go-trader-clear-cash-reconcile <strategy>` (#1400) — clears the `#1394` `CashReconcileRequired` latch after you confirm virtual cash matches the venue. Does not invent or adjust cash — only drops the buy-block so live spot buys may resume. Owner-DM-only.
-
-All config writes serialize on `ss.configWriteMu`; mutating commands use `restartSelf()` for deployment-agnostic restart (#893 — tries `systemctl restart` with `GO_TRADER_SERVICE` name, falls back to `syscall.Exec` for signal-mode deploys). Pure helpers (`redactConfigForDisplay`, `buildAddStrategyEntry`, `flipStrategyToLive`, `applyTopLevelConfigSet`, `buildTunerOverride`, `classifyConfigSetKey`) are unit-tested in `discord_mutating_commands_test.go` without a gateway.
-
-Auth lives in `authorizeCommand`; command set in `slashCommands()`; pure response builders
-(`format*Response`) are unit-tested in `discord_commands_test.go`. Registration failure is
-non-fatal (logged + owner DM).
+Every config write serializes on one mutex, and mutating commands restart deployment-agnostically (systemctl with `GO_TRADER_SERVICE`, falling back to an in-process exec for signal-mode deploys).
 
 ---
 
 ## TradingView Export
 
-Export SQLite trades to a TradingView portfolio transaction-import CSV:
-
 ```bash
-./go-trader export tradingview --strategy hl-btc-momentum --output tradingview-hl-btc-momentum.csv
-./go-trader export tradingview --strategy hl-btc-momentum --strategy okx-eth-breakout --output tradingview-selected.csv
-./go-trader export tradingview --all --output tradingview-all.csv
+./go-trader export tradingview --strategy hl-btc-momentum --output tv-hl-btc.csv
+./go-trader export tradingview --strategy hl-btc-momentum --strategy okx-eth-breakout --output tv-selected.csv
+./go-trader export tradingview --all --output tv-all.csv
 ```
 
-CSV header: `Symbol,Side,Qty,Status,Fill Price,Commission,Closing Time`. Built-in mappings cover known OKX and BinanceUS crypto pairs. Add `tradingview_export.symbol_overrides` for unmapped:
-
-```json
-"tradingview_export": { "symbol_overrides": { "hl:BTC": "BYBIT:BTCUSDT" } }
-```
+Ask which strategy IDs (or all) before running. CSV header, symbol mappings, and `tradingview_export.symbol_overrides`: [README.md](README.md) § TradingView Export.
 
 ---
 
@@ -444,440 +331,349 @@ When the user says `/go-trader`, "check bot status", "show strategy health", or 
 curl -s localhost:8099/status | python3 -c "
 import json, sys
 d = json.load(sys.stdin)
-prices = d.get('prices', {})
 strats = d.get('strategies', {})
 print(f'=== GO-TRADER (Cycle {d[\"cycle_count\"]}) ===')
-for sym, p in sorted(prices.items()):
+for sym, p in sorted(d.get('prices', {}).items()):
     print(f'  {sym}: \${p:,.2f}')
-total_val = sum(s['portfolio_value'] for s in strats.values())
-total_cap = sum(s['initial_capital'] for s in strats.values())
-total_pnl = total_val - total_cap
-pct = (total_pnl/total_cap)*100 if total_cap else 0
-print(f'\nPortfolio: \${total_cap:,.0f} -> \${total_val:,.0f} ({total_pnl:+,.0f} / {pct:+.1f}%)')
-print(f'Strategies: {len(strats)}')
-cb_active = [(id,s) for id,s in strats.items() if s['risk_state'].get('circuit_breaker_until','').startswith('20')]
-print(f'Circuit breakers active: {len(cb_active)}')
+val = sum(s['portfolio_value'] for s in strats.values())
+cap = sum(s['initial_capital'] for s in strats.values())
+pct = ((val-cap)/cap)*100 if cap else 0
+print(f'\nPortfolio: \${cap:,.0f} -> \${val:,.0f} ({val-cap:+,.0f} / {pct:+.1f}%)')
+cb = [(i,s) for i,s in strats.items() if s['risk_state'].get('circuit_breaker_until','').startswith('20')]
+print(f'Strategies: {len(strats)} | Circuit breakers active: {len(cb)}')
 ranked = sorted(strats.items(), key=lambda x: x[1]['pnl_pct'], reverse=True)
-print('\nTop 5:')
-for id, s in ranked[:5]:
-    print(f'  {id}: {s[\"pnl_pct\"]:+.1f}% (\${s[\"pnl\"]:+,.0f}) | {s[\"trade_count\"]} trades')
-print('\nBottom 5:')
-for id, s in ranked[-5:]:
-    print(f'  {id}: {s[\"pnl_pct\"]:+.1f}% (\${s[\"pnl\"]:+,.0f}) | {s[\"trade_count\"]} trades')
-dead = [id for id,s in strats.items() if s['trade_count'] == 0]
+for label, rows in (('Top 5', ranked[:5]), ('Bottom 5', ranked[-5:])):
+    print(f'\n{label}:')
+    for i, s in rows:
+        print(f'  {i}: {s[\"pnl_pct\"]:+.1f}% (\${s[\"pnl\"]:+,.0f}) | {s[\"trade_count\"]} trades')
+dead = [i for i,s in strats.items() if s['trade_count'] == 0]
 if dead:
     print(f'\nDead (0 trades): {len(dead)} - {dead}')
-if cb_active:
-    print('\nCircuit breaker details:')
-    for id, s in cb_active:
-        rs = s['risk_state']
-        print(f'  {id}: dd={rs[\"current_drawdown_pct\"]:.1f}% / max={rs[\"max_drawdown_pct\"]:.0f}% | until {rs[\"circuit_breaker_until\"][:19]}')
+for i, s in cb:
+    rs = s['risk_state']
+    print(f'  CB {i}: dd={rs[\"current_drawdown_pct\"]:.1f}% / max={rs[\"max_drawdown_pct\"]:.0f}% | until {rs[\"circuit_breaker_until\"][:19]}')
 "
 ```
 
-Present output in readable prose. Highlight CBs, dead strategies, large PnL changes, missing status data.
+Present the output as readable prose. Highlight circuit breakers, dead strategies, large PnL changes, and missing status data. When `/status` reports `drawdown_reading_substituted`, say so — the drawdown figure is carried forward, not measured this cycle.
 
 ---
 
 ## `/menu` Command
 
-When the user says `/menu`, "show menu", "what can I configure", "what's available", or "help me get started":
+When the user says `/menu`, "show menu", "what can I configure", or "help me get started", present these five groups and pull the live detail from the named source rather than from memory:
 
-```text
-=== GO-TRADER MENU ===
+1. **Trading platforms** — Strategy Reference § Platform conventions.
+2. **Available strategies** — list them from the registries, never from memory (Strategy Reference), plus `/go-trader-closing-strategies` for close evaluators.
+3. **Adjustable settings** — Adjustable Settings.
+4. **Commands** — the operator CLI below.
+5. **Backtesting** — Backtesting.
 
-1. TRADING PLATFORMS
-   Binance US spot; Deribit options; IBKR/CME options; Hyperliquid perps;
-   TopStep futures; Robinhood crypto/options; OKX spot/perps/options; Luno;
-   custom platforms via the integration checklist.
+Operator CLI:
 
-2. AVAILABLE STRATEGIES
-   Spot: sma_crossover, ema_crossover, momentum, rsi, bollinger_bands, macd,
-     mean_reversion, volume_weighted, triple_ema, rsi_macd_combo, pairs_spread
-   Futures/perps: momentum, mean_reversion, rsi, macd, breakout,
-     triple_ema_bidir, delta_neutral_funding
-   Options: vol_mean_reversion, momentum_options, protective_puts,
-     covered_calls, wheel, butterfly
-
-3. ADJUSTABLE SETTINGS
-   Global: interval_seconds, db_file, auto_update, status_port,
-     max_drawdown_pct, portfolio_risk.warn_threshold_pct,
-     notional_cap_usd, risk_free_rate, correlation.*, summary_frequency,
-     regime.enabled, regime.period, regime.adx_threshold
-   Per-strategy: capital, max_drawdown_pct, interval_seconds, htf_filter,
-     params, leverage, sizing_leverage, margin_per_trade_usd, stop_loss_pct,
-     stop_loss_margin_pct, trailing_stop_pct, trailing_stop_atr_mult,
-     trailing_stop_min_move_pct, margin_mode, direction, open_strategy,
-     close_strategies, allowed_regimes, theta_harvest.*
-   Discord/Telegram: enabled, channels, trade_alert_channels, dm_channels, owner_id
-   Environment: Discord token, status token, exchange credentials
-
-4. COMMANDS
-   /menu
-   /go-trader
-   ./go-trader init
-   ./go-trader init --json '{...}' --output scheduler/config.json
-   ./go-trader manual-open <strategy-id> [--side long|short] [--size N | --notional N | --margin N]
-   ./go-trader manual-open <strategy-id> --limit-price N [--tif Alo|Gtc] [--expire-after N]
-   ./go-trader manual-cancel <limit-order-id>
-   ./go-trader manual-close <strategy-id> [--qty N]
-   ./go-trader force-close <strategy-id> [--qty N] [--dry-run]   # live HL perps strategy close
-   ./go-trader manual-update-sl <strategy-id> --trigger N [--symbol Y] [--dry-run]
-   ./go-trader manual-cancel-sl <strategy-id> [--symbol Y] [--dry-run]
-   ./go-trader backfill hl-fees [--strategy <id>|--all] [--apply] [--reset-cash]
-   ./go-trader backfill trade-ledger [--strategy <id>|--all] [--apply] [--reset-cash]
-   ./go-trader inspect <strategy-id> [--all] [--json]
-   ./go-trader agent-info [--bootstrap-md] [--append-changelog]
-   sudo systemctl start|stop|restart|status go-trader
-   journalctl -u go-trader -n 50 --no-pager
-   curl -s localhost:8099/status | python3 -m json.tool
-
-5. BACKTESTING
-   uv run --no-sync python backtest/run_backtest.py --strategy <n> --symbol BTC/USDT --timeframe 1h --mode single|compare|multi|optimize
-   uv run --no-sync python backtest/backtest_options.py --underlying BTC --since 90 --capital 10000
-   uv run --no-sync python backtest/backtest_theta.py --underlying BTC --since 90 --capital 10000
+```bash
+./go-trader init [--json '{…}' --output scheduler/config.json]
+./go-trader manual-open <strategy-id> [--side long|short] [--size N | --notional N | --margin N]
+./go-trader manual-open <strategy-id> --limit-price N [--tif Alo|Gtc] [--expire-after N]
+./go-trader manual-add <strategy-id> [--size N | --notional N | --margin N]
+./go-trader manual-cancel <limit-order-id>
+./go-trader manual-close <strategy-id> [--qty N]
+./go-trader force-close <strategy-id> [--qty N] [--dry-run]      # live HL perps strategy close
+./go-trader manual-update-sl <strategy-id> --trigger N [--symbol Y] [--dry-run]
+./go-trader manual-cancel-sl <strategy-id> [--symbol Y] [--dry-run]
+./go-trader backfill hl-fees [--strategy <id>|--all] [--apply] [--reset-cash]
+./go-trader backfill trade-ledger [--strategy <id>|--all] [--apply] [--reset-cash]
+./go-trader diagnostics [--strategy <id>]
+./go-trader inspect <strategy-id> [--all] [--json]
+./go-trader export tradingview [--strategy <id>|--all] --output <file>
+./go-trader agent-info [--bootstrap-md] [--append-changelog]
+sudo systemctl start|stop|restart|status go-trader
+journalctl -u go-trader -n 50 --no-pager
+curl -s localhost:8099/status | python3 -m json.tool
 ```
+
+`agent-info --bootstrap-md` writes `AGENTS.generated.md`, never `AGENTS.md`.
 
 ---
 
 ## Manual Trading (HL perps)
 
-Use `type: "manual"` on Hyperliquid for hand-driven entries/exits with scheduler-tracked P/L, close evaluators (default SL@2.0×ATR + `tiered_tp_atr_live` TP1@2× / TP2@3× when regime is off; #1115 regime-ratchet path when enabled), and Discord trade DMs (#569).
-
-Config skeleton (no `script` / `args` / `interval_seconds` — `LoadConfig` fills them):
+`type: "manual"` on Hyperliquid gives hand-driven entries and exits scheduler-tracked P/L, close evaluators, and Discord trade DMs. Skeleton — no `script`, `args`, or `interval_seconds`, the loader fills them:
 
 ```json
 {"id":"hl-manual-btc","type":"manual","platform":"hyperliquid","symbol":"BTC","capital":1000,"leverage":3,"max_drawdown_pct":10}
 ```
 
-Multiple `type=manual` strategies and HL perps strategies may share a coin (#619/#620). Owner guards prevent cross-strategy mutation; full-close uses `shouldCloseFullPosition` to avoid flattening a peer's position; all TP OIDs are cancelled on full close. Peers must share `leverage` and `margin_mode`; at most one trailing-stop owner per coin.
+**Close defaults:** with `regime.enabled` and a resolvable per-regime trail, a manual strategy defaults to `trailing_tp_ratchet_regime` (the regime trail owns the stop). Otherwise `tiered_tp_atr_live` (TP1 at 2× ATR, TP2 at 3×) with a scalar stop at 2.0× ATR. Override through `close_strategy`, an explicit stop field, or `user_defaults.manual`.
 
-CLI:
+Manual and perps strategies may share a coin. Owner guards prevent cross-strategy mutation, a full close never flattens a peer's position, and all take-profit order IDs are cancelled on full close. Peers must share `leverage` and `margin_mode`, and at most one may own a trailing stop.
 
 ```bash
-# Open — pick at most one of --size, --notional, --margin
+# Open — at most one of --size, --notional, --margin
 ./go-trader manual-open hl-manual-btc                              # defaults: --side long --margin 50
 ./go-trader manual-open hl-manual-btc --side long --size 0.01
-./go-trader manual-open hl-manual-btc --side long --notional 500
-./go-trader manual-open hl-manual-btc --side short --margin 100   # margin × leverage = notional
+./go-trader manual-open hl-manual-btc --side short --margin 100    # margin × leverage = notional
+./go-trader manual-open hl-manual-btc --side long --size 0.01 --atr 850   # skip the ATR fetch
 
-# Optional: pass live ATR for accurate SL/TP distances; omit to auto-fetch ATR(14)
-./go-trader manual-open hl-manual-btc --side long --size 0.01 --atr 850
-
-# Scale in — ADD to an open position (side inferred; blends avg cost, freezes risk plan)
+# Scale in — side inferred, blends avg cost, freezes the risk plan
 ./go-trader manual-add hl-manual-btc --margin 50
-./go-trader manual-add hl-manual-btc --size 0.01 --record-only --fill-price 68100
 
-# Edit the stop-loss in place (#1050) — cancel-then-place / remove on-chain, scheduler adopts next cycle
-./go-trader manual-update-sl hl-manual-btc --trigger 66000   # ratchet the SL trigger
-./go-trader manual-cancel-sl hl-manual-btc                   # remove the resting SL
+# Edit the resting stop in place
+./go-trader manual-update-sl hl-manual-btc --trigger 66000
+./go-trader manual-cancel-sl hl-manual-btc
 
 # Close — full or partial
-./go-trader manual-close hl-manual-btc            # full close
-./go-trader manual-close hl-manual-btc --qty 0.005
+./go-trader manual-close hl-manual-btc [--qty 0.005]
 
-# Record-only (operator placed on HL UI; scheduler tracks)
+# Record-only (order placed on the HL UI; the scheduler tracks it)
 ./go-trader manual-open  hl-manual-btc --side long --size 0.01 --record-only --fill-price 67800
 ./go-trader manual-close hl-manual-btc --qty 0.005 --record-only --fill-price 68250
 ```
 
-Notes:
+Guardrails:
 
-- `--record-only` skips the live HL order; pair with `--fill-price`. SL is **not** auto-armed in record-only mode — place the trigger on the UI manually.
-- SL and TP[n] reduce-only orders are placed **inline** on open (#633). `--atr` is optional: when omitted, the binary auto-fetches ATR(14) from the strategy's symbol+timeframe via `check_hyperliquid.py --fetch-atr` (#690), matching what `ensure_atr_indicator` would compute on a baseline strategy open. If the fetch fails (network error, insufficient candles), it falls back to `0.1*fillPrice/leverage` (≈10% margin risked at 1× ATR SL) and emits one combined notifier message. Pass `--atr` explicitly when you have a live indicator value and want to skip the network round-trip.
-- `--side` defaults to `long` (#691/#692). When no sizing flag is passed (and not `--record-only`), `--margin 50` is auto-applied so `manual-open <strategy-id>` works as a smoke-test command. Operators who want a different size must still pass `--size`/`--notional`/`--margin` explicitly.
-- Default SL multiplier for `type=manual` is **2.0× ATR** (#691/#692, widened #1121), distinct from the fleet-wide `default_stop_loss_atr_mult` (typically 1.0×) used by non-manual HL perps. Explicit `stop_loss_atr_mult`/`stop_loss_pct`/`stop_loss_margin_pct`/`trailing_stop_pct`/`trailing_stop_atr_mult` on the strategy still wins; fleet `default_stop_loss_atr_mult: 0` opts manual out too. Ratchet regime-read fallback uses the same resolver but ignores `user_defaults.manual.stop_loss_atr_mult: 0` (#1121).
-- All four defaults (margin, SL multiplier, side, TP tiers) are overridable via the optional `user_defaults.manual` block (#696/#697/#1135) — see Adjustable Settings. `user_defaults.manual.stop_loss_atr_mult: 0` is a manual-only opt-out that doesn't affect non-manual HL perps; the block is hot-reloadable via SIGHUP. Legacy top-level `manual_defaults` is a deprecated alias that migrates to `user_defaults.manual` on load.
-- Open blocked when portfolio kill switch active or strategy has pending CB close.
-- Fills queued in `pending_manual_actions`, applied at top of next scheduler cycle (need `--once` if daemon idle). If the queue insert fails after a successful on-chain fill, the position is auto-flattened and SL/TP cancelled (#635); cleanup failures notify loudly — flatten manually.
-- A 99% partial close is **not** silently collapsed into a full close — the queue carries explicit `is_full_close` intent from `--qty`.
-- `manual-update-sl` / `manual-cancel-sl` (#1050) edit the resting stop-loss in place: they cancel-then-place (update) or cancel (remove) the on-chain SL, then queue an `update-sl`/`cancel-sl` action the daemon drains into memory — **no direct `state.db` write, no restart**. They are **hard-rejected** when the strategy's automated protection (ATR/regime `stop_loss_atr_mult`, trailing close) would re-pin the edit on the next cycle — only strategies opted out of auto-SL (`stop_loss_atr_mult: 0`, no trailing) qualify; the error names the opt-out. `update-sl` also refuses a trigger that would fill immediately against the current mark. Same kill-switch / pending-CB guards as `manual-open`; SL edits record no trade (no Discord trade DM).
-- `manual-open` auto-fetches ATR against the strategy's timeframe; when the strategy `timeframe` is unset it now defaults the fetch to **1h** (the manual flow's canonical default) instead of dropping straight to the coarse heuristic (#1131). The success log prints the timeframe the ATR was actually computed against.
-- `force-close <strategy-id> [--qty N] [--dry-run]` (#1140) closes a position on a **live Hyperliquid `type=perps` strategy** — the automated-strategy analog of `manual-close` (which only works on `type=manual`). Rejects paper mode and non-perps/non-HL strategies. It submits the reduce-only close, defers cancelling the on-chain SL/TP triggers until the close fill is confirmed (a failed or under-filled close never orphans protection), then queues the confirmed fill for the scheduler to adopt into state/trades on the next cycle (`--once` if the daemon is idle). The booked leg records a `force_close` trade and, unlike manual closes, **updates the strategy's RiskState** with the realized PnL (circuit-breaker-visible). A **full** close is refused while a stop-loss edit is queued for that position (run the scheduler first). `--qty` closes a partial; `--dry-run` previews without any exchange call or state write.
-- External closes (UI, SL, TP) detected by reconciler and cleared automatically (#576) — no ghosts.
-- `type=manual` exempt from CB drawdown checks (#574).
+- `--record-only` skips the live order; pair it with `--fill-price`. The stop is **not** auto-armed — place the trigger on the UI yourself.
+- Stop and take-profit reduce-only orders are placed inline on open. Omitting `--atr` auto-fetches ATR(14) for the strategy's symbol and timeframe, defaulting the fetch to 1h when the strategy has no `timeframe`. A failed fetch falls back to `0.1 × fillPrice / leverage` with one combined notification. The success log names the timeframe used.
+- `--side` defaults to `long`. With no sizing flag and no `--record-only`, `--margin 50` is applied, so a bare `manual-open <strategy-id>` works as a smoke test.
+- The manual default stop is 2.0× ATR, distinct from the fleet-wide `default_stop_loss_atr_mult` (typically 1.0×) for non-manual HL perps. An explicit stop field still wins. `user_defaults.manual.stop_loss_atr_mult: 0` opts manual out without touching non-manual perps; the ratchet fallback ignores that 0.
+- Opening is blocked while the portfolio kill switch is active or the strategy has a pending circuit-breaker close.
+- Fills queue in `pending_manual_actions` and apply at the top of the next cycle, so run `--once` if the daemon is idle. If the queue insert fails after a successful on-chain fill, the position is auto-flattened and its protection cancelled; a cleanup failure alerts loudly — flatten by hand.
+- A 99% partial close is never silently collapsed into a full close: the queue carries the explicit `--qty` intent.
+- `manual-update-sl` / `manual-cancel-sl` cancel-then-place (or cancel) the on-chain stop, then queue an action the daemon drains into memory — no direct state-DB write, no restart. They are **hard-rejected** when the strategy's automated protection would re-pin the edit next cycle; only strategies opted out of auto-stops qualify, and the error names the opt-out. `update-sl` also refuses a trigger that would fill immediately against the current mark. A stop edit records no trade.
+- `force-close <strategy-id>` closes a position on a **live Hyperliquid `type=perps`** strategy — the automated-strategy analog of `manual-close`. It rejects paper mode and every non-HL or non-perps strategy. It submits the reduce-only close, defers cancelling the on-chain triggers until the fill is confirmed (so a failed or under-filled close never orphans protection), then queues the confirmed fill for the next cycle. The booked leg records a `force_close` trade and, unlike a manual close, updates the strategy's risk state, so the circuit breaker sees it. A full close is refused while a stop edit is queued. `--qty` closes a partial; `--dry-run` previews with no exchange call and no state write.
+- External closes made on the UI, or by a stop or take-profit, are detected by the reconciler and cleared automatically.
+- `type=manual` is exempt from circuit-breaker drawdown checks.
 
-### Resting limit orders (#883)
-
-Place a maker/post-only limit open instead of a market open:
+### Resting limit orders
 
 ```bash
-# ALO (post-only, default) — rejected if it would immediately match
-./go-trader manual-open hl-manual-btc --limit-price 68000 --side long --margin 50
-./go-trader manual-open hl-manual-btc --limit-price 68000 --side long --margin 50 --tif Gtc
-
-# With TTL — auto-cancels after the duration if unfilled
-./go-trader manual-open hl-manual-btc --limit-price 68000 --side long --margin 50 --expire-after 4h
-
-# Cancel a resting limit order
+./go-trader manual-open hl-manual-btc --limit-price 68000 --side long --margin 50 [--tif Gtc] [--expire-after 4h]
 ./go-trader manual-cancel <limit-order-id>
 ```
 
-Notes:
+- `--tif Alo` (default, post-only) or `--tif Gtc` only. `Ioc` is rejected because it never rests.
+- The CLI exits right after placing the order. The scheduler polls fill status each cycle and books fills incrementally; partial fills open the position and grow it under the same position ID.
+- Protection is **not** placed inline. The next cycle after the first fill applies it, as for any manual position.
+- `manual-cancel <id>` queues a cancel; the scheduler cancels on-chain and finalizes next cycle. Expiry and operator cancel share that path.
+- Rows live in `pending_limit_orders`; each partial-fill leg is tagged `scale_in`, so `#T` counts one position however many fills it took.
 
-- `--tif Alo` (default, post-only) or `--tif Gtc` only — `Ioc` is rejected (it never rests).
-- The CLI exits immediately after placing the order. The scheduler polls fill status each cycle via `reconcilePendingLimitOrders` and books fills incrementally — partial fills open the position and grow it each cycle sharing the same PositionID.
-- Protection (SL/TP) is NOT placed inline — it is applied by the next scheduler cycle after the first fill, same as any other manual position.
-- `manual-cancel <id>` queues a cancel request; the scheduler cancels on-chain and finalizes next cycle. TTL expiry and operator cancel use the same path.
-- Limit orders are tracked in the `pending_limit_orders` table; each partial-fill leg is tagged `scale_in` so `#T` counts one position regardless of fill count.
+### Scale-in / pyramiding
 
-### Scale-in / pyramiding (#873)
+An opt-in way to **increase** an open position instead of the default skip-on-same-direction. Scope: Hyperliquid perps and manual, live and paper. A same-direction add blends only price and size for PnL (`AvgCost`, `Quantity`, `InitialQuantity` grow) and **freezes the original risk plan** — entry ATR, the regime label, and the trigger geometry stay pinned to the first entry, and the cleared-tier watermark is never reset. Only the on-chain protection **size** is re-based, at unchanged triggers, on the next protection sync.
 
-Opt-in way to **increase** an open position's size instead of the default skip-on-same-direction. Scope: **HL perps + manual, live + paper**. A same-direction add **blends only price and size** for PnL (`AvgCost`, `Quantity`, `InitialQuantity` grow) and **freezes the original risk plan** — `EntryATR`, the regime label, and the SL/TP trigger geometry stay pinned to the first entry (`RiskAnchorPrice`); the cleared-tier watermark is never reset. Only the on-chain protection **size** is re-based (SL + un-cleared TP tiers cancel+replaced at the unchanged triggers on the next protection sync).
-
-- **Strategy flag (perps):** `allow_scale_in: true` plus an optional `scale_in` block: `max_adds` (0=unlimited), `max_added_notional_usd` (0=unlimited), `add_spacing_atr` (signed: `>0` add-to-winners, `<0` average-down, `0` no gate — measured in ×EntryATR from the last entry leg), `add_notional_usd` (0=standard open notional per add). Fires only when a same-direction signal actually reaches Go (the population the existing skip guards target); close-evaluator strategies use `manual-add`.
-- **CLI (manual):** `manual-add <strategy-id>` with the same sizing flags as `manual-open` (`--size`/`--notional`/`--margin`, `--record-only` + `--fill-price`, `--dry-run`). Side is inferred from the open position; refuses when flat; kill-switch + pending-CB guards apply; queued in `pending_manual_actions` and applied next cycle.
-- An add leg is booked `trade_type=scale_in` (open-side, same position id) and **excluded from the `#T` open count** so `#T` stays distinct positions; W/L is unaffected.
-- **Live perps guard:** `allow_scale_in` requires an ATR/regime or trailing stop-loss (one the resize path can grow). A static scalar SL (`stop_loss_pct`/`stop_loss_margin_pct` or the `max_drawdown` fallback) is rejected at load — it would under-cover the grown position after an add. Manual auto-uses an ATR SL, so it qualifies.
-- Hot-reloadable when flat; toggling `allow_scale_in` or editing the `scale_in` block while a position is open is blocked (flatten first). **Backtestable since #1276** — `Backtester(allow_scale_in=…, scale_in=…)` or live `--config`; add legs simulate against the frozen risk anchor, not blended AvgCost.
+- **Strategy flags (perps):** `allow_scale_in: true` plus an optional `scale_in` block — `max_adds` (0 = unlimited), `max_added_notional_usd` (0 = unlimited), `add_spacing_atr` (signed: `>0` adds to winners, `<0` averages down, `0` no gate, measured in entry-ATR multiples from the last leg), `add_notional_usd` (0 = the standard open notional). It fires only when a same-direction signal actually reaches Go; close-evaluator strategies use `manual-add`.
+- **CLI (manual):** `manual-add <strategy-id>` takes the same sizing flags as `manual-open`. Side is inferred, it refuses when flat, and the kill-switch and pending-breaker guards apply.
+- An add books as `trade_type=scale_in` on the same position ID and is excluded from the `#T` open count, so `#T` stays distinct positions. Win/loss is unaffected.
+- **Live perps guard:** `allow_scale_in` needs an ATR, regime, or trailing stop — one the resize path can grow. A static scalar stop is rejected at load because it would under-cover the grown position. Manual auto-uses an ATR stop, so it qualifies.
+- Hot-reloadable when flat; toggling either field while open is blocked. Backtestable; add legs simulate against the frozen risk anchor, not the blended average cost.
 
 ---
 
 ## Backfill HL Fees
 
-HL `exchange_fee` was $0 for trades placed before #587. Backfill:
+Hyperliquid `exchange_fee` was $0 for trades placed before exact-fee resolution shipped.
 
 ```bash
-# Dry run
-./go-trader backfill hl-fees --all
+./go-trader backfill hl-fees --all                    # dry run
 ./go-trader backfill hl-fees --strategy hl-btc-momentum
-
-# Apply (stop daemon first)
 sudo systemctl stop go-trader
 ./go-trader backfill hl-fees --all --apply
 sudo systemctl start go-trader
 ```
 
-Notes:
-
-- `--apply` refuses when another `go-trader` process is alive.
-- Close-leg `realized_pnl` adjusted by `(modeled_fee − real_fee)`.
-- `strategies.cash` replayed from `initial_capital` using corrected fee/PnL stream.
-- Cash replay divergence > $1 (likely SIGHUP capital top-up) is WARNING and blocks `--apply` unless `--reset-cash` passed.
-- Paper-mode HL strategies skipped (no real OIDs). Manual strategies included.
-- Skip reasons (`missing_oid`, `no_fill_match`, `already_real_fee`) reported per row.
-- Rows already on the #954 gross convention (`pnl_gross=1`) are skipped (`gross_convention_row`) — they belong to `backfill trade-ledger` below.
+- `--apply` refuses while another `go-trader` process is alive.
+- Close-leg `realized_pnl` is adjusted by `(modeled_fee − real_fee)`.
+- `strategies.cash` is replayed from `initial_capital` on the corrected fee and PnL stream.
+- A cash-replay divergence over $1 (usually a SIGHUP capital top-up) is a warning and blocks `--apply` unless `--reset-cash` is passed.
+- Paper-mode HL strategies are skipped (no real order IDs). Manual strategies are included.
+- Per-row skip reasons are reported: `missing_oid`, `no_fill_match`, `already_real_fee`. Rows already on the gross convention are skipped as `gross_convention_row` — they belong to the trade-ledger backfill below.
 
 ---
 
-## Backfill Trade Ledger (#954)
+## Backfill Trade Ledger
 
-Migrates legacy trades rows to the gross-PnL convention and trues fee/price/PnL up to HL `userFills`, so the shared-wallet ledger display path (`initial_capital + Σ ledger + owned uPnL`) reads exchange-accurate values:
+Migrates legacy trade rows to the gross-PnL convention and trues fee, price, and PnL up to Hyperliquid `userFills`, so the shared-wallet ledger display path reads exchange-accurate values.
 
 ```bash
-# Dry run
-./go-trader backfill trade-ledger --all
-./go-trader backfill trade-ledger --strategy hl-btc-momentum
-
-# Apply (stop daemon first)
+./go-trader backfill trade-ledger --all               # dry run
 sudo systemctl stop go-trader
 ./go-trader backfill trade-ledger --all --apply
 sudo systemctl start go-trader
 ```
 
-Notes:
-
-- Two passes per row, chronological: (1) legacy `pnl_gross=0` rows migrate net→gross (the fee deducted at booking — stored real fee, else the modeled taker fee — is stamped into `exchange_fee`; close-leg `realized_pnl` gets it added back; `fee_source` records provenance); rows with `fee_source='reconcile_adjustment'` (#1042 model-only force-close/CB legs) skip migration and userFills true-up but cash replay still includes them; (2) rows whose OID matches a userFills aggregate get the real fee, fill VWAP price, and exchange gross `closedPnl`.
-- Rows sharing one OID (partial TP legs, flip close+open pairs, #1030 shared-coin aggregate fills) apportion the aggregate by quantity share — fee across ALL legs, closedPnl across close legs only.
-- `strategies.cash` and `closed_positions` replayed under net semantics; same `--reset-cash` divergence gate as `backfill hl-fees`.
-- Funding rows (`trade_type='funding'`) are never rewritten and never touch cash.
-- `--apply` resets every shared wallet's ledger drift baseline so the next reconciled cycle re-anchors on the repaired ledger instead of alarming on the correction.
+- Two chronological passes per row. Pass one migrates legacy net rows to gross: the fee deducted at booking (the stored real fee, else the modeled taker fee) is stamped into `exchange_fee`, the close leg gets it added back to `realized_pnl`, and `fee_source` records provenance. Rows whose `fee_source` is `reconcile_adjustment` skip migration and the userFills true-up, but cash replay still includes them. Pass two gives every row whose order ID matches a userFills aggregate the real fee, the fill VWAP price, and the exchange gross closed PnL.
+- Rows sharing one order ID (partial take-profit legs, flip close-and-open pairs, shared-coin aggregate fills) apportion the aggregate by quantity share: fee across ALL legs, closed PnL across close legs only.
+- `strategies.cash` and `closed_positions` replay under net semantics, with the same `--reset-cash` divergence gate as the fee backfill.
+- Funding rows are never rewritten and never touch cash.
+- `--apply` resets every shared wallet's ledger drift baseline, so the next reconciled cycle re-anchors on the repaired ledger instead of alarming on the correction.
 - Idempotent: a second run over the same fills reports zero changes.
 
 ---
 
-## Trade Diagnostics (#1147)
-
-Per-trade quality report over the closed-trade history:
+## Trade Diagnostics
 
 ```bash
 ./go-trader diagnostics                    # all strategies
 ./go-trader diagnostics --strategy hl-btc-momentum
 ```
 
-Every full close eagerly inserts a `trade_diagnostics` row (identity/outcome) at
-close time; a background worker fills in MFE/MAE/capture-ratio from hold-window
-OHLCV afterward (never blocks or alters the close — failure just leaves those
-columns NULL and `metrics_status` downgraded). The report opens the state DB
-read-only, aggregates NET PnL per strategy via the trades join (so tiered-TP and
-partial exits sum correctly across legs), splits by regime-at-open/direction, and
-prints sample-size-gated hypotheses with the exact `run_backtest.py` command to
-validate each one. Synthetic closes (`hl_sync_external`, `*_corrupt`,
-`*_dup_oid`) are excluded. `llm_verdict` (from #1137 below) shows per row when
-present but is written only by the LLM entry-analysis pipeline, never here.
+Every full close eagerly inserts a `trade_diagnostics` row at close time; a background worker fills in MFE, MAE, and capture ratio from hold-window OHLCV afterwards. That worker never blocks or alters a close — a failure just leaves those columns NULL and downgrades `metrics_status`. The report opens the state DB read-only, aggregates NET PnL per strategy through the trades join (so tiered take-profits and partial exits sum correctly across legs), splits by regime-at-open and direction, and prints sample-size-gated hypotheses with the exact backtest command to validate each one. Synthetic closes (`hl_sync_external`, `*_corrupt`, `*_dup_oid`) are excluded. `llm_verdict` shows per row when present, but only the LLM entry-analysis pipeline ever writes it.
 
 ---
 
 ## Backtesting
 
-Use `uv run --no-sync python` for all backtests.
+Run every backtest through `uv run --no-sync python`. Harness map: [`docs/backtesting-registry.md`](docs/backtesting-registry.md).
 
 ```bash
-uv run --no-sync python backtest/run_backtest.py --strategy momentum --symbol BTC/USDT --timeframe 1h --mode single
-uv run --no-sync python backtest/run_backtest.py --strategy momentum --symbol BTC/USDT --timeframe 1h --mode compare
-uv run --no-sync python backtest/run_backtest.py --strategy momentum --timeframe 1h --mode multi
-uv run --no-sync python backtest/run_backtest.py --strategy momentum --symbol BTC/USDT --timeframe 1h --mode optimize
+uv run --no-sync python backtest/run_backtest.py --strategy momentum --symbol BTC/USDT --timeframe 1h --mode single|compare|multi|optimize
 uv run --no-sync python backtest/run_backtest.py --strategy momentum --symbol BTC/USDT --timeframe 1h --since 90
 
-# Close-strategy registry (#535/#641) — single close per strategy (#842); --close-strategy sets it.
-# --close-strategy accepts both bare names and JSON refs ({"name","params"}).
-# --close-params is removed — fold params into the JSON ref.
+# Close evaluator — one close per strategy; --close-strategy takes a bare name or a JSON ref
 uv run --no-sync python backtest/run_backtest.py --strategy momentum --symbol BTC/USDT --timeframe 1h \
-  --close-strategy tp_at_pct \
-  --close-strategy '{"name":"tiered_tp_atr","params":{"tiers":[{"atr_multiple":1,"close_fraction":0.5},{"atr_multiple":2,"close_fraction":1.0}]}}'
+  --close-strategy '{"name":"tiered_tp_atr","params":{"tp_tiers":[{"atr_multiple":1,"close_fraction":0.5},{"atr_multiple":2,"close_fraction":1.0}]}}'
 
-# Backtest a live strategy verbatim (single mode only) — pulls the strategy's
-# open + close refs from the live config (#643). Pre-v15 configs are rejected (#951 — start the live binary once to migrate).
+# Backtest a live strategy verbatim (single mode only) — pulls its open + close refs from live config
 uv run --no-sync python backtest/run_backtest.py --config scheduler/config.json --strategy hl-btc-momentum \
   --symbol BTC/USDT --timeframe 1h --mode single
 
-# Regime gate (#549) — blocks entries outside allowed regimes; closes always execute
+# Regime gate — blocks entries outside the allowed labels; closes always execute
 uv run --no-sync python backtest/run_backtest.py --strategy momentum --symbol BTC/USDT --timeframe 1h \
   --regime-enabled --regime-period 14 --regime-adx-threshold 20 --allowed-regimes trending_up trending_down
 
-# Joint open × close-stack walk-forward co-optimization (#996, backtest-only) — picks the best
-# (entry params, exit config) pair per fold. --sweep-close uses the 25-stack default grid; or pass
-# --close-stacks-json PATH for a custom grid. --optimize-metric sharpe_ratio|total_return_pct|dd_adjusted_return.
+# Joint open × close-stack walk-forward co-optimization (backtest-only)
 uv run --no-sync python backtest/run_backtest.py --strategy momentum --symbol BTC/USDT --timeframe 1h \
-  --mode optimize --sweep-close --optimize-metric dd_adjusted_return --direction long
-
-# A backtest whose equity hits 0 (e.g. a stop-less short losing >100%) prints a LIQUIDATED banner and
-# floors return/Sharpe at -100% (#1005) so a deeper blowup can never rank above a shallower one.
+  --mode optimize --sweep-close --optimize-metric sharpe_ratio|total_return_pct|dd_adjusted_return
 
 uv run --no-sync python backtest/backtest_options.py --underlying BTC --since 90 --capital 10000
 uv run --no-sync python backtest/backtest_theta.py --underlying BTC --since 90 --capital 10000
 ```
 
+- `--config` needs `config_version` 15 or newer, applies `user_defaults` by default, and `--defaults system` keeps the built-in baseline instead.
+- Stop-versus-take-profit races default to `ohlc_walk`; `--intrabar-resolution bar_close` restores the legacy behavior.
+- A backtest whose equity hits 0 prints a LIQUIDATED banner and floors return and Sharpe at −100%, so a deeper blowup can never rank above a shallower one.
+- The backtester rejects HL-live-only mechanisms: `regime_window_divergence`, `tiered_tp_atr_live_regime_dynamic`, and an enabled `hedge` block.
+- Research surfaces (`tune_live.py`, auto-suggest, regime promotion, the `/tuning` page) are **suggest-only**. They never write live defaults, config, or PRs.
+
 ---
 
 ## Reconfiguration
 
-After edits to `scheduler/config.json`:
-
 ```bash
-sudo systemctl kill -s HUP go-trader   # hot reload (no state loss)
+sudo systemctl kill -s HUP go-trader   # hot reload, no state loss
 sudo systemctl restart go-trader       # full restart
 ```
 
-Hot reload (`SIGHUP`) re-applies a safe subset: capital, drawdown, intervals, params, stop-loss (incl. `%`/ATR-mult trailing), sizing leverage, theta-harvest, portfolio risk knobs, summary cadence, correlation thresholds, `allowed_regimes` per-strategy, auto-update mode, Discord/Telegram channels and tokens; per-strategy `regime_*_window` selectors and `replay_sharing` when flat. Refuses if strategy roster, script/args/type/platform, HTF filter, kill-switch identity, or DB path changed; refuses root `replay_log_path` change (restart-required); refuses per-strategy exchange `leverage` / HL `margin_mode` while positions open; refuses `regime_*_window`, `regime_window_divergence`, `regime_directional_policy`, `replay_sharing` while open. Global `regime` block (enabled/period/adx_threshold/windows) requires full restart (mirrors `correlation`). Re-runs HL peer-on-same-coin check (`margin_mode`/exchange `leverage` agreement; at most one trailing-stop owner). On rejection, fall back to restart. Status server reflects new port immediately.
+Hot reload re-applies a safe subset: capital, drawdown, intervals, params, stop-loss fields (including percentage and ATR-multiple trailing), sizing leverage, theta harvest, `portfolio_risk` knobs except `max_notional_usd`, summary cadence, per-strategy `allowed_regimes`, `paused`, `circuit_breaker` and its cooldowns, `notify_ratchet_triggers`, `allow_deprecated`, `llm_entry_analysis`, `hurst_gate`, `alert_throttle_interval`, `kill_switch_reset_dm_timeout`, `user_defaults`, `tuning.max_retained_runs`, and the Discord/Telegram **channel maps**. Per-strategy `regime_*_window` selectors and `replay_sharing` reload only while flat.
+
+**Restart-required — a SIGHUP is rejected outright:** the strategy roster; any `script`/`args`/`type`/`platform` field, the HTF filter, or kill-switch identity; `db_file`; `log_dir`; `status_port`; the status token; `auto_update`; `risk_free_rate`; `leaderboard_post_time` and `leaderboard_summaries`; `tradingview_export`; `replay_log_path`; `portfolio_risk.max_notional_usd`; the whole `correlation` block; the global `regime` block (enabled, period, adx_threshold, windows); `discord.enabled`/`token`/`owner_id` and `telegram.enabled`/`bot_token`/`owner_chat_id`; and a shared-wallet pool↔allocated budgeting switch.
+
+It also refuses when per-strategy exchange `leverage`, `direction`, `invert_signal`, HL `margin_mode`, or the regime timeframe changed while a position is open, and for every field in the blocked-while-open list under Post-Update Agent Protocol. It re-runs the HL peer-on-same-coin check for `margin_mode` and exchange `leverage` agreement and the single-trailing-stop-owner rule, and re-validates every `hedge` block. A rejection names every offending field at once; fall back to a restart.
 
 Common changes:
 
-- Regenerate config: `./go-trader init`
-- Scripted: `./go-trader init --json '{...}' --output scheduler/config.json`
-- Channels: edit `discord.channels` / `telegram.channels`; update OpenClaw allowlist if needed; use `trade_alert_channels` to send fills to a different channel than summaries
-- Token: `sudo systemctl edit go-trader`, add env override, restart
-- Add/remove strategies: edit `strategies` array; removed strategies pruned from state
-- Risk: edit strategy `max_drawdown_pct`, portfolio `max_drawdown_pct`, `portfolio_risk.warn_threshold_pct`
-- Theta harvesting: add `theta_harvest` block to options strategy entries
-- Paper → live: change `--mode=paper` to `--mode=live`, add `--execute` where required, configure exchange credentials
+- Regenerate config: `./go-trader init`, or the scripted `--json` form.
+- Channels: edit `discord.channels` / `telegram.channels`; use `trade_alert_channels` to send fills somewhere other than the summaries.
+- Token: `sudo systemctl edit go-trader`, add the environment override, restart.
+- Add or remove strategies: edit the `strategies` array. Removed strategies are pruned from state.
+- Risk: edit strategy `max_drawdown_pct`, portfolio `max_drawdown_pct`, `portfolio_risk.warn_threshold_pct`.
+- Paper to live: change `--mode=paper` to `--mode=live`, add `--execute` where required, and configure the exchange credentials.
 
-Changing `capital` does not reset cash/positions. Full reset: remove `scheduler/state.db` (or that strategy's rows) and restart.
+Changing `capital` does not reset cash or positions. For a full reset, remove `scheduler/state.db` (or that strategy's rows) and restart.
 
 ---
 
 ## Adjustable Settings
 
-Global config:
+Global — key, default, notes:
 
-| Setting | Key | Default |
+| Key | Default | Notes |
 | --- | --- | --- |
-| Check interval | `interval_seconds` | 300 |
-| State DB | `db_file` | `scheduler/state.db` |
-| Auto-update | `auto_update` | `off` |
-| Status port | `status_port` | 8099 |
-| Risk-free rate | `risk_free_rate` | 0.04 |
-| Portfolio kill switch | `max_drawdown_pct` | 25 |
-| Portfolio warn threshold | `portfolio_risk.warn_threshold_pct` | 60 |
-| Gross notional cap (USD) | `portfolio_risk.max_notional_usd` | `0` (disabled). When total gross notional exceeds the cap, position-increasing opens/adds/flips are held and manual open/add/limit-open refuse — closes, reductions, and SL/TP maintenance keep running (#1344). Restart-required (not SIGHUP). |
-| Correlation tracking | `correlation.*` | disabled |
-| Summary cadence | `summary_frequency` | legacy defaults |
-| Regime detection | `regime.enabled`, `regime.period`, `regime.adx_threshold`, `regime.windows` | disabled; period=14, threshold=20; `windows` empty = legacy single horizon (#792) |
-| Notify on HL TP/SL fill | `notify_tp_sl_fills` | enabled (nil/missing); set `false` to disable owner DMs from reconciler-detected fills |
-| Notify on ratchet tier trigger | `notify_ratchet_triggers` | enabled (nil/missing); owner DM when a `trailing_tp_ratchet*` tier clears and tightens the trail. Set `false` to disable (#1110). Per-strategy `notify_ratchet_triggers` overrides this global (#1118) — see the per-strategy table. |
-| `type=manual` defaults | `user_defaults.manual.{margin_usd,stop_loss_atr_mult,side,tp_tiers,trail_stop_atr_regime}` | Optional overrides for the hardcoded manual-open defaults ($50 margin, 2.0× ATR SL, `long`, `[{2×,0.5},{3×,1.0}]`). Resolution order: CLI/strategy-param → `user_defaults.manual` → hardcoded constant. `trail_stop_atr_regime` (#1115) tunes the per-regime opening trail for manuals that default to `trailing_tp_ratchet_regime` (cloned per strategy, resolved against each strategy's classifier labels). `stop_loss_atr_mult: 0` opts scalar manual out; ratchet fallback ignores 0 (#1121). Hot-reloadable via SIGHUP; `tp_tiers: []` is rejected at validation — omit the key to inherit the default (#696/#697/#1135). Legacy top-level `manual_defaults` is a deprecated alias migrated on load and rejected if it conflicts with the canonical section. |
-| Daily loss limit (USD) | `portfolio_risk.daily_max_loss_usd` | `0` (disabled). Hard portfolio-wide cap on the day's aggregate PRE-FEE realized loss; once reached, position-increasing actions (fresh opens/adds/flips/manual-open/add) are held until UTC rollover — closes and SL/TP management keep running, nothing is force-closed. Hot-reloadable incl. while tripped. Ignored inside `platforms.<name>.risk` overrides (#1269). |
-| Daily loss limit (%) | `portfolio_risk.daily_max_loss_pct` | `0` (disabled). Same limit as a percent of Σ per-strategy `initial_capital`. Both arms may be set — the lower resolved USD threshold wins; a 0-capital basis can't evaluate (surfaced in `/status`) (#1269). |
-| Same-direction exposure cap (USD) | `portfolio_risk.max_same_direction_notional_usd` | `0` (disabled). Blocks new same-direction opens once aggregate same-direction notional (crypto dispatch sites + options coarse-delta filter + manual open/add/limit-open) would exceed the cap; hot-reloadable via SIGHUP (#1270). |
-| Asset concentration cap (%) | `portfolio_risk.max_asset_concentration_pct` | `0` (disabled). Same blocking behavior scoped to a single asset's share of exposure; shares the exposure model with `correlation.*` (#1270). |
-| ATR smoothing method | `atr_method` | `"simple"` (default; legacy rolling mean, `round_large` ≥100 rounding) or `"wilder"` (published Wilder RMA, never rounded). Global default for the `standard_atr` surface only — EntryATR stamping, live `market_ctx["atr"]`, manual fetch-atr, backtester injection, tuner simulate; strategy-internal indicator math and `regime.py` (pinned `simple`) are untouched. Per-strategy `atr_method` overrides (see Per-strategy table) (v17, #1277). |
-| Tuning run retention | `tuning.max_retained_runs` | `0` (keep-all; prune off). Caps retained terminal `/tuning` research-run dirs/metadata; a positive N prunes oldest-first (result-less runs evicted before runs with `results.json`, then by completion/creation time, then ID) after startup load and after each terminal run persist. Never deletes `queued`/`running` runs. SIGHUP-adoptable (#1382). |
-| Live→paper replay log | `replay_log_path` | `""` (disabled). Shared SQLite path for #1431 decision replay — must live outside every deploy tree (e.g. `/var/lib/go-trader/shared/replay.db` under the template unit's `StateDirectory=go-trader/shared`). Required when any strategy sets `replay_sharing="live_mirror"`. Restart-required (both deployments open the DB at startup). |
+| `interval_seconds` | 300 | Check interval |
+| `db_file` | `scheduler/state.db` | State DB |
+| `auto_update` | `off` | `off` \| `daily` \| `heartbeat` |
+| `status_port` | 8099 | Loopback only |
+| `risk_free_rate` | 0.04 | Sharpe basis |
+| `max_drawdown_pct` | 25 | Portfolio kill switch |
+| `portfolio_risk.warn_threshold_pct` | 60 | Percent of the kill-switch limit |
+| `portfolio_risk.max_notional_usd` | `0` = off | Gross notional cap. Over it, opens/adds/flips are held and manual open/add/limit-open refuse; closes, reductions and protection keep running. **Restart-required.** |
+| `portfolio_risk.daily_max_loss_usd` | `0` = off | Cap on the day's aggregate PRE-FEE realized loss. Hold-only until UTC rollover; nothing is force-closed. Hot-reloadable even while tripped. Ignored inside `platforms.<name>.risk`. |
+| `portfolio_risk.daily_max_loss_pct` | `0` = off | Same limit as a percent of Σ per-strategy `initial_capital`. With both arms set the lower resolved USD threshold wins; a zero-capital basis cannot evaluate and `/status` says so. |
+| `portfolio_risk.max_same_direction_notional_usd` | `0` = off | Blocks a new same-direction open over the cap. Blocking only, direction-aware. Hot-reloadable. |
+| `portfolio_risk.max_asset_concentration_pct` | `0` = off | Same blocking behavior scoped to one asset's share of exposure. Shares its exposure model with `correlation.*`. |
+| `alert_throttle_interval` | 6h | Go duration. Coalesces repeat operator alerts. |
+| `kill_switch_reset_dm_timeout` | empty = 6h | Go duration. How long the reset prompt waits. Independent of `alert_throttle_interval`. |
+| `correlation.enabled`, `.max_concentration_pct`, `.max_same_direction_pct` | off, 60, 75 | Warnings to all active channels plus an owner DM; snapshot in `/status`. Restart-required. |
+| `summary_frequency` | see Configure | Per-channel cadence |
+| `regime.enabled`, `.period`, `.adx_threshold`, `.windows`, `.gate_on_failure`, `.transitions` | off, 14, 20, empty | Empty `windows` = one legacy horizon. Restart-required as a block. `transitions` is alerting-only — it never gates entries, mutates config, or touches positions. |
+| `notify_tp_sl_fills` | enabled when nil | `false` stops owner DMs from reconciler-detected fills |
+| `notify_ratchet_triggers` | enabled when nil | Owner DM when a ratchet tier clears and tightens the trail. The per-strategy field overrides it. |
+| `atr_method` | `"simple"` | `"simple"` (legacy rolling mean, ≥100 rounding) or `"wilder"` (published RMA, never rounded). Governs the standard ATR surface only — entry-ATR stamping, live market ATR, the manual fetch, backtester injection, tuner simulate. Strategy-internal indicators and the regime classifier are untouched. |
+| `default_stop_loss_atr_mult` | `1.0` | Applies to every HL perps strategy omitting all stop-owner fields, shared-coin peers included. `0` restores the `max_drawdown_pct` fallback fleet-wide. |
+| `user_defaults.manual.{margin_usd,stop_loss_atr_mult,side,tp_tiers,trail_stop_atr_regime}` | see Manual Trading | Overrides the manual-open defaults. Order: CLI or strategy param → `user_defaults.manual` → constant. `stop_loss_atr_mult: 0` opts scalar manual out and the ratchet fallback ignores that 0. `tp_tiers: []` is rejected — omit the key to inherit. Hot-reloadable. |
+| `user_defaults.close`, `user_defaults.regime_atr` | none | `user_defaults.close` injects `tp_tiers` into matching close refs that omit them; its `trailing_tp_ratchet_regime` entry may carry a coupled `trail_stop_atr_regime`. `user_defaults.regime_atr` supplies fleet-wide `stop_loss_atr_regime` / `trail_stop_atr_regime` for standalone `use_defaults` owners. Three layers — system → user → strategy, explicit wins. Hot-reloadable. |
+| `tuning.max_retained_runs` | `0` = keep all | Prunes oldest-first terminal research-run directories; never touches a queued or running row. Hot-reloadable. |
+| `replay_log_path` | `""` = off | Shared SQLite path for live→paper decision replay. It must live outside every deploy tree, e.g. `/var/lib/go-trader/shared/replay.db`, which the template unit grants through `StateDirectory=go-trader/shared`. Required by `replay_sharing`. **Restart-required.** |
 
 Per-strategy:
 
-| Setting | Key | Notes |
+| Key | Scope | Notes |
 | --- | --- | --- |
-| Capital | `capital` | Starting capital reference |
-| Max drawdown | `max_drawdown_pct` | Strategy CB |
-| Circuit breaker | `circuit_breaker` | `false` disables BOTH CB arms (drawdown + consecutive losses), live and paper; nil/omitted → enabled (safe default). Suppresses only NEW fires (a latched CB / pending close still drains); display drawdown still updates. One-shot WARNING when a disabled CB suppresses a breach; `cb=off` in startup summary + `inspect`. Hot-reloadable via SIGHUP while open. `type=manual` exempt. No version bump (#1048). |
-| Paused (manage-only) | `paused` | `false` (default). Holds position-increasing signals (opens/adds/flips) while closes, trailing SL/ratchet, and protection sync keep running; hot-reloadable always incl. while open. Surfaces `⏸️ paused:` in Discord `/status` (#1150). |
-| Allow deprecated edge | `allow_deprecated` | `*bool` ack for M5-deprecated strategies (#1275/#1402). Live: unset/false → startup DM; `true` silences DM (tag stays `(ack)`). Paper: unset auto-suppresses (`edge=deprecated_m5(paper)`); explicit `false` opts the warning back in. Hot-reloadable always. Warning surface only — never blocks trading. |
-| Live→paper replay | `replay_sharing` | `"none"` (default) or `"live_mirror"` (#1431). HL perps only. On live, records exposure-changing decisions to the root `replay_log_path`; on paper with the same `id`, suppresses own position-increasing signals and replays live rows (opens at live qty+VWAP; full closes at paper mark). Go-only flag (never forwarded to check scripts). Hot-reloadable flat-only; requires root `replay_log_path`. Book-drift skips WARN + throttled owner DM (#1436). |
-| CB timing/threshold | `cb_drawdown_cooldown_minutes` / `cb_loss_streak_threshold` / `cb_loss_streak_cooldown_minutes` | Optional per-strategy overrides of the CB's hardcoded parameters; nil/omitted → historical defaults (24h drawdown cooldown, 5-loss streak, 1h loss-streak cooldown). Positive only; cooldowns ≤ 30 days, threshold ≤ 100; rejected on `type=manual`. Read only via the `CircuitBreaker*` accessors — the same threshold accessor drives the firing arm and the #1048 suppression warning. Hot-reloadable via SIGHUP incl. while open (new fires only; a latched `CircuitBreakerUntil` is untouched). Non-defaults surface as `cb[…]` in startup summary + `inspect`. No version bump (#1273). |
-| Notify on ratchet tier trigger | `notify_ratchet_triggers` | Per-strategy override of the global `notify_ratchet_triggers` (#1110) ratchet-tighten owner DM. Nil/omitted → inherit the global value; explicit `true`/`false` wins. Notification-only — hot-reloadable via SIGHUP even while a position is open (masked in `strategyRestartShape`, no state-compat guard). No version bump (#1118). |
-| LLM entry analysis | `llm_entry_analysis` | `{enabled, model, max_debate_rounds, timeout_s, notify_dm, notify_channel}` (default off; model default `claude-sonnet-5`, rounds 1 [0–3], timeout 120s [max 600]; `notify_dm` on / `notify_channel` off by default, both per-strategy `*bool` overrides, both-off legal). After a FRESH position-open (not adds/flips/manual), an async pipeline posts an ELI18, ≤55-words-per-topic digest to the strategy's trade-alert DM (channel opt-in) and stamps the verdict (`bullish`/`bearish`/`mixed`) into `trade_diagnostics.llm_verdict` at close. Advisory only — an error/timeout posts nothing, zero trade impact. Dedicated job lane (own queue/concurrency, cancelled at shutdown, never the shared `pythonSemaphore`). Needs `ANTHROPIC_API_KEY`; `llm_review.py` probed at startup when any strategy opts in. Hot-reloadable via SIGHUP even while open. No version bump (#1137). |
-| Interval | `interval_seconds` | 0 uses global; auto-accelerates in DD warn band |
-| HTF filter | `htf_filter` | Skips counter-trend signals |
-| Open strategy params | `open_strategy.params` | Per-open overrides; no longer a flat top-level `params` map (#640). Migrated from legacy on first start |
-| Close strategy params | `close_strategy.params` | Close evaluator overrides (e.g. `tiered_tp_atr.tp_tiers`); the ref carries its own params so they don't leak into the open strategy. (Legacy `close_strategies[i].params` array path still read.) |
-| Direction | `direction` | Perps gate: `"long"` (default), `"short"` (#656 — open shorts only), or `"both"` (bidirectional). Replaces legacy `allow_shorts`; v14 migration converts `false→"long"`, `true→"both"`. SIGHUP-aware when flat. |
-| Invert signal | `invert_signal` | HL perps/manual only. `true` flips BUY↔SELL on every non-zero signal; HOLD (0) never flipped. Allows inverse-trend use of any open strategy without a new Python module. Composes with `direction="short"` (opens short on raw-BUY, distinct from plain short-direction which opens on raw-SELL). SIGHUP-blocked while open. Default `false`. |
-| Regime directional policy | `regime_directional_policy` | HL perps only. Per-regime `direction`+`invert_signal` override that auto-switches long/short/inverse mode as market regime changes. Requires top-level `regime.enabled=true`; all three canonical regime labels required. When flat, resolves from current regime; while a position is open, resolves from `pos.Regime` at open (hold-on-transition). Startup state-vs-config validation and `inspect` use the same effective-direction rules (#783). SIGHUP blocks shape changes while open. `base_direction`/`effective_direction` visible in `/status`. Backtestable via `run_backtest.py --config` per-cycle resolver (#1025). **#1085: evidence-gated default-OFF** — resolves to base direction unless the `(asset, timeframe, classifier)` cell is certified in `regime_directional_certifications.json` (shipped empty), so the override is currently inert; configuring it logs a non-breaking `[WARN]` (#1076). |
-| Regime window divergence | `regime_window_divergence` | HL perps live only. Shape: `{"short_window": "<name>", "medium_window": "<name>", "on_divergence": "<mode>"}`. Modes: `trust_short` / `trust_medium` / `alert_only`. Overrides `sc.Direction` when short + medium windows diverge (hard = bullish+bearish; soft = one ranging), applied after `regime_directional_policy`. Requires non-empty `regime.windows` with both named windows. Visible in `/status` + DMs + dashboard badge. SIGHUP-blocked while open. Default off. |
-| Stop loss (price %) | `stop_loss_pct` | HL perps. Sole-owner auto-derives from `max_drawdown_pct` (cap 50) when omitted; same-coin peers need one explicit positive owner. `0` opts out. |
-| Stop loss (margin %) | `stop_loss_margin_pct` | HL perps — leverage-aware; mutually exclusive with the other four owners. `0` opts out. |
-| Fixed ATR stop | `stop_loss_atr_mult` | HL perps — trigger `avg_cost ± mult × entry_atr`, armed once after open. Top-level `default_stop_loss_atr_mult` defaults to `1.0` and applies to every HL perps with all five stop fields omitted (incl. shared-coin peers since #601) (#562/#601/#605); per-strategy `0` or top-level `0` restores `max_drawdown_pct` fallback. |
-| Trailing stop (%) | `trailing_stop_pct` | HL perps — distance from high-water mark; mutually exclusive when positive. Live + paper (#532). Capped at 50%; `0` disables. |
-| Trailing stop (ATR×mult) | `trailing_stop_atr_mult` | HL perps — `mult × entry_atr / avg_cost` frozen at open; mutually exclusive when positive. Live + paper (#532). Arms cycle after open once ATR exists. |
-| Trailing debounce | `trailing_stop_min_move_pct` | Min trigger move before cancel/replace. Default 0.5%. |
-| Exchange leverage | `leverage` | Perps — exchange margin/risk leverage and HL `update_leverage` (#497). 1× default. |
-| Sizing leverage | `sizing_leverage` | Perps — notional multiplier (`cash * sizing_leverage`); defaults to `leverage` (#497). |
-| Margin per trade | `margin_per_trade_usd` | Perps (opt-in) — `notional = min(margin_per_trade_usd, cash) × leverage`. Overrides `sizing_leverage`. SIGHUP-aware (#520). **#1408 shared-wallet pool mode** (2+ live HL/OKX perps, every member omits capital fields): notional = `min(cap, account equity − deployed wallet margin) × leverage`; entry/mark reservation; missing balance blocks opens not closes. |
-| Risk-per-trade sizing | `risk_per_trade_pct` | HL perps only, opt-in — `qty = (cash × pct/100) / stop_distance`, capped at `cash × exchange_leverage`. Bounds `(0, 10]`. Mutually exclusive with `sizing_leverage`/`margin_per_trade_usd`/`allow_scale_in`; requires a stop owner resolvable at sizing time (regime-resolved/unified-close owners rejected at load). Fail-closed: an unresolvable stop distance refuses the open rather than falling back to notional sizing. Hot-reload: value tweaks always apply, risk↔notional mode switch blocked while open. Backtestable via `Backtester(risk_per_trade_pct=…)`/`--config` (#1268). |
-| Correlated hedge leg | `hedge` | HL perps only (live+paper), opt-in — `{enabled, symbol, side:"inverse", ratio, margin_mode, leverage}` auto-manages a reduce-only leg on a different coin, qty-event mirrored from the primary via `runHedgeSync` (no independent SL/TP/close evaluator). Hedge coin must be nobody's primary and no other strategy's hedge coin. Hedge PnL excluded from primary loss streak. Fail-closed: hedge failure on a cycle that added primary exposure unwinds that increment + CRITICAL DM. Hot-reloadable only while flat; blocked while either leg open. Backtester rejects an enabled block (#1159). |
-| Hurst entry gate / sizing | `hurst_gate` | Opt-in — `{enabled, mode:"gate"\|"size", min, max, disarm_min, disarm_max, window_key, on_failure, size_floor}`. Standalone gate on top of `allowed_regimes` (label gate unchanged). `mode=gate` holds position-increasing signals while disarmed; `mode=size` scales computed open size by `clamp(\|H-0.5\|/0.15, size_floor, 1.0)` (never >1). Reads `metrics["hurst"]` from a composite regime window only (adx/missing rejected at load). `on_failure` inherits `regime.hurst_gate_on_failure` then `"open"`. Hot-reloadable always incl. while open. #1424 calibration INCONCLUSIVE — no shipped thresholds. Backtest via `--config` (#1411). |
-| Regime-gate failure policy | `regime_gate_on_failure` | `"open"` (default; legacy fail-open) or `"closed"` (holds fresh opens only — posQty>0 management and closes always pass — while the regime store can't produce a gate label: subprocess failure, sealed budget, missing window). Overrides global `regime.gate_on_failure`; empty inherits. Hot-reloadable always, incl. while open. `closed` + `allowed_regimes` + `regime.enabled=false` rejected at load (permanent block) (#1278). |
-| ATR smoothing method (override) | `atr_method` | Per-strategy override of the global `atr_method` (`"simple"`\|`"wilder"`; empty inherits). Same scope as the global default (`standard_atr` surface only). Rejected on `type=options`. Hot-reload blocked while open (#1277). |
-| Margin mode | `margin_mode` | HL perps, `isolated` (default) or `cross`. Applied from flat. |
-| Open strategy | `open_strategy` | Override entry strategy name (else `args[0]`) |
-| Close strategy | `close_strategy` | Single exit ref `{name, params}` (#842 collapsed the array); legacy `close_strategies` array len ≤1 still read, len>1 rejected; nil → open-as-close |
-| Regime gate | `allowed_regimes` | Labels allowing entries (`trending_up`, `trending_down`, `ranging`); empty = allow all; needs `regime.enabled=true`; not on type=options |
-| Multi-window selectors | `regime_gate_window`, `regime_atr_window`, `regime_directional_window` | Require non-empty `regime.windows`. Route entry gate, regime-aware ATR/TP, and directional policy to different ADX horizons. Empty/`default` → legacy `regime.period`. Stamped labels persist in `pos.RegimeWindows` (#792). SIGHUP when flat; blocked while open. |
-| Regime-profile allocation | `regime_profile_allocation` | HL perps (live + paper). Two open-param profiles of one strategy; a slow long-window regime label picks the active one, switched hysteretically (`confirm_bars`, WARN<12) and only while flat (frozen to the open profile while a position is open). Shape `{window, profiles{label→name, all labels}, param_sets{name→overrides, exactly 2}, confirm_bars≥1, initial_profile}`. Requires `regime.enabled=true`. Persisted (`active_profile`); SIGHUP blocks shape change while open, resets state when flat. Backtestable via `--config`. No version bump (#998). |
-| Theta harvest | `theta_harvest.*` | Options early-exit |
-| User close defaults | `user_defaults.close` and `user_defaults.regime_atr` | Optional `user_defaults.close` close-evaluator keys (`tiered_tp_atr`, `trailing_tp_ratchet_regime`, …) inject `tp_tiers` into matching close refs omitting `tp_tiers`. `trailing_tp_ratchet_regime` may also carry coupled `trail_stop_atr_regime` (#1133). `user_defaults.regime_atr` supplies fleet-wide `stop_loss_atr_regime` / `trail_stop_atr_regime` for standalone `use_defaults`-only strategy owners (#1134). Three-layer resolution: system → user → strategy (explicit wins). SIGHUP-hot-reloadable. Backtest: `--defaults system\|user`. Legacy top-level `user_close_defaults` is a deprecated alias migrated on load; its reserved `regime_atr` key moves to `user_defaults.regime_atr`, and non-equivalent canonical+legacy duplicates are rejected (#1135). |
-| HL on-chain TP tiers | `close_strategies[i].params.tiers` (where ref is `tiered_tp_atr` or `tiered_tp_atr_live`) | HL perps only — list of `{atr_multiple, close_fraction}` (cumulative). **Default `[{1.5×,0.4},{3×,0.8},{5×,1.0}]` (#870 retune from old `[{1×,0.5},{2×,1.0}]`)**; final tier coerced to 1.0; non-numeric rejected per tier. **Live mode:** configuring tiers auto-suppresses the in-process `tiered_tp_atr*` close evaluator to prevent on-chain limit-fill races (#604/#615). **Paper mode:** evaluator is never suppressed (#781). Pre-v13 configs migrated automatically. |
-| Post-TP SL adjustment | `close_strategies[i].params.sl_after` (strategy-level) and/or `tiers[j].sl_after` (per-tier) — scalar modes: `"breakeven"`, `{atr_mult: N}` (signed), `{trail_from_here: {atr_mult: M}}`, `{trail_from_here: {tp_atr_fraction: F}}` (trail = F × firing tier ATR multiple). Regime-aware shapes: `{kind:"atr_offset","trend_regime":{...}}`, `{kind:"trail_from_here","trail_from_here":{"trend_regime":{...}}}`, `{trail_from_here:{tp_atr_fraction:{trend_regime:{label:F}}}}`; composite labels follow `regime_atr_window`. | HL perps + manual. Requires fixed SL (`stop_loss_atr_mult`, `stop_loss_atr_regime`, `stop_loss_pct`, or `stop_loss_margin_pct`). SIGHUP blocks scalar↔regime or shape changes while open. Backtester parity for scalar modes including scalar `tp_atr_fraction`; regime-aware `sl_after` HL-live-only (backtester rejects at init, #736/#742/#835). |
-| Regime-aware ATR stop/trailing | `stop_loss_atr_regime`, `trail_stop_atr_regime` | HL perps. Resolves ATR multiplier per `pos.Regime` label. Shape: `{"trend_regime": {"trending_up": {"atr": N}, "trending_down": {"atr": N}, "ranging": {"atr": N}}}` or `{"use_defaults": true}`. Mutually exclusive with scalar SL fields. Requires `regime.enabled=true`. **Backtester parity since #737/#747** — `Backtester(stop_loss_atr_regime=...)`. SIGHUP blocks flips while open (#733/#735). |
-| Regime-aware tiered TP | `close_strategies[i].params` with ref `tiered_tp_atr_regime` or `tiered_tp_atr_live_regime` | HL perps on-chain TPs with per-regime tiers. `_live_regime` re-resolves each tick. **Backtester parity since #737/#747.** |
-| Trailing-ratchet close | `close_strategy.params.tp_tiers` with ref `trailing_tp_ratchet` or `trailing_tp_ratchet_regime` (#844/#870) | HL perps + `type=manual`. Each tier `{atr_multiple, close_fraction?, trailing_mult_after \| tp_atr_fraction}` tightens the trail (monotonic, never loosens) and optionally scales out (cumulative `close_fraction`, `0`=trail-only). **Scalar form:** requires `trailing_stop_atr_mult > 0` (SL owner + initial trail); rejects other stop fields + `trailing_stop_pct`/`trail_stop_atr_regime`. **Regime form (`trailing_tp_ratchet_regime`):** requires `trail_stop_atr_regime` (#870 — `trailing_stop_atr_mult` rejected for regime variant); provides per-regime opening trail; `regime.enabled=true` required. First rung must be ≤ initial trail per regime. Regime `tp_tiers` keyed `{label: [tiers]}`, frozen at open. Places **no on-chain TP**. Default tiers (#866): `use_defaults:true`/omit `tp_tiers` → system default ladder (scalar: `1.5×/1.5×/0.8×` at `2×/2.5×/3×` ATR; regime: per-quality-group). Final-tier trail 0.8×ATR (#887, was 0.5×). Backtestable. SIGHUP blocks tier-table change while open. |
+| `capital` | all | Starting capital reference |
+| `max_drawdown_pct` | all | The strategy circuit breaker |
+| `interval_seconds` | all | `0` uses the global; auto-accelerates inside the drawdown warn band |
+| `circuit_breaker` | all but manual | `false` disables BOTH arms (drawdown and consecutive losses), live and paper; nil = enabled. It suppresses only NEW fires — a latched breaker or pending close still drains — and displayed drawdown still updates. One warning per suppressed breach, `cb=off` in the startup summary and `inspect`. Hot-reloadable even while open. |
+| `cb_drawdown_cooldown_minutes`, `cb_loss_streak_threshold`, `cb_loss_streak_cooldown_minutes` | all but manual | Override the hardcoded breaker parameters; nil keeps 24h, 5 losses, 1h. Positive only; cooldowns ≤ 30 days, threshold ≤ 100. Hot-reloadable even while open, for new fires only — a latched expiry is untouched. |
+| `paused` | all | `false`. Holds opens, adds and flips while closes, trailing stop, ratchet and protection sync keep running. Hot-reloadable always, including while open. Shows `⏸️ paused:` in Discord `/status`. |
+| `allow_deprecated` | all | Acknowledges a research-deprecated strategy. Live: unset or false gives a startup DM, `true` silences it. Paper auto-suppresses unless set `false`. Warning surface only — never blocks trading. |
+| `htf_filter` | all | Skips counter-trend signals. Restart-required. |
+| `open_strategy` | all | `{name, params}`; otherwise the name comes from `args[0]` |
+| `close_strategy` | all | The single exit ref `{name, params}`; nil = open-as-close. A legacy `close_strategies` array of length ≤1 still parses, length >1 is rejected. |
+| `direction` | perps | `"long"` (default), `"short"` (opens shorts only), `"both"`. Hot-reloadable when flat. |
+| `invert_signal` | HL perps, manual | `true` flips BUY↔SELL on every non-zero signal; HOLD is never flipped. Composes with `direction="short"`. Blocked while open. |
+| `stop_loss_pct` | HL perps | Sole owner auto-derives from `max_drawdown_pct` (cap 50) when omitted; same-coin peers need one explicit positive owner. `0` opts out. |
+| `stop_loss_margin_pct` | HL perps | Leverage-aware. `0` opts out. |
+| `stop_loss_atr_mult` | HL perps | Trigger at `avg_cost ± mult × entry_atr`, armed once after open. `0` restores the `max_drawdown_pct` fallback. |
+| `trailing_stop_pct` | HL perps | Distance from the high-water mark. Live and paper. Capped at 50%; `0` disables. |
+| `trailing_stop_atr_mult` | HL perps | `mult × entry_atr / avg_cost` frozen at open. Live and paper. Arms the cycle after open, once ATR exists. |
+| `stop_loss_atr_regime`, `trail_stop_atr_regime` | HL perps | Resolve the ATR multiplier per the position's frozen regime label. `{"trend_regime": {"<label>": {"atr": N}, …}}` or `{"use_defaults": true}`. Need `regime.enabled`. Backtestable. |
+| `trailing_stop_min_move_pct` | HL perps | Minimum trigger move before a cancel-and-replace. Default 0.5%. A ratchet tier tighten bypasses it once, same cycle. |
 
-Discord/Telegram:
+**Exactly one of the seven stop owners** may be positive on an HL perps strategy: `stop_loss_pct`, `stop_loss_margin_pct`, `stop_loss_atr_mult`, `stop_loss_atr_regime`, `trailing_stop_pct`, `trailing_stop_atr_mult`, `trail_stop_atr_regime` — plus the unified per-regime close block, which owns the stop itself and rejects every strategy-level stop field. Omit all of them and `default_stop_loss_atr_mult` applies. A nil↔positive toggle or a scalar↔regime flip is blocked while a position is open.
 
-- `enabled`
-- `channels`: platform/type map for summaries + trade alerts (fallback)
-- `trade_alert_channels`: optional override for trade fills only; same key scheme; SIGHUP-reloadable (#572)
-- `dm_channels`: per-platform DM-style trade alerts
-- `owner_id`: prefer `DISCORD_OWNER_ID` env
+| Key | Scope | Notes |
+| --- | --- | --- |
+| `sl_after` (on the close ref and/or per tier) | HL perps, manual | Post-take-profit stop move. Scalar modes: `"breakeven"`, `{atr_mult: N}` (signed), `{trail_from_here: {atr_mult: M}}`, `{trail_from_here: {tp_atr_fraction: F}}` where the trail is F × the firing tier's ATR multiple. Regime-aware shapes exist for each; composite labels follow `regime_atr_window`. Needs a fixed stop owner. Scalar↔regime or shape change blocked while open. The backtester has scalar parity and rejects the regime-aware shapes at init. |
+| `leverage` | perps | Exchange margin and risk leverage, and the HL `update_leverage` call. Default 1×. Applied from flat. |
+| `sizing_leverage` | perps | Notional multiplier (`cash × sizing_leverage`); defaults to `leverage`. |
+| `margin_per_trade_usd` | perps, opt-in | `notional = min(margin_per_trade_usd, cash) × leverage`. Overrides `sizing_leverage`. In shared-wallet pool mode (2+ live HL/OKX perps where every member omits the capital fields) notional is `min(cap, account equity − deployed wallet margin) × leverage` with entry/mark reservation; a missing balance blocks opens but not closes. Allocated↔pool is flat-only and restart-required. |
+| `risk_per_trade_pct` | HL perps, opt-in | `qty = (cash × pct/100) / stop_distance`, capped at `cash × leverage`. Bounds `(0, 10]`. Mutually exclusive with `sizing_leverage`, `margin_per_trade_usd`, `allow_scale_in`. Needs a stop owner resolvable at sizing time; regime-resolved and unified-close owners are rejected at load. **Fail-closed** — an unresolvable stop distance refuses the open rather than falling back to notional sizing. A risk↔notional mode switch is blocked while open. |
+| `margin_mode` | HL perps | `isolated` (default) or `cross`. Applied from flat. |
+| `allow_scale_in`, `scale_in` | HL perps, manual, opt-in | See Scale-in / pyramiding |
+| `hedge` | HL perps, opt-in | `{enabled, symbol, side:"inverse", ratio, margin_mode, leverage}`. Auto-manages a leg on a different coin, mirrored from the primary's quantity by one per-cycle reconciler; the hedge leg has no independent stop, take-profit or close evaluator, and mark drift never re-trades. The hedge coin must be nobody's primary and no other strategy's hedge coin. Hedge PnL is recorded separately and excluded from the primary's lifetime trade and win/loss counts and from its loss streak. **Fail-closed** — a hedge failure on a cycle that added primary exposure unwinds that increment and sends a CRITICAL DM. Hot-reloadable only while flat; the backtester rejects an enabled block. |
+| `hurst_gate` | opt-in | `{enabled, mode:"gate"\|"size", min, max, disarm_min, disarm_max, window_key, on_failure, size_floor}`. Sits ON TOP of `allowed_regimes`, which is unchanged. `mode=gate` holds position-increasing signals while disarmed; `mode=size` scales computed open size by `clamp(\|H-0.5\|/0.15, size_floor, 1.0)`, never above 1. Reads the Hurst metric from a composite regime window only — an ADX or missing window is rejected at load. `on_failure` inherits `regime.hurst_gate_on_failure` then `"open"`; fail-closed is flat-only. Hysteresis is keyed by a threshold hash, so editing a threshold resets it. Hot-reloadable always. **No thresholds ship** — calibration was inconclusive. Backtest through `--config`. |
+| `allowed_regimes` | not options | Labels that allow an entry. Empty allows all. Needs `regime.enabled`. |
+| `regime_gate_on_failure` | not options | `"open"` (default, legacy fail-open) or `"closed"`, which holds fresh opens only — management and closes always pass — while the regime store cannot produce a label. Overrides the global; empty inherits. Hot-reloadable always. `closed` with `allowed_regimes` and `regime.enabled=false` is rejected at load as a permanent block. |
+| `regime_gate_window`, `regime_atr_window`, `regime_directional_window` | not options | Route the entry gate, regime-aware ATR and take-profits, and the directional policy to different horizons. Need a non-empty `regime.windows`; empty or `default` uses `regime.period`. Stamped labels persist on the position. Reload only while flat. |
+| `regime_directional_policy` | HL perps | Per-regime `direction` plus `invert_signal` override. Needs `regime.enabled` and every canonical label. Resolves from the current regime while flat, from the position's frozen label while open. **Evidence-gated, DEFAULT-OFF** — it resolves to the base direction unless the `(asset, timeframe, classifier)` cell is certified in the shipped-empty artifact, so configuring it today is inert and logs a non-breaking warning. Certification is exact-match: a bare label never certifies its substates. Backtestable through `--config`. |
+| `regime_window_divergence` | HL perps live | `{"short_window", "medium_window", "on_divergence": "trust_short"\|"trust_medium"\|"alert_only"}`. Overrides the direction when the two windows diverge (hard = bullish plus bearish, soft = one ranging), applied after the directional policy. Needs both windows in `regime.windows`. Visible in `/status`, DMs and a dashboard badge. The backtester rejects it. |
+| `regime_profile_allocation` | HL perps | Two open-param profiles of one strategy; a slow long-window label picks the active one, switched hysteretically (`confirm_bars`, warn below 12) and only while flat — it freezes at open. `{window, profiles{label→name, all labels}, param_sets{name→overrides, exactly 2}, confirm_bars≥1, initial_profile}`. Needs `regime.enabled`. Persisted. Backtestable through `--config`. |
+| `atr_method` | not options | Per-strategy override of the global; empty inherits. |
+| `replay_sharing` | HL perps | `"none"` (default) or `"live_mirror"`. On live it records exposure-changing decisions to `replay_log_path`; on paper with the **same strategy `id`** it suppresses its own position-increasing signals and replays the live rows — opens at live quantity and VWAP, full closes at the paper mark under reason `replay_live_mirror`. Never forwarded to the check scripts. Hot-reloadable flat-only. Book-drift skips warn and DM (throttled) but are never retried; a close-while-flat is INFO only. |
+| `notify_ratchet_triggers` | HL perps, manual | Overrides the global; nil inherits. Notification-only, so it hot-reloads even while open. |
+| `llm_entry_analysis` | all, opt-in | `{enabled, model, max_debate_rounds, timeout_s, notify_dm, notify_channel}`, default off; model default `claude-sonnet-5`, 1 round (0–3), 120s timeout (max 600), `notify_dm` on, `notify_channel` off, both-off legal. After a FRESH open — never an add, flip or manual — an async pipeline posts a short digest to the trade-alert DM and stamps `bullish`/`bearish`/`mixed` into `trade_diagnostics.llm_verdict` at close. **Advisory only**: an error or timeout posts nothing and has zero trade impact. Runs on its own job lane, never the shared Python semaphore. Needs `ANTHROPIC_API_KEY`. Hot-reloadable even while open. |
+| `theta_harvest.*` | options | Early exit |
+| `close_strategy.params.tp_tiers` with ref `tiered_tp_atr` / `tiered_tp_atr_live` | HL perps | On-chain take-profit tiers, a list of `{atr_multiple, close_fraction}` (cumulative). Default `[{1.5×,0.4},{3×,0.8},{5×,1.0}]`; the final tier is coerced to 1.0 and a non-numeric tier is rejected. **Live:** configuring tiers auto-suppresses the in-process evaluator so an on-chain limit fill cannot race it. **Paper:** never suppressed. |
+| ref `tiered_tp_atr_regime` / `tiered_tp_atr_live_regime` | HL perps | Per-regime tiers; the `_live_` variant re-resolves each tick. Backtestable. |
+| `close_strategy.params.tp_tiers` with ref `trailing_tp_ratchet` / `trailing_tp_ratchet_regime` | HL perps, manual | Shape and rules in Configure. `use_defaults: true` or an omitted `tp_tiers` takes the system ladder (scalar: trails 1.5×/1.5×/0.8× at 2×/2.5×/3× ATR; regime: per quality group). Tier-table changes blocked while open. |
 
-Correlation:
-
-- `correlation.enabled`, `correlation.max_concentration_pct` (60), `correlation.max_same_direction_pct` (75)
-- Warnings → all active channels + owner DM; snapshot in `/status`.
-
-Regime detection (global opt-in):
-
-- `regime.enabled` — must be `true` for any per-strategy `allowed_regimes` to fire
-- `regime.period` — ADX lookback (Wilder), default 14
-- `regime.adx_threshold` — below = `ranging`, default 20.0
-- Valid labels: `trending_up`, `trending_down`, `ranging`. `AllowedRegimes` SIGHUP-compatible; global `regime` block (incl. `windows`) needs full restart. Per-strategy `regime_*_window` selectors SIGHUP when flat; blocked while open. Not on type=options.
+Discord and Telegram: `enabled`; `channels` (the platform/type map for summaries and, as a fallback, trade alerts); `trade_alert_channels` (an override for fills only, same key scheme, hot-reloadable); `dm_channels`; `owner_id` (prefer `DISCORD_OWNER_ID`); `ephemeral_replies`; `report_repo` and `report_github_token`.
 
 ---
 
 ## Strategy Reference
 
-Source of truth:
+**Never enumerate strategies from memory.** The registries are the source of truth and they change:
 
 ```bash
 uv run --no-sync python shared_strategies/open/spot/strategies.py --list-json
@@ -885,101 +681,87 @@ uv run --no-sync python shared_strategies/open/futures/strategies.py --list-json
 uv run --no-sync python shared_strategies/options/strategies.py --list-json
 ```
 
-`DISCOVERY_HIDDEN_STRATEGIES` (`amd_ifvg`, `donchian_breakout`, `range_scalper`, `session_breakout`, `vol_momentum`) are omitted from `--list-json` / `go-trader init` after research deprecations (#1034–#1041, #985) but stay registered — explicit `args[0]` / config refs still load. `liquidity_sweeps` is research-deprecated (#1032) but still discoverable.
+`/go-trader-closing-strategies` catalogs every registered close evaluator — name, description, platforms, config params — and marks the ones `user_defaults.close` overrides.
+
+Research-deprecated strategies are hidden from `--list-json` and `go-trader init` but stay registered, so an explicit `args[0]` or config ref still loads them. A live strategy on the deprecated roster gets one owner DM at startup unless `allow_deprecated: true`; paper strategies auto-suppress it. A strategy marked backtest-only fails closed on a live config.
+
+What an operator needs to choose one:
+
+- **Direction.** A bidirectional strategy needs `"direction": "both"`, or `"short"` to run it as a dedicated bear-only instrument. Short-only strategies emit sell signals exclusively and are pre-registered bidirectional, so they need one of those two values. Pair a short strategy with `allowed_regimes: ["trending_down"]` for clean entry gating.
+- **Validation status.** `--list-json` returns only the ID and the description, and the description carries the research verdict — read it. The deprecation tag itself surfaces as `edge=deprecated_m5` in the startup summary and in `./go-trader inspect`, plus a one-time owner DM for a live strategy. Treat anything tagged deprecated, or described as not out-of-sample validated, as paper-trade-first.
+- **Entry versus exit.** Several entry strategies ship entries only and expect the exit to come from config — pair them with a close evaluator and a stop rather than expecting a built-in exit.
 
 Platform conventions:
 
-| Platform | ID prefix | Type/script |
+| Platform | ID prefix | Type / script |
 | --- | --- | --- |
 | BinanceUS spot | none | `spot`, `shared_scripts/check_strategy.py` |
 | Hyperliquid perps | `hl-` | `perps`, `shared_scripts/check_hyperliquid.py` |
-| Hyperliquid manual | `hl-` | `manual` (#569), no script/interval; `manual-open`/`manual-close`; auto-defaults SL@2.0×ATR + `tiered_tp_atr_live` (TP1@2× / TP2@3×) when regime off (#1115 ratchet path when enabled); can share coin with HL perps peers (#619/#620) |
+| Hyperliquid manual | `hl-` | `manual`, no script or interval; driven by the `manual-*` CLI; may share a coin with HL perps peers |
 | TopStep futures | `ts-` | `futures`, `shared_scripts/check_topstep.py` |
-| Robinhood | `rh-` | spot via `check_robinhood.py`, options via `check_options.py --platform=robinhood` |
-| OKX | `okx-` | `check_okx.py` (spot/perps), `check_options.py --platform=okx` for options |
+| Robinhood | `rh-` | spot through `check_robinhood.py`, options through `check_options.py --platform=robinhood` |
+| OKX | `okx-` | `check_okx.py` (spot and perps), `check_options.py --platform=okx` for options |
 | Deribit options | `deribit-` | `check_options.py --platform=deribit` |
 | IBKR options | `ibkr-` | `check_options.py --platform=ibkr` |
-| Luno | `luno-` | Luno adapter/scripts |
+| Luno | `luno-` | Luno adapter and scripts |
 
-Common entries:
+ID conventions: `ts-{strategy}-{symbol}`, `rh-{strategy_short}-{asset_or_symbol}`, `okx-{strategy_short}-{asset}` for spot and options, `okx-{strategy_short}-{asset}-perp` for perps. Options short names: `vol_mean_reversion → vol`, `momentum_options → momentum`, `protective_puts → puts`, `covered_calls → calls`, `wheel`, `butterfly`.
+
+Example entries:
 
 ```json
 {"id":"momentum-btc","type":"spot","script":"shared_scripts/check_strategy.py","args":["momentum","BTC/USDT","1h"],"capital":1000,"max_drawdown_pct":60,"interval_seconds":300}
-{"id":"deribit-vol-btc","type":"options","script":"shared_scripts/check_options.py","args":["vol_mean_reversion","BTC","--platform=deribit"],"capital":1000,"max_drawdown_pct":40,"interval_seconds":1200}
-{"id":"ibkr-vol-btc","type":"options","script":"shared_scripts/check_options.py","args":["vol_mean_reversion","BTC","--platform=ibkr"],"capital":1000,"max_drawdown_pct":40,"interval_seconds":1200}
 {"id":"ts-momentum-es","type":"futures","platform":"topstep","script":"shared_scripts/check_topstep.py","args":["momentum","ES","1h","--mode=paper"],"capital":1000,"max_drawdown_pct":5,"interval_seconds":3600}
-{"id":"rh-sma-btc","type":"spot","platform":"robinhood","script":"shared_scripts/check_robinhood.py","args":["sma_crossover","BTC","1h","--mode=paper"],"capital":500,"max_drawdown_pct":5,"interval_seconds":3600}
 {"id":"rh-ccall-spy","type":"options","platform":"robinhood","script":"shared_scripts/check_options.py","args":["covered_calls","SPY","--platform=robinhood"],"capital":5000,"max_drawdown_pct":10,"interval_seconds":14400,"theta_harvest":{"enabled":true,"profit_target_pct":60,"stop_loss_pct":200,"min_dte_close":3}}
-{"id":"okx-sma-btc","type":"spot","platform":"okx","script":"shared_scripts/check_okx.py","args":["sma_crossover","BTC","1h","--mode=paper","--inst-type=spot"],"capital":1000,"max_drawdown_pct":5,"interval_seconds":3600}
 {"id":"okx-sma-btc-perp","type":"perps","platform":"okx","script":"shared_scripts/check_okx.py","args":["sma_crossover","BTC","1h","--mode=paper","--inst-type=swap"],"capital":1000,"max_drawdown_pct":5,"interval_seconds":3600}
-{"id":"okx-mom-btc","type":"options","platform":"okx","script":"shared_scripts/check_options.py","args":["momentum_options","BTC","--platform=okx"],"capital":5000,"max_drawdown_pct":10,"interval_seconds":14400,"theta_harvest":{"enabled":true,"profit_target_pct":60,"stop_loss_pct":200,"min_dte_close":3}}
 ```
 
-Short-name conventions:
-
-- Options: `vol_mean_reversion → vol`, `momentum_options → momentum`, `protective_puts → puts`, `covered_calls → calls`, `wheel → wheel`, `butterfly → butterfly`
-- TopStep: `ts-{strategy}-{symbol}`
-- Robinhood: `rh-{strategy_short}-{asset_or_symbol}`
-- OKX: `okx-{strategy_short}-{asset}` for spot/options, `okx-{strategy_short}-{asset}-perp` for perps
-- `triple_ema_bidir` is futures/perps only and needs `"direction": "both"` (formerly `"allow_shorts": true`; v14 migrates automatically). Use `"direction": "short"` to run any bidirectional strategy as a dedicated bear-only instrument (#656).
-- Short-focused strategies (futures/perps only): `bear_pullback_st` (rally-into-EMA20/50 in EMA50<EMA200 + ADX>20 regime, RSI 55–65 rebound, #655), `vwap_rejection_st` (intraday VWAP/EMA20/EMA50 rejection inside bearish HTF + RSI≤50 confirmation, #657). Both emit `signal=-1` only and are pre-registered as bidirectional so `direction: "short"` or `"both"` is required. Pair with `allowed_regimes: ["trending_down"]` for clean entry gating.
-- **New bidirectional strategies (#895):** `momentum_pro` (`mompro`) — stacked-EMA trend-pullback entry (fast>mid>long EMA), ADX-confirmed, volume-backed bar break; requires `direction: "both"`. `mean_reversion_pro` (`mrpro`) — z-score reversion gated by no-trend ADX ceiling + RSI extreme confirmation; requires `direction: "both"`. Both spot + futures/perps. Walk-forward OOS result: `momentum_pro` BTC 4h is marginally validated (~+6% median Sharpe ~1, high variance); `mean_reversion_pro` is not OOS validated — paper-trade before live. `momentum_pro` (#980) and `mean_reversion_pro` (#981) both gained default-off research kwargs (`vol_target_atr_pct`/`vol_target_atr_period`/`vol_target_min_fraction` on momentum_pro; `touch_entry`/`turn_entry` on mean_reversion_pro) — M1-validated negative for a default change, live behavior unchanged unless explicitly set. `momentum_pro`'s standalone short leg is also negative (#1166: regime-gating the short via `regime_directional_policy` doesn't clear the M1 bar either).
-- **Anchored VWAP family:** `anchored_vwap` (`avwap`, #1016) — single anchored-VWAP S/R flip; bidirectional (emits short on buffered breakdown below the line). Research-negative at default params (#1039) — treat as experimental; validate before live. **#1017 rider B:** default-off `gate_rsi_period`/`gate_rsi_level` (0/50.0) and `gate_ema_period` (0) momentum/trend gates — when set, longs need RSI≥level (or close≥EMA) on the signal bar, shorts the mirror; NaN warmup fails open (veto). Defaults keep `--list-json` bit-identical to pre-#1017. `anchored_vwap_channel` (`avwapch`, #1169) — dual-anchor channel (swing-low support / swing-high resistance line), range-edge mean reversion: long a bounce off support, short a rejection off resistance. `anchored_vwap_reversion` (`avwaprev`, #1170) — fades ATR-measured stretches beyond the anchored VWAP back toward the line (long below, short above), distinct per-bar from `anchored_vwap`'s breach trade. All three spot + futures/perps, pre-gated to composite `{ranging_quiet, ranging_volatile}` by default (channel/reversion) or unbounded (plain `anchored_vwap`). Pair `anchored_vwap` with the new `avwap_stop` close evaluator (exits on loss of the same line) for a self-consistent entry/exit — see `/go-trader-closing-strategies`.
-- **Range strategies (#896):** `consolidation_range` (`cr`) — range-edge mean-reversion at the top/bottom of a consolidation box; bidirectional (emits `signal=-1` at the top edge), requires `direction: "both"` for HL perps. Negative OOS at default params — tune `box_width_pct` and `atr_stop_mult` before live. `range_scalper` (`rs`) — **deprecated/hidden from discovery (#1034)**; unidirectional support/resistance scalper kept loadable for explicit configs.
-- **`atr_band_revert` (`abr`, #1069):** ranging mean-reversion — fade ATR-scaled bands around an SMA (long below `mid − k·ATR`; short above `mid + k·ATR` on the futures/perps `direction:"both"` variant). Entries only; exit is config not code — pair `tiered_tp_atr` (~`k_entry/2` & `k_entry` ATR tiers) + `stop_loss_atr_mult`. Spot long-only. `init` ships it pre-gated to `allowed_regimes:["ranging_quiet","ranging_volatile"]` on a composite "medium" window. Tunable baseline — backtest before live.
-- `donchian_breakout`, `chart_pattern`, `liquidity_sweeps` already emitted `signal=-1` for bearish setups but were generated long-only by `init.go`. Since #654 they default to `direction: "both"` so existing perps configs need a regenerate or a manual `direction` flip to capture the short side. `liquidity_sweeps` research-deprecate (#1032) — still in discovery; prefer other structure strategies. `donchian_breakout` (`dbo`) is **deprecated/hidden from discovery (#985)** — long leg fails all M1 windows ungated and under every regime-gate variant; short leg has a real OOS edge but fails both bull-year held-outs; kept loadable for explicit configs.
-- **`chart_pattern` HTF trend gate (#982):** four default-off params — `htf_gate_factor` (0 disables, default), `htf_gate_mode` (`veto`|`align`), `htf_gate_ema_fast`/`_slow` — veto/align pattern entries against a higher-timeframe EMA trend. M1-recommended opt-in: `{"htf_gate_factor": 4}` (mode `veto`) passes the protocol window and improves held-outs 1/3→2/3, but regresses 2024 — ships opt-in, not default. A regime-switched variant (gate on in `trending_down`/`ranging`, off in `trending_up`) was researched and rejected (#1167 — fails protocol OOS below both static parents); the static `{"htf_gate_factor": 4}` opt-in is the only recommended shape.
-- `session_breakout` (`sbo`) is futures/perps only and **deprecated/hidden from discovery (#1038)** — short leg failed bull-year held-outs (#1031)
-- Multiple HL perps strategies on the same coin share an on-chain position; peers must agree on `margin_mode` and exchange `leverage` (`sizing_leverage` may differ). Since #601 each peer places its own per-strategy sized reduce-only protection, so multiple peers can own fixed ATR / margin / trailing stops simultaneously. `LoadConfig` defaults all-five-omitted peers to `default_stop_loss_atr_mult` (#562/#601/#605); set per-strategy `stop_loss_atr_mult: 0` (one) or top-level `default_stop_loss_atr_mult: 0` (fleet-wide) to opt out. **Per-strategy CB (#515):** drain skips on-chain close when peers share the coin — exchange leg stays open until another path flattens. Sub-account isolation is the only path for full per-strategy independence.
+**Peers on one Hyperliquid coin** share a single on-chain position. They must agree on `margin_mode` and exchange `leverage`; `sizing_leverage` may differ. Each peer places its own per-strategy-sized reduce-only protection, so several peers may own fixed-ATR, margin, or trailing stops at once. Peers that omit every stop field fall back to `default_stop_loss_atr_mult`. A per-strategy circuit-breaker drain skips the on-chain close when peers share the coin, so the exchange leg stays open until another path flattens it. Sub-account isolation is the only route to full per-strategy independence.
 
 ---
 
 ## Add Or Change Strategies
 
-Open: `shared_strategies/open/registry.py`. Close: `shared_strategies/close/registry.py`.
+Open registry: `shared_strategies/open/registry.py`. Close registry: `shared_strategies/close/registry.py`.
 
-New spot/futures strategy:
+New spot or futures strategy:
 
-1. Add implementation + `@register(...)` in `shared_strategies/open/registry.py`.
-2. Set `platforms=(...)` correctly; use variants for platform-specific defaults.
-3. Append name to `PLATFORM_ORDER`.
-4. Add short name + default entries in `scheduler/init.go`.
+1. Add the implementation and its `@register(...)` in `shared_strategies/open/registry.py`.
+2. Set `platforms=(…)` correctly; use variants for platform-specific defaults.
+3. Append the name to `PLATFORM_ORDER`.
+4. Add the short name and default entries in `scheduler/init.go`.
 5. Add a param grid to `DEFAULT_PARAM_RANGES` in `backtest/optimizer.py`.
-6. Run registry + optimizer tests.
+6. Run the registry and optimizer tests.
 
-For close evaluators, add an `evaluate(position, market, params)` impl under `shared_strategies/close/` and register in `close/registry.py`.
+For a close evaluator, add an `evaluate(position, market, params)` implementation under `shared_strategies/close/` and register it in `close/registry.py`.
 
-Do not edit `shared_strategies/open/{spot,futures}/strategies.py` to add strategies — they are thin shims.
+Do not edit `shared_strategies/open/{spot,futures}/strategies.py` — they are thin shims.
 
-Before refactoring registry/shims:
+Before refactoring a registry or shim, snapshot discovery and diff it afterwards unless the change is meant to alter discovery:
 
 ```bash
 uv run --no-sync python shared_strategies/open/spot/strategies.py --list-json > /tmp/spot.json
 uv run --no-sync python shared_strategies/open/futures/strategies.py --list-json > /tmp/futures.json
 ```
 
-Diff afterwards unless intentionally changing discovery.
-
 ---
 
 ## Custom Platform Integration
 
-Gather: platform name + ID prefix; products (spot/perps/futures/options); API docs URL or `ccxt`; credential env var names; fees; assets/strategies; paper/live requirements.
-
-Implementation:
+Gather first: platform name and ID prefix; products (spot, perps, futures, options); API docs URL or `ccxt` coverage; credential environment variable names; fees; assets and strategies; paper and live requirements.
 
 1. `platforms/<name>/__init__.py`
-2. `platforms/<name>/adapter.py` — exactly one class ending in `ExchangeAdapter`
-3. Implement public adapter methods only (no private attribute access from check scripts)
-4. `shared_scripts/check_<name>.py` only if existing entry scripts don't fit
-5. ID prefix inference in `scheduler/config.go`
+2. `platforms/<name>/adapter.py` — exactly one class whose name ends in `ExchangeAdapter`
+3. Implement public adapter methods only; check scripts must never touch private attributes
+4. `shared_scripts/check_<name>.py`, only if an existing entry script does not fit
+5. ID-prefix inference in `scheduler/config.go`
 6. Fee dispatch in `scheduler/fees.go`
-7. Executor wiring only if a new live execution path is needed
+7. Executor wiring, only if a new live execution path is needed
 8. Config examples
-9. Init wizard / `generateConfig` if user-selectable
-10. Tests / pure helper tests for Go logic
+9. The init wizard and `generateConfig`, if the platform is user-selectable
+10. Tests, including pure-helper tests for the Go logic
 
-Adapter references: spot — `binanceus`; perps — `hyperliquid`; futures — `topstep`; options — `deribit`.
+Options platforms also need volatility, expiry, strike, and premium helpers, the fee calculator, and an entry in the options-platform list. Reference adapters: spot `binanceus`, perps `hyperliquid`, futures `topstep`, options `deribit`.
 
 ```bash
 uv run --no-sync python -m py_compile platforms/<name>/adapter.py
@@ -990,18 +772,97 @@ uv run --no-sync python -m py_compile shared_scripts/check_<name>.py
 
 ---
 
+## Portfolio Kill Switch And Latch Ownership
+
+The portfolio kill switch latches on drawdown and halts new trading until it is reset. **Exactly one measurement owns the latch each cycle** — there is no tie-break:
+
+- **Equity drawdown owns it** when the equity guard is armed: a portfolio total is available AND the recorded peak is above zero. The kill switch then trips on equity drawdown over `max_drawdown_pct`.
+- **Perps margin drawdown owns it** only when the equity guard is not armed.
+
+When equity owns the latch, a margin drawdown over the limit is a throttled WARNING, not a trip: per-strategy circuit breakers own margin protection. The warning is coalesced by `alert_throttle_interval` and re-fires early on a band entry or a 1-point drawdown escalation.
+
+**Untrusted readings.** A cycle's total is trusted only when the pooled equity read is complete AND no portfolio-value fallback and no stale risk balance were used. On an untrusted cycle the latch stays with equity, but:
+
+- The peak never ratchets up, so a bad total cannot inflate the peak.
+- The equity drawdown reading is FLOORED at the last reading, clamped to `max_drawdown_pct` so the floor alone can never latch.
+- The substitution is persisted and flagged as `drawdown_reading_substituted`. **Label it on every operator surface** — the number is carried forward, not measured this cycle. The warning DM marks it as "carried forward; balance substituted this cycle, does not reconcile with the figures below".
+
+**An untrusted over-limit reading defers the latch; it never vetoes it.** The first such cycle records the timestamp and a `latch_deferred` event naming the untrusted basis. While the run is unbroken and under 15 minutes old, the full-book latch is held and per-strategy circuit breakers are the active protection. Past 15 minutes the latch escalates and the reason names the untrusted basis and the deferral. A trusted reading landing first clears the timer. The deferral is loud: the log line is `[CRITICAL]`, and the warning DM bypasses the throttle for as long as the deferral stands. `/go-trader-circuit-breakers` shows the deferral, when it started, and when it escalates.
+
+Reset is owner-DM only. The reset DM carries the drawdown reason, the trader-instance label, the HL wallet address, and a protection-gap warning when the close plan has not confirmed flat. `kill_switch_reset_dm_timeout` sets how long that prompt waits (empty = 6h).
+
+**Auto-reset.** Once every platform is confirmed flat the next cycle clears virtual state and resumes trading, posting `Virtual state cleared. Kill switch auto-reset; trading will resume next cycle.` Auto-reset also needs every resting limit order resolved (see below) and no operator-required venue outstanding.
+
+**Resting limit orders are cancelled before the flatten.** The kill-switch close cancels every `pending_limit_orders` row first, keyed on the ROW rather than a position, under a 60-second deadline. Each row goes cancel → status check → delete; a row whose outcome cannot be resolved clears the confirmed-flat flag and blocks auto-reset without an owner. A row carrying an unadopted fill is never auto-deleted. Cancellation and adoption are separate eligibilities: a row belonging to a strategy that is absent from the config, or is no longer `type=manual`, is still cancelled even though it can no longer be adopted. Ordinary limit-order reconciliation is never gated on kill-switch state.
+
+**Multi-strategy HL coins.** Kill-switch fills split by virtual quantity at snapshot time, and the split fails closed. If HL flattens to about zero, a sole-stop trigger fires with the residual matching non-owner peers, or a single take-profit tier fills externally, the next cycle closes the affected virtual peers automatically; an ambiguous gap stays a gap.
+
+Warn-band messages repeat while the drawdown sits inside `portfolio_risk.warn_threshold_pct`. Silence them by resolving the drawdown or changing the threshold.
+
+Drain and live-execution failure alerts: `journalctl -u go-trader -n 100 | grep "liveExec\|drain"`.
+
+---
+
+## Hyperliquid Liquidation Guard
+
+A stop-loss trigger placed past the exchange liquidation price can never fill: Hyperliquid force-closes first, at liquidation-engine pricing. The guard makes that geometry unreachable.
+
+**Boot check.** For every live isolated-margin HL perps strategy, a stop distance at or beyond the bankruptcy distance (`100 / leverage` percent) fails the load with a message naming the field, the bound, and the leverage. It covers `stop_loss_pct`, the price-percentage derived from `stop_loss_margin_pct`, and the `max_drawdown_pct` fallback. Cross-margin strategies are exempt. Run the same audit across the fleet before an update with `bash scripts/check-hl-stop-bankruptcy-bound.sh`, which reads raw JSON, mirrors the loader's stop-owner resolution, and exits 1 on a finding.
+
+**Runtime clamp.** The guard reads the per-coin liquidation price and matches it against the coin's net side; a side mismatch means unknown and the coin is skipped. It **clamps, never refuses to arm**, and it tightens **one way only**: a trigger past liquidation moves to 0.5% inside it, and a replacement is submitted only when it is strictly tighter than what is resting. The liquidation price is never persisted, so 0 always means unknown. Geometry that cannot be clamped is refused rather than guessed. Before the dispatch of each cycle an audit tightens every stop owner; when nothing is due, an off-cycle pass runs at half the shortest live HL interval, floored at 60 seconds, over live HL perps and `manual`.
+
+**Refusals that protect peers.** The audit will not touch a coin whose recorded size across live strategies exceeds the on-chain snapshot — moving a reduce-only trigger there could close a peer's real position. It reports that as `not reconciled`: reconcile the coin and the audit heals it on the next pass.
+
+**Alerts.** Each outcome DMs the owner and posts to the channels, deduplicated per strategy and symbol and re-sent on an action change or after `alert_throttle_interval`. The action names what happened:
+
+| Action | Meaning | What to do |
+| --- | --- | --- |
+| `clamped` | The trigger was tightened to just inside liquidation | Nothing. Lower the leverage or the stop distance so the configured geometry is reachable |
+| `replace deferred` | The replacement could not be placed; the ORIGINAL stop is still resting | Nothing. The scheduler retries next cycle |
+| `protection lost` | The old trigger was cancelled and the replacement did NOT rest — **the position has no exchange-side stop** | Act now. The message names when the scheduler re-arms |
+| `re-armed` | A position with no stop got one | Nothing |
+| `re-arm failed` | The re-arm did not rest — **no exchange-side stop** | Act now |
+| `not reconciled` | Recorded size does not match the on-chain snapshot, so the audit did not touch the order | Reconcile the coin |
+| `SL filled` / `exited` | The original stop already fired, or the replacement filled at submit | Nothing; the reconciler books the close |
+| `outcome unknown` / `placement unknown` | The result could not be read; an order may be resting untracked | Verify the order book on Hyperliquid. Recorded state is kept and nothing is re-placed |
+
+An unreadable outcome always keeps the recorded state. A cancel that leaves nothing resting gets exactly one in-cycle retry, and only when the placement was positively rejected — classification comes from what actually rests, never from error text.
+
+---
+
+## Model-Only Close Reconciliation
+
+When a circuit-breaker close books a row from the model rather than a real fill, the row carries `fee_source='reconcile_adjustment'` and no exchange order ID. Once the real Hyperliquid fill lands, the scheduler corrects that row **in place** — quantity, fill VWAP price, exchange fee, gross realized PnL — instead of writing a second close. Partial fills accumulate against the closed basis over successive cycles, and the row stops accepting corrections after 48 hours.
+
+If the coin goes flat on-chain while the row still covers only part of the close, the residual was finished by another mechanism such as a resting stop. That raises an owner alert, at most once a day per strategy and symbol, saying that the trade row, `closed_positions`, and cash are inconsistent. Fix it with `backfill trade-ledger` or reconcile by hand.
+
+---
+
+## Hyperliquid Batched Signal Checks
+
+Due Hyperliquid perps strategies that share market data run ONE batched signal check instead of one process per strategy. Same decisions, fewer subprocesses, faster cycles. Strategies batch together when they share data platform, symbol, timeframe, OHLCV limit, and ATR method.
+
+Operator-visible behavior:
+
+- Set `GO_TRADER_HL_BATCH=0` (or `off`/`false`/`no`) to disable batching entirely and go back to one process per strategy.
+- A batch that fails on the shared market-data step makes **every member spawn its own check the same cycle**, so a batch failure never blanks a close, stop, ratchet, protection sync, or hedge. One alert is raised per group, not per strategy.
+- Three consecutive shared-state failures on one group revert it to per-strategy checks and retry the batch every 10 cycles. A success clears the state and re-alerts as recovered.
+- A slot whose configuration changed between snapshot and dispatch spawns its own check instead of trusting the batch.
+
+The log line names the group as `platform/symbol/timeframe/limit=N/atr=M`.
+
+---
+
 ## Operator-Required Circuit Breakers
 
-Some venues lack a safe automated close path:
+Some venues have no safe automated close path:
 
 | Platform | Type | Pending key |
 | --- | --- | --- |
 | OKX | spot | `okx_spot` |
 | Robinhood | options | `robinhood_options` |
 
-Triggered → scheduler enqueues `operator_required: true` and emits a CRITICAL warning every cycle until intervention.
-
-Detect:
+When one triggers, the scheduler enqueues `operator_required: true` and emits a CRITICAL warning every cycle until you intervene.
 
 ```bash
 curl -s localhost:8099/status | uv run --no-sync python -c "
@@ -1016,36 +877,27 @@ for sid, s in d['strategies'].items():
 "
 ```
 
-Response:
+Response: open the venue UI, flatten the listed positions, confirm through `/status`, then let the scheduler clear the pending entry on the next circuit-breaker reset — or reset the portfolio kill switch by owner DM if trading must resume sooner.
 
-1. Open the venue UI.
-2. Flatten the listed positions.
-3. Confirm via `/status`.
-4. Let the scheduler clear pending on the next CB reset, or reset the portfolio kill switch via owner DM if trading must resume sooner.
+This is not the portfolio kill switch. Operator-required is per-strategy and affects only the strategy that breached drawdown.
 
-Not the same as the portfolio kill switch (portfolio-level, runs automated close paths where available). Operator-required is per-strategy and affects only the strategy that breached drawdown.
+---
 
-Kill-switch auto-reset: once all platforms confirmed flat (`OnChainConfirmedFlat=true`), the next cycle clears virtual state and resumes trading. The bot posts `Virtual state cleared. Kill switch auto-reset; trading will resume next cycle.`
+## Cash Reconcile Latch
 
-Multi-strategy HL coins: kill-switch fills split by **virtual quantity at snapshot time** (#469). Per-strategy CB on shared HL coins (#515) does not submit a close — reconcile manually if expected to flatten. Reconciliation (#565/#617): if HL flattens to ~0, sole-SL trigger fires (residual matches non-owner peers' qty), or a single TP tier filled externally (Detector 3, #617), the next cycle closes affected virtual peers automatically; ambiguous gaps still gap-only.
-
-Portfolio drawdown warnings repeat every cycle while in warn band (`portfolio_risk.warn_threshold_pct`, default 60%). Silence by resolving DD or changing threshold.
-
-Drain/live-exec failure alerts:
-
-```bash
-journalctl -u go-trader -n 100 | grep "liveExec\|drain"
-```
+A live spot fill that overshoots virtual cash is always booked, because the venue already filled it. The strategy then latches `CashReconcileRequired`, raises a CRITICAL alert, and blocks further live buys. Closes keep running. Clear it with `/go-trader-clear-cash-reconcile <strategy>` only after the books match the venue — the command drops the buy block and never invents or adjusts cash.
 
 ---
 
 ## Implementation Patterns
 
-See CLAUDE.md "Key Patterns" for full coding constraints. Notes:
+Full coding constraints live in [CLAUDE.md](CLAUDE.md) § Key Patterns. Notes that bite most often:
 
-- New trade-recording paths must populate `Trade.PositionID` (or rely on `RecordTrade`'s lookup against `s.Positions`/`s.OptionPositions`) so partial closes collapse into one round trip.
-- New summary-posting paths must thread `lastSummaryPost map[string]time.Time` and call `ShouldPostSummary(freq, continuous, hasTrades, lastPost, now)`.
-- `FormatCategorySummary` row labels use `summaryStrategyLabel` (fixed width + alias substitution); assert exact text in tests.
+- A new trade-recording path must populate `Trade.PositionID`, or rely on the recorder's lookup against the strategy's positions, so partial closes collapse into one round trip.
+- A new summary-posting path must thread the last-post map and call the shared cadence helper.
+- Category-summary row labels use a fixed-width label helper; assert the exact text in tests.
+- A new side-effecting subprocess wrapper goes through the side-effect runner, never the plain runner.
+- Hedge PnL is recorded through the hedge recorder, never the ordinary trade recorder.
 
 Audits:
 
@@ -1064,10 +916,6 @@ uv run --no-sync python -m pytest
 uv run --no-sync python shared_strategies/open/test_registry_parity.py
 ```
 
-If Go cache needs an explicit writable path:
+If the Go cache needs an explicit writable path: `env GOCACHE=/tmp/go-build-cache /opt/homebrew/bin/go -C scheduler test ./...`.
 
-```bash
-env GOCACHE=/tmp/go-build-cache /opt/homebrew/bin/go -C scheduler test ./...
-```
-
-Go CI should not depend on a Python runtime, so tests for subprocess-based live helpers should extract pure parsers/decision helpers rather than invoking Python.
+Go CI must not depend on a Python runtime, so a test for a subprocess-based live helper extracts the pure parser or decision helper rather than invoking Python.

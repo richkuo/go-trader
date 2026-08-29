@@ -285,6 +285,8 @@ Sizing: mutually exclusive `--size` / `--notional` / `--margin` (default `--marg
 
 **Close defaults (#1115/#1135):** with `regime.enabled` and a resolvable per-regime trail, manual defaults to `trailing_tp_ratchet_regime` (regime trail owns the SL); otherwise `tiered_tp_atr_live` + scalar **2.0×ATR** SL (#1121). Override via `close_strategy`, stop fields, or `user_defaults.manual` (hot-reloadable via SIGHUP). Fleet close ladders live under `user_defaults.close`; standalone `*_atr_regime` defaults live under `user_defaults.regime_atr`.
 
+Operator guardrails, refusals, and the queueing model: [SKILL.md](SKILL.md) § Manual Trading.
+
 `manual-update-sl` / `manual-cancel-sl` queue daemon-side cancel-then-place edits — rejected when automated ATR/regime/trailing protection would re-pin next cycle. `force-close` is for live Hyperliquid `type=perps` strategy positions; it submits the reduce-only close and queues the fill for the scheduler to adopt into state/trades. `--dry-run` previews without exchange calls. Limit opens are post-only (ALO) by default or GTC with `--tif Gtc`; scheduler polls fills each cycle.
 
 ---
@@ -296,6 +298,8 @@ Sizing: mutually exclusive `--size` / `--notional` / `--margin` (default `--marg
 ./go-trader backfill hl-fees --all --apply                            # apply (stop daemon first)
 ./go-trader backfill trade-ledger --all --apply                       # shared-wallet gross-PnL migration
 ```
+
+Full backfill procedure, skip reasons, and the cash-replay gate: [SKILL.md](SKILL.md).
 
 `--apply` refuses while another `go-trader` process holds the same DB. Trade-ledger backfill is idempotent — run once after adopting the gross-PnL convention.
 
@@ -370,11 +374,13 @@ Open `https://<node>.tailnet.ts.net:8443/dashboard`. `status_token` still applie
 
 - **Portfolio kill switch** — halts at `portfolio_risk.max_drawdown_pct` (default 25); submits real closes on HL / OKX perps / Robinhood crypto / TopStep. Owner-DM reset confirmation wait is tunable via `kill_switch_reset_dm_timeout` (Go duration string, e.g. `"6h"`; default 6h).
 - **Per-strategy circuit breakers** — max-drawdown (24h cooldown) or consecutive losses (default 5, 1h cooldown); threshold and both cooldowns tunable per strategy via `cb_drawdown_cooldown_minutes` / `cb_loss_streak_threshold` / `cb_loss_streak_cooldown_minutes`. HL/OKX perps, Robinhood crypto, TopStep auto-close; OKX spot and Robinhood options need manual flatten. Latched HL perps CB still permits trailing-SL management. `circuit_breaker: false` disables firing.
-- **Hyperliquid stop-loss** — one positive field among five scalar stop types; omitted → `default_stop_loss_atr_mult × entry_atr` (1.0); `0` opts out.
+- **Hyperliquid stop-loss** — one positive field among seven mutually-exclusive stop owners (`stop_loss_pct`, `stop_loss_margin_pct`, `stop_loss_atr_mult`, `stop_loss_atr_regime`, `trailing_stop_pct`, `trailing_stop_atr_mult`, `trail_stop_atr_regime`); all omitted → `default_stop_loss_atr_mult × entry_atr` (1.0); `0` opts out. A stop past the Hyperliquid liquidation price is clamped, never left unreachable.
 - **On-chain N-tier TP/SL** — `tiered_tp_atr` / `tiered_tp_atr_live` (default tiers `[{1.5×, 0.4}, {3×, 0.8}, {5×, 1.0}]`).
 - **Trailing-ratchet close** — `trailing_tp_ratchet` / `trailing_tp_ratchet_regime`: cleared tiers tighten a single trailing stop; no fixed on-chain TPs. HL perps + `manual`.
 - **AVWAP stop close** — `avwap_stop`: exits when price breaches the anchored VWAP by `buffer_atr_mult`× ATR on the losing side; virtual exit only (no on-chain trigger).
 - **Regime gate**, **HL margin mode** (`isolated` default), correlation warnings (opt-in), options position limits, theta harvesting.
+
+Latch ownership, the untrusted-reading deferral, the Hyperliquid liquidation guard, and every operator alert: [SKILL.md](SKILL.md).
 
 ---
 
@@ -385,7 +391,7 @@ Open `https://<node>.tailnet.ts.net:8443/dashboard`. `status_token` still applie
 ./go-trader export tradingview --all --output tv-all.csv
 ```
 
-Built-in mappings cover known OKX/BinanceUS pairs; add `tradingview_export.symbol_overrides` for the rest.
+Built-in mappings cover known OKX/BinanceUS pairs; add `tradingview_export.symbol_overrides` for the rest. Export procedure: [SKILL.md](SKILL.md).
 
 ---
 
