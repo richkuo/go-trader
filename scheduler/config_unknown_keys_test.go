@@ -184,7 +184,7 @@ func TestValidateUserDefaultsJSONKeysAcceptsCanonicalShape(t *testing.T) {
 				"stop_loss_atr_mult": 2.25,
 				"side": "short",
 				"tp_tiers": [{"atr_multiple": 2.0, "close_fraction": 1.0}],
-				"trailing_stop_atr_regime": {"use_defaults": true}
+				"trail_stop_atr_regime": {"use_defaults": true}
 			}
 		},
 		"strategies": [{"id": "s1", "type": "spot", "script": "x.py", "args": []}]

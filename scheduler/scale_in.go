@@ -85,7 +85,7 @@ func applyScaleIn(pos *Position, addQty, addPrice float64) {
 func scaleInLiveProtectionResizable(sc StrategyConfig) bool {
 	trailing := (sc.TrailingStopPct != nil && *sc.TrailingStopPct > 0) ||
 		(sc.TrailingStopATRMult != nil && *sc.TrailingStopATRMult > 0) ||
-		(sc.TrailingStopATRRegime != nil && !sc.TrailingStopATRRegime.IsZero()) ||
+		(sc.TrailStopATRRegime != nil && !sc.TrailStopATRRegime.IsZero()) ||
 		strategyUsesTrailingTPRatchetClose(sc)
 	if trailing {
 		return true

@@ -47,7 +47,7 @@ _PRODUCTIVE_STATUSES = frozenset({"ranked", "dry_run"})
 _BENIGN_SKIP_STATUSES = frozenset({"unsupported"})
 
 _UNSUPPORTED_STOP_OWNERS = (
-    "stop_loss_atr_regime", "trailing_stop_atr_regime",
+    "stop_loss_atr_regime", "trail_stop_atr_regime",
     "stop_loss_pct", "trailing_stop_pct", "stop_loss_margin_pct",
 )
 
@@ -432,7 +432,7 @@ def tune_strategy(config_path: str, strategy_id: str, symbol: str,
     result["stop_owner"] = {
         k: resolution.get(k) for k in
         ("stop_loss_atr_mult", "trailing_stop_atr_mult",
-         "stop_loss_atr_regime", "trailing_stop_atr_regime",
+         "stop_loss_atr_regime", "trail_stop_atr_regime",
          "stop_loss_pct", "trailing_stop_pct", "stop_loss_margin_pct")
         if resolution.get(k) not in (None, 0, 0.0)
     }

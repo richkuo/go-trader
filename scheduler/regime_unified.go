@@ -110,7 +110,7 @@ func validateUnifiedCloseSoleOwner(sc StrategyConfig, ctxLabel string) []string 
 	conflict(sc.StopLossMarginPct != nil, "stop_loss_margin_pct")
 	conflict(sc.TrailingStopATRMult != nil, "trailing_stop_atr_mult")
 	conflict(sc.TrailingStopPct != nil, "trailing_stop_pct")
-	conflict(sc.TrailingStopATRRegime != nil && !sc.TrailingStopATRRegime.IsZero(), "trailing_stop_atr_regime")
+	conflict(sc.TrailStopATRRegime != nil && !sc.TrailStopATRRegime.IsZero(), "trail_stop_atr_regime")
 	return errs
 }
 

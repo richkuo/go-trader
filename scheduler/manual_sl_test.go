@@ -78,7 +78,7 @@ func TestManualSLAutoManaged(t *testing.T) {
 		},
 		{
 			name:       "regime trailing stop with unresolved label rejected by config presence",
-			sc:         StrategyConfig{ID: "x", Type: "manual", Platform: "hyperliquid", Symbol: "ETH", TrailingStopATRRegime: regimeBlock()},
+			sc:         StrategyConfig{ID: "x", Type: "manual", Platform: "hyperliquid", Symbol: "ETH", TrailStopATRRegime: regimeBlock()},
 			pos:        regimePos("-"),
 			wantManage: true,
 		},

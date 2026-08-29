@@ -45,7 +45,7 @@ def test_use_defaults_expands(regime_atr):
 
 def test_trailing_use_defaults_composite(regime_atr):
     block, errs = regime_atr.parse_regime_atr_block(
-        {"use_defaults": True}, "trailing_stop_atr_regime", regime_atr.SURFACE_TRAILING
+        {"use_defaults": True}, "trail_stop_atr_regime", regime_atr.SURFACE_TRAILING
     )
     assert errs == []
     for label in ("trending_up_clean", "trending_down_clean"):

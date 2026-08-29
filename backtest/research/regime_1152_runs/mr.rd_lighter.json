@@ -88,12 +88,12 @@
     }
   ],
   "control_stops": {
-    "trailing_stop_atr_regime": {
+    "trail_stop_atr_regime": {
       "use_defaults": true
     }
   },
   "candidate_stops": {
-    "trailing_stop_atr_regime": {
+    "trail_stop_atr_regime": {
       "use_defaults": true
     }
   },

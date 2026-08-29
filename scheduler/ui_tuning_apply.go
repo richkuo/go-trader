@@ -346,19 +346,79 @@ func canonicalJSONEqual(a, b json.RawMessage) bool {
 	return reflect.DeepEqual(va, vb)
 }
 
+func baselineJSONEqual(a, b json.RawMessage) bool {
+	return canonicalJSONEqual(normalizeLegacyTrailStopKeyJSON(a), normalizeLegacyTrailStopKeyJSON(b))
+}
+
+func normalizeLegacyTrailStopKeyJSON(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return raw
+	}
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return raw
+	}
+	normalized, changed := normalizeLegacyTrailStopKeyValue(v)
+	if !changed {
+		return raw
+	}
+	out, err := json.Marshal(normalized)
+	if err != nil {
+		return raw
+	}
+	return json.RawMessage(out)
+}
+
+func normalizeLegacyTrailStopKeyValue(v any) (any, bool) {
+	switch t := v.(type) {
+	case map[string]any:
+		changed := false
+		out := make(map[string]any, len(t))
+		for k, val := range t {
+			nv, sub := normalizeLegacyTrailStopKeyValue(val)
+			if sub {
+				changed = true
+			}
+			if k == legacyTrailStopATRRegimeKey {
+				changed = true
+				if _, canonicalPresent := t[trailStopATRRegimeKey]; canonicalPresent {
+					continue
+				}
+				out[trailStopATRRegimeKey] = nv
+				continue
+			}
+			out[k] = nv
+		}
+		return out, changed
+	case []any:
+		changed := false
+		out := make([]any, len(t))
+		for i, val := range t {
+			nv, sub := normalizeLegacyTrailStopKeyValue(val)
+			if sub {
+				changed = true
+			}
+			out[i] = nv
+		}
+		return out, changed
+	default:
+		return v, false
+	}
+}
+
 func promotionBaselinesEqual(a, b tuningPromotionBaseline) bool {
 	if a.OpenStrategyPresent != b.OpenStrategyPresent ||
 		a.UserDefaultsPresent != b.UserDefaultsPresent ||
 		a.UserCloseDefaultsPresent != b.UserCloseDefaultsPresent {
 		return false
 	}
-	if a.OpenStrategyPresent && !canonicalJSONEqual(a.OpenStrategy, b.OpenStrategy) {
+	if a.OpenStrategyPresent && !baselineJSONEqual(a.OpenStrategy, b.OpenStrategy) {
 		return false
 	}
-	if a.UserDefaultsPresent && !canonicalJSONEqual(a.UserDefaults, b.UserDefaults) {
+	if a.UserDefaultsPresent && !baselineJSONEqual(a.UserDefaults, b.UserDefaults) {
 		return false
 	}
-	if a.UserCloseDefaultsPresent && !canonicalJSONEqual(a.UserCloseDefaults, b.UserCloseDefaults) {
+	if a.UserCloseDefaultsPresent && !baselineJSONEqual(a.UserCloseDefaults, b.UserCloseDefaults) {
 		return false
 	}
 	return true

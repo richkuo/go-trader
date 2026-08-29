@@ -642,7 +642,7 @@ class Backtester:
                  trailing_stop_atr_mult: Optional[float] = None,
                  trailing_stop_pct: Optional[float] = None,
                  stop_loss_atr_regime: Optional[dict] = None,
-                 trailing_stop_atr_regime: Optional[dict] = None,
+                 trail_stop_atr_regime: Optional[dict] = None,
                  strategy_type: str = "perps",
                  direction: Optional[str] = None,
                  invert_signal: bool = False,
@@ -745,8 +745,8 @@ class Backtester:
         self.stop_loss_atr_regime = (
             dict(stop_loss_atr_regime) if stop_loss_atr_regime else None
         )
-        self.trailing_stop_atr_regime = (
-            dict(trailing_stop_atr_regime) if trailing_stop_atr_regime else None
+        self.trail_stop_atr_regime = (
+            dict(trail_stop_atr_regime) if trail_stop_atr_regime else None
         )
         self._stop_loss_regime_block = None
         self._trailing_stop_regime_block = None
@@ -792,9 +792,9 @@ class Backtester:
                 (self._ratchet_ref or {}).get("name") or ""
             ).strip().lower() == "trailing_tp_ratchet_regime"
             if _regime_ratchet:
-                if self.trailing_stop_atr_regime is None:
+                if self.trail_stop_atr_regime is None:
                     raise ValueError(
-                        "trailing_tp_ratchet_regime requires trailing_stop_atr_regime"
+                        "trailing_tp_ratchet_regime requires trail_stop_atr_regime"
                     )
             elif (
                 self.trailing_stop_atr_mult is None
@@ -809,7 +809,7 @@ class Backtester:
                 )
         _needs_regime_atr = (
             self.stop_loss_atr_regime is not None
-            or self.trailing_stop_atr_regime is not None
+            or self.trail_stop_atr_regime is not None
             or self._uses_regime_tiered_close
         )
         if _needs_regime_atr:
@@ -859,10 +859,10 @@ class Backtester:
                             "per-regime stop_loss_atr"
                         )
                 if self.stop_loss_atr_regime is not None or (
-                    self.trailing_stop_atr_regime is not None
+                    self.trail_stop_atr_regime is not None
                 ):
                     raise ValueError(
-                        "stop_loss_atr_regime/trailing_stop_atr_regime are not "
+                        "stop_loss_atr_regime/trail_stop_atr_regime are not "
                         "allowed alongside a unified per-regime close — the "
                         "close owns the SL via per-regime stop_loss_atr"
                     )
@@ -877,10 +877,10 @@ class Backtester:
                 )
                 regime_errs.extend(errs)
                 self._stop_loss_regime_block = blk
-            if self.trailing_stop_atr_regime is not None:
+            if self.trail_stop_atr_regime is not None:
                 blk, errs = parse_regime_atr_block(
-                    self.trailing_stop_atr_regime,
-                    "trailing_stop_atr_regime",
+                    self.trail_stop_atr_regime,
+                    "trail_stop_atr_regime",
                     SURFACE_TRAILING,
                     labels=self._regime_primary_labels,
                 )
@@ -932,7 +932,7 @@ class Backtester:
                 if _active_regime_sl(self._trailing_stop_regime_block):
                     raise ValueError(
                         "stop_loss_atr_regime is mutually exclusive with "
-                        "trailing_stop_atr_regime"
+                        "trail_stop_atr_regime"
                     )
 
             if _active_regime_sl(self._trailing_stop_regime_block):
@@ -941,17 +941,17 @@ class Backtester:
                     and self.trailing_stop_atr_mult > 0
                 ):
                     raise ValueError(
-                        "trailing_stop_atr_regime is mutually exclusive with "
+                        "trail_stop_atr_regime is mutually exclusive with "
                         "trailing_stop_atr_mult"
                     )
                 if self.trailing_stop_pct is not None and self.trailing_stop_pct > 0:
                     raise ValueError(
-                        "trailing_stop_atr_regime is mutually exclusive with "
+                        "trail_stop_atr_regime is mutually exclusive with "
                         "trailing_stop_pct"
                     )
                 if self.stop_loss_pct is not None and self.stop_loss_pct > 0:
                     raise ValueError(
-                        "trailing_stop_atr_regime is mutually exclusive with "
+                        "trail_stop_atr_regime is mutually exclusive with "
                         "stop_loss_pct"
                     )
                 if (
@@ -959,7 +959,7 @@ class Backtester:
                     and self.stop_loss_margin_pct > 0
                 ):
                     raise ValueError(
-                        "trailing_stop_atr_regime is mutually exclusive with "
+                        "trail_stop_atr_regime is mutually exclusive with "
                         "stop_loss_margin_pct"
                     )
                 if (
@@ -967,7 +967,7 @@ class Backtester:
                     and self.stop_loss_atr_mult > 0
                 ):
                     raise ValueError(
-                        "trailing_stop_atr_regime is mutually exclusive with "
+                        "trail_stop_atr_regime is mutually exclusive with "
                         "stop_loss_atr_mult"
                     )
             self._resolve_regime_atr = resolve_regime_atr
@@ -1095,11 +1095,11 @@ class Backtester:
                     "after open, so the stop distance is unknowable at "
                     "sizing time (#1268; live rejects this at config load)"
                 )
-            if self.stop_loss_atr_regime or self.trailing_stop_atr_regime:
+            if self.stop_loss_atr_regime or self.trail_stop_atr_regime:
                 raise ValueError(
                     "risk_per_trade_pct cannot size from a regime-resolved "
                     "stop owner (stop_loss_atr_regime / "
-                    "trailing_stop_atr_regime) — the SL resolves from the "
+                    "trail_stop_atr_regime) — the SL resolves from the "
                     "regime stamped after open (#1268; live rejects this at "
                     "config load)"
                 )

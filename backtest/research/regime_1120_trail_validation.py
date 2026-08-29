@@ -59,7 +59,7 @@ def _run_arm(df, label: str, trail: dict) -> dict:
         close_strategies=CLOSE_STACK,
         regime_enabled=True,
         regime_windows_spec=COMPOSITE_SPEC,
-        trailing_stop_atr_regime={"trend_regime": trail},
+        trail_stop_atr_regime={"trend_regime": trail},
     )
     r = bt.run(
         df,

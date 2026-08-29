@@ -635,7 +635,7 @@ def test_regime_primary_labels_helper():
 
 
 def _bt_with_sl_regime(spec, block, *, trailing=False):
-    kw = {"trailing_stop_atr_regime": block} if trailing else {"stop_loss_atr_regime": block}
+    kw = {"trail_stop_atr_regime": block} if trailing else {"stop_loss_atr_regime": block}
     return Backtester(initial_capital=1000.0, regime_enabled=True,
                       regime_windows_spec=spec, **kw)
 

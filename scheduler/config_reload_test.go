@@ -1536,13 +1536,13 @@ func TestApplyHotReloadConfigCopiesFlatRegimeTrailAndUserCloseDefaults(t *testin
 	strategy := func(block *RegimeATRBlock) StrategyConfig {
 		return StrategyConfig{
 			ID: "hl-eth", Type: "perps", Platform: "hyperliquid",
-			Script:                "shared_scripts/check_hyperliquid.py",
-			Args:                  []string{"sma_crossover", "ETH", "1h", "--mode=paper"},
-			CloseStrategy:         &StrategyRef{Name: trailingTPRatchetRegimeCloseName},
-			TrailingStopATRRegime: block,
-			Capital:               1000,
-			MaxDrawdownPct:        10,
-			Leverage:              1,
+			Script:             "shared_scripts/check_hyperliquid.py",
+			Args:               []string{"sma_crossover", "ETH", "1h", "--mode=paper"},
+			CloseStrategy:      &StrategyRef{Name: trailingTPRatchetRegimeCloseName},
+			TrailStopATRRegime: block,
+			Capital:            1000,
+			MaxDrawdownPct:     10,
+			Leverage:           1,
 		}
 	}
 	cfg := minimalReloadConfig([]StrategyConfig{strategy(oldTrail)})
@@ -1550,8 +1550,8 @@ func TestApplyHotReloadConfigCopiesFlatRegimeTrailAndUserCloseDefaults(t *testin
 	next.UserDefaults = &UserDefaultsConfig{
 		Close: CloseDefaultsMap{
 			trailingTPRatchetRegimeCloseName: {
-				"tp_tiers":                 ratchetRegimeUserTiers(),
-				"trailing_stop_atr_regime": ratchetRegimeTrailRaw(2.75, 2.75, 1.5),
+				"tp_tiers":              ratchetRegimeUserTiers(),
+				"trail_stop_atr_regime": ratchetRegimeTrailRaw(2.75, 2.75, 1.5),
 			},
 		},
 	}
@@ -1564,23 +1564,23 @@ func TestApplyHotReloadConfigCopiesFlatRegimeTrailAndUserCloseDefaults(t *testin
 		t.Fatalf("applyHotReloadConfig: %v", err)
 	}
 	joined := strings.Join(changes, "\n")
-	if !strings.Contains(joined, "trailing_stop_atr_regime") {
-		t.Fatalf("changes missing trailing_stop_atr_regime update: %v", changes)
+	if !strings.Contains(joined, "trail_stop_atr_regime") {
+		t.Fatalf("changes missing trail_stop_atr_regime update: %v", changes)
 	}
 	if !strings.Contains(joined, "user_defaults") {
 		t.Fatalf("changes missing user_defaults update: %v", changes)
 	}
-	got, ok := resolveRegimeATR(*cfg.Strategies[0].TrailingStopATRRegime, "ranging")
+	got, ok := resolveRegimeATR(*cfg.Strategies[0].TrailStopATRRegime, "ranging")
 	if !ok || got != 1.5 {
 		t.Fatalf("reloaded ranging trail = (%g, %v), want (1.5, true)", got, ok)
 	}
-	next.Strategies[0].TrailingStopATRRegime.TrendRegime["ranging"] = RegimeATREntry{ATR: 9.0}
-	got, ok = resolveRegimeATR(*cfg.Strategies[0].TrailingStopATRRegime, "ranging")
+	next.Strategies[0].TrailStopATRRegime.TrendRegime["ranging"] = RegimeATREntry{ATR: 9.0}
+	got, ok = resolveRegimeATR(*cfg.Strategies[0].TrailStopATRRegime, "ranging")
 	if !ok || got != 1.5 {
 		t.Fatalf("reloaded trail aliases next after mutation: (%g, %v)", got, ok)
 	}
-	next.UserDefaults.Close[trailingTPRatchetRegimeCloseName]["trailing_stop_atr_regime"] = map[string]interface{}{"use_defaults": true}
-	raw := cfg.UserDefaults.Close[trailingTPRatchetRegimeCloseName]["trailing_stop_atr_regime"].(map[string]interface{})
+	next.UserDefaults.Close[trailingTPRatchetRegimeCloseName]["trail_stop_atr_regime"] = map[string]interface{}{"use_defaults": true}
+	raw := cfg.UserDefaults.Close[trailingTPRatchetRegimeCloseName]["trail_stop_atr_regime"].(map[string]interface{})
 	if _, ok := raw["use_defaults"]; ok {
 		t.Fatal("cfg.UserDefaults.Close aliases next after reload")
 	}
@@ -1629,9 +1629,9 @@ func TestApplyHotReloadConfigRejectsUserCloseDefaultRegimeTrailChangeWithOpenPos
 
 			_, err := applyHotReloadConfig(cfg, next, openETHReloadState(tc.id), nil, nil)
 			if err == nil {
-				t.Fatal("expected open-position reload to reject changed user_defaults.close trailing_stop_atr_regime")
+				t.Fatal("expected open-position reload to reject changed user_defaults.close trail_stop_atr_regime")
 			}
-			if !strings.Contains(err.Error(), "trailing_stop_atr_regime shape changed with open positions") {
+			if !strings.Contains(err.Error(), "trail_stop_atr_regime shape changed with open positions") {
 				t.Fatalf("unexpected error: %v", err)
 			}
 		})
@@ -1657,12 +1657,12 @@ func TestApplyHotReloadConfigAllowsUserCloseDefaultRegimeTrailEquivalentEditWith
 	if err != nil {
 		t.Fatalf("applyHotReloadConfig rejected equivalent effective trail: %v", err)
 	}
-	if cfg.Strategies[0].TrailingStopATRRegime == nil || !cfg.Strategies[0].TrailingStopATRRegime.UseDefaults {
-		t.Fatalf("equivalent trail edit was not copied into cfg: %#v", cfg.Strategies[0].TrailingStopATRRegime)
+	if cfg.Strategies[0].TrailStopATRRegime == nil || !cfg.Strategies[0].TrailStopATRRegime.UseDefaults {
+		t.Fatalf("equivalent trail edit was not copied into cfg: %#v", cfg.Strategies[0].TrailStopATRRegime)
 	}
 	joined := strings.Join(changes, "\n")
-	if !strings.Contains(joined, "trailing_stop_atr_regime") || !strings.Contains(joined, "user_defaults") {
-		t.Fatalf("changes=%v, want trailing_stop_atr_regime and user_defaults entries", changes)
+	if !strings.Contains(joined, "trail_stop_atr_regime") || !strings.Contains(joined, "user_defaults") {
+		t.Fatalf("changes=%v, want trail_stop_atr_regime and user_defaults entries", changes)
 	}
 }
 
@@ -1704,7 +1704,7 @@ func loadUserDefaultRatchetRegimeReloadConfig(t *testing.T, strategyJSON, trailJ
 						"trending_down": [{"atr_multiple": 1.0, "trailing_mult_after": 1.0, "close_fraction": 0.0}],
 						"ranging": [{"atr_multiple": 1.0, "trailing_mult_after": 1.0, "close_fraction": 0.0}]
 					},
-					"trailing_stop_atr_regime": %s
+					"trail_stop_atr_regime": %s
 				}
 			}
 		},
@@ -2088,7 +2088,7 @@ func TestValidateHotReloadStateCompatible_StopOwnerModeToggles(t *testing.T) {
 	regimeBlock := func(sc *StrategyConfig, trailing bool) {
 		b := &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{"trending": {ATR: 2}}}
 		if trailing {
-			sc.TrailingStopATRRegime = b
+			sc.TrailStopATRRegime = b
 		} else {
 			sc.StopLossATRRegime = b
 		}
@@ -2118,12 +2118,12 @@ func TestValidateHotReloadStateCompatible_StopOwnerModeToggles(t *testing.T) {
 			func(sc *StrategyConfig) { sc.StopLossATRMult = pf(2) },
 			func(sc *StrategyConfig) { regimeBlock(sc, false) },
 			"stop_loss_atr_regime mode changed"},
-		{"trailing_stop_atr_regime added (nil->configured)",
+		{"trail_stop_atr_regime added (nil->configured)",
 			nil, func(sc *StrategyConfig) { regimeBlock(sc, true) },
-			"trailing_stop_atr_regime mode changed"},
-		{"trailing_stop_atr_regime removed (configured->nil)",
+			"trail_stop_atr_regime mode changed"},
+		{"trail_stop_atr_regime removed (configured->nil)",
 			func(sc *StrategyConfig) { regimeBlock(sc, true) }, nil,
-			"trailing_stop_atr_regime mode changed"},
+			"trail_stop_atr_regime mode changed"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

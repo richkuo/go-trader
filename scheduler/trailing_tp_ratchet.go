@@ -253,20 +253,20 @@ func validateTrailingTPRatchetClose(sc StrategyConfig, labels []string, regimeEn
 			break
 		}
 	}
-	hasRegimeBlock := sc.TrailingStopATRRegime != nil && !sc.TrailingStopATRRegime.IsZero()
+	hasRegimeBlock := sc.TrailStopATRRegime != nil && !sc.TrailStopATRRegime.IsZero()
 	if regimeVariant {
 		if !hasRegimeBlock {
-			errs = append(errs, fmt.Sprintf("%s: trailing_tp_ratchet_regime requires trailing_stop_atr_regime (the per-regime opening trail / SL owner)", prefix))
+			errs = append(errs, fmt.Sprintf("%s: trailing_tp_ratchet_regime requires trail_stop_atr_regime (the per-regime opening trail / SL owner)", prefix))
 		}
 		if sc.TrailingStopATRMult != nil && *sc.TrailingStopATRMult > 0 {
-			errs = append(errs, fmt.Sprintf("%s: trailing_tp_ratchet_regime cannot combine with scalar trailing_stop_atr_mult (the trailing_stop_atr_regime block owns the trail)", prefix))
+			errs = append(errs, fmt.Sprintf("%s: trailing_tp_ratchet_regime cannot combine with scalar trailing_stop_atr_mult (the trail_stop_atr_regime block owns the trail)", prefix))
 		}
 	} else {
 		if sc.TrailingStopATRMult == nil || *sc.TrailingStopATRMult <= 0 {
 			errs = append(errs, fmt.Sprintf("%s: trailing_tp_ratchet requires trailing_stop_atr_mult > 0 (initial trail distance)", prefix))
 		}
 		if hasRegimeBlock {
-			errs = append(errs, fmt.Sprintf("%s: trailing_tp_ratchet cannot combine with trailing_stop_atr_regime (use trailing_tp_ratchet_regime)", prefix))
+			errs = append(errs, fmt.Sprintf("%s: trailing_tp_ratchet cannot combine with trail_stop_atr_regime (use trailing_tp_ratchet_regime)", prefix))
 		}
 	}
 	if sc.TrailingStopPct != nil && *sc.TrailingStopPct > 0 {
@@ -289,10 +289,10 @@ func validateTrailingTPRatchetClose(sc StrategyConfig, labels []string, regimeEn
 		scalarInitialTrail = *sc.TrailingStopATRMult
 	}
 	regimeKeyOpen := func(key string) float64 {
-		if sc.TrailingStopATRRegime == nil {
+		if sc.TrailStopATRRegime == nil {
 			return 0
 		}
-		if v, ok := resolveRegimeATR(*sc.TrailingStopATRRegime, key); ok {
+		if v, ok := resolveRegimeATR(*sc.TrailStopATRRegime, key); ok {
 			return v
 		}
 		return 0
@@ -432,8 +432,8 @@ func effectiveTrailingRatchetMult(pos *Position, sc StrategyConfig) float64 {
 	if sc.TrailingStopATRMult != nil && *sc.TrailingStopATRMult > 0 {
 		return *sc.TrailingStopATRMult
 	}
-	if sc.TrailingStopATRRegime != nil && !sc.TrailingStopATRRegime.IsZero() && pos != nil {
-		if v, ok := resolveRegimeATR(*sc.TrailingStopATRRegime, protectionATRRegimeLabel(pos, sc)); ok {
+	if sc.TrailStopATRRegime != nil && !sc.TrailStopATRRegime.IsZero() && pos != nil {
+		if v, ok := resolveRegimeATR(*sc.TrailStopATRRegime, protectionATRRegimeLabel(pos, sc)); ok {
 			return v
 		}
 	}

@@ -629,39 +629,39 @@ func validateRegimeATRConfig(cfg *Config) []string {
 				if sc.TrailingStopATRMult != nil {
 					errs = append(errs, fmt.Sprintf("%s: stop_loss_atr_regime is mutually exclusive with trailing_stop_atr_mult", prefix))
 				}
-				if sc.TrailingStopATRRegime.IsConfigured() {
-					errs = append(errs, fmt.Sprintf("%s: stop_loss_atr_regime is mutually exclusive with trailing_stop_atr_regime", prefix))
+				if sc.TrailStopATRRegime.IsConfigured() {
+					errs = append(errs, fmt.Sprintf("%s: stop_loss_atr_regime is mutually exclusive with trail_stop_atr_regime", prefix))
 				}
 				if sc.Platform != "hyperliquid" || sc.Type != "perps" {
 					errs = append(errs, fmt.Sprintf("%s: stop_loss_atr_regime is HL perps only", prefix))
 				}
 			}
 		}
-		if sc.TrailingStopATRRegime != nil {
-			sub := sc.TrailingStopATRRegime.ResolveSurfaceWithLabels(prefix+".trailing_stop_atr_regime", regimeSurfaceTrailing, atrLabels)
+		if sc.TrailStopATRRegime != nil {
+			sub := sc.TrailStopATRRegime.ResolveSurfaceWithLabels(prefix+".trail_stop_atr_regime", regimeSurfaceTrailing, atrLabels)
 			for _, e := range sub {
 				errs = append(errs, wrapATR(e))
 			}
-			if len(sub) == 0 && !sc.TrailingStopATRRegime.IsZero() {
+			if len(sub) == 0 && !sc.TrailStopATRRegime.IsZero() {
 				usesRegime = true
 				if sc.TrailingStopATRMult != nil {
-					errs = append(errs, fmt.Sprintf("%s: trailing_stop_atr_regime is mutually exclusive with trailing_stop_atr_mult", prefix))
+					errs = append(errs, fmt.Sprintf("%s: trail_stop_atr_regime is mutually exclusive with trailing_stop_atr_mult", prefix))
 				}
 				if sc.TrailingStopPct != nil {
-					errs = append(errs, fmt.Sprintf("%s: trailing_stop_atr_regime is mutually exclusive with trailing_stop_pct", prefix))
+					errs = append(errs, fmt.Sprintf("%s: trail_stop_atr_regime is mutually exclusive with trailing_stop_pct", prefix))
 				}
 				if sc.StopLossPct != nil {
-					errs = append(errs, fmt.Sprintf("%s: trailing_stop_atr_regime is mutually exclusive with stop_loss_pct", prefix))
+					errs = append(errs, fmt.Sprintf("%s: trail_stop_atr_regime is mutually exclusive with stop_loss_pct", prefix))
 				}
 				if sc.StopLossMarginPct != nil {
-					errs = append(errs, fmt.Sprintf("%s: trailing_stop_atr_regime is mutually exclusive with stop_loss_margin_pct", prefix))
+					errs = append(errs, fmt.Sprintf("%s: trail_stop_atr_regime is mutually exclusive with stop_loss_margin_pct", prefix))
 				}
 				if sc.StopLossATRMult != nil {
-					errs = append(errs, fmt.Sprintf("%s: trailing_stop_atr_regime is mutually exclusive with stop_loss_atr_mult", prefix))
+					errs = append(errs, fmt.Sprintf("%s: trail_stop_atr_regime is mutually exclusive with stop_loss_atr_mult", prefix))
 				}
 				manualRatchet := sc.Type == "manual" && strategyUsesTrailingTPRatchetClose(*sc)
 				if sc.Platform != "hyperliquid" || (sc.Type != "perps" && !manualRatchet) {
-					errs = append(errs, fmt.Sprintf("%s: trailing_stop_atr_regime is HL perps only (or HL manual trailing_tp_ratchet_regime)", prefix))
+					errs = append(errs, fmt.Sprintf("%s: trail_stop_atr_regime is HL perps only (or HL manual trailing_tp_ratchet_regime)", prefix))
 				}
 			}
 		}

@@ -74,7 +74,7 @@ func migrateV15CloseKeys(raw map[string]interface{}) {
 }
 
 func migrateV15StrategyRegimeBlocks(sc map[string]interface{}) {
-	for _, key := range []string{"stop_loss_atr_regime", "trailing_stop_atr_regime"} {
+	for _, key := range []string{"stop_loss_atr_regime", trailStopATRRegimeKey, legacyTrailStopATRRegimeKey} {
 		if raw, ok := sc[key]; ok {
 			sc[key] = canonicalizeRegimeBlock(raw)
 		}
@@ -144,7 +144,8 @@ func migrateV15StripStrategyStopOwners(sc map[string]interface{}) {
 		"stop_loss_margin_pct",
 		"trailing_stop_atr_mult",
 		"trailing_stop_pct",
-		"trailing_stop_atr_regime",
+		trailStopATRRegimeKey,
+		legacyTrailStopATRRegimeKey,
 	} {
 		delete(sc, key)
 	}

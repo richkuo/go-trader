@@ -145,7 +145,7 @@ def _arm(
     stop_loss_atr_mult=None,
     trailing_stop_atr_mult=None,
     stop_loss_atr_regime=None,
-    trailing_stop_atr_regime=None,
+    trail_stop_atr_regime=None,
 ) -> dict:
     return {
         "label": label,
@@ -153,7 +153,7 @@ def _arm(
         "stop_loss_atr_mult": stop_loss_atr_mult,
         "trailing_stop_atr_mult": trailing_stop_atr_mult,
         "stop_loss_atr_regime": deepcopy(stop_loss_atr_regime),
-        "trailing_stop_atr_regime": deepcopy(trailing_stop_atr_regime),
+        "trail_stop_atr_regime": deepcopy(trail_stop_atr_regime),
     }
 
 
@@ -192,7 +192,7 @@ def surface_arms(surface: str, *, control_grids: Optional[dict] = None) -> tuple
                 _arm(f"flat_trail_atr={_fmt_num(v)}", trailing_stop_atr_mult=v)
                 for v in _grid(control_grids, "flat_atr", DEFAULT_FLAT_ATR_GRID)
             ],
-            _arm("regime_trail_defaults", trailing_stop_atr_regime={"use_defaults": True}),
+            _arm("regime_trail_defaults", trail_stop_atr_regime={"use_defaults": True}),
         )
     if surface == "tiered_tp":
         return (
@@ -256,7 +256,7 @@ def surface_arms(surface: str, *, control_grids: Optional[dict] = None) -> tuple
                     "name": "trailing_tp_ratchet_regime",
                     "params": {"use_defaults": True},
                 }],
-                trailing_stop_atr_regime={"use_defaults": True},
+                trail_stop_atr_regime={"use_defaults": True},
             ),
         )
     raise ValueError(f"unknown surface {surface!r}; allowed: {SURFACES}")
@@ -505,7 +505,7 @@ def _backtester_kwargs(arm: dict, *, capital: float, platform: str, strategy: st
         "stop_loss_atr_mult": arm.get("stop_loss_atr_mult"),
         "trailing_stop_atr_mult": arm.get("trailing_stop_atr_mult"),
         "stop_loss_atr_regime": deepcopy(arm.get("stop_loss_atr_regime")),
-        "trailing_stop_atr_regime": deepcopy(arm.get("trailing_stop_atr_regime")),
+        "trail_stop_atr_regime": deepcopy(arm.get("trail_stop_atr_regime")),
     }
 
 

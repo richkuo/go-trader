@@ -183,7 +183,7 @@ Optional ADX+DI 3-state gate (`trending_up` / `trending_down` / `ranging`) from 
 
 OHLCV fetch scales to the longest window. `go-trader inspect <id>` shows resolved selectors and stamped windows on open positions.
 
-**Regime-aware ATR multipliers (HL perps).** With `regime.enabled`, swap scalar stop/TP fields for `*_regime` siblings (`stop_loss_atr_regime`, `trailing_stop_atr_regime`, `tiered_tp_atr_regime`, `tiered_tp_atr_live_regime`). `{"use_defaults": true}` expands a baseline table; explicit form requires all three ADX labels. Regime is frozen at open for stops; live TP regime refs re-resolve each tick.
+**Regime-aware ATR multipliers (HL perps).** With `regime.enabled`, swap scalar stop/TP fields for `*_regime` siblings (`stop_loss_atr_regime`, `trail_stop_atr_regime`, `tiered_tp_atr_regime`, `tiered_tp_atr_live_regime`). `{"use_defaults": true}` expands a baseline table; explicit form requires all three ADX labels. Regime is frozen at open for stops; live TP regime refs re-resolve each tick.
 
 ### Correlation Tracking
 

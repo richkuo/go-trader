@@ -281,7 +281,7 @@ _USER_RATCHET_REGIME = {
                 {"atr_multiple": 1.0, "trailing_mult_after": 1.0, "close_fraction": 0.0}
             ],
         },
-        "trailing_stop_atr_regime": {
+        "trail_stop_atr_regime": {
             "trend_regime": {
                 "trending_up": {"atr_multiple": 2.75},
                 "trending_down": {"atr_multiple": 2.75},
@@ -399,7 +399,7 @@ def _ratchet_regime_cfg(tmp_path, extra_strategy=None):
 def test_defaults_user_injects_ratchet_regime_trail(tmp_path):
     path = _ratchet_regime_cfg(tmp_path)
     kwargs = run_backtest.load_strategy_config(path, "hl-rr", inject_user_defaults=True)
-    assert kwargs["trailing_stop_atr_regime"]["trend_regime"]["ranging"]["atr_multiple"] == 1.5
+    assert kwargs["trail_stop_atr_regime"]["trend_regime"]["ranging"]["atr_multiple"] == 1.5
     tp = kwargs["close_strategies"][0]["params"].get("tp_tiers")
     assert tp["trending_up"][0]["trailing_mult_after"] == 1.0
 
@@ -407,14 +407,14 @@ def test_defaults_user_injects_ratchet_regime_trail(tmp_path):
 def test_defaults_system_does_not_inject_ratchet_regime_trail(tmp_path):
     path = _ratchet_regime_cfg(tmp_path)
     kwargs = run_backtest.load_strategy_config(path, "hl-rr", inject_user_defaults=False)
-    assert kwargs["trailing_stop_atr_regime"] is None
+    assert kwargs["trail_stop_atr_regime"] is None
     assert kwargs["close_strategies"][0]["params"].get("tp_tiers") is None
 
 
 def test_defaults_user_ratchet_regime_trail_does_not_override_stop_owner(tmp_path):
     path = _ratchet_regime_cfg(tmp_path, {"trailing_stop_atr_mult": 3.0})
     kwargs = run_backtest.load_strategy_config(path, "hl-rr", inject_user_defaults=True)
-    assert kwargs["trailing_stop_atr_regime"] is None
+    assert kwargs["trail_stop_atr_regime"] is None
     assert kwargs["trailing_stop_atr_mult"] == 3.0
 
 

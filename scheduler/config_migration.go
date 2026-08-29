@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-const CurrentConfigVersion = 17
+const CurrentConfigVersion = 18
 
 const MinSupportedConfigVersion = 13
 
@@ -103,6 +103,15 @@ const v17ATRMethodNotice = "**Note:** ATR smoothing is now configurable (#1277).
 	"this happens. " +
 	"Backtest baselines were established under simple; re-validate before promoting Wilder-based results."
 
+const v18TrailStopRenameNotice = "**Note:** the per-regime trailing-stop field was renamed (#1465). " +
+	"`trailing_stop_atr_regime` is now `trail_stop_atr_regime`, so it no longer shares the `trailing_` " +
+	"prefix with the `trailing_tp_ratchet_regime` close evaluator. Migration rewrites the key on disk in " +
+	"strategy blocks, `user_defaults.regime_atr`, `user_defaults.manual` and every `user_defaults.close` " +
+	"entry. Runtime behavior is unchanged — the field still owns the high-water trailing stop on Hyperliquid " +
+	"perps. Where `scheduler/config.json` is still the #1056 transition symlink, this on-disk rewrite " +
+	"replaces the symlink with a regular in-tree file; deployments already pointed at " +
+	"`/var/lib/go-trader[/<instance>]/config.json` via `ExecStart --config` are unaffected."
+
 func NewFieldsSince(version int) []ConfigField {
 	var fields []ConfigField
 	for _, f := range configFieldRegistry {
@@ -156,6 +165,12 @@ func MigrateConfig(configPath string, fieldValues map[string]string, cfg *Config
 
 	if oldVer < 16 || hasLegacyUserDefaultAliases(raw) {
 		if err := migrateV16UserDefaults(raw); err != nil {
+			return err
+		}
+	}
+
+	if oldVer < 18 || hasLegacyTrailStopATRRegimeKey(raw) {
+		if err := migrateV18TrailStopATRRegimeKey(raw); err != nil {
 			return err
 		}
 	}
@@ -250,6 +265,13 @@ func runConfigMigrationDM(cfg *Config, notifier *MultiNotifier, configPath strin
 				fmt.Printf("[migration] %s\n", v17ATRMethodNotice)
 			}
 		}
+		if cfg.ConfigVersion < 18 {
+			if notifier != nil && notifier.HasOwner() {
+				notifier.SendOwnerDM(v18TrailStopRenameNotice)
+			} else {
+				fmt.Printf("[migration] %s\n", v18TrailStopRenameNotice)
+			}
+		}
 		return
 	}
 
@@ -273,6 +295,9 @@ func runConfigMigrationDM(cfg *Config, notifier *MultiNotifier, configPath strin
 		}
 		if cfg.ConfigVersion < 17 {
 			fmt.Printf("[migration] %s\n", v17ATRMethodNotice)
+		}
+		if cfg.ConfigVersion < 18 {
+			fmt.Printf("[migration] %s\n", v18TrailStopRenameNotice)
 		}
 		return
 	}
@@ -311,6 +336,9 @@ func runConfigMigrationDM(cfg *Config, notifier *MultiNotifier, configPath strin
 	}
 	if cfg.ConfigVersion < 17 {
 		notifier.SendOwnerDM(v17ATRMethodNotice)
+	}
+	if cfg.ConfigVersion < 18 {
+		notifier.SendOwnerDM(v18TrailStopRenameNotice)
 	}
 }
 

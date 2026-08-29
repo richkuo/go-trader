@@ -47,7 +47,7 @@ func TestConfigValidationCompoundScalarPlusRegimeStopOwnersRejected(t *testing.T
 		"capital": 1000, "max_drawdown_pct": 10, "leverage": 2,
 		"stop_loss_atr_mult": 1.5,
 		"stop_loss_atr_regime": {"trend_regime": {"trending_up": {"atr_multiple": 2.0}, "trending_down": {"atr_multiple": 2.0}, "ranging": {"atr_multiple": 1.0}}},
-		"trailing_stop_atr_regime": {"trend_regime": {"trending_up": {"atr_multiple": 2.0}, "trending_down": {"atr_multiple": 2.0}, "ranging": {"atr_multiple": 1.0}}}
+		"trail_stop_atr_regime": {"trend_regime": {"trending_up": {"atr_multiple": 2.0}, "trending_down": {"atr_multiple": 2.0}, "ranging": {"atr_multiple": 1.0}}}
 	}`)
 	var sc StrategyConfig
 	if err := json.Unmarshal(raw, &sc); err != nil {
@@ -64,7 +64,7 @@ func TestConfigValidationCompoundScalarPlusRegimeStopOwnersRejected(t *testing.T
 	msg := err.Error()
 	for _, want := range []string{
 		"stop_loss_atr_regime is mutually exclusive with stop_loss_atr_mult",
-		"trailing_stop_atr_regime is mutually exclusive with stop_loss_atr_mult",
+		"trail_stop_atr_regime is mutually exclusive with stop_loss_atr_mult",
 	} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("compound rejection missing %q in: %v", want, msg)

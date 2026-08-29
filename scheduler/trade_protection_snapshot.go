@@ -26,8 +26,8 @@ func tradeOpenStopLossATRMultForRegime(sc StrategyConfig, regime string) *float6
 			return &v
 		}
 	}
-	if sc.TrailingStopATRRegime != nil && !sc.TrailingStopATRRegime.IsZero() && regime != "" {
-		if v, ok := resolveRegimeATR(*sc.TrailingStopATRRegime, regime); ok {
+	if sc.TrailStopATRRegime != nil && !sc.TrailStopATRRegime.IsZero() && regime != "" {
+		if v, ok := resolveRegimeATR(*sc.TrailStopATRRegime, regime); ok {
 			return &v
 		}
 	}

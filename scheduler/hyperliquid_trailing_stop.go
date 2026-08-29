@@ -97,11 +97,11 @@ func effectiveTrailingStopPct(sc StrategyConfig, pos *Position) float64 {
 		}
 		return pct
 	}
-	if sc.TrailingStopATRRegime != nil && !sc.TrailingStopATRRegime.IsZero() {
+	if sc.TrailStopATRRegime != nil && !sc.TrailStopATRRegime.IsZero() {
 		if pos == nil || pos.EntryATR <= 0 || pos.AvgCost <= 0 || positionATRRegimeLabel(pos, sc) == "" {
 			return 0
 		}
-		mult, ok := resolveRegimeATR(*sc.TrailingStopATRRegime, positionATRRegimeLabel(pos, sc))
+		mult, ok := resolveRegimeATR(*sc.TrailStopATRRegime, positionATRRegimeLabel(pos, sc))
 		if !ok {
 			return 0
 		}
@@ -121,7 +121,7 @@ func atrMultMissingEntryATR(sc StrategyConfig, pos *Position) bool {
 	wantsTrailing := sc.TrailingStopATRMult != nil && *sc.TrailingStopATRMult > 0
 	wantsFixed := sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0
 	wantsRegimeFixed := sc.StopLossATRRegime != nil && !sc.StopLossATRRegime.IsZero()
-	wantsRegimeTrailing := sc.TrailingStopATRRegime != nil && !sc.TrailingStopATRRegime.IsZero()
+	wantsRegimeTrailing := sc.TrailStopATRRegime != nil && !sc.TrailStopATRRegime.IsZero()
 	if !wantsTrailing && !wantsFixed && !wantsRegimeFixed && !wantsRegimeTrailing {
 		return false
 	}

@@ -812,8 +812,8 @@ func TestEffectiveStopLossPct(t *testing.T) {
 		{"margin fallthrough beats drawdown", hlPerps(StrategyConfig{StopLossMarginPct: pf(20), MaxDrawdownPct: 5, Leverage: 20}), 1.0},
 		{"stop_loss_atr_regime defers, no drawdown fallback",
 			hlPerps(StrategyConfig{StopLossATRRegime: &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{"trending": {ATR: 2}}}, MaxDrawdownPct: 5, Leverage: 5}), 0},
-		{"trailing_stop_atr_regime defers, no drawdown fallback",
-			hlPerps(StrategyConfig{TrailingStopATRRegime: &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{"trending": {ATR: 2}}}, MaxDrawdownPct: 5, Leverage: 5}), 0},
+		{"trail_stop_atr_regime defers, no drawdown fallback",
+			hlPerps(StrategyConfig{TrailStopATRRegime: &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{"trending": {ATR: 2}}}, MaxDrawdownPct: 5, Leverage: 5}), 0},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -1690,11 +1690,11 @@ func TestRunHyperliquidTrailingStopPaper_RegimeSnapshotArms(t *testing.T) {
 		"ranging":  {ATR: 1.0},
 	}}
 	sc := StrategyConfig{
-		ID:                    "hl-regime-paper",
-		Platform:              "hyperliquid",
-		Type:                  "perps",
-		RegimeATRWindow:       "medium",
-		TrailingStopATRRegime: regimeBlock,
+		ID:                 "hl-regime-paper",
+		Platform:           "hyperliquid",
+		Type:               "perps",
+		RegimeATRWindow:    "medium",
+		TrailStopATRRegime: regimeBlock,
 	}
 	pos := &Position{
 		AvgCost:         2100,

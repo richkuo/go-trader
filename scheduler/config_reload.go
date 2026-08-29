@@ -228,9 +228,9 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 			addChange("strategy[%s].stop_loss_atr_regime: shape updated", sc.ID)
 			sc.StopLossATRRegime = cloneRegimeATRBlock(ns.StopLossATRRegime)
 		}
-		if !sc.TrailingStopATRRegime.EqualForReload(ns.TrailingStopATRRegime) {
-			addChange("strategy[%s].trailing_stop_atr_regime: shape updated", sc.ID)
-			sc.TrailingStopATRRegime = cloneRegimeATRBlock(ns.TrailingStopATRRegime)
+		if !sc.TrailStopATRRegime.EqualForReload(ns.TrailStopATRRegime) {
+			addChange("strategy[%s].trail_stop_atr_regime: shape updated", sc.ID)
+			sc.TrailStopATRRegime = cloneRegimeATRBlock(ns.TrailStopATRRegime)
 		}
 		if !floatPtrEqual(sc.TrailingStopMinMovePct, ns.TrailingStopMinMovePct) {
 			addChange("strategy[%s].trailing_stop_min_move_pct: %s -> %s", sc.ID, formatFloatPtrPct(sc.TrailingStopMinMovePct), formatFloatPtrPct(ns.TrailingStopMinMovePct))
@@ -582,13 +582,13 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 				errs = append(errs, fmt.Sprintf("strategy[%s] stop_loss_atr_regime shape changed with open positions (flatten first or restart after close)",
 					sc.ID))
 			}
-			oldTrailingRegime := sc.TrailingStopATRRegime.IsConfigured()
-			newTrailingRegime := ns.TrailingStopATRRegime.IsConfigured()
+			oldTrailingRegime := sc.TrailStopATRRegime.IsConfigured()
+			newTrailingRegime := ns.TrailStopATRRegime.IsConfigured()
 			if oldTrailingRegime != newTrailingRegime {
-				errs = append(errs, fmt.Sprintf("strategy[%s] trailing_stop_atr_regime mode changed with open positions (flatten first or restart after close)",
+				errs = append(errs, fmt.Sprintf("strategy[%s] trail_stop_atr_regime mode changed with open positions (flatten first or restart after close)",
 					sc.ID))
-			} else if oldTrailingRegime && !sc.TrailingStopATRRegime.EqualEffectiveForReload(ns.TrailingStopATRRegime) {
-				errs = append(errs, fmt.Sprintf("strategy[%s] trailing_stop_atr_regime shape changed with open positions (flatten first or restart after close)",
+			} else if oldTrailingRegime && !sc.TrailStopATRRegime.EqualEffectiveForReload(ns.TrailStopATRRegime) {
+				errs = append(errs, fmt.Sprintf("strategy[%s] trail_stop_atr_regime shape changed with open positions (flatten first or restart after close)",
 					sc.ID))
 			}
 		}
@@ -700,7 +700,7 @@ func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.TrailingStopATRMult = nil
 	sc.StopLossATRMult = nil
 	sc.StopLossATRRegime = nil
-	sc.TrailingStopATRRegime = nil
+	sc.TrailStopATRRegime = nil
 	sc.TrailingStopMinMovePct = nil
 	sc.Direction = ""
 	sc.AllowShorts = false
@@ -951,7 +951,7 @@ func cloneManualDefaults(md *ManualDefaultsConfig) *ManualDefaultsConfig {
 	if len(md.TPTiers) > 0 {
 		cp.TPTiers = append([]ManualTPTier(nil), md.TPTiers...)
 	}
-	cp.TrailingStopATRRegime = cloneRegimeATRBlock(md.TrailingStopATRRegime)
+	cp.TrailStopATRRegime = cloneRegimeATRBlock(md.TrailStopATRRegime)
 	return &cp
 }
 
@@ -1003,8 +1003,8 @@ func formatManualDefaults(md *ManualDefaultsConfig) string {
 	if len(md.TPTiers) > 0 {
 		parts = append(parts, fmt.Sprintf("tp_tiers=%d", len(md.TPTiers)))
 	}
-	if md.TrailingStopATRRegime.IsConfigured() {
-		parts = append(parts, "trailing_stop_atr_regime=configured")
+	if md.TrailStopATRRegime.IsConfigured() {
+		parts = append(parts, "trail_stop_atr_regime=configured")
 	}
 	if len(parts) == 0 {
 		return "{}"

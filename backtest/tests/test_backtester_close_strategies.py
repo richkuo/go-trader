@@ -258,7 +258,7 @@ def test_trailing_tp_ratchet_regime_uses_open_time_regime():
     bt = Backtester(
         intrabar_resolution="bar_close",
         initial_capital=1000, commission_pct=0, slippage_pct=0,
-        trailing_stop_atr_regime={"trend_regime": {
+        trail_stop_atr_regime={"trend_regime": {
             "ranging": {"atr_multiple": 3.0},
             "trending_up": {"atr_multiple": 3.0},
             "trending_down": {"atr_multiple": 3.0},

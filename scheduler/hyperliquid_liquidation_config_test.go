@@ -220,6 +220,60 @@ func bankruptcyPreflightParity(t *testing.T, cfg Config) (bool, bool) {
 	return goRejects, scriptRejects
 }
 
+func TestHLBankruptcyBoundPreflightAcceptsLegacyTrailStopRegimeKey(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not available")
+	}
+	script, err := filepath.Abs(filepath.Join("..", "scripts", "check-hl-stop-bankruptcy-bound.sh"))
+	if err != nil {
+		t.Fatalf("resolve script path: %v", err)
+	}
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "scheduler"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	path := filepath.Join(dir, "scheduler", "config.json")
+	legacyJSON := `{
+		"config_version": 17,
+		"default_stop_loss_atr_mult": 0,
+		"regime": {"enabled": true, "period": 14, "adx_threshold": 20},
+		"portfolio_risk": {"max_drawdown_pct": 25, "warn_threshold_pct": 80},
+		"strategies": [{
+			"id": "hl-eth",
+			"type": "perps",
+			"platform": "hyperliquid",
+			"script": "shared_scripts/check_hyperliquid.py",
+			"args": ["sma_crossover", "ETH", "1h", "--mode=live"],
+			"capital": 1000,
+			"max_drawdown_pct": 15,
+			"leverage": 20,
+			"margin_mode": "isolated",
+			"trailing_stop_atr_regime": {
+				"trend_regime": {
+					"trending_up": {"atr_multiple": 2.0},
+					"trending_down": {"atr_multiple": 2.0},
+					"ranging": {"atr_multiple": 1.5}
+				}
+			}
+		}]
+	}`
+	if err := os.WriteFile(path, []byte(legacyJSON), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	out, runErr := exec.Command("bash", script, dir).CombinedOutput()
+	if runErr != nil {
+		t.Fatalf("preflight rejected a legacy-key config the daemon migrates and accepts: %v\n%s", runErr, out)
+	}
+
+	if _, err := LoadConfigForProbe(path); err != nil {
+		t.Fatalf("LoadConfigForProbe rejected the legacy-key config: %v", err)
+	}
+}
+
 func TestHLBankruptcyBoundPreflightMatchesGoCheckLoadTimeResolution(t *testing.T) {
 	if _, err := exec.LookPath("bash"); err != nil {
 		t.Skip("bash not available")
@@ -295,8 +349,8 @@ func TestHLBankruptcyBoundPreflightMatchesGoCheckLoadTimeResolution(t *testing.T
 				}
 				c.UserDefaults = &UserDefaultsConfig{Close: CloseDefaultsMap{
 					trailingTPRatchetRegimeCloseName: map[string]interface{}{
-						"tp_tiers":                 ratchetRegimeUserTiers(),
-						"trailing_stop_atr_regime": ratchetRegimeTrailRaw(2.25, 2.25, 1.25),
+						"tp_tiers":              ratchetRegimeUserTiers(),
+						"trail_stop_atr_regime": ratchetRegimeTrailRaw(2.25, 2.25, 1.25),
 					},
 				}}
 			},
@@ -312,11 +366,11 @@ func TestHLBankruptcyBoundPreflightMatchesGoCheckLoadTimeResolution(t *testing.T
 			goRejects: false,
 		},
 		{
-			name: "explicit trailing_stop_atr_regime owns the stop",
+			name: "explicit trail_stop_atr_regime owns the stop",
 			mutate: func(c *Config) {
 				c.DefaultStopLossATRMult = floatPtr(0)
 				c.Regime = &RegimeConfig{Enabled: true, Period: 14, ADXThreshold: 20}
-				c.Strategies[0].TrailingStopATRRegime = regimeATRBlockFromRaw(ratchetRegimeTrailRaw(2.0, 2.0, 1.5))
+				c.Strategies[0].TrailStopATRRegime = regimeATRBlockFromRaw(ratchetRegimeTrailRaw(2.0, 2.0, 1.5))
 			},
 			goRejects: false,
 		},

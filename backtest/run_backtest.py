@@ -384,6 +384,27 @@ _USER_CLOSE_DEFAULTS_SUPPORTED = {
 }
 _USER_CLOSE_DEFAULT_REGIME_ATR_KEY = "regime_atr"
 
+_LEGACY_TRAIL_STOP_ATR_REGIME_KEY = "trailing_stop_atr_regime"
+_TRAIL_STOP_ATR_REGIME_KEY = "trail_stop_atr_regime"
+
+
+def _normalize_trail_stop_atr_regime_key(node):
+    if isinstance(node, dict):
+        out = {}
+        for key, value in node.items():
+            normalized = _normalize_trail_stop_atr_regime_key(value)
+            if key == _LEGACY_TRAIL_STOP_ATR_REGIME_KEY:
+                if _TRAIL_STOP_ATR_REGIME_KEY in node:
+                    continue
+                out[_TRAIL_STOP_ATR_REGIME_KEY] = normalized
+                continue
+            out[key] = normalized
+        return out
+    if isinstance(node, list):
+        return [_normalize_trail_stop_atr_regime_key(v) for v in node]
+    return node
+
+
 _STOP_OWNER_KEYS = (
     "stop_loss_atr_mult",
     "stop_loss_pct",
@@ -391,7 +412,7 @@ _STOP_OWNER_KEYS = (
     "trailing_stop_atr_mult",
     "trailing_stop_pct",
     "stop_loss_atr_regime",
-    "trailing_stop_atr_regime",
+    "trail_stop_atr_regime",
 )
 
 
@@ -512,12 +533,12 @@ def _validate_user_close_defaults_regime_atr(user_defaults: Optional[dict]) -> N
         raise ValueError(f"{section}: must be an object")
     if not entry:
         raise ValueError(f"{section}: must not be empty")
-    allowed = {"stop_loss_atr_regime", "trailing_stop_atr_regime"}
+    allowed = {"stop_loss_atr_regime", "trail_stop_atr_regime"}
     for key in entry:
         if key not in allowed:
             raise ValueError(
                 f'{section}: unknown key {key!r} '
-                "(only stop_loss_atr_regime and trailing_stop_atr_regime are allowed)"
+                "(only stop_loss_atr_regime and trail_stop_atr_regime are allowed)"
             )
     _close_dir = os.path.join(
         os.path.dirname(__file__), "..", "shared_strategies", "close"
@@ -548,7 +569,7 @@ def _validate_user_close_defaults_regime_atr(user_defaults: Optional[dict]) -> N
             raise ValueError(errs[0])
 
     _validate_sub("stop_loss_atr_regime", SURFACE_STOP_LOSS)
-    _validate_sub("trailing_stop_atr_regime", SURFACE_TRAILING)
+    _validate_sub("trail_stop_atr_regime", SURFACE_TRAILING)
 
 
 def _apply_user_close_defaults(close_refs: list, user_defaults: Optional[dict],
@@ -572,9 +593,9 @@ def _apply_user_close_defaults(close_refs: list, user_defaults: Optional[dict],
         if not _has_explicit_stop_owner(sc):
             entry = _user_close_default_entry(user_defaults, "trailing_tp_ratchet_regime")
             if entry is not None:
-                trail = entry.get("trailing_stop_atr_regime")
+                trail = entry.get("trail_stop_atr_regime")
                 if isinstance(trail, dict) and trail:
-                    sc["trailing_stop_atr_regime"] = deepcopy(trail)
+                    sc["trail_stop_atr_regime"] = deepcopy(trail)
         return
     if sc is None:
         return
@@ -588,13 +609,13 @@ def _apply_user_close_defaults(close_refs: list, user_defaults: Optional[dict],
         and _regime_atr_block_is_use_defaults_only(sc.get("stop_loss_atr_regime"))
     ):
         sc["stop_loss_atr_regime"] = deepcopy(sl_raw)
-    trail_raw = regime_entry.get("trailing_stop_atr_regime")
+    trail_raw = regime_entry.get("trail_stop_atr_regime")
     if (
         isinstance(trail_raw, dict)
         and trail_raw
-        and _regime_atr_block_is_use_defaults_only(sc.get("trailing_stop_atr_regime"))
+        and _regime_atr_block_is_use_defaults_only(sc.get("trail_stop_atr_regime"))
     ):
-        sc["trailing_stop_atr_regime"] = deepcopy(trail_raw)
+        sc["trail_stop_atr_regime"] = deepcopy(trail_raw)
 
 
 def _effective_direction(sc: dict) -> str:
@@ -627,7 +648,7 @@ def load_strategy_config(config_path: str, strategy_id: str,
                          include_promotion_baseline: bool = False) -> dict:
     import json as _json
     with open(config_path) as fh:
-        cfg = _json.load(fh)
+        cfg = _normalize_trail_stop_atr_regime_key(_json.load(fh))
     user_defaults = _effective_user_close_defaults(cfg)
     _validate_user_close_defaults_regime_atr(user_defaults)
     version = int(cfg.get("config_version", 0) or 0)
@@ -897,7 +918,7 @@ def load_strategy_config(config_path: str, strategy_id: str,
                 _has_trailing = (
                     (sc.get("trailing_stop_pct") or 0) > 0
                     or (sc.get("trailing_stop_atr_mult") or 0) > 0
-                    or bool(sc.get("trailing_stop_atr_regime"))
+                    or bool(sc.get("trail_stop_atr_regime"))
                     or (str((sc.get("close_strategy") or {}).get("name") or "")
                         .strip().lower()
                         in ("trailing_tp_ratchet", "trailing_tp_ratchet_regime"))
@@ -946,7 +967,7 @@ def load_strategy_config(config_path: str, strategy_id: str,
             "trailing_stop_atr_mult": sc.get("trailing_stop_atr_mult"),
             "trailing_stop_pct": sc.get("trailing_stop_pct"),
             "stop_loss_atr_regime": sc.get("stop_loss_atr_regime"),
-            "trailing_stop_atr_regime": sc.get("trailing_stop_atr_regime"),
+            "trail_stop_atr_regime": sc.get("trail_stop_atr_regime"),
             "strategy_type": strategy_type,
             "direction": direction,
             "invert_signal": invert_signal,
@@ -1001,7 +1022,7 @@ def run_single_backtest(
     trailing_stop_atr_mult: Optional[float] = None,
     trailing_stop_pct: Optional[float] = None,
     stop_loss_atr_regime: Optional[dict] = None,
-    trailing_stop_atr_regime: Optional[dict] = None,
+    trail_stop_atr_regime: Optional[dict] = None,
     strategy_type: str = "perps",
     direction: Optional[str] = None,
     invert_signal: bool = False,
@@ -1120,7 +1141,7 @@ def run_single_backtest(
         trailing_stop_atr_mult=trailing_stop_atr_mult,
         trailing_stop_pct=trailing_stop_pct,
         stop_loss_atr_regime=stop_loss_atr_regime,
-        trailing_stop_atr_regime=trailing_stop_atr_regime,
+        trail_stop_atr_regime=trail_stop_atr_regime,
         strategy_type=strategy_type,
         direction=direction,
         invert_signal=invert_signal,
@@ -1536,7 +1557,7 @@ def main():
             "trailing_stop_atr_mult",
             "trailing_stop_pct",
             "stop_loss_atr_regime",
-            "trailing_stop_atr_regime",
+            "trail_stop_atr_regime",
             "strategy_type",
             "direction",
             "invert_signal",

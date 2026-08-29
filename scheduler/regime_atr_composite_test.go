@@ -89,17 +89,17 @@ func TestValidateRegimeATRConfig_CompositeSLAfterTPATRFraction(t *testing.T) {
 
 func TestValidateRegimeATRConfig_CompositeTrailingExplicit(t *testing.T) {
 	sc := StrategyConfig{
-		ID:                    "hl-test",
-		Type:                  "perps",
-		Platform:              "hyperliquid",
-		RegimeATRWindow:       "daily",
-		TrailingStopATRRegime: &RegimeATRBlock{raw: composite7StateATR(2.5)},
+		ID:                 "hl-test",
+		Type:               "perps",
+		Platform:           "hyperliquid",
+		RegimeATRWindow:    "daily",
+		TrailStopATRRegime: &RegimeATRBlock{raw: composite7StateATR(2.5)},
 	}
 	cfg := compositeRegimeCfg(sc)
 	if errs := validateRegimeATRConfig(cfg); len(errs) != 0 {
-		t.Fatalf("composite trailing_stop_atr_regime must validate, got: %v", errs)
+		t.Fatalf("composite trail_stop_atr_regime must validate, got: %v", errs)
 	}
-	if got := len(cfg.Strategies[0].TrailingStopATRRegime.TrendRegime); got != 9 {
+	if got := len(cfg.Strategies[0].TrailStopATRRegime.TrendRegime); got != 9 {
 		t.Fatalf("trailing block must hold 9 composite labels, got %d", got)
 	}
 }
@@ -107,7 +107,7 @@ func TestValidateRegimeATRConfig_CompositeTrailingExplicit(t *testing.T) {
 func TestParseRegimeATRBlock_TrailingUseDefaultsComposite(t *testing.T) {
 	labels := regimeLabelsForClassifier(regimeClassifierComposite)
 	raw := map[string]interface{}{"use_defaults": true}
-	block, errs := parseRegimeATRBlock(raw, "trailing_stop_atr_regime", regimeSurfaceTrailing, labels)
+	block, errs := parseRegimeATRBlock(raw, "trail_stop_atr_regime", regimeSurfaceTrailing, labels)
 	if len(errs) > 0 {
 		t.Fatalf("unexpected errors: %v", errs)
 	}

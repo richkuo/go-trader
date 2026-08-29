@@ -339,11 +339,11 @@ def test_stops_from_kwargs_collects_all_present_and_drops_none():
         "trailing_stop_atr_mult": None,
         "trailing_stop_pct": None,
         "stop_loss_atr_regime": None,
-        "trailing_stop_atr_regime": {"trending_up": 2.0, "ranging_quiet": 3.0},
+        "trail_stop_atr_regime": {"trending_up": 2.0, "ranging_quiet": 3.0},
     }
     stops = m._stops_from_kwargs(kwargs)
     assert stops == {"stop_loss_atr_mult": 1.5,
-                     "trailing_stop_atr_regime": {"trending_up": 2.0, "ranging_quiet": 3.0}}
+                     "trail_stop_atr_regime": {"trending_up": 2.0, "ranging_quiet": 3.0}}
     assert all(v is not None for v in stops.values())
 
 
@@ -378,9 +378,9 @@ def test_backtester_kwargs_threads_regime_trailing_stop_with_open_as_close():
     regime_trail = {"trending_up": 2.0, "ranging_quiet": 3.0}
     kw = m._backtester_kwargs("sqz", {}, None, "long", 10000.0,
                               {"allowed_regimes": None},
-                              stops={"trailing_stop_atr_regime": regime_trail})
+                              stops={"trail_stop_atr_regime": regime_trail})
     assert kw["close_strategies"] is None
-    assert kw["trailing_stop_atr_regime"] == regime_trail
+    assert kw["trail_stop_atr_regime"] == regime_trail
 
 
 def test_control_keeps_stop_regardless_of_candidate_mode():
@@ -487,7 +487,7 @@ def test_stop_candidate_stacks_under_inherited_stop():
     assert m._candidate_stacks_on_inherited_stop(
         [{"name": "atr_stop", "params": {}}], "inherit", {"stop_loss_atr_mult": 1.5})
     assert m._candidate_stacks_on_inherited_stop(
-        [{"name": "trailing_stop_atr_regime", "params": {}}], "inherit",
+        [{"name": "trail_stop_atr_regime", "params": {}}], "inherit",
         {"trailing_stop_atr_mult": 2.0})
 
 

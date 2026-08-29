@@ -209,7 +209,7 @@ def _simulate_one(cfg: dict, candles: List[dict]) -> List[dict]:
         trailing_stop_atr_mult=cfg.get("trailing_stop_atr_mult"),
         trailing_stop_pct=cfg.get("trailing_stop_pct"),
         stop_loss_atr_regime=cfg.get("stop_loss_atr_regime"),
-        trailing_stop_atr_regime=cfg.get("trailing_stop_atr_regime"),
+        trail_stop_atr_regime=cfg.get("trail_stop_atr_regime", cfg.get("trailing_stop_atr_regime")),
         strategy_type=strategy_type,
     )
     results = bt.run(

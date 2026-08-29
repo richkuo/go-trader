@@ -683,8 +683,8 @@ func simulateConfigPayload(sc StrategyConfig, regime *RegimeConfig) map[string]i
 	if sc.StopLossATRRegime != nil {
 		payload["stop_loss_atr_regime"] = sc.StopLossATRRegime
 	}
-	if sc.TrailingStopATRRegime != nil {
-		payload["trailing_stop_atr_regime"] = sc.TrailingStopATRRegime
+	if sc.TrailStopATRRegime != nil {
+		payload["trail_stop_atr_regime"] = sc.TrailStopATRRegime
 	}
 	if regime != nil {
 		payload["regime"] = map[string]interface{}{

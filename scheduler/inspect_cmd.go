@@ -132,6 +132,9 @@ func loadStrategyExplicitKeys(path string) (map[string]map[string]bool, error) {
 		if keys["close_strategies"] {
 			keys["close_strategy"] = true
 		}
+		if keys[legacyTrailStopATRRegimeKey] {
+			keys[trailStopATRRegimeKey] = true
+		}
 		out[id] = keys
 	}
 	return out, nil
@@ -171,12 +174,12 @@ func resolveStopLoss(sc StrategyConfig, explicit map[string]bool) stopLossResolu
 			Detail:   formatRegimeATRInspectDetail("stop_loss_atr_regime", *sc.StopLossATRRegime, explicit["stop_loss_atr_regime"]),
 		}
 	}
-	if sc.TrailingStopATRRegime != nil && !sc.TrailingStopATRRegime.IsZero() {
+	if sc.TrailStopATRRegime != nil && !sc.TrailStopATRRegime.IsZero() {
 		return stopLossResolution{
-			Source:   "trailing_stop_atr_regime",
+			Source:   "trail_stop_atr_regime",
 			Value:    fmt.Sprintf("regime-aware trailing ATR (deferred until EntryATR + %s stamped)", regimeClassifierKey),
-			Explicit: explicit["trailing_stop_atr_regime"],
-			Detail:   formatRegimeATRInspectDetail("trailing_stop_atr_regime", *sc.TrailingStopATRRegime, explicit["trailing_stop_atr_regime"]),
+			Explicit: explicit["trail_stop_atr_regime"],
+			Detail:   formatRegimeATRInspectDetail("trail_stop_atr_regime", *sc.TrailStopATRRegime, explicit["trail_stop_atr_regime"]),
 		}
 	}
 	if sc.TrailingStopPct != nil {

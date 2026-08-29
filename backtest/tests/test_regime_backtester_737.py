@@ -135,10 +135,10 @@ def test_stop_loss_atr_regime_seeds_initial_sl_trigger_from_open_stamp():
     assert tr["exit_price"] == 96.0
 
 
-def test_trailing_stop_atr_regime_use_defaults_parses():
+def test_trail_stop_atr_regime_use_defaults_parses():
     blk, errs = regime_atr.parse_regime_atr_block(
         {"use_defaults": True},
-        "trailing_stop_atr_regime",
+        "trail_stop_atr_regime",
         regime_atr.SURFACE_TRAILING,
     )
     assert not errs
@@ -158,7 +158,7 @@ def test_backtester_rejects_mutex_trailing_scalar_with_regime_block():
     with pytest.raises(ValueError, match="mutually exclusive"):
         Backtester(
             trailing_stop_atr_mult=1.0,
-            trailing_stop_atr_regime={"use_defaults": True},
+            trail_stop_atr_regime={"use_defaults": True},
         )
 
 

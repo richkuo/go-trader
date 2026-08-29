@@ -399,8 +399,8 @@ func TestValidateTrailingTPRatchetClose_CompositeVocabulary(t *testing.T) {
 
 	scOK := StrategyConfig{
 		ID: "hl-comp", Type: "perps", Platform: "hyperliquid",
-		RegimeATRWindow:       "daily",
-		TrailingStopATRRegime: &RegimeATRBlock{raw: composite7StateATR(3.0)},
+		RegimeATRWindow:    "daily",
+		TrailStopATRRegime: &RegimeATRBlock{raw: composite7StateATR(3.0)},
 		CloseStrategy: &StrategyRef{
 			Name:   "trailing_tp_ratchet_regime",
 			Params: map[string]interface{}{"tp_tiers": compositeTable(composite)},
@@ -414,8 +414,8 @@ func TestValidateTrailingTPRatchetClose_CompositeVocabulary(t *testing.T) {
 	bad["ranging"] = tierList
 	scBad := StrategyConfig{
 		ID: "hl-comp-bad", Type: "perps", Platform: "hyperliquid",
-		RegimeATRWindow:       "daily",
-		TrailingStopATRRegime: &RegimeATRBlock{raw: composite7StateATR(3.0)},
+		RegimeATRWindow:    "daily",
+		TrailStopATRRegime: &RegimeATRBlock{raw: composite7StateATR(3.0)},
 		CloseStrategy: &StrategyRef{
 			Name:   "trailing_tp_ratchet_regime",
 			Params: map[string]interface{}{"tp_tiers": bad},
@@ -545,7 +545,7 @@ func TestValidateTrailingTPRatchetClose_DefaultRespectsInitialTrail(t *testing.T
 func TestValidateTrailingTPRatchetClose_RegimeOmittedTiersUsesDefault(t *testing.T) {
 	sc := StrategyConfig{
 		ID: "s1", Type: "perps", Platform: "hyperliquid",
-		TrailingStopATRRegime: &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{
+		TrailStopATRRegime: &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{
 			"trending_up":   {ATR: 2.0},
 			"trending_down": {ATR: 2.0},
 			"ranging":       {ATR: 1.5},
@@ -637,7 +637,7 @@ func TestValidateTrailingTPRatchetClose_RegimeRejectsScalarMult(t *testing.T) {
 	sc := StrategyConfig{
 		ID: "s1", Type: "perps", Platform: "hyperliquid",
 		TrailingStopATRMult: &trail,
-		TrailingStopATRRegime: &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{
+		TrailStopATRRegime: &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{
 			"trending_up": {ATR: 2.0}, "trending_down": {ATR: 2.0}, "ranging": {ATR: 1.5},
 		}},
 		CloseStrategy: &StrategyRef{Name: "trailing_tp_ratchet_regime", Params: map[string]interface{}{"use_defaults": true}},
@@ -659,7 +659,7 @@ func TestValidateTrailingTPRatchetClose_RegimePerKeyInitialTrail(t *testing.T) {
 	}
 	sc := StrategyConfig{
 		ID: "s1", Type: "perps", Platform: "hyperliquid",
-		TrailingStopATRRegime: &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{
+		TrailStopATRRegime: &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{
 			"trending_up": {ATR: 3.0}, "trending_down": {ATR: 3.0}, "ranging": {ATR: 1.0},
 		}},
 		CloseStrategy: &StrategyRef{Name: "trailing_tp_ratchet_regime", Params: map[string]interface{}{"tp_tiers": table}},
@@ -676,7 +676,7 @@ func TestValidateTrailingTPRatchetClose_RegimePerKeyInitialTrail(t *testing.T) {
 func TestValidateTrailingTPRatchetClose_ManualRegimeRatchet(t *testing.T) {
 	sc := StrategyConfig{
 		ID: "hl-man", Type: "manual", Platform: "hyperliquid",
-		TrailingStopATRRegime: &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{
+		TrailStopATRRegime: &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{
 			"trending_up": {ATR: 2.0}, "trending_down": {ATR: 2.0}, "ranging": {ATR: 1.5},
 		}},
 		CloseStrategy: &StrategyRef{Name: "trailing_tp_ratchet_regime", Params: map[string]interface{}{"use_defaults": true}},
@@ -760,8 +760,8 @@ func TestRatchetCloseDefaultGroup(t *testing.T) {
 func TestValidateRegimeRatchet_AllDefaultsCompositeValidates(t *testing.T) {
 	sc := StrategyConfig{
 		ID: "hl-allc", Type: "perps", Platform: "hyperliquid",
-		RegimeATRWindow:       "daily",
-		TrailingStopATRRegime: &RegimeATRBlock{raw: map[string]interface{}{"use_defaults": true}},
+		RegimeATRWindow:    "daily",
+		TrailStopATRRegime: &RegimeATRBlock{raw: map[string]interface{}{"use_defaults": true}},
 		CloseStrategy: &StrategyRef{
 			Name:   "trailing_tp_ratchet_regime",
 			Params: map[string]interface{}{"use_defaults": true},

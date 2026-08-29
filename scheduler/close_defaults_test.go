@@ -78,8 +78,8 @@ func TestValidateUserCloseDefaults(t *testing.T) {
 		t.Fatalf("a non-empty entry should pass, got: %v", errs)
 	}
 	if errs := validateUserCloseDefaults(CloseDefaultsMap{"trailing_tp_ratchet_regime": {
-		"tp_tiers":                 ratchetRegimeUserTiers(),
-		"trailing_stop_atr_regime": ratchetRegimeTrailRaw(2.25, 2.25, 1.25),
+		"tp_tiers":              ratchetRegimeUserTiers(),
+		"trail_stop_atr_regime": ratchetRegimeTrailRaw(2.25, 2.25, 1.25),
 	}}); len(errs) != 0 {
 		t.Fatalf("trailing_tp_ratchet_regime trail default should pass, got: %v", errs)
 	}
@@ -95,11 +95,11 @@ func TestValidateUserCloseDefaults(t *testing.T) {
 		{"unknown evaluator", CloseDefaultsMap{"bogus_close": {"tp_tiers": []interface{}{}}}, "not a tp_tiers close evaluator"},
 		{"missing tp_tiers", CloseDefaultsMap{"tiered_tp_atr": {}}, "missing tp_tiers"},
 		{"stray key", CloseDefaultsMap{"tiered_tp_atr": {"tp_tiers": validTiered, "foo": 1}}, "unknown key"},
-		{"trail key on other evaluator", CloseDefaultsMap{"trailing_tp_ratchet": {"tp_tiers": ratchetUserTiers(), "trailing_stop_atr_regime": ratchetRegimeTrailRaw(2.0, 2.0, 1.0)}}, "unknown key"},
+		{"trail key on other evaluator", CloseDefaultsMap{"trailing_tp_ratchet": {"tp_tiers": ratchetUserTiers(), "trail_stop_atr_regime": ratchetRegimeTrailRaw(2.0, 2.0, 1.0)}}, "unknown key"},
 		{"empty list", CloseDefaultsMap{"trailing_tp_ratchet": {"tp_tiers": []interface{}{}}}, "must not be empty"},
 		{"empty regime map", CloseDefaultsMap{"trailing_tp_ratchet_regime": {"tp_tiers": map[string]interface{}{}}}, "must not be empty"},
 		{"wrong type", CloseDefaultsMap{"tiered_tp_atr": {"tp_tiers": 42}}, "must be a tier list or regime-keyed object"},
-		{"bad trail shape", CloseDefaultsMap{"trailing_tp_ratchet_regime": {"tp_tiers": ratchetRegimeUserTiers(), "trailing_stop_atr_regime": map[string]interface{}{"trend_regime": map[string]interface{}{"trending_up": map[string]interface{}{"close_fraction": 0.5}}}}}, "close_fraction is only allowed inside close-evaluator tiers"},
+		{"bad trail shape", CloseDefaultsMap{"trailing_tp_ratchet_regime": {"tp_tiers": ratchetRegimeUserTiers(), "trail_stop_atr_regime": map[string]interface{}{"trend_regime": map[string]interface{}{"trending_up": map[string]interface{}{"close_fraction": 0.5}}}}}, "close_fraction is only allowed inside close-evaluator tiers"},
 		{"non-monotonic ratchet attributed", CloseDefaultsMap{"trailing_tp_ratchet": {"tp_tiers": nonMonotonicRatchet}}, "user_defaults.close[\"trailing_tp_ratchet\"].tp_tiers"},
 		{"dynamic excluded", CloseDefaultsMap{"tiered_tp_atr_live_regime_dynamic": {"tp_tiers": []interface{}{}}}, "not a tp_tiers close evaluator"},
 		{"tiered regime excluded", CloseDefaultsMap{"tiered_tp_atr_regime": {"tp_tiers": []interface{}{}}}, "not a tp_tiers close evaluator"},
@@ -211,7 +211,7 @@ func TestUserCloseDefaults_LoadConfigInjectsRatchetRegimeTrailBeforeScalarDefaul
 						{"atr_multiple": 2.0, "trailing_mult_after": 0.75, "close_fraction": 0.0}
 					]
 				},
-				"trailing_stop_atr_regime": {
+				"trail_stop_atr_regime": {
 					"trend_regime": {
 						"trending_up": {"atr_multiple": 2.25},
 						"trending_down": {"atr_multiple": 2.25},
@@ -238,10 +238,10 @@ func TestUserCloseDefaults_LoadConfigInjectsRatchetRegimeTrailBeforeScalarDefaul
 	if sc.StopLossATRMult != nil {
 		t.Fatalf("StopLossATRMult = %v, want nil because user regime trail owns the SL", *sc.StopLossATRMult)
 	}
-	if sc.TrailingStopATRRegime == nil || !sc.TrailingStopATRRegime.IsConfigured() {
-		t.Fatal("TrailingStopATRRegime was not injected")
+	if sc.TrailStopATRRegime == nil || !sc.TrailStopATRRegime.IsConfigured() {
+		t.Fatal("TrailStopATRRegime was not injected")
 	}
-	if got, ok := resolveRegimeATR(*sc.TrailingStopATRRegime, "ranging"); !ok || got != 1.25 {
+	if got, ok := resolveRegimeATR(*sc.TrailStopATRRegime, "ranging"); !ok || got != 1.25 {
 		t.Fatalf("ranging trail = (%g, %v), want (1.25, true)", got, ok)
 	}
 	tiers := trailingRatchetTiersForRegime(sc, "trending_up")
@@ -261,7 +261,7 @@ func TestUserCloseDefaults_RatchetRegimeTrailDoesNotOverrideExplicitStopOwner(t 
 					"trending_down": [{"atr_multiple": 1.0, "trailing_mult_after": 1.0, "close_fraction": 0.0}],
 					"ranging": [{"atr_multiple": 1.0, "trailing_mult_after": 1.0, "close_fraction": 0.0}]
 				},
-				"trailing_stop_atr_regime": {
+				"trail_stop_atr_regime": {
 					"trend_regime": {
 						"trending_up": {"atr_multiple": 2.0},
 						"trending_down": {"atr_multiple": 2.0},
@@ -285,7 +285,7 @@ func TestUserCloseDefaults_RatchetRegimeTrailDoesNotOverrideExplicitStopOwner(t 
 	if err == nil {
 		t.Fatal("LoadConfig accepted an explicit scalar stop owner with trailing_tp_ratchet_regime")
 	}
-	if !strings.Contains(err.Error(), "requires trailing_stop_atr_regime") || !strings.Contains(err.Error(), "cannot combine with stop_loss_atr_mult") {
+	if !strings.Contains(err.Error(), "requires trail_stop_atr_regime") || !strings.Contains(err.Error(), "cannot combine with stop_loss_atr_mult") {
 		t.Fatalf("expected missing-regime-owner plus scalar-conflict errors, got: %v", err)
 	}
 }
@@ -301,7 +301,7 @@ func TestUserCloseDefaults_ManualSynthesizedRatchetUsesUserTrail(t *testing.T) {
 					"trending_down": [{"atr_multiple": 1.0, "trailing_mult_after": 1.0, "close_fraction": 0.0}],
 					"ranging": [{"atr_multiple": 1.0, "trailing_mult_after": 1.0, "close_fraction": 0.0}]
 				},
-				"trailing_stop_atr_regime": {
+				"trail_stop_atr_regime": {
 					"trend_regime": {
 						"trending_up": {"atr_multiple": 2.75},
 						"trending_down": {"atr_multiple": 2.75},
@@ -329,7 +329,7 @@ func TestUserCloseDefaults_ManualSynthesizedRatchetUsesUserTrail(t *testing.T) {
 	if sc.CloseStrategy == nil || sc.CloseStrategy.Name != trailingTPRatchetRegimeCloseName {
 		t.Fatalf("CloseStrategy = %v, want %s", sc.CloseStrategy, trailingTPRatchetRegimeCloseName)
 	}
-	if got, ok := resolveRegimeATR(*sc.TrailingStopATRRegime, "trending_up"); !ok || got != 2.75 {
+	if got, ok := resolveRegimeATR(*sc.TrailStopATRRegime, "trending_up"); !ok || got != 2.75 {
 		t.Fatalf("trending_up trail = (%g, %v), want (2.75, true)", got, ok)
 	}
 	if sc.StopLossATRMult != nil {
@@ -342,7 +342,7 @@ func TestUserCloseDefaults_ManualDefaultsTrailWinsOverUserTrail(t *testing.T) {
 	cfgJSON := `{
 		"regime": {"enabled": true, "period": 14, "adx_threshold": 20},
 		"manual_defaults": {
-			"trailing_stop_atr_regime": {
+			"trail_stop_atr_regime": {
 				"trend_regime": {
 					"trending_up": {"atr_multiple": 3.5},
 					"trending_down": {"atr_multiple": 3.5},
@@ -357,7 +357,7 @@ func TestUserCloseDefaults_ManualDefaultsTrailWinsOverUserTrail(t *testing.T) {
 					"trending_down": [{"atr_multiple": 1.0, "trailing_mult_after": 1.0, "close_fraction": 0.0}],
 					"ranging": [{"atr_multiple": 1.0, "trailing_mult_after": 1.0, "close_fraction": 0.0}]
 				},
-				"trailing_stop_atr_regime": {
+				"trail_stop_atr_regime": {
 					"trend_regime": {
 						"trending_up": {"atr_multiple": 2.0},
 						"trending_down": {"atr_multiple": 2.0},
@@ -382,7 +382,7 @@ func TestUserCloseDefaults_ManualDefaultsTrailWinsOverUserTrail(t *testing.T) {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
 	sc := cfg.Strategies[0]
-	if got, ok := resolveRegimeATR(*sc.TrailingStopATRRegime, "trending_up"); !ok || got != 3.5 {
+	if got, ok := resolveRegimeATR(*sc.TrailStopATRRegime, "trending_up"); !ok || got != 3.5 {
 		t.Fatalf("trending_up trail = (%g, %v), want manual default (3.5, true)", got, ok)
 	}
 }
@@ -428,7 +428,7 @@ func TestUserCloseDefaults_RegimeATRInjectsStandaloneTrailingStop(t *testing.T) 
 		"regime": {"enabled": true, "period": 14, "adx_threshold": 20},
 		"user_close_defaults": {
 			"regime_atr": {
-				"trailing_stop_atr_regime": {
+				"trail_stop_atr_regime": {
 					"trend_regime": {
 						"trending_up": {"atr_multiple": 2.75},
 						"trending_down": {"atr_multiple": 2.75},
@@ -444,7 +444,7 @@ func TestUserCloseDefaults_RegimeATRInjectsStandaloneTrailingStop(t *testing.T) 
 			"script": "shared_scripts/check_hyperliquid.py",
 			"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
 			"capital": 1000,
-			"trailing_stop_atr_regime": {"use_defaults": true}
+			"trail_stop_atr_regime": {"use_defaults": true}
 		}]
 	}`
 	cfg, err := LoadConfig(writeTestConfig(t, dir, cfgJSON))
@@ -452,7 +452,7 @@ func TestUserCloseDefaults_RegimeATRInjectsStandaloneTrailingStop(t *testing.T) 
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
 	sc := cfg.Strategies[0]
-	if got, ok := resolveRegimeATR(*sc.TrailingStopATRRegime, "ranging"); !ok || got != 1.25 {
+	if got, ok := resolveRegimeATR(*sc.TrailStopATRRegime, "ranging"); !ok || got != 1.25 {
 		t.Fatalf("ranging trail = (%g, %v), want user default (1.25, true)", got, ok)
 	}
 }
@@ -574,7 +574,7 @@ func TestUserCloseDefaults_RegimeATRSkipsManualRatchet(t *testing.T) {
 		"regime": {"enabled": true, "period": 14, "adx_threshold": 20},
 		"user_close_defaults": {
 			"regime_atr": {
-				"trailing_stop_atr_regime": {
+				"trail_stop_atr_regime": {
 					"trend_regime": {
 						"trending_up": {"atr_multiple": 9.0},
 						"trending_down": {"atr_multiple": 9.0},
@@ -588,7 +588,7 @@ func TestUserCloseDefaults_RegimeATRSkipsManualRatchet(t *testing.T) {
 					"trending_down": [{"atr_multiple": 1.0, "trailing_mult_after": 1.0, "close_fraction": 0.0}],
 					"ranging": [{"atr_multiple": 1.0, "trailing_mult_after": 1.0, "close_fraction": 0.0}]
 				},
-				"trailing_stop_atr_regime": {
+				"trail_stop_atr_regime": {
 					"trend_regime": {
 						"trending_up": {"atr_multiple": 2.75},
 						"trending_down": {"atr_multiple": 2.75},
@@ -613,7 +613,7 @@ func TestUserCloseDefaults_RegimeATRSkipsManualRatchet(t *testing.T) {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
 	sc := cfg.Strategies[0]
-	if got, ok := resolveRegimeATR(*sc.TrailingStopATRRegime, "trending_up"); !ok || got != 2.75 {
+	if got, ok := resolveRegimeATR(*sc.TrailStopATRRegime, "trending_up"); !ok || got != 2.75 {
 		t.Fatalf("trending_up trail = (%g, %v), want #1133 ratchet-coupled default (2.75, true), not regime_atr", got, ok)
 	}
 }
