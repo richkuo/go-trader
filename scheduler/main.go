@@ -22,6 +22,7 @@ var knownSubcommands = []string{
 	"manual-close",
 	"force-close",
 	"manual-cancel",
+	"manual-clear-limit-row",
 	"manual-update-sl",
 	"manual-cancel-sl",
 	"backfill",
@@ -63,6 +64,8 @@ func main() {
 			os.Exit(runForceClose(os.Args[2:]))
 		case "manual-cancel":
 			os.Exit(runManualCancel(os.Args[2:]))
+		case "manual-clear-limit-row":
+			os.Exit(runManualClearLimitRow(os.Args[2:]))
 		case "manual-update-sl":
 			os.Exit(runManualUpdateSL(os.Args[2:]))
 		case "manual-cancel-sl":

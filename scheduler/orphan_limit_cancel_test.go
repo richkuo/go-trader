@@ -868,3 +868,132 @@ func TestOpenStateDBMigratesOperatorRequiredSinceOntoAnExistingQueue(t *testing.
 		t.Fatalf("the migrated column must persist the marker, got %+v", orders[0])
 	}
 }
+
+func TestOrphanLimitCancelDMOffersOnlyPathsThatStopTheAlert(t *testing.T) {
+	applyAlertThrottleInterval(6 * time.Hour)
+	t.Cleanup(func() { applyAlertThrottleInterval(DefaultAlertThrottleInterval) })
+
+	o := PendingLimitOrder{
+		StrategyID: "hl-manual-eth-live", Symbol: "ETH", Side: "long", OrderOID: 9001,
+		LimitPrice: 2000, OrderSize: 0.5,
+	}
+	msg := formatOrphanLimitCancelDM(o, "the strategy is absent from this config", offBookUnadoptedFillOutcome())
+
+	for _, want := range []string{
+		"go-trader manual-clear-limit-row 9001 --flattened",
+		"cannot see a flatten it does not own",
+		"this alert repeats every 6h0m0s until the queue row is cleared",
+		"Do not flatten and then restore without clearing the row",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("every remediation path named must actually stop the alert, missing %q in:\n%s", want, msg)
+		}
+	}
+	if strings.Contains(msg, "or flatten the position yourself on the Hyperliquid UI.") {
+		t.Errorf("a bare flatten does not clear the row, so it must not be offered as a terminal resolution:\n%s", msg)
+	}
+	if note := orphanLimitCancelRetryNote(orphanLimitStateOffBookUnadoptedFill); !strings.Contains(note, "manual-clear-limit-row") {
+		t.Errorf("the log line must name the same clearing path as the DM, got %q", note)
+	}
+}
+
+func TestFindPendingLimitOrderByOID(t *testing.T) {
+	orders := []PendingLimitOrder{
+		{ID: 1, OrderOID: 9001, Symbol: "ETH"},
+		{ID: 2, OrderOID: 9002, Symbol: "BTC"},
+	}
+	got, ok := findPendingLimitOrderByOID(orders, 9002)
+	if !ok || got.ID != 2 || got.Symbol != "BTC" {
+		t.Fatalf("lookup by oid = %+v ok=%v", got, ok)
+	}
+	if _, ok := findPendingLimitOrderByOID(orders, 9003); ok {
+		t.Error("an unknown oid must not match a row")
+	}
+	if _, ok := findPendingLimitOrderByOID(nil, 9001); ok {
+		t.Error("an empty queue must not match a row")
+	}
+}
+
+func TestClearOperatorRequiredLimitRowRefusalLadder(t *testing.T) {
+	marked := time.Now().UTC()
+	row := PendingLimitOrder{
+		ID: 1, StrategyID: "hl-manual-eth-live", Symbol: "ETH", Side: "long",
+		OrderOID: 9001, OrderSize: 0.5, LimitPrice: 2000,
+		OperatorRequiredSince: marked,
+	}
+
+	adoptable, _ := newLimitTestStrategy()
+	cfgAdoptable := &Config{Strategies: []StrategyConfig{adoptable}}
+	if got := clearOperatorRequiredLimitRowRefusal(cfgAdoptable, row, true); !strings.Contains(got, "the scheduler adopts this fill itself") {
+		t.Errorf("an adoptable row must never be cleared by hand, got %q", got)
+	}
+
+	cfgOrphan := &Config{Strategies: []StrategyConfig{orphanLaneRoster()}}
+
+	unmarked := row
+	unmarked.OperatorRequiredSince = time.Time{}
+	if got := clearOperatorRequiredLimitRowRefusal(cfgOrphan, unmarked, true); !strings.Contains(got, "still converging on its own") {
+		t.Errorf("a row the lane has not given up on must not be cleared, got %q", got)
+	}
+
+	if got := clearOperatorRequiredLimitRowRefusal(cfgOrphan, row, false); !strings.Contains(got, "--flattened") {
+		t.Errorf("clearing must require the operator's explicit assertion, got %q", got)
+	}
+
+	if got := clearOperatorRequiredLimitRowRefusal(cfgOrphan, row, true); got != "" {
+		t.Errorf("an operator-required orphaned row with --flattened must clear, got refusal %q", got)
+	}
+}
+
+func TestReconcileStopsAlertingOnceTheOperatorClearsTheRow(t *testing.T) {
+	resetOrphanLimitCancelAlerts(t)
+	applyAlertThrottleInterval(time.Hour)
+	t.Cleanup(func() { applyAlertThrottleInterval(DefaultAlertThrottleInterval) })
+
+	cfg := &Config{Strategies: []StrategyConfig{orphanLaneRoster()}}
+	state := newOrphanLaneState("hl-manual-eth-live")
+	db := newLimitTestStateDB(t)
+	var mu sync.RWMutex
+	row := seedOrphanLaneRow(t, db, "hl-manual-eth-live", true)
+
+	stubs := &orphanLaneStubs{}
+	withStubbedLimitDeps(t,
+		func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
+			stubs.statusCalls++
+			return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
+				{OID: 9001, Resting: limitTestBoolPtr(false), FilledSize: 0.5, AvgPx: 2000, Count: 1},
+			}}, "", nil
+		},
+		func(_ string, _ string, oid int64) (*HyperliquidCancelOrderResult, string, error) {
+			return &HyperliquidCancelOrderResult{OID: oid, Cancelled: true}, "", nil
+		},
+	)
+
+	notifier, mock := newOrphanLaneNotifier()
+	reconcilePendingLimitOrders(state, cfg, db, &mu, notifier, nil)
+	if len(mock.dms) != 1 {
+		t.Fatalf("the first pass must alert, dms = %+v", mock.dms)
+	}
+
+	orders, _ := db.LoadPendingLimitOrders()
+	if len(orders) != 1 || orders[0].OperatorRequiredSince.IsZero() {
+		t.Fatalf("the row must be marked operator-required before it can be cleared, got %+v", orders)
+	}
+	if refusal := clearOperatorRequiredLimitRowRefusal(cfg, orders[0], true); refusal != "" {
+		t.Fatalf("the command must accept the row the alert names, got %q", refusal)
+	}
+	if err := db.DeletePendingLimitOrder(row.ID); err != nil {
+		t.Fatalf("clear row: %v", err)
+	}
+
+	before := stubs.statusCalls
+	reconcilePendingLimitOrders(state, cfg, db, &mu, notifier, nil)
+	reconcilePendingLimitOrders(state, cfg, db, &mu, notifier, nil)
+
+	if stubs.statusCalls != before {
+		t.Errorf("a cleared row must drive no further exchange poll, calls = %d want %d", stubs.statusCalls, before)
+	}
+	if len(mock.dms) != 1 {
+		t.Errorf("a cleared row must stop the CRITICAL alert, dms = %+v", mock.dms)
+	}
+}

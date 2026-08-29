@@ -275,6 +275,7 @@ Hand-placed positions (or TradingView alerts) tracked for P&L, stops/TPs, and Di
 ./go-trader manual-open  hl-manual-btc --limit-price 68000 --side long --margin 50
 ./go-trader manual-open  hl-manual-btc --limit-price 68000 --tif Gtc --expire-after 4h
 ./go-trader manual-cancel <limit-order-id>
+./go-trader manual-clear-limit-row <order-oid> --flattened     # discard an off-book row you closed by hand
 ./go-trader manual-update-sl hl-manual-btc --trigger 66000
 ./go-trader manual-cancel-sl hl-manual-btc
 ./go-trader manual-close hl-manual-btc [--qty 0.025]

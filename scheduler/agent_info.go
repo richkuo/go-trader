@@ -33,6 +33,7 @@ var agentInfoCommands = []agentCommand{
 	{Name: "manual-close", Summary: "Close (or partially close) a manual position.", Usage: "go-trader manual-close [...]"},
 	{Name: "force-close", Summary: "Close (or partially close) a live Hyperliquid perps strategy position.", Usage: "go-trader force-close <strategy-id> [--qty N] [--dry-run]"},
 	{Name: "manual-cancel", Summary: "Cancel a resting manual limit order.", Usage: "go-trader manual-cancel [...]"},
+	{Name: "manual-clear-limit-row", Summary: "Discard the recovery record for an off-book limit order whose fill no automatic path can book, after the operator has flattened it by hand.", Usage: "go-trader manual-clear-limit-row <order-oid> --flattened [--dry-run]", Flags: []string{"--config", "--flattened", "--dry-run"}},
 	{Name: "manual-update-sl", Summary: "Move the stop-loss trigger on a manual position.", Usage: "go-trader manual-update-sl <strategy-id> --trigger N [--symbol Y] [--dry-run]"},
 	{Name: "manual-cancel-sl", Summary: "Cancel the resting stop-loss on a manual position.", Usage: "go-trader manual-cancel-sl <strategy-id> [--symbol Y] [--dry-run]"},
 	{Name: "backfill", Summary: "Backfill derived data (trade-ledger fees/PnL, HL fees).", Usage: "go-trader backfill <trade-ledger|hl-fees> [...]"},

@@ -90,7 +90,7 @@ func orphanLimitCancelHeadline(state orphanLimitCancelState) string {
 
 func orphanLimitCancelRetryNote(state orphanLimitCancelState) string {
 	if state == orphanLimitStateOffBookUnadoptedFill {
-		return "no automatic retry can change this — the fill needs the strategy restored or an operator on the exchange"
+		return "no automatic retry can change this — restore the strategy, or flatten on the exchange and clear the queue row with manual-clear-limit-row"
 	}
 	return "the reconciler will retry next cycle"
 }
@@ -104,7 +104,10 @@ func formatOrphanLimitCancelDM(o PendingLimitOrder, block string, outcome orphan
 			outcome.ExchangeFill, o.Symbol, outcome.AdoptedFill, outcome.Reason)
 		fmt.Fprintf(&b, "• Its owning strategy %q cannot adopt the fill because %s, so the position is open on Hyperliquid with NO stop-loss, NO take-profit and no owner in the book\n", o.StrategyID, block)
 		b.WriteString("• Retrying cannot clear this: no automatic path can book the fill, and the queue row is kept as the recovery record so the fill is never orphaned\n")
-		fmt.Fprintf(&b, "Restore %q to this config as a Hyperliquid-live type=manual strategy so the scheduler adopts the fill and arms protection, or flatten the position yourself on the Hyperliquid UI.", o.StrategyID)
+		fmt.Fprintf(&b, "• RESTORE %q to this config as a Hyperliquid-live type=manual strategy — the only path the scheduler can finish on its own. It adopts the fill, arms protection, and clears this alert\n", o.StrategyID)
+		fmt.Fprintf(&b, "• OR flatten the position yourself on the Hyperliquid UI, then run `go-trader manual-clear-limit-row %d --flattened`. The scheduler cannot see a flatten it does not own, and the order's fill history never changes, so this alert repeats every %s until the queue row is cleared\n",
+			o.OrderOID, effectiveAlertThrottleInterval())
+		b.WriteString("Do not flatten and then restore without clearing the row: the scheduler would adopt a fill that is no longer on the exchange.")
 	case orphanLimitStateOffBookRowStuck:
 		fmt.Fprintf(&b, "⚠️ **Limit order queue row not cleared: %s**\n", killSwitchLimitOrderLabel(o))
 		fmt.Fprintf(&b, "The order is OFF-BOOK and nothing is resting on Hyperliquid, so no exchange action is needed: %s.\n", outcome.Reason)

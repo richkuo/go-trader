@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -333,6 +334,120 @@ func runManualCancel(args []string) int {
 	fmt.Printf("Cancellation queued for %s/%s (%d order(s)); the scheduler will cancel on-chain and finalize on its next cycle.\n",
 		strategyID, sc.Symbol, n)
 	return 0
+}
+
+func findPendingLimitOrderByOID(orders []PendingLimitOrder, oid int64) (PendingLimitOrder, bool) {
+	for _, o := range orders {
+		if o.OrderOID == oid {
+			return o, true
+		}
+	}
+	return PendingLimitOrder{}, false
+}
+
+func clearOperatorRequiredLimitRowRefusal(cfg *Config, o PendingLimitOrder, flattened bool) string {
+	sc, known := scByIDLookup(cfg, o.StrategyID)
+	block := killSwitchLimitOrderAdoptionBlock(sc, known)
+	if block == "" {
+		return fmt.Sprintf("refusing: %s is a Hyperliquid-live type=manual strategy, so the scheduler adopts this fill itself — clearing the row would orphan it; let the reconciler converge instead",
+			o.StrategyID)
+	}
+	if o.OperatorRequiredSince.IsZero() {
+		return fmt.Sprintf("refusing: the reconciler has not classified oid=%d as needing an operator — it is still converging on its own, and clearing the row now would discard a live recovery record",
+			o.OrderOID)
+	}
+	if !flattened {
+		return fmt.Sprintf("refusing: pass --flattened to assert that you have confirmed on the Hyperliquid UI that the %s position from oid=%d is closed — the scheduler cannot verify a flatten for a strategy it does not own",
+			o.Symbol, o.OrderOID)
+	}
+	return ""
+}
+
+func scByIDLookup(cfg *Config, id string) (StrategyConfig, bool) {
+	for _, sc := range cfg.Strategies {
+		if sc.ID == id {
+			return sc, true
+		}
+	}
+	return StrategyConfig{}, false
+}
+
+func runManualClearLimitRow(args []string) int {
+	fs := flag.NewFlagSet("manual-clear-limit-row", flag.ContinueOnError)
+	configPath := fs.String("config", "scheduler/config.json", "Path to config file")
+	flattened := fs.Bool("flattened", false, "Assert you confirmed on the Hyperliquid UI that the position from this order is closed")
+	dryRun := fs.Bool("dry-run", false, "Print the record that would be discarded without deleting it")
+
+	args = reorderArgsForPositional(args, collectBoolFlagNames(fs))
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintln(os.Stderr, "Usage: go-trader manual-clear-limit-row <order-oid> --flattened [--dry-run]")
+		return 2
+	}
+	oid, convErr := strconv.ParseInt(fs.Arg(0), 10, 64)
+	if convErr != nil || oid <= 0 {
+		fmt.Fprintf(os.Stderr, "error: <order-oid> must be a positive integer, got %q\n", fs.Arg(0))
+		return 2
+	}
+
+	cfg, err := LoadConfig(*configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
+		return 1
+	}
+	stateDB, err := OpenStateDB(cfg.DBFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to open state DB: %v\n", err)
+		return 1
+	}
+	defer stateDB.Close()
+
+	unlock, lockErr := acquireManualActionFileLock(cfg.DBFile)
+	if lockErr != nil {
+		fmt.Fprintf(os.Stderr, "error: %v — refusing to discard a recovery record under a concurrent manual action\n", lockErr)
+		return 1
+	}
+	defer unlock()
+
+	orders, loadErr := stateDB.LoadPendingLimitOrders()
+	if loadErr != nil {
+		fmt.Fprintf(os.Stderr, "error loading the resting limit order queue: %v\n", loadErr)
+		return 1
+	}
+	o, found := findPendingLimitOrderByOID(orders, oid)
+	if !found {
+		fmt.Fprintf(os.Stderr, "no queued limit order with oid=%d — nothing to clear\n", oid)
+		return 1
+	}
+
+	fmt.Printf("Queue row %d: %s/%s %s %.6f @ $%.4f (oid=%d), tracked fill %.6f, operator-required since %s\n",
+		o.ID, o.StrategyID, o.Symbol, o.Side, o.OrderSize, o.LimitPrice, o.OrderOID, o.FilledSize,
+		limitRowOperatorRequiredLabel(o))
+
+	if refusal := clearOperatorRequiredLimitRowRefusal(cfg, o, *flattened); refusal != "" {
+		fmt.Fprintln(os.Stderr, refusal)
+		return 1
+	}
+	if *dryRun {
+		fmt.Printf("[dry-run] would discard the recovery record for oid=%d; the unadopted fill is NOT booked and stays off the ledger\n", o.OrderOID)
+		return 0
+	}
+	if err := stateDB.DeletePendingLimitOrder(o.ID); err != nil {
+		fmt.Fprintf(os.Stderr, "error clearing queue row %d: %v\n", o.ID, err)
+		return 1
+	}
+	fmt.Printf("Cleared queue row %d (oid=%d). Its unadopted fill was never booked, so it stays off the ledger — the scheduler stops alerting on it next cycle.\n",
+		o.ID, o.OrderOID)
+	return 0
+}
+
+func limitRowOperatorRequiredLabel(o PendingLimitOrder) string {
+	if o.OperatorRequiredSince.IsZero() {
+		return "never"
+	}
+	return o.OperatorRequiredSince.Format(time.RFC3339)
 }
 
 func limitOrderFullyFilled(cumFilled, orderSize float64) bool {
