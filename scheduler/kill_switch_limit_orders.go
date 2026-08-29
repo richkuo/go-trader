@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 type killSwitchLimitOrderCandidate struct {
@@ -17,13 +18,33 @@ func (c killSwitchLimitOrderCandidate) adoptionEligible() bool {
 }
 
 type killSwitchLimitOrderDeps struct {
-	Cancel func(script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error)
-	Status func(script, symbol string, oids []int64, sinceMs int64) (*HyperliquidLimitStatusResult, string, error)
-	Delete func(id int64) error
+	Cancel              func(script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error)
+	Status              func(script, symbol string, oids []int64, sinceMs int64) (*HyperliquidLimitStatusResult, string, error)
+	Delete              func(id int64) error
+	Flush               func() error
+	MarkCancelRequested func(strategyID, symbol string) (int64, error)
+	Now                 func() time.Time
 }
 
 func (d killSwitchLimitOrderDeps) wired() bool {
-	return d.Cancel != nil && d.Status != nil && d.Delete != nil
+	return d.Cancel != nil && d.Status != nil && d.Delete != nil &&
+		d.Flush != nil && d.MarkCancelRequested != nil
+}
+
+func (d killSwitchLimitOrderDeps) now() time.Time {
+	if d.Now != nil {
+		return d.Now()
+	}
+	return time.Now()
+}
+
+const killSwitchLimitOrderCallReserve = scriptTimeout
+
+func killSwitchLimitOrderBudget(d time.Duration) time.Duration {
+	if floor := 2 * killSwitchLimitOrderCallReserve; d < floor {
+		return floor
+	}
+	return d
 }
 
 type killSwitchLimitOrderReport struct {
@@ -93,7 +114,7 @@ func collectKillSwitchLimitOrderCandidates(orders []PendingLimitOrder, roster []
 	return candidates, unscripted
 }
 
-func cancelKillSwitchRestingLimitOrders(loader func() ([]PendingLimitOrder, error), roster []StrategyConfig, deps killSwitchLimitOrderDeps) killSwitchLimitOrderReport {
+func cancelKillSwitchRestingLimitOrders(loader func() ([]PendingLimitOrder, error), roster []StrategyConfig, deps killSwitchLimitOrderDeps, budget time.Duration) killSwitchLimitOrderReport {
 	var report killSwitchLimitOrderReport
 	if loader == nil {
 		return report
@@ -132,14 +153,41 @@ func cancelKillSwitchRestingLimitOrders(loader func() ([]PendingLimitOrder, erro
 		return report
 	}
 
-	for _, c := range candidates {
+	effectiveBudget := killSwitchLimitOrderBudget(budget)
+	deadline := deps.now().Add(effectiveBudget)
+	roomForCall := func() bool {
+		return !deps.now().Add(killSwitchLimitOrderCallReserve).After(deadline)
+	}
+
+	for i, c := range candidates {
 		o := c.Row
 		label := killSwitchLimitOrderLabel(o)
 
+		var markErr error
 		unresolve := func(reason string) {
+			if markErr != nil {
+				reason = fmt.Sprintf("%s; cancel intent could not be persisted (%v), so a latch reset would abandon this cancellation", reason, markErr)
+			}
 			report.Unresolved = append(report.Unresolved, fmt.Sprintf("%s: %s", label, reason))
 			report.LogLines = append(report.LogLines,
 				fmt.Sprintf("[CRITICAL] ks-limit: resting limit order %s not confirmed cancelled: %s (kill switch will retry next cycle)", label, reason))
+		}
+
+		if !roomForCall() {
+			for _, rest := range candidates[i:] {
+				restLabel := killSwitchLimitOrderLabel(rest.Row)
+				reason := fmt.Sprintf("cancel pass exhausted its %s budget before reaching this order — the flatten proceeded so live exposure is not held up; the kill switch will retry next cycle", effectiveBudget)
+				report.Unresolved = append(report.Unresolved, fmt.Sprintf("%s: %s", restLabel, reason))
+				report.LogLines = append(report.LogLines,
+					fmt.Sprintf("[CRITICAL] ks-limit: resting limit order %s not reached: %s", restLabel, reason))
+			}
+			break
+		}
+
+		if _, err := deps.MarkCancelRequested(o.StrategyID, o.Symbol); err != nil {
+			markErr = err
+			report.LogLines = append(report.LogLines,
+				fmt.Sprintf("[WARN] ks-limit: %s could not persist cancel intent: %v", label, err))
 		}
 
 		cancelRes, cstderr, cerr := deps.Cancel(c.Script, o.Symbol, o.OrderOID)
@@ -153,6 +201,11 @@ func cancelKillSwitchRestingLimitOrders(loader func() ([]PendingLimitOrder, erro
 				msg = cancelRes.Error
 			}
 			unresolve(strings.TrimSpace(fmt.Sprintf("cancel failed: %v %s", cerr, msg)))
+			continue
+		}
+
+		if !roomForCall() {
+			unresolve(fmt.Sprintf("cancel issued but the pass exhausted its %s budget before it could be verified — the flatten proceeded; the kill switch will retry next cycle", effectiveBudget))
 			continue
 		}
 
@@ -195,6 +248,12 @@ func cancelKillSwitchRestingLimitOrders(loader func() ([]PendingLimitOrder, erro
 					o.FilledSize, st.FilledSize, c.AdoptionBlock))
 			}
 			continue
+		}
+		if o.FilledSize > 0 {
+			if err := deps.Flush(); err != nil {
+				unresolve(fmt.Sprintf("order is off-book but its adopted fill %.6f could not be flushed to the state DB (%v) — queue row kept as the recovery record", o.FilledSize, err))
+				continue
+			}
 		}
 		if err := deps.Delete(o.ID); err != nil {
 			unresolve(fmt.Sprintf("order is off-book but the queue row could not be cleared (%v)", err))

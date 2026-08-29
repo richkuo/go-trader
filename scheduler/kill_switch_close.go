@@ -29,9 +29,10 @@ type KillSwitchCloseInputs struct {
 	HLNoFillRecoverer HLNoFillRecoverer
 	HLStopLossOIDs    map[string][]int64
 
-	HLLimitOrderLoader func() ([]PendingLimitOrder, error)
-	HLLimitOrderRoster []StrategyConfig
-	HLLimitOrderDeps   killSwitchLimitOrderDeps
+	HLLimitOrderLoader  func() ([]PendingLimitOrder, error)
+	HLLimitOrderRoster  []StrategyConfig
+	HLLimitOrderDeps    killSwitchLimitOrderDeps
+	HLLimitOrderTimeout time.Duration
 
 	OKXLiveAllPerps []StrategyConfig
 	OKXLiveAllSpot  []StrategyConfig
@@ -282,7 +283,9 @@ func applyKillSwitchSettledLegsWhileLatched(strategies map[string]*StrategyState
 func planKillSwitchClose(in KillSwitchCloseInputs) KillSwitchClosePlan {
 	plan := KillSwitchClosePlan{OnChainConfirmedFlat: true}
 
-	plan.LimitOrderReport = cancelKillSwitchRestingLimitOrders(in.HLLimitOrderLoader, in.HLLimitOrderRoster, in.HLLimitOrderDeps)
+	plan.LimitOrderReport = cancelKillSwitchRestingLimitOrders(
+		in.HLLimitOrderLoader, in.HLLimitOrderRoster, in.HLLimitOrderDeps,
+		in.platformCloseBudget(in.HLLimitOrderTimeout))
 	plan.LogLines = append(plan.LogLines, plan.LimitOrderReport.LogLines...)
 	if !plan.LimitOrderReport.ConfirmedClear() {
 		plan.OnChainConfirmedFlat = false

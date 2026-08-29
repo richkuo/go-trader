@@ -1110,21 +1110,33 @@ func main() {
 							}
 							return stateDB.DeletePendingLimitOrder(id)
 						},
+						Flush: func() error {
+							mu.Lock()
+							defer mu.Unlock()
+							return SaveStateWithDB(state, cfg, stateDB)
+						},
+						MarkCancelRequested: func(strategyID, symbol string) (int64, error) {
+							if stateDB == nil {
+								return 0, fmt.Errorf("state db unavailable")
+							}
+							return stateDB.MarkPendingLimitOrderCancelRequested(strategyID, symbol)
+						},
 					},
-					OKXLiveAllPerps: okxLivePerps,
-					OKXLiveAllSpot:  okxLiveSpot,
-					OKXCloser:       defaultOKXLiveCloser,
-					OKXFetcher:      defaultOKXPositionsFetcher,
-					RHLiveCrypto:    rhLiveCrypto,
-					RHLiveOptions:   rhLiveOptions,
-					RHCloser:        defaultRobinhoodLiveCloser,
-					RHFetcher:       defaultRobinhoodPositionsFetcher,
-					TSLiveAll:       tsLiveAll,
-					TSCloser:        defaultTopStepLiveCloser,
-					TSFetcher:       defaultTopStepPositionsFetcher,
-					PortfolioReason: portfolioReason,
-					CloseTimeout:    90 * time.Second,
-					RHCloseTimeout:  150 * time.Second,
+					HLLimitOrderTimeout: 60 * time.Second,
+					OKXLiveAllPerps:     okxLivePerps,
+					OKXLiveAllSpot:      okxLiveSpot,
+					OKXCloser:           defaultOKXLiveCloser,
+					OKXFetcher:          defaultOKXPositionsFetcher,
+					RHLiveCrypto:        rhLiveCrypto,
+					RHLiveOptions:       rhLiveOptions,
+					RHCloser:            defaultRobinhoodLiveCloser,
+					RHFetcher:           defaultRobinhoodPositionsFetcher,
+					TSLiveAll:           tsLiveAll,
+					TSCloser:            defaultTopStepLiveCloser,
+					TSFetcher:           defaultTopStepPositionsFetcher,
+					PortfolioReason:     portfolioReason,
+					CloseTimeout:        90 * time.Second,
+					RHCloseTimeout:      150 * time.Second,
 				}
 				plan = planKillSwitchClose(inputs)
 				for _, line := range plan.LogLines {

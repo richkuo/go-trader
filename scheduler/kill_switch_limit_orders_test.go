@@ -37,6 +37,20 @@ type killSwitchLimitStubs struct {
 	cancelCalls []int64
 	statusCalls []int64
 	deleted     []int64
+	marked      []string
+	flushes     int
+
+	clock     time.Time
+	callCost  time.Duration
+	flushErr  error
+	markErr   error
+	clockUsed bool
+}
+
+func (s *killSwitchLimitStubs) tick() {
+	if s.callCost > 0 {
+		s.clock = s.clock.Add(s.callCost)
+	}
 }
 
 func (s *killSwitchLimitStubs) deps(
@@ -44,20 +58,40 @@ func (s *killSwitchLimitStubs) deps(
 	status func(script, symbol string, oids []int64, sinceMs int64) (*HyperliquidLimitStatusResult, string, error),
 	del func(id int64) error,
 ) killSwitchLimitOrderDeps {
+	if s.clock.IsZero() {
+		s.clock = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	}
 	return killSwitchLimitOrderDeps{
 		Cancel: func(script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error) {
 			s.cancelCalls = append(s.cancelCalls, oid)
+			s.tick()
 			return cancel(script, symbol, oid)
 		},
 		Status: func(script, symbol string, oids []int64, sinceMs int64) (*HyperliquidLimitStatusResult, string, error) {
 			if len(oids) > 0 {
 				s.statusCalls = append(s.statusCalls, oids[0])
 			}
+			s.tick()
 			return status(script, symbol, oids, sinceMs)
 		},
 		Delete: func(id int64) error {
 			s.deleted = append(s.deleted, id)
 			return del(id)
+		},
+		Flush: func() error {
+			s.flushes++
+			return s.flushErr
+		},
+		MarkCancelRequested: func(strategyID, symbol string) (int64, error) {
+			s.marked = append(s.marked, strategyID+"/"+symbol)
+			if s.markErr != nil {
+				return 0, s.markErr
+			}
+			return 1, nil
+		},
+		Now: func() time.Time {
+			s.clockUsed = true
+			return s.clock
 		},
 	}
 }
@@ -502,14 +536,14 @@ func TestPlanKillSwitchClose_CancelsLimitOrdersBeforeFlatten(t *testing.T) {
 			Platform: "hyperliquid",
 		}, nil
 	}
-	deps := killSwitchLimitOrderDeps{
-		Cancel: func(script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error) {
+	stubs := &killSwitchLimitStubs{}
+	deps := stubs.deps(
+		func(script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error) {
 			seq = append(seq, "cancel-limit")
 			return okCancel(script, symbol, oid)
 		},
-		Status: offBookStatus(0),
-		Delete: db.DeletePendingLimitOrder,
-	}
+		offBookStatus(0),
+		db.DeletePendingLimitOrder)
 
 	in := KillSwitchCloseInputs{
 		HLAddr:             "0xaddr",
@@ -536,14 +570,14 @@ func TestPlanKillSwitchClose_CancelsLimitOrdersBeforeFlatten(t *testing.T) {
 
 func TestPlanKillSwitchClose_NoLimitOrdersLeavesPlanConfirmedFlat(t *testing.T) {
 	db := newLimitTestStateDB(t)
-	deps := killSwitchLimitOrderDeps{
-		Cancel: func(string, string, int64) (*HyperliquidCancelOrderResult, string, error) {
+	stubs := &killSwitchLimitStubs{}
+	deps := stubs.deps(
+		func(string, string, int64) (*HyperliquidCancelOrderResult, string, error) {
 			t.Error("cancel must not run with an empty queue")
 			return nil, "", nil
 		},
-		Status: offBookStatus(0),
-		Delete: db.DeletePendingLimitOrder,
-	}
+		offBookStatus(0),
+		db.DeletePendingLimitOrder)
 
 	plan := planKillSwitchClose(killSwitchLimitInputs(db, []StrategyConfig{killSwitchLimitTestStrategy()}, deps))
 
@@ -552,6 +586,9 @@ func TestPlanKillSwitchClose_NoLimitOrdersLeavesPlanConfirmedFlat(t *testing.T) 
 	}
 	if len(plan.LimitOrderReport.LogLines) != 0 {
 		t.Errorf("expected no log lines, got %v", plan.LimitOrderReport.LogLines)
+	}
+	if stubs.clockUsed {
+		t.Error("an empty queue must not start a budget or add latency")
 	}
 }
 
@@ -616,6 +653,292 @@ func TestCollectKillSwitchLimitOrderCandidatesWithoutAnyScript(t *testing.T) {
 
 	if len(candidates) != 0 || len(unscripted) != 1 || unscripted[0].ID != 1 {
 		t.Fatalf("a row with no usable script anywhere must fail closed: candidates=%+v unscripted=%+v", candidates, unscripted)
+	}
+}
+
+func killSwitchLimitFlattenInputs(db *StateDB, roster []StrategyConfig, deps killSwitchLimitOrderDeps, closer HyperliquidLiveCloser) KillSwitchCloseInputs {
+	in := killSwitchLimitInputs(db, roster, deps)
+	in.HLAddr = "0xaddr"
+	in.HLStateFetched = true
+	in.HLPositions = []HLPosition{{Coin: "ETH", Size: 0.5, EntryPrice: 3000}}
+	in.HLLiveAll = []StrategyConfig{{ID: "hl-ema-eth", Platform: "hyperliquid", Type: "perps",
+		Args: []string{"ema_crossover", "ETH", "1h", "--mode=live"}}}
+	in.HLCloser = closer
+	return in
+}
+
+func TestPlanKillSwitchClose_LimitCancelBudgetStillLetsTheFlattenRun(t *testing.T) {
+	sc := killSwitchLimitTestStrategy()
+	db := newLimitTestStateDB(t)
+	for _, oid := range []int64{9002, 9003, 9004} {
+		if _, err := db.InsertPendingLimitOrder(PendingLimitOrder{
+			StrategyID: sc.ID, Symbol: "ETH", Side: "long", OrderOID: oid,
+			LimitPrice: 2000, OrderSize: 0.5, TIF: "Alo", CreatedAt: time.Now().UTC(),
+		}); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+	seedKillSwitchLimitRow(t, db, sc.ID)
+
+	stubs := &killSwitchLimitStubs{callCost: scriptTimeout}
+	deps := stubs.deps(okCancel,
+		func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
+			return nil, "", errors.New("script timed out after 30s")
+		},
+		db.DeletePendingLimitOrder)
+
+	var closed []string
+	closer := func(symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+		closed = append(closed, symbol)
+		return &HyperliquidCloseResult{
+			Close:    &HyperliquidClose{Symbol: symbol, Fill: &HyperliquidCloseFill{TotalSz: 0.5, AvgPx: 3000}},
+			Platform: "hyperliquid",
+		}, nil
+	}
+
+	plan := planKillSwitchClose(killSwitchLimitFlattenInputs(db, []StrategyConfig{sc}, deps, closer))
+
+	if !stubs.clockUsed {
+		t.Fatal("budget must be measured against the injected clock")
+	}
+	if len(closed) != 1 || closed[0] != "ETH" {
+		t.Fatalf("the flatten must still run this cycle, closed = %v", closed)
+	}
+	if plan.OnChainConfirmedFlat || plan.CanAutoResetWithoutOwner() {
+		t.Fatal("unfinished cancellations must block confirmed-flat and auto-reset")
+	}
+	if len(stubs.cancelCalls) != 1 {
+		t.Fatalf("the budget must stop the pass after the first row, cancels = %v", stubs.cancelCalls)
+	}
+	if got := len(plan.LimitOrderReport.Unresolved); got != 4 {
+		t.Fatalf("every row must be reported unresolved, got %d: %v", got, plan.LimitOrderReport.Unresolved)
+	}
+	if !strings.Contains(plan.DiscordMessage, "exhausted its 1m0s budget before reaching this order") {
+		t.Errorf("message must name the budget, got: %s", plan.DiscordMessage)
+	}
+}
+
+func TestPlanKillSwitchClose_LimitCancelBudgetAllowsOneSlowRow(t *testing.T) {
+	sc := killSwitchLimitTestStrategy()
+	db := newLimitTestStateDB(t)
+	id := seedKillSwitchLimitRow(t, db, sc.ID)
+
+	stubs := &killSwitchLimitStubs{callCost: scriptTimeout - time.Second}
+	deps := stubs.deps(okCancel, offBookStatus(0), db.DeletePendingLimitOrder)
+
+	plan := planKillSwitchClose(killSwitchLimitInputs(db, []StrategyConfig{sc}, deps))
+
+	if !plan.OnChainConfirmedFlat {
+		t.Fatalf("a slow-but-successful row must not be abandoned by the budget, got %+v", plan.LimitOrderReport)
+	}
+	if len(stubs.deleted) != 1 || stubs.deleted[0] != id {
+		t.Errorf("the row must still be finalized, deleted = %v", stubs.deleted)
+	}
+}
+
+func TestPlanKillSwitchClose_LimitCancelBudgetExhaustedBeforeVerification(t *testing.T) {
+	sc := killSwitchLimitTestStrategy()
+	db := newLimitTestStateDB(t)
+	seedKillSwitchLimitRow(t, db, sc.ID)
+
+	stubs := &killSwitchLimitStubs{callCost: scriptTimeout + time.Second}
+	deps := stubs.deps(okCancel,
+		func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
+			t.Error("status must not run once the budget cannot cover it")
+			return nil, "", nil
+		},
+		db.DeletePendingLimitOrder)
+
+	plan := planKillSwitchClose(killSwitchLimitInputs(db, []StrategyConfig{sc}, deps))
+
+	if plan.OnChainConfirmedFlat || plan.CanAutoResetWithoutOwner() {
+		t.Fatal("an unverified cancellation must block confirmed-flat and auto-reset")
+	}
+	if len(stubs.deleted) != 0 {
+		t.Errorf("an unverified row must be kept, deleted = %v", stubs.deleted)
+	}
+	if !strings.Contains(plan.DiscordMessage, "cancel issued but the pass exhausted its") {
+		t.Errorf("message must explain the truncation, got: %s", plan.DiscordMessage)
+	}
+}
+
+func TestKillSwitchLimitOrderBudgetFloor(t *testing.T) {
+	if got := killSwitchLimitOrderBudget(time.Second); got != 2*scriptTimeout {
+		t.Errorf("budget floor = %v, want %v (one row must always fit)", got, 2*scriptTimeout)
+	}
+	if got := killSwitchLimitOrderBudget(5 * time.Minute); got != 5*time.Minute {
+		t.Errorf("an explicit budget above the floor must be honoured, got %v", got)
+	}
+}
+
+func TestPlanKillSwitchClose_FlushesAdoptedFillBeforeDeletingTheRow(t *testing.T) {
+	sc := killSwitchLimitTestStrategy()
+	db := newLimitTestStateDB(t)
+	id := seedKillSwitchLimitRow(t, db, sc.ID)
+	if err := db.UpdatePendingLimitOrderFill(id, 0.2, 2000, 0.3); err != nil {
+		t.Fatalf("seed watermark: %v", err)
+	}
+
+	stubs := &killSwitchLimitStubs{}
+	deps := stubs.deps(okCancel, offBookStatus(0.2), db.DeletePendingLimitOrder)
+
+	plan := planKillSwitchClose(killSwitchLimitInputs(db, []StrategyConfig{sc}, deps))
+
+	if !plan.OnChainConfirmedFlat {
+		t.Fatalf("a flushed row must resolve, got %+v", plan.LimitOrderReport)
+	}
+	if stubs.flushes != 1 {
+		t.Fatalf("the adopted fill must be flushed exactly once before delete, flushes = %d", stubs.flushes)
+	}
+	if len(stubs.deleted) != 1 || stubs.deleted[0] != id {
+		t.Errorf("delete must still proceed after a successful flush, deleted = %v", stubs.deleted)
+	}
+}
+
+func TestPlanKillSwitchClose_FailedFlushKeepsTheRecoveryRow(t *testing.T) {
+	sc := killSwitchLimitTestStrategy()
+	db := newLimitTestStateDB(t)
+	id := seedKillSwitchLimitRow(t, db, sc.ID)
+	if err := db.UpdatePendingLimitOrderFill(id, 0.2, 2000, 0.3); err != nil {
+		t.Fatalf("seed watermark: %v", err)
+	}
+
+	stubs := &killSwitchLimitStubs{flushErr: errors.New("disk full")}
+	deps := stubs.deps(okCancel, offBookStatus(0.2), db.DeletePendingLimitOrder)
+
+	plan := planKillSwitchClose(killSwitchLimitInputs(db, []StrategyConfig{sc}, deps))
+
+	if plan.OnChainConfirmedFlat || plan.CanAutoResetWithoutOwner() {
+		t.Fatal("a failed flush must block confirmed-flat and auto-reset")
+	}
+	if len(stubs.deleted) != 0 {
+		t.Fatalf("the queue row is the recovery record and must survive a failed flush, deleted = %v", stubs.deleted)
+	}
+	if orders, _ := db.LoadPendingLimitOrders(); len(orders) != 1 {
+		t.Fatalf("expected the row retained, got %d", len(orders))
+	}
+	if !strings.Contains(plan.DiscordMessage, "could not be flushed to the state DB") {
+		t.Errorf("message must name the flush failure, got: %s", plan.DiscordMessage)
+	}
+}
+
+func TestPlanKillSwitchClose_NoFillNeedsNoFlush(t *testing.T) {
+	peer := StrategyConfig{ID: "hl-ema-eth", Platform: "hyperliquid", Type: "perps",
+		Script: "shared_scripts/check_hyperliquid.py", Args: []string{"ema_crossover", "ETH", "1h", "--mode=live"}}
+	db := newLimitTestStateDB(t)
+	id := seedKillSwitchLimitRow(t, db, "hl-manual-eth-deleted")
+
+	stubs := &killSwitchLimitStubs{flushErr: errors.New("would fail if called")}
+	deps := stubs.deps(okCancel, offBookStatus(0), db.DeletePendingLimitOrder)
+
+	plan := planKillSwitchClose(killSwitchLimitInputs(db, []StrategyConfig{peer}, deps))
+
+	if !plan.OnChainConfirmedFlat {
+		t.Fatalf("a row with nothing to flush must still resolve, got %+v", plan.LimitOrderReport)
+	}
+	if stubs.flushes != 0 {
+		t.Errorf("a zero-fill row must not flush, flushes = %d", stubs.flushes)
+	}
+	if len(stubs.deleted) != 1 || stubs.deleted[0] != id {
+		t.Errorf("an adoption-ineligible zero-fill row must not latch forever, deleted = %v", stubs.deleted)
+	}
+}
+
+func TestPlanKillSwitchClose_RecordsCancelIntentBeforeCancelling(t *testing.T) {
+	sc := killSwitchLimitTestStrategy()
+	db := newLimitTestStateDB(t)
+	seedKillSwitchLimitRow(t, db, sc.ID)
+
+	var seq []string
+	stubs := &killSwitchLimitStubs{}
+	deps := stubs.deps(
+		func(script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error) {
+			seq = append(seq, "cancel")
+			return okCancel(script, symbol, oid)
+		},
+		func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
+			return nil, "", errors.New("status unreadable")
+		},
+		db.DeletePendingLimitOrder)
+	inner := deps.MarkCancelRequested
+	deps.MarkCancelRequested = func(strategyID, symbol string) (int64, error) {
+		seq = append(seq, "mark")
+		return inner(strategyID, symbol)
+	}
+
+	plan := planKillSwitchClose(killSwitchLimitInputs(db, []StrategyConfig{sc}, deps))
+
+	if len(seq) != 2 || seq[0] != "mark" || seq[1] != "cancel" {
+		t.Fatalf("cancel intent must be persisted before the cancel is issued, sequence = %v", seq)
+	}
+	if len(stubs.marked) != 1 || stubs.marked[0] != sc.ID+"/ETH" {
+		t.Fatalf("mark = %v", stubs.marked)
+	}
+	orders, _ := db.LoadPendingLimitOrders()
+	if len(orders) != 1 {
+		t.Fatalf("expected the unresolved row retained, got %d", len(orders))
+	}
+	if plan.OnChainConfirmedFlat {
+		t.Error("an unverified cancellation must block confirmed-flat")
+	}
+}
+
+func TestPlanKillSwitchClose_FailedCancelIntentIsSurfaced(t *testing.T) {
+	sc := killSwitchLimitTestStrategy()
+	db := newLimitTestStateDB(t)
+	seedKillSwitchLimitRow(t, db, sc.ID)
+
+	stubs := &killSwitchLimitStubs{markErr: errors.New("db is locked")}
+	deps := stubs.deps(okCancel,
+		func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
+			return nil, "", errors.New("status unreadable")
+		},
+		db.DeletePendingLimitOrder)
+
+	plan := planKillSwitchClose(killSwitchLimitInputs(db, []StrategyConfig{sc}, deps))
+
+	if len(stubs.cancelCalls) != 1 {
+		t.Fatalf("a failed mark must not stop the cancel, cancels = %v", stubs.cancelCalls)
+	}
+	if plan.OnChainConfirmedFlat {
+		t.Error("an unverified cancellation must block confirmed-flat")
+	}
+	if !strings.Contains(plan.DiscordMessage, "cancel intent could not be persisted") ||
+		!strings.Contains(plan.DiscordMessage, "latch reset would abandon") {
+		t.Errorf("message must warn that a reset would abandon the cancel, got: %s", plan.DiscordMessage)
+	}
+}
+
+func TestReconcilePendingLimitOrdersAdoptsFillOnACancelRequestedRow(t *testing.T) {
+	sc, state := newLimitTestStrategy()
+	cfg := &Config{Strategies: []StrategyConfig{sc}}
+	db := newLimitTestStateDB(t)
+	var mu sync.RWMutex
+
+	db.InsertPendingLimitOrder(PendingLimitOrder{
+		StrategyID: sc.ID, Symbol: "ETH", Side: "long", OrderOID: 9001,
+		LimitPrice: 2000, OrderSize: 0.5, TIF: "Alo", EntryATR: 50,
+		CancelRequested: true, CreatedAt: time.Now().UTC(),
+	})
+
+	withStubbedLimitDeps(t,
+		func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
+			return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
+				{OID: 9001, Resting: limitTestBoolPtr(true), FilledSize: 0.3, AvgPx: 2000, Fee: 0.4, Count: 1},
+			}}, "", nil
+		},
+		func(string, string, int64) (*HyperliquidCancelOrderResult, string, error) {
+			return &HyperliquidCancelOrderResult{OID: 9001, Cancelled: true}, "", nil
+		},
+	)
+
+	alerts := reconcilePendingLimitOrders(state, cfg, db, &mu, nil, nil)
+	if len(alerts) != 1 {
+		t.Fatalf("a cancel-requested row must still adopt a fill that landed, alerts = %+v", alerts)
+	}
+	pos := state.Strategies[sc.ID].Positions["ETH"]
+	if pos == nil || pos.Quantity != 0.3 {
+		t.Fatalf("fill must reach the book, position = %+v", pos)
 	}
 }
 
