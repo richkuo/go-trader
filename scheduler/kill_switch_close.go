@@ -29,6 +29,10 @@ type KillSwitchCloseInputs struct {
 	HLNoFillRecoverer HLNoFillRecoverer
 	HLStopLossOIDs    map[string][]int64
 
+	HLLimitOrderLoader func() ([]PendingLimitOrder, error)
+	HLLimitOrderRoster []StrategyConfig
+	HLLimitOrderDeps   killSwitchLimitOrderDeps
+
 	OKXLiveAllPerps []StrategyConfig
 	OKXLiveAllSpot  []StrategyConfig
 	OKXCloser       OKXLiveCloser
@@ -67,6 +71,8 @@ func defaultHLKillSwitchNoFillRecoverer(since time.Time) (*HLUserFillsResult, er
 type KillSwitchClosePlan struct {
 	OnChainConfirmedFlat bool
 
+	LimitOrderReport killSwitchLimitOrderReport
+
 	CloseReport HyperliquidLiveCloseReport
 
 	OKXCloseReport OKXLiveCloseReport
@@ -93,7 +99,7 @@ type KillSwitchClosePlan struct {
 }
 
 func (p KillSwitchClosePlan) CanAutoResetWithoutOwner() bool {
-	return p.OnChainConfirmedFlat && !p.OKXSpotPresent && !p.RHOptionsPresent
+	return p.OnChainConfirmedFlat && p.LimitOrderReport.ConfirmedClear() && !p.OKXSpotPresent && !p.RHOptionsPresent
 }
 
 const killSwitchManualResetLine = "Virtual state cleared. Manual reset required."
@@ -275,6 +281,12 @@ func applyKillSwitchSettledLegsWhileLatched(strategies map[string]*StrategyState
 
 func planKillSwitchClose(in KillSwitchCloseInputs) KillSwitchClosePlan {
 	plan := KillSwitchClosePlan{OnChainConfirmedFlat: true}
+
+	plan.LimitOrderReport = cancelKillSwitchRestingLimitOrders(in.HLLimitOrderLoader, in.HLLimitOrderRoster, in.HLLimitOrderDeps)
+	plan.LogLines = append(plan.LogLines, plan.LimitOrderReport.LogLines...)
+	if !plan.LimitOrderReport.ConfirmedClear() {
+		plan.OnChainConfirmedFlat = false
+	}
 
 	hlPositions := in.HLPositions
 	hlStateFetched := in.HLStateFetched
@@ -542,6 +554,9 @@ func formatKillSwitchMessage(hlAddr string, plan KillSwitchClosePlan, portfolioR
 		if len(plan.TSCloseReport.ClosedCoins) > 0 {
 			parts = append(parts, fmt.Sprintf("TopStep closes: %v", plan.TSCloseReport.ClosedCoins))
 		}
+		if len(plan.LimitOrderReport.Cancelled) > 0 {
+			parts = append(parts, fmt.Sprintf("cancelled resting limit orders: %s", strings.Join(plan.LimitOrderReport.Cancelled, ", ")))
+		}
 		header := "**PORTFOLIO KILL SWITCH**"
 		gapNotes := []string{}
 		if plan.OKXSpotPresent {
@@ -560,6 +575,12 @@ func formatKillSwitchMessage(hlAddr string, plan KillSwitchClosePlan, portfolioR
 
 	var segments []string
 
+	if len(plan.LimitOrderReport.Unresolved) > 0 {
+		segments = append(segments, "Resting limit orders NOT confirmed cancelled (they can still fill and re-enter) — "+strings.Join(plan.LimitOrderReport.Unresolved, "; "))
+	}
+	if len(plan.LimitOrderReport.Cancelled) > 0 {
+		segments = append(segments, "Cancelled resting limit orders — "+strings.Join(plan.LimitOrderReport.Cancelled, ", "))
+	}
 	if len(plan.CloseReport.Errors) > 0 {
 		parts := make([]string, 0, len(plan.CloseReport.Errors))
 		for _, coin := range plan.CloseReport.SortedErrorCoins() {

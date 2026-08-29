@@ -1090,20 +1090,41 @@ func main() {
 					HLFetcher:         defaultHLStateFetcher,
 					HLNoFillRecoverer: defaultHLKillSwitchNoFillRecoverer,
 					HLStopLossOIDs:    hlSLOIDs,
-					OKXLiveAllPerps:   okxLivePerps,
-					OKXLiveAllSpot:    okxLiveSpot,
-					OKXCloser:         defaultOKXLiveCloser,
-					OKXFetcher:        defaultOKXPositionsFetcher,
-					RHLiveCrypto:      rhLiveCrypto,
-					RHLiveOptions:     rhLiveOptions,
-					RHCloser:          defaultRobinhoodLiveCloser,
-					RHFetcher:         defaultRobinhoodPositionsFetcher,
-					TSLiveAll:         tsLiveAll,
-					TSCloser:          defaultTopStepLiveCloser,
-					TSFetcher:         defaultTopStepPositionsFetcher,
-					PortfolioReason:   portfolioReason,
-					CloseTimeout:      90 * time.Second,
-					RHCloseTimeout:    150 * time.Second,
+					HLLimitOrderLoader: func() ([]PendingLimitOrder, error) {
+						if stateDB == nil {
+							return nil, nil
+						}
+						return stateDB.LoadPendingLimitOrders()
+					},
+					HLLimitOrderRoster: killSwitchLimitOrderRoster(cfg.Strategies),
+					HLLimitOrderDeps: killSwitchLimitOrderDeps{
+						Cancel: func(script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error) {
+							return runHyperliquidCancelOrderFn(script, symbol, oid)
+						},
+						Status: func(script, symbol string, oids []int64, sinceMs int64) (*HyperliquidLimitStatusResult, string, error) {
+							return runHyperliquidLimitStatusFn(script, symbol, oids, sinceMs)
+						},
+						Delete: func(id int64) error {
+							if stateDB == nil {
+								return fmt.Errorf("state db unavailable")
+							}
+							return stateDB.DeletePendingLimitOrder(id)
+						},
+					},
+					OKXLiveAllPerps: okxLivePerps,
+					OKXLiveAllSpot:  okxLiveSpot,
+					OKXCloser:       defaultOKXLiveCloser,
+					OKXFetcher:      defaultOKXPositionsFetcher,
+					RHLiveCrypto:    rhLiveCrypto,
+					RHLiveOptions:   rhLiveOptions,
+					RHCloser:        defaultRobinhoodLiveCloser,
+					RHFetcher:       defaultRobinhoodPositionsFetcher,
+					TSLiveAll:       tsLiveAll,
+					TSCloser:        defaultTopStepLiveCloser,
+					TSFetcher:       defaultTopStepPositionsFetcher,
+					PortfolioReason: portfolioReason,
+					CloseTimeout:    90 * time.Second,
+					RHCloseTimeout:  150 * time.Second,
 				}
 				plan = planKillSwitchClose(inputs)
 				for _, line := range plan.LogLines {
