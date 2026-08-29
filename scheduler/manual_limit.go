@@ -476,9 +476,22 @@ func applyLimitFillProgress(state *AppState, sc StrategyConfig, o PendingLimitOr
 	return 1, nil
 }
 
+type orphanLimitCancelState int
+
+const (
+	orphanLimitStateUnknown orphanLimitCancelState = iota
+	orphanLimitStateResting
+	orphanLimitStateOffBookUnadoptedFill
+	orphanLimitStateOffBookRowStuck
+)
+
 type orphanLimitCancelOutcome struct {
-	Resolved bool
-	Reason   string
+	Resolved     bool
+	State        orphanLimitCancelState
+	Reason       string
+	CancelIssued bool
+	AdoptedFill  float64
+	ExchangeFill float64
 }
 
 func orphanLimitOrderStatus(script string, o PendingLimitOrder) (HyperliquidLimitOrderStatus, string) {
@@ -510,16 +523,22 @@ func orphanLimitOrderStatus(script string, o PendingLimitOrder) (HyperliquidLimi
 }
 
 func cancelOrphanedLimitOrder(state *AppState, cfg *Config, stateDB *StateDB, mu *sync.RWMutex, o PendingLimitOrder) orphanLimitCancelOutcome {
+	out := orphanLimitCancelOutcome{AdoptedFill: o.FilledSize}
+
 	candidates, _ := collectKillSwitchLimitOrderCandidates(
 		[]PendingLimitOrder{o}, killSwitchLimitOrderRoster(cfg.Strategies))
 	if len(candidates) == 0 {
-		return orphanLimitCancelOutcome{Reason: "no Hyperliquid strategy with a script remains in this config to cancel it — manual intervention required"}
+		out.State = orphanLimitStateUnknown
+		out.Reason = "no Hyperliquid strategy with a script remains in this config to cancel it — its on-chain state was never read, so manual intervention is required"
+		return out
 	}
 	script := candidates[0].Script
 
 	st, reason := orphanLimitOrderStatus(script, o)
 	if reason != "" {
-		return orphanLimitCancelOutcome{Reason: reason}
+		out.State = orphanLimitStateUnknown
+		out.Reason = reason
+		return out
 	}
 
 	if *st.Resting {
@@ -532,36 +551,72 @@ func cancelOrphanedLimitOrder(state *AppState, cfg *Config, stateDB *StateDB, mu
 			if cancelRes != nil {
 				msg = cancelRes.Error
 			}
-			return orphanLimitCancelOutcome{Reason: strings.TrimSpace(fmt.Sprintf("cancel failed: %v %s", cerr, msg))}
+			out.State = orphanLimitStateResting
+			out.Reason = strings.TrimSpace(fmt.Sprintf("cancel failed: %v %s", cerr, msg))
+			return out
 		}
+		out.CancelIssued = true
 		st, reason = orphanLimitOrderStatus(script, o)
 		if reason != "" {
-			return orphanLimitCancelOutcome{Reason: "cancel issued but unverified: " + reason}
+			out.State = orphanLimitStateUnknown
+			out.Reason = "cancel issued but unverified: " + reason
+			return out
 		}
 		if *st.Resting {
-			return orphanLimitCancelOutcome{Reason: "cancel issued but the order is still resting on the exchange"}
+			out.State = orphanLimitStateResting
+			out.Reason = "cancel issued but the order is still resting on the exchange"
+			return out
 		}
 	}
 
+	out.ExchangeFill = st.FilledSize
 	if st.FilledSize > o.FilledSize+limitFillEpsilon {
-		return orphanLimitCancelOutcome{Reason: fmt.Sprintf(
-			"order is off-book with an unadopted fill (tracked %.6f, exchange %.6f) that NO automatic path can book — no fill was booked and the queue row is kept as the recovery record",
-			o.FilledSize, st.FilledSize)}
+		out.State = orphanLimitStateOffBookUnadoptedFill
+		out.Reason = fmt.Sprintf(
+			"the exchange reports a filled size of %.6f where the book holds %.6f, and NO automatic path can book the difference, so no fill was booked and the queue row is kept as the recovery record",
+			st.FilledSize, o.FilledSize)
+		return out
 	}
 	if o.FilledSize > 0 {
 		mu.Lock()
 		saveErr := SaveStateWithDB(state, cfg, stateDB)
 		mu.Unlock()
 		if saveErr != nil {
-			return orphanLimitCancelOutcome{Reason: fmt.Sprintf(
-				"order is off-book but its adopted fill %.6f could not be flushed to the state DB (%v) — queue row kept as the recovery record",
-				o.FilledSize, saveErr)}
+			out.State = orphanLimitStateOffBookRowStuck
+			out.Reason = fmt.Sprintf(
+				"its already-booked fill of %.6f could not be flushed to the state DB (%v), so the queue row is kept as the recovery record",
+				o.FilledSize, saveErr)
+			return out
 		}
 	}
 	if err := stateDB.DeletePendingLimitOrder(o.ID); err != nil {
-		return orphanLimitCancelOutcome{Reason: fmt.Sprintf("order is off-book but the queue row could not be cleared (%v)", err)}
+		out.State = orphanLimitStateOffBookRowStuck
+		out.Reason = fmt.Sprintf("the queue row could not be cleared (%v)", err)
+		return out
 	}
-	return orphanLimitCancelOutcome{Resolved: true}
+	out.Resolved = true
+	return out
+}
+
+func orphanLimitPollDeferred(o PendingLimitOrder, now time.Time) bool {
+	if o.OperatorRequiredSince.IsZero() {
+		return false
+	}
+	return now.Sub(o.OperatorRequiredSince) < effectiveAlertThrottleInterval()
+}
+
+func applyOrphanLimitOperatorRequired(stateDB *StateDB, o PendingLimitOrder, outcome orphanLimitCancelOutcome, now time.Time) {
+	if !outcome.Resolved && outcome.State == orphanLimitStateOffBookUnadoptedFill {
+		if err := stateDB.MarkPendingLimitOrderOperatorRequired(o.ID, now); err != nil {
+			fmt.Printf("[limit] failed to persist the operator-required marker on row %d: %v\n", o.ID, err)
+		}
+		return
+	}
+	if !o.OperatorRequiredSince.IsZero() && !outcome.Resolved {
+		if err := stateDB.ClearPendingLimitOrderOperatorRequired(o.ID); err != nil {
+			fmt.Printf("[limit] failed to clear the operator-required marker on row %d: %v\n", o.ID, err)
+		}
+	}
 }
 
 func reconcilePendingLimitOrders(state *AppState, cfg *Config, stateDB *StateDB, mu *sync.RWMutex, notifier *MultiNotifier, logMgr *LogManager) []manualAlert {
@@ -595,16 +650,27 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, stateDB *StateDB,
 				fmt.Printf("[limit] skipping row %d: %s (%q) and no cancellation is queued for it\n", o.ID, block, o.StrategyID)
 				continue
 			}
-			outcome := cancelOrphanedLimitOrder(state, cfg, stateDB, mu, o)
-			if outcome.Resolved {
-				orphanLimitCancelAlerts.Clear(orphanLimitCancelKeyFor(o))
-				warnNotifier(notifier, fmt.Sprintf(
-					"[limit] %s %s: resting limit order cancelled by the cancel-only lane (oid=%d) — %s, so no adoption path could clear it",
-					o.StrategyID, o.Symbol, o.OrderOID, block))
+			if orphanLimitPollDeferred(o, now) {
+				fmt.Printf("[limit] row %d: %s needs an operator since %s — deferring the next exchange poll until %s\n",
+					o.ID, killSwitchLimitOrderLabel(o), o.OperatorRequiredSince.Format(time.RFC3339),
+					o.OperatorRequiredSince.Add(effectiveAlertThrottleInterval()).Format(time.RFC3339))
 				continue
 			}
-			reportOrphanLimitCancel(notifier, o, block, outcome.Reason, now)
+			outcome := cancelOrphanedLimitOrder(state, cfg, stateDB, mu, o)
+			applyOrphanLimitOperatorRequired(stateDB, o, outcome, now)
+			if outcome.Resolved {
+				orphanLimitCancelAlerts.Clear(orphanLimitCancelKeyFor(o))
+				warnNotifier(notifier, orphanLimitCancelResolvedMessage(o, block, outcome))
+				continue
+			}
+			reportOrphanLimitCancel(notifier, o, block, outcome, now)
 			continue
+		}
+		if !o.OperatorRequiredSince.IsZero() {
+			if err := stateDB.ClearPendingLimitOrderOperatorRequired(o.ID); err != nil {
+				fmt.Printf("[limit] failed to clear the operator-required marker on row %d: %v\n", o.ID, err)
+			}
+			o.OperatorRequiredSince = time.Time{}
 		}
 		var logger *StrategyLogger
 		if logMgr != nil {

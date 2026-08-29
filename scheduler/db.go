@@ -346,6 +346,7 @@ CREATE TABLE IF NOT EXISTS pending_limit_orders (
     fill_fee REAL NOT NULL DEFAULT 0,
     entry_atr REAL NOT NULL DEFAULT 0,
     cancel_requested INTEGER NOT NULL DEFAULT 0,
+    operator_required_since TEXT NOT NULL DEFAULT '',
     expires_at TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
 );
@@ -555,6 +556,7 @@ func (sdb *StateDB) migrateSchema() error {
 		"ALTER TABLE portfolio_risk ADD COLUMN manual_mark_basis_rebaselined INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE portfolio_risk ADD COLUMN drawdown_reading_substituted INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE portfolio_risk ADD COLUMN untrusted_over_limit_since TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE pending_limit_orders ADD COLUMN operator_required_since TEXT NOT NULL DEFAULT ''",
 		"CREATE INDEX IF NOT EXISTS idx_trades_strategy_timestamp ON trades(strategy_id, timestamp DESC, rowid DESC)",
 	}
 	for _, ddl := range migrations {
@@ -2367,8 +2369,11 @@ type PendingLimitOrder struct {
 	FillFee         float64
 	EntryATR        float64
 	CancelRequested bool
-	ExpiresAt       time.Time
-	CreatedAt       time.Time
+
+	OperatorRequiredSince time.Time
+
+	ExpiresAt time.Time
+	CreatedAt time.Time
 }
 
 func boolToInt(b bool) int {
@@ -2402,7 +2407,7 @@ func (sdb *StateDB) LoadPendingLimitOrders() ([]PendingLimitOrder, error) {
 	if sdb == nil || sdb.db == nil {
 		return nil, nil
 	}
-	rows, err := sdb.db.Query(`SELECT id, strategy_id, symbol, side, order_oid, limit_price, order_size, tif, filled_size, avg_fill_price, fill_fee, entry_atr, cancel_requested, expires_at, created_at FROM pending_limit_orders ORDER BY id`)
+	rows, err := sdb.db.Query(`SELECT id, strategy_id, symbol, side, order_oid, limit_price, order_size, tif, filled_size, avg_fill_price, fill_fee, entry_atr, cancel_requested, operator_required_since, expires_at, created_at FROM pending_limit_orders ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("load pending limit orders: %w", err)
 	}
@@ -2411,11 +2416,14 @@ func (sdb *StateDB) LoadPendingLimitOrders() ([]PendingLimitOrder, error) {
 	for rows.Next() {
 		var o PendingLimitOrder
 		var cancelInt int
-		var expiresStr, createdStr string
-		if err := rows.Scan(&o.ID, &o.StrategyID, &o.Symbol, &o.Side, &o.OrderOID, &o.LimitPrice, &o.OrderSize, &o.TIF, &o.FilledSize, &o.AvgFillPrice, &o.FillFee, &o.EntryATR, &cancelInt, &expiresStr, &createdStr); err != nil {
+		var operatorStr, expiresStr, createdStr string
+		if err := rows.Scan(&o.ID, &o.StrategyID, &o.Symbol, &o.Side, &o.OrderOID, &o.LimitPrice, &o.OrderSize, &o.TIF, &o.FilledSize, &o.AvgFillPrice, &o.FillFee, &o.EntryATR, &cancelInt, &operatorStr, &expiresStr, &createdStr); err != nil {
 			return nil, fmt.Errorf("scan pending limit order: %w", err)
 		}
 		o.CancelRequested = cancelInt != 0
+		if operatorStr != "" {
+			o.OperatorRequiredSince = parseTime(operatorStr)
+		}
 		if expiresStr != "" {
 			o.ExpiresAt = parseTime(expiresStr)
 		}
@@ -2446,6 +2454,25 @@ func (sdb *StateDB) MarkPendingLimitOrderCancelRequested(strategyID, symbol stri
 		return 0, err
 	}
 	return res.RowsAffected()
+}
+
+func (sdb *StateDB) MarkPendingLimitOrderOperatorRequired(id int64, at time.Time) error {
+	if sdb == nil || sdb.db == nil {
+		return nil
+	}
+	_, err := sdb.db.Exec(
+		"UPDATE pending_limit_orders SET operator_required_since = ? WHERE id = ?",
+		formatTime(at.UTC()), id)
+	return err
+}
+
+func (sdb *StateDB) ClearPendingLimitOrderOperatorRequired(id int64) error {
+	if sdb == nil || sdb.db == nil {
+		return nil
+	}
+	_, err := sdb.db.Exec(
+		"UPDATE pending_limit_orders SET operator_required_since = '' WHERE id = ?", id)
+	return err
 }
 
 func (sdb *StateDB) DeletePendingLimitOrder(id int64) error {
