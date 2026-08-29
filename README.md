@@ -63,7 +63,7 @@ sudo chown -R go-trader:go-trader /opt/go-trader-paper-testing /var/lib/go-trade
 sudo bash scripts/install-service.sh systemd/go-trader@.service paper-testing
 ```
 
-Existing in-tree deploy: **stop the service**, then `scripts/migrate-config-out-of-tree.sh --instance <name>` (refuses while daemon is live). `NO_START=1` enables without starting. Detail: [SKILL.md](SKILL.md) / [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Existing in-tree deploy: **stop the service**, then `scripts/migrate-config-out-of-tree.sh --instance <name>` (refuses while daemon is live). `NO_START=1` enables without starting. Detail: [SKILL.md](SKILL.md).
 
 ---
 
@@ -333,7 +333,7 @@ bash scripts/update.sh --all --restart                             # batch all i
 | Config (roster, script/args/type/platform, `regime` block) | `systemctl restart go-trader` |
 | Service file | `systemctl daemon-reload && systemctl restart go-trader` |
 
-Restart modes, batch discovery, and graceful drain: [SKILL.md](SKILL.md) / [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Restart modes, batch discovery, and graceful drain: [SKILL.md](SKILL.md).
 
 ---
 
@@ -407,7 +407,7 @@ Live fills record exchange-reported fees and order IDs.
 
 ## Layout & Dependencies
 
-`scheduler/` (Go) · `shared_scripts/` · `platforms/` · `shared_tools/`, `shared_strategies/` · `backtest/` · `systemd/`, `scripts/` · `SKILL.md`, `AGENTS.md`, `docs/ARCHITECTURE.md`.
+`scheduler/` (Go) · `shared_scripts/` · `platforms/` · `shared_tools/`, `shared_strategies/` · `backtest/` · `systemd/`, `scripts/` · `SKILL.md`, `AGENTS.md`.
 
 Python 3.12+ via [uv](https://github.com/astral-sh/uv); Go 1.26.2; systemd.
 

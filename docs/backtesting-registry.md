@@ -6,8 +6,7 @@ regime-promotion pipeline, and the one-shot research scripts — are listed
 individually below; the per-study candidate suites under `backtest/candidates/`
 (each a self-contained set of executable driver scripts plus specs) are indexed
 by study rather than enumerated script-by-script. This file is the source of
-truth; the per-subsystem mechanics live in
-[`docs/ARCHITECTURE.md` § Backtest harnesses](ARCHITECTURE.md).
+truth.
 
 **Upkeep rule:** any PR that adds, deprecates, or repurposes a harness updates
 its row here in the same PR. A new row is part of the change, not a follow-up.
@@ -125,4 +124,3 @@ they are indexed by study here, not enumerated script-by-script.
 
 - Committed run artifacts: `backtest/research/*.json` (e.g. `regime_1211_baseline_remeasure.json`).
 - Narrative writeups: `docs/research/*.md`.
-- Cross-cutting mechanics and negative results: `docs/ARCHITECTURE.md` § Backtest harnesses.
