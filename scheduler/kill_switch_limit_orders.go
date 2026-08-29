@@ -8,6 +8,12 @@ import (
 type killSwitchLimitOrderCandidate struct {
 	Row    PendingLimitOrder
 	Script string
+
+	AdoptionBlock string
+}
+
+func (c killSwitchLimitOrderCandidate) adoptionEligible() bool {
+	return c.AdoptionBlock == ""
 }
 
 type killSwitchLimitOrderDeps struct {
@@ -37,7 +43,7 @@ func killSwitchLimitOrderLabel(o PendingLimitOrder) string {
 func killSwitchLimitOrderRoster(cfgs []StrategyConfig) []StrategyConfig {
 	var out []StrategyConfig
 	for _, sc := range cfgs {
-		if sc.Platform != "hyperliquid" || strings.TrimSpace(sc.Script) == "" {
+		if sc.Platform != "hyperliquid" {
 			continue
 		}
 		out = append(out, sc)
@@ -45,25 +51,46 @@ func killSwitchLimitOrderRoster(cfgs []StrategyConfig) []StrategyConfig {
 	return out
 }
 
+func killSwitchLimitOrderAdoptionBlock(sc StrategyConfig, known bool) string {
+	switch {
+	case !known:
+		return "the strategy is absent from this config"
+	case sc.Type != "manual":
+		return fmt.Sprintf("the strategy type is %q, not \"manual\"", sc.Type)
+	case !hyperliquidIsLive(sc.Args):
+		return "the strategy is not Hyperliquid-live"
+	}
+	return ""
+}
+
 func collectKillSwitchLimitOrderCandidates(orders []PendingLimitOrder, roster []StrategyConfig) ([]killSwitchLimitOrderCandidate, []PendingLimitOrder) {
-	scripts := make(map[string]string, len(roster))
+	byID := make(map[string]StrategyConfig, len(roster))
+	fallbackScript := ""
 	for _, sc := range roster {
-		if strings.TrimSpace(sc.Script) == "" {
-			continue
+		byID[sc.ID] = sc
+		if fallbackScript == "" {
+			fallbackScript = strings.TrimSpace(sc.Script)
 		}
-		scripts[sc.ID] = sc.Script
 	}
 	var candidates []killSwitchLimitOrderCandidate
-	var unconfigured []PendingLimitOrder
+	var unscripted []PendingLimitOrder
 	for _, o := range orders {
-		script, ok := scripts[o.StrategyID]
-		if !ok {
-			unconfigured = append(unconfigured, o)
+		sc, known := byID[o.StrategyID]
+		script := strings.TrimSpace(sc.Script)
+		if script == "" {
+			script = fallbackScript
+		}
+		if script == "" {
+			unscripted = append(unscripted, o)
 			continue
 		}
-		candidates = append(candidates, killSwitchLimitOrderCandidate{Row: o, Script: script})
+		candidates = append(candidates, killSwitchLimitOrderCandidate{
+			Row:           o,
+			Script:        script,
+			AdoptionBlock: killSwitchLimitOrderAdoptionBlock(sc, known),
+		})
 	}
-	return candidates, unconfigured
+	return candidates, unscripted
 }
 
 func cancelKillSwitchRestingLimitOrders(loader func() ([]PendingLimitOrder, error), roster []StrategyConfig, deps killSwitchLimitOrderDeps) killSwitchLimitOrderReport {
@@ -84,14 +111,14 @@ func cancelKillSwitchRestingLimitOrders(loader func() ([]PendingLimitOrder, erro
 		return report
 	}
 
-	candidates, unconfigured := collectKillSwitchLimitOrderCandidates(orders, roster)
+	candidates, unscripted := collectKillSwitchLimitOrderCandidates(orders, roster)
 
-	for _, o := range unconfigured {
+	for _, o := range unscripted {
 		label := killSwitchLimitOrderLabel(o)
 		report.Unresolved = append(report.Unresolved,
-			fmt.Sprintf("%s: strategy is not a live Hyperliquid strategy in this config — manual intervention required", label))
+			fmt.Sprintf("%s: no Hyperliquid strategy with a script remains in this config to cancel it — manual intervention required", label))
 		report.LogLines = append(report.LogLines,
-			fmt.Sprintf("[CRITICAL] ks-limit: resting limit order %s belongs to no live Hyperliquid strategy — cannot cancel, manual intervention required (kill switch will retry next cycle)", label))
+			fmt.Sprintf("[CRITICAL] ks-limit: resting limit order %s cannot be cancelled — no Hyperliquid strategy with a script remains in this config, manual intervention required (kill switch will retry next cycle)", label))
 	}
 
 	if len(candidates) > 0 && !deps.wired() {
@@ -160,8 +187,13 @@ func cancelKillSwitchRestingLimitOrders(loader func() ([]PendingLimitOrder, erro
 			continue
 		}
 		if st.FilledSize > o.FilledSize+limitFillEpsilon {
-			unresolve(fmt.Sprintf("order is off-book with an unadopted fill (tracked %.6f, exchange %.6f) — queue row kept so the scheduler books the fill before the next flatten",
-				o.FilledSize, st.FilledSize))
+			if c.adoptionEligible() {
+				unresolve(fmt.Sprintf("order is off-book with an unadopted fill (tracked %.6f, exchange %.6f) — queue row kept so the scheduler books the fill before the next flatten",
+					o.FilledSize, st.FilledSize))
+			} else {
+				unresolve(fmt.Sprintf("order is off-book with an unadopted fill (tracked %.6f, exchange %.6f) that NO automatic path can book because %s — restore it to this config as a Hyperliquid-live type=manual strategy so the scheduler adopts the fill; manual intervention required",
+					o.FilledSize, st.FilledSize, c.AdoptionBlock))
+			}
 			continue
 		}
 		if err := deps.Delete(o.ID); err != nil {

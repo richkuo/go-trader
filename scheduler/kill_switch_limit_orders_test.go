@@ -329,9 +329,131 @@ func TestPlanKillSwitchClose_LimitQueueLoadErrorBlocksFlat(t *testing.T) {
 	}
 }
 
-func TestPlanKillSwitchClose_LimitOrderForUnknownStrategyBlocksFlat(t *testing.T) {
+func TestPlanKillSwitchClose_OrphanedLimitRowCancelledViaFallbackScript(t *testing.T) {
+	peer := StrategyConfig{ID: "hl-ema-eth", Platform: "hyperliquid", Type: "perps",
+		Script: "shared_scripts/check_hyperliquid.py", Args: []string{"ema_crossover", "ETH", "1h", "--mode=live"}}
 	db := newLimitTestStateDB(t)
-	seedKillSwitchLimitRow(t, db, "hl-manual-eth-live")
+	id := seedKillSwitchLimitRow(t, db, "hl-manual-eth-deleted")
+
+	var usedScript string
+	stubs := &killSwitchLimitStubs{}
+	deps := stubs.deps(
+		func(script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error) {
+			usedScript = script
+			return &HyperliquidCancelOrderResult{OID: oid, Cancelled: false, CancelError: "order already cancelled"}, "", nil
+		},
+		offBookStatus(0),
+		db.DeletePendingLimitOrder)
+
+	plan := planKillSwitchClose(killSwitchLimitInputs(db, []StrategyConfig{peer}, deps))
+
+	if !plan.OnChainConfirmedFlat || !plan.CanAutoResetWithoutOwner() {
+		t.Fatalf("an orphaned row confirmed off-book must clear, got %+v", plan.LimitOrderReport)
+	}
+	if usedScript != peer.Script {
+		t.Errorf("orphaned row must fall back to a peer script, got %q", usedScript)
+	}
+	if len(stubs.deleted) != 1 || stubs.deleted[0] != id {
+		t.Errorf("orphaned row must be deleted once off-book, deleted = %v", stubs.deleted)
+	}
+	if orders, _ := db.LoadPendingLimitOrders(); len(orders) != 0 {
+		t.Errorf("expected the stale row removed, got %d", len(orders))
+	}
+}
+
+func TestPlanKillSwitchClose_OrphanedLimitRowWithFillEscalates(t *testing.T) {
+	peer := StrategyConfig{ID: "hl-ema-eth", Platform: "hyperliquid", Type: "perps",
+		Script: "shared_scripts/check_hyperliquid.py", Args: []string{"ema_crossover", "ETH", "1h", "--mode=live"}}
+	db := newLimitTestStateDB(t)
+	seedKillSwitchLimitRow(t, db, "hl-manual-eth-deleted")
+
+	stubs := &killSwitchLimitStubs{}
+	deps := stubs.deps(okCancel, offBookStatus(0.2), db.DeletePendingLimitOrder)
+
+	plan := planKillSwitchClose(killSwitchLimitInputs(db, []StrategyConfig{peer}, deps))
+
+	if plan.OnChainConfirmedFlat || plan.CanAutoResetWithoutOwner() {
+		t.Fatal("an unbookable fill must block confirmed-flat and auto-reset")
+	}
+	if len(stubs.deleted) != 0 {
+		t.Fatalf("a row carrying an unadopted fill must never be auto-deleted, deleted = %v", stubs.deleted)
+	}
+	for _, want := range []string{"NO automatic path can book", "absent from this config", "manual intervention required"} {
+		if !strings.Contains(plan.DiscordMessage, want) {
+			t.Errorf("message missing %q, got: %s", want, plan.DiscordMessage)
+		}
+	}
+	if strings.Contains(plan.DiscordMessage, "queue row kept so the scheduler books the fill") {
+		t.Errorf("message must not promise a booking that cannot happen, got: %s", plan.DiscordMessage)
+	}
+}
+
+func TestPlanKillSwitchClose_AdoptionIneligibleLimitFillNamesTheBlock(t *testing.T) {
+	cases := []struct {
+		name string
+		sc   StrategyConfig
+		want string
+	}{
+		{
+			name: "strategy flipped to paper",
+			sc: StrategyConfig{ID: "hl-manual-eth-live", Platform: "hyperliquid", Type: "manual",
+				Script: "shared_scripts/check_hyperliquid.py", Args: []string{"hold", "ETH", "30m"}},
+			want: "not Hyperliquid-live",
+		},
+		{
+			name: "strategy type changed away from manual",
+			sc: StrategyConfig{ID: "hl-manual-eth-live", Platform: "hyperliquid", Type: "perps",
+				Script: "shared_scripts/check_hyperliquid.py", Args: []string{"ema_crossover", "ETH", "1h", "--mode=live"}},
+			want: `type is "perps"`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db := newLimitTestStateDB(t)
+			seedKillSwitchLimitRow(t, db, "hl-manual-eth-live")
+			stubs := &killSwitchLimitStubs{}
+			deps := stubs.deps(okCancel, offBookStatus(0.2), db.DeletePendingLimitOrder)
+
+			plan := planKillSwitchClose(killSwitchLimitInputs(db, []StrategyConfig{tc.sc}, deps))
+
+			if plan.OnChainConfirmedFlat || plan.CanAutoResetWithoutOwner() {
+				t.Fatal("an unbookable fill must block confirmed-flat and auto-reset")
+			}
+			if len(stubs.deleted) != 0 {
+				t.Fatalf("a row carrying an unadopted fill must never be auto-deleted, deleted = %v", stubs.deleted)
+			}
+			if !strings.Contains(plan.DiscordMessage, tc.want) ||
+				!strings.Contains(plan.DiscordMessage, "NO automatic path can book") {
+				t.Errorf("message must name why nothing can book the fill, got: %s", plan.DiscordMessage)
+			}
+		})
+	}
+}
+
+func TestPlanKillSwitchClose_AdoptionEligibleLimitFillStillDefersToReconciler(t *testing.T) {
+	sc := killSwitchLimitTestStrategy()
+	db := newLimitTestStateDB(t)
+	seedKillSwitchLimitRow(t, db, sc.ID)
+
+	stubs := &killSwitchLimitStubs{}
+	deps := stubs.deps(okCancel, offBookStatus(0.2), db.DeletePendingLimitOrder)
+
+	plan := planKillSwitchClose(killSwitchLimitInputs(db, []StrategyConfig{sc}, deps))
+
+	if plan.OnChainConfirmedFlat || plan.CanAutoResetWithoutOwner() {
+		t.Fatal("an unadopted fill must block confirmed-flat and auto-reset")
+	}
+	if !strings.Contains(plan.DiscordMessage, "queue row kept so the scheduler books the fill") {
+		t.Errorf("an eligible row must still defer to the reconciler, got: %s", plan.DiscordMessage)
+	}
+	if strings.Contains(plan.DiscordMessage, "NO automatic path can book") {
+		t.Errorf("an eligible row must not escalate, got: %s", plan.DiscordMessage)
+	}
+}
+
+func TestPlanKillSwitchClose_NoHyperliquidScriptInConfigBlocksFlat(t *testing.T) {
+	db := newLimitTestStateDB(t)
+	seedKillSwitchLimitRow(t, db, "hl-manual-eth-deleted")
 
 	stubs := &killSwitchLimitStubs{}
 	deps := stubs.deps(okCancel, offBookStatus(0), db.DeletePendingLimitOrder)
@@ -449,20 +571,51 @@ func TestPlanKillSwitchClose_NilLimitOrderLoaderIsSafe(t *testing.T) {
 
 func TestCollectKillSwitchLimitOrderCandidates(t *testing.T) {
 	sc := killSwitchLimitTestStrategy()
-	scriptless := StrategyConfig{ID: "hl-no-script", Platform: "hyperliquid", Type: "manual"}
+	paper := StrategyConfig{ID: "hl-manual-btc-paper", Platform: "hyperliquid", Type: "manual",
+		Script: "shared_scripts/check_hyperliquid.py", Args: []string{"hold", "BTC", "30m"}}
+	perps := StrategyConfig{ID: "hl-ema-sol", Platform: "hyperliquid", Type: "perps",
+		Script: "shared_scripts/check_hyperliquid.py", Args: []string{"ema_crossover", "SOL", "1h", "--mode=live"}}
 	orders := []PendingLimitOrder{
 		{ID: 1, StrategyID: sc.ID, Symbol: "ETH", OrderOID: 9001},
 		{ID: 2, StrategyID: "gone", Symbol: "SOL", OrderOID: 9002},
-		{ID: 3, StrategyID: scriptless.ID, Symbol: "BTC", OrderOID: 9003},
+		{ID: 3, StrategyID: paper.ID, Symbol: "BTC", OrderOID: 9003},
+		{ID: 4, StrategyID: perps.ID, Symbol: "SOL", OrderOID: 9004},
 	}
 
-	candidates, unconfigured := collectKillSwitchLimitOrderCandidates(orders, []StrategyConfig{sc, scriptless})
+	candidates, unscripted := collectKillSwitchLimitOrderCandidates(orders, []StrategyConfig{sc, paper, perps})
 
-	if len(candidates) != 1 || candidates[0].Row.ID != 1 || candidates[0].Script != sc.Script {
-		t.Fatalf("candidates = %+v", candidates)
+	if len(candidates) != 4 || len(unscripted) != 0 {
+		t.Fatalf("every row must be cancellable while any Hyperliquid script exists: candidates=%d unscripted=%d", len(candidates), len(unscripted))
 	}
-	if len(unconfigured) != 2 || unconfigured[0].ID != 2 || unconfigured[1].ID != 3 {
-		t.Fatalf("unconfigured = %+v", unconfigured)
+	for _, c := range candidates {
+		if c.Script != sc.Script {
+			t.Errorf("row %d resolved script %q", c.Row.ID, c.Script)
+		}
+	}
+	if !candidates[0].adoptionEligible() {
+		t.Errorf("a live manual row must stay adoption-eligible: %+v", candidates[0])
+	}
+	for _, i := range []int{1, 2, 3} {
+		if candidates[i].adoptionEligible() {
+			t.Errorf("row %d must be adoption-ineligible: %+v", candidates[i].Row.ID, candidates[i])
+		}
+	}
+	if !strings.Contains(candidates[1].AdoptionBlock, "absent from this config") ||
+		!strings.Contains(candidates[2].AdoptionBlock, "not Hyperliquid-live") ||
+		!strings.Contains(candidates[3].AdoptionBlock, `type is "perps"`) {
+		t.Errorf("adoption blocks must name the reason: %q %q %q",
+			candidates[1].AdoptionBlock, candidates[2].AdoptionBlock, candidates[3].AdoptionBlock)
+	}
+}
+
+func TestCollectKillSwitchLimitOrderCandidatesWithoutAnyScript(t *testing.T) {
+	scriptless := StrategyConfig{ID: "hl-no-script", Platform: "hyperliquid", Type: "manual"}
+	orders := []PendingLimitOrder{{ID: 1, StrategyID: scriptless.ID, Symbol: "ETH", OrderOID: 9001}}
+
+	candidates, unscripted := collectKillSwitchLimitOrderCandidates(orders, []StrategyConfig{scriptless})
+
+	if len(candidates) != 0 || len(unscripted) != 1 || unscripted[0].ID != 1 {
+		t.Fatalf("a row with no usable script anywhere must fail closed: candidates=%+v unscripted=%+v", candidates, unscripted)
 	}
 }
 
@@ -481,9 +634,9 @@ func TestKillSwitchLimitOrderRoster(t *testing.T) {
 	for _, sc := range got {
 		ids = append(ids, sc.ID)
 	}
-	want := []string{live.ID, paper.ID, perps.ID}
+	want := []string{live.ID, paper.ID, perps.ID, scriptless.ID}
 	if strings.Join(ids, ",") != strings.Join(want, ",") {
-		t.Fatalf("roster = %v, want %v (every Hyperliquid strategy with a script, so no queued order is left uncancellable)", ids, want)
+		t.Fatalf("roster = %v, want %v (every Hyperliquid strategy, so no queued order is left uncancellable)", ids, want)
 	}
 }
 
