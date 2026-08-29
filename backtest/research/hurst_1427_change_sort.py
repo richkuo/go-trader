@@ -523,8 +523,15 @@ def delta_size_multiplier(dh, sense: str, gain: float) -> float:
     return size_multiplier(value + LEVEL_ORIGIN, sense, gain)
 
 
-def delta_anti_signal_side(dh, sense: str) -> bool:
-    return anti_signal_side(float(dh) + LEVEL_ORIGIN, sense)
+def delta_anti_signal_side(dh, sense: str) -> Optional[bool]:
+    if sense not in (SENSE_HIGH, SENSE_LOW):
+        raise ValueError(f"unknown gate sense {sense!r}")
+    if dh is None:
+        return None
+    value = float(dh)
+    if not math.isfinite(value):
+        return None
+    return anti_signal_side(value + LEVEL_ORIGIN, sense)
 
 
 def delta_required_lead_bars(hurst_window: int) -> int:

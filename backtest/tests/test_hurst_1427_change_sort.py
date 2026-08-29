@@ -158,6 +158,10 @@ def test_the_anti_signal_side_is_1422s_own_split_re_centred():
     assert study.delta_anti_signal_side(-0.01, study.SENSE_HIGH) is True
     assert study.delta_anti_signal_side(0.0, study.SENSE_HIGH) is False
     assert study.delta_anti_signal_side(0.01, study.SENSE_LOW) is True
+    for dh in (-0.4, -0.05, -0.001, 0.0, 0.001, 0.05, 0.4):
+        for sense in (study.SENSE_HIGH, study.SENSE_LOW):
+            assert study.delta_anti_signal_side(dh, sense) == \
+                study1422.anti_signal_side(dh + 0.5, sense)
 
 
 # --- the lookback is one rule, fixed in advance, never swept ---------------
@@ -227,6 +231,26 @@ def test_an_undefined_change_never_transitions_the_gate():
     values = [arm, np.nan, np.nan, disarm - 0.01, np.nan, np.nan, arm]
     mask = study.hysteresis_mask(values, arm, disarm, study.SENSE_HIGH)
     assert list(mask) == [True, True, True, False, False, False, True]
+
+
+def test_an_undefined_change_has_no_gate_side():
+    for sense in (study.SENSE_HIGH, study.SENSE_LOW):
+        assert study.delta_anti_signal_side(None, sense) is None
+        assert study.delta_anti_signal_side(float("nan"), sense) is None
+        assert study.delta_anti_signal_side(float("inf"), sense) is None
+        assert study.delta_anti_signal_side(0.0, sense) is not None
+
+
+def test_an_undefined_gate_side_is_never_the_aligned_side():
+    for sense in (study.SENSE_HIGH, study.SENSE_LOW):
+        assert study.delta_anti_signal_side(None, sense) is not False
+        assert study.delta_anti_signal_side(float("nan"), sense) is not False
+
+
+def test_the_gate_side_still_rejects_an_unknown_sense_on_an_undefined_change():
+    for dh in (None, float("nan"), 0.01):
+        with pytest.raises(ValueError):
+            study.delta_anti_signal_side(dh, "sideways")
 
 
 def test_an_undefined_change_sizes_at_exactly_one():
