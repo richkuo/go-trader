@@ -818,7 +818,7 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, stateDB *StateDB,
 			if avgPx <= 0 {
 				avgPx = o.LimitPrice
 			}
-			positions, readErr := exposureReader.snapshot()
+			positions, readErr := exposureReader.snapshotNewerThan(statusPolledAt)
 			onChainNet := hyperliquidOnChainNetForCoin(positions, o.Symbol)
 			signedDelta := hlSignedQty(o.Side, st.FilledSize-o.FilledSize)
 			owners := hyperliquidLiveOwnersForCoin(cfg.Strategies, o.Symbol)
@@ -835,11 +835,6 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, stateDB *StateDB,
 			}
 			mu.RUnlock()
 			decision := classifyLimitFillLiveExposure(o.Symbol, preBooked, signedDelta, onChainNet, readErr, owners)
-			if !decision.adopts() {
-				positions, readErr = exposureReader.snapshotNewerThan(statusPolledAt)
-				onChainNet = hyperliquidOnChainNetForCoin(positions, o.Symbol)
-				decision = classifyLimitFillLiveExposure(o.Symbol, preBooked, signedDelta, onChainNet, readErr, owners)
-			}
 			var tradesBooked int
 			var applyErr error
 			if decision.adopts() {

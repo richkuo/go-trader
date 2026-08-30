@@ -170,13 +170,6 @@ func (r *hlLiveExposureReader) fetch() ([]HLPosition, error) {
 	return r.positions, nil
 }
 
-func (r *hlLiveExposureReader) snapshot() ([]HLPosition, error) {
-	if r.held {
-		return r.positions, r.err
-	}
-	return r.fetch()
-}
-
 func (r *hlLiveExposureReader) snapshotNewerThan(t time.Time) ([]HLPosition, error) {
 	if r.held && r.fetchedAt.After(t) {
 		return r.positions, r.err

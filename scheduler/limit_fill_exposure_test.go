@@ -548,14 +548,14 @@ func TestHLLiveExposureReaderReplacesBothPositionsAndErrorOnEveryFetch(t *testin
 
 	r := &hlLiveExposureReader{}
 	before := time.Now()
-	if positions, err := r.snapshot(); err != nil || len(positions) != 1 {
-		t.Fatalf("first snapshot = (%+v, %v), want the fetched position", positions, err)
+	if positions, err := r.snapshotNewerThan(before); err != nil || len(positions) != 1 {
+		t.Fatalf("first reading = (%+v, %v), want the fetched position", positions, err)
 	}
-	if positions, err := r.snapshot(); err != nil || len(positions) != 1 {
-		t.Fatalf("a held snapshot must be reused, got (%+v, %v)", positions, err)
+	if positions, err := r.snapshotNewerThan(before); err != nil || len(positions) != 1 {
+		t.Fatalf("a reading already newer than the requested instant must be reused, got (%+v, %v)", positions, err)
 	}
 	if fetches != 1 {
-		t.Fatalf("fetches = %d, want 1 — snapshot() fetches only when nothing is held", fetches)
+		t.Fatalf("fetches = %d, want 1 — a held reading newer than the requested instant is reused", fetches)
 	}
 	if positions, err := r.snapshotNewerThan(time.Now()); err == nil || positions != nil {
 		t.Fatalf("a failed re-read must surface as an error with no positions, got (%+v, %v)", positions, err)
@@ -568,5 +568,84 @@ func TestHLLiveExposureReaderReplacesBothPositionsAndErrorOnEveryFetch(t *testin
 	}
 	if fetches != 3 {
 		t.Fatalf("fetches = %d, want 3", fetches)
+	}
+}
+
+func twoRowMidPassFetches(t *testing.T, btcAfterPoll []HLPosition) (*AppState, *StateDB, StrategyConfig, StrategyConfig, *int, *mockNotifier) {
+	t.Helper()
+	state, cfg, db, ethSC, btcSC := twoCoinLimitFixture(t)
+	var mu sync.RWMutex
+
+	onChain := []HLPosition{{Coin: "ETH", Size: 0.5}, {Coin: "BTC", Size: 0.25}}
+	fetches := 0
+	countingHLStateStub(t, &fetches, &onChain)
+
+	withStubbedLimitDeps(t, twoCoinLimitStatusStub(0.5, 0.25, func(coin string) {
+		if coin == "BTC" && btcAfterPoll != nil {
+			onChain = btcAfterPoll
+		}
+	}), noCancelExpected(t))
+
+	notifier, mock := newOrphanLaneNotifier()
+	reconcilePendingLimitOrders(state, cfg, db, &mu, notifier, nil)
+	return state, db, ethSC, btcSC, &fetches, mock
+}
+
+func TestReconcilePendingLimitOrdersRefusesALaterRowWhoseCoinClosedMidPass(t *testing.T) {
+	state, db, ethSC, btcSC, fetches, mock := twoRowMidPassFetches(t, []HLPosition{{Coin: "ETH", Size: 0.5}})
+
+	if pos := state.Strategies[ethSC.ID].Positions["ETH"]; pos == nil || pos.Quantity != 0.5 {
+		t.Fatalf("ETH position = %+v, want the backed fill booked", pos)
+	}
+	if pos := state.Strategies[btcSC.ID].Positions["BTC"]; pos != nil {
+		t.Fatalf("BTC position = %+v, want none — its coin was flattened after the first row's snapshot, so the fill must not be booked", pos)
+	}
+	if *fetches != 2 {
+		t.Fatalf("account fetches = %d, want 2 — every booking decision needs a snapshot newer than its own row's status poll", *fetches)
+	}
+	orders, _ := db.LoadPendingLimitOrders()
+	if len(orders) != 1 || orders[0].Symbol != "BTC" {
+		t.Fatalf("rows = %+v, want only the BTC recovery record kept — a refused row is never deleted", orders)
+	}
+	if len(mock.dms) != 1 || !strings.Contains(mock.dms[0].content, "NO LIVE EXPOSURE") {
+		t.Fatalf("owner DMs = %+v, want one refusal alert for BTC", mock.dms)
+	}
+}
+
+func TestReconcilePendingLimitOrdersRefusesALaterRowWhoseCoinWasReducedMidPass(t *testing.T) {
+	state, db, ethSC, btcSC, fetches, _ := twoRowMidPassFetches(t,
+		[]HLPosition{{Coin: "ETH", Size: 0.5}, {Coin: "BTC", Size: 0.1}})
+
+	if pos := state.Strategies[ethSC.ID].Positions["ETH"]; pos == nil || pos.Quantity != 0.5 {
+		t.Fatalf("ETH position = %+v, want the backed fill booked", pos)
+	}
+	if pos := state.Strategies[btcSC.ID].Positions["BTC"]; pos != nil {
+		t.Fatalf("BTC position = %+v, want none — 0.1 on-chain cannot back a 0.25 fill", pos)
+	}
+	if *fetches != 2 {
+		t.Fatalf("account fetches = %d, want 2", *fetches)
+	}
+	if orders, _ := db.LoadPendingLimitOrders(); len(orders) != 1 || orders[0].Symbol != "BTC" {
+		t.Fatalf("rows = %+v, want only the BTC recovery record kept", orders)
+	}
+}
+
+func TestReconcilePendingLimitOrdersAdoptsALaterRowStillBackedMidPass(t *testing.T) {
+	state, db, ethSC, btcSC, fetches, mock := twoRowMidPassFetches(t, nil)
+
+	if pos := state.Strategies[ethSC.ID].Positions["ETH"]; pos == nil || pos.Quantity != 0.5 {
+		t.Fatalf("ETH position = %+v, want the backed fill booked", pos)
+	}
+	if pos := state.Strategies[btcSC.ID].Positions["BTC"]; pos == nil || pos.Quantity != 0.25 {
+		t.Fatalf("BTC position = %+v, want the still-backed fill booked after its own fresh read", pos)
+	}
+	if *fetches != 2 {
+		t.Fatalf("account fetches = %d, want 2 — one per fill-bearing row", *fetches)
+	}
+	if orders, _ := db.LoadPendingLimitOrders(); len(orders) != 0 {
+		t.Fatalf("rows = %+v, want both terminal rows cleared", orders)
+	}
+	if len(mock.dms) != 0 {
+		t.Fatalf("owner DMs = %+v, want none — both fills are backed", mock.dms)
 	}
 }
