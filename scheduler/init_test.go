@@ -36,6 +36,137 @@ func baseOpts() InitOptions {
 	}
 }
 
+func findStrategy(cfg *Config, id string) (StrategyConfig, bool) {
+	for _, s := range cfg.Strategies {
+		if s.ID == id {
+			return s, true
+		}
+	}
+	return StrategyConfig{}, false
+}
+
+func TestDefaultRangingStrategyWiring(t *testing.T) {
+	cases := []struct {
+		id        string
+		shortName string
+	}{
+		{id: "anchored_vwap", shortName: "avwap"},
+		{id: "anchored_vwap_channel", shortName: "avwapch"},
+		{id: "anchored_vwap_reversion", shortName: "avwaprev"},
+	}
+	lists := []struct {
+		name string
+		list []stratDef
+	}{
+		{name: "spot", list: defaultSpotStrategies},
+		{name: "perps", list: defaultPerpsStrategies},
+		{name: "futures", list: defaultFuturesStrategies},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.id, func(t *testing.T) {
+			if got := deriveShortName(tc.id); got != tc.shortName {
+				t.Fatalf("deriveShortName(%s) = %q, want %q", tc.id, got, tc.shortName)
+			}
+			if !isBidirectionalPerpsStrategy(tc.id) {
+				t.Fatalf("%s must be a bidirectional perps strategy", tc.id)
+			}
+			for _, list := range lists {
+				found := false
+				for _, s := range list.list {
+					if s.ID != tc.id {
+						continue
+					}
+					found = true
+					if s.ShortName != tc.shortName {
+						t.Fatalf("%s list: %s short name = %q, want %q", list.name, tc.id, s.ShortName, tc.shortName)
+					}
+				}
+				if !found {
+					t.Fatalf("%s missing from default %s list", tc.id, list.name)
+				}
+			}
+		})
+	}
+}
+
+func TestGenerateConfig_DefaultCompositeRangingGateStrategies(t *testing.T) {
+	cases := []struct {
+		id                  string
+		shortName           string
+		regimeGateOnFailure string
+	}{
+		{id: "atr_band_revert", shortName: "abr", regimeGateOnFailure: RegimeGateOnFailureClosed},
+		{id: "anchored_vwap_channel", shortName: "avwapch"},
+		{id: "anchored_vwap_reversion", shortName: "avwaprev"},
+	}
+	wantRegimes := []string{"ranging_quiet", "ranging_volatile"}
+
+	for _, tc := range cases {
+		t.Run(tc.id+"/spot", func(t *testing.T) {
+			opts := baseOpts()
+			opts.Assets = []string{"BTC"}
+			opts.SpotStrategies = []string{tc.id}
+
+			cfg := generateConfig(opts)
+			sc, ok := findStrategy(cfg, tc.shortName+"-btc")
+			if !ok {
+				t.Fatalf("expected strategy %s-btc, got %v", tc.shortName, cfg.Strategies)
+			}
+			if len(sc.AllowedRegimes) != len(wantRegimes) {
+				t.Fatalf("allowed_regimes = %v, want %v", sc.AllowedRegimes, wantRegimes)
+			}
+			for i, want := range wantRegimes {
+				if sc.AllowedRegimes[i] != want {
+					t.Fatalf("allowed_regimes[%d] = %q, want %q", i, sc.AllowedRegimes[i], want)
+				}
+			}
+			if tc.regimeGateOnFailure != "" && sc.RegimeGateOnFailure != tc.regimeGateOnFailure {
+				t.Fatalf("regime_gate_on_failure = %q, want %q", sc.RegimeGateOnFailure, tc.regimeGateOnFailure)
+			}
+			if cfg.Regime == nil || !cfg.Regime.Enabled {
+				t.Fatalf("expected cfg.Regime enabled, got %+v", cfg.Regime)
+			}
+			win, ok := cfg.Regime.Windows["medium"]
+			if !ok {
+				t.Fatalf("expected a composite 'medium' window, got windows %+v", cfg.Regime.Windows)
+			}
+			if win.effectiveClassifier() != regimeClassifierComposite {
+				t.Fatalf("medium window classifier = %q, want composite", win.effectiveClassifier())
+			}
+			if vErrs := validateStrategyRegimeVocabulary(cfg); len(vErrs) != 0 {
+				t.Fatalf("regime vocabulary errors: %v", vErrs)
+			}
+			if err := validateConfig(cfg, true); err != nil {
+				t.Fatalf("generated config failed validation: %v", err)
+			}
+		})
+
+		t.Run(tc.id+"/perps", func(t *testing.T) {
+			opts := baseOpts()
+			opts.Assets = []string{"BTC"}
+			opts.EnableSpot = false
+			opts.EnablePerps = true
+			opts.PerpsStrategies = []string{tc.id}
+
+			cfg := generateConfig(opts)
+			sc, ok := findStrategy(cfg, "hl-"+tc.shortName+"-btc")
+			if !ok {
+				t.Fatalf("expected strategy hl-%s-btc, got %v", tc.shortName, cfg.Strategies)
+			}
+			if len(sc.AllowedRegimes) == 0 {
+				t.Fatalf("perps %s should be regime-gated, got none", tc.id)
+			}
+			if cfg.Regime == nil || !cfg.Regime.Enabled {
+				t.Fatalf("expected cfg.Regime enabled for perps %s", tc.id)
+			}
+			if err := validateConfig(cfg, true); err != nil {
+				t.Fatalf("generated perps config failed validation: %v", err)
+			}
+		})
+	}
+}
+
 func TestGenerateConfig_AllTypes(t *testing.T) {
 	opts := InitOptions{
 		Assets:            []string{"BTC", "ETH", "SOL"},

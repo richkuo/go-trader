@@ -1199,105 +1199,57 @@ func TestCollectPositions_ShortEntryPrice(t *testing.T) {
 	}
 }
 
-func TestCollectPositions_StopLossLong(t *testing.T) {
-	ss := &StrategyState{
-		Positions: map[string]*Position{
-			"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.025, AvgCost: 63500, Side: "long", StopLossOID: 12345, StopLossTriggerPx: 61595},
-		},
-	}
-	prices := map[string]float64{"BTC/USDT": 63500}
-
-	lines := collectPositions(StrategyConfig{ID: "hl-btc-sma"}, ss, prices)
-	if len(lines) != 1 {
-		t.Fatalf("expected 1 line, got %d", len(lines))
-	}
-	if !strings.Contains(lines[0], "| SL: $61,595.00 (-3.0%)") {
-		t.Errorf("expected SL fragment 'SL: $61,595.00 (-3.0%%)', got: %s", lines[0])
-	}
-}
-
-func TestCollectPositions_StopLossShort(t *testing.T) {
-	ss := &StrategyState{
-		Positions: map[string]*Position{
-			"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.025, AvgCost: 63500, Side: "short", StopLossOID: 99, StopLossTriggerPx: 65405},
-		},
-	}
-	prices := map[string]float64{"BTC/USDT": 63500}
-
-	lines := collectPositions(StrategyConfig{ID: "hl-btc-sma"}, ss, prices)
-	if !strings.Contains(lines[0], "| SL: $65,405.00 (-3.0%)") {
-		t.Errorf("expected SL fragment 'SL: $65,405.00 (-3.0%%)' for short, got: %s", lines[0])
-	}
-}
-
-func TestCollectPositions_StopLossTriggerPxWithoutOID(t *testing.T) {
-	ss := &StrategyState{
-		Positions: map[string]*Position{
-			"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.025, AvgCost: 63500, Side: "long", StopLossOID: 0, StopLossTriggerPx: 61595},
-		},
-	}
-	lines := collectPositions(StrategyConfig{ID: "hl-btc-sma"}, ss, map[string]float64{"BTC/USDT": 63500})
-	if !strings.Contains(lines[0], "| SL: $61,595.00 (-3.0%)") {
-		t.Errorf("expected SL from trigger price when OID=0, got: %s", lines[0])
-	}
-}
-
-func TestCollectPositions_StopLossOmittedWhenNoTriggerPx(t *testing.T) {
-	ss := &StrategyState{
-		Positions: map[string]*Position{
-			"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.025, AvgCost: 63500, Side: "long", StopLossOID: 12345, StopLossTriggerPx: 0},
-		},
-	}
-	lines := collectPositions(StrategyConfig{ID: "hl-btc-sma"}, ss, map[string]float64{"BTC/USDT": 63500})
-	if strings.Contains(lines[0], "SL:") {
-		t.Errorf("SL fragment should be omitted when StopLossTriggerPx=0, got: %s", lines[0])
-	}
-}
-
-func TestCollectPositions_StopLossATRMultiplier(t *testing.T) {
-	pf := func(v float64) *float64 { return &v }
+func TestCollectPositions_StopLoss(t *testing.T) {
+	pointer := func(v float64) *float64 { return &v }
 	cases := []struct {
-		name    string
-		side    string
-		avg     float64
-		sl      float64
-		atr     float64
-		mult    *float64
-		wantSub string
+		name       string
+		side       string
+		avg        float64
+		sl         float64
+		atr        float64
+		mult       *float64
+		oid        int64
+		want       string
+		wantAbsent bool
 	}{
-		{name: "long_1x", side: "long", avg: 10000, sl: 9000, atr: 1000, mult: pf(1.0), wantSub: "| SL: $9,000.00 (-10.0%) (1x)"},
-		{name: "long_1.5x", side: "long", avg: 10000, sl: 9700, atr: 200, mult: pf(1.5), wantSub: "| SL: $9,700.00 (-3.0%) (1.5x)"},
-		{name: "long_1.5x_rounded_trigger", side: "long", avg: 2335.10, sl: 2323.30, atr: 7.92, mult: pf(1.5), wantSub: "| SL: $2,323.30 (-0.5%) (1.5x)"},
-		{name: "long_1.25x", side: "long", avg: 10000, sl: 9750, atr: 200, mult: pf(1.25), wantSub: "| SL: $9,750.00 (-2.5%) (1.25x)"},
-		{name: "short_1x", side: "short", avg: 10000, sl: 11000, atr: 1000, mult: pf(1.0), wantSub: "| SL: $11,000.00 (-10.0%) (1x)"},
+		{name: "long", side: "long", avg: 63500, sl: 61595, oid: 12345, want: "| SL: $61,595.00 (-3.0%)"},
+		{name: "short", side: "short", avg: 63500, sl: 65405, oid: 99, want: "| SL: $65,405.00 (-3.0%)"},
+		{name: "trigger_without_oid", side: "long", avg: 63500, sl: 61595, want: "| SL: $61,595.00 (-3.0%)"},
+		{name: "without_trigger", side: "long", avg: 63500, oid: 12345, wantAbsent: true},
+		{name: "long_1x", side: "long", avg: 10000, sl: 9000, atr: 1000, mult: pointer(1.0), want: "| SL: $9,000.00 (-10.0%) (1x)"},
+		{name: "long_1.5x", side: "long", avg: 10000, sl: 9700, atr: 200, mult: pointer(1.5), want: "| SL: $9,700.00 (-3.0%) (1.5x)"},
+		{name: "long_1.5x_rounded_trigger", side: "long", avg: 2335.10, sl: 2323.30, atr: 7.92, mult: pointer(1.5), want: "| SL: $2,323.30 (-0.5%) (1.5x)"},
+		{name: "long_1.25x", side: "long", avg: 10000, sl: 9750, atr: 200, mult: pointer(1.25), want: "| SL: $9,750.00 (-2.5%) (1.25x)"},
+		{name: "short_1x", side: "short", avg: 10000, sl: 11000, atr: 1000, mult: pointer(1.0), want: "| SL: $11,000.00 (-10.0%) (1x)"},
+		{name: "without_multiplier", side: "long", avg: 10000, sl: 9500, atr: 250, want: "| SL: $9,500.00 (-5.0%)"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ss := &StrategyState{
 				Positions: map[string]*Position{
-					"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.01, AvgCost: tc.avg, Side: tc.side, StopLossTriggerPx: tc.sl, EntryATR: tc.atr, StopLossATRMult: tc.mult},
+					"BTC/USDT": {
+						Symbol: "BTC/USDT", Quantity: 0.01, AvgCost: tc.avg, Side: tc.side,
+						StopLossOID: tc.oid, StopLossTriggerPx: tc.sl, EntryATR: tc.atr, StopLossATRMult: tc.mult,
+					},
 				},
 			}
 			lines := collectPositions(StrategyConfig{ID: "hl-btc-sma"}, ss, map[string]float64{"BTC/USDT": tc.avg})
-			if !strings.Contains(lines[0], tc.wantSub) {
-				t.Errorf("expected SL fragment %q, got: %s", tc.wantSub, lines[0])
+			if len(lines) != 1 {
+				t.Fatalf("expected 1 line, got %d", len(lines))
+			}
+			if tc.wantAbsent {
+				if strings.Contains(lines[0], "SL:") {
+					t.Errorf("SL fragment should be omitted when StopLossTriggerPx=0, got: %s", lines[0])
+				}
+				return
+			}
+			if !strings.Contains(lines[0], tc.want) {
+				t.Errorf("expected SL fragment %q, got: %s", tc.want, lines[0])
+			}
+			if tc.mult == nil && strings.Contains(lines[0], "x)") {
+				t.Errorf("expected no multiplier suffix when StopLossATRMult=nil, got: %s", lines[0])
 			}
 		})
-	}
-}
-
-func TestCollectPositions_StopLossNoATRMultiplierWhenMultNil(t *testing.T) {
-	ss := &StrategyState{
-		Positions: map[string]*Position{
-			"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.01, AvgCost: 10000, Side: "long", StopLossTriggerPx: 9500, EntryATR: 250, StopLossATRMult: nil},
-		},
-	}
-	lines := collectPositions(StrategyConfig{ID: "hl-btc-sma"}, ss, map[string]float64{"BTC/USDT": 10000})
-	if !strings.Contains(lines[0], "| SL: $9,500.00 (-5.0%)") {
-		t.Errorf("expected SL fragment without multiplier, got: %s", lines[0])
-	}
-	if strings.Contains(lines[0], "x)") {
-		t.Errorf("expected no multiplier suffix when StopLossATRMult=nil, got: %s", lines[0])
 	}
 }
 
@@ -1351,67 +1303,55 @@ func TestCollectPositions_AllFragments(t *testing.T) {
 	}
 }
 
-func TestCollectPositions_TieredTPATR_Long(t *testing.T) {
-	sc := StrategyConfig{
-		ID:            "hl-tatr-btc",
-		CloseStrategy: &StrategyRef{Name: "tiered_tp_atr"},
-	}
-	ss := &StrategyState{
-		Positions: map[string]*Position{
-			"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.025, AvgCost: 63500, Side: "long", EntryATR: 1000},
+func TestCollectPositions_TieredTPATR(t *testing.T) {
+	cases := []struct {
+		name        string
+		id          string
+		closeName   string
+		side        string
+		wantTargets string
+	}{
+		{
+			name:        "long",
+			id:          "hl-tatr-btc",
+			closeName:   "tiered_tp_atr",
+			side:        "long",
+			wantTargets: "| TP1: $65,000.00 (+2.4%) (1.5x) | TP2: $66,500.00 (+4.7%) (3x)",
+		},
+		{
+			name:        "short",
+			id:          "hl-tatr-btc",
+			closeName:   "tiered_tp_atr",
+			side:        "short",
+			wantTargets: "| TP1: $62,000.00 (+2.4%) (1.5x) | TP2: $60,500.00 (+4.7%) (3x)",
+		},
+		{
+			name:        "live_long",
+			id:          "hl-tatr-live-btc",
+			closeName:   "tiered_tp_atr_live",
+			side:        "long",
+			wantTargets: "| TP1: $65,000.00 (+2.4%) (1.5x) | TP2: $66,500.00 (+4.7%) (3x)",
 		},
 	}
-	lines := collectPositions(sc, ss, map[string]float64{"BTC/USDT": 63500})
-	if len(lines) != 1 {
-		t.Fatalf("expected 1 line, got %d", len(lines))
-	}
-	if !strings.Contains(lines[0], "| ATR: $1,000.00") {
-		t.Errorf("expected ATR fragment, got: %s", lines[0])
-	}
-	if !strings.Contains(lines[0], "| TP1: $65,000.00 (+2.4%) (1.5x) | TP2: $66,500.00 (+4.7%) (3x)") {
-		t.Errorf("expected tiered TP fragments for long, got: %s", lines[0])
-	}
-}
-
-func TestCollectPositions_TieredTPATR_Short(t *testing.T) {
-	sc := StrategyConfig{
-		ID:            "hl-tatr-btc",
-		CloseStrategy: &StrategyRef{Name: "tiered_tp_atr"},
-	}
-	ss := &StrategyState{
-		Positions: map[string]*Position{
-			"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.025, AvgCost: 63500, Side: "short", EntryATR: 1000},
-		},
-	}
-	lines := collectPositions(sc, ss, map[string]float64{"BTC/USDT": 63500})
-	if !strings.Contains(lines[0], "| ATR: $1,000.00") {
-		t.Errorf("expected ATR fragment, got: %s", lines[0])
-	}
-	if !strings.Contains(lines[0], "| TP1: $62,000.00 (+2.4%) (1.5x) | TP2: $60,500.00 (+4.7%) (3x)") {
-		t.Errorf("expected tiered TP fragments for short, got: %s", lines[0])
-	}
-}
-
-func TestCollectPositions_TieredTPATRLive_Long(t *testing.T) {
-	sc := StrategyConfig{
-		ID:            "hl-tatr-live-btc",
-		CloseStrategy: &StrategyRef{Name: "tiered_tp_atr_live"},
-	}
-	ss := &StrategyState{
-		Positions: map[string]*Position{
-			"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.025, AvgCost: 63500, Side: "long", EntryATR: 1000},
-		},
-	}
-	lines := collectPositions(sc, ss, map[string]float64{"BTC/USDT": 63500})
-	if len(lines) != 1 {
-		t.Fatalf("expected 1 line, got %d", len(lines))
-	}
-	if !strings.Contains(lines[0], "| ATR: $1,000.00") {
-		t.Errorf("expected ATR fragment, got: %s", lines[0])
-	}
-	want := "| TP1: $65,000.00 (+2.4%) (1.5x) | TP2: $66,500.00 (+4.7%) (3x)"
-	if !strings.Contains(lines[0], want) {
-		t.Errorf("expected tiered TP fragments for tiered_tp_atr_live long, got: %s", lines[0])
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sc := StrategyConfig{ID: tc.id, CloseStrategy: &StrategyRef{Name: tc.closeName}}
+			ss := &StrategyState{
+				Positions: map[string]*Position{
+					"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.025, AvgCost: 63500, Side: tc.side, EntryATR: 1000},
+				},
+			}
+			lines := collectPositions(sc, ss, map[string]float64{"BTC/USDT": 63500})
+			if len(lines) != 1 {
+				t.Fatalf("expected 1 line, got %d", len(lines))
+			}
+			if !strings.Contains(lines[0], "| ATR: $1,000.00") {
+				t.Errorf("expected ATR fragment, got: %s", lines[0])
+			}
+			if !strings.Contains(lines[0], tc.wantTargets) {
+				t.Errorf("expected tiered TP fragments, got: %s", lines[0])
+			}
+		})
 	}
 }
 
@@ -2132,34 +2072,6 @@ func TestFormatCategorySummary_LifetimeStatsNoFallback(t *testing.T) {
 	}
 }
 
-func TestFormatTradeDM_OpenWithATRAndTP(t *testing.T) {
-	sc := StrategyConfig{
-		ID:            "hl-tatr-btc",
-		Platform:      "hyperliquid",
-		Type:          "perps",
-		CloseStrategy: &StrategyRef{Name: "tiered_tp_atr"},
-	}
-	trade := Trade{
-		Symbol:   "BTC",
-		Side:     "buy",
-		Quantity: 0.01,
-		Price:    63500.0,
-		Value:    635.0,
-		EntryATR: 1000.0,
-		Details:  "Open long 0.010000 @ $63500.00 (fee $0.22)",
-	}
-	msg := FormatTradeDM(sc, trade, "live")
-	if !strings.Contains(msg, "ATR: $1,000.00") {
-		t.Errorf("expected 'ATR: $1,000.00' in DM, got:\n%s", msg)
-	}
-	if !strings.Contains(msg, "TP1: $65,000.00") {
-		t.Errorf("expected 'TP1: $65,000.00' in DM, got:\n%s", msg)
-	}
-	if !strings.Contains(msg, "TP2: $66,500.00") {
-		t.Errorf("expected 'TP2: $66,500.00' in DM, got:\n%s", msg)
-	}
-}
-
 func TestFormatTradeDM_OpenWithCustomTiers(t *testing.T) {
 	sc := StrategyConfig{
 		ID:       "hl-tema-eth-live",
@@ -2371,56 +2283,46 @@ func TestFormatTradeDM_SLNoATRMultiplier(t *testing.T) {
 }
 
 func TestFormatTradeDM_TPATRMultipliers(t *testing.T) {
-	sc := StrategyConfig{
-		ID:            "hl-tatr-btc",
-		Platform:      "hyperliquid",
-		Type:          "perps",
-		CloseStrategy: &StrategyRef{Name: "tiered_tp_atr"},
-	}
-	trade := Trade{
-		Symbol:   "BTC",
-		Side:     "buy",
-		Quantity: 0.01,
-		Price:    63500.0,
-		Value:    635.0,
-		EntryATR: 1000.0,
-		Details:  "Open long 0.010000 @ $63500.00",
-	}
-	msg := FormatTradeDM(sc, trade, "live")
-	if !strings.Contains(msg, "TP1: $65,000.00 (1.5x)") {
-		t.Errorf("expected TP1 with 1.5× multiplier, got:\n%s", msg)
-	}
-	if !strings.Contains(msg, "TP2: $66,500.00 (3x)") {
-		t.Errorf("expected TP2 with 3× multiplier, got:\n%s", msg)
-	}
-}
-
-func TestFormatTradeDM_TPATRMultipliersFractional(t *testing.T) {
-	sc := StrategyConfig{
-		ID:       "hl-tatr-btc",
-		Platform: "hyperliquid",
-		Type:     "perps",
-		CloseStrategy: &StrategyRef{
-			Name: "tiered_tp_atr",
-			Params: map[string]interface{}{
+	cases := []struct {
+		name   string
+		params map[string]interface{}
+		want   []string
+	}{
+		{
+			name: "defaults",
+			want: []string{"TP1: $65,000.00 (1.5x)", "TP2: $66,500.00 (3x)"},
+		},
+		{
+			name: "fractional",
+			params: map[string]interface{}{
 				"tp_tiers": []interface{}{
 					map[string]interface{}{"atr_multiple": 1.25, "close_fraction": 0.5},
 					map[string]interface{}{"atr_multiple": 2.5, "close_fraction": 1.0},
 				},
 			},
+			want: []string{"TP1: $64,750.00 (1.25x)", "TP2: $66,000.00 (2.5x)"},
 		},
 	}
-	trade := Trade{
-		Symbol: "BTC", Side: "buy", Quantity: 0.01, Price: 63500.0, Value: 635.0,
-		EntryATR: 1000.0,
-		Details:  "Open long 0.010000 @ $63500.00",
-	}
-	msg := FormatTradeDM(sc, trade, "live")
-	if !strings.Contains(msg, "TP1: $64,750.00 (1.25x)") {
-		t.Errorf("expected TP1 with fractional 1.25× preserved, got:\n%s", msg)
-	}
-	if !strings.Contains(msg, "TP2: $66,000.00 (2.5x)") {
-		t.Errorf("expected TP2 with fractional 2.5× preserved, got:\n%s", msg)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sc := StrategyConfig{
+				ID:            "hl-tatr-btc",
+				Platform:      "hyperliquid",
+				Type:          "perps",
+				CloseStrategy: &StrategyRef{Name: "tiered_tp_atr", Params: tc.params},
+			}
+			trade := Trade{
+				Symbol: "BTC", Side: "buy", Quantity: 0.01, Price: 63500.0, Value: 635.0,
+				EntryATR: 1000.0,
+				Details:  "Open long 0.010000 @ $63500.00",
+			}
+			msg := FormatTradeDM(sc, trade, "live")
+			for _, want := range tc.want {
+				if !strings.Contains(msg, want) {
+					t.Errorf("expected %q in DM, got:\n%s", want, msg)
+				}
+			}
+		})
 	}
 }
 
@@ -2686,120 +2588,77 @@ func TestFormatTradeDM_ATRShownWithoutTiers(t *testing.T) {
 	}
 }
 
-func TestFormatTradeDM_RatchetSuppressedOnScaleIn(t *testing.T) {
-	pf := func(v float64) *float64 { return &v }
-	sc := StrategyConfig{
-		ID:            "hl-vwap-eth-60",
-		Platform:      "hyperliquid",
-		Type:          "perps",
-		CloseStrategy: &StrategyRef{Name: "trailing_tp_ratchet_regime", Params: map[string]interface{}{"use_defaults": true}},
-		TrailingStopATRMultRegime: &RegimeATRBlock{
-			UseDefaults: false,
-			TrendRegime: map[string]RegimeATREntry{
-				"ranging": {ATR: 2.5},
-			},
+func TestFormatTradeDM_RatchetSuppressedOnScaleIns(t *testing.T) {
+	cases := []struct {
+		name    string
+		price   float64
+		value   float64
+		stop    float64
+		details string
+		wantATR bool
+	}{
+		{
+			name:    "scale_in",
+			price:   2500,
+			value:   250,
+			stop:    2440.90,
+			details: "Scale-in long 0.100000 @ $2500.00 (add #2, new qty 0.503000, avg $2485.50, fee $0.05)",
+			wantATR: true,
+		},
+		{
+			name:    "manual_scale_in",
+			price:   2500,
+			value:   250,
+			stop:    2440.90,
+			details: "manual scale-in long 0.100000 @ $2500.00 (add #2, new qty 0.503000)",
+		},
+		{
+			name:    "manual_limit_add",
+			price:   2490,
+			value:   249,
+			stop:    2430.90,
+			details: "manual limit add long 0.100000 @ $2490.00 (cumulative VWAP $2485.50)",
 		},
 	}
-	trade := Trade{
-		Symbol:            "ETH",
-		Side:              "buy",
-		Quantity:          0.1,
-		Price:             2500,
-		Value:             250,
-		EntryATR:          23.64,
-		StopLossTriggerPx: 2440.90,
-		StopLossATRMult:   pf(2.5),
-		Regime:            "ranging",
-		TradeType:         scaleInTradeType,
-		Details:           "Scale-in long 0.100000 @ $2500.00 (add #2, new qty 0.503000, avg $2485.50, fee $0.05)",
-	}
-	msg := FormatTradeDM(sc, trade, "live")
-	if strings.Contains(msg, "Ratchet:") {
-		t.Errorf("scale-in trade should not render ratchet block, got:\n%s", msg)
-	}
-	for _, notWant := range []string{"RT1:", "RT2:", "RT3:", "Trail:"} {
-		if strings.Contains(msg, notWant) {
-			t.Errorf("scale-in DM should not contain %s, got:\n%s", notWant, msg)
-		}
-	}
-	if !strings.Contains(msg, "ATR: $23.64") {
-		t.Errorf("ATR should still surface on scale-in DM, got:\n%s", msg)
-	}
-}
-
-func TestFormatTradeDM_RatchetSuppressedOnManualScaleIn(t *testing.T) {
-	pf := func(v float64) *float64 { return &v }
-	sc := StrategyConfig{
-		ID:            "hl-vwap-eth-60",
-		Platform:      "hyperliquid",
-		Type:          "perps",
-		CloseStrategy: &StrategyRef{Name: "trailing_tp_ratchet_regime", Params: map[string]interface{}{"use_defaults": true}},
-		TrailingStopATRMultRegime: &RegimeATRBlock{
-			UseDefaults: false,
-			TrendRegime: map[string]RegimeATREntry{
-				"ranging": {ATR: 2.5},
-			},
-		},
-	}
-	trade := Trade{
-		Symbol:            "ETH",
-		Side:              "buy",
-		Quantity:          0.1,
-		Price:             2500,
-		Value:             250,
-		EntryATR:          23.64,
-		StopLossTriggerPx: 2440.90,
-		StopLossATRMult:   pf(2.5),
-		Regime:            "ranging",
-		TradeType:         scaleInTradeType,
-		Details:           "manual scale-in long 0.100000 @ $2500.00 (add #2, new qty 0.503000)",
-	}
-	msg := FormatTradeDM(sc, trade, "live")
-	if strings.Contains(msg, "Ratchet:") {
-		t.Errorf("manual scale-in trade should not render ratchet block, got:\n%s", msg)
-	}
-	for _, notWant := range []string{"RT1:", "RT2:", "RT3:", "Trail:"} {
-		if strings.Contains(msg, notWant) {
-			t.Errorf("manual scale-in DM should not contain %s, got:\n%s", notWant, msg)
-		}
-	}
-}
-
-func TestFormatTradeDM_RatchetSuppressedOnManualLimitAdd(t *testing.T) {
-	pf := func(v float64) *float64 { return &v }
-	sc := StrategyConfig{
-		ID:            "hl-vwap-eth-60",
-		Platform:      "hyperliquid",
-		Type:          "perps",
-		CloseStrategy: &StrategyRef{Name: "trailing_tp_ratchet_regime", Params: map[string]interface{}{"use_defaults": true}},
-		TrailingStopATRMultRegime: &RegimeATRBlock{
-			UseDefaults: false,
-			TrendRegime: map[string]RegimeATREntry{
-				"ranging": {ATR: 2.5},
-			},
-		},
-	}
-	trade := Trade{
-		Symbol:            "ETH",
-		Side:              "buy",
-		Quantity:          0.1,
-		Price:             2490,
-		Value:             249,
-		EntryATR:          23.64,
-		StopLossTriggerPx: 2430.90,
-		StopLossATRMult:   pf(2.5),
-		Regime:            "ranging",
-		TradeType:         scaleInTradeType,
-		Details:           "manual limit add long 0.100000 @ $2490.00 (cumulative VWAP $2485.50)",
-	}
-	msg := FormatTradeDM(sc, trade, "live")
-	if strings.Contains(msg, "Ratchet:") {
-		t.Errorf("manual limit add should not render ratchet block, got:\n%s", msg)
-	}
-	for _, notWant := range []string{"RT1:", "RT2:", "RT3:", "Trail:"} {
-		if strings.Contains(msg, notWant) {
-			t.Errorf("manual limit add DM should not contain %s, got:\n%s", notWant, msg)
-		}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			trail := 2.5
+			sc := StrategyConfig{
+				ID:            "hl-vwap-eth-60",
+				Platform:      "hyperliquid",
+				Type:          "perps",
+				CloseStrategy: &StrategyRef{Name: "trailing_tp_ratchet_regime", Params: map[string]interface{}{"use_defaults": true}},
+				TrailingStopATRMultRegime: &RegimeATRBlock{
+					UseDefaults: false,
+					TrendRegime: map[string]RegimeATREntry{"ranging": {ATR: 2.5}},
+				},
+			}
+			trade := Trade{
+				Symbol:            "ETH",
+				Side:              "buy",
+				Quantity:          0.1,
+				Price:             tc.price,
+				Value:             tc.value,
+				EntryATR:          23.64,
+				StopLossTriggerPx: tc.stop,
+				StopLossATRMult:   &trail,
+				Regime:            "ranging",
+				TradeType:         scaleInTradeType,
+				Details:           tc.details,
+			}
+			msg := FormatTradeDM(sc, trade, "live")
+			if strings.Contains(msg, "Ratchet:") {
+				t.Errorf("scale-in trade should not render ratchet block, got:\n%s", msg)
+			}
+			for _, notWant := range []string{"RT1:", "RT2:", "RT3:", "Trail:"} {
+				if strings.Contains(msg, notWant) {
+					t.Errorf("scale-in DM should not contain %s, got:\n%s", notWant, msg)
+				}
+			}
+			if tc.wantATR && !strings.Contains(msg, "ATR: $23.64") {
+				t.Errorf("ATR should still surface on scale-in DM, got:\n%s", msg)
+			}
+		})
 	}
 }
 

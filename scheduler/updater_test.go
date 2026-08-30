@@ -6,59 +6,49 @@ import (
 )
 
 func TestFormatUpdateMessage(t *testing.T) {
-	msg := formatUpdateMessage(
-		"abcdef1234567890",
-		"1234567890abcdef",
-		"abc1234 fix: something\ndef5678 feat: new thing",
-		"",
-	)
-
-	if !strings.Contains(msg, "abcdef12") {
-		t.Error("should contain truncated local hash")
+	cases := []struct {
+		name      string
+		commitLog string
+		tag       string
+		want      []string
+		unwant    []string
+	}{
+		{
+			name:      "commit log",
+			commitLog: "abc1234 fix: something\ndef5678 feat: new thing",
+			want: []string{
+				"abcdef12",
+				"12345678",
+				"fix: something",
+				"scripts/update.sh --restart",
+				"GO_TRADER_SERVICE=go-trader-live.service",
+				"Update Available",
+			},
+		},
+		{
+			name: "tag",
+			tag:  "v1.5.0",
+			want: []string{"v1.5.0", "New Release"},
+		},
+		{
+			name:   "empty commit log",
+			unwant: []string{"```\n\n```"},
+		},
 	}
-	if !strings.Contains(msg, "12345678") {
-		t.Error("should contain truncated remote hash")
-	}
-	if !strings.Contains(msg, "fix: something") {
-		t.Error("should contain commit log")
-	}
-	if !strings.Contains(msg, "scripts/update.sh --restart") {
-		t.Error("should point operators at scripts/update.sh --restart")
-	}
-	if !strings.Contains(msg, "GO_TRADER_SERVICE=go-trader-live.service") {
-		t.Error("should mention the custom unit env override")
-	}
-	if !strings.Contains(msg, "Update Available") {
-		t.Error("should contain update header")
-	}
-}
-
-func TestFormatUpdateMessageWithTag(t *testing.T) {
-	msg := formatUpdateMessage(
-		"abcdef1234567890",
-		"1234567890abcdef",
-		"",
-		"v1.5.0",
-	)
-
-	if !strings.Contains(msg, "v1.5.0") {
-		t.Error("should contain release tag")
-	}
-	if !strings.Contains(msg, "New Release") {
-		t.Error("should contain 'New Release' header for tagged releases")
-	}
-}
-
-func TestFormatUpdateMessageNoCommitLog(t *testing.T) {
-	msg := formatUpdateMessage(
-		"abcdef1234567890",
-		"1234567890abcdef",
-		"",
-		"",
-	)
-
-	if strings.Contains(msg, "```\n\n```") {
-		t.Error("should not contain empty code block")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			msg := formatUpdateMessage("abcdef1234567890", "1234567890abcdef", tc.commitLog, tc.tag)
+			for _, want := range tc.want {
+				if !strings.Contains(msg, want) {
+					t.Errorf("message missing %q", want)
+				}
+			}
+			for _, unwant := range tc.unwant {
+				if strings.Contains(msg, unwant) {
+					t.Errorf("message contains %q", unwant)
+				}
+			}
+		})
 	}
 }
 
@@ -79,19 +69,22 @@ func TestTailForDM(t *testing.T) {
 	}
 }
 
-func TestUpdateSystemdUnitNameDefaultsToCanonicalUnit(t *testing.T) {
-	t.Setenv("GO_TRADER_SERVICE", "")
-
-	if got := updateSystemdUnitName(); got != defaultGoTraderSystemdUnit {
-		t.Fatalf("expected default unit %q, got %q", defaultGoTraderSystemdUnit, got)
+func TestUpdateSystemdUnitName(t *testing.T) {
+	cases := []struct {
+		name string
+		env  string
+		want string
+	}{
+		{name: "default", want: defaultGoTraderSystemdUnit},
+		{name: "override", env: " go-trader-live.service ", want: "go-trader-live.service"},
 	}
-}
-
-func TestUpdateSystemdUnitNameUsesEnvOverride(t *testing.T) {
-	t.Setenv("GO_TRADER_SERVICE", " go-trader-live.service ")
-
-	if got := updateSystemdUnitName(); got != "go-trader-live.service" {
-		t.Fatalf("expected env override to be trimmed and used, got %q", got)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("GO_TRADER_SERVICE", tc.env)
+			if got := updateSystemdUnitName(); got != tc.want {
+				t.Fatalf("expected unit %q, got %q", tc.want, got)
+			}
+		})
 	}
 }
 
@@ -100,15 +93,8 @@ func TestFormatUpdateMessageTruncatesLongLog(t *testing.T) {
 	for i := range lines {
 		lines[i] = "hash" + string(rune('a'+i)) + " commit message"
 	}
-	commitLog := strings.Join(lines, "\n")
 
-	msg := formatUpdateMessage(
-		"abcdef1234567890",
-		"1234567890abcdef",
-		commitLog,
-		"",
-	)
-
+	msg := formatUpdateMessage("abcdef1234567890", "1234567890abcdef", strings.Join(lines, "\n"), "")
 	if !strings.Contains(msg, "... and 5 more") {
 		t.Error("should truncate to 10 lines with '... and 5 more'")
 	}

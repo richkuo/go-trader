@@ -57,73 +57,92 @@ func TestRedactConfigForDisplayEmptyTokenUntouched(t *testing.T) {
 	}
 }
 
-func TestBuildAddStrategyEntryHyperliquid(t *testing.T) {
-	id, raw, err := buildAddStrategyEntry("momentum", "hyperliquid", "eth")
-	if err != nil {
-		t.Fatalf("build: %v", err)
+func TestBuildAddStrategyEntry(t *testing.T) {
+	cases := []struct {
+		name          string
+		strategy      string
+		platform      string
+		asset         string
+		wantID        string
+		wantType      string
+		wantPlatform  string
+		wantMode      string
+		wantArg       string
+		wantDirection string
+		wantErr       bool
+	}{
+		{
+			name:         "hyperliquid",
+			strategy:     "momentum",
+			platform:     "hyperliquid",
+			asset:        "eth",
+			wantID:       "hl-momentum-eth",
+			wantType:     "perps",
+			wantPlatform: "hyperliquid",
+			wantMode:     "--mode=paper",
+			wantArg:      "\"ETH\"",
+		},
+		{
+			name:          "bidirectional direction",
+			strategy:      "triple_ema_bidir",
+			platform:      "hyperliquid",
+			asset:         "btc",
+			wantDirection: DirectionBoth,
+		},
+		{
+			name:         "spot",
+			strategy:     "sma_crossover",
+			platform:     "binanceus",
+			asset:        "btc",
+			wantID:       "sma-btc",
+			wantType:     "spot",
+			wantPlatform: "binanceus",
+			wantArg:      "BTC/USDT",
+		},
+		{name: "unknown strategy", strategy: "not_a_real_strategy", platform: "hyperliquid", asset: "eth", wantErr: true},
+		{name: "unsupported platform", strategy: "momentum", platform: "deribit", asset: "eth", wantErr: true},
+		{name: "asset token", strategy: "momentum", platform: "hyperliquid", asset: "ETH/USDT", wantErr: true},
+		{name: "empty strategy", platform: "hyperliquid", asset: "eth", wantErr: true},
 	}
-	if id != "hl-momentum-eth" {
-		t.Errorf("unexpected id: %q", id)
-	}
-	var obj map[string]interface{}
-	if err := json.Unmarshal(raw, &obj); err != nil {
-		t.Fatalf("unmarshal entry: %v", err)
-	}
-	if obj["type"] != "perps" || obj["platform"] != "hyperliquid" {
-		t.Errorf("unexpected type/platform: %v", obj)
-	}
-	args, _ := json.Marshal(obj["args"])
-	if !strings.Contains(string(args), "--mode=paper") {
-		t.Errorf("new perps strategy must be paper mode, got args: %s", args)
-	}
-	if !strings.Contains(string(args), "\"ETH\"") {
-		t.Errorf("asset should be uppercased in args: %s", args)
-	}
-}
-
-func TestBuildAddStrategyEntryBidirectionalDirection(t *testing.T) {
-	_, raw, err := buildAddStrategyEntry("triple_ema_bidir", "hyperliquid", "btc")
-	if err != nil {
-		t.Fatalf("build: %v", err)
-	}
-	var obj map[string]interface{}
-	_ = json.Unmarshal(raw, &obj)
-	if obj["direction"] != DirectionBoth {
-		t.Errorf("bidirectional strategy should get direction=both, got %v", obj["direction"])
-	}
-}
-
-func TestBuildAddStrategyEntrySpot(t *testing.T) {
-	id, raw, err := buildAddStrategyEntry("sma_crossover", "binanceus", "btc")
-	if err != nil {
-		t.Fatalf("build: %v", err)
-	}
-	if id != "sma-btc" {
-		t.Errorf("unexpected id: %q", id)
-	}
-	var obj map[string]interface{}
-	_ = json.Unmarshal(raw, &obj)
-	if obj["type"] != "spot" {
-		t.Errorf("expected spot type, got %v", obj["type"])
-	}
-	args, _ := json.Marshal(obj["args"])
-	if !strings.Contains(string(args), "BTC/USDT") {
-		t.Errorf("spot args should carry BTC/USDT symbol: %s", args)
-	}
-}
-
-func TestBuildAddStrategyEntryRejections(t *testing.T) {
-	if _, _, err := buildAddStrategyEntry("not_a_real_strategy", "hyperliquid", "eth"); err == nil {
-		t.Error("expected error for unknown strategy name")
-	}
-	if _, _, err := buildAddStrategyEntry("momentum", "deribit", "eth"); err == nil {
-		t.Error("expected error for unsupported platform")
-	}
-	if _, _, err := buildAddStrategyEntry("momentum", "hyperliquid", "ETH/USDT"); err == nil {
-		t.Error("expected error for non-plain asset token")
-	}
-	if _, _, err := buildAddStrategyEntry("", "hyperliquid", "eth"); err == nil {
-		t.Error("expected error for empty name")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			id, raw, err := buildAddStrategyEntry(tc.strategy, tc.platform, tc.asset)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected build error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("build: %v", err)
+			}
+			if tc.wantID != "" && id != tc.wantID {
+				t.Errorf("unexpected id: %q", id)
+			}
+			var obj map[string]interface{}
+			if err := json.Unmarshal(raw, &obj); err != nil {
+				t.Fatalf("unmarshal entry: %v", err)
+			}
+			if tc.wantType != "" && obj["type"] != tc.wantType {
+				t.Errorf("type = %v, want %s", obj["type"], tc.wantType)
+			}
+			if tc.wantPlatform != "" && obj["platform"] != tc.wantPlatform {
+				t.Errorf("platform = %v, want %s", obj["platform"], tc.wantPlatform)
+			}
+			if tc.wantDirection != "" && obj["direction"] != tc.wantDirection {
+				t.Errorf("direction = %v, want %s", obj["direction"], tc.wantDirection)
+			}
+			args, err := json.Marshal(obj["args"])
+			if err != nil {
+				t.Fatalf("marshal args: %v", err)
+			}
+			if tc.wantMode != "" && !strings.Contains(string(args), tc.wantMode) {
+				t.Errorf("args missing %q: %s", tc.wantMode, args)
+			}
+			if tc.wantArg != "" && !strings.Contains(string(args), tc.wantArg) {
+				t.Errorf("args missing %q: %s", tc.wantArg, args)
+			}
+		})
 	}
 }
 

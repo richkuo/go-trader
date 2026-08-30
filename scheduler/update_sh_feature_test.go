@@ -18,6 +18,34 @@ func updateShellScriptPath(t *testing.T) string {
 	return filepath.Join(filepath.Dir(thisFile), "..", "scripts", "update.sh")
 }
 
+func updateShellBash(t *testing.T) string {
+	t.Helper()
+	candidates := []string{}
+	if path, err := exec.LookPath("bash"); err == nil {
+		candidates = append(candidates, path)
+	}
+	candidates = append(candidates, "/opt/homebrew/bin/bash", "/usr/local/bin/bash", "/opt/local/bin/bash")
+	seen := make(map[string]struct{}, len(candidates))
+	versions := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		if _, ok := seen[candidate]; ok {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		versionOutput, versionErr := exec.Command(candidate, "--version").CombinedOutput()
+		if versionErr != nil {
+			continue
+		}
+		version := strings.TrimSpace(strings.SplitN(string(versionOutput), "\n", 2)[0])
+		versions = append(versions, version)
+		if err := exec.Command(candidate, "-c", `test "${BASH_VERSINFO[0]}" -ge 4`).Run(); err == nil {
+			return candidate
+		}
+	}
+	t.Skipf("update.sh --all tests require Bash >= 4 for declare -A; available Bash runtimes: %s", strings.Join(versions, "; "))
+	return ""
+}
+
 func TestUpdateShellHelpDocumentsRsyncFrom790(t *testing.T) {
 	t.Parallel()
 	script := updateShellScriptPath(t)
@@ -40,12 +68,13 @@ func TestUpdateShellHelpDocumentsRsyncFrom790(t *testing.T) {
 
 func TestUpdateHelpersEnvfileParsing790(t *testing.T) {
 	t.Parallel()
+	bash := updateShellBash(t)
 	_, thisFile, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("runtime.Caller failed")
 	}
 	script := filepath.Join(filepath.Dir(thisFile), "..", "scripts", "test_update_helpers.sh")
-	out, err := exec.Command("bash", script).CombinedOutput()
+	out, err := exec.Command(bash, script).CombinedOutput()
 	if err != nil {
 		t.Fatalf("bash %s: %v\n%s", script, err, out)
 	}
@@ -69,13 +98,14 @@ func TestUpdateShellRejectsMissingRsyncFromDir790(t *testing.T) {
 func TestUpdateShellAllReportsSkippedAndFailsOnZeroUpdate1055(t *testing.T) {
 	t.Parallel()
 	script := updateShellScriptPath(t)
+	bash := updateShellBash(t)
 	root := t.TempDir()
 	for _, d := range []string{"go-trader-live", "go-trader-paper", "unrelated"} {
 		if err := os.MkdirAll(filepath.Join(root, d), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
-	cmd := exec.Command("bash", script, "--all", "--restart")
+	cmd := exec.Command(bash, script, "--all", "--restart")
 	cmd.Env = append(os.Environ(), "GO_TRADER_UPDATE_ALL_ROOT="+root)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
@@ -100,6 +130,7 @@ func TestUpdateShellAllReportsSkippedAndFailsOnZeroUpdate1055(t *testing.T) {
 func TestUpdateShellAllDispatchesWithoutBuildToolchain1055(t *testing.T) {
 	t.Parallel()
 	script := updateShellScriptPath(t)
+	bash := updateShellBash(t)
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "go-trader-x"), 0o755); err != nil {
 		t.Fatal(err)
@@ -116,7 +147,7 @@ func TestUpdateShellAllDispatchesWithoutBuildToolchain1055(t *testing.T) {
 		}
 	}
 
-	cmd := exec.Command("bash", script, "--all", "--restart")
+	cmd := exec.Command(bash, script, "--all", "--restart")
 	cmd.Env = []string{
 		"PATH=" + binDir,
 		"GO_TRADER_UPDATE_ALL_ROOT=" + root,
@@ -177,9 +208,10 @@ func allUnionTestEnv(t *testing.T) (string, string, []string) {
 func TestUpdateShellAllUnionsSystemdAndGlob1055(t *testing.T) {
 	t.Parallel()
 	script := updateShellScriptPath(t)
+	bash := updateShellBash(t)
 	repo, _, env := allUnionTestEnv(t)
 
-	cmd := exec.Command("bash", script, "--all", "--restart")
+	cmd := exec.Command(bash, script, "--all", "--restart")
 	cmd.Dir = repo
 	cmd.Env = env
 	out, _ := cmd.CombinedOutput()
@@ -200,10 +232,11 @@ func TestUpdateShellAllUnionsSystemdAndGlob1055(t *testing.T) {
 func TestUpdateShellAllExplicitRootSuppressesSystemd1055(t *testing.T) {
 	t.Parallel()
 	script := updateShellScriptPath(t)
+	bash := updateShellBash(t)
 	repo, _, env := allUnionTestEnv(t)
 	parent := filepath.Dir(repo)
 
-	cmd := exec.Command("bash", script, "--all", "--restart", "--update-all-root", parent)
+	cmd := exec.Command(bash, script, "--all", "--restart", "--update-all-root", parent)
 	cmd.Dir = repo
 	cmd.Env = env
 	out, _ := cmd.CombinedOutput()

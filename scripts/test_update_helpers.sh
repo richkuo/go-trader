@@ -176,7 +176,7 @@ fi
     canon_pair=$(printf '%s\n' "$got" | awk -F'|' '$1 == "/srv/deploys/go-trader-shared/" { print $2 }')
     assert_eq "$canon_pair" "go-trader@paper-2.service" \
         "unit_map: trailing-slash WD canonicalizes to physical-path+slash key"
-    collision_count=$(printf '%s\n' "$got" | awk -F'|' '{ print $1 }' | sort | uniq -d | wc -l)
+    collision_count=$(printf '%s\n' "$got" | awk -F'|' '{ print $1 }' | sort | uniq -d | wc -l | tr -d '[:space:]')
     assert_eq "$collision_count" "0" \
         "unit_map: helper does not de-dupe; consumer must dedupe + warn"
 )
