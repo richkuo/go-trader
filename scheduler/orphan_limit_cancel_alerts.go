@@ -124,7 +124,7 @@ func formatOrphanLimitCancelDM(o PendingLimitOrder, block string, outcome orphan
 		fmt.Fprintf(&b, "• RESTORE %q to this config as a Hyperliquid-live type=manual strategy — the only path the scheduler can finish on its own. It adopts the fill, arms protection, and clears this alert\n", o.StrategyID)
 		fmt.Fprintf(&b, "• OR flatten the position yourself on the Hyperliquid UI, then run `go-trader manual-clear-limit-row %d --flattened`. The scheduler cannot see a flatten it does not own, and the order's fill history never changes, so this alert repeats every %s until the queue row is cleared\n",
 			o.OrderOID, effectiveAlertThrottleInterval())
-		b.WriteString("Do not flatten and then restore without clearing the row: the scheduler would adopt a fill that is no longer on the exchange.")
+		b.WriteString("Do not flatten and then restore without clearing the row: the scheduler refuses to book a fill the account no longer holds, so the position stays untracked and this alert keeps repeating.")
 	case orphanLimitStateOffBookRowStuck:
 		fmt.Fprintf(&b, "⚠️ **Limit order queue row not cleared: %s**\n", killSwitchLimitOrderLabel(o))
 		fmt.Fprintf(&b, "The order is OFF-BOOK and nothing is resting on Hyperliquid, so no exchange action is needed: %s.\n", outcome.Reason)

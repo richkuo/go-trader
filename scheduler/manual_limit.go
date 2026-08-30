@@ -754,6 +754,8 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, stateDB *StateDB,
 
 	now := time.Now().UTC()
 	orphanLimitCancelAlerts.Retain(orders)
+	limitFillExposureAlerts.Retain(orders)
+	exposureReader := &hlLiveExposureReader{}
 	applied := make(map[string]*manualAlert)
 	var order []string
 
@@ -809,50 +811,74 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, stateDB *StateDB,
 		}
 		st := statusRes.Orders[0]
 
+		adoptionRefused := false
 		if st.FilledSize > o.FilledSize+limitFillEpsilon {
 			avgPx := st.AvgPx
 			if avgPx <= 0 {
 				avgPx = o.LimitPrice
 			}
+			positions, readErr := exposureReader.read()
+			onChainNet := hyperliquidOnChainNetForCoin(positions, o.Symbol)
+			signedDelta := hlSignedQty(o.Side, st.FilledSize-o.FilledSize)
+			owners := hyperliquidLiveOwnersForCoin(cfg.Strategies, o.Symbol)
 			entryATR := o.EntryATR
 			resolveATR := o.FilledSize == 0
+			mu.RLock()
+			preBooked := hyperliquidBookedSignedNetForCoin(cfg.Strategies, state, o.Symbol)
 			if !resolveATR {
-				mu.RLock()
 				if ss := state.Strategies[o.StrategyID]; ss != nil {
 					if p := ss.Positions[o.Symbol]; p != nil && p.EntryATR == 0 {
 						resolveATR = true
 					}
 				}
-				mu.RUnlock()
 			}
-			if resolveATR {
-				entryATR = resolveLimitFillEntryATR(sc, cfg, o.EntryATR, avgPx, notifier)
+			mu.RUnlock()
+			decision := classifyLimitFillLiveExposure(o.Symbol, preBooked, signedDelta, onChainNet, readErr, owners)
+			if decision.Verdict == limitFillExposureUnbacked {
+				positions, readErr = exposureReader.refresh()
+				onChainNet = hyperliquidOnChainNetForCoin(positions, o.Symbol)
+				decision = classifyLimitFillLiveExposure(o.Symbol, preBooked, signedDelta, onChainNet, readErr, owners)
 			}
-			mu.Lock()
-			tradesBooked, applyErr := applyLimitFillProgress(state, sc, o, st.FilledSize, avgPx, st.Fee, entryATR, resolveATRMethod(sc, cfg), now)
-			mu.Unlock()
-			if applyErr != nil {
+			var tradesBooked int
+			var applyErr error
+			if decision.adopts() {
+				if resolveATR {
+					entryATR = resolveLimitFillEntryATR(sc, cfg, o.EntryATR, avgPx, notifier)
+				}
+				tradesBooked, decision, applyErr = applyLimitFillIfLiveExposure(state, cfg, sc, o, st.FilledSize, avgPx, st.Fee, entryATR, resolveATRMethod(sc, cfg), now, onChainNet, readErr, mu)
+			}
+			if !decision.adopts() {
+				adoptionRefused = true
+				reportLimitFillExposureRefusal(notifier, o, st.FilledSize, decision, now)
+			} else if applyErr != nil {
 				warnNotifier(notifier, fmt.Sprintf("[limit-fill] %s %s: %v", o.StrategyID, o.Symbol, applyErr))
 				continue
-			}
-			if err := stateDB.UpdatePendingLimitOrderFill(o.ID, st.FilledSize, avgPx, st.Fee); err != nil {
-				fmt.Printf("[limit] failed to persist fill watermark for row %d: %v\n", o.ID, err)
-			}
-			o.FilledSize = st.FilledSize
-			o.AvgFillPrice = avgPx
-			o.FillFee = st.Fee
-			if _, fillPx := runHyperliquidProtectionSync(sc, state.Strategies[o.StrategyID], stateDB, o.Symbol, mu, notifier, logger, "HL limit-fill protection synced", nil, nil, nil); fillPx > 0 {
-				tradesBooked++
-			}
-			if ma := applied[o.StrategyID]; ma == nil {
-				applied[o.StrategyID] = &manualAlert{sc: sc, ss: state.Strategies[o.StrategyID], trades: tradesBooked}
-				order = append(order, o.StrategyID)
 			} else {
-				ma.trades += tradesBooked
+				limitFillExposureAlerts.Clear(limitFillExposureKeyFor(o))
+				if err := stateDB.UpdatePendingLimitOrderFill(o.ID, st.FilledSize, avgPx, st.Fee); err != nil {
+					fmt.Printf("[limit] failed to persist fill watermark for row %d: %v\n", o.ID, err)
+				}
+				o.FilledSize = st.FilledSize
+				o.AvgFillPrice = avgPx
+				o.FillFee = st.Fee
+				if _, fillPx := runHyperliquidProtectionSync(sc, state.Strategies[o.StrategyID], stateDB, o.Symbol, mu, notifier, logger, "HL limit-fill protection synced", nil, nil, nil); fillPx > 0 {
+					tradesBooked++
+				}
+				if ma := applied[o.StrategyID]; ma == nil {
+					applied[o.StrategyID] = &manualAlert{sc: sc, ss: state.Strategies[o.StrategyID], trades: tradesBooked}
+					order = append(order, o.StrategyID)
+				} else {
+					ma.trades += tradesBooked
+				}
 			}
 		}
 
 		if st.Resting != nil && !*st.Resting {
+			if adoptionRefused {
+				fmt.Printf("[limit] %s: order is off-book and its fill was NOT booked — keeping the queue row as the recovery record\n",
+					killSwitchLimitOrderLabel(o))
+				continue
+			}
 			if limitOrderFullyFilled(o.FilledSize, o.OrderSize) {
 				fmt.Printf("[limit] %s oid=%d fully filled (%.6f %s)\n", o.StrategyID, o.OrderOID, o.FilledSize, o.Symbol)
 			} else if o.FilledSize > 0 {

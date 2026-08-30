@@ -914,6 +914,7 @@ func TestReconcilePendingLimitOrdersAdoptsFillOnACancelRequestedRow(t *testing.T
 	cfg := &Config{Strategies: []StrategyConfig{sc}}
 	db := newLimitTestStateDB(t)
 	var mu sync.RWMutex
+	withStubbedHLLiveExposure(t, HLPosition{Coin: "ETH", Size: 0.3})
 
 	db.InsertPendingLimitOrder(PendingLimitOrder{
 		StrategyID: sc.ID, Symbol: "ETH", Side: "long", OrderOID: 9001,
@@ -969,6 +970,7 @@ func TestReconcilePendingLimitOrdersAdoptsFillWhileKillSwitchLatched(t *testing.
 	cfg := &Config{Strategies: []StrategyConfig{sc}}
 	db := newLimitTestStateDB(t)
 	var mu sync.RWMutex
+	withStubbedHLLiveExposure(t, HLPosition{Coin: "ETH", Size: 0.5})
 
 	db.InsertPendingLimitOrder(PendingLimitOrder{
 		StrategyID: sc.ID, Symbol: "ETH", Side: "long", OrderOID: 9001,

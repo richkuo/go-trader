@@ -917,6 +917,18 @@ func TestPendingLimitOrderCRUD(t *testing.T) {
 	}
 }
 
+func withStubbedHLLiveExposure(t *testing.T, positions ...HLPosition) {
+	t.Helper()
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xlimittest")
+	orig := fetchHyperliquidStateFn
+	snapshot := append([]HLPosition(nil), positions...)
+	fetchHyperliquidStateFn = func(string) (float64, []HLPosition, error) {
+		return 0, snapshot, nil
+	}
+	limitFillExposureAlerts.reset()
+	t.Cleanup(func() { fetchHyperliquidStateFn = orig })
+}
+
 func withStubbedLimitDeps(t *testing.T, status func(script, symbol string, oids []int64, sinceMs int64) (*HyperliquidLimitStatusResult, string, error), cancel func(script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error)) {
 	t.Helper()
 	origStatus := runHyperliquidLimitStatusFn
@@ -942,6 +954,7 @@ func TestReconcilePendingLimitOrdersFullFill(t *testing.T) {
 	cfg := &Config{Strategies: []StrategyConfig{sc}}
 	db := newLimitTestStateDB(t)
 	var mu sync.RWMutex
+	withStubbedHLLiveExposure(t, HLPosition{Coin: "ETH", Size: 0.5})
 
 	id, _ := db.InsertPendingLimitOrder(PendingLimitOrder{
 		StrategyID: sc.ID, Symbol: "ETH", Side: "long", OrderOID: 9001,
@@ -986,6 +999,7 @@ func TestReconcilePendingLimitOrdersFullFillFlushesPositionBeforeRowDelete(t *te
 	}
 	cfg := &Config{DBFile: dbPath, Strategies: []StrategyConfig{sc}}
 	var mu sync.RWMutex
+	withStubbedHLLiveExposure(t, HLPosition{Coin: "ETH", Size: 0.5})
 
 	db.InsertPendingLimitOrder(PendingLimitOrder{
 		StrategyID: sc.ID, Symbol: "ETH", Side: "long", OrderOID: 9001,
@@ -1032,6 +1046,7 @@ func TestReconcilePendingLimitOrdersPartialThenComplete(t *testing.T) {
 		LimitPrice: 2000, OrderSize: 1.0, TIF: "Alo", EntryATR: 50, CreatedAt: time.Now().UTC(),
 	})
 
+	withStubbedHLLiveExposure(t, HLPosition{Coin: "ETH", Size: 0.4})
 	withStubbedLimitDeps(t,
 		func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
 			return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
@@ -1051,6 +1066,7 @@ func TestReconcilePendingLimitOrdersPartialThenComplete(t *testing.T) {
 		t.Fatalf("watermark not persisted: %+v", orders)
 	}
 
+	withStubbedHLLiveExposure(t, HLPosition{Coin: "ETH", Size: 1.0})
 	withStubbedLimitDeps(t,
 		func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
 			return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
