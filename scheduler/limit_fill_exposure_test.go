@@ -335,12 +335,146 @@ func TestLimitFillExposureAlertsRetainDropsClearedRows(t *testing.T) {
 	}
 }
 
-func TestReconcilePendingLimitOrdersRereadsTheAccountBeforeRefusing(t *testing.T) {
-	sc, state := newLimitTestStrategy()
-	cfg := &Config{Strategies: []StrategyConfig{sc}}
+func limitExposureCoinStrategy(id, coin string) (StrategyConfig, *StrategyState) {
+	sc := StrategyConfig{
+		ID:       id,
+		Type:     "manual",
+		Platform: "hyperliquid",
+		Symbol:   coin,
+		Script:   "shared_scripts/check_hyperliquid.py",
+		Leverage: 10,
+		Args:     []string{"hold", coin, "30m", "--mode=live"},
+	}
+	ss := &StrategyState{
+		ID:        id,
+		Platform:  "hyperliquid",
+		Type:      "manual",
+		Positions: map[string]*Position{},
+		Cash:      10000,
+	}
+	return sc, ss
+}
+
+func seedLimitExposureCoinRow(t *testing.T, db *StateDB, strategyID, coin string, oid int64, size float64) {
+	t.Helper()
+	if _, err := db.InsertPendingLimitOrder(PendingLimitOrder{
+		StrategyID: strategyID, Symbol: coin, Side: "long", OrderOID: oid,
+		LimitPrice: 2000, OrderSize: size, TIF: "Alo", EntryATR: 50,
+		CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("seed pending limit order for %s: %v", coin, err)
+	}
+}
+
+func countingHLStateStub(t *testing.T, fetches *int, onChain *[]HLPosition) {
+	t.Helper()
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xlimittest")
+	limitFillExposureAlerts.reset()
+	t.Cleanup(func() { limitFillExposureAlerts.reset() })
+	orig := fetchHyperliquidStateFn
+	t.Cleanup(func() { fetchHyperliquidStateFn = orig })
+	fetchHyperliquidStateFn = func(string) (float64, []HLPosition, error) {
+		*fetches++
+		return 0, append([]HLPosition(nil), (*onChain)...), nil
+	}
+}
+
+func twoCoinLimitStatusStub(ethFilled, btcFilled float64, onFill func(coin string)) func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
+	return func(_ string, symbol string, _ []int64, _ int64) (*HyperliquidLimitStatusResult, string, error) {
+		if onFill != nil {
+			onFill(symbol)
+		}
+		if symbol == "BTC" {
+			return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
+				{OID: 9002, Resting: limitTestBoolPtr(false), FilledSize: btcFilled, AvgPx: 60000, Fee: 0.4, Count: 1},
+			}}, "", nil
+		}
+		return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
+			{OID: 9001, Resting: limitTestBoolPtr(false), FilledSize: ethFilled, AvgPx: 2000, Fee: 0.7, Count: 1},
+		}}, "", nil
+	}
+}
+
+func twoCoinLimitFixture(t *testing.T) (*AppState, *Config, *StateDB, StrategyConfig, StrategyConfig) {
+	t.Helper()
+	ethSC, ethState := limitExposureCoinStrategy("hl-manual-eth-live", "ETH")
+	btcSC, btcState := limitExposureCoinStrategy("hl-manual-btc-live", "BTC")
+	state := &AppState{Strategies: map[string]*StrategyState{ethSC.ID: ethState, btcSC.ID: btcState}}
+	cfg := &Config{Strategies: []StrategyConfig{ethSC, btcSC}}
 	db := newLimitTestStateDB(t)
+	seedLimitExposureCoinRow(t, db, ethSC.ID, "ETH", 9001, 0.5)
+	seedLimitExposureCoinRow(t, db, btcSC.ID, "BTC", 9002, 0.25)
+	return state, cfg, db, ethSC, btcSC
+}
+
+func TestReconcilePendingLimitOrdersGivesEachRowASnapshotNewerThanItsOwnStatusPoll(t *testing.T) {
+	state, cfg, db, ethSC, btcSC := twoCoinLimitFixture(t)
 	var mu sync.RWMutex
-	seedLimitExposureRow(t, db, sc.ID, 0)
+
+	var onChain []HLPosition
+	fetches := 0
+	countingHLStateStub(t, &fetches, &onChain)
+
+	withStubbedLimitDeps(t, twoCoinLimitStatusStub(0.5, 0.25, func(coin string) {
+		if coin == "BTC" {
+			onChain = append(onChain, HLPosition{Coin: "BTC", Size: 0.25})
+		}
+	}), noCancelExpected(t))
+
+	notifier, mock := newOrphanLaneNotifier()
+	reconcilePendingLimitOrders(state, cfg, db, &mu, notifier, nil)
+
+	if pos := state.Strategies[ethSC.ID].Positions["ETH"]; pos != nil {
+		t.Fatalf("ETH position = %+v, want none — that fill really has no live exposure", pos)
+	}
+	pos := state.Strategies[btcSC.ID].Positions["BTC"]
+	if pos == nil || pos.Quantity != 0.25 {
+		t.Fatalf("BTC position = %+v, want the 0.25 fill booked — an earlier row's refusal must not spend this row's re-read", pos)
+	}
+	if fetches != 2 {
+		t.Fatalf("account fetches = %d, want 2 — the second row needs a snapshot newer than its own status poll", fetches)
+	}
+	if len(mock.dms) != 1 || !strings.Contains(mock.dms[0].content, "ETH") {
+		t.Fatalf("owner DMs = %+v, want exactly one, for the genuinely unbacked ETH row", mock.dms)
+	}
+	if orders, _ := db.LoadPendingLimitOrders(); len(orders) != 1 || orders[0].Symbol != "ETH" {
+		t.Fatalf("rows = %+v, want only the refused ETH recovery record kept", orders)
+	}
+}
+
+func TestReconcilePendingLimitOrdersRefusesTwoUnbackedRowsInOnePass(t *testing.T) {
+	state, cfg, db, ethSC, btcSC := twoCoinLimitFixture(t)
+	var mu sync.RWMutex
+
+	var onChain []HLPosition
+	fetches := 0
+	countingHLStateStub(t, &fetches, &onChain)
+
+	withStubbedLimitDeps(t, twoCoinLimitStatusStub(0.5, 0.25, nil), noCancelExpected(t))
+
+	notifier, mock := newOrphanLaneNotifier()
+	reconcilePendingLimitOrders(state, cfg, db, &mu, notifier, nil)
+
+	if pos := state.Strategies[ethSC.ID].Positions["ETH"]; pos != nil {
+		t.Fatalf("ETH position = %+v, want none", pos)
+	}
+	if pos := state.Strategies[btcSC.ID].Positions["BTC"]; pos != nil {
+		t.Fatalf("BTC position = %+v, want none", pos)
+	}
+	if fetches != 2 {
+		t.Fatalf("account fetches = %d, want 2 — each refusing row is judged on a snapshot newer than its own status poll", fetches)
+	}
+	if len(mock.dms) != 2 {
+		t.Fatalf("owner DMs = %+v, want one per unbacked row", mock.dms)
+	}
+	if orders, _ := db.LoadPendingLimitOrders(); len(orders) != 2 {
+		t.Fatalf("rows = %+v, want both recovery records kept", orders)
+	}
+}
+
+func TestReconcilePendingLimitOrdersRetriesAFailedAccountReadForALaterRow(t *testing.T) {
+	state, cfg, db, ethSC, btcSC := twoCoinLimitFixture(t)
+	var mu sync.RWMutex
 
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xlimittest")
 	limitFillExposureAlerts.reset()
@@ -351,57 +485,88 @@ func TestReconcilePendingLimitOrdersRereadsTheAccountBeforeRefusing(t *testing.T
 	fetchHyperliquidStateFn = func(string) (float64, []HLPosition, error) {
 		fetches++
 		if fetches == 1 {
-			return 0, nil, nil
+			return 0, nil, errors.New("http 503 from api.hyperliquid.xyz")
 		}
-		return 0, []HLPosition{{Coin: "ETH", Size: 0.5}}, nil
+		return 0, []HLPosition{{Coin: "BTC", Size: 0.25}}, nil
 	}
 
-	withStubbedLimitDeps(t, offBookFullFillStatus(0.5), noCancelExpected(t))
+	withStubbedLimitDeps(t, twoCoinLimitStatusStub(0.5, 0.25, nil), noCancelExpected(t))
 
 	notifier, mock := newOrphanLaneNotifier()
-	alerts := reconcilePendingLimitOrders(state, cfg, db, &mu, notifier, nil)
+	reconcilePendingLimitOrders(state, cfg, db, &mu, notifier, nil)
 
+	if pos := state.Strategies[ethSC.ID].Positions["ETH"]; pos != nil {
+		t.Fatalf("ETH position = %+v, want none — an unreadable account defers", pos)
+	}
+	pos := state.Strategies[btcSC.ID].Positions["BTC"]
+	if pos == nil || pos.Quantity != 0.25 {
+		t.Fatalf("BTC position = %+v — one row's failed read must not mark every later row unreadable", pos)
+	}
 	if fetches != 2 {
-		t.Fatalf("account fetches = %d, want 2 — a snapshot older than the order status must be re-read before a refusal", fetches)
+		t.Fatalf("account fetches = %d, want 2 — the later row retries the read the earlier row lost", fetches)
 	}
-	if len(alerts) != 1 {
-		t.Fatalf("alerts = %+v, want one — the fresh reading backs the fill", alerts)
-	}
-	pos := state.Strategies[sc.ID].Positions["ETH"]
-	if pos == nil || pos.Quantity != 0.5 {
-		t.Fatalf("position = %+v, want the fill booked on the fresh reading", pos)
-	}
-	if len(mock.dms) != 0 {
-		t.Fatalf("owner DMs = %+v, want none — a stale snapshot must not raise a false alarm", mock.dms)
+	if len(mock.dms) != 1 || !strings.Contains(mock.dms[0].content, "account state unreadable") {
+		t.Fatalf("owner DMs = %+v, want exactly one deferral alert for the row that hit the failed read", mock.dms)
 	}
 }
 
-func TestReconcilePendingLimitOrdersRereadsTheAccountOnlyOncePerPass(t *testing.T) {
+func TestReconcilePendingLimitOrdersDoesNotRefetchASnapshotNewerThanItsStatusPoll(t *testing.T) {
 	sc, state := newLimitTestStrategy()
 	cfg := &Config{Strategies: []StrategyConfig{sc}}
 	db := newLimitTestStateDB(t)
 	var mu sync.RWMutex
 	seedLimitExposureRow(t, db, sc.ID, 0)
 
-	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xlimittest")
-	limitFillExposureAlerts.reset()
-	t.Cleanup(func() { limitFillExposureAlerts.reset() })
-	origFetch := fetchHyperliquidStateFn
-	t.Cleanup(func() { fetchHyperliquidStateFn = origFetch })
+	var onChain []HLPosition
 	fetches := 0
-	fetchHyperliquidStateFn = func(string) (float64, []HLPosition, error) {
-		fetches++
-		return 0, nil, nil
-	}
+	countingHLStateStub(t, &fetches, &onChain)
 
 	withStubbedLimitDeps(t, offBookFullFillStatus(0.5), noCancelExpected(t))
 
 	reconcilePendingLimitOrders(state, cfg, db, &mu, nil, nil)
 
-	if fetches != 2 {
-		t.Fatalf("account fetches = %d, want 2 — the re-read is bounded to one per reconcile pass", fetches)
+	if fetches != 1 {
+		t.Fatalf("account fetches = %d, want 1 — a snapshot already newer than this row's status poll needs no re-read", fetches)
 	}
 	if pos := state.Strategies[sc.ID].Positions["ETH"]; pos != nil {
-		t.Fatalf("position = %+v, want none — a confirmed-flat account still refuses the fill", pos)
+		t.Fatalf("position = %+v, want none — a confirmed-flat account refuses the fill", pos)
+	}
+}
+
+func TestHLLiveExposureReaderReplacesBothPositionsAndErrorOnEveryFetch(t *testing.T) {
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xlimittest")
+	orig := fetchHyperliquidStateFn
+	t.Cleanup(func() { fetchHyperliquidStateFn = orig })
+	fetches := 0
+	fetchHyperliquidStateFn = func(string) (float64, []HLPosition, error) {
+		fetches++
+		if fetches == 2 {
+			return 0, nil, errors.New("http 503")
+		}
+		return 0, []HLPosition{{Coin: "ETH", Size: 0.5}}, nil
+	}
+
+	r := &hlLiveExposureReader{}
+	before := time.Now()
+	if positions, err := r.snapshot(); err != nil || len(positions) != 1 {
+		t.Fatalf("first snapshot = (%+v, %v), want the fetched position", positions, err)
+	}
+	if positions, err := r.snapshot(); err != nil || len(positions) != 1 {
+		t.Fatalf("a held snapshot must be reused, got (%+v, %v)", positions, err)
+	}
+	if fetches != 1 {
+		t.Fatalf("fetches = %d, want 1 — snapshot() fetches only when nothing is held", fetches)
+	}
+	if positions, err := r.snapshotNewerThan(time.Now()); err == nil || positions != nil {
+		t.Fatalf("a failed re-read must surface as an error with no positions, got (%+v, %v)", positions, err)
+	}
+	if positions, err := r.snapshotNewerThan(time.Now()); err != nil || len(positions) != 1 {
+		t.Fatalf("a later fetch must replace the failed reading, got (%+v, %v) — a failed read must not persist", positions, err)
+	}
+	if _, err := r.snapshotNewerThan(before); err != nil {
+		t.Fatalf("a snapshot fetched after the requested instant must be reused, got %v", err)
+	}
+	if fetches != 3 {
+		t.Fatalf("fetches = %d, want 3", fetches)
 	}
 }

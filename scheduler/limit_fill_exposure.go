@@ -145,40 +145,43 @@ func classifyLimitFillLiveExposure(coin string, bookedNet, signedDelta, onChainN
 }
 
 type hlLiveExposureReader struct {
-	done      bool
-	refreshed bool
+	held      bool
+	fetchedAt time.Time
 	positions []HLPosition
 	err       error
 }
 
 var fetchHyperliquidStateFn = fetchHyperliquidState
 
-func (r *hlLiveExposureReader) read() ([]HLPosition, error) {
-	if r.done {
-		return r.positions, r.err
-	}
-	r.done = true
+func (r *hlLiveExposureReader) fetch() ([]HLPosition, error) {
+	r.held = true
+	r.fetchedAt = time.Now()
 	addr := os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS")
 	if addr == "" {
-		r.err = fmt.Errorf("HYPERLIQUID_ACCOUNT_ADDRESS is not set")
+		r.positions, r.err = nil, fmt.Errorf("HYPERLIQUID_ACCOUNT_ADDRESS is not set")
 		return nil, r.err
 	}
 	_, positions, err := fetchHyperliquidStateFn(addr)
 	if err != nil {
-		r.err = err
+		r.positions, r.err = nil, err
 		return nil, err
 	}
-	r.positions = positions
+	r.positions, r.err = positions, nil
 	return r.positions, nil
 }
 
-func (r *hlLiveExposureReader) refresh() ([]HLPosition, error) {
-	if r.refreshed {
-		return r.read()
+func (r *hlLiveExposureReader) snapshot() ([]HLPosition, error) {
+	if r.held {
+		return r.positions, r.err
 	}
-	r.refreshed = true
-	r.done = false
-	return r.read()
+	return r.fetch()
+}
+
+func (r *hlLiveExposureReader) snapshotNewerThan(t time.Time) ([]HLPosition, error) {
+	if r.held && r.fetchedAt.After(t) {
+		return r.positions, r.err
+	}
+	return r.fetch()
 }
 
 type limitFillExposureKey struct {

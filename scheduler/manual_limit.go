@@ -794,6 +794,7 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, stateDB *StateDB,
 			logger, _ = logMgr.GetStrategyLogger(o.StrategyID)
 		}
 
+		statusPolledAt := time.Now()
 		statusRes, stderr, perr := runHyperliquidLimitStatusFn(sc.Script, o.Symbol, []int64{o.OrderOID}, limitStatusSinceMs(o.CreatedAt))
 		if stderr != "" {
 			fmt.Fprintf(os.Stderr, "[limit] %s status stderr: %s\n", o.StrategyID, stderr)
@@ -817,7 +818,7 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, stateDB *StateDB,
 			if avgPx <= 0 {
 				avgPx = o.LimitPrice
 			}
-			positions, readErr := exposureReader.read()
+			positions, readErr := exposureReader.snapshot()
 			onChainNet := hyperliquidOnChainNetForCoin(positions, o.Symbol)
 			signedDelta := hlSignedQty(o.Side, st.FilledSize-o.FilledSize)
 			owners := hyperliquidLiveOwnersForCoin(cfg.Strategies, o.Symbol)
@@ -834,8 +835,8 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, stateDB *StateDB,
 			}
 			mu.RUnlock()
 			decision := classifyLimitFillLiveExposure(o.Symbol, preBooked, signedDelta, onChainNet, readErr, owners)
-			if decision.Verdict == limitFillExposureUnbacked {
-				positions, readErr = exposureReader.refresh()
+			if !decision.adopts() {
+				positions, readErr = exposureReader.snapshotNewerThan(statusPolledAt)
 				onChainNet = hyperliquidOnChainNetForCoin(positions, o.Symbol)
 				decision = classifyLimitFillLiveExposure(o.Symbol, preBooked, signedDelta, onChainNet, readErr, owners)
 			}
