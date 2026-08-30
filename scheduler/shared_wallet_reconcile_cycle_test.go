@@ -250,48 +250,6 @@ func TestDisplayStrategyValue_PrefersSetValue(t *testing.T) {
 	}
 }
 
-func TestSharedWalletDriftTracker_ConfirmThenThrottleThenRecover(t *testing.T) {
-	tr := &SharedWalletDriftTracker{}
-	now := time.Now().UTC()
-	if notify, _, _ := tr.Record("hyperliquid/0xabc", 5.00, []string{"BTC"}, now); notify {
-		t.Fatal("first detection must NOT alert (confirmation window)")
-	}
-	if notify, _, _ := tr.Record("hyperliquid/0xabc", 5.00, []string{"BTC"}, now.Add(time.Minute)); !notify {
-		t.Fatal("second consecutive detection must alert")
-	}
-	if notify, _, _ := tr.Record("hyperliquid/0xabc", 5.00, []string{"BTC"}, now.Add(2*time.Minute)); notify {
-		t.Error("third identical detection should be throttled")
-	}
-	if notify, _, _ := tr.Record("hyperliquid/0xabc", 9.00, []string{"BTC"}, now.Add(3*time.Minute)); !notify {
-		t.Error("materially changed drift should re-alert")
-	}
-	recovered, prior := tr.Clear("hyperliquid/0xabc")
-	if !recovered || prior == 0 {
-		t.Errorf("expected recovery after alerted streak, got recovered=%v prior=%d", recovered, prior)
-	}
-	if r, _ := tr.Clear("okx/none"); r {
-		t.Error("clearing unknown wallet must not report recovery")
-	}
-}
-
-func TestSharedWalletDriftTracker_OneCycleTransientSilent(t *testing.T) {
-	tr := &SharedWalletDriftTracker{}
-	now := time.Now().UTC()
-	if notify, _, _ := tr.Record("hyperliquid/0xabc", 25.00, []string{"BTC"}, now); notify {
-		t.Fatal("single transient detection must not alert")
-	}
-	recovered, _ := tr.Clear("hyperliquid/0xabc")
-	if recovered {
-		t.Error("a never-alerted transient must not fire a recovery notice")
-	}
-}
-
-func TestReportSharedWalletDrift_WithinToleranceNoPanic(t *testing.T) {
-	reportSharedWalletDrift(nil, []sharedWalletDriftResult{
-		{Key: SharedWalletKey{Platform: "hyperliquid", Account: "0x"}, Drift: 0.004, Balance: 100, MemberSum: 100},
-	})
-}
-
 func TestParseOKXPositionsOutput_CarriesUnrealizedPnL(t *testing.T) {
 	stdout := []byte(`{"positions":[{"coin":"BTC","size":0.3,"entry_price":60000,"side":"long","unrealized_pnl":123.45}],"platform":"okx"}`)
 	res, _, err := parseOKXPositionsOutput(stdout, "", nil)
@@ -329,259 +287,287 @@ func TestFetchHyperliquidState_ParsesUnrealizedPnL(t *testing.T) {
 	}
 }
 
-func TestSharedWalletDriftTracker_DistinctConsecutiveTransientsNoAlert(t *testing.T) {
-	tr := &SharedWalletDriftTracker{}
-	now := time.Now().UTC()
-	if notify, _, count := tr.Record("hyperliquid/0xabc", 25.00, []string{"BTC"}, now); notify || count != 1 {
-		t.Fatalf("first transient: want no alert at count 1, got notify=%v count=%d", notify, count)
-	}
-	if notify, _, count := tr.Record("hyperliquid/0xabc", 12.00, []string{"ETH"}, now.Add(time.Minute)); notify || count != 2 {
-		t.Fatalf("second distinct transient: want no alert at cycle 2, got notify=%v count=%d", notify, count)
-	}
-	if recovered, _ := tr.Clear("hyperliquid/0xabc"); recovered {
-		t.Error("never-alerted streak must not fire a recovery notice")
-	}
+func useFreshDriftTracker(t *testing.T) {
+	t.Helper()
+	prev := sharedWalletDriftTracker
+	sharedWalletDriftTracker = &SharedWalletDriftTracker{}
+	t.Cleanup(func() { sharedWalletDriftTracker = prev })
 }
 
-func TestSharedWalletDriftTracker_SameOrphanChangingMagnitudeStillAlerts(t *testing.T) {
-	tr := &SharedWalletDriftTracker{}
-	now := time.Now().UTC()
-	if notify, _, _ := tr.Record("hyperliquid/0xabc", 25.00, []string{"SOL"}, now); notify {
-		t.Fatal("first detection must not alert")
-	}
-	if notify, _, count := tr.Record("hyperliquid/0xabc", 31.40, []string{"SOL"}, now.Add(time.Minute)); !notify || count != 2 {
-		t.Fatalf("same orphan second cycle must alert at count 2, got notify=%v count=%d", notify, count)
-	}
+type driftTrackerStep struct {
+	at     time.Duration
+	drift  float64
+	coins  []string
+	notify *bool
+	log    *bool
+	count  int
 }
 
-func TestComputeSubsetDisplayValue_GatedPartialSliceMatchesRows(t *testing.T) {
-	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
-	allStrategies := []StrategyConfig{
-		{ID: "hl-btc", Platform: "hyperliquid", Type: "perps", Args: []string{"sma", "BTC", "1h", "--mode=live"}, Capital: 500},
-		{ID: "hl-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"rsi", "ETH", "1h", "--mode=live"}, Capital: 500},
-	}
-	state := &AppState{Strategies: map[string]*StrategyState{
-		"hl-btc": {ID: "hl-btc", Cash: 350, Positions: map[string]*Position{}, SharedWalletValue: 650, SharedWalletValueSet: true},
-		"hl-eth": {ID: "hl-eth", Cash: 500, Positions: map[string]*Position{}, SharedWalletValue: 350, SharedWalletValueSet: true},
-	}}
-	walletBalances := map[SharedWalletKey]float64{{Platform: "hyperliquid", Account: "0xtest"}: 1000}
-	accountShared := detectSharedWallets(allStrategies)
-
-	got, fb := computeSubsetDisplayValue(allStrategies[:1], state, nil, walletBalances, accountShared)
-	if got != 650 {
-		t.Errorf("gated partial slice: want 650 (= row value), got %.2f", got)
-	}
-	if fb {
-		t.Error("gated partial slice: expected usedFallback=false")
-	}
-
-	got, _ = computeSubsetDisplayValue(allStrategies, state, nil, walletBalances, accountShared)
-	if got != 1000 {
-		t.Errorf("gated full wallet: want 1000 (real balance), got %.2f", got)
-	}
-}
-
-func TestComputeSubsetDisplayValue_MixedGatedAndNonShared(t *testing.T) {
-	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
-	allStrategies := []StrategyConfig{
-		{ID: "hl-btc", Platform: "hyperliquid", Type: "perps", Args: []string{"sma", "BTC", "1h", "--mode=live"}, Capital: 500},
-		{ID: "hl-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"rsi", "ETH", "1h", "--mode=live"}, Capital: 500},
-		{ID: "spot-btc", Platform: "binanceus", Type: "spot", Capital: 2000},
-	}
-	state := &AppState{Strategies: map[string]*StrategyState{
-		"hl-btc":   {ID: "hl-btc", Cash: 350, Positions: map[string]*Position{}, SharedWalletValue: 650, SharedWalletValueSet: true},
-		"hl-eth":   {ID: "hl-eth", Cash: 500, Positions: map[string]*Position{}, SharedWalletValue: 350, SharedWalletValueSet: true},
-		"spot-btc": {ID: "spot-btc", Cash: 2000, Positions: map[string]*Position{}},
-	}}
-	walletBalances := map[SharedWalletKey]float64{{Platform: "hyperliquid", Account: "0xtest"}: 1000}
-	accountShared := detectSharedWallets(allStrategies)
-
-	got, fb := computeSubsetDisplayValue(allStrategies, state, nil, walletBalances, accountShared)
-	if want := 650.0 + 350.0 + 2000.0; got != want {
-		t.Errorf("mixed subset: want %.2f, got %.2f", want, got)
-	}
-	if fb {
-		t.Error("mixed subset: expected usedFallback=false")
-	}
-}
-
-func TestComputeSubsetDisplayValue_UngatedFallsBackToSubsetSemantics(t *testing.T) {
-	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
-	allStrategies := []StrategyConfig{
-		{ID: "hl-btc", Platform: "hyperliquid", Type: "perps", Args: []string{"sma", "BTC", "1h", "--mode=live"}, Capital: 500},
-		{ID: "hl-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"rsi", "ETH", "1h", "--mode=live"}, Capital: 500},
-	}
-	state := &AppState{Strategies: map[string]*StrategyState{
-		"hl-btc": {ID: "hl-btc", Cash: 400, Positions: map[string]*Position{}},
-		"hl-eth": {ID: "hl-eth", Cash: 600, Positions: map[string]*Position{}},
-	}}
-	accountShared := detectSharedWallets(allStrategies)
-	walletBalances := map[SharedWalletKey]float64{{Platform: "hyperliquid", Account: "0xtest"}: 800}
-
-	got, fb := computeSubsetDisplayValue(allStrategies, state, nil, walletBalances, accountShared)
-	if got != 800 || fb {
-		t.Errorf("ungated dedup: want 800/false, got %.2f/%v", got, fb)
-	}
-	got, fb = computeSubsetDisplayValue(allStrategies, state, nil, nil, accountShared)
-	if got != 1000 || !fb {
-		t.Errorf("ungated missing balance: want 1000/true, got %.2f/%v", got, fb)
-	}
-}
-
-func TestComputeSubsetDisplayValue_GatedManualNoDoubleCount(t *testing.T) {
-	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
-	allStrategies := []StrategyConfig{
-		{ID: "hl-btc", Platform: "hyperliquid", Type: "perps", Args: []string{"sma", "BTC", "1h", "--mode=live"}, Capital: 500},
-		{ID: "hl-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"rsi", "ETH", "1h", "--mode=live"}, Capital: 500},
-		{ID: "hl-manual", Platform: "hyperliquid", Type: "manual", Symbol: "SOL", Args: []string{"hold", "SOL", "1h", "--mode=live"}, Capital: 200},
-	}
-	state := &AppState{Strategies: map[string]*StrategyState{
-		"hl-btc":    {ID: "hl-btc", Cash: 350, Positions: map[string]*Position{}, SharedWalletValue: 500, SharedWalletValueSet: true},
-		"hl-eth":    {ID: "hl-eth", Cash: 500, Positions: map[string]*Position{}, SharedWalletValue: 300, SharedWalletValueSet: true},
-		"hl-manual": {ID: "hl-manual", Cash: 200, Positions: map[string]*Position{}, SharedWalletValue: 200, SharedWalletValueSet: true},
-	}}
-	walletBalances := map[SharedWalletKey]float64{{Platform: "hyperliquid", Account: "0xtest"}: 1000}
-	accountShared := detectSharedWallets(allStrategies[:2])
-
-	got, _ := computeSubsetDisplayValue(allStrategies, state, nil, walletBalances, accountShared)
-	if got != 1000 {
-		t.Errorf("gated wallet incl. manual: want exactly 1000 (real balance, no double count), got %.2f", got)
-	}
-}
-
-func TestSharedWalletDriftTracker_PersistentOrphanSurvivesChurn(t *testing.T) {
-	tr := &SharedWalletDriftTracker{}
-	now := time.Now().UTC()
-	if notify, _, _ := tr.Record("hyperliquid/0xabc", 25.00, []string{"BTC"}, now); notify {
-		t.Fatal("first detection must not alert")
-	}
-	if notify, _, count := tr.Record("hyperliquid/0xabc", 30.00, []string{"BTC", "DOGE"}, now.Add(time.Minute)); !notify || count != 2 {
-		t.Fatalf("persistent BTC orphan must alert through churn, got notify=%v count=%d", notify, count)
-	}
-	if notify, _, count := tr.Record("hyperliquid/0xabc", 30.00, []string{"BTC", "SHIB"}, now.Add(2*time.Minute)); notify || count != 3 {
-		t.Errorf("already-alerted persistent orphan should be throttled, got notify=%v count=%d", notify, count)
-	}
-}
-
-func TestSharedWalletDriftTracker_NewOrphanAfterAlertReconfirms(t *testing.T) {
-	tr := &SharedWalletDriftTracker{}
-	now := time.Now().UTC()
-	tr.Record("hyperliquid/0xabc", 25.00, []string{"BTC"}, now)
-	if notify, _, _ := tr.Record("hyperliquid/0xabc", 25.00, []string{"BTC"}, now.Add(time.Minute)); !notify {
-		t.Fatal("BTC orphan must alert on its second cycle")
-	}
-	if notify, _, count := tr.Record("hyperliquid/0xabc", 25.00, []string{"ETH"}, now.Add(2*time.Minute)); notify || count != 3 {
-		t.Fatalf("new orphan's first cycle must not alert, got notify=%v count=%d", notify, count)
-	}
-	if notify, _, count := tr.Record("hyperliquid/0xabc", 25.00, []string{"ETH"}, now.Add(3*time.Minute)); !notify || count != 4 {
-		t.Fatalf("new persistent orphan must re-confirm and alert, got notify=%v count=%d", notify, count)
-	}
-}
-
-func TestSharedWalletDriftTracker_NoOrphanCoinsStillConfirms(t *testing.T) {
-	tr := &SharedWalletDriftTracker{}
-	now := time.Now().UTC()
-	if notify, _, _ := tr.Record("okx/acct", 5.00, nil, now); notify {
-		t.Fatal("first detection must not alert")
-	}
-	if notify, _, count := tr.Record("okx/acct", 5.00, nil, now.Add(time.Minute)); !notify || count != 2 {
-		t.Fatalf("coinless drift must alert on second consecutive cycle, got notify=%v count=%d", notify, count)
-	}
-}
-
-func TestSharedWalletDriftTracker_MarkWiggleStaysThrottled(t *testing.T) {
-	tr := &SharedWalletDriftTracker{}
-	now := time.Now().UTC()
-	tr.Record("hyperliquid/0xabc", 5.00, []string{"BTC"}, now)
-	if notify, _, _ := tr.Record("hyperliquid/0xabc", 5.00, []string{"BTC"}, now.Add(time.Minute)); !notify {
-		t.Fatal("confirmation alert must fire on cycle 2")
-	}
-	if notify, _, _ := tr.Record("hyperliquid/0xabc", 5.20, []string{"BTC"}, now.Add(2*time.Minute)); notify {
-		t.Error("+4% mark wiggle must stay throttled")
-	}
-	if notify, _, _ := tr.Record("hyperliquid/0xabc", 5.40, []string{"BTC"}, now.Add(3*time.Minute)); notify {
-		t.Error("+8% cumulative wiggle must stay throttled")
-	}
-	if notify, _, _ := tr.Record("hyperliquid/0xabc", 5.60, []string{"BTC"}, now.Add(4*time.Minute)); !notify {
-		t.Error("+12% cumulative move must re-alert")
-	}
-	if notify, _, _ := tr.Record("hyperliquid/0xabc", 5.65, []string{"BTC"}, now.Add(5*time.Minute)); notify {
-		t.Error("small wiggle vs the NEW anchor must stay throttled")
-	}
-}
-
-func TestSharedWalletDriftTracker_RecoveryCountSurvivesChurn(t *testing.T) {
-	tr := &SharedWalletDriftTracker{}
-	now := time.Now().UTC()
-	tr.Record("hyperliquid/0xabc", 25.00, []string{"BTC"}, now)
-	tr.Record("hyperliquid/0xabc", 25.00, []string{"BTC"}, now.Add(time.Minute))
-	tr.Record("hyperliquid/0xabc", 25.00, []string{"BTC"}, now.Add(2*time.Minute))
-	tr.Record("hyperliquid/0xabc", 8.00, []string{"ETH"}, now.Add(3*time.Minute))
-	recovered, prior := tr.Clear("hyperliquid/0xabc")
-	if !recovered || prior != 4 {
-		t.Fatalf("want recovery with 4-cycle duration, got recovered=%v prior=%d", recovered, prior)
-	}
-}
-
-func TestSharedWalletDriftTracker_LogThrottledPerInterval(t *testing.T) {
-	withAlertThrottleInterval(t, time.Hour)
-	tr := &SharedWalletDriftTracker{}
-	now := time.Now().UTC()
-	if notify, log, _ := tr.Record("hyperliquid/0xabc", 5.00, []string{"BTC"}, now); notify || !log {
-		t.Fatalf("onset cycle: want notify=false log=true, got notify=%v log=%v", notify, log)
-	}
-	if notify, log, _ := tr.Record("hyperliquid/0xabc", 5.00, []string{"BTC"}, now.Add(time.Second)); !notify || !log {
-		t.Fatalf("alert cycle: want notify=true log=true, got notify=%v log=%v", notify, log)
-	}
-	if notify, log, _ := tr.Record("hyperliquid/0xabc", 5.00, []string{"BTC"}, now.Add(2*time.Second)); notify || log {
-		t.Fatalf("intra-interval cycle: want notify=false log=false, got notify=%v log=%v", notify, log)
-	}
-	if notify, log, _ := tr.Record("hyperliquid/0xabc", 5.00, []string{"BTC"}, now.Add(30*time.Minute)); notify || log {
-		t.Fatalf("mid-hour stable cycle: want notify=false log=false, got notify=%v log=%v", notify, log)
-	}
-	if notify, log, _ := tr.Record("hyperliquid/0xabc", 5.00, []string{"BTC"}, now.Add(time.Second+time.Hour)); !notify || !log {
-		t.Fatalf("hourly re-alert cycle: want notify=true log=true, got notify=%v log=%v", notify, log)
-	}
-}
-
-func TestSharedWalletDriftTracker_WorseningDriftLogsWithinInterval(t *testing.T) {
-	tr := &SharedWalletDriftTracker{}
-	now := time.Now().UTC()
-	if notify, log, _ := tr.Record("hyperliquid/0xabc", 5.00, []string{"BTC"}, now); notify || !log {
-		t.Fatalf("onset cycle: want notify=false log=true, got notify=%v log=%v", notify, log)
-	}
-	if notify, log, _ := tr.Record("hyperliquid/0xabc", 5.00, []string{"ETH"}, now.Add(time.Second)); notify || log {
-		t.Fatalf("stable churn cycle: want notify=false log=false, got notify=%v log=%v", notify, log)
-	}
-	if notify, log, _ := tr.Record("hyperliquid/0xabc", 20.00, []string{"SOL"}, now.Add(2*time.Second)); notify || !log {
-		t.Fatalf("worsening cycle: want notify=false log=true, got notify=%v log=%v", notify, log)
-	}
-}
-
-func TestSharedWalletDriftTracker_StableDriftRealertsHourlyNotEveryTenth(t *testing.T) {
-	withAlertThrottleInterval(t, time.Hour)
-	tr := &SharedWalletDriftTracker{}
-	now := time.Now().UTC()
-	tr.Record("hyperliquid/0xabc", 5.00, []string{"BTC"}, now)
-	if notify, _, _ := tr.Record("hyperliquid/0xabc", 5.00, []string{"BTC"}, now.Add(time.Second)); !notify {
-		t.Fatal("confirmation alert must fire on cycle 2")
-	}
-	base := now.Add(time.Second)
-	for i := 1; i <= 40; i++ {
-		ts := base.Add(time.Duration(i) * 3 * time.Second)
-		if notify, _, count := tr.Record("hyperliquid/0xabc", 5.00, []string{"BTC"}, ts); notify {
-			t.Fatalf("stable drift must not re-alert within the hour (cycle count=%d)", count)
+func TestSharedWalletDriftTracker(t *testing.T) {
+	yes, no := new(bool), new(bool)
+	*yes = true
+	btc := []string{"BTC"}
+	stableHour := func() []driftTrackerStep {
+		steps := []driftTrackerStep{
+			{at: 0, drift: 5.00, coins: btc},
+			{at: time.Second, drift: 5.00, coins: btc, notify: yes},
 		}
+		base := time.Second
+		for i := 1; i <= 40; i++ {
+			steps = append(steps, driftTrackerStep{at: base + time.Duration(i)*3*time.Second, drift: 5.00, coins: btc, notify: no})
+		}
+		return append(steps, driftTrackerStep{at: base + time.Hour + time.Second, drift: 5.00, coins: btc, notify: yes})
 	}
-	if notify, _, _ := tr.Record("hyperliquid/0xabc", 5.00, []string{"BTC"}, base.Add(time.Hour+time.Second)); !notify {
-		t.Fatal("stable drift must re-alert once the hourly back-off elapses")
+	cases := []struct {
+		name             string
+		throttle         time.Duration
+		key              string
+		steps            []driftTrackerStep
+		clear            bool
+		wantRecovered    bool
+		wantPriorNonZero bool
+		wantPrior        int
+	}{
+		{
+			name: "confirm then throttle then recover",
+			steps: []driftTrackerStep{
+				{at: 0, drift: 5.00, coins: btc, notify: no},
+				{at: time.Minute, drift: 5.00, coins: btc, notify: yes},
+				{at: 2 * time.Minute, drift: 5.00, coins: btc, notify: no},
+				{at: 3 * time.Minute, drift: 9.00, coins: btc, notify: yes},
+			},
+			clear: true, wantRecovered: true, wantPriorNonZero: true,
+		},
+		{
+			name: "clearing unknown wallet reports no recovery",
+			key:  "okx/none", clear: true, wantRecovered: false,
+		},
+		{
+			name:  "one-cycle transient stays silent and never recovers",
+			steps: []driftTrackerStep{{at: 0, drift: 25.00, coins: btc, notify: no}},
+			clear: true, wantRecovered: false,
+		},
+		{
+			name: "distinct consecutive transients do not alert",
+			steps: []driftTrackerStep{
+				{at: 0, drift: 25.00, coins: btc, notify: no, count: 1},
+				{at: time.Minute, drift: 12.00, coins: []string{"ETH"}, notify: no, count: 2},
+			},
+			clear: true, wantRecovered: false,
+		},
+		{
+			name: "same orphan with changing magnitude still alerts",
+			steps: []driftTrackerStep{
+				{at: 0, drift: 25.00, coins: []string{"SOL"}, notify: no},
+				{at: time.Minute, drift: 31.40, coins: []string{"SOL"}, notify: yes, count: 2},
+			},
+		},
+		{
+			name: "persistent orphan survives churn",
+			steps: []driftTrackerStep{
+				{at: 0, drift: 25.00, coins: btc, notify: no},
+				{at: time.Minute, drift: 30.00, coins: []string{"BTC", "DOGE"}, notify: yes, count: 2},
+				{at: 2 * time.Minute, drift: 30.00, coins: []string{"BTC", "SHIB"}, notify: no, count: 3},
+			},
+		},
+		{
+			name: "new orphan after alert re-confirms",
+			steps: []driftTrackerStep{
+				{at: 0, drift: 25.00, coins: btc},
+				{at: time.Minute, drift: 25.00, coins: btc, notify: yes},
+				{at: 2 * time.Minute, drift: 25.00, coins: []string{"ETH"}, notify: no, count: 3},
+				{at: 3 * time.Minute, drift: 25.00, coins: []string{"ETH"}, notify: yes, count: 4},
+			},
+		},
+		{
+			name: "no orphan coins still confirms",
+			key:  "okx/acct",
+			steps: []driftTrackerStep{
+				{at: 0, drift: 5.00, notify: no},
+				{at: time.Minute, drift: 5.00, notify: yes, count: 2},
+			},
+		},
+		{
+			name: "mark wiggle stays throttled until cumulative move exceeds ratio",
+			steps: []driftTrackerStep{
+				{at: 0, drift: 5.00, coins: btc},
+				{at: time.Minute, drift: 5.00, coins: btc, notify: yes},
+				{at: 2 * time.Minute, drift: 5.20, coins: btc, notify: no},
+				{at: 3 * time.Minute, drift: 5.40, coins: btc, notify: no},
+				{at: 4 * time.Minute, drift: 5.60, coins: btc, notify: yes},
+				{at: 5 * time.Minute, drift: 5.65, coins: btc, notify: no},
+			},
+		},
+		{
+			name: "sign flip re-alerts, small move against new anchor stays throttled",
+			steps: []driftTrackerStep{
+				{at: 0, drift: 5.00, coins: btc, notify: no},
+				{at: time.Second, drift: 5.00, coins: btc, notify: yes},
+				{at: 2 * time.Second, drift: -5.00, coins: btc, notify: yes},
+				{at: 3 * time.Second, drift: -5.05, coins: btc, notify: no},
+			},
+		},
+		{
+			name: "recovery count survives churn",
+			steps: []driftTrackerStep{
+				{at: 0, drift: 25.00, coins: btc},
+				{at: time.Minute, drift: 25.00, coins: btc},
+				{at: 2 * time.Minute, drift: 25.00, coins: btc},
+				{at: 3 * time.Minute, drift: 8.00, coins: []string{"ETH"}},
+			},
+			clear: true, wantRecovered: true, wantPrior: 4,
+		},
+		{
+			name:     "log throttled per interval",
+			throttle: time.Hour,
+			steps: []driftTrackerStep{
+				{at: 0, drift: 5.00, coins: btc, notify: no, log: yes},
+				{at: time.Second, drift: 5.00, coins: btc, notify: yes, log: yes},
+				{at: 2 * time.Second, drift: 5.00, coins: btc, notify: no, log: no},
+				{at: 30 * time.Minute, drift: 5.00, coins: btc, notify: no, log: no},
+				{at: time.Second + time.Hour, drift: 5.00, coins: btc, notify: yes, log: yes},
+			},
+		},
+		{
+			name: "worsening drift logs within interval",
+			steps: []driftTrackerStep{
+				{at: 0, drift: 5.00, coins: btc, notify: no, log: yes},
+				{at: time.Second, drift: 5.00, coins: []string{"ETH"}, notify: no, log: no},
+				{at: 2 * time.Second, drift: 20.00, coins: []string{"SOL"}, notify: no, log: yes},
+			},
+		},
+		{
+			name:     "stable drift re-alerts hourly, not every tenth cycle",
+			throttle: time.Hour,
+			steps:    stableHour(),
+		},
 	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.throttle > 0 {
+				withAlertThrottleInterval(t, tc.throttle)
+			}
+			key := tc.key
+			if key == "" {
+				key = "hyperliquid/0xabc"
+			}
+			tr := &SharedWalletDriftTracker{}
+			now := time.Now().UTC()
+			for i, st := range tc.steps {
+				notify, log, count := tr.Record(key, st.drift, st.coins, now.Add(st.at))
+				if st.notify != nil && notify != *st.notify {
+					t.Fatalf("step %d (drift %v coins %v): notify=%v, want %v (count=%d)", i+1, st.drift, st.coins, notify, *st.notify, count)
+				}
+				if st.log != nil && log != *st.log {
+					t.Fatalf("step %d (drift %v coins %v): log=%v, want %v", i+1, st.drift, st.coins, log, *st.log)
+				}
+				if st.count > 0 && count != st.count {
+					t.Fatalf("step %d (drift %v coins %v): count=%d, want %d", i+1, st.drift, st.coins, count, st.count)
+				}
+			}
+			if tc.clear {
+				recovered, prior := tr.Clear(key)
+				if recovered != tc.wantRecovered {
+					t.Fatalf("Clear: recovered=%v prior=%d, want recovered=%v", recovered, prior, tc.wantRecovered)
+				}
+				if tc.wantPriorNonZero && prior == 0 {
+					t.Fatalf("Clear: prior=%d, want nonzero", prior)
+				}
+				if tc.wantPrior > 0 && prior != tc.wantPrior {
+					t.Fatalf("Clear: prior=%d, want %d", prior, tc.wantPrior)
+				}
+			}
+		})
+	}
+}
+
+func TestComputeSubsetDisplayValue(t *testing.T) {
+	hlKey := SharedWalletKey{Platform: "hyperliquid", Account: "0xtest"}
+	hlPair := []StrategyConfig{hlLivePerps("hl-btc", "BTC", 500), hlLivePerps("hl-eth", "ETH", 500)}
+	gated := func(cash, value float64) *StrategyState {
+		return &StrategyState{Cash: cash, Positions: map[string]*Position{}, SharedWalletValue: value, SharedWalletValueSet: true}
+	}
+	ungated := func(cash float64) *StrategyState {
+		return &StrategyState{Cash: cash, Positions: map[string]*Position{}}
+	}
+	cases := []struct {
+		name         string
+		strategies   []StrategyConfig
+		states       map[string]*StrategyState
+		balances     map[SharedWalletKey]float64
+		sharedFrom   int
+		subsetN      int
+		want         float64
+		wantFallback *bool
+	}{
+		{"gated partial slice matches row value", hlPair,
+			map[string]*StrategyState{"hl-btc": gated(350, 650), "hl-eth": gated(500, 350)},
+			map[SharedWalletKey]float64{hlKey: 1000}, 2, 1, 650, new(bool)},
+		{"gated full wallet uses real balance", hlPair,
+			map[string]*StrategyState{"hl-btc": gated(350, 650), "hl-eth": gated(500, 350)},
+			map[SharedWalletKey]float64{hlKey: 1000}, 2, 2, 1000, nil},
+		{"mixed gated and non-shared", append(append([]StrategyConfig{}, hlPair...), StrategyConfig{ID: "spot-btc", Platform: "binanceus", Type: "spot", Capital: 2000}),
+			map[string]*StrategyState{"hl-btc": gated(350, 650), "hl-eth": gated(500, 350), "spot-btc": ungated(2000)},
+			map[SharedWalletKey]float64{hlKey: 1000}, 3, 3, 650 + 350 + 2000, new(bool)},
+		{"ungated dedups against balance", hlPair,
+			map[string]*StrategyState{"hl-btc": ungated(400), "hl-eth": ungated(600)},
+			map[SharedWalletKey]float64{hlKey: 800}, 2, 2, 800, new(bool)},
+		{"ungated missing balance falls back to subset sum", hlPair,
+			map[string]*StrategyState{"hl-btc": ungated(400), "hl-eth": ungated(600)},
+			nil, 2, 2, 1000, func() *bool { b := true; return &b }()},
+		{"gated wallet incl. live manual counts real balance once",
+			append(append([]StrategyConfig{}, hlPair...), hlLiveManual("hl-manual", 200)),
+			map[string]*StrategyState{"hl-btc": gated(350, 500), "hl-eth": gated(500, 300), "hl-manual": gated(200, 200)},
+			map[SharedWalletKey]float64{hlKey: 1000}, 2, 3, 1000, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
+			state := &AppState{Strategies: map[string]*StrategyState{}}
+			for id, s := range tc.states {
+				s.ID = id
+				state.Strategies[id] = s
+			}
+			accountShared := detectSharedWallets(tc.strategies[:tc.sharedFrom])
+			got, fb := computeSubsetDisplayValue(tc.strategies[:tc.subsetN], state, nil, tc.balances, accountShared)
+			if got != tc.want {
+				t.Errorf("display value=%.2f, want %.2f", got, tc.want)
+			}
+			if tc.wantFallback != nil && fb != *tc.wantFallback {
+				t.Errorf("usedFallback=%v, want %v", fb, *tc.wantFallback)
+			}
+		})
+	}
+}
+
+func TestFormatSharedWalletJournalAlerts(t *testing.T) {
+	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xabc"}
+	t.Run("orphan alert names wallet, coins, and untracked status", func(t *testing.T) {
+		msg := formatSharedWalletJournalOrphanAlert(key, 1000, 1000, 0.0, 2, []string{"BTC", "ETH"})
+		for _, want := range []string{"ORPHAN POSITION", "hyperliquid/0xabc", "BTC, ETH", "NO strategy"} {
+			if !strings.Contains(msg, want) {
+				t.Errorf("orphan alert missing %q: %s", want, msg)
+			}
+		}
+	})
+	t.Run("drift alert carries orphan context and never claims within tolerance", func(t *testing.T) {
+		with := formatSharedWalletJournalDriftAlert(key, 1000, 995, 5.00, 2, []string{"BTC"})
+		if strings.Contains(with, "within tolerance") {
+			t.Errorf("over-tolerance drift alert must never claim within tolerance: %s", with)
+		}
+		for _, want := range []string{"DRIFT (exchange journal)", "BTC", "NO strategy"} {
+			if !strings.Contains(with, want) {
+				t.Errorf("drift alert with orphan missing %q: %s", want, with)
+			}
+		}
+		if without := formatSharedWalletJournalDriftAlert(key, 1000, 995, 5.00, 2, nil); strings.Contains(without, "NO strategy") {
+			t.Errorf("no-orphan drift alert must not mention orphans: %s", without)
+		}
+	})
 }
 
 func TestReportSharedWalletDrift_JournalStreakPreservedOnPending(t *testing.T) {
-	prev := sharedWalletDriftTracker
-	sharedWalletDriftTracker = &SharedWalletDriftTracker{}
-	defer func() { sharedWalletDriftTracker = prev }()
+	useFreshDriftTracker(t)
 
 	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xabc"}
 	jkey := sharedWalletKeyLabel(key) + journalDriftStreakKeySuffix
@@ -612,9 +598,7 @@ func TestReportSharedWalletDrift_JournalStreakPreservedOnPending(t *testing.T) {
 }
 
 func TestReportSharedWalletDrift_JournalOrphanTripsWithoutTotalDrift(t *testing.T) {
-	prev := sharedWalletDriftTracker
-	sharedWalletDriftTracker = &SharedWalletDriftTracker{}
-	defer func() { sharedWalletDriftTracker = prev }()
+	useFreshDriftTracker(t)
 
 	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xabc"}
 	jkey := sharedWalletKeyLabel(key) + journalDriftStreakKeySuffix
@@ -641,20 +625,8 @@ func TestReportSharedWalletDrift_JournalOrphanTripsWithoutTotalDrift(t *testing.
 	}
 }
 
-func TestFormatSharedWalletJournalOrphanAlert(t *testing.T) {
-	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xabc"}
-	msg := formatSharedWalletJournalOrphanAlert(key, 1000, 1000, 0.0, 2, []string{"BTC", "ETH"})
-	for _, want := range []string{"ORPHAN POSITION", "hyperliquid/0xabc", "BTC, ETH", "NO strategy"} {
-		if !strings.Contains(msg, want) {
-			t.Errorf("orphan alert missing %q: %s", want, msg)
-		}
-	}
-}
-
 func TestCashflowJournalPersistentPendingFallsBackToLedgerAlarm(t *testing.T) {
-	prevTracker := sharedWalletDriftTracker
-	sharedWalletDriftTracker = &SharedWalletDriftTracker{}
-	defer func() { sharedWalletDriftTracker = prevTracker }()
+	useFreshDriftTracker(t)
 	prevPending := cashflowJournalPendingStreaks
 	cashflowJournalPendingStreaks = &cashflowJournalPendingTracker{}
 	defer func() { cashflowJournalPendingStreaks = prevPending }()
@@ -703,9 +675,7 @@ func TestCashflowJournalPersistentPendingFallsBackToLedgerAlarm(t *testing.T) {
 }
 
 func TestReportSharedWalletDrift_CompoundOrphanAndDriftReportsDrift(t *testing.T) {
-	prev := sharedWalletDriftTracker
-	sharedWalletDriftTracker = &SharedWalletDriftTracker{}
-	defer func() { sharedWalletDriftTracker = prev }()
+	useFreshDriftTracker(t)
 
 	mock := &mockNotifier{}
 	notifier := NewMultiNotifier(notifierBackend{
@@ -736,9 +706,7 @@ func TestReportSharedWalletDrift_CompoundOrphanAndDriftReportsDrift(t *testing.T
 }
 
 func TestReportSharedWalletDrift_JournalGapConfirmsDespiteOrphanChurn(t *testing.T) {
-	prev := sharedWalletDriftTracker
-	sharedWalletDriftTracker = &SharedWalletDriftTracker{}
-	defer func() { sharedWalletDriftTracker = prev }()
+	useFreshDriftTracker(t)
 
 	mock := &mockNotifier{}
 	notifier := NewMultiNotifier(notifierBackend{
@@ -778,9 +746,7 @@ func TestReportSharedWalletDrift_JournalGapConfirmsDespiteOrphanChurn(t *testing
 }
 
 func TestReportSharedWalletDrift_JournalGapBlipDoesNotConfirm(t *testing.T) {
-	prev := sharedWalletDriftTracker
-	sharedWalletDriftTracker = &SharedWalletDriftTracker{}
-	defer func() { sharedWalletDriftTracker = prev }()
+	useFreshDriftTracker(t)
 
 	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xabc"}
 	jkey := sharedWalletKeyLabel(key) + journalDriftStreakKeySuffix
@@ -797,9 +763,7 @@ func TestReportSharedWalletDrift_JournalGapBlipDoesNotConfirm(t *testing.T) {
 }
 
 func TestReportSharedWalletDrift_BasisSwitchClearsStaleTradeLedgerEntry(t *testing.T) {
-	prev := sharedWalletDriftTracker
-	sharedWalletDriftTracker = &SharedWalletDriftTracker{}
-	defer func() { sharedWalletDriftTracker = prev }()
+	useFreshDriftTracker(t)
 
 	mock := &mockNotifier{}
 	notifier := NewMultiNotifier(notifierBackend{
@@ -852,9 +816,7 @@ func TestReportSharedWalletDrift_BasisSwitchClearsStaleTradeLedgerEntry(t *testi
 }
 
 func TestReportSharedWalletDrift_TradeLedgerBasisPreservesJournalStreak(t *testing.T) {
-	prev := sharedWalletDriftTracker
-	sharedWalletDriftTracker = &SharedWalletDriftTracker{}
-	defer func() { sharedWalletDriftTracker = prev }()
+	useFreshDriftTracker(t)
 
 	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xabc"}
 	jkey := sharedWalletKeyLabel(key) + journalDriftStreakKeySuffix
@@ -870,21 +832,5 @@ func TestReportSharedWalletDrift_TradeLedgerBasisPreservesJournalStreak(t *testi
 	})
 	if e := sharedWalletDriftTracker.entries[jkey]; e == nil || e.cycles != 1 {
 		t.Fatalf("trade-ledger basis must preserve the journal streak (not clear it): %+v", e)
-	}
-}
-
-func TestFormatSharedWalletJournalDriftAlert_OrphanContext(t *testing.T) {
-	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xabc"}
-	with := formatSharedWalletJournalDriftAlert(key, 1000, 995, 5.00, 2, []string{"BTC"})
-	if strings.Contains(with, "within tolerance") {
-		t.Errorf("over-tolerance drift alert must never claim within tolerance: %s", with)
-	}
-	for _, want := range []string{"DRIFT (exchange journal)", "BTC", "NO strategy"} {
-		if !strings.Contains(with, want) {
-			t.Errorf("drift alert with orphan missing %q: %s", want, with)
-		}
-	}
-	if without := formatSharedWalletJournalDriftAlert(key, 1000, 995, 5.00, 2, nil); strings.Contains(without, "NO strategy") {
-		t.Errorf("no-orphan drift alert must not mention orphans: %s", without)
 	}
 }

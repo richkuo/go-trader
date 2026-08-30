@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -9,137 +10,97 @@ import (
 	"time"
 )
 
-func TestParseKillSwitchResetDMTimeout_DefaultsToSixHours(t *testing.T) {
-	d, err := ParseKillSwitchResetDMTimeout("")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+func writeKillSwitchResetDMConfig(t *testing.T, timeoutField string) string {
+	t.Helper()
+	path := t.TempDir() + "/config.json"
+	cfgJSON := `{
+		` + timeoutField + `
+		"strategies": [{
+			"id": "hl-sole",
+			"type": "perps",
+			"platform": "hyperliquid",
+			"script": "shared_scripts/check_hyperliquid.py",
+			"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
+			"capital": 1000,
+			"max_drawdown_pct": 10,
+			"leverage": 5
+		}]
+	}`
+	if err := os.WriteFile(path, []byte(cfgJSON), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
 	}
-	if d != DefaultKillSwitchResetDMTimeout {
-		t.Fatalf("got %s, want %s", d, DefaultKillSwitchResetDMTimeout)
-	}
-	if DefaultKillSwitchResetDMTimeout == 30*time.Minute {
-		t.Fatal("default must not be the former hard-coded 30m")
-	}
+	return path
+}
+
+func TestParseKillSwitchResetDMTimeout(t *testing.T) {
 	if DefaultKillSwitchResetDMTimeout != 6*time.Hour {
 		t.Fatalf("default = %s, want 6h", DefaultKillSwitchResetDMTimeout)
 	}
+	cases := []struct {
+		raw     string
+		want    time.Duration
+		wantErr bool
+	}{
+		{raw: "", want: DefaultKillSwitchResetDMTimeout},
+		{raw: "30m", want: 30 * time.Minute},
+		{raw: "nonsense", wantErr: true},
+		{raw: "0", wantErr: true},
+		{raw: "-1h", wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(fmt.Sprintf("%q", tc.raw), func(t *testing.T) {
+			d, err := ParseKillSwitchResetDMTimeout(tc.raw)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error for %q, got %s", tc.raw, d)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if d != tc.want {
+				t.Fatalf("got %s, want %s", d, tc.want)
+			}
+		})
+	}
 }
 
-func TestParseKillSwitchResetDMTimeout_ParsesGoDuration(t *testing.T) {
-	d, err := ParseKillSwitchResetDMTimeout("30m")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if d != 30*time.Minute {
-		t.Fatalf("got %s, want 30m", d)
-	}
-}
+func TestLoadConfig_KillSwitchResetDMTimeout(t *testing.T) {
+	prev := killSwitchResetDMTimeout
+	t.Cleanup(func() { killSwitchResetDMTimeout = prev })
 
-func TestParseKillSwitchResetDMTimeout_RejectsInvalid(t *testing.T) {
-	if _, err := ParseKillSwitchResetDMTimeout("nonsense"); err == nil {
-		t.Fatal("expected error for invalid duration")
-	}
-}
-
-func TestParseKillSwitchResetDMTimeout_RejectsNonPositive(t *testing.T) {
-	for _, raw := range []string{"0", "-1h"} {
-		if _, err := ParseKillSwitchResetDMTimeout(raw); err == nil {
-			t.Fatalf("expected error for %q", raw)
+	t.Run("applies configured value", func(t *testing.T) {
+		cfg, err := LoadConfigForProbe(writeKillSwitchResetDMConfig(t, `"kill_switch_reset_dm_timeout": "45m",`))
+		if err != nil {
+			t.Fatalf("LoadConfigForProbe: %v", err)
 		}
-	}
-}
-
-func TestLoadConfig_AppliesKillSwitchResetDMTimeout(t *testing.T) {
-	prev := killSwitchResetDMTimeout
-	t.Cleanup(func() { killSwitchResetDMTimeout = prev })
-
-	dir := t.TempDir()
-	path := dir + "/config.json"
-	cfgJSON := `{
-		"kill_switch_reset_dm_timeout": "45m",
-		"strategies": [{
-			"id": "hl-sole",
-			"type": "perps",
-			"platform": "hyperliquid",
-			"script": "shared_scripts/check_hyperliquid.py",
-			"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
-			"capital": 1000,
-			"max_drawdown_pct": 10,
-			"leverage": 5
-		}]
-	}`
-	if err := os.WriteFile(path, []byte(cfgJSON), 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-	cfg, err := LoadConfigForProbe(path)
-	if err != nil {
-		t.Fatalf("LoadConfigForProbe: %v", err)
-	}
-	if cfg.KillSwitchResetDMTimeout != "45m" {
-		t.Fatalf("KillSwitchResetDMTimeout = %q, want 45m", cfg.KillSwitchResetDMTimeout)
-	}
-	if err := applyKillSwitchResetDMTimeoutFromConfig(cfg); err != nil {
-		t.Fatalf("applyKillSwitchResetDMTimeoutFromConfig: %v", err)
-	}
-	if effectiveKillSwitchResetDMTimeout() != 45*time.Minute {
-		t.Fatalf("runtime timeout = %s, want 45m", effectiveKillSwitchResetDMTimeout())
-	}
-}
-
-func TestLoadConfig_KillSwitchResetDMTimeoutDefaultsToSixHours(t *testing.T) {
-	prev := killSwitchResetDMTimeout
-	t.Cleanup(func() { killSwitchResetDMTimeout = prev })
-
-	dir := t.TempDir()
-	path := dir + "/config.json"
-	cfgJSON := `{
-		"strategies": [{
-			"id": "hl-sole",
-			"type": "perps",
-			"platform": "hyperliquid",
-			"script": "shared_scripts/check_hyperliquid.py",
-			"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
-			"capital": 1000,
-			"max_drawdown_pct": 10,
-			"leverage": 5
-		}]
-	}`
-	if err := os.WriteFile(path, []byte(cfgJSON), 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-	if _, err := LoadConfigForProbe(path); err != nil {
-		t.Fatalf("LoadConfigForProbe: %v", err)
-	}
-	if err := applyKillSwitchResetDMTimeoutFromConfig(&Config{}); err != nil {
-		t.Fatalf("applyKillSwitchResetDMTimeoutFromConfig: %v", err)
-	}
-	if effectiveKillSwitchResetDMTimeout() != DefaultKillSwitchResetDMTimeout {
-		t.Fatalf("runtime timeout = %s, want %s", effectiveKillSwitchResetDMTimeout(), DefaultKillSwitchResetDMTimeout)
-	}
-}
-
-func TestLoadConfig_RejectsInvalidKillSwitchResetDMTimeout(t *testing.T) {
-	dir := t.TempDir()
-	path := dir + "/config.json"
-	cfgJSON := `{
-		"kill_switch_reset_dm_timeout": "nonsense",
-		"strategies": [{
-			"id": "hl-sole",
-			"type": "perps",
-			"platform": "hyperliquid",
-			"script": "shared_scripts/check_hyperliquid.py",
-			"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
-			"capital": 1000,
-			"max_drawdown_pct": 10,
-			"leverage": 5
-		}]
-	}`
-	if err := os.WriteFile(path, []byte(cfgJSON), 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-	if _, err := LoadConfigForProbe(path); err == nil {
-		t.Fatal("expected LoadConfigForProbe to reject invalid kill_switch_reset_dm_timeout")
-	}
+		if cfg.KillSwitchResetDMTimeout != "45m" {
+			t.Fatalf("KillSwitchResetDMTimeout = %q, want 45m", cfg.KillSwitchResetDMTimeout)
+		}
+		if err := applyKillSwitchResetDMTimeoutFromConfig(cfg); err != nil {
+			t.Fatalf("applyKillSwitchResetDMTimeoutFromConfig: %v", err)
+		}
+		if effectiveKillSwitchResetDMTimeout() != 45*time.Minute {
+			t.Fatalf("runtime timeout = %s, want 45m", effectiveKillSwitchResetDMTimeout())
+		}
+	})
+	t.Run("omitted defaults to six hours", func(t *testing.T) {
+		if _, err := LoadConfigForProbe(writeKillSwitchResetDMConfig(t, "")); err != nil {
+			t.Fatalf("LoadConfigForProbe: %v", err)
+		}
+		if err := applyKillSwitchResetDMTimeoutFromConfig(&Config{}); err != nil {
+			t.Fatalf("applyKillSwitchResetDMTimeoutFromConfig: %v", err)
+		}
+		if effectiveKillSwitchResetDMTimeout() != DefaultKillSwitchResetDMTimeout {
+			t.Fatalf("runtime timeout = %s, want %s", effectiveKillSwitchResetDMTimeout(), DefaultKillSwitchResetDMTimeout)
+		}
+	})
+	t.Run("rejects invalid value", func(t *testing.T) {
+		if _, err := LoadConfigForProbe(writeKillSwitchResetDMConfig(t, `"kill_switch_reset_dm_timeout": "nonsense",`)); err == nil {
+			t.Fatal("expected LoadConfigForProbe to reject invalid kill_switch_reset_dm_timeout")
+		}
+	})
 }
 
 func TestApplyHotReloadConfig_UpdatesKillSwitchResetDMTimeout(t *testing.T) {
@@ -168,24 +129,7 @@ func TestLoadConfigForProbe_DoesNotMutateAdoptedKillSwitchResetDMTimeout(t *test
 	t.Cleanup(func() { killSwitchResetDMTimeout = prev })
 	applyKillSwitchResetDMTimeout(90 * time.Minute)
 
-	dir := t.TempDir()
-	path := dir + "/config.json"
-	cfgJSON := `{
-		"kill_switch_reset_dm_timeout": "15m",
-		"strategies": [{
-			"id": "hl-sole",
-			"type": "perps",
-			"platform": "hyperliquid",
-			"script": "shared_scripts/check_hyperliquid.py",
-			"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
-			"capital": 1000,
-			"max_drawdown_pct": 10,
-			"leverage": 5
-		}]
-	}`
-	if err := os.WriteFile(path, []byte(cfgJSON), 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
+	path := writeKillSwitchResetDMConfig(t, `"kill_switch_reset_dm_timeout": "15m",`)
 	if _, err := LoadConfigForProbe(path); err != nil {
 		t.Fatalf("LoadConfigForProbe: %v", err)
 	}
@@ -221,24 +165,7 @@ func TestKillSwitchResetDMTimeout_ConcurrentProbeDoesNotRace(t *testing.T) {
 	t.Cleanup(func() { killSwitchResetDMTimeout = prev })
 	applyKillSwitchResetDMTimeout(time.Hour)
 
-	dir := t.TempDir()
-	path := dir + "/config.json"
-	cfgJSON := `{
-		"kill_switch_reset_dm_timeout": "30m",
-		"strategies": [{
-			"id": "hl-sole",
-			"type": "perps",
-			"platform": "hyperliquid",
-			"script": "shared_scripts/check_hyperliquid.py",
-			"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
-			"capital": 1000,
-			"max_drawdown_pct": 10,
-			"leverage": 5
-		}]
-	}`
-	if err := os.WriteFile(path, []byte(cfgJSON), 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
+	path := writeKillSwitchResetDMConfig(t, `"kill_switch_reset_dm_timeout": "30m",`)
 
 	done := make(chan struct{})
 	go func() {

@@ -256,58 +256,6 @@ func TestClearHLPerpsPositionAlertThrottlesClearsBoth(t *testing.T) {
 	hlLiquidationAlerts.Delete(hlLiquidationAlertKey("spot-eth", "ETH"))
 }
 
-func TestPlanHyperliquidLiquidationAuditClassification(t *testing.T) {
-	cands := []hlLiquidationAuditCandidate{
-		{StrategyID: "b-scalar", Symbol: "ETH", Side: "long", Qty: 1, StopLossOID: 11, StopLossTriggerPx: 2325, LiquidationPx: 2340.5, StaticScalarOwner: true, BookConsistent: true},
-		{StrategyID: "a-trailing", Symbol: "ETH", Side: "long", Qty: 1, StopLossOID: 12, StopLossTriggerPx: 2325, LiquidationPx: 2340.5, StaticScalarOwner: false, BookConsistent: true},
-		{StrategyID: "c-ok", Symbol: "ETH", Side: "long", Qty: 1, StopLossOID: 13, StopLossTriggerPx: 2360, LiquidationPx: 2340.5, StaticScalarOwner: true, BookConsistent: true},
-		{StrategyID: "d-unknown", Symbol: "BTC", Side: "long", Qty: 1, StopLossOID: 14, StopLossTriggerPx: 100, LiquidationPx: 0, StaticScalarOwner: true, BookConsistent: true},
-		{StrategyID: "e-nostop", Symbol: "BTC", Side: "long", Qty: 1, Unprotected: true, RearmTriggerPx: 39000, LiquidationPx: 40000, StaticScalarOwner: false, BookConsistent: true},
-		{StrategyID: "f-noqty", Symbol: "BTC", Side: "long", Qty: 0, StopLossOID: 15, StopLossTriggerPx: 39000, LiquidationPx: 40000, StaticScalarOwner: true, BookConsistent: true},
-	}
-	actions := planHyperliquidLiquidationAudit(cands)
-	if len(actions) != 2 {
-		t.Fatalf("actions = %d, want 2 (only the two past-liquidation candidates)", len(actions))
-	}
-	if actions[0].Candidate.StrategyID != "a-trailing" || actions[1].Candidate.StrategyID != "b-scalar" {
-		t.Fatalf("actions not sorted deterministically: %s, %s", actions[0].Candidate.StrategyID, actions[1].Candidate.StrategyID)
-	}
-	for _, a := range actions {
-		if a.Kind != hlAuditTighten {
-			t.Errorf("%s: kind = %v, want a tighten job — the audit heals every owner", a.Candidate.StrategyID, a.Kind)
-		}
-	}
-	want := 2340.5 * (1 + hlLiquidationStopBufferPct/100.0)
-	if !approxEqLiq(actions[1].ClampedTriggerPx, want) {
-		t.Errorf("clamped trigger = %g, want %g", actions[1].ClampedTriggerPx, want)
-	}
-}
-
-func TestPlanHyperliquidLiquidationAuditRearmsUnprotectedScalarOwner(t *testing.T) {
-	cands := []hlLiquidationAuditCandidate{
-		{StrategyID: "hl-eth", Symbol: "ETH", Side: "long", Qty: 1, Unprotected: true, RearmTriggerPx: 2325, LiquidationPx: 2300, StaticScalarOwner: true, BookConsistent: true},
-	}
-	actions := planHyperliquidLiquidationAudit(cands)
-	if len(actions) != 1 || actions[0].Kind != hlAuditRearm {
-		t.Fatalf("actions = %+v, want one re-arm job", actions)
-	}
-	if !approxEqLiq(actions[0].ClampedTriggerPx, 2325) {
-		t.Errorf("re-arm trigger = %g, want 2325", actions[0].ClampedTriggerPx)
-	}
-}
-
-func TestPlanHyperliquidLiquidationAuditRefusesUnreconciledCoin(t *testing.T) {
-	cands := []hlLiquidationAuditCandidate{
-		{StrategyID: "hl-eth", Symbol: "ETH", Side: "long", Qty: 1, StopLossOID: 11, StopLossTriggerPx: 2325, LiquidationPx: 2340.5, StaticScalarOwner: true, BookConsistent: false},
-		{StrategyID: "hl-eth2", Symbol: "ETH", Side: "long", Qty: 1, Unprotected: true, RearmTriggerPx: 2325, LiquidationPx: 2340.5, StaticScalarOwner: true, BookConsistent: false},
-	}
-	for _, a := range planHyperliquidLiquidationAudit(cands) {
-		if a.Kind != hlAuditRefuse {
-			t.Errorf("%s: kind = %v, want a refusal on an unreconciled coin", a.Candidate.StrategyID, a.Kind)
-		}
-	}
-}
-
 func TestHLLiquidationCoinBookConsistent(t *testing.T) {
 	got := hlLiquidationCoinBookConsistent(
 		map[string]float64{"ETH": 2.0, "BTC": 1.0, "SOL": 0.5, "AVAX": 3.0, "DOGE": 5.0, "MIX": -0.6, "PHANTOM": 1.1},
@@ -387,54 +335,6 @@ func TestCollectHLLiquidationAuditCandidatesHealsSoleOwnerDrift(t *testing.T) {
 	}
 }
 
-func TestRunHyperliquidLiquidationAuditSkipsWithoutSnapshot(t *testing.T) {
-	strategies, state := liqAuditFixture(t, true, 3.0)
-	state.Strategies["hl-eth"].Positions["ETH"].StopLossOID = 0
-	state.Strategies["hl-eth"].Positions["ETH"].StopLossTriggerPx = 0
-	calls := 0
-	orig := runHyperliquidUpdateStopLossFunc
-	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, qty, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
-		calls++
-		return &HyperliquidStopLossUpdateResult{StopLossOID: 7, StopLossTriggerPx: triggerPx}, "", nil
-	}
-	defer func() { runHyperliquidUpdateStopLossFunc = orig }()
-	hlLiquidationAlerts.Delete(hlLiquidationAlertKey("hl-eth", "ETH"))
-
-	res := runHyperliquidLiquidationAudit(strategies, state, map[string]float64{}, nil, map[string]float64{}, false, &sync.RWMutex{}, nil, time.Now().UTC())
-	if res.ImmediateFills != 0 || len(res.CloseDetails) != 0 {
-		t.Errorf("result = %+v, want an empty result with no snapshot", res)
-	}
-	if calls != 0 {
-		t.Errorf("placement calls = %d, want 0 with no snapshot", calls)
-	}
-	if _, alerted := hlLiquidationAlerts.Load(hlLiquidationAlertKey("hl-eth", "ETH")); alerted {
-		t.Error("a failed fetch must not raise a phantom-position alert")
-	}
-}
-
-func TestHLLiquidationAlertMessageOmitsUnknownGeometry(t *testing.T) {
-	headline, detail, unprotected := hlLiquidationAlertMessage(0, 0, 0, hlLiquidationActionUnreconciled, "")
-	if strings.Contains(detail, "$0.0000") {
-		t.Errorf("detail = %q, want no fabricated $0.0000 prices", detail)
-	}
-	if !strings.Contains(detail, "NO exchange-side stop") {
-		t.Errorf("detail = %q, want it to say the position has no stop", detail)
-	}
-	if headline != "**HL POSITION UNPROTECTED**" {
-		t.Errorf("headline = %q, want the unprotected headline", headline)
-	}
-	if !unprotected {
-		t.Error("a refused candidate with no stop is unprotected — must log CRITICAL")
-	}
-	_, armedDetail, armedUnprotected := hlLiquidationAlertMessage(2325, 2352, 2340.5, hlLiquidationActionUnreconciled, "")
-	if !strings.Contains(armedDetail, "$2325.0000") || !strings.Contains(armedDetail, "$2340.5000") {
-		t.Errorf("detail = %q, want the real trigger and liquidation prices", armedDetail)
-	}
-	if armedUnprotected {
-		t.Error("a refused TIGHTEN still has the old order resting — not unprotected")
-	}
-}
-
 func liqAuditFixture(t *testing.T, live bool, stopPct float64) ([]StrategyConfig, *AppState) {
 	t.Helper()
 	mode := "--mode=live"
@@ -457,45 +357,6 @@ func liqAuditFixture(t *testing.T, live bool, stopPct float64) ([]StrategyConfig
 		}},
 	}}
 	return []StrategyConfig{sc}, state
-}
-
-func TestRunHyperliquidLiquidationAuditReplacesScalarStop(t *testing.T) {
-	old := runHyperliquidUpdateStopLossFunc
-	defer func() { runHyperliquidUpdateStopLossFunc = old }()
-	clearHLLiquidationAlert("hl-eth", "ETH")
-
-	strategies, state := liqAuditFixture(t, true, 3.125)
-	var mu sync.RWMutex
-
-	var gotTrigger float64
-	var gotCancelOID int64
-	var gotSize float64
-	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
-		gotTrigger, gotCancelOID, gotSize = triggerPx, cancelStopLossOID, size
-		return &HyperliquidStopLossUpdateResult{StopLossOID: 9001, StopLossTriggerPx: triggerPx}, "", nil
-	}
-
-	res := runHyperliquidLiquidationAudit(strategies, state, map[string]float64{"ETH": 2340.5}, hlNetSideByCoinAllLong(), map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
-	if res.ImmediateFills != 0 {
-		t.Fatalf("immediate fills = %d, want 0 (a resting replacement)", res.ImmediateFills)
-	}
-	if gotCancelOID != 4242 {
-		t.Errorf("cancel OID = %d, want the resting 4242", gotCancelOID)
-	}
-	if !approxEqLiq(gotSize, 1.0) {
-		t.Errorf("replace size = %g, want 1.0", gotSize)
-	}
-	wantTrigger := 2340.5 * (1 + hlLiquidationStopBufferPct/100.0)
-	if !approxEqLiq(gotTrigger, wantTrigger) {
-		t.Errorf("replace trigger = %g, want %g (just inside liquidation)", gotTrigger, wantTrigger)
-	}
-	pos := state.Strategies["hl-eth"].Positions["ETH"]
-	if pos.StopLossOID != 9001 {
-		t.Errorf("position SL oid = %d, want the replacement 9001", pos.StopLossOID)
-	}
-	if !approxEqLiq(pos.StopLossTriggerPx, wantTrigger) {
-		t.Errorf("position trigger = %g, want %g", pos.StopLossTriggerPx, wantTrigger)
-	}
 }
 
 func TestRunHyperliquidLiquidationAuditKeepsOriginalStopOnFailure(t *testing.T) {
@@ -579,109 +440,6 @@ func TestRunHyperliquidLiquidationAuditCancelledThenRejectedRearms(t *testing.T)
 	}
 }
 
-func TestRunHyperliquidLiquidationAuditCancelThenPlaceIsANormalClamp(t *testing.T) {
-	old := runHyperliquidUpdateStopLossFunc
-	defer func() { runHyperliquidUpdateStopLossFunc = old }()
-	clearHLLiquidationAlert("hl-eth", "ETH")
-
-	strategies, state := liqAuditFixture(t, true, 3.125)
-	var mu sync.RWMutex
-	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
-		return &HyperliquidStopLossUpdateResult{CancelStopLossSucceeded: true, StopLossOID: 5150, StopLossTriggerPx: triggerPx}, "", nil
-	}
-	runHyperliquidLiquidationAudit(strategies, state, map[string]float64{"ETH": 2340.5}, hlNetSideByCoinAllLong(), map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
-	if got := state.Strategies["hl-eth"].Positions["ETH"].StopLossOID; got != 5150 {
-		t.Fatalf("position SL oid = %d, want the replacement 5150", got)
-	}
-	st, _ := hlLiquidationAlerts.Load(hlLiquidationAlertKey("hl-eth", "ETH"))
-	if s, ok := st.(hlLiquidationAlertState); !ok || s.LastAction != hlLiquidationActionClamped {
-		t.Errorf("last action = %+v, want a landed clamp — no false protection-lost alert", st)
-	}
-	clearHLLiquidationAlert("hl-eth", "ETH")
-}
-
-func TestRunHyperliquidLiquidationAuditFillAtSubmitReportsExited(t *testing.T) {
-	old := runHyperliquidUpdateStopLossFunc
-	defer func() { runHyperliquidUpdateStopLossFunc = old }()
-	clearHLLiquidationAlert("hl-eth", "ETH")
-	defer clearHLLiquidationAlert("hl-eth", "ETH")
-
-	strategies, state := liqAuditFixture(t, true, 3.125)
-	var mu sync.RWMutex
-	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
-		return &HyperliquidStopLossUpdateResult{
-			CancelStopLossSucceeded:   true,
-			StopLossFilledImmediately: true,
-			StopLossTriggerPx:         triggerPx,
-		}, "", nil
-	}
-	res := runHyperliquidLiquidationAudit(strategies, state, map[string]float64{"ETH": 2340.5}, hlNetSideByCoinAllLong(), map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
-	if res.ImmediateFills != 1 || len(res.CloseDetails) != 1 {
-		t.Fatalf("immediate fills = %d, close details = %d, want 1/1", res.ImmediateFills, len(res.CloseDetails))
-	}
-	st, _ := hlLiquidationAlerts.Load(hlLiquidationAlertKey("hl-eth", "ETH"))
-	if s2, ok := st.(hlLiquidationAlertState); !ok || s2.LastAction != hlLiquidationActionExited {
-		t.Errorf("last action = %+v, want %q — the position is FLAT", st, hlLiquidationActionExited)
-	}
-}
-
-func TestRunHyperliquidLiquidationAuditImmediateCloseReasonsTheAudit(t *testing.T) {
-	old := runHyperliquidUpdateStopLossFunc
-	defer func() { runHyperliquidUpdateStopLossFunc = old }()
-	clearHLLiquidationAlert("hl-eth", "ETH")
-	defer clearHLLiquidationAlert("hl-eth", "ETH")
-
-	strategies, state := liqAuditFixture(t, true, 3.125)
-	var mu sync.RWMutex
-	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
-		return &HyperliquidStopLossUpdateResult{
-			CancelStopLossSucceeded:   true,
-			StopLossFilledImmediately: true,
-			StopLossTriggerPx:         triggerPx,
-		}, "", nil
-	}
-	res := runHyperliquidLiquidationAudit(strategies, state, map[string]float64{"ETH": 2340.5}, hlNetSideByCoinAllLong(), map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
-	if res.ImmediateFills != 1 || len(res.CloseDetails) != 1 {
-		t.Fatalf("immediate fills = %d, close details = %d, want 1/1", res.ImmediateFills, len(res.CloseDetails))
-	}
-	ss := state.Strategies["hl-eth"]
-	if len(ss.ClosedPositions) == 0 {
-		t.Fatal("no closed position recorded for the immediate close")
-	}
-	cp := ss.ClosedPositions[len(ss.ClosedPositions)-1]
-	if cp.CloseReason != "liquidation_clamp_sl_immediate" {
-		t.Errorf("persisted CloseReason = %q, want liquidation_clamp_sl_immediate (not the trailing walker)", cp.CloseReason)
-	}
-	if len(ss.TradeHistory) == 0 {
-		t.Fatal("no trade recorded for the immediate close")
-	}
-	tr := ss.TradeHistory[len(ss.TradeHistory)-1]
-	if !strings.Contains(tr.Details, "Liquidation-clamp SL") {
-		t.Errorf("trade details %q must match the LIQUIDATION-CLAMP operator wording", tr.Details)
-	}
-}
-
-func TestRunHyperliquidLiquidationAuditFilledExternallyReportsFilled(t *testing.T) {
-	old := runHyperliquidUpdateStopLossFunc
-	defer func() { runHyperliquidUpdateStopLossFunc = old }()
-	clearHLLiquidationAlert("hl-eth", "ETH")
-	defer clearHLLiquidationAlert("hl-eth", "ETH")
-
-	strategies, state := liqAuditFixture(t, true, 3.125)
-	var mu sync.RWMutex
-	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
-		return &HyperliquidStopLossUpdateResult{StopLossFilledExternally: true}, "", nil
-	}
-	res := runHyperliquidLiquidationAudit(strategies, state, map[string]float64{"ETH": 2340.5}, hlNetSideByCoinAllLong(), map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
-	if res.ImmediateFills != 0 {
-		t.Fatalf("the reconciler owns this close, audit booked %d", res.ImmediateFills)
-	}
-	st, _ := hlLiquidationAlerts.Load(hlLiquidationAlertKey("hl-eth", "ETH"))
-	if s2, ok := st.(hlLiquidationAlertState); !ok || s2.LastAction != hlLiquidationActionFilledOnChain {
-		t.Errorf("last action = %+v, want %q", st, hlLiquidationActionFilledOnChain)
-	}
-}
-
 func TestStaticScalarOwnerCannotScaleIn(t *testing.T) {
 	sc := StrategyConfig{
 		ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py",
@@ -697,27 +455,6 @@ func TestStaticScalarOwnerCannotScaleIn(t *testing.T) {
 	err := validateConfig(cfg, true)
 	if err == nil || !strings.Contains(err.Error(), "allow_scale_in on live perps requires") {
 		t.Fatalf("allow_scale_in on a static scalar owner must be rejected at load, got %v", err)
-	}
-}
-
-func TestRunHyperliquidLiquidationAuditSkipsPaper(t *testing.T) {
-	old := runHyperliquidUpdateStopLossFunc
-	defer func() { runHyperliquidUpdateStopLossFunc = old }()
-	clearHLLiquidationAlert("hl-eth", "ETH")
-
-	strategies, state := liqAuditFixture(t, false, 3.125)
-	var mu sync.RWMutex
-	called := false
-	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
-		called = true
-		return &HyperliquidStopLossUpdateResult{StopLossOID: 1}, "", nil
-	}
-	runHyperliquidLiquidationAudit(strategies, state, map[string]float64{"ETH": 2340.5}, hlNetSideByCoinAllLong(), map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
-	if called {
-		t.Fatal("a paper strategy must never be clamped against a live liquidation price")
-	}
-	if state.Strategies["hl-eth"].Positions["ETH"].StopLossOID != 4242 {
-		t.Error("paper position state must be untouched")
 	}
 }
 
@@ -754,134 +491,6 @@ func TestRunHyperliquidLiquidationAuditHealsTrailingOwner(t *testing.T) {
 	runHyperliquidLiquidationAudit(strategies, state, map[string]float64{"ETH": 2340.5}, hlNetSideByCoinAllLong(), map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
 	if calls != 0 {
 		t.Errorf("a reachable resting trigger must produce no further order churn, got %d placements", calls)
-	}
-}
-
-func TestRunHyperliquidLiquidationAuditIsIndependentOfSignalResults(t *testing.T) {
-	old := runHyperliquidUpdateStopLossFunc
-	defer func() { runHyperliquidUpdateStopLossFunc = old }()
-	clearHLLiquidationAlert("hl-eth", "ETH")
-
-	strategies, state := liqAuditFixture(t, true, 0)
-	strategies[0].StopLossPct = nil
-	strategies[0].TrailingStopATRMult = floatPtr(2.5)
-	strategies[0].Args = []string{"x.py", "ETH", "4h", "--mode=live"}
-	var mu sync.RWMutex
-	placed := false
-	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
-		placed = true
-		return &HyperliquidStopLossUpdateResult{StopLossOID: 9200, StopLossTriggerPx: triggerPx}, "", nil
-	}
-	runHyperliquidLiquidationAudit(strategies, state, map[string]float64{"ETH": 2340.5}, hlNetSideByCoinAllLong(), map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
-	if !placed {
-		t.Fatal("a non-due 4h trailing owner must still be healed by the per-cycle audit")
-	}
-}
-
-func TestRunHyperliquidLiquidationAuditRefusesPhantomOnSharedCoin(t *testing.T) {
-	old := runHyperliquidUpdateStopLossFunc
-	defer func() { runHyperliquidUpdateStopLossFunc = old }()
-	clearHLLiquidationAlert("hl-eth", "ETH")
-	clearHLLiquidationAlert("hl-eth-b", "ETH")
-
-	strategies, state := liqAuditFixture(t, true, 3.125)
-	scB := strategies[0]
-	scB.ID = "hl-eth-b"
-	strategies = append(strategies, scB)
-	state.Strategies["hl-eth-b"] = &StrategyState{ID: "hl-eth-b", Platform: "hyperliquid", Type: "perps", Positions: map[string]*Position{
-		"ETH": {Symbol: "ETH", Side: "long", Quantity: 1.0, AvgCost: 2400, RiskAnchorPrice: 2400, EntryATR: 30, StopLossOID: 4343, StopLossTriggerPx: 2325},
-	}}
-	var mu sync.RWMutex
-	called := false
-	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
-		called = true
-		return &HyperliquidStopLossUpdateResult{StopLossOID: 1}, "", nil
-	}
-	runHyperliquidLiquidationAudit(strategies, state, map[string]float64{"ETH": 2340.5}, hlNetSideByCoinAllLong(), map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
-	if called {
-		t.Fatal("the audit must not move a reduce-only trigger on a coin whose book exceeds the on-chain snapshot")
-	}
-	if state.Strategies["hl-eth"].Positions["ETH"].StopLossOID != 4242 {
-		t.Error("a refused candidate's state must be untouched")
-	}
-}
-
-func TestRunHyperliquidLiquidationAuditHealsConsistentNonDuePosition(t *testing.T) {
-	old := runHyperliquidUpdateStopLossFunc
-	defer func() { runHyperliquidUpdateStopLossFunc = old }()
-	clearHLLiquidationAlert("hl-eth", "ETH")
-
-	strategies, state := liqAuditFixture(t, true, 3.125)
-	strategies[0].Args = []string{"x.py", "ETH", "1d", "--mode=live"}
-	var mu sync.RWMutex
-	called := false
-	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
-		called = true
-		return &HyperliquidStopLossUpdateResult{StopLossOID: 9300, StopLossTriggerPx: triggerPx}, "", nil
-	}
-	runHyperliquidLiquidationAudit(strategies, state, map[string]float64{"ETH": 2340.5}, hlNetSideByCoinAllLong(), map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
-	if !called {
-		t.Fatal("a consistent book must still be healed regardless of due-ness")
-	}
-}
-
-func TestRunHyperliquidLiquidationAuditNoOpsWithoutOnChainPosition(t *testing.T) {
-	old := runHyperliquidUpdateStopLossFunc
-	defer func() { runHyperliquidUpdateStopLossFunc = old }()
-	clearHLLiquidationAlert("hl-eth", "ETH")
-
-	strategies, state := liqAuditFixture(t, true, 3.125)
-	var mu sync.RWMutex
-	called := false
-	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
-		called = true
-		return &HyperliquidStopLossUpdateResult{StopLossOID: 1}, "", nil
-	}
-	runHyperliquidLiquidationAudit(strategies, state, map[string]float64{"ETH": 2340.5}, hlNetSideByCoinAllLong(), map[string]float64{}, true, &mu, nil, time.Now().UTC())
-	if called {
-		t.Fatal("no on-chain position for the coin must be a no-op")
-	}
-}
-
-func TestRunHyperliquidLiquidationAuditReportsBookedCloses(t *testing.T) {
-	old := runHyperliquidUpdateStopLossFunc
-	defer func() { runHyperliquidUpdateStopLossFunc = old }()
-	clearHLLiquidationAlert("hl-eth", "ETH")
-
-	strategies, state := liqAuditFixture(t, true, 3.125)
-	var mu sync.RWMutex
-	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
-		return &HyperliquidStopLossUpdateResult{StopLossFilledImmediately: true, StopLossTriggerPx: triggerPx}, "", nil
-	}
-	res := runHyperliquidLiquidationAudit(strategies, state, map[string]float64{"ETH": 2340.5}, hlNetSideByCoinAllLong(), map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
-	if res.ImmediateFills != 1 {
-		t.Fatalf("immediate fills = %d, want 1", res.ImmediateFills)
-	}
-	if len(res.CloseDetails) != 1 {
-		t.Fatalf("close details = %d, want 1 — a booked close must reach the trade notifier", len(res.CloseDetails))
-	}
-	cd := res.CloseDetails[0]
-	if cd.SC.ID != "hl-eth" || cd.Symbol != "ETH" || cd.Detail == "" {
-		t.Errorf("close detail = %+v, want a populated per-strategy line", cd)
-	}
-	if _, still := state.Strategies["hl-eth"].Positions["ETH"]; still {
-		t.Error("an immediate fill must book the close and drop the position")
-	}
-}
-
-func TestRunHyperliquidLiquidationAuditRestingClampEmitsNoClose(t *testing.T) {
-	old := runHyperliquidUpdateStopLossFunc
-	defer func() { runHyperliquidUpdateStopLossFunc = old }()
-	clearHLLiquidationAlert("hl-eth", "ETH")
-
-	strategies, state := liqAuditFixture(t, true, 3.125)
-	var mu sync.RWMutex
-	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
-		return &HyperliquidStopLossUpdateResult{StopLossOID: 9400, StopLossTriggerPx: triggerPx}, "", nil
-	}
-	res := runHyperliquidLiquidationAudit(strategies, state, map[string]float64{"ETH": 2340.5}, hlNetSideByCoinAllLong(), map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
-	if len(res.CloseDetails) != 0 || res.ImmediateFills != 0 {
-		t.Fatalf("a resting clamp must produce no close notification, got %+v", res)
 	}
 }
 
@@ -1083,38 +692,6 @@ func TestCollectHLLiquidationAuditCandidatesSideMismatchSkipsOppositeLeg(t *test
 	}
 }
 
-func TestRunHyperliquidLiquidationAuditStaleSideSoleOwnerDoesNothing(t *testing.T) {
-	old := runHyperliquidUpdateStopLossFunc
-	defer func() { runHyperliquidUpdateStopLossFunc = old }()
-	clearHLLiquidationAlert("hl-eth", "ETH")
-
-	strategies, state := liqAuditFixture(t, true, 3.125)
-	var mu sync.RWMutex
-	calls := 0
-	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
-		calls++
-		return &HyperliquidStopLossUpdateResult{StopLossOID: 9001, StopLossTriggerPx: triggerPx}, "", nil
-	}
-
-	res := runHyperliquidLiquidationAudit(strategies, state,
-		map[string]float64{"ETH": 2340.5},
-		map[string]string{"ETH": "short"},
-		map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
-	if calls != 0 {
-		t.Errorf("placement calls = %d, want 0 — a side mismatch must never touch the resting order", calls)
-	}
-	if res.ImmediateFills != 0 || len(res.CloseDetails) != 0 {
-		t.Errorf("result = %+v, want empty", res)
-	}
-	pos := state.Strategies["hl-eth"].Positions["ETH"]
-	if pos.StopLossOID != 4242 || pos.StopLossTriggerPx != 2325 {
-		t.Errorf("state changed: oid=%d trigger=%g — the healthy stop must be untouched", pos.StopLossOID, pos.StopLossTriggerPx)
-	}
-	if _, alerted := hlLiquidationAlerts.Load(hlLiquidationAlertKey("hl-eth", "ETH")); alerted {
-		t.Error("a side mismatch must not raise a past-liquidation alert")
-	}
-}
-
 func TestProtectionSyncSideMismatchNeverForcesPastLiquidationReplace(t *testing.T) {
 	mult := 2.0
 	sc := StrategyConfig{
@@ -1192,56 +769,6 @@ func TestHLStopBankruptcyBoundSkipsInertPctFieldsUnderUnifiedClose(t *testing.T)
 	}
 }
 
-func TestAuditRearmSkipsStaleSideSoleOwner(t *testing.T) {
-	old := runHyperliquidUpdateStopLossFunc
-	defer func() { runHyperliquidUpdateStopLossFunc = old }()
-	clearHLLiquidationAlert("hl-eth", "ETH")
-
-	strategies, state := liqAuditFixture(t, true, 3.125)
-	state.Strategies["hl-eth"].Positions["ETH"].StopLossOID = 0
-	state.Strategies["hl-eth"].Positions["ETH"].StopLossTriggerPx = 0
-	var mu sync.RWMutex
-	calls := 0
-	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
-		calls++
-		return &HyperliquidStopLossUpdateResult{StopLossOID: 9001, StopLossTriggerPx: triggerPx}, "", nil
-	}
-	runHyperliquidLiquidationAudit(strategies, state,
-		map[string]float64{"ETH": 2340.5},
-		map[string]string{"ETH": "short"},
-		map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
-	if calls != 0 {
-		t.Errorf("re-arm placements = %d, want 0 against an unconfirmed side", calls)
-	}
-	if _, alerted := hlLiquidationAlerts.Load(hlLiquidationAlertKey("hl-eth", "ETH")); alerted {
-		t.Error("a skipped stale-side re-arm must not raise the unthrottled CRITICAL")
-	}
-}
-
-func TestAuditRearmProceedsWithMatchingSideAndUnknownGeometry(t *testing.T) {
-	old := runHyperliquidUpdateStopLossFunc
-	defer func() { runHyperliquidUpdateStopLossFunc = old }()
-	clearHLLiquidationAlert("hl-eth", "ETH")
-
-	strategies, state := liqAuditFixture(t, true, 3.125)
-	state.Strategies["hl-eth"].Positions["ETH"].StopLossOID = 0
-	state.Strategies["hl-eth"].Positions["ETH"].StopLossTriggerPx = 0
-	var mu sync.RWMutex
-	var gotTrigger float64
-	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
-		gotTrigger = triggerPx
-		return &HyperliquidStopLossUpdateResult{StopLossOID: 9001, StopLossTriggerPx: triggerPx}, "", nil
-	}
-	runHyperliquidLiquidationAudit(strategies, state,
-		map[string]float64{},
-		map[string]string{"ETH": "long"},
-		map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
-	want := 2400 * (1 - 0.03125)
-	if !approxEqLiq(gotTrigger, want) {
-		t.Errorf("re-arm trigger = %g, want the unclamped configured distance %g", gotTrigger, want)
-	}
-}
-
 func liqTrailingAuditFixture(t *testing.T) ([]StrategyConfig, *AppState) {
 	t.Helper()
 	trail := 3.0
@@ -1260,145 +787,6 @@ func liqTrailingAuditFixture(t *testing.T) ([]StrategyConfig, *AppState) {
 		}},
 	}}
 	return []StrategyConfig{sc}, state
-}
-
-func TestAuditRetriesPlacementItStrippedSameCycle(t *testing.T) {
-	for _, tc := range []struct {
-		name          string
-		retryOK       bool
-		wantCalls     int
-		wantSecondOID int64
-		wantFinalOID  int64
-		wantAction    hlLiquidationAlertAction
-	}{
-		{"retry rests", true, 2, 0, 9002, hlLiquidationActionClamped},
-		{"retry also fails", false, 2, 0, 0, hlLiquidationActionProtectionLost},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			old := runHyperliquidUpdateStopLossFunc
-			defer func() { runHyperliquidUpdateStopLossFunc = old }()
-			clearHLLiquidationAlert("hl-eth", "ETH")
-
-			strategies, state := liqTrailingAuditFixture(t)
-			var mu sync.RWMutex
-			type call struct {
-				cancelOID int64
-				trigger   float64
-			}
-			var calls []call
-			callN := 0
-			runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
-				callN++
-				calls = append(calls, call{cancelOID: cancelOID, trigger: triggerPx})
-				if callN == 1 {
-					return &HyperliquidStopLossUpdateResult{
-						CancelStopLossSucceeded: true,
-						StopLossError:           "Order would exceed the open order limit",
-					}, "", nil
-				}
-				if tc.retryOK {
-					return &HyperliquidStopLossUpdateResult{StopLossOID: 9002, StopLossTriggerPx: triggerPx}, "", nil
-				}
-				return &HyperliquidStopLossUpdateResult{
-					CancelStopLossSucceeded: false,
-					StopLossError:           "Order would exceed the open order limit",
-				}, "", nil
-			}
-
-			runHyperliquidLiquidationAudit(strategies, state,
-				map[string]float64{"ETH": 2340.5},
-				hlNetSideByCoinAllLong(),
-				map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
-
-			if len(calls) != tc.wantCalls {
-				t.Fatalf("placement calls = %d (%+v), want %d", len(calls), calls, tc.wantCalls)
-			}
-			if tc.wantCalls == 2 && calls[1].cancelOID != tc.wantSecondOID {
-				t.Errorf("retry cancelOID = %d, want %d (nothing left to cancel)", calls[1].cancelOID, tc.wantSecondOID)
-			}
-			pos := state.Strategies["hl-eth"].Positions["ETH"]
-			if pos.StopLossOID != tc.wantFinalOID {
-				t.Errorf("final oid = %d, want %d", pos.StopLossOID, tc.wantFinalOID)
-			}
-			if last := lastLiqAlertAction("hl-eth", "ETH"); last != tc.wantAction {
-				t.Errorf("alert action = %q, want %q", last, tc.wantAction)
-			}
-		})
-	}
-
-	t.Run("first-try rest takes no retry", func(t *testing.T) {
-		old := runHyperliquidUpdateStopLossFunc
-		defer func() { runHyperliquidUpdateStopLossFunc = old }()
-		clearHLLiquidationAlert("hl-eth", "ETH")
-
-		strategies, state := liqTrailingAuditFixture(t)
-		var mu sync.RWMutex
-		calls := 0
-		runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
-			calls++
-			return &HyperliquidStopLossUpdateResult{StopLossOID: 9001, StopLossTriggerPx: triggerPx}, "", nil
-		}
-		runHyperliquidLiquidationAudit(strategies, state,
-			map[string]float64{"ETH": 2340.5},
-			hlNetSideByCoinAllLong(),
-			map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
-		if calls != 1 {
-			t.Errorf("placement calls = %d, want 1", calls)
-		}
-	})
-}
-
-func TestLiquidationAuditIntervalSeconds(t *testing.T) {
-	mk := func(id string, platform, typ string, live bool) StrategyConfig {
-		args := []string{"--mode", "paper"}
-		if live {
-			args = []string{"--mode", "live"}
-		}
-		return StrategyConfig{ID: id, Platform: platform, Type: typ, Args: args}
-	}
-	strategies := []StrategyConfig{
-		mk("hl-live-a", "hyperliquid", "perps", true),
-		mk("hl-paper-b", "hyperliquid", "perps", false),
-		mk("okx-live-c", "okx", "perps", true),
-		mk("hl-live-spot", "hyperliquid", "spot", true),
-	}
-	intervals := map[string]int{"hl-live-a": 300, "hl-paper-b": 60, "okx-live-c": 120, "hl-live-spot": 30}
-	if got := liquidationAuditIntervalSeconds(strategies, intervals); got != 150 {
-		t.Errorf("interval = %d, want 150 (half of hl-live-a's 300)", got)
-	}
-	if got := liquidationAuditIntervalSeconds(strategies[1:], intervals); got != 0 {
-		t.Errorf("interval without any live HL perps or manual = %d, want 0", got)
-	}
-}
-
-func TestLiquidationAuditIntervalStrictlyShorterAndCoversManual(t *testing.T) {
-	live := func(id, typ string) StrategyConfig {
-		return StrategyConfig{ID: id, Platform: "hyperliquid", Type: typ, Args: []string{"--mode", "live"}}
-	}
-
-	perps4h := []StrategyConfig{live("hl-4h", "perps")}
-	iv4h := map[string]int{"hl-4h": 14400}
-	got := liquidationAuditIntervalSeconds(perps4h, iv4h)
-	if got != 7200 {
-		t.Errorf("4h fleet cadence = %d, want 7200", got)
-	}
-	if got >= 14400 {
-		t.Errorf("cadence %d is not strictly shorter than the 14400s interval it bounds", got)
-	}
-
-	manualOnly := []StrategyConfig{live("hl-manual", "manual")}
-	if got := liquidationAuditIntervalSeconds(manualOnly, map[string]int{"hl-manual": 3600}); got != 1800 {
-		t.Errorf("manual-only cadence = %d, want 1800 (manual is an audit candidate)", got)
-	}
-
-	if got := liquidationAuditIntervalSeconds(perps4h, map[string]int{"hl-4h": 30}); got != liquidationAuditMinIntervalSeconds {
-		t.Errorf("fast-fleet cadence = %d, want floor %d", got, liquidationAuditMinIntervalSeconds)
-	}
-
-	paperManual := []StrategyConfig{{ID: "hl-pm", Platform: "hyperliquid", Type: "manual", Args: []string{"--mode", "paper"}}}
-	if got := liquidationAuditIntervalSeconds(paperManual, map[string]int{"hl-pm": 3600}); got != 0 {
-		t.Errorf("paper manual cadence = %d, want 0", got)
-	}
 }
 
 func TestBuildHLLiquidationMaps(t *testing.T) {
@@ -1607,38 +995,6 @@ func TestApplyAuditStopUpdateCountsStateMutations(t *testing.T) {
 	})
 }
 
-func TestOutcomeUnknownIsNotProtectionLost(t *testing.T) {
-	if hlLiquidationActionUnprotected(hlLiquidationActionOutcomeUnknown) {
-		t.Errorf("outcome-unknown counted as unprotected — the operator is told a fact nobody measured")
-	}
-	if !hlLiquidationActionUnprotected(hlLiquidationActionProtectionLost) {
-		t.Errorf("protection lost must still count as unprotected")
-	}
-
-	headline, detail, unprotected := hlLiquidationAlertMessage(1800, 1900, 1750, hlLiquidationActionOutcomeUnknown, "recovery")
-	if unprotected {
-		t.Errorf("outcome-unknown message flagged unprotected")
-	}
-	if !strings.Contains(headline, "OUTCOME UNKNOWN") {
-		t.Errorf("headline = %q, want an outcome-unknown headline", headline)
-	}
-	for _, want := range []string{"could NOT be read", "may be resting", "KEPT"} {
-		if !strings.Contains(detail, want) {
-			t.Errorf("detail = %q, want it to contain %q", detail, want)
-		}
-	}
-	if strings.Contains(detail, "no exchange-side stop right now") {
-		t.Errorf("detail asserts the position is unprotected: %q", detail)
-	}
-
-	if hlLiquidationMayRetryReplace(&HyperliquidStopLossUpdateResult{StopLossOutcomeUnknown: true}) {
-		t.Errorf("outcome-unknown must not license an in-cycle retry")
-	}
-	if !hlLiquidationMayRetryReplace(&HyperliquidStopLossUpdateResult{}) {
-		t.Errorf("a positively rejected placement must still retry")
-	}
-}
-
 func TestPlaceFreshClassifiesByWhatRests(t *testing.T) {
 	old := runHyperliquidUpdateStopLossFunc
 	defer func() { runHyperliquidUpdateStopLossFunc = old }()
@@ -1684,119 +1040,6 @@ func TestPlaceFreshClassifiesByWhatRests(t *testing.T) {
 	})
 }
 
-func TestAuditRetryAdoptsBookDiffResolvedOID(t *testing.T) {
-	old := runHyperliquidUpdateStopLossFunc
-	defer func() { runHyperliquidUpdateStopLossFunc = old }()
-	clearHLLiquidationAlert("hl-eth", "ETH")
-
-	strategies, state := liqTrailingAuditFixture(t)
-	var mu sync.RWMutex
-	callN := 0
-	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
-		callN++
-		if callN == 1 {
-			return &HyperliquidStopLossUpdateResult{
-				CancelStopLossSucceeded: true,
-				StopLossError:           "Order would exceed the open order limit",
-			}, "", nil
-		}
-		return &HyperliquidStopLossUpdateResult{
-			StopLossError:     "place_stop_loss returned no usable status: {...}",
-			StopLossOID:       9002,
-			StopLossTriggerPx: triggerPx,
-		}, "", nil
-	}
-
-	res := runHyperliquidLiquidationAudit(strategies, state,
-		map[string]float64{"ETH": 2340.5},
-		hlNetSideByCoinAllLong(),
-		map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
-
-	if callN != 2 {
-		t.Errorf("placement calls = %d, want 2 (clamp + in-cycle retry)", callN)
-	}
-	pos := state.Strategies["hl-eth"].Positions["ETH"]
-	if pos.StopLossOID != 9002 {
-		t.Errorf("final oid = %d, want 9002 (resolved retry adopted)", pos.StopLossOID)
-	}
-	if last := lastLiqAlertAction("hl-eth", "ETH"); last != hlLiquidationActionClamped {
-		t.Errorf("alert action = %q, want %q (no protection-lost report)", last, hlLiquidationActionClamped)
-	}
-	if res.StateMutations < 1 {
-		t.Errorf("state mutations = %d, want >= 1 (oid rewrite must flush)", res.StateMutations)
-	}
-}
-
-func TestAuditRetryOutcomeUnknownKeepsStateAndReportsUnknown(t *testing.T) {
-	old := runHyperliquidUpdateStopLossFunc
-	defer func() { runHyperliquidUpdateStopLossFunc = old }()
-	clearHLLiquidationAlert("hl-eth", "ETH")
-
-	strategies, state := liqTrailingAuditFixture(t)
-	var mu sync.RWMutex
-	callN := 0
-	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
-		callN++
-		if callN == 1 {
-			return &HyperliquidStopLossUpdateResult{
-				CancelStopLossSucceeded: true,
-				StopLossError:           "Order would exceed the open order limit",
-			}, "", nil
-		}
-		return &HyperliquidStopLossUpdateResult{
-			StopLossError:          "place_stop_loss failed: boom",
-			StopLossOutcomeUnknown: true,
-			StopLossTriggerPx:      triggerPx,
-		}, "", nil
-	}
-
-	runHyperliquidLiquidationAudit(strategies, state,
-		map[string]float64{"ETH": 2340.5},
-		hlNetSideByCoinAllLong(),
-		map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
-
-	pos := state.Strategies["hl-eth"].Positions["ETH"]
-	if pos.StopLossOID != 4242 || pos.StopLossTriggerPx != 2325 {
-		t.Fatalf("state cleared to oid=%d trigger=%.4f, want kept 4242/2325 (never an Unprotected re-arm candidate)", pos.StopLossOID, pos.StopLossTriggerPx)
-	}
-	if last := lastLiqAlertAction("hl-eth", "ETH"); last != hlLiquidationActionOutcomeUnknown {
-		t.Errorf("alert action = %q, want %q", last, hlLiquidationActionOutcomeUnknown)
-	}
-}
-
-func TestAuditRetryCapRejectedStillProtectionLost(t *testing.T) {
-	old := runHyperliquidUpdateStopLossFunc
-	defer func() { runHyperliquidUpdateStopLossFunc = old }()
-	clearHLLiquidationAlert("hl-eth", "ETH")
-
-	strategies, state := liqTrailingAuditFixture(t)
-	var mu sync.RWMutex
-	callN := 0
-	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
-		callN++
-		return &HyperliquidStopLossUpdateResult{
-			CancelStopLossSucceeded: callN == 1,
-			StopLossError:           "Order would exceed the open order limit",
-		}, "", nil
-	}
-
-	runHyperliquidLiquidationAudit(strategies, state,
-		map[string]float64{"ETH": 2340.5},
-		hlNetSideByCoinAllLong(),
-		map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
-
-	if callN != 2 {
-		t.Errorf("placement calls = %d, want 2", callN)
-	}
-	pos := state.Strategies["hl-eth"].Positions["ETH"]
-	if pos.StopLossOID != 0 || pos.StopLossTriggerPx != 0 {
-		t.Errorf("dead oid not cleared: oid=%d trigger=%.4f, want 0/0", pos.StopLossOID, pos.StopLossTriggerPx)
-	}
-	if last := lastLiqAlertAction("hl-eth", "ETH"); last != hlLiquidationActionProtectionLost {
-		t.Errorf("alert action = %q, want %q", last, hlLiquidationActionProtectionLost)
-	}
-}
-
 func TestFlushOffCycleLiquidationAuditStateForceProbe(t *testing.T) {
 	cfg := &Config{Strategies: []StrategyConfig{{ID: "hl-live", Platform: "hyperliquid", Type: "perps"}}}
 	newState := func() *AppState {
@@ -1829,130 +1072,6 @@ func TestFlushOffCycleLiquidationAuditStateForceProbe(t *testing.T) {
 			t.Errorf("failures = %d, want 4 (probe failure counts like any save failure)", failures)
 		}
 	})
-}
-
-func TestAuditRearmOutcomeUnknownRecordsTriggerAndStops(t *testing.T) {
-	old := runHyperliquidUpdateStopLossFunc
-	defer func() { runHyperliquidUpdateStopLossFunc = old }()
-	clearHLLiquidationAlert("hl-eth", "ETH")
-
-	strategies, state := liqAuditFixture(t, true, 3.125)
-	state.Strategies["hl-eth"].Positions["ETH"].StopLossOID = 0
-	state.Strategies["hl-eth"].Positions["ETH"].StopLossTriggerPx = 0
-	var mu sync.RWMutex
-	calls := 0
-	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
-		calls++
-		if cancelOID != 0 {
-			t.Errorf("re-arm must place fresh, got cancelOID=%d", cancelOID)
-		}
-		return &HyperliquidStopLossUpdateResult{
-			StopLossError:          "place_stop_loss returned no usable status: {...}",
-			StopLossOutcomeUnknown: true,
-			StopLossTriggerPx:      triggerPx,
-		}, "", nil
-	}
-
-	runHyperliquidLiquidationAudit(strategies, state,
-		map[string]float64{"ETH": 2340.5},
-		hlNetSideByCoinAllLong(),
-		map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
-	if calls != 1 {
-		t.Fatalf("first-pass placement calls = %d, want 1", calls)
-	}
-	pos := state.Strategies["hl-eth"].Positions["ETH"]
-	wantTrigger := 2340.5 * 1.005
-	if pos.StopLossTriggerPx != wantTrigger || pos.StopLossOID != 0 {
-		t.Fatalf("state = oid=%d trigger=%.4f, want oid=0 trigger=%.4f (requested trigger recorded)", pos.StopLossOID, pos.StopLossTriggerPx, wantTrigger)
-	}
-	if last := lastLiqAlertAction("hl-eth", "ETH"); last != hlLiquidationActionPlacementUnknown {
-		t.Fatalf("alert action = %q, want %q (fresh re-arm cancelled nothing)", last, hlLiquidationActionPlacementUnknown)
-	}
-
-	runHyperliquidLiquidationAudit(strategies, state,
-		map[string]float64{"ETH": 2340.5},
-		hlNetSideByCoinAllLong(),
-		map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
-	if calls != 1 {
-		t.Errorf("second-pass placement calls = %d total, want still 1 (no duplicate)", calls)
-	}
-	if last := lastLiqAlertAction("hl-eth", "ETH"); last != hlLiquidationActionPlacementUnknown {
-		t.Errorf("second-cycle alert action = %q, want %q (unresolved stays surfaced)", last, hlLiquidationActionPlacementUnknown)
-	}
-}
-
-func TestAuditRearmCapRejectedStillRetriedNextCycle(t *testing.T) {
-	old := runHyperliquidUpdateStopLossFunc
-	defer func() { runHyperliquidUpdateStopLossFunc = old }()
-	clearHLLiquidationAlert("hl-eth", "ETH")
-
-	strategies, state := liqAuditFixture(t, true, 3.125)
-	state.Strategies["hl-eth"].Positions["ETH"].StopLossOID = 0
-	state.Strategies["hl-eth"].Positions["ETH"].StopLossTriggerPx = 0
-	var mu sync.RWMutex
-	calls := 0
-	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
-		calls++
-		return &HyperliquidStopLossUpdateResult{
-			StopLossError: "Order would exceed the open order limit",
-		}, "", nil
-	}
-	for i := 0; i < 2; i++ {
-		runHyperliquidLiquidationAudit(strategies, state,
-			map[string]float64{"ETH": 2340.5},
-			hlNetSideByCoinAllLong(),
-			map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
-	}
-	if calls != 2 {
-		t.Errorf("placement calls across two passes = %d, want 2 (genuine rejection keeps retrying)", calls)
-	}
-	if last := lastLiqAlertAction("hl-eth", "ETH"); last != hlLiquidationActionRearmFailed {
-		t.Errorf("alert action = %q, want %q", last, hlLiquidationActionRearmFailed)
-	}
-}
-
-func TestAuditRearmAdoptsBookDiffResolvedOID(t *testing.T) {
-	old := runHyperliquidUpdateStopLossFunc
-	defer func() { runHyperliquidUpdateStopLossFunc = old }()
-	clearHLLiquidationAlert("hl-eth", "ETH")
-
-	strategies, state := liqAuditFixture(t, true, 3.125)
-	state.Strategies["hl-eth"].Positions["ETH"].StopLossOID = 0
-	state.Strategies["hl-eth"].Positions["ETH"].StopLossTriggerPx = 0
-	var mu sync.RWMutex
-	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
-		return &HyperliquidStopLossUpdateResult{
-			StopLossError:     "place_stop_loss returned no usable status: {...}",
-			StopLossOID:       9002,
-			StopLossTriggerPx: triggerPx,
-		}, "", nil
-	}
-	runHyperliquidLiquidationAudit(strategies, state,
-		map[string]float64{"ETH": 2340.5},
-		hlNetSideByCoinAllLong(),
-		map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
-	pos := state.Strategies["hl-eth"].Positions["ETH"]
-	if pos.StopLossOID != 9002 {
-		t.Errorf("oid = %d, want 9002 (resolved re-arm adopted)", pos.StopLossOID)
-	}
-	if last := lastLiqAlertAction("hl-eth", "ETH"); last != hlLiquidationActionRearmed {
-		t.Errorf("alert action = %q, want %q", last, hlLiquidationActionRearmed)
-	}
-}
-
-func TestHLLiquidationArmClampActionOutcomeUnknown(t *testing.T) {
-	if got := hlLiquidationArmClampAction(&HyperliquidStopLossUpdateResult{
-		StopLossError:          "boom",
-		StopLossOutcomeUnknown: true,
-		StopLossTriggerPx:      2300,
-	}, true); got != hlLiquidationActionPlacementUnknown {
-		t.Errorf("action = %q, want %q", got, hlLiquidationActionPlacementUnknown)
-	}
-	if got := hlLiquidationArmClampAction(&HyperliquidStopLossUpdateResult{
-		StopLossError: "Order would exceed the open order limit",
-	}, true); got != hlLiquidationActionRearmFailed {
-		t.Errorf("positive rejection = %q, want re-arm failed", got)
-	}
 }
 
 func TestAuditTightenOutcomeUnknownRecordsTriggerAndStops(t *testing.T) {
@@ -2054,19 +1173,500 @@ func TestApplyAuditStopUpdateBooksPartialFillQty(t *testing.T) {
 	}
 }
 
-func TestLiquidationAlertPlacementUnknownWording(t *testing.T) {
-	_, detailTighten, unprotectedTighten := hlLiquidationAlertMessage(2325, 2352.2025, 2340.5, hlLiquidationActionOutcomeUnknown, "rec")
-	if !strings.Contains(detailTighten, "CANCELLED") {
-		t.Errorf("tighten detail lost the cancel claim: %q", detailTighten)
+func liqAuditOnChainOne() map[string]float64 { return map[string]float64{"ETH": 1.0} }
+
+func liqAuditLiqETH() map[string]float64 { return map[string]float64{"ETH": 2340.5} }
+
+func liqAuditClampedTrigger() float64 { return 2340.5 * (1 + hlLiquidationStopBufferPct/100.0) }
+
+func stubLiqAuditStopLoss(t *testing.T, fn func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error)) {
+	t.Helper()
+	old := runHyperliquidUpdateStopLossFunc
+	runHyperliquidUpdateStopLossFunc = fn
+	t.Cleanup(func() { runHyperliquidUpdateStopLossFunc = old })
+}
+
+func TestPlanHyperliquidLiquidationAudit(t *testing.T) {
+	t.Run("classification sorts deterministically and tightens every past-liquidation owner", func(t *testing.T) {
+		cands := []hlLiquidationAuditCandidate{
+			{StrategyID: "b-scalar", Symbol: "ETH", Side: "long", Qty: 1, StopLossOID: 11, StopLossTriggerPx: 2325, LiquidationPx: 2340.5, StaticScalarOwner: true, BookConsistent: true},
+			{StrategyID: "a-trailing", Symbol: "ETH", Side: "long", Qty: 1, StopLossOID: 12, StopLossTriggerPx: 2325, LiquidationPx: 2340.5, StaticScalarOwner: false, BookConsistent: true},
+			{StrategyID: "c-ok", Symbol: "ETH", Side: "long", Qty: 1, StopLossOID: 13, StopLossTriggerPx: 2360, LiquidationPx: 2340.5, StaticScalarOwner: true, BookConsistent: true},
+			{StrategyID: "d-unknown", Symbol: "BTC", Side: "long", Qty: 1, StopLossOID: 14, StopLossTriggerPx: 100, LiquidationPx: 0, StaticScalarOwner: true, BookConsistent: true},
+			{StrategyID: "e-nostop", Symbol: "BTC", Side: "long", Qty: 1, Unprotected: true, RearmTriggerPx: 39000, LiquidationPx: 40000, StaticScalarOwner: false, BookConsistent: true},
+			{StrategyID: "f-noqty", Symbol: "BTC", Side: "long", Qty: 0, StopLossOID: 15, StopLossTriggerPx: 39000, LiquidationPx: 40000, StaticScalarOwner: true, BookConsistent: true},
+		}
+		actions := planHyperliquidLiquidationAudit(cands)
+		if len(actions) != 2 {
+			t.Fatalf("actions = %d, want 2 (only the two past-liquidation candidates)", len(actions))
+		}
+		if actions[0].Candidate.StrategyID != "a-trailing" || actions[1].Candidate.StrategyID != "b-scalar" {
+			t.Fatalf("actions not sorted deterministically: %s, %s", actions[0].Candidate.StrategyID, actions[1].Candidate.StrategyID)
+		}
+		for _, a := range actions {
+			if a.Kind != hlAuditTighten {
+				t.Errorf("%s: kind = %v, want a tighten job — the audit heals every owner", a.Candidate.StrategyID, a.Kind)
+			}
+		}
+		if !approxEqLiq(actions[1].ClampedTriggerPx, liqAuditClampedTrigger()) {
+			t.Errorf("clamped trigger = %g, want %g", actions[1].ClampedTriggerPx, liqAuditClampedTrigger())
+		}
+	})
+
+	t.Run("unprotected static-scalar owner is re-armed at the configured distance", func(t *testing.T) {
+		cands := []hlLiquidationAuditCandidate{
+			{StrategyID: "hl-eth", Symbol: "ETH", Side: "long", Qty: 1, Unprotected: true, RearmTriggerPx: 2325, LiquidationPx: 2300, StaticScalarOwner: true, BookConsistent: true},
+		}
+		actions := planHyperliquidLiquidationAudit(cands)
+		if len(actions) != 1 || actions[0].Kind != hlAuditRearm {
+			t.Fatalf("actions = %+v, want one re-arm job", actions)
+		}
+		if !approxEqLiq(actions[0].ClampedTriggerPx, 2325) {
+			t.Errorf("re-arm trigger = %g, want 2325", actions[0].ClampedTriggerPx)
+		}
+	})
+
+	t.Run("unreconciled coin refuses both tighten and re-arm", func(t *testing.T) {
+		cands := []hlLiquidationAuditCandidate{
+			{StrategyID: "hl-eth", Symbol: "ETH", Side: "long", Qty: 1, StopLossOID: 11, StopLossTriggerPx: 2325, LiquidationPx: 2340.5, StaticScalarOwner: true, BookConsistent: false},
+			{StrategyID: "hl-eth2", Symbol: "ETH", Side: "long", Qty: 1, Unprotected: true, RearmTriggerPx: 2325, LiquidationPx: 2340.5, StaticScalarOwner: true, BookConsistent: false},
+		}
+		for _, a := range planHyperliquidLiquidationAudit(cands) {
+			if a.Kind != hlAuditRefuse {
+				t.Errorf("%s: kind = %v, want a refusal on an unreconciled coin", a.Candidate.StrategyID, a.Kind)
+			}
+		}
+	})
+}
+
+func TestRunHyperliquidLiquidationAuditNoOpCases(t *testing.T) {
+	zeroStop := func(strategies []StrategyConfig, state *AppState) []StrategyConfig {
+		state.Strategies["hl-eth"].Positions["ETH"].StopLossOID = 0
+		state.Strategies["hl-eth"].Positions["ETH"].StopLossTriggerPx = 0
+		return strategies
 	}
-	if unprotectedTighten {
-		t.Error("outcome unknown must not classify as unprotected")
+	for _, tc := range []struct {
+		name        string
+		live        bool
+		stopPct     float64
+		mutate      func([]StrategyConfig, *AppState) []StrategyConfig
+		liq         map[string]float64
+		net         map[string]string
+		onChain     map[string]float64
+		snapshot    bool
+		wantOID     int64
+		wantTrigger float64
+		wantNoAlert bool
+	}{
+		{"paper strategy is never clamped against a live liquidation price", false, 3.125, nil, liqAuditLiqETH(), hlNetSideByCoinAllLong(), liqAuditOnChainOne(), true, 4242, 2325, true},
+		{"shared coin whose book exceeds the on-chain snapshot refuses", true, 3.125, func(strategies []StrategyConfig, state *AppState) []StrategyConfig {
+			scB := strategies[0]
+			scB.ID = "hl-eth-b"
+			state.Strategies["hl-eth-b"] = &StrategyState{ID: "hl-eth-b", Platform: "hyperliquid", Type: "perps", Positions: map[string]*Position{
+				"ETH": {Symbol: "ETH", Side: "long", Quantity: 1.0, AvgCost: 2400, RiskAnchorPrice: 2400, EntryATR: 30, StopLossOID: 4343, StopLossTriggerPx: 2325},
+			}}
+			return append(strategies, scB)
+		}, liqAuditLiqETH(), hlNetSideByCoinAllLong(), liqAuditOnChainOne(), true, 4242, 2325, false},
+		{"no on-chain position for the coin", true, 3.125, nil, liqAuditLiqETH(), hlNetSideByCoinAllLong(), map[string]float64{}, true, 4242, 2325, false},
+		{"failed snapshot fetch with no stop armed raises no phantom alert", true, 3.0, zeroStop, map[string]float64{}, nil, map[string]float64{}, false, 0, 0, true},
+		{"stale net side leaves a healthy resting stop untouched", true, 3.125, nil, liqAuditLiqETH(), map[string]string{"ETH": "short"}, liqAuditOnChainOne(), true, 4242, 2325, true},
+		{"stale net side skips the sole-owner re-arm", true, 3.125, zeroStop, liqAuditLiqETH(), map[string]string{"ETH": "short"}, liqAuditOnChainOne(), true, 0, 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clearHLLiquidationAlert("hl-eth", "ETH")
+			clearHLLiquidationAlert("hl-eth-b", "ETH")
+			t.Cleanup(func() {
+				clearHLLiquidationAlert("hl-eth", "ETH")
+				clearHLLiquidationAlert("hl-eth-b", "ETH")
+			})
+			strategies, state := liqAuditFixture(t, tc.live, tc.stopPct)
+			if tc.mutate != nil {
+				strategies = tc.mutate(strategies, state)
+			}
+			calls := 0
+			stubLiqAuditStopLoss(t, func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+				calls++
+				return &HyperliquidStopLossUpdateResult{StopLossOID: 9001, StopLossTriggerPx: triggerPx}, "", nil
+			})
+			res := runHyperliquidLiquidationAudit(strategies, state, tc.liq, tc.net, tc.onChain, tc.snapshot, &sync.RWMutex{}, nil, time.Now().UTC())
+			if calls != 0 {
+				t.Errorf("placement calls = %d, want 0 — the audit must not touch the resting order", calls)
+			}
+			if res.ImmediateFills != 0 || len(res.CloseDetails) != 0 {
+				t.Errorf("result = %+v, want empty", res)
+			}
+			pos := state.Strategies["hl-eth"].Positions["ETH"]
+			if pos.StopLossOID != tc.wantOID || !approxEqLiq(pos.StopLossTriggerPx, tc.wantTrigger) {
+				t.Errorf("state = oid=%d trigger=%g, want untouched oid=%d trigger=%g", pos.StopLossOID, pos.StopLossTriggerPx, tc.wantOID, tc.wantTrigger)
+			}
+			if _, alerted := hlLiquidationAlerts.Load(hlLiquidationAlertKey("hl-eth", "ETH")); tc.wantNoAlert && alerted {
+				t.Error("a no-op pass must not raise a liquidation alert")
+			}
+		})
 	}
-	_, detailFresh, unprotectedFresh := hlLiquidationAlertMessage(0, 2352.2025, 2340.5, hlLiquidationActionPlacementUnknown, "rec")
-	if strings.Contains(detailFresh, "old trigger was CANCELLED") || !strings.Contains(detailFresh, "Nothing was cancelled") {
-		t.Errorf("fresh-placement detail asserts a cancel that never happened: %q", detailFresh)
+}
+
+func TestRunHyperliquidLiquidationAuditHealsRegardlessOfDueness(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(sc *StrategyConfig)
+	}{
+		{"non-due 4h trailing owner", func(sc *StrategyConfig) {
+			sc.StopLossPct = nil
+			sc.TrailingStopATRMult = floatPtr(2.5)
+			sc.Args = []string{"x.py", "ETH", "4h", "--mode=live"}
+		}},
+		{"non-due 1d static scalar owner", func(sc *StrategyConfig) {
+			sc.Args = []string{"x.py", "ETH", "1d", "--mode=live"}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clearHLLiquidationAlert("hl-eth", "ETH")
+			t.Cleanup(func() { clearHLLiquidationAlert("hl-eth", "ETH") })
+			strategies, state := liqAuditFixture(t, true, 3.125)
+			tc.mutate(&strategies[0])
+			placed := false
+			stubLiqAuditStopLoss(t, func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+				placed = true
+				return &HyperliquidStopLossUpdateResult{StopLossOID: 9200, StopLossTriggerPx: triggerPx}, "", nil
+			})
+			runHyperliquidLiquidationAudit(strategies, state, liqAuditLiqETH(), hlNetSideByCoinAllLong(), liqAuditOnChainOne(), true, &sync.RWMutex{}, nil, time.Now().UTC())
+			if !placed {
+				t.Fatal("a consistent book must still be healed by the per-cycle audit regardless of due-ness")
+			}
+		})
 	}
-	if unprotectedFresh {
-		t.Error("placement unknown must not classify as unprotected")
+}
+
+func TestRunHyperliquidLiquidationAuditTightenOutcomes(t *testing.T) {
+	wantTrigger := liqAuditClampedTrigger()
+	for _, tc := range []struct {
+		name           string
+		result         HyperliquidStopLossUpdateResult
+		wantOID        int64
+		wantPosTrigger float64
+		wantAction     hlLiquidationAlertAction
+	}{
+		{"resting replacement lands", HyperliquidStopLossUpdateResult{StopLossOID: 9001}, 9001, wantTrigger, hlLiquidationActionClamped},
+		{"cancel then place is a normal clamp", HyperliquidStopLossUpdateResult{CancelStopLossSucceeded: true, StopLossOID: 5150}, 5150, wantTrigger, hlLiquidationActionClamped},
+		{"filled externally is the reconciler's close", HyperliquidStopLossUpdateResult{StopLossFilledExternally: true}, 4242, 2325, hlLiquidationActionFilledOnChain},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clearHLLiquidationAlert("hl-eth", "ETH")
+			t.Cleanup(func() { clearHLLiquidationAlert("hl-eth", "ETH") })
+			strategies, state := liqAuditFixture(t, true, 3.125)
+			var gotTrigger, gotSize float64
+			var gotCancelOID int64
+			stubLiqAuditStopLoss(t, func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+				gotTrigger, gotCancelOID, gotSize = triggerPx, cancelOID, size
+				r := tc.result
+				if r.StopLossOID > 0 {
+					r.StopLossTriggerPx = triggerPx
+				}
+				return &r, "", nil
+			})
+			res := runHyperliquidLiquidationAudit(strategies, state, liqAuditLiqETH(), hlNetSideByCoinAllLong(), liqAuditOnChainOne(), true, &sync.RWMutex{}, nil, time.Now().UTC())
+			if res.ImmediateFills != 0 || len(res.CloseDetails) != 0 {
+				t.Fatalf("result = %+v, want no booked close on a resting or external outcome", res)
+			}
+			if gotCancelOID != 4242 {
+				t.Errorf("cancel OID = %d, want the resting 4242", gotCancelOID)
+			}
+			if !approxEqLiq(gotSize, 1.0) {
+				t.Errorf("replace size = %g, want 1.0", gotSize)
+			}
+			if !approxEqLiq(gotTrigger, wantTrigger) {
+				t.Errorf("replace trigger = %g, want %g (just inside liquidation)", gotTrigger, wantTrigger)
+			}
+			pos := state.Strategies["hl-eth"].Positions["ETH"]
+			if pos.StopLossOID != tc.wantOID || !approxEqLiq(pos.StopLossTriggerPx, tc.wantPosTrigger) {
+				t.Errorf("position = oid=%d trigger=%g, want oid=%d trigger=%g", pos.StopLossOID, pos.StopLossTriggerPx, tc.wantOID, tc.wantPosTrigger)
+			}
+			if last := lastLiqAlertAction("hl-eth", "ETH"); last != tc.wantAction {
+				t.Errorf("alert action = %q, want %q", last, tc.wantAction)
+			}
+		})
+	}
+}
+
+func TestRunHyperliquidLiquidationAuditImmediateFillBooksClose(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		result HyperliquidStopLossUpdateResult
+	}{
+		{"cancel then immediate fill at submit", HyperliquidStopLossUpdateResult{CancelStopLossSucceeded: true, StopLossFilledImmediately: true}},
+		{"immediate fill without a cancel flag", HyperliquidStopLossUpdateResult{StopLossFilledImmediately: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clearHLLiquidationAlert("hl-eth", "ETH")
+			t.Cleanup(func() { clearHLLiquidationAlert("hl-eth", "ETH") })
+			strategies, state := liqAuditFixture(t, true, 3.125)
+			stubLiqAuditStopLoss(t, func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+				r := tc.result
+				r.StopLossTriggerPx = triggerPx
+				return &r, "", nil
+			})
+			res := runHyperliquidLiquidationAudit(strategies, state, liqAuditLiqETH(), hlNetSideByCoinAllLong(), liqAuditOnChainOne(), true, &sync.RWMutex{}, nil, time.Now().UTC())
+			if res.ImmediateFills != 1 || len(res.CloseDetails) != 1 {
+				t.Fatalf("immediate fills = %d, close details = %d, want 1/1 — a booked close must reach the trade notifier", res.ImmediateFills, len(res.CloseDetails))
+			}
+			cd := res.CloseDetails[0]
+			if cd.SC.ID != "hl-eth" || cd.Symbol != "ETH" || cd.Detail == "" {
+				t.Errorf("close detail = %+v, want a populated per-strategy line", cd)
+			}
+			ss := state.Strategies["hl-eth"]
+			if _, still := ss.Positions["ETH"]; still {
+				t.Error("an immediate fill must book the close and drop the position")
+			}
+			if len(ss.ClosedPositions) == 0 {
+				t.Fatal("no closed position recorded for the immediate close")
+			}
+			if cp := ss.ClosedPositions[len(ss.ClosedPositions)-1]; cp.CloseReason != "liquidation_clamp_sl_immediate" {
+				t.Errorf("persisted CloseReason = %q, want liquidation_clamp_sl_immediate (not the trailing walker)", cp.CloseReason)
+			}
+			if len(ss.TradeHistory) == 0 {
+				t.Fatal("no trade recorded for the immediate close")
+			}
+			if tr := ss.TradeHistory[len(ss.TradeHistory)-1]; !strings.Contains(tr.Details, "Liquidation-clamp SL") {
+				t.Errorf("trade details %q must match the LIQUIDATION-CLAMP operator wording", tr.Details)
+			}
+			if last := lastLiqAlertAction("hl-eth", "ETH"); last != hlLiquidationActionExited {
+				t.Errorf("alert action = %q, want %q — the position is FLAT", last, hlLiquidationActionExited)
+			}
+		})
+	}
+}
+
+func TestAuditRetriesPlacementItStrippedSameCycle(t *testing.T) {
+	capRejected := "Order would exceed the open order limit"
+	for _, tc := range []struct {
+		name             string
+		second           HyperliquidStopLossUpdateResult
+		wantFinalOID     int64
+		wantFinalTrigger float64
+		wantAction       hlLiquidationAlertAction
+		wantMinMutations int
+	}{
+		{"retry rests", HyperliquidStopLossUpdateResult{StopLossOID: 9002}, 9002, -1, hlLiquidationActionClamped, 0},
+		{"retry resolves a resting oid by book diff despite the error text", HyperliquidStopLossUpdateResult{StopLossError: "place_stop_loss returned no usable status: {...}", StopLossOID: 9002}, 9002, -1, hlLiquidationActionClamped, 1},
+		{"retry outcome unknown keeps the recorded state and reports unknown", HyperliquidStopLossUpdateResult{StopLossError: "place_stop_loss failed: boom", StopLossOutcomeUnknown: true}, 4242, 2325, hlLiquidationActionOutcomeUnknown, 0},
+		{"retry also cap-rejected is protection lost", HyperliquidStopLossUpdateResult{StopLossError: capRejected}, 0, 0, hlLiquidationActionProtectionLost, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clearHLLiquidationAlert("hl-eth", "ETH")
+			t.Cleanup(func() { clearHLLiquidationAlert("hl-eth", "ETH") })
+			strategies, state := liqTrailingAuditFixture(t)
+			type call struct {
+				cancelOID int64
+				trigger   float64
+			}
+			var calls []call
+			stubLiqAuditStopLoss(t, func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+				calls = append(calls, call{cancelOID: cancelOID, trigger: triggerPx})
+				if len(calls) == 1 {
+					return &HyperliquidStopLossUpdateResult{CancelStopLossSucceeded: true, StopLossError: capRejected}, "", nil
+				}
+				r := tc.second
+				if r.StopLossOID > 0 || r.StopLossOutcomeUnknown {
+					r.StopLossTriggerPx = triggerPx
+				}
+				return &r, "", nil
+			})
+			res := runHyperliquidLiquidationAudit(strategies, state, liqAuditLiqETH(), hlNetSideByCoinAllLong(), liqAuditOnChainOne(), true, &sync.RWMutex{}, nil, time.Now().UTC())
+			if len(calls) != 2 {
+				t.Fatalf("placement calls = %d (%+v), want 2 (clamp + in-cycle retry)", len(calls), calls)
+			}
+			if calls[1].cancelOID != 0 {
+				t.Errorf("retry cancelOID = %d, want 0 (nothing left to cancel)", calls[1].cancelOID)
+			}
+			pos := state.Strategies["hl-eth"].Positions["ETH"]
+			if pos.StopLossOID != tc.wantFinalOID {
+				t.Errorf("final oid = %d, want %d", pos.StopLossOID, tc.wantFinalOID)
+			}
+			if tc.wantFinalTrigger >= 0 && !approxEqLiq(pos.StopLossTriggerPx, tc.wantFinalTrigger) {
+				t.Errorf("final trigger = %.4f, want %.4f", pos.StopLossTriggerPx, tc.wantFinalTrigger)
+			}
+			if last := lastLiqAlertAction("hl-eth", "ETH"); last != tc.wantAction {
+				t.Errorf("alert action = %q, want %q", last, tc.wantAction)
+			}
+			if res.StateMutations < tc.wantMinMutations {
+				t.Errorf("state mutations = %d, want >= %d (oid rewrite must flush)", res.StateMutations, tc.wantMinMutations)
+			}
+		})
+	}
+
+	t.Run("first-try rest takes no retry", func(t *testing.T) {
+		clearHLLiquidationAlert("hl-eth", "ETH")
+		t.Cleanup(func() { clearHLLiquidationAlert("hl-eth", "ETH") })
+		strategies, state := liqTrailingAuditFixture(t)
+		calls := 0
+		stubLiqAuditStopLoss(t, func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+			calls++
+			return &HyperliquidStopLossUpdateResult{StopLossOID: 9001, StopLossTriggerPx: triggerPx}, "", nil
+		})
+		runHyperliquidLiquidationAudit(strategies, state, liqAuditLiqETH(), hlNetSideByCoinAllLong(), liqAuditOnChainOne(), true, &sync.RWMutex{}, nil, time.Now().UTC())
+		if calls != 1 {
+			t.Errorf("placement calls = %d, want 1", calls)
+		}
+	})
+}
+
+func TestAuditRearmOutcomes(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		liq         map[string]float64
+		result      HyperliquidStopLossUpdateResult
+		passes      int
+		wantCalls   int
+		wantOID     int64
+		wantTrigger float64
+		wantAction  hlLiquidationAlertAction
+	}{
+		{"outcome unknown records the requested trigger and stops re-placing", liqAuditLiqETH(), HyperliquidStopLossUpdateResult{StopLossError: "place_stop_loss returned no usable status: {...}", StopLossOutcomeUnknown: true}, 2, 1, 0, 2340.5 * 1.005, hlLiquidationActionPlacementUnknown},
+		{"genuine cap rejection keeps retrying next cycle", liqAuditLiqETH(), HyperliquidStopLossUpdateResult{StopLossError: "Order would exceed the open order limit"}, 2, 2, 0, -1, hlLiquidationActionRearmFailed},
+		{"book-diff resolved oid is adopted despite the error text", liqAuditLiqETH(), HyperliquidStopLossUpdateResult{StopLossError: "place_stop_loss returned no usable status: {...}", StopLossOID: 9002}, 1, 1, 9002, -1, hlLiquidationActionRearmed},
+		{"matching side with unknown geometry places the unclamped configured distance", map[string]float64{}, HyperliquidStopLossUpdateResult{StopLossOID: 9001}, 1, 1, 9001, 2400 * (1 - 0.03125), ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clearHLLiquidationAlert("hl-eth", "ETH")
+			t.Cleanup(func() { clearHLLiquidationAlert("hl-eth", "ETH") })
+			strategies, state := liqAuditFixture(t, true, 3.125)
+			state.Strategies["hl-eth"].Positions["ETH"].StopLossOID = 0
+			state.Strategies["hl-eth"].Positions["ETH"].StopLossTriggerPx = 0
+			calls := 0
+			var gotTrigger float64
+			stubLiqAuditStopLoss(t, func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+				calls++
+				gotTrigger = triggerPx
+				if cancelOID != 0 {
+					t.Errorf("re-arm must place fresh, got cancelOID=%d", cancelOID)
+				}
+				r := tc.result
+				if r.StopLossOID > 0 || r.StopLossOutcomeUnknown {
+					r.StopLossTriggerPx = triggerPx
+				}
+				return &r, "", nil
+			})
+			for i := 0; i < tc.passes; i++ {
+				runHyperliquidLiquidationAudit(strategies, state, tc.liq, hlNetSideByCoinAllLong(), liqAuditOnChainOne(), true, &sync.RWMutex{}, nil, time.Now().UTC())
+				if tc.wantAction != "" {
+					if last := lastLiqAlertAction("hl-eth", "ETH"); last != tc.wantAction {
+						t.Errorf("pass %d alert action = %q, want %q", i+1, last, tc.wantAction)
+					}
+				}
+			}
+			if calls != tc.wantCalls {
+				t.Errorf("placement calls across %d pass(es) = %d, want %d", tc.passes, calls, tc.wantCalls)
+			}
+			pos := state.Strategies["hl-eth"].Positions["ETH"]
+			if pos.StopLossOID != tc.wantOID {
+				t.Errorf("oid = %d, want %d", pos.StopLossOID, tc.wantOID)
+			}
+			if tc.wantTrigger >= 0 {
+				if !approxEqLiq(gotTrigger, tc.wantTrigger) {
+					t.Errorf("re-arm trigger = %.4f, want %.4f", gotTrigger, tc.wantTrigger)
+				}
+				if !approxEqLiq(pos.StopLossTriggerPx, tc.wantTrigger) {
+					t.Errorf("recorded trigger = %.4f, want %.4f", pos.StopLossTriggerPx, tc.wantTrigger)
+				}
+			}
+		})
+	}
+}
+
+func TestLiquidationAuditIntervalSeconds(t *testing.T) {
+	mk := func(id, platform, typ string, live bool) StrategyConfig {
+		args := []string{"--mode", "paper"}
+		if live {
+			args = []string{"--mode", "live"}
+		}
+		return StrategyConfig{ID: id, Platform: platform, Type: typ, Args: args}
+	}
+	fleet := []StrategyConfig{
+		mk("hl-live-a", "hyperliquid", "perps", true),
+		mk("hl-paper-b", "hyperliquid", "perps", false),
+		mk("okx-live-c", "okx", "perps", true),
+		mk("hl-live-spot", "hyperliquid", "spot", true),
+	}
+	fleetIntervals := map[string]int{"hl-live-a": 300, "hl-paper-b": 60, "okx-live-c": 120, "hl-live-spot": 30}
+	for _, tc := range []struct {
+		name       string
+		strategies []StrategyConfig
+		intervals  map[string]int
+		want       int
+	}{
+		{"half of the sole live HL perps interval", fleet, fleetIntervals, 150},
+		{"no live HL perps or manual", fleet[1:], fleetIntervals, 0},
+		{"4h fleet cadence is strictly shorter than the interval it bounds", []StrategyConfig{mk("hl-4h", "hyperliquid", "perps", true)}, map[string]int{"hl-4h": 14400}, 7200},
+		{"manual-only fleet is an audit candidate", []StrategyConfig{mk("hl-manual", "hyperliquid", "manual", true)}, map[string]int{"hl-manual": 3600}, 1800},
+		{"fast fleet clamps to the floor", []StrategyConfig{mk("hl-4h", "hyperliquid", "perps", true)}, map[string]int{"hl-4h": 30}, liquidationAuditMinIntervalSeconds},
+		{"paper manual is not a candidate", []StrategyConfig{mk("hl-pm", "hyperliquid", "manual", false)}, map[string]int{"hl-pm": 3600}, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := liquidationAuditIntervalSeconds(tc.strategies, tc.intervals); got != tc.want {
+				t.Errorf("interval = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestHLLiquidationAlertMessage(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		trigger         float64
+		clamped         float64
+		liq             float64
+		action          hlLiquidationAlertAction
+		wantHeadline    string
+		wantContains    []string
+		wantNotContains []string
+		wantUnprotected bool
+	}{
+		{"refused with no stop omits fabricated geometry and is unprotected", 0, 0, 0, hlLiquidationActionUnreconciled, "**HL POSITION UNPROTECTED**", []string{"NO exchange-side stop"}, []string{"$0.0000"}, true},
+		{"refused tighten keeps the old order and names the real prices", 2325, 2352, 2340.5, hlLiquidationActionUnreconciled, "", []string{"$2325.0000", "$2340.5000"}, nil, false},
+		{"outcome unknown never claims the position is naked", 1800, 1900, 1750, hlLiquidationActionOutcomeUnknown, "OUTCOME UNKNOWN", []string{"could NOT be read", "may be resting", "KEPT"}, []string{"no exchange-side stop right now"}, false},
+		{"outcome unknown after a tighten keeps the cancel claim", 2325, 2352.2025, 2340.5, hlLiquidationActionOutcomeUnknown, "", []string{"CANCELLED"}, nil, false},
+		{"placement unknown after a fresh re-arm asserts no cancel", 0, 2352.2025, 2340.5, hlLiquidationActionPlacementUnknown, "", []string{"Nothing was cancelled"}, []string{"old trigger was CANCELLED"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			headline, detail, unprotected := hlLiquidationAlertMessage(tc.trigger, tc.clamped, tc.liq, tc.action, "rec")
+			if tc.wantHeadline != "" && !strings.Contains(headline, tc.wantHeadline) {
+				t.Errorf("headline = %q, want it to contain %q", headline, tc.wantHeadline)
+			}
+			for _, want := range tc.wantContains {
+				if !strings.Contains(detail, want) {
+					t.Errorf("detail = %q, want it to contain %q", detail, want)
+				}
+			}
+			for _, bad := range tc.wantNotContains {
+				if strings.Contains(detail, bad) {
+					t.Errorf("detail = %q, must not contain %q", detail, bad)
+				}
+			}
+			if unprotected != tc.wantUnprotected {
+				t.Errorf("unprotected = %v, want %v", unprotected, tc.wantUnprotected)
+			}
+		})
+	}
+}
+
+func TestOutcomeUnknownIsNotProtectionLost(t *testing.T) {
+	if hlLiquidationActionUnprotected(hlLiquidationActionOutcomeUnknown) {
+		t.Errorf("outcome-unknown counted as unprotected — the operator is told a fact nobody measured")
+	}
+	if !hlLiquidationActionUnprotected(hlLiquidationActionProtectionLost) {
+		t.Errorf("protection lost must still count as unprotected")
+	}
+	if hlLiquidationMayRetryReplace(&HyperliquidStopLossUpdateResult{StopLossOutcomeUnknown: true}) {
+		t.Errorf("outcome-unknown must not license an in-cycle retry")
+	}
+	if !hlLiquidationMayRetryReplace(&HyperliquidStopLossUpdateResult{}) {
+		t.Errorf("a positively rejected placement must still retry")
+	}
+	if got := hlLiquidationArmClampAction(&HyperliquidStopLossUpdateResult{StopLossError: "boom", StopLossOutcomeUnknown: true, StopLossTriggerPx: 2300}, true); got != hlLiquidationActionPlacementUnknown {
+		t.Errorf("arm-clamp action = %q, want %q", got, hlLiquidationActionPlacementUnknown)
+	}
+	if got := hlLiquidationArmClampAction(&HyperliquidStopLossUpdateResult{StopLossError: "Order would exceed the open order limit"}, true); got != hlLiquidationActionRearmFailed {
+		t.Errorf("positive rejection = %q, want re-arm failed", got)
 	}
 }

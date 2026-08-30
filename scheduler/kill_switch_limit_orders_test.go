@@ -311,6 +311,12 @@ func TestPlanKillSwitchClose_UnadoptedLimitFillKeepsRowAndBlocksFlat(t *testing.
 	if !strings.Contains(plan.DiscordMessage, "unadopted fill") {
 		t.Errorf("message must name the unadopted fill, got: %s", plan.DiscordMessage)
 	}
+	if !strings.Contains(plan.DiscordMessage, "queue row kept so the scheduler books the fill") {
+		t.Errorf("an eligible row must still defer to the reconciler, got: %s", plan.DiscordMessage)
+	}
+	if strings.Contains(plan.DiscordMessage, "NO automatic path can book") {
+		t.Errorf("an eligible row must not escalate, got: %s", plan.DiscordMessage)
+	}
 }
 
 func TestPlanKillSwitchClose_LimitRowDeleteFailureBlocksFlat(t *testing.T) {
@@ -395,56 +401,36 @@ func TestPlanKillSwitchClose_OrphanedLimitRowCancelledViaFallbackScript(t *testi
 	}
 }
 
-func TestPlanKillSwitchClose_OrphanedLimitRowWithFillEscalates(t *testing.T) {
-	peer := StrategyConfig{ID: "hl-ema-eth", Platform: "hyperliquid", Type: "perps",
-		Script: "shared_scripts/check_hyperliquid.py", Args: []string{"ema_crossover", "ETH", "1h", "--mode=live"}}
-	db := newLimitTestStateDB(t)
-	seedKillSwitchLimitRow(t, db, "hl-manual-eth-deleted")
-
-	stubs := &killSwitchLimitStubs{}
-	deps := stubs.deps(okCancel, offBookStatus(0.2), db.DeletePendingLimitOrder)
-
-	plan := planKillSwitchClose(killSwitchLimitInputs(db, []StrategyConfig{peer}, deps))
-
-	if plan.OnChainConfirmedFlat || plan.CanAutoResetWithoutOwner() {
-		t.Fatal("an unbookable fill must block confirmed-flat and auto-reset")
-	}
-	if len(stubs.deleted) != 0 {
-		t.Fatalf("a row carrying an unadopted fill must never be auto-deleted, deleted = %v", stubs.deleted)
-	}
-	for _, want := range []string{"NO automatic path can book", "absent from this config", "manual intervention required"} {
-		if !strings.Contains(plan.DiscordMessage, want) {
-			t.Errorf("message missing %q, got: %s", want, plan.DiscordMessage)
-		}
-	}
-	if strings.Contains(plan.DiscordMessage, "queue row kept so the scheduler books the fill") {
-		t.Errorf("message must not promise a booking that cannot happen, got: %s", plan.DiscordMessage)
-	}
-}
-
 func TestPlanKillSwitchClose_AdoptionIneligibleLimitFillNamesTheBlock(t *testing.T) {
 	cases := []struct {
-		name string
-		sc   StrategyConfig
-		want string
+		name  string
+		rowID string
+		sc    StrategyConfig
+		want  []string
 	}{
 		{
-			name: "strategy flipped to paper",
+			name: "strategy flipped to paper", rowID: "hl-manual-eth-live",
 			sc: StrategyConfig{ID: "hl-manual-eth-live", Platform: "hyperliquid", Type: "manual",
 				Script: "shared_scripts/check_hyperliquid.py", Args: []string{"hold", "ETH", "30m"}},
-			want: "not Hyperliquid-live",
+			want: []string{"not Hyperliquid-live"},
 		},
 		{
-			name: "strategy type changed away from manual",
+			name: "strategy type changed away from manual", rowID: "hl-manual-eth-live",
 			sc: StrategyConfig{ID: "hl-manual-eth-live", Platform: "hyperliquid", Type: "perps",
 				Script: "shared_scripts/check_hyperliquid.py", Args: []string{"ema_crossover", "ETH", "1h", "--mode=live"}},
-			want: `type is "perps"`,
+			want: []string{`type is "perps"`},
+		},
+		{
+			name: "orphaned row whose strategy is absent from config", rowID: "hl-manual-eth-deleted",
+			sc: StrategyConfig{ID: "hl-ema-eth", Platform: "hyperliquid", Type: "perps",
+				Script: "shared_scripts/check_hyperliquid.py", Args: []string{"ema_crossover", "ETH", "1h", "--mode=live"}},
+			want: []string{"absent from this config", "manual intervention required"},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			db := newLimitTestStateDB(t)
-			seedKillSwitchLimitRow(t, db, "hl-manual-eth-live")
+			seedKillSwitchLimitRow(t, db, tc.rowID)
 			stubs := &killSwitchLimitStubs{}
 			deps := stubs.deps(okCancel, offBookStatus(0.2), db.DeletePendingLimitOrder)
 
@@ -456,32 +442,15 @@ func TestPlanKillSwitchClose_AdoptionIneligibleLimitFillNamesTheBlock(t *testing
 			if len(stubs.deleted) != 0 {
 				t.Fatalf("a row carrying an unadopted fill must never be auto-deleted, deleted = %v", stubs.deleted)
 			}
-			if !strings.Contains(plan.DiscordMessage, tc.want) ||
-				!strings.Contains(plan.DiscordMessage, "NO automatic path can book") {
-				t.Errorf("message must name why nothing can book the fill, got: %s", plan.DiscordMessage)
+			for _, want := range append(tc.want, "NO automatic path can book") {
+				if !strings.Contains(plan.DiscordMessage, want) {
+					t.Errorf("message must name why nothing can book the fill, missing %q, got: %s", want, plan.DiscordMessage)
+				}
+			}
+			if strings.Contains(plan.DiscordMessage, "queue row kept so the scheduler books the fill") {
+				t.Errorf("message must not promise a booking that cannot happen, got: %s", plan.DiscordMessage)
 			}
 		})
-	}
-}
-
-func TestPlanKillSwitchClose_AdoptionEligibleLimitFillStillDefersToReconciler(t *testing.T) {
-	sc := killSwitchLimitTestStrategy()
-	db := newLimitTestStateDB(t)
-	seedKillSwitchLimitRow(t, db, sc.ID)
-
-	stubs := &killSwitchLimitStubs{}
-	deps := stubs.deps(okCancel, offBookStatus(0.2), db.DeletePendingLimitOrder)
-
-	plan := planKillSwitchClose(killSwitchLimitInputs(db, []StrategyConfig{sc}, deps))
-
-	if plan.OnChainConfirmedFlat || plan.CanAutoResetWithoutOwner() {
-		t.Fatal("an unadopted fill must block confirmed-flat and auto-reset")
-	}
-	if !strings.Contains(plan.DiscordMessage, "queue row kept so the scheduler books the fill") {
-		t.Errorf("an eligible row must still defer to the reconciler, got: %s", plan.DiscordMessage)
-	}
-	if strings.Contains(plan.DiscordMessage, "NO automatic path can book") {
-		t.Errorf("an eligible row must not escalate, got: %s", plan.DiscordMessage)
 	}
 }
 

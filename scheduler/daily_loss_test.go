@@ -16,168 +16,146 @@ func dlState(id string, initialCapital, dailyPnL float64, date string) *Strategy
 
 func dlToday() string { return time.Now().UTC().Format("2006-01-02") }
 
-func TestEvaluateDailyLossLimitUnconfigured(t *testing.T) {
-	states := map[string]*StrategyState{
-		"a": dlState("a", 1000, -900, dlToday()),
-	}
-	st := evaluateDailyLossLimit(&PortfolioRiskConfig{MaxDrawdownPct: 25}, states, nil, time.Now().UTC())
-	if st.Configured || st.Tripped {
-		t.Fatalf("unconfigured limit must never trip: %+v", st)
-	}
-	if st.LossUSD != 900 {
-		t.Fatalf("LossUSD = %g, want 900", st.LossUSD)
-	}
-	st = evaluateDailyLossLimit(nil, states, nil, time.Now().UTC())
-	if st.Configured || st.Tripped {
-		t.Fatalf("nil portfolio risk must never trip: %+v", st)
-	}
-}
+func dlBool(v bool) *bool { return &v }
 
-func TestEvaluateDailyLossLimitUSDThreshold(t *testing.T) {
-	pr := &PortfolioRiskConfig{DailyMaxLossUSD: 500}
+func TestEvaluateDailyLossLimit(t *testing.T) {
 	now := time.Now().UTC()
-
-	below := map[string]*StrategyState{"a": dlState("a", 0, -499.99, dlToday())}
-	if st := evaluateDailyLossLimit(pr, below, nil, now); st.Tripped {
-		t.Fatalf("loss below threshold must not trip: %+v", st)
+	today := dlToday()
+	yesterday := now.AddDate(0, 0, -1).Format("2006-01-02")
+	cases := []struct {
+		name         string
+		pr           *PortfolioRiskConfig
+		states       map[string]*StrategyState
+		strategies   []StrategyConfig
+		tripped      bool
+		configured   *bool
+		lossUSD      *float64
+		thresholdUSD *float64
+		capitalBasis *float64
+		pctBasisMiss *bool
+	}{
+		{name: "unconfigured/max_drawdown_only_never_trips",
+			pr:         &PortfolioRiskConfig{MaxDrawdownPct: 25},
+			states:     map[string]*StrategyState{"a": dlState("a", 1000, -900, today)},
+			configured: dlBool(false), lossUSD: fp(900)},
+		{name: "unconfigured/nil_portfolio_risk_never_trips",
+			pr:         nil,
+			states:     map[string]*StrategyState{"a": dlState("a", 1000, -900, today)},
+			configured: dlBool(false)},
+		{name: "usd/below_threshold_not_tripped",
+			pr:     &PortfolioRiskConfig{DailyMaxLossUSD: 500},
+			states: map[string]*StrategyState{"a": dlState("a", 0, -499.99, today)}},
+		{name: "usd/at_threshold_trips",
+			pr:      &PortfolioRiskConfig{DailyMaxLossUSD: 500},
+			states:  map[string]*StrategyState{"a": dlState("a", 0, -500, today)},
+			tripped: true},
+		{name: "usd/multi_strategy_aggregate",
+			pr: &PortfolioRiskConfig{DailyMaxLossUSD: 500},
+			states: map[string]*StrategyState{
+				"a": dlState("a", 0, -300, today),
+				"b": dlState("b", 0, -250, today),
+			},
+			tripped: true, lossUSD: fp(550), thresholdUSD: fp(500)},
+		{name: "pct/basis_sums_initial_capital",
+			pr: &PortfolioRiskConfig{DailyMaxLossPct: 5},
+			states: map[string]*StrategyState{
+				"a": dlState("a", 2000, -100, today),
+				"b": dlState("b", 3000, -160, today),
+			},
+			tripped: true, capitalBasis: fp(5000), thresholdUSD: fp(250)},
+		{name: "pct/under_threshold_not_tripped",
+			pr: &PortfolioRiskConfig{DailyMaxLossPct: 5},
+			states: map[string]*StrategyState{
+				"a": dlState("a", 2000, -100, today),
+				"b": dlState("b", 3000, -140, today),
+			}},
+		{name: "pct_basis/excludes_shared_wallet_pool",
+			pr: &PortfolioRiskConfig{DailyMaxLossPct: 5},
+			states: map[string]*StrategyState{
+				"pool-a":    dlState("pool-a", 1000, -100, today),
+				"allocated": dlState("allocated", 2000, -20, today),
+			},
+			strategies: []StrategyConfig{{ID: "pool-a", sharedWalletPoolBudget: true}, {ID: "allocated"}},
+			tripped:    true, capitalBasis: fp(2000), thresholdUSD: fp(100)},
+		{name: "pct_basis/all_pool_surfaces_basis_miss",
+			pr:           &PortfolioRiskConfig{DailyMaxLossPct: 5},
+			states:       map[string]*StrategyState{"pool-a": dlState("pool-a", 1000, -100, today)},
+			strategies:   []StrategyConfig{{ID: "pool-a", sharedWalletPoolBudget: true}},
+			capitalBasis: fp(0), pctBasisMiss: dlBool(true)},
+		{name: "both_arms/usd_lower_wins",
+			pr:      &PortfolioRiskConfig{DailyMaxLossUSD: 400, DailyMaxLossPct: 5},
+			states:  map[string]*StrategyState{"a": dlState("a", 20000, -450, today)},
+			tripped: true, thresholdUSD: fp(400)},
+		{name: "both_arms/pct_lower_wins",
+			pr:           &PortfolioRiskConfig{DailyMaxLossUSD: 2000, DailyMaxLossPct: 5},
+			states:       map[string]*StrategyState{"a": dlState("a", 20000, -450, today)},
+			thresholdUSD: fp(1000)},
+		{name: "stale_day_counts_zero",
+			pr: &PortfolioRiskConfig{DailyMaxLossUSD: 100},
+			states: map[string]*StrategyState{
+				"stale": dlState("stale", 0, -5000, yesterday),
+				"fresh": dlState("fresh", 0, -50, today),
+			},
+			lossUSD: fp(50)},
+		{name: "wins_offset_losses",
+			pr: &PortfolioRiskConfig{DailyMaxLossUSD: 100},
+			states: map[string]*StrategyState{
+				"win":  dlState("win", 0, 400, today),
+				"loss": dlState("loss", 0, -450, today),
+			},
+			lossUSD: fp(50)},
+		{name: "net_positive_day_loss_zero",
+			pr: &PortfolioRiskConfig{DailyMaxLossUSD: 100},
+			states: map[string]*StrategyState{
+				"win":  dlState("win", 0, 400, today),
+				"loss": dlState("loss", 0, -100, today),
+			},
+			lossUSD: fp(0)},
+		{name: "manual_strategy_pnl_counts",
+			pr: &PortfolioRiskConfig{DailyMaxLossUSD: 300},
+			states: map[string]*StrategyState{
+				"hl-perps": {ID: "hl-perps", Type: "perps", RiskState: RiskState{DailyPnL: -200, DailyPnLDate: today}},
+				"manual":   {ID: "manual", Type: "manual", RiskState: RiskState{DailyPnL: -150, DailyPnLDate: today}},
+			},
+			tripped: true, lossUSD: fp(350)},
+		{name: "pct_basis_miss/pct_only_arm_inert",
+			pr:           &PortfolioRiskConfig{DailyMaxLossPct: 5},
+			states:       map[string]*StrategyState{"a": dlState("a", 0, -10000, today)},
+			pctBasisMiss: dlBool(true)},
+		{name: "pct_basis_miss/usd_arm_still_enforces",
+			pr:      &PortfolioRiskConfig{DailyMaxLossUSD: 500, DailyMaxLossPct: 5},
+			states:  map[string]*StrategyState{"a": dlState("a", 0, -10000, today)},
+			tripped: true, thresholdUSD: fp(500)},
+		{name: "nil_state_entry_skipped",
+			pr: &PortfolioRiskConfig{DailyMaxLossUSD: 100},
+			states: map[string]*StrategyState{
+				"nil": nil,
+				"a":   dlState("a", 0, -150, today),
+			},
+			tripped: true, lossUSD: fp(150)},
 	}
-	atLimit := map[string]*StrategyState{"a": dlState("a", 0, -500, dlToday())}
-	if st := evaluateDailyLossLimit(pr, atLimit, nil, now); !st.Tripped {
-		t.Fatalf("loss at threshold must trip: %+v", st)
-	}
-	beyond := map[string]*StrategyState{
-		"a": dlState("a", 0, -300, dlToday()),
-		"b": dlState("b", 0, -250, dlToday()),
-	}
-	st := evaluateDailyLossLimit(pr, beyond, nil, now)
-	if !st.Tripped || st.LossUSD != 550 || st.ThresholdUSD != 500 {
-		t.Fatalf("multi-strategy aggregate: %+v, want tripped loss=550 threshold=500", st)
-	}
-}
-
-func TestEvaluateDailyLossLimitPctThreshold(t *testing.T) {
-	pr := &PortfolioRiskConfig{DailyMaxLossPct: 5}
-	now := time.Now().UTC()
-	states := map[string]*StrategyState{
-		"a": dlState("a", 2000, -100, dlToday()),
-		"b": dlState("b", 3000, -160, dlToday()),
-	}
-	st := evaluateDailyLossLimit(pr, states, nil, now)
-	if !st.Tripped || st.CapitalBasis != 5000 || st.ThresholdUSD != 250 {
-		t.Fatalf("pct arm: %+v, want tripped basis=5000 threshold=250", st)
-	}
-	states["b"].RiskState.DailyPnL = -140
-	if st := evaluateDailyLossLimit(pr, states, nil, now); st.Tripped {
-		t.Fatalf("loss under pct threshold must not trip: %+v", st)
-	}
-}
-
-func TestEvaluateDailyLossLimitPctBasisExcludesSharedWalletPool(t *testing.T) {
-	pr := &PortfolioRiskConfig{DailyMaxLossPct: 5}
-	now := time.Now().UTC()
-	states := map[string]*StrategyState{
-		"pool-a":    dlState("pool-a", 1000, -100, dlToday()),
-		"allocated": dlState("allocated", 2000, -20, dlToday()),
-	}
-	strategies := []StrategyConfig{
-		{ID: "pool-a", sharedWalletPoolBudget: true},
-		{ID: "allocated"},
-	}
-	st := evaluateDailyLossLimit(pr, states, strategies, now)
-	if st.CapitalBasis != 2000 || st.ThresholdUSD != 100 {
-		t.Fatalf("mixed pool basis=%v threshold=%v, want allocated-only 2000/100", st.CapitalBasis, st.ThresholdUSD)
-	}
-	if !st.Tripped {
-		t.Fatalf("loss $120 must trip allocated-only $100 threshold: %+v", st)
-	}
-
-	delete(states, "allocated")
-	strategies = strategies[:1]
-	st = evaluateDailyLossLimit(pr, states, strategies, now)
-	if st.CapitalBasis != 0 || !st.PctBasisMiss || st.Tripped {
-		t.Fatalf("all-pool pct arm must surface a basis miss: %+v", st)
-	}
-}
-
-func TestEvaluateDailyLossLimitBothArmsLowerWins(t *testing.T) {
-	pr := &PortfolioRiskConfig{DailyMaxLossUSD: 400, DailyMaxLossPct: 5}
-	states := map[string]*StrategyState{"a": dlState("a", 20000, -450, dlToday())}
-	st := evaluateDailyLossLimit(pr, states, nil, time.Now().UTC())
-	if !st.Tripped || st.ThresholdUSD != 400 {
-		t.Fatalf("lower arm must win: %+v, want tripped threshold=400", st)
-	}
-	pr = &PortfolioRiskConfig{DailyMaxLossUSD: 2000, DailyMaxLossPct: 5}
-	st = evaluateDailyLossLimit(pr, states, nil, time.Now().UTC())
-	if st.Tripped || st.ThresholdUSD != 1000 {
-		t.Fatalf("pct arm lower: %+v, want not tripped threshold=1000", st)
-	}
-}
-
-func TestEvaluateDailyLossLimitStaleDayExcluded(t *testing.T) {
-	yesterday := time.Now().UTC().AddDate(0, 0, -1).Format("2006-01-02")
-	pr := &PortfolioRiskConfig{DailyMaxLossUSD: 100}
-	states := map[string]*StrategyState{
-		"stale": dlState("stale", 0, -5000, yesterday),
-		"fresh": dlState("fresh", 0, -50, dlToday()),
-	}
-	st := evaluateDailyLossLimit(pr, states, nil, time.Now().UTC())
-	if st.Tripped || st.LossUSD != 50 {
-		t.Fatalf("stale day must count 0: %+v, want loss=50 not tripped", st)
-	}
-}
-
-func TestEvaluateDailyLossLimitWinsOffsetLosses(t *testing.T) {
-	pr := &PortfolioRiskConfig{DailyMaxLossUSD: 100}
-	states := map[string]*StrategyState{
-		"win":  dlState("win", 0, 400, dlToday()),
-		"loss": dlState("loss", 0, -450, dlToday()),
-	}
-	st := evaluateDailyLossLimit(pr, states, nil, time.Now().UTC())
-	if st.Tripped || st.LossUSD != 50 {
-		t.Fatalf("net aggregate: %+v, want loss=50 not tripped", st)
-	}
-	states["loss"].RiskState.DailyPnL = -100
-	st = evaluateDailyLossLimit(pr, states, nil, time.Now().UTC())
-	if st.Tripped || st.LossUSD != 0 {
-		t.Fatalf("net-positive day: %+v, want loss=0 not tripped", st)
-	}
-}
-
-func TestEvaluateDailyLossLimitManualStrategyIncluded(t *testing.T) {
-	pr := &PortfolioRiskConfig{DailyMaxLossUSD: 300}
-	states := map[string]*StrategyState{
-		"hl-perps": {ID: "hl-perps", Type: "perps", RiskState: RiskState{DailyPnL: -200, DailyPnLDate: dlToday()}},
-		"manual":   {ID: "manual", Type: "manual", RiskState: RiskState{DailyPnL: -150, DailyPnLDate: dlToday()}},
-	}
-	st := evaluateDailyLossLimit(pr, states, nil, time.Now().UTC())
-	if !st.Tripped || st.LossUSD != 350 {
-		t.Fatalf("manual PnL must count: %+v, want tripped loss=350", st)
-	}
-}
-
-func TestEvaluateDailyLossLimitPctBasisMiss(t *testing.T) {
-	pr := &PortfolioRiskConfig{DailyMaxLossPct: 5}
-	states := map[string]*StrategyState{"a": dlState("a", 0, -10000, dlToday())}
-	st := evaluateDailyLossLimit(pr, states, nil, time.Now().UTC())
-	if st.Tripped || !st.PctBasisMiss {
-		t.Fatalf("basis-less pct arm: %+v, want not tripped with PctBasisMiss", st)
-	}
-	pr.DailyMaxLossUSD = 500
-	st = evaluateDailyLossLimit(pr, states, nil, time.Now().UTC())
-	if !st.Tripped || st.ThresholdUSD != 500 {
-		t.Fatalf("usd arm with basis miss: %+v, want tripped threshold=500", st)
-	}
-}
-
-func TestEvaluateDailyLossLimitNilStateSkipped(t *testing.T) {
-	pr := &PortfolioRiskConfig{DailyMaxLossUSD: 100}
-	states := map[string]*StrategyState{
-		"nil": nil,
-		"a":   dlState("a", 0, -150, dlToday()),
-	}
-	st := evaluateDailyLossLimit(pr, states, nil, time.Now().UTC())
-	if !st.Tripped || st.LossUSD != 150 {
-		t.Fatalf("nil entries must be skipped: %+v", st)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := evaluateDailyLossLimit(tc.pr, tc.states, tc.strategies, now)
+			if st.Tripped != tc.tripped {
+				t.Fatalf("Tripped = %v, want %v: %+v", st.Tripped, tc.tripped, st)
+			}
+			if tc.configured != nil && st.Configured != *tc.configured {
+				t.Fatalf("Configured = %v, want %v: %+v", st.Configured, *tc.configured, st)
+			}
+			if tc.lossUSD != nil && st.LossUSD != *tc.lossUSD {
+				t.Fatalf("LossUSD = %g, want %g: %+v", st.LossUSD, *tc.lossUSD, st)
+			}
+			if tc.thresholdUSD != nil && st.ThresholdUSD != *tc.thresholdUSD {
+				t.Fatalf("ThresholdUSD = %g, want %g: %+v", st.ThresholdUSD, *tc.thresholdUSD, st)
+			}
+			if tc.capitalBasis != nil && st.CapitalBasis != *tc.capitalBasis {
+				t.Fatalf("CapitalBasis = %g, want %g: %+v", st.CapitalBasis, *tc.capitalBasis, st)
+			}
+			if tc.pctBasisMiss != nil && st.PctBasisMiss != *tc.pctBasisMiss {
+				t.Fatalf("PctBasisMiss = %v, want %v: %+v", st.PctBasisMiss, *tc.pctBasisMiss, st)
+			}
+		})
 	}
 }
 
@@ -308,47 +286,42 @@ func TestManualStateViewDailyLossHold(t *testing.T) {
 	}
 }
 
-func TestManualOpenCoreRefusesDailyLossHold(t *testing.T) {
+func TestManualCoreRefusesDailyLossHold(t *testing.T) {
 	sc := StrategyConfig{ID: "m", Type: "manual", Platform: "hyperliquid", Symbol: "ETH", Leverage: 3}
-	deps := manualCoreDeps{
-		cfg: &Config{},
-		loadState: func(strategyID, symbol string) (manualStateView, error) {
-			return manualStateView{HasStrategy: true, DailyLossHold: true,
-				DailyLossNote: "daily loss limit tripped: today's realized loss $600.00 >= threshold $500.00 (pre-fee; basis=$0.00 initial capital)"}, nil
-		},
-		execute: func(string, string, string, float64, float64, int64, float64, string, float64, bool, hlExecuteSnapshot, ...int64) (*HyperliquidExecuteResult, string, error) {
-			t.Error("execute must not be called while the daily loss limit is tripped")
-			return nil, "", nil
-		},
-		fetchMids: func([]string) (map[string]float64, error) {
-			return map[string]float64{"ETH": 2000}, nil
-		},
+	const note = "daily loss limit tripped: today's realized loss $600.00 >= threshold $500.00 (pre-fee; basis=$0.00 initial capital)"
+	cases := []struct {
+		name string
+		pos  *Position
+		run  func(deps manualCoreDeps) error
+	}{
+		{"manual-open", nil, func(deps manualCoreDeps) error {
+			_, err := manualOpenCore(deps, sc, manualOpenInputs{StrategyID: "m", Margin: 50})
+			return err
+		}},
+		{"manual-add", &Position{Symbol: "ETH", Quantity: 1, AvgCost: 2000, Side: "long"}, func(deps manualCoreDeps) error {
+			_, err := manualAddCore(deps, sc, manualAddInputs{StrategyID: "m", Margin: 50})
+			return err
+		}},
 	}
-	_, err := manualOpenCore(deps, sc, manualOpenInputs{StrategyID: "m", Margin: 50})
-	if err == nil || !strings.Contains(err.Error(), "daily loss limit tripped") {
-		t.Fatalf("manual-open err = %v, want daily-loss refusal", err)
-	}
-}
-
-func TestManualAddCoreRefusesDailyLossHold(t *testing.T) {
-	sc := StrategyConfig{ID: "m", Type: "manual", Platform: "hyperliquid", Symbol: "ETH", Leverage: 3}
-	pos := &Position{Symbol: "ETH", Quantity: 1, AvgCost: 2000, Side: "long"}
-	deps := manualCoreDeps{
-		cfg: &Config{},
-		loadState: func(strategyID, symbol string) (manualStateView, error) {
-			return manualStateView{HasStrategy: true, Pos: pos, DailyLossHold: true,
-				DailyLossNote: "daily loss limit tripped: today's realized loss $600.00 >= threshold $500.00 (pre-fee; basis=$0.00 initial capital)"}, nil
-		},
-		execute: func(string, string, string, float64, float64, int64, float64, string, float64, bool, hlExecuteSnapshot, ...int64) (*HyperliquidExecuteResult, string, error) {
-			t.Error("execute must not be called while the daily loss limit is tripped")
-			return nil, "", nil
-		},
-		fetchMids: func([]string) (map[string]float64, error) {
-			return map[string]float64{"ETH": 2000}, nil
-		},
-	}
-	_, err := manualAddCore(deps, sc, manualAddInputs{StrategyID: "m", Margin: 50})
-	if err == nil || !strings.Contains(err.Error(), "daily loss limit tripped") {
-		t.Fatalf("manual-add err = %v, want daily-loss refusal", err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			deps := manualCoreDeps{
+				cfg: &Config{},
+				loadState: func(strategyID, symbol string) (manualStateView, error) {
+					return manualStateView{HasStrategy: true, Pos: tc.pos, DailyLossHold: true, DailyLossNote: note}, nil
+				},
+				execute: func(string, string, string, float64, float64, int64, float64, string, float64, bool, hlExecuteSnapshot, ...int64) (*HyperliquidExecuteResult, string, error) {
+					t.Error("execute must not be called while the daily loss limit is tripped")
+					return nil, "", nil
+				},
+				fetchMids: func([]string) (map[string]float64, error) {
+					return map[string]float64{"ETH": 2000}, nil
+				},
+			}
+			err := tc.run(deps)
+			if err == nil || !strings.Contains(err.Error(), "daily loss limit tripped") {
+				t.Fatalf("%s err = %v, want daily-loss refusal", tc.name, err)
+			}
+		})
 	}
 }

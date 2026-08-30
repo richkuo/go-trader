@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -199,138 +198,148 @@ func TestLoadConfigV19MigratesUserDefaultKeys(t *testing.T) {
 	}
 }
 
-func TestMigrateV19RejectsConflictingKeys(t *testing.T) {
-	raw := `{
-		"strategies": [{
-			"id": "hl-eth-conflict",
-			"type": "perps",
-			"platform": "hyperliquid",
-			"trail_stop_atr_regime": {
-				"trend_regime": {"ranging": {"atr_multiple": 1.0}}
+func TestMigrateV19AtrMultRegimeKey(t *testing.T) {
+	cases := []struct {
+		name    string
+		raw     string
+		wantErr []string
+		check   func(t *testing.T, sc map[string]interface{})
+	}{
+		{
+			name: "conflicting_blocks_rejected_naming_legacy_key",
+			raw: `{
+				"strategies": [{
+					"id": "hl-eth-conflict",
+					"type": "perps",
+					"platform": "hyperliquid",
+					"trail_stop_atr_regime": {
+						"trend_regime": {"ranging": {"atr_multiple": 1.0}}
+					},
+					"trailing_stop_atr_mult_regime": {
+						"trend_regime": {"ranging": {"atr_multiple": 2.0}}
+					}
+				}]
+			}`,
+			wantErr: []string{"conflicts", `"trail_stop_atr_regime"`},
+		},
+		{
+			name: "identical_blocks_drop_redundant_legacy_key",
+			raw: `{
+				"strategies": [{
+					"id": "hl-eth-redundant",
+					"type": "perps",
+					"platform": "hyperliquid",
+					"trail_stop_atr_regime": {
+						"trend_regime": {"ranging": {"atr_multiple": 2.0}}
+					},
+					"trailing_stop_atr_mult_regime": {
+						"trend_regime": {"ranging": {"atr_multiple": 2.0}}
+					}
+				}]
+			}`,
+			check: func(t *testing.T, sc map[string]interface{}) {
+				if _, present := sc["trail_stop_atr_regime"]; present {
+					t.Fatalf("legacy key should be dropped after identical-block merge")
+				}
+				canon, present := sc["trailing_stop_atr_mult_regime"]
+				if !present {
+					t.Fatalf("canonical key should remain")
+				}
+				canonMap, ok := canon.(map[string]interface{})
+				if !ok {
+					t.Fatalf("canonical block should be an object, got %T", canon)
+				}
+				trend, ok := canonMap["trend_regime"].(map[string]interface{})["ranging"].(map[string]interface{})["atr_multiple"]
+				if !ok || trend != 2.0 {
+					t.Fatalf("canonical atr_multiple = %v, want 2.0", trend)
+				}
 			},
-			"trailing_stop_atr_mult_regime": {
-				"trend_regime": {"ranging": {"atr_multiple": 2.0}}
-			}
-		}]
-	}`
-	var data map[string]interface{}
-	if err := json.Unmarshal([]byte(raw), &data); err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	err := migrateV19AtrMultRegimeKey(data)
-	if err == nil {
-		t.Fatalf("expected conflict error, got nil")
-	}
-	if !strings.Contains(err.Error(), "conflicts") {
-		t.Fatalf("expected conflict error, got %q", err)
-	}
-	if !strings.Contains(err.Error(), `"trail_stop_atr_regime"`) {
-		t.Fatalf("conflict error should name the legacy key, got %q", err)
-	}
-}
-
-func TestMigrateV19DropsRedundantLegacyKeyWhenCanonicalMatches(t *testing.T) {
-	raw := `{
-		"strategies": [{
-			"id": "hl-eth-redundant",
-			"type": "perps",
-			"platform": "hyperliquid",
-			"trail_stop_atr_regime": {
-				"trend_regime": {"ranging": {"atr_multiple": 2.0}}
+		},
+		{
+			name: "rename_leaves_trailing_stop_pct_untouched",
+			raw: `{
+				"strategies": [{
+					"id": "hl-eth-pct",
+					"type": "perps",
+					"platform": "hyperliquid",
+					"trailing_stop_pct": 1.5,
+					"trail_stop_atr_regime": {
+						"trend_regime": {"ranging": {"atr_multiple": 1.0}}
+					}
+				}]
+			}`,
+			check: func(t *testing.T, sc map[string]interface{}) {
+				if pct, ok := sc["trailing_stop_pct"].(float64); !ok || pct != 1.5 {
+					t.Fatalf("trailing_stop_pct should be untouched, got %v", sc["trailing_stop_pct"])
+				}
+				if _, present := sc["trail_stop_atr_regime"]; present {
+					t.Fatalf("legacy key should be renamed away")
+				}
+				if _, present := sc["trailing_stop_atr_mult_regime"]; !present {
+					t.Fatalf("canonical key missing after rename")
+				}
 			},
-			"trailing_stop_atr_mult_regime": {
-				"trend_regime": {"ranging": {"atr_multiple": 2.0}}
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			data := v19ParseRawConfig(t, tc.raw)
+			err := migrateV19AtrMultRegimeKey(data)
+			if len(tc.wantErr) > 0 {
+				if err == nil {
+					t.Fatalf("expected conflict error, got nil")
+				}
+				for _, want := range tc.wantErr {
+					if !strings.Contains(err.Error(), want) {
+						t.Fatalf("error %q missing %q", err, want)
+					}
+				}
+				return
 			}
-		}]
-	}`
-	var data map[string]interface{}
-	if err := json.Unmarshal([]byte(raw), &data); err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	if err := migrateV19AtrMultRegimeKey(data); err != nil {
-		t.Fatalf("redundant migration should succeed, got %v", err)
-	}
-	sc := data["strategies"].([]interface{})[0].(map[string]interface{})
-	if _, present := sc["trail_stop_atr_regime"]; present {
-		t.Fatalf("legacy key should be dropped after identical-block merge")
-	}
-	canon, present := sc["trailing_stop_atr_mult_regime"]
-	if !present {
-		t.Fatalf("canonical key should remain")
-	}
-	canonMap, ok := canon.(map[string]interface{})
-	if !ok {
-		t.Fatalf("canonical block should be an object, got %T", canon)
-	}
-	trend, ok := canonMap["trend_regime"].(map[string]interface{})["ranging"].(map[string]interface{})["atr_multiple"]
-	if !ok || trend != 2.0 {
-		t.Fatalf("canonical atr_multiple = %v, want 2.0", trend)
-	}
-}
-
-func TestNeedsV19AtrMultRegimeRenameDetectsLegacyKey(t *testing.T) {
-	data := v19ParseRawConfig(t, v19LegacyStrategyConfigJSON)
-	if !hasLegacyV19AtrMultRegimeKey(data) {
-		t.Fatalf("legacy strategy config should be flagged for v19 rename")
-	}
-	if !needsV19AtrMultRegimeRename([]byte(v19LegacyStrategyConfigJSON)) {
-		t.Fatalf("needsV19AtrMultRegimeRename should flag legacy key in raw bytes")
-	}
-}
-
-func TestNeedsV19AtrMultRegimeRenameIgnoresCanonicalConfig(t *testing.T) {
-	data := v19ParseRawConfig(t, v19CanonicalStrategyConfigJSON)
-	if hasLegacyV19AtrMultRegimeKey(data) {
-		t.Fatalf("canonical v19 config should not be flagged for rename")
-	}
-	if needsV19AtrMultRegimeRename([]byte(v19CanonicalStrategyConfigJSON)) {
-		t.Fatalf("needsV19AtrMultRegimeRename should ignore canonical v19 config")
-	}
-}
-
-func TestV19RenameKeepsTrailingStopPctUnaffected(t *testing.T) {
-	raw := `{
-		"strategies": [{
-			"id": "hl-eth-pct",
-			"type": "perps",
-			"platform": "hyperliquid",
-			"trailing_stop_pct": 1.5,
-			"trail_stop_atr_regime": {
-				"trend_regime": {"ranging": {"atr_multiple": 1.0}}
+			if err != nil {
+				t.Fatalf("v19 migration failed: %v", err)
 			}
-		}]
-	}`
-	var data map[string]interface{}
-	if err := json.Unmarshal([]byte(raw), &data); err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	if err := migrateV19AtrMultRegimeKey(data); err != nil {
-		t.Fatalf("v19 migration failed: %v", err)
-	}
-	sc := data["strategies"].([]interface{})[0].(map[string]interface{})
-	if pct, ok := sc["trailing_stop_pct"].(float64); !ok || pct != 1.5 {
-		t.Fatalf("trailing_stop_pct should be untouched, got %v", sc["trailing_stop_pct"])
+			tc.check(t, v19StrategyBlock(t, data))
+		})
 	}
 }
 
-func TestV19AtomicRenameSitesListsEveryMutationSite(t *testing.T) {
-	expected := []string{
-		"strategies[]",
-		"user_defaults.regime_atr",
-		"user_defaults.manual",
-		"user_defaults.close[]",
+func TestNeedsV19AtrMultRegimeRename(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{"legacy_v18_canonical_key_flagged", v19LegacyStrategyConfigJSON, true},
+		{"v19_canonical_key_ignored", v19CanonicalStrategyConfigJSON, false},
 	}
-	if len(v19AtomicRenameSites) != len(expected) {
-		t.Fatalf("v19AtomicRenameSites has %d entries, want %d", len(v19AtomicRenameSites), len(expected))
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hasLegacyV19AtrMultRegimeKey(v19ParseRawConfig(t, tc.raw)); got != tc.want {
+				t.Errorf("hasLegacyV19AtrMultRegimeKey = %v, want %v", got, tc.want)
+			}
+			if got := needsV19AtrMultRegimeRename([]byte(tc.raw)); got != tc.want {
+				t.Errorf("needsV19AtrMultRegimeRename = %v, want %v", got, tc.want)
+			}
+		})
 	}
-	for i, want := range expected {
-		if v19AtomicRenameSites[i] != want {
-			t.Fatalf("v19AtomicRenameSites[%d] = %q, want %q", i, v19AtomicRenameSites[i], want)
+}
+
+func TestV19RenameMap(t *testing.T) {
+	seen := map[string]bool{}
+	for _, pair := range v19RenameMap {
+		if seen[pair.LegacyKey] {
+			t.Fatalf("duplicate legacy key in v19 rename map: %q", pair.LegacyKey)
+		}
+		seen[pair.LegacyKey] = true
+		if pair.LegacyKey == pair.CanonKey {
+			t.Fatalf("rename pair maps a key to itself: %q", pair.LegacyKey)
 		}
 	}
-}
+	if len(seen) != 2 {
+		t.Fatalf("expected 2 rename pairs, got %d (%v)", len(seen), seen)
+	}
 
-func TestSortedV19RenameMapReturnsStableOrder(t *testing.T) {
 	a := sortedV19RenameMap()
 	b := sortedV19RenameMap()
 	if len(a) != len(v19RenameMap) {
@@ -338,14 +347,12 @@ func TestSortedV19RenameMapReturnsStableOrder(t *testing.T) {
 	}
 	for i := range a {
 		if a[i].LegacyKey != b[i].LegacyKey {
-			t.Fatalf("sortedV19RenameMap not deterministic at index %d: %q vs %q",
-				i, a[i].LegacyKey, b[i].LegacyKey)
+			t.Fatalf("sortedV19RenameMap not deterministic at index %d: %q vs %q", i, a[i].LegacyKey, b[i].LegacyKey)
 		}
 	}
 	for i := 1; i < len(a); i++ {
 		if a[i-1].LegacyKey >= a[i].LegacyKey {
-			t.Fatalf("sortedV19RenameMap not sorted: %q >= %q",
-				a[i-1].LegacyKey, a[i].LegacyKey)
+			t.Fatalf("sortedV19RenameMap not sorted: %q >= %q", a[i-1].LegacyKey, a[i].LegacyKey)
 		}
 	}
 }
@@ -473,21 +480,8 @@ func TestLoadConfigV19ReadOnlyCleanConfigDoesNotWrite(t *testing.T) {
 }
 
 func TestLoadConfigV19ReadOnlyLegacyKeyStillAttemptsRewrite(t *testing.T) {
-
-	if os.Getuid() == 0 {
-		t.Skip("root bypasses POSIX read-only enforcement; verified on Linux CI non-root")
-	}
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.json")
-	if err := os.WriteFile(path, []byte(v19LegacyStrategyConfigJSON), 0o644); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	if err := os.Chmod(dir, 0o555); err != nil {
-		t.Fatalf("chmod read-only: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
-	_, err := LoadConfigForProbe(path)
-	if err == nil {
+	path := readOnlyConfigDir(t, v19LegacyStrategyConfigJSON)
+	if _, err := LoadConfigForProbe(path); err == nil {
 		t.Fatalf("expected an error when read-only path blocks the v19 migration write")
 	}
 }
@@ -498,37 +492,6 @@ func keysOf(m map[string]interface{}) []string {
 		out = append(out, k)
 	}
 	return out
-}
-
-func TestRenameMapIsSortedByLegacyKey(t *testing.T) {
-	seen := map[string]bool{}
-	for _, pair := range v19RenameMap {
-		if seen[pair.LegacyKey] {
-			t.Fatalf("duplicate legacy key in v19 rename map: %q", pair.LegacyKey)
-		}
-		seen[pair.LegacyKey] = true
-		if pair.LegacyKey == pair.CanonKey {
-			t.Fatalf("rename pair maps a key to itself: %q", pair.LegacyKey)
-		}
-	}
-	if len(seen) != 2 {
-		t.Fatalf("expected 2 rename pairs, got %d (%v)", len(seen), seen)
-	}
-}
-
-func TestV19NoticeMentionsBothRenames(t *testing.T) {
-	if !strings.Contains(v19AtrMultRenameNotice, "stop_loss_atr_mult_regime") {
-		t.Fatalf("v19 notice should mention stop_loss_atr_mult_regime")
-	}
-	if !strings.Contains(v19AtrMultRenameNotice, "trailing_stop_atr_mult_regime") {
-		t.Fatalf("v19 notice should mention trailing_stop_atr_mult_regime")
-	}
-	if !strings.Contains(v19AtrMultRenameNotice, "stop_loss_atr_regime") {
-		t.Fatalf("v19 notice should mention the legacy stop_loss_atr_regime key")
-	}
-	if !strings.Contains(v19AtrMultRenameNotice, "trail_stop_atr_regime") {
-		t.Fatalf("v19 notice should mention the legacy trail_stop_atr_regime key")
-	}
 }
 
 func TestV19RenamePreservesPreExistingUnrelatedKeys(t *testing.T) {
@@ -577,5 +540,3 @@ func TestV19RenamePreservesPreExistingUnrelatedKeys(t *testing.T) {
 		t.Fatalf("margin_mode should be preserved, got %q", sc.MarginMode)
 	}
 }
-
-var _ = fmt.Sprintf

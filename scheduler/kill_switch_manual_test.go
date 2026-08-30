@@ -169,43 +169,48 @@ func TestHyperliquidKillSwitchShareSplit_PerpsAndManualPeers(t *testing.T) {
 	}
 }
 
-func TestCollectHLKillSwitchStopOIDs_IncludesManualTriggers(t *testing.T) {
-	strategies := map[string]*StrategyState{
-		"hl-manual-eth-live": {Positions: map[string]*Position{
-			"ETH": {StopLossOID: 111, TPOIDs: []int64{222}},
-		}},
-		"hl-perps-btc-live": {Positions: map[string]*Position{
-			"BTC": {StopLossOID: 333},
-		}},
+func TestCollectHLKillSwitchStopOIDs(t *testing.T) {
+	cases := []struct {
+		name       string
+		strategies map[string]*StrategyState
+		roster     []StrategyConfig
+		want       map[string][]int64
+	}{
+		{
+			name: "includes manual triggers",
+			strategies: map[string]*StrategyState{
+				"hl-manual-eth-live": {Positions: map[string]*Position{"ETH": {StopLossOID: 111, TPOIDs: []int64{222}}}},
+				"hl-perps-btc-live":  {Positions: map[string]*Position{"BTC": {StopLossOID: 333}}},
+			},
+			roster: []StrategyConfig{
+				{ID: "hl-perps-btc-live", Platform: "hyperliquid", Type: "perps", Args: []string{"sma", "BTC", "1h", "--mode=live"}},
+				{ID: "hl-manual-eth-live", Platform: "hyperliquid", Type: "manual", Symbol: "ETH", Args: []string{"hold", "ETH", "1h", "--mode=live"}},
+			},
+			want: map[string][]int64{"BTC": {333}, "ETH": {111, 222}},
+		},
+		{
+			name: "lower-case manual symbol falls back to raw key",
+			strategies: map[string]*StrategyState{
+				"hl-manual-sol-live": {Positions: map[string]*Position{"sol": {StopLossOID: 444}}},
+			},
+			roster: []StrategyConfig{
+				{ID: "hl-manual-sol-live", Platform: "hyperliquid", Type: "manual", Symbol: "sol", Args: []string{"hold", "sol", "1h", "--mode=live"}},
+			},
+			want: map[string][]int64{"sol": {444}},
+		},
 	}
-	roster := []StrategyConfig{
-		{ID: "hl-perps-btc-live", Platform: "hyperliquid", Type: "perps",
-			Args: []string{"sma", "BTC", "1h", "--mode=live"}},
-		{ID: "hl-manual-eth-live", Platform: "hyperliquid", Type: "manual", Symbol: "ETH",
-			Args: []string{"hold", "ETH", "1h", "--mode=live"}},
-	}
-	out := collectHLKillSwitchStopOIDs(strategies, roster)
-	if !reflect.DeepEqual(out["BTC"], []int64{333}) {
-		t.Errorf("BTC OIDs = %v; want [333]", out["BTC"])
-	}
-	if !reflect.DeepEqual(out["ETH"], []int64{111, 222}) {
-		t.Errorf("ETH OIDs = %v; want [111 222] — a manual coin's resting triggers must be cancelled before the flatten", out["ETH"])
-	}
-}
-
-func TestCollectHLKillSwitchStopOIDs_LowerCaseManualSymbolFallsBackToRawKey(t *testing.T) {
-	strategies := map[string]*StrategyState{
-		"hl-manual-sol-live": {Positions: map[string]*Position{
-			"sol": {StopLossOID: 444},
-		}},
-	}
-	roster := []StrategyConfig{
-		{ID: "hl-manual-sol-live", Platform: "hyperliquid", Type: "manual", Symbol: "sol",
-			Args: []string{"hold", "sol", "1h", "--mode=live"}},
-	}
-	out := collectHLKillSwitchStopOIDs(strategies, roster)
-	if !reflect.DeepEqual(out["sol"], []int64{444}) {
-		t.Errorf("sol OIDs = %v; want [444] under the raw configured symbol", out["sol"])
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := collectHLKillSwitchStopOIDs(tc.strategies, tc.roster)
+			for coin, want := range tc.want {
+				if !reflect.DeepEqual(out[coin], want) {
+					t.Errorf("%s OIDs = %v; want %v — a coin's resting triggers must be cancelled before the flatten", coin, out[coin], want)
+				}
+			}
+			if len(out) != len(tc.want) {
+				t.Errorf("collected coins = %v; want exactly %v", out, tc.want)
+			}
+		})
 	}
 }
 

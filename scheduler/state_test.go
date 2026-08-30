@@ -20,43 +20,50 @@ func TestNewAppState(t *testing.T) {
 }
 
 func TestNewStrategyState(t *testing.T) {
-	cfg := StrategyConfig{
-		ID:             "test-spot-btc",
-		Type:           "spot",
-		Platform:       "binanceus",
-		Capital:        1000,
-		MaxDrawdownPct: 60,
+	cases := []struct {
+		name        string
+		cfg         StrategyConfig
+		wantCash    float64
+		wantInitial float64
+	}{
+		{
+			name:     "capital seeds cash and initial capital",
+			cfg:      StrategyConfig{ID: "test-spot-btc", Type: "spot", Platform: "binanceus", Capital: 1000, MaxDrawdownPct: 60},
+			wantCash: 1000, wantInitial: 1000,
+		},
+		{
+			name:     "config initial_capital overrides capital",
+			cfg:      StrategyConfig{ID: "hl-sma-btc", Type: "perps", Platform: "hyperliquid", Capital: 600, InitialCapital: 505, MaxDrawdownPct: 10},
+			wantCash: 600, wantInitial: 505,
+		},
+		{
+			name:     "no config initial_capital falls back to capital",
+			cfg:      StrategyConfig{ID: "hl-sma-btc", Type: "perps", Platform: "hyperliquid", Capital: 600, MaxDrawdownPct: 10},
+			wantCash: 600, wantInitial: 600,
+		},
 	}
-	s := NewStrategyState(cfg)
-	if s.ID != "test-spot-btc" {
-		t.Errorf("ID = %q, want %q", s.ID, "test-spot-btc")
-	}
-	if s.Type != "spot" {
-		t.Errorf("Type = %q, want %q", s.Type, "spot")
-	}
-	if s.Platform != "binanceus" {
-		t.Errorf("Platform = %q, want %q", s.Platform, "binanceus")
-	}
-	if s.Cash != 1000 {
-		t.Errorf("Cash = %g, want 1000", s.Cash)
-	}
-	if s.InitialCapital != 1000 {
-		t.Errorf("InitialCapital = %g, want 1000", s.InitialCapital)
-	}
-	if s.Positions == nil {
-		t.Error("Positions should not be nil")
-	}
-	if s.OptionPositions == nil {
-		t.Error("OptionPositions should not be nil")
-	}
-	if s.TradeHistory == nil {
-		t.Error("TradeHistory should not be nil")
-	}
-	if s.RiskState.PeakValue != 1000 {
-		t.Errorf("RiskState.PeakValue = %g, want 1000", s.RiskState.PeakValue)
-	}
-	if s.RiskState.MaxDrawdownPct != 60 {
-		t.Errorf("RiskState.MaxDrawdownPct = %g, want 60", s.RiskState.MaxDrawdownPct)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := NewStrategyState(tc.cfg)
+			if s.ID != tc.cfg.ID || s.Type != tc.cfg.Type || s.Platform != tc.cfg.Platform {
+				t.Errorf("identity = (%q, %q, %q), want (%q, %q, %q)", s.ID, s.Type, s.Platform, tc.cfg.ID, tc.cfg.Type, tc.cfg.Platform)
+			}
+			if s.Cash != tc.wantCash {
+				t.Errorf("Cash = %g, want %g", s.Cash, tc.wantCash)
+			}
+			if s.InitialCapital != tc.wantInitial {
+				t.Errorf("InitialCapital = %g, want %g", s.InitialCapital, tc.wantInitial)
+			}
+			if s.Positions == nil || s.OptionPositions == nil || s.TradeHistory == nil {
+				t.Errorf("maps and trade history must be initialized: %+v", s)
+			}
+			if s.RiskState.PeakValue != tc.cfg.Capital {
+				t.Errorf("RiskState.PeakValue = %g, want %g", s.RiskState.PeakValue, tc.cfg.Capital)
+			}
+			if s.RiskState.MaxDrawdownPct != tc.cfg.MaxDrawdownPct {
+				t.Errorf("RiskState.MaxDrawdownPct = %g, want %g", s.RiskState.MaxDrawdownPct, tc.cfg.MaxDrawdownPct)
+			}
+		})
 	}
 }
 
@@ -325,124 +332,6 @@ func TestValidateState(t *testing.T) {
 	}
 }
 
-func TestValidatePerpsDirectionConfig(t *testing.T) {
-	state := NewAppState()
-	state.Strategies["hl-triple-ema-eth"] = &StrategyState{
-		ID:   "hl-triple-ema-eth",
-		Type: "perps",
-		Positions: map[string]*Position{
-			"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 2000, Side: "short", Multiplier: 1, Leverage: 1},
-		},
-	}
-	state.Strategies["hl-bidir-btc"] = &StrategyState{
-		ID:   "hl-bidir-btc",
-		Type: "perps",
-		Positions: map[string]*Position{
-			"BTC": {Symbol: "BTC", Quantity: 0.1, AvgCost: 60000, Side: "short", Multiplier: 1, Leverage: 1},
-		},
-	}
-	state.Strategies["hl-bear-sol"] = &StrategyState{
-		ID:   "hl-bear-sol",
-		Type: "perps",
-		Positions: map[string]*Position{
-			"SOL": {Symbol: "SOL", Quantity: 1.0, AvgCost: 200, Side: "long", Multiplier: 1, Leverage: 1},
-		},
-	}
-	state.Strategies["bn-sma-btc"] = &StrategyState{
-		ID:   "bn-sma-btc",
-		Type: "spot",
-		Positions: map[string]*Position{
-			"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.01, AvgCost: 60000, Side: "long"},
-		},
-	}
-
-	cfg := &Config{
-		Strategies: []StrategyConfig{
-			{ID: "hl-triple-ema-eth", Type: "perps", Platform: "hyperliquid", Direction: DirectionLong},
-			{ID: "hl-bidir-btc", Type: "perps", Platform: "hyperliquid", Direction: DirectionBoth},
-			{ID: "hl-bear-sol", Type: "perps", Platform: "hyperliquid", Direction: DirectionShort},
-			{ID: "bn-sma-btc", Type: "spot", Platform: "binanceus"},
-		},
-	}
-
-	warnings := ValidatePerpsDirectionConfig(state, cfg)
-	if len(warnings) != 2 {
-		t.Fatalf("want 2 warnings (long-direction short pos + short-direction long pos), got %d: %v", len(warnings), warnings)
-	}
-	joined := strings.Join(warnings, "\n")
-	if !strings.Contains(joined, "hl-triple-ema-eth") {
-		t.Errorf("warnings should name the long-direction strategy, got: %s", joined)
-	}
-	if !strings.Contains(joined, "hl-bear-sol") {
-		t.Errorf("warnings should name the short-direction strategy, got: %s", joined)
-	}
-	if !strings.Contains(joined, "direction=") {
-		t.Errorf("warnings should cite direction in the gap message, got: %s", joined)
-	}
-}
-
-func TestValidatePerpsDirectionConfig_NoConflicts(t *testing.T) {
-	state := NewAppState()
-	state.Strategies["hl-triple-ema-eth"] = &StrategyState{
-		ID:   "hl-triple-ema-eth",
-		Type: "perps",
-		Positions: map[string]*Position{
-			"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 2000, Side: "long", Multiplier: 1, Leverage: 1},
-		},
-	}
-	state.Strategies["hl-bear-sol"] = &StrategyState{
-		ID:   "hl-bear-sol",
-		Type: "perps",
-		Positions: map[string]*Position{
-			"SOL": {Symbol: "SOL", Quantity: 1.0, AvgCost: 200, Side: "short", Multiplier: 1, Leverage: 1},
-		},
-	}
-	cfg := &Config{
-		Strategies: []StrategyConfig{
-			{ID: "hl-triple-ema-eth", Type: "perps", Platform: "hyperliquid", Direction: DirectionLong},
-			{ID: "hl-bear-sol", Type: "perps", Platform: "hyperliquid", Direction: DirectionShort},
-		},
-	}
-	if warnings := ValidatePerpsDirectionConfig(state, cfg); len(warnings) != 0 {
-		t.Errorf("want no warnings when sides match direction, got: %v", warnings)
-	}
-}
-
-func TestValidatePerpsDirectionConfig_OrphanState(t *testing.T) {
-	state := NewAppState()
-	state.Strategies["gone"] = &StrategyState{
-		ID:   "gone",
-		Type: "perps",
-		Positions: map[string]*Position{
-			"ETH": {Symbol: "ETH", Quantity: 0.5, Side: "short", Multiplier: 1, Leverage: 1},
-		},
-	}
-	cfg := &Config{Strategies: []StrategyConfig{}}
-	if warnings := ValidatePerpsDirectionConfig(state, cfg); len(warnings) != 0 {
-		t.Errorf("orphan state should not produce warnings, got: %v", warnings)
-	}
-}
-
-func TestValidatePerpsDirectionConfig_LegacyAllowShortsFallthrough(t *testing.T) {
-	state := NewAppState()
-	state.Strategies["hl-legacy-eth"] = &StrategyState{
-		ID:   "hl-legacy-eth",
-		Type: "perps",
-		Positions: map[string]*Position{
-			"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 2000, Side: "short", Multiplier: 1, Leverage: 1},
-		},
-	}
-	cfg := &Config{
-		Strategies: []StrategyConfig{
-			{ID: "hl-legacy-eth", Type: "perps", Platform: "hyperliquid", AllowShorts: false},
-		},
-	}
-	warnings := ValidatePerpsDirectionConfig(state, cfg)
-	if len(warnings) != 1 {
-		t.Fatalf("legacy AllowShorts=false should map to direction=long and flag the short, got %d warnings: %v", len(warnings), warnings)
-	}
-}
-
 func makeRegimeDirectionalPolicyForValidation() *RegimeDirectionalPolicy {
 	return &RegimeDirectionalPolicy{TrendRegime: map[string]RegimeDirectionalEntry{
 		"trending_up":   {Direction: DirectionLong, InvertSignal: false},
@@ -451,97 +340,143 @@ func makeRegimeDirectionalPolicyForValidation() *RegimeDirectionalPolicy {
 	}}
 }
 
-func TestValidatePerpsDirectionConfig_RegimePolicyStampedTrendingDown(t *testing.T) {
-	state := NewAppState()
-	state.Strategies["hl-mr-hype"] = &StrategyState{
-		ID:   "hl-mr-hype",
-		Type: "perps",
-		Positions: map[string]*Position{
-			"HYPE": {Symbol: "HYPE", Quantity: 1, Side: "short", Regime: "trending_down", Multiplier: 1, Leverage: 1, DirectionCertifiedAtOpen: true,
-				DirectionCertifiedStatesAtOpen: map[string]string{"trending_up": DirectionLong, "trending_down": DirectionShort, "ranging": DirectionLong}},
+func TestValidatePerpsDirectionConfig(t *testing.T) {
+	perpsPos := func(sym string, qty, avg float64, side string) *Position {
+		return &Position{Symbol: sym, Quantity: qty, AvgCost: avg, Side: side, Multiplier: 1, Leverage: 1}
+	}
+	certified := map[string]string{"trending_up": DirectionLong, "trending_down": DirectionShort, "ranging": DirectionLong}
+	stamped := func(regime string) *Position {
+		p := perpsPos("HYPE", 1, 0, "short")
+		p.Regime = regime
+		p.DirectionCertifiedAtOpen = true
+		p.DirectionCertifiedStatesAtOpen = certified
+		return p
+	}
+	cases := []struct {
+		name           string
+		strategies     map[string]*StrategyState
+		cfg            []StrategyConfig
+		wantCount      int
+		wantJoined     []string
+		wantPerWarning [][]string
+	}{
+		{
+			name: "long and short direction conflicts",
+			strategies: map[string]*StrategyState{
+				"hl-triple-ema-eth": {ID: "hl-triple-ema-eth", Type: "perps", Positions: map[string]*Position{"ETH": perpsPos("ETH", 0.5, 2000, "short")}},
+				"hl-bidir-btc":      {ID: "hl-bidir-btc", Type: "perps", Positions: map[string]*Position{"BTC": perpsPos("BTC", 0.1, 60000, "short")}},
+				"hl-bear-sol":       {ID: "hl-bear-sol", Type: "perps", Positions: map[string]*Position{"SOL": perpsPos("SOL", 1.0, 200, "long")}},
+				"bn-sma-btc":        {ID: "bn-sma-btc", Type: "spot", Positions: map[string]*Position{"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.01, AvgCost: 60000, Side: "long"}}},
+			},
+			cfg: []StrategyConfig{
+				{ID: "hl-triple-ema-eth", Type: "perps", Platform: "hyperliquid", Direction: DirectionLong},
+				{ID: "hl-bidir-btc", Type: "perps", Platform: "hyperliquid", Direction: DirectionBoth},
+				{ID: "hl-bear-sol", Type: "perps", Platform: "hyperliquid", Direction: DirectionShort},
+				{ID: "bn-sma-btc", Type: "spot", Platform: "binanceus"},
+			},
+			wantCount:  2,
+			wantJoined: []string{"hl-triple-ema-eth", "hl-bear-sol", "direction="},
+		},
+		{
+			name: "no conflicts when sides match direction",
+			strategies: map[string]*StrategyState{
+				"hl-triple-ema-eth": {ID: "hl-triple-ema-eth", Type: "perps", Positions: map[string]*Position{"ETH": perpsPos("ETH", 0.5, 2000, "long")}},
+				"hl-bear-sol":       {ID: "hl-bear-sol", Type: "perps", Positions: map[string]*Position{"SOL": perpsPos("SOL", 1.0, 200, "short")}},
+			},
+			cfg: []StrategyConfig{
+				{ID: "hl-triple-ema-eth", Type: "perps", Platform: "hyperliquid", Direction: DirectionLong},
+				{ID: "hl-bear-sol", Type: "perps", Platform: "hyperliquid", Direction: DirectionShort},
+			},
+			wantCount: 0,
+		},
+		{
+			name: "orphan state without config produces no warning",
+			strategies: map[string]*StrategyState{
+				"gone": {ID: "gone", Type: "perps", Positions: map[string]*Position{"ETH": perpsPos("ETH", 0.5, 0, "short")}},
+			},
+			cfg:       []StrategyConfig{},
+			wantCount: 0,
+		},
+		{
+			name: "legacy allow_shorts=false maps to direction=long",
+			strategies: map[string]*StrategyState{
+				"hl-legacy-eth": {ID: "hl-legacy-eth", Type: "perps", Positions: map[string]*Position{"ETH": perpsPos("ETH", 0.5, 2000, "short")}},
+			},
+			cfg:       []StrategyConfig{{ID: "hl-legacy-eth", Type: "perps", Platform: "hyperliquid", AllowShorts: false}},
+			wantCount: 1,
+		},
+		{
+			name: "regime policy stamped trending_down short does not warn",
+			strategies: map[string]*StrategyState{
+				"hl-mr-hype": {ID: "hl-mr-hype", Type: "perps", Positions: map[string]*Position{"HYPE": stamped("trending_down")}},
+			},
+			cfg: []StrategyConfig{{
+				ID: "hl-mr-hype", Type: "perps", Platform: "hyperliquid", Direction: DirectionLong,
+				RegimeDirectionalPolicy: makeRegimeDirectionalPolicyForValidation(),
+			}},
+			wantCount: 0,
+		},
+		{
+			name: "regime policy stamped trending_up short conflicts",
+			strategies: map[string]*StrategyState{
+				"hl-mr-hype": {ID: "hl-mr-hype", Type: "perps", Positions: map[string]*Position{"HYPE": stamped("trending_up")}},
+			},
+			cfg: []StrategyConfig{{
+				ID: "hl-mr-hype", Type: "perps", Platform: "hyperliquid", Direction: DirectionLong,
+				RegimeDirectionalPolicy: makeRegimeDirectionalPolicyForValidation(),
+			}},
+			wantCount:      1,
+			wantPerWarning: [][]string{{"stamped regime=\"trending_up\""}},
+		},
+		{
+			name: "regime policy uncertified legacy short warns for #1085 migration",
+			strategies: map[string]*StrategyState{
+				"hl-mr-hype": {ID: "hl-mr-hype", Type: "perps", Positions: map[string]*Position{"HYPE": perpsPos("HYPE", 1, 0, "short")}},
+			},
+			cfg: []StrategyConfig{{
+				ID: "hl-mr-hype", Type: "perps", Platform: "hyperliquid", Direction: DirectionLong,
+				RegimeDirectionalPolicy: makeRegimeDirectionalPolicyForValidation(),
+			}},
+			wantCount:      1,
+			wantPerWarning: [][]string{{"DEFAULT-OFF", "#1085"}},
+		},
+		{
+			name: "warning order sorted by symbol",
+			strategies: map[string]*StrategyState{
+				"hl-multi": {ID: "hl-multi", Type: "perps", Positions: map[string]*Position{
+					"ETH": perpsPos("ETH", 1, 0, "short"),
+					"BTC": perpsPos("BTC", 0.1, 0, "short"),
+				}},
+			},
+			cfg:            []StrategyConfig{{ID: "hl-multi", Type: "perps", Platform: "hyperliquid", Direction: DirectionLong}},
+			wantCount:      2,
+			wantPerWarning: [][]string{{" BTC "}, {" ETH "}},
 		},
 	}
-	cfg := &Config{
-		Strategies: []StrategyConfig{{
-			ID: "hl-mr-hype", Type: "perps", Platform: "hyperliquid", Direction: DirectionLong,
-			RegimeDirectionalPolicy: makeRegimeDirectionalPolicyForValidation(),
-		}},
-	}
-	if warnings := ValidatePerpsDirectionConfig(state, cfg); len(warnings) != 0 {
-		t.Fatalf("short under trending_down policy should not warn, got: %v", warnings)
-	}
-}
-
-func TestValidatePerpsDirectionConfig_RegimePolicyStampedTrendingUpConflict(t *testing.T) {
-	state := NewAppState()
-	state.Strategies["hl-mr-hype"] = &StrategyState{
-		ID:   "hl-mr-hype",
-		Type: "perps",
-		Positions: map[string]*Position{
-			"HYPE": {Symbol: "HYPE", Quantity: 1, Side: "short", Regime: "trending_up", Multiplier: 1, Leverage: 1, DirectionCertifiedAtOpen: true,
-				DirectionCertifiedStatesAtOpen: map[string]string{"trending_up": DirectionLong, "trending_down": DirectionShort, "ranging": DirectionLong}},
-		},
-	}
-	cfg := &Config{
-		Strategies: []StrategyConfig{{
-			ID: "hl-mr-hype", Type: "perps", Platform: "hyperliquid", Direction: DirectionLong,
-			RegimeDirectionalPolicy: makeRegimeDirectionalPolicyForValidation(),
-		}},
-	}
-	warnings := ValidatePerpsDirectionConfig(state, cfg)
-	if len(warnings) != 1 {
-		t.Fatalf("want 1 warning for short under trending_up policy, got %d: %v", len(warnings), warnings)
-	}
-	if !strings.Contains(warnings[0], "stamped regime=\"trending_up\"") {
-		t.Errorf("warning should cite stamped regime, got: %s", warnings[0])
-	}
-}
-
-func TestValidatePerpsDirectionConfig_RegimePolicyUncertifiedWarnsForMigration(t *testing.T) {
-	state := NewAppState()
-	state.Strategies["hl-mr-hype"] = &StrategyState{
-		ID:   "hl-mr-hype",
-		Type: "perps",
-		Positions: map[string]*Position{
-			"HYPE": {Symbol: "HYPE", Quantity: 1, Side: "short", Multiplier: 1, Leverage: 1},
-		},
-	}
-	cfg := &Config{
-		Strategies: []StrategyConfig{{
-			ID: "hl-mr-hype", Type: "perps", Platform: "hyperliquid", Direction: DirectionLong,
-			RegimeDirectionalPolicy: makeRegimeDirectionalPolicyForValidation(),
-		}},
-	}
-	warnings := ValidatePerpsDirectionConfig(state, cfg)
-	if len(warnings) != 1 {
-		t.Fatalf("uncertified legacy short must surface for migration, got %d: %v", len(warnings), warnings)
-	}
-	if !strings.Contains(warnings[0], "DEFAULT-OFF") || !strings.Contains(warnings[0], "#1085") {
-		t.Errorf("warning should cite the #1085 default-off migration, got: %s", warnings[0])
-	}
-}
-
-func TestValidatePerpsDirectionConfig_WarningOrderDeterministic(t *testing.T) {
-	state := NewAppState()
-	state.Strategies["hl-multi"] = &StrategyState{
-		ID:   "hl-multi",
-		Type: "perps",
-		Positions: map[string]*Position{
-			"ETH": {Symbol: "ETH", Quantity: 1, Side: "short", Multiplier: 1, Leverage: 1},
-			"BTC": {Symbol: "BTC", Quantity: 0.1, Side: "short", Multiplier: 1, Leverage: 1},
-		},
-	}
-	cfg := &Config{
-		Strategies: []StrategyConfig{{
-			ID: "hl-multi", Type: "perps", Platform: "hyperliquid", Direction: DirectionLong,
-		}},
-	}
-	warnings := ValidatePerpsDirectionConfig(state, cfg)
-	if len(warnings) != 2 {
-		t.Fatalf("want 2 warnings, got %d: %v", len(warnings), warnings)
-	}
-	if !strings.Contains(warnings[0], " BTC ") || !strings.Contains(warnings[1], " ETH ") {
-		t.Errorf("warnings should be sorted by symbol (BTC before ETH), got:\n%s\n%s", warnings[0], warnings[1])
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			state := NewAppState()
+			for id, s := range tc.strategies {
+				state.Strategies[id] = s
+			}
+			warnings := ValidatePerpsDirectionConfig(state, &Config{Strategies: tc.cfg})
+			if len(warnings) != tc.wantCount {
+				t.Fatalf("want %d warnings, got %d: %v", tc.wantCount, len(warnings), warnings)
+			}
+			joined := strings.Join(warnings, "\n")
+			for _, want := range tc.wantJoined {
+				if !strings.Contains(joined, want) {
+					t.Errorf("warnings should contain %q, got: %s", want, joined)
+				}
+			}
+			for i, wants := range tc.wantPerWarning {
+				for _, want := range wants {
+					if !strings.Contains(warnings[i], want) {
+						t.Errorf("warnings[%d] should contain %q, got: %s", i, want, warnings[i])
+					}
+				}
+			}
+		})
 	}
 }
 
@@ -656,169 +591,126 @@ func TestLoadStateWithDB_MigratesLegacyPerpsMultiplier(t *testing.T) {
 }
 
 func TestSaveStateWithDB(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "state.db")
+	t.Run("persists cycle count", func(t *testing.T) {
+		db, err := OpenStateDB(filepath.Join(t.TempDir(), "state.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
 
-	db, err := OpenStateDB(dbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
+		state := &AppState{
+			CycleCount: 3,
+			Strategies: map[string]*StrategyState{
+				"test": {ID: "test", Type: "spot", Cash: 800, InitialCapital: 1000,
+					Positions: make(map[string]*Position), OptionPositions: make(map[string]*OptionPosition), TradeHistory: []Trade{}},
+			},
+		}
+		if err := SaveStateWithDB(state, &Config{}, db); err != nil {
+			t.Fatal(err)
+		}
+		dbState, err := db.LoadState()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if dbState.CycleCount != 3 {
+			t.Errorf("SQLite CycleCount = %d, want 3", dbState.CycleCount)
+		}
+	})
+	t.Run("closed db returns error", func(t *testing.T) {
+		db, err := OpenStateDB(filepath.Join(t.TempDir(), "state.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		db.Close()
 
-	state := &AppState{
-		CycleCount: 3,
-		Strategies: map[string]*StrategyState{
-			"test": {ID: "test", Type: "spot", Cash: 800, InitialCapital: 1000,
-				Positions: make(map[string]*Position), OptionPositions: make(map[string]*OptionPosition), TradeHistory: []Trade{}},
-		},
-	}
-
-	cfg := &Config{}
-	if err := SaveStateWithDB(state, cfg, db); err != nil {
-		t.Fatal(err)
-	}
-
-	dbState, err := db.LoadState()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if dbState.CycleCount != 3 {
-		t.Errorf("SQLite CycleCount = %d, want 3", dbState.CycleCount)
-	}
-}
-
-func TestSaveStateWithDB_Error(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "state.db")
-
-	db, err := OpenStateDB(dbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	db.Close()
-
-	state := &AppState{CycleCount: 5, Strategies: make(map[string]*StrategyState)}
-	cfg := &Config{}
-	err = SaveStateWithDB(state, cfg, db)
-	if err == nil {
-		t.Error("expected error when SQLite is closed")
-	}
-}
-
-func TestNewStrategyState_ConfigInitialCapital(t *testing.T) {
-	cfg := StrategyConfig{
-		ID:             "hl-sma-btc",
-		Type:           "perps",
-		Platform:       "hyperliquid",
-		Capital:        600,
-		InitialCapital: 505,
-		MaxDrawdownPct: 10,
-	}
-	s := NewStrategyState(cfg)
-	if s.InitialCapital != 505 {
-		t.Errorf("InitialCapital = %g, want 505 (from config)", s.InitialCapital)
-	}
-	if s.Cash != 600 {
-		t.Errorf("Cash = %g, want 600 (from Capital)", s.Cash)
-	}
-}
-
-func TestNewStrategyState_NoConfigInitialCapital(t *testing.T) {
-	cfg := StrategyConfig{
-		ID:             "hl-sma-btc",
-		Type:           "perps",
-		Platform:       "hyperliquid",
-		Capital:        600,
-		MaxDrawdownPct: 10,
-	}
-	s := NewStrategyState(cfg)
-	if s.InitialCapital != 600 {
-		t.Errorf("InitialCapital = %g, want 600 (from Capital fallback)", s.InitialCapital)
-	}
+		state := &AppState{CycleCount: 5, Strategies: make(map[string]*StrategyState)}
+		if err := SaveStateWithDB(state, &Config{}, db); err == nil {
+			t.Error("expected error when SQLite is closed")
+		}
+	})
 }
 
 func TestReconcileConfigInitialCapital(t *testing.T) {
-	dir := t.TempDir()
-	db, err := OpenStateDB(filepath.Join(dir, "state.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	resetInitialCapitalGuardDedup(t)
+	t.Run("config change updates memory and db, untouched strategy stays", func(t *testing.T) {
+		db, err := OpenStateDB(filepath.Join(t.TempDir(), "state.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		resetInitialCapitalGuardDedup(t)
 
-	state := &AppState{
-		Strategies: map[string]*StrategyState{
-			"hl-tema-eth": {
-				ID: "hl-tema-eth", Type: "perps", Platform: "hyperliquid",
-				Cash: 505, InitialCapital: 505,
-				Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{},
+		state := &AppState{
+			Strategies: map[string]*StrategyState{
+				"hl-tema-eth": {
+					ID: "hl-tema-eth", Type: "perps", Platform: "hyperliquid",
+					Cash: 505, InitialCapital: 505,
+					Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{},
+				},
+				"silent": {
+					ID: "silent", Type: "spot", Cash: 200, InitialCapital: 200,
+					Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{},
+				},
 			},
-			"silent": {
-				ID: "silent", Type: "spot", Cash: 200, InitialCapital: 200,
-				Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{},
+		}
+		if err := db.SaveState(state); err != nil {
+			t.Fatal(err)
+		}
+
+		cfg := &Config{
+			Strategies: []StrategyConfig{
+				{ID: "hl-tema-eth", Type: "perps", Platform: "hyperliquid", Capital: 1000, InitialCapital: 1000},
+				{ID: "silent", Type: "spot", Capital: 200},
 			},
-		},
-	}
-	if err := db.SaveState(state); err != nil {
-		t.Fatal(err)
-	}
+		}
 
-	cfg := &Config{
-		Strategies: []StrategyConfig{
-			{ID: "hl-tema-eth", Type: "perps", Platform: "hyperliquid", Capital: 1000, InitialCapital: 1000},
-			{ID: "silent", Type: "spot", Capital: 200},
-		},
-	}
+		infos, errs := ReconcileConfigInitialCapital(cfg, state, db)
+		if len(infos) != 1 {
+			t.Fatalf("infos = %d, want 1 (only hl-tema-eth changed)", len(infos))
+		}
+		if len(errs) != 0 {
+			t.Fatalf("errs = %v, want none", errs)
+		}
 
-	infos, errs := ReconcileConfigInitialCapital(cfg, state, db)
-	if len(infos) != 1 {
-		t.Fatalf("infos = %d, want 1 (only hl-tema-eth changed)", len(infos))
-	}
-	if len(errs) != 0 {
-		t.Fatalf("errs = %v, want none", errs)
-	}
+		if got := state.Strategies["hl-tema-eth"].InitialCapital; got != 1000 {
+			t.Errorf("in-memory InitialCapital = %g, want 1000", got)
+		}
+		if got := state.Strategies["silent"].InitialCapital; got != 200 {
+			t.Errorf("untouched strategy InitialCapital = %g, want 200", got)
+		}
 
-	if got := state.Strategies["hl-tema-eth"].InitialCapital; got != 1000 {
-		t.Errorf("in-memory InitialCapital = %g, want 1000", got)
-	}
-	if got := state.Strategies["silent"].InitialCapital; got != 200 {
-		t.Errorf("untouched strategy InitialCapital = %g, want 200", got)
-	}
+		if err := db.SaveState(state); err != nil {
+			t.Fatalf("SaveState after reconcile: %v", err)
+		}
+		loaded, err := db.LoadState()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := loaded.Strategies["hl-tema-eth"].InitialCapital; got != 1000 {
+			t.Errorf("persisted InitialCapital = %g, want 1000", got)
+		}
+	})
+	t.Run("no-op when config matches db", func(t *testing.T) {
+		db, err := OpenStateDB(filepath.Join(t.TempDir(), "state.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		resetInitialCapitalGuardDedup(t)
 
-	if err := db.SaveState(state); err != nil {
-		t.Fatalf("SaveState after reconcile: %v", err)
-	}
-	loaded, err := db.LoadState()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := loaded.Strategies["hl-tema-eth"].InitialCapital; got != 1000 {
-		t.Errorf("persisted InitialCapital = %g, want 1000", got)
-	}
-}
-
-func TestReconcileConfigInitialCapital_NoOpWhenAligned(t *testing.T) {
-	dir := t.TempDir()
-	db, err := OpenStateDB(filepath.Join(dir, "state.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	resetInitialCapitalGuardDedup(t)
-
-	state := &AppState{
-		Strategies: map[string]*StrategyState{
-			"s": {ID: "s", Type: "spot", Cash: 1000, InitialCapital: 1000,
-				Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{}},
-		},
-	}
-	if err := db.SaveState(state); err != nil {
-		t.Fatal(err)
-	}
-	cfg := &Config{Strategies: []StrategyConfig{
-		{ID: "s", Type: "spot", Capital: 1000, InitialCapital: 1000},
-	}}
-	if infos, errs := ReconcileConfigInitialCapital(cfg, state, db); len(infos) != 0 || len(errs) != 0 {
-		t.Errorf("infos=%v errs=%v, want none when config matches DB", infos, errs)
-	}
+		state := &AppState{
+			Strategies: map[string]*StrategyState{
+				"s": {ID: "s", Type: "spot", Cash: 1000, InitialCapital: 1000,
+					Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{}},
+			},
+		}
+		if err := db.SaveState(state); err != nil {
+			t.Fatal(err)
+		}
+		cfg := &Config{Strategies: []StrategyConfig{
+			{ID: "s", Type: "spot", Capital: 1000, InitialCapital: 1000},
+		}}
+		if infos, errs := ReconcileConfigInitialCapital(cfg, state, db); len(infos) != 0 || len(errs) != 0 {
+			t.Errorf("infos=%v errs=%v, want none when config matches DB", infos, errs)
+		}
+	})
 }

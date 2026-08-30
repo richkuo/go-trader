@@ -90,36 +90,6 @@ func astBlockContainsContinue(body *ast.BlockStmt) bool {
 	return found
 }
 
-func TestNotionalCapHoldPassesReduceAndManage(t *testing.T) {
-	const notionalBlocked = true
-	cases := []struct {
-		name          string
-		signal        int
-		closeFraction float64
-		posQty        float64
-		posSide       string
-		allowsLong    bool
-		allowsShort   bool
-		wantHold      bool
-	}{
-		{"manage_only_signal0", 0, 0, 1, "long", true, true, false},
-		{"long_sell_pure_close", -1, 0, 1, "long", true, false, false},
-		{"long_close_fraction", -1, 0.5, 1, "long", true, true, false},
-		{"flat_buy_fresh_open", 1, 0, 0, "", true, true, true},
-		{"long_buy_scale_in", 1, 0, 1, "long", true, true, true},
-		{"long_sell_flip_both", -1, 0, 1, "long", true, true, true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			held := notionalBlocked && pausedBlocksSignal(tc.signal, tc.closeFraction, tc.posQty, tc.posSide, tc.allowsLong, tc.allowsShort)
-			if held != tc.wantHold {
-				t.Fatalf("hold=%v want %v (signal=%d cf=%.2f qty=%.1f side=%q)",
-					held, tc.wantHold, tc.signal, tc.closeFraction, tc.posQty, tc.posSide)
-			}
-		})
-	}
-}
-
 func TestEvaluateNotionalCapHold(t *testing.T) {
 	states := map[string]*StrategyState{
 		"a": {ID: "a", Positions: map[string]*Position{
@@ -181,47 +151,42 @@ func TestManualStateViewNotionalHold(t *testing.T) {
 	}
 }
 
-func TestManualOpenCoreRefusesNotionalHold(t *testing.T) {
+func TestManualCoreRefusesNotionalHold(t *testing.T) {
 	sc := StrategyConfig{ID: "m", Type: "manual", Platform: "hyperliquid", Symbol: "ETH", Leverage: 3}
-	deps := manualCoreDeps{
-		cfg: &Config{},
-		loadState: func(strategyID, symbol string) (manualStateView, error) {
-			return manualStateView{HasStrategy: true, NotionalHold: true,
-				NotionalNote: "portfolio notional $60000.00 exceeds cap $50000.00 — new opens blocked, exits continue"}, nil
-		},
-		execute: func(string, string, string, float64, float64, int64, float64, string, float64, bool, hlExecuteSnapshot, ...int64) (*HyperliquidExecuteResult, string, error) {
-			t.Error("execute must not be called while the notional cap is breached")
-			return nil, "", nil
-		},
-		fetchMids: func([]string) (map[string]float64, error) {
-			return map[string]float64{"ETH": 2000}, nil
-		},
+	const note = "portfolio notional $60000.00 exceeds cap $50000.00 — new opens blocked, exits continue"
+	cases := []struct {
+		name string
+		pos  *Position
+		run  func(deps manualCoreDeps) error
+	}{
+		{"manual-open", nil, func(deps manualCoreDeps) error {
+			_, err := manualOpenCore(deps, sc, manualOpenInputs{StrategyID: "m", Margin: 50})
+			return err
+		}},
+		{"manual-add", &Position{Symbol: "ETH", Quantity: 1, AvgCost: 2000, Side: "long"}, func(deps manualCoreDeps) error {
+			_, err := manualAddCore(deps, sc, manualAddInputs{StrategyID: "m", Margin: 50})
+			return err
+		}},
 	}
-	_, err := manualOpenCore(deps, sc, manualOpenInputs{StrategyID: "m", Margin: 50})
-	if err == nil || !strings.Contains(err.Error(), "new opens blocked, exits continue") {
-		t.Fatalf("manual-open err = %v, want notional refusal", err)
-	}
-}
-
-func TestManualAddCoreRefusesNotionalHold(t *testing.T) {
-	sc := StrategyConfig{ID: "m", Type: "manual", Platform: "hyperliquid", Symbol: "ETH", Leverage: 3}
-	pos := &Position{Symbol: "ETH", Quantity: 1, AvgCost: 2000, Side: "long"}
-	deps := manualCoreDeps{
-		cfg: &Config{},
-		loadState: func(strategyID, symbol string) (manualStateView, error) {
-			return manualStateView{HasStrategy: true, Pos: pos, NotionalHold: true,
-				NotionalNote: "portfolio notional $60000.00 exceeds cap $50000.00 — new opens blocked, exits continue"}, nil
-		},
-		execute: func(string, string, string, float64, float64, int64, float64, string, float64, bool, hlExecuteSnapshot, ...int64) (*HyperliquidExecuteResult, string, error) {
-			t.Error("execute must not be called while the notional cap is breached")
-			return nil, "", nil
-		},
-		fetchMids: func([]string) (map[string]float64, error) {
-			return map[string]float64{"ETH": 2000}, nil
-		},
-	}
-	_, err := manualAddCore(deps, sc, manualAddInputs{StrategyID: "m", Margin: 50})
-	if err == nil || !strings.Contains(err.Error(), "new opens blocked, exits continue") {
-		t.Fatalf("manual-add err = %v, want notional refusal", err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			deps := manualCoreDeps{
+				cfg: &Config{},
+				loadState: func(strategyID, symbol string) (manualStateView, error) {
+					return manualStateView{HasStrategy: true, Pos: tc.pos, NotionalHold: true, NotionalNote: note}, nil
+				},
+				execute: func(string, string, string, float64, float64, int64, float64, string, float64, bool, hlExecuteSnapshot, ...int64) (*HyperliquidExecuteResult, string, error) {
+					t.Error("execute must not be called while the notional cap is breached")
+					return nil, "", nil
+				},
+				fetchMids: func([]string) (map[string]float64, error) {
+					return map[string]float64{"ETH": 2000}, nil
+				},
+			}
+			err := tc.run(deps)
+			if err == nil || !strings.Contains(err.Error(), "new opens blocked, exits continue") {
+				t.Fatalf("%s err = %v, want notional refusal", tc.name, err)
+			}
+		})
 	}
 }

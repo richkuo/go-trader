@@ -20,37 +20,12 @@ func TestKnownStrategyConfigKeysCoversCoreFields(t *testing.T) {
 		"stop_loss_pct", "stop_loss_margin_pct",
 		"trailing_stop_pct", "trailing_stop_atr_mult", "stop_loss_atr_mult",
 		"trailing_stop_min_move_pct", "margin_mode",
-		"theta_harvest", "futures",
+		"theta_harvest", "futures", "circuit_breaker",
 	}
 	for _, k := range mustHave {
 		if !known[k] {
 			t.Errorf("knownStrategyConfigKeys missing %q — did a StrategyConfig json tag get renamed?", k)
 		}
-	}
-}
-
-func TestValidateStrategyJSONKeysFlagsInventedTPField(t *testing.T) {
-	raw := []byte(`{
-		"strategies": [
-			{
-				"id": "hl-momentum-btc",
-				"type": "perps",
-				"platform": "hyperliquid",
-				"script": "shared_scripts/check_hyperliquid.py",
-				"args": ["momentum", "BTC", "1h"],
-				"take_profit_atr_mult": 2.0
-			}
-		]
-	}`)
-	errs := validateStrategyJSONKeys(raw)
-	if len(errs) != 1 {
-		t.Fatalf("want 1 error for invented field, got %d: %v", len(errs), errs)
-	}
-	if !strings.Contains(errs[0], `strategy[hl-momentum-btc]: unknown field "take_profit_atr_mult"`) {
-		t.Errorf("error missing strategy id + field name: %q", errs[0])
-	}
-	if !strings.Contains(errs[0], "close_strategy") {
-		t.Errorf("error missing TP-field hint pointing operator to close_strategy: %q", errs[0])
 	}
 }
 
@@ -63,30 +38,6 @@ func TestValidateStrategyJSONKeysAcceptsBothCloseSpellings(t *testing.T) {
 	}`)
 	if errs := validateStrategyJSONKeys(raw); len(errs) != 0 {
 		t.Fatalf("want no unknown-field errors for either close spelling, got %v", errs)
-	}
-}
-
-func TestValidateStrategyJSONKeysHintsLegacyParams(t *testing.T) {
-	raw := []byte(`{
-		"strategies": [
-			{"id": "s1", "type": "spot", "script": "x.py", "args": [], "params": {"foo": 1}}
-		]
-	}`)
-	errs := validateStrategyJSONKeys(raw)
-	if len(errs) != 1 || !strings.Contains(errs[0], "open_strategy: {name, params}") {
-		t.Fatalf("want legacy params hint, got %v", errs)
-	}
-}
-
-func TestValidateStrategyJSONKeysHintsStopLossTypos(t *testing.T) {
-	raw := []byte(`{
-		"strategies": [
-			{"id": "s1", "type": "perps", "script": "x.py", "args": [], "stop_loss_atr_multiple": 1.5}
-		]
-	}`)
-	errs := validateStrategyJSONKeys(raw)
-	if len(errs) != 1 || !strings.Contains(errs[0], "valid SL fields") {
-		t.Fatalf("want SL hint for misspelled stop_loss_atr_multiple, got %v", errs)
 	}
 }
 
@@ -118,12 +69,6 @@ func TestValidateStrategyJSONKeysAcceptsAllKnownFields(t *testing.T) {
 	}
 }
 
-func TestKnownStrategyConfigKeysIncludesCircuitBreaker(t *testing.T) {
-	if !knownStrategyConfigKeys()["circuit_breaker"] {
-		t.Fatal("circuit_breaker should be a known strategy config key")
-	}
-}
-
 func TestValidateStrategyJSONKeysIgnoresTopLevelKeys(t *testing.T) {
 	raw := []byte(`{
 		"some_top_level_unknown": true,
@@ -131,38 +76,6 @@ func TestValidateStrategyJSONKeysIgnoresTopLevelKeys(t *testing.T) {
 	}`)
 	if errs := validateStrategyJSONKeys(raw); len(errs) != 0 {
 		t.Fatalf("unknown top-level keys should not be flagged here (only strategy fields), got: %v", errs)
-	}
-}
-
-func TestValidateUserDefaultsJSONKeysFlagsUnknownSibling(t *testing.T) {
-	raw := []byte(`{
-		"user_defaults": {
-			"manaul": {"stop_loss_atr_mult": 2.25}
-		},
-		"strategies": [{"id": "s1", "type": "spot", "script": "x.py", "args": []}]
-	}`)
-	errs := validateUserDefaultsJSONKeys(raw)
-	if len(errs) != 1 {
-		t.Fatalf("want 1 error for typo'd user_defaults sibling, got %d: %v", len(errs), errs)
-	}
-	if !strings.Contains(errs[0], `user_defaults: unknown field "manaul"`) {
-		t.Fatalf("unexpected error: %v", errs)
-	}
-}
-
-func TestValidateUserDefaultsJSONKeysFlagsUnknownManualLeaf(t *testing.T) {
-	raw := []byte(`{
-		"user_defaults": {
-			"manual": {"margin": 125}
-		},
-		"strategies": [{"id": "s1", "type": "spot", "script": "x.py", "args": []}]
-	}`)
-	errs := validateUserDefaultsJSONKeys(raw)
-	if len(errs) != 1 {
-		t.Fatalf("want 1 error for typo'd manual leaf, got %d: %v", len(errs), errs)
-	}
-	if !strings.Contains(errs[0], `user_defaults.manual: unknown field "margin"`) {
-		t.Fatalf("unexpected error: %v", errs)
 	}
 }
 
@@ -250,70 +163,6 @@ func TestLoadConfigRejectsUnknownStrategyKey(t *testing.T) {
 	}
 }
 
-func TestLoadConfigRejectsUnknownUserDefaultsManualLeaf(t *testing.T) {
-	tmp := t.TempDir()
-	path := filepath.Join(tmp, "config.json")
-	body := `{
-		"config_version": 16,
-		"db_file": "` + filepath.Join(tmp, "state.db") + `",
-		"user_defaults": {"manual": {"stop_loss_atr_mlt": 2.25}},
-		"strategies": [
-			{
-				"id": "hl-manual-eth-live",
-				"type": "manual",
-				"platform": "hyperliquid",
-				"symbol": "ETH",
-				"timeframe": "1h",
-				"capital": 1000,
-				"max_drawdown_pct": 20,
-				"leverage": 20
-			}
-		]
-	}`
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	_, err := LoadConfig(path)
-	if err == nil {
-		t.Fatal("LoadConfig accepted unknown user_defaults.manual field")
-	}
-	if !strings.Contains(err.Error(), `user_defaults.manual: unknown field "stop_loss_atr_mlt"`) {
-		t.Errorf("error %q does not name the unknown user_defaults manual field", err)
-	}
-}
-
-func TestLoadConfigRejectsUnknownUserDefaultsSibling(t *testing.T) {
-	tmp := t.TempDir()
-	path := filepath.Join(tmp, "config.json")
-	body := `{
-		"config_version": 16,
-		"db_file": "` + filepath.Join(tmp, "state.db") + `",
-		"user_defaults": {"manaul": {"stop_loss_atr_mult": 2.25}},
-		"strategies": [
-			{
-				"id": "hl-manual-eth-live",
-				"type": "manual",
-				"platform": "hyperliquid",
-				"symbol": "ETH",
-				"timeframe": "1h",
-				"capital": 1000,
-				"max_drawdown_pct": 20,
-				"leverage": 20
-			}
-		]
-	}`
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	_, err := LoadConfig(path)
-	if err == nil {
-		t.Fatal("LoadConfig accepted unknown user_defaults sibling")
-	}
-	if !strings.Contains(err.Error(), `user_defaults: unknown field "manaul"`) {
-		t.Errorf("error %q does not name the unknown user_defaults sibling", err)
-	}
-}
-
 func TestLoadConfigMigratesLegacyManualDefaultsBeforeUnknownKeyValidation(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.json")
@@ -344,5 +193,98 @@ func TestLoadConfigMigratesLegacyManualDefaultsBeforeUnknownKeyValidation(t *tes
 	sc := cfg.Strategies[0]
 	if sc.StopLossATRMult == nil || *sc.StopLossATRMult != 2.25 {
 		t.Fatalf("StopLossATRMult = %v, want migrated legacy alias value 2.25", sc.StopLossATRMult)
+	}
+}
+
+func TestValidateStrategyJSONKeysUnknownFieldHints(t *testing.T) {
+	cases := []struct {
+		name     string
+		strategy string
+		wantSubs []string
+	}{
+		{
+			name:     "invented TP field names strategy id, field, and close_strategy hint",
+			strategy: `{"id": "hl-momentum-btc", "type": "perps", "platform": "hyperliquid", "script": "shared_scripts/check_hyperliquid.py", "args": ["momentum", "BTC", "1h"], "take_profit_atr_mult": 2.0}`,
+			wantSubs: []string{`strategy[hl-momentum-btc]: unknown field "take_profit_atr_mult"`, "close_strategy"},
+		},
+		{
+			name:     "legacy params hints open_strategy shape",
+			strategy: `{"id": "s1", "type": "spot", "script": "x.py", "args": [], "params": {"foo": 1}}`,
+			wantSubs: []string{"open_strategy: {name, params}"},
+		},
+		{
+			name:     "misspelled stop_loss_atr_multiple hints valid SL fields",
+			strategy: `{"id": "s1", "type": "perps", "script": "x.py", "args": [], "stop_loss_atr_multiple": 1.5}`,
+			wantSubs: []string{"valid SL fields"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			errs := validateStrategyJSONKeys([]byte(`{"strategies": [` + tc.strategy + `]}`))
+			if len(errs) != 1 {
+				t.Fatalf("want 1 error, got %d: %v", len(errs), errs)
+			}
+			for _, w := range tc.wantSubs {
+				if !strings.Contains(errs[0], w) {
+					t.Errorf("error %q missing %q", errs[0], w)
+				}
+			}
+		})
+	}
+}
+
+func TestValidateUserDefaultsJSONKeysFlagsUnknownKeys(t *testing.T) {
+	cases := []struct {
+		name         string
+		userDefaults string
+		wantErr      string
+	}{
+		{"typo'd sibling", `{"manaul": {"stop_loss_atr_mult": 2.25}}`, `user_defaults: unknown field "manaul"`},
+		{"typo'd manual leaf", `{"manual": {"margin": 125}}`, `user_defaults.manual: unknown field "margin"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := []byte(`{"user_defaults": ` + tc.userDefaults + `, "strategies": [{"id": "s1", "type": "spot", "script": "x.py", "args": []}]}`)
+			errs := validateUserDefaultsJSONKeys(raw)
+			if len(errs) != 1 {
+				t.Fatalf("want 1 error, got %d: %v", len(errs), errs)
+			}
+			if !strings.Contains(errs[0], tc.wantErr) {
+				t.Fatalf("unexpected error: %v", errs)
+			}
+		})
+	}
+}
+
+func TestLoadConfigRejectsUnknownUserDefaultsKeys(t *testing.T) {
+	cases := []struct {
+		name         string
+		userDefaults string
+		wantErr      string
+	}{
+		{"manual leaf", `{"manual": {"stop_loss_atr_mlt": 2.25}}`, `user_defaults.manual: unknown field "stop_loss_atr_mlt"`},
+		{"sibling", `{"manaul": {"stop_loss_atr_mult": 2.25}}`, `user_defaults: unknown field "manaul"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			path := filepath.Join(tmp, "config.json")
+			body := `{
+				"config_version": 16,
+				"db_file": "` + filepath.Join(tmp, "state.db") + `",
+				"user_defaults": ` + tc.userDefaults + `,
+				"strategies": [{"id": "hl-manual-eth-live", "type": "manual", "platform": "hyperliquid", "symbol": "ETH", "timeframe": "1h", "capital": 1000, "max_drawdown_pct": 20, "leverage": 20}]
+			}`
+			if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			_, err := LoadConfig(path)
+			if err == nil {
+				t.Fatalf("LoadConfig accepted unknown user_defaults %s", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("error %q does not name the unknown user_defaults %s", err, tc.name)
+			}
+		})
 	}
 }

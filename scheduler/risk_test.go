@@ -25,60 +25,55 @@ func newRiskState(date string, dailyPnL float64) RiskState {
 	}
 }
 
-func TestRolloverDailyPnL_SameDay(t *testing.T) {
-	r := newRiskState(todayUTC(), 123.45)
-	rolloverDailyPnL(&r)
-	if r.DailyPnL != 123.45 {
-		t.Errorf("expected DailyPnL=123.45 unchanged; got %.2f", r.DailyPnL)
+func TestRolloverDailyPnL(t *testing.T) {
+	cases := []struct {
+		name     string
+		date     string
+		dailyPnL float64
+		wantPnL  float64
+	}{
+		{"same day keeps accumulated pnl", todayUTC(), 123.45, 123.45},
+		{"new day resets pnl", yesterday(), 99.99, 0},
+		{"empty date resets pnl", "", 50.0, 0},
 	}
-	if r.DailyPnLDate != todayUTC() {
-		t.Errorf("expected DailyPnLDate=%s; got %s", todayUTC(), r.DailyPnLDate)
-	}
-}
-
-func TestRolloverDailyPnL_NewDay(t *testing.T) {
-	r := newRiskState(yesterday(), 99.99)
-	rolloverDailyPnL(&r)
-	if r.DailyPnL != 0 {
-		t.Errorf("expected DailyPnL reset to 0; got %.2f", r.DailyPnL)
-	}
-	if r.DailyPnLDate != todayUTC() {
-		t.Errorf("expected DailyPnLDate=%s; got %s", todayUTC(), r.DailyPnLDate)
-	}
-}
-
-func TestRolloverDailyPnL_EmptyDate(t *testing.T) {
-	r := newRiskState("", 50.0)
-	rolloverDailyPnL(&r)
-	if r.DailyPnL != 0 {
-		t.Errorf("expected DailyPnL reset to 0 on empty date; got %.2f", r.DailyPnL)
-	}
-	if r.DailyPnLDate != todayUTC() {
-		t.Errorf("expected DailyPnLDate=%s; got %s", todayUTC(), r.DailyPnLDate)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRiskState(tc.date, tc.dailyPnL)
+			rolloverDailyPnL(&r)
+			if r.DailyPnL != tc.wantPnL {
+				t.Errorf("DailyPnL = %.2f, want %.2f", r.DailyPnL, tc.wantPnL)
+			}
+			if r.DailyPnLDate != todayUTC() {
+				t.Errorf("DailyPnLDate = %s, want %s", r.DailyPnLDate, todayUTC())
+			}
+		})
 	}
 }
 
-func TestRecordTradeResult_MidnightCrossing(t *testing.T) {
-	r := newRiskState(yesterday(), 200.0)
-
-	RecordTradeResult(&r, 50.0)
-
-	if r.DailyPnL != 50.0 {
-		t.Errorf("expected DailyPnL=50 after midnight crossing; got %.2f", r.DailyPnL)
+func TestRecordTradeResult(t *testing.T) {
+	cases := []struct {
+		name    string
+		date    string
+		start   float64
+		pnls    []float64
+		wantPnL float64
+	}{
+		{"midnight crossing resets before booking", yesterday(), 200.0, []float64{50.0}, 50.0},
+		{"same day accumulates", todayUTC(), 100.0, []float64{30.0, -10.0}, 120.0},
 	}
-	if r.DailyPnLDate != todayUTC() {
-		t.Errorf("expected DailyPnLDate=%s; got %s", todayUTC(), r.DailyPnLDate)
-	}
-}
-
-func TestRecordTradeResult_SameDayAccumulation(t *testing.T) {
-	r := newRiskState(todayUTC(), 100.0)
-
-	RecordTradeResult(&r, 30.0)
-	RecordTradeResult(&r, -10.0)
-
-	if r.DailyPnL != 120.0 {
-		t.Errorf("expected DailyPnL=120 after two trades; got %.2f", r.DailyPnL)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRiskState(tc.date, tc.start)
+			for _, pnl := range tc.pnls {
+				RecordTradeResult(&r, pnl)
+			}
+			if r.DailyPnL != tc.wantPnL {
+				t.Errorf("DailyPnL = %.2f, want %.2f", r.DailyPnL, tc.wantPnL)
+			}
+			if r.DailyPnLDate != todayUTC() {
+				t.Errorf("DailyPnLDate = %s, want %s", r.DailyPnLDate, todayUTC())
+			}
+		})
 	}
 }
 
@@ -252,154 +247,151 @@ func TestCheckPortfolioRisk_PeakTracking(t *testing.T) {
 }
 
 func TestPortfolioNotional(t *testing.T) {
-	strategies := map[string]*StrategyState{
-		"spot-strat": {
-			Positions: map[string]*Position{
-				"BTC": {Symbol: "BTC", Quantity: 0.5, AvgCost: 40000.0, Side: "long"},
-				"ETH": {Symbol: "ETH", Quantity: 10.0, AvgCost: 3000.0, Side: "long"},
-			},
-			OptionPositions: make(map[string]*OptionPosition),
-		},
-		"options-strat": {
-			Positions: make(map[string]*Position),
-			OptionPositions: map[string]*OptionPosition{
-				"BTC-put-40000-sell": {
-					Action:          "sell",
-					Strike:          40000.0,
-					Quantity:        2.0,
-					CurrentValueUSD: -500.0,
+	cases := []struct {
+		name       string
+		strategies map[string]*StrategyState
+		prices     map[string]float64
+		want       float64
+		frozen     float64
+	}{
+		{
+			name: "spot plus options",
+			strategies: map[string]*StrategyState{
+				"spot-strat": {
+					Positions: map[string]*Position{
+						"BTC": {Symbol: "BTC", Quantity: 0.5, AvgCost: 40000.0, Side: "long"},
+						"ETH": {Symbol: "ETH", Quantity: 10.0, AvgCost: 3000.0, Side: "long"},
+					},
+					OptionPositions: make(map[string]*OptionPosition),
 				},
-				"BTC-call-50000-buy": {
-					Action:          "buy",
-					Strike:          50000.0,
-					Quantity:        1.0,
-					CurrentValueUSD: 800.0,
+				"options-strat": {
+					Positions: make(map[string]*Position),
+					OptionPositions: map[string]*OptionPosition{
+						"BTC-put-40000-sell": {Action: "sell", Strike: 40000.0, Quantity: 2.0, CurrentValueUSD: -500.0},
+						"BTC-call-50000-buy": {Action: "buy", Strike: 50000.0, Quantity: 1.0, CurrentValueUSD: 800.0},
+					},
 				},
 			},
+			prices: map[string]float64{"BTC": 50000.0, "ETH": 3500.0},
+			want:   140800.0,
 		},
-	}
-
-	prices := map[string]float64{
-		"BTC": 50000.0,
-		"ETH": 3500.0,
-	}
-
-	notional := PortfolioNotional(strategies, prices)
-
-	expected := 140800.0
-	if notional < expected-0.01 || notional > expected+0.01 {
-		t.Errorf("expected notional=%.2f; got %.2f", expected, notional)
-	}
-}
-
-func TestPortfolioNotional_IncludesPerps(t *testing.T) {
-	strategies := map[string]*StrategyState{
-		"hl-momentum-btc": {
-			Type: "perps",
-			Positions: map[string]*Position{
-				"BTC": {Symbol: "BTC", Quantity: 0.4, AvgCost: 40000.0, Side: "long"},
+		{
+			name: "includes perps at live mark",
+			strategies: map[string]*StrategyState{
+				"hl-momentum-btc": {
+					Type:            "perps",
+					Positions:       map[string]*Position{"BTC": {Symbol: "BTC", Quantity: 0.4, AvgCost: 40000.0, Side: "long"}},
+					OptionPositions: make(map[string]*OptionPosition),
+				},
+				"spot-btc": {
+					Type:            "spot",
+					Positions:       map[string]*Position{"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.1, AvgCost: 45000.0, Side: "long"}},
+					OptionPositions: make(map[string]*OptionPosition),
+				},
 			},
-			OptionPositions: make(map[string]*OptionPosition),
+			prices: map[string]float64{"BTC/USDT": 50000.0, "BTC": 50000.0},
+			want:   25000.0,
 		},
-		"spot-btc": {
-			Type: "spot",
-			Positions: map[string]*Position{
-				"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.1, AvgCost: 45000.0, Side: "long"},
+		{
+			name: "includes futures at live mark with multiplier",
+			strategies: map[string]*StrategyState{
+				"ts-trend-es": {
+					Type:            "futures",
+					Positions:       map[string]*Position{"ES": {Symbol: "ES", Quantity: 2, AvgCost: 5000.0, Side: "long", Multiplier: 50}},
+					OptionPositions: make(map[string]*OptionPosition),
+				},
+				"ts-mr-nq": {
+					Type:            "futures",
+					Positions:       map[string]*Position{"NQ": {Symbol: "NQ", Quantity: 1, AvgCost: 18000.0, Side: "short", Multiplier: 20}},
+					OptionPositions: make(map[string]*OptionPosition),
+				},
 			},
-			OptionPositions: make(map[string]*OptionPosition),
+			prices: map[string]float64{"ES": 5100.0, "NQ": 18500.0},
+			want:   880000.0,
+			frozen: 860000.0,
 		},
-	}
-
-	prices := map[string]float64{
-		"BTC/USDT": 50000.0,
-		"BTC":      50000.0,
-	}
-
-	notional := PortfolioNotional(strategies, prices)
-
-	expected := 25000.0
-	if notional < expected-0.01 || notional > expected+0.01 {
-		t.Errorf("expected notional=%.2f; got %.2f", expected, notional)
-	}
-}
-
-func TestPortfolioNotional_IncludesFutures(t *testing.T) {
-	strategies := map[string]*StrategyState{
-		"ts-trend-es": {
-			Type: "futures",
-			Positions: map[string]*Position{
-				"ES": {Symbol: "ES", Quantity: 2, AvgCost: 5000.0, Side: "long", Multiplier: 50},
+		{
+			name: "futures mark miss falls back to entry",
+			strategies: map[string]*StrategyState{
+				"ts-trend-cl": {
+					Type:            "futures",
+					Positions:       map[string]*Position{"CL": {Symbol: "CL", Quantity: 1, AvgCost: 80.0, Side: "long", Multiplier: 1000}},
+					OptionPositions: make(map[string]*OptionPosition),
+				},
 			},
-			OptionPositions: make(map[string]*OptionPosition),
+			prices: map[string]float64{},
+			want:   80000.0,
 		},
-		"ts-mr-nq": {
-			Type: "futures",
-			Positions: map[string]*Position{
-				"NQ": {Symbol: "NQ", Quantity: 1, AvgCost: 18000.0, Side: "short", Multiplier: 20},
+		{
+			name: "includes perps short at live mark",
+			strategies: map[string]*StrategyState{
+				"hl-mean-rev-eth": {
+					Type:            "perps",
+					Positions:       map[string]*Position{"ETH": {Symbol: "ETH", Quantity: 2.0, AvgCost: 3000.0, Side: "short"}},
+					OptionPositions: make(map[string]*OptionPosition),
+				},
 			},
-			OptionPositions: make(map[string]*OptionPosition),
+			prices: map[string]float64{"ETH/USDT": 3200.0, "ETH": 3200.0},
+			want:   6400.0,
 		},
 	}
-
-	prices := map[string]float64{
-		"ES": 5100.0,
-		"NQ": 18500.0,
-	}
-
-	notional := PortfolioNotional(strategies, prices)
-
-	expected := 880000.0
-	if notional < expected-0.01 || notional > expected+0.01 {
-		t.Errorf("expected futures notional at live mark=%.2f; got %.2f", expected, notional)
-	}
-
-	frozen := 860000.0
-	if notional == frozen {
-		t.Errorf("notional equals frozen-entry value %.2f — mark price was not applied", frozen)
-	}
-}
-
-func TestPortfolioNotional_FuturesMarkMiss(t *testing.T) {
-	strategies := map[string]*StrategyState{
-		"ts-trend-cl": {
-			Type: "futures",
-			Positions: map[string]*Position{
-				"CL": {Symbol: "CL", Quantity: 1, AvgCost: 80.0, Side: "long", Multiplier: 1000},
-			},
-			OptionPositions: make(map[string]*OptionPosition),
-		},
-	}
-	notional := PortfolioNotional(strategies, map[string]float64{})
-
-	expected := 80000.0
-	if notional < expected-0.01 || notional > expected+0.01 {
-		t.Errorf("expected fallback notional=%.2f; got %.2f", expected, notional)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			notional := PortfolioNotional(tc.strategies, tc.prices)
+			if math.Abs(notional-tc.want) > 0.01 {
+				t.Errorf("expected notional=%.2f; got %.2f", tc.want, notional)
+			}
+			if tc.frozen != 0 && notional == tc.frozen {
+				t.Errorf("notional equals frozen-entry value %.2f: mark price was not applied", tc.frozen)
+			}
+		})
 	}
 }
 
 func TestCollectFuturesMarkSymbols(t *testing.T) {
-	strategies := []StrategyConfig{
-		{ID: "ts-trend-es", Type: "futures", Platform: "topstep", Args: []string{"trend", "ES", "1h"}},
-		{ID: "ts-mr-es", Type: "futures", Platform: "topstep", Args: []string{"mean_rev", "ES", "15m"}},
-		{ID: "ts-trend-nq", Type: "futures", Platform: "topstep", Args: []string{"trend", "NQ", "1h"}},
-		{ID: "ts-trend-mes", Type: "futures", Platform: "topstep", Args: []string{"trend", "MES", "1h"}},
-		{ID: "sma-btc", Type: "spot", Platform: "binanceus", Args: []string{"sma", "BTC/USDT", "1h"}},
-		{ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Args: []string{"momentum", "ETH", "1h"}},
-		{ID: "deribit-vol-btc", Type: "options", Platform: "deribit", Args: []string{"vol", "BTC"}},
-		{ID: "ts-short", Type: "futures", Platform: "topstep", Args: []string{"trend"}},
-		{ID: "ts-empty-sym", Type: "futures", Platform: "topstep", Args: []string{"trend", "", "1h"}},
-		{ID: "ibkr-trend-cl", Type: "futures", Platform: "ibkr", Args: []string{"trend", "CL", "1h"}},
+	cases := []struct {
+		name       string
+		strategies []StrategyConfig
+		want       []string
+	}{
+		{
+			name: "topstep futures only, deduplicated and sorted",
+			strategies: []StrategyConfig{
+				{ID: "ts-trend-es", Type: "futures", Platform: "topstep", Args: []string{"trend", "ES", "1h"}},
+				{ID: "ts-mr-es", Type: "futures", Platform: "topstep", Args: []string{"mean_rev", "ES", "15m"}},
+				{ID: "ts-trend-nq", Type: "futures", Platform: "topstep", Args: []string{"trend", "NQ", "1h"}},
+				{ID: "ts-trend-mes", Type: "futures", Platform: "topstep", Args: []string{"trend", "MES", "1h"}},
+				{ID: "sma-btc", Type: "spot", Platform: "binanceus", Args: []string{"sma", "BTC/USDT", "1h"}},
+				{ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Args: []string{"momentum", "ETH", "1h"}},
+				{ID: "deribit-vol-btc", Type: "options", Platform: "deribit", Args: []string{"vol", "BTC"}},
+				{ID: "ts-short", Type: "futures", Platform: "topstep", Args: []string{"trend"}},
+				{ID: "ts-empty-sym", Type: "futures", Platform: "topstep", Args: []string{"trend", "", "1h"}},
+				{ID: "ibkr-trend-cl", Type: "futures", Platform: "ibkr", Args: []string{"trend", "CL", "1h"}},
+			},
+			want: []string{"ES", "MES", "NQ"},
+		},
+		{
+			name: "ignores manual strategies",
+			strategies: []StrategyConfig{
+				{ID: "manual-hl-eth", Type: "manual", Platform: "hyperliquid", Symbol: "ETH",
+					Args: []string{"hold", "ETH", "1h", "--mode=live"}},
+				{ID: "ts-trend-es", Type: "futures", Platform: "topstep", Args: []string{"trend", "ES", "1h"}},
+			},
+			want: []string{"ES"},
+		},
 	}
-
-	got := collectFuturesMarkSymbols(strategies)
-	want := []string{"ES", "MES", "NQ"}
-	if len(got) != len(want) {
-		t.Fatalf("got %d symbols %v, want %d %v", len(got), got, len(want), want)
-	}
-	for i, sym := range want {
-		if got[i] != sym {
-			t.Errorf("got[%d]=%q, want %q (full: %v)", i, got[i], sym, got)
-		}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := collectFuturesMarkSymbols(tc.strategies)
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %d symbols %v, want %d %v", len(got), got, len(tc.want), tc.want)
+			}
+			for i, sym := range tc.want {
+				if got[i] != sym {
+					t.Errorf("got[%d]=%q, want %q (full: %v)", i, got[i], sym, got)
+				}
+			}
+		})
 	}
 }
 
@@ -431,29 +423,6 @@ func TestMergeFuturesMarks(t *testing.T) {
 	}
 	if _, ok := prices["CL"]; ok {
 		t.Errorf("prices[CL] should not be set when mark is negative (got %v)", prices["CL"])
-	}
-}
-
-func TestPortfolioNotional_IncludesPerpsShort(t *testing.T) {
-	strategies := map[string]*StrategyState{
-		"hl-mean-rev-eth": {
-			Type: "perps",
-			Positions: map[string]*Position{
-				"ETH": {Symbol: "ETH", Quantity: 2.0, AvgCost: 3000.0, Side: "short"},
-			},
-			OptionPositions: make(map[string]*OptionPosition),
-		},
-	}
-	prices := map[string]float64{
-		"ETH/USDT": 3200.0,
-		"ETH":      3200.0,
-	}
-
-	notional := PortfolioNotional(strategies, prices)
-
-	expected := 6400.0
-	if notional < expected-0.01 || notional > expected+0.01 {
-		t.Errorf("expected short notional at live mark=%.2f; got %.2f", expected, notional)
 	}
 }
 
@@ -492,52 +461,73 @@ func TestCollectPriceSymbols(t *testing.T) {
 }
 
 func TestCollectPerpsMarkSymbols(t *testing.T) {
-	strategies := []StrategyConfig{
-		{ID: "hl-momentum-btc", Type: "perps", Platform: "hyperliquid", Args: []string{"momentum", "BTC", "1h"}},
-		{ID: "hl-mr-btc", Type: "perps", Platform: "hyperliquid", Args: []string{"mean_rev", "BTC", "15m"}},
-		{ID: "hl-trend-eth", Type: "perps", Platform: "hyperliquid", Args: []string{"trend", "ETH", "1h"}},
-		{ID: "okx-ema-sol-perp", Type: "perps", Platform: "okx", Args: []string{"ema", "SOL", "1h"}},
-		{ID: "okx-ema-btc-perp", Type: "perps", Platform: "okx", Args: []string{"ema", "BTC", "1h"}},
-		{ID: "sma-btc", Type: "spot", Platform: "binanceus", Args: []string{"sma", "BTC/USDT", "1h"}},
-		{ID: "deribit-vol-btc", Type: "options", Platform: "deribit", Args: []string{"vol", "BTC"}},
-		{ID: "ts-trend-es", Type: "futures", Platform: "topstep", Args: []string{"trend", "ES", "1h"}},
-		{ID: "hl-short", Type: "perps", Platform: "hyperliquid", Args: []string{"trend"}},
-		{ID: "hl-empty", Type: "perps", Platform: "hyperliquid", Args: []string{"trend", "", "1h"}},
+	cases := []struct {
+		name       string
+		strategies []StrategyConfig
+		wantHL     []string
+		wantOKX    []string
+	}{
+		{
+			name: "perps split by venue, deduplicated and sorted",
+			strategies: []StrategyConfig{
+				{ID: "hl-momentum-btc", Type: "perps", Platform: "hyperliquid", Args: []string{"momentum", "BTC", "1h"}},
+				{ID: "hl-mr-btc", Type: "perps", Platform: "hyperliquid", Args: []string{"mean_rev", "BTC", "15m"}},
+				{ID: "hl-trend-eth", Type: "perps", Platform: "hyperliquid", Args: []string{"trend", "ETH", "1h"}},
+				{ID: "okx-ema-sol-perp", Type: "perps", Platform: "okx", Args: []string{"ema", "SOL", "1h"}},
+				{ID: "okx-ema-btc-perp", Type: "perps", Platform: "okx", Args: []string{"ema", "BTC", "1h"}},
+				{ID: "sma-btc", Type: "spot", Platform: "binanceus", Args: []string{"sma", "BTC/USDT", "1h"}},
+				{ID: "deribit-vol-btc", Type: "options", Platform: "deribit", Args: []string{"vol", "BTC"}},
+				{ID: "ts-trend-es", Type: "futures", Platform: "topstep", Args: []string{"trend", "ES", "1h"}},
+				{ID: "hl-short", Type: "perps", Platform: "hyperliquid", Args: []string{"trend"}},
+				{ID: "hl-empty", Type: "perps", Platform: "hyperliquid", Args: []string{"trend", "", "1h"}},
+			},
+			wantHL:  []string{"BTC", "ETH"},
+			wantOKX: []string{"BTC", "SOL"},
+		},
+		{
+			name: "no perps yields empty lists",
+			strategies: []StrategyConfig{
+				{ID: "sma-btc", Type: "spot", Platform: "binanceus", Args: []string{"sma", "BTC/USDT", "1h"}},
+			},
+		},
+		{
+			name: "manual hyperliquid keyed on sc.Symbol, okx manual ignored",
+			strategies: []StrategyConfig{
+				{ID: "manual-hl-eth", Type: "manual", Platform: "hyperliquid", Symbol: "ETH",
+					Args: []string{"hold", "WRONGCOIN", "1h", "--mode=live"}},
+				{ID: "manual-hl-hype", Type: "manual", Platform: "hyperliquid", Symbol: "HYPE",
+					Args: []string{"hold", "HYPE", "1h", "--mode=paper"}},
+				{ID: "hl-trend-btc", Type: "perps", Platform: "hyperliquid", Args: []string{"trend", "BTC", "1h"}},
+				{ID: "manual-hl-btc", Type: "manual", Platform: "hyperliquid", Symbol: "BTC",
+					Args: []string{"hold", "BTC", "1h", "--mode=live"}},
+				{ID: "manual-okx-sol", Type: "manual", Platform: "okx", Symbol: "SOL",
+					Args: []string{"hold", "SOL", "1h", "--mode=live"}},
+				{ID: "manual-hl-empty", Type: "manual", Platform: "hyperliquid", Symbol: "",
+					Args: []string{"hold", "DOGE", "1h", "--mode=live"}},
+			},
+			wantHL: []string{"BTC", "ETH", "HYPE"},
+		},
 	}
-
-	hlCoins, okxCoins := collectPerpsMarkSymbols(strategies)
-
-	wantHL := []string{"BTC", "ETH"}
-	if len(hlCoins) != len(wantHL) {
-		t.Fatalf("hlCoins = %v, want %v", hlCoins, wantHL)
-	}
-	for i, c := range wantHL {
-		if hlCoins[i] != c {
-			t.Errorf("hlCoins[%d] = %q, want %q", i, hlCoins[i], c)
-		}
-	}
-
-	wantOKX := []string{"BTC", "SOL"}
-	if len(okxCoins) != len(wantOKX) {
-		t.Fatalf("okxCoins = %v, want %v", okxCoins, wantOKX)
-	}
-	for i, c := range wantOKX {
-		if okxCoins[i] != c {
-			t.Errorf("okxCoins[%d] = %q, want %q", i, okxCoins[i], c)
-		}
-	}
-}
-
-func TestCollectPerpsMarkSymbols_Empty(t *testing.T) {
-	strategies := []StrategyConfig{
-		{ID: "sma-btc", Type: "spot", Platform: "binanceus", Args: []string{"sma", "BTC/USDT", "1h"}},
-	}
-	hlCoins, okxCoins := collectPerpsMarkSymbols(strategies)
-	if len(hlCoins) != 0 {
-		t.Errorf("hlCoins = %v, want empty", hlCoins)
-	}
-	if len(okxCoins) != 0 {
-		t.Errorf("okxCoins = %v, want empty", okxCoins)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			hlCoins, okxCoins := collectPerpsMarkSymbols(tc.strategies)
+			if len(hlCoins) != len(tc.wantHL) {
+				t.Fatalf("hlCoins = %v, want %v", hlCoins, tc.wantHL)
+			}
+			for i, c := range tc.wantHL {
+				if hlCoins[i] != c {
+					t.Errorf("hlCoins[%d] = %q, want %q", i, hlCoins[i], c)
+				}
+			}
+			if len(okxCoins) != len(tc.wantOKX) {
+				t.Fatalf("okxCoins = %v, want %v", okxCoins, tc.wantOKX)
+			}
+			for i, c := range tc.wantOKX {
+				if okxCoins[i] != c {
+					t.Errorf("okxCoins[%d] = %q, want %q", i, okxCoins[i], c)
+				}
+			}
+		})
 	}
 }
 
@@ -1122,51 +1112,51 @@ func TestClearLatchedKillSwitchSharedWallet_FetchFailurePreservesLatch(t *testin
 	}
 }
 
-func TestClearLatchedKillSwitchSharedWallet_NoSharedWalletNoOp(t *testing.T) {
-	resetSchedulerStarted(t)
-	state := latchedSharedWalletState()
-	strategies := []StrategyConfig{
-		{ID: "spot-a", Platform: "binanceus", Capital: 1000},
-		{ID: "spot-b", Platform: "binanceus", Capital: 1000},
-		{ID: "hl-solo", Platform: "hyperliquid", CapitalPct: 0.5, Capital: 1000},
+func TestClearLatchedKillSwitchSharedWallet_NoOp(t *testing.T) {
+	cases := []struct {
+		name       string
+		state      func() *AppState
+		strategies func(t *testing.T) []StrategyConfig
+	}{
+		{
+			name:  "no shared wallet detected",
+			state: latchedSharedWalletState,
+			strategies: func(t *testing.T) []StrategyConfig {
+				return []StrategyConfig{
+					{ID: "spot-a", Platform: "binanceus", Capital: 1000},
+					{ID: "spot-b", Platform: "binanceus", Capital: 1000},
+					{ID: "hl-solo", Platform: "hyperliquid", CapitalPct: 0.5, Capital: 1000},
+				}
+			},
+		},
+		{
+			name: "switch already inactive",
+			state: func() *AppState {
+				return &AppState{PortfolioRisk: PortfolioRiskState{PeakValue: 10000, KillSwitchActive: false}}
+			},
+			strategies: sharedHLStrategies,
+		},
 	}
-
-	calls := 0
-	fetcher := func(platform string) (float64, error) {
-		calls++
-		return 5000, nil
-	}
-
-	cleared := ClearLatchedKillSwitchSharedWallet(state, strategies, fetcher)
-	if cleared {
-		t.Error("expected no clear when no shared wallet detected")
-	}
-	if calls != 0 {
-		t.Errorf("expected fetcher NOT called for non-shared wallets; got %d calls", calls)
-	}
-	if !state.PortfolioRisk.KillSwitchActive {
-		t.Error("expected KillSwitchActive to remain true")
-	}
-}
-
-func TestClearLatchedKillSwitchSharedWallet_InactiveSwitchNoOp(t *testing.T) {
-	resetSchedulerStarted(t)
-	state := &AppState{
-		PortfolioRisk: PortfolioRiskState{PeakValue: 10000, KillSwitchActive: false},
-	}
-	strategies := sharedHLStrategies(t)
-
-	calls := 0
-	fetcher := func(platform string) (float64, error) {
-		calls++
-		return 5000, nil
-	}
-
-	if cleared := ClearLatchedKillSwitchSharedWallet(state, strategies, fetcher); cleared {
-		t.Error("expected no clear when switch already inactive")
-	}
-	if calls != 0 {
-		t.Errorf("expected fetcher NOT called when switch inactive; got %d calls", calls)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resetSchedulerStarted(t)
+			state := tc.state()
+			wantActive := state.PortfolioRisk.KillSwitchActive
+			calls := 0
+			fetcher := func(platform string) (float64, error) {
+				calls++
+				return 5000, nil
+			}
+			if cleared := ClearLatchedKillSwitchSharedWallet(state, tc.strategies(t), fetcher); cleared {
+				t.Error("expected no clear")
+			}
+			if calls != 0 {
+				t.Errorf("expected fetcher NOT called; got %d calls", calls)
+			}
+			if state.PortfolioRisk.KillSwitchActive != wantActive {
+				t.Errorf("KillSwitchActive = %v, want unchanged %v", state.PortfolioRisk.KillSwitchActive, wantActive)
+			}
+		})
 	}
 }
 
@@ -1446,199 +1436,260 @@ func TestAutoResetConfirmedFlatKillSwitch_NoRelatchOnNextTick(t *testing.T) {
 	}
 }
 
-func TestPerpsMarginDrawdownInputs_OnlyPerpsCount(t *testing.T) {
-	s := &StrategyState{
-		Positions: map[string]*Position{
-			"ETH":      {Symbol: "ETH", Quantity: 0.2, AvgCost: 2000, Side: "long", Multiplier: 1, Leverage: 20},
-			"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.05, AvgCost: 50000, Side: "long"},
+func TestPerpsMarginDrawdownInputs(t *testing.T) {
+	cases := []struct {
+		name       string
+		positions  map[string]*Position
+		leverage   float64
+		prices     map[string]float64
+		wantLoss   float64
+		wantMargin float64
+	}{
+		{
+			name: "only perps count, gain books no loss",
+			positions: map[string]*Position{
+				"ETH":      {Symbol: "ETH", Quantity: 0.2, AvgCost: 2000, Side: "long", Multiplier: 1, Leverage: 20},
+				"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.05, AvgCost: 50000, Side: "long"},
+			},
+			leverage: 20, prices: map[string]float64{"ETH": 3000, "BTC/USDT": 60000, "ES": 4500},
+			wantLoss: 0, wantMargin: 30,
+		},
+		{
+			name: "only underwater legs add to loss",
+			positions: map[string]*Position{
+				"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 3000, Side: "long", Multiplier: 1, Leverage: 10},
+				"BTC": {Symbol: "BTC", Quantity: 0.1, AvgCost: 50000, Side: "short", Multiplier: 1, Leverage: 10},
+			},
+			leverage: 10, prices: map[string]float64{"ETH": 2700, "BTC": 47500},
+			wantLoss: 300, wantMargin: 745,
+		},
+		{
+			name: "missing price falls back to avg cost",
+			positions: map[string]*Position{
+				"HYPE": {Symbol: "HYPE", Quantity: 100, AvgCost: 20, Side: "long", Multiplier: 1, Leverage: 10},
+			},
+			leverage: 10, prices: map[string]float64{},
+			wantLoss: 0, wantMargin: 200,
+		},
+		{
+			name: "zero price falls back to avg cost",
+			positions: map[string]*Position{
+				"HYPE": {Symbol: "HYPE", Quantity: 100, AvgCost: 20, Side: "long", Multiplier: 1, Leverage: 10},
+			},
+			leverage: 10, prices: map[string]float64{"HYPE": 0},
+			wantLoss: 0, wantMargin: 200,
+		},
+		{
+			name:      "no positions",
+			positions: map[string]*Position{},
+			leverage:  10,
+		},
+		{
+			name: "uses config leverage not position leverage",
+			positions: map[string]*Position{
+				"ETH": {Symbol: "ETH", Quantity: 1.0, AvgCost: 3000, Side: "long", Multiplier: 1, Leverage: 20},
+			},
+			leverage: 2, prices: map[string]float64{"ETH": 2900},
+			wantLoss: 100, wantMargin: 1450,
+		},
+		{
+			name: "zero config leverage returns zero",
+			positions: map[string]*Position{
+				"ETH": {Symbol: "ETH", Quantity: 1.0, AvgCost: 3000, Side: "long", Multiplier: 1, Leverage: 20},
+			},
+			leverage: 0, prices: map[string]float64{"ETH": 2900},
 		},
 	}
-	prices := map[string]float64{"ETH": 3000, "BTC/USDT": 60000, "ES": 4500}
-
-	loss, margin := perpsMarginDrawdownInputs(s, 20, prices)
-	if margin < 29.999 || margin > 30.001 {
-		t.Errorf("margin = %.4f; want 30.0 (only perps count)", margin)
-	}
-	if loss != 0 {
-		t.Errorf("loss = %.4f; want 0 (ETH has unrealized gain, not loss)", loss)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			loss, margin := perpsMarginDrawdownInputs(&StrategyState{Positions: tc.positions}, tc.leverage, tc.prices)
+			if math.Abs(margin-tc.wantMargin) > 1e-6 {
+				t.Errorf("margin = %.4f; want %.4f", margin, tc.wantMargin)
+			}
+			if math.Abs(loss-tc.wantLoss) > 1e-6 {
+				t.Errorf("loss = %.4f; want %.4f", loss, tc.wantLoss)
+			}
+		})
 	}
 }
 
-func TestPerpsMarginDrawdownInputs_UnrealizedLoss(t *testing.T) {
-	s := &StrategyState{
-		Positions: map[string]*Position{
-			"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 3000, Side: "long", Multiplier: 1, Leverage: 10},
-			"BTC": {Symbol: "BTC", Quantity: 0.1, AvgCost: 50000, Side: "short", Multiplier: 1, Leverage: 10},
+func TestAggregatePerpsMarginInputs(t *testing.T) {
+	ethLong := map[string]*Position{
+		"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 3000, Side: "long", Multiplier: 1, Leverage: 20},
+	}
+	cases := []struct {
+		name       string
+		strategies map[string]*StrategyState
+		configs    []StrategyConfig
+		prices     map[string]float64
+		wantLoss   float64
+		wantMargin float64
+	}{
+		{
+			name: "sums perps only across strategies",
+			strategies: map[string]*StrategyState{
+				"hl-btc": {Type: "perps", Positions: map[string]*Position{
+					"BTC": {Symbol: "BTC", Quantity: 1, AvgCost: 40000, Side: "short", Multiplier: 1, Leverage: 10},
+				}},
+				"hl-eth": {Type: "perps", Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 10, AvgCost: 3000, Side: "long", Multiplier: 1, Leverage: 5},
+				}},
+				"spot-sol": {Type: "spot", Positions: map[string]*Position{
+					"SOL/USDT": {Symbol: "SOL/USDT", Quantity: 100, AvgCost: 150, Side: "long"},
+				}},
+				"ts-es": {Type: "futures", Positions: map[string]*Position{
+					"ES": {Symbol: "ES", Quantity: 1, AvgCost: 5000, Side: "long", Multiplier: 50},
+				}},
+			},
+			configs:  []StrategyConfig{{ID: "hl-btc", Leverage: 10}, {ID: "hl-eth", Leverage: 5}},
+			prices:   map[string]float64{"BTC": 42000, "ETH": 3100, "SOL/USDT": 200, "ES": 5100},
+			wantLoss: 2000, wantMargin: 10400,
+		},
+		{
+			name: "no perps returns zero",
+			strategies: map[string]*StrategyState{
+				"spot-btc": {Type: "spot", Positions: map[string]*Position{
+					"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.5, AvgCost: 40000, Side: "long"},
+				}},
+			},
+			prices: map[string]float64{"BTC/USDT": 50000},
+		},
+		{
+			name:       "uses config leverage not position leverage",
+			strategies: map[string]*StrategyState{"hl-eth": {Type: "perps", Positions: ethLong}},
+			configs:    []StrategyConfig{{ID: "hl-eth", Leverage: 2}},
+			prices:     map[string]float64{"ETH": 2900},
+			wantLoss:   100, wantMargin: 1450,
+		},
+		{
+			name:       "uses exchange leverage not sizing_leverage",
+			strategies: map[string]*StrategyState{"hl-eth": {Type: "perps", Positions: ethLong}},
+			configs:    []StrategyConfig{{ID: "hl-eth", Leverage: 20, SizingLeverage: 2}},
+			prices:     map[string]float64{"ETH": 2900},
+			wantLoss:   100, wantMargin: 145,
+		},
+		{
+			name:       "missing config skips the strategy",
+			strategies: map[string]*StrategyState{"hl-orphan": {Type: "perps", Positions: ethLong}},
+			prices:     map[string]float64{"ETH": 2900},
 		},
 	}
-	prices := map[string]float64{"ETH": 2700, "BTC": 47500}
-	loss, margin := perpsMarginDrawdownInputs(s, 10, prices)
-	if margin < 744.999 || margin > 745.001 {
-		t.Errorf("margin = %.4f; want 745", margin)
-	}
-	if loss < 299.999 || loss > 300.001 {
-		t.Errorf("loss = %.4f; want 300 (only ETH is underwater)", loss)
-	}
-}
-
-func TestPerpsMarginDrawdownInputs_FallbackToAvgCost(t *testing.T) {
-	s := &StrategyState{
-		Positions: map[string]*Position{
-			"HYPE": {Symbol: "HYPE", Quantity: 100, AvgCost: 20, Side: "long", Multiplier: 1, Leverage: 10},
-		},
-	}
-	_, margin := perpsMarginDrawdownInputs(s, 10, map[string]float64{})
-	want := 100.0 * 20.0 / 10.0
-	if margin < want-0.001 || margin > want+0.001 {
-		t.Errorf("margin with missing price = %.4f; want %.4f", margin, want)
-	}
-
-	_, margin = perpsMarginDrawdownInputs(s, 10, map[string]float64{"HYPE": 0})
-	if margin < want-0.001 || margin > want+0.001 {
-		t.Errorf("margin with zero price = %.4f; want %.4f", margin, want)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			loss, margin := AggregatePerpsMarginInputs(tc.strategies, tc.configs, tc.prices)
+			if math.Abs(margin-tc.wantMargin) > 1e-6 {
+				t.Errorf("margin = %.4f; want %.4f", margin, tc.wantMargin)
+			}
+			if math.Abs(loss-tc.wantLoss) > 1e-6 {
+				t.Errorf("loss = %.4f; want %.4f", loss, tc.wantLoss)
+			}
+		})
 	}
 }
 
-func TestPerpsMarginDrawdownInputs_NoPositions(t *testing.T) {
-	s := &StrategyState{Positions: map[string]*Position{}}
-	loss, margin := perpsMarginDrawdownInputs(s, 10, nil)
-	if loss != 0 || margin != 0 {
-		t.Errorf("perpsMarginDrawdownInputs with no positions = (%.4f, %.4f); want (0, 0)", loss, margin)
-	}
-}
-
-func TestPerpsMarginDrawdownInputs_UsesConfigLeverageNotPosLeverage(t *testing.T) {
-	s := &StrategyState{
-		Positions: map[string]*Position{
-			"ETH": {Symbol: "ETH", Quantity: 1.0, AvgCost: 3000, Side: "long", Multiplier: 1, Leverage: 20},
-		},
-	}
-	prices := map[string]float64{"ETH": 2900}
-
-	loss, margin := perpsMarginDrawdownInputs(s, 2, prices)
-
-	wantMargin := 1450.0
-	if math.Abs(margin-wantMargin) > 1e-6 {
-		t.Errorf("margin = %.4f; want %.4f (must use configLeverage=2, NOT pos.Leverage=20)", margin, wantMargin)
-	}
-	if math.Abs(loss-100) > 1e-6 {
-		t.Errorf("loss = %.4f; want 100", loss)
-	}
-}
-
-func TestPerpsMarginDrawdownInputs_ZeroConfigLeverageReturnsZero(t *testing.T) {
-	s := &StrategyState{
-		Positions: map[string]*Position{
-			"ETH": {Symbol: "ETH", Quantity: 1.0, AvgCost: 3000, Side: "long", Multiplier: 1, Leverage: 20},
-		},
-	}
-	loss, margin := perpsMarginDrawdownInputs(s, 0, map[string]float64{"ETH": 2900})
-	if loss != 0 || margin != 0 {
-		t.Errorf("zero configLeverage must return (0, 0); got (%.4f, %.4f)", loss, margin)
-	}
-}
-
-func TestAggregatePerpsMarginInputs_UsesConfigLeverage(t *testing.T) {
-	strategies := map[string]*StrategyState{
-		"hl-eth": {
+func TestCheckRisk_DrawdownBasis(t *testing.T) {
+	hlSC := &StrategyConfig{ID: "hl-test", Platform: "hyperliquid", Type: "perps", Leverage: 20}
+	perpsState := func(cash, peak, maxDD float64, positions map[string]*Position) *StrategyState {
+		return &StrategyState{
+			ID:   "hl-test",
 			Type: "perps",
-			Positions: map[string]*Position{
-				"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 3000, Side: "long", Multiplier: 1, Leverage: 20},
+			Cash: cash,
+			RiskState: RiskState{
+				PeakValue:      peak,
+				MaxDrawdownPct: maxDD,
+				DailyPnLDate:   todayUTC(),
 			},
+			Positions:       positions,
+			OptionPositions: make(map[string]*OptionPosition),
+			TradeHistory:    []Trade{},
+		}
+	}
+	cases := []struct {
+		name          string
+		state         *StrategyState
+		sc            *StrategyConfig
+		prices        map[string]float64
+		wantAllowed   bool
+		ddLo, ddHi    float64
+		wantOpenCount int
+	}{
+		{
+			name: "perps margin basis fires early on unrealized loss",
+			state: perpsState(584, 589, 25, map[string]*Position{
+				"ETH": {Symbol: "ETH", Quantity: 0.236, AvgCost: 2357.0, Side: "long", Multiplier: 1, Leverage: 20},
+			}),
+			sc: hlSC, prices: map[string]float64{"ETH": 2307.5},
+			ddLo: 40, ddHi: math.Inf(1),
 		},
-	}
-	configs := []StrategyConfig{
-		{ID: "hl-eth", Leverage: 2},
-	}
-	prices := map[string]float64{"ETH": 2900}
-	loss, margin := AggregatePerpsMarginInputs(strategies, configs, prices)
-
-	if math.Abs(margin-1450) > 1e-6 {
-		t.Errorf("margin = %.4f; want 1450 (config leverage, not pos.Leverage)", margin)
-	}
-	if math.Abs(loss-100) > 1e-6 {
-		t.Errorf("loss = %.4f; want 100", loss)
-	}
-}
-
-func TestAggregatePerpsMarginInputs_UsesExchangeLeverageNotSizingLeverage(t *testing.T) {
-	strategies := map[string]*StrategyState{
-		"hl-eth": {
-			Type: "perps",
-			Positions: map[string]*Position{
-				"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 3000, Side: "long", Multiplier: 1, Leverage: 20},
+		{
+			name: "perps drawdown fires before any closed trades",
+			state: perpsState(500, 500, 10, map[string]*Position{
+				"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 100, Side: "long", Multiplier: 1, Leverage: 20},
+			}),
+			sc: hlSC, prices: map[string]float64{"ETH": 80},
+			ddLo: 10, ddHi: math.Inf(1),
+		},
+		{
+			name: "perps margin basis below threshold stays allowed",
+			state: perpsState(584, 589, 25, map[string]*Position{
+				"ETH": {Symbol: "ETH", Quantity: 0.236, AvgCost: 2357.0, Side: "long", Multiplier: 1, Leverage: 20},
+			}),
+			sc: hlSC, prices: map[string]float64{"ETH": 2355.0},
+			wantAllowed: true, ddLo: 0, ddHi: 24.999, wantOpenCount: 1,
+		},
+		{
+			name: "prior realized losses do not inflate the perps drawdown",
+			state: perpsState(900, 1000, 25, map[string]*Position{
+				"ETH": {Symbol: "ETH", Quantity: 0.001, AvgCost: 3000, Side: "long", Multiplier: 1, Leverage: 20},
+			}),
+			sc: hlSC, prices: map[string]float64{"ETH": 3000},
+			wantAllowed: true, ddLo: 0, ddHi: 0.001, wantOpenCount: 1,
+		},
+		{
+			name:  "perps with no open positions falls back to peak basis",
+			state: perpsState(700, 1000, 25, map[string]*Position{}),
+			ddLo:  29, ddHi: 31,
+		},
+		{
+			name: "spot stays on peak basis",
+			state: &StrategyState{
+				Type: "spot",
+				Cash: 500.0,
+				RiskState: RiskState{
+					PeakValue:      1000.0,
+					MaxDrawdownPct: 25.0,
+					DailyPnLDate:   todayUTC(),
+				},
+				Positions: map[string]*Position{
+					"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.01, AvgCost: 50000, Side: "long"},
+				},
+				OptionPositions: make(map[string]*OptionPosition),
 			},
+			prices:      map[string]float64{"BTC/USDT": 30000},
+			wantAllowed: true, ddLo: 19.5, ddHi: 20.5, wantOpenCount: 1,
 		},
 	}
-	configs := []StrategyConfig{
-		{ID: "hl-eth", Leverage: 20, SizingLeverage: 2},
-	}
-	prices := map[string]float64{"ETH": 2900}
-	loss, margin := AggregatePerpsMarginInputs(strategies, configs, prices)
-
-	if math.Abs(margin-145) > 1e-6 {
-		t.Errorf("margin = %.4f; want 145 (exchange leverage 20, not sizing_leverage 2)", margin)
-	}
-	if math.Abs(loss-100) > 1e-6 {
-		t.Errorf("loss = %.4f; want 100", loss)
-	}
-}
-
-func TestAggregatePerpsMarginInputs_MissingConfigSkipsStrategy(t *testing.T) {
-	strategies := map[string]*StrategyState{
-		"hl-orphan": {
-			Type: "perps",
-			Positions: map[string]*Position{
-				"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 3000, Side: "long", Multiplier: 1, Leverage: 20},
-			},
-		},
-	}
-	loss, margin := AggregatePerpsMarginInputs(strategies, nil, map[string]float64{"ETH": 2900})
-	if loss != 0 || margin != 0 {
-		t.Errorf("orphan strategy without config must contribute 0; got (%.4f, %.4f)", loss, margin)
-	}
-}
-
-func TestCheckRisk_PerpsMarginDrawdown_FiresEarly(t *testing.T) {
-	s := &StrategyState{
-		ID:   "hl-test",
-		Type: "perps",
-		Cash: 584.0,
-		RiskState: RiskState{
-			PeakValue:      589.0,
-			MaxDrawdownPct: 25.0,
-			DailyPnLDate:   todayUTC(),
-		},
-		Positions: map[string]*Position{
-			"ETH": {
-				Symbol:     "ETH",
-				Quantity:   0.236,
-				AvgCost:    2357.0,
-				Side:       "long",
-				Multiplier: 1,
-				Leverage:   20,
-			},
-		},
-		OptionPositions: make(map[string]*OptionPosition),
-		TradeHistory:    []Trade{},
-	}
-	prices := map[string]float64{"ETH": 2307.5}
-	pv := PortfolioValue(s, prices)
-
-	sc := &StrategyConfig{ID: "hl-test", Platform: "hyperliquid", Type: "perps", Leverage: 20}
-	allowed, reason := CheckRisk(sc, s, pv, prices, nil, nil)
-
-	if allowed {
-		t.Errorf("expected circuit breaker to fire on margin-based drawdown; reason=%s", reason)
-	}
-	if s.RiskState.CurrentDrawdownPct < 25.0 {
-		t.Errorf("expected CurrentDrawdownPct > 25 on margin basis; got %.2f", s.RiskState.CurrentDrawdownPct)
-	}
-	if s.RiskState.CurrentDrawdownPct < 40 {
-		t.Errorf("expected margin-based drawdown well above threshold; got %.2f", s.RiskState.CurrentDrawdownPct)
-	}
-	if len(s.Positions) != 0 {
-		t.Errorf("expected positions force-closed; got %d", len(s.Positions))
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := tc.state
+			pv := PortfolioValue(s, tc.prices)
+			allowed, reason := CheckRisk(tc.sc, s, pv, tc.prices, nil, nil)
+			if allowed != tc.wantAllowed {
+				t.Fatalf("allowed = %v, want %v (reason=%q dd=%.2f)", allowed, tc.wantAllowed, reason, s.RiskState.CurrentDrawdownPct)
+			}
+			if !tc.wantAllowed && !strings.HasPrefix(reason, RiskReasonMaxDrawdownExceeded) {
+				t.Fatalf("reason = %q, want %q prefix", reason, RiskReasonMaxDrawdownExceeded)
+			}
+			if s.RiskState.CircuitBreaker == tc.wantAllowed {
+				t.Errorf("CircuitBreaker = %v, want %v", s.RiskState.CircuitBreaker, !tc.wantAllowed)
+			}
+			if dd := s.RiskState.CurrentDrawdownPct; dd < tc.ddLo || dd > tc.ddHi {
+				t.Errorf("CurrentDrawdownPct = %.2f, want within [%.3f, %.3f]", dd, tc.ddLo, tc.ddHi)
+			}
+			if len(s.Positions) != tc.wantOpenCount {
+				t.Errorf("open positions = %d, want %d", len(s.Positions), tc.wantOpenCount)
+			}
+		})
 	}
 }
 
@@ -1664,380 +1715,155 @@ func TestCheckRisk_SharedWalletPoolUsesMarginWithoutFakePeak(t *testing.T) {
 	}
 }
 
-func TestCheckRisk_PerpsDrawdownFiresBeforeAnyClosedTrades(t *testing.T) {
-	s := &StrategyState{
-		ID:   "hl-first-trade",
-		Type: "perps",
-		Cash: 500,
-		RiskState: RiskState{
-			PeakValue:      500,
-			MaxDrawdownPct: 10,
-			DailyPnLDate:   todayUTC(),
-		},
-		Positions: map[string]*Position{
-			"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 100, Side: "long", Multiplier: 1, Leverage: 20},
-		},
-		OptionPositions: make(map[string]*OptionPosition),
-		TradeHistory:    []Trade{},
-	}
-	prices := map[string]float64{"ETH": 80}
-	pv := PortfolioValue(s, prices)
-	sc := &StrategyConfig{ID: "hl-first-trade", Platform: "hyperliquid", Type: "perps", Leverage: 20}
-
-	allowed, reason := CheckRisk(sc, s, pv, prices, nil, nil)
-
-	if allowed {
-		t.Fatalf("expected first open position to trip drawdown circuit breaker; reason=%s", reason)
-	}
-	if !strings.HasPrefix(reason, RiskReasonMaxDrawdownExceeded) {
-		t.Fatalf("reason = %q, want %q prefix", reason, RiskReasonMaxDrawdownExceeded)
-	}
-	if !s.RiskState.CircuitBreaker {
-		t.Fatal("expected circuit breaker to be active")
-	}
-	if len(s.Positions) != 0 {
-		t.Errorf("expected positions force-closed; got %d", len(s.Positions))
-	}
-}
-
-func TestCheckRisk_LiveHLSharedCoin_PausesWithoutClose(t *testing.T) {
-	sc := StrategyConfig{
-		ID: "hl-tema", Platform: "hyperliquid", Type: "perps",
+func TestCheckRisk_LiveHLCircuitBreaker_SharedCoinVsSoleOwner(t *testing.T) {
+	peer := StrategyConfig{ID: "hl-rmc", Platform: "hyperliquid", Type: "perps",
 		CapitalPct: 0.5, Capital: 500, Leverage: 20,
-		Args: []string{"triple_ema", "ETH", "1h", "--mode=live"},
+		Args: []string{"rsi_macd", "ETH", "1h", "--mode=live"}}
+	cases := []struct {
+		name        string
+		capitalPct  float64
+		withPeer    bool
+		hlPositions []HLPosition
+		wantClose   bool
+	}{
+		{"shared coin pauses without close", 0.5, true, []HLPosition{{Coin: "ETH", Size: 0.517, EntryPrice: 3000}}, false},
+		{"shared coin pauses without close when HL fetch failed", 0.5, true, nil, false},
+		{"sole owner still force-closes", 0, false, []HLPosition{{Coin: "ETH", Size: 0.517, EntryPrice: 3000}}, true},
 	}
-	hlLiveAll := []StrategyConfig{
-		sc,
-		{ID: "hl-rmc", Platform: "hyperliquid", Type: "perps",
-			CapitalPct: 0.5, Capital: 500, Leverage: 20,
-			Args: []string{"rsi_macd", "ETH", "1h", "--mode=live"}},
-	}
-	assist := &PlatformRiskAssist{
-		HLPositions: []HLPosition{{Coin: "ETH", Size: 0.517, EntryPrice: 3000}},
-		HLLiveAll:   hlLiveAll,
-	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sc := StrategyConfig{
+				ID: "hl-tema", Platform: "hyperliquid", Type: "perps",
+				CapitalPct: tc.capitalPct, Capital: 500, Leverage: 20,
+				Args: []string{"triple_ema", "ETH", "1h", "--mode=live"},
+			}
+			hlLiveAll := []StrategyConfig{sc}
+			if tc.withPeer {
+				hlLiveAll = append(hlLiveAll, peer)
+			}
+			assist := &PlatformRiskAssist{HLPositions: tc.hlPositions, HLLiveAll: hlLiveAll}
+			s := &StrategyState{
+				ID:       sc.ID,
+				Type:     "perps",
+				Platform: "hyperliquid",
+				Cash:     584.0,
+				RiskState: RiskState{
+					PeakValue:      589.0,
+					MaxDrawdownPct: 25.0,
+					DailyPnLDate:   todayUTC(),
+				},
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 0.236, AvgCost: 2357.0, Side: "long", Multiplier: 1, Leverage: 20},
+				},
+				OptionPositions: make(map[string]*OptionPosition),
+				TradeHistory:    []Trade{},
+			}
+			prices := map[string]float64{"ETH": 2307.5}
 
-	s := &StrategyState{
-		ID:       sc.ID,
-		Type:     "perps",
-		Platform: "hyperliquid",
-		Cash:     584.0,
-		RiskState: RiskState{
-			PeakValue:      589.0,
-			MaxDrawdownPct: 25.0,
-			DailyPnLDate:   todayUTC(),
-		},
-		Positions: map[string]*Position{
-			"ETH": {Symbol: "ETH", Quantity: 0.236, AvgCost: 2357.0, Side: "long", Multiplier: 1, Leverage: 20},
-		},
-		OptionPositions: make(map[string]*OptionPosition),
-		TradeHistory:    []Trade{},
-	}
-	prices := map[string]float64{"ETH": 2307.5}
-	pv := PortfolioValue(s, prices)
+			allowed, _ := CheckRisk(&sc, s, PortfolioValue(s, prices), prices, nil, assist)
 
-	_, _ = CheckRisk(&sc, s, pv, prices, nil, assist)
-
-	if !s.RiskState.CircuitBreaker {
-		t.Fatal("expected circuit breaker to be active")
-	}
-	if p := s.RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid); p != nil {
-		t.Fatalf("expected no Hyperliquid pending close for shared coin; got %+v", p)
-	}
-	if _, ok := s.Positions["ETH"]; !ok {
-		t.Fatal("expected shared-coin virtual position to remain open")
-	}
-	if len(s.TradeHistory) != 0 {
-		t.Fatalf("expected no circuit-breaker close trade for shared coin; got %d", len(s.TradeHistory))
+			if allowed {
+				t.Fatal("expected risk block")
+			}
+			if !s.RiskState.CircuitBreaker {
+				t.Fatal("expected circuit breaker to be active")
+			}
+			p := s.RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid)
+			_, open := s.Positions["ETH"]
+			if tc.wantClose {
+				if p == nil || len(p.Symbols) != 1 || p.Symbols[0].Symbol != "ETH" {
+					t.Fatalf("expected Hyperliquid pending close for sole owner; got %+v", p)
+				}
+				if open {
+					t.Fatal("expected sole-owner virtual position to be force-closed")
+				}
+				if len(s.TradeHistory) != 1 {
+					t.Fatalf("expected one circuit-breaker close trade; got %d", len(s.TradeHistory))
+				}
+				return
+			}
+			if p != nil {
+				t.Fatalf("expected no Hyperliquid pending close for shared coin; got %+v", p)
+			}
+			if !open {
+				t.Fatal("expected shared-coin virtual position to remain open")
+			}
+			if len(s.TradeHistory) != 0 {
+				t.Fatalf("expected no circuit-breaker close trade for shared coin; got %d", len(s.TradeHistory))
+			}
+		})
 	}
 }
 
-func TestCheckRisk_LiveHLSharedCoin_PausesWithoutCloseWhenHLFetchFailed(t *testing.T) {
-	sc := StrategyConfig{
-		ID: "hl-tema", Platform: "hyperliquid", Type: "perps",
-		CapitalPct: 0.5, Capital: 500, Leverage: 20,
-		Args: []string{"triple_ema", "ETH", "1h", "--mode=live"},
+func TestCheckRisk_LiveTopStepCB_PendingFlatten(t *testing.T) {
+	cases := []struct {
+		name        string
+		withPeer    bool
+		tsSize      int
+		posQty      float64
+		wantPending bool
+		wantSize    float64
+	}{
+		{"sole peer sets pending full flatten", false, 3, 3, true, 3},
+		{"multi-peer contract sets no pending", true, 5, 2, false, 0},
 	}
-	assist := &PlatformRiskAssist{
-		HLLiveAll: []StrategyConfig{
-			sc,
-			{ID: "hl-rmc", Platform: "hyperliquid", Type: "perps",
-				CapitalPct: 0.5, Capital: 500, Leverage: 20,
-				Args: []string{"rsi_macd", "ETH", "1h", "--mode=live"}},
-		},
-	}
-	s := &StrategyState{
-		ID:       sc.ID,
-		Type:     "perps",
-		Platform: "hyperliquid",
-		Cash:     584.0,
-		RiskState: RiskState{
-			PeakValue:      589.0,
-			MaxDrawdownPct: 25.0,
-			DailyPnLDate:   todayUTC(),
-		},
-		Positions: map[string]*Position{
-			"ETH": {Symbol: "ETH", Quantity: 0.236, AvgCost: 2357.0, Side: "long", Multiplier: 1, Leverage: 20},
-		},
-		OptionPositions: make(map[string]*OptionPosition),
-		TradeHistory:    []Trade{},
-	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sc := StrategyConfig{
+				ID: "ts-a", Platform: "topstep", Type: "futures",
+				Capital: 5000,
+				Args:    []string{"sma", "ES", "15m", "--mode=live"},
+			}
+			tsLiveAll := []StrategyConfig{sc}
+			if tc.withPeer {
+				tsLiveAll = append(tsLiveAll, StrategyConfig{ID: "ts-b", Platform: "topstep", Type: "futures",
+					Capital: 5000,
+					Args:    []string{"rsi", "ES", "15m", "--mode=live"}})
+			}
+			assist := &PlatformRiskAssist{
+				TSPositions: []TopStepPosition{{Coin: "ES", Size: tc.tsSize, Side: "long"}},
+				TSLiveAll:   tsLiveAll,
+			}
+			s := &StrategyState{
+				ID:   sc.ID,
+				Type: "futures",
+				Cash: 3000.0,
+				RiskState: RiskState{
+					PeakValue:      5000.0,
+					MaxDrawdownPct: 25.0,
+					DailyPnLDate:   todayUTC(),
+				},
+				Positions: map[string]*Position{
+					"ES": {Symbol: "ES", Quantity: tc.posQty, AvgCost: 5000, Side: "long", Multiplier: 50},
+				},
+				OptionPositions: make(map[string]*OptionPosition),
+			}
+			prices := map[string]float64{"ES": 4995}
 
-	allowed, _ := CheckRisk(&sc, s, PortfolioValue(s, map[string]float64{"ETH": 2307.5}), map[string]float64{"ETH": 2307.5}, nil, assist)
-
-	if allowed {
-		t.Fatal("expected risk block")
-	}
-	if p := s.RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid); p != nil {
-		t.Fatalf("expected no pending close without HL position snapshot for shared coin; got %+v", p)
-	}
-	if _, ok := s.Positions["ETH"]; !ok {
-		t.Fatal("expected virtual position to remain open when HL fetch failed")
-	}
-}
-
-func TestCheckRisk_LiveHLSoleOwner_StillForceCloses(t *testing.T) {
-	sc := StrategyConfig{
-		ID: "hl-tema", Platform: "hyperliquid", Type: "perps",
-		Capital: 500, Leverage: 20,
-		Args: []string{"triple_ema", "ETH", "1h", "--mode=live"},
-	}
-	assist := &PlatformRiskAssist{
-		HLPositions: []HLPosition{{Coin: "ETH", Size: 0.517, EntryPrice: 3000}},
-		HLLiveAll:   []StrategyConfig{sc},
-	}
-	s := &StrategyState{
-		ID:       sc.ID,
-		Type:     "perps",
-		Platform: "hyperliquid",
-		Cash:     584.0,
-		RiskState: RiskState{
-			PeakValue:      589.0,
-			MaxDrawdownPct: 25.0,
-			DailyPnLDate:   todayUTC(),
-		},
-		Positions: map[string]*Position{
-			"ETH": {Symbol: "ETH", Quantity: 0.236, AvgCost: 2357.0, Side: "long", Multiplier: 1, Leverage: 20},
-		},
-		OptionPositions: make(map[string]*OptionPosition),
-		TradeHistory:    []Trade{},
-	}
-	prices := map[string]float64{"ETH": 2307.5}
-
-	allowed, _ := CheckRisk(&sc, s, PortfolioValue(s, prices), prices, nil, assist)
-
-	if allowed {
-		t.Fatal("expected risk block")
-	}
-	if p := s.RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid); p == nil || len(p.Symbols) != 1 || p.Symbols[0].Symbol != "ETH" {
-		t.Fatalf("expected Hyperliquid pending close for sole owner; got %+v", p)
-	}
-	if _, ok := s.Positions["ETH"]; ok {
-		t.Fatal("expected sole-owner virtual position to be force-closed")
-	}
-	if len(s.TradeHistory) != 1 {
-		t.Fatalf("expected one circuit-breaker close trade; got %d", len(s.TradeHistory))
-	}
-}
-
-func TestCheckRisk_LiveTopStepCB_SetsPendingFullFlatten(t *testing.T) {
-	sc := StrategyConfig{
-		ID: "ts-es", Platform: "topstep", Type: "futures",
-		Capital: 5000,
-		Args:    []string{"sma", "ES", "15m", "--mode=live"},
-	}
-	tsLiveAll := []StrategyConfig{sc}
-	assist := &PlatformRiskAssist{
-		TSPositions: []TopStepPosition{{Coin: "ES", Size: 3, Side: "long"}},
-		TSLiveAll:   tsLiveAll,
-	}
-
-	s := &StrategyState{
-		ID:   sc.ID,
-		Type: "futures",
-		Cash: 3000.0,
-		RiskState: RiskState{
-			PeakValue:      5000.0,
-			MaxDrawdownPct: 25.0,
-			DailyPnLDate:   todayUTC(),
-		},
-		Positions: map[string]*Position{
-			"ES": {Symbol: "ES", Quantity: 3, AvgCost: 5000, Side: "long", Multiplier: 50},
-		},
-		OptionPositions: make(map[string]*OptionPosition),
-	}
-	prices := map[string]float64{"ES": 4995}
-	pv := PortfolioValue(s, prices)
-
-	allowed, _ := CheckRisk(&sc, s, pv, prices, nil, assist)
-	if allowed {
-		t.Fatal("expected CB fire (drawdown exceeds 25%)")
-	}
-
-	p := s.RiskState.getPendingCircuitClose(PlatformPendingCloseTopStep)
-	if p == nil {
-		t.Fatal("expected PendingCircuitCloses[topstep] after CB fire")
-	}
-	if len(p.Symbols) != 1 {
-		t.Fatalf("expected 1 pending symbol, got %d", len(p.Symbols))
-	}
-	c0 := p.Symbols[0]
-	if c0.Symbol != "ES" {
-		t.Errorf("symbol=%q want ES", c0.Symbol)
-	}
-	if c0.Size != 3 {
-		t.Errorf("pending size=%.0f want 3 (full flatten for sole peer)", c0.Size)
-	}
-}
-
-func TestCheckRisk_LiveTopStepCB_MultiPeerNoPending(t *testing.T) {
-	sc := StrategyConfig{
-		ID: "ts-a", Platform: "topstep", Type: "futures",
-		Capital: 5000,
-		Args:    []string{"sma", "ES", "15m", "--mode=live"},
-	}
-	tsLiveAll := []StrategyConfig{
-		sc,
-		{ID: "ts-b", Platform: "topstep", Type: "futures",
-			Capital: 5000,
-			Args:    []string{"rsi", "ES", "15m", "--mode=live"}},
-	}
-	assist := &PlatformRiskAssist{
-		TSPositions: []TopStepPosition{{Coin: "ES", Size: 5, Side: "long"}},
-		TSLiveAll:   tsLiveAll,
-	}
-
-	s := &StrategyState{
-		ID:   sc.ID,
-		Type: "futures",
-		Cash: 3000.0,
-		RiskState: RiskState{
-			PeakValue:      5000.0,
-			MaxDrawdownPct: 25.0,
-			DailyPnLDate:   todayUTC(),
-		},
-		Positions: map[string]*Position{
-			"ES": {Symbol: "ES", Quantity: 2, AvgCost: 5000, Side: "long", Multiplier: 50},
-		},
-		OptionPositions: make(map[string]*OptionPosition),
-	}
-	prices := map[string]float64{"ES": 4995}
-	pv := PortfolioValue(s, prices)
-
-	allowed, _ := CheckRisk(&sc, s, pv, prices, nil, assist)
-	if allowed {
-		t.Fatal("expected CB fire")
-	}
-
-	if s.RiskState.getPendingCircuitClose(PlatformPendingCloseTopStep) != nil {
-		t.Error("expected no pending TS entry for multi-peer contract")
-	}
-}
-
-func TestCheckRisk_PerpsMarginDrawdown_BelowThreshold(t *testing.T) {
-	s := &StrategyState{
-		Type: "perps",
-		Cash: 584.0,
-		RiskState: RiskState{
-			PeakValue:      589.0,
-			MaxDrawdownPct: 25.0,
-			DailyPnLDate:   todayUTC(),
-		},
-		Positions: map[string]*Position{
-			"ETH": {Symbol: "ETH", Quantity: 0.236, AvgCost: 2357.0, Side: "long", Multiplier: 1, Leverage: 20},
-		},
-		OptionPositions: make(map[string]*OptionPosition),
-	}
-	prices := map[string]float64{"ETH": 2355.0}
-	pv := PortfolioValue(s, prices)
-	sc := &StrategyConfig{ID: "hl-test", Platform: "hyperliquid", Type: "perps", Leverage: 20}
-	allowed, reason := CheckRisk(sc, s, pv, prices, nil, nil)
-	if !allowed {
-		t.Errorf("expected allowed below margin drawdown threshold; reason=%s dd=%.2f",
-			reason, s.RiskState.CurrentDrawdownPct)
-	}
-	if s.RiskState.CurrentDrawdownPct >= 25 {
-		t.Errorf("expected drawdown < 25%%; got %.2f", s.RiskState.CurrentDrawdownPct)
-	}
-}
-
-func TestCheckRisk_PerpsPriorRealizedLossesDoNotInflateDrawdown(t *testing.T) {
-	s := &StrategyState{
-		Type: "perps",
-		Cash: 900.0,
-		RiskState: RiskState{
-			PeakValue:      1000.0,
-			MaxDrawdownPct: 25.0,
-			DailyPnLDate:   todayUTC(),
-		},
-		Positions: map[string]*Position{
-			"ETH": {Symbol: "ETH", Quantity: 0.001, AvgCost: 3000, Side: "long", Multiplier: 1, Leverage: 20},
-		},
-		OptionPositions: make(map[string]*OptionPosition),
-	}
-	prices := map[string]float64{"ETH": 3000}
-	pv := PortfolioValue(s, prices)
-	sc := &StrategyConfig{ID: "hl-test", Platform: "hyperliquid", Type: "perps", Leverage: 20}
-	allowed, reason := CheckRisk(sc, s, pv, prices, nil, nil)
-	if !allowed {
-		t.Errorf("expected fresh position with no unrealized PnL to NOT fire; reason=%s dd=%.2f",
-			reason, s.RiskState.CurrentDrawdownPct)
-	}
-	if s.RiskState.CurrentDrawdownPct > 0.001 {
-		t.Errorf("expected drawdown ≈ 0 (no unrealized loss on open position); got %.2f",
-			s.RiskState.CurrentDrawdownPct)
-	}
-	if len(s.Positions) != 1 {
-		t.Errorf("expected position to survive; got %d", len(s.Positions))
-	}
-}
-
-func TestCheckRisk_PerpsNoOpenPositions_FallsBackToPeak(t *testing.T) {
-	s := &StrategyState{
-		Type: "perps",
-		Cash: 700.0,
-		RiskState: RiskState{
-			PeakValue:      1000.0,
-			MaxDrawdownPct: 25.0,
-			DailyPnLDate:   todayUTC(),
-		},
-		Positions:       map[string]*Position{},
-		OptionPositions: make(map[string]*OptionPosition),
-	}
-	pv := PortfolioValue(s, nil)
-	allowed, _ := CheckRisk(nil, s, pv, nil, nil, nil)
-	if allowed {
-		t.Error("expected peak-relative drawdown to fire when no perps margin deployed")
-	}
-	if s.RiskState.CurrentDrawdownPct < 29 || s.RiskState.CurrentDrawdownPct > 31 {
-		t.Errorf("expected peak-relative drawdown ≈ 30%%; got %.2f", s.RiskState.CurrentDrawdownPct)
-	}
-}
-
-func TestCheckRisk_SpotUnchanged(t *testing.T) {
-	s := &StrategyState{
-		Type: "spot",
-		Cash: 500.0,
-		RiskState: RiskState{
-			PeakValue:      1000.0,
-			MaxDrawdownPct: 25.0,
-			DailyPnLDate:   todayUTC(),
-		},
-		Positions: map[string]*Position{
-			"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.01, AvgCost: 50000, Side: "long"},
-		},
-		OptionPositions: make(map[string]*OptionPosition),
-	}
-	prices := map[string]float64{"BTC/USDT": 30000}
-	pv := PortfolioValue(s, prices)
-	allowed, _ := CheckRisk(nil, s, pv, prices, nil, nil)
-	if !allowed {
-		t.Errorf("expected spot strategy to stay within 25%% peak drawdown; dd=%.2f",
-			s.RiskState.CurrentDrawdownPct)
-	}
-	if s.RiskState.CurrentDrawdownPct < 19.5 || s.RiskState.CurrentDrawdownPct > 20.5 {
-		t.Errorf("expected spot drawdown ≈ 20%% (peak-relative); got %.2f",
-			s.RiskState.CurrentDrawdownPct)
+			allowed, _ := CheckRisk(&sc, s, PortfolioValue(s, prices), prices, nil, assist)
+			if allowed {
+				t.Fatal("expected CB fire (drawdown exceeds 25%)")
+			}
+			p := s.RiskState.getPendingCircuitClose(PlatformPendingCloseTopStep)
+			if !tc.wantPending {
+				if p != nil {
+					t.Errorf("expected no pending TS entry for multi-peer contract; got %+v", p)
+				}
+				return
+			}
+			if p == nil {
+				t.Fatal("expected PendingCircuitCloses[topstep] after CB fire")
+			}
+			if len(p.Symbols) != 1 {
+				t.Fatalf("expected 1 pending symbol, got %d", len(p.Symbols))
+			}
+			if p.Symbols[0].Symbol != "ES" {
+				t.Errorf("symbol=%q want ES", p.Symbols[0].Symbol)
+			}
+			if p.Symbols[0].Size != tc.wantSize {
+				t.Errorf("pending size=%.0f want %.0f (full flatten for sole peer)", p.Symbols[0].Size, tc.wantSize)
+			}
+		})
 	}
 }
 
@@ -2211,61 +2037,67 @@ func TestCheckPortfolioRiskMissingPooledEquitySuppressesOnlyEquityArm(t *testing
 	}
 }
 
-func TestCheckPortfolioRisk_MixedAccount_SpotEquityStillHonored(t *testing.T) {
-	cfg := &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80}
-	prs := &PortfolioRiskState{PeakValue: 10000}
+func TestCheckPortfolioRisk_LatchSource(t *testing.T) {
+	type pctRange struct{ lo, hi float64 }
+	cases := []struct {
+		name         string
+		peak         float64
+		totalValue   float64
+		perpsLoss    float64
+		perpsMargin  float64
+		wantSource   string
+		reasonMargin bool
+		equityDD     *pctRange
+		marginDD     *pctRange
+		eventDD      *pctRange
+	}{
+		{
+			name: "mixed account: spot equity drawdown still latches",
+			peak: 10000, totalValue: 7000, perpsLoss: 0, perpsMargin: 500,
+			wantSource: "equity",
+		},
+		{
+			name: "mixed account: equity governs when both breach",
+			peak: 10000, totalValue: 7000, perpsLoss: 600, perpsMargin: 1000,
+			wantSource: "equity",
+			equityDD:   &pctRange{29.9, 30.1}, marginDD: &pctRange{59.9, 60.1}, eventDD: &pctRange{29.9, 30.1},
+		},
+		{
+			name: "cold-start peak zero: margin can still fire",
+			peak: 0, totalValue: 0, perpsLoss: 500, perpsMargin: 1000,
+			wantSource: "margin", reasonMargin: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80}
+			prs := &PortfolioRiskState{PeakValue: tc.peak}
 
-	totalValue := 7000.0
-	perpsLoss := 0.0
-	perpsMargin := 500.0
-
-	allowed, _, _, reason := CheckPortfolioRisk(prs, cfg, totalValue, 0, perpsLoss, perpsMargin)
-	if allowed {
-		t.Errorf("expected equity-drawdown kill switch to fire at 30%%; got allowed=true")
-	}
-	if !prs.KillSwitchActive {
-		t.Error("expected KillSwitchActive=true")
-	}
-	if strings.Contains(reason, "margin") {
-		t.Errorf("expected reason to reference equity drawdown, not margin; got %q", reason)
-	}
-	if len(prs.Events) != 1 || prs.Events[0].Source != "equity" {
-		t.Errorf("expected one triggered event with Source=equity; got %+v", prs.Events)
-	}
-}
-
-func TestCheckPortfolioRisk_MixedAccount_EquityGovernsWhenBothBreach(t *testing.T) {
-	cfg := &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80}
-	prs := &PortfolioRiskState{PeakValue: 10000}
-
-	totalValue := 7000.0
-	perpsLoss := 600.0
-	perpsMargin := 1000.0
-
-	allowed, _, _, reason := CheckPortfolioRisk(prs, cfg, totalValue, 0, perpsLoss, perpsMargin)
-	if allowed {
-		t.Error("expected kill switch to fire on 30% equity drawdown")
-	}
-	if !prs.KillSwitchActive {
-		t.Error("expected KillSwitchActive=true")
-	}
-	if strings.Contains(reason, "margin") {
-		t.Errorf("expected the equity reason to drive the latch; got %q", reason)
-	}
-	if prs.CurrentDrawdownPct < 29.9 || prs.CurrentDrawdownPct > 30.1 {
-		t.Errorf("expected CurrentDrawdownPct (equity)≈30%%; got %.2f", prs.CurrentDrawdownPct)
-	}
-	if prs.CurrentMarginDrawdownPct < 59.9 || prs.CurrentMarginDrawdownPct > 60.1 {
-		t.Errorf("expected CurrentMarginDrawdownPct≈60%%; got %.2f", prs.CurrentMarginDrawdownPct)
-	}
-	if len(prs.Events) != 1 {
-		t.Fatalf("expected exactly one event; got %+v", prs.Events)
-	}
-	if prs.Events[0].Source != "equity" {
-		t.Errorf("expected triggered event Source=equity; got %q", prs.Events[0].Source)
-	}
-	if prs.Events[0].DrawdownPct < 29.9 || prs.Events[0].DrawdownPct > 30.1 {
-		t.Errorf("expected event DrawdownPct≈30%% (equity signal); got %.2f", prs.Events[0].DrawdownPct)
+			allowed, _, _, reason := CheckPortfolioRisk(prs, cfg, tc.totalValue, 0, tc.perpsLoss, tc.perpsMargin)
+			if allowed {
+				t.Errorf("expected kill switch to fire; got allowed=true reason=%q", reason)
+			}
+			if !prs.KillSwitchActive {
+				t.Error("expected KillSwitchActive=true")
+			}
+			if strings.Contains(reason, "margin") != tc.reasonMargin {
+				t.Errorf("reason mentions margin = %v, want %v; got %q", !tc.reasonMargin, tc.reasonMargin, reason)
+			}
+			if len(prs.Events) != 1 {
+				t.Fatalf("expected exactly one event; got %+v", prs.Events)
+			}
+			if prs.Events[0].Source != tc.wantSource {
+				t.Errorf("triggered event Source = %q, want %q", prs.Events[0].Source, tc.wantSource)
+			}
+			check := func(label string, got float64, want *pctRange) {
+				if want != nil && (got < want.lo || got > want.hi) {
+					t.Errorf("%s = %.2f, want within [%.1f, %.1f]", label, got, want.lo, want.hi)
+				}
+			}
+			check("CurrentDrawdownPct", prs.CurrentDrawdownPct, tc.equityDD)
+			check("CurrentMarginDrawdownPct", prs.CurrentMarginDrawdownPct, tc.marginDD)
+			check("Events[0].DrawdownPct", prs.Events[0].DrawdownPct, tc.eventDD)
+		})
 	}
 }
 
@@ -2311,24 +2143,6 @@ func TestCheckPortfolioRisk_Incident1448_MarginTripAvertedWhenEquityHealthy(t *t
 	}
 	if prs.Events[0].DrawdownPct < 30.9 || prs.Events[0].DrawdownPct > 31.1 {
 		t.Errorf("expected event DrawdownPct≈31%% (equity signal); got %.2f", prs.Events[0].DrawdownPct)
-	}
-}
-
-func TestCheckPortfolioRisk_BothWarnMarginAboveLimit_ReasonNamesEquityGovernance(t *testing.T) {
-	cfg := &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80}
-	prs := &PortfolioRiskState{PeakValue: 10000}
-
-	_, _, warning, reason := CheckPortfolioRisk(prs, cfg, 7800, 0, 400, 1000)
-	if !warning || prs.KillSwitchActive {
-		t.Fatalf("expected warning without latch; warning=%v active=%v reason=%q", warning, prs.KillSwitchActive, reason)
-	}
-	for _, want := range []string{"equity=", "margin=", "exceeds limit", "#1448"} {
-		if !strings.Contains(reason, want) {
-			t.Errorf("expected reason to contain %q; got %q", want, reason)
-		}
-	}
-	if strings.Contains(reason, "approaching") {
-		t.Errorf("margin is over the limit, not approaching it; got %q", reason)
 	}
 }
 
@@ -2436,124 +2250,72 @@ func TestCheckPortfolioRisk_NoPerps_EquityBehaviorUnchanged(t *testing.T) {
 	}
 }
 
-func TestCheckPortfolioRisk_MarginWarning(t *testing.T) {
-	cfg := &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80}
-	prs := &PortfolioRiskState{PeakValue: 10000}
-
-	_, _, warning, reason := CheckPortfolioRisk(prs, cfg, 10000, 0, 210, 1000)
-	if !warning {
-		t.Errorf("expected warning=true at 21%% margin drawdown; reason=%q", reason)
-	}
-	if !strings.Contains(reason, "margin") {
-		t.Errorf("expected warning reason to reference margin; got %q", reason)
-	}
-	if prs.KillSwitchActive {
-		t.Error("expected kill switch NOT active (warning, not fire)")
-	}
-
-	_, _, warning, reason = CheckPortfolioRisk(prs, cfg, 10000, 0, 210, 1000)
-	if !warning {
-		t.Errorf("expected repeated warning=true while margin drawdown remains above threshold; reason=%q", reason)
-	}
-	if !strings.Contains(reason, "margin") {
-		t.Errorf("expected repeated warning reason to reference margin; got %q", reason)
-	}
-}
-
-func TestAggregatePerpsMarginInputs(t *testing.T) {
-	strategies := map[string]*StrategyState{
-		"hl-btc": {
-			Type: "perps",
-			Positions: map[string]*Position{
-				"BTC": {Symbol: "BTC", Quantity: 1, AvgCost: 40000, Side: "short", Multiplier: 1, Leverage: 10},
-			},
+func TestCheckPortfolioRisk_MarginWarningReasons(t *testing.T) {
+	cases := []struct {
+		name            string
+		totalValue      float64
+		perpsLoss       float64
+		perpsMargin     float64
+		cycles          int
+		wantWarning     bool
+		wantContains    []string
+		wantNotContains []string
+		marginDDLo      float64
+		marginDDHi      float64
+	}{
+		{
+			name:       "margin drawdown in warn band warns on every cycle without latch",
+			totalValue: 10000, perpsLoss: 210, perpsMargin: 1000, cycles: 2,
+			wantWarning: true, wantContains: []string{"margin"},
+			marginDDLo: 20.9, marginDDHi: 21.1,
 		},
-		"hl-eth": {
-			Type: "perps",
-			Positions: map[string]*Position{
-				"ETH": {Symbol: "ETH", Quantity: 10, AvgCost: 3000, Side: "long", Multiplier: 1, Leverage: 5},
-			},
+		{
+			name:       "margin drawdown below warn band populates the field without warning",
+			totalValue: 10000, perpsLoss: 100, perpsMargin: 1000, cycles: 1,
+			marginDDLo: 9.9, marginDDHi: 10.1,
 		},
-		"spot-sol": {
-			Type: "spot",
-			Positions: map[string]*Position{
-				"SOL/USDT": {Symbol: "SOL/USDT", Quantity: 100, AvgCost: 150, Side: "long"},
-			},
+		{
+			name:       "both signals in warn band name both",
+			totalValue: 7800, perpsLoss: 230, perpsMargin: 1000, cycles: 1,
+			wantWarning: true, wantContains: []string{"equity=", "margin="},
+			marginDDLo: 22.9, marginDDHi: 23.1,
 		},
-		"ts-es": {
-			Type: "futures",
-			Positions: map[string]*Position{
-				"ES": {Symbol: "ES", Quantity: 1, AvgCost: 5000, Side: "long", Multiplier: 50},
-			},
+		{
+			name:       "margin above limit while equity warns names equity governance (#1448)",
+			totalValue: 7800, perpsLoss: 400, perpsMargin: 1000, cycles: 1,
+			wantWarning:     true,
+			wantContains:    []string{"equity=", "margin=", "exceeds limit", "#1448"},
+			wantNotContains: []string{"approaching"},
+			marginDDLo:      39.9, marginDDHi: 40.1,
 		},
 	}
-	prices := map[string]float64{
-		"BTC":      42000,
-		"ETH":      3100,
-		"SOL/USDT": 200,
-		"ES":       5100,
-	}
-	configs := []StrategyConfig{
-		{ID: "hl-btc", Leverage: 10},
-		{ID: "hl-eth", Leverage: 5},
-	}
-
-	loss, margin := AggregatePerpsMarginInputs(strategies, configs, prices)
-
-	expectedLoss := 2000.0
-	expectedMargin := 10400.0
-	if loss < expectedLoss-0.01 || loss > expectedLoss+0.01 {
-		t.Errorf("expected loss=%.2f; got %.2f", expectedLoss, loss)
-	}
-	if margin < expectedMargin-0.01 || margin > expectedMargin+0.01 {
-		t.Errorf("expected margin=%.2f; got %.2f", expectedMargin, margin)
-	}
-}
-
-func TestAggregatePerpsMarginInputs_NoPerpsReturnsZero(t *testing.T) {
-	strategies := map[string]*StrategyState{
-		"spot-btc": {
-			Type: "spot",
-			Positions: map[string]*Position{
-				"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.5, AvgCost: 40000, Side: "long"},
-			},
-		},
-	}
-	loss, margin := AggregatePerpsMarginInputs(strategies, nil, map[string]float64{"BTC/USDT": 50000})
-	if loss != 0 || margin != 0 {
-		t.Errorf("expected (0, 0) for no perps; got (%.2f, %.2f)", loss, margin)
-	}
-}
-
-func TestCheckPortfolioRisk_PeakZero_MarginCanStillFire(t *testing.T) {
-	cfg := &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80}
-	prs := &PortfolioRiskState{PeakValue: 0}
-
-	allowed, _, _, reason := CheckPortfolioRisk(prs, cfg, 0, 0, 500, 1000)
-	if allowed {
-		t.Errorf("expected cold-start margin drawdown to fire kill switch; got allowed=true, reason=%s", reason)
-	}
-	if !prs.KillSwitchActive {
-		t.Error("expected KillSwitchActive=true on cold-start margin blowup")
-	}
-	if !strings.Contains(reason, "margin") {
-		t.Errorf("expected margin-driven reason; got %q", reason)
-	}
-	if len(prs.Events) != 1 || prs.Events[0].Source != "margin" {
-		t.Errorf("expected one triggered event with Source=margin; got %+v", prs.Events)
-	}
-}
-
-func TestCheckPortfolioRisk_BothSignalsBreachWarn_ReasonIncludesBoth(t *testing.T) {
-	cfg := &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80}
-	prs := &PortfolioRiskState{PeakValue: 10000}
-
-	_, _, warning, reason := CheckPortfolioRisk(prs, cfg, 7800, 0, 230, 1000)
-	if !warning {
-		t.Fatalf("expected warning=true; reason=%q", reason)
-	}
-	if !strings.Contains(reason, "equity=") || !strings.Contains(reason, "margin=") {
-		t.Errorf("expected reason to mention both equity= and margin=; got %q", reason)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80}
+			prs := &PortfolioRiskState{PeakValue: 10000}
+			for i := 0; i < tc.cycles; i++ {
+				allowed, _, warning, reason := CheckPortfolioRisk(prs, cfg, tc.totalValue, 0, tc.perpsLoss, tc.perpsMargin)
+				if !allowed || prs.KillSwitchActive {
+					t.Fatalf("cycle %d: expected no latch; allowed=%v active=%v reason=%q", i, allowed, prs.KillSwitchActive, reason)
+				}
+				if warning != tc.wantWarning {
+					t.Fatalf("cycle %d: warning = %v, want %v; reason=%q", i, warning, tc.wantWarning, reason)
+				}
+				for _, want := range tc.wantContains {
+					if !strings.Contains(reason, want) {
+						t.Errorf("cycle %d: expected reason to contain %q; got %q", i, want, reason)
+					}
+				}
+				for _, unwanted := range tc.wantNotContains {
+					if strings.Contains(reason, unwanted) {
+						t.Errorf("cycle %d: reason must not contain %q; got %q", i, unwanted, reason)
+					}
+				}
+			}
+			if prs.CurrentMarginDrawdownPct < tc.marginDDLo || prs.CurrentMarginDrawdownPct > tc.marginDDHi {
+				t.Errorf("CurrentMarginDrawdownPct = %.2f, want within [%.1f, %.1f]", prs.CurrentMarginDrawdownPct, tc.marginDDLo, tc.marginDDHi)
+			}
+		})
 	}
 }
 
@@ -2698,19 +2460,6 @@ func TestTruncateWarningField_UTF8Safe(t *testing.T) {
 	}
 }
 
-func TestCheckPortfolioRisk_MarginWarning_FieldsPopulated(t *testing.T) {
-	cfg := &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80}
-	prs := &PortfolioRiskState{PeakValue: 10000}
-
-	_, _, warning, _ := CheckPortfolioRisk(prs, cfg, 10000, 0, 100, 1000)
-	if warning {
-		t.Error("expected warning=false at 10%% margin drawdown")
-	}
-	if prs.CurrentMarginDrawdownPct < 9.9 || prs.CurrentMarginDrawdownPct > 10.1 {
-		t.Errorf("expected CurrentMarginDrawdownPct≈10%%; got %.2f", prs.CurrentMarginDrawdownPct)
-	}
-}
-
 func TestRiskState_PendingCircuitClose_Marshal_EmptyReturnsBlank(t *testing.T) {
 	cases := []struct {
 		name string
@@ -2734,64 +2483,107 @@ func TestRiskState_PendingCircuitClose_Marshal_EmptyReturnsBlank(t *testing.T) {
 	}
 }
 
-func TestRiskState_PendingCircuitClose_MarshalUnmarshalRoundTrip(t *testing.T) {
-	src := &RiskState{PendingCircuitCloses: map[string]*PendingCircuitClose{
-		PlatformPendingCloseHyperliquid: {Symbols: []PendingCircuitCloseSymbol{
-			{Symbol: "ETH", Size: 0.2585},
-			{Symbol: "BTC", Size: 0.01},
+func TestRiskState_PendingCircuitClose_RoundTrip(t *testing.T) {
+	notifiedAt := time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name    string
+		pending map[string]*PendingCircuitClose
+	}{
+		{"two symbols on one platform", map[string]*PendingCircuitClose{
+			PlatformPendingCloseHyperliquid: {Symbols: []PendingCircuitCloseSymbol{
+				{Symbol: "ETH", Size: 0.2585},
+				{Symbol: "BTC", Size: 0.01},
+			}},
 		}},
-	}}
-	blob := src.MarshalPendingCircuitClosesJSON()
-	if blob == "" {
-		t.Fatal("non-empty marshal expected")
+		{"multi platform", map[string]*PendingCircuitClose{
+			"hyperliquid": {Symbols: []PendingCircuitCloseSymbol{{Symbol: "ETH", Size: 0.1}}},
+			"okx":         {Symbols: []PendingCircuitCloseSymbol{{Symbol: "BTC-USDT-SWAP", Size: 0.01}}},
+		}},
+		{"consecutive failures and last notified", map[string]*PendingCircuitClose{
+			PlatformPendingCloseHyperliquid: {
+				Symbols:             []PendingCircuitCloseSymbol{{Symbol: "ETH", Size: 0.25}},
+				ConsecutiveFailures: 7,
+				LastNotifiedAt:      notifiedAt,
+			},
+		}},
 	}
-
-	var dst RiskState
-	dst.UnmarshalPendingCircuitClosesJSON(blob)
-
-	got := dst.getPendingCircuitClose(PlatformPendingCloseHyperliquid)
-	if got == nil || len(got.Symbols) != 2 {
-		t.Fatalf("round-trip missing entries: %+v", got)
-	}
-	byName := map[string]float64{}
-	for _, s := range got.Symbols {
-		byName[s.Symbol] = s.Size
-	}
-	if byName["ETH"] != 0.2585 || byName["BTC"] != 0.01 {
-		t.Errorf("round-trip sizes wrong: %+v", byName)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := &RiskState{PendingCircuitCloses: tc.pending}
+			blob := src.MarshalPendingCircuitClosesJSON()
+			if blob == "" {
+				t.Fatal("non-empty marshal expected")
+			}
+			var dst RiskState
+			dst.UnmarshalPendingCircuitClosesJSON(blob)
+			for platform, want := range tc.pending {
+				got := dst.getPendingCircuitClose(platform)
+				if got == nil || len(got.Symbols) != len(want.Symbols) {
+					t.Fatalf("%s entry lost in round-trip: %+v", platform, got)
+				}
+				byName := map[string]float64{}
+				for _, s := range got.Symbols {
+					byName[s.Symbol] = s.Size
+				}
+				for _, s := range want.Symbols {
+					if byName[s.Symbol] != s.Size {
+						t.Errorf("%s size for %s = %g, want %g", platform, s.Symbol, byName[s.Symbol], s.Size)
+					}
+				}
+				if got.ConsecutiveFailures != want.ConsecutiveFailures {
+					t.Errorf("%s ConsecutiveFailures = %d, want %d", platform, got.ConsecutiveFailures, want.ConsecutiveFailures)
+				}
+				if !got.LastNotifiedAt.Equal(want.LastNotifiedAt) {
+					t.Errorf("%s LastNotifiedAt = %v, want %v", platform, got.LastNotifiedAt, want.LastNotifiedAt)
+				}
+			}
+		})
 	}
 }
 
-func TestRiskState_PendingCircuitClose_UnmarshalLegacyHL(t *testing.T) {
-	var r RiskState
-	r.UnmarshalPendingCircuitClosesJSON(`{"coins":[{"coin":"ETH","sz":0.2585}]}`)
-
-	p := r.getPendingCircuitClose(PlatformPendingCloseHyperliquid)
-	if p == nil || len(p.Symbols) != 1 {
-		t.Fatalf("legacy JSON did not convert: %+v", p)
+func TestRiskState_PendingCircuitClose_Unmarshal(t *testing.T) {
+	seeded := func() RiskState {
+		return RiskState{PendingCircuitCloses: map[string]*PendingCircuitClose{
+			PlatformPendingCloseHyperliquid: {Symbols: []PendingCircuitCloseSymbol{{Symbol: "ETH", Size: 1}}},
+		}}
 	}
-	if p.Symbols[0].Symbol != "ETH" || p.Symbols[0].Size != 0.2585 {
-		t.Errorf("legacy conversion wrong: got symbol=%q size=%g", p.Symbols[0].Symbol, p.Symbols[0].Size)
+	cases := []struct {
+		name       string
+		start      RiskState
+		blob       string
+		wantNilMap bool
+		wantSymbol string
+		wantSize   float64
+	}{
+		{"legacy hl coins shape converts", RiskState{}, `{"coins":[{"coin":"ETH","sz":0.2585}]}`, false, "ETH", 0.2585},
+		{"legacy row defaults zero consecutive failures", RiskState{}, `{"hyperliquid":{"symbols":[{"symbol":"ETH","size":0.25}]}}`, false, "ETH", 0.25},
+		{"empty blob clears", seeded(), "", true, "", 0},
+		{"malformed blob clears", seeded(), `not-json{`, true, "", 0},
 	}
-}
-
-func TestRiskState_PendingCircuitClose_UnmarshalEmptyClears(t *testing.T) {
-	r := RiskState{PendingCircuitCloses: map[string]*PendingCircuitClose{
-		PlatformPendingCloseHyperliquid: {Symbols: []PendingCircuitCloseSymbol{{Symbol: "ETH", Size: 1}}},
-	}}
-	r.UnmarshalPendingCircuitClosesJSON("")
-	if r.PendingCircuitCloses != nil {
-		t.Errorf("expected nil map after empty unmarshal; got %+v", r.PendingCircuitCloses)
-	}
-}
-
-func TestRiskState_PendingCircuitClose_UnmarshalMalformedClears(t *testing.T) {
-	r := RiskState{PendingCircuitCloses: map[string]*PendingCircuitClose{
-		PlatformPendingCloseHyperliquid: {Symbols: []PendingCircuitCloseSymbol{{Symbol: "ETH", Size: 1}}},
-	}}
-	r.UnmarshalPendingCircuitClosesJSON(`not-json{`)
-	if r.PendingCircuitCloses != nil {
-		t.Errorf("expected nil map after malformed unmarshal; got %+v", r.PendingCircuitCloses)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := tc.start
+			r.UnmarshalPendingCircuitClosesJSON(tc.blob)
+			if tc.wantNilMap {
+				if r.PendingCircuitCloses != nil {
+					t.Errorf("expected nil map after unmarshal; got %+v", r.PendingCircuitCloses)
+				}
+				return
+			}
+			p := r.getPendingCircuitClose(PlatformPendingCloseHyperliquid)
+			if p == nil || len(p.Symbols) != 1 {
+				t.Fatalf("entry not loaded: %+v", p)
+			}
+			if p.Symbols[0].Symbol != tc.wantSymbol || p.Symbols[0].Size != tc.wantSize {
+				t.Errorf("got symbol=%q size=%g, want %q/%g", p.Symbols[0].Symbol, p.Symbols[0].Size, tc.wantSymbol, tc.wantSize)
+			}
+			if p.ConsecutiveFailures != 0 {
+				t.Errorf("legacy row must default ConsecutiveFailures=0, got %d", p.ConsecutiveFailures)
+			}
+			if !p.LastNotifiedAt.IsZero() {
+				t.Errorf("legacy row must default LastNotifiedAt=zero, got %v", p.LastNotifiedAt)
+			}
+		})
 	}
 }
 
@@ -2820,49 +2612,6 @@ func TestRiskState_PendingCircuitClose_SetClearGet(t *testing.T) {
 	r.clearPendingCircuitClose("hyperliquid")
 }
 
-func TestRiskState_PendingCircuitClose_MultiPlatformRoundTrip(t *testing.T) {
-	src := &RiskState{PendingCircuitCloses: map[string]*PendingCircuitClose{
-		"hyperliquid": {Symbols: []PendingCircuitCloseSymbol{{Symbol: "ETH", Size: 0.1}}},
-		"okx":         {Symbols: []PendingCircuitCloseSymbol{{Symbol: "BTC-USDT-SWAP", Size: 0.01}}},
-	}}
-	blob := src.MarshalPendingCircuitClosesJSON()
-	var dst RiskState
-	dst.UnmarshalPendingCircuitClosesJSON(blob)
-	if dst.getPendingCircuitClose("hyperliquid") == nil {
-		t.Error("hyperliquid entry lost in round-trip")
-	}
-	if dst.getPendingCircuitClose("okx") == nil {
-		t.Error("okx entry lost in round-trip")
-	}
-}
-
-func TestRiskState_PendingCircuitClose_ConsecutiveFailureserRoundTrip(t *testing.T) {
-	notifiedAt := time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC)
-	src := &RiskState{PendingCircuitCloses: map[string]*PendingCircuitClose{
-		PlatformPendingCloseHyperliquid: {
-			Symbols:             []PendingCircuitCloseSymbol{{Symbol: "ETH", Size: 0.25}},
-			ConsecutiveFailures: 7,
-			LastNotifiedAt:      notifiedAt,
-		},
-	}}
-	blob := src.MarshalPendingCircuitClosesJSON()
-	if blob == "" {
-		t.Fatal("expected non-empty JSON blob")
-	}
-	var dst RiskState
-	dst.UnmarshalPendingCircuitClosesJSON(blob)
-	got := dst.getPendingCircuitClose(PlatformPendingCloseHyperliquid)
-	if got == nil {
-		t.Fatal("entry lost in round-trip")
-	}
-	if got.ConsecutiveFailures != 7 {
-		t.Errorf("ConsecutiveFailures: got %d, want 7", got.ConsecutiveFailures)
-	}
-	if !got.LastNotifiedAt.Equal(notifiedAt) {
-		t.Errorf("LastNotifiedAt: got %v, want %v", got.LastNotifiedAt, notifiedAt)
-	}
-}
-
 func TestCheckRisk_ManualStrategyAlwaysAllowed(t *testing.T) {
 	sc := &StrategyConfig{ID: "hl-manual-eth-live", Type: "manual", Platform: "hyperliquid", Symbol: "ETH", Leverage: 10}
 	s := &StrategyState{Type: "manual", RiskState: RiskState{PeakValue: 100, MaxDrawdownPct: 60}}
@@ -2875,21 +2624,6 @@ func TestCheckRisk_ManualStrategyAlwaysAllowed(t *testing.T) {
 	}
 	if s.RiskState.CircuitBreaker {
 		t.Error("CheckRisk must not set CircuitBreaker for manual strategy")
-	}
-}
-
-func TestRiskState_PendingCircuitClose_LegacyShapeDefaultsZeroConsecutiveFailures(t *testing.T) {
-	var r RiskState
-	r.UnmarshalPendingCircuitClosesJSON(`{"hyperliquid":{"symbols":[{"symbol":"ETH","size":0.25}]}}`)
-	got := r.getPendingCircuitClose(PlatformPendingCloseHyperliquid)
-	if got == nil {
-		t.Fatal("entry not loaded")
-	}
-	if got.ConsecutiveFailures != 0 {
-		t.Errorf("legacy row must default ConsecutiveFailures=0, got %d", got.ConsecutiveFailures)
-	}
-	if !got.LastNotifiedAt.IsZero() {
-		t.Errorf("legacy row must default LastNotifiedAt=zero, got %v", got.LastNotifiedAt)
 	}
 }
 
@@ -2968,37 +2702,42 @@ func TestFormatPerStrategyCircuitBreakerBlock_IncludesTriageSections(t *testing.
 	}
 }
 
-func TestCircuitBreakerStrategyLabel_SkipsFlagTimeframe(t *testing.T) {
-	sc := StrategyConfig{
-		ID:       "deribit-btc-options",
-		Type:     "options",
-		Platform: "deribit",
-		Args:     []string{"wheel", "BTC", "--platform=deribit"},
+func TestCircuitBreakerStrategyLabel(t *testing.T) {
+	cases := []struct {
+		name            string
+		sc              StrategyConfig
+		wantContains    []string
+		wantNotContains []string
+	}{
+		{
+			name: "skips flag as timeframe",
+			sc: StrategyConfig{ID: "deribit-btc-options", Type: "options", Platform: "deribit",
+				Args: []string{"wheel", "BTC", "--platform=deribit"}},
+			wantContains:    []string{"Deribit", "BTC", "wheel", "options"},
+			wantNotContains: []string{"--platform=deribit"},
+		},
+		{
+			name: "strips spot quote suffix",
+			sc: StrategyConfig{ID: "spot-btc", Type: "spot", Platform: "binanceus",
+				Args: []string{"sma_cross", "BTC/USDT", "30m"}},
+			wantContains:    []string{"BinanceUS, BTC, 30m, sma_cross, spot"},
+			wantNotContains: []string{"BTC/USDT"},
+		},
 	}
-	got := circuitBreakerStrategyLabel(sc)
-	if strings.Contains(got, "--platform=deribit") {
-		t.Fatalf("strategy label rendered flag as timeframe: %q", got)
-	}
-	for _, want := range []string{"Deribit", "BTC", "wheel", "options"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("strategy label missing %q: %q", want, got)
-		}
-	}
-}
-
-func TestCircuitBreakerStrategyLabel_StripsSpotQuoteSuffix(t *testing.T) {
-	sc := StrategyConfig{
-		ID:       "spot-btc",
-		Type:     "spot",
-		Platform: "binanceus",
-		Args:     []string{"sma_cross", "BTC/USDT", "30m"},
-	}
-	got := circuitBreakerStrategyLabel(sc)
-	if !strings.Contains(got, "BinanceUS, BTC, 30m, sma_cross, spot") {
-		t.Fatalf("strategy label = %q, want normalized BTC asset", got)
-	}
-	if strings.Contains(got, "BTC/USDT") {
-		t.Fatalf("strategy label should not render raw spot pair: %q", got)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := circuitBreakerStrategyLabel(tc.sc)
+			for _, want := range tc.wantContains {
+				if !strings.Contains(got, want) {
+					t.Errorf("strategy label missing %q: %q", want, got)
+				}
+			}
+			for _, unwanted := range tc.wantNotContains {
+				if strings.Contains(got, unwanted) {
+					t.Errorf("strategy label must not contain %q: %q", unwanted, got)
+				}
+			}
+		})
 	}
 }
 
@@ -3281,193 +3020,168 @@ func TestCheckRisk_CircuitBreakerDisabled_ThrottleClearsWhenBreachClears(t *test
 	}
 }
 
-func TestCollectPerpsMarkSymbols_IncludesManualHyperliquid(t *testing.T) {
-	strategies := []StrategyConfig{
-		{ID: "manual-hl-eth", Type: "manual", Platform: "hyperliquid", Symbol: "ETH",
-			Args: []string{"hold", "WRONGCOIN", "1h", "--mode=live"}},
-		{ID: "manual-hl-hype", Type: "manual", Platform: "hyperliquid", Symbol: "HYPE",
-			Args: []string{"hold", "HYPE", "1h", "--mode=paper"}},
-		{ID: "hl-trend-btc", Type: "perps", Platform: "hyperliquid", Args: []string{"trend", "BTC", "1h"}},
-		{ID: "manual-hl-btc", Type: "manual", Platform: "hyperliquid", Symbol: "BTC",
-			Args: []string{"hold", "BTC", "1h", "--mode=live"}},
-		{ID: "manual-okx-sol", Type: "manual", Platform: "okx", Symbol: "SOL",
-			Args: []string{"hold", "SOL", "1h", "--mode=live"}},
-		{ID: "manual-hl-empty", Type: "manual", Platform: "hyperliquid", Symbol: "",
-			Args: []string{"hold", "DOGE", "1h", "--mode=live"}},
-	}
-
-	hlCoins, okxCoins := collectPerpsMarkSymbols(strategies)
-
-	wantHL := []string{"BTC", "ETH", "HYPE"}
-	if len(hlCoins) != len(wantHL) {
-		t.Fatalf("hlCoins = %v, want %v", hlCoins, wantHL)
-	}
-	for i, c := range wantHL {
-		if hlCoins[i] != c {
-			t.Errorf("hlCoins[%d] = %q, want %q", i, hlCoins[i], c)
-		}
-	}
-	if len(okxCoins) != 0 {
-		t.Errorf("okxCoins = %v, want empty (manual is hyperliquid-only)", okxCoins)
-	}
-}
-
-func TestCollectFuturesMarkSymbols_IgnoresManual(t *testing.T) {
-	strategies := []StrategyConfig{
-		{ID: "manual-hl-eth", Type: "manual", Platform: "hyperliquid", Symbol: "ETH",
-			Args: []string{"hold", "ETH", "1h", "--mode=live"}},
-		{ID: "ts-trend-es", Type: "futures", Platform: "topstep", Args: []string{"trend", "ES", "1h"}},
-	}
-	syms := collectFuturesMarkSymbols(strategies)
-	if len(syms) != 1 || syms[0] != "ES" {
-		t.Errorf("collectFuturesMarkSymbols = %v, want [ES]", syms)
-	}
-}
-
 func TestCollectMissingMarkPositions(t *testing.T) {
-	strategies := []StrategyConfig{
-		{ID: "manual-hl-eth", Type: "manual", Platform: "hyperliquid", Symbol: "ETH",
-			Args: []string{"hold", "ETH", "1h", "--mode=live"}},
-		{ID: "manual-hl-record", Type: "manual", Platform: "hyperliquid", Symbol: "HYPE",
-			Args: []string{"hold", "HYPE", "1h", "--mode=paper"}},
-		{ID: "hl-trend-btc", Type: "perps", Platform: "hyperliquid", Args: []string{"trend", "BTC", "1h"}},
-		{ID: "hl-trend-sol", Type: "perps", Platform: "hyperliquid", Args: []string{"trend", "SOL", "1h"}},
-		{ID: "sma-btc", Type: "spot", Platform: "binanceus", Args: []string{"sma", "BTC/USDT", "1h"}},
-		{ID: "deribit-vol-btc", Type: "options", Platform: "deribit", Args: []string{"vol", "BTC"}},
-		{ID: "flat-strategy", Type: "perps", Platform: "hyperliquid", Args: []string{"trend", "DOGE", "1h"}},
-		{ID: "not-in-state", Type: "perps", Platform: "hyperliquid", Args: []string{"trend", "AVAX", "1h"}},
-	}
-	openSymbols := map[string][]string{
-		"manual-hl-eth":    {"ETH"},
-		"manual-hl-record": {"HYPE"},
-		"hl-trend-btc":     {"BTC"},
-		"hl-trend-sol":     {"SOL"},
-		"sma-btc":          {"BTC/USDT"},
-		"deribit-vol-btc":  {"BTC-PERP"},
-		"flat-strategy":    {},
-	}
-	prices := map[string]float64{
-		"BTC":      67500.0,
-		"BTC/USDT": 67510.0,
-		"ETH":      0,
-	}
-
-	got := collectMissingMarkPositions(strategies, openSymbols, prices)
-	want := []missingMarkPosition{
-		{StrategyID: "manual-hl-eth", Symbol: "ETH", Live: true},
-		{StrategyID: "manual-hl-record", Symbol: "HYPE", Live: false},
-		{StrategyID: "hl-trend-sol", Symbol: "SOL", Live: false},
-	}
-	if len(got) != len(want) {
-		t.Fatalf("collectMissingMarkPositions = %+v, want %+v", got, want)
-	}
-	for i := range want {
-		if got[i].StrategyID != want[i].StrategyID || got[i].Symbol != want[i].Symbol || got[i].Live != want[i].Live {
-			t.Errorf("[%d] = %+v, want %+v", i, got[i], want[i])
+	hlPerps := func(id, coin string, mode string) StrategyConfig {
+		args := []string{"trend", coin, "1h"}
+		if mode != "" {
+			args = append(args, "--mode="+mode)
 		}
+		return StrategyConfig{ID: id, Type: "perps", Platform: "hyperliquid", Args: args}
+	}
+	hlManual := func(id, coin, mode string) StrategyConfig {
+		return StrategyConfig{ID: id, Type: "manual", Platform: "hyperliquid", Symbol: coin,
+			Args: []string{"hold", coin, "1h", "--mode=" + mode}}
+	}
+	type miss struct {
+		strategyID, symbol string
+		live               bool
+		platform, typ      string
+		disabledManagers   int
+	}
+	cases := []struct {
+		name        string
+		strategies  []StrategyConfig
+		openSymbols map[string][]string
+		prices      map[string]float64
+		want        []miss
+	}{
+		{
+			name: "mixed book reports only mark-less HL perps and manual positions",
+			strategies: []StrategyConfig{
+				hlManual("manual-hl-eth", "ETH", "live"),
+				hlManual("manual-hl-record", "HYPE", "paper"),
+				hlPerps("hl-trend-btc", "BTC", ""),
+				hlPerps("hl-trend-sol", "SOL", ""),
+				{ID: "sma-btc", Type: "spot", Platform: "binanceus", Args: []string{"sma", "BTC/USDT", "1h"}},
+				{ID: "deribit-vol-btc", Type: "options", Platform: "deribit", Args: []string{"vol", "BTC"}},
+				hlPerps("flat-strategy", "DOGE", ""),
+				hlPerps("not-in-state", "AVAX", ""),
+			},
+			openSymbols: map[string][]string{
+				"manual-hl-eth":    {"ETH"},
+				"manual-hl-record": {"HYPE"},
+				"hl-trend-btc":     {"BTC"},
+				"hl-trend-sol":     {"SOL"},
+				"sma-btc":          {"BTC/USDT"},
+				"deribit-vol-btc":  {"BTC-PERP"},
+				"flat-strategy":    {},
+			},
+			prices: map[string]float64{"BTC": 67500.0, "BTC/USDT": 67510.0, "ETH": 0},
+			want: []miss{
+				{"manual-hl-eth", "ETH", true, "hyperliquid", "manual", 2},
+				{"manual-hl-record", "HYPE", false, "hyperliquid", "manual", 2},
+				{"hl-trend-sol", "SOL", false, "hyperliquid", "perps", 2},
+			},
+		},
+		{
+			name:        "symbols sorted per strategy",
+			strategies:  []StrategyConfig{hlPerps("hl-trend-btc", "BTC", "")},
+			openSymbols: map[string][]string{"hl-trend-btc": {"SOL", "BTC", "ETH"}},
+			prices:      map[string]float64{},
+			want: []miss{
+				{"hl-trend-btc", "BTC", false, "hyperliquid", "perps", 2},
+				{"hl-trend-btc", "ETH", false, "hyperliquid", "perps", 2},
+				{"hl-trend-btc", "SOL", false, "hyperliquid", "perps", 2},
+			},
+		},
+		{
+			name:       "no open positions",
+			strategies: []StrategyConfig{hlPerps("hl-trend-btc", "BTC", "")},
+		},
+		{
+			name:        "live flag drives escalation",
+			strategies:  []StrategyConfig{hlPerps("hl-live", "BTC", "live"), hlPerps("hl-paper", "SOL", "paper")},
+			openSymbols: map[string][]string{"hl-live": {"BTC"}, "hl-paper": {"SOL"}},
+			prices:      map[string]float64{},
+			want: []miss{
+				{"hl-live", "BTC", true, "hyperliquid", "perps", 2},
+				{"hl-paper", "SOL", false, "hyperliquid", "perps", 2},
+			},
+		},
+		{
+			name:        "record-only manual position under a non-config symbol",
+			strategies:  []StrategyConfig{hlManual("manual-hl", "ETH", "live")},
+			openSymbols: map[string][]string{"manual-hl": {"HYPE"}},
+			prices:      map[string]float64{"ETH": 3400},
+			want:        []miss{{"manual-hl", "HYPE", true, "hyperliquid", "manual", 2}},
+		},
+		{
+			name:        "flat record-only manual is silent",
+			strategies:  []StrategyConfig{hlManual("manual-hl-record", "HYPE", "paper")},
+			openSymbols: map[string][]string{"manual-hl-record": {}},
+		},
+		{
+			name: "carries the venue management surface",
+			strategies: []StrategyConfig{
+				hlPerps("hl-live-btc", "BTC", "live"),
+				{ID: "sma-eth", Type: "spot", Platform: "binanceus", Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+			},
+			openSymbols: map[string][]string{"hl-live-btc": {"BTC"}, "sma-eth": {"ETH"}},
+			prices:      map[string]float64{},
+			want: []miss{
+				{"hl-live-btc", "BTC", true, "hyperliquid", "perps", 2},
+				{"sma-eth", "ETH", true, "binanceus", "spot", 0},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := collectMissingMarkPositions(tc.strategies, tc.openSymbols, tc.prices)
+			if len(got) != len(tc.want) {
+				t.Fatalf("collectMissingMarkPositions = %+v, want %+v", got, tc.want)
+			}
+			for i, want := range tc.want {
+				g := got[i]
+				if g.StrategyID != want.strategyID || g.Symbol != want.symbol || g.Live != want.live ||
+					g.Platform != want.platform || g.Type != want.typ || len(g.DisabledManagers) != want.disabledManagers {
+					t.Errorf("[%d] = %+v, want %+v", i, g, want)
+				}
+			}
+		})
 	}
 }
 
-func TestCollectMissingMarkPositions_SortsSymbolsPerStrategy(t *testing.T) {
-	strategies := []StrategyConfig{
-		{ID: "hl-trend-btc", Type: "perps", Platform: "hyperliquid", Args: []string{"trend", "BTC", "1h"}},
+func TestManualOnlyMarkSymbols(t *testing.T) {
+	cases := []struct {
+		name       string
+		strategies []StrategyConfig
+		want       []string
+	}{
+		{
+			name: "excludes coins donated by perps rails",
+			strategies: []StrategyConfig{
+				{ID: "manual-hype", Type: "manual", Platform: "hyperliquid", Symbol: "HYPE",
+					Args: []string{"hold", "HYPE", "1h", "--mode=live"}},
+				{ID: "manual-btc", Type: "manual", Platform: "hyperliquid", Symbol: "BTC",
+					Args: []string{"hold", "BTC", "1h", "--mode=live"}},
+				{ID: "hl-trend-btc", Type: "perps", Platform: "hyperliquid", Args: []string{"trend", "BTC", "1h"}},
+				{ID: "manual-sol", Type: "manual", Platform: "hyperliquid", Symbol: "SOL",
+					Args: []string{"hold", "SOL", "1h", "--mode=live"}},
+				{ID: "okx-trend-sol", Type: "perps", Platform: "okx", Args: []string{"trend", "SOL", "1h"}},
+				{ID: "manual-okx", Type: "manual", Platform: "okx", Symbol: "DOGE",
+					Args: []string{"hold", "DOGE", "1h", "--mode=live"}},
+			},
+			want: []string{"HYPE"},
+		},
+		{
+			name: "no manual strategies",
+			strategies: []StrategyConfig{
+				{ID: "hl-trend-btc", Type: "perps", Platform: "hyperliquid", Args: []string{"trend", "BTC", "1h"}},
+			},
+		},
 	}
-	openSymbols := map[string][]string{"hl-trend-btc": {"SOL", "BTC", "ETH"}}
-	got := collectMissingMarkPositions(strategies, openSymbols, map[string]float64{})
-	want := []string{"BTC", "ETH", "SOL"}
-	if len(got) != len(want) {
-		t.Fatalf("got %+v, want %d entries", got, len(want))
-	}
-	for i, sym := range want {
-		if got[i].Symbol != sym {
-			t.Errorf("[%d].Symbol = %q, want %q", i, got[i].Symbol, sym)
-		}
-	}
-}
-
-func TestCollectMissingMarkPositions_NoOpenPositions(t *testing.T) {
-	strategies := []StrategyConfig{
-		{ID: "hl-trend-btc", Type: "perps", Platform: "hyperliquid", Args: []string{"trend", "BTC", "1h"}},
-	}
-	if got := collectMissingMarkPositions(strategies, nil, nil); len(got) != 0 {
-		t.Errorf("collectMissingMarkPositions = %+v, want empty", got)
-	}
-}
-
-func TestCollectMissingMarkPositions_LiveFlagDrivesEscalation(t *testing.T) {
-	strategies := []StrategyConfig{
-		{ID: "hl-live", Type: "perps", Platform: "hyperliquid", Args: []string{"trend", "BTC", "1h", "--mode=live"}},
-		{ID: "hl-paper", Type: "perps", Platform: "hyperliquid", Args: []string{"trend", "SOL", "1h", "--mode=paper"}},
-	}
-	openSymbols := map[string][]string{"hl-live": {"BTC"}, "hl-paper": {"SOL"}}
-	got := collectMissingMarkPositions(strategies, openSymbols, map[string]float64{})
-	if len(got) != 2 {
-		t.Fatalf("collectMissingMarkPositions = %+v, want 2 entries", got)
-	}
-	if !got[0].Live {
-		t.Errorf("live strategy entry %+v: Live = false, want true", got[0])
-	}
-	if got[1].Live {
-		t.Errorf("paper strategy entry %+v: Live = true, want false", got[1])
-	}
-}
-
-func TestCollectMissingMarkPositions_RecordOnlyManualUnderNonSCSymbol(t *testing.T) {
-	strategies := []StrategyConfig{
-		{ID: "manual-hl", Type: "manual", Platform: "hyperliquid", Symbol: "ETH",
-			Args: []string{"hold", "ETH", "1h", "--mode=live"}},
-	}
-	openSymbols := map[string][]string{"manual-hl": {"HYPE"}}
-	got := collectMissingMarkPositions(strategies, openSymbols, map[string]float64{"ETH": 3400})
-	if len(got) != 1 || got[0].Symbol != "HYPE" {
-		t.Fatalf("collectMissingMarkPositions = %+v, want one HYPE miss", got)
-	}
-	if !got[0].Live {
-		t.Errorf("live manual miss %+v: Live = false, want true", got[0])
-	}
-}
-
-func TestCollectMissingMarkPositions_FlatRecordOnlyManualSilent(t *testing.T) {
-	strategies := []StrategyConfig{
-		{ID: "manual-hl-record", Type: "manual", Platform: "hyperliquid", Symbol: "HYPE",
-			Args: []string{"hold", "HYPE", "1h", "--mode=paper"}},
-	}
-	if got := collectMissingMarkPositions(strategies, map[string][]string{"manual-hl-record": {}}, nil); len(got) != 0 {
-		t.Errorf("collectMissingMarkPositions = %+v, want empty", got)
-	}
-}
-
-func TestManualOnlyMarkSymbols_ExcludesPreExistingDonors(t *testing.T) {
-	strategies := []StrategyConfig{
-		{ID: "manual-hype", Type: "manual", Platform: "hyperliquid", Symbol: "HYPE",
-			Args: []string{"hold", "HYPE", "1h", "--mode=live"}},
-		{ID: "manual-btc", Type: "manual", Platform: "hyperliquid", Symbol: "BTC",
-			Args: []string{"hold", "BTC", "1h", "--mode=live"}},
-		{ID: "hl-trend-btc", Type: "perps", Platform: "hyperliquid", Args: []string{"trend", "BTC", "1h"}},
-		{ID: "manual-sol", Type: "manual", Platform: "hyperliquid", Symbol: "SOL",
-			Args: []string{"hold", "SOL", "1h", "--mode=live"}},
-		{ID: "okx-trend-sol", Type: "perps", Platform: "okx", Args: []string{"trend", "SOL", "1h"}},
-		{ID: "manual-okx", Type: "manual", Platform: "okx", Symbol: "DOGE",
-			Args: []string{"hold", "DOGE", "1h", "--mode=live"}},
-	}
-	got := manualOnlyMarkSymbols(strategies)
-	want := []string{"HYPE"}
-	if len(got) != len(want) {
-		t.Fatalf("manualOnlyMarkSymbols = %v, want %v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("[%d] = %q, want %q", i, got[i], want[i])
-		}
-	}
-}
-
-func TestManualOnlyMarkSymbols_NoManualStrategies(t *testing.T) {
-	strategies := []StrategyConfig{
-		{ID: "hl-trend-btc", Type: "perps", Platform: "hyperliquid", Args: []string{"trend", "BTC", "1h"}},
-	}
-	if got := manualOnlyMarkSymbols(strategies); len(got) != 0 {
-		t.Errorf("manualOnlyMarkSymbols = %v, want empty", got)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := manualOnlyMarkSymbols(tc.strategies)
+			if len(got) != len(tc.want) {
+				t.Fatalf("manualOnlyMarkSymbols = %v, want %v", got, tc.want)
+			}
+			for i := range tc.want {
+				if got[i] != tc.want[i] {
+					t.Errorf("[%d] = %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
 	}
 }
 
@@ -3559,76 +3273,72 @@ func TestSnapshotOpenSymbolsByStrategy(t *testing.T) {
 	}
 }
 
-func TestMissingManualOnlyMarks_IgnoresNonManualOutage(t *testing.T) {
-	strategies := []StrategyConfig{
-		{ID: "manual-hl-hype", Type: "manual", Platform: "hyperliquid", Symbol: "HYPE",
-			Args: []string{"hold", "HYPE", "1h", "--mode=live"}},
-		{ID: "ts-es", Type: "futures", Platform: "topstep", Args: []string{"trend", "ES", "1h"}},
-		{ID: "okx-sol", Type: "perps", Platform: "okx", Args: []string{"trend", "SOL", "1h"}},
-		{ID: "sma-btc", Type: "spot", Platform: "binanceus", Args: []string{"sma", "BTC/USDT", "1h"}},
+func TestMissingManualOnlyMarks(t *testing.T) {
+	manual := func(id, coin string) StrategyConfig {
+		return StrategyConfig{ID: id, Type: "manual", Platform: "hyperliquid", Symbol: coin,
+			Args: []string{"hold", coin, "1h", "--mode=live"}}
 	}
-	openSymbols := map[string][]string{
-		"manual-hl-hype": {"HYPE"},
-		"ts-es":          {"ES"},
-		"okx-sol":        {"SOL"},
-		"sma-btc":        {"BTC/USDT"},
+	cases := []struct {
+		name        string
+		strategies  []StrategyConfig
+		openSymbols map[string][]string
+		prices      map[string]float64
+		want        []string
+	}{
+		{
+			name: "non-manual outages cancel out of the delta and never defer",
+			strategies: []StrategyConfig{
+				manual("manual-hl-hype", "HYPE"),
+				{ID: "ts-es", Type: "futures", Platform: "topstep", Args: []string{"trend", "ES", "1h"}},
+				{ID: "okx-sol", Type: "perps", Platform: "okx", Args: []string{"trend", "SOL", "1h"}},
+				{ID: "sma-btc", Type: "spot", Platform: "binanceus", Args: []string{"sma", "BTC/USDT", "1h"}},
+			},
+			openSymbols: map[string][]string{"manual-hl-hype": {"HYPE"}, "ts-es": {"ES"}, "okx-sol": {"SOL"}, "sma-btc": {"BTC/USDT"}},
+			prices:      map[string]float64{"HYPE": 42.0},
+		},
+		{
+			name:        "manual-only outage defers, sorted",
+			strategies:  []StrategyConfig{manual("manual-hl-hype", "HYPE"), manual("manual-hl-eth", "ETH")},
+			openSymbols: map[string][]string{"manual-hl-hype": {"HYPE"}, "manual-hl-eth": {"ETH"}},
+			prices:      map[string]float64{"ETH": 0},
+			want:        []string{"ETH", "HYPE"},
+		},
+		{
+			name: "no manual-only coin runs immediately",
+			strategies: []StrategyConfig{
+				{ID: "hl-trend-btc", Type: "perps", Platform: "hyperliquid", Args: []string{"trend", "BTC", "1h"}},
+				{ID: "sma-eth", Type: "spot", Platform: "binanceus", Args: []string{"sma", "ETH", "1h"}},
+			},
+			openSymbols: map[string][]string{"hl-trend-btc": {"BTC"}, "sma-eth": {"ETH"}},
+			prices:      map[string]float64{},
+		},
+		{
+			name: "donor coin never gates",
+			strategies: []StrategyConfig{
+				manual("manual-hl-btc", "BTC"),
+				{ID: "hl-trend-btc", Type: "perps", Platform: "hyperliquid", Args: []string{"trend", "BTC", "1h"}},
+			},
+			openSymbols: map[string][]string{"manual-hl-btc": {"BTC"}},
+			prices:      map[string]float64{},
+		},
+		{
+			name:        "unheld manual coin never gates",
+			strategies:  []StrategyConfig{manual("manual-hl-hype", "HYPE")},
+			openSymbols: map[string][]string{"manual-hl-hype": {}},
+		},
 	}
-	prices := map[string]float64{"HYPE": 42.0}
-	if got := missingManualOnlyMarks(strategies, openSymbols, prices); len(got) != 0 {
-		t.Errorf("missingManualOnlyMarks = %v, want empty — non-manual misses cancel out of the delta and must not defer the migration", got)
-	}
-}
-
-func TestMissingManualOnlyMarks_DefersOnManualOutage(t *testing.T) {
-	strategies := []StrategyConfig{
-		{ID: "manual-hl-hype", Type: "manual", Platform: "hyperliquid", Symbol: "HYPE",
-			Args: []string{"hold", "HYPE", "1h", "--mode=live"}},
-		{ID: "manual-hl-eth", Type: "manual", Platform: "hyperliquid", Symbol: "ETH",
-			Args: []string{"hold", "ETH", "1h", "--mode=live"}},
-	}
-	openSymbols := map[string][]string{"manual-hl-hype": {"HYPE"}, "manual-hl-eth": {"ETH"}}
-	got := missingManualOnlyMarks(strategies, openSymbols, map[string]float64{"ETH": 0})
-	want := []string{"ETH", "HYPE"}
-	if len(got) != len(want) {
-		t.Fatalf("missingManualOnlyMarks = %v, want %v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("[%d] = %q, want %q", i, got[i], want[i])
-		}
-	}
-}
-
-func TestMissingManualOnlyMarks_NoManualOnlyCoinsRunsImmediately(t *testing.T) {
-	strategies := []StrategyConfig{
-		{ID: "hl-trend-btc", Type: "perps", Platform: "hyperliquid", Args: []string{"trend", "BTC", "1h"}},
-		{ID: "sma-eth", Type: "spot", Platform: "binanceus", Args: []string{"sma", "ETH", "1h"}},
-	}
-	openSymbols := map[string][]string{"hl-trend-btc": {"BTC"}, "sma-eth": {"ETH"}}
-	if got := missingManualOnlyMarks(strategies, openSymbols, map[string]float64{}); len(got) != 0 {
-		t.Errorf("missingManualOnlyMarks = %v, want empty — no manual-only coin exists, so nothing gates the migration", got)
-	}
-}
-
-func TestMissingManualOnlyMarks_DonorCoinNeverGates(t *testing.T) {
-	strategies := []StrategyConfig{
-		{ID: "manual-hl-btc", Type: "manual", Platform: "hyperliquid", Symbol: "BTC",
-			Args: []string{"hold", "BTC", "1h", "--mode=live"}},
-		{ID: "hl-trend-btc", Type: "perps", Platform: "hyperliquid", Args: []string{"trend", "BTC", "1h"}},
-	}
-	openSymbols := map[string][]string{"manual-hl-btc": {"BTC"}}
-	if got := missingManualOnlyMarks(strategies, openSymbols, map[string]float64{}); len(got) != 0 {
-		t.Errorf("missingManualOnlyMarks = %v, want empty — BTC is donated by the perps rail, so it is not a manual-only coin", got)
-	}
-}
-
-func TestMissingManualOnlyMarks_UnheldManualCoinNeverGates(t *testing.T) {
-	strategies := []StrategyConfig{
-		{ID: "manual-hl-hype", Type: "manual", Platform: "hyperliquid", Symbol: "HYPE",
-			Args: []string{"hold", "HYPE", "1h", "--mode=live"}},
-	}
-	if got := missingManualOnlyMarks(strategies, map[string][]string{"manual-hl-hype": {}}, nil); len(got) != 0 {
-		t.Errorf("missingManualOnlyMarks = %v, want empty — the strategy is flat, so its coin cannot move the delta", got)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := missingManualOnlyMarks(tc.strategies, tc.openSymbols, tc.prices)
+			if len(got) != len(tc.want) {
+				t.Fatalf("missingManualOnlyMarks = %v, want %v", got, tc.want)
+			}
+			for i := range tc.want {
+				if got[i] != tc.want[i] {
+					t.Errorf("[%d] = %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
 	}
 }
 
@@ -3658,23 +3368,5 @@ func TestMarkGatedManagers_ScopedToHyperliquidPerpsAndManual(t *testing.T) {
 				t.Errorf("markGatedManagers = %v, want empty — this venue runs no mark-gated manager", got)
 			}
 		})
-	}
-}
-
-func TestCollectMissingMarkPositions_CarriesVenueManagementSurface(t *testing.T) {
-	strategies := []StrategyConfig{
-		{ID: "hl-live-btc", Type: "perps", Platform: "hyperliquid", Args: []string{"trend", "BTC", "1h", "--mode=live"}},
-		{ID: "sma-eth", Type: "spot", Platform: "binanceus", Args: []string{"sma", "ETH", "1h", "--mode=live"}},
-	}
-	openSymbols := map[string][]string{"hl-live-btc": {"BTC"}, "sma-eth": {"ETH"}}
-	got := collectMissingMarkPositions(strategies, openSymbols, map[string]float64{})
-	if len(got) != 2 {
-		t.Fatalf("collectMissingMarkPositions = %+v, want 2 entries", got)
-	}
-	if got[0].Platform != "hyperliquid" || got[0].Type != "perps" || len(got[0].DisabledManagers) != 2 {
-		t.Errorf("HL perps miss = %+v, want platform/type stamped and 2 disabled managers", got[0])
-	}
-	if got[1].Platform != "binanceus" || got[1].Type != "spot" || len(got[1].DisabledManagers) != 0 {
-		t.Errorf("spot miss = %+v, want platform/type stamped and NO disabled managers", got[1])
 	}
 }

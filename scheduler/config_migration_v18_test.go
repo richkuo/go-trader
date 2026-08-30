@@ -182,56 +182,65 @@ func TestLoadConfigV18MigratesLegacyUserDefaultKeys(t *testing.T) {
 	}
 }
 
-func TestMigrateV18RejectsConflictingTrailKeys(t *testing.T) {
-	raw := map[string]interface{}{
-		"strategies": []interface{}{
-			map[string]interface{}{
-				"id":                        "hl-eth",
-				legacyTrailStopATRRegimeKey: map[string]interface{}{"use_defaults": true},
-				trailStopATRRegimeKey:       map[string]interface{}{"trend_regime": map[string]interface{}{"ranging": map[string]interface{}{"atr_multiple": 1.0}}},
+func TestMigrateV18TrailStopATRRegimeKey(t *testing.T) {
+	t.Run("conflicting_blocks_rejected_naming_both_keys", func(t *testing.T) {
+		raw := map[string]interface{}{
+			"strategies": []interface{}{
+				map[string]interface{}{
+					"id":                        "hl-eth",
+					legacyTrailStopATRRegimeKey: map[string]interface{}{"use_defaults": true},
+					trailStopATRRegimeKey:       map[string]interface{}{"trend_regime": map[string]interface{}{"ranging": map[string]interface{}{"atr_multiple": 1.0}}},
+				},
 			},
-		},
-	}
-	err := migrateV18TrailStopATRRegimeKey(raw)
-	if err == nil {
-		t.Fatal("expected conflict error when both spellings carry different blocks")
-	}
-	if !strings.Contains(err.Error(), legacyTrailStopATRRegimeKey) || !strings.Contains(err.Error(), trailStopATRRegimeKey) {
-		t.Errorf("conflict error should name both keys, got: %v", err)
-	}
+		}
+		err := migrateV18TrailStopATRRegimeKey(raw)
+		if err == nil {
+			t.Fatal("expected conflict error when both spellings carry different blocks")
+		}
+		if !strings.Contains(err.Error(), legacyTrailStopATRRegimeKey) || !strings.Contains(err.Error(), trailStopATRRegimeKey) {
+			t.Errorf("conflict error should name both keys, got: %v", err)
+		}
+	})
+	t.Run("identical_blocks_drop_redundant_legacy_key", func(t *testing.T) {
+		raw := map[string]interface{}{
+			"strategies": []interface{}{
+				map[string]interface{}{
+					"id":                        "hl-eth",
+					legacyTrailStopATRRegimeKey: map[string]interface{}{"use_defaults": true},
+					trailStopATRRegimeKey:       map[string]interface{}{"use_defaults": true},
+				},
+			},
+		}
+		if err := migrateV18TrailStopATRRegimeKey(raw); err != nil {
+			t.Fatalf("identical blocks should migrate cleanly, got: %v", err)
+		}
+		sc := raw["strategies"].([]interface{})[0].(map[string]interface{})
+		if _, present := sc[legacyTrailStopATRRegimeKey]; present {
+			t.Error("redundant legacy key was not removed")
+		}
+		if got := sc[trailStopATRRegimeKey]; got == nil {
+			t.Error("canonical key was dropped")
+		}
+	})
 }
 
-func TestMigrateV18DropsRedundantLegacyTrailKey(t *testing.T) {
-	block := map[string]interface{}{"use_defaults": true}
-	raw := map[string]interface{}{
-		"strategies": []interface{}{
-			map[string]interface{}{
-				"id":                        "hl-eth",
-				legacyTrailStopATRRegimeKey: map[string]interface{}{"use_defaults": true},
-				trailStopATRRegimeKey:       block,
-			},
-		},
+func TestNeedsV18TrailStopKeyMigration(t *testing.T) {
+	cases := []struct {
+		name string
+		data string
+		want bool
+	}{
+		{"v18_stamped_still_carrying_legacy_key", `{"config_version": 18, "strategies": [{"id": "a", "trailing_stop_atr_regime": {"use_defaults": true}}]}`, true},
+		{"v18_stamped_on_canonical_key", `{"config_version": 18, "strategies": [{"id": "a", "trail_stop_atr_regime": {"use_defaults": true}}]}`, false},
+		{"sub_v18_with_no_legacy_key", v18CleanStrategyConfigJSON, false},
+		{"sub_v18_carrying_legacy_key", v18LegacyStrategyConfigJSON, true},
 	}
-	if err := migrateV18TrailStopATRRegimeKey(raw); err != nil {
-		t.Fatalf("identical blocks should migrate cleanly, got: %v", err)
-	}
-	sc := raw["strategies"].([]interface{})[0].(map[string]interface{})
-	if _, present := sc[legacyTrailStopATRRegimeKey]; present {
-		t.Error("redundant legacy key was not removed")
-	}
-	if got := sc[trailStopATRRegimeKey]; got == nil {
-		t.Error("canonical key was dropped")
-	}
-}
-
-func TestNeedsV18TrailStopKeyMigrationDetectsLegacyKeyAtCurrentVersion(t *testing.T) {
-	current := []byte(`{"config_version": 18, "strategies": [{"id": "a", "trailing_stop_atr_regime": {"use_defaults": true}}]}`)
-	if !needsV18TrailStopKeyMigration(current) {
-		t.Error("a v18-stamped config still carrying the legacy key must migrate")
-	}
-	clean := []byte(`{"config_version": 18, "strategies": [{"id": "a", "trail_stop_atr_regime": {"use_defaults": true}}]}`)
-	if needsV18TrailStopKeyMigration(clean) {
-		t.Error("a v18 config on the canonical key must not migrate again")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := needsV18TrailStopKeyMigration([]byte(tc.data)); got != tc.want {
+				t.Errorf("needsV18TrailStopKeyMigration = %v, want %v (keyed on the legacy key, never the version)", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -448,14 +457,5 @@ func TestLoadConfigLegacyKeyStillFailsLoudWhenItCannotBeRewritten(t *testing.T) 
 	path := readOnlyConfigDir(t, v18LegacyStrategyConfigJSON)
 	if _, err := LoadConfig(path); err == nil {
 		t.Fatal("a config carrying the legacy key must fail the load when the rename cannot be persisted — loading it would leave the on-disk key contradicting the running shape")
-	}
-}
-
-func TestNeedsV18MigrationIsKeyedOnTheLegacyKeyNotTheVersion(t *testing.T) {
-	if needsV18TrailStopKeyMigration([]byte(v18CleanStrategyConfigJSON)) {
-		t.Error("a sub-v18 config with no legacy key must not trigger a load-time rewrite")
-	}
-	if !needsV18TrailStopKeyMigration([]byte(v18LegacyStrategyConfigJSON)) {
-		t.Error("a config carrying the legacy key must trigger the rename")
 	}
 }
