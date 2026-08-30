@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -366,7 +367,39 @@ func seedLimitExposureCoinRow(t *testing.T, db *StateDB, strategyID, coin string
 	}
 }
 
-func countingHLStateStub(t *testing.T, fetches *int, onChain *[]HLPosition) {
+type limitExposureTrace struct {
+	events []string
+}
+
+func (tr *limitExposureTrace) fetches() int {
+	n := 0
+	for _, e := range tr.events {
+		if e == "fetch" {
+			n++
+		}
+	}
+	return n
+}
+
+func (tr *limitExposureTrace) assertNoFetchBeforeAnyPoll(t *testing.T) {
+	t.Helper()
+	lastPoll := -1
+	for i, e := range tr.events {
+		if strings.HasPrefix(e, "poll:") {
+			lastPoll = i
+		}
+	}
+	for i, e := range tr.events {
+		if e == "fetch" && i < lastPoll {
+			t.Fatalf("account read at step %d precedes the status poll at step %d — every booking decision must rest on a reading newer than every row's own status poll; events = %v", i, lastPoll, tr.events)
+		}
+	}
+	if tr.fetches() == 0 {
+		t.Fatalf("no account read happened at all; events = %v", tr.events)
+	}
+}
+
+func countingHLStateStub(t *testing.T, tr *limitExposureTrace, onChain *[]HLPosition) {
 	t.Helper()
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xlimittest")
 	limitFillExposureAlerts.reset()
@@ -374,13 +407,16 @@ func countingHLStateStub(t *testing.T, fetches *int, onChain *[]HLPosition) {
 	orig := fetchHyperliquidStateFn
 	t.Cleanup(func() { fetchHyperliquidStateFn = orig })
 	fetchHyperliquidStateFn = func(string) (float64, []HLPosition, error) {
-		*fetches++
+		tr.events = append(tr.events, "fetch")
 		return 0, append([]HLPosition(nil), (*onChain)...), nil
 	}
 }
 
-func twoCoinLimitStatusStub(ethFilled, btcFilled float64, onFill func(coin string)) func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
+func twoCoinLimitStatusStub(tr *limitExposureTrace, ethFilled, btcFilled float64, onFill func(coin string)) func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
 	return func(_ string, symbol string, _ []int64, _ int64) (*HyperliquidLimitStatusResult, string, error) {
+		if tr != nil {
+			tr.events = append(tr.events, "poll:"+symbol)
+		}
 		if onFill != nil {
 			onFill(symbol)
 		}
@@ -412,10 +448,10 @@ func TestReconcilePendingLimitOrdersGivesEachRowASnapshotNewerThanItsOwnStatusPo
 	var mu sync.RWMutex
 
 	var onChain []HLPosition
-	fetches := 0
-	countingHLStateStub(t, &fetches, &onChain)
+	var tr limitExposureTrace
+	countingHLStateStub(t, &tr, &onChain)
 
-	withStubbedLimitDeps(t, twoCoinLimitStatusStub(0.5, 0.25, func(coin string) {
+	withStubbedLimitDeps(t, twoCoinLimitStatusStub(&tr, 0.5, 0.25, func(coin string) {
 		if coin == "BTC" {
 			onChain = append(onChain, HLPosition{Coin: "BTC", Size: 0.25})
 		}
@@ -431,9 +467,7 @@ func TestReconcilePendingLimitOrdersGivesEachRowASnapshotNewerThanItsOwnStatusPo
 	if pos == nil || pos.Quantity != 0.25 {
 		t.Fatalf("BTC position = %+v, want the 0.25 fill booked — an earlier row's refusal must not spend this row's re-read", pos)
 	}
-	if fetches != 2 {
-		t.Fatalf("account fetches = %d, want 2 — the second row needs a snapshot newer than its own status poll", fetches)
-	}
+	tr.assertNoFetchBeforeAnyPoll(t)
 	if len(mock.dms) != 1 || !strings.Contains(mock.dms[0].content, "ETH") {
 		t.Fatalf("owner DMs = %+v, want exactly one, for the genuinely unbacked ETH row", mock.dms)
 	}
@@ -447,10 +481,10 @@ func TestReconcilePendingLimitOrdersRefusesTwoUnbackedRowsInOnePass(t *testing.T
 	var mu sync.RWMutex
 
 	var onChain []HLPosition
-	fetches := 0
-	countingHLStateStub(t, &fetches, &onChain)
+	var tr limitExposureTrace
+	countingHLStateStub(t, &tr, &onChain)
 
-	withStubbedLimitDeps(t, twoCoinLimitStatusStub(0.5, 0.25, nil), noCancelExpected(t))
+	withStubbedLimitDeps(t, twoCoinLimitStatusStub(&tr, 0.5, 0.25, nil), noCancelExpected(t))
 
 	notifier, mock := newOrphanLaneNotifier()
 	reconcilePendingLimitOrders(state, cfg, db, &mu, notifier, nil)
@@ -461,9 +495,7 @@ func TestReconcilePendingLimitOrdersRefusesTwoUnbackedRowsInOnePass(t *testing.T
 	if pos := state.Strategies[btcSC.ID].Positions["BTC"]; pos != nil {
 		t.Fatalf("BTC position = %+v, want none", pos)
 	}
-	if fetches != 2 {
-		t.Fatalf("account fetches = %d, want 2 — each refusing row is judged on a snapshot newer than its own status poll", fetches)
-	}
+	tr.assertNoFetchBeforeAnyPoll(t)
 	if len(mock.dms) != 2 {
 		t.Fatalf("owner DMs = %+v, want one per unbacked row", mock.dms)
 	}
@@ -487,26 +519,29 @@ func TestReconcilePendingLimitOrdersRetriesAFailedAccountReadForALaterRow(t *tes
 		if fetches == 1 {
 			return 0, nil, errors.New("http 503 from api.hyperliquid.xyz")
 		}
-		return 0, []HLPosition{{Coin: "BTC", Size: 0.25}}, nil
+		return 0, []HLPosition{{Coin: "ETH", Size: 0.5}}, nil
 	}
 
-	withStubbedLimitDeps(t, twoCoinLimitStatusStub(0.5, 0.25, nil), noCancelExpected(t))
+	withStubbedLimitDeps(t, twoCoinLimitStatusStub(nil, 0.5, 0.25, nil), noCancelExpected(t))
 
 	notifier, mock := newOrphanLaneNotifier()
 	reconcilePendingLimitOrders(state, cfg, db, &mu, notifier, nil)
 
-	if pos := state.Strategies[ethSC.ID].Positions["ETH"]; pos != nil {
-		t.Fatalf("ETH position = %+v, want none — an unreadable account defers", pos)
+	if pos := state.Strategies[btcSC.ID].Positions["BTC"]; pos != nil {
+		t.Fatalf("BTC position = %+v, want none — the coin whose read failed defers", pos)
 	}
-	pos := state.Strategies[btcSC.ID].Positions["BTC"]
-	if pos == nil || pos.Quantity != 0.25 {
-		t.Fatalf("BTC position = %+v — one row's failed read must not mark every later row unreadable", pos)
+	pos := state.Strategies[ethSC.ID].Positions["ETH"]
+	if pos == nil || pos.Quantity != 0.5 {
+		t.Fatalf("ETH position = %+v — one coin's failed read must not mark every later coin unreadable", pos)
 	}
 	if fetches != 2 {
-		t.Fatalf("account fetches = %d, want 2 — the later row retries the read the earlier row lost", fetches)
+		t.Fatalf("account fetches = %d, want 2 — a failed reading is never reused, so the next coin re-reads", fetches)
 	}
 	if len(mock.dms) != 1 || !strings.Contains(mock.dms[0].content, "account state unreadable") {
-		t.Fatalf("owner DMs = %+v, want exactly one deferral alert for the row that hit the failed read", mock.dms)
+		t.Fatalf("owner DMs = %+v, want exactly one deferral alert for the coin that hit the failed read", mock.dms)
+	}
+	if orders, _ := db.LoadPendingLimitOrders(); len(orders) != 1 || orders[0].Symbol != "BTC" {
+		t.Fatalf("rows = %+v, want only the deferred BTC recovery record kept", orders)
 	}
 }
 
@@ -518,13 +553,14 @@ func TestReconcilePendingLimitOrdersDoesNotRefetchASnapshotNewerThanItsStatusPol
 	seedLimitExposureRow(t, db, sc.ID, 0)
 
 	var onChain []HLPosition
-	fetches := 0
-	countingHLStateStub(t, &fetches, &onChain)
+	var tr limitExposureTrace
+	countingHLStateStub(t, &tr, &onChain)
 
 	withStubbedLimitDeps(t, offBookFullFillStatus(0.5), noCancelExpected(t))
 
 	reconcilePendingLimitOrders(state, cfg, db, &mu, nil, nil)
 
+	fetches := tr.fetches()
 	if fetches != 1 {
 		t.Fatalf("account fetches = %d, want 1 — a snapshot already newer than this row's status poll needs no re-read", fetches)
 	}
@@ -571,16 +607,16 @@ func TestHLLiveExposureReaderReplacesBothPositionsAndErrorOnEveryFetch(t *testin
 	}
 }
 
-func twoRowMidPassFetches(t *testing.T, btcAfterPoll []HLPosition) (*AppState, *StateDB, StrategyConfig, StrategyConfig, *int, *mockNotifier) {
+func twoRowMidPassFetches(t *testing.T, btcAfterPoll []HLPosition) (*AppState, *StateDB, StrategyConfig, StrategyConfig, *limitExposureTrace, *mockNotifier) {
 	t.Helper()
 	state, cfg, db, ethSC, btcSC := twoCoinLimitFixture(t)
 	var mu sync.RWMutex
 
 	onChain := []HLPosition{{Coin: "ETH", Size: 0.5}, {Coin: "BTC", Size: 0.25}}
-	fetches := 0
-	countingHLStateStub(t, &fetches, &onChain)
+	tr := &limitExposureTrace{}
+	countingHLStateStub(t, tr, &onChain)
 
-	withStubbedLimitDeps(t, twoCoinLimitStatusStub(0.5, 0.25, func(coin string) {
+	withStubbedLimitDeps(t, twoCoinLimitStatusStub(tr, 0.5, 0.25, func(coin string) {
 		if coin == "BTC" && btcAfterPoll != nil {
 			onChain = btcAfterPoll
 		}
@@ -588,11 +624,11 @@ func twoRowMidPassFetches(t *testing.T, btcAfterPoll []HLPosition) (*AppState, *
 
 	notifier, mock := newOrphanLaneNotifier()
 	reconcilePendingLimitOrders(state, cfg, db, &mu, notifier, nil)
-	return state, db, ethSC, btcSC, &fetches, mock
+	return state, db, ethSC, btcSC, tr, mock
 }
 
 func TestReconcilePendingLimitOrdersRefusesALaterRowWhoseCoinClosedMidPass(t *testing.T) {
-	state, db, ethSC, btcSC, fetches, mock := twoRowMidPassFetches(t, []HLPosition{{Coin: "ETH", Size: 0.5}})
+	state, db, ethSC, btcSC, tr, mock := twoRowMidPassFetches(t, []HLPosition{{Coin: "ETH", Size: 0.5}})
 
 	if pos := state.Strategies[ethSC.ID].Positions["ETH"]; pos == nil || pos.Quantity != 0.5 {
 		t.Fatalf("ETH position = %+v, want the backed fill booked", pos)
@@ -600,9 +636,7 @@ func TestReconcilePendingLimitOrdersRefusesALaterRowWhoseCoinClosedMidPass(t *te
 	if pos := state.Strategies[btcSC.ID].Positions["BTC"]; pos != nil {
 		t.Fatalf("BTC position = %+v, want none — its coin was flattened after the first row's snapshot, so the fill must not be booked", pos)
 	}
-	if *fetches != 2 {
-		t.Fatalf("account fetches = %d, want 2 — every booking decision needs a snapshot newer than its own row's status poll", *fetches)
-	}
+	tr.assertNoFetchBeforeAnyPoll(t)
 	orders, _ := db.LoadPendingLimitOrders()
 	if len(orders) != 1 || orders[0].Symbol != "BTC" {
 		t.Fatalf("rows = %+v, want only the BTC recovery record kept — a refused row is never deleted", orders)
@@ -613,7 +647,7 @@ func TestReconcilePendingLimitOrdersRefusesALaterRowWhoseCoinClosedMidPass(t *te
 }
 
 func TestReconcilePendingLimitOrdersRefusesALaterRowWhoseCoinWasReducedMidPass(t *testing.T) {
-	state, db, ethSC, btcSC, fetches, _ := twoRowMidPassFetches(t,
+	state, db, ethSC, btcSC, tr, _ := twoRowMidPassFetches(t,
 		[]HLPosition{{Coin: "ETH", Size: 0.5}, {Coin: "BTC", Size: 0.1}})
 
 	if pos := state.Strategies[ethSC.ID].Positions["ETH"]; pos == nil || pos.Quantity != 0.5 {
@@ -622,16 +656,14 @@ func TestReconcilePendingLimitOrdersRefusesALaterRowWhoseCoinWasReducedMidPass(t
 	if pos := state.Strategies[btcSC.ID].Positions["BTC"]; pos != nil {
 		t.Fatalf("BTC position = %+v, want none — 0.1 on-chain cannot back a 0.25 fill", pos)
 	}
-	if *fetches != 2 {
-		t.Fatalf("account fetches = %d, want 2", *fetches)
-	}
+	tr.assertNoFetchBeforeAnyPoll(t)
 	if orders, _ := db.LoadPendingLimitOrders(); len(orders) != 1 || orders[0].Symbol != "BTC" {
 		t.Fatalf("rows = %+v, want only the BTC recovery record kept", orders)
 	}
 }
 
 func TestReconcilePendingLimitOrdersAdoptsALaterRowStillBackedMidPass(t *testing.T) {
-	state, db, ethSC, btcSC, fetches, mock := twoRowMidPassFetches(t, nil)
+	state, db, ethSC, btcSC, tr, mock := twoRowMidPassFetches(t, nil)
 
 	if pos := state.Strategies[ethSC.ID].Positions["ETH"]; pos == nil || pos.Quantity != 0.5 {
 		t.Fatalf("ETH position = %+v, want the backed fill booked", pos)
@@ -639,13 +671,166 @@ func TestReconcilePendingLimitOrdersAdoptsALaterRowStillBackedMidPass(t *testing
 	if pos := state.Strategies[btcSC.ID].Positions["BTC"]; pos == nil || pos.Quantity != 0.25 {
 		t.Fatalf("BTC position = %+v, want the still-backed fill booked after its own fresh read", pos)
 	}
-	if *fetches != 2 {
-		t.Fatalf("account fetches = %d, want 2 — one per fill-bearing row", *fetches)
-	}
+	tr.assertNoFetchBeforeAnyPoll(t)
 	if orders, _ := db.LoadPendingLimitOrders(); len(orders) != 0 {
 		t.Fatalf("rows = %+v, want both terminal rows cleared", orders)
 	}
 	if len(mock.dms) != 0 {
 		t.Fatalf("owner DMs = %+v, want none — both fills are backed", mock.dms)
+	}
+}
+
+type sharedCoinLeg struct {
+	strategyID string
+	oid        int64
+	fill       float64
+}
+
+type sharedCoinOutcome struct {
+	booked map[string]float64
+	rows   []int64
+	dms    int
+}
+
+func runSharedCoinPass(t *testing.T, legs []sharedCoinLeg, onChainETH float64) sharedCoinOutcome {
+	t.Helper()
+	state := &AppState{Strategies: map[string]*StrategyState{}}
+	cfg := &Config{}
+	for _, leg := range legs {
+		sc, ss := limitExposureCoinStrategy(leg.strategyID, "ETH")
+		cfg.Strategies = append(cfg.Strategies, sc)
+		state.Strategies[leg.strategyID] = ss
+	}
+	db := newLimitTestStateDB(t)
+	var mu sync.RWMutex
+	fillByOID := make(map[int64]float64, len(legs))
+	for _, leg := range legs {
+		seedLimitExposureCoinRow(t, db, leg.strategyID, "ETH", leg.oid, leg.fill)
+		fillByOID[leg.oid] = leg.fill
+	}
+
+	onChain := []HLPosition{}
+	if onChainETH != 0 {
+		onChain = append(onChain, HLPosition{Coin: "ETH", Size: onChainETH})
+	}
+	tr := &limitExposureTrace{}
+	countingHLStateStub(t, tr, &onChain)
+
+	withStubbedLimitDeps(t,
+		func(_ string, _ string, oids []int64, _ int64) (*HyperliquidLimitStatusResult, string, error) {
+			oid := oids[0]
+			return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
+				{OID: oid, Resting: limitTestBoolPtr(false), FilledSize: fillByOID[oid], AvgPx: 2000, Fee: 0.7, Count: 1},
+			}}, "", nil
+		},
+		noCancelExpected(t),
+	)
+
+	notifier, mock := newOrphanLaneNotifier()
+	reconcilePendingLimitOrders(state, cfg, db, &mu, notifier, nil)
+
+	out := sharedCoinOutcome{booked: map[string]float64{}, dms: len(mock.dms)}
+	for _, leg := range legs {
+		if pos := state.Strategies[leg.strategyID].Positions["ETH"]; pos != nil {
+			out.booked[leg.strategyID] = pos.Quantity
+		}
+	}
+	rows, _ := db.LoadPendingLimitOrders()
+	for _, r := range rows {
+		out.rows = append(out.rows, r.OrderOID)
+	}
+	sort.Slice(out.rows, func(i, j int) bool { return out.rows[i] < out.rows[j] })
+	return out
+}
+
+func TestReconcilePendingLimitOrdersRefusesEverySharedCoinLegTheAccountCannotBack(t *testing.T) {
+	real := sharedCoinLeg{strategyID: "hl-manual-eth-a", oid: 9001, fill: 1.0}
+	phantom := sharedCoinLeg{strategyID: "hl-manual-eth-b", oid: 9002, fill: 0.5}
+
+	got := runSharedCoinPass(t, []sharedCoinLeg{real, phantom}, 1.0)
+
+	if len(got.booked) != 0 {
+		t.Fatalf("booked = %+v, want none — the account's 1.0 cannot back 1.5 of pending fills, and no leg may take the shared budget", got.booked)
+	}
+	if len(got.rows) != 2 {
+		t.Fatalf("rows = %+v, want both recovery records kept", got.rows)
+	}
+	if got.dms != 2 {
+		t.Fatalf("owner DMs = %d, want one per refused leg", got.dms)
+	}
+}
+
+func TestReconcilePendingLimitOrdersSharedCoinOutcomeIsIndependentOfRowOrder(t *testing.T) {
+	real := sharedCoinLeg{strategyID: "hl-manual-eth-a", oid: 9001, fill: 1.0}
+	phantom := sharedCoinLeg{strategyID: "hl-manual-eth-b", oid: 9002, fill: 0.5}
+
+	realFirst := runSharedCoinPass(t, []sharedCoinLeg{real, phantom}, 1.0)
+	phantomFirst := runSharedCoinPass(t, []sharedCoinLeg{phantom, real}, 1.0)
+
+	if len(realFirst.booked) != len(phantomFirst.booked) {
+		t.Fatalf("booked differs by row order: real-first %+v vs phantom-first %+v — no leg may greedily consume the shared on-chain budget",
+			realFirst.booked, phantomFirst.booked)
+	}
+	for id, qty := range realFirst.booked {
+		if phantomFirst.booked[id] != qty {
+			t.Fatalf("booked differs by row order for %s: %g vs %g", id, qty, phantomFirst.booked[id])
+		}
+	}
+	if len(realFirst.rows) != len(phantomFirst.rows) || realFirst.dms != phantomFirst.dms {
+		t.Fatalf("kept rows or alerts differ by row order: %+v/%d vs %+v/%d",
+			realFirst.rows, realFirst.dms, phantomFirst.rows, phantomFirst.dms)
+	}
+}
+
+func TestReconcilePendingLimitOrdersAdoptsEverySharedCoinLegTheAccountBacks(t *testing.T) {
+	a := sharedCoinLeg{strategyID: "hl-manual-eth-a", oid: 9001, fill: 1.0}
+	b := sharedCoinLeg{strategyID: "hl-manual-eth-b", oid: 9002, fill: 0.5}
+
+	got := runSharedCoinPass(t, []sharedCoinLeg{a, b}, 1.5)
+
+	if got.booked["hl-manual-eth-a"] != 1.0 || got.booked["hl-manual-eth-b"] != 0.5 {
+		t.Fatalf("booked = %+v, want both legs booked — the account backs the aggregate", got.booked)
+	}
+	if len(got.rows) != 0 {
+		t.Fatalf("rows = %+v, want both terminal rows cleared", got.rows)
+	}
+	if got.dms != 0 {
+		t.Fatalf("owner DMs = %d, want none", got.dms)
+	}
+}
+
+func TestReconcilePendingLimitOrdersRefusesThreeSharedLegsWhenTheAccountCoversOnlyTwo(t *testing.T) {
+	legs := []sharedCoinLeg{
+		{strategyID: "hl-manual-eth-a", oid: 9001, fill: 1.0},
+		{strategyID: "hl-manual-eth-b", oid: 9002, fill: 1.0},
+		{strategyID: "hl-manual-eth-c", oid: 9003, fill: 1.0},
+	}
+
+	got := runSharedCoinPass(t, legs, 2.0)
+
+	if len(got.booked) != 0 {
+		t.Fatalf("booked = %+v, want none — 2.0 on-chain cannot back 3.0 of pending fills, and picking two of three would be a guess", got.booked)
+	}
+	if len(got.rows) != 3 {
+		t.Fatalf("rows = %+v, want all three recovery records kept", got.rows)
+	}
+	if got.dms != 3 {
+		t.Fatalf("owner DMs = %d, want one per refused leg", got.dms)
+	}
+}
+
+func TestLimitFillExposureDMNamesTheSharedDecisionWhenACoinHasSeveralLegs(t *testing.T) {
+	o := PendingLimitOrder{StrategyID: "hl-manual-eth-a", Symbol: "ETH", Side: "long", OrderOID: 9001, OrderSize: 1.0}
+	d := classifyLimitFillLiveExposure("ETH", 0, 1.5, 1.0, nil, 2)
+	d.Legs = 2
+
+	msg := formatLimitFillExposureDM(o, 1.0, d)
+	if !strings.Contains(msg, "decided TOGETHER") {
+		t.Fatalf("a multi-leg refusal must tell the operator the coin's legs were decided together, got:\n%s", msg)
+	}
+
+	d.Legs = 1
+	if msg := formatLimitFillExposureDM(o, 1.0, d); strings.Contains(msg, "decided TOGETHER") {
+		t.Fatalf("a single-leg refusal must not claim a shared decision, got:\n%s", msg)
 	}
 }

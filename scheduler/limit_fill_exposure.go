@@ -27,6 +27,7 @@ type limitFillExposureDecision struct {
 	RequiredNet float64
 	OnChainNet  float64
 	Owners      int
+	Legs        int
 }
 
 func (d limitFillExposureDecision) adopts() bool {
@@ -171,7 +172,7 @@ func (r *hlLiveExposureReader) fetch() ([]HLPosition, error) {
 }
 
 func (r *hlLiveExposureReader) snapshotNewerThan(t time.Time) ([]HLPosition, error) {
-	if r.held && r.fetchedAt.After(t) {
+	if r.held && r.err == nil && r.fetchedAt.After(t) {
 		return r.positions, r.err
 	}
 	return r.fetch()
@@ -281,8 +282,14 @@ func formatLimitFillExposureDM(o PendingLimitOrder, exchangeFill float64, d limi
 		}
 		fmt.Fprintf(&b, "• If you already flattened this position by hand, clear the record with `go-trader manual-clear-limit-row %d --flattened`. Until you do, this alert repeats every %s\n",
 			o.OrderOID, effectiveAlertThrottleInterval())
-		fmt.Fprintf(&b, "• If the position IS open on Hyperliquid, check that the account holds %+.6f or more of %s in the same direction — the scheduler adopts the fill on the next cycle once it does",
-			d.RequiredNet, o.Symbol)
+		if d.Legs > 1 {
+			fmt.Fprintf(&b, "• %d pending limit fills on %s are decided TOGETHER, because the account's net size for a coin cannot be attributed to one order — the exchange must back every one of them or the scheduler books none, so the outcome never depends on the order the rows are read in\n", d.Legs, o.Symbol)
+			fmt.Fprintf(&b, "• If these positions ARE open on Hyperliquid, check that the account holds %+.6f or more of %s in the same direction across every live leg — the scheduler adopts them all on the next cycle once it does",
+				d.RequiredNet, o.Symbol)
+		} else {
+			fmt.Fprintf(&b, "• If the position IS open on Hyperliquid, check that the account holds %+.6f or more of %s in the same direction — the scheduler adopts the fill on the next cycle once it does",
+				d.RequiredNet, o.Symbol)
+		}
 		return b.String()
 	}
 	fmt.Fprintf(&b, "⚠️ **Limit fill deferred — account state unreadable: %s**\n", killSwitchLimitOrderLabel(o))
@@ -307,28 +314,46 @@ func reportLimitFillExposureRefusal(notifier *MultiNotifier, o PendingLimitOrder
 	return msg
 }
 
-func applyLimitFillIfLiveExposure(
+type limitFillCandidate struct {
+	order       PendingLimitOrder
+	sc          StrategyConfig
+	logger      *StrategyLogger
+	status      HyperliquidLimitOrderStatus
+	polledAt    time.Time
+	hasFill     bool
+	avgPx       float64
+	signedDelta float64
+	resolveATR  bool
+	entryATR    float64
+	refused     bool
+	applyFailed bool
+}
+
+func applyCoinLimitFills(
 	state *AppState,
 	cfg *Config,
-	sc StrategyConfig,
-	o PendingLimitOrder,
-	cumFilled, avgPx, cumFee, entryATR float64,
-	atrMethod string,
-	now time.Time,
-	onChainNet float64,
-	readErr error,
 	mu *sync.RWMutex,
-) (int, limitFillExposureDecision, error) {
-	signedDelta := hlSignedQty(o.Side, cumFilled-o.FilledSize)
-	owners := hyperliquidLiveOwnersForCoin(cfg.Strategies, o.Symbol)
+	coin string,
+	rows []*limitFillCandidate,
+	totalDelta, onChainNet float64,
+	readErr error,
+	owners int,
+	now time.Time,
+) (limitFillExposureDecision, []int, []error) {
 	mu.Lock()
 	defer mu.Unlock()
-	decision := classifyLimitFillLiveExposure(o.Symbol,
-		hyperliquidBookedSignedNetForCoin(cfg.Strategies, state, o.Symbol),
-		signedDelta, onChainNet, readErr, owners)
+	decision := classifyLimitFillLiveExposure(coin,
+		hyperliquidBookedSignedNetForCoin(cfg.Strategies, state, coin),
+		totalDelta, onChainNet, readErr, owners)
+	decision.Legs = len(rows)
 	if !decision.adopts() {
-		return 0, decision, nil
+		return decision, nil, nil
 	}
-	trades, err := applyLimitFillProgress(state, sc, o, cumFilled, avgPx, cumFee, entryATR, atrMethod, now)
-	return trades, decision, err
+	trades := make([]int, len(rows))
+	errs := make([]error, len(rows))
+	for i, r := range rows {
+		trades[i], errs[i] = applyLimitFillProgress(state, r.sc, r.order, r.status.FilledSize,
+			r.avgPx, r.status.Fee, r.entryATR, resolveATRMethod(r.sc, cfg), now)
+	}
+	return decision, trades, errs
 }
