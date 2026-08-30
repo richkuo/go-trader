@@ -925,8 +925,16 @@ func TestClearOperatorRequiredLimitRowRefusalLadder(t *testing.T) {
 
 	adoptable, _ := newLimitTestStrategy()
 	cfgAdoptable := &Config{Strategies: []StrategyConfig{adoptable}}
-	if got := clearOperatorRequiredLimitRowRefusal(cfgAdoptable, row, true); !strings.Contains(got, "the scheduler adopts this fill itself") {
-		t.Errorf("an adoptable row must never be cleared by hand, got %q", got)
+	unmarkedAdoptable := row
+	unmarkedAdoptable.OperatorRequiredSince = time.Time{}
+	if got := clearOperatorRequiredLimitRowRefusal(cfgAdoptable, unmarkedAdoptable, true); !strings.Contains(got, "the scheduler adopts this fill itself") {
+		t.Errorf("an adoptable row the reconciler has not given up on must never be cleared by hand, got %q", got)
+	}
+	if got := clearOperatorRequiredLimitRowRefusal(cfgAdoptable, row, true); got != "" {
+		t.Errorf("an adoptable row the reconciler marked operator-required must be clearable, or the refusal alert can never be stopped, got %q", got)
+	}
+	if got := clearOperatorRequiredLimitRowRefusal(cfgAdoptable, row, false); !strings.Contains(got, "--flattened") {
+		t.Errorf("clearing a marked adoptable row must still require the operator's explicit assertion, got %q", got)
 	}
 
 	cfgOrphan := &Config{Strategies: []StrategyConfig{orphanLaneRoster()}}

@@ -349,11 +349,11 @@ func findPendingLimitOrderByOID(orders []PendingLimitOrder, oid int64) (PendingL
 func clearOperatorRequiredLimitRowRefusal(cfg *Config, o PendingLimitOrder, flattened bool) string {
 	sc, known := scByIDLookup(cfg, o.StrategyID)
 	block := killSwitchLimitOrderAdoptionBlock(sc, known)
-	if block == "" {
-		return fmt.Sprintf("refusing: %s is a Hyperliquid-live type=manual strategy, so the scheduler adopts this fill itself — clearing the row would orphan it; let the reconciler converge instead",
-			o.StrategyID)
-	}
 	if o.OperatorRequiredSince.IsZero() {
+		if block == "" {
+			return fmt.Sprintf("refusing: %s is a Hyperliquid-live type=manual strategy and the reconciler has NOT marked oid=%d as needing an operator, so the scheduler adopts this fill itself — clearing the row would orphan it; let the reconciler converge instead",
+				o.StrategyID, o.OrderOID)
+		}
 		return fmt.Sprintf("refusing: the reconciler has not classified oid=%d as needing an operator — it is still converging on its own, and clearing the row now would discard a live recovery record",
 			o.OrderOID)
 	}
@@ -785,12 +785,6 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, stateDB *StateDB,
 			reportOrphanLimitCancel(notifier, o, block, outcome, now)
 			continue
 		}
-		if !o.OperatorRequiredSince.IsZero() {
-			if err := stateDB.ClearPendingLimitOrderOperatorRequired(o.ID); err != nil {
-				fmt.Printf("[limit] failed to clear the operator-required marker on row %d: %v\n", o.ID, err)
-			}
-			o.OperatorRequiredSince = time.Time{}
-		}
 		var logger *StrategyLogger
 		if logMgr != nil {
 			logger, _ = logMgr.GetStrategyLogger(o.StrategyID)
@@ -880,6 +874,7 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, stateDB *StateDB,
 		if !decision.adopts() {
 			for _, r := range rows {
 				r.refused = true
+				r.refusalVerdict = decision.Verdict
 				reportLimitFillExposureRefusal(notifier, r.order, r.status.FilledSize, decision, now)
 			}
 			continue
@@ -908,6 +903,10 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, stateDB *StateDB,
 				ma.trades += booked
 			}
 		}
+	}
+
+	for _, c := range candidates {
+		applyLimitExposureOperatorRequired(stateDB, c, now)
 	}
 
 	for _, c := range candidates {

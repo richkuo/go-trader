@@ -280,7 +280,7 @@ func formatLimitFillExposureDM(o PendingLimitOrder, exchangeFill float64, d limi
 		if d.Owners > 1 {
 			fmt.Fprintf(&b, "• %d live strategies share %s, so the account's net size cannot be attributed to this order on its own and the check refuses rather than guesses\n", d.Owners, o.Symbol)
 		}
-		fmt.Fprintf(&b, "• If you already flattened this position by hand, clear the record with `go-trader manual-clear-limit-row %d --flattened`. Until you do, this alert repeats every %s\n",
+		fmt.Fprintf(&b, "• If you already flattened this position by hand, clear the record with `go-trader manual-clear-limit-row %d --flattened` — the scheduler has marked this row as needing an operator, so the command accepts it and books nothing. Until you run it, this alert repeats every %s\n",
 			o.OrderOID, effectiveAlertThrottleInterval())
 		if d.Legs > 1 {
 			fmt.Fprintf(&b, "• %d pending limit fills on %s are decided TOGETHER, because the account's net size for a coin cannot be attributed to one order — the exchange must back every one of them or the scheduler books none, so the outcome never depends on the order the rows are read in\n", d.Legs, o.Symbol)
@@ -315,18 +315,47 @@ func reportLimitFillExposureRefusal(notifier *MultiNotifier, o PendingLimitOrder
 }
 
 type limitFillCandidate struct {
-	order       PendingLimitOrder
-	sc          StrategyConfig
-	logger      *StrategyLogger
-	status      HyperliquidLimitOrderStatus
-	polledAt    time.Time
-	hasFill     bool
-	avgPx       float64
-	signedDelta float64
-	resolveATR  bool
-	entryATR    float64
-	refused     bool
-	applyFailed bool
+	order          PendingLimitOrder
+	sc             StrategyConfig
+	logger         *StrategyLogger
+	status         HyperliquidLimitOrderStatus
+	polledAt       time.Time
+	hasFill        bool
+	avgPx          float64
+	signedDelta    float64
+	resolveATR     bool
+	entryATR       float64
+	refused        bool
+	refusalVerdict limitFillExposureVerdict
+	applyFailed    bool
+}
+
+func applyLimitExposureOperatorRequired(stateDB *StateDB, c *limitFillCandidate, now time.Time) {
+	if c == nil || stateDB == nil {
+		return
+	}
+	if c.refused {
+		if c.refusalVerdict != limitFillExposureUnbacked {
+			return
+		}
+		if !c.order.OperatorRequiredSince.IsZero() {
+			return
+		}
+		if err := stateDB.MarkPendingLimitOrderOperatorRequired(c.order.ID, now); err != nil {
+			fmt.Printf("[limit] failed to persist the operator-required marker on row %d: %v\n", c.order.ID, err)
+			return
+		}
+		c.order.OperatorRequiredSince = now
+		return
+	}
+	if c.order.OperatorRequiredSince.IsZero() {
+		return
+	}
+	if err := stateDB.ClearPendingLimitOrderOperatorRequired(c.order.ID); err != nil {
+		fmt.Printf("[limit] failed to clear the operator-required marker on row %d: %v\n", c.order.ID, err)
+		return
+	}
+	c.order.OperatorRequiredSince = time.Time{}
 }
 
 func applyCoinLimitFills(

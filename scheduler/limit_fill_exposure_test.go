@@ -834,3 +834,139 @@ func TestLimitFillExposureDMNamesTheSharedDecisionWhenACoinHasSeveralLegs(t *tes
 		t.Fatalf("a single-leg refusal must not claim a shared decision, got:\n%s", msg)
 	}
 }
+
+func TestReconcilePendingLimitOrdersMarksAnUnbackedRowOperatorRequired(t *testing.T) {
+	sc, state := newLimitTestStrategy()
+	cfg := &Config{Strategies: []StrategyConfig{sc}}
+	db := newLimitTestStateDB(t)
+	var mu sync.RWMutex
+	withStubbedHLLiveExposure(t)
+	seedLimitExposureRow(t, db, sc.ID, 0)
+
+	withStubbedLimitDeps(t, offBookFullFillStatus(0.5), noCancelExpected(t))
+
+	notifier, mock := newOrphanLaneNotifier()
+	reconcilePendingLimitOrders(state, cfg, db, &mu, notifier, nil)
+
+	orders, _ := db.LoadPendingLimitOrders()
+	if len(orders) != 1 || orders[0].OperatorRequiredSince.IsZero() {
+		t.Fatalf("rows = %+v, want the refused row marked operator-required", orders)
+	}
+	if refusal := clearOperatorRequiredLimitRowRefusal(cfg, orders[0], true); refusal != "" {
+		t.Fatalf("the command the alert names must accept the row it fires on, got %q", refusal)
+	}
+	if refusal := clearOperatorRequiredLimitRowRefusal(cfg, orders[0], false); !strings.Contains(refusal, "--flattened") {
+		t.Fatalf("clearing must still require the operator's assertion, got %q", refusal)
+	}
+	if len(mock.dms) != 1 || !strings.Contains(mock.dms[0].content, "manual-clear-limit-row 9001 --flattened") {
+		t.Fatalf("owner DM = %+v, want the working remediation named", mock.dms)
+	}
+}
+
+func TestReconcilePendingLimitOrdersMarksAnUnbackedPartialAddOperatorRequired(t *testing.T) {
+	sc, state := newLimitTestStrategy()
+	state.Strategies[sc.ID].Positions["ETH"] = &Position{
+		Symbol: "ETH", Side: "long", Quantity: 0.4, InitialQuantity: 0.4, AvgCost: 2000,
+		Multiplier: 1, OwnerStrategyID: sc.ID, EntryATR: 50,
+	}
+	cfg := &Config{Strategies: []StrategyConfig{sc}}
+	db := newLimitTestStateDB(t)
+	var mu sync.RWMutex
+	withStubbedHLLiveExposure(t, HLPosition{Coin: "ETH", Size: 0.4})
+	seedLimitExposureRow(t, db, sc.ID, 0.4)
+
+	withStubbedLimitDeps(t,
+		func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
+			return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
+				{OID: 9001, Resting: limitTestBoolPtr(true), FilledSize: 1.0, AvgPx: 2005, Fee: 0.5, Count: 2},
+			}}, "", nil
+		},
+		func(string, string, int64) (*HyperliquidCancelOrderResult, string, error) {
+			return &HyperliquidCancelOrderResult{}, "", nil
+		},
+	)
+
+	reconcilePendingLimitOrders(state, cfg, db, &mu, nil, nil)
+
+	orders, _ := db.LoadPendingLimitOrders()
+	if len(orders) != 1 || orders[0].OperatorRequiredSince.IsZero() {
+		t.Fatalf("rows = %+v, want the refused partial add marked operator-required", orders)
+	}
+	if refusal := clearOperatorRequiredLimitRowRefusal(cfg, orders[0], true); refusal != "" {
+		t.Fatalf("an unbacked partial add must also be clearable, got %q", refusal)
+	}
+}
+
+func TestReconcilePendingLimitOrdersAdoptsAndUnmarksOnceExposureReturns(t *testing.T) {
+	sc, state := newLimitTestStrategy()
+	cfg := &Config{Strategies: []StrategyConfig{sc}}
+	db := newLimitTestStateDB(t)
+	var mu sync.RWMutex
+	seedLimitExposureRow(t, db, sc.ID, 0)
+
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xlimittest")
+	limitFillExposureAlerts.reset()
+	t.Cleanup(func() { limitFillExposureAlerts.reset() })
+	origFetch := fetchHyperliquidStateFn
+	t.Cleanup(func() { fetchHyperliquidStateFn = origFetch })
+	var onChain []HLPosition
+	fetchHyperliquidStateFn = func(string) (float64, []HLPosition, error) {
+		return 0, append([]HLPosition(nil), onChain...), nil
+	}
+
+	withStubbedLimitDeps(t,
+		func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
+			return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
+				{OID: 9001, Resting: limitTestBoolPtr(true), FilledSize: 0.5, AvgPx: 2000, Fee: 0.7, Count: 1},
+			}}, "", nil
+		},
+		func(string, string, int64) (*HyperliquidCancelOrderResult, string, error) {
+			return &HyperliquidCancelOrderResult{}, "", nil
+		},
+	)
+
+	reconcilePendingLimitOrders(state, cfg, db, &mu, nil, nil)
+	orders, _ := db.LoadPendingLimitOrders()
+	if len(orders) != 1 || orders[0].OperatorRequiredSince.IsZero() {
+		t.Fatalf("rows = %+v, want the first pass to mark the row", orders)
+	}
+
+	onChain = []HLPosition{{Coin: "ETH", Size: 0.5}}
+	reconcilePendingLimitOrders(state, cfg, db, &mu, nil, nil)
+
+	pos := state.Strategies[sc.ID].Positions["ETH"]
+	if pos == nil || pos.Quantity != 0.5 {
+		t.Fatalf("position = %+v — a marked row must still be polled every cycle and adopt once the exposure returns", pos)
+	}
+	orders, _ = db.LoadPendingLimitOrders()
+	if len(orders) != 1 || !orders[0].OperatorRequiredSince.IsZero() {
+		t.Fatalf("rows = %+v, want the marker cleared once the fill was adopted", orders)
+	}
+	if refusal := clearOperatorRequiredLimitRowRefusal(cfg, orders[0], true); !strings.Contains(refusal, "adopts this fill itself") {
+		t.Fatalf("an adopted row must go back to refusing a hand clear, got %q", refusal)
+	}
+}
+
+func TestReconcilePendingLimitOrdersDoesNotMarkAnUnreadableAccountOperatorRequired(t *testing.T) {
+	sc, state := newLimitTestStrategy()
+	cfg := &Config{Strategies: []StrategyConfig{sc}}
+	db := newLimitTestStateDB(t)
+	var mu sync.RWMutex
+	withFailingHLLiveExposure(t, errors.New("http 503 from api.hyperliquid.xyz"))
+	seedLimitExposureRow(t, db, sc.ID, 0)
+
+	withStubbedLimitDeps(t, offBookFullFillStatus(0.5), noCancelExpected(t))
+
+	reconcilePendingLimitOrders(state, cfg, db, &mu, nil, nil)
+
+	orders, _ := db.LoadPendingLimitOrders()
+	if len(orders) != 1 {
+		t.Fatalf("rows = %+v, want the row kept", orders)
+	}
+	if !orders[0].OperatorRequiredSince.IsZero() {
+		t.Fatalf("an unreadable account confirms nothing, so it must not mark the row operator-required: %+v", orders[0])
+	}
+	if refusal := clearOperatorRequiredLimitRowRefusal(cfg, orders[0], true); refusal == "" {
+		t.Fatal("a row deferred on an unreadable account must still refuse a hand clear — the reconciler is still converging")
+	}
+}
