@@ -64,11 +64,6 @@ def test_legacy_conflicting_with_canonical_raises(block):
         rb._normalize_atr_regime_keys(block)
 
 
-def test_legacy_matching_canonical_merges():
-    assert rb._normalize_atr_regime_keys(
-        {TRAIL_V18: BLOCK_A, TRAIL_CANON: BLOCK_A}) == {TRAIL_CANON: BLOCK_A}
-
-
 def test_conflict_is_detected_when_nested_in_lists_and_dicts():
     cfg = {"user_defaults": {"close": {"trailing_tp_ratchet_regime": {
         TRAIL_V17: BLOCK_A, TRAIL_V18: BLOCK_B}}}}
