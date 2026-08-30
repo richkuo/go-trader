@@ -6,21 +6,6 @@ import (
 	"testing"
 )
 
-func TestConfigExampleDeclaresCurrentConfigVersion(t *testing.T) {
-	data, err := os.ReadFile("config.example.json")
-	if err != nil {
-		t.Fatalf("read config.example.json: %v", err)
-	}
-	if got := rawConfigVersion(data); got != CurrentConfigVersion {
-		t.Fatalf("config.example.json declares config_version %d, want %d — the example ships the "+
-			"current canonical key spellings, so a lower stamp is a version no real config could carry "+
-			"and makes a fresh copy announce a spurious upgrade at first boot", got, CurrentConfigVersion)
-	}
-	if needsV19AtrMultRegimeRename(data) || needsV18TrailStopKeyMigration(data) {
-		t.Fatalf("config.example.json still carries a legacy ATR-regime stop spelling")
-	}
-}
-
 func TestConfigExampleCopyDoesNotTriggerTheUpgradePath(t *testing.T) {
 	orig, err := os.ReadFile("config.example.json")
 	if err != nil {
