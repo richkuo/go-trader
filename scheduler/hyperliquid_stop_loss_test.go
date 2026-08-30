@@ -1690,10 +1690,10 @@ func TestRunHyperliquidTrailingStopPaper_RegimeSnapshotArms(t *testing.T) {
 		"ranging":  {ATR: 1.0},
 	}}
 	sc := StrategyConfig{
-		ID:                 "hl-regime-paper",
-		Platform:           "hyperliquid",
-		Type:               "perps",
-		RegimeATRWindow:    "medium",
+		ID:                        "hl-regime-paper",
+		Platform:                  "hyperliquid",
+		Type:                      "perps",
+		RegimeATRWindow:           "medium",
 		TrailingStopATRMultRegime: regimeBlock,
 	}
 	pos := &Position{

@@ -172,7 +172,7 @@ func validateUserDefaultRegimeATR(entry map[string]interface{}) []string {
 	}
 	var errs []string
 	allowed := map[string]bool{
-		userCloseDefaultStopLossATRMultRegimeKey:  true,
+		userCloseDefaultStopLossATRMultRegimeKey:     true,
 		userCloseDefaultTrailingStopATRMultRegimeKey: true,
 	}
 	for k := range entry {

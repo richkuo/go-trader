@@ -399,7 +399,7 @@ func TestValidateTrailingTPRatchetClose_CompositeVocabulary(t *testing.T) {
 
 	scOK := StrategyConfig{
 		ID: "hl-comp", Type: "perps", Platform: "hyperliquid",
-		RegimeATRWindow:    "daily",
+		RegimeATRWindow:           "daily",
 		TrailingStopATRMultRegime: &RegimeATRBlock{raw: composite7StateATR(3.0)},
 		CloseStrategy: &StrategyRef{
 			Name:   "trailing_tp_ratchet_regime",
@@ -414,7 +414,7 @@ func TestValidateTrailingTPRatchetClose_CompositeVocabulary(t *testing.T) {
 	bad["ranging"] = tierList
 	scBad := StrategyConfig{
 		ID: "hl-comp-bad", Type: "perps", Platform: "hyperliquid",
-		RegimeATRWindow:    "daily",
+		RegimeATRWindow:           "daily",
 		TrailingStopATRMultRegime: &RegimeATRBlock{raw: composite7StateATR(3.0)},
 		CloseStrategy: &StrategyRef{
 			Name:   "trailing_tp_ratchet_regime",
@@ -760,7 +760,7 @@ func TestRatchetCloseDefaultGroup(t *testing.T) {
 func TestValidateRegimeRatchet_AllDefaultsCompositeValidates(t *testing.T) {
 	sc := StrategyConfig{
 		ID: "hl-allc", Type: "perps", Platform: "hyperliquid",
-		RegimeATRWindow:    "daily",
+		RegimeATRWindow:           "daily",
 		TrailingStopATRMultRegime: &RegimeATRBlock{raw: map[string]interface{}{"use_defaults": true}},
 		CloseStrategy: &StrategyRef{
 			Name:   "trailing_tp_ratchet_regime",

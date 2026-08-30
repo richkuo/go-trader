@@ -1536,13 +1536,13 @@ func TestApplyHotReloadConfigCopiesFlatRegimeTrailAndUserCloseDefaults(t *testin
 	strategy := func(block *RegimeATRBlock) StrategyConfig {
 		return StrategyConfig{
 			ID: "hl-eth", Type: "perps", Platform: "hyperliquid",
-			Script:             "shared_scripts/check_hyperliquid.py",
-			Args:               []string{"sma_crossover", "ETH", "1h", "--mode=paper"},
-			CloseStrategy:      &StrategyRef{Name: trailingTPRatchetRegimeCloseName},
+			Script:                    "shared_scripts/check_hyperliquid.py",
+			Args:                      []string{"sma_crossover", "ETH", "1h", "--mode=paper"},
+			CloseStrategy:             &StrategyRef{Name: trailingTPRatchetRegimeCloseName},
 			TrailingStopATRMultRegime: block,
-			Capital:            1000,
-			MaxDrawdownPct:     10,
-			Leverage:           1,
+			Capital:                   1000,
+			MaxDrawdownPct:            10,
+			Leverage:                  1,
 		}
 	}
 	cfg := minimalReloadConfig([]StrategyConfig{strategy(oldTrail)})
@@ -1550,7 +1550,7 @@ func TestApplyHotReloadConfigCopiesFlatRegimeTrailAndUserCloseDefaults(t *testin
 	next.UserDefaults = &UserDefaultsConfig{
 		Close: CloseDefaultsMap{
 			trailingTPRatchetRegimeCloseName: {
-				"tp_tiers":              ratchetRegimeUserTiers(),
+				"tp_tiers":                      ratchetRegimeUserTiers(),
 				"trailing_stop_atr_mult_regime": ratchetRegimeTrailRaw(2.75, 2.75, 1.5),
 			},
 		},

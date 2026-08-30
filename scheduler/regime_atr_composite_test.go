@@ -39,10 +39,10 @@ func compositeRegimeCfg(scs ...StrategyConfig) *Config {
 
 func TestValidateRegimeATRConfig_CompositeStopLossExplicit(t *testing.T) {
 	sc := StrategyConfig{
-		ID:                "hl-test",
-		Type:              "perps",
-		Platform:          "hyperliquid",
-		RegimeATRWindow:   "daily",
+		ID:                    "hl-test",
+		Type:                  "perps",
+		Platform:              "hyperliquid",
+		RegimeATRWindow:       "daily",
 		StopLossATRMultRegime: &RegimeATRBlock{raw: composite7StateATR(2.0)},
 	}
 	cfg := compositeRegimeCfg(sc)
@@ -89,10 +89,10 @@ func TestValidateRegimeATRConfig_CompositeSLAfterTPATRFraction(t *testing.T) {
 
 func TestValidateRegimeATRConfig_CompositeTrailingExplicit(t *testing.T) {
 	sc := StrategyConfig{
-		ID:                 "hl-test",
-		Type:               "perps",
-		Platform:           "hyperliquid",
-		RegimeATRWindow:    "daily",
+		ID:                        "hl-test",
+		Type:                      "perps",
+		Platform:                  "hyperliquid",
+		RegimeATRWindow:           "daily",
 		TrailingStopATRMultRegime: &RegimeATRBlock{raw: composite7StateATR(2.5)},
 	}
 	cfg := compositeRegimeCfg(sc)
@@ -141,10 +141,10 @@ func TestValidateRegimeATRConfig_CompositeMissingLabelRejected(t *testing.T) {
 	raw := composite7StateATR(2.0)
 	delete(raw["trend_regime"].(map[string]interface{}), "ranging_volatile")
 	sc := StrategyConfig{
-		ID:                "hl-test",
-		Type:              "perps",
-		Platform:          "hyperliquid",
-		RegimeATRWindow:   "daily",
+		ID:                    "hl-test",
+		Type:                  "perps",
+		Platform:              "hyperliquid",
+		RegimeATRWindow:       "daily",
 		StopLossATRMultRegime: &RegimeATRBlock{raw: raw},
 	}
 	errs := validateRegimeATRConfig(compositeRegimeCfg(sc))
@@ -169,10 +169,10 @@ func TestValidateRegimeATRConfig_CompositeBareDirectionalCoversSubLabels(t *test
 		t.Fatal("test fixture: expected bare ranging_directional key")
 	}
 	sc := StrategyConfig{
-		ID:                "hl-test",
-		Type:              "perps",
-		Platform:          "hyperliquid",
-		RegimeATRWindow:   "daily",
+		ID:                    "hl-test",
+		Type:                  "perps",
+		Platform:              "hyperliquid",
+		RegimeATRWindow:       "daily",
 		StopLossATRMultRegime: &RegimeATRBlock{raw: raw},
 	}
 	if errs := validateRegimeATRConfig(compositeRegimeCfg(sc)); len(errs) != 0 {
@@ -184,10 +184,10 @@ func TestValidateRegimeATRConfig_CompositeSubLabelsWithoutBareRejected(t *testin
 	raw := composite7StateATR(2.0)
 	delete(raw["trend_regime"].(map[string]interface{}), "ranging_directional")
 	sc := StrategyConfig{
-		ID:                "hl-test",
-		Type:              "perps",
-		Platform:          "hyperliquid",
-		RegimeATRWindow:   "daily",
+		ID:                    "hl-test",
+		Type:                  "perps",
+		Platform:              "hyperliquid",
+		RegimeATRWindow:       "daily",
 		StopLossATRMultRegime: &RegimeATRBlock{raw: raw},
 	}
 	errs := validateRegimeATRConfig(compositeRegimeCfg(sc))
@@ -203,10 +203,10 @@ func TestRegimeATRBlock_ResolveSubLabelFallsBackToBareAndExplicitWins(t *testing
 	delete(tr, "ranging_directional_up")
 	delete(tr, "ranging_directional_down")
 	sc := StrategyConfig{
-		ID:                "hl-test",
-		Type:              "perps",
-		Platform:          "hyperliquid",
-		RegimeATRWindow:   "daily",
+		ID:                    "hl-test",
+		Type:                  "perps",
+		Platform:              "hyperliquid",
+		RegimeATRWindow:       "daily",
 		StopLossATRMultRegime: &RegimeATRBlock{raw: raw},
 	}
 	if errs := validateRegimeATRConfig(compositeRegimeCfg(sc)); len(errs) != 0 {
@@ -226,10 +226,10 @@ func TestRegimeATRBlock_ResolveSubLabelFallsBackToBareAndExplicitWins(t *testing
 	raw2 := composite7StateATR(1.5)
 	raw2["trend_regime"].(map[string]interface{})["ranging_directional_up"] = map[string]interface{}{"atr_multiple": 0.9}
 	sc2 := StrategyConfig{
-		ID:                "hl-test2",
-		Type:              "perps",
-		Platform:          "hyperliquid",
-		RegimeATRWindow:   "daily",
+		ID:                    "hl-test2",
+		Type:                  "perps",
+		Platform:              "hyperliquid",
+		RegimeATRWindow:       "daily",
 		StopLossATRMultRegime: &RegimeATRBlock{raw: raw2},
 	}
 	if errs := validateRegimeATRConfig(compositeRegimeCfg(sc2)); len(errs) != 0 {

@@ -45,17 +45,17 @@ func TestConfigValidation_MinMoveAcceptsUnresolvedRegimeTrail(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sc := StrategyConfig{
-				ID:                     "hl-rmc-eth-live",
-				Type:                   "perps",
-				Platform:               "hyperliquid",
-				Script:                 "shared_scripts/check_hyperliquid.py",
-				Capital:                1000,
-				MaxDrawdownPct:         10,
-				Leverage:               10,
-				MarginMode:             "isolated",
-				RegimeATRWindow:        "daily",
-				TrailingStopATRMultRegime:     &RegimeATRBlock{raw: tc.raw},
-				TrailingStopMinMovePct: &minMove,
+				ID:                        "hl-rmc-eth-live",
+				Type:                      "perps",
+				Platform:                  "hyperliquid",
+				Script:                    "shared_scripts/check_hyperliquid.py",
+				Capital:                   1000,
+				MaxDrawdownPct:            10,
+				Leverage:                  10,
+				MarginMode:                "isolated",
+				RegimeATRWindow:           "daily",
+				TrailingStopATRMultRegime: &RegimeATRBlock{raw: tc.raw},
+				TrailingStopMinMovePct:    &minMove,
 			}
 			err := validateConfig(adxRegimeCfg(sc), false)
 			if err != nil && strings.Contains(err.Error(), minMoveRequiresErr) {
@@ -86,11 +86,11 @@ func TestConfigValidation_MinMoveStillRequiresATrailingMode(t *testing.T) {
 
 func TestValidateRegimeATRConfig_RegimeStopMutexEnforced(t *testing.T) {
 	sc := StrategyConfig{
-		ID:                 "hl-test",
-		Type:               "perps",
-		Platform:           "hyperliquid",
-		RegimeATRWindow:    "daily",
-		StopLossATRMultRegime:  &RegimeATRBlock{raw: adx3StateATR(2.0)},
+		ID:                        "hl-test",
+		Type:                      "perps",
+		Platform:                  "hyperliquid",
+		RegimeATRWindow:           "daily",
+		StopLossATRMultRegime:     &RegimeATRBlock{raw: adx3StateATR(2.0)},
 		TrailingStopATRMultRegime: &RegimeATRBlock{raw: adx3StateATR(2.0)},
 	}
 	errs := validateRegimeATRConfig(adxRegimeCfg(sc))
@@ -108,10 +108,10 @@ func TestValidateRegimeATRConfig_RegimeStopMutexEnforced(t *testing.T) {
 
 func TestValidateRegimeATRConfig_SingleRegimeStopNoMutex(t *testing.T) {
 	sc := StrategyConfig{
-		ID:                 "hl-test",
-		Type:               "perps",
-		Platform:           "hyperliquid",
-		RegimeATRWindow:    "daily",
+		ID:                        "hl-test",
+		Type:                      "perps",
+		Platform:                  "hyperliquid",
+		RegimeATRWindow:           "daily",
 		TrailingStopATRMultRegime: &RegimeATRBlock{raw: adx3StateATR(2.0)},
 	}
 	for _, e := range validateRegimeATRConfig(adxRegimeCfg(sc)) {

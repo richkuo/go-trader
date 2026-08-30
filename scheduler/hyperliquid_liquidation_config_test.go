@@ -349,7 +349,7 @@ func TestHLBankruptcyBoundPreflightMatchesGoCheckLoadTimeResolution(t *testing.T
 				}
 				c.UserDefaults = &UserDefaultsConfig{Close: CloseDefaultsMap{
 					trailingTPRatchetRegimeCloseName: map[string]interface{}{
-						"tp_tiers":              ratchetRegimeUserTiers(),
+						"tp_tiers":                      ratchetRegimeUserTiers(),
 						"trailing_stop_atr_mult_regime": ratchetRegimeTrailRaw(2.25, 2.25, 1.25),
 					},
 				}}

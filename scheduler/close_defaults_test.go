@@ -78,7 +78,7 @@ func TestValidateUserCloseDefaults(t *testing.T) {
 		t.Fatalf("a non-empty entry should pass, got: %v", errs)
 	}
 	if errs := validateUserCloseDefaults(CloseDefaultsMap{"trailing_tp_ratchet_regime": {
-		"tp_tiers":              ratchetRegimeUserTiers(),
+		"tp_tiers":                      ratchetRegimeUserTiers(),
 		"trailing_stop_atr_mult_regime": ratchetRegimeTrailRaw(2.25, 2.25, 1.25),
 	}}); len(errs) != 0 {
 		t.Fatalf("trailing_tp_ratchet_regime trail default should pass, got: %v", errs)
@@ -546,10 +546,10 @@ func TestUserCloseDefaults_RegimeATRCompositeBareCoversDirectionalSubs(t *testin
 			},
 		},
 		Strategies: []StrategyConfig{{
-			ID:                "hl-eth-composite",
-			Type:              "perps",
-			Platform:          "hyperliquid",
-			RegimeATRWindow:   "daily",
+			ID:                    "hl-eth-composite",
+			Type:                  "perps",
+			Platform:              "hyperliquid",
+			RegimeATRWindow:       "daily",
 			StopLossATRMultRegime: &RegimeATRBlock{raw: map[string]interface{}{"use_defaults": true}},
 		}},
 	}
