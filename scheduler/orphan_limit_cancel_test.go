@@ -466,22 +466,23 @@ func TestOrphanLimitCancelTrackerRetainDropsClearedRows(t *testing.T) {
 	kept := PendingLimitOrder{StrategyID: "a", Symbol: "ETH", OrderOID: 1}
 	gone := PendingLimitOrder{StrategyID: "b", Symbol: "BTC", OrderOID: 2}
 
-	if !orphanLimitCancelAlerts.Record(orphanLimitCancelKeyFor(kept), now) {
+	state := orphanLimitStateOffBookUnadoptedFill
+	if !orphanLimitCancelAlerts.Record(orphanLimitCancelKeyFor(kept), state, now) {
 		t.Fatal("first alert must fire")
 	}
-	if !orphanLimitCancelAlerts.Record(orphanLimitCancelKeyFor(gone), now) {
+	if !orphanLimitCancelAlerts.Record(orphanLimitCancelKeyFor(gone), state, now) {
 		t.Fatal("first alert must fire")
 	}
-	if orphanLimitCancelAlerts.Record(orphanLimitCancelKeyFor(kept), now) {
+	if orphanLimitCancelAlerts.Record(orphanLimitCancelKeyFor(kept), state, now) {
 		t.Fatal("a repeat inside the throttle window must be suppressed")
 	}
 
 	orphanLimitCancelAlerts.Retain([]PendingLimitOrder{kept})
 
-	if orphanLimitCancelAlerts.Record(orphanLimitCancelKeyFor(kept), now) {
+	if orphanLimitCancelAlerts.Record(orphanLimitCancelKeyFor(kept), state, now) {
 		t.Error("a retained key keeps its throttle window")
 	}
-	if !orphanLimitCancelAlerts.Record(orphanLimitCancelKeyFor(gone), now) {
+	if !orphanLimitCancelAlerts.Record(orphanLimitCancelKeyFor(gone), state, now) {
 		t.Error("a key dropped by Retain must alert again if the order comes back")
 	}
 }
@@ -995,5 +996,136 @@ func TestReconcileStopsAlertingOnceTheOperatorClearsTheRow(t *testing.T) {
 	}
 	if len(mock.dms) != 1 {
 		t.Errorf("a cleared row must stop the CRITICAL alert, dms = %+v", mock.dms)
+	}
+}
+
+func TestOrphanLimitCancelSeverityRanksExposureAboveBookkeeping(t *testing.T) {
+	got := map[orphanLimitCancelState]int{}
+	for _, st := range []orphanLimitCancelState{
+		orphanLimitStateOffBookRowStuck, orphanLimitStateUnknown,
+		orphanLimitStateResting, orphanLimitStateOffBookUnadoptedFill,
+	} {
+		got[st] = orphanLimitCancelSeverity(st)
+	}
+	if !(got[orphanLimitStateOffBookRowStuck] < got[orphanLimitStateUnknown] &&
+		got[orphanLimitStateUnknown] < got[orphanLimitStateResting] &&
+		got[orphanLimitStateResting] < got[orphanLimitStateOffBookUnadoptedFill]) {
+		t.Fatalf("an untracked position must outrank a possible resting order, which must outrank a bookkeeping failure: %+v", got)
+	}
+}
+
+func TestOrphanLimitCancelThrottleLetsAnEscalationThrough(t *testing.T) {
+	applyAlertThrottleInterval(6 * time.Hour)
+	t.Cleanup(func() { applyAlertThrottleInterval(DefaultAlertThrottleInterval) })
+
+	cases := []struct {
+		name  string
+		first orphanLimitCancelState
+	}{
+		{"after a resting alert", orphanLimitStateResting},
+		{"after an unreadable-state alert", orphanLimitStateUnknown},
+		{"after a row-stuck alert", orphanLimitStateOffBookRowStuck},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resetOrphanLimitCancelAlerts(t)
+			k := orphanLimitCancelKeyFor(PendingLimitOrder{StrategyID: "a", Symbol: "ETH", OrderOID: 9001})
+			now := time.Now().UTC()
+
+			if !orphanLimitCancelAlerts.Record(k, tc.first, now) {
+				t.Fatal("the first alert must fire")
+			}
+			if !orphanLimitCancelAlerts.Record(k, orphanLimitStateOffBookUnadoptedFill, now.Add(time.Minute)) {
+				t.Fatal("an untracked position must reach the owner even inside the earlier alert's throttle window")
+			}
+			if orphanLimitCancelAlerts.Record(k, orphanLimitStateOffBookUnadoptedFill, now.Add(2*time.Minute)) {
+				t.Error("an unchanged severity must still be throttled after the escalation")
+			}
+			if orphanLimitCancelAlerts.Record(k, tc.first, now.Add(3*time.Minute)) {
+				t.Error("a de-escalation must not re-open the throttle window")
+			}
+		})
+	}
+}
+
+func TestOrphanLimitCancelThrottleSuppressesAnUnchangedSeverity(t *testing.T) {
+	resetOrphanLimitCancelAlerts(t)
+	applyAlertThrottleInterval(6 * time.Hour)
+	t.Cleanup(func() { applyAlertThrottleInterval(DefaultAlertThrottleInterval) })
+
+	k := orphanLimitCancelKeyFor(PendingLimitOrder{StrategyID: "a", Symbol: "ETH", OrderOID: 9001})
+	now := time.Now().UTC()
+
+	if !orphanLimitCancelAlerts.Record(k, orphanLimitStateOffBookUnadoptedFill, now) {
+		t.Fatal("the first alert must fire")
+	}
+	if orphanLimitCancelAlerts.Record(k, orphanLimitStateOffBookUnadoptedFill, now.Add(5*time.Hour)) {
+		t.Error("two consecutive untracked-position outcomes must not double-alert inside one window")
+	}
+	if !orphanLimitCancelAlerts.Record(k, orphanLimitStateOffBookUnadoptedFill, now.Add(7*time.Hour)) {
+		t.Error("the repeat must fire again once the window elapses")
+	}
+}
+
+func TestOrphanLimitCancelThrottleDoesNotLatchSeverityAcrossWindows(t *testing.T) {
+	resetOrphanLimitCancelAlerts(t)
+	applyAlertThrottleInterval(time.Hour)
+	t.Cleanup(func() { applyAlertThrottleInterval(DefaultAlertThrottleInterval) })
+
+	k := orphanLimitCancelKeyFor(PendingLimitOrder{StrategyID: "a", Symbol: "ETH", OrderOID: 9001})
+	now := time.Now().UTC()
+
+	if !orphanLimitCancelAlerts.Record(k, orphanLimitStateOffBookUnadoptedFill, now) {
+		t.Fatal("the first alert must fire")
+	}
+	if !orphanLimitCancelAlerts.Record(k, orphanLimitStateResting, now.Add(2*time.Hour)) {
+		t.Error("a fresh window must alert on its own severity, not stay gated by the previous window's peak")
+	}
+	if !orphanLimitCancelAlerts.Record(k, orphanLimitStateOffBookUnadoptedFill, now.Add(2*time.Hour+time.Minute)) {
+		t.Error("the escalation must still fire inside the new window")
+	}
+}
+
+func TestReconcileDeliversAnEscalationDMAfterARestingAlert(t *testing.T) {
+	resetOrphanLimitCancelAlerts(t)
+	applyAlertThrottleInterval(6 * time.Hour)
+	t.Cleanup(func() { applyAlertThrottleInterval(DefaultAlertThrottleInterval) })
+
+	cfg := &Config{Strategies: []StrategyConfig{orphanLaneRoster()}}
+	state := newOrphanLaneState("hl-manual-eth-live")
+	db := newLimitTestStateDB(t)
+	var mu sync.RWMutex
+	seedOrphanLaneRow(t, db, "hl-manual-eth-live", true)
+
+	resting := true
+	withStubbedLimitDeps(t,
+		func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
+			if resting {
+				return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
+					{OID: 9001, Resting: limitTestBoolPtr(true), FilledSize: 0},
+				}}, "", nil
+			}
+			return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
+				{OID: 9001, Resting: limitTestBoolPtr(false), FilledSize: 0.5, AvgPx: 2000, Count: 1},
+			}}, "", nil
+		},
+		func(string, string, int64) (*HyperliquidCancelOrderResult, string, error) {
+			return nil, "", errors.New("hyperliquid 503")
+		},
+	)
+
+	notifier, mock := newOrphanLaneNotifier()
+	reconcilePendingLimitOrders(state, cfg, db, &mu, notifier, nil)
+	if len(mock.dms) != 1 || !strings.Contains(mock.dms[0].content, "IS STILL RESTING") {
+		t.Fatalf("the cancel failure must alert as a resting order, dms = %+v", mock.dms)
+	}
+
+	resting = false
+	reconcilePendingLimitOrders(state, cfg, db, &mu, notifier, nil)
+	if len(mock.dms) != 2 {
+		t.Fatalf("the untracked position must reach the owner in the same throttle window, dms = %d", len(mock.dms))
+	}
+	if !strings.Contains(mock.dms[1].content, "UNTRACKED HYPERLIQUID POSITION") {
+		t.Fatalf("the escalation DM must describe the untracked position, got: %s", mock.dms[1].content)
 	}
 }

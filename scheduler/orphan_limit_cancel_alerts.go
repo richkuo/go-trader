@@ -14,7 +14,8 @@ type orphanLimitCancelKey struct {
 }
 
 type orphanLimitCancelSlot struct {
-	lastNotifiedAt time.Time
+	lastNotifiedAt   time.Time
+	notifiedSeverity int
 }
 
 type orphanLimitCancelTracker struct {
@@ -28,7 +29,20 @@ func orphanLimitCancelKeyFor(o PendingLimitOrder) orphanLimitCancelKey {
 	return orphanLimitCancelKey{strategyID: o.StrategyID, symbol: o.Symbol, orderOID: o.OrderOID}
 }
 
-func (t *orphanLimitCancelTracker) Record(k orphanLimitCancelKey, now time.Time) bool {
+func orphanLimitCancelSeverity(state orphanLimitCancelState) int {
+	switch state {
+	case orphanLimitStateOffBookUnadoptedFill:
+		return 3
+	case orphanLimitStateResting:
+		return 2
+	case orphanLimitStateUnknown:
+		return 1
+	default:
+		return 0
+	}
+}
+
+func (t *orphanLimitCancelTracker) Record(k orphanLimitCancelKey, state orphanLimitCancelState, now time.Time) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.entries == nil {
@@ -39,11 +53,14 @@ func (t *orphanLimitCancelTracker) Record(k orphanLimitCancelKey, now time.Time)
 		e = &orphanLimitCancelSlot{}
 		t.entries[k] = e
 	}
-	if e.lastNotifiedAt.IsZero() || now.Sub(e.lastNotifiedAt) >= effectiveAlertThrottleInterval() {
-		e.lastNotifiedAt = now
-		return true
+	severity := orphanLimitCancelSeverity(state)
+	windowOpen := !e.lastNotifiedAt.IsZero() && now.Sub(e.lastNotifiedAt) < effectiveAlertThrottleInterval()
+	if windowOpen && severity <= e.notifiedSeverity {
+		return false
 	}
-	return false
+	e.lastNotifiedAt = now
+	e.notifiedSeverity = severity
+	return true
 }
 
 func (t *orphanLimitCancelTracker) Retain(orders []PendingLimitOrder) {
@@ -136,7 +153,7 @@ func reportOrphanLimitCancel(notifier *MultiNotifier, o PendingLimitOrder, block
 	fmt.Printf("[CRITICAL] limit: %s %s: %s (its strategy cannot adopt it because %s) — %s\n",
 		orphanLimitCancelHeadline(outcome.State), killSwitchLimitOrderLabel(o), outcome.Reason, block,
 		orphanLimitCancelRetryNote(outcome.State))
-	if !orphanLimitCancelAlerts.Record(orphanLimitCancelKeyFor(o), now) {
+	if !orphanLimitCancelAlerts.Record(orphanLimitCancelKeyFor(o), outcome.State, now) {
 		return ""
 	}
 	msg := formatOrphanLimitCancelDM(o, block, outcome)
