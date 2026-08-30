@@ -141,6 +141,36 @@ def _marker(time: int, kind: str, is_close: bool, price: float, pnl: float = 0.0
     }
 
 
+_ATR_REGIME_STOP_SPELLINGS = {
+    "stop_loss_atr_mult_regime": ("stop_loss_atr_regime",),
+    "trailing_stop_atr_mult_regime": (
+        "trail_stop_atr_regime",
+        "trailing_stop_atr_regime",
+    ),
+}
+
+
+def _resolve_atr_regime_stop(cfg: dict, canon: str):
+    """Fold the legacy spellings of one per-regime ATR stop field onto its v19
+    canonical key, merging equivalent blocks and refusing differing ones the way
+    renameV19AtrMultRegimeKeys does in scheduler/config_migration_v19.go."""
+    resolved = None
+    source = None
+    for key in (canon,) + _ATR_REGIME_STOP_SPELLINGS[canon]:
+        if key not in cfg:
+            continue
+        value = cfg[key]
+        if source is None:
+            resolved, source = value, key
+            continue
+        if value != resolved:
+            raise ValueError(
+                f"conflicting ATR-regime stop keys {source!r} and {key!r} both "
+                f"normalize to {canon!r} with differing values"
+            )
+    return resolved
+
+
 def _simulate_one(cfg: dict, candles: List[dict]) -> List[dict]:
     strategy_type = str(cfg.get("type") or "spot")
     if strategy_type == "options":
@@ -208,8 +238,10 @@ def _simulate_one(cfg: dict, candles: List[dict]) -> List[dict]:
         stop_loss_margin_pct=cfg.get("stop_loss_margin_pct"),
         trailing_stop_atr_mult=cfg.get("trailing_stop_atr_mult"),
         trailing_stop_pct=cfg.get("trailing_stop_pct"),
-        stop_loss_atr_mult_regime=cfg.get("stop_loss_atr_mult_regime", cfg.get("stop_loss_atr_regime")),
-        trailing_stop_atr_mult_regime=cfg.get("trailing_stop_atr_mult_regime", cfg.get("trail_stop_atr_regime", cfg.get("trailing_stop_atr_regime"))),
+        stop_loss_atr_mult_regime=_resolve_atr_regime_stop(
+            cfg, "stop_loss_atr_mult_regime"),
+        trailing_stop_atr_mult_regime=_resolve_atr_regime_stop(
+            cfg, "trailing_stop_atr_mult_regime"),
         strategy_type=strategy_type,
     )
     results = bt.run(
