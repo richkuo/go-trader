@@ -1268,7 +1268,7 @@ func TestRunHyperliquidLiquidationAuditNoOpCases(t *testing.T) {
 			return append(strategies, scB)
 		}, liqAuditLiqETH(), hlNetSideByCoinAllLong(), liqAuditOnChainOne(), true, 4242, 2325, false},
 		{"no on-chain position for the coin", true, 3.125, nil, liqAuditLiqETH(), hlNetSideByCoinAllLong(), map[string]float64{}, true, 4242, 2325, false},
-		{"failed snapshot fetch with no stop armed raises no phantom alert", true, 3.0, zeroStop, map[string]float64{}, nil, map[string]float64{}, false, 0, 0, true},
+		{"failed snapshot fetch with no stop armed raises no phantom alert", true, 3.0, zeroStop, liqAuditLiqETH(), hlNetSideByCoinAllLong(), liqAuditOnChainOne(), false, 0, 0, true},
 		{"stale net side leaves a healthy resting stop untouched", true, 3.125, nil, liqAuditLiqETH(), map[string]string{"ETH": "short"}, liqAuditOnChainOne(), true, 4242, 2325, true},
 		{"stale net side skips the sole-owner re-arm", true, 3.125, zeroStop, liqAuditLiqETH(), map[string]string{"ETH": "short"}, liqAuditOnChainOne(), true, 0, 0, true},
 	} {

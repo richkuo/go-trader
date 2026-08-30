@@ -227,11 +227,15 @@ func TestApplyHotReloadConfigOpenPositionGuards(t *testing.T) {
 		}
 		return out
 	}
-	twoTiers := tiers(
-		map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 0.5},
-		map[string]interface{}{"atr_multiple": 3.0, "close_fraction": 1.0},
-	)
-	oneTier := tiers(map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 1.0})
+	twoTiers := func() []interface{} {
+		return tiers(
+			map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 0.5},
+			map[string]interface{}{"atr_multiple": 3.0, "close_fraction": 1.0},
+		)
+	}
+	oneTier := func() []interface{} {
+		return tiers(map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 1.0})
+	}
 	slAfterRegime := func(ranging float64) map[string]interface{} {
 		return map[string]interface{}{
 			"trend_regime": map[string]interface{}{
@@ -498,25 +502,25 @@ func TestApplyHotReloadConfigOpenPositionGuards(t *testing.T) {
 		},
 		{
 			name: "rejects sl_after add with open position",
-			cfg:  func() *Config { return hlReloadConfig(withSL(map[string]interface{}{"tp_tiers": twoTiers})) },
+			cfg:  func() *Config { return hlReloadConfig(withSL(map[string]interface{}{"tp_tiers": twoTiers()})) },
 			next: func() *Config {
-				return hlReloadConfig(withSL(map[string]interface{}{"sl_after": "breakeven", "tp_tiers": twoTiers}))
+				return hlReloadConfig(withSL(map[string]interface{}{"sl_after": "breakeven", "tp_tiers": twoTiers()}))
 			},
 			state:   openETH,
 			wantErr: "sl_after rules changed with open positions",
 		},
 		{
 			name: "allows sl_after add when flat",
-			cfg:  func() *Config { return hlReloadConfig(withSL(map[string]interface{}{"tp_tiers": oneTier})) },
+			cfg:  func() *Config { return hlReloadConfig(withSL(map[string]interface{}{"tp_tiers": oneTier()})) },
 			next: func() *Config {
-				return hlReloadConfig(withSL(map[string]interface{}{"sl_after": "breakeven", "tp_tiers": oneTier}))
+				return hlReloadConfig(withSL(map[string]interface{}{"sl_after": "breakeven", "tp_tiers": oneTier()}))
 			},
 			state: flatETHReloadState,
 		},
 		{
 			name: "rejects sl_after mode switch (breakeven -> trail_from_here) with open position",
 			cfg: func() *Config {
-				return hlReloadConfig(withSL(map[string]interface{}{"sl_after": "breakeven", "tp_tiers": oneTier}))
+				return hlReloadConfig(withSL(map[string]interface{}{"sl_after": "breakeven", "tp_tiers": oneTier()}))
 			},
 			next: func() *Config {
 				return hlReloadConfig(withSL(map[string]interface{}{
@@ -524,7 +528,7 @@ func TestApplyHotReloadConfigOpenPositionGuards(t *testing.T) {
 						"kind":            "trail_from_here",
 						"trail_from_here": map[string]interface{}{"atr_mult": 1.0},
 					},
-					"tp_tiers": oneTier,
+					"tp_tiers": oneTier(),
 				}))
 			},
 			state:   openETH,
@@ -533,10 +537,10 @@ func TestApplyHotReloadConfigOpenPositionGuards(t *testing.T) {
 		{
 			name: "rejects sl_after scalar -> regime shape change with open position",
 			cfg: func() *Config {
-				return hlReloadConfig(withSL(map[string]interface{}{"sl_after": map[string]interface{}{"atr_mult": 0.25}, "tp_tiers": oneTier}))
+				return hlReloadConfig(withSL(map[string]interface{}{"sl_after": map[string]interface{}{"atr_mult": 0.25}, "tp_tiers": oneTier()}))
 			},
 			next: func() *Config {
-				return hlReloadConfig(withSL(map[string]interface{}{"sl_after": slAfterRegime(0.0), "tp_tiers": oneTier}))
+				return hlReloadConfig(withSL(map[string]interface{}{"sl_after": slAfterRegime(0.0), "tp_tiers": oneTier()}))
 			},
 			state:   openETH,
 			wantErr: "sl_after rules changed with open positions",
@@ -544,10 +548,10 @@ func TestApplyHotReloadConfigOpenPositionGuards(t *testing.T) {
 		{
 			name: "rejects sl_after regime value change with open position",
 			cfg: func() *Config {
-				return hlReloadConfig(withSL(map[string]interface{}{"sl_after": slAfterRegime(0.0), "tp_tiers": oneTier}))
+				return hlReloadConfig(withSL(map[string]interface{}{"sl_after": slAfterRegime(0.0), "tp_tiers": oneTier()}))
 			},
 			next: func() *Config {
-				return hlReloadConfig(withSL(map[string]interface{}{"sl_after": slAfterRegime(-0.5), "tp_tiers": oneTier}))
+				return hlReloadConfig(withSL(map[string]interface{}{"sl_after": slAfterRegime(-0.5), "tp_tiers": oneTier()}))
 			},
 			state:   openETH,
 			wantErr: "sl_after rules changed with open positions",
@@ -555,10 +559,10 @@ func TestApplyHotReloadConfigOpenPositionGuards(t *testing.T) {
 		{
 			name: "allows identical sl_after regime block with open position",
 			cfg: func() *Config {
-				return hlReloadConfig(withSL(map[string]interface{}{"sl_after": slAfterRegime(0.0), "tp_tiers": oneTier}))
+				return hlReloadConfig(withSL(map[string]interface{}{"sl_after": slAfterRegime(0.0), "tp_tiers": oneTier()}))
 			},
 			next: func() *Config {
-				return hlReloadConfig(withSL(map[string]interface{}{"sl_after": slAfterRegime(0.0), "tp_tiers": oneTier}))
+				return hlReloadConfig(withSL(map[string]interface{}{"sl_after": slAfterRegime(0.0), "tp_tiers": oneTier()}))
 			},
 			state: openETH,
 		},
