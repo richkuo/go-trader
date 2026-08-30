@@ -113,7 +113,7 @@ Generate via `./go-trader init` or `--json`. Skeleton:
 
 ```json
 {
-  "config_version": 17,
+  "config_version": 19,
   "interval_seconds": 3600,
   "db_file": "scheduler/state.db",
   "log_dir": "logs",
@@ -145,7 +145,7 @@ Generate via `./go-trader init` or `--json`. Skeleton:
 }
 ```
 
-`config_version` migrates on startup (current **17**: v17 adds the opt-in `atr_method` ATR-smoothing selector, stamp-only). Configs older than **13** are rejected at load — start the pre-upgrade binary once to migrate first.
+`config_version` migrates on startup (current **19**: v19 renames the per-regime stop fields to `stop_loss_atr_mult_regime` / `trailing_stop_atr_mult_regime`, after v18's `trail_stop_atr_regime` rename). Configs older than **13** are rejected at load — start the pre-upgrade binary once to migrate first.
 
 ### Portfolio Risk
 
