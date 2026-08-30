@@ -187,7 +187,7 @@ def test_load_strategy_config_legacy_and_canonical_trail_keys_agree(tmp_path):
     )
 
 
-def test_load_strategy_config_canonical_trail_key_wins_over_legacy(tmp_path):
+def test_load_strategy_config_rejects_conflicting_legacy_and_canonical_trail_keys(tmp_path):
     cfg = _legacy_trail_config()
     cfg["strategies"][0]["trailing_stop_atr_mult_regime"] = {
         "trend_regime": {
@@ -198,5 +198,32 @@ def test_load_strategy_config_canonical_trail_key_wins_over_legacy(tmp_path):
     }
     path = tmp_path / "config.json"
     path.write_text(json.dumps(cfg))
+    with pytest.raises(ValueError):
+        load_strategy_config(str(path), "hl-test")
+
+
+def test_load_strategy_config_merges_equivalent_legacy_and_canonical_trail_keys(tmp_path):
+    cfg = _legacy_trail_config()
+    sc = cfg["strategies"][0]
+    sc["trailing_stop_atr_mult_regime"] = json.loads(
+        json.dumps(sc["trail_stop_atr_regime"]))
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(cfg))
     kwargs = load_strategy_config(str(path), "hl-test")
-    assert kwargs["trailing_stop_atr_mult_regime"]["trend_regime"]["ranging"]["atr_multiple"] == 1.1
+    assert kwargs["trailing_stop_atr_mult_regime"]["trend_regime"]["ranging"]["atr_multiple"] == 2.0
+
+
+def test_load_strategy_config_rejects_two_conflicting_legacy_trail_spellings(tmp_path):
+    cfg = _legacy_trail_config()
+    sc = cfg["strategies"][0]
+    sc["trailing_stop_atr_regime"] = {
+        "trend_regime": {
+            "trending_up": {"atr_multiple": 1.1},
+            "trending_down": {"atr_multiple": 1.1},
+            "ranging": {"atr_multiple": 1.1},
+        }
+    }
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(cfg))
+    with pytest.raises(ValueError):
+        load_strategy_config(str(path), "hl-test")

@@ -397,23 +397,30 @@ _ATR_REGIME_KEY_RENAMES = (
 )
 
 
+class AtrRegimeKeyConflict(ValueError):
+    """Two ATR-regime stop spellings normalize to one key with differing values."""
+
+
 def _normalize_atr_regime_keys(node):
     if isinstance(node, dict):
         out = {}
-        for key, value in node.items():
-            normalized = _normalize_atr_regime_keys(value)
-            rewritten = False
+        sources = {}
+        for key in sorted(node.keys()):
+            normalized = _normalize_atr_regime_keys(node[key])
+            target = key
             for legacy, canon in _ATR_REGIME_KEY_RENAMES:
                 if key == legacy:
-                    if canon in node:
-                        rewritten = True
-                        break
-                    out[canon] = normalized
-                    rewritten = True
+                    target = canon
                     break
-            if rewritten:
+            if target in sources:
+                if out[target] != normalized:
+                    raise AtrRegimeKeyConflict(
+                        f"conflicting ATR-regime stop keys {sources[target]!r} and "
+                        f"{key!r} both normalize to {target!r} with differing values"
+                    )
                 continue
-            out[key] = normalized
+            sources[target] = key
+            out[target] = normalized
         return out
     if isinstance(node, list):
         return [_normalize_atr_regime_keys(v) for v in node]

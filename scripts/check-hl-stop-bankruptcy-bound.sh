@@ -26,23 +26,30 @@ ATR_REGIME_KEY_RENAMES = (
 )
 
 
+class AtrRegimeKeyConflict(Exception):
+    pass
+
+
 def normalize_atr_regime_keys(node):
     if isinstance(node, dict):
         out = {}
-        for k, v in node.items():
-            nv = normalize_atr_regime_keys(v)
-            rewritten = False
+        sources = {}
+        for k in sorted(node.keys()):
+            nv = normalize_atr_regime_keys(node[k])
+            target = k
             for legacy, canon in ATR_REGIME_KEY_RENAMES:
                 if k == legacy:
-                    if canon in node:
-                        rewritten = True
-                        break
-                    out[canon] = nv
-                    rewritten = True
+                    target = canon
                     break
-            if rewritten:
+            if target in sources:
+                if out[target] != nv:
+                    raise AtrRegimeKeyConflict(
+                        "%r and %r both normalize to %r with differing values"
+                        % (sources[target], k, target)
+                    )
                 continue
-            out[k] = nv
+            sources[target] = k
+            out[target] = nv
         return out
     if isinstance(node, list):
         return [normalize_atr_regime_keys(v) for v in node]
@@ -52,6 +59,9 @@ def normalize_atr_regime_keys(node):
 try:
     with open(sys.argv[1]) as f:
         cfg = normalize_atr_regime_keys(json.load(f))
+except AtrRegimeKeyConflict as exc:
+    print("conflict: %s" % exc)
+    sys.exit(0)
 except Exception:
     print("unreadable")
     sys.exit(0)
@@ -232,7 +242,7 @@ report_row() {
     local source="$1" cfg_path="$2" out
     out=$(scan_config "$cfg_path")
     rows=$((rows + 1))
-    if [[ "$out" == "missing-file" || "$out" == "unreadable" ]]; then
+    if [[ "$out" == "missing-file" || "$out" == "unreadable" || "$out" == conflict:* ]]; then
         printf '%-40s %-60s %s\n' "$source" "$cfg_path" "FAIL (cannot verify: ${out})"
         bad=$((bad + 1))
         return 0

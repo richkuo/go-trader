@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -848,5 +849,67 @@ func TestTuningEligibilityOverlayCachesLiveBaselinePerStrategy(t *testing.T) {
 	}
 	if got := extracts.Load(); got != 2 {
 		t.Fatalf("live baseline extracts = %d, want 2 (one per strategy)", got)
+	}
+}
+
+func TestNormalizeLegacyTrailStopKeyValueMergesEquivalentLegacySpellings(t *testing.T) {
+	block := map[string]any{"trending_up": 2.0}
+	for _, order := range []map[string]any{
+		{legacyTrailStopATRRegimeKey: block, trailStopATRRegimeKey: block},
+		{trailStopATRRegimeKey: block, legacyTrailStopATRRegimeKey: block},
+	} {
+		got, changed, err := normalizeLegacyTrailStopKeyValue(order)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !changed {
+			t.Fatalf("expected changed=true")
+		}
+		want := map[string]any{v19TrailingStopATRMultRegimeKey: block}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("got %v want %v", got, want)
+		}
+	}
+}
+
+func TestNormalizeLegacyTrailStopKeyValueRejectsConflictingLegacySpellings(t *testing.T) {
+	a := map[string]any{"trending_up": 2.0}
+	b := map[string]any{"trending_up": 4.0}
+	cases := []map[string]any{
+		{legacyTrailStopATRRegimeKey: a, trailStopATRRegimeKey: b},
+		{trailStopATRRegimeKey: b, legacyTrailStopATRRegimeKey: a},
+		{legacyTrailStopATRRegimeKey: a, v19TrailingStopATRMultRegimeKey: b},
+		{trailStopATRRegimeKey: a, v19TrailingStopATRMultRegimeKey: b},
+		{v19LegacyStopLossATRRegimeKey: a, v19StopLossATRMultRegimeKey: b},
+	}
+	for i, in := range cases {
+		if _, _, err := normalizeLegacyTrailStopKeyValue(in); err == nil {
+			t.Fatalf("case %d: expected conflict error, got nil", i)
+		}
+	}
+}
+
+func TestNormalizeLegacyTrailStopKeyValueDetectsNestedConflict(t *testing.T) {
+	in := map[string]any{"strategies": []any{map[string]any{
+		legacyTrailStopATRRegimeKey: map[string]any{"trending_up": 2.0},
+		trailStopATRRegimeKey:       map[string]any{"trending_up": 4.0},
+	}}}
+	if _, _, err := normalizeLegacyTrailStopKeyValue(in); err == nil {
+		t.Fatalf("expected nested conflict error, got nil")
+	}
+}
+
+func TestBaselineJSONEqualTreatsConflictAsDrift(t *testing.T) {
+	conflicting := json.RawMessage(`{"trailing_stop_atr_regime":{"trending_up":2},"trail_stop_atr_regime":{"trending_up":4}}`)
+	canonical := json.RawMessage(`{"trailing_stop_atr_mult_regime":{"trending_up":2}}`)
+	if baselineJSONEqual(conflicting, canonical) {
+		t.Fatalf("conflicting baseline must not compare equal")
+	}
+	if baselineJSONEqual(conflicting, conflicting) {
+		t.Fatalf("conflicting baseline must not compare equal to itself")
+	}
+	agreeing := json.RawMessage(`{"trailing_stop_atr_regime":{"trending_up":2},"trail_stop_atr_regime":{"trending_up":2}}`)
+	if !baselineJSONEqual(agreeing, canonical) {
+		t.Fatalf("agreeing legacy spellings must fold onto the canonical key")
 	}
 }

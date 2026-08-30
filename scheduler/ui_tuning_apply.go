@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"time"
 )
@@ -347,26 +348,37 @@ func canonicalJSONEqual(a, b json.RawMessage) bool {
 }
 
 func baselineJSONEqual(a, b json.RawMessage) bool {
-	return canonicalJSONEqual(normalizeLegacyTrailStopKeyJSON(a), normalizeLegacyTrailStopKeyJSON(b))
+	na, err := normalizeLegacyTrailStopKeyJSON(a)
+	if err != nil {
+		return false
+	}
+	nb, err := normalizeLegacyTrailStopKeyJSON(b)
+	if err != nil {
+		return false
+	}
+	return canonicalJSONEqual(na, nb)
 }
 
-func normalizeLegacyTrailStopKeyJSON(raw json.RawMessage) json.RawMessage {
+func normalizeLegacyTrailStopKeyJSON(raw json.RawMessage) (json.RawMessage, error) {
 	if len(raw) == 0 {
-		return raw
+		return raw, nil
 	}
 	var v any
 	if err := json.Unmarshal(raw, &v); err != nil {
-		return raw
+		return raw, nil
 	}
-	normalized, changed := normalizeLegacyTrailStopKeyValue(v)
+	normalized, changed, err := normalizeLegacyTrailStopKeyValue(v)
+	if err != nil {
+		return nil, err
+	}
 	if !changed {
-		return raw
+		return raw, nil
 	}
 	out, err := json.Marshal(normalized)
 	if err != nil {
-		return raw
+		return raw, nil
 	}
-	return json.RawMessage(out)
+	return json.RawMessage(out), nil
 }
 
 var atrRegimeKeyRenames = []struct {
@@ -378,48 +390,61 @@ var atrRegimeKeyRenames = []struct {
 	{v19LegacyStopLossATRRegimeKey, v19StopLossATRMultRegimeKey},
 }
 
-func normalizeLegacyTrailStopKeyValue(v any) (any, bool) {
+func normalizeLegacyTrailStopKeyValue(v any) (any, bool, error) {
 	switch t := v.(type) {
 	case map[string]any:
 		changed := false
 		out := make(map[string]any, len(t))
-		for k, val := range t {
-			nv, sub := normalizeLegacyTrailStopKeyValue(val)
+		sources := make(map[string]string, len(t))
+		keys := make([]string, 0, len(t))
+		for k := range t {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			nv, sub, err := normalizeLegacyTrailStopKeyValue(t[k])
+			if err != nil {
+				return nil, false, err
+			}
 			if sub {
 				changed = true
 			}
-			renamed := false
+			target := k
 			for _, pair := range atrRegimeKeyRenames {
-				if k != pair.LegacyKey {
-					continue
-				}
-				changed = true
-				renamed = true
-				if _, canonicalPresent := t[pair.CanonKey]; canonicalPresent {
+				if k == pair.LegacyKey {
+					target = pair.CanonKey
+					changed = true
 					break
 				}
-				out[pair.CanonKey] = nv
-				break
 			}
-			if renamed {
+			if prevSrc, taken := sources[target]; taken {
+				if !reflect.DeepEqual(out[target], nv) {
+					return nil, false, fmt.Errorf(
+						"conflicting ATR-regime stop keys %q and %q both normalize to %q with differing values",
+						prevSrc, k, target)
+				}
 				continue
 			}
-			out[k] = nv
+			sources[target] = k
+			out[target] = nv
 		}
-		return out, changed
+		return out, changed, nil
 	case []any:
 		changed := false
 		out := make([]any, len(t))
 		for i, val := range t {
-			nv, sub := normalizeLegacyTrailStopKeyValue(val)
+			nv, sub, err := normalizeLegacyTrailStopKeyValue(val)
+			if err != nil {
+				return nil, false, err
+			}
 			if sub {
 				changed = true
 			}
 			out[i] = nv
 		}
-		return out, changed
+		return out, changed, nil
 	default:
-		return v, false
+		return v, false, nil
 	}
 }
 
