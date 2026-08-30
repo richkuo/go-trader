@@ -455,14 +455,14 @@ func TestV19MigrationChainsAfterV18(t *testing.T) {
 func TestLoadConfigV19ReadOnlyCleanConfigDoesNotWrite(t *testing.T) {
 
 	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte(v19CanonicalStrategyConfigJSON), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
 	if err := os.Chmod(dir, 0o555); err != nil {
 		t.Fatalf("chmod read-only: %v", err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
-	path := filepath.Join(dir, "config.json")
-	if err := os.WriteFile(path, []byte(v19CanonicalStrategyConfigJSON), 0o444); err != nil {
-		t.Fatalf("write: %v", err)
-	}
 	cfg, err := LoadConfigForProbe(path)
 	if err != nil {
 		t.Fatalf("LoadConfigForProbe should load a clean v19 config under read-only path; got error: %v", err)
@@ -478,14 +478,14 @@ func TestLoadConfigV19ReadOnlyLegacyKeyStillAttemptsRewrite(t *testing.T) {
 		t.Skip("root bypasses POSIX read-only enforcement; verified on Linux CI non-root")
 	}
 	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte(v19LegacyStrategyConfigJSON), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
 	if err := os.Chmod(dir, 0o555); err != nil {
 		t.Fatalf("chmod read-only: %v", err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
-	path := filepath.Join(dir, "config.json")
-	if err := os.WriteFile(path, []byte(v19LegacyStrategyConfigJSON), 0o444); err != nil {
-		t.Fatalf("write: %v", err)
-	}
 	_, err := LoadConfigForProbe(path)
 	if err == nil {
 		t.Fatalf("expected an error when read-only path blocks the v19 migration write")
