@@ -7,6 +7,9 @@ import numpy as np
 import pandas as pd
 
 _SHARED_TOOLS = pathlib.Path(__file__).parent.parent / "shared_tools"
+_REPO_ROOT = _SHARED_TOOLS.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 if str(_SHARED_TOOLS) not in sys.path:
     sys.path.insert(0, str(_SHARED_TOOLS))
 
