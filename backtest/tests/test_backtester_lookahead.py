@@ -442,3 +442,43 @@ def test_scale_in_spacing_gate_reads_signal_bar_close():
                     allow_scale_in=True, scale_in={"add_spacing_atr": 1.0})
     result = bt.run(df, save=False)
     assert result["scale_in_adds"] == 0
+
+
+def test_regime_tp_tier_resolution_reads_prior_bar_regime_not_current():
+    idx = pd.date_range("2024-01-01", periods=6, freq="D")
+    df = pd.DataFrame(
+        {
+            "open": [100.0, 100.0, 100.0, 100.26, 100.26, 100.26],
+            "close": [100.0, 100.0, 100.0, 100.26, 100.26, 100.26],
+            "atr": [1.0] * 6,
+            "open_action": ["none", "long", "none", "none", "none", "none"],
+            "regime": ["ranging", "ranging", "trending_up", "trending_up",
+                       "trending_up", "trending_up"],
+        },
+        index=idx,
+    )
+    close_ref = {
+        "name": "tiered_tp_atr_regime",
+        "params": {
+            "tp_tiers": [
+                {
+                    "trend_regime": {
+                        "ranging": {"atr_multiple": 0.25, "close_fraction": 1.0},
+                        "trending_up": {"atr_multiple": 10.0,
+                                        "close_fraction": 1.0},
+                        "trending_down": {"atr_multiple": 10.0,
+                                          "close_fraction": 1.0},
+                    }
+                }
+            ]
+        },
+    }
+    bt = Backtester(
+        initial_capital=10_000.0, commission_pct=0.0, slippage_pct=0.0,
+        close_strategies=[close_ref], regime_enabled=True,
+    )
+    result = bt.run(df, save=False)
+    assert result["trades"][0]["exit_date"] == str(idx[4]), (
+        "Bar 4 must resolve its TP tier from bar 3's 'trending_up' label. "
+        "An exit at bar 3 means the close side read the unshifted label."
+    )

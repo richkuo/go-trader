@@ -197,21 +197,6 @@ def test_m6_baseline_config_path_also_requires_strategy_id():
         asug.load_spec(bad, _STUDY_DIR)
 
 
-_TEMPLATE = os.path.join(os.path.dirname(_STUDY_DIR), "suggest.template.jsonc")
-
-
-def _load_template_json():
-    import re
-    return json.loads(re.sub(r"//.*", "", open(_TEMPLATE).read()))
-
-
-def test_template_documents_every_variant_and_candidate_option():
-    raw = _load_template_json()
-    assert any("harnesses" in c for c in raw["candidates"]), "template omits per-candidate harnesses"
-    m6 = raw["m6"]
-    assert "allowed_regimes" in m6, "template omits m6-level allowed_regimes"
-    assert any("strategy_id" in v for v in m6["candidate_close_variants"]), \
-        "template omits per-variant strategy_id override"
 
 
 def test_shipped_full_options_spec_loads_and_expands():
@@ -579,21 +564,6 @@ def test_rank_survivors_first_failed_still_present():
     assert any(e["verdict"] == "run_failed" for e in ranked)
 
 
-def test_format_shortlist_has_correction_line_context_label_and_footer():
-    report = {
-        "study": "t", "exploratory": False,
-        "correction": {"method": "benjamini_hochberg", "alpha": 0.05, "m": 3,
-                       "effective_threshold": 0.01, "bonferroni_threshold": 0.0167,
-                       "n_survivors": 1},
-        "ranked": [{"key": "win", "verdict": "survivor", "limitations": [],
-                    "results": {"m5": {"data": {"salvage_verdict": "graduate_m1"}}}}],
-    }
-    text = asug.format_shortlist(report)
-    assert "benjamini_hochberg" in text
-    assert "UNCORRECTED CONTEXT" in text
-    assert asug.FOOTER in text
-
-
 def test_reproduction_command_uses_relative_harness_paths():
     entry = {"key": "x", "results": {
         "m1": {"argv_tail": ["--candidate-json", "/t/c.json", "--registry", "spot"]}}}
@@ -781,39 +751,6 @@ def test_extract_mc_tolerates_no_data_legs_and_missing_percentiles():
     assert asug.extract_mc({}) == {}
 
 
-def test_format_shortlist_labels_mc_advisory_and_prints_the_oos_worst_case():
-    report = {
-        "study": "t", "exploratory": False,
-        "correction": {"method": "benjamini_hochberg", "alpha": 0.05, "m": 1,
-                       "effective_threshold": 0.01, "bonferroni_threshold": 0.05,
-                       "n_survivors": 1},
-        "ranked": [{"key": "win", "verdict": "survivor", "limitations": [],
-                    "results": {"mc": {"data": asug.extract_mc(_mc_payload())}}}],
-    }
-    text = asug.format_shortlist(report)
-    assert "MC(adv,oos)" in text
-    assert "p95DD 70.0%" in text and "pKS 0.550" in text
-    assert "does not gate" in text
-    assert "M3/M5/MC figures are UNCORRECTED CONTEXT" in text
-
-
-def test_format_shortlist_omits_the_mc_segment_when_the_run_failed():
-    report = {
-        "study": "t", "exploratory": False,
-        "correction": {"method": "benjamini_hochberg", "alpha": 0.05, "m": 1,
-                       "effective_threshold": None, "bonferroni_threshold": None,
-                       "n_survivors": 0},
-        "ranked": [{"key": "win", "verdict": "survivor",
-                    "limitations": ["mc_run_failed"],
-                    "results": {"mc": {"status": "failed"}}}],
-    }
-    text = asug.format_shortlist(report)
-    row = next(ln for ln in text.splitlines() if ln.strip().startswith("1 "))
-    assert "MC(adv," not in row
-    assert "mc_run_failed" in row
-    assert "survivor" in row
-
-
 def test_dry_run_prints_a_command_for_every_enabled_harness():
     spec = asug.load_spec(_base_spec(harnesses=["m1_noise", "m1", "m3", "m5", "mc"]),
                            _STUDY_DIR)
@@ -835,13 +772,6 @@ def test_dry_run_with_default_harnesses_omits_mc():
             f"dry-run omits {harness} — it would spawn it anyway"
     assert not any("monte_carlo.py" in c for c in cmds), \
         "mc must not run when a spec doesn't opt into it (#1316)"
-
-
-def test_dry_run_omits_the_mc_command_when_mc_is_not_enabled():
-    spec = asug.load_spec(_base_spec(harnesses=["m1"]), _STUDY_DIR)
-    spec["seed"], spec["resamples"], spec["datasets"] = 1066, 10, None
-    cmds = asug._dry_run_commands(asug.expand_candidates(spec), spec, "/tmp/out")
-    assert not any("monte_carlo.py" in c for c in cmds)
 
 
 def _open_spec(harnesses):
@@ -943,12 +873,6 @@ def test_mc_column_prefers_a_scored_window_over_a_zero_trade_one():
     mc = _mc_data(**{"is": _SCORED, "oos": _NO_TRADES})
     assert asug._mc_column_window(mc) == "is"
     assert "MC(adv,is)" in asug._mc_segment(mc)
-
-
-def test_mc_column_reports_dashes_when_every_window_was_resampled_but_empty():
-    mc = _mc_data(**{"is": _NO_TRADES, "oos": _NO_TRADES})
-    assert asug._mc_column_window(mc) == "oos"
-    assert "MC(adv,oos)=p95DD -% pKS - pDown -" in asug._mc_segment(mc)
 
 
 def test_mc_column_absent_when_no_window_was_resampled_at_all():

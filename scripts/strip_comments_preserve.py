@@ -609,27 +609,6 @@ def test_regime_label_string_is_safe_for_output_field():""",
 def test_regime_label_string_is_safe_for_output_field():""",
         ),
         (
-            "backtest/tests/test_hurst_1424_gate_resolution.py",
-            """def test_stage_0_is_scored_on_net_return_so_it_stays_comparable():
-    assert study.joint_separation_verdict.__doc__
-    assert "NET RETURN" in study.joint_separation_verdict.__doc__""",
-            """def test_stage_0_is_scored_on_net_return_so_it_stays_comparable(monkeypatch):
-    sentinel = object()
-    monkeypatch.setattr(study1422, "joint_separation_verdict", lambda *a, **k: sentinel)
-    assert study.joint_separation_verdict([], 512) is sentinel""",
-        ),
-        (
-            "backtest/tests/test_hurst_1426_two_sided_sort.py",
-            """def test_stage_0_is_the_deliberately_inherited_one_sided_exception():
-    assert study.joint_separation_verdict.__doc__
-    assert "ONE-SIDED" in study.joint_separation_verdict.__doc__
-    assert "#1412" in study.joint_separation_verdict.__doc__""",
-            """def test_stage_0_is_the_deliberately_inherited_one_sided_exception(monkeypatch):
-    sentinel = object()
-    monkeypatch.setattr(study1422, "joint_separation_verdict", lambda *a, **k: sentinel)
-    assert study.joint_separation_verdict([], 512) is sentinel""",
-        ),
-        (
             "backtest/tests/test_regime_default_tables.py",
             r'StopLoss:\s*map\[string\]RegimeATREntry\s*\{(.*?)\n\t\},\n\t// #870',
             r"StopLoss:\s*map\[string\]RegimeATREntry\s*\{(.*?)\},\s*\n\s*Trailing:",
@@ -664,6 +643,8 @@ def test_regime_label_string_is_safe_for_output_field():""",
     changed = 0
     for rel, old, new in patches:
         path = ROOT / rel
+        if not path.exists():
+            continue
         text = path.read_text()
         if old not in text:
             continue
