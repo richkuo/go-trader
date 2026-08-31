@@ -288,3 +288,35 @@ def test_an_added_symbol_on_another_venue_resolves_and_is_not_repointed(
     assert sources["HYPE/USDC:USDC"] == "hyperliquid"
     assert all(sources[s] == premise_mod.PLATFORM
                for s in premise_mod.DEFAULT_SYMBOLS)
+
+
+def test_each_symbol_is_fetched_from_its_own_mapped_venue(monkeypatch):
+    seen = []
+
+    def recorder(symbol, timeframe, exchange_id=None, start_date=None,
+                 end_date=None):
+        seen.append((symbol, exchange_id))
+        return _ohlcv(start_date, 24 * 60)
+
+    monkeypatch.setattr(premise_mod, "load_cached_data", recorder)
+    th = dict(premise_mod._DEFAULT_COMPOSITE_THRESHOLDS)
+
+    premise_mod._load("BTC/USDT", "1h", "is", "composite", th)
+    premise_mod._load("HYPE/USDC:USDC", "1h", "is", "composite", th,
+                      exchange="hyperliquid")
+    assert seen == [("BTC/USDT", premise_mod.PLATFORM),
+                    ("HYPE/USDC:USDC", "hyperliquid")]
+
+    seen.clear()
+    specs = premise_mod.parse_symbols_arg(
+        "BTC/USDT,HYPE/USDC:USDC@hyperliquid")
+    rows = premise_mod.run(specs, ("1h",), ("is",), (4,), ("composite",),
+                           th, 1, 0)
+    assert dict(seen) == {"BTC/USDT": premise_mod.PLATFORM,
+                          "HYPE/USDC:USDC": "hyperliquid"}
+    assert rows
+    assert {r["symbol"]: r["source"] for r in rows} == {
+        "BTC/USDT": premise_mod.PLATFORM,
+        "HYPE/USDC:USDC": "hyperliquid"}
+    assert (certify_mod.baseline_source_violations(
+        premise_mod.resolve_data_sources(specs), premise_mod.PLATFORM) == {})
