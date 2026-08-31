@@ -167,6 +167,57 @@ func TestGenerateConfig_DefaultCompositeRangingGateStrategies(t *testing.T) {
 	}
 }
 
+func TestGenerateConfig_RegimeOnlyForRangingStrategies(t *testing.T) {
+	t.Run("momentum-only", func(t *testing.T) {
+		opts := baseOpts()
+		opts.Assets = []string{"BTC"}
+		opts.SpotStrategies = []string{"momentum"}
+
+		cfg := generateConfig(opts)
+		if cfg.Regime != nil && cfg.Regime.Enabled {
+			t.Fatalf("regime should stay disabled without a ranging strategy, got %+v", cfg.Regime)
+		}
+		sc, ok := findStrategy(cfg, "momentum-btc")
+		if !ok {
+			t.Fatalf("expected momentum-btc")
+		}
+		if len(sc.AllowedRegimes) != 0 {
+			t.Fatalf("momentum should not be regime-gated, got %v", sc.AllowedRegimes)
+		}
+	})
+
+	t.Run("mixed", func(t *testing.T) {
+		opts := baseOpts()
+		opts.Assets = []string{"BTC"}
+		opts.SpotStrategies = []string{"momentum", "atr_band_revert"}
+
+		cfg := generateConfig(opts)
+		if cfg.Regime == nil || !cfg.Regime.Enabled {
+			t.Fatalf("expected regime enabled for a ranging strategy, got %+v", cfg.Regime)
+		}
+		momentum, ok := findStrategy(cfg, "momentum-btc")
+		if !ok {
+			t.Fatalf("expected momentum-btc")
+		}
+		if len(momentum.AllowedRegimes) != 0 {
+			t.Fatalf("momentum should stay ungated in a mixed config, got %v", momentum.AllowedRegimes)
+		}
+		abr, ok := findStrategy(cfg, "abr-btc")
+		if !ok {
+			t.Fatalf("expected abr-btc")
+		}
+		want := []string{"ranging_quiet", "ranging_volatile"}
+		if len(abr.AllowedRegimes) != len(want) {
+			t.Fatalf("abr allowed_regimes = %v, want %v", abr.AllowedRegimes, want)
+		}
+		for i, label := range want {
+			if abr.AllowedRegimes[i] != label {
+				t.Fatalf("abr allowed_regimes[%d] = %q, want %q", i, abr.AllowedRegimes[i], label)
+			}
+		}
+	})
+}
+
 func TestGenerateConfig_AllTypes(t *testing.T) {
 	opts := InitOptions{
 		Assets:            []string{"BTC", "ETH", "SOL"},
