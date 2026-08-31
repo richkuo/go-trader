@@ -6,6 +6,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from shared_strategies.open.conftest import load_module, make_ohlcv
+
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -21,21 +23,6 @@ def _load_registry():
 @pytest.fixture(scope="module")
 def registry():
     return _load_registry()
-
-
-def make_ohlcv(closes, index=None, noise=0.5):
-    closes = np.array(closes, dtype=float)
-    n = len(closes)
-    df = pd.DataFrame({
-        "open": closes - noise * 0.3,
-        "high": closes + noise,
-        "low": closes - noise,
-        "close": closes,
-        "volume": np.full(n, 100.0),
-    })
-    if index is not None:
-        df.index = index
-    return df
 
 
 def _three_leg_trend_df():

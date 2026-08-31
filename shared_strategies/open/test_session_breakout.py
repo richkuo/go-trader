@@ -3,7 +3,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from session_breakout import session_breakout_core
+from shared_strategies.open.conftest import load_module
+
+_SESSION_BREAKOUT = load_module("_session_breakout_test", __file__.replace("test_session_breakout.py", "session_breakout.py"))
+session_breakout_core = _SESSION_BREAKOUT.session_breakout_core
 
 
 def _make_df(bars):

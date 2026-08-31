@@ -1,19 +1,16 @@
 
 import os
-import sys
-import tempfile
 
 import numpy as np
 import pandas as pd
 import pytest
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from shared_tools.conftest import load_module, make_ohlcv
 
-from funding_fetcher import (
-    attach_funding_accrual_column,
-    attach_funding_column,
-    load_cached_funding,
-)
+_FUNDING_FETCHER = load_module("_funding_fetcher_test", os.path.join(os.path.dirname(__file__), "funding_fetcher.py"))
+attach_funding_accrual_column = _FUNDING_FETCHER.attach_funding_accrual_column
+attach_funding_column = _FUNDING_FETCHER.attach_funding_column
+load_cached_funding = _FUNDING_FETCHER.load_cached_funding
 
 _HOUR_MS = 3_600_000
 _BASE_MS = int(pd.Timestamp("2026-01-01", tz="UTC").timestamp() * 1000)
@@ -34,15 +31,13 @@ class StubAdapter:
                 if r["time"] >= start_ms and (end_ms is None or r["time"] <= end_ms)]
 
 
-def _tmp_db():
-    fd, path = tempfile.mkstemp(suffix=".db")
-    os.close(fd)
-    os.unlink(path)
-    return path
+@pytest.fixture
+def db_path(tmp_path):
+    return str(tmp_path / "funding.db")
 
 
-def test_fetch_then_cache_hit():
-    db = _tmp_db()
+def test_fetch_then_cache_hit(db_path):
+    db = db_path
     stub = StubAdapter(_BASE_MS, hours=72)
     first = load_cached_funding("BTC", "2026-01-01", "2026-01-03",
                                 adapter=stub, db_path=db)
@@ -52,11 +47,10 @@ def test_fetch_then_cache_hit():
                                 adapter=stub, db_path=db)
     assert stub.calls == 1, "covered range must be served from cache"
     assert len(again) == len(first)
-    os.unlink(db)
 
 
-def test_uncovered_range_refetches():
-    db = _tmp_db()
+def test_uncovered_range_refetches(db_path):
+    db = db_path
     stub = StubAdapter(_BASE_MS, hours=24 * 10)
     load_cached_funding("BTC", "2026-01-01", "2026-01-02", adapter=stub, db_path=db)
     assert stub.calls == 1
@@ -64,11 +58,10 @@ def test_uncovered_range_refetches():
                                 adapter=stub, db_path=db)
     assert stub.calls == 2, "cache end short of requested end must refetch"
     assert int(wider["timestamp"].iloc[-1]) >= _BASE_MS + 8 * 24 * _HOUR_MS
-    os.unlink(db)
 
 
-def test_cache_hit_survives_elapsed_wallclock():
-    db = _tmp_db()
+def test_cache_hit_survives_elapsed_wallclock(db_path):
+    db = db_path
     stub = StubAdapter(_BASE_MS, hours=72)
     load_cached_funding("BTC", "2026-01-01", "2026-01-03", adapter=stub, db_path=db)
     assert stub.calls == 1
@@ -76,11 +69,10 @@ def test_cache_hit_survives_elapsed_wallclock():
                                 adapter=stub, db_path=db)
     assert stub.calls == 1
     assert not again.empty
-    os.unlink(db)
 
 
-def test_late_listed_coin_cached_after_first_fetch():
-    db = _tmp_db()
+def test_late_listed_coin_cached_after_first_fetch(db_path):
+    db = db_path
     listed_at = _BASE_MS + 30 * 24 * _HOUR_MS
     stub = StubAdapter(listed_at, hours=24 * 5)
     first = load_cached_funding("LATECOIN", "2026-01-01", "2026-02-04",
@@ -91,11 +83,10 @@ def test_late_listed_coin_cached_after_first_fetch():
                                 adapter=stub, db_path=db)
     assert stub.calls == 1, "late-listed coin must not refetch forever"
     assert len(again) == len(first)
-    os.unlink(db)
 
 
-def test_partial_fetch_does_not_claim_tail_coverage():
-    db = _tmp_db()
+def test_partial_fetch_does_not_claim_tail_coverage(db_path):
+    db = db_path
     stub = StubAdapter(_BASE_MS, hours=24)
     load_cached_funding("BTC", "2026-01-01", "2026-01-10", adapter=stub, db_path=db)
     assert stub.calls == 1
@@ -104,11 +95,10 @@ def test_partial_fetch_does_not_claim_tail_coverage():
     load_cached_funding("BTC", "2026-01-01", "2026-01-01 20:00",
                         adapter=stub, db_path=db)
     assert stub.calls == 2
-    os.unlink(db)
 
 
-def test_disjoint_fetches_do_not_poison_middle():
-    db = _tmp_db()
+def test_disjoint_fetches_do_not_poison_middle(db_path):
+    db = db_path
     stub = StubAdapter(_BASE_MS, hours=24 * 300)
     load_cached_funding("BTC", "2026-07-20", "2026-07-30", adapter=stub, db_path=db)
     assert stub.calls == 1
@@ -119,11 +109,10 @@ def test_disjoint_fetches_do_not_poison_middle():
     assert stub.calls == 3, "unfetched middle must refetch, not false-cache-hit"
     assert not middle.empty
     assert int(middle["timestamp"].iloc[0]) >= _to_ms("2026-03-01")
-    os.unlink(db)
 
 
-def test_adjacent_fetches_merge_into_one_covered_interval():
-    db = _tmp_db()
+def test_adjacent_fetches_merge_into_one_covered_interval(db_path):
+    db = db_path
     stub = StubAdapter(_BASE_MS, hours=24 * 20)
     load_cached_funding("BTC", "2026-01-01", "2026-01-10", adapter=stub, db_path=db)
     load_cached_funding("BTC", "2026-01-10", "2026-01-20", adapter=stub, db_path=db)
@@ -132,11 +121,10 @@ def test_adjacent_fetches_merge_into_one_covered_interval():
                                    adapter=stub, db_path=db)
     assert stub.calls == 2, "range inside two touching fetches must be a cache hit"
     assert not spanning.empty
-    os.unlink(db)
 
 
-def test_gap_spanning_request_backfills_and_heals_coverage():
-    db = _tmp_db()
+def test_gap_spanning_request_backfills_and_heals_coverage(db_path):
+    db = db_path
     stub = StubAdapter(_BASE_MS, hours=24 * 300)
     load_cached_funding("BTC", "2026-01-01", "2026-01-10", adapter=stub, db_path=db)
     load_cached_funding("BTC", "2026-07-20", "2026-07-30", adapter=stub, db_path=db)
@@ -149,15 +137,14 @@ def test_gap_spanning_request_backfills_and_heals_coverage():
                                 adapter=stub, db_path=db)
     assert stub.calls == 3, "backfilled span must now be covered"
     assert len(again) == len(spanning)
-    os.unlink(db)
 
 
 def _to_ms(date_str):
     return int(pd.Timestamp(date_str, tz="UTC").timestamp() * 1000)
 
 
-def test_timestamp_end_date_accepted():
-    db = _tmp_db()
+def test_timestamp_end_date_accepted(db_path):
+    db = db_path
     stub = StubAdapter(_BASE_MS, hours=72)
     naive_end = pd.Timestamp("2026-01-03")
     aware_end = pd.Timestamp("2026-01-03", tz="UTC")
@@ -167,24 +154,26 @@ def test_timestamp_end_date_accepted():
     out2 = load_cached_funding("BTC", "2026-01-01", aware_end,
                                adapter=stub, db_path=db)
     assert stub.calls == 1 and len(out2) == len(out)
-    os.unlink(db)
 
 
-def test_empty_api_returns_cached_or_empty():
-    db = _tmp_db()
+def test_empty_api_returns_cached_or_empty(db_path):
+    db = db_path
     stub = StubAdapter(_BASE_MS, hours=0)
     out = load_cached_funding("NEWCOIN", "2026-01-01", "2026-01-03",
                               adapter=stub, db_path=db)
     assert out.empty
-    os.unlink(db)
 
 
 def _bars(n, freq="1h", tz=None):
     idx = pd.date_range("2026-01-01", periods=n, freq=freq, tz=tz)
-    return pd.DataFrame({
-        "open": 100.0, "high": 101.0, "low": 99.0,
-        "close": 100.0, "volume": 10.0,
-    }, index=idx)
+    return make_ohlcv(
+        [100.0] * n,
+        volume=10.0,
+        opens=[100.0] * n,
+        highs=[101.0] * n,
+        lows=[99.0] * n,
+        index=idx,
+    )
 
 
 def _funding_frame(times_ms, rates):

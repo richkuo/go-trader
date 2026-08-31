@@ -3,13 +3,14 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from analog_retrieval import (
-    FEATURE_COLUMNS,
-    analog_retrieval_core,
-    encode_features,
-    forward_returns,
-    retrieve_neighbors,
-)
+from shared_strategies.open.conftest import load_module
+
+_ANALOG_RETRIEVAL = load_module("_analog_retrieval_test", __file__.replace("test_analog_retrieval.py", "analog_retrieval.py"))
+FEATURE_COLUMNS = _ANALOG_RETRIEVAL.FEATURE_COLUMNS
+analog_retrieval_core = _ANALOG_RETRIEVAL.analog_retrieval_core
+encode_features = _ANALOG_RETRIEVAL.encode_features
+forward_returns = _ANALOG_RETRIEVAL.forward_returns
+retrieve_neighbors = _ANALOG_RETRIEVAL.retrieve_neighbors
 
 
 def _hourly_index(n, start="2026-01-01 00:00:00"):

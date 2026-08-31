@@ -3,20 +3,14 @@ import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "shared_tools"))
 
-import pandas as pd
-from atr import ensure_atr_indicator
+from shared_tools.conftest import load_module, make_ohlcv
+
+_ATR = load_module("_atr_indicator_extraction_test", os.path.join(os.path.dirname(__file__), "..", "shared_tools", "atr.py"))
+ensure_atr_indicator = _ATR.ensure_atr_indicator
 
 
 def _make_df(n=20):
-    return pd.DataFrame(
-        {
-            "open": [1.0] * n,
-            "high": [1.1] * n,
-            "low": [0.9] * n,
-            "close": [1.0] * n,
-            "volume": [1.0] * n,
-        }
-    )
+    return make_ohlcv([1.0] * n, volume=1.0, noise=0.1)
 
 
 def test_stale_last_missing_atr():

@@ -107,15 +107,9 @@ def test_cache_path_sanitizes_interval(adapter_mod, tmp_path):
     assert "/" not in os.path.basename(path)
 
 
-def test_ttl_caps_fast_intervals_to_half_bar(adapter_mod):
+def test_ttl_contract(adapter_mod):
     assert adapter_mod._ohlcv_cache_ttl(60_000) == 30
-
-
-def test_ttl_caps_slow_intervals_at_default(adapter_mod):
     assert adapter_mod._ohlcv_cache_ttl(3_600_000) == adapter_mod.OHLCV_CACHE_TTL_S
-
-
-def test_ttl_never_zero(adapter_mod):
     assert adapter_mod._ohlcv_cache_ttl(1) >= 1
 
 
@@ -126,14 +120,19 @@ def test_save_then_load_returns_candles(adapter_mod, cache_path):
     assert got == candles
 
 
-def test_load_returns_none_when_missing(adapter_mod, cache_path):
-    assert adapter_mod._load_ohlcv_cache(cache_path) is None
-
-
-def test_load_returns_none_when_ttl_expired(adapter_mod, cache_path):
-    payload = {"ts": time.time() - 3600, "candles": _sample_candles()}
-    with open(cache_path, "w") as f:
-        json.dump(payload, f)
+@pytest.mark.parametrize("case", ("missing", "expired", "empty", "garbage"))
+def test_load_rejects_missing_or_invalid_cache(adapter_mod, cache_path, case):
+    if case == "expired":
+        payload = {"ts": time.time() - 3600, "candles": _sample_candles()}
+        with open(cache_path, "w") as f:
+            json.dump(payload, f)
+    elif case == "empty":
+        payload = {"ts": time.time(), "candles": []}
+        with open(cache_path, "w") as f:
+            json.dump(payload, f)
+    elif case == "garbage":
+        with open(cache_path, "w") as f:
+            f.write("not json")
     assert adapter_mod._load_ohlcv_cache(cache_path) is None
 
 
@@ -142,19 +141,6 @@ def test_load_within_ttl_returns_candles(adapter_mod, cache_path):
     with open(cache_path, "w") as f:
         json.dump(payload, f)
     assert adapter_mod._load_ohlcv_cache(cache_path) == _sample_candles()
-
-
-def test_load_rejects_empty_candle_list(adapter_mod, cache_path):
-    payload = {"ts": time.time(), "candles": []}
-    with open(cache_path, "w") as f:
-        json.dump(payload, f)
-    assert adapter_mod._load_ohlcv_cache(cache_path) is None
-
-
-def test_load_rejects_garbage(adapter_mod, cache_path):
-    with open(cache_path, "w") as f:
-        f.write("not json")
-    assert adapter_mod._load_ohlcv_cache(cache_path) is None
 
 
 def test_save_atomic_replace_leaves_no_tmp(adapter_mod, cache_path, tmp_path):

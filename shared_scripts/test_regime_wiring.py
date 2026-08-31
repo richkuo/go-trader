@@ -1,8 +1,7 @@
 
 import json
-import sys
 import pathlib
-import importlib.util
+import sys
 
 import numpy as np
 import pandas as pd
@@ -11,31 +10,25 @@ _SHARED_TOOLS = pathlib.Path(__file__).parent.parent / "shared_tools"
 if str(_SHARED_TOOLS) not in sys.path:
     sys.path.insert(0, str(_SHARED_TOOLS))
 
-from regime import latest_regime, latest_regime_composite, map_composite_label
+from shared_tools.conftest import load_module
+from shared_tools.conftest import make_ohlcv
 
-_SHARED_STRATEGIES_TOOLS = str(_SHARED_TOOLS)
+_REGIME = load_module("_regime_wiring_regime_test", _SHARED_TOOLS / "regime.py")
+latest_regime = _REGIME.latest_regime
+latest_regime_composite = _REGIME.latest_regime_composite
+_STRATEGY_COMPOSITION = load_module("_regime_wiring_composition_test", _SHARED_TOOLS / "strategy_composition.py")
 
 
 def _make_uptrend_df(n: int = 100) -> pd.DataFrame:
     close = np.linspace(100.0, 200.0, n)
     idx = pd.date_range("2024-01-01", periods=n, freq="1h", tz="UTC")
-    return pd.DataFrame(
-        {"open": close, "high": close + 0.5, "low": close - 0.5, "close": close, "volume": 1000.0},
-        index=idx,
-    )
+    return make_ohlcv(close, volume=1000.0, noise=0.5, index=idx)
 
 
 def _make_flat_df(n: int = 100) -> pd.DataFrame:
     close = np.full(n, 100.0)
     idx = pd.date_range("2024-01-01", periods=n, freq="1h", tz="UTC")
-    return pd.DataFrame(
-        {"open": close, "high": close + 0.05, "low": close - 0.05, "close": close, "volume": 1000.0},
-        index=idx,
-    )
-
-
-def test_latest_regime_importable_via_check_script_syspath():
-    assert callable(latest_regime)
+    return make_ohlcv(close, volume=1000.0, noise=0.05, index=idx)
 
 
 def test_latest_regime_output_json_serializable_uptrend():
@@ -107,13 +100,6 @@ def test_hurst_survives_the_go_metrics_map_contract():
         assert np.isfinite(value), key
 
 
-def test_map_composite_label_does_not_reference_hurst():
-    import inspect
-    body = inspect.getsource(map_composite_label)
-    assert body is not None
-    assert "hurst" not in body
-
-
 def test_regime_label_string_is_safe_for_output_field():
     df = _make_uptrend_df()
     payload = latest_regime(df)
@@ -123,55 +109,29 @@ def test_regime_label_string_is_safe_for_output_field():
     assert json.dumps({"regime": label})
 
 
-def test_regime_merge_into_none_params():
-    df = _make_uptrend_df()
-    payload = latest_regime(df)
-    strategy_params = None
-    strategy_params = (strategy_params or {})
-    strategy_params["regime"] = payload
-    assert "regime" in strategy_params
-    assert strategy_params["regime"]["regime"] in ("trending_up", "trending_down", "ranging")
-
-
-def test_regime_merge_preserves_existing_params():
-    df = _make_uptrend_df()
-    payload = latest_regime(df)
-    strategy_params = {"rsi_period": 14, "threshold": 0.6}
-    strategy_params["regime"] = payload
-    assert strategy_params["rsi_period"] == 14
-    assert strategy_params["threshold"] == 0.6
-    assert "regime" in strategy_params
-
-
 def test_strip_unsupported_drops_regime_for_non_aware_function():
-    from strategy_composition import strip_unsupported_position_context
-
     def dummy_strategy(df, rsi_period=14):
         return df
 
     df = _make_uptrend_df()
     params = {"rsi_period": 14, "regime": latest_regime(df)}
-    stripped = strip_unsupported_position_context(dummy_strategy, params)
+    stripped = _STRATEGY_COMPOSITION.strip_unsupported_position_context(dummy_strategy, params)
     assert "regime" not in stripped
     assert stripped["rsi_period"] == 14
 
 
 def test_strip_unsupported_keeps_regime_for_aware_function():
-    from strategy_composition import strip_unsupported_position_context
-
     def regime_aware_strategy(df, regime=None, rsi_period=14):
         return df
 
     df = _make_uptrend_df()
     params = {"rsi_period": 14, "regime": latest_regime(df)}
-    stripped = strip_unsupported_position_context(regime_aware_strategy, params)
+    stripped = _STRATEGY_COMPOSITION.strip_unsupported_position_context(regime_aware_strategy, params)
     assert "regime" in stripped
     assert stripped["rsi_period"] == 14
 
 
 def test_strip_unsupported_drops_regime_for_var_keyword_wrapper():
-    from strategy_composition import strip_unsupported_position_context
-
     def dummy_strategy_wrapper(df, **params):
         return df
 
@@ -183,7 +143,7 @@ def test_strip_unsupported_drops_regime_for_var_keyword_wrapper():
         "side": "long",
         "avg_cost": 100.0,
     }
-    stripped = strip_unsupported_position_context(dummy_strategy_wrapper, params)
+    stripped = _STRATEGY_COMPOSITION.strip_unsupported_position_context(dummy_strategy_wrapper, params)
     assert "regime" not in stripped
     assert "side" not in stripped
     assert "avg_cost" not in stripped
@@ -192,15 +152,11 @@ def test_strip_unsupported_drops_regime_for_var_keyword_wrapper():
 
 
 def test_apply_strategy_does_not_crash_on_regime_injection():
-    import importlib.util
-
     futures_path = (
         pathlib.Path(__file__).parent.parent
         / "shared_strategies" / "open" / "futures" / "strategies.py"
     )
-    spec = importlib.util.spec_from_file_location("_futures_shim_720", futures_path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    mod = load_module("_futures_shim_720", futures_path)
 
     df = _make_uptrend_df(n=200)
     params = {"regime": latest_regime(df)}
@@ -213,10 +169,7 @@ def test_apply_strategy_does_not_crash_on_regime_injection():
 
 def _load_check_options_module():
     src_path = pathlib.Path(__file__).parent / "check_options.py"
-    spec = importlib.util.spec_from_file_location("_check_options_under_test", src_path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return load_module("_check_options_under_test", src_path)
 
 
 def test_check_options_regime_label_from_uptrend_df():
@@ -284,22 +237,3 @@ def test_latest_regime_honors_custom_adx_threshold():
     df = _make_uptrend_df(100)
     assert latest_regime(df, adx_threshold=101.0)["regime"] == "ranging"
     assert latest_regime(df, adx_threshold=50.0)["regime"] == "trending_up"
-
-
-def test_regime_disabled_path_returns_empty_label():
-    regime_enabled = False
-    df = _make_uptrend_df()
-    if regime_enabled:
-        regime_payload = latest_regime(df)
-    else:
-        regime_payload = {"regime": "", "score": 0.0, "metrics": {}}
-    assert regime_payload["regime"] == ""
-    assert regime_payload["score"] == 0.0
-    assert regime_payload["metrics"] == {}
-
-
-def test_regime_disabled_payload_is_json_serializable():
-    payload = {"regime": "", "score": 0.0, "metrics": {}}
-    serialized = json.dumps(payload)
-    parsed = json.loads(serialized)
-    assert parsed["regime"] == ""

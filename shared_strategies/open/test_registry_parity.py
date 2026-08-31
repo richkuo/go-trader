@@ -98,8 +98,12 @@ def _apply_each(shim, helpers):
     idx = pd.date_range("2024-01-01", periods=200, freq="15min")
     df = helpers.make_ohlcv(helpers.make_trending_up(200), index=idx)
     for name in shim.list_strategies():
-        result = shim.apply_strategy(name, df)
+        result = shim.apply_strategy(name, df.copy())
+        assert len(result) == len(df), f"{name}: changed bar count"
+        assert result.index.equals(df.index), f"{name}: changed bar index"
         assert "signal" in result.columns, f"{name}: missing 'signal' column"
+        signals = result["signal"].dropna()
+        assert set(signals.unique()).issubset({-1, 0, 1}), f"{name}: invalid signal"
 
 
 def test_spot_shim_applies_every_registered_strategy(spot_shim, conftest_helpers):
@@ -130,7 +134,10 @@ def test_deprecated_range_scalper_hidden_but_loadable(spot_shim, futures_shim, c
         assert "range_scalper" in shim.STRATEGY_REGISTRY
         df = conftest_helpers.make_ohlcv(conftest_helpers.make_trending_up(80))
         result = shim.apply_strategy("range_scalper", df)
+        assert len(result) == len(df)
+        assert result.index.equals(df.index)
         assert "signal" in result.columns
+        assert set(result["signal"].dropna().unique()).issubset({-1, 0, 1})
 
 
 def test_deprecated_session_breakout_hidden_but_loadable(spot_shim, futures_shim, conftest_helpers):
@@ -142,7 +149,10 @@ def test_deprecated_session_breakout_hidden_but_loadable(spot_shim, futures_shim
     idx = pd.date_range("2024-01-01", periods=200, freq="15min")
     df = conftest_helpers.make_ohlcv(conftest_helpers.make_trending_up(200), index=idx)
     result = futures_shim.apply_strategy("session_breakout", df)
+    assert len(result) == len(df)
+    assert result.index.equals(df.index)
     assert "signal" in result.columns
+    assert set(result["signal"].dropna().unique()).issubset({-1, 0, 1})
 
 
 def test_deprecated_vol_momentum_hidden_but_loadable(spot_shim, futures_shim, conftest_helpers):
@@ -151,7 +161,10 @@ def test_deprecated_vol_momentum_hidden_but_loadable(spot_shim, futures_shim, co
         assert "vol_momentum" in shim.STRATEGY_REGISTRY
         df = conftest_helpers.make_ohlcv(conftest_helpers.make_trending_up(80))
         result = shim.apply_strategy("vol_momentum", df)
+        assert len(result) == len(df)
+        assert result.index.equals(df.index)
         assert "signal" in result.columns
+        assert set(result["signal"].dropna().unique()).issubset({-1, 0, 1})
 
     assert spot_shim.STRATEGY_REGISTRY["vol_momentum"]["default_params"]["allow_short"] is False
     assert futures_shim.STRATEGY_REGISTRY["vol_momentum"]["default_params"]["allow_short"] is True
@@ -163,7 +176,10 @@ def test_deprecated_donchian_breakout_hidden_but_loadable(spot_shim, futures_shi
         assert "donchian_breakout" in shim.STRATEGY_REGISTRY
         df = conftest_helpers.make_ohlcv(conftest_helpers.make_trending_up(80))
         result = shim.apply_strategy("donchian_breakout", df)
+        assert len(result) == len(df)
+        assert result.index.equals(df.index)
         assert "signal" in result.columns
+        assert set(result["signal"].dropna().unique()).issubset({-1, 0, 1})
 
 
 def test_deprecated_amd_ifvg_hidden_but_loadable(spot_shim, futures_shim, conftest_helpers):
@@ -174,7 +190,10 @@ def test_deprecated_amd_ifvg_hidden_but_loadable(spot_shim, futures_shim, confte
         assert "amd_ifvg" not in shim.list_strategies()
         assert "amd_ifvg" in shim.STRATEGY_REGISTRY
         result = shim.apply_strategy("amd_ifvg", df)
+        assert len(result) == len(df)
+        assert result.index.equals(df.index)
         assert "signal" in result.columns
+        assert set(result["signal"].dropna().unique()).issubset({-1, 0, 1})
     p = spot_shim.STRATEGY_REGISTRY["amd_ifvg"]["default_params"]
     assert p["session_tz"] == "America/New_York"
     assert (p["asian_start_hour"], p["asian_end_hour"]) == (20, 0)
@@ -198,7 +217,10 @@ def test_backtest_only_analog_retrieval_hidden_but_loadable(spot_shim, futures_s
         assert shim.STRATEGY_REGISTRY["analog_retrieval"]["backtest_only"] is True
         df = conftest_helpers.make_ohlcv(conftest_helpers.make_trending_up(80))
         result = shim.apply_strategy("analog_retrieval", df)
+        assert len(result) == len(df)
+        assert result.index.equals(df.index)
         assert "signal" in result.columns
+        assert set(result["signal"].dropna().unique()).issubset({-1, 0, 1})
         assert (result["signal"] == 0).all()
 
 

@@ -7,20 +7,37 @@ import pytest
 from unittest.mock import MagicMock, patch
 from datetime import datetime, timedelta, timezone
 
-from adapter import (
-    OptionContract, OptionPosition, OptionType, OptionSide, Greeks,
-)
-from risk import OptionsRiskManager, OptionsRiskConfig
-from strategies import (
-    OPTIONS_STRATEGY_REGISTRY,
-    list_options_strategies,
-    get_options_strategy,
-    create_options_strategy,
-    MomentumOptionsStrategy,
-    VolMeanReversionStrategy,
-    ProtectivePutsStrategy,
-    CoveredCallsStrategy,
-)
+from shared_tools.conftest import load_module
+
+_OPTIONS_DIR = os.path.dirname(os.path.abspath(__file__))
+_DERIBIT_DIR = os.path.join(_OPTIONS_DIR, "..", "..", "platforms", "deribit")
+_SAVED_MODULES = {name: sys.modules.get(name) for name in ("adapter", "risk")}
+_ADAPTER = load_module("_options_deribit_adapter_test", os.path.join(_DERIBIT_DIR, "adapter.py"))
+sys.modules["adapter"] = _ADAPTER
+_RISK = load_module("_options_risk_test", os.path.join(_OPTIONS_DIR, "risk.py"))
+sys.modules["risk"] = _RISK
+_STRATEGIES = load_module("_options_strategies_test", os.path.join(_OPTIONS_DIR, "strategies.py"))
+for _name, _module in _SAVED_MODULES.items():
+    if _module is None:
+        sys.modules.pop(_name, None)
+    else:
+        sys.modules[_name] = _module
+
+OptionContract = _ADAPTER.OptionContract
+OptionPosition = _ADAPTER.OptionPosition
+OptionType = _ADAPTER.OptionType
+OptionSide = _ADAPTER.OptionSide
+Greeks = _ADAPTER.Greeks
+OptionsRiskManager = _RISK.OptionsRiskManager
+OptionsRiskConfig = _RISK.OptionsRiskConfig
+OPTIONS_STRATEGY_REGISTRY = _STRATEGIES.OPTIONS_STRATEGY_REGISTRY
+list_options_strategies = _STRATEGIES.list_options_strategies
+get_options_strategy = _STRATEGIES.get_options_strategy
+create_options_strategy = _STRATEGIES.create_options_strategy
+MomentumOptionsStrategy = _STRATEGIES.MomentumOptionsStrategy
+VolMeanReversionStrategy = _STRATEGIES.VolMeanReversionStrategy
+ProtectivePutsStrategy = _STRATEGIES.ProtectivePutsStrategy
+CoveredCallsStrategy = _STRATEGIES.CoveredCallsStrategy
 
 
 def _make_adapter():

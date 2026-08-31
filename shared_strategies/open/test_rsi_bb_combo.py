@@ -2,19 +2,10 @@
 import numpy as np
 import pandas as pd
 
-from rsi_bb_combo import rsi_bb_combo_core
+from shared_strategies.open.conftest import load_module, make_ohlcv
 
-
-def make_ohlcv(closes, noise=0.5, volume=100.0):
-    closes = np.asarray(closes, dtype=float)
-    n = len(closes)
-    return pd.DataFrame({
-        "open": closes - noise * 0.3,
-        "high": closes + noise,
-        "low": closes - noise,
-        "close": closes,
-        "volume": np.full(n, volume),
-    })
+_RSI_BB = load_module("_rsi_bb_combo_test", __file__.replace("test_rsi_bb_combo.py", "rsi_bb_combo.py"))
+rsi_bb_combo_core = _RSI_BB.rsi_bb_combo_core
 
 
 def make_range_with_v_dip(base=100.0, quiet=40, dip_depth=12.0, dip_len=5, recover=6, seed=7):

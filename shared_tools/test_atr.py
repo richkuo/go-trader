@@ -1,45 +1,29 @@
 
 import math
-import importlib.util
-import pathlib
 
-import pandas as pd
 import numpy as np
+import pandas as pd
+import pytest
 
-spec = importlib.util.spec_from_file_location(
-    "atr", pathlib.Path(__file__).parent / "atr.py"
-)
-_atr_mod = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(_atr_mod)
+from shared_tools.conftest import load_module, make_ohlcv
+
+_atr_mod = load_module("_atr_test", __file__.replace("test_atr.py", "atr.py"))
 standard_atr = _atr_mod.standard_atr
 ensure_atr_indicator = _atr_mod.ensure_atr_indicator
 latest_atr = _atr_mod.latest_atr
 
 
-def _make_ohlcv(n: int = 30, seed: int = 42) -> pd.DataFrame:
+def _make_close(n: int = 30, seed: int = 42, start: float = 100.0, scale: float = 1.0) -> np.ndarray:
     rng = np.random.default_rng(seed)
-    close = 100 + np.cumsum(rng.normal(0, 1, n))
-    high = close + rng.uniform(0.1, 1.0, n)
-    low = close - rng.uniform(0.1, 1.0, n)
-    return pd.DataFrame({"open": close, "high": high, "low": low, "close": close, "volume": 1.0})
+    return start + np.cumsum(rng.normal(0, scale, n))
 
 
-def test_standard_atr_length():
-    df = _make_ohlcv(30)
+def test_standard_atr_contract():
+    df = make_ohlcv(_make_close(30), volume=1.0, noise=0.5)
     result = standard_atr(df, period=14)
     assert len(result) == 30
-
-
-def test_standard_atr_first_period_minus_one_nan():
-    df = _make_ohlcv(30)
-    result = standard_atr(df, period=14)
     assert result.iloc[:13].isna().all()
     assert not math.isnan(result.iloc[13])
-
-
-def test_standard_atr_positive_after_warmup():
-    df = _make_ohlcv(30)
-    result = standard_atr(df, period=14)
     valid = result.dropna()
     assert len(valid) > 0
     assert (valid > 0).all()
@@ -61,7 +45,7 @@ def test_standard_atr_hand_computed():
 
 
 def test_ensure_atr_indicator_injects_when_missing():
-    df = _make_ohlcv(30)
+    df = make_ohlcv(_make_close(30), volume=1.0, noise=0.5)
     assert "atr" not in df.columns
     out = ensure_atr_indicator(df)
     assert "atr" in out.columns
@@ -69,7 +53,7 @@ def test_ensure_atr_indicator_injects_when_missing():
 
 
 def test_ensure_atr_indicator_noop_when_present():
-    df = _make_ohlcv(30)
+    df = make_ohlcv(_make_close(30), volume=1.0, noise=0.5)
     sentinel = pd.Series([99.0] * 30, index=df.index)
     df["atr"] = sentinel
     ensure_atr_indicator(df)
@@ -77,7 +61,7 @@ def test_ensure_atr_indicator_noop_when_present():
 
 
 def test_ensure_atr_indicator_idempotent():
-    df = _make_ohlcv(30)
+    df = make_ohlcv(_make_close(30), volume=1.0, noise=0.5)
     ensure_atr_indicator(df)
     first = df["atr"].copy()
     ensure_atr_indicator(df)
@@ -85,43 +69,22 @@ def test_ensure_atr_indicator_idempotent():
 
 
 def test_latest_atr_returns_last_finite_value():
-    df = _make_ohlcv(30)
+    df = make_ohlcv(_make_close(30), volume=1.0, noise=0.5)
     expected = standard_atr(df, period=14).iloc[-1]
     assert math.isclose(latest_atr(df), float(expected), rel_tol=1e-12)
 
 
-def test_latest_atr_zero_when_warmup_incomplete():
-    df = _make_ohlcv(5)
-    assert latest_atr(df, period=14) == 0.0
-
-
-def test_latest_atr_zero_for_empty_series():
-    df = pd.DataFrame({"open": [], "high": [], "low": [], "close": [], "volume": []})
-    assert latest_atr(df) == 0.0
-
-
-def test_latest_atr_strict_positive():
-    n = 30
-    df = pd.DataFrame({
-        "open": [100.0] * n,
-        "high": [100.0] * n,
-        "low": [100.0] * n,
-        "close": [100.0] * n,
-        "volume": [1.0] * n,
-    })
-    assert latest_atr(df) == 0.0
-
-
-def _make_big_ohlcv(n: int = 60, seed: int = 7) -> pd.DataFrame:
-    rng = np.random.default_rng(seed)
-    close = 50_000 + np.cumsum(rng.normal(0, 300, n))
-    high = close + rng.uniform(50, 400, n)
-    low = close - rng.uniform(50, 400, n)
-    return pd.DataFrame({"open": close, "high": high, "low": low, "close": close, "volume": 1.0})
+@pytest.mark.parametrize("df,period", [
+    (make_ohlcv(_make_close(5), volume=1.0, noise=0.5), 14),
+    (pd.DataFrame({"open": [], "high": [], "low": [], "close": [], "volume": []}), 14),
+    (make_ohlcv([100.0] * 30, volume=1.0, noise=0.0), 14),
+])
+def test_latest_atr_returns_zero_when_no_positive_value(df, period):
+    assert latest_atr(df, period=period) == 0.0
 
 
 def test_ensure_atr_indicator_threads_method():
-    big = _make_big_ohlcv()
+    big = make_ohlcv(_make_close(60, seed=7, start=50_000, scale=300), volume=1.0, noise=200)
     simple = ensure_atr_indicator(big.copy(), period=14)["atr"].dropna()
     wilder = ensure_atr_indicator(big.copy(), period=14, method="wilder")["atr"].dropna()
     assert (simple == simple.round(0)).all()
@@ -129,14 +92,14 @@ def test_ensure_atr_indicator_threads_method():
 
 
 def test_ensure_atr_indicator_preserves_strategy_atr_regardless_of_method():
-    df = _make_ohlcv(30)
+    df = make_ohlcv(_make_close(30), volume=1.0, noise=0.5)
     df["atr"] = 42.0
     out = ensure_atr_indicator(df, period=14, method="wilder")
     assert (out["atr"] == 42.0).all()
 
 
 def test_latest_atr_rejects_unknown_method():
-    df = _make_ohlcv(30)
+    df = make_ohlcv(_make_close(30), volume=1.0, noise=0.5)
     try:
         latest_atr(df, method="rma")
     except ValueError as exc:
@@ -146,12 +109,8 @@ def test_latest_atr_rejects_unknown_method():
 
 
 def test_regime_classifier_pinned_to_simple():
-    spec_r = importlib.util.spec_from_file_location(
-        "_t_regime_1277", pathlib.Path(__file__).parent / "regime.py"
-    )
-    regime_mod = importlib.util.module_from_spec(spec_r)
-    spec_r.loader.exec_module(regime_mod)
-    big = _make_big_ohlcv()
+    regime_mod = load_module("_regime_atr_test", __file__.replace("test_atr.py", "regime.py"))
+    big = make_ohlcv(_make_close(60, seed=7, start=50_000, scale=300), volume=1.0, noise=200)
     got = regime_mod._atr_at_end(big, 14)
     want = float(standard_atr(big, 14, method="simple").iloc[-1])
     assert got == want

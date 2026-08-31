@@ -7,7 +7,7 @@ import sys
 import numpy as np
 import pandas as pd
 
-sys.path.insert(0, str(pathlib.Path(__file__).parent))
+from shared_tools.conftest import make_ohlcv
 
 _spec = importlib.util.spec_from_file_location(
     "regime", pathlib.Path(__file__).parent / "regime.py"
@@ -31,14 +31,11 @@ compute_regime_bundle = _check_regime_mod.compute_regime_bundle
 
 
 def _make_uptrend(n: int = 120, noise: float = 0.5) -> pd.DataFrame:
-    close = np.linspace(100.0, 200.0, n)
-    return pd.DataFrame({
-        "open": close - noise * 0.3,
-        "high": close + noise,
-        "low": close - noise,
-        "close": close,
-        "volume": np.ones(n) * 1000.0,
-    })
+    return make_ohlcv(
+        np.linspace(100.0, 200.0, n),
+        volume=np.full(n, 1000.0),
+        noise=noise,
+    )
 
 
 _SPEC_MULTI = {

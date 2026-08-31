@@ -1,5 +1,4 @@
 
-import importlib.util
 import inspect
 import math
 import os
@@ -9,29 +8,33 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from indicators_core import (
-    HURST_DFA_MIN_POINTS,
-    HURST_RS_MIN_POINTS,
-    atr_from_true_range,
-    atr_sma,
-    atr_sma_series,
-    hurst_exponent,
-    hurst_rescaled_range,
-    round_atr_large,
-    true_range,
-    true_range_series,
-    wilder_rsi,
-)
+from shared_strategies.open.conftest import load_module
 
 _OPEN_DIR = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.abspath(os.path.join(_OPEN_DIR, "..", ".."))
 
+_INDICATORS_CORE = load_module("_indicators_core_test", os.path.join(_OPEN_DIR, "indicators_core.py"))
+HURST_DFA_MIN_POINTS = _INDICATORS_CORE.HURST_DFA_MIN_POINTS
+HURST_RS_MIN_POINTS = _INDICATORS_CORE.HURST_RS_MIN_POINTS
+atr_from_true_range = _INDICATORS_CORE.atr_from_true_range
+atr_sma = _INDICATORS_CORE.atr_sma
+atr_sma_series = _INDICATORS_CORE.atr_sma_series
+hurst_exponent = _INDICATORS_CORE.hurst_exponent
+hurst_rescaled_range = _INDICATORS_CORE.hurst_rescaled_range
+round_atr_large = _INDICATORS_CORE.round_atr_large
+true_range = _INDICATORS_CORE.true_range
+true_range_series = _INDICATORS_CORE.true_range_series
+wilder_rsi = _INDICATORS_CORE.wilder_rsi
+normalize_atr_method = _INDICATORS_CORE.normalize_atr_method
+_hurst_dfa_fluctuation = _INDICATORS_CORE._hurst_dfa_fluctuation
+_HURST_RS_MIN_BLOCK = _INDICATORS_CORE._HURST_RS_MIN_BLOCK
+_HURST_RS_NUM_BLOCKS = _INDICATORS_CORE._HURST_RS_NUM_BLOCKS
+_hurst_rs_block_sizes = _INDICATORS_CORE._hurst_rs_block_sizes
+_hurst_rs_statistic = _INDICATORS_CORE._hurst_rs_statistic
+_anis_lloyd_expected_rs = _INDICATORS_CORE._anis_lloyd_expected_rs
 
-def _load_by_path(name, path):
-    spec = importlib.util.spec_from_file_location(name, path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+
+_load_by_path = load_module
 
 
 def _ohlcv(scale=1.0, n=300, seed=7):
@@ -457,7 +460,6 @@ def test_explicit_simple_is_byte_identical_to_default():
 
 
 def test_normalize_atr_method_vocabulary():
-    from indicators_core import normalize_atr_method
     assert normalize_atr_method(None) == "simple"
     assert normalize_atr_method("") == "simple"
     assert normalize_atr_method(" Wilder ") == "wilder"
@@ -610,8 +612,6 @@ def test_hurst_random_walk_high_percentile_exceeds_no_memory_band_at_enriched_co
 
 
 def test_hurst_dfa_fluctuation_vectorization_matches_naive_per_segment_polyfit():
-    from indicators_core import _hurst_dfa_fluctuation
-
     def naive_fluctuation(profile, scale):
         n = len(profile)
         n_segments = n // scale
@@ -757,12 +757,6 @@ def test_hurst_rs_is_noisier_than_dfa_at_the_live_frame_size():
 
 
 def test_hurst_rs_block_sizes_mirror_the_dfa_scale_grid_shape():
-    from indicators_core import (
-        _HURST_RS_MIN_BLOCK,
-        _HURST_RS_NUM_BLOCKS,
-        _hurst_rs_block_sizes,
-    )
-
     for n in (64, 100, 128, 256, 512, 2000):
         blocks = _hurst_rs_block_sizes(n)
         assert blocks.dtype.kind == "i"
@@ -773,8 +767,6 @@ def test_hurst_rs_block_sizes_mirror_the_dfa_scale_grid_shape():
 
 
 def test_hurst_rs_returns_nan_when_the_block_grid_collapses():
-    from indicators_core import _HURST_RS_MIN_BLOCK, _hurst_rs_block_sizes
-
     n_returns = 4 * _HURST_RS_MIN_BLOCK
     assert len(_hurst_rs_block_sizes(n_returns)) == 1
     close = _ar1_log_price_series(n_returns + 1, phi=0.0, seed=8)
@@ -782,8 +774,6 @@ def test_hurst_rs_returns_nan_when_the_block_grid_collapses():
 
 
 def test_hurst_rs_statistic_matches_a_naive_per_block_range_over_sd():
-    from indicators_core import _hurst_rs_statistic
-
     def naive(series, block):
         n = len(series)
         n_blocks = n // block
@@ -819,8 +809,6 @@ def test_hurst_rs_statistic_matches_a_naive_per_block_range_over_sd():
 
 
 def test_anis_lloyd_expectation_matches_the_published_closed_form():
-    from indicators_core import _anis_lloyd_expected_rs
-
     def closed_form(n):
         tail = sum(math.sqrt((n - i) / i) for i in range(1, n))
         if n > 340:
@@ -835,8 +823,6 @@ def test_anis_lloyd_expectation_matches_the_published_closed_form():
 
 
 def test_anis_lloyd_expectation_approaches_the_brownian_limit_from_below():
-    from indicators_core import _anis_lloyd_expected_rs
-
     limit = math.sqrt(math.pi / 2.0)
     sizes = (16, 32, 64, 128, 256, 512, 1024, 2048, 4096)
     ratios = [_anis_lloyd_expected_rs(n) / math.sqrt(n) for n in sizes]
@@ -846,8 +832,6 @@ def test_anis_lloyd_expectation_approaches_the_brownian_limit_from_below():
 
 
 def test_anis_lloyd_expectation_grows_like_the_square_root_of_the_block():
-    from indicators_core import _anis_lloyd_expected_rs
-
     sizes = np.array([256, 512, 1024, 2048, 4096], dtype=float)
     values = np.array([_anis_lloyd_expected_rs(int(n)) for n in sizes])
     slope, _intercept = np.polyfit(np.log(sizes), np.log(values), 1)
@@ -855,8 +839,6 @@ def test_anis_lloyd_expectation_grows_like_the_square_root_of_the_block():
 
 
 def test_anis_lloyd_expectation_is_undefined_below_two_blocks():
-    from indicators_core import _anis_lloyd_expected_rs
-
     assert np.isnan(_anis_lloyd_expected_rs(1))
     assert np.isnan(_anis_lloyd_expected_rs(0))
 

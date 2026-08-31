@@ -1,20 +1,10 @@
 
 import numpy as np
-import pandas as pd
 
-from bear_pullback_st import bear_pullback_st_core
+from shared_strategies.open.conftest import load_module, make_ohlcv
 
-
-def make_ohlcv(closes, noise=0.5):
-    closes = np.array(closes, dtype=float)
-    n = len(closes)
-    return pd.DataFrame({
-        "open": closes - noise * 0.3,
-        "high": closes + noise,
-        "low": closes - noise,
-        "close": closes,
-        "volume": np.full(n, 100.0),
-    })
+_BEAR_PULLBACK = load_module("_bear_pullback_st_test", __file__.replace("test_bear_pullback_st.py", "bear_pullback_st.py"))
+bear_pullback_st_core = _BEAR_PULLBACK.bear_pullback_st_core
 
 
 def _bear_setup_with_rally_and_rejection():

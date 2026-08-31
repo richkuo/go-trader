@@ -22,7 +22,7 @@ sma_crossover = _imod.sma_crossover
 rsi = _imod.rsi
 bollinger_bands = _imod.bollinger_bands
 
-from conftest import make_ohlcv
+from shared_strategies.open.conftest import make_ohlcv
 
 
 class TestSMA:

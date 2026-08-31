@@ -2,19 +2,10 @@
 import numpy as np
 import pandas as pd
 
-from mean_reversion_pro import mean_reversion_pro_core
+from shared_strategies.open.conftest import load_module, make_ohlcv
 
-
-def make_ohlcv(closes, noise=0.5, volume=100.0):
-    closes = np.asarray(closes, dtype=float)
-    n = len(closes)
-    return pd.DataFrame({
-        "open": closes - noise * 0.3,
-        "high": closes + noise,
-        "low": closes - noise,
-        "close": closes,
-        "volume": np.full(n, volume),
-    })
+_MEAN_REVERSION = load_module("_mean_reversion_pro_test", __file__.replace("test_mean_reversion_pro.py", "mean_reversion_pro.py"))
+mean_reversion_pro_core = _MEAN_REVERSION.mean_reversion_pro_core
 
 
 def make_choppy_with_extremes(base=100.0, cycles=14, seed=5):

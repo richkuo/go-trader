@@ -3,7 +3,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from htf_filter import get_default_htf, htf_trend_filter, apply_htf_filter, _compute_ema
+from shared_tools.conftest import load_module
+
+_HTF_FILTER = load_module("_htf_filter_test", __file__.replace("test_htf_filter.py", "htf_filter.py"))
+get_default_htf = _HTF_FILTER.get_default_htf
+htf_trend_filter = _HTF_FILTER.htf_trend_filter
+apply_htf_filter = _HTF_FILTER.apply_htf_filter
+_compute_ema = _HTF_FILTER._compute_ema
 
 
 class TestGetDefaultHtf:

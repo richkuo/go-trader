@@ -2,25 +2,11 @@
 import numpy as np
 import pandas as pd
 
-from mtf_confluence import mtf_confluence_core, _resample_htf
+from shared_strategies.open.conftest import load_module, make_ohlcv
 
-
-def make_ohlcv(closes, volume=None, noise=1.0, freq="1h", start="2024-01-01"):
-    closes = np.asarray(closes, dtype=float)
-    n = len(closes)
-    if volume is None:
-        volume = np.full(n, 100.0)
-    idx = pd.date_range(start, periods=n, freq=freq)
-    return pd.DataFrame(
-        {
-            "open": closes - noise * 0.3,
-            "high": closes + noise,
-            "low": closes - noise,
-            "close": closes,
-            "volume": np.asarray(volume, dtype=float),
-        },
-        index=idx,
-    )
+_MTF_CONFLUENCE = load_module("_mtf_confluence_test", __file__.replace("test_mtf_confluence.py", "mtf_confluence.py"))
+mtf_confluence_core = _MTF_CONFLUENCE.mtf_confluence_core
+_resample_htf = _MTF_CONFLUENCE._resample_htf
 
 
 def build_uptrend_with_pullback(n_trend=900, dip=10.0):

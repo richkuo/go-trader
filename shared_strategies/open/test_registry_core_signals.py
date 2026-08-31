@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from conftest import make_flat, make_ohlcv
+from shared_strategies.open.conftest import make_flat, make_ohlcv
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 

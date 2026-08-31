@@ -2,30 +2,10 @@
 import numpy as np
 import pandas as pd
 
-from vwap_rejection_st import vwap_rejection_st_core
+from shared_strategies.open.conftest import load_module, make_ohlcv
 
-
-def make_ohlc(opens, highs, lows, closes, index, volume=100.0):
-    n = len(closes)
-    return pd.DataFrame(
-        {
-            "open": np.asarray(opens, dtype=float),
-            "high": np.asarray(highs, dtype=float),
-            "low": np.asarray(lows, dtype=float),
-            "close": np.asarray(closes, dtype=float),
-            "volume": np.full(n, float(volume)),
-        },
-        index=index,
-    )
-
-
-def make_ohlcv_from_closes(closes, index, noise=0.5):
-    closes = np.asarray(closes, dtype=float)
-    n = len(closes)
-    opens = closes - noise * 0.3
-    highs = closes + noise
-    lows = closes - noise
-    return make_ohlc(opens, highs, lows, closes, index)
+_VWAP_REJECTION = load_module("_vwap_rejection_st_test", __file__.replace("test_vwap_rejection_st.py", "vwap_rejection_st.py"))
+vwap_rejection_st_core = _VWAP_REJECTION.vwap_rejection_st_core
 
 
 def _hourly_index(n: int, start: str = "2026-01-01 00:00:00") -> pd.DatetimeIndex:
@@ -40,7 +20,7 @@ def _bear_setup_with_rally_and_rejection():
     closes = np.concatenate([down, rally, reject_closes])
     n = len(closes)
     idx = _hourly_index(n)
-    df = make_ohlcv_from_closes(closes, idx, noise=0.4)
+    df = make_ohlcv(closes, index=idx, noise=0.4)
     for i, close_px in enumerate(reject_closes, start=len(down) + len(rally)):
         prev_close = closes[i - 1]
         df.iat[i, df.columns.get_loc("open")] = prev_close + 0.5
@@ -73,14 +53,14 @@ def test_bullish_regime_blocks_shorts():
     rng = np.random.default_rng(0)
     closes = np.linspace(100.0, 200.0, 250) + rng.normal(0, 0.4, 250)
     idx = _hourly_index(len(closes))
-    df = make_ohlcv_from_closes(closes, idx)
+    df = make_ohlcv(closes, index=idx)
     result = vwap_rejection_st_core(df)
     assert (result["signal"] == 0).all(), "Bullish regime must produce no short signals"
 
 
 def test_short_data_returns_zero_signal_without_crash():
     idx = _hourly_index(50)
-    df = make_ohlcv_from_closes([100.0] * 50, idx)
+    df = make_ohlcv([100.0] * 50, index=idx)
     result = vwap_rejection_st_core(df)
     assert "signal" in result.columns
     assert (result["signal"] == 0).all()

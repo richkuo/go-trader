@@ -3,42 +3,26 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from chart_patterns import (
-    PatternMatch,
-    find_swing_points,
-    volume_confirmed,
-    detect_double_top,
-    detect_double_bottom,
-    detect_triple_top,
-    detect_triple_bottom,
-    detect_head_and_shoulders,
-    detect_inverse_head_and_shoulders,
-    detect_bull_flag,
-    detect_bear_flag,
-    detect_ascending_triangle,
-    detect_descending_triangle,
-    detect_cup_and_handle,
-    chart_pattern_core,
-    _get_swing_indices,
-    _htf_gate_trend,
-)
+from shared_strategies.open.conftest import load_module, make_ohlcv
 
-
-def make_ohlcv(closes, volume=None, noise=0.5):
-    closes = np.array(closes, dtype=float)
-    n = len(closes)
-    if volume is None:
-        volume = np.full(n, 100.0)
-    highs = closes + noise
-    lows = closes - noise
-    opens = closes - noise * 0.3
-    return pd.DataFrame({
-        "open": opens,
-        "high": highs,
-        "low": lows,
-        "close": closes,
-        "volume": np.array(volume, dtype=float),
-    })
+_CHART_PATTERNS = load_module("_chart_patterns_test", __file__.replace("test_chart_patterns.py", "chart_patterns.py"))
+PatternMatch = _CHART_PATTERNS.PatternMatch
+find_swing_points = _CHART_PATTERNS.find_swing_points
+volume_confirmed = _CHART_PATTERNS.volume_confirmed
+detect_double_top = _CHART_PATTERNS.detect_double_top
+detect_double_bottom = _CHART_PATTERNS.detect_double_bottom
+detect_triple_top = _CHART_PATTERNS.detect_triple_top
+detect_triple_bottom = _CHART_PATTERNS.detect_triple_bottom
+detect_head_and_shoulders = _CHART_PATTERNS.detect_head_and_shoulders
+detect_inverse_head_and_shoulders = _CHART_PATTERNS.detect_inverse_head_and_shoulders
+detect_bull_flag = _CHART_PATTERNS.detect_bull_flag
+detect_bear_flag = _CHART_PATTERNS.detect_bear_flag
+detect_ascending_triangle = _CHART_PATTERNS.detect_ascending_triangle
+detect_descending_triangle = _CHART_PATTERNS.detect_descending_triangle
+detect_cup_and_handle = _CHART_PATTERNS.detect_cup_and_handle
+chart_pattern_core = _CHART_PATTERNS.chart_pattern_core
+_get_swing_indices = _CHART_PATTERNS._get_swing_indices
+_htf_gate_trend = _CHART_PATTERNS._htf_gate_trend
 
 
 class TestSwingPoints:

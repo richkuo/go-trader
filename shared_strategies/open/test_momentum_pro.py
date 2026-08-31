@@ -3,17 +3,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from momentum_pro import momentum_pro_core
+from shared_strategies.open.conftest import load_module, make_ohlcv as make_frame
 
-
-def make_ohlcv(opens, highs, lows, closes, volume):
-    return pd.DataFrame({
-        "open": np.asarray(opens, dtype=float),
-        "high": np.asarray(highs, dtype=float),
-        "low": np.asarray(lows, dtype=float),
-        "close": np.asarray(closes, dtype=float),
-        "volume": np.asarray(volume, dtype=float),
-    })
+_MOMENTUM_PRO = load_module("_momentum_pro_test", __file__.replace("test_momentum_pro.py", "momentum_pro.py"))
+momentum_pro_core = _MOMENTUM_PRO.momentum_pro_core
 
 
 def build_uptrend_with_pullback():
@@ -30,7 +23,7 @@ def build_uptrend_with_pullback():
     vol = np.full(n, 100.0)
     vol[-1] = 100.0
     vol[-2] = 500.0
-    return make_ohlcv(opens, highs, lows, closes, vol)
+    return make_frame(closes, volume=vol, opens=opens, highs=highs, lows=lows)
 
 
 def test_columns_present():
@@ -41,9 +34,9 @@ def test_columns_present():
 
 
 def test_warmup_returns_no_signal():
-    df = make_ohlcv(
-        opens=[100] * 30, highs=[101] * 30, lows=[99] * 30,
-        closes=[100] * 30, volume=[100] * 30,
+    df = make_frame(
+        [100] * 30, opens=[100] * 30, highs=[101] * 30,
+        lows=[99] * 30, volume=[100] * 30,
     )
     out = momentum_pro_core(df)
     assert (out["signal"] == 0).all()
@@ -71,7 +64,10 @@ def test_volume_gate_blocks_when_unmet():
 def test_flat_market_no_signal():
     n = 260
     closes = np.full(n, 100.0) + np.random.RandomState(0).randn(n) * 0.05
-    df = make_ohlcv(closes - 0.3, closes + 0.5, closes - 0.5, closes, np.full(n, 100.0))
+    df = make_frame(
+        closes, opens=closes - 0.3, highs=closes + 0.5,
+        lows=closes - 0.5, volume=np.full(n, 100.0),
+    )
     out = momentum_pro_core(df)
     assert (out["signal"] == 0).all()
 
@@ -89,7 +85,7 @@ def test_downtrend_pullback_fires_short():
     opens = closes + 0.3
     vol = np.full(n, 100.0)
     vol[-2] = 500.0
-    df = make_ohlcv(opens, highs, lows, closes, vol)
+    df = make_frame(closes, volume=vol, opens=opens, highs=highs, lows=lows)
     out = momentum_pro_core(df, vol_mult=1.2)
     assert (out["signal"] == -1).any(), "expected a short entry on the breakdown bar"
 
@@ -117,8 +113,10 @@ def test_vol_target_never_changes_signals():
 def test_vol_target_emits_fraction_scaled_by_atr():
     n = 260
     closes = np.full(n, 100.0)
-    df = make_ohlcv(closes, closes + 1.0, closes - 1.0, closes,
-                    np.full(n, 100.0))
+    df = make_frame(
+        closes, volume=np.full(n, 100.0), opens=closes,
+        highs=closes + 1.0, lows=closes - 1.0,
+    )
     out = momentum_pro_core(df, vol_target_atr_pct=0.01)
     assert "entry_fraction" in out.columns
     warm = out["entry_fraction"].iloc[50:]
@@ -130,8 +128,10 @@ def test_vol_target_emits_fraction_scaled_by_atr():
 def test_vol_target_fraction_floors_at_min_fraction():
     n = 260
     closes = np.full(n, 100.0)
-    df = make_ohlcv(closes, closes + 1.0, closes - 1.0, closes,
-                    np.full(n, 100.0))
+    df = make_frame(
+        closes, volume=np.full(n, 100.0), opens=closes,
+        highs=closes + 1.0, lows=closes - 1.0,
+    )
     out = momentum_pro_core(df, vol_target_atr_pct=0.0001,
                             vol_target_min_fraction=0.10)
     warm = out["entry_fraction"].iloc[50:]
@@ -141,8 +141,10 @@ def test_vol_target_fraction_floors_at_min_fraction():
 def test_vol_target_caps_fraction_at_one_in_quiet_markets():
     n = 260
     closes = np.full(n, 100.0)
-    df = make_ohlcv(closes, closes + 1.0, closes - 1.0, closes,
-                    np.full(n, 100.0))
+    df = make_frame(
+        closes, volume=np.full(n, 100.0), opens=closes,
+        highs=closes + 1.0, lows=closes - 1.0,
+    )
     out = momentum_pro_core(df, vol_target_atr_pct=0.50)
     warm = out["entry_fraction"].iloc[50:]
     assert np.allclose(warm, 1.0)

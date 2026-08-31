@@ -2,7 +2,10 @@
 import numpy as np
 import pandas as pd
 
-from funding_skew import funding_skew_core
+from shared_strategies.open.conftest import load_module
+
+_FUNDING_SKEW = load_module("_funding_skew_test", __file__.replace("test_funding_skew.py", "funding_skew.py"))
+funding_skew_core = _FUNDING_SKEW.funding_skew_core
 
 
 def make_ohlcv(closes, noise=0.5, tz="UTC"):

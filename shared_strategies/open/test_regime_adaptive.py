@@ -2,23 +2,14 @@
 import numpy as np
 import pandas as pd
 
-from regime_adaptive import regime_adaptive_core
+from shared_strategies.open.conftest import load_module, make_ohlcv
+
+_REGIME_ADAPTIVE = load_module("_regime_adaptive_test", __file__.replace("test_regime_adaptive.py", "regime_adaptive.py"))
+regime_adaptive_core = _REGIME_ADAPTIVE.regime_adaptive_core
 
 PIN = dict(period=20, adx_threshold=25.0, return_eff_threshold=0.05,
            range_eff_threshold=0.03, efficiency_threshold=0.5,
            breakout_lookback=20, mr_lookback=20, mr_entry_z=1.5, mr_exit_z=0.0)
-
-
-def make_ohlcv(closes, noise=0.5, volume=100.0):
-    closes = np.asarray(closes, dtype=float)
-    n = len(closes)
-    return pd.DataFrame({
-        "open": closes - noise * 0.3,
-        "high": closes + noise,
-        "low": closes - noise,
-        "close": closes,
-        "volume": np.full(n, volume),
-    }, index=pd.date_range("2026-01-01", periods=n, freq="1h"))
 
 
 def make_range_with_swings(base=100.0, cycles=14, seed=5):

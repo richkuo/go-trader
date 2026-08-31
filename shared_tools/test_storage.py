@@ -8,7 +8,15 @@ import sys
 import pandas as pd
 import pytest
 
-from storage import get_connection, init_db, store_ohlcv, load_ohlcv, store_backtest_result, get_backtest_results
+from shared_tools.conftest import load_module
+
+_STORAGE = load_module("_storage_test", __file__.replace("test_storage.py", "storage.py"))
+get_connection = _STORAGE.get_connection
+init_db = _STORAGE.init_db
+store_ohlcv = _STORAGE.store_ohlcv
+load_ohlcv = _STORAGE.load_ohlcv
+store_backtest_result = _STORAGE.store_backtest_result
+get_backtest_results = _STORAGE.get_backtest_results
 
 
 def test_ohlcv_cache_env_override_is_import_time_default(tmp_path):

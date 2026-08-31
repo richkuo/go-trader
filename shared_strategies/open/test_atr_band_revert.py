@@ -5,9 +5,10 @@ import sys
 import numpy as np
 import pandas as pd
 
-sys.path.insert(0, os.path.dirname(__file__))
+from shared_strategies.open.conftest import load_module
 
-from atr_band_revert import atr_band_revert_core
+_ATR_BAND_REVERT = load_module("_atr_band_revert_test", __file__.replace("test_atr_band_revert.py", "atr_band_revert.py"))
+atr_band_revert_core = _ATR_BAND_REVERT.atr_band_revert_core
 
 
 def _box(n=60, level=100.0, top=101.0, bottom=99.0):

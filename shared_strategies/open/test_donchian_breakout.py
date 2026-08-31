@@ -1,26 +1,11 @@
 
 import numpy as np
-import pandas as pd
 import pytest
 
-from donchian_breakout import donchian_breakout_core
+from shared_strategies.open.conftest import load_module, make_ohlcv
 
-
-def make_ohlcv(closes, volume=None, noise=0.5):
-    closes = np.array(closes, dtype=float)
-    n = len(closes)
-    if volume is None:
-        volume = np.full(n, 100.0)
-    highs = closes + noise
-    lows = closes - noise
-    opens = closes - noise * 0.3
-    return pd.DataFrame({
-        "open": opens,
-        "high": highs,
-        "low": lows,
-        "close": closes,
-        "volume": np.array(volume, dtype=float),
-    })
+_DONCHIAN = load_module("_donchian_breakout_test", __file__.replace("test_donchian_breakout.py", "donchian_breakout.py"))
+donchian_breakout_core = _DONCHIAN.donchian_breakout_core
 
 
 def test_breakout_above_channel_generates_buy():

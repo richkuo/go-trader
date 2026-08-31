@@ -3,13 +3,14 @@ from pathlib import Path
 
 import pandas as pd
 
-from strategy_composition import (
-    compose_signal,
-    evaluate_open_close,
-    finalize_decision,
-    max_close_fraction,
-    validate_close_strategy_names,
-)
+from shared_tools.conftest import load_module
+
+_STRATEGY_COMPOSITION = load_module("_strategy_composition_test", Path(__file__).with_name("strategy_composition.py"))
+compose_signal = _STRATEGY_COMPOSITION.compose_signal
+evaluate_open_close = _STRATEGY_COMPOSITION.evaluate_open_close
+finalize_decision = _STRATEGY_COMPOSITION.finalize_decision
+max_close_fraction = _STRATEGY_COMPOSITION.max_close_fraction
+validate_close_strategy_names = _STRATEGY_COMPOSITION.validate_close_strategy_names
 
 
 def test_compose_signal_close_before_open():

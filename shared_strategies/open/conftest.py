@@ -2,25 +2,59 @@
 import numpy as np
 import pandas as pd
 import pytest
+import importlib.util
+from pathlib import Path
+import sys
 
 
-def make_ohlcv(closes, volume=None, noise=0.5, index=None):
+def load_module(name, path):
+    spec = importlib.util.spec_from_file_location(name, Path(path))
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load module {name} from {path}")
+    module = importlib.util.module_from_spec(spec)
+    previous = sys.modules.get(name)
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        if previous is None:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = previous
+        raise
+    return module
+
+
+def make_ohlcv(
+    closes,
+    volume=None,
+    noise=0.5,
+    index=None,
+    start="2026-01-01",
+    freq="1h",
+    opens=None,
+    highs=None,
+    lows=None,
+):
     closes = np.array(closes, dtype=float)
     n = len(closes)
     if volume is None:
         volume = np.full(n, 100.0)
-    highs = closes + noise
-    lows = closes - noise
-    opens = closes - noise * 0.3
+    volume = np.full(n, float(volume)) if np.isscalar(volume) else np.array(volume, dtype=float)
+    highs = closes + noise if highs is None else np.array(highs, dtype=float)
+    lows = closes - noise if lows is None else np.array(lows, dtype=float)
+    opens = closes - noise * 0.3 if opens is None else np.array(opens, dtype=float)
     df = pd.DataFrame({
         "open": opens,
         "high": highs,
         "low": lows,
         "close": closes,
-        "volume": np.array(volume, dtype=float),
+        "volume": volume,
     })
-    if index is not None:
-        df.index = index
+    df.index = (
+        pd.date_range(start, periods=n, freq=freq)
+        if index is None else index
+    )
     return df
 
 

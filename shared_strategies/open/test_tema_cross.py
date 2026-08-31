@@ -3,24 +3,11 @@ import importlib.util
 import os
 
 import numpy as np
-import pandas as pd
 import pytest
 
+from shared_strategies.open.conftest import load_module, make_ohlcv
+
 _HERE = os.path.dirname(os.path.abspath(__file__))
-
-
-def make_ohlcv(closes, volume=None, noise=0.5):
-    closes = np.array(closes, dtype=float)
-    n = len(closes)
-    if volume is None:
-        volume = np.full(n, 100.0)
-    return pd.DataFrame({
-        "open": closes - noise * 0.3,
-        "high": closes + noise,
-        "low": closes - noise,
-        "close": closes,
-        "volume": np.array(volume, dtype=float),
-    })
 
 
 def _load_registry():

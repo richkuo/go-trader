@@ -1,26 +1,12 @@
 
 import numpy as np
-import pandas as pd
 import pytest
 
-from adx_trend import adx_trend_core, _compute_adx_components
+from shared_strategies.open.conftest import load_module, make_ohlcv
 
-
-def make_ohlcv(closes, volume=None, noise=0.5):
-    closes = np.array(closes, dtype=float)
-    n = len(closes)
-    if volume is None:
-        volume = np.full(n, 100.0)
-    highs = closes + noise
-    lows = closes - noise
-    opens = closes - noise * 0.3
-    return pd.DataFrame({
-        "open": opens,
-        "high": highs,
-        "low": lows,
-        "close": closes,
-        "volume": np.array(volume, dtype=float),
-    })
+_ADX_TREND = load_module("_adx_trend_test", __file__.replace("test_adx_trend.py", "adx_trend.py"))
+adx_trend_core = _ADX_TREND.adx_trend_core
+_compute_adx_components = _ADX_TREND._compute_adx_components
 
 
 def test_strong_uptrend_generates_buy():

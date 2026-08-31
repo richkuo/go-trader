@@ -9,7 +9,11 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "shared_tools"))
 sys.path.insert(0, os.path.join(ROOT, "backtest"))
 
-from simulate_strategy import _resolve_atr_regime_stop, _run_payload
+from shared_tools.conftest import load_module
+
+_SIMULATE_STRATEGY = load_module("_simulate_strategy_atr_keys_test", os.path.join(ROOT, "shared_scripts", "simulate_strategy.py"))
+_resolve_atr_regime_stop = _SIMULATE_STRATEGY._resolve_atr_regime_stop
+_run_payload = _SIMULATE_STRATEGY._run_payload
 
 SL_CANON = "stop_loss_atr_mult_regime"
 SL_LEGACY = "stop_loss_atr_regime"

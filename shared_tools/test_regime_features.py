@@ -1,11 +1,12 @@
 import numpy as np
 import pandas as pd
-from regime import (
-    composite_feature_matrix,
-    compute_regime_composite,
-    map_composite_label,
-    _DEFAULT_COMPOSITE_THRESHOLDS,
-)
+from shared_tools.conftest import load_module
+
+_REGIME = load_module("_regime_features_test", __file__.replace("test_regime_features.py", "regime.py"))
+composite_feature_matrix = _REGIME.composite_feature_matrix
+compute_regime_composite = _REGIME.compute_regime_composite
+map_composite_label = _REGIME.map_composite_label
+_DEFAULT_COMPOSITE_THRESHOLDS = _REGIME._DEFAULT_COMPOSITE_THRESHOLDS
 
 
 def _synth(n=300, seed=1):

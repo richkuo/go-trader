@@ -8,7 +8,10 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "shared_tools"))
 sys.path.insert(0, os.path.join(ROOT, "backtest"))
 
-from simulate_strategy import _resolve_gate_on_failure
+from shared_tools.conftest import load_module
+
+_SIMULATE_STRATEGY = load_module("_simulate_strategy_gate_test", os.path.join(ROOT, "shared_scripts", "simulate_strategy.py"))
+_resolve_gate_on_failure = _SIMULATE_STRATEGY._resolve_gate_on_failure
 
 
 def test_default_open_when_neither_set():

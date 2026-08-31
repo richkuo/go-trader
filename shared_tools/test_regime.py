@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-sys.path.insert(0, str(pathlib.Path(__file__).parent))
+from shared_tools.conftest import make_ohlcv
 
 import importlib.util
 
@@ -37,42 +37,29 @@ _indicators_core_spec.loader.exec_module(_indicators_core_mod)
 
 
 def _make_uptrend(n: int = 100, noise: float = 0.5) -> pd.DataFrame:
-    close = np.linspace(100.0, 200.0, n)
-    high = close + noise
-    low = close - noise
-    return pd.DataFrame({
-        "open": close - noise * 0.3,
-        "high": high,
-        "low": low,
-        "close": close,
-        "volume": np.ones(n) * 1000.0,
-    })
+    return make_ohlcv(
+        np.linspace(100.0, 200.0, n),
+        volume=np.full(n, 1000.0),
+        noise=noise,
+    )
 
 
 def _make_downtrend(n: int = 100, noise: float = 0.5) -> pd.DataFrame:
-    close = np.linspace(200.0, 100.0, n)
-    high = close + noise
-    low = close - noise
-    return pd.DataFrame({
-        "open": close + noise * 0.3,
-        "high": high,
-        "low": low,
-        "close": close,
-        "volume": np.ones(n) * 1000.0,
-    })
+    return make_ohlcv(
+        np.linspace(200.0, 100.0, n),
+        volume=np.full(n, 1000.0),
+        noise=noise,
+        opens=np.linspace(200.0, 100.0, n) + noise * 0.3,
+    )
 
 
 def _make_flat(n: int = 100, noise: float = 0.05) -> pd.DataFrame:
-    close = np.full(n, 100.0)
-    high = close + noise
-    low = close - noise
-    return pd.DataFrame({
-        "open": close,
-        "high": high,
-        "low": low,
-        "close": close,
-        "volume": np.ones(n) * 1000.0,
-    })
+    return make_ohlcv(
+        np.full(n, 100.0),
+        volume=np.full(n, 1000.0),
+        noise=noise,
+        opens=np.full(n, 100.0),
+    )
 
 
 def test_compute_regime_returns_dataframe():

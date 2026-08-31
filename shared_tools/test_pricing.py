@@ -2,7 +2,14 @@
 import math
 import pytest
 
-from pricing import norm_cdf, norm_pdf, bs_price, bs_greeks, bs_price_and_greeks
+from shared_tools.conftest import load_module
+
+_PRICING = load_module("_pricing_test", __file__.replace("test_pricing.py", "pricing.py"))
+norm_cdf = _PRICING.norm_cdf
+norm_pdf = _PRICING.norm_pdf
+bs_price = _PRICING.bs_price
+bs_greeks = _PRICING.bs_greeks
+bs_price_and_greeks = _PRICING.bs_price_and_greeks
 
 
 class TestNormCdf:

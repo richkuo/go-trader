@@ -2,7 +2,12 @@
 import numpy as np
 import pandas as pd
 
-from amd_ifvg import amd_ifvg_core, _hours_in_window, _session_local
+from shared_strategies.open.conftest import load_module
+
+_AMD_IFVG = load_module("_amd_ifvg_test", __file__.replace("test_amd_ifvg.py", "amd_ifvg.py"))
+amd_ifvg_core = _AMD_IFVG.amd_ifvg_core
+_hours_in_window = _AMD_IFVG._hours_in_window
+_session_local = _AMD_IFVG._session_local
 
 LEGACY_UTC = dict(
     asian_start_hour=0, asian_end_hour=8,

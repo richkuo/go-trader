@@ -88,15 +88,24 @@ def test_save_then_load_returns_payload(adapter_mod, cache_path):
     assert got_meta == meta
 
 
-def test_load_returns_none_when_file_missing(adapter_mod, cache_path):
-    assert adapter_mod._load_meta_cache(path=cache_path) is None
-
-
-def test_load_returns_none_when_ttl_expired(adapter_mod, cache_path):
-    spot_meta, meta = _sample_meta()
-    payload = {"ts": time.time() - 7200, "spot_meta": spot_meta, "meta": meta}
-    with open(cache_path, "w") as f:
-        json.dump(payload, f)
+@pytest.mark.parametrize("case", ("missing", "expired", "empty", "garbage"))
+def test_load_rejects_missing_or_invalid_cache(adapter_mod, cache_path, case):
+    if case == "expired":
+        spot_meta, meta = _sample_meta()
+        payload = {"ts": time.time() - 7200, "spot_meta": spot_meta, "meta": meta}
+        with open(cache_path, "w") as f:
+            json.dump(payload, f)
+    elif case == "empty":
+        payload = {
+            "ts": time.time(),
+            "spot_meta": {"universe": [], "tokens": []},
+            "meta": {"universe": []},
+        }
+        with open(cache_path, "w") as f:
+            json.dump(payload, f)
+    elif case == "garbage":
+        with open(cache_path, "w") as f:
+            f.write("not json")
     assert adapter_mod._load_meta_cache(path=cache_path) is None
 
 
@@ -106,24 +115,7 @@ def test_load_within_ttl_returns_payload(adapter_mod, cache_path):
     with open(cache_path, "w") as f:
         json.dump(payload, f)
     got = adapter_mod._load_meta_cache(path=cache_path)
-    assert got is not None
-
-
-def test_load_rejects_empty_universe(adapter_mod, cache_path):
-    payload = {
-        "ts": time.time(),
-        "spot_meta": {"universe": [], "tokens": []},
-        "meta": {"universe": []},
-    }
-    with open(cache_path, "w") as f:
-        json.dump(payload, f)
-    assert adapter_mod._load_meta_cache(path=cache_path) is None
-
-
-def test_load_rejects_garbage(adapter_mod, cache_path):
-    with open(cache_path, "w") as f:
-        f.write("not json")
-    assert adapter_mod._load_meta_cache(path=cache_path) is None
+    assert got == (spot_meta, meta)
 
 
 def test_save_atomic_replace_does_not_leak_tmp(adapter_mod, cache_path, tmp_path):

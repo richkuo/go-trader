@@ -9,6 +9,7 @@ import ccxt
 
 import sys
 from unittest.mock import MagicMock as _MagicMock
+from shared_tools.conftest import load_module
 
 _real_storage = sys.modules.get("storage")
 _mock_storage = _MagicMock()
@@ -16,7 +17,11 @@ _mock_storage.store_ohlcv = _MagicMock()
 _mock_storage.load_ohlcv = _MagicMock(return_value=pd.DataFrame())
 sys.modules["storage"] = _mock_storage
 
-from data_fetcher import get_exchange, fetch_ohlcv, fetch_full_history, load_cached_data
+_DATA_FETCHER = load_module("data_fetcher", __file__.replace("test_data_fetcher.py", "data_fetcher.py"))
+get_exchange = _DATA_FETCHER.get_exchange
+fetch_ohlcv = _DATA_FETCHER.fetch_ohlcv
+fetch_full_history = _DATA_FETCHER.fetch_full_history
+load_cached_data = _DATA_FETCHER.load_cached_data
 
 if _real_storage is not None:
     sys.modules["storage"] = _real_storage

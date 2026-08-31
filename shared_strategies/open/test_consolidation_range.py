@@ -5,9 +5,10 @@ import sys
 import numpy as np
 import pandas as pd
 
-sys.path.insert(0, os.path.dirname(__file__))
+from shared_strategies.open.conftest import load_module
 
-from consolidation_range import consolidation_range_core
+_CONSOLIDATION_RANGE = load_module("_consolidation_range_test", __file__.replace("test_consolidation_range.py", "consolidation_range.py"))
+consolidation_range_core = _CONSOLIDATION_RANGE.consolidation_range_core
 
 
 def _box(n=40, close_level=100.0, top=101.0, bottom=99.0):

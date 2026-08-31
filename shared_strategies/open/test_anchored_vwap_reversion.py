@@ -5,24 +5,11 @@ import os
 import numpy as np
 import pandas as pd
 
-from anchored_vwap_reversion import anchored_vwap_reversion_core
+from shared_strategies.open.conftest import load_module, make_ohlcv
 
-
-def _hourly_index(n, start="2026-01-01 00:00:00"):
-    return pd.date_range(start, periods=n, freq="1h")
-
-
-def _ohlcv(closes, highs=None, lows=None, opens=None, volume=100.0):
-    closes = np.asarray(closes, dtype=float)
-    n = len(closes)
-    highs = closes + 0.5 if highs is None else np.asarray(highs, dtype=float)
-    lows = closes - 0.5 if lows is None else np.asarray(lows, dtype=float)
-    opens = closes if opens is None else np.asarray(opens, dtype=float)
-    vol = np.full(n, float(volume)) if np.isscalar(volume) else np.asarray(volume, dtype=float)
-    return pd.DataFrame(
-        {"open": opens, "high": highs, "low": lows, "close": closes, "volume": vol},
-        index=_hourly_index(n),
-    )
+_ANCHORED_VWAP_REVERSION = load_module("_anchored_vwap_reversion_test", os.path.join(os.path.dirname(__file__), "anchored_vwap_reversion.py"))
+anchored_vwap_reversion_core = _ANCHORED_VWAP_REVERSION.anchored_vwap_reversion_core
+_ohlcv = make_ohlcv
 
 
 _PARAMS = dict(pivot_strength=2, entry_atr_mult=1.0, buffer_atr_mult=0.0,

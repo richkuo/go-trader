@@ -4,7 +4,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-from close_registry_loader import list_strategies, list_strategies_detailed
+from shared_tools.conftest import load_module
+
+_CLOSE_REGISTRY_LOADER = load_module("_close_registry_loader_test", Path(__file__).with_name("close_registry_loader.py"))
+list_strategies = _CLOSE_REGISTRY_LOADER.list_strategies
+list_strategies_detailed = _CLOSE_REGISTRY_LOADER.list_strategies_detailed
 
 _LOADER_PATH = Path(__file__).resolve().parent / "close_registry_loader.py"
 

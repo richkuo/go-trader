@@ -2,20 +2,20 @@
 import numpy as np
 import pandas as pd
 
-from liquidity_sweeps import _find_swing_lows, liquidity_sweep_core
+from shared_strategies.open.conftest import load_module, make_ohlcv
+
+_LIQUIDITY_SWEEPS = load_module("_liquidity_sweeps_test", __file__.replace("test_liquidity_sweeps.py", "liquidity_sweeps.py"))
+_find_swing_lows = _LIQUIDITY_SWEEPS._find_swing_lows
+liquidity_sweep_core = _LIQUIDITY_SWEEPS.liquidity_sweep_core
 
 
 def _make_ohlcv(highs, lows, closes, opens=None):
-    n = len(closes)
-    if opens is None:
-        opens = closes
-    return pd.DataFrame({
-        "open":   opens,
-        "high":   highs,
-        "low":    lows,
-        "close":  closes,
-        "volume": [100.0] * n,
-    })
+    return make_ohlcv(
+        closes,
+        opens=closes if opens is None else opens,
+        highs=highs,
+        lows=lows,
+    )
 
 
 def _monotone_uptrend(n: int, start: float = 100.0, slope: float = 0.5) -> tuple:

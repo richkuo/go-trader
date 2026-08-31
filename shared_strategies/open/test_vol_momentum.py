@@ -2,19 +2,10 @@
 import numpy as np
 import pandas as pd
 
-from vol_momentum import vol_momentum_core
+from shared_strategies.open.conftest import load_module, make_ohlcv
 
-
-def make_ohlcv(closes, noise=0.5, volume=100.0):
-    closes = np.asarray(closes, dtype=float)
-    n = len(closes)
-    return pd.DataFrame({
-        "open": closes - noise * 0.3,
-        "high": closes + noise,
-        "low": closes - noise,
-        "close": closes,
-        "volume": np.full(n, volume),
-    }, index=pd.date_range("2026-01-01", periods=n, freq="1h"))
+_VOL_MOMENTUM = load_module("_vol_momentum_test", __file__.replace("test_vol_momentum.py", "vol_momentum.py"))
+vol_momentum_core = _VOL_MOMENTUM.vol_momentum_core
 
 
 def make_uptrend_with_plateau():

@@ -5,25 +5,13 @@ import os
 import numpy as np
 import pandas as pd
 
-from anchored_vwap import anchored_vwap_core
-from indicators_core import wilder_rsi as _inline_rsi
+from shared_strategies.open.conftest import load_module, make_ohlcv
 
-
-def _hourly_index(n, start="2026-01-01 00:00:00"):
-    return pd.date_range(start, periods=n, freq="1h")
-
-
-def _ohlcv(closes, highs=None, lows=None, opens=None, volume=100.0):
-    closes = np.asarray(closes, dtype=float)
-    n = len(closes)
-    highs = closes + 0.5 if highs is None else np.asarray(highs, dtype=float)
-    lows = closes - 0.5 if lows is None else np.asarray(lows, dtype=float)
-    opens = closes if opens is None else np.asarray(opens, dtype=float)
-    vol = np.full(n, float(volume)) if np.isscalar(volume) else np.asarray(volume, dtype=float)
-    return pd.DataFrame(
-        {"open": opens, "high": highs, "low": lows, "close": closes, "volume": vol},
-        index=_hourly_index(n),
-    )
+_ANCHORED_VWAP = load_module("_anchored_vwap_test", os.path.join(os.path.dirname(__file__), "anchored_vwap.py"))
+_INDICATORS_CORE = load_module("_anchored_vwap_indicators_test", os.path.join(os.path.dirname(__file__), "indicators_core.py"))
+anchored_vwap_core = _ANCHORED_VWAP.anchored_vwap_core
+_inline_rsi = _INDICATORS_CORE.wilder_rsi
+_ohlcv = make_ohlcv
 
 
 def test_empty_and_short_df_return_zero_signal():
