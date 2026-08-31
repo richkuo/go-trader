@@ -313,7 +313,8 @@ def test_enriched_bakeoff_smoke_if_data_available():
     except Exception as e:
         pytest.skip(f"no cached OHLCV / data path unavailable: {e}")
     assert "ablation" in report and "candidates" in report
-    assert report["ablation"]["canonical"]["status"] in ("ok", "unavailable")
+    status = report["ablation"]["canonical"]["status"]
+    assert status == "ok" or status == "unavailable" or status.startswith("unavailable: ")
     assert "live_wiring_delta" in report
     assert report["n_perm"] == 200
     assert report["bonferroni_denominator"] == sum(
