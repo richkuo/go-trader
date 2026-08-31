@@ -45,9 +45,9 @@ present (`shared_tools/trading_bot.db`) via one of the four committed drivers
 `fee_drag.py`) — each section below states its exact command. Candidate
 regime state (`allowed_regimes` / `regime_windows_spec` /
 `profile_allocation`) is threaded into every leg by
-`driver_common.candidate_leg_kwargs` (unit-tested in
-`backtest/tests/test_breakout_1165_drivers.py`) — unlike the #984 twins, a
-driver here that dropped it would silently score the ungated entry. Protocol
+`driver_common.candidate_leg_kwargs`, which every driver here calls — unlike
+the #984 twins, a driver that dropped it would silently score the ungated
+entry, so re-read the four drivers' call sites before regenerating. Protocol
 windows (`is`, `oos`, held-out) are date-pinned; the continuous audit window
 ends at the latest cache by default, so `audit_headline.py` records the
 effective per-dataset data range in its artifact — diff that against the

@@ -259,8 +259,12 @@ def test_a_deferring_study_refuses_the_contract_path_even_when_asked(
     argv = ["--report-out", CONTRACT]
     if needs_json_out:
         argv += ["--json-out", str(tmp_path / "scoped.json")]
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit) as exc:
         study.main(argv)
+    message = str(exc.value)
+    assert f"[{name.split('_')[1]}]" in message, message
+    assert CONTRACT_BASENAME in message, message
+    assert f"{CONTRACT_OWNER}.py" in message, message
     assert (os.path.exists(CONTRACT) and open(CONTRACT).read()) == before
 
 

@@ -3,6 +3,8 @@ import os
 import sys
 from datetime import datetime, timezone
 
+import numpy as np
+import pandas as pd
 import pytest
 
 sys.path.insert(0, os.path.abspath(
@@ -219,3 +221,70 @@ def test_repo_artifact_run_over_the_full_family_is_allowed(
     assert rc == 0
     assert art.exists() and rep.exists()
     assert json.loads(art.read_text())["certified"] == []
+
+
+# --- the producer feeding that artifact: premise functions certify() calls for
+#     real. docs/backtesting-registry.md marks regime_1076_directional_premise
+#     "the screen re-run by the #1085 producer", so the window clip that defines
+#     held-out data and the source resolution behind the repointed-baseline
+#     refusal are runtime-gating, not report-only. -------------------------------
+
+
+def _ohlcv(start, periods, freq="1h"):
+    rng = np.random.default_rng(7)
+    idx = pd.date_range(start, periods=periods, freq=freq)
+    close = 100.0 * np.exp(np.cumsum(rng.normal(0, 0.002, periods)))
+    return pd.DataFrame({"open": close, "high": close * 1.001,
+                         "low": close * 0.999, "close": close,
+                         "volume": 1.0}, index=idx)
+
+
+@pytest.mark.parametrize("window", premise_mod.HELD_OUT_FORWARD)
+def test_load_clips_a_wider_fetch_to_the_held_out_window(window, monkeypatch):
+    start, end = premise_mod.WINDOWS[window]
+    full = _ohlcv(pd.Timestamp(start) - pd.Timedelta(days=120), 24 * 400)
+    monkeypatch.setattr(premise_mod, "load_cached_data",
+                        lambda *a, **k: full.copy())
+
+    d = premise_mod._load("BTC/USDT", "1h", window, "composite",
+                          dict(premise_mod._DEFAULT_COMPOSITE_THRESHOLDS))
+
+    in_window = (full.index >= pd.Timestamp(start))
+    if end is not None:
+        in_window &= (full.index <= pd.Timestamp(end))
+    n_in = int(in_window.sum())
+    assert 0 < n_in < len(full)
+    assert d is not None
+    assert len(d["close"]) == n_in
+
+
+def test_clip_window_is_inclusive_of_both_bounds_and_drops_the_rest():
+    start, end = premise_mod.WINDOWS["is"]
+    out = premise_mod._clip_window(
+        _ohlcv(pd.Timestamp(start) - pd.Timedelta(days=30), 24 * 400),
+        start, end)
+    assert out.index.min() >= pd.Timestamp(start)
+    assert out.index.max() <= pd.Timestamp(end)
+    assert len(out) > 0
+
+
+def test_clip_window_refuses_a_frame_with_no_datetime_index():
+    with pytest.raises(ValueError):
+        premise_mod._clip_window(pd.DataFrame({"close": [1.0, 2.0]}),
+                                 *premise_mod.WINDOWS["is"])
+
+
+def test_an_added_symbol_on_another_venue_resolves_and_is_not_repointed(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(premise_mod, "run", lambda *a, **k: [_row(p=0.9)])
+    art, rep = tmp_path / "art.json", tmp_path / "rep.json"
+    monkeypatch.setattr(certify_mod, "DEFAULT_ARTIFACT", str(art))
+    monkeypatch.setattr(certify_mod, "DEFAULT_RUN_REPORT", str(rep))
+    rc = certify_mod.main([
+        "--symbols",
+        ",".join(premise_mod.DEFAULT_SYMBOLS) + ",HYPE/USDC:USDC@hyperliquid"])
+    assert rc == 0
+    sources = json.loads(art.read_text())["criteria"]["data_sources"]
+    assert sources["HYPE/USDC:USDC"] == "hyperliquid"
+    assert all(sources[s] == premise_mod.PLATFORM
+               for s in premise_mod.DEFAULT_SYMBOLS)

@@ -656,15 +656,18 @@ def test_regime_label_string_is_safe_for_output_field():""",
         "// Genuine post-run live edit still reports drifted.\n",
     ]
     tuning = ROOT / "scheduler/ui_tuning_page_test.go"
-    tuning_text = tuning.read_text()
-    tuning_new = tuning_text
-    for block in js_comment_blocks:
-        tuning_new = tuning_new.replace(block, "")
-    if tuning_new != tuning_text:
-        tuning.write_text(tuning_new)
-        changed += 1
+    if tuning.exists():
+        tuning_text = tuning.read_text()
+        tuning_new = tuning_text
+        for block in js_comment_blocks:
+            tuning_new = tuning_new.replace(block, "")
+        if tuning_new != tuning_text:
+            tuning.write_text(tuning_new)
+            changed += 1
     for rel in argparse_files:
         path = ROOT / rel
+        if not path.exists():
+            continue
         text = path.read_text()
         new_text = text
         for old in argparse_old:
