@@ -3,3 +3,5 @@ Repository-specific additions for go-trader, appended to the shared review forma
 The no-execution ban covers backtests as well: do NOT run backtests, optimizers, tuning runs, or parity harnesses in this workflow. CI runs the Go build, go test, and pytest on the pull request separately.
 
 The safety carve-out applies to this repository's auto-protective mechanisms by name: the portfolio kill switch, the per-strategy circuit breaker, stop-loss arming and trailing-stop replacement, liquidation clamping, shared-wallet and cash reconciliation, and position, fill, or realized-PnL accounting. A finding that touches any of them is always surfaced, at any confidence and any magnitude.
+
+Apply the test-scope rule in CLAUDE.md to every new test. Flag violations under ### Optional.
