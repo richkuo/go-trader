@@ -397,19 +397,6 @@ class HyperliquidExchangeAdapter:
                 return info.asset_to_sz_decimals[asset]
         return None
 
-    @staticmethod
-    def _resolve_asset_index(info, symbol: str):
-        name_to_asset = getattr(info, "name_to_asset", None)
-        if callable(name_to_asset):
-            try:
-                return name_to_asset(symbol)
-            except Exception:
-                pass
-        coin_to_asset = getattr(info, "coin_to_asset", None)
-        if isinstance(coin_to_asset, dict) and symbol in coin_to_asset:
-            return coin_to_asset[symbol]
-        return None
-
     @property
     def is_live(self) -> bool:
         return self._wallet is not None
