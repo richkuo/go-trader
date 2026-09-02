@@ -943,13 +943,6 @@ class TestLazyExchangeInit:
 
 
 def _sdk_info(asset_to_sz_decimals_by_index, name_to_coin=None, coin_to_asset=None, name_to_asset_fn=None):
-    """Build a MagicMock that mirrors the real hyperliquid-python-sdk Info shape.
-
-    The SDK keys `asset_to_sz_decimals` by integer asset index, with
-    `name_to_coin` / `coin_to_asset` providing the symbol→index translation
-    (info.py:761-789). Older mocks in this file used a symbol-keyed dict, which
-    hid the bug fixed in #1505.
-    """
     mock_info = MagicMock()
     mock_info.asset_to_sz_decimals = asset_to_sz_decimals_by_index
     if name_to_coin is None:
@@ -966,14 +959,8 @@ def _sdk_info(asset_to_sz_decimals_by_index, name_to_coin=None, coin_to_asset=No
 
 
 class TestSzDecimalsSdkShape:
-    """Regression tests for #1505 — HL adapter was looking the symbol up in a
-    dict keyed by integer asset index, so it always missed and fell back to 3.
-    HYPE (szDecimals=2) silently mis-rounded off-tick and the exchange rejected
-    or IOC-partial-filled the order.
-    """
 
     def test_returns_correct_decimals_for_hype_via_name_to_asset(self):
-        # HYPE is asset index 151 in the real HL universe; szDecimals=2.
         mock_info = _sdk_info(
             asset_to_sz_decimals_by_index={151: 2, 0: 5},
             coin_to_asset={"HYPE": 151, "BTC": 0},
@@ -994,7 +981,6 @@ class TestSzDecimalsSdkShape:
         assert adapter._sz_decimals("ETH") == 4
 
     def test_market_open_rounds_hype_size_to_2_decimals_not_3(self):
-        # 6.137982 at szDecimals=2 must round to 6.14 (on-tick), NOT 6.138.
         mock_info = _sdk_info(
             asset_to_sz_decimals_by_index={151: 2},
             coin_to_asset={"HYPE": 151},
@@ -1027,9 +1013,6 @@ class TestSzDecimalsSdkShape:
         mock_exchange.market_close.assert_called_once_with("HYPE", 6.14)
 
     def test_unknown_symbol_falls_through_to_default_3(self):
-        # `name_to_coin` doesn't contain the symbol → real SDK would never know
-        # about it; the legacy `asset_to_sz_decimals` keyed-by-symbol fallback
-        # also misses; we hit the warning and return 3.
         mock_info = _sdk_info(
             asset_to_sz_decimals_by_index={0: 5},
             coin_to_asset={"BTC": 0},
@@ -1040,8 +1023,6 @@ class TestSzDecimalsSdkShape:
         assert adapter._sz_decimals("NOPE") == 3
 
     def test_name_to_asset_raising_falls_back_to_coin_to_asset(self):
-        # If a custom `name_to_asset` raises, we should still resolve via
-        # `coin_to_asset` rather than crashing.
         def _raising(name):
             raise RuntimeError("sdk quirk")
 
@@ -1056,13 +1037,9 @@ class TestSzDecimalsSdkShape:
         assert adapter._sz_decimals("HYPE") == 2
 
     def test_legacy_symbol_keyed_mock_still_works(self):
-        # Pre-#1505 tests used a symbol-keyed `asset_to_sz_decimals` dict. The
-        # fix preserves that behavior so existing assertions don't break — the
-        # legacy path is unreachable in production (real HL Info never keys by
-        # symbol) but tests rely on it.
         mock_info = MagicMock()
         mock_info.asset_to_sz_decimals = {"BTC": 5}
-        mock_info.name_to_coin = {}  # no SDK-shape entries
+        mock_info.name_to_coin = {}
         mock_info.coin_to_asset = {}
         mod = _load_hl_adapter()
         adapter = mod.HyperliquidExchangeAdapter()
