@@ -351,8 +351,26 @@ class HyperliquidExchangeAdapter:
         return self._ensure_exchange()
 
     def _sz_decimals(self, symbol: str) -> int:
-        if self._info is not None and symbol in self._info.asset_to_sz_decimals:
-            return self._info.asset_to_sz_decimals[symbol]
+        # The hyperliquid-python-sdk `Info` class keys `asset_to_sz_decimals` by
+        # *integer asset index* (info.py:set_perp_meta / set_spot_meta), not by
+        # symbol name. Resolve the symbol through `name_to_asset` (or fall back
+        # to `coin_to_asset` if `name_to_asset` is unavailable) before reading
+        # the per-asset szDecimals. Looking the symbol up directly in
+        # `asset_to_sz_decimals` always misses and silently falls back to 3,
+        # which mis-rounds HYPE (szDecimals=2) and other 2-decimal perps off
+        # the valid tick grid — the exchange then either rejects the order
+        # outright ("Order has invalid size") or IOC-partial-fills a tiny
+        # fragment. See issue #1505.
+        info = self._info
+        resolved = self._resolve_sz_decimals(info, symbol) if info is not None else None
+        if resolved is not None:
+            return resolved
+        # Legacy fallback for tests/mocks that keyed `asset_to_sz_decimals` by
+        # symbol name (the pre-fix shape). Real HL Info instances never key by
+        # symbol, so this branch is unreachable in production.
+        if info is not None and isinstance(getattr(info, "asset_to_sz_decimals", None), dict) \
+                and symbol in info.asset_to_sz_decimals:
+            return info.asset_to_sz_decimals[symbol]
         if symbol in self._sz_decimals_misses:
             return 3
         try:
@@ -361,11 +379,64 @@ class HyperliquidExchangeAdapter:
             print(f"[WARN] hl meta refresh failed for {symbol}: {exc}", file=sys.stderr)
             self._sz_decimals_misses.add(symbol)
             return 3
-        if self._info is not None and symbol in self._info.asset_to_sz_decimals:
-            return self._info.asset_to_sz_decimals[symbol]
+        info = self._info
+        resolved = self._resolve_sz_decimals(info, symbol) if info is not None else None
+        if resolved is not None:
+            return resolved
+        if info is not None and isinstance(getattr(info, "asset_to_sz_decimals", None), dict) \
+                and symbol in info.asset_to_sz_decimals:
+            return info.asset_to_sz_decimals[symbol]
         print(f"[WARN] sz_decimals not found for {symbol} after refresh, defaulting to 3", file=sys.stderr)
         self._sz_decimals_misses.add(symbol)
         return 3
+
+    @staticmethod
+    def _resolve_sz_decimals(info, symbol: str):
+        """Return the per-asset szDecimals for `symbol`, or None if unresolvable.
+
+        Resolves the symbol through `name_to_asset` (the SDK's documented
+        resolver, info.py:789) with a fallback to `coin_to_asset`, then reads
+        the SDK's `asset_to_sz_decimals` dict (keyed by integer asset index).
+        Returns None when either step fails so the caller can decide what to do
+        next (legacy fallback, meta refresh, default-to-3).
+        """
+        if not isinstance(getattr(info, "name_to_coin", None), dict) \
+                or symbol not in info.name_to_coin:
+            return None
+        name_to_asset = getattr(info, "name_to_asset", None)
+        if callable(name_to_asset):
+            try:
+                asset = name_to_asset(symbol)
+            except Exception:
+                asset = None
+            if isinstance(asset, int) and asset in info.asset_to_sz_decimals:
+                return info.asset_to_sz_decimals[asset]
+        coin_to_asset = getattr(info, "coin_to_asset", None)
+        if isinstance(coin_to_asset, dict) and symbol in coin_to_asset:
+            asset = coin_to_asset[symbol]
+            if isinstance(asset, int) and asset in info.asset_to_sz_decimals:
+                return info.asset_to_sz_decimals[asset]
+        return None
+
+    @staticmethod
+    def _resolve_asset_index(info, symbol: str):
+        """Return the integer asset index for `symbol`, or None if unresolvable.
+
+        Prefers `name_to_asset` (the SDK's documented resolver, info.py:789) and
+        falls back to `coin_to_asset` (set for both perps and spots in
+        set_perp_meta / the spot loop) so we don't depend on a single method
+        being present in every SDK version we run against.
+        """
+        name_to_asset = getattr(info, "name_to_asset", None)
+        if callable(name_to_asset):
+            try:
+                return name_to_asset(symbol)
+            except Exception:
+                pass
+        coin_to_asset = getattr(info, "coin_to_asset", None)
+        if isinstance(coin_to_asset, dict) and symbol in coin_to_asset:
+            return coin_to_asset[symbol]
+        return None
 
     @property
     def is_live(self) -> bool:
