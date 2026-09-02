@@ -382,19 +382,22 @@ class HyperliquidExchangeAdapter:
         if not isinstance(getattr(info, "name_to_coin", None), dict) \
                 or symbol not in info.name_to_coin:
             return None
+        sz_by_asset = getattr(info, "asset_to_sz_decimals", None)
+        if not isinstance(sz_by_asset, dict):
+            return None
         name_to_asset = getattr(info, "name_to_asset", None)
         if callable(name_to_asset):
             try:
                 asset = name_to_asset(symbol)
             except Exception:
                 asset = None
-            if isinstance(asset, int) and asset in info.asset_to_sz_decimals:
-                return info.asset_to_sz_decimals[asset]
+            if isinstance(asset, int) and asset in sz_by_asset:
+                return sz_by_asset[asset]
         coin_to_asset = getattr(info, "coin_to_asset", None)
         if isinstance(coin_to_asset, dict) and symbol in coin_to_asset:
             asset = coin_to_asset[symbol]
-            if isinstance(asset, int) and asset in info.asset_to_sz_decimals:
-                return info.asset_to_sz_decimals[asset]
+            if isinstance(asset, int) and asset in sz_by_asset:
+                return sz_by_asset[asset]
         return None
 
     @property

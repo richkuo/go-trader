@@ -960,25 +960,43 @@ def _sdk_info(asset_to_sz_decimals_by_index, name_to_coin=None, coin_to_asset=No
 
 class TestSzDecimalsSdkShape:
 
-    def test_returns_correct_decimals_for_hype_via_name_to_asset(self):
+    @pytest.mark.parametrize(
+        "symbol,sz_by_index,coin_to_asset,expected",
+        [
+            ("HYPE", {151: 2, 0: 5}, {"HYPE": 151, "BTC": 0}, 2),
+            ("BTC", {151: 2, 0: 5}, {"HYPE": 151, "BTC": 0}, 5),
+            ("ETH", {1: 4}, {"ETH": 1}, 4),
+        ],
+    )
+    def test_returns_correct_decimals_via_name_to_asset(self, symbol, sz_by_index, coin_to_asset, expected):
         mock_info = _sdk_info(
-            asset_to_sz_decimals_by_index={151: 2, 0: 5},
-            coin_to_asset={"HYPE": 151, "BTC": 0},
+            asset_to_sz_decimals_by_index=sz_by_index,
+            coin_to_asset=coin_to_asset,
         )
         mod = _load_hl_adapter()
         adapter = mod.HyperliquidExchangeAdapter()
         adapter._info = mock_info
-        assert adapter._sz_decimals("HYPE") == 2
+        assert adapter._sz_decimals(symbol) == expected
 
-    def test_returns_correct_decimals_for_eth_via_name_to_asset(self):
+    def test_missing_asset_to_sz_decimals_falls_back_to_default_3(self):
         mock_info = _sdk_info(
-            asset_to_sz_decimals_by_index={1: 4},
-            coin_to_asset={"ETH": 1},
+            asset_to_sz_decimals_by_index={151: 2},
+            coin_to_asset={"HYPE": 151},
         )
+        del mock_info.asset_to_sz_decimals
         mod = _load_hl_adapter()
         adapter = mod.HyperliquidExchangeAdapter()
         adapter._info = mock_info
-        assert adapter._sz_decimals("ETH") == 4
+        adapter._sz_decimals_misses.add("HYPE")
+        assert adapter._sz_decimals("HYPE") == 3
+
+    def test_resolved_index_absent_from_sz_map_returns_none(self):
+        mock_info = _sdk_info(
+            asset_to_sz_decimals_by_index={0: 5},
+            coin_to_asset={"HYPE": 151},
+        )
+        mod = _load_hl_adapter()
+        assert mod.HyperliquidExchangeAdapter._resolve_sz_decimals(mock_info, "HYPE") is None
 
     def test_market_open_rounds_hype_size_to_2_decimals_not_3(self):
         mock_info = _sdk_info(
