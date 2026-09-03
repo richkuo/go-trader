@@ -1408,6 +1408,78 @@ func TestReconcileHyperliquidHedgeCloseSkipsPublicTradeAlerts(t *testing.T) {
 	}
 }
 
+func TestHyperliquidPublicTradeAlertRowsSkipsHedgeRows(t *testing.T) {
+	cases := []struct {
+		name      string
+		trades    []Trade
+		wantCoins []string
+	}{
+		{
+			name: "hedge-only close",
+			trades: []Trade{
+				{Symbol: "BTC", TradeType: hedgeTradeType},
+			},
+		},
+		{
+			name: "primary rows around hedge close",
+			trades: []Trade{
+				{Symbol: "ETH", TradeType: "perps"},
+				{Symbol: "BTC", TradeType: hedgeTradeType},
+				{Symbol: "SOL", TradeType: "perps"},
+			},
+			wantCoins: []string{"ETH", "SOL"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := hyperliquidPublicTradeAlertRows(tc.trades)
+			if len(got) != len(tc.wantCoins) {
+				t.Fatalf("public rows = %d, want %d: %+v", len(got), len(tc.wantCoins), got)
+			}
+			for i, want := range tc.wantCoins {
+				if got[i].Symbol != want {
+					t.Errorf("public row %d symbol = %q, want %q", i, got[i].Symbol, want)
+				}
+			}
+		})
+	}
+}
+
+func TestReconcileHyperliquidHedgeClosePublishesPrimaryTradeData(t *testing.T) {
+	prev := tradeRecorder
+	tradeRecorder = nil
+	t.Cleanup(func() { tradeRecorder = prev })
+
+	sc := hedgeTestConfig()
+	s := hedgeTestState(sc.ID)
+	s.Positions["ETH"] = primaryPos(10, "long")
+	s.Positions["BTC"] = hedgePos(0.4, "short", 10)
+	state := &AppState{Strategies: map[string]*StrategyState{sc.ID: s}}
+	mock := &mockNotifier{}
+	mn := NewMultiNotifier(notifierBackend{
+		notifier:           mock,
+		tradeAlertChannels: map[string]string{"hyperliquid": "trade-alerts"},
+		ownerID:            "owner",
+	})
+	logMgr, err := NewLogManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.RWMutex
+	reconcileHyperliquidAccountPositions([]StrategyConfig{sc}, []StrategyConfig{sc}, state, &mu, logMgr, nil, nil, "", mn, false)
+
+	if len(mock.messages) != 1 {
+		t.Fatalf("public trade alerts = %d, want 1: %+v", len(mock.messages), mock.messages)
+	}
+	if !strings.Contains(mock.messages[0].content, "\nETH") || strings.Contains(mock.messages[0].content, "\nBTC") {
+		t.Errorf("public trade alert = %q, want primary ETH data only", mock.messages[0].content)
+	}
+	if len(mock.dms) != 1 || !strings.Contains(mock.dms[0].content, "Hedge leg closed externally") {
+		t.Errorf("hedge DMs = %+v, want one hedge close DM", mock.dms)
+	}
+}
+
 func TestReconcileSharedCoin_MultipleStopLossOwnersConfirmed_ClosesOwners(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{

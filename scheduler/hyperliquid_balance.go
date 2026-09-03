@@ -27,10 +27,21 @@ type HLPosition struct {
 }
 
 type hyperliquidTradeAlertState struct {
-	sc       StrategyConfig
-	ss       *StrategyState
-	baseline int
-	count    int
+	sc        StrategyConfig
+	ss        *StrategyState
+	baseline  int
+	newTrades []Trade
+}
+
+func hyperliquidPublicTradeAlertRows(trades []Trade) []Trade {
+	rows := make([]Trade, 0, len(trades))
+	for _, trade := range trades {
+		if trade.TradeType == hedgeTradeType {
+			continue
+		}
+		rows = append(rows, trade)
+	}
+	return rows
 }
 
 func hlExecuteSnapshotForCoin(positions []HLPosition, coin string) hlExecuteSnapshot {
@@ -599,14 +610,14 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 		if ok && !isNilSender(notifier) {
 			ids := make([]string, 0, len(tradeAlertStates))
 			for id, alert := range tradeAlertStates {
-				if alert.count > 0 {
+				if len(alert.newTrades) > 0 {
 					ids = append(ids, id)
 				}
 			}
 			sort.Strings(ids)
 			for _, id := range ids {
 				alert := tradeAlertStates[id]
-				sendTradeAlerts(alert.sc, alert.ss, alert.count, mu, tradeNotifier)
+				sendTradeAlertRows(alert.sc, alert.newTrades, tradeNotifier)
 			}
 		}
 		if notifier != nil && !isNilSender(notifier) {
@@ -1118,13 +1129,8 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 	}
 
 	for id, alert := range tradeAlertStates {
-		for _, trade := range alert.ss.TradeHistory[alert.baseline:] {
-			if trade.TradeType == hedgeTradeType {
-				continue
-			}
-			alert.count++
-		}
-		if alert.count > 0 {
+		alert.newTrades = hyperliquidPublicTradeAlertRows(alert.ss.TradeHistory[alert.baseline:])
+		if len(alert.newTrades) > 0 {
 			tradeAlertStates[id] = alert
 		}
 	}
