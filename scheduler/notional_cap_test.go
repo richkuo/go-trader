@@ -22,10 +22,10 @@ func TestNotionalCapNeverSkipsStrategyCycle(t *testing.T) {
 		t.Fatalf("read main.go: %v", err)
 	}
 	body := string(src)
-	if !strings.Contains(body, "notionalCapSkipsStrategyCycle(notionalBlocked)") {
-		t.Fatal("main.go must call notionalCapSkipsStrategyCycle(notionalBlocked) for the cycle-skip decision")
+	if !strings.Contains(body, "notionalCapSkipsStrategyCycle(sr.NotionalBlocked)") {
+		t.Fatal("main.go must call notionalCapSkipsStrategyCycle(sr.NotionalBlocked) for the cycle-skip decision")
 	}
-	if strings.Contains(body, "!cbManageOnly && notionalBlocked") {
+	if strings.Contains(body, "!cbManageOnly && sr.NotionalBlocked") {
 		t.Fatal("main.go must not restore the pre-#1344 `!cbManageOnly && notionalBlocked` cycle skip")
 	}
 
@@ -39,7 +39,7 @@ func TestNotionalCapNeverSkipsStrategyCycle(t *testing.T) {
 		if !ok {
 			return true
 		}
-		if !astCondMentionsIdent(ifs.Cond, "notionalBlocked") {
+		if !astCondMentionsNotionalBlocked(ifs.Cond) {
 			return true
 		}
 		if astCondIsNotionalCapSkipHelper(ifs.Cond) {
@@ -51,6 +51,21 @@ func TestNotionalCapNeverSkipsStrategyCycle(t *testing.T) {
 		}
 		return true
 	})
+}
+
+func astCondMentionsNotionalBlocked(expr ast.Expr) bool {
+	if astCondMentionsIdent(expr, "notionalBlocked") {
+		return true
+	}
+	found := false
+	ast.Inspect(expr, func(n ast.Node) bool {
+		if sel, ok := n.(*ast.SelectorExpr); ok && sel.Sel != nil && sel.Sel.Name == "NotionalBlocked" {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
 }
 
 func astCondMentionsIdent(expr ast.Expr, name string) bool {

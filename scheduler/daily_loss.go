@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -82,7 +83,7 @@ func dailyLossAlertDue(tripped bool, lastAlertDate, today string) bool {
 	return tripped && lastAlertDate != today
 }
 
-var dailyLossLastAlertDate string
+var dailyLossLastAlertDate = map[PortfolioScope]string{}
 
 func dailyLossStartupSummaryLine(pr *PortfolioRiskConfig) string {
 	if !dailyLossLimitConfigured(pr) {
@@ -101,27 +102,56 @@ func dailyLossStartupSummaryLine(pr *PortfolioRiskConfig) string {
 	return fmt.Sprintf("[config] portfolio: daily_max_loss %s (pre-fee realized; blocks new entries for the rest of the UTC day when tripped)", parts)
 }
 
-func dailyLossStatusNote(pr *PortfolioRiskConfig, states map[string]*StrategyState, strategies []StrategyConfig, now time.Time) string {
-	if !dailyLossLimitConfigured(pr) {
+func dailyLossPaperStartupSummaryLine(cfg *Config) string {
+	if cfg == nil || cfg.PortfolioRisk == nil || cfg.PortfolioRisk.Paper == nil {
 		return ""
 	}
-	st := evaluateDailyLossLimit(pr, states, strategies, now)
-	var note string
-	switch {
-	case st.Tripped:
-		note = fmt.Sprintf("\n🛑 daily loss limit TRIPPED: loss $%.2f >= $%.2f — entries held until UTC rollover", st.LossUSD, st.ThresholdUSD)
-	case st.ThresholdUSD > 0:
-		note = fmt.Sprintf("\n🟢 daily loss limit armed: today $%.2f / threshold $%.2f", st.DailyPnL, st.ThresholdUSD)
+	paper := scopeRiskConfig(cfg, ScopePaper)
+	if paper == nil {
+		return ""
 	}
-	if st.PctBasisMiss {
-		note += "\n" + dailyLossPctBasisMissWarning
+	if paper.DailyMaxLossUSD == cfg.PortfolioRisk.DailyMaxLossUSD && paper.DailyMaxLossPct == cfg.PortfolioRisk.DailyMaxLossPct {
+		return ""
+	}
+	line := dailyLossStartupSummaryLine(paper)
+	if line == "" {
+		return ""
+	}
+	return strings.Replace(line, "[config] portfolio:", "[config] portfolio (paper scope):", 1)
+}
+
+func dailyLossStatusNote(cfg *Config, states map[string]*StrategyState, now time.Time) string {
+	if cfg == nil {
+		return ""
+	}
+	scopes := activeScopes(cfg.Strategies)
+	var note string
+	for _, scope := range scopes {
+		pr := scopeRiskConfig(cfg, scope)
+		if !dailyLossLimitConfigured(pr) {
+			continue
+		}
+		st := evaluateDailyLossLimit(pr, filterStatesByScope(states, cfg.Strategies, scope), strategiesInScope(cfg.Strategies, scope), now)
+		prefix := ""
+		if len(scopes) > 1 {
+			prefix = "[" + scopeLabel(scope) + "] "
+		}
+		switch {
+		case st.Tripped:
+			note += fmt.Sprintf("\n🛑 %sdaily loss limit TRIPPED: loss $%.2f >= $%.2f — entries held until UTC rollover", prefix, st.LossUSD, st.ThresholdUSD)
+		case st.ThresholdUSD > 0:
+			note += fmt.Sprintf("\n🟢 %sdaily loss limit armed: today $%.2f / threshold $%.2f", prefix, st.DailyPnL, st.ThresholdUSD)
+		}
+		if st.PctBasisMiss {
+			note += "\n" + dailyLossPctBasisMissWarning
+		}
 	}
 	return note
 }
 
 const dailyLossPctBasisMissWarning = "⚠️ daily loss limit: daily_max_loss_pct is configured but no allocated strategy has initial_capital > 0 — the pct arm CANNOT evaluate and enforces nothing (keep an allocated baseline or use daily_max_loss_usd; pool members cannot set initial_capital)"
 
-var dailyLossPctBasisMissAlertDate string
+var dailyLossPctBasisMissAlertDate = map[PortfolioScope]string{}
 
 func formatDailyLossPctBasisMissDM(st DailyLossLimitStatus, now time.Time) string {
 	usdNote := "No other arm is configured — the daily loss limit is fully inert."

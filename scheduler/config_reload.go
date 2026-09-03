@@ -323,6 +323,32 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 		addChange("portfolio_risk.max_asset_concentration_pct: %.2f%% -> %.2f%%",
 			portfolioRiskMaxAssetConcentration(cfg.PortfolioRisk), portfolioRiskMaxAssetConcentration(next.PortfolioRisk))
 	}
+	curPaper := portfolioRiskPaperOverride(cfg.PortfolioRisk)
+	nextPaper := portfolioRiskPaperOverride(next.PortfolioRisk)
+	if portfolioRiskMaxDrawdown(curPaper) != portfolioRiskMaxDrawdown(nextPaper) {
+		addChange("portfolio_risk.paper.max_drawdown_pct: %.2f%% -> %.2f%%",
+			portfolioRiskMaxDrawdown(curPaper), portfolioRiskMaxDrawdown(nextPaper))
+	}
+	if portfolioRiskWarnThreshold(curPaper) != portfolioRiskWarnThreshold(nextPaper) {
+		addChange("portfolio_risk.paper.warn_threshold_pct: %.2f%% -> %.2f%%",
+			portfolioRiskWarnThreshold(curPaper), portfolioRiskWarnThreshold(nextPaper))
+	}
+	if portfolioRiskDailyMaxLossUSD(curPaper) != portfolioRiskDailyMaxLossUSD(nextPaper) {
+		addChange("portfolio_risk.paper.daily_max_loss_usd: $%.2f -> $%.2f",
+			portfolioRiskDailyMaxLossUSD(curPaper), portfolioRiskDailyMaxLossUSD(nextPaper))
+	}
+	if portfolioRiskDailyMaxLossPct(curPaper) != portfolioRiskDailyMaxLossPct(nextPaper) {
+		addChange("portfolio_risk.paper.daily_max_loss_pct: %.2f%% -> %.2f%%",
+			portfolioRiskDailyMaxLossPct(curPaper), portfolioRiskDailyMaxLossPct(nextPaper))
+	}
+	if portfolioRiskMaxSameDirectionNotional(curPaper) != portfolioRiskMaxSameDirectionNotional(nextPaper) {
+		addChange("portfolio_risk.paper.max_same_direction_notional_usd: $%.2f -> $%.2f",
+			portfolioRiskMaxSameDirectionNotional(curPaper), portfolioRiskMaxSameDirectionNotional(nextPaper))
+	}
+	if portfolioRiskMaxAssetConcentration(curPaper) != portfolioRiskMaxAssetConcentration(nextPaper) {
+		addChange("portfolio_risk.paper.max_asset_concentration_pct: %.2f%% -> %.2f%%",
+			portfolioRiskMaxAssetConcentration(curPaper), portfolioRiskMaxAssetConcentration(nextPaper))
+	}
 	cfg.PortfolioRisk = clonePortfolioRiskConfig(next.PortfolioRisk)
 
 	if !reflect.DeepEqual(cfg.Discord.Channels, next.Discord.Channels) {
@@ -440,6 +466,11 @@ func validateHotReloadCompatible(cfg, next *Config) error {
 	if portfolioRiskMaxNotional(cfg.PortfolioRisk) != portfolioRiskMaxNotional(next.PortfolioRisk) {
 		errs = append(errs, fmt.Sprintf("portfolio_risk.max_notional_usd changed (%.2f -> %.2f; restart required)",
 			portfolioRiskMaxNotional(cfg.PortfolioRisk), portfolioRiskMaxNotional(next.PortfolioRisk)))
+	}
+	if portfolioRiskMaxNotional(portfolioRiskPaperOverride(cfg.PortfolioRisk)) != portfolioRiskMaxNotional(portfolioRiskPaperOverride(next.PortfolioRisk)) {
+		errs = append(errs, fmt.Sprintf("portfolio_risk.paper.max_notional_usd changed (%.2f -> %.2f; restart required)",
+			portfolioRiskMaxNotional(portfolioRiskPaperOverride(cfg.PortfolioRisk)),
+			portfolioRiskMaxNotional(portfolioRiskPaperOverride(next.PortfolioRisk))))
 	}
 	if cfg.Discord.Enabled != next.Discord.Enabled {
 		errs = append(errs, "discord.enabled changed (restart required)")
@@ -925,7 +956,19 @@ func clonePortfolioRiskConfig(pr *PortfolioRiskConfig) *PortfolioRiskConfig {
 		return nil
 	}
 	cp := *pr
+	if pr.Paper != nil {
+		paper := *pr.Paper
+		paper.Paper = nil
+		cp.Paper = &paper
+	}
 	return &cp
+}
+
+func portfolioRiskPaperOverride(pr *PortfolioRiskConfig) *PortfolioRiskConfig {
+	if pr == nil {
+		return nil
+	}
+	return pr.Paper
 }
 
 func cloneTuningConfig(t *TuningConfig) *TuningConfig {

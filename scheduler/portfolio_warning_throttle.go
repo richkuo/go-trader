@@ -13,7 +13,7 @@ type portfolioWarningAlertState struct {
 	MarginInBand    bool
 }
 
-var portfolioWarningAlerts portfolioWarningAlertState
+var portfolioWarningAlerts = map[PortfolioScope]portfolioWarningAlertState{}
 
 func portfolioWarningShouldNotify(prev portfolioWarningAlertState, equityInBand, marginInBand bool, equityDD, marginDD float64, now time.Time) (bool, portfolioWarningAlertState) {
 	notify := false
@@ -44,6 +44,6 @@ func portfolioWarningShouldNotify(prev portfolioWarningAlertState, equityInBand,
 	}
 }
 
-func portfolioWarningAlertsReset() {
-	portfolioWarningAlerts = portfolioWarningAlertState{}
+func portfolioWarningAlertsReset(scope PortfolioScope) {
+	delete(portfolioWarningAlerts, scope)
 }

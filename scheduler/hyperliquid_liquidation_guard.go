@@ -1089,7 +1089,7 @@ func runOffCycleLiquidationAudit(strategies []StrategyConfig, state *AppState, m
 	fmt.Printf("[WARN] #1450 liquidation audit: %d position(s) exited on a clamped stop this cycle\n", auditRes.ImmediateFills)
 	priceCoins := make(map[string]bool)
 	for _, cd := range auditRes.CloseDetails {
-		if chKey := notifier.resolveChannelKey(cd.SC.Platform, cd.SC.Type); chKey != "" {
+		if chKey := notifier.resolveChannelKey(cd.SC.Platform, cd.SC.Type, isLiveArgs(cd.SC.Args)); chKey != "" {
 			notifier.SendToChannel(cd.SC.Platform, cd.SC.Type, fmt.Sprintf("**#1450 off-cycle liquidation audit**\n%s", cd.Detail))
 		}
 		priceCoins[cd.Symbol] = true

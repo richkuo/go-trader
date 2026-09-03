@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -559,6 +560,8 @@ func (sdb *StateDB) migrateSchema() error {
 		"ALTER TABLE portfolio_risk ADD COLUMN untrusted_over_limit_since TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE pending_limit_orders ADD COLUMN operator_required_since TEXT NOT NULL DEFAULT ''",
 		"CREATE INDEX IF NOT EXISTS idx_trades_strategy_timestamp ON trades(strategy_id, timestamp DESC, rowid DESC)",
+		"ALTER TABLE kill_switch_events ADD COLUMN scope TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE portfolio_risk ADD COLUMN kill_switch_close_applied INTEGER NOT NULL DEFAULT 0",
 	}
 	for _, ddl := range migrations {
 		if _, err := sdb.db.Exec(ddl); err != nil {
@@ -570,6 +573,9 @@ func (sdb *StateDB) migrateSchema() error {
 		}
 	}
 	if err := sdb.migratePendingCircuitClosesColumn(); err != nil {
+		return err
+	}
+	if err := sdb.migratePortfolioRiskScopeColumns(); err != nil {
 		return err
 	}
 	return sdb.backfillTradeCloseFlags()
@@ -798,6 +804,102 @@ func (sdb *StateDB) strategiesColumnPresence() (hasLegacy, hasNew bool, err erro
 		}
 	}
 	return hasLegacy, hasNew, rows.Err()
+}
+
+const portfolioRiskScopedDDL = `CREATE TABLE portfolio_risk_v2 (
+    scope TEXT PRIMARY KEY CHECK (scope IN ('live','paper','')),
+    peak_value REAL NOT NULL DEFAULT 0,
+    current_drawdown_pct REAL NOT NULL DEFAULT 0,
+    current_margin_drawdown_pct REAL NOT NULL DEFAULT 0,
+    kill_switch_active INTEGER NOT NULL DEFAULT 0,
+    kill_switch_at TEXT NOT NULL DEFAULT '',
+    warning_sent INTEGER NOT NULL DEFAULT 0,
+    warn_band_entered_at TEXT NOT NULL DEFAULT '',
+    last_warning_equity_dd_pct REAL NOT NULL DEFAULT 0,
+    last_warning_margin_dd_pct REAL NOT NULL DEFAULT 0,
+    warning_equity_delta_pct REAL NOT NULL DEFAULT 0,
+    warning_margin_delta_pct REAL NOT NULL DEFAULT 0,
+    manual_mark_basis_rebaselined INTEGER NOT NULL DEFAULT 0,
+    drawdown_reading_substituted INTEGER NOT NULL DEFAULT 0,
+    untrusted_over_limit_since TEXT NOT NULL DEFAULT '',
+    kill_switch_close_applied INTEGER NOT NULL DEFAULT 0
+)`
+
+const portfolioRiskScopedCopySQL = `INSERT INTO portfolio_risk_v2 (scope, peak_value, current_drawdown_pct,
+    current_margin_drawdown_pct, kill_switch_active, kill_switch_at, warning_sent, warn_band_entered_at,
+    last_warning_equity_dd_pct, last_warning_margin_dd_pct, warning_equity_delta_pct, warning_margin_delta_pct,
+    manual_mark_basis_rebaselined, drawdown_reading_substituted, untrusted_over_limit_since, kill_switch_close_applied)
+    SELECT '', COALESCE(peak_value, 0), COALESCE(current_drawdown_pct, 0),
+    COALESCE(current_margin_drawdown_pct, 0), COALESCE(kill_switch_active, 0), COALESCE(kill_switch_at, ''),
+    COALESCE(warning_sent, 0), COALESCE(warn_band_entered_at, ''),
+    COALESCE(last_warning_equity_dd_pct, 0), COALESCE(last_warning_margin_dd_pct, 0),
+    COALESCE(warning_equity_delta_pct, 0), COALESCE(warning_margin_delta_pct, 0),
+    COALESCE(manual_mark_basis_rebaselined, 0), COALESCE(drawdown_reading_substituted, 0),
+    COALESCE(untrusted_over_limit_since, ''), COALESCE(kill_switch_close_applied, 0) FROM portfolio_risk`
+
+const correlationSnapshotScopedDDL = `CREATE TABLE correlation_snapshot_v2 (
+    scope TEXT PRIMARY KEY CHECK (scope IN ('live','paper','')),
+    snapshot_json TEXT NOT NULL DEFAULT '{}'
+)`
+
+const correlationSnapshotScopedCopySQL = `INSERT INTO correlation_snapshot_v2 (scope, snapshot_json)
+    SELECT '', COALESCE(snapshot_json, '{}') FROM correlation_snapshot`
+
+func (sdb *StateDB) tableHasColumn(table, column string) (bool, error) {
+	rows, err := sdb.db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	found := false
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt any
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return false, err
+		}
+		if name == column {
+			found = true
+		}
+	}
+	return found, rows.Err()
+}
+
+func (sdb *StateDB) rebuildTableWithScope(table, ddl, copySQL string) error {
+	hasScope, err := sdb.tableHasColumn(table, "scope")
+	if err != nil {
+		return fmt.Errorf("introspect %s columns: %w", table, err)
+	}
+	if hasScope {
+		return nil
+	}
+	tx, err := sdb.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	stmts := []string{
+		fmt.Sprintf("DROP TABLE IF EXISTS %s_v2", table),
+		ddl,
+		copySQL,
+		fmt.Sprintf("DROP TABLE %s", table),
+		fmt.Sprintf("ALTER TABLE %s_v2 RENAME TO %s", table, table),
+	}
+	for _, stmt := range stmts {
+		if _, err := tx.Exec(stmt); err != nil {
+			return fmt.Errorf("migrate %s to scoped key: %w", table, err)
+		}
+	}
+	return tx.Commit()
+}
+
+func (sdb *StateDB) migratePortfolioRiskScopeColumns() error {
+	if err := sdb.rebuildTableWithScope("portfolio_risk", portfolioRiskScopedDDL, portfolioRiskScopedCopySQL); err != nil {
+		return err
+	}
+	return sdb.rebuildTableWithScope("correlation_snapshot", correlationSnapshotScopedDDL, correlationSnapshotScopedCopySQL)
 }
 
 func (sdb *StateDB) Close() error {
@@ -1342,60 +1444,61 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 		flushedDiags = append(flushedDiags, rows...)
 	}
 
-	ksActive := 0
-	if state.PortfolioRisk.KillSwitchActive {
-		ksActive = 1
+	if _, err := tx.Exec("DELETE FROM portfolio_risk"); err != nil {
+		return fmt.Errorf("delete portfolio_risk: %w", err)
 	}
-	warnSent := 0
-	if state.PortfolioRisk.WarningSent {
-		warnSent = 1
-	}
-	basisRebaselined := 0
-	if state.PortfolioRisk.ManualMarkBasisRebaselined {
-		basisRebaselined = 1
-	}
-	ddSubstituted := 0
-	if state.PortfolioRisk.DrawdownReadingSubstituted {
-		ddSubstituted = 1
-	}
-	if _, err := tx.Exec(`INSERT OR REPLACE INTO portfolio_risk (id, peak_value, current_drawdown_pct, current_margin_drawdown_pct, kill_switch_active, kill_switch_at, warning_sent, warn_band_entered_at, last_warning_equity_dd_pct, last_warning_margin_dd_pct, warning_equity_delta_pct, warning_margin_delta_pct, manual_mark_basis_rebaselined, drawdown_reading_substituted, untrusted_over_limit_since)
-		VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		state.PortfolioRisk.PeakValue, state.PortfolioRisk.CurrentDrawdownPct, state.PortfolioRisk.CurrentMarginDrawdownPct,
-		ksActive, formatTime(state.PortfolioRisk.KillSwitchAt), warnSent, formatTime(state.PortfolioRisk.WarnBandEnteredAt),
-		state.PortfolioRisk.LastWarningEquityDDPct, state.PortfolioRisk.LastWarningMarginDDPct,
-		state.PortfolioRisk.WarningEquityDeltaPct, state.PortfolioRisk.WarningMarginDeltaPct,
-		basisRebaselined, ddSubstituted, formatTime(state.PortfolioRisk.UntrustedOverLimitSince),
-	); err != nil {
-		return fmt.Errorf("upsert portfolio_risk: %w", err)
-	}
-
 	if _, err := tx.Exec("DELETE FROM kill_switch_events"); err != nil {
 		return fmt.Errorf("delete kill_switch_events: %w", err)
 	}
-	if len(state.PortfolioRisk.Events) > 0 {
-		stmtEvt, err := tx.Prepare(`INSERT INTO kill_switch_events (timestamp, type, source, drawdown_pct, portfolio_value, peak_value, details)
-			VALUES (?, ?, ?, ?, ?, ?, ?)`)
-		if err != nil {
-			return fmt.Errorf("prepare kill_switch_event insert: %w", err)
+	stmtEvt, err := tx.Prepare(`INSERT INTO kill_switch_events (scope, timestamp, type, source, drawdown_pct, portfolio_value, peak_value, details)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return fmt.Errorf("prepare kill_switch_event insert: %w", err)
+	}
+	defer stmtEvt.Close()
+	for _, scope := range sortedPortfolioScopes(state.PortfolioRisk) {
+		prs := state.PortfolioRisk[scope]
+		if prs == nil {
+			continue
 		}
-		defer stmtEvt.Close()
-		for _, evt := range state.PortfolioRisk.Events {
-			if _, err := stmtEvt.Exec(formatTime(evt.Timestamp), evt.Type, evt.Source, evt.DrawdownPct, evt.PortfolioValue, evt.PeakValue, evt.Details); err != nil {
+		ksActive := boolToInt(prs.KillSwitchActive)
+		warnSent := boolToInt(prs.WarningSent)
+		basisRebaselined := boolToInt(prs.ManualMarkBasisRebaselined)
+		ddSubstituted := boolToInt(prs.DrawdownReadingSubstituted)
+		closeApplied := boolToInt(prs.KillSwitchCloseApplied)
+		if _, err := tx.Exec(`INSERT OR REPLACE INTO portfolio_risk (scope, peak_value, current_drawdown_pct, current_margin_drawdown_pct, kill_switch_active, kill_switch_at, warning_sent, warn_band_entered_at, last_warning_equity_dd_pct, last_warning_margin_dd_pct, warning_equity_delta_pct, warning_margin_delta_pct, manual_mark_basis_rebaselined, drawdown_reading_substituted, untrusted_over_limit_since, kill_switch_close_applied)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			string(scope), prs.PeakValue, prs.CurrentDrawdownPct, prs.CurrentMarginDrawdownPct,
+			ksActive, formatTime(prs.KillSwitchAt), warnSent, formatTime(prs.WarnBandEnteredAt),
+			prs.LastWarningEquityDDPct, prs.LastWarningMarginDDPct,
+			prs.WarningEquityDeltaPct, prs.WarningMarginDeltaPct,
+			basisRebaselined, ddSubstituted, formatTime(prs.UntrustedOverLimitSince), closeApplied,
+		); err != nil {
+			return fmt.Errorf("upsert portfolio_risk: %w", err)
+		}
+		for _, evt := range prs.Events {
+			if _, err := stmtEvt.Exec(string(scope), formatTime(evt.Timestamp), evt.Type, evt.Source, evt.DrawdownPct, evt.PortfolioValue, evt.PeakValue, evt.Details); err != nil {
 				return fmt.Errorf("insert kill_switch_event: %w", err)
 			}
 		}
 	}
 
-	snapJSON := "{}"
-	if state.CorrelationSnapshot != nil {
-		data, err := json.Marshal(state.CorrelationSnapshot)
-		if err != nil {
-			return fmt.Errorf("marshal correlation_snapshot: %w", err)
-		}
-		snapJSON = string(data)
+	if _, err := tx.Exec("DELETE FROM correlation_snapshot"); err != nil {
+		return fmt.Errorf("delete correlation_snapshot: %w", err)
 	}
-	if _, err := tx.Exec(`INSERT OR REPLACE INTO correlation_snapshot (id, snapshot_json) VALUES (1, ?)`, snapJSON); err != nil {
-		return fmt.Errorf("upsert correlation_snapshot: %w", err)
+	for _, scope := range sortedCorrelationScopes(state.CorrelationSnapshot) {
+		snap := state.CorrelationSnapshot[scope]
+		snapJSON := "{}"
+		if snap != nil {
+			data, err := json.Marshal(snap)
+			if err != nil {
+				return fmt.Errorf("marshal correlation_snapshot: %w", err)
+			}
+			snapJSON = string(data)
+		}
+		if _, err := tx.Exec(`INSERT OR REPLACE INTO correlation_snapshot (scope, snapshot_json) VALUES (?, ?)`, string(scope), snapJSON); err != nil {
+			return fmt.Errorf("upsert correlation_snapshot: %w", err)
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -1827,6 +1930,8 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 		LastLeaderboardSummaries: lbSummaries,
 		LastSummaryPost:          summaryPosts,
 		Strategies:               make(map[string]*StrategyState),
+		PortfolioRisk:            make(map[PortfolioScope]*PortfolioRiskState),
+		CorrelationSnapshot:      make(map[PortfolioScope]*CorrelationSnapshot),
 	}
 
 	rows, err := sdb.db.Query(`SELECT id, type, platform, cash, initial_capital,
@@ -2001,55 +2106,102 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 		s.TradeHistory = allTrades
 	}
 
-	var ksActiveInt, warnSentInt, basisRebaselinedInt, ddSubstitutedInt int
-	var ksAtStr, warnBandEnteredAtStr, untrustedOverLimitSinceStr string
-	err = sdb.db.QueryRow("SELECT peak_value, current_drawdown_pct, current_margin_drawdown_pct, kill_switch_active, kill_switch_at, warning_sent, COALESCE(warn_band_entered_at, '') AS warn_band_entered_at, COALESCE(last_warning_equity_dd_pct, 0) AS last_warning_equity_dd_pct, COALESCE(last_warning_margin_dd_pct, 0) AS last_warning_margin_dd_pct, COALESCE(warning_equity_delta_pct, 0) AS warning_equity_delta_pct, COALESCE(warning_margin_delta_pct, 0) AS warning_margin_delta_pct, COALESCE(manual_mark_basis_rebaselined, 0) AS manual_mark_basis_rebaselined, COALESCE(drawdown_reading_substituted, 0) AS drawdown_reading_substituted, COALESCE(untrusted_over_limit_since, '') AS untrusted_over_limit_since FROM portfolio_risk WHERE id = 1").
-		Scan(&state.PortfolioRisk.PeakValue, &state.PortfolioRisk.CurrentDrawdownPct, &state.PortfolioRisk.CurrentMarginDrawdownPct,
-			&ksActiveInt, &ksAtStr, &warnSentInt, &warnBandEnteredAtStr, &state.PortfolioRisk.LastWarningEquityDDPct,
-			&state.PortfolioRisk.LastWarningMarginDDPct, &state.PortfolioRisk.WarningEquityDeltaPct, &state.PortfolioRisk.WarningMarginDeltaPct,
-			&basisRebaselinedInt, &ddSubstitutedInt, &untrustedOverLimitSinceStr)
-	if err != nil && err != sql.ErrNoRows {
+	prsRows, err := sdb.db.Query("SELECT scope, peak_value, current_drawdown_pct, current_margin_drawdown_pct, kill_switch_active, kill_switch_at, warning_sent, COALESCE(warn_band_entered_at, '') AS warn_band_entered_at, COALESCE(last_warning_equity_dd_pct, 0) AS last_warning_equity_dd_pct, COALESCE(last_warning_margin_dd_pct, 0) AS last_warning_margin_dd_pct, COALESCE(warning_equity_delta_pct, 0) AS warning_equity_delta_pct, COALESCE(warning_margin_delta_pct, 0) AS warning_margin_delta_pct, COALESCE(manual_mark_basis_rebaselined, 0) AS manual_mark_basis_rebaselined, COALESCE(drawdown_reading_substituted, 0) AS drawdown_reading_substituted, COALESCE(untrusted_over_limit_since, '') AS untrusted_over_limit_since, COALESCE(kill_switch_close_applied, 0) AS kill_switch_close_applied FROM portfolio_risk")
+	if err != nil {
 		return nil, fmt.Errorf("load portfolio_risk: %w", err)
 	}
-	state.PortfolioRisk.ManualMarkBasisRebaselined = basisRebaselinedInt != 0
-	state.PortfolioRisk.DrawdownReadingSubstituted = ddSubstitutedInt != 0
-	state.PortfolioRisk.UntrustedOverLimitSince = parseTime(untrustedOverLimitSinceStr)
-	state.PortfolioRisk.KillSwitchActive = ksActiveInt != 0
-	state.PortfolioRisk.KillSwitchAt = parseTime(ksAtStr)
-	state.PortfolioRisk.WarningSent = warnSentInt != 0
-	state.PortfolioRisk.WarnBandEnteredAt = parseTime(warnBandEnteredAtStr)
+	defer prsRows.Close()
+	for prsRows.Next() {
+		var scopeStr, ksAtStr, warnBandEnteredAtStr, untrustedOverLimitSinceStr string
+		var ksActiveInt, warnSentInt, basisRebaselinedInt, ddSubstitutedInt, closeAppliedInt int
+		prs := &PortfolioRiskState{}
+		if err := prsRows.Scan(&scopeStr, &prs.PeakValue, &prs.CurrentDrawdownPct, &prs.CurrentMarginDrawdownPct,
+			&ksActiveInt, &ksAtStr, &warnSentInt, &warnBandEnteredAtStr, &prs.LastWarningEquityDDPct,
+			&prs.LastWarningMarginDDPct, &prs.WarningEquityDeltaPct, &prs.WarningMarginDeltaPct,
+			&basisRebaselinedInt, &ddSubstitutedInt, &untrustedOverLimitSinceStr, &closeAppliedInt); err != nil {
+			return nil, fmt.Errorf("scan portfolio_risk: %w", err)
+		}
+		prs.KillSwitchCloseApplied = closeAppliedInt != 0
+		prs.ManualMarkBasisRebaselined = basisRebaselinedInt != 0
+		prs.DrawdownReadingSubstituted = ddSubstitutedInt != 0
+		prs.UntrustedOverLimitSince = parseTime(untrustedOverLimitSinceStr)
+		prs.KillSwitchActive = ksActiveInt != 0
+		prs.KillSwitchAt = parseTime(ksAtStr)
+		prs.WarningSent = warnSentInt != 0
+		prs.WarnBandEnteredAt = parseTime(warnBandEnteredAtStr)
+		state.PortfolioRisk[PortfolioScope(scopeStr)] = prs
+	}
+	if err := prsRows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate portfolio_risk: %w", err)
+	}
 
-	evtRows, err := sdb.db.Query("SELECT timestamp, type, source, drawdown_pct, portfolio_value, peak_value, details FROM kill_switch_events ORDER BY rowid ASC")
+	evtRows, err := sdb.db.Query("SELECT COALESCE(scope, '') AS scope, timestamp, type, source, drawdown_pct, portfolio_value, peak_value, details FROM kill_switch_events ORDER BY rowid ASC")
 	if err != nil {
 		return nil, fmt.Errorf("load kill_switch_events: %w", err)
 	}
 	defer evtRows.Close()
 	for evtRows.Next() {
 		var evt KillSwitchEvent
-		var tsStr string
-		if err := evtRows.Scan(&tsStr, &evt.Type, &evt.Source, &evt.DrawdownPct, &evt.PortfolioValue, &evt.PeakValue, &evt.Details); err != nil {
+		var tsStr, scopeStr string
+		if err := evtRows.Scan(&scopeStr, &tsStr, &evt.Type, &evt.Source, &evt.DrawdownPct, &evt.PortfolioValue, &evt.PeakValue, &evt.Details); err != nil {
 			return nil, fmt.Errorf("scan kill_switch_event: %w", err)
 		}
 		evt.Timestamp = parseTime(tsStr)
-		state.PortfolioRisk.Events = append(state.PortfolioRisk.Events, evt)
+		scope := PortfolioScope(scopeStr)
+		evt.Scope = scope
+		prs, ok := state.PortfolioRisk[scope]
+		if !ok || prs == nil {
+			prs = &PortfolioRiskState{}
+			state.PortfolioRisk[scope] = prs
+		}
+		prs.Events = append(prs.Events, evt)
 	}
 	if err := evtRows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate kill_switch_events: %w", err)
 	}
 
-	var snapJSON string
-	err = sdb.db.QueryRow("SELECT snapshot_json FROM correlation_snapshot WHERE id = 1").Scan(&snapJSON)
-	if err == nil && snapJSON != "{}" {
+	snapRows, err := sdb.db.Query("SELECT scope, snapshot_json FROM correlation_snapshot")
+	if err != nil {
+		return nil, fmt.Errorf("load correlation_snapshot: %w", err)
+	}
+	defer snapRows.Close()
+	for snapRows.Next() {
+		var scopeStr, snapJSON string
+		if err := snapRows.Scan(&scopeStr, &snapJSON); err != nil {
+			return nil, fmt.Errorf("scan correlation_snapshot: %w", err)
+		}
+		if snapJSON == "" || snapJSON == "{}" {
+			continue
+		}
 		var snap CorrelationSnapshot
 		if err := json.Unmarshal([]byte(snapJSON), &snap); err != nil {
 			return nil, fmt.Errorf("unmarshal correlation_snapshot: %w", err)
 		}
-		state.CorrelationSnapshot = &snap
-	} else if err != nil && err != sql.ErrNoRows {
-		return nil, fmt.Errorf("load correlation_snapshot: %w", err)
+		state.CorrelationSnapshot[PortfolioScope(scopeStr)] = &snap
+	}
+	if err := snapRows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate correlation_snapshot: %w", err)
 	}
 
 	return state, nil
+}
+
+func sortedPortfolioScopes(m map[PortfolioScope]*PortfolioRiskState) []PortfolioScope {
+	out := make([]PortfolioScope, 0, len(m))
+	for scope := range m {
+		out = append(out, scope)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
+func sortedCorrelationScopes(m map[PortfolioScope]*CorrelationSnapshot) []PortfolioScope {
+	out := make([]PortfolioScope, 0, len(m))
+	for scope := range m {
+		out = append(out, scope)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
 }
 
 const tradeStatsExcludedTypesSQL = `('scale_in', 'funding', 'hedge')`

@@ -371,14 +371,14 @@ func TestExposureCapStartupSummaryLine(t *testing.T) {
 func TestExposureCapStatusNote(t *testing.T) {
 	state := &AppState{Strategies: exposureTestStates()}
 	prices := exposureTestPrices()
-	if note := exposureCapStatusNote(&PortfolioRiskConfig{MaxDrawdownPct: 25}, state, exposureTestConfigs(), prices); note != "" {
+	if note := exposureCapStatusNote(&Config{PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25}, Strategies: exposureTestConfigs()}, state, prices); note != "" {
 		t.Errorf("expected empty note when disabled, got %q", note)
 	}
-	armed := exposureCapStatusNote(&PortfolioRiskConfig{MaxSameDirectionNotionalUSD: 50000}, state, exposureTestConfigs(), prices)
+	armed := exposureCapStatusNote(&Config{PortfolioRisk: &PortfolioRiskConfig{MaxSameDirectionNotionalUSD: 50000}, Strategies: exposureTestConfigs()}, state, prices)
 	if !strings.Contains(armed, "🟢 exposure cap armed") || !strings.Contains(armed, "long $19000.00") {
 		t.Errorf("unexpected armed note: %q", armed)
 	}
-	hot := exposureCapStatusNote(&PortfolioRiskConfig{MaxSameDirectionNotionalUSD: 15000}, state, exposureTestConfigs(), prices)
+	hot := exposureCapStatusNote(&Config{PortfolioRisk: &PortfolioRiskConfig{MaxSameDirectionNotionalUSD: 15000}, Strategies: exposureTestConfigs()}, state, prices)
 	if !strings.Contains(hot, "🛑 exposure cap") || !strings.Contains(hot, "new long opens blocked") {
 		t.Errorf("unexpected blocking note: %q", hot)
 	}
@@ -451,7 +451,7 @@ func TestManualExposureCapStatus_ConcentrationOnlyEnforced(t *testing.T) {
 	cfg := manualExposureTestConfig()
 	state := &AppState{Strategies: exposureTestStates()}
 
-	st := manualExposureCapStatus(cfg, state)
+	st := manualExposureCapStatus(cfg, state, ScopePaper)
 	if !st.Configured {
 		t.Fatal("expected Configured=true")
 	}
@@ -522,7 +522,7 @@ func TestManualStateView_CarriesConcentrationArm(t *testing.T) {
 
 func TestManualExposureCapStatus_PVBasisMissSurfaced(t *testing.T) {
 	cfg := manualExposureTestConfig()
-	st := manualExposureCapStatus(cfg, &AppState{Strategies: map[string]*StrategyState{}})
+	st := manualExposureCapStatus(cfg, &AppState{Strategies: map[string]*StrategyState{}}, ScopePaper)
 	if !st.PVBasisMiss {
 		t.Error("expected PVBasisMiss=true on a zero-value book")
 	}

@@ -36,7 +36,10 @@
   },
   "portfolio_risk": {
     "max_drawdown_pct": 25,
-    "max_notional_usd": 0
+    "max_notional_usd": 0,
+    "paper": {
+      "max_drawdown_pct": 50
+    }
   },
   "strategies": [
     {

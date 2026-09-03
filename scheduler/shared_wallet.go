@@ -448,6 +448,16 @@ func computeInitialPortfolioPeak(strategies []StrategyConfig, fetcher WalletBala
 	return total
 }
 
+func computeInitialPortfolioPeakForScope(strategies []StrategyConfig, scope PortfolioScope, fetcher WalletBalanceFetcher) float64 {
+	return computeInitialPortfolioPeak(strategiesInScope(strategies, scope), fetcher)
+}
+
+func rebaselinePortfolioPeakAfterPruneForScope(state *AppState, cfg *Config, scope PortfolioScope, fetcher WalletBalanceFetcher) float64 {
+	scopedCfg := &Config{Strategies: strategiesInScope(cfg.Strategies, scope)}
+	scopedState := &AppState{Strategies: filterStatesByScope(state.Strategies, cfg.Strategies, scope)}
+	return rebaselinePortfolioPeakAfterPrune(scopedState, scopedCfg, fetcher)
+}
+
 func rebaselinePortfolioPeakAfterPrune(state *AppState, cfg *Config, fetcher WalletBalanceFetcher) float64 {
 	byID := make(map[string]StrategyConfig, len(cfg.Strategies))
 	for _, sc := range cfg.Strategies {
@@ -476,6 +486,51 @@ func rebaselinePortfolioPeakAfterPrune(state *AppState, cfg *Config, fetcher Wal
 	floor := computeInitialPortfolioPeak(cfg.Strategies, fetcher)
 	if sum < floor {
 		sum = floor
+	}
+	return sum
+}
+
+func liveScopeRebasedPeak(state *AppState, cfg *Config, fetcher WalletBalanceFetcher) float64 {
+	if fetcher == nil {
+		fetcher = defaultSharedWalletFetcher
+	}
+	liveCfgs := strategiesInScope(cfg.Strategies, ScopeLive)
+	byID := make(map[string]StrategyConfig, len(liveCfgs))
+	for _, sc := range liveCfgs {
+		byID[sc.ID] = sc
+	}
+	sharedWallets := detectSharedWallets(liveCfgs)
+	pooled := make(map[string]bool)
+	for key, ids := range sharedWallets {
+		for _, id := range riskPathWalletMemberIDs(key, ids, liveCfgs) {
+			pooled[id] = true
+		}
+	}
+	dedupedManual := dedupedSameAccountLiveManualIDs(liveCfgs)
+	sum := 0.0
+	for _, sc := range liveCfgs {
+		if pooled[sc.ID] || dedupedManual[sc.ID] {
+			continue
+		}
+		if ss := state.Strategies[sc.ID]; ss != nil && ss.RiskState.PeakValue > 0 {
+			sum += ss.RiskState.PeakValue
+			continue
+		}
+		sum += sc.Capital
+	}
+	for key, ids := range sharedWallets {
+		bal, err := fetcher(key)
+		if err != nil {
+			fmt.Printf("[WARN] live scope peak re-base: balance fetch failed for %s/%s: %v — falling back to summed capital\n",
+				key.Platform, key.Account, err)
+			for _, id := range riskPathWalletMemberIDs(key, ids, liveCfgs) {
+				if sc, ok := byID[id]; ok {
+					sum += sc.Capital
+				}
+			}
+			continue
+		}
+		sum += bal
 	}
 	return sum
 }

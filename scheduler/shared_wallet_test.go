@@ -413,17 +413,17 @@ func TestRebaselinePortfolioPeakAfterPrune_PreventsImmediateKillSwitch(t *testin
 		Strategies: map[string]*StrategyState{
 			"spot-btc": {ID: "spot-btc", RiskState: RiskState{PeakValue: 9034.24}},
 		},
-		PortfolioRisk: PortfolioRiskState{PeakValue: 15148.90},
+		PortfolioRisk: map[PortfolioScope]*PortfolioRiskState{ScopeLive: {PeakValue: 15148.90}},
 	}
 
-	state.PortfolioRisk.PeakValue = rebaselinePortfolioPeakAfterPrune(state, cfg, nil)
+	state.scopeRisk(ScopeLive).PeakValue = rebaselinePortfolioPeakAfterPrune(state, cfg, nil)
 
 	prsCfg := &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80}
-	allowed, _, _, reason := CheckPortfolioRisk(&state.PortfolioRisk, prsCfg, 9034.24, 0, 0, 0)
+	allowed, _, _, reason := CheckPortfolioRisk(state.scopeRisk(ScopeLive), prsCfg, 9034.24, 0, 0, 0)
 	if !allowed {
 		t.Errorf("expected kill switch NOT to fire after rebaseline; got reason=%q", reason)
 	}
-	if state.PortfolioRisk.KillSwitchActive {
+	if state.scopeRisk(ScopeLive).KillSwitchActive {
 		t.Errorf("expected kill switch inactive after rebaseline; got active")
 	}
 }
@@ -454,11 +454,11 @@ func TestRebaselinePortfolioPeakAfterPrune_MatchesRiskPathTotalWithManual(t *tes
 		t.Fatal("post-prune rebaseline: expected usedFallback=false")
 	}
 
-	state.PortfolioRisk.PeakValue = rebaseline
+	state.scopeRisk(ScopeLive).PeakValue = rebaseline
 	prsCfg := &PortfolioRiskConfig{MaxDrawdownPct: 20, WarnThresholdPct: 16}
-	allowed, _, warning, reason := CheckPortfolioRisk(&state.PortfolioRisk, prsCfg, totalPV, 0, 0, 0)
-	if !allowed || warning || state.PortfolioRisk.CurrentDrawdownPct != 0 {
-		t.Errorf("flat post-prune: allowed=%v warning=%v dd=%.2f reason=%q", allowed, warning, state.PortfolioRisk.CurrentDrawdownPct, reason)
+	allowed, _, warning, reason := CheckPortfolioRisk(state.scopeRisk(ScopeLive), prsCfg, totalPV, 0, 0, 0)
+	if !allowed || warning || state.scopeRisk(ScopeLive).CurrentDrawdownPct != 0 {
+		t.Errorf("flat post-prune: allowed=%v warning=%v dd=%.2f reason=%q", allowed, warning, state.scopeRisk(ScopeLive).CurrentDrawdownPct, reason)
 	}
 }
 

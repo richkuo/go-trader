@@ -285,36 +285,71 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type StatusResp struct {
-		CycleCount         int                           `json:"cycle_count"`
-		Prices             map[string]float64            `json:"prices"`
-		Strategies         map[string]StratStatus        `json:"strategies"`
-		PortfolioRisk      PortfolioRiskState            `json:"portfolio_risk"`
-		TotalValue         float64                       `json:"total_value"`
-		TotalNotional      float64                       `json:"total_notional"`
-		Correlation        *CorrelationSnapshot          `json:"correlation,omitempty"`
-		ReconciliationGaps map[string]*ReconciliationGap `json:"reconciliation_gaps,omitempty"`
+		CycleCount           int                             `json:"cycle_count"`
+		Prices               map[string]float64              `json:"prices"`
+		Strategies           map[string]StratStatus          `json:"strategies"`
+		PortfolioRisk        PortfolioRiskState              `json:"portfolio_risk"`
+		PortfolioRiskByScope map[string]PortfolioRiskState   `json:"portfolio_risk_by_scope"`
+		TotalValue           float64                         `json:"total_value"`
+		TotalValueByScope    map[string]float64              `json:"total_value_by_scope,omitempty"`
+		TotalNotional        float64                         `json:"total_notional"`
+		TotalNotionalByScope map[string]float64              `json:"total_notional_by_scope,omitempty"`
+		Correlation          *CorrelationSnapshot            `json:"correlation,omitempty"`
+		CorrelationByScope   map[string]*CorrelationSnapshot `json:"correlation_by_scope,omitempty"`
+		ReconciliationGaps   map[string]*ReconciliationGap   `json:"reconciliation_gaps,omitempty"`
+	}
+
+	ss.strategiesMu.RLock()
+	cfgStrategies := append([]StrategyConfig(nil), ss.strategies...)
+	ss.strategiesMu.RUnlock()
+	cfgByID := make(map[string]StrategyConfig, len(cfgStrategies))
+	for _, sc := range cfgStrategies {
+		cfgByID[sc.ID] = sc
 	}
 
 	totalValue := latestDisplayTotal(ss.state, prices)
 	totalNotional := PortfolioNotional(ss.state.Strategies, prices)
 
-	resp := StatusResp{
-		CycleCount:         ss.state.CycleCount,
-		Prices:             prices,
-		Strategies:         make(map[string]StratStatus),
-		PortfolioRisk:      ss.state.PortfolioRisk,
-		TotalValue:         totalValue,
-		TotalNotional:      totalNotional,
-		Correlation:        ss.state.CorrelationSnapshot,
-		ReconciliationGaps: ss.state.ReconciliationGaps,
+	scopes := activeScopes(cfgStrategies)
+	riskByScope := make(map[string]PortfolioRiskState, len(scopes))
+	valueByScope := make(map[string]float64, len(scopes))
+	notionalByScope := make(map[string]float64, len(scopes))
+	corrByScope := make(map[string]*CorrelationSnapshot, len(scopes))
+	for _, scope := range scopes {
+		key := string(scope)
+		if prs := ss.state.scopeRiskIfPresent(scope); prs != nil {
+			riskByScope[key] = *prs
+		} else {
+			riskByScope[key] = PortfolioRiskState{}
+		}
+		valueByScope[key] = latestDisplayTotalForScope(ss.state, cfgStrategies, scope, prices)
+		notionalByScope[key] = PortfolioNotional(filterStatesByScope(ss.state.Strategies, cfgStrategies, scope), prices)
+		if snap := ss.state.scopeCorrelation(scope); snap != nil {
+			corrByScope[key] = snap
+		}
+	}
+	legacyScope := statusLegacyScope(scopes)
+	if len(scopes) > 0 {
+		totalValue = valueByScope[string(legacyScope)]
+		totalNotional = notionalByScope[string(legacyScope)]
 	}
 
-	ss.strategiesMu.RLock()
-	cfgByID := make(map[string]StrategyConfig, len(ss.strategies))
-	for _, sc := range ss.strategies {
-		cfgByID[sc.ID] = sc
+	resp := StatusResp{
+		CycleCount:           ss.state.CycleCount,
+		Prices:               prices,
+		Strategies:           make(map[string]StratStatus),
+		PortfolioRiskByScope: riskByScope,
+		TotalValue:           totalValue,
+		TotalValueByScope:    valueByScope,
+		TotalNotional:        totalNotional,
+		TotalNotionalByScope: notionalByScope,
+		CorrelationByScope:   corrByScope,
+		ReconciliationGaps:   ss.state.ReconciliationGaps,
 	}
-	ss.strategiesMu.RUnlock()
+	if prs := ss.state.scopeRiskIfPresent(legacyScope); prs != nil {
+		resp.PortfolioRisk = *prs
+	}
+	resp.Correlation = ss.state.scopeCorrelation(legacyScope)
 
 	for id, s := range ss.state.Strategies {
 		pv := displayStrategyValue(s, prices)
@@ -519,4 +554,16 @@ func (ss *StatusServer) handleHistory(w http.ResponseWriter, r *http.Request) {
 		Limit:  limit,
 		Offset: offset,
 	})
+}
+
+func statusLegacyScope(scopes []PortfolioScope) PortfolioScope {
+	for _, scope := range scopes {
+		if scope == ScopeLive {
+			return ScopeLive
+		}
+	}
+	if len(scopes) > 0 {
+		return scopes[0]
+	}
+	return ScopeLive
 }

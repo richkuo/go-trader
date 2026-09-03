@@ -76,20 +76,29 @@ func evaluateExposureCap(pr *PortfolioRiskConfig, states map[string]*StrategySta
 	return st
 }
 
-func manualExposureCapStatus(cfg *Config, state *AppState) ExposureCapStatus {
-	if cfg == nil || state == nil || !exposureCapConfigured(cfg.PortfolioRisk) {
+func manualExposureCapStatus(cfg *Config, state *AppState, scope PortfolioScope) ExposureCapStatus {
+	if cfg == nil || state == nil {
 		return ExposureCapStatus{}
 	}
-	ids := make([]string, 0, len(state.Strategies))
-	for id := range state.Strategies {
+	return exposureCapStatusForSubset(scopeRiskConfig(cfg, scope),
+		filterStatesByScope(state.Strategies, cfg.Strategies, scope),
+		strategiesInScope(cfg.Strategies, scope))
+}
+
+func exposureCapStatusForSubset(pr *PortfolioRiskConfig, states map[string]*StrategyState, cfgs []StrategyConfig) ExposureCapStatus {
+	if !exposureCapConfigured(pr) {
+		return ExposureCapStatus{}
+	}
+	ids := make([]string, 0, len(states))
+	for id := range states {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
 	var pv float64
 	for _, id := range ids {
-		pv += displayStrategyValue(state.Strategies[id], nil)
+		pv += displayStrategyValue(states[id], nil)
 	}
-	return evaluateExposureCap(cfg.PortfolioRisk, state.Strategies, cfg.Strategies, nil, pv)
+	return evaluateExposureCap(pr, states, cfgs, nil, pv)
 }
 
 func exposureCapManualEntryBlock(st ExposureCapStatus, asset, dir string) (bool, string) {
@@ -255,7 +264,7 @@ type exposureCapAlertState struct {
 	PVBasisMissAlerted bool
 }
 
-var exposureCapAlerts exposureCapAlertState
+var exposureCapAlerts = map[PortfolioScope]exposureCapAlertState{}
 
 func exposureCapAlertMessage(st ExposureCapStatus, prev exposureCapAlertState, now time.Time) (string, exposureCapAlertState) {
 	next := exposureCapAlertState{
@@ -308,30 +317,61 @@ func exposureCapStartupSummaryLine(pr *PortfolioRiskConfig) string {
 	return fmt.Sprintf("[config] portfolio: exposure cap %s (blocks capped-direction opens only; closes and SL/TP management unaffected)", strings.Join(parts, " "))
 }
 
-func exposureCapStatusNote(pr *PortfolioRiskConfig, state *AppState, cfgStrategies []StrategyConfig, prices map[string]float64) string {
-	if !exposureCapConfigured(pr) {
+func exposureCapPaperStartupSummaryLine(cfg *Config) string {
+	if cfg == nil || cfg.PortfolioRisk == nil || cfg.PortfolioRisk.Paper == nil {
 		return ""
 	}
-	var pv float64
-	for _, ss := range state.Strategies {
-		pv += displayStrategyValue(ss, prices)
+	paper := scopeRiskConfig(cfg, ScopePaper)
+	if paper == nil {
+		return ""
 	}
-	st := evaluateExposureCap(pr, state.Strategies, cfgStrategies, prices, pv)
+	if paper.MaxSameDirectionNotionalUSD == cfg.PortfolioRisk.MaxSameDirectionNotionalUSD &&
+		paper.MaxAssetConcentrationPct == cfg.PortfolioRisk.MaxAssetConcentrationPct {
+		return ""
+	}
+	line := exposureCapStartupSummaryLine(paper)
+	if line == "" {
+		return ""
+	}
+	return strings.Replace(line, "[config] portfolio:", "[config] portfolio (paper scope):", 1)
+}
+
+func exposureCapStatusNote(cfg *Config, state *AppState, prices map[string]float64) string {
+	if cfg == nil || state == nil {
+		return ""
+	}
+	scopes := activeScopes(cfg.Strategies)
 	var note string
-	if st.CapUSD > 0 {
-		if st.LongBlocked || st.ShortBlocked {
-			note += fmt.Sprintf("\n🛑 exposure cap: long $%.2f / short $%.2f vs cap $%.2f — %s", st.LongUSD, st.ShortUSD, st.CapUSD, blockedDirectionsLabel(st))
-		} else {
-			note += fmt.Sprintf("\n🟢 exposure cap armed: long $%.2f / short $%.2f / cap $%.2f", st.LongUSD, st.ShortUSD, st.CapUSD)
+	for _, scope := range scopes {
+		pr := scopeRiskConfig(cfg, scope)
+		if !exposureCapConfigured(pr) {
+			continue
 		}
-	}
-	for _, a := range sortedOverConcentrated(st) {
-		stat := st.OverConcentrated[a]
-		note += fmt.Sprintf("\n🛑 exposure cap: %s net %s %.1f%% of portfolio value (cap %.1f%%) — new %s %ss blocked",
-			a, stat.Direction, stat.Pct, st.ConcentrationPct, a, stat.Direction)
-	}
-	if st.PVBasisMiss {
-		note += "\n" + exposureCapPVBasisMissWarning
+		scoped := filterStatesByScope(state.Strategies, cfg.Strategies, scope)
+		var pv float64
+		for _, ss := range scoped {
+			pv += displayStrategyValue(ss, prices)
+		}
+		st := evaluateExposureCap(pr, scoped, strategiesInScope(cfg.Strategies, scope), prices, pv)
+		prefix := ""
+		if len(scopes) > 1 {
+			prefix = "[" + scopeLabel(scope) + "] "
+		}
+		if st.CapUSD > 0 {
+			if st.LongBlocked || st.ShortBlocked {
+				note += fmt.Sprintf("\n🛑 %sexposure cap: long $%.2f / short $%.2f vs cap $%.2f — %s", prefix, st.LongUSD, st.ShortUSD, st.CapUSD, blockedDirectionsLabel(st))
+			} else {
+				note += fmt.Sprintf("\n🟢 %sexposure cap armed: long $%.2f / short $%.2f / cap $%.2f", prefix, st.LongUSD, st.ShortUSD, st.CapUSD)
+			}
+		}
+		for _, a := range sortedOverConcentrated(st) {
+			stat := st.OverConcentrated[a]
+			note += fmt.Sprintf("\n🛑 %sexposure cap: %s net %s %.1f%% of portfolio value (cap %.1f%%) — new %s %ss blocked",
+				prefix, a, stat.Direction, stat.Pct, st.ConcentrationPct, a, stat.Direction)
+		}
+		if st.PVBasisMiss {
+			note += "\n" + exposureCapPVBasisMissWarning
+		}
 	}
 	return note
 }

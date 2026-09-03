@@ -447,14 +447,14 @@ func TestAPICorrelation(t *testing.T) {
 		t.Errorf("expected null correlation before first cycle, got %+v", resp.Correlation)
 	}
 
-	state.CorrelationSnapshot = &CorrelationSnapshot{
+	state.setScopeCorrelation(ScopeLive, &CorrelationSnapshot{
 		Timestamp:         time.Now(),
 		PortfolioGrossUSD: 1234,
 		Warnings:          []string{"BTC concentration 90%"},
 		Assets: map[string]*AssetExposure{
 			"BTC": {Asset: "BTC", NetDeltaUSD: 1000, GrossDeltaUSD: 1100, ConcentrationPct: 90},
 		},
-	}
+	})
 	w = opsGet(ss, ss.handleAPICorrelation, "/api/correlation")
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode: %v", err)
