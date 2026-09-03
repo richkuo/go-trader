@@ -524,6 +524,7 @@ type StrategyConfig struct {
 	RegimeProfileAllocation     *RegimeProfileAllocation `json:"regime_profile_allocation,omitempty"`
 	AllowScaleIn                bool                     `json:"allow_scale_in,omitempty"`
 	ReplaySharing               string                   `json:"replay_sharing,omitempty"`
+	ReplaySourceID              string                   `json:"replay_source_id,omitempty"`
 	ScaleIn                     *ScaleInConfig           `json:"scale_in,omitempty"`
 	Hedge                       *HedgeConfig             `json:"hedge,omitempty"`
 }
@@ -1364,6 +1365,13 @@ func regimeDirectionalPolicyWarnings(cfg *Config) []string {
 func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 	var errs []string
 	seenIDs := make(map[string]bool)
+	mirroredReplaySources := make(map[string]string)
+	strategyByID := make(map[string]StrategyConfig, len(cfg.Strategies))
+	for _, sc := range cfg.Strategies {
+		if sc.ID != "" {
+			strategyByID[sc.ID] = sc
+		}
+	}
 	sharedWalletPoolIDs, poolErrs := validateConfiguredSharedWalletPools(cfg.Strategies)
 	errs = append(errs, poolErrs...)
 	for i := range cfg.Strategies {
@@ -1456,6 +1464,36 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 			}
 			if strings.TrimSpace(cfg.ReplayLogPath) == "" {
 				errs = append(errs, fmt.Sprintf("%s: replay_sharing=%q requires the root replay_log_path to be set", prefix, ReplaySharingLiveMirror))
+			}
+		}
+
+		if srcID := strings.TrimSpace(sc.ReplaySourceID); srcID != "" {
+			src, srcFound := strategyByID[srcID]
+			switch {
+			case normalizeReplaySharing(sc.ReplaySharing) != ReplaySharingLiveMirror:
+				errs = append(errs, fmt.Sprintf("%s: replay_source_id requires replay_sharing=%q", prefix, ReplaySharingLiveMirror))
+			case sc.Type != "perps" || sc.Platform != "hyperliquid":
+				errs = append(errs, fmt.Sprintf("%s: replay_source_id is supported for HL perps strategies only (type=perps, platform=hyperliquid)", prefix))
+			case isLiveArgs(sc.Args):
+				errs = append(errs, fmt.Sprintf("%s: replay_source_id is only valid on a paper strategy — the live source writes the decision log", prefix))
+			case srcID == sc.ID:
+				errs = append(errs, fmt.Sprintf("%s: replay_source_id must name another strategy; omit it to mirror the live twin that shares this id", prefix))
+			case !srcFound:
+				errs = append(errs, fmt.Sprintf("%s: replay_source_id %q names no strategy in this config", prefix, srcID))
+			case !isLiveArgs(src.Args):
+				errs = append(errs, fmt.Sprintf("%s: replay_source_id %q names a paper strategy; the replay source must run live (--mode=live)", prefix, srcID))
+			case src.Type != "perps" || src.Platform != "hyperliquid":
+				errs = append(errs, fmt.Sprintf("%s: replay_source_id %q must name an HL perps strategy (type=perps, platform=hyperliquid)", prefix, srcID))
+			case normalizeReplaySharing(src.ReplaySharing) != ReplaySharingLiveMirror:
+				errs = append(errs, fmt.Sprintf("%s: replay_source_id %q must set replay_sharing=%q or it never writes decisions", prefix, srcID, ReplaySharingLiveMirror))
+			case extractAsset(src) != extractAsset(sc) || extractTimeframe(src) != extractTimeframe(sc):
+				errs = append(errs, fmt.Sprintf("%s: replay_source_id %q trades %s/%s but this strategy trades %s/%s — the mirror must track the same symbol and timeframe",
+					prefix, srcID, extractAsset(src), extractTimeframe(src), extractAsset(sc), extractTimeframe(sc)))
+			case mirroredReplaySources[srcID] != "":
+				errs = append(errs, fmt.Sprintf("%s: replay_source_id %q is already mirrored by strategy %q — one paper mirror per live source (the mirrors would consume each other's rows)",
+					prefix, srcID, mirroredReplaySources[srcID]))
+			default:
+				mirroredReplaySources[srcID] = sc.ID
 			}
 		}
 

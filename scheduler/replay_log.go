@@ -215,9 +215,70 @@ func replaySharingSourceEnabled(sc StrategyConfig) bool {
 		sc.Type == "perps" && sc.Platform == "hyperliquid" && isLiveArgs(sc.Args)
 }
 
+func replayMirrorSourceID(sc StrategyConfig) string {
+	if normalizeReplaySharing(sc.ReplaySharing) != ReplaySharingLiveMirror ||
+		sc.Type != "perps" || sc.Platform != "hyperliquid" || isLiveArgs(sc.Args) {
+		return ""
+	}
+	if id := strings.TrimSpace(sc.ReplaySourceID); id != "" {
+		return id
+	}
+	return strings.TrimSpace(sc.ID)
+}
+
 func replayMirrorPaperActive(sc StrategyConfig) bool {
-	return sc.ReplaySharing == ReplaySharingLiveMirror &&
-		sc.Type == "perps" && sc.Platform == "hyperliquid" && !isLiveArgs(sc.Args)
+	return replayMirrorSourceID(sc) != ""
+}
+
+func orderReplaySourcesBeforeMirrors(due []StrategyConfig) []StrategyConfig {
+	sources := make(map[string]int, len(due))
+	for i, sc := range due {
+		if replaySharingSourceEnabled(sc) {
+			sources[sc.ID] = i
+		}
+	}
+	blockedBy := make(map[int]int, len(due))
+	pendingFor := make(map[int][]int, len(due))
+	for i, sc := range due {
+		srcID := replayMirrorSourceID(sc)
+		if srcID == "" || srcID == sc.ID {
+			continue
+		}
+		srcIdx, ok := sources[srcID]
+		if !ok || srcIdx <= i {
+			continue
+		}
+		blockedBy[i] = srcIdx
+		pendingFor[srcIdx] = append(pendingFor[srcIdx], i)
+	}
+	if len(blockedBy) == 0 {
+		return due
+	}
+	out := make([]StrategyConfig, 0, len(due))
+	emitted := make([]bool, len(due))
+	var emit func(idx int)
+	emit = func(idx int) {
+		if emitted[idx] {
+			return
+		}
+		emitted[idx] = true
+		out = append(out, due[idx])
+		released := append([]int(nil), pendingFor[idx]...)
+		sort.Ints(released)
+		for _, m := range released {
+			emit(m)
+		}
+	}
+	for i := range due {
+		if _, held := blockedBy[i]; held {
+			continue
+		}
+		emit(i)
+	}
+	for i := range due {
+		emit(i)
+	}
+	return out
 }
 
 var decisionLogWriter func(dec ReplayDecision) error

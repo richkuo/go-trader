@@ -293,6 +293,10 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 			addChange("strategy[%s].replay_sharing: %q -> %q", sc.ID, normalizeReplaySharing(sc.ReplaySharing), normalizeReplaySharing(ns.ReplaySharing))
 			sc.ReplaySharing = ns.ReplaySharing
 		}
+		if strings.TrimSpace(sc.ReplaySourceID) != strings.TrimSpace(ns.ReplaySourceID) {
+			addChange("strategy[%s].replay_source_id: %q -> %q", sc.ID, strings.TrimSpace(sc.ReplaySourceID), strings.TrimSpace(ns.ReplaySourceID))
+			sc.ReplaySourceID = ns.ReplaySourceID
+		}
 	}
 
 	if portfolioRiskMaxDrawdown(cfg.PortfolioRisk) != portfolioRiskMaxDrawdown(next.PortfolioRisk) {
@@ -542,6 +546,10 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 			errs = append(errs, fmt.Sprintf("strategy[%s] replay_sharing changed with open positions (%q -> %q; flatten first or restart after close)",
 				sc.ID, normalizeReplaySharing(sc.ReplaySharing), normalizeReplaySharing(ns.ReplaySharing)))
 		}
+		if strings.TrimSpace(sc.ReplaySourceID) != strings.TrimSpace(ns.ReplaySourceID) && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
+			errs = append(errs, fmt.Sprintf("strategy[%s] replay_source_id changed with open positions (%q -> %q; flatten first or restart after close)",
+				sc.ID, strings.TrimSpace(sc.ReplaySourceID), strings.TrimSpace(ns.ReplaySourceID)))
+		}
 		if sc.Type == "perps" && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
 			oldRiskMode := sc.RiskPerTradePct != nil && *sc.RiskPerTradePct > 0
 			newRiskMode := ns.RiskPerTradePct != nil && *ns.RiskPerTradePct > 0
@@ -715,6 +723,7 @@ func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.ATRMethod = ""
 	sc.Hedge = nil
 	sc.ReplaySharing = ""
+	sc.ReplaySourceID = ""
 	return sc
 }
 

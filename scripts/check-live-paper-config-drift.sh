@@ -102,6 +102,21 @@ def strip_mode(args):
     return out
 
 
+def id_note(block, key):
+    sid = block.get("id")
+    if isinstance(sid, str) and sid != key:
+        return " [id=%s]" % sid
+    return ""
+
+
+def pair_key(block, mode):
+    if mode != "live":
+        src = block.get("replay_source_id")
+        if isinstance(src, str) and src.strip():
+            return src.strip()
+    return block["id"]
+
+
 def fmt(v):
     if v is MISSING:
         return "-"
@@ -119,7 +134,7 @@ print("go-trader live/paper config drift audit (#1430)")
 print("%-40s %-60s %s" % ("DEPLOYMENT", "CONFIG", "STRATEGIES live/paper/unset"))
 
 bad = 0
-entries = []  # (id, source, mode, block)
+entries = []  # (key, source, mode, block)
 for source, _, path in rows:
     try:
         with open(path) as f:
@@ -143,7 +158,7 @@ for source, _, path in rows:
         args = [a for a in args if isinstance(a, str)]
         mode = classify(args)
         counts[mode] += 1
-        entries.append((s["id"], source, mode, s))
+        entries.append((pair_key(s, mode), source, mode, s))
     print("%-40s %-60s %d/%d/%d" % (source, path, counts["live"], counts["paper"], counts["unset"]))
 
 by_id = {}
@@ -181,7 +196,7 @@ for sid in sorted(by_id):
                 if lv is MISSING or pv is MISSING or lv != pv:
                     watched_diffs.append((k, lv, pv))
             other_diffs = []
-            for k in sorted((set(lblock) | set(pblock)) - set(WATCHED) - {"id"}):
+            for k in sorted((set(lblock) | set(pblock)) - set(WATCHED) - {"id", "replay_source_id"}):
                 lv = lblock.get(k, MISSING)
                 pv = pblock.get(k, MISSING)
                 if k == "args":
@@ -196,9 +211,9 @@ for sid in sorted(by_id):
                     other_diffs.append((k, lv, pv))
             print()
             print("PAIR %s" % sid)
-            print("  live : %s" % live[1])
+            print("  live : %s%s" % (live[1], id_note(lblock, sid)))
             note = " (no --mode token — daemon default is paper)" if paper[2] == "unset" else ""
-            print("  paper: %s%s" % (paper[1], note))
+            print("  paper: %s%s%s" % (paper[1], id_note(pblock, sid), note))
             for k, lv, pv in watched_diffs:
                 print("  DRIFT  %-22s live=%-14s paper=%s" % (k, fmt(lv), fmt(pv)))
             for k, lv, pv in other_diffs:

@@ -628,6 +628,63 @@ if [[ "$audit_out" != *"UNPAIRED"* ]]; then
     exit 1
 fi
 
+mkdir -p "$drift/inproc/scheduler" "$drift/inproc-drift/scheduler"
+cat > "$drift/inproc/scheduler/config.json" <<'JSON'
+{"config_version": 19, "replay_log_path": "/var/lib/go-trader/shared/replay.db", "strategies": [
+  {"id": "hl-x-live", "type": "perps", "platform": "hyperliquid",
+   "script": "shared_scripts/check_hyperliquid.py",
+   "args": ["vwap", "ETH", "1h", "--mode=live"],
+   "interval_seconds": 300, "leverage": 20, "margin_per_trade_usd": 50,
+   "capital": 100, "close_strategy": "trailing_tp_ratchet_regime",
+   "replay_sharing": "live_mirror"},
+  {"id": "hl-x-paper", "type": "perps", "platform": "hyperliquid",
+   "script": "shared_scripts/check_hyperliquid.py",
+   "args": ["vwap", "ETH", "1h", "--mode=paper"],
+   "interval_seconds": 300, "leverage": 20, "margin_per_trade_usd": 50,
+   "capital": 100, "close_strategy": "trailing_tp_ratchet_regime",
+   "replay_sharing": "live_mirror", "replay_source_id": "hl-x-live"}
+]}
+JSON
+
+cat > "$drift/inproc-drift/scheduler/config.json" <<'JSON'
+{"config_version": 19, "replay_log_path": "/var/lib/go-trader/shared/replay.db", "strategies": [
+  {"id": "hl-x-live", "type": "perps", "platform": "hyperliquid",
+   "script": "shared_scripts/check_hyperliquid.py",
+   "args": ["vwap", "ETH", "1h", "--mode=live"],
+   "interval_seconds": 300, "leverage": 20, "margin_per_trade_usd": 50,
+   "capital": 100, "close_strategy": "trailing_tp_ratchet_regime",
+   "replay_sharing": "live_mirror"},
+  {"id": "hl-x-paper", "type": "perps", "platform": "hyperliquid",
+   "script": "shared_scripts/check_hyperliquid.py",
+   "args": ["vwap", "ETH", "1h", "--mode=paper"],
+   "interval_seconds": 3600, "leverage": 20, "margin_per_trade_usd": 50,
+   "capital": 100, "close_strategy": "trailing_tp_ratchet_regime",
+   "replay_sharing": "live_mirror", "replay_source_id": "hl-x-live"}
+]}
+JSON
+
+audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/inproc") && audit_rc=0 || audit_rc=$?
+assert_eq "$audit_rc" "0" "drift audit: in-process twins paired by replay_source_id report no drift"
+if [[ "$audit_out" != *"PAIR hl-x-live"* ]]; then
+    echo "FAIL: expected the pair keyed on replay_source_id, got: $audit_out" >&2
+    exit 1
+fi
+if [[ "$audit_out" != *"[id=hl-x-paper]"* ]]; then
+    echo "FAIL: expected the mirror id annotated on the paper line, got: $audit_out" >&2
+    exit 1
+fi
+if [[ "$audit_out" != *"IN SYNC"* || "$audit_out" == *"DRIFT"* || "$audit_out" == *"OTHER"* ]]; then
+    echo "FAIL: differing id and replay_source_id must not read as drift, got: $audit_out" >&2
+    exit 1
+fi
+
+audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/inproc-drift") && audit_rc=0 || audit_rc=$?
+assert_eq "$audit_rc" "1" "drift audit: in-process pair still gates on cadence drift"
+if [[ "$audit_out" != *"CANDIDATE"* || "$audit_out" != *"interval_seconds"* ]]; then
+    echo "FAIL: expected interval_seconds drift for the in-process pair, got: $audit_out" >&2
+    exit 1
+fi
+
 audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/live" "$drift/broken") && audit_rc=0 || audit_rc=$?
 assert_eq "$audit_rc" "1" "drift audit: unreadable config exits 1"
 

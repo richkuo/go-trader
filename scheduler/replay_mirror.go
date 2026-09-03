@@ -26,6 +26,35 @@ func replayMirrorSetLastApplied(strategyID string, id int64) {
 	}
 }
 
+func replayMirrorResetProgress(strategyID string) {
+	replayMirrorProgress.Lock()
+	defer replayMirrorProgress.Unlock()
+	delete(replayMirrorProgress.last, strategyID)
+}
+
+func syncReplayMirrorWatermarkSource(sc StrategyConfig, s *StrategyState, sourceID string, logger *StrategyLogger) bool {
+	if s == nil || sourceID == "" {
+		return false
+	}
+	stored := strings.TrimSpace(s.ReplayMirrorWatermarkSource)
+	if stored == "" {
+		stored = sc.ID
+	}
+	if stored == sourceID {
+		s.ReplayMirrorWatermarkSource = sourceID
+		return false
+	}
+	prev := s.ReplayMirrorWatermark
+	s.ReplayMirrorWatermark = 0
+	s.ReplayMirrorWatermarkSource = sourceID
+	replayMirrorResetProgress(sc.ID)
+	if logger != nil {
+		logger.Warn("Replay mirror: source changed %q -> %q — watermark reset (was %d); every pending row of the new source replays from the start (#1510)",
+			stored, sourceID, prev)
+	}
+	return true
+}
+
 const (
 	replayDriftKindOpenWhileHolding       = "open-while-holding"
 	replayDriftKindScaleInWhileMismatched = "scale-in-while-mismatched"

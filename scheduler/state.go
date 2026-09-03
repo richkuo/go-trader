@@ -95,7 +95,8 @@ type StrategyState struct {
 
 	CashReconcileRequired bool `json:"cash_reconcile_required,omitempty"`
 
-	ReplayMirrorWatermark int64 `json:"replay_mirror_watermark,omitempty"`
+	ReplayMirrorWatermark       int64  `json:"replay_mirror_watermark,omitempty"`
+	ReplayMirrorWatermarkSource string `json:"replay_mirror_watermark_source,omitempty"`
 }
 
 func NewStrategyState(cfg StrategyConfig) *StrategyState {

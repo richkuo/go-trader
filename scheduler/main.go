@@ -644,6 +644,8 @@ func main() {
 			}
 		}
 
+		dueStrategies = orderReplaySourcesBeforeMirrors(dueStrategies)
+
 		if len(dueStrategies) == 0 {
 			if audSec := liquidationAuditIntervalSeconds(cfg.Strategies, intervals); audSec > 0 && os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS") != "" {
 				now := time.Now().UTC()
@@ -2166,8 +2168,18 @@ func main() {
 								updateStrategyProfileState(stratState, hlProfileNext)
 								mu.Unlock()
 							}
-							if replayMirrorPaperActive(sc) && decisionLog != nil {
-								pending, perr := decisionLog.PendingDecisions(sc.ID)
+							if replaySourceID := replayMirrorSourceID(sc); replaySourceID != "" && decisionLog != nil {
+								mu.Lock()
+								sourceReset := syncReplayMirrorWatermarkSource(sc, stratState, replaySourceID, logger)
+								var sourceResetSaveErr error
+								if sourceReset {
+									sourceResetSaveErr = SaveStrategyBookWithDB(stratState, stateDB)
+								}
+								mu.Unlock()
+								if sourceResetSaveErr != nil {
+									logger.Error("Replay mirror: state save failed after resetting the watermark for source %q: %v (#1510)", replaySourceID, sourceResetSaveErr)
+								}
+								pending, perr := decisionLog.PendingDecisions(replaySourceID)
 								switch {
 								case perr != nil:
 									logger.Error("Replay mirror: failed to read decision log: %v — holding last replayed state (#1431)", perr)
