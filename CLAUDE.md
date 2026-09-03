@@ -54,7 +54,7 @@
 
 Other dirs (guardrails):
 - `shared_scripts/` — per-platform `check_*.py` + `check_{strategy,options,price,regime}.py`, tuner/simulate. All accept `--regime-payload-json`; probed at startup. `check_hyperliquid.py` splits into `build_shared_signal_state` + `evaluate_signal_slot` (on `shared["df"].copy()`); single mode and `--batch-check` both run that pair. Shared-state failure raises `SharedSignalStateError` → one `error_scope="shared_state"` sentinel; a slot exception stays in its slot.
-- `platforms/<name>/adapter.py` — one `*ExchangeAdapter`/file. HL caches in `/tmp`; lazy `_ensure_exchange`; sparse indices via `_normalize_spot_meta`.
+- `platforms/<name>/adapter.py` — one `*ExchangeAdapter`/file. HL caches in `/tmp`; lazy `_ensure_exchange`; sparse indices via `_normalize_spot_meta`. HL `_sz_decimals()`: SDK's `asset_to_sz_decimals` keys by integer asset index, NOT symbol — resolve via `name_to_asset(symbol)` (fallback `coin_to_asset`) first, direct symbol lookup is a legacy test-mock-only fallback.
 - `shared_tools/` — `regime.py`; `funding_fetcher.py` (`merge_asof` backward; DISJOINT `funding_coverage`); `atr.py` shims `shared_strategies/open/indicators_core.py`; `atr_method` via `resolveATRMethod` (`regime.py` pinned `simple`).
 - `shared_strategies/` — open SSoT `open/registry.py`; **`open/{spot,futures}/strategies.py` are shims — do not edit.** Close `close/registry.py`; options `options/strategies.py`. `open/indicators_core.py`: ATR/RSI + Hurst — `hurst_exponent` (DFA, live SSoT) and research-only `hurst_rescaled_range`.
 - `backtest/` — `backtester.py`,`optimizer.py`,`run_backtest.py`,`backtest_{options,theta,pairs}.py`,`parity_diff.py`. See § Backtest.
