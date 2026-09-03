@@ -990,13 +990,31 @@ class TestSzDecimalsSdkShape:
         adapter._sz_decimals_misses.add("HYPE")
         assert adapter._sz_decimals("HYPE") == 3
 
-    def test_resolved_index_absent_from_sz_map_returns_none(self):
+    def test_resolved_index_absent_from_sz_map_falls_back_to_default_3(self):
         mock_info = _sdk_info(
             asset_to_sz_decimals_by_index={0: 5},
             coin_to_asset={"HYPE": 151},
         )
         mod = _load_hl_adapter()
-        assert mod.HyperliquidExchangeAdapter._resolve_sz_decimals(mock_info, "HYPE") is None
+        adapter = mod.HyperliquidExchangeAdapter()
+        adapter._info = mock_info
+        adapter._build_info = lambda *args, **kwargs: mock_info
+        assert adapter._sz_decimals("HYPE") == 3
+
+    def test_symbol_missing_from_name_to_coin_still_resolves_via_coin_to_asset(self):
+        def _sdk_name_to_asset(name):
+            return mock_info.coin_to_asset[mock_info.name_to_coin[name]]
+
+        mock_info = _sdk_info(
+            asset_to_sz_decimals_by_index={151: 2},
+            name_to_coin={},
+            coin_to_asset={"HYPE": 151},
+            name_to_asset_fn=_sdk_name_to_asset,
+        )
+        mod = _load_hl_adapter()
+        adapter = mod.HyperliquidExchangeAdapter()
+        adapter._info = mock_info
+        assert adapter._sz_decimals("HYPE") == 2
 
     def test_market_open_rounds_hype_size_to_2_decimals_not_3(self):
         mock_info = _sdk_info(

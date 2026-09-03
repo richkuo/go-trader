@@ -379,9 +379,6 @@ class HyperliquidExchangeAdapter:
 
     @staticmethod
     def _resolve_sz_decimals(info, symbol: str):
-        if not isinstance(getattr(info, "name_to_coin", None), dict) \
-                or symbol not in info.name_to_coin:
-            return None
         sz_by_asset = getattr(info, "asset_to_sz_decimals", None)
         if not isinstance(sz_by_asset, dict):
             return None
