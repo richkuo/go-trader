@@ -1118,9 +1118,13 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 	}
 
 	for id, alert := range tradeAlertStates {
-		count := len(alert.ss.TradeHistory) - alert.baseline
-		if count > 0 {
-			alert.count = count
+		for _, trade := range alert.ss.TradeHistory[alert.baseline:] {
+			if trade.TradeType == hedgeTradeType {
+				continue
+			}
+			alert.count++
+		}
+		if alert.count > 0 {
 			tradeAlertStates[id] = alert
 		}
 	}
