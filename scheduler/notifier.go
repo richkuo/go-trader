@@ -306,6 +306,10 @@ type tradeAlertRoute struct {
 	liveChan  string
 }
 
+type tradeAlertRouter interface {
+	tradeAlertRoutes(platform, stratType string, isLive bool) []tradeAlertRoute
+}
+
 func (m *MultiNotifier) tradeAlertRoutes(platform, stratType string, isLive bool) []tradeAlertRoute {
 	var routes []tradeAlertRoute
 	dmKey := platform

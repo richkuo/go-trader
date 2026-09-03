@@ -49,6 +49,26 @@ func TestFormatTradeDMCloseTradeIncludesSource(t *testing.T) {
 	}
 }
 
+func TestFormatTradeDM_HyperliquidReconcileSLIncludesOID(t *testing.T) {
+	sc := StrategyConfig{ID: "hl-sync-eth", Platform: "hyperliquid", Type: "perps"}
+	trade := Trade{
+		IsClose:         true,
+		Symbol:          "ETH",
+		Side:            "sell",
+		Quantity:        1,
+		Price:           2900,
+		Value:           2900,
+		Details:         "Stop loss close, PnL: $-100.05 (fee $0.05)",
+		ExchangeOrderID: "42",
+	}
+	msg := FormatTradeDM(sc, trade, "live")
+	for _, want := range []string{"TRADE CLOSED - LIVE", "OID: 42", "Source: exchange SL"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("message missing %q:\n%s", want, msg)
+		}
+	}
+}
+
 func TestFormatTradeDMOpenTradeOmitsSource(t *testing.T) {
 	sc := StrategyConfig{ID: "hl-rmc-eth-live", Platform: "hyperliquid", Type: "perps"}
 	trade := Trade{

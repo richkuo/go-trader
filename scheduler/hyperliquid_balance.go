@@ -26,6 +26,13 @@ type HLPosition struct {
 	LiquidationPx float64
 }
 
+type hyperliquidTradeAlertState struct {
+	sc       StrategyConfig
+	ss       *StrategyState
+	baseline int
+	count    int
+}
+
 func hlExecuteSnapshotForCoin(positions []HLPosition, coin string) hlExecuteSnapshot {
 	if coin == "" {
 		return hlExecuteSnapshot{}
@@ -522,6 +529,21 @@ func reconcileHyperliquidPositionsWithResolver(stratState *StrategyState, sym st
 					statePos.Quantity = lookup.FilledQty
 				}
 				if recordPerpsStopLossCloseWithFillFee(stratState, sym, statePos.StopLossTriggerPx, lookup.Fee, useFillFee, oidStr, "stop_loss", logger) {
+					if pendingAlerts != nil {
+						*pendingAlerts = append(*pendingAlerts, ProtectionFillAlert{
+							StrategyID:      sc.ID,
+							Symbol:          sym,
+							Side:            statePos.Side,
+							FillType:        "SL",
+							IsPartial:       false,
+							FillPrice:       statePos.StopLossTriggerPx,
+							CloseQty:        statePos.Quantity,
+							RemainingQty:    0,
+							RealizedPnL:     lastBookedTradePnL(stratState),
+							HasPnL:          true,
+							ExchangeOrderID: oidStr,
+						})
+					}
 					return true
 				}
 			} else if useFillFee {
@@ -568,9 +590,24 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 	var pendingAlerts []ProtectionFillAlert
 	var pendingOrphanCloses []RegimeDirectionOrphanCloseJob
 	var pendingHedgeAlerts []string
+	tradeAlertStates := make(map[string]hyperliquidTradeAlertState, len(allStrategies))
 	defer func() {
 		for _, a := range pendingAlerts {
 			notifyProtectionFill(notifier, notifyTPSLFills, a)
+		}
+		tradeNotifier, ok := notifier.(tradeAlertRouter)
+		if ok && !isNilSender(notifier) {
+			ids := make([]string, 0, len(tradeAlertStates))
+			for id, alert := range tradeAlertStates {
+				if alert.count > 0 {
+					ids = append(ids, id)
+				}
+			}
+			sort.Strings(ids)
+			for _, id := range ids {
+				alert := tradeAlertStates[id]
+				sendTradeAlerts(alert.sc, alert.ss, alert.count, mu, tradeNotifier)
+			}
 		}
 		if notifier != nil && !isNilSender(notifier) {
 			for _, msg := range pendingHedgeAlerts {
@@ -583,6 +620,17 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 	defer mu.Unlock()
 
 	changed := false
+	for _, sc := range allStrategies {
+		ss := state.Strategies[sc.ID]
+		if ss == nil {
+			continue
+		}
+		tradeAlertStates[sc.ID] = hyperliquidTradeAlertState{
+			sc:       sc,
+			ss:       ss,
+			baseline: len(ss.TradeHistory),
+		}
+	}
 
 	coinStrategies := make(map[string][]string)
 	for _, sc := range allStrategies {
@@ -1066,6 +1114,14 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 			}
 			fmt.Printf("[WARN] hl-sync: unowned on-chain position: %s %.6f %s @ $%.2f (no strategy claims it)\n",
 				side, qty, p.Coin, p.EntryPrice)
+		}
+	}
+
+	for id, alert := range tradeAlertStates {
+		count := len(alert.ss.TradeHistory) - alert.baseline
+		if count > 0 {
+			alert.count = count
+			tradeAlertStates[id] = alert
 		}
 	}
 

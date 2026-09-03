@@ -1214,6 +1214,132 @@ func TestReconcileSharedCoin_OwnerStopLossFired_ClosesOwnerOnly(t *testing.T) {
 	}
 }
 
+func TestReconcileSoleOwnerSL_SendsTradeAlertAndProtectionDM(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-owner-eth": {
+				ID: "hl-owner-eth", Cash: 1000, Platform: "hyperliquid", Type: "perps",
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 3000, Side: "long",
+						Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-owner-eth",
+						StopLossOID: 42, StopLossTriggerPx: 2900},
+				},
+			},
+		},
+	}
+	sc := StrategyConfig{
+		ID: "hl-owner-eth", Platform: "hyperliquid", Type: "perps",
+		Args: []string{"tema", "ETH", "1h", "--mode=live"},
+	}
+	origLookup := lookupHyperliquidReconcileFillFee
+	defer func() { lookupHyperliquidReconcileFillFee = origLookup }()
+	lookupHyperliquidReconcileFillFee = func(_, _ string, oid int64, _ float64) (HLFillLookup, bool) {
+		if oid == 42 {
+			return HLFillLookup{Fee: 0.05, FilledQty: 1, Px: 2900, Count: 1, OID: 42}, true
+		}
+		return HLFillLookup{}, false
+	}
+
+	mock := &mockNotifier{}
+	mn := NewMultiNotifier(notifierBackend{
+		notifier:           mock,
+		tradeAlertChannels: map[string]string{"hyperliquid": "trade-alerts"},
+		ownerID:            "owner",
+	})
+	logMgr, err := NewLogManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.RWMutex
+	reconcileHyperliquidAccountPositions([]StrategyConfig{sc}, []StrategyConfig{sc}, state, &mu, logMgr, nil, nil, "0xtest", mn, true)
+
+	if len(mock.messages) != 1 {
+		t.Fatalf("trade alert messages = %d, want 1", len(mock.messages))
+	}
+	if mock.messages[0].channelID != "trade-alerts" || !strings.Contains(mock.messages[0].content, "TRADE CLOSED") {
+		t.Errorf("trade alert = %+v, want configured live close alert", mock.messages[0])
+	}
+	if len(mock.dms) != 1 || !strings.Contains(mock.dms[0].content, "SL filled") {
+		t.Errorf("protection DMs = %+v, want one sole-owner SL fill DM", mock.dms)
+	}
+}
+
+func TestReconcileSharedCoinSLAndExternal_SendsTradeAlertPerBookedTrade(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-owner-eth": {
+				ID: "hl-owner-eth", Cash: 1000, Platform: "hyperliquid", Type: "perps",
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 3000, Side: "long",
+						Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-owner-eth",
+						StopLossOID: 42, StopLossTriggerPx: 2900},
+				},
+			},
+			"hl-peer-eth": {
+				ID: "hl-peer-eth", Cash: 500, Platform: "hyperliquid", Type: "perps",
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 3000, Side: "long",
+						Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-peer-eth"},
+				},
+			},
+		},
+	}
+	strategies := []StrategyConfig{
+		{ID: "hl-owner-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"tema", "ETH", "1h", "--mode=live"}},
+		{ID: "hl-peer-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"rmc", "ETH", "1h", "--mode=live"}},
+	}
+	origLookup := lookupHyperliquidReconcileFillFee
+	defer func() { lookupHyperliquidReconcileFillFee = origLookup }()
+	lookupHyperliquidReconcileFillFee = func(_, coin string, oid int64, qty float64) (HLFillLookup, bool) {
+		if coin != "ETH" {
+			return HLFillLookup{}, false
+		}
+		if oid == 42 {
+			return HLFillLookup{Fee: 0.05, FilledQty: 1, Px: 2900, Count: 1, OID: 42}, true
+		}
+		if oid == 0 && math.Abs(qty-1.5) < 1e-9 {
+			return HLFillLookup{Fee: 0.15, FilledQty: 1.5, Px: 2850, Count: 1, OID: 99}, true
+		}
+		return HLFillLookup{}, false
+	}
+
+	mock := &mockNotifier{}
+	mn := NewMultiNotifier(notifierBackend{
+		notifier:           mock,
+		tradeAlertChannels: map[string]string{"hyperliquid": "trade-alerts"},
+		ownerID:            "owner",
+	})
+	logMgr, err := NewLogManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.RWMutex
+	reconcileHyperliquidAccountPositions(strategies, strategies, state, &mu, logMgr, nil, nil, "0xtest", mn, true)
+
+	if len(mock.messages) != 2 {
+		t.Fatalf("trade alert messages = %d, want 2", len(mock.messages))
+	}
+	counts := map[string]int{}
+	for _, message := range mock.messages {
+		if message.channelID != "trade-alerts" || !strings.Contains(message.content, "TRADE CLOSED") {
+			t.Errorf("trade alert = %+v, want configured live close alert", message)
+		}
+		for _, id := range []string{"hl-owner-eth", "hl-peer-eth"} {
+			if strings.Contains(message.content, "Strategy: "+id) {
+				counts[id]++
+			}
+		}
+	}
+	for _, id := range []string{"hl-owner-eth", "hl-peer-eth"} {
+		if counts[id] != 1 {
+			t.Errorf("trade alerts for %s = %d, want 1", id, counts[id])
+		}
+	}
+	if len(mock.dms) != 1 || !strings.Contains(mock.dms[0].content, "SL filled") {
+		t.Errorf("protection DMs = %+v, want one owner SL fill DM", mock.dms)
+	}
+}
+
 func TestReconcileSharedCoin_MultipleStopLossOwnersConfirmed_ClosesOwners(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{

@@ -3123,7 +3123,7 @@ func isFreshPerStrategyCircuitBreaker(reason string) bool {
 		strings.HasPrefix(reason, RiskReasonConsecutiveLosses)
 }
 
-func sendTradeAlerts(sc StrategyConfig, stratState *StrategyState, trades int, mu *sync.RWMutex, notifier *MultiNotifier) {
+func sendTradeAlerts(sc StrategyConfig, stratState *StrategyState, trades int, mu *sync.RWMutex, notifier tradeAlertRouter) {
 	isLive := isLiveArgs(sc.Args)
 	mode := "paper"
 	if isLive {
