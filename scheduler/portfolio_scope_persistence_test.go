@@ -337,6 +337,14 @@ func TestHandleStatus_PerScopeFields(t *testing.T) {
 	if !ok || legacy["peak_value"] != float64(11000) {
 		t.Errorf("the legacy portfolio_risk field must mirror the live scope; got %v", resp["portfolio_risk"])
 	}
+	valueByScope, _ := resp["total_value_by_scope"].(map[string]any)
+	if resp["total_value"] != valueByScope["live"] || resp["total_value"] == valueByScope["paper"] {
+		t.Errorf("legacy total_value must mirror the live scope: total=%v by_scope=%v", resp["total_value"], valueByScope)
+	}
+	notionalByScope, _ := resp["total_notional_by_scope"].(map[string]any)
+	if resp["total_notional"] != notionalByScope["live"] {
+		t.Errorf("legacy total_notional must mirror the live scope: total=%v by_scope=%v", resp["total_notional"], notionalByScope)
+	}
 
 	paperOnly := NewAppState()
 	paperOnly.Strategies["paper-a"] = scopeState("paper-a", 2000)
@@ -349,6 +357,10 @@ func TestHandleStatus_PerScopeFields(t *testing.T) {
 	legacy, _ = resp["portfolio_risk"].(map[string]any)
 	if legacy["peak_value"] != float64(22000) {
 		t.Errorf("with no live scope the legacy field must mirror paper; got %v", legacy)
+	}
+	valueByScope, _ = resp["total_value_by_scope"].(map[string]any)
+	if resp["total_value"] != valueByScope["paper"] {
+		t.Errorf("with no live scope legacy total_value must mirror paper: total=%v by_scope=%v", resp["total_value"], valueByScope)
 	}
 }
 

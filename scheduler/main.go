@@ -1218,20 +1218,20 @@ func main() {
 				notifier.SendToAllChannels(killSwitchMsg)
 			}
 
-			var paperKillSwitchMsg string
+			var paperKillSwitch paperKillSwitchOutcome
 			if paperSR := scopeRisk[ScopePaper]; paperSR != nil && paperSR.KillSwitchFired {
 				mu.Lock()
-				paperPrs := state.scopeRisk(ScopePaper)
-				if !paperPrs.KillSwitchCloseApplied {
-					closed := forceClosePaperScopePositions(state, cfg, prices)
-					paperPrs.KillSwitchCloseApplied = true
-					paperKillSwitchMsg = formatPaperKillSwitchMessage(paperSR.Reason, closed)
-					fmt.Printf("[CRITICAL] Portfolio kill switch [paper]: force-closed %d paper strategy book(s) at mark\n", len(closed))
-				}
+				paperKillSwitch = applyPaperKillSwitchCycle(state, cfg, prices, paperSR, notifier.HasOwner())
 				mu.Unlock()
+				if paperKillSwitch.CloseApplied {
+					fmt.Printf("[CRITICAL] Portfolio kill switch [paper]: force-closed %d paper strategy book(s) at mark\n", len(paperKillSwitch.Closed))
+				}
+				if paperKillSwitch.AutoReset {
+					fmt.Printf("[CRITICAL] Portfolio kill switch [paper] auto-reset after the virtual close (no owner configured, peak re-baselined to $%.2f)\n", paperSR.TotalPV)
+				}
 			}
-			if paperKillSwitchMsg != "" && notifier.HasBackends() {
-				notifier.SendToScopeChannels(ScopePaper, paperKillSwitchMsg)
+			if paperKillSwitch.Message != "" && notifier.HasBackends() {
+				notifier.SendToScopeChannels(ScopePaper, paperKillSwitch.Message)
 			}
 
 			for _, moAlert := range drainModelOnlyCloseAlerts() {
@@ -1356,7 +1356,7 @@ func main() {
 				promptScope := scope
 				scopePlan := plan
 				if promptScope != ScopeLive {
-					scopePlan = KillSwitchClosePlan{OnChainConfirmedFlat: true, DiscordMessage: paperKillSwitchMsg}
+					scopePlan = KillSwitchClosePlan{OnChainConfirmedFlat: true, DiscordMessage: formatPaperKillSwitchPromptMessage(sr.Reason)}
 				}
 				resetPrompt := formatKillSwitchResetPrompt(killSwitchInstanceLabel(*configPath), hlAddr, scopePlan, promptScope, latchedNow)
 				resetDMTimeout := effectiveKillSwitchResetDMTimeout()

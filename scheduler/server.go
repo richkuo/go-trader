@@ -329,6 +329,10 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	legacyScope := statusLegacyScope(scopes)
+	if len(scopes) > 0 {
+		totalValue = valueByScope[string(legacyScope)]
+		totalNotional = notionalByScope[string(legacyScope)]
+	}
 
 	resp := StatusResp{
 		CycleCount:           ss.state.CycleCount,

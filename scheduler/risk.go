@@ -1430,12 +1430,60 @@ func forceClosePaperScopePositions(state *AppState, cfg *Config, prices map[stri
 	return closed
 }
 
+const paperKillSwitchHeader = "**PORTFOLIO KILL SWITCH (PAPER)**"
+
+const paperKillSwitchManualResetLine = "Reply to the owner DM with 'reset paper' to clear this latch."
+
+const paperKillSwitchAutoResetLine = "Kill switch auto-reset (no DM owner configured); paper trading will resume next cycle."
+
 func formatPaperKillSwitchMessage(reason string, closed []string) string {
-	header := "**PORTFOLIO KILL SWITCH (PAPER)**"
 	detail := "No open paper books to close."
 	if len(closed) > 0 {
 		detail = fmt.Sprintf("Paper books force-closed at mark: %s", strings.Join(closed, ", "))
 	}
-	return fmt.Sprintf("%s\n%s\n%s No exchange order was sent. Live strategies are unaffected. Reply to the owner DM with 'reset paper' to clear this latch.",
-		header, reason, detail)
+	return fmt.Sprintf("%s\n%s\n%s No exchange order was sent. Live strategies are unaffected. %s",
+		paperKillSwitchHeader, reason, detail, paperKillSwitchManualResetLine)
+}
+
+func formatPaperKillSwitchPromptMessage(reason string) string {
+	return fmt.Sprintf("%s\n%s\nPaper books were force-closed at mark when this latch fired. No exchange order was sent. Live strategies are unaffected.",
+		paperKillSwitchHeader, reason)
+}
+
+func formatPaperKillSwitchAutoResetMessage(msg string) string {
+	return strings.Replace(msg, paperKillSwitchManualResetLine, paperKillSwitchAutoResetLine, 1)
+}
+
+type paperKillSwitchOutcome struct {
+	Closed       []string
+	CloseApplied bool
+	AutoReset    bool
+	Message      string
+}
+
+func applyPaperKillSwitchCycle(state *AppState, cfg *Config, prices map[string]float64, paperSR *scopeCycleRisk, hasOwner bool) paperKillSwitchOutcome {
+	var out paperKillSwitchOutcome
+	if state == nil || cfg == nil || paperSR == nil || !paperSR.KillSwitchFired {
+		return out
+	}
+	prs := state.scopeRisk(ScopePaper)
+	if !prs.KillSwitchCloseApplied {
+		out.Closed = forceClosePaperScopePositions(state, cfg, prices)
+		prs.KillSwitchCloseApplied = true
+		out.CloseApplied = true
+		out.Message = formatPaperKillSwitchMessage(paperSR.Reason, out.Closed)
+	}
+	if hasOwner || !prs.KillSwitchActive {
+		return out
+	}
+	out.AutoReset = AutoResetConfirmedFlatKillSwitch(prs, paperSR.TotalPV, paperSR.PeakRebaselineAvailable,
+		"paper books closed at mark after portfolio kill-switch; no DM owner configured, paper latch auto-cleared")
+	if !out.AutoReset {
+		return out
+	}
+	if out.Message == "" {
+		out.Message = formatPaperKillSwitchMessage(paperSR.Reason, nil)
+	}
+	out.Message = formatPaperKillSwitchAutoResetMessage(out.Message)
+	return out
 }

@@ -693,3 +693,81 @@ func TestValidateConfig_PaperOverrideRanges(t *testing.T) {
 		t.Fatalf("zero override fields mean inherit and must validate: %v", err)
 	}
 }
+
+func TestPaperKillSwitch_AutoResetsWithoutOwner(t *testing.T) {
+	cases := []struct {
+		name          string
+		hasOwner      bool
+		closeApplied  bool
+		wantAutoReset bool
+		wantLatched   bool
+	}{
+		{"no owner first cycle", false, false, true, false},
+		{"no owner after restart with close already applied", false, true, true, false},
+		{"owner configured stays latched", true, false, false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{Strategies: []StrategyConfig{scopeCfg("live-a", true), scopeCfg("paper-a", false)}}
+			state := NewAppState()
+			state.Strategies["live-a"] = scopeLongPosState("live-a", 0.2)
+			state.Strategies["paper-a"] = scopeLongPosState("paper-a", 0.4)
+			paperPrs := state.scopeRisk(ScopePaper)
+			paperPrs.KillSwitchActive = true
+			paperPrs.KillSwitchAt = time.Now()
+			paperPrs.PeakValue = 20000
+			paperPrs.KillSwitchCloseApplied = tc.closeApplied
+			livePrs := state.scopeRisk(ScopeLive)
+			livePrs.KillSwitchActive = true
+			sr := &scopeCycleRisk{Scope: ScopePaper, KillSwitchFired: true, TotalPV: 15000, PeakRebaselineAvailable: true, Reason: "paper drawdown 50.0% exceeds limit 25.0%"}
+
+			out := applyPaperKillSwitchCycle(state, cfg, map[string]float64{"BTC": 50000}, sr, tc.hasOwner)
+			if out.AutoReset != tc.wantAutoReset {
+				t.Fatalf("AutoReset = %v, want %v", out.AutoReset, tc.wantAutoReset)
+			}
+			if paperPrs.KillSwitchActive != tc.wantLatched {
+				t.Fatalf("paper KillSwitchActive = %v, want %v", paperPrs.KillSwitchActive, tc.wantLatched)
+			}
+			if !livePrs.KillSwitchActive {
+				t.Error("a paper auto-reset must never clear the live latch")
+			}
+			if len(state.Strategies["live-a"].Positions) != 1 {
+				t.Error("a paper latch must never touch a live book")
+			}
+			if out.Message == "" {
+				t.Fatal("the paper kill-switch message must carry the reason on every outcome")
+			}
+			if !strings.Contains(out.Message, sr.Reason) {
+				t.Errorf("message must carry the drawdown reason:\n%s", out.Message)
+			}
+			if tc.wantAutoReset {
+				if paperPrs.KillSwitchCloseApplied {
+					t.Error("auto-reset must clear KillSwitchCloseApplied so the next latch force-closes again")
+				}
+				if paperPrs.PeakValue != 15000 {
+					t.Errorf("auto-reset must re-baseline the paper peak; got %v", paperPrs.PeakValue)
+				}
+				if !strings.Contains(out.Message, paperKillSwitchAutoResetLine) || strings.Contains(out.Message, paperKillSwitchManualResetLine) {
+					t.Errorf("auto-reset message must say the latch cleared itself:\n%s", out.Message)
+				}
+			} else if !strings.Contains(out.Message, paperKillSwitchManualResetLine) {
+				t.Errorf("an owner-gated latch must ask for the DM reset:\n%s", out.Message)
+			}
+			if !tc.closeApplied && len(state.Strategies["paper-a"].Positions) != 0 {
+				t.Error("the paper book must be flat after the latch")
+			}
+		})
+	}
+}
+
+func TestPaperKillSwitchPromptMessage_CarriesReason(t *testing.T) {
+	reason := "portfolio kill switch latched at 2026-09-03T05:00:00Z (paper drawdown 50.0%)"
+	msg := formatPaperKillSwitchPromptMessage(reason)
+	if !strings.Contains(msg, reason) || !strings.Contains(msg, "PAPER") {
+		t.Fatalf("prompt message must name the scope and reason:\n%s", msg)
+	}
+	prompt := formatKillSwitchResetPrompt("paper-testing", "0xabc", KillSwitchClosePlan{OnChainConfirmedFlat: true, DiscordMessage: msg}, ScopePaper, []PortfolioScope{ScopePaper})
+	if !strings.Contains(prompt, reason) {
+		t.Errorf("a re-issued paper reset prompt must carry the drawdown reason:\n%s", prompt)
+	}
+}
