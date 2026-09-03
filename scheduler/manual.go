@@ -90,25 +90,29 @@ func runManualOpen(args []string) int {
 			if loadErr != nil {
 				fmt.Fprintf(os.Stderr, "warning: could not load state for safety check: %v\n", loadErr)
 			} else {
-				if state.PortfolioRisk.KillSwitchActive {
-					fmt.Fprintln(os.Stderr, "error: portfolio kill switch is active — manual-open blocked (use manual-close to flatten)")
+				scope := portfolioScopeFor(sc)
+				if state.scopeLatched(scope) {
+					fmt.Fprintf(os.Stderr, "error: portfolio kill switch is active for the %s scope — manual-open blocked (use manual-close to flatten)\n", scopeLabel(scope))
 					return 1
 				}
+				scopedPR := scopeRiskConfig(cfg, scope)
+				scopedStates := filterStatesByScope(state.Strategies, cfg.Strategies, scope)
+				scopedCfgs := strategiesInScope(cfg.Strategies, scope)
 				if ss := state.Strategies[strategyID]; ss != nil {
 					if ss.RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid) != nil {
 						fmt.Fprintln(os.Stderr, "error: strategy has a pending circuit-breaker close — manual-open blocked")
 						return 1
 					}
 				}
-				if st := evaluateDailyLossLimit(cfg.PortfolioRisk, state.Strategies, cfg.Strategies, time.Now().UTC()); st.Tripped {
+				if st := evaluateDailyLossLimit(scopedPR, scopedStates, scopedCfgs, time.Now().UTC()); st.Tripped {
 					fmt.Fprintf(os.Stderr, "error: %s — manual-open blocked until UTC rollover (closes and SL edits are unaffected)\n", dailyLossHoldDetail(st))
 					return 1
 				}
-				if held, detail := evaluateNotionalCapHold(cfg.PortfolioRisk, state.Strategies, nil); held {
+				if held, detail := evaluateNotionalCapHold(scopedPR, scopedStates, nil); held {
 					fmt.Fprintf(os.Stderr, "error: %s — manual-open blocked (closes and SL edits are unaffected)\n", detail)
 					return 1
 				}
-				capSt := manualExposureCapStatus(cfg, state)
+				capSt := manualExposureCapStatus(cfg, state, scope)
 				if blocked, why := exposureCapManualEntryBlock(capSt, extractAsset(sc), resolvedSide); blocked {
 					fmt.Fprintf(os.Stderr, "error: %s — manual limit-open (%s) blocked (closes and SL edits are unaffected)\n", why, resolvedSide)
 					return 1

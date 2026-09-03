@@ -23,6 +23,7 @@ type AssetExposure struct {
 }
 
 type CorrelationSnapshot struct {
+	Scope             PortfolioScope            `json:"scope,omitempty"`
 	Timestamp         time.Time                 `json:"timestamp"`
 	Assets            map[string]*AssetExposure `json:"assets"`
 	PortfolioGrossUSD float64                   `json:"portfolio_gross_usd"`

@@ -243,8 +243,17 @@ func (m *MultiNotifier) HasChannel(platform, stratType string) bool {
 	return false
 }
 
-func (m *MultiNotifier) resolveChannelKey(platform, stratType string) string {
-	for _, b := range m.snapshotBackends() {
+func (m *MultiNotifier) resolveChannelKey(platform, stratType string, isLive bool) string {
+	backends := m.snapshotBackends()
+	if !isLive {
+		paperKey := platform + "-paper"
+		for _, b := range backends {
+			if ch, ok := b.channels[paperKey]; ok && ch != "" {
+				return paperKey
+			}
+		}
+	}
+	for _, b := range backends {
 		if _, ok := b.channels[platform]; ok {
 			return platform
 		}
@@ -253,6 +262,30 @@ func (m *MultiNotifier) resolveChannelKey(platform, stratType string) string {
 		}
 	}
 	return ""
+}
+
+func (m *MultiNotifier) SendToScopeChannels(scope PortfolioScope, content string) {
+	if scope != ScopePaper {
+		m.SendToAllChannels(content)
+		return
+	}
+	sent := false
+	for _, b := range m.snapshotBackends() {
+		seen := make(map[string]bool)
+		for key, ch := range b.channels {
+			if ch == "" || !strings.HasSuffix(key, "-paper") || seen[ch] {
+				continue
+			}
+			seen[ch] = true
+			sent = true
+			if err := b.notifier.SendMessage(ch, content); err != nil {
+				fmt.Printf("[WARN] Notifier broadcast failed: %v\n", err)
+			}
+		}
+	}
+	if !sent {
+		m.SendToAllChannels(content)
+	}
 }
 
 func (m *MultiNotifier) AllChannelKeys() map[string]bool {

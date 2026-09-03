@@ -320,13 +320,14 @@ const maxKillSwitchEvents = 50
 const untrustedEquityLatchDeferral = 15 * time.Minute
 
 type KillSwitchEvent struct {
-	Timestamp      time.Time `json:"timestamp"`
-	Type           string    `json:"type"`
-	Source         string    `json:"source,omitempty"`
-	DrawdownPct    float64   `json:"drawdown_pct"`
-	PortfolioValue float64   `json:"portfolio_value"`
-	PeakValue      float64   `json:"peak_value"`
-	Details        string    `json:"details"`
+	Scope          PortfolioScope `json:"scope,omitempty"`
+	Timestamp      time.Time      `json:"timestamp"`
+	Type           string         `json:"type"`
+	Source         string         `json:"source,omitempty"`
+	DrawdownPct    float64        `json:"drawdown_pct"`
+	PortfolioValue float64        `json:"portfolio_value"`
+	PeakValue      float64        `json:"peak_value"`
+	Details        string         `json:"details"`
 }
 
 type PortfolioRiskState struct {
@@ -346,6 +347,7 @@ type PortfolioRiskState struct {
 	Events                     []KillSwitchEvent `json:"events,omitempty"`
 
 	ManualMarkBasisRebaselined bool `json:"manual_mark_basis_rebaselined,omitempty"`
+	KillSwitchCloseApplied     bool `json:"kill_switch_close_applied,omitempty"`
 }
 
 type SharedWalletBalanceFetcher func(platform string) (float64, error)
@@ -388,7 +390,11 @@ func ClearLatchedKillSwitchSharedWallet(state *AppState, strategies []StrategyCo
 	if schedulerStarted.Load() {
 		panic("ClearLatchedKillSwitchSharedWallet called after scheduler started")
 	}
-	if state == nil || !state.PortfolioRisk.KillSwitchActive {
+	if state == nil {
+		return false
+	}
+	prs := state.scopeRiskIfPresent(ScopeLive)
+	if prs == nil || !prs.KillSwitchActive {
 		return false
 	}
 
@@ -407,24 +413,25 @@ func ClearLatchedKillSwitchSharedWallet(state *AppState, strategies []StrategyCo
 		totalBalance += balance
 	}
 
-	latchedAt := state.PortfolioRisk.KillSwitchAt.Format("2006-01-02 15:04 UTC")
+	latchedAt := prs.KillSwitchAt.Format("2006-01-02 15:04 UTC")
 	fmt.Printf("[INFO] Shared wallet (%v): clearing kill switch (was latched at %s, real total balance=$%.2f, prior peak=$%.2f)\n",
-		sharedPlatforms, latchedAt, totalBalance, state.PortfolioRisk.PeakValue)
+		sharedPlatforms, latchedAt, totalBalance, prs.PeakValue)
 
-	state.PortfolioRisk.KillSwitchActive = false
-	state.PortfolioRisk.KillSwitchAt = time.Time{}
-	state.PortfolioRisk.WarningSent = false
-	state.PortfolioRisk.WarnBandEnteredAt = time.Time{}
-	state.PortfolioRisk.LastWarningEquityDDPct = 0
-	state.PortfolioRisk.LastWarningMarginDDPct = 0
-	state.PortfolioRisk.WarningEquityDeltaPct = 0
-	state.PortfolioRisk.WarningMarginDeltaPct = 0
-	state.PortfolioRisk.PeakValue = totalBalance
-	state.PortfolioRisk.CurrentDrawdownPct = 0
-	state.PortfolioRisk.CurrentMarginDrawdownPct = 0
-	state.PortfolioRisk.DrawdownReadingSubstituted = false
-	state.PortfolioRisk.UntrustedOverLimitSince = time.Time{}
-	addKillSwitchEvent(&state.PortfolioRisk, "auto_reset", "",
+	prs.KillSwitchActive = false
+	prs.KillSwitchAt = time.Time{}
+	prs.WarningSent = false
+	prs.WarnBandEnteredAt = time.Time{}
+	prs.LastWarningEquityDDPct = 0
+	prs.LastWarningMarginDDPct = 0
+	prs.WarningEquityDeltaPct = 0
+	prs.WarningMarginDeltaPct = 0
+	prs.PeakValue = totalBalance
+	prs.CurrentDrawdownPct = 0
+	prs.CurrentMarginDrawdownPct = 0
+	prs.DrawdownReadingSubstituted = false
+	prs.UntrustedOverLimitSince = time.Time{}
+	prs.KillSwitchCloseApplied = false
+	addKillSwitchEvent(prs, "auto_reset", "",
 		0, totalBalance, totalBalance,
 		fmt.Sprintf("startup auto-clear: shared wallets %v reachable, total balance=$%.2f (peak re-baselined)",
 			sharedPlatforms, totalBalance))
@@ -471,6 +478,7 @@ func AutoResetConfirmedFlatKillSwitch(
 	prs.CurrentMarginDrawdownPct = 0
 	prs.DrawdownReadingSubstituted = false
 	prs.UntrustedOverLimitSince = time.Time{}
+	prs.KillSwitchCloseApplied = false
 	addKillSwitchEvent(prs, "auto_reset", "", 0, rebaselineValue, prs.PeakValue, details)
 	return true
 }
@@ -486,6 +494,7 @@ func ResetPortfolioKillSwitchManual(prs *PortfolioRiskState) float64 {
 	prs.CurrentMarginDrawdownPct = 0
 	prs.DrawdownReadingSubstituted = false
 	prs.UntrustedOverLimitSince = time.Time{}
+	prs.KillSwitchCloseApplied = false
 	return priorDrawdownPct
 }
 
@@ -1398,4 +1407,35 @@ func recordPositionTradeResult(s *StrategyState, pos *Position, pnl float64) {
 		return
 	}
 	RecordTradeResult(&s.RiskState, pnl)
+}
+
+func forceClosePaperScopePositions(state *AppState, cfg *Config, prices map[string]float64) []string {
+	if state == nil || cfg == nil {
+		return nil
+	}
+	var closed []string
+	for _, sc := range strategiesInScope(cfg.Strategies, ScopePaper) {
+		s, ok := state.Strategies[sc.ID]
+		if !ok || s == nil {
+			continue
+		}
+		if len(s.Positions) == 0 && len(s.OptionPositions) == 0 {
+			continue
+		}
+		scCopy := sc
+		forceCloseAllPositions(s, &scCopy, prices, nil)
+		closed = append(closed, sc.ID)
+	}
+	sort.Strings(closed)
+	return closed
+}
+
+func formatPaperKillSwitchMessage(reason string, closed []string) string {
+	header := "**PORTFOLIO KILL SWITCH (PAPER)**"
+	detail := "No open paper books to close."
+	if len(closed) > 0 {
+		detail = fmt.Sprintf("Paper books force-closed at mark: %s", strings.Join(closed, ", "))
+	}
+	return fmt.Sprintf("%s\n%s\n%s No exchange order was sent. Live strategies are unaffected. Reply to the owner DM with 'reset paper' to clear this latch.",
+		header, reason, detail)
 }

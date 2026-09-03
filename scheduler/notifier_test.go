@@ -208,13 +208,13 @@ func TestMultiNotifier_ResolveChannelKey(t *testing.T) {
 		},
 	)
 
-	if key := mn.resolveChannelKey("hyperliquid", "perps"); key != "hyperliquid" {
+	if key := mn.resolveChannelKey("hyperliquid", "perps", true); key != "hyperliquid" {
 		t.Errorf("expected 'hyperliquid', got %q", key)
 	}
-	if key := mn.resolveChannelKey("binanceus", "spot"); key != "spot" {
+	if key := mn.resolveChannelKey("binanceus", "spot", true); key != "spot" {
 		t.Errorf("expected 'spot', got %q", key)
 	}
-	if key := mn.resolveChannelKey("unknown", "unknown"); key != "" {
+	if key := mn.resolveChannelKey("unknown", "unknown", true); key != "" {
 		t.Errorf("expected '', got %q", key)
 	}
 }
@@ -555,7 +555,7 @@ func TestMultiNotifier_ReloadConfigConcurrentRoutingReads(t *testing.T) {
 			mn.SendToAllChannels("broadcast")
 			mn.SendOwnerDM("owner")
 			_ = mn.HasChannel("hyperliquid", "perps")
-			_ = mn.resolveChannelKey("hyperliquid", "perps")
+			_ = mn.resolveChannelKey("hyperliquid", "perps", true)
 			_ = mn.AllChannelKeys()
 			sendTradeAlerts(sc, stratState, 1, &stateMu, mn)
 		}
@@ -605,7 +605,7 @@ func TestTradeAlertRoutes_OverrideDoesNotAffectSummaries(t *testing.T) {
 		tradeAlertChannels: map[string]string{"hyperliquid": "trade-ch"},
 	})
 
-	key := mn.resolveChannelKey("hyperliquid", "perps")
+	key := mn.resolveChannelKey("hyperliquid", "perps", true)
 	if key != "hyperliquid" {
 		t.Errorf("summary key: expected hyperliquid, got %q", key)
 	}

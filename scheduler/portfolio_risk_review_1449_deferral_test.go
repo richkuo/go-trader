@@ -148,11 +148,11 @@ func TestUntrustedEquity_DegenerateLimitKeepsExistingMeaning(t *testing.T) {
 func TestPortfolioWarningMessage_NamesTheDeferredLatch(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{},
-		PortfolioRisk: PortfolioRiskState{
+		PortfolioRisk: map[PortfolioScope]*PortfolioRiskState{ScopeLive: {
 			PeakValue:               10000,
 			CurrentDrawdownPct:      40,
 			UntrustedOverLimitSince: time.Now().UTC().Add(-time.Minute),
-		},
+		}},
 	}
 	msg := BuildPortfolioWarningMessage(PortfolioWarningMessageInputs{
 		Reason:           "portfolio equity drawdown 40.0% exceeds limit 25.0%",

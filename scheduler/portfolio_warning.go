@@ -18,6 +18,8 @@ type PortfolioWarningMessageInputs struct {
 	Reason           string
 	Config           *PortfolioRiskConfig
 	State            *AppState
+	Scope            PortfolioScope
+	CfgStrategies    []StrategyConfig
 	Prices           map[string]float64
 	TotalValue       float64
 	PerpsLoss        float64
@@ -41,14 +43,25 @@ func BuildPortfolioWarningMessage(in PortfolioWarningMessageInputs) string {
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
+	scope := in.Scope
+	if scope == scopeUnassigned {
+		scope = ScopeLive
+	}
 	var prs PortfolioRiskState
 	if in.State != nil {
-		prs = in.State.PortfolioRisk
+		if p := in.State.scopeRiskIfPresent(scope); p != nil {
+			prs = *p
+		}
 	}
-	contribs := portfolioWarningContributors(in.State, in.Prices)
+	contribs := portfolioWarningContributors(in.State, in.CfgStrategies, scope, in.Prices)
 
 	var b strings.Builder
-	b.WriteString("**PORTFOLIO WARNING**")
+	b.WriteString("**PORTFOLIO WARNING")
+	if in.Scope != scopeUnassigned {
+		b.WriteString(" ")
+		b.WriteString(strings.ToUpper(scopeLabel(in.Scope)))
+	}
+	b.WriteString("**")
 	if lead := portfolioWarningLead(contribs); lead != "" {
 		b.WriteString(" - ")
 		b.WriteString(lead)
@@ -136,19 +149,23 @@ func BuildPortfolioWarningMessage(in PortfolioWarningMessageInputs) string {
 	return truncateWarningField(msg, portfolioWarningMaxChars)
 }
 
-func portfolioWarningContributors(state *AppState, prices map[string]float64) []portfolioWarningContributor {
+func portfolioWarningContributors(state *AppState, cfgStrategies []StrategyConfig, scope PortfolioScope, prices map[string]float64) []portfolioWarningContributor {
 	if state == nil {
 		return nil
 	}
+	scoped := state.Strategies
+	if len(cfgStrategies) > 0 {
+		scoped = filterStatesByScope(state.Strategies, cfgStrategies, scope)
+	}
 	totalNegative := 0.0
-	out := make([]portfolioWarningContributor, 0, len(state.Strategies))
-	ids := make([]string, 0, len(state.Strategies))
-	for id := range state.Strategies {
+	out := make([]portfolioWarningContributor, 0, len(scoped))
+	ids := make([]string, 0, len(scoped))
+	for id := range scoped {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
 	for _, id := range ids {
-		ss := state.Strategies[id]
+		ss := scoped[id]
 		if ss == nil {
 			continue
 		}

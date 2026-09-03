@@ -59,6 +59,43 @@ type PortfolioRiskConfig struct {
 	DailyMaxLossPct             float64 `json:"daily_max_loss_pct,omitempty"`
 	MaxSameDirectionNotionalUSD float64 `json:"max_same_direction_notional_usd,omitempty"`
 	MaxAssetConcentrationPct    float64 `json:"max_asset_concentration_pct,omitempty"`
+
+	Paper *PortfolioRiskConfig `json:"paper,omitempty"`
+}
+
+func scopeRiskConfig(cfg *Config, scope PortfolioScope) *PortfolioRiskConfig {
+	if cfg == nil || cfg.PortfolioRisk == nil {
+		return nil
+	}
+	parent := cfg.PortfolioRisk
+	if scope != ScopePaper || parent.Paper == nil {
+		return parent
+	}
+	merged := *parent
+	merged.Paper = nil
+	override := parent.Paper
+	if override.MaxDrawdownPct != 0 {
+		merged.MaxDrawdownPct = override.MaxDrawdownPct
+	}
+	if override.MaxNotionalUSD != 0 {
+		merged.MaxNotionalUSD = override.MaxNotionalUSD
+	}
+	if override.WarnThresholdPct != 0 {
+		merged.WarnThresholdPct = override.WarnThresholdPct
+	}
+	if override.DailyMaxLossUSD != 0 {
+		merged.DailyMaxLossUSD = override.DailyMaxLossUSD
+	}
+	if override.DailyMaxLossPct != 0 {
+		merged.DailyMaxLossPct = override.DailyMaxLossPct
+	}
+	if override.MaxSameDirectionNotionalUSD != 0 {
+		merged.MaxSameDirectionNotionalUSD = override.MaxSameDirectionNotionalUSD
+	}
+	if override.MaxAssetConcentrationPct != 0 {
+		merged.MaxAssetConcentrationPct = override.MaxAssetConcentrationPct
+	}
+	return &merged
 }
 
 type PlatformConfig struct {
@@ -1868,26 +1905,12 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 	errs = append(errs, validateHedgeConfigs(cfg)...)
 
 	if cfg.PortfolioRisk != nil {
-		if cfg.PortfolioRisk.MaxDrawdownPct <= 0 || cfg.PortfolioRisk.MaxDrawdownPct > 100 {
-			errs = append(errs, fmt.Sprintf("portfolio_risk.max_drawdown_pct must be in (0, 100], got %g", cfg.PortfolioRisk.MaxDrawdownPct))
-		}
-		if cfg.PortfolioRisk.MaxNotionalUSD < 0 {
-			errs = append(errs, fmt.Sprintf("portfolio_risk.max_notional_usd must be >= 0, got %g", cfg.PortfolioRisk.MaxNotionalUSD))
-		}
-		if cfg.PortfolioRisk.WarnThresholdPct <= 0 || cfg.PortfolioRisk.WarnThresholdPct > 100 {
-			errs = append(errs, fmt.Sprintf("portfolio_risk.warn_threshold_pct must be in (0, 100], got %g", cfg.PortfolioRisk.WarnThresholdPct))
-		}
-		if cfg.PortfolioRisk.DailyMaxLossUSD < 0 {
-			errs = append(errs, fmt.Sprintf("portfolio_risk.daily_max_loss_usd must be >= 0 (0 = disabled), got %g", cfg.PortfolioRisk.DailyMaxLossUSD))
-		}
-		if cfg.PortfolioRisk.DailyMaxLossPct < 0 || cfg.PortfolioRisk.DailyMaxLossPct > 100 {
-			errs = append(errs, fmt.Sprintf("portfolio_risk.daily_max_loss_pct must be in [0, 100] (0 = disabled), got %g", cfg.PortfolioRisk.DailyMaxLossPct))
-		}
-		if cfg.PortfolioRisk.MaxSameDirectionNotionalUSD < 0 {
-			errs = append(errs, fmt.Sprintf("portfolio_risk.max_same_direction_notional_usd must be >= 0 (0 = disabled), got %g", cfg.PortfolioRisk.MaxSameDirectionNotionalUSD))
-		}
-		if cfg.PortfolioRisk.MaxAssetConcentrationPct < 0 || cfg.PortfolioRisk.MaxAssetConcentrationPct > 100 {
-			errs = append(errs, fmt.Sprintf("portfolio_risk.max_asset_concentration_pct must be in [0, 100] (0 = disabled), got %g", cfg.PortfolioRisk.MaxAssetConcentrationPct))
+		errs = append(errs, validatePortfolioRiskFields(cfg.PortfolioRisk, "portfolio_risk.", false)...)
+		if cfg.PortfolioRisk.Paper != nil {
+			errs = append(errs, validatePortfolioRiskFields(cfg.PortfolioRisk.Paper, "portfolio_risk.paper.", true)...)
+			if cfg.PortfolioRisk.Paper.Paper != nil {
+				errs = append(errs, "portfolio_risk.paper.paper is not allowed (the paper override cannot nest another override)")
+			}
 		}
 	}
 
@@ -2043,4 +2066,42 @@ func validateDMChannelsMap(m map[string]string, label string, knownPlatforms map
 			fmt.Printf("[WARN] %s: dm_channels[%q] references platform %q with no configured strategies — possible typo\n", label, k, platform)
 		}
 	}
+}
+
+func validatePortfolioRiskFields(pr *PortfolioRiskConfig, prefix string, inheritZero bool) []string {
+	if pr == nil {
+		return nil
+	}
+	var errs []string
+	if inheritZero {
+		if pr.MaxDrawdownPct < 0 || pr.MaxDrawdownPct > 100 {
+			errs = append(errs, fmt.Sprintf("%smax_drawdown_pct must be in [0, 100] (0 = inherit), got %g", prefix, pr.MaxDrawdownPct))
+		}
+		if pr.WarnThresholdPct < 0 || pr.WarnThresholdPct > 100 {
+			errs = append(errs, fmt.Sprintf("%swarn_threshold_pct must be in [0, 100] (0 = inherit), got %g", prefix, pr.WarnThresholdPct))
+		}
+	} else {
+		if pr.MaxDrawdownPct <= 0 || pr.MaxDrawdownPct > 100 {
+			errs = append(errs, fmt.Sprintf("%smax_drawdown_pct must be in (0, 100], got %g", prefix, pr.MaxDrawdownPct))
+		}
+		if pr.WarnThresholdPct <= 0 || pr.WarnThresholdPct > 100 {
+			errs = append(errs, fmt.Sprintf("%swarn_threshold_pct must be in (0, 100], got %g", prefix, pr.WarnThresholdPct))
+		}
+	}
+	if pr.MaxNotionalUSD < 0 {
+		errs = append(errs, fmt.Sprintf("%smax_notional_usd must be >= 0, got %g", prefix, pr.MaxNotionalUSD))
+	}
+	if pr.DailyMaxLossUSD < 0 {
+		errs = append(errs, fmt.Sprintf("%sdaily_max_loss_usd must be >= 0 (0 = disabled), got %g", prefix, pr.DailyMaxLossUSD))
+	}
+	if pr.DailyMaxLossPct < 0 || pr.DailyMaxLossPct > 100 {
+		errs = append(errs, fmt.Sprintf("%sdaily_max_loss_pct must be in [0, 100] (0 = disabled), got %g", prefix, pr.DailyMaxLossPct))
+	}
+	if pr.MaxSameDirectionNotionalUSD < 0 {
+		errs = append(errs, fmt.Sprintf("%smax_same_direction_notional_usd must be >= 0 (0 = disabled), got %g", prefix, pr.MaxSameDirectionNotionalUSD))
+	}
+	if pr.MaxAssetConcentrationPct < 0 || pr.MaxAssetConcentrationPct > 100 {
+		errs = append(errs, fmt.Sprintf("%smax_asset_concentration_pct must be in [0, 100] (0 = disabled), got %g", prefix, pr.MaxAssetConcentrationPct))
+	}
+	return errs
 }

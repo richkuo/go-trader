@@ -935,7 +935,7 @@ func TestKillSwitchLimitOrderRoster(t *testing.T) {
 
 func TestReconcilePendingLimitOrdersAdoptsFillWhileKillSwitchLatched(t *testing.T) {
 	sc, state := newLimitTestStrategy()
-	state.PortfolioRisk.KillSwitchActive = true
+	state.scopeRisk(ScopeLive).KillSwitchActive = true
 	cfg := &Config{Strategies: []StrategyConfig{sc}}
 	db := newLimitTestStateDB(t)
 	var mu sync.RWMutex

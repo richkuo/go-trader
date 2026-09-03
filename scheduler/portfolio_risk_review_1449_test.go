@@ -136,14 +136,20 @@ func TestPortfolioWarningThrottle(t *testing.T) {
 		t.Errorf("expected %d throttled reminders over 24h; got %d", want, sent)
 	}
 
-	portfolioWarningAlerts = cur
-	portfolioWarningAlertsReset()
-	if portfolioWarningAlerts.Notified {
+	portfolioWarningAlerts[ScopeLive] = cur
+	portfolioWarningAlertsReset(ScopeLive)
+	if portfolioWarningAlerts[ScopeLive].Notified {
 		t.Error("reset must clear the throttle so a re-entered band notifies immediately")
 	}
-	if n, _ := portfolioWarningShouldNotify(portfolioWarningAlerts, false, true, 0, 30, base.Add(25*time.Hour)); !n {
+	if n, _ := portfolioWarningShouldNotify(portfolioWarningAlerts[ScopeLive], false, true, 0, 30, base.Add(25*time.Hour)); !n {
 		t.Error("re-entered band must notify on its first cycle")
 	}
+	portfolioWarningAlerts[ScopePaper] = cur
+	portfolioWarningAlertsReset(ScopeLive)
+	if !portfolioWarningAlerts[ScopePaper].Notified {
+		t.Error("resetting the live throttle must leave the paper throttle intact")
+	}
+	portfolioWarningAlertsReset(ScopePaper)
 
 	throttled := portfolioWarningAlertState{
 		Notified: true, LastNotifiedAt: base, LastMarginDDPct: 30, MarginInBand: true,
@@ -358,7 +364,7 @@ func TestDrawdownReadingSubstitutedMarker(t *testing.T) {
 func TestPortfolioWarningLabels_FollowTheArmedGuard(t *testing.T) {
 	cfg := &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 60}
 	base := func(prs PortfolioRiskState) *AppState {
-		return &AppState{PortfolioRisk: prs, Strategies: map[string]*StrategyState{}}
+		return &AppState{PortfolioRisk: map[PortfolioScope]*PortfolioRiskState{ScopeLive: &prs}, Strategies: map[string]*StrategyState{}}
 	}
 
 	unarmed := BuildPortfolioWarningMessage(PortfolioWarningMessageInputs{

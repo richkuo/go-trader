@@ -267,7 +267,16 @@ func (ss *StatusServer) handleAPICorrelation(w http.ResponseWriter, r *http.Requ
 	}
 
 	ss.mu.RLock()
-	snap := ss.state.CorrelationSnapshot
+	ss.strategiesMu.RLock()
+	cfgStrategies := append([]StrategyConfig(nil), ss.strategies...)
+	ss.strategiesMu.RUnlock()
+	byScope := make(map[string]*CorrelationSnapshot)
+	for _, scope := range activeScopes(cfgStrategies) {
+		if snap := ss.state.scopeCorrelation(scope); snap != nil {
+			byScope[string(scope)] = snap
+		}
+	}
+	legacy := ss.state.scopeCorrelation(statusLegacyScope(activeScopes(cfgStrategies)))
 	ss.mu.RUnlock()
-	writeJSON(w, map[string]any{"correlation": snap})
+	writeJSON(w, map[string]any{"correlation": legacy, "correlation_by_scope": byScope})
 }

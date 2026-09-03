@@ -178,35 +178,35 @@ func TestDailyLossStatusNote(t *testing.T) {
 	now := time.Now().UTC()
 	states := map[string]*StrategyState{"a": dlState("a", 1000, -600, dlToday())}
 
-	if note := dailyLossStatusNote(nil, states, nil, now); note != "" {
+	if note := dailyLossStatusNote(dlNoteCfg(nil), states, now); note != "" {
 		t.Fatalf("unconfigured note = %q, want empty", note)
 	}
-	if note := dailyLossStatusNote(&PortfolioRiskConfig{MaxDrawdownPct: 25}, states, nil, now); note != "" {
+	if note := dailyLossStatusNote(dlNoteCfg(&PortfolioRiskConfig{MaxDrawdownPct: 25}), states, now); note != "" {
 		t.Fatalf("unconfigured note = %q, want empty", note)
 	}
-	tripped := dailyLossStatusNote(&PortfolioRiskConfig{DailyMaxLossUSD: 500}, states, nil, now)
+	tripped := dailyLossStatusNote(dlNoteCfg(&PortfolioRiskConfig{DailyMaxLossUSD: 500}), states, now)
 	if !strings.Contains(tripped, "TRIPPED") || !strings.Contains(tripped, "$600.00") {
 		t.Fatalf("tripped note = %q", tripped)
 	}
-	armed := dailyLossStatusNote(&PortfolioRiskConfig{DailyMaxLossUSD: 5000}, states, nil, now)
+	armed := dailyLossStatusNote(dlNoteCfg(&PortfolioRiskConfig{DailyMaxLossUSD: 5000}), states, now)
 	if !strings.Contains(armed, "armed") || !strings.Contains(armed, "$5000.00") {
 		t.Fatalf("armed note = %q", armed)
 	}
-	miss := dailyLossStatusNote(&PortfolioRiskConfig{DailyMaxLossPct: 5}, map[string]*StrategyState{
+	miss := dailyLossStatusNote(dlNoteCfg(&PortfolioRiskConfig{DailyMaxLossPct: 5}), map[string]*StrategyState{
 		"a": dlState("a", 0, -600, dlToday()),
-	}, nil, now)
+	}, now)
 	if !strings.Contains(miss, "initial_capital") || !strings.Contains(miss, "CANNOT evaluate") {
 		t.Fatalf("basis-miss note = %q", miss)
 	}
-	both := dailyLossStatusNote(&PortfolioRiskConfig{DailyMaxLossUSD: 5000, DailyMaxLossPct: 5}, map[string]*StrategyState{
+	both := dailyLossStatusNote(dlNoteCfg(&PortfolioRiskConfig{DailyMaxLossUSD: 5000, DailyMaxLossPct: 5}), map[string]*StrategyState{
 		"a": dlState("a", 0, -600, dlToday()),
-	}, nil, now)
+	}, now)
 	if !strings.Contains(both, "armed") || !strings.Contains(both, "CANNOT evaluate") {
 		t.Fatalf("both-arms basis-miss note = %q, want armed + pct warning", both)
 	}
-	trippedMiss := dailyLossStatusNote(&PortfolioRiskConfig{DailyMaxLossUSD: 500, DailyMaxLossPct: 5}, map[string]*StrategyState{
+	trippedMiss := dailyLossStatusNote(dlNoteCfg(&PortfolioRiskConfig{DailyMaxLossUSD: 500, DailyMaxLossPct: 5}), map[string]*StrategyState{
 		"a": dlState("a", 0, -600, dlToday()),
-	}, nil, now)
+	}, now)
 	if !strings.Contains(trippedMiss, "TRIPPED") || !strings.Contains(trippedMiss, "CANNOT evaluate") {
 		t.Fatalf("tripped basis-miss note = %q, want TRIPPED + pct warning", trippedMiss)
 	}
@@ -323,5 +323,12 @@ func TestManualCoreRefusesDailyLossHold(t *testing.T) {
 				t.Fatalf("%s err = %v, want daily-loss refusal", tc.name, err)
 			}
 		})
+	}
+}
+
+func dlNoteCfg(pr *PortfolioRiskConfig) *Config {
+	return &Config{
+		PortfolioRisk: pr,
+		Strategies:    []StrategyConfig{{ID: "a", Args: []string{"strat", "BTC/USDT", "--mode=live"}}},
 	}
 }

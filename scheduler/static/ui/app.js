@@ -2097,14 +2097,24 @@
     try {
       const status = await getJSON("/status");
       const rows = [];
-      const pr = status.portfolio_risk || {};
-      if (pr.kill_switch_active) {
-        rows.push('<div class="panel-row risk-alert">🛑 Kill switch ACTIVE (drawdown ' +
-          escapeHTML(fmtPct(pr.current_drawdown_pct)) + ")</div>");
-      } else {
-        rows.push('<div class="panel-row">Kill switch: off (drawdown ' +
-          escapeHTML(fmtPct(pr.current_drawdown_pct)) + ")</div>");
+      const byScope = status.portfolio_risk_by_scope || {};
+      let scopeKeys = Object.keys(byScope).sort();
+      if (!scopeKeys.length) {
+        byScope[""] = status.portfolio_risk || {};
+        scopeKeys = [""];
       }
+      scopeKeys.forEach(function (scope) {
+        const pr = byScope[scope] || {};
+        const tag = scope ? " [" + scope + "]" : "";
+        if (pr.kill_switch_active) {
+          rows.push('<div class="panel-row risk-alert">🛑 Kill switch ACTIVE' + escapeHTML(tag) + " (drawdown " +
+            escapeHTML(fmtPct(pr.current_drawdown_pct)) + ")</div>");
+        } else {
+          rows.push('<div class="panel-row">Kill switch' + escapeHTML(tag) + ": off (drawdown " +
+            escapeHTML(fmtPct(pr.current_drawdown_pct)) + ")</div>");
+        }
+      });
+      const riskHeaderRows = rows.length;
       const now = Date.now();
       Object.keys(status.strategies || {}).sort().forEach(function (id) {
         const rs = (status.strategies[id] || {}).risk_state || {};
@@ -2118,7 +2128,7 @@
             ": pending circuit close (" + pending + " venue(s))</div>");
         }
       });
-      if (rows.length === 1) {
+      if (rows.length === riskHeaderRows) {
         rows.push('<div class="panel-row panel-muted">No active circuit breakers</div>');
       }
       els.riskContent.innerHTML = rows.join("");
@@ -2304,24 +2314,35 @@
     if (!els.correlationContent) return;
     try {
       const resp = await getJSON("/api/correlation");
-      const snap = resp.correlation;
-      if (!snap) {
+      const byScope = resp.correlation_by_scope || {};
+      let scopeKeys = Object.keys(byScope).sort();
+      if (!scopeKeys.length && resp.correlation) {
+        byScope[""] = resp.correlation;
+        scopeKeys = [""];
+      }
+      if (!scopeKeys.length) {
         panelFallback(els.correlationContent, "No correlation snapshot yet");
         return;
       }
       const rows = [];
-      rows.push('<div class="panel-row">Gross exposure: ' + escapeHTML(fmtMoney(snap.portfolio_gross_usd)) + "</div>");
-      (snap.warnings || []).forEach(function (warning) {
-        rows.push('<div class="panel-row risk-alert">⚠️ ' + escapeHTML(warning) + "</div>");
-      });
-      const assets = Object.keys(snap.assets || {}).sort(function (a, b) {
-        return (snap.assets[b].concentration_pct || 0) - (snap.assets[a].concentration_pct || 0);
-      });
-      assets.forEach(function (asset) {
-        const e = snap.assets[asset] || {};
-        rows.push('<div class="panel-row panel-indent">' + escapeHTML(asset) + ": net " +
-          escapeHTML(fmtMoney(e.net_delta_usd)) + ' <span class="panel-muted">(' +
-          escapeHTML(fmtPct(e.concentration_pct)) + " concentration)</span></div>");
+      scopeKeys.forEach(function (scope) {
+        const snap = byScope[scope];
+        if (!snap) return;
+        const tag = scope ? " [" + scope + "]" : "";
+        rows.push('<div class="panel-row">Gross exposure' + escapeHTML(tag) + ": " +
+          escapeHTML(fmtMoney(snap.portfolio_gross_usd)) + "</div>");
+        (snap.warnings || []).forEach(function (warning) {
+          rows.push('<div class="panel-row risk-alert">⚠️ ' + escapeHTML(warning) + "</div>");
+        });
+        const assets = Object.keys(snap.assets || {}).sort(function (a, b) {
+          return (snap.assets[b].concentration_pct || 0) - (snap.assets[a].concentration_pct || 0);
+        });
+        assets.forEach(function (asset) {
+          const e = snap.assets[asset] || {};
+          rows.push('<div class="panel-row panel-indent">' + escapeHTML(asset) + ": net " +
+            escapeHTML(fmtMoney(e.net_delta_usd)) + ' <span class="panel-muted">(' +
+            escapeHTML(fmtPct(e.concentration_pct)) + " concentration)</span></div>");
+        });
       });
       els.correlationContent.innerHTML = rows.join("");
     } catch (_err) {

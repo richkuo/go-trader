@@ -69,18 +69,78 @@ type manualStateView struct {
 	Pos              *Position
 }
 
+func manualSubsetStateView(pr *PortfolioRiskConfig, states map[string]*StrategyState, cfgs []StrategyConfig, now time.Time) manualStateView {
+	var v manualStateView
+	if st := evaluateDailyLossLimit(pr, states, cfgs, now); st.Tripped {
+		v.DailyLossHold = true
+		v.DailyLossNote = dailyLossHoldDetail(st)
+	}
+	if held, detail := evaluateNotionalCapHold(pr, states, nil); held {
+		v.NotionalHold = true
+		v.NotionalNote = detail
+	}
+	v.ExposureCap = exposureCapStatusForSubset(pr, states, cfgs)
+	return v
+}
+
+func manualScopeStateView(cfg *Config, state *AppState, scope PortfolioScope, now time.Time) manualStateView {
+	v := manualStateView{KillSwitch: state.scopeLatched(scope)}
+	if cfg == nil {
+		return v
+	}
+	scoped := manualSubsetStateView(scopeRiskConfig(cfg, scope),
+		filterStatesByScope(state.Strategies, cfg.Strategies, scope),
+		strategiesInScope(cfg.Strategies, scope), now)
+	scoped.KillSwitch = v.KillSwitch
+	return scoped
+}
+
+func mergeManualStateViews(dst, src manualStateView) manualStateView {
+	dst.KillSwitch = dst.KillSwitch || src.KillSwitch
+	if !dst.DailyLossHold && src.DailyLossHold {
+		dst.DailyLossHold = true
+		dst.DailyLossNote = src.DailyLossNote
+	}
+	if !dst.NotionalHold && src.NotionalHold {
+		dst.NotionalHold = true
+		dst.NotionalNote = src.NotionalNote
+	}
+	if !dst.ExposureCap.Configured {
+		dst.ExposureCap = src.ExposureCap
+		return dst
+	}
+	if src.ExposureCap.Configured {
+		dst.ExposureCap.LongBlocked = dst.ExposureCap.LongBlocked || src.ExposureCap.LongBlocked
+		dst.ExposureCap.ShortBlocked = dst.ExposureCap.ShortBlocked || src.ExposureCap.ShortBlocked
+		dst.ExposureCap.PVBasisMiss = dst.ExposureCap.PVBasisMiss || src.ExposureCap.PVBasisMiss
+		for asset, stat := range src.ExposureCap.OverConcentrated {
+			if dst.ExposureCap.OverConcentrated == nil {
+				dst.ExposureCap.OverConcentrated = make(map[string]ExposureCapAssetStat)
+			}
+			if _, exists := dst.ExposureCap.OverConcentrated[asset]; !exists {
+				dst.ExposureCap.OverConcentrated[asset] = stat
+			}
+		}
+	}
+	return dst
+}
+
 func manualStateViewFromState(cfg *Config, state *AppState, strategyID, symbol string) manualStateView {
-	v := manualStateView{KillSwitch: state.PortfolioRisk.KillSwitchActive}
+	now := time.Now().UTC()
+	var v manualStateView
+	scope, known := scopeOfStrategyID(configStrategyList(cfg), strategyID)
+	if known {
+		v = manualScopeStateView(cfg, state, scope, now)
+	} else {
+		v.KillSwitch = state.anyScopeLatched()
+		if cfg != nil {
+			v = mergeManualStateViews(v, manualSubsetStateView(cfg.PortfolioRisk, state.Strategies, cfg.Strategies, now))
+			for _, sc := range activeScopes(cfg.Strategies) {
+				v = mergeManualStateViews(v, manualScopeStateView(cfg, state, sc, now))
+			}
+		}
+	}
 	if cfg != nil {
-		if st := evaluateDailyLossLimit(cfg.PortfolioRisk, state.Strategies, cfg.Strategies, time.Now().UTC()); st.Tripped {
-			v.DailyLossHold = true
-			v.DailyLossNote = dailyLossHoldDetail(st)
-		}
-		if held, detail := evaluateNotionalCapHold(cfg.PortfolioRisk, state.Strategies, nil); held {
-			v.NotionalHold = true
-			v.NotionalNote = detail
-		}
-		v.ExposureCap = manualExposureCapStatus(cfg, state)
 		for _, sc := range cfg.Strategies {
 			if sc.ID == strategyID {
 				v.ExposureCapAsset = extractAsset(sc)
@@ -1495,4 +1555,11 @@ func manualCancelSLCore(d manualCoreDeps, sc StrategyConfig, in manualSLInputs) 
 	res.queued = true
 	res.outf("Queued: %s stop-loss removal will sync to the dashboard after the next scheduler cycle.", strategyID)
 	return res, nil
+}
+
+func configStrategyList(cfg *Config) []StrategyConfig {
+	if cfg == nil {
+		return nil
+	}
+	return cfg.Strategies
 }

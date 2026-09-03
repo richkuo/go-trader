@@ -269,14 +269,22 @@ func formatCircuitBreakersResponse(state *AppState, now time.Time) string {
 		}
 	}
 	var sb strings.Builder
-	if state.PortfolioRisk.KillSwitchActive {
-		sb.WriteString(fmt.Sprintf("🛑 Portfolio kill switch ACTIVE (drawdown %.2f%%)\n", state.PortfolioRisk.CurrentDrawdownPct))
-	}
-	if !state.PortfolioRisk.KillSwitchActive && !state.PortfolioRisk.UntrustedOverLimitSince.IsZero() {
-		sb.WriteString(fmt.Sprintf("⚠️ Portfolio latch DEFERRED: equity drawdown %.2f%% is over the limit on an untrusted total (since %s); escalates %s unless a trusted measurement lands first\n",
-			state.PortfolioRisk.CurrentDrawdownPct,
-			state.PortfolioRisk.UntrustedOverLimitSince.Format("2006-01-02 15:04 UTC"),
-			state.PortfolioRisk.UntrustedOverLimitSince.Add(untrustedEquityLatchDeferral).Format("2006-01-02 15:04 UTC")))
+	for _, scope := range sortedPortfolioScopes(state.PortfolioRisk) {
+		prs := state.PortfolioRisk[scope]
+		if prs == nil {
+			continue
+		}
+		label := scopeLabel(scope)
+		if prs.KillSwitchActive {
+			sb.WriteString(fmt.Sprintf("🛑 Portfolio kill switch ACTIVE [%s] (drawdown %.2f%%)\n", label, prs.CurrentDrawdownPct))
+		}
+		if !prs.KillSwitchActive && !prs.UntrustedOverLimitSince.IsZero() {
+			sb.WriteString(fmt.Sprintf("⚠️ Portfolio latch DEFERRED [%s]: equity drawdown %.2f%% is over the limit on an untrusted total (since %s); escalates %s unless a trusted measurement lands first\n",
+				label,
+				prs.CurrentDrawdownPct,
+				prs.UntrustedOverLimitSince.Format("2006-01-02 15:04 UTC"),
+				prs.UntrustedOverLimitSince.Add(untrustedEquityLatchDeferral).Format("2006-01-02 15:04 UTC")))
+		}
 	}
 	if len(lines) == 0 {
 		if sb.Len() == 0 {
@@ -302,12 +310,28 @@ func formatDeadStrategiesResponse(state *AppState, lifetime map[string]LifetimeT
 	return fmt.Sprintf("**Dead strategies (0 positions opened) — %d**\n%s", len(dead), strings.Join(dead, "\n"))
 }
 
-func formatCorrelationResponse(snap *CorrelationSnapshot) string {
-	if snap == nil {
+func formatCorrelationResponse(snaps map[PortfolioScope]*CorrelationSnapshot) string {
+	scopes := sortedCorrelationScopes(snaps)
+	var blocks []string
+	for _, scope := range scopes {
+		if snaps[scope] == nil {
+			continue
+		}
+		blocks = append(blocks, formatCorrelationScopeBlock(scope, snaps[scope], len(scopes) > 1))
+	}
+	if len(blocks) == 0 {
 		return "No correlation snapshot yet (computed during the trading cycle)."
 	}
+	return strings.Join(blocks, "\n")
+}
+
+func formatCorrelationScopeBlock(scope PortfolioScope, snap *CorrelationSnapshot, labelScope bool) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("**Correlation / concentration** (gross $%.2f)\n", snap.PortfolioGrossUSD))
+	if labelScope {
+		sb.WriteString(fmt.Sprintf("**Correlation / concentration [%s]** (gross $%.2f)\n", scopeLabel(scope), snap.PortfolioGrossUSD))
+	} else {
+		sb.WriteString(fmt.Sprintf("**Correlation / concentration** (gross $%.2f)\n", snap.PortfolioGrossUSD))
+	}
 	if len(snap.Warnings) > 0 {
 		sb.WriteString("⚠️ Warnings:\n")
 		for _, w := range snap.Warnings {
@@ -628,8 +652,8 @@ func (d *DiscordNotifier) buildDiscordStatus() string {
 	base := formatStatusResponse(d.ss.state, prices)
 	base += pausedStrategiesNote(d.cfg.Strategies)
 	base += hedgeStatusNote(d.cfg.Strategies, d.ss.state)
-	base += dailyLossStatusNote(d.cfg.PortfolioRisk, d.ss.state.Strategies, d.cfg.Strategies, time.Now())
-	base += exposureCapStatusNote(d.cfg.PortfolioRisk, d.ss.state, d.cfg.Strategies, prices)
+	base += dailyLossStatusNote(d.cfg, d.ss.state.Strategies, time.Now())
+	base += exposureCapStatusNote(d.cfg, d.ss.state, prices)
 	base += recentRegimeTransitionsNote(d.ss.stateDB, d.cfg.Regime, time.Now())
 	if note := directionalCertOperatorNotes(d.cfg.Strategies, d.cfg.Regime); note != "" {
 		return base + note

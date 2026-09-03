@@ -668,14 +668,21 @@ func killSwitchInstanceLabel(configPath string) string {
 	return "go-trader"
 }
 
-func formatKillSwitchResetPrompt(instanceLabel, hlAddr string, plan KillSwitchClosePlan) string {
+func formatKillSwitchResetPrompt(instanceLabel, hlAddr string, plan KillSwitchClosePlan, scope PortfolioScope, latched []PortfolioScope) string {
 	identity := instanceLabel
-	if hlAddr != "" {
+	if hlAddr != "" && scope == ScopeLive {
 		identity = fmt.Sprintf("%s (Hyperliquid %s)", identity, hlAddr)
 	}
-	resetNote := "Replying 'reset' only clears the kill switch latch so trading can resume next cycle — it does not itself close or protect any position."
-	if !plan.OnChainConfirmedFlat {
+	reply := "reset"
+	if len(latched) > 1 {
+		reply = "reset " + scopeLabel(scope)
+	}
+	resetNote := fmt.Sprintf("Replying '%s' only clears the %s kill switch latch so trading can resume next cycle — it does not itself close or protect any position.", reply, scopeLabel(scope))
+	if scope == ScopeLive && !plan.OnChainConfirmedFlat {
 		resetNote += " On-chain close is still retrying and resting stop-losses may already be cancelled ahead of the flatten attempt — verify positions manually before assuming they're protected."
 	}
-	return fmt.Sprintf("[KILL SWITCH] %s\n%s\n\n%s\nReply 'reset' to proceed.", identity, plan.DiscordMessage, resetNote)
+	if len(latched) > 1 {
+		resetNote += fmt.Sprintf(" Both scopes are latched (%s); this prompt clears the %s scope only.", joinScopeLabels(latched), scopeLabel(scope))
+	}
+	return fmt.Sprintf("[KILL SWITCH %s] %s\n%s\n\n%s\nReply '%s' to proceed.", scopeLabel(scope), identity, plan.DiscordMessage, resetNote, reply)
 }

@@ -212,8 +212,9 @@ func runManualLimitOpen(cfg *Config, sc StrategyConfig, stateDB *StateDB, in man
 		fmt.Fprintf(os.Stderr, "error: could not load state for placement guard: %v\n", loadErr)
 		return 1
 	}
-	if state.PortfolioRisk.KillSwitchActive {
-		fmt.Fprintln(os.Stderr, "error: portfolio kill switch is active — manual-open blocked (use manual-close to flatten)")
+	limitScope := portfolioScopeFor(sc)
+	if state.scopeLatched(limitScope) {
+		fmt.Fprintf(os.Stderr, "error: portfolio kill switch is active for the %s scope — manual-open blocked (use manual-close to flatten)\n", scopeLabel(limitScope))
 		return 1
 	}
 	if ss := state.Strategies[in.strategyID]; ss != nil {

@@ -448,6 +448,16 @@ func computeInitialPortfolioPeak(strategies []StrategyConfig, fetcher WalletBala
 	return total
 }
 
+func computeInitialPortfolioPeakForScope(strategies []StrategyConfig, scope PortfolioScope, fetcher WalletBalanceFetcher) float64 {
+	return computeInitialPortfolioPeak(strategiesInScope(strategies, scope), fetcher)
+}
+
+func rebaselinePortfolioPeakAfterPruneForScope(state *AppState, cfg *Config, scope PortfolioScope, fetcher WalletBalanceFetcher) float64 {
+	scopedCfg := &Config{Strategies: strategiesInScope(cfg.Strategies, scope)}
+	scopedState := &AppState{Strategies: filterStatesByScope(state.Strategies, cfg.Strategies, scope)}
+	return rebaselinePortfolioPeakAfterPrune(scopedState, scopedCfg, fetcher)
+}
+
 func rebaselinePortfolioPeakAfterPrune(state *AppState, cfg *Config, fetcher WalletBalanceFetcher) float64 {
 	byID := make(map[string]StrategyConfig, len(cfg.Strategies))
 	for _, sc := range cfg.Strategies {

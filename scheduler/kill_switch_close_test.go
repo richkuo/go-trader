@@ -1484,7 +1484,7 @@ func TestFormatKillSwitchResetPrompt(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := formatKillSwitchResetPrompt(tc.instance, tc.addr, tc.plan)
+			got := formatKillSwitchResetPrompt(tc.instance, tc.addr, tc.plan, ScopeLive, []PortfolioScope{ScopeLive})
 			for _, w := range tc.want {
 				if !strings.Contains(got, w) {
 					t.Errorf("prompt missing %q, got: %s", w, got)

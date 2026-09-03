@@ -90,19 +90,10 @@ func hyperliquidBatchArgsSupported(args []string) bool {
 }
 
 func hyperliquidModeFromArgs(args []string) string {
-	for i, arg := range args {
-		if strings.HasPrefix(arg, "--mode=") {
-			if v := strings.TrimSpace(strings.TrimPrefix(arg, "--mode=")); v != "" {
-				return v
-			}
-		}
-		if arg == "--mode" && i+1 < len(args) {
-			if v := strings.TrimSpace(args[i+1]); v != "" {
-				return v
-			}
-		}
+	if isLiveArgs(args) {
+		return string(ScopeLive)
 	}
-	return "paper"
+	return string(ScopePaper)
 }
 
 func hyperliquidTimeframe(args []string) string {

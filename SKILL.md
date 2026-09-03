@@ -80,7 +80,7 @@ Config skeleton and the full field list: [README.md](README.md) § Configuration
 - Strategy entries need `id`, `type`, `script`, `args`, `capital`, `max_drawdown_pct`, `interval_seconds`.
 - `open_strategy` and `close_strategy` are objects of shape `{"name": "<id>", "params": {…}}`. Per-evaluator params live on the close ref, never on the strategy. A legacy `close_strategies` array of length ≤1 is still read; length >1 is rejected at load.
 - Tier lists use `tp_tiers`; each tier is `{"atr_multiple"|"profit_pct": N, "close_fraction": 0..1, "sl_after"?: {…}}`. Per-tier legacy `atr` / `multiple` / `fraction` aliases still parse. Write the canonical names.
-- `discord.channels` / `telegram.channels` keys: `spot`, `options`, `hyperliquid`, `topstep`, `robinhood`, `okx`, `luno`, plus optional paper keys such as `okx-paper`.
+- `discord.channels` / `telegram.channels` keys: `spot`, `options`, `hyperliquid`, `topstep`, `robinhood`, `okx`, `luno`, plus optional paper keys such as `okx-paper`. A non-empty `<platform>-paper` key also splits cycle summaries, leaderboards and Sharpe groups by mode; with no such key the grouping stays merged, exactly as before.
 - `summary_frequency` uses the same key scheme. Values: `hourly`, `daily`, `every`, `per_check`, `always`, or a Go duration (`30m`, `2h`). The wall-clock cadence persists in SQLite and survives restart and SIGHUP. `options`, `perps`, `futures`, and `manual` post every channel run; `spot` posts hourly. A trade always forces an immediate post.
 - `discord.owner_id` comes from `DISCORD_OWNER_ID`; it enables DM upgrade and migration prompts.
 
@@ -565,9 +565,9 @@ sudo systemctl kill -s HUP go-trader   # hot reload, no state loss
 sudo systemctl restart go-trader       # full restart
 ```
 
-Hot reload re-applies a safe subset: capital, drawdown, intervals, params, stop-loss fields (including percentage and ATR-multiple trailing), sizing leverage, theta harvest, `portfolio_risk` knobs except `max_notional_usd`, summary cadence, per-strategy `allowed_regimes`, `paused`, `circuit_breaker` and its cooldowns, `notify_ratchet_triggers`, `allow_deprecated`, `llm_entry_analysis`, `hurst_gate`, `alert_throttle_interval`, `kill_switch_reset_dm_timeout`, `user_defaults`, `tuning.max_retained_runs`, and the Discord/Telegram **channel maps**. Per-strategy `regime_*_window` selectors and `replay_sharing` reload only while flat.
+Hot reload re-applies a safe subset: capital, drawdown, intervals, params, stop-loss fields (including percentage and ATR-multiple trailing), sizing leverage, theta harvest, `portfolio_risk` knobs and their `portfolio_risk.paper` overrides except `max_notional_usd` on either, summary cadence, per-strategy `allowed_regimes`, `paused`, `circuit_breaker` and its cooldowns, `notify_ratchet_triggers`, `allow_deprecated`, `llm_entry_analysis`, `hurst_gate`, `alert_throttle_interval`, `kill_switch_reset_dm_timeout`, `user_defaults`, `tuning.max_retained_runs`, and the Discord/Telegram **channel maps**. Per-strategy `regime_*_window` selectors and `replay_sharing` reload only while flat.
 
-**Restart-required — a SIGHUP is rejected outright:** the strategy roster; any `script`/`args`/`type`/`platform` field, the HTF filter, or kill-switch identity; `db_file`; `log_dir`; `status_port`; the status token; `auto_update`; `risk_free_rate`; `leaderboard_post_time` and `leaderboard_summaries`; `tradingview_export`; `replay_log_path`; `portfolio_risk.max_notional_usd`; the whole `correlation` block; the global `regime` block (enabled, period, adx_threshold, windows); `discord.enabled`/`token`/`owner_id` and `telegram.enabled`/`bot_token`/`owner_chat_id`; and a shared-wallet pool↔allocated budgeting switch.
+**Restart-required — a SIGHUP is rejected outright:** the strategy roster; any `script`/`args`/`type`/`platform` field, the HTF filter, or kill-switch identity; `db_file`; `log_dir`; `status_port`; the status token; `auto_update`; `risk_free_rate`; `leaderboard_post_time` and `leaderboard_summaries`; `tradingview_export`; `replay_log_path`; `portfolio_risk.max_notional_usd` and `portfolio_risk.paper.max_notional_usd`; the whole `correlation` block; the global `regime` block (enabled, period, adx_threshold, windows); `discord.enabled`/`token`/`owner_id` and `telegram.enabled`/`bot_token`/`owner_chat_id`; and a shared-wallet pool↔allocated budgeting switch.
 
 It also refuses when per-strategy exchange `leverage`, `direction`, `invert_signal`, HL `margin_mode`, or the regime timeframe changed while a position is open, and for every field in the blocked-while-open list under Post-Update Agent Protocol. It re-runs the HL peer-on-same-coin check for `margin_mode` and exchange `leverage` agreement and the single-trailing-stop-owner rule, and re-validates every `hedge` block. A rejection names every offending field at once; fall back to a restart.
 
@@ -595,13 +595,14 @@ Global — key, default, notes:
 | `auto_update` | `off` | `off` \| `daily` \| `heartbeat` |
 | `status_port` | 8099 | Loopback only |
 | `risk_free_rate` | 0.04 | Sharpe basis |
-| `max_drawdown_pct` | 25 | Portfolio kill switch |
+| `max_drawdown_pct` | 25 | Portfolio kill switch, per scope (live and paper latch independently) |
 | `portfolio_risk.warn_threshold_pct` | 60 | Percent of the kill-switch limit |
 | `portfolio_risk.max_notional_usd` | `0` = off | Gross notional cap. Over it, opens/adds/flips are held and manual open/add/limit-open refuse; closes, reductions and protection keep running. **Restart-required.** |
 | `portfolio_risk.daily_max_loss_usd` | `0` = off | Cap on the day's aggregate PRE-FEE realized loss. Hold-only until UTC rollover; nothing is force-closed. Hot-reloadable even while tripped. Ignored inside `platforms.<name>.risk`. |
 | `portfolio_risk.daily_max_loss_pct` | `0` = off | Same limit as a percent of Σ per-strategy `initial_capital`. With both arms set the lower resolved USD threshold wins; a zero-capital basis cannot evaluate and `/status` says so. |
 | `portfolio_risk.max_same_direction_notional_usd` | `0` = off | Blocks a new same-direction open over the cap. Blocking only, direction-aware. Hot-reloadable. |
 | `portfolio_risk.max_asset_concentration_pct` | `0` = off | Same blocking behavior scoped to one asset's share of exposure. Shares its exposure model with `correlation.*`. |
+| `portfolio_risk.paper` | absent = inherit | Optional override block with the same fields, applied to the paper scope only. A zero or omitted field inherits the parent value; a nested `paper.paper` is rejected. `paper.max_notional_usd` is restart-required; the rest hot-reload. |
 | `alert_throttle_interval` | 6h | Go duration. Coalesces repeat operator alerts. |
 | `kill_switch_reset_dm_timeout` | empty = 6h | Go duration. How long the reset prompt waits. Independent of `alert_throttle_interval`. |
 | `correlation.enabled`, `.max_concentration_pct`, `.max_same_direction_pct` | off, 60, 75 | Warnings to all active channels plus an owner DM; snapshot in `/status`. Restart-required. |
@@ -775,6 +776,10 @@ uv run --no-sync python -m py_compile shared_scripts/check_<name>.py
 
 ## Portfolio Kill Switch And Latch Ownership
 
+**The latch is partitioned by mode.** One scheduler holds two portfolio scopes, `live` and `paper`, decided only by `--mode=live` in the strategy args. Each scope keeps its own peak, drawdown, latch, events, daily-loss ledger, notional total, exposure total and correlation model, and each is evaluated once per cycle over its own strategies. A paper drawdown can never latch live, and a live drawdown can never latch paper. Only a scope with at least one configured strategy is evaluated, so a single-mode deployment behaves exactly as before, with the scope name added to the operator surfaces. On upgrade, an existing unscoped `portfolio_risk` row moves into `live` when the config holds any live strategy, else into `paper`; the move is written back on the first boot and is a no-op afterwards.
+
+A live latch runs the exchange close plan over the live roster only. A paper latch closes paper books virtually at mark, sends no exchange order, and posts to the `-paper` channels; it never auto-resets without an owner. Because paper has no wallet fetch, its equity reading is always trusted, so a paper scope never shows a substituted reading or a deferred latch.
+
 The portfolio kill switch latches on drawdown and halts new trading until it is reset. **Exactly one measurement owns the latch each cycle** — there is no tie-break:
 
 - **Equity drawdown owns it** when the equity guard is armed: a portfolio total is available AND the recorded peak is above zero. The kill switch then trips on equity drawdown over `max_drawdown_pct`.
@@ -790,7 +795,7 @@ When equity owns the latch, a margin drawdown over the limit is a throttled WARN
 
 **An untrusted over-limit reading defers the latch; it never vetoes it.** The first such cycle records the timestamp and a `latch_deferred` event naming the untrusted basis. While the run is unbroken and under 15 minutes old, the full-book latch is held and per-strategy circuit breakers are the active protection. Past 15 minutes the latch escalates and the reason names the untrusted basis and the deferral. A trusted reading landing first clears the timer. The deferral is loud: the log line is `[CRITICAL]`, and the warning DM bypasses the throttle for as long as the deferral stands. `/go-trader-circuit-breakers` shows the deferral, when it started, and when it escalates.
 
-Reset is owner-DM only. The reset DM carries the drawdown reason, the trader-instance label, the HL wallet address, and a protection-gap warning when the close plan has not confirmed flat. `kill_switch_reset_dm_timeout` sets how long that prompt waits (empty = 6h).
+Reset is owner-DM only and clears one scope. The reset DM names the scope in its header, and carries the drawdown reason, the trader-instance label, the HL wallet address (live prompts only), and a protection-gap warning when the close plan has not confirmed flat. Reply `reset` while one scope is latched. While both are latched, reply `reset live` or `reset paper`; a bare `reset` is refused and names both. Each scope owns its own single-flight prompt, so a paper prompt cannot block a live one. `kill_switch_reset_dm_timeout` sets how long that prompt waits (empty = 6h).
 
 **Auto-reset.** Once every platform is confirmed flat the next cycle clears virtual state and resumes trading, posting `Virtual state cleared. Kill switch auto-reset; trading will resume next cycle.` Auto-reset also needs every resting limit order resolved (see below) and no operator-required venue outstanding.
 

@@ -362,14 +362,14 @@ func TestUITradeActionsKillSwitchAndCBGates(t *testing.T) {
 	stubTradeDeps(t, ss)
 
 	delete(ss.state.Strategies["hl-manual-eth"].Positions, "ETH")
-	ss.state.PortfolioRisk.KillSwitchActive = true
+	ss.state.scopeRisk(ScopeLive).KillSwitchActive = true
 	nonce := confirmNonceFor(t, ss, "open", "hl-manual-eth", `{"margin":50}`)
 	w := tradeActionPost(ss, "/api/strategies/hl-manual-eth/open",
 		fmt.Sprintf(`{"nonce":%q,"params":{"margin":50}}`, nonce), nil)
 	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "kill switch") {
 		t.Fatalf("kill-switch open status = %d, body %s", w.Code, w.Body.String())
 	}
-	ss.state.PortfolioRisk.KillSwitchActive = false
+	ss.state.scopeRisk(ScopeLive).KillSwitchActive = false
 
 	ss.state.Strategies["hl-manual-eth"].RiskState.PendingCircuitCloses = map[string]*PendingCircuitClose{
 		PlatformPendingCloseHyperliquid: {},
