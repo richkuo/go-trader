@@ -771,3 +771,67 @@ func TestPaperKillSwitchPromptMessage_CarriesReason(t *testing.T) {
 		t.Errorf("a re-issued paper reset prompt must carry the drawdown reason:\n%s", prompt)
 	}
 }
+
+func TestScopeHasPersistedState(t *testing.T) {
+	cfgs := []StrategyConfig{scopeCfg("live-a", true), scopeCfg("paper-a", false), scopeCfg("paper-new", false)}
+	persisted := map[string]bool{"live-a": true, "paper-a": true}
+	if !scopeHasPersistedState(cfgs, ScopePaper, persisted) {
+		t.Error("a paper scope with one persisted member carries state")
+	}
+	if scopeHasPersistedState(cfgs, ScopePaper, map[string]bool{"live-a": true}) {
+		t.Error("a paper scope whose members are all new carries no state")
+	}
+}
+
+func TestCycleScopeRisk_NewScopeSeedsPeakFromCurrentValue(t *testing.T) {
+	cfg := scopeTestConfig(true, true)
+	state := scopeTestState(cfg, 10000, 7000)
+	state.scopeRisk(ScopeLive).PeakValue = 10000
+
+	res := runScopeCycle(t, cfg, state, nil)
+	paperPrs := state.scopeRisk(ScopePaper)
+	if paperPrs.PeakValue != res[ScopePaper].TotalPV || paperPrs.PeakValue != 7000 {
+		t.Fatalf("a new paper scope must seed its peak from the current paper value; peak=%v total=%v", paperPrs.PeakValue, res[ScopePaper].TotalPV)
+	}
+	if res[ScopePaper].KillSwitchFired || paperPrs.CurrentDrawdownPct != 0 {
+		t.Fatalf("a paper book already below configured capital must not latch on its first cycle; reason=%q dd=%v", res[ScopePaper].Reason, paperPrs.CurrentDrawdownPct)
+	}
+
+	state.Strategies["paper-a"].Cash = 5000
+	res = runScopeCycle(t, cfg, state, nil)
+	if !res[ScopePaper].KillSwitchFired {
+		t.Errorf("a later paper loss past the limit must latch against the seeded peak; reason=%q", res[ScopePaper].Reason)
+	}
+
+	above := scopeTestState(cfg, 10000, 13000)
+	above.scopeRisk(ScopeLive).PeakValue = 10000
+	runScopeCycle(t, cfg, above, nil)
+	if above.scopeRisk(ScopePaper).PeakValue != 13000 {
+		t.Errorf("a paper book above configured capital must seed at its current value, not lower; got %v", above.scopeRisk(ScopePaper).PeakValue)
+	}
+}
+
+func TestKillSwitchResetPromptForScopes(t *testing.T) {
+	livePlan := KillSwitchClosePlan{OnChainConfirmedFlat: false, DiscordMessage: "**PORTFOLIO KILL SWITCH**\nlive drawdown 30%"}
+	paperPlan := KillSwitchClosePlan{OnChainConfirmedFlat: true, DiscordMessage: formatPaperKillSwitchPromptMessage("paper drawdown 40%")}
+	plans := map[PortfolioScope]KillSwitchClosePlan{ScopeLive: livePlan, ScopePaper: paperPlan}
+	both := formatKillSwitchResetPromptForScopes("inst", "0xabc", plans, []PortfolioScope{ScopeLive, ScopePaper}, []PortfolioScope{ScopeLive, ScopePaper})
+	for _, want := range []string{"[KILL SWITCH live]", "[KILL SWITCH paper]", "live drawdown 30%", "paper drawdown 40%", "Hyperliquid 0xabc", "Reply 'reset live' or 'reset paper' to proceed.", "resting stop-losses may already be cancelled"} {
+		if !strings.Contains(both, want) {
+			t.Errorf("two-scope prompt missing %q:\n%s", want, both)
+		}
+	}
+	if strings.Count(both, "Hyperliquid 0xabc") != 1 {
+		t.Errorf("only the live section may carry the exchange identity:\n%s", both)
+	}
+	single := formatKillSwitchResetPromptForScopes("inst", "0xabc", plans, []PortfolioScope{ScopePaper}, []PortfolioScope{ScopePaper})
+	if single != formatKillSwitchResetPrompt("inst", "0xabc", paperPlan, ScopePaper, []PortfolioScope{ScopePaper}) {
+		t.Error("a single latched scope must produce the single-scope prompt")
+	}
+	if target, err := parseKillSwitchResetReply("reset paper", []PortfolioScope{ScopeLive, ScopePaper}); err != nil || target != ScopePaper {
+		t.Errorf("the one reply must resolve the named scope: %q %v", target, err)
+	}
+	if target, err := parseKillSwitchResetReply("reset", []PortfolioScope{ScopeLive}); err != nil || target != ScopeLive {
+		t.Errorf("a bare reset must resolve the surviving scope: %q %v", target, err)
+	}
+}

@@ -496,6 +496,15 @@ func assignLegacyPortfolioScope(state *AppState, cfg *Config) (PortfolioScope, b
 				legacy.Events[i].Scope = target
 			}
 			state.PortfolioRisk[target] = legacy
+			if target == ScopeLive && cfg != nil && len(strategiesInScope(cfg.Strategies, ScopePaper)) > 0 {
+				priorPeak := legacy.PeakValue
+				newPeak := liveScopeRebasedPeak(state, cfg, nil)
+				legacy.PeakValue = newPeak
+				addKillSwitchEvent(legacy, "scope_basis_rebaseline", "equity", legacy.CurrentDrawdownPct, 0, newPeak,
+					fmt.Sprintf("#1509 legacy whole-roster peak $%.2f re-based onto the live-only roster: $%.2f (sum of live per-strategy peaks, configured capital for a strategy with no peak, wallet equity for a shared-wallet pool); latch untouched", priorPeak, newPeak))
+				legacy.Events[len(legacy.Events)-1].Scope = target
+				fmt.Printf("[state] Legacy portfolio peak re-based for the live scope: $%.0f -> $%.0f (paper strategies now measure in their own scope)\n", priorPeak, newPeak)
+			}
 		} else {
 			if legacy.KillSwitchActive && !existing.KillSwitchActive {
 				existing.KillSwitchActive = true

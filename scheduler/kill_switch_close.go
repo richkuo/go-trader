@@ -686,3 +686,23 @@ func formatKillSwitchResetPrompt(instanceLabel, hlAddr string, plan KillSwitchCl
 	}
 	return fmt.Sprintf("[KILL SWITCH %s] %s\n%s\n\n%s\nReply '%s' to proceed.", scopeLabel(scope), identity, plan.DiscordMessage, resetNote, reply)
 }
+
+func formatKillSwitchResetPromptForScopes(instanceLabel, hlAddr string, plans map[PortfolioScope]KillSwitchClosePlan, scopes []PortfolioScope, latched []PortfolioScope) string {
+	if len(scopes) == 1 {
+		return formatKillSwitchResetPrompt(instanceLabel, hlAddr, plans[scopes[0]], scopes[0], latched)
+	}
+	sections := make([]string, 0, len(scopes))
+	for _, scope := range scopes {
+		identity := instanceLabel
+		if hlAddr != "" && scope == ScopeLive {
+			identity = fmt.Sprintf("%s (Hyperliquid %s)", identity, hlAddr)
+		}
+		section := fmt.Sprintf("[KILL SWITCH %s] %s\n%s", scopeLabel(scope), identity, plans[scope].DiscordMessage)
+		if scope == ScopeLive && !plans[scope].OnChainConfirmedFlat {
+			section += "\nOn-chain close is still retrying and resting stop-losses may already be cancelled ahead of the flatten attempt — verify positions manually before assuming they're protected."
+		}
+		sections = append(sections, section)
+	}
+	note := fmt.Sprintf("Both scopes are latched (%s). One reply clears one scope only and does not itself close or protect any position; a new prompt follows for any scope still latched.", joinScopeLabels(latched))
+	return fmt.Sprintf("%s\n\n%s\nReply 'reset live' or 'reset paper' to proceed.", strings.Join(sections, "\n\n"), note)
+}

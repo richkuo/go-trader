@@ -178,6 +178,10 @@ func main() {
 		os.Exit(1)
 	}
 	ValidateState(state, cfg.Strategies)
+	persistedStrategyIDs := make(map[string]bool, len(state.Strategies))
+	for id := range state.Strategies {
+		persistedStrategyIDs[id] = true
+	}
 
 	resolveCapitalPct(cfg.Strategies)
 
@@ -281,6 +285,10 @@ func main() {
 	for _, scope := range startupScopes {
 		prs := state.scopeRisk(scope)
 		if prs.PeakValue != 0 {
+			continue
+		}
+		if scopeHasPersistedState(cfg.Strategies, scope, persistedStrategyIDs) {
+			fmt.Printf("  Portfolio peak for the %s scope will seed from its current book value on the first cycle (strategies already carry state)\n", scopeLabel(scope))
 			continue
 		}
 		total := computeInitialPortfolioPeakForScope(cfg.Strategies, scope, nil)
@@ -612,7 +620,7 @@ func main() {
 	lastAutoUpdateCheck := time.Now()
 
 	saveFailures := 0
-	resetGoroutineRunning := map[PortfolioScope]*atomic.Bool{}
+	var resetGoroutineRunning atomic.Bool
 	sharedWalletRiskBalances := make(map[SharedWalletKey]sharedWalletRiskBalanceSnapshot)
 	sharedWalletRiskGeneration := 0
 
@@ -1340,28 +1348,25 @@ func main() {
 			mu.RLock()
 			latchedNow := state.latchedScopes()
 			mu.RUnlock()
+			var promptScopes []PortfolioScope
+			promptPlans := map[PortfolioScope]KillSwitchClosePlan{}
 			for _, scope := range cycleScopes {
 				sr := scopeRisk[scope]
-				if !sr.KillSwitchFired || !notifier.HasOwner() {
+				if !sr.KillSwitchFired || !scopeInList(scope, latchedNow) {
 					continue
 				}
-				running := resetGoroutineRunning[scope]
-				if running == nil {
-					running = &atomic.Bool{}
-					resetGoroutineRunning[scope] = running
+				promptScopes = append(promptScopes, scope)
+				if scope == ScopeLive {
+					promptPlans[scope] = plan
+				} else {
+					promptPlans[scope] = KillSwitchClosePlan{OnChainConfirmedFlat: true, DiscordMessage: formatPaperKillSwitchPromptMessage(sr.Reason)}
 				}
-				if !tryClaimKillSwitchResetPrompt(running) {
-					continue
-				}
-				promptScope := scope
-				scopePlan := plan
-				if promptScope != ScopeLive {
-					scopePlan = KillSwitchClosePlan{OnChainConfirmedFlat: true, DiscordMessage: formatPaperKillSwitchPromptMessage(sr.Reason)}
-				}
-				resetPrompt := formatKillSwitchResetPrompt(killSwitchInstanceLabel(*configPath), hlAddr, scopePlan, promptScope, latchedNow)
+			}
+			if len(promptScopes) > 0 && notifier.HasOwner() && tryClaimKillSwitchResetPrompt(&resetGoroutineRunning) {
+				resetPrompt := formatKillSwitchResetPromptForScopes(killSwitchInstanceLabel(*configPath), hlAddr, promptPlans, promptScopes, latchedNow)
 				resetDMTimeout := effectiveKillSwitchResetDMTimeout()
 				go func() {
-					defer releaseKillSwitchResetPrompt(running)
+					defer releaseKillSwitchResetPrompt(&resetGoroutineRunning)
 					resp, err := notifier.AskOwnerDM(resetPrompt, resetDMTimeout)
 					if err != nil {
 						fmt.Printf("[update] Kill switch reset DM timed out or failed: %v\n", err)
@@ -1376,13 +1381,6 @@ func main() {
 						notifier.SendOwnerDM(parseErr.Error())
 						return
 					}
-					if target != promptScope {
-						fmt.Printf("[update] Kill switch reset DM reply %q targets the %s scope; this prompt owns the %s scope\n",
-							resp, scopeLabel(target), scopeLabel(promptScope))
-						notifier.SendOwnerDM(fmt.Sprintf("This prompt resets the %s scope only. Reply 'reset %s' here, and answer the %s prompt to reset that scope.",
-							scopeLabel(promptScope), scopeLabel(promptScope), scopeLabel(target)))
-						return
-					}
 					mu.Lock()
 					prs := state.scopeRisk(target)
 					resetDrawdownPct := ResetPortfolioKillSwitchManual(prs)
@@ -1392,8 +1390,13 @@ func main() {
 					if err := SaveStateWithDB(state, cfg, stateDB); err != nil {
 						fmt.Printf("[CRITICAL] Failed to save state after kill switch reset: %v\n", err)
 					}
+					remaining := state.latchedScopes()
 					mu.Unlock()
-					notifier.SendOwnerDM(fmt.Sprintf("Kill switch reset (%s scope). Trading will resume next cycle.", scopeLabel(target)))
+					ack := fmt.Sprintf("Kill switch reset (%s scope). Trading will resume next cycle.", scopeLabel(target))
+					if len(remaining) > 0 {
+						ack += fmt.Sprintf(" The %s scope stays latched; a new prompt follows next cycle.", joinScopeLabels(remaining))
+					}
+					notifier.SendOwnerDM(ack)
 					fmt.Printf("[update] Kill switch reset by owner via DM (%s scope)\n", scopeLabel(target))
 					return
 				}()

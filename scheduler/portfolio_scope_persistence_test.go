@@ -135,7 +135,7 @@ func TestAssignLegacyPortfolioScope(t *testing.T) {
 		want  PortfolioScope
 		moved bool
 	}{
-		{"live present lands in live", []StrategyConfig{scopeCfg("l", true), scopeCfg("p", false)}, ScopeLive, true},
+		{"live only lands in live", []StrategyConfig{scopeCfg("l", true)}, ScopeLive, true},
 		{"paper only lands in paper", []StrategyConfig{scopeCfg("p", false)}, ScopePaper, true},
 		{"empty roster lands in paper", nil, ScopePaper, true},
 	}
@@ -518,5 +518,49 @@ func TestConfigExample_PaperOverrideLoads(t *testing.T) {
 	}
 	if scopeRiskConfig(cfg, ScopeLive).MaxDrawdownPct != cfg.PortfolioRisk.MaxDrawdownPct {
 		t.Error("the live scope must keep the parent drawdown limit")
+	}
+}
+
+func TestAssignLegacyPortfolioScope_MixedRosterRebasesLivePeak(t *testing.T) {
+	cfg := &Config{Strategies: []StrategyConfig{scopeCfg("live-a", true), scopeCfg("live-b", true), scopeCfg("paper-a", false)}}
+	state := NewAppState()
+	state.Strategies["live-a"] = scopeState("live-a", 8000)
+	state.Strategies["live-a"].RiskState.PeakValue = 8000
+	state.Strategies["live-b"] = scopeState("live-b", 4000)
+	state.Strategies["live-b"].RiskState.PeakValue = 4000
+	state.Strategies["paper-a"] = scopeState("paper-a", 9000)
+	state.Strategies["paper-a"].RiskState.PeakValue = 9000
+	latchedAt := time.Now().UTC().Add(-time.Hour)
+	state.PortfolioRisk[scopeUnassigned] = &PortfolioRiskState{PeakValue: 21000, CurrentDrawdownPct: 5, KillSwitchActive: true, KillSwitchAt: latchedAt}
+
+	target, moved := assignLegacyPortfolioScope(state, cfg)
+	if !moved || target != ScopeLive {
+		t.Fatalf("placement = %q,%v; want live,true", target, moved)
+	}
+	prs := state.scopeRisk(ScopeLive)
+	if prs.PeakValue != 12000 {
+		t.Fatalf("live peak = %v, want the live-only basis 12000 (sum of live per-strategy peaks, with no configured-capital floor)", prs.PeakValue)
+	}
+	if !prs.KillSwitchActive || !prs.KillSwitchAt.Equal(latchedAt) {
+		t.Error("the legacy latch must survive the re-base untouched")
+	}
+	if n := len(prs.Events); n == 0 || prs.Events[n-1].Type != "scope_basis_rebaseline" || prs.Events[n-1].Scope != ScopeLive {
+		t.Errorf("the re-base must be recorded as a live-scope event; got %+v", prs.Events)
+	}
+	if state.scopeRiskIfPresent(ScopePaper) != nil {
+		t.Error("placement must not create the paper scope; its peak seeds from the paper book on the first cycle")
+	}
+
+	cfgWithRisk := &Config{PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 60}, Strategies: cfg.Strategies}
+	prs.KillSwitchActive = false
+	prs.KillSwitchAt = time.Time{}
+	res := runScopeCycle(t, cfgWithRisk, state, nil)
+	if res[ScopeLive].KillSwitchFired {
+		t.Errorf("live at its own peaks must not latch after the upgrade; reason=%q", res[ScopeLive].Reason)
+	}
+	state.Strategies["live-a"].Cash = 2000
+	res = runScopeCycle(t, cfgWithRisk, state, nil)
+	if !res[ScopeLive].KillSwitchFired {
+		t.Errorf("a genuine live drawdown past the limit must still latch on the re-based peak; reason=%q", res[ScopeLive].Reason)
 	}
 }

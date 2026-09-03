@@ -202,3 +202,12 @@ func applyScopeCycleRisk(sr *scopeCycleRisk, prs *PortfolioRiskState) {
 	sr.NotionalBlocked = notionalBlocked
 	sr.DailyLossEntriesHeld = sr.DailyLossStatus.Tripped
 }
+
+func scopeHasPersistedState(cfgs []StrategyConfig, scope PortfolioScope, persisted map[string]bool) bool {
+	for _, sc := range strategiesInScope(cfgs, scope) {
+		if persisted[sc.ID] {
+			return true
+		}
+	}
+	return false
+}
