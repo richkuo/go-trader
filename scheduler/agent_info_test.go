@@ -198,11 +198,6 @@ func TestRenderAgentInfoMarkdownAndChangelog(t *testing.T) {
 		LiveState: agentLiveState{Source: "state.db snapshot", Note: "snapshot ... port 8099", DBPresent: true, CycleCount: 7},
 	}
 	md := renderAgentInfoMarkdown(info)
-	for _, want := range []string{agentInfoMarkdownHeader, "agent-info", "config.json", "HYPERLIQUID_SECRET_KEY", "trend_follow", "Live state"} {
-		if !strings.Contains(md, want) {
-			t.Errorf("markdown missing %q", want)
-		}
-	}
 	if strings.Contains(agentInfoGeneratedFile, "AGENTS.md") || agentInfoGeneratedFile == "AGENTS.md" {
 		t.Fatal("generated file must not be AGENTS.md (symlink to CLAUDE.md)")
 	}

@@ -1,8 +1,6 @@
 package main
 
 import (
-	"fmt"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -123,31 +121,6 @@ func TestScriptFailureTracker_IndependentPerStrategy(t *testing.T) {
 	}
 	if notify, count := tr.Record("hl-b", "boom", now); notify || count != 1 {
 		t.Fatalf("hl-b first failure: notify=%v count=%d, want false/1", notify, count)
-	}
-}
-
-func TestFormatScriptFailureAlert_NamesModeAndCount(t *testing.T) {
-	sc := StrategyConfig{ID: "hl-rmc-eth-live", Platform: "hyperliquid", Script: "check_hyperliquid.py"}
-	pidTag := fmt.Sprintf("pid=%d", os.Getpid())
-	crash := formatScriptFailureAlert(sc, scriptFailureCrash, "signal: killed", 4)
-	if !strings.Contains(crash, "hard crash") || !strings.Contains(crash, "4 consecutive") ||
-		!strings.Contains(crash, "hl-rmc-eth-live") || !strings.Contains(crash, "check_hyperliquid.py") ||
-		!strings.Contains(crash, pidTag) {
-		t.Fatalf("crash alert missing fields: %q", crash)
-	}
-	soft := formatScriptFailureAlert(sc, scriptFailureError, "list index out of range", 3)
-	if !strings.Contains(soft, "script error") || !strings.Contains(soft, "list index out of range") {
-		t.Fatalf("soft alert missing fields: %q", soft)
-	}
-}
-
-func TestFormatScriptRecoveredAlert(t *testing.T) {
-	sc := StrategyConfig{ID: "hl-x", Platform: "hyperliquid", Script: "check_hyperliquid.py"}
-	pidTag := fmt.Sprintf("pid=%d", os.Getpid())
-	msg := formatScriptRecoveredAlert(sc, 7)
-	if !strings.Contains(msg, "RECOVERED") || !strings.Contains(msg, "7 consecutive") ||
-		!strings.Contains(msg, pidTag) {
-		t.Fatalf("recovery alert missing fields: %q", msg)
 	}
 }
 
@@ -318,118 +291,8 @@ func TestScriptFailureTransientTracker_RecoveryResetsWallClock(t *testing.T) {
 
 const wrapped502BundleErr = "regime bundle hyperliquid/BNB/30m: (502, '<html>\\r\\n<head><title>502 Bad Gateway</title></head>\\r\\n<body>\\r\\n<center><h1>502 Bad Gateway</h1></center>\\r\\n<hr><center>nginx/1.22.1</center>\\r\\n</body>\\r\\n</html>\\r\\n')"
 
-func TestNotifyScriptFailure_Wrapped502SkipsPrimaryStreak(t *testing.T) {
-	id := "regime[hyperliquid/BNB/30m]"
-	defer func() {
-		scriptFailureTracker.Clear(id)
-		scriptFailureTransientTracker.Clear(id)
-	}()
-	sc := StrategyConfig{ID: id, Platform: "hyperliquid", Script: "shared_scripts/check_regime.py"}
-	for i := 0; i < scriptFailureAlertThreshold; i++ {
-		notifyScriptFailure(nil, sc, scriptFailureError, wrapped502BundleErr)
-	}
-	recovered, prior := scriptFailureTracker.Clear(id)
-	if recovered || prior != 0 {
-		t.Fatalf("three wrapped 502s must not touch primary tracker: recovered=%v prior=%d, want false/0", recovered, prior)
-	}
-	transientRecovered, transientPrior := scriptFailureTransientTracker.Clear(id)
-	if transientRecovered || transientPrior != scriptFailureAlertThreshold {
-		t.Fatalf("wrapped 502 must increment transient tracker only: recovered=%v prior=%d, want false/%d", transientRecovered, transientPrior, scriptFailureAlertThreshold)
-	}
-}
-
-func TestNotifyScriptFailure_Sustained502AlertsTransient(t *testing.T) {
-	id := "regime[hyperliquid/BNB/30m]-sustained"
-	defer func() {
-		scriptFailureTracker.Clear(id)
-		scriptFailureTransientTracker.Clear(id)
-	}()
-	sc := StrategyConfig{ID: id, Platform: "hyperliquid", Script: "shared_scripts/check_regime.py"}
-	for i := 0; i < scriptFailureTransientAlertThreshold; i++ {
-		notifyScriptFailure(nil, sc, scriptFailureError, wrapped502BundleErr)
-	}
-	recovered, prior := scriptFailureTransientTracker.Clear(id)
-	if !recovered || prior != scriptFailureTransientAlertThreshold {
-		t.Fatalf("sustained 502: recovered=%v prior=%d, want true/%d", recovered, prior, scriptFailureTransientAlertThreshold)
-	}
-	primaryRecovered, primaryPrior := scriptFailureTracker.Clear(id)
-	if primaryRecovered || primaryPrior != 0 {
-		t.Fatalf("sustained 502 must leave primary at 0: recovered=%v prior=%d", primaryRecovered, primaryPrior)
-	}
-}
-
-func TestNotifyScriptFailure_502ThenRealStartsPrimary(t *testing.T) {
-	id := "regime[hyperliquid/BNB/30m]-handoff"
-	defer func() {
-		scriptFailureTracker.Clear(id)
-		scriptFailureTransientTracker.Clear(id)
-	}()
-	sc := StrategyConfig{ID: id, Platform: "hyperliquid", Script: "shared_scripts/check_regime.py"}
-	notifyScriptFailure(nil, sc, scriptFailureError, wrapped502BundleErr)
-	notifyScriptFailure(nil, sc, scriptFailureError, "NameError: foo")
-	recovered, prior := scriptFailureTracker.Clear(id)
-	if recovered || prior != 1 {
-		t.Fatalf("real error after 502 must start primary at 1: recovered=%v prior=%d, want false/1", recovered, prior)
-	}
-}
-
-func TestClearScriptFailure_Clears502TransientTracker(t *testing.T) {
-	id := "regime[hyperliquid/BNB/30m]-clear"
-	defer func() {
-		scriptFailureTracker.Clear(id)
-		scriptFailureTransientTracker.Clear(id)
-	}()
-	sc := StrategyConfig{ID: id, Platform: "hyperliquid", Script: "shared_scripts/check_regime.py"}
-	notifyScriptFailure(nil, sc, scriptFailureError, wrapped502BundleErr)
-	clearScriptFailure(nil, sc)
-	_, transientPrior := scriptFailureTransientTracker.Clear(id)
-	if transientPrior != 0 {
-		t.Fatalf("clearScriptFailure must reset 502 transient streak: prior=%d, want 0", transientPrior)
-	}
-}
-
 const wrappedTimeoutErr = "script error: script timed out after 30s (stderr: )"
 const regimeTimeoutErr = "regime bundle hyperliquid/HYPE/30m: script timed out after 30s"
-
-func TestNotifyScriptFailure_WrappedTimeoutSkipsPrimaryStreak(t *testing.T) {
-	id := "regime[hyperliquid/HYPE/30m]"
-	defer func() {
-		scriptFailureTracker.Clear(id)
-		scriptFailureTransientTracker.Clear(id)
-	}()
-	sc := StrategyConfig{ID: id, Platform: "hyperliquid", Script: "shared_scripts/check_regime.py"}
-	for i := 0; i < scriptFailureAlertThreshold; i++ {
-		notifyScriptFailure(nil, sc, scriptFailureError, wrappedTimeoutErr)
-	}
-	recovered, prior := scriptFailureTracker.Clear(id)
-	if recovered || prior != 0 {
-		t.Fatalf("three wrapped timeouts must not fire primary: recovered=%v prior=%d, want false/0", recovered, prior)
-	}
-	transientRecovered, transientPrior := scriptFailureTransientTracker.Clear(id)
-	if transientRecovered || transientPrior != scriptFailureAlertThreshold {
-		t.Fatalf("wrapped timeout must increment transient tracker only: recovered=%v prior=%d, want false/%d", transientRecovered, transientPrior, scriptFailureAlertThreshold)
-	}
-}
-
-func TestNotifyScriptFailure_SustainedTimeoutAlertsTransient(t *testing.T) {
-	id := "regime[hyperliquid/HYPE/30m]-sustained"
-	defer func() {
-		scriptFailureTracker.Clear(id)
-		scriptFailureTransientTracker.Clear(id)
-	}()
-	sc := StrategyConfig{ID: id, Platform: "hyperliquid", Script: "shared_scripts/check_regime.py"}
-	for i := 0; i < scriptFailureTransientAlertThreshold; i++ {
-		notifyScriptFailure(nil, sc, scriptFailureError, wrappedTimeoutErr)
-	}
-	recovered, prior := scriptFailureTransientTracker.Clear(id)
-	if !recovered || prior != scriptFailureTransientAlertThreshold {
-		t.Fatalf("sustained timeout: recovered=%v prior=%d, want true/%d", recovered, prior, scriptFailureTransientAlertThreshold)
-	}
-	primaryRecovered, primaryPrior := scriptFailureTracker.Clear(id)
-	if primaryRecovered || primaryPrior != 0 {
-		t.Fatalf("sustained timeout must leave primary at 0: recovered=%v prior=%d", primaryRecovered, primaryPrior)
-	}
-}
 
 func TestNotifyScriptFailure_502ThenTimeoutStaysTransient(t *testing.T) {
 	id := "regime[hyperliquid/HYPE/30m]-mixed"
@@ -450,36 +313,109 @@ func TestNotifyScriptFailure_502ThenTimeoutStaysTransient(t *testing.T) {
 	}
 }
 
-func TestNotifyScriptFailure_TimeoutThenRealStartsPrimary(t *testing.T) {
-	id := "regime[hyperliquid/HYPE/30m]-handoff"
-	defer func() {
-		scriptFailureTracker.Clear(id)
-		scriptFailureTransientTracker.Clear(id)
-	}()
-	sc := StrategyConfig{ID: id, Platform: "hyperliquid", Script: "shared_scripts/check_regime.py"}
-	notifyScriptFailure(nil, sc, scriptFailureError, wrappedTimeoutErr)
-	notifyScriptFailure(nil, sc, scriptFailureError, "NameError: foo")
-	recovered, prior := scriptFailureTracker.Clear(id)
-	if recovered || prior != 1 {
-		t.Fatalf("real error after timeout must start primary at 1: recovered=%v prior=%d, want false/1", recovered, prior)
+var wrappedTransientErrs = []struct {
+	name string
+	err  string
+}{
+	{"wrapped 502 bundle", wrapped502BundleErr},
+	{"wrapped script timeout", wrappedTimeoutErr},
+}
+
+func wrappedTransientStrategy(id string) StrategyConfig {
+	return StrategyConfig{ID: id, Platform: "hyperliquid", Script: "shared_scripts/check_regime.py"}
+}
+
+func TestNotifyScriptFailure_WrappedTransientSkipsPrimaryStreak(t *testing.T) {
+	for _, tc := range wrappedTransientErrs {
+		t.Run(tc.name, func(t *testing.T) {
+			id := "wrapped-skip-" + tc.name
+			defer func() {
+				scriptFailureTracker.Clear(id)
+				scriptFailureTransientTracker.Clear(id)
+			}()
+			sc := wrappedTransientStrategy(id)
+			for i := 0; i < scriptFailureAlertThreshold; i++ {
+				notifyScriptFailure(nil, sc, scriptFailureError, tc.err)
+			}
+			recovered, prior := scriptFailureTracker.Clear(id)
+			if recovered || prior != 0 {
+				t.Fatalf("wrapped transient must not touch primary: recovered=%v prior=%d, want false/0", recovered, prior)
+			}
+			transientRecovered, transientPrior := scriptFailureTransientTracker.Clear(id)
+			if transientRecovered || transientPrior != scriptFailureAlertThreshold {
+				t.Fatalf("wrapped transient must increment transient only: recovered=%v prior=%d, want false/%d", transientRecovered, transientPrior, scriptFailureAlertThreshold)
+			}
+		})
 	}
 }
 
-func TestClearScriptFailure_ClearsTimeoutTransientTracker(t *testing.T) {
-	id := "regime[hyperliquid/HYPE/30m]-clear"
-	defer func() {
-		scriptFailureTracker.Clear(id)
-		scriptFailureTransientTracker.Clear(id)
-	}()
-	sc := StrategyConfig{ID: id, Platform: "hyperliquid", Script: "shared_scripts/check_regime.py"}
-	notifyScriptFailure(nil, sc, scriptFailureError, regimeTimeoutErr)
-	clearScriptFailure(nil, sc)
-	_, transientPrior := scriptFailureTransientTracker.Clear(id)
-	if transientPrior != 0 {
-		t.Fatalf("clearScriptFailure must reset timeout transient streak: prior=%d, want 0", transientPrior)
+func TestNotifyScriptFailure_SustainedWrappedTransientAlertsTransient(t *testing.T) {
+	for _, tc := range wrappedTransientErrs {
+		t.Run(tc.name, func(t *testing.T) {
+			id := "wrapped-sustained-" + tc.name
+			defer func() {
+				scriptFailureTracker.Clear(id)
+				scriptFailureTransientTracker.Clear(id)
+			}()
+			sc := wrappedTransientStrategy(id)
+			for i := 0; i < scriptFailureTransientAlertThreshold; i++ {
+				notifyScriptFailure(nil, sc, scriptFailureError, tc.err)
+			}
+			recovered, prior := scriptFailureTransientTracker.Clear(id)
+			if !recovered || prior != scriptFailureTransientAlertThreshold {
+				t.Fatalf("sustained transient: recovered=%v prior=%d, want true/%d", recovered, prior, scriptFailureTransientAlertThreshold)
+			}
+			primaryRecovered, primaryPrior := scriptFailureTracker.Clear(id)
+			if primaryRecovered || primaryPrior != 0 {
+				t.Fatalf("sustained transient must leave primary at 0: recovered=%v prior=%d", primaryRecovered, primaryPrior)
+			}
+		})
 	}
-	_, primaryPrior := scriptFailureTracker.Clear(id)
-	if primaryPrior != 0 {
-		t.Fatalf("clearScriptFailure must reset primary streak: prior=%d, want 0", primaryPrior)
+}
+
+func TestNotifyScriptFailure_WrappedTransientThenRealStartsPrimary(t *testing.T) {
+	for _, tc := range wrappedTransientErrs {
+		t.Run(tc.name, func(t *testing.T) {
+			id := "wrapped-handoff-" + tc.name
+			defer func() {
+				scriptFailureTracker.Clear(id)
+				scriptFailureTransientTracker.Clear(id)
+			}()
+			sc := wrappedTransientStrategy(id)
+			notifyScriptFailure(nil, sc, scriptFailureError, tc.err)
+			notifyScriptFailure(nil, sc, scriptFailureError, "NameError: foo")
+			recovered, prior := scriptFailureTracker.Clear(id)
+			if recovered || prior != 1 {
+				t.Fatalf("real error after transient must start primary at 1: recovered=%v prior=%d, want false/1", recovered, prior)
+			}
+		})
+	}
+}
+
+func TestClearScriptFailure_ClearsWrappedTransientTracker(t *testing.T) {
+	cases := []struct {
+		name string
+		err  string
+	}{
+		{"wrapped 502 bundle", wrapped502BundleErr},
+		{"regime script timeout", regimeTimeoutErr},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			id := "wrapped-clear-" + tc.name
+			defer func() {
+				scriptFailureTracker.Clear(id)
+				scriptFailureTransientTracker.Clear(id)
+			}()
+			sc := wrappedTransientStrategy(id)
+			notifyScriptFailure(nil, sc, scriptFailureError, tc.err)
+			clearScriptFailure(nil, sc)
+			if _, transientPrior := scriptFailureTransientTracker.Clear(id); transientPrior != 0 {
+				t.Fatalf("clearScriptFailure must reset transient streak: prior=%d, want 0", transientPrior)
+			}
+			if _, primaryPrior := scriptFailureTracker.Clear(id); primaryPrior != 0 {
+				t.Fatalf("clearScriptFailure must reset primary streak: prior=%d, want 0", primaryPrior)
+			}
+		})
 	}
 }

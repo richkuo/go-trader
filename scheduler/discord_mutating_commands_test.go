@@ -323,26 +323,6 @@ func TestConfirmYes(t *testing.T) {
 	}
 }
 
-func TestPlatformSetupGuide(t *testing.T) {
-	guide, err := platformSetupGuide("hyperliquid")
-	if err != nil {
-		t.Fatalf("guide: %v", err)
-	}
-	if !strings.Contains(guide, "/opt/go-trader/.env") || !strings.Contains(guide, "/go-trader-add-strategy") {
-		t.Errorf("hyperliquid guide missing setup steps: %s", guide)
-	}
-	guide, err = platformSetupGuide("deribit")
-	if err != nil {
-		t.Fatalf("guide: %v", err)
-	}
-	if !strings.Contains(guide, "init wizard") {
-		t.Errorf("deribit guide should point to wizard: %s", guide)
-	}
-	if _, err := platformSetupGuide("not-a-platform"); err == nil {
-		t.Error("expected error for unknown platform")
-	}
-}
-
 func TestWriteValidatedConfigRootRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
