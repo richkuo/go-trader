@@ -762,9 +762,10 @@ Gather first: platform name and ID prefix; products (spot, perps, futures, optio
 7. Executor wiring, only if a new live execution path is needed
 8. Config examples
 9. The init wizard and `generateConfig`, if the platform is user-selectable
-10. Tests, including pure-helper tests for the Go logic
+10. `pyproject.toml` for any new SDK dependency, then `uv sync`
+11. Tests, including pure-helper tests for the Go logic
 
-Options platforms also need volatility, expiry, strike, and premium helpers, the fee calculator, and an entry in the options-platform list. Reference adapters: spot `binanceus`, perps `hyperliquid`, futures `topstep`, options `deribit`.
+Options platforms also need volatility, expiry, strike, and premium helpers, `CalculateOptionFee`, and an `OptionPlatforms` entry. Reference adapters: spot `binanceus`, perps `hyperliquid`, futures `topstep`, options `deribit`.
 
 ```bash
 uv run --no-sync python -m py_compile platforms/<name>/adapter.py
@@ -923,6 +924,7 @@ Per-subsystem mechanism notes for coding agents. `CLAUDE.md` keeps only the guar
 
 - `runPythonSideEffect` is the runner for every subprocess that can place, cancel, or modify an order; `runPython` is read-only. Graceful shutdown drains side-effecting subprocesses for at most `shutdownDrainCap=15s` and then SIGKILLs; state save, notifier flush, and DB close run afterwards through deferred LIFO. `TimeoutStopSec=20` in the units.
 - `confirmHyperliquidExecuteFill` covers open, close, scale-in, hedge, manual, and UI paths. A response without a confirmed fill returns `"exchange returned no confirmed fill"` and books nothing. `hyperliquidExecuteSucceededCancelOIDs` retains the confirmed cancel OIDs so protection reconciliation can tell a cancelled trigger from a lost one.
+- Bidirectional perps: a short entry registers in `bidirectionalPerpsStrategies`; flip sizing uses `perpsLiveOrderSize`.
 
 ### Loopback UI and tuning (`server.go`, `ui_*.go`, `static/ui/*`, `ui_tuning.go`)
 
@@ -948,6 +950,7 @@ Per-subsystem mechanism notes for coding agents. `CLAUDE.md` keeps only the guar
 - Daily loss limit: `portfolio_risk.daily_max_loss_usd`/`daily_max_loss_pct`, 0 = off; both set → the lower resolved USD wins; the pct basis is the sum of strategy `initial_capital` per scope. The gate shape to copy for any new `portfolio_risk` gate: RLock evaluation per scope, `pausedBlocksSignal` holds, `manualStateView` refusals, `clonePortfolioRiskConfig` hot-reload.
 - Exposure cap: `portfolio_risk.max_same_direction_notional_usd`/`max_asset_concentration_pct`, 0 = off; `exposureCapBlocksSignal` decides; TopStep futures are ungated. `computeAssetDeltas` in `correlation.go` is the one exposure model shared with `ComputeCorrelation`. Hot-reloadable via SIGHUP.
 - Notional cap: `portfolio_risk.max_notional_usd`, 0 = off. `notionalCapSkipsStrategyCycle` is always false: closes, SL, and TP maintenance keep running; manual open, add, and limit-open refuse. Restart-required.
+- Kill-switch fill attribution on shared HL coins goes through `hyperliquidKillSwitchFillShare`, which fails closed when the split cannot be determined. The reset prompt is single-flight via an `atomic.Bool`; the deferral timestamp is `UntrustedOverLimitSince`.
 
 ### Live-to-paper replay (`replay_log.go`, `replay_mirror.go`)
 
@@ -994,6 +997,7 @@ Enabled by `replay_log_path` plus per-strategy `replay_sharing="live_mirror"`. P
 - Cashflow journal: HL total-drift is live; OKX and TopStep run in shadow.
 - Kill-switch limit orders: each row goes cancel → `--limit-status` → delete under a 60s pre-flatten deadline; an unresolved row clears `OnChainConfirmedFlat` and blocks `CanAutoResetWithoutOwner`. Operator view: § Portfolio Kill Switch And Latch Ownership.
 - Orphan cancel lane: rows in `cancel_requested` or expired that fail `killSwitchLimitOrderAdoptionBlock`; roster from `killSwitchLimitOrderRoster` plus `collectKillSwitchLimitOrderCandidates`. Severity-gated throttle; `operator_required_since` backs off the poll. `applyLimitExposureOperatorRequired` sets the marker on `unbacked`, leaves it on `unreadable`, clears otherwise; the marker is the sole gate for `manual-clear-limit-row <oid> --flattened`.
+- The orphan cancel lane is `cancelOrphanedLimitOrder`.
 - Limit fill exposure: `hlLiveExposureReader` polls rows, decides per coin, finalizes; `snapshotNewerThan` is the sole reader; `applyCoinLimitFills` aggregates per coin; `classifyLimitFillLiveExposure` requires same-direction and contained. DM severity is gated by outcome.
 
 ### Python side (`shared_scripts/`, `platforms/`, `shared_tools/`, `shared_strategies/`, `backtest/`)
@@ -1003,19 +1007,17 @@ Enabled by `replay_log_path` plus per-strategy `replay_sharing="live_mirror"`. P
 - `shared_tools/atr.py` shims `shared_strategies/open/indicators_core.py`; `atr_method` resolves via `resolveATRMethod`. `indicators_core.py` holds ATR/RSI plus `hurst_exponent` (DFA, live SSoT) and research-only `hurst_rescaled_range`. Options strategies live in `options/strategies.py`.
 - Strategy DSL: config params sit under runtime; `HTFFilter` is not available on options or `delta_neutral_funding`. M5 `deprecated_m5` holds 32 names; live use DMs unless `allow_deprecated:true`; paper auto-suppresses via `AllowDeprecatedEffective()`.
 - Backtest files: `backtester.py`, `optimizer.py`, `run_backtest.py`, `backtest_{options,theta,pairs}.py`, `parity_diff.py`. `--config <path> --strategy <id>` reads the single `close_strategy` and applies `user_defaults` by default (`--defaults system` keeps the built-in baseline). `--intrabar-resolution bar_close` is the legacy race resolution. Regime: `--config` threads `allowed_regimes` (the CLI flag is rejected); composite via `regime.windows`; the open name falls back to `args[0]`. `regime_directional_policy` is backtestable behind its flag; scalar `sl_after` and `*_atr_mult_regime` stop dicts are backtestable. Liquidation floor: a sticky equity floor at 0 from the first bust; blown legs report `±LIQUIDATED_METRIC_FLOOR`. `tune_live.py` writes SCHEMA_VERSION=2 `promotion_baseline`.
+- Close evaluators: `avwap_stop` is a virtual exit only and is absent from `isTieredTPATRCloseName` and `closeStrategiesSuppressedByOnChainProtection`; `atr_stop` and `avwap_stop` follow the same `atr_source` rule as `tiered_tp_atr_live`, which recomputes from `market_ctx["atr"]` (`atr_source` `live`|`entry`). Backtest regime gating blocks entries when `bar_regime ∉ allowed_regimes`.
 
 ### Notifications and channels
 
-Channels are `spot`, `options`, `<platform>`, `<platform>-paper`. `resolveChannelKey(platform, type, isLive)` prefers a non-empty `<platform>-paper` key for paper strategies, so summaries, leaderboards, and Sharpe groups split by mode only when that key is configured. `SendToScopeChannels(scope, msg)` targets `-paper` channels for paper and falls back to `SendToAllChannels`. Bidirectional perps: a short entry registers in `bidirectionalPerpsStrategies`; flip sizing uses `perpsLiveOrderSize`.
+Channels are `spot`, `options`, `<platform>`, `<platform>-paper`. `resolveChannelKey(platform, type, isLive)` prefers a non-empty `<platform>-paper` key for paper strategies, so summaries, leaderboards, and Sharpe groups split by mode only when that key is configured. `SendToScopeChannels(scope, msg)` targets `-paper` channels for paper and falls back to `SendToAllChannels`.
 
 ### Build, deploy, and test mechanics
 
 - `scripts/update.sh --restart` is atomic: preflight → `pull --ff-only` (or `--rsync-from <src>`) → `uv sync` → build → probe → binary swap (previous kept as `.prev`) → restart and verify → rollback on timeout. `--all --restart` discovers deployments via `discover_deployment_dirs_from_systemd`. A one-off build is `go build -ldflags "-X main.Version=$(git describe --tags --always --dirty=-mod)" -o go-trader .`; config-only reload is `kill -HUP $(pgrep go-trader)` and Python picks the change up next cycle.
 - Post-update classification diffs `<running>..HEAD` per § Post-Update Agent Protocol.
-- New-platform touchpoints beyond § Custom Platform Integration: `pyproject.toml` for dependencies; options platforms also add `CalculateOptionFee` and an `OptionPlatforms` entry.
 - Test placement: Go `_test.go` beside the file; Python `test_*.py`. Pure helpers to extract from subprocess wrappers include `perpsLiveOrderSize`, `*OrderSkipReason`, `parseXxxCloseOutput`, and the Sharpe computation. `shared_scripts/test_*.py` sits outside pytest `testpaths`; registry and sys.path tests import through `importlib.util.spec_from_file_location`.
-- Kill-switch fill attribution on shared HL coins goes through `hyperliquidKillSwitchFillShare`, which fails closed when the split cannot be determined. The reset prompt is single-flight via an `atomic.Bool`; the deferral timestamp is `UntrustedOverLimitSince`.
-- The orphan cancel lane is `cancelOrphanedLimitOrder`. `avwap_stop` is a virtual exit only and is absent from `isTieredTPATRCloseName` and `closeStrategiesSuppressedByOnChainProtection`; `atr_stop` and `avwap_stop` follow the same `atr_source` rule as `tiered_tp_atr_live`, which recomputes from `market_ctx["atr"]` (`atr_source` `live`|`entry`). Backtest regime gating blocks entries when `bar_regime ∉ allowed_regimes`.
 
 ### The `@claude` GitHub workflow (`.github/workflows/claude.yml`)
 
