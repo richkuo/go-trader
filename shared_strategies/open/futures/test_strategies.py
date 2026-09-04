@@ -1,7 +1,5 @@
 import os
 import sys
-from unittest.mock import patch
-
 import numpy as np
 import pandas as pd
 import pytest
@@ -72,17 +70,15 @@ def test_apply_strategy_returns_signal_contract():
 
 
 class TestTripleEmaBidir:
-    def test_uptrend_enters_long(self):
-        result = _run("triple_ema_bidir", make_trending_up(120))
+    @pytest.mark.parametrize("maker,expected", [
+        (make_trending_up, 1),
+        (make_trending_down, -1),
+    ])
+    def test_trend_direction_enters_matching_side(self, maker, expected):
+        result = _run("triple_ema_bidir", maker(120))
         _assert_signal_contract(result)
-        assert (result["position"] == 1).any()
-        assert (result["signal"] == 1).any()
-
-    def test_downtrend_enters_short(self):
-        result = _run("triple_ema_bidir", make_trending_down(120))
-        _assert_signal_contract(result)
-        assert (result["position"] == -1).any()
-        assert (result["signal"] == -1).any()
+        assert (result["position"] == expected).any()
+        assert (result["signal"] == expected).any()
 
     def test_direct_flip_signal_is_clamped(self):
         closes = list(make_trending_up(80, start=100, step=1.0)) + list(

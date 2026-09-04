@@ -130,24 +130,18 @@ class TestMultiPage:
         assert out["by_oid"]["222"]["fee"] == pytest.approx(0.20)
 
 
-class TestErrorPaths:
-    def test_missing_account_address_errors_cleanly(self):
-        out, code = _run_script([], ["--since-ms=500"], account_address="")
-        assert code == 1
-        assert "HYPERLIQUID_ACCOUNT_ADDRESS" in out["error"]
-        assert out["by_oid"] == {}
-
-    def test_invalid_since_ms_errors(self):
-        out, code = _run_script([], ["--since-ms=0"], account_address="0xabc")
-        assert code == 1
-        assert "since-ms" in out["error"]
-
-    def test_user_fills_exception_surfaces(self):
-        out, code = _run_script(RuntimeError("indexer down"),
-                                ["--since-ms=500"], account_address="0xabc")
-        assert code == 1
-        assert "user_fills_by_time" in out["error"]
-        assert "indexer down" in out["error"]
+@pytest.mark.parametrize("pages_or_exc,argv,account_address,fragments", [
+    ([], ["--since-ms=500"], "", ["HYPERLIQUID_ACCOUNT_ADDRESS"]),
+    ([], ["--since-ms=0"], "0xabc", ["since-ms"]),
+    (RuntimeError("indexer down"), ["--since-ms=500"], "0xabc",
+     ["user_fills_by_time", "indexer down"]),
+])
+def test_error_paths_exit_one_with_json_envelope(pages_or_exc, argv, account_address, fragments):
+    out, code = _run_script(pages_or_exc, argv, account_address=account_address)
+    assert code == 1
+    for fragment in fragments:
+        assert fragment in out["error"]
+    assert out["by_oid"] == {}
 
 
 class TestNoFills:

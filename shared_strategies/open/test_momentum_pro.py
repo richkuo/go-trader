@@ -110,41 +110,25 @@ def test_vol_target_never_changes_signals():
     pd.testing.assert_series_equal(base["signal"], sized["signal"])
 
 
-def test_vol_target_emits_fraction_scaled_by_atr():
+def _flat_atr_frame():
     n = 260
     closes = np.full(n, 100.0)
-    df = make_frame(
+    return make_frame(
         closes, volume=np.full(n, 100.0), opens=closes,
         highs=closes + 1.0, lows=closes - 1.0,
     )
-    out = momentum_pro_core(df, vol_target_atr_pct=0.01)
+
+
+@pytest.mark.parametrize("kwargs,expected", [
+    (dict(vol_target_atr_pct=0.01), 0.5),
+    (dict(vol_target_atr_pct=0.0001, vol_target_min_fraction=0.10), 0.10),
+    (dict(vol_target_atr_pct=0.50), 1.0),
+], ids=["scaled_by_atr", "floored_at_min_fraction", "capped_at_one"])
+def test_vol_target_entry_fraction(kwargs, expected):
+    out = momentum_pro_core(_flat_atr_frame(), **kwargs)
     assert "entry_fraction" in out.columns
     warm = out["entry_fraction"].iloc[50:]
     assert warm.notna().all()
-    assert warm.iloc[-1] == pytest.approx(0.5)
+    assert warm.iloc[-1] == pytest.approx(expected)
     assert ((warm > 0) & (warm <= 1)).all()
-
-
-def test_vol_target_fraction_floors_at_min_fraction():
-    n = 260
-    closes = np.full(n, 100.0)
-    df = make_frame(
-        closes, volume=np.full(n, 100.0), opens=closes,
-        highs=closes + 1.0, lows=closes - 1.0,
-    )
-    out = momentum_pro_core(df, vol_target_atr_pct=0.0001,
-                            vol_target_min_fraction=0.10)
-    warm = out["entry_fraction"].iloc[50:]
-    assert np.allclose(warm, 0.10)
-
-
-def test_vol_target_caps_fraction_at_one_in_quiet_markets():
-    n = 260
-    closes = np.full(n, 100.0)
-    df = make_frame(
-        closes, volume=np.full(n, 100.0), opens=closes,
-        highs=closes + 1.0, lows=closes - 1.0,
-    )
-    out = momentum_pro_core(df, vol_target_atr_pct=0.50)
-    warm = out["entry_fraction"].iloc[50:]
-    assert np.allclose(warm, 1.0)
+    assert np.allclose(warm, expected)

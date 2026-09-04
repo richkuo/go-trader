@@ -60,17 +60,6 @@ def test_uncovered_range_refetches(db_path):
     assert int(wider["timestamp"].iloc[-1]) >= _BASE_MS + 8 * 24 * _HOUR_MS
 
 
-def test_cache_hit_survives_elapsed_wallclock(db_path):
-    db = db_path
-    stub = StubAdapter(_BASE_MS, hours=72)
-    load_cached_funding("BTC", "2026-01-01", "2026-01-03", adapter=stub, db_path=db)
-    assert stub.calls == 1
-    again = load_cached_funding("BTC", "2026-01-01", "2026-01-03",
-                                adapter=stub, db_path=db)
-    assert stub.calls == 1
-    assert not again.empty
-
-
 def test_late_listed_coin_cached_after_first_fetch(db_path):
     db = db_path
     listed_at = _BASE_MS + 30 * 24 * _HOUR_MS

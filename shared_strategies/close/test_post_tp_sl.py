@@ -21,21 +21,15 @@ def _regime(entries):
     }
 
 
-def test_scalar_atr_offset_implicit():
-    rule = parse_sl_after_rule({"atr_mult": 0.25})
-    assert rule == SLAfterRule(kind="atr_offset", atr_mult=0.25)
-
-
-def test_scalar_atr_offset_signed():
-    rule = parse_sl_after_rule({"atr_mult": -0.5})
-    assert rule == SLAfterRule(kind="atr_offset", atr_mult=-0.5)
-
-
-def test_scalar_trail_from_here():
-    rule = parse_sl_after_rule(
-        {"trail_from_here": {"atr_mult": 1.0}}
-    )
-    assert rule == SLAfterRule(kind="trail_from_here", trail_atr_mult=1.0)
+@pytest.mark.parametrize("raw,expected", [
+    ({"atr_mult": 0.25}, SLAfterRule(kind="atr_offset", atr_mult=0.25)),
+    ({"atr_mult": -0.5}, SLAfterRule(kind="atr_offset", atr_mult=-0.5)),
+    ({"trail_from_here": {"atr_mult": 1.0}},
+     SLAfterRule(kind="trail_from_here", trail_atr_mult=1.0)),
+    ("breakeven", SLAfterRule(kind="breakeven")),
+])
+def test_scalar_shapes_parse(raw, expected):
+    assert parse_sl_after_rule(raw) == expected
 
 
 def test_scalar_trail_from_here_tp_atr_fraction():
@@ -43,10 +37,6 @@ def test_scalar_trail_from_here_tp_atr_fraction():
         {"trail_from_here": {"tp_atr_fraction": 0.5}}
     )
     assert rule.kind == "trail_from_here"
-
-
-def test_scalar_breakeven_string():
-    assert parse_sl_after_rule("breakeven") == SLAfterRule(kind="breakeven")
 
 
 def test_regime_atr_offset_implicit():
@@ -104,85 +94,36 @@ def test_regime_trail_rejects_non_positive(atr):
         )
 
 
-def test_regime_rejects_bare_label_keys():
+_FULL_TREND_REGIME = {
+    "trending_up": {"atr_multiple": 0.25},
+    "trending_down": {"atr_multiple": 0.25},
+    "ranging": {"atr_multiple": 0.0},
+}
+
+_FULL_TRAIL_REGIME = {
+    "trending_up": {"atr_multiple": 1.0},
+    "trending_down": {"atr_multiple": 1.0},
+    "ranging": {"atr_multiple": 0.5},
+}
+
+
+@pytest.mark.parametrize("raw,substrings", [
+    ({"trending_up": {"atr_multiple": 0.25}}, ("trend_regime", "object must contain")),
+    ({"trend_regime": {"trending_up": {"atr_multiple": 0.25},
+                       "ranging": {"atr_multiple": 0.0}}},
+     ("missing required regime labels",)),
+    ({"use_defaults": True, "trend_regime": dict(_FULL_TREND_REGIME)}, ()),
+    ({"atr_mult": 0.25, "trend_regime": dict(_FULL_TREND_REGIME)}, ("pick one shape",)),
+    ({"kind": "atr_offset", "trend_regime": dict(_FULL_TREND_REGIME),
+      "trail_atr_mult": 99.0}, ("pick one shape",)),
+    ({"trail_from_here": {"trend_regime": dict(_FULL_TRAIL_REGIME),
+                          "atr_offset": -3.0}}, ("pick one shape",)),
+])
+def test_regime_shape_rejections(raw, substrings):
     with pytest.raises(ValueError) as exc:
-        parse_sl_after_rule({"trending_up": {"atr_multiple": 0.25}})
-    assert "trend_regime" in str(exc.value) or "object must contain" in str(exc.value)
-
-
-def test_regime_rejects_missing_labels():
-    with pytest.raises(ValueError) as exc:
-        parse_sl_after_rule(
-            {
-                "trend_regime": {
-                    "trending_up": {"atr_multiple": 0.25},
-                    "ranging": {"atr_multiple": 0.0},
-                }
-            }
-        )
-    assert "missing required regime labels" in str(exc.value)
-
-
-def test_regime_rejects_use_defaults_with_explicit():
-    with pytest.raises(ValueError):
-        parse_sl_after_rule(
-            {
-                "use_defaults": True,
-                "trend_regime": {
-                    "trending_up": {"atr_multiple": 0.25},
-                    "trending_down": {"atr_multiple": 0.25},
-                    "ranging": {"atr_multiple": 0.0},
-                },
-            }
-        )
-
-
-def test_regime_rejects_scalar_and_regime_mix():
-    with pytest.raises(ValueError) as exc:
-        parse_sl_after_rule(
-            {
-                "atr_mult": 0.25,
-                "trend_regime": {
-                    "trending_up": {"atr_multiple": 0.25},
-                    "trending_down": {"atr_multiple": 0.25},
-                    "ranging": {"atr_multiple": 0.0},
-                },
-            }
-        )
-    assert "pick one shape" in str(exc.value)
-
-
-def test_atr_offset_regime_rejects_stray_trail_atr_mult():
-    with pytest.raises(ValueError) as exc:
-        parse_sl_after_rule(
-            {
-                "kind": "atr_offset",
-                "trend_regime": {
-                    "trending_up": {"atr_multiple": 0.25},
-                    "trending_down": {"atr_multiple": 0.25},
-                    "ranging": {"atr_multiple": 0.0},
-                },
-                "trail_atr_mult": 99.0,
-            }
-        )
-    assert "pick one shape" in str(exc.value)
-
-
-def test_trail_regime_rejects_stray_atr_offset():
-    with pytest.raises(ValueError) as exc:
-        parse_sl_after_rule(
-            {
-                "trail_from_here": {
-                    "trend_regime": {
-                        "trending_up": {"atr_multiple": 1.0},
-                        "trending_down": {"atr_multiple": 1.0},
-                        "ranging": {"atr_multiple": 0.5},
-                    },
-                    "atr_offset": -3.0,
-                }
-            }
-        )
-    assert "pick one shape" in str(exc.value)
+        parse_sl_after_rule(raw)
+    if substrings:
+        assert any(sub in str(exc.value) for sub in substrings), exc.value
 
 
 def test_resolve_for_regime_atr_offset():

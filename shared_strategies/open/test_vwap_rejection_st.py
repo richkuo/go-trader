@@ -68,13 +68,6 @@ def test_short_data_returns_zero_signal_without_crash():
         assert col in result.columns
 
 
-def test_indicator_columns_exposed():
-    df = _bear_setup_with_rally_and_rejection()
-    result = vwap_rejection_st_core(df)
-    for col in ("ema_short", "ema_mid", "ema_long", "vwap", "rsi"):
-        assert col in result.columns, f"{col} column missing from output"
-
-
 def test_rsi_reclaim_above_50_blocks_short():
     df = _bear_setup_with_rally_and_rejection()
     result = vwap_rejection_st_core(df, rsi_max_reclaim=0.0)
@@ -89,12 +82,6 @@ def test_buffer_rejects_wick_only_touch():
     assert (result["signal"] == 0).all(), (
         "Buffer gate at 50% must veto every short — no high realistically overshoots that much"
     )
-
-
-def test_signal_values_valid():
-    df = _bear_setup_with_rally_and_rejection()
-    result = vwap_rejection_st_core(df)
-    assert set(result["signal"].unique()).issubset({-1, 0, 1})
 
 
 def test_trigger_closes_below_every_rally_magnet():

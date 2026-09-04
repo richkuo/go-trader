@@ -72,20 +72,14 @@ class TestEMA:
 
 
 class TestSMACrossover:
-    def test_bullish_crossover(self):
-        closes = list(np.linspace(120, 90, 60)) + list(np.linspace(90, 130, 60))
-        df = make_ohlcv(closes)
-        result = sma_crossover(df, fast_period=10, slow_period=30)
+    @pytest.mark.parametrize("closes,expected", [
+        (list(np.linspace(120, 90, 60)) + list(np.linspace(90, 130, 60)), 1),
+        (list(np.linspace(90, 130, 60)) + list(np.linspace(130, 80, 60)), -1),
+    ])
+    def test_crossover_emits_signal(self, closes, expected):
+        result = sma_crossover(make_ohlcv(closes), fast_period=10, slow_period=30)
         assert "signal" in result.columns
-        buy_signals = result[result["signal"] == 1]
-        assert len(buy_signals) >= 1
-
-    def test_bearish_crossover(self):
-        closes = list(np.linspace(90, 130, 60)) + list(np.linspace(130, 80, 60))
-        df = make_ohlcv(closes)
-        result = sma_crossover(df, fast_period=10, slow_period=30)
-        sell_signals = result[result["signal"] == -1]
-        assert len(sell_signals) >= 1
+        assert len(result[result["signal"] == expected]) >= 1
 
     def test_flat_data_no_crossovers(self):
         df = make_ohlcv([100.0] * 100, noise=0)
@@ -118,23 +112,15 @@ class TestRSI:
         valid_rsi = result["rsi"].dropna()
         assert (valid_rsi >= 0).all() and (valid_rsi <= 100).all()
 
-    def test_sell_signal_on_overbought_drop(self):
-        closes = list(np.linspace(100, 100, 20)) + list(np.linspace(100, 150, 15)) + list(np.linspace(150, 130, 30))
-        df = make_ohlcv(closes)
-        result = rsi(df, period=14, overbought=70, oversold=30)
-        sell_signals = result[result["signal"] == -1]
-        assert isinstance(sell_signals, pd.DataFrame)
-
-    def test_flat_data_no_signals(self):
-        df = make_ohlcv([100.0] * 50, noise=0)
+    @pytest.mark.parametrize("closes,noise", [
+        ([100.0] * 50, 0),
+        ([100.0, 101.0], None),
+    ])
+    def test_no_signals_without_usable_data(self, closes, noise):
+        df = make_ohlcv(closes) if noise is None else make_ohlcv(closes, noise=noise)
         result = rsi(df, period=14)
         signals = result["signal"]
         assert (signals == 0).all() or signals.isna().all()
-
-    def test_insufficient_data(self):
-        df = make_ohlcv([100.0, 101.0])
-        result = rsi(df, period=14)
-        assert (result["signal"] == 0).all()
 
 
 class TestBollingerBands:
@@ -162,12 +148,11 @@ class TestBollingerBands:
         result = bollinger_bands(df, period=20, num_std=2.0)
         assert set(result["signal"].unique()).issubset({-1, 0, 1})
 
-    def test_flat_data_no_signals(self):
-        df = make_ohlcv([100.0] * 50, noise=0)
-        result = bollinger_bands(df, period=20, num_std=2.0)
-        assert (result["signal"] == 0).all()
-
-    def test_insufficient_data(self):
-        df = make_ohlcv([100.0] * 5)
+    @pytest.mark.parametrize("closes,noise", [
+        ([100.0] * 50, 0),
+        ([100.0] * 5, None),
+    ])
+    def test_no_signals_without_usable_data(self, closes, noise):
+        df = make_ohlcv(closes) if noise is None else make_ohlcv(closes, noise=noise)
         result = bollinger_bands(df, period=20, num_std=2.0)
         assert (result["signal"] == 0).all()

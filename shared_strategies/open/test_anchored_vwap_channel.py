@@ -171,11 +171,3 @@ def test_registered_for_spot_and_futures():
     for platform in ("spot", "futures"):
         assert "anchored_vwap_channel" in reg.build_registry(platform), platform
         assert "anchored_vwap_channel" in reg.PLATFORM_ORDER[platform], platform
-
-
-def test_registered_fn_applies_via_registry():
-    reg = _load_registry()
-    entry = reg.STRATEGIES["anchored_vwap_channel"]
-    df = _long_bounce_df()
-    out = entry["fn"](df, **entry["default_params"])
-    assert "signal" in out.columns

@@ -412,32 +412,30 @@ def test_shared_state_accepts_a_prebuilt_frame_without_an_adapter(mod):
     assert math.isfinite(result["price"])
 
 
-def test_futures_registry_fast_path_rejects_the_spot_registry(mod, monkeypatch):
-    spot_path = os.path.join(
+def _spot_registry_path(mod):
+    return os.path.join(
         os.path.dirname(os.path.abspath(mod.__file__)),
         "..", "shared_strategies", "open", "spot", "strategies.py")
-    spot_stub = types.ModuleType("strategies")
-    spot_stub.__file__ = spot_path
-    spot_stub.apply_strategy = lambda *a, **k: None
-    monkeypatch.setitem(sys.modules, "strategies", spot_stub)
-
-    resolved = mod._futures_strategies_module()
-    assert resolved is not spot_stub
-    assert os.path.realpath(resolved.__file__) == os.path.realpath(mod.FUTURES_STRATEGIES_PATH)
 
 
-def test_futures_registry_fast_path_rejects_a_registry_without_a_file(mod, monkeypatch):
+@pytest.mark.parametrize("stub_file,accepted", [
+    ("spot", False),
+    (None, False),
+    ("futures", True),
+])
+def test_futures_registry_fast_path_only_accepts_the_futures_registry(
+        mod, monkeypatch, stub_file, accepted):
     stub = types.ModuleType("strategies")
+    if stub_file == "spot":
+        stub.__file__ = _spot_registry_path(mod)
+    elif stub_file == "futures":
+        stub.__file__ = mod.FUTURES_STRATEGIES_PATH
     stub.apply_strategy = lambda *a, **k: None
     monkeypatch.setitem(sys.modules, "strategies", stub)
+
     resolved = mod._futures_strategies_module()
-    assert resolved is not stub
+    if accepted:
+        assert resolved is stub
+    else:
+        assert resolved is not stub
     assert os.path.realpath(resolved.__file__) == os.path.realpath(mod.FUTURES_STRATEGIES_PATH)
-
-
-def test_futures_registry_fast_path_accepts_the_futures_registry(mod, monkeypatch):
-    futures_stub = types.ModuleType("strategies")
-    futures_stub.__file__ = mod.FUTURES_STRATEGIES_PATH
-    futures_stub.apply_strategy = lambda *a, **k: None
-    monkeypatch.setitem(sys.modules, "strategies", futures_stub)
-    assert mod._futures_strategies_module() is futures_stub

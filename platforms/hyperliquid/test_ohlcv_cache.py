@@ -76,14 +76,16 @@ def _sample_candles():
     ]
 
 
-def test_cache_enabled_by_default(adapter_mod, monkeypatch):
-    monkeypatch.delenv("GO_TRADER_HL_OHLCV_CACHE", raising=False)
-    assert adapter_mod._ohlcv_cache_enabled() is True
-
-
-def test_cache_disabled_via_env(adapter_mod, monkeypatch):
-    monkeypatch.setenv("GO_TRADER_HL_OHLCV_CACHE", "0")
-    assert adapter_mod._ohlcv_cache_enabled() is False
+@pytest.mark.parametrize("env_value,expected", [
+    (None, True),
+    ("0", False),
+])
+def test_cache_enable_switch(adapter_mod, monkeypatch, env_value, expected):
+    if env_value is None:
+        monkeypatch.delenv("GO_TRADER_HL_OHLCV_CACHE", raising=False)
+    else:
+        monkeypatch.setenv("GO_TRADER_HL_OHLCV_CACHE", env_value)
+    assert adapter_mod._ohlcv_cache_enabled() is expected
 
 
 def test_cache_path_sanitizes_symbol(adapter_mod, tmp_path):

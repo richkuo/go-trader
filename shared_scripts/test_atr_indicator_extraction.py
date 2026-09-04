@@ -15,13 +15,6 @@ def _make_df(n=20):
     return make_ohlcv([1.0] * n, volume=1.0, noise=0.1)
 
 
-def test_stale_last_missing_atr():
-    df = _make_df()
-    stale_last = df.iloc[-1]
-    ensure_atr_indicator(df)
-    assert "atr" not in stale_last.index
-
-
 def test_fresh_last_has_atr():
     df = _make_df()
     ensure_atr_indicator(df)

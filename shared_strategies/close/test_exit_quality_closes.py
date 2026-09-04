@@ -49,18 +49,16 @@ def test_time_stop_missing_context_fails_safe(reg):
     assert out["reason"] == "noop:missing_bars_held"
 
 
-def test_atr_stop_long_hit_and_boundary(reg):
-    params = {"atr_mult": 2.0}
-    base = {"side": "long", "current_quantity": 1.0, "avg_cost": 100.0, "entry_atr": 2.0}
-    assert reg.evaluate("atr_stop", base, {"mark_price": 96.0}, params)["close_fraction"] == 1.0
-    assert reg.evaluate("atr_stop", base, {"mark_price": 96.5}, params)["close_fraction"] == 0.0
-
-
-def test_atr_stop_short_mirrors(reg):
-    params = {"atr_mult": 2.0}
-    base = {"side": "short", "current_quantity": 1.0, "avg_cost": 100.0, "entry_atr": 2.0}
-    assert reg.evaluate("atr_stop", base, {"mark_price": 104.0}, params)["close_fraction"] == 1.0
-    assert reg.evaluate("atr_stop", base, {"mark_price": 103.0}, params)["close_fraction"] == 0.0
+@pytest.mark.parametrize("side,mark,expected", [
+    ("long", 96.0, 1.0),
+    ("long", 96.5, 0.0),
+    ("short", 104.0, 1.0),
+    ("short", 103.0, 0.0),
+])
+def test_atr_stop_both_sides(reg, side, mark, expected):
+    base = {"side": side, "current_quantity": 1.0, "avg_cost": 100.0, "entry_atr": 2.0}
+    out = reg.evaluate("atr_stop", base, {"mark_price": mark}, {"atr_mult": 2.0})
+    assert out["close_fraction"] == expected
 
 
 def test_atr_stop_source_entry_vs_live(reg):

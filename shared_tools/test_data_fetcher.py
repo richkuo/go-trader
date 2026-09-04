@@ -1,6 +1,6 @@
 
 import time
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
 import pytest
@@ -48,12 +48,9 @@ def _make_mock_exchange(candles=None, exchange_id="binanceus"):
 
 
 class TestGetExchange:
-    def test_returns_exchange_instance(self):
+    def test_returns_rate_limited_exchange_instance(self):
         ex = get_exchange("binanceus")
         assert isinstance(ex, ccxt.Exchange)
-
-    def test_enables_rate_limit(self):
-        ex = get_exchange("binanceus")
         assert ex.enableRateLimit is True
 
     def test_invalid_exchange_raises(self):
@@ -71,11 +68,6 @@ class TestFetchOhlcv:
         for col in ("timestamp", "open", "high", "low", "close", "volume"):
             assert col in df.columns
         assert len(df) == 5
-
-    @patch("data_fetcher.get_exchange")
-    def test_datetime_index(self, mock_get_ex):
-        mock_get_ex.return_value = _make_mock_exchange()
-        df = fetch_ohlcv("BTC/USDT", "1h", limit=5, store=False)
         assert df.index.name == "datetime"
 
     @patch("data_fetcher.get_exchange")
@@ -96,19 +88,13 @@ class TestFetchOhlcv:
         assert len(df) == 0
         assert "timestamp" in df.columns
 
+    @pytest.mark.parametrize("store,expected_calls", [(True, 1), (False, 0)])
     @patch("data_fetcher.get_exchange")
     @patch("data_fetcher.store_ohlcv")
-    def test_store_called_when_enabled(self, mock_store, mock_get_ex):
+    def test_store_called_only_when_enabled(self, mock_store, mock_get_ex, store, expected_calls):
         mock_get_ex.return_value = _make_mock_exchange()
-        fetch_ohlcv("BTC/USDT", "1h", limit=5, store=True)
-        mock_store.assert_called_once()
-
-    @patch("data_fetcher.get_exchange")
-    @patch("data_fetcher.store_ohlcv")
-    def test_store_not_called_when_disabled(self, mock_store, mock_get_ex):
-        mock_get_ex.return_value = _make_mock_exchange()
-        fetch_ohlcv("BTC/USDT", "1h", limit=5, store=False)
-        mock_store.assert_not_called()
+        fetch_ohlcv("BTC/USDT", "1h", limit=5, store=store)
+        assert mock_store.call_count == expected_calls
 
 
 class TestFetchFullHistory:
@@ -166,30 +152,17 @@ class TestFetchFullHistory:
         df = fetch_full_history("BTC/USDT", "1h", since="2023-11-14", store=False)
         assert len(df) == 0
 
+    @pytest.mark.parametrize("error", [
+        ccxt.RateLimitExceeded("rate limited"),
+        ccxt.NetworkError("timeout"),
+    ])
     @patch("data_fetcher.get_exchange")
     @patch("data_fetcher.store_ohlcv")
     @patch("time.sleep")
-    def test_rate_limit_retry(self, mock_sleep, mock_store, mock_get_ex):
+    def test_transient_error_retry(self, mock_sleep, mock_store, mock_get_ex, error):
         mock_ex = _make_mock_exchange()
         mock_ex.fetch_ohlcv.side_effect = [
-            ccxt.RateLimitExceeded("rate limited"),
-            SAMPLE_CANDLES[:2],
-            [],
-        ]
-        mock_ex.parse8601.return_value = 1700000000000
-        mock_ex.milliseconds.return_value = 1700100000000
-        mock_get_ex.return_value = mock_ex
-
-        df = fetch_full_history("BTC/USDT", "1h", since="2023-11-14", store=False)
-        assert len(df) == 2
-
-    @patch("data_fetcher.get_exchange")
-    @patch("data_fetcher.store_ohlcv")
-    @patch("time.sleep")
-    def test_network_error_retry(self, mock_sleep, mock_store, mock_get_ex):
-        mock_ex = _make_mock_exchange()
-        mock_ex.fetch_ohlcv.side_effect = [
-            ccxt.NetworkError("timeout"),
+            error,
             SAMPLE_CANDLES[:2],
             [],
         ]

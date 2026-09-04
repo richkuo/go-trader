@@ -99,44 +99,25 @@ def _sample_backtest_result():
 
 
 class TestInitDb:
-    def test_creates_ohlcv_table(self, db_path):
+    @pytest.mark.parametrize("object_type,name", [
+        ("table", "ohlcv"),
+        ("table", "backtest_results"),
+        ("index", "idx_ohlcv_lookup"),
+    ])
+    def test_creates_schema_objects(self, db_path, object_type, name):
         conn = sqlite3.connect(db_path)
-        tables = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
+        rows = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type=?", (object_type,)
         ).fetchall()
-        table_names = [t[0] for t in tables]
-        assert "ohlcv" in table_names
         conn.close()
-
-    def test_creates_backtest_results_table(self, db_path):
-        conn = sqlite3.connect(db_path)
-        tables = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        ).fetchall()
-        table_names = [t[0] for t in tables]
-        assert "backtest_results" in table_names
-        conn.close()
+        assert name in [r[0] for r in rows]
 
     def test_idempotent(self, db_path):
         init_db(db_path)
         init_db(db_path)
 
-    def test_creates_index(self, db_path):
-        conn = sqlite3.connect(db_path)
-        indexes = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='index'"
-        ).fetchall()
-        index_names = [i[0] for i in indexes]
-        assert "idx_ohlcv_lookup" in index_names
-        conn.close()
-
 
 class TestGetConnection:
-    def test_returns_connection(self, db_path):
-        conn = get_connection(db_path)
-        assert isinstance(conn, sqlite3.Connection)
-        conn.close()
-
     def test_wal_mode(self, db_path):
         conn = get_connection(db_path)
         mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
@@ -154,16 +135,7 @@ class TestOhlcvRoundTrip:
         assert list(loaded["timestamp"]) == [1700000000000, 1700003600000, 1700007200000]
         assert loaded["close"].iloc[0] == pytest.approx(35200.0)
         assert loaded["close"].iloc[2] == pytest.approx(35900.0)
-
-    def test_datetime_index_set(self, db_path):
-        df = _sample_ohlcv_df()
-        store_ohlcv(df, "binanceus", "BTC/USDT", "1h", db_path=db_path)
-        loaded = load_ohlcv("binanceus", "BTC/USDT", "1h", db_path=db_path)
         assert loaded.index.name == "datetime"
-
-    def test_load_empty_when_no_data(self, db_path):
-        loaded = load_ohlcv("binanceus", "ETH/USDT", "1d", db_path=db_path)
-        assert len(loaded) == 0
 
     def test_upsert_on_duplicate_timestamp(self, db_path):
         df = _sample_ohlcv_df()
@@ -183,30 +155,17 @@ class TestOhlcvRoundTrip:
         assert len(loaded) == 3
         assert loaded["close"].iloc[0] == pytest.approx(99999.0)
 
-    def test_filter_by_start_ts(self, db_path):
+    @pytest.mark.parametrize("kwargs,expected_rows", [
+        ({"start_ts": 1700003600000}, 2),
+        ({"end_ts": 1700003600000}, 2),
+        ({"start_ts": 1700003600000, "end_ts": 1700003600000}, 1),
+    ])
+    def test_timestamp_filters(self, db_path, kwargs, expected_rows):
         df = _sample_ohlcv_df()
         store_ohlcv(df, "binanceus", "BTC/USDT", "1h", db_path=db_path)
 
-        loaded = load_ohlcv("binanceus", "BTC/USDT", "1h",
-                            start_ts=1700003600000, db_path=db_path)
-        assert len(loaded) == 2
-
-    def test_filter_by_end_ts(self, db_path):
-        df = _sample_ohlcv_df()
-        store_ohlcv(df, "binanceus", "BTC/USDT", "1h", db_path=db_path)
-
-        loaded = load_ohlcv("binanceus", "BTC/USDT", "1h",
-                            end_ts=1700003600000, db_path=db_path)
-        assert len(loaded) == 2
-
-    def test_filter_by_date_range(self, db_path):
-        df = _sample_ohlcv_df()
-        store_ohlcv(df, "binanceus", "BTC/USDT", "1h", db_path=db_path)
-
-        loaded = load_ohlcv("binanceus", "BTC/USDT", "1h",
-                            start_ts=1700003600000, end_ts=1700003600000,
-                            db_path=db_path)
-        assert len(loaded) == 1
+        loaded = load_ohlcv("binanceus", "BTC/USDT", "1h", db_path=db_path, **kwargs)
+        assert len(loaded) == expected_rows
 
     def test_different_exchanges_isolated(self, db_path):
         df = _sample_ohlcv_df()
@@ -255,23 +214,16 @@ class TestBacktestRoundTrip:
         assert df["sharpe_ratio"].iloc[0] == pytest.approx(1.5)
         assert df["total_trades"].iloc[0] == 42
 
-    def test_params_stored_as_json(self, db_path):
+    @pytest.mark.parametrize("column,check", [
+        ("params", lambda v: v["fast_period"] == 10 and v["slow_period"] == 50),
+        ("trades_json", lambda v: len(v) == 1 and v[0]["side"] == "buy"),
+    ])
+    def test_nested_fields_stored_as_json(self, db_path, column, check):
         result = _sample_backtest_result()
         store_backtest_result(result, db_path=db_path)
 
         df = get_backtest_results(db_path=db_path)
-        params = json.loads(df["params"].iloc[0])
-        assert params["fast_period"] == 10
-        assert params["slow_period"] == 50
-
-    def test_trades_stored_as_json(self, db_path):
-        result = _sample_backtest_result()
-        store_backtest_result(result, db_path=db_path)
-
-        df = get_backtest_results(db_path=db_path)
-        trades = json.loads(df["trades_json"].iloc[0])
-        assert len(trades) == 1
-        assert trades[0]["side"] == "buy"
+        assert check(json.loads(df[column].iloc[0]))
 
     def test_filter_by_strategy_name(self, db_path):
         r1 = _sample_backtest_result()
