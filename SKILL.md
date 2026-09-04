@@ -915,6 +915,119 @@ grep -n "liveExecFailed" scheduler/main.go
 
 ---
 
+## Subsystem Mechanism Reference
+
+Per-subsystem mechanism notes for coding agents. `CLAUDE.md` keeps only the guardrail for each file; the mechanism behind it lives here. Grouped by `scheduler/` file.
+
+### Execution and fill confirmation (`executor.go`, `shutdown.go`)
+
+- `runPythonSideEffect` is the runner for every subprocess that can place, cancel, or modify an order; `runPython` is read-only. Graceful shutdown drains side-effecting subprocesses for at most `shutdownDrainCap=15s` and then SIGKILLs; state save, notifier flush, and DB close run afterwards through deferred LIFO. `TimeoutStopSec=20` in the units.
+- `confirmHyperliquidExecuteFill` covers open, close, scale-in, hedge, manual, and UI paths. A response without a confirmed fill returns `"exchange returned no confirmed fill"` and books nothing. `hyperliquidExecuteSucceededCancelOIDs` retains the confirmed cancel OIDs so protection reconciliation can tell a cancelled trigger from a lost one.
+
+### Loopback UI and tuning (`server.go`, `ui_*.go`, `static/ui/*`, `ui_tuning.go`)
+
+- `applyStrategyConfigPatch` needs `config_version>=13`. `/tuning` (`static/ui/tuning.html`) is read-and-launch: it re-reads `/api/strategies/<id>/config` on every poll.
+- `/api/tuning/runs` is a suggest-only lane. `tuning.max_retained_runs` prunes terminal run directories. `POST /api/tuning/apply` is refused on drift against the schema-v2 `promotion_baseline` and applies through `mutateConfigRoot` as an exact replace.
+
+### Config and close defaults (`config.go`, `config_migration.go`, `close_defaults.go`)
+
+- v19 renames the per-regime stop fields to `*_atr_mult_regime`; legacy-key presence gates the boot rewrite. The seven HL stop owners are mutually exclusive and all-omitted resolves to `DefaultStopLossATRMult=1.0`. A single `*StrategyRef` is accepted, `close_strategy` canonical.
+- `portfolio_risk.paper` is an optional override block with the parent's fields. `scopeRiskConfig(cfg, scope)` merges non-zero override fields over a clone of the parent (zero = inherit). `paper.max_notional_usd` is restart-required like the parent; the other override fields hot-reload.
+- Close defaults resolve system → user → strategy. A reserved `regime_atr` section serves standalone `*_atr_mult_regime` `use_defaults` owners. `user_defaults.close["trailing_tp_ratchet_regime"]` may carry `trailing_stop_atr_mult_regime`; `applyUserCloseDefaultRatchetRegimeTrails` applies it inside `loadConfig` before the scalar ATR-stop default so the scalar default never shadows it.
+
+### Portfolio scope and state (`portfolio_scope.go`, `state.go`, `db.go`)
+
+- `hyperliquidModeFromArgs` is a wrapper over `PortfolioScope`. `measureScopeCycleRisk` and `applyScopeCycleRisk` own the per-scope cycle read; `dueStrategiesNotLatched` filters the due set per scope.
+- `portfolio_risk` is keyed by `scope` (rebuild migration `migratePortfolioRiskScopeColumns`); `kill_switch_events` and `correlation_snapshot` carry `scope`. Legacy unscoped rows load under `scopeUnassigned`; `assignLegacyPortfolioScope` in `LoadStateWithDB` (which has the roster) places them under `live` when `HasLiveStrategy`, else `paper`, and saves immediately so the placement is idempotent.
+- `LoadState` bounds per-strategy trades in SQL (`ORDER BY timestamp DESC, rowid DESC LIMIT maxTradeHistory`, index `idx_trades_strategy_timestamp`). `ValidatePerpsDirectionConfig` runs at startup; `CheckStatePresence` is bypassed with `GO_TRADER_ALLOW_MISSING_STATE=1`.
+
+### Risk, latch, and the portfolio gates (`risk.go`, `strategy_interval.go`, `daily_loss.go`, `exposure_cap.go`, `notional_cap.go`)
+
+- `collectPerpsMarkSymbols` feeds `type=manual` positions at live mids. A one-shot `PortfolioRisk.PeakValue` migration runs on first load.
+- Latch ownership per cycle: equity drawdown when `equityGuardArmed`, else margin drawdown, with no tie-break. When equity owns the latch, margin drawdown over the limit is a throttled WARN. With `equityTrusted` false the latch stays equity-side, the peak ratchet is skipped, and drawdown is floored at the last reading (`DrawdownReadingSubstituted`). An untrusted over-limit reading defers until `untrustedEquityLatchDeferral` (15m), then latches loudly. Per-scope single-flight flags guard the reset prompt; the prompt names the scope and accepts `reset` for one latched scope, `reset live`/`reset paper` when both are latched. A paper latch calls `forceClosePaperScopePositions` (virtual close at mark, no exchange call), guarded once by `KillSwitchCloseApplied`. Per-position margin protection is the per-strategy circuit breaker (`circuit_breaker:false` opt-out). Full operator behavior: § Portfolio Kill Switch And Latch Ownership.
+- Daily loss limit: `portfolio_risk.daily_max_loss_usd`/`daily_max_loss_pct`, 0 = off; both set → the lower resolved USD wins; the pct basis is the sum of strategy `initial_capital` per scope. The gate shape to copy for any new `portfolio_risk` gate: RLock evaluation per scope, `pausedBlocksSignal` holds, `manualStateView` refusals, `clonePortfolioRiskConfig` hot-reload.
+- Exposure cap: `portfolio_risk.max_same_direction_notional_usd`/`max_asset_concentration_pct`, 0 = off; `exposureCapBlocksSignal` decides; TopStep futures are ungated. `computeAssetDeltas` in `correlation.go` is the one exposure model shared with `ComputeCorrelation`. Hot-reloadable via SIGHUP.
+- Notional cap: `portfolio_risk.max_notional_usd`, 0 = off. `notionalCapSkipsStrategyCycle` is always false: closes, SL, and TP maintenance keep running; manual open, add, and limit-open refuse. Restart-required.
+
+### Live-to-paper replay (`replay_log.go`, `replay_mirror.go`)
+
+Enabled by `replay_log_path` plus per-strategy `replay_sharing="live_mirror"`. Paper suppresses its own entries and replays the live decisions. The source id comes from `replayMirrorSourceID` (`replay_source_id`, else the strategy's own id); `orderReplaySourcesBeforeMirrors` runs an in-process source before its mirror in the same cycle. The watermark is keyed on the paper strategy plus `ReplayMirrorWatermarkSource`; a source change resets it with a WARN. Book drift raises WARN plus DM; a close while flat is INFO.
+
+### Batched HL checks and fills (`hl_batch.go`, `hyperliquid_fills.go`, `hyperliquid_balance.go`)
+
+- Batching is a pure partition on `hlBatchKey` into one `check_hyperliquid.py --batch-check`; the fingerprint is re-checked at dispatch. Three strikes revert a group to per-strategy checks with a batch retry every 10 cycles. Operator view: § Hyperliquid Batched Signal Checks.
+- The fill resolver is built outside `mu.Lock`; a resolver failure falls back to the modeled fee. Reconcile paths treat unconfirmed SL fills as gaps, never as books.
+- `reconcileHyperliquidAccountPositions` sends public trade alerts for reconciliation closes via `sendTradeAlertRows` in the deferred unlock path. `hyperliquidPublicTradeAlertRows` drops hedge-leg rows so a hedge close alerts only its owner DM. A sole-owner reconciled SL close also queues a `ProtectionFillAlert`.
+
+### Pause, regime, ratchet, hedge, Hurst (`pause.go`, `regime*.go`, `post_tp_sl.go`, `trailing_tp_ratchet.go`, `hedge.go`, `hurst_gate.go`)
+
+- `StrategyConfig.Paused` (`"paused"`) runs a full manage-only cycle and hot-reloads at any time, including while open.
+- Regime store failure displays `regime=-`; the entry empty-label policy comes from `resolveRegimeGateOnFailure` (`"open"`|`"closed"`). `regime_atr.go` treats the v15 `atr_multiple` as canonical. The regime label is display-only; regime transitions are alerting-only.
+- The ratchet sets SL through `trailing_stop_atr_mult`/`trailing_stop_atr_mult_regime`. A same-cycle tier tighten replaces the resting SL and bypasses `TrailingStopMinMovePct`. The open DM shows the ratchet or trail block; it is suppressed on scale-in and on a non-default `regime_atr_window`.
+- Hedge legs run through one reconciler (`hedgeTargetDecision` then `runHedgeSync`); the collision matrix between hedge and owner positions is load-bearing.
+- Hurst gate: sits on top of the label gate; `resolveHurstGateOnFailure` fails closed flat-only. Size multiplier `clamp(|H-0.5|/0.15, floor, 1.0)`; hysteresis lives in `strategies.hurst_gate_state`. Hot-reloadable while open. Backtest counterpart `backtest/hurst_gate.py`.
+
+### LLM review, scale-in, manual (`llm_entry_analysis.go`, `llm_review.py`, `scale_in.go`, `manual*.go`)
+
+- The LLM verdict is advisory; it is written only to `trade_diagnostics.llm_verdict`.
+- Scale-in freezes the stop geometry on `RiskAnchorPrice` instead of the blended `AvgCost`; HL perps plus `manual`; backtested.
+- Manual actions run under the kill switch and circuit breaker. `force-close` is live HL perps only.
+
+### Liquidation guard and protection (`hyperliquid_liquidation_guard.go`, `hyperliquid_open_trailing.go`, `hyperliquid_protection.go`)
+
+- `hlLiquidationPx` is a NET per-coin map read via `hlLiquidationPxForSide` against `hlNetSideByCoin`. Healing runs through the trailing `trailingReplacePolicy.liquidationPx` or the static/regime `buildHyperliquidProtectionPlan`, strictly tighter only. `runHyperliquidLiquidationAudit` tightens every owner; `hlLiquidationClampReplace` is tri-state (`protection lost` / re-arm / refuse over-virtual-net). One in-cycle retry on a positively rejected cancel-with-nothing-resting; classification comes from what rests. The off-cycle pass runs at `liquidationAuditIntervalSeconds`, floored at 60s. Preflight: `scripts/check-hl-stop-bankruptcy-bound.sh`. `recordPositionOpen` runs after the deferred-open execute leg. Operator view: § Hyperliquid Liquidation Guard.
+- On-chain TP suppression nils `CloseStrategy` for live tiered-TP strategies; paper never places on-chain TPs.
+
+### Probes, diagnostics, alerts, commands
+
+- `version_probe.go`/`probe_cmd.go`/`exit_codes.go`: every unique check script runs with `--probe-only` at startup; `probeFailureScriptMissing` detects `"can't open file"`; a failure logs, DMs the owner, and exits 78 (`EX_CONFIG`).
+- `trade_diagnostics*.go`: eager insert in `recordClosedPosition`; MFE/MAE computed async outside `mu`.
+- `agent_info.go`: read-only dump.
+- `failure_alerts.go`/`script_failure_alerts.go`: primary alert at 3 strikes; transient 429/5xx/timeout stays WARN until 15 strikes or 75 minutes.
+- `discord_commands.go`/`discord_mutating_commands.go`: `/clear-cash-reconcile` mutating, `/closing-strategies` read-only.
+- `missing_mark_alerts.go`: throttled DM per `(strategy_id, symbol)`. `hl_reconcile_gap_alerts.go`: alerting only. `portfolio_warning.go`, `circuit_breaker_alert.go`: alert routing.
+- `model_only_reconcile.go`: § Model-Only Close Reconciliation. `portfolio.go`: `CashReconcileRequired` (§ Cash Reconcile Latch). `kill_switch_close.go` and `*_close.go`: `type=manual` HL positions join the flatten via `hlKillSwitchAll`.
+
+### Shared wallet, cashflow, limit orders (`shared_wallet*.go`, `cashflow_journal.go`, `kill_switch_limit_orders.go`, `orphan_limit_cancel_alerts.go`, `limit_fill_exposure.go`)
+
+- Shared-wallet drift tolerance is $0.01 over 2 cycles. Pool sizing comes from account equity minus deployed margin; switching a strategy between allocated and pool budgeting needs a flat book and a restart.
+- Cashflow journal: HL total-drift is live; OKX and TopStep run in shadow.
+- Kill-switch limit orders: each row goes cancel → `--limit-status` → delete under a 60s pre-flatten deadline; an unresolved row clears `OnChainConfirmedFlat` and blocks `CanAutoResetWithoutOwner`. Operator view: § Portfolio Kill Switch And Latch Ownership.
+- Orphan cancel lane: rows in `cancel_requested` or expired that fail `killSwitchLimitOrderAdoptionBlock`; roster from `killSwitchLimitOrderRoster` plus `collectKillSwitchLimitOrderCandidates`. Severity-gated throttle; `operator_required_since` backs off the poll. `applyLimitExposureOperatorRequired` sets the marker on `unbacked`, leaves it on `unreadable`, clears otherwise; the marker is the sole gate for `manual-clear-limit-row <oid> --flattened`.
+- Limit fill exposure: `hlLiveExposureReader` polls rows, decides per coin, finalizes; `snapshotNewerThan` is the sole reader; `applyCoinLimitFills` aggregates per coin; `classifyLimitFillLiveExposure` requires same-direction and contained. DM severity is gated by outcome.
+
+### Python side (`shared_scripts/`, `platforms/`, `shared_tools/`, `shared_strategies/`, `backtest/`)
+
+- `check_hyperliquid.py` splits into `build_shared_signal_state` and `evaluate_signal_slot` (on `shared["df"].copy()`); single mode and `--batch-check` both run that pair. A shared-state failure raises `SharedSignalStateError` → one `error_scope="shared_state"` sentinel; a slot exception stays in its slot.
+- HL adapter caches in `/tmp`, lazy `_ensure_exchange`, sparse indices via `_normalize_spot_meta`. The SDK's `asset_to_sz_decimals` keys by integer asset index; resolve via `name_to_asset(symbol)` (fallback `coin_to_asset`); a direct symbol lookup is a legacy test-mock-only fallback.
+- `shared_tools/atr.py` shims `shared_strategies/open/indicators_core.py`; `atr_method` resolves via `resolveATRMethod`. `indicators_core.py` holds ATR/RSI plus `hurst_exponent` (DFA, live SSoT) and research-only `hurst_rescaled_range`. Options strategies live in `options/strategies.py`.
+- Strategy DSL: config params sit under runtime; `HTFFilter` is not available on options or `delta_neutral_funding`. M5 `deprecated_m5` holds 32 names; live use DMs unless `allow_deprecated:true`; paper auto-suppresses via `AllowDeprecatedEffective()`.
+- Backtest files: `backtester.py`, `optimizer.py`, `run_backtest.py`, `backtest_{options,theta,pairs}.py`, `parity_diff.py`. `--config <path> --strategy <id>` reads the single `close_strategy` and applies `user_defaults` by default (`--defaults system` keeps the built-in baseline). `--intrabar-resolution bar_close` is the legacy race resolution. Regime: `--config` threads `allowed_regimes` (the CLI flag is rejected); composite via `regime.windows`; the open name falls back to `args[0]`. `regime_directional_policy` is backtestable behind its flag; scalar `sl_after` and `*_atr_mult_regime` stop dicts are backtestable. Liquidation floor: a sticky equity floor at 0 from the first bust; blown legs report `±LIQUIDATED_METRIC_FLOOR`. `tune_live.py` writes SCHEMA_VERSION=2 `promotion_baseline`.
+
+### Notifications and channels
+
+Channels are `spot`, `options`, `<platform>`, `<platform>-paper`. `resolveChannelKey(platform, type, isLive)` prefers a non-empty `<platform>-paper` key for paper strategies, so summaries, leaderboards, and Sharpe groups split by mode only when that key is configured. `SendToScopeChannels(scope, msg)` targets `-paper` channels for paper and falls back to `SendToAllChannels`. Bidirectional perps: a short entry registers in `bidirectionalPerpsStrategies`; flip sizing uses `perpsLiveOrderSize`.
+
+### Build, deploy, and test mechanics
+
+- `scripts/update.sh --restart` is atomic: preflight → `pull --ff-only` (or `--rsync-from <src>`) → `uv sync` → build → probe → binary swap (previous kept as `.prev`) → restart and verify → rollback on timeout. `--all --restart` discovers deployments via `discover_deployment_dirs_from_systemd`. A one-off build is `go build -ldflags "-X main.Version=$(git describe --tags --always --dirty=-mod)" -o go-trader .`; config-only reload is `kill -HUP $(pgrep go-trader)` and Python picks the change up next cycle.
+- Post-update classification diffs `<running>..HEAD` per § Post-Update Agent Protocol.
+- New-platform touchpoints beyond § Custom Platform Integration: `pyproject.toml` for dependencies; options platforms also add `CalculateOptionFee` and an `OptionPlatforms` entry.
+- Test placement: Go `_test.go` beside the file; Python `test_*.py`. Pure helpers to extract from subprocess wrappers include `perpsLiveOrderSize`, `*OrderSkipReason`, `parseXxxCloseOutput`, and the Sharpe computation. `shared_scripts/test_*.py` sits outside pytest `testpaths`; registry and sys.path tests import through `importlib.util.spec_from_file_location`.
+- Kill-switch fill attribution on shared HL coins goes through `hyperliquidKillSwitchFillShare`, which fails closed when the split cannot be determined. The reset prompt is single-flight via an `atomic.Bool`; the deferral timestamp is `UntrustedOverLimitSince`.
+- The orphan cancel lane is `cancelOrphanedLimitOrder`. `avwap_stop` is a virtual exit only and is absent from `isTieredTPATRCloseName` and `closeStrategiesSuppressedByOnChainProtection`; `atr_stop` and `avwap_stop` follow the same `atr_source` rule as `tiered_tp_atr_live`, which recomputes from `market_ctx["atr"]` (`atr_source` `live`|`entry`). Backtest regime gating blocks entries when `bar_regime ∉ allowed_regimes`.
+
+### The `@claude` GitHub workflow (`.github/workflows/claude.yml`)
+
+- `classify` plus review and implement callers of `richkuo/rk-skills/.../claude-run.yml@main`; only the call-site `permissions:` differ (review has no `id-token: write`).
+- git and gh run on the Claude GitHub App token. Review comments post as `github-actions[bot]`; implement posts as `claude[bot]`. Patch steps key on `RUN_ID`.
+- Mode routing: `pull_request_review*` → `review`; issues, non-PR comments, docs-sync, and release → `implement`; otherwise the keyword after `@claude` (untrusted or fork → `review`; trusted → `fix-pr`).
+- Comment patching uses `patch_claude_comment.sh` and `compose_claude_comment.py`, staged from `rk-skills` `templates/claude-workflow/scripts/` into `$RUNNER_TEMP` each run. `.github/scripts/test_workflow_logic.py` executes the real `run:` blocks. Concurrency `group: claude-<N>`, `cancel-in-progress: false`. `timeout-minutes: 90`. `issues: types: [opened]` only.
+- The CLAUDE.md revision step must `git commit` and `git push origin HEAD`, then diff `HEAD -- CLAUDE.md` against `origin/main` to catch a silent revert.
+- Operator lookup for the latest bot review: `gh api repos/richkuo/go-trader/issues/<N>/comments --jq '[.[] | select(.user.login=="claude[bot]" or .user.login=="github-actions[bot]")] | last | .body'`.
+
+---
+
 ## Tests
 
 ```bash
