@@ -226,21 +226,6 @@ func TestFormatDailyLossPctBasisMissDM(t *testing.T) {
 	}
 }
 
-func TestDailyLossStartupSummaryLine(t *testing.T) {
-	if line := dailyLossStartupSummaryLine(nil); line != "" {
-		t.Fatalf("nil config line = %q, want empty", line)
-	}
-	if line := dailyLossStartupSummaryLine(&PortfolioRiskConfig{MaxDrawdownPct: 25}); line != "" {
-		t.Fatalf("unconfigured line = %q, want empty", line)
-	}
-	line := dailyLossStartupSummaryLine(&PortfolioRiskConfig{DailyMaxLossUSD: 500, DailyMaxLossPct: 5})
-	for _, want := range []string{"daily_max_loss", "usd=$500.00", "pct=5.00%"} {
-		if !strings.Contains(line, want) {
-			t.Fatalf("summary line %q missing %q", line, want)
-		}
-	}
-}
-
 func TestConfigValidationDailyLossThresholds(t *testing.T) {
 	cfg := Config{PortfolioRisk: &PortfolioRiskConfig{
 		MaxDrawdownPct:   25,

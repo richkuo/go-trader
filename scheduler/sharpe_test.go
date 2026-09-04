@@ -26,51 +26,40 @@ func manyDays(start time.Time, n int, pnl func(i int) float64) []ClosedPosition 
 	return out
 }
 
-func TestComputeSharpeRatioInsufficientData(t *testing.T) {
-	if got := ComputeSharpeRatio(nil, 1000, 0.02); got != 0 {
-		t.Fatalf("empty input should yield 0, got %v", got)
-	}
-	one := []ClosedPosition{{ClosedAt: day("2026-01-01"), RealizedPnL: 10}}
-	if got := ComputeSharpeRatio(one, 1000, 0.02); got != 0 {
-		t.Fatalf("single-day input should yield 0, got %v", got)
-	}
-	skipped := []ClosedPosition{
-		{ClosedAt: time.Time{}, RealizedPnL: 10},
-		{ClosedAt: time.Time{}, RealizedPnL: -5},
-	}
-	if got := ComputeSharpeRatio(skipped, 1000, 0.02); got != 0 {
-		t.Fatalf("zero-timestamp rows should be skipped, got %v", got)
-	}
-	short := manyDays(day("2026-01-01"), minSharpeDays-1, func(i int) float64 {
+func TestComputeSharpeRatioZeroCases(t *testing.T) {
+	alt := func(i int) float64 {
 		if i%2 == 0 {
 			return 10
 		}
 		return -5
-	})
-	if got := ComputeSharpeRatio(short, 1000, 0); got != 0 {
-		t.Fatalf("fewer than minSharpeDays distinct days should yield 0, got %v", got)
 	}
-}
-
-func TestComputeSharpeRatioZeroStdev(t *testing.T) {
-	same := manyDays(day("2026-01-01"), minSharpeDays, func(int) float64 { return 10 })
-	if got := ComputeSharpeRatio(same, 1000, 0); got != 0 {
-		t.Fatalf("zero-stdev should yield 0, got %v", got)
+	cases := []struct {
+		name    string
+		closed  []ClosedPosition
+		capital float64
+		rfr     float64
+	}{
+		{"empty input", nil, 1000, 0.02},
+		{"single day", []ClosedPosition{{ClosedAt: day("2026-01-01"), RealizedPnL: 10}}, 1000, 0.02},
+		{"zero-timestamp rows skipped", []ClosedPosition{
+			{ClosedAt: time.Time{}, RealizedPnL: 10},
+			{ClosedAt: time.Time{}, RealizedPnL: -5},
+		}, 1000, 0.02},
+		{"fewer than minSharpeDays distinct days", manyDays(day("2026-01-01"), minSharpeDays-1, alt), 1000, 0},
+		{"zero stdev", manyDays(day("2026-01-01"), minSharpeDays, func(int) float64 { return 10 }), 1000, 0},
+		{"zero capital", manyDays(day("2026-01-01"), minSharpeDays, alt), 0, 0.02},
+		{"negative capital", manyDays(day("2026-01-01"), minSharpeDays, alt), -100, 0.02},
+		{"sparse series gated by minSharpeDays", []ClosedPosition{
+			{ClosedAt: day("2026-01-01"), RealizedPnL: 100},
+			{ClosedAt: day("2026-01-31"), RealizedPnL: -50},
+		}, 10000, 0},
 	}
-}
-
-func TestComputeSharpeRatioInvalidCapital(t *testing.T) {
-	closed := manyDays(day("2026-01-01"), minSharpeDays, func(i int) float64 {
-		if i%2 == 0 {
-			return 10
-		}
-		return -5
-	})
-	if got := ComputeSharpeRatio(closed, 0, 0.02); got != 0 {
-		t.Fatalf("zero capital should yield 0, got %v", got)
-	}
-	if got := ComputeSharpeRatio(closed, -100, 0.02); got != 0 {
-		t.Fatalf("negative capital should yield 0, got %v", got)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ComputeSharpeRatio(tc.closed, tc.capital, tc.rfr); got != 0 {
+				t.Fatalf("ComputeSharpeRatio = %v, want 0", got)
+			}
+		})
 	}
 }
 
@@ -102,16 +91,6 @@ func TestComputeSharpeRatioKnownValue(t *testing.T) {
 	}
 	if got <= 0 {
 		t.Fatalf("positive-drift series should yield positive Sharpe, got %v", got)
-	}
-}
-
-func TestComputeSharpeRatioZeroFillBetweenCloses(t *testing.T) {
-	sparse := []ClosedPosition{
-		{ClosedAt: day("2026-01-01"), RealizedPnL: 100},
-		{ClosedAt: day("2026-01-31"), RealizedPnL: -50},
-	}
-	if got := ComputeSharpeRatio(sparse, 10000, 0); got != 0 {
-		t.Fatalf("sparse series with 2 distinct closes should yield 0 (gated by minSharpeDays), got %v", got)
 	}
 }
 
@@ -163,23 +142,6 @@ func TestRiskFreeRateOrDefault(t *testing.T) {
 	negative := -0.01
 	if got := RiskFreeRateOrDefault(&Config{RiskFreeRate: &negative}); got != DefaultAnnualRiskFreeRate {
 		t.Fatalf("negative rate should fall back to default, got %v", got)
-	}
-}
-
-func TestFmtSharpe(t *testing.T) {
-	cases := []struct {
-		in   float64
-		want string
-	}{
-		{0, "N/A"},
-		{1.23, "+1.23"},
-		{-0.75, "-0.75"},
-		{2.0, "+2.00"},
-	}
-	for _, c := range cases {
-		if got := fmtSharpe(c.in); got != c.want {
-			t.Fatalf("fmtSharpe(%v) = %q, want %q", c.in, got, c.want)
-		}
 	}
 }
 

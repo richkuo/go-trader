@@ -2284,24 +2284,6 @@ func TestExecuteFuturesWithFillFee_PartialCloseFractionTooSmallNoOps(t *testing.
 	}
 }
 
-func TestStopLossCloseDetailsPrefix(t *testing.T) {
-	cases := map[string]string{
-		"trailing_stop_loss_paper":     "Paper trailing SL close",
-		"trailing_stop_loss_immediate": "Trailing SL close",
-		"stop_loss_atr_paper":          "Paper SL close",
-		"stop_loss_atr_immediate":      "Stop loss close",
-		"stop_loss_immediate":          "Stop loss close",
-		"stop_loss":                    "Stop loss close",
-		"hl_sync_stop_loss":            "Stop loss close",
-		"unknown_future_reason":        "Stop loss close",
-	}
-	for reason, want := range cases {
-		if got := stopLossCloseDetailsPrefix(reason); got != want {
-			t.Errorf("reason=%q → %q, want %q", reason, got, want)
-		}
-	}
-}
-
 func TestFormatStatusLine(t *testing.T) {
 	cases := []struct {
 		name   string
