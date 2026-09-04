@@ -328,91 +328,104 @@ func TestContractSpecJSON(t *testing.T) {
 	}
 }
 
-func TestParseHyperliquidCloseOutput_CleanSuccess(t *testing.T) {
-	stdout := []byte(`{"close":{"symbol":"ETH","fill":{"avg_px":3000,"total_sz":0.5,"oid":12345,"fee":0.6}},"platform":"hyperliquid","timestamp":"2026-04-19T00:00:00Z"}`)
-	result, _, err := parseHyperliquidCloseOutput(stdout, "", nil)
-	if err != nil {
-		t.Fatalf("expected nil err, got %v", err)
+func TestParseHyperliquidCloseOutput(t *testing.T) {
+	cases := []struct {
+		name        string
+		stdout      string
+		runErr      error
+		wantErr     bool
+		errContains string
+		wantNilRes  bool
+		check       func(*testing.T, *HyperliquidCloseResult)
+	}{
+		{
+			name:   "clean success parses fill, fee and OID",
+			stdout: `{"close":{"symbol":"ETH","fill":{"avg_px":3000,"total_sz":0.5,"oid":12345,"fee":0.6}},"platform":"hyperliquid","timestamp":"2026-04-19T00:00:00Z"}`,
+			check: func(t *testing.T, result *HyperliquidCloseResult) {
+				if result == nil || result.Close == nil || result.Close.Fill == nil {
+					t.Fatalf("expected populated result, got %+v", result)
+				}
+				if result.Close.Fill.TotalSz != 0.5 {
+					t.Errorf("TotalSz = %g, want 0.5", result.Close.Fill.TotalSz)
+				}
+				if result.Close.Fill.Fee != 0.6 {
+					t.Errorf("Fee = %g, want 0.6 — Fee field must be parsed for accounting", result.Close.Fill.Fee)
+				}
+				if result.Close.Fill.OID != 12345 {
+					t.Errorf("OID = %d, want 12345", result.Close.Fill.OID)
+				}
+			},
+		},
+		{
+			name:        "exit 0 with an error envelope still errors",
+			stdout:      `{"close":{"symbol":"ETH","fill":{}},"platform":"hyperliquid","timestamp":"x","error":"sdk timeout"}`,
+			wantErr:     true,
+			errContains: "sdk timeout",
+			check: func(t *testing.T, result *HyperliquidCloseResult) {
+				if result == nil || result.Error != "sdk timeout" {
+					t.Errorf("expected populated result.Error, got %+v", result)
+				}
+			},
+		},
+		{
+			name:        "exit 1 with an error envelope errors so the kill switch latches",
+			stdout:      `{"close":{"symbol":"ETH","fill":{}},"platform":"hyperliquid","timestamp":"x","error":"hl rate limited"}`,
+			runErr:      fmt.Errorf("exit status 1"),
+			wantErr:     true,
+			errContains: "hl rate limited",
+			check: func(t *testing.T, result *HyperliquidCloseResult) {
+				if result == nil || result.Error != "hl rate limited" {
+					t.Errorf("expected populated result.Error, got %+v", result)
+				}
+			},
+		},
+		{
+			name:        "exit 1 without an error field still errors",
+			stdout:      `{"close":{"symbol":"ETH","fill":{}},"platform":"hyperliquid","timestamp":"x"}`,
+			runErr:      fmt.Errorf("exit status 1"),
+			wantErr:     true,
+			errContains: "no error field",
+		},
+		{
+			name:       "malformed JSON yields no result",
+			stdout:     "this is not json",
+			wantErr:    true,
+			wantNilRes: true,
+		},
+		{
+			name:   "already_flat is parsed so the Go side can route the close",
+			stdout: `{"close":{"symbol":"ETH","fill":{},"already_flat":true},"platform":"hyperliquid","timestamp":"x"}`,
+			check: func(t *testing.T, result *HyperliquidCloseResult) {
+				if result == nil || result.Close == nil {
+					t.Fatalf("expected populated result.Close, got %+v", result)
+				}
+				if !result.Close.AlreadyFlat {
+					t.Errorf("AlreadyFlat = false, want true — Go side cannot route to AlreadyFlat slice without this field")
+				}
+			},
+		},
 	}
-	if result == nil || result.Close == nil || result.Close.Fill == nil {
-		t.Fatalf("expected populated result, got %+v", result)
-	}
-	if result.Close.Fill.TotalSz != 0.5 {
-		t.Errorf("TotalSz = %g, want 0.5", result.Close.Fill.TotalSz)
-	}
-	if result.Close.Fill.Fee != 0.6 {
-		t.Errorf("Fee = %g, want 0.6 — Fee field must be parsed for accounting", result.Close.Fill.Fee)
-	}
-	if result.Close.Fill.OID != 12345 {
-		t.Errorf("OID = %d, want 12345", result.Close.Fill.OID)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, _, err := parseHyperliquidCloseOutput([]byte(tc.stdout), "", tc.runErr)
+			if tc.wantErr && err == nil {
+				t.Fatal("expected a non-nil error")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("expected nil err, got %v", err)
+			}
+			if tc.errContains != "" && !strings.Contains(err.Error(), tc.errContains) {
+				t.Errorf("err = %v, want it to surface %q", err, tc.errContains)
+			}
+			if tc.wantNilRes && result != nil {
+				t.Errorf("result should be nil for unparseable output, got %+v", result)
+			}
+			if tc.check != nil {
+				tc.check(t, result)
+			}
+		})
 	}
 }
-
-func TestParseHyperliquidCloseOutput_Exit0WithError(t *testing.T) {
-	stdout := []byte(`{"close":{"symbol":"ETH","fill":{}},"platform":"hyperliquid","timestamp":"x","error":"sdk timeout"}`)
-	result, _, err := parseHyperliquidCloseOutput(stdout, "", nil)
-	if err == nil {
-		t.Fatal("expected non-nil err for exit 0 with error envelope")
-	}
-	if result == nil || result.Error != "sdk timeout" {
-		t.Errorf("expected populated result.Error, got %+v", result)
-	}
-	if !strings.Contains(err.Error(), "sdk timeout") {
-		t.Errorf("err must surface envelope error message, got %v", err)
-	}
-}
-
-func TestParseHyperliquidCloseOutput_Exit1WithError(t *testing.T) {
-	stdout := []byte(`{"close":{"symbol":"ETH","fill":{}},"platform":"hyperliquid","timestamp":"x","error":"hl rate limited"}`)
-	runErr := fmt.Errorf("exit status 1")
-	result, _, err := parseHyperliquidCloseOutput(stdout, "", runErr)
-	if err == nil {
-		t.Fatal("expected non-nil err for exit 1 — kill switch must latch")
-	}
-	if result == nil || result.Error != "hl rate limited" {
-		t.Errorf("expected populated result.Error, got %+v", result)
-	}
-	if !strings.Contains(err.Error(), "hl rate limited") {
-		t.Errorf("err must include underlying error, got %v", err)
-	}
-}
-
-func TestParseHyperliquidCloseOutput_Exit1WithoutErrorField(t *testing.T) {
-	stdout := []byte(`{"close":{"symbol":"ETH","fill":{}},"platform":"hyperliquid","timestamp":"x"}`)
-	runErr := fmt.Errorf("exit status 1")
-	_, _, err := parseHyperliquidCloseOutput(stdout, "", runErr)
-	if err == nil {
-		t.Fatal("expected non-nil err for exit 1 even without error field")
-	}
-	if !strings.Contains(err.Error(), "no error field") {
-		t.Errorf("err message should mention missing error field, got %v", err)
-	}
-}
-
-func TestParseHyperliquidCloseOutput_MalformedJSON(t *testing.T) {
-	result, _, err := parseHyperliquidCloseOutput([]byte("this is not json"), "", nil)
-	if err == nil {
-		t.Fatal("expected non-nil err for malformed JSON")
-	}
-	if result != nil {
-		t.Errorf("result should be nil for unparseable output, got %+v", result)
-	}
-}
-
-func TestParseHyperliquidCloseOutput_AlreadyFlatFieldParsed(t *testing.T) {
-	stdout := []byte(`{"close":{"symbol":"ETH","fill":{},"already_flat":true},"platform":"hyperliquid","timestamp":"x"}`)
-	result, _, err := parseHyperliquidCloseOutput(stdout, "", nil)
-	if err != nil {
-		t.Fatalf("expected nil err, got %v", err)
-	}
-	if result == nil || result.Close == nil {
-		t.Fatalf("expected populated result.Close, got %+v", result)
-	}
-	if !result.Close.AlreadyFlat {
-		t.Errorf("AlreadyFlat = false, want true — Go side cannot route to AlreadyFlat slice without this field")
-	}
-}
-
 func TestBuildHyperliquidCloseArgs_CancelAfterClose(t *testing.T) {
 	sz := 1.25
 	got := buildHyperliquidCloseArgs("ETH", &sz, []int64{111, 0, 222}, true)
@@ -429,132 +442,159 @@ func TestBuildHyperliquidCloseArgs_CancelAfterClose(t *testing.T) {
 	}
 }
 
-func TestParseOKXCloseOutput_CleanSuccess(t *testing.T) {
-	stdout := []byte(`{"close":{"symbol":"BTC","fill":{"avg_px":42000,"total_sz":0.01,"oid":"abc123","fee":0.02}},"platform":"okx","timestamp":"2026-04-19T00:00:00Z"}`)
-	result, _, err := parseOKXCloseOutput(stdout, "", nil)
-	if err != nil {
-		t.Fatalf("expected nil err, got %v", err)
+func TestParseOKXCloseOutput(t *testing.T) {
+	cases := []struct {
+		name        string
+		stdout      string
+		runErr      error
+		wantErr     bool
+		errContains string
+		wantNilRes  bool
+		check       func(*testing.T, *OKXCloseResult)
+	}{
+		{
+			name:   "clean success parses fill, string OID and fee",
+			stdout: `{"close":{"symbol":"BTC","fill":{"avg_px":42000,"total_sz":0.01,"oid":"abc123","fee":0.02}},"platform":"okx","timestamp":"2026-04-19T00:00:00Z"}`,
+			check: func(t *testing.T, result *OKXCloseResult) {
+				if result == nil || result.Close == nil || result.Close.Fill == nil {
+					t.Fatalf("expected populated result, got %+v", result)
+				}
+				if result.Close.Fill.TotalSz != 0.01 {
+					t.Errorf("TotalSz = %g, want 0.01", result.Close.Fill.TotalSz)
+				}
+				if result.Close.Fill.OID != "abc123" {
+					t.Errorf("OID = %q, want abc123 (ccxt IDs are strings, unlike HL ints)", result.Close.Fill.OID)
+				}
+				if result.Close.Fill.Fee != 0.02 {
+					t.Errorf("Fee = %g, want 0.02 — fee parsing is load-bearing for post-kill accounting", result.Close.Fill.Fee)
+				}
+			},
+		},
+		{
+			name:        "exit 0 with an error envelope still errors",
+			stdout:      `{"close":{"symbol":"BTC","fill":{}},"platform":"okx","timestamp":"x","error":"okx auth failed"}`,
+			wantErr:     true,
+			errContains: "okx auth failed",
+		},
+		{
+			name:        "exit 1 with an error envelope errors so the kill switch latches",
+			stdout:      `{"close":{"symbol":"BTC","fill":{}},"platform":"okx","timestamp":"x","error":"okx rate limited"}`,
+			runErr:      fmt.Errorf("exit status 1"),
+			wantErr:     true,
+			errContains: "okx rate limited",
+		},
+		{
+			name:        "exit 1 without an error field still errors so virtual state is not cleared",
+			stdout:      `{"close":{"symbol":"BTC","fill":{}},"platform":"okx","timestamp":"x"}`,
+			runErr:      fmt.Errorf("exit status 1"),
+			wantErr:     true,
+			errContains: "no error field",
+		},
+		{
+			name:   "already_flat is parsed",
+			stdout: `{"close":{"symbol":"BTC","fill":{},"already_flat":true},"platform":"okx","timestamp":"x"}`,
+			check: func(t *testing.T, result *OKXCloseResult) {
+				if result == nil || result.Close == nil {
+					t.Fatalf("expected populated result.Close, got %+v", result)
+				}
+				if !result.Close.AlreadyFlat {
+					t.Errorf("AlreadyFlat = false, want true (#350)")
+				}
+			},
+		},
+		{
+			name:       "malformed JSON yields no result",
+			stdout:     "not json",
+			wantErr:    true,
+			wantNilRes: true,
+		},
 	}
-	if result == nil || result.Close == nil || result.Close.Fill == nil {
-		t.Fatalf("expected populated result, got %+v", result)
-	}
-	if result.Close.Fill.TotalSz != 0.01 {
-		t.Errorf("TotalSz = %g, want 0.01", result.Close.Fill.TotalSz)
-	}
-	if result.Close.Fill.OID != "abc123" {
-		t.Errorf("OID = %q, want abc123 (ccxt IDs are strings, unlike HL ints)", result.Close.Fill.OID)
-	}
-	if result.Close.Fill.Fee != 0.02 {
-		t.Errorf("Fee = %g, want 0.02 — fee parsing is load-bearing for post-kill accounting", result.Close.Fill.Fee)
-	}
-}
-
-func TestParseOKXCloseOutput_Exit0WithError(t *testing.T) {
-	stdout := []byte(`{"close":{"symbol":"BTC","fill":{}},"platform":"okx","timestamp":"x","error":"okx auth failed"}`)
-	_, _, err := parseOKXCloseOutput(stdout, "", nil)
-	if err == nil {
-		t.Fatal("expected non-nil err for exit 0 with error envelope")
-	}
-	if !strings.Contains(err.Error(), "okx auth failed") {
-		t.Errorf("err must surface envelope error, got %v", err)
-	}
-}
-
-func TestParseOKXCloseOutput_Exit1WithError(t *testing.T) {
-	stdout := []byte(`{"close":{"symbol":"BTC","fill":{}},"platform":"okx","timestamp":"x","error":"okx rate limited"}`)
-	runErr := fmt.Errorf("exit status 1")
-	_, _, err := parseOKXCloseOutput(stdout, "", runErr)
-	if err == nil {
-		t.Fatal("expected non-nil err for exit 1 — kill switch must latch")
-	}
-	if !strings.Contains(err.Error(), "okx rate limited") {
-		t.Errorf("err must include underlying error, got %v", err)
-	}
-}
-
-func TestParseOKXCloseOutput_Exit1WithoutErrorField(t *testing.T) {
-	stdout := []byte(`{"close":{"symbol":"BTC","fill":{}},"platform":"okx","timestamp":"x"}`)
-	runErr := fmt.Errorf("exit status 1")
-	_, _, err := parseOKXCloseOutput(stdout, "", runErr)
-	if err == nil {
-		t.Fatal("expected non-nil err for exit 1 even without error field — silent crash must not clear virtual state")
-	}
-	if !strings.Contains(err.Error(), "no error field") {
-		t.Errorf("err message should mention missing error field, got %v", err)
-	}
-}
-
-func TestParseOKXCloseOutput_AlreadyFlatFieldParsed(t *testing.T) {
-	stdout := []byte(`{"close":{"symbol":"BTC","fill":{},"already_flat":true},"platform":"okx","timestamp":"x"}`)
-	result, _, err := parseOKXCloseOutput(stdout, "", nil)
-	if err != nil {
-		t.Fatalf("expected nil err, got %v", err)
-	}
-	if result == nil || result.Close == nil {
-		t.Fatalf("expected populated result.Close, got %+v", result)
-	}
-	if !result.Close.AlreadyFlat {
-		t.Errorf("AlreadyFlat = false, want true (#350)")
-	}
-}
-
-func TestParseOKXCloseOutput_MalformedJSON(t *testing.T) {
-	result, _, err := parseOKXCloseOutput([]byte("not json"), "", nil)
-	if err == nil {
-		t.Fatal("expected non-nil err for malformed JSON")
-	}
-	if result != nil {
-		t.Errorf("result should be nil for unparseable output, got %+v", result)
-	}
-}
-
-func TestParseOKXPositionsOutput_Success(t *testing.T) {
-	stdout := []byte(`{"positions":[{"coin":"BTC","size":0.01,"entry_price":42000,"side":"long"},{"coin":"ETH","size":-0.5,"entry_price":3000,"side":"short"}],"platform":"okx","timestamp":"x"}`)
-	result, _, err := parseOKXPositionsOutput(stdout, "", nil)
-	if err != nil {
-		t.Fatalf("expected nil err, got %v", err)
-	}
-	if len(result.Positions) != 2 {
-		t.Fatalf("expected 2 positions, got %d", len(result.Positions))
-	}
-	if result.Positions[0].Coin != "BTC" || result.Positions[0].Size != 0.01 {
-		t.Errorf("position[0] = %+v", result.Positions[0])
-	}
-	if result.Positions[1].Size != -0.5 {
-		t.Errorf("short size must be signed negative, got %g", result.Positions[1].Size)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, _, err := parseOKXCloseOutput([]byte(tc.stdout), "", tc.runErr)
+			if tc.wantErr && err == nil {
+				t.Fatal("expected a non-nil error")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("expected nil err, got %v", err)
+			}
+			if tc.errContains != "" && !strings.Contains(err.Error(), tc.errContains) {
+				t.Errorf("err = %v, want it to surface %q", err, tc.errContains)
+			}
+			if tc.wantNilRes && result != nil {
+				t.Errorf("result should be nil for unparseable output, got %+v", result)
+			}
+			if tc.check != nil {
+				tc.check(t, result)
+			}
+		})
 	}
 }
-
-func TestParseOKXPositionsOutput_EmptyIsSuccess(t *testing.T) {
-	stdout := []byte(`{"positions":[],"platform":"okx","timestamp":"x"}`)
-	result, _, err := parseOKXPositionsOutput(stdout, "", nil)
-	if err != nil {
-		t.Fatalf("empty positions must be success, got err=%v", err)
+func TestParseOKXPositionsOutput(t *testing.T) {
+	cases := []struct {
+		name        string
+		stdout      string
+		runErr      error
+		wantErr     bool
+		errContains string
+		check       func(*testing.T, *OKXPositionsResult)
+	}{
+		{
+			name:   "positions parse with signed sizes",
+			stdout: `{"positions":[{"coin":"BTC","size":0.01,"entry_price":42000,"side":"long"},{"coin":"ETH","size":-0.5,"entry_price":3000,"side":"short"}],"platform":"okx","timestamp":"x"}`,
+			check: func(t *testing.T, result *OKXPositionsResult) {
+				if len(result.Positions) != 2 {
+					t.Fatalf("expected 2 positions, got %d", len(result.Positions))
+				}
+				if result.Positions[0].Coin != "BTC" || result.Positions[0].Size != 0.01 {
+					t.Errorf("position[0] = %+v", result.Positions[0])
+				}
+				if result.Positions[1].Size != -0.5 {
+					t.Errorf("short size must be signed negative, got %g", result.Positions[1].Size)
+				}
+			},
+		},
+		{
+			name:   "an empty position list is a success",
+			stdout: `{"positions":[],"platform":"okx","timestamp":"x"}`,
+			check: func(t *testing.T, result *OKXPositionsResult) {
+				if len(result.Positions) != 0 {
+					t.Errorf("expected 0 positions, got %d", len(result.Positions))
+				}
+			},
+		},
+		{
+			name:        "an error envelope errors so the kill switch latches",
+			stdout:      `{"positions":[],"platform":"okx","timestamp":"x","error":"OKX auth failed"}`,
+			runErr:      fmt.Errorf("exit status 1"),
+			wantErr:     true,
+			errContains: "OKX auth failed",
+		},
+		{
+			name:    "positions are never inferred from malformed JSON",
+			stdout:  "garbage",
+			wantErr: true,
+		},
 	}
-	if len(result.Positions) != 0 {
-		t.Errorf("expected 0 positions, got %d", len(result.Positions))
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, _, err := parseOKXPositionsOutput([]byte(tc.stdout), "", tc.runErr)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected a non-nil error")
+				}
+				if tc.errContains != "" && !strings.Contains(err.Error(), tc.errContains) {
+					t.Errorf("err = %v, want it to surface %q", err, tc.errContains)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("expected nil err, got %v", err)
+			}
+			tc.check(t, result)
+		})
 	}
 }
-
-func TestParseOKXPositionsOutput_ErrorEnvelope(t *testing.T) {
-	stdout := []byte(`{"positions":[],"platform":"okx","timestamp":"x","error":"OKX auth failed"}`)
-	runErr := fmt.Errorf("exit status 1")
-	_, _, err := parseOKXPositionsOutput(stdout, "", runErr)
-	if err == nil {
-		t.Fatal("expected non-nil err when envelope has error field — kill switch must latch")
-	}
-	if !strings.Contains(err.Error(), "OKX auth failed") {
-		t.Errorf("err must include envelope error, got %v", err)
-	}
-}
-
-func TestParseOKXPositionsOutput_MalformedJSON(t *testing.T) {
-	_, _, err := parseOKXPositionsOutput([]byte("garbage"), "", nil)
-	if err == nil {
-		t.Fatal("expected non-nil err for malformed JSON — cannot infer positions from garbage")
-	}
-}
-
 func argsContains(args []string, want string) bool {
 	for _, a := range args {
 		if a == want {

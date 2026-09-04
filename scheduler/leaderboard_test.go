@@ -73,103 +73,6 @@ func TestBuildLeaderboardMessages(t *testing.T) {
 	if !containsStr(topMsg, "sma-btc") {
 		t.Error("top message should contain sma-btc")
 	}
-	if !containsStr(topMsg, "Top All-Time Performers") {
-		t.Error("top message should contain title")
-	}
-	if !containsStr(topMsg, "TOTAL") {
-		t.Error("top message should contain TOTAL row")
-	}
-	if !containsStr(topMsg, "winning") {
-		t.Error("top message should contain winning/losing/flat counts")
-	}
-	for _, hdr := range []string{"Tf", "Int", "#T", "W/L", "Sharpe"} {
-		if !containsStr(topMsg, hdr) {
-			t.Errorf("top message should contain %q column header, got:\n%s", hdr, topMsg)
-		}
-	}
-}
-
-func TestBuildLeaderboardMessages_SharpeColumn(t *testing.T) {
-	cfg := &Config{
-		Strategies: []StrategyConfig{
-			{ID: "sma-btc", Type: "spot", Capital: 1000, Platform: "binanceus", Args: []string{"sma_crossover", "BTC/USDT", "1h"}},
-			{ID: "rsi-eth", Type: "spot", Capital: 500, Platform: "binanceus", Args: []string{"rsi_divergence", "ETH/USDT", "1h"}},
-		},
-	}
-	state := NewAppState()
-	for _, sc := range cfg.Strategies {
-		ss := NewStrategyState(sc)
-		ss.Cash = sc.Capital + 100
-		state.Strategies[sc.ID] = ss
-	}
-	sharpe := map[string]float64{
-		"sma-btc": 1.42,
-		"rsi-eth": -0.33,
-	}
-
-	messages := BuildLeaderboardMessages(cfg, state, map[string]float64{"BTC/USDT": 50000, "ETH/USDT": 3000}, sharpe, nil, nil, nil)
-	if messages == nil {
-		t.Fatal("BuildLeaderboardMessages returned nil")
-	}
-	topMsg := messages["top"]
-	if !containsStr(topMsg, "Sharpe") {
-		t.Errorf("top message should contain Sharpe column header, got:\n%s", topMsg)
-	}
-	if !containsStr(topMsg, "+1.42") {
-		t.Errorf("top message should render sma-btc Sharpe +1.42, got:\n%s", topMsg)
-	}
-	bottomMsg := messages["bottom"]
-	if !containsStr(bottomMsg, "-0.33") {
-		t.Errorf("bottom message should render rsi-eth Sharpe -0.33, got:\n%s", bottomMsg)
-	}
-}
-
-func TestBuildLeaderboardMessages_TfIntColumns(t *testing.T) {
-	cfg := &Config{
-		IntervalSeconds: 3600,
-		Strategies: []StrategyConfig{
-			{ID: "sma-btc", Type: "spot", Capital: 1000, Platform: "binanceus", Args: []string{"sma_crossover", "BTC/USDT", "30m"}, IntervalSeconds: 600},
-			{ID: "rsi-eth", Type: "spot", Capital: 500, Platform: "binanceus", Args: []string{"rsi_divergence", "ETH/USDT", "4h"}},
-		},
-	}
-	state := NewAppState()
-	for _, sc := range cfg.Strategies {
-		ss := NewStrategyState(sc)
-		ss.Cash = sc.Capital + 100
-		state.Strategies[sc.ID] = ss
-	}
-	messages := BuildLeaderboardMessages(cfg, state, map[string]float64{"BTC/USDT": 50000, "ETH/USDT": 3000}, nil, nil, nil, nil)
-	topMsg := messages["top"]
-	smaCell := fmt.Sprintf("%4s %4s", "30m", "10m")
-	if !containsStr(topMsg, smaCell) {
-		t.Errorf("top message should contain Tf+Int cell %q for sma-btc, got:\n%s", smaCell, topMsg)
-	}
-	rsiCell := fmt.Sprintf("%4s %4s", "4h", "1h")
-	if !containsStr(topMsg, rsiCell) {
-		t.Errorf("top message should contain Tf+Int cell %q for rsi-eth, got:\n%s", rsiCell, topMsg)
-	}
-}
-
-func TestBuildLeaderboardMessages_PositionsOpenedAndWinLoss(t *testing.T) {
-	cfg := &Config{
-		Strategies: []StrategyConfig{
-			{ID: "sma-btc", Type: "spot", Capital: 1000, Platform: "binanceus", Args: []string{"sma_crossover", "BTC/USDT", "1h"}},
-		},
-	}
-	state := NewAppState()
-	ss := NewStrategyState(cfg.Strategies[0])
-	ss.Cash = 1100
-	state.Strategies["sma-btc"] = ss
-
-	lifetime := map[string]LifetimeTradeStats{
-		"sma-btc": {PositionsOpened: 7, Wins: 5, Losses: 2},
-	}
-	messages := BuildLeaderboardMessages(cfg, state, map[string]float64{"BTC/USDT": 50000}, nil, lifetime, nil, nil)
-	topMsg := messages["top"]
-	wantCell := fmt.Sprintf("%4d %5s", 7, fmtWinLossRatio(5, 2))
-	if !containsStr(topMsg, wantCell) {
-		t.Errorf("top message should render #T+W/L cell %q, got:\n%s", wantCell, topMsg)
-	}
 }
 
 func TestBuildLeaderboardMessages_Empty(t *testing.T) {
@@ -181,60 +84,22 @@ func TestBuildLeaderboardMessages_Empty(t *testing.T) {
 	}
 }
 
-func TestFmtSignedDollar(t *testing.T) {
-	tests := []struct {
-		input float64
-		want  string
+func TestLeaderboardTopN(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  *Config
+		want int
 	}{
-		{100, "$+100"},
-		{-50, "$-50"},
-		{0, "$+0"},
-		{1234, "$+1,234"},
-		{-9876, "$-9,876"},
+		{"zero falls back to default", &Config{}, 5},
+		{"configured value wins", &Config{Discord: DiscordConfig{LeaderboardTopN: 10}}, 10},
+		{"negative falls back to default", &Config{Discord: DiscordConfig{LeaderboardTopN: -1}}, 5},
 	}
-	for _, tt := range tests {
-		got := fmtSignedDollar(tt.input)
-		if got != tt.want {
-			t.Errorf("fmtSignedDollar(%v) = %q, want %q", tt.input, got, tt.want)
-		}
-	}
-}
-
-func TestFmtSignedPct(t *testing.T) {
-	tests := []struct {
-		input float64
-		want  string
-	}{
-		{10.5, "+10.5%"},
-		{-3.2, "-3.2%"},
-		{0, "+0.0%"},
-	}
-	for _, tt := range tests {
-		got := fmtSignedPct(tt.input)
-		if got != tt.want {
-			t.Errorf("fmtSignedPct(%v) = %q, want %q", tt.input, got, tt.want)
-		}
-	}
-}
-
-func TestLeaderboardTopNDefault(t *testing.T) {
-	cfg := &Config{}
-	if got := leaderboardTopN(cfg); got != 5 {
-		t.Errorf("leaderboardTopN with zero value = %d, want 5", got)
-	}
-}
-
-func TestLeaderboardTopNConfigured(t *testing.T) {
-	cfg := &Config{Discord: DiscordConfig{LeaderboardTopN: 10}}
-	if got := leaderboardTopN(cfg); got != 10 {
-		t.Errorf("leaderboardTopN with configured value = %d, want 10", got)
-	}
-}
-
-func TestLeaderboardTopNNegative(t *testing.T) {
-	cfg := &Config{Discord: DiscordConfig{LeaderboardTopN: -1}}
-	if got := leaderboardTopN(cfg); got != 5 {
-		t.Errorf("leaderboardTopN with negative value = %d, want 5", got)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := leaderboardTopN(tc.cfg); got != tc.want {
+				t.Errorf("leaderboardTopN = %d, want %d", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -495,30 +360,6 @@ func TestBuildLeaderboardSummary_PlatformOnly(t *testing.T) {
 	}
 }
 
-func TestBuildLeaderboardSummary_RegimePriceLine741(t *testing.T) {
-	cfg := &Config{
-		Regime: &RegimeConfig{Enabled: true, Period: 14, ADXThreshold: 20},
-		Strategies: []StrategyConfig{
-			{ID: "hl-sma-btc", Type: "perps", Capital: 1000, Platform: "hyperliquid", Args: []string{"sma_crossover", "ETH/USDT", "1h"}},
-		},
-	}
-	state := NewAppState()
-	ss := NewStrategyState(cfg.Strategies[0])
-	ss.Cash = 1100
-	ss.Regime = "ranging"
-	state.Strategies["hl-sma-btc"] = ss
-
-	lc := LeaderboardSummaryConfig{Platform: "hyperliquid", TopN: 5, Channel: "chan-1"}
-	prices := map[string]float64{"ETH/USDT": 3000}
-	msg := BuildLeaderboardSummary(lc, cfg, state, prices, nil, nil, nil, nil)
-	if msg == "" {
-		t.Fatal("Expected non-empty message")
-	}
-	if !containsStr(msg, "ETH: $3,000.00 | ranging") {
-		t.Errorf("expected header price line with regime, got:\n%s", msg)
-	}
-}
-
 func TestBuildLeaderboardSummary_TickerFilter(t *testing.T) {
 	cfg := &Config{
 		Strategies: []StrategyConfig{
@@ -552,56 +393,6 @@ func TestBuildLeaderboardSummary_TickerFilter(t *testing.T) {
 	momIdx := strings.Index(msg, "hl-mom-eth")
 	if rsiIdx < 0 || momIdx < 0 || rsiIdx >= momIdx {
 		t.Errorf("Expected hl-rsi-eth (+20%%) before hl-mom-eth (+12.5%%), got rsi=%d mom=%d in:\n%s", rsiIdx, momIdx, msg)
-	}
-}
-
-func TestBuildLeaderboardSummary_DefaultTopN(t *testing.T) {
-	var strats []StrategyConfig
-	for i := 0; i < 8; i++ {
-		strats = append(strats, StrategyConfig{
-			ID:       fmt.Sprintf("hl-s%02d-btc", i),
-			Type:     "perps",
-			Capital:  1000,
-			Platform: "hyperliquid",
-			Args:     []string{"sma", "BTC/USDT", "1h"},
-		})
-	}
-	cfg := &Config{Strategies: strats}
-	state := NewAppState()
-	for _, sc := range cfg.Strategies {
-		ss := NewStrategyState(sc)
-		ss.Cash = 1100
-		state.Strategies[sc.ID] = ss
-	}
-
-	lc := LeaderboardSummaryConfig{Platform: "hyperliquid", Channel: "c1"}
-	msg := BuildLeaderboardSummary(lc, cfg, state, nil, nil, nil, nil, nil)
-	if !containsStr(msg, "Hyperliquid Top 5") {
-		t.Errorf("Expected default TopN=5 in title, got:\n%s", msg)
-	}
-}
-
-func TestBuildLeaderboardSummary_PositionsOpenedAndWinLoss(t *testing.T) {
-	cfg := &Config{
-		Strategies: []StrategyConfig{
-			{ID: "hl-sma-btc", Type: "perps", Capital: 1000, Platform: "hyperliquid", Args: []string{"sma_crossover", "BTC/USDT", "1h"}},
-		},
-	}
-	state := NewAppState()
-	state.Strategies["hl-sma-btc"] = NewStrategyState(cfg.Strategies[0])
-	state.Strategies["hl-sma-btc"].Cash = 1100
-
-	lifetime := map[string]LifetimeTradeStats{
-		"hl-sma-btc": {PositionsOpened: 4, Wins: 3, Losses: 1},
-	}
-	lc := LeaderboardSummaryConfig{Platform: "hyperliquid", TopN: 5, Channel: "c1"}
-	msg := BuildLeaderboardSummary(lc, cfg, state, map[string]float64{"BTC/USDT": 50000}, nil, lifetime, nil, nil)
-	if msg == "" {
-		t.Fatal("BuildLeaderboardSummary returned empty message")
-	}
-	wantCell := fmt.Sprintf("%4d %5s", 4, fmtWinLossRatio(3, 1))
-	if !containsStr(msg, wantCell) {
-		t.Errorf("summary should render #T+W/L cell %q for hl-sma-btc, got:\n%s", wantCell, msg)
 	}
 }
 

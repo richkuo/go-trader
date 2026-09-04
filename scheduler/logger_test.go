@@ -7,29 +7,6 @@ import (
 	"testing"
 )
 
-func TestNewLogManager(t *testing.T) {
-	dir := t.TempDir()
-	logDir := filepath.Join(dir, "logs")
-
-	lm, err := NewLogManager(logDir)
-	if err != nil {
-		t.Fatalf("NewLogManager failed: %v", err)
-	}
-	defer lm.Close()
-
-	if _, err := os.Stat(logDir); err != nil {
-		t.Errorf("log directory should exist: %v", err)
-	}
-}
-
-func TestNewLogManagerEmptyDir(t *testing.T) {
-	lm, err := NewLogManager("")
-	if err != nil {
-		t.Fatalf("NewLogManager('') failed: %v", err)
-	}
-	defer lm.Close()
-}
-
 func TestGetStrategyLogger(t *testing.T) {
 	dir := t.TempDir()
 	logDir := filepath.Join(dir, "logs")

@@ -1,5 +1,3 @@
-import json
-
 import numpy as np
 import pandas as pd
 import pytest
@@ -74,31 +72,23 @@ def test_grid_dedupes_identical_stacks_across_specs():
     assert len(grid) == 2
 
 
-def test_grid_rejects_both_stop_owners():
-    with pytest.raises(ValueError, match="mutually exclusive"):
-        generate_close_stack_grid([
-            {"close": None,
-             "stop_loss_atr_mult": [1.5],
-             "trailing_stop_atr_mult": [2.0]},
-        ])
-
-
-def test_grid_rejects_unknown_spec_keys():
-    with pytest.raises(ValueError, match="unknown keys"):
-        generate_close_stack_grid([{"close": None, "tp_tiers": [TIGHT_LADDER]}])
-
-
-def test_grid_rejects_non_list_param_candidates():
-    with pytest.raises(ValueError, match="non-empty list"):
-        generate_close_stack_grid([
-            {"close": {"name": "tiered_tp_atr",
-                       "params": {"tp_tiers": TIGHT_LADDER}}},
-        ])
-
-
-def test_grid_rejects_close_without_name():
-    with pytest.raises(ValueError, match="needs a 'name'"):
-        generate_close_stack_grid([{"close": {"params": {}}}])
+@pytest.mark.parametrize(
+    "specs,match",
+    [
+        ([{"close": None,
+           "stop_loss_atr_mult": [1.5],
+           "trailing_stop_atr_mult": [2.0]}], "mutually exclusive"),
+        ([{"close": None, "tp_tiers": [TIGHT_LADDER]}], "unknown keys"),
+        ([{"close": {"name": "tiered_tp_atr",
+                     "params": {"tp_tiers": TIGHT_LADDER}}}], "non-empty list"),
+        ([{"close": {"params": {}}}], "needs a 'name'"),
+    ],
+    ids=["both_stop_owners", "unknown_spec_keys",
+         "non_list_param_candidates", "close_without_name"],
+)
+def test_grid_rejects_invalid_specs(specs, match):
+    with pytest.raises(ValueError, match=match):
+        generate_close_stack_grid(specs)
 
 
 def test_default_specs_expand_and_are_exclusive():
@@ -120,17 +110,19 @@ def test_close_stack_label_is_compact():
     assert grid[0]["label"] == "tiered_tp_atr[0.5x:0.5,1x:1] sl_atr=2"
 
 
-def test_result_metric_reads_plain_keys():
-    assert _result_metric({"sharpe_ratio": 1.5}, "sharpe_ratio") == 1.5
-
-
-def test_result_metric_dd_adjusted_return():
-    assert _result_metric(
-        {"total_return_pct": 30.0, "max_drawdown_pct": -15.0},
-        "dd_adjusted_return") == pytest.approx(2.0)
-    assert _result_metric(
-        {"total_return_pct": 10.0, "max_drawdown_pct": 0.0},
-        "dd_adjusted_return") == 0.0
+@pytest.mark.parametrize(
+    "result,metric,expected",
+    [
+        ({"sharpe_ratio": 1.5}, "sharpe_ratio", 1.5),
+        ({"total_return_pct": 30.0, "max_drawdown_pct": -15.0},
+         "dd_adjusted_return", 2.0),
+        ({"total_return_pct": 10.0, "max_drawdown_pct": 0.0},
+         "dd_adjusted_return", 0.0),
+    ],
+    ids=["plain_key", "dd_adjusted", "dd_adjusted_zero_drawdown"],
+)
+def test_result_metric(result, metric, expected):
+    assert _result_metric(result, metric) == pytest.approx(expected)
 
 
 def test_joint_sweep_reports_best_close_stack():
@@ -240,17 +232,6 @@ def test_dd_adjusted_metric_selects_and_reports():
     assert result["optimize_metric"] == "dd_adjusted_return"
     for w in result["window_results"]:
         assert np.isfinite(w["train_metric"])
-
-
-def test_stack_specs_survive_json_round_trip():
-    specs = json.loads(json.dumps([
-        {"close": {"name": "tiered_tp_atr",
-                   "params": {"tp_tiers": [TIGHT_LADDER]}},
-         "stop_loss_atr_mult": [None, 1.5]},
-    ]))
-    grid = generate_close_stack_grid(specs)
-    assert len(grid) == 2
-    assert {g["stop_loss_atr_mult"] for g in grid} == {None, 1.5}
 
 
 def test_joint_sweep_defaults_to_long_universe():

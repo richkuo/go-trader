@@ -33,10 +33,6 @@ def test_trending_window_vol_matches_reference():
     assert got < 0.01
 
 
-def test_short_history_returns_default():
-    assert calc_historical_vol([100.0, 101.0, 102.0], window=14) == 0.5
-
-
 def test_exact_minimum_length_computes_vol():
     window = 14
     rng = np.random.default_rng(7)
@@ -52,9 +48,15 @@ def test_exact_minimum_length_computes_vol():
     assert got != 0.5
 
 
-def test_one_below_minimum_returns_default():
-    window = 14
-    closes = [100.0 + i for i in range(window)]
+@pytest.mark.parametrize(
+    "closes,window",
+    [
+        ([100.0, 101.0, 102.0], 14),
+        ([100.0 + i for i in range(14)], 14),
+    ],
+    ids=["short_history", "one_below_minimum"],
+)
+def test_too_little_history_returns_default(closes, window):
     assert calc_historical_vol(closes, window=window) == 0.5
 
 

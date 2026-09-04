@@ -14,39 +14,21 @@ _SIMULATE_STRATEGY = load_module("_simulate_strategy_gate_test", os.path.join(RO
 _resolve_gate_on_failure = _SIMULATE_STRATEGY._resolve_gate_on_failure
 
 
-def test_default_open_when_neither_set():
-    assert _resolve_gate_on_failure({}, {}) == "open"
+@pytest.mark.parametrize("strategy_cfg,global_cfg,expected", [
+    ({}, {}, "open"),
+    ({}, {"gate_on_failure": "closed"}, "closed"),
+    ({"regime_gate_on_failure": "open"}, {"gate_on_failure": "closed"}, "open"),
+    ({"regime_gate_on_failure": "closed"}, {}, "closed"),
+])
+def test_resolves_gate_on_failure(strategy_cfg, global_cfg, expected):
+    assert _resolve_gate_on_failure(strategy_cfg, global_cfg) == expected
 
 
-def test_global_applies_when_no_per_strategy():
-    assert _resolve_gate_on_failure({}, {"gate_on_failure": "closed"}) == "closed"
-
-
-def test_per_strategy_wins_over_global():
-    assert _resolve_gate_on_failure(
-        {"regime_gate_on_failure": "open"}, {"gate_on_failure": "closed"}
-    ) == "open"
-
-
-def test_per_strategy_applies_with_no_global():
-    assert _resolve_gate_on_failure(
-        {"regime_gate_on_failure": "closed"}, {}
-    ) == "closed"
-
-
-def test_unknown_per_strategy_rejected():
+@pytest.mark.parametrize("strategy_cfg,global_cfg", [
+    ({"regime_gate_on_failure": "fail-closed"}, {}),
+    ({}, {"gate_on_failure": "garbage"}),
+    ({"regime_gate_on_failure": "closed"}, {"gate_on_failure": "garbage"}),
+])
+def test_unknown_value_rejected(strategy_cfg, global_cfg):
     with pytest.raises(ValueError, match="regime_gate_on_failure"):
-        _resolve_gate_on_failure({"regime_gate_on_failure": "fail-closed"}, {})
-
-
-def test_unknown_global_rejected_with_no_override():
-    with pytest.raises(ValueError, match="regime_gate_on_failure"):
-        _resolve_gate_on_failure({}, {"gate_on_failure": "garbage"})
-
-
-def test_garbage_global_rejected_even_with_valid_per_strategy_override():
-    with pytest.raises(ValueError, match="regime_gate_on_failure"):
-        _resolve_gate_on_failure(
-            {"regime_gate_on_failure": "closed"},
-            {"gate_on_failure": "garbage"},
-        )
+        _resolve_gate_on_failure(strategy_cfg, global_cfg)

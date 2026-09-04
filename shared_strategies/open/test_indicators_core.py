@@ -496,26 +496,32 @@ def _ar1_log_price_series(n, phi, seed, drift=0.0, scale=100.0):
     return pd.Series(scale * np.exp(log_price))
 
 
-def test_hurst_random_walk_near_half():
-    close = _ar1_log_price_series(2000, phi=0.0, seed=1)
-    h = hurst_exponent(close)
-    assert 0.35 <= h <= 0.65, h
+@pytest.mark.parametrize("phi,seed,check", [
+    (0.0, 1, lambda h: 0.35 <= h <= 0.65),
+    (0.7, 2, lambda h: h > 0.55),
+    (-0.6, 3, lambda h: h < 0.45),
+], ids=["random_walk", "persistent", "mean_reverting"])
+def test_hurst_separates_the_three_regimes(phi, seed, check):
+    h = hurst_exponent(_ar1_log_price_series(2000, phi=phi, seed=seed))
+    assert check(h), h
 
 
-def test_hurst_persistent_series_above_half():
-    close = _ar1_log_price_series(2000, phi=0.7, seed=2)
-    h = hurst_exponent(close)
-    assert h > 0.55, h
+def _degenerate_dfa_inputs():
+    return [
+        pytest.param(pd.Series(np.linspace(100.0, 110.0, HURST_DFA_MIN_POINTS)),
+                     id="below_min_points"),
+        pytest.param(pd.Series(np.full(300, 100.0)), id="constant_price"),
+        pytest.param(pd.Series(np.concatenate(
+            [np.full(150, 100.0), [-1.0], np.full(150, 100.0)])),
+            id="non_positive_price"),
+        pytest.param(pd.Series([], dtype=float), id="empty"),
+        pytest.param(pd.Series([100.0]), id="single_point"),
+        pytest.param(pd.Series(np.full(500, float("nan"))), id="all_nan"),
+    ]
 
 
-def test_hurst_mean_reverting_series_below_half():
-    close = _ar1_log_price_series(2000, phi=-0.6, seed=3)
-    h = hurst_exponent(close)
-    assert h < 0.45, h
-
-
-def test_hurst_insufficient_data_returns_nan():
-    close = pd.Series(np.linspace(100.0, 110.0, HURST_DFA_MIN_POINTS))
+@pytest.mark.parametrize("close", _degenerate_dfa_inputs())
+def test_hurst_returns_nan_without_raising_on_degenerate_input(close):
     assert np.isnan(hurst_exponent(close))
 
 
@@ -523,26 +529,6 @@ def test_hurst_exactly_at_minimum_is_not_nan():
     close = _ar1_log_price_series(HURST_DFA_MIN_POINTS + 1, phi=0.0, seed=4)
     h = hurst_exponent(close)
     assert not np.isnan(h)
-
-
-def test_hurst_constant_price_returns_nan():
-    close = pd.Series(np.full(300, 100.0))
-    assert np.isnan(hurst_exponent(close))
-
-
-def test_hurst_non_positive_price_returns_nan():
-    close = pd.Series(np.concatenate([np.full(150, 100.0), [-1.0], np.full(150, 100.0)]))
-    assert np.isnan(hurst_exponent(close))
-
-
-def test_hurst_never_raises_on_degenerate_input():
-    for close in (
-        pd.Series([], dtype=float),
-        pd.Series([100.0]),
-        pd.Series(np.full(500, float("nan"))),
-    ):
-        h = hurst_exponent(close)
-        assert np.isnan(h)
 
 
 def test_hurst_deterministic():
@@ -643,22 +629,14 @@ def test_hurst_dfa_fluctuation_vectorization_matches_naive_per_segment_polyfit()
         assert actual == pytest.approx(expected, rel=1e-9)
 
 
-def test_hurst_rs_random_walk_near_half():
-    close = _ar1_log_price_series(2000, phi=0.0, seed=1)
-    h = hurst_rescaled_range(close)
-    assert 0.35 <= h <= 0.65, h
-
-
-def test_hurst_rs_persistent_series_above_half():
-    close = _ar1_log_price_series(2000, phi=0.7, seed=2)
-    h = hurst_rescaled_range(close)
-    assert h > 0.5, h
-
-
-def test_hurst_rs_mean_reverting_series_below_half():
-    close = _ar1_log_price_series(2000, phi=-0.6, seed=3)
-    h = hurst_rescaled_range(close)
-    assert h < 0.5, h
+@pytest.mark.parametrize("phi,seed,check", [
+    (0.0, 1, lambda h: 0.35 <= h <= 0.65),
+    (0.7, 2, lambda h: h > 0.5),
+    (-0.6, 3, lambda h: h < 0.5),
+], ids=["random_walk", "persistent", "mean_reverting"])
+def test_hurst_rs_separates_the_three_regimes(phi, seed, check):
+    h = hurst_rescaled_range(_ar1_log_price_series(2000, phi=phi, seed=seed))
+    assert check(h), h
 
 
 def test_hurst_rs_orders_the_three_regimes():
@@ -668,33 +646,28 @@ def test_hurst_rs_orders_the_three_regimes():
     assert mr < rw < persistent, (mr, rw, persistent)
 
 
-def test_hurst_rs_insufficient_data_returns_nan():
-    close = _ar1_log_price_series(HURST_RS_MIN_POINTS, phi=0.0, seed=4)
+def _degenerate_rs_inputs():
+    return [
+        pytest.param(_ar1_log_price_series(HURST_RS_MIN_POINTS, phi=0.0, seed=4),
+                     id="below_min_points"),
+        pytest.param(pd.Series(np.full(300, 100.0)), id="constant_price"),
+        pytest.param(pd.Series(np.concatenate(
+            [np.full(150, 100.0), [-1.0], np.full(150, 100.0)])),
+            id="non_positive_price"),
+        pytest.param(pd.Series([], dtype=float), id="empty"),
+        pytest.param(pd.Series([100.0]), id="single_point"),
+        pytest.param(pd.Series(np.full(500, float("nan"))), id="all_nan"),
+    ]
+
+
+@pytest.mark.parametrize("close", _degenerate_rs_inputs())
+def test_hurst_rs_returns_nan_without_raising_on_degenerate_input(close):
     assert np.isnan(hurst_rescaled_range(close))
 
 
 def test_hurst_rs_exactly_at_minimum_is_not_nan():
     close = _ar1_log_price_series(HURST_RS_MIN_POINTS + 1, phi=0.0, seed=4)
     assert not np.isnan(hurst_rescaled_range(close))
-
-
-def test_hurst_rs_constant_price_returns_nan():
-    close = pd.Series(np.full(300, 100.0))
-    assert np.isnan(hurst_rescaled_range(close))
-
-
-def test_hurst_rs_non_positive_price_returns_nan():
-    close = pd.Series(np.concatenate([np.full(150, 100.0), [-1.0], np.full(150, 100.0)]))
-    assert np.isnan(hurst_rescaled_range(close))
-
-
-def test_hurst_rs_never_raises_on_degenerate_input():
-    for close in (
-        pd.Series([], dtype=float),
-        pd.Series([100.0]),
-        pd.Series(np.full(500, float("nan"))),
-    ):
-        assert np.isnan(hurst_rescaled_range(close))
 
 
 def test_hurst_rs_never_returns_half_as_a_sentinel():

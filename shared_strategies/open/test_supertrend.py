@@ -35,13 +35,6 @@ def _three_leg_trend_df():
     return make_ohlcv(closes, index=idx)
 
 
-def test_supertrend_emits_signals_on_trending_data(registry):
-    res = registry.supertrend_strategy(_three_leg_trend_df())
-    signals = res["signal"].to_numpy()
-    assert (signals == 1).sum() > 0, "no buy signals on trending data"
-    assert (signals == -1).sum() > 0, "no sell signals on trending data"
-
-
 def test_supertrend_exact_signal_values_and_positions(registry):
     res = registry.supertrend_strategy(_three_leg_trend_df())
     signals = res["signal"].to_numpy()

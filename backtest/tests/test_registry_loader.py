@@ -6,20 +6,16 @@ from registry_loader import load_registry, registry_for_strategy_type
 from optimizer import DEFAULT_PARAM_RANGES
 
 
-def test_load_spot_registry():
-    mod = load_registry("spot")
-    assert "sma_crossover" in mod.STRATEGY_REGISTRY
-    assert "pairs_spread" in mod.STRATEGY_REGISTRY
-    assert "delta_neutral_funding" not in mod.STRATEGY_REGISTRY
-    assert "breakout" not in mod.STRATEGY_REGISTRY
-
-
-def test_load_futures_registry():
-    mod = load_registry("futures")
-    assert "sma_crossover" in mod.STRATEGY_REGISTRY
-    assert "delta_neutral_funding" in mod.STRATEGY_REGISTRY
-    assert "breakout" in mod.STRATEGY_REGISTRY
-    assert "pairs_spread" not in mod.STRATEGY_REGISTRY
+@pytest.mark.parametrize("platform,present,absent", [
+    ("spot", ["sma_crossover", "pairs_spread"], ["delta_neutral_funding", "breakout"]),
+    ("futures", ["sma_crossover", "delta_neutral_funding", "breakout"], ["pairs_spread"]),
+])
+def test_load_registry_membership(platform, present, absent):
+    mod = load_registry(platform)
+    for name in present:
+        assert name in mod.STRATEGY_REGISTRY
+    for name in absent:
+        assert name not in mod.STRATEGY_REGISTRY
 
 
 def test_both_registries_coexist():

@@ -12,102 +12,75 @@ import (
 )
 
 func TestHandleHealth(t *testing.T) {
-	state := NewAppState()
-	state.LastCycle = time.Now()
-	var mu sync.RWMutex
-
-	ss := NewStatusServer(state, &mu, "", nil, nil)
-
-	req := httptest.NewRequest("GET", "/health", nil)
-	w := httptest.NewRecorder()
-	ss.handleHealth(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	cases := []struct {
+		name      string
+		lastCycle time.Time
+		wantCode  int
+	}{
+		{"fresh cycle is ok", time.Now(), http.StatusOK},
+		{"stale cycle is unavailable", time.Now().Add(-60 * time.Minute), http.StatusServiceUnavailable},
+		{"zero time is healthy", time.Time{}, http.StatusOK},
 	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			state := NewAppState()
+			state.LastCycle = tc.lastCycle
+			var mu sync.RWMutex
+			ss := NewStatusServer(state, &mu, "", nil, nil)
 
-	body := w.Body.String()
-	if !strings.Contains(body, "\"version\":\""+Version+"\"") {
-		t.Errorf("body %q missing literal version substring update.sh greps for", body)
-	}
+			req := httptest.NewRequest("GET", "/health", nil)
+			w := httptest.NewRecorder()
+			ss.handleHealth(w, req)
 
-	var resp map[string]any
-	json.Unmarshal([]byte(body), &resp)
-	if resp["status"] != "ok" {
-		t.Errorf("status = %q, want %q", resp["status"], "ok")
-	}
-	if resp["version"] != Version {
-		t.Errorf("version = %q, want %q", resp["version"], Version)
-	}
-	if pid, ok := resp["pid"].(float64); !ok || int(pid) != os.Getpid() {
-		t.Errorf("pid = %v, want %d", resp["pid"], os.Getpid())
-	}
-}
-
-func TestHandleHealthStale(t *testing.T) {
-	state := NewAppState()
-	state.LastCycle = time.Now().Add(-60 * time.Minute)
-	var mu sync.RWMutex
-
-	ss := NewStatusServer(state, &mu, "", nil, nil)
-
-	req := httptest.NewRequest("GET", "/health", nil)
-	w := httptest.NewRecorder()
-	ss.handleHealth(w, req)
-
-	if w.Code != http.StatusServiceUnavailable {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusServiceUnavailable)
-	}
-	var resp map[string]any
-	json.NewDecoder(w.Body).Decode(&resp)
-	if resp["version"] != Version {
-		t.Errorf("version = %q, want %q", resp["version"], Version)
+			if w.Code != tc.wantCode {
+				t.Errorf("status = %d, want %d", w.Code, tc.wantCode)
+			}
+			body := w.Body.String()
+			if !strings.Contains(body, "\"version\":\""+Version+"\"") {
+				t.Errorf("body %q missing literal version substring update.sh greps for", body)
+			}
+			var resp map[string]any
+			if err := json.Unmarshal([]byte(body), &resp); err != nil {
+				t.Fatalf("unmarshal health body: %v", err)
+			}
+			if resp["version"] != Version {
+				t.Errorf("version = %q, want %q", resp["version"], Version)
+			}
+			if pid, ok := resp["pid"].(float64); !ok || int(pid) != os.Getpid() {
+				t.Errorf("pid = %v, want %d", resp["pid"], os.Getpid())
+			}
+			if tc.wantCode == http.StatusOK && resp["status"] != "ok" {
+				t.Errorf("status = %q, want %q", resp["status"], "ok")
+			}
+		})
 	}
 }
 
-func TestHandleHealthZeroTime(t *testing.T) {
-	state := NewAppState()
-	var mu sync.RWMutex
-
-	ss := NewStatusServer(state, &mu, "", nil, nil)
-
-	req := httptest.NewRequest("GET", "/health", nil)
-	w := httptest.NewRecorder()
-	ss.handleHealth(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("status = %d, want %d (zero time = healthy)", w.Code, http.StatusOK)
+func TestHandleStatusRejectsBadToken(t *testing.T) {
+	cases := []struct {
+		name   string
+		header string
+	}{
+		{"no authorization header", ""},
+		{"wrong bearer token", "Bearer wrong-token"},
 	}
-}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			state := NewAppState()
+			var mu sync.RWMutex
+			ss := NewStatusServer(state, &mu, "secret-token", nil, nil)
 
-func TestHandleStatusUnauthorized(t *testing.T) {
-	state := NewAppState()
-	var mu sync.RWMutex
+			req := httptest.NewRequest("GET", "/status", nil)
+			if tc.header != "" {
+				req.Header.Set("Authorization", tc.header)
+			}
+			w := httptest.NewRecorder()
+			ss.handleStatus(w, req)
 
-	ss := NewStatusServer(state, &mu, "secret-token", nil, nil)
-
-	req := httptest.NewRequest("GET", "/status", nil)
-	w := httptest.NewRecorder()
-	ss.handleStatus(w, req)
-
-	if w.Code != http.StatusUnauthorized {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusUnauthorized)
-	}
-}
-
-func TestHandleStatusUnauthorizedWrongToken(t *testing.T) {
-	state := NewAppState()
-	var mu sync.RWMutex
-
-	ss := NewStatusServer(state, &mu, "secret-token", nil, nil)
-
-	req := httptest.NewRequest("GET", "/status", nil)
-	req.Header.Set("Authorization", "Bearer wrong-token")
-	w := httptest.NewRecorder()
-	ss.handleStatus(w, req)
-
-	if w.Code != http.StatusUnauthorized {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusUnauthorized)
+			if w.Code != http.StatusUnauthorized {
+				t.Errorf("status = %d, want %d", w.Code, http.StatusUnauthorized)
+			}
+		})
 	}
 }
 

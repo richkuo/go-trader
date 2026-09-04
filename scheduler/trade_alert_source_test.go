@@ -33,54 +33,69 @@ func TestTradeAlertCloseSourceClassification(t *testing.T) {
 	}
 }
 
-func TestFormatTradeDMCloseTradeIncludesSource(t *testing.T) {
-	sc := StrategyConfig{ID: "hl-rmc-eth-live", Platform: "hyperliquid", Type: "perps"}
-	trade := Trade{
-		Symbol:   "ETH",
-		Side:     "sell",
-		Quantity: 0.47,
-		Price:    3077.70,
-		Value:    1446.52,
-		Details:  "Stop loss close ETH, PnL: $-22.45 (fee $1.10)",
+func TestFormatTradeDMSourceLine(t *testing.T) {
+	cases := []struct {
+		name         string
+		sc           StrategyConfig
+		trade        Trade
+		wantContains []string
+		wantOmits    []string
+	}{
+		{
+			name: "close trade carries source",
+			sc:   StrategyConfig{ID: "hl-rmc-eth-live", Platform: "hyperliquid", Type: "perps"},
+			trade: Trade{
+				Symbol:   "ETH",
+				Side:     "sell",
+				Quantity: 0.47,
+				Price:    3077.70,
+				Value:    1446.52,
+				Details:  "Stop loss close ETH, PnL: $-22.45 (fee $1.10)",
+			},
+			wantContains: []string{"Source: exchange SL"},
+		},
+		{
+			name: "hyperliquid reconcile SL carries OID and source",
+			sc:   StrategyConfig{ID: "hl-sync-eth", Platform: "hyperliquid", Type: "perps"},
+			trade: Trade{
+				IsClose:         true,
+				Symbol:          "ETH",
+				Side:            "sell",
+				Quantity:        1,
+				Price:           2900,
+				Value:           2900,
+				Details:         "Stop loss close, PnL: $-100.05 (fee $0.05)",
+				ExchangeOrderID: "42",
+			},
+			wantContains: []string{"TRADE CLOSED - LIVE", "OID: 42", "Source: exchange SL"},
+		},
+		{
+			name: "open trade omits source",
+			sc:   StrategyConfig{ID: "hl-rmc-eth-live", Platform: "hyperliquid", Type: "perps"},
+			trade: Trade{
+				Symbol:   "ETH",
+				Side:     "buy",
+				Quantity: 0.47,
+				Price:    3077.70,
+				Value:    1446.52,
+				Details:  "Open long 0.47 @ $3077.70 (5x, fee $1.10)",
+			},
+			wantOmits: []string{"Source:"},
+		},
 	}
-	msg := FormatTradeDM(sc, trade, "live")
-	if !strings.Contains(msg, "Source: exchange SL") {
-		t.Errorf("expected Source line for SL close, got:\n%s", msg)
-	}
-}
-
-func TestFormatTradeDM_HyperliquidReconcileSLIncludesOID(t *testing.T) {
-	sc := StrategyConfig{ID: "hl-sync-eth", Platform: "hyperliquid", Type: "perps"}
-	trade := Trade{
-		IsClose:         true,
-		Symbol:          "ETH",
-		Side:            "sell",
-		Quantity:        1,
-		Price:           2900,
-		Value:           2900,
-		Details:         "Stop loss close, PnL: $-100.05 (fee $0.05)",
-		ExchangeOrderID: "42",
-	}
-	msg := FormatTradeDM(sc, trade, "live")
-	for _, want := range []string{"TRADE CLOSED - LIVE", "OID: 42", "Source: exchange SL"} {
-		if !strings.Contains(msg, want) {
-			t.Errorf("message missing %q:\n%s", want, msg)
-		}
-	}
-}
-
-func TestFormatTradeDMOpenTradeOmitsSource(t *testing.T) {
-	sc := StrategyConfig{ID: "hl-rmc-eth-live", Platform: "hyperliquid", Type: "perps"}
-	trade := Trade{
-		Symbol:   "ETH",
-		Side:     "buy",
-		Quantity: 0.47,
-		Price:    3077.70,
-		Value:    1446.52,
-		Details:  "Open long 0.47 @ $3077.70 (5x, fee $1.10)",
-	}
-	msg := FormatTradeDM(sc, trade, "live")
-	if strings.Contains(msg, "Source:") {
-		t.Errorf("open trade should not carry a Source line, got:\n%s", msg)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			msg := FormatTradeDM(tc.sc, tc.trade, "live")
+			for _, want := range tc.wantContains {
+				if !strings.Contains(msg, want) {
+					t.Errorf("message missing %q:\n%s", want, msg)
+				}
+			}
+			for _, omit := range tc.wantOmits {
+				if strings.Contains(msg, omit) {
+					t.Errorf("message should not contain %q:\n%s", omit, msg)
+				}
+			}
+		})
 	}
 }

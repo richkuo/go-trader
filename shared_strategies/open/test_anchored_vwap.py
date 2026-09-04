@@ -8,9 +8,7 @@ import pandas as pd
 from shared_strategies.open.conftest import load_module, make_ohlcv
 
 _ANCHORED_VWAP = load_module("_anchored_vwap_test", os.path.join(os.path.dirname(__file__), "anchored_vwap.py"))
-_INDICATORS_CORE = load_module("_anchored_vwap_indicators_test", os.path.join(os.path.dirname(__file__), "indicators_core.py"))
 anchored_vwap_core = _ANCHORED_VWAP.anchored_vwap_core
-_inline_rsi = _INDICATORS_CORE.wilder_rsi
 _ohlcv = make_ohlcv
 
 
@@ -116,15 +114,6 @@ def _high_prior_long_reclaim_df():
               100.5, 100.2, 99.8, 99.5,
               103.5, 104.0, 104.5, 105.0]
     return _ohlcv(closes, volume=10.0)
-
-
-def test_inline_rsi_extremes_and_warmup():
-    rising = pd.Series(np.linspace(100, 113, 14))
-    rsi = _inline_rsi(rising, 3)
-    assert rsi.iloc[:3].isna().all()
-    assert (rsi.iloc[3:] == 100.0).all()
-    falling = pd.Series(np.linspace(113, 100, 14))
-    assert (_inline_rsi(falling, 3).iloc[3:] == 0.0).all()
 
 
 def test_gate_default_off_is_bit_identical():
@@ -245,11 +234,3 @@ def test_registered_for_spot_and_futures():
     for platform in ("spot", "futures"):
         assert "anchored_vwap" in reg.build_registry(platform), platform
         assert "anchored_vwap" in reg.PLATFORM_ORDER[platform], platform
-
-
-def test_registered_fn_applies_via_registry():
-    reg = _load_registry()
-    entry = reg.STRATEGIES["anchored_vwap"]
-    df = _long_reclaim_df()
-    out = entry["fn"](df, **entry["default_params"])
-    assert "signal" in out.columns

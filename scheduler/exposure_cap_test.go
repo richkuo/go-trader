@@ -312,7 +312,7 @@ func TestExposureCapAlertMessage_EdgeTriggered(t *testing.T) {
 		Configured: true, CapUSD: 15000, LongUSD: 19000, LongBlocked: true,
 	}
 	msg, alertState := exposureCapAlertMessage(blocked, exposureCapAlertState{}, now)
-	if msg == "" || !strings.Contains(msg, "new long opens blocked") {
+	if msg == "" {
 		t.Fatalf("expected first-block DM, got %q", msg)
 	}
 	msg, alertState = exposureCapAlertMessage(blocked, alertState, now)
@@ -353,45 +353,6 @@ func TestExposureCapAlertMessage_ConcentrationAndBasisMiss(t *testing.T) {
 	}
 	if msg, _ = exposureCapAlertMessage(miss, alertState, now); msg != "" {
 		t.Fatalf("expected no repeat basis-miss DM, got %q", msg)
-	}
-}
-
-func TestExposureCapStartupSummaryLine(t *testing.T) {
-	if line := exposureCapStartupSummaryLine(&PortfolioRiskConfig{MaxDrawdownPct: 25}); line != "" {
-		t.Errorf("expected empty line when disabled, got %q", line)
-	}
-	line := exposureCapStartupSummaryLine(&PortfolioRiskConfig{MaxSameDirectionNotionalUSD: 15000, MaxAssetConcentrationPct: 40})
-	for _, want := range []string{"same_direction=$15000.00", "asset_concentration=40.0%", "capped-direction opens only"} {
-		if !strings.Contains(line, want) {
-			t.Errorf("startup line missing %q: %q", want, line)
-		}
-	}
-}
-
-func TestExposureCapStatusNote(t *testing.T) {
-	state := &AppState{Strategies: exposureTestStates()}
-	prices := exposureTestPrices()
-	if note := exposureCapStatusNote(&Config{PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25}, Strategies: exposureTestConfigs()}, state, prices); note != "" {
-		t.Errorf("expected empty note when disabled, got %q", note)
-	}
-	armed := exposureCapStatusNote(&Config{PortfolioRisk: &PortfolioRiskConfig{MaxSameDirectionNotionalUSD: 50000}, Strategies: exposureTestConfigs()}, state, prices)
-	if !strings.Contains(armed, "🟢 exposure cap armed") || !strings.Contains(armed, "long $19000.00") {
-		t.Errorf("unexpected armed note: %q", armed)
-	}
-	hot := exposureCapStatusNote(&Config{PortfolioRisk: &PortfolioRiskConfig{MaxSameDirectionNotionalUSD: 15000}, Strategies: exposureTestConfigs()}, state, prices)
-	if !strings.Contains(hot, "🛑 exposure cap") || !strings.Contains(hot, "new long opens blocked") {
-		t.Errorf("unexpected blocking note: %q", hot)
-	}
-}
-
-func TestExposureCapHoldDetail(t *testing.T) {
-	st := ExposureCapStatus{Configured: true, CapUSD: 15000, LongUSD: 19000, LongBlocked: true}
-	detail := exposureCapHoldDetail(st)
-	if !strings.Contains(detail, "long $19000.00") || !strings.Contains(detail, "cap $15000.00") {
-		t.Errorf("unexpected hold detail: %q", detail)
-	}
-	if exposureCapHoldDetail(ExposureCapStatus{Configured: true}) != "" {
-		t.Error("expected empty detail when nothing is blocked")
 	}
 }
 

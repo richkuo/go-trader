@@ -110,47 +110,27 @@ class TestOptionsRegistry:
 
 
 class TestMomentumOptions:
-    def test_no_signal_returns_none(self):
+    @pytest.mark.parametrize("signal,option_type,expected", [
+        (0, OptionType.CALL, "none"),
+        (1, OptionType.CALL, "buy_call"),
+        (-1, OptionType.PUT, "buy_put"),
+    ])
+    def test_signal_selects_action(self, signal, option_type, expected):
         adapter = _make_adapter()
         risk = _make_risk()
-        strat = MomentumOptionsStrategy(adapter, risk, roc_period=14, threshold=5.0,
-                                         target_dte=37, profit_target_pct=50.0,
-                                         stop_loss_pct=30.0, position_size_pct=3.0)
-        with patch.object(strat, '_get_momentum_signal', return_value=0):
-            actions = strat.evaluate("BTC")
-        assert len(actions) == 1
-        assert actions[0]["type"] == "none"
-
-    def test_buy_signal_produces_call(self):
-        adapter = _make_adapter()
-        risk = _make_risk()
-        contract = _make_contract()
+        contract = _make_contract(option_type=option_type)
         adapter.find_options.return_value = [contract]
         adapter.enrich_contract.return_value = contract
 
         strat = MomentumOptionsStrategy(adapter, risk, roc_period=14, threshold=5.0,
                                          target_dte=37, profit_target_pct=50.0,
                                          stop_loss_pct=30.0, position_size_pct=3.0)
-        with patch.object(strat, '_get_momentum_signal', return_value=1):
+        with patch.object(strat, '_get_momentum_signal', return_value=signal):
             actions = strat.evaluate("BTC")
         assert len(actions) == 1
-        assert actions[0]["type"] == "buy_call"
-        assert actions[0]["contract"] == contract
-
-    def test_sell_signal_produces_put(self):
-        adapter = _make_adapter()
-        risk = _make_risk()
-        contract = _make_contract(option_type=OptionType.PUT)
-        adapter.find_options.return_value = [contract]
-        adapter.enrich_contract.return_value = contract
-
-        strat = MomentumOptionsStrategy(adapter, risk, roc_period=14, threshold=5.0,
-                                         target_dte=37, profit_target_pct=50.0,
-                                         stop_loss_pct=30.0, position_size_pct=3.0)
-        with patch.object(strat, '_get_momentum_signal', return_value=-1):
-            actions = strat.evaluate("BTC")
-        assert len(actions) == 1
-        assert actions[0]["type"] == "buy_put"
+        assert actions[0]["type"] == expected
+        if expected != "none":
+            assert actions[0]["contract"] == contract
 
     def test_existing_position_skips(self):
         adapter = _make_adapter()
@@ -179,10 +159,15 @@ class TestMomentumOptions:
         assert actions[0]["type"] == "none"
         assert "No suitable calls" in actions[0]["reason"]
 
-    def test_manage_positions_profit_target(self):
+    @pytest.mark.parametrize("pnl_pct,dte,reason_substring", [
+        (55.0, 20, "profit target"),
+        (-35.0, 20, "stop loss"),
+        (10.0, 3, "expiry"),
+    ])
+    def test_manage_positions_closes(self, pnl_pct, dte, reason_substring):
         adapter = _make_adapter()
         risk = _make_risk()
-        pid, pos = _make_position(pnl_pct=55.0, side=OptionSide.BUY)
+        pid, pos = _make_position(pnl_pct=pnl_pct, side=OptionSide.BUY, dte=dte)
         adapter.get_positions.return_value = {pid: pos}
 
         strat = MomentumOptionsStrategy(adapter, risk, profit_target_pct=50.0,
@@ -190,40 +175,19 @@ class TestMomentumOptions:
         actions = strat.manage_positions("BTC")
         assert len(actions) == 1
         assert actions[0]["type"] == "close"
-        assert "Profit target" in actions[0]["reason"]
-
-    def test_manage_positions_stop_loss(self):
-        adapter = _make_adapter()
-        risk = _make_risk()
-        pid, pos = _make_position(pnl_pct=-35.0, side=OptionSide.BUY)
-        adapter.get_positions.return_value = {pid: pos}
-
-        strat = MomentumOptionsStrategy(adapter, risk, profit_target_pct=50.0,
-                                         stop_loss_pct=30.0)
-        actions = strat.manage_positions("BTC")
-        assert len(actions) == 1
-        assert actions[0]["type"] == "close"
-        assert "Stop loss" in actions[0]["reason"]
-
-    def test_manage_positions_approaching_expiry(self):
-        adapter = _make_adapter()
-        risk = _make_risk()
-        pid, pos = _make_position(pnl_pct=10.0, side=OptionSide.BUY, dte=3)
-        adapter.get_positions.return_value = {pid: pos}
-
-        strat = MomentumOptionsStrategy(adapter, risk, profit_target_pct=50.0,
-                                         stop_loss_pct=30.0)
-        actions = strat.manage_positions("BTC")
-        assert len(actions) == 1
-        assert actions[0]["type"] == "close"
-        assert "expiry" in actions[0]["reason"].lower()
+        assert reason_substring in actions[0]["reason"].lower()
 
 
 class TestVolMeanReversion:
-    def test_high_iv_sells_strangle(self):
+    @pytest.mark.parametrize("iv_rank,expected", [
+        (85.0, "sell_strangle"),
+        (15.0, "buy_straddle"),
+        (50.0, "none"),
+    ])
+    def test_iv_rank_selects_action(self, iv_rank, expected):
         adapter = _make_adapter()
         risk = _make_risk()
-        adapter.get_iv_rank.return_value = 85.0
+        adapter.get_iv_rank.return_value = iv_rank
 
         strat = VolMeanReversionStrategy(adapter, risk,
                                           high_iv_threshold=75, low_iv_threshold=25,
@@ -231,33 +195,9 @@ class TestVolMeanReversion:
                                           exit_iv_reversion_pct=50.0, position_size_pct=5.0)
         actions = strat.evaluate("BTC")
         assert len(actions) == 1
-        assert actions[0]["type"] == "sell_strangle"
-
-    def test_low_iv_buys_straddle(self):
-        adapter = _make_adapter()
-        risk = _make_risk()
-        adapter.get_iv_rank.return_value = 15.0
-
-        strat = VolMeanReversionStrategy(adapter, risk,
-                                          high_iv_threshold=75, low_iv_threshold=25,
-                                          target_dte=30, iv_lookback_days=60,
-                                          exit_iv_reversion_pct=50.0, position_size_pct=5.0)
-        actions = strat.evaluate("BTC")
-        assert len(actions) == 1
-        assert actions[0]["type"] == "buy_straddle"
-
-    def test_neutral_iv_no_action(self):
-        adapter = _make_adapter()
-        risk = _make_risk()
-        adapter.get_iv_rank.return_value = 50.0
-
-        strat = VolMeanReversionStrategy(adapter, risk,
-                                          high_iv_threshold=75, low_iv_threshold=25,
-                                          target_dte=30, iv_lookback_days=60,
-                                          exit_iv_reversion_pct=50.0, position_size_pct=5.0)
-        actions = strat.evaluate("BTC")
-        assert actions[0]["type"] == "none"
-        assert "neutral zone" in actions[0]["reason"]
+        assert actions[0]["type"] == expected
+        if expected == "none":
+            assert "neutral zone" in actions[0]["reason"]
 
     def test_existing_vol_position_skips(self):
         adapter = _make_adapter()
@@ -399,31 +339,22 @@ class TestCoveredCalls:
         actions = strat.evaluate("BTC")
         assert actions[0]["type"] == "none"
 
-    def test_manage_roll_approaching_itm(self):
+    @pytest.mark.parametrize("strike,dte,reason_substring", [
+        (50500, 15, "within"),
+        (56000, 3, "DTE"),
+    ])
+    def test_manage_rolls(self, strike, dte, reason_substring):
         adapter = _make_adapter()
         risk = _make_risk()
         pid, pos = _make_position(option_type=OptionType.CALL, side=OptionSide.SELL,
-                                   strike=50500, dte=15)
+                                   strike=strike, dte=dte)
         adapter.get_positions.return_value = {pid: pos}
 
         strat = CoveredCallsStrategy(adapter, risk, roll_dte=5, itm_roll_threshold_pct=2.0)
         actions = strat.manage_positions("BTC")
         assert len(actions) == 1
         assert actions[0]["type"] == "roll"
-        assert "within" in actions[0]["reason"]
-
-    def test_manage_roll_approaching_expiry(self):
-        adapter = _make_adapter()
-        risk = _make_risk()
-        pid, pos = _make_position(option_type=OptionType.CALL, side=OptionSide.SELL,
-                                   strike=56000, dte=3)
-        adapter.get_positions.return_value = {pid: pos}
-
-        strat = CoveredCallsStrategy(adapter, risk, roll_dte=5, itm_roll_threshold_pct=2.0)
-        actions = strat.manage_positions("BTC")
-        assert len(actions) == 1
-        assert actions[0]["type"] == "roll"
-        assert "DTE" in actions[0]["reason"]
+        assert reason_substring in actions[0]["reason"]
 
 
 class TestRiskBlocking:

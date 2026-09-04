@@ -295,56 +295,30 @@ func TestRegimeGateDoesNotBlockOpenPositionManagement(t *testing.T) {
 	}
 }
 
-func TestRegimeGateBlastRadiusGrew_ConcurrentAddIsGrowth(t *testing.T) {
-	shown := []string{"gated-window"}
-	fresh := []string{"gated-window", "surprise-strategy"}
-	got := regimeGateBlastRadiusGrew(fresh, shown)
-	if !reflect.DeepEqual(got, []string{"surprise-strategy"}) {
-		t.Errorf("got %v, want [surprise-strategy]", got)
+func TestRegimeGateBlastRadiusGrew(t *testing.T) {
+	cases := []struct {
+		name  string
+		shown []string
+		fresh []string
+		want  []string
+	}{
+		{"concurrent add is growth", []string{"gated-window"}, []string{"gated-window", "surprise-strategy"}, []string{"surprise-strategy"}},
+		{"concurrent removal is not growth", []string{"gated-legacy", "gated-window"}, []string{"gated-window"}, nil},
+		{"concurrent enable collapses to no growth", []string{"gated-legacy", "gated-window"}, nil, nil},
+		{"unchanged is not growth", []string{"gated-legacy", "gated-window"}, []string{"gated-legacy", "gated-window"}, nil},
 	}
-}
-
-func TestRegimeGateBlastRadiusGrew_ConcurrentRemovalIsNotGrowth(t *testing.T) {
-	shown := []string{"gated-legacy", "gated-window"}
-	fresh := []string{"gated-window"}
-	if got := regimeGateBlastRadiusGrew(fresh, shown); len(got) != 0 {
-		t.Errorf("a shrunk set must not be reported as growth, got %v", got)
-	}
-}
-
-func TestRegimeGateBlastRadiusGrew_ConcurrentEnableCollapsesToNoGrowth(t *testing.T) {
-	shown := []string{"gated-legacy", "gated-window"}
-	var fresh []string
-	if got := regimeGateBlastRadiusGrew(fresh, shown); len(got) != 0 {
-		t.Errorf("a concurrent enable collapsing the flip to a no-op must not be growth, got %v", got)
-	}
-}
-
-func TestRegimeGateBlastRadiusGrew_UnchangedIsNotGrowth(t *testing.T) {
-	shown := []string{"gated-legacy", "gated-window"}
-	fresh := []string{"gated-legacy", "gated-window"}
-	if got := regimeGateBlastRadiusGrew(fresh, shown); len(got) != 0 {
-		t.Errorf("an unchanged set must not be reported as growth, got %v", got)
-	}
-}
-
-func TestBuildRegimeGatePickerMessage(t *testing.T) {
-	preset, _ := regimeGatePresetByName(defaultRegimeGatePresetName)
-	candidates := []gateCandidate{
-		{sc: StrategyConfig{ID: "hl-breakout-btc", Type: "perps", Platform: "hyperliquid"}, live: true, hasOpen: false},
-		{sc: StrategyConfig{ID: "ts-breakout-btc", Type: "futures", Platform: "topstep"}, live: true, hasOpen: true},
-	}
-	msg := buildRegimeGatePickerMessage(candidates, preset)
-	for _, want := range []string{
-		"comp_up_clean_p21",
-		"1. `hl-breakout-btc`",
-		"perps/hyperliquid (live)",
-		"flat",
-		"2. `ts-breakout-btc`",
-		"open position",
-	} {
-		if !strings.Contains(msg, want) {
-			t.Errorf("picker message missing %q:\n%s", want, msg)
-		}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := regimeGateBlastRadiusGrew(tc.fresh, tc.shown)
+			if len(tc.want) == 0 {
+				if len(got) != 0 {
+					t.Errorf("got %v, want no growth", got)
+				}
+				return
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("got %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

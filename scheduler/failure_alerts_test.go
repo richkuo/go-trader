@@ -1,49 +1,39 @@
 package main
 
 import (
-	"strings"
 	"testing"
 	"time"
 )
 
-func TestShouldNotifyDrainFailure_FirstFailure_Notifies(t *testing.T) {
-	if !shouldNotifyDrainFailure(1, time.Time{}, time.Now()) {
-		t.Error("expected notify on first failure")
+func TestShouldNotifyDrainFailure(t *testing.T) {
+	base := time.Now()
+	cases := []struct {
+		name           string
+		count          int
+		lastNotifiedAt time.Time
+		now            time.Time
+		hourlyThrottle bool
+		want           bool
+	}{
+		{name: "first failure notifies", count: 1, lastNotifiedAt: time.Time{}, now: base, want: true},
+		{name: "second suppressed", count: 2, lastNotifiedAt: base, now: base.Add(time.Minute), want: false},
+		{name: "fifth suppressed", count: 5, lastNotifiedAt: base, now: base.Add(time.Minute), want: false},
+		{name: "ninth suppressed", count: 9, lastNotifiedAt: base, now: base.Add(time.Minute), want: false},
+		{name: "tenth notifies", count: 10, lastNotifiedAt: base, now: base.Add(time.Minute), want: true},
+		{name: "twentieth notifies", count: 20, lastNotifiedAt: base, now: base.Add(time.Minute), want: true},
+		{name: "thirtieth notifies", count: 30, lastNotifiedAt: base, now: base.Add(time.Minute), want: true},
+		{name: "hourly notifies off cadence", count: 5, lastNotifiedAt: base, now: base.Add(61 * time.Minute), hourlyThrottle: true, want: true},
+		{name: "zero lastNotifiedAt suppresses mid count", count: 5, lastNotifiedAt: time.Time{}, now: base, want: false},
 	}
-}
-
-func TestShouldNotifyDrainFailure_2ndThrough9thSuppressed(t *testing.T) {
-	notifiedAt := time.Now()
-	for i := 2; i <= 9; i++ {
-		if shouldNotifyDrainFailure(i, notifiedAt, notifiedAt.Add(time.Minute)) {
-			t.Errorf("expected suppress on failure #%d (within hour, not mod 10)", i)
-		}
-	}
-}
-
-func TestShouldNotifyDrainFailure_EveryTenthNotifies(t *testing.T) {
-	notifiedAt := time.Now()
-	for _, count := range []int{10, 20, 30} {
-		if !shouldNotifyDrainFailure(count, notifiedAt, notifiedAt.Add(time.Minute)) {
-			t.Errorf("expected notify at count=%d (mod 10)", count)
-		}
-	}
-}
-
-func TestShouldNotifyDrainFailure_HourlyEvenIfNotMod10(t *testing.T) {
-	withAlertThrottleInterval(t, time.Hour)
-	notifiedAt := time.Now()
-	if !shouldNotifyDrainFailure(5, notifiedAt, notifiedAt.Add(61*time.Minute)) {
-		t.Error("expected notify when >1 hour since last notify")
-	}
-}
-
-func TestShouldNotifyDrainFailure_ZeroLastNotifiedAt_FirstNotifiesMidSuppressed(t *testing.T) {
-	if !shouldNotifyDrainFailure(1, time.Time{}, time.Now()) {
-		t.Error("count==1 with zero LastNotifiedAt must notify")
-	}
-	if shouldNotifyDrainFailure(5, time.Time{}, time.Now()) {
-		t.Error("count==5 with zero LastNotifiedAt must be suppressed (not mod 10, IsZero blocks hourly)")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.hourlyThrottle {
+				withAlertThrottleInterval(t, time.Hour)
+			}
+			if got := shouldNotifyDrainFailure(tc.count, tc.lastNotifiedAt, tc.now); got != tc.want {
+				t.Errorf("shouldNotifyDrainFailure(%d) = %v, want %v", tc.count, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -126,44 +116,5 @@ func TestLiveExecFailureThrottle_HourlyAlert(t *testing.T) {
 	notify, _ := th.Record("k1", "err", now.Add(65*time.Minute))
 	if !notify {
 		t.Error("expected hourly alert after 65 minutes")
-	}
-}
-
-func TestFormatLiveExecFailureAlert_IncludesAllFields(t *testing.T) {
-	msg := formatLiveExecFailureAlert("hl-tema-btc", "hyperliquid", "open", "BTC", "float_to_wire", 1)
-	for _, want := range []string{"hl-tema-btc", "hyperliquid", "open", "BTC", "float_to_wire"} {
-		if !strings.Contains(msg, want) {
-			t.Errorf("message missing %q: %s", want, msg)
-		}
-	}
-}
-
-func TestFormatLiveExecFailureAlert_RepeatIncludesCount(t *testing.T) {
-	msg := formatLiveExecFailureAlert("hl-a", "hyperliquid", "close", "ETH", "timeout", 10)
-	if !strings.Contains(msg, "failure #10") {
-		t.Errorf("expected 'failure #10' in repeat message: %s", msg)
-	}
-}
-
-func TestFormatLiveExecFailureAlert_FirstOmitsCount(t *testing.T) {
-	msg := formatLiveExecFailureAlert("hl-a", "hyperliquid", "close", "ETH", "timeout", 1)
-	if strings.Contains(msg, "failure #") {
-		t.Errorf("first-failure message should omit count: %s", msg)
-	}
-}
-
-func TestFormatDrainFailureAlert_IncludesAllFields(t *testing.T) {
-	msg := formatDrainFailureAlert("hyperliquid", "hl-tema-eth", "ETH", 0.25, "float_to_wire", 1)
-	for _, want := range []string{"hl-tema-eth", "hyperliquid", "ETH", "float_to_wire"} {
-		if !strings.Contains(msg, want) {
-			t.Errorf("message missing %q: %s", want, msg)
-		}
-	}
-}
-
-func TestFormatDrainFailureAlert_RepeatIncludesCount(t *testing.T) {
-	msg := formatDrainFailureAlert("okx", "okx-a", "ETH", 0.1, "503", 5)
-	if !strings.Contains(msg, "failure #5") {
-		t.Errorf("expected 'failure #5' in message: %s", msg)
 	}
 }

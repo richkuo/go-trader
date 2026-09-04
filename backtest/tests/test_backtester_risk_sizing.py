@@ -142,29 +142,21 @@ def test_rejects_entry_fraction_column_combo():
              risk_per_trade_pct=1.0, stop_loss_atr_mult=1.0)
 
 
-def test_rejects_out_of_bounds_pct():
-    with pytest.raises(ValueError, match=r"\(0, 10\]"):
-        Backtester(risk_per_trade_pct=0.0, stop_loss_atr_mult=1.0)
-    with pytest.raises(ValueError, match=r"\(0, 10\]"):
-        Backtester(risk_per_trade_pct=12.0, stop_loss_atr_mult=1.0)
-
-
-def test_rejects_regime_resolved_stop_owner():
-    with pytest.raises(ValueError, match="regime-resolved"):
-        Backtester(
-            risk_per_trade_pct=1.0,
-            stop_loss_atr_mult_regime={"use_defaults": True},
-        )
-
-
-def test_rejects_margin_pct_only_stop():
-    with pytest.raises(ValueError, match="stop_loss_margin_pct"):
-        Backtester(risk_per_trade_pct=1.0, stop_loss_margin_pct=20.0)
-
-
-def test_rejects_missing_stop_owner():
-    with pytest.raises(ValueError, match="explicit stop owner"):
-        Backtester(risk_per_trade_pct=1.0)
+@pytest.mark.parametrize(
+    "kwargs,match",
+    [
+        ({"risk_per_trade_pct": 0.0, "stop_loss_atr_mult": 1.0}, r"\(0, 10\]"),
+        ({"risk_per_trade_pct": 12.0, "stop_loss_atr_mult": 1.0}, r"\(0, 10\]"),
+        ({"risk_per_trade_pct": 1.0,
+          "stop_loss_atr_mult_regime": {"use_defaults": True}}, "regime-resolved"),
+        ({"risk_per_trade_pct": 1.0, "stop_loss_margin_pct": 20.0},
+         "stop_loss_margin_pct"),
+        ({"risk_per_trade_pct": 1.0}, "explicit stop owner"),
+    ],
+)
+def test_init_rejects_invalid_risk_sizing(kwargs, match):
+    with pytest.raises(ValueError, match=match):
+        Backtester(**kwargs)
 
 
 def _write_config(tmp_path, strategy, extra=None):
@@ -195,29 +187,22 @@ def test_config_threads_risk_per_trade_pct(tmp_path):
     assert kwargs["stop_loss_atr_mult"] == 1.5
 
 
-def test_config_rejects_sizing_leverage_combo(tmp_path):
-    path = _write_config(tmp_path, _risk_strategy(sizing_leverage=2.0))
-    with pytest.raises(ValueError, match="sizing_leverage"):
-        run_backtest.load_strategy_config(path, "hl-r-btc")
-
-
-def test_config_rejects_margin_per_trade_combo(tmp_path):
-    path = _write_config(tmp_path, _risk_strategy(margin_per_trade_usd=50.0))
-    with pytest.raises(ValueError, match="margin_per_trade_usd"):
-        run_backtest.load_strategy_config(path, "hl-r-btc")
-
-
-def test_config_rejects_scale_in_combo(tmp_path):
-    path = _write_config(tmp_path, _risk_strategy(allow_scale_in=True))
-    with pytest.raises(ValueError, match="allow_scale_in"):
-        run_backtest.load_strategy_config(path, "hl-r-btc")
-
-
-def test_config_rejects_pct_stop_owner(tmp_path):
-    sc = _risk_strategy(stop_loss_pct=2.0)
-    del sc["stop_loss_atr_mult"]
+@pytest.mark.parametrize(
+    "overrides,drop_atr_mult,match",
+    [
+        ({"sizing_leverage": 2.0}, False, "sizing_leverage"),
+        ({"margin_per_trade_usd": 50.0}, False, "margin_per_trade_usd"),
+        ({"allow_scale_in": True}, False, "allow_scale_in"),
+        ({"stop_loss_pct": 2.0}, True, "fraction-denominated"),
+    ],
+)
+def test_config_rejects_invalid_risk_sizing_combo(tmp_path, overrides,
+                                                  drop_atr_mult, match):
+    sc = _risk_strategy(**overrides)
+    if drop_atr_mult:
+        del sc["stop_loss_atr_mult"]
     path = _write_config(tmp_path, sc)
-    with pytest.raises(ValueError, match="fraction-denominated"):
+    with pytest.raises(ValueError, match=match):
         run_backtest.load_strategy_config(path, "hl-r-btc")
 
 

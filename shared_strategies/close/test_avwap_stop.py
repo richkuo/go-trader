@@ -30,23 +30,20 @@ def _short_pos(**over):
     return pos
 
 
-def test_long_hit_and_boundary(reg):
+@pytest.mark.parametrize("side,mark,expected", [
+    ("long", 99.0, 1.0),
+    ("long", 99.5, 0.0),
+    ("short", 101.0, 1.0),
+    ("short", 100.5, 0.0),
+])
+def test_buffered_line_break_both_sides(reg, side, mark, expected):
     params = {"buffer_atr_mult": 0.5, "atr_source": "live"}
-    mkt = {"avwap": 100.0, "atr": 2.0}
-    out = reg.evaluate("avwap_stop", _long_pos(), {**mkt, "mark_price": 99.0}, params)
-    assert out["close_fraction"] == 1.0
-    assert out["reason"].startswith("avwap_stop:")
-    out = reg.evaluate("avwap_stop", _long_pos(), {**mkt, "mark_price": 99.5}, params)
-    assert out["close_fraction"] == 0.0
-
-
-def test_short_mirrors(reg):
-    params = {"buffer_atr_mult": 0.5, "atr_source": "live"}
-    mkt = {"avwap": 100.0, "atr": 2.0}
-    out = reg.evaluate("avwap_stop", _short_pos(), {**mkt, "mark_price": 101.0}, params)
-    assert out["close_fraction"] == 1.0
-    out = reg.evaluate("avwap_stop", _short_pos(), {**mkt, "mark_price": 100.5}, params)
-    assert out["close_fraction"] == 0.0
+    pos = _long_pos() if side == "long" else _short_pos()
+    out = reg.evaluate("avwap_stop", pos,
+                       {"avwap": 100.0, "atr": 2.0, "mark_price": mark}, params)
+    assert out["close_fraction"] == expected
+    if expected == 1.0:
+        assert out["reason"].startswith("avwap_stop:")
 
 
 def test_zero_buffer_exits_at_line_touch_without_atr(reg):
@@ -68,32 +65,19 @@ def test_atr_source_entry_vs_live(reg):
                         {"buffer_atr_mult": 0.5, "atr_source": "live"})["close_fraction"] == 0.0
 
 
-def test_missing_atr_fails_safe_when_buffer_positive(reg):
-    out = reg.evaluate("avwap_stop", _long_pos(entry_atr=0.0),
-                       {"mark_price": 50.0, "avwap": 100.0},
-                       {"buffer_atr_mult": 0.5, "atr_source": "live"})
+@pytest.mark.parametrize("pos,mkt,params,reason", [
+    (_long_pos(entry_atr=0.0), {"mark_price": 50.0, "avwap": 100.0},
+     {"buffer_atr_mult": 0.5, "atr_source": "live"}, "noop:missing_live_atr"),
+    (_long_pos(entry_atr=0.0), {"mark_price": 50.0, "avwap": 100.0},
+     {"buffer_atr_mult": 0.5, "atr_source": "entry"}, "noop:missing_entry_atr"),
+    (_long_pos(), {"mark_price": 50.0, "atr": 2.0}, None, "noop:missing_avwap"),
+    ({}, {"mark_price": 50.0, "avwap": 100.0, "atr": 2.0}, None, "noop:missing_position"),
+    (_long_pos(), {"avwap": 100.0, "atr": 2.0}, None, "noop:missing_mark_price"),
+])
+def test_missing_inputs_fail_safe(reg, pos, mkt, params, reason):
+    out = reg.evaluate("avwap_stop", pos, mkt, params)
     assert out["close_fraction"] == 0.0
-    assert out["reason"] == "noop:missing_live_atr"
-    out = reg.evaluate("avwap_stop", _long_pos(entry_atr=0.0),
-                       {"mark_price": 50.0, "avwap": 100.0},
-                       {"buffer_atr_mult": 0.5, "atr_source": "entry"})
-    assert out["close_fraction"] == 0.0
-    assert out["reason"] == "noop:missing_entry_atr"
-
-
-def test_missing_avwap_fails_safe(reg):
-    out = reg.evaluate("avwap_stop", _long_pos(), {"mark_price": 50.0, "atr": 2.0}, None)
-    assert out["close_fraction"] == 0.0
-    assert out["reason"] == "noop:missing_avwap"
-
-
-def test_missing_position_or_mark_fails_safe(reg):
-    out = reg.evaluate("avwap_stop", {}, {"mark_price": 50.0, "avwap": 100.0, "atr": 2.0}, None)
-    assert out["close_fraction"] == 0.0
-    assert out["reason"] == "noop:missing_position"
-    out = reg.evaluate("avwap_stop", _long_pos(), {"avwap": 100.0, "atr": 2.0}, None)
-    assert out["close_fraction"] == 0.0
-    assert out["reason"] == "noop:missing_mark_price"
+    assert out["reason"] == reason
 
 
 def test_registry_defaults_use_live_atr_quarter_buffer(reg):

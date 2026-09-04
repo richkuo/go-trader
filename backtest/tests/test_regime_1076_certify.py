@@ -116,17 +116,19 @@ def test_narrowed_run_refuses_when_only_the_report_targets_the_repo():
     assert "regime_1443_run_report.json" in str(exc.value)
 
 
-def test_baseline_source_violations_reports_every_repointed_default():
-    sources = {"BTC/USDT": "kraken", "ETH/USDT": "coinbase",
-               "SOL/USDT": "binanceus"}
-    assert certify_mod.baseline_source_violations(sources, "binanceus") == {
-        "BTC/USDT": "kraken", "ETH/USDT": "coinbase"}
-
-
-def test_baseline_source_violations_ignores_added_symbols():
-    sources = {"BTC/USDT": "binanceus", "ETH/USDT": "binanceus",
-               "SOL/USDT": "binanceus", "HYPE/USDC:USDC": "hyperliquid"}
-    assert certify_mod.baseline_source_violations(sources, "binanceus") == {}
+@pytest.mark.parametrize("sources,expected", [
+    pytest.param(
+        {"BTC/USDT": "kraken", "ETH/USDT": "coinbase", "SOL/USDT": "binanceus"},
+        {"BTC/USDT": "kraken", "ETH/USDT": "coinbase"},
+        id="reports_every_repointed_default"),
+    pytest.param(
+        {"BTC/USDT": "binanceus", "ETH/USDT": "binanceus",
+         "SOL/USDT": "binanceus", "HYPE/USDC:USDC": "hyperliquid"},
+        {},
+        id="ignores_added_symbols"),
+])
+def test_baseline_source_violations(sources, expected):
+    assert certify_mod.baseline_source_violations(sources, "binanceus") == expected
 
 
 def test_repointed_baseline_refuses_to_write_the_repo_artifact():

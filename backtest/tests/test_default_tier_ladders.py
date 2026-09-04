@@ -62,46 +62,31 @@ def _go_default_protection_tiers():
     return tuple((float(m), float(f)) for m, f in rows)
 
 
-def test_python_tiered_tp_atr_default_tiers_match_expected():
-    assert _python_tiered_tp_atr_ladder() == EXPECTED_LADDER
+_LADDERS = {
+    "go_default_protection": _go_default_protection_tiers,
+    "python_scalar_tp": _python_scalar_tp_ladder,
+    "python_tiered_tp_atr": _python_tiered_tp_atr_ladder,
+}
 
 
-def test_python_scalar_tp_tiers_match_expected():
-    assert _python_scalar_tp_ladder() == EXPECTED_LADDER
-
-
-def test_go_default_protection_tiers_match_expected():
-    assert _go_default_protection_tiers() == EXPECTED_LADDER
-
-
-def test_all_three_default_tier_ladders_agree():
-    go = _go_default_protection_tiers()
-    py_atr = _python_tiered_tp_atr_ladder()
-    py_scalar = _python_scalar_tp_ladder()
-    assert go == py_atr == py_scalar, (
-        "Default tier ladder desync — retune one of "
-        "defaultHLProtectionTiers() (Go), DEFAULT_TIERS (tiered_tp_atr.py), "
-        "_DEFAULT_SCALAR_TP_TIERS (post_tp_sl.py) and you MUST update all three "
-        f"together. Go={go} tiered_tp_atr={py_atr} scalar={py_scalar}"
+@pytest.mark.parametrize("name", sorted(_LADDERS))
+def test_default_tier_ladders_match_expected(name):
+    assert _LADDERS[name]() == EXPECTED_LADDER, (
+        "Default tier ladder desync — defaultHLProtectionTiers() (Go), "
+        "DEFAULT_TIERS (tiered_tp_atr.py) and _DEFAULT_SCALAR_TP_TIERS "
+        "(post_tp_sl.py) MUST be updated together."
     )
 
 
-def test_final_tier_closes_everything_remaining():
-    for ladder in (
-        _go_default_protection_tiers(),
-        _python_tiered_tp_atr_ladder(),
-        _python_scalar_tp_ladder(),
-    ):
-        assert ladder[-1][1] == pytest.approx(1.0)
+@pytest.mark.parametrize("name", sorted(_LADDERS))
+def test_final_tier_closes_everything_remaining(name):
+    assert _LADDERS[name]()[-1][1] == pytest.approx(1.0)
 
 
-def test_tier_multiples_and_fractions_are_monotonic():
-    for ladder in (
-        _go_default_protection_tiers(),
-        _python_tiered_tp_atr_ladder(),
-        _python_scalar_tp_ladder(),
-    ):
-        mults = [m for m, _ in ladder]
-        fracs = [f for _, f in ladder]
-        assert mults == sorted(mults) and len(set(mults)) == len(mults)
-        assert fracs == sorted(fracs)
+@pytest.mark.parametrize("name", sorted(_LADDERS))
+def test_tier_multiples_and_fractions_are_monotonic(name):
+    ladder = _LADDERS[name]()
+    mults = [m for m, _ in ladder]
+    fracs = [f for _, f in ladder]
+    assert mults == sorted(mults) and len(set(mults)) == len(mults)
+    assert fracs == sorted(fracs)

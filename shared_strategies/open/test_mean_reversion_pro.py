@@ -1,6 +1,7 @@
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from shared_strategies.open.conftest import load_module, make_ohlcv
 
@@ -38,30 +39,42 @@ def test_empty_df_is_safe():
     assert len(out) == 0
 
 
-def test_oscillating_range_fires_both_sides():
-    out = mean_reversion_pro_core(make_ohlcv(make_choppy_with_extremes()), entry_std=1.5)
+_TREND_CLOSES = np.linspace(100, 300, 400)
+
+_EXTRA = dict(touch_entry=1, turn_entry=1)
+
+_BLOCKED_CASES = [
+    ("strong_trend", "trend", dict()),
+    ("adx_max_zero", "chop", dict(adx_max=0.0)),
+    ("rsi_gate", "chop", dict(rsi_oversold=-1.0, rsi_overbought=101.0)),
+    ("strong_trend_extra", "trend", _EXTRA),
+    ("adx_max_zero_extra", "chop", dict(adx_max=0.0, **_EXTRA)),
+    ("rsi_gate_extra", "chop",
+     dict(rsi_oversold=-1.0, rsi_overbought=101.0, **_EXTRA)),
+]
+
+
+def _frame(kind):
+    if kind == "trend":
+        return make_ohlcv(_TREND_CLOSES, noise=0.2)
+    return make_ohlcv(make_choppy_with_extremes())
+
+
+@pytest.mark.parametrize("case,kind,kwargs", _BLOCKED_CASES,
+                         ids=[c[0] for c in _BLOCKED_CASES])
+def test_gates_block_every_entry(case, kind, kwargs):
+    out = mean_reversion_pro_core(_frame(kind), **kwargs)
+    assert (out["signal"] == 0).all()
+
+
+@pytest.mark.parametrize("kwargs", [
+    dict(entry_std=1.5),
+    dict(entry_std=1.5, touch_entry=1, turn_entry=1),
+], ids=["base", "extra_triggers"])
+def test_oscillating_range_fires_both_sides(kwargs):
+    out = mean_reversion_pro_core(make_ohlcv(make_choppy_with_extremes()), **kwargs)
     assert (out["signal"] == 1).any(), "expected at least one long reversion"
     assert (out["signal"] == -1).any(), "expected at least one short reversion"
-
-
-def test_strong_trend_blocks_entries():
-    closes = np.linspace(100, 300, 400)
-    out = mean_reversion_pro_core(make_ohlcv(closes, noise=0.2))
-    assert (out["signal"] == 0).all()
-
-
-def test_adx_max_is_respected():
-    out = mean_reversion_pro_core(make_ohlcv(make_choppy_with_extremes()), adx_max=0.0)
-    assert (out["signal"] == 0).all()
-
-
-def test_rsi_confirmation_required():
-    out = mean_reversion_pro_core(
-        make_ohlcv(make_choppy_with_extremes()),
-        rsi_oversold=-1.0,
-        rsi_overbought=101.0,
-    )
-    assert (out["signal"] == 0).all()
 
 
 def test_extra_triggers_default_off_bit_identical():
@@ -100,40 +113,6 @@ def test_extra_triggers_preserve_base_signal_values():
     both = mean_reversion_pro_core(df, entry_std=1.5, touch_entry=1, turn_entry=1)
     fired = base["signal"].values != 0
     assert (base["signal"].values[fired] == both["signal"].values[fired]).all()
-
-
-def test_extra_triggers_still_blocked_by_strong_trend():
-    closes = np.linspace(100, 300, 400)
-    out = mean_reversion_pro_core(
-        make_ohlcv(closes, noise=0.2), touch_entry=1, turn_entry=1
-    )
-    assert (out["signal"] == 0).all()
-
-
-def test_extra_triggers_respect_adx_max_zero():
-    out = mean_reversion_pro_core(
-        make_ohlcv(make_choppy_with_extremes()),
-        adx_max=0.0, touch_entry=1, turn_entry=1,
-    )
-    assert (out["signal"] == 0).all()
-
-
-def test_extra_triggers_require_rsi_evidence():
-    out = mean_reversion_pro_core(
-        make_ohlcv(make_choppy_with_extremes()),
-        rsi_oversold=-1.0, rsi_overbought=101.0,
-        touch_entry=1, turn_entry=1,
-    )
-    assert (out["signal"] == 0).all()
-
-
-def test_extra_triggers_fire_both_sides():
-    out = mean_reversion_pro_core(
-        make_ohlcv(make_choppy_with_extremes()),
-        entry_std=1.5, touch_entry=1, turn_entry=1,
-    )
-    assert (out["signal"] == 1).any()
-    assert (out["signal"] == -1).any()
 
 
 def test_extra_triggers_prefix_stable():

@@ -52,19 +52,6 @@ def test_short_data_returns_zero_signal_without_crash():
         assert col in result.columns
 
 
-def test_signal_values_valid():
-    df = _bear_setup_with_rally_and_rejection()
-    result = bear_pullback_st_core(df)
-    assert set(result["signal"].unique()).issubset({-1, 0, 1})
-
-
-def test_indicator_columns_exposed():
-    df = _bear_setup_with_rally_and_rejection()
-    result = bear_pullback_st_core(df)
-    for col in ("ema_short", "ema_mid", "ema_long", "adx", "rsi"):
-        assert col in result.columns, f"{col} column missing from output"
-
-
 def test_shallow_rally_below_rsi_zone_blocks_short():
     rng = np.random.default_rng(7)
     down = np.linspace(200.0, 110.0, 230) + rng.normal(0, 0.4, 230)

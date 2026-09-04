@@ -88,35 +88,25 @@ def test_same_bar_race_short_adverse_first_stops_out_at_trigger():
     assert legacy["final_capital"] == pytest.approx(10600.0, rel=1e-9)
 
 
-def test_gap_through_sl_long_fills_at_open_not_trigger():
-    df = _df(
-        opens=[100, 100, 95, 94, 94],
-        highs=[101, 101, 96, 95, 95],
-        lows=[99, 99, 94, 93, 93],
-        closes=[100, 100, 95, 94, 94],
-        signals=[1, 0, 0, 0, 0],
-    )
-    res = _run(df, close_strategies=TP_5PCT_FULL, stop_loss_pct=0.03)
-    assert res["total_trades"] == 1
-    trade = res["trades"][0]
-    assert trade["exit_price"] == pytest.approx(95.0, rel=1e-9)
-    assert trade["exit_reason"] == "sl"
-    assert trade["exit_date"] == str(df.index[2])
-
-
-def test_gap_through_sl_short_fills_at_open_not_trigger():
-    df = _df(
-        opens=[100, 100, 105, 106, 106],
-        highs=[101, 101, 106, 107, 107],
-        lows=[99, 99, 104, 105, 105],
-        closes=[100, 100, 105, 106, 106],
-        signals=[-1, 0, 0, 0, 0],
-    )
+@pytest.mark.parametrize(
+    "opens,highs,lows,closes,signals,direction,expected_exit",
+    [
+        ([100, 100, 95, 94, 94], [101, 101, 96, 95, 95],
+         [99, 99, 94, 93, 93], [100, 100, 95, 94, 94],
+         [1, 0, 0, 0, 0], "long", 95.0),
+        ([100, 100, 105, 106, 106], [101, 101, 106, 107, 107],
+         [99, 99, 104, 105, 105], [100, 100, 105, 106, 106],
+         [-1, 0, 0, 0, 0], "short", 105.0),
+    ],
+)
+def test_gap_through_sl_fills_at_open_not_trigger(
+        opens, highs, lows, closes, signals, direction, expected_exit):
+    df = _df(opens, highs, lows, closes, signals)
     res = _run(df, close_strategies=TP_5PCT_FULL, stop_loss_pct=0.03,
-               direction="short")
+               direction=direction)
     assert res["total_trades"] == 1
     trade = res["trades"][0]
-    assert trade["exit_price"] == pytest.approx(105.0, rel=1e-9)
+    assert trade["exit_price"] == pytest.approx(expected_exit, rel=1e-9)
     assert trade["exit_reason"] == "sl"
     assert trade["exit_date"] == str(df.index[2])
 

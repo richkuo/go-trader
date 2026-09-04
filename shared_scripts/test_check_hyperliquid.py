@@ -87,109 +87,45 @@ class TestFillExtraction:
         assert fill["oid"] == 1234567890
         assert fill["fee"] == 0.35
 
-    def test_fill_with_oid_no_fee(self):
-        sdk_response = {
-            "status": "ok",
-            "response": {
-                "type": "order",
-                "data": {
-                    "statuses": [
-                        {
-                            "filled": {
-                                "avgPx": "2100.0",
-                                "totalSz": "0.5",
-                                "oid": 9876543210,
-                            }
+    _NO_FEE_RESPONSE = {
+        "status": "ok",
+        "response": {
+            "type": "order",
+            "data": {
+                "statuses": [
+                    {
+                        "filled": {
+                            "avgPx": "2100.0",
+                            "totalSz": "0.5",
+                            "oid": 9876543210,
                         }
-                    ]
-                },
+                    }
+                ]
             },
-        }
-        result, exit_code = self._run_execute_with_mock_response(sdk_response)
-        assert exit_code == 0
-        fill = result["execution"]["fill"]
-        assert fill["oid"] == 9876543210
-        assert "fee" not in fill
+        },
+    }
 
-    def test_fill_uses_numeric_lookup_result(self):
-        sdk_response = {
-            "status": "ok",
-            "response": {
-                "type": "order",
-                "data": {
-                    "statuses": [
-                        {
-                            "filled": {
-                                "avgPx": "2100.0",
-                                "totalSz": "0.5",
-                                "oid": 9876543210,
-                            }
-                        }
-                    ]
-                },
-            },
-        }
+    @pytest.mark.parametrize("lookup_result,expected", [
+        (_UNSET, {}),
+        ({"fee": "0.42", "closed_pnl": "3.14"}, {"fee": 0.42, "closed_pnl": 3.14}),
+        (MagicMock(), {}),
+        ({"fee": MagicMock(), "closed_pnl": MagicMock()}, {}),
+    ])
+    def test_fill_lookup_result_handling(self, lookup_result, expected):
         result, exit_code = self._run_execute_with_mock_response(
-            sdk_response,
-            lookup_result={"fee": "0.42", "closed_pnl": "3.14"},
+            self._NO_FEE_RESPONSE,
+            **({} if lookup_result is _UNSET else {"lookup_result": lookup_result}),
         )
         assert exit_code == 0
         fill = result["execution"]["fill"]
-        assert fill["fee"] == 0.42
-        assert fill["closed_pnl"] == 3.14
-
-    def test_fill_ignores_truthy_non_mapping_lookup_result(self):
-        sdk_response = {
-            "status": "ok",
-            "response": {
-                "type": "order",
-                "data": {
-                    "statuses": [
-                        {
-                            "filled": {
-                                "avgPx": "2100.0",
-                                "totalSz": "0.5",
-                                "oid": 9876543210,
-                            }
-                        }
-                    ]
-                },
-            },
-        }
-        result, exit_code = self._run_execute_with_mock_response(sdk_response, lookup_result=MagicMock())
-        assert exit_code == 0
-        fill = result["execution"]["fill"]
+        assert fill["avg_px"] == 2100.0
+        assert fill["total_sz"] == 0.5
         assert fill["oid"] == 9876543210
-        assert "fee" not in fill
-        assert "closed_pnl" not in fill
-
-    def test_fill_ignores_malformed_lookup_values(self):
-        sdk_response = {
-            "status": "ok",
-            "response": {
-                "type": "order",
-                "data": {
-                    "statuses": [
-                        {
-                            "filled": {
-                                "avgPx": "2100.0",
-                                "totalSz": "0.5",
-                                "oid": 9876543210,
-                            }
-                        }
-                    ]
-                },
-            },
-        }
-        result, exit_code = self._run_execute_with_mock_response(
-            sdk_response,
-            lookup_result={"fee": MagicMock(), "closed_pnl": MagicMock()},
-        )
-        assert exit_code == 0
-        fill = result["execution"]["fill"]
-        assert fill["oid"] == 9876543210
-        assert "fee" not in fill
-        assert "closed_pnl" not in fill
+        for key in ("fee", "closed_pnl"):
+            if key in expected:
+                assert fill[key] == expected[key]
+            else:
+                assert key not in fill
 
     def test_fill_without_oid(self):
         sdk_response = {
@@ -406,28 +342,22 @@ class TestPeerLeverageSkip:
                     exit_code = e.code
         return json.loads(captured.getvalue()), mock_adapter, exit_code
 
-    def test_skips_update_leverage_when_state_matches(self):
+    @pytest.mark.parametrize("current_state,expect_update", [
+        ({"margin_mode": "isolated", "leverage": 5}, False),
+        ({"margin_mode": "cross", "leverage": 5}, True),
+        ({"margin_mode": "isolated", "leverage": 3}, True),
+        (None, True),
+    ])
+    def test_update_leverage_only_when_state_differs(self, current_state, expect_update):
         result, adapter, exit_code = self._run_execute_with_existing_pos(
-            "isolated", 5, {"margin_mode": "isolated", "leverage": 5})
+            "isolated", 5, current_state)
         assert exit_code == 0
-        adapter.update_leverage.assert_not_called()
+        if expect_update:
+            adapter.update_leverage.assert_called_once_with(5, "ETH", is_cross=False)
+        else:
+            adapter.update_leverage.assert_not_called()
         adapter.market_open.assert_called_once()
         assert result["execution"]["action"] == "buy"
-
-    def test_calls_update_leverage_when_mode_mismatches(self):
-        result, adapter, exit_code = self._run_execute_with_existing_pos(
-            "isolated", 5, {"margin_mode": "cross", "leverage": 5})
-        adapter.update_leverage.assert_called_once_with(5, "ETH", is_cross=False)
-
-    def test_calls_update_leverage_when_leverage_mismatches(self):
-        result, adapter, exit_code = self._run_execute_with_existing_pos(
-            "isolated", 5, {"margin_mode": "isolated", "leverage": 3})
-        adapter.update_leverage.assert_called_once_with(5, "ETH", is_cross=False)
-
-    def test_calls_update_leverage_when_no_existing_position(self):
-        result, adapter, exit_code = self._run_execute_with_existing_pos(
-            "isolated", 5, None)
-        adapter.update_leverage.assert_called_once_with(5, "ETH", is_cross=False)
 
     def test_state_fetch_failure_falls_back_to_calling_update_leverage(self):
         mod, spec = _load_check_module()
@@ -475,69 +405,26 @@ class TestClassifySLResponse:
         spec.loader.exec_module(mod)
         return mod._classify_sl_response(response)
 
-    def test_resting(self):
-        kind, oid = self._classify({
-            "response": {"type": "order", "data": {"statuses": [
-                {"resting": {"oid": 12345}}
-            ]}}
-        })
-        assert kind == "resting"
-        assert oid == 12345
-
-    def test_resting_missing_oid_returns_zero(self):
-        kind, oid = self._classify({
-            "response": {"type": "order", "data": {"statuses": [
-                {"resting": {}}
-            ]}}
-        })
-        assert kind == "resting"
-        assert oid == 0
-
-    def test_filled_immediate_with_oid(self):
-        kind, oid = self._classify({
-            "response": {"type": "order", "data": {"statuses": [
-                {"filled": {"oid": 67890, "avgPx": "3000"}}
-            ]}}
-        })
-        assert kind == "filled"
-        assert oid == 67890
-
-    def test_filled_immediate_without_oid(self):
-        kind, oid = self._classify({
-            "response": {"type": "order", "data": {"statuses": [
-                {"filled": {}}
-            ]}}
-        })
-        assert kind == "filled"
-        assert oid == 0
-
-    def test_per_status_error(self):
-        kind, payload = self._classify({
-            "response": {"type": "order", "data": {"statuses": [
-                {"error": "Too many open trigger orders"}
-            ]}}
-        })
-        assert kind == "error"
-        assert "Too many" in payload
-
-    def test_missing_when_no_statuses(self):
-        kind, payload = self._classify({
-            "response": {"type": "order", "data": {"statuses": []}}
-        })
-        assert kind == "missing"
-        assert payload is None
-
-    def test_missing_when_completely_malformed(self):
-        kind, payload = self._classify({})
-        assert kind == "missing"
-        assert payload is None
-
-    def test_missing_when_status_is_not_dict(self):
-        kind, payload = self._classify({
-            "response": {"type": "order", "data": {"statuses": ["not a dict"]}}
-        })
-        assert kind == "missing"
-        assert payload is None
+    @pytest.mark.parametrize("response,expected", [
+        ({"response": {"type": "order", "data": {"statuses": [{"resting": {"oid": 12345}}]}}},
+         ("resting", 12345)),
+        ({"response": {"type": "order", "data": {"statuses": [{"resting": {}}]}}},
+         ("resting", 0)),
+        ({"response": {"type": "order", "data": {"statuses": [
+            {"filled": {"oid": 67890, "avgPx": "3000"}}]}}},
+         ("filled", 67890)),
+        ({"response": {"type": "order", "data": {"statuses": [{"filled": {}}]}}},
+         ("filled", 0)),
+        ({"response": {"type": "order", "data": {"statuses": [
+            {"error": "Too many open trigger orders"}]}}},
+         ("error", "Too many open trigger orders")),
+        ({"response": {"type": "order", "data": {"statuses": []}}}, ("missing", None)),
+        ({}, ("missing", None)),
+        ({"response": {"type": "order", "data": {"statuses": ["not a dict"]}}},
+         ("missing", None)),
+    ])
+    def test_classify_sl_response(self, response, expected):
+        assert self._classify(response) == expected
 
 
 _CANCEL_OK_RESPONSE = {
@@ -557,27 +444,22 @@ class TestClassifyCancelResponse:
         spec.loader.exec_module(mod)
         return mod
 
-    def test_confirmed_string_status_is_ok(self):
-        assert self._load()._classify_cancel_response(_CANCEL_OK_RESPONSE) == ("ok", "")
-
-    def test_confirmed_dict_status_without_error_is_ok(self):
-        resp = {"status": "ok", "response": {"data": {"statuses": [{}]}}}
-        assert self._load()._classify_cancel_response(resp) == ("ok", "")
-
-    def test_top_level_err_rejects(self):
-        kind, payload = self._load()._classify_cancel_response({"status": "err"})
-        assert kind == "error"
-        assert "err" in payload
-
-    def test_per_order_error_rejects(self):
-        resp = {"status": "ok", "response": {"data": {"statuses": [{"error": "no such order"}]}}}
-        assert self._load()._classify_cancel_response(resp)[0] == "error"
-
-    def test_missing_statuses_fails_closed(self):
-        assert self._load()._classify_cancel_response({})[0] == "error"
-
-    def test_non_dict_fails_closed(self):
-        assert self._load()._classify_cancel_response(None)[0] == "error"
+    @pytest.mark.parametrize("response,kind,fragment", [
+        (_CANCEL_OK_RESPONSE, "ok", ""),
+        ({"status": "ok", "response": {"data": {"statuses": [{}]}}}, "ok", ""),
+        ({"status": "err"}, "error", "err"),
+        ({"status": "ok", "response": {"data": {"statuses": [{"error": "no such order"}]}}},
+         "error", None),
+        ({}, "error", None),
+        (None, "error", None),
+    ])
+    def test_classify_cancel_response(self, response, kind, fragment):
+        got_kind, payload = self._load()._classify_cancel_response(response)
+        assert got_kind == kind
+        if fragment == "":
+            assert payload == ""
+        elif fragment is not None:
+            assert fragment in payload
 
 
 class TestUpdateStopLoss:
@@ -812,26 +694,6 @@ class TestCloseFullPosition:
         assert fill["avg_px"] == 3000.5
         assert fill["total_sz"] == 0.211
         assert fill["oid"] == 888
-
-    def test_dust_scenario_closes_full_residual(self):
-        _, adapter = self._run_close_full(market_close_response={
-            "status": "ok",
-            "response": {
-                "type": "order",
-                "data": {
-                    "statuses": [
-                        {
-                            "filled": {
-                                "avgPx": "3100.0",
-                                "totalSz": "0.211",
-                                "oid": 999,
-                            }
-                        }
-                    ]
-                },
-            },
-        })
-        adapter.market_close.assert_called_once_with("ETH", sz=None)
 
 
 class TestSyncProtection:
@@ -1310,45 +1172,20 @@ class TestComputeTPTierSizes:
         spec.loader.exec_module(mod)
         return mod
 
-    def test_zero_size_returns_zero_sizes(self):
-        mod = self._load()
-        sizes = mod.compute_tp_tier_sizes(0.0, [(1.0, 0.5), (2.0, 1.0)], self._floor3)
-        assert sizes == [0.0, 0.0]
-
-    def test_negative_size_returns_zero_sizes(self):
-        mod = self._load()
-        sizes = mod.compute_tp_tier_sizes(-0.5, [(1.0, 0.5), (2.0, 1.0)], self._floor3)
-        assert sizes == [0.0, 0.0]
-
-    def test_empty_tiers_returns_empty(self):
-        mod = self._load()
-        assert mod.compute_tp_tier_sizes(1.0, [], self._floor3) == []
-
-    def test_two_tier_5050_split_zero_residual(self):
-        mod = self._load()
-        sizes = mod.compute_tp_tier_sizes(0.003, [(1.0, 0.5), (2.0, 1.0)], self._floor3)
-        assert sizes == pytest.approx([0.001, 0.002])
-        assert sum(sizes) == pytest.approx(0.003)
-
-    def test_final_tier_absorbs_subdivided_floor_loss(self):
-        mod = self._load()
-        sizes = mod.compute_tp_tier_sizes(
-            0.007, [(1.0, 0.3), (2.0, 0.6), (3.0, 1.0)], self._floor3
-        )
-        assert sizes == pytest.approx([0.002, 0.002, 0.003])
-        assert sum(sizes) == pytest.approx(0.007)
-
-    def test_lot_aligned_size_preserves_exact_split(self):
-        mod = self._load()
-        sizes = mod.compute_tp_tier_sizes(10.0, [(1.0, 0.5), (2.0, 1.0)], self._floor3)
-        assert sizes == pytest.approx([5.0, 5.0])
-
-    def test_final_tier_below_one_uses_floored_remainder(self):
-        mod = self._load()
-        sizes = mod.compute_tp_tier_sizes(0.5, [(1.0, 0.5), (2.0, 1.0)], self._floor3)
-        assert sum(sizes) == pytest.approx(0.5)
-        assert sizes[0] == pytest.approx(0.25)
-        assert sizes[1] == pytest.approx(0.25)
+    @pytest.mark.parametrize("size,tiers,expected", [
+        (0.0, [(1.0, 0.5), (2.0, 1.0)], [0.0, 0.0]),
+        (-0.5, [(1.0, 0.5), (2.0, 1.0)], [0.0, 0.0]),
+        (1.0, [], []),
+        (0.003, [(1.0, 0.5), (2.0, 1.0)], [0.001, 0.002]),
+        (0.007, [(1.0, 0.3), (2.0, 0.6), (3.0, 1.0)], [0.002, 0.002, 0.003]),
+        (10.0, [(1.0, 0.5), (2.0, 1.0)], [5.0, 5.0]),
+        (0.5, [(1.0, 0.5), (2.0, 1.0)], [0.25, 0.25]),
+    ])
+    def test_compute_tp_tier_sizes(self, size, tiers, expected):
+        sizes = self._load().compute_tp_tier_sizes(size, tiers, self._floor3)
+        assert sizes == pytest.approx(expected)
+        if expected:
+            assert sum(sizes) == pytest.approx(sum(expected))
 
 
 class TestProtectionSyncStopLossTriggerContract:

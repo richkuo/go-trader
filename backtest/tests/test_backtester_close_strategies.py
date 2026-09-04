@@ -573,49 +573,57 @@ def _run_avwap_stop_backtest(df, close_strategies):
     return bt.run(df, save=False)
 
 
-def test_avwap_stop_warns_once_when_column_absent(capsys):
-    df = _df_open_then_hold(
+_AVWAP_STOP_REF = [{"name": "avwap_stop", "params": {"buffer_atr_mult": 0.5}}]
+_TP_REF = [{"name": "tp_at_pct", "params": {"pct": 0.03}}]
+
+
+def _avwap_absent_df():
+    return _df_open_then_hold(
         opens=[100, 100, 100, 95, 95],
         closes=[100, 100, 95, 95, 95],
         atrs=[2.0] * 5,
     )
-    _run_avwap_stop_backtest(df, [{"name": "avwap_stop", "params": {"buffer_atr_mult": 0.5}}])
-    err = capsys.readouterr().err
-    assert err.count(_AVWAP_WARN_MARK) == 1
 
 
-def test_avwap_stop_warns_once_when_column_all_nan(capsys):
-    df = _df_avwap_hold(
+def _avwap_nan_df():
+    return _df_avwap_hold(
         opens=[100, 100, 100, 95, 95],
         closes=[100, 100, 95, 95, 95],
         avwaps=[float("nan")] * 5,
         atrs=[2.0] * 5,
     )
-    _run_avwap_stop_backtest(df, [{"name": "avwap_stop", "params": {"buffer_atr_mult": 0.5}}])
-    err = capsys.readouterr().err
-    assert err.count(_AVWAP_WARN_MARK) == 1
 
 
-def test_avwap_stop_does_not_warn_when_line_usable(capsys):
-    df = _df_avwap_hold(
+def _avwap_usable_df():
+    return _df_avwap_hold(
         opens=[100, 100, 100, 95, 95],
         closes=[100, 100, 95, 95, 95],
         avwaps=[100.0] * 5,
         atrs=[2.0] * 5,
     )
-    _run_avwap_stop_backtest(df, [{"name": "avwap_stop", "params": {"buffer_atr_mult": 0.5}}])
-    err = capsys.readouterr().err
-    assert _AVWAP_WARN_MARK not in err
 
 
-def test_avwap_stop_does_not_warn_when_not_configured(capsys):
-    df = _df_open_then_hold(
+def _tp_only_df():
+    return _df_open_then_hold(
         opens=[100, 100, 100, 103, 103],
         closes=[100, 100, 103, 103, 103],
     )
-    _run_avwap_stop_backtest(df, [{"name": "tp_at_pct", "params": {"pct": 0.03}}])
+
+
+@pytest.mark.parametrize(
+    "df_factory,close_strategies,expected_warns",
+    [
+        (_avwap_absent_df, _AVWAP_STOP_REF, 1),
+        (_avwap_nan_df, _AVWAP_STOP_REF, 1),
+        (_avwap_usable_df, _AVWAP_STOP_REF, 0),
+        (_tp_only_df, _TP_REF, 0),
+    ],
+)
+def test_avwap_stop_unusable_line_warns_once(capsys, df_factory,
+                                             close_strategies, expected_warns):
+    _run_avwap_stop_backtest(df_factory(), close_strategies)
     err = capsys.readouterr().err
-    assert _AVWAP_WARN_MARK not in err
+    assert err.count(_AVWAP_WARN_MARK) == expected_warns
 
 
 _UNIFIED_CLOSE = {
@@ -681,25 +689,6 @@ def test_unified_regime_close_no_stop_without_breach():
     assert result["trades"][0]["exit_date"] == str(idx[4])
 
 
-def test_unified_regime_close_rejects_second_sl_owner():
-    with pytest.raises(ValueError, match="unified per-regime close"):
-        Backtester(
-            initial_capital=1000, commission_pct=0, slippage_pct=0,
-            stop_loss_atr_mult=1.5,
-            close_strategies=[_UNIFIED_CLOSE],
-        )
-    with pytest.raises(ValueError, match="unified per-regime close"):
-        Backtester(
-            initial_capital=1000, commission_pct=0, slippage_pct=0,
-            stop_loss_atr_mult_regime={"trend_regime": {
-                "ranging": {"atr_multiple": 1.0},
-                "trending_up": {"atr_multiple": 1.0},
-                "trending_down": {"atr_multiple": 1.0},
-            }},
-            close_strategies=[_UNIFIED_CLOSE],
-        )
-
-
 _COMPOSITE_SPEC_1228 = {"medium": {"classifier": "composite", "period": 21}}
 
 
@@ -754,47 +743,50 @@ def _unified_adx_block(sl_overrides=None, drop_sl_for=()):
     return {"name": "tiered_tp_atr_regime", "params": {"trend_regime": block}}
 
 
-def test_unified_close_missing_stop_loss_atr_rejected_at_load():
-    with pytest.raises(ValueError, match="stop_loss_atr"):
-        Backtester(
-            initial_capital=1000, commission_pct=0, slippage_pct=0,
-            close_strategies=[_unified_adx_block(drop_sl_for=("trending_up",))],
-        )
+def _single_tier_adx_block():
+    ref = _unified_adx_block()
+    ref["params"]["trend_regime"]["ranging"]["tp_tiers"] = [
+        {"atr_multiple": 2.0, "close_fraction": 1.0}]
+    return ref
 
 
-def test_unified_close_nonpositive_stop_loss_atr_rejected_at_load():
-    with pytest.raises(ValueError, match="must be > 0"):
-        Backtester(
-            initial_capital=1000, commission_pct=0, slippage_pct=0,
-            close_strategies=[_unified_adx_block(sl_overrides={"ranging": 0})],
-        )
-    with pytest.raises(ValueError, match="must be > 0"):
-        Backtester(
-            initial_capital=1000, commission_pct=0, slippage_pct=0,
-            close_strategies=[_unified_adx_block(sl_overrides={"ranging": -1.5})],
-        )
-
-
-def test_unified_close_bare_block_without_sl_rejected_at_load():
-    close_ref = {
+def _bare_block_without_sl_ref():
+    return {
         "name": "tiered_tp_atr_regime",
         "params": {"trend_regime": _unified_composite_block(
             include_bare_sl=False)},
     }
-    with pytest.raises(ValueError, match="stop_loss_atr"):
-        Backtester(
-            initial_capital=1000, commission_pct=0, slippage_pct=0,
-            regime_windows_spec=_COMPOSITE_SPEC_1228,
-            close_strategies=[close_ref],
-        )
 
 
-def test_unified_close_single_tier_rejected_at_load():
-    ref = _unified_adx_block()
-    ref["params"]["trend_regime"]["ranging"]["tp_tiers"] = [
-        {"atr_multiple": 2.0, "close_fraction": 1.0}]
-    with pytest.raises(ValueError, match="at least 2 tiers"):
+@pytest.mark.parametrize(
+    "kwargs_factory,match",
+    [
+        (lambda: {"stop_loss_atr_mult": 1.5,
+                  "close_strategies": [_UNIFIED_CLOSE]},
+         "unified per-regime close"),
+        (lambda: {"stop_loss_atr_mult_regime": {"trend_regime": {
+            "ranging": {"atr_multiple": 1.0},
+            "trending_up": {"atr_multiple": 1.0},
+            "trending_down": {"atr_multiple": 1.0},
+        }}, "close_strategies": [_UNIFIED_CLOSE]},
+         "unified per-regime close"),
+        (lambda: {"close_strategies": [
+            _unified_adx_block(drop_sl_for=("trending_up",))]},
+         "stop_loss_atr"),
+        (lambda: {"close_strategies": [
+            _unified_adx_block(sl_overrides={"ranging": 0})]}, "must be > 0"),
+        (lambda: {"close_strategies": [
+            _unified_adx_block(sl_overrides={"ranging": -1.5})]}, "must be > 0"),
+        (lambda: {"regime_windows_spec": _COMPOSITE_SPEC_1228,
+                  "close_strategies": [_bare_block_without_sl_ref()]},
+         "stop_loss_atr"),
+        (lambda: {"close_strategies": [_single_tier_adx_block()]},
+         "at least 2 tiers"),
+    ],
+)
+def test_unified_regime_close_rejected_at_load(kwargs_factory, match):
+    with pytest.raises(ValueError, match=match):
         Backtester(
             initial_capital=1000, commission_pct=0, slippage_pct=0,
-            close_strategies=[ref],
+            **kwargs_factory(),
         )

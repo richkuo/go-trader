@@ -7,19 +7,20 @@ import eval_windows as ew
 import gross_edge_noise as gen
 
 
-def test_summarize_returns_empty():
-    s = gen.summarize_returns([])
-    assert s["n"] == 0 and s["mean"] is None and s["median"] is None
-    assert s["n_pos"] == 0 and s["n_neg"] == 0 and s["n_zero"] == 0
-
-
-def test_summarize_returns_mixed():
-    s = gen.summarize_returns([1.0, -2.0, 0.0, 3.0])
-    assert s["n"] == 4
-    assert s["mean"] == pytest.approx(0.5)
-    assert s["median"] == pytest.approx(0.5)
-    assert s["min"] == -2.0 and s["max"] == 3.0
-    assert s["n_pos"] == 2 and s["n_neg"] == 1 and s["n_zero"] == 1
+@pytest.mark.parametrize("values,expected", [
+    ([], {"n": 0, "mean": None, "median": None,
+          "n_pos": 0, "n_neg": 0, "n_zero": 0}),
+    ([1.0, -2.0, 0.0, 3.0], {"n": 4, "mean": 0.5, "median": 0.5,
+                             "min": -2.0, "max": 3.0,
+                             "n_pos": 2, "n_neg": 1, "n_zero": 1}),
+])
+def test_summarize_returns(values, expected):
+    s = gen.summarize_returns(values)
+    for key, want in expected.items():
+        if isinstance(want, float):
+            assert s[key] == pytest.approx(want)
+        else:
+            assert s[key] == want
 
 
 def test_permutation_empty_sample_is_p_one():
@@ -54,19 +55,16 @@ def test_permutation_p_never_zero():
     assert 0.0 < r["p_value"] <= 1.0
 
 
-def test_bootstrap_p_le_zero_empty_is_none():
-    assert gen.bootstrap_p_mean_le_zero([]) is None
-
-
-def test_bootstrap_p_le_zero_single_value_uses_point():
-    assert gen.bootstrap_p_mean_le_zero([2.0]) == 0.0
-    assert gen.bootstrap_p_mean_le_zero([-2.0]) == 1.0
-    assert gen.bootstrap_p_mean_le_zero([0.0]) == 1.0
-
-
-def test_bootstrap_p_le_zero_all_positive_is_zero():
-    assert gen.bootstrap_p_mean_le_zero([1.0, 2.0, 3.0],
-                                        n_resamples=500, seed=3) == 0.0
+@pytest.mark.parametrize("values,expected", [
+    ([], None),
+    ([2.0], 0.0),
+    ([-2.0], 1.0),
+    ([0.0], 1.0),
+    ([1.0, 2.0, 3.0], 0.0),
+])
+def test_bootstrap_p_mean_le_zero(values, expected):
+    assert gen.bootstrap_p_mean_le_zero(values, n_resamples=500,
+                                        seed=3) == expected
 
 
 def test_bootstrap_p_le_zero_deterministic():
@@ -76,41 +74,31 @@ def test_bootstrap_p_le_zero_deterministic():
     assert a == b
 
 
-def test_dedupe_drops_same_dataset_same_entry():
-    samples = [
-        {"dataset": "BTC/USDT 1h", "entry_date": "2025-06-15", "pnl_pct": 1.0},
-        {"dataset": "BTC/USDT 1h", "entry_date": "2025-06-15", "pnl_pct": 1.0},
-        {"dataset": "ETH/USDT 1h", "entry_date": "2025-06-15", "pnl_pct": 2.0},
-    ]
-    out, dropped = gen.dedupe_samples(samples)
-    assert dropped == 1
-    assert len(out) == 2
-    assert out[0]["dataset"] == "BTC/USDT 1h"
-    assert out[1]["dataset"] == "ETH/USDT 1h"
+@pytest.mark.parametrize("samples,dropped,kept_datasets", [
+    ([{"dataset": "BTC/USDT 1h", "entry_date": "2025-06-15", "pnl_pct": 1.0},
+      {"dataset": "BTC/USDT 1h", "entry_date": "2025-06-15", "pnl_pct": 1.0},
+      {"dataset": "ETH/USDT 1h", "entry_date": "2025-06-15", "pnl_pct": 2.0}],
+     1, ["BTC/USDT 1h", "ETH/USDT 1h"]),
+    ([{"dataset": "BTC/USDT 1h", "entry_date": "2025-06-15", "pnl_pct": 1.0},
+      {"dataset": "BTC/USDT 1h", "entry_date": "2025-06-16", "pnl_pct": -1.0}],
+     0, ["BTC/USDT 1h", "BTC/USDT 1h"]),
+])
+def test_dedupe_samples(samples, dropped, kept_datasets):
+    out, n_dropped = gen.dedupe_samples(samples)
+    assert n_dropped == dropped
+    assert [s["dataset"] for s in out] == kept_datasets
 
 
-def test_dedupe_keeps_distinct_entries():
-    samples = [
-        {"dataset": "BTC/USDT 1h", "entry_date": "2025-06-15", "pnl_pct": 1.0},
-        {"dataset": "BTC/USDT 1h", "entry_date": "2025-06-16", "pnl_pct": -1.0},
-    ]
-    out, dropped = gen.dedupe_samples(samples)
-    assert dropped == 0 and len(out) == 2
-
-
-def test_verdict_non_positive_mean_is_no_edge():
-    assert gen.noise_verdict(0.0, 0.001) == gen.VERDICT_NO_EDGE
-    assert gen.noise_verdict(-0.5, 0.001) == gen.VERDICT_NO_EDGE
-    assert gen.noise_verdict(None, 0.001) == gen.VERDICT_NO_EDGE
-
-
-def test_verdict_significant_positive_is_distinguishable():
-    assert gen.noise_verdict(0.3, 0.01) == gen.VERDICT_DISTINGUISHABLE
-
-
-def test_verdict_insignificant_positive_is_indistinguishable():
-    assert gen.noise_verdict(0.3, 0.39) == gen.VERDICT_INDISTINGUISHABLE
-    assert gen.noise_verdict(0.3, 0.05) == gen.VERDICT_INDISTINGUISHABLE
+@pytest.mark.parametrize("mean,permutation_p,expected", [
+    (0.0, 0.001, gen.VERDICT_NO_EDGE),
+    (-0.5, 0.001, gen.VERDICT_NO_EDGE),
+    (None, 0.001, gen.VERDICT_NO_EDGE),
+    (0.3, 0.01, gen.VERDICT_DISTINGUISHABLE),
+    (0.3, 0.39, gen.VERDICT_INDISTINGUISHABLE),
+    (0.3, 0.05, gen.VERDICT_INDISTINGUISHABLE),
+])
+def test_noise_verdict(mean, permutation_p, expected):
+    assert gen.noise_verdict(mean, permutation_p) == expected
 
 
 def test_analyze_sample_verdict_matches_primary_test():
@@ -127,17 +115,16 @@ def test_analyze_sample_verdict_matches_primary_test():
         assert key in strong
 
 
-def test_entry_in_range_bare_date_bounds_vs_timestamps():
-    rng = ("2025-06-10", "2025-07-01")
-    assert gen._entry_in_range("2025-06-10 00:00:00", rng)
-    assert gen._entry_in_range("2025-06-30 23:00:00", rng)
-    assert not gen._entry_in_range("2025-07-01 00:00:00", rng)
-    assert not gen._entry_in_range("2025-06-09 23:00:00", rng)
-
-
-def test_entry_in_range_open_ended():
-    assert gen._entry_in_range("2099-01-01 00:00:00", ("2026-01-01", None))
-    assert not gen._entry_in_range("2025-12-31 23:00:00", ("2026-01-01", None))
+@pytest.mark.parametrize("entry_date,window_range,expected", [
+    ("2025-06-10 00:00:00", ("2025-06-10", "2025-07-01"), True),
+    ("2025-06-30 23:00:00", ("2025-06-10", "2025-07-01"), True),
+    ("2025-07-01 00:00:00", ("2025-06-10", "2025-07-01"), False),
+    ("2025-06-09 23:00:00", ("2025-06-10", "2025-07-01"), False),
+    ("2099-01-01 00:00:00", ("2026-01-01", None), True),
+    ("2025-12-31 23:00:00", ("2026-01-01", None), False),
+])
+def test_entry_in_range(entry_date, window_range, expected):
+    assert bool(gen._entry_in_range(entry_date, window_range)) is expected
 
 
 def test_pool_exact_duplicate_still_dropped():

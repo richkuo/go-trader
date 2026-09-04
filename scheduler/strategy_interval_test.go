@@ -5,101 +5,65 @@ import (
 	"time"
 )
 
-func TestEffectiveStrategyIntervalSeconds_DrawdownWarningUsesFastInterval(t *testing.T) {
-	sc := StrategyConfig{ID: "s1", IntervalSeconds: 3600}
-	state := &StrategyState{
-		RiskState: RiskState{
-			MaxDrawdownPct:     10,
-			CurrentDrawdownPct: 8.5,
+func TestEffectiveStrategyIntervalSeconds(t *testing.T) {
+	fast := strategyDrawdownFastIntervalSeconds
+	cases := []struct {
+		name     string
+		interval int
+		risk     RiskState
+		want     int
+	}{
+		{
+			name:     "drawdown warning uses fast interval",
+			interval: 3600,
+			risk:     RiskState{MaxDrawdownPct: 10, CurrentDrawdownPct: 8.5},
+			want:     fast,
+		},
+		{
+			name:     "drawdown recovery reverts to normal interval",
+			interval: 3600,
+			risk:     RiskState{MaxDrawdownPct: 10, CurrentDrawdownPct: 7.5},
+			want:     3600,
+		},
+		{
+			name:     "warning strategy speeds up",
+			interval: 3600,
+			risk:     RiskState{MaxDrawdownPct: 10, CurrentDrawdownPct: 8.1},
+			want:     fast,
+		},
+		{
+			name:     "non-warning peer keeps its own interval",
+			interval: 3600,
+			risk:     RiskState{MaxDrawdownPct: 10, CurrentDrawdownPct: 2.0},
+			want:     3600,
+		},
+		{
+			name:     "already fast strategy is not slowed",
+			interval: 60,
+			risk:     RiskState{MaxDrawdownPct: 10, CurrentDrawdownPct: 8.5},
+			want:     60,
+		},
+		{
+			name:     "circuit breaker is not warning mode",
+			interval: 3600,
+			risk:     RiskState{MaxDrawdownPct: 10, CurrentDrawdownPct: 12, CircuitBreaker: true},
+			want:     3600,
+		},
+		{
+			name:     "over max drawdown before circuit breaker still fast",
+			interval: 3600,
+			risk:     RiskState{MaxDrawdownPct: 10, CurrentDrawdownPct: 12},
+			want:     fast,
 		},
 	}
-
-	got := effectiveStrategyIntervalSeconds(sc, state, 600, 80)
-	if got != strategyDrawdownFastIntervalSeconds {
-		t.Errorf("effective interval = %d, want %d", got, strategyDrawdownFastIntervalSeconds)
-	}
-}
-
-func TestEffectiveStrategyIntervalSeconds_DrawdownRecoveryReverts(t *testing.T) {
-	sc := StrategyConfig{ID: "s1", IntervalSeconds: 3600}
-	state := &StrategyState{
-		RiskState: RiskState{
-			MaxDrawdownPct:     10,
-			CurrentDrawdownPct: 7.5,
-		},
-	}
-
-	got := effectiveStrategyIntervalSeconds(sc, state, 600, 80)
-	if got != 3600 {
-		t.Errorf("effective interval = %d, want normal interval 3600", got)
-	}
-}
-
-func TestEffectiveStrategyIntervalSeconds_OnlyWarningStrategySpeedsUp(t *testing.T) {
-	strategies := []StrategyConfig{
-		{ID: "warning", IntervalSeconds: 3600, Capital: 1000},
-		{ID: "normal", IntervalSeconds: 3600, Capital: 1000},
-	}
-	states := map[string]*StrategyState{
-		"warning": {
-			RiskState: RiskState{MaxDrawdownPct: 10, CurrentDrawdownPct: 8.1},
-		},
-		"normal": {
-			RiskState: RiskState{MaxDrawdownPct: 10, CurrentDrawdownPct: 2.0},
-		},
-	}
-
-	if got := effectiveStrategyIntervalSeconds(strategies[0], states["warning"], 600, 80); got != strategyDrawdownFastIntervalSeconds {
-		t.Errorf("warning strategy interval = %d, want %d", got, strategyDrawdownFastIntervalSeconds)
-	}
-	if got := effectiveStrategyIntervalSeconds(strategies[1], states["normal"], 600, 80); got != 3600 {
-		t.Errorf("normal strategy interval = %d, want 3600", got)
-	}
-}
-
-func TestEffectiveStrategyIntervalSeconds_DoesNotSlowAlreadyFastStrategy(t *testing.T) {
-	sc := StrategyConfig{ID: "s1", IntervalSeconds: 60}
-	state := &StrategyState{
-		RiskState: RiskState{
-			MaxDrawdownPct:     10,
-			CurrentDrawdownPct: 8.5,
-		},
-	}
-
-	got := effectiveStrategyIntervalSeconds(sc, state, 600, 80)
-	if got != 60 {
-		t.Errorf("effective interval = %d, want existing faster interval 60", got)
-	}
-}
-
-func TestEffectiveStrategyIntervalSeconds_CircuitBreakerIsNotWarningMode(t *testing.T) {
-	sc := StrategyConfig{ID: "s1", IntervalSeconds: 3600}
-	state := &StrategyState{
-		RiskState: RiskState{
-			MaxDrawdownPct:     10,
-			CurrentDrawdownPct: 12,
-			CircuitBreaker:     true,
-		},
-	}
-
-	got := effectiveStrategyIntervalSeconds(sc, state, 600, 80)
-	if got != 3600 {
-		t.Errorf("effective interval = %d, want normal interval 3600 while circuit breaker is active", got)
-	}
-}
-
-func TestEffectiveStrategyIntervalSeconds_OverMaxDrawdownStillFast(t *testing.T) {
-	sc := StrategyConfig{ID: "s1", IntervalSeconds: 3600}
-	state := &StrategyState{
-		RiskState: RiskState{
-			MaxDrawdownPct:     10,
-			CurrentDrawdownPct: 12,
-		},
-	}
-
-	got := effectiveStrategyIntervalSeconds(sc, state, 600, 80)
-	if got != strategyDrawdownFastIntervalSeconds {
-		t.Errorf("effective interval = %d, want fast %d when drawdown exceeds max but CB not yet set", got, strategyDrawdownFastIntervalSeconds)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sc := StrategyConfig{ID: "s1", IntervalSeconds: tc.interval, Capital: 1000}
+			state := &StrategyState{RiskState: tc.risk}
+			if got := effectiveStrategyIntervalSeconds(sc, state, 600, 80); got != tc.want {
+				t.Errorf("effective interval = %d, want %d", got, tc.want)
+			}
+		})
 	}
 }
 

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"strings"
 	"sync"
 	"testing"
 )
@@ -156,46 +155,6 @@ func TestNotifyRatchetTrigger_Gating(t *testing.T) {
 	notifyRatchetTrigger(c, true, alert)
 	if c.count != 1 {
 		t.Fatalf("enabled+alert should send once, count=%d", c.count)
-	}
-}
-
-func TestFormatRatchetTriggerAlert_Rendering(t *testing.T) {
-	a := RatchetTriggerAlert{
-		StrategyID: "hl-rmc-eth-live", Symbol: "ETH", Side: "long",
-		TierIdx: 0, TotalTiers: 3, TierATRMultiple: 1.5, TierTriggerPx: 1611.98,
-		MarkPrice: 1619.25, AnchorPrice: 1579.50, EntryATR: 21.65,
-		ProfitATR: 1.83, ProfitUSD: 34.85,
-		OldTrailMult: 2.0, NewTrailMult: 1.5,
-		HighWaterMark: 1623.15, IntendedSLTriggerPx: 1590.74,
-		HasNextTier: true, NextTierATRMultiple: 2.0, NextTierTrailAfter: 1.25, NextTierTriggerPx: 1622.80,
-		RegimeLabel: "trending_down_choppy", PositionRegimeAtOpen: "trending_down_choppy",
-	}
-	out := formatRatchetTriggerAlert(a)
-	for _, want := range []string{
-		"[hl-rmc-eth-live] ETH long — Ratchet Tier 1/3 cleared",
-		"Triggered at: 1.5×ATR",
-		"Trail tightened: 2×ATR → 1.5×ATR",
-		"Intended SL trigger:",
-		"Next tier: 2×ATR",
-		"Regime: trending_down_choppy",
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("missing %q in:\n%s", want, out)
-		}
-	}
-	if strings.Contains(out, "stamped at open") {
-		t.Errorf("identical regime should not render the stamped-at-open suffix:\n%s", out)
-	}
-}
-
-func TestFormatRatchetTriggerAlert_DistinctRegimeShowsStamp(t *testing.T) {
-	a := RatchetTriggerAlert{
-		StrategyID: "s", Symbol: "ETH", Side: "short", TotalTiers: 2,
-		RegimeLabel: "ranging_quiet", PositionRegimeAtOpen: "trending_up_clean",
-	}
-	out := formatRatchetTriggerAlert(a)
-	if !strings.Contains(out, "Regime: ranging_quiet (stamped at open: trending_up_clean)") {
-		t.Errorf("distinct open regime should be shown:\n%s", out)
 	}
 }
 

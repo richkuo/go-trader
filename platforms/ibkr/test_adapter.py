@@ -20,12 +20,6 @@ CME_SPECS = _mod.CME_SPECS
 DEFAULT_SPECS = _mod.DEFAULT_SPECS
 
 
-class TestProperties:
-    def test_name(self):
-        adapter = IBKRExchangeAdapter()
-        assert adapter.name == "ibkr"
-
-
 class TestSpotPrice:
     def test_get_spot_price(self):
         adapter = IBKRExchangeAdapter()
@@ -88,20 +82,15 @@ class TestOptionsProtocol:
         assert dte == 30
         datetime.strptime(expiry, "%Y-%m-%d")
 
-    def test_get_real_strike_btc(self):
+    @pytest.mark.parametrize("underlying,spot,expected", [
+        ("BTC", 67500, 68000),
+        ("ETH", 3475, 3500),
+        ("SOL", 160, 200),
+    ])
+    def test_get_real_strike(self, underlying, spot, expected):
         adapter = IBKRExchangeAdapter()
-        strike = adapter.get_real_strike("BTC", "2026-05-01", "call", 67500)
-        assert strike == 68000
-
-    def test_get_real_strike_eth(self):
-        adapter = IBKRExchangeAdapter()
-        strike = adapter.get_real_strike("ETH", "2026-05-01", "call", 3475)
-        assert strike == 3500
-
-    def test_get_real_strike_default(self):
-        adapter = IBKRExchangeAdapter()
-        strike = adapter.get_real_strike("SOL", "2026-05-01", "call", 160)
-        assert strike == 200
+        strike = adapter.get_real_strike(underlying, "2026-05-01", "call", spot)
+        assert strike == expected
 
     def test_get_premium_and_greeks(self):
         adapter = IBKRExchangeAdapter()
@@ -126,7 +115,3 @@ class TestOptionsProtocol:
         assert adapter.get_multiplier("BTC") == 0.1
         assert adapter.get_multiplier("ETH") == 0.5
 
-    def test_get_strike_interval(self):
-        adapter = IBKRExchangeAdapter()
-        assert adapter.get_strike_interval("BTC") == 1000
-        assert adapter.get_strike_interval("ETH") == 50

@@ -53,3 +53,6 @@ jobs:
 
       - name: Run shared_scripts tests (outside testpaths)
         run: uv run pytest shared_scripts/
+
+      - name: Test budget
+        run: uv run python3 scripts/check_test_budget.py

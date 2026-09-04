@@ -32,15 +32,6 @@ def adapter():
 
 
 class TestProperties:
-    def test_name(self, adapter):
-        a, _ = adapter
-        assert a.name == "okx"
-
-    def test_paper_mode(self, adapter):
-        a, _ = adapter
-        assert a.mode == "paper"
-        assert a.is_live is False
-
     def test_live_mode(self):
         mock_ex = MagicMock()
         with patch.dict(os.environ, {
@@ -145,15 +136,14 @@ class TestMarketData:
 
 
 class TestOrderExecution:
-    def test_market_open_paper_raises(self, adapter):
+    @pytest.mark.parametrize("method,args", [
+        ("market_open", ("BTC", True, 0.5)),
+        ("market_close", ("BTC",)),
+    ])
+    def test_market_order_paper_raises(self, adapter, method, args):
         a, _ = adapter
         with pytest.raises(RuntimeError, match="live mode"):
-            a.market_open("BTC", True, 0.5)
-
-    def test_market_close_paper_raises(self, adapter):
-        a, _ = adapter
-        with pytest.raises(RuntimeError, match="live mode"):
-            a.market_close("BTC")
+            getattr(a, method)(*args)
 
     def test_market_open_spot(self, adapter):
         a, mock_ex = adapter
@@ -382,16 +372,15 @@ class TestOKXUSDTCashBalance:
         info = self._info([{"ccy": "BTC", "cashBal": "0.5"}, {"ccy": "USDT", "cashBal": "900.25"}])
         assert _mod._okx_usdt_cash_balance(info) == 900.25
 
-    def test_missing_details_returns_none(self):
-        assert _mod._okx_usdt_cash_balance({"data": [{}]}) is None
-        assert _mod._okx_usdt_cash_balance({}) is None
-        assert _mod._okx_usdt_cash_balance(None) is None
-
-    def test_no_usdt_entry_returns_none(self):
-        assert _mod._okx_usdt_cash_balance(self._info([{"ccy": "BTC", "cashBal": "0.5"}])) is None
-
-    def test_unparseable_cash_bal_returns_none(self):
-        assert _mod._okx_usdt_cash_balance(self._info([{"ccy": "USDT", "cashBal": "n/a"}])) is None
+    @pytest.mark.parametrize("info", [
+        {"data": [{}]},
+        {},
+        None,
+        {"code": "0", "data": [{"details": [{"ccy": "BTC", "cashBal": "0.5"}]}]},
+        {"code": "0", "data": [{"details": [{"ccy": "USDT", "cashBal": "n/a"}]}]},
+    ])
+    def test_unreadable_cash_bal_returns_none(self, info):
+        assert _mod._okx_usdt_cash_balance(info) is None
 
 
 class TestGetAccountEquityAndUPnL:

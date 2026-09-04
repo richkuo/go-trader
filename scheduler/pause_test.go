@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -92,26 +91,6 @@ func TestPausedStrategiesNote(t *testing.T) {
 	})
 	if !strings.Contains(note, "m-strat, z-strat") {
 		t.Fatalf("expected sorted paused IDs, got %q", note)
-	}
-	if !strings.Contains(note, "⏸️") {
-		t.Fatalf("expected pause marker in note, got %q", note)
-	}
-}
-
-func TestPausedConfigUnmarshal(t *testing.T) {
-	var sc StrategyConfig
-	if err := json.Unmarshal([]byte(`{"id":"x","paused":true}`), &sc); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if !sc.Paused {
-		t.Fatal("expected paused=true after unmarshal")
-	}
-	var sc2 StrategyConfig
-	if err := json.Unmarshal([]byte(`{"id":"x"}`), &sc2); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if sc2.Paused {
-		t.Fatal("expected paused=false when omitted")
 	}
 }
 

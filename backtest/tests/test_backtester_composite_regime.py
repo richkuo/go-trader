@@ -30,11 +30,15 @@ def _gated_df(label: str, n: int = 100, buy_at: int = 50) -> pd.DataFrame:
 
 
 @pytest.mark.parametrize("label", COMPOSITE_LABELS)
-def test_composite_label_allows_entry_when_gate_matches(label):
+@pytest.mark.parametrize("multi_label_gate", [False, True])
+def test_composite_label_allows_entry_when_gate_matches(label, multi_label_gate):
+    allow = [label]
+    if multi_label_gate:
+        allow += [l for l in COMPOSITE_LABELS if l != label][:2]
     df = _gated_df(label)
     bt = Backtester(
         initial_capital=1000, commission_pct=0, slippage_pct=0,
-        regime_enabled=True, allowed_regimes=[label],
+        regime_enabled=True, allowed_regimes=allow,
     )
     result = bt.run(df, save=False)
     assert result["total_trades"] >= 1, (
@@ -58,18 +62,6 @@ def test_composite_label_blocks_entry_when_gate_mismatches(label):
     assert result["total_trades"] == 0, (
         f"Bar regime '{label}' must be blocked when only '{other}' is allowed"
     )
-
-
-@pytest.mark.parametrize("label", COMPOSITE_LABELS)
-def test_composite_label_allowed_within_multi_label_gate(label):
-    allow = [label] + [l for l in COMPOSITE_LABELS if l != label][:2]
-    df = _gated_df(label)
-    bt = Backtester(
-        initial_capital=1000, commission_pct=0, slippage_pct=0,
-        regime_enabled=True, allowed_regimes=allow,
-    )
-    result = bt.run(df, save=False)
-    assert result["total_trades"] >= 1
 
 
 def test_clean_and_choppy_variants_are_distinct_gates():

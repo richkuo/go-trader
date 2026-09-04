@@ -1,4 +1,4 @@
-
+import json
 import math
 
 import pandas as pd
@@ -7,23 +7,23 @@ import pytest
 import exit_policy_ab as m
 
 
-def test_sign_test_all_positive_is_significant():
-    r = m.sign_test([0.5, 1.0, 2.0, 0.1, 0.3])
-    assert r["n_pos"] == 5 and r["n_neg"] == 0 and r["n_zero"] == 0
-    assert r["n"] == 5
-    assert r["p_value"] == pytest.approx(0.0625, abs=1e-6)
-
-
-def test_sign_test_balanced_is_not_significant():
-    r = m.sign_test([1.0, -1.0, 2.0, -2.0])
-    assert r["n_pos"] == 2 and r["n_neg"] == 2
-    assert r["p_value"] == pytest.approx(1.0)
-
-
-def test_sign_test_drops_zeros_not_splits():
-    r = m.sign_test([0.0, 0.0, 1.0, 2.0])
-    assert r["n_zero"] == 2 and r["n"] == 2 and r["n_pos"] == 2
-    assert r["p_value"] == pytest.approx(0.5)
+@pytest.mark.parametrize(
+    "xs,n_pos,n_neg,n_zero,n,p_value",
+    [
+        ([0.5, 1.0, 2.0, 0.1, 0.3], 5, 0, 0, 5, 0.0625),
+        ([1.0, -1.0, 2.0, -2.0], 2, 2, 0, 4, 1.0),
+        ([0.0, 0.0, 1.0, 2.0], 2, 0, 2, 2, 0.5),
+        ([], 0, 0, 0, 0, 1.0),
+    ],
+    ids=["all_positive", "balanced", "zeros_dropped", "empty"],
+)
+def test_sign_test(xs, n_pos, n_neg, n_zero, n, p_value):
+    r = m.sign_test(xs)
+    assert r["n_pos"] == n_pos
+    assert r["n_neg"] == n_neg
+    assert r["n_zero"] == n_zero
+    assert r["n"] == n
+    assert r["p_value"] == pytest.approx(p_value, abs=1e-6)
 
 
 def test_binom_p_large_n_no_overflow():
@@ -44,11 +44,6 @@ def test_binom_p_log_space_matches_small_n_exact():
 
     for k, n in [(0, 5), (3, 10), (7, 8), (25, 60)]:
         assert m._binom_two_sided_p(k, n) == pytest.approx(direct(k, n), rel=1e-9)
-
-
-def test_sign_test_empty():
-    r = m.sign_test([])
-    assert r["n"] == 0 and r["p_value"] == 1.0
 
 
 def test_signed_rank_all_positive_low_p():
@@ -252,30 +247,25 @@ def test_arm_summary_none_results():
     assert s["entries"] == 0 and s["win_rate"] is None and s["max_drawdown_pct"] is None
 
 
-def test_replayable_true_for_rule_based_exits():
-    assert m.candidate_is_replayable([{"name": "atr_stop", "params": {}}])
-    assert m.candidate_is_replayable(
-        [{"name": "tiered_tp_atr", "params": {}},
-         {"name": "trailing_stop_atr_mult", "params": {"atr_mult": 3}}])
-
-
-def test_replayable_false_for_open_as_close_and_unknown():
-    assert not m.candidate_is_replayable(None)
-    assert not m.candidate_is_replayable([])
-    assert not m.candidate_is_replayable([{"name": "some_signal_reversal_close"}])
-
-
-def test_replayable_true_for_ratchet_and_frozen_regime_tp():
-    assert m.candidate_is_replayable([{"name": "trailing_tp_ratchet", "params": {}}])
-    assert m.candidate_is_replayable(
-        [{"name": "trailing_tp_ratchet_regime", "params": {"use_defaults": True}}])
-    assert m.candidate_is_replayable([{"name": "tiered_tp_atr_regime", "params": {}}])
-
-
-def test_replayable_false_for_per_tick_regime_variants():
-    assert not m.candidate_is_replayable([{"name": "tiered_tp_atr_live_regime"}])
-    assert not m.candidate_is_replayable(
-        [{"name": "tiered_tp_atr_live_regime_dynamic"}])
+@pytest.mark.parametrize(
+    "candidate,expected",
+    [
+        ([{"name": "atr_stop", "params": {}}], True),
+        ([{"name": "tiered_tp_atr", "params": {}},
+          {"name": "trailing_stop_atr_mult", "params": {"atr_mult": 3}}], True),
+        ([{"name": "trailing_tp_ratchet", "params": {}}], True),
+        ([{"name": "trailing_tp_ratchet_regime",
+           "params": {"use_defaults": True}}], True),
+        ([{"name": "tiered_tp_atr_regime", "params": {}}], True),
+        (None, False),
+        ([], False),
+        ([{"name": "some_signal_reversal_close"}], False),
+        ([{"name": "tiered_tp_atr_live_regime"}], False),
+        ([{"name": "tiered_tp_atr_live_regime_dynamic"}], False),
+    ],
+)
+def test_candidate_is_replayable(candidate, expected):
+    assert bool(m.candidate_is_replayable(candidate)) is expected
 
 
 def test_paired_delta_summary_shape():
@@ -297,11 +287,6 @@ def _regime_args(classifier=None, windows_json=None, period=14, adx=20.0, gate_w
         regime_period=period, regime_adx_threshold=adx, gate_window=gate_window)
 
 
-def test_resolve_regime_adx_default():
-    cfg = m.resolve_regime_cfg(_regime_args(), {})
-    assert cfg["classifier"] == "adx" and cfg["windows_spec"] is None
-
-
 def test_resolve_regime_composite_synthesizes_windows_spec():
     cfg = m.resolve_regime_cfg(_regime_args(classifier="composite", period=20), {})
     assert cfg["classifier"] == "composite"
@@ -311,22 +296,26 @@ def test_resolve_regime_composite_synthesizes_windows_spec():
     assert cfg["gate_window"] == "attribution"
 
 
-def test_resolve_regime_inherits_config_windows():
-    windows = {"medium": {"classifier": "composite", "period": 14}}
-    cfg = m.resolve_regime_cfg(_regime_args(), {"windows": windows})
-    assert cfg["classifier"] == "composite" and cfg["windows_spec"] == windows
+_CONFIG_WINDOWS = {"medium": {"classifier": "composite", "period": 14}}
+_EXPLICIT_WINDOWS = {"fast": {"classifier": "composite", "period": 7}}
 
 
-def test_resolve_regime_explicit_windows_json_wins():
-    spec = {"fast": {"classifier": "composite", "period": 7}}
-    cfg = m.resolve_regime_cfg(_regime_args(windows_json=__import__("json").dumps(spec)), {})
-    assert cfg["classifier"] == "composite" and cfg["windows_spec"] == spec
-
-
-def test_resolve_regime_explicit_adx_overrides_config_windows():
-    cfg = m.resolve_regime_cfg(_regime_args(classifier="adx"),
-                               {"windows": {"medium": {"classifier": "composite", "period": 14}}})
-    assert cfg["classifier"] == "adx" and cfg["windows_spec"] is None
+@pytest.mark.parametrize(
+    "args,config,classifier,windows_spec",
+    [
+        (_regime_args(), {}, "adx", None),
+        (_regime_args(), {"windows": _CONFIG_WINDOWS}, "composite", _CONFIG_WINDOWS),
+        (_regime_args(windows_json=json.dumps(_EXPLICIT_WINDOWS)), {},
+         "composite", _EXPLICIT_WINDOWS),
+        (_regime_args(classifier="adx"), {"windows": _CONFIG_WINDOWS}, "adx", None),
+    ],
+    ids=["adx_default", "inherits_config_windows",
+         "explicit_windows_json_wins", "explicit_adx_overrides_config_windows"],
+)
+def test_resolve_regime_cfg(args, config, classifier, windows_spec):
+    cfg = m.resolve_regime_cfg(args, config)
+    assert cfg["classifier"] == classifier
+    assert cfg["windows_spec"] == windows_spec
 
 
 def test_stops_from_kwargs_collects_all_present_and_drops_none():
@@ -422,24 +411,24 @@ _MULTI_WINDOW = ('{"fast":{"classifier":"composite","period":7},'
 _SINGLE_WINDOW = '{"slow":{"classifier":"composite","period":21}}'
 
 
-def test_gate_window_on_multi_window_spec_rejected():
+@pytest.mark.parametrize(
+    "windows_json,gate_window",
+    [
+        (_MULTI_WINDOW, "slow"),
+        (_MULTI_WINDOW, "fast"),
+        (_SINGLE_WINDOW, "nope"),
+    ],
+    ids=["multi_window_slow", "multi_window_fast", "absent_window"],
+)
+def test_gate_window_rejected(windows_json, gate_window):
     with pytest.raises(SystemExit):
-        m._resolve_spec(_spec_args(["--regime-windows-json", _MULTI_WINDOW,
-                                    "--gate-window", "slow"]))
-    with pytest.raises(SystemExit):
-        m._resolve_spec(_spec_args(["--regime-windows-json", _MULTI_WINDOW,
-                                    "--gate-window", "fast"]))
+        m._resolve_spec(_spec_args(["--regime-windows-json", windows_json,
+                                    "--gate-window", gate_window]))
 
 
 def test_multi_window_without_gate_window_is_allowed():
     spec = m._resolve_spec(_spec_args(["--regime-windows-json", _MULTI_WINDOW]))
     assert len(spec["regime_cfg"]["windows_spec"]) == 2
-
-
-def test_gate_window_naming_absent_window_rejected():
-    with pytest.raises(SystemExit):
-        m._resolve_spec(_spec_args(["--regime-windows-json", _SINGLE_WINDOW,
-                                    "--gate-window", "nope"]))
 
 
 def test_gate_window_on_single_window_spec_naming_that_window_ok():
@@ -448,21 +437,18 @@ def test_gate_window_on_single_window_spec_naming_that_window_ok():
     assert list(spec["regime_cfg"]["windows_spec"].keys()) == ["slow"]
 
 
-def test_reject_invert_signal_incumbent():
+@pytest.mark.parametrize(
+    "incumbent",
+    [
+        {"invert_signal": True},
+        {"regime_directional_policy": {"trending_up": "long"}},
+        {"profile_allocation": {"window": "long", "param_sets": {}}},
+    ],
+    ids=["invert_signal", "regime_directional_policy", "profile_allocation"],
+)
+def test_reject_unreplayable_entry_shapers(incumbent):
     with pytest.raises(SystemExit):
-        m._reject_unreplayable_entry_shapers({"invert_signal": True})
-
-
-def test_reject_regime_directional_policy_incumbent():
-    with pytest.raises(SystemExit):
-        m._reject_unreplayable_entry_shapers(
-            {"regime_directional_policy": {"trending_up": "long"}})
-
-
-def test_reject_profile_allocation_incumbent():
-    with pytest.raises(SystemExit):
-        m._reject_unreplayable_entry_shapers(
-            {"profile_allocation": {"window": "long", "param_sets": {}}})
+        m._reject_unreplayable_entry_shapers(incumbent)
 
 
 def test_reject_names_all_offenders():

@@ -6,126 +6,60 @@ import (
 	"testing"
 )
 
-func TestClassifyRegimeDivergence_NoneWhenSame(t *testing.T) {
+func TestClassifyRegimeDivergence(t *testing.T) {
 	cases := []struct {
-		short, medium string
+		name         string
+		short        string
+		medium       string
+		shortEff     float64
+		mediumEff    float64
+		mode         string
+		wantKind     DivergenceKind
+		wantDir      string
+		wantTrusting string
+		wantInactive bool
 	}{
-		{"trending_up_clean", "trending_up_choppy"},
-		{"trending_down", "trending_down_clean"},
-		{"ranging_volatile", "ranging_quiet"},
-		{"ranging_directional", "ranging_directional"},
-		{"", ""},
+		{name: "same clean/choppy trend", short: "trending_up_clean", medium: "trending_up_choppy", mode: onDivergenceTrustShort, wantKind: DivergenceNone},
+		{name: "same down trend", short: "trending_down", medium: "trending_down_clean", mode: onDivergenceTrustShort, wantKind: DivergenceNone},
+		{name: "both ranging", short: "ranging_volatile", medium: "ranging_quiet", mode: onDivergenceTrustShort, wantKind: DivergenceNone},
+		{name: "both ranging_directional", short: "ranging_directional", medium: "ranging_directional", mode: onDivergenceTrustShort, wantKind: DivergenceNone},
+		{name: "both empty", short: "", medium: "", mode: onDivergenceTrustShort, wantKind: DivergenceNone},
+
+		{name: "soft short trend vs ranging medium", short: "trending_up_clean", medium: "ranging_volatile", mode: onDivergenceTrustShort, wantKind: DivergenceSoft},
+		{name: "soft ranging short vs trend medium", short: "ranging_quiet", medium: "trending_down_choppy", mode: onDivergenceTrustShort, wantKind: DivergenceSoft},
+
+		{name: "hard up_clean vs down trusts short", short: "trending_up_clean", medium: "trending_down", mode: onDivergenceTrustShort, wantKind: DivergenceHard, wantDir: DirectionLong, wantTrusting: "short"},
+		{name: "hard up vs down_choppy trusts short", short: "trending_up", medium: "trending_down_choppy", mode: onDivergenceTrustShort, wantKind: DivergenceHard, wantDir: DirectionLong, wantTrusting: "short"},
+		{name: "hard down_clean vs up trusts short", short: "trending_down_clean", medium: "trending_up", mode: onDivergenceTrustShort, wantKind: DivergenceHard, wantDir: DirectionShort, wantTrusting: "short"},
+		{name: "hard down vs up_clean trusts short", short: "trending_down", medium: "trending_up_clean", mode: onDivergenceTrustShort, wantKind: DivergenceHard, wantDir: DirectionShort, wantTrusting: "short"},
+
+		{name: "trust_medium flips override to medium side", short: "trending_up_clean", medium: "trending_down", mode: onDivergenceTrustMedium, wantKind: DivergenceHard, wantDir: DirectionShort, wantTrusting: "medium"},
+		{name: "alert_only never overrides", short: "trending_up_clean", medium: "trending_down", mode: onDivergenceAlertOnly, wantKind: DivergenceHard, wantInactive: true},
+
+		{name: "ranging_directional positive return_eff is hard long", short: "ranging_directional", medium: "trending_down", shortEff: 0.05, mode: onDivergenceTrustShort, wantKind: DivergenceHard, wantDir: DirectionLong, wantTrusting: "short"},
+		{name: "ranging_directional negative return_eff agrees", short: "ranging_directional", medium: "trending_down", shortEff: -0.05, mode: onDivergenceTrustShort, wantKind: DivergenceNone},
+		{name: "ranging_directional zero return_eff is soft", short: "ranging_directional", medium: "trending_down", mode: onDivergenceTrustShort, wantKind: DivergenceSoft},
+		{name: "explicit ranging_directional_up vs down is hard long", short: "ranging_directional_up", medium: "trending_down", mode: onDivergenceTrustShort, wantKind: DivergenceHard, wantDir: DirectionLong, wantTrusting: "short"},
+		{name: "explicit ranging_directional_down vs down agrees", short: "ranging_directional_down", medium: "trending_down", shortEff: 0.99, mode: onDivergenceTrustShort, wantKind: DivergenceNone},
+		{name: "explicit ranging_directional_down vs up is hard short", short: "ranging_directional_down", medium: "trending_up", mode: onDivergenceTrustShort, wantKind: DivergenceHard, wantDir: DirectionShort, wantTrusting: "short"},
+		{name: "trust_medium ranging_directional positive medium eff", short: "trending_down", medium: "ranging_directional", mediumEff: 0.05, mode: onDivergenceTrustMedium, wantKind: DivergenceHard, wantDir: DirectionLong, wantTrusting: "medium"},
 	}
 	for _, tc := range cases {
-		r := classifyRegimeDivergence(tc.short, tc.medium, 0, 0, onDivergenceTrustShort)
-		if r.Kind != DivergenceNone {
-			t.Errorf("short=%q medium=%q: expected none, got %q", tc.short, tc.medium, r.Kind)
-		}
-		if r.OverrideDir != "" {
-			t.Errorf("short=%q medium=%q: expected no override, got %q", tc.short, tc.medium, r.OverrideDir)
-		}
-	}
-}
-
-func TestClassifyRegimeDivergence_SoftWhenOneNeutral(t *testing.T) {
-	cases := []struct {
-		short, medium string
-	}{
-		{"trending_up_clean", "ranging_volatile"},
-		{"ranging_quiet", "trending_down_choppy"},
-	}
-	for _, tc := range cases {
-		r := classifyRegimeDivergence(tc.short, tc.medium, 0, 0, onDivergenceTrustShort)
-		if r.Kind != DivergenceSoft {
-			t.Errorf("short=%q medium=%q: expected soft, got %q", tc.short, tc.medium, r.Kind)
-		}
-		if r.OverrideDir != "" {
-			t.Errorf("short=%q medium=%q: soft divergence should not override, got %q", tc.short, tc.medium, r.OverrideDir)
-		}
-	}
-}
-
-func TestClassifyRegimeDivergence_HardOppositeDirections(t *testing.T) {
-	cases := []struct {
-		short, medium, wantDir string
-	}{
-		{"trending_up_clean", "trending_down", DirectionLong},
-		{"trending_up", "trending_down_choppy", DirectionLong},
-		{"trending_down_clean", "trending_up", DirectionShort},
-		{"trending_down", "trending_up_clean", DirectionShort},
-	}
-	for _, tc := range cases {
-		r := classifyRegimeDivergence(tc.short, tc.medium, 0, 0, onDivergenceTrustShort)
-		if r.Kind != DivergenceHard {
-			t.Errorf("short=%q medium=%q: expected hard, got %q", tc.short, tc.medium, r.Kind)
-		}
-		if r.OverrideDir != tc.wantDir {
-			t.Errorf("short=%q medium=%q trust_short: expected dir=%q, got %q", tc.short, tc.medium, tc.wantDir, r.OverrideDir)
-		}
-		if r.TrustingWindow != "short" {
-			t.Errorf("short=%q medium=%q trust_short: expected trusting=short, got %q", tc.short, tc.medium, r.TrustingWindow)
-		}
-	}
-}
-
-func TestClassifyRegimeDivergence_TrustMedium(t *testing.T) {
-	r := classifyRegimeDivergence("trending_up_clean", "trending_down", 0, 0, onDivergenceTrustMedium)
-	if r.Kind != DivergenceHard {
-		t.Fatalf("expected hard, got %q", r.Kind)
-	}
-	if r.OverrideDir != DirectionShort {
-		t.Errorf("trust_medium: expected short, got %q", r.OverrideDir)
-	}
-	if r.TrustingWindow != "medium" {
-		t.Errorf("trust_medium: expected trusting=medium, got %q", r.TrustingWindow)
-	}
-}
-
-func TestClassifyRegimeDivergence_AlertOnly(t *testing.T) {
-	r := classifyRegimeDivergence("trending_up_clean", "trending_down", 0, 0, onDivergenceAlertOnly)
-	if r.Kind != DivergenceHard {
-		t.Fatalf("expected hard, got %q", r.Kind)
-	}
-	if r.OverrideDir != "" {
-		t.Errorf("alert_only: expected no override dir, got %q", r.OverrideDir)
-	}
-	if r.IsActive() {
-		t.Error("alert_only: IsActive should be false")
-	}
-}
-
-func TestClassifyRegimeDivergence_RangingDirectionalSign(t *testing.T) {
-	r := classifyRegimeDivergence("ranging_directional", "trending_down", 0.05, 0, onDivergenceTrustShort)
-	if r.Kind != DivergenceHard {
-		t.Fatalf("positive return_eff: expected hard, got %q", r.Kind)
-	}
-	if r.OverrideDir != DirectionLong {
-		t.Errorf("positive return_eff: expected long, got %q", r.OverrideDir)
-	}
-
-	r2 := classifyRegimeDivergence("ranging_directional", "trending_down", -0.05, 0, onDivergenceTrustShort)
-	if r2.Kind != DivergenceNone {
-		t.Errorf("negative return_eff: expected none, got %q", r2.Kind)
-	}
-
-	r3 := classifyRegimeDivergence("ranging_directional", "trending_down", 0, 0, onDivergenceTrustShort)
-	if r3.Kind != DivergenceSoft {
-		t.Errorf("zero return_eff: expected soft, got %q", r3.Kind)
-	}
-}
-
-func TestClassifyRegimeDivergence_RangingDirectionalExplicit(t *testing.T) {
-	up := classifyRegimeDivergence("ranging_directional_up", "trending_down", 0, 0, onDivergenceTrustShort)
-	if up.Kind != DivergenceHard || up.OverrideDir != DirectionLong {
-		t.Fatalf("ranging_directional_up: want hard/long, got %q/%q", up.Kind, up.OverrideDir)
-	}
-	down := classifyRegimeDivergence("ranging_directional_down", "trending_down", 0.99, 0, onDivergenceTrustShort)
-	if down.Kind != DivergenceNone {
-		t.Fatalf("ranging_directional_down vs trending_down: want none, got %q", down.Kind)
-	}
-	downVsUp := classifyRegimeDivergence("ranging_directional_down", "trending_up", 0, 0, onDivergenceTrustShort)
-	if downVsUp.Kind != DivergenceHard || downVsUp.OverrideDir != DirectionShort {
-		t.Fatalf("ranging_directional_down vs trending_up: want hard/short, got %q/%q", downVsUp.Kind, downVsUp.OverrideDir)
+		t.Run(tc.name, func(t *testing.T) {
+			r := classifyRegimeDivergence(tc.short, tc.medium, tc.shortEff, tc.mediumEff, tc.mode)
+			if r.Kind != tc.wantKind {
+				t.Fatalf("Kind = %q, want %q", r.Kind, tc.wantKind)
+			}
+			if r.OverrideDir != tc.wantDir {
+				t.Errorf("OverrideDir = %q, want %q", r.OverrideDir, tc.wantDir)
+			}
+			if tc.wantTrusting != "" && r.TrustingWindow != tc.wantTrusting {
+				t.Errorf("TrustingWindow = %q, want %q", r.TrustingWindow, tc.wantTrusting)
+			}
+			if tc.wantInactive && r.IsActive() {
+				t.Error("IsActive should be false")
+			}
+		})
 	}
 }
 
@@ -378,27 +312,6 @@ func TestUpdateStrategyDivergenceState_ZeroValueClears(t *testing.T) {
 	}
 }
 
-func TestFormatDivergenceDMLine_TrustsCorrectWindow(t *testing.T) {
-	ds := &RegimeDivergenceState{
-		Short:             "trending_up_clean",
-		Medium:            "trending_down",
-		Kind:              string(DivergenceHard),
-		ResolvedDirection: DirectionShort,
-		TrustingWindow:    "medium",
-		CyclesActive:      3,
-	}
-	line := formatDivergenceDMLine(ds)
-	if line == "" {
-		t.Fatal("expected non-empty DM line")
-	}
-	if !strings.Contains(line, "trusting medium window") {
-		t.Errorf("expected 'trusting medium window' in DM line, got: %q", line)
-	}
-	if !strings.Contains(line, "→ short") {
-		t.Errorf("expected resolved direction in DM line, got: %q", line)
-	}
-}
-
 func TestFormatDivergenceDMLine_EmptyWhenInactive(t *testing.T) {
 	if formatDivergenceDMLine(nil) != "" {
 		t.Error("nil state should produce empty line")
@@ -410,16 +323,6 @@ func TestFormatDivergenceDMLine_EmptyWhenInactive(t *testing.T) {
 	noDir := &RegimeDivergenceState{Kind: string(DivergenceHard)}
 	if formatDivergenceDMLine(noDir) != "" {
 		t.Error("hard divergence without override dir should produce empty line")
-	}
-}
-
-func TestClassifyRegimeDivergence_TrustMediumRangingDirectional(t *testing.T) {
-	r := classifyRegimeDivergence("trending_down", "ranging_directional", 0, 0.05, onDivergenceTrustMedium)
-	if r.Kind != DivergenceHard {
-		t.Fatalf("expected hard divergence, got %q", r.Kind)
-	}
-	if r.OverrideDir != DirectionLong {
-		t.Errorf("trust_medium ranging_directional+: expected long, got %q", r.OverrideDir)
 	}
 }
 

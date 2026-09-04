@@ -2,6 +2,7 @@ import importlib.util
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from shared_tools.conftest import load_module
 
@@ -366,28 +367,18 @@ def _apply_without_avwap(name, data, params=None):
     return result
 
 
-def test_avwap_stop_warns_once_when_column_absent(capsys):
-    _run_avwap_open_close(_apply_without_avwap, ["avwap_stop"])
+@pytest.mark.parametrize("apply_strategy,close_strategies,expected_warnings", [
+    (_apply_without_avwap, ["avwap_stop"], 1),
+    (_apply_with_avwap([float("nan"), float("nan")]), ["avwap_stop"], 1),
+    (_apply_with_avwap([float("nan"), 101.5]), ["avwap_stop"], 0),
+    (_apply_without_avwap, ["tiered_tp_atr_live"], 0),
+])
+def test_avwap_stop_warns_once_when_avwap_unusable(
+    capsys, apply_strategy, close_strategies, expected_warnings
+):
+    _run_avwap_open_close(apply_strategy, close_strategies)
     err = capsys.readouterr().err
-    assert err.count(_AVWAP_WARN_MARK) == 1
-
-
-def test_avwap_stop_warns_once_when_column_all_nan(capsys):
-    _run_avwap_open_close(_apply_with_avwap([float("nan"), float("nan")]), ["avwap_stop"])
-    err = capsys.readouterr().err
-    assert err.count(_AVWAP_WARN_MARK) == 1
-
-
-def test_avwap_stop_does_not_warn_when_avwap_present(capsys):
-    _run_avwap_open_close(_apply_with_avwap([float("nan"), 101.5]), ["avwap_stop"])
-    err = capsys.readouterr().err
-    assert _AVWAP_WARN_MARK not in err
-
-
-def test_avwap_stop_does_not_warn_when_not_configured(capsys):
-    _run_avwap_open_close(_apply_without_avwap, ["tiered_tp_atr_live"])
-    err = capsys.readouterr().err
-    assert _AVWAP_WARN_MARK not in err
+    assert err.count(_AVWAP_WARN_MARK) == expected_warnings
 
 
 def test_reject_backtest_only_strategies_validates_and_refuses():

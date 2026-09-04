@@ -21,25 +21,15 @@ get_live_premium = _mod.get_live_premium
 
 
 class TestFormatInstrument:
-    def test_btc_call(self):
-        result = _format_instrument("BTC", "call", 75000, "2026-03-13")
-        assert result == "BTC-13MAR26-75000-C"
-
-    def test_eth_put(self):
-        result = _format_instrument("ETH", "put", 3500, "2026-12-25")
-        assert result == "ETH-25DEC26-3500-P"
-
-    def test_lowercase_underlying(self):
-        result = _format_instrument("btc", "call", 100000, "2026-01-15")
-        assert result.startswith("BTC-")
-
-    def test_lowercase_option_type(self):
-        result = _format_instrument("BTC", "Call", 80000, "2026-06-20")
-        assert result.endswith("-C")
-
-    def test_put_suffix(self):
-        result = _format_instrument("BTC", "put", 80000, "2026-06-20")
-        assert result.endswith("-P")
+    @pytest.mark.parametrize("underlying,option_type,strike,expiry,expected", [
+        ("BTC", "call", 75000, "2026-03-13", "BTC-13MAR26-75000-C"),
+        ("ETH", "put", 3500, "2026-12-25", "ETH-25DEC26-3500-P"),
+        ("btc", "call", 100000, "2026-01-15", "BTC-15JAN26-100000-C"),
+        ("BTC", "Call", 80000, "2026-06-20", "BTC-20JUN26-80000-C"),
+        ("BTC", "put", 80000, "2026-06-20", "BTC-20JUN26-80000-P"),
+    ])
+    def test_instrument_name(self, underlying, option_type, strike, expiry, expected):
+        assert _format_instrument(underlying, option_type, strike, expiry) == expected
 
 
 class TestFetchAvailableExpiries:

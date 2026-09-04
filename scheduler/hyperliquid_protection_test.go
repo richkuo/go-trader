@@ -666,48 +666,51 @@ func TestHyperliquidProtectionTiersRejectsSingleTier(t *testing.T) {
 	}
 }
 
-func TestHyperliquidPlacesOnChainTPs_RegimeAwareWithoutStampedRegime(t *testing.T) {
-	sc := StrategyConfig{
-		Args:     []string{"bollinger_bands", "ETH", "30m", "--mode=live"},
-		Type:     "perps",
-		Platform: "hyperliquid",
-		CloseStrategy: &StrategyRef{
-			Name:   "tiered_tp_atr_regime",
-			Params: map[string]interface{}{"use_defaults": true},
+func TestHyperliquidPlacesOnChainTPs(t *testing.T) {
+	cases := []struct {
+		name          string
+		mode          string
+		closeStrategy *StrategyRef
+		wantNoTiers   bool
+		want          bool
+	}{
+		{
+			name:          "regime tiered TP before a regime is stamped",
+			mode:          "--mode=live",
+			closeStrategy: &StrategyRef{Name: "tiered_tp_atr_regime", Params: map[string]interface{}{"use_defaults": true}},
+			wantNoTiers:   true,
+			want:          true,
+		},
+		{
+			name:          "scalar tiered TP in live mode",
+			mode:          "--mode=live",
+			closeStrategy: &StrategyRef{Name: "tiered_tp_atr"},
+			want:          true,
+		},
+		{
+			name:          "paper HL perps never place on-chain TPs",
+			mode:          "--mode=paper",
+			closeStrategy: &StrategyRef{Name: "tiered_tp_atr"},
+			want:          false,
 		},
 	}
-	if len(strategyTPTiers(sc)) != 0 {
-		t.Fatalf("strategyTPTiers(sc) should be nil before regime is stamped, got %#v", strategyTPTiers(sc))
-	}
-	if !hyperliquidPlacesOnChainTPs(sc) {
-		t.Fatal("hyperliquidPlacesOnChainTPs must be true for regime tiered TP so HL on-chain suppression/filter gates apply (#750)")
-	}
-}
-
-func TestHyperliquidPlacesOnChainTPs_ScalarTiered(t *testing.T) {
-	sc := StrategyConfig{
-		Args:          []string{"bollinger_bands", "ETH", "30m", "--mode=live"},
-		Type:          "perps",
-		Platform:      "hyperliquid",
-		CloseStrategy: &StrategyRef{Name: "tiered_tp_atr"},
-	}
-	if !hyperliquidPlacesOnChainTPs(sc) {
-		t.Fatal("expected true for scalar tiered_tp_atr in live mode")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sc := StrategyConfig{
+				Args:          []string{"bollinger_bands", "ETH", "30m", tc.mode},
+				Type:          "perps",
+				Platform:      "hyperliquid",
+				CloseStrategy: tc.closeStrategy,
+			}
+			if tc.wantNoTiers && len(strategyTPTiers(sc)) != 0 {
+				t.Fatalf("strategyTPTiers(sc) should be nil before regime is stamped, got %#v", strategyTPTiers(sc))
+			}
+			if got := hyperliquidPlacesOnChainTPs(sc); got != tc.want {
+				t.Fatalf("hyperliquidPlacesOnChainTPs = %v, want %v (#750, #781)", got, tc.want)
+			}
+		})
 	}
 }
-
-func TestHyperliquidPlacesOnChainTPs_PaperFalse(t *testing.T) {
-	sc := StrategyConfig{
-		Args:          []string{"bollinger_bands", "ETH", "30m", "--mode=paper"},
-		Type:          "perps",
-		Platform:      "hyperliquid",
-		CloseStrategy: &StrategyRef{Name: "tiered_tp_atr"},
-	}
-	if hyperliquidPlacesOnChainTPs(sc) {
-		t.Fatal("paper HL perps must not place on-chain TPs (#781)")
-	}
-}
-
 func TestStrategyConfigWithOnChainProtectionFilter_PaperKeepsTieredTP(t *testing.T) {
 	sc := StrategyConfig{
 		Args: []string{"bollinger_bands", "ETH", "30m", "--mode=paper"},

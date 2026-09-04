@@ -151,8 +151,8 @@ var compositeLabels = []string{
 	"trending_down_choppy", "ranging_quiet", "ranging_volatile", "ranging_directional",
 }
 
-func TestResolveRaw_Valid(t *testing.T) {
-	raw := `{
+func TestResolveRaw(t *testing.T) {
+	const validRaw = `{
 		"window": "profile_long",
 		"profiles": {
 			"trending_up_clean": "trend", "trending_up_choppy": "trend",
@@ -163,71 +163,79 @@ func TestResolveRaw_Valid(t *testing.T) {
 		"confirm_bars": 24,
 		"initial_profile": "fade"
 	}`
-	a, errs := resolveRawFromJSON(t, raw, compositeLabels)
-	if len(errs) != 0 {
-		t.Fatalf("valid block rejected: %v", errs)
-	}
-	if a.Window != "profile_long" || a.ConfirmBars != 24 || a.InitialProfile != "fade" {
-		t.Fatalf("resolved fields wrong: %+v", a)
-	}
-}
 
-func TestResolveRaw_WrongParamSetCount(t *testing.T) {
-	raw := `{
-		"window": "w", "confirm_bars": 24, "initial_profile": "a",
-		"profiles": {"trending_up_clean":"a","trending_up_choppy":"a","trending_down_clean":"a","trending_down_choppy":"a","ranging_quiet":"a","ranging_volatile":"a","ranging_directional":"a"},
-		"param_sets": {"a": {}, "b": {}, "c": {}}
-	}`
-	_, errs := resolveRawFromJSON(t, raw, compositeLabels)
-	if !containsSubstr(errs, "exactly 2 profiles") {
-		t.Fatalf("expected param_sets count error, got %v", errs)
-	}
-}
+	t.Run("valid block resolves fields", func(t *testing.T) {
+		a, errs := resolveRawFromJSON(t, validRaw, compositeLabels)
+		if len(errs) != 0 {
+			t.Fatalf("valid block rejected: %v", errs)
+		}
+		if a.Window != "profile_long" || a.ConfirmBars != 24 || a.InitialProfile != "fade" {
+			t.Fatalf("resolved fields wrong: %+v", a)
+		}
+	})
 
-func TestResolveRaw_MissingLabelCoverage(t *testing.T) {
-	raw := `{
-		"window": "w", "confirm_bars": 24, "initial_profile": "fade",
-		"profiles": {"trending_up_clean":"trend","ranging_quiet":"fade"},
-		"param_sets": {"fade": {}, "trend": {}}
-	}`
-	_, errs := resolveRawFromJSON(t, raw, compositeLabels)
-	if !containsSubstr(errs, "missing mapping for regime label") {
-		t.Fatalf("expected label-coverage error, got %v", errs)
+	cases := []struct {
+		name     string
+		raw      string
+		labels   []string
+		wantErrs []string
+	}{
+		{
+			name: "wrong param_sets count",
+			raw: `{
+				"window": "w", "confirm_bars": 24, "initial_profile": "a",
+				"profiles": {"trending_up_clean":"a","trending_up_choppy":"a","trending_down_clean":"a","trending_down_choppy":"a","ranging_quiet":"a","ranging_volatile":"a","ranging_directional":"a"},
+				"param_sets": {"a": {}, "b": {}, "c": {}}
+			}`,
+			labels:   compositeLabels,
+			wantErrs: []string{"exactly 2 profiles"},
+		},
+		{
+			name: "missing regime label coverage",
+			raw: `{
+				"window": "w", "confirm_bars": 24, "initial_profile": "fade",
+				"profiles": {"trending_up_clean":"trend","ranging_quiet":"fade"},
+				"param_sets": {"fade": {}, "trend": {}}
+			}`,
+			labels:   compositeLabels,
+			wantErrs: []string{"missing mapping for regime label"},
+		},
+		{
+			name: "initial_profile not a param set",
+			raw: `{
+				"window": "w", "confirm_bars": 24, "initial_profile": "ghost",
+				"profiles": {"trending_up_clean":"trend","trending_up_choppy":"trend","trending_down_clean":"trend","trending_down_choppy":"trend","ranging_quiet":"fade","ranging_volatile":"fade","ranging_directional":"fade"},
+				"param_sets": {"fade": {}, "trend": {}}
+			}`,
+			labels:   compositeLabels,
+			wantErrs: []string{"initial_profile"},
+		},
+		{
+			name:     "unknown key and missing required keys",
+			raw:      `{"window": "w", "bogus": 1}`,
+			labels:   nil,
+			wantErrs: []string{"unknown key", "missing required key"},
+		},
+		{
+			name: "profile value not in param_sets",
+			raw: `{
+				"window": "w", "confirm_bars": 24, "initial_profile": "fade",
+				"profiles": {"trending_up_clean":"ghost","trending_up_choppy":"trend","trending_down_clean":"trend","trending_down_choppy":"trend","ranging_quiet":"fade","ranging_volatile":"fade","ranging_directional":"fade"},
+				"param_sets": {"fade": {}, "trend": {}}
+			}`,
+			labels:   compositeLabels,
+			wantErrs: []string{"is not a param_sets profile"},
+		},
 	}
-}
-
-func TestResolveRaw_BadInitialProfile(t *testing.T) {
-	raw := `{
-		"window": "w", "confirm_bars": 24, "initial_profile": "ghost",
-		"profiles": {"trending_up_clean":"trend","trending_up_choppy":"trend","trending_down_clean":"trend","trending_down_choppy":"trend","ranging_quiet":"fade","ranging_volatile":"fade","ranging_directional":"fade"},
-		"param_sets": {"fade": {}, "trend": {}}
-	}`
-	_, errs := resolveRawFromJSON(t, raw, compositeLabels)
-	if !containsSubstr(errs, "initial_profile") {
-		t.Fatalf("expected initial_profile error, got %v", errs)
-	}
-}
-
-func TestResolveRaw_UnknownKeyAndMissingRequired(t *testing.T) {
-	raw := `{"window": "w", "bogus": 1}`
-	_, errs := resolveRawFromJSON(t, raw, nil)
-	if !containsSubstr(errs, "unknown key") {
-		t.Fatalf("expected unknown-key error, got %v", errs)
-	}
-	if !containsSubstr(errs, "missing required key") {
-		t.Fatalf("expected missing-required error, got %v", errs)
-	}
-}
-
-func TestResolveRaw_ProfileValueNotInParamSets(t *testing.T) {
-	raw := `{
-		"window": "w", "confirm_bars": 24, "initial_profile": "fade",
-		"profiles": {"trending_up_clean":"ghost","trending_up_choppy":"trend","trending_down_clean":"trend","trending_down_choppy":"trend","ranging_quiet":"fade","ranging_volatile":"fade","ranging_directional":"fade"},
-		"param_sets": {"fade": {}, "trend": {}}
-	}`
-	_, errs := resolveRawFromJSON(t, raw, compositeLabels)
-	if !containsSubstr(errs, "is not a param_sets profile") {
-		t.Fatalf("expected profile-reference error, got %v", errs)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, errs := resolveRawFromJSON(t, tc.raw, tc.labels)
+			for _, want := range tc.wantErrs {
+				if !containsSubstr(errs, want) {
+					t.Fatalf("expected %q error, got %v", want, errs)
+				}
+			}
+		})
 	}
 }
 
@@ -377,44 +385,59 @@ const validPALJSON = `{
 	"initial_profile": "fade"
 }`
 
-func TestConfigValidation_ProfileAllocation_Valid(t *testing.T) {
-	cfg := fullProfileAllocConfig(t, validPALJSON)
-	if err := validateConfig(&cfg, false); err != nil {
-		t.Fatalf("expected no error, got: %v", err)
+func TestConfigValidation_ProfileAllocation(t *testing.T) {
+	cases := []struct {
+		name    string
+		raw     string
+		mutate  func(cfg *Config)
+		wantErr string
+	}{
+		{name: "valid", raw: validPALJSON},
+		{
+			name:    "rejects regime disabled",
+			raw:     validPALJSON,
+			mutate:  func(cfg *Config) { cfg.Regime.Enabled = false },
+			wantErr: "regime_profile_allocation requires top-level regime.enabled=true",
+		},
+		{
+			name: "rejects non-HL platform",
+			raw:  validPALJSON,
+			mutate: func(cfg *Config) {
+				cfg.Strategies[0].Platform = "okx"
+				cfg.Strategies[0].Args = []string{"regime_adaptive_htf", "BTC-USDT-SWAP", "1h"}
+				cfg.Strategies[0].Script = "shared_scripts/check_okx.py"
+			},
+			wantErr: "regime_profile_allocation is only supported for HL perps",
+		},
+		{
+			name: "rejects three profiles",
+			raw: `{
+				"window": "profile_long",
+				"profiles": {"trending_up_clean":"a","trending_up_choppy":"a","trending_down_clean":"a","trending_down_choppy":"a","ranging_quiet":"b","ranging_volatile":"b","ranging_directional":"c"},
+				"param_sets": {"a": {}, "b": {}, "c": {}},
+				"confirm_bars": 24,
+				"initial_profile": "a"
+			}`,
+			wantErr: "exactly 2 profiles",
+		},
 	}
-}
-
-func TestConfigValidation_ProfileAllocation_RejectsRegimeDisabled(t *testing.T) {
-	cfg := fullProfileAllocConfig(t, validPALJSON)
-	cfg.Regime.Enabled = false
-	err := validateConfig(&cfg, false)
-	if err == nil || !indexOfErr(err, "regime_profile_allocation requires top-level regime.enabled=true") {
-		t.Fatalf("expected regime-enabled error, got: %v", err)
-	}
-}
-
-func TestConfigValidation_ProfileAllocation_RejectsNonHL(t *testing.T) {
-	cfg := fullProfileAllocConfig(t, validPALJSON)
-	cfg.Strategies[0].Platform = "okx"
-	cfg.Strategies[0].Args = []string{"regime_adaptive_htf", "BTC-USDT-SWAP", "1h"}
-	cfg.Strategies[0].Script = "shared_scripts/check_okx.py"
-	err := validateConfig(&cfg, false)
-	if err == nil || !indexOfErr(err, "regime_profile_allocation is only supported for HL perps") {
-		t.Fatalf("expected HL-perps-only error, got: %v", err)
-	}
-}
-
-func TestConfigValidation_ProfileAllocation_RejectsThreeProfiles(t *testing.T) {
-	cfg := fullProfileAllocConfig(t, `{
-		"window": "profile_long",
-		"profiles": {"trending_up_clean":"a","trending_up_choppy":"a","trending_down_clean":"a","trending_down_choppy":"a","ranging_quiet":"b","ranging_volatile":"b","ranging_directional":"c"},
-		"param_sets": {"a": {}, "b": {}, "c": {}},
-		"confirm_bars": 24,
-		"initial_profile": "a"
-	}`)
-	err := validateConfig(&cfg, false)
-	if err == nil || !indexOfErr(err, "exactly 2 profiles") {
-		t.Fatalf("expected param_sets count error, got: %v", err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := fullProfileAllocConfig(t, tc.raw)
+			if tc.mutate != nil {
+				tc.mutate(&cfg)
+			}
+			err := validateConfig(&cfg, false)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("expected no error, got: %v", err)
+				}
+				return
+			}
+			if err == nil || !indexOfErr(err, tc.wantErr) {
+				t.Fatalf("expected %q error, got: %v", tc.wantErr, err)
+			}
+		})
 	}
 }
 

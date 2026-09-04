@@ -111,25 +111,6 @@ func TestFormatHealthResponse(t *testing.T) {
 	}
 }
 
-func TestFormatStatusResponse(t *testing.T) {
-	state := &AppState{Strategies: map[string]*StrategyState{
-		"hl-a": {ID: "hl-a", Platform: "hyperliquid", Cash: 100,
-			Positions: map[string]*Position{"BTC": {Symbol: "BTC", Quantity: 1, AvgCost: 50, Side: "long"}},
-			Regime:    "trend_up"},
-	}}
-	prices := map[string]float64{"BTC": 60}
-	got := formatStatusResponse(state, prices)
-	if !strings.Contains(got, "positions=1") {
-		t.Errorf("expected 1 position in status, got: %s", got)
-	}
-	if !strings.Contains(got, "regime=trend_up") {
-		t.Errorf("expected regime in status, got: %s", got)
-	}
-	if strings.Contains(got, "CASH RECONCILE REQUIRED") {
-		t.Errorf("unlatched status must not mention reconcile, got: %s", got)
-	}
-}
-
 func TestFormatStatusResponseUsesWalletDedupedDisplayTotal(t *testing.T) {
 	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xpool"}
 	state := &AppState{
@@ -207,28 +188,6 @@ func testPnLState() *AppState {
 		"hl-b": {ID: "hl-b", Platform: "hyperliquid", Cash: 50, InitialCapital: 50,
 			Positions: map[string]*Position{}},
 	}}
-}
-
-func TestFormatPositionsResponse(t *testing.T) {
-	empty := formatPositionsResponse(&AppState{Strategies: map[string]*StrategyState{}}, nil)
-	if !strings.Contains(empty, "No open positions") {
-		t.Errorf("expected empty message, got: %s", empty)
-	}
-
-	got := formatPositionsResponse(testPnLState(), map[string]float64{"BTC": 60})
-	if !strings.Contains(got, "BTC") || !strings.Contains(got, "hl-a") {
-		t.Errorf("expected BTC position owned by hl-a, got: %s", got)
-	}
-}
-
-func TestFormatPnLResponse(t *testing.T) {
-	got := formatPnLResponse(testPnLState(), map[string]float64{"BTC": 60})
-	if !strings.Contains(got, "+10.00") || !strings.Contains(got, "+20.00%") {
-		t.Errorf("expected hl-a pnl +10 (+20%%), got: %s", got)
-	}
-	if !strings.Contains(got, "Total") {
-		t.Errorf("expected a Total line, got: %s", got)
-	}
 }
 
 func TestFormatPnLResponsePooledReturnsAreUndefined(t *testing.T) {

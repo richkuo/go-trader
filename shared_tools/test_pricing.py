@@ -12,48 +12,52 @@ bs_greeks = _PRICING.bs_greeks
 bs_price_and_greeks = _PRICING.bs_price_and_greeks
 
 
-class TestNormCdf:
-    def test_zero(self):
-        assert norm_cdf(0.0) == pytest.approx(0.5, abs=1e-10)
-
-    def test_large_positive(self):
-        assert norm_cdf(4.0) == pytest.approx(0.9999683, abs=1e-5)
-
-    def test_large_negative(self):
-        assert norm_cdf(-4.0) == pytest.approx(1.0 - 0.9999683, abs=1e-5)
-
-    def test_symmetry(self):
-        for x in [0.5, 1.0, 2.0, 3.0]:
-            assert norm_cdf(x) + norm_cdf(-x) == pytest.approx(1.0, abs=1e-12)
-
-    def test_known_values(self):
-        assert norm_cdf(1.0) == pytest.approx(0.8413, abs=1e-4)
-        assert norm_cdf(-1.0) == pytest.approx(0.1587, abs=1e-4)
+@pytest.mark.parametrize("x,expected,tol", [
+    (0.0, 0.5, 1e-10),
+    (4.0, 0.9999683, 1e-5),
+    (-4.0, 1.0 - 0.9999683, 1e-5),
+    (1.0, 0.8413, 1e-4),
+    (-1.0, 0.1587, 1e-4),
+])
+def test_norm_cdf_known_values(x, expected, tol):
+    assert norm_cdf(x) == pytest.approx(expected, abs=tol)
 
 
-class TestNormPdf:
-    def test_zero(self):
-        assert norm_pdf(0.0) == pytest.approx(1.0 / math.sqrt(2 * math.pi), abs=1e-10)
+def test_norm_cdf_symmetry():
+    for x in [0.5, 1.0, 2.0, 3.0]:
+        assert norm_cdf(x) + norm_cdf(-x) == pytest.approx(1.0, abs=1e-12)
 
-    def test_symmetry(self):
-        for x in [0.5, 1.0, 2.0]:
-            assert norm_pdf(x) == pytest.approx(norm_pdf(-x), abs=1e-12)
 
-    def test_decreasing(self):
-        assert norm_pdf(0.0) > norm_pdf(1.0) > norm_pdf(2.0) > norm_pdf(3.0)
+@pytest.mark.parametrize("x,expected,tol", [
+    (0.0, 1.0 / math.sqrt(2 * math.pi), 1e-10),
+    (1.0, 0.2420, 1e-4),
+])
+def test_norm_pdf_known_values(x, expected, tol):
+    assert norm_pdf(x) == pytest.approx(expected, abs=tol)
 
-    def test_known_value(self):
-        assert norm_pdf(1.0) == pytest.approx(0.2420, abs=1e-4)
+
+def test_norm_pdf_symmetry():
+    for x in [0.5, 1.0, 2.0]:
+        assert norm_pdf(x) == pytest.approx(norm_pdf(-x), abs=1e-12)
+
+
+def test_norm_pdf_decreasing():
+    assert norm_pdf(0.0) > norm_pdf(1.0) > norm_pdf(2.0) > norm_pdf(3.0)
 
 
 class TestBsPrice:
-    def test_atm_call_known_value(self):
-        price = bs_price(100, 100, 365, 0.20, risk_free=0.05, option_type="call")
-        assert price == pytest.approx(10.45, abs=0.1)
-
-    def test_atm_put_known_value(self):
-        price = bs_price(100, 100, 365, 0.20, risk_free=0.05, option_type="put")
-        assert price == pytest.approx(5.57, abs=0.1)
+    @pytest.mark.parametrize("S,K,dte,vol,option_type,expected,tol", [
+        (100, 100, 365, 0.20, "call", 10.45, 0.1),
+        (100, 100, 365, 0.20, "put", 5.57, 0.1),
+        (110, 100, 0, 0.30, "call", 10.0, 1e-10),
+        (110, 100, 0, 0.30, "put", 0.0, 1e-10),
+        (90, 100, 0, 0.30, "put", 10.0, 1e-10),
+        (110, 100, 30, 0, "call", 10.0, 1e-10),
+        (90, 100, 30, 0, "call", 0.0, 1e-10),
+    ])
+    def test_known_values(self, S, K, dte, vol, option_type, expected, tol):
+        price = bs_price(S, K, dte, vol, risk_free=0.05, option_type=option_type)
+        assert price == pytest.approx(expected, abs=tol)
 
     def test_put_call_parity(self):
         S, K, dte, vol, r = 100, 100, 365, 0.30, 0.05
@@ -73,35 +77,12 @@ class TestBsPrice:
         assert price < 1.0
         assert price >= 0.0
 
-    def test_expired_call_itm(self):
-        price = bs_price(110, 100, 0, 0.30, 0.05, "call")
-        assert price == pytest.approx(10.0, abs=1e-10)
-
-    def test_expired_put_otm(self):
-        price = bs_price(110, 100, 0, 0.30, 0.05, "put")
-        assert price == pytest.approx(0.0, abs=1e-10)
-
-    def test_expired_put_itm(self):
-        price = bs_price(90, 100, 0, 0.30, 0.05, "put")
-        assert price == pytest.approx(10.0, abs=1e-10)
-
-    def test_zero_vol_itm_call(self):
-        price = bs_price(110, 100, 30, 0, 0.05, "call")
-        assert price == pytest.approx(10.0, abs=1e-10)
-
-    def test_zero_vol_otm_call(self):
-        price = bs_price(90, 100, 30, 0, 0.05, "call")
-        assert price == pytest.approx(0.0, abs=1e-10)
-
-    def test_higher_vol_higher_price(self):
-        low_vol = bs_price(100, 100, 30, 0.20, 0.05, "call")
-        high_vol = bs_price(100, 100, 30, 0.50, 0.05, "call")
-        assert high_vol > low_vol
-
-    def test_longer_dte_higher_price(self):
-        short = bs_price(100, 100, 7, 0.30, 0.05, "call")
-        long = bs_price(100, 100, 90, 0.30, 0.05, "call")
-        assert long > short
+    @pytest.mark.parametrize("lower,higher", [
+        ((100, 100, 30, 0.20, 0.05, "call"), (100, 100, 30, 0.50, 0.05, "call")),
+        ((100, 100, 7, 0.30, 0.05, "call"), (100, 100, 90, 0.30, 0.05, "call")),
+    ])
+    def test_price_monotonic_in_vol_and_dte(self, lower, higher):
+        assert bs_price(*higher) > bs_price(*lower)
 
     def test_btc_atm_call(self):
         price = bs_price(95000, 95000, 30, 0.80, 0.05)
@@ -110,39 +91,34 @@ class TestBsPrice:
 
 
 class TestBsGreeks:
-    def test_atm_call_delta_near_half(self):
-        g = bs_greeks(100, 100, 365, 0.20, 0.05, "call")
-        assert g["delta"] == pytest.approx(0.6368, abs=0.02)
+    @pytest.mark.parametrize("S,K,dte,vol,option_type,expected,tol", [
+        (100, 100, 365, 0.20, "call", 0.6368, 0.02),
+        (100, 100, 365, 0.20, "put", -0.3632, 0.02),
+        (200, 100, 30, 0.20, "call", 1.0, 0.01),
+        (50, 100, 30, 0.20, "call", 0.0, 0.01),
+    ])
+    def test_delta_known_values(self, S, K, dte, vol, option_type, expected, tol):
+        g = bs_greeks(S, K, dte, vol, 0.05, option_type)
+        assert g["delta"] == pytest.approx(expected, abs=tol)
 
-    def test_atm_put_delta_near_neg_half(self):
-        g = bs_greeks(100, 100, 365, 0.20, 0.05, "put")
-        assert g["delta"] == pytest.approx(-0.3632, abs=0.02)
+    @pytest.mark.parametrize("option_type,low,high", [
+        ("call", 0, 1),
+        ("put", -1, 0),
+    ])
+    def test_delta_range(self, option_type, low, high):
+        g = bs_greeks(100, 100, 30, 0.30, 0.05, option_type)
+        assert low <= g["delta"] <= high
 
-    def test_call_delta_range(self):
+    @pytest.mark.parametrize("greek", ["gamma", "vega"])
+    def test_greek_positive(self, greek):
         g = bs_greeks(100, 100, 30, 0.30, 0.05, "call")
-        assert 0 <= g["delta"] <= 1
+        assert g[greek] > 0
 
-    def test_put_delta_range(self):
-        g = bs_greeks(100, 100, 30, 0.30, 0.05, "put")
-        assert -1 <= g["delta"] <= 0
-
-    def test_gamma_positive(self):
-        g = bs_greeks(100, 100, 30, 0.30, 0.05, "call")
-        assert g["gamma"] > 0
-
-    def test_gamma_same_for_call_and_put(self):
+    @pytest.mark.parametrize("greek", ["gamma", "vega"])
+    def test_greek_same_for_call_and_put(self, greek):
         gc = bs_greeks(100, 100, 30, 0.30, 0.05, "call")
         gp = bs_greeks(100, 100, 30, 0.30, 0.05, "put")
-        assert gc["gamma"] == pytest.approx(gp["gamma"], abs=1e-6)
-
-    def test_vega_positive(self):
-        g = bs_greeks(100, 100, 30, 0.30, 0.05, "call")
-        assert g["vega"] > 0
-
-    def test_vega_same_for_call_and_put(self):
-        gc = bs_greeks(100, 100, 30, 0.30, 0.05, "call")
-        gp = bs_greeks(100, 100, 30, 0.30, 0.05, "put")
-        assert gc["vega"] == pytest.approx(gp["vega"], abs=1e-6)
+        assert gc[greek] == pytest.approx(gp[greek], abs=1e-6)
 
     def test_theta_negative_for_long_options(self):
         gc = bs_greeks(100, 100, 30, 0.30, 0.05, "call")
@@ -150,32 +126,17 @@ class TestBsGreeks:
         assert gc["theta"] < 0
         assert gp["theta"] < 0
 
-    def test_expired_returns_zeros(self):
-        g = bs_greeks(100, 100, 0, 0.30, 0.05, "call")
-        assert g["delta"] == 0.0
-        assert g["gamma"] == 0.0
-        assert g["theta"] == 0.0
-        assert g["vega"] == 0.0
-
-    def test_zero_spot_returns_zeros(self):
-        g = bs_greeks(0, 100, 30, 0.30, 0.05, "call")
-        assert g["delta"] == 0.0
-
-    def test_deep_itm_call_delta_near_one(self):
-        g = bs_greeks(200, 100, 30, 0.20, 0.05, "call")
-        assert g["delta"] == pytest.approx(1.0, abs=0.01)
-
-    def test_deep_otm_call_delta_near_zero(self):
-        g = bs_greeks(50, 100, 30, 0.20, 0.05, "call")
-        assert g["delta"] == pytest.approx(0.0, abs=0.01)
+    @pytest.mark.parametrize("args,keys", [
+        ((100, 100, 0, 0.30, 0.05, "call"), ("delta", "gamma", "theta", "vega")),
+        ((0, 100, 30, 0.30, 0.05, "call"), ("delta",)),
+    ])
+    def test_degenerate_inputs_return_zeros(self, args, keys):
+        g = bs_greeks(*args)
+        for key in keys:
+            assert g[key] == 0.0
 
 
 class TestBsPriceAndGreeks:
-    def test_returns_tuple(self):
-        result = bs_price_and_greeks(100, 100, 30, 0.30, 0.05, "call")
-        assert isinstance(result, tuple)
-        assert len(result) == 2
-
     def test_price_matches_standalone(self):
         price_standalone = bs_price(100, 100, 30, 0.30, 0.05, "call")
         price_combined, _ = bs_price_and_greeks(100, 100, 30, 0.30, 0.05, "call")

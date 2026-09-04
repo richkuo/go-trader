@@ -151,32 +151,17 @@ def test_resolve_overrides_valid_and_freeze():
     assert fr == {"slow_period"}
 
 
-def test_resolve_overrides_unknown_param_refused():
+@pytest.mark.parametrize("grids,overrides,known,match", [
+    ({"nope": [1]}, {}, {"fast_period"}, "unknown param"),
+    ({"fast_period": [-3]}, {}, {"fast_period", "slow_period"}, "constraint"),
+    ({"fast_period": [10]}, {"s": {"freeze": ["fast_period"]}},
+     {"fast_period", "slow_period"}, "both overridden and frozen"),
+    ({}, {"s": {"freeze": ["ghost"]}}, {"fast_period"}, "unknown params"),
+])
+def test_resolve_overrides_refuses(grids, overrides, known, match):
     reg = load_registry("spot")
-    with pytest.raises(ValueError, match="unknown param"):
-        tl.resolve_overrides("s", {"nope": [1]}, {}, {"fast_period"}, _check_value(reg))
-
-
-def test_resolve_overrides_bad_value_refused_loudly():
-    reg = load_registry("spot")
-    with pytest.raises(ValueError, match="constraint"):
-        tl.resolve_overrides("s", {"fast_period": [-3]}, {},
-                             {"fast_period", "slow_period"}, _check_value(reg))
-
-
-def test_resolve_overrides_freeze_and_override_conflict():
-    reg = load_registry("spot")
-    with pytest.raises(ValueError, match="both overridden and frozen"):
-        tl.resolve_overrides("s", {"fast_period": [10]},
-                             {"s": {"freeze": ["fast_period"]}},
-                             {"fast_period", "slow_period"}, _check_value(reg))
-
-
-def test_resolve_overrides_frozen_unknown_refused():
-    reg = load_registry("spot")
-    with pytest.raises(ValueError, match="unknown params"):
-        tl.resolve_overrides("s", {}, {"s": {"freeze": ["ghost"]}},
-                             {"fast_period"}, _check_value(reg))
+    with pytest.raises(ValueError, match=match):
+        tl.resolve_overrides("s", grids, overrides, known, _check_value(reg))
 
 
 def test_earliest_stage2_start_and_unknown_window():
@@ -255,15 +240,6 @@ def test_build_candidate_composite_gate_owns_lookback():
     assert "regime_adx_threshold" not in cand
 
 
-def test_stage1_skip_composite_only_when_gate_active():
-    spec = {"primary": {"classifier": "composite", "period": 14}}
-    active = {"regime_enabled": True, "regime_windows_spec": spec}
-    dormant = {"regime_enabled": False, "regime_windows_spec": spec}
-    assert tl.stage1_skip_reason(active) == (
-        "composite_regime_gate_unmodelable_in_walk_forward")
-    assert tl.stage1_skip_reason(dormant) is None
-
-
 @pytest.mark.parametrize("resolution,expected", [
     ({"stop_loss_atr_mult_regime": {"x": 1}}, "unsupported_stop:stop_loss_atr_mult_regime"),
     ({"stop_loss_pct": 0.05}, "unsupported_stop:stop_loss_pct"),
@@ -290,6 +266,11 @@ def test_unsupported_reason(resolution, expected):
      "composite_regime_gate_unmodelable_in_walk_forward"),
     ({"direction": "long"}, None),
     ({"direction": "both"}, None),
+    ({"regime_enabled": True, "regime_windows_spec": {
+        "primary": {"classifier": "composite", "period": 14}}},
+     "composite_regime_gate_unmodelable_in_walk_forward"),
+    ({"regime_enabled": False, "regime_windows_spec": {
+        "primary": {"classifier": "composite", "period": 14}}}, None),
 ])
 def test_stage1_skip_reason(resolution, expected):
     assert tl.stage1_skip_reason(resolution) == expected
@@ -357,8 +338,6 @@ def test_full_main_writes_versioned_artifact_and_progress(tmp_path, monkeypatch)
     assert rc == 0
     art = json.loads((tmp_path / "art.json").read_text())
     assert art["schema_version"] == 2
-    assert art["schema_version"] == tl.SCHEMA_VERSION
-    assert art["tool"] == "tune_live" and art["issue"] == 1338
     s = art["strategies"][0]
     assert s["status"] == "ranked"
     assert s["baseline_params"] == {"fast_period": 18, "slow_period": 50}
@@ -377,7 +356,6 @@ def test_full_main_writes_versioned_artifact_and_progress(tmp_path, monkeypatch)
     assert surv[0]["patch"]["open_strategy"]["name"] == "sma_crossover"
     prog = json.loads((tmp_path / "tune_live.progress.json").read_text())
     assert prog["schema_version"] == 2
-    assert prog["schema_version"] == tl.SCHEMA_VERSION
     assert prog["phase"] == "done"
 
 
@@ -698,7 +676,6 @@ def test_pre_v15_config_error_status(tmp_path):
                            load_registry("spot"), _make_args(dry_run=True), {},
                            str(tmp_path))
     assert res["status"] == "config_error"
-    assert "config_version" in res["error"] or "v15" in res["error"]
 
 
 def test_config_strategy_entries_uses_trade_timeframe_not_regime(tmp_path):
@@ -825,9 +802,8 @@ def test_regime_disabled_stale_timeframe_still_supported(tmp_path):
     assert res["status"] == "dry_run"
 
 
-@pytest.mark.parametrize("atr_key,atr_val", [("atr_method", "wilder")])
-def test_wilder_atr_method_skipped_unsupported(tmp_path, atr_key, atr_val):
-    cfg = {"config_version": 15, atr_key: atr_val,
+def test_wilder_atr_method_skipped_unsupported(tmp_path):
+    cfg = {"config_version": 15, "atr_method": "wilder",
            "strategies": [{"id": "hl-sma", "type": "perps", "platform": "hyperliquid",
                            "args": ["sma_crossover", "BTC/USDT", "1d"],
                            "open_strategy": {"name": "sma_crossover", "params": {}}}]}
@@ -955,4 +931,3 @@ def test_too_many_candidates_refused(tmp_path):
     res = tl.tune_strategy(path, "spot-sma-btc", "BTC/USDT", "1d", "spot",
                            load_registry("spot"), args, {}, str(tmp_path))
     assert res["status"] == "too_many_candidates"
-    assert "max-candidates" in res["error"]

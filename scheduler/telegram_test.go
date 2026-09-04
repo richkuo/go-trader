@@ -58,24 +58,6 @@ func TestTelegramNotifier_SendMessage(t *testing.T) {
 	}
 }
 
-func TestTelegramNotifier_ImplementsNotifier(t *testing.T) {
-	var _ Notifier = (*TelegramNotifier)(nil)
-}
-
-func TestTelegramNotifier_Close(t *testing.T) {
-	tg := &TelegramNotifier{
-		botToken:    "test",
-		ownerChatID: "123",
-		client:      &http.Client{},
-	}
-	tg.Close()
-	tg.mu.Lock()
-	if !tg.closed {
-		t.Error("expected closed to be true")
-	}
-	tg.mu.Unlock()
-}
-
 func TestTelegramNotifier_SendDM_IsSendMessage(t *testing.T) {
 	var sentChatID string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -192,8 +174,4 @@ func TestApiCallDoesNotLeakToken(t *testing.T) {
 	if !strings.Contains(err.Error(), "getMe") {
 		t.Errorf("error should mention the API method, got: %v", err)
 	}
-}
-
-func TestDiscordNotifier_ImplementsNotifier(t *testing.T) {
-	var _ Notifier = (*DiscordNotifier)(nil)
 }

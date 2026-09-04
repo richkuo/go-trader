@@ -129,7 +129,12 @@ class TestSuccessFill:
         assert out["cancel_stop_loss_succeeded"] is True
         assert out["cancel_stop_loss_succeeded_oids"] == [123, 456]
 
-    def test_filled_uses_numeric_lookup_result(self):
+    @pytest.mark.parametrize("lookup_result,expected", [
+        ({"fee": "0.91", "closed_pnl": "7.5"}, {"fee": 0.91, "closed_pnl": 7.5}),
+        (MagicMock(), {}),
+        ({"fee": MagicMock(), "closed_pnl": MagicMock()}, {}),
+    ])
+    def test_filled_lookup_result_handling(self, lookup_result, expected):
         sdk_response = {
             "status": "ok",
             "response": {"type": "order", "data": {"statuses": [
@@ -139,48 +144,16 @@ class TestSuccessFill:
         out, code = _run_script(
             sdk_response,
             ["--symbol=ETH", "--mode=live"],
-            lookup_result={"fee": "0.91", "closed_pnl": "7.5"},
-        )
-        assert code == 0
-        fill = out["close"]["fill"]
-        assert fill["fee"] == 0.91
-        assert fill["closed_pnl"] == 7.5
-
-    def test_filled_ignores_truthy_non_mapping_lookup_result(self):
-        sdk_response = {
-            "status": "ok",
-            "response": {"type": "order", "data": {"statuses": [
-                {"filled": {"avgPx": "3000.5", "totalSz": "0.517", "oid": 9999999}}
-            ]}},
-        }
-        out, code = _run_script(
-            sdk_response,
-            ["--symbol=ETH", "--mode=live"],
-            lookup_result=MagicMock(),
+            lookup_result=lookup_result,
         )
         assert code == 0
         fill = out["close"]["fill"]
         assert fill["oid"] == 9999999
-        assert "fee" not in fill
-        assert "closed_pnl" not in fill
-
-    def test_filled_ignores_malformed_lookup_values(self):
-        sdk_response = {
-            "status": "ok",
-            "response": {"type": "order", "data": {"statuses": [
-                {"filled": {"avgPx": "3000.5", "totalSz": "0.517", "oid": 9999999}}
-            ]}},
-        }
-        out, code = _run_script(
-            sdk_response,
-            ["--symbol=ETH", "--mode=live"],
-            lookup_result={"fee": MagicMock(), "closed_pnl": MagicMock()},
-        )
-        assert code == 0
-        fill = out["close"]["fill"]
-        assert fill["oid"] == 9999999
-        assert "fee" not in fill
-        assert "closed_pnl" not in fill
+        for key in ("fee", "closed_pnl"):
+            if key in expected:
+                assert fill[key] == expected[key]
+            else:
+                assert key not in fill
 
 
 class TestAlreadyFlat:

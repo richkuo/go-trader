@@ -4,6 +4,8 @@ import re
 import subprocess
 import tempfile
 
+import pytest
+
 HERE = os.path.dirname(__file__)
 CLAUDE_YML = os.path.abspath(os.path.join(HERE, "..", "workflows", "claude.yml"))
 
@@ -121,171 +123,65 @@ def run_verify_invocation(event_name, body, trigger_actor="someuser"):
     )
 
 
-def test_trusted_member_pr_comment_no_review_word_is_fix_pr():
+CLASSIFY_CASES = [
+    ("trusted_member_no_review_word", "issue_comment", "@claude correct the lint error", PR_URL, "MEMBER", "", "", "fix-pr"),
+    ("trusted_owner_pr_comment", "issue_comment", "@claude address the feedback", PR_URL, "OWNER", "", "", "fix-pr"),
+    ("claude_bot_authored_pr", "issue_comment", "@claude address the feedback", PR_URL, "NONE", "claude[bot]", "", "fix-pr"),
+    ("external_author_pr_comment", "issue_comment", "@claude fix the lint error", PR_URL, "NONE", "", "", "review"),
+    ("contributor_author_pr_comment", "issue_comment", "@claude fix this", PR_URL, "CONTRIBUTOR", "", "", "review"),
+    ("review_keyword_trusted_author", "issue_comment", "@claude review this carefully", PR_URL, "MEMBER", "", "", "review"),
+    ("review_keyword_after_model_shorthand", "issue_comment", "@claude sonnet review", PR_URL, "MEMBER", "", "", "review"),
+    ("review_and_fix_loses_push", "issue_comment", "@claude review and fix it", PR_URL, "OWNER", "", "", "review"),
+    ("review_word_later_in_sentence", "issue_comment", "@claude fix the review comments", PR_URL, "MEMBER", "", "", "fix-pr"),
+    ("fix_keyword", "issue_comment", "@claude fix", PR_URL, "MEMBER", "", "", "fix-pr"),
+    ("fix_keyword_after_model_shorthand", "issue_comment", "@claude opus fix and be thorough", PR_URL, "OWNER", "", "", "fix-pr"),
+    ("old_fix_pr_spelling", "issue_comment", "@claude fix-pr", PR_URL, "MEMBER", "", "", "fix-pr"),
+    ("fix_keyword_untrusted_pr_author", "issue_comment", "@claude fix", PR_URL, "NONE", "", "", "review"),
+    ("fix_keyword_on_plain_issue", "issue_comment", "@claude fix", "", "MEMBER", "", "", "implement"),
+    ("fix_keyword_on_inline_review_surface", "pull_request_review_comment", "@claude fix", PR_URL, "OWNER", "", "", "review"),
+    ("pull_request_review_surface", "pull_request_review", "@claude fix this", PR_URL, "MEMBER", "", "", "review"),
+    ("pull_request_review_comment_surface", "pull_request_review_comment", "@claude fix this", PR_URL, "OWNER", "", "", "review"),
+    ("issues_event", "issues", "@claude build this feature", "", "MEMBER", "", "", "implement"),
+    ("docs_release_flow_on_pr", "issue_comment", "@claude sync-docs", PR_URL, "MEMBER", "", "sync-docs", "implement"),
+    ("issue_comment_on_issue", "issue_comment", "@claude implement this", "", "MEMBER", "", "", "implement"),
+]
+
+
+@pytest.mark.parametrize(
+    "event_name,stripped,pr_url,pr_author_assoc,pr_author_login,flow,expected",
+    [c[1:] for c in CLASSIFY_CASES],
+    ids=[c[0] for c in CLASSIFY_CASES],
+)
+def test_classify_mode_routes(event_name, stripped, pr_url, pr_author_assoc, pr_author_login, flow, expected):
     assert run_classify_mode(
-        "issue_comment", "@claude correct the lint error", pr_url=PR_URL, pr_author_assoc="MEMBER"
-    ) == "fix-pr"
+        event_name,
+        stripped,
+        pr_url=pr_url,
+        pr_author_assoc=pr_author_assoc,
+        pr_author_login=pr_author_login,
+        flow=flow,
+    ) == expected
 
 
-def test_trusted_owner_pr_comment_is_fix_pr():
-    assert run_classify_mode(
-        "issue_comment", "@claude address the feedback", pr_url=PR_URL, pr_author_assoc="OWNER"
-    ) == "fix-pr"
+VERIFY_CASES = [
+    ("exact_one_line_self_trigger", "issue_comment", "@claude review", "claude[bot]", "true"),
+    ("leading_blank_line", "issue_comment", "\n@claude review", "claude[bot]", "true"),
+    ("leading_blank_and_indentation", "issue_comment", "  \n   @claude review  ", "claude[bot]", "true"),
+    ("trailing_carriage_return", "issue_comment", "@claude review\r", "claude[bot]", "true"),
+    ("model_shorthand_self_trigger", "issue_comment", "@claude opus review", "claude[bot]", "true"),
+    ("effort_token_self_trigger", "issue_comment", "@claude review effort:high", "claude[bot]", "true"),
+    ("second_nonblank_line", "issue_comment", "@claude review\nplease also fix the flaky test", "claude[bot]", "false"),
+    ("multiline_review_output_quoting_claude", "issue_comment", "@claude review\n\nLGTM\n### Recommended Optional\n1. Something to consider.", "claude[bot]", "false"),
+    ("bot_non_review_comment", "issue_comment", "@claude fix this", "claude[bot]", "false"),
+    ("human_at_claude_invocation", "issue_comment", "@claude fix this", "someuser", "true"),
+    ("human_at_claude_only_in_code_block", "issue_comment", "here is an example:\n```\n@claude review\n```\nthanks", "someuser", "false"),
+]
 
 
-def test_claude_bot_authored_pr_is_fix_pr():
-    assert run_classify_mode(
-        "issue_comment", "@claude address the feedback", pr_url=PR_URL,
-        pr_author_assoc="NONE", pr_author_login="claude[bot]"
-    ) == "fix-pr"
-
-
-def test_external_author_pr_comment_is_review_only():
-    assert run_classify_mode(
-        "issue_comment", "@claude fix the lint error", pr_url=PR_URL, pr_author_assoc="NONE"
-    ) == "review"
-
-
-def test_contributor_author_pr_comment_is_review_only():
-    assert run_classify_mode(
-        "issue_comment", "@claude fix this", pr_url=PR_URL, pr_author_assoc="CONTRIBUTOR"
-    ) == "review"
-
-
-def test_review_keyword_forces_review_even_for_trusted_author():
-    assert run_classify_mode(
-        "issue_comment", "@claude review this carefully", pr_url=PR_URL, pr_author_assoc="MEMBER"
-    ) == "review"
-
-
-def test_review_keyword_after_model_shorthand_is_review():
-    assert run_classify_mode(
-        "issue_comment", "@claude sonnet review", pr_url=PR_URL, pr_author_assoc="MEMBER"
-    ) == "review"
-
-
-def test_review_and_fix_loses_push_on_purpose():
-    assert run_classify_mode(
-        "issue_comment", "@claude review and fix it", pr_url=PR_URL, pr_author_assoc="OWNER"
-    ) == "review"
-
-
-def test_review_word_later_in_sentence_no_longer_forces_review():
-    assert run_classify_mode(
-        "issue_comment", "@claude fix the review comments", pr_url=PR_URL, pr_author_assoc="MEMBER"
-    ) == "fix-pr"
-
-
-def test_fix_keyword_routes_to_fix_pr():
-    assert run_classify_mode(
-        "issue_comment", "@claude fix", pr_url=PR_URL, pr_author_assoc="MEMBER"
-    ) == "fix-pr"
-
-
-def test_fix_keyword_after_model_shorthand_routes_to_fix_pr():
-    assert run_classify_mode(
-        "issue_comment", "@claude opus fix and be thorough", pr_url=PR_URL, pr_author_assoc="OWNER"
-    ) == "fix-pr"
-
-
-def test_old_fix_pr_spelling_routes_to_fix_pr():
-    assert run_classify_mode(
-        "issue_comment", "@claude fix-pr", pr_url=PR_URL, pr_author_assoc="MEMBER"
-    ) == "fix-pr"
-
-
-def test_fix_keyword_untrusted_pr_author_is_review_only():
-    assert run_classify_mode(
-        "issue_comment", "@claude fix", pr_url=PR_URL, pr_author_assoc="NONE"
-    ) == "review"
-
-
-def test_fix_keyword_on_plain_issue_is_implement():
-    assert run_classify_mode(
-        "issue_comment", "@claude fix", pr_url="", pr_author_assoc="MEMBER"
-    ) == "implement"
-
-
-def test_fix_keyword_on_inline_review_surface_stays_review():
-    assert run_classify_mode(
-        "pull_request_review_comment", "@claude fix", pr_url=PR_URL, pr_author_assoc="OWNER"
-    ) == "review"
-
-
-def test_pull_request_review_surface_is_review():
-    assert run_classify_mode(
-        "pull_request_review", "@claude fix this", pr_url=PR_URL, pr_author_assoc="MEMBER"
-    ) == "review"
-
-
-def test_pull_request_review_comment_surface_is_review():
-    assert run_classify_mode(
-        "pull_request_review_comment", "@claude fix this", pr_url=PR_URL, pr_author_assoc="OWNER"
-    ) == "review"
-
-
-def test_issues_event_is_implement():
-    assert run_classify_mode(
-        "issues", "@claude build this feature", pr_author_assoc="MEMBER"
-    ) == "implement"
-
-
-def test_docs_release_flow_routes_to_implement_even_on_pr():
-    assert run_classify_mode(
-        "issue_comment", "@claude sync-docs", pr_url=PR_URL,
-        pr_author_assoc="MEMBER", flow="sync-docs"
-    ) == "implement"
-
-
-def test_issue_comment_on_issue_is_implement():
-    assert run_classify_mode(
-        "issue_comment", "@claude implement this", pr_url="", pr_author_assoc="MEMBER"
-    ) == "implement"
-
-
-def test_exact_one_line_self_trigger_fires():
-    assert run_verify_invocation("issue_comment", "@claude review", "claude[bot]") == "true"
-
-
-def test_leading_blank_line_still_fires():
-    assert run_verify_invocation("issue_comment", "\n@claude review", "claude[bot]") == "true"
-
-
-def test_leading_blank_and_indentation_still_fires():
-    assert run_verify_invocation("issue_comment", "  \n   @claude review  ", "claude[bot]") == "true"
-
-
-def test_trailing_carriage_return_still_fires():
-    assert run_verify_invocation("issue_comment", "@claude review\r", "claude[bot]") == "true"
-
-
-def test_model_shorthand_self_trigger_fires():
-    assert run_verify_invocation("issue_comment", "@claude opus review", "claude[bot]") == "true"
-
-
-def test_effort_token_self_trigger_fires():
-    assert run_verify_invocation("issue_comment", "@claude review effort:high", "claude[bot]") == "true"
-
-
-def test_second_nonblank_line_does_not_fire():
-    assert run_verify_invocation(
-        "issue_comment", "@claude review\nplease also fix the flaky test", "claude[bot]"
-    ) == "false"
-
-
-def test_multiline_review_output_quoting_claude_does_not_fire():
-    body = "@claude review\n\nLGTM\n### Recommended Optional\n1. Something to consider."
-    assert run_verify_invocation("issue_comment", body, "claude[bot]") == "false"
-
-
-def test_bot_non_review_comment_does_not_fire():
-    assert run_verify_invocation("issue_comment", "@claude fix this", "claude[bot]") == "false"
-
-
-def test_human_at_claude_invocation_fires():
-    assert run_verify_invocation("issue_comment", "@claude fix this", "someuser") == "true"
-
-
-def test_human_at_claude_only_in_code_block_does_not_fire():
-    body = "here is an example:\n```\n@claude review\n```\nthanks"
-    assert run_verify_invocation("issue_comment", body, "someuser") == "false"
+@pytest.mark.parametrize(
+    "event_name,body,trigger_actor,expected",
+    [c[1:] for c in VERIFY_CASES],
+    ids=[c[0] for c in VERIFY_CASES],
+)
+def test_verify_invocation_fires(event_name, body, trigger_actor, expected):
+    assert run_verify_invocation(event_name, body, trigger_actor) == expected

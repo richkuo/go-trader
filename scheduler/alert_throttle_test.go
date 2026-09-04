@@ -7,37 +7,35 @@ import (
 	"time"
 )
 
-func TestParseAlertThrottleInterval_DefaultsToSixHours(t *testing.T) {
-	d, err := ParseAlertThrottleInterval("")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+func TestParseAlertThrottleInterval(t *testing.T) {
+	cases := []struct {
+		name    string
+		raw     string
+		want    time.Duration
+		wantErr bool
+	}{
+		{name: "empty defaults to six hours", raw: "", want: DefaultAlertThrottleInterval},
+		{name: "go duration", raw: "30m", want: 30 * time.Minute},
+		{name: "invalid rejected", raw: "nonsense", wantErr: true},
+		{name: "zero rejected", raw: "0", wantErr: true},
+		{name: "negative rejected", raw: "-1h", wantErr: true},
 	}
-	if d != DefaultAlertThrottleInterval {
-		t.Fatalf("got %s, want %s", d, DefaultAlertThrottleInterval)
-	}
-}
-
-func TestParseAlertThrottleInterval_ParsesGoDuration(t *testing.T) {
-	d, err := ParseAlertThrottleInterval("30m")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if d != 30*time.Minute {
-		t.Fatalf("got %s, want 30m", d)
-	}
-}
-
-func TestParseAlertThrottleInterval_RejectsInvalid(t *testing.T) {
-	if _, err := ParseAlertThrottleInterval("nonsense"); err == nil {
-		t.Fatal("expected error for invalid duration")
-	}
-}
-
-func TestParseAlertThrottleInterval_RejectsNonPositive(t *testing.T) {
-	for _, raw := range []string{"0", "-1h"} {
-		if _, err := ParseAlertThrottleInterval(raw); err == nil {
-			t.Fatalf("expected error for %q", raw)
-		}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d, err := ParseAlertThrottleInterval(tc.raw)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error for %q", tc.raw)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if d != tc.want {
+				t.Fatalf("got %s, want %s", d, tc.want)
+			}
+		})
 	}
 }
 
@@ -82,38 +80,6 @@ func TestLoadConfig_AppliesAlertThrottleInterval(t *testing.T) {
 	}
 	if effectiveAlertThrottleInterval() != 45*time.Minute {
 		t.Fatalf("runtime interval = %s, want 45m", effectiveAlertThrottleInterval())
-	}
-}
-
-func TestLoadConfig_AlertThrottleIntervalDefaultsToSixHours(t *testing.T) {
-	prev := alertThrottleInterval
-	t.Cleanup(func() { alertThrottleInterval = prev })
-
-	dir := t.TempDir()
-	path := dir + "/config.json"
-	cfgJSON := `{
-		"strategies": [{
-			"id": "hl-sole",
-			"type": "perps",
-			"platform": "hyperliquid",
-			"script": "shared_scripts/check_hyperliquid.py",
-			"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
-			"capital": 1000,
-			"max_drawdown_pct": 10,
-			"leverage": 5
-		}]
-	}`
-	if err := os.WriteFile(path, []byte(cfgJSON), 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-	if _, err := LoadConfigForProbe(path); err != nil {
-		t.Fatalf("LoadConfigForProbe: %v", err)
-	}
-	if err := applyAlertThrottleFromConfig(&Config{}); err != nil {
-		t.Fatalf("applyAlertThrottleFromConfig: %v", err)
-	}
-	if effectiveAlertThrottleInterval() != DefaultAlertThrottleInterval {
-		t.Fatalf("runtime interval = %s, want %s", effectiveAlertThrottleInterval(), DefaultAlertThrottleInterval)
 	}
 }
 

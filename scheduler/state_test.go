@@ -6,19 +6,6 @@ import (
 	"testing"
 )
 
-func TestNewAppState(t *testing.T) {
-	state := NewAppState()
-	if state.CycleCount != 0 {
-		t.Errorf("CycleCount = %d, want 0", state.CycleCount)
-	}
-	if state.Strategies == nil {
-		t.Error("Strategies map should not be nil")
-	}
-	if len(state.Strategies) != 0 {
-		t.Errorf("Strategies should be empty, got %d", len(state.Strategies))
-	}
-}
-
 func TestNewStrategyState(t *testing.T) {
 	cases := []struct {
 		name        string

@@ -224,119 +224,52 @@ func TestIsLiveArgs(t *testing.T) {
 	}
 }
 
-func TestHyperliquidIsLive(t *testing.T) {
-	if hyperliquidIsLive([]string{"sma", "BTC", "1h", "--mode=live"}) != true {
-		t.Error("expected true for --mode=live")
+func TestPlatformIsLive(t *testing.T) {
+	fns := map[string]func([]string) bool{
+		"hyperliquid": hyperliquidIsLive,
+		"topstep":     topstepIsLive,
+		"robinhood":   robinhoodIsLive,
+		"okx":         okxIsLive,
 	}
-	if hyperliquidIsLive([]string{"sma", "BTC", "1h"}) != false {
-		t.Error("expected false without --mode=live")
-	}
-}
-
-func TestHyperliquidSymbol(t *testing.T) {
-	cases := []struct {
-		args []string
-		want string
-	}{
-		{[]string{"sma", "BTC", "1h"}, "BTC"},
-		{[]string{"rsi", "ETH", "4h"}, "ETH"},
-		{[]string{"sma"}, ""},
-		{[]string{}, ""},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.want, func(t *testing.T) {
-			got := hyperliquidSymbol(tc.args)
-			if got != tc.want {
-				t.Errorf("hyperliquidSymbol(%v) = %q, want %q", tc.args, got, tc.want)
+	for _, name := range []string{"hyperliquid", "topstep", "robinhood", "okx"} {
+		t.Run(name, func(t *testing.T) {
+			fn := fns[name]
+			if fn([]string{"sma", "BTC", "1h", "--mode=live"}) != true {
+				t.Error("expected true for --mode=live")
+			}
+			if fn([]string{"sma", "BTC", "1h"}) != false {
+				t.Error("expected false without --mode=live")
 			}
 		})
 	}
 }
 
-func TestTopstepIsLive(t *testing.T) {
-	if topstepIsLive([]string{"sma", "ES", "15m", "--mode=live"}) != true {
-		t.Error("expected true for --mode=live")
-	}
-	if topstepIsLive([]string{"sma", "ES", "15m"}) != false {
-		t.Error("expected false without --mode=live")
-	}
-}
-
-func TestTopstepSymbol(t *testing.T) {
+func TestPlatformSymbol(t *testing.T) {
 	cases := []struct {
+		name string
+		fn   func([]string) string
 		args []string
 		want string
 	}{
-		{[]string{"sma", "ES", "15m"}, "ES"},
-		{[]string{"rsi", "NQ", "5m"}, "NQ"},
-		{[]string{"sma"}, ""},
-		{[]string{}, ""},
+		{"hyperliquid btc", hyperliquidSymbol, []string{"sma", "BTC", "1h"}, "BTC"},
+		{"hyperliquid eth", hyperliquidSymbol, []string{"rsi", "ETH", "4h"}, "ETH"},
+		{"hyperliquid no symbol", hyperliquidSymbol, []string{"sma"}, ""},
+		{"hyperliquid empty", hyperliquidSymbol, []string{}, ""},
+		{"topstep es", topstepSymbol, []string{"sma", "ES", "15m"}, "ES"},
+		{"topstep nq", topstepSymbol, []string{"rsi", "NQ", "5m"}, "NQ"},
+		{"topstep no symbol", topstepSymbol, []string{"sma"}, ""},
+		{"topstep empty", topstepSymbol, []string{}, ""},
+		{"robinhood btc", robinhoodSymbol, []string{"sma", "BTC", "1h"}, "BTC"},
+		{"robinhood no symbol", robinhoodSymbol, []string{"rsi"}, ""},
+		{"robinhood empty", robinhoodSymbol, []string{}, ""},
+		{"okx btc", okxSymbol, []string{"sma", "BTC", "1h"}, "BTC"},
+		{"okx no symbol", okxSymbol, []string{"rsi"}, ""},
+		{"okx empty", okxSymbol, []string{}, ""},
 	}
-
 	for _, tc := range cases {
-		t.Run(tc.want, func(t *testing.T) {
-			got := topstepSymbol(tc.args)
-			if got != tc.want {
-				t.Errorf("topstepSymbol(%v) = %q, want %q", tc.args, got, tc.want)
-			}
-		})
-	}
-}
-
-func TestRobinhoodIsLive(t *testing.T) {
-	if robinhoodIsLive([]string{"sma", "BTC", "1h", "--mode=live"}) != true {
-		t.Error("expected true for --mode=live")
-	}
-	if robinhoodIsLive([]string{"sma", "BTC", "1h"}) != false {
-		t.Error("expected false without --mode=live")
-	}
-}
-
-func TestRobinhoodSymbol(t *testing.T) {
-	cases := []struct {
-		args []string
-		want string
-	}{
-		{[]string{"sma", "BTC", "1h"}, "BTC"},
-		{[]string{"rsi"}, ""},
-		{[]string{}, ""},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.want, func(t *testing.T) {
-			got := robinhoodSymbol(tc.args)
-			if got != tc.want {
-				t.Errorf("robinhoodSymbol(%v) = %q, want %q", tc.args, got, tc.want)
-			}
-		})
-	}
-}
-
-func TestOKXIsLive(t *testing.T) {
-	if okxIsLive([]string{"sma", "BTC", "1h", "--mode=live"}) != true {
-		t.Error("expected true for --mode=live")
-	}
-	if okxIsLive([]string{"sma", "BTC", "1h"}) != false {
-		t.Error("expected false without --mode=live")
-	}
-}
-
-func TestOKXSymbol(t *testing.T) {
-	cases := []struct {
-		args []string
-		want string
-	}{
-		{[]string{"sma", "BTC", "1h"}, "BTC"},
-		{[]string{"rsi"}, ""},
-		{[]string{}, ""},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.want, func(t *testing.T) {
-			got := okxSymbol(tc.args)
-			if got != tc.want {
-				t.Errorf("okxSymbol(%v) = %q, want %q", tc.args, got, tc.want)
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.fn(tc.args); got != tc.want {
+				t.Errorf("symbol(%v) = %q, want %q", tc.args, got, tc.want)
 			}
 		})
 	}
@@ -378,439 +311,160 @@ func testTrade() Trade {
 	}
 }
 
-func TestSendTradeAlerts_DMAndChannel(t *testing.T) {
-	mock := &mockNotifier{}
-	sc := StrategyConfig{
+func TestSendTradeAlertsRouting(t *testing.T) {
+	spotPaper := StrategyConfig{
 		ID:       "test-spot-sma",
 		Type:     "spot",
 		Platform: "binanceus",
 		Args:     []string{"sma", "BTC/USDT", "1h", "--mode=paper"},
 	}
-	state := &StrategyState{
-		TradeHistory: []Trade{testTrade()},
+	hlPaper := StrategyConfig{
+		ID:       "hl-sma-btc",
+		Type:     "perps",
+		Platform: "hyperliquid",
+		Args:     []string{"sma", "BTC", "1h", "--mode=paper"},
 	}
-	var mu sync.RWMutex
-	notifier := &MultiNotifier{
-		backends: []notifierBackend{
-			{
-				notifier:   mock,
-				ownerID:    "owner123",
-				channels:   map[string]string{"spot": "ch-spot-123"},
-				dmChannels: map[string]string{"binanceus-paper": "owner123"},
-			},
-		},
+	hlLive := StrategyConfig{
+		ID:       "hl-sma-btc",
+		Type:     "perps",
+		Platform: "hyperliquid",
+		Args:     []string{"sma", "BTC", "1h", "--mode=live"},
 	}
-
-	sendTradeAlerts(sc, state, 1, &mu, notifier)
-
-	if len(mock.dms) != 1 {
-		t.Errorf("expected 1 DM message, got %d", len(mock.dms))
-	}
-	if len(mock.messages) != 1 {
-		t.Errorf("expected 1 channel message, got %d", len(mock.messages))
-	}
-	if len(mock.messages) > 0 && mock.messages[0].channelID != "ch-spot-123" {
-		t.Errorf("expected channel message to ch-spot-123, got %s", mock.messages[0].channelID)
-	}
-}
-
-func TestSendTradeAlerts_DMOnly(t *testing.T) {
-	mock := &mockNotifier{}
-	sc := StrategyConfig{
-		ID:       "test-spot-sma",
-		Type:     "spot",
-		Platform: "binanceus",
-		Args:     []string{"sma", "BTC/USDT", "1h", "--mode=paper"},
-	}
-	state := &StrategyState{
-		TradeHistory: []Trade{testTrade()},
-	}
-	var mu sync.RWMutex
-	notifier := &MultiNotifier{
-		backends: []notifierBackend{
-			{
-				notifier:   mock,
-				ownerID:    "owner123",
-				channels:   map[string]string{},
-				dmChannels: map[string]string{"binanceus-paper": "owner123"},
-			},
-		},
-	}
-
-	sendTradeAlerts(sc, state, 1, &mu, notifier)
-
-	if len(mock.dms) != 1 {
-		t.Errorf("expected 1 DM message, got %d", len(mock.dms))
-	}
-	if len(mock.messages) != 0 {
-		t.Errorf("expected no channel messages, got %d", len(mock.messages))
-	}
-}
-
-func TestSendTradeAlerts_ChannelOnly(t *testing.T) {
-	mock := &mockNotifier{}
-	sc := StrategyConfig{
-		ID:       "test-spot-sma",
-		Type:     "spot",
-		Platform: "binanceus",
-		Args:     []string{"sma", "BTC/USDT", "1h", "--mode=paper"},
-	}
-	state := &StrategyState{
-		TradeHistory: []Trade{testTrade()},
-	}
-	var mu sync.RWMutex
-	notifier := &MultiNotifier{
-		backends: []notifierBackend{
-			{
-				notifier: mock,
-				ownerID:  "owner123",
-				channels: map[string]string{"spot": "ch-spot-123"},
-			},
-		},
-	}
-
-	sendTradeAlerts(sc, state, 1, &mu, notifier)
-
-	if len(mock.dms) != 0 {
-		t.Errorf("expected no DM messages, got %d", len(mock.dms))
-	}
-	if len(mock.messages) != 1 {
-		t.Errorf("expected 1 channel message, got %d", len(mock.messages))
-	}
-}
-
-func TestSendTradeAlerts_NeitherEnabled(t *testing.T) {
-	mock := &mockNotifier{}
-	sc := StrategyConfig{
-		ID:       "test-spot-sma",
-		Type:     "spot",
-		Platform: "binanceus",
-		Args:     []string{"sma", "BTC/USDT", "1h", "--mode=paper"},
-	}
-	state := &StrategyState{
-		TradeHistory: []Trade{testTrade()},
-	}
-	var mu sync.RWMutex
-	notifier := &MultiNotifier{
-		backends: []notifierBackend{
-			{
-				notifier: mock,
-				ownerID:  "owner123",
-				channels: map[string]string{},
-			},
-		},
-	}
-
-	sendTradeAlerts(sc, state, 1, &mu, notifier)
-
-	if len(mock.dms) != 0 {
-		t.Errorf("expected no DM messages, got %d", len(mock.dms))
-	}
-	if len(mock.messages) != 0 {
-		t.Errorf("expected no channel messages, got %d", len(mock.messages))
-	}
-}
-
-func TestSendTradeAlerts_NoChannelForPlatform(t *testing.T) {
-	mock := &mockNotifier{}
-	sc := StrategyConfig{
+	hlPaperNoChannelKey := StrategyConfig{
 		ID:       "hl-perps-sma",
 		Type:     "perps",
 		Platform: "hyperliquid",
 		Args:     []string{"sma", "BTC", "1h", "--mode=paper"},
 	}
-	state := &StrategyState{
-		TradeHistory: []Trade{testTrade()},
-	}
-	var mu sync.RWMutex
-	notifier := &MultiNotifier{
-		backends: []notifierBackend{
-			{
-				notifier: mock,
-				ownerID:  "owner123",
-				channels: map[string]string{"spot": "ch-spot-123"},
-			},
+
+	cases := []struct {
+		name        string
+		sc          StrategyConfig
+		ownerID     string
+		channels    map[string]string
+		dmChannels  map[string]string
+		failSendDM  bool
+		wantDMs     int
+		wantDMUser  string
+		wantChanIDs []string
+	}{
+		{
+			name: "dm and channel", sc: spotPaper, ownerID: "owner123",
+			channels:   map[string]string{"spot": "ch-spot-123"},
+			dmChannels: map[string]string{"binanceus-paper": "owner123"},
+			wantDMs:    1, wantChanIDs: []string{"ch-spot-123"},
+		},
+		{
+			name: "dm only", sc: spotPaper, ownerID: "owner123",
+			channels:   map[string]string{},
+			dmChannels: map[string]string{"binanceus-paper": "owner123"},
+			wantDMs:    1, wantChanIDs: nil,
+		},
+		{
+			name: "channel only", sc: spotPaper, ownerID: "owner123",
+			channels: map[string]string{"spot": "ch-spot-123"},
+			wantDMs:  0, wantChanIDs: []string{"ch-spot-123"},
+		},
+		{
+			name: "neither enabled", sc: spotPaper, ownerID: "owner123",
+			channels: map[string]string{},
+			wantDMs:  0, wantChanIDs: nil,
+		},
+		{
+			name: "no channel for platform", sc: hlPaperNoChannelKey, ownerID: "owner123",
+			channels: map[string]string{"spot": "ch-spot-123"},
+			wantDMs:  0, wantChanIDs: nil,
+		},
+		{
+			name: "live channel routing", sc: hlLive, ownerID: "owner123",
+			channels:   map[string]string{"hyperliquid": "ch-hl", "hyperliquid-live": "ch-hl-live"},
+			dmChannels: map[string]string{"hyperliquid": "owner123"},
+			wantDMs:    1, wantChanIDs: []string{"ch-hl", "ch-hl-live"},
+		},
+		{
+			name: "live channel dedup", sc: hlLive,
+			channels: map[string]string{"hyperliquid": "ch-hl", "hyperliquid-live": "ch-hl"},
+			wantDMs:  0, wantChanIDs: []string{"ch-hl"},
+		},
+		{
+			name: "paper takes no live channel", sc: hlPaper,
+			channels: map[string]string{"hyperliquid": "ch-hl", "hyperliquid-live": "ch-hl-live"},
+			wantDMs:  0, wantChanIDs: []string{"ch-hl"},
+		},
+		{
+			name: "paper channel routing", sc: hlPaper,
+			channels: map[string]string{"hyperliquid": "ch-hl-live", "hyperliquid-paper": "ch-hl-paper"},
+			wantDMs:  0, wantChanIDs: []string{"ch-hl-paper"},
+		},
+		{
+			name: "paper falls back to base channel", sc: hlPaper,
+			channels: map[string]string{"hyperliquid": "ch-hl"},
+			wantDMs:  0, wantChanIDs: []string{"ch-hl"},
+		},
+		{
+			name: "dm channel paper key", sc: hlPaper,
+			dmChannels: map[string]string{"hyperliquid-paper": "user-paper-dm"},
+			wantDMs:    1, wantDMUser: "user-paper-dm",
+		},
+		{
+			name: "dm channel live key", sc: hlLive,
+			dmChannels: map[string]string{"hyperliquid": "user-live-dm"},
+			wantDMs:    1, wantDMUser: "user-live-dm",
+		},
+		{
+			name: "dm key missing for mode", sc: hlPaper,
+			dmChannels: map[string]string{"hyperliquid": "only-live"},
+			channels:   map[string]string{},
+			wantDMs:    0, wantChanIDs: nil,
+		},
+		{
+			name: "dm send failure falls back to channel", sc: hlPaper, failSendDM: true,
+			dmChannels: map[string]string{"hyperliquid-paper": "private-log-channel"},
+			wantDMs:    0, wantChanIDs: []string{"private-log-channel"},
 		},
 	}
 
-	sendTradeAlerts(sc, state, 1, &mu, notifier)
-
-	if len(mock.dms) != 0 {
-		t.Errorf("expected no DM messages, got %d", len(mock.dms))
-	}
-	if len(mock.messages) != 0 {
-		t.Errorf("expected no channel messages, got %d", len(mock.messages))
-	}
-}
-
-func TestSendTradeAlerts_LiveChannelRouting(t *testing.T) {
-	mock := &mockNotifier{}
-	sc := StrategyConfig{
-		ID:       "hl-sma-btc",
-		Type:     "perps",
-		Platform: "hyperliquid",
-		Args:     []string{"sma", "BTC", "1h", "--mode=live"},
-	}
-	state := &StrategyState{
-		TradeHistory: []Trade{testTrade()},
-	}
-	var mu sync.RWMutex
-	notifier := &MultiNotifier{
-		backends: []notifierBackend{
-			{
-				notifier:   mock,
-				ownerID:    "owner123",
-				channels:   map[string]string{"hyperliquid": "ch-hl", "hyperliquid-live": "ch-hl-live"},
-				dmChannels: map[string]string{"hyperliquid": "owner123"},
-			},
-		},
-	}
-
-	sendTradeAlerts(sc, state, 1, &mu, notifier)
-
-	if len(mock.dms) != 1 {
-		t.Errorf("expected 1 DM, got %d", len(mock.dms))
-	}
-	if len(mock.messages) != 2 {
-		t.Errorf("expected 2 channel messages (primary + live), got %d", len(mock.messages))
-	}
-	channels := map[string]bool{}
-	for _, m := range mock.messages {
-		channels[m.channelID] = true
-	}
-	if !channels["ch-hl"] {
-		t.Error("expected message to primary channel ch-hl")
-	}
-	if !channels["ch-hl-live"] {
-		t.Error("expected message to live channel ch-hl-live")
-	}
-}
-
-func TestSendTradeAlerts_LiveChannelDedup(t *testing.T) {
-	mock := &mockNotifier{}
-	sc := StrategyConfig{
-		ID:       "hl-sma-btc",
-		Type:     "perps",
-		Platform: "hyperliquid",
-		Args:     []string{"sma", "BTC", "1h", "--mode=live"},
-	}
-	state := &StrategyState{
-		TradeHistory: []Trade{testTrade()},
-	}
-	var mu sync.RWMutex
-	notifier := &MultiNotifier{
-		backends: []notifierBackend{
-			{
-				notifier: mock,
-				ownerID:  "",
-				channels: map[string]string{"hyperliquid": "ch-hl", "hyperliquid-live": "ch-hl"},
-			},
-		},
-	}
-
-	sendTradeAlerts(sc, state, 1, &mu, notifier)
-
-	if len(mock.messages) != 1 {
-		t.Errorf("expected 1 channel message (dedup), got %d", len(mock.messages))
-	}
-}
-
-func TestSendTradeAlerts_PaperNoLiveChannel(t *testing.T) {
-	mock := &mockNotifier{}
-	sc := StrategyConfig{
-		ID:       "hl-sma-btc",
-		Type:     "perps",
-		Platform: "hyperliquid",
-		Args:     []string{"sma", "BTC", "1h", "--mode=paper"},
-	}
-	state := &StrategyState{
-		TradeHistory: []Trade{testTrade()},
-	}
-	var mu sync.RWMutex
-	notifier := &MultiNotifier{
-		backends: []notifierBackend{
-			{
-				notifier: mock,
-				ownerID:  "",
-				channels: map[string]string{"hyperliquid": "ch-hl", "hyperliquid-live": "ch-hl-live"},
-			},
-		},
-	}
-
-	sendTradeAlerts(sc, state, 1, &mu, notifier)
-
-	if len(mock.messages) != 1 {
-		t.Errorf("expected 1 channel message (primary only), got %d", len(mock.messages))
-	}
-	if len(mock.messages) > 0 && mock.messages[0].channelID != "ch-hl" {
-		t.Errorf("expected message to primary channel ch-hl, got %s", mock.messages[0].channelID)
-	}
-}
-
-func TestSendTradeAlerts_PaperChannelRouting(t *testing.T) {
-	mock := &mockNotifier{}
-	sc := StrategyConfig{
-		ID:       "hl-sma-btc",
-		Type:     "perps",
-		Platform: "hyperliquid",
-		Args:     []string{"sma", "BTC", "1h", "--mode=paper"},
-	}
-	state := &StrategyState{
-		TradeHistory: []Trade{testTrade()},
-	}
-	var mu sync.RWMutex
-	notifier := &MultiNotifier{
-		backends: []notifierBackend{
-			{
-				notifier: mock,
-				ownerID:  "",
-				channels: map[string]string{
-					"hyperliquid":       "ch-hl-live",
-					"hyperliquid-paper": "ch-hl-paper",
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mock := &mockNotifier{failSendDM: tc.failSendDM}
+			state := &StrategyState{TradeHistory: []Trade{testTrade()}}
+			var mu sync.RWMutex
+			notifier := &MultiNotifier{
+				backends: []notifierBackend{
+					{
+						notifier:   mock,
+						ownerID:    tc.ownerID,
+						channels:   tc.channels,
+						dmChannels: tc.dmChannels,
+					},
 				},
-			},
-		},
-	}
+			}
 
-	sendTradeAlerts(sc, state, 1, &mu, notifier)
+			sendTradeAlerts(tc.sc, state, 1, &mu, notifier)
 
-	if len(mock.messages) != 1 {
-		t.Errorf("expected 1 channel message, got %d", len(mock.messages))
-	}
-	if len(mock.messages) > 0 && mock.messages[0].channelID != "ch-hl-paper" {
-		t.Errorf("expected message to paper channel ch-hl-paper, got %s", mock.messages[0].channelID)
-	}
-}
-
-func TestSendTradeAlerts_PaperFallbackToBase(t *testing.T) {
-	mock := &mockNotifier{}
-	sc := StrategyConfig{
-		ID:       "hl-sma-btc",
-		Type:     "perps",
-		Platform: "hyperliquid",
-		Args:     []string{"sma", "BTC", "1h", "--mode=paper"},
-	}
-	state := &StrategyState{
-		TradeHistory: []Trade{testTrade()},
-	}
-	var mu sync.RWMutex
-	notifier := &MultiNotifier{
-		backends: []notifierBackend{
-			{
-				notifier: mock,
-				ownerID:  "",
-				channels: map[string]string{"hyperliquid": "ch-hl"},
-			},
-		},
-	}
-
-	sendTradeAlerts(sc, state, 1, &mu, notifier)
-
-	if len(mock.messages) != 1 {
-		t.Errorf("expected 1 channel message, got %d", len(mock.messages))
-	}
-	if len(mock.messages) > 0 && mock.messages[0].channelID != "ch-hl" {
-		t.Errorf("expected message to base channel ch-hl, got %s", mock.messages[0].channelID)
-	}
-}
-
-func TestSendTradeAlerts_DMChannelPaper(t *testing.T) {
-	mock := &mockNotifier{}
-	sc := StrategyConfig{
-		ID:       "hl-sma-btc",
-		Type:     "perps",
-		Platform: "hyperliquid",
-		Args:     []string{"sma", "BTC", "1h", "--mode=paper"},
-	}
-	state := &StrategyState{TradeHistory: []Trade{testTrade()}}
-	var mu sync.RWMutex
-	notifier := &MultiNotifier{
-		backends: []notifierBackend{
-			{
-				notifier:   mock,
-				dmChannels: map[string]string{"hyperliquid-paper": "user-paper-dm"},
-			},
-		},
-	}
-	sendTradeAlerts(sc, state, 1, &mu, notifier)
-	if len(mock.dms) != 1 || mock.dms[0].userID != "user-paper-dm" {
-		t.Errorf("expected 1 DM to user-paper-dm, got %#v", mock.dms)
-	}
-}
-
-func TestSendTradeAlerts_DMChannelLive(t *testing.T) {
-	mock := &mockNotifier{}
-	sc := StrategyConfig{
-		ID:       "hl-sma-btc",
-		Type:     "perps",
-		Platform: "hyperliquid",
-		Args:     []string{"sma", "BTC", "1h", "--mode=live"},
-	}
-	state := &StrategyState{TradeHistory: []Trade{testTrade()}}
-	var mu sync.RWMutex
-	notifier := &MultiNotifier{
-		backends: []notifierBackend{
-			{
-				notifier:   mock,
-				dmChannels: map[string]string{"hyperliquid": "user-live-dm"},
-			},
-		},
-	}
-	sendTradeAlerts(sc, state, 1, &mu, notifier)
-	if len(mock.dms) != 1 || mock.dms[0].userID != "user-live-dm" {
-		t.Errorf("expected 1 DM to user-live-dm, got %#v", mock.dms)
-	}
-}
-
-func TestSendTradeAlerts_DMMissingKey(t *testing.T) {
-	mock := &mockNotifier{}
-	sc := StrategyConfig{
-		ID:       "hl-sma-btc",
-		Type:     "perps",
-		Platform: "hyperliquid",
-		Args:     []string{"sma", "BTC", "1h", "--mode=paper"},
-	}
-	state := &StrategyState{TradeHistory: []Trade{testTrade()}}
-	var mu sync.RWMutex
-	notifier := &MultiNotifier{
-		backends: []notifierBackend{
-			{
-				notifier:   mock,
-				dmChannels: map[string]string{"hyperliquid": "only-live"},
-				channels:   map[string]string{},
-			},
-		},
-	}
-	sendTradeAlerts(sc, state, 1, &mu, notifier)
-	if len(mock.dms) != 0 || len(mock.messages) != 0 {
-		t.Errorf("expected no messages, dms=%d messages=%d", len(mock.dms), len(mock.messages))
-	}
-}
-
-func TestSendTradeAlerts_DMChannelFallback(t *testing.T) {
-	mock := &mockNotifier{failSendDM: true}
-	sc := StrategyConfig{
-		ID:       "hl-sma-btc",
-		Type:     "perps",
-		Platform: "hyperliquid",
-		Args:     []string{"sma", "BTC", "1h", "--mode=paper"},
-	}
-	state := &StrategyState{TradeHistory: []Trade{testTrade()}}
-	var mu sync.RWMutex
-	notifier := &MultiNotifier{
-		backends: []notifierBackend{
-			{
-				notifier:   mock,
-				dmChannels: map[string]string{"hyperliquid-paper": "private-log-channel"},
-			},
-		},
-	}
-	sendTradeAlerts(sc, state, 1, &mu, notifier)
-	if len(mock.dms) != 0 {
-		t.Errorf("expected SendDM to fail without recording DM, got %d dms", len(mock.dms))
-	}
-	if len(mock.messages) != 1 || mock.messages[0].channelID != "private-log-channel" {
-		t.Errorf("expected 1 channel message to private-log-channel, got %#v", mock.messages)
+			if len(mock.dms) != tc.wantDMs {
+				t.Errorf("dms = %d, want %d (%#v)", len(mock.dms), tc.wantDMs, mock.dms)
+			}
+			if tc.wantDMUser != "" {
+				if len(mock.dms) == 0 || mock.dms[0].userID != tc.wantDMUser {
+					t.Errorf("expected DM to %s, got %#v", tc.wantDMUser, mock.dms)
+				}
+			}
+			if len(mock.messages) != len(tc.wantChanIDs) {
+				t.Fatalf("channel messages = %d, want %d (%#v)", len(mock.messages), len(tc.wantChanIDs), mock.messages)
+			}
+			got := map[string]int{}
+			for _, m := range mock.messages {
+				got[m.channelID]++
+			}
+			for _, want := range tc.wantChanIDs {
+				if got[want] == 0 {
+					t.Errorf("expected a message to %s, got %#v", want, mock.messages)
+					continue
+				}
+				got[want]--
+			}
+		})
 	}
 }
 

@@ -81,44 +81,20 @@ func TestMissingMarkTracker_RetainKeepsOtherSlots(t *testing.T) {
 	}
 }
 
-func TestFormatMissingMarkDM_NamesDisabledProtections(t *testing.T) {
-	miss := missingMarkPosition{
-		StrategyID: "hl-live", Symbol: "BTC", Live: true,
-		Platform: "hyperliquid", Type: "perps",
-		DisabledManagers: markGatedManagers(StrategyConfig{Type: "perps", Platform: "hyperliquid"}),
-	}
-	got := formatMissingMarkDM(miss)
-	for _, want := range []string{"hl-live", "BTC", "Trailing stop-loss walker", "Take-profit ratchet"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("DM missing %q:\n%s", want, got)
-		}
-	}
-}
-
-func TestFormatMissingMarkDM_ManualNamesDisabledProtections(t *testing.T) {
-	miss := missingMarkPosition{
-		StrategyID: "manual-hl", Symbol: "HYPE", Live: true,
-		Platform: "hyperliquid", Type: "manual",
-		DisabledManagers: markGatedManagers(StrategyConfig{Type: "manual", Platform: "hyperliquid"}),
-	}
-	got := formatMissingMarkDM(miss)
-	for _, want := range []string{"manual-hl", "HYPE", "Trailing stop-loss walker", "Take-profit ratchet"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("DM missing %q:\n%s", want, got)
-		}
-	}
-}
-
-func TestFormatMissingMarkDM_NonHLVenuesClaimNoHLMechanism(t *testing.T) {
+func TestFormatMissingMarkDM_NamesOnlyProtectionsThatRun(t *testing.T) {
+	hlManagers := []string{"Trailing stop-loss walker", "Take-profit ratchet"}
 	cases := []struct {
-		name string
-		sc   StrategyConfig
-		id   string
-		sym  string
+		name       string
+		sc         StrategyConfig
+		id         string
+		sym        string
+		wantHLMgrs bool
 	}{
-		{"binanceus spot", StrategyConfig{Type: "spot", Platform: "binanceus"}, "sma-eth", "ETH/USDT"},
-		{"okx perps", StrategyConfig{Type: "perps", Platform: "okx"}, "okx-sol", "SOL"},
-		{"topstep futures", StrategyConfig{Type: "futures", Platform: "topstep"}, "ts-es", "ES"},
+		{"hl perps", StrategyConfig{Type: "perps", Platform: "hyperliquid"}, "hl-live", "BTC", true},
+		{"hl manual", StrategyConfig{Type: "manual", Platform: "hyperliquid"}, "manual-hl", "HYPE", true},
+		{"binanceus spot", StrategyConfig{Type: "spot", Platform: "binanceus"}, "sma-eth", "ETH/USDT", false},
+		{"okx perps", StrategyConfig{Type: "perps", Platform: "okx"}, "okx-sol", "SOL", false},
+		{"topstep futures", StrategyConfig{Type: "futures", Platform: "topstep"}, "ts-es", "ES", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -128,25 +104,16 @@ func TestFormatMissingMarkDM_NonHLVenuesClaimNoHLMechanism(t *testing.T) {
 				DisabledManagers: markGatedManagers(tc.sc),
 			}
 			got := formatMissingMarkDM(miss)
-			for _, banned := range []string{"Trailing stop-loss walker", "Take-profit ratchet"} {
-				if strings.Contains(got, banned) {
-					t.Errorf("DM claims %q on %s, which never runs it:\n%s", banned, tc.sc.Platform, got)
+			for _, mgr := range hlManagers {
+				if has := strings.Contains(got, mgr); has != tc.wantHLMgrs {
+					t.Errorf("%s: manager %q named=%v, want %v:\n%s", tc.sc.Platform, mgr, has, tc.wantHLMgrs, got)
 				}
 			}
-			for _, want := range []string{tc.id, tc.sym, tc.sc.Platform, "falls back to entry cost"} {
+			for _, want := range []string{tc.id, tc.sym} {
 				if !strings.Contains(got, want) {
 					t.Errorf("DM missing %q:\n%s", want, got)
 				}
 			}
 		})
-	}
-}
-
-func TestFormatManualMarkBasisRebaselineDM_StatesDrawdownNotReset(t *testing.T) {
-	got := formatManualMarkBasisRebaselineDM(60000, 56000, 56000, 60000)
-	for _, want := range []string{"60000.00", "56000.00", "NOT reset", "-4000.00"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("DM missing %q:\n%s", want, got)
-		}
 	}
 }

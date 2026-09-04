@@ -53,10 +53,6 @@ def test_backtester_normalizes_atr_method(raw, want):
     assert Backtester(atr_method=raw).atr_method == want
 
 
-def test_backtester_default_is_simple():
-    assert Backtester().atr_method == "simple"
-
-
 def _big_ohlcv(n=80, seed=3):
     rng = np.random.default_rng(seed)
     close = 50_000 + np.cumsum(rng.normal(0, 300, n))
@@ -87,33 +83,24 @@ def test_wilder_changes_stamped_entry_atr():
     )
 
 
-def test_config_default_resolves_simple(tmp_path):
+@pytest.mark.parametrize("global_atr,strategy_atr,want", [
+    (None, None, "simple"),
+    ("wilder", None, "wilder"),
+    ("wilder", "simple", "simple"),
+])
+def test_config_resolves_atr_method(tmp_path, global_atr, strategy_atr, want):
     kwargs = run_backtest.load_strategy_config(
-        _write_config(tmp_path, _base_config()), "hl-temacb-btc")
-    assert kwargs["atr_method"] == "simple"
-
-
-def test_config_global_wilder_inherited(tmp_path):
-    kwargs = run_backtest.load_strategy_config(
-        _write_config(tmp_path, _base_config(global_atr="wilder")), "hl-temacb-btc")
-    assert kwargs["atr_method"] == "wilder"
-
-
-def test_config_per_strategy_wins_over_global(tmp_path):
-    kwargs = run_backtest.load_strategy_config(
-        _write_config(tmp_path, _base_config(global_atr="wilder", strategy_atr="simple")),
+        _write_config(tmp_path, _base_config(global_atr=global_atr, strategy_atr=strategy_atr)),
         "hl-temacb-btc")
-    assert kwargs["atr_method"] == "simple"
+    assert kwargs["atr_method"] == want
 
 
-def test_config_rejects_unknown_global_atr_method(tmp_path):
+@pytest.mark.parametrize("global_atr,strategy_atr", [
+    ("rma", None),
+    ("simple", "bogus"),
+])
+def test_config_rejects_unknown_atr_method(tmp_path, global_atr, strategy_atr):
     with pytest.raises(ValueError, match="atr_method"):
         run_backtest.load_strategy_config(
-            _write_config(tmp_path, _base_config(global_atr="rma")), "hl-temacb-btc")
-
-
-def test_config_rejects_unknown_per_strategy_even_with_valid_global(tmp_path):
-    with pytest.raises(ValueError, match="atr_method"):
-        run_backtest.load_strategy_config(
-            _write_config(tmp_path, _base_config(global_atr="simple", strategy_atr="bogus")),
+            _write_config(tmp_path, _base_config(global_atr=global_atr, strategy_atr=strategy_atr)),
             "hl-temacb-btc")

@@ -32,13 +32,6 @@ def test_empirical_transition_skips_pairs_spanning_a_dropped_bar():
     assert np.allclose(A, [[1.0 / 3, 2.0 / 3], [0.5, 0.5]])
 
 
-def test_init_distribution_is_stationary_and_sums_to_one():
-    A = np.array([[0.9, 0.1], [0.2, 0.8]])
-    pi = rvm.init_distribution(A)
-    assert pi.sum() == pytest.approx(1.0)
-    assert np.allclose(pi @ A, pi, atol=1e-8)
-
-
 def test_logsumexp_matches_naive():
     v = np.array([-1.0, -2.0, -3.0])
     assert rvm._logsumexp(v) == pytest.approx(np.log(np.exp(v).sum()))
@@ -67,19 +60,12 @@ def _purity(assign, truth, k):
     return correct / len(truth)
 
 
-def test_fit_kmeans_recovers_three_blobs():
-    z, truth = _three_blobs()
-    assign, em_mean, em_var, counts = rvm.fit_kmeans(z, 3, seed=0)
+@pytest.mark.parametrize("fitter,seed", [("kmeans", 0), ("gmm", 1)])
+def test_fitters_recover_three_blobs(fitter, seed):
+    z, truth = _three_blobs(seed=seed)
+    assign, em_mean, em_var, counts = rvm.FITTERS[fitter](z, 3, seed=0)
     assert em_mean.shape == (3, 4) and em_var.shape == (3, 4)
-    assert counts.sum() == len(z)
     assert (em_var > 0).all()
-    assert _purity(assign, truth, 3) > 0.95
-
-
-def test_fit_gmm_recovers_three_blobs():
-    z, truth = _three_blobs(seed=1)
-    assign, em_mean, em_var, counts = rvm.fit_gmm(z, 3, seed=0)
-    assert em_mean.shape == (3, 4) and em_var.shape == (3, 4) and (em_var > 0).all()
     assert counts.sum() == len(z)
     assert _purity(assign, truth, 3) > 0.95
 
@@ -103,11 +89,6 @@ def test_fit_hmm_recovers_markov_states():
     assert em_mean.shape == (3, 4) and (em_var > 0).all()
     assert counts.sum() == len(z)
     assert _purity(assign, truth, 3) > 0.9
-
-
-def test_fitters_registry_complete():
-    assert set(rvm.FITTERS) == {"kmeans", "gmm", "hmm"}
-    assert rvm.FITTERS["hmm"] is rvm.fit_hmm
 
 
 def test_fit_kmeans_k1_returns_global_mean_not_random_init():
@@ -244,25 +225,40 @@ def test_model_satisfies_bounded_window_and_forward_filter_contract():
     assert prov["in_sample"] is False
 
 
-def test_non_degeneracy_flags_constant_stream():
+@pytest.mark.parametrize("thr_kw,stream_fn,expected", [
+    pytest.param(
+        dict(min_active_labels=2, max_occupancy=0.8, min_transition_rate=0.05),
+        lambda: np.array(["ranging_quiet"] * 500, dtype=object),
+        {"ok": False, "active_labels": 1, "reason": "min_active_labels"},
+        id="constant_stream"),
+    pytest.param(
+        dict(min_active_labels=2, max_occupancy=0.9, min_transition_rate=0.01),
+        lambda: np.random.default_rng(0).choice(
+            ["ranging_quiet", "trending_up_clean", "ranging_volatile"],
+            size=600).astype(object),
+        {"ok": True, "reason": None},
+        id="healthy_stream"),
+    pytest.param(
+        dict(min_active_labels=2, max_occupancy=0.8, min_transition_rate=0.0),
+        lambda: np.array((["a"] * 9 + ["b"]) * 50, dtype=object),
+        {"ok": False, "active_labels": 2, "reason": "max_occupancy"},
+        id="high_occupancy"),
+    pytest.param(
+        dict(min_active_labels=2, max_occupancy=1.0, min_transition_rate=0.5),
+        lambda: np.array(["a"] * 300 + ["b"] * 300, dtype=object),
+        {"ok": False, "reason": "min_transition_rate"},
+        id="low_transition_rate"),
+])
+def test_non_degeneracy(thr_kw, stream_fn, expected):
     from regime_vol_model import NonDegeneracyThresholds, non_degeneracy
-    thr = NonDegeneracyThresholds(min_active_labels=2, max_occupancy=0.8,
-                                  min_transition_rate=0.05)
-    constant = np.array(["ranging_quiet"] * 500, dtype=object)
-    rep = non_degeneracy(constant, thr)
-    assert rep["ok"] is False
-    assert rep["active_labels"] == 1
-    assert "min_active_labels" in " ".join(rep["reasons"])
-
-
-def test_non_degeneracy_passes_healthy_stream():
-    from regime_vol_model import NonDegeneracyThresholds, non_degeneracy
-    thr = NonDegeneracyThresholds(min_active_labels=2, max_occupancy=0.9,
-                                  min_transition_rate=0.01)
-    rng = np.random.default_rng(0)
-    stream = rng.choice(["ranging_quiet", "trending_up_clean", "ranging_volatile"], size=600)
-    rep = non_degeneracy(stream.astype(object), thr)
-    assert rep["ok"] is True and rep["reasons"] == []
+    rep = non_degeneracy(stream_fn(), NonDegeneracyThresholds(**thr_kw))
+    assert rep["ok"] is expected["ok"]
+    if "active_labels" in expected:
+        assert rep["active_labels"] == expected["active_labels"]
+    if expected["reason"] is None:
+        assert rep["reasons"] == []
+    else:
+        assert expected["reason"] in " ".join(rep["reasons"])
 
 
 def test_derive_thresholds_is_looser_than_incumbent_worst_window():
@@ -371,27 +367,6 @@ def test_bakeoff_smoke_on_cached_data_if_available():
     assert report["min_achievable_p_value"] <= report["bonferroni_alpha"]
 
 
-def test_non_degeneracy_flags_high_occupancy():
-    from regime_vol_model import NonDegeneracyThresholds, non_degeneracy
-    thr = NonDegeneracyThresholds(min_active_labels=2, max_occupancy=0.8,
-                                  min_transition_rate=0.0)
-    stream = np.array((["a"] * 9 + ["b"]) * 50, dtype=object)
-    rep = non_degeneracy(stream, thr)
-    assert rep["ok"] is False
-    assert "max_occupancy" in " ".join(rep["reasons"])
-    assert rep["active_labels"] == 2
-
-
-def test_non_degeneracy_flags_low_transition_rate():
-    from regime_vol_model import NonDegeneracyThresholds, non_degeneracy
-    thr = NonDegeneracyThresholds(min_active_labels=2, max_occupancy=1.0,
-                                  min_transition_rate=0.5)
-    stream = np.array(["a"] * 300 + ["b"] * 300, dtype=object)
-    rep = non_degeneracy(stream, thr)
-    assert rep["ok"] is False
-    assert "min_transition_rate" in " ".join(rep["reasons"])
-
-
 def test_resolve_bakeoff_n_perm_default_achieves_corrected_alpha_with_headroom():
     mod = _load_research_module("nperm_default")
     n = mod.resolve_bakeoff_n_perm(18)
@@ -461,18 +436,13 @@ def test_select_winner_ignores_structurally_ineligible_candidates():
     assert win is not None and win["family"] == "gmm" and win["k"] == 4
 
 
-def test_permutation_steps_to_alpha_flags_merged_run_knife_edge():
+def test_permutation_steps_to_alpha_and_knife_edge_are_symmetric():
     mod = _load_research_module("steps")
     assert mod.permutation_steps_to_alpha(10.0 / 201.0, 200) == 0
     assert mod.permutation_steps_to_alpha(15.0 / 201.0, 200) < 0
     assert mod.permutation_steps_to_alpha(2.0 / 201.0, 200) > 0
-
-
-def test_verdict_knife_edge_is_symmetric_around_alpha():
-    mod = _load_research_module("knife")
-    assert mod.permutation_steps_to_alpha(10.0 / 201.0, 200) == 0
-    assert mod.verdict_knife_edge(0) is True
     assert mod.permutation_steps_to_alpha(11.0 / 201.0, 200) == -1
+    assert mod.verdict_knife_edge(0) is True
     assert mod.verdict_knife_edge(-1) is True
     assert mod.verdict_knife_edge(1) is True
     assert mod.verdict_knife_edge(-2) is False

@@ -16,18 +16,14 @@ norm_cdf = _mod.norm_cdf
 black_scholes = _mod.black_scholes
 bs_greeks = _mod.bs_greeks
 IBKRPaperAdapter = _mod.IBKRPaperAdapter
-IBKRConnection = _mod.IBKRConnection
 get_spot_price_ibkr = _mod.get_spot_price_ibkr
 calc_vol_and_iv_rank = _mod.calc_vol_and_iv_rank
 
 
 class TestBlackScholes:
-    def test_call_price_positive(self):
-        price = black_scholes(100, 100, 30, 0.3, option_type="call")
-        assert price > 0
-
-    def test_put_price_positive(self):
-        price = black_scholes(100, 100, 30, 0.3, option_type="put")
+    @pytest.mark.parametrize("option_type", ["call", "put"])
+    def test_atm_price_positive(self, option_type):
+        price = black_scholes(100, 100, 30, 0.3, option_type=option_type)
         assert price > 0
 
     def test_call_put_parity(self):
@@ -52,21 +48,18 @@ class TestBlackScholes:
 
 
 class TestBSGreeks:
-    def test_call_delta_range(self):
-        g = bs_greeks(100, 100, 30, 0.3, option_type="call")
-        assert 0 < g["delta"] < 1
+    @pytest.mark.parametrize("option_type,low,high", [
+        ("call", 0, 1),
+        ("put", -1, 0),
+    ])
+    def test_delta_range(self, option_type, low, high):
+        g = bs_greeks(100, 100, 30, 0.3, option_type=option_type)
+        assert low < g["delta"] < high
 
-    def test_put_delta_range(self):
-        g = bs_greeks(100, 100, 30, 0.3, option_type="put")
-        assert -1 < g["delta"] < 0
-
-    def test_gamma_positive(self):
+    @pytest.mark.parametrize("greek", ["gamma", "vega"])
+    def test_greek_positive(self, greek):
         g = bs_greeks(100, 100, 30, 0.3, option_type="call")
-        assert g["gamma"] > 0
-
-    def test_vega_positive(self):
-        g = bs_greeks(100, 100, 30, 0.3, option_type="call")
-        assert g["vega"] > 0
+        assert g[greek] > 0
 
     def test_expired_returns_zeros(self):
         g = bs_greeks(100, 100, 0, 0.3)
@@ -75,60 +68,54 @@ class TestBSGreeks:
 
 
 class TestNormCdf:
-    def test_at_zero(self):
-        assert abs(norm_cdf(0) - 0.5) < 0.001
-
-    def test_large_positive(self):
-        assert norm_cdf(5) > 0.999
-
-    def test_large_negative(self):
-        assert norm_cdf(-5) < 0.001
+    @pytest.mark.parametrize("x,low,high", [
+        (0, 0.499, 0.501),
+        (5, 0.999, 1.001),
+        (-5, -0.001, 0.001),
+    ])
+    def test_bounds(self, x, low, high):
+        assert low < norm_cdf(x) < high
 
 
 class TestIBKRPaperAdapter:
-    def test_multiplier_btc(self):
+    @pytest.mark.parametrize("symbol,expected", [
+        ("BTC", 0.1),
+        ("ETH", 0.5),
+        ("XYZ", 1.0),
+    ])
+    def test_multiplier(self, symbol, expected):
         adapter = IBKRPaperAdapter()
-        assert adapter.get_multiplier("BTC") == 0.1
-
-    def test_multiplier_eth(self):
-        adapter = IBKRPaperAdapter()
-        assert adapter.get_multiplier("ETH") == 0.5
-
-    def test_multiplier_unknown(self):
-        adapter = IBKRPaperAdapter()
-        assert adapter.get_multiplier("XYZ") == 1.0
+        assert adapter.get_multiplier(symbol) == expected
 
     def test_contract_value(self):
         adapter = IBKRPaperAdapter()
         value = adapter.get_contract_value("BTC", 67000)
         assert value == 6700.0
 
-    def test_estimate_premium_call(self):
+    @pytest.mark.parametrize("strike,option_type", [
+        (70000, "call"),
+        (65000, "put"),
+    ])
+    def test_estimate_premium(self, strike, option_type):
         adapter = IBKRPaperAdapter()
-        result = adapter.estimate_premium("BTC", 67000, 70000, 30, 0.6, "call")
+        result = adapter.estimate_premium("BTC", 67000, strike, 30, 0.6, option_type)
         assert result["premium_usd"] > 0
         assert result["multiplier"] == 0.1
         assert "greeks" in result
         assert "delta" in result["greeks"]
 
-    def test_estimate_premium_put(self):
+    @pytest.mark.parametrize("underlying,spot,interval", [
+        ("BTC", 67000, 1000),
+        ("ETH", 3500, 50),
+    ])
+    def test_available_strikes(self, underlying, spot, interval):
         adapter = IBKRPaperAdapter()
-        result = adapter.estimate_premium("BTC", 67000, 65000, 30, 0.6, "put")
-        assert result["premium_usd"] > 0
-
-    def test_available_strikes_btc(self):
-        adapter = IBKRPaperAdapter()
-        result = adapter.get_available_strikes("BTC", 67000)
+        result = adapter.get_available_strikes(underlying, spot)
         assert len(result["strikes"]) > 0
-        assert result["underlying"] == "BTC"
-        assert result["interval"] == 1000
-        assert any(s < 67000 for s in result["strikes"])
-        assert any(s > 67000 for s in result["strikes"])
-
-    def test_available_strikes_eth(self):
-        adapter = IBKRPaperAdapter()
-        result = adapter.get_available_strikes("ETH", 3500)
-        assert result["interval"] == 50
+        assert result["underlying"] == underlying
+        assert result["interval"] == interval
+        assert any(s < spot for s in result["strikes"])
+        assert any(s > spot for s in result["strikes"])
 
     def test_available_expiries(self):
         adapter = IBKRPaperAdapter()
@@ -137,14 +124,6 @@ class TestIBKRPaperAdapter:
         for exp in expiries:
             datetime.strptime(exp, "%Y-%m-%d")
         assert expiries == sorted(expiries)
-
-
-class TestIBKRConnection:
-    def test_init(self):
-        conn = IBKRConnection(host="127.0.0.1", port=4002, client_id=1)
-        assert conn.host == "127.0.0.1"
-        assert conn.port == 4002
-        assert conn.is_connected() is False
 
 
 class TestConvenienceFunctions:

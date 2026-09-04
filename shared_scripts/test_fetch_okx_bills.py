@@ -55,59 +55,41 @@ def _run_script(bills_or_exc, capped=False, is_live=True, argv=None):
     return parsed, exit_code["value"], mock_adapter
 
 
-class TestSuccess:
-    def test_relays_bills(self):
-        bills = [
-            {"bill_id": "b1", "ts_ms": 100, "ccy": "USDT", "type": "2", "bal_chg": 19.7},
-            {"bill_id": "b2", "ts_ms": 200, "ccy": "USDT", "type": "8", "bal_chg": -1.0},
-        ]
-        out, code, _ = _run_script(bills)
-        assert code == 0
-        assert out["bills"] == bills
-        assert out["capped"] is False
-        assert "error" not in out
-
-    def test_passes_since_ms_to_adapter(self):
-        out, code, adapter = _run_script([], argv=["fetch_okx_bills.py", "--since-ms=987654321"])
-        assert code == 0
-        adapter.get_account_bills.assert_called_once_with(since_ms=987654321)
-
-    def test_capped_flag_relayed(self):
-        out, code, _ = _run_script([{"bill_id": "b", "ts_ms": 1, "bal_chg": 1.0}], capped=True)
-        assert code == 0
-        assert out["capped"] is True
-
-    def test_empty_bills(self):
-        out, code, _ = _run_script([])
-        assert code == 0
-        assert out["bills"] == []
-        assert out["capped"] is False
-        assert "error" not in out
+BILLS = [
+    {"bill_id": "b1", "ts_ms": 100, "ccy": "USDT", "type": "2", "bal_chg": 19.7},
+    {"bill_id": "b2", "ts_ms": 200, "ccy": "USDT", "type": "8", "bal_chg": -1.0},
+]
 
 
-class TestFailurePaths:
-    def test_non_live_adapter(self):
-        out, code, _ = _run_script([], is_live=False)
-        assert code == 1
-        assert "OKX_API_KEY" in out["error"]
-        assert out["bills"] == []
-
-    def test_adapter_raises(self):
-        out, code, _ = _run_script(RuntimeError("OKX 503 Service Unavailable"))
-        assert code == 1
-        assert "OKX 503" in out["error"]
-        assert out["bills"] == []
-        assert out["capped"] is False
+@pytest.mark.parametrize("bills,capped", [
+    (BILLS, False),
+    ([{"bill_id": "b", "ts_ms": 1, "bal_chg": 1.0}], True),
+    ([], False),
+])
+def test_relays_bills_and_capped_flag(bills, capped):
+    out, code, _ = _run_script(bills, capped=capped)
+    assert code == 0
+    assert out["bills"] == bills
+    assert out["capped"] is capped
+    assert "error" not in out
 
 
-class TestArgParsing:
-    def test_since_ms_defaults_to_zero(self):
-        mod_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fetch_okx_bills.py")
-        spec = importlib.util.spec_from_file_location("fetch_okx_bills_args", mod_path)
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        assert mod._parse_args([]).since_ms == 0
-        assert mod._parse_args(["--since-ms=42"]).since_ms == 42
+def test_passes_since_ms_to_adapter():
+    out, code, adapter = _run_script([], argv=["fetch_okx_bills.py", "--since-ms=987654321"])
+    assert code == 0
+    adapter.get_account_bills.assert_called_once_with(since_ms=987654321)
+
+
+@pytest.mark.parametrize("bills_or_exc,is_live,fragment", [
+    ([], False, "OKX_API_KEY"),
+    (RuntimeError("OKX 503 Service Unavailable"), True, "OKX 503"),
+])
+def test_failure_paths_emit_error_envelope(bills_or_exc, is_live, fragment):
+    out, code, _ = _run_script(bills_or_exc, is_live=is_live)
+    assert code == 1
+    assert fragment in out["error"]
+    assert out["bills"] == []
+    assert out["capped"] is False
 
 
 if __name__ == "__main__":

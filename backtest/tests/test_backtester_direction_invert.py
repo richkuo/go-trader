@@ -9,46 +9,25 @@ def _bt(direction=None, invert_signal=False):
                       invert_signal=invert_signal)
 
 
-def test_invert_signal_negates_in_domain():
-    out = _bt(invert_signal=True)._apply_direction_invert(
-        pd.Series([1, -1, 0, 1]), uses_open_close=True)
-    assert out.tolist() == [-1, 1, 0, -1]
-
-
-def test_no_transform_when_unset():
-    sig = pd.Series([1, -1, 0])
-    assert _bt()._apply_direction_invert(sig, uses_open_close=True).tolist() == [1, -1, 0]
-    assert _bt()._apply_direction_invert(sig, uses_open_close=False).tolist() == [1, -1, 0]
-
-
-def test_direction_long_masks_short_opens_in_open_close_path():
-    out = _bt(direction="long")._apply_direction_invert(
-        pd.Series([1, -1, 0]), uses_open_close=True)
-    assert out.tolist() == [1, 0, 0]
-
-
-def test_direction_short_masks_long_opens_in_open_close_path():
-    out = _bt(direction="short")._apply_direction_invert(
-        pd.Series([1, -1, 0]), uses_open_close=True)
-    assert out.tolist() == [0, -1, 0]
-
-
-def test_direction_both_never_masks():
-    out = _bt(direction="both")._apply_direction_invert(
-        pd.Series([1, -1, 0]), uses_open_close=True)
-    assert out.tolist() == [1, -1, 0]
-
-
-def test_direction_long_plain_path_preserves_close_signal():
-    out = _bt(direction="long")._apply_direction_invert(
-        pd.Series([1, -1, 0]), uses_open_close=False)
-    assert out.tolist() == [1, -1, 0]
-
-
-def test_invert_runs_before_direction_gating():
-    out = _bt(direction="long", invert_signal=True)._apply_direction_invert(
-        pd.Series([1, -1]), uses_open_close=True)
-    assert out.tolist() == [0, 1]
+@pytest.mark.parametrize(
+    "direction,invert_signal,uses_open_close,signal,expected",
+    [
+        (None, True, True, [1, -1, 0, 1], [-1, 1, 0, -1]),
+        (None, False, True, [1, -1, 0], [1, -1, 0]),
+        (None, False, False, [1, -1, 0], [1, -1, 0]),
+        ("long", False, True, [1, -1, 0], [1, 0, 0]),
+        ("short", False, True, [1, -1, 0], [0, -1, 0]),
+        ("both", False, True, [1, -1, 0], [1, -1, 0]),
+        ("long", False, False, [1, -1, 0], [1, -1, 0]),
+        ("long", True, True, [1, -1], [0, 1]),
+    ],
+)
+def test_apply_direction_invert(direction, invert_signal, uses_open_close,
+                                signal, expected):
+    out = _bt(direction=direction,
+              invert_signal=invert_signal)._apply_direction_invert(
+        pd.Series(signal), uses_open_close=uses_open_close)
+    assert out.tolist() == expected
 
 
 def _ohlc(signal):
@@ -87,35 +66,36 @@ def _run(signal, **kw):
     return bt.run(_ohlc(signal), save=False)
 
 
-def test_invert_signal_flips_realized_trade_side():
-    base = _run([1, 0, 0, 0], invert_signal=False)
-    inv = _run([1, 0, 0, 0], invert_signal=True)
-    assert [t["side"] for t in base["trades"]] == ["long"]
-    assert [t["side"] for t in inv["trades"]] == ["short"]
+@pytest.mark.parametrize(
+    "signal,kwargs,expected_sides",
+    [
+        ([1, 0, 0, 0], {"invert_signal": False}, ["long"]),
+        ([1, 0, 0, 0], {"invert_signal": True}, ["short"]),
+        ([-1, 0, 0, 0], {"direction": "long"}, []),
+        ([-1, 0, 0, 0], {"direction": "both"}, ["short"]),
+        ([1, 0, 0, 0], {"direction": "short"}, []),
+        ([1, 0, 0, 0], {"direction": "both"}, ["long"]),
+        ([-1, 0, 0, 0], {"direction": "long", "invert_signal": True}, ["long"]),
+        ([1, 0, 0, 0], {"direction": "long", "invert_signal": True}, []),
+    ],
+)
+def test_direction_and_invert_realized_sides(signal, kwargs, expected_sides):
+    res = _run(signal, **kwargs)
+    assert [t["side"] for t in res["trades"]] == expected_sides
 
 
-def test_direction_long_blocks_short_entry_end_to_end():
-    blocked = _run([-1, 0, 0, 0], direction="long")
-    allowed = _run([-1, 0, 0, 0], direction="both")
-    assert blocked["trades"] == []
-    assert [t["side"] for t in allowed["trades"]] == ["short"]
-
-
-def test_direction_short_blocks_long_entry_end_to_end():
-    blocked = _run([1, 0, 0, 0], direction="short")
-    allowed = _run([1, 0, 0, 0], direction="both")
-    assert blocked["trades"] == []
-    assert [t["side"] for t in allowed["trades"]] == ["long"]
-
-
-def test_invert_then_direction_opens_long_from_inverted_sell():
-    inverted_sell = _run([-1, 0, 0, 0], direction="long", invert_signal=True)
-    inverted_buy = _run([1, 0, 0, 0], direction="long", invert_signal=True)
-    assert [t["side"] for t in inverted_sell["trades"]] == ["long"]
-    assert inverted_buy["trades"] == []
-
-
-def test_regime_directional_policy_opens_inverse_short():
+@pytest.mark.parametrize(
+    "cert_kwargs,expected_sides",
+    [
+        ({"regime_directional_certified": True}, ["short"]),
+        ({"regime_directional_certified": False}, ["long"]),
+        ({"regime_directional_certified_states": {"trending_down": "short"}},
+         ["short"]),
+        ({"regime_directional_certified_states": {"trending_down": "long"}},
+         ["long"]),
+    ],
+)
+def test_regime_directional_policy_certification(cert_kwargs, expected_sides):
     df = _ohlc([1, 0, 0, 0])
     df["regime"] = "trending_down"
     bt = Backtester(
@@ -125,58 +105,10 @@ def test_regime_directional_policy_opens_inverse_short():
         close_strategies=_NEVER_FIRES_CLOSE,
         regime_enabled=True,
         regime_directional_policy=_REGIME_POLICY,
-        regime_directional_certified=True,
+        **cert_kwargs,
     )
     res = bt.run(df, save=False)
-    assert [t["side"] for t in res["trades"]] == ["short"]
-
-
-def test_regime_directional_policy_default_off_when_uncertified():
-    df = _ohlc([1, 0, 0, 0])
-    df["regime"] = "trending_down"
-    bt = Backtester(
-        initial_capital=1000,
-        commission_pct=0.0,
-        slippage_pct=0.0,
-        close_strategies=_NEVER_FIRES_CLOSE,
-        regime_enabled=True,
-        regime_directional_policy=_REGIME_POLICY,
-        regime_directional_certified=False,
-    )
-    res = bt.run(df, save=False)
-    assert [t["side"] for t in res["trades"]] == ["long"]
-
-
-def test_regime_directional_policy_per_state_certified_states_honors_match():
-    df = _ohlc([1, 0, 0, 0])
-    df["regime"] = "trending_down"
-    bt = Backtester(
-        initial_capital=1000,
-        commission_pct=0.0,
-        slippage_pct=0.0,
-        close_strategies=_NEVER_FIRES_CLOSE,
-        regime_enabled=True,
-        regime_directional_policy=_REGIME_POLICY,
-        regime_directional_certified_states={"trending_down": "short"},
-    )
-    res = bt.run(df, save=False)
-    assert [t["side"] for t in res["trades"]] == ["short"]
-
-
-def test_regime_directional_policy_per_state_sign_contradiction_falls_to_base():
-    df = _ohlc([1, 0, 0, 0])
-    df["regime"] = "trending_down"
-    bt = Backtester(
-        initial_capital=1000,
-        commission_pct=0.0,
-        slippage_pct=0.0,
-        close_strategies=_NEVER_FIRES_CLOSE,
-        regime_enabled=True,
-        regime_directional_policy=_REGIME_POLICY,
-        regime_directional_certified_states={"trending_down": "long"},
-    )
-    res = bt.run(df, save=False)
-    assert [t["side"] for t in res["trades"]] == ["long"]
+    assert [t["side"] for t in res["trades"]] == expected_sides
 
 
 def test_regime_directional_policy_holds_open_position_regime_plain_path():
@@ -223,32 +155,39 @@ def _run_oc_flip(open_action, close_fraction, regime):
     return bt.run(_oc_flip_df(open_action, close_fraction, regime), save=False)
 
 
-def test_open_close_same_bar_flip_reopens_from_current_regime():
+@pytest.mark.parametrize(
+    "close_fraction,regime,expected_sides,expected_last_exit_reason",
+    [
+        (
+            [0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+            ["trending_up", "trending_up", "trending_down",
+             "trending_down", "trending_down", "trending_down"],
+            ["long", "short"],
+            None,
+        ),
+        (
+            [0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+            ["trending_down", "trending_down", "trending_up",
+             "trending_up", "trending_up", "trending_up"],
+            ["short", "long"],
+            None,
+        ),
+        (
+            [0.0, 0.0, 0.5, 0.0, 0.0, 0.0],
+            ["trending_up", "trending_up", "trending_down",
+             "trending_down", "trending_down", "trending_down"],
+            ["long", "long"],
+            "end_of_data",
+        ),
+    ],
+)
+def test_open_close_same_bar_flip(close_fraction, regime, expected_sides,
+                                  expected_last_exit_reason):
     res = _run_oc_flip(
         open_action=["long", "none", "long", "none", "none", "none"],
-        close_fraction=[0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
-        regime=["trending_up", "trending_up", "trending_down",
-                "trending_down", "trending_down", "trending_down"],
+        close_fraction=close_fraction,
+        regime=regime,
     )
-    assert [t["side"] for t in res["trades"]] == ["long", "short"]
-
-
-def test_open_close_same_bar_flip_inverse_reopens_long():
-    res = _run_oc_flip(
-        open_action=["long", "none", "long", "none", "none", "none"],
-        close_fraction=[0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
-        regime=["trending_down", "trending_down", "trending_up",
-                "trending_up", "trending_up", "trending_up"],
-    )
-    assert [t["side"] for t in res["trades"]] == ["short", "long"]
-
-
-def test_open_close_partial_close_keeps_frozen_regime_no_flip():
-    res = _run_oc_flip(
-        open_action=["long", "none", "long", "none", "none", "none"],
-        close_fraction=[0.0, 0.0, 0.5, 0.0, 0.0, 0.0],
-        regime=["trending_up", "trending_up", "trending_down",
-                "trending_down", "trending_down", "trending_down"],
-    )
-    assert [t["side"] for t in res["trades"]] == ["long", "long"]
-    assert res["trades"][-1]["exit_reason"] == "end_of_data"
+    assert [t["side"] for t in res["trades"]] == expected_sides
+    if expected_last_exit_reason is not None:
+        assert res["trades"][-1]["exit_reason"] == expected_last_exit_reason

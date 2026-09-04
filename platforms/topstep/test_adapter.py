@@ -13,19 +13,9 @@ _spec.loader.exec_module(_mod)
 
 TopStepExchangeAdapter = _mod.TopStepExchangeAdapter
 CONTRACT_SPECS = _mod.CONTRACT_SPECS
-YAHOO_SYMBOL_MAP = _mod.YAHOO_SYMBOL_MAP
 
 
 class TestProperties:
-    def test_name(self):
-        adapter = TopStepExchangeAdapter(mode="paper")
-        assert adapter.name == "topstep"
-
-    def test_paper_mode(self):
-        adapter = TopStepExchangeAdapter(mode="paper")
-        assert adapter.mode == "paper"
-        assert adapter.is_live is False
-
     def test_live_mode_no_creds_raises(self):
         with patch.dict(os.environ, {}, clear=False):
             for key in ("TOPSTEP_API_KEY", "TOPSTEP_API_SECRET", "TOPSTEP_ACCOUNT_ID"):
@@ -35,18 +25,15 @@ class TestProperties:
 
 
 class TestContractSpecs:
-    def test_get_es_spec(self):
+    @pytest.mark.parametrize("symbol,expected", [
+        ("ES", {"tick_size": 0.25, "tick_value": 12.50, "multiplier": 50, "margin": 15400}),
+        ("NQ", {"multiplier": 20}),
+    ])
+    def test_get_contract_spec(self, symbol, expected):
         adapter = TopStepExchangeAdapter(mode="paper")
-        spec = adapter.get_contract_spec("ES")
-        assert spec["tick_size"] == 0.25
-        assert spec["tick_value"] == 12.50
-        assert spec["multiplier"] == 50
-        assert spec["margin"] == 15400
-
-    def test_get_nq_spec(self):
-        adapter = TopStepExchangeAdapter(mode="paper")
-        spec = adapter.get_contract_spec("NQ")
-        assert spec["multiplier"] == 20
+        spec = adapter.get_contract_spec(symbol)
+        for key, value in expected.items():
+            assert spec[key] == value
 
     def test_unknown_symbol_raises(self):
         adapter = TopStepExchangeAdapter(mode="paper")
@@ -204,26 +191,11 @@ class TestCashflowJournalFeeds:
 
 
 class TestOrderExecution:
-    def test_market_open_paper_raises(self):
+    @pytest.mark.parametrize("method,args", [
+        ("market_open", ("ES", True, 1)),
+        ("market_close", ("ES",)),
+    ])
+    def test_market_order_paper_raises(self, method, args):
         adapter = TopStepExchangeAdapter(mode="paper")
         with pytest.raises(RuntimeError, match="live mode"):
-            adapter.market_open("ES", True, 1)
-
-    def test_market_close_paper_raises(self):
-        adapter = TopStepExchangeAdapter(mode="paper")
-        with pytest.raises(RuntimeError, match="live mode"):
-            adapter.market_close("ES")
-
-
-class TestMarketHours:
-    def test_is_market_open_returns_bool(self):
-        adapter = TopStepExchangeAdapter(mode="paper")
-        result = adapter.is_market_open()
-        assert isinstance(result, bool)
-
-
-class TestYahooSymbolMap:
-    def test_known_symbols(self):
-        assert YAHOO_SYMBOL_MAP["ES"] == "ES=F"
-        assert YAHOO_SYMBOL_MAP["NQ"] == "NQ=F"
-        assert YAHOO_SYMBOL_MAP["GC"] == "GC=F"
+            getattr(adapter, method)(*args)

@@ -21,13 +21,16 @@ def _path_from_vol_schedule(vol_per_day: list, seed: int = 0) -> list:
     return closes
 
 
-def test_returns_default_when_history_too_short():
-    closes = [100.0 + i for i in range(50)]
-    assert calc_iv_rank(closes, recent_window=RECENT, lookback_days=LOOKBACK) == 50.0
-
-
-def test_boundary_one_below_minimum_returns_default():
-    closes = [100.0 + i for i in range(74)]
+@pytest.mark.parametrize(
+    "closes",
+    [
+        [100.0 + i for i in range(50)],
+        [100.0 + i for i in range(74)],
+        [100.0] * (RECENT + LOOKBACK + 5),
+    ],
+    ids=["history_too_short", "one_below_minimum", "flat_lookback"],
+)
+def test_degenerate_history_returns_neutral_50(closes):
     assert calc_iv_rank(closes, recent_window=RECENT, lookback_days=LOOKBACK) == 50.0
 
 
@@ -39,38 +42,21 @@ def test_boundary_exact_minimum_computes_rank():
     assert rank != 50.0
 
 
-def test_flat_lookback_returns_neutral_50():
-    closes = [100.0] * (RECENT + LOOKBACK + 5)
-    assert calc_iv_rank(closes, recent_window=RECENT, lookback_days=LOOKBACK) == 50.0
-
-
-def test_recent_spike_ranks_near_100():
-    sched = [0.005] * 76 + [0.08] * 14
-    closes = _path_from_vol_schedule(sched, seed=1)
+@pytest.mark.parametrize(
+    "schedule,seed,lo,hi,strict_lo,strict_hi",
+    [
+        ([0.005] * 76 + [0.08] * 14, 1, 90.0, 100.0, True, False),
+        ([0.08] * 76 + [0.001] * 14, 2, 0.0, 10.0, False, True),
+        ([0.02] * 76 + [0.04] * 14, 3, 0.0, 100.0, False, False),
+        (list(np.linspace(0.01, 0.05, 76)) + [0.03] * 14, 4, 20.0, 80.0, True, True),
+    ],
+    ids=["recent_spike", "recent_calm", "clamped_to_0_100", "middle_of_distribution"],
+)
+def test_rank_lands_in_expected_band(schedule, seed, lo, hi, strict_lo, strict_hi):
+    closes = _path_from_vol_schedule(schedule, seed=seed)
     rank = calc_iv_rank(closes, recent_window=RECENT, lookback_days=LOOKBACK)
-    assert rank > 90, f"expected near-100, got {rank}"
-
-
-def test_recent_calm_ranks_near_0():
-    sched = [0.08] * 76 + [0.001] * 14
-    closes = _path_from_vol_schedule(sched, seed=2)
-    rank = calc_iv_rank(closes, recent_window=RECENT, lookback_days=LOOKBACK)
-    assert rank < 10, f"expected near-0, got {rank}"
-
-
-def test_rank_is_clamped_to_0_100():
-    sched = [0.02] * 76 + [0.04] * 14
-    closes = _path_from_vol_schedule(sched, seed=3)
-    rank = calc_iv_rank(closes, recent_window=RECENT, lookback_days=LOOKBACK)
-    assert 0.0 <= rank <= 100.0
-
-
-def test_middle_of_distribution_ranks_around_50():
-    lookback_vols = np.linspace(0.01, 0.05, 76).tolist()
-    recent_vols = [0.03] * 14
-    closes = _path_from_vol_schedule(lookback_vols + recent_vols, seed=4)
-    rank = calc_iv_rank(closes, recent_window=RECENT, lookback_days=LOOKBACK)
-    assert 20 < rank < 80, f"expected a middle value, got {rank}"
+    assert (rank > lo) if strict_lo else (rank >= lo), f"got {rank}, low bound {lo}"
+    assert (rank < hi) if strict_hi else (rank <= hi), f"got {rank}, high bound {hi}"
 
 
 def _live_okx_iv_rank(closes: list, window: int = 14) -> float:

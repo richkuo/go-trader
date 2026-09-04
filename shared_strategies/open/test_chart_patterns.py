@@ -25,31 +25,19 @@ _get_swing_indices = _CHART_PATTERNS._get_swing_indices
 _htf_gate_trend = _CHART_PATTERNS._htf_gate_trend
 
 
+@pytest.mark.parametrize("prices,side", [
+    (list(range(100, 90, -1)) + list(range(90, 101)), "low"),
+    (list(range(90, 101)) + list(range(100, 89, -1)), "high"),
+], ids=["trough", "peak"])
+def test_find_swing_points_detects_the_obvious_pivot(prices, side):
+    df = make_ohlcv(prices)
+    sh, sl = find_swing_points(df["high"], df["low"], lookback=3)
+    idx = _get_swing_indices(sh if side == "high" else sl)
+    assert len(idx) >= 1
+    assert any(abs(i - 10) <= 3 for i in idx)
+
+
 class TestSwingPoints:
-    def test_detects_obvious_peak_and_trough(self):
-        prices = list(range(100, 90, -1)) + list(range(90, 101))
-        df = make_ohlcv(prices)
-        sh, sl = find_swing_points(df["high"], df["low"], lookback=3)
-
-        swing_low_idx = _get_swing_indices(sl)
-        assert len(swing_low_idx) >= 1
-        assert any(abs(i - 10) <= 3 for i in swing_low_idx)
-
-    def test_detects_peak(self):
-        prices = list(range(90, 101)) + list(range(100, 89, -1))
-        df = make_ohlcv(prices)
-        sh, sl = find_swing_points(df["high"], df["low"], lookback=3)
-
-        swing_high_idx = _get_swing_indices(sh)
-        assert len(swing_high_idx) >= 1
-        assert any(abs(i - 10) <= 3 for i in swing_high_idx)
-
-    def test_flat_data_no_swings(self):
-        prices = [100.0] * 50
-        df = make_ohlcv(prices, noise=0)
-        sh, sl = find_swing_points(df["high"], df["low"], lookback=5)
-        assert len(df) == 50
-
     def test_insufficient_data(self):
         prices = [100, 101, 100]
         df = make_ohlcv(prices)
@@ -58,20 +46,16 @@ class TestSwingPoints:
         assert sl.notna().sum() == 0
 
 
-class TestVolumeConfirmed:
-    def test_high_volume_confirmed(self):
-        vol = pd.Series([100] * 25)
-        vol.iloc[24] = 200
-        assert volume_confirmed(vol, 24, vol_period=20, vol_multiplier=1.5)
-
-    def test_low_volume_rejected(self):
-        vol = pd.Series([100] * 25)
-        vol.iloc[24] = 110
-        assert not volume_confirmed(vol, 24, vol_period=20, vol_multiplier=1.5)
-
-    def test_insufficient_history_allows(self):
-        vol = pd.Series([100] * 5)
-        assert volume_confirmed(vol, 3, vol_period=20, vol_multiplier=1.5)
+@pytest.mark.parametrize("bars,idx,spike,expected", [
+    (25, 24, 200, True),
+    (25, 24, 110, False),
+    (5, 3, None, True),
+])
+def test_volume_confirmed(bars, idx, spike, expected):
+    vol = pd.Series([100] * bars)
+    if spike is not None:
+        vol.iloc[idx] = spike
+    assert bool(volume_confirmed(vol, idx, vol_period=20, vol_multiplier=1.5)) is expected
 
 
 class TestDoubleTop:

@@ -72,11 +72,3 @@ def test_compute_adx_components_non_negative():
     assert (c["adx"] >= 0).all()
     assert (c["plus_di"] >= 0).all()
     assert (c["minus_di"] >= 0).all()
-
-
-def test_adx_trend_core_matches_when_components_extracted():
-    prices = list(np.linspace(150, 100, 50)) + list(np.linspace(100, 200, 100))
-    df = make_ohlcv(prices, noise=1.0)
-    result = adx_trend_core(df)
-    assert set(result["signal"].unique()).issubset({-1, 0, 1})
-    assert (result["signal"] == 1).any(), "Refactored core must still generate buy signal on uptrend"

@@ -1,8 +1,6 @@
 
 import importlib.util
 import pathlib
-import sys
-from io import StringIO
 from unittest.mock import MagicMock
 
 import pytest
@@ -17,61 +15,53 @@ _finite_number = _mod._finite_number
 apply_user_fills_lookup = _mod.apply_user_fills_lookup
 
 
-class TestFiniteNumber:
-    def test_float_string(self):
-        assert _finite_number("3.14") == pytest.approx(3.14)
-
-    def test_int(self):
-        assert _finite_number(42) == pytest.approx(42.0)
-
-    def test_float(self):
-        assert _finite_number(1.5) == pytest.approx(1.5)
-
-    def test_bool_rejected(self):
-        assert _finite_number(True) is None
-        assert _finite_number(False) is None
-
-    def test_non_numeric_string(self):
-        assert _finite_number("abc") is None
-
-    def test_none(self):
-        assert _finite_number(None) is None
-
-    def test_mock_rejected(self):
-        assert _finite_number(MagicMock()) is None
-
-    def test_inf_rejected(self):
-        assert _finite_number(float("inf")) is None
-        assert _finite_number("-inf") is None
-
-    def test_nan_rejected(self):
-        assert _finite_number(float("nan")) is None
+@pytest.mark.parametrize("value,expected", [
+    ("3.14", 3.14),
+    (42, 42.0),
+    (1.5, 1.5),
+    (True, None),
+    (False, None),
+    ("abc", None),
+    (None, None),
+    (MagicMock(), None),
+    (float("inf"), None),
+    ("-inf", None),
+    (float("nan"), None),
+])
+def test_finite_number(value, expected):
+    got = _finite_number(value)
+    if expected is None:
+        assert got is None
+    else:
+        assert got == pytest.approx(expected)
 
 
 class TestApplyUserFillsLookup:
-    def test_valid_fee_and_closed_pnl(self):
+    @pytest.mark.parametrize("lookup,expected_fee,expected_closed_pnl", [
+        ({"fee": "0.42", "closed_pnl": "3.14"}, 0.42, 3.14),
+        ({"fee": 0.5}, 0.5, None),
+        ({"fee": 2}, 2.0, None),
+    ])
+    def test_valid_lookup_applied(self, lookup, expected_fee, expected_closed_pnl):
         fill = {}
-        result = apply_user_fills_lookup(fill, {"fee": "0.42", "closed_pnl": "3.14"})
+        result = apply_user_fills_lookup(fill, lookup)
         assert result is True
-        assert fill["fee"] == pytest.approx(0.42)
-        assert fill["closed_pnl"] == pytest.approx(3.14)
+        assert fill["fee"] == pytest.approx(expected_fee)
+        if expected_closed_pnl is None:
+            assert "closed_pnl" not in fill
+        else:
+            assert fill["closed_pnl"] == pytest.approx(expected_closed_pnl)
 
-    def test_valid_fee_no_closed_pnl_key(self):
+    @pytest.mark.parametrize("lookup", [
+        MagicMock(),
+        {"fee": MagicMock()},
+        {"fee": True},
+        {},
+        None,
+    ])
+    def test_malformed_lookup_rejected(self, lookup):
         fill = {}
-        result = apply_user_fills_lookup(fill, {"fee": 0.5})
-        assert result is True
-        assert fill["fee"] == pytest.approx(0.5)
-        assert "closed_pnl" not in fill
-
-    def test_truthy_non_mapping_rejected(self):
-        fill = {}
-        result = apply_user_fills_lookup(fill, MagicMock())
-        assert result is False
-        assert "fee" not in fill
-
-    def test_malformed_fee_rejected(self):
-        fill = {}
-        result = apply_user_fills_lookup(fill, {"fee": MagicMock()})
+        result = apply_user_fills_lookup(fill, lookup)
         assert result is False
         assert "fee" not in fill
 
@@ -84,27 +74,3 @@ class TestApplyUserFillsLookup:
         captured = capsys.readouterr()
         assert "[WARN]" in captured.err
         assert "closed_pnl" in captured.err
-
-    def test_bool_fee_rejected(self):
-        fill = {}
-        result = apply_user_fills_lookup(fill, {"fee": True})
-        assert result is False
-        assert "fee" not in fill
-
-    def test_empty_mapping_rejected(self):
-        fill = {}
-        result = apply_user_fills_lookup(fill, {})
-        assert result is False
-        assert "fee" not in fill
-
-    def test_none_lookup_rejected(self):
-        fill = {}
-        result = apply_user_fills_lookup(fill, None)
-        assert result is False
-        assert "fee" not in fill
-
-    def test_numeric_int_fee(self):
-        fill = {}
-        result = apply_user_fills_lookup(fill, {"fee": 2})
-        assert result is True
-        assert fill["fee"] == pytest.approx(2.0)

@@ -5,6 +5,7 @@ import sys
 
 import numpy as np
 import pandas as pd
+import pytest
 
 _SHARED_TOOLS = pathlib.Path(__file__).parent.parent / "shared_tools"
 _REPO_ROOT = _SHARED_TOOLS.parent
@@ -34,22 +35,19 @@ def _make_flat_df(n: int = 100) -> pd.DataFrame:
     return make_ohlcv(close, volume=1000.0, noise=0.05, index=idx)
 
 
-def test_latest_regime_output_json_serializable_uptrend():
-    df = _make_uptrend_df()
-    payload = latest_regime(df)
-    serialized = json.dumps(payload)
-    parsed = json.loads(serialized)
+@pytest.mark.parametrize("make_df,expected_label", [
+    (_make_uptrend_df, None),
+    (_make_flat_df, "ranging"),
+])
+def test_latest_regime_output_json_serializable(make_df, expected_label):
+    payload = latest_regime(make_df())
+    parsed = json.loads(json.dumps(payload))
+    assert isinstance(parsed["regime"], str)
     assert parsed["regime"] in ("trending_up", "trending_down", "ranging")
+    if expected_label is not None:
+        assert parsed["regime"] == expected_label
     assert isinstance(parsed["score"], float)
     assert isinstance(parsed["metrics"], dict)
-
-
-def test_latest_regime_output_json_serializable_flat():
-    df = _make_flat_df()
-    payload = latest_regime(df)
-    serialized = json.dumps(payload)
-    parsed = json.loads(serialized)
-    assert parsed["regime"] == "ranging"
 
 
 def test_composite_json_never_contains_nan_token_when_hurst_omitted():
@@ -101,15 +99,6 @@ def test_hurst_survives_the_go_metrics_map_contract():
         assert isinstance(value, (int, float)), (key, type(value))
         assert not isinstance(value, bool), key
         assert np.isfinite(value), key
-
-
-def test_regime_label_string_is_safe_for_output_field():
-    df = _make_uptrend_df()
-    payload = latest_regime(df)
-    label = payload["regime"]
-    assert isinstance(label, str)
-    assert label in ("trending_up", "trending_down", "ranging")
-    assert json.dumps({"regime": label})
 
 
 def test_strip_unsupported_drops_regime_for_non_aware_function():
@@ -175,22 +164,18 @@ def _load_check_options_module():
     return load_module("_check_options_under_test", src_path)
 
 
-def test_check_options_regime_label_from_uptrend_df():
+@pytest.mark.parametrize("df_factory,expected", [
+    (lambda: _make_uptrend_df(100), ("trending_up", "trending_down", "ranging")),
+    (lambda: _make_uptrend_df(10), None),
+    (lambda: None, None),
+])
+def test_check_options_regime_label_from_df(df_factory, expected):
     module = _load_check_options_module()
-    df = _make_uptrend_df(100)
-    label = module._regime_label_from_df(df)
-    assert label in ("trending_up", "trending_down", "ranging")
-
-
-def test_check_options_regime_label_from_short_df_is_none():
-    module = _load_check_options_module()
-    df = _make_uptrend_df(10)
-    assert module._regime_label_from_df(df) is None
-
-
-def test_check_options_regime_label_from_none_df_is_none():
-    module = _load_check_options_module()
-    assert module._regime_label_from_df(None) is None
+    label = module._regime_label_from_df(df_factory())
+    if expected is None:
+        assert label is None
+    else:
+        assert label in expected
 
 
 def test_check_options_fetch_ohlcv_df_uses_adapter_when_available():

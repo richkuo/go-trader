@@ -56,99 +56,70 @@ def _run_script(positions_or_exc, is_live=True, use_raise=True):
     return parsed, exit_code["value"]
 
 
-class TestSuccess:
-    def test_long_position(self):
-        out, code = _run_script([
-            {"symbol": "ES", "quantity": 2, "avg_price": 5000.0, "side": "long"},
-        ])
-        assert code == 0
-        assert len(out["positions"]) == 1
-        p = out["positions"][0]
-        assert p["coin"] == "ES"
-        assert p["size"] == 2
-        assert p["avg_price"] == 5000.0
-        assert p["side"] == "long"
-        assert "error" not in out
-
-    def test_short_position_size_is_negative(self):
-        out, code = _run_script([
-            {"symbol": "NQ", "quantity": -1, "avg_price": 18000.0, "side": "short"},
-        ])
-        assert code == 0
-        assert out["positions"][0]["size"] == -1
-        assert out["positions"][0]["side"] == "short"
-
-    def test_zero_size_filtered(self):
-        out, code = _run_script([
-            {"symbol": "ES", "quantity": 0, "avg_price": 5000.0, "side": "long"},
-        ])
-        assert code == 0
-        assert out["positions"] == []
-
-    def test_empty_positions(self):
-        out, code = _run_script([])
-        assert code == 0
-        assert out["positions"] == []
-        assert "error" not in out
+@pytest.mark.parametrize("raw,expected", [
+    ([{"symbol": "ES", "quantity": 2, "avg_price": 5000.0, "side": "long"}],
+     [{"coin": "ES", "size": 2, "avg_price": 5000.0, "side": "long"}]),
+    ([{"symbol": "NQ", "quantity": -1, "avg_price": 18000.0, "side": "short"}],
+     [{"coin": "NQ", "size": -1, "avg_price": 18000.0, "side": "short"}]),
+    ([{"symbol": "ES", "quantity": 0, "avg_price": 5000.0, "side": "long"}], []),
+    ([], []),
+])
+def test_positions_are_normalized(raw, expected):
+    out, code = _run_script(raw)
+    assert code == 0
+    assert len(out["positions"]) == len(expected)
+    for got, want in zip(out["positions"], expected):
+        for key, value in want.items():
+            assert got[key] == value
+    assert "error" not in out
 
 
-class TestFailurePaths:
-    def test_non_live_adapter(self):
-        out, code = _run_script([], is_live=False)
-        assert code == 1
-        assert "TOPSTEP_API_KEY" in out["error"]
+@pytest.mark.parametrize("positions_or_exc,is_live,fragment", [
+    ([], False, "TOPSTEP_API_KEY"),
+    (RuntimeError("401 Unauthorized"), True, "401"),
+    (RuntimeError("TopStepX 503 Service Unavailable"), True, "503"),
+    (ConnectionError("DNS resolution failed"), True, "DNS"),
+])
+def test_failure_paths_emit_error_envelope(positions_or_exc, is_live, fragment):
+    out, code = _run_script(positions_or_exc, is_live=is_live)
+    assert code == 1
+    assert fragment in out["error"]
+    assert out["positions"] == []
 
-    def test_exchange_raises_401(self):
-        out, code = _run_script(RuntimeError("401 Unauthorized"))
-        assert code == 1
-        assert "401" in out["error"]
-        assert out["positions"] == []
 
-    def test_exchange_raises_5xx(self):
-        out, code = _run_script(RuntimeError("TopStepX 503 Service Unavailable"))
-        assert code == 1
-        assert "503" in out["error"]
-        assert out["positions"] == []
+def test_uses_raise_variant_not_soft_fail():
+    script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "fetch_topstep_positions.py")
+    spec = importlib.util.spec_from_file_location("fetch_topstep_positions", script_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
 
-    def test_network_error(self):
-        out, code = _run_script(ConnectionError("DNS resolution failed"))
-        assert code == 1
-        assert "DNS" in out["error"]
-        assert out["positions"] == []
+    mock_adapter_cls = MagicMock()
+    mock_adapter = MagicMock()
+    mock_adapter.is_live = True
+    mock_adapter_cls.return_value = mock_adapter
+    mock_adapter.get_open_positions_raise.return_value = []
+    mock_adapter.get_open_positions.side_effect = AssertionError(
+        "fetch_topstep_positions must use get_open_positions_raise, not get_open_positions"
+    )
 
-    def test_uses_raise_variant_not_soft_fail(self):
-        script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                   "fetch_topstep_positions.py")
-        spec = importlib.util.spec_from_file_location("fetch_topstep_positions", script_path)
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
+    original_import = builtins.__import__
 
-        mock_adapter_cls = MagicMock()
-        mock_adapter = MagicMock()
-        mock_adapter.is_live = True
-        mock_adapter_cls.return_value = mock_adapter
-        mock_adapter.get_open_positions_raise.return_value = []
-        mock_adapter.get_open_positions.side_effect = AssertionError(
-            "fetch_topstep_positions must use get_open_positions_raise, not get_open_positions"
-        )
+    def mock_import(name, *args, **kwargs):
+        if name == "adapter":
+            fake_mod = MagicMock()
+            fake_mod.TopStepExchangeAdapter = mock_adapter_cls
+            return fake_mod
+        return original_import(name, *args, **kwargs)
 
-        original_import = builtins.__import__
+    captured = StringIO()
+    with patch("builtins.__import__", side_effect=mock_import), \
+         patch("sys.stdout", captured), \
+         patch("sys.argv", ["fetch_topstep_positions.py"]):
+        mod.main()
 
-        def mock_import(name, *args, **kwargs):
-            if name == "adapter":
-                fake_mod = MagicMock()
-                fake_mod.TopStepExchangeAdapter = mock_adapter_cls
-                return fake_mod
-            return original_import(name, *args, **kwargs)
-
-        captured = StringIO()
-        with patch("builtins.__import__", side_effect=mock_import), \
-             patch("sys.stdout", captured), \
-             patch("sys.argv", ["fetch_topstep_positions.py"]):
-            mod.main()
-
-        assert mock_adapter.get_open_positions_raise.called
-        assert not mock_adapter.get_open_positions.called
+    assert mock_adapter.get_open_positions_raise.called
+    assert not mock_adapter.get_open_positions.called
 
 
 if __name__ == "__main__":

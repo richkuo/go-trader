@@ -126,17 +126,31 @@ func TestRegimeRequiredOhlcvLimit(t *testing.T) {
 	}
 }
 
-func TestValidateRegimeWindowsConfig_RejectsWindowWithoutGlobalWindows(t *testing.T) {
-	cfg := &Config{
-		Regime: &RegimeConfig{Enabled: true, Period: 14, ADXThreshold: 20},
-		Strategies: []StrategyConfig{{
-			ID:               "hl-test",
-			RegimeGateWindow: "long",
-		}},
+func TestValidateRegimeWindowsConfig_Rejections(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  *Config
+	}{
+		{
+			name: "strategy gate window without global windows",
+			cfg: &Config{
+				Regime:     &RegimeConfig{Enabled: true, Period: 14, ADXThreshold: 20},
+				Strategies: []StrategyConfig{{ID: "hl-test", RegimeGateWindow: "long"}},
+			},
+		},
+		{
+			name: "reserved window name",
+			cfg: &Config{
+				Regime: &RegimeConfig{Enabled: true, Windows: RegimeWindowsMap{"regime": {Period: 168}}},
+			},
+		},
 	}
-	errs := validateRegimeWindowsConfig(cfg)
-	if len(errs) != 1 {
-		t.Fatalf("errs = %v", errs)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if errs := validateRegimeWindowsConfig(tc.cfg); len(errs) != 1 {
+				t.Fatalf("errs = %v, want exactly 1", errs)
+			}
+		})
 	}
 }
 
@@ -154,59 +168,44 @@ func TestRegimePayload_UnmarshalWindowNamedRegime(t *testing.T) {
 	}
 }
 
-func TestValidateRegimeWindowsConfig_RejectsReservedWindowName(t *testing.T) {
-	cfg := &Config{
-		Regime: &RegimeConfig{
-			Enabled: true,
-			Windows: RegimeWindowsMap{"regime": {Period: 168}},
+func TestStrategyDisplayRegimeLabel_Fallbacks(t *testing.T) {
+	cases := []struct {
+		name string
+		sc   StrategyConfig
+		st   *StrategyState
+		want string
+	}{
+		{
+			name: "gate window unset falls back to shared default",
+			sc:   StrategyConfig{},
+			st: &StrategyState{
+				Regime:        "ranging",
+				RegimeWindows: map[string]string{"medium": "ranging", "composite_long": "trending_down_choppy"},
+			},
+			want: "ranging",
+		},
+		{
+			name: "gate window label not captured falls back",
+			sc:   StrategyConfig{RegimeGateWindow: "composite_long"},
+			st: &StrategyState{
+				Regime:        "ranging",
+				RegimeWindows: map[string]string{"medium": "ranging"},
+			},
+			want: "ranging",
+		},
+		{
+			name: "nil strategy state yields empty",
+			sc:   StrategyConfig{RegimeGateWindow: "composite_long"},
+			st:   nil,
+			want: "",
 		},
 	}
-	errs := validateRegimeWindowsConfig(cfg)
-	if len(errs) != 1 {
-		t.Fatalf("errs = %v", errs)
-	}
-}
-
-func TestStrategyDisplayRegimeLabel_UsesGateWindowOverride(t *testing.T) {
-	sc := StrategyConfig{RegimeGateWindow: "composite_long"}
-	st := &StrategyState{
-		Regime: "ranging",
-		RegimeWindows: map[string]string{
-			"medium":         "ranging",
-			"composite_long": "trending_down_choppy",
-		},
-	}
-	if got := strategyDisplayRegimeLabel(st, sc, nil); got != "trending_down_choppy" {
-		t.Fatalf("strategyDisplayRegimeLabel = %q, want trending_down_choppy", got)
-	}
-}
-
-func TestStrategyDisplayRegimeLabel_FallsBackWhenGateWindowUnset(t *testing.T) {
-	sc := StrategyConfig{}
-	st := &StrategyState{
-		Regime:        "ranging",
-		RegimeWindows: map[string]string{"medium": "ranging", "composite_long": "trending_down_choppy"},
-	}
-	if got := strategyDisplayRegimeLabel(st, sc, nil); got != "ranging" {
-		t.Fatalf("strategyDisplayRegimeLabel = %q, want ranging (fallback to shared default)", got)
-	}
-}
-
-func TestStrategyDisplayRegimeLabel_FallsBackWhenWindowLabelMissing(t *testing.T) {
-	sc := StrategyConfig{RegimeGateWindow: "composite_long"}
-	st := &StrategyState{
-		Regime:        "ranging",
-		RegimeWindows: map[string]string{"medium": "ranging"},
-	}
-	if got := strategyDisplayRegimeLabel(st, sc, nil); got != "ranging" {
-		t.Fatalf("strategyDisplayRegimeLabel = %q, want ranging (fallback, gate label not yet captured)", got)
-	}
-}
-
-func TestStrategyDisplayRegimeLabel_NilStratState(t *testing.T) {
-	sc := StrategyConfig{RegimeGateWindow: "composite_long"}
-	if got := strategyDisplayRegimeLabel(nil, sc, nil); got != "" {
-		t.Fatalf("strategyDisplayRegimeLabel = %q, want empty", got)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := strategyDisplayRegimeLabel(tc.st, tc.sc, nil); got != tc.want {
+				t.Fatalf("strategyDisplayRegimeLabel = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

@@ -75,103 +75,103 @@ func TestResolveHurstGateWindowFallsBackToGateWindow(t *testing.T) {
 	}
 }
 
-func TestHurstStateMachineHysteresisMinOnly(t *testing.T) {
-	hg := &HurstGateConfig{Enabled: true, Min: hfp(0.55), DisarmMin: hfp(0.50)}
-	st := advanceHurstState(hg, hurstGateStateUnknown, 0.40, true)
-	if st != hurstGateStateDisarmed {
-		t.Fatalf("first reading below min should disarm, got %q", st)
+func TestAdvanceHurstStateTransitions(t *testing.T) {
+	type step struct {
+		h        float64
+		observed bool
+		want     string
 	}
-	st = advanceHurstState(hg, st, 0.52, true)
-	if st != hurstGateStateDisarmed {
-		t.Fatalf("0.52 is inside the gap and must not re-arm, got %q", st)
+	cases := []struct {
+		name  string
+		hg    *HurstGateConfig
+		start string
+		steps []step
+	}{
+		{
+			name:  "min_only_hysteresis",
+			hg:    &HurstGateConfig{Enabled: true, Min: hfp(0.55), DisarmMin: hfp(0.50)},
+			start: hurstGateStateUnknown,
+			steps: []step{
+				{0.40, true, hurstGateStateDisarmed},
+				{0.52, true, hurstGateStateDisarmed},
+				{0.55, true, hurstGateStateArmed},
+				{0.51, true, hurstGateStateArmed},
+				{0.4999, true, hurstGateStateDisarmed},
+			},
+		},
+		{
+			name:  "max_only_hysteresis",
+			hg:    &HurstGateConfig{Enabled: true, Max: hfp(0.45), DisarmMax: hfp(0.50)},
+			start: hurstGateStateUnknown,
+			steps: []step{
+				{0.40, true, hurstGateStateArmed},
+				{0.48, true, hurstGateStateArmed},
+				{0.51, true, hurstGateStateDisarmed},
+				{0.47, true, hurstGateStateDisarmed},
+				{0.45, true, hurstGateStateArmed},
+			},
+		},
+		{
+			name:  "unset_disarm_collapses_to_arm_bound",
+			hg:    &HurstGateConfig{Enabled: true, Min: hfp(0.55)},
+			start: hurstGateStateArmed,
+			steps: []step{
+				{0.5499, true, hurstGateStateDisarmed},
+				{0.55, true, hurstGateStateArmed},
+			},
+		},
+		{
+			name:  "band_config_hysteresis",
+			hg:    &HurstGateConfig{Enabled: true, Min: hfp(0.45), Max: hfp(0.55), DisarmMin: hfp(0.40), DisarmMax: hfp(0.60)},
+			start: hurstGateStateUnknown,
+			steps: []step{
+				{0.50, true, hurstGateStateArmed},
+				{0.58, true, hurstGateStateArmed},
+				{0.61, true, hurstGateStateDisarmed},
+				{0.56, true, hurstGateStateDisarmed},
+			},
+		},
+		{
+			name:  "absent_h_never_transitions_from_unknown",
+			hg:    &HurstGateConfig{Enabled: true, Min: hfp(0.55)},
+			start: hurstGateStateUnknown,
+			steps: []step{{math.NaN(), false, hurstGateStateUnknown}},
+		},
+		{
+			name:  "absent_h_never_transitions_from_armed",
+			hg:    &HurstGateConfig{Enabled: true, Min: hfp(0.55)},
+			start: hurstGateStateArmed,
+			steps: []step{{math.NaN(), false, hurstGateStateArmed}},
+		},
+		{
+			name:  "absent_h_never_transitions_from_disarmed",
+			hg:    &HurstGateConfig{Enabled: true, Min: hfp(0.55)},
+			start: hurstGateStateDisarmed,
+			steps: []step{{math.NaN(), false, hurstGateStateDisarmed}},
+		},
+		{
+			name:  "reading_above_one_arms_momentum_gate",
+			hg:    &HurstGateConfig{Enabled: true, Min: hfp(0.55)},
+			start: hurstGateStateUnknown,
+			steps: []step{{2.0033, true, hurstGateStateArmed}},
+		},
+		{
+			name:  "reading_above_one_disarms_mean_reversion_gate",
+			hg:    &HurstGateConfig{Enabled: true, Max: hfp(0.45)},
+			start: hurstGateStateArmed,
+			steps: []step{{2.0033, true, hurstGateStateDisarmed}},
+		},
 	}
-	st = advanceHurstState(hg, st, 0.55, true)
-	if st != hurstGateStateArmed {
-		t.Fatalf("H at the arm bound should arm, got %q", st)
-	}
-	st = advanceHurstState(hg, st, 0.51, true)
-	if st != hurstGateStateArmed {
-		t.Fatalf("armed must survive a dip above disarm_min, got %q", st)
-	}
-	st = advanceHurstState(hg, st, 0.4999, true)
-	if st != hurstGateStateDisarmed {
-		t.Fatalf("below disarm_min should disarm, got %q", st)
-	}
-}
-
-func TestHurstStateMachineHysteresisMaxOnly(t *testing.T) {
-	hg := &HurstGateConfig{Enabled: true, Max: hfp(0.45), DisarmMax: hfp(0.50)}
-	st := advanceHurstState(hg, hurstGateStateUnknown, 0.40, true)
-	if st != hurstGateStateArmed {
-		t.Fatalf("mean-reversion gate arms below max, got %q", st)
-	}
-	st = advanceHurstState(hg, st, 0.48, true)
-	if st != hurstGateStateArmed {
-		t.Fatalf("inside the gap must stay armed, got %q", st)
-	}
-	st = advanceHurstState(hg, st, 0.51, true)
-	if st != hurstGateStateDisarmed {
-		t.Fatalf("above disarm_max should disarm, got %q", st)
-	}
-	st = advanceHurstState(hg, st, 0.47, true)
-	if st != hurstGateStateDisarmed {
-		t.Fatalf("gap must not re-arm from disarmed, got %q", st)
-	}
-	st = advanceHurstState(hg, st, 0.45, true)
-	if st != hurstGateStateArmed {
-		t.Fatalf("back inside the arm band should arm, got %q", st)
-	}
-}
-
-func TestHurstStateMachineUnsetDisarmCollapsesToArmBound(t *testing.T) {
-	hg := &HurstGateConfig{Enabled: true, Min: hfp(0.55)}
-	st := advanceHurstState(hg, hurstGateStateArmed, 0.5499, true)
-	if st != hurstGateStateDisarmed {
-		t.Fatalf("without disarm_min the arm bound is the disarm bound, got %q", st)
-	}
-	st = advanceHurstState(hg, st, 0.55, true)
-	if st != hurstGateStateArmed {
-		t.Fatalf("at the bound should arm, got %q", st)
-	}
-}
-
-func TestHurstStateMachineBandConfig(t *testing.T) {
-	hg := &HurstGateConfig{Enabled: true, Min: hfp(0.45), Max: hfp(0.55), DisarmMin: hfp(0.40), DisarmMax: hfp(0.60)}
-	st := advanceHurstState(hg, hurstGateStateUnknown, 0.50, true)
-	if st != hurstGateStateArmed {
-		t.Fatalf("inside band arms, got %q", st)
-	}
-	st = advanceHurstState(hg, st, 0.58, true)
-	if st != hurstGateStateArmed {
-		t.Fatalf("inside the upper gap must stay armed, got %q", st)
-	}
-	st = advanceHurstState(hg, st, 0.61, true)
-	if st != hurstGateStateDisarmed {
-		t.Fatalf("above disarm_max disarms, got %q", st)
-	}
-	st = advanceHurstState(hg, st, 0.56, true)
-	if st != hurstGateStateDisarmed {
-		t.Fatalf("upper gap must not re-arm, got %q", st)
-	}
-}
-
-func TestHurstStateMachineAbsentHNeverTransitions(t *testing.T) {
-	hg := &HurstGateConfig{Enabled: true, Min: hfp(0.55)}
-	for _, prior := range []string{hurstGateStateUnknown, hurstGateStateArmed, hurstGateStateDisarmed} {
-		if got := advanceHurstState(hg, prior, math.NaN(), false); got != prior {
-			t.Fatalf("absent H changed %q -> %q; NaN must neither arm nor disarm", prior, got)
-		}
-	}
-}
-
-func TestHurstStateMachineHandlesReadingsAboveOne(t *testing.T) {
-	minOnly := &HurstGateConfig{Enabled: true, Min: hfp(0.55)}
-	if got := advanceHurstState(minOnly, hurstGateStateUnknown, 2.0033, true); got != hurstGateStateArmed {
-		t.Fatalf("H=2.0033 is above min and must arm a momentum gate, got %q", got)
-	}
-	maxOnly := &HurstGateConfig{Enabled: true, Max: hfp(0.45)}
-	if got := advanceHurstState(maxOnly, hurstGateStateArmed, 2.0033, true); got != hurstGateStateDisarmed {
-		t.Fatalf("H=2.0033 is above max and must disarm a mean-reversion gate, got %q", got)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := tc.start
+			for i, sp := range tc.steps {
+				st = advanceHurstState(tc.hg, st, sp.h, sp.observed)
+				if st != sp.want {
+					t.Fatalf("step %d (h=%v observed=%v): state = %q, want %q", i, sp.h, sp.observed, st, sp.want)
+				}
+			}
+		})
 	}
 }
 
@@ -661,28 +661,6 @@ func TestHurstStampsAcceptReadingsAboveOne(t *testing.T) {
 	captureTradeDiagnostics(s, &Position{Symbol: "ETH", Side: "long", AvgCost: 10, Quantity: 1}, 11, 1, "signal_close", time.Now().UTC())
 	if captured.HurstAtOpen != nil || captured.HurstSizeMult != nil {
 		t.Fatal("0 must still read as unstamped")
-	}
-}
-
-func TestHurstGateStatusMarker(t *testing.T) {
-	cases := []struct {
-		name string
-		d    HurstGateDecision
-		want string
-	}{
-		{"inactive renders nothing", HurstGateDecision{}, ""},
-		{"armed", HurstGateDecision{Active: true, Mode: HurstGateModeGate, H: 0.6123, HKnown: true}, "hurst=0.6123 (gate armed)"},
-		{"disarmed", HurstGateDecision{Active: true, Mode: HurstGateModeGate, H: 0.48, HKnown: true, Holds: true}, "hurst=0.4800 (gate disarmed)"},
-		{"unknown fail-closed", HurstGateDecision{Active: true, Mode: HurstGateModeGate, Holds: true}, "hurst=? (gate closed)"},
-		{"unknown fail-open", HurstGateDecision{Active: true, Mode: HurstGateModeGate}, "hurst=?"},
-		{"size", HurstGateDecision{Active: true, Mode: HurstGateModeSize, H: 0.575, HKnown: true, SizeMult: 0.5}, "hurst=0.5750 (size ×0.50)"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := hurstGateStatusMarker(tc.d); got != tc.want {
-				t.Fatalf("got %q want %q", got, tc.want)
-			}
-		})
 	}
 }
 

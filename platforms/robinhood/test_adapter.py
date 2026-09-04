@@ -32,13 +32,6 @@ def paper_adapter():
 
 
 class TestProperties:
-    def test_name(self, paper_adapter):
-        assert paper_adapter.name == "robinhood"
-
-    def test_paper_mode(self, paper_adapter):
-        assert paper_adapter.mode == "paper"
-        assert paper_adapter.is_live is False
-
     def test_live_mode_no_creds_raises(self):
         with patch.dict(os.environ, {}, clear=False):
             for key in ("ROBINHOOD_USERNAME", "ROBINHOOD_PASSWORD", "ROBINHOOD_TOTP_SECRET"):
@@ -48,13 +41,14 @@ class TestProperties:
 
 
 class TestSymbolResolution:
-    def test_crypto_resolves_to_yahoo(self, paper_adapter):
-        assert paper_adapter._resolve_yahoo_symbol("BTC") == "BTC-USD"
-        assert paper_adapter._resolve_yahoo_symbol("ETH") == "ETH-USD"
-
-    def test_stock_passes_through(self, paper_adapter):
-        assert paper_adapter._resolve_yahoo_symbol("SPY") == "SPY"
-        assert paper_adapter._resolve_yahoo_symbol("AAPL") == "AAPL"
+    @pytest.mark.parametrize("symbol,expected", [
+        ("BTC", "BTC-USD"),
+        ("ETH", "ETH-USD"),
+        ("SPY", "SPY"),
+        ("AAPL", "AAPL"),
+    ])
+    def test_resolve_yahoo_symbol(self, paper_adapter, symbol, expected):
+        assert paper_adapter._resolve_yahoo_symbol(symbol) == expected
 
 
 class TestMarketData:
@@ -83,14 +77,13 @@ class TestMarketData:
 
 
 class TestStrikeInterval:
-    def test_under_100(self):
-        assert _get_strike_interval(50) == 1
-
-    def test_100_to_500(self):
-        assert _get_strike_interval(200) == 5
-
-    def test_over_500(self):
-        assert _get_strike_interval(600) == 10
+    @pytest.mark.parametrize("price,expected", [
+        (50, 1),
+        (200, 5),
+        (600, 10),
+    ])
+    def test_interval_by_price_band(self, price, expected):
+        assert _get_strike_interval(price) == expected
 
 
 class TestOptionsProtocol:
@@ -118,13 +111,13 @@ class TestOptionsProtocol:
 
 
 class TestOrderExecution:
-    def test_market_buy_paper_raises(self, paper_adapter):
+    @pytest.mark.parametrize("method,args", [
+        ("market_buy", ("BTC", 1000)),
+        ("market_sell", ("BTC", 0.5)),
+    ])
+    def test_market_order_paper_raises(self, paper_adapter, method, args):
         with pytest.raises(RuntimeError, match="live mode"):
-            paper_adapter.market_buy("BTC", 1000)
-
-    def test_market_sell_paper_raises(self, paper_adapter):
-        with pytest.raises(RuntimeError, match="live mode"):
-            paper_adapter.market_sell("BTC", 0.5)
+            getattr(paper_adapter, method)(*args)
 
     def test_get_crypto_positions_not_logged_in(self, paper_adapter):
         assert paper_adapter.get_crypto_positions() == []

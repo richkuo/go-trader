@@ -153,15 +153,9 @@ def test_engine_path_short_fractional_entry():
     assert res["final_capital"] == pytest.approx(1100.0)
 
 
-def test_zero_entry_fraction_rejected():
+@pytest.mark.parametrize("fractions", [[0.0, 1.0, 1.0], [1.5, 1.0, 1.0]])
+def test_invalid_entry_fraction_rejected(fractions):
     closes = [100, 100, 100]
     signals = [1, 0, 0]
     with pytest.raises(ValueError, match=r"entry_fraction .* \(0, 1\]"):
-        _run(_df(closes, signals, entry_fraction=[0.0, 1.0, 1.0]))
-
-
-def test_out_of_range_entry_fraction_rejected():
-    closes = [100, 100, 100]
-    signals = [1, 0, 0]
-    with pytest.raises(ValueError, match=r"entry_fraction .* \(0, 1\]"):
-        _run(_df(closes, signals, entry_fraction=[1.5, 1.0, 1.0]))
+        _run(_df(closes, signals, entry_fraction=fractions))

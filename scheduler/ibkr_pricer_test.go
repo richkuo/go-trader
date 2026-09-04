@@ -162,62 +162,78 @@ func TestIBKRPricerFetchSpotPrice(t *testing.T) {
 }
 
 func TestIBKRPricerGetOptionPriceFull(t *testing.T) {
-	prices := map[string]float64{
-		"BTC/USDT": 60000,
+	cases := []struct {
+		name       string
+		prices     map[string]float64
+		underlying string
+		expiry     string
+		wantErr    bool
+		check      func(t *testing.T, markPrice, spotPrice float64, greeks OptGreeks)
+	}{
+		{
+			name:       "future expiry prices and greeks",
+			prices:     map[string]float64{"BTC/USDT": 60000},
+			underlying: "BTC",
+			expiry:     "2027-12-31",
+			check: func(t *testing.T, markPrice, spotPrice float64, greeks OptGreeks) {
+				if spotPrice != 60000 {
+					t.Errorf("spotPrice = %g, want 60000", spotPrice)
+				}
+				if markPrice <= 0 {
+					t.Errorf("markPrice should be > 0 for future expiry, got %g", markPrice)
+				}
+				if greeks.Delta <= 0 {
+					t.Errorf("call delta should be > 0, got %g", greeks.Delta)
+				}
+			},
+		},
+		{
+			name:       "expired option zeroes mark and greeks",
+			prices:     map[string]float64{"BTC/USDT": 60000},
+			underlying: "BTC",
+			expiry:     "2020-01-01",
+			check: func(t *testing.T, markPrice, spotPrice float64, greeks OptGreeks) {
+				if spotPrice != 60000 {
+					t.Errorf("spotPrice = %g, want 60000", spotPrice)
+				}
+				if markPrice != 0 {
+					t.Errorf("expired option markPrice should be 0, got %g", markPrice)
+				}
+				if greeks.Delta != 0 {
+					t.Errorf("expired option delta should be 0, got %g", greeks.Delta)
+				}
+			},
+		},
+		{
+			name:       "invalid expiry format",
+			prices:     map[string]float64{"BTC/USDT": 60000},
+			underlying: "BTC",
+			expiry:     "not-a-date",
+			wantErr:    true,
+		},
+		{
+			name:       "unknown underlying",
+			prices:     map[string]float64{},
+			underlying: "UNKNOWN",
+			expiry:     "2027-12-31",
+			wantErr:    true,
+		},
 	}
-	pricer := NewIBKRPricer(prices)
-
-	markPrice, spotPrice, greeks, err := pricer.GetOptionPriceFull("BTC", "call", 60000, "2027-12-31")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if spotPrice != 60000 {
-		t.Errorf("spotPrice = %g, want 60000", spotPrice)
-	}
-	if markPrice <= 0 {
-		t.Errorf("markPrice should be > 0 for future expiry, got %g", markPrice)
-	}
-	if greeks.Delta <= 0 {
-		t.Errorf("call delta should be > 0, got %g", greeks.Delta)
-	}
-}
-
-func TestIBKRPricerGetOptionPriceExpired(t *testing.T) {
-	prices := map[string]float64{
-		"BTC/USDT": 60000,
-	}
-	pricer := NewIBKRPricer(prices)
-
-	markPrice, spotPrice, greeks, err := pricer.GetOptionPriceFull("BTC", "call", 60000, "2020-01-01")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if spotPrice != 60000 {
-		t.Errorf("spotPrice = %g, want 60000", spotPrice)
-	}
-	if markPrice != 0 {
-		t.Errorf("expired option markPrice should be 0, got %g", markPrice)
-	}
-	if greeks.Delta != 0 {
-		t.Errorf("expired option delta should be 0, got %g", greeks.Delta)
-	}
-}
-
-func TestIBKRPricerInvalidExpiry(t *testing.T) {
-	prices := map[string]float64{"BTC/USDT": 60000}
-	pricer := NewIBKRPricer(prices)
-
-	_, _, _, err := pricer.GetOptionPriceFull("BTC", "call", 60000, "not-a-date")
-	if err == nil {
-		t.Error("expected error for invalid expiry format")
-	}
-}
-
-func TestIBKRPricerUnknownUnderlying(t *testing.T) {
-	pricer := NewIBKRPricer(map[string]float64{})
-	_, _, _, err := pricer.GetOptionPriceFull("UNKNOWN", "call", 100, "2027-12-31")
-	if err == nil {
-		t.Error("expected error for unknown underlying")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pricer := NewIBKRPricer(tc.prices)
+			markPrice, spotPrice, greeks, err := pricer.GetOptionPriceFull(tc.underlying, "call", 60000, tc.expiry)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			tc.check(t, markPrice, spotPrice, greeks)
+		})
 	}
 }
 

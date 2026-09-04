@@ -128,76 +128,40 @@ def test_shims_produce_independent_registries(spot_shim, futures_shim):
     assert "triple_ema_bidir" in futures_shim.STRATEGY_REGISTRY
 
 
-def test_deprecated_range_scalper_hidden_but_loadable(spot_shim, futures_shim, conftest_helpers):
-    for shim in (spot_shim, futures_shim):
-        assert "range_scalper" not in shim.list_strategies()
-        assert "range_scalper" in shim.STRATEGY_REGISTRY
-        df = conftest_helpers.make_ohlcv(conftest_helpers.make_trending_up(80))
-        result = shim.apply_strategy("range_scalper", df)
-        assert len(result) == len(df)
-        assert result.index.equals(df.index)
-        assert "signal" in result.columns
-        assert set(result["signal"].dropna().unique()).issubset({-1, 0, 1})
+_HIDDEN_LOADABLE_CASES = [
+    ("range_scalper", ("spot", "futures"), 80, None),
+    ("session_breakout", ("futures",), 200, "15min"),
+    ("vol_momentum", ("spot", "futures"), 80, None),
+    ("donchian_breakout", ("spot", "futures"), 80, None),
+    ("amd_ifvg", ("spot", "futures"), 200, "15min"),
+]
 
 
-def test_deprecated_session_breakout_hidden_but_loadable(spot_shim, futures_shim, conftest_helpers):
+@pytest.mark.parametrize("name,registered_on,bars,freq", _HIDDEN_LOADABLE_CASES,
+                         ids=[c[0] for c in _HIDDEN_LOADABLE_CASES])
+def test_deprecated_strategy_hidden_but_loadable(
+        name, registered_on, bars, freq, spot_shim, futures_shim, conftest_helpers):
     import pandas as pd
-    assert "session_breakout" not in futures_shim.list_strategies()
-    assert "session_breakout" in futures_shim.STRATEGY_REGISTRY
-    assert "session_breakout" not in spot_shim.list_strategies()
-    assert "session_breakout" not in spot_shim.STRATEGY_REGISTRY
-    idx = pd.date_range("2024-01-01", periods=200, freq="15min")
-    df = conftest_helpers.make_ohlcv(conftest_helpers.make_trending_up(200), index=idx)
-    result = futures_shim.apply_strategy("session_breakout", df)
-    assert len(result) == len(df)
-    assert result.index.equals(df.index)
-    assert "signal" in result.columns
-    assert set(result["signal"].dropna().unique()).issubset({-1, 0, 1})
-
-
-def test_deprecated_vol_momentum_hidden_but_loadable(spot_shim, futures_shim, conftest_helpers):
-    for shim in (spot_shim, futures_shim):
-        assert "vol_momentum" not in shim.list_strategies()
-        assert "vol_momentum" in shim.STRATEGY_REGISTRY
-        df = conftest_helpers.make_ohlcv(conftest_helpers.make_trending_up(80))
-        result = shim.apply_strategy("vol_momentum", df)
+    for platform, shim in (("spot", spot_shim), ("futures", futures_shim)):
+        assert name not in shim.list_strategies()
+        if platform not in registered_on:
+            assert name not in shim.STRATEGY_REGISTRY
+            continue
+        assert name in shim.STRATEGY_REGISTRY
+        index = (pd.date_range("2024-01-01", periods=bars, freq=freq)
+                 if freq else None)
+        df = conftest_helpers.make_ohlcv(
+            conftest_helpers.make_trending_up(bars), index=index)
+        result = shim.apply_strategy(name, df)
         assert len(result) == len(df)
         assert result.index.equals(df.index)
         assert "signal" in result.columns
         assert set(result["signal"].dropna().unique()).issubset({-1, 0, 1})
 
+
+def test_vol_momentum_variant_allows_short_only_on_futures(spot_shim, futures_shim):
     assert spot_shim.STRATEGY_REGISTRY["vol_momentum"]["default_params"]["allow_short"] is False
     assert futures_shim.STRATEGY_REGISTRY["vol_momentum"]["default_params"]["allow_short"] is True
-
-
-def test_deprecated_donchian_breakout_hidden_but_loadable(spot_shim, futures_shim, conftest_helpers):
-    for shim in (spot_shim, futures_shim):
-        assert "donchian_breakout" not in shim.list_strategies()
-        assert "donchian_breakout" in shim.STRATEGY_REGISTRY
-        df = conftest_helpers.make_ohlcv(conftest_helpers.make_trending_up(80))
-        result = shim.apply_strategy("donchian_breakout", df)
-        assert len(result) == len(df)
-        assert result.index.equals(df.index)
-        assert "signal" in result.columns
-        assert set(result["signal"].dropna().unique()).issubset({-1, 0, 1})
-
-
-def test_deprecated_amd_ifvg_hidden_but_loadable(spot_shim, futures_shim, conftest_helpers):
-    import pandas as pd
-    idx = pd.date_range("2024-01-01", periods=200, freq="15min")
-    df = conftest_helpers.make_ohlcv(conftest_helpers.make_trending_up(200), index=idx)
-    for shim in (spot_shim, futures_shim):
-        assert "amd_ifvg" not in shim.list_strategies()
-        assert "amd_ifvg" in shim.STRATEGY_REGISTRY
-        result = shim.apply_strategy("amd_ifvg", df)
-        assert len(result) == len(df)
-        assert result.index.equals(df.index)
-        assert "signal" in result.columns
-        assert set(result["signal"].dropna().unique()).issubset({-1, 0, 1})
-    p = spot_shim.STRATEGY_REGISTRY["amd_ifvg"]["default_params"]
-    assert p["session_tz"] == "America/New_York"
-    assert (p["asian_start_hour"], p["asian_end_hour"]) == (20, 0)
-    assert (p["london_start_hour"], p["london_end_hour"]) == (2, 5)
 
 
 def test_momentum_variant_overrides_threshold(spot_shim, futures_shim):

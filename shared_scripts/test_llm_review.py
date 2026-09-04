@@ -41,17 +41,14 @@ CTX = {
 
 
 class TestWordCap:
-    def test_under_cap_unchanged(self, mod):
-        assert mod.truncate_to_word_cap("one two three", 5) == "one two three"
-
-    def test_normalizes_whitespace(self, mod):
-        assert mod.truncate_to_word_cap("  a\n b\tc ", 5) == "a b c"
-
-    def test_truncates_with_ellipsis(self, mod):
-        assert mod.truncate_to_word_cap("a b c d e", 3) == "a b c …"
-
-    def test_none_safe(self, mod):
-        assert mod.truncate_to_word_cap(None, 3) == ""
+    @pytest.mark.parametrize("text,cap,expected", [
+        ("one two three", 5, "one two three"),
+        ("  a\n b\tc ", 5, "a b c"),
+        ("a b c d e", 3, "a b c …"),
+        (None, 3, ""),
+    ])
+    def test_word_cap(self, mod, text, cap, expected):
+        assert mod.truncate_to_word_cap(text, cap) == expected
 
 
 class TestSummarizeOhlcv:
@@ -70,17 +67,18 @@ class TestSummarizeOhlcv:
 
 
 class TestJudgeParsing:
-    def test_strict_json(self, mod):
-        v, r = mod.parse_judge_output('{"verdict": "Bullish", "rationale": "looks good"}', 55)
-        assert v == "bullish" and r == "looks good"
+    @pytest.mark.parametrize("raw,verdict", [
+        ('{"verdict": "Bullish", "rationale": "looks good"}', "bullish"),
+        ('```json\n{"verdict":"bearish","rationale":"r"}\n```', "bearish"),
+        ("Overall this reads mixed to me because ...", "mixed"),
+    ])
+    def test_verdict_parsing(self, mod, raw, verdict):
+        v, _ = mod.parse_judge_output(raw, 55)
+        assert v == verdict
 
-    def test_fenced_json(self, mod):
-        v, _ = mod.parse_judge_output('```json\n{"verdict":"bearish","rationale":"r"}\n```', 55)
-        assert v == "bearish"
-
-    def test_keyword_fallback_single(self, mod):
-        v, r = mod.parse_judge_output("Overall this reads mixed to me because ...", 55)
-        assert v == "mixed"
+    def test_strict_json_rationale(self, mod):
+        _, r = mod.parse_judge_output('{"verdict": "Bullish", "rationale": "looks good"}', 55)
+        assert r == "looks good"
 
     def test_ambiguous_raises(self, mod):
         with pytest.raises(RuntimeError):

@@ -107,64 +107,29 @@ def test_tiered_tp_atr_uses_entry_atr_multiple(registry):
     assert hit == {"close_fraction": 1.0, "reason": "tiered_tp_atr:5"}
 
 
-def test_tiered_tp_atr_live_uses_market_atr(registry):
-    live_hit = registry.evaluate(
-        "tiered_tp_atr_live",
-        {"side": "long", "avg_cost": 100, "current_quantity": 1, "initial_quantity": 1, "entry_atr": 2},
-        {"mark_price": 105, "atr": 3},
-        {},
-    )
-    assert live_hit == {"close_fraction": 0.4, "reason": "tiered_tp_atr_live:live:1.5"}
+_LIVE_POS = {"side": "long", "avg_cost": 100, "current_quantity": 1,
+             "initial_quantity": 1, "entry_atr": 2}
 
 
-def test_tiered_tp_atr_live_falls_back_to_entry_atr(registry):
-    fallback = registry.evaluate(
-        "tiered_tp_atr_live",
-        {"side": "long", "avg_cost": 100, "current_quantity": 1, "initial_quantity": 1, "entry_atr": 2},
-        {"mark_price": 110},
-        {},
-    )
-    assert fallback == {"close_fraction": 1.0, "reason": "tiered_tp_atr_live:entry_fallback:5"}
-
-
-def test_tiered_tp_atr_live_zero_live_atr_falls_back(registry):
-    result = registry.evaluate(
-        "tiered_tp_atr_live",
-        {"side": "long", "avg_cost": 100, "current_quantity": 1, "initial_quantity": 1, "entry_atr": 2},
-        {"mark_price": 103, "atr": 0},
-        {},
-    )
-    assert result["reason"].startswith("tiered_tp_atr_live:entry_fallback")
-
-
-def test_tiered_tp_atr_live_missing_all_atr_noop(registry):
-    result = registry.evaluate(
-        "tiered_tp_atr_live",
-        {"side": "long", "avg_cost": 100, "current_quantity": 1, "initial_quantity": 1},
-        {"mark_price": 104},
-        {},
-    )
-    assert result == {"close_fraction": 0.0, "reason": "noop:missing_atr"}
-
-
-def test_tiered_tp_atr_live_entry_source_ignores_market_atr(registry):
-    result = registry.evaluate(
-        "tiered_tp_atr_live",
-        {"side": "long", "avg_cost": 100, "current_quantity": 1, "initial_quantity": 1, "entry_atr": 2},
-        {"mark_price": 110, "atr": 10},
-        {"atr_source": "entry"},
-    )
-    assert result == {"close_fraction": 1.0, "reason": "tiered_tp_atr_live:entry:5"}
-
-
-def test_tiered_tp_atr_live_short_side(registry):
-    result = registry.evaluate(
-        "tiered_tp_atr_live",
-        {"side": "short", "avg_cost": 100, "current_quantity": 1, "initial_quantity": 1, "entry_atr": 5},
-        {"mark_price": 90, "atr": 2},
-        {},
-    )
-    assert result == {"close_fraction": 1.0, "reason": "tiered_tp_atr_live:live:5"}
+@pytest.mark.parametrize("position,market,params,expected", [
+    (_LIVE_POS, {"mark_price": 105, "atr": 3}, {},
+     {"close_fraction": 0.4, "reason": "tiered_tp_atr_live:live:1.5"}),
+    (_LIVE_POS, {"mark_price": 110}, {},
+     {"close_fraction": 1.0, "reason": "tiered_tp_atr_live:entry_fallback:5"}),
+    (_LIVE_POS, {"mark_price": 103, "atr": 0}, {},
+     {"close_fraction": 0.4, "reason": "tiered_tp_atr_live:entry_fallback:1.5"}),
+    ({"side": "long", "avg_cost": 100, "current_quantity": 1, "initial_quantity": 1},
+     {"mark_price": 104}, {},
+     {"close_fraction": 0.0, "reason": "noop:missing_atr"}),
+    (_LIVE_POS, {"mark_price": 110, "atr": 10}, {"atr_source": "entry"},
+     {"close_fraction": 1.0, "reason": "tiered_tp_atr_live:entry:5"}),
+    ({"side": "short", "avg_cost": 100, "current_quantity": 1,
+      "initial_quantity": 1, "entry_atr": 5},
+     {"mark_price": 90, "atr": 2}, {},
+     {"close_fraction": 1.0, "reason": "tiered_tp_atr_live:live:5"}),
+])
+def test_tiered_tp_atr_live_atr_source_resolution(registry, position, market, params, expected):
+    assert registry.evaluate("tiered_tp_atr_live", position, market, params) == expected
 
 
 def test_market_atr_wiring_end_to_end(registry):

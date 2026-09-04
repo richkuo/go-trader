@@ -35,31 +35,57 @@ def test_load_spec_accepts_committed_1198_shape():
     assert spec["candidates"][1]["candidate"]["allowed_regimes"] == ["trending_up", "ranging"]
 
 
-def test_load_spec_rejects_unknown_harness():
-    with pytest.raises(ValueError, match="unknown harnesses"):
-        asug.load_spec(_base_spec(harnesses=["m1", "m9"]), _STUDY_DIR)
+_M6_VARIANT = {"key": "v",
+               "candidate_close": [{"name": "atr_stop",
+                                    "params": {"atr_mult": 2}}]}
 
 
-def test_load_spec_rejects_unknown_window():
-    with pytest.raises(ValueError, match="unknown windows"):
-        asug.load_spec(_base_spec(windows=["is", "nope"]), _STUDY_DIR)
-
-
-def test_load_spec_rejects_unknown_registry():
-    with pytest.raises(ValueError, match="registry must be"):
-        asug.load_spec(_base_spec(registry="options"), _STUDY_DIR)
-
-
-def test_load_spec_rejects_non_bh_correction():
-    with pytest.raises(ValueError, match="benjamini_hochberg"):
-        asug.load_spec(_base_spec(correction={"method": "bonferroni"}), _STUDY_DIR)
-
-
-def test_load_spec_runs_candidate_validator():
-    bad = _base_spec(candidates=[{"key": "c", "candidate": {
-        "name": "squeeze_momentum", "allowed_regimes": "trending_up"}}])
-    with pytest.raises(ValueError, match="allowed_regimes"):
-        asug.load_spec(bad, _STUDY_DIR)
+@pytest.mark.parametrize("overrides,match", [
+    (dict(harnesses=["m1", "m9"]), "unknown harnesses"),
+    (dict(windows=["is", "nope"]), "unknown windows"),
+    (dict(registry="options"), "registry must be"),
+    (dict(correction={"method": "bonferroni"}), "benjamini_hochberg"),
+    (dict(candidates=[{"key": "c", "candidate": {
+        "name": "squeeze_momentum", "allowed_regimes": "trending_up"}}]),
+     "allowed_regimes"),
+    (dict(correction={"method": "benjamini_hochberg", "family_size": 0}),
+     "family_size"),
+    (dict(correction={"method": "benjamini_hochberg", "family_size": -1}),
+     "family_size"),
+    (dict(correction={"method": "benjamini_hochberg", "family_size": 1.5}),
+     "family_size"),
+    (dict(correction={"method": "benjamini_hochberg", "family_size": True}),
+     "family_size"),
+    (dict(correction={"method": "benjamini_hochberg", "family_size": "8"}),
+     "family_size"),
+    (dict(candidates=[], m6={"strategy_id": "s", "baseline_config": "cfg.json",
+                             "incumbent_close": [{"name": "tiered_tp_atr"}],
+                             "candidate_close_variants": []}), "EXACTLY one"),
+    (dict(candidates=[], m6={"strategy_id": "s",
+                             "candidate_close_variants": []}), "EXACTLY one"),
+    (dict(candidates=[], m6={"incumbent_close": [{"name": "tiered_tp_atr",
+                                                  "params": {}}],
+                             "candidate_close_variants": [_M6_VARIANT]}),
+     "strategy_id"),
+    (dict(candidates=[], m6={"baseline_config": "cfg.json",
+                             "candidate_close_variants": [_M6_VARIANT]}),
+     "strategy_id"),
+    (dict(candidates=[], m6={
+        "incumbent_close": [{"name": "tiered_tp_atr", "params": {}}],
+        "candidate_close_variants": [],
+        "close_stack_specs": [{"close": {"name": "atr_stop",
+                                         "params": {"atr_mult": [2.0]}}}]}),
+     "close_stack_specs"),
+    (dict(mc={"kill_switch_pct": 30, "config": "c.json", "strategy_id": "x"}),
+     "mutually exclusive"),
+    (dict(mc={"config": "c.json"}), "go together"),
+    (dict(mc={"strategy_id": "x"}), "go together"),
+    (dict(mc={"schemes": ["permute"]}), "unknown mc keys"),
+    (dict(mc={"n_paths": 0}), "n_paths"),
+])
+def test_load_spec_rejects_invalid_spec(overrides, match):
+    with pytest.raises(ValueError, match=match):
+        asug.load_spec(_base_spec(**overrides), _STUDY_DIR)
 
 
 def test_expand_explicit_candidates():
@@ -133,19 +159,6 @@ def test_non_replayable_m6_close_excluded():
     assert entries["m6.good"]["precondition_errors"] == []
 
 
-def test_m6_requires_exactly_one_incumbent_source():
-    base = dict(candidates=[])
-    both = _base_spec(**base, m6={"strategy_id": "s", "baseline_config": "cfg.json",
-                                  "incumbent_close": [{"name": "tiered_tp_atr"}],
-                                  "candidate_close_variants": []})
-    with pytest.raises(ValueError, match="EXACTLY one"):
-        asug.load_spec(both, _STUDY_DIR)
-    neither = _base_spec(**base, m6={"strategy_id": "s",
-                                     "candidate_close_variants": []})
-    with pytest.raises(ValueError, match="EXACTLY one"):
-        asug.load_spec(neither, _STUDY_DIR)
-
-
 def test_m6_incumbent_close_only_spec_loads():
     spec = asug.load_spec(_base_spec(candidates=[], m6={
         "strategy_id": "squeeze_momentum",
@@ -159,15 +172,6 @@ def test_m6_incumbent_close_only_spec_loads():
     assert ab[0]["candidate"]["baseline_config"] is None
 
 
-def test_m6_missing_strategy_id_everywhere_fails_at_load():
-    bad = _base_spec(candidates=[], m6={
-        "incumbent_close": [{"name": "tiered_tp_atr", "params": {}}],
-        "candidate_close_variants": [
-            {"key": "v", "candidate_close": [{"name": "atr_stop", "params": {"atr_mult": 2}}]}]})
-    with pytest.raises(ValueError, match="strategy_id"):
-        asug.load_spec(bad, _STUDY_DIR)
-
-
 def test_m6_per_variant_strategy_id_override_loads_without_m6_default():
     spec = asug.load_spec(_base_spec(candidates=[], m6={
         "incumbent_close": [{"name": "tiered_tp_atr", "params": {}}],
@@ -177,24 +181,6 @@ def test_m6_per_variant_strategy_id_override_loads_without_m6_default():
     ), _STUDY_DIR)
     ab = [e for e in asug.expand_candidates(spec) if e["kind"] == "exit_ab"]
     assert len(ab) == 1 and ab[0]["candidate"]["strategy_id"] == "squeeze_momentum"
-
-
-def test_m6_close_stack_specs_require_m6_level_strategy_id():
-    bad = _base_spec(candidates=[], m6={
-        "incumbent_close": [{"name": "tiered_tp_atr", "params": {}}],
-        "candidate_close_variants": [],
-        "close_stack_specs": [{"close": {"name": "atr_stop", "params": {"atr_mult": [2.0]}}}]})
-    with pytest.raises(ValueError, match="close_stack_specs"):
-        asug.load_spec(bad, _STUDY_DIR)
-
-
-def test_m6_baseline_config_path_also_requires_strategy_id():
-    bad = _base_spec(candidates=[], m6={
-        "baseline_config": "cfg.json",
-        "candidate_close_variants": [
-            {"key": "v", "candidate_close": [{"name": "atr_stop", "params": {"atr_mult": 2}}]}]})
-    with pytest.raises(ValueError, match="strategy_id"):
-        asug.load_spec(bad, _STUDY_DIR)
 
 
 
@@ -362,10 +348,6 @@ def test_correction_empty_family():
     assert corr["n_survivors"] == 0
 
 
-def _one_test(p):
-    return [{"candidate_key": "a", "harness": "m6", "p": p, "effect_positive": True}]
-
-
 def test_bh_family_size_widens_denominator_and_is_stricter():
     pvals = [0.01, 0.04]
     assert benjamini_hochberg(pvals, 0.05) == [True, True]
@@ -406,20 +388,6 @@ def test_load_spec_accepts_positive_family_size():
                                "family_size": 40}),
         _STUDY_DIR)
     assert spec["correction"]["family_size"] == 40
-
-
-def test_load_spec_defaults_family_size_none():
-    spec = asug.load_spec(_base_spec(), _STUDY_DIR)
-    assert spec["correction"]["family_size"] is None
-
-
-@pytest.mark.parametrize("bad", [0, -1, 1.5, True, "8"])
-def test_load_spec_rejects_bad_family_size(bad):
-    with pytest.raises(ValueError, match="family_size"):
-        asug.load_spec(
-            _base_spec(correction={"method": "benjamini_hochberg",
-                                   "family_size": bad}),
-            _STUDY_DIR)
 
 
 def test_collect_family_pvalues_dedupes_noise_and_excludes_m3_m5():
@@ -679,27 +647,6 @@ def test_mc_argv_tail_threshold_sources_are_exclusive():
     assert "--kill-switch-pct" not in from_cfg
 
 
-def test_load_spec_rejects_both_mc_threshold_sources():
-    with pytest.raises(ValueError, match="mutually exclusive"):
-        asug.load_spec(_base_spec(mc={"kill_switch_pct": 30,
-                                      "config": "c.json",
-                                      "strategy_id": "x"}), _STUDY_DIR)
-
-
-def test_load_spec_rejects_mc_config_without_strategy_id():
-    with pytest.raises(ValueError, match="go together"):
-        asug.load_spec(_base_spec(mc={"config": "c.json"}), _STUDY_DIR)
-    with pytest.raises(ValueError, match="go together"):
-        asug.load_spec(_base_spec(mc={"strategy_id": "x"}), _STUDY_DIR)
-
-
-def test_load_spec_rejects_unknown_mc_key_and_bad_n_paths():
-    with pytest.raises(ValueError, match="unknown mc keys"):
-        asug.load_spec(_base_spec(mc={"schemes": ["permute"]}), _STUDY_DIR)
-    with pytest.raises(ValueError, match="n_paths"):
-        asug.load_spec(_base_spec(mc={"n_paths": 0}), _STUDY_DIR)
-
-
 def test_load_spec_resolves_mc_config_against_the_spec_dir():
     spec = asug.load_spec(_base_spec(mc={"config": "cfg.json",
                                          "strategy_id": "hl-x"}), _STUDY_DIR)
@@ -856,26 +803,11 @@ _NO_TRADES = {"p_dd_ge_kill_switch": None, "p95_max_dd": None,
               "p_final_below_start": None}
 
 
-def test_mc_column_falls_back_to_a_scored_window_when_oos_is_all_no_data():
-    mc = _mc_data(**{"is": _SCORED, "oos": None})
-    assert asug._mc_column_window(mc) == "is"
-    seg = asug._mc_segment(mc)
-    assert "MC(adv,is)=p95DD 40.0%" in seg
-
-
-def test_mc_column_still_prefers_oos_when_both_windows_are_scored():
-    mc = _mc_data(**{"is": _SCORED, "oos": _SCORED_OOS})
-    assert asug._mc_column_window(mc) == "oos"
-    assert "MC(adv,oos)=p95DD 70.0%" in asug._mc_segment(mc)
-
-
-def test_mc_column_prefers_a_scored_window_over_a_zero_trade_one():
-    mc = _mc_data(**{"is": _SCORED, "oos": _NO_TRADES})
-    assert asug._mc_column_window(mc) == "is"
-    assert "MC(adv,is)" in asug._mc_segment(mc)
-
-
-def test_mc_column_absent_when_no_window_was_resampled_at_all():
-    assert asug._mc_column_window(_mc_data(**{"is": None, "oos": None})) is None
-    assert asug._mc_segment(_mc_data(**{"is": None, "oos": None})) == ""
-    assert asug._mc_segment({}) == ""
+@pytest.mark.parametrize("windows,expected", [
+    ({"is": _SCORED, "oos": None}, "is"),
+    ({"is": _SCORED, "oos": _SCORED_OOS}, "oos"),
+    ({"is": _SCORED, "oos": _NO_TRADES}, "is"),
+    ({"is": None, "oos": None}, None),
+])
+def test_mc_column_window(windows, expected):
+    assert asug._mc_column_window(_mc_data(**windows)) == expected

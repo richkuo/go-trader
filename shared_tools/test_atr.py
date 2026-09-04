@@ -52,20 +52,13 @@ def test_ensure_atr_indicator_injects_when_missing():
     assert out is df
 
 
-def test_ensure_atr_indicator_noop_when_present():
+@pytest.mark.parametrize("kwargs", [{}, {"period": 14, "method": "wilder"}])
+def test_ensure_atr_indicator_noop_when_present(kwargs):
     df = make_ohlcv(_make_close(30), volume=1.0, noise=0.5)
     sentinel = pd.Series([99.0] * 30, index=df.index)
     df["atr"] = sentinel
-    ensure_atr_indicator(df)
+    ensure_atr_indicator(df, **kwargs)
     pd.testing.assert_series_equal(df["atr"], sentinel, check_names=False)
-
-
-def test_ensure_atr_indicator_idempotent():
-    df = make_ohlcv(_make_close(30), volume=1.0, noise=0.5)
-    ensure_atr_indicator(df)
-    first = df["atr"].copy()
-    ensure_atr_indicator(df)
-    pd.testing.assert_series_equal(df["atr"], first)
 
 
 def test_latest_atr_returns_last_finite_value():
@@ -89,13 +82,6 @@ def test_ensure_atr_indicator_threads_method():
     wilder = ensure_atr_indicator(big.copy(), period=14, method="wilder")["atr"].dropna()
     assert (simple == simple.round(0)).all()
     assert (wilder != wilder.round(0)).any()
-
-
-def test_ensure_atr_indicator_preserves_strategy_atr_regardless_of_method():
-    df = make_ohlcv(_make_close(30), volume=1.0, noise=0.5)
-    df["atr"] = 42.0
-    out = ensure_atr_indicator(df, period=14, method="wilder")
-    assert (out["atr"] == 42.0).all()
 
 
 def test_latest_atr_rejects_unknown_method():

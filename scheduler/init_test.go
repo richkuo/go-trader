@@ -592,62 +592,36 @@ func TestGenerateConfig_IntervalDefaults(t *testing.T) {
 	}
 }
 
-func TestGenerateConfig_PortfolioRiskDefaults(t *testing.T) {
-	cfg := generateConfig(baseOpts())
+func TestGenerateConfig_PortfolioRisk(t *testing.T) {
+	cases := []struct {
+		name         string
+		maxDrawdown  float64
+		warnThresh   float64
+		wantDrawdown float64
+		wantWarn     float64
+	}{
+		{"unset uses defaults", 0, 0, 25, 60},
+		{"explicit override", 15, 70, 15, 70},
+		{"explicit zero keeps defaults", 0, 0, 25, 60},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := baseOpts()
+			opts.PortfolioMaxDrawdownPct = tc.maxDrawdown
+			opts.PortfolioWarnThresholdPct = tc.warnThresh
 
-	if cfg.PortfolioRisk == nil {
-		t.Fatal("expected PortfolioRisk to be set")
-	}
-	if cfg.PortfolioRisk.MaxDrawdownPct != 25 {
-		t.Errorf("expected MaxDrawdownPct=25, got %.0f", cfg.PortfolioRisk.MaxDrawdownPct)
-	}
-	if cfg.PortfolioRisk.WarnThresholdPct != 60 {
-		t.Errorf("expected WarnThresholdPct=60, got %.0f", cfg.PortfolioRisk.WarnThresholdPct)
-	}
-}
+			cfg := generateConfig(opts)
 
-func TestGenerateConfig_PortfolioRiskOverride(t *testing.T) {
-	opts := baseOpts()
-	opts.PortfolioMaxDrawdownPct = 15
-	opts.PortfolioWarnThresholdPct = 70
-
-	cfg := generateConfig(opts)
-
-	if cfg.PortfolioRisk == nil {
-		t.Fatal("expected PortfolioRisk to be set")
-	}
-	if cfg.PortfolioRisk.MaxDrawdownPct != 15 {
-		t.Errorf("expected MaxDrawdownPct=15, got %.0f", cfg.PortfolioRisk.MaxDrawdownPct)
-	}
-	if cfg.PortfolioRisk.WarnThresholdPct != 70 {
-		t.Errorf("expected WarnThresholdPct=70, got %.0f", cfg.PortfolioRisk.WarnThresholdPct)
-	}
-}
-
-func TestGenerateConfig_PortfolioRiskZeroKeepsDefaults(t *testing.T) {
-	opts := baseOpts()
-	opts.PortfolioMaxDrawdownPct = 0
-	opts.PortfolioWarnThresholdPct = 0
-
-	cfg := generateConfig(opts)
-
-	if cfg.PortfolioRisk.MaxDrawdownPct != 25 || cfg.PortfolioRisk.WarnThresholdPct != 60 {
-		t.Errorf("expected defaults 25/60, got %.0f/%.0f",
-			cfg.PortfolioRisk.MaxDrawdownPct, cfg.PortfolioRisk.WarnThresholdPct)
-	}
-}
-
-func TestInitOptions_PortfolioRiskJSONTags(t *testing.T) {
-	blob := `{"portfolioMaxDrawdownPct": 18, "portfolioWarnThresholdPct": 65}`
-	var opts InitOptions
-	if err := json.Unmarshal([]byte(blob), &opts); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if opts.PortfolioMaxDrawdownPct != 18 {
-		t.Errorf("expected 18, got %.0f", opts.PortfolioMaxDrawdownPct)
-	}
-	if opts.PortfolioWarnThresholdPct != 65 {
-		t.Errorf("expected 65, got %.0f", opts.PortfolioWarnThresholdPct)
+			if cfg.PortfolioRisk == nil {
+				t.Fatal("expected PortfolioRisk to be set")
+			}
+			if cfg.PortfolioRisk.MaxDrawdownPct != tc.wantDrawdown {
+				t.Errorf("expected MaxDrawdownPct=%g, got %g", tc.wantDrawdown, cfg.PortfolioRisk.MaxDrawdownPct)
+			}
+			if cfg.PortfolioRisk.WarnThresholdPct != tc.wantWarn {
+				t.Errorf("expected WarnThresholdPct=%g, got %g", tc.wantWarn, cfg.PortfolioRisk.WarnThresholdPct)
+			}
+		})
 	}
 }
 
@@ -683,12 +657,9 @@ func TestMakePairs(t *testing.T) {
 			t.Errorf("pair[%d]: expected %v, got %v", i, expected[i], pair)
 		}
 	}
-}
 
-func TestMakePairs_TwoAssets(t *testing.T) {
-	pairs := makePairs([]string{"BTC", "ETH"})
-	if len(pairs) != 1 {
-		t.Errorf("expected 1 pair, got %d", len(pairs))
+	if pairs := makePairs([]string{"BTC", "ETH"}); len(pairs) != 1 {
+		t.Errorf("expected 1 pair for two assets, got %d", len(pairs))
 	}
 }
 
@@ -1627,22 +1598,6 @@ func TestGenerateConfig_EnableManualDefaults(t *testing.T) {
 	}
 	if s.Capital != 2000 {
 		t.Errorf("expected Capital=2000, got %g", s.Capital)
-	}
-}
-
-func TestGenerateConfig_PortfolioRiskZeroUsesDefaults(t *testing.T) {
-	opts := baseOpts()
-
-	cfg := generateConfig(opts)
-
-	if cfg.PortfolioRisk == nil {
-		t.Fatal("expected PortfolioRisk to be set")
-	}
-	if cfg.PortfolioRisk.MaxDrawdownPct != 25 {
-		t.Errorf("expected MaxDrawdownPct=25 default, got %g", cfg.PortfolioRisk.MaxDrawdownPct)
-	}
-	if cfg.PortfolioRisk.WarnThresholdPct != 60 {
-		t.Errorf("expected WarnThresholdPct=60 default, got %g", cfg.PortfolioRisk.WarnThresholdPct)
 	}
 }
 

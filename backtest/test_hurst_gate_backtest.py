@@ -352,55 +352,41 @@ def test_backtest_resolves_global_on_failure_default(tmp_path, load_strategy_con
     assert load_strategy_config(path, "s1")["hurst_gate"]["on_failure"] == "open"
 
 
-def test_backtest_rejects_non_composite_window(tmp_path, load_strategy_config):
-    regime = {"enabled": True, "windows": {"medium": {"classifier": "adx", "period": 20}}}
-    path = _write_cfg(tmp_path, {"hurst_gate": {"enabled": True, "min": 0.55}}, regime)
-    with pytest.raises(ValueError, match='emitted ONLY by the "composite" classifier'):
-        load_strategy_config(path, "s1")
+_ADX_REGIME = {"enabled": True, "windows": {"medium": {"classifier": "adx", "period": 20}}}
+_TWO_COMPOSITE_REGIME = {
+    "enabled": True,
+    "windows": {
+        "medium": {"classifier": "composite", "period": 20},
+        "long": {"classifier": "composite", "period": 60},
+    },
+}
 
 
-def test_backtest_rejects_regime_disabled(tmp_path, load_strategy_config):
-    path = _write_cfg(tmp_path, {"hurst_gate": {"enabled": True, "min": 0.55}}, {"enabled": False})
-    with pytest.raises(ValueError, match="regime.enabled=false"):
-        load_strategy_config(path, "s1")
-
-
-def test_backtest_rejects_missing_windows(tmp_path, load_strategy_config):
-    path = _write_cfg(tmp_path, {"hurst_gate": {"enabled": True, "min": 0.55}}, {"enabled": True})
-    with pytest.raises(ValueError, match="regime.windows is empty"):
-        load_strategy_config(path, "s1")
-
-
-def test_backtest_rejects_non_primary_window(tmp_path, load_strategy_config):
-    regime = {
-        "enabled": True,
-        "windows": {
-            "medium": {"classifier": "composite", "period": 20},
-            "long": {"classifier": "composite", "period": 60},
-        },
-    }
-    path = _write_cfg(
-        tmp_path, {"hurst_gate": {"enabled": True, "min": 0.55, "window_key": "long"}}, regime
-    )
-    with pytest.raises(ValueError, match="classifies\\s+only the PRIMARY window"):
-        load_strategy_config(path, "s1")
-
-
-def test_backtest_rejects_unknown_window(tmp_path, load_strategy_config):
-    path = _write_cfg(
-        tmp_path,
-        {"hurst_gate": {"enabled": True, "min": 0.55, "window_key": "nope"}},
-        _COMPOSITE_REGIME,
-    )
-    with pytest.raises(ValueError, match="not in\\s+regime.windows"):
-        load_strategy_config(path, "s1")
-
-
-def test_backtest_rejects_invalid_bounds(tmp_path, load_strategy_config):
-    path = _write_cfg(
-        tmp_path, {"hurst_gate": {"enabled": True, "min": 0.7, "max": 0.3}}, _COMPOSITE_REGIME
-    )
-    with pytest.raises(ValueError, match="must be <"):
+@pytest.mark.parametrize(
+    "regime,gate,match",
+    [
+        (_ADX_REGIME, {"enabled": True, "min": 0.55},
+         'emitted ONLY by the "composite" classifier'),
+        ({"enabled": False}, {"enabled": True, "min": 0.55},
+         "regime.enabled=false"),
+        ({"enabled": True}, {"enabled": True, "min": 0.55},
+         "regime.windows is empty"),
+        (_TWO_COMPOSITE_REGIME,
+         {"enabled": True, "min": 0.55, "window_key": "long"},
+         "classifies\\s+only the PRIMARY window"),
+        (_COMPOSITE_REGIME, {"enabled": True, "min": 0.55, "window_key": "nope"},
+         "not in\\s+regime.windows"),
+        (_COMPOSITE_REGIME, {"enabled": True, "min": 0.7, "max": 0.3},
+         "must be <"),
+    ],
+    ids=["non_composite_window", "regime_disabled", "missing_windows",
+         "non_primary_window", "unknown_window", "invalid_bounds"],
+)
+def test_backtest_rejects_bad_hurst_gate_config(
+    tmp_path, load_strategy_config, regime, gate, match
+):
+    path = _write_cfg(tmp_path, {"hurst_gate": gate}, regime)
+    with pytest.raises(ValueError, match=match):
         load_strategy_config(path, "s1")
 
 

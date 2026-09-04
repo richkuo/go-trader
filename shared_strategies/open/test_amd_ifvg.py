@@ -1,6 +1,7 @@
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from shared_strategies.open.conftest import load_module
 
@@ -90,27 +91,16 @@ class TestLookahead:
             )
 
 
-class TestHoursInWindow:
-
-    def test_simple_window(self):
-        h = np.arange(24)
-        m = _hours_in_window(h, 2, 5)
-        assert set(h[m]) == {2, 3, 4}
-
-    def test_end_midnight_is_24(self):
-        h = np.arange(24)
-        m = _hours_in_window(h, 20, 0)
-        assert set(h[m]) == {20, 21, 22, 23}
-
-    def test_wraps_past_midnight(self):
-        h = np.arange(24)
-        m = _hours_in_window(h, 22, 2)
-        assert set(h[m]) == {22, 23, 0, 1}
-
-    def test_legacy_window_unchanged(self):
-        h = np.arange(24)
-        assert set(h[_hours_in_window(h, 0, 8)]) == set(range(8))
-        assert set(h[_hours_in_window(h, 8, 12)]) == {8, 9, 10, 11}
+@pytest.mark.parametrize("start,end,expected", [
+    (2, 5, {2, 3, 4}),
+    (20, 0, {20, 21, 22, 23}),
+    (22, 2, {22, 23, 0, 1}),
+    (0, 8, set(range(8))),
+    (8, 12, {8, 9, 10, 11}),
+])
+def test_hours_in_window(start, end, expected):
+    h = np.arange(24)
+    assert set(h[_hours_in_window(h, start, end)]) == expected
 
 
 class TestSessionTZ:

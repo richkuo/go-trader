@@ -64,88 +64,52 @@ def test_backtester_close_strategies_records_refs_on_result():
     assert refs[1]["params"] == {}
 
 
-def test_backtester_rejects_close_strategy_without_name():
-    with pytest.raises(ValueError, match="missing 'name'"):
-        Backtester(close_strategies=[{"params": {"pct": 0.03}}])
+@pytest.mark.parametrize("close_strategies,match", [
+    ([{"params": {"pct": 0.03}}], "missing 'name'"),
+    (["bare_string_no_longer_supported"], "must be dicts"),
+])
+def test_backtester_rejects_malformed_close_strategy_ref(close_strategies, match):
+    with pytest.raises(ValueError, match=match):
+        Backtester(close_strategies=close_strategies)
 
 
-def test_backtester_rejects_close_strategy_non_dict():
-    with pytest.raises(ValueError, match="must be dicts"):
-        Backtester(close_strategies=["bare_string_no_longer_supported"])
+@pytest.mark.parametrize("raw,expected", [
+    ("tp_at_pct", {"name": "tp_at_pct", "params": {}}),
+    ('{"name": "tiered_tp_pct"}', {"name": "tiered_tp_pct", "params": {}}),
+    (
+        '{"name": "tiered_tp_atr", "params": {"tp_tiers": [{"atr_multiple": 2.0}]}}',
+        {"name": "tiered_tp_atr",
+         "params": {"tp_tiers": [{"atr_multiple": 2.0}]}},
+    ),
+])
+def test_parse_close_strategy_arg_accepts(raw, expected):
+    assert run_backtest._parse_close_strategy_arg(raw) == expected
 
 
-def test_parse_close_strategy_arg_bare_name():
-    ref = run_backtest._parse_close_strategy_arg("tp_at_pct")
-    assert ref == {"name": "tp_at_pct", "params": {}}
+@pytest.mark.parametrize("raw,match", [
+    ('{"params": {"pct": 0.03}}', "missing 'name'"),
+    ('{"name": "tiered_tp_pct"', "not valid JSON"),
+    ('["tp_at_pct"]', "must be an object"),
+])
+def test_parse_close_strategy_arg_rejects(raw, match):
+    with pytest.raises(SystemExit, match=match):
+        run_backtest._parse_close_strategy_arg(raw)
 
 
-def test_parse_close_strategy_arg_json_with_params():
-    ref = run_backtest._parse_close_strategy_arg(
-        '{"name": "tiered_tp_atr", "params": {"tp_tiers": [{"atr_multiple": 2.0}]}}'
-    )
-    assert ref["name"] == "tiered_tp_atr"
-    assert ref["params"]["tp_tiers"][0]["atr_multiple"] == 2.0
-
-
-def test_parse_close_strategy_arg_json_without_params():
-    ref = run_backtest._parse_close_strategy_arg('{"name": "tiered_tp_pct"}')
-    assert ref == {"name": "tiered_tp_pct", "params": {}}
-
-
-def test_parse_close_strategy_arg_json_missing_name_rejected():
-    with pytest.raises(SystemExit, match="missing 'name'"):
-        run_backtest._parse_close_strategy_arg('{"params": {"pct": 0.03}}')
-
-
-def test_parse_close_strategy_arg_invalid_json_rejected():
-    with pytest.raises(SystemExit, match="not valid JSON"):
-        run_backtest._parse_close_strategy_arg('{"name": "tiered_tp_pct"')
-
-
-def test_parse_close_strategy_arg_non_object_json_rejected():
-    with pytest.raises(SystemExit, match="must be an object"):
-        run_backtest._parse_close_strategy_arg('["tp_at_pct"]')
-
-
-def test_defaults_auto_uses_user_defaults_for_config_runs():
-    args = run_backtest._build_parser().parse_args([
-        "--config", "scheduler/config.json",
-        "--strategy", "hl-r",
-        "--mode", "single",
-    ])
-
-    assert run_backtest._resolve_defaults_mode(args) == "user"
-
-
-def test_defaults_auto_uses_system_defaults_without_config():
-    args = run_backtest._build_parser().parse_args([
-        "--strategy", "tema_cross_bd",
-        "--mode", "single",
-    ])
-
-    assert run_backtest._resolve_defaults_mode(args) == "system"
-
-
-def test_defaults_system_overrides_config_auto_default():
-    args = run_backtest._build_parser().parse_args([
-        "--config", "scheduler/config.json",
-        "--strategy", "hl-r",
-        "--mode", "single",
-        "--defaults", "system",
-    ])
-
-    assert run_backtest._resolve_defaults_mode(args) == "system"
-
-
-def test_defaults_user_without_config_warns_and_falls_back(capsys):
-    args = run_backtest._build_parser().parse_args([
-        "--strategy", "tema_cross_bd",
-        "--mode", "single",
-        "--defaults", "user",
-    ])
-
-    assert run_backtest._resolve_defaults_mode(args) == "system"
-    assert "requires --config" in capsys.readouterr().out
+@pytest.mark.parametrize("argv,expected_mode,warn_contains", [
+    (["--config", "scheduler/config.json", "--strategy", "hl-r",
+      "--mode", "single"], "user", None),
+    (["--strategy", "tema_cross_bd", "--mode", "single"], "system", None),
+    (["--config", "scheduler/config.json", "--strategy", "hl-r",
+      "--mode", "single", "--defaults", "system"], "system", None),
+    (["--strategy", "tema_cross_bd", "--mode", "single",
+      "--defaults", "user"], "system", "requires --config"),
+])
+def test_resolve_defaults_mode(capsys, argv, expected_mode, warn_contains):
+    args = run_backtest._build_parser().parse_args(argv)
+    assert run_backtest._resolve_defaults_mode(args) == expected_mode
+    if warn_contains is not None:
+        assert warn_contains in capsys.readouterr().out
 
 
 def _write_config(tmp_path, version, strategies):
@@ -155,44 +119,29 @@ def _write_config(tmp_path, version, strategies):
     return str(p)
 
 
-def test_load_strategy_config_extracts_refs(tmp_path):
-    path = _write_config(tmp_path, version=15, strategies=[
-        {
-            "id": "hl-temacb-btc",
-            "type": "perps",
-            "open_strategy": {"name": "tema_cross_bd", "params": {"short_period": 5}},
-            "close_strategies": [
-                {"name": "tiered_tp_atr", "params": {"tp_tiers": [
-                    {"atr_multiple": 2.0, "close_fraction": 0.5},
-                    {"atr_multiple": 3.0, "close_fraction": 1.0},
-                ]}},
-            ],
-        },
-    ])
-    kwargs = run_backtest.load_strategy_config(path, "hl-temacb-btc")
-    assert kwargs["open_strategy"]["name"] == "tema_cross_bd"
-    assert kwargs["open_strategy"]["params"]["short_period"] == 5
-    assert len(kwargs["close_strategies"]) == 1
-    assert kwargs["close_strategies"][0]["name"] == "tiered_tp_atr"
-    assert kwargs["close_strategies"][0]["params"]["tp_tiers"][0]["atr_multiple"] == 2.0
+def _write_full_config(tmp_path, cfg):
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps(cfg, indent=2))
+    return str(p)
 
 
-def test_load_strategy_config_reads_single_close_strategy(tmp_path):
-    path = _write_config(tmp_path, version=15, strategies=[
-        {
-            "id": "hl-temacb-btc",
-            "type": "perps",
-            "open_strategy": {"name": "tema_cross_bd"},
-            "close_strategy": {"name": "tiered_tp_atr", "params": {"tp_tiers": [
-                {"atr_multiple": 2.0, "close_fraction": 0.5},
-                {"atr_multiple": 3.0, "close_fraction": 1.0},
-            ]}},
-        },
-    ])
-    kwargs = run_backtest.load_strategy_config(path, "hl-temacb-btc")
-    assert len(kwargs["close_strategies"]) == 1
-    assert kwargs["close_strategies"][0]["name"] == "tiered_tp_atr"
-    assert kwargs["close_strategies"][0]["params"]["tp_tiers"][1]["atr_multiple"] == 3.0
+def _cfg(version, strategies, **top):
+    out = {"config_version": version, "strategies": strategies}
+    out.update(top)
+    return out
+
+
+def _perps_strategy(strategy_id="hl-d-btc", **extra):
+    base = {
+        "id": strategy_id,
+        "type": "perps",
+        "open_strategy": {"name": "tema_cross_bd"},
+        "close_strategy": {"name": "tiered_tp_atr", "params": {"tp_tiers": [
+            {"atr_multiple": 2.0, "close_fraction": 1.0},
+        ]}},
+    }
+    base.update(extra)
+    return base
 
 
 def _init_shaped_strategy():
@@ -209,56 +158,243 @@ def _init_shaped_strategy():
     }
 
 
-def test_load_strategy_config_init_config_falls_back_to_args0(tmp_path):
-    path = _write_config(tmp_path, version=15, strategies=[_init_shaped_strategy()])
-    kwargs = run_backtest.load_strategy_config(path, "momentum-btc")
-    assert kwargs["open_strategy"]["name"] == "momentum"
-    assert kwargs["open_strategy"]["params"] == {}
-    assert kwargs["close_strategies"] == []
+def _dig(obj, path):
+    for step in path:
+        if step == "__len__":
+            obj = len(obj)
+        elif step == "__names__":
+            obj = [r["name"] for r in obj]
+        elif isinstance(obj, dict):
+            obj = obj.get(step)
+        else:
+            obj = obj[step]
+    return obj
 
 
-def test_load_strategy_config_missing_open_strategy_key_falls_back(tmp_path):
-    path = _write_config(tmp_path, version=15, strategies=[
-        {"id": "spot-x", "type": "spot",
-         "args": ["mean_reversion", "ETH/USDT", "1h"]},
-    ])
-    kwargs = run_backtest.load_strategy_config(path, "spot-x")
-    assert kwargs["open_strategy"]["name"] == "mean_reversion"
+def _assert_config_kwargs(tmp_path, spec):
+    path = _write_full_config(tmp_path, spec["cfg"])
+    kwargs = run_backtest.load_strategy_config(
+        path, spec["sid"], inject_user_defaults=spec.get("inject", False))
+    for check_path, expected in spec["checks"]:
+        assert _dig(kwargs, check_path) == expected, (check_path, kwargs)
 
 
-def test_load_strategy_config_open_name_wins_over_args0(tmp_path):
-    path = _write_config(tmp_path, version=15, strategies=[
-        {"id": "hl-x", "type": "perps",
-         "args": ["legacy_positional", "BTC/USDT", "1h"],
-         "open_strategy": {"name": "tema_cross_bd", "params": {"short_period": 5}}},
-    ])
-    kwargs = run_backtest.load_strategy_config(path, "hl-x")
-    assert kwargs["open_strategy"]["name"] == "tema_cross_bd"
-    assert kwargs["open_strategy"]["params"]["short_period"] == 5
+_TIERED_TP_ATR_CLOSE = {"name": "tiered_tp_atr", "params": {"tp_tiers": [
+    {"atr_multiple": 2.0, "close_fraction": 0.5},
+    {"atr_multiple": 3.0, "close_fraction": 1.0},
+]}}
+
+_REGIME_ON = {"enabled": True, "period": 10, "adx_threshold": 25}
+
+_REGIME_DIRECTIONAL_POLICY = {
+    "trend_regime": {
+        "trending_up": {"direction": "long", "invert_signal": False},
+        "trending_down": {"direction": "short", "invert_signal": True},
+        "ranging": {"direction": "long", "invert_signal": False},
+    },
+}
+
+_SPOT_NEVER_FIRES_CLOSE = {"name": "tiered_tp_pct", "params": {"tp_tiers": [
+    {"profit_pct": 0.9, "close_fraction": 1.0},
+]}}
 
 
-def test_load_strategy_config_whitespace_open_name_falls_back(tmp_path):
-    path = _write_config(tmp_path, version=15, strategies=[
-        {"id": "spot-y", "type": "spot",
-         "args": ["momentum", "BTC/USDT", "1h"],
-         "open_strategy": {"name": "   "}},
-    ])
-    kwargs = run_backtest.load_strategy_config(path, "spot-y")
-    assert kwargs["open_strategy"]["name"] == "momentum"
+_REF_CASES = {
+    "extracts_refs": dict(
+        cfg=_cfg(15, [{
+            "id": "hl-temacb-btc",
+            "type": "perps",
+            "open_strategy": {"name": "tema_cross_bd",
+                              "params": {"short_period": 5}},
+            "close_strategies": [_TIERED_TP_ATR_CLOSE],
+        }]),
+        sid="hl-temacb-btc",
+        checks=[
+            (("open_strategy", "name"), "tema_cross_bd"),
+            (("open_strategy", "params", "short_period"), 5),
+            (("close_strategies", "__len__"), 1),
+            (("close_strategies", 0, "name"), "tiered_tp_atr"),
+            (("close_strategies", 0, "params", "tp_tiers", 0, "atr_multiple"), 2.0),
+        ],
+    ),
+    "reads_single_close_strategy": dict(
+        cfg=_cfg(15, [{
+            "id": "hl-temacb-btc",
+            "type": "perps",
+            "open_strategy": {"name": "tema_cross_bd"},
+            "close_strategy": _TIERED_TP_ATR_CLOSE,
+        }]),
+        sid="hl-temacb-btc",
+        checks=[
+            (("close_strategies", "__len__"), 1),
+            (("close_strategies", 0, "name"), "tiered_tp_atr"),
+            (("close_strategies", 0, "params", "tp_tiers", 1, "atr_multiple"), 3.0),
+        ],
+    ),
+    "init_config_falls_back_to_args0": dict(
+        cfg=_cfg(15, [_init_shaped_strategy()]),
+        sid="momentum-btc",
+        checks=[
+            (("open_strategy", "name"), "momentum"),
+            (("open_strategy", "params"), {}),
+            (("close_strategies",), []),
+        ],
+    ),
+    "missing_open_strategy_key_falls_back": dict(
+        cfg=_cfg(15, [{"id": "spot-x", "type": "spot",
+                       "args": ["mean_reversion", "ETH/USDT", "1h"]}]),
+        sid="spot-x",
+        checks=[(("open_strategy", "name"), "mean_reversion")],
+    ),
+    "open_name_wins_over_args0": dict(
+        cfg=_cfg(15, [{"id": "hl-x", "type": "perps",
+                       "args": ["legacy_positional", "BTC/USDT", "1h"],
+                       "open_strategy": {"name": "tema_cross_bd",
+                                         "params": {"short_period": 5}}}]),
+        sid="hl-x",
+        checks=[
+            (("open_strategy", "name"), "tema_cross_bd"),
+            (("open_strategy", "params", "short_period"), 5),
+        ],
+    ),
+    "whitespace_open_name_falls_back": dict(
+        cfg=_cfg(15, [{"id": "spot-y", "type": "spot",
+                       "args": ["momentum", "BTC/USDT", "1h"],
+                       "open_strategy": {"name": "   "}}]),
+        sid="spot-y",
+        checks=[(("open_strategy", "name"), "momentum")],
+    ),
+    "single_close_wins_over_legacy_array": dict(
+        cfg=_cfg(15, [{
+            "id": "hl-temacb-btc",
+            "type": "perps",
+            "open_strategy": {"name": "tema_cross_bd"},
+            "close_strategy": {"name": "tiered_tp_pct", "params": {"pct": 0.05}},
+            "close_strategies": [{"name": "tiered_tp_atr"}],
+        }]),
+        sid="hl-temacb-btc",
+        checks=[(("close_strategies", "__names__"), ["tiered_tp_pct"])],
+    ),
+}
 
 
-def test_load_strategy_config_rejects_when_no_open_name_and_no_args(tmp_path):
-    path = _write_config(tmp_path, version=15, strategies=[
-        {"id": "spot-z", "type": "spot", "args": [], "open_strategy": {"name": ""}},
-    ])
-    with pytest.raises(ValueError, match="neither open_strategy.name nor"):
-        run_backtest.load_strategy_config(path, "spot-z")
+@pytest.mark.parametrize("name", list(_REF_CASES))
+def test_load_strategy_config_threads_refs(tmp_path, name):
+    _assert_config_kwargs(tmp_path, _REF_CASES[name])
 
 
-def _write_full_config(tmp_path, cfg):
-    p = tmp_path / "config.json"
-    p.write_text(json.dumps(cfg, indent=2))
-    return str(p)
+_DIRECTION_REGIME_CASES = {
+    "returns_direction_and_invert": dict(
+        cfg=_cfg(15, [_perps_strategy(direction="short", invert_signal=True)]),
+        sid="hl-d-btc",
+        checks=[(("direction",), "short"), (("invert_signal",), True)],
+    ),
+    "direction_defaults_long": dict(
+        cfg=_cfg(15, [_perps_strategy()]),
+        sid="hl-d-btc",
+        checks=[(("direction",), "long"), (("invert_signal",), False)],
+    ),
+    "allow_shorts_maps_to_both": dict(
+        cfg=_cfg(15, [_perps_strategy(allow_shorts=True)]),
+        sid="hl-d-btc",
+        checks=[(("direction",), "both")],
+    ),
+    "spot_direction_is_long": dict(
+        cfg=_cfg(15, [{"id": "spot-x", "type": "spot",
+                       "open_strategy": {"name": "sma_crossover"},
+                       "direction": "short"}]),
+        sid="spot-x",
+        checks=[(("direction",), "long")],
+    ),
+    "short_without_close_is_allowed": dict(
+        cfg=_cfg(15, [{"id": "hl-shortnoclose", "type": "perps",
+                       "open_strategy": {"name": "tema_cross_bd"},
+                       "direction": "short"}]),
+        sid="hl-shortnoclose",
+        checks=[(("direction",), "short"), (("close_strategies",), [])],
+    ),
+    "long_without_close_is_allowed": dict(
+        cfg=_cfg(15, [{"id": "hl-longnoclose", "type": "perps",
+                       "open_strategy": {"name": "tema_cross_bd"},
+                       "direction": "long"}]),
+        sid="hl-longnoclose",
+        checks=[(("direction",), "long"), (("close_strategies",), [])],
+    ),
+    "both_with_close_is_allowed": dict(
+        cfg=_cfg(15, [_perps_strategy(direction="both")]),
+        sid="hl-d-btc",
+        checks=[(("direction",), "both")],
+    ),
+    "invert_signal_on_perps": dict(
+        cfg=_cfg(15, [_perps_strategy("inv-x", type="perps", invert_signal=True)]),
+        sid="inv-x",
+        checks=[(("invert_signal",), True), (("strategy_type",), "perps")],
+    ),
+    "invert_signal_on_manual": dict(
+        cfg=_cfg(15, [_perps_strategy("inv-x", type="manual", invert_signal=True)]),
+        sid="inv-x",
+        checks=[(("invert_signal",), True), (("strategy_type",), "manual")],
+    ),
+    "threads_regime_directional_policy": dict(
+        cfg=_cfg(15, [_perps_strategy(
+            regime_directional_policy=_REGIME_DIRECTIONAL_POLICY)],
+            regime=_REGIME_ON),
+        sid="hl-d-btc",
+        checks=[
+            (("regime_directional_policy",), _REGIME_DIRECTIONAL_POLICY),
+            (("regime_enabled",), True),
+            (("regime_period",), 10),
+            (("regime_adx_threshold",), 25.0),
+        ],
+    ),
+    "threads_allowed_regimes": dict(
+        cfg=_cfg(15, [_perps_strategy(
+            allowed_regimes=["trending_up", "ranging"])], regime=_REGIME_ON),
+        sid="hl-d-btc",
+        checks=[
+            (("allowed_regimes",), ["trending_up", "ranging"]),
+            (("regime_enabled",), True),
+        ],
+    ),
+    "allowed_regimes_none_when_unset": dict(
+        cfg=_cfg(15, [_perps_strategy()], regime=_REGIME_ON),
+        sid="hl-d-btc",
+        checks=[(("allowed_regimes",), None)],
+    ),
+    "empty_allowed_regimes_is_none": dict(
+        cfg=_cfg(15, [_perps_strategy(allowed_regimes=[])], regime=_REGIME_ON),
+        sid="hl-d-btc",
+        checks=[(("allowed_regimes",), None)],
+    ),
+    "empty_gate_window_threads": dict(
+        cfg=_cfg(15, [_perps_strategy(allowed_regimes=["ranging"],
+                                      regime_gate_window="")], regime=_REGIME_ON),
+        sid="hl-d-btc",
+        checks=[(("allowed_regimes",), ["ranging"])],
+    ),
+    "default_gate_window_threads": dict(
+        cfg=_cfg(15, [_perps_strategy(allowed_regimes=["ranging"],
+                                      regime_gate_window="default")],
+                 regime=_REGIME_ON),
+        sid="hl-d-btc",
+        checks=[(("allowed_regimes",), ["ranging"])],
+    ),
+    "named_gate_window_no_op_when_regime_disabled": dict(
+        cfg=_cfg(15, [_perps_strategy(allowed_regimes=["trending_up"],
+                                      regime_gate_window="slow")],
+                 regime={"enabled": False, "windows": {"slow": 40}}),
+        sid="hl-d-btc",
+        checks=[
+            (("regime_enabled",), False),
+            (("allowed_regimes",), ["trending_up"]),
+        ],
+    ),
+}
+
+
+@pytest.mark.parametrize("name", list(_DIRECTION_REGIME_CASES))
+def test_load_strategy_config_threads_direction_and_regime(tmp_path, name):
+    _assert_config_kwargs(tmp_path, _DIRECTION_REGIME_CASES[name])
 
 
 _USER_RATCHET = {
@@ -292,135 +428,119 @@ _USER_RATCHET_REGIME = {
 }
 
 
-def _ratchet_cfg(tmp_path, close_params):
-    return _write_full_config(tmp_path, {
-        "config_version": 16,
-        "user_defaults": {"close": _USER_RATCHET},
-        "strategies": [{
-            "id": "hl-r", "type": "perps", "platform": "hyperliquid",
-            "open_strategy": {"name": "tema_cross_bd"},
-            "trailing_stop_atr_mult": 3.0,
-            "close_strategy": {"name": "trailing_tp_ratchet", "params": close_params},
-        }],
-    })
+def _ratchet_strategy(close_params):
+    return {
+        "id": "hl-r", "type": "perps", "platform": "hyperliquid",
+        "open_strategy": {"name": "tema_cross_bd"},
+        "trailing_stop_atr_mult": 3.0,
+        "close_strategy": {"name": "trailing_tp_ratchet", "params": close_params},
+    }
 
 
-def test_defaults_user_injects_user_defaults_close(tmp_path):
-    path = _ratchet_cfg(tmp_path, {"use_defaults": True})
-    kwargs = run_backtest.load_strategy_config(path, "hl-r", inject_user_defaults=True)
-    tp = kwargs["close_strategies"][0]["params"].get("tp_tiers")
-    assert tp is not None and len(tp) == 2
-    assert tp[0]["trailing_mult_after"] == 2.0
-
-
-def test_defaults_user_accepts_legacy_alias_when_canonical_absent(tmp_path):
-    path = _write_full_config(tmp_path, {
-        "config_version": 16,
-        "user_close_defaults": _USER_RATCHET,
-        "strategies": [{
-            "id": "hl-r", "type": "perps", "platform": "hyperliquid",
-            "open_strategy": {"name": "tema_cross_bd"},
-            "trailing_stop_atr_mult": 3.0,
-            "close_strategy": {"name": "trailing_tp_ratchet", "params": {"use_defaults": True}},
-        }],
-    })
-    kwargs = run_backtest.load_strategy_config(path, "hl-r", inject_user_defaults=True)
-    tp = kwargs["close_strategies"][0]["params"].get("tp_tiers")
-    assert tp is not None and tp[0]["trailing_mult_after"] == 2.0
-
-
-def test_defaults_user_rejects_conflicting_legacy_alias(tmp_path):
-    path = _write_full_config(tmp_path, {
-        "config_version": 16,
-        "user_defaults": {"close": _USER_RATCHET},
-        "user_close_defaults": {
-            "trailing_tp_ratchet": {"tp_tiers": [
-                {"atr_multiple": 9.0, "trailing_mult_after": 1.0, "close_fraction": 0.0},
-            ]},
-        },
-        "strategies": [{
-            "id": "hl-r", "type": "perps", "platform": "hyperliquid",
-            "open_strategy": {"name": "tema_cross_bd"},
-            "trailing_stop_atr_mult": 3.0,
-            "close_strategy": {"name": "trailing_tp_ratchet", "params": {"use_defaults": True}},
-        }],
-    })
-    with pytest.raises(ValueError, match="conflicts"):
-        run_backtest.load_strategy_config(path, "hl-r", inject_user_defaults=True)
-
-
-def test_defaults_system_does_not_inject(tmp_path):
-    path = _ratchet_cfg(tmp_path, {"use_defaults": True})
-    kwargs = run_backtest.load_strategy_config(path, "hl-r", inject_user_defaults=False)
-    assert kwargs["close_strategies"][0]["params"].get("tp_tiers") is None
-
-
-def test_defaults_user_empty_tiers_not_injected(tmp_path):
-    path = _write_full_config(tmp_path, {
-        "config_version": 16,
-        "user_defaults": {"close": {"trailing_tp_ratchet": {"tp_tiers": []}}},
-        "strategies": [{
-            "id": "hl-r", "type": "perps", "platform": "hyperliquid",
-            "open_strategy": {"name": "tema_cross_bd"},
-            "trailing_stop_atr_mult": 3.0,
-            "close_strategy": {"name": "trailing_tp_ratchet", "params": {"use_defaults": True}},
-        }],
-    })
-    kwargs = run_backtest.load_strategy_config(path, "hl-r", inject_user_defaults=True)
-    assert kwargs["close_strategies"][0]["params"].get("tp_tiers") is None
-
-
-def test_defaults_user_strategy_tiers_win(tmp_path):
-    explicit = [{"atr_multiple": 5.0, "trailing_mult_after": 1.0, "close_fraction": 0.0}]
-    path = _ratchet_cfg(tmp_path, {"tp_tiers": explicit})
-    kwargs = run_backtest.load_strategy_config(path, "hl-r", inject_user_defaults=True)
-    tp = kwargs["close_strategies"][0]["params"]["tp_tiers"]
-    assert len(tp) == 1 and tp[0]["atr_multiple"] == 5.0
-
-
-def _ratchet_regime_cfg(tmp_path, extra_strategy=None):
+def _ratchet_regime_strategy(**extra):
     strategy = {
         "id": "hl-rr",
         "type": "perps",
         "platform": "hyperliquid",
         "open_strategy": {"name": "tema_cross_bd"},
-        "close_strategy": {"name": "trailing_tp_ratchet_regime", "params": {"use_defaults": True}},
+        "close_strategy": {"name": "trailing_tp_ratchet_regime",
+                           "params": {"use_defaults": True}},
     }
-    if extra_strategy:
-        strategy.update(extra_strategy)
-    return _write_full_config(tmp_path, {
-        "config_version": 16,
-        "regime": {"enabled": True, "period": 14, "adx_threshold": 20},
-        "user_defaults": {"close": _USER_RATCHET_REGIME},
-        "strategies": [strategy],
-    })
+    strategy.update(extra)
+    return strategy
 
 
-def test_defaults_user_injects_ratchet_regime_trail(tmp_path):
-    path = _ratchet_regime_cfg(tmp_path)
-    kwargs = run_backtest.load_strategy_config(path, "hl-rr", inject_user_defaults=True)
-    assert kwargs["trailing_stop_atr_mult_regime"]["trend_regime"]["ranging"]["atr_multiple"] == 1.5
-    tp = kwargs["close_strategies"][0]["params"].get("tp_tiers")
-    assert tp["trending_up"][0]["trailing_mult_after"] == 1.0
+_RATCHET_TP = ("close_strategies", 0, "params", "tp_tiers")
+
+_USER_DEFAULTS_CASES = {
+    "injects_user_defaults_close": dict(
+        cfg=_cfg(16, [_ratchet_strategy({"use_defaults": True})],
+                 user_defaults={"close": _USER_RATCHET}),
+        sid="hl-r",
+        inject=True,
+        checks=[
+            (_RATCHET_TP + ("__len__",), 2),
+            (_RATCHET_TP + (0, "trailing_mult_after"), 2.0),
+        ],
+    ),
+    "accepts_legacy_alias_when_canonical_absent": dict(
+        cfg=_cfg(16, [_ratchet_strategy({"use_defaults": True})],
+                 user_close_defaults=_USER_RATCHET),
+        sid="hl-r",
+        inject=True,
+        checks=[(_RATCHET_TP + (0, "trailing_mult_after"), 2.0)],
+    ),
+    "system_defaults_do_not_inject": dict(
+        cfg=_cfg(16, [_ratchet_strategy({"use_defaults": True})],
+                 user_defaults={"close": _USER_RATCHET}),
+        sid="hl-r",
+        inject=False,
+        checks=[(_RATCHET_TP, None)],
+    ),
+    "empty_tiers_not_injected": dict(
+        cfg=_cfg(16, [_ratchet_strategy({"use_defaults": True})],
+                 user_defaults={"close": {"trailing_tp_ratchet": {"tp_tiers": []}}}),
+        sid="hl-r",
+        inject=True,
+        checks=[(_RATCHET_TP, None)],
+    ),
+    "strategy_tiers_win": dict(
+        cfg=_cfg(16, [_ratchet_strategy({"tp_tiers": [
+            {"atr_multiple": 5.0, "trailing_mult_after": 1.0,
+             "close_fraction": 0.0}]})],
+            user_defaults={"close": _USER_RATCHET}),
+        sid="hl-r",
+        inject=True,
+        checks=[
+            (_RATCHET_TP + ("__len__",), 1),
+            (_RATCHET_TP + (0, "atr_multiple"), 5.0),
+        ],
+    ),
+    "injects_ratchet_regime_trail": dict(
+        cfg=_cfg(16, [_ratchet_regime_strategy()],
+                 regime={"enabled": True, "period": 14, "adx_threshold": 20},
+                 user_defaults={"close": _USER_RATCHET_REGIME}),
+        sid="hl-rr",
+        inject=True,
+        checks=[
+            (("trailing_stop_atr_mult_regime", "trend_regime", "ranging",
+              "atr_multiple"), 1.5),
+            (_RATCHET_TP + ("trending_up", 0, "trailing_mult_after"), 1.0),
+        ],
+    ),
+    "system_defaults_do_not_inject_ratchet_regime_trail": dict(
+        cfg=_cfg(16, [_ratchet_regime_strategy()],
+                 regime={"enabled": True, "period": 14, "adx_threshold": 20},
+                 user_defaults={"close": _USER_RATCHET_REGIME}),
+        sid="hl-rr",
+        inject=False,
+        checks=[
+            (("trailing_stop_atr_mult_regime",), None),
+            (_RATCHET_TP, None),
+        ],
+    ),
+    "ratchet_regime_trail_does_not_override_stop_owner": dict(
+        cfg=_cfg(16, [_ratchet_regime_strategy(trailing_stop_atr_mult=3.0)],
+                 regime={"enabled": True, "period": 14, "adx_threshold": 20},
+                 user_defaults={"close": _USER_RATCHET_REGIME}),
+        sid="hl-rr",
+        inject=True,
+        checks=[
+            (("trailing_stop_atr_mult_regime",), None),
+            (("trailing_stop_atr_mult",), 3.0),
+        ],
+    ),
+}
 
 
-def test_defaults_system_does_not_inject_ratchet_regime_trail(tmp_path):
-    path = _ratchet_regime_cfg(tmp_path)
-    kwargs = run_backtest.load_strategy_config(path, "hl-rr", inject_user_defaults=False)
-    assert kwargs["trailing_stop_atr_mult_regime"] is None
-    assert kwargs["close_strategies"][0]["params"].get("tp_tiers") is None
+@pytest.mark.parametrize("name", list(_USER_DEFAULTS_CASES))
+def test_load_strategy_config_user_close_defaults(tmp_path, name):
+    _assert_config_kwargs(tmp_path, _USER_DEFAULTS_CASES[name])
 
 
-def test_defaults_user_ratchet_regime_trail_does_not_override_stop_owner(tmp_path):
-    path = _ratchet_regime_cfg(tmp_path, {"trailing_stop_atr_mult": 3.0})
-    kwargs = run_backtest.load_strategy_config(path, "hl-rr", inject_user_defaults=True)
-    assert kwargs["trailing_stop_atr_mult_regime"] is None
-    assert kwargs["trailing_stop_atr_mult"] == 3.0
-
-
-def test_load_strategy_config_rejects_multi_legacy_close_array(tmp_path):
-    path = _write_config(tmp_path, version=15, strategies=[
-        {
+_REJECT_CASES = {
+    "multi_legacy_close_array": dict(
+        cfg=_cfg(15, [{
             "id": "hl-temacb-btc",
             "type": "perps",
             "open_strategy": {"name": "tema_cross_bd"},
@@ -428,88 +548,140 @@ def test_load_strategy_config_rejects_multi_legacy_close_array(tmp_path):
                 {"name": "tiered_tp_atr"},
                 {"name": "tiered_tp_pct", "params": {"pct": 0.05}},
             ],
-        },
-    ])
-    with pytest.raises(ValueError, match="collapsed to a single close_strategy"):
-        run_backtest.load_strategy_config(path, "hl-temacb-btc")
-
-
-def test_load_strategy_config_single_close_wins_over_legacy_array(tmp_path):
-    path = _write_config(tmp_path, version=15, strategies=[
-        {
-            "id": "hl-temacb-btc",
-            "type": "perps",
+        }]),
+        sid="hl-temacb-btc",
+        match="collapsed to a single close_strategy",
+    ),
+    "pre_v15_gate": dict(
+        cfg=_cfg(12, [{"id": "hl-temacb-btc", "open_strategy": "tema_cross_bd",
+                       "close_strategies": ["tiered_tp_atr"],
+                       "params": {"tp_tiers": []}}]),
+        sid="hl-temacb-btc",
+        match="config_version=12",
+    ),
+    "v13_legacy_tiers": dict(
+        cfg=_cfg(13, [{
+            "id": "hl-temacb-btc", "type": "perps",
             "open_strategy": {"name": "tema_cross_bd"},
-            "close_strategy": {"name": "tiered_tp_pct", "params": {"pct": 0.05}},
-            "close_strategies": [{"name": "tiered_tp_atr"}],
-        },
-    ])
-    kwargs = run_backtest.load_strategy_config(path, "hl-temacb-btc")
-    assert [r["name"] for r in kwargs["close_strategies"]] == ["tiered_tp_pct"]
-
-
-def test_load_strategy_config_rejects_pre_v15_gate(tmp_path):
-    path = _write_config(tmp_path, version=12, strategies=[
-        {"id": "hl-temacb-btc", "open_strategy": "tema_cross_bd",
-         "close_strategies": ["tiered_tp_atr"], "params": {"tp_tiers": []}},
-    ])
-    with pytest.raises(ValueError, match="config_version=12"):
-        run_backtest.load_strategy_config(path, "hl-temacb-btc")
-
-
-@pytest.mark.parametrize("version", [13, 14])
-def test_load_strategy_config_rejects_pre_v15_with_legacy_tiers(tmp_path, version):
-    path = _write_config(tmp_path, version=version, strategies=[
-        {
-            "id": "hl-temacb-btc",
-            "type": "perps",
+            "close_strategy": {"name": "tiered_tp_atr", "params": {"tiers": [
+                {"atr": 2.0, "fraction": 0.5}, {"atr": 3.0, "fraction": 1.0}]}},
+        }]),
+        sid="hl-temacb-btc",
+        match="config_version=13",
+    ),
+    "v14_legacy_tiers": dict(
+        cfg=_cfg(14, [{
+            "id": "hl-temacb-btc", "type": "perps",
             "open_strategy": {"name": "tema_cross_bd"},
-            "close_strategy": {"name": "tiered_tp_atr", "params": {
-                "tiers": [
-                    {"atr": 2.0, "fraction": 0.5},
-                    {"atr": 3.0, "fraction": 1.0},
-                ],
-            }},
-        },
-    ])
-    with pytest.raises(ValueError, match=f"config_version={version}"):
-        run_backtest.load_strategy_config(path, "hl-temacb-btc")
+            "close_strategy": {"name": "tiered_tp_atr", "params": {"tiers": [
+                {"atr": 2.0, "fraction": 0.5}, {"atr": 3.0, "fraction": 1.0}]}},
+        }]),
+        sid="hl-temacb-btc",
+        match="config_version=14",
+    ),
+    "unknown_id": dict(
+        cfg=_cfg(15, [{"id": "hl-temacb-btc",
+                       "open_strategy": {"name": "tema_cross_bd"},
+                       "close_strategies": []}]),
+        sid="hl-other-eth",
+        match="no strategy with id='hl-other-eth'",
+    ),
+    "dynamic_regime_close_single": dict(
+        cfg=_cfg(15, [{"id": "hl-dyn-btc",
+                       "open_strategy": {"name": "tema_cross_bd"},
+                       "close_strategy": {
+                           "name": "tiered_tp_atr_live_regime_dynamic",
+                           "params": {}}}]),
+        sid="hl-dyn-btc",
+        match="tiered_tp_atr_live_regime_dynamic",
+    ),
+    "dynamic_regime_close_legacy_array": dict(
+        cfg=_cfg(15, [{"id": "hl-dyn-btc",
+                       "open_strategy": {"name": "tema_cross_bd"},
+                       "close_strategies": [{
+                           "name": "tiered_tp_atr_live_regime_dynamic",
+                           "params": {}}]}]),
+        sid="hl-dyn-btc",
+        match="tiered_tp_atr_live_regime_dynamic",
+    ),
+    "regime_window_divergence": dict(
+        cfg=_cfg(15, [_perps_strategy(regime_window_divergence={
+            "short_window": "short", "medium_window": "medium",
+            "on_divergence": {"mode": "trust_short"}})]),
+        sid="hl-d-btc",
+        match="regime_window_divergence",
+    ),
+    "policy_without_regime_enabled": dict(
+        cfg=_cfg(15, [_perps_strategy(
+            regime_directional_policy=_REGIME_DIRECTIONAL_POLICY)]),
+        sid="hl-d-btc",
+        match="regime.enabled=true",
+    ),
+    "policy_requires_top_level_regime": dict(
+        cfg=_cfg(15, [_perps_strategy(
+            regime=_REGIME_ON,
+            regime_directional_policy=_REGIME_DIRECTIONAL_POLICY)]),
+        sid="hl-d-btc",
+        match="regime.enabled=true",
+    ),
+    "both_without_close": dict(
+        cfg=_cfg(15, [{"id": "hl-noclose", "type": "perps",
+                       "open_strategy": {"name": "tema_cross_bd"},
+                       "direction": "both"}]),
+        sid="hl-noclose",
+        match="silently dropped",
+    ),
+    "invert_signal_on_spot": dict(
+        cfg=_cfg(15, [{"id": "inv-x", "type": "spot",
+                       "open_strategy": {"name": "sma_crossover"},
+                       "close_strategy": dict(_SPOT_NEVER_FIRES_CLOSE),
+                       "invert_signal": True}]),
+        sid="inv-x",
+        match="invert_signal",
+    ),
+    "invert_signal_on_futures": dict(
+        cfg=_cfg(15, [{"id": "inv-x", "type": "futures",
+                       "open_strategy": {"name": "sma_crossover"},
+                       "close_strategy": dict(_SPOT_NEVER_FIRES_CLOSE),
+                       "invert_signal": True}]),
+        sid="inv-x",
+        match="invert_signal",
+    ),
+    "allowed_regimes_with_named_gate_window": dict(
+        cfg=_cfg(15, [_perps_strategy(allowed_regimes=["trending_up"],
+                                      regime_gate_window="slow")],
+                 regime={"enabled": True, "period": 10, "adx_threshold": 25,
+                         "windows": {"slow": {"classifier": "adx",
+                                              "period": 40}}}),
+        sid="hl-d-btc",
+        match="regime_gate_window",
+    ),
+    "no_open_name_and_no_args": dict(
+        cfg=_cfg(15, [{"id": "spot-z", "type": "spot", "args": [],
+                       "open_strategy": {"name": ""}}]),
+        sid="spot-z",
+        match="neither open_strategy.name nor",
+    ),
+    "conflicting_user_defaults_legacy_alias": dict(
+        cfg=_cfg(16, [_ratchet_strategy({"use_defaults": True})],
+                 user_defaults={"close": _USER_RATCHET},
+                 user_close_defaults={"trailing_tp_ratchet": {"tp_tiers": [
+                     {"atr_multiple": 9.0, "trailing_mult_after": 1.0,
+                      "close_fraction": 0.0}]}}),
+        sid="hl-r",
+        inject=True,
+        match="conflicts",
+    ),
+}
 
 
-def test_load_strategy_config_rejects_unknown_id(tmp_path):
-    path = _write_config(tmp_path, version=15, strategies=[
-        {"id": "hl-temacb-btc",
-         "open_strategy": {"name": "tema_cross_bd"},
-         "close_strategies": []},
-    ])
-    with pytest.raises(ValueError, match="no strategy with id='hl-other-eth'"):
-        run_backtest.load_strategy_config(path, "hl-other-eth")
-
-
-def test_load_strategy_config_rejects_dynamic_regime_close_single(tmp_path):
-    path = _write_config(tmp_path, version=15, strategies=[
-        {
-            "id": "hl-dyn-btc",
-            "open_strategy": {"name": "tema_cross_bd"},
-            "close_strategy": {"name": "tiered_tp_atr_live_regime_dynamic", "params": {}},
-        },
-    ])
-    with pytest.raises(ValueError, match="tiered_tp_atr_live_regime_dynamic"):
-        run_backtest.load_strategy_config(path, "hl-dyn-btc")
-
-
-def test_load_strategy_config_rejects_dynamic_regime_close_legacy_array(tmp_path):
-    path = _write_config(tmp_path, version=15, strategies=[
-        {
-            "id": "hl-dyn-btc",
-            "open_strategy": {"name": "tema_cross_bd"},
-            "close_strategies": [
-                {"name": "tiered_tp_atr_live_regime_dynamic", "params": {}},
-            ],
-        },
-    ])
-    with pytest.raises(ValueError, match="tiered_tp_atr_live_regime_dynamic"):
-        run_backtest.load_strategy_config(path, "hl-dyn-btc")
+@pytest.mark.parametrize("name", list(_REJECT_CASES))
+def test_load_strategy_config_rejects(tmp_path, name):
+    spec = _REJECT_CASES[name]
+    path = _write_full_config(tmp_path, spec["cfg"])
+    with pytest.raises(ValueError, match=spec["match"]):
+        run_backtest.load_strategy_config(
+            path, spec["sid"], inject_user_defaults=spec.get("inject", False))
 
 
 def test_load_strategy_config_then_backtester_parity(tmp_path):
@@ -548,7 +720,6 @@ def test_config_flag_threads_live_open_params_to_result(tmp_path, monkeypatch):
     ])
 
     captured = {}
-    real_run_single = run_backtest.run_single_backtest
 
     def spy_run_single(*args, **kwargs):
         captured["params"] = kwargs.get("params")
@@ -566,16 +737,9 @@ def test_config_flag_threads_live_open_params_to_result(tmp_path, monkeypatch):
 
     run_backtest.main()
 
-    assert captured["strategy_name"] == "triple_ema", (
-        f"main() did not rewrite --strategy to the live open ref name; "
-        f"got {captured.get('strategy_name')!r}"
-    )
-    assert captured["params"] == {"short_period": 3, "mid_period": 13, "long_period": 34}, (
-        f"main() did not thread live open_strategy.params; got {captured.get('params')!r}. "
-        f"Without this, run_single_backtest falls back to triple_ema's registry default "
-        f"short_period=8 and silently ignores the live config."
-    )
-    assert real_run_single is not None
+    assert captured["strategy_name"] == "triple_ema"
+    assert captured["params"] == {
+        "short_period": 3, "mid_period": 13, "long_period": 34}
 
 
 def test_config_flag_rejects_non_single_modes(tmp_path):
@@ -594,179 +758,32 @@ def test_config_flag_rejects_non_single_modes(tmp_path):
             _sys.argv = old_argv
 
 
-def test_direction_flag_rejected_alongside_config(tmp_path, monkeypatch):
-    config_path = _write_config(tmp_path, version=15, strategies=[
-        {"id": "x", "open_strategy": {"name": "triple_ema"}, "close_strategies": []},
-    ])
+@pytest.mark.parametrize("cfg,sid,extra_argv", [
+    (
+        _cfg(15, [{"id": "x", "open_strategy": {"name": "triple_ema"},
+                   "close_strategies": []}]),
+        "x",
+        ["--direction", "short"],
+    ),
+    (
+        _cfg(15, [_perps_strategy(allowed_regimes=["trending_up"])],
+             regime=_REGIME_ON),
+        "hl-d-btc",
+        ["--allowed-regimes", "ranging"],
+    ),
+])
+def test_flag_rejected_alongside_config(tmp_path, monkeypatch, cfg, sid, extra_argv):
+    config_path = _write_full_config(tmp_path, cfg)
     called = {}
     monkeypatch.setattr(run_backtest, "run_single_backtest",
                         lambda *a, **kw: called.setdefault("hit", True))
     monkeypatch.setattr("sys.argv", [
         "run_backtest.py", "--mode", "single",
-        "--config", config_path, "--strategy", "x",
-        "--direction", "short",
+        "--config", config_path, "--strategy", sid, *extra_argv,
     ])
     with pytest.raises(SystemExit):
         run_backtest.main()
     assert "hit" not in called
-
-
-def _perps_strategy(strategy_id="hl-d-btc", **extra):
-    base = {
-        "id": strategy_id,
-        "type": "perps",
-        "open_strategy": {"name": "tema_cross_bd"},
-        "close_strategy": {"name": "tiered_tp_atr", "params": {"tp_tiers": [
-            {"atr_multiple": 2.0, "close_fraction": 1.0},
-        ]}},
-    }
-    base.update(extra)
-    return base
-
-
-def test_load_strategy_config_returns_direction_and_invert(tmp_path):
-    path = _write_config(tmp_path, version=15, strategies=[
-        _perps_strategy(direction="short", invert_signal=True),
-    ])
-    kwargs = run_backtest.load_strategy_config(path, "hl-d-btc")
-    assert kwargs["direction"] == "short"
-    assert kwargs["invert_signal"] is True
-
-
-def test_load_strategy_config_direction_defaults_long(tmp_path):
-    path = _write_config(tmp_path, version=15, strategies=[_perps_strategy()])
-    kwargs = run_backtest.load_strategy_config(path, "hl-d-btc")
-    assert kwargs["direction"] == "long"
-    assert kwargs["invert_signal"] is False
-
-
-def test_load_strategy_config_allow_shorts_maps_to_both(tmp_path):
-    path = _write_config(tmp_path, version=15, strategies=[
-        _perps_strategy(allow_shorts=True),
-    ])
-    kwargs = run_backtest.load_strategy_config(path, "hl-d-btc")
-    assert kwargs["direction"] == "both"
-
-
-def test_load_strategy_config_spot_direction_is_long(tmp_path):
-    path = _write_config(tmp_path, version=15, strategies=[
-        {
-            "id": "spot-x",
-            "type": "spot",
-            "open_strategy": {"name": "sma_crossover"},
-            "direction": "short",
-        },
-    ])
-    kwargs = run_backtest.load_strategy_config(path, "spot-x")
-    assert kwargs["direction"] == "long"
-
-
-def test_load_strategy_config_rejects_regime_window_divergence(tmp_path):
-    path = _write_config(tmp_path, version=15, strategies=[
-        _perps_strategy(regime_window_divergence={
-            "short_window": "short", "medium_window": "medium",
-            "on_divergence": {"mode": "trust_short"},
-        }),
-    ])
-    with pytest.raises(ValueError, match="regime_window_divergence"):
-        run_backtest.load_strategy_config(path, "hl-d-btc")
-
-
-_REGIME_DIRECTIONAL_POLICY = {
-    "trend_regime": {
-        "trending_up": {"direction": "long", "invert_signal": False},
-        "trending_down": {"direction": "short", "invert_signal": True},
-        "ranging": {"direction": "long", "invert_signal": False},
-    },
-}
-
-
-def test_load_strategy_config_threads_regime_directional_policy(tmp_path):
-    path = _write_full_config(tmp_path, {
-        "config_version": 15,
-        "regime": {"enabled": True, "period": 10, "adx_threshold": 25},
-        "strategies": [
-            _perps_strategy(regime_directional_policy=_REGIME_DIRECTIONAL_POLICY),
-        ],
-    })
-    kwargs = run_backtest.load_strategy_config(path, "hl-d-btc")
-    assert kwargs["regime_directional_policy"] == _REGIME_DIRECTIONAL_POLICY
-    assert kwargs["regime_enabled"] is True
-    assert kwargs["regime_period"] == 10
-    assert kwargs["regime_adx_threshold"] == 25.0
-
-
-def test_load_strategy_config_rejects_policy_without_regime_enabled(tmp_path):
-    path = _write_config(tmp_path, version=15, strategies=[
-        _perps_strategy(regime_directional_policy=_REGIME_DIRECTIONAL_POLICY),
-    ])
-    with pytest.raises(ValueError, match="regime.enabled=true"):
-        run_backtest.load_strategy_config(path, "hl-d-btc")
-
-
-def test_load_strategy_config_requires_top_level_regime_for_policy(tmp_path):
-    path = _write_config(tmp_path, version=15, strategies=[
-        _perps_strategy(
-            regime={"enabled": True, "period": 10, "adx_threshold": 25},
-            regime_directional_policy=_REGIME_DIRECTIONAL_POLICY,
-        ),
-    ])
-    with pytest.raises(ValueError, match="regime.enabled=true"):
-        run_backtest.load_strategy_config(path, "hl-d-btc")
-
-
-def test_load_strategy_config_rejects_both_without_close(tmp_path):
-    path = _write_config(tmp_path, version=15, strategies=[
-        {
-            "id": "hl-noclose",
-            "type": "perps",
-            "open_strategy": {"name": "tema_cross_bd"},
-            "direction": "both",
-        },
-    ])
-    with pytest.raises(ValueError, match="silently dropped"):
-        run_backtest.load_strategy_config(path, "hl-noclose")
-
-
-def test_load_strategy_config_short_without_close_is_allowed(tmp_path):
-    path = _write_config(tmp_path, version=15, strategies=[
-        {
-            "id": "hl-shortnoclose",
-            "type": "perps",
-            "open_strategy": {"name": "tema_cross_bd"},
-            "direction": "short",
-        },
-    ])
-    kwargs = run_backtest.load_strategy_config(path, "hl-shortnoclose")
-    assert kwargs["direction"] == "short"
-    assert kwargs["close_strategies"] == []
-
-
-def test_load_strategy_config_long_without_close_is_allowed(tmp_path):
-    path = _write_config(tmp_path, version=15, strategies=[
-        {
-            "id": "hl-longnoclose",
-            "type": "perps",
-            "open_strategy": {"name": "tema_cross_bd"},
-            "direction": "long",
-        },
-    ])
-    kwargs = run_backtest.load_strategy_config(path, "hl-longnoclose")
-    assert kwargs["direction"] == "long"
-    assert kwargs["close_strategies"] == []
-
-
-def test_load_strategy_config_both_with_close_is_allowed(tmp_path):
-    path = _write_config(tmp_path, version=15, strategies=[
-        _perps_strategy(direction="both"),
-    ])
-    kwargs = run_backtest.load_strategy_config(path, "hl-d-btc")
-    assert kwargs["direction"] == "both"
-
-
-_SPOT_NEVER_FIRES_CLOSE = {"name": "tiered_tp_pct", "params": {"tp_tiers": [
-    {"profit_pct": 0.9, "close_fraction": 1.0},
-]}}
 
 
 def _flat_ohlc(signal):
@@ -821,134 +838,10 @@ def test_config_spot_stray_direction_short_is_ignored(tmp_path):
     assert _run_config(path, "sc-x", [-1, 0, 0, 0])["trades"] == []
 
 
-@pytest.mark.parametrize("strategy_type", ["spot", "futures"])
-def test_load_strategy_config_rejects_invert_signal_on_non_perps(tmp_path, strategy_type):
-    path = _write_config(tmp_path, version=15, strategies=[
-        {
-            "id": "inv-x",
-            "type": strategy_type,
-            "open_strategy": {"name": "sma_crossover"},
-            "close_strategy": dict(_SPOT_NEVER_FIRES_CLOSE),
-            "invert_signal": True,
-        },
-    ])
-    with pytest.raises(ValueError, match="invert_signal"):
-        run_backtest.load_strategy_config(path, "inv-x")
-
-
-@pytest.mark.parametrize("strategy_type", ["perps", "manual"])
-def test_load_strategy_config_allows_invert_signal_on_hl_types(tmp_path, strategy_type):
-    path = _write_config(tmp_path, version=15, strategies=[
-        {
-            "id": "inv-x",
-            "type": strategy_type,
-            "open_strategy": {"name": "tema_cross_bd"},
-            "close_strategy": {"name": "tiered_tp_atr", "params": {"tp_tiers": [
-                {"atr_multiple": 2.0, "close_fraction": 1.0},
-            ]}},
-            "invert_signal": True,
-        },
-    ])
-    kwargs = run_backtest.load_strategy_config(path, "inv-x")
-    assert kwargs["invert_signal"] is True
-    assert kwargs["strategy_type"] == strategy_type
-
-
-def test_load_strategy_config_threads_allowed_regimes(tmp_path):
-    path = _write_full_config(tmp_path, {
-        "config_version": 15,
-        "regime": {"enabled": True, "period": 10, "adx_threshold": 25},
-        "strategies": [_perps_strategy(allowed_regimes=["trending_up", "ranging"])],
-    })
-    kwargs = run_backtest.load_strategy_config(path, "hl-d-btc")
-    assert kwargs["allowed_regimes"] == ["trending_up", "ranging"]
-    assert kwargs["regime_enabled"] is True
-
-
-def test_load_strategy_config_allowed_regimes_none_when_unset(tmp_path):
-    path = _write_full_config(tmp_path, {
-        "config_version": 15,
-        "regime": {"enabled": True, "period": 10, "adx_threshold": 25},
-        "strategies": [_perps_strategy()],
-    })
-    kwargs = run_backtest.load_strategy_config(path, "hl-d-btc")
-    assert kwargs["allowed_regimes"] is None
-
-
-def test_load_strategy_config_empty_allowed_regimes_is_none(tmp_path):
-    path = _write_full_config(tmp_path, {
-        "config_version": 15,
-        "regime": {"enabled": True, "period": 10, "adx_threshold": 25},
-        "strategies": [_perps_strategy(allowed_regimes=[])],
-    })
-    kwargs = run_backtest.load_strategy_config(path, "hl-d-btc")
-    assert kwargs["allowed_regimes"] is None
-
-
-def test_load_strategy_config_rejects_allowed_regimes_with_named_gate_window(tmp_path):
-    path = _write_full_config(tmp_path, {
-        "config_version": 15,
-        "regime": {"enabled": True, "period": 10, "adx_threshold": 25,
-                   "windows": {"slow": {"classifier": "adx", "period": 40}}},
-        "strategies": [
-            _perps_strategy(allowed_regimes=["trending_up"], regime_gate_window="slow"),
-        ],
-    })
-    with pytest.raises(ValueError, match="regime_gate_window"):
-        run_backtest.load_strategy_config(path, "hl-d-btc")
-
-
-@pytest.mark.parametrize("gate_window", ["", "default"])
-def test_load_strategy_config_default_gate_window_threads(tmp_path, gate_window):
-    path = _write_full_config(tmp_path, {
-        "config_version": 15,
-        "regime": {"enabled": True, "period": 10, "adx_threshold": 25},
-        "strategies": [
-            _perps_strategy(allowed_regimes=["ranging"], regime_gate_window=gate_window),
-        ],
-    })
-    kwargs = run_backtest.load_strategy_config(path, "hl-d-btc")
-    assert kwargs["allowed_regimes"] == ["ranging"]
-
-
-def test_load_strategy_config_named_gate_window_no_op_when_regime_disabled(tmp_path):
-    path = _write_full_config(tmp_path, {
-        "config_version": 15,
-        "regime": {"enabled": False, "windows": {"slow": 40}},
-        "strategies": [
-            _perps_strategy(allowed_regimes=["trending_up"], regime_gate_window="slow"),
-        ],
-    })
-    kwargs = run_backtest.load_strategy_config(path, "hl-d-btc")
-    assert kwargs["regime_enabled"] is False
-    assert kwargs["allowed_regimes"] == ["trending_up"]
-
-
-def test_allowed_regimes_flag_rejected_alongside_config(tmp_path, monkeypatch):
-    config_path = _write_full_config(tmp_path, {
-        "config_version": 15,
-        "regime": {"enabled": True, "period": 10, "adx_threshold": 25},
-        "strategies": [_perps_strategy(allowed_regimes=["trending_up"])],
-    })
-    called = {}
-    monkeypatch.setattr(run_backtest, "run_single_backtest",
-                        lambda *a, **kw: called.setdefault("hit", True))
-    monkeypatch.setattr("sys.argv", [
-        "run_backtest.py", "--mode", "single",
-        "--config", config_path, "--strategy", "hl-d-btc",
-        "--allowed-regimes", "ranging",
-    ])
-    with pytest.raises(SystemExit):
-        run_backtest.main()
-    assert "hit" not in called
-
-
 def test_config_flag_threads_allowed_regimes_to_run_single(tmp_path, monkeypatch):
-    config_path = _write_full_config(tmp_path, {
-        "config_version": 15,
-        "regime": {"enabled": True, "period": 10, "adx_threshold": 25},
-        "strategies": [_perps_strategy(allowed_regimes=["trending_up", "ranging"])],
-    })
+    config_path = _write_full_config(tmp_path, _cfg(
+        15, [_perps_strategy(allowed_regimes=["trending_up", "ranging"])],
+        regime=_REGIME_ON))
     captured = {}
     monkeypatch.setattr(run_backtest, "run_single_backtest",
                         lambda *a, **kw: captured.update(kw))

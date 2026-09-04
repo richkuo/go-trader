@@ -59,13 +59,6 @@ def _load_hl_adapter(mock_info_cls=None, mock_exchange_cls=None, mock_api_cls=No
 
 
 class TestProperties:
-    def test_name(self):
-        mock_info = MagicMock()
-        mock_info_cls = MagicMock(return_value=mock_info)
-        mod = _load_hl_adapter(mock_info_cls=mock_info_cls)
-        adapter = mod.HyperliquidExchangeAdapter()
-        assert adapter.name == "hyperliquid"
-
     def test_paper_mode_when_no_secret(self):
         mock_info = MagicMock()
         mock_info_cls = MagicMock(return_value=mock_info)
@@ -251,17 +244,16 @@ class TestMarketData:
         rate = adapter.get_funding_rate("BTC")
         assert rate == 0.0001
 
-    def test_get_funding_rate_not_found(self):
+    @pytest.mark.parametrize("ctxs,error", [
+        ([{"universe": [{"name": "ETH"}]}, [{"funding": "0.0002"}]], None),
+        (None, Exception("API down")),
+    ])
+    def test_get_funding_rate_unavailable_returns_zero(self, ctxs, error):
         adapter, mock_info = self._make_adapter()
-        mock_info.meta_and_asset_ctxs.return_value = [
-            {"universe": [{"name": "ETH"}]},
-            [{"funding": "0.0002"}],
-        ]
-        assert adapter.get_funding_rate("BTC") == 0.0
-
-    def test_get_funding_rate_on_error(self):
-        adapter, mock_info = self._make_adapter()
-        mock_info.meta_and_asset_ctxs.side_effect = Exception("API down")
+        if error is not None:
+            mock_info.meta_and_asset_ctxs.side_effect = error
+        else:
+            mock_info.meta_and_asset_ctxs.return_value = ctxs
         assert adapter.get_funding_rate("BTC") == 0.0
 
     def test_get_funding_history(self):
@@ -318,22 +310,18 @@ class TestAccountData:
 
 
 class TestOrderExecution:
-    def test_market_open_paper_mode_raises(self):
+    @pytest.mark.parametrize("method,args", [
+        ("market_open", ("BTC", True, 0.5)),
+        ("market_close", ("BTC",)),
+    ])
+    def test_paper_mode_raises(self, method, args):
         mock_info = MagicMock()
         mock_info_cls = MagicMock(return_value=mock_info)
         mod = _load_hl_adapter(mock_info_cls=mock_info_cls)
         adapter = mod.HyperliquidExchangeAdapter()
         assert adapter._exchange is None
         with pytest.raises(RuntimeError, match="live mode"):
-            adapter.market_open("BTC", True, 0.5)
-
-    def test_market_close_paper_mode_raises(self):
-        mock_info = MagicMock()
-        mock_info_cls = MagicMock(return_value=mock_info)
-        mod = _load_hl_adapter(mock_info_cls=mock_info_cls)
-        adapter = mod.HyperliquidExchangeAdapter()
-        with pytest.raises(RuntimeError, match="live mode"):
-            adapter.market_close("BTC")
+            getattr(adapter, method)(*args)
 
     def test_market_open_live_mode(self):
         mock_info = MagicMock()
@@ -439,13 +427,17 @@ class TestStopLossPlacement:
         adapter._info = mock_info
         return adapter, mock_exchange, mod
 
-    def test_place_stop_loss_paper_mode_raises(self):
+    @pytest.mark.parametrize("method,args", [
+        ("place_stop_loss", ("BTC", 0.01, 60000, False)),
+        ("cancel_trigger_order", ("BTC", 12345)),
+    ])
+    def test_paper_mode_raises(self, method, args):
         mock_info = MagicMock()
         mock_info_cls = MagicMock(return_value=mock_info)
         mod = _load_hl_adapter(mock_info_cls=mock_info_cls)
         adapter = mod.HyperliquidExchangeAdapter()
         with pytest.raises(RuntimeError, match="live mode"):
-            adapter.place_stop_loss("BTC", 0.01, 60000, False)
+            getattr(adapter, method)(*args)
 
     def test_place_stop_loss_long_uses_sell_with_lower_limit(self):
         adapter, ex, _ = self._live_adapter()
@@ -499,14 +491,6 @@ class TestStopLossPlacement:
         assert adapter.round_perps_trigger_px("BTC", 63123.456) == mod._round_perps_px(63123.456, 5)
         rounded = adapter.round_perps_trigger_px("BTC", 63123.456)
         assert adapter.round_perps_trigger_px("BTC", rounded) == rounded
-
-    def test_cancel_trigger_order_paper_mode_raises(self):
-        mock_info = MagicMock()
-        mock_info_cls = MagicMock(return_value=mock_info)
-        mod = _load_hl_adapter(mock_info_cls=mock_info_cls)
-        adapter = mod.HyperliquidExchangeAdapter()
-        with pytest.raises(RuntimeError, match="live mode"):
-            adapter.cancel_trigger_order("BTC", 12345)
 
     def test_cancel_trigger_order_passes_int_oid(self):
         adapter, ex, _ = self._live_adapter()
