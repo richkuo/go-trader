@@ -44,249 +44,201 @@ func hedgePos(qty float64, side string, basis float64) *Position {
 	}
 }
 
-func TestHedgeTargetDecisionOpensInverseWithNotionalSizing(t *testing.T) {
-	sc := hedgeTestConfig()
-	snap := hedgeSnapshot{PrimarySymbol: "ETH", PrimaryQty: 10, PrimarySide: "long", HedgeSymbol: "BTC"}
-	act := hedgeTargetDecision(sc, snap, testPrimaryPx, testHedgePx)
-
-	if act.Kind != hedgeActionOpen {
-		t.Fatalf("kind = %v, want open (%s)", act.Kind, act.Reason)
+func TestHedgeTargetDecision(t *testing.T) {
+	defaultMarks := [][2]float64{{testPrimaryPx, testHedgePx}}
+	cases := []struct {
+		name          string
+		ratio         float64
+		noHedgeConfig bool
+		snap          hedgeSnapshot
+		marks         [][2]float64
+		wantKind      hedgeActionKind
+		wantBlocked   bool
+		wantHedgeSide string
+		wantOrderSide string
+		wantQty       *float64
+		wantBasis     *float64
+		wantReason    string
+	}{
+		{
+			name:          "long primary opens an inverse leg sized off notional",
+			snap:          hedgeSnapshot{PrimarySymbol: "ETH", PrimaryQty: 10, PrimarySide: "long", HedgeSymbol: "BTC"},
+			wantKind:      hedgeActionOpen,
+			wantHedgeSide: "short",
+			wantOrderSide: "sell",
+			wantQty:       f64p(0.4),
+			wantBasis:     f64p(10),
+		},
+		{
+			name:          "short primary hedges long via a buy",
+			snap:          hedgeSnapshot{PrimarySymbol: "ETH", PrimaryQty: 5, PrimarySide: "short", HedgeSymbol: "BTC"},
+			wantKind:      hedgeActionOpen,
+			wantHedgeSide: "long",
+			wantOrderSide: "buy",
+		},
+		{
+			name:     "ratio scales the opened size",
+			ratio:    0.5,
+			snap:     hedgeSnapshot{PrimarySymbol: "ETH", PrimaryQty: 10, PrimarySide: "long", HedgeSymbol: "BTC"},
+			wantKind: hedgeActionOpen,
+			wantQty:  f64p(0.2),
+		},
+		{
+			name:     "sub-minimum open is deferred, never submitted",
+			snap:     hedgeSnapshot{PrimarySymbol: "ETH", PrimaryQty: 0.0045, PrimarySide: "long", HedgeSymbol: "BTC"},
+			wantKind: hedgeActionNone,
+		},
+		{
+			name:      "deferred open fires once the primary grows past the floor",
+			snap:      hedgeSnapshot{PrimarySymbol: "ETH", PrimaryQty: 0.02, PrimarySide: "long", HedgeSymbol: "BTC"},
+			wantKind:  hedgeActionOpen,
+			wantBasis: f64p(0.02),
+		},
+		{
+			name: "mark drift alone never re-trades the hedge",
+			snap: hedgeSnapshot{
+				PrimarySymbol: "ETH", PrimaryQty: 10, PrimarySide: "long",
+				HedgeSymbol: "BTC", HedgeHeld: true, HedgeQty: 0.4, HedgeSide: "short", HedgeBasis: 10,
+			},
+			marks:    [][2]float64{{2000, 50000}, {2600, 41000}, {1500, 63000}},
+			wantKind: hedgeActionNone,
+		},
+		{
+			name: "primary growth adds to the leg",
+			snap: hedgeSnapshot{
+				PrimarySymbol: "ETH", PrimaryQty: 15, PrimarySide: "long",
+				HedgeSymbol: "BTC", HedgeHeld: true, HedgeQty: 0.4, HedgeSide: "short", HedgeBasis: 10,
+			},
+			wantKind:  hedgeActionAdd,
+			wantQty:   f64p(0.2),
+			wantBasis: f64p(15),
+		},
+		{
+			name: "partial primary close reduces proportionally and stays immune to marks",
+			snap: hedgeSnapshot{
+				PrimarySymbol: "ETH", PrimaryQty: 5, PrimarySide: "long",
+				HedgeSymbol: "BTC", HedgeHeld: true, HedgeQty: 0.4, HedgeSide: "short", HedgeBasis: 10,
+			},
+			marks:     [][2]float64{{testPrimaryPx, testHedgePx}, {testPrimaryPx * 1.4, testHedgePx * 0.6}},
+			wantKind:  hedgeActionReduce,
+			wantQty:   f64p(0.2),
+			wantBasis: f64p(5),
+		},
+		{
+			name: "flat primary flattens the hedge in full, with or without marks",
+			snap: hedgeSnapshot{
+				PrimarySymbol: "ETH", PrimaryQty: 0,
+				HedgeSymbol: "BTC", HedgeHeld: true, HedgeQty: 0.4, HedgeSide: "short", HedgeBasis: 10,
+			},
+			marks:     [][2]float64{{testPrimaryPx, testHedgePx}, {0, 0}},
+			wantKind:  hedgeActionCloseFull,
+			wantQty:   f64p(0.4),
+			wantBasis: f64p(0),
+		},
+		{
+			name:        "unusable marks fail closed instead of sizing off a stale price",
+			snap:        hedgeSnapshot{PrimarySymbol: "ETH", PrimaryQty: 10, PrimarySide: "long", HedgeSymbol: "BTC"},
+			marks:       [][2]float64{{0, testHedgePx}, {testPrimaryPx, 0}, {-1, -1}},
+			wantKind:    hedgeActionNone,
+			wantBlocked: true,
+		},
+		{
+			name:        "unknown primary side blocks",
+			snap:        hedgeSnapshot{PrimarySymbol: "ETH", PrimaryQty: 10, PrimarySide: "sideways", HedgeSymbol: "BTC"},
+			wantBlocked: true,
+		},
+		{
+			name: "wrong-side leg is flattened",
+			snap: hedgeSnapshot{
+				PrimarySymbol: "ETH", PrimaryQty: 10, PrimarySide: "long",
+				HedgeSymbol: "BTC", HedgeHeld: true, HedgeQty: 0.4, HedgeSide: "long", HedgeBasis: 10,
+			},
+			wantKind:   hedgeActionCloseFull,
+			wantReason: "doubles exposure",
+		},
+		{
+			name: "corrupt leg is cleared with the absolute qty",
+			snap: hedgeSnapshot{
+				PrimarySymbol: "ETH", PrimaryQty: 10, PrimarySide: "long",
+				HedgeSymbol: "BTC", HedgeHeld: true, HedgeQty: -0.4, HedgeSide: "short", HedgeBasis: 10,
+			},
+			wantKind: hedgeActionCloseFull,
+			wantQty:  f64p(0.4),
+		},
+		{
+			name: "dust add is deferred without advancing the basis",
+			snap: hedgeSnapshot{
+				PrimarySymbol: "ETH", PrimaryQty: 10.001, PrimarySide: "long",
+				HedgeSymbol: "BTC", HedgeHeld: true, HedgeQty: 0.4, HedgeSide: "short", HedgeBasis: 10,
+			},
+			wantKind:  hedgeActionNone,
+			wantBasis: f64p(0),
+		},
+		{
+			name: "near-total reduce collapses into a full close",
+			snap: hedgeSnapshot{
+				PrimarySymbol: "ETH", PrimaryQty: 0.001, PrimarySide: "long",
+				HedgeSymbol: "BTC", HedgeHeld: true, HedgeQty: 0.4, HedgeSide: "short", HedgeBasis: 10,
+			},
+			wantKind: hedgeActionCloseFull,
+		},
+		{
+			name: "missing basis re-anchors without trading",
+			snap: hedgeSnapshot{
+				PrimarySymbol: "ETH", PrimaryQty: 10, PrimarySide: "long",
+				HedgeSymbol: "BTC", HedgeHeld: true, HedgeQty: 0.4, HedgeSide: "short", HedgeBasis: 0,
+			},
+			wantKind:  hedgeActionNone,
+			wantBasis: f64p(10),
+		},
+		{
+			name:          "no hedge config produces no action",
+			noHedgeConfig: true,
+			snap:          hedgeSnapshot{PrimarySymbol: "ETH", PrimaryQty: 10, PrimarySide: "long"},
+			wantKind:      hedgeActionNone,
+		},
 	}
-	if act.HedgeSide != "short" || act.Side != "sell" {
-		t.Fatalf("long primary must hedge SHORT via a sell, got side=%q order=%q", act.HedgeSide, act.Side)
-	}
-	if math.Abs(act.Qty-0.4) > 1e-12 {
-		t.Fatalf("qty = %v, want 0.4", act.Qty)
-	}
-	if act.NewBasis != 10 {
-		t.Fatalf("basis = %v, want 10", act.NewBasis)
-	}
-}
-
-func TestHedgeTargetDecisionShortPrimaryHedgesLong(t *testing.T) {
-	sc := hedgeTestConfig()
-	snap := hedgeSnapshot{PrimarySymbol: "ETH", PrimaryQty: 5, PrimarySide: "short", HedgeSymbol: "BTC"}
-	act := hedgeTargetDecision(sc, snap, testPrimaryPx, testHedgePx)
-	if act.Kind != hedgeActionOpen || act.HedgeSide != "long" || act.Side != "buy" {
-		t.Fatalf("short primary must hedge LONG via a buy, got %v side=%q order=%q", act.Kind, act.HedgeSide, act.Side)
-	}
-}
-
-func TestHedgeTargetDecisionAppliesRatio(t *testing.T) {
-	sc := hedgeTestConfig()
-	sc.Hedge.Ratio = 0.5
-	snap := hedgeSnapshot{PrimarySymbol: "ETH", PrimaryQty: 10, PrimarySide: "long", HedgeSymbol: "BTC"}
-	act := hedgeTargetDecision(sc, snap, testPrimaryPx, testHedgePx)
-	if math.Abs(act.Qty-0.2) > 1e-12 {
-		t.Fatalf("qty at ratio 0.5 = %v, want 0.2", act.Qty)
-	}
-}
-
-func TestHedgeTargetDecisionDefersOpenBelowMinNotional(t *testing.T) {
-	sc := hedgeTestConfig()
-	snap := hedgeSnapshot{PrimarySymbol: "ETH", PrimaryQty: 0.0045, PrimarySide: "long", HedgeSymbol: "BTC"}
-	act := hedgeTargetDecision(sc, snap, testPrimaryPx, testHedgePx)
-	if act.Kind != hedgeActionNone {
-		t.Fatalf("kind = %v (%s), want none — a sub-$%.0f open must be deferred, not submitted", act.Kind, act.Reason, hedgeMinOrderNotionalUSD)
-	}
-}
-
-func TestHedgeTargetDecisionDeferredOpenFiresAfterGrowth(t *testing.T) {
-	sc := hedgeTestConfig()
-	snap := hedgeSnapshot{PrimarySymbol: "ETH", PrimaryQty: 0.02, PrimarySide: "long", HedgeSymbol: "BTC"}
-	act := hedgeTargetDecision(sc, snap, testPrimaryPx, testHedgePx)
-	if act.Kind != hedgeActionOpen {
-		t.Fatalf("kind = %v (%s), want open — $%.2f notional is above the floor", act.Kind, act.Reason, 0.02*testPrimaryPx)
-	}
-	if act.NewBasis != 0.02 {
-		t.Fatalf("basis = %v, want 0.02", act.NewBasis)
-	}
-}
-
-func TestHedgeTargetDecisionIgnoresMarkDriftWhenQuantityUnchanged(t *testing.T) {
-	sc := hedgeTestConfig()
-	snap := hedgeSnapshot{
-		PrimarySymbol: "ETH", PrimaryQty: 10, PrimarySide: "long",
-		HedgeSymbol: "BTC", HedgeHeld: true, HedgeQty: 0.4, HedgeSide: "short", HedgeBasis: 10,
-	}
-	for _, marks := range [][2]float64{{2000, 50000}, {2600, 41000}, {1500, 63000}} {
-		act := hedgeTargetDecision(sc, snap, marks[0], marks[1])
-		if act.Kind != hedgeActionNone {
-			t.Fatalf("marks %v produced %v (%s); mark drift must never re-trade the hedge", marks, act.Kind, act.Reason)
-		}
-	}
-}
-
-func TestHedgeTargetDecisionAddsOnPrimaryGrowth(t *testing.T) {
-	sc := hedgeTestConfig()
-	snap := hedgeSnapshot{
-		PrimarySymbol: "ETH", PrimaryQty: 15, PrimarySide: "long",
-		HedgeSymbol: "BTC", HedgeHeld: true, HedgeQty: 0.4, HedgeSide: "short", HedgeBasis: 10,
-	}
-	act := hedgeTargetDecision(sc, snap, testPrimaryPx, testHedgePx)
-	if act.Kind != hedgeActionAdd {
-		t.Fatalf("kind = %v, want add (%s)", act.Kind, act.Reason)
-	}
-	if math.Abs(act.Qty-0.2) > 1e-12 {
-		t.Fatalf("add qty = %v, want 0.2", act.Qty)
-	}
-	if act.NewBasis != 15 {
-		t.Fatalf("basis = %v, want 15", act.NewBasis)
-	}
-}
-
-func TestHedgeTargetDecisionReducesProportionallyOnPartialClose(t *testing.T) {
-	sc := hedgeTestConfig()
-	snap := hedgeSnapshot{
-		PrimarySymbol: "ETH", PrimaryQty: 5, PrimarySide: "long",
-		HedgeSymbol: "BTC", HedgeHeld: true, HedgeQty: 0.4, HedgeSide: "short", HedgeBasis: 10,
-	}
-	act := hedgeTargetDecision(sc, snap, testPrimaryPx, testHedgePx)
-	if act.Kind != hedgeActionReduce {
-		t.Fatalf("kind = %v, want reduce (%s)", act.Kind, act.Reason)
-	}
-	if math.Abs(act.Qty-0.2) > 1e-12 {
-		t.Fatalf("reduce qty = %v, want 0.2 (half of the held 0.4)", act.Qty)
-	}
-	if act.NewBasis != 5 {
-		t.Fatalf("basis = %v, want 5", act.NewBasis)
-	}
-}
-
-func TestHedgeTargetDecisionReduceIsImmuneToMarkMovement(t *testing.T) {
-	sc := hedgeTestConfig()
-	snap := hedgeSnapshot{
-		PrimarySymbol: "ETH", PrimaryQty: 5, PrimarySide: "long",
-		HedgeSymbol: "BTC", HedgeHeld: true, HedgeQty: 0.4, HedgeSide: "short", HedgeBasis: 10,
-	}
-	a := hedgeTargetDecision(sc, snap, testPrimaryPx, testHedgePx)
-	b := hedgeTargetDecision(sc, snap, testPrimaryPx*1.4, testHedgePx*0.6)
-	if math.Abs(a.Qty-b.Qty) > 1e-12 {
-		t.Fatalf("reduce qty moved with marks: %v vs %v", a.Qty, b.Qty)
-	}
-}
-
-func TestHedgeTargetDecisionClosesWhenPrimaryFlat(t *testing.T) {
-	sc := hedgeTestConfig()
-	snap := hedgeSnapshot{
-		PrimarySymbol: "ETH", PrimaryQty: 0,
-		HedgeSymbol: "BTC", HedgeHeld: true, HedgeQty: 0.4, HedgeSide: "short", HedgeBasis: 10,
-	}
-	act := hedgeTargetDecision(sc, snap, testPrimaryPx, testHedgePx)
-	if act.Kind != hedgeActionCloseFull || math.Abs(act.Qty-0.4) > 1e-12 || act.NewBasis != 0 {
-		t.Fatalf("primary flat must flatten the hedge in full, got %v qty=%v basis=%v (%s)", act.Kind, act.Qty, act.NewBasis, act.Reason)
-	}
-}
-
-func TestHedgeTargetDecisionClosesOnFlatPrimaryEvenWithoutMarks(t *testing.T) {
-	sc := hedgeTestConfig()
-	snap := hedgeSnapshot{
-		PrimarySymbol: "ETH", PrimaryQty: 0,
-		HedgeSymbol: "BTC", HedgeHeld: true, HedgeQty: 0.4, HedgeSide: "short", HedgeBasis: 10,
-	}
-	act := hedgeTargetDecision(sc, snap, 0, 0)
-	if act.Kind != hedgeActionCloseFull {
-		t.Fatalf("kind = %v, want close even with unusable marks (%s)", act.Kind, act.Reason)
-	}
-}
-
-func TestHedgeTargetDecisionFailsClosedOnUnusableMarks(t *testing.T) {
-	sc := hedgeTestConfig()
-	snap := hedgeSnapshot{PrimarySymbol: "ETH", PrimaryQty: 10, PrimarySide: "long", HedgeSymbol: "BTC"}
-	for _, marks := range [][2]float64{{0, testHedgePx}, {testPrimaryPx, 0}, {-1, -1}} {
-		act := hedgeTargetDecision(sc, snap, marks[0], marks[1])
-		if act.Kind != hedgeActionNone || !act.Blocked {
-			t.Fatalf("marks %v: kind=%v blocked=%v — must fail closed, never size off a stale price", marks, act.Kind, act.Blocked)
-		}
-	}
-}
-
-func TestHedgeTargetDecisionFailsClosedOnUnknownPrimarySide(t *testing.T) {
-	sc := hedgeTestConfig()
-	snap := hedgeSnapshot{PrimarySymbol: "ETH", PrimaryQty: 10, PrimarySide: "sideways", HedgeSymbol: "BTC"}
-	act := hedgeTargetDecision(sc, snap, testPrimaryPx, testHedgePx)
-	if !act.Blocked {
-		t.Fatalf("unknown primary side must block, got %v (%s)", act.Kind, act.Reason)
-	}
-}
-
-func TestHedgeTargetDecisionFlattensWrongSideLeg(t *testing.T) {
-	sc := hedgeTestConfig()
-	snap := hedgeSnapshot{
-		PrimarySymbol: "ETH", PrimaryQty: 10, PrimarySide: "long",
-		HedgeSymbol: "BTC", HedgeHeld: true, HedgeQty: 0.4, HedgeSide: "long", HedgeBasis: 10,
-	}
-	act := hedgeTargetDecision(sc, snap, testPrimaryPx, testHedgePx)
-	if act.Kind != hedgeActionCloseFull {
-		t.Fatalf("kind = %v, want close for a wrong-side leg (%s)", act.Kind, act.Reason)
-	}
-	if !strings.Contains(act.Reason, "doubles exposure") {
-		t.Fatalf("reason must explain the danger, got %q", act.Reason)
-	}
-}
-
-func TestHedgeTargetDecisionClearsCorruptLeg(t *testing.T) {
-	sc := hedgeTestConfig()
-	snap := hedgeSnapshot{
-		PrimarySymbol: "ETH", PrimaryQty: 10, PrimarySide: "long",
-		HedgeSymbol: "BTC", HedgeHeld: true, HedgeQty: -0.4, HedgeSide: "short", HedgeBasis: 10,
-	}
-	act := hedgeTargetDecision(sc, snap, testPrimaryPx, testHedgePx)
-	if act.Kind != hedgeActionCloseFull || act.Qty != 0.4 {
-		t.Fatalf("corrupt leg must be cleared with the absolute qty, got %v qty=%v (%s)", act.Kind, act.Qty, act.Reason)
-	}
-}
-
-func TestHedgeTargetDecisionDefersDustAddWithoutAdvancingBasis(t *testing.T) {
-	sc := hedgeTestConfig()
-	snap := hedgeSnapshot{
-		PrimarySymbol: "ETH", PrimaryQty: 10.001, PrimarySide: "long",
-		HedgeSymbol: "BTC", HedgeHeld: true, HedgeQty: 0.4, HedgeSide: "short", HedgeBasis: 10,
-	}
-	act := hedgeTargetDecision(sc, snap, testPrimaryPx, testHedgePx)
-	if act.Kind != hedgeActionNone {
-		t.Fatalf("kind = %v, want none for a $2 add (%s)", act.Kind, act.Reason)
-	}
-	if act.NewBasis != 0 {
-		t.Fatalf("a deferred add must NOT advance the basis, got %v", act.NewBasis)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sc := hedgeTestConfig()
+			if tc.noHedgeConfig {
+				sc = hedgePerpsStrategy("eth-long", "ETH")
+			} else if tc.ratio != 0 {
+				sc.Hedge.Ratio = tc.ratio
+			}
+			marks := tc.marks
+			if len(marks) == 0 {
+				marks = defaultMarks
+			}
+			for _, mk := range marks {
+				act := hedgeTargetDecision(sc, tc.snap, mk[0], mk[1])
+				if act.Kind != tc.wantKind {
+					t.Fatalf("marks %v: kind = %v, want %v (%s)", mk, act.Kind, tc.wantKind, act.Reason)
+				}
+				if act.Blocked != tc.wantBlocked {
+					t.Fatalf("marks %v: blocked = %v, want %v (%s)", mk, act.Blocked, tc.wantBlocked, act.Reason)
+				}
+				if tc.wantHedgeSide != "" && act.HedgeSide != tc.wantHedgeSide {
+					t.Fatalf("marks %v: hedge side = %q, want %q", mk, act.HedgeSide, tc.wantHedgeSide)
+				}
+				if tc.wantOrderSide != "" && act.Side != tc.wantOrderSide {
+					t.Fatalf("marks %v: order side = %q, want %q", mk, act.Side, tc.wantOrderSide)
+				}
+				if tc.wantQty != nil && math.Abs(act.Qty-*tc.wantQty) > 1e-12 {
+					t.Fatalf("marks %v: qty = %v, want %v", mk, act.Qty, *tc.wantQty)
+				}
+				if tc.wantBasis != nil && act.NewBasis != *tc.wantBasis {
+					t.Fatalf("marks %v: basis = %v, want %v", mk, act.NewBasis, *tc.wantBasis)
+				}
+				if tc.wantReason != "" && !strings.Contains(act.Reason, tc.wantReason) {
+					t.Fatalf("marks %v: reason = %q, want it to explain %q", mk, act.Reason, tc.wantReason)
+				}
+			}
+		})
 	}
 }
 
-func TestHedgeTargetDecisionCollapsesNearTotalReduceIntoFullClose(t *testing.T) {
-	sc := hedgeTestConfig()
-	snap := hedgeSnapshot{
-		PrimarySymbol: "ETH", PrimaryQty: 0.001, PrimarySide: "long",
-		HedgeSymbol: "BTC", HedgeHeld: true, HedgeQty: 0.4, HedgeSide: "short", HedgeBasis: 10,
-	}
-	act := hedgeTargetDecision(sc, snap, testPrimaryPx, testHedgePx)
-	if act.Kind != hedgeActionCloseFull {
-		t.Fatalf("kind = %v, want closeFull when the residual is sub-minimum (%s)", act.Kind, act.Reason)
-	}
-}
-
-func TestHedgeTargetDecisionReanchorsMissingBasisWithoutTrading(t *testing.T) {
-	sc := hedgeTestConfig()
-	snap := hedgeSnapshot{
-		PrimarySymbol: "ETH", PrimaryQty: 10, PrimarySide: "long",
-		HedgeSymbol: "BTC", HedgeHeld: true, HedgeQty: 0.4, HedgeSide: "short", HedgeBasis: 0,
-	}
-	act := hedgeTargetDecision(sc, snap, testPrimaryPx, testHedgePx)
-	if act.Kind != hedgeActionNone {
-		t.Fatalf("kind = %v, want none — a missing basis must re-anchor, not trade (%s)", act.Kind, act.Reason)
-	}
-	if act.NewBasis != 10 {
-		t.Fatalf("basis = %v, want 10", act.NewBasis)
-	}
-}
-
-func TestHedgeTargetDecisionNoopWhenDisabled(t *testing.T) {
-	sc := hedgePerpsStrategy("eth-long", "ETH")
-	snap := hedgeSnapshot{PrimarySymbol: "ETH", PrimaryQty: 10, PrimarySide: "long"}
-	if act := hedgeTargetDecision(sc, snap, testPrimaryPx, testHedgePx); act.Kind != hedgeActionNone {
-		t.Fatalf("no hedge config must produce no action, got %v", act.Kind)
-	}
-}
-
+func f64p(v float64) *float64 { return &v }
 func TestHedgeOrderSkipReasonBlocksStaleDecisions(t *testing.T) {
 	sc := hedgeTestConfig()
 	open := hedgeAction{Kind: hedgeActionOpen, Qty: 0.4, Side: "sell", HedgeSide: "short", NewBasis: 10}

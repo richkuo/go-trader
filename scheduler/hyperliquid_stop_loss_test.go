@@ -99,44 +99,80 @@ func TestParseHyperliquidExecuteOutput_ErrorJSONPreserved(t *testing.T) {
 	}
 }
 
-func TestStrategyConfig_StopLossPctJSON(t *testing.T) {
-	v := 3.5
-	sc := StrategyConfig{
-		ID:          "hl-donch-btc",
-		Platform:    "hyperliquid",
-		Type:        "perps",
-		StopLossPct: &v,
+func TestStrategyConfig_StopFieldPointerJSON(t *testing.T) {
+	cases := []struct {
+		name  string
+		key   string
+		value float64
+		set   func(*StrategyConfig, *float64)
+		get   func(StrategyConfig) *float64
+	}{
+		{"stop_loss_pct", "stop_loss_pct", 3.5,
+			func(sc *StrategyConfig, v *float64) { sc.StopLossPct = v },
+			func(sc StrategyConfig) *float64 { return sc.StopLossPct }},
+		{"stop_loss_margin_pct", "stop_loss_margin_pct", 25,
+			func(sc *StrategyConfig, v *float64) { sc.StopLossMarginPct = v },
+			func(sc StrategyConfig) *float64 { return sc.StopLossMarginPct }},
+		{"trailing_stop_atr_mult", "trailing_stop_atr_mult", 1.5,
+			func(sc *StrategyConfig, v *float64) { sc.TrailingStopATRMult = v },
+			func(sc StrategyConfig) *float64 { return sc.TrailingStopATRMult }},
+		{"stop_loss_atr_mult", "stop_loss_atr_mult", 1.5,
+			func(sc *StrategyConfig, v *float64) { sc.StopLossATRMult = v },
+			func(sc StrategyConfig) *float64 { return sc.StopLossATRMult }},
 	}
-	b, err := json.Marshal(sc)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	var round StrategyConfig
-	if err := json.Unmarshal(b, &round); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if round.StopLossPct == nil || *round.StopLossPct != 3.5 {
-		t.Errorf("round-trip StopLossPct: got %v, want 3.5", round.StopLossPct)
-	}
-	b2, _ := json.Marshal(StrategyConfig{ID: "x", Platform: "hyperliquid", Type: "perps"})
-	if containsKey(b2, "stop_loss_pct") {
-		t.Errorf("nil StopLossPct should be omitted; got %s", b2)
-	}
-	zero := 0.0
-	scZero := StrategyConfig{ID: "x", Platform: "hyperliquid", Type: "perps", StopLossPct: &zero}
-	b3, _ := json.Marshal(scZero)
-	if !containsKey(b3, "stop_loss_pct") {
-		t.Errorf("explicit zero StopLossPct must be preserved in JSON; got %s", b3)
-	}
-	var roundZero StrategyConfig
-	if err := json.Unmarshal(b3, &roundZero); err != nil {
-		t.Fatalf("unmarshal zero: %v", err)
-	}
-	if roundZero.StopLossPct == nil || *roundZero.StopLossPct != 0 {
-		t.Errorf("round-trip explicit-zero StopLossPct: got %v, want 0 (non-nil)", roundZero.StopLossPct)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			base := func() StrategyConfig {
+				return StrategyConfig{ID: "hl-test", Type: "perps", Platform: "hyperliquid", Leverage: 10}
+			}
+
+			sc := base()
+			v := tc.value
+			tc.set(&sc, &v)
+			b, err := json.Marshal(sc)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if !containsKey(b, tc.key) {
+				t.Errorf("expected %s in JSON; got %s", tc.key, b)
+			}
+			var round StrategyConfig
+			if err := json.Unmarshal(b, &round); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if got := tc.get(round); got == nil || *got != tc.value {
+				t.Errorf("round-trip %s: got %v, want %v", tc.key, got, tc.value)
+			}
+
+			scNil := base()
+			b2, err := json.Marshal(scNil)
+			if err != nil {
+				t.Fatalf("marshal nil: %v", err)
+			}
+			if containsKey(b2, tc.key) {
+				t.Errorf("nil %s should be omitted; got %s", tc.key, b2)
+			}
+
+			scZero := base()
+			zero := 0.0
+			tc.set(&scZero, &zero)
+			b3, err := json.Marshal(scZero)
+			if err != nil {
+				t.Fatalf("marshal zero: %v", err)
+			}
+			if !containsKey(b3, tc.key) {
+				t.Errorf("explicit zero %s must be preserved in JSON; got %s", tc.key, b3)
+			}
+			var roundZero StrategyConfig
+			if err := json.Unmarshal(b3, &roundZero); err != nil {
+				t.Fatalf("unmarshal zero: %v", err)
+			}
+			if got := tc.get(roundZero); got == nil || *got != 0 {
+				t.Errorf("round-trip explicit-zero %s: got %v, want 0 (non-nil)", tc.key, got)
+			}
+		})
 	}
 }
-
 func TestPosition_StopLossOIDJSON(t *testing.T) {
 	p := Position{Symbol: "ETH", Quantity: 1, AvgCost: 3000, Side: "long", StopLossOID: 42, StopLossTriggerPx: 2900, StopLossHighWaterPx: 3100}
 	b, err := json.Marshal(p)
@@ -1025,50 +1061,6 @@ func TestConfigValidation_HLPeersTrailingAndFixedStopLossAllowed(t *testing.T) {
 	}
 }
 
-func TestStrategyConfig_StopLossMarginPctJSON(t *testing.T) {
-	v := 25.0
-	sc := StrategyConfig{
-		ID:                "hl-test",
-		Type:              "perps",
-		Platform:          "hyperliquid",
-		Leverage:          20,
-		StopLossMarginPct: &v,
-	}
-	b, err := json.Marshal(sc)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if !strings.Contains(string(b), `"stop_loss_margin_pct":25`) {
-		t.Errorf("expected stop_loss_margin_pct in JSON; got %s", b)
-	}
-	var round StrategyConfig
-	if err := json.Unmarshal(b, &round); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if round.StopLossMarginPct == nil || *round.StopLossMarginPct != 25 {
-		t.Errorf("round-trip StopLossMarginPct: got %v, want 25", round.StopLossMarginPct)
-	}
-
-	sc.StopLossMarginPct = nil
-	b2, err := json.Marshal(sc)
-	if err != nil {
-		t.Fatalf("marshal nil: %v", err)
-	}
-	if strings.Contains(string(b2), "stop_loss_margin_pct") {
-		t.Errorf("nil StopLossMarginPct should be omitted; got %s", b2)
-	}
-
-	zero := 0.0
-	sc.StopLossMarginPct = &zero
-	b3, err := json.Marshal(sc)
-	if err != nil {
-		t.Fatalf("marshal zero: %v", err)
-	}
-	if !strings.Contains(string(b3), `"stop_loss_margin_pct":0`) {
-		t.Errorf("explicit zero StopLossMarginPct must round-trip; got %s", b3)
-	}
-}
-
 func TestEffectiveTrailingStopPct_ATRMult(t *testing.T) {
 	pf := func(v float64) *float64 { return &v }
 	hl := func(sc StrategyConfig) StrategyConfig {
@@ -1249,43 +1241,6 @@ func TestNormalizeHyperliquidPeerStopLosses_TrailingATRMultOwnerNoop(t *testing.
 	}
 	if strategies[1].StopLossPct != nil {
 		t.Fatalf("peer StopLossPct = %v, want nil", strategies[1].StopLossPct)
-	}
-}
-
-func TestStrategyConfig_TrailingStopATRMultJSON(t *testing.T) {
-	v := 1.5
-	sc := StrategyConfig{
-		ID:                  "hl-test",
-		Type:                "perps",
-		Platform:            "hyperliquid",
-		Leverage:            10,
-		TrailingStopATRMult: &v,
-	}
-	b, err := json.Marshal(sc)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if !strings.Contains(string(b), `"trailing_stop_atr_mult":1.5`) {
-		t.Errorf("expected trailing_stop_atr_mult in JSON; got %s", b)
-	}
-
-	sc.TrailingStopATRMult = nil
-	b2, err := json.Marshal(sc)
-	if err != nil {
-		t.Fatalf("marshal nil: %v", err)
-	}
-	if strings.Contains(string(b2), "trailing_stop_atr_mult") {
-		t.Errorf("nil TrailingStopATRMult should be omitted; got %s", b2)
-	}
-
-	zero := 0.0
-	sc.TrailingStopATRMult = &zero
-	b3, err := json.Marshal(sc)
-	if err != nil {
-		t.Fatalf("marshal zero: %v", err)
-	}
-	if !strings.Contains(string(b3), `"trailing_stop_atr_mult":0`) {
-		t.Errorf("explicit zero TrailingStopATRMult must round-trip; got %s", b3)
 	}
 }
 
@@ -2264,43 +2219,6 @@ func TestRunHyperliquidFixedATRStopLossPaper_Unset(t *testing.T) {
 	}
 }
 
-func TestStrategyConfig_StopLossATRMultJSON(t *testing.T) {
-	v := 1.5
-	sc := StrategyConfig{
-		ID:              "hl-test",
-		Type:            "perps",
-		Platform:        "hyperliquid",
-		Leverage:        10,
-		StopLossATRMult: &v,
-	}
-	b, err := json.Marshal(sc)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if !strings.Contains(string(b), `"stop_loss_atr_mult":1.5`) {
-		t.Errorf("expected stop_loss_atr_mult in JSON; got %s", b)
-	}
-
-	sc.StopLossATRMult = nil
-	b2, err := json.Marshal(sc)
-	if err != nil {
-		t.Fatalf("marshal nil: %v", err)
-	}
-	if strings.Contains(string(b2), "stop_loss_atr_mult") {
-		t.Errorf("nil StopLossATRMult should be omitted; got %s", b2)
-	}
-
-	zero := 0.0
-	sc.StopLossATRMult = &zero
-	b3, err := json.Marshal(sc)
-	if err != nil {
-		t.Fatalf("marshal zero: %v", err)
-	}
-	if !strings.Contains(string(b3), `"stop_loss_atr_mult":0`) {
-		t.Errorf("explicit zero StopLossATRMult must round-trip; got %s", b3)
-	}
-}
-
 func TestHyperliquidArmFixedATRStopLossLive_PlacesWithCorrectArgs(t *testing.T) {
 	old := runHyperliquidUpdateStopLossFunc
 	defer func() { runHyperliquidUpdateStopLossFunc = old }()
@@ -2366,59 +2284,32 @@ func TestHyperliquidArmFixedATRStopLossLive_NotifiesOnError(t *testing.T) {
 	}
 }
 
-func TestHLSLEffectiveQty_NoCapWhenOnChainGeVirtual(t *testing.T) {
-	onChain := map[string]float64{"ETH": 0.422}
-	got, capped := hlSLEffectiveQty("ETH", 0.422, onChain)
-	if capped {
-		t.Error("capped=true, want false when on-chain == virtual")
+func TestHLSLEffectiveQty(t *testing.T) {
+	cases := []struct {
+		name       string
+		onChain    map[string]float64
+		virtualQty float64
+		wantQty    float64
+		wantCapped bool
+	}{
+		{"on-chain equals virtual", map[string]float64{"ETH": 0.422}, 0.422, 0.422, false},
+		{"on-chain above virtual", map[string]float64{"ETH": 0.500}, 0.422, 0.422, false},
+		{"on-chain below virtual caps to on-chain", map[string]float64{"ETH": 0.211}, 0.422, 0.211, true},
+		{"symbol absent from the map", map[string]float64{"BTC": 0.01}, 0.422, 0.422, false},
+		{"on-chain qty is zero", map[string]float64{"ETH": 0}, 0.422, 0.422, false},
 	}
-	if got != 0.422 {
-		t.Errorf("qty = %g, want 0.422", got)
-	}
-
-	onChain2 := map[string]float64{"ETH": 0.500}
-	got2, capped2 := hlSLEffectiveQty("ETH", 0.422, onChain2)
-	if capped2 {
-		t.Error("capped=true, want false when on-chain > virtual")
-	}
-	if got2 != 0.422 {
-		t.Errorf("qty = %g, want 0.422", got2)
-	}
-}
-
-func TestHLSLEffectiveQty_CapsWhenOnChainLtVirtual(t *testing.T) {
-	onChain := map[string]float64{"ETH": 0.211}
-	got, capped := hlSLEffectiveQty("ETH", 0.422, onChain)
-	if !capped {
-		t.Error("capped=false, want true when on-chain < virtual")
-	}
-	if got < 0.211-1e-9 || got > 0.211+1e-9 {
-		t.Errorf("qty = %g, want 0.211 (on-chain qty)", got)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, capped := hlSLEffectiveQty("ETH", tc.virtualQty, tc.onChain)
+			if capped != tc.wantCapped {
+				t.Errorf("capped = %v, want %v", capped, tc.wantCapped)
+			}
+			if got < tc.wantQty-1e-9 || got > tc.wantQty+1e-9 {
+				t.Errorf("qty = %g, want %g", got, tc.wantQty)
+			}
+		})
 	}
 }
-
-func TestHLSLEffectiveQty_NoCapWhenSymbolNotInMap(t *testing.T) {
-	onChain := map[string]float64{"BTC": 0.01}
-	got, capped := hlSLEffectiveQty("ETH", 0.422, onChain)
-	if capped {
-		t.Error("capped=true, want false when symbol not in on-chain map")
-	}
-	if got != 0.422 {
-		t.Errorf("qty = %g, want 0.422", got)
-	}
-}
-
-func TestHLSLEffectiveQty_NoCapWhenOnChainZero(t *testing.T) {
-	onChain := map[string]float64{"ETH": 0}
-	got, capped := hlSLEffectiveQty("ETH", 0.422, onChain)
-	if capped {
-		t.Error("capped=true, want false when on-chain qty is zero")
-	}
-	if got != 0.422 {
-		t.Errorf("qty = %g, want 0.422", got)
-	}
-}
-
 func TestATRMultMissingEntryATR_FixedATRMult(t *testing.T) {
 	pf := func(v float64) *float64 { return &v }
 	sc := StrategyConfig{

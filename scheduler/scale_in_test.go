@@ -358,132 +358,87 @@ func longSnap() scaleInSnapshot {
 	return scaleInSnapshot{Side: "long", Quantity: 100, AvgCost: 2000, EntryATR: 50, LastAddPrice: 2000}
 }
 
-func TestPerpsScaleInDecisionRequiresOptIn(t *testing.T) {
-	sc := StrategyConfig{AllowScaleIn: false}
-	if _, ok, _ := perpsScaleInDecision(sc, longSnap(), 1, 2000, 1000); ok {
-		t.Fatalf("scale-in allowed with AllowScaleIn=false")
+func TestPerpsScaleInDecision(t *testing.T) {
+	shortSnap := func() scaleInSnapshot {
+		return scaleInSnapshot{Side: "short", Quantity: 100, AvgCost: 2000, EntryATR: 50, LastAddPrice: 2000}
+	}
+	withSnap := func(mut func(*scaleInSnapshot)) scaleInSnapshot {
+		s := longSnap()
+		mut(&s)
+		return s
+	}
+
+	cases := []struct {
+		name     string
+		sc       StrategyConfig
+		snap     scaleInSnapshot
+		signal   int
+		price    float64
+		notional float64
+		wantOK   bool
+		wantQty  *float64
+	}{
+		{name: "opt-in required", sc: StrategyConfig{AllowScaleIn: false}, snap: longSnap(), signal: 1, price: 2000, notional: 1000},
+
+		{name: "buy on long adds", sc: StrategyConfig{AllowScaleIn: true}, snap: longSnap(), signal: 1, price: 2000, notional: 1000, wantOK: true},
+		{name: "sell on long does not add", sc: StrategyConfig{AllowScaleIn: true}, snap: longSnap(), signal: -1, price: 2000, notional: 1000},
+		{name: "buy on short does not add", sc: StrategyConfig{AllowScaleIn: true}, snap: shortSnap(), signal: 1, price: 2000, notional: 1000},
+		{name: "sell on short adds", sc: StrategyConfig{AllowScaleIn: true}, snap: shortSnap(), signal: -1, price: 2000, notional: 1000, wantOK: true},
+		{name: "add from flat is rejected", sc: StrategyConfig{AllowScaleIn: true}, snap: scaleInSnapshot{Side: "", Quantity: 0}, signal: 1, price: 2000, notional: 1000},
+
+		{name: "at max_adds", sc: StrategyConfig{AllowScaleIn: true, ScaleIn: &ScaleInConfig{MaxAdds: 2}},
+			snap: withSnap(func(s *scaleInSnapshot) { s.ScaleInCount = 2 }), signal: 1, price: 2000, notional: 1000},
+		{name: "under max_adds", sc: StrategyConfig{AllowScaleIn: true, ScaleIn: &ScaleInConfig{MaxAdds: 2}},
+			snap: withSnap(func(s *scaleInSnapshot) { s.ScaleInCount = 1 }), signal: 1, price: 2000, notional: 1000, wantOK: true},
+
+		{name: "past max_added_notional", sc: StrategyConfig{AllowScaleIn: true, ScaleIn: &ScaleInConfig{MaxAddedNotionalUSD: 1500}},
+			snap: withSnap(func(s *scaleInSnapshot) { s.AddedNotionalUSD = 1000 }), signal: 1, price: 2000, notional: 1000},
+		{name: "under max_added_notional", sc: StrategyConfig{AllowScaleIn: true, ScaleIn: &ScaleInConfig{MaxAddedNotionalUSD: 1500}},
+			snap: withSnap(func(s *scaleInSnapshot) { s.AddedNotionalUSD = 1000 }), signal: 1, price: 2000, notional: 400, wantOK: true},
+
+		{name: "long add-to-winners before the spacing distance", sc: StrategyConfig{AllowScaleIn: true, ScaleIn: &ScaleInConfig{AddSpacingATR: 1.0}},
+			snap: longSnap(), signal: 1, price: 2049, notional: 1000},
+		{name: "long add-to-winners past the spacing distance", sc: StrategyConfig{AllowScaleIn: true, ScaleIn: &ScaleInConfig{AddSpacingATR: 1.0}},
+			snap: longSnap(), signal: 1, price: 2051, notional: 1000, wantOK: true},
+		{name: "long add-to-winners on an adverse move", sc: StrategyConfig{AllowScaleIn: true, ScaleIn: &ScaleInConfig{AddSpacingATR: 1.0}},
+			snap: longSnap(), signal: 1, price: 1900, notional: 1000},
+
+		{name: "long average-down before the adverse distance", sc: StrategyConfig{AllowScaleIn: true, ScaleIn: &ScaleInConfig{AddSpacingATR: -1.0}},
+			snap: longSnap(), signal: 1, price: 1951, notional: 1000},
+		{name: "long average-down past the adverse distance", sc: StrategyConfig{AllowScaleIn: true, ScaleIn: &ScaleInConfig{AddSpacingATR: -1.0}},
+			snap: longSnap(), signal: 1, price: 1949, notional: 1000, wantOK: true},
+		{name: "long average-down on a favorable move", sc: StrategyConfig{AllowScaleIn: true, ScaleIn: &ScaleInConfig{AddSpacingATR: -1.0}},
+			snap: longSnap(), signal: 1, price: 2100, notional: 1000},
+
+		{name: "short add-to-winners on a favorable (down) move", sc: StrategyConfig{AllowScaleIn: true, ScaleIn: &ScaleInConfig{AddSpacingATR: 1.0}},
+			snap: shortSnap(), signal: -1, price: 1949, notional: 1000, wantOK: true},
+		{name: "short add-to-winners on an adverse (up) move", sc: StrategyConfig{AllowScaleIn: true, ScaleIn: &ScaleInConfig{AddSpacingATR: 1.0}},
+			snap: shortSnap(), signal: -1, price: 2100, notional: 1000},
+
+		{name: "zero spacing does not gate", sc: StrategyConfig{AllowScaleIn: true, ScaleIn: &ScaleInConfig{AddSpacingATR: 0}},
+			snap: longSnap(), signal: 1, price: 2000, notional: 1000, wantOK: true},
+		{name: "spacing measures from AvgCost when LastAddPrice is unset", sc: StrategyConfig{AllowScaleIn: true, ScaleIn: &ScaleInConfig{AddSpacingATR: 1.0}},
+			snap: withSnap(func(s *scaleInSnapshot) { s.LastAddPrice = 0 }), signal: 1, price: 2051, notional: 1000, wantOK: true},
+		{name: "spacing gate rejects a missing EntryATR", sc: StrategyConfig{AllowScaleIn: true, ScaleIn: &ScaleInConfig{AddSpacingATR: 1.0}},
+			snap: withSnap(func(s *scaleInSnapshot) { s.EntryATR = 0 }), signal: 1, price: 5000, notional: 1000},
+
+		{name: "default add notional sizes the leg", sc: StrategyConfig{AllowScaleIn: true},
+			snap: longSnap(), signal: 1, price: 2000, notional: 1000, wantOK: true, wantQty: scaleInQtyPtr(0.5)},
+		{name: "override add notional sizes the leg", sc: StrategyConfig{AllowScaleIn: true, ScaleIn: &ScaleInConfig{AddNotionalUSD: 4000}},
+			snap: longSnap(), signal: 1, price: 2000, notional: 1000, wantOK: true, wantQty: scaleInQtyPtr(2.0)},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			addQty, ok, reason := perpsScaleInDecision(tc.sc, tc.snap, tc.signal, tc.price, tc.notional)
+			if ok != tc.wantOK {
+				t.Fatalf("ok = %v, want %v (reason=%q)", ok, tc.wantOK, reason)
+			}
+			if tc.wantQty != nil && !approxEq(addQty, *tc.wantQty) {
+				t.Fatalf("addQty = %v, want %v", addQty, *tc.wantQty)
+			}
+		})
 	}
 }
 
-func TestPerpsScaleInDecisionDirectionMatch(t *testing.T) {
-	sc := StrategyConfig{AllowScaleIn: true}
-	if _, ok, _ := perpsScaleInDecision(sc, longSnap(), 1, 2000, 1000); !ok {
-		t.Fatalf("buy on long should add")
-	}
-	if _, ok, _ := perpsScaleInDecision(sc, longSnap(), -1, 2000, 1000); ok {
-		t.Fatalf("sell on long should NOT add")
-	}
-	short := scaleInSnapshot{Side: "short", Quantity: 100, AvgCost: 2000, EntryATR: 50, LastAddPrice: 2000}
-	if _, ok, _ := perpsScaleInDecision(sc, short, 1, 2000, 1000); ok {
-		t.Fatalf("buy on short should NOT add")
-	}
-	if _, ok, _ := perpsScaleInDecision(sc, short, -1, 2000, 1000); !ok {
-		t.Fatalf("sell on short should add")
-	}
-	flat := scaleInSnapshot{Side: "", Quantity: 0}
-	if _, ok, _ := perpsScaleInDecision(sc, flat, 1, 2000, 1000); ok {
-		t.Fatalf("add from flat should be rejected")
-	}
-}
-
-func TestPerpsScaleInDecisionMaxAdds(t *testing.T) {
-	sc := StrategyConfig{AllowScaleIn: true, ScaleIn: &ScaleInConfig{MaxAdds: 2}}
-	snap := longSnap()
-	snap.ScaleInCount = 2
-	if _, ok, reason := perpsScaleInDecision(sc, snap, 1, 2000, 1000); ok {
-		t.Fatalf("add past max_adds allowed (reason=%q)", reason)
-	}
-	snap.ScaleInCount = 1
-	if _, ok, _ := perpsScaleInDecision(sc, snap, 1, 2000, 1000); !ok {
-		t.Fatalf("add under max_adds rejected")
-	}
-}
-
-func TestPerpsScaleInDecisionMaxAddedNotional(t *testing.T) {
-	sc := StrategyConfig{AllowScaleIn: true, ScaleIn: &ScaleInConfig{MaxAddedNotionalUSD: 1500}}
-	snap := longSnap()
-	snap.AddedNotionalUSD = 1000
-	if _, ok, _ := perpsScaleInDecision(sc, snap, 1, 2000, 1000); ok {
-		t.Fatalf("add past max_added_notional allowed")
-	}
-	if _, ok, _ := perpsScaleInDecision(sc, snap, 1, 2000, 400); !ok {
-		t.Fatalf("add under max_added_notional rejected")
-	}
-}
-
-func TestPerpsScaleInDecisionSpacingAddToWinnersLong(t *testing.T) {
-	sc := StrategyConfig{AllowScaleIn: true, ScaleIn: &ScaleInConfig{AddSpacingATR: 1.0}}
-	snap := longSnap()
-	if _, ok, _ := perpsScaleInDecision(sc, snap, 1, 2049, 1000); ok {
-		t.Fatalf("add allowed before reaching spacing distance")
-	}
-	if _, ok, _ := perpsScaleInDecision(sc, snap, 1, 2051, 1000); !ok {
-		t.Fatalf("add blocked after reaching spacing distance")
-	}
-	if _, ok, _ := perpsScaleInDecision(sc, snap, 1, 1900, 1000); ok {
-		t.Fatalf("add-to-winners allowed on adverse move")
-	}
-}
-
-func TestPerpsScaleInDecisionSpacingAverageDownLong(t *testing.T) {
-	sc := StrategyConfig{AllowScaleIn: true, ScaleIn: &ScaleInConfig{AddSpacingATR: -1.0}}
-	snap := longSnap()
-	if _, ok, _ := perpsScaleInDecision(sc, snap, 1, 1951, 1000); ok {
-		t.Fatalf("average-down allowed before reaching adverse distance")
-	}
-	if _, ok, _ := perpsScaleInDecision(sc, snap, 1, 1949, 1000); !ok {
-		t.Fatalf("average-down blocked after reaching adverse distance")
-	}
-	if _, ok, _ := perpsScaleInDecision(sc, snap, 1, 2100, 1000); ok {
-		t.Fatalf("average-down allowed on favorable move")
-	}
-}
-
-func TestPerpsScaleInDecisionSpacingShort(t *testing.T) {
-	sc := StrategyConfig{AllowScaleIn: true, ScaleIn: &ScaleInConfig{AddSpacingATR: 1.0}}
-	snap := scaleInSnapshot{Side: "short", Quantity: 100, AvgCost: 2000, EntryATR: 50, LastAddPrice: 2000}
-	if _, ok, _ := perpsScaleInDecision(sc, snap, -1, 1949, 1000); !ok {
-		t.Fatalf("short add-to-winners blocked on favorable (down) move")
-	}
-	if _, ok, _ := perpsScaleInDecision(sc, snap, -1, 2100, 1000); ok {
-		t.Fatalf("short add-to-winners allowed on adverse (up) move")
-	}
-}
-
-func TestPerpsScaleInDecisionSpacingZeroNoGate(t *testing.T) {
-	sc := StrategyConfig{AllowScaleIn: true, ScaleIn: &ScaleInConfig{AddSpacingATR: 0}}
-	if _, ok, _ := perpsScaleInDecision(sc, longSnap(), 1, 2000, 1000); !ok {
-		t.Fatalf("zero spacing should not gate an add")
-	}
-}
-
-func TestPerpsScaleInDecisionLastAddPriceFallsBackToAvgCost(t *testing.T) {
-	sc := StrategyConfig{AllowScaleIn: true, ScaleIn: &ScaleInConfig{AddSpacingATR: 1.0}}
-	snap := longSnap()
-	snap.LastAddPrice = 0
-	if _, ok, _ := perpsScaleInDecision(sc, snap, 1, 2051, 1000); !ok {
-		t.Fatalf("spacing should measure from AvgCost when LastAddPrice unset")
-	}
-}
-
-func TestPerpsScaleInDecisionAddQtySizing(t *testing.T) {
-	sc := StrategyConfig{AllowScaleIn: true}
-	addQty, ok, _ := perpsScaleInDecision(sc, longSnap(), 1, 2000, 1000)
-	if !ok || !approxEq(addQty, 0.5) {
-		t.Fatalf("addQty = %v ok=%v, want 0.5 from default notional 1000/2000", addQty, ok)
-	}
-	sc2 := StrategyConfig{AllowScaleIn: true, ScaleIn: &ScaleInConfig{AddNotionalUSD: 4000}}
-	addQty2, ok2, _ := perpsScaleInDecision(sc2, longSnap(), 1, 2000, 1000)
-	if !ok2 || !approxEq(addQty2, 2.0) {
-		t.Fatalf("addQty = %v ok=%v, want 2.0 from override notional 4000/2000", addQty2, ok2)
-	}
-}
-
-func TestPerpsScaleInDecisionSpacingNeedsEntryATR(t *testing.T) {
-	sc := StrategyConfig{AllowScaleIn: true, ScaleIn: &ScaleInConfig{AddSpacingATR: 1.0}}
-	snap := longSnap()
-	snap.EntryATR = 0
-	if _, ok, _ := perpsScaleInDecision(sc, snap, 1, 5000, 1000); ok {
-		t.Fatalf("spacing gate should reject when EntryATR is unavailable")
-	}
-}
+func scaleInQtyPtr(v float64) *float64 { return &v }

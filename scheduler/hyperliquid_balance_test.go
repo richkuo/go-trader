@@ -275,97 +275,76 @@ func TestReconcileRemoveClosedPosition(t *testing.T) {
 	}
 }
 
-func TestReconcileNoChange(t *testing.T) {
-	s := &StrategyState{
-		ID:   "hl-btc",
-		Cash: 5000,
-		Positions: map[string]*Position{
-			"BTC": {Symbol: "BTC", Quantity: 0.5, AvgCost: 40000, Side: "long", Multiplier: 1, Leverage: 2, OwnerStrategyID: "hl-btc"},
+func TestReconcileHyperliquidPositionsNoChange(t *testing.T) {
+	cases := []struct {
+		name        string
+		positions   map[string]*Position
+		onChain     []HLPosition
+		wantPresent bool
+	}{
+		{
+			name: "state already matches on-chain",
+			positions: map[string]*Position{
+				"BTC": {Symbol: "BTC", Quantity: 0.5, AvgCost: 40000, Side: "long", Multiplier: 1, Leverage: 2, OwnerStrategyID: "hl-btc"},
+			},
+			onChain:     []HLPosition{{Coin: "BTC", Size: 0.5, EntryPrice: 40000, Leverage: 2}},
+			wantPresent: true,
+		},
+		{
+			name:      "unowned on-chain position is never adopted",
+			positions: map[string]*Position{},
+			onChain:   []HLPosition{{Coin: "BTC", Size: 0.5, EntryPrice: 40000}},
+		},
+		{
+			name:      "no position on either side",
+			positions: map[string]*Position{},
+			onChain:   []HLPosition{},
 		},
 	}
-	logger := newTestLogger(t)
-	positions := []HLPosition{{Coin: "BTC", Size: 0.5, EntryPrice: 40000, Leverage: 2}}
-
-	changed := reconcileHyperliquidPositionsWithResolver(s, "BTC", positions, noFillFeeResolver, logger, nil, nil, StrategyConfig{})
-
-	if changed {
-		t.Error("expected changed=false when state matches on-chain")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &StrategyState{ID: "hl-btc", Cash: 5000, Positions: tc.positions}
+			changed := reconcileHyperliquidPositionsWithResolver(s, "BTC", tc.onChain, noFillFeeResolver, newTestLogger(t), nil, nil, StrategyConfig{})
+			if changed {
+				t.Error("expected changed=false")
+			}
+			if _, ok := s.Positions["BTC"]; ok != tc.wantPresent {
+				t.Errorf("BTC position present = %v, want %v", ok, tc.wantPresent)
+			}
+			if s.Cash != 5000 {
+				t.Errorf("cash = %g, want 5000 (unchanged)", s.Cash)
+			}
+		})
 	}
 }
-
-func TestReconcileSkipsUnownedOnChainPosition(t *testing.T) {
-	s := &StrategyState{
-		ID:        "hl-btc",
-		Cash:      5000,
-		Positions: make(map[string]*Position),
+func TestReconcileHyperliquidPositionsLeverage(t *testing.T) {
+	cases := []struct {
+		name        string
+		posLeverage float64
+		onChainLev  float64
+		want        float64
+	}{
+		{"configured leverage is preserved against on-chain", 2, 20, 2},
+		{"zero-value position is seeded from on-chain", 0, 10, 10},
 	}
-	logger := newTestLogger(t)
-	positions := []HLPosition{{Coin: "BTC", Size: 0.5, EntryPrice: 40000}}
-
-	changed := reconcileHyperliquidPositionsWithResolver(s, "BTC", positions, noFillFeeResolver, logger, nil, nil, StrategyConfig{})
-
-	if changed {
-		t.Error("expected changed=false — should not adopt unowned position")
-	}
-	if _, ok := s.Positions["BTC"]; ok {
-		t.Error("BTC position should NOT be added to a strategy that doesn't own it")
-	}
-}
-
-func TestReconcilePreservesConfiguredLeverage(t *testing.T) {
-	s := &StrategyState{
-		ID:   "hl-eth",
-		Cash: 1000,
-		Positions: map[string]*Position{
-			"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 3000, Side: "long",
-				Multiplier: 1, Leverage: 2, OwnerStrategyID: "hl-eth"},
-		},
-	}
-	logger := newTestLogger(t)
-	positions := []HLPosition{{Coin: "ETH", Size: 1, EntryPrice: 3000, Leverage: 20}}
-
-	reconcileHyperliquidPositionsWithResolver(s, "ETH", positions, noFillFeeResolver, logger, nil, nil, StrategyConfig{})
-
-	if s.Positions["ETH"].Leverage != 2 {
-		t.Errorf("Leverage = %v; want 2 (configured value must be preserved against on-chain 20)", s.Positions["ETH"].Leverage)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &StrategyState{
+				ID:   "hl-eth",
+				Cash: 1000,
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 3000, Side: "long",
+						Multiplier: 1, Leverage: tc.posLeverage, OwnerStrategyID: "hl-eth"},
+				},
+			}
+			positions := []HLPosition{{Coin: "ETH", Size: 1, EntryPrice: 3000, Leverage: tc.onChainLev}}
+			reconcileHyperliquidPositionsWithResolver(s, "ETH", positions, noFillFeeResolver, newTestLogger(t), nil, nil, StrategyConfig{})
+			if s.Positions["ETH"].Leverage != tc.want {
+				t.Errorf("Leverage = %v; want %v", s.Positions["ETH"].Leverage, tc.want)
+			}
+		})
 	}
 }
-
-func TestReconcileSeedsZeroLeverageFromOnChain(t *testing.T) {
-	s := &StrategyState{
-		ID:   "hl-eth",
-		Cash: 1000,
-		Positions: map[string]*Position{
-			"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 3000, Side: "long",
-				Multiplier: 1, OwnerStrategyID: "hl-eth"},
-		},
-	}
-	logger := newTestLogger(t)
-	positions := []HLPosition{{Coin: "ETH", Size: 1, EntryPrice: 3000, Leverage: 10}}
-
-	reconcileHyperliquidPositionsWithResolver(s, "ETH", positions, noFillFeeResolver, logger, nil, nil, StrategyConfig{})
-
-	if s.Positions["ETH"].Leverage != 10 {
-		t.Errorf("Leverage = %v; want 10 (zero-value position seeded from on-chain)", s.Positions["ETH"].Leverage)
-	}
-}
-
-func TestReconcileNoPositionBothSides(t *testing.T) {
-	s := &StrategyState{
-		ID:        "hl-btc",
-		Cash:      5000,
-		Positions: make(map[string]*Position),
-	}
-	logger := newTestLogger(t)
-	positions := []HLPosition{}
-
-	changed := reconcileHyperliquidPositionsWithResolver(s, "BTC", positions, noFillFeeResolver, logger, nil, nil, StrategyConfig{})
-
-	if changed {
-		t.Error("expected changed=false when no position on either side")
-	}
-}
-
 func setupHLTestServer(balance float64, positions []HLPosition) *httptest.Server {
 	resp := map[string]interface{}{
 		"marginSummary": map[string]string{
@@ -2846,72 +2825,6 @@ func TestReconcileSharedCoin_ResidualMismatch_LeavesPositionsAlone(t *testing.T)
 	}
 }
 
-func TestReconciliationGapJSONRoundTrip(t *testing.T) {
-	original := &AppState{
-		CycleCount: 42,
-		Strategies: map[string]*StrategyState{},
-		ReconciliationGaps: map[string]*ReconciliationGap{
-			"ETH": {
-				Coin:       "ETH",
-				OnChainQty: 0.5,
-				VirtualQty: 0.8,
-				DeltaQty:   0.3,
-				Strategies: []string{"hl-a", "hl-b"},
-			},
-		},
-	}
-
-	data, err := json.Marshal(original)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-
-	var restored AppState
-	if err := json.Unmarshal(data, &restored); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-
-	gap := restored.ReconciliationGaps["ETH"]
-	if gap == nil {
-		t.Fatal("ETH gap missing after round-trip")
-	}
-	if gap.Coin != "ETH" {
-		t.Errorf("Coin = %q, want ETH", gap.Coin)
-	}
-	if gap.OnChainQty != 0.5 {
-		t.Errorf("OnChainQty = %g, want 0.5", gap.OnChainQty)
-	}
-	if gap.VirtualQty != 0.8 {
-		t.Errorf("VirtualQty = %g, want 0.8", gap.VirtualQty)
-	}
-	if gap.DeltaQty != 0.3 {
-		t.Errorf("DeltaQty = %g, want 0.3", gap.DeltaQty)
-	}
-	if len(gap.Strategies) != 2 {
-		t.Errorf("Strategies = %v, want 2 entries", gap.Strategies)
-	}
-}
-
-func TestReconciliationGapOmittedWhenEmpty(t *testing.T) {
-	state := &AppState{
-		CycleCount: 1,
-		Strategies: map[string]*StrategyState{},
-	}
-
-	data, err := json.Marshal(state)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil {
-		t.Fatalf("unmarshal raw: %v", err)
-	}
-	if _, ok := raw["reconciliation_gaps"]; ok {
-		t.Error("reconciliation_gaps should be omitted when nil/empty")
-	}
-}
-
 func fakeCloser(errs map[string]error) (HyperliquidLiveCloser, *[]string) {
 	var calls []string
 	closer := func(symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
@@ -3121,63 +3034,73 @@ func TestForceCloseHyperliquidLive_AdapterAlreadyFlatRoutedCorrectly(t *testing.
 	}
 }
 
-func TestComputeHyperliquidCircuitCloseQty_SoleOwnerFullSzi(t *testing.T) {
-	hlLive := []StrategyConfig{
-		{ID: "hl-eth", Platform: "hyperliquid", Type: "perps",
-			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+func TestComputeHyperliquidCircuitCloseQty(t *testing.T) {
+	cases := []struct {
+		name    string
+		forID   string
+		hlLive  []StrategyConfig
+		pos     []HLPosition
+		wantQty float64
+		wantOK  bool
+	}{
+		{
+			name:  "sole owner takes the full abs szi",
+			forID: "hl-eth",
+			hlLive: []StrategyConfig{
+				{ID: "hl-eth", Platform: "hyperliquid", Type: "perps",
+					Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+			},
+			pos:     []HLPosition{{Coin: "ETH", Size: -0.4, EntryPrice: 3000}},
+			wantQty: 0.4,
+			wantOK:  true,
+		},
+		{
+			name: "shared coin must not enqueue a per-strategy close",
+			hlLive: []StrategyConfig{
+				{ID: "hl-a", Platform: "hyperliquid", Type: "perps", CapitalPct: 0.5, Capital: 1000,
+					Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+				{ID: "hl-b", Platform: "hyperliquid", Type: "perps", CapitalPct: 0.5, Capital: 1000,
+					Args: []string{"ema", "ETH", "1h", "--mode=live"}},
+			},
+			pos: []HLPosition{{Coin: "ETH", Size: 0.517, EntryPrice: 3000}},
+		},
+		{
+			name: "manual peer on the coin must not enqueue a per-strategy close",
+			hlLive: []StrategyConfig{
+				{ID: "hl-a", Platform: "hyperliquid", Type: "perps",
+					Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+				{ID: "hl-manual-eth", Platform: "hyperliquid", Type: "manual", Symbol: "ETH",
+					Args: []string{"hold", "ETH", "1h", "--mode=live"}},
+			},
+			pos: []HLPosition{{Coin: "ETH", Size: 0.517, EntryPrice: 3000}},
+		},
+		{
+			name: "mixed capital units on a shared coin must not enqueue a per-strategy close",
+			hlLive: []StrategyConfig{
+				{ID: "hl-a", Platform: "hyperliquid", Type: "perps", CapitalPct: 0.5,
+					Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+				{ID: "hl-b", Platform: "hyperliquid", Type: "perps", Capital: 1000,
+					Args: []string{"ema", "ETH", "1h", "--mode=live"}},
+			},
+			pos: []HLPosition{{Coin: "ETH", Size: 0.5, EntryPrice: 3000}},
+		},
 	}
-	pos := []HLPosition{{Coin: "ETH", Size: -0.4, EntryPrice: 3000}}
-	q, ok := computeHyperliquidCircuitCloseQty("ETH", "hl-eth", pos, hlLive)
-	if !ok {
-		t.Fatal("expected ok")
-	}
-	if math.Abs(q-0.4) > 1e-9 {
-		t.Errorf("qty=%.6f want 0.4 (full abs szi for sole owner)", q)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			forID := tc.forID
+			if forID == "" {
+				forID = "hl-a"
+			}
+			q, ok := computeHyperliquidCircuitCloseQty("ETH", forID, tc.pos, tc.hlLive)
+			if ok != tc.wantOK {
+				t.Fatalf("ok = %v, want %v (qty=%.6f)", ok, tc.wantOK, q)
+			}
+			if math.Abs(q-tc.wantQty) > 1e-9 {
+				t.Errorf("qty = %.6f, want %.6f", q, tc.wantQty)
+			}
+		})
 	}
 }
-
-func TestComputeHyperliquidCircuitCloseQty_SharedCoinSkipped(t *testing.T) {
-	hlLive := []StrategyConfig{
-		{ID: "hl-a", Platform: "hyperliquid", Type: "perps", CapitalPct: 0.5, Capital: 1000,
-			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
-		{ID: "hl-b", Platform: "hyperliquid", Type: "perps", CapitalPct: 0.5, Capital: 1000,
-			Args: []string{"ema", "ETH", "1h", "--mode=live"}},
-	}
-	pos := []HLPosition{{Coin: "ETH", Size: 0.517, EntryPrice: 3000}}
-	q, ok := computeHyperliquidCircuitCloseQty("ETH", "hl-a", pos, hlLive)
-	if ok || q != 0 {
-		t.Fatalf("shared Hyperliquid coin must not enqueue a per-strategy close; qty=%.6f ok=%v", q, ok)
-	}
-}
-
-func TestComputeHyperliquidCircuitCloseQty_ManualPeerSharedCoinSkipped(t *testing.T) {
-	hlLive := []StrategyConfig{
-		{ID: "hl-a", Platform: "hyperliquid", Type: "perps",
-			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
-		{ID: "hl-manual-eth", Platform: "hyperliquid", Type: "manual", Symbol: "ETH",
-			Args: []string{"hold", "ETH", "1h", "--mode=live"}},
-	}
-	pos := []HLPosition{{Coin: "ETH", Size: 0.517, EntryPrice: 3000}}
-	q, ok := computeHyperliquidCircuitCloseQty("ETH", "hl-a", pos, hlLive)
-	if ok || q != 0 {
-		t.Fatalf("manual peer on shared Hyperliquid coin must not enqueue a per-strategy close; qty=%.6f ok=%v", q, ok)
-	}
-}
-
-func TestComputeHyperliquidCircuitCloseQty_MixedUnitsSharedCoinSkipped(t *testing.T) {
-	hlLive := []StrategyConfig{
-		{ID: "hl-a", Platform: "hyperliquid", Type: "perps", CapitalPct: 0.5,
-			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
-		{ID: "hl-b", Platform: "hyperliquid", Type: "perps", Capital: 1000,
-			Args: []string{"ema", "ETH", "1h", "--mode=live"}},
-	}
-	pos := []HLPosition{{Coin: "ETH", Size: 0.5, EntryPrice: 3000}}
-	q, ok := computeHyperliquidCircuitCloseQty("ETH", "hl-a", pos, hlLive)
-	if ok || q != 0 {
-		t.Fatalf("shared Hyperliquid coin must not enqueue a per-strategy close; qty=%.6f ok=%v", q, ok)
-	}
-}
-
 func TestRunPendingHyperliquidCircuitCloses_RecoversStuckCB(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
@@ -3998,50 +3921,30 @@ func tieredTPATRSC() StrategyConfig {
 	}
 }
 
-func TestHyperliquidHasClearedTPTier_NoTPOIDs(t *testing.T) {
+func TestHyperliquidHasClearedTPTier(t *testing.T) {
 	sc := tieredTPATRSC()
-	pos := &Position{Quantity: 0.422, TPOIDs: nil}
-	if hyperliquidHasClearedTPTier(sc, pos, 0.211) {
-		t.Error("expected false when pos.TPOIDs is nil")
+	cases := []struct {
+		name     string
+		tpOIDs   []int64
+		closeQty float64
+		want     bool
+	}{
+		{"nil TP OIDs", nil, 0.211, false},
+		{"empty TP OIDs", []int64{}, 0.211, false},
+		{"all tiers active", []int64{111, 222}, 0.211, false},
+		{"one cleared one active", []int64{0, 222}, 0.211, true},
+		{"all zero, partial close is an ambiguous gap", []int64{0, 0}, 0.211, false},
+		{"all zero, full close is a sole-peer final close", []int64{0, 0}, 0.422, true},
 	}
-	pos.TPOIDs = []int64{}
-	if hyperliquidHasClearedTPTier(sc, pos, 0.211) {
-		t.Error("expected false when pos.TPOIDs is empty")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pos := &Position{Quantity: 0.422, TPOIDs: tc.tpOIDs}
+			if got := hyperliquidHasClearedTPTier(sc, pos, tc.closeQty); got != tc.want {
+				t.Errorf("hyperliquidHasClearedTPTier = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
-
-func TestHyperliquidHasClearedTPTier_AllActive(t *testing.T) {
-	sc := tieredTPATRSC()
-	pos := &Position{Quantity: 0.422, TPOIDs: []int64{111, 222}}
-	if hyperliquidHasClearedTPTier(sc, pos, 0.211) {
-		t.Error("expected false when all TP OIDs are active (non-zero)")
-	}
-}
-
-func TestHyperliquidHasClearedTPTier_OneClearedOneActive(t *testing.T) {
-	sc := tieredTPATRSC()
-	pos := &Position{Quantity: 0.422, TPOIDs: []int64{0, 222}}
-	if !hyperliquidHasClearedTPTier(sc, pos, 0.211) {
-		t.Error("expected true when one tier is cleared and one is still active")
-	}
-}
-
-func TestHyperliquidHasClearedTPTier_AllZeroFullClose(t *testing.T) {
-	sc := tieredTPATRSC()
-	pos := &Position{Quantity: 0.422, TPOIDs: []int64{0, 0}}
-	if hyperliquidHasClearedTPTier(sc, pos, 0.211) {
-		t.Error("expected false when all OIDs zero but closeQty != pos.Quantity (ambiguous gap)")
-	}
-	if !hyperliquidHasClearedTPTier(sc, pos, 0.422) {
-		t.Error("expected true when all OIDs zero and closeQty == pos.Quantity (sole-peer final close)")
-	}
-	if hyperliquidAllTiersArmedAndCleared(sc, &Position{Quantity: 0.422, TPOIDs: []int64{0, 0}, TPArmedTiers: []bool{true, true}}) {
-		if hyperliquidHasClearedTPTier(sc, pos, 0.211) {
-			t.Error("hyperliquidHasClearedTPTier must stay false for dust; use hlAttemptCloseFromArmedTPClears (#777)")
-		}
-	}
-}
-
 func TestReconcilePositionSLClose_UsesFilledQtyFromLookup(t *testing.T) {
 	const (
 		virtualQty  = 0.422

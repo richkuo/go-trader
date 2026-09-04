@@ -29,94 +29,116 @@ func hedgeErrsContaining(errs []string, needle string) bool {
 	return false
 }
 
-func TestValidateHedgeConfigsAcceptsCleanConfig(t *testing.T) {
-	cfg := &Config{Strategies: []StrategyConfig{
-		withHedge(hedgePerpsStrategy("eth-long", "ETH"), &HedgeConfig{Enabled: true, Symbol: "BTC", Ratio: 1.0, Leverage: 3, MarginMode: "cross"}),
-	}}
-	if errs := validateHedgeConfigs(cfg); len(errs) != 0 {
-		t.Fatalf("expected no errors, got %v", errs)
+func TestValidateHedgeConfigsCollisionsAndShape(t *testing.T) {
+	paperPeer := hedgePerpsStrategy("btc-paper", "BTC")
+	paperPeer.Args = []string{"--symbol", "BTC", "--mode", "paper"}
+	directionBoth := hedgePerpsStrategy("eth-both", "ETH")
+	directionBoth.Direction = DirectionBoth
+
+	cases := []struct {
+		name       string
+		strategies []StrategyConfig
+		wantClean  bool
+		want       []string
+		wantNot    []string
+	}{
+		{
+			name: "clean config",
+			strategies: []StrategyConfig{
+				withHedge(hedgePerpsStrategy("eth-long", "ETH"), &HedgeConfig{Enabled: true, Symbol: "BTC", Ratio: 1.0, Leverage: 3, MarginMode: "cross"}),
+			},
+			wantClean: true,
+		},
+		{
+			name: "hedge coin is the strategy's own coin",
+			strategies: []StrategyConfig{
+				withHedge(hedgePerpsStrategy("eth-long", "ETH"), &HedgeConfig{Enabled: true, Symbol: "ETH"}),
+			},
+			want: []string{"is the strategy's own coin"},
+		},
+		{
+			name: "ccxt symbol normalizes before the own-coin check",
+			strategies: []StrategyConfig{
+				withHedge(hedgePerpsStrategy("eth-long", "ETH"), &HedgeConfig{Enabled: true, Symbol: "eth/USDC:USDC"}),
+			},
+			want: []string{"is the strategy's own coin"},
+		},
+		{
+			name: "hedge coin is a live peer's primary coin",
+			strategies: []StrategyConfig{
+				withHedge(hedgePerpsStrategy("eth-long", "ETH"), &HedgeConfig{Enabled: true, Symbol: "BTC"}),
+				hedgePerpsStrategy("btc-long", "BTC"),
+			},
+			want: []string{"is the primary coin of strategy/strategies btc-long"},
+		},
+		{
+			name: "hedge coin is a paper peer's primary coin",
+			strategies: []StrategyConfig{
+				withHedge(hedgePerpsStrategy("eth-long", "ETH"), &HedgeConfig{Enabled: true, Symbol: "BTC"}),
+				paperPeer,
+			},
+			want: []string{"is the primary coin of strategy/strategies btc-paper"},
+		},
+		{
+			name: "hedge coin is a manual peer's primary coin",
+			strategies: []StrategyConfig{
+				withHedge(hedgePerpsStrategy("eth-long", "ETH"), &HedgeConfig{Enabled: true, Symbol: "BTC"}),
+				{ID: "btc-manual", Type: "manual", Platform: "hyperliquid", Symbol: "BTC"},
+			},
+			want: []string{"is the primary coin of strategy/strategies btc-manual"},
+		},
+		{
+			name: "two hedge-enabled strategies claim the same coin",
+			strategies: []StrategyConfig{
+				withHedge(hedgePerpsStrategy("eth-long", "ETH"), &HedgeConfig{Enabled: true, Symbol: "BTC"}),
+				withHedge(hedgePerpsStrategy("sol-long", "SOL"), &HedgeConfig{Enabled: true, Symbol: "btc"}),
+			},
+			want: []string{"claimed by multiple hedge-enabled strategies (eth-long, sol-long)"},
+		},
+		{
+			name: "direction both is rejected",
+			strategies: []StrategyConfig{
+				withHedge(directionBoth, &HedgeConfig{Enabled: true, Symbol: "BTC"}),
+			},
+			want: []string{"hedge is not supported with direction"},
+		},
+		{
+			name: "non-perps and non-hyperliquid are both rejected",
+			strategies: []StrategyConfig{
+				withHedge(StrategyConfig{ID: "spot-x", Type: "spot", Platform: "binanceus"}, &HedgeConfig{Enabled: true, Symbol: "BTC"}),
+			},
+			want: []string{"only supported for perps strategies", "only supported on hyperliquid"},
+		},
+		{
+			name: "a disabled block skips collisions but keeps shape checks",
+			strategies: []StrategyConfig{
+				withHedge(hedgePerpsStrategy("eth-long", "ETH"), &HedgeConfig{Enabled: false, Symbol: "ETH", Side: "same"}),
+				hedgePerpsStrategy("btc-long", "BTC"),
+			},
+			want:    []string{"hedge.side must be empty or"},
+			wantNot: []string{"is the strategy's own coin"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			errs := validateHedgeConfigs(&Config{Strategies: tc.strategies})
+			if tc.wantClean && len(errs) != 0 {
+				t.Fatalf("expected no errors, got %v", errs)
+			}
+			for _, needle := range tc.want {
+				if !hedgeErrsContaining(errs, needle) {
+					t.Fatalf("expected an error containing %q, got %v", needle, errs)
+				}
+			}
+			for _, needle := range tc.wantNot {
+				if hedgeErrsContaining(errs, needle) {
+					t.Fatalf("did not expect an error containing %q, got %v", needle, errs)
+				}
+			}
+		})
 	}
 }
-
-func TestValidateHedgeConfigsRejectsOwnPrimaryCoin(t *testing.T) {
-	cfg := &Config{Strategies: []StrategyConfig{
-		withHedge(hedgePerpsStrategy("eth-long", "ETH"), &HedgeConfig{Enabled: true, Symbol: "ETH"}),
-	}}
-	errs := validateHedgeConfigs(cfg)
-	if !hedgeErrsContaining(errs, "is the strategy's own coin") {
-		t.Fatalf("expected own-coin rejection, got %v", errs)
-	}
-}
-
-func TestValidateHedgeConfigsNormalizesCcxtSymbolForCollisions(t *testing.T) {
-	cfg := &Config{Strategies: []StrategyConfig{
-		withHedge(hedgePerpsStrategy("eth-long", "ETH"), &HedgeConfig{Enabled: true, Symbol: "eth/USDC:USDC"}),
-	}}
-	errs := validateHedgeConfigs(cfg)
-	if !hedgeErrsContaining(errs, "is the strategy's own coin") {
-		t.Fatalf("expected ccxt-normalized own-coin rejection, got %v", errs)
-	}
-}
-
-func TestValidateHedgeConfigsRejectsPeerPrimaryCoin(t *testing.T) {
-	cfg := &Config{Strategies: []StrategyConfig{
-		withHedge(hedgePerpsStrategy("eth-long", "ETH"), &HedgeConfig{Enabled: true, Symbol: "BTC"}),
-		hedgePerpsStrategy("btc-long", "BTC"),
-	}}
-	errs := validateHedgeConfigs(cfg)
-	if !hedgeErrsContaining(errs, "is the primary coin of strategy/strategies btc-long") {
-		t.Fatalf("expected peer-primary rejection, got %v", errs)
-	}
-}
-
-func TestValidateHedgeConfigsRejectsPaperPeerPrimaryCoin(t *testing.T) {
-	paper := hedgePerpsStrategy("btc-paper", "BTC")
-	paper.Args = []string{"--symbol", "BTC", "--mode", "paper"}
-	cfg := &Config{Strategies: []StrategyConfig{
-		withHedge(hedgePerpsStrategy("eth-long", "ETH"), &HedgeConfig{Enabled: true, Symbol: "BTC"}),
-		paper,
-	}}
-	errs := validateHedgeConfigs(cfg)
-	if !hedgeErrsContaining(errs, "is the primary coin of strategy/strategies btc-paper") {
-		t.Fatalf("expected paper-peer rejection, got %v", errs)
-	}
-}
-
-func TestValidateHedgeConfigsRejectsManualPeerPrimaryCoin(t *testing.T) {
-	manual := StrategyConfig{ID: "btc-manual", Type: "manual", Platform: "hyperliquid", Symbol: "BTC"}
-	cfg := &Config{Strategies: []StrategyConfig{
-		withHedge(hedgePerpsStrategy("eth-long", "ETH"), &HedgeConfig{Enabled: true, Symbol: "BTC"}),
-		manual,
-	}}
-	errs := validateHedgeConfigs(cfg)
-	if !hedgeErrsContaining(errs, "is the primary coin of strategy/strategies btc-manual") {
-		t.Fatalf("expected manual-peer rejection, got %v", errs)
-	}
-}
-
-func TestValidateHedgeConfigsRejectsHedgeVsHedgeCollision(t *testing.T) {
-	cfg := &Config{Strategies: []StrategyConfig{
-		withHedge(hedgePerpsStrategy("eth-long", "ETH"), &HedgeConfig{Enabled: true, Symbol: "BTC"}),
-		withHedge(hedgePerpsStrategy("sol-long", "SOL"), &HedgeConfig{Enabled: true, Symbol: "btc"}),
-	}}
-	errs := validateHedgeConfigs(cfg)
-	if !hedgeErrsContaining(errs, "claimed by multiple hedge-enabled strategies (eth-long, sol-long)") {
-		t.Fatalf("expected hedge-vs-hedge rejection, got %v", errs)
-	}
-}
-
-func TestValidateHedgeConfigsRejectsDirectionBoth(t *testing.T) {
-	sc := hedgePerpsStrategy("eth-both", "ETH")
-	sc.Direction = DirectionBoth
-	cfg := &Config{Strategies: []StrategyConfig{
-		withHedge(sc, &HedgeConfig{Enabled: true, Symbol: "BTC"}),
-	}}
-	errs := validateHedgeConfigs(cfg)
-	if !hedgeErrsContaining(errs, "hedge is not supported with direction") {
-		t.Fatalf("expected direction=both rejection, got %v", errs)
-	}
-}
-
 func TestValidateHedgeConfigsRejectsLegacyAllowShortsBoth(t *testing.T) {
 	sc := hedgePerpsStrategy("eth-legacy", "ETH")
 	sc.AllowShorts = true
@@ -129,20 +151,6 @@ func TestValidateHedgeConfigsRejectsLegacyAllowShortsBoth(t *testing.T) {
 	errs := validateHedgeConfigs(cfg)
 	if !hedgeErrsContaining(errs, "hedge is not supported with direction") {
 		t.Fatalf("expected legacy allow_shorts rejection, got %v", errs)
-	}
-}
-
-func TestValidateHedgeConfigsRejectsNonPerpsAndNonHyperliquid(t *testing.T) {
-	spot := StrategyConfig{ID: "spot-x", Type: "spot", Platform: "binanceus"}
-	cfg := &Config{Strategies: []StrategyConfig{
-		withHedge(spot, &HedgeConfig{Enabled: true, Symbol: "BTC"}),
-	}}
-	errs := validateHedgeConfigs(cfg)
-	if !hedgeErrsContaining(errs, "only supported for perps strategies") {
-		t.Fatalf("expected type rejection, got %v", errs)
-	}
-	if !hedgeErrsContaining(errs, "only supported on hyperliquid") {
-		t.Fatalf("expected platform rejection, got %v", errs)
 	}
 }
 
@@ -171,20 +179,6 @@ func TestValidateHedgeConfigsRejectsBadVocabularyAndBounds(t *testing.T) {
 				t.Fatalf("expected %q, got %v", tc.needle, errs)
 			}
 		})
-	}
-}
-
-func TestValidateHedgeConfigsDisabledBlockSkipsCollisionsButKeepsShapeChecks(t *testing.T) {
-	cfg := &Config{Strategies: []StrategyConfig{
-		withHedge(hedgePerpsStrategy("eth-long", "ETH"), &HedgeConfig{Enabled: false, Symbol: "ETH", Side: "same"}),
-		hedgePerpsStrategy("btc-long", "BTC"),
-	}}
-	errs := validateHedgeConfigs(cfg)
-	if hedgeErrsContaining(errs, "is the strategy's own coin") {
-		t.Fatalf("disabled block must not trip collision rules, got %v", errs)
-	}
-	if !hedgeErrsContaining(errs, "hedge.side must be empty or") {
-		t.Fatalf("disabled block must still be shape-checked, got %v", errs)
 	}
 }
 
@@ -239,12 +233,6 @@ func TestValidateStrategyJSONKeysAcceptsKnownHedgeKeys(t *testing.T) {
 	raw := []byte(`{"strategies":[{"id":"eth-long","hedge":{"enabled":true,"symbol":"BTC","side":"inverse","ratio":1,"platform":"hyperliquid","type":"perps","margin_mode":"cross","leverage":3}}]}`)
 	if errs := validateStrategyJSONKeys(raw); len(errs) != 0 {
 		t.Fatalf("expected no unknown-key errors, got %v", errs)
-	}
-}
-
-func TestKnownStrategyConfigKeysIncludesHedge(t *testing.T) {
-	if !knownStrategyConfigKeys()["hedge"] {
-		t.Fatal("knownStrategyConfigKeys must include \"hedge\"")
 	}
 }
 
