@@ -38,3 +38,16 @@ def test_go_wording_only(body, expected):
 )
 def test_py_wording_only(body, expected):
     assert budget.py_wording_only(body) is expected
+
+
+@pytest.mark.parametrize(
+    "hits,baseline,expected_new,expected_stale",
+    [
+        (["a::t1", "b::t2"], ["a::t1", "b::t2"], [], []),
+        (["a::t1", "c::t3"], ["a::t1", "b::t2"], ["c::t3"], ["b::t2"]),
+        (["a::t1"], ["a::t1", "b::t2"], [], ["b::t2"]),
+        (["a::t1", "a::t9"], ["a::t1"], ["a::t9"], []),
+    ],
+)
+def test_compare_flags_new_and_stale_identifiers(hits, baseline, expected_new, expected_stale):
+    assert budget.compare(hits, baseline) == (expected_new, expected_stale)

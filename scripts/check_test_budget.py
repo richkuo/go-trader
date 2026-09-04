@@ -63,24 +63,50 @@ def scan():
     return hits
 
 
+def compare(hits, baseline):
+    hit_set = set(hits)
+    base_set = set(baseline)
+    return sorted(hit_set - base_set), sorted(base_set - hit_set)
+
+
+def load_baseline():
+    if not BASELINE.exists():
+        return []
+    data = json.loads(BASELINE.read_text())
+    entries = data.get("wording_only_tests", [])
+    if not isinstance(entries, list):
+        raise SystemExit("baseline must list test identifiers; run --write-baseline")
+    return entries
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--write-baseline", action="store_true")
     ap.add_argument("--list", action="store_true")
     args = ap.parse_args()
-    hits = scan()
+    hits = sorted(scan())
     if args.list:
         print("\n".join(hits))
     if args.write_baseline:
-        BASELINE.write_text(json.dumps({"wording_only_tests": len(hits)}, indent=2) + "\n")
-        print(f"baseline written: {len(hits)}")
+        BASELINE.write_text(json.dumps({"wording_only_tests": hits}, indent=2) + "\n")
+        print(f"baseline written: {len(hits)} wording-only tests")
         return 0
-    baseline = json.loads(BASELINE.read_text())["wording_only_tests"] if BASELINE.exists() else 0
-    print(f"wording-only tests: {len(hits)} (baseline {baseline})")
-    if len(hits) > baseline:
+    baseline = load_baseline()
+    new, stale = compare(hits, baseline)
+    print(f"wording-only tests: {len(hits)} (baseline {len(baseline)})")
+    rc = 0
+    if new:
         print("test budget exceeded: new tests assert only message wording", file=sys.stderr)
-        return 1
-    return 0
+        for ident in new:
+            print(f"  new: {ident}", file=sys.stderr)
+        print("add an identifier to scripts/test_budget_baseline.json only when the wording drives an operator decision", file=sys.stderr)
+        rc = 1
+    if stale:
+        print("baseline lists wording-only tests that no longer exist; run scripts/check_test_budget.py --write-baseline to tighten it", file=sys.stderr)
+        for ident in stale:
+            print(f"  stale: {ident}", file=sys.stderr)
+        rc = 1
+    return rc
 
 
 if __name__ == "__main__":
