@@ -6,19 +6,14 @@ import (
 	"testing"
 )
 
-func TestEncodePositionsJSONEmpty(t *testing.T) {
-	got := EncodePositionsJSON(nil)
-	if got != "[]" {
+func TestEncodePositionsJSON(t *testing.T) {
+	if got := EncodePositionsJSON(nil); got != "[]" {
 		t.Errorf("nil positions = %q, want %q", got, "[]")
 	}
-
-	got = EncodePositionsJSON(map[string]*OptionPosition{})
-	if got != "[]" {
+	if got := EncodePositionsJSON(map[string]*OptionPosition{}); got != "[]" {
 		t.Errorf("empty positions = %q, want %q", got, "[]")
 	}
-}
 
-func TestEncodePositionsJSON(t *testing.T) {
 	positions := map[string]*OptionPosition{
 		"pos1": {
 			OptionType:      "call",
@@ -48,14 +43,11 @@ func TestEncodePositionsJSON(t *testing.T) {
 	}
 }
 
-func TestEncodeAllPositionsJSONEmpty(t *testing.T) {
-	got := EncodeAllPositionsJSON(nil, nil)
-	if got != "[]" {
+func TestEncodeAllPositionsJSON(t *testing.T) {
+	if got := EncodeAllPositionsJSON(nil, nil); got != "[]" {
 		t.Errorf("nil positions = %q, want %q", got, "[]")
 	}
-}
 
-func TestEncodeAllPositionsJSON(t *testing.T) {
 	optPos := map[string]*OptionPosition{
 		"opt1": {
 			OptionType: "put",

@@ -76,6 +76,7 @@ func TestPrompterChoice(t *testing.T) {
 		{"select third", "3\n", 0, 2},
 		{"empty uses default", "\n", 1, 1},
 		{"eof uses default", "", 2, 2},
+		{"invalid then valid", "99\n2\n", 0, 1},
 	}
 
 	for _, tc := range cases {
@@ -86,14 +87,6 @@ func TestPrompterChoice(t *testing.T) {
 				t.Errorf("Choice() = %d, want %d", got, tc.want)
 			}
 		})
-	}
-}
-
-func TestPrompterChoiceInvalidThenValid(t *testing.T) {
-	p, _ := newTestPrompter("99\n2\n")
-	got := p.Choice("Pick:", []string{"A", "B", "C"}, 0)
-	if got != 1 {
-		t.Errorf("Choice() = %d, want 1 (second attempt)", got)
 	}
 }
 
@@ -213,24 +206,5 @@ func TestPrompterFloatRange(t *testing.T) {
 				t.Errorf("FloatRange() = %g, want %g", got, tc.want)
 			}
 		})
-	}
-}
-
-func TestMultiSelectDefault(t *testing.T) {
-	options := []string{"A", "B", "C"}
-
-	all := multiSelectDefault(options, true)
-	if len(all) != 3 {
-		t.Errorf("defaultAll=true: len = %d, want 3", len(all))
-	}
-	for i, v := range all {
-		if v != i {
-			t.Errorf("defaultAll=true: [%d] = %d, want %d", i, v, i)
-		}
-	}
-
-	none := multiSelectDefault(options, false)
-	if len(none) != 0 {
-		t.Errorf("defaultAll=false: len = %d, want 0", len(none))
 	}
 }

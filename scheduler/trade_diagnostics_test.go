@@ -12,109 +12,104 @@ func diagCandle(t int64, o, h, l, c float64) UICandle {
 	return UICandle{Time: t, Open: o, High: h, Low: l, Close: c}
 }
 
-func TestComputeTradeQualityLongWinner(t *testing.T) {
-	candles := []UICandle{
-		diagCandle(0, 100, 104, 99, 103),
-		diagCandle(3600, 103, 110, 102, 108),
-		diagCandle(7200, 108, 109, 105, 106),
+func TestComputeTradeQuality(t *testing.T) {
+	f := func(v float64) *float64 { return &v }
+	cases := []struct {
+		name          string
+		candles       []UICandle
+		side          string
+		entry, exit   float64
+		wantOK        bool
+		wantMFE       *float64
+		wantMAE       *float64
+		wantFav       *float64
+		wantAdv       *float64
+		wantCapture   *float64
+		wantNoCapture bool
+	}{
+		{
+			name: "long winner",
+			candles: []UICandle{
+				diagCandle(0, 100, 104, 99, 103),
+				diagCandle(3600, 103, 110, 102, 108),
+				diagCandle(7200, 108, 109, 105, 106),
+			},
+			side: "long", entry: 100, exit: 106, wantOK: true,
+			wantMFE: f(110), wantMAE: f(99), wantFav: f(10), wantAdv: f(1), wantCapture: f(0.6),
+		},
+		{
+			name: "short winner",
+			candles: []UICandle{
+				diagCandle(0, 100, 102, 95, 96),
+				diagCandle(3600, 96, 98, 90, 92),
+			},
+			side: "short", entry: 100, exit: 95, wantOK: true,
+			wantMFE: f(90), wantMAE: f(102), wantFav: f(10), wantAdv: f(2), wantCapture: f(0.5),
+		},
+		{
+			name:    "loser has no capture ratio",
+			candles: []UICandle{diagCandle(0, 100, 101, 94, 95)},
+			side:    "long", entry: 100, exit: 95, wantOK: true,
+			wantAdv: f(6), wantNoCapture: true,
+		},
+		{
+			name:    "immediate reversal",
+			candles: []UICandle{diagCandle(0, 100, 100, 92, 93)},
+			side:    "long", entry: 100, exit: 93, wantOK: true,
+			wantMFE: f(100), wantFav: f(0), wantNoCapture: true,
+		},
+		{
+			name:    "single bar hold",
+			candles: []UICandle{diagCandle(0, 100, 105, 98, 104)},
+			side:    "long", entry: 100, exit: 104, wantOK: true,
+			wantMFE: f(105), wantMAE: f(98), wantCapture: f(0.8),
+		},
+		{
+			name:    "capture clamps at one",
+			candles: []UICandle{diagCandle(0, 100, 104, 99, 104)},
+			side:    "long", entry: 100, exit: 106, wantOK: true,
+			wantCapture: f(1),
+		},
+		{
+			name: "no candles fails", candles: nil,
+			side: "long", entry: 100, exit: 105, wantOK: false,
+		},
+		{
+			name: "zero entry fails", candles: []UICandle{diagCandle(0, 1, 1, 1, 1)},
+			side: "long", entry: 0, exit: 105, wantOK: false,
+		},
 	}
-	m, ok := computeTradeQuality(candles, "long", 100, 106)
-	if !ok {
-		t.Fatal("expected metrics")
-	}
-	if m.MFEPrice != 110 || m.MAEPrice != 99 {
-		t.Fatalf("MFE/MAE = %v/%v, want 110/99", m.MFEPrice, m.MAEPrice)
-	}
-	if m.FavorablePct != 10 {
-		t.Fatalf("favorable = %v, want 10", m.FavorablePct)
-	}
-	if m.AdversePct != 1 {
-		t.Fatalf("adverse = %v, want 1", m.AdversePct)
-	}
-	if m.CaptureRatio == nil || *m.CaptureRatio != 0.6 {
-		t.Fatalf("capture = %v, want 0.6", m.CaptureRatio)
-	}
-}
 
-func TestComputeTradeQualityShortWinner(t *testing.T) {
-	candles := []UICandle{
-		diagCandle(0, 100, 102, 95, 96),
-		diagCandle(3600, 96, 98, 90, 92),
-	}
-	m, ok := computeTradeQuality(candles, "short", 100, 95)
-	if !ok {
-		t.Fatal("expected metrics")
-	}
-	if m.MFEPrice != 90 || m.MAEPrice != 102 {
-		t.Fatalf("MFE/MAE = %v/%v, want 90/102", m.MFEPrice, m.MAEPrice)
-	}
-	if m.FavorablePct != 10 || m.AdversePct != 2 {
-		t.Fatalf("favorable/adverse = %v/%v, want 10/2", m.FavorablePct, m.AdversePct)
-	}
-	if m.CaptureRatio == nil || *m.CaptureRatio != 0.5 {
-		t.Fatalf("capture = %v, want 0.5", m.CaptureRatio)
-	}
-}
-
-func TestComputeTradeQualityLoserHasNoCaptureRatio(t *testing.T) {
-	candles := []UICandle{diagCandle(0, 100, 101, 94, 95)}
-	m, ok := computeTradeQuality(candles, "long", 100, 95)
-	if !ok {
-		t.Fatal("expected metrics")
-	}
-	if m.CaptureRatio != nil {
-		t.Fatalf("losers must not get a capture ratio, got %v", *m.CaptureRatio)
-	}
-	if m.AdversePct != 6 {
-		t.Fatalf("adverse = %v, want 6", m.AdversePct)
-	}
-}
-
-func TestComputeTradeQualityImmediateReversal(t *testing.T) {
-	candles := []UICandle{diagCandle(0, 100, 100, 92, 93)}
-	m, ok := computeTradeQuality(candles, "long", 100, 93)
-	if !ok {
-		t.Fatal("expected metrics")
-	}
-	if m.MFEPrice != 100 || m.FavorablePct != 0 {
-		t.Fatalf("MFE = %v favorable = %v, want entry/0", m.MFEPrice, m.FavorablePct)
-	}
-	if m.CaptureRatio != nil {
-		t.Fatal("no favorable move → no capture ratio")
-	}
-}
-
-func TestComputeTradeQualitySingleBarHold(t *testing.T) {
-	candles := []UICandle{diagCandle(0, 100, 105, 98, 104)}
-	m, ok := computeTradeQuality(candles, "long", 100, 104)
-	if !ok {
-		t.Fatal("expected metrics")
-	}
-	if m.MFEPrice != 105 || m.MAEPrice != 98 {
-		t.Fatalf("MFE/MAE = %v/%v, want 105/98", m.MFEPrice, m.MAEPrice)
-	}
-	if m.CaptureRatio == nil || *m.CaptureRatio != 0.8 {
-		t.Fatalf("capture = %v, want 0.8", m.CaptureRatio)
-	}
-}
-
-func TestComputeTradeQualityCaptureClampsAtOne(t *testing.T) {
-	candles := []UICandle{diagCandle(0, 100, 104, 99, 104)}
-	m, ok := computeTradeQuality(candles, "long", 100, 106)
-	if !ok {
-		t.Fatal("expected metrics")
-	}
-	if m.CaptureRatio == nil || *m.CaptureRatio != 1 {
-		t.Fatalf("capture = %v, want clamp to 1", m.CaptureRatio)
-	}
-}
-
-func TestComputeTradeQualityBadInputs(t *testing.T) {
-	if _, ok := computeTradeQuality(nil, "long", 100, 105); ok {
-		t.Fatal("no candles must fail")
-	}
-	if _, ok := computeTradeQuality([]UICandle{diagCandle(0, 1, 1, 1, 1)}, "long", 0, 105); ok {
-		t.Fatal("zero entry must fail")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, ok := computeTradeQuality(tc.candles, tc.side, tc.entry, tc.exit)
+			if ok != tc.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tc.wantOK)
+			}
+			if !tc.wantOK {
+				return
+			}
+			if tc.wantMFE != nil && m.MFEPrice != *tc.wantMFE {
+				t.Fatalf("MFE = %v, want %v", m.MFEPrice, *tc.wantMFE)
+			}
+			if tc.wantMAE != nil && m.MAEPrice != *tc.wantMAE {
+				t.Fatalf("MAE = %v, want %v", m.MAEPrice, *tc.wantMAE)
+			}
+			if tc.wantFav != nil && m.FavorablePct != *tc.wantFav {
+				t.Fatalf("favorable = %v, want %v", m.FavorablePct, *tc.wantFav)
+			}
+			if tc.wantAdv != nil && m.AdversePct != *tc.wantAdv {
+				t.Fatalf("adverse = %v, want %v", m.AdversePct, *tc.wantAdv)
+			}
+			if tc.wantNoCapture && m.CaptureRatio != nil {
+				t.Fatalf("expected no capture ratio, got %v", *m.CaptureRatio)
+			}
+			if tc.wantCapture != nil {
+				if m.CaptureRatio == nil || *m.CaptureRatio != *tc.wantCapture {
+					t.Fatalf("capture = %v, want %v", m.CaptureRatio, *tc.wantCapture)
+				}
+			}
+		})
 	}
 }
 

@@ -55,62 +55,74 @@ func TestTradingViewExportRowsExplicitStrategyRequiresData(t *testing.T) {
 	}
 }
 
-func TestTradingViewSymbolOverridesAndUnsupported(t *testing.T) {
-	trade := Trade{StrategyID: "hl-btc", Symbol: "BTC"}
-	symbol, err := tradingViewSymbol(
-		StrategyConfig{ID: "hl-btc", Platform: "hyperliquid", Type: "perps"},
-		trade,
-		map[string]string{"hl:BTC": "BYBIT:BTCUSDT"},
-	)
-	if err != nil {
-		t.Fatalf("tradingViewSymbol override: %v", err)
-	}
-	if symbol != "BYBIT:BTCUSDT" {
-		t.Fatalf("symbol = %q, want BYBIT:BTCUSDT", symbol)
-	}
-
-	_, err = tradingViewSymbol(StrategyConfig{ID: "rh-aapl", Platform: "robinhood", Type: "spot"}, Trade{StrategyID: "rh-aapl", Symbol: "AAPL"}, nil)
-	if err == nil || !strings.Contains(err.Error(), "symbol_overrides") {
-		t.Fatalf("expected unsupported mapping error, got %v", err)
-	}
-}
-
-func TestTradingViewSymbolOverridePriorityAndAliases(t *testing.T) {
-	trade := Trade{StrategyID: "rh-aapl", Symbol: "AAPL"}
-	overrides := map[string]string{
+func TestTradingViewSymbol(t *testing.T) {
+	aliasOverrides := map[string]string{
 		"AAPL":         "NASDAQ:AAPL",
 		"rh:AAPL":      "NYSE:AAPL",
 		"rh-aapl:AAPL": "AMEX:AAPL",
 	}
-	symbol, err := tradingViewSymbol(StrategyConfig{ID: "rh-aapl", Platform: "robinhood", Type: "spot"}, trade, overrides)
-	if err != nil {
-		t.Fatalf("tradingViewSymbol: %v", err)
+	platformAliasOnly := map[string]string{
+		"AAPL":    "NASDAQ:AAPL",
+		"rh:AAPL": "NYSE:AAPL",
 	}
-	if symbol != "AMEX:AAPL" {
-		t.Fatalf("symbol = %q, want strategy-specific override AMEX:AAPL", symbol)
+	cases := []struct {
+		name      string
+		sc        StrategyConfig
+		trade     Trade
+		overrides map[string]string
+		want      string
+		wantErr   string
+	}{
+		{
+			name:      "explicit platform override wins over derived symbol",
+			sc:        StrategyConfig{ID: "hl-btc", Platform: "hyperliquid", Type: "perps"},
+			trade:     Trade{StrategyID: "hl-btc", Symbol: "BTC"},
+			overrides: map[string]string{"hl:BTC": "BYBIT:BTCUSDT"},
+			want:      "BYBIT:BTCUSDT",
+		},
+		{
+			name:    "unsupported platform mapping errors",
+			sc:      StrategyConfig{ID: "rh-aapl", Platform: "robinhood", Type: "spot"},
+			trade:   Trade{StrategyID: "rh-aapl", Symbol: "AAPL"},
+			wantErr: "symbol_overrides",
+		},
+		{
+			name:      "strategy-specific override beats platform alias and bare symbol",
+			sc:        StrategyConfig{ID: "rh-aapl", Platform: "robinhood", Type: "spot"},
+			trade:     Trade{StrategyID: "rh-aapl", Symbol: "AAPL"},
+			overrides: aliasOverrides,
+			want:      "AMEX:AAPL",
+		},
+		{
+			name:      "platform alias beats bare symbol",
+			sc:        StrategyConfig{ID: "rh-aapl", Platform: "robinhood", Type: "spot"},
+			trade:     Trade{StrategyID: "rh-aapl", Symbol: "AAPL"},
+			overrides: platformAliasOnly,
+			want:      "NYSE:AAPL",
+		},
+		{
+			name:  "okx perps derive a .P symbol",
+			sc:    StrategyConfig{ID: "okx-btc-perp", Platform: "okx", Type: "perps"},
+			trade: Trade{StrategyID: "okx-btc-perp", Symbol: "BTC-USDT-SWAP", TradeType: "perps"},
+			want:  "OKX:BTCUSDT.P",
+		},
 	}
-
-	delete(overrides, "rh-aapl:AAPL")
-	symbol, err = tradingViewSymbol(StrategyConfig{ID: "rh-aapl", Platform: "robinhood", Type: "spot"}, trade, overrides)
-	if err != nil {
-		t.Fatalf("tradingViewSymbol alias: %v", err)
-	}
-	if symbol != "NYSE:AAPL" {
-		t.Fatalf("symbol = %q, want rh alias override NYSE:AAPL", symbol)
-	}
-}
-
-func TestTradingViewPerpsSymbol(t *testing.T) {
-	symbol, err := tradingViewSymbol(
-		StrategyConfig{ID: "okx-btc-perp", Platform: "okx", Type: "perps"},
-		Trade{StrategyID: "okx-btc-perp", Symbol: "BTC-USDT-SWAP", TradeType: "perps"},
-		nil,
-	)
-	if err != nil {
-		t.Fatalf("tradingViewSymbol perps: %v", err)
-	}
-	if symbol != "OKX:BTCUSDT.P" {
-		t.Fatalf("symbol = %q, want OKX:BTCUSDT.P", symbol)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			symbol, err := tradingViewSymbol(tc.sc, tc.trade, tc.overrides)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("tradingViewSymbol: %v", err)
+			}
+			if symbol != tc.want {
+				t.Fatalf("symbol = %q, want %q", symbol, tc.want)
+			}
+		})
 	}
 }
 

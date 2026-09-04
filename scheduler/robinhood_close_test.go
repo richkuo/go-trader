@@ -206,88 +206,107 @@ func TestRobinhoodLiveCloseReport_SortedErrorCoins(t *testing.T) {
 	}
 }
 
-func TestParseRobinhoodCloseOutput_CleanSuccess(t *testing.T) {
-	stdout := []byte(`{"close":{"symbol":"BTC","fill":{"avg_px":42000,"total_sz":0.01,"oid":"abc-123"}},"platform":"robinhood","timestamp":"2026-04-19T10:00:00Z"}`)
-	result, _, err := parseRobinhoodCloseOutput(stdout, "", nil)
-	if err != nil {
-		t.Fatalf("expected nil err on clean success, got %v", err)
+func TestParseRobinhoodCloseOutput(t *testing.T) {
+	cases := []struct {
+		name    string
+		stdout  string
+		stderr  string
+		exitErr error
+		wantErr bool
+		check   func(t *testing.T, result *RobinhoodCloseResult)
+	}{
+		{
+			name:   "clean success",
+			stdout: `{"close":{"symbol":"BTC","fill":{"avg_px":42000,"total_sz":0.01,"oid":"abc-123"}},"platform":"robinhood","timestamp":"2026-04-19T10:00:00Z"}`,
+			check: func(t *testing.T, result *RobinhoodCloseResult) {
+				if result == nil || result.Close == nil || result.Close.Symbol != "BTC" {
+					t.Errorf("unexpected result: %+v", result)
+				}
+			},
+		},
+		{
+			name:    "exit 0 with error field",
+			stdout:  `{"close":{"symbol":"BTC","fill":{}},"platform":"robinhood","timestamp":"x","error":"bad thing"}`,
+			wantErr: true,
+		},
+		{
+			name:    "non-zero exit with error envelope",
+			stdout:  `{"close":{"symbol":"BTC","fill":{}},"platform":"robinhood","timestamp":"x","error":"auth failed"}`,
+			exitErr: fmt.Errorf("exit 1"),
+			wantErr: true,
+		},
+		{
+			name:    "non-zero exit with no error field",
+			stdout:  `{"close":{"symbol":"BTC","fill":{}},"platform":"robinhood","timestamp":"x"}`,
+			stderr:  "stderr msg",
+			exitErr: fmt.Errorf("exit 2"),
+			wantErr: true,
+		},
+		{
+			name:   "already flat field parsed",
+			stdout: `{"close":{"symbol":"BTC","fill":{},"already_flat":true},"platform":"robinhood","timestamp":"x"}`,
+			check: func(t *testing.T, result *RobinhoodCloseResult) {
+				if result == nil || result.Close == nil {
+					t.Fatalf("expected populated result.Close, got %+v", result)
+				}
+				if !result.Close.AlreadyFlat {
+					t.Errorf("AlreadyFlat = false, want true (#350)")
+				}
+			},
+		},
+		{
+			name:    "malformed json",
+			stdout:  `not json`,
+			wantErr: true,
+			check: func(t *testing.T, result *RobinhoodCloseResult) {
+				if result != nil {
+					t.Errorf("expected nil result on parse failure, got %+v", result)
+				}
+			},
+		},
 	}
-	if result == nil || result.Close == nil || result.Close.Symbol != "BTC" {
-		t.Errorf("unexpected result: %+v", result)
-	}
-}
-
-func TestParseRobinhoodCloseOutput_Exit0WithErrorField(t *testing.T) {
-	stdout := []byte(`{"close":{"symbol":"BTC","fill":{}},"platform":"robinhood","timestamp":"x","error":"bad thing"}`)
-	_, _, err := parseRobinhoodCloseOutput(stdout, "", nil)
-	if err == nil {
-		t.Fatal("expected non-nil err when error field populated, even on exit 0")
-	}
-}
-
-func TestParseRobinhoodCloseOutput_ExitNonZeroWithErrorEnvelope(t *testing.T) {
-	stdout := []byte(`{"close":{"symbol":"BTC","fill":{}},"platform":"robinhood","timestamp":"x","error":"auth failed"}`)
-	_, _, err := parseRobinhoodCloseOutput(stdout, "", fmt.Errorf("exit 1"))
-	if err == nil {
-		t.Fatal("expected non-nil err on error envelope")
-	}
-}
-
-func TestParseRobinhoodCloseOutput_ExitNonZeroNoErrorField(t *testing.T) {
-	stdout := []byte(`{"close":{"symbol":"BTC","fill":{}},"platform":"robinhood","timestamp":"x"}`)
-	_, _, err := parseRobinhoodCloseOutput(stdout, "stderr msg", fmt.Errorf("exit 2"))
-	if err == nil {
-		t.Fatal("expected non-nil err on non-zero exit with no error field")
-	}
-}
-
-func TestParseRobinhoodCloseOutput_AlreadyFlatFieldParsed(t *testing.T) {
-	stdout := []byte(`{"close":{"symbol":"BTC","fill":{},"already_flat":true},"platform":"robinhood","timestamp":"x"}`)
-	result, _, err := parseRobinhoodCloseOutput(stdout, "", nil)
-	if err != nil {
-		t.Fatalf("expected nil err, got %v", err)
-	}
-	if result == nil || result.Close == nil {
-		t.Fatalf("expected populated result.Close, got %+v", result)
-	}
-	if !result.Close.AlreadyFlat {
-		t.Errorf("AlreadyFlat = false, want true (#350)")
-	}
-}
-
-func TestParseRobinhoodCloseOutput_MalformedJSON(t *testing.T) {
-	stdout := []byte(`not json`)
-	result, _, err := parseRobinhoodCloseOutput(stdout, "", nil)
-	if err == nil {
-		t.Fatal("expected non-nil err on malformed JSON")
-	}
-	if result != nil {
-		t.Errorf("expected nil result on parse failure, got %+v", result)
-	}
-}
-
-func TestParseRobinhoodPositionsOutput_CleanSuccess(t *testing.T) {
-	stdout := []byte(`{"positions":[{"coin":"BTC","size":0.01,"avg_price":42000}],"platform":"robinhood","timestamp":"x"}`)
-	result, _, err := parseRobinhoodPositionsOutput(stdout, "", nil)
-	if err != nil {
-		t.Fatalf("expected nil err, got %v", err)
-	}
-	if len(result.Positions) != 1 || result.Positions[0].Coin != "BTC" {
-		t.Errorf("unexpected positions: %+v", result.Positions)
-	}
-}
-
-func TestParseRobinhoodPositionsOutput_ErrorEnvelope(t *testing.T) {
-	stdout := []byte(`{"positions":[],"platform":"robinhood","timestamp":"x","error":"not live"}`)
-	_, _, err := parseRobinhoodPositionsOutput(stdout, "", fmt.Errorf("exit 1"))
-	if err == nil {
-		t.Fatal("expected non-nil err when error envelope populated — silent parse would make kill switch misread as 'no positions' and clear virtual state while on-chain remained live (#346/#345 bug class)")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, _, err := parseRobinhoodCloseOutput([]byte(tc.stdout), tc.stderr, tc.exitErr)
+			if tc.wantErr && err == nil {
+				t.Fatalf("expected non-nil err")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("expected nil err, got %v", err)
+			}
+			if tc.check != nil {
+				tc.check(t, result)
+			}
+		})
 	}
 }
 
-func TestParseRobinhoodPositionsOutput_MalformedJSON(t *testing.T) {
-	_, _, err := parseRobinhoodPositionsOutput([]byte(`garbage`), "", nil)
-	if err == nil {
-		t.Fatal("expected non-nil err on malformed JSON")
+func TestParseRobinhoodPositionsOutput(t *testing.T) {
+	cases := []struct {
+		name    string
+		stdout  string
+		exitErr error
+		wantErr bool
+	}{
+		{name: "clean success", stdout: `{"positions":[{"coin":"BTC","size":0.01,"avg_price":42000}],"platform":"robinhood","timestamp":"x"}`},
+		{name: "error envelope", stdout: `{"positions":[],"platform":"robinhood","timestamp":"x","error":"not live"}`, exitErr: fmt.Errorf("exit 1"), wantErr: true},
+		{name: "malformed json", stdout: `garbage`, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, _, err := parseRobinhoodPositionsOutput([]byte(tc.stdout), "", tc.exitErr)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected non-nil err — a silent parse would make the kill switch misread as 'no positions' and clear virtual state while on-account remained live (#346/#345 bug class)")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("expected nil err, got %v", err)
+			}
+			if len(result.Positions) != 1 || result.Positions[0].Coin != "BTC" {
+				t.Errorf("unexpected positions: %+v", result.Positions)
+			}
+		})
 	}
 }

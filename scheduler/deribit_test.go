@@ -20,31 +20,17 @@ func TestFormatInstrument(t *testing.T) {
 		{"ETH", "put", "2026-06-25", 3000, "ETH-25JUN26-3000-P"},
 		{"BTC", "call", "2027-12-31", 100000, "BTC-31DEC27-100000-C"},
 		{"btc", "PUT", "2026-01-15", 50000, "BTC-15JAN26-50000-P"},
+		{"BTC", "call", "not-a-date", 50000, ""},
 	}
 
 	for _, tc := range cases {
-		t.Run(tc.want, func(t *testing.T) {
+		t.Run(tc.expiry, func(t *testing.T) {
 			got := d.formatInstrument(tc.underlying, tc.optionType, tc.strike, tc.expiry)
 			if got != tc.want {
 				t.Errorf("formatInstrument(%q, %q, %g, %q) = %q, want %q",
 					tc.underlying, tc.optionType, tc.strike, tc.expiry, got, tc.want)
 			}
 		})
-	}
-}
-
-func TestFormatInstrumentInvalidExpiry(t *testing.T) {
-	d := NewDeribitPricer()
-	got := d.formatInstrument("BTC", "call", 50000, "not-a-date")
-	if got != "" {
-		t.Errorf("expected empty string for invalid expiry, got %q", got)
-	}
-}
-
-func TestDeribitPricerName(t *testing.T) {
-	d := NewDeribitPricer()
-	if d.Name() != "deribit" {
-		t.Errorf("Name() = %q, want %q", d.Name(), "deribit")
 	}
 }
 

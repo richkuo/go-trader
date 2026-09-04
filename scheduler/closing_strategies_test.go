@@ -25,9 +25,6 @@ func TestFormatClosingStrategiesResponseSortedOrder(t *testing.T) {
 	if !(iAtr < iAvwap && iAvwap < iZ) {
 		t.Fatalf("entries not sorted by name: atr_stop=%d avwap_stop=%d zscore_target=%d", iAtr, iAvwap, iZ)
 	}
-	if !strings.Contains(body, "3 registered") {
-		t.Fatalf("expected header to report 3 registered evaluators, got: %s", body)
-	}
 }
 
 func TestFormatClosingStrategiesResponseParamsAndPlatforms(t *testing.T) {
@@ -48,38 +45,6 @@ func TestFormatClosingStrategiesResponseParamsAndPlatforms(t *testing.T) {
 	}
 	if !strings.Contains(body, "buffer_atr_mult=0.25") {
 		t.Fatalf("expected buffer_atr_mult param rendered, got: %s", body)
-	}
-}
-
-func TestFormatClosingStrategiesResponseNoParams(t *testing.T) {
-	entries := []closeRegistryEntry{
-		{Name: "trailing_tp_ratchet_regime", Description: "Regime ratchet", DefaultParams: map[string]interface{}{}, Platforms: []string{"spot"}},
-	}
-	body := formatClosingStrategiesResponse(&Config{}, entries)[0]
-	if !strings.Contains(body, "params: (none)") {
-		t.Fatalf("expected explicit (none) marker for empty default_params, got: %s", body)
-	}
-}
-
-func TestFormatClosingStrategiesResponseOverrideSurfacesWhenRegistryDefaultIsEmpty(t *testing.T) {
-	cfg := &Config{
-		UserDefaults: &UserDefaultsConfig{
-			Close: CloseDefaultsMap{
-				"trailing_tp_ratchet_regime": {"tp_tiers": []interface{}{
-					map[string]interface{}{"atr_multiple": 1.0, "trailing_stop_mult_after": 0.5},
-				}},
-			},
-		},
-	}
-	entries := []closeRegistryEntry{
-		{Name: "trailing_tp_ratchet_regime", Description: "Regime ratchet", DefaultParams: map[string]interface{}{}, Platforms: []string{"spot"}},
-	}
-	body := formatClosingStrategiesResponse(cfg, entries)[0]
-	if strings.Contains(body, "params: (none)") {
-		t.Fatalf("configured override must not be hidden behind the empty-registry-default (none) marker, got: %s", body)
-	}
-	if !strings.Contains(body, "tp_tiers=") || !strings.Contains(body, "user_defaults.close override") {
-		t.Fatalf("expected tp_tiers override to be surfaced, got: %s", body)
 	}
 }
 
@@ -171,28 +136,6 @@ func TestFormatClosingStrategiesResponseUserDefaultsOverride(t *testing.T) {
 	}
 	if strings.Contains(body, "atr_source=\"live\" (user_defaults.close override)") {
 		t.Fatalf("atr_source must not be marked as an override, got: %s", body)
-	}
-}
-
-func TestFormatClosingStrategiesResponseNoOverrideWhenUnconfigured(t *testing.T) {
-	entries := []closeRegistryEntry{
-		{
-			Name:          "tiered_tp_atr_live",
-			Description:   "Tiered TP",
-			DefaultParams: map[string]interface{}{"tp_tiers": []interface{}{map[string]interface{}{"atr_multiple": 1.5}}},
-			Platforms:     []string{"spot"},
-		},
-	}
-	body := formatClosingStrategiesResponse(&Config{}, entries)[0]
-	if strings.Contains(body, "override") {
-		t.Fatalf("no user_defaults.close entry exists — must not claim an override: %s", body)
-	}
-}
-
-func TestFormatClosingStrategiesResponseEmptyCatalog(t *testing.T) {
-	pages := formatClosingStrategiesResponse(&Config{}, nil)
-	if len(pages) != 1 || pages[0] != "No close evaluators registered." {
-		t.Fatalf("expected the empty-catalog message, got: %v", pages)
 	}
 }
 

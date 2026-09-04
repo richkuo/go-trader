@@ -168,150 +168,140 @@ func TestTopStepLiveCloseReport_SortedErrorCoins(t *testing.T) {
 	}
 }
 
-func TestParseTopStepCloseOutput_CleanSuccess(t *testing.T) {
-	stdout := []byte(`{"close":{"symbol":"ES","fill":{"avg_px":5000,"total_contracts":2,"oid":"ord-1"}},"platform":"topstep","timestamp":"2026-04-19T10:00:00Z"}`)
-	result, _, err := parseTopStepCloseOutput(stdout, "", nil)
-	if err != nil {
-		t.Fatalf("expected nil err, got %v", err)
+func TestParseTopStepCloseOutput(t *testing.T) {
+	cases := []struct {
+		name    string
+		stdout  string
+		stderr  string
+		exitErr error
+		wantErr bool
+		check   func(t *testing.T, result *TopStepCloseResult)
+	}{
+		{
+			name:   "clean success",
+			stdout: `{"close":{"symbol":"ES","fill":{"avg_px":5000,"total_contracts":2,"oid":"ord-1"}},"platform":"topstep","timestamp":"2026-04-19T10:00:00Z"}`,
+			check: func(t *testing.T, result *TopStepCloseResult) {
+				if result == nil || result.Close == nil || result.Close.Symbol != "ES" {
+					t.Errorf("unexpected result: %+v", result)
+				}
+				if result.Close.Fill == nil || result.Close.Fill.TotalContracts != 2 {
+					t.Errorf("Fill = %+v, want TotalContracts=2", result.Close.Fill)
+				}
+			},
+		},
+		{
+			name:    "exit 0 with error field",
+			stdout:  `{"close":{"symbol":"ES","fill":{}},"platform":"topstep","timestamp":"x","error":"venue down"}`,
+			wantErr: true,
+		},
+		{
+			name:    "non-zero exit with error envelope",
+			stdout:  `{"close":{"symbol":"ES","fill":{}},"platform":"topstep","timestamp":"x","error":"market closed"}`,
+			exitErr: fmt.Errorf("exit 1"),
+			wantErr: true,
+		},
+		{
+			name:    "non-zero exit with no error field",
+			stdout:  `{"close":{"symbol":"ES","fill":{}},"platform":"topstep","timestamp":"x"}`,
+			stderr:  "stderr msg",
+			exitErr: fmt.Errorf("exit 2"),
+			wantErr: true,
+		},
+		{
+			name:    "malformed json",
+			stdout:  `not json`,
+			wantErr: true,
+			check: func(t *testing.T, result *TopStepCloseResult) {
+				if result != nil {
+					t.Errorf("expected nil result on parse failure, got %+v", result)
+				}
+			},
+		},
 	}
-	if result == nil || result.Close == nil || result.Close.Symbol != "ES" {
-		t.Errorf("unexpected result: %+v", result)
-	}
-	if result.Close.Fill == nil || result.Close.Fill.TotalContracts != 2 {
-		t.Errorf("Fill = %+v, want TotalContracts=2", result.Close.Fill)
-	}
-}
-
-func TestParseTopStepCloseOutput_Exit0WithErrorField(t *testing.T) {
-	stdout := []byte(`{"close":{"symbol":"ES","fill":{}},"platform":"topstep","timestamp":"x","error":"venue down"}`)
-	_, _, err := parseTopStepCloseOutput(stdout, "", nil)
-	if err == nil {
-		t.Fatal("expected non-nil err when error field populated, even on exit 0")
-	}
-}
-
-func TestParseTopStepCloseOutput_ExitNonZeroWithErrorEnvelope(t *testing.T) {
-	stdout := []byte(`{"close":{"symbol":"ES","fill":{}},"platform":"topstep","timestamp":"x","error":"market closed"}`)
-	_, _, err := parseTopStepCloseOutput(stdout, "", fmt.Errorf("exit 1"))
-	if err == nil {
-		t.Fatal("expected non-nil err on error envelope")
-	}
-}
-
-func TestParseTopStepCloseOutput_ExitNonZeroNoErrorField(t *testing.T) {
-	stdout := []byte(`{"close":{"symbol":"ES","fill":{}},"platform":"topstep","timestamp":"x"}`)
-	_, _, err := parseTopStepCloseOutput(stdout, "stderr msg", fmt.Errorf("exit 2"))
-	if err == nil {
-		t.Fatal("expected non-nil err on non-zero exit with no error field")
-	}
-}
-
-func TestParseTopStepCloseOutput_MalformedJSON(t *testing.T) {
-	result, _, err := parseTopStepCloseOutput([]byte(`not json`), "", nil)
-	if err == nil {
-		t.Fatal("expected non-nil err on malformed JSON")
-	}
-	if result != nil {
-		t.Errorf("expected nil result on parse failure, got %+v", result)
-	}
-}
-
-func TestParseTopStepPositionsOutput_CleanSuccess(t *testing.T) {
-	stdout := []byte(`{"positions":[{"coin":"ES","size":2,"avg_price":5000,"side":"long"}],"platform":"topstep","timestamp":"x"}`)
-	result, _, err := parseTopStepPositionsOutput(stdout, "", nil)
-	if err != nil {
-		t.Fatalf("expected nil err, got %v", err)
-	}
-	if len(result.Positions) != 1 || result.Positions[0].Coin != "ES" {
-		t.Errorf("unexpected positions: %+v", result.Positions)
-	}
-	if result.Positions[0].Size != 2 {
-		t.Errorf("Size = %d, want 2", result.Positions[0].Size)
-	}
-}
-
-func TestParseTopStepPositionsOutput_ErrorEnvelopeLatchesSwitch(t *testing.T) {
-	stdout := []byte(`{"positions":[],"platform":"topstep","timestamp":"x","error":"credentials missing"}`)
-	_, _, err := parseTopStepPositionsOutput(stdout, "", fmt.Errorf("exit 1"))
-	if err == nil {
-		t.Fatal("expected non-nil err when error envelope populated")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, _, err := parseTopStepCloseOutput([]byte(tc.stdout), tc.stderr, tc.exitErr)
+			if tc.wantErr && err == nil {
+				t.Fatalf("expected non-nil err")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("expected nil err, got %v", err)
+			}
+			if tc.check != nil {
+				tc.check(t, result)
+			}
+		})
 	}
 }
 
-func TestParseTopStepPositionsOutput_MalformedJSON(t *testing.T) {
-	_, _, err := parseTopStepPositionsOutput([]byte(`garbage`), "", nil)
-	if err == nil {
-		t.Fatal("expected non-nil err on malformed JSON")
+func TestParseTopStepPositionsOutput(t *testing.T) {
+	cases := []struct {
+		name    string
+		stdout  string
+		exitErr error
+		wantErr bool
+	}{
+		{name: "clean success", stdout: `{"positions":[{"coin":"ES","size":2,"avg_price":5000,"side":"long"}],"platform":"topstep","timestamp":"x"}`},
+		{name: "error envelope latches switch", stdout: `{"positions":[],"platform":"topstep","timestamp":"x","error":"credentials missing"}`, exitErr: fmt.Errorf("exit 1"), wantErr: true},
+		{name: "malformed json", stdout: `garbage`, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, _, err := parseTopStepPositionsOutput([]byte(tc.stdout), "", tc.exitErr)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected non-nil err")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("expected nil err, got %v", err)
+			}
+			if len(result.Positions) != 1 || result.Positions[0].Coin != "ES" {
+				t.Errorf("unexpected positions: %+v", result.Positions)
+			}
+			if result.Positions[0].Size != 2 {
+				t.Errorf("Size = %d, want 2", result.Positions[0].Size)
+			}
+		})
 	}
 }
 
-func TestComputeTopStepCircuitCloseQty_SolePeerFullFlatten(t *testing.T) {
-	tsLive := []StrategyConfig{
+func TestComputeTopStepCircuitCloseQty(t *testing.T) {
+	soleOwner := []StrategyConfig{
 		{ID: "ts-es", Platform: "topstep", Type: "futures",
 			Args: []string{"sma", "ES", "15m", "--mode=live"}},
 	}
-	pos := []TopStepPosition{{Coin: "ES", Size: 3, AvgPrice: 5000, Side: "long"}}
-	q, ok := computeTopStepCircuitCloseQty("ES", "ts-es", pos, tsLive)
-	if !ok {
-		t.Fatal("expected ok for sole peer")
-	}
-	if q != 3 {
-		t.Errorf("qty=%d want 3 (full abs size for sole peer)", q)
-	}
-}
-
-func TestComputeTopStepCircuitCloseQty_SolePeerShortFullFlatten(t *testing.T) {
-	tsLive := []StrategyConfig{
-		{ID: "ts-es", Platform: "topstep", Type: "futures",
-			Args: []string{"sma", "ES", "15m", "--mode=live"}},
-	}
-	pos := []TopStepPosition{{Coin: "ES", Size: -2, AvgPrice: 5000, Side: "short"}}
-	q, ok := computeTopStepCircuitCloseQty("ES", "ts-es", pos, tsLive)
-	if !ok {
-		t.Fatal("expected ok")
-	}
-	if q != 2 {
-		t.Errorf("qty=%d want 2 (abs of -2)", q)
-	}
-}
-
-func TestComputeTopStepCircuitCloseQty_MultiPeerSkipped(t *testing.T) {
-	tsLive := []StrategyConfig{
+	multiPeer := []StrategyConfig{
 		{ID: "ts-a", Platform: "topstep", Type: "futures",
 			Args: []string{"sma", "ES", "15m", "--mode=live"}},
 		{ID: "ts-b", Platform: "topstep", Type: "futures",
 			Args: []string{"rsi", "ES", "15m", "--mode=live"}},
 	}
-	pos := []TopStepPosition{{Coin: "ES", Size: 5, Side: "long"}}
-	q, ok := computeTopStepCircuitCloseQty("ES", "ts-a", pos, tsLive)
-	if ok {
-		t.Fatalf("expected ok=false when multiple peers share contract, got qty=%d", q)
+	cases := []struct {
+		name       string
+		strategyID string
+		roster     []StrategyConfig
+		positions  []TopStepPosition
+		wantQty    int
+		wantOK     bool
+	}{
+		{"sole peer full flatten", "ts-es", soleOwner, []TopStepPosition{{Coin: "ES", Size: 3, AvgPrice: 5000, Side: "long"}}, 3, true},
+		{"sole peer short full flatten", "ts-es", soleOwner, []TopStepPosition{{Coin: "ES", Size: -2, AvgPrice: 5000, Side: "short"}}, 2, true},
+		{"multi peer skipped", "ts-a", multiPeer, []TopStepPosition{{Coin: "ES", Size: 5, Side: "long"}}, 0, false},
+		{"no on-account position", "ts-es", soleOwner, nil, 0, false},
+		{"zero size position", "ts-es", soleOwner, []TopStepPosition{{Coin: "ES", Size: 0, Side: "long"}}, 0, false},
 	}
-	if q != 0 {
-		t.Errorf("qty=%d want 0 for multi-peer skip", q)
-	}
-}
-
-func TestComputeTopStepCircuitCloseQty_NoOnAccountPosition(t *testing.T) {
-	tsLive := []StrategyConfig{
-		{ID: "ts-es", Platform: "topstep", Type: "futures",
-			Args: []string{"sma", "ES", "15m", "--mode=live"}},
-	}
-	q, ok := computeTopStepCircuitCloseQty("ES", "ts-es", nil, tsLive)
-	if ok {
-		t.Errorf("expected ok=false when no position found, got qty=%d", q)
-	}
-}
-
-func TestComputeTopStepCircuitCloseQty_ZeroSizePosition(t *testing.T) {
-	tsLive := []StrategyConfig{
-		{ID: "ts-es", Platform: "topstep", Type: "futures",
-			Args: []string{"sma", "ES", "15m", "--mode=live"}},
-	}
-	pos := []TopStepPosition{{Coin: "ES", Size: 0, Side: "long"}}
-	q, ok := computeTopStepCircuitCloseQty("ES", "ts-es", pos, tsLive)
-	if ok {
-		t.Errorf("expected ok=false for zero-size position, got qty=%d", q)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			q, ok := computeTopStepCircuitCloseQty("ES", tc.strategyID, tc.positions, tc.roster)
+			if ok != tc.wantOK {
+				t.Fatalf("ok=%v want %v (qty=%d)", ok, tc.wantOK, q)
+			}
+			if q != tc.wantQty {
+				t.Errorf("qty=%d want %d", q, tc.wantQty)
+			}
+		})
 	}
 }
 

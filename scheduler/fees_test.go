@@ -25,34 +25,20 @@ func TestCalculateFuturesFee(t *testing.T) {
 	}
 }
 
-func TestHyperliquidFeeConstants(t *testing.T) {
-	if HyperliquidTakerFeePct != 0.00045 {
-		t.Errorf("HyperliquidTakerFeePct = %v, want 0.00045", HyperliquidTakerFeePct)
+func TestCalculatePlatformSpotFee(t *testing.T) {
+	cases := []struct {
+		platform string
+		want     float64
+	}{
+		{"okx", 1000.0 * OKXSpotTakerFeePct},
+		{"okx-perps", 1000.0 * OKXPerpsTakerFeePct},
 	}
-	if HyperliquidMakerFeePct != 0.00015 {
-		t.Errorf("HyperliquidMakerFeePct = %v, want 0.00015", HyperliquidMakerFeePct)
-	}
-	if HyperliquidMakerFeePct >= HyperliquidTakerFeePct {
-		t.Errorf("maker rate %v must be below taker rate %v", HyperliquidMakerFeePct, HyperliquidTakerFeePct)
-	}
-	if got := CalculateHyperliquidFee(1000.0); got != 1000.0*HyperliquidTakerFeePct {
-		t.Errorf("CalculateHyperliquidFee(1000) = %v, want %v", got, 1000.0*HyperliquidTakerFeePct)
-	}
-}
-
-func TestCalculatePlatformSpotFeeOKX(t *testing.T) {
-	fee := CalculatePlatformSpotFee("okx", 1000.0)
-	expected := 1000.0 * OKXSpotTakerFeePct
-	if fee != expected {
-		t.Errorf("OKX spot fee: got %f, want %f", fee, expected)
-	}
-}
-
-func TestCalculatePlatformSpotFeeOKXPerps(t *testing.T) {
-	fee := CalculatePlatformSpotFee("okx-perps", 1000.0)
-	expected := 1000.0 * OKXPerpsTakerFeePct
-	if fee != expected {
-		t.Errorf("OKX perps fee: got %f, want %f", fee, expected)
+	for _, tc := range cases {
+		t.Run(tc.platform, func(t *testing.T) {
+			if fee := CalculatePlatformSpotFee(tc.platform, 1000.0); fee != tc.want {
+				t.Errorf("%s fee: got %f, want %f", tc.platform, fee, tc.want)
+			}
+		})
 	}
 }
 

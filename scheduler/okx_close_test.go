@@ -178,66 +178,46 @@ func TestOKXLiveCloseReport_SortedErrorCoins(t *testing.T) {
 	}
 }
 
-func TestComputeOKXCircuitCloseQty_SoleOwnerFullSzi(t *testing.T) {
-	okxLive := []StrategyConfig{
+func TestComputeOKXCircuitCloseQty(t *testing.T) {
+	soleOwner := []StrategyConfig{
 		{ID: "okx-eth", Platform: "okx", Type: "perps",
 			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
 	}
-	pos := []OKXPosition{{Coin: "ETH", Size: -0.4, EntryPrice: 3000, Side: "short"}}
-	q, ok := computeOKXCircuitCloseQty("ETH", "okx-eth", pos, okxLive)
-	if !ok {
-		t.Fatal("expected ok")
-	}
-	if math.Abs(q-0.4) > 1e-9 {
-		t.Errorf("qty=%.6f want 0.4 (full abs size for sole owner)", q)
-	}
-}
-
-func TestComputeOKXCircuitCloseQty_Shared50_50(t *testing.T) {
-	okxLive := []StrategyConfig{
+	sharedPct := []StrategyConfig{
 		{ID: "okx-a", Platform: "okx", Type: "perps", CapitalPct: 0.5, Capital: 1000,
 			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
 		{ID: "okx-b", Platform: "okx", Type: "perps", CapitalPct: 0.5, Capital: 1000,
 			Args: []string{"ema", "ETH", "1h", "--mode=live"}},
 	}
-	pos := []OKXPosition{{Coin: "ETH", Size: 0.517, EntryPrice: 3000, Side: "long"}}
-	q, ok := computeOKXCircuitCloseQty("ETH", "okx-a", pos, okxLive)
-	if !ok {
-		t.Fatal("expected ok")
-	}
-	want := 0.517 * 0.5
-	if math.Abs(q-want) > 1e-9 {
-		t.Errorf("qty=%.6f want %.6f", q, want)
-	}
-}
-
-func TestComputeOKXCircuitCloseQty_MixedUnitsFallsBackToEqualWeights(t *testing.T) {
-	okxLive := []StrategyConfig{
+	mixedUnits := []StrategyConfig{
 		{ID: "okx-a", Platform: "okx", Type: "perps", CapitalPct: 0.5,
 			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
 		{ID: "okx-b", Platform: "okx", Type: "perps", Capital: 1000,
 			Args: []string{"ema", "ETH", "1h", "--mode=live"}},
 	}
-	pos := []OKXPosition{{Coin: "ETH", Size: 0.5, EntryPrice: 3000, Side: "long"}}
-	q, ok := computeOKXCircuitCloseQty("ETH", "okx-a", pos, okxLive)
-	if !ok {
-		t.Fatal("expected ok")
+	cases := []struct {
+		name       string
+		strategyID string
+		roster     []StrategyConfig
+		positions  []OKXPosition
+		wantQty    float64
+		wantOK     bool
+	}{
+		{"sole owner takes full abs size", "okx-eth", soleOwner, []OKXPosition{{Coin: "ETH", Size: -0.4, EntryPrice: 3000, Side: "short"}}, 0.4, true},
+		{"shared 50/50 splits by capital pct", "okx-a", sharedPct, []OKXPosition{{Coin: "ETH", Size: 0.517, EntryPrice: 3000, Side: "long"}}, 0.517 * 0.5, true},
+		{"mixed units falls back to equal weights", "okx-a", mixedUnits, []OKXPosition{{Coin: "ETH", Size: 0.5, EntryPrice: 3000, Side: "long"}}, 0.25, true},
+		{"no on-chain position for coin", "okx-eth", soleOwner, []OKXPosition{{Coin: "BTC", Size: 0.1, EntryPrice: 42000, Side: "long"}}, 0, false},
 	}
-	want := 0.25
-	if math.Abs(q-want) > 1e-9 {
-		t.Errorf("qty=%.6f want %.6f (equal-weight fallback on mixed units)", q, want)
-	}
-}
-
-func TestComputeOKXCircuitCloseQty_NoPositionReturnsFalse(t *testing.T) {
-	okxLive := []StrategyConfig{
-		{ID: "okx-eth", Platform: "okx", Type: "perps",
-			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
-	}
-	pos := []OKXPosition{{Coin: "BTC", Size: 0.1, EntryPrice: 42000, Side: "long"}}
-	q, ok := computeOKXCircuitCloseQty("ETH", "okx-eth", pos, okxLive)
-	if ok {
-		t.Errorf("expected ok=false when no on-chain position for coin, got qty=%v", q)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			q, ok := computeOKXCircuitCloseQty("ETH", tc.strategyID, tc.positions, tc.roster)
+			if ok != tc.wantOK {
+				t.Fatalf("ok=%v want %v (qty=%v)", ok, tc.wantOK, q)
+			}
+			if tc.wantOK && math.Abs(q-tc.wantQty) > 1e-9 {
+				t.Errorf("qty=%.6f want %.6f", q, tc.wantQty)
+			}
+		})
 	}
 }
 
@@ -525,22 +505,32 @@ func TestSetOKXCircuitBreakerPending_NilAssistIsNoOp(t *testing.T) {
 	}
 }
 
-func TestParseOKXBalanceOutput_CleanSuccess(t *testing.T) {
-	stdout := []byte(`{"balance":1234.56,"platform":"okx","timestamp":"2026-04-20T00:00:00Z"}`)
-	r, _, err := parseOKXBalanceOutput(stdout, "", nil)
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
+func TestParseOKXBalanceOutput(t *testing.T) {
+	cases := []struct {
+		name    string
+		stdout  string
+		exitErr error
+		wantErr bool
+	}{
+		{name: "clean success", stdout: `{"balance":1234.56,"platform":"okx","timestamp":"2026-04-20T00:00:00Z"}`},
+		{name: "error envelope surfaces as err", stdout: `{"balance":0,"platform":"okx","timestamp":"x","error":"auth failed"}`, exitErr: fmt.Errorf("exit 1"), wantErr: true},
 	}
-	if math.Abs(r.Balance-1234.56) > 1e-9 {
-		t.Errorf("balance=%v want 1234.56", r.Balance)
-	}
-}
-
-func TestParseOKXBalanceOutput_ErrorEnvelopeSurfacesAsErr(t *testing.T) {
-	stdout := []byte(`{"balance":0,"platform":"okx","timestamp":"x","error":"auth failed"}`)
-	_, _, err := parseOKXBalanceOutput(stdout, "", fmt.Errorf("exit 1"))
-	if err == nil {
-		t.Fatal("expected non-nil err for error envelope")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r, _, err := parseOKXBalanceOutput([]byte(tc.stdout), "", tc.exitErr)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected non-nil err")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected err: %v", err)
+			}
+			if math.Abs(r.Balance-1234.56) > 1e-9 {
+				t.Errorf("balance=%v want 1234.56", r.Balance)
+			}
+		})
 	}
 }
 
