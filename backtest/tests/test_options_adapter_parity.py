@@ -24,22 +24,22 @@ from pricing import bs_price, bs_price_and_greeks
 DERIBIT_ADAPTER = REPO_ROOT / "platforms" / "deribit" / "adapter.py"
 
 
-def test_btc_strikes_round_to_1000():
-    assert adapter_strike("BTC", 67234) == 67000
-    assert adapter_strike("BTC", 67501) == 68000
-    assert adapter_strike("BTC", 67500) == 68000
-
-
-def test_eth_strikes_round_to_50():
-    assert adapter_strike("ETH", 3412) == 3400
-    assert adapter_strike("ETH", 3426) == 3450
-    assert adapter_strike("ETH", 3425) == 3400
-
-
-def test_unknown_underlying_uses_50_default():
-    assert adapter_strike("SOL", 150) == 150
-    assert adapter_strike("SOL", 173) == 150
-    assert adapter_strike("DOGE", 0.2134) == 0.0
+@pytest.mark.parametrize(
+    "underlying,target,expected",
+    [
+        ("BTC", 67234, 67000),
+        ("BTC", 67501, 68000),
+        ("BTC", 67500, 68000),
+        ("ETH", 3412, 3400),
+        ("ETH", 3426, 3450),
+        ("ETH", 3425, 3400),
+        ("SOL", 150, 150),
+        ("SOL", 173, 150),
+        ("DOGE", 0.2134, 0.0),
+    ],
+)
+def test_strikes_round_to_the_underlying_grid(underlying, target, expected):
+    assert adapter_strike(underlying, target) == expected
 
 
 def test_strike_grid_matches_adapter_source():
@@ -93,20 +93,20 @@ def test_backtest_bs_matches_shared_pricing(spot, strike, dte, vol, option_type)
     )
 
 
-def test_greeks_populated_on_bs_call():
-    price, greeks = bs_price_and_greeks(67000, 67000, 30, 0.80, option_type="call")
+@pytest.mark.parametrize(
+    "option_type,delta_lo,delta_hi",
+    [
+        ("call", 0.4, 0.7),
+        ("put", -0.6, -0.3),
+    ],
+)
+def test_greeks_populated_on_bs_price(option_type, delta_lo, delta_hi):
+    price, greeks = bs_price_and_greeks(67000, 67000, 30, 0.80,
+                                        option_type=option_type)
     assert price > 0
-    assert 0.4 < greeks["delta"] < 0.7, greeks
+    assert delta_lo < greeks["delta"] < delta_hi, greeks
     assert greeks["gamma"] > 0
     assert greeks["vega"] > 0
-    assert greeks["theta"] < 0
-
-
-def test_greeks_populated_on_bs_put():
-    price, greeks = bs_price_and_greeks(67000, 67000, 30, 0.80, option_type="put")
-    assert price > 0
-    assert -0.6 < greeks["delta"] < -0.3, greeks
-    assert greeks["gamma"] > 0
     assert greeks["theta"] < 0
 
 

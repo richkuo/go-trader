@@ -4,28 +4,35 @@ import pytest
 import run_backtest
 
 
-def test_build_parser_accepts_platform_and_registry():
-    parser = run_backtest._build_parser()
-    args = parser.parse_args([
-        "--registry", "futures",
-        "--platform", "hyperliquid",
-        "--strategy", "sma_crossover",
-        "--mode", "single",
-    ])
-    assert args.registry == "futures"
-    assert args.platform == "hyperliquid"
+@pytest.mark.parametrize("argv,expected", [
+    (
+        ["--registry", "futures", "--platform", "hyperliquid",
+         "--strategy", "sma_crossover", "--mode", "single"],
+        {"registry": "futures", "platform": "hyperliquid"},
+    ),
+    (
+        ["--mode", "optimize", "--strategy", "sma_crossover",
+         "--sweep-close", "--optimize-metric", "dd_adjusted_return",
+         "--direction", "long"],
+        {"sweep_close": True, "optimize_metric": "dd_adjusted_return",
+         "direction": "long", "close_stacks_json": None},
+    ),
+])
+def test_build_parser_accepts(argv, expected):
+    args = run_backtest._build_parser().parse_args(argv)
+    for field, want in expected.items():
+        assert getattr(args, field) == want
 
 
-def test_build_parser_rejects_unknown_platform():
+@pytest.mark.parametrize("argv", [
+    ["--platform", "mystery-exchange"],
+    ["--registry", "options"],
+    ["--optimize-metric", "alpha_decay"],
+])
+def test_build_parser_rejects_unknown_choice(argv):
     parser = run_backtest._build_parser()
     with pytest.raises(SystemExit):
-        parser.parse_args(["--platform", "mystery-exchange"])
-
-
-def test_build_parser_rejects_unknown_registry():
-    parser = run_backtest._build_parser()
-    with pytest.raises(SystemExit):
-        parser.parse_args(["--registry", "options"])
+        parser.parse_args(argv)
 
 
 def test_run_single_backtest_threads_platform_to_backtester(monkeypatch):
@@ -109,25 +116,6 @@ def test_backtester_imports_under_script_style_sys_path(tmp_path):
     assert "OK" in proc.stdout
 
 
-def test_build_parser_accepts_close_stack_flags():
-    parser = run_backtest._build_parser()
-    args = parser.parse_args([
-        "--mode", "optimize", "--strategy", "sma_crossover",
-        "--sweep-close", "--optimize-metric", "dd_adjusted_return",
-        "--direction", "long",
-    ])
-    assert args.sweep_close is True
-    assert args.optimize_metric == "dd_adjusted_return"
-    assert args.direction == "long"
-    assert args.close_stacks_json is None
-
-
-def test_build_parser_rejects_unknown_optimize_metric():
-    parser = run_backtest._build_parser()
-    with pytest.raises(SystemExit):
-        parser.parse_args(["--optimize-metric", "alpha_decay"])
-
-
 def _spy_single(monkeypatch):
     seen = {}
 
@@ -139,32 +127,16 @@ def _spy_single(monkeypatch):
     return seen
 
 
-def test_single_mode_threads_direction(monkeypatch):
+@pytest.mark.parametrize("extra_argv", [
+    ["--mode", "single"],
+    ["--mode", "compare"],
+    ["--mode", "multi", "--symbols", "BTC/USDT"],
+])
+def test_mode_threads_direction(monkeypatch, extra_argv):
     seen = _spy_single(monkeypatch)
     monkeypatch.setattr("sys.argv", [
-        "run_backtest.py", "--mode", "single",
+        "run_backtest.py", *extra_argv,
         "--strategy", "sma_crossover", "--direction", "short",
-    ])
-    run_backtest.main()
-    assert seen["calls"][0]["direction"] == "short"
-
-
-def test_compare_mode_threads_direction(monkeypatch):
-    seen = _spy_single(monkeypatch)
-    monkeypatch.setattr("sys.argv", [
-        "run_backtest.py", "--mode", "compare",
-        "--strategy", "sma_crossover", "--direction", "short",
-    ])
-    run_backtest.main()
-    assert seen["calls"][0]["direction"] == "short"
-
-
-def test_multi_mode_threads_direction(monkeypatch):
-    seen = _spy_single(monkeypatch)
-    monkeypatch.setattr("sys.argv", [
-        "run_backtest.py", "--mode", "multi",
-        "--strategy", "sma_crossover", "--symbols", "BTC/USDT",
-        "--direction", "short",
     ])
     run_backtest.main()
     assert seen["calls"][0]["direction"] == "short"

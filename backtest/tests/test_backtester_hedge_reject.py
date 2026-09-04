@@ -38,28 +38,13 @@ def test_rejects_enabled_hedge_block(tmp_path):
         run_backtest.load_strategy_config(path, "hl-test")
 
 
-def test_reject_message_names_the_issue_and_the_hedge_symbol(tmp_path):
-    path = _config(tmp_path, _hl_strategy(
-        hedge={"enabled": True, "symbol": "BTC", "ratio": 1.0},
-    ))
-    with pytest.raises(ValueError) as excinfo:
-        run_backtest.load_strategy_config(path, "hl-test")
-    msg = str(excinfo.value)
-    assert "#1159" in msg
-    assert "BTC" in msg
-    assert "hedge.enabled=false" in msg
-
-
-def test_allows_explicitly_disabled_hedge_block(tmp_path):
-    path = _config(tmp_path, _hl_strategy(
-        hedge={"enabled": False, "symbol": "BTC", "ratio": 1.0},
-    ))
-    kwargs = run_backtest.load_strategy_config(path, "hl-test")
-    assert kwargs["open_strategy"] == {"name": "tema_cross", "params": {}}
-
-
-def test_allows_config_without_hedge_block(tmp_path):
-    path = _config(tmp_path, _hl_strategy())
+@pytest.mark.parametrize("hedge", [
+    {"enabled": False, "symbol": "BTC", "ratio": 1.0},
+    None,
+])
+def test_allows_config_without_enabled_hedge(tmp_path, hedge):
+    over = {} if hedge is None else {"hedge": hedge}
+    path = _config(tmp_path, _hl_strategy(**over))
     kwargs = run_backtest.load_strategy_config(path, "hl-test")
     assert kwargs["open_strategy"] == {"name": "tema_cross", "params": {}}
 

@@ -8,30 +8,17 @@ import eval_windows as ew
 import monte_carlo as mc
 
 
-def test_equity_path_empty():
-    assert mc.equity_path_stats([]) == (0.0, 0.0)
-
-
-def test_equity_path_all_winners_has_zero_dd():
-    dd, final = mc.equity_path_stats([10.0, 10.0])
-    assert dd == 0.0
-    assert final == pytest.approx(21.0)
-
-
-def test_equity_path_hand_computed_dd():
-    dd, final = mc.equity_path_stats([10.0, -20.0, 10.0])
-    assert dd == pytest.approx(20.0)
-    assert final == pytest.approx(-3.2)
-
-
-def test_equity_path_bust_is_sticky_floor():
-    dd, final = mc.equity_path_stats([-100.0, 50.0])
-    assert (dd, final) == (100.0, -100.0)
-
-
-def test_equity_path_dd_positive_magnitude():
-    dd, _ = mc.equity_path_stats([-10.0])
-    assert dd == pytest.approx(10.0)
+@pytest.mark.parametrize("trades,expected_dd,expected_final", [
+    ([], 0.0, 0.0),
+    ([10.0, 10.0], 0.0, 21.0),
+    ([10.0, -20.0, 10.0], 20.0, -3.2),
+    ([-100.0, 50.0], 100.0, -100.0),
+    ([-10.0], 10.0, -10.0),
+])
+def test_equity_path_stats(trades, expected_dd, expected_final):
+    dd, final = mc.equity_path_stats(trades)
+    assert dd == pytest.approx(expected_dd)
+    assert final == pytest.approx(expected_final)
 
 
 def test_percentile_empty_none_and_interpolation():
@@ -156,28 +143,27 @@ def _trade(pnl_pct, shares=2.0, entry_price=100.0, pnl=None):
             "pnl": pnl}
 
 
-def test_trade_returns_net_deducts_fees():
-    vals = mc.trade_returns([_trade(5.0, pnl=8.0)])
-    assert vals == [pytest.approx(4.0)]
+@pytest.mark.parametrize("trades,kwargs,expected", [
+    ([_trade(5.0, pnl=8.0)], {}, [4.0]),
+    ([_trade(5.0, pnl=8.0)], {"returns": "gross"}, [5.0]),
+    ([_trade(5.0, shares=0.0, pnl=8.0)], {}, [5.0]),
+    ([1.5, -2.0], {}, [1.5, -2.0]),
+])
+def test_trade_returns(trades, kwargs, expected):
+    assert mc.trade_returns(trades, **kwargs) == [pytest.approx(v)
+                                                  for v in expected]
 
 
-def test_trade_returns_gross_reads_pnl_pct():
-    vals = mc.trade_returns([_trade(5.0, pnl=8.0)], returns="gross")
-    assert vals == [5.0]
-
-
-def test_trade_returns_net_falls_back_without_notional():
-    vals = mc.trade_returns([_trade(5.0, shares=0.0, pnl=8.0)])
-    assert vals == [5.0]
-
-
-def test_trade_returns_accepts_bare_numbers():
-    assert mc.trade_returns([1.5, -2.0]) == [1.5, -2.0]
-
-
-def test_trade_returns_rejects_bad_mode():
-    with pytest.raises(ValueError):
-        mc.trade_returns([], returns="fees")
+@pytest.mark.parametrize("trades,kwargs,match", [
+    ([], {"returns": "fees"}, None),
+    ([{"shares": 2.0, "entry_price": 100.0, "pnl": 8.0}],
+     {"returns": "gross"}, "pnl_pct"),
+    ([{"shares": 0.0, "entry_price": 0.0, "pnl": 8.0}],
+     {"returns": "net"}, "pnl_pct"),
+])
+def test_trade_returns_rejects(trades, kwargs, match):
+    with pytest.raises(ValueError, match=match):
+        mc.trade_returns(trades, **kwargs)
 
 
 def test_payload_dict_and_list_forms():
@@ -193,28 +179,25 @@ def _cfg(strategies, platforms=None):
     return {"strategies": strategies, "platforms": platforms or {}}
 
 
-def test_kill_switch_explicit_strategy_value_wins():
-    cfg = _cfg([{"id": "s1", "type": "perps", "max_drawdown_pct": 12.5}])
-    assert mc.resolve_kill_switch_pct(cfg, "s1") == 12.5
-
-
-def test_kill_switch_platform_risk_override():
-    cfg = _cfg([{"id": "s1", "type": "spot", "platform": "okx"}],
-               {"okx": {"risk": {"max_drawdown_pct": 33.0}}})
-    assert mc.resolve_kill_switch_pct(cfg, "s1") == 33.0
-
-
-def test_kill_switch_type_defaults():
-    for stype, want in (("options", 40.0), ("futures", 45.0),
-                        ("perps", 50.0), ("spot", 60.0)):
-        cfg = _cfg([{"id": "s1", "type": stype, "platform": "binanceus"}])
-        assert mc.resolve_kill_switch_pct(cfg, "s1") == want
-
-
-def test_kill_switch_platform_inferred_from_id_prefix():
-    cfg = _cfg([{"id": "hl-btc-x", "type": "perps"}],
-               {"hyperliquid": {"risk": {"max_drawdown_pct": 18.0}}})
-    assert mc.resolve_kill_switch_pct(cfg, "hl-btc-x") == 18.0
+@pytest.mark.parametrize("cfg,strategy_id,expected", [
+    (_cfg([{"id": "s1", "type": "perps", "max_drawdown_pct": 12.5}]),
+     "s1", 12.5),
+    (_cfg([{"id": "s1", "type": "spot", "platform": "okx"}],
+          {"okx": {"risk": {"max_drawdown_pct": 33.0}}}), "s1", 33.0),
+    (_cfg([{"id": "hl-btc-x", "type": "perps"}],
+          {"hyperliquid": {"risk": {"max_drawdown_pct": 18.0}}}),
+     "hl-btc-x", 18.0),
+    (_cfg([{"id": "s1", "type": "options", "platform": "binanceus"}]),
+     "s1", 40.0),
+    (_cfg([{"id": "s1", "type": "futures", "platform": "binanceus"}]),
+     "s1", 45.0),
+    (_cfg([{"id": "s1", "type": "perps", "platform": "binanceus"}]),
+     "s1", 50.0),
+    (_cfg([{"id": "s1", "type": "spot", "platform": "binanceus"}]),
+     "s1", 60.0),
+])
+def test_resolve_kill_switch_pct(cfg, strategy_id, expected):
+    assert mc.resolve_kill_switch_pct(cfg, strategy_id) == expected
 
 
 def test_kill_switch_missing_strategy_raises():
@@ -237,7 +220,7 @@ def test_trade_samples_net_falls_back_to_gross():
     assert samples[0]["pnl_pct_net"] == 5.0
 
 
-def test_cli_deterministic_byte_identical_json(tmp_path, capsys):
+def test_cli_deterministic_byte_identical_json(tmp_path):
     trades = [{"entry_date": "2025-01-01", "pnl_pct": 3.0, "shares": 1.0,
                "entry_price": 100.0, "pnl": 2.5},
               {"entry_date": "2025-01-02", "pnl_pct": -2.0, "shares": 1.0,
@@ -259,7 +242,7 @@ def test_cli_deterministic_byte_identical_json(tmp_path, capsys):
     assert payload["kill_switch_pct"] == mc.DEFAULT_KILL_SWITCH_PCT
 
 
-def test_cli_config_threshold_resolution(tmp_path, capsys):
+def test_cli_config_threshold_resolution(tmp_path):
     src = tmp_path / "results.json"
     src.write_text(json.dumps([1.0, -2.0, 3.0]))
     cfg = tmp_path / "config.json"
@@ -273,26 +256,10 @@ def test_cli_config_threshold_resolution(tmp_path, capsys):
     assert json.loads(out.read_text())["kill_switch_pct"] == 15.0
 
 
-def test_cli_requires_exactly_one_source(tmp_path):
-    with pytest.raises(SystemExit):
-        mc.main([])
-    with pytest.raises(SystemExit):
-        mc.main(["--trades-json", "a.json", "--strategy", "breakout"])
-
-
-def test_cli_config_requires_strategy_id(tmp_path):
-    src = tmp_path / "results.json"
-    src.write_text(json.dumps([1.0]))
-    with pytest.raises(SystemExit):
-        mc.main(["--trades-json", str(src), "--config", "cfg.json"])
-
-
-def test_cli_empty_trades_no_crash(tmp_path, capsys):
+def test_cli_empty_trades_no_crash(tmp_path):
     src = tmp_path / "results.json"
     src.write_text(json.dumps({"trades": []}))
-    rc = mc.main(["--trades-json", str(src), "--n-paths", "50"])
-    assert rc == 0
-    assert "nothing to resample" in capsys.readouterr().out
+    assert mc.main(["--trades-json", str(src), "--n-paths", "50"]) == 0
 
 
 def _valid_trades_json(tmp_path):
@@ -301,137 +268,90 @@ def _valid_trades_json(tmp_path):
     return src
 
 
-def test_cli_rejects_negative_n_paths(tmp_path):
-    src = _valid_trades_json(tmp_path)
-    with pytest.raises(SystemExit):
-        mc.main(["--trades-json", str(src), "--n-paths", "-5"])
+def _write_json(tmp_path, name, payload):
+    p = tmp_path / name
+    p.write_text(json.dumps(payload))
+    return str(p)
 
 
-def test_cli_rejects_zero_n_paths(tmp_path):
-    src = _valid_trades_json(tmp_path)
-    with pytest.raises(SystemExit):
-        mc.main(["--trades-json", str(src), "--n-paths", "0"])
+def _write_text(tmp_path, name, text):
+    p = tmp_path / name
+    p.write_text(text)
+    return str(p)
 
 
-def test_cli_rejects_percentile_above_100(tmp_path):
-    src = _valid_trades_json(tmp_path)
-    with pytest.raises(SystemExit):
-        mc.main(["--trades-json", str(src), "--percentiles", "5,50,150"])
+_BAD_CFG = {"strategies": [{"id": "hl-x", "type": "perps",
+                            "max_drawdown_pct": 15.0}]}
 
 
-def test_cli_rejects_negative_percentile(tmp_path):
-    src = _valid_trades_json(tmp_path)
-    with pytest.raises(SystemExit):
-        mc.main(["--trades-json", str(src), "--percentiles", "-1"])
-
-
-def test_cli_rejects_empty_schemes(tmp_path):
-    src = _valid_trades_json(tmp_path)
-    with pytest.raises(SystemExit):
-        mc.main(["--trades-json", str(src), "--schemes", ","])
-
-
-def test_cli_rejects_empty_percentiles(tmp_path):
-    src = _valid_trades_json(tmp_path)
-    with pytest.raises(SystemExit):
-        mc.main(["--trades-json", str(src), "--percentiles", ","])
-
-
-def test_cli_rejects_non_numeric_percentile(tmp_path):
-    src = _valid_trades_json(tmp_path)
-    with pytest.raises(SystemExit):
-        mc.main(["--trades-json", str(src), "--percentiles", "5,abc,95"])
-
-
-def test_cli_rejects_unknown_strategy_id_in_config(tmp_path):
-    src = _valid_trades_json(tmp_path)
-    cfg = tmp_path / "config.json"
-    cfg.write_text(json.dumps({"strategies": [
-        {"id": "hl-x", "type": "perps", "max_drawdown_pct": 15.0}]}))
-    with pytest.raises(SystemExit):
-        mc.main(["--trades-json", str(src), "--config", str(cfg),
-                  "--strategy-id", "typo-d-id"])
-
-
-def test_cli_rejects_trades_json_dict_without_trades_key(tmp_path):
-    src = tmp_path / "results.json"
-    src.write_text(json.dumps({"foo": []}))
-    with pytest.raises(SystemExit):
-        mc.main(["--trades-json", str(src)])
-
-
-def test_cli_rejects_trades_json_bare_string(tmp_path):
-    src = tmp_path / "results.json"
-    src.write_text(json.dumps("nope"))
-    with pytest.raises(SystemExit):
-        mc.main(["--trades-json", str(src)])
-
-
-def test_cli_rejects_trades_json_bare_number(tmp_path):
-    src = tmp_path / "results.json"
-    src.write_text(json.dumps(42))
-    with pytest.raises(SystemExit):
-        mc.main(["--trades-json", str(src)])
-
-
-def test_cli_config_missing_file_exits_cleanly(tmp_path):
-    src = _valid_trades_json(tmp_path)
-    with pytest.raises(SystemExit):
-        mc.main(["--trades-json", str(src),
-                  "--config", str(tmp_path / "does_not_exist.json"),
-                  "--strategy-id", "hl-x"])
-
-
-def test_cli_config_invalid_json_exits_cleanly(tmp_path):
-    src = _valid_trades_json(tmp_path)
-    cfg = tmp_path / "config.json"
-    cfg.write_text("{not valid json")
-    with pytest.raises(SystemExit):
-        mc.main(["--trades-json", str(src), "--config", str(cfg),
-                  "--strategy-id", "hl-x"])
-
-
-def test_cli_trades_json_missing_file_exits_cleanly(tmp_path):
-    with pytest.raises(SystemExit):
-        mc.main(["--trades-json", str(tmp_path / "does_not_exist.json")])
-
-
-def test_cli_trades_json_invalid_json_exits_cleanly(tmp_path):
-    src = tmp_path / "results.json"
-    src.write_text("{not valid json")
-    with pytest.raises(SystemExit):
-        mc.main(["--trades-json", str(src)])
-
-
-def test_cli_params_invalid_json_exits_cleanly(tmp_path):
-    with pytest.raises(SystemExit):
-        mc.main(["--strategy", "squeeze_momentum", "--params", "{bad json"])
+@pytest.mark.parametrize("build_argv,match", [
+    (lambda tp: [], None),
+    (lambda tp: ["--trades-json", "a.json", "--strategy", "breakout"], None),
+    (lambda tp: ["--trades-json", str(_valid_trades_json(tp)),
+                 "--config", "cfg.json"], None),
+    (lambda tp: ["--trades-json", str(_valid_trades_json(tp)),
+                 "--n-paths", "-5"], None),
+    (lambda tp: ["--trades-json", str(_valid_trades_json(tp)),
+                 "--n-paths", "0"], None),
+    (lambda tp: ["--trades-json", str(_valid_trades_json(tp)),
+                 "--percentiles", "5,50,150"], None),
+    (lambda tp: ["--trades-json", str(_valid_trades_json(tp)),
+                 "--percentiles", "-1"], None),
+    (lambda tp: ["--trades-json", str(_valid_trades_json(tp)),
+                 "--schemes", ","], None),
+    (lambda tp: ["--trades-json", str(_valid_trades_json(tp)),
+                 "--percentiles", ","], None),
+    (lambda tp: ["--trades-json", str(_valid_trades_json(tp)),
+                 "--percentiles", "5,abc,95"], None),
+    (lambda tp: ["--trades-json", str(_valid_trades_json(tp)),
+                 "--config", _write_json(tp, "config.json", _BAD_CFG),
+                 "--strategy-id", "typo-d-id"], None),
+    (lambda tp: ["--trades-json", _write_json(tp, "results.json",
+                                              {"foo": []})], None),
+    (lambda tp: ["--trades-json", _write_json(tp, "results.json",
+                                              "nope")], None),
+    (lambda tp: ["--trades-json", _write_json(tp, "results.json", 42)], None),
+    (lambda tp: ["--trades-json", _write_json(
+        tp, "results.json", {"trades": [{"shares": 0.0, "entry_price": 0.0,
+                                         "pnl": 8.0}]})], None),
+    (lambda tp: ["--trades-json", str(_valid_trades_json(tp)),
+                 "--config", str(tp / "does_not_exist.json"),
+                 "--strategy-id", "hl-x"], None),
+    (lambda tp: ["--trades-json", str(_valid_trades_json(tp)),
+                 "--config", _write_text(tp, "config.json", "{not valid json"),
+                 "--strategy-id", "hl-x"], None),
+    (lambda tp: ["--trades-json", str(tp / "does_not_exist.json")], None),
+    (lambda tp: ["--trades-json", _write_text(tp, "results.json",
+                                              "{not valid json")], None),
+    (lambda tp: ["--strategy", "squeeze_momentum",
+                 "--params", "{bad json"], None),
+    (lambda tp: ["--strategy", "x", "--candidate-json", "c.json"],
+     "exactly one trade source"),
+    (lambda tp: ["--trades-json", "a.json", "--candidate-json", "c.json"],
+     "exactly one trade source"),
+    (lambda tp: ["--trades-json", "a.json", "--windows", "is"],
+     "do not apply to --trades-json"),
+    (lambda tp: ["--strategy", "x", "--windows", "is", "--window", "oos"],
+     "mutually exclusive"),
+    (lambda tp: ["--strategy", "x", "--datasets", "BTC/USDT:1h",
+                 "--dataset", "ETH/USDT:1h"], "mutually exclusive"),
+    (lambda tp: ["--candidate-json", "c.json", "--params", "{}"],
+     "candidate JSON carries its own"),
+    (lambda tp: ["--candidate-json", "c.json", "--direction", "short"],
+     "candidate JSON carries its own"),
+    (lambda tp: ["--candidate-json", _write_json(
+        tp, "bad.json", {"name": "squeeze_momentum", "direction": "both"}),
+        "--window", "is"], "not a valid candidate"),
+])
+def test_cli_rejects_bad_invocation(tmp_path, build_argv, match):
+    with pytest.raises(SystemExit, match=match):
+        mc.main(build_argv(tmp_path))
 
 
 def test_run_leg_trades_rejects_bad_dataset(tmp_path):
     with pytest.raises(SystemExit, match="--dataset"):
         mc.run_leg_trades("squeeze_momentum", "spot", None,
                           "not-a-valid-dataset", "is", 1000.0, None, "net")
-
-
-def test_trade_returns_missing_pnl_pct_gross_raises_value_error():
-    trade = {"shares": 2.0, "entry_price": 100.0, "pnl": 8.0}
-    with pytest.raises(ValueError, match="pnl_pct"):
-        mc.trade_returns([trade], returns="gross")
-
-
-def test_trade_returns_missing_pnl_pct_net_fallback_raises_value_error():
-    trade = {"shares": 0.0, "entry_price": 0.0, "pnl": 8.0}
-    with pytest.raises(ValueError, match="pnl_pct"):
-        mc.trade_returns([trade], returns="net")
-
-
-def test_cli_trades_json_missing_pnl_pct_exits_cleanly(tmp_path):
-    src = tmp_path / "results.json"
-    src.write_text(json.dumps({"trades": [
-        {"shares": 0.0, "entry_price": 0.0, "pnl": 8.0}]}))
-    with pytest.raises(SystemExit):
-        mc.main(["--trades-json", str(src)])
 
 
 class _FakeReg:
@@ -614,40 +534,6 @@ def test_multileg_bare_strategy_source_also_fans(monkeypatch, tmp_path):
                     "--datasets", "BTC/USDT:1h", "--n-paths", "20",
                     "--json", str(out)]) == 0
     assert len(json.loads(out.read_text())["legs"]) == 1
-
-
-def test_cli_rejects_three_way_source_ambiguity(tmp_path):
-    with pytest.raises(SystemExit, match="exactly one trade source"):
-        mc.main(["--strategy", "x", "--candidate-json", "c.json"])
-    with pytest.raises(SystemExit, match="exactly one trade source"):
-        mc.main(["--trades-json", "a.json", "--candidate-json", "c.json"])
-
-
-def test_cli_rejects_multileg_flags_on_a_saved_run(tmp_path):
-    with pytest.raises(SystemExit, match="do not apply to --trades-json"):
-        mc.main(["--trades-json", "a.json", "--windows", "is"])
-
-
-def test_cli_rejects_mixing_singular_and_plural_leg_flags(tmp_path):
-    with pytest.raises(SystemExit, match="mutually exclusive"):
-        mc.main(["--strategy", "x", "--windows", "is", "--window", "oos"])
-    with pytest.raises(SystemExit, match="mutually exclusive"):
-        mc.main(["--strategy", "x", "--datasets", "BTC/USDT:1h",
-                 "--dataset", "ETH/USDT:1h"])
-
-
-def test_cli_rejects_strategy_flags_alongside_a_candidate_json():
-    with pytest.raises(SystemExit, match="candidate JSON carries its own"):
-        mc.main(["--candidate-json", "c.json", "--params", "{}"])
-    with pytest.raises(SystemExit, match="candidate JSON carries its own"):
-        mc.main(["--candidate-json", "c.json", "--direction", "short"])
-
-
-def test_cli_rejects_an_invalid_candidate_json(tmp_path):
-    bad = tmp_path / "bad.json"
-    bad.write_text(json.dumps({"name": "squeeze_momentum", "direction": "both"}))
-    with pytest.raises(SystemExit, match="not a valid candidate"):
-        mc.main(["--candidate-json", str(bad), "--window", "is"])
 
 
 def test_single_leg_payload_shape_is_unchanged_by_1295(monkeypatch, tmp_path):

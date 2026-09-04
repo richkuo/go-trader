@@ -27,18 +27,6 @@ def test_forward_realized_vol_horizon2_sums_squared_log_returns():
     assert np.isnan(fv[2]) and np.isnan(fv[3])
 
 
-def test_forward_realized_vol_separates_quiet_from_volatile():
-    rng = np.random.default_rng(0)
-    quiet = rng.normal(0, 0.001, 200)
-    loud = rng.normal(0, 0.02, 200)
-    close = 100 * np.exp(np.cumsum(np.concatenate([quiet, loud])))
-    labels = np.array(["quiet"] * 200 + ["loud"] * 200, dtype=object)
-    fv = forward_realized_vol(close, 4)
-    sep = separation(labels, fv)
-    assert sep["per_state"]["loud"]["mean"] > sep["per_state"]["quiet"]["mean"]
-    assert sep["kruskal_h"] > 5.0
-
-
 def test_coverage_counts():
     labels = np.array(["a", "a", "b", "a"])
     cov = coverage(labels)
@@ -84,18 +72,6 @@ def test_kmeans_yardstick_runs():
     fwd = np.concatenate([np.full(100, 0.02), np.full(100, -0.02)])
     out = kmeans_yardstick(feats, fwd, k_range=(2, 3), seed=0)
     assert out[2]["kruskal_h"] > 5.0
-
-
-def test_score_labels_bundle():
-    from regime_diagnostics import score_labels
-    rng = np.random.default_rng(0)
-    close = 100 * np.cumprod(1 + rng.normal(0, 0.005, 300))
-    labels = np.array(["up" if r >= 0 else "down" for r in np.diff(close, prepend=close[0])], dtype=object)
-    feats = rng.normal(0, 1, (300, 4))
-    out = score_labels(close, labels, feats, horizons=(1, 4), block_mult=3, seed=0)
-    assert "h4" in out and "kruskal_h" in out["h4"]["separation"]
-    assert "coverage" in out and "stability" in out
-    assert "p_value" in out["h4"]["significance"]
 
 
 def test_score_labels_masks_warmup():

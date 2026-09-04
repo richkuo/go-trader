@@ -29,21 +29,19 @@ def _trending_ohlc(n: int = 500, seed: int = 7) -> pd.DataFrame:
     )
 
 
-def test_max_indicator_lookback_picks_largest_int():
-    ranges = {
-        "fast_period": [10, 15, 20],
-        "slow_period": [40, 50, 80],
-        "multiplier":  [1.5, 2.0, 3.0],
-    }
-    assert max_indicator_lookback(ranges) == 80
-
-
-def test_max_indicator_lookback_zero_for_float_only_grid():
-    ranges = {
-        "entry_std": [1.0, 1.5, 2.0],
-        "exit_std":  [0.0, 0.5, 1.0],
-    }
-    assert max_indicator_lookback(ranges) == 0
+@pytest.mark.parametrize(
+    "ranges,expected",
+    [
+        ({"fast_period": [10, 15, 20],
+          "slow_period": [40, 50, 80],
+          "multiplier": [1.5, 2.0, 3.0]}, 80),
+        ({"entry_std": [1.0, 1.5, 2.0],
+          "exit_std": [0.0, 0.5, 1.0]}, 0),
+    ],
+    ids=["largest_int", "float_only_grid"],
+)
+def test_max_indicator_lookback(ranges, expected):
+    assert max_indicator_lookback(ranges) == expected
 
 
 def test_sma_80_grid_generates_trades_with_warmup():

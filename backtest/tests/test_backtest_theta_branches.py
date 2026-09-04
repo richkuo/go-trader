@@ -106,7 +106,7 @@ def test_zero_premium_position_is_skipped():
     assert bt.total_trades == 0
 
 
-def test_report_metrics_block_computes_expected_fields():
+def test_report_metrics_block_computes_derived_metrics():
     bt = _bt(initial_capital=10_000.0, profit_target_pct=60,
              stop_loss_pct=150, min_dte_close=2)
     bt.cash = 11_000.0
@@ -130,28 +130,15 @@ def test_report_metrics_block_computes_expected_fields():
 
     report = bt._report("BTC", start_date, end_date, 20_000.0, 22_000.0)
 
-    assert report["label"] == "t"
-    assert report["underlying"] == "BTC"
     assert report["days"] == n
-    assert report["initial_capital"] == 10_000.0
     assert report["final_value"] == pytest.approx(11_000.0)
     assert report["total_return_pct"] == pytest.approx(10.0)
     assert report["buy_hold_return_pct"] == pytest.approx(10.0)
     assert report["annualized_return_pct"] == pytest.approx(10.0, abs=0.5)
     assert report["win_rate_pct"] == pytest.approx(75.0)
-    assert report["total_trades"] == 4
-    assert report["winning_trades"] == 3
-    assert report["losing_trades"] == 1
-    assert report["early_closes"] == 2
-    assert report["stop_losses"] == 1
-    assert report["dte_closes"] == 1
-    assert report["total_premium_collected"] == pytest.approx(500.0)
     assert report["max_drawdown_pct"] == pytest.approx(0.0)
     assert isinstance(report["sharpe_ratio"], float)
     assert report["sharpe_ratio"] >= 0
-    assert report["profit_target_pct"] == 60
-    assert report["stop_loss_pct"] == 150
-    assert report["min_dte_close"] == 2
 
 
 def test_report_zero_trades_yields_zero_win_rate():

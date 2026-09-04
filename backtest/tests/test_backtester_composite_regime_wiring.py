@@ -326,29 +326,41 @@ def _run_main(monkeypatch, argv):
     return run_backtest.main()
 
 
-def test_cli_rejects_windows_spec_with_non_single_mode(monkeypatch):
-    with pytest.raises(SystemExit):
-        _run_main(monkeypatch, [
+@pytest.mark.parametrize(
+    "argv_factory",
+    [
+        lambda tmp_path: [
             "--mode", "compare", "--strategy", "sma_crossover",
             "--regime-windows-spec-json", json.dumps(COMPOSITE_SPEC),
-        ])
-
-
-def test_cli_rejects_malformed_windows_spec(monkeypatch):
-    with pytest.raises(SystemExit):
-        _run_main(monkeypatch, [
+        ],
+        lambda tmp_path: [
             "--mode", "single", "--strategy", "sma_crossover",
             "--regime-windows-spec-json", "{not valid json",
-        ])
-
-
-def test_cli_rejects_windows_spec_with_config(monkeypatch, tmp_path):
-    with pytest.raises(SystemExit):
-        _run_main(monkeypatch, [
+        ],
+        lambda tmp_path: [
             "--mode", "single", "--strategy", "hl-temacb-btc",
             "--config", _composite_config(tmp_path),
             "--regime-windows-spec-json", json.dumps(COMPOSITE_SPEC),
-        ])
+        ],
+        lambda tmp_path: [
+            "--mode", "single", "--strategy", "sma_crossover",
+            "--regime-enabled", "--allowed-regimes", "ranging_quiet",
+        ],
+        lambda tmp_path: [
+            "--mode", "single", "--strategy", "hl-temacb-btc",
+            "--config", _config_with_regime(
+                tmp_path, classifier="composite", allowed_regimes=["ranging"]),
+        ],
+        lambda tmp_path: [
+            "--mode", "single", "--strategy", "hl-temacb-btc",
+            "--config", _config_with_regime(
+                tmp_path, classifier="adx", allowed_regimes=["ranging_quiet"]),
+        ],
+    ],
+)
+def test_cli_rejects_invalid_regime_wiring(monkeypatch, tmp_path, argv_factory):
+    with pytest.raises(SystemExit):
+        _run_main(monkeypatch, argv_factory(tmp_path))
 
 
 def test_cli_by_name_threads_windows_spec_to_backtester(monkeypatch):
@@ -398,65 +410,43 @@ _COMPOSITE_PRIMARY_WITH_ADX = {
 _COMPOSITE_NO_MEDIUM = {"slow": {"classifier": "composite", "period": 40}}
 
 
-def test_primary_classifier_none_spec_is_adx():
-    assert run_backtest._primary_window_classifier(None) == "adx"
-    assert run_backtest._primary_window_classifier({}) == "adx"
+@pytest.mark.parametrize(
+    "spec,expected",
+    [
+        (None, "adx"),
+        ({}, "adx"),
+        (COMPOSITE_SPEC, "composite"),
+        (_COMPOSITE_PRIMARY_WITH_ADX, "composite"),
+        (_COMPOSITE_NO_MEDIUM, "composite"),
+        ({"z": {"classifier": "composite"}, "a": {"classifier": "adx"}}, "adx"),
+    ],
+)
+def test_primary_window_classifier(spec, expected):
+    assert run_backtest._primary_window_classifier(spec) == expected
 
 
-def test_primary_classifier_medium_first():
-    assert run_backtest._primary_window_classifier(COMPOSITE_SPEC) == "composite"
-
-
-def test_primary_classifier_mixed_spec_uses_medium_not_other_window():
-    assert run_backtest._primary_window_classifier(
-        _COMPOSITE_PRIMARY_WITH_ADX) == "composite"
-
-
-def test_primary_classifier_no_medium_uses_sorted_first():
-    assert run_backtest._primary_window_classifier(_COMPOSITE_NO_MEDIUM) == "composite"
-    assert run_backtest._primary_window_classifier(
-        {"z": {"classifier": "composite"}, "a": {"classifier": "adx"}}) == "adx"
-
-
-def test_validate_accepts_adx_label_no_spec():
-    run_backtest._validate_allowed_regimes_vocabulary(["trending_up", "ranging"], None)
-
-
-def test_validate_accepts_composite_label_with_composite_spec():
-    run_backtest._validate_allowed_regimes_vocabulary(["ranging_quiet"], COMPOSITE_SPEC)
-    run_backtest._validate_allowed_regimes_vocabulary(
-        ["trending_up_clean", "ranging_directional"], COMPOSITE_SPEC)
-
-
-def test_validate_rejects_composite_label_without_spec():
-    with pytest.raises(SystemExit):
-        run_backtest._validate_allowed_regimes_vocabulary(["ranging_quiet"], None)
-    with pytest.raises(SystemExit):
-        run_backtest._validate_allowed_regimes_vocabulary(["trending_up_clean"], _ADX_SPEC)
-
-
-def test_validate_rejects_bare_adx_label_with_composite_primary():
-    with pytest.raises(SystemExit):
-        run_backtest._validate_allowed_regimes_vocabulary(["trending_up"], COMPOSITE_SPEC)
-    with pytest.raises(SystemExit):
-        run_backtest._validate_allowed_regimes_vocabulary(
-            ["trending_up"], _COMPOSITE_PRIMARY_WITH_ADX)
-
-
-def test_validate_rejects_garbage_label():
-    with pytest.raises(SystemExit):
-        run_backtest._validate_allowed_regimes_vocabulary(["not_a_regime"], None)
-
-
-def test_validate_noop_on_empty():
-    run_backtest._validate_allowed_regimes_vocabulary(None, COMPOSITE_SPEC)
-    run_backtest._validate_allowed_regimes_vocabulary([], COMPOSITE_SPEC)
-
-
-def test_validate_compound_partial_invalid_rejects():
-    with pytest.raises(SystemExit):
-        run_backtest._validate_allowed_regimes_vocabulary(
-            ["ranging_quiet", "trending_up"], COMPOSITE_SPEC)
+@pytest.mark.parametrize(
+    "labels,spec,rejects",
+    [
+        (["trending_up", "ranging"], None, False),
+        (["ranging_quiet"], COMPOSITE_SPEC, False),
+        (["trending_up_clean", "ranging_directional"], COMPOSITE_SPEC, False),
+        (None, COMPOSITE_SPEC, False),
+        ([], COMPOSITE_SPEC, False),
+        (["ranging_quiet"], None, True),
+        (["trending_up_clean"], _ADX_SPEC, True),
+        (["trending_up"], COMPOSITE_SPEC, True),
+        (["trending_up"], _COMPOSITE_PRIMARY_WITH_ADX, True),
+        (["not_a_regime"], None, True),
+        (["ranging_quiet", "trending_up"], COMPOSITE_SPEC, True),
+    ],
+)
+def test_validate_allowed_regimes_vocabulary(labels, spec, rejects):
+    if rejects:
+        with pytest.raises(SystemExit):
+            run_backtest._validate_allowed_regimes_vocabulary(labels, spec)
+    else:
+        run_backtest._validate_allowed_regimes_vocabulary(labels, spec)
 
 
 def test_cli_composite_label_reaches_backtester_with_spec(monkeypatch):
@@ -499,15 +489,6 @@ def test_cli_composite_label_reaches_backtester_with_spec(monkeypatch):
     assert seen["regime_windows_spec"]["medium"]["classifier"] == "composite"
 
 
-def test_cli_composite_label_rejected_without_spec(monkeypatch):
-    with pytest.raises(SystemExit):
-        _run_main(monkeypatch, [
-            "--mode", "single", "--strategy", "sma_crossover",
-            "--regime-enabled",
-            "--allowed-regimes", "ranging_quiet",
-        ])
-
-
 def _config_with_regime(tmp_path, *, classifier, allowed_regimes=None):
     strat = {
         "id": "hl-temacb-btc", "type": "perps", "platform": "hyperliquid",
@@ -525,22 +506,6 @@ def _config_with_regime(tmp_path, *, classifier, allowed_regimes=None):
         },
         "strategies": [strat],
     })
-
-
-def test_config_rejects_adx_label_under_composite_primary(monkeypatch, tmp_path):
-    cfg = _config_with_regime(tmp_path, classifier="composite", allowed_regimes=["ranging"])
-    with pytest.raises(SystemExit):
-        _run_main(monkeypatch, [
-            "--mode", "single", "--strategy", "hl-temacb-btc", "--config", cfg,
-        ])
-
-
-def test_config_rejects_composite_label_under_adx_primary(monkeypatch, tmp_path):
-    cfg = _config_with_regime(tmp_path, classifier="adx", allowed_regimes=["ranging_quiet"])
-    with pytest.raises(SystemExit):
-        _run_main(monkeypatch, [
-            "--mode", "single", "--strategy", "hl-temacb-btc", "--config", cfg,
-        ])
 
 
 def _spy_backtester_seen(monkeypatch, df):
@@ -569,33 +534,21 @@ def _spy_backtester_seen(monkeypatch, df):
     return seen
 
 
-def test_config_matching_composite_label_runs(monkeypatch, tmp_path):
+@pytest.mark.parametrize("allowed_regimes", [["ranging_quiet"], None])
+def test_config_threads_regime_wiring_to_backtester(monkeypatch, tmp_path,
+                                                    allowed_regimes):
     df = pd.DataFrame(
         {"open": [100.0] * 60, "high": [101.0] * 60, "low": [99.0] * 60,
          "close": [100.0] * 60, "volume": [1000.0] * 60},
         index=pd.date_range("2024-01-01", periods=60, freq="D"),
     )
     seen = _spy_backtester_seen(monkeypatch, df)
-    cfg = _config_with_regime(tmp_path, classifier="composite", allowed_regimes=["ranging_quiet"])
+    cfg = _config_with_regime(tmp_path, classifier="composite",
+                              allowed_regimes=allowed_regimes)
     _run_main(monkeypatch, [
         "--mode", "single", "--strategy", "hl-temacb-btc", "--config", cfg,
     ])
-    assert seen["allowed_regimes"] == ["ranging_quiet"]
-    assert seen["regime_windows_spec"]["medium"]["classifier"] == "composite"
-
-
-def test_config_absent_allowed_regimes_runs(monkeypatch, tmp_path):
-    df = pd.DataFrame(
-        {"open": [100.0] * 60, "high": [101.0] * 60, "low": [99.0] * 60,
-         "close": [100.0] * 60, "volume": [1000.0] * 60},
-        index=pd.date_range("2024-01-01", periods=60, freq="D"),
-    )
-    seen = _spy_backtester_seen(monkeypatch, df)
-    cfg = _config_with_regime(tmp_path, classifier="composite", allowed_regimes=None)
-    _run_main(monkeypatch, [
-        "--mode", "single", "--strategy", "hl-temacb-btc", "--config", cfg,
-    ])
-    assert seen["allowed_regimes"] is None
+    assert seen["allowed_regimes"] == allowed_regimes
     assert seen["regime_windows_spec"]["medium"]["classifier"] == "composite"
 
 
@@ -659,11 +612,6 @@ def test_adx_primary_adx_keyed_sl_regime_byte_identical():
     assert bt_adx._stop_loss_regime_block.resolve("ranging").atr == 1.5
     bt_legacy = _bt_with_sl_regime(None, _ADX_SL_BLOCK)
     assert bt_legacy._stop_loss_regime_block.resolve("trending_up").atr == 2.0
-
-
-def test_composite_primary_adx_keyed_sl_regime_does_not_silently_default():
-    with pytest.raises(ValueError):
-        _bt_with_sl_regime(COMPOSITE_SPEC, _ADX_SL_BLOCK)
 
 
 def test_composite_keyed_trailing_regime_parses_and_resolves():

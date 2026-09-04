@@ -38,56 +38,38 @@ def _run(df, **kw):
                   timeframe="1d", save=False)
 
 
-def test_short_collects_positive_funding_on_flat_price():
-    df = _df([-1, 0, 0, 0, 0, 0], accrual=[1e-3] * 6)
-    res = _run(df, direction="short")
-    assert res["total_funding_pnl"] == pytest.approx(40.0)
-    assert res["final_capital"] == pytest.approx(10040.0)
-
-
-def test_short_pays_negative_funding():
-    df = _df([-1, 0, 0, 0, 0, 0], accrual=[-1e-3] * 6)
-    res = _run(df, direction="short")
-    assert res["total_funding_pnl"] == pytest.approx(-40.0)
-    assert res["final_capital"] == pytest.approx(9960.0)
-
-
-def test_long_pays_positive_funding():
-    df = _df([1, 0, 0, 0, 0, 0], accrual=[1e-3] * 6)
-    res = _run(df, direction=None)
-    assert res["total_funding_pnl"] == pytest.approx(-40.0)
-    assert res["final_capital"] == pytest.approx(9960.0)
-
-
-def test_open_bar_accrues_nothing_one_interval_one_charge():
-    df = _df([-1, 1, 0, 0, 0, 0], accrual=[1e-3] * 6)
-    res = _run(df, direction="short")
-    assert res["total_trades"] == 1
-    assert res["total_funding_pnl"] == pytest.approx(10.0)
-
-
-def test_charge_count_equals_intervals_held():
-    df = _df([-1, 0, 1, 0, 0, 0], accrual=[1e-3] * 6)
-    res = _run(df, direction="short")
-    assert res["total_trades"] == 1
-    assert res["total_funding_pnl"] == pytest.approx(20.0)
-
-
-def test_nan_accrual_is_ignored():
-    df = _df([-1, 0, 0, 0, 0, 0], accrual=[1e-3, 1e-3, np.nan, 1e-3, 1e-3, 1e-3])
-    res = _run(df, direction="short")
-    assert res["total_funding_pnl"] == pytest.approx(30.0)
+@pytest.mark.parametrize(
+    "signals,accrual,direction,funding,capital,trades",
+    [
+        ([-1, 0, 0, 0, 0, 0], [1e-3] * 6, "short", 40.0, 10040.0, None),
+        ([-1, 0, 0, 0, 0, 0], [-1e-3] * 6, "short", -40.0, 9960.0, None),
+        ([1, 0, 0, 0, 0, 0], [1e-3] * 6, None, -40.0, 9960.0, None),
+        ([-1, 1, 0, 0, 0, 0], [1e-3] * 6, "short", 10.0, None, 1),
+        ([-1, 0, 1, 0, 0, 0], [1e-3] * 6, "short", 20.0, None, 1),
+        ([-1, 0, 0, 0, 0, 0],
+         [1e-3, 1e-3, np.nan, 1e-3, 1e-3, 1e-3], "short", 30.0, None, None),
+        ([-1, 0, 0, 1, 0, 0], None, "short", 0.0, None, None),
+        ([0, 0, 0, 0, 0, 0], [1e-3] * 6, "short", 0.0, 10000.0, None),
+    ],
+    ids=[
+        "short_collects_positive",
+        "short_pays_negative",
+        "long_pays_positive",
+        "open_bar_accrues_nothing",
+        "charge_count_equals_intervals_held",
+        "nan_accrual_ignored",
+        "no_funding_column",
+        "not_booked_while_flat",
+    ],
+)
+def test_funding_accrual_books_each_held_interval(
+    signals, accrual, direction, funding, capital, trades
+):
+    df = _df(signals, accrual=accrual)
+    res = _run(df, direction=direction)
+    assert res["total_funding_pnl"] == pytest.approx(funding)
     assert np.isfinite(res["final_capital"])
-
-
-def test_no_funding_column_books_nothing():
-    df = _df([-1, 0, 0, 1, 0, 0])
-    res = _run(df, direction="short")
-    assert res["total_funding_pnl"] == 0.0
-
-
-def test_funding_not_booked_while_flat():
-    df = _df([0, 0, 0, 0, 0, 0], accrual=[1e-3] * 6)
-    res = _run(df, direction="short")
-    assert res["total_funding_pnl"] == 0.0
-    assert res["final_capital"] == pytest.approx(10000.0)
+    if capital is not None:
+        assert res["final_capital"] == pytest.approx(capital)
+    if trades is not None:
+        assert res["total_trades"] == trades

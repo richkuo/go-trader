@@ -50,114 +50,81 @@ def _decide(cfg=None, side="long", qty=1.0, avg_cost=100.0, entry_atr=2.0,
     )
 
 
-def test_gate_direction_match():
-    _, ok, _ = _decide(side="long", signal=1)
-    assert ok
-    _, ok, reason = _decide(side="long", signal=-1)
-    assert not ok and reason == "not a same-direction add"
-    _, ok, _ = _decide(side="short", signal=-1)
-    assert ok
-    _, ok, _ = _decide(side="short", signal=1)
-    assert not ok
-    _, ok, _ = _decide(side="long", signal=1, qty=0.0)
-    assert not ok
+@pytest.mark.parametrize(
+    "cfg,kw,expect_ok,reason_eq,reason_has,expect_qty",
+    [
+        (None, {"side": "long", "signal": 1}, True, None, None, None),
+        (None, {"side": "long", "signal": -1}, False,
+         "not a same-direction add", None, None),
+        (None, {"side": "short", "signal": -1}, True, None, None, None),
+        (None, {"side": "short", "signal": 1}, False, None, None, None),
+        (None, {"side": "long", "signal": 1, "qty": 0.0}, False, None, None, None),
+        (None, {"price": 0.0}, False, "no price for scale-in", None, None),
+        ({"max_adds": 2}, {"count": 1}, True, None, None, None),
+        ({"max_adds": 2}, {"count": 2}, False,
+         "scale-in max_adds reached", None, None),
+        ({"max_added_notional_usd": 2000.0},
+         {"added": 1000.0, "default_notional": 1000.0}, True, None, None, None),
+        ({"max_added_notional_usd": 2000.0},
+         {"added": 1000.0 + 1e-6, "default_notional": 1000.0}, False,
+         "scale-in max_added_notional_usd reached", None, None),
+        (None, {"default_notional": 0.0}, False,
+         "scale-in add notional resolves to zero", None, None),
+        ({"add_notional_usd": 500.0}, {"price": 100.0, "default_notional": 1000.0},
+         True, None, None, 5.0),
+        ({"add_spacing_atr": 1.0}, {"last_add": 100.0, "price": 101.9}, False,
+         None, "add-to-winners", None),
+        ({"add_spacing_atr": 1.0}, {"last_add": 100.0, "price": 102.0}, True,
+         None, None, None),
+        ({"add_spacing_atr": -1.0}, {"last_add": 100.0, "price": 98.1}, False,
+         None, "average-down", None),
+        ({"add_spacing_atr": -1.0}, {"last_add": 100.0, "price": 98.0}, True,
+         None, None, None),
+        ({"add_spacing_atr": 1.0},
+         {"side": "short", "signal": -1, "last_add": 100.0, "price": 98.0},
+         True, None, None, None),
+        ({"add_spacing_atr": 1.0},
+         {"side": "short", "signal": -1, "last_add": 100.0, "price": 99.0},
+         False, None, None, None),
+        ({"add_spacing_atr": 1.0}, {"entry_atr": 0.0}, False,
+         "scale-in spacing requires a positive EntryATR", None, None),
+        ({"add_spacing_atr": 1.0},
+         {"avg_cost": 100.0, "last_add": 0.0, "price": 102.0}, True,
+         None, None, None),
+        ({"add_spacing_atr": 1.0},
+         {"avg_cost": 100.0, "last_add": 0.0, "price": 101.0}, False,
+         None, None, None),
+        ({"add_spacing_atr": 0.0}, {"last_add": 100.0, "price": 100.0}, True,
+         None, None, None),
+    ],
+)
+def test_scale_in_decision_gates(cfg, kw, expect_ok, reason_eq, reason_has,
+                                 expect_qty):
+    qty, ok, reason = _decide(cfg, **kw)
+    assert ok is expect_ok
+    if reason_eq is not None:
+        assert reason == reason_eq
+    if reason_has is not None:
+        assert reason_has in reason
+    if expect_qty is not None:
+        assert qty == pytest.approx(expect_qty)
 
 
-def test_gate_no_price():
-    _, ok, reason = _decide(price=0.0)
-    assert not ok and reason == "no price for scale-in"
-
-
-def test_gate_max_adds():
-    cfg = {"max_adds": 2}
-    _, ok, _ = _decide(cfg, count=1)
-    assert ok
-    _, ok, reason = _decide(cfg, count=2)
-    assert not ok and reason == "scale-in max_adds reached"
-
-
-def test_gate_max_added_notional_boundary():
-    cfg = {"max_added_notional_usd": 2000.0}
-    _, ok, _ = _decide(cfg, added=1000.0, default_notional=1000.0)
-    assert ok
-    _, ok, reason = _decide(cfg, added=1000.0 + 1e-6, default_notional=1000.0)
-    assert not ok and reason == "scale-in max_added_notional_usd reached"
-
-
-def test_gate_zero_notional():
-    _, ok, reason = _decide(default_notional=0.0)
-    assert not ok and reason == "scale-in add notional resolves to zero"
-
-
-def test_gate_add_notional_override():
-    qty, ok, _ = _decide({"add_notional_usd": 500.0}, price=100.0,
-                         default_notional=1000.0)
-    assert ok and qty == pytest.approx(5.0)
-
-
-def test_gate_spacing_add_to_winners():
-    cfg = {"add_spacing_atr": 1.0}
-    _, ok, reason = _decide(cfg, last_add=100.0, price=101.9)
-    assert not ok and "add-to-winners" in reason
-    _, ok, _ = _decide(cfg, last_add=100.0, price=102.0)
-    assert ok
-
-
-def test_gate_spacing_average_down():
-    cfg = {"add_spacing_atr": -1.0}
-    _, ok, reason = _decide(cfg, last_add=100.0, price=98.1)
-    assert not ok and "average-down" in reason
-    _, ok, _ = _decide(cfg, last_add=100.0, price=98.0)
-    assert ok
-
-
-def test_gate_spacing_short_sign():
-    cfg = {"add_spacing_atr": 1.0}
-    _, ok, _ = _decide(cfg, side="short", signal=-1, last_add=100.0, price=98.0)
-    assert ok
-    _, ok, _ = _decide(cfg, side="short", signal=-1, last_add=100.0, price=99.0)
-    assert not ok
-
-
-def test_gate_spacing_requires_entry_atr():
-    _, ok, reason = _decide({"add_spacing_atr": 1.0}, entry_atr=0.0)
-    assert not ok and reason == "scale-in spacing requires a positive EntryATR"
-
-
-def test_gate_spacing_last_add_falls_back_to_avg_cost():
-    cfg = {"add_spacing_atr": 1.0}
-    _, ok, _ = _decide(cfg, avg_cost=100.0, last_add=0.0, price=102.0)
-    assert ok
-    _, ok, _ = _decide(cfg, avg_cost=100.0, last_add=0.0, price=101.0)
-    assert not ok
-
-
-def test_gate_spacing_zero_no_gate():
-    _, ok, _ = _decide({"add_spacing_atr": 0.0}, last_add=100.0, price=100.0)
-    assert ok
-
-
-def test_init_rejects_scale_in_without_flag():
-    with pytest.raises(ValueError, match="allow_scale_in"):
-        Backtester(scale_in={"max_adds": 2})
-
-
-def test_init_rejects_risk_sizing_combo():
-    with pytest.raises(ValueError, match="risk_per_trade_pct"):
-        Backtester(allow_scale_in=True, risk_per_trade_pct=1.0,
-                   stop_loss_atr_mult=1.0)
-
-
-def test_init_rejects_unknown_scale_in_key():
-    with pytest.raises(ValueError, match="unknown key"):
-        Backtester(allow_scale_in=True, scale_in={"max_ads": 2})
-
-
-def test_init_rejects_negative_bounds():
-    with pytest.raises(ValueError, match="max_adds"):
-        Backtester(allow_scale_in=True, scale_in={"max_adds": -1})
-    with pytest.raises(ValueError, match="add_notional_usd"):
-        Backtester(allow_scale_in=True, scale_in={"add_notional_usd": -5})
+@pytest.mark.parametrize(
+    "kwargs,match",
+    [
+        ({"scale_in": {"max_adds": 2}}, "allow_scale_in"),
+        ({"allow_scale_in": True, "risk_per_trade_pct": 1.0,
+          "stop_loss_atr_mult": 1.0}, "risk_per_trade_pct"),
+        ({"allow_scale_in": True, "scale_in": {"max_ads": 2}}, "unknown key"),
+        ({"allow_scale_in": True, "scale_in": {"max_adds": -1}}, "max_adds"),
+        ({"allow_scale_in": True, "scale_in": {"add_notional_usd": -5}},
+         "add_notional_usd"),
+    ],
+)
+def test_init_rejects_invalid_scale_in(kwargs, match):
+    with pytest.raises(ValueError, match=match):
+        Backtester(**kwargs)
 
 
 def test_run_rejects_entry_fraction_column():
@@ -445,31 +412,21 @@ def test_loader_defaults_off(tmp_path):
     assert kwargs["scale_in"] is None
 
 
-def test_loader_rejects_block_without_flag(tmp_path):
-    path = _config(tmp_path, _hl_strategy(scale_in={"max_adds": 3}))
-    with pytest.raises(ValueError, match="allow_scale_in"):
-        run_backtest.load_strategy_config(path, "hl-test")
-
-
-def test_loader_rejects_wrong_type(tmp_path):
-    path = _config(tmp_path, _hl_strategy(type="spot", allow_scale_in=True))
-    with pytest.raises(ValueError, match="perps/manual-only"):
-        run_backtest.load_strategy_config(path, "hl-test")
-
-
-def test_loader_rejects_wrong_platform(tmp_path):
-    path = _config(tmp_path, _hl_strategy(platform="okx", allow_scale_in=True))
-    with pytest.raises(ValueError, match="hyperliquid-only"):
-        run_backtest.load_strategy_config(path, "hl-test")
-
-
-def test_loader_rejects_live_static_scalar_sl(tmp_path):
-    path = _config(tmp_path, _hl_strategy(
-        allow_scale_in=True,
-        args=["tema_cross", "BTC", "4h", "--mode", "live"],
-        stop_loss_atr_mult=None, stop_loss_pct=5.0,
-    ))
-    with pytest.raises(ValueError, match="static scalar"):
+@pytest.mark.parametrize(
+    "overrides,match",
+    [
+        ({"scale_in": {"max_adds": 3}}, "allow_scale_in"),
+        ({"type": "spot", "allow_scale_in": True}, "perps/manual-only"),
+        ({"platform": "okx", "allow_scale_in": True}, "hyperliquid-only"),
+        ({"allow_scale_in": True,
+          "args": ["tema_cross", "BTC", "4h", "--mode", "live"],
+          "stop_loss_atr_mult": None, "stop_loss_pct": 5.0}, "static scalar"),
+        ({"allow_scale_in": True, "risk_per_trade_pct": 1.0}, "allow_scale_in"),
+    ],
+)
+def test_loader_rejects_invalid_scale_in_config(tmp_path, overrides, match):
+    path = _config(tmp_path, _hl_strategy(**overrides))
+    with pytest.raises(ValueError, match=match):
         run_backtest.load_strategy_config(path, "hl-test")
 
 
@@ -481,11 +438,3 @@ def test_loader_accepts_live_trailing_sl(tmp_path):
     ))
     kwargs = run_backtest.load_strategy_config(path, "hl-test")
     assert kwargs["allow_scale_in"] is True
-
-
-def test_loader_preserves_1268_combo_reject(tmp_path):
-    path = _config(tmp_path, _hl_strategy(
-        allow_scale_in=True, risk_per_trade_pct=1.0,
-    ))
-    with pytest.raises(ValueError, match="allow_scale_in"):
-        run_backtest.load_strategy_config(path, "hl-test")

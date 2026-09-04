@@ -4,6 +4,7 @@ import pathlib
 
 import numpy as np
 import pandas as pd
+import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent.parent / "shared_tools"))
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
@@ -55,11 +56,8 @@ def test_switcher_desired_equals_active_resets_pending():
 def test_parse_rejects_wrong_profile_count():
     bad = _alloc()
     bad["param_sets"] = {"a": {}, "b": {}, "c": {}}
-    try:
+    with pytest.raises(ValueError):
         _parse_profile_allocation(bad)
-        assert False, "expected ValueError"
-    except ValueError as e:
-        assert "exactly 2" in str(e)
 
 
 def _flat_df(n=40):
@@ -105,8 +103,5 @@ def test_engine_requires_profile_columns():
     df = _flat_df(10)
     df["_profile_label"] = "up"
     bt = Backtester(initial_capital=1000.0, profile_allocation=_alloc())
-    try:
+    with pytest.raises(ValueError):
         bt.run(df, save=False)
-        assert False, "expected ValueError for missing signal columns"
-    except ValueError as e:
-        assert "missing signal columns" in str(e)

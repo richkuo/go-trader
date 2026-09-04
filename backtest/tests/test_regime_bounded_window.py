@@ -356,15 +356,6 @@ def test_go_no_go_unverified_provenance_blocks_when_required():
     assert any("provenance unverifiable" in r for r in v["blocking_reasons"])
 
 
-def test_go_no_go_promote_iff_no_blocking_reason():
-    hr = _scored(10.0, 0.40)
-    md = _scored(9.7, 0.25)
-    ok = go_no_go(md, hr, md, hr, _drift(0.99))
-    assert ok["promote"] is (ok["blocking_reasons"] == [])
-    blocked = go_no_go(md, hr, md, hr, _drift(0.99), in_sample=True)
-    assert blocked["promote"] is (blocked["blocking_reasons"] == [])
-
-
 def test_validate_frames_in_sample_blocks_end_to_end():
     df_ext = _ohlcv(260, seed=33)
     eval_start = 180

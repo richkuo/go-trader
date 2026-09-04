@@ -41,26 +41,26 @@ def _run(df, **kw):
                   timeframe="1d", save=False)
 
 
-def test_short_round_trip_profits_when_price_falls():
-    closes = [100, 100, 90, 80, 80, 80]
+@pytest.mark.parametrize(
+    "closes,expected_entry,expected_exit,pnl_sign,expected_final",
+    [
+        ([100, 100, 90, 80, 80, 80], 100.0, 80.0, 1, 12000.0),
+        ([100, 100, 110, 120, 120, 120], None, None, -1, 8000.0),
+    ],
+)
+def test_short_round_trip_pnl(closes, expected_entry, expected_exit, pnl_sign,
+                              expected_final):
     signals = [-1, 0, 0, 1, 0, 0]
     res = _run(_df(closes, signals))
     assert res["total_trades"] == 1
     t = res["trades"][0]
     assert t["side"] == "short"
-    assert t["entry_price"] == pytest.approx(100.0)
-    assert t["exit_price"] == pytest.approx(80.0)
-    assert t["pnl"] > 0
-    assert res["final_capital"] == pytest.approx(12000.0)
-
-
-def test_short_round_trip_loses_when_price_rises():
-    closes = [100, 100, 110, 120, 120, 120]
-    signals = [-1, 0, 0, 1, 0, 0]
-    res = _run(_df(closes, signals))
-    assert res["total_trades"] == 1
-    assert res["trades"][0]["pnl"] < 0
-    assert res["final_capital"] == pytest.approx(8000.0)
+    if expected_entry is not None:
+        assert t["entry_price"] == pytest.approx(expected_entry)
+    if expected_exit is not None:
+        assert t["exit_price"] == pytest.approx(expected_exit)
+    assert (t["pnl"] > 0) if pnl_sign > 0 else (t["pnl"] < 0)
+    assert res["final_capital"] == pytest.approx(expected_final)
 
 
 def test_short_entry_fills_next_bar_open_not_signal_bar():
@@ -225,25 +225,19 @@ def test_cash_zero_boundary_books_no_phantom_trade():
     assert res["final_capital"] == pytest.approx(0.0)
 
 
-def test_no_short_reentry_after_blowup_engine_path():
-    closes = [100, 100, 200, 300, 300, 100, 100]
-    signals = [-1, 0, 0, 0, -1, 0, 0]
+@pytest.mark.parametrize(
+    "closes,signals,extra_kw",
+    [
+        ([100, 100, 200, 300, 300, 100, 100], [-1, 0, 0, 0, -1, 0, 0], {}),
+        ([100, 100, 200, 300, 300, 300, 300], [-1, 0, 0, 0, 1, 0, 0],
+         {"direction": "both"}),
+    ],
+)
+def test_no_reopen_after_short_blowup_engine_path(closes, signals, extra_kw):
     df = _df(closes, signals, atr=2.0)
     res = _run(df, close_strategies=[
         {"name": "time_stop", "params": {"max_bars": 2}},
-    ])
-    assert res["total_trades"] == 1
-    assert res["trades"][0]["side"] == "short"
-    assert res["final_capital"] == pytest.approx(-10000.0)
-
-
-def test_no_long_open_after_short_blowup_engine_path_both():
-    closes = [100, 100, 200, 300, 300, 300, 300]
-    signals = [-1, 0, 0, 0, 1, 0, 0]
-    df = _df(closes, signals, atr=2.0)
-    res = _run(df, direction="both", close_strategies=[
-        {"name": "time_stop", "params": {"max_bars": 2}},
-    ])
+    ], **extra_kw)
     assert res["total_trades"] == 1
     assert res["trades"][0]["side"] == "short"
     assert res["final_capital"] == pytest.approx(-10000.0)

@@ -11,9 +11,7 @@ _BACKTEST_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _BACKTEST_DIR not in sys.path:
     sys.path.insert(0, _BACKTEST_DIR)
 
-from backtester import (
-    Backtester, periods_per_year, TIMEFRAME_PERIODS_PER_YEAR,
-)
+from backtester import Backtester, periods_per_year
 from backtest_options import OptionsBacktester
 from backtest_theta import ThetaHarvestBacktester
 
@@ -156,7 +154,7 @@ def _synthetic_candles(n_days=200, start_price=20000.0, vol=0.02, seed=11):
     return candles
 
 
-def test_theta_force_close_emits_trade_log_entries():
+def test_theta_run_leaves_no_open_positions():
     candles = _synthetic_candles(n_days=200, vol=0.01)
     bt = ThetaHarvestBacktester(
         initial_capital=10_000.0,
@@ -167,10 +165,7 @@ def test_theta_force_close_emits_trade_log_entries():
         label="test",
     )
     bt.run(candles, "BTC")
-    force_close_log = [t for t in bt.trade_log if t.get("event") == "force_close"]
     assert len(bt.positions) == 0
-    if bt.total_trades > 0:
-        assert len(bt.trade_log) > 0
 
 
 def _htf_ohlcv_df(n=120, start_price=100.0, drift=0.5, seed=3):

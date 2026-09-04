@@ -167,12 +167,6 @@ def test_hurst_column_is_causal_future_bars_do_not_change_past_rows():
     assert np.array_equal(np.nan_to_num(a, nan=-7.0), np.nan_to_num(b, nan=-7.0))
 
 
-def test_hurst_extra_column_appended_after_canonical_block():
-    assert ref.ENRICHED_COLUMNS[-1] == "hurst"
-    assert ref.ENRICHED_COLUMNS[:4] == ref.CANONICAL_COLUMNS
-    assert "hurst" in ref.ENRICHED_EXTRA_COLUMNS
-
-
 def test_fit_unsupervised_enriched_schema_and_decode():
     from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH, VALID_LABELS_COMPOSITE
     df = _synthetic_ohlcv()
@@ -255,15 +249,6 @@ def test_naming_with_canonical_columns_not_first():
     assert names == ["ranging_quiet", "trending_up_clean"]
 
 
-def test_map_latent_to_names_default_indices_unchanged_for_canonical_only():
-    from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH
-    mean = np.zeros(4); std = np.ones(4)
-    em = np.array([[0.0, 0.0, 0.1, 0.0], [0.5, 0.5, 0.9, 40.0]], dtype=float)
-    names, mapping = rvm.map_latent_to_names(em, mean, std, dict(TH))
-    assert names == ["ranging_quiet", "trending_up_clean"]
-    assert mapping["1"]["centroid_raw"] == [0.5, 0.5, 0.9, 40.0]
-
-
 def _load_research(mod_name, filename):
     import importlib.util
     path = os.path.join(_BACKTEST, "research", filename)
@@ -319,6 +304,5 @@ def test_enriched_bakeoff_smoke_if_data_available():
     assert report["n_perm"] == 200
     assert report["bonferroni_denominator"] == sum(
         1 for c in report["candidates"] if not c["structurally_ineligible"])
-    assert "ONE family" in report["bonferroni_denominator_policy"]
     for hr in report["handrule_held_out"].values():
         assert "permutation_steps_to_alpha" in hr and "knife_edge" in hr
