@@ -211,41 +211,46 @@ func TestMirrorSuppressionWiring(t *testing.T) {
 	}
 }
 
-func TestMergeTradeDetailsPreservesEarlierNativeAction(t *testing.T) {
-	sl := "[hl-paper-eth] PAPER TRAILING SL ETH @ $1900.00"
-	replay := []string{"[hl-paper-eth] REPLAY OPEN long ETH 0.500000 @ $1908.25"}
-	got := mergeTradeDetails(sl, replay...)
-	want := sl + "; " + replay[0]
-	if got != want {
-		t.Fatalf("merge = %q, want %q", got, want)
-	}
-}
+func TestMergeTradeDetails(t *testing.T) {
+	const nativeSL = "[hl-paper-eth] PAPER TRAILING SL ETH @ $1900.00"
+	const nativeATR = "[hl-paper-eth] PAPER FIXED ATR SL ETH @ $1890.00"
 
-func TestMergeTradeDetailsJoinsMultipleReplayRowsWithoutDroppingNative(t *testing.T) {
-	native := "[hl-paper-eth] PAPER FIXED ATR SL ETH @ $1890.00"
-	got := mergeTradeDetails(native,
-		"[hl-paper-eth] REPLAY SCALE-IN ETH +0.500000 @ $1910.00",
-		"[hl-paper-eth] REPLAY CLOSE ETH @ $1905.00 (live reason: signal)",
-	)
-	if !strings.HasPrefix(got, native+"; ") {
-		t.Fatalf("native detail was eclipsed: %q", got)
-	}
-	if !strings.Contains(got, "REPLAY SCALE-IN") || !strings.Contains(got, "REPLAY CLOSE") {
-		t.Fatalf("missing a replay fragment: %q", got)
-	}
-}
+	t.Run("preserves earlier native action", func(t *testing.T) {
+		replay := []string{"[hl-paper-eth] REPLAY OPEN long ETH 0.500000 @ $1908.25"}
+		got := mergeTradeDetails(nativeSL, replay...)
+		if want := nativeSL + "; " + replay[0]; got != want {
+			t.Fatalf("merge = %q, want %q", got, want)
+		}
+	})
 
-func TestMergeTradeDetailsEmptyReplayKeepsNative(t *testing.T) {
-	native := "[hl-paper-eth] PAPER TRAILING SL ETH @ $1900.00"
-	if got := mergeTradeDetails(native); got != native {
-		t.Fatalf("empty parts dropped native: %q", got)
-	}
-	if got := mergeTradeDetails(native, "", ""); got != native {
-		t.Fatalf("blank parts dropped native: %q", got)
-	}
-	if got := mergeTradeDetails("", "[hl-paper-eth] REPLAY OPEN long ETH 0.5 @ $1900"); !strings.Contains(got, "REPLAY OPEN") || strings.HasPrefix(got, "; ") {
-		t.Fatalf("empty existing produced %q", got)
-	}
+	t.Run("joins multiple replay rows without dropping native", func(t *testing.T) {
+		got := mergeTradeDetails(nativeATR,
+			"[hl-paper-eth] REPLAY SCALE-IN ETH +0.500000 @ $1910.00",
+			"[hl-paper-eth] REPLAY CLOSE ETH @ $1905.00 (live reason: signal)",
+		)
+		if !strings.HasPrefix(got, nativeATR+"; ") {
+			t.Fatalf("native detail was eclipsed: %q", got)
+		}
+		if !strings.Contains(got, "REPLAY SCALE-IN") || !strings.Contains(got, "REPLAY CLOSE") {
+			t.Fatalf("missing a replay fragment: %q", got)
+		}
+	})
+
+	t.Run("empty and blank replay parts keep native", func(t *testing.T) {
+		if got := mergeTradeDetails(nativeSL); got != nativeSL {
+			t.Fatalf("empty parts dropped native: %q", got)
+		}
+		if got := mergeTradeDetails(nativeSL, "", ""); got != nativeSL {
+			t.Fatalf("blank parts dropped native: %q", got)
+		}
+	})
+
+	t.Run("empty existing detail does not leave a leading separator", func(t *testing.T) {
+		got := mergeTradeDetails("", "[hl-paper-eth] REPLAY OPEN long ETH 0.5 @ $1900")
+		if !strings.Contains(got, "REPLAY OPEN") || strings.HasPrefix(got, "; ") {
+			t.Fatalf("empty existing produced %q", got)
+		}
+	})
 }
 
 func TestMirrorReplayPersistedWatermarkSurvivesRestart(t *testing.T) {

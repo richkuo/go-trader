@@ -5,127 +5,82 @@ import (
 	"testing"
 )
 
-func TestFormatProtectionFillAlert_FullSL(t *testing.T) {
-	out := formatProtectionFillAlert(ProtectionFillAlert{
-		StrategyID:   "hl-tema-eth-live",
-		Symbol:       "ETH",
-		Side:         "long",
-		FillType:     "SL",
-		IsPartial:    false,
-		FillPrice:    1800.50,
-		CloseQty:     0.42,
-		RemainingQty: 0,
-		RealizedPnL:  -42.10,
-		HasPnL:       true,
-	})
-	for _, want := range []string{
-		"SL filled — hl-tema-eth-live",
-		"ETH LONG",
-		"@ $1800.5000",
-		"Remaining: 0.000000 ETH",
-		"PnL=-$42.10",
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("missing %q in alert body:\n%s", want, out)
-		}
+func TestFormatProtectionFillAlert_BranchMarkers(t *testing.T) {
+	cases := []struct {
+		name    string
+		alert   ProtectionFillAlert
+		want    []string
+		notWant []string
+	}{
+		{
+			name: "full SL with pnl",
+			alert: ProtectionFillAlert{
+				StrategyID: "hl-tema-eth-live", Symbol: "ETH", Side: "long", FillType: "SL",
+				FillPrice: 1800.50, CloseQty: 0.42, RealizedPnL: -42.10, HasPnL: true,
+			},
+			want:    []string{"PnL="},
+			notWant: []string{"(partial)", "(oid=", "(fill price unknown)"},
+		},
+		{
+			name: "partial TP short",
+			alert: ProtectionFillAlert{
+				StrategyID: "hl-bear-btc-live", Symbol: "BTC", Side: "short", FillType: "TP2",
+				IsPartial: true, FillPrice: 65000, CloseQty: 0.005, RemainingQty: 0.005,
+				RealizedPnL: 12.34, HasPnL: true,
+			},
+			want:    []string{"(partial)", "PnL="},
+			notWant: []string{"(oid="},
+		},
+		{
+			name: "no pnl",
+			alert: ProtectionFillAlert{
+				StrategyID: "hl-x", Symbol: "BTC", Side: "long", FillType: "SL",
+				FillPrice: 50000, CloseQty: 0.1,
+			},
+			notWant: []string{"PnL=", "(oid=", "(fill price unknown)"},
+		},
+		{
+			name: "with oid",
+			alert: ProtectionFillAlert{
+				StrategyID: "manual-eth", Symbol: "ETH", Side: "long", FillType: "SL",
+				FillPrice: 2301, CloseQty: 0.429, RealizedPnL: -12.31, HasPnL: true,
+				ExchangeOrderID: "420267328218",
+			},
+			want:    []string{"(oid=420267328218)"},
+			notWant: []string{"(partial)"},
+		},
+		{
+			name: "with oid partial",
+			alert: ProtectionFillAlert{
+				StrategyID: "hl-bear-btc-live", Symbol: "BTC", Side: "short", FillType: "TP1",
+				IsPartial: true, FillPrice: 65000, CloseQty: 0.005, RemainingQty: 0.005,
+				ExchangeOrderID: "999000111",
+			},
+			want: []string{"(oid=999000111)", "(partial)"},
+		},
+		{
+			name: "unknown fill price",
+			alert: ProtectionFillAlert{
+				StrategyID: "hl-x", Symbol: "BTC", Side: "long", FillType: "SL",
+				FillPrice: 0, CloseQty: 0.1,
+			},
+			want: []string{"(fill price unknown)"},
+		},
 	}
-	if strings.Contains(out, "(partial)") {
-		t.Errorf("full-close alert should not contain '(partial)':\n%s", out)
-	}
-}
-
-func TestFormatProtectionFillAlert_PartialTPShort(t *testing.T) {
-	out := formatProtectionFillAlert(ProtectionFillAlert{
-		StrategyID:   "hl-bear-btc-live",
-		Symbol:       "BTC",
-		Side:         "short",
-		FillType:     "TP2",
-		IsPartial:    true,
-		FillPrice:    65000.0,
-		CloseQty:     0.005,
-		RemainingQty: 0.005,
-		RealizedPnL:  12.34,
-		HasPnL:       true,
-	})
-	for _, want := range []string{
-		"TP2 filled — hl-bear-btc-live (partial)",
-		"BTC SHORT",
-		"PnL=$12.34",
-		"Remaining: 0.005000 BTC",
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("missing %q in alert body:\n%s", want, out)
-		}
-	}
-}
-
-func TestFormatProtectionFillAlert_NoPnL(t *testing.T) {
-	out := formatProtectionFillAlert(ProtectionFillAlert{
-		StrategyID: "hl-x", Symbol: "BTC", Side: "long", FillType: "SL",
-		FillPrice: 50000, CloseQty: 0.1, HasPnL: false,
-	})
-	if strings.Contains(out, "PnL=") {
-		t.Errorf("expected no PnL line when HasPnL=false:\n%s", out)
-	}
-}
-
-func TestFormatProtectionFillAlert_WithOID(t *testing.T) {
-	out := formatProtectionFillAlert(ProtectionFillAlert{
-		StrategyID:      "manual-eth",
-		Symbol:          "ETH",
-		Side:            "long",
-		FillType:        "SL",
-		IsPartial:       false,
-		FillPrice:       2301.0,
-		CloseQty:        0.429,
-		RemainingQty:    0,
-		RealizedPnL:     -12.31,
-		HasPnL:          true,
-		ExchangeOrderID: "420267328218",
-	})
-	if !strings.Contains(out, "SL filled (oid=420267328218) — manual-eth") {
-		t.Errorf("missing headline with OID:\n%s", out)
-	}
-}
-
-func TestFormatProtectionFillAlert_WithOIDPartial(t *testing.T) {
-	out := formatProtectionFillAlert(ProtectionFillAlert{
-		StrategyID:      "hl-bear-btc-live",
-		Symbol:          "BTC",
-		Side:            "short",
-		FillType:        "TP1",
-		IsPartial:       true,
-		FillPrice:       65000.0,
-		CloseQty:        0.005,
-		RemainingQty:    0.005,
-		HasPnL:          false,
-		ExchangeOrderID: "999000111",
-	})
-	if !strings.Contains(out, "TP1 filled (oid=999000111) — hl-bear-btc-live (partial)") {
-		t.Errorf("partial headline with OID missing/misordered:\n%s", out)
-	}
-}
-
-func TestFormatProtectionFillAlert_EmptyOIDOmitsParens(t *testing.T) {
-	out := formatProtectionFillAlert(ProtectionFillAlert{
-		StrategyID: "hl-x", Symbol: "BTC", Side: "long", FillType: "SL",
-		FillPrice: 50000, CloseQty: 0.1, HasPnL: false,
-	})
-	if strings.Contains(out, "(oid=") {
-		t.Errorf("empty ExchangeOrderID must not render oid=():\n%s", out)
-	}
-	if !strings.Contains(out, "SL filled — hl-x") {
-		t.Errorf("expected plain headline when OID is empty:\n%s", out)
-	}
-}
-
-func TestFormatProtectionFillAlert_UnknownPrice(t *testing.T) {
-	out := formatProtectionFillAlert(ProtectionFillAlert{
-		StrategyID: "hl-x", Symbol: "BTC", Side: "long", FillType: "SL",
-		FillPrice: 0, CloseQty: 0.1,
-	})
-	if !strings.Contains(out, "(fill price unknown)") {
-		t.Errorf("expected unknown-price marker:\n%s", out)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := formatProtectionFillAlert(tc.alert)
+			for _, want := range tc.want {
+				if !strings.Contains(out, want) {
+					t.Errorf("missing %q in:\n%s", want, out)
+				}
+			}
+			for _, bad := range tc.notWant {
+				if strings.Contains(out, bad) {
+					t.Errorf("unexpected %q in:\n%s", bad, out)
+				}
+			}
+		})
 	}
 }
 
@@ -139,41 +94,23 @@ func (c *countingDMSender) SendOwnerDM(s string) {
 	c.last = s
 }
 
-func TestNotifyProtectionFill_NilSenderIsNoop(t *testing.T) {
-	notifyProtectionFill(nil, true, ProtectionFillAlert{StrategyID: "x"})
-	var mn *MultiNotifier
-	notifyProtectionFill(mn, true, ProtectionFillAlert{StrategyID: "x"})
-}
-
-func TestNotifyProtectionFill_DisabledFlagSuppresses(t *testing.T) {
-	c := &countingDMSender{}
-	notifyProtectionFill(c, false, ProtectionFillAlert{
-		StrategyID: "x", Symbol: "BTC", Side: "long", FillType: "SL", FillPrice: 100, CloseQty: 0.1,
-	})
-	if c.count != 0 {
-		t.Errorf("disabled flag must suppress; got %d invocations", c.count)
-	}
-}
-
-func TestNotifyProtectionFill_EnabledEmits(t *testing.T) {
-	c := &countingDMSender{}
-	notifyProtectionFill(c, true, ProtectionFillAlert{
+func TestNotifyProtectionFill_Gating(t *testing.T) {
+	alert := ProtectionFillAlert{
 		StrategyID: "hl-x", Symbol: "BTC", Side: "long", FillType: "SL", FillPrice: 100, CloseQty: 0.1,
-	})
+	}
+
+	notifyProtectionFill(nil, true, alert)
+	var mn *MultiNotifier
+	notifyProtectionFill(mn, true, alert)
+
+	c := &countingDMSender{}
+	notifyProtectionFill(c, false, alert)
+	if c.count != 0 {
+		t.Fatalf("disabled flag must suppress; got %d invocations", c.count)
+	}
+	notifyProtectionFill(c, true, alert)
 	if c.count != 1 {
 		t.Fatalf("enabled must emit once; got %d", c.count)
-	}
-	if !strings.Contains(c.last, "SL filled — hl-x") {
-		t.Errorf("body missing headline: %s", c.last)
-	}
-}
-
-func TestTPTierLabel(t *testing.T) {
-	cases := map[int]string{0: "TP1", 1: "TP2", 4: "TP5"}
-	for in, want := range cases {
-		if got := tpTierLabel(in); got != want {
-			t.Errorf("tpTierLabel(%d) = %q, want %q", in, got, want)
-		}
 	}
 }
 

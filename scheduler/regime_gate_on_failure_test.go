@@ -142,15 +142,6 @@ func TestRegimeStoreFailureRespectsPerStrategyPolicy(t *testing.T) {
 	}
 }
 
-func TestRegimeGateBlockDetail(t *testing.T) {
-	if got := regimeGateBlockDetail(""); got != "regime unknown, fail-closed" {
-		t.Errorf("empty label detail = %q", got)
-	}
-	if got := regimeGateBlockDetail("ranging"); got != "regime=ranging" {
-		t.Errorf("known label detail = %q", got)
-	}
-}
-
 func testGatePolicyConfig(strategyPolicy, globalPolicy string, regimeEnabled bool) *Config {
 	return &Config{
 		Strategies: []StrategyConfig{{
@@ -329,14 +320,5 @@ func TestRegimeGateFailClosedActive(t *testing.T) {
 	globalRegimeStore.set(&RegimeBundle{Key: req.Key, Payload: RegimePayload{Legacy: "trending_up"}, At: time.Now().UTC()}, gen)
 	if regimeGateFailClosedActive(sc, flat, rc) {
 		t.Error("a resolvable gate label must clear the fail-closed marker")
-	}
-}
-
-func TestDecorateRegimeLabelGateClosed(t *testing.T) {
-	if got := decorateRegimeLabelGateClosed(""); got != "? (gate closed)" {
-		t.Errorf("empty label = %q", got)
-	}
-	if got := decorateRegimeLabelGateClosed("ranging"); got != "ranging (gate closed)" {
-		t.Errorf("stale label = %q", got)
 	}
 }

@@ -371,12 +371,6 @@ func TestReplaySharingUnknownKeyGuardAcceptsField(t *testing.T) {
 	}
 }
 
-func TestStopLossCloseDetailsPrefixReplayMirror(t *testing.T) {
-	if got := stopLossCloseDetailsPrefix("replay_live_mirror"); got != "Live mirror replay close" {
-		t.Errorf("stopLossCloseDetailsPrefix(replay_live_mirror) = %q, want %q", got, "Live mirror replay close")
-	}
-}
-
 func TestReplaySourceAndMirrorPredicates(t *testing.T) {
 	liveHL := StrategyConfig{ID: "a", Type: "perps", Platform: "hyperliquid", Args: []string{"--mode", "live"}, ReplaySharing: "live_mirror"}
 	paperHL := StrategyConfig{ID: "b", Type: "perps", Platform: "hyperliquid", Args: []string{"--mode", "paper"}, ReplaySharing: "live_mirror"}

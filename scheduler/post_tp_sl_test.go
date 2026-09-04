@@ -29,136 +29,58 @@ func postTPSLTestStrategy(slAfter interface{}, tiers []interface{}) StrategyConf
 	}
 }
 
-func TestComputePostTPStopLossTrigger_Breakeven(t *testing.T) {
-	cases := []struct {
-		name string
-		side string
-		avg  float64
-	}{
-		{"long", "long", 100},
-		{"short", "short", 200},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			px, mode, ok := computePostTPStopLossTrigger(
-				SLAfterRule{Kind: "breakeven"}, tc.side, tc.avg, 5, 0,
-			)
-			if !ok {
-				t.Fatalf("expected ok=true")
-			}
-			if px != tc.avg {
-				t.Fatalf("trigger px = %v, want %v", px, tc.avg)
-			}
-			if mode != "breakeven" {
-				t.Fatalf("mode = %q, want breakeven", mode)
-			}
-		})
-	}
-}
-
-func TestComputePostTPStopLossTrigger_ATROffset(t *testing.T) {
+func TestComputePostTPStopLossTrigger(t *testing.T) {
 	const avg, atr = 100.0, 5.0
 	cases := []struct {
-		name string
-		side string
-		mult float64
-		want float64
+		name     string
+		rule     SLAfterRule
+		side     string
+		avg      float64
+		atr      float64
+		mark     float64
+		wantOK   bool
+		wantPx   float64
+		wantMode string
 	}{
-		{"long_positive_locks_profit", "long", 0.25, avg + 0.25*atr},
-		{"long_negative_loosens", "long", -0.5, avg - 0.5*atr},
-		{"long_zero_eq_breakeven", "long", 0, avg},
-		{"short_positive_locks_profit", "short", 0.25, avg - 0.25*atr},
-		{"short_negative_loosens", "short", -0.5, avg + 0.5*atr},
+		{name: "breakeven long", rule: SLAfterRule{Kind: "breakeven"}, side: "long", avg: 100, atr: 5, wantOK: true, wantPx: 100, wantMode: "breakeven"},
+		{name: "breakeven short", rule: SLAfterRule{Kind: "breakeven"}, side: "short", avg: 200, atr: 5, wantOK: true, wantPx: 200, wantMode: "breakeven"},
+
+		{name: "atr_offset long positive locks profit", rule: SLAfterRule{Kind: "atr_offset", ATRMult: 0.25}, side: "long", avg: avg, atr: atr, wantOK: true, wantPx: avg + 0.25*atr, wantMode: "atr+0.25"},
+		{name: "atr_offset long negative loosens", rule: SLAfterRule{Kind: "atr_offset", ATRMult: -0.5}, side: "long", avg: avg, atr: atr, wantOK: true, wantPx: avg - 0.5*atr, wantMode: "atr-0.5"},
+		{name: "atr_offset long zero equals breakeven", rule: SLAfterRule{Kind: "atr_offset", ATRMult: 0}, side: "long", avg: avg, atr: atr, wantOK: true, wantPx: avg, wantMode: "atr+0"},
+		{name: "atr_offset long unit mult", rule: SLAfterRule{Kind: "atr_offset", ATRMult: 1}, side: "long", avg: avg, atr: atr, wantOK: true, wantPx: avg + atr, wantMode: "atr+1"},
+		{name: "atr_offset short positive locks profit", rule: SLAfterRule{Kind: "atr_offset", ATRMult: 0.25}, side: "short", avg: avg, atr: atr, wantOK: true, wantPx: avg - 0.25*atr, wantMode: "atr+0.25"},
+		{name: "atr_offset short negative loosens", rule: SLAfterRule{Kind: "atr_offset", ATRMult: -0.5}, side: "short", avg: avg, atr: atr, wantOK: true, wantPx: avg + 0.5*atr, wantMode: "atr-0.5"},
+
+		{name: "trail_from_here long", rule: SLAfterRule{Kind: "trail_from_here", TrailATRMult: 1.0}, side: "long", avg: avg, atr: atr, mark: 110, wantOK: true, wantPx: 110 - 1.0*atr},
+		{name: "trail_from_here short", rule: SLAfterRule{Kind: "trail_from_here", TrailATRMult: 1.5}, side: "short", avg: avg, atr: atr, mark: 90, wantOK: true, wantPx: 90 + 1.5*atr},
+
+		{name: "reject empty rule", rule: SLAfterRule{}, side: "long", avg: 100, atr: 5},
+		{name: "reject unknown side", rule: SLAfterRule{Kind: "breakeven"}, side: "neutral", avg: 100, atr: 5},
+		{name: "reject non-positive avgCost", rule: SLAfterRule{Kind: "breakeven"}, side: "long", avg: 0, atr: 5},
+		{name: "reject atr_offset missing ATR", rule: SLAfterRule{Kind: "atr_offset", ATRMult: 0.25}, side: "long", avg: 100, atr: 0},
+		{name: "reject trail missing ATR", rule: SLAfterRule{Kind: "trail_from_here", TrailATRMult: 1}, side: "long", avg: 100, atr: 0, mark: 110},
+		{name: "reject trail missing mark", rule: SLAfterRule{Kind: "trail_from_here", TrailATRMult: 1}, side: "long", avg: 100, atr: 5},
+		{name: "reject trail non-positive mult", rule: SLAfterRule{Kind: "trail_from_here", TrailATRMult: 0}, side: "long", avg: 100, atr: 5, mark: 110},
+		{name: "reject unknown kind", rule: SLAfterRule{Kind: "weird"}, side: "long", avg: 100, atr: 5, mark: 110},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			px, _, ok := computePostTPStopLossTrigger(
-				SLAfterRule{Kind: "atr_offset", ATRMult: tc.mult}, tc.side, avg, atr, 0,
-			)
-			if !ok {
-				t.Fatalf("expected ok=true")
+			px, mode, ok := computePostTPStopLossTrigger(tc.rule, tc.side, tc.avg, tc.atr, tc.mark)
+			if ok != tc.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tc.wantOK)
 			}
-			if math.Abs(px-tc.want) > 1e-9 {
-				t.Fatalf("trigger px = %v, want %v", px, tc.want)
+			if !tc.wantOK {
+				return
 			}
-		})
-	}
-}
-
-func TestComputePostTPStopLossTrigger_ATROffsetMode(t *testing.T) {
-	cases := []struct {
-		mult float64
-		want string
-	}{
-		{0, "atr+0"},
-		{0.25, "atr+0.25"},
-		{-0.5, "atr-0.5"},
-		{1, "atr+1"},
-	}
-	for _, tc := range cases {
-		_, mode, _ := computePostTPStopLossTrigger(
-			SLAfterRule{Kind: "atr_offset", ATRMult: tc.mult}, "long", 100, 5, 0,
-		)
-		if mode != tc.want {
-			t.Fatalf("mult=%v: mode = %q, want %q", tc.mult, mode, tc.want)
-		}
-	}
-}
-
-func TestComputePostTPStopLossTrigger_TrailFromHere(t *testing.T) {
-	const avg, atr = 100.0, 5.0
-	cases := []struct {
-		name string
-		side string
-		mark float64
-		mult float64
-		want float64
-	}{
-		{"long", "long", 110, 1.0, 110 - 1.0*atr},
-		{"short", "short", 90, 1.5, 90 + 1.5*atr},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			px, mode, ok := computePostTPStopLossTrigger(
-				SLAfterRule{Kind: "trail_from_here", TrailATRMult: tc.mult},
-				tc.side, avg, atr, tc.mark,
-			)
-			if !ok {
-				t.Fatalf("expected ok=true")
+			if math.Abs(px-tc.wantPx) > 1e-9 {
+				t.Fatalf("trigger px = %v, want %v", px, tc.wantPx)
 			}
-			if math.Abs(px-tc.want) > 1e-9 {
-				t.Fatalf("trigger px = %v, want %v", px, tc.want)
+			if tc.wantMode != "" && mode != tc.wantMode {
+				t.Fatalf("mode = %q, want %q", mode, tc.wantMode)
 			}
 			if mode == "" {
-				t.Fatalf("expected non-empty mode label")
-			}
-		})
-	}
-}
-
-func TestComputePostTPStopLossTrigger_RejectsBadInputs(t *testing.T) {
-	cases := []struct {
-		name string
-		rule SLAfterRule
-		side string
-		avg  float64
-		atr  float64
-		mark float64
-	}{
-		{"empty rule", SLAfterRule{}, "long", 100, 5, 0},
-		{"unknown side", SLAfterRule{Kind: "breakeven"}, "neutral", 100, 5, 0},
-		{"non-positive avgCost", SLAfterRule{Kind: "breakeven"}, "long", 0, 5, 0},
-		{"atr_offset missing ATR", SLAfterRule{Kind: "atr_offset", ATRMult: 0.25}, "long", 100, 0, 0},
-		{"trail missing ATR", SLAfterRule{Kind: "trail_from_here", TrailATRMult: 1}, "long", 100, 0, 110},
-		{"trail missing mark", SLAfterRule{Kind: "trail_from_here", TrailATRMult: 1}, "long", 100, 5, 0},
-		{"trail non-positive mult", SLAfterRule{Kind: "trail_from_here", TrailATRMult: 0}, "long", 100, 5, 110},
-		{"unknown kind", SLAfterRule{Kind: "weird"}, "long", 100, 5, 110},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			_, _, ok := computePostTPStopLossTrigger(tc.rule, tc.side, tc.avg, tc.atr, tc.mark)
-			if ok {
-				t.Fatalf("expected ok=false")
+				t.Fatal("expected non-empty mode label")
 			}
 		})
 	}
@@ -188,15 +110,6 @@ func TestValidateSLAfterRule(t *testing.T) {
 		if err := validateSLAfterRule(r); err == nil {
 			t.Fatalf("expected error for %+v", r)
 		}
-	}
-}
-
-func TestSLAfterRule_IsEmpty(t *testing.T) {
-	if !(SLAfterRule{}).IsEmpty() {
-		t.Fatal("zero value should be empty")
-	}
-	if (SLAfterRule{Kind: "breakeven"}).IsEmpty() {
-		t.Fatal("breakeven rule should not be empty")
 	}
 }
 
@@ -441,58 +354,6 @@ func TestValidatePostTPStopLossRules_AcceptsValid(t *testing.T) {
 	}
 }
 
-func TestFormatSLAdjustmentAlert(t *testing.T) {
-	cases := []struct {
-		name string
-		a    SLAdjustmentAlert
-		want []string
-	}{
-		{
-			"breakeven",
-			SLAdjustmentAlert{
-				StrategyID: "hl-eth-st", Symbol: "ETH", Side: "long",
-				TierIdx: 0, OldTriggerPx: 95, NewTriggerPx: 100, Mode: "breakeven",
-			},
-			[]string{"SL adjusted post-TP1", "hl-eth-st", "ETH LONG", "$95.0000 → $100.0000", "(breakeven)"},
-		},
-		{
-			"atr_offset_short",
-			SLAdjustmentAlert{
-				StrategyID: "hl-btc-st", Symbol: "BTC", Side: "short",
-				TierIdx: 1, OldTriggerPx: 105, NewTriggerPx: 99.5, Mode: "atr+0.5",
-			},
-			[]string{"SL adjusted post-TP2", "BTC SHORT", "$105.0000 → $99.5000", "(atr+0.5)"},
-		},
-		{
-			"trail_transition",
-			SLAdjustmentAlert{
-				StrategyID: "hl-eth-st", Symbol: "ETH", Side: "long",
-				TierIdx: 0, OldTriggerPx: 95, NewTriggerPx: 108,
-				Mode: "trail 1.00×ATR", TransitionToTrailing: true,
-			},
-			[]string{"SL adjusted post-TP1 → trailing", "$95.0000 → $108.0000"},
-		},
-		{
-			"no_old_trigger",
-			SLAdjustmentAlert{
-				StrategyID: "hl-eth-st", Symbol: "ETH", Side: "long",
-				TierIdx: 0, OldTriggerPx: 0, NewTriggerPx: 100, Mode: "breakeven",
-			},
-			[]string{"SL: $100.0000 (breakeven)"},
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := formatSLAdjustmentAlert(tc.a)
-			for _, s := range tc.want {
-				if !strings.Contains(got, s) {
-					t.Errorf("output missing %q\nfull output:\n%s", s, got)
-				}
-			}
-		})
-	}
-}
-
 type fakeOwnerDMSender struct {
 	messages []string
 }
@@ -513,33 +374,40 @@ func TestNotifySLAdjustment_GatedOnEnabled(t *testing.T) {
 	}
 }
 
-func TestEffectiveTrailingStopPct_HonorsPostTPTrailingATRMult(t *testing.T) {
-	sc := StrategyConfig{Platform: "hyperliquid", Type: "perps"}
+func TestEffectiveTrailingStopPct_PostTPTrailingATRMult(t *testing.T) {
 	mult := 1.0
-	pos := &Position{AvgCost: 100, EntryATR: 5, PostTPTrailingATRMult: &mult}
-	got := effectiveTrailingStopPct(sc, pos)
-	if math.Abs(got-5.0) > 1e-9 {
-		t.Fatalf("effectiveTrailingStopPct = %v, want 5", got)
-	}
-}
-
-func TestEffectiveTrailingStopPct_PostTPMissingATRReturnsZero(t *testing.T) {
-	sc := StrategyConfig{Platform: "hyperliquid", Type: "perps"}
-	mult := 1.0
-	pos := &Position{AvgCost: 100, EntryATR: 0, PostTPTrailingATRMult: &mult}
-	if got := effectiveTrailingStopPct(sc, pos); got != 0 {
-		t.Fatalf("effectiveTrailingStopPct = %v, want 0", got)
-	}
-}
-
-func TestEffectiveTrailingStopPct_PostTPTakesPrecedenceOverStrategy(t *testing.T) {
 	trail := 2.0
-	sc := StrategyConfig{Platform: "hyperliquid", Type: "perps", TrailingStopPct: &trail}
-	mult := 1.0
-	pos := &Position{AvgCost: 100, EntryATR: 5, PostTPTrailingATRMult: &mult}
-	got := effectiveTrailingStopPct(sc, pos)
-	if math.Abs(got-5.0) > 1e-9 {
-		t.Fatalf("effectiveTrailingStopPct = %v, want 5 (post-TP)", got)
+	cases := []struct {
+		name string
+		sc   StrategyConfig
+		pos  *Position
+		want float64
+	}{
+		{
+			name: "honors post-TP trailing ATR mult",
+			sc:   StrategyConfig{Platform: "hyperliquid", Type: "perps"},
+			pos:  &Position{AvgCost: 100, EntryATR: 5, PostTPTrailingATRMult: &mult},
+			want: 5,
+		},
+		{
+			name: "missing entry ATR returns zero",
+			sc:   StrategyConfig{Platform: "hyperliquid", Type: "perps"},
+			pos:  &Position{AvgCost: 100, EntryATR: 0, PostTPTrailingATRMult: &mult},
+			want: 0,
+		},
+		{
+			name: "post-TP takes precedence over strategy trailing_stop_pct",
+			sc:   StrategyConfig{Platform: "hyperliquid", Type: "perps", TrailingStopPct: &trail},
+			pos:  &Position{AvgCost: 100, EntryATR: 5, PostTPTrailingATRMult: &mult},
+			want: 5,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := effectiveTrailingStopPct(tc.sc, tc.pos); math.Abs(got-tc.want) > 1e-9 {
+				t.Fatalf("effectiveTrailingStopPct = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 

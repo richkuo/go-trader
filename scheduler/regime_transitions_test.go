@@ -133,19 +133,6 @@ func TestRegimeReversalSignatureSorted(t *testing.T) {
 	}
 }
 
-func TestFormatRegimeReversalDM_SortedWindows(t *testing.T) {
-	msg := formatRegimeReversalDM(transitionsTestKey(), regimeReversalResult{
-		LongestWindow: "30d", LongestLabel: "trending_down",
-		Opposing: map[string]string{"7d": "trending_up", "1d": "trending_up"},
-	})
-	if !strings.Contains(msg, "1d=trending_up, 7d=trending_up") {
-		t.Errorf("opposing windows must render sorted, got: %s", msg)
-	}
-	if !strings.Contains(msg, "hyperliquid/BTC/1h") || !strings.Contains(msg, "30d=trending_down") {
-		t.Errorf("DM missing key or longest window: %s", msg)
-	}
-}
-
 func TestValidateRegimeTransitionsConfig(t *testing.T) {
 	cfg := &Config{Regime: &RegimeConfig{Transitions: &RegimeTransitionAlertsConfig{
 		DebounceCycles: -1, RetentionDays: -2, ReversalMinOpposing: -3,

@@ -33,48 +33,67 @@ func compUpCleanP21FuturesConfig() Config {
 	}
 }
 
-func TestConfigValidation_CompUpCleanP21Wiring_Accepts(t *testing.T) {
-	cfg := compUpCleanP21FuturesConfig()
-	if err := validateConfig(&cfg, false); err != nil {
-		t.Fatalf("comp_up_clean_p21 wiring should validate, got: %v", err)
+func TestConfigValidation_CompUpCleanP21Wiring(t *testing.T) {
+	cases := []struct {
+		name      string
+		mutate    func(cfg *Config)
+		wantErr   bool
+		wantLabel bool
+	}{
+		{
+			name:   "composite medium gate window accepted",
+			mutate: func(cfg *Config) {},
+		},
+		{
+			name: "composite gate window alongside adx medium accepted",
+			mutate: func(cfg *Config) {
+				cfg.Regime.Windows = RegimeWindowsMap{
+					"medium":   {Classifier: "adx", Period: 14, ADXThreshold: 20},
+					"comp_p21": {Classifier: "composite", Period: 21},
+				}
+				cfg.Strategies[0].RegimeGateWindow = "comp_p21"
+			},
+		},
+		{
+			name: "no gate window falls back to adx primary and is rejected",
+			mutate: func(cfg *Config) {
+				cfg.Regime.Windows = RegimeWindowsMap{
+					"medium":   {Classifier: "adx", Period: 14, ADXThreshold: 20},
+					"comp_p21": {Classifier: "composite", Period: 21},
+				}
+				cfg.Strategies[0].RegimeGateWindow = ""
+			},
+			wantErr:   true,
+			wantLabel: true,
+		},
+		{
+			name: "adx classifier gate window rejected",
+			mutate: func(cfg *Config) {
+				cfg.Regime.Windows = RegimeWindowsMap{
+					"medium": {Classifier: "adx", Period: 21},
+				}
+			},
+			wantErr: true,
+		},
 	}
-}
-
-func TestConfigValidation_CompUpCleanP21Wiring_AcceptsAlongsideExistingADXWindow(t *testing.T) {
-	cfg := compUpCleanP21FuturesConfig()
-	cfg.Regime.Windows = RegimeWindowsMap{
-		"medium":   {Classifier: "adx", Period: 14, ADXThreshold: 20},
-		"comp_p21": {Classifier: "composite", Period: 21},
-	}
-	cfg.Strategies[0].RegimeGateWindow = "comp_p21"
-	if err := validateConfig(&cfg, false); err != nil {
-		t.Fatalf("comp_p21 gate window alongside an ADX medium window should validate, got: %v", err)
-	}
-}
-
-func TestConfigValidation_CompUpCleanP21Wiring_RejectsWithoutGateWindow(t *testing.T) {
-	cfg := compUpCleanP21FuturesConfig()
-	cfg.Regime.Windows = RegimeWindowsMap{
-		"medium":   {Classifier: "adx", Period: 14, ADXThreshold: 20},
-		"comp_p21": {Classifier: "composite", Period: 21},
-	}
-	cfg.Strategies[0].RegimeGateWindow = ""
-	err := validateConfig(&cfg, false)
-	if err == nil {
-		t.Fatal("trending_up_clean against the primary ADX window should fail validation")
-	}
-	if !strings.Contains(err.Error(), "trending_up_clean") {
-		t.Fatalf("error should name the invalid label, got: %v", err)
-	}
-}
-
-func TestConfigValidation_CompUpCleanP21Wiring_RejectsADXClassifierWindow(t *testing.T) {
-	cfg := compUpCleanP21FuturesConfig()
-	cfg.Regime.Windows = RegimeWindowsMap{
-		"medium": {Classifier: "adx", Period: 21},
-	}
-	if err := validateConfig(&cfg, false); err == nil {
-		t.Fatal("trending_up_clean against an adx-classifier gate window should fail validation")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := compUpCleanP21FuturesConfig()
+			tc.mutate(&cfg)
+			err := validateConfig(&cfg, false)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected validation failure")
+				}
+				if tc.wantLabel && !strings.Contains(err.Error(), "trending_up_clean") {
+					t.Fatalf("error should name the invalid label, got: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("expected validation to pass, got: %v", err)
+			}
+		})
 	}
 }
 

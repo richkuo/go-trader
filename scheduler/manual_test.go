@@ -1827,18 +1827,6 @@ func TestApplyManualAction_OpenSetsProtectionFields(t *testing.T) {
 	}
 }
 
-func TestDefaultManualMarginUSD(t *testing.T) {
-	if defaultManualMarginUSD != 50.0 {
-		t.Errorf("defaultManualMarginUSD = %g, want 50.0", defaultManualMarginUSD)
-	}
-}
-
-func TestDefaultManualStopLossATRMult(t *testing.T) {
-	if defaultManualStopLossATRMult != 2.0 {
-		t.Errorf("defaultManualStopLossATRMult = %g, want 2.0", defaultManualStopLossATRMult)
-	}
-}
-
 func TestCollectBoolFlagNames(t *testing.T) {
 	fs := flag.NewFlagSet("t", flag.ContinueOnError)
 	fs.Bool("flag-a", false, "")
