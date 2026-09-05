@@ -78,7 +78,7 @@ func runManualOpen(args []string) int {
 			return 2
 		}
 
-		stateDB, err := OpenStateDB(cfg.DBFile)
+		stateDB, err := openToolStateStore(cfg)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to open state DB: %v\n", err)
 			return 1
@@ -86,7 +86,7 @@ func runManualOpen(args []string) int {
 		defer stateDB.Close()
 
 		if !*dryRun {
-			state, loadErr := LoadStateWithDB(cfg, stateDB)
+			state, _, loadErr := LoadStateWithStore(cfg, stateDB)
 			if loadErr != nil {
 				fmt.Fprintf(os.Stderr, "warning: could not load state for safety check: %v\n", loadErr)
 			} else {
@@ -140,7 +140,7 @@ func runManualOpen(args []string) int {
 		})
 	}
 
-	stateDB, err := OpenStateDB(cfg.DBFile)
+	stateDB, err := openToolStateStore(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to open state DB: %v\n", err)
 		return 1
@@ -196,7 +196,7 @@ func runManualAdd(args []string) int {
 		return 1
 	}
 
-	stateDB, err := OpenStateDB(cfg.DBFile)
+	stateDB, err := openToolStateStore(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to open state DB: %v\n", err)
 		return 1
@@ -243,7 +243,7 @@ func runManualClose(args []string) int {
 		return 1
 	}
 
-	stateDB, err := OpenStateDB(cfg.DBFile)
+	stateDB, err := openToolStateStore(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to open state DB: %v\n", err)
 		return 1
@@ -290,7 +290,7 @@ func runForceCloseWithCloser(args []string, closer HyperliquidLiveCloser) int {
 		return 1
 	}
 
-	stateDB, err := OpenStateDB(cfg.DBFile)
+	stateDB, err := openToolStateStore(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to open state DB: %v\n", err)
 		return 1
@@ -330,11 +330,15 @@ type manualAlert struct {
 	trades int
 }
 
-func drainPendingManualActions(state *AppState, cfg *Config, stateDB *StateDB) []manualAlert {
-	if stateDB == nil {
+// drainPendingManualActions applies every queued action and records its
+// acknowledgement against the scope that owns it. The acknowledgement is
+// deleted by the transaction that persists the effect, so a failed action is
+// never removed by a later success in this file or in the other one.
+func drainPendingManualActions(state *AppState, cfg *Config, store *StateStore) []manualAlert {
+	if store == nil {
 		return nil
 	}
-	actions, err := stateDB.LoadPendingManualActions()
+	actions, err := store.LoadPendingManualActions()
 	if err != nil {
 		fmt.Printf("[manual] failed to load pending actions: %v\n", err)
 		return nil
@@ -348,17 +352,33 @@ func drainPendingManualActions(state *AppState, cfg *Config, stateDB *StateDB) [
 		scByID[sc.ID] = sc
 	}
 
-	var maxDrained int64
 	applied := make(map[string]*manualAlert)
 	var order []string
+	appliedScopes := make(map[PortfolioScope]bool)
+	appliedAny := false
 	for _, a := range actions {
+		role := a.SourceRole
+		if role == "" {
+			role = storageRolePrimary
+		}
+		if store.manualActionApplied(role, a.ID) {
+			continue
+		}
+		scope, mapped := store.scopeForStrategy(a.StrategyID)
+		if !mapped {
+			if store.Split() {
+				fmt.Printf("[manual] action %d (%s %s) names no configured strategy; leaving it queued in the %s state file\n", a.ID, a.Action, a.StrategyID, role)
+				continue
+			}
+			scope = ScopeLive
+		}
 		if err := applyManualAction(state, cfg, scByID, a); err != nil {
 			fmt.Printf("[manual] failed to apply action %d (%s %s): %v\n", a.ID, a.Action, a.StrategyID, err)
 			continue
 		}
-		if a.ID > maxDrained {
-			maxDrained = a.ID
-		}
+		store.recordAppliedManualAction(a.StrategyID, role, a.ID)
+		appliedScopes[scope] = true
+		appliedAny = true
 		if !manualActionRecordsTrade(a.Action) {
 			continue
 		}
@@ -371,9 +391,23 @@ func drainPendingManualActions(state *AppState, cfg *Config, stateDB *StateDB) [
 		ma.trades++
 	}
 
-	if maxDrained > 0 {
-		if err := stateDB.DeletePendingManualActionsThrough(maxDrained); err != nil {
-			fmt.Printf("[manual] failed to delete drained actions: %v\n", err)
+	// Persist at once so an on-chain fill is durable before the cycle runs.
+	if appliedAny {
+		if !store.Split() {
+			for scope, saveErr := range store.SaveAll(state) {
+				if saveErr != nil {
+					fmt.Printf("[manual] failed to persist drained actions for the %s scope: %v\n", scopeLabel(scope), saveErr)
+				}
+			}
+		} else {
+			for _, scope := range []PortfolioScope{ScopeLive, ScopePaper} {
+				if !appliedScopes[scope] {
+					continue
+				}
+				if saveErr := store.SaveScope(state, scope); saveErr != nil {
+					fmt.Printf("[manual] failed to persist drained actions for the %s scope: %v\n", scopeLabel(scope), saveErr)
+				}
+			}
 		}
 	}
 

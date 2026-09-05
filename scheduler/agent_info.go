@@ -39,6 +39,7 @@ var agentInfoCommands = []agentCommand{
 	{Name: "backfill", Summary: "Backfill derived data (trade-ledger fees/PnL, HL fees).", Usage: "go-trader backfill <trade-ledger|hl-fees> [...]"},
 	{Name: "probe", Summary: "Run startup probes against the configured check scripts.", Usage: "go-trader probe [--config <path>]"},
 	{Name: "inspect", Summary: "Print a strategy's effective (post-migration, post-default) config.", Usage: "go-trader inspect [--config <path>] [--json] <strategy-id>|--all"},
+	{Name: "storage-inspect", Summary: "Read-only ownership report for every state file: strategy mapping, orphans, risk-row scopes, held locks. Writes nothing.", Usage: "go-trader storage-inspect [--config <path>] [--json] [--require-idle]", Flags: []string{"--config", "--json", "--require-idle"}},
 	{Name: "diagnostics", Summary: "Read-only per-strategy trade-quality report (MFE/MAE/capture ratio) with backtestable tuning hypotheses (#1147).", Usage: "go-trader diagnostics [--config <path>] [--db <path>] [--strategy <id>] [--min-trades N] [--min-bucket N]", Flags: []string{"--config", "--db", "--strategy", "--min-trades", "--min-bucket"}},
 	{Name: "version", Summary: "Print the binary version.", Usage: "go-trader version"},
 }
@@ -101,9 +102,11 @@ type agentOpenPosition struct {
 	Quantity   float64 `json:"quantity"`
 	AvgCost    float64 `json:"avg_cost"`
 	Regime     string  `json:"regime"`
+	Scope      string  `json:"scope,omitempty"`
 }
 
 type agentOpenOptionPosition struct {
+	Scope      string  `json:"scope,omitempty"`
 	StrategyID string  `json:"strategy_id"`
 	Underlying string  `json:"underlying"`
 	OptionType string  `json:"option_type"`
@@ -219,15 +222,11 @@ func buildAgentInfo(cfg *Config, version string, now time.Time) agentInfo {
 
 	if cfg != nil {
 		info.Strategies = summarizeStrategies(cfg)
-		dbPath := cfg.DBFile
-		if dbPath == "" {
-			dbPath = "scheduler/state.db"
-		}
 		statusPort := cfg.StatusPort
 		if statusPort == 0 {
 			statusPort = DefaultStatusPort
 		}
-		info.StateDB, info.LiveState = readStateDBReadOnly(dbPath, statusPort)
+		info.StateDB, info.LiveState = readStateFilesReadOnly(cfg, statusPort)
 	}
 	return info
 }
@@ -290,6 +289,47 @@ func summarizeStrategies(cfg *Config) []agentStrategyInfo {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
+}
+
+// readStateFilesReadOnly reports every configured state file, tagging each open
+// position with the scope of the file it came from.
+func readStateFilesReadOnly(cfg *Config, statusPort int) ([]agentTable, agentLiveState) {
+	layout, err := resolveStorageLayout(cfg)
+	if err != nil {
+		return nil, agentLiveState{Source: "state.db snapshot", Note: fmt.Sprintf("storage layout rejected: %v", err)}
+	}
+	if !layout.Split {
+		primary, _ := layout.spec(storageRolePrimary)
+		return readStateDBReadOnly(primary.Path, statusPort)
+	}
+	var tables []agentTable
+	combined := agentLiveState{Source: "state.db snapshot", DBPresent: true}
+	var notes []string
+	for _, spec := range layout.Files {
+		scope := scopeLabel(layout.scopesForRole(spec.Role)[0])
+		fileTables, live := readStateDBReadOnly(spec.Path, statusPort)
+		if len(tables) == 0 {
+			tables = fileTables
+		}
+		notes = append(notes, fmt.Sprintf("[%s/%s] %s", spec.Role, scope, live.Note))
+		if !live.DBPresent {
+			combined.DBPresent = false
+			continue
+		}
+		if spec.Role == storageRolePrimary {
+			combined.CycleCount = live.CycleCount
+		}
+		for _, pos := range live.OpenPositions {
+			pos.Scope = scope
+			combined.OpenPositions = append(combined.OpenPositions, pos)
+		}
+		for _, opt := range live.OpenOptionPositions {
+			opt.Scope = scope
+			combined.OpenOptionPositions = append(combined.OpenOptionPositions, opt)
+		}
+	}
+	combined.Note = strings.Join(notes, " | ")
+	return tables, combined
 }
 
 func readStateDBReadOnly(path string, statusPort int) ([]agentTable, agentLiveState) {

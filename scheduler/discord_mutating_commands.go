@@ -725,7 +725,7 @@ func (d *DiscordNotifier) handleClearCashReconcile(s *discordgo.Session, i *disc
 	cash, cleared, err := clearCashReconcileRequiredForStrategy(d.ss.state, id)
 	var saveErr error
 	if err == nil && cleared && d.ss.stateDB != nil {
-		saveErr = SaveStateWithDB(d.ss.state, d.cfg, d.ss.stateDB)
+		saveErr = SaveStateWithStore(d.ss.state, d.ss.stateDB)
 	}
 	d.ss.mu.Unlock()
 

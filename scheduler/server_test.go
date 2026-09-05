@@ -283,7 +283,7 @@ func TestHandleHistory_NoAuth(t *testing.T) {
 	}
 
 	var mu sync.RWMutex
-	ss := NewStatusServer(NewAppState(), &mu, "", nil, db)
+	ss := NewStatusServer(NewAppState(), &mu, "", nil, openTestStore(t, db))
 
 	req := httptest.NewRequest("GET", "/history", nil)
 	w := httptest.NewRecorder()
@@ -318,7 +318,7 @@ func TestHandleHistory_QueryParams(t *testing.T) {
 	}
 
 	var mu sync.RWMutex
-	ss := NewStatusServer(NewAppState(), &mu, "", nil, db)
+	ss := NewStatusServer(NewAppState(), &mu, "", nil, openTestStore(t, db))
 
 	req := httptest.NewRequest("GET", "/history?strategy=hl-momentum-btc&limit=1", nil)
 	w := httptest.NewRecorder()
@@ -580,7 +580,7 @@ func TestHandleAPIStrategyTradesMarkers(t *testing.T) {
 	var mu sync.RWMutex
 	ss := NewStatusServer(state, &mu, "", []StrategyConfig{
 		{ID: "spot-btc", Platform: "binanceus", Type: "spot", Args: []string{"sma", "BTC/USDT", "1h"}},
-	}, db)
+	}, openTestStore(t, db))
 
 	req := httptest.NewRequest("GET", "/api/strategies/spot-btc/trades", nil)
 	w := httptest.NewRecorder()
@@ -675,7 +675,7 @@ func TestHandleAPIStrategyEquity(t *testing.T) {
 	var mu sync.RWMutex
 	ss := NewStatusServer(state, &mu, "", []StrategyConfig{
 		{ID: "spot-btc", Platform: "binanceus", Type: "spot", Capital: 1000, Args: []string{"sma", "BTC/USDT", "1h"}},
-	}, db)
+	}, openTestStore(t, db))
 
 	req := httptest.NewRequest("GET", "/api/strategies/spot-btc/equity?limit=40", nil)
 	w := httptest.NewRecorder()

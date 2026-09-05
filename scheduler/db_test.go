@@ -25,6 +25,30 @@ func openTestDB(t *testing.T) *StateDB {
 	return db
 }
 
+// clearPendingManualActions empties the queue, which is what the old
+// high-water-mark delete did for these setup steps.
+func clearPendingManualActions(t *testing.T, db *StateDB) {
+	t.Helper()
+	rows, err := db.LoadPendingManualActions()
+	if err != nil {
+		t.Fatalf("LoadPendingManualActions: %v", err)
+	}
+	ids := make([]int64, 0, len(rows))
+	for _, r := range rows {
+		ids = append(ids, r.ID)
+	}
+	if err := db.DeletePendingManualActionsByID(ids); err != nil {
+		t.Fatalf("clear queue: %v", err)
+	}
+}
+
+// openTestStore wraps one already-open handle as a single-file store, which is
+// exactly the layout a deployment without paper_db_file runs.
+func openTestStore(t *testing.T, db *StateDB) *StateStore {
+	t.Helper()
+	return singleFileStore(db)
+}
+
 func openNullablePositionIDDB(t *testing.T) *StateDB {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "state.db")

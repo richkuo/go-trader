@@ -340,27 +340,6 @@ update_canonicalize_path() {
     printf '%s' "$p"
 }
 
-update_resolve_db_exclude() {
-    local db_path="scheduler/state.db"
-    if [[ -f scheduler/config.json && -x .venv/bin/python3 ]]; then
-        local custom
-        custom=$(.venv/bin/python3 -c '
-import json
-try:
-    cfg = json.load(open("scheduler/config.json"))
-    p = cfg.get("db_file") or ""
-    if isinstance(p, str) and p.strip():
-        print(p.strip())
-except Exception:
-    pass
-' 2>/dev/null || true)
-        if [[ -n "$custom" ]]; then
-            db_path="$custom"
-        fi
-    fi
-    printf '%s' "$db_path"
-}
-
 run_rsync_from() {
     local src="$1"
     local dest="$2"
@@ -369,15 +348,18 @@ run_rsync_from() {
     if ! command -v rsync >/dev/null 2>&1; then
         fail "rsync not on PATH — install rsync or omit --rsync-from"
     fi
-    db_excl=$(update_resolve_db_exclude)
     signal_log_excl="${GO_TRADER_SIGNAL_LOG:-./go-trader-signal.log}"
     rsync_excludes=(
         --exclude='.git/'
         --exclude='.env'
         --exclude='scheduler/config.json'
-        --exclude="${db_excl}*"
         --exclude='trading_bot.db*'
     )
+    while IFS= read -r db_excl; do
+        if [[ -n "$db_excl" ]]; then
+            rsync_excludes+=(--exclude="${db_excl}*")
+        fi
+    done < <(update_resolve_db_exclude)
     local db_glob
     while IFS= read -r db_glob; do
         [[ -n "$db_glob" ]] && rsync_excludes+=(--exclude="$db_glob")

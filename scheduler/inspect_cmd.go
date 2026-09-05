@@ -81,20 +81,18 @@ func runInspect(args []string) int {
 	return 0
 }
 
+// loadInspectState reads every configured state file read-only: inspect never
+// migrates and never writes.
 func loadInspectState(cfg *Config) *AppState {
 	if cfg == nil || cfg.DBFile == "" {
 		return nil
 	}
-	if _, err := os.Stat(cfg.DBFile); err != nil {
-		return nil
-	}
-	sdb, err := OpenStateDB(cfg.DBFile)
+	store, err := openToolStateStoreReadOnly(cfg)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[inspect] state DB unavailable: %v\n", err)
 		return nil
 	}
-	defer sdb.Close()
-	state, err := sdb.LoadState()
+	defer store.Close()
+	state, _, err := LoadStateWithStore(cfg, store)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[inspect] state DB unavailable: %v\n", err)
 		return nil

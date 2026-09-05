@@ -20,7 +20,7 @@ type StatusServer struct {
 	futuresSymbols []string
 	hlPerpsCoins   []string
 	okxPerpsCoins  []string
-	stateDB        *StateDB
+	stateDB        *StateStore
 	candleFetcher  UICandleFetcher
 	candleCache    *UICandleCache
 	tuning         *tuningRunManager
@@ -58,7 +58,7 @@ const DefaultStatusPort = 8099
 
 const statusPortMaxAttempts = 5
 
-func NewStatusServer(state *AppState, mu *sync.RWMutex, statusToken string, strategies []StrategyConfig, stateDB *StateDB) *StatusServer {
+func NewStatusServer(state *AppState, mu *sync.RWMutex, statusToken string, strategies []StrategyConfig, stateDB *StateStore) *StatusServer {
 	symbols := collectPriceSymbols(strategies)
 	futuresSymbols := collectFuturesMarkSymbols(strategies)
 	hlCoins, okxCoins := collectPerpsMarkSymbols(strategies)

@@ -265,7 +265,7 @@ func TestLoadClosedPositionsByStrategy(t *testing.T) {
 		t.Fatalf("SaveStateWithDB: %v", err)
 	}
 
-	got := LoadClosedPositionsByStrategy(sdb, cfg)
+	got := LoadClosedPositionsByStrategy(openTestStore(t, sdb), cfg)
 	if got == nil {
 		t.Fatal("LoadClosedPositionsByStrategy returned nil")
 	}

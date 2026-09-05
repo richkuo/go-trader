@@ -1056,19 +1056,23 @@ func liquidationAuditIntervalSeconds(strategies []StrategyConfig, intervals map[
 	return liquidationAuditMinIntervalSeconds
 }
 
-func flushOffCycleLiquidationAuditState(state *AppState, cfg *Config, stateDB *StateDB, mu *sync.RWMutex, mutations int, dirty bool, saveFailures int, force bool) (bool, int) {
+func flushOffCycleLiquidationAuditState(state *AppState, cfg *Config, store *StateStore, mu *sync.RWMutex, mutations int, dirty bool, force bool) bool {
 	if mutations <= 0 && !dirty && !force {
-		return dirty, saveFailures
+		return dirty
 	}
 	mu.Lock()
-	err := SaveStateWithDB(state, cfg, stateDB)
+	outcomes := store.SaveAll(state)
 	mu.Unlock()
-	if err != nil {
-		saveFailures++
-		fmt.Printf("[CRITICAL] Save state failed after off-cycle liquidation audit (%d/3): %v\n", saveFailures, err)
-		return true, saveFailures
+	failed := false
+	for _, out := range sortedScopeErrors(outcomes) {
+		if out.err == nil {
+			continue
+		}
+		failed = true
+		fmt.Printf("[CRITICAL] Save state failed after off-cycle liquidation audit for the %s scope (%d/3): %v\n",
+			scopeLabel(out.scope), store.saveFailures(out.scope), out.err)
 	}
-	return false, 0
+	return failed
 }
 
 func runOffCycleLiquidationAudit(strategies []StrategyConfig, state *AppState, mu *sync.RWMutex, notifier *MultiNotifier, logMgr *LogManager) int {

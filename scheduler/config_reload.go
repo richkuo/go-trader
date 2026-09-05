@@ -430,6 +430,10 @@ func validateHotReloadCompatible(cfg, next *Config) error {
 	if cfg.DBFile != next.DBFile {
 		errs = append(errs, fmt.Sprintf("db_file changed (%q -> %q; restart required)", cfg.DBFile, next.DBFile))
 	}
+	if cfg.PaperDBFile != next.PaperDBFile {
+		errs = append(errs, fmt.Sprintf("paper_db_file changed (%q -> %q; restart required)", cfg.PaperDBFile, next.PaperDBFile))
+	}
+	errs = append(errs, storageIdentityReloadErrors(cfg, next)...)
 	if cfg.ReplayLogPath != next.ReplayLogPath {
 		errs = append(errs, fmt.Sprintf("replay_log_path changed (%q -> %q; restart required)", cfg.ReplayLogPath, next.ReplayLogPath))
 	}

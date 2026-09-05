@@ -650,7 +650,7 @@ func TestReconcileConfigInitialCapital(t *testing.T) {
 			},
 		}
 
-		infos, errs := ReconcileConfigInitialCapital(cfg, state, db)
+		infos, errs := ReconcileConfigInitialCapital(cfg, state, openTestStore(t, db))
 		if len(infos) != 1 {
 			t.Fatalf("infos = %d, want 1 (only hl-tema-eth changed)", len(infos))
 		}
@@ -696,7 +696,7 @@ func TestReconcileConfigInitialCapital(t *testing.T) {
 		cfg := &Config{Strategies: []StrategyConfig{
 			{ID: "s", Type: "spot", Capital: 1000, InitialCapital: 1000},
 		}}
-		if infos, errs := ReconcileConfigInitialCapital(cfg, state, db); len(infos) != 0 || len(errs) != 0 {
+		if infos, errs := ReconcileConfigInitialCapital(cfg, state, openTestStore(t, db)); len(infos) != 0 || len(errs) != 0 {
 			t.Errorf("infos=%v errs=%v, want none when config matches DB", infos, errs)
 		}
 	})

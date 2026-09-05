@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func pendingManualActionExists(stateDB *StateDB, strategyID, symbol string, kinds ...string) (bool, error) {
+func pendingManualActionExists(stateDB *StateStore, strategyID, symbol string, kinds ...string) (bool, error) {
 	actions, err := stateDB.LoadPendingManualActions()
 	if err != nil {
 		return false, err
@@ -70,7 +70,7 @@ func (ss *StatusServer) daemonManualCoreDeps(cfg *Config) manualCoreDeps {
 	d.loadState = func(strategyID, symbol string) (manualStateView, error) {
 		ss.mu.RLock()
 		defer ss.mu.RUnlock()
-		return manualStateViewFromState(cfg, ss.state, strategyID, symbol), nil
+		return manualStateViewFromStateWithStore(cfg, ss.state, ss.stateDB, strategyID, symbol), nil
 	}
 	d.reconcileCanceledProtection = func(strategyID, symbol string, cancelOIDs []int64) error {
 		if len(cancelOIDs) == 0 {
@@ -90,7 +90,7 @@ func (ss *StatusServer) daemonManualCoreDeps(cfg *Config) manualCoreDeps {
 			return nil
 		}
 		clearHyperliquidProtectionOIDsMatching(position, cancelOIDs)
-		return SaveStrategyBookWithDB(strategy, ss.stateDB)
+		return ss.stateDB.SaveStrategyBook(strategy)
 	}
 	return d
 }

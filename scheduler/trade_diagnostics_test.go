@@ -233,7 +233,7 @@ func newDiagWorkerFixture(candles []UICandle, fetchErr error) *diagWorkerFixture
 			f.fetched = append(f.fetched, req)
 			return candles, "test", fetchErr
 		},
-		func(rowID int64, tf string, m *tradeQualityMetrics, status string) error {
+		func(_ PortfolioScope, rowID int64, tf string, m *tradeQualityMetrics, status string) error {
 			f.updates = append(f.updates, status)
 			f.metrics = append(f.metrics, m)
 			f.tfs = append(f.tfs, tf)

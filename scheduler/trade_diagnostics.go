@@ -60,6 +60,9 @@ type TradeDiagnosticsRow struct {
 
 	HurstAtOpen   *float64
 	HurstSizeMult *float64
+
+	Scope      PortfolioScope `json:"-"`
+	SourceRole storageRole    `json:"-"`
 }
 
 func captureTradeDiagnostics(s *StrategyState, pos *Position, closePrice, realizedPnL float64, reason string, closedAt time.Time) {
@@ -213,11 +216,16 @@ type tradeDiagnosticsWorker struct {
 	metaMu sync.RWMutex
 	meta   map[string]StrategyConfig
 
-	fetchCandles  func(UICandleRequest) ([]UICandle, string, error)
-	updateMetrics func(rowID int64, timeframe string, m *tradeQualityMetrics, status string) error
+	fetchCandles func(UICandleRequest) ([]UICandle, string, error)
+	// updateMetrics carries the owning scope beside the row identifier: a bare
+	// row identifier cannot choose a file.
+	updateMetrics func(scope PortfolioScope, rowID int64, timeframe string, m *tradeQualityMetrics, status string) error
+
+	// splitStorage marks a layout where an unscoped row cannot be resolved.
+	splitStorage bool
 }
 
-func newTradeDiagnosticsWorker(fetch func(UICandleRequest) ([]UICandle, string, error), update func(int64, string, *tradeQualityMetrics, string) error) *tradeDiagnosticsWorker {
+func newTradeDiagnosticsWorker(fetch func(UICandleRequest) ([]UICandle, string, error), update func(PortfolioScope, int64, string, *tradeQualityMetrics, string) error) *tradeDiagnosticsWorker {
 	return &tradeDiagnosticsWorker{
 		ch:            make(chan TradeDiagnosticsRow, diagQueueCap),
 		meta:          make(map[string]StrategyConfig),
@@ -263,8 +271,12 @@ func (w *tradeDiagnosticsWorker) run(ctx context.Context) {
 }
 
 func (w *tradeDiagnosticsWorker) process(row TradeDiagnosticsRow) {
+	if w.splitStorage && row.Scope == scopeUnassigned {
+		log.Printf("[diagnostics] row %d (%s %s) carries no scope; refusing to update before choosing a state file", row.RowID, row.StrategyID, row.Symbol)
+		return
+	}
 	status, tf, metrics := w.computeRowMetrics(row)
-	if err := w.updateMetrics(row.RowID, tf, metrics, status); err != nil {
+	if err := w.updateMetrics(row.Scope, row.RowID, tf, metrics, status); err != nil {
 		log.Printf("[diagnostics] update metrics for row %d (%s %s): %v", row.RowID, row.StrategyID, row.Symbol, err)
 	}
 }

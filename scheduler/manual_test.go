@@ -447,7 +447,7 @@ func TestDrainPendingManualActions(t *testing.T) {
 		CreatedAt: time.Now().UTC(),
 	})
 
-	alerts := drainPendingManualActions(state, cfg, db)
+	alerts := drainPendingManualActions(state, cfg, openTestStore(t, db))
 
 	pos := state.Strategies[stratID].Positions["ETH"]
 	if pos == nil {
@@ -506,7 +506,7 @@ func TestDrainPendingManualActionsAlerts(t *testing.T) {
 	_ = db.InsertPendingManualAction(PendingManualAction{StrategyID: openID, Action: "close", Symbol: "ETH", Side: "long", Quantity: 0.5, FillPrice: 2100, FillFee: 0.7, RealizedPnL: 49.3, IsFullClose: true, CreatedAt: now})
 	_ = db.InsertPendingManualAction(PendingManualAction{StrategyID: otherID, Action: "open", Symbol: "BTC", Side: "short", Quantity: 0.01, FillPrice: 60000, FillFee: 0.3, EntryATR: 500, CreatedAt: now})
 
-	alerts := drainPendingManualActions(state, cfg, db)
+	alerts := drainPendingManualActions(state, cfg, openTestStore(t, db))
 
 	if len(alerts) != 2 {
 		t.Fatalf("expected 2 strategy alerts, got %d", len(alerts))
@@ -528,8 +528,11 @@ func TestDrainPendingManualActionsAlerts(t *testing.T) {
 	}
 
 	remaining, _ := db.LoadPendingManualActions()
-	if len(remaining) != 0 {
-		t.Errorf("expected empty queue after drain, got %d rows", len(remaining))
+	if len(remaining) != 1 {
+		t.Fatalf("queue after drain = %d rows, want 1 (the failed DOGE close survives acknowledgement of the others)", len(remaining))
+	}
+	if remaining[0].StrategyID != otherID || remaining[0].Symbol != "DOGE" {
+		t.Errorf("surviving row = %s/%s, want the failed %s/DOGE close", remaining[0].StrategyID, remaining[0].Symbol, otherID)
 	}
 }
 
@@ -1164,7 +1167,7 @@ func TestManualCoresGuardPositionDoubleFire(t *testing.T) {
 	}
 
 	firingDeps := func(fired *int) manualCoreDeps {
-		d := newCLIManualCoreDeps(cfg, db, nil)
+		d := newCLIManualCoreDeps(cfg, openTestStore(t, db), nil)
 		d.fetchMids = func(coins []string) (map[string]float64, error) { return map[string]float64{"ETH": 2000}, nil }
 		d.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
 			if closeFullPosition {
@@ -1176,7 +1179,7 @@ func TestManualCoresGuardPositionDoubleFire(t *testing.T) {
 		return d
 	}
 	failLoudDeps := func() manualCoreDeps {
-		d := newCLIManualCoreDeps(cfg, db, nil)
+		d := newCLIManualCoreDeps(cfg, openTestStore(t, db), nil)
 		d.fetchMids = func(coins []string) (map[string]float64, error) { return map[string]float64{"ETH": 2000}, nil }
 		d.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
 			t.Error("execute must not be called for a guarded action")
@@ -1226,11 +1229,7 @@ func TestManualCoresGuardPositionDoubleFire(t *testing.T) {
 		t.Fatalf("force-close-while-close-queued err = %v, want refusal", err)
 	}
 
-	if all, _ := db.LoadPendingManualActions(); len(all) > 0 {
-		if err := db.DeletePendingManualActionsThrough(all[len(all)-1].ID); err != nil {
-			t.Fatalf("clear queue: %v", err)
-		}
-	}
+	clearPendingManualActions(t, db)
 	if err := db.InsertPendingManualAction(PendingManualAction{
 		StrategyID: "hl-manual-eth-peer", Action: "close", Symbol: "ETH", Side: "sell",
 		Quantity: 0.4, FillPrice: 2100, IsFullClose: true, CreatedAt: time.Now().UTC(),
@@ -1286,7 +1285,7 @@ func TestManualActionLockPreventsCrossProcessDoubleFire(t *testing.T) {
 	enteredSubmit := make(chan struct{})
 	releaseSubmit := make(chan struct{})
 
-	depsA := newCLIManualCoreDeps(cfg, db, nil)
+	depsA := newCLIManualCoreDeps(cfg, openTestStore(t, db), nil)
 	depsA.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
 		atomic.AddInt32(&aFired, 1)
 		close(enteredSubmit)
@@ -1294,7 +1293,7 @@ func TestManualActionLockPreventsCrossProcessDoubleFire(t *testing.T) {
 		return &HyperliquidExecuteResult{Execution: &HyperliquidExecution{Fill: &HyperliquidFill{AvgPx: 2100, TotalSz: size, OID: 4242, Fee: 1.0}}}, "", nil
 	}
 
-	depsB := newCLIManualCoreDeps(cfg, db, nil)
+	depsB := newCLIManualCoreDeps(cfg, openTestStore(t, db), nil)
 	depsB.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
 		atomic.AddInt32(&bFired, 1)
 		return &HyperliquidExecuteResult{Execution: &HyperliquidExecution{Fill: &HyperliquidFill{AvgPx: 2100, TotalSz: size, OID: 5252, Fee: 1.0}}}, "", nil
@@ -1808,7 +1807,7 @@ func TestApplyManualAction_OpenSetsProtectionFields(t *testing.T) {
 		CreatedAt:                       time.Now().UTC(),
 	})
 
-	drainPendingManualActions(state, cfg, db)
+	drainPendingManualActions(state, cfg, openTestStore(t, db))
 
 	pos := state.Strategies[stratID].Positions["ETH"]
 	if pos == nil {

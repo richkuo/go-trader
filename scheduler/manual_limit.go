@@ -178,7 +178,7 @@ type manualLimitOpenInputs struct {
 	dryRun      bool
 }
 
-func runManualLimitOpen(cfg *Config, sc StrategyConfig, stateDB *StateDB, in manualLimitOpenInputs) int {
+func runManualLimitOpen(cfg *Config, sc StrategyConfig, stateDB *StateStore, in manualLimitOpenInputs) int {
 	size := resolveManualSize(in.size, in.notional, in.margin, in.limitPrice, sc.Leverage)
 	if size <= 0 {
 		fmt.Fprintf(os.Stderr, "error: resolved size is zero (size=%g notional=%g margin=%g limit=%g leverage=%g)\n",
@@ -200,14 +200,14 @@ func runManualLimitOpen(cfg *Config, sc StrategyConfig, stateDB *StateDB, in man
 		fmt.Fprintln(os.Stderr, "warning: --stop-loss-atr-mult / --stop-loss-pct are ignored for --limit-price orders; the scheduler arms SL/TP from strategy config after the fill")
 	}
 
-	unlock, lockErr := acquireManualActionFileLock(cfg.DBFile)
+	unlock, lockErr := stateDB.manualActionLock(in.strategyID)
 	if lockErr != nil {
 		fmt.Fprintf(os.Stderr, "error: %v — refusing to avoid double-firing an on-chain order\n", lockErr)
 		return 1
 	}
 	defer unlock()
 
-	state, loadErr := LoadStateWithDB(cfg, stateDB)
+	state, _, loadErr := LoadStateWithStore(cfg, stateDB)
 	if loadErr != nil {
 		fmt.Fprintf(os.Stderr, "error: could not load state for placement guard: %v\n", loadErr)
 		return 1
@@ -317,7 +317,7 @@ func runManualCancel(args []string) int {
 		return 1
 	}
 
-	stateDB, err := OpenStateDB(cfg.DBFile)
+	stateDB, err := openToolStateStore(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to open state DB: %v\n", err)
 		return 1
@@ -399,7 +399,7 @@ func runManualClearLimitRow(args []string) int {
 		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
 		return 1
 	}
-	stateDB, err := OpenStateDB(cfg.DBFile)
+	stateDB, err := openToolStateStore(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to open state DB: %v\n", err)
 		return 1
@@ -639,7 +639,7 @@ func orphanLimitOrderStatus(script string, o PendingLimitOrder) (HyperliquidLimi
 	return st, ""
 }
 
-func cancelOrphanedLimitOrder(state *AppState, cfg *Config, stateDB *StateDB, mu *sync.RWMutex, o PendingLimitOrder) orphanLimitCancelOutcome {
+func cancelOrphanedLimitOrder(state *AppState, cfg *Config, store *StateStore, mu *sync.RWMutex, o PendingLimitOrder) orphanLimitCancelOutcome {
 	out := orphanLimitCancelOutcome{AdoptedFill: o.FilledSize}
 
 	candidates, _ := collectKillSwitchLimitOrderCandidates(
@@ -696,7 +696,7 @@ func cancelOrphanedLimitOrder(state *AppState, cfg *Config, stateDB *StateDB, mu
 	}
 	if o.FilledSize > 0 {
 		mu.Lock()
-		saveErr := SaveStateWithDB(state, cfg, stateDB)
+		saveErr := SaveStateWithStore(state, store)
 		mu.Unlock()
 		if saveErr != nil {
 			out.State = orphanLimitStateOffBookRowStuck
@@ -706,7 +706,7 @@ func cancelOrphanedLimitOrder(state *AppState, cfg *Config, stateDB *StateDB, mu
 			return out
 		}
 	}
-	if err := stateDB.DeletePendingLimitOrder(o.ID); err != nil {
+	if err := store.DeletePendingLimitOrder(o.ID); err != nil {
 		out.State = orphanLimitStateOffBookRowStuck
 		out.Reason = fmt.Sprintf("the queue row could not be cleared (%v)", err)
 		return out
@@ -722,25 +722,25 @@ func orphanLimitPollDeferred(o PendingLimitOrder, now time.Time) bool {
 	return now.Sub(o.OperatorRequiredSince) < effectiveAlertThrottleInterval()
 }
 
-func applyOrphanLimitOperatorRequired(stateDB *StateDB, o PendingLimitOrder, outcome orphanLimitCancelOutcome, now time.Time) {
+func applyOrphanLimitOperatorRequired(store *StateStore, o PendingLimitOrder, outcome orphanLimitCancelOutcome, now time.Time) {
 	if !outcome.Resolved && outcome.State == orphanLimitStateOffBookUnadoptedFill {
-		if err := stateDB.MarkPendingLimitOrderOperatorRequired(o.ID, now); err != nil {
+		if err := store.MarkPendingLimitOrderOperatorRequired(o.ID, now); err != nil {
 			fmt.Printf("[limit] failed to persist the operator-required marker on row %d: %v\n", o.ID, err)
 		}
 		return
 	}
 	if !o.OperatorRequiredSince.IsZero() && !outcome.Resolved {
-		if err := stateDB.ClearPendingLimitOrderOperatorRequired(o.ID); err != nil {
+		if err := store.ClearPendingLimitOrderOperatorRequired(o.ID); err != nil {
 			fmt.Printf("[limit] failed to clear the operator-required marker on row %d: %v\n", o.ID, err)
 		}
 	}
 }
 
-func reconcilePendingLimitOrders(state *AppState, cfg *Config, stateDB *StateDB, mu *sync.RWMutex, notifier *MultiNotifier, logMgr *LogManager) []manualAlert {
-	if stateDB == nil {
+func reconcilePendingLimitOrders(state *AppState, cfg *Config, store *StateStore, mu *sync.RWMutex, notifier *MultiNotifier, logMgr *LogManager) []manualAlert {
+	if store == nil {
 		return nil
 	}
-	orders, err := stateDB.LoadPendingLimitOrders()
+	orders, err := store.LoadPendingLimitOrders()
 	if err != nil {
 		fmt.Printf("[limit] failed to load pending limit orders: %v\n", err)
 		return nil
@@ -776,8 +776,8 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, stateDB *StateDB,
 					o.OperatorRequiredSince.Add(effectiveAlertThrottleInterval()).Format(time.RFC3339))
 				continue
 			}
-			outcome := cancelOrphanedLimitOrder(state, cfg, stateDB, mu, o)
-			applyOrphanLimitOperatorRequired(stateDB, o, outcome, now)
+			outcome := cancelOrphanedLimitOrder(state, cfg, store, mu, o)
+			applyOrphanLimitOperatorRequired(store, o, outcome, now)
 			if outcome.Resolved {
 				orphanLimitCancelAlerts.Clear(orphanLimitCancelKeyFor(o))
 				warnNotifier(notifier, orphanLimitCancelResolvedMessage(o, block, outcome))
@@ -887,14 +887,19 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, stateDB *StateDB,
 				continue
 			}
 			limitFillExposureAlerts.Clear(limitFillExposureKeyFor(r.order))
-			if err := stateDB.UpdatePendingLimitOrderFill(r.order.ID, r.status.FilledSize, r.avgPx, r.status.Fee); err != nil {
+			if err := store.UpdatePendingLimitOrderFill(r.order.ID, r.status.FilledSize, r.avgPx, r.status.Fee); err != nil {
 				fmt.Printf("[limit] failed to persist fill watermark for row %d: %v\n", r.order.ID, err)
 			}
 			r.order.FilledSize = r.status.FilledSize
 			r.order.AvgFillPrice = r.avgPx
 			r.order.FillFee = r.status.Fee
 			booked := trades[i]
-			if _, fillPx := runHyperliquidProtectionSync(r.sc, state.Strategies[r.order.StrategyID], stateDB, coin, mu, notifier, r.logger, "HL limit-fill protection synced", nil, nil, nil); fillPx > 0 {
+			protectionDB, protectionErr := store.dbForStrategy(r.order.StrategyID)
+			if protectionErr != nil {
+				fmt.Printf("[limit] %v\n", protectionErr)
+				continue
+			}
+			if _, fillPx := runHyperliquidProtectionSync(r.sc, state.Strategies[r.order.StrategyID], protectionDB, coin, mu, notifier, r.logger, "HL limit-fill protection synced", nil, nil, nil); fillPx > 0 {
 				booked++
 			}
 			if ma := applied[r.order.StrategyID]; ma == nil {
@@ -907,7 +912,7 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, stateDB *StateDB,
 	}
 
 	for _, c := range candidates {
-		applyLimitExposureOperatorRequired(stateDB, c, now)
+		applyLimitExposureOperatorRequired(store, c, now)
 	}
 
 	for _, c := range candidates {
@@ -936,7 +941,7 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, stateDB *StateDB,
 			}
 			if o.FilledSize > 0 {
 				mu.Lock()
-				saveErr := SaveStateWithDB(state, cfg, stateDB)
+				saveErr := SaveStateWithStore(state, store)
 				mu.Unlock()
 				if saveErr != nil {
 					warnNotifier(notifier, fmt.Sprintf(
@@ -945,7 +950,7 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, stateDB *StateDB,
 					continue
 				}
 			}
-			if err := stateDB.DeletePendingLimitOrder(o.ID); err != nil {
+			if err := store.DeletePendingLimitOrder(o.ID); err != nil {
 				fmt.Printf("[limit] failed to delete terminal row %d: %v\n", o.ID, err)
 			}
 			continue

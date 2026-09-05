@@ -90,7 +90,7 @@ func ComputeSharpeRatio(closed []ClosedPosition, initialCapital, annualRiskFreeR
 	return annualizedSharpeFromDaily(returns, annualRiskFreeRate)
 }
 
-func LoadClosedPositionsByStrategy(sdb *StateDB, cfg *Config) map[string][]ClosedPosition {
+func LoadClosedPositionsByStrategy(sdb *StateStore, cfg *Config) map[string][]ClosedPosition {
 	if sdb == nil || cfg == nil {
 		return nil
 	}

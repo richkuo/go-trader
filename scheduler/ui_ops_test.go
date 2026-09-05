@@ -11,12 +11,12 @@ import (
 
 func newOpsTestServer(t *testing.T, strategies []StrategyConfig, state *AppState, withDB bool) *StatusServer {
 	t.Helper()
-	var sdb *StateDB
+	var store *StateStore
 	if withDB {
-		sdb = openTestDB(t)
+		store = openTestStore(t, openTestDB(t))
 	}
 	var mu sync.RWMutex
-	ss := NewStatusServer(state, &mu, "", strategies, sdb)
+	ss := NewStatusServer(state, &mu, "", strategies, store)
 	ss.SetConfigContext("", &Config{IntervalSeconds: 3600})
 	return ss
 }
@@ -115,7 +115,7 @@ func TestAPIDiagnosticsEmptyDB(t *testing.T) {
 
 func TestAPIDiagnosticsNetPnLAndPendingMetrics(t *testing.T) {
 	ss := newOpsTestServer(t, nil, NewAppState(), true)
-	sdb := ss.stateDB
+	sdb := ss.stateDB.primary()
 
 	row := &TradeDiagnosticsRow{
 		StrategyID: "hl-btc", PositionID: "pos-1", Symbol: "BTC", Side: "long",
@@ -225,7 +225,7 @@ func TestAPICashflowEmptyAndPopulated(t *testing.T) {
 	cashflowJournalBases.mu.Lock()
 	delete(cashflowJournalBases.bases, "hyperliquid/0xabc")
 	cashflowJournalBases.mu.Unlock()
-	sdb := ss.stateDB
+	sdb := ss.stateDB.primary()
 	if err := sdb.UpsertCashflowJournalState("hyperliquid", "0xabc", CashflowJournalState{BaselineSet: true, BaselineAccountValue: 1000}); err != nil {
 		t.Fatalf("upsert hl: %v", err)
 	}
@@ -272,7 +272,7 @@ func TestAPICashflowRuntimeBasisOverridesEligibility(t *testing.T) {
 	ss := newOpsTestServer(t, nil, NewAppState(), true)
 	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xbasis"}
 	label := sharedWalletKeyLabel(key)
-	if err := ss.stateDB.UpsertCashflowJournalState(key.Platform, key.Account, CashflowJournalState{BaselineSet: true}); err != nil {
+	if err := ss.stateDB.primary().UpsertCashflowJournalState(key.Platform, key.Account, CashflowJournalState{BaselineSet: true}); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
 	defer cashflowJournalPendingStreaks.reset(label)

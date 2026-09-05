@@ -298,7 +298,7 @@ func TestExportTradingViewCSVFileEndToEnd(t *testing.T) {
 		Strategies: []StrategyConfig{{ID: "okx-btc", Platform: "okx", Type: "spot"}},
 	}
 
-	n, err := exportTradingViewCSVFile(db, cfg, tradingViewExportOptions{All: true, OutputPath: out})
+	n, err := exportTradingViewCSVFile(openTestStore(t, db), cfg, tradingViewExportOptions{All: true, OutputPath: out})
 	if err != nil {
 		t.Fatalf("exportTradingViewCSVFile: %v", err)
 	}

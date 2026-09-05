@@ -305,7 +305,7 @@ func TestManualLiveExecuteRejectsUnconfirmedWithoutQueueing(t *testing.T) {
 				t.Fatalf("SaveState: %v", err)
 			}
 			cfg := &Config{DBFile: dbPath, Strategies: []StrategyConfig{sc}}
-			deps := newCLIManualCoreDeps(cfg, db, nil)
+			deps := newCLIManualCoreDeps(cfg, openTestStore(t, db), nil)
 			deps.fetchMids = func([]string) (map[string]float64, error) { return map[string]float64{"ETH": 2000}, nil }
 			deps.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
 				result := unconfirmedExecuteResult()

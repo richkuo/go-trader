@@ -76,6 +76,33 @@ case "stale_instance.db" in *.db) ;; *) echo "FAIL: *.db should match stale_inst
 case "state.db-wal" in *.db) echo "FAIL: *.db must not match state.db-wal" >&2; exit 1;; esac
 case "state.db.lock" in *.db) echo "FAIL: *.db must not match state.db.lock" >&2; exit 1;; esac
 
+tmp_cfg_dir=$(mktemp -d)
+trap 'rm -rf "$tmp_cfg_dir"' EXIT
+export GO_TRADER_UPDATE_PYTHON="$(command -v python3)"
+
+export GO_TRADER_UPDATE_CONFIG="$tmp_cfg_dir/single.json"
+cat > "$GO_TRADER_UPDATE_CONFIG" <<'JSON'
+{"db_file": "/var/lib/go-trader/state.db"}
+JSON
+assert_eq "$(update_resolve_db_exclude)" "/var/lib/go-trader/state.db" \
+    "single-file layout excludes db_file only"
+
+export GO_TRADER_UPDATE_CONFIG="$tmp_cfg_dir/split.json"
+cat > "$GO_TRADER_UPDATE_CONFIG" <<'JSON'
+{"db_file": "/var/lib/go-trader/live.db", "paper_db_file": "/var/lib/go-trader/paper.db"}
+JSON
+assert_eq "$(update_resolve_db_exclude)" $'/var/lib/go-trader/live.db\n/var/lib/go-trader/paper.db' \
+    "split layout excludes db_file AND paper_db_file (#1523)"
+
+export GO_TRADER_UPDATE_CONFIG="$tmp_cfg_dir/default.json"
+cat > "$GO_TRADER_UPDATE_CONFIG" <<'JSON'
+{"paper_db_file": "/var/lib/go-trader/paper.db"}
+JSON
+assert_eq "$(update_resolve_db_exclude)" $'scheduler/state.db\n/var/lib/go-trader/paper.db' \
+    "an omitted db_file still falls back to the default primary path"
+
+unset GO_TRADER_UPDATE_CONFIG GO_TRADER_UPDATE_PYTHON
+
 norm_in=$'/root/go-trader-live\n/root/.openclaw/workspace/go-trader-paper-1/\n\n  /opt/deploy/go-trader-x  \nrelative/dir\n/root/go-trader-live'
 assert_eq "$(printf '%s' "$norm_in" | normalize_systemd_deployment_dirs)" \
     $'/root/go-trader-live/\n/root/.openclaw/workspace/go-trader-paper-1/\n/opt/deploy/go-trader-x/' \

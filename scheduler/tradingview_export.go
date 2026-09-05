@@ -71,7 +71,7 @@ func runTradingViewExport(args []string) int {
 		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
 		return 1
 	}
-	stateDB, err := OpenStateDB(cfg.DBFile)
+	stateDB, err := openToolStateStore(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to open state DB: %v\n", err)
 		return 1
@@ -91,7 +91,7 @@ func runTradingViewExport(args []string) int {
 	return 0
 }
 
-func exportTradingViewCSVFile(stateDB *StateDB, cfg *Config, opts tradingViewExportOptions) (int, error) {
+func exportTradingViewCSVFile(stateDB *StateStore, cfg *Config, opts tradingViewExportOptions) (int, error) {
 	if strings.TrimSpace(opts.OutputPath) == "" {
 		return 0, fmt.Errorf("--output is required")
 	}

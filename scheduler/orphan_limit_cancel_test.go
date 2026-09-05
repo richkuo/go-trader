@@ -90,7 +90,7 @@ func TestReconcileCancelLaneConvergesRowWhoseStrategyIsAbsent(t *testing.T) {
 	)
 
 	notifier, mock := newOrphanLaneNotifier()
-	reconcilePendingLimitOrders(state, cfg, db, &mu, notifier, nil)
+	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, notifier, nil)
 
 	if stubs.cancelCalls != 1 {
 		t.Fatalf("cancel calls = %d, want 1 — an orphaned cancel_requested row must be re-issued by the reconciler", stubs.cancelCalls)
@@ -139,7 +139,7 @@ func TestReconcileCancelLaneConvergesPaperAndNonManualRows(t *testing.T) {
 				},
 			)
 
-			reconcilePendingLimitOrders(state, cfg, db, &mu, nil, nil)
+			reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, nil, nil)
 
 			if stubs.cancelCalls != 1 {
 				t.Fatalf("cancel calls = %d, want 1 for an adoption-ineligible %s row", stubs.cancelCalls, sc.Type)
@@ -173,7 +173,7 @@ func TestReconcileCancelLaneSkipsCancelWhenOrderIsAlreadyOffBook(t *testing.T) {
 		},
 	)
 
-	reconcilePendingLimitOrders(state, cfg, db, &mu, nil, nil)
+	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, nil, nil)
 
 	if stubs.cancelCalls != 0 {
 		t.Fatalf("an order already off-book must not be cancelled again, calls = %d", stubs.cancelCalls)
@@ -206,7 +206,7 @@ func TestReconcileCancelLaneKeepsRowAndBooksNothingOnUnadoptedFill(t *testing.T)
 	)
 
 	notifier, mock := newOrphanLaneNotifier()
-	reconcilePendingLimitOrders(state, cfg, db, &mu, notifier, nil)
+	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, notifier, nil)
 
 	orders, _ := db.LoadPendingLimitOrders()
 	if len(orders) != 1 {
@@ -246,8 +246,8 @@ func TestReconcileCancelLaneRetriesAFailedCancelOnLaterTicks(t *testing.T) {
 	)
 
 	notifier, mock := newOrphanLaneNotifier()
-	reconcilePendingLimitOrders(state, cfg, db, &mu, notifier, nil)
-	reconcilePendingLimitOrders(state, cfg, db, &mu, notifier, nil)
+	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, notifier, nil)
+	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, notifier, nil)
 
 	if stubs.cancelCalls != 2 {
 		t.Fatalf("a failed cancel must be retried on the next tick, calls = %d", stubs.cancelCalls)
@@ -284,7 +284,7 @@ func TestReconcileCancelLaneRefusesWithoutAHyperliquidScript(t *testing.T) {
 	)
 
 	notifier, mock := newOrphanLaneNotifier()
-	reconcilePendingLimitOrders(state, cfg, db, &mu, notifier, nil)
+	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, notifier, nil)
 
 	if stubs.cancelCalls != 0 || stubs.statusCalls != 0 {
 		t.Fatalf("the lane must refuse without a Hyperliquid script, status=%d cancel=%d", stubs.statusCalls, stubs.cancelCalls)
@@ -318,7 +318,7 @@ func TestReconcileCancelLaneLeavesAnIneligibleRowAloneWithNoCancelQueued(t *test
 	)
 
 	notifier, mock := newOrphanLaneNotifier()
-	reconcilePendingLimitOrders(state, cfg, db, &mu, notifier, nil)
+	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, notifier, nil)
 
 	if stubs.cancelCalls != 0 || stubs.statusCalls != 0 {
 		t.Fatalf("no cancellation is queued, so nothing must be issued: status=%d cancel=%d", stubs.statusCalls, stubs.cancelCalls)
@@ -357,7 +357,7 @@ func TestReconcileCancelLaneCancelsAnExpiredIneligibleRow(t *testing.T) {
 		},
 	)
 
-	reconcilePendingLimitOrders(state, cfg, db, &mu, nil, nil)
+	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, nil, nil)
 
 	if stubs.cancelCalls != 1 {
 		t.Fatalf("an expired orphaned row must also converge, calls = %d", stubs.cancelCalls)
@@ -390,7 +390,7 @@ func TestReconcileCancelLaneLeavesEligibleRowsToTheExistingBranch(t *testing.T) 
 	)
 
 	notifier, mock := newOrphanLaneNotifier()
-	reconcilePendingLimitOrders(state, cfg, db, &mu, notifier, nil)
+	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, notifier, nil)
 
 	if stubs.cancelCalls != 1 {
 		t.Fatalf("an eligible row must take the existing branch exactly once, calls = %d", stubs.cancelCalls)
@@ -445,7 +445,7 @@ func TestReconcileCancelLaneFlushesAnAdoptedFillBeforeClearingTheRow(t *testing.
 		},
 	)
 
-	reconcilePendingLimitOrders(state, cfg, db, &mu, nil, nil)
+	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, nil, nil)
 
 	if orders, _ := db.LoadPendingLimitOrders(); len(orders) != 0 {
 		t.Fatalf("row must be cleared once the adopted fill is flushed, got %+v", orders)
@@ -625,7 +625,7 @@ func TestReconcileCancelLaneReportsAFinalizeWithoutACancelHonestly(t *testing.T)
 	)
 
 	notifier, mock := newOrphanLaneNotifier()
-	reconcilePendingLimitOrders(state, cfg, db, &mu, notifier, nil)
+	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, notifier, nil)
 
 	if len(mock.dms) != 1 {
 		t.Fatalf("dms = %+v", mock.dms)
@@ -660,12 +660,12 @@ func TestReconcileCancelLaneBacksOffTheExchangePollForAnUnresolvableRow(t *testi
 		},
 	)
 
-	reconcilePendingLimitOrders(state, cfg, db, &mu, nil, nil)
+	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, nil, nil)
 	if stubs.statusCalls != 1 {
 		t.Fatalf("first pass must poll once, calls = %d", stubs.statusCalls)
 	}
-	reconcilePendingLimitOrders(state, cfg, db, &mu, nil, nil)
-	reconcilePendingLimitOrders(state, cfg, db, &mu, nil, nil)
+	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, nil, nil)
+	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, nil, nil)
 	if stubs.statusCalls != 1 {
 		t.Fatalf("a row the lane cannot resolve must not re-poll every cycle, calls = %d", stubs.statusCalls)
 	}
@@ -681,7 +681,7 @@ func TestReconcileCancelLaneBacksOffTheExchangePollForAnUnresolvableRow(t *testi
 	if err := db.MarkPendingLimitOrderOperatorRequired(row.ID, time.Now().UTC().Add(-2*time.Hour)); err != nil {
 		t.Fatalf("age the marker: %v", err)
 	}
-	reconcilePendingLimitOrders(state, cfg, db, &mu, nil, nil)
+	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, nil, nil)
 	if stubs.statusCalls != 2 {
 		t.Fatalf("the lane must poll again once the backoff window elapses, calls = %d", stubs.statusCalls)
 	}
@@ -735,8 +735,8 @@ func TestReconcileCancelLaneBacksOffEachUnresolvableRowIndependently(t *testing.
 		},
 	)
 
-	reconcilePendingLimitOrders(state, cfg, db, &mu, nil, nil)
-	reconcilePendingLimitOrders(state, cfg, db, &mu, nil, nil)
+	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, nil, nil)
+	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, nil, nil)
 
 	if polled[9001] != 1 || polled[9002] != 1 {
 		t.Fatalf("each row must be polled once and then deferred on its own marker, polls = %+v", polled)
@@ -780,7 +780,7 @@ func TestReconcileCancelLaneClearsTheMarkerWhenTheStrategyBecomesAdoptable(t *te
 	)
 
 	cfg := &Config{Strategies: []StrategyConfig{sc}}
-	reconcilePendingLimitOrders(state, cfg, db, &mu, nil, nil)
+	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, nil, nil)
 
 	if stubs.statusCalls != 1 || stubs.cancelCalls != 1 {
 		t.Fatalf("the backoff must never delay the eligible branch, status=%d cancel=%d", stubs.statusCalls, stubs.cancelCalls)
@@ -817,7 +817,7 @@ func TestReconcileCancelLaneClearsTheMarkerWhenTheStateStopsBeingTerminal(t *tes
 		},
 	)
 
-	reconcilePendingLimitOrders(state, cfg, db, &mu, nil, nil)
+	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, nil, nil)
 
 	orders, _ := db.LoadPendingLimitOrders()
 	if len(orders) != 1 {
@@ -979,7 +979,7 @@ func TestReconcileStopsAlertingOnceTheOperatorClearsTheRow(t *testing.T) {
 	)
 
 	notifier, mock := newOrphanLaneNotifier()
-	reconcilePendingLimitOrders(state, cfg, db, &mu, notifier, nil)
+	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, notifier, nil)
 	if len(mock.dms) != 1 {
 		t.Fatalf("the first pass must alert, dms = %+v", mock.dms)
 	}
@@ -996,8 +996,8 @@ func TestReconcileStopsAlertingOnceTheOperatorClearsTheRow(t *testing.T) {
 	}
 
 	before := stubs.statusCalls
-	reconcilePendingLimitOrders(state, cfg, db, &mu, notifier, nil)
-	reconcilePendingLimitOrders(state, cfg, db, &mu, notifier, nil)
+	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, notifier, nil)
+	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, notifier, nil)
 
 	if stubs.statusCalls != before {
 		t.Errorf("a cleared row must drive no further exchange poll, calls = %d want %d", stubs.statusCalls, before)
@@ -1123,13 +1123,13 @@ func TestReconcileDeliversAnEscalationDMAfterARestingAlert(t *testing.T) {
 	)
 
 	notifier, mock := newOrphanLaneNotifier()
-	reconcilePendingLimitOrders(state, cfg, db, &mu, notifier, nil)
+	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, notifier, nil)
 	if len(mock.dms) != 1 || !strings.Contains(mock.dms[0].content, "IS STILL RESTING") {
 		t.Fatalf("the cancel failure must alert as a resting order, dms = %+v", mock.dms)
 	}
 
 	resting = false
-	reconcilePendingLimitOrders(state, cfg, db, &mu, notifier, nil)
+	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, notifier, nil)
 	if len(mock.dms) != 2 {
 		t.Fatalf("the untracked position must reach the owner in the same throttle window, dms = %d", len(mock.dms))
 	}

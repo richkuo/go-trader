@@ -52,7 +52,7 @@ func slPlacementFailureLeftNaked(cancelSucceeded bool, oldOID int64) bool {
 	return cancelSucceeded || oldOID == 0
 }
 
-func pendingSLActionExists(stateDB *StateDB, strategyID, symbol string) (bool, error) {
+func pendingSLActionExists(stateDB *StateStore, strategyID, symbol string) (bool, error) {
 	actions, err := stateDB.LoadPendingManualActions()
 	if err != nil {
 		return false, err
@@ -94,7 +94,7 @@ func runManualUpdateSL(args []string) int {
 	if !ok {
 		return 1
 	}
-	stateDB, err := OpenStateDB(cfg.DBFile)
+	stateDB, err := openToolStateStore(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to open state DB: %v\n", err)
 		return 1
@@ -135,7 +135,7 @@ func runManualCancelSL(args []string) int {
 	if !ok {
 		return 1
 	}
-	stateDB, err := OpenStateDB(cfg.DBFile)
+	stateDB, err := openToolStateStore(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to open state DB: %v\n", err)
 		return 1

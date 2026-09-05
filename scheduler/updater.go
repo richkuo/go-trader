@@ -13,7 +13,7 @@ import (
 
 const defaultGoTraderSystemdUnit = "go-trader"
 
-func checkForUpdates(cfg *Config, notifier *MultiNotifier, lastNotifiedHash *string, mu *sync.RWMutex, state *AppState, stateDB *StateDB) bool {
+func checkForUpdates(cfg *Config, notifier *MultiNotifier, lastNotifiedHash *string, mu *sync.RWMutex, state *AppState, store *StateStore) bool {
 	if err := gitCheck(); err != nil {
 		fmt.Printf("[update] Not a git repo or git unavailable: %v\n", err)
 		return false
@@ -66,7 +66,7 @@ func checkForUpdates(cfg *Config, notifier *MultiNotifier, lastNotifiedHash *str
 				notifier.SendOwnerDM("Upgrade skipped.")
 				return
 			}
-			applyUpgrade(notifier, mu, state, cfg, stateDB)
+			applyUpgrade(notifier, mu, state, cfg, store)
 		}()
 	}
 
@@ -77,7 +77,7 @@ func checkForUpdates(cfg *Config, notifier *MultiNotifier, lastNotifiedHash *str
 	return true
 }
 
-func applyUpgrade(notifier *MultiNotifier, mu *sync.RWMutex, state *AppState, cfg *Config, stateDB *StateDB) {
+func applyUpgrade(notifier *MultiNotifier, mu *sync.RWMutex, state *AppState, cfg *Config, store *StateStore) {
 	notifier.SendOwnerDM("Starting upgrade...")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
@@ -91,7 +91,7 @@ func applyUpgrade(notifier *MultiNotifier, mu *sync.RWMutex, state *AppState, cf
 	notifier.SendOwnerDM(fmt.Sprintf("update.sh OK:\n```\n%s\n```\nSaving state and restarting...", tailForDM(string(out), 1500)))
 
 	mu.Lock()
-	if err := SaveStateWithDB(state, cfg, stateDB); err != nil {
+	if err := SaveStateWithStore(state, store); err != nil {
 		fmt.Printf("[upgrade] Failed to save state: %v\n", err)
 	}
 	mu.Unlock()

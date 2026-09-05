@@ -157,21 +157,21 @@ func TestPendingSLActionExists(t *testing.T) {
 		t.Fatalf("insert other-strategy update-sl: %v", err)
 	}
 
-	if pending, err := pendingSLActionExists(db, "hl-eth", "ETH"); err != nil || pending {
+	if pending, err := pendingSLActionExists(openTestStore(t, db), "hl-eth", "ETH"); err != nil || pending {
 		t.Fatalf("expected no pending SL action for hl-eth/ETH (open + other-strategy only), got pending=%v err=%v", pending, err)
 	}
 
 	if err := db.InsertPendingManualAction(PendingManualAction{StrategyID: "hl-eth", Action: "update-sl", Symbol: "ETH", Side: "long", Quantity: 1, StopLossOID: 9, StopLossTriggerPx: 1950, CreatedAt: now}); err != nil {
 		t.Fatalf("insert same update-sl: %v", err)
 	}
-	if pending, err := pendingSLActionExists(db, "hl-eth", "eth"); err != nil || !pending {
+	if pending, err := pendingSLActionExists(openTestStore(t, db), "hl-eth", "eth"); err != nil || !pending {
 		t.Fatalf("expected pending SL action for hl-eth/eth, got pending=%v err=%v", pending, err)
 	}
 
 	if err := db.InsertPendingManualAction(PendingManualAction{StrategyID: "hl-sol", Action: "cancel-sl", Symbol: "SOL", Side: "long", CreatedAt: now}); err != nil {
 		t.Fatalf("insert cancel-sl: %v", err)
 	}
-	if pending, err := pendingSLActionExists(db, "hl-sol", "SOL"); err != nil || !pending {
+	if pending, err := pendingSLActionExists(openTestStore(t, db), "hl-sol", "SOL"); err != nil || !pending {
 		t.Fatalf("expected pending cancel-sl action for hl-sol/SOL, got pending=%v err=%v", pending, err)
 	}
 }

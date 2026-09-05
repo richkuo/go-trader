@@ -37,29 +37,36 @@ func runDiagnostics(args []string) int {
 		return 2
 	}
 
-	path := *dbPath
-	if path == "" {
-		resolved, err := diagnosticsDBPathFromConfig(*configPath)
+	// --db stays single-file; without it the report spans every owned file.
+	var reader diagnosticsReader
+	if *dbPath != "" {
+		if _, err := os.Stat(*dbPath); err != nil {
+			fmt.Fprintf(os.Stderr, "diagnostics: state DB %s not found: %v\n", *dbPath, err)
+			return 1
+		}
+		db, err := sql.Open("sqlite", "file:"+*dbPath+"?mode=ro&_pragma=busy_timeout(5000)")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "diagnostics: open %s: %v\n", *dbPath, err)
+			return 1
+		}
+		defer db.Close()
+		reader = &StateDB{db: db, readOnly: true, role: storageRolePrimary}
+	} else {
+		cfg, err := LoadConfig(*configPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "diagnostics: %v\n", err)
 			return 1
 		}
-		path = resolved
-	}
-	if _, err := os.Stat(path); err != nil {
-		fmt.Fprintf(os.Stderr, "diagnostics: state DB %s not found: %v\n", path, err)
-		return 1
+		store, err := openToolStateStoreReadOnly(cfg)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "diagnostics: %v\n", err)
+			return 1
+		}
+		defer store.Close()
+		reader = store
 	}
 
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro&_pragma=busy_timeout(5000)")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "diagnostics: open %s: %v\n", path, err)
-		return 1
-	}
-	defer db.Close()
-	sdb := &StateDB{db: db}
-
-	rows, err := sdb.TradeDiagnosticsRows(*strategyID)
+	rows, err := reader.TradeDiagnosticsRows(*strategyID)
 	if err != nil {
 		if strings.Contains(err.Error(), "no such table") {
 			fmt.Println("No diagnostics recorded yet (the trade_diagnostics table is created on the daemon's next start; rows appear as positions close).")
@@ -68,7 +75,7 @@ func runDiagnostics(args []string) int {
 		fmt.Fprintf(os.Stderr, "diagnostics: %v\n", err)
 		return 1
 	}
-	netByPos, err := sdb.NetPnLByPosition(*strategyID)
+	netByPos, err := reader.NetPnLByPosition(*strategyID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "diagnostics: %v\n", err)
 		return 1
@@ -79,6 +86,13 @@ func runDiagnostics(args []string) int {
 		MinBucket: *minBucket,
 	}))
 	return 0
+}
+
+// diagnosticsReader is satisfied by one file and by the combined store, so the
+// report reads the same way from either.
+type diagnosticsReader interface {
+	TradeDiagnosticsRows(strategyID string) ([]TradeDiagnosticsRow, error)
+	NetPnLByPosition(strategyID string) (map[string]map[string]float64, error)
 }
 
 func diagnosticsDBPathFromConfig(path string) (string, error) {

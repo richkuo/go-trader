@@ -83,6 +83,11 @@ type RegimeWindowTransitionRow struct {
 	BarTime   string `json:"bar_time,omitempty"`
 	TS        string `json:"ts"`
 	AlertedAt string `json:"alerted_at,omitempty"`
+
+	// SourceRole names the file a combined read took the row from. New writes
+	// always go to the primary; a paper file's pre-split history stays where it
+	// is and is reported with its source.
+	SourceRole storageRole `json:"-"`
 }
 
 type RegimeWindowHistoryEntry struct {
@@ -184,6 +189,7 @@ func (sdb *StateDB) RecentRegimeWindowTransitions(limit int) ([]RegimeWindowTran
 			&r.OldLabel, &r.NewLabel, &r.BarTime, &r.TS, &r.AlertedAt); err != nil {
 			return nil, err
 		}
+		r.SourceRole = sdb.storageRoleOf()
 		out = append(out, r)
 	}
 	return out, rows.Err()
@@ -504,7 +510,7 @@ func processRegimeReversal(sdb *StateDB, b *RegimeBundle, rc *RegimeConfig, noti
 	regimeAlertSendFn(notifier, formatRegimeReversalDM(b.Key, result))
 }
 
-func recentRegimeTransitionsNote(sdb *StateDB, rc *RegimeConfig, now time.Time) string {
+func recentRegimeTransitionsNote(sdb *StateStore, rc *RegimeConfig, now time.Time) string {
 	if sdb == nil || rc == nil || !rc.Transitions.enabled() {
 		return ""
 	}

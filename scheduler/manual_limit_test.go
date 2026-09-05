@@ -144,7 +144,7 @@ func TestReconcilePendingLimitOrdersAnchorsLookbackToPlacement(t *testing.T) {
 			return &HyperliquidCancelOrderResult{}, "", nil
 		},
 	)
-	reconcilePendingLimitOrders(state, cfg, db, &mu, nil, nil)
+	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, nil, nil)
 
 	want := limitStatusSinceMs(placed)
 	if gotSinceMs != want {
@@ -334,7 +334,7 @@ func TestManualLimitOpenRefusesQueuedMarketAction(t *testing.T) {
 		return &HyperliquidLimitOpenResult{Status: "resting", OrderOID: 9001}, "", nil
 	})
 
-	rc := runManualLimitOpen(cfg, sc, db, manualLimitOpenInputs{
+	rc := runManualLimitOpen(cfg, sc, openTestStore(t, db), manualLimitOpenInputs{
 		strategyID: sc.ID, side: "long", openSide: "buy", margin: 50, limitPrice: 2000, tif: "Alo",
 	})
 	if rc == 0 {
@@ -358,7 +358,7 @@ func TestManualOpenCoreRefusesQueuedLimitOrder(t *testing.T) {
 		t.Fatalf("insert pending limit: %v", err)
 	}
 
-	deps := newCLIManualCoreDeps(cfg, db, nil)
+	deps := newCLIManualCoreDeps(cfg, openTestStore(t, db), nil)
 	deps.fetchMids = func([]string) (map[string]float64, error) {
 		return map[string]float64{sc.Symbol: 2000}, nil
 	}
@@ -412,7 +412,7 @@ func TestManualLimitOpenLockPreventsCrossProcessDoubleFire(t *testing.T) {
 		strategyID: sc.ID, side: "long", openSide: "buy", margin: 50, limitPrice: 2000, tif: "Alo",
 	}
 	aDone := make(chan int, 1)
-	go func() { aDone <- runManualLimitOpen(cfg, sc, dbA, input) }()
+	go func() { aDone <- runManualLimitOpen(cfg, sc, openTestStore(t, dbA), input) }()
 
 	select {
 	case <-enteredSubmit:
@@ -423,7 +423,7 @@ func TestManualLimitOpenLockPreventsCrossProcessDoubleFire(t *testing.T) {
 	}
 
 	bDone := make(chan int, 1)
-	go func() { bDone <- runManualLimitOpen(cfg, sc, dbB, input) }()
+	go func() { bDone <- runManualLimitOpen(cfg, sc, openTestStore(t, dbB), input) }()
 
 	select {
 	case rc := <-bDone:
@@ -507,7 +507,7 @@ func TestManualCloseCancelsPartialLimitRemainderBeforeFlatten(t *testing.T) {
 			return &HyperliquidCancelOrderResult{OID: 9001, Cancelled: true}, "", nil
 		},
 	)
-	deps := newCLIManualCoreDeps(cfg, db, nil)
+	deps := newCLIManualCoreDeps(cfg, openTestStore(t, db), nil)
 	execCalls := 0
 	deps.execute = func(string, string, string, float64, float64, int64, float64, string, float64, bool, hlExecuteSnapshot, ...int64) (*HyperliquidExecuteResult, string, error) {
 		execCalls++
@@ -556,7 +556,7 @@ func TestManualCloseReconcilesStaleSnapshotAgainstAdoptedLimitFill(t *testing.T)
 			return &HyperliquidCancelOrderResult{OID: 9001, Cancelled: true}, "", nil
 		},
 	)
-	deps := newCLIManualCoreDeps(cfg, db, nil)
+	deps := newCLIManualCoreDeps(cfg, openTestStore(t, db), nil)
 	var gotCloseQty float64
 	var gotFullClose bool
 	deps.execute = func(_ string, _ string, _ string, size float64, _ float64, _ int64, _ float64, _ string, _ float64, closeFull bool, _ hlExecuteSnapshot, _ ...int64) (*HyperliquidExecuteResult, string, error) {
@@ -614,7 +614,7 @@ func staleReconcileCloseHarness(t *testing.T) (*Config, StrategyConfig, *StateDB
 
 func TestManualCloseAcceptsExplicitQtyMatchingReconciledSize(t *testing.T) {
 	cfg, sc, db := staleReconcileCloseHarness(t)
-	deps := newCLIManualCoreDeps(cfg, db, nil)
+	deps := newCLIManualCoreDeps(cfg, openTestStore(t, db), nil)
 	var gotCloseQty float64
 	deps.execute = func(_ string, _ string, _ string, size float64, _ float64, _ int64, _ float64, _ string, _ float64, _ bool, _ hlExecuteSnapshot, _ ...int64) (*HyperliquidExecuteResult, string, error) {
 		gotCloseQty = size
@@ -635,7 +635,7 @@ func TestManualCloseAcceptsExplicitQtyMatchingReconciledSize(t *testing.T) {
 
 func TestManualClosePartialQtyBetweenStaleAndReconciledSize(t *testing.T) {
 	cfg, sc, db := staleReconcileCloseHarness(t)
-	deps := newCLIManualCoreDeps(cfg, db, nil)
+	deps := newCLIManualCoreDeps(cfg, openTestStore(t, db), nil)
 	var gotCloseQty float64
 	var gotFullClose bool
 	deps.execute = func(_ string, _ string, _ string, size float64, _ float64, _ int64, _ float64, _ string, _ float64, closeFull bool, _ hlExecuteSnapshot, _ ...int64) (*HyperliquidExecuteResult, string, error) {
@@ -661,7 +661,7 @@ func TestManualClosePartialQtyBetweenStaleAndReconciledSize(t *testing.T) {
 
 func TestManualCloseRejectsQtyExceedingReconciledSize(t *testing.T) {
 	cfg, sc, db := staleReconcileCloseHarness(t)
-	deps := newCLIManualCoreDeps(cfg, db, nil)
+	deps := newCLIManualCoreDeps(cfg, openTestStore(t, db), nil)
 	deps.execute = func(string, string, string, float64, float64, int64, float64, string, float64, bool, hlExecuteSnapshot, ...int64) (*HyperliquidExecuteResult, string, error) {
 		t.Error("execute must not run when --qty exceeds the reconciled position")
 		return nil, "", errors.New("execute called")
@@ -698,7 +698,7 @@ func staleReadRowGoneCloseHarness(t *testing.T) (StrategyConfig, manualCoreDeps,
 		Args: []string{"hold", "ETH", "30m", "--mode=live"},
 	})
 
-	deps := newCLIManualCoreDeps(cfg, db, nil)
+	deps := newCLIManualCoreDeps(cfg, openTestStore(t, db), nil)
 	realLoad := deps.loadState
 	callN := 0
 	deps.loadState = func(id, sym string) (manualStateView, error) {
@@ -773,7 +773,7 @@ func TestManualAddCancelsPartialLimitRemainderBeforeAveraging(t *testing.T) {
 			return &HyperliquidCancelOrderResult{OID: 9001, Cancelled: true}, "", nil
 		},
 	)
-	deps := newCLIManualCoreDeps(cfg, db, nil)
+	deps := newCLIManualCoreDeps(cfg, openTestStore(t, db), nil)
 	deps.fetchMids = func([]string) (map[string]float64, error) {
 		return map[string]float64{sc.Symbol: 2000}, nil
 	}
@@ -810,7 +810,7 @@ func TestManualCloseDefersWhenLimitCancelHasUnadoptedFill(t *testing.T) {
 			return &HyperliquidCancelOrderResult{OID: 9001, Cancelled: true}, "", nil
 		},
 	)
-	deps := newCLIManualCoreDeps(cfg, db, nil)
+	deps := newCLIManualCoreDeps(cfg, openTestStore(t, db), nil)
 	deps.execute = func(string, string, string, float64, float64, int64, float64, string, float64, bool, hlExecuteSnapshot, ...int64) (*HyperliquidExecuteResult, string, error) {
 		t.Error("execute must not run while a limit fill is unadopted")
 		return nil, "", errors.New("execute called")
@@ -841,7 +841,7 @@ func TestManualAddDefersWhenLimitCancelBookStateUnknown(t *testing.T) {
 			return &HyperliquidCancelOrderResult{OID: 9001, Cancelled: true}, "", nil
 		},
 	)
-	deps := newCLIManualCoreDeps(cfg, db, nil)
+	deps := newCLIManualCoreDeps(cfg, openTestStore(t, db), nil)
 	deps.fetchMids = func([]string) (map[string]float64, error) {
 		return map[string]float64{sc.Symbol: 2000}, nil
 	}
@@ -973,7 +973,7 @@ func TestReconcilePendingLimitOrdersFullFill(t *testing.T) {
 		},
 	)
 
-	alerts := reconcilePendingLimitOrders(state, cfg, db, &mu, nil, nil)
+	alerts := reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, nil, nil)
 	if len(alerts) != 1 || alerts[0].trades != 1 {
 		t.Fatalf("alerts = %+v", alerts)
 	}
@@ -1018,7 +1018,7 @@ func TestReconcilePendingLimitOrdersFullFillFlushesPositionBeforeRowDelete(t *te
 		},
 	)
 
-	reconcilePendingLimitOrders(state, cfg, db, &mu, nil, nil)
+	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, nil, nil)
 
 	if orders, _ := db.LoadPendingLimitOrders(); len(orders) != 0 {
 		t.Fatalf("terminal row not deleted: %+v", orders)
@@ -1057,7 +1057,7 @@ func TestReconcilePendingLimitOrdersPartialThenComplete(t *testing.T) {
 			return &HyperliquidCancelOrderResult{}, "", nil
 		},
 	)
-	reconcilePendingLimitOrders(state, cfg, db, &mu, nil, nil)
+	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, nil, nil)
 	pos := state.Strategies[sc.ID].Positions["ETH"]
 	if pos == nil || pos.Quantity != 0.4 {
 		t.Fatalf("after partial: pos=%+v", pos)
@@ -1077,7 +1077,7 @@ func TestReconcilePendingLimitOrdersPartialThenComplete(t *testing.T) {
 			return &HyperliquidCancelOrderResult{}, "", nil
 		},
 	)
-	reconcilePendingLimitOrders(state, cfg, db, &mu, nil, nil)
+	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, nil, nil)
 	pos = state.Strategies[sc.ID].Positions["ETH"]
 	if pos.Quantity != 1.0 || pos.AvgCost != 2005 {
 		t.Fatalf("after complete: pos=%+v", pos)
@@ -1110,7 +1110,7 @@ func TestReconcilePendingLimitOrdersCancelRequested(t *testing.T) {
 			return &HyperliquidCancelOrderResult{OID: 9001, Cancelled: true}, "", nil
 		},
 	)
-	reconcilePendingLimitOrders(state, cfg, db, &mu, nil, nil)
+	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, nil, nil)
 	if cancelCalls != 1 {
 		t.Errorf("cancel calls = %d, want 1", cancelCalls)
 	}
@@ -1131,7 +1131,7 @@ func TestReconcilePendingLimitOrdersCancelRequested(t *testing.T) {
 			return &HyperliquidCancelOrderResult{}, "", nil
 		},
 	)
-	reconcilePendingLimitOrders(state, cfg, db, &mu, nil, nil)
+	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, nil, nil)
 	if orders, _ := db.LoadPendingLimitOrders(); len(orders) != 0 {
 		t.Errorf("expected row deleted after cancel finalize, got %d", len(orders))
 	}
@@ -1160,7 +1160,7 @@ func TestReconcilePendingLimitOrdersExpiry(t *testing.T) {
 			return &HyperliquidCancelOrderResult{OID: 9001, Cancelled: true}, "", nil
 		},
 	)
-	reconcilePendingLimitOrders(state, cfg, db, &mu, nil, nil)
+	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, nil, nil)
 	if cancelCalls != 1 {
 		t.Errorf("expiry should issue a cancel, calls = %d", cancelCalls)
 	}
@@ -1185,7 +1185,7 @@ func TestReconcilePendingLimitOrdersDeferOnUnknownBook(t *testing.T) {
 			return &HyperliquidCancelOrderResult{}, "", nil
 		},
 	)
-	reconcilePendingLimitOrders(state, cfg, db, &mu, nil, nil)
+	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, nil, nil)
 	if orders, _ := db.LoadPendingLimitOrders(); len(orders) != 1 {
 		t.Errorf("row must be retained when book state is unknown, got %d", len(orders))
 	}

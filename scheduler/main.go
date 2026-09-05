@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -28,6 +27,7 @@ var knownSubcommands = []string{
 	"backfill",
 	"probe",
 	"inspect",
+	"storage-inspect",
 	"agent-info",
 	"diagnostics",
 	"version",
@@ -76,6 +76,8 @@ func main() {
 			os.Exit(runProbe(os.Args[2:]))
 		case "inspect":
 			os.Exit(runInspect(os.Args[2:]))
+		case "storage-inspect":
+			os.Exit(runStorageInspect(os.Args[2:]))
 		case "agent-info":
 			os.Exit(runAgentInfo(os.Args[2:]))
 		case "diagnostics":
@@ -142,23 +144,78 @@ func main() {
 		fmt.Println(line)
 	}
 
+	storageLayoutCfg, err := resolveStorageLayout(cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[storage] CRITICAL: %v\n", err)
+		os.Exit(ExitStorageOwnership)
+	}
+	storageIdent, err := buildStorageIdentityMap(cfg, storageLayoutCfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[storage] CRITICAL: %v\n", err)
+		os.Exit(ExitStorageOwnership)
+	}
+	fmt.Printf("[storage] layout: %s\n", storageLayoutCfg.describe())
+	for _, spec := range storageLayoutCfg.Files {
+		fmt.Printf("[storage]   %s -> %s\n", spec.Role, spec.Canonical)
+	}
+
+	// One-shot reporting modes read only: no migration, no startup write, no
+	// ownership lock, so they can run beside a live daemon.
+	readOnlyReport := *summary != "" || *leaderboard
+
+	var ownership *stateOwnership
+	if !readOnlyReport && schedulerNeedsOwnership(*once) {
+		owned, lockErr := acquireStateOwnership(storageLayoutCfg.Files)
+		if lockErr != nil {
+			reportStateOwnershipFailure(lockErr)
+			os.Exit(ExitSingletonLock)
+		}
+		ownership = owned
+		defer ownership.Release()
+	}
+
+	if !readOnlyReport {
+		si, inspectErr := inspectStorageOwnership(storageLayoutCfg, storageIdent, cfg, false)
+		if inspectErr != nil {
+			fmt.Fprintf(os.Stderr, "[storage] CRITICAL: ownership inspection failed: %v\n", inspectErr)
+			os.Exit(ExitStorageOwnership)
+		}
+		if !si.OK() {
+			fmt.Fprint(os.Stderr, formatStorageInspection(si))
+			fmt.Fprintf(os.Stderr, "[storage] CRITICAL: refusing to start with a rejected storage layout (exit %d)\n", ExitStorageOwnership)
+			os.Exit(ExitStorageOwnership)
+		}
+	}
+
 	var missingStateWarning string
 	if msg := CheckStatePresence(cfg.DBFile, cfg.Strategies); msg != "" && !AllowMissingState() {
 		fmt.Fprintln(os.Stderr, msg)
 		missingStateWarning = msg
 	}
+	if paper, ok := storageLayoutCfg.spec(storageRolePaper); ok {
+		if _, statErr := os.Stat(paper.Canonical); statErr != nil {
+			fmt.Printf("[storage] paper state file %q is absent; it will be created on the first save\n", paper.Path)
+		}
+	}
 
-	stateDB, err := OpenStateDB(cfg.DBFile)
+	openStore := OpenStateStore
+	if readOnlyReport {
+		openStore = OpenStateStoreReadOnly
+	}
+	store, err := openStore(storageLayoutCfg, storageIdent)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to open state DB: %v\n", err)
+		if readOnlyReport {
+			fmt.Fprintln(os.Stderr, "One-shot reporting opens the state files read-only. If the schema predates this build, start the daemon once so migrations run, then retry.")
+		}
 		os.Exit(1)
 	}
-	defer stateDB.Close()
+	defer store.Close()
 
-	tradeRecorder = stateDB.InsertTrade
-	modelOnlyCloseUpdater = stateDB.ReconcileModelOnlyClose
-	modelOnlyCloseBasisLoader = stateDB.LoadModelOnlyCloseBasis
-	modelOnlyCloseAbandonMarker = stateDB.MarkModelOnlyCloseAbandoned
+	tradeRecorder = store.InsertTrade
+	modelOnlyCloseUpdater = store.ReconcileModelOnlyClose
+	modelOnlyCloseBasisLoader = store.LoadModelOnlyCloseBasis
+	modelOnlyCloseAbandonMarker = store.MarkModelOnlyCloseAbandoned
 
 	if strings.TrimSpace(cfg.ReplayLogPath) != "" {
 		dl, dlErr := OpenDecisionLogDB(cfg.ReplayLogPath)
@@ -172,7 +229,7 @@ func main() {
 	}
 	rebuildReplayLiveSources(cfg)
 
-	state, err := LoadStateWithDB(cfg, stateDB)
+	state, storageOrphans, err := LoadStateWithStore(cfg, store)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to load state: %v\n", err)
 		os.Exit(1)
@@ -185,7 +242,10 @@ func main() {
 
 	resolveCapitalPct(cfg.Strategies)
 
-	initialCapitalChangeInfos, initialCapitalChangeErrors := ReconcileConfigInitialCapital(cfg, state, stateDB)
+	var initialCapitalChangeInfos, initialCapitalChangeErrors []string
+	if !readOnlyReport {
+		initialCapitalChangeInfos, initialCapitalChangeErrors = ReconcileConfigInitialCapital(cfg, state, store)
+	}
 
 	sharedWalletTransitionBlockers := sharedWalletPoolTransitionBlockers(cfg.Strategies, state)
 	var sharedWalletTransitionWarnings []string
@@ -229,8 +289,8 @@ func main() {
 			continue
 		}
 		if poolTransition != sharedWalletPoolStateUnchanged {
-			if stateExisted {
-				if err := stateDB.PersistSharedWalletPoolStateTransition(s); err != nil {
+			if stateExisted && !readOnlyReport {
+				if err := store.PersistSharedWalletPoolStateTransition(s); err != nil {
 					fmt.Fprintf(os.Stderr, "Failed to persist shared-wallet pool state for %s: %v\n", sc.ID, err)
 					os.Exit(1)
 				}
@@ -255,6 +315,14 @@ func main() {
 			fmt.Printf("  Pruned stale strategy: %s\n", id)
 			pruned = true
 		}
+	}
+	for _, orphan := range storageOrphans {
+		fmt.Printf("  Pruned stale strategy: %s [%s state file, %d position(s)]\n", orphan.StorageID, orphan.Role, orphan.PositionCount)
+		if orphan.PositionCount > 0 {
+			fmt.Fprintf(os.Stderr, "[storage] WARN: stale strategy %s in the %s state file still holds %d position(s); the next save of that file drops the row\n",
+				orphan.StorageID, orphan.Role, orphan.PositionCount)
+		}
+		pruned = true
 	}
 
 	startupScopes := activeScopes(cfg.Strategies)
@@ -310,7 +378,7 @@ func main() {
 	initShutdownContexts()
 
 	statusPort := resolveStatusPort(*statusPortFlag, cfg.StatusPort)
-	server := NewStatusServer(state, &mu, cfg.StatusToken, cfg.Strategies, stateDB)
+	server := NewStatusServer(state, &mu, cfg.StatusToken, cfg.Strategies, store)
 	server.SetConfigContext(*configPath, cfg)
 	tuningManager, tuningErr := newTuningRunManager(*configPath, nil, cfg.tuningMaxRetainedRuns())
 	if tuningErr != nil {
@@ -324,9 +392,10 @@ func main() {
 	}
 	server.Start(statusPort)
 
-	diagWorker := newTradeDiagnosticsWorker(FetchUICandles, stateDB.UpdateTradeDiagnosticsMetrics)
+	diagWorker := newTradeDiagnosticsWorker(FetchUICandles, store.UpdateTradeDiagnosticsMetrics)
+	diagWorker.splitStorage = store.Split()
 	diagWorker.UpdateStrategies(cfg.Strategies)
-	tradeDiagnosticsRecorder = stateDB.InsertTradeDiagnostics
+	tradeDiagnosticsRecorder = store.InsertTradeDiagnostics
 	tradeDiagnosticsEnqueue = diagWorker.Enqueue
 	go diagWorker.run(shutdownReadOnlyCtx)
 
@@ -402,7 +471,7 @@ func main() {
 	defer func() {
 		runDrain()
 		mu.Lock()
-		if err := SaveStateWithDB(state, cfg, stateDB); err != nil {
+		if err := SaveStateWithStore(state, store); err != nil {
 			fmt.Fprintf(os.Stderr, "[shutdown] Failed to save state: %v\n", err)
 		} else {
 			fmt.Println("[shutdown] State saved.")
@@ -472,7 +541,7 @@ func main() {
 	}
 
 	if *summary != "" {
-		runSummaryAndExit(*summary, cfg, state, stateDB, notifier)
+		runSummaryAndExit(*summary, cfg, state, store, notifier)
 	}
 
 	if *leaderboard {
@@ -485,8 +554,8 @@ func main() {
 			os.Exit(0)
 		}
 		prices := fetchPricesForSummary(cfg)
-		sharpeByStrategy := ComputeSharpeByStrategy(LoadClosedPositionsByStrategy(stateDB, cfg), cfg, state)
-		lifetimeStats := loadLifetimeStatsBestEffort(stateDB, "[leaderboard]")
+		sharpeByStrategy := ComputeSharpeByStrategy(LoadClosedPositionsByStrategy(store, cfg), cfg, state)
+		lifetimeStats := loadLifetimeStatsBestEffort(store, "[leaderboard]")
 		if err := PostLeaderboard(cfg, state, prices, sharpeByStrategy, lifetimeStats, notifier); err != nil {
 			fmt.Fprintf(os.Stderr, "Leaderboard post failed: %v\n", err)
 			os.Exit(1)
@@ -520,31 +589,10 @@ func main() {
 		os.Exit(ExitProbeFailure)
 	}
 
-	if !*once {
-		lock, lockErr := acquireStateDBLock(cfg.DBFile)
-		if lockErr != nil {
-			var locked *stateDBLockedError
-			if errors.As(lockErr, &locked) {
-				msg := fmt.Sprintf("CRITICAL: %s — refusing to start so this process can't double-trade against the same state DB. If no other go-trader is actually running, the lock auto-releases on exit; check `pgrep -af go-trader`.", locked.Error())
-				fmt.Fprintln(os.Stderr, "[singleton] "+msg)
-				if notifier != nil && notifier.HasOwner() {
-					notifier.SendOwnerDM("**Singleton guard** — " + msg)
-				}
-			} else {
-				fmt.Fprintf(os.Stderr, "[singleton] CRITICAL: could not acquire state DB lock: %v — refusing to start.\n", lockErr)
-				if notifier != nil && notifier.HasOwner() {
-					notifier.SendOwnerDM(fmt.Sprintf("**Singleton guard** — could not acquire state DB lock, refusing to start: %v", lockErr))
-				}
-			}
-			os.Exit(ExitSingletonLock)
-		}
-		heldStateDBLock = lock
-	}
-
 	var lastNotifiedHash string
 
 	if cfg.AutoUpdate != "off" {
-		checkForUpdates(cfg, notifier, &lastNotifiedHash, &mu, state, stateDB)
+		checkForUpdates(cfg, notifier, &lastNotifiedHash, &mu, state, store)
 	}
 
 	deribitPricer := NewDeribitPricer()
@@ -619,7 +667,6 @@ func main() {
 
 	lastAutoUpdateCheck := time.Now()
 
-	saveFailures := 0
 	var resetGoroutineRunning atomic.Bool
 	sharedWalletRiskBalances := make(map[SharedWalletKey]sharedWalletRiskBalanceSnapshot)
 	sharedWalletRiskGeneration := 0
@@ -642,13 +689,13 @@ func main() {
 		channelTradeDetails := make(map[string][]string)
 
 		mu.Lock()
-		manualAlerts := drainPendingManualActions(state, cfg, stateDB)
+		manualAlerts := drainPendingManualActions(state, cfg, store)
 		mu.Unlock()
 		for _, ma := range manualAlerts {
 			sendTradeAlerts(ma.sc, ma.ss, ma.trades, &mu, notifier)
 		}
 
-		limitAlerts := reconcilePendingLimitOrders(state, cfg, stateDB, &mu, notifier, logMgr)
+		limitAlerts := reconcilePendingLimitOrders(state, cfg, store, &mu, notifier, logMgr)
 		for _, ma := range limitAlerts {
 			sendTradeAlerts(ma.sc, ma.ss, ma.trades, &mu, notifier)
 		}
@@ -678,15 +725,15 @@ func main() {
 			if audSec := liquidationAuditIntervalSeconds(cfg.Strategies, intervals); audSec > 0 && os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS") != "" {
 				now := time.Now().UTC()
 				if lastLiquidationAudit.IsZero() || now.Sub(lastLiquidationAudit) >= time.Duration(audSec)*time.Second {
-					if saveFailures >= 3 {
+					if allScopesSaveBlocked(store, cfg) {
 						fmt.Println("[CRITICAL] State save failed 3x, skipping off-cycle liquidation audit this pass")
-						offCycleAuditSaveDirty, saveFailures = flushOffCycleLiquidationAuditState(state, cfg, stateDB, &mu, 0, offCycleAuditSaveDirty, saveFailures, true)
+						offCycleAuditSaveDirty = flushOffCycleLiquidationAuditState(state, cfg, store, &mu, 0, offCycleAuditSaveDirty, true)
 						lastLiquidationAudit = time.Now().UTC()
 						continue
 					}
 					mutations := runOffCycleLiquidationAudit(cfg.Strategies, state, &mu, notifier, logMgr)
 					lastLiquidationAudit = time.Now().UTC()
-					offCycleAuditSaveDirty, saveFailures = flushOffCycleLiquidationAuditState(state, cfg, stateDB, &mu, mutations, offCycleAuditSaveDirty, saveFailures, false)
+					offCycleAuditSaveDirty = flushOffCycleLiquidationAuditState(state, cfg, store, &mu, mutations, offCycleAuditSaveDirty, false)
 					continue
 				}
 				delay := schedulerDelay(cfg.Strategies, intervals, lastRun, cfg.IntervalSeconds, time.Now(), tickSeconds)
@@ -809,7 +856,7 @@ func main() {
 		sharedWallets := detectSharedWallets(cfg.Strategies)
 		walletBalances := make(map[SharedWalletKey]float64)
 
-		if saveFailures >= 3 {
+		if allScopesSaveBlocked(store, cfg) {
 			fmt.Println("[CRITICAL] State save failed 3x, skipping trades this cycle")
 			globalRegimeStore.resetForCycle(time.Now().UTC())
 			mu.Lock()
@@ -916,7 +963,7 @@ func main() {
 			var walletLedgerFetches []walletLedgerFetchResult
 			if hlShared && hlStateFetched {
 				walletLedgerFetches = append(walletLedgerFetches,
-					fetchWalletLedgerEvents(stateDB, hlKey, time.Now().UTC()))
+					fetchWalletLedgerEvents(storeLiveDB(store), hlKey, time.Now().UTC()))
 			}
 
 			okxHasCreds := os.Getenv("OKX_API_KEY") != ""
@@ -1044,8 +1091,8 @@ func main() {
 					fmt.Printf("[WARN] [%s] %s\n", scopeLabel(scope), dailyLossPctBasisMissWarning)
 				}
 			}
-			ingestSharedWalletLedgers(stateDB, state, cfg.Strategies, sharedWallets, walletLedgerFetches)
-			driftResults := reconcileSharedWalletDisplayValues(cfg.Strategies, state, stateDB, sharedWallets, walletBalances, hlPositions, okxPositions, okxStateFetched)
+			ingestSharedWalletLedgers(storeLiveDB(store), state, cfg.Strategies, sharedWallets, walletLedgerFetches)
+			driftResults := reconcileSharedWalletDisplayValues(cfg.Strategies, state, storeLiveDB(store), sharedWallets, walletBalances, hlPositions, okxPositions, okxStateFetched)
 			mu.Unlock()
 
 			if manualBasisRebaselineDM != "" {
@@ -1083,17 +1130,17 @@ func main() {
 			}
 
 			if hlShared && hlStateFetched {
-				rec := reconcileCashflowJournal(stateDB, hlKey, walletBalances[hlKey], sumHLAccountUPnL(hlPositions), hlSnapshotAt)
+				rec := reconcileCashflowJournal(storeLiveDB(store), hlKey, walletBalances[hlKey], sumHLAccountUPnL(hlPositions), hlSnapshotAt)
 				applyCashflowJournalDriftBasis(driftResults, hlKey, rec, cashflowJournalAlarmEnabled())
 			}
 
 			if okxShared && okxBalanceFetched {
-				okxRec := reconcileOKXCashflowJournal(stateDB, okxKey, walletBalances[okxKey], okxSnapshotUPnL, okxSnapshotAt)
+				okxRec := reconcileOKXCashflowJournal(storeLiveDB(store), okxKey, walletBalances[okxKey], okxSnapshotUPnL, okxSnapshotAt)
 				logOKXCashflowJournalShadow(driftResults, okxKey, okxRec)
 			}
 
 			if tsShared && tsBalanceFetched {
-				tsRec := reconcileTopStepCashflowJournal(stateDB, tsKey, tsSnapshotEquity, tsSnapshotUPnL, tsSnapshotAt)
+				tsRec := reconcileTopStepCashflowJournal(storeLiveDB(store), tsKey, tsSnapshotEquity, tsSnapshotUPnL, tsSnapshotAt)
 				logTopStepCashflowJournalShadow(driftResults, tsKey, tsRec)
 			}
 
@@ -1132,10 +1179,10 @@ func main() {
 					HLNoFillRecoverer: defaultHLKillSwitchNoFillRecoverer,
 					HLStopLossOIDs:    hlSLOIDs,
 					HLLimitOrderLoader: func() ([]PendingLimitOrder, error) {
-						if stateDB == nil {
+						if store == nil {
 							return nil, nil
 						}
-						return stateDB.LoadPendingLimitOrders()
+						return store.LoadPendingLimitOrders()
 					},
 					HLLimitOrderRoster: killSwitchLimitOrderRoster(cfg.Strategies),
 					HLLimitOrderDeps: killSwitchLimitOrderDeps{
@@ -1146,21 +1193,21 @@ func main() {
 							return runHyperliquidLimitStatusFn(script, symbol, oids, sinceMs)
 						},
 						Delete: func(id int64) error {
-							if stateDB == nil {
+							if store == nil {
 								return fmt.Errorf("state db unavailable")
 							}
-							return stateDB.DeletePendingLimitOrder(id)
+							return store.DeletePendingLimitOrder(id)
 						},
 						Flush: func() error {
 							mu.Lock()
 							defer mu.Unlock()
-							return SaveStateWithDB(state, cfg, stateDB)
+							return SaveStateWithStore(state, store)
 						},
 						MarkCancelRequested: func(strategyID, symbol string) (int64, error) {
-							if stateDB == nil {
+							if store == nil {
 								return 0, fmt.Errorf("state db unavailable")
 							}
-							return stateDB.MarkPendingLimitOrderCancelRequested(strategyID, symbol)
+							return store.MarkPendingLimitOrderCancelRequested(strategyID, symbol)
 						},
 					},
 					HLLimitOrderTimeout: 60 * time.Second,
@@ -1279,8 +1326,8 @@ func main() {
 				}
 
 				var recentTrades []Trade
-				if notifyWarn && stateDB != nil {
-					if rows, err := stateDB.RecentTrades(warnNow.Add(-portfolioWarningRecentWindow), portfolioWarningMaxRows); err != nil {
+				if notifyWarn && store != nil {
+					if rows, err := store.RecentTrades(warnNow.Add(-portfolioWarningRecentWindow), portfolioWarningMaxRows); err != nil {
 						fmt.Printf("[WARN] portfolio warning recent-trade lookup failed: %v\n", err)
 					} else {
 						recentTrades = rows
@@ -1389,7 +1436,7 @@ func main() {
 					addKillSwitchEvent(prs, "reset", "", resetDrawdownPct, 0, prs.PeakValue,
 						fmt.Sprintf("manual reset via DM (%s scope)", scopeLabel(target)))
 					prs.Events[len(prs.Events)-1].Scope = target
-					if err := SaveStateWithDB(state, cfg, stateDB); err != nil {
+					if err := SaveStateWithStore(state, store); err != nil {
 						fmt.Printf("[CRITICAL] Failed to save state after kill switch reset: %v\n", err)
 					}
 					remaining := state.latchedScopes()
@@ -1512,8 +1559,8 @@ func main() {
 			}
 
 			regimeStoreReady()
-			processRegimeTransitionAlerts(stateDB, globalRegimeStore, cfg.Regime, notifier, time.Now().UTC())
-			dueUnlatched := dueStrategiesNotLatched(dueStrategies, scopeRisk)
+			processRegimeTransitionAlerts(store.primary(), globalRegimeStore, cfg.Regime, notifier, time.Now().UTC())
+			dueUnlatched := dueStrategiesPersistable(store, dueStrategiesNotLatched(dueStrategies, scopeRisk))
 			hlBatchResults := runHyperliquidBatchPrePass(dueUnlatched, state, &mu, cfg, prices, notifier, func(format string, a ...any) {
 				fmt.Printf(format+"\n", a...)
 			})
@@ -1522,6 +1569,13 @@ func main() {
 				if stratState == nil {
 					continue
 				}
+				stratDB, stratDBErr := store.dbForStrategy(sc.ID)
+				if stratDBErr != nil {
+					fmt.Fprintf(os.Stderr, "[storage] CRITICAL: %v — skipping %s this cycle\n", stratDBErr, sc.ID)
+					continue
+				}
+				stratScope := portfolioScopeFor(sc)
+				persistenceHold := store.persistenceHoldsScope(stratScope)
 				sr := scopeRisk[portfolioScopeFor(sc)]
 				if sr == nil {
 					sr = &scopeCycleRisk{Scope: portfolioScopeFor(sc), Config: scopeRiskConfig(cfg, portfolioScopeFor(sc))}
@@ -1716,7 +1770,7 @@ func main() {
 				}
 				cbManageOnly := false
 				if !allowed {
-					notifyPerStrategyCircuitBreakerWithSnapshot(sc, cbSnapshot, reason, pv, sr.TotalPV, stateDB, notifier, sr.KillSwitchFired)
+					notifyPerStrategyCircuitBreakerWithSnapshot(sc, cbSnapshot, reason, pv, sr.TotalPV, stratDB, notifier, sr.KillSwitchFired)
 					logger.Warn("Risk block: %s (portfolio=$%.2f)", reason, pv)
 					if circuitBreakerPermitsManagement(reason, sc.Platform, sc.Type, hlPosQty) {
 						cbManageOnly = true
@@ -1765,6 +1819,10 @@ func main() {
 								logger.Warn("Notional cap: %s signal suppressed — new opens blocked, exits continue (#1344)", signalStr)
 								result.Signal = 0
 							}
+							if persistenceHold && pausedBlocksSignal(result.Signal, result.CloseFraction, okxPosQty, okxPosSide, true, false) {
+								logger.Warn("Persistence hold: %s signal suppressed — the %s scope has an unacknowledged state save failure, so no new exposure is taken; exits, stops, ratchet and protection continue (#1523)", signalStr, scopeLabel(stratScope))
+								result.Signal = 0
+							}
 							if capBlocked, capWhy := exposureCapBlocksSignal(sr.ExposureCapStatus, extractAsset(sc), result.Signal, result.CloseFraction, okxPosQty, okxPosSide, true, false); capBlocked {
 								logger.Warn("Exposure cap: %s signal suppressed — %s (#1270)", signalStr, capWhy)
 								result.Signal = 0
@@ -1784,7 +1842,7 @@ func main() {
 							if !liveExecFailed {
 								var cashAlert string
 								mu.Lock()
-								trades, detail, cashAlert = executeOKXResult(sc, stratState, stateDB, result, execResult, signalStr, price, cfg.Regime, cfg, hurstDecision, logger)
+								trades, detail, cashAlert = executeOKXResult(sc, stratState, stratDB, result, execResult, signalStr, price, cfg.Regime, cfg, hurstDecision, logger)
 								mu.Unlock()
 								if cashAlert != "" {
 									notifySpotLiveCashOverBudget(notifier, cashAlert)
@@ -1821,6 +1879,10 @@ func main() {
 								logger.Warn("Notional cap: %s signal suppressed — new opens blocked, exits continue (#1344)", signalStr)
 								result.Signal = 0
 							}
+							if persistenceHold && pausedBlocksSignal(result.Signal, result.CloseFraction, rhPosQty, rhPosSide, true, false) {
+								logger.Warn("Persistence hold: %s signal suppressed — the %s scope has an unacknowledged state save failure, so no new exposure is taken; exits, stops, ratchet and protection continue (#1523)", signalStr, scopeLabel(stratScope))
+								result.Signal = 0
+							}
 							if capBlocked, capWhy := exposureCapBlocksSignal(sr.ExposureCapStatus, extractAsset(sc), result.Signal, result.CloseFraction, rhPosQty, rhPosSide, true, false); capBlocked {
 								logger.Warn("Exposure cap: %s signal suppressed — %s (#1270)", signalStr, capWhy)
 								result.Signal = 0
@@ -1840,7 +1902,7 @@ func main() {
 							if !liveExecFailed {
 								var cashAlert string
 								mu.Lock()
-								trades, detail, cashAlert = executeRobinhoodResult(sc, stratState, stateDB, result, execResult, signalStr, price, cfg.Regime, cfg, hurstDecision, logger)
+								trades, detail, cashAlert = executeRobinhoodResult(sc, stratState, stratDB, result, execResult, signalStr, price, cfg.Regime, cfg, hurstDecision, logger)
 								mu.Unlock()
 								if cashAlert != "" {
 									notifySpotLiveCashOverBudget(notifier, cashAlert)
@@ -1875,13 +1937,17 @@ func main() {
 							logger.Warn("Notional cap: %s signal suppressed — new opens blocked, exits continue (#1344)", signalStr)
 							result.Signal = 0
 						}
+						if persistenceHold && pausedBlocksSignal(result.Signal, result.CloseFraction, spotPosCtx.Quantity, spotPosCtx.Side, true, false) {
+							logger.Warn("Persistence hold: %s signal suppressed — the %s scope has an unacknowledged state save failure, so no new exposure is taken; exits, stops, ratchet and protection continue (#1523)", signalStr, scopeLabel(stratScope))
+							result.Signal = 0
+						}
 						if capBlocked, capWhy := exposureCapBlocksSignal(sr.ExposureCapStatus, extractAsset(sc), result.Signal, result.CloseFraction, spotPosCtx.Quantity, spotPosCtx.Side, true, false); capBlocked {
 							logger.Warn("Exposure cap: %s signal suppressed — %s (#1270)", signalStr, capWhy)
 							result.Signal = 0
 						}
 						mu.Lock()
 						syncStrategyRegimeState(stratState, storeRegime, cfg.Regime)
-						trades, detail = executeSpotResult(sc, stratState, stateDB, result, signalStr, price, cfg.Regime, cfg, hurstDecision, logger)
+						trades, detail = executeSpotResult(sc, stratState, stratDB, result, signalStr, price, cfg.Regime, cfg, hurstDecision, logger)
 						mu.Unlock()
 					}
 				case "options":
@@ -1962,6 +2028,10 @@ func main() {
 								logger.Warn("Notional cap: %s signal suppressed — new opens blocked, exits continue (#1344)", signalStr)
 								result.Signal = 0
 							}
+							if persistenceHold && pausedBlocksSignal(result.Signal, result.CloseFraction, okxPosQty, okxPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)) {
+								logger.Warn("Persistence hold: %s signal suppressed — the %s scope has an unacknowledged state save failure, so no new exposure is taken; exits, stops, ratchet and protection continue (#1523)", signalStr, scopeLabel(stratScope))
+								result.Signal = 0
+							}
 							if capBlocked, capWhy := exposureCapBlocksSignal(sr.ExposureCapStatus, extractAsset(sc), result.Signal, result.CloseFraction, okxPosQty, okxPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)); capBlocked {
 								logger.Warn("Exposure cap: %s signal suppressed — %s (#1270)", signalStr, capWhy)
 								result.Signal = 0
@@ -1981,7 +2051,7 @@ func main() {
 							if !liveExecFailed {
 								var cashAlert string
 								mu.Lock()
-								trades, detail, cashAlert = executeOKXResult(sc, stratState, stateDB, result, execResult, signalStr, price, cfg.Regime, cfg, hurstDecision, logger)
+								trades, detail, cashAlert = executeOKXResult(sc, stratState, stratDB, result, execResult, signalStr, price, cfg.Regime, cfg, hurstDecision, logger)
 								mu.Unlock()
 								if cashAlert != "" {
 									notifySpotLiveCashOverBudget(notifier, cashAlert)
@@ -2018,6 +2088,10 @@ func main() {
 						}
 						if sr.NotionalBlocked && pausedBlocksSignal(result.Signal, result.CloseFraction, hlPosQty, hlPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)) {
 							logger.Warn("Notional cap: %s signal suppressed — new opens blocked, exits continue (#1344)", signalStr)
+							result.Signal = 0
+						}
+						if persistenceHold && pausedBlocksSignal(result.Signal, result.CloseFraction, hlPosQty, hlPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)) {
+							logger.Warn("Persistence hold: %s signal suppressed — the %s scope has an unacknowledged state save failure, so no new exposure is taken; exits, stops, ratchet and protection continue (#1523)", signalStr, scopeLabel(stratScope))
 							result.Signal = 0
 						}
 						if capBlocked, capWhy := exposureCapBlocksSignal(sr.ExposureCapStatus, extractAsset(sc), result.Signal, result.CloseFraction, hlPosQty, hlPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)); capBlocked {
@@ -2104,7 +2178,7 @@ func main() {
 									}
 								} else if newTrigger > 0 && pos.StopLossTriggerPx == 0 {
 									pos.StopLossTriggerPx = newTrigger
-									stampOpenTradeWithProtectionSnapshot(stratState, stateDB, sc, result.Symbol, pos)
+									stampOpenTradeWithProtectionSnapshot(stratState, stratDB, sc, result.Symbol, pos)
 									logger.Info("Paper fixed ATR SL armed @ $%.4f (%.2f%% from entry $%.4f)",
 										newTrigger, effectiveFixedStopLossATRPct(sc, hlPosSnapshot), pos.AvgCost)
 								}
@@ -2142,11 +2216,11 @@ func main() {
 										} else if slResult.StopLossOID > 0 {
 											pos.StopLossOID = slResult.StopLossOID
 											pos.StopLossTriggerPx = slResult.StopLossTriggerPx
-											stampOpenTradeWithProtectionSnapshot(stratState, stateDB, sc, result.Symbol, pos)
+											stampOpenTradeWithProtectionSnapshot(stratState, stratDB, sc, result.Symbol, pos)
 											logger.Info("Fixed ATR SL armed oid=%d @ $%.4f", slResult.StopLossOID, slResult.StopLossTriggerPx)
 										} else if slResult.StopLossOutcomeUnknown && slResult.StopLossTriggerPx > 0 {
 											pos.StopLossTriggerPx = slResult.StopLossTriggerPx
-											stampOpenTradeWithProtectionSnapshot(stratState, stateDB, sc, result.Symbol, pos)
+											stampOpenTradeWithProtectionSnapshot(stratState, stratDB, sc, result.Symbol, pos)
 											logger.Warn("Fixed ATR SL outcome unreadable for %s: requested trigger $%.4f recorded (oid unknown)", result.Symbol, slResult.StopLossTriggerPx)
 										}
 									}
@@ -2158,7 +2232,7 @@ func main() {
 							}
 						}
 						if hyperliquidIsLive(sc.Args) && result.Signal == 0 && hlPosQty > 0 {
-							if _, fillPx := runHyperliquidProtectionSync(sc, stratState, stateDB, result.Symbol, &mu, notifier, logger, "HL protection synced", hlReconcileFillHintsJSON, hlLiquidationPx, hlNetSideByCoin); fillPx > 0 {
+							if _, fillPx := runHyperliquidProtectionSync(sc, stratState, stratDB, result.Symbol, &mu, notifier, logger, "HL protection synced", hlReconcileFillHintsJSON, hlLiquidationPx, hlNetSideByCoin); fillPx > 0 {
 								trades++
 								detail = fmt.Sprintf("[%s] LIVE PROTECTION SYNC SL %s @ $%.2f", sc.ID, result.Symbol, fillPx)
 							}
@@ -2230,7 +2304,7 @@ func main() {
 								}
 							}
 							if execResult != nil && trades > 0 {
-								if _, fillPx := runHyperliquidProtectionSync(sc, stratState, stateDB, result.Symbol, &mu, notifier, logger, "HL protection synced after trade", hlReconcileFillHintsJSON, hlLiquidationPx, hlNetSideByCoin); fillPx > 0 {
+								if _, fillPx := runHyperliquidProtectionSync(sc, stratState, stratDB, result.Symbol, &mu, notifier, logger, "HL protection synced after trade", hlReconcileFillHintsJSON, hlLiquidationPx, hlNetSideByCoin); fillPx > 0 {
 									trades++
 									detail = fmt.Sprintf("[%s] LIVE PROTECTION SYNC SL %s @ $%.2f", sc.ID, result.Symbol, fillPx)
 								}
@@ -2258,7 +2332,7 @@ func main() {
 								if openTrade != nil {
 									mu.Lock()
 									if pos, okPos := stratState.Positions[result.Symbol]; okPos && pos != nil && pos.Quantity > 0 {
-										stampOpenTradeWithProtectionSnapshot(stratState, stateDB, sc, result.Symbol, pos)
+										stampOpenTradeWithProtectionSnapshot(stratState, stratDB, sc, result.Symbol, pos)
 									}
 									mu.Unlock()
 								}
@@ -2278,7 +2352,7 @@ func main() {
 							sourceReset := syncReplayMirrorWatermarkSource(sc, stratState, replaySourceID, logger)
 							var sourceResetSaveErr error
 							if sourceReset {
-								sourceResetSaveErr = SaveStrategyBookWithDB(stratState, stateDB)
+								sourceResetSaveErr = SaveStrategyBookWithDB(stratState, stratDB)
 							}
 							mu.Unlock()
 							if sourceResetSaveErr != nil {
@@ -2293,7 +2367,7 @@ func main() {
 								appliedIDs, replayTrades, replayDetails, driftDMs := applyReplayedLiveDecisions(sc, stratState, pending, price, result, cfg, logger)
 								var saveErr error
 								if len(appliedIDs) > 0 {
-									saveErr = SaveStrategyBookWithDB(stratState, stateDB)
+									saveErr = SaveStrategyBookWithDB(stratState, stratDB)
 								}
 								mu.Unlock()
 								sendReplayDriftWarns(driftDMs)
@@ -2349,6 +2423,10 @@ func main() {
 							logger.Warn("Notional cap: %s signal suppressed — new opens blocked, exits continue (#1344)", signalStr)
 							result.Signal = 0
 						}
+						if persistenceHold && pausedBlocksSignal(result.Signal, result.CloseFraction, tsContracts, tsPosSide, true, true) {
+							logger.Warn("Persistence hold: %s signal suppressed — the %s scope has an unacknowledged state save failure, so no new exposure is taken; exits, stops, ratchet and protection continue (#1523)", signalStr, scopeLabel(stratScope))
+							result.Signal = 0
+						}
 						mu.Lock()
 						syncStrategyRegimeState(stratState, storeRegime, cfg.Regime)
 						mu.Unlock()
@@ -2363,7 +2441,7 @@ func main() {
 						}
 						if !liveExecFailed {
 							mu.Lock()
-							trades, detail = executeTopStepResult(sc, stratState, stateDB, result, execResult, signalStr, price, cfg.Regime, cfg, hurstDecision, logger)
+							trades, detail = executeTopStepResult(sc, stratState, stratDB, result, execResult, signalStr, price, cfg.Regime, cfg, hurstDecision, logger)
 							mu.Unlock()
 						}
 					}
@@ -2376,7 +2454,7 @@ func main() {
 						break
 					}
 					if pos != nil && hyperliquidIsLive(sc.Args) {
-						if _, fillPx := runHyperliquidProtectionSync(sc, stratState, stateDB, sc.Symbol, &mu, notifier, logger, "HL manual protection synced", hlReconcileFillHintsJSON, hlLiquidationPx, hlNetSideByCoin); fillPx > 0 {
+						if _, fillPx := runHyperliquidProtectionSync(sc, stratState, stratDB, sc.Symbol, &mu, notifier, logger, "HL manual protection synced", hlReconcileFillHintsJSON, hlLiquidationPx, hlNetSideByCoin); fillPx > 0 {
 							trades++
 							detail = fmt.Sprintf("[%s] LIVE PROTECTION SYNC SL %s @ $%.2f", sc.ID, sc.Symbol, fillPx)
 						}
@@ -2518,7 +2596,7 @@ func main() {
 									IsFullClose:     intentFullClose,
 									CreatedAt:       time.Now().UTC(),
 								}
-								if err := stateDB.InsertPendingManualAction(action); err != nil {
+								if err := stratDB.InsertPendingManualAction(action); err != nil {
 									logger.Error("failed to queue manual close action: %v", err)
 								} else {
 									prices[sc.Symbol] = fill.AvgPx
@@ -2644,10 +2722,10 @@ func main() {
 		elapsed := time.Since(cycleStart)
 		logMgr.LogSummary(cycle, elapsed, len(dueStrategies), totalTrades, totalPV)
 
-		closedByStrategy := LoadClosedPositionsByStrategy(stateDB, cfg)
+		closedByStrategy := LoadClosedPositionsByStrategy(store, cfg)
 		rfr := RiskFreeRateOrDefault(cfg)
 
-		lifetimeStats := loadLifetimeStatsBestEffort(stateDB, "[summary]")
+		lifetimeStats := loadLifetimeStatsBestEffort(store, "[summary]")
 
 		if notifier.HasBackends() {
 			summaryNow := time.Now().UTC()
@@ -2708,11 +2786,17 @@ func main() {
 			duePending = collectDueLeaderboardSummaries(cfg, state, prices, ComputeSharpeByStrategy(closedByStrategy, cfg, state), lifetimeStats, walletBalances, sharedWallets)
 		}
 
-		if err := SaveStateWithDB(state, cfg, stateDB); err != nil {
-			saveFailures++
-			fmt.Printf("[CRITICAL] Save state failed (%d/3): %v\n", saveFailures, err)
-		} else {
-			saveFailures = 0
+		saveOutcomes := store.SaveAll(state)
+		savedAll := true
+		for _, out := range sortedScopeErrors(saveOutcomes) {
+			if out.err == nil {
+				continue
+			}
+			savedAll = false
+			fmt.Printf("[CRITICAL] Save state failed for the %s scope (%d/3): %v\n",
+				scopeLabel(out.scope), store.saveFailures(out.scope), out.err)
+		}
+		if savedAll {
 			offCycleAuditSaveDirty = false
 		}
 
@@ -2741,7 +2825,7 @@ func main() {
 			stampDate := func() {
 				mu.Lock()
 				state.LastLeaderboardPostDate = time.Now().UTC().Format("2006-01-02")
-				if err := SaveStateWithDB(state, cfg, stateDB); err != nil {
+				if err := SaveStateWithStore(state, store); err != nil {
 					fmt.Printf("[WARN] Leaderboard post-date save failed: %v\n", err)
 				}
 				mu.Unlock()
@@ -2769,9 +2853,9 @@ func main() {
 		}
 
 		if cfg.AutoUpdate == "heartbeat" {
-			checkForUpdates(cfg, notifier, &lastNotifiedHash, &mu, state, stateDB)
+			checkForUpdates(cfg, notifier, &lastNotifiedHash, &mu, state, store)
 		} else if cfg.AutoUpdate == "daily" && time.Since(lastAutoUpdateCheck) >= 24*time.Hour {
-			checkForUpdates(cfg, notifier, &lastNotifiedHash, &mu, state, stateDB)
+			checkForUpdates(cfg, notifier, &lastNotifiedHash, &mu, state, store)
 			lastAutoUpdateCheck = time.Now()
 		}
 
@@ -2799,7 +2883,7 @@ func main() {
 	}
 }
 
-func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, sdb *StateDB, notifier *MultiNotifier) {
+func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, sdb *StateStore, notifier *MultiNotifier) {
 	if !notifier.HasBackends() {
 		fmt.Fprintf(os.Stderr, "No notification backends configured\n")
 		os.Exit(1)
@@ -4208,7 +4292,7 @@ func fetchPricesForSummary(cfg *Config) map[string]float64 {
 	return prices
 }
 
-func runLeaderboardSummariesAndExit(lcs []LeaderboardSummaryConfig, cfg *Config, state *AppState, sdb *StateDB, notifier *MultiNotifier) {
+func runLeaderboardSummariesAndExit(lcs []LeaderboardSummaryConfig, cfg *Config, state *AppState, sdb *StateStore, notifier *MultiNotifier) {
 	prices := fetchPricesForSummary(cfg)
 	sharpeByStrategy := ComputeSharpeByStrategy(LoadClosedPositionsByStrategy(sdb, cfg), cfg, state)
 	lifetimeStats := loadLifetimeStatsBestEffort(sdb, "[leaderboard]")
@@ -4235,7 +4319,7 @@ func runLeaderboardSummariesAndExit(lcs []LeaderboardSummaryConfig, cfg *Config,
 	os.Exit(0)
 }
 
-func loadLifetimeStatsBestEffort(sdb *StateDB, logPrefix string) map[string]LifetimeTradeStats {
+func loadLifetimeStatsBestEffort(sdb *StateStore, logPrefix string) map[string]LifetimeTradeStats {
 	if sdb == nil {
 		return nil
 	}

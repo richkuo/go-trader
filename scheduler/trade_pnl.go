@@ -50,9 +50,13 @@ func (sdb *StateDB) LedgerNetByStrategy(strategyIDs []string) (map[string]float6
 	if len(strategyIDs) == 0 {
 		return out, nil
 	}
-	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(strategyIDs)), ",")
-	args := make([]interface{}, len(strategyIDs))
-	for i, id := range strategyIDs {
+	storageIDs, err := sdb.toStorageIDs(strategyIDs)
+	if err != nil {
+		return nil, err
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(storageIDs)), ",")
+	args := make([]interface{}, len(storageIDs))
+	for i, id := range storageIDs {
 		args[i] = id
 	}
 	rows, err := sdb.db.Query(
@@ -68,7 +72,7 @@ func (sdb *StateDB) LedgerNetByStrategy(strategyIDs []string) (map[string]float6
 		if err := rows.Scan(&id, &sum); err != nil {
 			return nil, fmt.Errorf("scan ledger sum: %w", err)
 		}
-		out[id] = sum.Float64
+		out[sdb.fromStorageID(id)] = sum.Float64
 	}
 	return out, rows.Err()
 }
@@ -80,10 +84,14 @@ func (sdb *StateDB) HasTradeWithExchangeOrderID(strategyID, exchangeOrderID stri
 	if exchangeOrderID == "" {
 		return false, nil
 	}
+	sid, err := sdb.toStorageID(strategyID)
+	if err != nil {
+		return false, err
+	}
 	var n int
-	err := sdb.db.QueryRow(
+	err = sdb.db.QueryRow(
 		`SELECT EXISTS(SELECT 1 FROM trades WHERE strategy_id = ? AND exchange_order_id = ?)`,
-		strategyID, exchangeOrderID).Scan(&n)
+		sid, exchangeOrderID).Scan(&n)
 	if err != nil {
 		return false, fmt.Errorf("trade oid existence: %w", err)
 	}

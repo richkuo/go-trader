@@ -31,6 +31,8 @@ type TradeLedgerChange struct {
 
 type TradeLedgerPlan struct {
 	StrategyID                  string
+	StorageStrategyID           string
+	Role                        storageRole
 	Changes                     []TradeLedgerChange
 	Skipped                     []SkippedTrade
 	ClosedPositions             []ClosedPositionRecompute
@@ -340,6 +342,10 @@ func (sdb *StateDB) ApplyTradeLedgerPlan(plan TradeLedgerPlan) error {
 	if sdb == nil || sdb.db == nil {
 		return fmt.Errorf("state db unavailable")
 	}
+	sid, err := sdb.resolvePlanStorageID(plan.Role, plan.StorageStrategyID, plan.StrategyID)
+	if err != nil {
+		return err
+	}
 	tx, err := sdb.db.Begin()
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
@@ -367,12 +373,12 @@ func (sdb *StateDB) ApplyTradeLedgerPlan(plan TradeLedgerPlan) error {
 	}
 	defer cpStmt.Close()
 	for _, cp := range plan.ClosedPositions {
-		if _, err := cpStmt.Exec(cp.NewPnL, cp.RowID, plan.StrategyID); err != nil {
+		if _, err := cpStmt.Exec(cp.NewPnL, cp.RowID, sid); err != nil {
 			return fmt.Errorf("update closed_positions id=%d: %w", cp.RowID, err)
 		}
 	}
 
-	if _, err := tx.Exec("UPDATE strategies SET cash = ? WHERE id = ?", plan.NewCash, plan.StrategyID); err != nil {
+	if _, err := tx.Exec("UPDATE strategies SET cash = ? WHERE id = ?", plan.NewCash, sid); err != nil {
 		return fmt.Errorf("update strategy cash: %w", err)
 	}
 	return tx.Commit()
@@ -474,12 +480,6 @@ func runBackfillTradeLedger(args []string) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if *apply {
-		if err := refuseIfSchedulerRunning(); err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			return 1
-		}
-	}
 	if (*strategyID == "" && !*all) || (*strategyID != "" && *all) {
 		fmt.Fprintln(os.Stderr, "error: exactly one of --strategy <id> or --all is required")
 		return 2
@@ -490,13 +490,21 @@ func runBackfillTradeLedger(args []string) int {
 		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
 		return 1
 	}
-	stateDB, err := OpenStateDB(cfg.DBFile)
+	if *apply {
+		release, lockErr := acquireBackfillOwnership(cfg)
+		if lockErr != nil {
+			fmt.Fprintf(os.Stderr, "error: %v — refusing to rewrite the ledger while another process owns the state files\n", lockErr)
+			return 1
+		}
+		defer release()
+	}
+	stateDB, err := openToolStateStore(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to open state DB: %v\n", err)
 		return 1
 	}
 	defer stateDB.Close()
-	state, err := LoadStateWithDB(cfg, stateDB)
+	state, _, err := LoadStateWithStore(cfg, stateDB)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to load state: %v\n", err)
 		return 1
@@ -616,6 +624,14 @@ func runBackfillTradeLedger(args []string) int {
 		}
 
 		plan := planTradeLedgerForStrategyWithOIDTotals(sc.ID, trades, fillResult.ByOID, initialCapital, oldCash, sharedOIDTotalsByID[sc.ID])
+		planRole, planStorageID, bindErr := bindPlanToStore(stateDB, sc.ID)
+		if bindErr != nil {
+			fmt.Fprintf(os.Stderr, "[%s] %v\n", sc.ID, bindErr)
+			exitCode = 1
+			continue
+		}
+		plan.Role = planRole
+		plan.StorageStrategyID = planStorageID
 		plan.ClosedPositions = planClosedPositionRecomputes(tradeLedgerCorrectedNetRows(trades, plan), closedRows)
 		printTradeLedgerReport(plan)
 
@@ -630,7 +646,13 @@ func runBackfillTradeLedger(args []string) int {
 				fmt.Printf("[%s] APPLY skipped: no changes (ledger already repaired)\n", sc.ID)
 				continue
 			}
-			if err := stateDB.ApplyTradeLedgerPlan(plan); err != nil {
+			planDB, planErr := stateDB.dbForStrategy(sc.ID)
+			if planErr != nil {
+				fmt.Fprintf(os.Stderr, "[%s] APPLY failed: %v\n", sc.ID, planErr)
+				exitCode = 1
+				continue
+			}
+			if err := planDB.ApplyTradeLedgerPlan(plan); err != nil {
 				fmt.Fprintf(os.Stderr, "[%s] APPLY failed: %v\n", sc.ID, err)
 				exitCode = 1
 				continue
@@ -642,7 +664,7 @@ func runBackfillTradeLedger(args []string) int {
 	}
 
 	if len(appliedIDs) > 0 {
-		resetWalletBaselinesForAppliedStrategies(stateDB, cfg.Strategies, appliedIDs)
+		resetWalletBaselinesForAppliedStrategies(storeLiveDB(stateDB), cfg.Strategies, appliedIDs)
 	}
 	if !*apply {
 		fmt.Println("\n(dry-run — re-run with --apply to commit)")

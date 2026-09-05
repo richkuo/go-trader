@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"os/exec"
 	"sort"
 	"strings"
 	"time"
@@ -96,6 +95,8 @@ type ClosedPositionRecompute struct {
 
 type BackfillPlan struct {
 	StrategyID            string
+	StorageStrategyID     string
+	Role                  storageRole
 	TradeChanges          []TradeChange
 	Skipped               []SkippedTrade
 	ClosedPositions       []ClosedPositionRecompute
@@ -361,12 +362,6 @@ func runBackfillHLFees(args []string) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if *apply {
-		if err := refuseIfSchedulerRunning(); err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			return 1
-		}
-	}
 	if (*strategyID == "" && !*all) || (*strategyID != "" && *all) {
 		fmt.Fprintln(os.Stderr, "error: exactly one of --strategy <id> or --all is required")
 		return 2
@@ -378,14 +373,23 @@ func runBackfillHLFees(args []string) int {
 		return 1
 	}
 
-	stateDB, err := OpenStateDB(cfg.DBFile)
+	if *apply {
+		release, lockErr := acquireBackfillOwnership(cfg)
+		if lockErr != nil {
+			fmt.Fprintf(os.Stderr, "error: %v — refusing to rewrite the ledger while another process owns the state files\n", lockErr)
+			return 1
+		}
+		defer release()
+	}
+
+	stateDB, err := openToolStateStore(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to open state DB: %v\n", err)
 		return 1
 	}
 	defer stateDB.Close()
 
-	state, err := LoadStateWithDB(cfg, stateDB)
+	state, _, err := LoadStateWithStore(cfg, stateDB)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to load state: %v\n", err)
 		return 1
@@ -501,6 +505,14 @@ func runBackfillHLFees(args []string) int {
 		}
 
 		plan := planBackfillForStrategy(sc.ID, trades, fillResult.ByOID, initialCapital, oldCash)
+		planRole, planStorageID, bindErr := bindPlanToStore(stateDB, sc.ID)
+		if bindErr != nil {
+			fmt.Fprintf(os.Stderr, "[%s] %v\n", sc.ID, bindErr)
+			exitCode = 1
+			continue
+		}
+		plan.Role = planRole
+		plan.StorageStrategyID = planStorageID
 
 		changeByRowID := make(map[int64]TradeChange, len(plan.TradeChanges))
 		for _, c := range plan.TradeChanges {
@@ -526,7 +538,13 @@ func runBackfillHLFees(args []string) int {
 				exitCode = 1
 				continue
 			}
-			if err := stateDB.ApplyBackfillPlan(plan); err != nil {
+			planDB, planErr := stateDB.dbForStrategy(sc.ID)
+			if planErr != nil {
+				fmt.Fprintf(os.Stderr, "[%s] APPLY failed: %v\n", sc.ID, planErr)
+				exitCode = 1
+				continue
+			}
+			if err := planDB.ApplyBackfillPlan(plan); err != nil {
 				fmt.Fprintf(os.Stderr, "[%s] APPLY failed: %v\n", sc.ID, err)
 				exitCode = 1
 				continue
@@ -568,33 +586,6 @@ func printBackfillReport(plan BackfillPlan) {
 		fmt.Printf("           — SIGHUP applies Cash += new - old with no trade row, which a\n")
 		fmt.Printf("           forward replay cannot reproduce. --apply requires --reset-cash.\n")
 	}
-}
-
-func refuseIfSchedulerRunning() error {
-	out, err := exec.Command("pgrep", "-x", "go-trader").Output()
-	if err != nil {
-		return nil
-	}
-	self := os.Getpid()
-	var others []int
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		var pid int
-		if _, perr := fmt.Sscanf(line, "%d", &pid); perr != nil {
-			continue
-		}
-		if pid == self {
-			continue
-		}
-		others = append(others, pid)
-	}
-	if len(others) == 0 {
-		return nil
-	}
-	return fmt.Errorf("another go-trader process is running (pid %v); stop it before running --apply (concurrent SaveState would overwrite the recomputed strategies.cash)", others)
 }
 
 const hlUserFillsFetchTimeout = 5 * time.Minute

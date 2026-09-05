@@ -57,7 +57,7 @@ func newTradeActionTestServer(t *testing.T) (*StatusServer, *StateDB, *Config) {
 		}
 	}
 
-	ss := NewStatusServer(state, &sync.RWMutex{}, "", cfg.Strategies, db)
+	ss := NewStatusServer(state, &sync.RWMutex{}, "", cfg.Strategies, openTestStore(t, db))
 	ss.SetConfigContext("", cfg)
 	return ss, db, cfg
 }
@@ -272,7 +272,7 @@ func TestUIUpdateSLQueuesPendingActionLikeCLI(t *testing.T) {
 	if err := db.SaveState(ss.state); err != nil {
 		t.Fatalf("SaveState: %v", err)
 	}
-	cliDeps := newCLIManualCoreDeps(cfg, db, nil)
+	cliDeps := newCLIManualCoreDeps(cfg, openTestStore(t, db), nil)
 	cliDeps.updateSL = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 		return &HyperliquidStopLossUpdateResult{StopLossOID: 555, StopLossTriggerPx: triggerPx, CancelStopLossSucceeded: true}, "", nil
 	}
@@ -289,9 +289,7 @@ func TestUIUpdateSLQueuesPendingActionLikeCLI(t *testing.T) {
 		t.Fatalf("CLI rows = %d (err=%v), want 1", len(cliRows), err)
 	}
 	cliRow := cliRows[0]
-	if err := db.DeletePendingManualActionsThrough(cliRow.ID); err != nil {
-		t.Fatalf("clear queue: %v", err)
-	}
+	clearPendingManualActions(t, db)
 
 	nonce := confirmNonceFor(t, ss, "update-sl", "hl-manual-eth", `{"trigger":1850}`)
 	w := tradeActionPost(ss, "/api/strategies/hl-manual-eth/update-sl",
@@ -449,7 +447,7 @@ func TestUIOpenGuardsDoubleFire(t *testing.T) {
 	}
 
 	rows, _ := db.LoadPendingManualActions()
-	if err := db.DeletePendingManualActionsThrough(rows[len(rows)-1].ID); err != nil {
+	if err := db.DeletePendingManualActionsByID([]int64{rows[len(rows)-1].ID}); err != nil {
 		t.Fatalf("delete pending: %v", err)
 	}
 	stubs.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
@@ -543,9 +541,7 @@ func TestUICancelSLQueuesAndErrors(t *testing.T) {
 		t.Fatal("in-memory SL OID mutated before drain")
 	}
 
-	if err := db.DeletePendingManualActionsThrough(rows[0].ID); err != nil {
-		t.Fatalf("delete: %v", err)
-	}
+	clearPendingManualActions(t, db)
 	ss.state.Strategies["hl-manual-eth"].Positions["ETH"].StopLossOID = 0
 	stubs.cancelOrder = func(script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error) {
 		t.Error("cancelOrder must not be called with no resting SL")
@@ -593,10 +589,7 @@ func TestUICloseGuardsDoubleFire(t *testing.T) {
 		t.Fatalf("guarded force-close status = %d, body %s", w.Code, w.Body.String())
 	}
 
-	rows, _ := db.LoadPendingManualActions()
-	if err := db.DeletePendingManualActionsThrough(rows[len(rows)-1].ID); err != nil {
-		t.Fatalf("delete: %v", err)
-	}
+	clearPendingManualActions(t, db)
 	stubs.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
 		return &HyperliquidExecuteResult{
 			Execution: &HyperliquidExecution{Fill: &HyperliquidFill{AvgPx: 2100, TotalSz: 0.4, OID: 4243, Fee: 1.5}},
@@ -681,10 +674,7 @@ func TestUICrossClassPendingGuard(t *testing.T) {
 		t.Fatalf("add-while-close-queued status = %d, body %s", w.Code, w.Body.String())
 	}
 
-	rows, _ := db.LoadPendingManualActions()
-	if err := db.DeletePendingManualActionsThrough(rows[len(rows)-1].ID); err != nil {
-		t.Fatalf("delete: %v", err)
-	}
+	clearPendingManualActions(t, db)
 	if err := db.InsertPendingManualAction(PendingManualAction{
 		StrategyID: "hl-manual-eth", Action: "add", Symbol: "ETH", Side: "buy",
 		Quantity: 0.05, FillPrice: 2050, CreatedAt: time.Now().UTC(),
@@ -736,10 +726,7 @@ func TestUISLEditGuardedWhileCloseQueued(t *testing.T) {
 		t.Fatalf("cancel-sl-while-close-queued status = %d, body %s", w.Code, w.Body.String())
 	}
 
-	rows, _ := db.LoadPendingManualActions()
-	if err := db.DeletePendingManualActionsThrough(rows[len(rows)-1].ID); err != nil {
-		t.Fatalf("delete: %v", err)
-	}
+	clearPendingManualActions(t, db)
 	stubs.updateSL = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 		return &HyperliquidStopLossUpdateResult{StopLossOID: 1001, StopLossTriggerPx: 1950}, "", nil
 	}

@@ -2061,7 +2061,7 @@ func forceCloseCoupledHedgeQueuedFullFlag(t *testing.T, heldQty, filled float64,
 
 	deps := manualCoreDeps{
 		cfg:     &Config{Strategies: []StrategyConfig{sc}},
-		stateDB: db,
+		stateDB: openTestStore(t, db),
 		loadState: func(strategyID, symbol string) (manualStateView, error) {
 			if symbol != "BTC" {
 				return manualStateView{HasStrategy: true}, nil

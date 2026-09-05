@@ -443,8 +443,8 @@ func ValidatePerpsDirectionConfig(state *AppState, cfg *Config) []string {
 	return warnings
 }
 
-func ReconcileConfigInitialCapital(cfg *Config, state *AppState, sdb *StateDB) (infos []string, errors []string) {
-	if state == nil || sdb == nil {
+func ReconcileConfigInitialCapital(cfg *Config, state *AppState, store *StateStore) (infos []string, errors []string) {
+	if state == nil || store == nil {
 		return nil, nil
 	}
 	for _, sc := range cfg.Strategies {
@@ -456,7 +456,7 @@ func ReconcileConfigInitialCapital(cfg *Config, state *AppState, sdb *StateDB) (
 			continue
 		}
 		prev := s.InitialCapital
-		if err := sdb.SetInitialCapital(sc.ID, sc.InitialCapital); err != nil {
+		if err := store.SetInitialCapital(sc.ID, sc.InitialCapital); err != nil {
 			msg := fmt.Sprintf("config-driven initial_capital change for %s ($%.2f → $%.2f) failed to persist: %v — DB still holds $%.2f",
 				sc.ID, prev, sc.InitialCapital, err, prev)
 			fmt.Fprintf(os.Stderr, "[state] WARN: %s\n", msg)
@@ -485,6 +485,17 @@ func assignLegacyPortfolioScope(state *AppState, cfg *Config) (PortfolioScope, b
 	target := ScopePaper
 	if cfg != nil && HasLiveStrategy(cfg.Strategies) {
 		target = ScopeLive
+	}
+	placeLegacyPortfolioRisk(state, cfg, legacy, legacySnap, target)
+	return target, true
+}
+
+// placeLegacyPortfolioRisk moves one file's unscoped legacy rows into the scope
+// that file owns. The caller decides the target, so a split layout places each
+// file's row from that file's own validated scope.
+func placeLegacyPortfolioRisk(state *AppState, cfg *Config, legacy *PortfolioRiskState, legacySnap *CorrelationSnapshot, target PortfolioScope) {
+	if state == nil || (legacy == nil && legacySnap == nil) {
+		return
 	}
 
 	if legacy != nil {
@@ -527,8 +538,6 @@ func assignLegacyPortfolioScope(state *AppState, cfg *Config) (PortfolioScope, b
 		}
 		delete(state.CorrelationSnapshot, scopeUnassigned)
 	}
-
-	return target, true
 }
 
 func LoadStateWithDB(cfg *Config, sdb *StateDB) (*AppState, error) {

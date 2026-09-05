@@ -140,7 +140,7 @@ func TestReconcilePendingLimitOrdersRefusesFillWithNoLiveExposure(t *testing.T) 
 	withStubbedLimitDeps(t, offBookFullFillStatus(0.5), noCancelExpected(t))
 
 	notifier, mock := newOrphanLaneNotifier()
-	alerts := reconcilePendingLimitOrders(state, cfg, db, &mu, notifier, nil)
+	alerts := reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, notifier, nil)
 
 	if len(alerts) != 0 {
 		t.Fatalf("alerts = %+v, want none — a fill with no live exposure must book nothing", alerts)
@@ -176,7 +176,7 @@ func TestReconcilePendingLimitOrdersRefusesFillAfterAManualCloseAndStrategyResto
 
 	withStubbedLimitDeps(t, offBookFullFillStatus(0.5), noCancelExpected(t))
 
-	reconcilePendingLimitOrders(state, cfg, db, &mu, nil, nil)
+	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, nil, nil)
 
 	if pos := state.Strategies[sc.ID].Positions["ETH"]; pos != nil {
 		t.Fatalf("position = %+v — restoring a strategy after a hand close must never re-open the position", pos)
@@ -198,7 +198,7 @@ func TestReconcilePendingLimitOrdersDefersFillWhenAccountUnreadable(t *testing.T
 	withStubbedLimitDeps(t, offBookFullFillStatus(0.5), noCancelExpected(t))
 
 	notifier, mock := newOrphanLaneNotifier()
-	reconcilePendingLimitOrders(state, cfg, db, &mu, notifier, nil)
+	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, notifier, nil)
 
 	if pos := state.Strategies[sc.ID].Positions["ETH"]; pos != nil {
 		t.Fatalf("position = %+v — an unreadable account must defer, never book", pos)
@@ -222,7 +222,7 @@ func TestReconcilePendingLimitOrdersDefersFillWhenAccountAddressUnset(t *testing
 
 	withStubbedLimitDeps(t, offBookFullFillStatus(0.5), noCancelExpected(t))
 
-	reconcilePendingLimitOrders(state, cfg, db, &mu, nil, nil)
+	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, nil, nil)
 
 	if pos := state.Strategies[sc.ID].Positions["ETH"]; pos != nil {
 		t.Fatalf("position = %+v — with no account address there is no evidence of live exposure", pos)
@@ -255,7 +255,7 @@ func TestReconcilePendingLimitOrdersRefusesAPartialAddWithNoRoomOnChain(t *testi
 		},
 	)
 
-	reconcilePendingLimitOrders(state, cfg, db, &mu, nil, nil)
+	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, nil, nil)
 
 	pos := state.Strategies[sc.ID].Positions["ETH"]
 	if pos == nil || pos.Quantity != 0.4 {
@@ -284,7 +284,7 @@ func TestReconcilePendingLimitOrdersAdoptsAFillSharedCoinNetBacks(t *testing.T) 
 
 	withStubbedLimitDeps(t, offBookFullFillStatus(0.5), noCancelExpected(t))
 
-	alerts := reconcilePendingLimitOrders(state, cfg, db, &mu, nil, nil)
+	alerts := reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, nil, nil)
 
 	if len(alerts) != 1 {
 		t.Fatalf("alerts = %+v, want one — a fill the account net fully backs is adopted as before", alerts)
@@ -458,7 +458,7 @@ func TestReconcilePendingLimitOrdersGivesEachRowASnapshotNewerThanItsOwnStatusPo
 	}), noCancelExpected(t))
 
 	notifier, mock := newOrphanLaneNotifier()
-	reconcilePendingLimitOrders(state, cfg, db, &mu, notifier, nil)
+	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, notifier, nil)
 
 	if pos := state.Strategies[ethSC.ID].Positions["ETH"]; pos != nil {
 		t.Fatalf("ETH position = %+v, want none — that fill really has no live exposure", pos)
@@ -487,7 +487,7 @@ func TestReconcilePendingLimitOrdersRefusesTwoUnbackedRowsInOnePass(t *testing.T
 	withStubbedLimitDeps(t, twoCoinLimitStatusStub(&tr, 0.5, 0.25, nil), noCancelExpected(t))
 
 	notifier, mock := newOrphanLaneNotifier()
-	reconcilePendingLimitOrders(state, cfg, db, &mu, notifier, nil)
+	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, notifier, nil)
 
 	if pos := state.Strategies[ethSC.ID].Positions["ETH"]; pos != nil {
 		t.Fatalf("ETH position = %+v, want none", pos)
@@ -525,7 +525,7 @@ func TestReconcilePendingLimitOrdersRetriesAFailedAccountReadForALaterRow(t *tes
 	withStubbedLimitDeps(t, twoCoinLimitStatusStub(nil, 0.5, 0.25, nil), noCancelExpected(t))
 
 	notifier, mock := newOrphanLaneNotifier()
-	reconcilePendingLimitOrders(state, cfg, db, &mu, notifier, nil)
+	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, notifier, nil)
 
 	if pos := state.Strategies[btcSC.ID].Positions["BTC"]; pos != nil {
 		t.Fatalf("BTC position = %+v, want none — the coin whose read failed defers", pos)
@@ -558,7 +558,7 @@ func TestReconcilePendingLimitOrdersDoesNotRefetchASnapshotNewerThanItsStatusPol
 
 	withStubbedLimitDeps(t, offBookFullFillStatus(0.5), noCancelExpected(t))
 
-	reconcilePendingLimitOrders(state, cfg, db, &mu, nil, nil)
+	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, nil, nil)
 
 	fetches := tr.fetches()
 	if fetches != 1 {
@@ -623,7 +623,7 @@ func twoRowMidPassFetches(t *testing.T, btcAfterPoll []HLPosition) (*AppState, *
 	}), noCancelExpected(t))
 
 	notifier, mock := newOrphanLaneNotifier()
-	reconcilePendingLimitOrders(state, cfg, db, &mu, notifier, nil)
+	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, notifier, nil)
 	return state, db, ethSC, btcSC, tr, mock
 }
 
@@ -727,7 +727,7 @@ func runSharedCoinPass(t *testing.T, legs []sharedCoinLeg, onChainETH float64) s
 	)
 
 	notifier, mock := newOrphanLaneNotifier()
-	reconcilePendingLimitOrders(state, cfg, db, &mu, notifier, nil)
+	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, notifier, nil)
 
 	out := sharedCoinOutcome{booked: map[string]float64{}, dms: len(mock.dms)}
 	for _, leg := range legs {
@@ -846,7 +846,7 @@ func TestReconcilePendingLimitOrdersMarksAnUnbackedRowOperatorRequired(t *testin
 	withStubbedLimitDeps(t, offBookFullFillStatus(0.5), noCancelExpected(t))
 
 	notifier, mock := newOrphanLaneNotifier()
-	reconcilePendingLimitOrders(state, cfg, db, &mu, notifier, nil)
+	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, notifier, nil)
 
 	orders, _ := db.LoadPendingLimitOrders()
 	if len(orders) != 1 || orders[0].OperatorRequiredSince.IsZero() {
@@ -886,7 +886,7 @@ func TestReconcilePendingLimitOrdersMarksAnUnbackedPartialAddOperatorRequired(t 
 		},
 	)
 
-	reconcilePendingLimitOrders(state, cfg, db, &mu, nil, nil)
+	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, nil, nil)
 
 	orders, _ := db.LoadPendingLimitOrders()
 	if len(orders) != 1 || orders[0].OperatorRequiredSince.IsZero() {
@@ -925,14 +925,14 @@ func TestReconcilePendingLimitOrdersAdoptsAndUnmarksOnceExposureReturns(t *testi
 		},
 	)
 
-	reconcilePendingLimitOrders(state, cfg, db, &mu, nil, nil)
+	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, nil, nil)
 	orders, _ := db.LoadPendingLimitOrders()
 	if len(orders) != 1 || orders[0].OperatorRequiredSince.IsZero() {
 		t.Fatalf("rows = %+v, want the first pass to mark the row", orders)
 	}
 
 	onChain = []HLPosition{{Coin: "ETH", Size: 0.5}}
-	reconcilePendingLimitOrders(state, cfg, db, &mu, nil, nil)
+	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, nil, nil)
 
 	pos := state.Strategies[sc.ID].Positions["ETH"]
 	if pos == nil || pos.Quantity != 0.5 {
@@ -957,7 +957,7 @@ func TestReconcilePendingLimitOrdersDoesNotMarkAnUnreadableAccountOperatorRequir
 
 	withStubbedLimitDeps(t, offBookFullFillStatus(0.5), noCancelExpected(t))
 
-	reconcilePendingLimitOrders(state, cfg, db, &mu, nil, nil)
+	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, nil, nil)
 
 	orders, _ := db.LoadPendingLimitOrders()
 	if len(orders) != 1 {

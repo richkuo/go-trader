@@ -18,6 +18,13 @@ type sqlExecer interface {
 }
 
 func insertTradeDiagnosticsRow(exec sqlExecer, row *TradeDiagnosticsRow) error {
+	if row == nil {
+		return fmt.Errorf("nil diagnostics row")
+	}
+	return insertTradeDiagnosticsRowAs(exec, row, row.StrategyID)
+}
+
+func insertTradeDiagnosticsRowAs(exec sqlExecer, row *TradeDiagnosticsRow, storageID string) error {
 	if exec == nil {
 		return fmt.Errorf("state db unavailable")
 	}
@@ -29,7 +36,7 @@ func insertTradeDiagnosticsRow(exec sqlExecer, row *TradeDiagnosticsRow) error {
 			 entry_price, exit_price, quantity, realized_pnl, entry_atr, stop_loss_atr_mult,
 			 opened_at, closed_at, metrics_status, llm_verdict, hurst_at_open, hurst_size_mult)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		row.StrategyID, row.PositionID, row.Symbol, row.Side, row.Timeframe, row.RegimeAtOpen, row.CloseReason,
+		storageID, row.PositionID, row.Symbol, row.Side, row.Timeframe, row.RegimeAtOpen, row.CloseReason,
 		row.EntryPrice, row.ExitPrice, row.Quantity, row.RealizedPnL, row.EntryATR, nullableFloat64(row.StopLossATRMult),
 		formatTime(row.OpenedAt), formatTime(row.ClosedAt), row.MetricsStatus, nullableString(row.LLMVerdict),
 		nullableFloat64(row.HurstAtOpen), nullableFloat64(row.HurstSizeMult))
@@ -47,6 +54,9 @@ func insertTradeDiagnosticsRow(exec sqlExecer, row *TradeDiagnosticsRow) error {
 func (sdb *StateDB) UpdateTradeDiagnosticsMetrics(rowID int64, timeframe string, m *tradeQualityMetrics, status string) error {
 	if sdb == nil || sdb.db == nil {
 		return fmt.Errorf("state db unavailable")
+	}
+	if sdb.readOnly {
+		return fmt.Errorf("%s state file is open read-only", sdb.storageRoleOf())
 	}
 	if m == nil {
 		_, err := sdb.db.Exec(
@@ -81,8 +91,12 @@ func (sdb *StateDB) TradeDiagnosticsRows(strategyID string) ([]TradeDiagnosticsR
 		FROM trade_diagnostics`
 	var args []interface{}
 	if strategyID != "" {
+		sid, err := sdb.toStorageID(strategyID)
+		if err != nil {
+			return nil, err
+		}
 		query += ` WHERE strategy_id = ?`
-		args = append(args, strategyID)
+		args = append(args, sid)
 	}
 	query += ` ORDER BY closed_at ASC, rowid ASC`
 	rows, err := sdb.db.Query(query, args...)
@@ -90,7 +104,7 @@ func (sdb *StateDB) TradeDiagnosticsRows(strategyID string) ([]TradeDiagnosticsR
 		return nil, fmt.Errorf("query trade diagnostics: %w", err)
 	}
 	defer rows.Close()
-	return scanTradeDiagnosticsRows(rows)
+	return sdb.scanTradeDiagnosticsRows(rows)
 }
 
 func (sdb *StateDB) TradeDiagnosticsRowsPage(strategyID string, limit, offset int) ([]TradeDiagnosticsRow, int, error) {
@@ -105,10 +119,14 @@ func (sdb *StateDB) TradeDiagnosticsRowsPage(strategyID string, limit, offset in
 		FROM trade_diagnostics`
 	var countArgs, args []interface{}
 	if strategyID != "" {
+		sid, err := sdb.toStorageID(strategyID)
+		if err != nil {
+			return nil, 0, err
+		}
 		countQuery += ` WHERE strategy_id = ?`
-		countArgs = append(countArgs, strategyID)
+		countArgs = append(countArgs, sid)
 		query += ` WHERE strategy_id = ?`
-		args = append(args, strategyID)
+		args = append(args, sid)
 	}
 	var total int
 	if err := sdb.db.QueryRow(countQuery, countArgs...).Scan(&total); err != nil {
@@ -121,14 +139,14 @@ func (sdb *StateDB) TradeDiagnosticsRowsPage(strategyID string, limit, offset in
 		return nil, 0, fmt.Errorf("query trade diagnostics page: %w", err)
 	}
 	defer rows.Close()
-	out, err := scanTradeDiagnosticsRows(rows)
+	out, err := sdb.scanTradeDiagnosticsRows(rows)
 	if err != nil {
 		return nil, 0, err
 	}
 	return out, total, nil
 }
 
-func scanTradeDiagnosticsRows(rows *sql.Rows) ([]TradeDiagnosticsRow, error) {
+func (sdb *StateDB) scanTradeDiagnosticsRows(rows *sql.Rows) ([]TradeDiagnosticsRow, error) {
 	var out []TradeDiagnosticsRow
 	for rows.Next() {
 		var r TradeDiagnosticsRow
@@ -153,6 +171,8 @@ func scanTradeDiagnosticsRows(rows *sql.Rows) ([]TradeDiagnosticsRow, error) {
 			v := verdict.String
 			r.LLMVerdict = &v
 		}
+		r.StrategyID = sdb.fromStorageID(r.StrategyID)
+		r.SourceRole = sdb.storageRoleOf()
 		out = append(out, r)
 	}
 	return out, rows.Err()
@@ -175,8 +195,12 @@ func (sdb *StateDB) NetPnLForPositions(strategyID string, positionIDs []string) 
 		args = append(args, pid)
 	}
 	if strategyID != "" {
+		sid, err := sdb.toStorageID(strategyID)
+		if err != nil {
+			return nil, err
+		}
 		query += ` AND strategy_id = ?`
-		args = append(args, strategyID)
+		args = append(args, sid)
 	}
 	query += ` GROUP BY strategy_id, position_id`
 	rows, err := sdb.db.Query(query, args...)
@@ -190,6 +214,7 @@ func (sdb *StateDB) NetPnLForPositions(strategyID string, positionIDs []string) 
 		if err := rows.Scan(&sid, &pid, &net); err != nil {
 			return nil, fmt.Errorf("scan net pnl for positions: %w", err)
 		}
+		sid = sdb.fromStorageID(sid)
 		if out[sid] == nil {
 			out[sid] = make(map[string]float64)
 		}
@@ -206,8 +231,12 @@ func (sdb *StateDB) NetPnLByPosition(strategyID string) (map[string]map[string]f
 		FROM trades WHERE is_close = 1 AND position_id != ''`
 	var args []interface{}
 	if strategyID != "" {
+		sid, err := sdb.toStorageID(strategyID)
+		if err != nil {
+			return nil, err
+		}
 		query += ` AND strategy_id = ?`
-		args = append(args, strategyID)
+		args = append(args, sid)
 	}
 	query += ` GROUP BY strategy_id, position_id`
 	rows, err := sdb.db.Query(query, args...)
@@ -222,6 +251,7 @@ func (sdb *StateDB) NetPnLByPosition(strategyID string) (map[string]map[string]f
 		if err := rows.Scan(&sid, &pid, &net); err != nil {
 			return nil, fmt.Errorf("scan net pnl by position: %w", err)
 		}
+		sid = sdb.fromStorageID(sid)
 		if out[sid] == nil {
 			out[sid] = make(map[string]float64)
 		}

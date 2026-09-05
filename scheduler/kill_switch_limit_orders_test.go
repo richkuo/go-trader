@@ -902,7 +902,7 @@ func TestReconcilePendingLimitOrdersAdoptsFillOnACancelRequestedRow(t *testing.T
 		},
 	)
 
-	alerts := reconcilePendingLimitOrders(state, cfg, db, &mu, nil, nil)
+	alerts := reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, nil, nil)
 	if len(alerts) != 1 {
 		t.Fatalf("a cancel-requested row must still adopt a fill that landed, alerts = %+v", alerts)
 	}
@@ -957,7 +957,7 @@ func TestReconcilePendingLimitOrdersAdoptsFillWhileKillSwitchLatched(t *testing.
 		},
 	)
 
-	alerts := reconcilePendingLimitOrders(state, cfg, db, &mu, nil, nil)
+	alerts := reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, nil, nil)
 	if len(alerts) != 1 || alerts[0].trades != 1 {
 		t.Fatalf("a latched kill switch must not suppress fill adoption, alerts = %+v", alerts)
 	}

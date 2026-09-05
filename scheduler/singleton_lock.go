@@ -16,8 +16,6 @@ type stateDBLock struct {
 	path string
 }
 
-var heldStateDBLock *stateDBLock
-
 type stateDBLockedError struct {
 	path string
 	pid  int
@@ -100,4 +98,68 @@ func readLockPID(f *os.File) int {
 		return 0
 	}
 	return pid
+}
+
+// stateOwnership is the process-wide claim on every state file. Both files are
+// locked in role order before any migration, startup write or trading, and any
+// failure releases everything already held.
+type stateOwnership struct {
+	locks []*stateDBLock
+}
+
+func (o *stateOwnership) Release() {
+	if o == nil {
+		return
+	}
+	for i := len(o.locks) - 1; i >= 0; i-- {
+		o.locks[i].Release()
+	}
+	o.locks = nil
+}
+
+func acquireStateOwnership(specs []storageFileSpec) (*stateOwnership, error) {
+	owned := &stateOwnership{}
+	for _, role := range storageRoleOrder {
+		for _, spec := range specs {
+			if spec.Role != role {
+				continue
+			}
+			if spec.InMemory {
+				continue
+			}
+			lock, err := acquireStateDBLock(spec.Path)
+			if err != nil {
+				owned.Release()
+				return nil, err
+			}
+			owned.locks = append(owned.locks, lock)
+		}
+	}
+	return owned, nil
+}
+
+// schedulerNeedsOwnership reports whether this scheduler invocation must own
+// the state files. A one-shot cycle writes books exactly like the daemon, so it
+// takes ownership too.
+func schedulerNeedsOwnership(once bool) bool {
+	return true
+}
+
+// probeStateDBLockHolder reports the pid holding a file's ownership lock
+// without taking it. It never creates the lock file.
+func probeStateDBLockHolder(dbPath string) (int, bool) {
+	lockPath := stateDBLockPath(dbPath)
+	f, err := os.OpenFile(lockPath, os.O_RDWR, 0644)
+	if err != nil {
+		return 0, false
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return readLockPID(f), true
+		}
+		return 0, false
+	}
+	syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	return 0, false
 }

@@ -177,6 +177,34 @@ update_db_rsync_excludes() {
     printf '%s\n' '*.db' '*.db-wal' '*.db-shm' '*.db.lock'
 }
 
+# Prints every configured state-file path, one per line: db_file first, then
+# paper_db_file when the split live/paper layout is configured (#1523).
+update_resolve_db_exclude() {
+    local db_paths="scheduler/state.db"
+    if [[ -f ${GO_TRADER_UPDATE_CONFIG:-scheduler/config.json} && -x "${GO_TRADER_UPDATE_PYTHON:-.venv/bin/python3}" ]]; then
+        local custom
+        custom=$("${GO_TRADER_UPDATE_PYTHON:-.venv/bin/python3}" -c '
+import json, os
+try:
+    cfg = json.load(open(os.environ.get("GO_TRADER_UPDATE_CONFIG", "scheduler/config.json")))
+    out = []
+    p = cfg.get("db_file") or ""
+    out.append(p.strip() if isinstance(p, str) and p.strip() else "scheduler/state.db")
+    q = cfg.get("paper_db_file") or ""
+    if isinstance(q, str) and q.strip():
+        out.append(q.strip())
+    print("\n".join(out))
+except Exception:
+    pass
+' 2>/dev/null || true)
+        if [[ -n "$custom" ]]; then
+            db_paths="$custom"
+        fi
+    fi
+    printf '%s\n' "$db_paths"
+}
+
+
 strip_unit_flags_from_argv() {
     declare -a out=()
     local skip_next=0

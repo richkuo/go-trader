@@ -57,13 +57,16 @@ func manualCoreExitCode(err error) int {
 }
 
 type manualStateView struct {
-	KillSwitch       bool
-	HasStrategy      bool
-	PendingCBClose   bool
-	DailyLossHold    bool
-	DailyLossNote    string
-	NotionalHold     bool
-	NotionalNote     string
+	KillSwitch     bool
+	HasStrategy    bool
+	PendingCBClose bool
+	DailyLossHold  bool
+	DailyLossNote  string
+	NotionalHold   bool
+	NotionalNote   string
+	// PersistenceHold marks a scope with an unacknowledged state save failure:
+	// no new exposure until a save succeeds. Closes and SL edits stay open.
+	PersistenceHold  bool
 	ExposureCap      ExposureCapStatus
 	ExposureCapAsset string
 	Pos              *Position
@@ -105,6 +108,7 @@ func mergeManualStateViews(dst, src manualStateView) manualStateView {
 		dst.NotionalHold = true
 		dst.NotionalNote = src.NotionalNote
 	}
+	dst.PersistenceHold = dst.PersistenceHold || src.PersistenceHold
 	if !dst.ExposureCap.Configured {
 		dst.ExposureCap = src.ExposureCap
 		return dst
@@ -126,17 +130,23 @@ func mergeManualStateViews(dst, src manualStateView) manualStateView {
 }
 
 func manualStateViewFromState(cfg *Config, state *AppState, strategyID, symbol string) manualStateView {
+	return manualStateViewFromStateWithStore(cfg, state, nil, strategyID, symbol)
+}
+
+func manualStateViewFromStateWithStore(cfg *Config, state *AppState, store *StateStore, strategyID, symbol string) manualStateView {
 	now := time.Now().UTC()
 	var v manualStateView
 	scope, known := scopeOfStrategyID(configStrategyList(cfg), strategyID)
 	if known {
 		v = manualScopeStateView(cfg, state, scope, now)
+		v.PersistenceHold = store.persistenceHoldsScope(scope)
 	} else {
 		v.KillSwitch = state.anyScopeLatched()
 		if cfg != nil {
 			v = mergeManualStateViews(v, manualSubsetStateView(cfg.PortfolioRisk, state.Strategies, cfg.Strategies, now))
 			for _, sc := range activeScopes(cfg.Strategies) {
 				v = mergeManualStateViews(v, manualScopeStateView(cfg, state, sc, now))
+				v.PersistenceHold = v.PersistenceHold || store.persistenceHoldsScope(sc)
 			}
 		}
 	}
@@ -165,7 +175,7 @@ func manualStateViewFromState(cfg *Config, state *AppState, strategyID, symbol s
 
 type manualCoreDeps struct {
 	cfg      *Config
-	stateDB  *StateDB
+	stateDB  *StateStore
 	notifier *MultiNotifier
 
 	loadState func(strategyID, symbol string) (manualStateView, error)
@@ -176,30 +186,32 @@ type manualCoreDeps struct {
 	fetchMids   manualMarkFetcher
 	closer      HyperliquidLiveCloser
 
-	lockManualActions           func() (release func(), err error)
+	// lockManualActions takes the manual-action lock of the file that owns the
+	// target strategy, so a paper command never blocks a live one.
+	lockManualActions           func(strategyID string) (release func(), err error)
 	reconcileCanceledProtection func(strategyID, symbol string, cancelOIDs []int64) error
 }
 
-func (d manualCoreDeps) acquireManualActionLock() (func(), error) {
+func (d manualCoreDeps) acquireManualActionLock(strategyID string) (func(), error) {
 	if d.lockManualActions == nil {
 		return func() {}, nil
 	}
-	return d.lockManualActions()
+	return d.lockManualActions(strategyID)
 }
 
-func newCLIManualCoreDeps(cfg *Config, stateDB *StateDB, notifier *MultiNotifier) manualCoreDeps {
-	d := newManualCoreDeps(cfg, stateDB, notifier)
+func newCLIManualCoreDeps(cfg *Config, store *StateStore, notifier *MultiNotifier) manualCoreDeps {
+	d := newManualCoreDeps(cfg, store, notifier)
 	d.loadState = func(strategyID, symbol string) (manualStateView, error) {
-		state, err := LoadStateWithDB(cfg, stateDB)
+		state, _, err := LoadStateWithStore(cfg, store)
 		if err != nil {
 			return manualStateView{}, err
 		}
-		return manualStateViewFromState(cfg, state, strategyID, symbol), nil
+		return manualStateViewFromStateWithStore(cfg, state, store, strategyID, symbol), nil
 	}
 	return d
 }
 
-func newManualCoreDeps(cfg *Config, stateDB *StateDB, notifier *MultiNotifier) manualCoreDeps {
+func newManualCoreDeps(cfg *Config, stateDB *StateStore, notifier *MultiNotifier) manualCoreDeps {
 	return manualCoreDeps{
 		cfg:         cfg,
 		stateDB:     stateDB,
@@ -212,17 +224,17 @@ func newManualCoreDeps(cfg *Config, stateDB *StateDB, notifier *MultiNotifier) m
 		reconcileCanceledProtection: func(strategyID, symbol string, cancelOIDs []int64) error {
 			return reconcileCanceledExecuteProtectionInDB(cfg, stateDB, strategyID, symbol, cancelOIDs)
 		},
-		lockManualActions: func() (func(), error) {
-			return acquireManualActionFileLock(cfg.DBFile)
+		lockManualActions: func(strategyID string) (func(), error) {
+			return stateDB.manualActionLock(strategyID)
 		},
 	}
 }
 
-func reconcileCanceledExecuteProtectionInDB(cfg *Config, stateDB *StateDB, strategyID, symbol string, cancelOIDs []int64) error {
-	if stateDB == nil || len(cancelOIDs) == 0 {
+func reconcileCanceledExecuteProtectionInDB(cfg *Config, store *StateStore, strategyID, symbol string, cancelOIDs []int64) error {
+	if store == nil || len(cancelOIDs) == 0 {
 		return nil
 	}
-	state, err := LoadStateWithDB(cfg, stateDB)
+	state, _, err := LoadStateWithStore(cfg, store)
 	if err != nil {
 		return err
 	}
@@ -235,7 +247,7 @@ func reconcileCanceledExecuteProtectionInDB(cfg *Config, stateDB *StateDB, strat
 		return nil
 	}
 	clearHyperliquidProtectionOIDsMatching(position, cancelOIDs)
-	return SaveStrategyBookWithDB(strategy, stateDB)
+	return store.SaveStrategyBook(strategy)
 }
 
 func reconcileManualExecuteProtection(d manualCoreDeps, res *manualCoreResult, strategyID, symbol string, executeResult *HyperliquidExecuteResult, requestedCancelOIDs []int64) {
@@ -283,7 +295,7 @@ func lookupForceCloseStrategy(cfg *Config, id string) (StrategyConfig, string, e
 	return StrategyConfig{}, "", manualFailf("error: strategy %q not found in config", id)
 }
 
-func refuseIfPendingManualPositionAction(stateDB *StateDB, cmdName, strategyID, symbol string) error {
+func refuseIfPendingManualPositionAction(stateDB *StateStore, cmdName, strategyID, symbol string) error {
 	pending, err := pendingManualActionExists(stateDB, strategyID, symbol, "open", "add", "close")
 	if err != nil {
 		return manualFailf("error: could not check for queued position actions (%v) — refusing %s to avoid double-firing an on-chain order; retry once the scheduler is reachable", err, cmdName)
@@ -294,7 +306,7 @@ func refuseIfPendingManualPositionAction(stateDB *StateDB, cmdName, strategyID, 
 	return nil
 }
 
-func refuseIfRestingLimitOrderQueued(stateDB *StateDB, cmdName, strategyID, symbol string) error {
+func refuseIfRestingLimitOrderQueued(stateDB *StateStore, cmdName, strategyID, symbol string) error {
 	existing, err := stateDB.CountPendingLimitOrders(strategyID, symbol)
 	if err != nil {
 		return manualFailf("error: could not check for resting limit orders (%v) — refusing %s to avoid double-firing an on-chain order; retry once the scheduler is reachable", err, cmdName)
@@ -315,7 +327,7 @@ func refuseIfPositionActionQueued(d manualCoreDeps, cmdName, strategyID, symbol 
 	return nil
 }
 
-func pendingLimitOrdersForStrategySymbol(stateDB *StateDB, strategyID, symbol string) ([]PendingLimitOrder, error) {
+func pendingLimitOrdersForStrategySymbol(stateDB *StateStore, strategyID, symbol string) ([]PendingLimitOrder, error) {
 	orders, err := stateDB.LoadPendingLimitOrders()
 	if err != nil {
 		return nil, err
@@ -510,6 +522,9 @@ func manualOpenCore(d manualCoreDeps, sc StrategyConfig, in manualOpenInputs) (*
 			if view.NotionalHold {
 				return res, manualFailf("error: %s — manual-open blocked (closes and SL edits are unaffected)", view.NotionalNote)
 			}
+			if view.PersistenceHold {
+				return res, manualFailf("error: the last state save for this scope failed and has not been acknowledged — manual-open blocked until a save succeeds (closes and SL edits are unaffected)")
+			}
 			if blocked, why := exposureCapManualEntryBlock(view.ExposureCap, view.ExposureCapAsset, side); blocked {
 				return res, manualFailf("error: %s — manual-open (%s) blocked (closes and SL edits are unaffected)", why, side)
 			}
@@ -520,7 +535,7 @@ func manualOpenCore(d manualCoreDeps, sc StrategyConfig, in manualOpenInputs) (*
 	}
 
 	if !in.RecordOnly && !in.DryRun {
-		unlock, lockErr := d.acquireManualActionLock()
+		unlock, lockErr := d.acquireManualActionLock(strategyID)
 		if lockErr != nil {
 			return res, manualFailf("error: %v — refusing to avoid double-firing an on-chain order", lockErr)
 		}
@@ -795,6 +810,9 @@ func manualAddCore(d manualCoreDeps, sc StrategyConfig, in manualAddInputs) (*ma
 	if view.NotionalHold {
 		return res, manualFailf("error: %s — manual-add blocked (closes and SL edits are unaffected)", view.NotionalNote)
 	}
+	if view.PersistenceHold {
+		return res, manualFailf("error: the last state save for this scope failed and has not been acknowledged — manual-add blocked until a save succeeds (closes and SL edits are unaffected)")
+	}
 	addDir := "long"
 	if pos.Side == "short" {
 		addDir = "short"
@@ -807,7 +825,7 @@ func manualAddCore(d manualCoreDeps, sc StrategyConfig, in manualAddInputs) (*ma
 	}
 
 	if !in.RecordOnly && !in.DryRun {
-		unlock, lockErr := d.acquireManualActionLock()
+		unlock, lockErr := d.acquireManualActionLock(strategyID)
 		if lockErr != nil {
 			return res, manualFailf("error: %v — refusing to avoid double-firing an on-chain order", lockErr)
 		}
@@ -936,7 +954,7 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 		return res, nil
 	}
 
-	unlock, lockErr := d.acquireManualActionLock()
+	unlock, lockErr := d.acquireManualActionLock(strategyID)
 	if lockErr != nil {
 		return res, manualFailf("error: %v — refusing to avoid double-firing an on-chain order", lockErr)
 	}
@@ -1121,7 +1139,7 @@ func forceCloseCore(d manualCoreDeps, sc StrategyConfig, sym string, in forceClo
 	}
 
 	if !in.DryRun {
-		unlock, lockErr := d.acquireManualActionLock()
+		unlock, lockErr := d.acquireManualActionLock(strategyID)
 		if lockErr != nil {
 			return res, manualFailf("error: %v — refusing to avoid double-firing an on-chain order", lockErr)
 		}
@@ -1424,7 +1442,7 @@ func manualUpdateSLCore(d manualCoreDeps, sc StrategyConfig, in manualSLInputs) 
 	}
 
 	if !in.DryRun {
-		unlock, lockErr := d.acquireManualActionLock()
+		unlock, lockErr := d.acquireManualActionLock(strategyID)
 		if lockErr != nil {
 			return res, manualFailf("error: %v — refusing to avoid double-firing an on-chain order", lockErr)
 		}
@@ -1503,7 +1521,7 @@ func manualCancelSLCore(d manualCoreDeps, sc StrategyConfig, in manualSLInputs) 
 	strategyID := in.StrategyID
 
 	if !in.DryRun {
-		unlock, lockErr := d.acquireManualActionLock()
+		unlock, lockErr := d.acquireManualActionLock(strategyID)
 		if lockErr != nil {
 			return res, manualFailf("error: %v — refusing to avoid double-firing an on-chain order", lockErr)
 		}

@@ -330,8 +330,8 @@ type limitFillCandidate struct {
 	applyFailed    bool
 }
 
-func applyLimitExposureOperatorRequired(stateDB *StateDB, c *limitFillCandidate, now time.Time) {
-	if c == nil || stateDB == nil {
+func applyLimitExposureOperatorRequired(store *StateStore, c *limitFillCandidate, now time.Time) {
+	if c == nil || store == nil {
 		return
 	}
 	if c.refused {
@@ -341,7 +341,7 @@ func applyLimitExposureOperatorRequired(stateDB *StateDB, c *limitFillCandidate,
 		if !c.order.OperatorRequiredSince.IsZero() {
 			return
 		}
-		if err := stateDB.MarkPendingLimitOrderOperatorRequired(c.order.ID, now); err != nil {
+		if err := store.MarkPendingLimitOrderOperatorRequired(c.order.ID, now); err != nil {
 			fmt.Printf("[limit] failed to persist the operator-required marker on row %d: %v\n", c.order.ID, err)
 			return
 		}
@@ -351,7 +351,7 @@ func applyLimitExposureOperatorRequired(stateDB *StateDB, c *limitFillCandidate,
 	if c.order.OperatorRequiredSince.IsZero() {
 		return
 	}
-	if err := stateDB.ClearPendingLimitOrderOperatorRequired(c.order.ID); err != nil {
+	if err := store.ClearPendingLimitOrderOperatorRequired(c.order.ID); err != nil {
 		fmt.Printf("[limit] failed to clear the operator-required marker on row %d: %v\n", c.order.ID, err)
 		return
 	}

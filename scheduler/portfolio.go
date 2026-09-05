@@ -431,6 +431,13 @@ type Trade struct {
 	StopLossATRMult *float64 `json:"stop_loss_atr_mult,omitempty"`
 	TPTiersJSON     string   `json:"tp_tiers_json,omitempty"`
 
+	// SourceScope and sourceRowID carry the provenance a combined read needs to
+	// order rows from two files deterministically. sourceRowID is the row
+	// identifier inside its own file, so it is only a tie-break within a scope.
+	SourceScope PortfolioScope `json:"source_scope,omitempty"`
+	sourceRole  storageRole
+	sourceRowID int64
+
 	persisted bool
 }
 

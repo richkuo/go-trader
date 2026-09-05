@@ -180,6 +180,7 @@ type Config struct {
 	IntervalSeconds          int                        `json:"interval_seconds"`
 	LogDir                   string                     `json:"log_dir"`
 	DBFile                   string                     `json:"db_file,omitempty"`
+	PaperDBFile              string                     `json:"paper_db_file,omitempty"`
 	ReplayLogPath            string                     `json:"replay_log_path,omitempty"`
 	StatusPort               int                        `json:"status_port,omitempty"`
 	StatusToken              string                     `json:"-"`
@@ -506,6 +507,7 @@ type StrategyRef struct {
 
 type StrategyConfig struct {
 	ID                          string                   `json:"id"`
+	StorageStrategyID           string                   `json:"storage_strategy_id,omitempty"`
 	Type                        string                   `json:"type"`
 	Platform                    string                   `json:"platform"`
 	Symbol                      string                   `json:"symbol,omitempty"`
@@ -908,9 +910,11 @@ func loadConfig(path string, skipLiveCredentialChecks bool) (*Config, error) {
 	if cfg.LogDir == "" {
 		cfg.LogDir = "logs"
 	}
+	cfg.DBFile = strings.TrimSpace(cfg.DBFile)
 	if cfg.DBFile == "" {
 		cfg.DBFile = "scheduler/state.db"
 	}
+	cfg.PaperDBFile = strings.TrimSpace(cfg.PaperDBFile)
 	if cfg.AutoUpdate == "" {
 		cfg.AutoUpdate = "off"
 	}
@@ -1422,6 +1426,8 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 	}
 
 	errs = append(errs, validateUserDefaults(cfg.UserDefaults)...)
+
+	errs = append(errs, validateStorageIdentityConfig(cfg)...)
 
 	if !validATRMethodValue(cfg.ATRMethod) {
 		errs = append(errs, fmt.Sprintf("atr_method must be %q or %q, got %q", ATRMethodSimple, ATRMethodWilder, cfg.ATRMethod))

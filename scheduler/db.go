@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -440,7 +441,11 @@ CREATE TABLE IF NOT EXISTS regime_reversal_alerts (
 `
 
 type StateDB struct {
-	db *sql.DB
+	db       *sql.DB
+	path     string
+	role     storageRole
+	ident    *fileIdentity
+	readOnly bool
 }
 
 func OpenStateDB(path string) (*StateDB, error) {
@@ -470,12 +475,39 @@ func OpenStateDB(path string) (*StateDB, error) {
 		return nil, fmt.Errorf("create schema: %w", err)
 	}
 
-	sdb := &StateDB{db: db}
+	sdb := &StateDB{db: db, path: path, role: storageRolePrimary}
 	if err := sdb.migrateSchema(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate schema: %w", err)
 	}
 	return sdb, nil
+}
+
+// openStateDBReadOnly opens an existing state file for inspection only: no
+// schema DDL, no migrations, and no journal or shared-memory sidecar written by
+// this process. A file that does not exist is an error rather than a fresh DB.
+func openStateDBReadOnly(path string) (*StateDB, error) {
+	if isInMemoryDBPath(path) {
+		return nil, fmt.Errorf("read-only open needs a real file, got %q", path)
+	}
+	if _, err := os.Stat(path); err != nil {
+		return nil, fmt.Errorf("stat state db %q: %w", path, err)
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("resolve state db %q: %w", path, err)
+	}
+	dsn := (&url.URL{Scheme: "file", Path: abs, RawQuery: "mode=ro"}).String()
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open db read-only: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec("PRAGMA busy_timeout=5000"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("pragma busy_timeout: %w", err)
+	}
+	return &StateDB{db: db, path: path, role: storageRolePrimary, readOnly: true}, nil
 }
 
 func (sdb *StateDB) migrateSchema() error {
@@ -910,6 +942,10 @@ func (sdb *StateDB) InsertTrade(strategyID string, trade Trade) error {
 	if sdb == nil || sdb.db == nil {
 		return fmt.Errorf("state db unavailable")
 	}
+	sid, err := sdb.toStorageID(strategyID)
+	if err != nil {
+		return err
+	}
 	isClose := 0
 	if trade.IsClose {
 		isClose = 1
@@ -918,10 +954,10 @@ func (sdb *StateDB) InsertTrade(strategyID string, trade Trade) error {
 	if trade.Manual {
 		isManual = 1
 	}
-	_, err := sdb.db.Exec(`INSERT INTO trades
+	_, err = sdb.db.Exec(`INSERT INTO trades
 			(strategy_id, timestamp, symbol, position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl, regime, entry_atr, stop_loss_oid, stop_loss_trigger_px, tp_oids_json, manual, stop_loss_atr_mult, tp_tiers_json, pnl_gross, fee_source)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		strategyID, formatTime(trade.Timestamp), trade.Symbol, trade.PositionID, trade.Side,
+		sid, formatTime(trade.Timestamp), trade.Symbol, trade.PositionID, trade.Side,
 		trade.Quantity, trade.Price, trade.Value, trade.TradeType, trade.Details,
 		trade.ExchangeOrderID, trade.ExchangeFee, isClose, trade.RealizedPnL, trade.Regime,
 		trade.EntryATR, trade.StopLossOID, trade.StopLossTriggerPx, marshalTPOIDsJSON(trade.TPOIDs), isManual,
@@ -939,7 +975,7 @@ func (sdb *StateDB) RecentTrades(since time.Time, limit int) ([]Trade, error) {
 	if limit <= 0 {
 		return nil, nil
 	}
-	rows, err := sdb.db.Query(`SELECT timestamp, strategy_id, symbol, COALESCE(position_id, '') AS position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl, COALESCE(regime, '') AS regime, COALESCE(entry_atr, 0) AS entry_atr, COALESCE(stop_loss_oid, 0) AS stop_loss_oid, COALESCE(stop_loss_trigger_px, 0) AS stop_loss_trigger_px, COALESCE(tp_oids_json, '') AS tp_oids_json, COALESCE(manual, 0) AS manual, stop_loss_atr_mult, COALESCE(tp_tiers_json, '') AS tp_tiers_json, COALESCE(pnl_gross, 0) AS pnl_gross, COALESCE(fee_source, '') AS fee_source
+	rows, err := sdb.db.Query(`SELECT rowid, timestamp, strategy_id, symbol, COALESCE(position_id, '') AS position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl, COALESCE(regime, '') AS regime, COALESCE(entry_atr, 0) AS entry_atr, COALESCE(stop_loss_oid, 0) AS stop_loss_oid, COALESCE(stop_loss_trigger_px, 0) AS stop_loss_trigger_px, COALESCE(tp_oids_json, '') AS tp_oids_json, COALESCE(manual, 0) AS manual, stop_loss_atr_mult, COALESCE(tp_tiers_json, '') AS tp_tiers_json, COALESCE(pnl_gross, 0) AS pnl_gross, COALESCE(fee_source, '') AS fee_source
 		FROM trades WHERE timestamp >= ? ORDER BY timestamp DESC, rowid DESC LIMIT ?`, formatTime(since), limit)
 	if err != nil {
 		return nil, fmt.Errorf("query recent trades: %w", err)
@@ -952,7 +988,7 @@ func (sdb *StateDB) RecentTrades(since time.Time, limit int) ([]Trade, error) {
 		var isCloseInt, isManualInt, pnlGrossInt int
 		var tpOIDsJSON string
 		var slATRMult sql.NullFloat64
-		if err := rows.Scan(&tsStr, &tr.StrategyID, &tr.Symbol, &tr.PositionID, &tr.Side, &tr.Quantity, &tr.Price, &tr.Value, &tr.TradeType, &tr.Details, &tr.ExchangeOrderID, &tr.ExchangeFee, &isCloseInt, &tr.RealizedPnL, &tr.Regime, &tr.EntryATR, &tr.StopLossOID, &tr.StopLossTriggerPx, &tpOIDsJSON, &isManualInt, &slATRMult, &tr.TPTiersJSON, &pnlGrossInt, &tr.FeeSource); err != nil {
+		if err := rows.Scan(&tr.sourceRowID, &tsStr, &tr.StrategyID, &tr.Symbol, &tr.PositionID, &tr.Side, &tr.Quantity, &tr.Price, &tr.Value, &tr.TradeType, &tr.Details, &tr.ExchangeOrderID, &tr.ExchangeFee, &isCloseInt, &tr.RealizedPnL, &tr.Regime, &tr.EntryATR, &tr.StopLossOID, &tr.StopLossTriggerPx, &tpOIDsJSON, &isManualInt, &slATRMult, &tr.TPTiersJSON, &pnlGrossInt, &tr.FeeSource); err != nil {
 			return nil, fmt.Errorf("scan recent trade: %w", err)
 		}
 		tr.Timestamp = parseTime(tsStr)
@@ -964,6 +1000,8 @@ func (sdb *StateDB) RecentTrades(since time.Time, limit int) ([]Trade, error) {
 			v := slATRMult.Float64
 			tr.StopLossATRMult = &v
 		}
+		tr.StrategyID = sdb.fromStorageID(tr.StrategyID)
+		tr.sourceRole = sdb.storageRoleOf()
 		tr.persisted = true
 		out = append(out, tr)
 	}
@@ -983,8 +1021,12 @@ func (sdb *StateDB) RecentTradesForStrategy(strategyID string, limit int) ([]Tra
 	if limit <= 0 {
 		return nil, nil
 	}
+	sid, err := sdb.toStorageID(strategyID)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := sdb.db.Query(`SELECT timestamp, strategy_id, symbol, COALESCE(position_id, '') AS position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl, COALESCE(regime, '') AS regime, COALESCE(entry_atr, 0) AS entry_atr, COALESCE(stop_loss_oid, 0) AS stop_loss_oid, COALESCE(stop_loss_trigger_px, 0) AS stop_loss_trigger_px, COALESCE(tp_oids_json, '') AS tp_oids_json, COALESCE(manual, 0) AS manual, stop_loss_atr_mult, COALESCE(tp_tiers_json, '') AS tp_tiers_json, COALESCE(pnl_gross, 0) AS pnl_gross, COALESCE(fee_source, '') AS fee_source
-		FROM trades WHERE strategy_id = ? ORDER BY timestamp DESC, rowid DESC LIMIT ?`, strategyID, limit)
+		FROM trades WHERE strategy_id = ? ORDER BY timestamp DESC, rowid DESC LIMIT ?`, sid, limit)
 	if err != nil {
 		return nil, fmt.Errorf("query recent trades for %s: %w", strategyID, err)
 	}
@@ -1008,6 +1050,8 @@ func (sdb *StateDB) RecentTradesForStrategy(strategyID string, limit int) ([]Tra
 			v := slATRMult.Float64
 			tr.StopLossATRMult = &v
 		}
+		tr.StrategyID = strategyID
+		tr.sourceRole = sdb.storageRoleOf()
 		tr.persisted = true
 		out = append(out, tr)
 	}
@@ -1018,9 +1062,13 @@ func (sdb *StateDB) RecentTradesForStrategy(strategyID string, limit int) ([]Tra
 }
 
 func (sdb *StateDB) UpdateTradeStampedFields(strategyID string, ts time.Time, entryATR float64, stopLossOID int64, stopLossTriggerPx float64, tpOIDs []int64, stopLossATRMult *float64, tpTiersJSON string) error {
-	_, err := sdb.db.Exec(
+	sid, err := sdb.toStorageID(strategyID)
+	if err != nil {
+		return err
+	}
+	_, err = sdb.db.Exec(
 		`UPDATE trades SET entry_atr = ?, stop_loss_oid = ?, stop_loss_trigger_px = ?, tp_oids_json = ?, stop_loss_atr_mult = ?, tp_tiers_json = ? WHERE strategy_id = ? AND timestamp = ?`,
-		entryATR, stopLossOID, stopLossTriggerPx, marshalTPOIDsJSON(tpOIDs), nullableFloat64(stopLossATRMult), tpTiersJSON, strategyID, formatTime(ts),
+		entryATR, stopLossOID, stopLossTriggerPx, marshalTPOIDsJSON(tpOIDs), nullableFloat64(stopLossATRMult), tpTiersJSON, sid, formatTime(ts),
 	)
 	return err
 }
@@ -1028,6 +1076,10 @@ func (sdb *StateDB) UpdateTradeStampedFields(strategyID string, ts time.Time, en
 func (sdb *StateDB) ReconcileModelOnlyClose(u modelOnlyCloseCorrection) error {
 	if sdb == nil || sdb.db == nil {
 		return fmt.Errorf("state db unavailable")
+	}
+	sid, err := sdb.toStorageID(u.StrategyID)
+	if err != nil {
+		return err
 	}
 	tx, err := sdb.db.Begin()
 	if err != nil {
@@ -1042,13 +1094,13 @@ func (sdb *StateDB) ReconcileModelOnlyClose(u modelOnlyCloseCorrection) error {
 			`UPDATE trades SET quantity = ?, price = ?, value = ?, details = ?, exchange_fee = ?, realized_pnl = ?, exchange_order_id = ?, fee_source = ?
 			 WHERE strategy_id = ? AND timestamp = ? AND symbol = ? AND is_close = 1 AND exchange_order_id = '' AND fee_source = ?`,
 			u.FilledQty, u.RowPrice, u.Value, u.Details, u.CumFee, u.CumGross, u.OID, FeeSourceUserFills,
-			u.StrategyID, ts, u.Symbol, FeeSourceReconcileAdjustment)
+			sid, ts, u.Symbol, FeeSourceReconcileAdjustment)
 	} else {
 		res, err = tx.Exec(
 			`UPDATE trades SET quantity = ?, price = ?, value = ?, details = ?, exchange_fee = ?, realized_pnl = ?
 			 WHERE strategy_id = ? AND timestamp = ? AND symbol = ? AND is_close = 1 AND exchange_order_id = '' AND fee_source = ?`,
 			u.FilledQty, u.RowPrice, u.Value, u.Details, u.CumFee, u.CumGross,
-			u.StrategyID, ts, u.Symbol, FeeSourceReconcileAdjustment)
+			sid, ts, u.Symbol, FeeSourceReconcileAdjustment)
 	}
 	if err != nil {
 		return fmt.Errorf("update trades row: %w", err)
@@ -1060,7 +1112,7 @@ func (sdb *StateDB) ReconcileModelOnlyClose(u modelOnlyCloseCorrection) error {
 	res, err = tx.Exec(
 		`UPDATE closed_positions SET close_price = ?, realized_pnl = ?
 		 WHERE strategy_id = ? AND symbol = ? AND close_reason = ? AND closed_at = ?`,
-		u.VwapPx, u.CumGross-u.CumFee, u.StrategyID, u.Symbol, u.CloseReason, formatTime(u.ClosedAt))
+		u.VwapPx, u.CumGross-u.CumFee, sid, u.Symbol, u.CloseReason, formatTime(u.ClosedAt))
 	if err != nil {
 		return fmt.Errorf("update closed_positions row: %w", err)
 	}
@@ -1072,7 +1124,7 @@ func (sdb *StateDB) ReconcileModelOnlyClose(u modelOnlyCloseCorrection) error {
 		if _, err := tx.Exec(
 			`UPDATE trade_diagnostics SET exit_price = ?, realized_pnl = ?
 			 WHERE strategy_id = ? AND position_id = ? AND closed_at = ?`,
-			u.VwapPx, u.CumGross-u.CumFee, u.StrategyID, u.PositionID, formatTime(u.ClosedAt)); err != nil {
+			u.VwapPx, u.CumGross-u.CumFee, sid, u.PositionID, formatTime(u.ClosedAt)); err != nil {
 			return fmt.Errorf("update trade_diagnostics row: %w", err)
 		}
 	}
@@ -1083,11 +1135,15 @@ func (sdb *StateDB) LoadModelOnlyCloseBasis(strategyID, symbol, closeReason stri
 	if sdb == nil || sdb.db == nil {
 		return nil, fmt.Errorf("state db unavailable")
 	}
+	sid, err := sdb.toStorageID(strategyID)
+	if err != nil {
+		return nil, err
+	}
 	row := sdb.db.QueryRow(
 		`SELECT quantity, avg_cost, side, multiplier FROM closed_positions
 		 WHERE strategy_id = ? AND symbol = ? AND close_reason = ? AND closed_at = ?
 		 ORDER BY id DESC LIMIT 1`,
-		strategyID, symbol, closeReason, formatTime(closedAt))
+		sid, symbol, closeReason, formatTime(closedAt))
 	var b modelOnlyClosedBasis
 	if err := row.Scan(&b.Quantity, &b.AvgCost, &b.Side, &b.Multiplier); err != nil {
 		return nil, fmt.Errorf("load closed-position basis for %s %s @ %s: %w", strategyID, symbol, formatTime(closedAt), err)
@@ -1099,11 +1155,15 @@ func (sdb *StateDB) MarkModelOnlyCloseAbandoned(strategyID, symbol string, ts ti
 	if sdb == nil || sdb.db == nil {
 		return fmt.Errorf("state db unavailable")
 	}
-	_, err := sdb.db.Exec(
+	sid, err := sdb.toStorageID(strategyID)
+	if err != nil {
+		return err
+	}
+	_, err = sdb.db.Exec(
 		`UPDATE trades SET details = details || ? WHERE strategy_id = ? AND timestamp = ? AND symbol = ?
 		  AND exchange_order_id = '' AND fee_source = ? AND details LIKE '%fill-reconciled%'
 		  AND details NOT LIKE '%[reconcile-abandoned]%'`,
-		" [reconcile-abandoned]", strategyID, formatTime(ts), symbol, FeeSourceReconcileAdjustment)
+		" [reconcile-abandoned]", sid, formatTime(ts), symbol, FeeSourceReconcileAdjustment)
 	return err
 }
 
@@ -1128,12 +1188,16 @@ func (sdb *StateDB) SetInitialCapital(strategyID string, value float64) error {
 	if value <= 0 {
 		return fmt.Errorf("initial_capital must be > 0, got %g", value)
 	}
+	sid, err := sdb.toStorageID(strategyID)
+	if err != nil {
+		return err
+	}
 	tx, err := sdb.db.Begin()
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback()
-	res, err := tx.Exec("UPDATE strategies SET initial_capital = ? WHERE id = ?", value, strategyID)
+	res, err := tx.Exec("UPDATE strategies SET initial_capital = ? WHERE id = ?", value, sid)
 	if err != nil {
 		return fmt.Errorf("update initial_capital for %s: %w", strategyID, err)
 	}
@@ -1159,6 +1223,10 @@ func (sdb *StateDB) PersistSharedWalletPoolStateTransition(s *StrategyState) err
 	if s == nil {
 		return fmt.Errorf("strategy state is nil")
 	}
+	sid, err := sdb.toStorageID(s.ID)
+	if err != nil {
+		return err
+	}
 	poolInt := 0
 	if s.SharedWalletPoolBudget {
 		poolInt = 1
@@ -1169,7 +1237,7 @@ func (sdb *StateDB) PersistSharedWalletPoolStateTransition(s *StrategyState) err
 		     risk_current_drawdown_pct = ?, shared_wallet_pool_budget = ?
 		 WHERE id = ?`,
 		s.Cash, s.InitialCapital, s.RiskState.PeakValue,
-		s.RiskState.CurrentDrawdownPct, poolInt, s.ID,
+		s.RiskState.CurrentDrawdownPct, poolInt, sid,
 	)
 	if err != nil {
 		return fmt.Errorf("persist shared-wallet pool transition for %s: %w", s.ID, err)
@@ -1185,13 +1253,56 @@ func (sdb *StateDB) PersistSharedWalletPoolStateTransition(s *StrategyState) err
 	return nil
 }
 
-func (sdb *StateDB) SaveState(state *AppState) error {
-	tx, err := sdb.db.Begin()
-	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
-	}
-	defer tx.Rollback()
+// storeCommitHook runs immediately before each per-file commit. It exists so
+// tests can inject a persistence failure at a chosen file and prove the other
+// file's committed effects are neither lost nor duplicated.
+var storeCommitHook func(role storageRole) error
 
+// scopeSaveRequest describes one physical file's share of a save: the books it
+// owns, the risk scopes it owns, and the manual actions its transaction
+// acknowledges.
+type scopeSaveRequest struct {
+	Strategies []*StrategyState
+	ScopeOf    map[string]PortfolioScope
+	Scopes     []PortfolioScope
+	// FullFile marks a request that covers every scope the file owns, so the
+	// whole roster is replaced exactly as the single-file save always did. A
+	// partial request replaces only the rows it names and leaves the other
+	// scope's books and any orphan row untouched.
+	FullFile bool
+	// IncludeUnscoped keeps a legacy unscoped risk row round-tripping in the
+	// single-file layout, where one file owns every scope.
+	IncludeUnscoped bool
+	WriteMeta       bool
+	AckActionID     []int64
+}
+
+func sortedStrategyStates(m map[string]*StrategyState) []*StrategyState {
+	ids := make([]string, 0, len(m))
+	for id := range m {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	out := make([]*StrategyState, 0, len(ids))
+	for _, id := range ids {
+		if s := m[id]; s != nil {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func (sdb *StateDB) SaveState(state *AppState) error {
+	return sdb.saveStateSubset(state, scopeSaveRequest{
+		Strategies:      sortedStrategyStates(state.Strategies),
+		Scopes:          []PortfolioScope{ScopeLive, ScopePaper},
+		FullFile:        true,
+		IncludeUnscoped: true,
+		WriteMeta:       true,
+	})
+}
+
+func saveProcessMeta(tx *sql.Tx, state *AppState) error {
 	lbSummariesJSON := ""
 	if len(state.LastLeaderboardSummaries) > 0 {
 		raw, err := json.Marshal(state.LastLeaderboardSummaries)
@@ -1218,6 +1329,53 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 	); err != nil {
 		return fmt.Errorf("upsert app_state: %w", err)
 	}
+	return nil
+}
+
+func scopePlaceholders(scopes []PortfolioScope) (string, []interface{}) {
+	args := make([]interface{}, 0, len(scopes)+1)
+	marks := make([]string, 0, len(scopes)+1)
+	for _, scope := range scopes {
+		marks = append(marks, "?")
+		args = append(args, string(scope))
+	}
+	marks = append(marks, "?")
+	args = append(args, string(scopeUnassigned))
+	return strings.Join(marks, ", "), args
+}
+
+func (sdb *StateDB) saveStateSubset(state *AppState, req scopeSaveRequest) error {
+	if sdb == nil || sdb.db == nil {
+		return fmt.Errorf("state db unavailable")
+	}
+	if sdb.readOnly {
+		return fmt.Errorf("%s state file is open read-only", sdb.storageRoleOf())
+	}
+	storageIDs := make([]string, len(req.Strategies))
+	for i, s := range req.Strategies {
+		sid, err := sdb.toStorageID(s.ID)
+		if err != nil {
+			return err
+		}
+		storageIDs[i] = sid
+	}
+
+	tx, err := sdb.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`INSERT INTO app_state (id, cycle_count, last_cycle, last_leaderboard_post_date, last_leaderboard_summaries, last_summary_post)
+		VALUES (1, 0, '', '', '', '')
+		ON CONFLICT(id) DO NOTHING`); err != nil {
+		return fmt.Errorf("ensure app_state: %w", err)
+	}
+	if req.WriteMeta {
+		if err := saveProcessMeta(tx, state); err != nil {
+			return err
+		}
+	}
 
 	existingInitCaps := make(map[string]float64)
 	existingRows, err := tx.Query("SELECT id, initial_capital FROM strategies")
@@ -1239,8 +1397,20 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 	}
 	existingRows.Close()
 
-	if _, err := tx.Exec("DELETE FROM strategies"); err != nil {
-		return fmt.Errorf("delete strategies: %w", err)
+	if req.FullFile {
+		if _, err := tx.Exec("DELETE FROM strategies"); err != nil {
+			return fmt.Errorf("delete strategies: %w", err)
+		}
+	} else if len(storageIDs) > 0 {
+		marks := make([]string, len(storageIDs))
+		args := make([]interface{}, len(storageIDs))
+		for i, id := range storageIDs {
+			marks[i] = "?"
+			args[i] = id
+		}
+		if _, err := tx.Exec("DELETE FROM strategies WHERE id IN ("+strings.Join(marks, ", ")+")", args...); err != nil {
+			return fmt.Errorf("delete strategies: %w", err)
+		}
 	}
 
 	stmtStrat, err := tx.Prepare(`INSERT OR REPLACE INTO strategies (id, type, platform, cash, initial_capital,
@@ -1270,8 +1440,9 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 	}
 	defer stmtOpt.Close()
 
-	for _, s := range state.Strategies {
-		if prev, ok := existingInitCaps[s.ID]; ok && prev > 0 && s.InitialCapital != prev {
+	for i, s := range req.Strategies {
+		sid := storageIDs[i]
+		if prev, ok := existingInitCaps[sid]; ok && prev > 0 && s.InitialCapital != prev {
 			applyInitialCapitalGuard(s, prev)
 		}
 
@@ -1288,7 +1459,7 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 			poolBudgetInt = 1
 		}
 		if _, err := stmtStrat.Exec(
-			s.ID, s.Type, s.Platform, s.Cash, s.InitialCapital,
+			sid, s.Type, s.Platform, s.Cash, s.InitialCapital,
 			s.RiskState.PeakValue, s.RiskState.MaxDrawdownPct, s.RiskState.CurrentDrawdownPct,
 			s.RiskState.DailyPnL, s.RiskState.DailyPnLDate, s.RiskState.ConsecutiveLosses,
 			cbInt, formatTime(s.RiskState.CircuitBreakerUntil),
@@ -1303,7 +1474,8 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 			return fmt.Errorf("insert strategy %s: %w", s.ID, err)
 		}
 
-		for _, pos := range s.Positions {
+		for _, sym := range sortedPositionSymbols(s.Positions) {
+			pos := s.Positions[sym]
 			positionID := ensurePositionTradeID(s.ID, pos.Symbol, pos)
 			tp1OID, tp2OID := firstTwoTPOIDs(pos.TPOIDs)
 			scaleInResizePending := 0
@@ -1322,15 +1494,16 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 			if pos.LLMAnalysisRequested {
 				llmAnalysisRequested = 1
 			}
-			if _, err := stmtPos.Exec(s.ID, pos.Symbol, positionID, pos.Quantity, pos.InitialQuantity, pos.AvgCost, pos.EntryATR, pos.Side, pos.Multiplier, pos.OwnerStrategyID, formatTime(pos.OpenedAt), pos.StopLossOID, pos.StopLossTriggerPx, pos.StopLossHighWaterPx, tp1OID, tp2OID, marshalTPOIDsJSON(pos.TPOIDs), marshalTPArmedTiersJSON(pos.TPArmedTiers), nullableFloat64(pos.StopLossATRMult), pos.TPTiersJSON, pos.SLAdjustedTiersProcessed, nullableFloat64(pos.PostTPTrailingATRMult), pos.Regime, marshalRegimeWindowsJSON(pos.RegimeWindows), pos.RegimePendingLabel, pos.RegimePendingCount, pos.RegimeAppliedLabel, pos.ScaleInCount, pos.LastAddPrice, pos.AddedNotionalUSD, pos.RiskAnchorPrice, scaleInResizePending, ratchetFallbackNormalizePending, pos.OpenProfile, directionCertifiedAtOpen, marshalStringMapJSON(pos.DirectionCertifiedStatesAtOpen), llmAnalysisRequested, pos.LLMVerdict, pos.ATRMethodAtOpen, pos.HedgeFor, pos.HedgePrimaryQtyBasis, pos.HurstAtOpen, pos.HurstSizeMult); err != nil {
+			if _, err := stmtPos.Exec(sid, pos.Symbol, positionID, pos.Quantity, pos.InitialQuantity, pos.AvgCost, pos.EntryATR, pos.Side, pos.Multiplier, sdb.toStorageOwnerID(pos.OwnerStrategyID), formatTime(pos.OpenedAt), pos.StopLossOID, pos.StopLossTriggerPx, pos.StopLossHighWaterPx, tp1OID, tp2OID, marshalTPOIDsJSON(pos.TPOIDs), marshalTPArmedTiersJSON(pos.TPArmedTiers), nullableFloat64(pos.StopLossATRMult), pos.TPTiersJSON, pos.SLAdjustedTiersProcessed, nullableFloat64(pos.PostTPTrailingATRMult), pos.Regime, marshalRegimeWindowsJSON(pos.RegimeWindows), pos.RegimePendingLabel, pos.RegimePendingCount, pos.RegimeAppliedLabel, pos.ScaleInCount, pos.LastAddPrice, pos.AddedNotionalUSD, pos.RiskAnchorPrice, scaleInResizePending, ratchetFallbackNormalizePending, pos.OpenProfile, directionCertifiedAtOpen, marshalStringMapJSON(pos.DirectionCertifiedStatesAtOpen), llmAnalysisRequested, pos.LLMVerdict, pos.ATRMethodAtOpen, pos.HedgeFor, pos.HedgePrimaryQtyBasis, pos.HurstAtOpen, pos.HurstSizeMult); err != nil {
 				return fmt.Errorf("insert position %s/%s: %w", s.ID, pos.Symbol, err)
 			}
 		}
 
-		for key, opt := range s.OptionPositions {
+		for _, key := range sortedOptionKeys(s.OptionPositions) {
+			opt := s.OptionPositions[key]
 			positionID := ensureOptionTradeID(s.ID, opt)
 			if _, err := stmtOpt.Exec(
-				s.ID, key, positionID, opt.Underlying, opt.OptionType, opt.Strike, opt.Expiry, opt.DTE,
+				sid, key, positionID, opt.Underlying, opt.OptionType, opt.Strike, opt.Expiry, opt.DTE,
 				opt.Action, opt.Quantity, opt.EntryPremium, opt.EntryPremiumUSD, opt.CurrentValueUSD,
 				opt.Greeks.Delta, opt.Greeks.Gamma, opt.Greeks.Theta, opt.Greeks.Vega,
 				formatTime(opt.OpenedAt),
@@ -1353,12 +1526,13 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 	}
 	var flushed []trackedFlush
 
-	for _, s := range state.Strategies {
-		for i := range s.TradeHistory {
-			if s.TradeHistory[i].persisted {
+	for i, s := range req.Strategies {
+		sid := storageIDs[i]
+		for j := range s.TradeHistory {
+			if s.TradeHistory[j].persisted {
 				continue
 			}
-			t := s.TradeHistory[i]
+			t := s.TradeHistory[j]
 			isClose := 0
 			if t.IsClose {
 				isClose = 1
@@ -1367,15 +1541,15 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 			if t.Manual {
 				isManual = 1
 			}
-			if _, err := stmtTrade.Exec(s.ID, formatTime(t.Timestamp), t.Symbol, t.PositionID, t.Side, t.Quantity, t.Price, t.Value, t.TradeType, t.Details, t.ExchangeOrderID, t.ExchangeFee, isClose, t.RealizedPnL, t.Regime, t.EntryATR, t.StopLossOID, t.StopLossTriggerPx, marshalTPOIDsJSON(t.TPOIDs), isManual, nullableFloat64(t.StopLossATRMult), t.TPTiersJSON, boolToInt(t.PnLGross), t.FeeSource); err != nil {
+			if _, err := stmtTrade.Exec(sid, formatTime(t.Timestamp), t.Symbol, t.PositionID, t.Side, t.Quantity, t.Price, t.Value, t.TradeType, t.Details, t.ExchangeOrderID, t.ExchangeFee, isClose, t.RealizedPnL, t.Regime, t.EntryATR, t.StopLossOID, t.StopLossTriggerPx, marshalTPOIDsJSON(t.TPOIDs), isManual, nullableFloat64(t.StopLossATRMult), t.TPTiersJSON, boolToInt(t.PnLGross), t.FeeSource); err != nil {
 				return fmt.Errorf("insert trade for %s: %w", s.ID, err)
 			}
-			flushed = append(flushed, trackedFlush{strat: s, index: i})
+			flushed = append(flushed, trackedFlush{strat: s, index: j})
 		}
 	}
 
 	hasClosed := false
-	for _, s := range state.Strategies {
+	for _, s := range req.Strategies {
 		if len(s.ClosedPositions) > 0 {
 			hasClosed = true
 			break
@@ -1390,10 +1564,18 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 			return fmt.Errorf("prepare closed_position insert: %w", err)
 		}
 		defer stmtClosed.Close()
-		for _, s := range state.Strategies {
+		for i, s := range req.Strategies {
+			sid := storageIDs[i]
 			for _, cp := range s.ClosedPositions {
+				closedSID := sid
+				if cp.StrategyID != s.ID {
+					closedSID, err = sdb.toStorageID(cp.StrategyID)
+					if err != nil {
+						return err
+					}
+				}
 				if _, err := stmtClosed.Exec(
-					cp.StrategyID, cp.Symbol, cp.Quantity, cp.AvgCost, cp.Side, cp.Multiplier,
+					closedSID, cp.Symbol, cp.Quantity, cp.AvgCost, cp.Side, cp.Multiplier,
 					formatTime(cp.OpenedAt), formatTime(cp.ClosedAt),
 					cp.ClosePrice, cp.RealizedPnL, cp.CloseReason, cp.DurationSeconds,
 				); err != nil {
@@ -1404,7 +1586,7 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 	}
 
 	hasClosedOpt := false
-	for _, s := range state.Strategies {
+	for _, s := range req.Strategies {
 		if len(s.ClosedOptionPositions) > 0 {
 			hasClosedOpt = true
 			break
@@ -1420,10 +1602,18 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 			return fmt.Errorf("prepare closed_option_position insert: %w", err)
 		}
 		defer stmtClosedOpt.Close()
-		for _, s := range state.Strategies {
+		for i, s := range req.Strategies {
+			sid := storageIDs[i]
 			for _, cop := range s.ClosedOptionPositions {
+				closedSID := sid
+				if cop.StrategyID != s.ID {
+					closedSID, err = sdb.toStorageID(cop.StrategyID)
+					if err != nil {
+						return err
+					}
+				}
 				if _, err := stmtClosedOpt.Exec(
-					cop.StrategyID, cop.PositionID, cop.Underlying, cop.OptionType,
+					closedSID, cop.PositionID, cop.Underlying, cop.OptionType,
 					cop.Strike, cop.Expiry, cop.Action, cop.Quantity,
 					cop.EntryPremiumUSD, cop.ClosePriceUSD, cop.RealizedPnL,
 					formatTime(cop.OpenedAt), formatTime(cop.ClosedAt),
@@ -1436,19 +1626,29 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 	}
 
 	var flushedDiags []TradeDiagnosticsRow
-	for _, s := range state.Strategies {
-		rows, err := flushPendingDiagnosticsFor(tx, s)
+	for i, s := range req.Strategies {
+		rows, err := sdb.flushPendingDiagnosticsFor(tx, s, storageIDs[i], req.ScopeOf[s.ID])
 		if err != nil {
 			return err
 		}
 		flushedDiags = append(flushedDiags, rows...)
 	}
 
-	if _, err := tx.Exec("DELETE FROM portfolio_risk"); err != nil {
-		return fmt.Errorf("delete portfolio_risk: %w", err)
-	}
-	if _, err := tx.Exec("DELETE FROM kill_switch_events"); err != nil {
-		return fmt.Errorf("delete kill_switch_events: %w", err)
+	scopeFilter, scopeArgs := scopePlaceholders(req.Scopes)
+	if req.FullFile {
+		if _, err := tx.Exec("DELETE FROM portfolio_risk"); err != nil {
+			return fmt.Errorf("delete portfolio_risk: %w", err)
+		}
+		if _, err := tx.Exec("DELETE FROM kill_switch_events"); err != nil {
+			return fmt.Errorf("delete kill_switch_events: %w", err)
+		}
+	} else {
+		if _, err := tx.Exec("DELETE FROM portfolio_risk WHERE scope IN ("+scopeFilter+")", scopeArgs...); err != nil {
+			return fmt.Errorf("delete portfolio_risk: %w", err)
+		}
+		if _, err := tx.Exec("DELETE FROM kill_switch_events WHERE COALESCE(scope, '') IN ("+scopeFilter+")", scopeArgs...); err != nil {
+			return fmt.Errorf("delete kill_switch_events: %w", err)
+		}
 	}
 	stmtEvt, err := tx.Prepare(`INSERT INTO kill_switch_events (scope, timestamp, type, source, drawdown_pct, portfolio_value, peak_value, details)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
@@ -1456,7 +1656,17 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 		return fmt.Errorf("prepare kill_switch_event insert: %w", err)
 	}
 	defer stmtEvt.Close()
+	owned := make(map[PortfolioScope]bool, len(req.Scopes)+1)
+	for _, scope := range req.Scopes {
+		owned[scope] = true
+	}
+	if req.IncludeUnscoped {
+		owned[scopeUnassigned] = true
+	}
 	for _, scope := range sortedPortfolioScopes(state.PortfolioRisk) {
+		if !owned[scope] {
+			continue
+		}
 		prs := state.PortfolioRisk[scope]
 		if prs == nil {
 			continue
@@ -1483,10 +1693,17 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 		}
 	}
 
-	if _, err := tx.Exec("DELETE FROM correlation_snapshot"); err != nil {
+	if req.FullFile {
+		if _, err := tx.Exec("DELETE FROM correlation_snapshot"); err != nil {
+			return fmt.Errorf("delete correlation_snapshot: %w", err)
+		}
+	} else if _, err := tx.Exec("DELETE FROM correlation_snapshot WHERE scope IN ("+scopeFilter+")", scopeArgs...); err != nil {
 		return fmt.Errorf("delete correlation_snapshot: %w", err)
 	}
 	for _, scope := range sortedCorrelationScopes(state.CorrelationSnapshot) {
+		if !owned[scope] {
+			continue
+		}
 		snap := state.CorrelationSnapshot[scope]
 		snapJSON := "{}"
 		if snap != nil {
@@ -1501,10 +1718,20 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 		}
 	}
 
+	if err := deletePendingManualActionsByID(tx, req.AckActionID); err != nil {
+		return err
+	}
+
+	if storeCommitHook != nil {
+		if err := storeCommitHook(sdb.storageRoleOf()); err != nil {
+			return fmt.Errorf("commit hook (%s): %w", sdb.storageRoleOf(), err)
+		}
+	}
+
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	for _, s := range state.Strategies {
+	for _, s := range req.Strategies {
 		s.ClosedPositions = nil
 		s.ClosedOptionPositions = nil
 		s.pendingTradeDiagnostics = nil
@@ -1532,14 +1759,16 @@ func applyInitialCapitalGuard(s *StrategyState, existing float64) {
 	}
 }
 
-func flushPendingDiagnosticsFor(tx *sql.Tx, s *StrategyState) ([]TradeDiagnosticsRow, error) {
+func (sdb *StateDB) flushPendingDiagnosticsFor(tx *sql.Tx, s *StrategyState, storageID string, scope PortfolioScope) ([]TradeDiagnosticsRow, error) {
 	if tx == nil || s == nil || len(s.pendingTradeDiagnostics) == 0 {
 		return nil, nil
 	}
 	flushed := make([]TradeDiagnosticsRow, 0, len(s.pendingTradeDiagnostics))
 	for i := range s.pendingTradeDiagnostics {
 		row := &s.pendingTradeDiagnostics[i]
-		if err := insertTradeDiagnosticsRow(tx, row); err != nil {
+		row.Scope = scope
+		row.SourceRole = sdb.storageRoleOf()
+		if err := insertTradeDiagnosticsRowAs(tx, row, storageID); err != nil {
 			return nil, err
 		}
 		flushed = append(flushed, *row)
@@ -1557,11 +1786,22 @@ func enqueueFlushedDiagnostics(rows []TradeDiagnosticsRow) {
 }
 
 func (sdb *StateDB) SaveStrategyBook(s *StrategyState) error {
+	return sdb.saveStrategyBookWithAcks(s, scopeUnassigned, nil)
+}
+
+func (sdb *StateDB) saveStrategyBookWithAcks(s *StrategyState, scope PortfolioScope, ackIDs []int64) error {
 	if sdb == nil || sdb.db == nil {
 		return fmt.Errorf("state db unavailable")
 	}
 	if s == nil {
 		return fmt.Errorf("strategy state is nil")
+	}
+	if sdb.readOnly {
+		return fmt.Errorf("%s state file is open read-only", sdb.storageRoleOf())
+	}
+	sid, err := sdb.toStorageID(s.ID)
+	if err != nil {
+		return err
 	}
 
 	tx, err := sdb.db.Begin()
@@ -1577,7 +1817,7 @@ func (sdb *StateDB) SaveStrategyBook(s *StrategyState) error {
 	}
 
 	var existingInitCap float64
-	err = tx.QueryRow("SELECT initial_capital FROM strategies WHERE id = ?", s.ID).Scan(&existingInitCap)
+	err = tx.QueryRow("SELECT initial_capital FROM strategies WHERE id = ?", sid).Scan(&existingInitCap)
 	if err != nil && err != sql.ErrNoRows {
 		return fmt.Errorf("read existing initial_capital for %s: %w", s.ID, err)
 	}
@@ -1603,7 +1843,7 @@ func (sdb *StateDB) SaveStrategyBook(s *StrategyState) error {
 		risk_circuit_breaker, risk_circuit_breaker_until, risk_pending_circuit_closes_json, active_profile,
 		cash_reconcile_required, shared_wallet_pool_budget, hurst_gate_state, replay_mirror_watermark, replay_mirror_watermark_source)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		s.ID, s.Type, s.Platform, s.Cash, s.InitialCapital,
+		sid, s.Type, s.Platform, s.Cash, s.InitialCapital,
 		s.RiskState.PeakValue, s.RiskState.MaxDrawdownPct, s.RiskState.CurrentDrawdownPct,
 		s.RiskState.DailyPnL, s.RiskState.DailyPnLDate, s.RiskState.ConsecutiveLosses,
 		cbInt, formatTime(s.RiskState.CircuitBreakerUntil),
@@ -1618,10 +1858,10 @@ func (sdb *StateDB) SaveStrategyBook(s *StrategyState) error {
 		return fmt.Errorf("insert strategy %s: %w", s.ID, err)
 	}
 
-	if _, err := tx.Exec(`DELETE FROM positions WHERE strategy_id = ?`, s.ID); err != nil {
+	if _, err := tx.Exec(`DELETE FROM positions WHERE strategy_id = ?`, sid); err != nil {
 		return fmt.Errorf("delete positions for %s: %w", s.ID, err)
 	}
-	if _, err := tx.Exec(`DELETE FROM option_positions WHERE strategy_id = ?`, s.ID); err != nil {
+	if _, err := tx.Exec(`DELETE FROM option_positions WHERE strategy_id = ?`, sid); err != nil {
 		return fmt.Errorf("delete option_positions for %s: %w", s.ID, err)
 	}
 
@@ -1631,7 +1871,8 @@ func (sdb *StateDB) SaveStrategyBook(s *StrategyState) error {
 		return fmt.Errorf("prepare position insert: %w", err)
 	}
 	defer stmtPos.Close()
-	for _, pos := range s.Positions {
+	for _, sym := range sortedPositionSymbols(s.Positions) {
+		pos := s.Positions[sym]
 		positionID := ensurePositionTradeID(s.ID, pos.Symbol, pos)
 		tp1OID, tp2OID := firstTwoTPOIDs(pos.TPOIDs)
 		scaleInResizePending := 0
@@ -1650,7 +1891,7 @@ func (sdb *StateDB) SaveStrategyBook(s *StrategyState) error {
 		if pos.LLMAnalysisRequested {
 			llmAnalysisRequested = 1
 		}
-		if _, err := stmtPos.Exec(s.ID, pos.Symbol, positionID, pos.Quantity, pos.InitialQuantity, pos.AvgCost, pos.EntryATR, pos.Side, pos.Multiplier, pos.OwnerStrategyID, formatTime(pos.OpenedAt), pos.StopLossOID, pos.StopLossTriggerPx, pos.StopLossHighWaterPx, tp1OID, tp2OID, marshalTPOIDsJSON(pos.TPOIDs), marshalTPArmedTiersJSON(pos.TPArmedTiers), nullableFloat64(pos.StopLossATRMult), pos.TPTiersJSON, pos.SLAdjustedTiersProcessed, nullableFloat64(pos.PostTPTrailingATRMult), pos.Regime, marshalRegimeWindowsJSON(pos.RegimeWindows), pos.RegimePendingLabel, pos.RegimePendingCount, pos.RegimeAppliedLabel, pos.ScaleInCount, pos.LastAddPrice, pos.AddedNotionalUSD, pos.RiskAnchorPrice, scaleInResizePending, ratchetFallbackNormalizePending, pos.OpenProfile, directionCertifiedAtOpen, marshalStringMapJSON(pos.DirectionCertifiedStatesAtOpen), llmAnalysisRequested, pos.LLMVerdict, pos.ATRMethodAtOpen, pos.HedgeFor, pos.HedgePrimaryQtyBasis, pos.HurstAtOpen, pos.HurstSizeMult); err != nil {
+		if _, err := stmtPos.Exec(sid, pos.Symbol, positionID, pos.Quantity, pos.InitialQuantity, pos.AvgCost, pos.EntryATR, pos.Side, pos.Multiplier, sdb.toStorageOwnerID(pos.OwnerStrategyID), formatTime(pos.OpenedAt), pos.StopLossOID, pos.StopLossTriggerPx, pos.StopLossHighWaterPx, tp1OID, tp2OID, marshalTPOIDsJSON(pos.TPOIDs), marshalTPArmedTiersJSON(pos.TPArmedTiers), nullableFloat64(pos.StopLossATRMult), pos.TPTiersJSON, pos.SLAdjustedTiersProcessed, nullableFloat64(pos.PostTPTrailingATRMult), pos.Regime, marshalRegimeWindowsJSON(pos.RegimeWindows), pos.RegimePendingLabel, pos.RegimePendingCount, pos.RegimeAppliedLabel, pos.ScaleInCount, pos.LastAddPrice, pos.AddedNotionalUSD, pos.RiskAnchorPrice, scaleInResizePending, ratchetFallbackNormalizePending, pos.OpenProfile, directionCertifiedAtOpen, marshalStringMapJSON(pos.DirectionCertifiedStatesAtOpen), llmAnalysisRequested, pos.LLMVerdict, pos.ATRMethodAtOpen, pos.HedgeFor, pos.HedgePrimaryQtyBasis, pos.HurstAtOpen, pos.HurstSizeMult); err != nil {
 			return fmt.Errorf("insert position %s/%s: %w", s.ID, pos.Symbol, err)
 		}
 	}
@@ -1664,10 +1905,11 @@ func (sdb *StateDB) SaveStrategyBook(s *StrategyState) error {
 			return fmt.Errorf("prepare option_position insert: %w", err)
 		}
 		defer stmtOpt.Close()
-		for key, opt := range s.OptionPositions {
+		for _, key := range sortedOptionKeys(s.OptionPositions) {
+			opt := s.OptionPositions[key]
 			positionID := ensureOptionTradeID(s.ID, opt)
 			if _, err := stmtOpt.Exec(
-				s.ID, key, positionID, opt.Underlying, opt.OptionType, opt.Strike, opt.Expiry, opt.DTE,
+				sid, key, positionID, opt.Underlying, opt.OptionType, opt.Strike, opt.Expiry, opt.DTE,
 				opt.Action, opt.Quantity, opt.EntryPremium, opt.EntryPremiumUSD, opt.CurrentValueUSD,
 				opt.Greeks.Delta, opt.Greeks.Gamma, opt.Greeks.Theta, opt.Greeks.Vega,
 				formatTime(opt.OpenedAt),
@@ -1700,7 +1942,7 @@ func (sdb *StateDB) SaveStrategyBook(s *StrategyState) error {
 		if t.Manual {
 			isManual = 1
 		}
-		if _, err := stmtTrade.Exec(s.ID, formatTime(t.Timestamp), t.Symbol, t.PositionID, t.Side, t.Quantity, t.Price, t.Value, t.TradeType, t.Details, t.ExchangeOrderID, t.ExchangeFee, isClose, t.RealizedPnL, t.Regime, t.EntryATR, t.StopLossOID, t.StopLossTriggerPx, marshalTPOIDsJSON(t.TPOIDs), isManual, nullableFloat64(t.StopLossATRMult), t.TPTiersJSON, boolToInt(t.PnLGross), t.FeeSource); err != nil {
+		if _, err := stmtTrade.Exec(sid, formatTime(t.Timestamp), t.Symbol, t.PositionID, t.Side, t.Quantity, t.Price, t.Value, t.TradeType, t.Details, t.ExchangeOrderID, t.ExchangeFee, isClose, t.RealizedPnL, t.Regime, t.EntryATR, t.StopLossOID, t.StopLossTriggerPx, marshalTPOIDsJSON(t.TPOIDs), isManual, nullableFloat64(t.StopLossATRMult), t.TPTiersJSON, boolToInt(t.PnLGross), t.FeeSource); err != nil {
 			return fmt.Errorf("insert trade for %s: %w", s.ID, err)
 		}
 		flushed = append(flushed, trackedFlush{index: i})
@@ -1716,8 +1958,12 @@ func (sdb *StateDB) SaveStrategyBook(s *StrategyState) error {
 		}
 		defer stmtClosed.Close()
 		for _, cp := range s.ClosedPositions {
+			closedSID, err := sdb.toStorageID(cp.StrategyID)
+			if err != nil {
+				return err
+			}
 			if _, err := stmtClosed.Exec(
-				cp.StrategyID, cp.Symbol, cp.Quantity, cp.AvgCost, cp.Side, cp.Multiplier,
+				closedSID, cp.Symbol, cp.Quantity, cp.AvgCost, cp.Side, cp.Multiplier,
 				formatTime(cp.OpenedAt), formatTime(cp.ClosedAt),
 				cp.ClosePrice, cp.RealizedPnL, cp.CloseReason, cp.DurationSeconds,
 			); err != nil {
@@ -1737,8 +1983,12 @@ func (sdb *StateDB) SaveStrategyBook(s *StrategyState) error {
 		}
 		defer stmtClosedOpt.Close()
 		for _, cop := range s.ClosedOptionPositions {
+			closedSID, err := sdb.toStorageID(cop.StrategyID)
+			if err != nil {
+				return err
+			}
 			if _, err := stmtClosedOpt.Exec(
-				cop.StrategyID, cop.PositionID, cop.Underlying, cop.OptionType,
+				closedSID, cop.PositionID, cop.Underlying, cop.OptionType,
 				cop.Strike, cop.Expiry, cop.Action, cop.Quantity,
 				cop.EntryPremiumUSD, cop.ClosePriceUSD, cop.RealizedPnL,
 				formatTime(cop.OpenedAt), formatTime(cop.ClosedAt),
@@ -1749,9 +1999,19 @@ func (sdb *StateDB) SaveStrategyBook(s *StrategyState) error {
 		}
 	}
 
-	flushedDiags, err := flushPendingDiagnosticsFor(tx, s)
+	flushedDiags, err := sdb.flushPendingDiagnosticsFor(tx, s, sid, scope)
 	if err != nil {
 		return err
+	}
+
+	if err := deletePendingManualActionsByID(tx, ackIDs); err != nil {
+		return err
+	}
+
+	if storeCommitHook != nil {
+		if err := storeCommitHook(sdb.storageRoleOf()); err != nil {
+			return fmt.Errorf("commit hook (%s): %w", sdb.storageRoleOf(), err)
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -1771,8 +2031,12 @@ func (sdb *StateDB) QueryClosedPositions(strategyID, symbol string, since, until
 	var where []string
 	var args []interface{}
 	if strategyID != "" {
+		sid, err := sdb.toStorageID(strategyID)
+		if err != nil {
+			return nil, 0, err
+		}
 		where = append(where, "strategy_id = ?")
-		args = append(args, strategyID)
+		args = append(args, sid)
 	}
 	if symbol != "" {
 		where = append(where, "symbol = ?")
@@ -1818,6 +2082,7 @@ func (sdb *StateDB) QueryClosedPositions(strategyID, symbol string, since, until
 			&openedStr, &closedStr, &cp.ClosePrice, &cp.RealizedPnL, &cp.CloseReason, &cp.DurationSeconds); err != nil {
 			return nil, 0, fmt.Errorf("scan closed_position: %w", err)
 		}
+		cp.StrategyID = sdb.fromStorageID(cp.StrategyID)
 		cp.OpenedAt = parseTime(openedStr)
 		cp.ClosedAt = parseTime(closedStr)
 		out = append(out, cp)
@@ -1835,8 +2100,12 @@ func (sdb *StateDB) QueryClosedOptionPositions(strategyID, underlying string, si
 	var where []string
 	var args []interface{}
 	if strategyID != "" {
+		sid, err := sdb.toStorageID(strategyID)
+		if err != nil {
+			return nil, 0, err
+		}
 		where = append(where, "strategy_id = ?")
-		args = append(args, strategyID)
+		args = append(args, sid)
 	}
 	if underlying != "" {
 		where = append(where, "underlying = ?")
@@ -1885,6 +2154,7 @@ func (sdb *StateDB) QueryClosedOptionPositions(strategyID, underlying string, si
 			&openedStr, &closedStr, &cop.CloseReason, &cop.DurationSeconds); err != nil {
 			return nil, 0, fmt.Errorf("scan closed_option_position: %w", err)
 		}
+		cop.StrategyID = sdb.fromStorageID(cop.StrategyID)
 		cop.OpenedAt = parseTime(openedStr)
 		cop.ClosedAt = parseTime(closedStr)
 		out = append(out, cop)
@@ -1898,41 +2168,82 @@ func (sdb *StateDB) QueryClosedOptionPositions(strategyID, underlying string, si
 	return out, total, nil
 }
 
-func (sdb *StateDB) LoadState() (*AppState, error) {
-	var cycleCount int
-	var lastCycleStr, lastLeaderboardDate, lastLBSummariesJSON, lastSummaryPostJSON string
+type processMeta struct {
+	CycleCount               int
+	LastCycle                time.Time
+	LastLeaderboardPostDate  string
+	LastLeaderboardSummaries map[string]time.Time
+	LastSummaryPost          map[string]time.Time
+}
+
+// storageOrphan is a stored book whose identifier maps to no configured
+// strategy in that file. It is reported rather than keyed into the roster, so
+// an alias never silently adopts another book and a stale book stays visible.
+type storageOrphan struct {
+	Role          storageRole
+	StorageID     string
+	PositionCount int
+}
+
+type scopeLoad struct {
+	Role                storageRole
+	Strategies          map[string]*StrategyState
+	Orphans             []storageOrphan
+	PortfolioRisk       map[PortfolioScope]*PortfolioRiskState
+	CorrelationSnapshot map[PortfolioScope]*CorrelationSnapshot
+}
+
+// mapStoredStrategyID resolves a stored identifier to its process identifier.
+// A file with no identity map is the legacy single-file case, where the two
+// namespaces are the same and every row maps.
+func (sdb *StateDB) mapStoredStrategyID(storageID string) (string, bool) {
+	if sdb == nil || sdb.ident == nil {
+		return storageID, true
+	}
+	procID, ok := sdb.ident.storeToProc[storageID]
+	return procID, ok
+}
+
+func (sdb *StateDB) loadProcessMeta() (processMeta, bool, error) {
+	var meta processMeta
+	var lastCycleStr, lastLBSummariesJSON, lastSummaryPostJSON string
 	err := sdb.db.QueryRow("SELECT cycle_count, last_cycle, last_leaderboard_post_date, last_leaderboard_summaries, last_summary_post FROM app_state WHERE id = 1").
-		Scan(&cycleCount, &lastCycleStr, &lastLeaderboardDate, &lastLBSummariesJSON, &lastSummaryPostJSON)
+		Scan(&meta.CycleCount, &lastCycleStr, &meta.LastLeaderboardPostDate, &lastLBSummariesJSON, &lastSummaryPostJSON)
 	if err == sql.ErrNoRows {
-		return nil, nil
+		return processMeta{}, false, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("load app_state: %w", err)
+		return processMeta{}, false, fmt.Errorf("load app_state: %w", err)
 	}
-
-	lbSummaries := make(map[string]time.Time)
+	meta.LastCycle = parseTime(lastCycleStr)
+	meta.LastLeaderboardSummaries = make(map[string]time.Time)
 	if lastLBSummariesJSON != "" {
-		if err := json.Unmarshal([]byte(lastLBSummariesJSON), &lbSummaries); err != nil {
-			return nil, fmt.Errorf("parse last_leaderboard_summaries: %w", err)
+		if err := json.Unmarshal([]byte(lastLBSummariesJSON), &meta.LastLeaderboardSummaries); err != nil {
+			return processMeta{}, false, fmt.Errorf("parse last_leaderboard_summaries: %w", err)
 		}
 	}
-	summaryPosts := make(map[string]time.Time)
+	meta.LastSummaryPost = make(map[string]time.Time)
 	if lastSummaryPostJSON != "" {
-		if err := json.Unmarshal([]byte(lastSummaryPostJSON), &summaryPosts); err != nil {
-			return nil, fmt.Errorf("parse last_summary_post: %w", err)
+		if err := json.Unmarshal([]byte(lastSummaryPostJSON), &meta.LastSummaryPost); err != nil {
+			return processMeta{}, false, fmt.Errorf("parse last_summary_post: %w", err)
 		}
 	}
+	return meta, true, nil
+}
 
-	state := &AppState{
-		CycleCount:               cycleCount,
-		LastCycle:                parseTime(lastCycleStr),
-		LastLeaderboardPostDate:  lastLeaderboardDate,
-		LastLeaderboardSummaries: lbSummaries,
-		LastSummaryPost:          summaryPosts,
-		Strategies:               make(map[string]*StrategyState),
-		PortfolioRisk:            make(map[PortfolioScope]*PortfolioRiskState),
-		CorrelationSnapshot:      make(map[PortfolioScope]*CorrelationSnapshot),
+func (sdb *StateDB) loadScopeBooks(scopes []PortfolioScope) (*scopeLoad, error) {
+	if sdb == nil || sdb.db == nil {
+		return nil, fmt.Errorf("state db unavailable")
 	}
+	out := &scopeLoad{
+		Role:                sdb.storageRoleOf(),
+		Strategies:          make(map[string]*StrategyState),
+		PortfolioRisk:       make(map[PortfolioScope]*PortfolioRiskState),
+		CorrelationSnapshot: make(map[PortfolioScope]*CorrelationSnapshot),
+	}
+	// storageID -> process id for every mapped book in this file.
+	loaded := make(map[string]string)
+	orphanPositions := make(map[string]int)
 
 	rows, err := sdb.db.Query(`SELECT id, type, platform, cash, initial_capital,
 		risk_peak_value, risk_max_drawdown_pct, risk_current_drawdown_pct,
@@ -1952,13 +2263,14 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 
 	for rows.Next() {
 		var s StrategyState
+		var storedID string
 		var cbInt int
 		var cashReconcileInt int
 		var poolBudgetInt int
 		var cbUntilStr, pendingCircuitClosesJSON, activeProfile string
 		var hurstGateJSON string
 		if err := rows.Scan(
-			&s.ID, &s.Type, &s.Platform, &s.Cash, &s.InitialCapital,
+			&storedID, &s.Type, &s.Platform, &s.Cash, &s.InitialCapital,
 			&s.RiskState.PeakValue, &s.RiskState.MaxDrawdownPct, &s.RiskState.CurrentDrawdownPct,
 			&s.RiskState.DailyPnL, &s.RiskState.DailyPnLDate, &s.RiskState.ConsecutiveLosses,
 			&cbInt, &cbUntilStr, &pendingCircuitClosesJSON, &activeProfile,
@@ -1968,6 +2280,12 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 		); err != nil {
 			return nil, fmt.Errorf("scan strategy: %w", err)
 		}
+		procID, mapped := sdb.mapStoredStrategyID(storedID)
+		if !mapped {
+			orphanPositions[storedID] = 0
+			continue
+		}
+		s.ID = procID
 		s.RiskState.CircuitBreaker = cbInt != 0
 		s.RiskState.CircuitBreakerUntil = parseTime(cbUntilStr)
 		s.RiskState.UnmarshalPendingCircuitClosesJSON(pendingCircuitClosesJSON)
@@ -1981,7 +2299,8 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 		s.Positions = make(map[string]*Position)
 		s.OptionPositions = make(map[string]*OptionPosition)
 		s.TradeHistory = []Trade{}
-		state.Strategies[s.ID] = &s
+		out.Strategies[procID] = &s
+		loaded[storedID] = procID
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate strategies: %w", err)
@@ -1993,7 +2312,7 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 	}
 	defer posRows.Close()
 	for posRows.Next() {
-		var stratID string
+		var storedID string
 		var pos Position
 		var openedAtStr string
 		var tp1OID, tp2OID int64
@@ -2007,9 +2326,17 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 		var directionCertifiedAtOpen int
 		var directionCertifiedStatesJSON string
 		var llmAnalysisRequested int
-		if err := posRows.Scan(&stratID, &pos.Symbol, &pos.TradePositionID, &pos.Quantity, &pos.InitialQuantity, &pos.AvgCost, &pos.EntryATR, &pos.Side, &pos.Multiplier, &pos.OwnerStrategyID, &openedAtStr, &pos.StopLossOID, &pos.StopLossTriggerPx, &pos.StopLossHighWaterPx, &tp1OID, &tp2OID, &tpOIDsJSON, &tpArmedTiersJSON, &slATRMult, &pos.TPTiersJSON, &pos.SLAdjustedTiersProcessed, &postTPTrailingMult, &pos.Regime, &regimeWindowsJSON, &pos.RegimePendingLabel, &pos.RegimePendingCount, &pos.RegimeAppliedLabel, &pos.ScaleInCount, &pos.LastAddPrice, &pos.AddedNotionalUSD, &pos.RiskAnchorPrice, &scaleInResizePending, &ratchetFallbackNormalizePending, &pos.OpenProfile, &directionCertifiedAtOpen, &directionCertifiedStatesJSON, &llmAnalysisRequested, &pos.LLMVerdict, &pos.ATRMethodAtOpen, &pos.HedgeFor, &pos.HedgePrimaryQtyBasis, &pos.HurstAtOpen, &pos.HurstSizeMult); err != nil {
+		if err := posRows.Scan(&storedID, &pos.Symbol, &pos.TradePositionID, &pos.Quantity, &pos.InitialQuantity, &pos.AvgCost, &pos.EntryATR, &pos.Side, &pos.Multiplier, &pos.OwnerStrategyID, &openedAtStr, &pos.StopLossOID, &pos.StopLossTriggerPx, &pos.StopLossHighWaterPx, &tp1OID, &tp2OID, &tpOIDsJSON, &tpArmedTiersJSON, &slATRMult, &pos.TPTiersJSON, &pos.SLAdjustedTiersProcessed, &postTPTrailingMult, &pos.Regime, &regimeWindowsJSON, &pos.RegimePendingLabel, &pos.RegimePendingCount, &pos.RegimeAppliedLabel, &pos.ScaleInCount, &pos.LastAddPrice, &pos.AddedNotionalUSD, &pos.RiskAnchorPrice, &scaleInResizePending, &ratchetFallbackNormalizePending, &pos.OpenProfile, &directionCertifiedAtOpen, &directionCertifiedStatesJSON, &llmAnalysisRequested, &pos.LLMVerdict, &pos.ATRMethodAtOpen, &pos.HedgeFor, &pos.HedgePrimaryQtyBasis, &pos.HurstAtOpen, &pos.HurstSizeMult); err != nil {
 			return nil, fmt.Errorf("scan position: %w", err)
 		}
+		procID, mapped := loaded[storedID]
+		if !mapped {
+			if _, isOrphan := orphanPositions[storedID]; isOrphan {
+				orphanPositions[storedID]++
+			}
+			continue
+		}
+		pos.OwnerStrategyID = sdb.fromStorageOwnerID(pos.OwnerStrategyID)
 		pos.ScaleInResizePending = scaleInResizePending != 0
 		pos.RatchetFallbackNormalizePending = ratchetFallbackNormalizePending != 0
 		pos.LLMAnalysisRequested = llmAnalysisRequested != 0
@@ -2028,7 +2355,7 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 			v := postTPTrailingMult.Float64
 			pos.PostTPTrailingATRMult = &v
 		}
-		if s, ok := state.Strategies[stratID]; ok {
+		if s, ok := out.Strategies[procID]; ok {
 			s.Positions[pos.Symbol] = &pos
 		}
 	}
@@ -2044,19 +2371,23 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 	}
 	defer optRows.Close()
 	for optRows.Next() {
-		var stratID string
+		var storedID string
 		var opt OptionPosition
 		var openedAtStr string
 		if err := optRows.Scan(
-			&stratID, &opt.ID, &opt.TradePositionID, &opt.Underlying, &opt.OptionType, &opt.Strike, &opt.Expiry, &opt.DTE,
+			&storedID, &opt.ID, &opt.TradePositionID, &opt.Underlying, &opt.OptionType, &opt.Strike, &opt.Expiry, &opt.DTE,
 			&opt.Action, &opt.Quantity, &opt.EntryPremium, &opt.EntryPremiumUSD, &opt.CurrentValueUSD,
 			&opt.Greeks.Delta, &opt.Greeks.Gamma, &opt.Greeks.Theta, &opt.Greeks.Vega,
 			&openedAtStr,
 		); err != nil {
 			return nil, fmt.Errorf("scan option_position: %w", err)
 		}
+		procID, mapped := loaded[storedID]
+		if !mapped {
+			continue
+		}
 		opt.OpenedAt = parseTime(openedAtStr)
-		if s, ok := state.Strategies[stratID]; ok {
+		if s, ok := out.Strategies[procID]; ok {
 			s.OptionPositions[opt.ID] = &opt
 		}
 	}
@@ -2064,11 +2395,12 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 		return nil, fmt.Errorf("iterate option_positions: %w", err)
 	}
 
-	for id, s := range state.Strategies {
+	for storedID, procID := range loaded {
+		s := out.Strategies[procID]
 		tradeRows, err := sdb.db.Query(`SELECT timestamp, strategy_id, symbol, COALESCE(position_id, '') AS position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl, COALESCE(regime, '') AS regime, COALESCE(entry_atr, 0) AS entry_atr, COALESCE(stop_loss_oid, 0) AS stop_loss_oid, COALESCE(stop_loss_trigger_px, 0) AS stop_loss_trigger_px, COALESCE(tp_oids_json, '') AS tp_oids_json, COALESCE(manual, 0) AS manual, stop_loss_atr_mult, COALESCE(tp_tiers_json, '') AS tp_tiers_json, COALESCE(pnl_gross, 0) AS pnl_gross, COALESCE(fee_source, '') AS fee_source
-			FROM trades WHERE strategy_id = ? ORDER BY timestamp DESC, rowid DESC LIMIT ?`, id, maxTradeHistory)
+			FROM trades WHERE strategy_id = ? ORDER BY timestamp DESC, rowid DESC LIMIT ?`, storedID, maxTradeHistory)
 		if err != nil {
-			return nil, fmt.Errorf("load trades for %s: %w", id, err)
+			return nil, fmt.Errorf("load trades for %s: %w", procID, err)
 		}
 		var allTrades []Trade
 		for tradeRows.Next() {
@@ -2081,6 +2413,7 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 				tradeRows.Close()
 				return nil, fmt.Errorf("scan trade: %w", err)
 			}
+			t.StrategyID = procID
 			t.Timestamp = parseTime(tsStr)
 			t.IsClose = isCloseInt != 0
 			t.Manual = isManualInt != 0
@@ -2095,7 +2428,7 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 		}
 		tradeRows.Close()
 		if err := tradeRows.Err(); err != nil {
-			return nil, fmt.Errorf("iterate trades for %s: %w", id, err)
+			return nil, fmt.Errorf("iterate trades for %s: %w", procID, err)
 		}
 		for i, j := 0, len(allTrades)-1; i < j; i, j = i+1, j-1 {
 			allTrades[i], allTrades[j] = allTrades[j], allTrades[i]
@@ -2106,7 +2439,8 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 		s.TradeHistory = allTrades
 	}
 
-	prsRows, err := sdb.db.Query("SELECT scope, peak_value, current_drawdown_pct, current_margin_drawdown_pct, kill_switch_active, kill_switch_at, warning_sent, COALESCE(warn_band_entered_at, '') AS warn_band_entered_at, COALESCE(last_warning_equity_dd_pct, 0) AS last_warning_equity_dd_pct, COALESCE(last_warning_margin_dd_pct, 0) AS last_warning_margin_dd_pct, COALESCE(warning_equity_delta_pct, 0) AS warning_equity_delta_pct, COALESCE(warning_margin_delta_pct, 0) AS warning_margin_delta_pct, COALESCE(manual_mark_basis_rebaselined, 0) AS manual_mark_basis_rebaselined, COALESCE(drawdown_reading_substituted, 0) AS drawdown_reading_substituted, COALESCE(untrusted_over_limit_since, '') AS untrusted_over_limit_since, COALESCE(kill_switch_close_applied, 0) AS kill_switch_close_applied FROM portfolio_risk")
+	scopeFilter, scopeArgs := scopePlaceholders(scopes)
+	prsRows, err := sdb.db.Query("SELECT scope, peak_value, current_drawdown_pct, current_margin_drawdown_pct, kill_switch_active, kill_switch_at, warning_sent, COALESCE(warn_band_entered_at, '') AS warn_band_entered_at, COALESCE(last_warning_equity_dd_pct, 0) AS last_warning_equity_dd_pct, COALESCE(last_warning_margin_dd_pct, 0) AS last_warning_margin_dd_pct, COALESCE(warning_equity_delta_pct, 0) AS warning_equity_delta_pct, COALESCE(warning_margin_delta_pct, 0) AS warning_margin_delta_pct, COALESCE(manual_mark_basis_rebaselined, 0) AS manual_mark_basis_rebaselined, COALESCE(drawdown_reading_substituted, 0) AS drawdown_reading_substituted, COALESCE(untrusted_over_limit_since, '') AS untrusted_over_limit_since, COALESCE(kill_switch_close_applied, 0) AS kill_switch_close_applied FROM portfolio_risk WHERE scope IN ("+scopeFilter+")", scopeArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("load portfolio_risk: %w", err)
 	}
@@ -2129,13 +2463,13 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 		prs.KillSwitchAt = parseTime(ksAtStr)
 		prs.WarningSent = warnSentInt != 0
 		prs.WarnBandEnteredAt = parseTime(warnBandEnteredAtStr)
-		state.PortfolioRisk[PortfolioScope(scopeStr)] = prs
+		out.PortfolioRisk[PortfolioScope(scopeStr)] = prs
 	}
 	if err := prsRows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate portfolio_risk: %w", err)
 	}
 
-	evtRows, err := sdb.db.Query("SELECT COALESCE(scope, '') AS scope, timestamp, type, source, drawdown_pct, portfolio_value, peak_value, details FROM kill_switch_events ORDER BY rowid ASC")
+	evtRows, err := sdb.db.Query("SELECT COALESCE(scope, '') AS scope, timestamp, type, source, drawdown_pct, portfolio_value, peak_value, details FROM kill_switch_events WHERE COALESCE(scope, '') IN ("+scopeFilter+") ORDER BY rowid ASC", scopeArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("load kill_switch_events: %w", err)
 	}
@@ -2149,10 +2483,10 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 		evt.Timestamp = parseTime(tsStr)
 		scope := PortfolioScope(scopeStr)
 		evt.Scope = scope
-		prs, ok := state.PortfolioRisk[scope]
+		prs, ok := out.PortfolioRisk[scope]
 		if !ok || prs == nil {
 			prs = &PortfolioRiskState{}
-			state.PortfolioRisk[scope] = prs
+			out.PortfolioRisk[scope] = prs
 		}
 		prs.Events = append(prs.Events, evt)
 	}
@@ -2160,7 +2494,7 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 		return nil, fmt.Errorf("iterate kill_switch_events: %w", err)
 	}
 
-	snapRows, err := sdb.db.Query("SELECT scope, snapshot_json FROM correlation_snapshot")
+	snapRows, err := sdb.db.Query("SELECT scope, snapshot_json FROM correlation_snapshot WHERE scope IN ("+scopeFilter+")", scopeArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("load correlation_snapshot: %w", err)
 	}
@@ -2177,13 +2511,73 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 		if err := json.Unmarshal([]byte(snapJSON), &snap); err != nil {
 			return nil, fmt.Errorf("unmarshal correlation_snapshot: %w", err)
 		}
-		state.CorrelationSnapshot[PortfolioScope(scopeStr)] = &snap
+		out.CorrelationSnapshot[PortfolioScope(scopeStr)] = &snap
 	}
 	if err := snapRows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate correlation_snapshot: %w", err)
 	}
 
+	orphanIDs := make([]string, 0, len(orphanPositions))
+	for storedID := range orphanPositions {
+		orphanIDs = append(orphanIDs, storedID)
+	}
+	sort.Strings(orphanIDs)
+	for _, storedID := range orphanIDs {
+		out.Orphans = append(out.Orphans, storageOrphan{
+			Role:          out.Role,
+			StorageID:     storedID,
+			PositionCount: orphanPositions[storedID],
+		})
+	}
+
+	return out, nil
+}
+
+func (sdb *StateDB) LoadState() (*AppState, error) {
+	meta, ok, err := sdb.loadProcessMeta()
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, nil
+	}
+	books, err := sdb.loadScopeBooks([]PortfolioScope{ScopeLive, ScopePaper})
+	if err != nil {
+		return nil, err
+	}
+	state := &AppState{
+		CycleCount:               meta.CycleCount,
+		LastCycle:                meta.LastCycle,
+		LastLeaderboardPostDate:  meta.LastLeaderboardPostDate,
+		LastLeaderboardSummaries: meta.LastLeaderboardSummaries,
+		LastSummaryPost:          meta.LastSummaryPost,
+		Strategies:               books.Strategies,
+		PortfolioRisk:            books.PortfolioRisk,
+		CorrelationSnapshot:      books.CorrelationSnapshot,
+	}
 	return state, nil
+}
+
+func sortedPositionSymbols(m map[string]*Position) []string {
+	out := make([]string, 0, len(m))
+	for sym, pos := range m {
+		if pos != nil {
+			out = append(out, sym)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func sortedOptionKeys(m map[string]*OptionPosition) []string {
+	out := make([]string, 0, len(m))
+	for key, opt := range m {
+		if opt != nil {
+			out = append(out, key)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func sortedPortfolioScopes(m map[PortfolioScope]*PortfolioRiskState) []PortfolioScope {
@@ -2232,9 +2626,10 @@ func (sdb *StateDB) LifetimeTradeStatsAll() (map[string]LifetimeTradeStats, erro
 		if err := openRows.Scan(&id, &opens); err != nil {
 			return nil, fmt.Errorf("scan lifetime open counts: %w", err)
 		}
-		entry := out[id]
+		procID := sdb.fromStorageID(id)
+		entry := out[procID]
 		entry.PositionsOpened = int(opens.Int64)
-		out[id] = entry
+		out[procID] = entry
 	}
 	if err := openRows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate lifetime open counts: %w", err)
@@ -2268,10 +2663,11 @@ func (sdb *StateDB) LifetimeTradeStatsAll() (map[string]LifetimeTradeStats, erro
 		if err := closeRows.Scan(&id, &wins, &losses); err != nil {
 			return nil, fmt.Errorf("scan lifetime trade stats: %w", err)
 		}
-		entry := out[id]
+		procID := sdb.fromStorageID(id)
+		entry := out[procID]
 		entry.Wins = int(wins.Int64)
 		entry.Losses = int(losses.Int64)
-		out[id] = entry
+		out[procID] = entry
 	}
 	if err := closeRows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate lifetime trade stats: %w", err)
@@ -2286,11 +2682,15 @@ func (sdb *StateDB) LifetimeTradeStatsForStrategy(strategyID string) (LifetimeTr
 	if strategyID == "" {
 		return LifetimeTradeStats{}, fmt.Errorf("strategy id required")
 	}
+	sid, err := sdb.toStorageID(strategyID)
+	if err != nil {
+		return LifetimeTradeStats{}, err
+	}
 	var out LifetimeTradeStats
 	var opens sql.NullInt64
 	if err := sdb.db.QueryRow(`SELECT COUNT(*)
 		FROM trades
-		WHERE strategy_id = ? AND is_close = 0 AND trade_type NOT IN `+tradeStatsExcludedTypesSQL+``, strategyID).Scan(&opens); err != nil {
+		WHERE strategy_id = ? AND is_close = 0 AND trade_type NOT IN `+tradeStatsExcludedTypesSQL+``, sid).Scan(&opens); err != nil {
 		return LifetimeTradeStats{}, fmt.Errorf("query lifetime open count for %s: %w", strategyID, err)
 	}
 	out.PositionsOpened = int(opens.Int64)
@@ -2310,7 +2710,7 @@ func (sdb *StateDB) LifetimeTradeStatsForStrategy(strategyID string) (LifetimeTr
 			FROM trades
 			WHERE strategy_id = ? AND is_close = 1 AND trade_type NOT IN `+tradeStatsExcludedTypesSQL+`
 			GROUP BY pkey
-		)`, strategyID).Scan(&wins, &losses); err != nil {
+		)`, sid).Scan(&wins, &losses); err != nil {
 		return LifetimeTradeStats{}, fmt.Errorf("query lifetime trade stats for %s: %w", strategyID, err)
 	}
 	out.Wins = int(wins.Int64)
@@ -2322,8 +2722,12 @@ func (sdb *StateDB) QueryTradeHistory(strategyID, symbol string, since, until ti
 	var where []string
 	var args []interface{}
 	if strategyID != "" {
+		sid, err := sdb.toStorageID(strategyID)
+		if err != nil {
+			return nil, 0, err
+		}
 		where = append(where, "strategy_id = ?")
-		args = append(args, strategyID)
+		args = append(args, sid)
 	}
 	if symbol != "" {
 		where = append(where, "symbol = ?")
@@ -2355,7 +2759,7 @@ func (sdb *StateDB) QueryTradeHistory(strategyID, symbol string, since, until ti
 		limit = 500
 	}
 
-	query := fmt.Sprintf("SELECT timestamp, strategy_id, symbol, COALESCE(position_id, '') AS position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl, COALESCE(regime, '') AS regime, COALESCE(entry_atr, 0) AS entry_atr, COALESCE(stop_loss_oid, 0) AS stop_loss_oid, COALESCE(stop_loss_trigger_px, 0) AS stop_loss_trigger_px, COALESCE(tp_oids_json, '') AS tp_oids_json, stop_loss_atr_mult, COALESCE(tp_tiers_json, '') AS tp_tiers_json, COALESCE(pnl_gross, 0) AS pnl_gross, COALESCE(fee_source, '') AS fee_source FROM trades %s ORDER BY timestamp DESC LIMIT ? OFFSET ?", whereClause)
+	query := fmt.Sprintf("SELECT rowid, timestamp, strategy_id, symbol, COALESCE(position_id, '') AS position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl, COALESCE(regime, '') AS regime, COALESCE(entry_atr, 0) AS entry_atr, COALESCE(stop_loss_oid, 0) AS stop_loss_oid, COALESCE(stop_loss_trigger_px, 0) AS stop_loss_trigger_px, COALESCE(tp_oids_json, '') AS tp_oids_json, stop_loss_atr_mult, COALESCE(tp_tiers_json, '') AS tp_tiers_json, COALESCE(pnl_gross, 0) AS pnl_gross, COALESCE(fee_source, '') AS fee_source FROM trades %s ORDER BY timestamp DESC, rowid DESC LIMIT ? OFFSET ?", whereClause)
 	queryArgs := append(args, limit, offset)
 	rows, err := sdb.db.Query(query, queryArgs...)
 	if err != nil {
@@ -2370,9 +2774,11 @@ func (sdb *StateDB) QueryTradeHistory(strategyID, symbol string, since, until ti
 		var isCloseInt, pnlGrossInt int
 		var tpOIDsJSON string
 		var slATRMult sql.NullFloat64
-		if err := rows.Scan(&tsStr, &t.StrategyID, &t.Symbol, &t.PositionID, &t.Side, &t.Quantity, &t.Price, &t.Value, &t.TradeType, &t.Details, &t.ExchangeOrderID, &t.ExchangeFee, &isCloseInt, &t.RealizedPnL, &t.Regime, &t.EntryATR, &t.StopLossOID, &t.StopLossTriggerPx, &tpOIDsJSON, &slATRMult, &t.TPTiersJSON, &pnlGrossInt, &t.FeeSource); err != nil {
+		if err := rows.Scan(&t.sourceRowID, &tsStr, &t.StrategyID, &t.Symbol, &t.PositionID, &t.Side, &t.Quantity, &t.Price, &t.Value, &t.TradeType, &t.Details, &t.ExchangeOrderID, &t.ExchangeFee, &isCloseInt, &t.RealizedPnL, &t.Regime, &t.EntryATR, &t.StopLossOID, &t.StopLossTriggerPx, &tpOIDsJSON, &slATRMult, &t.TPTiersJSON, &pnlGrossInt, &t.FeeSource); err != nil {
 			return nil, 0, fmt.Errorf("scan trade: %w", err)
 		}
+		t.StrategyID = sdb.fromStorageID(t.StrategyID)
+		t.sourceRole = sdb.storageRoleOf()
 		t.Timestamp = parseTime(tsStr)
 		t.IsClose = isCloseInt != 0
 		t.PnLGross = pnlGrossInt != 0
@@ -2399,13 +2805,17 @@ func (sdb *StateDB) QueryTradingViewExportTrades(strategyIDs []string) ([]Trade,
 	if len(strategyIDs) == 0 {
 		return nil, fmt.Errorf("at least one strategy id is required")
 	}
-	placeholders := make([]string, len(strategyIDs))
-	args := make([]interface{}, 0, len(strategyIDs))
-	for i, id := range strategyIDs {
+	storageIDs, err := sdb.toStorageIDs(strategyIDs)
+	if err != nil {
+		return nil, err
+	}
+	placeholders := make([]string, len(storageIDs))
+	args := make([]interface{}, 0, len(storageIDs))
+	for i, id := range storageIDs {
 		placeholders[i] = "?"
 		args = append(args, id)
 	}
-	query := fmt.Sprintf(`SELECT timestamp, strategy_id, symbol, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee
+	query := fmt.Sprintf(`SELECT rowid, timestamp, strategy_id, symbol, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee
 		FROM trades
 		WHERE strategy_id IN (%s)
 		ORDER BY timestamp ASC, strategy_id ASC, symbol ASC, rowid ASC`, strings.Join(placeholders, ","))
@@ -2419,9 +2829,11 @@ func (sdb *StateDB) QueryTradingViewExportTrades(strategyIDs []string) ([]Trade,
 	for rows.Next() {
 		var t Trade
 		var tsStr string
-		if err := rows.Scan(&tsStr, &t.StrategyID, &t.Symbol, &t.Side, &t.Quantity, &t.Price, &t.Value, &t.TradeType, &t.Details, &t.ExchangeOrderID, &t.ExchangeFee); err != nil {
+		if err := rows.Scan(&t.sourceRowID, &tsStr, &t.StrategyID, &t.Symbol, &t.Side, &t.Quantity, &t.Price, &t.Value, &t.TradeType, &t.Details, &t.ExchangeOrderID, &t.ExchangeFee); err != nil {
 			return nil, fmt.Errorf("scan TradingView export trade: %w", err)
 		}
+		t.StrategyID = sdb.fromStorageID(t.StrategyID)
+		t.sourceRole = sdb.storageRoleOf()
 		t.Timestamp = parseTime(tsStr)
 		trades = append(trades, t)
 	}
@@ -2453,6 +2865,8 @@ type PendingManualAction struct {
 	TPOIDs                          []int64
 	RatchetFallbackNormalizePending bool
 	CreatedAt                       time.Time
+
+	SourceRole storageRole
 }
 
 func (sdb *StateDB) InsertPendingManualAction(a PendingManualAction) error {
@@ -2467,10 +2881,14 @@ func (sdb *StateDB) InsertPendingManualAction(a PendingManualAction) error {
 	if a.RatchetFallbackNormalizePending {
 		ratchetFallbackNormalizePending = 1
 	}
-	_, err := sdb.db.Exec(`INSERT INTO pending_manual_actions
+	sid, err := sdb.toStorageID(a.StrategyID)
+	if err != nil {
+		return err
+	}
+	_, err = sdb.db.Exec(`INSERT INTO pending_manual_actions
 		(strategy_id, action, symbol, side, quantity, fill_price, fill_fee, exchange_order_id, stop_loss_oid, stop_loss_trigger_px, entry_atr, atr_method, realized_pnl, is_full_close, tp_oids_json, ratchet_fallback_normalize_pending, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		a.StrategyID, a.Action, a.Symbol, a.Side, a.Quantity, a.FillPrice, a.FillFee,
+		sid, a.Action, a.Symbol, a.Side, a.Quantity, a.FillPrice, a.FillFee,
 		a.ExchangeOrderID, a.StopLossOID, a.StopLossTriggerPx, a.EntryATR, a.ATRMethod, a.RealizedPnL,
 		isFullClose, marshalTPOIDsJSON(a.TPOIDs), ratchetFallbackNormalizePending, formatTime(a.CreatedAt))
 	return err
@@ -2499,17 +2917,33 @@ func (sdb *StateDB) LoadPendingManualActions() ([]PendingManualAction, error) {
 		a.TPOIDs = parseTPOIDsJSON(tpOIDsJSON, 0, 0)
 		a.RatchetFallbackNormalizePending = ratchetFallbackNormalizePending != 0
 		a.CreatedAt = parseTime(createdStr)
+		a.StrategyID = sdb.fromStorageID(a.StrategyID)
+		a.SourceRole = sdb.storageRoleOf()
 		actions = append(actions, a)
 	}
 	return actions, rows.Err()
 }
 
-func (sdb *StateDB) DeletePendingManualActionsThrough(maxID int64) error {
+// deletePendingManualActionsByID acknowledges exactly the actions named, inside
+// the transaction that persists their effect. A failed action keeps its row even
+// when a later action succeeds, in this file or in the other one.
+func deletePendingManualActionsByID(exec sqlExecer, ids []int64) error {
+	if exec == nil || len(ids) == 0 {
+		return nil
+	}
+	for _, id := range ids {
+		if _, err := exec.Exec("DELETE FROM pending_manual_actions WHERE id = ?", id); err != nil {
+			return fmt.Errorf("acknowledge pending manual action %d: %w", id, err)
+		}
+	}
+	return nil
+}
+
+func (sdb *StateDB) DeletePendingManualActionsByID(ids []int64) error {
 	if sdb == nil || sdb.db == nil {
 		return nil
 	}
-	_, err := sdb.db.Exec("DELETE FROM pending_manual_actions WHERE id <= ?", maxID)
-	return err
+	return deletePendingManualActionsByID(sdb.db, ids)
 }
 
 type PendingLimitOrder struct {
@@ -2548,10 +2982,14 @@ func (sdb *StateDB) InsertPendingLimitOrder(o PendingLimitOrder) (int64, error) 
 	if !o.ExpiresAt.IsZero() {
 		expiresStr = formatTime(o.ExpiresAt.UTC())
 	}
+	sid, err := sdb.toStorageID(o.StrategyID)
+	if err != nil {
+		return 0, err
+	}
 	res, err := sdb.db.Exec(`INSERT INTO pending_limit_orders
 		(strategy_id, symbol, side, order_oid, limit_price, order_size, tif, filled_size, avg_fill_price, fill_fee, entry_atr, cancel_requested, expires_at, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		o.StrategyID, o.Symbol, o.Side, o.OrderOID, o.LimitPrice, o.OrderSize, o.TIF,
+		sid, o.Symbol, o.Side, o.OrderOID, o.LimitPrice, o.OrderSize, o.TIF,
 		o.FilledSize, o.AvgFillPrice, o.FillFee, o.EntryATR, boolToInt(o.CancelRequested),
 		expiresStr, formatTime(o.CreatedAt.UTC()))
 	if err != nil {
@@ -2585,6 +3023,7 @@ func (sdb *StateDB) LoadPendingLimitOrders() ([]PendingLimitOrder, error) {
 			o.ExpiresAt = parseTime(expiresStr)
 		}
 		o.CreatedAt = parseTime(createdStr)
+		o.StrategyID = sdb.fromStorageID(o.StrategyID)
 		orders = append(orders, o)
 	}
 	return orders, rows.Err()
@@ -2604,9 +3043,13 @@ func (sdb *StateDB) MarkPendingLimitOrderCancelRequested(strategyID, symbol stri
 	if sdb == nil || sdb.db == nil {
 		return 0, fmt.Errorf("state db unavailable")
 	}
+	sid, err := sdb.toStorageID(strategyID)
+	if err != nil {
+		return 0, err
+	}
 	res, err := sdb.db.Exec(
 		"UPDATE pending_limit_orders SET cancel_requested = 1 WHERE strategy_id = ? AND symbol = ?",
-		strategyID, symbol)
+		sid, symbol)
 	if err != nil {
 		return 0, err
 	}
@@ -2644,10 +3087,14 @@ func (sdb *StateDB) CountPendingLimitOrders(strategyID, symbol string) (int, err
 	if sdb == nil || sdb.db == nil {
 		return 0, nil
 	}
+	sid, err := sdb.toStorageID(strategyID)
+	if err != nil {
+		return 0, err
+	}
 	var n int
-	err := sdb.db.QueryRow(
+	err = sdb.db.QueryRow(
 		"SELECT COUNT(*) FROM pending_limit_orders WHERE strategy_id = ? AND symbol = ?",
-		strategyID, symbol).Scan(&n)
+		sid, symbol).Scan(&n)
 	return n, err
 }
 
@@ -2658,9 +3105,13 @@ func (sdb *StateDB) EarliestTradeTimestamp(strategyIDs []string) (time.Time, err
 	if len(strategyIDs) == 0 {
 		return time.Time{}, nil
 	}
-	placeholders := make([]string, len(strategyIDs))
-	args := make([]interface{}, len(strategyIDs))
-	for i, id := range strategyIDs {
+	storageIDs, err := sdb.toStorageIDs(strategyIDs)
+	if err != nil {
+		return time.Time{}, err
+	}
+	placeholders := make([]string, len(storageIDs))
+	args := make([]interface{}, len(storageIDs))
+	for i, id := range storageIDs {
 		placeholders[i] = "?"
 		args[i] = id
 	}
@@ -2682,13 +3133,17 @@ func (sdb *StateDB) ListTradesForBackfill(strategyID string) ([]TradeBackfillRow
 	if sdb == nil || sdb.db == nil {
 		return nil, fmt.Errorf("state db unavailable")
 	}
+	sid, err := sdb.toStorageID(strategyID)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := sdb.db.Query(`
 		SELECT rowid, timestamp, symbol, COALESCE(position_id, '') AS position_id,
 		       side, quantity, price, value, trade_type, details, is_close, exchange_order_id, exchange_fee, realized_pnl,
 		       COALESCE(pnl_gross, 0) AS pnl_gross, COALESCE(fee_source, '') AS fee_source
 		FROM trades
 		WHERE strategy_id = ?
-		ORDER BY timestamp ASC, rowid ASC`, strategyID)
+		ORDER BY timestamp ASC, rowid ASC`, sid)
 	if err != nil {
 		return nil, fmt.Errorf("list trades for backfill: %w", err)
 	}
@@ -2721,11 +3176,15 @@ func (sdb *StateDB) LoadClosedPositionRows(strategyID string) ([]ClosedPositionR
 	if sdb == nil || sdb.db == nil {
 		return nil, fmt.Errorf("state db unavailable")
 	}
+	sid, err := sdb.toStorageID(strategyID)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := sdb.db.Query(`
 		SELECT id, symbol, closed_at, realized_pnl
 		FROM closed_positions
 		WHERE strategy_id = ?
-		ORDER BY closed_at ASC, id ASC`, strategyID)
+		ORDER BY closed_at ASC, id ASC`, sid)
 	if err != nil {
 		return nil, fmt.Errorf("load closed_positions: %w", err)
 	}
@@ -2746,6 +3205,10 @@ func (sdb *StateDB) LoadClosedPositionRows(strategyID string) ([]ClosedPositionR
 func (sdb *StateDB) ApplyBackfillPlan(plan BackfillPlan) error {
 	if sdb == nil || sdb.db == nil {
 		return fmt.Errorf("state db unavailable")
+	}
+	sid, err := sdb.resolvePlanStorageID(plan.Role, plan.StorageStrategyID, plan.StrategyID)
+	if err != nil {
+		return err
 	}
 	tx, err := sdb.db.Begin()
 	if err != nil {
@@ -2774,12 +3237,12 @@ func (sdb *StateDB) ApplyBackfillPlan(plan BackfillPlan) error {
 	}
 	defer cpStmt.Close()
 	for _, cp := range plan.ClosedPositions {
-		if _, err := cpStmt.Exec(cp.NewPnL, cp.RowID, plan.StrategyID); err != nil {
+		if _, err := cpStmt.Exec(cp.NewPnL, cp.RowID, sid); err != nil {
 			return fmt.Errorf("update closed_positions id=%d: %w", cp.RowID, err)
 		}
 	}
 
-	if _, err := tx.Exec("UPDATE strategies SET cash = ? WHERE id = ?", plan.NewCash, plan.StrategyID); err != nil {
+	if _, err := tx.Exec("UPDATE strategies SET cash = ? WHERE id = ?", plan.NewCash, sid); err != nil {
 		return fmt.Errorf("update strategy cash: %w", err)
 	}
 

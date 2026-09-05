@@ -539,7 +539,7 @@ func TestRecentRegimeTransitionsNote(t *testing.T) {
 	db := newTransitionsTestDB(t)
 	rc := &RegimeConfig{Transitions: &RegimeTransitionAlertsConfig{Enabled: true}}
 	now := time.Date(2026, 7, 2, 0, 0, 0, 0, time.UTC)
-	if note := recentRegimeTransitionsNote(db, rc, now); note != "" {
+	if note := recentRegimeTransitionsNote(openTestStore(t, db), rc, now); note != "" {
 		t.Errorf("empty DB note = %q", note)
 	}
 	key := transitionsTestKey()
@@ -549,7 +549,7 @@ func TestRecentRegimeTransitionsNote(t *testing.T) {
 	if err := db.InsertRegimeWindowTransition(key, "1d", "x", "y", "", "2026-06-01T00:00:00Z"); err != nil {
 		t.Fatal(err)
 	}
-	note := recentRegimeTransitionsNote(db, rc, now)
+	note := recentRegimeTransitionsNote(openTestStore(t, db), rc, now)
 	if !strings.Contains(note, "7d: a → b") {
 		t.Errorf("note missing recent transition: %q", note)
 	}
@@ -560,7 +560,7 @@ func TestRecentRegimeTransitionsNote(t *testing.T) {
 		t.Error("nil DB must yield empty note")
 	}
 	rc.Transitions = nil
-	if recentRegimeTransitionsNote(db, rc, now) != "" {
+	if recentRegimeTransitionsNote(openTestStore(t, db), rc, now) != "" {
 		t.Error("disabled feature must yield empty note")
 	}
 }

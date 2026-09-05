@@ -195,6 +195,16 @@ Generate via `./go-trader init` or `--json`. Skeleton:
 
 `config_version` migrates on startup (current **19**: v19 renames the per-regime stop fields to `stop_loss_atr_mult_regime` / `trailing_stop_atr_mult_regime`, after v18's `trail_stop_atr_regime` rename). Configs older than **13** are rejected at load — start the pre-upgrade binary once to migrate first.
 
+### Split live and paper state files
+
+| Field | Description | Default |
+|-------|-------------|---------|
+| `db_file` | Primary state file. In the split layout it owns the live scope, process metadata, the live-only wallet and cash-flow tables, and shared regime history. Restart-required | `scheduler/state.db` |
+| `paper_db_file` | Optional second file owning the paper scope's books, risk row, kill-switch events and correlation snapshot. Omit it and the single-file layout is unchanged. It must resolve to a different physical file than `db_file` — relative paths, symbolic links and hard links are all checked, and an alias exits with code 80. Restart-required | absent |
+| `storage_strategy_id` (per strategy) | The row identifier this strategy owns inside its file; defaults to `id`. Must be unique **within one file**; the same value in the live and paper files is the supported alias. Set it to the previous `id` to rename a strategy with no stored rewrite and no book reset. Restart-required | `id` |
+
+Both files are locked before any migration or startup write, so a second scheduler — `--once` included — refuses to run. `./go-trader storage-inspect` prints a read-only ownership report for every file. Back up and restore the two files together, with their `-wal` and `-shm` sidecars, while the service is stopped.
+
 ### Portfolio Risk
 
 | Field | Description | Default |
@@ -477,9 +487,11 @@ Python 3.12+ via [uv](https://github.com/astral-sh/uv); Go 1.26.2; systemd.
 | Service won't start | `journalctl -u go-trader -n 50` |
 | Didn't come back after reboot | Re-run `sudo bash scripts/install-service.sh` |
 | Strategy not trading | Circuit breaker in `/status`, verify params |
-| Reset positions | `rm scheduler/state.db && systemctl restart go-trader` |
+| Reset positions | `rm scheduler/state.db && systemctl restart go-trader` (with `paper_db_file` set, remove **both** files) |
+| Inspect state-file ownership | `./go-trader storage-inspect --config <path>` — read-only; add `--require-idle` to reject while the daemon owns a file |
 | Live mode fails | Set env vars from Platforms table |
-| "state DB missing but live strategies configured" | Restore `scheduler/state.db` from backup, or `GO_TRADER_ALLOW_MISSING_STATE=1` for first-run |
+| "state DB missing but live strategies configured" | Restore `scheduler/state.db` from backup, or `GO_TRADER_ALLOW_MISSING_STATE=1` for first-run. With `paper_db_file` set, restore both files together with their `-wal` / `-shm` sidecars |
+| Exit code 80 on startup | The storage layout was rejected (aliased files, a book in the wrong file, an ambiguous legacy risk row). Run `./go-trader storage-inspect` — it names the file and the identifier |
 
 ---
 

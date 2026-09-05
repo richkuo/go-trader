@@ -15,7 +15,7 @@ Quick flow for a new server: tell OpenClaw `install https://github.com/richkuo/g
 - Use `uv run --no-sync python` for dev, backtest, and manual CLI work. The scheduler calls `.venv/bin/python3` directly, so no PATH configuration is needed for the service.
 - Install Python dependencies with `uv sync`.
 - Scheduler config: `scheduler/config.json` (start from `scheduler/config.example.json`). On deployments the real file lives outside the deploy tree at `/var/lib/go-trader[/<instance>]/config.json`.
-- State is SQLite only: default `scheduler/state.db`.
+- State is SQLite only: default `scheduler/state.db`. Optional root `paper_db_file` moves the paper scope into a second file (§ Storage Ownership).
 - Never store secrets in config files. Put Discord and exchange credentials in systemd environment variables.
 - Prefer `./go-trader init` for humans, `./go-trader init --json … --output scheduler/config.json` for agents and scripts.
 - TradingView export: ask which strategy IDs (or all) before running.
@@ -83,6 +83,8 @@ Config skeleton and the full field list: [README.md](README.md) § Configuration
 - `discord.channels` / `telegram.channels` keys: `spot`, `options`, `hyperliquid`, `topstep`, `robinhood`, `okx`, `luno`, plus optional paper keys such as `okx-paper`. A non-empty `<platform>-paper` key also splits cycle summaries, leaderboards and Sharpe groups by mode; with no such key the grouping stays merged, exactly as before.
 - `summary_frequency` uses the same key scheme. Values: `hourly`, `daily`, `every`, `per_check`, `always`, or a Go duration (`30m`, `2h`). The wall-clock cadence persists in SQLite and survives restart and SIGHUP. `options`, `perps`, `futures`, and `manual` post every channel run; `spot` posts hourly. A trade always forces an immediate post.
 - `discord.owner_id` comes from `DISCORD_OWNER_ID`; it enables DM upgrade and migration prompts.
+- **Separate live and paper state files (#1523).** Set root `paper_db_file` beside `db_file` and the paper scope's books, risk row, kill-switch events and correlation snapshot move to that file; the live scope, process metadata, the live-only wallet and cash-flow tables and shared regime history stay in `db_file`. Omit `paper_db_file` and the single-file layout is unchanged. The two paths must resolve to different physical files — relative paths, symbolic links and hard links are all checked — or startup refuses with exit code 80.
+- **Stored identity.** Optional per-strategy `storage_strategy_id` names the row a strategy owns inside its file; it defaults to `id`. Storage identity is `(scope, storage_strategy_id)` and must be unique **within one file**; the same value in the live and paper files is the supported alias. Rename a strategy's `id` and set `storage_strategy_id` to the old name to keep its cash, positions, latches, queued actions and history. Both keys are restart-required.
 
 Live-mode risk defaults offered by `init`: per-strategy spot drawdown 5%, per-strategy options drawdown 10%, portfolio kill switch 25%, portfolio warn threshold 60% of the kill switch.
 
@@ -147,7 +149,9 @@ journalctl -u go-trader -n 100 --no-pager
 
 **Config out of the deploy tree.** Both units set `StateDirectory=go-trader[/%i]` and point `ExecStart --config` at `/var/lib/go-trader[/<instance>]/config.json`. For an existing in-tree deploy, stop the service first, then run `scripts/migrate-config-out-of-tree.sh [--instance <name>]` — it refuses while the daemon is live. `scheduler/config.json` stays as a transition symlink; a config-version migration that rewrites the file replaces that symlink with a regular in-tree file, so prefer the out-of-tree path.
 
-**Startup probe.** Every unique check script runs with `--probe-only`. A non-zero result logs, DMs the owner, and exits with code 78 (`ExitProbeFailure`). Both unit files set `RestartPreventExitStatus=78`, so the service stays down instead of crash-looping. A probe failure right after an update almost always means `shared_scripts/` was not updated or the binary was not rebuilt — rerun `scripts/update.sh`.
+**File ownership.** Before any migration, startup write, probe or trading, the scheduler takes an exclusive lock on **every** configured state file, in role order (primary, then paper); a failure releases everything already held and exits with code 79 (`ExitSingletonLock`), naming the file and the holder pid. `--once` takes ownership too, so it refuses to run while the daemon is up — the daemon drains queued manual fills on its own next cycle. Startup then runs the read-only ownership check (`storage-inspect`); a rejected layout exits with code 80 (`ExitStorageOwnership`). Manual commands and the dashboard take only the owning file's manual-action lock, so they still work beside a running daemon; `backfill --apply` takes full ownership plus both manual-action locks.
+
+**Startup probe.** Every unique check script runs with `--probe-only`. A non-zero result logs, DMs the owner, and exits with code 78 (`ExitProbeFailure`). Both unit files set `RestartPreventExitStatus=78 79 80`, so the service stays down instead of crash-looping. A probe failure right after an update almost always means `shared_scripts/` was not updated or the binary was not rebuilt — rerun `scripts/update.sh`.
 
 **Graceful shutdown.** The daemon drains side-effecting subprocesses for up to 15 seconds, then SIGKILLs; state save, notifier flush, and DB close run afterwards. The unit sets `TimeoutStopSec=20`. Service-file edits need `daemon-reload`.
 
@@ -438,7 +442,7 @@ Guardrails:
 - The manual default stop is 2.0× ATR, distinct from the fleet-wide `default_stop_loss_atr_mult` (typically 1.0×) for non-manual HL perps. An explicit stop field still wins. `user_defaults.manual.stop_loss_atr_mult: 0` opts manual out without touching non-manual perps; the ratchet fallback ignores that 0.
 - Opening is blocked while the portfolio kill switch is active or the strategy has a pending circuit-breaker close.
 - Live market `manual-open`, `manual-close`, and `manual-add` refuse without queueing when the exchange returns no confirmed fill (`AvgPx>0` and `TotalSz>0` required); state is unchanged. The dashboard trade-actions API returns HTTP 409 with the same error.
-- Fills queue in `pending_manual_actions` and apply at the top of the next cycle, so run `--once` if the daemon is idle. If the queue insert fails after a successful on-chain fill, the position is auto-flattened and its protection cancelled; a cleanup failure alerts loudly — flatten by hand.
+- Fills queue in `pending_manual_actions` and apply at the top of the next cycle; the running daemon drains them itself. `--once` now takes file ownership, so it refuses while the daemon is up — start the daemon rather than racing it. Each drained action is acknowledged **by row id inside the transaction that persists its effect**, so an action that fails to apply keeps its row and is never deleted by a later success, in its own file or the other one. If the queue insert fails after a successful on-chain fill, the position is auto-flattened and its protection cancelled; a cleanup failure alerts loudly — flatten by hand.
 - A 99% partial close is never silently collapsed into a full close: the queue carries the explicit `--qty` intent.
 - `manual-update-sl` / `manual-cancel-sl` cancel-then-place (or cancel) the on-chain stop, then queue an action the daemon drains into memory — no direct state-DB write, no restart. They are **hard-rejected** when the strategy's automated protection would re-pin the edit next cycle; only strategies opted out of auto-stops qualify, and the error names the opt-out. `update-sl` also refuses a trigger that would fill immediately against the current mark. A stop edit records no trade.
 - `force-close <strategy-id>` closes a position on a **live Hyperliquid `type=perps`** strategy — the automated-strategy analog of `manual-close`. It rejects paper mode and every non-HL or non-perps strategy. It submits the reduce-only close, defers cancelling the on-chain triggers until the fill is confirmed (so a failed or under-filled close never orphans protection), then queues the confirmed fill for the next cycle. The booked leg records a `force_close` trade and, unlike a manual close, updates the strategy's risk state, so the circuit breaker sees it. A full close is refused while a stop edit is queued. `--qty` closes a partial; `--dry-run` previews with no exchange call and no state write.
@@ -567,7 +571,7 @@ sudo systemctl restart go-trader       # full restart
 
 Hot reload re-applies a safe subset: capital, drawdown, intervals, params, stop-loss fields (including percentage and ATR-multiple trailing), sizing leverage, theta harvest, `portfolio_risk` knobs and their `portfolio_risk.paper` overrides except `max_notional_usd` on either, summary cadence, per-strategy `allowed_regimes`, `paused`, `circuit_breaker` and its cooldowns, `notify_ratchet_triggers`, `allow_deprecated`, `llm_entry_analysis`, `hurst_gate`, `alert_throttle_interval`, `kill_switch_reset_dm_timeout`, `user_defaults`, `tuning.max_retained_runs`, and the Discord/Telegram **channel maps**. Per-strategy `regime_*_window` selectors, `replay_sharing` and `replay_source_id` reload only while flat.
 
-**Restart-required — a SIGHUP is rejected outright:** the strategy roster; any `script`/`args`/`type`/`platform` field, the HTF filter, or kill-switch identity; `db_file`; `log_dir`; `status_port`; the status token; `auto_update`; `risk_free_rate`; `leaderboard_post_time` and `leaderboard_summaries`; `tradingview_export`; `replay_log_path`; `portfolio_risk.max_notional_usd` and `portfolio_risk.paper.max_notional_usd`; the whole `correlation` block; the global `regime` block (enabled, period, adx_threshold, windows); `discord.enabled`/`token`/`owner_id` and `telegram.enabled`/`bot_token`/`owner_chat_id`; and a shared-wallet pool↔allocated budgeting switch.
+**Restart-required — a SIGHUP is rejected outright:** the strategy roster; any `script`/`args`/`type`/`platform` field, the HTF filter, or kill-switch identity; `db_file`; `log_dir`; `status_port`; the status token; `auto_update`; `paper_db_file` and any strategy's effective `storage_strategy_id`; `risk_free_rate`; `leaderboard_post_time` and `leaderboard_summaries`; `tradingview_export`; `replay_log_path`; `portfolio_risk.max_notional_usd` and `portfolio_risk.paper.max_notional_usd`; the whole `correlation` block; the global `regime` block (enabled, period, adx_threshold, windows); `discord.enabled`/`token`/`owner_id` and `telegram.enabled`/`bot_token`/`owner_chat_id`; and a shared-wallet pool↔allocated budgeting switch.
 
 It also refuses when per-strategy exchange `leverage`, `direction`, `invert_signal`, HL `margin_mode`, or the regime timeframe changed while a position is open, and for every field in the blocked-while-open list under Post-Update Agent Protocol. It re-runs the HL peer-on-same-coin check for `margin_mode` and exchange `leverage` agreement and the single-trailing-stop-owner rule, and re-validates every `hedge` block. A rejection names every offending field at once; fall back to a restart.
 
@@ -591,7 +595,9 @@ Global — key, default, notes:
 | Key | Default | Notes |
 | --- | --- | --- |
 | `interval_seconds` | 300 | Check interval |
-| `db_file` | `scheduler/state.db` | State DB |
+| `db_file` | `scheduler/state.db` | State DB. In the split layout it holds the live scope, process metadata, the live-only wallet/cash-flow tables and shared regime history. **Restart-required.** |
+| `paper_db_file` | absent = single file | Optional second state file owning the paper scope's books, risk row, kill-switch events and correlation snapshot. Must resolve to a different physical file than `db_file`. **Restart-required.** |
+| `storage_strategy_id` (per strategy) | `id` | The identifier this strategy owns inside its state file. Unique per file; the same value in both files is the supported alias. Lets a strategy `id` be renamed with no stored rewrite. **Restart-required.** |
 | `auto_update` | `off` | `off` \| `daily` \| `heartbeat` |
 | `status_port` | 8099 | Loopback only |
 | `risk_free_rate` | 0.04 | Sharpe basis |
@@ -776,9 +782,38 @@ uv run --no-sync python -m py_compile shared_scripts/check_<name>.py
 
 ---
 
+## Storage Ownership
+
+Set `paper_db_file` and the scheduler runs both modes in one process against two state files. `db_file` is the **primary** file; `paper_db_file` is the **paper** file. Omit `paper_db_file` and every behaviour below collapses to the single-file layout that has always shipped.
+
+**Who owns what**
+
+| Table | Owner | Notes |
+| --- | --- | --- |
+| `app_state` | primary | The paper file's row is read once at boot and its summary/leaderboard stamps are unioned in with primary precedence; it is never written again. |
+| `strategies`, `positions`, `option_positions`, `trades`, `closed_positions`, `closed_option_positions`, `trade_diagnostics`, `pending_manual_actions` | the strategy's scope | Identifiers are translated in both directions at the SQL boundary. |
+| `portfolio_risk`, `kill_switch_events`, `correlation_snapshot` | the row's explicit scope | A legacy unscoped row is placed using the owning file's validated scope. |
+| `wallet_ledger_state`, `wallet_transfers`, `cashflow_journal`, `cashflow_journal_state`, `pending_limit_orders` | primary, live-only | A write naming a paper-scope strategy is refused. |
+| `regime_window_history`, `regime_window_transitions`, `regime_reversal_alerts` | primary for new writes | A paper file's pre-split history is read with its source named and is never pruned or marked. |
+| `decisions` (replay log) | unchanged | Its own `replay_log_path` file. |
+
+**Identity translation.** A strategy's process identifier (`id`) and its stored identifier (`storage_strategy_id`, default `id`) are separate namespaces. Every strategy identifier is translated inside the per-file handle, so no caller can skip it. Values that stay in the process namespace: `position_id`, `replay_mirror_watermark_source`, `hedge_for` (a symbol) and `replay_source_id`. A stored row that maps to no configured strategy in its file is an **orphan**: it is reported, never keyed into the roster, and dropped by that file's next full save. Historical trade, closed-position and diagnostics rows with no current strategy keep their stored identifier and carry their source file; nothing assigns them a scope by identifier suffix.
+
+**Acknowledgement.** A drained manual action is deleted **by row id inside the transaction that persists its effect**. A failed action keeps its row. A high-water mark is never used, so one file's acknowledgement can never delete another file's row.
+
+**Persistence hold.** Each scope carries its own save-failure counter. Any unacknowledged failure holds position-increasing signals for that scope at all six regime-gated dispatch sites and refuses `manual-open` / `manual-add`; closes, trailing stops, ratchet, protection sync and hedge management keep running. Three consecutive failures skip that scope's strategies for the cycle, as before. A successful save clears the hold. In the single-file layout both counters move together, so the outcome equals the previous whole-cycle skip.
+
+**Combined reads.** History, counts, statistics, exports and diagnostics query every required file, translate identifiers, merge, then order and page globally by `(timestamp DESC, scope ASC, rowid DESC)`. A file that cannot be read fails the whole read; no page or map is ever returned with a scope missing.
+
+**Inspection.** `go-trader storage-inspect [--config <path>] [--json] [--require-idle]` prints, per file, the canonical path, the scopes it owns, any held lock and its pid, every mapped strategy with its position count, orphans (flagged when they hold positions), the pending-action count and the risk rows with their latch. It opens each file read-only, tolerates a pre-#1509 schema, and never migrates, moves or deletes a row. It exits 1 on a rejection: a book in the wrong file, a risk row whose scope the file does not own, an ambiguous legacy row, or a duplicate stored identifier. `--require-idle` also rejects a file owned by a running process. Startup runs the same check and exits 80 on a rejection, before the first migrating open. A mixed single-file deployment that already holds paper books cannot be split automatically — resolve it by hand or stay single-file.
+
+**Backup and restore.** Stop the service, then copy **both** files with their `-wal` and `-shm` sidecars; restore them together. `scripts/update.sh` excludes both paths from its rsync. There is no transaction across the two files: a crash stops both modes, and separate files give record separation without fault isolation inside one process.
+
+---
+
 ## Portfolio Kill Switch And Latch Ownership
 
-**The latch is partitioned by mode.** One scheduler holds two portfolio scopes, `live` and `paper`, decided only by `--mode=live` in the strategy args. Each scope keeps its own peak, drawdown, latch, events, daily-loss ledger, notional total, exposure total and correlation model, and each is evaluated once per cycle over its own strategies. A paper drawdown can never latch live, and a live drawdown can never latch paper. Only a scope with at least one configured strategy is evaluated, so a single-mode deployment behaves exactly as before, with the scope name added to the operator surfaces. On upgrade, an existing unscoped `portfolio_risk` row moves into `live` when the config holds any live strategy, else into `paper`; the move is written back on the first boot and is a no-op afterwards.
+**The latch is partitioned by mode.** One scheduler holds two portfolio scopes, `live` and `paper`, decided only by `--mode=live` in the strategy args. Each scope keeps its own peak, drawdown, latch, events, daily-loss ledger, notional total, exposure total and correlation model, and each is evaluated once per cycle over its own strategies. A paper drawdown can never latch live, and a live drawdown can never latch paper. Only a scope with at least one configured strategy is evaluated, so a single-mode deployment behaves exactly as before, with the scope name added to the operator surfaces. On upgrade, an existing unscoped `portfolio_risk` row moves into `live` when the config holds any live strategy, else into `paper`; the move is written back on the first boot and is a no-op afterwards. With `paper_db_file` set, each file's unscoped row is placed from that file's own owned scope (§ Storage Ownership).
 
 A live latch runs the exchange close plan over the live roster only. A paper latch closes paper books virtually at mark, sends no exchange order, and posts to the `-paper` channels; it never auto-resets without an owner. Because paper has no wallet fetch, its equity reading is always trusted, so a paper scope never shows a substituted reading or a deferred latch.
 
@@ -940,7 +975,8 @@ Per-subsystem mechanism notes for coding agents. `CLAUDE.md` keeps only the guar
 ### Portfolio scope and state (`portfolio_scope.go`, `state.go`, `db.go`)
 
 - `hyperliquidModeFromArgs` is a wrapper over `PortfolioScope`. `measureScopeCycleRisk` and `applyScopeCycleRisk` own the per-scope cycle read; `dueStrategiesNotLatched` filters the due set per scope.
-- `portfolio_risk` is keyed by `scope` (rebuild migration `migratePortfolioRiskScopeColumns`); `kill_switch_events` and `correlation_snapshot` carry `scope`. Legacy unscoped rows load under `scopeUnassigned`; `assignLegacyPortfolioScope` in `LoadStateWithDB` (which has the roster) places them under `live` when `HasLiveStrategy`, else `paper`, and saves immediately so the placement is idempotent.
+- `portfolio_risk` is keyed by `scope` (rebuild migration `migratePortfolioRiskScopeColumns`); `kill_switch_events` and `correlation_snapshot` carry `scope`. Legacy unscoped rows load under `scopeUnassigned`; `placeLegacyPortfolioRisk` puts each file's row into the scope that file owns and the placement is saved at once, so it is idempotent. In a split layout with no live strategy the primary file's unscoped row is rejected instead of guessed.
+- `StateStore` (`state_store.go`) owns the physical handles and the immutable identity map, routes every write to the owning file and combines every cross-scope read. `LoadStateWithStore` composes `loadProcessMeta` and `loadScopeBooks` per file, so paper books load with no process-metadata row in the primary. `SaveAll` runs one transaction per file and returns an error per scope; a failed file leaves its scope in memory for retry and cannot duplicate the other file's committed effects. Test hook `storeCommitHook` injects a per-file commit failure. § Storage Ownership.
 - `LoadState` bounds per-strategy trades in SQL (`ORDER BY timestamp DESC, rowid DESC LIMIT maxTradeHistory`, index `idx_trades_strategy_timestamp`). `ValidatePerpsDirectionConfig` runs at startup; `CheckStatePresence` is bypassed with `GO_TRADER_ALLOW_MISSING_STATE=1`.
 
 ### Risk, latch, and the portfolio gates (`risk.go`, `strategy_interval.go`, `daily_loss.go`, `exposure_cap.go`, `notional_cap.go`)
