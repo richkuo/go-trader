@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
+	"time"
 )
 
 func TestAcquireStateDBLock_Basic(t *testing.T) {
@@ -52,6 +53,32 @@ func TestAcquireStateDBLock_Contended(t *testing.T) {
 	if locked.pid != os.Getpid() {
 		t.Errorf("locked.pid = %d, want %d", locked.pid, os.Getpid())
 	}
+}
+
+func TestAcquireStateDBLock_SurvivesProbeWindow(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	lockPath := stateDBLockPath(dbPath)
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		t.Fatalf("open lock file: %v", err)
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatalf("flock: %v", err)
+	}
+	if _, held := probeStateDBLockHolder(dbPath); !held {
+		t.Fatal("probe reports the lock free while a probe-length hold is in place")
+	}
+	go func() {
+		time.Sleep(3 * stateDBLockRetryGap)
+		syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	}()
+
+	lock, err := acquireStateDBLock(dbPath)
+	if err != nil {
+		t.Fatalf("acquire during a probe-length hold failed: %v (want a retried success, never exit 79)", err)
+	}
+	lock.Release()
 }
 
 func TestAcquireStateDBLock_ReleaseAllowsReacquire(t *testing.T) {

@@ -795,6 +795,18 @@ func TestStateStoreRoutesLiveOnlyWritesAndRefusesPaperStrategies(t *testing.T) {
 	if n != 0 {
 		t.Errorf("paper limit orders = %d, want 0 (the table is live-only)", n)
 	}
+
+	// A read over the live-only table reports "none" for a paper strategy so
+	// manual-open/manual-add stay usable; an unmapped id still errors.
+	if cnt, err := store.CountPendingLimitOrders("hl-paper", "ETH"); err != nil || cnt != 0 {
+		t.Errorf("CountPendingLimitOrders(paper) = %d, %v; want 0, nil", cnt, err)
+	}
+	if cnt, err := store.CountPendingLimitOrders("hl-live", "ETH"); err != nil || cnt != 1 {
+		t.Errorf("CountPendingLimitOrders(live) = %d, %v; want 1, nil", cnt, err)
+	}
+	if _, err := store.CountPendingLimitOrders("unmapped", "ETH"); err == nil {
+		t.Error("CountPendingLimitOrders(unmapped) = nil error, want a storage-owner refusal")
+	}
 }
 
 func TestDrainPendingManualActionsPerFile(t *testing.T) {

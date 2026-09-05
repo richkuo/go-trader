@@ -1973,6 +1973,13 @@ func main() {
 							}
 							result.Actions = kept
 						}
+						if persistenceHold {
+							kept, dropped := pausedOptionsActions(result.Actions)
+							if dropped > 0 {
+								logger.Warn("Persistence hold: %d option open action(s) dropped — the %s scope has an unacknowledged state save failure, so no new exposure is taken; closes continue (#1523)", dropped, scopeLabel(stratScope))
+							}
+							result.Actions = kept
+						}
 						if kept, dropped, capWhy := exposureCapOptionsActions(sr.ExposureCapStatus, extractAsset(sc), result.Actions); dropped > 0 {
 							logger.Warn("Exposure cap: %d option open action(s) dropped — %s (#1270)", dropped, capWhy)
 							result.Actions = kept

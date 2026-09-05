@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 type stateDBLock struct {
@@ -43,13 +44,21 @@ func canonicalDBPath(dbPath string) string {
 	return resolved
 }
 
+const (
+	stateDBLockAttempts = 10
+	stateDBLockRetryGap = 10 * time.Millisecond
+)
+
+// acquireStateDBLock takes the exclusive ownership lock. A contended lock is
+// retried briefly so a read-only probe (probeStateDBLockHolder) that holds
+// the lock for microseconds never turns a daemon start into an exit 79.
 func acquireStateDBLock(dbPath string) (*stateDBLock, error) {
 	lockPath := stateDBLockPath(dbPath)
 	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
 		return nil, fmt.Errorf("open lock file %s: %w", lockPath, err)
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if err := flockWithRetry(f); err != nil {
 		pid := readLockPID(f)
 		f.Close()
 		if errors.Is(err, syscall.EWOULDBLOCK) {
@@ -61,6 +70,20 @@ func acquireStateDBLock(dbPath string) (*stateDBLock, error) {
 		fmt.Fprintf(os.Stderr, "[singleton] WARN: could not write pid to %s: %v\n", lockPath, err)
 	}
 	return &stateDBLock{f: f, path: lockPath}, nil
+}
+
+func flockWithRetry(f *os.File) error {
+	var err error
+	for attempt := 0; attempt < stateDBLockAttempts; attempt++ {
+		if attempt > 0 {
+			time.Sleep(stateDBLockRetryGap)
+		}
+		err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if !errors.Is(err, syscall.EWOULDBLOCK) {
+			return err
+		}
+	}
+	return err
 }
 
 func (l *stateDBLock) Release() {

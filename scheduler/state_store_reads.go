@@ -564,11 +564,32 @@ func (st *StateStore) CountPendingLimitOrders(strategyID, symbol string) (int, e
 	if st == nil {
 		return 0, nil
 	}
-	db, err := st.liveOwnedFileForStrategy(strategyID)
+	db, paper, err := st.liveOnlyReadFileForStrategy(strategyID)
 	if err != nil {
 		return 0, err
 	}
+	if paper {
+		return 0, nil
+	}
 	return db.CountPendingLimitOrders(strategyID, symbol)
+}
+
+// liveOnlyReadFileForStrategy resolves a read over a live-only table. A
+// paper-scope strategy can never own a row there, so the read reports "none"
+// instead of failing; an unmapped strategy is still an error.
+func (st *StateStore) liveOnlyReadFileForStrategy(strategyID string) (*StateDB, bool, error) {
+	db, err := st.liveFile()
+	if err != nil {
+		return nil, false, err
+	}
+	if !st.layout.Split {
+		return db, false, nil
+	}
+	ident, ok := st.ident.storageFor(strategyID)
+	if !ok {
+		return nil, false, fmt.Errorf("strategy %q has no storage owner", strategyID)
+	}
+	return db, ident.Scope != ScopeLive, nil
 }
 
 // liveOwnedFileForStrategy refuses a live-only write that names a paper-scope
