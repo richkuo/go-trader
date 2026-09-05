@@ -363,6 +363,12 @@ func keyReadiness(s *feedKeyState, now time.Time, connected bool) feedKeyReadine
 	if s.Status == feedStatusFailed {
 		return out
 	}
+	if s.Status == feedStatusRepairing {
+		if out.Detail == "" {
+			out.Detail = "awaiting reconnect repair"
+		}
+		return out
+	}
 	floor := feedReadyFloor(s.Required)
 	if len(s.Bars) == 0 {
 		out.Status = feedStatusBootstrapping

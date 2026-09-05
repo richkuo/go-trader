@@ -375,23 +375,48 @@ func marketPayloadFor(s *marketSnapshot, frames []marketPayloadFrameSpec, coins 
 			Stale:     age > feedMidStaleAfter,
 			Confirmed: mid.Px > 0,
 		}
-		if f, ok := s.funding[coin]; ok {
-			if payload.Funding == nil {
-				payload.Funding = make(map[string]marketFundingPayload, len(coins))
-			}
-			payload.Funding[coin] = marketFundingPayload{
-				Current:     f.Current,
-				Avg7d:       f.Avg7d,
-				HasScalar:   f.HasScalar,
-				Records:     f.Records,
-				HasRecords:  f.HasRecords,
-				FetchedAtMs: f.FetchedAt.UnixMilli(),
-				Source:      f.Source,
-				Error:       f.Err,
-			}
+	}
+	for _, coin := range coins {
+		f, ok := s.funding[coin]
+		if !ok {
+			continue
+		}
+		if payload.Funding == nil {
+			payload.Funding = make(map[string]marketFundingPayload, len(coins))
+		}
+		payload.Funding[coin] = marketFundingPayload{
+			Current:     f.Current,
+			Avg7d:       f.Avg7d,
+			HasScalar:   f.HasScalar,
+			Records:     f.Records,
+			HasRecords:  f.HasRecords,
+			FetchedAtMs: f.FetchedAt.UnixMilli(),
+			Source:      f.Source,
+			Error:       f.Err,
 		}
 	}
 	return payload, nil
+}
+
+func (s *marketSnapshot) fundingHold(coin string, scalar, records bool) (bool, string) {
+	if !scalar && !records {
+		return false, ""
+	}
+	if s == nil {
+		return true, fmt.Sprintf("no sealed funding for %s", coin)
+	}
+	f, ok := s.funding[coin]
+	switch {
+	case !ok:
+		return true, fmt.Sprintf("no sealed funding for %s", coin)
+	case f.Err != "":
+		return true, fmt.Sprintf("funding fetch for %s failed: %s", coin, f.Err)
+	case scalar && !f.HasScalar:
+		return true, fmt.Sprintf("sealed funding for %s carries no current rate", coin)
+	case records && !f.HasRecords:
+		return true, fmt.Sprintf("sealed funding for %s carries no history", coin)
+	}
+	return false, ""
 }
 
 type marketStdinEnvelope struct {

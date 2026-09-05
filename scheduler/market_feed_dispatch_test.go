@@ -430,3 +430,129 @@ func TestBatchFallsBackWhenTheSealedPayloadIsUnavailable(t *testing.T) {
 		t.Fatalf("the fallback must be reported: %v", logs)
 	}
 }
+
+func TestFeedDegradedAlertsCountOncePerKeyPerCycleAndClearOnEveryPath(t *testing.T) {
+	feed, cfg, scA, scB := feedDispatchFixture(t)
+	signalKey := feed.Requirements.Strategies[scA.ID].Signal
+	delete(feed.Snapshot.keys, signalKey)
+	t.Cleanup(func() { clearMarketFeedDegraded(nil, signalKey) })
+
+	origPlain := runHyperliquidCheckFn
+	origStdin := runHyperliquidCheckWithStdinFn
+	runHyperliquidCheckFn = func(string, []string) (*HyperliquidResult, string, error) { return nil, "", nil }
+	runHyperliquidCheckWithStdinFn = func(string, []string, []byte) (*HyperliquidResult, string, error) { return nil, "", nil }
+	t.Cleanup(func() {
+		runHyperliquidCheckFn = origPlain
+		runHyperliquidCheckWithStdinFn = origStdin
+	})
+
+	prices := map[string]float64{"BTC": 101}
+	for _, sc := range []StrategyConfig{scA, scB} {
+		sc := sc
+		if _, _, _, ok := runHyperliquidCheck(&sc, prices, PositionCtx{}, cfg.Regime, "simple", nil, hlBatchTestLogger(), nil, feed); !ok {
+			t.Fatalf("degraded twin %s must still evaluate", sc.ID)
+		}
+	}
+	marketFeedDegradedTracker.mu.Lock()
+	count := 0
+	if e := marketFeedDegradedTracker.entries[signalKey.String()]; e != nil {
+		count = e.count
+	}
+	marketFeedDegradedTracker.mu.Unlock()
+	if count != 1 {
+		t.Fatalf("twins on one key in one snapshot must count one degraded cycle, got %d", count)
+	}
+
+	healthy := &hlBatchCycleResults{}
+	fp, err := hyperliquidBatchSlotFingerprint(scA, PositionCtx{}, cfg.Regime)
+	if err != nil {
+		t.Fatalf("fingerprint: %v", err)
+	}
+	healthy.put(scA.ID, hlBatchMemberOutcome{Result: &HyperliquidResult{Symbol: "BTC", Price: 101, Indicators: map[string]interface{}{}}, Fingerprint: fp})
+	if _, _, _, ok := runHyperliquidCheck(&scA, prices, PositionCtx{}, cfg.Regime, "simple", nil, hlBatchTestLogger(), healthy, feed); !ok {
+		t.Fatalf("the batched healthy result must be consumed")
+	}
+	if _, prior := marketFeedDegradedTracker.Clear(signalKey.String()); prior != 0 {
+		t.Fatalf("a healthy batched result must clear the key's degraded tracker, prior count %d", prior)
+	}
+}
+
+func TestFundingStrategyDegradesInsteadOfSkippingWhenFundingIsUnavailable(t *testing.T) {
+	now := time.Unix(1_700_003_600, 0).UTC()
+	scF := StrategyConfig{
+		ID: "hl-funding", Type: "perps", Platform: "hyperliquid", Script: hyperliquidCheckScript,
+		Args: []string{"delta_neutral_funding", "BTC", "1h", "--mode=paper"}, Capital: 1000,
+	}
+	scG := scF
+	scG.ID = "hl-funding-live"
+	scG.Args = []string{"delta_neutral_funding", "BTC", "1h", "--mode=live"}
+	cfg := &Config{IntervalSeconds: 300, MarketFeed: marketFeedWebsocket, Strategies: []StrategyConfig{scF, scG}}
+	req, err := deriveFeedRequirements(cfg)
+	if err != nil {
+		t.Fatalf("derive requirements: %v", err)
+	}
+	if !req.Strategies[scF.ID].FundingScalar {
+		t.Fatalf("fixture must be a funding strategy: %+v", req.Strategies[scF.ID])
+	}
+	build := func(funding *feedFunding) *marketFeedContext {
+		owner := newMarketFeedOwner(func() time.Time { return now }, nil)
+		for key, lookback := range req.Keys {
+			st := newFeedKeyState(key, mustIntervalMs(t, key.Timeframe), lookback)
+			mergeRestRows(st, testRawSeries(now.UnixMilli()-int64(lookback+5)*st.IntervalMs, lookback+5), now.Add(-time.Second))
+			st.Status = feedStatusReady
+			st.LastRecvAt = now
+			owner.keys[key] = st
+			owner.published[key] = true
+		}
+		owner.midCoins["BTC"] = true
+		owner.mids["BTC"] = feedMid{Px: 101, RecvAt: now, Source: "ws"}
+		if funding != nil {
+			owner.funding["BTC"] = funding
+		}
+		reqs := cycleRequirementsForDue(cfg.Strategies, req)
+		snap := sealCycleMarketSnapshot(context.Background(), owner, reqs, "300s/1700003600", now)
+		return &marketFeedContext{Enabled: true, Requirements: req, Snapshot: snap, Interval: 300}
+	}
+	key, _ := hlBatchKeyForStrategy(scF, cfg)
+
+	tests := []struct {
+		name     string
+		funding  *feedFunding
+		wantHold bool
+	}{
+		{name: "healthy funding runs the check", funding: &feedFunding{Current: 0.0001, Avg7d: 0.0002, HasScalar: true, FetchedAt: now}, wantHold: false},
+		{name: "funding fetch error degrades", funding: &feedFunding{Err: "venue 503", FetchedAt: now}, wantHold: true},
+		{name: "funding never fetched degrades", funding: nil, wantHold: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			origStub := fetchHyperliquidFundingRateFn
+			fetchHyperliquidFundingRateFn = func(context.Context, string) (float64, error) { return 0, context.DeadlineExceeded }
+			t.Cleanup(func() { fetchHyperliquidFundingRateFn = origStub })
+			feed := build(tc.funding)
+			hold := feed.holdFor(scF)
+			if hold.Held != tc.wantHold {
+				t.Fatalf("hold: got %+v want %v", hold, tc.wantHold)
+			}
+			_, batchErr := feed.batchPayload(key, []StrategyConfig{scF, scG})
+			if (batchErr != nil) != tc.wantHold {
+				t.Fatalf("the batch payload must refuse a group whose funding is unavailable: err=%v", batchErr)
+			}
+			if tc.wantHold {
+				return
+			}
+			blob, err := feed.singleCheckPayload(scF)
+			if err != nil {
+				t.Fatalf("single payload: %v", err)
+			}
+			var envelope map[string]any
+			if err := json.Unmarshal(blob, &envelope); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			funding := envelope["market"].(map[string]any)["funding"].(map[string]any)["BTC"].(map[string]any)
+			if funding["has_scalar"] != true {
+				t.Fatalf("a healthy payload keeps its funding block: %v", funding)
+			}
+		})
+	}
+}

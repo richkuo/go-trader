@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -92,6 +93,9 @@ func (c *marketFeedContext) batchPayload(key hlBatchKey, members []StrategyConfi
 		if entry.HasRegime {
 			raise(entry.Regime, entry.RegimeLookback)
 		}
+		if held, why := c.Snapshot.fundingHold(entry.Coin, entry.FundingScalar, entry.FundingRecords); held {
+			return nil, fmt.Errorf("strategy %s: %s", sc.ID, why)
+		}
 	}
 	for i := range specs {
 		specs[i].Required = seen[specs[i].Key]
@@ -119,21 +123,53 @@ func (c *marketFeedContext) ownsRegimeBundle(req regimeBundleRequest) bool {
 	return ok
 }
 
+type feedHold struct {
+	Held   bool
+	Key    marketFeedKey
+	Reason string
+}
+
 func (c *marketFeedContext) feedHoldsSignal(sc StrategyConfig) (bool, string) {
+	hold := c.holdFor(sc)
+	return hold.Held, hold.Reason
+}
+
+func (c *marketFeedContext) holdFor(sc StrategyConfig) feedHold {
 	if !c.active() {
-		return false, ""
+		return feedHold{}
 	}
 	entry, ok := c.entryFor(sc.ID)
 	if !ok {
-		return false, ""
+		return feedHold{}
 	}
 	if c.Snapshot.keyFailed(entry.Signal) {
-		return true, fmt.Sprintf("no ready candle frame for %s", entry.Signal.PayloadID())
+		return feedHold{Held: true, Key: entry.Signal, Reason: fmt.Sprintf("no ready candle frame for %s", entry.Signal.PayloadID())}
 	}
 	if entry.HasHTF && c.Snapshot.keyFailed(entry.HTF) {
-		return true, fmt.Sprintf("no ready higher-timeframe frame for %s", entry.HTF.PayloadID())
+		return feedHold{Held: true, Key: entry.HTF, Reason: fmt.Sprintf("no ready higher-timeframe frame for %s", entry.HTF.PayloadID())}
 	}
-	return false, ""
+	if held, why := c.Snapshot.fundingHold(entry.Coin, entry.FundingScalar, entry.FundingRecords); held {
+		return feedHold{Held: true, Key: entry.Signal, Reason: why}
+	}
+	return feedHold{}
+}
+
+func (c *marketFeedContext) snapshotID() string {
+	if c == nil || c.Snapshot == nil {
+		return ""
+	}
+	return c.Snapshot.EvaluationID
+}
+
+func (c *marketFeedContext) clearDegradedFor(notifier *MultiNotifier, id string) {
+	entry, ok := c.entryFor(id)
+	if !ok {
+		return
+	}
+	clearMarketFeedDegraded(notifier, entry.Signal)
+	if entry.HasHTF {
+		clearMarketFeedDegraded(notifier, entry.HTF)
+	}
 }
 
 func (c *marketFeedContext) decisionTooOld(now time.Time, intervalSeconds int) (bool, string) {
@@ -198,6 +234,28 @@ func degradedHyperliquidResult(sc StrategyConfig, symbol, mode, reason string, p
 
 var marketFeedDegradedTracker = &ScriptFailureTracker{}
 
+var marketFeedDegradedCycle = struct {
+	sync.Mutex
+	seen map[string]string
+}{seen: map[string]string{}}
+
+func marketFeedDegradedCountsThisCycle(key marketFeedKey, snapshotID string) bool {
+	marketFeedDegradedCycle.Lock()
+	defer marketFeedDegradedCycle.Unlock()
+	id := key.String()
+	if snapshotID != "" && marketFeedDegradedCycle.seen[id] == snapshotID {
+		return false
+	}
+	marketFeedDegradedCycle.seen[id] = snapshotID
+	return true
+}
+
+func marketFeedDegradedForget(key marketFeedKey) {
+	marketFeedDegradedCycle.Lock()
+	defer marketFeedDegradedCycle.Unlock()
+	delete(marketFeedDegradedCycle.seen, key.String())
+}
+
 func marketFeedAlertConfig(key marketFeedKey) StrategyConfig {
 	return StrategyConfig{
 		ID:       "market-feed[" + key.PayloadID() + "]",
@@ -206,7 +264,10 @@ func marketFeedAlertConfig(key marketFeedKey) StrategyConfig {
 	}
 }
 
-func notifyMarketFeedDegraded(notifier *MultiNotifier, key marketFeedKey, detail string) {
+func notifyMarketFeedDegraded(notifier *MultiNotifier, key marketFeedKey, snapshotID, detail string) {
+	if !marketFeedDegradedCountsThisCycle(key, snapshotID) {
+		return
+	}
 	now := time.Now().UTC()
 	shouldNotify, count := marketFeedDegradedTracker.Record(key.String(), detail, now)
 	if !shouldNotify || notifier == nil || !notifier.HasBackends() {
@@ -219,6 +280,7 @@ func notifyMarketFeedDegraded(notifier *MultiNotifier, key marketFeedKey, detail
 }
 
 func clearMarketFeedDegraded(notifier *MultiNotifier, key marketFeedKey) {
+	marketFeedDegradedForget(key)
 	recovered, _ := marketFeedDegradedTracker.Clear(key.String())
 	if !recovered || notifier == nil || !notifier.HasBackends() {
 		return

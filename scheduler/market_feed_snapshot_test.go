@@ -223,3 +223,95 @@ func TestSnapshotAgeGatesLateDecisions(t *testing.T) {
 		t.Fatalf("the refusal must name the limit: %s", why)
 	}
 }
+
+func TestSealedPayloadCarriesFundingIndependentlyOfMids(t *testing.T) {
+	key := testFeedKey()
+	now := time.Unix(1_700_003_600, 0).UTC()
+	owner := feedOwnerWithHistory(t, key, 60, 80, now)
+	delete(owner.mids, "BTC")
+	owner.funding["BTC"] = &feedFunding{Current: 0.0001, Avg7d: 0.0002, HasScalar: true, HasRecords: true,
+		Records: []feedFundingRecord{{Rate: 0.0001, TimeMs: now.UnixMilli()}}, FetchedAt: now, Source: "rest"}
+	reqs := feedCycleReqs(key, 60)
+	reqs.Funding["BTC"] = feedFundingNeed{Scalar: true, Records: true}
+
+	snap := sealCycleMarketSnapshot(context.Background(), owner, reqs, "300s/1", now)
+	payload, err := marketPayloadFor(snap, []marketPayloadFrameSpec{{Key: key, Required: 60}}, []string{"BTC"})
+	if err != nil {
+		t.Fatalf("payload: %v", err)
+	}
+	if _, hasMid := payload.Mids["BTC"]; hasMid {
+		t.Fatalf("no mid has arrived, so the payload must not invent one")
+	}
+	f, ok := payload.Funding["BTC"]
+	if !ok || !f.HasScalar || !f.HasRecords || f.Current != 0.0001 {
+		t.Fatalf("funding must travel without a mid: %+v", payload.Funding)
+	}
+
+	tests := []struct {
+		name     string
+		funding  *feedFunding
+		scalar   bool
+		records  bool
+		wantHold bool
+	}{
+		{name: "healthy scalar and records", funding: owner.funding["BTC"], scalar: true, records: true, wantHold: false},
+		{name: "strategy without funding needs never holds", funding: nil, scalar: false, records: false, wantHold: false},
+		{name: "missing funding holds", funding: nil, scalar: true, records: false, wantHold: true},
+		{name: "fetch error holds", funding: &feedFunding{Err: "boom", FetchedAt: now}, scalar: true, records: false, wantHold: true},
+		{name: "scalar need without a rate holds", funding: &feedFunding{HasRecords: true, FetchedAt: now}, scalar: true, records: false, wantHold: true},
+		{name: "records need without history holds", funding: &feedFunding{HasScalar: true, FetchedAt: now}, scalar: false, records: true, wantHold: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &marketSnapshot{funding: map[string]feedFunding{}}
+			if tc.funding != nil {
+				s.funding["BTC"] = *tc.funding
+			}
+			held, why := s.fundingHold("BTC", tc.scalar, tc.records)
+			if held != tc.wantHold || (held && why == "") {
+				t.Fatalf("hold: got %v %q want %v", held, why, tc.wantHold)
+			}
+		})
+	}
+}
+
+func TestSealedSnapshotRepairsAReconnectingKeyBeforeServingIt(t *testing.T) {
+	key := testFeedKey()
+	now := time.Unix(1_700_003_600, 0).UTC()
+	owner := feedOwnerWithHistory(t, key, 40, 60, now)
+	owner.SetConnected(true)
+	owner.SetConnected(false)
+	if r, _ := owner.readinessFor(key); r.Ready || r.Status != feedStatusRepairing {
+		t.Fatalf("a key awaiting reconnect repair must not report ready: %+v", r)
+	}
+
+	stubFeedCandleSnapshot(t, func(string, string, int64, int64) ([]hlCandleRaw, error) {
+		return nil, context.DeadlineExceeded
+	})
+	snap := sealCycleMarketSnapshot(context.Background(), owner, feedCycleReqs(key, 40), "300s/1", now)
+	if !snap.keyFailed(key) {
+		t.Fatalf("a repairing key whose recovery failed must not serve a frame with a hole in it: %+v", snap.keys[key].Readiness)
+	}
+	if owner.Metrics().RecoveryCalls != 1 {
+		t.Fatalf("the cycle must try exactly one recovery: %+v", owner.Metrics())
+	}
+
+	stubFeedCandleSnapshot(t, func(string, string, int64, int64) ([]hlCandleRaw, error) {
+		return testRawSeries(now.UnixMilli()-40*testFeedIntervalMs, 40), nil
+	})
+	snap = sealCycleMarketSnapshot(context.Background(), owner, feedCycleReqs(key, 40), "300s/2", now)
+	if snap.keyFailed(key) {
+		t.Fatalf("a successful recovery must serve the key in the same cycle: %+v", snap.keys[key].Readiness)
+	}
+	if r, _ := owner.readinessFor(key); !r.Ready || r.Status != feedStatusReady {
+		t.Fatalf("the repaired key must be ready again: %+v", r)
+	}
+
+	owner.SetConnected(true)
+	owner.SetConnected(false)
+	owner.SetConnected(true)
+	owner.repairAfterConnect(context.Background())
+	if r, _ := owner.readinessFor(key); !r.Ready {
+		t.Fatalf("a reconnect repair that succeeds serves the key with no degraded cycle: %+v", r)
+	}
+}

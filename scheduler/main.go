@@ -3390,6 +3390,9 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 				}
 				result = &res
 			}
+			if outcome.Err == "" && result != nil && result.Degraded == "" && feed.covers(*sc) {
+				feed.clearDegradedFor(notifier, sc.ID)
+			}
 			return finishHyperliquidCheck(sc, prices, posCtx, regime, notifier, logger,
 				result, outcome.Stderr, outcome.Err, outcome.Mode)
 		}
@@ -3399,8 +3402,9 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 	if feed.covers(*sc) {
 		entry, _ := feed.entryFor(sc.ID)
 		degradedReason := ""
-		if held, why := feed.feedHoldsSignal(*sc); held {
-			degradedReason = why
+		degradedKey := entry.Signal
+		if hold := feed.holdFor(*sc); hold.Held {
+			degradedReason, degradedKey = hold.Reason, hold.Key
 		} else if blob, err := feed.singleCheckPayload(*sc); err != nil {
 			degradedReason = err.Error()
 		} else {
@@ -3408,7 +3412,7 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 		}
 		if degradedReason != "" {
 			logger.Warn("Market feed: %s - this evaluation is degraded, so no candle-derived signal runs; verified protection continues (#1524)", degradedReason)
-			notifyMarketFeedDegraded(notifier, entry.Signal, degradedReason)
+			notifyMarketFeedDegraded(notifier, degradedKey, feed.snapshotID(), degradedReason)
 			price := degradedFeedPrice(feed, prices, hyperliquidSymbol(sc.Args))
 			if price <= 0 {
 				logger.Error("Market feed: no verified mark for %s while the sealed snapshot is degraded - skipping this strategy this cycle", hyperliquidSymbol(sc.Args))
@@ -3417,7 +3421,7 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 			result := degradedHyperliquidResult(*sc, hyperliquidSymbol(sc.Args), hyperliquidModeFromArgs(sc.Args), degradedReason, price)
 			return finishHyperliquidCheck(sc, prices, posCtx, regime, notifier, logger, result, "", "", scriptFailureError)
 		}
-		clearMarketFeedDegraded(notifier, entry.Signal)
+		feed.clearDegradedFor(notifier, sc.ID)
 	}
 	args := append([]string{}, sc.Args...)
 	scForCheck := strategyConfigWithOnChainProtectionFilter(*sc)
