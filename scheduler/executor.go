@@ -51,6 +51,7 @@ type HyperliquidResult struct {
 	Platform   string                 `json:"platform"`
 	Timestamp  string                 `json:"timestamp"`
 	Error      string                 `json:"error,omitempty"`
+	Degraded   string                 `json:"degraded,omitempty"`
 	Divergence DivergenceResult       `json:"-"`
 }
 
@@ -264,7 +265,14 @@ func RunOptionsCheckWithStdin(script string, args []string, positionsJSON string
 }
 
 func RunHyperliquidCheck(script string, args []string) (*HyperliquidResult, string, error) {
-	stdout, stderr, err := RunPythonScript(script, args)
+	return runHyperliquidCheckStdout(RunPythonScript(script, args))
+}
+
+func RunHyperliquidCheckWithStdin(script string, args []string, stdinData []byte) (*HyperliquidResult, string, error) {
+	return runHyperliquidCheckStdout(runPythonReadOnlyWithStdin(script, args, stdinData))
+}
+
+func runHyperliquidCheckStdout(stdout, stderr []byte, err error) (*HyperliquidResult, string, error) {
 	stderrStr := string(stderr)
 	if err != nil {
 		var result HyperliquidResult

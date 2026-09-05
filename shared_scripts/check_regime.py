@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(_REPO_ROOT, "shared_tools"))
 
+from market_payload import market_frame_rows
 from regime import (
     CLASSIFIER_ADX,
     CLASSIFIER_COMPOSITE,
@@ -97,6 +98,15 @@ def _fetch_dataframe(args):
     return _make_dataframe(rows)
 
 
+def _market_dataframe(args):
+    payload = json.loads(sys.stdin.read())
+    if not isinstance(payload, dict):
+        raise ValueError("market stdin payload must be a JSON object")
+    market = payload.get("market")
+    rows = market_frame_rows(market, args.symbol, args.timeframe, limit=args.ohlcv_limit)
+    return _make_dataframe(rows)
+
+
 def _window_adx_threshold(spec: dict) -> float:
     if spec.get("classifier") == CLASSIFIER_COMPOSITE:
         th = spec.get("thresholds") or {}
@@ -124,9 +134,6 @@ def compute_regime_bundle(df, windows_spec: dict) -> dict:
 
 
 def main() -> None:
-    if "--probe-only" in sys.argv:
-        sys.exit(0)
-
     parser = argparse.ArgumentParser(description="Compute one regime bundle (#879)")
     parser.add_argument("--platform", required=True,
                         help="data source: binanceus | hyperliquid | okx | topstep | robinhood | <options platform>")
@@ -139,15 +146,22 @@ def main() -> None:
                         help="insufficient-data floor; mirrors the check scripts' candle guard")
     parser.add_argument("--allow-spot-fallback", action="store_true", default=False,
                         help="options platforms: fall back to BinanceUS <symbol>/USDT when the adapter has no OHLCV")
+    parser.add_argument("--market-stdin", action="store_true", default=False,
+                        help="#1524: read a sealed market payload from stdin instead of fetching candles")
     parser.add_argument("--probe-only", action="store_true", default=False)
     args = parser.parse_args()
+    if args.probe_only:
+        sys.exit(0)
 
     try:
         windows_spec = parse_regime_windows_spec_json(args.regime_windows_spec_json)
         if not windows_spec:
             _emit_error(args, "empty --regime-windows-spec-json")
 
-        df = _fetch_dataframe(args)
+        if args.market_stdin:
+            df = _market_dataframe(args)
+        else:
+            df = _fetch_dataframe(args)
         if df is None or len(df) < args.min_bars:
             got = 0 if df is None else len(df)
             _emit_error(args, f"Insufficient data: {got} candles (need {args.min_bars})")

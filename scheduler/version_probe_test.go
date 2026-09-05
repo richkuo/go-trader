@@ -149,6 +149,14 @@ func TestProbeRunsExtraArgvForHL(t *testing.T) {
 				break
 			}
 		}
+		if mode == "signal" {
+			for _, a := range argv {
+				if a == marketStdinFlag {
+					mode = "market-signal"
+					break
+				}
+			}
+		}
 		calls[script] = append(calls[script], mode)
 		return nil
 	}
@@ -162,7 +170,7 @@ func TestProbeRunsExtraArgvForHL(t *testing.T) {
 		t.Fatalf("probe failed: %v", err)
 	}
 	hl := calls["shared_scripts/check_hyperliquid.py"]
-	wantHL := []string{"signal", "signal", "fetch-atr", "execute", "limit-open", "limit-status", "cancel-order", "batch-check"}
+	wantHL := []string{"signal", "signal", "fetch-atr", "execute", "limit-open", "limit-status", "cancel-order", "batch-check", "market-signal", "market-signal"}
 	if len(hl) != len(wantHL) {
 		t.Errorf("HL should be probed %v, got %v", wantHL, hl)
 	} else {

@@ -179,6 +179,13 @@ func TestParseRegimeBundleOutputErrors(t *testing.T) {
 
 func stubRegimeBundleCheck(t *testing.T, fn func(context.Context, regimeBundleRequest) (*RegimeBundle, error)) {
 	t.Helper()
+	stubRegimeBundleCheckWithMarket(t, func(ctx context.Context, req regimeBundleRequest, _ []byte) (*RegimeBundle, error) {
+		return fn(ctx, req)
+	})
+}
+
+func stubRegimeBundleCheckWithMarket(t *testing.T, fn func(context.Context, regimeBundleRequest, []byte) (*RegimeBundle, error)) {
+	t.Helper()
 	orig := runRegimeBundleCheckFn
 	runRegimeBundleCheckFn = fn
 	t.Cleanup(func() { runRegimeBundleCheckFn = orig })
@@ -197,7 +204,7 @@ func TestPopulateRegimeStoreSharesBundleAcrossPeers(t *testing.T) {
 		return &RegimeBundle{Key: req.Key, Payload: payload, RawRegimeJSON: `"trending_up"`, At: time.Now().UTC()}, nil
 	})
 	store := &RegimeStore{}
-	populateRegimeStore(store, due, rc, nil)
+	populateRegimeStore(store, due, rc, nil, nil)
 	if calls != 1 {
 		t.Fatalf("two peers sharing a signature must compute ONCE, got %d calls", calls)
 	}
@@ -215,7 +222,7 @@ func TestPopulateRegimeStoreFailureYieldsEmptyPayload(t *testing.T) {
 		return nil, fmt.Errorf("regime bundle %s: boom", req.Key)
 	})
 	store := &RegimeStore{}
-	populateRegimeStore(store, []StrategyConfig{sc}, rc, nil)
+	populateRegimeStore(store, []StrategyConfig{sc}, rc, nil, nil)
 
 	if payload := store.PayloadForStrategy(sc, rc); !payload.IsEmpty() {
 		t.Errorf("failed bundle must yield an empty payload, got %+v", payload)
@@ -248,12 +255,12 @@ func TestPopulateRegimeStoreClearsPriorCycle(t *testing.T) {
 		return &RegimeBundle{Key: req.Key, Payload: RegimePayload{Legacy: "trending_up"}, RawRegimeJSON: `"trending_up"`, At: time.Now().UTC()}, nil
 	})
 	store := &RegimeStore{}
-	populateRegimeStore(store, []StrategyConfig{sc}, rc, nil)
+	populateRegimeStore(store, []StrategyConfig{sc}, rc, nil, nil)
 	if store.PayloadForStrategy(sc, rc).IsEmpty() {
 		t.Fatal("first cycle should have a payload")
 	}
 	ok = false
-	populateRegimeStore(store, []StrategyConfig{sc}, rc, nil)
+	populateRegimeStore(store, []StrategyConfig{sc}, rc, nil, nil)
 	if !store.PayloadForStrategy(sc, rc).IsEmpty() {
 		t.Error("failed cycle must not serve the previous cycle's label")
 	}
@@ -313,7 +320,7 @@ func TestRegimeStorePhaseBudgetSealsStragglers(t *testing.T) {
 	})
 
 	store := &RegimeStore{}
-	wait := startRegimeStorePopulation(store, []StrategyConfig{fast, slow}, rc, nil)
+	wait := startRegimeStorePopulation(store, []StrategyConfig{fast, slow}, rc, nil, nil)
 	start := time.Now()
 	wait()
 	if elapsed := time.Since(start); elapsed > 2*time.Second {

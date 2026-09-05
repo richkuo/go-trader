@@ -138,6 +138,33 @@ func validRegimeTimeframes() []string {
 	return out
 }
 
+const (
+	marketFeedREST      = "rest"
+	marketFeedWebsocket = "websocket"
+)
+
+func (c *Config) marketFeedMode() string {
+	if c == nil {
+		return marketFeedREST
+	}
+	mode := strings.TrimSpace(c.MarketFeed)
+	if mode == "" {
+		return marketFeedREST
+	}
+	return mode
+}
+
+func (c *Config) marketFeedWebsocketEnabled() bool {
+	return c.marketFeedMode() == marketFeedWebsocket
+}
+
+func marketFeedStartupLine(cfg *Config) string {
+	if cfg.marketFeedWebsocketEnabled() {
+		return "Market feed: websocket (Hyperliquid perps + manual)"
+	}
+	return "Market feed: rest (legacy polling)"
+}
+
 type CorrelationConfig struct {
 	Enabled             bool    `json:"enabled"`
 	MaxConcentrationPct float64 `json:"max_concentration_pct"`
@@ -205,6 +232,7 @@ type Config struct {
 	TradingViewExport        TradingViewExportConfig    `json:"tradingview_export,omitempty"`
 	UserDefaults             *UserDefaultsConfig        `json:"user_defaults,omitempty"`
 	Tuning                   *TuningConfig              `json:"tuning,omitempty"`
+	MarketFeed               string                     `json:"market_feed,omitempty"`
 
 	migrationBaseVersion    int
 	migrationBaseVersionSet bool
@@ -1156,6 +1184,10 @@ func loadConfig(path string, skipLiveCredentialChecks bool) (*Config, error) {
 	applyUserCloseDefaults(&cfg)
 
 	applyUserCloseDefaultRegimeATRs(&cfg)
+
+	if err := validateMarketFeedConfig(&cfg); err != nil {
+		return nil, err
+	}
 
 	if err := validateConfig(&cfg, skipLiveCredentialChecks); err != nil {
 		return nil, err

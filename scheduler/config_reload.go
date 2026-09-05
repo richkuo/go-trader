@@ -434,6 +434,9 @@ func validateHotReloadCompatible(cfg, next *Config) error {
 		errs = append(errs, fmt.Sprintf("paper_db_file changed (%q -> %q; restart required)", cfg.PaperDBFile, next.PaperDBFile))
 	}
 	errs = append(errs, storageIdentityReloadErrors(cfg, next)...)
+	if cfg.marketFeedMode() != next.marketFeedMode() {
+		errs = append(errs, fmt.Sprintf("market_feed changed (%q -> %q; restart required)", cfg.marketFeedMode(), next.marketFeedMode()))
+	}
 	if cfg.ReplayLogPath != next.ReplayLogPath {
 		errs = append(errs, fmt.Sprintf("replay_log_path changed (%q -> %q; restart required)", cfg.ReplayLogPath, next.ReplayLogPath))
 	}

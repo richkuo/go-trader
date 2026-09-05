@@ -92,6 +92,14 @@ func TestRunProbeHappyPath(t *testing.T) {
 				break
 			}
 		}
+		if mode == "signal" {
+			for _, a := range argv {
+				if a == marketStdinFlag {
+					mode = "market-signal"
+					break
+				}
+			}
+		}
 		probed = append(probed, probeCall{script, mode})
 		return nil
 	}
@@ -136,14 +144,16 @@ func TestRunProbeHappyPath(t *testing.T) {
 	if rc != 0 {
 		t.Fatalf("happy-path probe should return 0, got %d", rc)
 	}
-	if len(probed) != 14 {
-		t.Fatalf("expected 14 probe invocations, got %d: %v", len(probed), probed)
+	if len(probed) != 17 {
+		t.Fatalf("expected 17 probe invocations, got %d: %v", len(probed), probed)
 	}
-	var hlSignal, hlFetchATR, hlExecute, hlLimitOpen, hlLimitStatus, hlCancelOrder, hlBatchCheck, spotSignal, candleHelper, schemaHelper, simulateHelper, regimeHelper int
+	var hlSignal, hlMarketSignal, hlFetchATR, hlExecute, hlLimitOpen, hlLimitStatus, hlCancelOrder, hlBatchCheck, spotSignal, candleHelper, schemaHelper, simulateHelper, regimeHelper, regimeMarketHelper int
 	for _, p := range probed {
 		switch {
 		case p.script == "shared_scripts/check_hyperliquid.py" && p.mode == "signal":
 			hlSignal++
+		case p.script == "shared_scripts/check_hyperliquid.py" && p.mode == "market-signal":
+			hlMarketSignal++
 		case p.script == "shared_scripts/check_hyperliquid.py" && p.mode == "fetch-atr":
 			hlFetchATR++
 		case p.script == "shared_scripts/check_hyperliquid.py" && p.mode == "execute":
@@ -166,11 +176,13 @@ func TestRunProbeHappyPath(t *testing.T) {
 			simulateHelper++
 		case p.script == "shared_scripts/check_regime.py" && p.mode == "signal":
 			regimeHelper++
+		case p.script == "shared_scripts/check_regime.py" && p.mode == "market-signal":
+			regimeMarketHelper++
 		}
 	}
-	if hlSignal != 2 || hlFetchATR != 1 || hlExecute != 1 || hlLimitOpen != 1 || hlLimitStatus != 1 || hlCancelOrder != 1 || hlBatchCheck != 1 || spotSignal != 2 || candleHelper != 1 || schemaHelper != 1 || simulateHelper != 1 || regimeHelper != 1 {
-		t.Fatalf("expected hl-signal=2, hl-fetch-atr=1, hl-execute=1, hl-limit-open=1, hl-limit-status=1, hl-cancel-order=1, hl-batch-check=1, spot-signal=2, candle-helper=1, schema=1, simulate=1, regime=1; got %d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d (probed=%v)",
-			hlSignal, hlFetchATR, hlExecute, hlLimitOpen, hlLimitStatus, hlCancelOrder, hlBatchCheck, spotSignal, candleHelper, schemaHelper, simulateHelper, regimeHelper, probed)
+	if hlSignal != 2 || hlMarketSignal != 2 || hlFetchATR != 1 || hlExecute != 1 || hlLimitOpen != 1 || hlLimitStatus != 1 || hlCancelOrder != 1 || hlBatchCheck != 1 || spotSignal != 2 || candleHelper != 1 || schemaHelper != 1 || simulateHelper != 1 || regimeHelper != 1 || regimeMarketHelper != 1 {
+		t.Fatalf("expected hl-signal=2, hl-market-signal=2, hl-fetch-atr=1, hl-execute=1, hl-limit-open=1, hl-limit-status=1, hl-cancel-order=1, hl-batch-check=1, spot-signal=2, candle-helper=1, schema=1, simulate=1, regime=1, regime-market=1; got %d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d (probed=%v)",
+			hlSignal, hlMarketSignal, hlFetchATR, hlExecute, hlLimitOpen, hlLimitStatus, hlCancelOrder, hlBatchCheck, spotSignal, candleHelper, schemaHelper, simulateHelper, regimeHelper, regimeMarketHelper, probed)
 	}
 }
 

@@ -608,6 +608,34 @@ func main() {
 	deribitPricer := NewDeribitPricer()
 	fmt.Println("Option pricers ready (deribit: live API, ibkr: Black-Scholes)")
 
+	websocketFeed := cfg.marketFeedWebsocketEnabled()
+	fmt.Println(marketFeedStartupLine(cfg))
+	var feedOwner *marketFeedOwner
+	var feedReq feedRequirements
+	lastEvaluated := make(map[string]feedEvaluationMark)
+	if websocketFeed {
+		derived, ferr := deriveFeedRequirements(cfg)
+		if ferr != nil {
+			fmt.Fprintf(os.Stderr, "[feed] CRITICAL: %v\n", ferr)
+			sendStartupRefusalDM(notifier, "Market feed", ferr.Error())
+			cleanupNotifier()
+			os.Exit(1)
+		}
+		feedReq = derived
+		feedOwner = newMarketFeedOwner(nil, func(format string, a ...any) { fmt.Printf(format+"\n", a...) })
+		globalMarketFeedStatus.setOwner(feedOwner)
+		ready := feedOwner.ApplyGeneration(shutdownReadOnlyCtx, feedReq)
+		go feedOwner.Run(shutdownReadOnlyCtx)
+		select {
+		case <-ready:
+		case <-time.After(feedStartupBudget):
+			fmt.Printf("[feed] startup budget %s elapsed before every key was ready; unready keys hold entries until they recover\n", feedStartupBudget)
+		}
+		for _, r := range feedOwner.Readiness() {
+			fmt.Printf("[feed] %s: %s (%d/%d bars)\n", r.Key, r.Status, r.Bars, r.Required)
+		}
+	}
+
 	lastRun := make(map[string]time.Time)
 	var lastLiquidationAudit time.Time
 	offCycleAuditSaveDirty := false
@@ -637,6 +665,17 @@ func main() {
 		mu.Unlock()
 
 		diagWorker.UpdateStrategies(cfg.Strategies)
+
+		if websocketFeed && feedOwner != nil {
+			nextReq, reqErr := deriveFeedRequirements(cfg)
+			if reqErr != nil {
+				fmt.Fprintf(os.Stderr, "[reload] ERROR: market feed requirements rejected; keeping the previous generation: %v\n", reqErr)
+			} else {
+				feedReq = nextReq
+				<-feedOwner.ApplyGeneration(shutdownReadOnlyCtx, nextReq)
+				fmt.Printf("[reload] market feed generation %d published (%d keys)\n", feedOwner.Generation(), len(nextReq.Order))
+			}
+		}
 
 		setDirectionalCertStore(LoadDirectionalCertSetFailClosed(directionalCertPath(), func(f string, a ...interface{}) {
 			fmt.Fprintf(os.Stderr, "[reload] "+f+"\n", a...)
@@ -716,17 +755,12 @@ func main() {
 		intervals := effectiveStrategyIntervals(cfg.Strategies, state.Strategies, cfg.IntervalSeconds, drawdownWarnThresholdPct)
 		mu.RUnlock()
 
-		dueStrategies := make([]StrategyConfig, 0)
-		for _, sc := range cfg.Strategies {
-			if shouldSkipZeroCapital(sc) {
-				fmt.Printf("[ERROR] %s: capital_pct set but capital resolved to $0 — skipping\n", sc.ID)
-				continue
-			}
-			interval := intervals[sc.ID]
-			last, exists := lastRun[sc.ID]
-			if !exists || cycleStart.Sub(last) >= time.Duration(interval)*time.Second {
-				dueStrategies = append(dueStrategies, sc)
-			}
+		dueStrategies, evaluationMarks, zeroCapitalSkipped := computeDueSet(cycleStart, cfg, intervals, lastRun, lastEvaluated, websocketFeed)
+		for _, id := range zeroCapitalSkipped {
+			fmt.Printf("[ERROR] %s: capital_pct set but capital resolved to $0 — skipping\n", id)
+		}
+		for _, line := range feedCycleEvaluationSummary(evaluationMarks) {
+			fmt.Println(line)
 		}
 
 		dueStrategies = orderReplaySourcesBeforeMirrors(dueStrategies)
@@ -746,7 +780,7 @@ func main() {
 					offCycleAuditSaveDirty = flushOffCycleLiquidationAuditState(state, cfg, store, &mu, mutations, offCycleAuditSaveDirty, false)
 					continue
 				}
-				delay := schedulerDelay(cfg.Strategies, intervals, lastRun, cfg.IntervalSeconds, time.Now(), tickSeconds)
+				delay := cycleSchedulerDelay(cfg, intervals, lastRun, lastEvaluated, time.Now(), tickSeconds, websocketFeed)
 				if wait := time.Until(lastLiquidationAudit.Add(time.Duration(audSec) * time.Second)); wait < delay {
 					delay = wait
 				}
@@ -768,7 +802,7 @@ func main() {
 					return
 				}
 			}
-			delay := schedulerDelay(cfg.Strategies, intervals, lastRun, cfg.IntervalSeconds, time.Now(), tickSeconds)
+			delay := cycleSchedulerDelay(cfg, intervals, lastRun, lastEvaluated, time.Now(), tickSeconds, websocketFeed)
 			timer := time.NewTimer(delay)
 			select {
 			case <-timer.C:
@@ -793,6 +827,19 @@ func main() {
 		futuresSymbols := collectFuturesMarkSymbols(cfg.Strategies)
 		hlPerpsCoins, okxPerpsCoins := collectPerpsMarkSymbols(cfg.Strategies)
 
+		feedCtx := &marketFeedContext{Enabled: websocketFeed, Requirements: feedReq, Interval: cfg.IntervalSeconds}
+		var cycleFeedReqs cycleMarketRequirements
+		if websocketFeed && feedOwner != nil {
+			cycleFeedReqs = cycleRequirementsForDue(dueStrategies, feedReq)
+			evalID := cycleEvaluationID(evaluationMarks, cycle)
+			feedCtx.Snapshot = sealCycleMarketSnapshot(shutdownReadOnlyCtx, feedOwner, cycleFeedReqs, evalID, time.Now().UTC())
+			globalMarketFeedStatus.setSnapshotID(evalID)
+			fmt.Println(marketSnapshotLogLine(feedCtx.Snapshot, cycleFeedReqs))
+			for _, line := range formatFeedAlerts(feedOwner.DrainAlerts()) {
+				fmt.Println(line)
+			}
+		}
+
 		prices := make(map[string]float64)
 		if len(symbols) > 0 {
 			p, err := FetchPrices(symbols)
@@ -812,7 +859,29 @@ func main() {
 				continue
 			}
 		}
-		if len(hlPerpsCoins) > 0 {
+		if len(hlPerpsCoins) > 0 && feedCtx.active() {
+			feedMarks := feedCtx.Snapshot.freshMids()
+			mergePerpsMarks(prices, feedMarks)
+			missing := make([]string, 0, len(hlPerpsCoins))
+			for _, coin := range hlPerpsCoins {
+				if _, ok := prices[coin]; !ok {
+					missing = append(missing, coin)
+				}
+			}
+			if len(missing) > 0 {
+				restMarks, err := fetchHyperliquidMids(missing)
+				if err != nil {
+					fmt.Printf("[WARN] HL perps marks REST fallback failed for %v: %v — portfolio notional will use entry cost for those coins\n", missing, err)
+				} else {
+					mergePerpsMarks(prices, restMarks)
+				}
+				for _, coin := range missing {
+					if _, ok := prices[coin]; !ok {
+						fmt.Printf("[WARN] No HL perps mark for %s — PortfolioNotional/Value will fall back to entry cost\n", coin)
+					}
+				}
+			}
+		} else if len(hlPerpsCoins) > 0 {
 			hlMarks, err := fetchHyperliquidMids(hlPerpsCoins)
 			if err != nil {
 				fmt.Printf("[WARN] HL perps marks fetch failed for %v: %v — portfolio notional will use entry cost for open HL perps positions\n", hlPerpsCoins, err)
@@ -883,7 +952,7 @@ func main() {
 			totalPV, _ = computeTotalPortfolioValue(cfg.Strategies, state, prices, nil, sharedWallets)
 			mu.RUnlock()
 		} else {
-			regimeStoreReady := startRegimeStorePopulation(globalRegimeStore, dueStrategies, cfg.Regime, notifier)
+			regimeStoreReady := startRegimeStorePopulation(globalRegimeStore, dueStrategies, cfg.Regime, notifier, feedCtx)
 			cycleScopes := activeScopes(cfg.Strategies)
 			scopeRisk := make(map[PortfolioScope]*scopeCycleRisk, len(cycleScopes))
 			for _, scope := range cycleScopes {
@@ -1573,7 +1642,7 @@ func main() {
 			dueUnlatched := dueStrategiesPersistable(store, dueStrategiesNotLatched(dueStrategies, scopeRisk))
 			hlBatchResults := runHyperliquidBatchPrePass(dueUnlatched, state, &mu, cfg, prices, notifier, func(format string, a ...any) {
 				fmt.Printf(format+"\n", a...)
-			})
+			}, feedCtx)
 			for _, sc := range dueUnlatched {
 				stratState := state.Strategies[sc.ID]
 				if stratState == nil {
@@ -1787,7 +1856,7 @@ func main() {
 						logger.Info("Circuit breaker latched — suppressing new entries but continuing trailing-SL/TP management for open position (#1046)")
 					} else {
 						logger.Close()
-						lastRun[sc.ID] = time.Now()
+						markStrategyEvaluated(sc, websocketFeed, evaluationMarks, lastRun, lastEvaluated, time.Now())
 						continue
 					}
 				}
@@ -1795,7 +1864,7 @@ func main() {
 				if notionalCapSkipsStrategyCycle(sr.NotionalBlocked) {
 					logger.Warn("Notional cap exceeded — skipping strategy cycle")
 					logger.Close()
-					lastRun[sc.ID] = time.Now()
+					markStrategyEvaluated(sc, websocketFeed, evaluationMarks, lastRun, lastEvaluated, time.Now())
 					continue
 				}
 
@@ -2079,7 +2148,7 @@ func main() {
 								}
 							}
 						}
-					} else if result, signalStr, price, ok := runHyperliquidCheck(&sc, prices, hlPosCtx, cfg.Regime, resolveATRMethod(sc, cfg), notifier, logger, hlBatchResults); ok {
+					} else if result, signalStr, price, ok := runHyperliquidCheck(&sc, prices, hlPosCtx, cfg.Regime, resolveATRMethod(sc, cfg), notifier, logger, hlBatchResults, feedCtx); ok {
 						prices[result.Symbol] = price
 						if cbManageOnly {
 							result.Signal = 0
@@ -2117,6 +2186,14 @@ func main() {
 						}
 						if replayMirrorPaperActive(sc) && pausedBlocksSignal(result.Signal, result.CloseFraction, hlPosQty, hlPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)) {
 							logger.Info("Replay mirror: %s signal suppressed — entries mirror the live decision log (#1431)", signalStr)
+							result.Signal = 0
+						}
+						if feedHeld, feedWhy := feedCtx.feedHoldsSignal(sc); feedHeld && pausedBlocksSignal(result.Signal, result.CloseFraction, hlPosQty, hlPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)) {
+							logger.Warn("Market feed: %s signal suppressed (%s) — closes, stops, ratchet and protection continue (#1524)", signalStr, feedWhy)
+							result.Signal = 0
+						}
+						if tooOld, ageWhy := feedCtx.decisionTooOld(time.Now(), intervals[sc.ID]); tooOld && pausedBlocksSignal(result.Signal, result.CloseFraction, hlPosQty, hlPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)) {
+							logger.Warn("Market feed: %s signal suppressed (%s) — closes, stops, ratchet and protection continue (#1524)", signalStr, ageWhy)
 							result.Signal = 0
 						}
 						mu.Lock()
@@ -2476,7 +2553,10 @@ func main() {
 							detail = fmt.Sprintf("[%s] LIVE PROTECTION SYNC SL %s @ $%.2f", sc.ID, sc.Symbol, fillPx)
 						}
 					}
-					closeFraction, _, manualOK := runManualCloseEval(sc, stratState, cfg, notifier, logger)
+					if feedHeld, feedWhy := feedCtx.feedHoldsSignal(sc); feedHeld {
+						logger.Warn("Market feed: %s — the manual close evaluation is degraded, so no candle-derived close runs; stop-loss, ratchet and protection continue (#1524)", feedWhy)
+					}
+					closeFraction, _, manualOK := runManualCloseEval(sc, stratState, cfg, notifier, logger, feedCtx)
 					manualRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
 					if manualOK {
 						mu.Lock()
@@ -2677,7 +2757,7 @@ func main() {
 				logger.Info("%s", statusLine)
 
 				logger.Close()
-				lastRun[sc.ID] = time.Now()
+				markStrategyEvaluated(sc, websocketFeed, evaluationMarks, lastRun, lastEvaluated, time.Now())
 			}
 		}
 
@@ -2884,7 +2964,7 @@ func main() {
 		mu.RLock()
 		endIntervals := effectiveStrategyIntervals(cfg.Strategies, state.Strategies, cfg.IntervalSeconds, drawdownWarnThresholdPct)
 		mu.RUnlock()
-		delay := schedulerDelay(cfg.Strategies, endIntervals, lastRun, cfg.IntervalSeconds, time.Now(), tickSeconds)
+		delay := cycleSchedulerDelay(cfg, endIntervals, lastRun, lastEvaluated, time.Now(), tickSeconds, websocketFeed)
 		timer := time.NewTimer(delay)
 		select {
 		case <-timer.C:
@@ -3292,7 +3372,11 @@ func isHLLiveReconcilable(sc StrategyConfig) bool {
 		hyperliquidIsLive(sc.Args)
 }
 
-func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, atrMethod string, notifier *MultiNotifier, logger *StrategyLogger, batch *hlBatchCycleResults) (*HyperliquidResult, string, float64, bool) {
+var runHyperliquidCheckFn = RunHyperliquidCheck
+
+var runHyperliquidCheckWithStdinFn = RunHyperliquidCheckWithStdin
+
+func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, atrMethod string, notifier *MultiNotifier, logger *StrategyLogger, batch *hlBatchCycleResults, feed *marketFeedContext) (*HyperliquidResult, string, float64, bool) {
 	if outcome, ok := batch.lookup(sc.ID); ok {
 		fp, fpErr := hyperliquidBatchSlotFingerprint(*sc, posCtx, regime)
 		if fpErr == nil && fp == outcome.Fingerprint {
@@ -3310,6 +3394,30 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 				result, outcome.Stderr, outcome.Err, outcome.Mode)
 		}
 		logger.Warn("Batched check inputs changed since the pre-pass snapshot; running this strategy's own check (#1442)")
+	}
+	var marketStdin []byte
+	if feed.covers(*sc) {
+		entry, _ := feed.entryFor(sc.ID)
+		degradedReason := ""
+		if held, why := feed.feedHoldsSignal(*sc); held {
+			degradedReason = why
+		} else if blob, err := feed.singleCheckPayload(*sc); err != nil {
+			degradedReason = err.Error()
+		} else {
+			marketStdin = blob
+		}
+		if degradedReason != "" {
+			logger.Warn("Market feed: %s - this evaluation is degraded, so no candle-derived signal runs; verified protection continues (#1524)", degradedReason)
+			notifyMarketFeedDegraded(notifier, entry.Signal, degradedReason)
+			price := degradedFeedPrice(feed, prices, hyperliquidSymbol(sc.Args))
+			if price <= 0 {
+				logger.Error("Market feed: no verified mark for %s while the sealed snapshot is degraded - skipping this strategy this cycle", hyperliquidSymbol(sc.Args))
+				return nil, "", 0, false
+			}
+			result := degradedHyperliquidResult(*sc, hyperliquidSymbol(sc.Args), hyperliquidModeFromArgs(sc.Args), degradedReason, price)
+			return finishHyperliquidCheck(sc, prices, posCtx, regime, notifier, logger, result, "", "", scriptFailureError)
+		}
+		clearMarketFeedDegraded(notifier, entry.Signal)
 	}
 	args := append([]string{}, sc.Args...)
 	scForCheck := strategyConfigWithOnChainProtectionFilter(*sc)
@@ -3331,9 +3439,19 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 			args = append(args, fmt.Sprintf("--mark-price=%g", mid))
 		}
 	}
+	if marketStdin != nil {
+		args = append(args, marketStdinFlag)
+	}
 	logger.Info("Running: python3 %s %v", sc.Script, args)
 
-	result, stderr, err := RunHyperliquidCheck(sc.Script, args)
+	var result *HyperliquidResult
+	var stderr string
+	var err error
+	if marketStdin != nil {
+		result, stderr, err = runHyperliquidCheckWithStdinFn(sc.Script, args, marketStdin)
+	} else {
+		result, stderr, err = runHyperliquidCheckFn(sc.Script, args)
+	}
 	errMsg, mode := "", scriptFailureCrash
 	switch {
 	case err != nil:

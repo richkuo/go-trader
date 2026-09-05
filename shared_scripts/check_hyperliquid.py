@@ -34,6 +34,14 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools')
 
 from atr import ensure_atr_indicator, latest_atr
 from hl_user_fills import apply_user_fills_lookup
+from market_payload import (
+    MarketPayloadError as MarketPayloadBaseError,
+    market_frame_rows,
+    market_funding_records,
+    market_funding_scalar,
+    market_mid,
+    validate_market_payload,
+)
 from regime import latest_regime, parse_regime_windows_spec_json, prepare_check_regime
 
 
@@ -68,8 +76,16 @@ def _position_ctx_from_args(args):
 
 BATCH_PROTOCOL_VERSION = 1
 
+BATCH_PROTOCOL_VERSIONS = frozenset({1, 2})
+
+BATCH_PROTOCOL_VERSION_MARKET = 2
+
 
 class SharedSignalStateError(Exception):
+    pass
+
+
+class MarketPayloadError(MarketPayloadBaseError, SharedSignalStateError):
     pass
 
 
@@ -153,7 +169,16 @@ def build_shared_signal_state(symbol, timeframe, *, adapter=None, df=None,
                               ohlcv_limit=200, atr_method="simple", mark_price=0.0,
                               regime_enabled=False, regime_windows_spec=None,
                               regime_payload_json=None, mode="paper",
-                              regime_period=14, regime_adx_threshold=20.0):
+                              regime_period=14, regime_adx_threshold=20.0,
+                              market=None):
+    if market is not None:
+        validate_market_payload(market, MarketPayloadError)
+        rows = market_frame_rows(market, symbol, timeframe, MarketPayloadError, limit=ohlcv_limit)
+        if len(rows) < 30:
+            raise InsufficientCandlesError(len(rows))
+        df = _make_dataframe(rows)
+        adapter = None
+
     if df is None:
         if adapter is None:
             raise SharedSignalStateError("no adapter and no prebuilt DataFrame")
@@ -166,6 +191,10 @@ def build_shared_signal_state(symbol, timeframe, *, adapter=None, df=None,
     price_override = 0.0
     if mark_price and mark_price > 0:
         price_override = float(mark_price)
+    elif market is not None:
+        payload_mid = market_mid(market, symbol, MarketPayloadError)
+        if payload_mid:
+            price_override = float(payload_mid)
     elif adapter is not None:
         try:
             mid = adapter.get_spot_price(symbol)
@@ -176,6 +205,7 @@ def build_shared_signal_state(symbol, timeframe, *, adapter=None, df=None,
 
     return {
         "adapter": adapter,
+        "market": market,
         "symbol": symbol,
         "timeframe": timeframe,
         "mode": mode,
@@ -197,6 +227,11 @@ def build_shared_signal_state(symbol, timeframe, *, adapter=None, df=None,
 def _shared_funding_scalar(shared, symbol):
     if shared.get("funding_scalar") is not None:
         return shared["funding_scalar"]
+    market = shared.get("market")
+    if market is not None:
+        params = market_funding_scalar(market, symbol, MarketPayloadError)
+        shared["funding_scalar"] = params
+        return params
     adapter = shared.get("adapter")
     params = {}
     if adapter is not None:
@@ -218,6 +253,12 @@ def _shared_funding_scalar(shared, symbol):
 def _shared_funding_records(shared, symbol):
     if shared.get("funding_records") is not None:
         return shared["funding_records"]
+    market = shared.get("market")
+    if market is not None:
+        start_ms = int(shared["df"]["timestamp"].iloc[0])
+        records = market_funding_records(market, symbol, start_ms, MarketPayloadError)
+        shared["funding_records"] = records
+        return records
     adapter = shared.get("adapter")
     records = None
     if adapter is not None:
@@ -236,9 +277,14 @@ def _shared_htf_frame(shared, sym, tf, limit):
     cache = shared["htf_cache"]
     key = (sym, tf, limit)
     if key not in cache:
-        adapter = shared.get("adapter")
-        candles = adapter.get_ohlcv(sym, interval=tf, limit=limit) if adapter is not None else None
-        cache[key] = _make_dataframe(candles) if candles else None
+        market = shared.get("market")
+        if market is not None:
+            rows = market_frame_rows(market, sym, tf, MarketPayloadError, limit=limit)
+            cache[key] = _make_dataframe(rows)
+        else:
+            adapter = shared.get("adapter")
+            candles = adapter.get_ohlcv(sym, interval=tf, limit=limit) if adapter is not None else None
+            cache[key] = _make_dataframe(candles) if candles else None
     frame = cache[key]
     return frame.copy() if frame is not None else None
 
@@ -389,14 +435,17 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                      regime_payload_json=None,
                      close_params_by_name=None,
                      atr_method="simple",
-                     mark_price=0.0):
+                     mark_price=0.0,
+                     market=None):
     try:
-        from adapter import HyperliquidExchangeAdapter
-
         deps = _signal_check_deps()
         _validate_slot_strategy_names(deps, strategy_name, open_strategy, close_strategies)
 
-        adapter = HyperliquidExchangeAdapter()
+        adapter = None
+        if market is None:
+            from adapter import HyperliquidExchangeAdapter
+
+            adapter = HyperliquidExchangeAdapter()
 
         shared = build_shared_signal_state(
             symbol, timeframe,
@@ -408,6 +457,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             regime_windows_spec=regime_windows_spec,
             regime_payload_json=regime_payload_json,
             mode=mode,
+            market=market,
         )
         output = evaluate_signal_slot(shared, {
             "id": strategy_name,
@@ -457,12 +507,37 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
 
 
 def parse_batch_slots(raw_stdin):
+    slots, _market = parse_batch_request(raw_stdin)
+    return slots
+
+
+def parse_market_stdin(raw_stdin):
+    payload = json.loads(raw_stdin)
+    if not isinstance(payload, dict):
+        raise ValueError("market stdin payload must be a JSON object")
+    version = int(payload.get("v", BATCH_PROTOCOL_VERSION_MARKET))
+    if version != BATCH_PROTOCOL_VERSION_MARKET:
+        raise ValueError(f"--market-stdin requires envelope version {BATCH_PROTOCOL_VERSION_MARKET}, got {version}")
+    market = payload.get("market")
+    validate_market_payload(market, MarketPayloadError)
+    return market
+
+
+def parse_batch_request(raw_stdin):
     payload = json.loads(raw_stdin)
     if not isinstance(payload, dict):
         raise ValueError("batch payload must be a JSON object")
-    version = payload.get("v", BATCH_PROTOCOL_VERSION)
-    if int(version) != BATCH_PROTOCOL_VERSION:
+    version = int(payload.get("v", BATCH_PROTOCOL_VERSION))
+    if version not in BATCH_PROTOCOL_VERSIONS:
         raise ValueError(f"unsupported batch protocol version {version}")
+    market = payload.get("market")
+    if version >= BATCH_PROTOCOL_VERSION_MARKET:
+        if not isinstance(market, dict):
+            raise ValueError(
+                f"batch protocol version {version} requires a 'market' object")
+    elif market is not None:
+        raise ValueError(
+            f"batch protocol version {version} must not carry a 'market' object")
     slots = payload.get("slots")
     if not isinstance(slots, list) or not slots:
         raise ValueError("batch payload must carry a non-empty 'slots' array")
@@ -490,7 +565,7 @@ def parse_batch_slots(raw_stdin):
         if not str(slot.get("strategy") or "").strip():
             raise ValueError(f"slot {slot_id!r} is missing 'strategy'")
         out.append(slot)
-    return out
+    return out, market
 
 
 def _batch_slot_error(slot, symbol, timeframe, message):
@@ -512,7 +587,7 @@ def _batch_slot_error(slot, symbol, timeframe, message):
 
 def run_batch_signal_check(symbol, timeframe, slots, *, ohlcv_limit=200, atr_method="simple",
                            mark_price=0.0, regime_enabled=False, regime_windows_spec=None,
-                           regime_payload_json=None, adapter=None, df=None):
+                           regime_payload_json=None, adapter=None, df=None, market=None):
     envelope = {
         "platform": "hyperliquid",
         "symbol": symbol,
@@ -524,7 +599,10 @@ def run_batch_signal_check(symbol, timeframe, slots, *, ohlcv_limit=200, atr_met
     }
     try:
         deps = _signal_check_deps()
-        if adapter is None and df is None:
+        if market is not None:
+            adapter = None
+            df = None
+        elif adapter is None and df is None:
             from adapter import HyperliquidExchangeAdapter
             adapter = HyperliquidExchangeAdapter()
         shared = build_shared_signal_state(
@@ -537,6 +615,7 @@ def run_batch_signal_check(symbol, timeframe, slots, *, ohlcv_limit=200, atr_met
             regime_enabled=regime_enabled,
             regime_windows_spec=regime_windows_spec,
             regime_payload_json=regime_payload_json,
+            market=market,
         )
     except Exception as e:
         traceback.print_exc(file=sys.stderr)
@@ -1652,6 +1731,8 @@ def main():
         parser.add_argument("--regime-enabled", action="store_true", default=False)
         parser.add_argument("--regime-windows-spec-json", default="")
         parser.add_argument("--regime-payload-json", default=None)
+        parser.add_argument("--market-stdin", action="store_true", default=False,
+            help="#1524: the stdin envelope carries a sealed market payload; never fetch candles here.")
         parser.add_argument("--probe-only", action="store_true",
             help="Startup compatibility probe (#1442): validate argv shape and exit 0 before reading stdin.")
         args = parser.parse_args()
@@ -1659,8 +1740,11 @@ def main():
             sys.exit(0)
         symbol = args.symbol
         timeframe = args.timeframe
+        market = None
         try:
-            slots = parse_batch_slots(sys.stdin.read())
+            slots, market = parse_batch_request(sys.stdin.read())
+            if args.market_stdin and market is None:
+                raise ValueError("--market-stdin was set but the envelope carries no 'market' object")
         except Exception as e:
             traceback.print_exc(file=sys.stderr)
             print(json.dumps({
@@ -1682,6 +1766,7 @@ def main():
             regime_enabled=args.regime_enabled,
             regime_windows_spec=regime_windows_spec,
             regime_payload_json=args.regime_payload_json,
+            market=market,
         )
         print(json.dumps(envelope, cls=SafeEncoder))
         if exit_code:
@@ -1929,11 +2014,33 @@ def main():
         parser.add_argument("--position-regime", default="")
         parser.add_argument("--mark-price", type=float, default=0.0,
             help="Optional mid from Go's fetchHyperliquidMids cycle; when >0 skips adapter.get_spot_price's duplicate /info allMids call (#768).")
+        parser.add_argument("--market-stdin", action="store_true", default=False,
+            help="#1524: read the sealed market payload from stdin; never fetch candles, higher-timeframe frames or funding here.")
         parser.add_argument("--probe-only", action="store_true",
             help="Startup compatibility probe (#645): validate argv shape and exit 0.")
         args = parser.parse_args()
         if args.probe_only:
             sys.exit(0)
+        market = None
+        if args.market_stdin:
+            try:
+                market = parse_market_stdin(sys.stdin.read())
+            except Exception as e:
+                traceback.print_exc(file=sys.stderr)
+                print(json.dumps({
+                    "strategy": args.strategy,
+                    "symbol": args.symbol,
+                    "timeframe": args.timeframe,
+                    "signal": 0,
+                    "price": 0,
+                    "indicators": {},
+                    "regime": None,
+                    "mode": args.mode,
+                    "platform": "hyperliquid",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "error": f"invalid market payload: {e}",
+                }, cls=SafeEncoder))
+                sys.exit(1)
         from strategy_composition import parse_strategy_refs_arg
         refs = parse_strategy_refs_arg(args.strategy_refs)
         open_strategy_name = refs["open_name"] if refs else args.open_strategy
@@ -1955,6 +2062,7 @@ def main():
             close_params_by_name=close_params_by_name,
             atr_method=args.atr_method,
             mark_price=args.mark_price,
+            market=market,
         )
 
 

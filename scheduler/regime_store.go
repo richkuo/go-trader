@@ -312,8 +312,12 @@ func parseRegimeBundleOutput(key regimeBundleKey, data []byte, now time.Time) (*
 
 var runRegimeBundleCheckFn = runRegimeBundleCheck
 
-func runRegimeBundleCheck(ctx context.Context, req regimeBundleRequest) (*RegimeBundle, error) {
-	stdout, stderr, err := runPython(ctx, regimeCheckScript, regimeBundleCheckArgs(req), nil)
+func runRegimeBundleCheck(ctx context.Context, req regimeBundleRequest, marketStdin []byte) (*RegimeBundle, error) {
+	args := regimeBundleCheckArgs(req)
+	if marketStdin != nil {
+		args = append(args, marketStdinFlag)
+	}
+	stdout, stderr, err := runPython(ctx, regimeCheckScript, args, marketStdin)
 	now := time.Now().UTC()
 	if bundle, perr := parseRegimeBundleOutput(req.Key, stdout, now); perr == nil {
 		return bundle, nil
@@ -377,7 +381,7 @@ func regimeGateOutagePolicyNote(key regimeBundleKey, due []StrategyConfig, rc *R
 	return "; entry gates — " + strings.Join(parts, "; ")
 }
 
-func startRegimeStorePopulation(store *RegimeStore, due []StrategyConfig, rc *RegimeConfig, notifier *MultiNotifier) func() {
+func startRegimeStorePopulation(store *RegimeStore, due []StrategyConfig, rc *RegimeConfig, notifier *MultiNotifier, feed *marketFeedContext) func() {
 	gen := store.resetForCycle(time.Now().UTC())
 	reqs := collectRegimeBundleRequests(due, rc)
 	if len(reqs) == 0 {
@@ -394,7 +398,16 @@ func startRegimeStorePopulation(store *RegimeStore, due []StrategyConfig, rc *Re
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				bundle, err := runRegimeBundleCheckFn(popCtx, req)
+				var marketStdin []byte
+				if feed.ownsRegimeBundle(req) {
+					blob, perr := feed.regimeBundlePayload(req)
+					if perr != nil {
+						errs[i] = fmt.Errorf("regime bundle %s: sealed market frame unavailable: %w", req.Key, perr)
+						return
+					}
+					marketStdin = blob
+				}
+				bundle, err := runRegimeBundleCheckFn(popCtx, req, marketStdin)
 				if err != nil {
 					errs[i] = err
 					return
@@ -433,8 +446,8 @@ func startRegimeStorePopulation(store *RegimeStore, due []StrategyConfig, rc *Re
 	}
 }
 
-func populateRegimeStore(store *RegimeStore, due []StrategyConfig, rc *RegimeConfig, notifier *MultiNotifier) {
-	startRegimeStorePopulation(store, due, rc, notifier)()
+func populateRegimeStore(store *RegimeStore, due []StrategyConfig, rc *RegimeConfig, notifier *MultiNotifier, feed *marketFeedContext) {
+	startRegimeStorePopulation(store, due, rc, notifier, feed)()
 }
 
 func regimeStoreSummary(store *RegimeStore) string {

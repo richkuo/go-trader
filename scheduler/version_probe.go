@@ -36,6 +36,12 @@ var probeCompositeArgv = []string{
 	"--probe-only",
 }
 
+var hyperliquidMarketCheckProbeArgv = append(append([]string{}, probeArgv[:len(probeArgv)-1]...),
+	"--market-stdin", "--probe-only")
+
+var hyperliquidMarketCheckCompositeProbeArgv = append(append([]string{}, probeCompositeArgv[:len(probeCompositeArgv)-1]...),
+	"--market-stdin", "--probe-only")
+
 var fetchATRProbeArgv = []string{
 	"--fetch-atr", "--symbol=BTC", "--timeframe=1h", "--period=14", "--atr-method=simple", "--probe-only",
 }
@@ -72,6 +78,7 @@ var hyperliquidBatchProbeArgv = []string{
 	"--ohlcv-limit", "200", "--atr-method=simple", "--mark-price=0",
 	"--regime-windows-spec-json", `{"default":{"classifier":"adx","period":14,"adx_threshold":20}}`,
 	"--regime-payload-json", `{"default":{"regime":"trending_up","score":0.5,"classifier":"adx","metrics":{"adx":25.0}}}`,
+	"--market-stdin",
 	"--probe-only",
 }
 
@@ -83,6 +90,14 @@ var checkRegimeProbeArgv = []string{
 	"--platform=binanceus", "--symbol=BTC/USDT", "--timeframe=1h",
 	"--regime-windows-spec-json", `{"default":{"classifier":"adx","period":14,"adx_threshold":20}}`,
 	"--ohlcv-limit", "200", "--min-bars", "30",
+	"--probe-only",
+}
+
+var checkRegimeMarketProbeArgv = []string{
+	"--platform=hyperliquid", "--symbol=BTC", "--timeframe=1h",
+	"--regime-windows-spec-json", `{"default":{"classifier":"adx","period":14,"adx_threshold":20}}`,
+	"--ohlcv-limit", "200", "--min-bars", "30",
+	"--market-stdin",
 	"--probe-only",
 }
 
@@ -124,6 +139,12 @@ func probeCheckScripts(cfg *Config) error {
 			if err := probeOneCheckScriptFn(script, hyperliquidBatchProbeArgv); err != nil {
 				return err
 			}
+			if err := probeOneCheckScriptFn(script, hyperliquidMarketCheckProbeArgv); err != nil {
+				return err
+			}
+			if err := probeOneCheckScriptFn(script, hyperliquidMarketCheckCompositeProbeArgv); err != nil {
+				return err
+			}
 		}
 	}
 	if anyStrategyUsesLLMEntryAnalysis(cfg) {
@@ -139,6 +160,9 @@ func probeCheckScripts(cfg *Config) error {
 			return err
 		}
 		if err := probeOneCheckScriptFn(regimeCheckScript, checkRegimeProbeArgv); err != nil {
+			return err
+		}
+		if err := probeOneCheckScriptFn(regimeCheckScript, checkRegimeMarketProbeArgv); err != nil {
 			return err
 		}
 		if err := probeOneCheckScriptFn("shared_scripts/simulate_strategy.py", simulateStrategyProbeArgv); err != nil {

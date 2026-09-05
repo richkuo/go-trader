@@ -439,3 +439,188 @@ def test_futures_registry_fast_path_only_accepts_the_futures_registry(
     else:
         assert resolved is not stub
     assert os.path.realpath(resolved.__file__) == os.path.realpath(mod.FUTURES_STRATEGIES_PATH)
+
+
+def _market_frame(rows, required=200, ready=True):
+    return {
+        "rows": rows,
+        "required": required,
+        "bars": len(rows),
+        "coverage_short": False,
+        "first_open_ms": rows[0][0] if rows else 0,
+        "last_open_ms": rows[-1][0] if rows else 0,
+        "last_close_ms": rows[-1][0] if rows else 0,
+        "last_recv_at_ms": 1_700_000_000_000,
+        "source": "ws",
+        "ready": ready,
+        "forming_bar_included": True,
+    }
+
+
+def _market_payload(symbol="BTC", timeframe="1h", rows=None, htf_rows=None,
+                    funding=None, mid=25_000.0):
+    rows = rows if rows is not None else _candles()
+    payload = {
+        "version": 1,
+        "snapshot_id": "300s/1700000000",
+        "generation": 4,
+        "sealed_at_ms": 1_700_000_000_000,
+        "frames": {f"{symbol}|{timeframe}": _market_frame(rows)},
+        "mids": {symbol: {"px": mid, "recv_at_ms": 1_700_000_000_000,
+                          "source": "ws", "age_ms": 0, "stale": False, "confirmed": True}},
+        "feed_complete": True,
+    }
+    if htf_rows is not None:
+        payload["frames"][f"{symbol}|4h"] = _market_frame(htf_rows, required=60)
+    if funding is not None:
+        payload["funding"] = {symbol: funding}
+    return payload
+
+
+def test_market_payload_contract(mod):
+    adapter = FakeAdapter()
+    market = _market_payload()
+    shared = mod.build_shared_signal_state(
+        "BTC", "1h", adapter=adapter, ohlcv_limit=200, atr_method="simple",
+        mark_price=0.0, market=market)
+    assert adapter.ohlcv_calls == []
+    assert adapter.spot_price_calls == 0
+    assert shared["adapter"] is None
+    assert shared["price_override"] == 25_000.0
+    assert len(shared["df"]) == len(_candles())
+
+
+def test_market_payload_matches_legacy_polling_for_the_same_frozen_rows(mod):
+    rows = _candles()
+    legacy = mod.evaluate_signal_slot(_shared(mod, FakeAdapter(rows)), SLOT_MATRIX[0])
+    injected_shared = mod.build_shared_signal_state(
+        "BTC", "1h", ohlcv_limit=200, atr_method="simple", mark_price=25_000.0,
+        market=_market_payload(rows=rows))
+    injected = mod.evaluate_signal_slot(injected_shared, SLOT_MATRIX[0])
+    assert _strip_volatile(injected) == _strip_volatile(legacy)
+
+
+def test_market_payload_serves_the_higher_timeframe_frame_without_fetching(mod):
+    adapter = FakeAdapter()
+    htf_rows = _candles(n=80, step_ms=4 * 3_600_000)
+    market = _market_payload(htf_rows=htf_rows)
+    shared = mod.build_shared_signal_state(
+        "BTC", "1h", adapter=adapter, ohlcv_limit=200, atr_method="simple",
+        mark_price=25_000.0, market=market)
+    out = mod.evaluate_signal_slot(shared, _slot("hl-htf", "breakout", htf_filter=True))
+    assert adapter.ohlcv_calls == []
+    assert out["indicators"].get("htf_trend") in (-1, 0, 1)
+
+
+def test_market_payload_missing_htf_frame_is_an_explicit_error(mod):
+    adapter = FakeAdapter()
+    shared = mod.build_shared_signal_state(
+        "BTC", "1h", adapter=adapter, ohlcv_limit=200, atr_method="simple",
+        mark_price=25_000.0, market=_market_payload())
+    with pytest.raises(mod.MarketPayloadError):
+        mod._shared_htf_frame(shared, "BTC", "4h", 60)
+    assert adapter.ohlcv_calls == []
+
+
+def test_market_payload_funding_comes_from_the_payload(mod):
+    adapter = FakeAdapter()
+    rows = _candles()
+    funding = {
+        "current": 0.0003, "avg_7d": 0.0002, "has_scalar": True,
+        "records": [{"rate": 0.0004, "time": rows[0][0] - 10},
+                    {"rate": 0.0005, "time": rows[0][0] + 10}],
+        "has_records": True, "fetched_at_ms": 1_700_000_000_000, "source": "rest",
+    }
+    shared = mod.build_shared_signal_state(
+        "BTC", "1h", adapter=adapter, ohlcv_limit=200, atr_method="simple",
+        mark_price=25_000.0, market=_market_payload(rows=rows, funding=funding))
+    scalar = mod._shared_funding_scalar(shared, "BTC")
+    assert scalar == {"current_funding_rate": 0.0003, "avg_funding_rate_7d": 0.0002}
+    records = mod._shared_funding_records(shared, "BTC")
+    assert records == [{"rate": 0.0005, "time": rows[0][0] + 10}]
+    assert adapter.funding_rate_calls == 0
+    assert adapter.funding_range_calls == 0
+
+
+def test_market_payload_missing_funding_is_an_explicit_error(mod):
+    adapter = FakeAdapter()
+    shared = mod.build_shared_signal_state(
+        "BTC", "1h", adapter=adapter, ohlcv_limit=200, atr_method="simple",
+        mark_price=25_000.0, market=_market_payload())
+    with pytest.raises(mod.MarketPayloadError):
+        mod._shared_funding_scalar(shared, "BTC")
+    with pytest.raises(mod.MarketPayloadError):
+        mod._shared_funding_records(shared, "BTC")
+    assert adapter.funding_rate_calls == 0
+    assert adapter.funding_range_calls == 0
+
+
+def test_market_payload_defects_fail_the_shared_state(mod):
+    adapter = FakeAdapter()
+    defects = {
+        "missing frame": {"version": 1, "snapshot_id": "x", "frames": {}},
+        "unready frame": {"version": 1, "snapshot_id": "x",
+                          "frames": {"BTC|1h": _market_frame(_candles(), ready=False)}},
+        "wrong version": {"version": 99, "snapshot_id": "x",
+                          "frames": {"BTC|1h": _market_frame(_candles())}},
+        "no snapshot id": {"version": 1, "frames": {"BTC|1h": _market_frame(_candles())}},
+        "malformed row": {"version": 1, "snapshot_id": "x",
+                          "frames": {"BTC|1h": _market_frame([[1, 2, 3]])}},
+        "not an object": "nope",
+    }
+    for name, market in defects.items():
+        envelope, exit_code = mod.run_batch_signal_check(
+            "BTC", "1h", SLOT_MATRIX, ohlcv_limit=200, atr_method="simple",
+            mark_price=25_000.0, adapter=adapter, market=market)
+        assert exit_code == 1, name
+        assert envelope["error_scope"] == "shared_state", name
+        assert envelope["results"] == [], name
+    assert adapter.ohlcv_calls == []
+
+
+def test_market_payload_short_history_is_insufficient_data(mod):
+    envelope, exit_code = mod.run_batch_signal_check(
+        "BTC", "1h", SLOT_MATRIX, ohlcv_limit=200, atr_method="simple",
+        mark_price=25_000.0, market=_market_payload(rows=_candles(n=10)))
+    assert exit_code == 1
+    assert envelope["error_scope"] == "shared_state"
+    assert "candles" in envelope["error"]
+
+
+def test_parse_batch_request_versions(mod):
+    slots_json = json.dumps({"v": 1, "slots": [{"id": "a", "strategy": "breakout"}]})
+    slots, market = mod.parse_batch_request(slots_json)
+    assert market is None and len(slots) == 1
+
+    v2 = json.dumps({"v": 2, "slots": [{"id": "a", "strategy": "breakout"}],
+                     "market": _market_payload()})
+    slots, market = mod.parse_batch_request(v2)
+    assert len(slots) == 1
+    assert market["snapshot_id"] == "300s/1700000000"
+
+    with pytest.raises(ValueError):
+        mod.parse_batch_request(json.dumps({"v": 2, "slots": [{"id": "a", "strategy": "b"}]}))
+    with pytest.raises(ValueError):
+        mod.parse_batch_request(json.dumps({"v": 1, "slots": [{"id": "a", "strategy": "b"}],
+                                            "market": _market_payload()}))
+    with pytest.raises(ValueError):
+        mod.parse_batch_request(json.dumps({"v": 3, "slots": [{"id": "a", "strategy": "b"}]}))
+
+
+def test_v1_batch_requests_still_fetch_through_the_adapter(mod):
+    adapter = FakeAdapter()
+    envelope, exit_code = mod.run_batch_signal_check(
+        "BTC", "1h", SLOT_MATRIX, ohlcv_limit=200, atr_method="simple",
+        mark_price=25_000.0, adapter=adapter)
+    assert exit_code == 0, envelope
+    assert adapter.ohlcv_calls, "legacy polling must still reach the adapter"
+
+
+def test_parse_market_stdin_requires_the_v2_envelope(mod):
+    market = _market_payload()
+    parsed = mod.parse_market_stdin(json.dumps({"v": 2, "market": market}))
+    assert parsed["snapshot_id"] == market["snapshot_id"]
+    with pytest.raises(ValueError):
+        mod.parse_market_stdin(json.dumps({"v": 1, "market": market}))
+    with pytest.raises(mod.MarketPayloadError):
+        mod.parse_market_stdin(json.dumps({"v": 2}))

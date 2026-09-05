@@ -107,3 +107,15 @@ class TestHtfTrendFilter:
 ])
 def test_apply_htf_filter(signal, trend, expected):
     assert apply_htf_filter(signal, trend) == expected
+
+
+def test_htf_map_matches_the_shared_fixture():
+    import json
+    import os
+
+    fixture = os.path.join(os.path.dirname(os.path.abspath(__file__)), "testdata", "htf_map.json")
+    with open(fixture) as fh:
+        spec = json.load(fh)
+    assert _HTF_FILTER._HTF_MAP == spec["map"]
+    assert get_default_htf("7m") == spec["default"]
+    assert spec["lookback"] == 50 + 10

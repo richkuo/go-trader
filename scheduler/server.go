@@ -297,6 +297,7 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		Correlation          *CorrelationSnapshot            `json:"correlation,omitempty"`
 		CorrelationByScope   map[string]*CorrelationSnapshot `json:"correlation_by_scope,omitempty"`
 		ReconciliationGaps   map[string]*ReconciliationGap   `json:"reconciliation_gaps,omitempty"`
+		MarketFeed           *marketFeedHealth               `json:"market_feed,omitempty"`
 	}
 
 	ss.strategiesMu.RLock()
@@ -345,6 +346,7 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		TotalNotionalByScope: notionalByScope,
 		CorrelationByScope:   corrByScope,
 		ReconciliationGaps:   ss.state.ReconciliationGaps,
+		MarketFeed:           marketFeedStatusBlock(),
 	}
 	if prs := ss.state.scopeRiskIfPresent(legacyScope); prs != nil {
 		resp.PortfolioRisk = *prs

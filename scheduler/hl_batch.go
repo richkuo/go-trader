@@ -18,6 +18,8 @@ const hlBatchPythonDefaultOhlcvLimit = 200
 
 const hlBatchProtocolVersion = 1
 
+const hlBatchProtocolVersionMarket = 2
+
 var hlBatchTimeout = scriptTimeout
 
 const hlBatchDisabledEnv = "GO_TRADER_HL_BATCH"
@@ -158,8 +160,9 @@ type hlBatchSlot struct {
 }
 
 type hlBatchRequest struct {
-	Version int           `json:"v"`
-	Slots   []hlBatchSlot `json:"slots"`
+	Version int            `json:"v"`
+	Slots   []hlBatchSlot  `json:"slots"`
+	Market  *marketPayload `json:"market,omitempty"`
 }
 
 type HyperliquidBatchSlotResult struct {
@@ -236,7 +239,7 @@ func hlBatchRegimeATRWindow(sc StrategyConfig, regime *RegimeConfig) string {
 	return ""
 }
 
-func hlBatchSharedArgs(key hlBatchKey, regime *RegimeConfig, regimePayloadJSON string, hasRegimePayload bool, markPrice float64) []string {
+func hlBatchSharedArgs(key hlBatchKey, regime *RegimeConfig, regimePayloadJSON string, hasRegimePayload bool, markPrice float64, marketStdin bool) []string {
 	args := []string{
 		"--batch-check",
 		"--symbol=" + key.Symbol,
@@ -255,6 +258,9 @@ func hlBatchSharedArgs(key hlBatchKey, regime *RegimeConfig, regimePayloadJSON s
 	}
 	if markPrice > 0 {
 		args = append(args, fmt.Sprintf("--mark-price=%g", markPrice))
+	}
+	if marketStdin {
+		args = append(args, marketStdinFlag)
 	}
 	return args
 }
@@ -416,7 +422,7 @@ type hlBatchGroupInput struct {
 	MarkPrice float64
 }
 
-func runHyperliquidBatchGroups(inputs []hlBatchGroupInput, cfg *Config, notifier *MultiNotifier, logf func(string, ...any)) *hlBatchCycleResults {
+func runHyperliquidBatchGroups(inputs []hlBatchGroupInput, cfg *Config, notifier *MultiNotifier, logf func(string, ...any), feed *marketFeedContext) *hlBatchCycleResults {
 	results := &hlBatchCycleResults{}
 	if logf == nil {
 		logf = func(string, ...any) {}
@@ -431,8 +437,20 @@ func runHyperliquidBatchGroups(inputs []hlBatchGroupInput, cfg *Config, notifier
 			logf("[WARN] hl-batch %s: members disagree on the injected regime payload; falling back to per-strategy checks", in.Key)
 			continue
 		}
-		args := hlBatchSharedArgs(in.Key, rc, payloadJSON, hasPayload, in.MarkPrice)
-		req := hlBatchRequest{Version: hlBatchProtocolVersion}
+		var market *marketPayload
+		if feed.active() {
+			built, err := feed.batchPayload(in.Key, in.Members)
+			if err != nil {
+				logf("[WARN] hl-batch %s: sealed market payload unavailable (%v); members fall back to their own sealed-snapshot checks", in.Key, err)
+				continue
+			}
+			market = built
+		}
+		args := hlBatchSharedArgs(in.Key, rc, payloadJSON, hasPayload, in.MarkPrice, market != nil)
+		req := hlBatchRequest{Version: hlBatchProtocolVersion, Market: market}
+		if market != nil {
+			req.Version = hlBatchProtocolVersionMarket
+		}
 		fingerprints := make(map[string]string, len(in.Members))
 		slotErr := false
 		for _, sc := range in.Members {
@@ -457,6 +475,10 @@ func runHyperliquidBatchGroups(inputs []hlBatchGroupInput, cfg *Config, notifier
 		stdin, err := json.Marshal(req)
 		if err != nil {
 			logf("[WARN] hl-batch %s: marshal slots: %v; falling back to per-strategy checks", in.Key, err)
+			continue
+		}
+		if len(stdin) > marketPayloadMaxBytes {
+			logf("[WARN] hl-batch %s: request is %d bytes, over the %d-byte cap; members fall back to their own sealed-snapshot checks", in.Key, len(stdin), marketPayloadMaxBytes)
 			continue
 		}
 		logf("[INFO] hl-batch %s: %d strategies in one call (%s)", in.Key, len(in.Members), strings.Join(in.MemberIDsOrdered(), ", "))
@@ -634,7 +656,7 @@ func snapshotHyperliquidBatchGroups(groups []hlBatchGroup, state *AppState, mu *
 	return out
 }
 
-func runHyperliquidBatchPrePass(due []StrategyConfig, state *AppState, mu *sync.RWMutex, cfg *Config, prices map[string]float64, notifier *MultiNotifier, logf func(string, ...any)) *hlBatchCycleResults {
+func runHyperliquidBatchPrePass(due []StrategyConfig, state *AppState, mu *sync.RWMutex, cfg *Config, prices map[string]float64, notifier *MultiNotifier, logf func(string, ...any), feed *marketFeedContext) *hlBatchCycleResults {
 	if !hyperliquidBatchEnabled() {
 		return nil
 	}
@@ -659,7 +681,7 @@ func runHyperliquidBatchPrePass(due []StrategyConfig, state *AppState, mu *sync.
 	if len(inputs) == 0 {
 		return nil
 	}
-	return runHyperliquidBatchGroups(inputs, cfg, notifier, logf)
+	return runHyperliquidBatchGroups(inputs, cfg, notifier, logf, feed)
 }
 
 func hlBatchGroupRegimePayload(members []StrategyConfig, rc *RegimeConfig) (payload string, has bool, uniform bool) {

@@ -93,10 +93,11 @@ flowchart TB
             PROT["Protection<br/>on-chain SL/TP, trailing,<br/>liquidation clamp"]
             RECON["Reconciliation<br/>shared wallet, cashflow, fills"]
             MIRROR["Replay mirror<br/>live decisions to paper"]
+            FEED["Market feed (market_feed=websocket)<br/>one HL websocket, history repair,<br/>sealed per-evaluation snapshot"]
             OPS["Operator surfaces<br/>Discord bot, loopback dashboard,<br/>owner DMs"]
         end
         subgraph Py["One-shot Python subprocesses (per cycle)"]
-            CHECK["check_&lt;platform&gt;.py<br/>candles, regime, open/close signals<br/>(HL: one batch per symbol+timeframe)"]
+            CHECK["check_&lt;platform&gt;.py<br/>candles, regime, open/close signals<br/>(HL: one batch per symbol+timeframe;<br/>market_feed=websocket: sealed Go snapshot on stdin)"]
             XQ["check_&lt;platform&gt;.py execute<br/>live orders via adapter"]
             REG["check_regime.py / check_price.py"]
         end
@@ -106,6 +107,8 @@ flowchart TB
     LOG["replay_log_path<br/>shared decision log"]
 
     CFG --> LOOP
+    FEED --> LOOP
+    FEED -->|candles, mids| EXCH
     LOOP -->|spawn, parse JSON| CHECK
     LOOP --> REG
     LOOP --> RISK --> EXEC

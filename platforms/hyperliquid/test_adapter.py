@@ -2,6 +2,7 @@
 import sys
 import os
 import importlib.util
+import json
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -128,6 +129,19 @@ class TestMarketData:
         _name, interval, start_ms, end_ms = mock_info.candles_snapshot.call_args[0]
         assert interval == "1h"
         assert end_ms - start_ms == 3_600_000 * (200 + 50)
+
+    def test_candle_snapshot_conversion_parity(self, monkeypatch):
+        monkeypatch.setenv("GO_TRADER_HL_OHLCV_CACHE", "0")
+        testdata = os.path.join(os.path.dirname(os.path.abspath(__file__)), "testdata")
+        with open(os.path.join(testdata, "candle_snapshot_fixture.json")) as fh:
+            raw_rows = json.load(fh)
+        with open(os.path.join(testdata, "candle_snapshot_expected_rows.json")) as fh:
+            expected = json.load(fh)
+
+        adapter, mock_info = self._make_adapter()
+        mock_info.candles_snapshot.return_value = raw_rows
+        result = adapter.get_ohlcv("BTC", "1h", len(raw_rows))
+        assert result == expected
 
     def test_get_ohlcv_trims_to_limit_when_api_returns_extra(self, monkeypatch):
         monkeypatch.setenv("GO_TRADER_HL_OHLCV_CACHE", "0")

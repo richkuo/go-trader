@@ -304,7 +304,7 @@ func TestStrategiesDifferingOffKeyStillBatchWithTheirOwnValues(t *testing.T) {
 func TestSharedArgsCarryOnlyKeyAndSharedFlags(t *testing.T) {
 	rc := &RegimeConfig{Enabled: true}
 	key := hlBatchKey{DataPlatform: "hyperliquid", Symbol: "BTC", Timeframe: "1h", OhlcvLimit: 250, ATRMethod: "wilder"}
-	args := hlBatchSharedArgs(key, rc, `{"default":{}}`, true, 25_000)
+	args := hlBatchSharedArgs(key, rc, `{"default":{}}`, true, 25_000, false)
 	joined := strings.Join(args, " ")
 	for _, want := range []string{
 		"--batch-check", "--symbol=BTC", "--timeframe=1h", "--ohlcv-limit 250",
@@ -319,7 +319,7 @@ func TestSharedArgsCarryOnlyKeyAndSharedFlags(t *testing.T) {
 			t.Fatalf("shared argv %q leaked per-slot flag %q", joined, banned)
 		}
 	}
-	if noMark := strings.Join(hlBatchSharedArgs(key, rc, "", false, 0), " "); strings.Contains(noMark, "--mark-price") {
+	if noMark := strings.Join(hlBatchSharedArgs(key, rc, "", false, 0, false), " "); strings.Contains(noMark, "--mark-price") {
 		t.Fatalf("mark price must be omitted when the cycle has no mid: %q", noMark)
 	}
 }
@@ -388,7 +388,7 @@ func TestBatchDispatchCachesOneResultPerMember(t *testing.T) {
 		gotArgs, gotStdin = args, stdinJSON
 		return batchOK("hl-a", "hl-b"), "", nil
 	})
-	results := runHyperliquidBatchGroups(inputs, cfg, nil, nil)
+	results := runHyperliquidBatchGroups(inputs, cfg, nil, nil, nil)
 
 	if gotArgs[0] != "--batch-check" {
 		t.Fatalf("argv = %v", gotArgs)
@@ -420,7 +420,7 @@ func TestBatchSlotErrorIsolatesOneMember(t *testing.T) {
 		})
 		return out, "", nil
 	})
-	results := runHyperliquidBatchGroups(inputs, cfg, nil, nil)
+	results := runHyperliquidBatchGroups(inputs, cfg, nil, nil, nil)
 
 	good, _ := results.lookup("hl-a")
 	if good.Result == nil || good.Result.Signal != 1 {
@@ -452,7 +452,7 @@ func TestSharedStateFailureLeavesMembersAsMisses(t *testing.T) {
 	stubBatchCheck(t, func(string, []string, []byte) (*HyperliquidBatchResult, string, error) {
 		return &HyperliquidBatchResult{Error: "candle fetch failed", ErrorScope: hlBatchSharedStateScope}, "", nil
 	})
-	results := runHyperliquidBatchGroups(inputs, cfg, nil, nil)
+	results := runHyperliquidBatchGroups(inputs, cfg, nil, nil, nil)
 
 	for _, id := range []string{"hl-a", "hl-b"} {
 		if out, ok := results.lookup(id); ok {
@@ -474,7 +474,7 @@ func TestSharedStateTimeoutLeavesMembersAsMisses(t *testing.T) {
 	stubBatchCheck(t, func(string, []string, []byte) (*HyperliquidBatchResult, string, error) {
 		return nil, "", &pythonScriptTimeoutError{d: hlBatchTimeout}
 	})
-	results := runHyperliquidBatchGroups(inputs, cfg, nil, nil)
+	results := runHyperliquidBatchGroups(inputs, cfg, nil, nil, nil)
 	for _, id := range []string{"hl-a", "hl-b"} {
 		if out, ok := results.lookup(id); ok {
 			t.Fatalf("%s must be a map miss after a batch timeout, got %+v", id, out)
@@ -489,7 +489,7 @@ func TestUnparseableEnvelopeLeavesMembersAsMisses(t *testing.T) {
 	stubBatchCheck(t, func(string, []string, []byte) (*HyperliquidBatchResult, string, error) {
 		return nil, "", fmt.Errorf("parse batch output: unexpected end of JSON input (stdout: )")
 	})
-	results := runHyperliquidBatchGroups(inputs, cfg, nil, nil)
+	results := runHyperliquidBatchGroups(inputs, cfg, nil, nil, nil)
 	for _, id := range []string{"hl-a", "hl-b"} {
 		if out, ok := results.lookup(id); ok {
 			t.Fatalf("%s must be a map miss after an unparseable envelope, got %+v", id, out)
@@ -505,7 +505,7 @@ func TestSharedStateFailureDoesNotFalselyClearAMemberStreak(t *testing.T) {
 	stubBatchCheck(t, func(string, []string, []byte) (*HyperliquidBatchResult, string, error) {
 		return nil, "", fmt.Errorf("batch script error: exit 1")
 	})
-	results := runHyperliquidBatchGroups(inputs, cfg, nil, nil)
+	results := runHyperliquidBatchGroups(inputs, cfg, nil, nil, nil)
 	if out, ok := results.lookup("hl-a"); ok {
 		t.Fatalf("hl-a must be a map miss after a shared-state failure, got %+v", out)
 	}
@@ -523,7 +523,7 @@ func TestMissingOrDuplicateSlotLeavesThatMemberAMiss(t *testing.T) {
 		out.Results = append(out.Results, out.Results[0])
 		return out, "", nil
 	})
-	results := runHyperliquidBatchGroups(inputs, cfg, nil, nil)
+	results := runHyperliquidBatchGroups(inputs, cfg, nil, nil, nil)
 
 	if out, ok := results.lookup("hl-a"); ok {
 		t.Fatalf("duplicated-slot member must be a map miss, got %+v", out)
@@ -545,7 +545,7 @@ func TestRepeatedSlotDriftTripsTheFallback(t *testing.T) {
 		if !hlBatchFallback.Allow(key) {
 			t.Fatalf("batching blocked before the threshold (strike %d)", i)
 		}
-		runHyperliquidBatchGroups(inputs, cfg, nil, nil)
+		runHyperliquidBatchGroups(inputs, cfg, nil, nil, nil)
 	}
 	if hlBatchFallback.Allow(key) {
 		t.Fatalf("group still batching after %d consecutive incomplete responses",
@@ -562,7 +562,7 @@ func TestSlotErrorPayloadStaysACachedSoftError(t *testing.T) {
 		out.Results[1].Error = "adapter refused the symbol"
 		return out, "", nil
 	})
-	results := runHyperliquidBatchGroups(inputs, cfg, nil, nil)
+	results := runHyperliquidBatchGroups(inputs, cfg, nil, nil, nil)
 	bad, ok := results.lookup("hl-b")
 	if !ok {
 		t.Fatal("a slot error payload must stay a map HIT, not become a re-spawn")
@@ -589,7 +589,7 @@ func TestGroupStderrIsNotStampedOnHealthyMembers(t *testing.T) {
 	var logged []string
 	results := runHyperliquidBatchGroups(inputs, cfg, nil, func(format string, args ...any) {
 		logged = append(logged, fmt.Sprintf(format, args...))
-	})
+	}, nil)
 	healthy, _ := results.lookup("hl-a")
 	if healthy.Stderr != "" {
 		t.Fatalf("healthy member carries the group's stderr: %q", healthy.Stderr)
@@ -663,7 +663,7 @@ func TestPrePassSkipsAFallenBackGroup(t *testing.T) {
 	})
 	state := hlBatchTestState("hl-a", "hl-b")
 	var mu sync.RWMutex
-	if got := runHyperliquidBatchPrePass(due, state, &mu, cfg, nil, nil, nil); got != nil {
+	if got := runHyperliquidBatchPrePass(due, state, &mu, cfg, nil, nil, nil, nil); got != nil {
 		t.Fatalf("fallen-back group must produce no batched results, got %+v", got)
 	}
 	if calls != 0 {
@@ -685,7 +685,7 @@ func TestPrePassNeverBatchesASingleMemberGroup(t *testing.T) {
 	}
 	state := hlBatchTestState("hl-a", "hl-eth")
 	var mu sync.RWMutex
-	if got := runHyperliquidBatchPrePass(due, state, &mu, cfg, nil, nil, nil); got != nil {
+	if got := runHyperliquidBatchPrePass(due, state, &mu, cfg, nil, nil, nil, nil); got != nil {
 		t.Fatalf("single-member groups must produce no batch, got %+v", got)
 	}
 	if calls != 0 {
@@ -711,7 +711,7 @@ func TestPrePassHonoursTheEnvironmentKillSwitch(t *testing.T) {
 	}
 	state := hlBatchTestState("hl-a", "hl-b")
 	var mu sync.RWMutex
-	if got := runHyperliquidBatchPrePass(due, state, &mu, cfg, nil, nil, nil); got != nil {
+	if got := runHyperliquidBatchPrePass(due, state, &mu, cfg, nil, nil, nil, nil); got != nil {
 		t.Fatalf("kill switch must produce no batched results, got %+v", got)
 	}
 	if calls != 0 {
@@ -780,7 +780,7 @@ func TestRunHyperliquidCheckConsumesTheCachedSlot(t *testing.T) {
 	batch := &hlBatchCycleResults{}
 	batch.put("hl-a", hlBatchMemberOutcome{Result: cached, Fingerprint: fp})
 
-	got, signalStr, price, ok := runHyperliquidCheck(&sc, prices, posCtx, nil, "simple", nil, hlBatchTestLogger(), batch)
+	got, signalStr, price, ok := runHyperliquidCheck(&sc, prices, posCtx, nil, "simple", nil, hlBatchTestLogger(), batch, nil)
 	if !ok || got == nil || !reflect.DeepEqual(*got, *cached) || price != 25_000 || signalStr != signalLabel(1) {
 		t.Fatalf("batched consumption = (%v, %q, %v, %v)", got, signalStr, price, ok)
 	}
@@ -809,7 +809,7 @@ func TestRoundedPriceWriteBackKeepsPeersBatched(t *testing.T) {
 		})
 	}
 
-	_, _, priceA, okA := runHyperliquidCheck(&scA, prices, posCtx, nil, "simple", nil, hlBatchTestLogger(), batch)
+	_, _, priceA, okA := runHyperliquidCheck(&scA, prices, posCtx, nil, "simple", nil, hlBatchTestLogger(), batch, nil)
 	if !okA {
 		t.Fatal("member 1 must consume its cached slot")
 	}
@@ -818,7 +818,7 @@ func TestRoundedPriceWriteBackKeepsPeersBatched(t *testing.T) {
 		t.Fatalf("fixture no longer exercises the rounding write-back: %v", priceA)
 	}
 
-	resB, _, priceB, okB := runHyperliquidCheck(&scB, prices, posCtx, nil, "simple", nil, hlBatchTestLogger(), batch)
+	resB, _, priceB, okB := runHyperliquidCheck(&scB, prices, posCtx, nil, "simple", nil, hlBatchTestLogger(), batch, nil)
 	if !okB || resB == nil {
 		t.Fatal("member 2 lost its cached slot to the rounded price write-back")
 	}
@@ -839,7 +839,7 @@ func TestBatchedMemberReportsDispatchTimeMark(t *testing.T) {
 	batch := &hlBatchCycleResults{}
 	batch.put("hl-a", hlBatchMemberOutcome{Result: cached, Fingerprint: fp})
 
-	got, _, price, ok := runHyperliquidCheck(&sc, map[string]float64{"BTC": 26_000.567}, posCtx, nil, "simple", nil, hlBatchTestLogger(), batch)
+	got, _, price, ok := runHyperliquidCheck(&sc, map[string]float64{"BTC": 26_000.567}, posCtx, nil, "simple", nil, hlBatchTestLogger(), batch, nil)
 	if !ok || got == nil {
 		t.Fatal("cached slot must still be consumed")
 	}
@@ -864,7 +864,7 @@ func TestWholeNumberMarkStillBatches(t *testing.T) {
 		Result:      &HyperliquidResult{Strategy: "breakout", Symbol: "BTC", Timeframe: "1h", Signal: 1, Price: 25_000, Mode: "paper"},
 		Fingerprint: fp,
 	})
-	_, _, price, ok := runHyperliquidCheck(&sc, map[string]float64{"BTC": 25_000}, posCtx, nil, "simple", nil, hlBatchTestLogger(), batch)
+	_, _, price, ok := runHyperliquidCheck(&sc, map[string]float64{"BTC": 25_000}, posCtx, nil, "simple", nil, hlBatchTestLogger(), batch, nil)
 	if !ok || price != 25_000 {
 		t.Fatalf("whole-number mark broke the hit: ok=%v price=%v", ok, price)
 	}
@@ -880,7 +880,7 @@ func TestFailedSlotIsNotResurrectedByThePricePath(t *testing.T) {
 	}
 	batch := &hlBatchCycleResults{}
 	batch.put("hl-a", hlBatchMemberOutcome{Err: "slot blew up", Mode: scriptFailureError, Fingerprint: fp})
-	res, _, price, ok := runHyperliquidCheck(&sc, map[string]float64{"BTC": 25_000}, posCtx, nil, "simple", nil, hlBatchTestLogger(), batch)
+	res, _, price, ok := runHyperliquidCheck(&sc, map[string]float64{"BTC": 25_000}, posCtx, nil, "simple", nil, hlBatchTestLogger(), batch, nil)
 	if ok || res != nil || price != 0 {
 		t.Fatalf("failed slot resurrected: ok=%v res=%+v price=%v", ok, res, price)
 	}
@@ -901,14 +901,14 @@ func TestRunHyperliquidCheckRefusesToDecideOnAFailedSlot(t *testing.T) {
 		})
 		return out, "", nil
 	})
-	batch := runHyperliquidBatchGroups(inputs, cfg, nil, nil)
+	batch := runHyperliquidBatchGroups(inputs, cfg, nil, nil, nil)
 
 	sc := inputs[0].Members[1]
 	if sc.ID != "hl-b" {
 		t.Fatalf("fixture member order changed: %q", sc.ID)
 	}
 	res, _, _, ok := runHyperliquidCheck(&sc, map[string]float64{"BTC": 25_000},
-		inputs[0].PosCtx["hl-b"], cfg.Regime, "simple", nil, hlBatchTestLogger(), batch)
+		inputs[0].PosCtx["hl-b"], cfg.Regime, "simple", nil, hlBatchTestLogger(), batch, nil)
 	if ok || res != nil {
 		t.Fatalf("a failed slot must skip the cycle, got ok=%v res=%+v", ok, res)
 	}
@@ -987,7 +987,7 @@ func TestReplayChokePointsSeeIdenticalResults(t *testing.T) {
 			batched := tc.result
 			batch := &hlBatchCycleResults{}
 			batch.put(sc.ID, hlBatchMemberOutcome{Result: &batched, Fingerprint: fp})
-			fromBatch, _, _, ok := runHyperliquidCheck(&sc, prices, tc.posCtx, nil, "simple", nil, hlBatchTestLogger(), batch)
+			fromBatch, _, _, ok := runHyperliquidCheck(&sc, prices, tc.posCtx, nil, "simple", nil, hlBatchTestLogger(), batch, nil)
 			if !ok {
 				t.Fatal("batched slot did not produce a decision")
 			}

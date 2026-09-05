@@ -132,7 +132,7 @@ func TestRegimeStoreFailureRespectsPerStrategyPolicy(t *testing.T) {
 		return nil, fmt.Errorf("regime bundle %s: boom", req.Key)
 	})
 	store := &RegimeStore{}
-	populateRegimeStore(store, []StrategyConfig{closedSC, openSC}, rc, nil)
+	populateRegimeStore(store, []StrategyConfig{closedSC, openSC}, rc, nil, nil)
 
 	if _, blocked := applyRegimeGate(closedSC, store.PayloadForStrategy(closedSC, rc), rc, 0); !blocked {
 		t.Error("fail-closed strategy must be blocked when its regime bundle failed")

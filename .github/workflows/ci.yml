@@ -22,6 +22,9 @@ jobs:
       - name: Test
         run: cd scheduler && go test ./...
 
+      - name: Market feed race test
+        run: cd scheduler && go test -race -run MarketFeed .
+
       - name: Format check
         run: |
           cd scheduler

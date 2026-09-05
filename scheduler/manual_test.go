@@ -2010,7 +2010,7 @@ func TestManualCloseEval_FlatShortCircuits(t *testing.T) {
 	ss := &StrategyState{ID: sc.ID, Positions: map[string]*Position{}}
 	cfg := &Config{Regime: &RegimeConfig{Enabled: true, Period: 14, ADXThreshold: 20}}
 
-	cf, px, ok := runManualCloseEval(sc, ss, cfg, nil, nil)
+	cf, px, ok := runManualCloseEval(sc, ss, cfg, nil, nil, nil)
 	if !ok {
 		t.Fatalf("flat manual close-eval ok = false, want true")
 	}

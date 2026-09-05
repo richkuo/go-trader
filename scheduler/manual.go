@@ -894,7 +894,7 @@ func resolveManualRatchetRegimeLabel(sc StrategyConfig, cfg *Config, notifier *M
 	}
 	logger := &StrategyLogger{stratID: sc.ID, writer: os.Stderr}
 	posCtx := positionCtxFromPosition(nil)
-	result, _, _, ok := runHyperliquidCheck(&sc, nil, posCtx, cfg.Regime, resolveATRMethod(sc, cfg), notifier, logger, nil)
+	result, _, _, ok := runHyperliquidCheck(&sc, nil, posCtx, cfg.Regime, resolveATRMethod(sc, cfg), notifier, logger, nil, nil)
 	if !ok || result == nil {
 		return ""
 	}
@@ -914,14 +914,14 @@ func manualRatchetOpeningTrailOrFallback(block *RegimeATRBlock, label string, fa
 	return defaultManualStopLossATRMult, true
 }
 
-func runManualCloseEval(sc StrategyConfig, ss *StrategyState, cfg *Config, notifier *MultiNotifier, logger *StrategyLogger) (float64, float64, bool) {
+func runManualCloseEval(sc StrategyConfig, ss *StrategyState, cfg *Config, notifier *MultiNotifier, logger *StrategyLogger, feed *marketFeedContext) (float64, float64, bool) {
 	pos := ss.Positions[sc.Symbol]
 	if pos == nil {
 		return 0, 0, true
 	}
 
 	posCtx := positionCtxFromPosition(pos)
-	result, _, price, ok := runHyperliquidCheck(&sc, nil, posCtx, cfg.Regime, resolveATRMethod(sc, cfg), notifier, logger, nil)
+	result, _, price, ok := runHyperliquidCheck(&sc, nil, posCtx, cfg.Regime, resolveATRMethod(sc, cfg), notifier, logger, nil, feed)
 	if !ok {
 		return 0, 0, false
 	}

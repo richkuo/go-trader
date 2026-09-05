@@ -571,7 +571,7 @@ sudo systemctl restart go-trader       # full restart
 
 Hot reload re-applies a safe subset: capital, drawdown, intervals, params, stop-loss fields (including percentage and ATR-multiple trailing), sizing leverage, theta harvest, `portfolio_risk` knobs and their `portfolio_risk.paper` overrides except `max_notional_usd` on either, summary cadence, per-strategy `allowed_regimes`, `paused`, `circuit_breaker` and its cooldowns, `notify_ratchet_triggers`, `allow_deprecated`, `llm_entry_analysis`, `hurst_gate`, `alert_throttle_interval`, `kill_switch_reset_dm_timeout`, `user_defaults`, `tuning.max_retained_runs`, and the Discord/Telegram **channel maps**. Per-strategy `regime_*_window` selectors, `replay_sharing` and `replay_source_id` reload only while flat.
 
-**Restart-required — a SIGHUP is rejected outright:** the strategy roster; any `script`/`args`/`type`/`platform` field, the HTF filter, or kill-switch identity; `db_file`; `log_dir`; `status_port`; the status token; `auto_update`; `paper_db_file` and any strategy's effective `storage_strategy_id`; `risk_free_rate`; `leaderboard_post_time` and `leaderboard_summaries`; `tradingview_export`; `replay_log_path`; `portfolio_risk.max_notional_usd` and `portfolio_risk.paper.max_notional_usd`; the whole `correlation` block; the global `regime` block (enabled, period, adx_threshold, windows); `discord.enabled`/`token`/`owner_id` and `telegram.enabled`/`bot_token`/`owner_chat_id`; and a shared-wallet pool↔allocated budgeting switch.
+**Restart-required — a SIGHUP is rejected outright:** the strategy roster; any `script`/`args`/`type`/`platform` field, the HTF filter, or kill-switch identity; `db_file`; `log_dir`; `status_port`; the status token; `auto_update`; `paper_db_file` and any strategy's effective `storage_strategy_id`; `risk_free_rate`; `leaderboard_post_time` and `leaderboard_summaries`; `tradingview_export`; `replay_log_path`; `market_feed`; `portfolio_risk.max_notional_usd` and `portfolio_risk.paper.max_notional_usd`; the whole `correlation` block; the global `regime` block (enabled, period, adx_threshold, windows); `discord.enabled`/`token`/`owner_id` and `telegram.enabled`/`bot_token`/`owner_chat_id`; and a shared-wallet pool↔allocated budgeting switch.
 
 It also refuses when per-strategy exchange `leverage`, `direction`, `invert_signal`, HL `margin_mode`, or the regime timeframe changed while a position is open, and for every field in the blocked-while-open list under Post-Update Agent Protocol. It re-runs the HL peer-on-same-coin check for `margin_mode` and exchange `leverage` agreement and the single-trailing-stop-owner rule, and re-validates every `hedge` block. A rejection names every offending field at once; fall back to a restart.
 
@@ -616,6 +616,7 @@ Global — key, default, notes:
 | `regime.enabled`, `.period`, `.adx_threshold`, `.windows`, `.gate_on_failure`, `.transitions` | off, 14, 20, empty | Empty `windows` = one legacy horizon. Restart-required as a block. `transitions` is alerting-only — it never gates entries, mutates config, or touches positions. |
 | `notify_tp_sl_fills` | enabled when nil | `false` stops owner DMs from reconciler-detected fills |
 | `notify_ratchet_triggers` | enabled when nil | Owner DM when a ratchet tier clears and tightens the trail. The per-strategy field overrides it. |
+| `market_feed` | `"rest"` | `"rest"` (default; an omitted field means this) keeps legacy per-check polling. `"websocket"` opens one Hyperliquid socket and hands Hyperliquid perps and `manual` checks a sealed market snapshot on stdin. Any other value fails `loadConfig`. **Restart-required.** § Hyperliquid Batched Signal Checks. |
 | `atr_method` | `"simple"` | `"simple"` (legacy rolling mean, ≥100 rounding) or `"wilder"` (published RMA, never rounded). Governs the standard ATR surface only — entry-ATR stamping, live market ATR, the manual fetch, backtester injection, tuner simulate. Strategy-internal indicators and the regime classifier are untouched. |
 | `default_stop_loss_atr_mult` | `1.0` | Applies to every HL perps strategy omitting all stop-owner fields, shared-coin peers included. `0` restores the `max_drawdown_pct` fallback fleet-wide. |
 | `user_defaults.manual.{margin_usd,stop_loss_atr_mult,side,tp_tiers,trailing_stop_atr_mult_regime}` | see Manual Trading | Overrides the manual-open defaults. Order: CLI or strategy param → `user_defaults.manual` → constant. `stop_loss_atr_mult: 0` opts scalar manual out and the ratchet fallback ignores that 0. `tp_tiers: []` is rejected — omit the key to inherit. Hot-reloadable. |
@@ -894,6 +895,30 @@ Operator-visible behavior:
 
 The log line names the group as `platform/symbol/timeframe/limit=N/atr=M`.
 
+### Market feed (`market_feed: websocket`)
+
+Root `market_feed` chooses where Hyperliquid candles come from. `rest` (the default, and what an omitted field means) keeps today's polling and scheduling untouched. `websocket` opens ONE Hyperliquid socket, keeps the candle history and mid prices in the Go process, and hands every covered check a sealed snapshot on standard input. The mode is logged at startup as `Market feed: rest (legacy polling)` or `Market feed: websocket (Hyperliquid perps + manual)`, and changing it is restart-required.
+
+**Scope.** Hyperliquid `perps` and `manual` strategies only. Every other platform keeps legacy polling under both values.
+
+**Six REST consumers stay outside the feed** and outside the zero-call criterion: the manual-open ATR fetch (`--fetch-atr`), the LLM entry-review candles, the UI candle chart, the status-server mid fetch, the liquidation-guard off-cycle mid fetch, and OKX perps checks that fetch their own candles.
+
+**Scheduling.** In-scope strategies become due on epoch-aligned deadlines (`floor(now / interval) * interval`), so live and paper twins on the same cadence share one evaluation identifier and one snapshot no matter how long each check takes. A missed deadline is never replayed: the next cycle consumes only the newest one. Strategies on other platforms keep last-run scheduling. Cadences that differ (a drawdown-accelerated strategy, say) get their own identifier, and the cycle log says so.
+
+**Freshness.** A key is ready once it holds at least 30 bars (`coverage_short` is reported when the venue's history is shorter than the lookback). It is stale when its newest bar closed more than two intervals plus 60s ago, or when a connected socket has sent nothing for that key in `max(2 × interval, 5m)`. Mids expire after 15s. A reconnect gets a 30s grace before silence counts. A sealed snapshot older than `max(60s, interval / 2)` at dispatch holds entries.
+
+**Outage behavior.** A key that is not ready and cannot be recovered yields no candle frame. The strategy still evaluates: signal 0, close fraction 0, price from the freshest verified mid, and a `degraded` reason in the log plus one throttled owner alert per key. Trailing stops, ratchets, protection sync, hedge sync and reconciliation keep running on verified inputs; candle-dependent closes report degraded rather than guessing. Entries are held at both in-scope dispatch sites. With no verified mark either, the strategy is skipped with a CRITICAL line. The operator pause state is never written.
+
+**Never a silent private fetch.** With the feed on, a malformed, stale, incomplete or mismatched payload is an explicit error. Python sets the adapter aside for candle, higher-timeframe and funding reads whenever a market payload is present.
+
+**Counting.** Steady-state evaluations make zero candle REST calls. Bootstrap, reconnect repair and stale recovery are counted separately and printed each cycle:
+
+```
+[feed] snapshot=300s/1788592500/1 keys=1 ready=1 stale=0 rest{bootstrap,repair,recovery}=1,0,0 steady_candle_rest=0
+```
+
+`/status` carries a `market_feed` block with the mode, connection state, generation, last snapshot identifier and per-key readiness.
+
 ---
 
 ## Operator-Required Circuit Breakers
@@ -995,6 +1020,13 @@ Enabled by `replay_log_path` plus per-strategy `replay_sharing="live_mirror"`. P
 ### Batched HL checks and fills (`hl_batch.go`, `hyperliquid_fills.go`, `hyperliquid_balance.go`)
 
 - Batching is a pure partition on `hlBatchKey` into one `check_hyperliquid.py --batch-check`; the fingerprint is re-checked at dispatch. Three strikes revert a group to per-strategy checks with a batch retry every 10 cycles. Operator view: § Hyperliquid Batched Signal Checks.
+
+### Market feed (`market_feed*.go`, `hyperliquid_candles.go`, `hyperliquid_funding.go`)
+
+- `marketFeedOwner` owns one websocket, its own `feedMu`, and a bar ring per `marketFeedKey{Host, Namespace, Symbol, Timeframe}` sized `required + 50`. It never takes the scheduler state lock; alerts leave through a channel the cycle drains outside `mu`. A race test and a source guard hold that line.
+- `deriveFeedRequirements(cfg)` builds the key set from every in-scope consumer: signal frames, higher-timeframe filter frames (`hlFeedHTFMap` mirrors Python `_HTF_MAP` through `shared_tools/testdata/htf_map.json`), regime timeframe overrides, mid coins and funding needs. Each key stores the highest lookback any consumer asks for; `snapshot.frameFor(key, required)` slices it per consumer, so legacy row counts are preserved. `ApplyGeneration` bootstraps new keys and publishes a generation only once every required key is ready or has failed explicitly.
+- `hlFetchCandleHistory` mirrors the Python adapter's widening loop, and `hlCandleRowFromRaw` mirrors its row conversion including the exchange close-timestamp preference; one golden fixture proves both converters agree.
+- `sealCycleMarketSnapshot` runs at most one REST recovery per stale key per cycle, then freezes a deep copy. Later socket updates belong to a later snapshot. The payload rides stdin: the batch envelope becomes `v:2` with a `market` object; individual and regime-bundle checks get `--market-stdin` and the same envelope. Go caps the payload at 8 MiB and treats a serialization or size failure as a degraded dispatch, never a private fetch.
 - The fill resolver is built outside `mu.Lock`; a resolver failure falls back to the modeled fee. Reconcile paths treat unconfirmed SL fills as gaps, never as books.
 - `reconcileHyperliquidAccountPositions` sends public trade alerts for reconciliation closes via `sendTradeAlertRows` in the deferred unlock path. `hyperliquidPublicTradeAlertRows` drops hedge-leg rows so a hedge close alerts only its owner DM. A sole-owner reconciled SL close also queues a `ProtectionFillAlert`.
 
