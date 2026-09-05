@@ -3483,7 +3483,9 @@ func finishHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCt
 	if stderr != "" {
 		logger.Info("stderr: %s", stderr)
 	}
-	clearScriptFailure(notifier, *sc)
+	if result.Degraded == "" {
+		clearScriptFailure(notifier, *sc)
+	}
 	currentDirRegime := regimeDirectionalLabel(*sc, regimePayloadValue(result.Regime), regime)
 	posDirRegime := posCtx.DirectionalRegime
 	var dirCertStates map[string]string

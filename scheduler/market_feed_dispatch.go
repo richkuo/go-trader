@@ -36,12 +36,12 @@ func (c *marketFeedContext) covers(sc StrategyConfig) bool {
 	return ok
 }
 
-func (c *marketFeedContext) frameSpecs(sc StrategyConfig, signalRequired int) ([]marketPayloadFrameSpec, string, bool) {
+func (c *marketFeedContext) frameSpecs(sc StrategyConfig) ([]marketPayloadFrameSpec, string, bool) {
 	entry, ok := c.entryFor(sc.ID)
 	if !ok {
 		return nil, "", false
 	}
-	specs := []marketPayloadFrameSpec{{Key: entry.Signal, Required: signalRequired}}
+	specs := []marketPayloadFrameSpec{{Key: entry.Signal, Required: entry.SignalLookback}}
 	if entry.HasHTF {
 		specs = append(specs, marketPayloadFrameSpec{Key: entry.HTF, Required: hlFeedHTFLookback})
 	}
@@ -52,7 +52,7 @@ func (c *marketFeedContext) frameSpecs(sc StrategyConfig, signalRequired int) ([
 }
 
 func (c *marketFeedContext) singleCheckPayload(sc StrategyConfig) ([]byte, error) {
-	specs, coin, ok := c.frameSpecs(sc, hlBatchPythonDefaultOhlcvLimit)
+	specs, coin, ok := c.frameSpecs(sc)
 	if !ok {
 		return nil, fmt.Errorf("strategy %s is outside the market feed contract", sc.ID)
 	}

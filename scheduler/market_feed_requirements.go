@@ -244,6 +244,8 @@ func (o *marketFeedOwner) ApplyGeneration(ctx context.Context, req feedRequireme
 		o.fundingNeeds[coin] = need
 	}
 	o.subVersion++
+	o.applySeq++
+	token := o.applySeq
 	pending := make([]marketFeedKey, 0, len(req.Order))
 	for _, key := range req.Order {
 		st := o.keys[key]
@@ -275,15 +277,19 @@ func (o *marketFeedOwner) ApplyGeneration(ctx context.Context, req feedRequireme
 			}()
 		}
 		wg.Wait()
-		o.publishGeneration(req)
+		o.publishGeneration(req, token)
 	}()
 
 	return done
 }
 
-func (o *marketFeedOwner) publishGeneration(req feedRequirements) {
+func (o *marketFeedOwner) publishGeneration(req feedRequirements, token uint64) bool {
 	o.feedMu.Lock()
 	defer o.feedMu.Unlock()
+	if token != o.applySeq {
+		o.logf("[feed] generation request %d finished after request %d superseded it; keeping the newer key set", token, o.applySeq)
+		return false
+	}
 	for key := range o.keys {
 		if !req.requires(key) {
 			delete(o.keys, key)
@@ -294,6 +300,7 @@ func (o *marketFeedOwner) publishGeneration(req feedRequirements) {
 		o.published[key] = true
 	}
 	o.gen++
+	return true
 }
 
 func (o *marketFeedOwner) fundingWork() map[string]feedFundingNeed {

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -29,8 +30,12 @@ func decodeMarketEnvelope(t *testing.T, stdin []byte) map[string]any {
 
 func feedDispatchFixture(t *testing.T) (*marketFeedContext, *Config, StrategyConfig, StrategyConfig) {
 	t.Helper()
+	return feedDispatchFixtureWithRegime(t, &RegimeConfig{Enabled: true, Timeframe: "4h", Period: 14, ADXThreshold: 20})
+}
+
+func feedDispatchFixtureWithRegime(t *testing.T, rc *RegimeConfig) (*marketFeedContext, *Config, StrategyConfig, StrategyConfig) {
+	t.Helper()
 	now := time.Unix(1_700_003_600, 0).UTC()
-	rc := &RegimeConfig{Enabled: true, Timeframe: "4h", Period: 14, ADXThreshold: 20}
 	scA := StrategyConfig{
 		ID: "hl-a", Type: "perps", Platform: "hyperliquid", Script: hyperliquidCheckScript,
 		Args: []string{"momentum", "BTC", "1h", "--mode=paper"}, HTFFilter: true, Capital: 1000,
@@ -194,8 +199,8 @@ func TestEveryCheckPathConsumesTheSealedSnapshot(t *testing.T) {
 				t.Fatalf("check %d is missing the signal frame: %v", i, keysOf(frames))
 			}
 			signal := frames["BTC|1h"].(map[string]any)
-			if int(signal["required"].(float64)) != hlBatchPythonDefaultOhlcvLimit {
-				t.Fatalf("a singleton check must ask for the legacy 200-bar lookback, got %v", signal["required"])
+			if want := feed.Requirements.Strategies["hl-a"].SignalLookback; int(signal["required"].(float64)) != want {
+				t.Fatalf("a singleton check must ask for the row count its argv names (%d), got %v", want, signal["required"])
 			}
 		}
 		if _, ok := captured[0].Market["frames"].(map[string]any)["BTC|4h"]; !ok {
@@ -268,6 +273,45 @@ func containsArg(args []string, want string) bool {
 	return false
 }
 
+func TestSingletonPayloadRowCountMatchesTheArgvLimit(t *testing.T) {
+	tests := []struct {
+		name string
+		rc   *RegimeConfig
+		want func(*RegimeConfig) int
+	}{
+		{name: "regime disabled keeps the legacy 200 rows", rc: nil, want: func(*RegimeConfig) int { return hlBatchPythonDefaultOhlcvLimit }},
+		{name: "regime at period 14 stays at 200 rows", rc: &RegimeConfig{Enabled: true, Timeframe: "4h", Period: 14, ADXThreshold: 20}, want: func(*RegimeConfig) int { return hlBatchPythonDefaultOhlcvLimit }},
+		{name: "regime at period 120 carries the deeper argv limit", rc: &RegimeConfig{Enabled: true, Timeframe: "4h", Period: 120, ADXThreshold: 20}, want: regimeRequiredOhlcvLimit},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			feed, cfg, scA, _ := feedDispatchFixtureWithRegime(t, tc.rc)
+			want := tc.want(tc.rc)
+			if tc.rc != nil && tc.rc.Enabled {
+				argv := appendRegimeArgs(nil, cfg.Regime)
+				if !containsArg(argv, strconv.Itoa(want)) {
+					t.Fatalf("argv --ohlcv-limit must name %d: %v", want, argv)
+				}
+			}
+			blob, err := feed.singleCheckPayload(scA)
+			if err != nil {
+				t.Fatalf("single payload: %v", err)
+			}
+			var envelope map[string]any
+			if err := json.Unmarshal(blob, &envelope); err != nil {
+				t.Fatalf("decode payload: %v", err)
+			}
+			signal := envelope["market"].(map[string]any)["frames"].(map[string]any)["BTC|1h"].(map[string]any)
+			if got := int(signal["required"].(float64)); got != want {
+				t.Fatalf("required rows: got %d want %d", got, want)
+			}
+			if got := len(signal["rows"].([]any)); got != want {
+				t.Fatalf("payload rows: got %d want %d", got, want)
+			}
+		})
+	}
+}
+
 func TestFeedOutageHoldsEntriesAndKeepsProtection(t *testing.T) {
 	feed, cfg, scA, _ := feedDispatchFixture(t)
 	failedKey := feed.Requirements.Strategies[scA.ID].Signal
@@ -289,9 +333,15 @@ func TestFeedOutageHoldsEntriesAndKeepsProtection(t *testing.T) {
 		runHyperliquidCheckWithStdinFn = origStdin
 	})
 
+	scriptFailureTracker.Record(scA.ID, "boom", time.Now())
+	t.Cleanup(func() { scriptFailureTracker.Clear(scA.ID) })
+
 	result, _, price, ok := runHyperliquidCheck(&scA, map[string]float64{"BTC": 101}, PositionCtx{}, cfg.Regime, "simple", nil, hlBatchTestLogger(), nil, feed)
 	if !ok {
 		t.Fatalf("a degraded evaluation must still return a result so protection can run")
+	}
+	if _, streak := scriptFailureTracker.Clear(scA.ID); streak != 1 {
+		t.Fatalf("a degraded evaluation runs no script, so it must not clear the script-failure streak: prior count %d", streak)
 	}
 	if spawns != 0 {
 		t.Fatalf("a degraded evaluation must never spawn a private fetch, got %d spawns", spawns)

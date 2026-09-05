@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"testing"
@@ -78,7 +79,7 @@ func TestMarketFeedHistoryContract(t *testing.T) {
 		st := newFeedKeyState(testFeedKey(), testFeedIntervalMs, 40)
 		st.Status = feedStatusReady
 		mergeRestRows(st, []hlCandleRaw{testRawBar(base, 100), testRawBar(base+2*testFeedIntervalMs, 102)}, now)
-		if err := applySocketBar(st, feedBarFromRaw(testRawBar(base+testFeedIntervalMs, 101), feedBarSourceSocket, now)); err != nil {
+		if err := applySocketBar(st, feedBarFromRaw(testRawBar(base+testFeedIntervalMs, 101), testFeedIntervalMs, feedBarSourceSocket, now)); err != nil {
 			t.Fatalf("gap fill rejected: %v", err)
 		}
 		if len(st.Bars) != 3 {
@@ -94,8 +95,8 @@ func TestMarketFeedHistoryContract(t *testing.T) {
 	t.Run("an out-of-order socket update lands in order", func(t *testing.T) {
 		st := newFeedKeyState(testFeedKey(), testFeedIntervalMs, 40)
 		st.Status = feedStatusReady
-		applySocketBar(st, feedBarFromRaw(testRawBar(base+2*testFeedIntervalMs, 102), feedBarSourceSocket, now))
-		applySocketBar(st, feedBarFromRaw(testRawBar(base, 100), feedBarSourceSocket, now))
+		applySocketBar(st, feedBarFromRaw(testRawBar(base+2*testFeedIntervalMs, 102), testFeedIntervalMs, feedBarSourceSocket, now))
+		applySocketBar(st, feedBarFromRaw(testRawBar(base, 100), testFeedIntervalMs, feedBarSourceSocket, now))
 		if st.Bars[0].OpenMs != base {
 			t.Fatalf("oldest bar first: got %d", st.Bars[0].OpenMs)
 		}
@@ -104,8 +105,8 @@ func TestMarketFeedHistoryContract(t *testing.T) {
 	t.Run("a repeated update for the forming bar replaces it", func(t *testing.T) {
 		st := newFeedKeyState(testFeedKey(), testFeedIntervalMs, 40)
 		st.Status = feedStatusReady
-		applySocketBar(st, feedBarFromRaw(testRawBar(base, 100), feedBarSourceSocket, now))
-		applySocketBar(st, feedBarFromRaw(testRawBar(base, 107), feedBarSourceSocket, now.Add(time.Second)))
+		applySocketBar(st, feedBarFromRaw(testRawBar(base, 100), testFeedIntervalMs, feedBarSourceSocket, now))
+		applySocketBar(st, feedBarFromRaw(testRawBar(base, 107), testFeedIntervalMs, feedBarSourceSocket, now.Add(time.Second)))
 		if len(st.Bars) != 1 {
 			t.Fatalf("the same open time must replace, not append: %d bars", len(st.Bars))
 		}
@@ -118,11 +119,11 @@ func TestMarketFeedHistoryContract(t *testing.T) {
 		st := newFeedKeyState(testFeedKey(), testFeedIntervalMs, 40)
 		st.Status = feedStatusReady
 		fresh := testRawBar(base, 107)
-		applySocketBar(st, feedBarFromRaw(fresh, feedBarSourceSocket, now))
+		applySocketBar(st, feedBarFromRaw(fresh, testFeedIntervalMs, feedBarSourceSocket, now))
 		stale := fresh
 		stale.CloseMs = fresh.CloseMs - 1000
 		stale.Close = 90
-		applySocketBar(st, feedBarFromRaw(stale, feedBarSourceSocket, now.Add(time.Second)))
+		applySocketBar(st, feedBarFromRaw(stale, testFeedIntervalMs, feedBarSourceSocket, now.Add(time.Second)))
 		if st.Bars[0].Close != 107 {
 			t.Fatalf("an older close timestamp must not overwrite the newer bar: %v", st.Bars[0].Close)
 		}
@@ -132,7 +133,7 @@ func TestMarketFeedHistoryContract(t *testing.T) {
 		st := newFeedKeyState(testFeedKey(), testFeedIntervalMs, 40)
 		st.Status = feedStatusReady
 		socketAt := now
-		applySocketBar(st, feedBarFromRaw(testRawBar(base, 999), feedBarSourceSocket, socketAt))
+		applySocketBar(st, feedBarFromRaw(testRawBar(base, 999), testFeedIntervalMs, feedBarSourceSocket, socketAt))
 		out := mergeRestRows(st, []hlCandleRaw{testRawBar(base, 100)}, socketAt.Add(-time.Minute))
 		if out.Kept != 1 || out.Replaced != 0 {
 			t.Fatalf("stale REST row must be kept out: %+v", out)
@@ -145,7 +146,7 @@ func TestMarketFeedHistoryContract(t *testing.T) {
 	t.Run("a newer REST response repairs the stored bar", func(t *testing.T) {
 		st := newFeedKeyState(testFeedKey(), testFeedIntervalMs, 40)
 		st.Status = feedStatusReady
-		applySocketBar(st, feedBarFromRaw(testRawBar(base, 999), feedBarSourceSocket, now.Add(-time.Hour)))
+		applySocketBar(st, feedBarFromRaw(testRawBar(base, 999), testFeedIntervalMs, feedBarSourceSocket, now.Add(-time.Hour)))
 		out := mergeRestRows(st, []hlCandleRaw{testRawBar(base, 100)}, now)
 		if out.Replaced != 1 {
 			t.Fatalf("a newer REST response must repair the bar: %+v", out)
@@ -154,7 +155,7 @@ func TestMarketFeedHistoryContract(t *testing.T) {
 
 	t.Run("bootstrapping buffers socket bars until the history lands", func(t *testing.T) {
 		st := newFeedKeyState(testFeedKey(), testFeedIntervalMs, 40)
-		applySocketBar(st, feedBarFromRaw(testRawBar(base+3*testFeedIntervalMs, 103), feedBarSourceSocket, now))
+		applySocketBar(st, feedBarFromRaw(testRawBar(base+3*testFeedIntervalMs, 103), testFeedIntervalMs, feedBarSourceSocket, now))
 		if len(st.Bars) != 0 || len(st.Pending) != 1 {
 			t.Fatalf("socket bars must buffer while bootstrapping: bars=%d pending=%d", len(st.Bars), len(st.Pending))
 		}
@@ -165,21 +166,47 @@ func TestMarketFeedHistoryContract(t *testing.T) {
 		}
 	})
 
+	t.Run("a bar without a close timestamp is accepted like the Python adapter accepts it", func(t *testing.T) {
+		st := newFeedKeyState(testFeedKey(), testFeedIntervalMs, 40)
+		st.Status = feedStatusReady
+		forming := hlCandleRaw{OpenMs: base, HasClose: false, Open: 1, High: 2, Low: 0.5, Close: 1.5, Volume: 1}
+		if err := applySocketBar(st, feedBarFromRaw(forming, testFeedIntervalMs, feedBarSourceSocket, now)); err != nil {
+			t.Fatalf("a forming bar without T must be accepted: %v", err)
+		}
+		if len(st.Bars) != 1 || st.Bars[0].CloseMs != base+testFeedIntervalMs-1 {
+			t.Fatalf("the synthesized close must sit at the end of the interval: %+v", st.Bars)
+		}
+		if got := st.Bars[0].row().TimestampMs; got != hlCandleRowFromRaw(forming).TimestampMs {
+			t.Fatalf("the row timestamp must fall back to the open time as the REST converter does: got %d want %d", got, forming.OpenMs)
+		}
+		full := testRawBar(base, 105)
+		applySocketBar(st, feedBarFromRaw(full, testFeedIntervalMs, feedBarSourceSocket, now.Add(time.Second)))
+		if len(st.Bars) != 1 || !st.Bars[0].HasClose || st.Bars[0].Close != 105 {
+			t.Fatalf("a later full update for the same open must replace the synthesized bar: %+v", st.Bars)
+		}
+		if got := st.Bars[0].row().TimestampMs; got != full.CloseMs {
+			t.Fatalf("a bar with T keeps the close timestamp: got %d want %d", got, full.CloseMs)
+		}
+		restOnly := newFeedKeyState(testFeedKey(), testFeedIntervalMs, 40)
+		if out := mergeRestRows(restOnly, []hlCandleRaw{forming}, now); out.Added != 1 || out.Invalid != 0 {
+			t.Fatalf("a REST row without T must merge: %+v", out)
+		}
+	})
+
 	t.Run("invalid bars are rejected and never stored", func(t *testing.T) {
 		bad := map[string]hlCandleRaw{
-			"no close timestamp": {OpenMs: base, HasClose: false, Open: 1, High: 2, Low: 0.5, Close: 1.5, Volume: 1},
-			"close before open":  {OpenMs: base, CloseMs: base - 1, HasClose: true, Open: 1, High: 2, Low: 0.5, Close: 1.5, Volume: 1},
-			"spans two bars":     {OpenMs: base, CloseMs: base + 2*testFeedIntervalMs, HasClose: true, Open: 1, High: 2, Low: 0.5, Close: 1.5, Volume: 1},
-			"zero price":         {OpenMs: base, CloseMs: base + 10, HasClose: true, Open: 0, High: 2, Low: 0.5, Close: 1.5, Volume: 1},
-			"not finite":         {OpenMs: base, CloseMs: base + 10, HasClose: true, Open: math.NaN(), High: 2, Low: 0.5, Close: 1.5, Volume: 1},
-			"high below close":   {OpenMs: base, CloseMs: base + 10, HasClose: true, Open: 1, High: 1.2, Low: 0.5, Close: 1.5, Volume: 1},
-			"low above open":     {OpenMs: base, CloseMs: base + 10, HasClose: true, Open: 1, High: 2, Low: 1.4, Close: 1.5, Volume: 1},
-			"negative volume":    {OpenMs: base, CloseMs: base + 10, HasClose: true, Open: 1, High: 2, Low: 0.5, Close: 1.5, Volume: -1},
+			"close before open": {OpenMs: base, CloseMs: base - 1, HasClose: true, Open: 1, High: 2, Low: 0.5, Close: 1.5, Volume: 1},
+			"spans two bars":    {OpenMs: base, CloseMs: base + 2*testFeedIntervalMs, HasClose: true, Open: 1, High: 2, Low: 0.5, Close: 1.5, Volume: 1},
+			"zero price":        {OpenMs: base, CloseMs: base + 10, HasClose: true, Open: 0, High: 2, Low: 0.5, Close: 1.5, Volume: 1},
+			"not finite":        {OpenMs: base, CloseMs: base + 10, HasClose: true, Open: math.NaN(), High: 2, Low: 0.5, Close: 1.5, Volume: 1},
+			"high below close":  {OpenMs: base, CloseMs: base + 10, HasClose: true, Open: 1, High: 1.2, Low: 0.5, Close: 1.5, Volume: 1},
+			"low above open":    {OpenMs: base, CloseMs: base + 10, HasClose: true, Open: 1, High: 2, Low: 1.4, Close: 1.5, Volume: 1},
+			"negative volume":   {OpenMs: base, CloseMs: base + 10, HasClose: true, Open: 1, High: 2, Low: 0.5, Close: 1.5, Volume: -1},
 		}
 		for name, raw := range bad {
 			st := newFeedKeyState(testFeedKey(), testFeedIntervalMs, 40)
 			st.Status = feedStatusReady
-			if err := applySocketBar(st, feedBarFromRaw(raw, feedBarSourceSocket, now)); err == nil {
+			if err := applySocketBar(st, feedBarFromRaw(raw, testFeedIntervalMs, feedBarSourceSocket, now)); err == nil {
 				t.Fatalf("%s: expected the bar to be rejected", name)
 			}
 			if len(st.Bars) != 0 {
@@ -228,6 +255,49 @@ func TestMarketFeedHistoryContract(t *testing.T) {
 			t.Fatalf("the newest bar must survive trimming: %d", st.Bars[len(st.Bars)-1].OpenMs)
 		}
 	})
+}
+
+func TestMarketFeedGenerationPublishIsNeverClobberedByAnOlderRequest(t *testing.T) {
+	base := int64(1_700_000_000_000)
+	btc := testFeedKey()
+	eth := marketFeedKey{Host: btc.Host, Namespace: btc.Namespace, Symbol: "ETH", Timeframe: "1h"}
+	release := make(chan struct{})
+	stubFeedCandleSnapshot(t, func(coin string, _ string, _, _ int64) ([]hlCandleRaw, error) {
+		if coin == "BTC" {
+			<-release
+		}
+		return testRawSeries(base, 40), nil
+	})
+	owner := newMarketFeedOwner(nil, nil)
+
+	first := owner.ApplyGeneration(context.Background(), feedTestRequirements(btc, 40, "BTC"))
+	select {
+	case <-first:
+		t.Fatalf("the first generation must still be bootstrapping while its fetch is blocked")
+	case <-time.After(20 * time.Millisecond):
+	}
+	<-owner.ApplyGeneration(context.Background(), feedTestRequirements(eth, 40, "ETH"))
+	if owner.Generation() != 1 {
+		t.Fatalf("the newer request must publish first: gen=%d", owner.Generation())
+	}
+	close(release)
+	select {
+	case <-first:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("the stale generation goroutine must still finish")
+	}
+
+	owner.feedMu.Lock()
+	defer owner.feedMu.Unlock()
+	if owner.gen != 1 {
+		t.Fatalf("a superseded request must not bump the generation: gen=%d", owner.gen)
+	}
+	if !owner.published[eth] || owner.published[btc] {
+		t.Fatalf("the published set must stay the newest request's keys: %v", owner.published)
+	}
+	if owner.keys[btc] != nil {
+		t.Fatalf("a key the newest request dropped must not be resurrected")
+	}
 }
 
 func TestMarketFeedReadyFloorNeverExceedsRequired(t *testing.T) {

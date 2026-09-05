@@ -901,7 +901,7 @@ Root `market_feed` chooses where Hyperliquid candles come from. `rest` (the defa
 
 **Scope.** Hyperliquid `perps` and `manual` strategies only. Every other platform keeps legacy polling under both values.
 
-**Six REST consumers stay outside the feed** and outside the zero-call criterion: the manual-open ATR fetch (`--fetch-atr`), the LLM entry-review candles, the UI candle chart, the status-server mid fetch, the liquidation-guard off-cycle mid fetch, and OKX perps checks that fetch their own candles.
+**Seven REST consumers stay outside the feed** and outside the zero-call criterion: the manual-open ATR fetch (`--fetch-atr`), the manual-open regime-trail label check (`resolveManualRatchetRegimeLabel`, which runs the check script off-cycle with no feed context from both the CLI and the UI open paths), the LLM entry-review candles, the UI candle chart, the status-server mid fetch, the liquidation-guard off-cycle mid fetch, and OKX perps checks that fetch their own candles.
 
 **Scheduling.** In-scope strategies become due on epoch-aligned deadlines (`floor(now / interval) * interval`), so live and paper twins on the same cadence share one evaluation identifier and one snapshot no matter how long each check takes. A missed deadline is never replayed: the next cycle consumes only the newest one. Strategies on other platforms keep last-run scheduling. Cadences that differ (a drawdown-accelerated strategy, say) get their own identifier, and the cycle log says so.
 

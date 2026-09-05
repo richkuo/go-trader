@@ -77,21 +77,26 @@ func sortMarketFeedKeys(keys []marketFeedKey) {
 }
 
 type feedBar struct {
-	OpenMs  int64
-	CloseMs int64
-	Open    float64
-	High    float64
-	Low     float64
-	Close   float64
-	Volume  float64
-	Seq     uint64
-	RecvAt  time.Time
-	Source  feedBarSource
+	OpenMs   int64
+	CloseMs  int64
+	HasClose bool
+	Open     float64
+	High     float64
+	Low      float64
+	Close    float64
+	Volume   float64
+	Seq      uint64
+	RecvAt   time.Time
+	Source   feedBarSource
 }
 
 func (b feedBar) row() hlCandleRow {
+	ts := b.OpenMs
+	if b.HasClose {
+		ts = b.CloseMs
+	}
 	return hlCandleRow{
-		TimestampMs: b.CloseMs,
+		TimestampMs: ts,
 		Open:        b.Open,
 		High:        b.High,
 		Low:         b.Low,
@@ -100,17 +105,22 @@ func (b feedBar) row() hlCandleRow {
 	}
 }
 
-func feedBarFromRaw(raw hlCandleRaw, source feedBarSource, recvAt time.Time) feedBar {
+func feedBarFromRaw(raw hlCandleRaw, intervalMs int64, source feedBarSource, recvAt time.Time) feedBar {
+	closeMs := raw.CloseMs
+	if !raw.HasClose {
+		closeMs = raw.OpenMs + intervalMs - 1
+	}
 	return feedBar{
-		OpenMs:  raw.OpenMs,
-		CloseMs: raw.CloseMs,
-		Open:    raw.Open,
-		High:    raw.High,
-		Low:     raw.Low,
-		Close:   raw.Close,
-		Volume:  raw.Volume,
-		RecvAt:  recvAt,
-		Source:  source,
+		OpenMs:   raw.OpenMs,
+		CloseMs:  closeMs,
+		HasClose: raw.HasClose,
+		Open:     raw.Open,
+		High:     raw.High,
+		Low:      raw.Low,
+		Close:    raw.Close,
+		Volume:   raw.Volume,
+		RecvAt:   recvAt,
+		Source:   source,
 	}
 }
 
@@ -268,7 +278,7 @@ type mergeRestOutcome struct {
 func mergeRestRows(s *feedKeyState, raws []hlCandleRaw, requestedAt time.Time) mergeRestOutcome {
 	var out mergeRestOutcome
 	for _, raw := range raws {
-		bar := feedBarFromRaw(raw, feedBarSourceREST, requestedAt)
+		bar := feedBarFromRaw(raw, s.IntervalMs, feedBarSourceREST, requestedAt)
 		if err := validateFeedBar(bar, s.IntervalMs); err != nil {
 			s.recordInvalid(err)
 			out.Invalid++
@@ -446,6 +456,7 @@ type marketFeedOwner struct {
 
 	gen        uint64
 	subVersion uint64
+	applySeq   uint64
 
 	connected        bool
 	lastConnectAt    time.Time
@@ -590,7 +601,7 @@ func (o *marketFeedOwner) IngestSocketCandle(key marketFeedKey, raw hlCandleRaw,
 	if st == nil {
 		return
 	}
-	bar := feedBarFromRaw(raw, feedBarSourceSocket, recvAt.UTC())
+	bar := feedBarFromRaw(raw, st.IntervalMs, feedBarSourceSocket, recvAt.UTC())
 	if err := applySocketBar(st, bar); err != nil {
 		o.logf("[feed] %s: dropped an invalid candle update: %v", key, err)
 		return
