@@ -1114,3 +1114,78 @@ func TestSaveStrategyBookAcknowledgesOnlyItsOwnActions(t *testing.T) {
 		t.Fatalf("remaining rows = %+v, want only hl-live-2 (its effect is still unsaved)", after)
 	}
 }
+
+func TestStateStoreEagerDiagnosticsInsertUsesStoredIdentifier(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &Config{DBFile: filepath.Join(dir, "live.db"), PaperDBFile: filepath.Join(dir, "paper.db"), Strategies: []StrategyConfig{
+		{ID: "hl-eth-momentum", StorageStrategyID: "hl-perps-eth", Type: "perps", Platform: "hyperliquid", Args: []string{"--mode=live"}},
+	}}
+	store := openSplitStore(t, cfg)
+	defer store.Close()
+
+	row := &TradeDiagnosticsRow{StrategyID: "hl-eth-momentum", PositionID: "p1", Symbol: "ETH", Side: "long", CloseReason: "signal", EntryPrice: 1800, ExitPrice: 1900, Quantity: 1, RealizedPnL: 100, ClosedAt: time.Unix(10, 0).UTC()}
+	if err := store.InsertTradeDiagnostics(row); err != nil {
+		t.Fatalf("InsertTradeDiagnostics: %v", err)
+	}
+	var stored string
+	if err := store.primary().db.QueryRow("SELECT strategy_id FROM trade_diagnostics").Scan(&stored); err != nil {
+		t.Fatalf("read stored strategy_id: %v", err)
+	}
+	if stored != "hl-perps-eth" {
+		t.Errorf("stored strategy_id = %q, want the storage identifier %q", stored, "hl-perps-eth")
+	}
+	rows, err := store.TradeDiagnosticsRows("hl-eth-momentum")
+	if err != nil {
+		t.Fatalf("TradeDiagnosticsRows: %v", err)
+	}
+	if len(rows) != 1 || rows[0].StrategyID != "hl-eth-momentum" {
+		t.Fatalf("rows = %+v, want one row read back under the process identifier", rows)
+	}
+	// The fill-reconciled correction filters on the stored identifier, so it
+	// must hit the eagerly inserted row.
+	res, err := store.primary().db.Exec("UPDATE trade_diagnostics SET exit_price = 1950, realized_pnl = 150 WHERE strategy_id = ? AND position_id = ?", "hl-perps-eth", "p1")
+	if err != nil {
+		t.Fatalf("correction update: %v", err)
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		t.Fatalf("correction affected %d rows, want 1", n)
+	}
+	rows, _ = store.TradeDiagnosticsRows("hl-eth-momentum")
+	if len(rows) != 1 || rows[0].ExitPrice != 1950 || rows[0].RealizedPnL != 150 {
+		t.Errorf("after correction rows = %+v, want exit 1950 / pnl 150 on the eagerly inserted row", rows)
+	}
+}
+
+func TestLoadStateWithStoreReportsMissingPrimaryFile(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &Config{DBFile: filepath.Join(dir, "live.db"), PaperDBFile: filepath.Join(dir, "paper.db"), Strategies: []StrategyConfig{
+		{ID: "hl-paper", Type: "perps", Platform: "hyperliquid", Symbol: "ETH", Args: []string{"--mode=paper"}},
+	}}
+	store := openSplitStore(t, cfg)
+	if err := SaveStateWithStore(NewAppState(), store); err != nil {
+		t.Fatalf("SaveStateWithStore: %v", err)
+	}
+	store.Close()
+	if err := os.Remove(cfg.DBFile); err != nil {
+		t.Fatalf("remove primary: %v", err)
+	}
+
+	ro, err := openToolStateStoreReadOnly(cfg)
+	if err != nil {
+		t.Fatalf("openToolStateStoreReadOnly: %v", err)
+	}
+	defer ro.Close()
+	if _, _, err := LoadStateWithStore(cfg, ro); err == nil || !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("LoadStateWithStore err = %v, want a missing primary file error, never a panic", err)
+	}
+}
+
+func TestStorageRefusalDMNamesEveryRejection(t *testing.T) {
+	sendStartupRefusalDM(nil, "Storage layout", "unused")
+	body := storageRefusalDMBody(storageInspection{Rejections: []string{"first rejection", "second rejection"}})
+	for _, want := range []string{"first rejection", "second rejection", "exit 80"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("DM body %q lacks %q", body, want)
+		}
+	}
+}

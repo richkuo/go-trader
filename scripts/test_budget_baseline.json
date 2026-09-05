@@ -127,6 +127,7 @@
     "scheduler/scale_in_synthesis_test.go::TestConfigValidationScaleInGuardScopedToLiveScalar",
     "scheduler/script_failure_alerts_test.go::TestFormatScriptFailureTransientAlert_NamesUpstreamError",
     "scheduler/shared_wallet_reconcile_cycle_test.go::TestFormatSharedWalletJournalAlerts",
+    "scheduler/storage_split_test.go::TestStorageRefusalDMNamesEveryRejection",
     "scheduler/trade_alert_source_test.go::TestFormatTradeDMSourceLine",
     "scheduler/trade_diagnostics_test.go::TestDiagnosticsReportCaptureAndRegimeHypotheses",
     "scheduler/trade_diagnostics_test.go::TestDiagnosticsReportDirectionHypothesis",

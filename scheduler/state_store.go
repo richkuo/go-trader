@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -566,13 +567,38 @@ func dueStrategiesPersistable(store *StateStore, due []StrategyConfig) []Strateg
 
 // reportStateOwnershipFailure prints the singleton guard message for a failed
 // ownership acquisition, naming the file and the holder.
-func reportStateOwnershipFailure(err error) {
+func reportStateOwnershipFailure(err error) string {
 	var locked *stateDBLockedError
+	var msg string
 	if errors.As(err, &locked) {
-		fmt.Fprintf(os.Stderr, "[singleton] CRITICAL: %s — refusing to start so this process can't double-trade against the same state files. If no other go-trader is actually running, the lock auto-releases on exit; check `pgrep -af go-trader`.\n", locked.Error())
+		msg = fmt.Sprintf("%s — refusing to start so this process can't double-trade against the same state files. If no other go-trader is actually running, the lock auto-releases on exit; check `pgrep -af go-trader`. (exit %d)", locked.Error(), ExitSingletonLock)
+	} else {
+		msg = fmt.Sprintf("could not acquire state file ownership: %v — refusing to start. (exit %d)", err, ExitSingletonLock)
+	}
+	fmt.Fprintf(os.Stderr, "[singleton] CRITICAL: %s\n", msg)
+	return msg
+}
+
+// sendStartupRefusalDM pages the owner about a refusal that systemd keeps down
+// under RestartPreventExitStatus. Every such exit must reach the notifier, not
+// stderr alone.
+func sendStartupRefusalDM(notifier *MultiNotifier, guard, msg string) {
+	if notifier == nil || !notifier.HasOwner() {
 		return
 	}
-	fmt.Fprintf(os.Stderr, "[singleton] CRITICAL: could not acquire state file ownership: %v — refusing to start.\n", err)
+	notifier.SendOwnerDM(fmt.Sprintf("**%s** — %s", guard, msg))
+}
+
+// storageRefusalDMBody names each rejection so the owner can act without the
+// journal.
+func storageRefusalDMBody(si storageInspection) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "refusing to start with a rejected storage layout (exit %d):", ExitStorageOwnership)
+	for _, r := range si.Rejections {
+		b.WriteString("\n- ")
+		b.WriteString(r)
+	}
+	return b.String()
 }
 
 // manualActionLock takes the manual-action lock of the file that owns one

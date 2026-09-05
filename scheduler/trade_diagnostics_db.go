@@ -10,7 +10,14 @@ func (sdb *StateDB) InsertTradeDiagnostics(row *TradeDiagnosticsRow) error {
 	if sdb == nil || sdb.db == nil {
 		return fmt.Errorf("state db unavailable")
 	}
-	return insertTradeDiagnosticsRow(sdb.db, row)
+	if row == nil {
+		return fmt.Errorf("nil diagnostics row")
+	}
+	sid, err := sdb.toStorageID(row.StrategyID)
+	if err != nil {
+		return err
+	}
+	return insertTradeDiagnosticsRowAs(sdb.db, row, sid)
 }
 
 type sqlExecer interface {

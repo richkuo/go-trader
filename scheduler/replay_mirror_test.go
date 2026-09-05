@@ -330,13 +330,13 @@ func TestMirrorSaveBeforeMarkWiring(t *testing.T) {
 	if applyIdx < 0 {
 		t.Fatal("replay application call not found")
 	}
-	saveIdx := strings.Index(src[applyIdx:], "SaveStrategyBookWithDB(stratState, stratDB)")
+	saveIdx := strings.Index(src[applyIdx:], "store.SaveStrategyBook(stratState)")
 	markIdx := strings.Index(src[applyIdx:], "decisionLog.MarkDecisionsApplied(appliedIDs)")
 	if saveIdx < 0 || markIdx < 0 {
 		t.Fatalf("replay block missing save (%d) or mark (%d) after apply", saveIdx, markIdx)
 	}
 	if saveIdx > markIdx {
-		t.Fatal("MarkDecisionsApplied runs BEFORE SaveStrategyBookWithDB — a kill in the gap drops a mirrored trade")
+		t.Fatal("MarkDecisionsApplied runs BEFORE store.SaveStrategyBook — a kill in the gap drops a mirrored trade")
 	}
 	if strings.Contains(src[applyIdx:applyIdx+markIdx+len("decisionLog.MarkDecisionsApplied(appliedIDs)")], "SaveStateWithStore(state, store)") {
 		t.Fatal("replay block still calls full-fleet SaveStateWithDB — persist cost would grow with unrelated strategies")

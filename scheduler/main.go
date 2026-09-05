@@ -163,11 +163,18 @@ func main() {
 	// ownership lock, so they can run beside a live daemon.
 	readOnlyReport := *summary != "" || *leaderboard
 
+	// The notifier exists before any refusal that RestartPreventExitStatus
+	// keeps down, so the owner is paged instead of reading stderr.
+	notifier, cleanupNotifier := buildNotifierFromConfig(cfg)
+	defer cleanupNotifier()
+
 	var ownership *stateOwnership
 	if !readOnlyReport && schedulerNeedsOwnership(*once) {
 		owned, lockErr := acquireStateOwnership(storageLayoutCfg.Files)
 		if lockErr != nil {
-			reportStateOwnershipFailure(lockErr)
+			msg := reportStateOwnershipFailure(lockErr)
+			sendStartupRefusalDM(notifier, "Singleton guard", msg)
+			cleanupNotifier()
 			os.Exit(ExitSingletonLock)
 		}
 		ownership = owned
@@ -177,12 +184,17 @@ func main() {
 	if !readOnlyReport {
 		si, inspectErr := inspectStorageOwnership(storageLayoutCfg, storageIdent, cfg, false)
 		if inspectErr != nil {
-			fmt.Fprintf(os.Stderr, "[storage] CRITICAL: ownership inspection failed: %v\n", inspectErr)
+			msg := fmt.Sprintf("ownership inspection failed: %v", inspectErr)
+			fmt.Fprintf(os.Stderr, "[storage] CRITICAL: %s\n", msg)
+			sendStartupRefusalDM(notifier, "Storage layout", fmt.Sprintf("%s (exit %d)", msg, ExitStorageOwnership))
+			cleanupNotifier()
 			os.Exit(ExitStorageOwnership)
 		}
 		if !si.OK() {
 			fmt.Fprint(os.Stderr, formatStorageInspection(si))
 			fmt.Fprintf(os.Stderr, "[storage] CRITICAL: refusing to start with a rejected storage layout (exit %d)\n", ExitStorageOwnership)
+			sendStartupRefusalDM(notifier, "Storage layout", storageRefusalDMBody(si))
+			cleanupNotifier()
 			os.Exit(ExitStorageOwnership)
 		}
 	}
@@ -410,8 +422,6 @@ func main() {
 		close(stopCh)
 	}()
 
-	notifier, cleanupNotifier := buildNotifierFromConfig(cfg)
-	defer cleanupNotifier()
 	fmt.Printf("Notification backends: %d active\n", notifier.BackendCount())
 	server.SetNotifier(notifier)
 
@@ -2359,7 +2369,7 @@ func main() {
 							sourceReset := syncReplayMirrorWatermarkSource(sc, stratState, replaySourceID, logger)
 							var sourceResetSaveErr error
 							if sourceReset {
-								sourceResetSaveErr = SaveStrategyBookWithDB(stratState, stratDB)
+								sourceResetSaveErr = store.SaveStrategyBook(stratState)
 							}
 							mu.Unlock()
 							if sourceResetSaveErr != nil {
@@ -2374,7 +2384,7 @@ func main() {
 								appliedIDs, replayTrades, replayDetails, driftDMs := applyReplayedLiveDecisions(sc, stratState, pending, price, result, cfg, logger)
 								var saveErr error
 								if len(appliedIDs) > 0 {
-									saveErr = SaveStrategyBookWithDB(stratState, stratDB)
+									saveErr = store.SaveStrategyBook(stratState)
 								}
 								mu.Unlock()
 								sendReplayDriftWarns(driftDMs)
