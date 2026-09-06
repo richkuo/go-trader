@@ -1700,6 +1700,7 @@ func main() {
 				var hlAddedNotionalUSD float64
 				var hlScaleInCash float64
 				var hlScaleInResizePending bool
+				var hlSharedCloseHoldUSD float64
 				var hlPoolBalanceKnown bool
 				var hlProfileState *RegimeProfileState
 				if sc.Type == "perps" && sc.Platform == "hyperliquid" {
@@ -1738,6 +1739,7 @@ func main() {
 							hlLastAddPrice = pos.LastAddPrice
 							hlAddedNotionalUSD = pos.AddedNotionalUSD
 							hlScaleInResizePending = pos.ScaleInResizePending
+							hlSharedCloseHoldUSD = pos.SharedCloseHoldUSD
 						}
 					}
 				}
@@ -2351,7 +2353,28 @@ func main() {
 									liveExecFailed = true
 								}
 							} else {
+								floorOutcome, floorRemainderUSD := applySharedCoinFullCloseFloor(sc, result, hlPosQty, hlPosSide, price, hlReconcileAll, hlOnChainCoinView{Known: hlStateFetched, AbsQty: hlOnChainAbsQty, NetSide: hlNetSideByCoin}, hlSharedCloseHoldUSD != 0, notifier, logger)
 								er, ok2 := runHyperliquidExecuteOrder(sc, result, price, hlCash, hlPoolBalanceKnown, hlPosQty, hlPosSide, hlAvgCost, hlPosLeverage, hlStopLossOID, hlTPOIDs, hlReconcileAll, walletSnapshot, hurstDecision, notifier, logger)
+								switch {
+								case floorOutcome == hlSharedCloseFloorHold:
+									mu.Lock()
+									stampSharedCloseHold(stratState, result.Symbol, floorRemainderUSD)
+									mu.Unlock()
+								case result.SharedCloseStrandedUSD > 0:
+									mu.Lock()
+									stampSharedCloseHold(stratState, result.Symbol, result.SharedCloseStrandedUSD)
+									mu.Unlock()
+								case floorOutcome == hlSharedCloseFloorNone && hlSharedCloseHoldUSD != 0 && result.CloseFraction == 1.0:
+									mu.Lock()
+									if clearSharedCloseHold(stratState, result.Symbol) {
+										logger.Info("Stranded-remainder hold cleared for %s: the full close is again above the venue minimum", result.Symbol)
+									}
+									mu.Unlock()
+								case floorOutcome == hlSharedCloseFloorEscalate && ok2:
+									mu.Lock()
+									clearSharedCloseHold(stratState, result.Symbol)
+									mu.Unlock()
+								}
 								if ok2 {
 									execResult = er
 								} else {
@@ -3642,6 +3665,9 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 	}
 
 	closeFullPosition := shouldCloseFullPosition(result.CloseFraction, result.Symbol, hlLiveAll)
+	if result.ForceFullClose && result.CloseFraction == 1.0 {
+		closeFullPosition = true
+	}
 	if closeFullPosition {
 		logger.Info("Final-tier full close %s (close_fraction=1.0) — using market_close(sz=None)", result.Symbol)
 	} else if result.CloseFraction == 1.0 {
@@ -3658,6 +3684,13 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 	execResult, err = confirmHyperliquidExecuteFill(execResult, err)
 	if err != nil {
 		logger.Error("Live execute failed: %v", err)
+		if result.ForceFullClose && closeFullPosition && isHLMinOrderValueRejection(err.Error()) {
+			remainderUSD := posQty * price
+			result.SharedCloseStrandedUSD = remainderUSD
+			logger.Error("Escalated whole-position close %s was rejected below the venue minimum ($%.2f) — holding the close and alerting once", result.Symbol, remainderUSD)
+			notifySharedCloseStranded(notifier, sc, result.Symbol, remainderUSD, fmt.Sprintf("Every peer is flat on-chain, but the venue also rejected the whole-position reduce-only close (%s).", err.Error()))
+			return execResult, false
+		}
 		notifyLiveExecFailure(notifier, sc, direction, result.Symbol, err.Error())
 		return execResult, false
 	}
