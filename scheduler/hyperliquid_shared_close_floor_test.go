@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"math"
 	"strings"
 	"sync"
 	"testing"
@@ -221,53 +222,92 @@ func TestSharedCloseHoldPersistsAcrossReload(t *testing.T) {
 	}
 }
 
-func TestRearmProtectionAfterStrandedCloseCoversTrailOwnedStop(t *testing.T) {
+func TestRearmTrailingStopAfterFailedCloseKeepsRatchetAndClamp(t *testing.T) {
 	oldUpdate := runHyperliquidUpdateStopLossFunc
 	t.Cleanup(func() { runHyperliquidUpdateStopLossFunc = oldUpdate })
 	trail := 2.0
 	liveArgs := []string{"x.py", "ETH", "1h", "--mode=live"}
+	sc := StrategyConfig{ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py", Args: liveArgs, TrailingStopATRMult: &trail}
 	cases := []struct {
-		name       string
-		sc         StrategyConfig
-		stopOID    int64
-		unreadable bool
-		wantArm    bool
-		wantCancel int64
+		name          string
+		bookOID       int64
+		bookTrigger   float64
+		bookHighWater float64
+		prevOID       int64
+		prevTrigger   float64
+		prevHighWater float64
+		onChainQty    float64
+		liqPx         float64
+		wantCancel    int64
+		wantSize      float64
+		wantTrigger   float64
+		wantHighWater float64
 	}{
-		{name: "trailing owner re-arms after the canceled stop is cleared", sc: StrategyConfig{ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py", Args: liveArgs, TrailingStopATRMult: &trail}, wantArm: true},
-		{name: "unreadable execute result clears the stale OID and still re-arms", sc: StrategyConfig{ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py", Args: liveArgs, TrailingStopATRMult: &trail}, stopOID: 444, unreadable: true, wantArm: true},
-		{name: "readable execute result with a resting stop leaves it alone", sc: StrategyConfig{ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py", Args: liveArgs, TrailingStopATRMult: &trail}, stopOID: 444, wantArm: false},
+		{name: "readable cancel cleared the book: old oid is the cancel oid and the ratcheted high-water anchors the trigger", bookHighWater: 2200, prevOID: 444, prevTrigger: 2090, prevHighWater: 2200, onChainQty: 0.002, wantCancel: 444, wantSize: 0.002, wantTrigger: 2090, wantHighWater: 2200},
+		{name: "unreadable result keeps the book oid and hands it to the update script as the cancel oid", bookOID: 444, bookTrigger: 2090, bookHighWater: 2200, prevOID: 444, prevTrigger: 2090, prevHighWater: 2200, onChainQty: 0.002, wantCancel: 444, wantSize: 0.002, wantTrigger: 2090, wantHighWater: 2200},
+		{name: "virtual above on-chain arms at the capped size instead of skipping", bookHighWater: 2200, prevOID: 444, prevHighWater: 2200, onChainQty: 0.001, wantCancel: 444, wantSize: 0.001, wantTrigger: 2090, wantHighWater: 2200},
+		{name: "trigger past the liquidation price is clamped inside it", bookHighWater: 2200, prevOID: 444, prevHighWater: 2200, onChainQty: 0.002, liqPx: 2095, wantCancel: 444, wantSize: 0.002, wantTrigger: 2095 * (1 + hlLiquidationStopBufferPct/100), wantHighWater: 2200},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			placed := 0
 			var gotCancel int64
+			var gotSize, gotTrigger float64
+			placed := 0
 			runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 				placed++
-				gotCancel = cancelStopLossOID
-				return &HyperliquidStopLossUpdateResult{StopLossOID: 999, StopLossTriggerPx: triggerPx}, "", nil
-			}
-			trigger := 0.0
-			if tc.stopOID != 0 {
-				trigger = 1950
+				gotCancel, gotSize, gotTrigger = cancelStopLossOID, size, triggerPx
+				return &HyperliquidStopLossUpdateResult{StopLossOID: 999, StopLossTriggerPx: triggerPx, CancelStopLossSucceeded: cancelStopLossOID > 0}, "", nil
 			}
 			st := &StrategyState{ID: "hl-eth", Positions: map[string]*Position{
-				"ETH": {Symbol: "ETH", Side: "long", Quantity: 0.002, InitialQuantity: 0.002, AvgCost: 2000, EntryATR: 50, RiskAnchorPrice: 2000, StopLossOID: tc.stopOID, StopLossTriggerPx: trigger},
+				"ETH": {Symbol: "ETH", Side: "long", Quantity: 0.002, InitialQuantity: 0.002, AvgCost: 2000, EntryATR: 50, RiskAnchorPrice: 2000, StopLossOID: tc.bookOID, StopLossTriggerPx: tc.bookTrigger, StopLossHighWaterPx: tc.bookHighWater},
 			}}
+			var liq map[string]float64
+			var net map[string]string
+			if tc.liqPx > 0 {
+				liq = map[string]float64{"ETH": tc.liqPx}
+				net = map[string]string{"ETH": "long"}
+			}
 			var mu sync.RWMutex
-			rearmProtectionAfterStrandedClose(tc.sc, st, nil, "ETH", 2000, tc.unreadable, tc.stopOID, map[string]float64{"ETH": 0.002}, nil, nil, nil, &mu, nil, newTestLogger(t))
-			if (placed > 0) != tc.wantArm {
-				t.Fatalf("stop placements = %d, want armed %t", placed, tc.wantArm)
+			rearmProtectionAfterFailedClose(sc, st, nil, "ETH", 2100, tc.prevOID, tc.prevTrigger, tc.prevHighWater, map[string]float64{"ETH": tc.onChainQty}, nil, liq, net, &mu, nil, newTestLogger(t))
+			if placed != 1 {
+				t.Fatalf("stop placements = %d, want 1", placed)
+			}
+			if gotCancel != tc.wantCancel || math.Abs(gotSize-tc.wantSize) > 1e-9 || math.Abs(gotTrigger-tc.wantTrigger) > 1e-6 {
+				t.Fatalf("placed cancel=%d size=%g trigger=%g, want cancel=%d size=%g trigger=%g", gotCancel, gotSize, gotTrigger, tc.wantCancel, tc.wantSize, tc.wantTrigger)
 			}
 			pos := st.Positions["ETH"]
-			if tc.wantArm && (pos.StopLossOID != 999 || pos.StopLossTriggerPx <= 0) {
-				t.Fatalf("position after re-arm oid=%d trigger=%g, want armed oid 999", pos.StopLossOID, pos.StopLossTriggerPx)
+			if pos.StopLossOID != 999 || math.Abs(pos.StopLossTriggerPx-tc.wantTrigger) > 1e-6 || math.Abs(pos.StopLossHighWaterPx-tc.wantHighWater) > 1e-9 {
+				t.Fatalf("book after re-arm oid=%d trigger=%g high_water=%g, want oid 999 trigger %g high_water %g", pos.StopLossOID, pos.StopLossTriggerPx, pos.StopLossHighWaterPx, tc.wantTrigger, tc.wantHighWater)
 			}
-			if tc.wantArm && gotCancel != tc.wantCancel {
-				t.Fatalf("cancel oid = %d, want %d", gotCancel, tc.wantCancel)
+		})
+	}
+}
+
+func TestHLPeerVirtualQtyOnCoinMatchesPeerSetKey(t *testing.T) {
+	live := []string{"x.py", "kPEPE", "1h", "--mode=live"}
+	self := StrategyConfig{ID: "self", Type: "perps", Platform: "hyperliquid", Args: live}
+	cases := []struct {
+		name string
+		peer StrategyConfig
+		want float64
+	}{
+		{name: "peer coin padded with whitespace", peer: StrategyConfig{ID: "peer", Type: "perps", Platform: "hyperliquid", Args: []string{"x.py", " kPEPE ", "1h", "--mode=live"}}, want: 5},
+		{name: "peer coin differs only by case", peer: StrategyConfig{ID: "peer", Type: "perps", Platform: "hyperliquid", Args: []string{"x.py", "KPEPE", "1h", "--mode=live"}}, want: 5},
+		{name: "manual peer keyed by its symbol", peer: StrategyConfig{ID: "peer", Type: "manual", Platform: "hyperliquid", Symbol: "kpepe", Args: live}, want: 5},
+		{name: "peer on another coin is not a peer", peer: StrategyConfig{ID: "peer", Type: "perps", Platform: "hyperliquid", Args: []string{"x.py", "DOGE", "1h", "--mode=live"}}, want: 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			peerCoin := hyperliquidRawCoin(tc.peer)
+			strategies := map[string]*StrategyState{
+				"self": {ID: "self", Positions: map[string]*Position{"kPEPE": {Symbol: "kPEPE", Side: "long", Quantity: 1, AvgCost: 0.01}}},
+				"peer": {ID: "peer", Positions: map[string]*Position{peerCoin: {Symbol: peerCoin, Side: "long", Quantity: 5, AvgCost: 0.01}}},
 			}
-			if !tc.wantArm && pos.StopLossOID != tc.stopOID {
-				t.Fatalf("resting stop oid changed to %d", pos.StopLossOID)
+			roster := []StrategyConfig{self, tc.peer}
+			sharedPeers := len(hlLiveStrategiesForCoin("kPEPE", roster)) - 1
+			got := hlPeerVirtualQtyOnCoin(snapshotHyperliquidVirtualQuantities(strategies, roster), "kPEPE", "self")
+			if (sharedPeers > 0) != (got > 0) || got != tc.want {
+				t.Fatalf("shared peers=%d but peer virtual qty=%g, want %g", sharedPeers, got, tc.want)
 			}
 		})
 	}

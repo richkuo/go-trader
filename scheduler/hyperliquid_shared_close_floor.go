@@ -49,11 +49,16 @@ type hlOnChainCoinView struct {
 }
 
 func hlPeerVirtualQtyOnCoin(snapshot hlVirtualQuantitySnapshot, coin, selfID string) float64 {
-	coin = strings.TrimSpace(coin)
+	target := strings.ToUpper(strings.TrimSpace(coin))
 	total := 0.0
-	for id, qty := range snapshot[coin] {
-		if id != selfID && qty > 0 {
-			total += qty
+	for rawCoin, byID := range snapshot {
+		if strings.ToUpper(strings.TrimSpace(rawCoin)) != target {
+			continue
+		}
+		for id, qty := range byID {
+			if id != selfID && qty > 0 {
+				total += qty
+			}
 		}
 	}
 	return total
@@ -109,7 +114,7 @@ func evaluateSharedCoinFullCloseFloor(closeFraction float64, symbol string, hlLi
 func formatSharedCloseStrandedAlert(strategyID, symbol string, remainderUSD float64, reason, holdReason string) string {
 	recovery := "The scheduler holds this close and will not resend it until the value rises above the gate, every peer is flat on-chain and in its own book, or the operator closes it by hand."
 	if holdReason == hlSharedCloseHoldVenueReject {
-		recovery = "The scheduler holds this close and will not resend it until the value rises above the gate or the operator closes it by hand; a peer going flat does not resend it."
+		recovery = "The scheduler holds this close and will not resend it until the value rises above the gate; a peer going flat does not resend it, and the bot's force-close sends the same sized order the venue rejects (issue 1534), so close the remainder directly on the venue or add to it above the gate."
 	}
 	return fmt.Sprintf("**CRITICAL — stranded remainder below venue minimum gate** [%s] %s: the final full close is worth $%.2f, under the $%.2f gate (the $%.2f venue minimum plus the %.0f%% safety margin). %s %s",
 		strategyID, symbol, remainderUSD, hlVenueCloseGateThresholdUSD(), hlVenueMinOrderNotionalUSD, hlVenueMinOrderNotionalMargin*100, reason, recovery)
@@ -193,27 +198,63 @@ func clearSharedCloseHold(s *StrategyState, symbol string) bool {
 	return false
 }
 
-func rearmProtectionAfterStrandedClose(sc StrategyConfig, stratState *StrategyState, db *StateDB, symbol string, price float64, executeResultUnreadable bool, stopLossOID int64, onChainAbsQty map[string]float64, reconcileFillHintsJSON []byte, liqPxByCoin map[string]float64, netSideByCoin map[string]string, mu *sync.RWMutex, notifier *MultiNotifier, logger *StrategyLogger) (int, string) {
+func rearmProtectionAfterFailedClose(sc StrategyConfig, stratState *StrategyState, db *StateDB, symbol string, price float64, prevStopOID int64, prevTriggerPx, prevHighWater float64, onChainAbsQty map[string]float64, reconcileFillHintsJSON []byte, liqPxByCoin map[string]float64, netSideByCoin map[string]string, mu *sync.RWMutex, notifier *MultiNotifier, logger *StrategyLogger) (int, string) {
 	if stratState == nil || symbol == "" {
 		return 0, ""
 	}
-	if executeResultUnreadable && stopLossOID > 0 {
-		mu.Lock()
-		if pos, ok := stratState.Positions[symbol]; ok {
-			clearHyperliquidProtectionOIDsMatching(pos, []int64{stopLossOID})
-		}
-		mu.Unlock()
-		logger.Warn("Stranded close %s: the execute result is unreadable, so the cancel outcome of SL oid=%d is unknown — treating it as canceled and re-arming fail-safe", symbol, stopLossOID)
-	}
 	trades := 0
 	detail := ""
-	if _, fillPx := runHyperliquidProtectionSync(sc, stratState, db, symbol, mu, notifier, logger, "HL protection re-armed after stranded close", reconcileFillHintsJSON, liqPxByCoin, netSideByCoin); fillPx > 0 {
+	if _, fillPx := runHyperliquidProtectionSync(sc, stratState, db, symbol, mu, notifier, logger, "HL protection re-armed after failed close", reconcileFillHintsJSON, liqPxByCoin, netSideByCoin); fillPx > 0 {
 		trades++
 		detail = fmt.Sprintf("[%s] LIVE PROTECTION SYNC SL %s @ $%.2f", sc.ID, symbol, fillPx)
 	}
-	if extraTrades, slDetail := armTrailingStopAtOpenNow(sc, stratState, symbol, price, onChainAbsQty, 0, mu, notifier, logger); extraTrades > 0 {
+	if extraTrades, slDetail := rearmTrailingStopAfterFailedClose(sc, stratState, symbol, price, prevStopOID, prevTriggerPx, prevHighWater, onChainAbsQty, liqPxByCoin, netSideByCoin, mu, notifier, logger); extraTrades > 0 {
 		trades += extraTrades
 		detail = slDetail
 	}
 	return trades, detail
+}
+
+func rearmTrailingStopAfterFailedClose(sc StrategyConfig, stratState *StrategyState, symbol string, mark float64, prevStopOID int64, prevTriggerPx, prevHighWater float64, onChainAbsQty map[string]float64, liqPxByCoin map[string]float64, netSideByCoin map[string]string, mu *sync.RWMutex, notifier *MultiNotifier, logger *StrategyLogger) (int, string) {
+	if !hyperliquidIsLive(sc.Args) || stratState == nil || symbol == "" || mark <= 0 {
+		return 0, ""
+	}
+	mu.RLock()
+	pos := stratState.Positions[symbol]
+	if pos == nil || pos.Quantity <= 0 || effectiveTrailingStopPct(sc, pos) <= 0 {
+		mu.RUnlock()
+		return 0, ""
+	}
+	side := pos.Side
+	highWater := pos.StopLossHighWaterPx
+	if highWater <= 0 {
+		highWater = prevHighWater
+	}
+	triggerPx := pos.StopLossTriggerPx
+	if triggerPx <= 0 {
+		triggerPx = prevTriggerPx
+	}
+	cancelOID := pos.StopLossOID
+	if cancelOID <= 0 {
+		cancelOID = prevStopOID
+	}
+	posSnap := *pos
+	mu.RUnlock()
+
+	slEffectiveQty, capped := hlSLEffectiveQty(symbol, posSnap.Quantity, onChainAbsQty)
+	if capped {
+		logger.Warn("failed-close trailing SL re-arm: virtual qty %.6f > on-chain %.6f for %s; capping SL size to on-chain qty (#621)", posSnap.Quantity, slEffectiveQty, symbol)
+	}
+	logger.Warn("Failed close %s cancelled its on-chain stop (oid=%d); re-arming the trailing SL from high-water $%.4f with the old oid verified on-chain before any cancel", symbol, cancelOID, highWater)
+	policy := trailingReplacePolicy{forceResize: true, liquidationPx: hlLiquidationPxForSide(liqPxByCoin, netSideByCoin, symbol, side)}
+	newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, symbol, side, slEffectiveQty, &posSnap, mark, highWater, triggerPx, cancelOID, policy, notifier, logger)
+	mu.Lock()
+	defer mu.Unlock()
+	if immediateFill, fillPx := applyTrailingStopUpdateResult(stratState, symbol, side, cancelOID, newHighWater, updateConfirmed, slUpdate, "trailing_stop_loss_immediate", logger, 0); immediateFill {
+		return 1, fmt.Sprintf("[%s] LIVE TRAILING SL %s @ $%.2f", sc.ID, symbol, fillPx)
+	}
+	if updateConfirmed && slUpdate != nil && slUpdate.StopLossOID > 0 {
+		logger.Info("Trailing SL re-armed after failed close for %s (qty=%.6f high_water=$%.4f trigger=$%.4f)", symbol, slEffectiveQty, newHighWater, slUpdate.StopLossTriggerPx)
+	}
+	return 0, ""
 }

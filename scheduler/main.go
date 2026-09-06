@@ -2412,8 +2412,8 @@ func main() {
 											mu.Unlock()
 										}
 									}
-									if result.SharedCloseStrandedUSD > 0 && hlPosQty > 0 {
-										if extraTrades, slDetail := rearmProtectionAfterStrandedClose(sc, stratState, stratDB, result.Symbol, price, er == nil, hlStopLossOID, hlOnChainAbsQty, hlReconcileFillHintsJSON, hlLiquidationPx, hlNetSideByCoin, &mu, notifier, logger); extraTrades > 0 {
+									if hlPosQty > 0 && (er == nil || len(canceledOIDs) > 0) {
+										if extraTrades, slDetail := rearmProtectionAfterFailedClose(sc, stratState, stratDB, result.Symbol, price, hlStopLossOID, hlStopLossTriggerPx, hlStopLossHighWaterPx, hlOnChainAbsQty, hlReconcileFillHintsJSON, hlLiquidationPx, hlNetSideByCoin, &mu, notifier, logger); extraTrades > 0 {
 											trades += extraTrades
 											detail = slDetail
 										}
