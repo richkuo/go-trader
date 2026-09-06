@@ -16,6 +16,7 @@ EXIT_UNIT_ACTIVE=14
 EXIT_PAPER_NOT_PAPER=15
 EXIT_DB_IDENTITY=16
 EXIT_LIVE_PAPER_DB_CONFLICT=17
+EXIT_CONFIG_MIGRATION=18
 EXIT_INSPECTION_REFUSED=20
 EXIT_COMPOSE_REFUSED=21
 EXIT_PROOF_REFUSED=22
@@ -32,8 +33,10 @@ Defaults: --base /var/lib/go-trader, --deploy-root /opt (deployments at
 <root>/go-trader-<instance>), --unit-dir /etc/systemd/system, units
 go-trader@<instance>.service. Without --apply nothing outside the staging
 area changes. Exit codes: 2 usage, 3 lock contention, 4 restore failed,
-5 source changed before apply, 10-17 preflight refusals, 20-24 inspection,
-compose, proof, override and journal refusals.
+5 source changed before apply, 10-18 preflight refusals (18: a config
+migration is pending or the two configs carry different versions), 20-24
+inspection, compose, proof, override and journal refusals. The binaries run
+against copies of both configs; the deployment files are never rewritten.
 EOF
 }
 
@@ -212,6 +215,7 @@ def cmd_classify(path):
         "paper_db_file": (cfg.get("paper_db_file") or "").strip(),
         "status_port": cfg.get("status_port"),
         "nested_paper_risk": isinstance(risk, dict) and "paper" in risk,
+        "config_version": cfg.get("config_version"),
     }))
 
 def cmd_get(path, key):
@@ -255,8 +259,8 @@ def cmd_storage_check(path, holder_pid, expect_mapped, label):
             problems.append("%s file %s holds %d orphan book(s): %s" % (
                 fi.get("role"), fi.get("path"), len(fi["orphans"]),
                 ", ".join(o.get("storage_strategy_id", "?") for o in fi["orphans"])))
-        if expect_mapped != "-" and fi.get("present") and len(fi.get("strategies", [])) != int(expect_mapped):
-            problems.append("%s file %s maps %d strategies; the paper config carries %s" % (
+        if expect_mapped != "-" and fi.get("present") and len(fi.get("strategies", [])) > int(expect_mapped):
+            problems.append("%s file %s maps %d strategies; the paper config carries only %s" % (
                 fi.get("role"), fi.get("path"), len(fi.get("strategies", [])), expect_mapped))
     if problems:
         for p in problems:
@@ -273,6 +277,9 @@ def cmd_storage_check(path, holder_pid, expect_mapped, label):
             positions, int(fi.get("pending_manual_actions", 0)), "true" if latched else "false"))
         for row in fi.get("strategies", []):
             print("  %s -> %s (%d position(s))" % (row.get("storage_strategy_id"), row.get("process_strategy_id"), int(row.get("position_count", 0))))
+        if expect_mapped != "-" and len(fi.get("strategies", [])) < int(expect_mapped):
+            print("  %d configured strateg%s without a stored book yet (never ran a cycle); nothing to move for them" % (
+                int(expect_mapped) - len(fi.get("strategies", [])), "y" if int(expect_mapped) - len(fi.get("strategies", [])) == 1 else "ies"))
 
 def effective_root(cfg, key, default):
     v = cfg.get(key)
@@ -485,19 +492,24 @@ def cmd_compose(live_path, paper_path, paper_db_abs, out_path, map_path, inspect
         if mm:
             merged_discord[map_key] = mm
 
+    def root_value(cfg, key):
+        v = cfg.get(key)
+        if key == "market_feed":
+            return (v or "").strip() or "rest"
+        return v
     for key in REFUSE_ON_DIFFERENCE:
-        if key in paper and paper.get(key) != live.get(key):
-            refuse("root key %s differs between live and paper configs: live=%s paper=%s" % (
+        if (key in paper or key in live) and root_value(paper, key) != root_value(live, key):
+            refuse("root key %s differs between live and paper configs (an absent key is compared too, since the merged config would apply the live value to the moved strategies): live=%s paper=%s" % (
                 key, json.dumps(live.get(key), sort_keys=True), json.dumps(paper.get(key), sort_keys=True)))
     dropped = []
-    for key in sorted(paper):
+    for key in sorted(set(paper) | set(live)):
         if key in DROPPED or key in REFUSE_ON_DIFFERENCE:
-            if key in DROPPED and key not in ("strategies", "portfolio_risk", "discord", "db_file", "paper_db_file", "config_version", "interval_seconds", "atr_method", "replay_log_path"):
+            if key in DROPPED and key in paper and key not in ("strategies", "portfolio_risk", "discord", "db_file", "paper_db_file", "config_version", "interval_seconds", "atr_method", "replay_log_path"):
                 if paper.get(key) != live.get(key):
                     dropped.append(key)
             continue
         if paper.get(key) != live.get(key):
-            refuse("root key %s differs between live and paper configs and is not a known drop: live=%s paper=%s" % (
+            refuse("root key %s differs between live and paper configs and is not a known drop (an absent key is compared too): live=%s paper=%s" % (
                 key, json.dumps(live.get(key), sort_keys=True), json.dumps(paper.get(key), sort_keys=True)))
 
     merged["strategies"] = merged_strats + [b for _, b in new_strats]
@@ -663,9 +675,25 @@ paper_version=$(run_bin "$PAPER_DEPLOY" "$PAPER_BIN" version 2>/dev/null || true
 for c in "$LIVE_CFG" "$PAPER_CFG"; do
     [[ -f "$c" ]] || fail "$EXIT_CONFIG_MISSING" "config $c is missing"
 done
-for pair in "live|$LIVE_DEPLOY|$LIVE_BIN|$LIVE_CFG" "paper|$PAPER_DEPLOY|$PAPER_BIN|$PAPER_CFG"; do
-    IFS='|' read -r side deploy bin cfg <<<"$pair"
+require_units_stopped
+LIVE_CFG_COPY="$WORK/live-config.json"
+PAPER_CFG_COPY="$WORK/paper-config.json"
+cp "$LIVE_CFG" "$LIVE_CFG_COPY"
+cp "$PAPER_CFG" "$PAPER_CFG_COPY"
+fp_live_cfg=$(update_file_fingerprint "$LIVE_CFG")
+fp_paper_cfg=$(update_file_fingerprint "$PAPER_CFG")
+
+config_copy_intact() {
+    local side="$1" copy="$2" want="$3" what="$4"
+    if [[ "$(update_file_fingerprint "$copy")" != "$want" ]]; then
+        fail "$EXIT_CONFIG_MIGRATION" "the $side binary rewrote its config while running $what (a config migration is pending); this release inspects read-only, so update the $side deployment to it, or start the unit once as the service user to migrate the file, then re-run"
+    fi
+}
+
+for pair in "live|$LIVE_DEPLOY|$LIVE_BIN|$LIVE_CFG_COPY|$fp_live_cfg" "paper|$PAPER_DEPLOY|$PAPER_BIN|$PAPER_CFG_COPY|$fp_paper_cfg"; do
+    IFS='|' read -r side deploy bin cfg want <<<"$pair"
     run_bin "$deploy" "$bin" storage-inspect --json --config "$cfg" >"$WORK/probe-$side.json" 2>"$WORK/probe-$side.err" || true
+    config_copy_intact "$side" "$cfg" "$want" "storage-inspect"
     if [[ ! -s "$WORK/probe-$side.json" ]]; then
         cat "$WORK/probe-$side.err" >&2
         if grep -q "failed to load config" "$WORK/probe-$side.err"; then
@@ -678,7 +706,6 @@ for pair in "live|$LIVE_DEPLOY|$LIVE_BIN|$LIVE_CFG" "paper|$PAPER_DEPLOY|$PAPER_
         fail "$EXIT_BINARY_INCOMPATIBLE" "$side binary's storage-inspect --json carries no layout; a release with the early ownership-lock contract is required"
     fi
 done
-require_units_stopped
 
 paper_class=$(py classify "$PAPER_CFG")
 live_class=$(py classify "$LIVE_CFG")
@@ -686,6 +713,10 @@ paper_live_count=$(printf '%s' "$paper_class" | python3 -c 'import json,sys; pri
 [[ "$paper_live_count" == "0" ]] || fail "$EXIT_PAPER_NOT_PAPER" "paper config runs $paper_live_count live strategy(ies); every strategy must be paper"
 paper_strategy_count=$(printf '%s' "$paper_class" | python3 -c 'import json,sys; print(json.load(sys.stdin)["strategy_count"])')
 [[ "$paper_strategy_count" != "0" ]] || fail "$EXIT_PAPER_NOT_PAPER" "paper config has no strategies"
+paper_cv=$(printf '%s' "$paper_class" | python3 -c 'import json,sys; print(json.load(sys.stdin)["config_version"] or "")')
+live_cv=$(printf '%s' "$live_class" | python3 -c 'import json,sys; print(json.load(sys.stdin)["config_version"] or "")')
+[[ -n "$live_cv" && "$live_cv" == "$paper_cv" ]] || \
+    fail "$EXIT_CONFIG_MIGRATION" "config_version differs: live='$live_cv' paper='$paper_cv'; start each unit once on the current release so both files carry one version, then re-run"
 paper_nested=$(printf '%s' "$paper_class" | python3 -c 'import json,sys; print(json.load(sys.stdin)["nested_paper_risk"])')
 [[ "$paper_nested" == "False" ]] || fail "$EXIT_PAPER_NOT_PAPER" "paper config nests portfolio_risk.paper"
 paper_split=$(printf '%s' "$paper_class" | python3 -c 'import json,sys; print(json.load(sys.stdin)["paper_db_file"])')
@@ -854,11 +885,13 @@ if [[ -f "$JOURNAL" ]]; then
     fi
 fi
 
+cp "$LIVE_CFG" "$LIVE_CFG_COPY"
+cp "$PAPER_CFG" "$PAPER_CFG_COPY"
 fp_live_cfg=$(update_file_fingerprint "$LIVE_CFG")
 fp_paper_cfg=$(update_file_fingerprint "$PAPER_CFG")
 
-run_bin "$LIVE_DEPLOY" "$LIVE_BIN" storage-inspect --json --config "$LIVE_CFG" >"$WORK/storage-live.json" 2>"$WORK/storage-live.err" || true
-run_bin "$PAPER_DEPLOY" "$PAPER_BIN" storage-inspect --json --config "$PAPER_CFG" >"$WORK/storage-paper.json" 2>"$WORK/storage-paper.err" || true
+run_bin "$LIVE_DEPLOY" "$LIVE_BIN" storage-inspect --json --config "$LIVE_CFG_COPY" >"$WORK/storage-live.json" 2>"$WORK/storage-live.err" || true
+run_bin "$PAPER_DEPLOY" "$PAPER_BIN" storage-inspect --json --config "$PAPER_CFG_COPY" >"$WORK/storage-paper.json" 2>"$WORK/storage-paper.err" || true
 [[ -s "$WORK/storage-live.json" ]] || { cat "$WORK/storage-live.err" >&2; fail "$EXIT_INSPECTION_REFUSED" "live storage-inspect produced no report"; }
 [[ -s "$WORK/storage-paper.json" ]] || { cat "$WORK/storage-paper.err" >&2; fail "$EXIT_INSPECTION_REFUSED" "paper storage-inspect produced no report"; }
 if ! py storage-check "$WORK/storage-live.json" "$HOLDER_PID" - primary; then
@@ -868,14 +901,18 @@ echo "inspect: paper deployment"
 if ! py storage-check "$WORK/storage-paper.json" "$HOLDER_PID" "$paper_strategy_count" primary; then
     fail "$EXIT_INSPECTION_REFUSED" "paper storage inspection refused"
 fi
-if ! run_bin "$LIVE_DEPLOY" "$LIVE_BIN" inspect --all --json --config "$LIVE_CFG" >"$WORK/inspect-live.json" 2>"$WORK/inspect-live.err"; then
+if ! run_bin "$LIVE_DEPLOY" "$LIVE_BIN" inspect --all --json --config "$LIVE_CFG_COPY" >"$WORK/inspect-live.json" 2>"$WORK/inspect-live.err"; then
     cat "$WORK/inspect-live.err" >&2
     fail "$EXIT_INSPECTION_REFUSED" "live inspect --all --json failed"
 fi
-if ! run_bin "$PAPER_DEPLOY" "$PAPER_BIN" inspect --all --json --config "$PAPER_CFG" >"$WORK/inspect-paper.json" 2>"$WORK/inspect-paper.err"; then
+if ! run_bin "$PAPER_DEPLOY" "$PAPER_BIN" inspect --all --json --config "$PAPER_CFG_COPY" >"$WORK/inspect-paper.json" 2>"$WORK/inspect-paper.err"; then
     cat "$WORK/inspect-paper.err" >&2
     fail "$EXIT_INSPECTION_REFUSED" "paper inspect --all --json failed"
 fi
+config_copy_intact live "$LIVE_CFG_COPY" "$fp_live_cfg" "inspection"
+config_copy_intact paper "$PAPER_CFG_COPY" "$fp_paper_cfg" "inspection"
+[[ "$(update_file_fingerprint "$LIVE_CFG")" == "$fp_live_cfg" ]] || fail "$EXIT_SOURCE_CHANGED" "$LIVE_CFG changed during inspection"
+[[ "$(update_file_fingerprint "$PAPER_CFG")" == "$fp_paper_cfg" ]] || fail "$EXIT_SOURCE_CHANGED" "$PAPER_CFG changed during inspection"
 check_db_fingerprints "inspection" || exit "$EXIT_INSPECTION_REFUSED"
 
 if ! py compose "$LIVE_CFG" "$PAPER_CFG" "$PAPER_DB_CANON" "$STAGED_CFG" "$STAGED_MAP" "$WORK/inspect-live.json" "$WORK/inspect-paper.json"; then
@@ -883,6 +920,7 @@ if ! py compose "$LIVE_CFG" "$PAPER_CFG" "$PAPER_DB_CANON" "$STAGED_CFG" "$STAGE
     fail "$EXIT_COMPOSE_REFUSED" "merged config could not be composed"
 fi
 
+fp_staged_cfg=$(update_file_fingerprint "$STAGED_CFG")
 run_bin "$LIVE_DEPLOY" "$LIVE_BIN" storage-inspect --json --config "$STAGED_CFG" >"$WORK/storage-staged.json" 2>"$WORK/storage-staged.err" || true
 [[ -s "$WORK/storage-staged.json" ]] || { cat "$WORK/storage-staged.err" >&2; fail "$EXIT_PROOF_REFUSED" "staged storage-inspect produced no report"; }
 echo "proof: staged layout"
@@ -897,6 +935,8 @@ fi
 if ! py diff "$WORK/inspect-staged.json" "$WORK/inspect-live.json" "$WORK/inspect-paper.json" "$STAGED_MAP"; then
     fail "$EXIT_PROOF_REFUSED" "effective settings differ between the source deployments and the staged config"
 fi
+[[ "$(update_file_fingerprint "$STAGED_CFG")" == "$fp_staged_cfg" ]] || \
+    fail "$EXIT_PROOF_REFUSED" "the live binary rewrote $STAGED_CFG during the proof; the staged config is not what was proven"
 check_db_fingerprints "proof" || exit "$EXIT_PROOF_REFUSED"
 
 paper_db_dir=$(dirname "$PAPER_DB_CANON")

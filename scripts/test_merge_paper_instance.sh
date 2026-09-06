@@ -561,4 +561,72 @@ out=$(run_merge --apply 2>&1) || { echo "$out" >&2; fail "apply before clean rol
 out=$(run_merge --rollback 2>&1) || { echo "$out" >&2; fail "clean rollback"; }
 [[ -z "$(ls "$LIVE_CFG".merge-edited.* 2>/dev/null)" ]] || fail "a clean rollback archives nothing"
 
+echo "== configs below the current version are inspected without a rewrite"
+setup oldcfg
+python3 - "$LIVE_CFG" "$PAPER_CFG" <<'PY'
+import json, sys
+for p in sys.argv[1:]:
+    cfg = json.load(open(p))
+    cfg["config_version"] = 15
+    json.dump(cfg, open(p, "w"))
+PY
+live_before=$(cat "$LIVE_CFG"); paper_before=$(cat "$PAPER_CFG")
+out=$(run_merge 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "dry run over v15 configs exits 0 (rc=$rc)"; }
+assert_eq "$(cat "$LIVE_CFG")" "$live_before" "a dry run never rewrites the live config (pending migration stays on disk)"
+assert_eq "$(cat "$PAPER_CFG")" "$paper_before" "a dry run never rewrites the paper config"
+[[ ! -e "$LIVE_CFG.tmp" && ! -e "$PAPER_CFG.tmp" ]] || fail "no migration temp file may appear beside a deployment config"
+assert_eq "$(json_get "$LIVE_CFG.merge-staged" config_version)" "15" "the staged config keeps the live config version for the daemon to migrate as the service user"
+setup mixedcfg
+python3 - "$PAPER_CFG" <<'PY'
+import json, sys
+p = sys.argv[1]
+cfg = json.load(open(p))
+cfg["config_version"] = 15
+json.dump(cfg, open(p, "w"))
+PY
+out=$(run_merge 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "18" "configs at different versions refuse before any lock or inspection"
+assert_contains "$out" "config_version differs" "version mismatch named"
+
+echo "== a root key set only in the live config is compared too"
+setup liveonly
+python3 - "$LIVE_CFG" <<'PY'
+import json, sys
+p = sys.argv[1]
+cfg = json.load(open(p))
+cfg["market_feed"] = "websocket"
+json.dump(cfg, open(p, "w"))
+PY
+out=$(run_merge 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "21" "live-only market_feed=websocket refuses instead of moving the paper strategies onto the sealed feed"
+assert_contains "$out" "root key market_feed differs" "the live-only key is named"
+setup liveonly2
+python3 - "$LIVE_CFG" <<'PY'
+import json, sys
+p = sys.argv[1]
+cfg = json.load(open(p))
+cfg["telegram"] = {"enabled": True, "token": "t", "channels": {"hyperliquid": "T-live"}}
+json.dump(cfg, open(p, "w"))
+PY
+out=$(run_merge 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "21" "a live-only telegram block refuses"
+assert_contains "$out" "root key telegram differs" "the live-only telegram key is named"
+
+echo "== a paper strategy with no stored book passes"
+setup nobook
+python3 - "$PAPER_CFG" <<'PY'
+import json, sys
+p = sys.argv[1]
+cfg = json.load(open(p))
+cfg["strategies"].append({"id": "hl-new", "type": "perps", "platform": "hyperliquid",
+    "script": "shared_scripts/check_hyperliquid.py", "args": ["vwap", "BTC", "1h", "--mode=paper"],
+    "capital": 100, "leverage": 5, "margin_per_trade_usd": 50})
+json.dump(cfg, open(p, "w"))
+PY
+out=$(run_merge 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "a configured paper strategy without a book reaches READY (rc=$rc)"; }
+assert_contains "$out" "1 configured strategy without a stored book yet" "the bookless strategy is reported"
+assert_eq "$(json_get "$LIVE_CFG.merge-staged" strategies.2.id)" "hl-new" "the bookless strategy is still moved"
+
 echo "OK: merge-paper-instance tests passed"

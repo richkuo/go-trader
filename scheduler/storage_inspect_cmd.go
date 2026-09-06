@@ -61,10 +61,10 @@ func inspectStorageLayoutForConfig(cfg *Config, requireIdle bool) (storageInspec
 
 func loadConfigQuietForJSON(path string, quiet bool) (*Config, error) {
 	if !quiet {
-		return LoadConfig(path)
+		return LoadConfigReadOnly(path)
 	}
 	saved := os.Stdout
 	os.Stdout = os.Stderr
 	defer func() { os.Stdout = saved }()
-	return LoadConfig(path)
+	return LoadConfigReadOnly(path)
 }

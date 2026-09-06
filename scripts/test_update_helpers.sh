@@ -865,6 +865,26 @@ JSON
         echo "FAIL: a deployment with a binary must not report RAW, got: $audit_out" >&2
         exit 1
     fi
+    mkdir -p "$drift/eff-paper/out"
+    mv "$drift/eff-paper/scheduler/config.json" "$drift/eff-paper/out/config.json"
+    python3 - "$drift/eff-paper/out/config.json" <<'PY'
+import json, sys
+p = sys.argv[1]
+cfg = json.load(open(p))
+cfg["config_version"] = 15
+json.dump(cfg, open(p, "w"))
+PY
+    ln -s "$drift/eff-paper/out/config.json" "$drift/eff-paper/scheduler/config.json"
+    old_bytes=$(cat "$drift/eff-paper/out/config.json")
+    audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/eff-live" "$drift/eff-paper") && audit_rc=0 || audit_rc=$?
+    assert_eq "$audit_rc" "1" "drift audit: a config below the current version still yields an effective view"
+    if [[ "$audit_out" == *"RAW"* ]]; then
+        echo "FAIL: a v15 config beside a binary must not fall back to RAW, got: $audit_out" >&2
+        exit 1
+    fi
+    [[ -L "$drift/eff-paper/scheduler/config.json" ]] || { echo "FAIL: the drift audit replaced the transition symlink with a regular file" >&2; exit 1; }
+    assert_eq "$(cat "$drift/eff-paper/out/config.json")" "$old_bytes" "drift audit with a binary beside the config is read-only (no migration rewrite)"
+    [[ ! -e "$drift/eff-paper/out/config.json.tmp" ]] || { echo "FAIL: the drift audit left a migration temp file" >&2; exit 1; }
     rm -f "$drift/eff-paper/go-trader"
     audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/eff-live" "$drift/eff-paper") && audit_rc=0 || audit_rc=$?
     assert_eq "$audit_rc" "0" "drift audit: a deployment without a binary falls back to raw keys"
