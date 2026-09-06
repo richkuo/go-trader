@@ -70,9 +70,11 @@ func TestHyperliquidExecuteOrderMarksSubmissionOnlyAfterSend(t *testing.T) {
 		signal        int
 		closeFraction float64
 		wantSubmitted bool
+		wantCancel    bool
 	}{
 		{name: "already long skip sends nothing", signal: 1, wantSubmitted: false},
-		{name: "rejected close was sent", signal: -1, closeFraction: 1.0, wantSubmitted: true},
+		{name: "rejected full close was sent and asked to cancel the stop", signal: -1, closeFraction: 1.0, wantSubmitted: true, wantCancel: true},
+		{name: "rejected partial close was sent but asked for no cancel", signal: -1, closeFraction: 0.5, wantSubmitted: true, wantCancel: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -90,8 +92,8 @@ func TestHyperliquidExecuteOrderMarksSubmissionOnlyAfterSend(t *testing.T) {
 			if ok || got != nil {
 				t.Fatalf("execute result = %+v, ok=%t, want (nil, false)", got, ok)
 			}
-			if (called > 0) != tc.wantSubmitted || result.LiveOrderSubmitted != tc.wantSubmitted {
-				t.Fatalf("execute calls = %d, submitted = %t, want submitted %t", called, result.LiveOrderSubmitted, tc.wantSubmitted)
+			if (called > 0) != tc.wantSubmitted || result.LiveOrderSubmitted != tc.wantSubmitted || result.LiveOrderCancelRequested != tc.wantCancel {
+				t.Fatalf("execute calls = %d, submitted = %t, cancel requested = %t, want submitted %t cancel %t", called, result.LiveOrderSubmitted, result.LiveOrderCancelRequested, tc.wantSubmitted, tc.wantCancel)
 			}
 		})
 	}

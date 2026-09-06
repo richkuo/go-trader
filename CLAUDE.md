@@ -34,7 +34,7 @@ Guardrails only. Mechanism: SKILL.md § Subsystem Mechanism Reference; operator 
 - `llm_entry_analysis.go`: advisory-only; `spawnPythonProcess` NEVER `runPython*`; sole writer of `trade_diagnostics.llm_verdict`; `trade_diagnostics*.go` never.
 - `scale_in.go`: geometry frozen via `RiskAnchorPrice`, never blended `AvgCost`. `manual*.go`: kill-switch+CB gated; SL edits queue `PendingManualAction`, NEVER a direct UPDATE; `force-close` live HL perps only.
 - `hyperliquid_liquidation_guard.go`: **CLAMP, never refuse to arm; ONE-WAY TIGHTEN** at 0.5% buffer; 0 = unknown, never persisted; unclampable REFUSES; unreadable outcome keeps state. Boot `validateHLStopWithinBankruptcyBound` mirrors `LoadConfig` stop-owner resolution.
-- `hyperliquid_protection.go`: reduce-only; on-chain TP only when `strategyUsesTieredTPATRClose` AND live (paper never). `hyperliquid_open_trailing.go` arms SL at open. `hyperliquid_shared_close_floor.go`: <$10 shared-coin full close escalates ONLY if every peer is flat on-chain (refetched, raw keys) AND in book, before SL blocks; else ONE alert+hold; `venue_rejected` never resends; re-arm a cancelled stop same cycle ONLY after a SUBMITTED close.
+- `hyperliquid_protection.go`: reduce-only; on-chain TP only when `strategyUsesTieredTPATRClose` AND live (paper never). `hyperliquid_open_trailing.go` arms SL at open. `hyperliquid_shared_close_floor.go`: <$10 shared-coin full close escalates ONLY if every peer is flat on-chain (refetched, raw keys) AND in book, before SL blocks; else ONE alert+hold; `venue_rejected` never resends; same-cycle re-arm ONLY after a SUBMITTED order that REQUESTED the cancel.
 - `version_probe.go`/`probe_cmd.go`: new runtime CLI flag > both probe argvs. `agent_info.go`: `--bootstrap-md` > `AGENTS.generated.md`, NEVER `AGENTS.md`.
 - `failure_alerts.go`: wire notifier on each new `run*Check`. `discord_*commands.go`: new mutating command > `opsCommandNames`+`slashCommands()`+dispatch.
 - `shared_wallet*.go`: PRE-FEE `realized_pnl`, net via `tradeNetPnL*`. Pool budgeting: 2+ live HL/OKX perps omit capital fields, positive `margin_per_trade_usd` each; allocated↔pool flat-only. `cashflow_journal.go` OUTSIDE `mu`.
@@ -59,7 +59,7 @@ Guardrails only. Mechanism: SKILL.md § Subsystem Mechanism Reference; operator 
 - HL stops: `EffectiveStopLossPct` 7 exclusive owners; scalar↔regime blocked while open. `risk_per_trade_pct` fails closed on unresolvable stop; exclusive vs sizing_leverage/margin/scale_in. Trailing SL replace only past `TrailingStopMinMovePct`; `hlSLEffectiveQty=min(virtual,onChain)`; snapshot = full protection surface. Peers share `margin_mode`+`leverage`; `update_leverage` when flat.
 - SIGHUP `validateHotReloadCompatible` blocks add/remove, script/args/type/platform/HTFFilter, kill-switch identity, `db_file`/`paper_db_file`, effective `storage_strategy_id`, `max_notional_usd`, `market_feed`.
 - New per-strategy flag: field > `run*Check` CLI > Python parse > InitOptions/wizard; runtime-required > probe argvs.
-- Notifications via `MultiNotifier`; paper routes via `resolveChannelKey`/`SendToScopeChannels`.
+- Notifications: `MultiNotifier`; paper routes via `resolveChannelKey`/`SendToScopeChannels`.
 
 ## PRs
 - `Closes #<N>` in body; never bare `#N` in lists. Title `type(#<N>): summary [C<score>, <model>, <effort>]` (`, fableplan` if Fable planned). Body: `## Plain simple English` (<55 words) first, then `## Summary` + verification.

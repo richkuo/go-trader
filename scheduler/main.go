@@ -2412,7 +2412,7 @@ func main() {
 											mu.Unlock()
 										}
 									}
-									if hlPosQty > 0 && result.LiveOrderSubmitted && (er == nil || len(canceledOIDs) > 0) {
+									if hlPosQty > 0 && result.LiveOrderSubmitted && result.LiveOrderCancelRequested && (er == nil || len(canceledOIDs) > 0) {
 										if extraTrades, slDetail := rearmProtectionAfterFailedClose(sc, stratState, stratDB, result.Symbol, price, hlStopLossOID, hlStopLossTriggerPx, hlStopLossHighWaterPx, hlOnChainAbsQty, hlReconcileFillHintsJSON, hlLiquidationPx, hlNetSideByCoin, &mu, notifier, logger); extraTrades > 0 {
 											trades += extraTrades
 											detail = slDetail
@@ -3700,6 +3700,7 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 		logger.Info("Final-tier close %s shares coin with HL perps peers — using sized close to preserve peer exposure", result.Symbol)
 	}
 	result.LiveOrderSubmitted = true
+	result.LiveOrderCancelRequested = cancelOID > 0 || len(extraCancelOIDs) > 0
 	execResult, stderr, err := runHyperliquidExecuteFn(sc.Script, result.Symbol, side, size, slPct, cancelOID, prevPosQty, marginMode, leverageForOpen, closeFullPosition, walletSnapshot, extraCancelOIDs...)
 	if stderr != "" {
 		logger.Info("execute stderr: %s", stderr)

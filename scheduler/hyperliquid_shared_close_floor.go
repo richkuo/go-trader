@@ -112,7 +112,7 @@ func evaluateSharedCoinFullCloseFloor(closeFraction float64, symbol string, hlLi
 }
 
 func formatSharedCloseStrandedAlert(strategyID, symbol string, remainderUSD float64, reason, holdReason string) string {
-	recovery := "The scheduler holds this close and will not resend it until the value rises above the gate, every peer is flat on-chain and in its own book, or the operator closes it by hand."
+	recovery := "The scheduler holds this close and will not resend it until the value rises above the gate or every peer is flat on-chain and in its own book; the bot's force-close sends the same sized order the venue rejects (issue 1534), so to end it sooner close the remainder directly on the venue or add to it above the gate."
 	if holdReason == hlSharedCloseHoldVenueReject {
 		recovery = "The scheduler holds this close and will not resend it until the value rises above the gate; a peer going flat does not resend it, and the bot's force-close sends the same sized order the venue rejects (issue 1534), so close the remainder directly on the venue or add to it above the gate."
 	}
