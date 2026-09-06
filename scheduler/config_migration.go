@@ -156,10 +156,21 @@ func MigrateConfig(configPath string, fieldValues map[string]string, cfg *Config
 	if err != nil {
 		return fmt.Errorf("read config: %w", err)
 	}
+	newData, err := migrateConfigData(data, fieldValues)
+	if err != nil {
+		return err
+	}
+	tmpPath := configPath + ".tmp"
+	if err := os.WriteFile(tmpPath, newData, 0600); err != nil {
+		return fmt.Errorf("write tmp: %w", err)
+	}
+	return os.Rename(tmpPath, configPath)
+}
 
+func migrateConfigData(data []byte, fieldValues map[string]string) ([]byte, error) {
 	var raw map[string]interface{}
 	if err := json.Unmarshal(data, &raw); err != nil {
-		return fmt.Errorf("parse config: %w", err)
+		return nil, fmt.Errorf("parse config: %w", err)
 	}
 
 	oldVer := 0
@@ -168,11 +179,11 @@ func MigrateConfig(configPath string, fieldValues map[string]string, cfg *Config
 	}
 
 	if oldVer != 0 && oldVer < MinSupportedConfigVersion {
-		return errUnsupportedConfigVersion(oldVer)
+		return nil, errUnsupportedConfigVersion(oldVer)
 	}
 	if oldVer == 0 {
 		if key, found := versionlessConfigRemovedTranslationKey(data); found {
-			return errVersionlessRemovedTranslationKey(key)
+			return nil, errVersionlessRemovedTranslationKey(key)
 		}
 	}
 
@@ -194,19 +205,19 @@ func MigrateConfig(configPath string, fieldValues map[string]string, cfg *Config
 
 	if oldVer < 16 || hasLegacyUserDefaultAliases(raw) {
 		if err := migrateV16UserDefaults(raw); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
 	if oldVer < 18 || hasLegacyTrailStopATRRegimeKey(raw) {
 		if err := migrateV18TrailStopATRRegimeKey(raw); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
 	if oldVer < 19 || hasLegacyV19AtrMultRegimeKey(raw) {
 		if err := migrateV19AtrMultRegimeKey(raw); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
@@ -214,14 +225,9 @@ func MigrateConfig(configPath string, fieldValues map[string]string, cfg *Config
 
 	newData, err := json.MarshalIndent(raw, "", "  ")
 	if err != nil {
-		return fmt.Errorf("marshal: %w", err)
+		return nil, fmt.Errorf("marshal: %w", err)
 	}
-
-	tmpPath := configPath + ".tmp"
-	if err := os.WriteFile(tmpPath, newData, 0600); err != nil {
-		return fmt.Errorf("write tmp: %w", err)
-	}
-	return os.Rename(tmpPath, configPath)
+	return newData, nil
 }
 
 func setNestedField(obj map[string]interface{}, path string, value string) {

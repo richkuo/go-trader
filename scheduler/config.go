@@ -857,17 +857,39 @@ func EffectiveInitialCapital(sc StrategyConfig, ss *StrategyState) float64 {
 }
 
 func LoadConfig(path string) (*Config, error) {
-	return loadConfig(path, false)
+	return loadConfig(path, false, false)
 }
 
 func LoadConfigForProbe(path string) (*Config, error) {
-	return loadConfig(path, true)
+	return loadConfig(path, true, false)
 }
 
-func loadConfig(path string, skipLiveCredentialChecks bool) (*Config, error) {
+func LoadConfigReadOnly(path string) (*Config, error) {
+	return loadConfig(path, false, true)
+}
+
+func loadConfig(path string, skipLiveCredentialChecks bool, readOnly bool) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
+	}
+	migrate := func(label string) error {
+		if readOnly {
+			migrated, err := migrateConfigData(data, nil)
+			if err != nil {
+				return fmt.Errorf("%s (in memory): %w", label, err)
+			}
+			data = migrated
+			return nil
+		}
+		if err := MigrateConfig(path, nil, nil); err != nil {
+			return fmt.Errorf("%s: %w", label, err)
+		}
+		data, err = os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read config after %s: %w", label, err)
+		}
+		return nil
 	}
 	if err := checkRawConfigVersionSupported(data); err != nil {
 		return nil, err
@@ -877,48 +899,28 @@ func loadConfig(path string, skipLiveCredentialChecks bool) (*Config, error) {
 		migrationBaseVersion = CurrentConfigVersion
 	}
 	if needsV13SchemaMigration(data) {
-		if err := MigrateConfig(path, nil, nil); err != nil {
-			return nil, fmt.Errorf("v13 schema migration: %w", err)
-		}
-		data, err = os.ReadFile(path)
-		if err != nil {
-			return nil, fmt.Errorf("read config after v13 migration: %w", err)
+		if err := migrate("v13 schema migration"); err != nil {
+			return nil, err
 		}
 	}
 	if needsV15CloseMigration(data) {
-		if err := MigrateConfig(path, nil, nil); err != nil {
-			return nil, fmt.Errorf("v15 close-key migration: %w", err)
-		}
-		data, err = os.ReadFile(path)
-		if err != nil {
-			return nil, fmt.Errorf("read config after v15 migration: %w", err)
+		if err := migrate("v15 close-key migration"); err != nil {
+			return nil, err
 		}
 	}
 	if needsV16UserDefaultsMigration(data) {
-		if err := MigrateConfig(path, nil, nil); err != nil {
-			return nil, fmt.Errorf("v16 user-defaults migration: %w", err)
-		}
-		data, err = os.ReadFile(path)
-		if err != nil {
-			return nil, fmt.Errorf("read config after v16 user-defaults migration: %w", err)
+		if err := migrate("v16 user-defaults migration"); err != nil {
+			return nil, err
 		}
 	}
 	if needsV18TrailStopKeyMigration(data) {
-		if err := MigrateConfig(path, nil, nil); err != nil {
-			return nil, fmt.Errorf("v18 trail_stop_atr_regime key migration: %w", err)
-		}
-		data, err = os.ReadFile(path)
-		if err != nil {
-			return nil, fmt.Errorf("read config after v18 trail_stop_atr_regime migration: %w", err)
+		if err := migrate("v18 trail_stop_atr_regime key migration"); err != nil {
+			return nil, err
 		}
 	}
 	if needsV19AtrMultRegimeRename(data) {
-		if err := MigrateConfig(path, nil, nil); err != nil {
-			return nil, fmt.Errorf("v19 atr_mult_regime key migration: %w", err)
-		}
-		data, err = os.ReadFile(path)
-		if err != nil {
-			return nil, fmt.Errorf("read config after v19 atr_mult_regime migration: %w", err)
+		if err := migrate("v19 atr_mult_regime key migration"); err != nil {
+			return nil, err
 		}
 	}
 	var cfg Config

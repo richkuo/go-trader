@@ -502,6 +502,84 @@ assert_eq "$audit_rc" "1" "fleet audit: missing config is a FAIL (cannot verify)
 assert_eq "$(cat "$fleet/old/scheduler/config.json")" '{"config_version": 12}' "fleet audit is read-only"
 rm -rf "$fleet"
 
+merge_tmp=$(mktemp -d)
+mkdir -p "$merge_tmp/real/dir" "$merge_tmp/deploy"
+ln -s "$merge_tmp/real" "$merge_tmp/link"
+absent_canon=$(update_canonical_db_path "$merge_tmp/link/dir/state.db")
+assert_eq "$absent_canon" "$merge_tmp/link/dir/state.db" \
+    "canonical db path keeps the unresolved absolute path of an absent file behind a symlinked parent, as the scheduler does"
+assert_eq "$(update_state_lock_paths "$merge_tmp/link/dir/state.db")" "${absent_canon}.lock"$'\n'"${absent_canon}.manual-action.lock" \
+    "state lock paths of an absent db sit beside the unresolved path"
+assert_eq "$(update_file_fingerprint "$merge_tmp/nope")" "absent" "fingerprint of a missing file is absent"
+printf 'abc' > "$merge_tmp/real/dir/state.db"
+canon=$(update_canonical_db_path "$merge_tmp/link/dir/state.db")
+assert_eq "$canon" "$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$merge_tmp/real")/dir/state.db" \
+    "canonical db path resolves every symlink once the file exists"
+lock_paths=$(update_state_lock_paths "$merge_tmp/link/dir/state.db")
+assert_eq "$lock_paths" "${canon}.lock"$'\n'"${canon}.manual-action.lock" \
+    "state lock paths sit beside the canonical db"
+printf 'wal' > "$merge_tmp/real/dir/state.db-wal"
+fp=$(update_db_fingerprint "$merge_tmp/link/dir/state.db")
+assert_eq "$fp" "db=ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"$'\n'"wal=$(update_file_fingerprint "$merge_tmp/real/dir/state.db-wal")" \
+    "db fingerprint covers the db and its wal only"
+: > "$merge_tmp/real/dir/state.db-wal"
+assert_eq "$(update_db_fingerprint "$merge_tmp/link/dir/state.db" | tail -n 1)" "wal=none" \
+    "an empty wal holds no frames and fingerprints like an absent one"
+rm -f "$merge_tmp/real/dir/state.db-wal"
+assert_eq "$(update_db_fingerprint "$merge_tmp/link/dir/state.db" | tail -n 1)" "wal=none" \
+    "an absent wal fingerprints as none"
+assert_eq "$(update_resolve_config_db_path /opt/go-trader-a scheduler/state.db)" "/opt/go-trader-a/scheduler/state.db" \
+    "relative db_file resolves under the deploy dir"
+assert_eq "$(update_resolve_config_db_path /opt/go-trader-a /var/lib/go-trader/a/state.db)" "/var/lib/go-trader/a/state.db" \
+    "absolute db_file is kept"
+assert_eq "$(update_unit_dropin_path /etc/systemd/system go-trader@live.service 50-merge-paper-b)" \
+    "/etc/systemd/system/go-trader@live.service.d/50-merge-paper-b.conf" "drop-in path"
+assert_eq "$(update_paper_override_directive /var/lib/go-trader/paper)" "StateDirectory=go-trader/paper" \
+    "a /var/lib instance directory becomes a StateDirectory directive"
+assert_eq "$(update_paper_override_directive /var/lib/go-trader)" "StateDirectory=go-trader" \
+    "a bare /var/lib directory becomes a StateDirectory directive"
+assert_eq "$(update_paper_override_directive /opt/go-trader-paper/scheduler)" "ReadWritePaths=/opt/go-trader-paper/scheduler" \
+    "a deploy-tree directory becomes a ReadWritePaths directive"
+
+update_start_state_lock_holder "$merge_tmp/link/dir/state.db" || { echo "FAIL: lock holder did not start" >&2; exit 1; }
+holder_pid="$UPDATE_LOCK_HOLDER_PID"
+assert_eq "$(cat "${canon}.lock")" "$holder_pid" "the holder writes its pid into the ownership lock"
+if [[ -s "${canon}.manual-action.lock" ]]; then
+    echo "FAIL: the manual-action lock must stay empty" >&2
+    exit 1
+fi
+contended=$(python3 -c '
+import fcntl, os, sys
+fd = os.open(sys.argv[1], os.O_RDWR)
+try:
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    print("free")
+except OSError:
+    print("held")
+' "${canon}.lock")
+assert_eq "$contended" "held" "the ownership lock is held while the holder runs"
+second_out=$(
+    UPDATE_LOCK_HOLDER_PID=""; UPDATE_LOCK_HOLDER_FD=""
+    update_start_state_lock_holder "$merge_tmp/link/dir/state.db" 2>&1
+) && second_rc=0 || second_rc=$?
+assert_eq "$second_rc" "1" "a second holder on the same db is refused"
+if [[ "$second_out" != *"CONTENDED ${canon}.lock pid=${holder_pid}"* ]]; then
+    echo "FAIL: contention must name the lock and the holder pid, got: $second_out" >&2
+    exit 1
+fi
+update_stop_state_lock_holder
+released=$(python3 -c '
+import fcntl, os, sys
+fd = os.open(sys.argv[1], os.O_RDWR)
+try:
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    print("free")
+except OSError:
+    print("held")
+' "${canon}.lock")
+assert_eq "$released" "free" "stopping the holder releases the ownership lock"
+rm -rf "$merge_tmp"
+
 drift=$(mktemp -d)
 mkdir -p "$drift/live/scheduler" "$drift/paper/scheduler" "$drift/paper2/scheduler" \
     "$drift/paper3/scheduler" "$drift/synced/scheduler" "$drift/broken/scheduler"
@@ -710,6 +788,112 @@ assert_eq "$audit_rc" "1" "drift audit: in-process pair still gates on cadence d
 if [[ "$audit_out" != *"CANDIDATE"* || "$audit_out" != *"interval_seconds"* ]]; then
     echo "FAIL: expected interval_seconds drift for the in-process pair, got: $audit_out" >&2
     exit 1
+fi
+
+mkdir -p "$drift/alias/scheduler" "$drift/ambiguous/scheduler"
+cat > "$drift/alias/scheduler/config.json" <<'JSON'
+{"config_version": 19, "strategies": [
+  {"id": "hl-y", "type": "perps", "platform": "hyperliquid",
+   "script": "shared_scripts/check_hyperliquid.py",
+   "args": ["vwap", "ETH", "1h", "--mode=live"],
+   "interval_seconds": 300, "leverage": 20, "margin_per_trade_usd": 50, "capital": 100},
+  {"id": "hl-y-paper", "storage_strategy_id": "hl-y", "type": "perps", "platform": "hyperliquid",
+   "script": "shared_scripts/check_hyperliquid.py",
+   "args": ["vwap", "ETH", "1h", "--mode=paper"],
+   "interval_seconds": 300, "leverage": 20, "margin_per_trade_usd": 50, "capital": 100}
+]}
+JSON
+cat > "$drift/ambiguous/scheduler/config.json" <<'JSON'
+{"config_version": 19, "strategies": [
+  {"id": "hl-y", "type": "perps", "platform": "hyperliquid",
+   "script": "shared_scripts/check_hyperliquid.py",
+   "args": ["vwap", "ETH", "1h", "--mode=live"],
+   "interval_seconds": 300, "leverage": 20, "margin_per_trade_usd": 50, "capital": 100},
+  {"id": "hl-y-paper", "type": "perps", "platform": "hyperliquid",
+   "script": "shared_scripts/check_hyperliquid.py",
+   "args": ["vwap", "ETH", "1h", "--mode=paper"],
+   "interval_seconds": 300, "leverage": 20, "margin_per_trade_usd": 50, "capital": 100}
+]}
+JSON
+audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/alias") && audit_rc=0 || audit_rc=$?
+assert_eq "$audit_rc" "0" "drift audit: in-process twins paired by storage_strategy_id exit 0"
+if [[ "$audit_out" != *"PAIR hl-y"* || "$audit_out" != *"[id=hl-y-paper]"* || "$audit_out" != *"IN SYNC"* ]]; then
+    echo "FAIL: expected the storage-alias pair in sync, got: $audit_out" >&2
+    exit 1
+fi
+audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/ambiguous") && audit_rc=0 || audit_rc=$?
+assert_eq "$audit_rc" "1" "drift audit: a -paper suffix alone is ambiguous and gates"
+if [[ "$audit_out" != *"AMBIGUOUS hl-y-paper"* || "$audit_out" == *"PAIR hl-y"* ]]; then
+    echo "FAIL: expected an AMBIGUOUS line and no pair, got: $audit_out" >&2
+    exit 1
+fi
+audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/live" "$drift/paper2") && audit_rc=0 || audit_rc=$?
+assert_eq "$audit_rc" "0" "drift audit: an incompatible timeframe pair is reported and left alone"
+if [[ "$audit_out" != *"INCOMPATIBLE timeframe"* || "$audit_out" != *"SKIP — INCOMPATIBLE"* ]]; then
+    echo "FAIL: expected an INCOMPATIBLE timeframe marker, got: $audit_out" >&2
+    exit 1
+fi
+
+if [[ -n "${GO_TRADER_BIN:-}" && -x "${GO_TRADER_BIN:-}" ]]; then
+    mkdir -p "$drift/eff-live/scheduler" "$drift/eff-paper/scheduler"
+    cp "$GO_TRADER_BIN" "$drift/eff-live/go-trader"
+    cp "$GO_TRADER_BIN" "$drift/eff-paper/go-trader"
+    printf 'HYPERLIQUID_SECRET_KEY=fixture\n' > "$drift/eff-live/.env"
+    cat > "$drift/eff-live/scheduler/config.json" <<'JSON'
+{"config_version": 19, "interval_seconds": 300, "strategies": [
+  {"id": "hl-z", "type": "perps", "platform": "hyperliquid",
+   "script": "shared_scripts/check_hyperliquid.py",
+   "args": ["vwap", "ETH", "1h", "--mode=live"],
+   "leverage": 20, "margin_per_trade_usd": 50, "capital": 100}
+]}
+JSON
+    cat > "$drift/eff-paper/scheduler/config.json" <<'JSON'
+{"config_version": 19, "interval_seconds": 600, "strategies": [
+  {"id": "hl-z", "type": "perps", "platform": "hyperliquid",
+   "script": "shared_scripts/check_hyperliquid.py",
+   "args": ["vwap", "ETH", "1h", "--mode=paper"],
+   "leverage": 20, "margin_per_trade_usd": 50, "capital": 100}
+]}
+JSON
+    audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/eff-live" "$drift/eff-paper") && audit_rc=0 || audit_rc=$?
+    assert_eq "$audit_rc" "1" "drift audit: root cadence differences surface as effective drift"
+    if [[ "$audit_out" != *"interval_seconds"* || "$audit_out" != *"live=300"* || "$audit_out" != *"paper=600 (effective)"* ]]; then
+        echo "FAIL: expected an effective interval_seconds drift line, got: $audit_out" >&2
+        exit 1
+    fi
+    if [[ "$audit_out" == *"RAW"* ]]; then
+        echo "FAIL: a deployment with a binary must not report RAW, got: $audit_out" >&2
+        exit 1
+    fi
+    mkdir -p "$drift/eff-paper/out"
+    mv "$drift/eff-paper/scheduler/config.json" "$drift/eff-paper/out/config.json"
+    python3 - "$drift/eff-paper/out/config.json" <<'PY'
+import json, sys
+p = sys.argv[1]
+cfg = json.load(open(p))
+cfg["config_version"] = 15
+json.dump(cfg, open(p, "w"))
+PY
+    ln -s "$drift/eff-paper/out/config.json" "$drift/eff-paper/scheduler/config.json"
+    old_bytes=$(cat "$drift/eff-paper/out/config.json")
+    audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/eff-live" "$drift/eff-paper") && audit_rc=0 || audit_rc=$?
+    assert_eq "$audit_rc" "1" "drift audit: a config below the current version still yields an effective view"
+    if [[ "$audit_out" == *"RAW"* ]]; then
+        echo "FAIL: a v15 config beside a binary must not fall back to RAW, got: $audit_out" >&2
+        exit 1
+    fi
+    [[ -L "$drift/eff-paper/scheduler/config.json" ]] || { echo "FAIL: the drift audit replaced the transition symlink with a regular file" >&2; exit 1; }
+    assert_eq "$(cat "$drift/eff-paper/out/config.json")" "$old_bytes" "drift audit with a binary beside the config is read-only (no migration rewrite)"
+    [[ ! -e "$drift/eff-paper/out/config.json.tmp" ]] || { echo "FAIL: the drift audit left a migration temp file" >&2; exit 1; }
+    rm -f "$drift/eff-paper/go-trader"
+    audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/eff-live" "$drift/eff-paper") && audit_rc=0 || audit_rc=$?
+    assert_eq "$audit_rc" "0" "drift audit: a deployment without a binary falls back to raw keys"
+    if [[ "$audit_out" != *"(RAW: no go-trader binary"* || "$audit_out" != *"IN SYNC (RAW)"* ]]; then
+        echo "FAIL: expected the RAW marker on the fallback pair, got: $audit_out" >&2
+        exit 1
+    fi
+else
+    echo "note: GO_TRADER_BIN unset; effective-cadence drift case skipped"
 fi
 
 audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/live" "$drift/broken") && audit_rc=0 || audit_rc=$?

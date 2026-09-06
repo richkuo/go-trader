@@ -158,6 +158,9 @@ func main() {
 	for _, spec := range storageLayoutCfg.Files {
 		fmt.Printf("[storage]   %s -> %s\n", spec.Role, spec.Canonical)
 	}
+	for _, line := range formatStorageAliasLines(storageIdent, storageLayoutCfg) {
+		fmt.Println(line)
+	}
 
 	// One-shot reporting modes read only: no migration, no startup write, no
 	// ownership lock, so they can run beside a live daemon.

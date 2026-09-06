@@ -204,6 +204,167 @@ except Exception:
     printf '%s\n' "$db_paths"
 }
 
+update_canonical_db_path() {
+    python3 -c '
+import os, sys
+p = os.path.abspath(sys.argv[1])
+try:
+    os.stat(p)
+    p = os.path.realpath(p)
+except OSError:
+    pass
+print(p)
+' "$1"
+}
+
+update_state_lock_paths() {
+    local canon
+    canon=$(update_canonical_db_path "$1")
+    printf '%s\n' "${canon}.lock" "${canon}.manual-action.lock"
+}
+
+update_file_fingerprint() {
+    local path="$1"
+    if [[ ! -e "$path" ]]; then
+        printf 'absent'
+        return 0
+    fi
+    python3 -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$path"
+}
+
+update_db_fingerprint() {
+    local canon
+    canon=$(update_canonical_db_path "$1")
+    local wal="${canon}-wal" wal_fp
+    if [[ -s "$wal" ]]; then
+        wal_fp=$(update_file_fingerprint "$wal")
+    else
+        wal_fp="none"
+    fi
+    printf 'db=%s\nwal=%s\n' "$(update_file_fingerprint "$canon")" "$wal_fp"
+}
+
+update_resolve_config_db_path() {
+    local deploy_dir="$1" db_path="$2"
+    if [[ "$db_path" == /* ]]; then
+        printf '%s' "$db_path"
+    else
+        printf '%s/%s' "${deploy_dir%/}" "$db_path"
+    fi
+}
+
+update_unit_dropin_path() {
+    local unit_dir="$1" unit="$2" name="$3"
+    printf '%s/%s.d/%s.conf' "${unit_dir%/}" "$unit" "$name"
+}
+
+update_paper_override_directive() {
+    local dir="${1%/}"
+    if [[ "$dir" == /var/lib/*/* ]]; then
+        update_config_writable_directive "${dir%/*}" "${dir##*/}"
+    else
+        update_config_writable_directive "$dir" ""
+    fi
+}
+
+UPDATE_LOCK_HOLDER_PY='
+import fcntl, os, sys
+paths = sys.argv[1:]
+held = []
+warnings = []
+def lock_owner(p):
+    for suffix in (".manual-action.lock", ".lock"):
+        if p.endswith(suffix):
+            db = p[:-len(suffix)]
+            break
+    else:
+        db = p
+    for cand in (db, os.path.dirname(p)):
+        try:
+            st = os.stat(cand)
+        except OSError:
+            continue
+        return st.st_uid, st.st_gid
+    return None
+for p in paths:
+    existed = os.path.exists(p)
+    fd = os.open(p, os.O_CREAT | os.O_RDWR, 0o644)
+    if not existed:
+        owner = lock_owner(p)
+        if owner is not None and owner != (os.geteuid(), os.getegid()):
+            try:
+                os.fchown(fd, owner[0], owner[1])
+            except OSError as exc:
+                warnings.append("WARN %s created but could not be given to uid %d gid %d: %s" % (p, owner[0], owner[1], exc))
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        pid = ""
+        try:
+            pid = os.read(fd, 32).decode("utf-8", "replace").strip()
+        except OSError:
+            pass
+        print("CONTENDED %s pid=%s" % (p, pid or "unknown"))
+        sys.stdout.flush()
+        sys.exit(1)
+    held.append((p, fd))
+for p, fd in held:
+    if p.endswith(".manual-action.lock"):
+        continue
+    os.ftruncate(fd, 0)
+    os.lseek(fd, 0, os.SEEK_SET)
+    os.write(fd, ("%d\n" % os.getpid()).encode())
+    os.fsync(fd)
+print("HELD %d" % os.getpid())
+for w in warnings:
+    print(w)
+sys.stdout.flush()
+sys.stdin.read()
+'
+
+update_start_state_lock_holder() {
+    local -a locks=()
+    local db
+    for db in "$@"; do
+        while IFS= read -r line; do
+            locks+=("$line")
+        done < <(update_state_lock_paths "$db")
+    done
+    local fifo out
+    fifo=$(mktemp -u "${TMPDIR:-/tmp}/go-trader-lock-holder.XXXXXX")
+    mkfifo "$fifo"
+    out=$(mktemp "${TMPDIR:-/tmp}/go-trader-lock-holder-out.XXXXXX")
+    python3 -c "$UPDATE_LOCK_HOLDER_PY" "${locks[@]}" <"$fifo" >"$out" 2>&1 &
+    UPDATE_LOCK_HOLDER_PID=$!
+    exec {UPDATE_LOCK_HOLDER_FD}>"$fifo"
+    rm -f "$fifo"
+    local i status=""
+    for i in $(seq 1 200); do
+        status=$(head -n 1 "$out" 2>/dev/null || true)
+        [[ -n "$status" ]] && break
+        sleep 0.05
+    done
+    if [[ "$status" != HELD* ]]; then
+        exec {UPDATE_LOCK_HOLDER_FD}>&-
+        wait "$UPDATE_LOCK_HOLDER_PID" 2>/dev/null || true
+        cat "$out" >&2
+        rm -f "$out"
+        unset UPDATE_LOCK_HOLDER_PID UPDATE_LOCK_HOLDER_FD
+        return 1
+    fi
+    tail -n +2 "$out" >&2
+    rm -f "$out"
+}
+
+update_stop_state_lock_holder() {
+    if [[ -n "${UPDATE_LOCK_HOLDER_FD:-}" ]]; then
+        exec {UPDATE_LOCK_HOLDER_FD}>&-
+    fi
+    if [[ -n "${UPDATE_LOCK_HOLDER_PID:-}" ]]; then
+        wait "$UPDATE_LOCK_HOLDER_PID" 2>/dev/null || true
+    fi
+    unset UPDATE_LOCK_HOLDER_PID UPDATE_LOCK_HOLDER_FD
+}
 
 strip_unit_flags_from_argv() {
     declare -a out=()

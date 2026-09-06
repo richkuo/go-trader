@@ -237,6 +237,26 @@ func inspectOneStorageFile(db *StateDB, fi *storageFileInspection, layout storag
 	return rejections, nil
 }
 
+func formatStorageAliasLines(ident storageIdentityMap, layout storageLayout) []string {
+	var out []string
+	for _, role := range layout.roles() {
+		fi := ident.fileIdentity(role)
+		procIDs := make([]string, 0, len(fi.procToStore))
+		for procID := range fi.procToStore {
+			procIDs = append(procIDs, procID)
+		}
+		sort.Strings(procIDs)
+		for _, procID := range procIDs {
+			storageID := fi.procToStore[procID]
+			if storageID == procID {
+				continue
+			}
+			out = append(out, fmt.Sprintf("[storage]   alias %s: %s -> %s", role, procID, storageID))
+		}
+	}
+	return out
+}
+
 func foreignRoleForStorageID(ident storageIdentityMap, layout storageLayout, role storageRole, storageID string) (storageRole, bool) {
 	for _, other := range layout.roles() {
 		if other == role {
