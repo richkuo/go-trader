@@ -2,7 +2,7 @@
 
 Guardrails only. Mechanism: SKILL.md § Subsystem Mechanism Reference; operator flows: SKILL.md, docs/POST_UPDATE_HISTORY.md. Under 15,000 bytes, never split (agents load only root `CLAUDE.md`; `AGENTS.md` symlinks). Shorten wording; drop no guardrail.
 
-## Environment
+## Env
 - Go 1.26.2 (`/opt/homebrew/bin/go`). Python: `uv run --no-sync python`; scheduler calls `.venv/bin/python3`; `uv sync` per worktree.
 - systemd units: `ProtectSystem=strict`, no `PATH`/`UV_CACHE_DIR` injection; secrets in `/opt/go-trader/.env`; config at `/var/lib/go-trader[/<instance>]/config.json`; `scheduler/config.json` = transition symlink.
 
@@ -10,7 +10,7 @@ Guardrails only. Mechanism: SKILL.md § Subsystem Mechanism Reference; operator 
 - **Always the absolute best technical solution.** Cost, compute, time, effort, tests, code volume never narrow options; branch+PR workflow, issue-claim checks vs code, destructive-action safety win.
 - **Never give time, duration or effort estimates.** Complexity = scope+risk
 
-## Repo Structure (`scheduler/` = one Go `package main`)
+## Repo (`scheduler/` = one Go `package main`)
 - `executor.go`/`shutdown.go`: **side-effecting wrappers > `runPythonSideEffect`, NEVER `runPython`.** `confirmHyperliquidExecuteFill` gates each live HL book: finite `AvgPx>0`+`TotalSz>0` in `Execution.Fill`, else no book; `check_hyperliquid.py execute` exits 1 on no fill.
 - `server.go`/`ui_*.go`: **lock order `mu > strategiesMu`**. **Loopback only.** `/tuning` never writes config; `ui_tuning.go` > `spawnPythonProcessWithEnv` (NEVER `runPython*`); `POST /api/tuning/apply` = sole promotion.
 - `config.go`/`config_migration.go`: `CurrentConfigVersion=19`, `MinSupportedConfigVersion=13`. 7 exclusive HL stop fields (none > `DefaultStopLossATRMult=1.0`); `close_strategy` canonical; unknown-key guard. `strategyUsesTieredTPATRClose(sc)` gates on-chain TPs, NOT `len(tiers)>0`. `CircuitBreaker *bool` ONLY via accessors. `portfolio_risk.paper`: evaluators use `scopeRiskConfig`; nested `paper` rejected.
@@ -34,16 +34,16 @@ Guardrails only. Mechanism: SKILL.md § Subsystem Mechanism Reference; operator 
 - `llm_entry_analysis.go`: advisory-only; `spawnPythonProcess` NEVER `runPython*`; sole writer of `trade_diagnostics.llm_verdict`; `trade_diagnostics*.go` never.
 - `scale_in.go`: geometry frozen via `RiskAnchorPrice`, never blended `AvgCost`. `manual*.go`: kill-switch+CB gated; SL edits queue `PendingManualAction`, NEVER a direct UPDATE; `force-close` live HL perps only.
 - `hyperliquid_liquidation_guard.go`: **CLAMP, never refuse to arm; ONE-WAY TIGHTEN** at 0.5% buffer; 0 = unknown, never persisted; unclampable REFUSES; unreadable outcome keeps state. Boot `validateHLStopWithinBankruptcyBound` mirrors `LoadConfig` stop-owner resolution.
-- `hyperliquid_protection.go`: reduce-only; on-chain TP only when `strategyUsesTieredTPATRClose` AND live (paper never). `hyperliquid_open_trailing.go` arms SL at open.
+- `hyperliquid_protection.go`: reduce-only; on-chain TP only when `strategyUsesTieredTPATRClose` AND live (paper never). `hyperliquid_open_trailing.go` arms SL at open. `hyperliquid_shared_close_floor.go`: <$10 shared-coin full close escalates ONLY if every peer is flat on-chain (refetched, raw keys) AND in book, before SL blocks; else ONE alert+hold; `venue_rejected` never resends; re-arm a cancelled stop same cycle ONLY after a SUBMITTED close.
 - `version_probe.go`/`probe_cmd.go`: new runtime CLI flag > both probe argvs. `agent_info.go`: `--bootstrap-md` > `AGENTS.generated.md`, NEVER `AGENTS.md`.
 - `failure_alerts.go`: wire notifier on each new `run*Check`. `discord_*commands.go`: new mutating command > `opsCommandNames`+`slashCommands()`+dispatch.
 - `shared_wallet*.go`: PRE-FEE `realized_pnl`, net via `tradeNetPnL*`. Pool budgeting: 2+ live HL/OKX perps omit capital fields, positive `margin_per_trade_usd` each; allocated↔pool flat-only. `cashflow_journal.go` OUTSIDE `mu`.
 - `kill_switch_limit_orders.go`: cancel each `pending_limit_orders` row BEFORE flatten (keyed on ROW); **never gate `reconcilePendingLimitOrders` on kill-switch**; cancel≠adoption; never auto-delete an unadopted fill.
 - `orphan_limit_cancel_alerts.go`: cancel-only lane, status-FIRST finalize, books NO fill; `orphanLimitCancelState` = SSoT (off-book fill = UNTRACKED POSITION). `limit_fill_exposure.go`: book a limit fill ONLY once live exposure confirms; per-coin aggregate, never per-row greedy; fail-closed same-direction+contained; `unreadable`/`unbacked` refuse book AND block delete.
-- `shared_scripts/`: check scripts take `--regime-payload-json`, probed at start. `check_hyperliquid.py` close gate: live-only, lot-floored, never a full close, no lot = no gate. `hyperliquid_shared_close_floor.go`: <$10 shared-coin full close escalates ONLY if every peer is flat on-chain (refetched, raw keys) AND in book, before SL blocks; else ONE alert+hold; `venue_rejected` never resends; failed close re-arms its cancelled stop same cycle. `platforms/<name>/adapter.py`: one `*ExchangeAdapter`; HL `_sz_decimals()` via `name_to_asset`. `funding_fetcher.py`: `merge_asof` backward, DISJOINT `funding_coverage`; `regime.py` ATR `simple`.
+- `shared_scripts/`: check scripts take `--regime-payload-json`, probed at start. `check_hyperliquid.py` close gate: live-only, lot-floored, never a full close, no lot = no gate. `platforms/<name>/adapter.py`: one `*ExchangeAdapter`; HL `_sz_decimals()` via `name_to_asset`. `funding_fetcher.py`: `merge_asof` backward, DISJOINT `funding_coverage`; `regime.py` ATR `simple`.
 - `shared_strategies/`: open SSoT `open/registry.py`; **`open/{spot,futures}/strategies.py` = shims, never edit.** Close via `close/registry.py` through `from close_registry_loader import …`, never bare `import registry`. `hurst_exponent` (DFA) = SSoT.
 
-## Key Patterns
+## Patterns
 - Git from repo root; `go -C scheduler build .`, never `cd scheduler &&`.
 - New platform: SKILL.md § Custom Platform Integration lists touchpoints. Adapters load via `importlib`, class `endswith("ExchangeAdapter")`; check scripts: public methods only.
 - Subprocess contract: JSON on stdout, exit 1 on error; Go parses regardless.
@@ -61,7 +61,7 @@ Guardrails only. Mechanism: SKILL.md § Subsystem Mechanism Reference; operator 
 - New per-strategy flag: field > `run*Check` CLI > Python parse > InitOptions/wizard; runtime-required > probe argvs.
 - Notifications via `MultiNotifier`; paper routes via `resolveChannelKey`/`SendToScopeChannels`.
 
-## Pull Requests
+## PRs
 - `Closes #<N>` in body; never bare `#N` in lists. Title `type(#<N>): summary [C<score>, <model>, <effort>]` (`, fableplan` if Fable planned). Body: `## Plain simple English` (<55 words) first, then `## Summary` + verification.
 - Commits, PR and issue bodies end `LLM: <model> | <effort> | Harness: <action>`; no `Co-authored-by` trailer.
 - Bot reviews land on the issue-comments endpoint. Before merging a long-lived PR diff `origin/main..HEAD` for reverts.
@@ -69,11 +69,11 @@ Guardrails only. Mechanism: SKILL.md § Subsystem Mechanism Reference; operator 
 - Review findings: restate as invariant, list breaking states (inverse, compound), add class tests.
 - `.github/workflows/claude.yml`: least-privilege split; mode routing fail-closed (untrusted/fork > review); no-execution ban in agent; commit/push implement-mode only; prompt never holds `"`, `` ` ``, `$`; `.github/scripts/` keeps ONLY `test_workflow_logic.py`.
 
-## GitHub Issues
+## Issues
 - `gh issue create`; title `[C<0-100>] <title>`; first body line `**Complexity: N/100** - scope; risk; uncertainty` (money/data/protection risk weighs most; never time).
 - rk-skills workflow skills = CI-only; no project settings pin.
 
-## Build & Deploy
+## Deploy
 - **Update only with `bash scripts/update.sh --restart`. Never rebuild Go alone**: Go+Python share one argv contract per SHA. `update_resolve_db_exclude` lists all state files.
 - Exit codes: probe 78, singleton 79, storage 80; units set `RestartPreventExitStatus=78 79 80`. Ownership over ALL files (incl. `--once`) precedes any migration or startup write. Unit edits: `daemon-reload`.
 - Post-update: SKILL.md § Post-Update Agent Protocol. After a Python-launcher change smoke `./go-trader --once` (daemon stopped).
@@ -87,9 +87,9 @@ Guardrails only. Mechanism: SKILL.md § Subsystem Mechanism Reference; operator 
 
 ## Testing
 - New functionality and each bug fix need a test guarding a behavior contract (money, state, protection, subprocess contracts, migration, backtest parity). Assert outcomes; pin only operator-decision wording; no constants or round-trips; table-driven variants.
-- **Test budget.** Only that contract list; max one table-driven test per new function; none asserting only wording, a constant or a round-trip (operator-decision wording aside). `check_test_budget.py` fails CI on a wording-only test outside `scripts/test_budget_baseline.json` or a stale entry; entries only for such wording; `--write-baseline` after a delete.
+- **Test budget.** Only that contract list; max one table-driven test per new function; none asserting only wording, a constant or a round-trip (operator-decision wording aside). `check_test_budget.py` fails CI on a wording-only test outside `scripts/test_budget_baseline.json` or a stale entry; entries only for operator-decision wording; `--write-baseline` after a delete.
 - Go CI never spawns Python: pure helpers out of subprocess wrappers. Go tests check `json.Unmarshal` errors.
-- `go build`/`go test ./...`; `gofmt -w` after edits. Tabbed Go edits: Python `replace(old,new,1)`.
+- `go build`/`go test ./...` from repo root; `gofmt -w` after edits. Tabbed Go edits: Python `replace(old,new,1)`.
 - Pytest: `uv run --no-sync python -m pytest shared_strategies/ shared_tools/ platforms/ backtest/`; `shared_scripts/test_*.py` by path. Registry/sys.path tests > FULL suite. CI `-n auto`: never bare-`import` an ambiguous name; intermittent failure = isolation, not flake.
 - `stampEntryATRIfOpened` rejects ATR > 50% of AvgCost. Strategy tests assert real signal values; smoke tests need `DatetimeIndex`.
 - `tiered_tp_atr`/`trailing_stop_atr_mult` need `Position.EntryATR`; `*_live` recompute via `atr_source`; `avwap_stop` = virtual exit only.

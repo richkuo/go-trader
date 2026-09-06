@@ -55,6 +55,7 @@ type HyperliquidResult struct {
 	Divergence             DivergenceResult       `json:"-"`
 	ForceFullClose         bool                   `json:"-"`
 	SharedCloseStrandedUSD float64                `json:"-"`
+	LiveOrderSubmitted     bool                   `json:"-"`
 }
 
 type HyperliquidFill struct {
