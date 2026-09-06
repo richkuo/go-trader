@@ -667,6 +667,25 @@ def test_venue_close_gate_rewrites_only_dust_partial_closes(
         assert out["close_fraction"] == expect_fraction
 
 
+@pytest.mark.parametrize("case,price,gated", [
+    ("exactly_minimum_is_gated", 100.0, True),
+    ("inside_margin_band_is_gated", 102.0, True),
+    ("above_margin_band_passes", 104.0, False),
+])
+def test_venue_close_gate_margin_covers_price_drift_before_execute(mod, case, price, gated):
+    decision = {"close_fraction": 0.5, "open_action": "none", "signal": -1}
+    out = mod.apply_venue_close_gate(
+        decision, {"current_quantity": 0.2}, price, 4, 10.0, "long", min_notional_margin=0.03)
+    if gated:
+        assert out["close_fraction"] == 0.0
+        assert out["signal"] == 0
+        assert out["close_gate"] == "below_venue_minimum"
+        assert out["close_gate_detail"]["min_notional_usd"] == 10.0
+        assert out["close_gate_detail"]["gate_threshold_usd"] == pytest.approx(10.3)
+    else:
+        assert out is decision
+
+
 def test_venue_close_gate_uses_the_meta_cache_on_the_sealed_path(mod, monkeypatch):
     seen = []
 

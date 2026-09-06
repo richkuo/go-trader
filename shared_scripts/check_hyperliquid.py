@@ -168,6 +168,15 @@ def _venue_min_order_notional_usd():
         return 10.0
 
 
+def _venue_min_order_notional_margin():
+    try:
+        from adapter import MIN_ORDER_NOTIONAL_SAFETY_MARGIN
+
+        return max(float(MIN_ORDER_NOTIONAL_SAFETY_MARGIN), 0.0)
+    except Exception:
+        return 0.03
+
+
 def _floor_lot_size(qty, lot_decimals):
     from decimal import Decimal, ROUND_DOWN
 
@@ -195,7 +204,8 @@ def resolve_venue_lot_decimals(shared, symbol):
         return None
 
 
-def apply_venue_close_gate(decision, position_ctx, price, lot_decimals, min_notional_usd, position_side=""):
+def apply_venue_close_gate(decision, position_ctx, price, lot_decimals, min_notional_usd, position_side="",
+                           min_notional_margin=0.0):
     if not decision or lot_decimals is None:
         return decision
     try:
@@ -217,8 +227,9 @@ def apply_venue_close_gate(decision, position_ctx, price, lot_decimals, min_noti
     except (TypeError, ValueError):
         px = 0.0
     notional = floored_qty * px if px > 0 else None
+    gate_threshold = float(min_notional_usd) * (1.0 + max(float(min_notional_margin or 0.0), 0.0))
     below_lot = floored_qty <= 0
-    below_value = notional is not None and notional < float(min_notional_usd)
+    below_value = notional is not None and notional < gate_threshold
     if not below_lot and not below_value:
         return decision
     from strategy_composition import compose_signal
@@ -233,6 +244,7 @@ def apply_venue_close_gate(decision, position_ctx, price, lot_decimals, min_noti
         "lot_decimals": int(lot_decimals),
         "notional_usd": notional,
         "min_notional_usd": float(min_notional_usd),
+        "gate_threshold_usd": gate_threshold,
     }
     return gated
 
@@ -476,6 +488,7 @@ def evaluate_signal_slot(shared, slot, deps=None):
                 resolve_venue_lot_decimals(shared, symbol),
                 _venue_min_order_notional_usd(),
                 position_side,
+                min_notional_margin=_venue_min_order_notional_margin(),
             )
             if gated is not decision:
                 detail = gated["close_gate_detail"]
@@ -483,7 +496,7 @@ def evaluate_signal_slot(shared, slot, deps=None):
                     f"Venue close gate: {symbol} close_fraction {decision['close_fraction']:.6g} -> 0 "
                     f"(requested {detail['requested_qty']:.10g}, floored {detail['floored_qty']:.10g} "
                     f"at {detail['lot_decimals']} decimals, notional {detail['notional_usd']}, "
-                    f"min {detail['min_notional_usd']})",
+                    f"min {detail['min_notional_usd']}, gate {detail['gate_threshold_usd']:.4g})",
                     file=sys.stderr,
                 )
                 decision = gated
