@@ -505,14 +505,19 @@ rm -rf "$fleet"
 merge_tmp=$(mktemp -d)
 mkdir -p "$merge_tmp/real/dir" "$merge_tmp/deploy"
 ln -s "$merge_tmp/real" "$merge_tmp/link"
+absent_canon=$(update_canonical_db_path "$merge_tmp/link/dir/state.db")
+assert_eq "$absent_canon" "$merge_tmp/link/dir/state.db" \
+    "canonical db path keeps the unresolved absolute path of an absent file behind a symlinked parent, as the scheduler does"
+assert_eq "$(update_state_lock_paths "$merge_tmp/link/dir/state.db")" "${absent_canon}.lock"$'\n'"${absent_canon}.manual-action.lock" \
+    "state lock paths of an absent db sit beside the unresolved path"
+assert_eq "$(update_file_fingerprint "$merge_tmp/nope")" "absent" "fingerprint of a missing file is absent"
+printf 'abc' > "$merge_tmp/real/dir/state.db"
 canon=$(update_canonical_db_path "$merge_tmp/link/dir/state.db")
 assert_eq "$canon" "$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$merge_tmp/real")/dir/state.db" \
-    "canonical db path resolves a symlinked parent of an absent file"
+    "canonical db path resolves every symlink once the file exists"
 lock_paths=$(update_state_lock_paths "$merge_tmp/link/dir/state.db")
 assert_eq "$lock_paths" "${canon}.lock"$'\n'"${canon}.manual-action.lock" \
     "state lock paths sit beside the canonical db"
-assert_eq "$(update_file_fingerprint "$merge_tmp/nope")" "absent" "fingerprint of a missing file is absent"
-printf 'abc' > "$merge_tmp/real/dir/state.db"
 printf 'wal' > "$merge_tmp/real/dir/state.db-wal"
 fp=$(update_db_fingerprint "$merge_tmp/link/dir/state.db")
 assert_eq "$fp" "db=ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"$'\n'"wal=$(update_file_fingerprint "$merge_tmp/real/dir/state.db-wal")" \

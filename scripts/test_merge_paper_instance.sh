@@ -431,4 +431,134 @@ PY
 out=$(run_merge --apply 2>&1) && rc=0 || rc=$?
 assert_rc "$rc" "21" "existing different portfolio_risk.paper refuses"
 
+echo "== live config without a portfolio_risk block"
+setup norisk
+python3 - "$LIVE_CFG" <<'PY'
+import json, sys
+p = sys.argv[1]
+cfg = json.load(open(p))
+del cfg["portfolio_risk"]
+json.dump(cfg, open(p, "w"))
+PY
+out=$(run_merge 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "live config without portfolio_risk reaches READY (rc=$rc)"; }
+assert_contains "$out" "portfolio_risk root materialized from the effective live view" "materialized root reported"
+staged="$LIVE_CFG.merge-staged"
+assert_eq "$(json_get "$staged" portfolio_risk.max_drawdown_pct)" "25" "the loader's default live drawdown limit stays explicit in the merged root"
+assert_eq "$(json_get "$staged" portfolio_risk.warn_threshold_pct)" "60" "the loader's default warn threshold stays explicit in the merged root"
+assert_eq "$(json_get "$staged" portfolio_risk.paper.max_drawdown_pct)" "50" "paper override kept when live had no block"
+assert_eq "$(json_get "$staged" portfolio_risk.paper.daily_max_loss_usd)" "500" "paper daily loss limit kept when live had no block"
+
+echo "== live config with an empty portfolio_risk block"
+setup emptyrisk
+python3 - "$LIVE_CFG" <<'PY'
+import json, sys
+p = sys.argv[1]
+cfg = json.load(open(p))
+cfg["portfolio_risk"] = {}
+json.dump(cfg, open(p, "w"))
+PY
+out=$(run_merge 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "20" "a live config the binary refuses to load exits under the inspection code, never as an incompatible binary"
+assert_contains "$out" "portfolio_risk.max_drawdown_pct must be in (0, 100]" "the loader error is shown"
+
+echo "== paper config without a portfolio_risk block"
+setup paperdefault
+python3 - "$PAPER_CFG" <<'PY'
+import json, sys
+p = sys.argv[1]
+cfg = json.load(open(p))
+del cfg["portfolio_risk"]
+json.dump(cfg, open(p, "w"))
+PY
+out=$(run_merge 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "21" "a paper deployment with no daily loss limit cannot inherit the live one"
+assert_contains "$out" "portfolio_risk.paper.daily_max_loss_usd would be zero" "effective paper value drives the zero-inherits refusal"
+python3 - "$LIVE_CFG" <<'PY'
+import json, sys
+p = sys.argv[1]
+cfg = json.load(open(p))
+cfg["portfolio_risk"] = {"max_drawdown_pct": 25}
+json.dump(cfg, open(p, "w"))
+PY
+out=$(run_merge 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "paper defaults equal to the live limits reach READY (rc=$rc)"; }
+[[ "$(json_get "$LIVE_CFG.merge-staged" portfolio_risk.paper)" == "" ]] || fail "equal effective limits need no paper override"
+
+echo "== preflight passes a rejected layout through"
+setup rejected
+python3 - "$PAPER_CFG" "$BASE/paper/other.db" <<'PY'
+import json, sys
+p = sys.argv[1]
+cfg = json.load(open(p))
+cfg["paper_db_file"] = sys.argv[2]
+json.dump(cfg, open(p, "w"))
+PY
+HYPERLIQUID_SECRET_KEY=fixture "$GO_TRADER_BIN" storage-inspect --json --config "$PAPER_CFG" >"$T/rejected.json" 2>/dev/null && fail "rejected precondition: storage-inspect must exit nonzero"
+[[ "$(json_get "$T/rejected.json" rejections.0)" == *"state file"* ]] || fail "rejected precondition: the binary reports a rejection with its JSON"
+out=$(run_merge 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "16" "a layout the binary rejects with a full report passes the binary probe and reaches the later refusals, never exit 12"
+
+echo "== dry run reports the journal state"
+setup journal
+out=$(run_merge 2>&1) || { echo "$out" >&2; fail "dry run before journal cases"; }
+cp "$LIVE_CFG" "$LIVE_CFG.pre-merge-paper"
+cp "$LIVE_CFG.merge-staged" "$LIVE_CFG"
+printf 'run_id x\noverride_prior absent\nconfig begin\nconfig done\n' > "$JOURNAL"
+out=$(run_merge 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "24" "a dry run over an interrupted journal refuses"
+assert_contains "$out" "records an interrupted apply" "dry run names the interrupted state"
+assert_eq "$(cat "$LIVE_CFG")" "$(cat "$LIVE_CFG.merge-staged")" "a dry run never restores"
+setup journal2
+out=$(run_merge --apply 2>&1) || { echo "$out" >&2; fail "apply before complete-journal dry run"; }
+out=$(run_merge 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "dry run over a complete journal exits 0 (rc=$rc)"; }
+assert_contains "$out" "is complete and both deployment files match its result" "dry run reports the complete journal"
+assert_contains "$out" "VERDICT: READY" "complete journal dry run still certifies"
+python3 - "$LIVE_CFG" <<'PY'
+import json, sys
+p = sys.argv[1]
+cfg = json.load(open(p))
+cfg["interval_seconds"] = 301
+json.dump(cfg, open(p, "w"))
+PY
+out=$(run_merge 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "24" "a dry run over a complete journal whose files changed refuses like apply"
+setup journal3
+out=$(MERGE_PAPER_FAIL_AFTER=config run_merge --apply 2>&1) || true
+grep -qx rolled-back "$JOURNAL" || fail "journal3 precondition: rolled-back journal"
+out=$(run_merge 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "dry run over a rolled-back journal exits 0 (rc=$rc)"; }
+assert_contains "$out" "records a rolled-back run" "dry run reports the rolled-back journal"
+[[ -f "$JOURNAL" ]] || fail "a dry run never archives the journal"
+
+echo "== rollback keeps a copy of a hand-edited merged config"
+setup edited
+orig_cfg=$(cat "$LIVE_CFG")
+out=$(run_merge --apply 2>&1) || { echo "$out" >&2; fail "apply before edited rollback"; }
+python3 - "$LIVE_CFG" <<'PY'
+import json, sys
+p = sys.argv[1]
+cfg = json.load(open(p))
+cfg["interval_seconds"] = 302
+json.dump(cfg, open(p, "w"))
+PY
+edited_cfg=$(cat "$LIVE_CFG")
+printf '[Service]\nNice=7\n' > "$DROPIN"
+out=$(run_merge --rollback 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "rollback after a hand edit exits 0 (rc=$rc)"; }
+assert_eq "$(cat "$LIVE_CFG")" "$orig_cfg" "rollback restores the previous config"
+archive=$(ls "$LIVE_CFG".merge-edited.* 2>/dev/null | head -n 1)
+[[ -n "$archive" ]] || fail "rollback keeps a copy of the edited config"
+assert_eq "$(cat "$archive")" "$edited_cfg" "the archived copy holds the hand edit"
+assert_contains "$out" "copy kept at $archive" "rollback names the archived copy"
+dropin_archive=$(ls "$DROPIN".merge-edited.* 2>/dev/null | head -n 1)
+[[ -n "$dropin_archive" ]] || fail "rollback keeps a copy of the edited drop-in"
+assert_eq "$(cat "$dropin_archive")" $'[Service]\nNice=7' "the archived drop-in holds the hand edit"
+[[ ! -e "$DROPIN" ]] || fail "rollback removes the drop-in that was absent before"
+setup clean
+out=$(run_merge --apply 2>&1) || { echo "$out" >&2; fail "apply before clean rollback"; }
+out=$(run_merge --rollback 2>&1) || { echo "$out" >&2; fail "clean rollback"; }
+[[ -z "$(ls "$LIVE_CFG".merge-edited.* 2>/dev/null)" ]] || fail "a clean rollback archives nothing"
+
 echo "OK: merge-paper-instance tests passed"

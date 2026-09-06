@@ -101,9 +101,15 @@ echo "$first_log" | tail -n 40
 ls -la "$STATE_BASE/live" "$STATE_BASE/paper"
 
 echo "== second start while the handoff holds the paper lock"
-touch "$STATE_BASE/paper/state.db.lock" "$STATE_BASE/paper/state.db.manual-action.lock"
-chown "$USER_NAME:$USER_NAME" "$STATE_BASE/paper/state.db.lock" "$STATE_BASE/paper/state.db.manual-action.lock"
-update_start_state_lock_holder "$STATE_BASE/paper/state.db" || fail "lock holder did not start"
+rm -f "$STATE_BASE/paper/state.db.manual-action.lock" "$STATE_BASE/live/state.db.lock" "$STATE_BASE/live/state.db.manual-action.lock"
+[[ ! -e "$STATE_BASE/paper/state.db.manual-action.lock" ]] || fail "fixture precondition: paper manual-action lock must not pre-exist"
+[[ ! -e "$STATE_BASE/live/state.db.lock" ]] || fail "fixture precondition: live ownership lock must not pre-exist"
+update_start_state_lock_holder "$STATE_BASE/live/state.db" "$STATE_BASE/paper/state.db" || fail "lock holder did not start"
+for lock in "$STATE_BASE/live/state.db.lock" "$STATE_BASE/live/state.db.manual-action.lock" "$STATE_BASE/paper/state.db.lock" "$STATE_BASE/paper/state.db.manual-action.lock"; do
+    [[ -e "$lock" ]] || fail "lock holder did not create $lock"
+    owner=$(stat -c '%U:%G' "$lock")
+    [[ "$owner" == "$USER_NAME:$USER_NAME" ]] || fail "$lock is owned by $owner, want $USER_NAME:$USER_NAME (the merged service must open it read-write)"
+done
 second_log=$(run_unit 2>&1) && second_rc=0 || second_rc=$?
 echo "$second_log" | tail -n 20
 [[ "$second_rc" == "79" ]] || fail "second start exited $second_rc, want 79 (exit 79 = another owner holds a state file)"

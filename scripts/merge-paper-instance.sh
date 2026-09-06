@@ -280,7 +280,29 @@ def effective_root(cfg, key, default):
         return default
     return v
 
-def cmd_compose(live_path, paper_path, paper_db_abs, out_path, map_path):
+def risk_fields(view):
+    out = {}
+    if not isinstance(view, dict):
+        return out
+    for k in RISK_FIELDS:
+        v = view.get(k) or 0
+        if v != 0:
+            out[k] = v
+    return out
+
+def effective_scope_risk(inspect_path, scope):
+    docs = load(inspect_path)
+    views = [s.get("scope_risk") for s in docs if isinstance(s, dict) and s.get("scope") == scope]
+    if not views:
+        return None
+    first = views[0]
+    for v in views[1:]:
+        if risk_fields(v) != risk_fields(first):
+            refuse("inspect %s reports different %s-scope risk views across strategies: %s vs %s" % (
+                inspect_path, scope, json.dumps(risk_fields(first), sort_keys=True), json.dumps(risk_fields(v), sort_keys=True)))
+    return risk_fields(first)
+
+def cmd_compose(live_path, paper_path, paper_db_abs, out_path, map_path, inspect_live_path, inspect_paper_path):
     live = load(live_path)
     paper = load(paper_path)
     merged = json.loads(json.dumps(live))
@@ -388,25 +410,46 @@ def cmd_compose(live_path, paper_path, paper_db_abs, out_path, map_path):
     live_risk = live.get("portfolio_risk")
     if isinstance(paper_risk, dict) and "paper" in paper_risk:
         refuse("paper config nests portfolio_risk.paper")
-    if isinstance(live_risk, dict) and live_risk:
-        override = {}
-        if isinstance(paper_risk, dict):
-            override = dict((k, v) for k, v in paper_risk.items() if k in RISK_FIELDS)
-        for k in RISK_FIELDS:
-            lv = live_risk.get(k, 0) or 0
-            pv = override.get(k, 0) or 0
-            if lv != 0 and pv == 0:
-                refuse("portfolio_risk.paper.%s would be zero while live sets %s; zero inherits the live limit and cannot disable it. Set an explicit paper value" % (k, lv))
-        existing = live_risk.get("paper")
-        override = dict((k, v) for k, v in override.items() if v != 0)
-        if existing is not None and existing != override:
-            refuse("portfolio_risk.paper already exists with different values: %s vs paper config %s" % (json.dumps(existing, sort_keys=True), json.dumps(override, sort_keys=True)))
-        if override:
-            merged["portfolio_risk"]["paper"] = override
-            report.append("portfolio_risk.paper=%s" % json.dumps(override, sort_keys=True))
-    elif isinstance(paper_risk, dict) and any((paper_risk.get(k) or 0) != 0 for k in RISK_FIELDS):
-        merged["portfolio_risk"] = {"paper": dict((k, v) for k, v in paper_risk.items() if k in RISK_FIELDS and v)}
-        report.append("portfolio_risk.paper=%s (live had none)" % json.dumps(merged["portfolio_risk"]["paper"], sort_keys=True))
+    if live_risk is not None and not isinstance(live_risk, dict):
+        refuse("live config portfolio_risk is not an object")
+    live_eff = effective_scope_risk(inspect_live_path, MODE_LIVE)
+    paper_eff = effective_scope_risk(inspect_paper_path, MODE_PAPER)
+    if paper_eff is None:
+        refuse("the paper inspect document carries no paper-scope strategy; the effective paper risk limits are unknown")
+    if live_eff is None:
+        if isinstance(live_risk, dict) and "paper" in live_risk:
+            refuse("the live config runs no live strategy and already carries portfolio_risk.paper; the effective live risk limits cannot be separated from the override")
+        live_eff = effective_scope_risk(inspect_live_path, MODE_PAPER)
+    if live_eff is None:
+        refuse("the live inspect document carries no strategy; the effective live risk limits are unknown")
+    root = dict(live_risk) if isinstance(live_risk, dict) else {}
+    existing = root.pop("paper", None)
+    if not risk_fields(root):
+        root = dict((k, v) for k, v in live_eff.items())
+        report.append("portfolio_risk root materialized from the effective live view: %s%s" % (
+            json.dumps(root, sort_keys=True), "" if isinstance(live_risk, dict) else " (live config had no portfolio_risk block; the loader default now stays explicit)"))
+    override = {}
+    for k in RISK_FIELDS:
+        lv = live_eff.get(k, 0)
+        pv = paper_eff.get(k, 0)
+        if pv == lv:
+            continue
+        if pv == 0:
+            refuse("portfolio_risk.paper.%s would be zero while live sets %s; zero inherits the live limit and cannot disable it. Set an explicit paper value" % (k, lv))
+        override[k] = pv
+    if existing is not None:
+        existing_eff = dict(live_eff)
+        existing_eff.update(risk_fields(existing))
+        override_eff = dict(live_eff)
+        override_eff.update(override)
+        if existing_eff != override_eff:
+            refuse("portfolio_risk.paper already exists with different values: %s vs paper deployment %s" % (json.dumps(existing, sort_keys=True), json.dumps(override, sort_keys=True)))
+        override = risk_fields(existing)
+    if override:
+        root["paper"] = override
+        report.append("portfolio_risk.paper=%s" % json.dumps(override, sort_keys=True))
+    if root:
+        merged["portfolio_risk"] = root
 
     paper_discord = paper.get("discord") or {}
     merged_discord = merged.setdefault("discord", {})
@@ -622,12 +665,18 @@ for c in "$LIVE_CFG" "$PAPER_CFG"; do
 done
 for pair in "live|$LIVE_DEPLOY|$LIVE_BIN|$LIVE_CFG" "paper|$PAPER_DEPLOY|$PAPER_BIN|$PAPER_CFG"; do
     IFS='|' read -r side deploy bin cfg <<<"$pair"
-    if ! run_bin "$deploy" "$bin" storage-inspect --json --config "$cfg" >"$WORK/probe-$side.json" 2>"$WORK/probe-$side.err"; then
+    run_bin "$deploy" "$bin" storage-inspect --json --config "$cfg" >"$WORK/probe-$side.json" 2>"$WORK/probe-$side.err" || true
+    if [[ ! -s "$WORK/probe-$side.json" ]]; then
         cat "$WORK/probe-$side.err" >&2
-        fail "$EXIT_BINARY_INCOMPATIBLE" "$side binary cannot inspect its storage layout (storage-inspect --json failed)"
+        if grep -q "failed to load config" "$WORK/probe-$side.err"; then
+            fail "$EXIT_INSPECTION_REFUSED" "$side binary refuses to load $cfg; fix the config errors above first"
+        fi
+        fail "$EXIT_BINARY_INCOMPATIBLE" "$side binary cannot inspect its storage layout (storage-inspect --json produced no report)"
     fi
-    [[ -n "$(cfg_get "$WORK/probe-$side.json" layout)" ]] || \
+    if ! layout=$(cfg_get "$WORK/probe-$side.json" layout 2>/dev/null) || [[ -z "$layout" ]]; then
+        cat "$WORK/probe-$side.err" >&2
         fail "$EXIT_BINARY_INCOMPATIBLE" "$side binary's storage-inspect --json carries no layout; a release with the early ownership-lock contract is required"
+    fi
 done
 require_units_stopped
 
@@ -683,10 +732,35 @@ journal_has() {
     [[ -f "$JOURNAL" ]] && grep -qx "$1" "$JOURNAL"
 }
 
+journal_value() {
+    [[ -f "$JOURNAL" ]] || return 0
+    grep "^$1 " "$JOURNAL" | tail -n 1 | cut -d' ' -f2- || true
+}
+
+archive_if_edited() {
+    local path="$1" label="$2"; shift 2
+    local current known
+    [[ -e "$path" ]] || return 0
+    current=$(update_file_fingerprint "$path")
+    for known in "$@"; do
+        [[ -n "$known" && "$current" == "$known" ]] && return 0
+    done
+    local archive="${path}.merge-edited.$(date +%Y%m%d%H%M%S)"
+    if cp -p "$path" "$archive"; then
+        echo "restore: $label $path no longer matches what the apply installed or found; copy kept at $archive" >&2
+        return 0
+    fi
+    echo "CRITICAL: $label $path was edited after the apply and could not be archived to $archive" >&2
+    return 1
+}
+
 restore_from_retained() {
     local failed=0
     if journal_has "config done" || journal_has "config begin"; then
-        if [[ -f "$RETAINED_CFG" ]]; then
+        archive_if_edited "$LIVE_CFG" "config" "$(journal_value live_config)" "$(journal_value staged_config)" "$(journal_value result_config)" || failed=1
+        if [[ "$failed" == "1" ]]; then
+            :
+        elif [[ -f "$RETAINED_CFG" ]]; then
             if mv -f "$RETAINED_CFG" "$LIVE_CFG"; then
                 echo "restore: $LIVE_CFG restored from $RETAINED_CFG"
             else
@@ -699,7 +773,10 @@ restore_from_retained() {
         fi
     fi
     if journal_has "override done" || journal_has "override begin"; then
-        if journal_has "override_prior absent"; then
+        archive_if_edited "$DROPIN" "override" "$(journal_value override_prior_fp)" "$(journal_value staged_override)" "$(journal_value result_override)" || failed=1
+        if [[ "$failed" == "1" ]]; then
+            :
+        elif journal_has "override_prior absent"; then
             if [[ -e "$DROPIN" ]]; then
                 if rm -f "$DROPIN"; then
                     echo "restore: $DROPIN removed (absent before the merge)"
@@ -743,20 +820,28 @@ if [[ "$MODE" == "rollback" ]]; then
     exit 0
 fi
 
-if [[ "$MODE" == "apply" && -f "$JOURNAL" ]]; then
+if [[ -f "$JOURNAL" ]]; then
     if journal_has "complete"; then
-        rec_cfg=$(grep '^result_config ' "$JOURNAL" | tail -n 1 | cut -d' ' -f2)
-        rec_ovr=$(grep '^result_override ' "$JOURNAL" | tail -n 1 | cut -d' ' -f2)
+        rec_cfg=$(journal_value result_config)
+        rec_ovr=$(journal_value result_override)
         if [[ "$(update_file_fingerprint "$LIVE_CFG")" == "$rec_cfg" && "$(update_file_fingerprint "$DROPIN")" == "$rec_ovr" ]]; then
-            echo "apply: journal $JOURNAL is complete and both deployment files match its result; nothing to do"
-            check_db_fingerprints "apply" || exit "$EXIT_RESTORE_FAILED"
-            exit 0
+            if [[ "$MODE" == "apply" ]]; then
+                echo "apply: journal $JOURNAL is complete and both deployment files match its result; nothing to do"
+                check_db_fingerprints "apply" || exit "$EXIT_RESTORE_FAILED"
+                exit 0
+            fi
+            echo "journal: $JOURNAL is complete and both deployment files match its result; this dry run composes over the merged config and --apply is a no-op"
+        else
+            fail "$EXIT_JOURNAL_STATE" "journal $JOURNAL is complete but $LIVE_CFG or $DROPIN changed since; inspect by hand and remove the journal to merge again"
         fi
-        fail "$EXIT_JOURNAL_STATE" "journal $JOURNAL is complete but $LIVE_CFG or $DROPIN changed since; inspect by hand and remove the journal to merge again"
     elif journal_has "rolled-back"; then
-        mv -f "$JOURNAL" "${JOURNAL}.rolled-back.$(date +%Y%m%d%H%M%S)"
-        echo "apply: previous journal was rolled back; archived it and starting fresh"
-    else
+        if [[ "$MODE" == "apply" ]]; then
+            mv -f "$JOURNAL" "${JOURNAL}.rolled-back.$(date +%Y%m%d%H%M%S)"
+            echo "apply: previous journal was rolled back; archived it and starting fresh"
+        else
+            echo "journal: $JOURNAL records a rolled-back run; --apply archives it and starts fresh"
+        fi
+    elif [[ "$MODE" == "apply" ]]; then
         echo "apply: journal $JOURNAL records an interrupted apply; restoring the retained files first"
         if ! restore_from_retained; then
             exit "$EXIT_RESTORE_FAILED"
@@ -764,6 +849,8 @@ if [[ "$MODE" == "apply" && -f "$JOURNAL" ]]; then
         check_db_fingerprints "resume" || exit "$EXIT_RESTORE_FAILED"
         mv -f "$JOURNAL" "${JOURNAL}.rolled-back.$(date +%Y%m%d%H%M%S)"
         echo "apply: interrupted apply rolled back; continuing with a fresh run"
+    else
+        fail "$EXIT_JOURNAL_STATE" "journal $JOURNAL records an interrupted apply; $LIVE_CFG may hold the half-applied merge. Run --rollback, or --apply which restores the retained files first, before certifying a dry run"
     fi
 fi
 
@@ -791,7 +878,7 @@ if ! run_bin "$PAPER_DEPLOY" "$PAPER_BIN" inspect --all --json --config "$PAPER_
 fi
 check_db_fingerprints "inspection" || exit "$EXIT_INSPECTION_REFUSED"
 
-if ! py compose "$LIVE_CFG" "$PAPER_CFG" "$PAPER_DB_CANON" "$STAGED_CFG" "$STAGED_MAP"; then
+if ! py compose "$LIVE_CFG" "$PAPER_CFG" "$PAPER_DB_CANON" "$STAGED_CFG" "$STAGED_MAP" "$WORK/inspect-live.json" "$WORK/inspect-paper.json"; then
     rm -f "$STAGED_CFG" "$STAGED_MAP"
     fail "$EXIT_COMPOSE_REFUSED" "merged config could not be composed"
 fi
@@ -868,7 +955,14 @@ run_id="$(date +%Y%m%d%H%M%S)-$$"
     printf 'paper_config %s\n' "$fp_paper_cfg"
     printf 'live_db %s\n' "$fp_live_db"
     printf 'paper_db %s\n' "$fp_paper_db"
-    if [[ -e "$DROPIN" ]]; then printf 'override_prior present\n'; else printf 'override_prior absent\n'; fi
+    printf 'staged_config %s\n' "$(update_file_fingerprint "$STAGED_CFG")"
+    printf 'staged_override %s\n' "$(update_file_fingerprint "$STAGED_OVERRIDE")"
+    if [[ -e "$DROPIN" ]]; then
+        printf 'override_prior present\n'
+        printf 'override_prior_fp %s\n' "$(update_file_fingerprint "$DROPIN")"
+    else
+        printf 'override_prior absent\n'
+    fi
 } > "$JOURNAL"
 
 apply_failed() {

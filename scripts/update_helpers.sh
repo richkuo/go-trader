@@ -205,7 +205,16 @@ except Exception:
 }
 
 update_canonical_db_path() {
-    python3 -c 'import os, sys; print(os.path.realpath(os.path.abspath(sys.argv[1])))' "$1"
+    python3 -c '
+import os, sys
+p = os.path.abspath(sys.argv[1])
+try:
+    os.stat(p)
+    p = os.path.realpath(p)
+except OSError:
+    pass
+print(p)
+' "$1"
 }
 
 update_state_lock_paths() {
@@ -262,8 +271,31 @@ UPDATE_LOCK_HOLDER_PY='
 import fcntl, os, sys
 paths = sys.argv[1:]
 held = []
+warnings = []
+def lock_owner(p):
+    for suffix in (".manual-action.lock", ".lock"):
+        if p.endswith(suffix):
+            db = p[:-len(suffix)]
+            break
+    else:
+        db = p
+    for cand in (db, os.path.dirname(p)):
+        try:
+            st = os.stat(cand)
+        except OSError:
+            continue
+        return st.st_uid, st.st_gid
+    return None
 for p in paths:
+    existed = os.path.exists(p)
     fd = os.open(p, os.O_CREAT | os.O_RDWR, 0o644)
+    if not existed:
+        owner = lock_owner(p)
+        if owner is not None and owner != (os.geteuid(), os.getegid()):
+            try:
+                os.fchown(fd, owner[0], owner[1])
+            except OSError as exc:
+                warnings.append("WARN %s created but could not be given to uid %d gid %d: %s" % (p, owner[0], owner[1], exc))
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
@@ -284,6 +316,8 @@ for p, fd in held:
     os.write(fd, ("%d\n" % os.getpid()).encode())
     os.fsync(fd)
 print("HELD %d" % os.getpid())
+for w in warnings:
+    print(w)
 sys.stdout.flush()
 sys.stdin.read()
 '
@@ -318,6 +352,7 @@ update_start_state_lock_holder() {
         unset UPDATE_LOCK_HOLDER_PID UPDATE_LOCK_HOLDER_FD
         return 1
     fi
+    tail -n +2 "$out" >&2
     rm -f "$out"
 }
 
