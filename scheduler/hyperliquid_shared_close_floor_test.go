@@ -44,6 +44,8 @@ func TestEvaluateSharedCoinFullCloseFloor(t *testing.T) {
 		{name: "already held on busy peer stays silent", fraction: 1, peers: peers, posQty: 0.002, price: 2000, onChain: hlOnChainCoinView{Known: true, AbsQty: map[string]float64{"ETH": 0.5}, NetSide: map[string]string{"ETH": "long"}}, heldReason: hlSharedCloseHoldPeerBusy, want: hlSharedCloseFloorHeld},
 		{name: "busy-peer hold escalates once the peer goes flat", fraction: 1, peers: peers, posQty: 0.002, price: 2000, onChain: hlOnChainCoinView{Known: true, AbsQty: map[string]float64{"ETH": 0.002}, NetSide: map[string]string{"ETH": "long"}}, heldReason: hlSharedCloseHoldPeerBusy, want: hlSharedCloseFloorEscalate},
 		{name: "venue-rejected hold never re-escalates on a flat peer", fraction: 1, peers: peers, posQty: 0.002, price: 2000, onChain: hlOnChainCoinView{Known: true, AbsQty: map[string]float64{"ETH": 0.002}, NetSide: map[string]string{"ETH": "long"}}, heldReason: hlSharedCloseHoldVenueReject, want: hlSharedCloseFloorHeld},
+		{name: "escalate-failed marker retries the escalation while every peer stays flat", fraction: 1, peers: peers, posQty: 0.002, price: 2000, onChain: hlOnChainCoinView{Known: true, AbsQty: map[string]float64{"ETH": 0.002}, NetSide: map[string]string{"ETH": "long"}}, heldReason: hlSharedCloseHoldEscalateFail, want: hlSharedCloseFloorEscalate},
+		{name: "escalate-failed marker still alerts when a peer becomes busy", fraction: 1, peers: peers, posQty: 0.002, price: 2000, onChain: hlOnChainCoinView{Known: true, AbsQty: map[string]float64{"ETH": 0.5}, NetSide: map[string]string{"ETH": "long"}}, heldReason: hlSharedCloseHoldEscalateFail, want: hlSharedCloseFloorHold},
 		{name: "venue-rejected hold clears above the gate", fraction: 1, peers: peers, posQty: 0.01, price: 2000, onChain: hlOnChainCoinView{Known: true, AbsQty: map[string]float64{"ETH": 0.01}, NetSide: map[string]string{"ETH": "long"}}, heldReason: hlSharedCloseHoldVenueReject, want: hlSharedCloseFloorNone},
 		{name: "mixed-case coin busy peer holds", fraction: 1, peers: kPeers, symbol: "kPEPE", posQty: 500, price: 0.00001, onChain: hlOnChainCoinView{Known: true, AbsQty: map[string]float64{"kPEPE": 900000}, NetSide: map[string]string{"kPEPE": "long"}}, want: hlSharedCloseFloorHold},
 		{name: "mixed-case coin opposite-side peer holds", fraction: 1, peers: kPeers, symbol: "kPEPE", posQty: 500, price: 0.00001, onChain: hlOnChainCoinView{Known: true, AbsQty: map[string]float64{"kPEPE": 100}, NetSide: map[string]string{"kPEPE": "short"}}, want: hlSharedCloseFloorHold},
@@ -81,20 +83,21 @@ func TestSharedCoinFullCloseFloorExecutePath(t *testing.T) {
 	busy := hlOnChainCoinView{Known: true, AbsQty: map[string]float64{"ETH": 0.5}, NetSide: map[string]string{"ETH": "long"}}
 
 	cases := []struct {
-		name          string
-		onChain       hlOnChainCoinView
-		refetched     *hlOnChainCoinView
-		refetchErr    error
-		peerVirtual   float64
-		heldReason    string
-		signal        int
-		execErr       error
-		wantFullClose int
-		wantSized     int
-		wantAlerts    int
-		wantThrottled int
-		wantStranded  bool
-		wantOK        bool
+		name               string
+		onChain            hlOnChainCoinView
+		refetched          *hlOnChainCoinView
+		refetchErr         error
+		peerVirtual        float64
+		heldReason         string
+		signal             int
+		execErr            error
+		wantFullClose      int
+		wantSized          int
+		wantAlerts         int
+		wantThrottled      int
+		wantStranded       bool
+		wantEscalateFailed bool
+		wantOK             bool
 	}{
 		{name: "flat peer escalates to whole-position close", onChain: flat, wantFullClose: 1, wantOK: true},
 		{name: "busy peer alerts once and sends no order", onChain: busy, wantAlerts: 1},
@@ -105,7 +108,8 @@ func TestSharedCoinFullCloseFloorExecutePath(t *testing.T) {
 		{name: "refetch failure defers without an order or alert", onChain: flat, refetchErr: errors.New("clearinghouseState timeout")},
 		{name: "peer book holds quantity though the wallet net looks flat: one alert, no order", onChain: flat, peerVirtual: 0.001, wantAlerts: 1},
 		{name: "zero signal is a noop for the floor", onChain: busy, signal: 0},
-		{name: "escalated close other failure keeps the throttled failure alert", onChain: flat, execErr: errors.New("insufficient margin"), wantFullClose: 1, wantAlerts: 1, wantThrottled: 1},
+		{name: "escalated close other failure keeps the throttled failure alert and marks the escalation failed", onChain: flat, execErr: errors.New("insufficient margin"), wantFullClose: 1, wantAlerts: 1, wantThrottled: 1, wantEscalateFailed: true},
+		{name: "escalated close refused in unrecognised wording marks the escalation failed instead of stranding", onChain: flat, execErr: errors.New("order value below minimum"), wantFullClose: 1, wantAlerts: 1, wantThrottled: 1, wantEscalateFailed: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -177,6 +181,9 @@ func TestSharedCoinFullCloseFloorExecutePath(t *testing.T) {
 			}
 			if (result.SharedCloseStrandedUSD > 0) != tc.wantStranded {
 				t.Fatalf("stranded = %g, want stranded %t", result.SharedCloseStrandedUSD, tc.wantStranded)
+			}
+			if (result.SharedCloseEscalateFailedUSD > 0) != tc.wantEscalateFailed {
+				t.Fatalf("escalate-failed = %g, want marked %t", result.SharedCloseEscalateFailedUSD, tc.wantEscalateFailed)
 			}
 			if tc.wantStranded {
 				backend.mu.Lock()
@@ -308,6 +315,69 @@ func TestHLPeerVirtualQtyOnCoinMatchesPeerSetKey(t *testing.T) {
 			got := hlPeerVirtualQtyOnCoin(snapshotHyperliquidVirtualQuantities(strategies, roster), "kPEPE", "self")
 			if (sharedPeers > 0) != (got > 0) || got != tc.want {
 				t.Fatalf("shared peers=%d but peer virtual qty=%g, want %g", sharedPeers, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRearmProtectionAfterFailedCloseCoversPercentageStopOwners(t *testing.T) {
+	oldUpdate := runHyperliquidUpdateStopLossFunc
+	t.Cleanup(func() { runHyperliquidUpdateStopLossFunc = oldUpdate })
+	liveArgs := []string{"x.py", "ETH", "1h", "--mode=live"}
+	pct := 5.0
+	marginPct := 20.0
+	trailPct := 3.0
+	base := func(mut func(*StrategyConfig)) StrategyConfig {
+		sc := StrategyConfig{ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py", Args: liveArgs}
+		mut(&sc)
+		return sc
+	}
+	cases := []struct {
+		name        string
+		sc          StrategyConfig
+		bookOID     int64
+		bookTrigger float64
+		prevOID     int64
+		liqPx       float64
+		wantPlaced  int
+		wantCancel  int64
+		wantTrigger float64
+	}{
+		{name: "stop_loss_pct owner whose cancel landed is re-armed at the anchor-scaled trigger", sc: base(func(sc *StrategyConfig) { sc.StopLossPct = &pct }), prevOID: 444, wantPlaced: 1, wantCancel: 444, wantTrigger: 1900},
+		{name: "stop_loss_margin_pct owner with an unreadable result hands the still-recorded oid to the update script", sc: base(func(sc *StrategyConfig) { sc.StopLossMarginPct = &marginPct; sc.Leverage = 4 }), bookOID: 444, bookTrigger: 1900, prevOID: 444, wantPlaced: 1, wantCancel: 444, wantTrigger: 1900},
+		{name: "max_drawdown_pct fallback owner is re-armed", sc: base(func(sc *StrategyConfig) { sc.MaxDrawdownPct = 5 }), prevOID: 444, wantPlaced: 1, wantCancel: 444, wantTrigger: 1900},
+		{name: "percentage trigger past the liquidation price is clamped inside it", sc: base(func(sc *StrategyConfig) { sc.StopLossPct = &pct }), prevOID: 444, liqPx: 1950, wantPlaced: 1, wantCancel: 444, wantTrigger: 1950 * (1 + hlLiquidationStopBufferPct/100)},
+		{name: "trailing_stop_pct owner is armed once by the trailing arm and never double-armed", sc: base(func(sc *StrategyConfig) { sc.TrailingStopPct = &trailPct }), prevOID: 444, wantPlaced: 1, wantCancel: 444, wantTrigger: 2000 * (1 - trailPct/100)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotCancel int64
+			var gotTrigger float64
+			placed := 0
+			runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+				placed++
+				gotCancel, gotTrigger = cancelStopLossOID, triggerPx
+				return &HyperliquidStopLossUpdateResult{StopLossOID: 999, StopLossTriggerPx: triggerPx, CancelStopLossSucceeded: cancelStopLossOID > 0}, "", nil
+			}
+			st := &StrategyState{ID: "hl-eth", Positions: map[string]*Position{
+				"ETH": {Symbol: "ETH", Side: "long", Quantity: 0.002, InitialQuantity: 0.002, AvgCost: 2000, EntryATR: 50, RiskAnchorPrice: 2000, StopLossOID: tc.bookOID, StopLossTriggerPx: tc.bookTrigger, StopLossHighWaterPx: 2000},
+			}}
+			var liq map[string]float64
+			var net map[string]string
+			if tc.liqPx > 0 {
+				liq = map[string]float64{"ETH": tc.liqPx}
+				net = map[string]string{"ETH": "long"}
+			}
+			var mu sync.RWMutex
+			rearmProtectionAfterFailedClose(tc.sc, st, nil, "ETH", 2000, tc.prevOID, tc.bookTrigger, 2000, map[string]float64{"ETH": 0.002}, nil, liq, net, &mu, nil, newTestLogger(t))
+			if placed != tc.wantPlaced {
+				t.Fatalf("stop placements = %d, want %d", placed, tc.wantPlaced)
+			}
+			if gotCancel != tc.wantCancel || math.Abs(gotTrigger-tc.wantTrigger) > 1e-6 {
+				t.Fatalf("placed cancel=%d trigger=%g, want cancel=%d trigger=%g", gotCancel, gotTrigger, tc.wantCancel, tc.wantTrigger)
+			}
+			if pos := st.Positions["ETH"]; pos.StopLossOID != 999 || math.Abs(pos.StopLossTriggerPx-tc.wantTrigger) > 1e-6 {
+				t.Fatalf("book after re-arm oid=%d trigger=%g, want oid 999 trigger %g", pos.StopLossOID, pos.StopLossTriggerPx, tc.wantTrigger)
 			}
 		})
 	}

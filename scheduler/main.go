@@ -2384,6 +2384,19 @@ func main() {
 									mu.Lock()
 									stampSharedCloseHold(stratState, result.Symbol, result.SharedCloseStrandedUSD, hlSharedCloseHoldVenueReject)
 									mu.Unlock()
+								case result.SharedCloseEscalateFailedUSD > 0:
+									if hlSharedCloseHoldReason == hlSharedCloseHoldEscalateFail {
+										mu.Lock()
+										stampSharedCloseHold(stratState, result.Symbol, result.SharedCloseEscalateFailedUSD, hlSharedCloseHoldVenueReject)
+										mu.Unlock()
+										logger.Error("Escalated whole-position close %s failed again ($%.2f) — holding the close whatever the rejection wording and alerting once", result.Symbol, result.SharedCloseEscalateFailedUSD)
+										notifySharedCloseStranded(notifier, sc, result.Symbol, result.SharedCloseEscalateFailedUSD, fmt.Sprintf("Every peer is flat, but the venue refused the whole-position reduce-only close on consecutive cycles (%s).", result.SharedCloseEscalateFailureError), hlSharedCloseHoldVenueReject)
+									} else {
+										mu.Lock()
+										stampSharedCloseHold(stratState, result.Symbol, result.SharedCloseEscalateFailedUSD, hlSharedCloseHoldEscalateFail)
+										mu.Unlock()
+										logger.Warn("Escalated whole-position close %s failed ($%.2f) — retrying once next cycle before holding on an unrecognised rejection", result.Symbol, result.SharedCloseEscalateFailedUSD)
+									}
 								case floorOutcome == hlSharedCloseFloorNone && (hlSharedCloseHoldUSD != 0 || hlSharedCloseHoldReason != "") && result.CloseFraction == 1.0:
 									mu.Lock()
 									if clearSharedCloseHold(stratState, result.Symbol) {
@@ -3718,6 +3731,10 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 			logger.Error("Escalated whole-position close %s was rejected below the venue minimum ($%.2f) — holding the close and alerting once", result.Symbol, remainderUSD)
 			notifySharedCloseStranded(notifier, sc, result.Symbol, remainderUSD, fmt.Sprintf("Every peer is flat, but the venue also rejected the whole-position reduce-only close (%s).", err.Error()), hlSharedCloseHoldVenueReject)
 			return execResult, false
+		}
+		if result.ForceFullClose && closeFullPosition {
+			result.SharedCloseEscalateFailedUSD = posQty * price
+			result.SharedCloseEscalateFailureError = err.Error()
 		}
 		notifyLiveExecFailure(notifier, sc, direction, result.Symbol, err.Error())
 		return execResult, false

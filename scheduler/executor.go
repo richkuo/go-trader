@@ -41,22 +41,24 @@ type SpotResult struct {
 
 type HyperliquidResult struct {
 	StrategyDecisionFields
-	Strategy                 string                 `json:"strategy"`
-	Symbol                   string                 `json:"symbol"`
-	Timeframe                string                 `json:"timeframe"`
-	Signal                   int                    `json:"signal"`
-	Price                    float64                `json:"price"`
-	Indicators               map[string]interface{} `json:"indicators"`
-	Mode                     string                 `json:"mode"`
-	Platform                 string                 `json:"platform"`
-	Timestamp                string                 `json:"timestamp"`
-	Error                    string                 `json:"error,omitempty"`
-	Degraded                 string                 `json:"degraded,omitempty"`
-	Divergence               DivergenceResult       `json:"-"`
-	ForceFullClose           bool                   `json:"-"`
-	SharedCloseStrandedUSD   float64                `json:"-"`
-	LiveOrderSubmitted       bool                   `json:"-"`
-	LiveOrderCancelRequested bool                   `json:"-"`
+	Strategy                        string                 `json:"strategy"`
+	Symbol                          string                 `json:"symbol"`
+	Timeframe                       string                 `json:"timeframe"`
+	Signal                          int                    `json:"signal"`
+	Price                           float64                `json:"price"`
+	Indicators                      map[string]interface{} `json:"indicators"`
+	Mode                            string                 `json:"mode"`
+	Platform                        string                 `json:"platform"`
+	Timestamp                       string                 `json:"timestamp"`
+	Error                           string                 `json:"error,omitempty"`
+	Degraded                        string                 `json:"degraded,omitempty"`
+	Divergence                      DivergenceResult       `json:"-"`
+	ForceFullClose                  bool                   `json:"-"`
+	SharedCloseStrandedUSD          float64                `json:"-"`
+	SharedCloseEscalateFailedUSD    float64                `json:"-"`
+	SharedCloseEscalateFailureError string                 `json:"-"`
+	LiveOrderSubmitted              bool                   `json:"-"`
+	LiveOrderCancelRequested        bool                   `json:"-"`
 }
 
 type HyperliquidFill struct {

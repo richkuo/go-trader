@@ -15,6 +15,7 @@ const (
 	hlSharedCloseQtyTolerance     = 1e-6
 	hlSharedCloseHoldPeerBusy     = "peer_busy"
 	hlSharedCloseHoldVenueReject  = "venue_rejected"
+	hlSharedCloseHoldEscalateFail = "escalate_failed"
 )
 
 type hlSharedCloseFloorOutcome int
@@ -105,7 +106,7 @@ func evaluateSharedCoinFullCloseFloor(closeFraction float64, symbol string, hlLi
 	if peerVirtualQty <= 1e-9 && hlPeerFlatOnCoin(symbol, posSide, posQty, onChain) {
 		return hlSharedCloseFloorEscalate, remainderUSD
 	}
-	if heldReason != "" {
+	if heldReason == hlSharedCloseHoldPeerBusy {
 		return hlSharedCloseFloorHeld, remainderUSD
 	}
 	return hlSharedCloseFloorHold, remainderUSD
@@ -212,7 +213,66 @@ func rearmProtectionAfterFailedClose(sc StrategyConfig, stratState *StrategyStat
 		trades += extraTrades
 		detail = slDetail
 	}
+	if extraTrades, slDetail := rearmScalarStopAfterFailedClose(sc, stratState, symbol, prevStopOID, onChainAbsQty, liqPxByCoin, netSideByCoin, mu, logger); extraTrades > 0 {
+		trades += extraTrades
+		detail = slDetail
+	}
 	return trades, detail
+}
+
+func rearmScalarStopAfterFailedClose(sc StrategyConfig, stratState *StrategyState, symbol string, prevStopOID int64, onChainAbsQty map[string]float64, liqPxByCoin map[string]float64, netSideByCoin map[string]string, mu *sync.RWMutex, logger *StrategyLogger) (int, string) {
+	if !hyperliquidIsLive(sc.Args) || stratState == nil || symbol == "" {
+		return 0, ""
+	}
+	if EffectiveStopLossPct(sc) <= 0 {
+		return 0, ""
+	}
+	mu.RLock()
+	pos := stratState.Positions[symbol]
+	if pos == nil || pos.Quantity <= 0 || effectiveTrailingStopPct(sc, pos) > 0 {
+		mu.RUnlock()
+		return 0, ""
+	}
+	side := pos.Side
+	anchor := pos.riskAnchorPrice()
+	virtualQty := pos.Quantity
+	cancelOID := pos.StopLossOID
+	if cancelOID <= 0 {
+		cancelOID = prevStopOID
+	}
+	mu.RUnlock()
+
+	liqPx := hlLiquidationPxForSide(liqPxByCoin, netSideByCoin, symbol, side)
+	triggerPx := hlLiquidationScalarRearmTriggerPx(sc, side, anchor, liqPx)
+	if triggerPx <= 0 {
+		logger.Error("CRITICAL: failed close %s cancelled the percentage stop and no re-arm trigger could be resolved (side=%q anchor=$%.4f) — the position has NO exchange-side stop", symbol, side, anchor)
+		return 0, ""
+	}
+	slEffectiveQty, capped := hlSLEffectiveQty(symbol, virtualQty, onChainAbsQty)
+	if capped {
+		logger.Warn("failed-close percentage SL re-arm: virtual qty %.6f > on-chain %.6f for %s; capping SL size to on-chain qty (#621)", virtualQty, slEffectiveQty, symbol)
+	}
+	logger.Warn("Failed close %s cancelled its on-chain percentage stop (oid=%d); re-arming at $%.4f from anchor $%.4f with the old oid verified on-chain before any cancel", symbol, cancelOID, triggerPx, anchor)
+	candidate := hlLiquidationAuditCandidate{
+		StrategyID:  sc.ID,
+		Script:      sc.Script,
+		Symbol:      symbol,
+		Side:        side,
+		Qty:         slEffectiveQty,
+		VirtualQty:  virtualQty,
+		QtyCapped:   capped,
+		StopLossOID: cancelOID,
+	}
+	result, _ := hlLiquidationClampReplace(candidate, triggerPx, logger)
+	mu.Lock()
+	defer mu.Unlock()
+	if immediateFill, fillPx := applyTrailingStopUpdateResult(stratState, symbol, side, cancelOID, 0, true, result, "stop_loss_pct_immediate", logger, slEffectiveQty); immediateFill {
+		return 1, fmt.Sprintf("[%s] LIVE PERCENTAGE SL %s @ $%.2f", sc.ID, symbol, fillPx)
+	}
+	if result != nil && result.StopLossOID > 0 {
+		logger.Info("Percentage SL re-armed after failed close for %s (qty=%.6f trigger=$%.4f)", symbol, slEffectiveQty, result.StopLossTriggerPx)
+	}
+	return 0, ""
 }
 
 func rearmTrailingStopAfterFailedClose(sc StrategyConfig, stratState *StrategyState, symbol string, mark float64, prevStopOID int64, prevTriggerPx, prevHighWater float64, onChainAbsQty map[string]float64, liqPxByCoin map[string]float64, netSideByCoin map[string]string, mu *sync.RWMutex, notifier *MultiNotifier, logger *StrategyLogger) (int, string) {
