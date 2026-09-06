@@ -375,3 +375,26 @@ def test_sz_decimals_uses_cached_value_without_refresh(adapter_mod, monkeypatch)
     assert a._sz_decimals("BTC") == 5
     assert a._sz_decimals("ETH") == 4
     assert rebuilt["called"] is False
+
+
+@pytest.mark.parametrize("case", ["fresh", "expired", "coin_missing", "file_missing", "malformed_value"])
+def test_sz_decimals_from_meta_cache_reads_lot_size_offline(adapter_mod, cache_path, case):
+    spot_meta, meta = _sample_meta()
+    if case == "malformed_value":
+        meta = {"universe": [{"name": "ETH", "szDecimals": "four"}]}
+    if case != "file_missing":
+        adapter_mod._save_meta_cache(spot_meta, meta, path=cache_path)
+    if case == "expired":
+        with open(cache_path) as f:
+            payload = json.load(f)
+        payload["ts"] = time.time() - 10 * adapter_mod.META_CACHE_TTL_S
+        with open(cache_path, "w") as f:
+            json.dump(payload, f)
+    symbol = "DOGE" if case == "coin_missing" else "ETH"
+
+    got = adapter_mod.sz_decimals_from_meta_cache(symbol, path=cache_path)
+
+    if case in ("fresh", "expired"):
+        assert got == 4
+    else:
+        assert got is None

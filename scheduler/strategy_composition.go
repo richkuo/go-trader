@@ -14,6 +14,7 @@ type StrategyDecisionFields struct {
 	OpenAction      string         `json:"open_action,omitempty"`
 	CloseFraction   float64        `json:"close_fraction"`
 	CloseStrategy   string         `json:"close_strategy,omitempty"`
+	CloseGate       string         `json:"close_gate,omitempty"`
 	Regime          *RegimePayload `json:"regime,omitempty"`
 }
 

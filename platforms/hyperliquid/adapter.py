@@ -13,6 +13,8 @@ TESTNET_URL = "https://api.hyperliquid-testnet.xyz"
 
 META_CACHE_PATH = "/tmp/hl_meta.json"
 META_CACHE_TTL_S = 3600
+MIN_ORDER_NOTIONAL_USD = 10.0
+MIN_ORDER_NOTIONAL_SAFETY_MARGIN = 0.03
 
 _EXCHANGE_INIT_BACKOFF_S = 30
 
@@ -102,6 +104,27 @@ def _load_meta_cache(path: str = META_CACHE_PATH, ttl_s: int = META_CACHE_TTL_S,
     if not spot_meta.get("universe") or not meta.get("universe"):
         return None
     return spot_meta, meta
+
+
+def sz_decimals_from_meta_cache(symbol: str, path: str = META_CACHE_PATH):
+    cached = _load_meta_cache(path, ttl_s=float("inf"))
+    if cached is None:
+        return None
+    _spot_meta, meta = cached
+    universe = meta.get("universe")
+    if not isinstance(universe, list):
+        return None
+    for entry in universe:
+        if not isinstance(entry, dict) or entry.get("name") != symbol:
+            continue
+        value = entry.get("szDecimals")
+        if isinstance(value, bool):
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+    return None
 
 
 def _save_meta_cache(spot_meta, meta, path: str = META_CACHE_PATH) -> None:
@@ -351,31 +374,43 @@ class HyperliquidExchangeAdapter:
         return self._ensure_exchange()
 
     def _sz_decimals(self, symbol: str) -> int:
-        info = self._info
-        resolved = self._resolve_sz_decimals(info, symbol) if info is not None else None
+        resolved = self.lot_size_decimals(symbol)
         if resolved is not None:
             return resolved
-        if info is not None and isinstance(getattr(info, "asset_to_sz_decimals", None), dict) \
-                and symbol in info.asset_to_sz_decimals:
-            return info.asset_to_sz_decimals[symbol]
+        print(f"[WARN] sz_decimals unresolved for {symbol}, defaulting to 3", file=sys.stderr)
+        return 3
+
+    def lot_size_decimals(self, symbol: str):
+        info = self._info
+        resolved = self._resolve_sz_decimals_any(info, symbol)
+        if resolved is not None:
+            return resolved
         if symbol in self._sz_decimals_misses:
-            return 3
+            return None
         try:
             self._info = self._build_info(self._base_url, allow_cache=False)
         except Exception as exc:
             print(f"[WARN] hl meta refresh failed for {symbol}: {exc}", file=sys.stderr)
             self._sz_decimals_misses.add(symbol)
-            return 3
-        info = self._info
-        resolved = self._resolve_sz_decimals(info, symbol) if info is not None else None
+            return None
+        resolved = self._resolve_sz_decimals_any(self._info, symbol)
         if resolved is not None:
             return resolved
-        if info is not None and isinstance(getattr(info, "asset_to_sz_decimals", None), dict) \
-                and symbol in info.asset_to_sz_decimals:
-            return info.asset_to_sz_decimals[symbol]
-        print(f"[WARN] sz_decimals not found for {symbol} after refresh, defaulting to 3", file=sys.stderr)
+        print(f"[WARN] sz_decimals not found for {symbol} after refresh; lot size unresolved", file=sys.stderr)
         self._sz_decimals_misses.add(symbol)
-        return 3
+        return None
+
+    @classmethod
+    def _resolve_sz_decimals_any(cls, info, symbol: str):
+        if info is None:
+            return None
+        resolved = cls._resolve_sz_decimals(info, symbol)
+        if resolved is not None:
+            return resolved
+        sz_by_asset = getattr(info, "asset_to_sz_decimals", None)
+        if isinstance(sz_by_asset, dict) and symbol in sz_by_asset:
+            return sz_by_asset[symbol]
+        return None
 
     @staticmethod
     def _resolve_sz_decimals(info, symbol: str):

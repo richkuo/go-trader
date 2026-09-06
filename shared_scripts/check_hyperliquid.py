@@ -153,6 +153,102 @@ def _signal_check_deps():
     )
 
 
+def _offline_sz_decimals(symbol):
+    from adapter import sz_decimals_from_meta_cache
+
+    return sz_decimals_from_meta_cache(symbol)
+
+
+def _venue_min_order_notional_usd():
+    try:
+        from adapter import MIN_ORDER_NOTIONAL_USD
+
+        return float(MIN_ORDER_NOTIONAL_USD)
+    except Exception:
+        return 10.0
+
+
+def _venue_min_order_notional_margin():
+    try:
+        from adapter import MIN_ORDER_NOTIONAL_SAFETY_MARGIN
+
+        return max(float(MIN_ORDER_NOTIONAL_SAFETY_MARGIN), 0.0)
+    except Exception:
+        return 0.03
+
+
+def _floor_lot_size(qty, lot_decimals):
+    from decimal import Decimal, ROUND_DOWN
+
+    if qty <= 0:
+        return 0.0
+    quant = Decimal("1").scaleb(-max(int(lot_decimals), 0))
+    return float(Decimal(str(qty)).quantize(quant, rounding=ROUND_DOWN))
+
+
+def resolve_venue_lot_decimals(shared, symbol):
+    try:
+        adapter = shared.get("adapter")
+        if adapter is not None:
+            value = adapter.lot_size_decimals(symbol)
+        else:
+            value = _offline_sz_decimals(symbol)
+    except Exception as exc:
+        print(f"[WARN] venue lot size unresolved for {symbol}: {exc}", file=sys.stderr)
+        return None
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def apply_venue_close_gate(decision, position_ctx, price, lot_decimals, min_notional_usd, position_side="",
+                           min_notional_margin=0.0):
+    if not decision or lot_decimals is None:
+        return decision
+    try:
+        close_fraction = float(decision.get("close_fraction", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return decision
+    if close_fraction <= 0 or close_fraction >= 1:
+        return decision
+    try:
+        current_qty = float((position_ctx or {}).get("current_quantity", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return decision
+    if current_qty <= 0:
+        return decision
+    requested_qty = current_qty * close_fraction
+    floored_qty = _floor_lot_size(requested_qty, lot_decimals)
+    try:
+        px = float(price or 0.0)
+    except (TypeError, ValueError):
+        px = 0.0
+    notional = floored_qty * px if px > 0 else None
+    gate_threshold = float(min_notional_usd) * (1.0 + max(float(min_notional_margin or 0.0), 0.0))
+    below_lot = floored_qty <= 0
+    below_value = notional is not None and notional < gate_threshold
+    if not below_lot and not below_value:
+        return decision
+    from strategy_composition import compose_signal
+
+    gated = dict(decision)
+    gated["close_fraction"] = 0.0
+    gated["signal"] = compose_signal(decision.get("open_action", "none"), 0.0, position_side)
+    gated["close_gate"] = "below_venue_minimum"
+    gated["close_gate_detail"] = {
+        "requested_qty": requested_qty,
+        "floored_qty": floored_qty,
+        "lot_decimals": int(lot_decimals),
+        "notional_usd": notional,
+        "min_notional_usd": float(min_notional_usd),
+        "gate_threshold_usd": gate_threshold,
+    }
+    return gated
+
+
 def _validate_slot_strategy_names(deps, strategy_name, open_strategy, close_strategies):
     configured_names = [open_strategy or strategy_name]
     deps.reject_backtest_only_strategies(configured_names, deps.get_strategy)
@@ -381,12 +477,30 @@ def evaluate_signal_slot(shared, slot, deps=None):
         if signal != original_signal:
             print(f"HTF filter: {original_signal} → {signal} (HTF trend={htf_info.get('htf_trend')})", file=sys.stderr)
 
-    if open_close_enabled:
-        decision = deps.finalize_decision(evaluation, position_side, signal)
-        signal = decision["signal"]
-
     if shared["price_override"] > 0:
         price = shared["price_override"]
+
+    if open_close_enabled:
+        decision = deps.finalize_decision(evaluation, position_side, signal)
+        if mode == "live" and 0 < float(decision.get("close_fraction", 0.0) or 0.0) < 1:
+            gated = apply_venue_close_gate(
+                decision, position_ctx, price,
+                resolve_venue_lot_decimals(shared, symbol),
+                _venue_min_order_notional_usd(),
+                position_side,
+                min_notional_margin=_venue_min_order_notional_margin(),
+            )
+            if gated is not decision:
+                detail = gated["close_gate_detail"]
+                print(
+                    f"Venue close gate: {symbol} close_fraction {decision['close_fraction']:.6g} -> 0 "
+                    f"(requested {detail['requested_qty']:.10g}, floored {detail['floored_qty']:.10g} "
+                    f"at {detail['lot_decimals']} decimals, notional {detail['notional_usd']}, "
+                    f"min {detail['min_notional_usd']}, gate {detail['gate_threshold_usd']:.4g})",
+                    file=sys.stderr,
+                )
+                decision = gated
+        signal = decision["signal"]
 
     indicators = {}
     skip_cols = {

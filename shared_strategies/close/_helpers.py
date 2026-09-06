@@ -5,6 +5,8 @@ import sys
 
 _deprecated_close_keys_warned: set[str] = set()
 
+FLOAT_NOISE_RELATIVE_TOLERANCE = 1e-9
+
 
 def warn_deprecated_close_key(old: str, canonical: str) -> None:
     token = f"{old}->{canonical}"
@@ -46,6 +48,8 @@ def current_close_fraction(position: dict, target_closed_fraction: float) -> flo
     already_closed_qty = max(initial_qty - current_qty, 0.0)
     target_closed_qty = initial_qty * clamp_fraction(target_closed_fraction)
     qty_to_close = min(max(target_closed_qty - already_closed_qty, 0.0), current_qty)
-    if qty_to_close <= 0:
+    if qty_to_close <= initial_qty * FLOAT_NOISE_RELATIVE_TOLERANCE:
         return 0.0
+    if qty_to_close >= current_qty * (1.0 - FLOAT_NOISE_RELATIVE_TOLERANCE):
+        return 1.0
     return clamp_fraction(qty_to_close / current_qty)
