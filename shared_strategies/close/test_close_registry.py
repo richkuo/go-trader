@@ -237,3 +237,23 @@ def test_unified_regime_block_evaluator(registry):
 
     none = registry.evaluate("tiered_tp_atr_regime", base_pos, market, params)
     assert none["close_fraction"] == 0.0
+
+
+@pytest.mark.parametrize("remainder_ratio,noise", [
+    (1e-12, True),
+    (1e-6, False),
+])
+def test_tiered_tp_pct_ignores_float_noise_remainder_only(registry, remainder_ratio, noise):
+    initial = 1.0
+    current = 0.5 + initial * remainder_ratio
+    result = registry.evaluate(
+        "tiered_tp_pct",
+        {"side": "long", "avg_cost": 100, "current_quantity": current, "initial_quantity": initial},
+        {"mark_price": 102},
+        {},
+    )
+    if noise:
+        assert result == {"close_fraction": 0.0, "reason": "noop:already_taken"}
+    else:
+        assert result["reason"] == "tiered_tp_pct:0.02"
+        assert result["close_fraction"] == pytest.approx((initial * remainder_ratio) / current)

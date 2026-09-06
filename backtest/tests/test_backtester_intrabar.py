@@ -312,7 +312,7 @@ def test_three_way_split_entry_fees_prorate_by_initial_quantity():
         "name": "tiered_tp_pct",
         "params": {"tp_tiers": [
             {"profit_pct": 0.05, "close_fraction": 0.25},
-            {"profit_pct": 0.10, "close_fraction": 0.25},
+            {"profit_pct": 0.10, "close_fraction": 0.50},
         ]},
     }]
     df = _df(

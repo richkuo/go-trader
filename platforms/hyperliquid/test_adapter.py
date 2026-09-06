@@ -1080,3 +1080,20 @@ class TestSzDecimalsSdkShape:
         adapter._info = mock_info
         assert adapter._sz_decimals("BTC") == 5
 
+
+@pytest.mark.parametrize("symbol,strict,rounded", [
+    ("BTC", 5, 5),
+    ("UNLISTED", None, 3),
+])
+def test_lot_size_decimals_is_strict_while_sz_decimals_keeps_the_default(symbol, strict, rounded):
+    mod = _load_hl_adapter()
+    adapter = mod.HyperliquidExchangeAdapter()
+    adapter._info = MagicMock()
+    adapter._info.asset_to_sz_decimals = {"BTC": 5}
+    refreshed = MagicMock()
+    refreshed.asset_to_sz_decimals = {"BTC": 5}
+    adapter._build_info = lambda base_url, allow_cache: refreshed
+
+    assert adapter.lot_size_decimals(symbol) == strict
+    assert adapter._sz_decimals(symbol) == rounded
+

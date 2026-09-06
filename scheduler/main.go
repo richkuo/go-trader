@@ -3529,6 +3529,9 @@ func finishHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCt
 
 	signalStr := signalLabel(result.Signal)
 	logger.Info("Signal: %s | %s @ $%.2f [%s]", signalStr, result.Symbol, result.Price, result.Mode)
+	if result.CloseGate != "" {
+		logger.Info("Venue close gate for %s: partial close rewritten to noop (%s); no order this cycle", result.Symbol, result.CloseGate)
+	}
 
 	price := result.Price
 	if price <= 0 {
@@ -3571,6 +3574,10 @@ func shouldCloseFullPosition(closeFraction float64, symbol string, hlLiveAll []S
 }
 
 func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, price, cash float64, poolBalanceKnown bool, posQty float64, posSide string, avgCost, posLeverage float64, existingStopLossOID int64, existingTPOIDs []int64, hlLiveAll []StrategyConfig, walletSnapshot hlExecuteSnapshot, hurst HurstGateDecision, notifier *MultiNotifier, logger *StrategyLogger) (*HyperliquidExecuteResult, bool) {
+	if result.Signal == 0 {
+		logger.Info("Skipping live order for %s: no signal", result.Symbol)
+		return nil, false
+	}
 	directionEnum := EffectiveDirection(sc)
 	if reason := PerpsOrderSkipReason(result.Signal, posSide, directionEnum); reason != "" {
 		logger.Info("Skipping live order for %s: %s", result.Symbol, reason)

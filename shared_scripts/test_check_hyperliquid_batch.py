@@ -39,14 +39,18 @@ def _candles(n=160, start_ms=1_700_000_000_000, step_ms=3_600_000):
 
 class FakeAdapter:
 
-    def __init__(self, candles=None, spot_price=0.0, ohlcv_error=None):
+    def __init__(self, candles=None, spot_price=0.0, ohlcv_error=None, lot_decimals=None):
         self._candles = candles if candles is not None else _candles()
         self._spot_price = spot_price
         self._ohlcv_error = ohlcv_error
+        self._lot_decimals = lot_decimals
         self.ohlcv_calls = []
         self.spot_price_calls = 0
         self.funding_rate_calls = 0
         self.funding_range_calls = 0
+
+    def lot_size_decimals(self, symbol):
+        return self._lot_decimals
 
     def get_ohlcv(self, symbol, interval="1h", limit=200):
         self.ohlcv_calls.append((symbol, interval, limit))
@@ -624,3 +628,58 @@ def test_parse_market_stdin_requires_the_v2_envelope(mod):
         mod.parse_market_stdin(json.dumps({"v": 1, "market": market}))
     with pytest.raises(mod.MarketPayloadError):
         mod.parse_market_stdin(json.dumps({"v": 2}))
+
+
+def _tier_slot(slot_id, initial_qty, current_qty, entry_atr):
+    return _slot(
+        slot_id,
+        "breakout",
+        position_side="long",
+        position_ctx={"side": "long", "avg_cost": 80.0, "current_quantity": current_qty,
+                      "initial_quantity": initial_qty, "entry_atr": entry_atr},
+        close_strategies="tiered_tp_atr",
+    )
+
+
+@pytest.mark.parametrize("case,lot_decimals,initial_qty,current_qty,entry_atr,gated,expect_fraction", [
+    ("sub_lot_remainder", 4, 0.1234, 0.0741, 5.0, True, 0.0),
+    ("several_lots_above_minimum", 4, 12.34, 7.41, 3.0, False, None),
+    ("full_close_never_gated", 4, 0.1234, 0.0741, 2.0, False, 1.0),
+    ("unknown_lot_size_keeps_fraction", None, 0.1234, 0.0741, 5.0, False, None),
+    ("one_lot_below_minimum_value", 4, 0.1234, 0.0742, 5.0, True, 0.0),
+])
+def test_venue_close_gate_rewrites_only_dust_partial_closes(
+        mod, case, lot_decimals, initial_qty, current_qty, entry_atr, gated, expect_fraction):
+    shared = _shared(mod, FakeAdapter(lot_decimals=lot_decimals), mark_price=100.0)
+    out = mod.evaluate_signal_slot(shared, _tier_slot(f"hl-{case}", initial_qty, current_qty, entry_atr))
+    if gated:
+        assert out["close_fraction"] == 0.0
+        assert out["signal"] == 0
+        assert out["close_gate"] == "below_venue_minimum"
+        assert out["close_gate_detail"]["lot_decimals"] == 4
+        assert out["close_gate_detail"]["min_notional_usd"] == 10.0
+        return
+    assert "close_gate" not in out
+    assert out["signal"] == -1
+    if expect_fraction is None:
+        assert 0 < out["close_fraction"] < 1
+    else:
+        assert out["close_fraction"] == expect_fraction
+
+
+def test_venue_close_gate_uses_the_meta_cache_on_the_sealed_path(mod, monkeypatch):
+    seen = []
+
+    def offline(symbol):
+        seen.append(symbol)
+        return 4
+
+    monkeypatch.setattr(mod, "_offline_sz_decimals", offline)
+    shared = mod.build_shared_signal_state(
+        "BTC", "1h", ohlcv_limit=200, atr_method="simple", mark_price=100.0,
+        market=_market_payload(mid=100.0))
+    assert shared["adapter"] is None
+    out = mod.evaluate_signal_slot(shared, _tier_slot("hl-sealed", 0.1234, 0.0741, 5.0))
+    assert seen == ["BTC"]
+    assert out["close_fraction"] == 0.0
+    assert out["close_gate"] == "below_venue_minimum"
