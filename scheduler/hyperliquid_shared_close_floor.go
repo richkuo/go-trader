@@ -47,6 +47,17 @@ type hlOnChainCoinView struct {
 	NetSide map[string]string
 }
 
+func hlPeerVirtualQtyOnCoin(snapshot hlVirtualQuantitySnapshot, coin, selfID string) float64 {
+	coin = strings.TrimSpace(coin)
+	total := 0.0
+	for id, qty := range snapshot[coin] {
+		if id != selfID && qty > 0 {
+			total += qty
+		}
+	}
+	return total
+}
+
 func hlVenueCloseGateThresholdUSD() float64 {
 	return hlVenueMinOrderNotionalUSD * (1.0 + hlVenueMinOrderNotionalMargin)
 }
@@ -68,7 +79,7 @@ func hlPeerFlatOnCoin(symbol, posSide string, posQty float64, onChain hlOnChainC
 	return onChainQty <= posQty+hlSharedCloseQtyTolerance
 }
 
-func evaluateSharedCoinFullCloseFloor(closeFraction float64, symbol string, hlLiveAll []StrategyConfig, posQty float64, posSide string, price float64, onChain hlOnChainCoinView, heldReason string) (hlSharedCloseFloorOutcome, float64) {
+func evaluateSharedCoinFullCloseFloor(closeFraction float64, symbol string, hlLiveAll []StrategyConfig, posQty float64, posSide string, price float64, onChain hlOnChainCoinView, peerVirtualQty float64, heldReason string) (hlSharedCloseFloorOutcome, float64) {
 	if closeFraction != 1.0 || posQty <= 0 || price <= 0 || math.IsNaN(price) || math.IsInf(price, 0) {
 		return hlSharedCloseFloorNone, 0
 	}
@@ -85,7 +96,7 @@ func evaluateSharedCoinFullCloseFloor(closeFraction float64, symbol string, hlLi
 	if !onChain.Known {
 		return hlSharedCloseFloorDefer, remainderUSD
 	}
-	if hlPeerFlatOnCoin(symbol, posSide, posQty, onChain) {
+	if peerVirtualQty <= 1e-9 && hlPeerFlatOnCoin(symbol, posSide, posQty, onChain) {
 		return hlSharedCloseFloorEscalate, remainderUSD
 	}
 	if heldReason != "" {
@@ -94,25 +105,29 @@ func evaluateSharedCoinFullCloseFloor(closeFraction float64, symbol string, hlLi
 	return hlSharedCloseFloorHold, remainderUSD
 }
 
-func formatSharedCloseStrandedAlert(strategyID, symbol string, remainderUSD float64, reason string) string {
-	return fmt.Sprintf("**CRITICAL — stranded remainder below venue minimum** [%s] %s: the final full close is worth $%.2f, under the $%.2f venue minimum (gate $%.2f). %s The scheduler holds this close and will not resend it until the value rises above the minimum, the peer goes flat, or the operator closes it by hand.",
-		strategyID, symbol, remainderUSD, hlVenueMinOrderNotionalUSD, hlVenueCloseGateThresholdUSD(), reason)
+func formatSharedCloseStrandedAlert(strategyID, symbol string, remainderUSD float64, reason, holdReason string) string {
+	recovery := "The scheduler holds this close and will not resend it until the value rises above the gate, every peer is flat on-chain and in its own book, or the operator closes it by hand."
+	if holdReason == hlSharedCloseHoldVenueReject {
+		recovery = "The scheduler holds this close and will not resend it until the value rises above the gate or the operator closes it by hand; a peer going flat does not resend it."
+	}
+	return fmt.Sprintf("**CRITICAL — stranded remainder below venue minimum gate** [%s] %s: the final full close is worth $%.2f, under the $%.2f gate (the $%.2f venue minimum plus the %.0f%% safety margin). %s %s",
+		strategyID, symbol, remainderUSD, hlVenueCloseGateThresholdUSD(), hlVenueMinOrderNotionalUSD, hlVenueMinOrderNotionalMargin*100, reason, recovery)
 }
 
-func notifySharedCloseStranded(notifier *MultiNotifier, sc StrategyConfig, symbol string, remainderUSD float64, reason string) {
+func notifySharedCloseStranded(notifier *MultiNotifier, sc StrategyConfig, symbol string, remainderUSD float64, reason, holdReason string) {
 	if notifier == nil || !notifier.HasBackends() {
 		return
 	}
-	msg := formatSharedCloseStrandedAlert(sc.ID, symbol, remainderUSD, reason)
+	msg := formatSharedCloseStrandedAlert(sc.ID, symbol, remainderUSD, reason, holdReason)
 	notifier.SendToAllChannels(msg)
 	notifier.SendOwnerDM(msg)
 }
 
-func applySharedCoinFullCloseFloor(sc StrategyConfig, result *HyperliquidResult, posQty float64, posSide string, price float64, hlLiveAll []StrategyConfig, onChain hlOnChainCoinView, heldReason string, refetch func() (hlOnChainCoinView, error), notifier *MultiNotifier, logger *StrategyLogger) (hlSharedCloseFloorOutcome, float64) {
-	if result == nil {
+func applySharedCoinFullCloseFloor(sc StrategyConfig, result *HyperliquidResult, posQty float64, posSide string, price float64, hlLiveAll []StrategyConfig, onChain hlOnChainCoinView, peerVirtualQty float64, heldReason string, refetch func() (hlOnChainCoinView, error), notifier *MultiNotifier, logger *StrategyLogger) (hlSharedCloseFloorOutcome, float64) {
+	if result == nil || result.Signal == 0 {
 		return hlSharedCloseFloorNone, 0
 	}
-	outcome, remainderUSD := evaluateSharedCoinFullCloseFloor(result.CloseFraction, result.Symbol, hlLiveAll, posQty, posSide, price, onChain, heldReason)
+	outcome, remainderUSD := evaluateSharedCoinFullCloseFloor(result.CloseFraction, result.Symbol, hlLiveAll, posQty, posSide, price, onChain, peerVirtualQty, heldReason)
 	if outcome == hlSharedCloseFloorEscalate {
 		if refetch == nil {
 			outcome = hlSharedCloseFloorDefer
@@ -120,7 +135,7 @@ func applySharedCoinFullCloseFloor(sc StrategyConfig, result *HyperliquidResult,
 			logger.Warn("Final full close %s: pre-escalation account refetch failed (%v) — deferring to the next cycle", result.Symbol, err)
 			outcome = hlSharedCloseFloorDefer
 		} else {
-			outcome, remainderUSD = evaluateSharedCoinFullCloseFloor(result.CloseFraction, result.Symbol, hlLiveAll, posQty, posSide, price, fresh, heldReason)
+			outcome, remainderUSD = evaluateSharedCoinFullCloseFloor(result.CloseFraction, result.Symbol, hlLiveAll, posQty, posSide, price, fresh, peerVirtualQty, heldReason)
 			if outcome != hlSharedCloseFloorEscalate {
 				logger.Warn("Final full close %s: the refetched account state no longer shows every peer flat — outcome %s", result.Symbol, outcome)
 			}
@@ -129,13 +144,13 @@ func applySharedCoinFullCloseFloor(sc StrategyConfig, result *HyperliquidResult,
 	switch outcome {
 	case hlSharedCloseFloorEscalate:
 		result.ForceFullClose = true
-		logger.Info("Final full close %s worth $%.2f is below the venue minimum and every peer is flat on the refetched account state — escalating to market_close(sz=None)", result.Symbol, remainderUSD)
+		logger.Info("Final full close %s worth $%.2f is below the venue minimum gate and every peer is flat on the refetched account state and in its own book — escalating to market_close(sz=None)", result.Symbol, remainderUSD)
 	case hlSharedCloseFloorHold:
 		result.Signal = 0
 		result.CloseFraction = 0
 		result.CloseGate = hlSharedCloseStrandedGate
-		logger.Error("Final full close %s worth $%.2f is below the venue minimum while a peer holds on-chain quantity — holding the close and alerting once", result.Symbol, remainderUSD)
-		notifySharedCloseStranded(notifier, sc, result.Symbol, remainderUSD, "A peer strategy still holds on-chain quantity on this coin, so a whole-position close would take its exposure and a sized close is rejected by the venue.")
+		logger.Error("Final full close %s worth $%.2f is below the venue minimum gate while a peer holds quantity (peer virtual %.6f) — holding the close and alerting once; stop-loss management continues", result.Symbol, remainderUSD, peerVirtualQty)
+		notifySharedCloseStranded(notifier, sc, result.Symbol, remainderUSD, "A peer strategy still holds quantity on this coin (on-chain or in its own book), so a whole-position close would take its exposure and a sized close is rejected by the venue.", hlSharedCloseHoldPeerBusy)
 	case hlSharedCloseFloorHeld:
 		result.Signal = 0
 		result.CloseFraction = 0

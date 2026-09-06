@@ -1705,6 +1705,7 @@ func main() {
 				var hlScaleInResizePending bool
 				var hlSharedCloseHoldUSD float64
 				var hlSharedCloseHoldReason string
+				var hlPeerVirtualQty float64
 				var hlPoolBalanceKnown bool
 				var hlProfileState *RegimeProfileState
 				if sc.Type == "perps" && sc.Platform == "hyperliquid" {
@@ -1745,6 +1746,9 @@ func main() {
 							hlScaleInResizePending = pos.ScaleInResizePending
 							hlSharedCloseHoldUSD = pos.SharedCloseHoldUSD
 							hlSharedCloseHoldReason = pos.SharedCloseHoldReason
+						}
+						if hlLiveStrategy {
+							hlPeerVirtualQty = hlPeerVirtualQtyOnCoin(snapshotHyperliquidVirtualQuantities(state.Strategies, hlReconcileAll), sym, sc.ID)
 						}
 					}
 				}
@@ -2207,6 +2211,17 @@ func main() {
 						syncStrategyRegimeState(stratState, storeRegime, cfg.Regime)
 						updateStrategyDivergenceState(stratState, result.Divergence)
 						mu.Unlock()
+						floorOutcome, floorRemainderUSD := hlSharedCloseFloorNone, 0.0
+						if hyperliquidIsLive(sc.Args) && result.Signal != 0 {
+							floorRefetch := func() (hlOnChainCoinView, error) {
+								_, fresh, err := fetchHyperliquidStateFn(hlAddr)
+								if err != nil {
+									return hlOnChainCoinView{}, err
+								}
+								return hlOnChainCoinViewFromPositions(fresh), nil
+							}
+							floorOutcome, floorRemainderUSD = applySharedCoinFullCloseFloor(sc, result, hlPosQty, hlPosSide, price, hlReconcileAll, hlOnChainCoinView{Known: hlStateFetched, AbsQty: hlOnChainAbsQty, NetSide: hlNetSideByCoin}, hlPeerVirtualQty, hlSharedCloseHoldReason, floorRefetch, notifier, logger)
+						}
 						var execResult *HyperliquidExecuteResult
 						liveExecFailed := false
 						hedgeFreshExposureQty := 0.0
@@ -2332,6 +2347,11 @@ func main() {
 								notifyHLStopPastLiquidation(sc, result.Symbol, hlPosSide, clampOffendingPx, clampedTriggerPx, armLiqPx, clampArmAction, notifier, logger, time.Now().UTC())
 							}
 						}
+						if floorOutcome == hlSharedCloseFloorHold {
+							mu.Lock()
+							stampSharedCloseHold(stratState, result.Symbol, floorRemainderUSD, hlSharedCloseHoldPeerBusy)
+							mu.Unlock()
+						}
 						if hyperliquidIsLive(sc.Args) && result.Signal == 0 && hlPosQty > 0 {
 							if _, fillPx := runHyperliquidProtectionSync(sc, stratState, stratDB, result.Symbol, &mu, notifier, logger, "HL protection synced", hlReconcileFillHintsJSON, hlLiquidationPx, hlNetSideByCoin); fillPx > 0 {
 								trades++
@@ -2358,20 +2378,8 @@ func main() {
 									liveExecFailed = true
 								}
 							} else {
-								floorRefetch := func() (hlOnChainCoinView, error) {
-									_, fresh, err := fetchHyperliquidStateFn(hlAddr)
-									if err != nil {
-										return hlOnChainCoinView{}, err
-									}
-									return hlOnChainCoinViewFromPositions(fresh), nil
-								}
-								floorOutcome, floorRemainderUSD := applySharedCoinFullCloseFloor(sc, result, hlPosQty, hlPosSide, price, hlReconcileAll, hlOnChainCoinView{Known: hlStateFetched, AbsQty: hlOnChainAbsQty, NetSide: hlNetSideByCoin}, hlSharedCloseHoldReason, floorRefetch, notifier, logger)
 								er, ok2 := runHyperliquidExecuteOrder(sc, result, price, hlCash, hlPoolBalanceKnown, hlPosQty, hlPosSide, hlAvgCost, hlPosLeverage, hlStopLossOID, hlTPOIDs, hlReconcileAll, walletSnapshot, hurstDecision, notifier, logger)
 								switch {
-								case floorOutcome == hlSharedCloseFloorHold:
-									mu.Lock()
-									stampSharedCloseHold(stratState, result.Symbol, floorRemainderUSD, hlSharedCloseHoldPeerBusy)
-									mu.Unlock()
 								case result.SharedCloseStrandedUSD > 0:
 									mu.Lock()
 									stampSharedCloseHold(stratState, result.Symbol, result.SharedCloseStrandedUSD, hlSharedCloseHoldVenueReject)
@@ -2402,6 +2410,12 @@ func main() {
 												logger.Info("cleared canceled protection OIDs=%v after live execute failed", canceledOIDs)
 											}
 											mu.Unlock()
+										}
+									}
+									if result.SharedCloseStrandedUSD > 0 && hlPosQty > 0 {
+										if _, fillPx := runHyperliquidProtectionSync(sc, stratState, stratDB, result.Symbol, &mu, notifier, logger, "HL protection re-armed after stranded close", hlReconcileFillHintsJSON, hlLiquidationPx, hlNetSideByCoin); fillPx > 0 {
+											trades++
+											detail = fmt.Sprintf("[%s] LIVE PROTECTION SYNC SL %s @ $%.2f", sc.ID, result.Symbol, fillPx)
 										}
 									}
 								}
@@ -3700,7 +3714,7 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 			remainderUSD := posQty * price
 			result.SharedCloseStrandedUSD = remainderUSD
 			logger.Error("Escalated whole-position close %s was rejected below the venue minimum ($%.2f) — holding the close and alerting once", result.Symbol, remainderUSD)
-			notifySharedCloseStranded(notifier, sc, result.Symbol, remainderUSD, fmt.Sprintf("Every peer is flat on-chain, but the venue also rejected the whole-position reduce-only close (%s).", err.Error()))
+			notifySharedCloseStranded(notifier, sc, result.Symbol, remainderUSD, fmt.Sprintf("Every peer is flat, but the venue also rejected the whole-position reduce-only close (%s).", err.Error()), hlSharedCloseHoldVenueReject)
 			return execResult, false
 		}
 		notifyLiveExecFailure(notifier, sc, direction, result.Symbol, err.Error())

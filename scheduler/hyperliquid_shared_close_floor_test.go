@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -20,20 +21,24 @@ func TestEvaluateSharedCoinFullCloseFloor(t *testing.T) {
 		{ID: "hl-kpepe-b", Type: "perps", Platform: "hyperliquid", Symbol: "kPEPE", Script: "shared_scripts/check_hyperliquid.py", Args: []string{"hold", "kPEPE", "1h", "--mode=live"}},
 	}
 	cases := []struct {
-		name       string
-		fraction   float64
-		peers      []StrategyConfig
-		posQty     float64
-		price      float64
-		symbol     string
-		onChain    hlOnChainCoinView
-		heldReason string
-		want       hlSharedCloseFloorOutcome
+		name        string
+		fraction    float64
+		peers       []StrategyConfig
+		posQty      float64
+		price       float64
+		symbol      string
+		onChain     hlOnChainCoinView
+		peerVirtual float64
+		heldReason  string
+		want        hlSharedCloseFloorOutcome
 	}{
 		{name: "peer flat escalates", fraction: 1, peers: peers, posQty: 0.002, price: 2000, onChain: hlOnChainCoinView{Known: true, AbsQty: map[string]float64{"ETH": 0.002}, NetSide: map[string]string{"ETH": "long"}}, want: hlSharedCloseFloorEscalate},
 		{name: "on-chain below virtual escalates", fraction: 1, peers: peers, posQty: 0.002, price: 2000, onChain: hlOnChainCoinView{Known: true, AbsQty: map[string]float64{"ETH": 0.001}, NetSide: map[string]string{"ETH": "long"}}, want: hlSharedCloseFloorEscalate},
 		{name: "peer holds quantity holds once", fraction: 1, peers: peers, posQty: 0.002, price: 2000, onChain: hlOnChainCoinView{Known: true, AbsQty: map[string]float64{"ETH": 0.5}, NetSide: map[string]string{"ETH": "long"}}, want: hlSharedCloseFloorHold},
 		{name: "peer net opposite side holds", fraction: 1, peers: peers, posQty: 0.002, price: 2000, onChain: hlOnChainCoinView{Known: true, AbsQty: map[string]float64{"ETH": 0.001}, NetSide: map[string]string{"ETH": "short"}}, want: hlSharedCloseFloorHold},
+		{name: "opposite-side peer netting to a small same-side residual holds", fraction: 1, peers: peers, posQty: 0.002, price: 2000, onChain: hlOnChainCoinView{Known: true, AbsQty: map[string]float64{"ETH": 0.0005}, NetSide: map[string]string{"ETH": "long"}}, peerVirtual: 0.0015, want: hlSharedCloseFloorHold},
+		{name: "same-side peer hidden under virtual-over-on-chain drift holds", fraction: 1, peers: peers, posQty: 0.002, price: 2000, onChain: hlOnChainCoinView{Known: true, AbsQty: map[string]float64{"ETH": 0.001}, NetSide: map[string]string{"ETH": "long"}}, peerVirtual: 0.001, want: hlSharedCloseFloorHold},
+		{name: "peer book non-zero while wallet net is under virtual holds", fraction: 1, peers: peers, posQty: 0.002, price: 2000, onChain: hlOnChainCoinView{Known: true, AbsQty: map[string]float64{"ETH": 0.0}, NetSide: map[string]string{}}, peerVirtual: 0.003, want: hlSharedCloseFloorHold},
 		{name: "already held on busy peer stays silent", fraction: 1, peers: peers, posQty: 0.002, price: 2000, onChain: hlOnChainCoinView{Known: true, AbsQty: map[string]float64{"ETH": 0.5}, NetSide: map[string]string{"ETH": "long"}}, heldReason: hlSharedCloseHoldPeerBusy, want: hlSharedCloseFloorHeld},
 		{name: "busy-peer hold escalates once the peer goes flat", fraction: 1, peers: peers, posQty: 0.002, price: 2000, onChain: hlOnChainCoinView{Known: true, AbsQty: map[string]float64{"ETH": 0.002}, NetSide: map[string]string{"ETH": "long"}}, heldReason: hlSharedCloseHoldPeerBusy, want: hlSharedCloseFloorEscalate},
 		{name: "venue-rejected hold never re-escalates on a flat peer", fraction: 1, peers: peers, posQty: 0.002, price: 2000, onChain: hlOnChainCoinView{Known: true, AbsQty: map[string]float64{"ETH": 0.002}, NetSide: map[string]string{"ETH": "long"}}, heldReason: hlSharedCloseHoldVenueReject, want: hlSharedCloseFloorHeld},
@@ -53,7 +58,7 @@ func TestEvaluateSharedCoinFullCloseFloor(t *testing.T) {
 			if symbol == "" {
 				symbol = "ETH"
 			}
-			got, _ := evaluateSharedCoinFullCloseFloor(tc.fraction, symbol, tc.peers, tc.posQty, "long", tc.price, tc.onChain, tc.heldReason)
+			got, _ := evaluateSharedCoinFullCloseFloor(tc.fraction, symbol, tc.peers, tc.posQty, "long", tc.price, tc.onChain, tc.peerVirtual, tc.heldReason)
 			if got != tc.want {
 				t.Fatalf("outcome = %s, want %s", got, tc.want)
 			}
@@ -78,7 +83,9 @@ func TestSharedCoinFullCloseFloorExecutePath(t *testing.T) {
 		onChain       hlOnChainCoinView
 		refetched     *hlOnChainCoinView
 		refetchErr    error
+		peerVirtual   float64
 		heldReason    string
+		signal        int
 		execErr       error
 		wantFullClose int
 		wantSized     int
@@ -94,6 +101,8 @@ func TestSharedCoinFullCloseFloorExecutePath(t *testing.T) {
 		{name: "venue-rejected hold sends no order and no alert next cycle", onChain: flat, heldReason: hlSharedCloseHoldVenueReject},
 		{name: "peer opened since the cycle snapshot: refetch holds instead of escalating", onChain: flat, refetched: &busy, wantAlerts: 1},
 		{name: "refetch failure defers without an order or alert", onChain: flat, refetchErr: errors.New("clearinghouseState timeout")},
+		{name: "peer book holds quantity though the wallet net looks flat: one alert, no order", onChain: flat, peerVirtual: 0.001, wantAlerts: 1},
+		{name: "zero signal is a noop for the floor", onChain: busy, signal: 0},
 		{name: "escalated close other failure keeps the throttled failure alert", onChain: flat, execErr: errors.New("insufficient margin"), wantFullClose: 1, wantAlerts: 1, wantThrottled: 1},
 	}
 	for _, tc := range cases {
@@ -112,7 +121,14 @@ func TestSharedCoinFullCloseFloorExecutePath(t *testing.T) {
 			}
 			liveExecThrottle = &LiveExecFailureThrottle{}
 			notifier, backend := confirmationNotifier()
-			result := &HyperliquidResult{Symbol: "ETH", Signal: -1, Price: 2000}
+			signal := -1
+			if tc.signal != 0 {
+				signal = tc.signal
+			}
+			if tc.name == "zero signal is a noop for the floor" {
+				signal = 0
+			}
+			result := &HyperliquidResult{Symbol: "ETH", Signal: signal, Price: 2000}
 			result.CloseFraction = 1
 			refetches := 0
 			refetch := func() (hlOnChainCoinView, error) {
@@ -125,12 +141,18 @@ func TestSharedCoinFullCloseFloorExecutePath(t *testing.T) {
 				}
 				return tc.onChain, nil
 			}
-			outcome, _ := applySharedCoinFullCloseFloor(sc, result, 0.002, "long", 2000, peers, tc.onChain, tc.heldReason, refetch, notifier, silentStrategyLogger(sc.ID))
+			outcome, _ := applySharedCoinFullCloseFloor(sc, result, 0.002, "long", 2000, peers, tc.onChain, tc.peerVirtual, tc.heldReason, refetch, notifier, silentStrategyLogger(sc.ID))
 			if outcome == hlSharedCloseFloorEscalate && refetches != 1 {
 				t.Fatalf("escalated with %d refetches, want exactly 1", refetches)
 			}
 			if tc.wantFullClose == 0 && result.ForceFullClose {
 				t.Fatalf("ForceFullClose set on outcome %s", outcome)
+			}
+			if signal == 0 {
+				if outcome != hlSharedCloseFloorNone || result.CloseGate != "" {
+					t.Fatalf("zero-signal floor outcome = %s gate %q, want none", outcome, result.CloseGate)
+				}
+				return
 			}
 			_, ok := runHyperliquidExecuteOrder(sc, result, 2000, 1000, false, 0.002, "long", 1900, 2, 111, nil, peers, hlExecuteSnapshot{}, HurstGateDecision{}, notifier, silentStrategyLogger(sc.ID))
 			if ok != tc.wantOK {
@@ -154,6 +176,14 @@ func TestSharedCoinFullCloseFloorExecutePath(t *testing.T) {
 			if (result.SharedCloseStrandedUSD > 0) != tc.wantStranded {
 				t.Fatalf("stranded = %g, want stranded %t", result.SharedCloseStrandedUSD, tc.wantStranded)
 			}
+			if tc.wantStranded {
+				backend.mu.Lock()
+				msg := backend.dms[0].content
+				backend.mu.Unlock()
+				if strings.Contains(msg, "every peer is flat on-chain and in its own book, or") || !strings.Contains(msg, "a peer going flat does not resend it") {
+					t.Fatalf("venue-rejected alert promises a peer-flat resend: %s", msg)
+				}
+			}
 		})
 	}
 }
@@ -174,7 +204,7 @@ func TestSharedCloseHoldPersistsAcrossReload(t *testing.T) {
 	if got.SharedCloseHoldUSD != 4 || got.SharedCloseHoldReason != hlSharedCloseHoldVenueReject {
 		t.Fatalf("hold after reload = %g/%q, want 4/%q", got.SharedCloseHoldUSD, got.SharedCloseHoldReason, hlSharedCloseHoldVenueReject)
 	}
-	if outcome, _ := evaluateSharedCoinFullCloseFloor(1, "ETH", sharedCloseFloorPeers(), 0.002, "long", 2000, hlOnChainCoinView{Known: true, AbsQty: map[string]float64{"ETH": 0.002}, NetSide: map[string]string{"ETH": "long"}}, got.SharedCloseHoldReason); outcome != hlSharedCloseFloorHeld {
+	if outcome, _ := evaluateSharedCoinFullCloseFloor(1, "ETH", sharedCloseFloorPeers(), 0.002, "long", 2000, hlOnChainCoinView{Known: true, AbsQty: map[string]float64{"ETH": 0.002}, NetSide: map[string]string{"ETH": "long"}}, 0, got.SharedCloseHoldReason); outcome != hlSharedCloseFloorHeld {
 		t.Fatalf("reloaded venue-rejected hold outcome = %s, want held", outcome)
 	}
 	clearSharedCloseHold(loaded.Strategies["hl-momentum-btc"], "ETH")
