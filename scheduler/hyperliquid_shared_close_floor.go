@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"sync"
 )
 
 const (
@@ -190,4 +191,29 @@ func clearSharedCloseHold(s *StrategyState, symbol string) bool {
 		return true
 	}
 	return false
+}
+
+func rearmProtectionAfterStrandedClose(sc StrategyConfig, stratState *StrategyState, db *StateDB, symbol string, price float64, executeResultUnreadable bool, stopLossOID int64, onChainAbsQty map[string]float64, reconcileFillHintsJSON []byte, liqPxByCoin map[string]float64, netSideByCoin map[string]string, mu *sync.RWMutex, notifier *MultiNotifier, logger *StrategyLogger) (int, string) {
+	if stratState == nil || symbol == "" {
+		return 0, ""
+	}
+	if executeResultUnreadable && stopLossOID > 0 {
+		mu.Lock()
+		if pos, ok := stratState.Positions[symbol]; ok {
+			clearHyperliquidProtectionOIDsMatching(pos, []int64{stopLossOID})
+		}
+		mu.Unlock()
+		logger.Warn("Stranded close %s: the execute result is unreadable, so the cancel outcome of SL oid=%d is unknown — treating it as canceled and re-arming fail-safe", symbol, stopLossOID)
+	}
+	trades := 0
+	detail := ""
+	if _, fillPx := runHyperliquidProtectionSync(sc, stratState, db, symbol, mu, notifier, logger, "HL protection re-armed after stranded close", reconcileFillHintsJSON, liqPxByCoin, netSideByCoin); fillPx > 0 {
+		trades++
+		detail = fmt.Sprintf("[%s] LIVE PROTECTION SYNC SL %s @ $%.2f", sc.ID, symbol, fillPx)
+	}
+	if extraTrades, slDetail := armTrailingStopAtOpenNow(sc, stratState, symbol, price, onChainAbsQty, 0, mu, notifier, logger); extraTrades > 0 {
+		trades += extraTrades
+		detail = slDetail
+	}
+	return trades, detail
 }

@@ -2413,9 +2413,9 @@ func main() {
 										}
 									}
 									if result.SharedCloseStrandedUSD > 0 && hlPosQty > 0 {
-										if _, fillPx := runHyperliquidProtectionSync(sc, stratState, stratDB, result.Symbol, &mu, notifier, logger, "HL protection re-armed after stranded close", hlReconcileFillHintsJSON, hlLiquidationPx, hlNetSideByCoin); fillPx > 0 {
-											trades++
-											detail = fmt.Sprintf("[%s] LIVE PROTECTION SYNC SL %s @ $%.2f", sc.ID, result.Symbol, fillPx)
+										if extraTrades, slDetail := rearmProtectionAfterStrandedClose(sc, stratState, stratDB, result.Symbol, price, er == nil, hlStopLossOID, hlOnChainAbsQty, hlReconcileFillHintsJSON, hlLiquidationPx, hlNetSideByCoin, &mu, notifier, logger); extraTrades > 0 {
+											trades += extraTrades
+											detail = slDetail
 										}
 									}
 								}

@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -217,5 +218,57 @@ func TestSharedCloseHoldPersistsAcrossReload(t *testing.T) {
 	}
 	if v := again.Strategies["hl-momentum-btc"].Positions["ETH"]; v.SharedCloseHoldUSD != 0 || v.SharedCloseHoldReason != "" {
 		t.Fatalf("hold after clear = %g/%q, want 0/empty", v.SharedCloseHoldUSD, v.SharedCloseHoldReason)
+	}
+}
+
+func TestRearmProtectionAfterStrandedCloseCoversTrailOwnedStop(t *testing.T) {
+	oldUpdate := runHyperliquidUpdateStopLossFunc
+	t.Cleanup(func() { runHyperliquidUpdateStopLossFunc = oldUpdate })
+	trail := 2.0
+	liveArgs := []string{"x.py", "ETH", "1h", "--mode=live"}
+	cases := []struct {
+		name       string
+		sc         StrategyConfig
+		stopOID    int64
+		unreadable bool
+		wantArm    bool
+		wantCancel int64
+	}{
+		{name: "trailing owner re-arms after the canceled stop is cleared", sc: StrategyConfig{ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py", Args: liveArgs, TrailingStopATRMult: &trail}, wantArm: true},
+		{name: "unreadable execute result clears the stale OID and still re-arms", sc: StrategyConfig{ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py", Args: liveArgs, TrailingStopATRMult: &trail}, stopOID: 444, unreadable: true, wantArm: true},
+		{name: "readable execute result with a resting stop leaves it alone", sc: StrategyConfig{ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py", Args: liveArgs, TrailingStopATRMult: &trail}, stopOID: 444, wantArm: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			placed := 0
+			var gotCancel int64
+			runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+				placed++
+				gotCancel = cancelStopLossOID
+				return &HyperliquidStopLossUpdateResult{StopLossOID: 999, StopLossTriggerPx: triggerPx}, "", nil
+			}
+			trigger := 0.0
+			if tc.stopOID != 0 {
+				trigger = 1950
+			}
+			st := &StrategyState{ID: "hl-eth", Positions: map[string]*Position{
+				"ETH": {Symbol: "ETH", Side: "long", Quantity: 0.002, InitialQuantity: 0.002, AvgCost: 2000, EntryATR: 50, RiskAnchorPrice: 2000, StopLossOID: tc.stopOID, StopLossTriggerPx: trigger},
+			}}
+			var mu sync.RWMutex
+			rearmProtectionAfterStrandedClose(tc.sc, st, nil, "ETH", 2000, tc.unreadable, tc.stopOID, map[string]float64{"ETH": 0.002}, nil, nil, nil, &mu, nil, newTestLogger(t))
+			if (placed > 0) != tc.wantArm {
+				t.Fatalf("stop placements = %d, want armed %t", placed, tc.wantArm)
+			}
+			pos := st.Positions["ETH"]
+			if tc.wantArm && (pos.StopLossOID != 999 || pos.StopLossTriggerPx <= 0) {
+				t.Fatalf("position after re-arm oid=%d trigger=%g, want armed oid 999", pos.StopLossOID, pos.StopLossTriggerPx)
+			}
+			if tc.wantArm && gotCancel != tc.wantCancel {
+				t.Fatalf("cancel oid = %d, want %d", gotCancel, tc.wantCancel)
+			}
+			if !tc.wantArm && pos.StopLossOID != tc.stopOID {
+				t.Fatalf("resting stop oid changed to %d", pos.StopLossOID)
+			}
+		})
 	}
 }
