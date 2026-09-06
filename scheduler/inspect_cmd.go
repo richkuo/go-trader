@@ -14,18 +14,22 @@ func runInspect(args []string) int {
 	fs := flag.NewFlagSet("inspect", flag.ContinueOnError)
 	configPath := fs.String("config", "scheduler/config.json", "Path to config file")
 	jsonOut := fs.Bool("json", false, "Emit the effective view as JSON (machine-readable)")
+	all := fs.Bool("all", false, "Inspect every configured strategy")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	rest := fs.Args()
-	if len(rest) == 0 {
-		fmt.Fprintln(os.Stderr, "inspect: missing <strategy-id>")
-		fmt.Fprintln(os.Stderr, "usage: go-trader inspect [--config <path>] [--json] <strategy-id>|--all")
-		return 2
+	target := "--all"
+	if !*all {
+		if len(rest) == 0 {
+			fmt.Fprintln(os.Stderr, "inspect: missing <strategy-id>")
+			fmt.Fprintln(os.Stderr, "usage: go-trader inspect [--config <path>] [--json] <strategy-id>|--all")
+			return 2
+		}
+		target = rest[0]
 	}
-	target := rest[0]
 
-	cfg, err := LoadConfig(*configPath)
+	cfg, err := loadConfigQuietForJSON(*configPath, *jsonOut)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "inspect: failed to load config %s: %v\n", *configPath, err)
 		return 1
@@ -56,7 +60,15 @@ func runInspect(args []string) int {
 		}
 	}
 
-	inspectState := loadInspectState(cfg)
+	var inspectState *AppState
+	if *jsonOut {
+		saved := os.Stdout
+		os.Stdout = os.Stderr
+		inspectState = loadInspectState(cfg)
+		os.Stdout = saved
+	} else {
+		inspectState = loadInspectState(cfg)
+	}
 
 	if *jsonOut {
 		out := make([]map[string]interface{}, 0, len(targets))
@@ -670,6 +682,139 @@ func buildStrategyInspectionJSON(sc StrategyConfig, explicit map[string]bool, cf
 		out["interval_seconds"] = cfg.IntervalSeconds
 		out["interval_seconds_explicit"] = false
 	}
+	for k, v := range strategyScopeInspectJSON(sc, cfg) {
+		out[k] = v
+	}
+	return out
+}
+
+func strategyScopeInspectJSON(sc StrategyConfig, cfg *Config) map[string]interface{} {
+	scope := portfolioScopeFor(sc)
+	out := map[string]interface{}{
+		"scope":                  scope,
+		"storage_strategy_id":    effectiveStorageStrategyID(sc),
+		"capital":                sc.Capital,
+		"capital_pct":            sc.CapitalPct,
+		"initial_capital":        sc.InitialCapital,
+		"margin_per_trade_usd":   EffectiveMarginPerTradeUSD(sc),
+		"htf_filter":             sc.HTFFilter,
+		"allowed_regimes":        append([]string{}, sc.AllowedRegimes...),
+		"hurst_gate_enabled":     hurstGateConfigured(sc),
+		"regime_gate_on_failure": resolveRegimeGateOnFailure(sc, regimeConfigOf(cfg)),
+	}
+	if sc.RiskPerTradePct != nil {
+		out["risk_per_trade_pct"] = *sc.RiskPerTradePct
+	} else {
+		out["risk_per_trade_pct"] = nil
+	}
+	if sc.Type != "options" {
+		out["atr_method"] = resolveATRMethod(sc, cfg)
+	}
+	out["replay"] = map[string]interface{}{
+		"sharing":          normalizeReplaySharing(sc.ReplaySharing),
+		"source_id":        strings.TrimSpace(sc.ReplaySourceID),
+		"effective_source": replayMirrorSourceID(sc),
+	}
+	out["notification"] = notificationRoutingJSON(sc, cfg, scope == ScopeLive)
+	out["scope_risk"] = scopeRiskInspectJSON(cfg, scope)
+	return out
+}
+
+func regimeConfigOf(cfg *Config) *RegimeConfig {
+	if cfg == nil {
+		return nil
+	}
+	return cfg.Regime
+}
+
+func notificationRoutingJSON(sc StrategyConfig, cfg *Config, isLive bool) map[string]interface{} {
+	var channels, alerts, dms []map[string]string
+	if cfg != nil {
+		channels = append(channels, cfg.Discord.Channels, cfg.Telegram.Channels)
+		alerts = append(alerts, cfg.Discord.TradeAlertChannels, cfg.Telegram.TradeAlertChannels)
+		dms = append(dms, cfg.Discord.DMChannels, cfg.Telegram.DMChannels)
+	}
+	chKey, chVal := resolveChannelKeyOverMaps(channels, sc.Platform, sc.Type, isLive)
+	alertKey, alertVal := resolveTradeAlertKeyOverMaps(alerts, channels, sc.Platform, sc.Type, isLive)
+	dmKey, dmVal := resolveChannelKeyOverMaps(dms, sc.Platform, sc.Type, isLive)
+	return map[string]interface{}{
+		"channel_key":         chKey,
+		"channel":             chVal,
+		"trade_alert_key":     alertKey,
+		"trade_alert_channel": alertVal,
+		"dm_key":              dmKey,
+		"dm_channel":          dmVal,
+	}
+}
+
+func resolveChannelKeyOverMaps(maps []map[string]string, platform, stratType string, isLive bool) (string, string) {
+	if !isLive {
+		for _, m := range maps {
+			if ch, ok := m[platform+"-paper"]; ok && ch != "" {
+				return platform + "-paper", ch
+			}
+		}
+	}
+	for _, m := range maps {
+		if ch, ok := m[platform]; ok && ch != "" {
+			return platform, ch
+		}
+		if ch, ok := m[stratType]; ok && ch != "" {
+			return stratType, ch
+		}
+	}
+	return "", ""
+}
+
+func resolveTradeAlertKeyOverMaps(overrides, channels []map[string]string, platform, stratType string, isLive bool) (string, string) {
+	for _, m := range overrides {
+		if len(m) == 0 {
+			continue
+		}
+		modeKey := platform + "-live"
+		if !isLive {
+			modeKey = platform + "-paper"
+		}
+		for _, key := range []string{modeKey, platform, stratType} {
+			if ch, ok := m[key]; ok && ch != "" {
+				return key, ch
+			}
+		}
+	}
+	return resolveChannelKeyOverMaps(channels, platform, stratType, isLive)
+}
+
+var scopeRiskInspectFields = []struct {
+	Key string
+	Get func(*PortfolioRiskConfig) float64
+}{
+	{"max_drawdown_pct", func(r *PortfolioRiskConfig) float64 { return r.MaxDrawdownPct }},
+	{"max_notional_usd", func(r *PortfolioRiskConfig) float64 { return r.MaxNotionalUSD }},
+	{"warn_threshold_pct", func(r *PortfolioRiskConfig) float64 { return r.WarnThresholdPct }},
+	{"daily_max_loss_usd", func(r *PortfolioRiskConfig) float64 { return r.DailyMaxLossUSD }},
+	{"daily_max_loss_pct", func(r *PortfolioRiskConfig) float64 { return r.DailyMaxLossPct }},
+	{"max_same_direction_notional_usd", func(r *PortfolioRiskConfig) float64 { return r.MaxSameDirectionNotionalUSD }},
+	{"max_asset_concentration_pct", func(r *PortfolioRiskConfig) float64 { return r.MaxAssetConcentrationPct }},
+}
+
+func scopeRiskInspectJSON(cfg *Config, scope PortfolioScope) interface{} {
+	merged := scopeRiskConfig(cfg, scope)
+	if merged == nil {
+		return nil
+	}
+	out := make(map[string]interface{}, len(scopeRiskInspectFields)+1)
+	for _, f := range scopeRiskInspectFields {
+		out[f.Key] = f.Get(merged)
+	}
+	inherits := []string{}
+	if scope == ScopePaper && cfg.PortfolioRisk.Paper != nil {
+		for _, f := range scopeRiskInspectFields {
+			if f.Get(cfg.PortfolioRisk.Paper) == 0 && f.Get(cfg.PortfolioRisk) != 0 {
+				inherits = append(inherits, f.Key)
+			}
+		}
+	}
+	out["zero_override_inherits"] = inherits
 	return out
 }
 

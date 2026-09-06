@@ -1,0 +1,65 @@
+{
+  "config_version": 19,
+  "interval_seconds": 300,
+  "db_file": "/var/lib/go-trader/live/state.db",
+  "paper_db_file": "/var/lib/go-trader/paper/state.db",
+  "replay_log_path": "/var/lib/go-trader/shared/replay.db",
+  "status_port": 8099,
+  "market_feed": "rest",
+  "default_stop_loss_atr_mult": 1.0,
+  "alert_throttle_interval": "6h",
+  "kill_switch_reset_dm_timeout": "6h",
+  "portfolio_risk": {
+    "max_drawdown_pct": 25,
+    "max_notional_usd": 0,
+    "daily_max_loss_usd": 500,
+    "paper": {
+      "max_drawdown_pct": 50,
+      "daily_max_loss_usd": 500
+    }
+  },
+  "discord": {
+    "enabled": false,
+    "token": "",
+    "channels": {
+      "hyperliquid": "LIVE_CHANNEL_ID",
+      "hyperliquid-paper": "PAPER_CHANNEL_ID"
+    },
+    "trade_alert_channels": {
+      "hyperliquid-live": "LIVE_ALERT_CHANNEL_ID",
+      "hyperliquid-paper": "PAPER_ALERT_CHANNEL_ID"
+    }
+  },
+  "strategies": [
+    {
+      "id": "hl-vwap-eth-60",
+      "type": "perps",
+      "platform": "hyperliquid",
+      "script": "shared_scripts/check_hyperliquid.py",
+      "args": ["vwap", "ETH", "1h", "--mode=live"],
+      "capital": 100,
+      "leverage": 5,
+      "margin_per_trade_usd": 50,
+      "max_drawdown_pct": 40,
+      "trailing_stop_atr_mult": 2.0,
+      "close_strategy": {"name": "trailing_tp_ratchet"},
+      "replay_sharing": "live_mirror"
+    },
+    {
+      "id": "hl-vwap-eth-60-paper",
+      "storage_strategy_id": "hl-vwap-eth-60",
+      "type": "perps",
+      "platform": "hyperliquid",
+      "script": "shared_scripts/check_hyperliquid.py",
+      "args": ["vwap", "ETH", "1h", "--mode=paper"],
+      "capital": 100,
+      "leverage": 5,
+      "margin_per_trade_usd": 50,
+      "max_drawdown_pct": 40,
+      "trailing_stop_atr_mult": 2.0,
+      "close_strategy": {"name": "trailing_tp_ratchet"},
+      "replay_sharing": "live_mirror",
+      "replay_source_id": "hl-vwap-eth-60"
+    }
+  ]
+}
