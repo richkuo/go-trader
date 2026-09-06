@@ -377,6 +377,7 @@ class HyperliquidExchangeAdapter:
         resolved = self.lot_size_decimals(symbol)
         if resolved is not None:
             return resolved
+        print(f"[WARN] sz_decimals unresolved for {symbol}, defaulting to 3", file=sys.stderr)
         return 3
 
     def lot_size_decimals(self, symbol: str):
@@ -395,7 +396,7 @@ class HyperliquidExchangeAdapter:
         resolved = self._resolve_sz_decimals_any(self._info, symbol)
         if resolved is not None:
             return resolved
-        print(f"[WARN] sz_decimals not found for {symbol} after refresh, defaulting to 3", file=sys.stderr)
+        print(f"[WARN] sz_decimals not found for {symbol} after refresh; lot size unresolved", file=sys.stderr)
         self._sz_decimals_misses.add(symbol)
         return None
 

@@ -630,10 +630,11 @@ def test_parse_market_stdin_requires_the_v2_envelope(mod):
         mod.parse_market_stdin(json.dumps({"v": 2}))
 
 
-def _tier_slot(slot_id, initial_qty, current_qty, entry_atr):
+def _tier_slot(slot_id, initial_qty, current_qty, entry_atr, mode="live"):
     return _slot(
         slot_id,
         "breakout",
+        mode=mode,
         position_side="long",
         position_ctx={"side": "long", "avg_cost": 80.0, "current_quantity": current_qty,
                       "initial_quantity": initial_qty, "entry_atr": entry_atr},
@@ -647,11 +648,14 @@ def _tier_slot(slot_id, initial_qty, current_qty, entry_atr):
     ("full_close_never_gated", 4, 0.1234, 0.0741, 2.0, False, 1.0),
     ("unknown_lot_size_keeps_fraction", None, 0.1234, 0.0741, 5.0, False, None),
     ("one_lot_below_minimum_value", 4, 0.1234, 0.0742, 5.0, True, 0.0),
+    ("paper_mode_never_gated", 4, 0.1234, 0.0741, 5.0, False, None),
 ])
 def test_venue_close_gate_rewrites_only_dust_partial_closes(
         mod, case, lot_decimals, initial_qty, current_qty, entry_atr, gated, expect_fraction):
     shared = _shared(mod, FakeAdapter(lot_decimals=lot_decimals), mark_price=100.0)
-    out = mod.evaluate_signal_slot(shared, _tier_slot(f"hl-{case}", initial_qty, current_qty, entry_atr))
+    mode = "paper" if case == "paper_mode_never_gated" else "live"
+    out = mod.evaluate_signal_slot(
+        shared, _tier_slot(f"hl-{case}", initial_qty, current_qty, entry_atr, mode=mode))
     if gated:
         assert out["close_fraction"] == 0.0
         assert out["signal"] == 0

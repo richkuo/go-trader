@@ -482,7 +482,7 @@ def evaluate_signal_slot(shared, slot, deps=None):
 
     if open_close_enabled:
         decision = deps.finalize_decision(evaluation, position_side, signal)
-        if 0 < float(decision.get("close_fraction", 0.0) or 0.0) < 1:
+        if mode == "live" and 0 < float(decision.get("close_fraction", 0.0) or 0.0) < 1:
             gated = apply_venue_close_gate(
                 decision, position_ctx, price,
                 resolve_venue_lot_decimals(shared, symbol),

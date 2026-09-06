@@ -239,6 +239,24 @@ def test_unified_regime_block_evaluator(registry):
     assert none["close_fraction"] == 0.0
 
 
+@pytest.mark.parametrize("initial,current", [
+    (7.6252, 0.3877),
+    (4.4594, 1.51),
+    (0.1234, 0.0247),
+])
+def test_final_tier_snaps_to_a_full_close_despite_float_noise(registry, initial, current):
+    result = registry.evaluate(
+        "tiered_tp_atr",
+        {"side": "long", "avg_cost": 100.0, "current_quantity": current,
+         "initial_quantity": initial, "entry_atr": 1.0},
+        {"mark_price": 200.0},
+        {"tp_tiers": [{"atr_multiple": 1.0, "close_fraction": 0.4},
+                      {"atr_multiple": 2.0, "close_fraction": 0.8},
+                      {"atr_multiple": 3.0, "close_fraction": 1.0}]},
+    )
+    assert result["close_fraction"] == 1.0
+
+
 @pytest.mark.parametrize("remainder_ratio,noise", [
     (1e-12, True),
     (1e-6, False),
