@@ -1704,6 +1704,7 @@ func main() {
 				var hlScaleInCash float64
 				var hlScaleInResizePending bool
 				var hlSharedCloseHoldUSD float64
+				var hlSharedCloseHoldReason string
 				var hlPoolBalanceKnown bool
 				var hlProfileState *RegimeProfileState
 				if sc.Type == "perps" && sc.Platform == "hyperliquid" {
@@ -1743,6 +1744,7 @@ func main() {
 							hlAddedNotionalUSD = pos.AddedNotionalUSD
 							hlScaleInResizePending = pos.ScaleInResizePending
 							hlSharedCloseHoldUSD = pos.SharedCloseHoldUSD
+							hlSharedCloseHoldReason = pos.SharedCloseHoldReason
 						}
 					}
 				}
@@ -2356,18 +2358,25 @@ func main() {
 									liveExecFailed = true
 								}
 							} else {
-								floorOutcome, floorRemainderUSD := applySharedCoinFullCloseFloor(sc, result, hlPosQty, hlPosSide, price, hlReconcileAll, hlOnChainCoinView{Known: hlStateFetched, AbsQty: hlOnChainAbsQty, NetSide: hlNetSideByCoin}, hlSharedCloseHoldUSD != 0, notifier, logger)
+								floorRefetch := func() (hlOnChainCoinView, error) {
+									_, fresh, err := fetchHyperliquidStateFn(hlAddr)
+									if err != nil {
+										return hlOnChainCoinView{}, err
+									}
+									return hlOnChainCoinViewFromPositions(fresh), nil
+								}
+								floorOutcome, floorRemainderUSD := applySharedCoinFullCloseFloor(sc, result, hlPosQty, hlPosSide, price, hlReconcileAll, hlOnChainCoinView{Known: hlStateFetched, AbsQty: hlOnChainAbsQty, NetSide: hlNetSideByCoin}, hlSharedCloseHoldReason, floorRefetch, notifier, logger)
 								er, ok2 := runHyperliquidExecuteOrder(sc, result, price, hlCash, hlPoolBalanceKnown, hlPosQty, hlPosSide, hlAvgCost, hlPosLeverage, hlStopLossOID, hlTPOIDs, hlReconcileAll, walletSnapshot, hurstDecision, notifier, logger)
 								switch {
 								case floorOutcome == hlSharedCloseFloorHold:
 									mu.Lock()
-									stampSharedCloseHold(stratState, result.Symbol, floorRemainderUSD)
+									stampSharedCloseHold(stratState, result.Symbol, floorRemainderUSD, hlSharedCloseHoldPeerBusy)
 									mu.Unlock()
 								case result.SharedCloseStrandedUSD > 0:
 									mu.Lock()
-									stampSharedCloseHold(stratState, result.Symbol, result.SharedCloseStrandedUSD)
+									stampSharedCloseHold(stratState, result.Symbol, result.SharedCloseStrandedUSD, hlSharedCloseHoldVenueReject)
 									mu.Unlock()
-								case floorOutcome == hlSharedCloseFloorNone && hlSharedCloseHoldUSD != 0 && result.CloseFraction == 1.0:
+								case floorOutcome == hlSharedCloseFloorNone && (hlSharedCloseHoldUSD != 0 || hlSharedCloseHoldReason != "") && result.CloseFraction == 1.0:
 									mu.Lock()
 									if clearSharedCloseHold(stratState, result.Symbol) {
 										logger.Info("Stranded-remainder hold cleared for %s: the full close is again above the venue minimum", result.Symbol)
