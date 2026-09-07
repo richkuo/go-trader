@@ -176,6 +176,12 @@ func TestInterpretManualCloseTPRestore(t *testing.T) {
 			wantOIDs:  []int64{7001, 0, 0},
 		},
 		{
+			name:      "an unresolved placement outcome arms the tier and never re-places it",
+			result:    &HyperliquidProtectionSyncResult{TPOIDs: []int64{7001, 0, 0}, TPOutcomeUnknown: []bool{false, true, false}, TPErrors: []string{"", "connection refused", ""}},
+			wantKinds: []manualCloseTPOutcomeKind{manualCloseTPPreserved, manualCloseTPOutcomeUnknown, manualCloseTPSkipped},
+			wantOIDs:  []int64{7001, 0, 0},
+		},
+		{
 			name:      "a size-skipped unconfirmed tier is unverified, never verified-resting",
 			result:    &HyperliquidProtectionSyncResult{TPOIDs: []int64{7001, 9002, 0}, TPSizeSkipped: []bool{true, false, false}},
 			wantKinds: []manualCloseTPOutcomeKind{manualCloseTPUnverified, manualCloseTPRestored, manualCloseTPSkipped},
@@ -232,6 +238,16 @@ func TestApplyRestoredTakeProfitTiers(t *testing.T) {
 			},
 			wantOIDs:  []int64{0, 0, 7003},
 			wantArmed: []bool{true, true, true},
+		},
+		{
+			name: "an unresolved placement arms the tier so the next sync places nothing",
+			pos:  &Position{TPOIDs: []int64{0, 0}, TPArmedTiers: []bool{false, false}},
+			outcomes: []manualCloseTPTierOutcome{
+				{Kind: manualCloseTPOutcomeUnknown, PrevOID: 7001, NewOID: 0},
+				{Kind: manualCloseTPSkipped, PrevOID: 0, NewOID: 0},
+			},
+			wantOIDs:  []int64{0, 0},
+			wantArmed: []bool{true, false},
 		},
 		{
 			name: "a preserved tier keeps the verified resting order",
@@ -862,7 +878,7 @@ func TestManualCloseTPRestoreSerialisesWithTheProtectionSync(t *testing.T) {
 		go func() {
 			defer close(done)
 			var mu sync.RWMutex
-			runHyperliquidProtectionSync(sc, stratState, nil, "ETH-LOCK", &mu, nil, nil, "test", nil, nil, nil)
+			runHyperliquidProtectionSync(sc, stratState, nil, "ETH-LOCK", &mu, nil, nil, "test", nil, nil, nil, hlProtectionGuardFull)
 		}()
 		select {
 		case <-placed:
@@ -957,7 +973,7 @@ func TestManualCloseRearmSerialisesWithProtectionSync(t *testing.T) {
 				defer close(cycleDone)
 				var mu sync.RWMutex
 				state := &StrategyState{Positions: map[string]*Position{sc.Symbol: {Symbol: sc.Symbol, Side: "long", Quantity: 1, AvgCost: 2000, EntryATR: 50}}}
-				runHyperliquidProtectionSync(sc, state, nil, sc.Symbol, &mu, nil, nil, "test", nil, nil, nil)
+				runHyperliquidProtectionSync(sc, state, nil, sc.Symbol, &mu, nil, nil, "test", nil, nil, nil, hlProtectionGuardFull)
 			}
 			if cycleFirst {
 				go cycle()
@@ -992,6 +1008,154 @@ func TestManualCloseRearmSerialisesWithProtectionSync(t *testing.T) {
 			case <-cycleDone:
 			case <-time.After(2 * time.Second):
 				t.Fatal("cycle did not finish")
+			}
+		})
+	}
+}
+
+func TestDrainRestoreTPTerminalStates(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		owner         string
+		age           time.Duration
+		wantCriticals int
+		wantQueued    int
+		wantAdopted   bool
+	}{
+		{name: "owned by a peer is acknowledged with a critical", owner: "peer", wantCriticals: 1},
+		{name: "a fresh apply failure stays queued", owner: "peer", age: -time.Minute, wantCriticals: 1},
+		{name: "an owned row still adopts", wantAdopted: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dbPath := filepath.Join(t.TempDir(), "state.db")
+			db, err := OpenStateDB(dbPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			sc := StrategyConfig{ID: "manual-eth", Type: "manual", Platform: "hyperliquid", Symbol: "ETH"}
+			store := singleFileStore(db)
+			if err := store.InsertPendingManualAction(PendingManualAction{StrategyID: sc.ID, Symbol: sc.Symbol, Action: "restore-tp", PrevTPOIDs: []int64{701}, TPOIDs: []int64{901}, TPArmedTiers: []bool{true}, CreatedAt: time.Now().UTC().Add(tc.age)}); err != nil {
+				t.Fatal(err)
+			}
+			pos := &Position{Symbol: sc.Symbol, Side: "long", Quantity: 1, AvgCost: 2000, EntryATR: 50, OwnerStrategyID: tc.owner, TPOIDs: []int64{701}, TPArmedTiers: []bool{true}}
+			state := &AppState{Strategies: map[string]*StrategyState{sc.ID: {ID: sc.ID, Type: sc.Type, Platform: sc.Platform, Positions: map[string]*Position{sc.Symbol: pos}}}}
+			_, criticals := drainPendingManualActions(state, &Config{Strategies: []StrategyConfig{sc}}, store)
+			if len(criticals) != tc.wantCriticals {
+				t.Fatalf("criticals=%v want %d", criticals, tc.wantCriticals)
+			}
+			pending, err := store.LoadPendingManualActions()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(pending) != tc.wantQueued {
+				t.Fatalf("queued rows=%d want %d", len(pending), tc.wantQueued)
+			}
+			if tc.wantAdopted && pos.TPOIDs[0] != 901 {
+				t.Fatalf("the owned row did not adopt: %v", pos.TPOIDs)
+			}
+			if !tc.wantAdopted && pos.TPOIDs[0] != 701 {
+				t.Fatalf("a row for another owner mutated the book: %v", pos.TPOIDs)
+			}
+		})
+	}
+}
+
+func TestDrainAcknowledgesExpiredFailingAction(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		age        time.Duration
+		wantQueued int
+	}{
+		{name: "an expired failing row is acknowledged", age: -2 * staleManualActionMaxAge},
+		{name: "a fresh failing row is retried", age: -time.Minute, wantQueued: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dbPath := filepath.Join(t.TempDir(), "state.db")
+			db, err := OpenStateDB(dbPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			sc := StrategyConfig{ID: "manual-eth", Type: "manual", Platform: "hyperliquid", Symbol: "ETH"}
+			store := singleFileStore(db)
+			if err := store.InsertPendingManualAction(PendingManualAction{StrategyID: sc.ID, Symbol: sc.Symbol, Action: "cancel-sl", CreatedAt: time.Now().UTC().Add(tc.age)}); err != nil {
+				t.Fatal(err)
+			}
+			state := &AppState{Strategies: map[string]*StrategyState{sc.ID: {ID: sc.ID, Type: sc.Type, Platform: sc.Platform, Cash: 100, Positions: map[string]*Position{}}}}
+			_, criticals := drainPendingManualActions(state, &Config{Strategies: []StrategyConfig{sc}}, store)
+			pending, err := store.LoadPendingManualActions()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(pending) != tc.wantQueued {
+				t.Fatalf("queued rows=%d want %d", len(pending), tc.wantQueued)
+			}
+			if wantCriticals := 1 - tc.wantQueued; len(criticals) != wantCriticals {
+				t.Fatalf("criticals=%v want %d", criticals, wantCriticals)
+			}
+		})
+	}
+}
+
+func TestSaveStrategyBookQueueingManualActionIsAtomic(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		action     PendingManualAction
+		breakQueue bool
+		wantErr    bool
+		wantQueued int
+		wantBook   bool
+	}{
+		{name: "book and queue commit together", action: PendingManualAction{StrategyID: "manual-eth", Symbol: "ETH", Action: "restore-tp", TPOIDs: []int64{901}}, wantQueued: 1, wantBook: true},
+		{name: "a rejected queue write rolls the book back", action: PendingManualAction{StrategyID: "manual-eth", Symbol: "ETH", Action: "restore-tp", TPOIDs: []int64{901}}, breakQueue: true, wantErr: true},
+		{name: "a queue row for another strategy is refused", action: PendingManualAction{StrategyID: "peer", Symbol: "ETH", Action: "restore-tp"}, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dbPath := filepath.Join(t.TempDir(), "state.db")
+			db, err := OpenStateDB(dbPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			if tc.breakQueue {
+				if _, err := db.db.Exec("DROP TABLE pending_manual_actions"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			store := singleFileStore(db)
+			strategy := &StrategyState{ID: "manual-eth", Type: "manual", Platform: "hyperliquid", Positions: map[string]*Position{
+				"ETH": {Symbol: "ETH", Side: "long", Quantity: 1, AvgCost: 2000, EntryATR: 50, TPOIDs: []int64{901}, TPArmedTiers: []bool{true}},
+			}}
+			err = store.SaveStrategyBookQueueingManualAction(strategy, tc.action)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("save error=%v wantErr=%v", err, tc.wantErr)
+			}
+			if !tc.breakQueue {
+				pending, loadErr := store.LoadPendingManualActions()
+				if loadErr != nil {
+					t.Fatal(loadErr)
+				}
+				if len(pending) != tc.wantQueued {
+					t.Fatalf("queued rows=%d want %d", len(pending), tc.wantQueued)
+				}
+			}
+			loaded, _, loadErr := LoadStateWithStore(&Config{Strategies: []StrategyConfig{{ID: "manual-eth", Type: "manual", Platform: "hyperliquid", Symbol: "ETH"}}}, store)
+			if loadErr != nil {
+				t.Fatal(loadErr)
+			}
+			var pos *Position
+			if ss := loaded.Strategies["manual-eth"]; ss != nil {
+				pos = ss.Positions["ETH"]
+			}
+			if !tc.wantBook {
+				if pos != nil {
+					t.Fatalf("the book was persisted without its queue row: %+v", pos)
+				}
+				return
+			}
+			if pos == nil || pos.TPOIDs[0] != 901 {
+				t.Fatalf("the book did not persist with its queue row: %+v", pos)
 			}
 		})
 	}

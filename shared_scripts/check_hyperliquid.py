@@ -770,23 +770,27 @@ def _classify_sl_response(sdk_response: dict):
     return ("missing", None)
 
 
-def _resolve_sl_placement_by_book_diff(adapter, symbol, pre_oids):
+def _resolve_placement_by_book_diff(adapter, symbol, pre_oids, label="SL"):
     if pre_oids is None:
         return ("unknown", None)
     try:
         now_oids = adapter.open_order_oids(symbol)
     except Exception as oe:
-        print(f"[WARN] outcome-unknown SL placement: open_order_oids({symbol}) re-read failed: {oe}", file=sys.stderr)
+        print(f"[WARN] outcome-unknown {label} placement: open_order_oids({symbol}) re-read failed: {oe}", file=sys.stderr)
         return ("unknown", None)
     if now_oids is None:
         return ("unknown", None)
     fresh = [int(o) for o in now_oids if int(o) not in pre_oids]
     if len(fresh) == 1:
-        print(f"[WARN] unreadable SL placement response resolved to resting oid={fresh[0]}", file=sys.stderr)
+        print(f"[WARN] unreadable {label} placement response resolved to resting oid={fresh[0]}", file=sys.stderr)
         return ("resting", fresh[0])
     if not fresh:
         return ("none", None)
     return ("unknown", None)
+
+
+def _resolve_sl_placement_by_book_diff(adapter, symbol, pre_oids):
+    return _resolve_placement_by_book_diff(adapter, symbol, pre_oids, label="SL")
 
 
 def _snapshot_open_oids(adapter, symbol):
@@ -1173,6 +1177,7 @@ def run_sync_protection(
                 tp_fills = [None] * len(tiers)
                 tp_filled_immediately = [False] * len(tiers)
                 tp_size_skipped = [False] * len(tiers)
+                tp_outcome_unknown = [False] * len(tiers)
                 armed = [bool(x) for x in (tp_armed_tiers or [])]
                 if len(armed) < len(tiers):
                     armed.extend([False] * (len(tiers) - len(armed)))
@@ -1186,6 +1191,40 @@ def run_sync_protection(
                 tier_sizes = compute_tp_tier_sizes(
                     size, tiers, lambda sz: adapter.floor_size(symbol, sz)
                 )
+
+                def _place_tp(idx, tier_size, rounded_px):
+                    pre_oids = _snapshot_open_oids(adapter, symbol)
+
+                    def _resolve_unknown_tp(reason):
+                        kind, oid = _resolve_placement_by_book_diff(
+                            adapter, symbol, pre_oids, label=f"TP{idx + 1}"
+                        )
+                        if kind == "resting":
+                            tp_oids_out[idx] = oid
+                            return
+                        tp_errors[idx] = reason
+                        if kind == "unknown":
+                            tp_outcome_unknown[idx] = True
+
+                    try:
+                        resp = adapter.place_take_profit_limit(
+                            symbol, tier_size, rounded_px, close_is_buy
+                        )
+                        kind, payload = _classify_sl_response(resp)
+                        if kind == "resting":
+                            tp_oids_out[idx] = payload
+                        elif kind == "filled":
+                            tp_filled_immediately[idx] = True
+                        elif kind == "error":
+                            tp_errors[idx] = (
+                                f"place_take_profit_limit SDK error: {payload}"
+                            )
+                        else:
+                            _resolve_unknown_tp(
+                                f"place_take_profit_limit returned no usable status: {resp}"
+                            )
+                    except Exception as te:
+                        _resolve_unknown_tp(str(te))
 
                 for idx, ((atr_mult, _cumulative_fraction), tier_size) in enumerate(
                     zip(tiers, tier_sizes)
@@ -1208,25 +1247,7 @@ def run_sync_protection(
                         except Exception as ce:
                             tp_errors[idx] = f"force replace cancel: {ce}"
                             continue
-                        try:
-                            resp = adapter.place_take_profit_limit(
-                                symbol, tier_size, rounded_px, close_is_buy
-                            )
-                            kind, payload = _classify_sl_response(resp)
-                            if kind == "resting":
-                                tp_oids_out[idx] = payload
-                            elif kind == "filled":
-                                tp_filled_immediately[idx] = True
-                            elif kind == "error":
-                                tp_errors[idx] = (
-                                    f"place_take_profit_limit SDK error: {payload}"
-                                )
-                            else:
-                                tp_errors[idx] = (
-                                    f"place_take_profit_limit returned no usable status: {resp}"
-                                )
-                        except Exception as te:
-                            tp_errors[idx] = str(te)
+                        _place_tp(idx, tier_size, rounded_px)
                         continue
 
                     if prev_oid <= 0 and tier_armed:
@@ -1240,19 +1261,7 @@ def run_sync_protection(
                         tp_fills[idx] = fill
                         print(f"[WARN] TP{idx + 1} OID={prev_oid} already filled on-chain; not re-placing — reconciler will book the close", file=sys.stderr)
                     elif action == "place":
-                        try:
-                            resp = adapter.place_take_profit_limit(symbol, tier_size, rounded_px, close_is_buy)
-                            kind, payload = _classify_sl_response(resp)
-                            if kind == "resting":
-                                tp_oids_out[idx] = payload
-                            elif kind == "filled":
-                                tp_filled_immediately[idx] = True
-                            elif kind == "error":
-                                tp_errors[idx] = f"place_take_profit_limit SDK error: {payload}"
-                            else:
-                                tp_errors[idx] = f"place_take_profit_limit returned no usable status: {resp}"
-                        except Exception as te:
-                            tp_errors[idx] = str(te)
+                        _place_tp(idx, tier_size, rounded_px)
 
                 out["tp_oids"] = tp_oids_out
                 out["tp_pxs"] = tp_pxs
@@ -1265,6 +1274,8 @@ def run_sync_protection(
                     out["tp_filled_immediately"] = tp_filled_immediately
                 if any(tp_size_skipped):
                     out["tp_size_skipped"] = tp_size_skipped
+                if any(tp_outcome_unknown):
+                    out["tp_outcome_unknown"] = tp_outcome_unknown
 
                 if len(tp_oids_out) > 0 and tp_oids_out[0] > 0:
                     out["tp1_oid"] = tp_oids_out[0]

@@ -327,6 +327,23 @@ func printManualCoreOutcome(res *manualCoreResult, err error) int {
 	return 0
 }
 
+// staleManualActionMaxAge bounds how long a queued action that keeps failing to
+// apply may stay in the table. The guard on the protection sync reads the same
+// table, so an unbounded row would suppress stop-loss and take-profit placement
+// for an open position forever. The bound only ever ends a row whose apply has
+// already failed, so a row that recovers still applies.
+const staleManualActionMaxAge = time.Hour
+
+// manualActionRetryExpired reports whether a failing action has outlived the
+// retry bound. A row with no readable insert time never expires, so a parse
+// failure keeps the conservative retry behaviour.
+func manualActionRetryExpired(a PendingManualAction, now time.Time) bool {
+	if a.CreatedAt.IsZero() {
+		return false
+	}
+	return now.Sub(a.CreatedAt) > staleManualActionMaxAge
+}
+
 type manualAlert struct {
 	sc     StrategyConfig
 	ss     *StrategyState
@@ -378,7 +395,17 @@ func drainPendingManualActions(state *AppState, cfg *Config, store *StateStore) 
 		}
 		actionCriticals, err := applyManualActionWithCriticals(state, cfg, scByID, a)
 		if err != nil {
-			fmt.Printf("[manual] failed to apply action %d (%s %s): %v\n", a.ID, a.Action, a.StrategyID, err)
+			if !manualActionRetryExpired(a, time.Now().UTC()) {
+				fmt.Printf("[manual] failed to apply action %d (%s %s): %v\n", a.ID, a.Action, a.StrategyID, err)
+				continue
+			}
+			msg := fmt.Sprintf("CRITICAL: [%s] %s: queued manual action %d (%s) has failed to apply for longer than %s (%v) and is being acknowledged so it stops suppressing reduce-only protection placement for this symbol. Any order the action was to adopt may be resting untracked; verify the open orders on Hyperliquid and reconcile.",
+				a.StrategyID, a.Symbol, a.ID, a.Action, staleManualActionMaxAge, err)
+			fmt.Printf("[manual] %s\n", msg)
+			criticals = append(criticals, msg)
+			store.recordAppliedManualAction(a.StrategyID, role, a.ID)
+			appliedScopes[scope] = true
+			appliedAny = true
 			continue
 		}
 		criticals = append(criticals, actionCriticals...)
@@ -638,7 +665,10 @@ func applyManualActionWithCriticals(state *AppState, cfg *Config, scByID map[str
 			return nil, nil
 		}
 		if !manualPositionOwnedByStrategy(pos, a.StrategyID) {
-			return nil, fmt.Errorf("position %s/%s is owned by %q, not %q", a.StrategyID, a.Symbol, pos.OwnerStrategyID, a.StrategyID)
+			msg := fmt.Sprintf("CRITICAL: [%s] %s: the restored take-profit orders %v cannot be adopted — the book now records owner %q, not %q. Adopting them would attach the orders to another strategy's position, so the row is acknowledged; the restored reduce-only orders may be resting untracked. Verify the open orders on Hyperliquid and reconcile.",
+				a.StrategyID, a.Symbol, a.TPOIDs, pos.OwnerStrategyID, a.StrategyID)
+			fmt.Printf("[manual] %s\n", msg)
+			return []string{msg}, nil
 		}
 		if a.PositionID != "" && pos.TradePositionID != "" && pos.TradePositionID != a.PositionID {
 			fmt.Printf("[manual] skipped stale restore-tp: %s %s names trade position %q, the book now holds %q\n",

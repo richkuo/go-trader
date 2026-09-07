@@ -251,9 +251,6 @@ func recordRearmedStopLossInDB(cfg *Config, store *StateStore, strategyID, symbo
 	}
 	position.StopLossOID = newOID
 	position.StopLossTriggerPx = newTrigger
-	if err := store.SaveStrategyBook(strategy); err != nil {
-		return err
-	}
 	queued := PendingManualAction{
 		StrategyID: strategyID,
 		Action:     action,
@@ -266,5 +263,5 @@ func recordRearmedStopLossInDB(cfg *Config, store *StateStore, strategyID, symbo
 		queued.StopLossOID = newOID
 		queued.StopLossTriggerPx = newTrigger
 	}
-	return store.InsertPendingManualAction(queued)
+	return store.SaveStrategyBookQueueingManualAction(strategy, queued)
 }

@@ -719,6 +719,8 @@ class TestSyncProtection:
         force_sl_replace=False,
         stop_loss_atr_mult=1.0,
         open_orders_error=None,
+        open_oids_sequence=None,
+        tp_place_error=None,
     ):
         mod, spec = _load_check_module()
         spec.loader.exec_module(mod)
@@ -728,6 +730,16 @@ class TestSyncProtection:
         mock_adapter_cls.return_value = mock_adapter
         if open_orders_error is not None:
             mock_adapter.open_order_oids.side_effect = Exception(open_orders_error)
+        elif open_oids_sequence is not None:
+            reads = list(open_oids_sequence)
+
+            def open_oids_step(_symbol):
+                step = reads.pop(0) if reads else set()
+                if isinstance(step, Exception):
+                    raise step
+                return step
+
+            mock_adapter.open_order_oids.side_effect = open_oids_step
         else:
             mock_adapter.open_order_oids.return_value = (
                 set() if open_oids is None else set(open_oids)
@@ -749,6 +761,8 @@ class TestSyncProtection:
             return responses.get("sl", {"status": "ok", "response": {"type": "order", "data": {"statuses": [{"resting": {"oid": 9000}}]}}})
 
         def tp_side_effect(symbol, sz, px, is_buy):
+            if tp_place_error is not None:
+                raise tp_place_error
             count = mock_adapter.place_take_profit_limit.call_count
             key = "tp1" if count == 1 else "tp2"
             return responses.get(key, {
@@ -812,6 +826,32 @@ class TestSyncProtection:
             assert out["tp_oids"][0] > 0
             assert out["tp_oids"][2] > 0
         adapter.lookup_fill_fee_by_oid.assert_not_called()
+
+    @pytest.mark.parametrize("reads,place_error,unreadable_response,want_oid,want_unknown,want_error", [
+        ([{7002}, {7002}, {7002, 9500}], None, True, 9500, False, False),
+        ([{7002}, {7002}, {7002, 9500}], RuntimeError("read timeout"), False, 9500, False, False),
+        ([{7002}, {7002}, {7002}], RuntimeError("connection refused"), False, 0, False, True),
+        ([{7002}, {7002}, Exception("re-read failed")], RuntimeError("connection refused"), False, 0, True, True),
+        ([{7002}, Exception("snapshot failed"), {7002, 9500}], RuntimeError("connection refused"), False, 0, True, True),
+        ([{7002}, {7002}, {7002, 9500, 9501}], RuntimeError("connection refused"), False, 0, True, True),
+    ])
+    def test_unresolved_tp_placement_resolves_by_book_diff(
+        self, reads, place_error, unreadable_response, want_oid, want_unknown, want_error
+    ):
+        responses = {"tp1": {"status": "ok", "response": {"type": "order", "data": {"statuses": []}}}} if unreadable_response else None
+        out, adapter = self._run_sync(
+            stop_loss_atr_mult=0,
+            tp_tiers=[(1.0, 0.5), (2.0, 1.0)],
+            tp_oids=[0, 7002],
+            tp_armed_tiers=[False, True],
+            open_oids_sequence=reads,
+            tp_place_error=place_error,
+            place_responses=responses,
+        )
+        assert adapter.place_take_profit_limit.call_count == 1
+        assert out["tp_oids"] == [want_oid, 7002]
+        assert bool(out.get("tp_outcome_unknown", [False])[0]) is want_unknown
+        assert bool(out.get("tp_errors", [""])[0]) is want_error
 
     def test_manual_close_recovery_leaves_the_stop_alone(self):
         out, adapter = self._run_sync(

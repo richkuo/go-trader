@@ -287,6 +287,22 @@ func (st *StateStore) SaveScope(state *AppState, scope PortfolioScope) error {
 }
 
 func (st *StateStore) SaveStrategyBook(s *StrategyState) error {
+	return st.saveStrategyBookQueueing(s, nil)
+}
+
+// SaveStrategyBookQueueingManualAction persists the book and the queued action
+// atomically. An operator recovery that placed exchange-side orders records the
+// new ids and the row that repairs the daemon's memory in one transaction, so a
+// rejected write can never leave a restored order resting with nothing naming
+// it and nothing holding the cycle back.
+func (st *StateStore) SaveStrategyBookQueueingManualAction(s *StrategyState, a PendingManualAction) error {
+	if s != nil && a.StrategyID != s.ID {
+		return fmt.Errorf("queued action names strategy %q, the book names %q", a.StrategyID, s.ID)
+	}
+	return st.saveStrategyBookQueueing(s, &a)
+}
+
+func (st *StateStore) saveStrategyBookQueueing(s *StrategyState, queue *PendingManualAction) error {
 	if st == nil || s == nil {
 		return fmt.Errorf("state store unavailable")
 	}
@@ -296,7 +312,7 @@ func (st *StateStore) SaveStrategyBook(s *StrategyState) error {
 	}
 	scope, _ := st.scopeForStrategy(s.ID)
 	acks := st.acksForStrategies([]string{s.ID})
-	if err := db.saveStrategyBookWithAcks(s, scope, acks); err != nil {
+	if err := db.saveStrategyBookWithAcks(s, scope, acks, queue); err != nil {
 		return err
 	}
 	st.clearAcks([]string{s.ID})

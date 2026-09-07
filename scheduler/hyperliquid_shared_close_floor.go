@@ -314,7 +314,7 @@ func rearmProtectionAfterFailedClose(sc StrategyConfig, stratState *StrategyStat
 	}
 	trades := 0
 	detail := ""
-	if _, fillPx := runHyperliquidProtectionSync(sc, stratState, db, symbol, mu, notifier, logger, "HL protection re-armed after failed close", reconcileFillHintsJSON, liqPxByCoin, netSideByCoin); fillPx > 0 {
+	if _, fillPx := runHyperliquidProtectionSync(sc, stratState, db, symbol, mu, notifier, logger, "HL protection re-armed after failed close", reconcileFillHintsJSON, liqPxByCoin, netSideByCoin, hlProtectionGuardStopLegAfterFailedClose); fillPx > 0 {
 		trades++
 		detail = fmt.Sprintf("[%s] LIVE PROTECTION SYNC SL %s @ $%.2f", sc.ID, symbol, fillPx)
 	}

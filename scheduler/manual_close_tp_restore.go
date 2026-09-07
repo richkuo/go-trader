@@ -23,6 +23,7 @@ const (
 	manualCloseTPFilledExternally
 	manualCloseTPFilledImmediately
 	manualCloseTPUnverified
+	manualCloseTPOutcomeUnknown
 	manualCloseTPMissing
 )
 
@@ -165,6 +166,13 @@ func applyManualCloseTPTierResult(o *manualCloseTPTierOutcome, idx int, result *
 		placed = result.TPOIDs[idx]
 	}
 	switch {
+	case idx < len(result.TPOutcomeUnknown) && result.TPOutcomeUnknown[idx]:
+		o.Kind = manualCloseTPOutcomeUnknown
+		o.NewOID = 0
+		o.Detail = "the venue never resolved the placement and an open-order re-read could not settle it"
+		if idx < len(result.TPErrors) && result.TPErrors[idx] != "" {
+			o.Detail = result.TPErrors[idx]
+		}
 	case idx < len(result.TPErrors) && result.TPErrors[idx] != "":
 		o.Kind = manualCloseTPMissing
 		o.NewOID = 0
@@ -217,6 +225,9 @@ func applyRestoredTakeProfitTiers(pos *Position, outcomes []manualCloseTPTierOut
 		case manualCloseTPUnverified:
 			pos.TPOIDs[i] = o.PrevOID
 			pos.TPArmedTiers[i] = o.PrevOID > 0
+		case manualCloseTPOutcomeUnknown:
+			pos.TPOIDs[i] = 0
+			pos.TPArmedTiers[i] = true
 		case manualCloseTPMissing:
 			pos.TPOIDs[i] = 0
 			pos.TPArmedTiers[i] = false
@@ -246,6 +257,8 @@ func restoredTakeProfitActionVectors(outcomes []manualCloseTPTierOutcome) ([]int
 			armed[i] = true
 		case manualCloseTPUnverified:
 			armed[i] = o.PrevOID > 0
+		case manualCloseTPOutcomeUnknown:
+			armed[i] = true
 		case manualCloseTPMissing:
 			armed[i] = false
 		default:
@@ -383,6 +396,8 @@ func reportManualCloseTPRestore(res *manualCoreResult, alertf func(string), stra
 				tier, symbol)
 		case manualCloseTPUnverified:
 			failures = append(failures, fmt.Sprintf("tier %d (OID=%d) could not be verified: %s", tier, o.PrevOID, o.Detail))
+		case manualCloseTPOutcomeUnknown:
+			failures = append(failures, fmt.Sprintf("tier %d (replacing the cancelled OID=%d) has an unresolved placement outcome, so a reduce-only order may be resting untracked and the tier is marked armed to stop a second placement: %s", tier, o.PrevOID, o.Detail))
 		case manualCloseTPMissing:
 			failures = append(failures, fmt.Sprintf("tier %d (cancelled OID=%d) was not restored: %s", tier, o.PrevOID, o.Detail))
 		}
@@ -415,11 +430,8 @@ func recordRestoredTakeProfitsInDB(cfg *Config, store *StateStore, strategyID, s
 		return nil
 	}
 	applyRestoredTakeProfitTiers(position, outcomes)
-	if err := store.SaveStrategyBook(strategy); err != nil {
-		return err
-	}
 	prev, next, armed := restoredTakeProfitActionVectors(outcomes)
-	return store.InsertPendingManualAction(PendingManualAction{
+	return store.SaveStrategyBookQueueingManualAction(strategy, PendingManualAction{
 		StrategyID:   strategyID,
 		Action:       "restore-tp",
 		Symbol:       symbol,

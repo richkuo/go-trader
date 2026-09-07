@@ -1796,10 +1796,15 @@ func enqueueFlushedDiagnostics(rows []TradeDiagnosticsRow) {
 }
 
 func (sdb *StateDB) SaveStrategyBook(s *StrategyState) error {
-	return sdb.saveStrategyBookWithAcks(s, scopeUnassigned, nil)
+	return sdb.saveStrategyBookWithAcks(s, scopeUnassigned, nil, nil)
 }
 
-func (sdb *StateDB) saveStrategyBookWithAcks(s *StrategyState, scope PortfolioScope, ackIDs []int64) error {
+// saveStrategyBookWithAcks persists one strategy's book, acknowledges the
+// manual actions the caller applied, and — when queue is set — inserts that
+// queued action in the same transaction. A book change that hands a restored
+// order id to the daemon must never be durable without the row that names it,
+// so both writes commit together or neither does.
+func (sdb *StateDB) saveStrategyBookWithAcks(s *StrategyState, scope PortfolioScope, ackIDs []int64, queue *PendingManualAction) error {
 	if sdb == nil || sdb.db == nil {
 		return fmt.Errorf("state db unavailable")
 	}
@@ -2016,6 +2021,16 @@ func (sdb *StateDB) saveStrategyBookWithAcks(s *StrategyState, scope PortfolioSc
 
 	if err := deletePendingManualActionsByID(tx, ackIDs); err != nil {
 		return err
+	}
+
+	if queue != nil {
+		queueSID, err := sdb.toStorageID(queue.StrategyID)
+		if err != nil {
+			return err
+		}
+		if err := insertPendingManualActionRow(tx, queueSID, *queue); err != nil {
+			return fmt.Errorf("queue manual action %s for %s: %w", queue.Action, queue.StrategyID, err)
+		}
 	}
 
 	if storeCommitHook != nil {
@@ -2886,6 +2901,17 @@ func (sdb *StateDB) InsertPendingManualAction(a PendingManualAction) error {
 	if sdb == nil || sdb.db == nil {
 		return fmt.Errorf("state db unavailable")
 	}
+	sid, err := sdb.toStorageID(a.StrategyID)
+	if err != nil {
+		return err
+	}
+	return insertPendingManualActionRow(sdb.db, sid, a)
+}
+
+func insertPendingManualActionRow(exec sqlExecer, sid string, a PendingManualAction) error {
+	if exec == nil {
+		return fmt.Errorf("state db unavailable")
+	}
 	isFullClose := 0
 	if a.IsFullClose {
 		isFullClose = 1
@@ -2894,11 +2920,7 @@ func (sdb *StateDB) InsertPendingManualAction(a PendingManualAction) error {
 	if a.RatchetFallbackNormalizePending {
 		ratchetFallbackNormalizePending = 1
 	}
-	sid, err := sdb.toStorageID(a.StrategyID)
-	if err != nil {
-		return err
-	}
-	_, err = sdb.db.Exec(`INSERT INTO pending_manual_actions
+	_, err := exec.Exec(`INSERT INTO pending_manual_actions
 		(strategy_id, action, symbol, side, quantity, fill_price, fill_fee, exchange_order_id, stop_loss_oid, stop_loss_trigger_px, entry_atr, atr_method, realized_pnl, is_full_close, tp_oids_json, prev_tp_oids_json, tp_armed_tiers_json, position_id, ratchet_fallback_normalize_pending, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sid, a.Action, a.Symbol, a.Side, a.Quantity, a.FillPrice, a.FillFee,

@@ -117,6 +117,7 @@ type HyperliquidProtectionSyncResult struct {
 	TPFilledExternally        []bool    `json:"tp_filled_externally,omitempty"`
 	TPFilledImmediately       []bool    `json:"tp_filled_immediately,omitempty"`
 	TPSizeSkipped             []bool    `json:"tp_size_skipped,omitempty"`
+	TPOutcomeUnknown          []bool    `json:"tp_outcome_unknown,omitempty"`
 	TP1OID                    int64     `json:"tp1_oid,omitempty"`
 	TP2OID                    int64     `json:"tp2_oid,omitempty"`
 	TP1Px                     float64   `json:"tp1_px,omitempty"`

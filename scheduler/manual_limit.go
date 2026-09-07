@@ -899,7 +899,7 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, store *StateStore
 				fmt.Printf("[limit] %v\n", protectionErr)
 				continue
 			}
-			if _, fillPx := runHyperliquidProtectionSync(r.sc, state.Strategies[r.order.StrategyID], protectionDB, coin, mu, notifier, r.logger, "HL limit-fill protection synced", nil, nil, nil); fillPx > 0 {
+			if _, fillPx := runHyperliquidProtectionSync(r.sc, state.Strategies[r.order.StrategyID], protectionDB, coin, mu, notifier, r.logger, "HL limit-fill protection synced", nil, nil, nil, hlProtectionGuardFull); fillPx > 0 {
 				booked++
 			}
 			if ma := applied[r.order.StrategyID]; ma == nil {

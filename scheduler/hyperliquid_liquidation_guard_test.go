@@ -730,7 +730,7 @@ func TestProtectionSyncSideMismatchNeverForcesPastLiquidationReplace(t *testing.
 				gotMult = plan.StopLossATRMult
 				return &HyperliquidProtectionSyncResult{StopLossOID: 55}, true
 			})
-			runHyperliquidProtectionSync(sc, state, nil, "ETH", &mu, nil, nil, "test", nil, liq, tc.net)
+			runHyperliquidProtectionSync(sc, state, nil, "ETH", &mu, nil, nil, "test", nil, liq, tc.net, hlProtectionGuardFull)
 			if gotForce != tc.wantForce {
 				t.Errorf("ForceSLReplace = %v, want %v", gotForce, tc.wantForce)
 			}

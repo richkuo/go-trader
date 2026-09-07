@@ -24,6 +24,68 @@ func lockHyperliquidProtectionSync(symbol string) func() {
 	return m.Unlock
 }
 
+// hlProtectionGuardMode names how an owner of the protection sync reacts to a
+// queued manual action. The default skips the whole sync so the daemon never
+// plans from a book the queued row has not repaired yet. The failed-close owner
+// re-arms the stop-loss leg regardless: its cycle just cancelled the stop and
+// cleared the cancelled ids from memory, so it cannot duplicate a queued row's
+// orders, and leaving the position with no exchange-side stop for a whole cycle
+// is the worse outcome.
+type hlProtectionGuardMode int
+
+const (
+	hlProtectionGuardFull hlProtectionGuardMode = iota
+	hlProtectionGuardStopLegAfterFailedClose
+)
+
+// hlProtectionGuardAlertAfterBlocks is the number of consecutive blocked syncs
+// for one strategy and symbol that turns the skip into an operator alert. One
+// skip is the ordinary hand-off from an operator command whose row the next
+// cycle-top drain adopts; a run of them means the row is not being adopted and
+// the position is going unmaintained.
+const hlProtectionGuardAlertAfterBlocks = 3
+
+var (
+	hlProtectionGuardMu      sync.Mutex
+	hlProtectionGuardBlocks  = map[string]int{}
+	hlProtectionGuardAlerted = map[string]bool{}
+)
+
+func hlProtectionGuardKey(strategyID, symbol string) string {
+	return strategyID + "|" + symbol
+}
+
+func recordHLProtectionGuardBlock(strategyID, symbol string) (int, bool) {
+	key := hlProtectionGuardKey(strategyID, symbol)
+	hlProtectionGuardMu.Lock()
+	defer hlProtectionGuardMu.Unlock()
+	hlProtectionGuardBlocks[key]++
+	count := hlProtectionGuardBlocks[key]
+	if count < hlProtectionGuardAlertAfterBlocks || hlProtectionGuardAlerted[key] {
+		return count, false
+	}
+	hlProtectionGuardAlerted[key] = true
+	return count, true
+}
+
+func clearHLProtectionGuardBlocks(strategyID, symbol string) {
+	key := hlProtectionGuardKey(strategyID, symbol)
+	hlProtectionGuardMu.Lock()
+	delete(hlProtectionGuardBlocks, key)
+	delete(hlProtectionGuardAlerted, key)
+	hlProtectionGuardMu.Unlock()
+}
+
+func notifyHLProtectionGuardStall(notifier *MultiNotifier, sc StrategyConfig, symbol, reason string, blocks int) string {
+	msg := fmt.Sprintf("CRITICAL: [%s] %s: reduce-only stop-loss and take-profit placement has been skipped for %d consecutive protection syncs because %s. The position holds no maintained exchange-side protection. Drain or clear the queued manual action, then verify the open orders on Hyperliquid.",
+		sc.ID, symbol, blocks, reason)
+	if notifier != nil && notifier.HasBackends() {
+		notifier.SendToAllChannels(msg)
+		notifier.SendOwnerDM(msg)
+	}
+	return msg
+}
+
 func guardHyperliquidProtectionSync(db *StateDB, strategyID, symbol string) (func(), string) {
 	if db == nil {
 		return func() {}, ""
@@ -485,7 +547,61 @@ func applyHyperliquidProtectionSync(pos *Position, result *HyperliquidProtection
 			}
 		}
 	}
+	applyUnknownTPPlacementOutcome(pos, result)
 	applySurplusTPCancelOutcome(pos, result, cancelTPOIDs)
+}
+
+// applyUnknownTPPlacementOutcome arms a tier whose placement outcome the venue
+// never resolved. The order may be resting untracked, so the tier keeps id 0 and
+// is marked armed: the next cycle must not place a second order at the same
+// price. The caller raises the operator alert that names the tier.
+func applyUnknownTPPlacementOutcome(pos *Position, result *HyperliquidProtectionSyncResult) {
+	if pos == nil || result == nil || len(result.TPOutcomeUnknown) == 0 {
+		return
+	}
+	if len(pos.TPOIDs) < len(result.TPOutcomeUnknown) {
+		pos.TPOIDs = tpOIDsForTierCount(pos.TPOIDs, len(result.TPOutcomeUnknown))
+	}
+	if len(pos.TPArmedTiers) < len(result.TPOutcomeUnknown) {
+		extended := make([]bool, len(result.TPOutcomeUnknown))
+		copy(extended, pos.TPArmedTiers)
+		pos.TPArmedTiers = extended
+	}
+	for idx, unknown := range result.TPOutcomeUnknown {
+		if !unknown {
+			continue
+		}
+		pos.TPOIDs[idx] = 0
+		pos.TPArmedTiers[idx] = true
+	}
+}
+
+func unknownTPPlacementTiers(result *HyperliquidProtectionSyncResult) []int {
+	if result == nil {
+		return nil
+	}
+	var tiers []int
+	for idx, unknown := range result.TPOutcomeUnknown {
+		if unknown {
+			tiers = append(tiers, idx+1)
+		}
+	}
+	return tiers
+}
+
+func notifyHLProtectionTPOutcomeUnknown(notifier *MultiNotifier, logger *StrategyLogger, sc StrategyConfig, symbol string, tiers []int) {
+	if len(tiers) == 0 {
+		return
+	}
+	msg := fmt.Sprintf("CRITICAL: [%s] %s: the venue never resolved the placement of take-profit tier(s) %v and an open-order re-read could not settle it. A reduce-only order may be resting untracked. The tiers are marked armed so no second order is placed; verify the open orders on Hyperliquid and reconcile.",
+		sc.ID, symbol, tiers)
+	if logger != nil {
+		logger.Error("%s", msg)
+	}
+	if notifier != nil && notifier.HasBackends() {
+		notifier.SendToAllChannels(msg)
+		notifier.SendOwnerDM(msg)
+	}
 }
 
 func applySurplusTPCancelOutcome(pos *Position, result *HyperliquidProtectionSyncResult, cancelTPOIDs []int64) {
@@ -566,18 +682,36 @@ func runHyperliquidProtectionSync(
 	reconcileFillHintsJSON []byte,
 	liqPxByCoin map[string]float64,
 	netSideByCoin map[string]string,
+	guardMode hlProtectionGuardMode,
 ) (bool, float64) {
 	if stratState == nil || symbol == "" {
 		return false, 0
 	}
 	unlockManual, blocked := guardHyperliquidProtectionSync(db, sc.ID, symbol)
-	if blocked != "" {
+	stopLegOnly := false
+	switch {
+	case blocked == "":
+		clearHLProtectionGuardBlocks(sc.ID, symbol)
+	case guardMode == hlProtectionGuardStopLegAfterFailedClose:
+		stopLegOnly = true
 		if logger != nil {
+			logger.Warn("%s: %s — re-arming the stop-loss leg only so the position is not left without an exchange-side stop; the take-profit tiers wait for the queued action to be adopted", logTag, blocked)
+		}
+	default:
+		blocks, alert := recordHLProtectionGuardBlock(sc.ID, symbol)
+		if alert {
+			msg := notifyHLProtectionGuardStall(notifier, sc, symbol, blocked, blocks)
+			if logger != nil {
+				logger.Error("%s", msg)
+			}
+		} else if logger != nil {
 			logger.Info("%s skipped: %s", logTag, blocked)
 		}
 		return false, 0
 	}
-	defer unlockManual()
+	if unlockManual != nil {
+		defer unlockManual()
+	}
 	unlockSymbol := lockHyperliquidProtectionSync(symbol)
 	defer unlockSymbol()
 	var plan hlProtectionPlan
@@ -618,6 +752,15 @@ func runHyperliquidProtectionSync(
 	if !syncOK {
 		return false, 0
 	}
+	if stopLegOnly {
+		plan = stopLegOnlyProtectionPlan(plan)
+		if plan.StopLossATRMult <= 0 {
+			if logger != nil {
+				logger.Info("%s skipped: the queued manual action gates the take-profit tiers and this strategy has no protection-sync stop-loss leg to re-arm", logTag)
+			}
+			return false, 0
+		}
+	}
 	protection, ok := syncHyperliquidProtection(sc, plan, notifier, logger, reconcileFillHintsJSON)
 	if !ok || protection == nil {
 		return false, 0
@@ -634,6 +777,7 @@ func runHyperliquidProtectionSync(
 		}
 	}
 	applyHyperliquidProtectionSync(pos, protection, plan.CancelTPOIDs)
+	notifyHLProtectionTPOutcomeUnknown(notifier, logger, sc, symbol, unknownTPPlacementTiers(protection))
 	if effectiveTrailingStopPct(sc, pos) <= 0 {
 		pos.ScaleInResizePending = false
 	}
@@ -645,6 +789,19 @@ func runHyperliquidProtectionSync(
 		logger.Info("%s (sl_oid=%d tp_oids=%v)", logTag, pos.StopLossOID, pos.TPOIDs)
 	}
 	return true, 0
+}
+
+// stopLegOnlyProtectionPlan strips every take-profit input so the sync places
+// and maintains the stop alone. The queued manual action still owns the tier
+// ids, so the daemon must not plan, replace, or cancel a tier from a book the
+// row has not repaired yet.
+func stopLegOnlyProtectionPlan(plan hlProtectionPlan) hlProtectionPlan {
+	plan.Tiers = nil
+	plan.TPOIDs = nil
+	plan.TPArmedTiers = nil
+	plan.ForceTPReplace = nil
+	plan.CancelTPOIDs = nil
+	return plan
 }
 
 func hyperliquidPlacesOnChainTPs(sc StrategyConfig) bool {
