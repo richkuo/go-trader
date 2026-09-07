@@ -23,10 +23,6 @@ const (
 	manualCloseRearmOutcomeUnknown
 )
 
-func (d manualCloseRearmDecision) rearms() bool {
-	return d == manualCloseRearmStopCancelled || d == manualCloseRearmOutcomeUnknown
-}
-
 func decideManualCloseRearm(execResult *HyperliquidExecuteResult, requestedCancelOIDs []int64, snap manualCloseProtectionSnapshot) manualCloseRearmDecision {
 	if snap.StopLossOID <= 0 || !containsInt64(requestedCancelOIDs, snap.StopLossOID) {
 		return manualCloseRearmNoCancelRequested
@@ -78,27 +74,29 @@ func (d manualCoreDeps) hyperliquidAccountMaps() (map[string]float64, map[string
 	return onChainAbsQty, liqPxByCoin, netSideByCoin, nil
 }
 
+const manualRearmUnverifiedState = "The stop-loss state on the exchange is UNVERIFIED, so the position may be UNPROTECTED."
+
 func restoreManualStopLossAfterFailedClose(d manualCoreDeps, res *manualCoreResult, sc StrategyConfig, strategyID string, snap manualCloseProtectionSnapshot, execResult *HyperliquidExecuteResult, requestedCancelOIDs []int64) {
 	if !hyperliquidIsLive(sc.Args) {
 		return
 	}
 	decision := decideManualCloseRearm(execResult, requestedCancelOIDs, snap)
-	switch decision {
-	case manualCloseRearmNoCancelRequested:
+	if decision == manualCloseRearmNoCancelRequested {
 		return
-	case manualCloseRearmCancelNotConfirmed:
-		res.outf("manual-close %s %s: the venue rejected the close and did not confirm the stop-loss cancel — the original trigger $%.4f (OID=%d) is still resting on-chain, so nothing was re-armed.",
-			strategyID, snap.Symbol, snap.TriggerPx, snap.StopLossOID)
-		return
+	}
+	if decision == manualCloseRearmCancelNotConfirmed {
+		res.outf("manual-close %s %s: the venue rejected the close and did not confirm the stop-loss cancel — a cancel whose reply is lost still removes the trigger, so the previous stop (OID=%d) is verified on-chain and restored rather than assumed live.",
+			strategyID, snap.Symbol, snap.StopLossOID)
 	}
 
 	cancelledOIDs := manualCloseCancelledOIDsForAlert(execResult, requestedCancelOIDs)
-	criticalf := func(reason string) {
-		msg := fmt.Sprintf("CRITICAL: [%s] %s: the venue rejected the manual close after the exchange-side protection was cancelled (order ids %v) and the stop-loss re-arm FAILED: %s. The position is UNPROTECTED on-chain. Re-arm now with `go-trader manual-update-sl %s --trigger %.4f` or close the position.",
-			strategyID, snap.Symbol, cancelledOIDs, reason, strategyID, snap.TriggerPx)
+	alertf := func(state, reason string) {
+		msg := fmt.Sprintf("CRITICAL: [%s] %s: the venue rejected the manual close after a cancel of the exchange-side protection was requested (order ids %v) and the stop-loss re-arm did not complete: %s. %s Verify and re-arm now with `go-trader manual-update-sl %s --trigger %.4f` or close the position.",
+			strategyID, snap.Symbol, cancelledOIDs, reason, state, strategyID, snap.TriggerPx)
 		res.outf("%s", msg)
 		notifyManualCloseRearmFailure(d.notifier, msg)
 	}
+	criticalf := func(reason string) { alertf(manualRearmUnverifiedState, reason) }
 
 	if snap.TriggerPx <= 0 {
 		criticalf("the book recorded no stop-loss trigger to restore")
@@ -127,7 +125,11 @@ func restoreManualStopLossAfterFailedClose(d manualCoreDeps, res *manualCoreResu
 		triggerPx = clamped
 	}
 
-	result, stderr, err := d.updateSL(sc.Script, snap.Symbol, snap.Side, qty, triggerPx, snap.StopLossOID)
+	result, stderr, err := func() (*HyperliquidStopLossUpdateResult, string, error) {
+		unlock := lockHyperliquidTrailingUpdate(snap.Symbol)
+		defer unlock()
+		return d.updateSL(sc.Script, snap.Symbol, snap.Side, qty, triggerPx, snap.StopLossOID)
+	}()
 	if stderr != "" {
 		res.errf("SL re-arm stderr: %s", stderr)
 	}
@@ -158,14 +160,16 @@ func restoreManualStopLossAfterFailedClose(d manualCoreDeps, res *manualCoreResu
 		res.outf("The previous stop-loss for %s (OID=%d) had already filled on-chain, so nothing was re-armed — the reconciler will book the close.",
 			snap.Symbol, snap.StopLossOID)
 	case result.StopLossOID > 0:
-		res.outf("Stop-loss re-armed after the rejected close: %s %.6f @ $%.4f (OID=%d, replacing the cancelled OID=%d).",
+		res.outf("Stop-loss re-armed after the rejected close: %s %.6f @ $%.4f (OID=%d, superseding the verified OID=%d).",
 			snap.Symbol, qty, result.StopLossTriggerPx, result.StopLossOID, snap.StopLossOID)
 	case result.StopLossOutcomeUnknown:
-		criticalf("the placement outcome could not be read; the recorded trigger was kept with an unknown order id")
+		alertf("The previous stop was cancelled and the replacement's outcome could NOT be read, so it may be resting untracked and the position may be UNPROTECTED.",
+			"the placement outcome could not be read; the recorded trigger was kept with an unknown order id")
 	case result.CancelStopLossError != "":
-		criticalf(result.CancelStopLossError)
+		alertf(fmt.Sprintf("The venue reported the previous stop (OID=%d) still resting when its open orders were read and no replacement was placed, so the position is most likely still protected by it.", snap.StopLossOID),
+			result.CancelStopLossError)
 	case result.OpenOrderCheckError != "":
-		criticalf(result.OpenOrderCheckError)
+		alertf("The venue's open orders could not be read, so nothing was placed and the stop-loss state is UNVERIFIED.", result.OpenOrderCheckError)
 	case result.StopLossError != "":
 		criticalf(result.StopLossError)
 	default:

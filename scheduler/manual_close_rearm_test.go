@@ -33,14 +33,14 @@ func TestManualCloseRearmDecision(t *testing.T) {
 			want:      manualCloseRearmStopCancelled,
 		},
 		{
-			name:      "a failed stop cancel leaves the trigger live",
+			name:      "a failed stop cancel is unconfirmed, never proof the trigger survived",
 			result:    &HyperliquidExecuteResult{Error: "rejected", CancelStopLossError: "5150: rejected", CancelStopLossFailedOIDs: []int64{5150}},
 			requested: []int64{5150},
 			snap:      snap,
 			want:      manualCloseRearmCancelNotConfirmed,
 		},
 		{
-			name:      "a result that names no cancel outcome leaves the trigger live",
+			name:      "a result that names no cancel outcome is unconfirmed",
 			result:    &HyperliquidExecuteResult{Error: "update_leverage failed"},
 			requested: []int64{5150},
 			snap:      snap,
@@ -59,9 +59,6 @@ func TestManualCloseRearmDecision(t *testing.T) {
 			got := decideManualCloseRearm(tc.result, tc.requested, tc.snap)
 			if got != tc.want {
 				t.Fatalf("decision = %d, want %d", got, tc.want)
-			}
-			if got.rearms() != (tc.want == manualCloseRearmStopCancelled || tc.want == manualCloseRearmOutcomeUnknown) {
-				t.Fatalf("rearms() = %v for decision %d", got.rearms(), got)
 			}
 		})
 	}
@@ -117,7 +114,7 @@ func TestManualCloseRestoresTheStopAfterAVenueRejection(t *testing.T) {
 			wantOutPart:  "Stop-loss re-armed after the rejected close",
 		},
 		{
-			name:    "an unconfirmed cancel leaves the live trigger alone",
+			name:    "an unconfirmed cancel is verified on-chain and restored, never assumed live",
 			onChain: []HLPosition{{Coin: "ETH", Size: bookQty}},
 			execute: func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
 				return &HyperliquidExecuteResult{
@@ -126,9 +123,29 @@ func TestManualCloseRestoresTheStopAfterAVenueRejection(t *testing.T) {
 					CancelStopLossFailedOIDs: []int64{prevOID},
 				}, "", nil
 			},
-			wantBookOID:  prevOID,
+			slResult:     &HyperliquidStopLossUpdateResult{StopLossOID: 6200, StopLossTriggerPx: prevTrigger},
+			wantSLCall:   &rearmSLCall{symbol: "ETH", side: "long", size: bookQty, triggerPx: prevTrigger, cancelOID: prevOID},
+			wantBookOID:  6200,
 			wantBookTrig: prevTrigger,
-			wantOutPart:  "is still resting on-chain",
+			wantAction:   "update-sl",
+			wantOutPart:  "verified on-chain and restored rather than assumed live",
+		},
+		{
+			name:    "a venue that still reports the old stop resting places no duplicate and says so",
+			onChain: []HLPosition{{Coin: "ETH", Size: bookQty}},
+			execute: func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+				return &HyperliquidExecuteResult{
+					Error:                    "order value below the venue minimum",
+					CancelStopLossError:      "5150: rejected",
+					CancelStopLossFailedOIDs: []int64{prevOID},
+				}, "", nil
+			},
+			slResult:      &HyperliquidStopLossUpdateResult{CancelStopLossError: "cancel rejected", StopLossTriggerPx: prevTrigger},
+			wantSLCall:    &rearmSLCall{symbol: "ETH", side: "long", size: bookQty, triggerPx: prevTrigger, cancelOID: prevOID},
+			wantBookOID:   prevOID,
+			wantBookTrig:  prevTrigger,
+			wantOutPart:   "still resting when its open orders were read and no replacement was placed",
+			wantAlertPart: "5150",
 		},
 		{
 			name:          "a failed re-arm alerts with the symbol and the cancelled order ids",
@@ -137,7 +154,7 @@ func TestManualCloseRestoresTheStopAfterAVenueRejection(t *testing.T) {
 			slErr:         fmt.Errorf("subprocess exited 1"),
 			wantSLCall:    &rearmSLCall{symbol: "ETH", side: "long", size: bookQty, triggerPx: prevTrigger, cancelOID: prevOID},
 			wantBookOID:   0,
-			wantOutPart:   "UNPROTECTED on-chain",
+			wantOutPart:   "UNVERIFIED",
 			wantAlertPart: "5150 7001",
 		},
 		{
@@ -298,4 +315,48 @@ func TestManualCloseRestoresTheStopAfterAVenueRejection(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestManualCloseRearmWaitsForThePerSymbolStopLock(t *testing.T) {
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "")
+
+	sc := StrategyConfig{ID: "hl-manual-eth", Type: "manual", Platform: "hyperliquid", Symbol: "ETH",
+		Script: "shared_scripts/check_hyperliquid.py",
+		Args:   []string{"hold", "ETH", "1h", "--mode=live"}}
+	snap := manualCloseProtectionSnapshot{Symbol: "ETH", Side: "long", Quantity: 0.4, StopLossOID: 5150, TriggerPx: 1900}
+
+	started := make(chan struct{})
+	d := manualCoreDeps{
+		updateSL: func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+			close(started)
+			return &HyperliquidStopLossUpdateResult{StopLossOID: 6200, StopLossTriggerPx: triggerPx}, "", nil
+		},
+		recordRearmedStopLoss: func(strategyID, symbol, side string, qty float64, prevStopOID int64, result *HyperliquidStopLossUpdateResult) error {
+			return nil
+		},
+	}
+
+	unlock := lockHyperliquidTrailingUpdate(snap.Symbol)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		restoreManualStopLossAfterFailedClose(d, &manualCoreResult{}, sc, sc.ID, snap,
+			&HyperliquidExecuteResult{Error: "rejected", CancelStopLossSucceededOIDs: []int64{snap.StopLossOID}},
+			[]int64{snap.StopLossOID})
+	}()
+
+	select {
+	case <-started:
+		unlock()
+		t.Fatal("the re-arm placed a stop while the per-symbol stop lock was held by another replacement")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	unlock()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the re-arm never placed a stop after the per-symbol stop lock was released")
+	}
+	<-done
 }

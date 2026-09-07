@@ -52,7 +52,14 @@ func slPlacementFailureLeftNaked(cancelSucceeded bool, oldOID int64) bool {
 	return cancelSucceeded || oldOID == 0
 }
 
-func pendingSLActionExists(stateDB *StateStore, strategyID, symbol string) (bool, error) {
+func slActionAlreadyInBook(a PendingManualAction, pos *Position) bool {
+	if a.Action != "update-sl" || pos == nil || a.StopLossOID <= 0 {
+		return false
+	}
+	return a.StopLossOID == pos.StopLossOID && a.StopLossTriggerPx == pos.StopLossTriggerPx
+}
+
+func pendingSLActionExists(stateDB *StateStore, strategyID, symbol string, pos *Position) (bool, error) {
 	actions, err := stateDB.LoadPendingManualActions()
 	if err != nil {
 		return false, err
@@ -61,9 +68,13 @@ func pendingSLActionExists(stateDB *StateStore, strategyID, symbol string) (bool
 		if a.StrategyID != strategyID || !strings.EqualFold(a.Symbol, symbol) {
 			continue
 		}
-		if a.Action == "update-sl" || a.Action == "cancel-sl" {
-			return true, nil
+		if a.Action != "update-sl" && a.Action != "cancel-sl" {
+			continue
 		}
+		if slActionAlreadyInBook(a, pos) {
+			continue
+		}
+		return true, nil
 	}
 	return false, nil
 }

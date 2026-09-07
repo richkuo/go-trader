@@ -32,9 +32,9 @@ Guardrails only. Mechanism: SKILL.md § Subsystem Mechanism Reference; flows: SK
 - `hedge.go`: HL perps only; ONE reconciler (`hedgeTargetDecision`+`runHedgeSync`), ownership `Position.HedgeFor` ONLY; hedge PnL: `RecordHedgeTradeResult`, never `RecordTradeResult`; fail-closed unwind + CRITICAL DM; hot-reload blocked while open, backtester rejects.
 - `hurst_gate.go`: **DEFAULT-OFF**, no shipped threshold, `config.example.json` clean; holds position-increasing signals only, fail-closed FLAT-ONLY; `metrics["hurst"]` ONLY from composite classifier; keep in `run_backtest.py` `stop_keys`.
 - `llm_entry_analysis.go`: advisory-only; `spawnPythonProcess` NEVER `runPython*`; sole writer of `trade_diagnostics.llm_verdict`, `trade_diagnostics*.go` never.
-- `scale_in.go`: geometry frozen via `RiskAnchorPrice`, never blended `AvgCost`. `manual*.go`: kill-switch+CB gated; SL edits queue `PendingManualAction`, NEVER a direct UPDATE; a rejected close re-arms the recorded trigger ONLY on a confirmed stop cancel, re-arm failure = CRITICAL; `force-close` live HL perps only.
+- `scale_in.go`: geometry frozen via `RiskAnchorPrice`, never blended `AvgCost`. `manual*.go`: kill-switch+CB gated; SL edits queue `PendingManualAction`, NEVER a direct UPDATE; a rejected close never assumes an unconfirmed cancel spared the trigger; verify-first restore, unverified = CRITICAL; an adopted SL edit does not gate; `force-close` live HL perps only.
 - `hyperliquid_liquidation_guard.go`: **CLAMP, never refuse to arm; ONE-WAY TIGHTEN** at 0.5% buffer; 0 = unknown, never persisted; unclampable REFUSES, unreadable outcome keeps state. Boot `validateHLStopWithinBankruptcyBound` mirrors `LoadConfig` stop-owner resolution.
-- `hyperliquid_protection.go`: reduce-only, on-chain TP only when `strategyUsesTieredTPATRClose` AND live (paper never); `hyperliquid_open_trailing.go` arms SL at open. `hyperliquid_shared_close_floor.go`: <$10 shared-coin full close escalates ONLY if each peer is flat on-chain (refetched, raw keys) AND in book, before SL blocks; else ONE alert+hold, `venue_rejected` never resends; same-cycle re-arm (all 7 owners) ONLY after a SUBMITTED order that REQUESTED the cancel; 2nd escalated refusal holds, any wording.
+- `hyperliquid_protection.go`: reduce-only, on-chain TP also needs live (paper never); `hyperliquid_open_trailing.go` arms SL at open. `hyperliquid_shared_close_floor.go`: <$10 shared-coin full close escalates ONLY if each peer is flat on-chain (refetched, raw keys) AND in book, before SL blocks; else ONE alert+hold, `venue_rejected` never resends; same-cycle re-arm (all 7 owners) ONLY after a SUBMITTED order that REQUESTED the cancel; 2nd escalated refusal holds, any wording.
 - `version_probe.go`/`probe_cmd.go`: new runtime CLI flag > both probe argvs. `agent_info.go`: `--bootstrap-md` → `AGENTS.generated.md`, NEVER `AGENTS.md`.
 - `failure_alerts.go`: wire notifier on each new `run*Check`. `discord_*commands.go`: new mutating command: `opsCommandNames`+`slashCommands()`+dispatch.
 - `shared_wallet*.go`: PRE-FEE `realized_pnl`, net via `tradeNetPnL*`. Pool budgeting: 2+ live HL/OKX perps omit capital fields, positive `margin_per_trade_usd` each; allocated↔pool flat-only. `cashflow_journal.go` OUTSIDE `mu`.
@@ -45,7 +45,7 @@ Guardrails only. Mechanism: SKILL.md § Subsystem Mechanism Reference; flows: SK
 
 ## Patterns
 - Git from repo root; `go -C scheduler build .`, never `cd scheduler &&`.
-- New platform: SKILL.md § Custom Platform Integration lists touchpoints. Adapters load via `importlib`, class `endswith("ExchangeAdapter")`; check scripts: public methods only.
+- New platform: touchpoints in SKILL.md § Custom Platform Integration. Adapters load via `importlib`, class `endswith("ExchangeAdapter")`; check scripts: public methods only.
 - Subprocess contract: JSON on stdout, exit 1 on error; Go parses regardless.
 - Locking: `mu sync.RWMutex`, 6 phases (RLock > Lock(CheckRisk) > no-lock subprocess > Lock(execute) > marks > RLock(status)). Skip-reason checks BEFORE spawn; capture `posSide` with `posQty` in Phase 1; `liveExecFailed` guards live exec.
 - Dispatch by `s.Platform`, never ID prefix. Perps paper=`ExecuteSpotSignalWithFillFee`, live=`RunHyperliquidExecute`; futures=`ExecuteFuturesSignalWithFillFee`.
@@ -79,14 +79,14 @@ Guardrails only. Mechanism: SKILL.md § Subsystem Mechanism Reference; flows: SK
 - Post-update: SKILL.md § Post-Update Agent Protocol. After a Python-launcher change smoke `./go-trader --once` (daemon stopped).
 
 ## Backtest
-- Harness map `docs/backtesting-registry.md`: update its row in the PR adding/deprecating it.
+- Harness map `docs/backtesting-registry.md`: update its row in the adding/deprecating PR.
 - `--config` gates on `config_version>=15`; entry ATR guard 50% of AvgCost, SL-vs-TP races default `ohlc_walk`.
 - Look-ahead: bar N signal fills at N+1 open; regime gate reads N-1, closes use closed-bar ATR. **HTF series indexed by candle OPEN time MUST `.shift(1)` BEFORE `reindex(…, method="ffill")`.**
 - Backtester rejects HL-live-only closes (`regime_window_divergence`, `tiered_tp_atr_live_regime_dynamic`); options regime gating unsupported.
 - M1–M6, auto_suggest, regime promotion, `tune_live.py` = SUGGEST-ONLY: **never write live defaults, config or PRs.**
 
 ## Testing
-- New functionality and each bug fix need a test guarding a behavior contract (money, state, protection, subprocess contracts, migration, backtest parity). Assert outcomes; pin only operator-decision wording; no constants or round-trips, table-driven variants.
+- Each new feature and bug fix needs a test guarding a behavior contract (money, state, protection, subprocess contracts, migration, backtest parity). Assert outcomes; pin only operator-decision wording; no constants or round-trips, table-driven variants.
 - **Test budget.** Only that contract list; max one table-driven test per new function. `check_test_budget.py` fails CI on a wording-only test outside `scripts/test_budget_baseline.json` or a stale entry; entries only for operator-decision wording; `--write-baseline` after a delete.
 - Go CI never spawns Python: pure helpers out of subprocess wrappers; Go tests check `json.Unmarshal` errors.
 - `go build`/`go test ./...` from repo root; `gofmt -w` after edits; tabbed Go edits: Python `replace(old,new,1)`.

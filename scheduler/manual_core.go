@@ -1088,7 +1088,7 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 	}
 
 	if intentFullClose {
-		if pending, perr := pendingSLActionExists(d.stateDB, strategyID, sc.Symbol); perr != nil {
+		if pending, perr := pendingSLActionExists(d.stateDB, strategyID, sc.Symbol, pos); perr != nil {
 			return res, manualFailf("error: could not check for queued stop-loss edits (%v) — refusing the full close to avoid orphaning an on-chain order; retry once the scheduler is reachable", perr)
 		} else if pending {
 			return res, manualFailf("error: a stop-loss edit for %s/%s is queued and not yet applied — run the scheduler (`--once`) or wait for the next cycle before a full close (closing now would orphan the new stop-loss on-chain)", strategyID, sc.Symbol)
@@ -1264,7 +1264,7 @@ func forceCloseCore(d manualCoreDeps, sc StrategyConfig, sym string, in forceClo
 
 	closeFullPosition := false
 	if intentFullClose {
-		if pending, perr := pendingSLActionExists(d.stateDB, strategyID, sym); perr != nil {
+		if pending, perr := pendingSLActionExists(d.stateDB, strategyID, sym, pos); perr != nil {
 			return res, manualFailf("error: could not check for queued stop-loss edits (%v) - refusing the full close to avoid orphaning an on-chain order; retry once the scheduler is reachable", perr)
 		} else if pending {
 			return res, manualFailf("error: a stop-loss edit for %s/%s is queued and not yet applied - run the scheduler (`--once`) or wait for the next cycle before a full close", strategyID, sym)
@@ -1564,7 +1564,7 @@ func resolveManualSLTargetCore(d manualCoreDeps, sc StrategyConfig, cmdName, str
 		return nil, "", manualFailf("error: %s for %s/%s — a manual stop-loss edit would be reverted on the next scheduler cycle.\n       To manage the stop-loss manually, opt the strategy out of auto-protection (set stop_loss_atr_mult: 0 and remove any trailing close).", reason, strategyID, symbol)
 	}
 
-	if pending, err := pendingSLActionExists(d.stateDB, strategyID, symbol); err != nil {
+	if pending, err := pendingSLActionExists(d.stateDB, strategyID, symbol, pos); err != nil {
 		return nil, "", manualFailf("error: could not check for queued stop-loss edits (%v) — refusing to avoid orphaning an on-chain order; retry once the scheduler is reachable", err)
 	} else if pending {
 		return nil, "", manualFailf("error: a stop-loss edit for %s/%s is already queued and not yet applied — run the scheduler (`--once`) or wait for the next cycle before editing again (a second edit now would orphan the first stop-loss on-chain)", strategyID, symbol)
