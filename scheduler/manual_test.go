@@ -2060,3 +2060,152 @@ func TestManualStampRegimeOnPosition(t *testing.T) {
 		t.Errorf("empty payload must not stamp a regime, got %q", got)
 	}
 }
+
+func TestOperatorSharedCloseFloorGatesBothCores(t *testing.T) {
+	t.Setenv("HYPERLIQUID_SECRET_KEY", "test-secret")
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xoperator")
+
+	flat := []HLPosition{{Coin: "ETH", Size: 0.002}}
+	busy := []HLPosition{{Coin: "ETH", Size: 0.5}}
+
+	cases := []struct {
+		name          string
+		soleOwner     bool
+		posQty        float64
+		peerBookQty   float64
+		positions     []HLPosition
+		positionsErr  error
+		holdReason    string
+		wantFired     int
+		wantFullClose bool
+		wantErrPart   string
+	}{
+		{name: "flat peers escalate to a whole-position close", posQty: 0.002,
+			positions: flat, wantFired: 1, wantFullClose: true},
+		{name: "a stored venue-rejected hold does not change the escalation", posQty: 0.002,
+			positions: flat, holdReason: hlSharedCloseHoldVenueReject, wantFired: 1, wantFullClose: true},
+		{name: "a peer holding on-chain refuses", posQty: 0.002,
+			positions: busy, wantErrPart: "no order sent"},
+		{name: "a peer holding in its own book refuses", posQty: 0.002,
+			peerBookQty: 0.003, positions: flat, wantErrPart: "0.003000"},
+		{name: "an unreadable account refuses", posQty: 0.002,
+			positionsErr: fmt.Errorf("clearinghouseState timeout"), wantErrPart: "clearinghouseState timeout"},
+		{name: "a single-owner coin sends the order it sends today", soleOwner: true, posQty: 0.002,
+			positions: flat, wantFired: 1, wantFullClose: true},
+		{name: "a shared coin above the gate sends the sized order", posQty: 0.4,
+			positions: flat, wantFired: 1, wantFullClose: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, core := range []string{"manual-close", "force-close"} {
+				t.Run(core, func(t *testing.T) {
+					dir := t.TempDir()
+					dbPath := filepath.Join(dir, "state.db")
+					db, err := OpenStateDB(dbPath)
+					if err != nil {
+						t.Fatalf("OpenStateDB: %v", err)
+					}
+					defer db.Close()
+
+					manualSC := StrategyConfig{ID: "hl-manual-eth", Type: "manual", Platform: "hyperliquid", Symbol: "ETH",
+						Script: "shared_scripts/check_hyperliquid.py",
+						Args:   []string{"hold", "ETH", "1h", "--mode=live"}, Capital: 1000, Leverage: 2}
+					perpsSC := StrategyConfig{ID: "hl-perps-eth", Type: "perps", Platform: "hyperliquid",
+						Script: "shared_scripts/check_hyperliquid.py",
+						Args:   []string{"tcross", "ETH", "1h", "--mode=live"}, Capital: 1000, Leverage: 2}
+					subject, peer := perpsSC, manualSC
+					if core == "manual-close" {
+						subject, peer = manualSC, perpsSC
+					}
+					cfg := &Config{DBFile: dbPath, Strategies: []StrategyConfig{subject, peer}}
+					if tc.soleOwner {
+						cfg.Strategies = []StrategyConfig{subject}
+					}
+					strategyID := subject.ID
+					peerID := peer.ID
+					mkPos := func(owner string, qty float64) *Position {
+						return &Position{
+							Symbol: "ETH", Quantity: qty, InitialQuantity: qty, AvgCost: 2000,
+							Side: "long", Multiplier: 1, Leverage: 2, OwnerStrategyID: owner,
+							SharedCloseHoldReason: tc.holdReason,
+							OpenedAt:              time.Now().UTC().Add(-time.Hour),
+						}
+					}
+					state := &AppState{Strategies: map[string]*StrategyState{
+						strategyID: {ID: strategyID, Type: subject.Type, Platform: "hyperliquid",
+							Cash: 1000, InitialCapital: 1000,
+							Positions: map[string]*Position{"ETH": mkPos(strategyID, tc.posQty)}},
+					}}
+					if tc.peerBookQty > 0 {
+						state.Strategies[peerID] = &StrategyState{
+							ID: peerID, Type: peer.Type, Platform: "hyperliquid",
+							Cash: 1000, InitialCapital: 1000,
+							Positions: map[string]*Position{"ETH": mkPos(peerID, tc.peerBookQty)},
+						}
+					}
+					if err := db.SaveState(state); err != nil {
+						t.Fatalf("SaveState: %v", err)
+					}
+
+					d := newCLIManualCoreDeps(cfg, openTestStore(t, db), nil)
+					d.fetchMids = func(coins []string) (map[string]float64, error) {
+						return map[string]float64{"ETH": 2000}, nil
+					}
+					d.fetchPositions = func(addr string) ([]HLPosition, error) {
+						if tc.positionsErr != nil {
+							return nil, tc.positionsErr
+						}
+						return tc.positions, nil
+					}
+					fired := 0
+					gotFullClose := false
+					d.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+						fired++
+						gotFullClose = closeFullPosition
+						return &HyperliquidExecuteResult{Execution: &HyperliquidExecution{Fill: &HyperliquidFill{AvgPx: 2000, TotalSz: size, OID: 7, Fee: 0.01}}}, "", nil
+					}
+					d.closer = func(symbol string, partialSz *float64, cancelOIDs []int64) (*HyperliquidCloseResult, error) {
+						fired++
+						gotFullClose = partialSz == nil
+						return &HyperliquidCloseResult{Close: &HyperliquidClose{Fill: &HyperliquidCloseFill{AvgPx: 2000, TotalSz: tc.posQty, OID: 7, Fee: 0.01}}}, nil
+					}
+
+					var coreErr error
+					if core == "manual-close" {
+						sc, lookupErr := lookupManualStrategy(cfg, strategyID)
+						if lookupErr != nil {
+							t.Fatalf("lookup: %v", lookupErr)
+						}
+						_, coreErr = manualCloseCore(d, sc, manualCloseInputs{StrategyID: strategyID})
+					} else {
+						sc, sym, lookupErr := lookupForceCloseStrategy(cfg, strategyID)
+						if lookupErr != nil {
+							t.Fatalf("lookup: %v", lookupErr)
+						}
+						_, coreErr = forceCloseCore(d, sc, sym, forceCloseInputs{StrategyID: strategyID})
+					}
+
+					if tc.wantErrPart != "" {
+						if coreErr == nil || !strings.Contains(coreErr.Error(), tc.wantErrPart) {
+							t.Fatalf("err = %v, want a refusal containing %q", coreErr, tc.wantErrPart)
+						}
+						if fired != 0 {
+							t.Fatalf("venue calls = %d on a refusal, want 0", fired)
+						}
+						return
+					}
+					if coreErr != nil {
+						t.Fatalf("unexpected error: %v", coreErr)
+					}
+					if fired != tc.wantFired {
+						t.Fatalf("venue calls = %d, want %d", fired, tc.wantFired)
+					}
+					if gotFullClose != tc.wantFullClose {
+						t.Fatalf("whole-position close = %v, want %v", gotFullClose, tc.wantFullClose)
+					}
+				})
+			}
+		})
+	}
+}

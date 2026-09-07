@@ -67,6 +67,7 @@
     "scheduler/hyperliquid_liquidation_clamp_sites_test.go::TestLiquidationAlertLectureOnlyOnMeasuredOpenGeometry",
     "scheduler/hyperliquid_liquidation_config_test.go::TestConfigValidationAllowsTrailingPctPastBankruptcyDistance",
     "scheduler/hyperliquid_liquidation_config_test.go::TestConfigValidationRejectsMaxDrawdownFallbackPastBankruptcyDistance",
+    "scheduler/hyperliquid_shared_close_floor_test.go::TestSharedCloseStrandedAlertRecoveryTextDropsForceCloseClaim",
     "scheduler/init_test.go::TestConfigValidation_SharedWalletPoolRejectsAllocationBaselines",
     "scheduler/init_test.go::TestConfigValidation_SharedWalletPoolRequiresEveryTradeCap",
     "scheduler/inspect_cmd_test.go::TestFormatStrategyInspectionBaseDirectionWithPolicy",

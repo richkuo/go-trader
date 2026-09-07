@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 )
@@ -70,6 +71,7 @@ type manualStateView struct {
 	ExposureCap      ExposureCapStatus
 	ExposureCapAsset string
 	Pos              *Position
+	PeerVirtualQty   float64
 }
 
 func manualSubsetStateView(pr *PortfolioRiskConfig, states map[string]*StrategyState, cfgs []StrategyConfig, now time.Time) manualStateView {
@@ -158,6 +160,11 @@ func manualStateViewFromStateWithStore(cfg *Config, state *AppState, store *Stat
 			}
 		}
 	}
+	if cfg != nil && state != nil {
+		v.PeerVirtualQty = hlPeerVirtualQtyOnCoin(
+			snapshotHyperliquidVirtualQuantities(state.Strategies, hyperliquidCloseScopeStrategies(cfg.Strategies)),
+			symbol, strategyID)
+	}
 	ss := state.Strategies[strategyID]
 	if ss == nil {
 		return v
@@ -180,11 +187,12 @@ type manualCoreDeps struct {
 
 	loadState func(strategyID, symbol string) (manualStateView, error)
 
-	execute     func(script, symbol, side string, size, stopLossPct float64, cancelStopLossOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error)
-	updateSL    func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error)
-	cancelOrder func(script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error)
-	fetchMids   manualMarkFetcher
-	closer      HyperliquidLiveCloser
+	execute        func(script, symbol, side string, size, stopLossPct float64, cancelStopLossOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error)
+	updateSL       func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error)
+	cancelOrder    func(script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error)
+	fetchMids      manualMarkFetcher
+	closer         HyperliquidLiveCloser
+	fetchPositions func(accountAddress string) ([]HLPosition, error)
 
 	// lockManualActions takes the manual-action lock of the file that owns the
 	// target strategy, so a paper command never blocks a live one.
@@ -221,6 +229,10 @@ func newManualCoreDeps(cfg *Config, stateDB *StateStore, notifier *MultiNotifier
 		cancelOrder: RunHyperliquidCancelOrder,
 		fetchMids:   fetchHyperliquidMids,
 		closer:      defaultHyperliquidForceCloseCloser,
+		fetchPositions: func(accountAddress string) ([]HLPosition, error) {
+			_, positions, err := fetchHyperliquidStateFn(accountAddress)
+			return positions, err
+		},
 		reconcileCanceledProtection: func(strategyID, symbol string, cancelOIDs []int64) error {
 			return reconcileCanceledExecuteProtectionInDB(cfg, stateDB, strategyID, symbol, cancelOIDs)
 		},
@@ -915,6 +927,37 @@ func manualAddCore(d manualCoreDeps, sc StrategyConfig, in manualAddInputs) (*ma
 	return res, nil
 }
 
+func operatorSharedCloseFloorDecision(d manualCoreDeps, symbol, posSide string, posQty, peerVirtualQty float64) operatorSharedCloseDecision {
+	var hlLiveAll []StrategyConfig
+	if d.cfg != nil {
+		hlLiveAll = hyperliquidCloseScopeStrategies(d.cfg.Strategies)
+	}
+	if len(hlLiveStrategiesForCoin(symbol, hlLiveAll)) <= 1 {
+		return operatorSharedCloseDecision{}
+	}
+	price := 0.0
+	if d.fetchMids != nil {
+		if marks, err := d.fetchMids([]string{symbol}); err == nil {
+			price = marks[symbol]
+		}
+	}
+	fetchOnChain := func() (hlOnChainCoinView, error) {
+		if d.fetchPositions == nil {
+			return hlOnChainCoinView{}, fmt.Errorf("no Hyperliquid account reader is configured")
+		}
+		addr := os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS")
+		if addr == "" {
+			return hlOnChainCoinView{}, fmt.Errorf("HYPERLIQUID_ACCOUNT_ADDRESS is not set")
+		}
+		positions, err := d.fetchPositions(addr)
+		if err != nil {
+			return hlOnChainCoinView{}, err
+		}
+		return hlOnChainCoinViewFromPositions(positions), nil
+	}
+	return decideOperatorSharedCloseFloor(symbol, posSide, posQty, price, hlLiveAll, peerVirtualQty, fetchOnChain)
+}
+
 type manualCloseInputs struct {
 	StrategyID string
 	Qty        float64
@@ -985,6 +1028,7 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 		if !manualPositionOwnedByStrategy(refreshed.Pos, strategyID) {
 			return res, manualFailf("error: position %s/%s is owned by %q, not %q", strategyID, sc.Symbol, refreshed.Pos.OwnerStrategyID, strategyID)
 		}
+		view = refreshed
 		pos = refreshed.Pos
 	}
 
@@ -1025,6 +1069,18 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 		sc.Symbol,
 		hyperliquidCloseScopeStrategies(d.cfg.Strategies),
 	)
+	if intentFullClose && !closeFullPosition && hyperliquidIsLive(sc.Args) {
+		floor := operatorSharedCloseFloorDecision(d, sc.Symbol, pos.Side, pos.Quantity, view.PeerVirtualQty)
+		switch {
+		case floor.Refuse:
+			notifySharedCloseStranded(d.notifier, sc, sc.Symbol, floor.RemainderUSD, floor.Reason, hlSharedCloseHoldOperatorRef)
+			return res, manualFailf("error: %s", floor.Reason)
+		case floor.Escalate:
+			closeFullPosition = true
+			res.outf("manual-close %s: the closing value $%.2f is under the $%.2f venue minimum gate and every peer is flat on-chain and in its own book — escalating to a whole-position close",
+				sc.Symbol, floor.RemainderUSD, hlVenueCloseGateThresholdUSD())
+		}
+	}
 	var extraCancelOIDs []int64
 	if intentFullClose {
 		extraCancelOIDs = cloneInt64s(pos.TPOIDs)
@@ -1160,6 +1216,26 @@ func forceCloseCore(d manualCoreDeps, sc StrategyConfig, sym string, in forceClo
 		)
 	}
 
+	escalatedSharedClose := false
+	if intentFullClose && !closeFullPosition && hyperliquidIsLive(sc.Args) {
+		floor := operatorSharedCloseFloorDecision(d, sym, pos.Side, pos.Quantity, view.PeerVirtualQty)
+		switch {
+		case floor.Refuse && in.DryRun:
+			res.outf("[dry-run] force-close %s: REFUSED — %s", strategyID, floor.Reason)
+			return res, nil
+		case floor.Refuse:
+			notifySharedCloseStranded(d.notifier, sc, sym, floor.RemainderUSD, floor.Reason, hlSharedCloseHoldOperatorRef)
+			return res, manualFailf("error: %s", floor.Reason)
+		case floor.Escalate:
+			closeFullPosition = true
+			escalatedSharedClose = true
+			if !in.DryRun {
+				res.outf("force-close %s: the closing value $%.2f is under the $%.2f venue minimum gate and every peer is flat on-chain and in its own book — escalating to a whole-position close",
+					sym, floor.RemainderUSD, hlVenueCloseGateThresholdUSD())
+			}
+		}
+	}
+
 	var cancelOIDs []int64
 	if intentFullClose {
 		cancelOIDs = hyperliquidProtectionCancelOIDs(pos)
@@ -1174,6 +1250,9 @@ func forceCloseCore(d manualCoreDeps, sc StrategyConfig, sym string, in forceClo
 		mode := fmt.Sprintf("sized %.6f", closeQty)
 		if closeFullPosition {
 			mode = "full market_close"
+			if escalatedSharedClose {
+				mode = "full market_close (escalated: peers flat)"
+			}
 		}
 		res.outf("[dry-run] force-close %s: %s %.6f %s (current pos=%.6f, avg_cost=$%.4f, %s)",
 			strategyID, closeSide, closeQty, sym, pos.Quantity, pos.AvgCost, mode)

@@ -382,3 +382,98 @@ func TestRearmProtectionAfterFailedCloseCoversPercentageStopOwners(t *testing.T)
 		})
 	}
 }
+
+func TestDecideOperatorSharedCloseFloor(t *testing.T) {
+	peers := sharedCloseFloorPeers()
+	single := peers[:1]
+	flat := hlOnChainCoinView{Known: true, AbsQty: map[string]float64{"ETH": 0.002}, NetSide: map[string]string{"ETH": "long"}}
+	busy := hlOnChainCoinView{Known: true, AbsQty: map[string]float64{"ETH": 0.5}, NetSide: map[string]string{"ETH": "long"}}
+	fetchErr := errors.New("clearinghouseState timeout")
+
+	cases := []struct {
+		name         string
+		peers        []StrategyConfig
+		posQty       float64
+		price        float64
+		peerVirtual  float64
+		reads        []hlOnChainCoinView
+		readErrs     []error
+		wantEscalate bool
+		wantRefuse   bool
+		wantReads    int
+		wantInReason []string
+	}{
+		{name: "every peer flat escalates", peers: peers, posQty: 0.002, price: 2000,
+			reads: []hlOnChainCoinView{flat, flat}, wantEscalate: true, wantReads: 2},
+		{name: "peer holds quantity in its own book refuses", peers: peers, posQty: 0.002, price: 2000,
+			peerVirtual: 0.003, reads: []hlOnChainCoinView{flat}, wantRefuse: true, wantReads: 1,
+			wantInReason: []string{"0.003000", "no order sent"}},
+		{name: "peer holds quantity on-chain refuses", peers: peers, posQty: 0.002, price: 2000,
+			reads: []hlOnChainCoinView{busy}, wantRefuse: true, wantReads: 1,
+			wantInReason: []string{"0.500000", "no order sent"}},
+		{name: "peer goes busy between the read and the refetch refuses", peers: peers, posQty: 0.002, price: 2000,
+			reads: []hlOnChainCoinView{flat, busy}, wantRefuse: true, wantReads: 2,
+			wantInReason: []string{"0.500000", "no order sent"}},
+		{name: "refetch failure refuses", peers: peers, posQty: 0.002, price: 2000,
+			reads: []hlOnChainCoinView{flat, {}}, readErrs: []error{nil, fetchErr}, wantRefuse: true, wantReads: 2,
+			wantInReason: []string{"clearinghouseState timeout", "no order sent"}},
+		{name: "first read failure refuses", peers: peers, posQty: 0.002, price: 2000,
+			reads: []hlOnChainCoinView{{}}, readErrs: []error{fetchErr}, wantRefuse: true, wantReads: 1,
+			wantInReason: []string{"clearinghouseState timeout"}},
+		{name: "unreadable account refuses", peers: peers, posQty: 0.002, price: 2000,
+			reads: []hlOnChainCoinView{{}}, wantRefuse: true, wantReads: 1,
+			wantInReason: []string{"not readable"}},
+		{name: "unreadable mark refuses without reading the account", peers: peers, posQty: 0.002, price: 0,
+			wantRefuse: true, wantReads: 0, wantInReason: []string{"no usable mark price"}},
+		{name: "single owner leaves the order unchanged", peers: single, posQty: 0.002, price: 2000, wantReads: 0},
+		{name: "value at or above the gate leaves the order unchanged", peers: peers, posQty: 0.01, price: 2000, wantReads: 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reads := 0
+			fetch := func() (hlOnChainCoinView, error) {
+				idx := reads
+				reads++
+				if idx >= len(tc.reads) {
+					t.Fatalf("unexpected on-chain read #%d", reads)
+				}
+				var err error
+				if idx < len(tc.readErrs) {
+					err = tc.readErrs[idx]
+				}
+				return tc.reads[idx], err
+			}
+			got := decideOperatorSharedCloseFloor("ETH", "long", tc.posQty, tc.price, tc.peers, tc.peerVirtual, fetch)
+			if got.Escalate != tc.wantEscalate || got.Refuse != tc.wantRefuse {
+				t.Fatalf("escalate=%v refuse=%v, want escalate=%v refuse=%v (reason %q)", got.Escalate, got.Refuse, tc.wantEscalate, tc.wantRefuse, got.Reason)
+			}
+			if reads != tc.wantReads {
+				t.Fatalf("on-chain reads = %d, want %d", reads, tc.wantReads)
+			}
+			if tc.wantRefuse && got.Reason == "" {
+				t.Fatal("refusal carries no reason")
+			}
+			for _, want := range tc.wantInReason {
+				if !strings.Contains(got.Reason, want) {
+					t.Fatalf("reason %q missing %q", got.Reason, want)
+				}
+			}
+		})
+	}
+
+	t.Run("no account reader refuses", func(t *testing.T) {
+		got := decideOperatorSharedCloseFloor("ETH", "long", 0.002, 2000, peers, 0, nil)
+		if !got.Refuse || got.Escalate {
+			t.Fatalf("escalate=%v refuse=%v, want a refusal", got.Escalate, got.Refuse)
+		}
+	})
+}
+
+func TestSharedCloseStrandedAlertRecoveryTextDropsForceCloseClaim(t *testing.T) {
+	for _, holdReason := range []string{hlSharedCloseHoldPeerBusy, hlSharedCloseHoldVenueReject, hlSharedCloseHoldOperatorRef} {
+		msg := formatSharedCloseStrandedAlert("hl-eth", "ETH", 4.12, "peer busy", holdReason)
+		if strings.Contains(msg, "sends the same sized order") || strings.Contains(msg, "issue 1534") {
+			t.Fatalf("hold %q recovery text still promises the old force-close behavior: %s", holdReason, msg)
+		}
+	}
+}
