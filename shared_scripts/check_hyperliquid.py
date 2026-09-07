@@ -1159,6 +1159,7 @@ def run_sync_protection(
 
             size = adapter.round_size(symbol, size)
             if size <= 0:
+                out["tp_size_skipped"] = [True] * len(tiers)
                 print(
                     f"[INFO] TP protection skipped for {symbol}: virtual qty "
                     f"rounds to zero at lot precision — peer TPs cover the on-chain position",
@@ -1171,6 +1172,7 @@ def run_sync_protection(
                 tp_filled_externally = [False] * len(tiers)
                 tp_fills = [None] * len(tiers)
                 tp_filled_immediately = [False] * len(tiers)
+                tp_size_skipped = [False] * len(tiers)
                 armed = [bool(x) for x in (tp_armed_tiers or [])]
                 if len(armed) < len(tiers):
                     armed.extend([False] * (len(tiers) - len(armed)))
@@ -1195,6 +1197,7 @@ def run_sync_protection(
                     tier_armed = armed[idx] if idx < len(armed) else False
 
                     if tier_size <= 0:
+                        tp_size_skipped[idx] = True
                         continue
                     if _oid_is_open(open_oids, prev_oid) and not (idx < len(force_tp) and force_tp[idx]):
                         tp_oids_out[idx] = prev_oid
@@ -1260,6 +1263,8 @@ def run_sync_protection(
                     out["tp_fills"] = tp_fills
                 if any(tp_filled_immediately):
                     out["tp_filled_immediately"] = tp_filled_immediately
+                if any(tp_size_skipped):
+                    out["tp_size_skipped"] = tp_size_skipped
 
                 if len(tp_oids_out) > 0 and tp_oids_out[0] > 0:
                     out["tp1_oid"] = tp_oids_out[0]

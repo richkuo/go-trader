@@ -115,6 +115,9 @@ func restoreManualStopLossAfterFailedClose(d manualCoreDeps, res *manualCoreResu
 		return false
 	}
 
+	unlockSymbol := lockHyperliquidProtectionSync(snap.Symbol)
+	defer unlockSymbol()
+
 	onChainAbsQty, liqPxByCoin, netSideByCoin, mapErr := d.hyperliquidAccountMaps()
 	if mapErr != nil {
 		res.errf("warning: could not read the Hyperliquid account before re-arming %s (%v) — re-arming at the recorded size with no liquidation clamp", snap.Symbol, mapErr)

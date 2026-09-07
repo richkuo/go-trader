@@ -633,7 +633,9 @@ func applyManualActionWithCriticals(state *AppState, cfg *Config, scByID map[str
 	case "restore-tp":
 		pos, exists := ss.Positions[a.Symbol]
 		if !exists || pos == nil {
-			return nil, fmt.Errorf("no open position for %s/%s", a.StrategyID, a.Symbol)
+			fmt.Printf("[manual] skipped stale restore-tp: %s %s has no open position in the book\n",
+				a.StrategyID, a.Symbol)
+			return nil, nil
 		}
 		if !manualPositionOwnedByStrategy(pos, a.StrategyID) {
 			return nil, fmt.Errorf("position %s/%s is owned by %q, not %q", a.StrategyID, a.Symbol, pos.OwnerStrategyID, a.StrategyID)

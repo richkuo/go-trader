@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"math"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -1013,5 +1015,116 @@ func TestProtectionSyncOutcomeUnknownDefersInsteadOfClearing(t *testing.T) {
 	both := &HyperliquidProtectionSyncResult{CancelStopLossSucceeded: true, StopLossOID: 333, StopLossOutcomeUnknown: true}
 	if hlProtectionLostExchangeStop(both) || hlProtectionStopOutcomeUnknown(both) {
 		t.Errorf("a resolved placement must raise neither alert")
+	}
+}
+
+func TestRunHyperliquidProtectionSyncManualActionGuard(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		action   string
+		strategy string
+		symbol   string
+		locked   bool
+		broken   bool
+		blocked  bool
+	}{
+		{name: "in flight command", locked: true, blocked: true},
+		{name: "restored orders awaiting adoption", action: "restore-tp", blocked: true},
+		{name: "open awaiting adoption", action: "open", blocked: true},
+		{name: "add awaiting adoption", action: "add", blocked: true},
+		{name: "close awaiting adoption", action: "close", blocked: true},
+		{name: "stop edit awaiting adoption", action: "update-sl", blocked: true},
+		{name: "stop cancel awaiting adoption", action: "cancel-sl", blocked: true},
+		{name: "different strategy", action: "restore-tp", strategy: "peer"},
+		{name: "different symbol", action: "restore-tp", symbol: "BTC"},
+		{name: "unreadable queue", broken: true, blocked: true},
+		{name: "no pending action"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dbPath := filepath.Join(t.TempDir(), "state.db")
+			db, err := OpenStateDB(dbPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sc := StrategyConfig{ID: "manual-eth", Type: "manual", Platform: "hyperliquid", CloseStrategy: tieredTPCloseStrategy()}
+			if tc.action != "" {
+				id, symbol := tc.strategy, tc.symbol
+				if id == "" {
+					id = sc.ID
+				}
+				if symbol == "" {
+					symbol = "eth"
+				}
+				if err := singleFileStore(db).InsertPendingManualAction(PendingManualAction{StrategyID: id, Symbol: symbol, Action: tc.action, CreatedAt: time.Now().UTC()}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			db.Close()
+			db, err = OpenStateDB(dbPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			if tc.broken {
+				db.Close()
+			}
+			if tc.locked {
+				unlock, err := acquireManualActionFileLock(dbPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer unlock()
+			}
+			calls := 0
+			withStubbedSyncHyperliquidProtection(t, func(StrategyConfig, hlProtectionPlan, *MultiNotifier, *StrategyLogger, []byte) (*HyperliquidProtectionSyncResult, bool) {
+				calls++
+				unlock, err := acquireManualActionFileLockWithWait(dbPath, 0)
+				if err == nil {
+					unlock()
+					t.Error("placement did not hold the manual-action file lock")
+				}
+				return &HyperliquidProtectionSyncResult{TPOIDs: []int64{901, 902, 903}}, true
+			})
+			pos := &Position{Symbol: "ETH", Quantity: 1, AvgCost: 2000, EntryATR: 50, Side: "long", TPOIDs: []int64{701, 702, 703}}
+			state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
+			var mu sync.RWMutex
+			synced, _ := runHyperliquidProtectionSync(sc, state, db, "ETH", &mu, nil, nil, "test", nil, nil, nil)
+			if tc.blocked {
+				if synced || calls != 0 || !reflect.DeepEqual(pos.TPOIDs, []int64{701, 702, 703}) {
+					t.Fatalf("blocked sync mutated protection: synced=%v calls=%d oids=%v", synced, calls, pos.TPOIDs)
+				}
+			} else if !synced || calls != 1 || !reflect.DeepEqual(pos.TPOIDs, []int64{901, 902, 903}) {
+				t.Fatalf("allowed sync failed: synced=%v calls=%d oids=%v", synced, calls, pos.TPOIDs)
+			}
+		})
+	}
+}
+
+func TestApplyHyperliquidProtectionSyncImmediateTiers(t *testing.T) {
+	for _, raw := range []string{
+		`{"tp_oids":[0,702],"tp_filled_immediately":[true,false]}`,
+		`{"tp_oids":[0,0],"tp_filled_immediately":[true,false],"tp_filled_externally":[false,true]}`,
+		`{"tp2_oid":702,"tp_filled_immediately":[true,false]}`,
+		`{"tp_filled_immediately":[true,false],"tp2_filled_externally":true}`,
+	} {
+		t.Run(raw, func(t *testing.T) {
+			var result HyperliquidProtectionSyncResult
+			if err := json.Unmarshal([]byte(raw), &result); err != nil {
+				t.Fatal(err)
+			}
+			pos := &Position{Symbol: "ETH", Quantity: 1, AvgCost: 2000, EntryATR: 50, Side: "long"}
+			applyHyperliquidProtectionSync(pos, &result, nil)
+			if len(pos.TPOIDs) != 2 || pos.TPOIDs[0] != 0 || !reflect.DeepEqual(pos.TPArmedTiers, []bool{true, true}) {
+				t.Fatalf("completed tier lost: %+v", pos)
+			}
+			if pos.Quantity != 1 || pos.AvgCost != 2000 {
+				t.Fatal("protection result booked an unconfirmed fill")
+			}
+			sc := StrategyConfig{Type: "manual", Platform: "hyperliquid", CloseStrategy: &StrategyRef{Name: "tiered_tp_atr"}}
+			plan, ok := buildHyperliquidProtectionPlan(sc, pos, 0)
+			if !ok || plan.TPOIDs[0] != 0 || !plan.TPArmedTiers[0] {
+				t.Fatalf("next cycle would replace the completed tier: %+v", plan)
+			}
+		})
 	}
 }

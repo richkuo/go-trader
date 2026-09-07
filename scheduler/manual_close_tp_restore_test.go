@@ -159,16 +159,27 @@ func TestInterpretManualCloseTPRestore(t *testing.T) {
 			wantOIDs:  []int64{0, 0, 0},
 		},
 		{
-			name:      "a subprocess failure marks every acted tier missing",
+			name:      "a subprocess failure keeps an unconfirmed tier unverified and marks a cancelled tier missing",
 			syncErr:   fmt.Errorf("script error"),
-			wantKinds: []manualCloseTPOutcomeKind{manualCloseTPMissing, manualCloseTPMissing, manualCloseTPSkipped},
-			wantOIDs:  []int64{0, 0, 0},
+			wantKinds: []manualCloseTPOutcomeKind{manualCloseTPUnverified, manualCloseTPMissing, manualCloseTPSkipped},
+			wantOIDs:  []int64{7001, 0, 0},
 		},
 		{
-			name:      "a script-level error marks every acted tier missing",
+			name:      "a missing result keeps an unconfirmed tier unverified",
+			wantKinds: []manualCloseTPOutcomeKind{manualCloseTPUnverified, manualCloseTPMissing, manualCloseTPSkipped},
+			wantOIDs:  []int64{7001, 0, 0},
+		},
+		{
+			name:      "a script-level error keeps an unconfirmed tier unverified and marks a cancelled tier missing",
 			result:    &HyperliquidProtectionSyncResult{Error: "avg-cost and entry-atr must be > 0"},
-			wantKinds: []manualCloseTPOutcomeKind{manualCloseTPMissing, manualCloseTPMissing, manualCloseTPSkipped},
-			wantOIDs:  []int64{0, 0, 0},
+			wantKinds: []manualCloseTPOutcomeKind{manualCloseTPUnverified, manualCloseTPMissing, manualCloseTPSkipped},
+			wantOIDs:  []int64{7001, 0, 0},
+		},
+		{
+			name:      "a size-skipped unconfirmed tier is unverified, never verified-resting",
+			result:    &HyperliquidProtectionSyncResult{TPOIDs: []int64{7001, 9002, 0}, TPSizeSkipped: []bool{true, false, false}},
+			wantKinds: []manualCloseTPOutcomeKind{manualCloseTPUnverified, manualCloseTPRestored, manualCloseTPSkipped},
+			wantOIDs:  []int64{7001, 9002, 0},
 		},
 	}
 	for _, tc := range cases {
@@ -866,4 +877,122 @@ func TestManualCloseTPRestoreSerialisesWithTheProtectionSync(t *testing.T) {
 			t.Fatal("the cycle sync never ran after the per-symbol protection lock was released")
 		}
 	})
+}
+
+func TestDrainRestoreTPForClosedPosition(t *testing.T) {
+	for _, restart := range []bool{false, true} {
+		t.Run(fmt.Sprintf("restart=%v", restart), func(t *testing.T) {
+			dbPath := filepath.Join(t.TempDir(), "state.db")
+			db, err := OpenStateDB(dbPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sc := StrategyConfig{ID: "manual-eth", Type: "manual", Platform: "hyperliquid", Symbol: "ETH"}
+			store := singleFileStore(db)
+			if err := store.InsertPendingManualAction(PendingManualAction{StrategyID: sc.ID, Symbol: sc.Symbol, Action: "restore-tp", PositionID: "closed", PrevTPOIDs: []int64{701}, TPOIDs: []int64{901}, TPArmedTiers: []bool{true}, CreatedAt: time.Now().UTC()}); err != nil {
+				t.Fatal(err)
+			}
+			if restart {
+				db.Close()
+				db, err = OpenStateDB(dbPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				store = singleFileStore(db)
+			}
+			defer db.Close()
+			state := &AppState{Strategies: map[string]*StrategyState{sc.ID: {ID: sc.ID, Type: sc.Type, Platform: sc.Platform, Cash: 100, Positions: map[string]*Position{}}}}
+			alerts, criticals := drainPendingManualActions(state, &Config{Strategies: []StrategyConfig{sc}}, store)
+			if len(alerts) != 0 || len(criticals) != 0 {
+				t.Fatalf("stale restore produced alerts: %v %v", alerts, criticals)
+			}
+			pending, err := store.LoadPendingManualActions()
+			if err != nil || len(pending) != 0 {
+				t.Fatalf("stale restore remains queued: %v %v", pending, err)
+			}
+			if len(state.Strategies[sc.ID].Positions) != 0 || state.Strategies[sc.ID].Cash != 100 || len(state.Strategies[sc.ID].TradeHistory) != 0 {
+				t.Fatal("stale restore changed the closed book")
+			}
+		})
+	}
+}
+
+func TestManualCloseRearmSerialisesWithProtectionSync(t *testing.T) {
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "")
+	for _, cycleFirst := range []bool{false, true} {
+		t.Run(fmt.Sprintf("cycleFirst=%v", cycleFirst), func(t *testing.T) {
+			sc := StrategyConfig{ID: "manual-lock", Type: "manual", Platform: "hyperliquid", Symbol: "ETH-REARM-LOCK", Args: []string{"--mode=live"}, CloseStrategy: tieredTPCloseStrategy()}
+			snap := manualCloseProtectionSnapshot{Symbol: sc.Symbol, Side: "long", Quantity: 1, StopLossOID: 701, TriggerPx: 1900}
+			firstEntered := make(chan struct{})
+			secondEntered := make(chan struct{})
+			release := make(chan struct{})
+			var once sync.Once
+			unblock := func() { once.Do(func() { close(release) }) }
+			defer unblock()
+			visit := func(first bool) {
+				if first {
+					close(firstEntered)
+					<-release
+				} else {
+					close(secondEntered)
+				}
+			}
+			withStubbedSyncHyperliquidProtection(t, func(StrategyConfig, hlProtectionPlan, *MultiNotifier, *StrategyLogger, []byte) (*HyperliquidProtectionSyncResult, bool) {
+				visit(cycleFirst)
+				return nil, false
+			})
+			d := manualCoreDeps{
+				updateSL: func(string, string, string, float64, float64, int64) (*HyperliquidStopLossUpdateResult, string, error) {
+					visit(!cycleFirst)
+					return &HyperliquidStopLossUpdateResult{StopLossFilledImmediately: true, StopLossTriggerPx: 1900}, "", nil
+				},
+				recordRearmedStopLoss: func(string, string, string, float64, int64, *HyperliquidStopLossUpdateResult) error { return nil },
+			}
+			flat := make(chan bool, 1)
+			rearm := func() {
+				flat <- restoreManualStopLossAfterFailedClose(d, &manualCoreResult{}, sc, sc.ID, snap, &HyperliquidExecuteResult{CancelStopLossSucceededOIDs: []int64{701}}, []int64{701})
+			}
+			cycleDone := make(chan struct{})
+			cycle := func() {
+				defer close(cycleDone)
+				var mu sync.RWMutex
+				state := &StrategyState{Positions: map[string]*Position{sc.Symbol: {Symbol: sc.Symbol, Side: "long", Quantity: 1, AvgCost: 2000, EntryATR: 50}}}
+				runHyperliquidProtectionSync(sc, state, nil, sc.Symbol, &mu, nil, nil, "test", nil, nil, nil)
+			}
+			if cycleFirst {
+				go cycle()
+			} else {
+				go rearm()
+			}
+			select {
+			case <-firstEntered:
+			case <-time.After(2 * time.Second):
+				t.Fatal("first operation did not start")
+			}
+			if cycleFirst {
+				go rearm()
+			} else {
+				go cycle()
+			}
+			select {
+			case <-secondEntered:
+				t.Fatal("protection operations overlapped")
+			case <-time.After(100 * time.Millisecond):
+			}
+			unblock()
+			select {
+			case got := <-flat:
+				if !got {
+					t.Fatal("immediate stop fill did not report flat")
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("rearm did not finish")
+			}
+			select {
+			case <-cycleDone:
+			case <-time.After(2 * time.Second):
+				t.Fatal("cycle did not finish")
+			}
+		})
+	}
 }

@@ -16,6 +16,10 @@ const manualActionLockMaxWait = 8 * time.Second
 const manualActionLockPollInterval = 25 * time.Millisecond
 
 func acquireManualActionFileLock(dbPath string) (release func(), err error) {
+	return acquireManualActionFileLockWithWait(dbPath, manualActionLockMaxWait)
+}
+
+func acquireManualActionFileLockWithWait(dbPath string, maxWait time.Duration) (release func(), err error) {
 	if isInMemoryDBPath(dbPath) {
 		return func() {}, nil
 	}
@@ -24,7 +28,7 @@ func acquireManualActionFileLock(dbPath string) (release func(), err error) {
 	if err != nil {
 		return nil, fmt.Errorf("open manual-action lock %s: %w", lockPath, err)
 	}
-	deadline := time.Now().Add(manualActionLockMaxWait)
+	deadline := time.Now().Add(maxWait)
 	for {
 		flockErr := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 		if flockErr == nil {

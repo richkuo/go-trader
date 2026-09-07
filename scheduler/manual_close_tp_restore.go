@@ -131,23 +131,29 @@ func interpretManualCloseTPRestore(classes []manualCloseTPTierClass, prevOIDs []
 		}
 		switch {
 		case syncErr != nil:
-			o.Kind = manualCloseTPMissing
-			o.NewOID = 0
-			o.Detail = syncErr.Error()
+			applyManualCloseTPSyncFailure(&o, syncErr.Error())
 		case result == nil:
-			o.Kind = manualCloseTPMissing
-			o.NewOID = 0
-			o.Detail = "the protection sync returned no result"
+			applyManualCloseTPSyncFailure(&o, "the protection sync returned no result")
 		case result.Error != "":
-			o.Kind = manualCloseTPMissing
-			o.NewOID = 0
-			o.Detail = result.Error
+			applyManualCloseTPSyncFailure(&o, result.Error)
 		default:
 			applyManualCloseTPTierResult(&o, i, result)
 		}
 		outcomes[i] = o
 	}
 	return outcomes
+}
+
+func applyManualCloseTPSyncFailure(o *manualCloseTPTierOutcome, detail string) {
+	if o.Class == manualCloseTPTierUnconfirmed {
+		o.Kind = manualCloseTPUnverified
+		o.NewOID = o.PrevOID
+		o.Detail = detail
+		return
+	}
+	o.Kind = manualCloseTPMissing
+	o.NewOID = 0
+	o.Detail = detail
 }
 
 func applyManualCloseTPTierResult(o *manualCloseTPTierOutcome, idx int, result *HyperliquidProtectionSyncResult) {
@@ -167,6 +173,10 @@ func applyManualCloseTPTierResult(o *manualCloseTPTierOutcome, idx int, result *
 		o.Kind = manualCloseTPUnverified
 		o.NewOID = o.PrevOID
 		o.Detail = result.OpenOrderCheckError
+	case o.Class == manualCloseTPTierUnconfirmed && idx < len(result.TPSizeSkipped) && result.TPSizeSkipped[idx]:
+		o.Kind = manualCloseTPUnverified
+		o.NewOID = o.PrevOID
+		o.Detail = "the tier size rounds to zero at lot precision, so the order was never verified on-chain"
 	case idx < len(result.TPFilledExternally) && result.TPFilledExternally[idx]:
 		o.Kind = manualCloseTPFilledExternally
 		o.NewOID = 0

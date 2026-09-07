@@ -24,6 +24,26 @@ func lockHyperliquidProtectionSync(symbol string) func() {
 	return m.Unlock
 }
 
+func guardHyperliquidProtectionSync(db *StateDB, strategyID, symbol string) (func(), string) {
+	if db == nil {
+		return func() {}, ""
+	}
+	unlock, err := acquireManualActionFileLockWithWait(db.path, 0)
+	if err != nil {
+		return nil, fmt.Sprintf("the manual-action lock could not be taken (%v)", err)
+	}
+	pending, err := pendingManualActionExists(singleFileStore(db), strategyID, symbol, "open", "add", "close", "update-sl", "cancel-sl", "restore-tp")
+	if err != nil {
+		unlock()
+		return nil, fmt.Sprintf("the queued manual actions could not be read (%v)", err)
+	}
+	if pending {
+		unlock()
+		return nil, "a position-changing manual action is queued and not yet applied"
+	}
+	return unlock, ""
+}
+
 type hlProtectionPlan struct {
 	Symbol          string
 	Side            string
@@ -449,6 +469,22 @@ func applyHyperliquidProtectionSync(pos *Position, result *HyperliquidProtection
 			pos.TPArmedTiers[1] = true
 		}
 	}
+	if len(result.TPFilledImmediately) > 0 {
+		if len(pos.TPOIDs) < len(result.TPFilledImmediately) {
+			pos.TPOIDs = tpOIDsForTierCount(pos.TPOIDs, len(result.TPFilledImmediately))
+		}
+		if len(pos.TPArmedTiers) < len(result.TPFilledImmediately) {
+			extended := make([]bool, len(result.TPFilledImmediately))
+			copy(extended, pos.TPArmedTiers)
+			pos.TPArmedTiers = extended
+		}
+		for idx, filled := range result.TPFilledImmediately {
+			if filled {
+				pos.TPOIDs[idx] = 0
+				pos.TPArmedTiers[idx] = true
+			}
+		}
+	}
 	applySurplusTPCancelOutcome(pos, result, cancelTPOIDs)
 }
 
@@ -534,6 +570,14 @@ func runHyperliquidProtectionSync(
 	if stratState == nil || symbol == "" {
 		return false, 0
 	}
+	unlockManual, blocked := guardHyperliquidProtectionSync(db, sc.ID, symbol)
+	if blocked != "" {
+		if logger != nil {
+			logger.Info("%s skipped: %s", logTag, blocked)
+		}
+		return false, 0
+	}
+	defer unlockManual()
 	unlockSymbol := lockHyperliquidProtectionSync(symbol)
 	defer unlockSymbol()
 	var plan hlProtectionPlan

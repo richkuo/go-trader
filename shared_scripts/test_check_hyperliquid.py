@@ -795,6 +795,24 @@ class TestSyncProtection:
                 )
         return json.loads(captured.getvalue()), mock_adapter
 
+    @pytest.mark.parametrize("size,tiers,oids,skipped,placements", [
+        (0.003, [(1.0, 0.4), (2.0, 0.5), (3.0, 1.0)], [0, 7002, 0], [False, True, False], 2),
+        (0.0004, [(1.0, 0.5), (2.0, 1.0)], [7001, 7002], [True, True], 0),
+    ])
+    def test_size_skipped_tiers_report_unverified(self, size, tiers, oids, skipped, placements):
+        out, adapter = self._run_sync(
+            size=size, stop_loss_atr_mult=0, tp_tiers=tiers,
+            tp_oids=oids, tp_armed_tiers=[oid > 0 for oid in oids],
+            open_oids=set(),
+        )
+        assert out["tp_size_skipped"] == skipped
+        assert adapter.place_take_profit_limit.call_count == placements
+        if placements:
+            assert out["tp_oids"][1] == 7002
+            assert out["tp_oids"][0] > 0
+            assert out["tp_oids"][2] > 0
+        adapter.lookup_fill_fee_by_oid.assert_not_called()
+
     def test_manual_close_recovery_leaves_the_stop_alone(self):
         out, adapter = self._run_sync(
             stop_loss_atr_mult=0,
