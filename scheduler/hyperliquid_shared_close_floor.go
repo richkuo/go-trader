@@ -161,7 +161,7 @@ func operatorSharedCloseUnprovableReason(symbol string, remainderUSD float64, pe
 	if err != nil {
 		detail = fmt.Sprintf("the on-chain account read failed: %v", err)
 	}
-	return fmt.Sprintf("cannot prove every peer is flat on %s (%s); the closing value $%.2f is under the $%.2f venue minimum gate, so the venue rejects a sized close and a whole-position close could take the exposure of one of the %d live strategies sharing this coin — no order sent",
+	return fmt.Sprintf("cannot prove every peer is flat on %s (%s); the closing value $%.2f is under the $%.2f venue minimum gate, so the venue rejects a sized close and a whole-position close could take the exposure of one of the %d live strategies sharing this coin — no close order sent",
 		symbol, detail, remainderUSD, hlVenueCloseGateThresholdUSD(), peers)
 }
 
@@ -203,10 +203,22 @@ func decideOperatorSharedCloseFloor(symbol, posSide string, posQty, price float6
 		d.Reason = operatorSharedCloseUnprovableReason(symbol, r.RemainderUSD, peers, r.RefetchErr)
 	default:
 		d.Refuse = true
-		d.Reason = fmt.Sprintf("a peer strategy still holds quantity on %s (peers hold %.6f in their own books and the account holds %.6f on-chain against this position's %.6f), so a whole-position close would take its exposure; the closing value $%.2f is under the $%.2f venue minimum gate, so the venue rejects a sized close — no order sent",
+		d.Reason = fmt.Sprintf("a peer strategy still holds quantity on %s (peers hold %.6f in their own books and the account holds %.6f on-chain against this position's %.6f), so a whole-position close would take its exposure; the closing value $%.2f is under the $%.2f venue minimum gate, so the venue rejects a sized close — no close order sent",
 			symbol, peerVirtualQty, r.OnChainQty, posQty, r.RemainderUSD, gate)
 	}
 	return d
+}
+
+func operatorRefusalWithCancelledRestingLimits(reason string, cancelledOIDs []int64) string {
+	if reason == "" || len(cancelledOIDs) == 0 {
+		return reason
+	}
+	oids := make([]string, 0, len(cancelledOIDs))
+	for _, oid := range cancelledOIDs {
+		oids = append(oids, fmt.Sprintf("%d", oid))
+	}
+	return fmt.Sprintf("%s; this strategy's resting limit order(s) oid=%s were already cancelled on the venue before the refusal and are not restored — re-place them by hand if you still want them",
+		reason, strings.Join(oids, ","))
 }
 
 func formatSharedCloseStrandedAlert(strategyID, symbol string, remainderUSD float64, reason, holdReason string) string {
@@ -215,7 +227,7 @@ func formatSharedCloseStrandedAlert(strategyID, symbol string, remainderUSD floa
 	case hlSharedCloseHoldVenueReject:
 		recovery = "The scheduler holds this close and will not resend it until the value rises above the gate; a peer going flat does not resend it, and a hand close escalates to a whole-position close only under the same peer-flat proof and otherwise refuses, so close the remainder directly on the venue or add to it above the gate."
 	case hlSharedCloseHoldOperatorRef:
-		recovery = "The hand close was refused and no order was sent; the scheduler's own hold on this position is unchanged. A hand close escalates to a whole-position close only when every peer is flat on-chain and in its own book, so close the remainder directly on the venue or add to it above the gate."
+		recovery = "The hand close was refused and no close order was sent; the scheduler's own hold on this position is unchanged. A hand close escalates to a whole-position close only when every peer is flat on-chain and in its own book, so close the remainder directly on the venue or add to it above the gate."
 	}
 	value := fmt.Sprintf("the final full close is worth $%.2f, under the $%.2f gate", remainderUSD, hlVenueCloseGateThresholdUSD())
 	if remainderUSD <= 0 {

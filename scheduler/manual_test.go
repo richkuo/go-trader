@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"math"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -2078,7 +2079,7 @@ func TestManualCloseDryRunPreviewsSharedCloseDecision(t *testing.T) {
 		{name: "every peer flat previews the escalated whole-position close", posQty: 0.002,
 			positions: flat, wantInLines: []string{"full market_close (escalated: peers flat)"}},
 		{name: "a peer holding quantity previews the refusal", posQty: 0.002,
-			positions: busy, wantInLines: []string{"REFUSED", "no order sent"}},
+			positions: busy, wantInLines: []string{"REFUSED", "no close order sent"}},
 		{name: "a value above the gate previews the sized close", posQty: 0.4,
 			positions: flat, wantInLines: []string{"sized 0.400000"}},
 		{name: "an unreadable mark previews the sized close with a warning", posQty: 0.002,
@@ -2181,7 +2182,7 @@ func TestOperatorSharedCloseFloorGatesBothCores(t *testing.T) {
 		{name: "a stored venue-rejected hold does not change the escalation", posQty: 0.002,
 			positions: flat, holdReason: hlSharedCloseHoldVenueReject, wantFired: 1, wantFullClose: true},
 		{name: "a peer holding on-chain refuses", posQty: 0.002,
-			positions: busy, wantErrPart: "no order sent"},
+			positions: busy, wantErrPart: "no close order sent"},
 		{name: "a peer holding in its own book refuses", posQty: 0.002,
 			peerBookQty: 0.003, positions: flat, wantErrPart: "0.003000"},
 		{name: "an unreadable account refuses", posQty: 0.002,
@@ -2311,6 +2312,233 @@ func TestOperatorSharedCloseFloorGatesBothCores(t *testing.T) {
 						t.Fatalf("on-chain account reads = %d on an unreadable mark, want 0", accountReads)
 					}
 				})
+			}
+		})
+	}
+}
+
+func TestManualCloseBooksTheVenueFillNotTheBookQuantity(t *testing.T) {
+	t.Setenv("HYPERLIQUID_SECRET_KEY", "test-secret")
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xoperator")
+
+	const bookQty = 0.002
+
+	cases := []struct {
+		name        string
+		fillSz      float64
+		fillErr     bool
+		wantQty     float64
+		wantFee     float64
+		wantFull    bool
+		wantErrPart string
+	}{
+		{name: "a short fill books only what the venue filled", fillSz: 0.0012,
+			wantQty: 0.0012, wantFee: 0.01, wantFull: false},
+		{name: "a fill equal to the book books the book quantity", fillSz: bookQty,
+			wantQty: bookQty, wantFee: 0.01, wantFull: true},
+		{name: "a fill above the book attributes only the virtual quantity", fillSz: 0.004,
+			wantQty: bookQty, wantFee: 0.005, wantFull: true},
+		{name: "a zero fill errors and books nothing", fillErr: true,
+			wantErrPart: "no confirmed fill"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			dbPath := filepath.Join(dir, "state.db")
+			db, err := OpenStateDB(dbPath)
+			if err != nil {
+				t.Fatalf("OpenStateDB: %v", err)
+			}
+			defer db.Close()
+
+			subject := StrategyConfig{ID: "hl-manual-eth", Type: "manual", Platform: "hyperliquid", Symbol: "ETH",
+				Script: "shared_scripts/check_hyperliquid.py",
+				Args:   []string{"hold", "ETH", "1h", "--mode=live"}, Capital: 1000, Leverage: 2}
+			peer := StrategyConfig{ID: "hl-perps-eth", Type: "perps", Platform: "hyperliquid",
+				Script: "shared_scripts/check_hyperliquid.py",
+				Args:   []string{"tcross", "ETH", "1h", "--mode=live"}, Capital: 1000, Leverage: 2}
+			cfg := &Config{DBFile: dbPath, Strategies: []StrategyConfig{subject, peer}}
+
+			state := &AppState{Strategies: map[string]*StrategyState{
+				subject.ID: {ID: subject.ID, Type: subject.Type, Platform: "hyperliquid",
+					Cash: 1000, InitialCapital: 1000,
+					Positions: map[string]*Position{"ETH": {
+						Symbol: "ETH", Quantity: bookQty, InitialQuantity: bookQty, AvgCost: 2000,
+						Side: "long", Multiplier: 1, Leverage: 2, OwnerStrategyID: subject.ID,
+						StopLossOID: 5150, OpenedAt: time.Now().UTC().Add(-time.Hour),
+					}}},
+			}}
+			if err := db.SaveState(state); err != nil {
+				t.Fatalf("SaveState: %v", err)
+			}
+
+			d := newCLIManualCoreDeps(cfg, openTestStore(t, db), nil)
+			d.fetchMids = func(coins []string) (map[string]float64, error) {
+				return map[string]float64{"ETH": 2000}, nil
+			}
+			d.fetchPositions = func(addr string) ([]HLPosition, error) {
+				return []HLPosition{{Coin: "ETH", Size: bookQty}}, nil
+			}
+			gotFullClose := false
+			d.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+				gotFullClose = closeFullPosition
+				if tc.fillErr {
+					return &HyperliquidExecuteResult{Error: "exchange returned no confirmed fill (sz=0.00000000 px=0.00000000)"}, "", nil
+				}
+				return &HyperliquidExecuteResult{Execution: &HyperliquidExecution{
+					Fill: &HyperliquidFill{AvgPx: 2500, TotalSz: tc.fillSz, OID: 7, Fee: 0.01},
+				}}, "", nil
+			}
+
+			sc, lookupErr := lookupManualStrategy(cfg, subject.ID)
+			if lookupErr != nil {
+				t.Fatalf("lookup: %v", lookupErr)
+			}
+			_, coreErr := manualCloseCore(d, sc, manualCloseInputs{StrategyID: subject.ID})
+
+			queued, loadErr := db.LoadPendingManualActions()
+			if loadErr != nil {
+				t.Fatalf("LoadPendingManualActions: %v", loadErr)
+			}
+
+			if tc.wantErrPart != "" {
+				if coreErr == nil || !strings.Contains(coreErr.Error(), tc.wantErrPart) {
+					t.Fatalf("err = %v, want one containing %q", coreErr, tc.wantErrPart)
+				}
+				if len(queued) != 0 {
+					t.Fatalf("queued actions = %d on a failed close, want 0", len(queued))
+				}
+				return
+			}
+			if coreErr != nil {
+				t.Fatalf("unexpected error: %v", coreErr)
+			}
+			if !gotFullClose {
+				t.Fatalf("escalation did not reach the venue as a whole-position close")
+			}
+			if len(queued) != 1 {
+				t.Fatalf("queued actions = %d, want 1", len(queued))
+			}
+			a := queued[0]
+			if math.Abs(a.Quantity-tc.wantQty) > 1e-9 {
+				t.Errorf("booked quantity = %v, want %v", a.Quantity, tc.wantQty)
+			}
+			if math.Abs(a.FillFee-tc.wantFee) > 1e-9 {
+				t.Errorf("booked fee = %v, want %v", a.FillFee, tc.wantFee)
+			}
+			wantPnL := tc.wantQty*(2500-2000) - tc.wantFee
+			if math.Abs(a.RealizedPnL-wantPnL) > 1e-9 {
+				t.Errorf("booked realized PnL = %v, want %v", a.RealizedPnL, wantPnL)
+			}
+			if a.IsFullClose != tc.wantFull {
+				t.Errorf("IsFullClose = %v, want %v", a.IsFullClose, tc.wantFull)
+			}
+		})
+	}
+}
+
+func TestManualCloseRefusalNamesCancelledRestingLimitOrders(t *testing.T) {
+	t.Setenv("HYPERLIQUID_SECRET_KEY", "test-secret")
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xoperator")
+
+	cases := []struct {
+		name        string
+		restingOID  int64
+		wantInErr   []string
+		wantNotInEr []string
+	}{
+		{name: "a refusal that already cancelled a resting order names it", restingOID: 9001,
+			wantInErr: []string{"no close order sent", "oid=9001", "are not restored"}},
+		{name: "a refusal with no resting order names none",
+			wantInErr:   []string{"no close order sent"},
+			wantNotInEr: []string{"resting limit order(s)"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			dbPath := filepath.Join(dir, "state.db")
+			db, err := OpenStateDB(dbPath)
+			if err != nil {
+				t.Fatalf("OpenStateDB: %v", err)
+			}
+			defer db.Close()
+
+			subject := StrategyConfig{ID: "hl-manual-eth", Type: "manual", Platform: "hyperliquid", Symbol: "ETH",
+				Script: "shared_scripts/check_hyperliquid.py",
+				Args:   []string{"hold", "ETH", "1h", "--mode=live"}, Capital: 1000, Leverage: 2}
+			peer := StrategyConfig{ID: "hl-perps-eth", Type: "perps", Platform: "hyperliquid",
+				Script: "shared_scripts/check_hyperliquid.py",
+				Args:   []string{"tcross", "ETH", "1h", "--mode=live"}, Capital: 1000, Leverage: 2}
+			cfg := &Config{DBFile: dbPath, Strategies: []StrategyConfig{subject, peer}}
+
+			state := &AppState{Strategies: map[string]*StrategyState{
+				subject.ID: {ID: subject.ID, Type: subject.Type, Platform: "hyperliquid",
+					Cash: 1000, InitialCapital: 1000,
+					Positions: map[string]*Position{"ETH": {
+						Symbol: "ETH", Quantity: 0.002, InitialQuantity: 0.002, AvgCost: 2000,
+						Side: "long", Multiplier: 1, Leverage: 2, OwnerStrategyID: subject.ID,
+						OpenedAt: time.Now().UTC().Add(-time.Hour),
+					}}},
+			}}
+			if err := db.SaveState(state); err != nil {
+				t.Fatalf("SaveState: %v", err)
+			}
+			if tc.restingOID != 0 {
+				if _, ierr := db.InsertPendingLimitOrder(PendingLimitOrder{
+					StrategyID: subject.ID, Symbol: "ETH", Side: "long", OrderOID: tc.restingOID,
+					LimitPrice: 1900, OrderSize: 0.002, TIF: "Alo", CreatedAt: time.Now().UTC(),
+				}); ierr != nil {
+					t.Fatalf("InsertPendingLimitOrder: %v", ierr)
+				}
+			}
+
+			cancelled := 0
+			withStubbedLimitDeps(t,
+				func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
+					return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
+						{OID: tc.restingOID, Resting: limitTestBoolPtr(false), FilledSize: 0, AvgPx: 0},
+					}}, "", nil
+				},
+				func(string, string, int64) (*HyperliquidCancelOrderResult, string, error) {
+					cancelled++
+					return &HyperliquidCancelOrderResult{}, "", nil
+				},
+			)
+
+			d := newCLIManualCoreDeps(cfg, openTestStore(t, db), nil)
+			d.fetchMids = func(coins []string) (map[string]float64, error) {
+				return map[string]float64{"ETH": 2000}, nil
+			}
+			d.fetchPositions = func(addr string) ([]HLPosition, error) {
+				return []HLPosition{{Coin: "ETH", Size: 0.5}}, nil
+			}
+			d.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+				t.Fatal("a refusal must not reach the venue with a close order")
+				return nil, "", nil
+			}
+
+			sc, lookupErr := lookupManualStrategy(cfg, subject.ID)
+			if lookupErr != nil {
+				t.Fatalf("lookup: %v", lookupErr)
+			}
+			_, coreErr := manualCloseCore(d, sc, manualCloseInputs{StrategyID: subject.ID})
+			if coreErr == nil {
+				t.Fatalf("expected a refusal, got nil")
+			}
+			if tc.restingOID != 0 && cancelled != 1 {
+				t.Fatalf("venue cancels = %d, want 1", cancelled)
+			}
+			for _, want := range tc.wantInErr {
+				if !strings.Contains(coreErr.Error(), want) {
+					t.Errorf("refusal %q missing %q", coreErr.Error(), want)
+				}
+			}
+			for _, notWant := range tc.wantNotInEr {
+				if strings.Contains(coreErr.Error(), notWant) {
+					t.Errorf("refusal %q must not contain %q", coreErr.Error(), notWant)
+				}
 			}
 		})
 	}
