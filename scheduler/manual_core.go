@@ -199,6 +199,8 @@ type manualCoreDeps struct {
 	lockManualActions           func(strategyID string) (release func(), err error)
 	reconcileCanceledProtection func(strategyID, symbol string, cancelOIDs []int64) error
 	recordRearmedStopLoss       func(strategyID, symbol, side string, qty float64, prevStopOID int64, result *HyperliquidStopLossUpdateResult) error
+	syncProtection              func(sc StrategyConfig, plan hlProtectionPlan) (*HyperliquidProtectionSyncResult, string, error)
+	recordRestoredTakeProfits   func(strategyID, symbol, side, positionID string, outcomes []manualCloseTPTierOutcome) error
 }
 
 func (d manualCoreDeps) acquireManualActionLock(strategyID string) (func(), error) {
@@ -239,6 +241,16 @@ func newManualCoreDeps(cfg *Config, stateDB *StateStore, notifier *MultiNotifier
 		},
 		recordRearmedStopLoss: func(strategyID, symbol, side string, qty float64, prevStopOID int64, result *HyperliquidStopLossUpdateResult) error {
 			return recordRearmedStopLossInDB(cfg, stateDB, strategyID, symbol, side, qty, prevStopOID, result)
+		},
+		syncProtection: func(sc StrategyConfig, plan hlProtectionPlan) (*HyperliquidProtectionSyncResult, string, error) {
+			return RunHyperliquidSyncProtection(
+				sc.Script, plan.Symbol, plan.Side, plan.Size, plan.AvgCost, plan.EntryATR,
+				plan.StopLossATRMult, plan.Tiers, plan.StopLossOID, plan.TPOIDs, plan.TPArmedTiers,
+				plan.ForceSLReplace, plan.ForceTPReplace, plan.CancelTPOIDs, nil,
+			)
+		},
+		recordRestoredTakeProfits: func(strategyID, symbol, side, positionID string, outcomes []manualCloseTPTierOutcome) error {
+			return recordRestoredTakeProfitsInDB(cfg, stateDB, strategyID, symbol, side, positionID, outcomes)
 		},
 		lockManualActions: func(strategyID string) (func(), error) {
 			return stateDB.manualActionLock(strategyID)
@@ -1124,11 +1136,15 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 		extraCancelOIDs = cloneInt64s(pos.TPOIDs)
 	}
 	protectionSnapshot := manualCloseProtectionSnapshot{
-		Symbol:      sc.Symbol,
-		Side:        pos.Side,
-		Quantity:    pos.Quantity,
-		StopLossOID: cancelOID,
-		TriggerPx:   pos.StopLossTriggerPx,
+		Symbol:          sc.Symbol,
+		Side:            pos.Side,
+		Quantity:        pos.Quantity,
+		StopLossOID:     cancelOID,
+		TriggerPx:       pos.StopLossTriggerPx,
+		PositionID:      pos.TradePositionID,
+		OwnerStrategyID: pos.OwnerStrategyID,
+		TPOIDs:          cloneInt64s(pos.TPOIDs),
+		TPArmedTiers:    append([]bool(nil), pos.TPArmedTiers...),
 	}
 
 	execResult, stderr, execErr := d.execute(
@@ -1142,7 +1158,8 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 	execResult, execErr = confirmHyperliquidExecuteFill(execResult, execErr)
 	if execErr != nil {
 		reconcileManualExecuteProtection(d, res, strategyID, sc.Symbol, execResult, requestedCancelOIDs)
-		restoreManualStopLossAfterFailedClose(d, res, sc, strategyID, protectionSnapshot, execResult, requestedCancelOIDs)
+		positionFlat := restoreManualStopLossAfterFailedClose(d, res, sc, strategyID, protectionSnapshot, execResult, requestedCancelOIDs)
+		restoreManualTakeProfitsAfterFailedClose(d, res, sc, strategyID, protectionSnapshot, execResult, requestedCancelOIDs, positionFlat)
 		return res, manualFailf("error placing close order: %v", execErr)
 	}
 	if execResult.CancelStopLossError != "" {

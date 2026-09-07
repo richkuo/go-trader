@@ -7,6 +7,23 @@ import (
 	"sync"
 )
 
+var (
+	hlProtectionSyncLocksMu sync.Mutex
+	hlProtectionSyncLocks   = map[string]*sync.Mutex{}
+)
+
+func lockHyperliquidProtectionSync(symbol string) func() {
+	hlProtectionSyncLocksMu.Lock()
+	m := hlProtectionSyncLocks[symbol]
+	if m == nil {
+		m = &sync.Mutex{}
+		hlProtectionSyncLocks[symbol] = m
+	}
+	hlProtectionSyncLocksMu.Unlock()
+	m.Lock()
+	return m.Unlock
+}
+
 type hlProtectionPlan struct {
 	Symbol          string
 	Side            string
@@ -517,6 +534,8 @@ func runHyperliquidProtectionSync(
 	if stratState == nil || symbol == "" {
 		return false, 0
 	}
+	unlockSymbol := lockHyperliquidProtectionSync(symbol)
+	defer unlockSymbol()
 	var plan hlProtectionPlan
 	var syncOK bool
 	if strategyUsesDynamicRegimeClose(sc) {

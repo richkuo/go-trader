@@ -337,17 +337,17 @@ type manualAlert struct {
 // acknowledgement against the scope that owns it. The acknowledgement is
 // deleted by the transaction that persists the effect, so a failed action is
 // never removed by a later success in this file or in the other one.
-func drainPendingManualActions(state *AppState, cfg *Config, store *StateStore) []manualAlert {
+func drainPendingManualActions(state *AppState, cfg *Config, store *StateStore) ([]manualAlert, []string) {
 	if store == nil {
-		return nil
+		return nil, nil
 	}
 	actions, err := store.LoadPendingManualActions()
 	if err != nil {
 		fmt.Printf("[manual] failed to load pending actions: %v\n", err)
-		return nil
+		return nil, nil
 	}
 	if len(actions) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	scByID := make(map[string]StrategyConfig, len(cfg.Strategies))
@@ -359,6 +359,7 @@ func drainPendingManualActions(state *AppState, cfg *Config, store *StateStore) 
 	var order []string
 	appliedScopes := make(map[PortfolioScope]bool)
 	appliedAny := false
+	var criticals []string
 	for _, a := range actions {
 		role := a.SourceRole
 		if role == "" {
@@ -375,10 +376,12 @@ func drainPendingManualActions(state *AppState, cfg *Config, store *StateStore) 
 			}
 			scope = ScopeLive
 		}
-		if err := applyManualAction(state, cfg, scByID, a); err != nil {
+		actionCriticals, err := applyManualActionWithCriticals(state, cfg, scByID, a)
+		if err != nil {
 			fmt.Printf("[manual] failed to apply action %d (%s %s): %v\n", a.ID, a.Action, a.StrategyID, err)
 			continue
 		}
+		criticals = append(criticals, actionCriticals...)
 		store.recordAppliedManualAction(a.StrategyID, role, a.ID)
 		appliedScopes[scope] = true
 		appliedAny = true
@@ -418,21 +421,26 @@ func drainPendingManualActions(state *AppState, cfg *Config, store *StateStore) 
 	for _, id := range order {
 		alerts = append(alerts, *applied[id])
 	}
-	return alerts
+	return alerts, criticals
 }
 
 func applyManualAction(state *AppState, cfg *Config, scByID map[string]StrategyConfig, a PendingManualAction) error {
+	_, err := applyManualActionWithCriticals(state, cfg, scByID, a)
+	return err
+}
+
+func applyManualActionWithCriticals(state *AppState, cfg *Config, scByID map[string]StrategyConfig, a PendingManualAction) ([]string, error) {
 	sc, hasSC := scByID[a.StrategyID]
 	if !hasSC {
-		return fmt.Errorf("strategy %q not found in config", a.StrategyID)
+		return nil, fmt.Errorf("strategy %q not found in config", a.StrategyID)
 	}
 	if err := validatePendingManualActionStrategy(sc, a); err != nil {
-		return err
+		return nil, err
 	}
 
 	ss := state.Strategies[a.StrategyID]
 	if ss == nil {
-		return fmt.Errorf("strategy state for %q not found", a.StrategyID)
+		return nil, fmt.Errorf("strategy state for %q not found", a.StrategyID)
 	}
 
 	now := a.CreatedAt
@@ -443,7 +451,7 @@ func applyManualAction(state *AppState, cfg *Config, scByID map[string]StrategyC
 	switch a.Action {
 	case "open":
 		if _, exists := ss.Positions[a.Symbol]; exists {
-			return fmt.Errorf("position already open for %s/%s; close it first", a.StrategyID, a.Symbol)
+			return nil, fmt.Errorf("position already open for %s/%s; close it first", a.StrategyID, a.Symbol)
 		}
 		pos := &Position{
 			Symbol:                          a.Symbol,
@@ -503,14 +511,14 @@ func applyManualAction(state *AppState, cfg *Config, scByID map[string]StrategyC
 			}
 			fmt.Printf("[manual] skipped duplicate close: %s %s oid=%s already booked\n",
 				a.StrategyID, a.Symbol, a.ExchangeOrderID)
-			return nil
+			return nil, nil
 		}
 		pos, exists := ss.Positions[a.Symbol]
 		if !exists || pos == nil {
-			return fmt.Errorf("no open position for %s/%s", a.StrategyID, a.Symbol)
+			return nil, fmt.Errorf("no open position for %s/%s", a.StrategyID, a.Symbol)
 		}
 		if !manualPositionOwnedByStrategy(pos, a.StrategyID) {
-			return fmt.Errorf("position %s/%s is owned by %q, not %q", a.StrategyID, a.Symbol, pos.OwnerStrategyID, a.StrategyID)
+			return nil, fmt.Errorf("position %s/%s is owned by %q, not %q", a.StrategyID, a.Symbol, pos.OwnerStrategyID, a.StrategyID)
 		}
 		closedFull := a.IsFullClose
 		side := closeTradeSide(pos.Side)
@@ -562,13 +570,13 @@ func applyManualAction(state *AppState, cfg *Config, scByID map[string]StrategyC
 	case "add":
 		pos, exists := ss.Positions[a.Symbol]
 		if !exists || pos == nil {
-			return fmt.Errorf("no open position for %s/%s; open one first", a.StrategyID, a.Symbol)
+			return nil, fmt.Errorf("no open position for %s/%s; open one first", a.StrategyID, a.Symbol)
 		}
 		if !manualPositionOwnedByStrategy(pos, a.StrategyID) {
-			return fmt.Errorf("position %s/%s is owned by %q, not %q", a.StrategyID, a.Symbol, pos.OwnerStrategyID, a.StrategyID)
+			return nil, fmt.Errorf("position %s/%s is owned by %q, not %q", a.StrategyID, a.Symbol, pos.OwnerStrategyID, a.StrategyID)
 		}
 		if a.Side != "" && a.Side != pos.Side {
-			return fmt.Errorf("scale-in side %q does not match open position side %q for %s/%s", a.Side, pos.Side, a.StrategyID, a.Symbol)
+			return nil, fmt.Errorf("scale-in side %q does not match open position side %q for %s/%s", a.Side, pos.Side, a.StrategyID, a.Symbol)
 		}
 		applyScaleIn(pos, a.Quantity, a.FillPrice)
 		trade := Trade{
@@ -599,10 +607,10 @@ func applyManualAction(state *AppState, cfg *Config, scByID map[string]StrategyC
 	case "update-sl":
 		pos, exists := ss.Positions[a.Symbol]
 		if !exists || pos == nil {
-			return fmt.Errorf("no open position for %s/%s", a.StrategyID, a.Symbol)
+			return nil, fmt.Errorf("no open position for %s/%s", a.StrategyID, a.Symbol)
 		}
 		if !manualPositionOwnedByStrategy(pos, a.StrategyID) {
-			return fmt.Errorf("position %s/%s is owned by %q, not %q", a.StrategyID, a.Symbol, pos.OwnerStrategyID, a.StrategyID)
+			return nil, fmt.Errorf("position %s/%s is owned by %q, not %q", a.StrategyID, a.Symbol, pos.OwnerStrategyID, a.StrategyID)
 		}
 		pos.StopLossOID = a.StopLossOID
 		pos.StopLossTriggerPx = a.StopLossTriggerPx
@@ -612,20 +620,45 @@ func applyManualAction(state *AppState, cfg *Config, scByID map[string]StrategyC
 	case "cancel-sl":
 		pos, exists := ss.Positions[a.Symbol]
 		if !exists || pos == nil {
-			return fmt.Errorf("no open position for %s/%s", a.StrategyID, a.Symbol)
+			return nil, fmt.Errorf("no open position for %s/%s", a.StrategyID, a.Symbol)
 		}
 		if !manualPositionOwnedByStrategy(pos, a.StrategyID) {
-			return fmt.Errorf("position %s/%s is owned by %q, not %q", a.StrategyID, a.Symbol, pos.OwnerStrategyID, a.StrategyID)
+			return nil, fmt.Errorf("position %s/%s is owned by %q, not %q", a.StrategyID, a.Symbol, pos.OwnerStrategyID, a.StrategyID)
 		}
 		pos.StopLossOID = 0
 		pos.StopLossTriggerPx = 0
 		fmt.Printf("[manual] applied cancel-sl: %s %s (stop-loss removed)\n",
 			a.StrategyID, a.Symbol)
 
+	case "restore-tp":
+		pos, exists := ss.Positions[a.Symbol]
+		if !exists || pos == nil {
+			return nil, fmt.Errorf("no open position for %s/%s", a.StrategyID, a.Symbol)
+		}
+		if !manualPositionOwnedByStrategy(pos, a.StrategyID) {
+			return nil, fmt.Errorf("position %s/%s is owned by %q, not %q", a.StrategyID, a.Symbol, pos.OwnerStrategyID, a.StrategyID)
+		}
+		if a.PositionID != "" && pos.TradePositionID != "" && pos.TradePositionID != a.PositionID {
+			fmt.Printf("[manual] skipped stale restore-tp: %s %s names trade position %q, the book now holds %q\n",
+				a.StrategyID, a.Symbol, a.PositionID, pos.TradePositionID)
+			return nil, nil
+		}
+		conflicts := adoptRestoredTakeProfits(pos, a)
+		fmt.Printf("[manual] applied restore-tp: %s %s take-profit OIDs -> %v (armed %v)\n",
+			a.StrategyID, a.Symbol, pos.TPOIDs, pos.TPArmedTiers)
+		var criticals []string
+		for _, conflict := range conflicts {
+			msg := fmt.Sprintf("CRITICAL: [%s] %s: the restored take-profit could not be adopted — %s. A restored reduce-only order may be resting untracked; verify the open orders on Hyperliquid and reconcile.",
+				a.StrategyID, a.Symbol, conflict)
+			fmt.Printf("[manual] %s\n", msg)
+			criticals = append(criticals, msg)
+		}
+		return criticals, nil
+
 	default:
-		return fmt.Errorf("unknown action %q", a.Action)
+		return nil, fmt.Errorf("unknown action %q", a.Action)
 	}
-	return nil
+	return nil, nil
 }
 
 func findManualStrategy(cfg *Config, id string) (StrategyConfig, bool) {

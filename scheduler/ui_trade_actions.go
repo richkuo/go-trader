@@ -111,6 +111,32 @@ func (ss *StatusServer) daemonManualCoreDeps(cfg *Config) manualCoreDeps {
 		applyTrailingStopUpdateResult(strategy, symbol, side, prevStopOID, 0, false, result, "manual_close_rearm_sl_immediate", logger, qty)
 		return ss.stateDB.SaveStrategyBook(strategy)
 	}
+	d.recordRestoredTakeProfits = func(strategyID, symbol, side, positionID string, outcomes []manualCloseTPTierOutcome) error {
+		if len(outcomes) == 0 {
+			return nil
+		}
+		ss.mu.Lock()
+		defer ss.mu.Unlock()
+		if ss.state == nil {
+			return fmt.Errorf("state unavailable")
+		}
+		strategy := ss.state.Strategies[strategyID]
+		if strategy == nil {
+			return fmt.Errorf("strategy %q is no longer in the book", strategyID)
+		}
+		position := strategy.Positions[symbol]
+		if position == nil {
+			return fmt.Errorf("position %s/%s is no longer in the book", strategyID, symbol)
+		}
+		if positionID != "" && position.TradePositionID != "" && position.TradePositionID != positionID {
+			return fmt.Errorf("position %s/%s was replaced (trade position %q, not %q)", strategyID, symbol, position.TradePositionID, positionID)
+		}
+		if !restoredTakeProfitBookChanged(outcomes) {
+			return nil
+		}
+		applyRestoredTakeProfitTiers(position, outcomes)
+		return ss.stateDB.SaveStrategyBook(strategy)
+	}
 	return d
 }
 

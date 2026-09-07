@@ -448,7 +448,7 @@ func TestDrainPendingManualActions(t *testing.T) {
 		CreatedAt: time.Now().UTC(),
 	})
 
-	alerts := drainPendingManualActions(state, cfg, openTestStore(t, db))
+	alerts, _ := drainPendingManualActions(state, cfg, openTestStore(t, db))
 
 	pos := state.Strategies[stratID].Positions["ETH"]
 	if pos == nil {
@@ -507,7 +507,7 @@ func TestDrainPendingManualActionsAlerts(t *testing.T) {
 	_ = db.InsertPendingManualAction(PendingManualAction{StrategyID: openID, Action: "close", Symbol: "ETH", Side: "long", Quantity: 0.5, FillPrice: 2100, FillFee: 0.7, RealizedPnL: 49.3, IsFullClose: true, CreatedAt: now})
 	_ = db.InsertPendingManualAction(PendingManualAction{StrategyID: otherID, Action: "open", Symbol: "BTC", Side: "short", Quantity: 0.01, FillPrice: 60000, FillFee: 0.3, EntryATR: 500, CreatedAt: now})
 
-	alerts := drainPendingManualActions(state, cfg, openTestStore(t, db))
+	alerts, _ := drainPendingManualActions(state, cfg, openTestStore(t, db))
 
 	if len(alerts) != 2 {
 		t.Fatalf("expected 2 strategy alerts, got %d", len(alerts))

@@ -741,10 +741,13 @@ func main() {
 		channelTradeDetails := make(map[string][]string)
 
 		mu.Lock()
-		manualAlerts := drainPendingManualActions(state, cfg, store)
+		manualAlerts, manualCriticals := drainPendingManualActions(state, cfg, store)
 		mu.Unlock()
 		for _, ma := range manualAlerts {
 			sendTradeAlerts(ma.sc, ma.ss, ma.trades, &mu, notifier)
+		}
+		for _, critical := range manualCriticals {
+			notifyManualCloseRearmFailure(notifier, critical)
 		}
 
 		limitAlerts := reconcilePendingLimitOrders(state, cfg, store, &mu, notifier, logMgr)

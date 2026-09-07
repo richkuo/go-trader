@@ -840,7 +840,7 @@ func TestDrainPendingManualActionsPerFile(t *testing.T) {
 		t.Fatalf("insert live open: %v", err)
 	}
 
-	alerts := drainPendingManualActions(state, cfg, store)
+	alerts, _ := drainPendingManualActions(state, cfg, store)
 	if len(alerts) != 1 || alerts[0].sc.ID != "hl-live" {
 		t.Fatalf("alerts = %+v, want one for hl-live", alerts)
 	}

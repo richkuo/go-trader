@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -100,6 +101,7 @@ type tradeStubs struct {
 	closer         HyperliquidLiveCloser
 	cancelOrder    func(script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error)
 	fetchPositions func(accountAddress string) ([]HLPosition, error)
+	syncProtection func(sc StrategyConfig, plan hlProtectionPlan) (*HyperliquidProtectionSyncResult, string, error)
 }
 
 func stubTradeDeps(t *testing.T, ss *StatusServer) *tradeStubs {
@@ -138,6 +140,14 @@ func stubTradeDeps(t *testing.T, ss *StatusServer) *tradeStubs {
 		} else {
 			d.fetchPositions = func(accountAddress string) ([]HLPosition, error) {
 				return nil, fmt.Errorf("stub: no account reader")
+			}
+		}
+		if stubs.syncProtection != nil {
+			d.syncProtection = stubs.syncProtection
+		} else {
+			d.syncProtection = func(sc StrategyConfig, plan hlProtectionPlan) (*HyperliquidProtectionSyncResult, string, error) {
+				t.Error("syncProtection must not be called")
+				return nil, "", fmt.Errorf("stub")
 			}
 		}
 		if stubs.closer != nil {
@@ -746,5 +756,69 @@ func TestUISLEditGuardedWhileCloseQueued(t *testing.T) {
 	}
 	if rows, _ := db.LoadPendingManualActions(); len(rows) != 1 || rows[0].Action != "update-sl" {
 		t.Fatalf("rows = %+v, want one update-sl", rows)
+	}
+}
+
+func TestDaemonManualCloseRestoresTakeProfits(t *testing.T) {
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xoperator")
+	ss, db, cfg := newTradeActionTestServer(t)
+	for i := range cfg.Strategies {
+		if cfg.Strategies[i].ID == "hl-manual-eth" {
+			cfg.Strategies[i].CloseStrategy = tieredTPCloseStrategy()
+		}
+	}
+	position := ss.state.Strategies["hl-manual-eth"].Positions["ETH"]
+	position.TradePositionID = "pos-1"
+	position.StopLossOID = 0
+	position.StopLossTriggerPx = 0
+	position.TPOIDs = []int64{7001, 7002, 7003}
+	position.TPArmedTiers = []bool{true, true, true}
+
+	stubs := stubTradeDeps(t, ss)
+	stubs.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+		return &HyperliquidExecuteResult{
+			Execution:                   &HyperliquidExecution{Fill: &HyperliquidFill{}},
+			CancelStopLossSucceeded:     true,
+			CancelStopLossSucceededOIDs: []int64{7001, 7002, 7003},
+		}, "", nil
+	}
+	stubs.fetchPositions = func(accountAddress string) ([]HLPosition, error) {
+		return []HLPosition{{Coin: "ETH", Size: 0.4}}, nil
+	}
+	var gotPlan hlProtectionPlan
+	stubs.syncProtection = func(sc StrategyConfig, plan hlProtectionPlan) (*HyperliquidProtectionSyncResult, string, error) {
+		gotPlan = plan
+		return &HyperliquidProtectionSyncResult{TPOIDs: []int64{9001, 9002, 9003}, TPPxs: []float64{2050, 2100, 2150}}, "", nil
+	}
+
+	nonce := confirmNonceFor(t, ss, "close", "hl-manual-eth", `{}`)
+	w := tradeActionPost(ss, "/api/strategies/hl-manual-eth/close", fmt.Sprintf(`{"nonce":%q,"params":{}}`, nonce), nil)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "exchange returned no confirmed fill") {
+		t.Fatalf("daemon close status = %d, body %s", w.Code, w.Body.String())
+	}
+	if gotPlan.StopLossATRMult != 0 || gotPlan.ForceSLReplace || len(gotPlan.Tiers) != 3 || gotPlan.Size != 0.4 {
+		t.Fatalf("restore plan = %+v, want three tiers at 0.4 with no stop-loss leg", gotPlan)
+	}
+	if !reflect.DeepEqual(gotPlan.TPArmedTiers, []bool{false, false, false}) {
+		t.Fatalf("restore plan armed tiers = %v, want every cancelled tier re-placed", gotPlan.TPArmedTiers)
+	}
+	if !reflect.DeepEqual(position.TPOIDs, []int64{9001, 9002, 9003}) ||
+		!reflect.DeepEqual(position.TPArmedTiers, []bool{true, true, true}) {
+		t.Fatalf("daemon memory = %v armed %v, want the restored order ids", position.TPOIDs, position.TPArmedTiers)
+	}
+	actions, err := db.LoadPendingManualActions()
+	if err != nil {
+		t.Fatalf("LoadPendingManualActions: %v", err)
+	}
+	if len(actions) != 0 {
+		t.Fatalf("pending actions = %+v, want none from the dashboard path", actions)
+	}
+	reloaded, _, loadErr := LoadStateWithStore(cfg, openTestStore(t, db))
+	if loadErr != nil {
+		t.Fatalf("LoadStateWithStore: %v", loadErr)
+	}
+	saved := reloaded.Strategies["hl-manual-eth"].Positions["ETH"]
+	if saved == nil || !reflect.DeepEqual(saved.TPOIDs, []int64{9001, 9002, 9003}) {
+		t.Fatalf("saved book = %+v, want the restored order ids persisted", saved)
 	}
 }
