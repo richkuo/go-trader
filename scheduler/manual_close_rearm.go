@@ -114,6 +114,10 @@ func restoreManualStopLossAfterFailedClose(d manualCoreDeps, res *manualCoreResu
 	onChainAbsQty, liqPxByCoin, netSideByCoin, mapErr := d.hyperliquidAccountMaps()
 	if mapErr != nil {
 		res.errf("warning: could not read the Hyperliquid account before re-arming %s (%v) — re-arming at the recorded size with no liquidation clamp", snap.Symbol, mapErr)
+	} else if gone, detail := hlPositionGoneForSide(onChainAbsQty, netSideByCoin, snap.Symbol, snap.Side); gone {
+		res.outf("manual-close %s %s: %s, so the close order most likely filled after the command lost its reply — no stop-loss was placed; the reconciler books the close at the next scheduler cycle.",
+			strategyID, snap.Symbol, detail)
+		return
 	}
 	qty, capped := hlSLEffectiveQty(snap.Symbol, snap.Quantity, onChainAbsQty)
 	if capped {
@@ -154,7 +158,7 @@ func restoreManualStopLossAfterFailedClose(d manualCoreDeps, res *manualCoreResu
 
 	switch {
 	case result.StopLossFilledImmediately && result.StopLossTriggerPx > 0:
-		res.outf("The re-armed stop-loss for %s filled immediately at $%.4f — the position closed on-chain and the close is queued for the next scheduler cycle.",
+		res.outf("The re-armed stop-loss for %s filled immediately at $%.4f — the position closed on-chain and the reconciler books the close, with its venue fill and fee, at the next scheduler cycle.",
 			snap.Symbol, result.StopLossTriggerPx)
 	case result.StopLossFilledExternally:
 		res.outf("The previous stop-loss for %s (OID=%d) had already filled on-chain, so nothing was re-armed — the reconciler will book the close.",
@@ -185,21 +189,39 @@ func notifyManualCloseRearmFailure(notifier *MultiNotifier, msg string) {
 	notifier.SendOwnerDM(msg)
 }
 
-func rearmedStopLossBookValues(result *HyperliquidStopLossUpdateResult) (int64, float64, bool) {
+func hlPositionGoneForSide(onChainAbsQty map[string]float64, netSideByCoin map[string]string, symbol, side string) (bool, string) {
+	if qty, ok := onChainAbsQty[symbol]; !ok || qty <= 1e-9 {
+		return true, fmt.Sprintf("the venue reports no open %s position", symbol)
+	}
+	if netSideByCoin[symbol] != side {
+		return true, fmt.Sprintf("the venue reports the %s position net %q, not %q", symbol, netSideByCoin[symbol], side)
+	}
+	return false, ""
+}
+
+func rearmedStopLossBookValues(result *HyperliquidStopLossUpdateResult) (int64, float64, string) {
 	if result == nil {
-		return 0, 0, false
+		return 0, 0, ""
 	}
 	switch {
+	case result.StopLossFilledImmediately && result.StopLossTriggerPx > 0:
+		return 0, 0, "cancel-sl"
 	case result.StopLossOID > 0:
-		return result.StopLossOID, result.StopLossTriggerPx, true
+		return result.StopLossOID, result.StopLossTriggerPx, "update-sl"
 	case result.StopLossOutcomeUnknown:
-		return 0, result.StopLossTriggerPx, true
+		return 0, result.StopLossTriggerPx, "update-sl"
+	case result.StopLossFilledExternally, result.CancelStopLossSucceeded:
+		return 0, 0, "cancel-sl"
 	}
-	return 0, 0, false
+	return 0, 0, ""
 }
 
 func recordRearmedStopLossInDB(cfg *Config, store *StateStore, strategyID, symbol, side string, qty float64, prevStopOID int64, result *HyperliquidStopLossUpdateResult) error {
-	if store == nil || result == nil {
+	if store == nil {
+		return nil
+	}
+	newOID, newTrigger, action := rearmedStopLossBookValues(result)
+	if action == "" {
 		return nil
 	}
 	state, _, err := LoadStateWithStore(cfg, store)
@@ -214,34 +236,7 @@ func recordRearmedStopLossInDB(cfg *Config, store *StateStore, strategyID, symbo
 	if position == nil {
 		return nil
 	}
-
-	if result.StopLossFilledImmediately && result.StopLossTriggerPx > 0 {
-		fillQty := qty
-		if fillQty > position.Quantity {
-			fillQty = position.Quantity
-		}
-		if fillQty <= 0 {
-			return nil
-		}
-		realizedPnL := fillQty * (result.StopLossTriggerPx - position.AvgCost)
-		if position.Side == "short" {
-			realizedPnL = fillQty * (position.AvgCost - result.StopLossTriggerPx)
-		}
-		return store.InsertPendingManualAction(PendingManualAction{
-			StrategyID:  strategyID,
-			Action:      "close",
-			Symbol:      symbol,
-			Side:        closeTradeSide(position.Side),
-			Quantity:    fillQty,
-			FillPrice:   result.StopLossTriggerPx,
-			RealizedPnL: realizedPnL,
-			IsFullClose: position.Quantity-fillQty <= 0.0001,
-			CreatedAt:   time.Now().UTC(),
-		})
-	}
-
-	newOID, newTrigger, ok := rearmedStopLossBookValues(result)
-	if !ok {
+	if action == "cancel-sl" && position.StopLossOID != 0 && position.StopLossOID != prevStopOID {
 		return nil
 	}
 	position.StopLossOID = newOID
@@ -249,14 +244,17 @@ func recordRearmedStopLossInDB(cfg *Config, store *StateStore, strategyID, symbo
 	if err := store.SaveStrategyBook(strategy); err != nil {
 		return err
 	}
-	return store.InsertPendingManualAction(PendingManualAction{
-		StrategyID:        strategyID,
-		Action:            "update-sl",
-		Symbol:            symbol,
-		Side:              side,
-		Quantity:          qty,
-		StopLossOID:       newOID,
-		StopLossTriggerPx: newTrigger,
-		CreatedAt:         time.Now().UTC(),
-	})
+	queued := PendingManualAction{
+		StrategyID: strategyID,
+		Action:     action,
+		Symbol:     symbol,
+		Side:       side,
+		CreatedAt:  time.Now().UTC(),
+	}
+	if action == "update-sl" {
+		queued.Quantity = qty
+		queued.StopLossOID = newOID
+		queued.StopLossTriggerPx = newTrigger
+	}
+	return store.InsertPendingManualAction(queued)
 }

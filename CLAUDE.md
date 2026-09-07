@@ -32,7 +32,7 @@ Guardrails only. Mechanism: SKILL.md § Subsystem Mechanism Reference; flows: SK
 - `hedge.go`: HL perps only; ONE reconciler (`hedgeTargetDecision`+`runHedgeSync`), ownership `Position.HedgeFor` ONLY; hedge PnL: `RecordHedgeTradeResult`, never `RecordTradeResult`; fail-closed unwind + CRITICAL DM; hot-reload blocked while open, backtester rejects.
 - `hurst_gate.go`: **DEFAULT-OFF**, no shipped threshold, `config.example.json` clean; holds position-increasing signals only, fail-closed FLAT-ONLY; `metrics["hurst"]` ONLY from composite classifier; keep in `run_backtest.py` `stop_keys`.
 - `llm_entry_analysis.go`: advisory-only; `spawnPythonProcess` NEVER `runPython*`; sole writer of `trade_diagnostics.llm_verdict`, `trade_diagnostics*.go` never.
-- `scale_in.go`: geometry frozen via `RiskAnchorPrice`, never blended `AvgCost`. `manual*.go`: kill-switch+CB gated; SL edits queue `PendingManualAction`, NEVER a direct UPDATE; a rejected close never assumes an unconfirmed cancel spared the trigger; verify-first restore, unverified = CRITICAL; an adopted SL edit does not gate; `force-close` live HL perps only.
+- `scale_in.go`: geometry frozen via `RiskAnchorPrice`, never blended `AvgCost`. `manual*.go`: kill-switch+CB gated; SL edits queue `PendingManualAction`, never a bare book write; only the re-arm also writes it; a rejected close never assumes an unconfirmed cancel spared the trigger; verify-first restore, unverified = CRITICAL; adopted SL edits never gate; `force-close` live HL perps only.
 - `hyperliquid_liquidation_guard.go`: **CLAMP, never refuse to arm; ONE-WAY TIGHTEN** at 0.5% buffer; 0 = unknown, never persisted; unclampable REFUSES, unreadable outcome keeps state. Boot `validateHLStopWithinBankruptcyBound` mirrors `LoadConfig` stop-owner resolution.
 - `hyperliquid_protection.go`: reduce-only, on-chain TP also needs live (paper never); `hyperliquid_open_trailing.go` arms SL at open. `hyperliquid_shared_close_floor.go`: <$10 shared-coin full close escalates ONLY if each peer is flat on-chain (refetched, raw keys) AND in book, before SL blocks; else ONE alert+hold, `venue_rejected` never resends; same-cycle re-arm (all 7 owners) ONLY after a SUBMITTED order that REQUESTED the cancel; 2nd escalated refusal holds, any wording.
 - `version_probe.go`/`probe_cmd.go`: new runtime CLI flag > both probe argvs. `agent_info.go`: `--bootstrap-md` → `AGENTS.generated.md`, NEVER `AGENTS.md`.
@@ -65,7 +65,7 @@ Guardrails only. Mechanism: SKILL.md § Subsystem Mechanism Reference; flows: SK
 - `Closes #<N>` in body; never bare `#N` in lists. Title `type(#<N>): summary [C<score>, <model>, <effort>]` (`, fableplan` if Fable planned). Body: `## Plain simple English` (<55 words) first, then `## Summary` + verification.
 - Commits, PR and issue bodies end `LLM: <model> | <effort> | Harness: <action>`, no `Co-authored-by` trailer.
 - Bot reviews land on issue-comments endpoint; before merging a long-lived PR diff `origin/main..HEAD` for reverts.
-- Review format SSoT: rk-skills `pr-review-format.md` + `.github/prompts/pr-review-format-local.md`, reviews never gate on CI.
+- Review format: rk-skills `pr-review-format.md` + `.github/prompts/pr-review-format-local.md`, reviews never gate on CI.
 - Review findings: restate as invariant, list breaking states (inverse, compound), add class tests.
 - `.github/workflows/claude.yml`: least-privilege split; mode routing fail-closed (untrusted/fork = review); no-execution ban in agent, commit/push implement-mode only; prompt never holds `"`, `` ` ``, `$`; `.github/scripts/` keeps ONLY `test_workflow_logic.py`.
 
@@ -89,7 +89,7 @@ Guardrails only. Mechanism: SKILL.md § Subsystem Mechanism Reference; flows: SK
 - Each new feature and bug fix needs a test guarding a behavior contract (money, state, protection, subprocess contracts, migration, backtest parity). Assert outcomes; pin only operator-decision wording; no constants or round-trips, table-driven variants.
 - **Test budget.** Only that contract list; max one table-driven test per new function. `check_test_budget.py` fails CI on a wording-only test outside `scripts/test_budget_baseline.json` or a stale entry; entries only for operator-decision wording; `--write-baseline` after a delete.
 - Go CI never spawns Python: pure helpers out of subprocess wrappers; Go tests check `json.Unmarshal` errors.
-- `go build`/`go test ./...` from repo root; `gofmt -w` after edits; tabbed Go edits: Python `replace(old,new,1)`.
+- `go test ./...` after edits, then `gofmt -w`; tabbed Go edits: Python `replace(old,new,1)`.
 - Pytest: `uv run --no-sync python -m pytest shared_strategies/ shared_tools/ platforms/ backtest/`; `shared_scripts/test_*.py` by path; Registry/sys.path tests: FULL suite. CI `-n auto`: never bare-`import` an ambiguous name; intermittent failure = isolation, not flake.
 - `stampEntryATRIfOpened` rejects ATR > 50% of AvgCost. Strategy tests assert real signal values, smoke tests need `DatetimeIndex`.
 - `tiered_tp_atr`/`trailing_stop_atr_mult` need `Position.EntryATR`; `*_live` recompute via `atr_source`; `avwap_stop` = virtual exit only.

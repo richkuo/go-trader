@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 )
@@ -96,14 +97,8 @@ func (ss *StatusServer) daemonManualCoreDeps(cfg *Config) manualCoreDeps {
 		if result == nil {
 			return nil
 		}
-		logMgr, err := NewLogManager("")
-		if err != nil {
-			return err
-		}
-		logger, err := logMgr.GetStrategyLogger(strategyID)
-		if err != nil {
-			return err
-		}
+		logger := strategyLoggerOrStdout(cfg.LogDir, strategyID)
+		defer logger.Close()
 		ss.mu.Lock()
 		defer ss.mu.Unlock()
 		if ss.state == nil {
@@ -333,4 +328,13 @@ func (ss *StatusServer) handleAPIStrategyTradeAction(w http.ResponseWriter, r *h
 		return
 	}
 	writeJSON(w, uiTradeActionResponse{OK: true, Queued: res.queued, Message: res.uiMessage()})
+}
+
+func strategyLoggerOrStdout(logDir, strategyID string) *StrategyLogger {
+	if logMgr, err := NewLogManager(logDir); err == nil {
+		if logger, lerr := logMgr.GetStrategyLogger(strategyID); lerr == nil {
+			return logger
+		}
+	}
+	return &StrategyLogger{stratID: strategyID, writer: os.Stdout}
 }
