@@ -1222,6 +1222,3 @@ git commit -m "test(#1080): cache-guarded bake-off smoke + full-suite regression
 **Placeholder scan:** none — every code step shows complete code; no TBD/TODO/"handle edge cases".
 
 **Type consistency:** the fitter signature `(z,k,*,seed,...) -> (assign,em_mean,em_var,counts)` is identical across Tasks 2/3/4 and consumed by `fit_unsupervised` (Task 6). `non_degeneracy`/`derive_thresholds`/`NonDegeneracyThresholds` names match between Task 7 definition and Task 8 use. `select_winner` candidate dict keys (`verdict.ship`, `non_degenerate_all`, `model_kruskal_h`, `stability_gain`) match between Task 8's test and `run_bakeoff` output.
-
----
-Created with LLM: Opus 4.8 | xhigh | Harness: Claude Code

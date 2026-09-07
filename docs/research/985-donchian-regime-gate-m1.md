@@ -206,6 +206,3 @@ configs/backtests:
 Status: M1 protocol complete (baseline both legs + 7 gate/profile candidates +
 8 plateau sweeps + 1 OOS look, all 6 datasets × 5 windows). Verdict: deprecate
 — **implemented.**
-
----
-Created with LLM: Fable 5 | high | Harness: Claude Code + live M1 runs

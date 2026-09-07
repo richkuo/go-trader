@@ -74,6 +74,3 @@ modes), and the #1054 gross noise gates reproduce **bit-for-bit** (n=37 mean
 +0.082%/trade p=0.3913; n=173 mean -0.022%/trade p=0.5516). Where `bar_close`
 re-runs differ from documented numbers (983/984 nets), the entire difference
 is the #1320 fee model, as designed — the pinned mode itself is intact.
-
----
-Created with LLM: Fable 5 | high | Harness: Claude Code

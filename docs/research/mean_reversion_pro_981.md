@@ -225,6 +225,3 @@ binanceus fee model, 5 bps slippage, long-leg open-as-close harness);
 Caveat (same class as #980's): a run against a cold or partially-populated
 cache is not reproducible — populate 2023-01-01→now first; with a warm cache
 back-to-back runs reproduce to the digit.
-
----
-Created with LLM: Fable 5 | high | Harness: Claude Code

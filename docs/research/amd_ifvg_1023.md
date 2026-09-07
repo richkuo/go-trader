@@ -154,6 +154,3 @@ held-outs while keeping the chop-window edge) — out of scope here.
 Status: M1 protocol complete (corrected baseline, both 15m and 1h/4h, all 5
 windows). Verdict: deprecate — **implemented** (hidden from discovery, kept
 loadable).
-
----
-Created with LLM: Opus 4.8 | xhigh | Harness: Claude Code + live M1 runs

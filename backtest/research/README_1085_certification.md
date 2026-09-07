@@ -294,6 +294,3 @@ via `GO_TRADER_DIRECTIONAL_CERT_PATH`).
   `(asset, timeframe, classifier)` gate (classifier = the one the backtester
   actually models — composite if a windows spec is configured, else legacy ADX),
   so a backtest can never show a directional edge the live path suppresses.
-
----
-Created with LLM: Opus 4.8 | high | Harness: Claude Code

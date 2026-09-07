@@ -87,6 +87,3 @@ uv run --no-sync python backtest/eval_windows.py \
 uv run --no-sync python backtest/eval_windows.py --strategy mean_reversion_pro \
   --json /tmp/m1-mrpro.json
 ```
-
----
-Created with LLM: Fable 5 | high | Harness: Claude Code

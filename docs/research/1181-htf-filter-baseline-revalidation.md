@@ -164,8 +164,3 @@ no surface to act on — `ohlc_walk` vs `bar_close` produce byte-identical
 output. And `run_backtest.py` prices the default `binanceus` platform fee,
 which #1320 did not change. **These baselines are current under the new
 default; no verdict or number changes.**
-
----
-Created with LLM: Fable 5 | high | Harness: Claude Code
-Updated with LLM: Opus 4.8 | high | Harness: Claude Code
-Updated with LLM: Fable 5 | high | Harness: Claude Code

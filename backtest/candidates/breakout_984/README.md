@@ -346,7 +346,3 @@ flips PASS → FAIL under the intra-bar walk, but the protocol verdict is
 unchanged in both modes (judged-OOS FAIL, held-out 0/3, matching the
 documented table). The #1243 finding that `tp_tight`'s documented continuous
 collapse was refuted stands (it is intrabar-unreached; only fees moved it).
-
----
-Updated with LLM: Opus 4.8 | high | Harness: Claude Code
-Updated with LLM: Fable 5 | high | Harness: Claude Code

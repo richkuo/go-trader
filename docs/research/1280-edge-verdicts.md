@@ -222,8 +222,3 @@ the verdict rests on the 2023–2024 evidence and should be re-confirmed once
 funding history is backfilled for the remaining windows. Disposition:
 `delta_neutral_funding` stays registered and live-eligible, now with a
 demonstrated carry edge rather than a withheld verdict.
-
----
-Created with LLM: Fable 5 | medium | Harness: Claude Code
-Updated with LLM: Opus 4.8 | high | Harness: Claude Code | fableplan-work-on-issue
-Updated with LLM: Opus 4.8 | high | Harness: Claude Code | fix-pr-review

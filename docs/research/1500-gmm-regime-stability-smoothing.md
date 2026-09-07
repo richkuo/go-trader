@@ -205,6 +205,3 @@ null), and the hand-rule path are not touched by this change. `git diff 17cdacb9
   not promoted by this document. A follow-up that re-runs the #1499 bake-off with
   `decode_stickiness=20` on every candidate, on both symbols, and with a higher `n_perm`
   to get off the alpha edge, would be the next research step. That follow-up is unfiled.
-
----
-Created with LLM: Fable 5.1 | low | Harness: Claude Code

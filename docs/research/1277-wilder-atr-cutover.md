@@ -86,6 +86,3 @@ unaffected because those sites are frozen (roster above).
 
 The wilder path never applies the `>= 100` integer rounding; the simple path
 keeps it frozen (#887) so historical baselines stay reproducible.
-
----
-Created with LLM: Fable 5 | high | Harness: Claude Code

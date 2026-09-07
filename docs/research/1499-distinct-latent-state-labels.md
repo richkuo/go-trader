@@ -259,6 +259,3 @@ hand-rule classifier.
 - No gate-semantics or threshold change is proposed. The knife-edge Bonferroni passes are
   a property of `n_perm` resolution at 1799 permutations; raising `n_perm` for a
   confirmation run would tighten the p-value estimate without changing the gate.
-
----
-Created with LLM: Fable 5.1 | high | Harness: Claude Code

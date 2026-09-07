@@ -272,7 +272,3 @@ fee-model-driven; #1271 additionally shifts that candidate's numbers (its
 trailing stop is engine-tracked) without moving any verdict. With 0/3
 held-out windows it remains a non-shipper, so the keep-baseline verdict is
 unaffected.
-
----
-Updated with LLM: Opus 4.8 | high | Harness: Claude Code
-Updated with LLM: Fable 5 | high | Harness: Claude Code

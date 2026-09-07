@@ -173,6 +173,3 @@ additionally rested on M1 protocol failures vs the incumbent bar, which the
 fee change moves on both sides. `regime_adaptive` spot stays `graduate_m1` on
 the M5 screen exactly as it was pre-change; its quarantine (PR #1314) came
 from the deeper M1/noise protocol, not this screen.
-
----
-Created with LLM: Fable 5 | high | Harness: Claude Code

@@ -215,8 +215,3 @@ same gross +0.27; hyperliquid 0.045%/side prices ~0.35pp less round-trip drag
 than binanceus 0.1%/side). The verdict rests on the gross-edge noise gates,
 which are unchanged — **`NO_POSITIVE_EDGE` and the deprecate recommendation
 hold under the current engine.**
-
----
-Created with LLM: Fable 5 | high | Harness: Claude Code + live M1 runs
-Updated with LLM: Opus 4.8 | high | Harness: Claude Code
-Updated with LLM: Fable 5 | high | Harness: Claude Code

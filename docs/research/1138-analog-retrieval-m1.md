@@ -56,6 +56,3 @@ uv run --no-sync python backtest/run_backtest.py --strategy analog_retrieval \
 
 Verdict: strategy stays backtest-only research; no promotion candidate.
 Promotion to live would additionally require explicit human sign-off (#1138).
-
----
-Created with LLM: Fable 5 | high | Harness: Claude Code

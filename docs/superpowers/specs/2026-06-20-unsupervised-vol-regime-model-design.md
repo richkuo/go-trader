@@ -203,6 +203,3 @@ order-independent and unaffected. No action needed here; flagged so #1074 doesn'
 - Live / Go classifier wiring and parity — **#1074**.
 - Economic payoff of regime-conditioned ATR sizing vs flat ATR — **#1081**.
 - Multi-asset validation beyond BTC/USDT 1h — **#1083**.
-
----
-Created with LLM: Opus 4.8 | xhigh | Harness: Claude Code

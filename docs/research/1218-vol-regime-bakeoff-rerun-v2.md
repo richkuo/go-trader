@@ -99,6 +99,3 @@ window (plus `max_occupancy` breaches for the funding/all_enriched arms).
   the evidence points at the state-collapse problem (fit-time K ≠ decoded effective
   states), not at significance power — `n_perm` resolution is no longer the binding
   constraint anywhere.
-
----
-Created with LLM: Fable 5 | high | Harness: Claude Code

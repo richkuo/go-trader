@@ -232,8 +232,3 @@ not merely reproduce the legacy bar-close pass. Committed artifact
 `backtest/research/regime_1152_exit_retune.json` remains the full 18-run
 2026-07-05 matrix; this addendum's two-candidate re-runs live in the PR record
 only.
-
----
-Created with LLM: Fable 5 | high | Harness: Claude Code
-Updated with LLM: Fable 5 | high | Harness: Claude Code
-Updated with LLM: Opus 4.8 | high | Harness: Claude Code

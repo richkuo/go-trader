@@ -153,6 +153,3 @@ No registry defaults change; `--list-json` verified byte-identical against
 `main` for both registries. The engine gains the `entry_fraction` surface
 (+ tests) and momentum_pro gains the default-off sizing kwargs (+ tests);
 both are inert unless explicitly enabled.
-
----
-Created with LLM: Fable 5 | high | Harness: Claude Code

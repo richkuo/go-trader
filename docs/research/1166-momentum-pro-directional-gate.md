@@ -212,6 +212,3 @@ conditions on the same information. No certification evidence is generated,
 harness threading stays: it is strategy-agnostic and lets the next
 directional-gate candidate (one whose entries do NOT already self-select for
 local downtrends) be measured on the M1 bar without new plumbing.
-
----
-Created with LLM: Fable 5 | high | Harness: Claude Code

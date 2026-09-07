@@ -61,6 +61,3 @@ uv run --no-sync python backtest/candidates/rahtf_1054/entry_condition_split.py 
 Runs executed 2026-07-01 (data cache through 2026-06-04/12 per dataset — the
 same cache state the M5 audit saw; the fee-audit row reproduces exactly).
 Stats are deterministic under the default seed (1066, 10000 resamples).
-
----
-Created with LLM: Fable 5 | high | Harness: Claude Code
