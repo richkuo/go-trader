@@ -986,14 +986,42 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 			dryCloseSide = "buy"
 		}
 		dryCloseQty := pos.Quantity
+		dryFullClose := true
 		if in.Qty > 0 {
 			if in.Qty > pos.Quantity {
 				return res, manualFailf("error: --qty %.6f exceeds open position %.6f", in.Qty, pos.Quantity)
 			}
 			dryCloseQty = in.Qty
+			if pos.Quantity-in.Qty > 0.0001 {
+				dryFullClose = false
+			}
 		}
-		res.outf("[dry-run] manual-close %s: %s %.6f %s (current pos=%.6f, avg_cost=$%.4f)",
-			strategyID, dryCloseSide, dryCloseQty, sc.Symbol, pos.Quantity, pos.AvgCost)
+		dryWholePosition := false
+		if d.cfg != nil {
+			dryWholePosition = shouldCloseFullPosition(
+				manualCloseIntentFraction(dryFullClose, dryCloseQty, pos.Quantity),
+				sc.Symbol,
+				hyperliquidCloseScopeStrategies(d.cfg.Strategies),
+			)
+		}
+		mode := fmt.Sprintf("sized %.6f", dryCloseQty)
+		if dryWholePosition {
+			mode = "full market_close"
+		}
+		if dryFullClose && !dryWholePosition && hyperliquidIsLive(sc.Args) {
+			floor := operatorSharedCloseFloorDecision(d, sc.Symbol, pos.Side, pos.Quantity, view.PeerVirtualQty)
+			switch {
+			case floor.Refuse:
+				res.outf("[dry-run] manual-close %s: REFUSED — %s", strategyID, floor.Reason)
+				return res, nil
+			case floor.Escalate:
+				mode = "full market_close (escalated: peers flat)"
+			case floor.MarkUnreadable:
+				res.errf("[dry-run] warning: manual-close %s: %s", strategyID, floor.Reason)
+			}
+		}
+		res.outf("[dry-run] manual-close %s: %s %.6f %s (current pos=%.6f, avg_cost=$%.4f, %s)",
+			strategyID, dryCloseSide, dryCloseQty, sc.Symbol, pos.Quantity, pos.AvgCost, mode)
 		return res, nil
 	}
 
@@ -1079,6 +1107,8 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 			closeFullPosition = true
 			res.outf("manual-close %s: the closing value $%.2f is under the $%.2f venue minimum gate and every peer is flat on-chain and in its own book — escalating to a whole-position close",
 				sc.Symbol, floor.RemainderUSD, hlVenueCloseGateThresholdUSD())
+		case floor.MarkUnreadable:
+			res.errf("warning: manual-close %s: %s", sc.Symbol, floor.Reason)
 		}
 	}
 	var extraCancelOIDs []int64
@@ -1233,6 +1263,12 @@ func forceCloseCore(d manualCoreDeps, sc StrategyConfig, sym string, in forceClo
 				res.outf("force-close %s: the closing value $%.2f is under the $%.2f venue minimum gate and every peer is flat on-chain and in its own book — escalating to a whole-position close",
 					sym, floor.RemainderUSD, hlVenueCloseGateThresholdUSD())
 			}
+		case floor.MarkUnreadable:
+			prefix := "warning: "
+			if in.DryRun {
+				prefix = "[dry-run] warning: "
+			}
+			res.errf("%sforce-close %s: %s", prefix, sym, floor.Reason)
 		}
 	}
 

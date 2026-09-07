@@ -2061,6 +2061,101 @@ func TestManualStampRegimeOnPosition(t *testing.T) {
 	}
 }
 
+func TestManualCloseDryRunPreviewsSharedCloseDecision(t *testing.T) {
+	t.Setenv("HYPERLIQUID_SECRET_KEY", "test-secret")
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xoperator")
+
+	flat := []HLPosition{{Coin: "ETH", Size: 0.002}}
+	busy := []HLPosition{{Coin: "ETH", Size: 0.5}}
+
+	cases := []struct {
+		name        string
+		posQty      float64
+		positions   []HLPosition
+		midsErr     error
+		wantInLines []string
+	}{
+		{name: "every peer flat previews the escalated whole-position close", posQty: 0.002,
+			positions: flat, wantInLines: []string{"full market_close (escalated: peers flat)"}},
+		{name: "a peer holding quantity previews the refusal", posQty: 0.002,
+			positions: busy, wantInLines: []string{"REFUSED", "no order sent"}},
+		{name: "a value above the gate previews the sized close", posQty: 0.4,
+			positions: flat, wantInLines: []string{"sized 0.400000"}},
+		{name: "an unreadable mark previews the sized close with a warning", posQty: 0.002,
+			positions: flat, midsErr: fmt.Errorf("allMids timeout"),
+			wantInLines: []string{"sized 0.002000", "no usable mark price"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			dbPath := filepath.Join(dir, "state.db")
+			db, err := OpenStateDB(dbPath)
+			if err != nil {
+				t.Fatalf("OpenStateDB: %v", err)
+			}
+			defer db.Close()
+
+			subject := StrategyConfig{ID: "hl-manual-eth", Type: "manual", Platform: "hyperliquid", Symbol: "ETH",
+				Script: "shared_scripts/check_hyperliquid.py",
+				Args:   []string{"hold", "ETH", "1h", "--mode=live"}, Capital: 1000, Leverage: 2}
+			peer := StrategyConfig{ID: "hl-perps-eth", Type: "perps", Platform: "hyperliquid",
+				Script: "shared_scripts/check_hyperliquid.py",
+				Args:   []string{"tcross", "ETH", "1h", "--mode=live"}, Capital: 1000, Leverage: 2}
+			cfg := &Config{DBFile: dbPath, Strategies: []StrategyConfig{subject, peer}}
+
+			state := &AppState{Strategies: map[string]*StrategyState{
+				subject.ID: {ID: subject.ID, Type: subject.Type, Platform: "hyperliquid",
+					Cash: 1000, InitialCapital: 1000,
+					Positions: map[string]*Position{"ETH": {
+						Symbol: "ETH", Quantity: tc.posQty, InitialQuantity: tc.posQty, AvgCost: 2000,
+						Side: "long", Multiplier: 1, Leverage: 2, OwnerStrategyID: subject.ID,
+						OpenedAt: time.Now().UTC().Add(-time.Hour),
+					}}},
+			}}
+			if err := db.SaveState(state); err != nil {
+				t.Fatalf("SaveState: %v", err)
+			}
+
+			d := newCLIManualCoreDeps(cfg, openTestStore(t, db), nil)
+			d.fetchMids = func(coins []string) (map[string]float64, error) {
+				if tc.midsErr != nil {
+					return nil, tc.midsErr
+				}
+				return map[string]float64{"ETH": 2000}, nil
+			}
+			d.fetchPositions = func(addr string) ([]HLPosition, error) { return tc.positions, nil }
+			fired := 0
+			d.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+				fired++
+				return nil, "", fmt.Errorf("dry run must not reach the venue")
+			}
+
+			sc, lookupErr := lookupManualStrategy(cfg, subject.ID)
+			if lookupErr != nil {
+				t.Fatalf("lookup: %v", lookupErr)
+			}
+			res, coreErr := manualCloseCore(d, sc, manualCloseInputs{StrategyID: subject.ID, DryRun: true})
+			if coreErr != nil {
+				t.Fatalf("dry run returned an error: %v", coreErr)
+			}
+			if fired != 0 {
+				t.Fatalf("venue calls = %d on a dry run, want 0", fired)
+			}
+			var out []string
+			for _, l := range res.lines {
+				out = append(out, l.text)
+			}
+			joined := strings.Join(out, "\n")
+			for _, want := range tc.wantInLines {
+				if !strings.Contains(joined, want) {
+					t.Fatalf("dry-run output %q missing %q", joined, want)
+				}
+			}
+		})
+	}
+}
+
 func TestOperatorSharedCloseFloorGatesBothCores(t *testing.T) {
 	t.Setenv("HYPERLIQUID_SECRET_KEY", "test-secret")
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xoperator")
@@ -2075,6 +2170,7 @@ func TestOperatorSharedCloseFloorGatesBothCores(t *testing.T) {
 		peerBookQty   float64
 		positions     []HLPosition
 		positionsErr  error
+		midsErr       error
 		holdReason    string
 		wantFired     int
 		wantFullClose bool
@@ -2094,6 +2190,8 @@ func TestOperatorSharedCloseFloorGatesBothCores(t *testing.T) {
 			positions: flat, wantFired: 1, wantFullClose: true},
 		{name: "a shared coin above the gate sends the sized order", posQty: 0.4,
 			positions: flat, wantFired: 1, wantFullClose: false},
+		{name: "an unreadable mark sends the sized order it sends today", posQty: 0.002,
+			midsErr: fmt.Errorf("allMids timeout"), positions: flat, wantFired: 1, wantFullClose: false},
 	}
 
 	for _, tc := range cases {
@@ -2150,9 +2248,14 @@ func TestOperatorSharedCloseFloorGatesBothCores(t *testing.T) {
 
 					d := newCLIManualCoreDeps(cfg, openTestStore(t, db), nil)
 					d.fetchMids = func(coins []string) (map[string]float64, error) {
+						if tc.midsErr != nil {
+							return nil, tc.midsErr
+						}
 						return map[string]float64{"ETH": 2000}, nil
 					}
+					accountReads := 0
 					d.fetchPositions = func(addr string) ([]HLPosition, error) {
+						accountReads++
 						if tc.positionsErr != nil {
 							return nil, tc.positionsErr
 						}
@@ -2203,6 +2306,9 @@ func TestOperatorSharedCloseFloorGatesBothCores(t *testing.T) {
 					}
 					if gotFullClose != tc.wantFullClose {
 						t.Fatalf("whole-position close = %v, want %v", gotFullClose, tc.wantFullClose)
+					}
+					if tc.midsErr != nil && accountReads != 0 {
+						t.Fatalf("on-chain account reads = %d on an unreadable mark, want 0", accountReads)
 					}
 				})
 			}

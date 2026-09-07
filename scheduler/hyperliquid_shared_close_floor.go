@@ -149,10 +149,11 @@ func resolveSharedCloseFloorEscalation(closeFraction float64, symbol string, hlL
 }
 
 type operatorSharedCloseDecision struct {
-	Escalate     bool
-	Refuse       bool
-	RemainderUSD float64
-	Reason       string
+	Escalate       bool
+	Refuse         bool
+	MarkUnreadable bool
+	RemainderUSD   float64
+	Reason         string
 }
 
 func operatorSharedCloseUnprovableReason(symbol string, remainderUSD float64, peers int, err error) string {
@@ -172,8 +173,8 @@ func decideOperatorSharedCloseFloor(symbol, posSide string, posQty, price float6
 	}
 	gate := hlVenueCloseGateThresholdUSD()
 	if price <= 0 || math.IsNaN(price) || math.IsInf(price, 0) {
-		d.Refuse = true
-		d.Reason = fmt.Sprintf("no usable mark price for %s, so the closing value cannot be measured against the $%.2f venue minimum gate; %d live strategies share this coin, so a whole-position close could take a peer's exposure — no order sent",
+		d.MarkUnreadable = true
+		d.Reason = fmt.Sprintf("no usable mark price for %s, so the closing value cannot be measured against the $%.2f venue minimum gate; %d live strategies share this coin, so the escalation to a whole-position close is withheld and the sized reduce-only close is sent unchanged — the venue rejects it if the value is under the gate",
 			symbol, gate, peers)
 		return d
 	}
@@ -216,8 +217,12 @@ func formatSharedCloseStrandedAlert(strategyID, symbol string, remainderUSD floa
 	case hlSharedCloseHoldOperatorRef:
 		recovery = "The hand close was refused and no order was sent; the scheduler's own hold on this position is unchanged. A hand close escalates to a whole-position close only when every peer is flat on-chain and in its own book, so close the remainder directly on the venue or add to it above the gate."
 	}
-	return fmt.Sprintf("**CRITICAL — stranded remainder below venue minimum gate** [%s] %s: the final full close is worth $%.2f, under the $%.2f gate (the $%.2f venue minimum plus the %.0f%% safety margin). %s %s",
-		strategyID, symbol, remainderUSD, hlVenueCloseGateThresholdUSD(), hlVenueMinOrderNotionalUSD, hlVenueMinOrderNotionalMargin*100, reason, recovery)
+	value := fmt.Sprintf("the final full close is worth $%.2f, under the $%.2f gate", remainderUSD, hlVenueCloseGateThresholdUSD())
+	if remainderUSD <= 0 {
+		value = fmt.Sprintf("the closing value of the final full close could not be measured against the $%.2f gate", hlVenueCloseGateThresholdUSD())
+	}
+	return fmt.Sprintf("**CRITICAL — stranded remainder below venue minimum gate** [%s] %s: %s (the $%.2f venue minimum plus the %.0f%% safety margin). %s %s",
+		strategyID, symbol, value, hlVenueMinOrderNotionalUSD, hlVenueMinOrderNotionalMargin*100, reason, recovery)
 }
 
 func notifySharedCloseStranded(notifier *MultiNotifier, sc StrategyConfig, symbol string, remainderUSD float64, reason, holdReason string) {

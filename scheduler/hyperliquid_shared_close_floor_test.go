@@ -400,6 +400,7 @@ func TestDecideOperatorSharedCloseFloor(t *testing.T) {
 		readErrs     []error
 		wantEscalate bool
 		wantRefuse   bool
+		wantUnread   bool
 		wantReads    int
 		wantInReason []string
 	}{
@@ -423,8 +424,11 @@ func TestDecideOperatorSharedCloseFloor(t *testing.T) {
 		{name: "unreadable account refuses", peers: peers, posQty: 0.002, price: 2000,
 			reads: []hlOnChainCoinView{{}}, wantRefuse: true, wantReads: 1,
 			wantInReason: []string{"not readable"}},
-		{name: "unreadable mark refuses without reading the account", peers: peers, posQty: 0.002, price: 0,
-			wantRefuse: true, wantReads: 0, wantInReason: []string{"no usable mark price"}},
+		{name: "unreadable mark withholds only the escalation and leaves the sized order unchanged", peers: peers, posQty: 0.002, price: 0,
+			wantUnread: true, wantReads: 0,
+			wantInReason: []string{"no usable mark price", "escalation to a whole-position close is withheld", "sized reduce-only close is sent unchanged"}},
+		{name: "unreadable mark on a large position leaves the sized order unchanged", peers: peers, posQty: 5, price: math.NaN(),
+			wantUnread: true, wantReads: 0, wantInReason: []string{"no usable mark price"}},
 		{name: "single owner leaves the order unchanged", peers: single, posQty: 0.002, price: 2000, wantReads: 0},
 		{name: "value at or above the gate leaves the order unchanged", peers: peers, posQty: 0.01, price: 2000, wantReads: 0},
 	}
@@ -444,8 +448,9 @@ func TestDecideOperatorSharedCloseFloor(t *testing.T) {
 				return tc.reads[idx], err
 			}
 			got := decideOperatorSharedCloseFloor("ETH", "long", tc.posQty, tc.price, tc.peers, tc.peerVirtual, fetch)
-			if got.Escalate != tc.wantEscalate || got.Refuse != tc.wantRefuse {
-				t.Fatalf("escalate=%v refuse=%v, want escalate=%v refuse=%v (reason %q)", got.Escalate, got.Refuse, tc.wantEscalate, tc.wantRefuse, got.Reason)
+			if got.Escalate != tc.wantEscalate || got.Refuse != tc.wantRefuse || got.MarkUnreadable != tc.wantUnread {
+				t.Fatalf("escalate=%v refuse=%v markUnreadable=%v, want escalate=%v refuse=%v markUnreadable=%v (reason %q)",
+					got.Escalate, got.Refuse, got.MarkUnreadable, tc.wantEscalate, tc.wantRefuse, tc.wantUnread, got.Reason)
 			}
 			if reads != tc.wantReads {
 				t.Fatalf("on-chain reads = %d, want %d", reads, tc.wantReads)
@@ -474,6 +479,16 @@ func TestSharedCloseStrandedAlertRecoveryTextDropsForceCloseClaim(t *testing.T) 
 		msg := formatSharedCloseStrandedAlert("hl-eth", "ETH", 4.12, "peer busy", holdReason)
 		if strings.Contains(msg, "sends the same sized order") || strings.Contains(msg, "issue 1534") {
 			t.Fatalf("hold %q recovery text still promises the old force-close behavior: %s", holdReason, msg)
+		}
+		if !strings.Contains(msg, "worth $4.12") {
+			t.Fatalf("hold %q alert dropped the measured remainder: %s", holdReason, msg)
+		}
+		unmeasured := formatSharedCloseStrandedAlert("hl-eth", "ETH", 0, "peer busy", holdReason)
+		if strings.Contains(unmeasured, "worth $0.00") {
+			t.Fatalf("hold %q alert states an unmeasured value as fact: %s", holdReason, unmeasured)
+		}
+		if !strings.Contains(unmeasured, "could not be measured") {
+			t.Fatalf("hold %q alert does not say the value is unmeasured: %s", holdReason, unmeasured)
 		}
 	}
 }
