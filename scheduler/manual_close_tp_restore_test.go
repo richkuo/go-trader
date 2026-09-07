@@ -308,12 +308,11 @@ func TestApplyManualActionRestoreTP(t *testing.T) {
 		TPArmedTiers: []bool{true, true, false},
 	}
 	cases := []struct {
-		name          string
-		pos           *Position
-		wantOIDs      []int64
-		wantArmed     []bool
-		wantConflicts int
-		wantErr       bool
+		name         string
+		pos          *Position
+		wantOIDs     []int64
+		wantArmed    []bool
+		wantCritical []string
 	}{
 		{
 			name:      "a cleared book adopts the restored order ids",
@@ -328,11 +327,11 @@ func TestApplyManualActionRestoreTP(t *testing.T) {
 			wantArmed: []bool{true, true, false},
 		},
 		{
-			name:          "a third order id keeps memory and reports both ids",
-			pos:           &Position{Symbol: "ETH", Quantity: 0.4, Side: "long", OwnerStrategyID: sc.ID, TradePositionID: "pos-1", TPOIDs: []int64{7001, 8888, 0}, TPArmedTiers: []bool{true, true, false}},
-			wantOIDs:      []int64{7001, 8888, 0},
-			wantArmed:     []bool{true, true, false},
-			wantConflicts: 1,
+			name:         "a third order id keeps memory and reports both ids",
+			pos:          &Position{Symbol: "ETH", Quantity: 0.4, Side: "long", OwnerStrategyID: sc.ID, TradePositionID: "pos-1", TPOIDs: []int64{7001, 8888, 0}, TPArmedTiers: []bool{true, true, false}},
+			wantOIDs:     []int64{7001, 8888, 0},
+			wantArmed:    []bool{true, true, false},
+			wantCritical: []string{"8888", "9002"},
 		},
 		{
 			name:      "a replacement position is never touched",
@@ -341,9 +340,11 @@ func TestApplyManualActionRestoreTP(t *testing.T) {
 			wantArmed: []bool{false, false, false},
 		},
 		{
-			name:    "a position owned by another strategy errors",
-			pos:     &Position{Symbol: "ETH", Quantity: 0.4, Side: "long", OwnerStrategyID: "other", TradePositionID: "pos-1"},
-			wantErr: true,
+			name:         "a position owned by another strategy is acknowledged with a critical, never adopted",
+			pos:          &Position{Symbol: "ETH", Quantity: 0.4, Side: "long", OwnerStrategyID: "other", TradePositionID: "pos-1", TPOIDs: []int64{4001}, TPArmedTiers: []bool{true}},
+			wantOIDs:     []int64{4001},
+			wantArmed:    []bool{true},
+			wantCritical: []string{"9002", "other"},
 		},
 	}
 	for _, tc := range cases {
@@ -352,21 +353,21 @@ func TestApplyManualActionRestoreTP(t *testing.T) {
 				sc.ID: {ID: sc.ID, Type: "manual", Platform: "hyperliquid", Positions: map[string]*Position{"ETH": tc.pos}},
 			}}
 			criticals, err := applyManualActionWithCriticals(state, nil, scByID, action)
-			if tc.wantErr {
-				if err == nil {
-					t.Fatal("apply returned no error, want the ownership refusal")
-				}
-				return
-			}
 			if err != nil {
 				t.Fatalf("apply: %v", err)
 			}
-			if len(criticals) != tc.wantConflicts {
-				t.Fatalf("criticals = %v, want %d", criticals, tc.wantConflicts)
+			wantCount := 0
+			if len(tc.wantCritical) > 0 {
+				wantCount = 1
+			}
+			if len(criticals) != wantCount {
+				t.Fatalf("criticals = %v, want %d", criticals, wantCount)
 			}
 			for _, c := range criticals {
-				if !strings.Contains(c, "8888") || !strings.Contains(c, "9002") {
-					t.Fatalf("critical = %q, want it to name both order ids", c)
+				for _, want := range tc.wantCritical {
+					if !strings.Contains(c, want) {
+						t.Fatalf("critical = %q, want it to name %q", c, want)
+					}
 				}
 			}
 			if !reflect.DeepEqual(tc.pos.TPOIDs, tc.wantOIDs) {
