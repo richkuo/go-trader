@@ -95,10 +95,11 @@ func confirmNonceFor(t *testing.T, ss *StatusServer, action, id, params string) 
 }
 
 type tradeStubs struct {
-	updateSL    func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error)
-	execute     func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error)
-	closer      HyperliquidLiveCloser
-	cancelOrder func(script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error)
+	updateSL       func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error)
+	execute        func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error)
+	closer         HyperliquidLiveCloser
+	cancelOrder    func(script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error)
+	fetchPositions func(accountAddress string) ([]HLPosition, error)
 }
 
 func stubTradeDeps(t *testing.T, ss *StatusServer) *tradeStubs {
@@ -130,6 +131,13 @@ func stubTradeDeps(t *testing.T, ss *StatusServer) *tradeStubs {
 			d.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
 				t.Error("execute must not be called")
 				return nil, "", fmt.Errorf("stub")
+			}
+		}
+		if stubs.fetchPositions != nil {
+			d.fetchPositions = stubs.fetchPositions
+		} else {
+			d.fetchPositions = func(accountAddress string) ([]HLPosition, error) {
+				return nil, fmt.Errorf("stub: no account reader")
 			}
 		}
 		if stubs.closer != nil {

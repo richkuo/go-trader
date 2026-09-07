@@ -198,6 +198,7 @@ type manualCoreDeps struct {
 	// target strategy, so a paper command never blocks a live one.
 	lockManualActions           func(strategyID string) (release func(), err error)
 	reconcileCanceledProtection func(strategyID, symbol string, cancelOIDs []int64) error
+	recordRearmedStopLoss       func(strategyID, symbol, side string, qty float64, prevStopOID int64, result *HyperliquidStopLossUpdateResult) error
 }
 
 func (d manualCoreDeps) acquireManualActionLock(strategyID string) (func(), error) {
@@ -235,6 +236,9 @@ func newManualCoreDeps(cfg *Config, stateDB *StateStore, notifier *MultiNotifier
 		},
 		reconcileCanceledProtection: func(strategyID, symbol string, cancelOIDs []int64) error {
 			return reconcileCanceledExecuteProtectionInDB(cfg, stateDB, strategyID, symbol, cancelOIDs)
+		},
+		recordRearmedStopLoss: func(strategyID, symbol, side string, qty float64, prevStopOID int64, result *HyperliquidStopLossUpdateResult) error {
+			return recordRearmedStopLossInDB(cfg, stateDB, strategyID, symbol, side, qty, prevStopOID, result)
 		},
 		lockManualActions: func(strategyID string) (func(), error) {
 			return stateDB.manualActionLock(strategyID)
@@ -1119,6 +1123,13 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 	if intentFullClose {
 		extraCancelOIDs = cloneInt64s(pos.TPOIDs)
 	}
+	protectionSnapshot := manualCloseProtectionSnapshot{
+		Symbol:      sc.Symbol,
+		Side:        pos.Side,
+		Quantity:    pos.Quantity,
+		StopLossOID: cancelOID,
+		TriggerPx:   pos.StopLossTriggerPx,
+	}
 
 	execResult, stderr, execErr := d.execute(
 		sc.Script, sc.Symbol, closeSide, closeQty,
@@ -1131,6 +1142,7 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 	execResult, execErr = confirmHyperliquidExecuteFill(execResult, execErr)
 	if execErr != nil {
 		reconcileManualExecuteProtection(d, res, strategyID, sc.Symbol, execResult, requestedCancelOIDs)
+		restoreManualStopLossAfterFailedClose(d, res, sc, strategyID, protectionSnapshot, execResult, requestedCancelOIDs)
 		return res, manualFailf("error placing close order: %v", execErr)
 	}
 	if execResult.CancelStopLossError != "" {

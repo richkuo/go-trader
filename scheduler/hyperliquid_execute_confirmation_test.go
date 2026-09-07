@@ -362,7 +362,7 @@ func TestManualLiveExecuteRejectsUnconfirmedWithoutQueueing(t *testing.T) {
 	}
 }
 
-func TestDaemonManualCloseRejectsUnconfirmedWithoutQueueing(t *testing.T) {
+func TestDaemonManualCloseRejectsUnconfirmedAndRestoresTheStop(t *testing.T) {
 	ss, db, _ := newTradeActionTestServer(t)
 	stubs := stubTradeDeps(t, ss)
 	stubs.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
@@ -372,10 +372,19 @@ func TestDaemonManualCloseRejectsUnconfirmedWithoutQueueing(t *testing.T) {
 			CancelStopLossSucceededOIDs: []int64{111},
 		}, "", nil
 	}
+	var gotCancelOID int64
+	var gotTrigger, gotSize float64
+	stubs.updateSL = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		gotCancelOID, gotTrigger, gotSize = cancelOID, triggerPx, size
+		return &HyperliquidStopLossUpdateResult{StopLossOID: 222, StopLossTriggerPx: triggerPx}, "", nil
+	}
 	nonce := confirmNonceFor(t, ss, "close", "hl-manual-eth", `{}`)
 	w := tradeActionPost(ss, "/api/strategies/hl-manual-eth/close", fmt.Sprintf(`{"nonce":%q,"params":{}}`, nonce), nil)
 	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "exchange returned no confirmed fill") {
 		t.Fatalf("daemon close status = %d, body %s", w.Code, w.Body.String())
+	}
+	if gotCancelOID != 111 || gotTrigger != 1900 || gotSize != 0.4 {
+		t.Fatalf("updateSL called with cancelOID=%d trigger=%v size=%v, want 111/1900/0.4", gotCancelOID, gotTrigger, gotSize)
 	}
 	actions, err := db.LoadPendingManualActions()
 	if err != nil {
@@ -385,7 +394,7 @@ func TestDaemonManualCloseRejectsUnconfirmedWithoutQueueing(t *testing.T) {
 		t.Fatalf("pending actions = %+v, want none", actions)
 	}
 	position := ss.state.Strategies["hl-manual-eth"].Positions["ETH"]
-	if position.Quantity != 0.4 || position.StopLossOID != 0 || position.StopLossTriggerPx != 0 {
-		t.Fatalf("daemon state = %+v, want quantity unchanged and canceled SL cleared", position)
+	if position.Quantity != 0.4 || position.StopLossOID != 222 || position.StopLossTriggerPx != 1900 {
+		t.Fatalf("daemon state = %+v, want quantity unchanged and the stop restored at OID 222 / $1900", position)
 	}
 }

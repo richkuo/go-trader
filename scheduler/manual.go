@@ -250,7 +250,10 @@ func runManualClose(args []string) int {
 	}
 	defer stateDB.Close()
 
-	res, coreErr := manualCloseCore(newCLIManualCoreDeps(cfg, stateDB, nil), sc, manualCloseInputs{
+	notifier, closeNotifier := buildNotifierFromConfig(cfg)
+	defer closeNotifier()
+
+	res, coreErr := manualCloseCore(newCLIManualCoreDeps(cfg, stateDB, notifier), sc, manualCloseInputs{
 		StrategyID: strategyID,
 		Qty:        *qty,
 		DryRun:     *dryRun,

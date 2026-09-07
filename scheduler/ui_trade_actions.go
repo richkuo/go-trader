@@ -92,6 +92,30 @@ func (ss *StatusServer) daemonManualCoreDeps(cfg *Config) manualCoreDeps {
 		clearHyperliquidProtectionOIDsMatching(position, cancelOIDs)
 		return ss.stateDB.SaveStrategyBook(strategy)
 	}
+	d.recordRearmedStopLoss = func(strategyID, symbol, side string, qty float64, prevStopOID int64, result *HyperliquidStopLossUpdateResult) error {
+		if result == nil {
+			return nil
+		}
+		logMgr, err := NewLogManager("")
+		if err != nil {
+			return err
+		}
+		logger, err := logMgr.GetStrategyLogger(strategyID)
+		if err != nil {
+			return err
+		}
+		ss.mu.Lock()
+		defer ss.mu.Unlock()
+		if ss.state == nil {
+			return fmt.Errorf("state unavailable")
+		}
+		strategy := ss.state.Strategies[strategyID]
+		if strategy == nil {
+			return nil
+		}
+		applyTrailingStopUpdateResult(strategy, symbol, side, prevStopOID, 0, false, result, "manual_close_rearm_sl_immediate", logger, qty)
+		return ss.stateDB.SaveStrategyBook(strategy)
+	}
 	return d
 }
 
