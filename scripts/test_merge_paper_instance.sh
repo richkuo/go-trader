@@ -760,6 +760,50 @@ case "$out" in
         ;;
 esac
 
+echo "== --diff replay_log_path follows compose any_mirror"
+setup diffreplayoff
+python3 - "$LIVE_CFG" "$PAPER_CFG" "$PAPER_DB" <<'PY'
+import json, os, sys
+live_p, paper_p, paper_db = sys.argv[1], sys.argv[2], sys.argv[3]
+live = json.load(open(live_p))
+paper = json.load(open(paper_p))
+moved = json.loads(json.dumps(paper["strategies"][0]))
+moved["id"] = "hl-x-paper"
+moved["storage_strategy_id"] = "hl-x"
+moved.pop("replay_sharing", None)
+live["strategies"].append(moved)
+live["paper_db_file"] = os.path.realpath(paper_db) if os.path.exists(paper_db) else os.path.abspath(paper_db)
+paper["replay_log_path"] = "/tmp/other-replay.db"
+json.dump(live, open(live_p, "w"))
+json.dump(paper, open(paper_p, "w"))
+PY
+out=$(run_merge --diff 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "0" "--diff with a detached live-side mirror exits 0"
+case "$out" in
+    *"diff: compose-refuse replay_log_path"*)
+        echo "$out" >&2
+        fail "--diff must not preview replay_log_path when the merged config has no live mirror"
+        ;;
+esac
+setup diffreplayon
+python3 - "$LIVE_CFG" "$PAPER_CFG" "$PAPER_DB" <<'PY'
+import json, os, sys
+live_p, paper_p, paper_db = sys.argv[1], sys.argv[2], sys.argv[3]
+live = json.load(open(live_p))
+paper = json.load(open(paper_p))
+moved = json.loads(json.dumps(paper["strategies"][0]))
+moved["id"] = "hl-x-paper"
+moved["storage_strategy_id"] = "hl-x"
+live["strategies"].append(moved)
+live["paper_db_file"] = os.path.realpath(paper_db) if os.path.exists(paper_db) else os.path.abspath(paper_db)
+paper["replay_log_path"] = "/tmp/other-replay.db"
+json.dump(live, open(live_p, "w"))
+json.dump(paper, open(paper_p, "w"))
+PY
+out=$(run_merge --diff 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "0" "--diff with a still-active already-merged mirror exits 0"
+assert_contains "$out" "diff: compose-refuse replay_log_path" "--diff still names replay_log_path when an already-merged mirror is active"
+
 echo "== --align-to-live is opt-in"
 setup alignflag
 out=$(run_merge --align-to-live 2>&1) && rc=0 || rc=$?

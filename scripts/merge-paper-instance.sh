@@ -35,7 +35,8 @@ go-trader@<instance>.service. Without --apply nothing outside the staging
 area changes. --diff reads only the two config files and prints every
 differing root key (refuse-on-difference, dropped with the live value kept,
 or unknown) plus compose refuses it can see without inspect (replay_log_path
-when a paper mirror is present, discord -paper clashes from strategies compose
+when a paper mirror is present and the merged config would still have a live
+mirror, discord -paper clashes from strategies compose
 would newly merge). It is not a dry run: inspect-based portfolio_risk refuses
 still need the full pipeline.
 Units may stay running and no lock or binary is used.
@@ -373,20 +374,29 @@ def compose_paper_already_merged(live, paper_db_abs):
     already_merged = live.get("paper_db_file", "") == paper_db_abs
     return already_merged, live_paper_storage
 
+def compose_new_paper_strats(live, paper, paper_db_abs):
+    already_merged, live_paper_storage = compose_paper_already_merged(live, paper_db_abs)
+    out = []
+    for s in strategies(paper):
+        if already_merged and storage_id(s) in live_paper_storage:
+            continue
+        out.append(s)
+    return out
+
 def collect_compose_refuse_previews(live, paper, paper_db_abs=""):
     previews = []
     seen = set()
     paper_strats = strategies(paper)
-    if paper_strats and any(mirror_source(s) is not None for s in paper_strats):
-        if (live.get("replay_log_path") or "") != (paper.get("replay_log_path") or ""):
+    new_paper = compose_new_paper_strats(live, paper, paper_db_abs)
+    all_after = list(strategies(live)) + new_paper
+    any_mirror = any(mirror_source(s) is not None for s in all_after)
+    if any_mirror and (live.get("replay_log_path") or "") != (paper.get("replay_log_path") or ""):
+        if paper_strats and any(mirror_source(s) is not None for s in paper_strats):
             label = "replay_log_path"
             seen.add(label)
             previews.append((label, json.dumps(live.get("replay_log_path"), sort_keys=True), json.dumps(paper.get("replay_log_path"), sort_keys=True)))
-    already_merged, live_paper_storage = compose_paper_already_merged(live, paper_db_abs)
     used = set()
-    for s in paper_strats:
-        if already_merged and storage_id(s) in live_paper_storage:
-            continue
+    for s in new_paper:
         platform = s.get("platform") or ("hyperliquid" if s["id"].startswith("hl-") else "")
         used.add((platform, s.get("type") or ""))
     merged_discord = json.loads(json.dumps(live.get("discord") or {}))
