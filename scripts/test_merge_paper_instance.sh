@@ -704,6 +704,29 @@ out=$(run_merge --diff 2>&1) && rc=0 || rc=$?
 assert_rc "$rc" "0" "--diff with a -paper channel clash exits 0"
 assert_contains "$out" "diff: compose-refuse discord.channels.hyperliquid-paper" "--diff names a discord -paper clash"
 
+echo "== --diff names a same-platform type-keyed discord self-conflict"
+setup difftypes
+python3 - "$PAPER_CFG" <<'PY'
+import json, sys
+p = sys.argv[1]
+cfg = json.load(open(p))
+cfg["strategies"].append({
+    "id": "hl-opt", "type": "options", "platform": "hyperliquid",
+    "script": "shared_scripts/check_hyperliquid.py",
+    "args": ["vwap", "ETH", "1h", "--mode=paper"],
+    "capital": 100, "leverage": 5, "margin_per_trade_usd": 50,
+})
+cfg["discord"]["channels"] = {"perps": "Ch-perps", "options": "Ch-opt"}
+cfg["discord"]["trade_alert_channels"] = {"perps": "T-perps", "options": "T-opt"}
+cfg["discord"]["dm_channels"] = {"perps": "D-perps", "options": "D-opt"}
+json.dump(cfg, open(p, "w"))
+PY
+out=$(run_merge --diff 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "0" "--diff with two types on one platform exits 0"
+assert_contains "$out" "diff: compose-refuse discord.channels.hyperliquid-paper" "--diff names a channels type-keyed self-conflict"
+assert_contains "$out" "diff: compose-refuse discord.trade_alert_channels.hyperliquid-paper" "--diff names a trade_alert_channels type-keyed self-conflict"
+assert_contains "$out" "diff: compose-refuse discord.dm_channels.hyperliquid-paper" "--diff names a dm_channels type-keyed self-conflict"
+
 echo "== --align-to-live is opt-in"
 setup alignflag
 out=$(run_merge --align-to-live 2>&1) && rc=0 || rc=$?

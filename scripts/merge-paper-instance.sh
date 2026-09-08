@@ -324,24 +324,12 @@ def mirror_source(s):
         return src.strip()
     return s["id"]
 
-def collect_compose_refuse_previews(live, paper):
-    previews = []
-    seen = set()
-    paper_strats = strategies(paper)
-    if paper_strats and any(mirror_source(s) is not None for s in paper_strats):
-        if (live.get("replay_log_path") or "") != (paper.get("replay_log_path") or ""):
-            label = "replay_log_path"
-            seen.add(label)
-            previews.append((label, json.dumps(live.get("replay_log_path"), sort_keys=True), json.dumps(paper.get("replay_log_path"), sort_keys=True)))
-    paper_discord = paper.get("discord") or {}
-    live_discord = live.get("discord") or {}
-    used = set()
-    for s in paper_strats:
-        platform = s.get("platform") or ("hyperliquid" if s["id"].startswith("hl-") else "")
-        used.add((platform, s.get("type") or ""))
+def apply_paper_discord_maps(merged_discord, paper_discord, used):
+    report = []
+    conflicts = []
     for map_key in CHANNEL_MAPS:
         pm = paper_discord.get(map_key) or {}
-        mm = live_discord.get(map_key)
+        mm = merged_discord.get(map_key)
         if mm is None:
             mm = {}
         for platform, stype in sorted(used):
@@ -354,17 +342,50 @@ def collect_compose_refuse_previews(live, paper):
                 continue
             target = "%s-paper" % platform
             if target in mm and mm[target] != val:
-                label = "discord.%s.%s" % (map_key, target)
-                if label not in seen:
-                    seen.add(label)
-                    previews.append((label, json.dumps(mm[target], sort_keys=True), json.dumps(val, sort_keys=True)))
+                conflicts.append((
+                    "discord.%s.%s" % (map_key, target),
+                    mm[target],
+                    val,
+                    "discord.%s.%s is %r in the live config but the paper deployment routes to %r" % (map_key, target, mm[target], val),
+                ))
+            elif target not in mm:
+                mm[target] = val
+                report.append("discord.%s.%s=%s" % (map_key, target, val))
         for key in sorted(pm):
             val = pm[key]
-            if key.endswith("-paper") and key in mm and mm[key] != val:
-                label = "discord.%s.%s" % (map_key, key)
-                if label not in seen:
-                    seen.add(label)
-                    previews.append((label, json.dumps(mm[key], sort_keys=True), json.dumps(val, sort_keys=True)))
+            if key.endswith("-paper") and key not in mm and val:
+                mm[key] = val
+                report.append("discord.%s.%s=%s" % (map_key, key, val))
+            elif key.endswith("-paper") and key in mm and mm[key] != val:
+                conflicts.append((
+                    "discord.%s.%s" % (map_key, key),
+                    mm[key],
+                    val,
+                    "discord.%s.%s differs: live=%r paper=%r" % (map_key, key, mm[key], val),
+                ))
+        if mm:
+            merged_discord[map_key] = mm
+    return report, conflicts
+
+def collect_compose_refuse_previews(live, paper):
+    previews = []
+    seen = set()
+    paper_strats = strategies(paper)
+    if paper_strats and any(mirror_source(s) is not None for s in paper_strats):
+        if (live.get("replay_log_path") or "") != (paper.get("replay_log_path") or ""):
+            label = "replay_log_path"
+            seen.add(label)
+            previews.append((label, json.dumps(live.get("replay_log_path"), sort_keys=True), json.dumps(paper.get("replay_log_path"), sort_keys=True)))
+    used = set()
+    for s in paper_strats:
+        platform = s.get("platform") or ("hyperliquid" if s["id"].startswith("hl-") else "")
+        used.add((platform, s.get("type") or ""))
+    merged_discord = json.loads(json.dumps(live.get("discord") or {}))
+    _report, conflicts = apply_paper_discord_maps(merged_discord, paper.get("discord") or {}, used)
+    for label, live_v, paper_v, _msg in conflicts:
+        if label not in seen:
+            seen.add(label)
+            previews.append((label, json.dumps(live_v, sort_keys=True), json.dumps(paper_v, sort_keys=True)))
     return previews
 
 def cmd_classify(path):
@@ -630,33 +651,10 @@ def cmd_compose(live_path, paper_path, paper_db_abs, out_path, map_path, inspect
     for s, block in new_strats:
         platform = block.get("platform") or ("hyperliquid" if block["id"].startswith("hl-") else "")
         used.add((platform, block.get("type") or ""))
-    for map_key in CHANNEL_MAPS:
-        pm = paper_discord.get(map_key) or {}
-        mm = merged_discord.get(map_key)
-        if mm is None:
-            mm = {}
-        for platform, stype in sorted(used):
-            val = ""
-            for key in ("%s-paper" % platform, platform, stype):
-                if pm.get(key):
-                    val = pm[key]
-                    break
-            if not val:
-                continue
-            target = "%s-paper" % platform
-            if target in mm and mm[target] != val:
-                refuse("discord.%s.%s is %r in the live config but the paper deployment routes to %r" % (map_key, target, mm[target], val))
-            if target not in mm:
-                mm[target] = val
-                report.append("discord.%s.%s=%s" % (map_key, target, val))
-        for key, val in pm.items():
-            if key.endswith("-paper") and key not in mm and val:
-                mm[key] = val
-                report.append("discord.%s.%s=%s" % (map_key, key, val))
-            elif key.endswith("-paper") and key in mm and mm[key] != val:
-                refuse("discord.%s.%s differs: live=%r paper=%r" % (map_key, key, mm[key], val))
-        if mm:
-            merged_discord[map_key] = mm
+    discord_report, discord_conflicts = apply_paper_discord_maps(merged_discord, paper_discord, used)
+    if discord_conflicts:
+        refuse(discord_conflicts[0][3])
+    report.extend(discord_report)
 
     refuse_keys, unknown_keys, dropped = collect_root_diffs(live, paper)
     if refuse_keys or unknown_keys:
