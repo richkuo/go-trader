@@ -1112,6 +1112,14 @@ PAPER_COMPOSE="$PAPER_CFG"
 if [[ "$ALIGN_TO_LIVE" == "1" ]]; then
     write_aligned_paper
     PAPER_COMPOSE="${PAPER_CFG}.aligned"
+    PAPER_ALIGN_COPY="$WORK/paper-aligned-config.json"
+    cp "$PAPER_COMPOSE" "$PAPER_ALIGN_COPY"
+    fp_paper_align=$(update_file_fingerprint "$PAPER_ALIGN_COPY")
+    if ! run_bin "$PAPER_DEPLOY" "$PAPER_BIN" inspect --all --json --config "$PAPER_ALIGN_COPY" >"$WORK/inspect-paper.json" 2>"$WORK/inspect-paper-aligned.err"; then
+        cat "$WORK/inspect-paper-aligned.err" >&2
+        fail "$EXIT_INSPECTION_REFUSED" "paper inspect --all --json failed on the aligned config"
+    fi
+    config_copy_intact paper "$PAPER_ALIGN_COPY" "$fp_paper_align" "aligned inspection"
 fi
 if ! py compose "$LIVE_CFG" "$PAPER_COMPOSE" "$PAPER_DB_CANON" "$STAGED_CFG" "$STAGED_MAP" "$WORK/inspect-live.json" "$WORK/inspect-paper.json"; then
     rm -f "$STAGED_CFG" "$STAGED_MAP"

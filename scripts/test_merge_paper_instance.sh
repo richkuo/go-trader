@@ -848,4 +848,28 @@ grep -q '^align: regime before=' "$JOURNAL" || fail "journal records aligned reg
 grep -q '^align: telegram before=' "$JOURNAL" || fail "journal records aligned telegram with before-value"
 assert_eq "$(json_get "$LIVE_CFG" strategies.1.id)" "hl-x-paper" "aligned apply still moves the paper strategy"
 
+echo "== --apply --align-to-live proves an aligned stop default"
+setup alignapplystop
+python3 - "$PAPER_CFG" <<'PY'
+import json, sys
+p = sys.argv[1]
+cfg = json.load(open(p))
+cfg["default_stop_loss_atr_mult"] = 2.5
+cfg["strategies"].append({
+    "id": "hl-y", "type": "perps", "platform": "hyperliquid",
+    "script": "shared_scripts/check_hyperliquid.py",
+    "args": ["vwap", "BTC", "1h", "--mode=paper"],
+    "capital": 100, "leverage": 5, "margin_per_trade_usd": 50,
+    "stop_loss_atr_mult": 3.0,
+})
+json.dump(cfg, open(p, "w"))
+PY
+paper_before=$(cat "$PAPER_CFG")
+out=$(run_merge --apply --align-to-live 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "--apply --align-to-live with a differing stop default exits 0 (rc=$rc)"; }
+assert_contains "$out" "VERDICT: APPLIED" "--apply --align-to-live reaches apply when default_stop_loss_atr_mult is aligned"
+assert_eq "$(cat "$PAPER_CFG")" "$paper_before" "--apply --align-to-live never mutates the paper source when aligning a stop default"
+assert_eq "$(json_get "$PAPER_CFG.aligned" default_stop_loss_atr_mult)" "" "aligned file drops paper's default_stop_loss_atr_mult so it matches live"
+assert_eq "$(json_get "$PAPER_CFG.aligned" strategies.1.stop_loss_atr_mult)" "3.0" "aligned file keeps an explicit strategy stop override"
+
 echo "OK: merge-paper-instance tests passed"
