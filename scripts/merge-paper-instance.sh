@@ -35,8 +35,9 @@ go-trader@<instance>.service. Without --apply nothing outside the staging
 area changes. --diff reads only the two config files and prints every
 differing root key (refuse-on-difference, dropped with the live value kept,
 or unknown) plus compose refuses it can see without inspect (replay_log_path
-when a paper mirror is present, discord -paper channel clashes). It is not a
-dry run: inspect-based portfolio_risk refuses still need the full pipeline.
+when a paper mirror is present, discord -paper clashes from strategies compose
+would newly merge). It is not a dry run: inspect-based portfolio_risk refuses
+still need the full pipeline.
 Units may stay running and no lock or binary is used.
 --align-to-live is valid only with --diff or --apply: it writes live's
 shared root values to <paper-config>.aligned and never changes the paper
@@ -262,12 +263,12 @@ def write_json_atomic(path, doc, chown_from):
         pass
     os.replace(tmp, path)
 
-def cmd_root_diff(live_path, paper_path):
+def cmd_root_diff(live_path, paper_path, paper_db_abs=""):
     live = load(live_path)
     paper = load(paper_path)
     refuse_keys, unknown_keys, dropped_keys = collect_root_diffs(live, paper)
     print_root_diff_report(live, paper, refuse_keys, unknown_keys, dropped_keys)
-    for label, live_v, paper_v in collect_compose_refuse_previews(live, paper):
+    for label, live_v, paper_v in collect_compose_refuse_previews(live, paper, paper_db_abs):
         print("diff: compose-refuse %s live=%s paper=%s" % (label, live_v, paper_v))
     print("diff: config-file preview only; inspect-based portfolio_risk refuses need a dry run")
 
@@ -367,7 +368,12 @@ def apply_paper_discord_maps(merged_discord, paper_discord, used):
             merged_discord[map_key] = mm
     return report, conflicts
 
-def collect_compose_refuse_previews(live, paper):
+def compose_paper_already_merged(live, paper_db_abs):
+    live_paper_storage = set(storage_id(s) for s in strategies(live) if strategy_mode(s) == MODE_PAPER)
+    already_merged = live.get("paper_db_file", "") == paper_db_abs
+    return already_merged, live_paper_storage
+
+def collect_compose_refuse_previews(live, paper, paper_db_abs=""):
     previews = []
     seen = set()
     paper_strats = strategies(paper)
@@ -376,8 +382,11 @@ def collect_compose_refuse_previews(live, paper):
             label = "replay_log_path"
             seen.add(label)
             previews.append((label, json.dumps(live.get("replay_log_path"), sort_keys=True), json.dumps(paper.get("replay_log_path"), sort_keys=True)))
+    already_merged, live_paper_storage = compose_paper_already_merged(live, paper_db_abs)
     used = set()
     for s in paper_strats:
+        if already_merged and storage_id(s) in live_paper_storage:
+            continue
         platform = s.get("platform") or ("hyperliquid" if s["id"].startswith("hl-") else "")
         used.add((platform, s.get("type") or ""))
     merged_discord = json.loads(json.dumps(live.get("discord") or {}))
@@ -510,8 +519,7 @@ def cmd_compose(live_path, paper_path, paper_db_abs, out_path, map_path, inspect
             refuse("paper config strategy %s runs --mode=live" % s["id"])
 
     live_ids = set(s["id"] for s in live_strats)
-    live_paper_storage = set(storage_id(s) for s in live_strats if strategy_mode(s) == MODE_PAPER)
-    already_merged = live.get("paper_db_file", "") == paper_db_abs
+    already_merged, live_paper_storage = compose_paper_already_merged(live, paper_db_abs)
     taken = set(live_ids)
     remaining = set(s["id"] for s in paper_strats)
     renames = {}
@@ -819,7 +827,14 @@ if [[ "$MODE" == "diff" ]]; then
         [[ -f "$c" ]] || fail "$EXIT_CONFIG_MISSING" "config $c is missing"
     done
     echo "merge-paper-instance: live=$LIVE ($LIVE_CFG) paper=$PAPER ($PAPER_CFG) mode=diff"
-    if ! py root-diff "$LIVE_CFG" "$PAPER_CFG"; then
+    diff_paper_db=""
+    if paper_class=$(py classify "$PAPER_CFG"); then
+        paper_db_rel=$(printf '%s' "$paper_class" | python3 -c 'import json,sys; print(json.load(sys.stdin)["db_file"])')
+        if [[ -n "$paper_db_rel" ]]; then
+            diff_paper_db=$(update_canonical_db_path "$(update_resolve_config_db_path "$PAPER_DEPLOY" "$paper_db_rel")")
+        fi
+    fi
+    if ! py root-diff "$LIVE_CFG" "$PAPER_CFG" "$diff_paper_db"; then
         fail "$EXIT_CONFIG_MISSING" "could not read live/paper configs for --diff"
     fi
     if [[ "$ALIGN_TO_LIVE" == "1" ]]; then

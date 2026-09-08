@@ -727,6 +727,39 @@ assert_contains "$out" "diff: compose-refuse discord.channels.hyperliquid-paper"
 assert_contains "$out" "diff: compose-refuse discord.trade_alert_channels.hyperliquid-paper" "--diff names a trade_alert_channels type-keyed self-conflict"
 assert_contains "$out" "diff: compose-refuse discord.dm_channels.hyperliquid-paper" "--diff names a dm_channels type-keyed self-conflict"
 
+echo "== --diff skips already-merged paper strategies for discord used"
+setup diffmerged
+python3 - "$LIVE_CFG" "$PAPER_CFG" "$PAPER_DB" <<'PY'
+import json, os, sys
+live_p, paper_p, paper_db = sys.argv[1], sys.argv[2], sys.argv[3]
+live = json.load(open(live_p))
+paper = json.load(open(paper_p))
+moved = json.loads(json.dumps(paper["strategies"][0]))
+moved["id"] = "hl-x-paper"
+moved["storage_strategy_id"] = "hl-x"
+live["strategies"].append(moved)
+live["paper_db_file"] = os.path.realpath(paper_db) if os.path.exists(paper_db) else os.path.abspath(paper_db)
+paper["strategies"].append({
+    "id": "hl-opt", "type": "options", "platform": "hyperliquid",
+    "script": "shared_scripts/check_hyperliquid.py",
+    "args": ["vwap", "ETH", "1h", "--mode=paper"],
+    "capital": 100, "leverage": 5, "margin_per_trade_usd": 50,
+})
+paper["discord"]["channels"] = {"perps": "Ch-perps", "options": "Ch-opt"}
+paper["discord"]["trade_alert_channels"] = {"perps": "T-perps", "options": "T-opt"}
+paper["discord"]["dm_channels"] = {"perps": "D-perps", "options": "D-opt"}
+json.dump(live, open(live_p, "w"))
+json.dump(paper, open(paper_p, "w"))
+PY
+out=$(run_merge --diff 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "0" "--diff with an already-merged type plus a new type exits 0"
+case "$out" in
+    *"diff: compose-refuse discord.channels.hyperliquid-paper"*|*"diff: compose-refuse discord.trade_alert_channels.hyperliquid-paper"*|*"diff: compose-refuse discord.dm_channels.hyperliquid-paper"*)
+        echo "$out" >&2
+        fail "--diff must not preview a type-keyed discord self-conflict when one type is already merged"
+        ;;
+esac
+
 echo "== --align-to-live is opt-in"
 setup alignflag
 out=$(run_merge --align-to-live 2>&1) && rc=0 || rc=$?
