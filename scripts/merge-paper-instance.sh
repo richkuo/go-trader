@@ -25,24 +25,31 @@ EXIT_JOURNAL_STATE=24
 
 usage() {
     cat <<'EOF'
-usage: merge-paper-instance.sh --live <instance> --paper <instance> [--apply | --rollback]
-         [--base <dir>] [--deploy-root <dir>] [--unit-dir <dir>]
+usage: merge-paper-instance.sh --live <instance> --paper <instance> [--apply | --rollback | --diff]
+         [--align-to-live] [--base <dir>] [--deploy-root <dir>] [--unit-dir <dir>]
          [--live-unit <unit>] [--paper-unit <unit>]
 
 Defaults: --base /var/lib/go-trader, --deploy-root /opt (deployments at
 <root>/go-trader-<instance>), --unit-dir /etc/systemd/system, units
 go-trader@<instance>.service. Without --apply nothing outside the staging
-area changes. Exit codes: 2 usage, 3 lock contention, 4 restore failed,
-5 source changed before apply, 10-18 preflight refusals (18: a config
-migration is pending or the two configs carry different versions), 20-24
-inspection, compose, proof, override and journal refusals. The binaries run
-against copies of both configs; the deployment files are never rewritten.
+area changes. --diff reads only the two config files and prints every
+differing root key (refuse-on-difference, dropped with the live value kept,
+or unknown); units may stay running and no lock or binary is used.
+--align-to-live is valid only with --diff or --apply: it writes live's
+shared root values to <paper-config>.aligned and never changes the paper
+source; --apply then composes from that file. Exit codes: 2 usage, 3 lock
+contention, 4 restore failed, 5 source changed before apply, 10-18 preflight
+refusals (18: a config migration is pending or the two configs carry
+different versions), 20-24 inspection, compose, proof, override and journal
+refusals. The binaries run against copies of both configs; the deployment
+files are never rewritten.
 EOF
 }
 
 LIVE=""
 PAPER=""
 MODE="dry-run"
+ALIGN_TO_LIVE=0
 BASE="/var/lib/go-trader"
 DEPLOY_ROOT="/opt"
 UNIT_DIR="/etc/systemd/system"
@@ -56,15 +63,23 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --live) LIVE="${2:-}"; shift 2 ;;
         --paper) PAPER="${2:-}"; shift 2 ;;
-        --apply) MODE="apply"; shift ;;
-        --rollback) MODE="rollback"; shift ;;
+        --apply)
+            [[ "$MODE" == "dry-run" ]] || { echo "ERROR: use only one of --apply, --rollback, --diff" >&2; usage >&2; exit "$EXIT_USAGE"; }
+            MODE="apply"; shift ;;
+        --rollback)
+            [[ "$MODE" == "dry-run" ]] || { echo "ERROR: use only one of --apply, --rollback, --diff" >&2; usage >&2; exit "$EXIT_USAGE"; }
+            MODE="rollback"; shift ;;
+        --diff)
+            [[ "$MODE" == "dry-run" ]] || { echo "ERROR: use only one of --apply, --rollback, --diff" >&2; usage >&2; exit "$EXIT_USAGE"; }
+            MODE="diff"; shift ;;
+        --align-to-live) ALIGN_TO_LIVE=1; shift ;;
         --base) BASE="${2:-}"; shift 2 ;;
         --deploy-root) DEPLOY_ROOT="${2:-}"; shift 2 ;;
         --unit-dir) UNIT_DIR="${2:-}"; shift 2 ;;
         --live-unit) LIVE_UNIT="${2:-}"; shift 2 ;;
         --paper-unit) PAPER_UNIT="${2:-}"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
-        *) echo "ERROR: unknown argument $1" >&2; usage >&2; exit "$EXIT_USAGE" ;;
+        *) echo "ERROR: unknown argument $1" >&2; usage >&2; exit "$EXIT_USAGE"; ;;
     esac
 done
 
@@ -78,6 +93,9 @@ fail() {
 [[ "$(update_validate_instance_name "$LIVE")" == "ok" ]] || fail "$EXIT_USAGE" "invalid live instance name '$LIVE'"
 [[ "$(update_validate_instance_name "$PAPER")" == "ok" ]] || fail "$EXIT_USAGE" "invalid paper instance name '$PAPER'"
 [[ "$LIVE" != "$PAPER" ]] || fail "$EXIT_USAGE" "live and paper instances must differ"
+if [[ "$ALIGN_TO_LIVE" == "1" && "$MODE" != "diff" && "$MODE" != "apply" ]]; then
+    fail "$EXIT_USAGE" "--align-to-live is only valid with --diff or --apply"
+fi
 [[ -z "$LIVE_UNIT" ]] && LIVE_UNIT="go-trader@${LIVE}.service"
 [[ -z "$PAPER_UNIT" ]] && PAPER_UNIT="go-trader@${PAPER}.service"
 
@@ -153,6 +171,17 @@ DROPPED = [
     "replay_log_path",
 ]
 CHANNEL_MAPS = ["channels", "trade_alert_channels", "dm_channels"]
+COMPOSE_DROP_SILENT = (
+    "strategies",
+    "portfolio_risk",
+    "discord",
+    "db_file",
+    "paper_db_file",
+    "config_version",
+    "interval_seconds",
+    "atr_method",
+    "replay_log_path",
+)
 
 def load(path):
     with open(path) as f:
@@ -166,6 +195,94 @@ def load(path):
 def refuse(msg):
     print("REFUSE: %s" % msg)
     sys.exit(1)
+
+def root_value(cfg, key):
+    v = cfg.get(key)
+    if key == "market_feed":
+        return (v or "").strip() or "rest"
+    return v
+
+def dump_root(cfg, key):
+    return json.dumps(cfg.get(key), sort_keys=True)
+
+def collect_root_diffs(live, paper):
+    refuse_keys = []
+    unknown_keys = []
+    dropped_keys = []
+    for key in REFUSE_ON_DIFFERENCE:
+        if (key in paper or key in live) and root_value(paper, key) != root_value(live, key):
+            refuse_keys.append(key)
+    for key in sorted(set(paper) | set(live)):
+        if key in DROPPED or key in REFUSE_ON_DIFFERENCE:
+            if key in DROPPED and key in paper and key not in COMPOSE_DROP_SILENT:
+                if paper.get(key) != live.get(key):
+                    dropped_keys.append(key)
+            continue
+        if paper.get(key) != live.get(key):
+            unknown_keys.append(key)
+    return refuse_keys, unknown_keys, dropped_keys
+
+def print_root_diff_report(live, paper, refuse_keys, unknown_keys, dropped_keys):
+    for key in refuse_keys:
+        print("diff: refuse-on-difference %s live=%s paper=%s" % (key, dump_root(live, key), dump_root(paper, key)))
+    for key in unknown_keys:
+        print("diff: unknown %s live=%s paper=%s" % (key, dump_root(live, key), dump_root(paper, key)))
+    for key in dropped_keys:
+        print("diff: dropped %s live=%s paper=%s (live value kept)" % (key, dump_root(live, key), dump_root(paper, key)))
+    if not refuse_keys and not unknown_keys and not dropped_keys:
+        print("diff: no root-key differences")
+        return
+    print("diff: %d refuse-on-difference, %d unknown, %d dropped" % (len(refuse_keys), len(unknown_keys), len(dropped_keys)))
+
+def refuse_root_conflicts(live, paper, refuse_keys, unknown_keys, dropped_keys):
+    for key in refuse_keys:
+        print("REFUSE: root key %s differs between live and paper configs (an absent key is compared too, since the merged config would apply the live value to the moved strategies): live=%s paper=%s" % (
+            key, dump_root(live, key), dump_root(paper, key)))
+    for key in unknown_keys:
+        print("REFUSE: root key %s differs between live and paper configs and is not a known drop (an absent key is compared too): live=%s paper=%s" % (
+            key, dump_root(live, key), dump_root(paper, key)))
+    for key in dropped_keys:
+        print("dropped paper root key %s (live value kept): live=%s paper=%s" % (
+            key, dump_root(live, key), dump_root(paper, key)))
+    sys.exit(1)
+
+def write_json_atomic(path, doc, chown_from):
+    tmp = path + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(doc, f, indent=2)
+        f.write("\n")
+    st = os.stat(chown_from)
+    try:
+        os.chown(tmp, st.st_uid, st.st_gid)
+    except PermissionError:
+        pass
+    os.replace(tmp, path)
+
+def cmd_root_diff(live_path, paper_path):
+    live = load(live_path)
+    paper = load(paper_path)
+    refuse_keys, unknown_keys, dropped_keys = collect_root_diffs(live, paper)
+    print_root_diff_report(live, paper, refuse_keys, unknown_keys, dropped_keys)
+
+def cmd_align(live_path, paper_path, out_path):
+    live = load(live_path)
+    paper = load(paper_path)
+    refuse_keys, unknown_keys, _dropped = collect_root_diffs(live, paper)
+    aligned = json.loads(json.dumps(paper))
+    copied = 0
+    for key in list(refuse_keys) + unknown_keys:
+        before = paper[key] if key in paper else None
+        if key in live:
+            aligned[key] = json.loads(json.dumps(live[key]))
+        elif key in aligned:
+            del aligned[key]
+        after = aligned[key] if key in aligned else None
+        print("align: %s before=%s after=%s" % (key, json.dumps(before, sort_keys=True), json.dumps(after, sort_keys=True)))
+        copied += 1
+    write_json_atomic(out_path, aligned, paper_path)
+    if copied == 0:
+        print("align: no non-dropped root keys to copy")
 
 def strategy_mode(s):
     args = s.get("args") or []
@@ -492,39 +609,13 @@ def cmd_compose(live_path, paper_path, paper_db_abs, out_path, map_path, inspect
         if mm:
             merged_discord[map_key] = mm
 
-    def root_value(cfg, key):
-        v = cfg.get(key)
-        if key == "market_feed":
-            return (v or "").strip() or "rest"
-        return v
-    for key in REFUSE_ON_DIFFERENCE:
-        if (key in paper or key in live) and root_value(paper, key) != root_value(live, key):
-            refuse("root key %s differs between live and paper configs (an absent key is compared too, since the merged config would apply the live value to the moved strategies): live=%s paper=%s" % (
-                key, json.dumps(live.get(key), sort_keys=True), json.dumps(paper.get(key), sort_keys=True)))
-    dropped = []
-    for key in sorted(set(paper) | set(live)):
-        if key in DROPPED or key in REFUSE_ON_DIFFERENCE:
-            if key in DROPPED and key in paper and key not in ("strategies", "portfolio_risk", "discord", "db_file", "paper_db_file", "config_version", "interval_seconds", "atr_method", "replay_log_path"):
-                if paper.get(key) != live.get(key):
-                    dropped.append(key)
-            continue
-        if paper.get(key) != live.get(key):
-            refuse("root key %s differs between live and paper configs and is not a known drop (an absent key is compared too): live=%s paper=%s" % (
-                key, json.dumps(live.get(key), sort_keys=True), json.dumps(paper.get(key), sort_keys=True)))
+    refuse_keys, unknown_keys, dropped = collect_root_diffs(live, paper)
+    if refuse_keys or unknown_keys:
+        refuse_root_conflicts(live, paper, refuse_keys, unknown_keys, dropped)
 
     merged["strategies"] = merged_strats + [b for _, b in new_strats]
     merged["paper_db_file"] = paper_db_abs
-    tmp = out_path + ".tmp"
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        json.dump(merged, f, indent=2)
-        f.write("\n")
-    st = os.stat(live_path)
-    try:
-        os.chown(tmp, st.st_uid, st.st_gid)
-    except PermissionError:
-        pass
-    os.replace(tmp, out_path)
+    write_json_atomic(out_path, merged, live_path)
     with open(map_path, "w") as f:
         json.dump({
             "renames": renames,
@@ -616,6 +707,10 @@ def main():
         cmd_compose(*args)
     elif cmd == "diff":
         cmd_diff(*args)
+    elif cmd == "root-diff":
+        cmd_root_diff(*args)
+    elif cmd == "align":
+        cmd_align(*args)
     else:
         refuse("unknown helper command %s" % cmd)
 
@@ -659,6 +754,32 @@ run_bin() {
         exec "$bin" "$@"
     )
 }
+
+write_aligned_paper() {
+    local aligned="${PAPER_CFG}.aligned" rc=0
+    ALIGN_OUT=$(py align "$LIVE_CFG" "$PAPER_CFG" "$aligned") || rc=$?
+    if [[ "$rc" != "0" ]]; then
+        printf '%s\n' "$ALIGN_OUT" >&2
+        fail "$EXIT_COMPOSE_REFUSED" "could not write aligned paper config $aligned"
+    fi
+    printf '%s\n' "$ALIGN_OUT"
+    echo "align: wrote $aligned (source paper config unchanged)"
+}
+
+ALIGN_OUT=""
+if [[ "$MODE" == "diff" ]]; then
+    for c in "$LIVE_CFG" "$PAPER_CFG"; do
+        [[ -f "$c" ]] || fail "$EXIT_CONFIG_MISSING" "config $c is missing"
+    done
+    echo "merge-paper-instance: live=$LIVE ($LIVE_CFG) paper=$PAPER ($PAPER_CFG) mode=diff"
+    if ! py root-diff "$LIVE_CFG" "$PAPER_CFG"; then
+        fail "$EXIT_CONFIG_MISSING" "could not read live/paper configs for --diff"
+    fi
+    if [[ "$ALIGN_TO_LIVE" == "1" ]]; then
+        write_aligned_paper
+    fi
+    exit 0
+fi
 
 echo "merge-paper-instance: live=$LIVE ($LIVE_DEPLOY, $LIVE_CFG) paper=$PAPER ($PAPER_DEPLOY, $PAPER_CFG) mode=$MODE"
 
@@ -915,7 +1036,12 @@ config_copy_intact paper "$PAPER_CFG_COPY" "$fp_paper_cfg" "inspection"
 [[ "$(update_file_fingerprint "$PAPER_CFG")" == "$fp_paper_cfg" ]] || fail "$EXIT_SOURCE_CHANGED" "$PAPER_CFG changed during inspection"
 check_db_fingerprints "inspection" || exit "$EXIT_INSPECTION_REFUSED"
 
-if ! py compose "$LIVE_CFG" "$PAPER_CFG" "$PAPER_DB_CANON" "$STAGED_CFG" "$STAGED_MAP" "$WORK/inspect-live.json" "$WORK/inspect-paper.json"; then
+PAPER_COMPOSE="$PAPER_CFG"
+if [[ "$ALIGN_TO_LIVE" == "1" ]]; then
+    write_aligned_paper
+    PAPER_COMPOSE="${PAPER_CFG}.aligned"
+fi
+if ! py compose "$LIVE_CFG" "$PAPER_COMPOSE" "$PAPER_DB_CANON" "$STAGED_CFG" "$STAGED_MAP" "$WORK/inspect-live.json" "$WORK/inspect-paper.json"; then
     rm -f "$STAGED_CFG" "$STAGED_MAP"
     fail "$EXIT_COMPOSE_REFUSED" "merged config could not be composed"
 fi
@@ -997,6 +1123,9 @@ run_id="$(date +%Y%m%d%H%M%S)-$$"
     printf 'paper_db %s\n' "$fp_paper_db"
     printf 'staged_config %s\n' "$(update_file_fingerprint "$STAGED_CFG")"
     printf 'staged_override %s\n' "$(update_file_fingerprint "$STAGED_OVERRIDE")"
+    if [[ -n "$ALIGN_OUT" ]]; then
+        printf '%s\n' "$ALIGN_OUT"
+    fi
     if [[ -e "$DROPIN" ]]; then
         printf 'override_prior present\n'
         printf 'override_prior_fp %s\n' "$(update_file_fingerprint "$DROPIN")"

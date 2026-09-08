@@ -629,4 +629,98 @@ out=$(run_merge 2>&1) && rc=0 || rc=$?
 assert_contains "$out" "1 configured strategy without a stored book yet" "the bookless strategy is reported"
 assert_eq "$(json_get "$LIVE_CFG.merge-staged" strategies.2.id)" "hl-new" "the bookless strategy is still moved"
 
+echo "== one-shot root-key conflict report"
+setup manykeys
+python3 - "$PAPER_CFG" <<'PY'
+import json, sys
+p = sys.argv[1]
+cfg = json.load(open(p))
+cfg["regime"] = {"enabled": True}
+cfg["telegram"] = {"enabled": True, "token": "paper-token"}
+cfg["notify_ratchet_triggers"] = True
+cfg["channels"] = {"ops": "paper-ops"}
+json.dump(cfg, open(p, "w"))
+PY
+paper_before=$(cat "$PAPER_CFG")
+out=$(run_merge 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "21" "N root-key conflicts refuse once"
+assert_contains "$out" "root key regime differs" "regime is listed"
+assert_contains "$out" "root key telegram differs" "telegram is listed in the same refuse"
+assert_contains "$out" "root key notify_ratchet_triggers differs" "notify_ratchet_triggers is listed in the same refuse"
+assert_contains "$out" "root key channels differs" "unknown root key channels is listed"
+assert_contains "$out" "dropped paper root key log_dir (live value kept)" "dropped log_dir is listed while refusing"
+assert_contains "$out" "dropped paper root key status_port (live value kept)" "dropped status_port is listed while refusing"
+[[ ! -e "$LIVE_CFG.merge-staged" ]] || fail "one-shot refuse leaves no staged config"
+assert_eq "$(cat "$PAPER_CFG")" "$paper_before" "a refused compose never edits the paper config"
+
+echo "== --diff is a static preview"
+setup diffpreview
+python3 - "$PAPER_CFG" <<'PY'
+import json, sys
+p = sys.argv[1]
+cfg = json.load(open(p))
+cfg["regime"] = {"enabled": True}
+cfg["telegram"] = {"enabled": True, "token": "paper-token"}
+cfg["channels"] = {"ops": "paper-ops"}
+json.dump(cfg, open(p, "w"))
+PY
+printf 'active\n' > "$F/live.state"
+rm -f "$OPT/go-trader-paper/go-trader"
+hold_lock_in_background "$(update_canonical_db_path "$PAPER_DB").lock"
+out=$(run_merge --diff 2>&1) && rc=0 || rc=$?
+kill "$HOLD_PID" 2>/dev/null || true
+wait "$HOLD_PID" 2>/dev/null || true
+assert_rc "$rc" "0" "--diff exits 0 while units run, a binary is missing, and a lock is held"
+assert_contains "$out" "diff: refuse-on-difference regime" "--diff classifies regime"
+assert_contains "$out" "diff: refuse-on-difference telegram" "--diff classifies telegram"
+assert_contains "$out" "diff: unknown channels" "--diff classifies an unknown root key"
+assert_contains "$out" "diff: dropped log_dir" "--diff classifies dropped log_dir"
+assert_contains "$out" "(live value kept)" "--diff marks dropped keys as live-value-kept"
+[[ ! -e "$LIVE_CFG.merge-staged" ]] || fail "--diff must not write a staged config"
+[[ ! -e "$JOURNAL" ]] || fail "--diff must not write a journal"
+
+echo "== --align-to-live is opt-in"
+setup alignflag
+out=$(run_merge --align-to-live 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "2" "--align-to-live without --diff or --apply is usage"
+setup aligndiff
+python3 - "$PAPER_CFG" <<'PY'
+import json, sys
+p = sys.argv[1]
+cfg = json.load(open(p))
+cfg["regime"] = {"enabled": True}
+cfg["telegram"] = {"enabled": True, "token": "paper-token"}
+json.dump(cfg, open(p, "w"))
+PY
+paper_before=$(cat "$PAPER_CFG")
+printf 'active\n' > "$F/paper.state"
+out=$(run_merge --diff --align-to-live 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "0" "--diff --align-to-live exits 0 while a unit is active"
+assert_eq "$(cat "$PAPER_CFG")" "$paper_before" "--align-to-live never mutates the paper source"
+[[ -f "$PAPER_CFG.aligned" ]] || fail "--diff --align-to-live writes the aligned paper config"
+assert_eq "$(json_get "$PAPER_CFG.aligned" regime)" "" "aligned file drops a paper-only regime so it matches live"
+assert_contains "$out" "align: regime before=" "align records the regime before-value"
+assert_contains "$out" "align: telegram before=" "align records the telegram before-value"
+
+echo "== --align-to-live with --apply"
+setup alignapply
+python3 - "$PAPER_CFG" <<'PY'
+import json, sys
+p = sys.argv[1]
+cfg = json.load(open(p))
+cfg["regime"] = {"enabled": True}
+cfg["telegram"] = {"enabled": True, "token": "paper-token"}
+json.dump(cfg, open(p, "w"))
+PY
+paper_before=$(cat "$PAPER_CFG")
+out=$(run_merge --apply --align-to-live 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "--apply --align-to-live exits 0 (rc=$rc)"; }
+assert_contains "$out" "VERDICT: APPLIED" "--apply --align-to-live reaches apply"
+assert_eq "$(cat "$PAPER_CFG")" "$paper_before" "--apply --align-to-live never mutates the paper source"
+[[ -f "$PAPER_CFG.aligned" ]] || fail "--apply --align-to-live preserves the aligned paper config"
+assert_eq "$(json_get "$PAPER_CFG.aligned" regime)" "" "applied alignment drops paper-only regime"
+grep -q '^align: regime before=' "$JOURNAL" || fail "journal records aligned regime with before-value"
+grep -q '^align: telegram before=' "$JOURNAL" || fail "journal records aligned telegram with before-value"
+assert_eq "$(json_get "$LIVE_CFG" strategies.1.id)" "hl-x-paper" "aligned apply still moves the paper strategy"
+
 echo "OK: merge-paper-instance tests passed"
