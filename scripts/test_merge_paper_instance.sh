@@ -676,8 +676,33 @@ assert_contains "$out" "diff: refuse-on-difference telegram" "--diff classifies 
 assert_contains "$out" "diff: unknown channels" "--diff classifies an unknown root key"
 assert_contains "$out" "diff: dropped log_dir" "--diff classifies dropped log_dir"
 assert_contains "$out" "(live value kept)" "--diff marks dropped keys as live-value-kept"
+assert_contains "$out" "inspect-based portfolio_risk refuses need a dry run" "--diff does not claim a clean merge"
 [[ ! -e "$LIVE_CFG.merge-staged" ]] || fail "--diff must not write a staged config"
 [[ ! -e "$JOURNAL" ]] || fail "--diff must not write a journal"
+
+echo "== --diff names compose refuses it can see without inspect"
+setup diffreplay
+python3 - "$PAPER_CFG" <<'PY'
+import json, sys
+p = sys.argv[1]
+cfg = json.load(open(p))
+cfg["replay_log_path"] = "/tmp/other-replay.db"
+json.dump(cfg, open(p, "w"))
+PY
+out=$(run_merge --diff 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "0" "--diff with a paper-mirror replay_log_path clash exits 0"
+assert_contains "$out" "diff: compose-refuse replay_log_path" "--diff names a paper-mirror replay_log_path clash"
+setup diffchannel
+python3 - "$LIVE_CFG" <<'PY'
+import json, sys
+p = sys.argv[1]
+cfg = json.load(open(p))
+cfg["discord"]["channels"]["hyperliquid-paper"] = "C-other"
+json.dump(cfg, open(p, "w"))
+PY
+out=$(run_merge --diff 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "0" "--diff with a -paper channel clash exits 0"
+assert_contains "$out" "diff: compose-refuse discord.channels.hyperliquid-paper" "--diff names a discord -paper clash"
 
 echo "== --align-to-live is opt-in"
 setup alignflag

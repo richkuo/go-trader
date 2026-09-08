@@ -34,7 +34,10 @@ Defaults: --base /var/lib/go-trader, --deploy-root /opt (deployments at
 go-trader@<instance>.service. Without --apply nothing outside the staging
 area changes. --diff reads only the two config files and prints every
 differing root key (refuse-on-difference, dropped with the live value kept,
-or unknown); units may stay running and no lock or binary is used.
+or unknown) plus compose refuses it can see without inspect (replay_log_path
+when a paper mirror is present, discord -paper channel clashes). It is not a
+dry run: inspect-based portfolio_risk refuses still need the full pipeline.
+Units may stay running and no lock or binary is used.
 --align-to-live is valid only with --diff or --apply: it writes live's
 shared root values to <paper-config>.aligned and never changes the paper
 source; --apply then composes from that file. Exit codes: 2 usage, 3 lock
@@ -264,6 +267,9 @@ def cmd_root_diff(live_path, paper_path):
     paper = load(paper_path)
     refuse_keys, unknown_keys, dropped_keys = collect_root_diffs(live, paper)
     print_root_diff_report(live, paper, refuse_keys, unknown_keys, dropped_keys)
+    for label, live_v, paper_v in collect_compose_refuse_previews(live, paper):
+        print("diff: compose-refuse %s live=%s paper=%s" % (label, live_v, paper_v))
+    print("diff: config-file preview only; inspect-based portfolio_risk refuses need a dry run")
 
 def cmd_align(live_path, paper_path, out_path):
     live = load(live_path)
@@ -317,6 +323,49 @@ def mirror_source(s):
     if isinstance(src, str) and src.strip():
         return src.strip()
     return s["id"]
+
+def collect_compose_refuse_previews(live, paper):
+    previews = []
+    seen = set()
+    paper_strats = strategies(paper)
+    if paper_strats and any(mirror_source(s) is not None for s in paper_strats):
+        if (live.get("replay_log_path") or "") != (paper.get("replay_log_path") or ""):
+            label = "replay_log_path"
+            seen.add(label)
+            previews.append((label, json.dumps(live.get("replay_log_path"), sort_keys=True), json.dumps(paper.get("replay_log_path"), sort_keys=True)))
+    paper_discord = paper.get("discord") or {}
+    live_discord = live.get("discord") or {}
+    used = set()
+    for s in paper_strats:
+        platform = s.get("platform") or ("hyperliquid" if s["id"].startswith("hl-") else "")
+        used.add((platform, s.get("type") or ""))
+    for map_key in CHANNEL_MAPS:
+        pm = paper_discord.get(map_key) or {}
+        mm = live_discord.get(map_key)
+        if mm is None:
+            mm = {}
+        for platform, stype in sorted(used):
+            val = ""
+            for key in ("%s-paper" % platform, platform, stype):
+                if pm.get(key):
+                    val = pm[key]
+                    break
+            if not val:
+                continue
+            target = "%s-paper" % platform
+            if target in mm and mm[target] != val:
+                label = "discord.%s.%s" % (map_key, target)
+                if label not in seen:
+                    seen.add(label)
+                    previews.append((label, json.dumps(mm[target], sort_keys=True), json.dumps(val, sort_keys=True)))
+        for key in sorted(pm):
+            val = pm[key]
+            if key.endswith("-paper") and key in mm and mm[key] != val:
+                label = "discord.%s.%s" % (map_key, key)
+                if label not in seen:
+                    seen.add(label)
+                    previews.append((label, json.dumps(mm[key], sort_keys=True), json.dumps(val, sort_keys=True)))
+    return previews
 
 def cmd_classify(path):
     cfg = load(path)
