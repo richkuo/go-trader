@@ -708,6 +708,7 @@ assert_contains "$out" "diff: dropped log_dir" "--diff classifies dropped log_di
 assert_contains "$out" "(live value kept)" "--diff marks dropped keys as live-value-kept"
 assert_contains "$out" "inspect-based portfolio_risk refuses need a dry run" "--diff does not claim a clean merge"
 assert_contains "$out" "diff: alias hl-x -> hl-x-paper (storage_strategy_id=hl-x)" "--diff previews the alias the apply step would create"
+assert_contains "$out" "diff: channel-plan discord.channels.hyperliquid-paper=C-paper" "--diff names the -paper channel key the compose step would add"
 [[ ! -e "$LIVE_CFG.merge-staged" ]] || fail "--diff must not write a staged config"
 [[ ! -e "$JOURNAL" ]] || fail "--diff must not write a journal"
 
@@ -734,6 +735,44 @@ PY
 out=$(run_merge --diff 2>&1) && rc=0 || rc=$?
 assert_rc "$rc" "0" "--diff with a -paper channel clash exits 0"
 assert_contains "$out" "diff: compose-refuse discord.channels.hyperliquid-paper" "--diff names a discord -paper clash"
+
+echo "== --diff previews every discord channel key the merge would add"
+setup diffchannelplan
+python3 - "$PAPER_CFG" <<'PY'
+import json, sys
+p = sys.argv[1]
+cfg = json.load(open(p))
+cfg["discord"]["trade_alert_channels"] = {"hyperliquid": "T-paper"}
+cfg["discord"]["dm_channels"] = {"hyperliquid": "D-paper"}
+json.dump(cfg, open(p, "w"))
+PY
+out=$(run_merge --diff 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "0" "--diff with all three paper channel maps exits 0"
+assert_contains "$out" "diff: channel-plan discord.channels.hyperliquid-paper=C-paper" "--diff names the channels key it would add"
+assert_contains "$out" "diff: channel-plan discord.trade_alert_channels.hyperliquid-paper=T-paper" "--diff names the trade_alert_channels key it would add"
+assert_contains "$out" "diff: channel-plan discord.dm_channels.hyperliquid-paper=D-paper" "--diff names the dm_channels key it would add"
+[[ ! -e "$LIVE_CFG.merge-staged" ]] || fail "--diff must not write a staged config while previewing the channel plan"
+
+echo "== a paper channel value equal to live adds no -paper key"
+setup samechannel
+python3 - "$PAPER_CFG" <<'PY'
+import json, sys
+p = sys.argv[1]
+cfg = json.load(open(p))
+cfg["discord"]["channels"]["hyperliquid"] = "C-live"
+json.dump(cfg, open(p, "w"))
+PY
+out=$(run_merge --diff 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "0" "--diff with an identical paper channel exits 0"
+assert_contains "$out" "diff: channel-plan discord.channels.hyperliquid-paper not added" "--diff names the channel key it would skip"
+out=$(run_merge 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "0" "dry run with an identical paper channel exits 0"
+assert_contains "$out" "compose: discord.channels.hyperliquid-paper not added" "compose names the same skip --diff previewed"
+staged="$LIVE_CFG.merge-staged"
+assert_eq "$(json_get "$staged" discord.channels.hyperliquid)" "C-live" "the merged map keeps the single bare channel key"
+assert_eq "$(json_get "$staged" discord.channels.hyperliquid-paper)" "" "no -paper key is added when the paper value repeats the live value"
+assert_eq "$(json_get "$staged" discord.trade_alert_channels)" "" "no empty trade_alert_channels map is written"
+assert_eq "$(json_get "$staged" discord.dm_channels)" "" "no empty dm_channels map is written"
 
 echo "== --diff names a same-platform type-keyed discord self-conflict"
 setup difftypes
