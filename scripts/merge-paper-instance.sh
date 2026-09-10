@@ -32,13 +32,22 @@ usage: merge-paper-instance.sh --live <instance> --paper <instance> [--apply | -
 Defaults: --base /var/lib/go-trader, --deploy-root /opt (deployments at
 <root>/go-trader-<instance>), --unit-dir /etc/systemd/system, units
 go-trader@<instance>.service. Without --apply nothing outside the staging
-area changes. --diff reads only the two config files and prints every
-differing root key (refuse-on-difference, dropped with the live value kept,
-or unknown) plus compose refuses it can see without inspect (replay_log_path
-when a paper mirror is present and the merged config would still have a live
-mirror, discord -paper clashes from strategies compose
-would newly merge). It is not a dry run: inspect-based portfolio_risk refuses
-still need the full pipeline.
+area changes.
+
+Every paper strategy is aliased as <base>-paper, and the numeric suffix is
+incremented (<base>-paper2, <base>-paper3, ...) until the name is free in the
+merged config. The alias becomes the in-process id and storage_strategy_id
+keeps the bare stored id from the paper database, so the stored books are
+untouched. A paper id that already carries the -paper alias keeps it when the
+name is free.
+
+--diff reads only the two config files and prints every differing root key
+(refuse-on-difference, dropped with the live value kept, or unknown), the
+alias every paper strategy would take, plus compose refuses it can see
+without inspect (replay_log_path when a paper mirror is present and the
+merged config would still have a live mirror, discord -paper clashes from
+strategies compose would newly merge). It is not a dry run: inspect-based
+portfolio_risk refuses still need the full pipeline.
 Units may stay running and no lock or binary is used.
 --align-to-live is valid only with --diff or --apply: it writes live's
 shared root values to <paper-config>.aligned and never changes the paper
@@ -271,6 +280,14 @@ def cmd_root_diff(live_path, paper_path, paper_db_abs=""):
     print_root_diff_report(live, paper, refuse_keys, unknown_keys, dropped_keys)
     for label, live_v, paper_v in collect_compose_refuse_previews(live, paper, paper_db_abs):
         print("diff: compose-refuse %s live=%s paper=%s" % (label, live_v, paper_v))
+    plan, alias_skipped = compose_alias_plan(live, paper, paper_db_abs)
+    for s, pid in plan:
+        if pid != s["id"]:
+            print("diff: alias %s -> %s (storage_strategy_id=%s)" % (s["id"], pid, storage_id(s)))
+        else:
+            print("diff: alias %s kept (already carries the -paper alias)" % s["id"])
+    for sid in alias_skipped:
+        print("diff: alias %s already merged; no rename" % sid)
     print("diff: config-file preview only; inspect-based portfolio_risk refuses need a dry run")
 
 def cmd_align(live_path, paper_path, out_path):
@@ -382,6 +399,44 @@ def compose_new_paper_strats(live, paper, paper_db_abs):
             continue
         out.append(s)
     return out
+
+def paper_alias_base(sid):
+    if sid.endswith("-paper"):
+        return sid[: -len("-paper")]
+    head, sep, tail = sid.rpartition("-paper")
+    if sep and tail.isdigit():
+        return head
+    return None
+
+def resolve_paper_alias(sid, taken, remaining):
+    base = paper_alias_base(sid)
+    if base is None:
+        base = sid
+    elif sid not in taken and sid not in remaining:
+        return sid
+    n = 1
+    while True:
+        cand = "%s-paper" % base if n == 1 else "%s-paper%d" % (base, n)
+        if cand not in taken and cand not in remaining:
+            return cand
+        n += 1
+
+def compose_alias_plan(live, paper, paper_db_abs=""):
+    paper_strats = strategies(paper)
+    already_merged, live_paper_storage = compose_paper_already_merged(live, paper_db_abs)
+    taken = set(s["id"] for s in strategies(live))
+    remaining = set(s["id"] for s in paper_strats)
+    plan = []
+    skipped = []
+    for s in paper_strats:
+        remaining.discard(s["id"])
+        if already_merged and storage_id(s) in live_paper_storage:
+            skipped.append(s["id"])
+            continue
+        pid = resolve_paper_alias(s["id"], taken, remaining)
+        taken.add(pid)
+        plan.append((s, pid))
+    return plan, skipped
 
 def collect_compose_refuse_previews(live, paper, paper_db_abs=""):
     previews = []
@@ -520,7 +575,6 @@ def cmd_compose(live_path, paper_path, paper_db_abs, out_path, map_path, inspect
     paper = load(paper_path)
     merged = json.loads(json.dumps(live))
     report = []
-    live_strats = strategies(live)
     paper_strats = strategies(paper)
     if paper.get("paper_db_file"):
         refuse("the paper config already splits its own state (paper_db_file); the handoff handles one primary file per side")
@@ -528,27 +582,10 @@ def cmd_compose(live_path, paper_path, paper_db_abs, out_path, map_path, inspect
         if strategy_mode(s) == MODE_LIVE:
             refuse("paper config strategy %s runs --mode=live" % s["id"])
 
-    live_ids = set(s["id"] for s in live_strats)
-    already_merged, live_paper_storage = compose_paper_already_merged(live, paper_db_abs)
-    taken = set(live_ids)
-    remaining = set(s["id"] for s in paper_strats)
+    plan, skipped = compose_alias_plan(live, paper, paper_db_abs)
     renames = {}
-    skipped = []
     new_strats = []
-    for s in paper_strats:
-        remaining.discard(s["id"])
-        if already_merged and storage_id(s) in live_paper_storage:
-            skipped.append(s["id"])
-            continue
-        pid = s["id"]
-        if pid in taken:
-            n = 1
-            while True:
-                cand = "%s-paper" % s["id"] if n == 1 else "%s-paper%d" % (s["id"], n)
-                if cand not in taken and cand not in remaining:
-                    break
-                n += 1
-            pid = cand
+    for s, pid in plan:
         block = json.loads(json.dumps(s))
         if pid != s["id"]:
             renames[s["id"]] = pid
@@ -556,7 +593,8 @@ def cmd_compose(live_path, paper_path, paper_db_abs, out_path, map_path, inspect
             if "storage_strategy_id" not in block:
                 block["storage_strategy_id"] = s["id"]
             report.append("rename %s -> %s (storage_strategy_id=%s)" % (s["id"], pid, block["storage_strategy_id"]))
-        taken.add(pid)
+        else:
+            report.append("keep %s (already carries the -paper alias; storage_strategy_id=%s)" % (s["id"], storage_id(s)))
         new_strats.append((s, block))
 
     live_interval = effective_root(live, "interval_seconds", 600)

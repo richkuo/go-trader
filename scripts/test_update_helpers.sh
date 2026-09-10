@@ -927,6 +927,32 @@ if [[ "$audit_out" != *"AMBIGUOUS hl-y-paper"* || "$audit_out" == *"PAIR hl-y"* 
     echo "FAIL: expected an AMBIGUOUS line and no pair, got: $audit_out" >&2
     exit 1
 fi
+
+mkdir -p "$drift/notwin/scheduler"
+cat > "$drift/notwin/scheduler/config.json" <<'JSON'
+{"config_version": 19, "strategies": [
+  {"id": "hl-z-paper", "storage_strategy_id": "hl-z", "type": "perps", "platform": "hyperliquid",
+   "script": "shared_scripts/check_hyperliquid.py",
+   "args": ["vwap", "ETH", "1h", "--mode=paper"],
+   "interval_seconds": 300, "leverage": 20, "margin_per_trade_usd": 50, "capital": 100}
+]}
+JSON
+audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/notwin") && audit_rc=0 || audit_rc=$?
+assert_eq "$audit_rc" "0" "drift audit: a paper alias with no live twin is reported and does not gate"
+if [[ "$audit_out" != *"UNPAIRED (no live twin) hl-z-paper"* ]]; then
+    echo "FAIL: expected an UNPAIRED no-live-twin line, got: $audit_out" >&2
+    exit 1
+fi
+if [[ "$audit_out" == *"AMBIGUOUS hl-z-paper"* ]]; then
+    echo "FAIL: a paper alias with no live base must not be ambiguous, got: $audit_out" >&2
+    exit 1
+fi
+audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/alias") && audit_rc=0 || audit_rc=$?
+assert_eq "$audit_rc" "0" "drift audit: a paper alias whose live twin exists still pairs"
+if [[ "$audit_out" == *"UNPAIRED (no live twin)"* ]]; then
+    echo "FAIL: a paired alias must not be reported as having no live twin, got: $audit_out" >&2
+    exit 1
+fi
 audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/live" "$drift/paper2") && audit_rc=0 || audit_rc=$?
 assert_eq "$audit_rc" "0" "drift audit: an incompatible timeframe pair is reported and left alone"
 if [[ "$audit_out" != *"INCOMPATIBLE timeframe"* || "$audit_out" != *"SKIP — INCOMPATIBLE"* ]]; then

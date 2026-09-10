@@ -295,21 +295,49 @@ out=$(run_merge 2>&1) && rc=0 || rc=$?
 assert_rc "$rc" "21" "conflicting -paper channel refuses"
 assert_contains "$out" "discord.channels.hyperliquid-paper" "channel refusal names the key"
 
-echo "== second collision suffix"
+echo "== second suffix, with and without a live id collision"
 setup suffix
 python3 - "$LIVE_CFG" <<'PY'
 import json, sys
 p = sys.argv[1]
 cfg = json.load(open(p))
 del cfg["strategies"][0]["capital"]
-cfg["strategies"].append({"id": "hl-x-paper", "type": "perps", "platform": "hyperliquid",
-    "script": "shared_scripts/check_hyperliquid.py", "args": ["vwap", "BTC", "1h", "--mode=live"],
-    "leverage": 5, "margin_per_trade_usd": 50})
+for sid in ("hl-x-paper", "hl-y-paper"):
+    cfg["strategies"].append({"id": sid, "type": "perps", "platform": "hyperliquid",
+        "script": "shared_scripts/check_hyperliquid.py", "args": ["vwap", "BTC", "1h", "--mode=live"],
+        "leverage": 5, "margin_per_trade_usd": 50})
+json.dump(cfg, open(p, "w"))
+PY
+python3 - "$PAPER_CFG" <<'PY'
+import json, sys
+p = sys.argv[1]
+cfg = json.load(open(p))
+cfg["strategies"].append({"id": "hl-y", "type": "perps", "platform": "hyperliquid",
+    "script": "shared_scripts/check_hyperliquid.py", "args": ["vwap", "BTC", "1h", "--mode=paper"],
+    "capital": 100, "leverage": 5, "margin_per_trade_usd": 50})
 json.dump(cfg, open(p, "w"))
 PY
 out=$(run_merge 2>&1) && rc=0 || rc=$?
 [[ "$rc" == "0" ]] || { echo "$out" >&2; fail "second suffix dry run exits 0 (rc=$rc)"; }
-assert_contains "$out" "rename hl-x -> hl-x-paper2 (storage_strategy_id=hl-x)" "second suffix used only when the first is taken"
+assert_contains "$out" "rename hl-x -> hl-x-paper2 (storage_strategy_id=hl-x)" "a colliding paper id takes the second suffix when the first is used"
+assert_contains "$out" "rename hl-y -> hl-y-paper2 (storage_strategy_id=hl-y)" "a paper id with no live collision takes the second suffix too"
+
+echo "== a paper id that already carries the alias keeps it"
+setup aliased
+python3 - "$PAPER_CFG" <<'PY'
+import json, sys
+p = sys.argv[1]
+cfg = json.load(open(p))
+s = cfg["strategies"][0]
+s["id"] = "hl-x-paper"
+s["storage_strategy_id"] = "hl-x"
+s.pop("replay_sharing", None)
+json.dump(cfg, open(p, "w"))
+PY
+out=$(run_merge 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "an already aliased paper id reaches READY (rc=$rc)"; }
+assert_contains "$out" "keep hl-x-paper (already carries the -paper alias; storage_strategy_id=hl-x)" "an already aliased id is not renamed again"
+assert_eq "$(json_get "$LIVE_CFG.merge-staged" strategies.1.id)" "hl-x-paper" "the already aliased id is staged as it is"
 
 echo "== invalid explicit storage mapping on the paper side"
 setup badmap
@@ -627,7 +655,9 @@ PY
 out=$(run_merge 2>&1) && rc=0 || rc=$?
 [[ "$rc" == "0" ]] || { echo "$out" >&2; fail "a configured paper strategy without a book reaches READY (rc=$rc)"; }
 assert_contains "$out" "1 configured strategy without a stored book yet" "the bookless strategy is reported"
-assert_eq "$(json_get "$LIVE_CFG.merge-staged" strategies.2.id)" "hl-new" "the bookless strategy is still moved"
+assert_contains "$out" "rename hl-new -> hl-new-paper (storage_strategy_id=hl-new)" "a paper strategy with no live counterpart is aliased too"
+assert_eq "$(json_get "$LIVE_CFG.merge-staged" strategies.2.id)" "hl-new-paper" "the bookless strategy is moved under its alias"
+assert_eq "$(json_get "$LIVE_CFG.merge-staged" strategies.2.storage_strategy_id)" "hl-new" "the alias keeps the bare stored id"
 
 echo "== one-shot root-key conflict report"
 setup manykeys
@@ -677,6 +707,7 @@ assert_contains "$out" "diff: unknown channels" "--diff classifies an unknown ro
 assert_contains "$out" "diff: dropped log_dir" "--diff classifies dropped log_dir"
 assert_contains "$out" "(live value kept)" "--diff marks dropped keys as live-value-kept"
 assert_contains "$out" "inspect-based portfolio_risk refuses need a dry run" "--diff does not claim a clean merge"
+assert_contains "$out" "diff: alias hl-x -> hl-x-paper (storage_strategy_id=hl-x)" "--diff previews the alias the apply step would create"
 [[ ! -e "$LIVE_CFG.merge-staged" ]] || fail "--diff must not write a staged config"
 [[ ! -e "$JOURNAL" ]] || fail "--diff must not write a journal"
 

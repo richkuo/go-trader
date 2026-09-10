@@ -209,6 +209,7 @@ for source, path, deploy_dir in rows:
 lives = [e for e in entries if e["mode"] == "live"]
 live_ids = set(e["block"]["id"] for e in lives)
 ambiguous = []
+unpaired_alias = []
 by_key = {}
 for e in entries:
     if e["mode"] == "live":
@@ -231,8 +232,15 @@ for e in entries:
                 ambiguous.append(e)
                 continue
         else:
+            if base is not None:
+                unpaired_alias.append((e, base))
             key = sid
     by_key.setdefault(key, []).append(e)
+
+for e, base in unpaired_alias:
+    print()
+    print("UNPAIRED (no live twin) %s at %s — the -paper alias names %s and no audited deployment runs a live strategy with that id; add the live twin or audit the deployment that holds it"
+          % (e["block"]["id"], e["source"], base))
 
 for e in ambiguous:
     print()

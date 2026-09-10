@@ -54,6 +54,9 @@ func TestConfigExampleCopyDoesNotTriggerTheUpgradePath(t *testing.T) {
 				if got, _ := ident.processFor(storageRolePaper, "hl-vwap-eth-60"); got != "hl-vwap-eth-60-paper" {
 					t.Fatalf("paper alias maps to %q, want hl-vwap-eth-60-paper", got)
 				}
+				if got, _ := ident.processFor(storageRolePaper, "hl-rsi-btc-60"); got != "hl-rsi-btc-60-paper" {
+					t.Fatalf("the paper alias with no live twin maps to %q, want hl-rsi-btc-60-paper", got)
+				}
 			}
 		})
 	}

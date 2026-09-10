@@ -60,6 +60,20 @@
       "close_strategy": {"name": "trailing_tp_ratchet"},
       "replay_sharing": "live_mirror",
       "replay_source_id": "hl-vwap-eth-60"
+    },
+    {
+      "id": "hl-rsi-btc-60-paper",
+      "storage_strategy_id": "hl-rsi-btc-60",
+      "type": "perps",
+      "platform": "hyperliquid",
+      "script": "shared_scripts/check_hyperliquid.py",
+      "args": ["rsi", "BTC", "1h", "--mode=paper"],
+      "capital": 100,
+      "leverage": 5,
+      "margin_per_trade_usd": 50,
+      "max_drawdown_pct": 40,
+      "trailing_stop_atr_mult": 2.0,
+      "close_strategy": {"name": "trailing_tp_ratchet"}
     }
   ]
 }
