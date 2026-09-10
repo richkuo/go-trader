@@ -55,7 +55,9 @@ compose refuses it can see without inspect (replay_log_path when a paper
 mirror is present and the merged config would still have a live mirror,
 discord -paper clashes from strategies compose would newly merge). A paper
 channel value that already routes through the merged bare key adds no -paper
-key and is named as not added. It is not a dry run: inspect-based
+key and is named as not added, except under channels when dropping the key
+would change which channels a paper-scope alert reaches: that key is kept and
+named as kept. It is not a dry run: inspect-based
 portfolio_risk refuses still need the full pipeline.
 Units may stay running and no lock or binary is used.
 --align-to-live is valid only with --diff or --apply: it writes live's
@@ -366,6 +368,12 @@ def merged_channel_route_key(mm, platform, stype):
             return key
     return ""
 
+def paper_scope_broadcast_values(mm, dropped=()):
+    vals = set(v for k, v in mm.items() if k.endswith("-paper") and v and k not in dropped)
+    if vals:
+        return vals
+    return set(v for k, v in mm.items() if v and k not in dropped)
+
 def apply_paper_discord_maps(merged_discord, paper_discord, used):
     report = []
     conflicts = []
@@ -402,21 +410,12 @@ def apply_paper_discord_maps(merged_discord, paper_discord, used):
                 routed.setdefault(target, []).append((platform, stype))
                 if src == target:
                     pinned.add(target)
-        for target, val in added:
-            if mm.get(target) != val:
-                continue
-            route_keys = [merged_channel_route_key(mm, platform, stype) for platform, stype in routed.get(target, [])]
-            if target not in pinned and route_keys and all(k and mm.get(k) == val for k in route_keys):
-                del mm[target]
-                report.append("discord.%s.%s not added (paper value %s already routes through discord.%s.%s)" % (
-                    map_key, target, val, map_key, route_keys[0]))
-            else:
-                report.append("discord.%s.%s=%s" % (map_key, target, val))
+        passthrough = []
         for key in sorted(pm):
             val = pm[key]
             if key.endswith("-paper") and key not in mm and val:
                 mm[key] = val
-                report.append("discord.%s.%s=%s" % (map_key, key, val))
+                passthrough.append("discord.%s.%s=%s" % (map_key, key, val))
             elif key.endswith("-paper") and key in mm and mm[key] != val:
                 conflicts.append((
                     "discord.%s.%s" % (map_key, key),
@@ -424,6 +423,32 @@ def apply_paper_discord_maps(merged_discord, paper_discord, used):
                     val,
                     "discord.%s.%s differs: live=%r paper=%r" % (map_key, key, mm[key], val),
                 ))
+        candidates = []
+        for target, val in added:
+            if mm.get(target) != val or target in pinned:
+                continue
+            route_keys = [merged_channel_route_key(mm, platform, stype) for platform, stype in routed.get(target, [])]
+            if route_keys and all(k and mm.get(k) == val for k in route_keys):
+                candidates.append(target)
+        blocked = set()
+        if map_key == "channels" and candidates:
+            if paper_scope_broadcast_values(mm, candidates) != paper_scope_broadcast_values(mm):
+                blocked = set(candidates)
+                candidates = []
+        pruned = set(candidates)
+        for target, val in added:
+            if mm.get(target) != val:
+                continue
+            if target in pruned:
+                del mm[target]
+                report.append("discord.%s.%s not added (paper value %s already routes through discord.%s.%s)" % (
+                    map_key, target, val, map_key, merged_channel_route_key(mm, *routed[target][0])))
+            elif target in blocked:
+                report.append("discord.%s.%s=%s (kept: dropping it would change which channels paper-scope alerts reach)" % (
+                    map_key, target, val))
+            else:
+                report.append("discord.%s.%s=%s" % (map_key, target, val))
+        report.extend(passthrough)
         if mm:
             merged_discord[map_key] = mm
     return report, conflicts

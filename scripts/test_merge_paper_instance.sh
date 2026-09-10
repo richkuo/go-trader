@@ -774,6 +774,31 @@ assert_eq "$(json_get "$staged" discord.channels.hyperliquid-paper)" "" "no -pap
 assert_eq "$(json_get "$staged" discord.trade_alert_channels)" "" "no empty trade_alert_channels map is written"
 assert_eq "$(json_get "$staged" discord.dm_channels)" "" "no empty dm_channels map is written"
 
+echo "== an identical paper channel keeps its -paper key when a live-only channel exists"
+setup scopeisolation
+python3 - "$LIVE_CFG" "$PAPER_CFG" <<'PY'
+import json, sys
+live_p, paper_p = sys.argv[1], sys.argv[2]
+live = json.load(open(live_p))
+paper = json.load(open(paper_p))
+live["discord"]["channels"]["okx"] = "C-okx-live"
+paper["discord"]["channels"]["hyperliquid"] = "C-live"
+paper["discord"]["dm_channels"] = {"hyperliquid": "D-live"}
+live["discord"]["dm_channels"] = {"hyperliquid": "D-live", "okx": "D-okx-live"}
+json.dump(live, open(live_p, "w"))
+json.dump(paper, open(paper_p, "w"))
+PY
+out=$(run_merge --diff 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "0" "--diff with a live-only second channel exits 0"
+assert_contains "$out" "diff: channel-plan discord.channels.hyperliquid-paper=C-live (kept:" "--diff says the channel key is kept for paper-scope alerts"
+assert_contains "$out" "diff: channel-plan discord.dm_channels.hyperliquid-paper not added" "the dm map has no scope broadcast, so its redundant key is still skipped"
+out=$(run_merge 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "0" "dry run with a live-only second channel exits 0"
+staged="$LIVE_CFG.merge-staged"
+assert_eq "$(json_get "$staged" discord.channels.hyperliquid-paper)" "C-live" "the -paper channel key survives so paper-scope alerts stay off the live-only channel"
+assert_eq "$(json_get "$staged" discord.channels.okx)" "C-okx-live" "the live-only channel is untouched"
+assert_eq "$(json_get "$staged" discord.dm_channels.hyperliquid-paper)" "" "the redundant dm key is still skipped"
+
 echo "== --diff names a same-platform type-keyed discord self-conflict"
 setup difftypes
 python3 - "$PAPER_CFG" <<'PY'
