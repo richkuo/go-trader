@@ -17,7 +17,7 @@ Guardrails only. Mechanism/flows: SKILL.md, docs/POST_UPDATE_HISTORY.md; <15k by
 - `portfolio_scope.go`: `PortfolioScope` from `isLiveArgs` = SOLE mode classifier; `activeScopes` evaluates ONLY configured scopes. New portfolio-wide surface: subset via `filterStatesByScope`/`strategiesInScope`, never the roster.
 - `state.go`/`db.go`: SQLite-only, idempotent migrations. `AppState.PortfolioRisk`/`CorrelationSnapshot` = per-scope maps read only via `scopeRisk`/`scopeRiskIfPresent`/`scopeCorrelation`. `initial_capital` only via `SetInitialCapital`.
 - `state_store*.go`/`storage_*.go`: identity map immutable. EVERY DB caller via `StateStore` (`dbForStrategy`, live-only `liveFile`); ids translate INSIDE `StateDB`. New table: SKILL.md Storage Ownership row. Manual acks by ROW ID in-tx, NEVER a high-water mark; book+queued row = ONE tx; failing rows end; unknown ownership errs BEFORE mutation; combined reads fail whole.
-- `merge-paper-instance.sh`: binaries run on config COPIES; `inspect`/`storage-inspect` = `LoadConfigReadOnly` (no rewrite); both locks held preflight>apply except `--diff` (config-only, no binary/lock/unit-stop); `--align-to-live` writes `.aligned` never source; compose lists ALL root-key conflicts then refuses; `--once`/`--probe-only` never proof, zero paper override inherits.
+- `merge-paper-instance.sh`: binaries run on config COPIES; `inspect`/`storage-inspect` = `LoadConfigReadOnly` (no rewrite); both locks held preflight>apply except `--diff` (config-only); `--align-to-live` writes `.aligned` never source; compose lists ALL root-key conflicts then refuses; alias unconditional via shared `paper_alias.py`; `--once`/`--probe-only` never proof, zero paper override inherits.
 - `risk.go`: `CheckRisk` skips `manual`. Corrupt position (qty<=0 or avgCost<=0) = zero-PnL `*_corrupt` leg, cash untouched. Latch: ONE owner per cycle+scope; `DrawdownReadingSubstituted` labelled everywhere, untrusted over-limit defers, never vetoes. Paper `equityTrusted` always true. `ResetPortfolioKillSwitchManual` = sole DM reset; `AutoResetConfirmedFlatKillSwitch`/`ClearLatchedKillSwitchSharedWallet` `ScopeLive` only.
 - `daily_loss.go`: hold-only, UNLATCHED pure read, PRE-FEE realized PnL, never force-closes, per scope. New `portfolio_risk` gate copies this shape.
 - `exposure_cap.go`: blocking-only, direction-aware; single exposure model `computeAssetDeltas`, shared by `ComputeCorrelation`. `notional_cap.go`: hold-only via `pausedBlocksSignal`, never skips a cycle, restart-required.
@@ -65,7 +65,7 @@ Guardrails only. Mechanism/flows: SKILL.md, docs/POST_UPDATE_HISTORY.md; <15k by
 - `.github/workflows/claude.yml`: mode routing fail-closed (untrusted/fork = review); no-execution in agent; commit/push implement-only; prompt never holds `"`, `` ` ``, `$`; `.github/scripts/` keeps ONLY `test_workflow_logic.py`.
 
 ## Issues
-- `gh issue create`, title `[C<0-100>] <title>`; body line 1 `**Complexity: N/100** - scope; risk; uncertainty` (money/data/protection risk weighs most, never time). rk-skills workflow skills = CI-only, no project settings pin.
+- `gh issue create`, title `[C<0-100>] <title>`; body line 1 `**Complexity: N/100** - scope; risk; uncertainty` (money/data/protection risk > time). rk-skills workflow skills = CI-only, no settings pin.
 
 ## Deploy
 - **Update only with `bash scripts/update.sh --restart`. Never rebuild Go alone**: Go+Python share 1 argv contract per SHA; `update_resolve_db_exclude` lists all state files.
