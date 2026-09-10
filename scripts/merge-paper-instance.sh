@@ -4,6 +4,12 @@ set -euo pipefail
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 source "${SCRIPT_DIR}/update_helpers.sh"
 
+PAPER_ALIAS_PY="${SCRIPT_DIR}/paper_alias.py"
+if [[ ! -f "$PAPER_ALIAS_PY" ]]; then
+    echo "ERROR: missing $PAPER_ALIAS_PY - the shared -paper alias rule" >&2
+    exit 2
+fi
+
 EXIT_USAGE=2
 EXIT_LOCK_CONTENDED=3
 EXIT_RESTORE_FAILED=4
@@ -138,6 +144,9 @@ MERGE_PY=$(cat <<'PY'
 import json
 import os
 import sys
+
+sys.path.insert(0, os.environ["GO_TRADER_SCRIPT_DIR"])
+from paper_alias import paper_alias_base
 
 MODE_LIVE = "live"
 MODE_PAPER = "paper"
@@ -399,14 +408,6 @@ def compose_new_paper_strats(live, paper, paper_db_abs):
             continue
         out.append(s)
     return out
-
-def paper_alias_base(sid):
-    if sid.endswith("-paper"):
-        return sid[: -len("-paper")]
-    head, sep, tail = sid.rpartition("-paper")
-    if sep and tail.isdigit():
-        return head
-    return None
 
 def resolve_paper_alias(sid, taken, remaining):
     base = paper_alias_base(sid)
@@ -822,7 +823,7 @@ PY
 )
 
 py() {
-    python3 -c "$MERGE_PY" "$@"
+    GO_TRADER_SCRIPT_DIR="$SCRIPT_DIR" python3 -c "$MERGE_PY" "$@"
 }
 
 cfg_get() {

@@ -4,6 +4,12 @@ set -euo pipefail
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 source "${SCRIPT_DIR}/update_helpers.sh"
 
+PAPER_ALIAS_PY="${SCRIPT_DIR}/paper_alias.py"
+if [[ ! -f "$PAPER_ALIAS_PY" ]]; then
+    echo "ERROR: missing $PAPER_ALIAS_PY - the shared -paper alias rule" >&2
+    exit 2
+fi
+
 rows_file=$(mktemp)
 trap 'rm -f "$rows_file"' EXIT
 rows=0
@@ -56,11 +62,14 @@ if [[ "$rows" -eq 0 ]]; then
     exit 2
 fi
 
-python3 - "$rows_file" <<'PY'
+GO_TRADER_SCRIPT_DIR="$SCRIPT_DIR" python3 - "$rows_file" <<'PY'
 import json
 import os
 import subprocess
 import sys
+
+sys.path.insert(0, os.environ["GO_TRADER_SCRIPT_DIR"])
+from paper_alias import paper_alias_base
 
 WATCHED = [
     "interval_seconds",
@@ -112,15 +121,6 @@ def id_note(block, key):
     if isinstance(sid, str) and sid != key:
         return " [id=%s]" % sid
     return ""
-
-
-def strip_paper_suffix(sid):
-    if sid.endswith("-paper"):
-        return sid[: -len("-paper")]
-    head, sep, tail = sid.rpartition("-paper")
-    if sep and tail.isdigit():
-        return head
-    return None
 
 
 def identity(block):
@@ -223,7 +223,7 @@ for e in entries:
     elif sid in live_ids:
         key = sid
     else:
-        base = strip_paper_suffix(sid)
+        base = paper_alias_base(sid)
         storage = block.get("storage_strategy_id")
         if base is not None and base in live_ids:
             if isinstance(storage, str) and storage.strip() == base:
@@ -245,7 +245,7 @@ for e, base in unpaired_alias:
 for e in ambiguous:
     print()
     print("AMBIGUOUS %s at %s — the -paper suffix alone does not prove a twin of %s; set replay_source_id or storage_strategy_id to pair it"
-          % (e["block"]["id"], e["source"], strip_paper_suffix(e["block"]["id"])))
+          % (e["block"]["id"], e["source"], paper_alias_base(e["block"]["id"])))
 
 drift_pairs = 0
 skip_pairs = 0
