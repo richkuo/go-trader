@@ -57,7 +57,8 @@ discord -paper clashes from strategies compose would newly merge). A paper
 channel value that already routes through the merged bare key adds no -paper
 key and is named as not added, except under channels when dropping the key
 would change which channels a paper-scope alert reaches: that key is kept and
-named as kept. It is not a dry run: inspect-based
+named as kept. dm_channels keys are always added, since the paper DM route
+reads that exact key. It is not a dry run: inspect-based
 portfolio_risk refuses still need the full pipeline.
 Units may stay running and no lock or binary is used.
 --align-to-live is valid only with --diff or --apply: it writes live's
@@ -199,6 +200,7 @@ DROPPED = [
     "replay_log_path",
 ]
 CHANNEL_MAPS = ["channels", "trade_alert_channels", "dm_channels"]
+CHANNEL_MAPS_WITH_BARE_KEY_FALLBACK = ["channels", "trade_alert_channels"]
 COMPOSE_DROP_SILENT = (
     "strategies",
     "portfolio_risk",
@@ -425,6 +427,8 @@ def apply_paper_discord_maps(merged_discord, paper_discord, used):
                 ))
         candidates = []
         for target, val in added:
+            if map_key not in CHANNEL_MAPS_WITH_BARE_KEY_FALLBACK:
+                continue
             if mm.get(target) != val or target in pinned:
                 continue
             route_keys = [merged_channel_route_key(mm, platform, stype) for platform, stype in routed.get(target, [])]

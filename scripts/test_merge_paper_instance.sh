@@ -791,13 +791,32 @@ PY
 out=$(run_merge --diff 2>&1) && rc=0 || rc=$?
 assert_rc "$rc" "0" "--diff with a live-only second channel exits 0"
 assert_contains "$out" "diff: channel-plan discord.channels.hyperliquid-paper=C-live (kept:" "--diff says the channel key is kept for paper-scope alerts"
-assert_contains "$out" "diff: channel-plan discord.dm_channels.hyperliquid-paper not added" "the dm map has no scope broadcast, so its redundant key is still skipped"
+assert_contains "$out" "diff: channel-plan discord.dm_channels.hyperliquid-paper=D-live" "the dm map has no bare-key fallback, so its key is always added"
 out=$(run_merge 2>&1) && rc=0 || rc=$?
 assert_rc "$rc" "0" "dry run with a live-only second channel exits 0"
 staged="$LIVE_CFG.merge-staged"
 assert_eq "$(json_get "$staged" discord.channels.hyperliquid-paper)" "C-live" "the -paper channel key survives so paper-scope alerts stay off the live-only channel"
 assert_eq "$(json_get "$staged" discord.channels.okx)" "C-okx-live" "the live-only channel is untouched"
-assert_eq "$(json_get "$staged" discord.dm_channels.hyperliquid-paper)" "" "the redundant dm key is still skipped"
+assert_eq "$(json_get "$staged" discord.dm_channels.hyperliquid-paper)" "D-live" "the dm -paper key survives, because tradeAlertRoutes never falls back off it for a paper strategy"
+
+echo "== a type-keyed dm map still gets its -paper key"
+setup dmtypekey
+python3 - "$LIVE_CFG" "$PAPER_CFG" <<'PY'
+import json, sys
+live_p, paper_p = sys.argv[1], sys.argv[2]
+live = json.load(open(live_p))
+paper = json.load(open(paper_p))
+paper["discord"]["channels"]["hyperliquid"] = "C-live"
+live["discord"]["dm_channels"] = {"perps": "D-perps"}
+paper["discord"]["dm_channels"] = {"perps": "D-perps"}
+json.dump(live, open(live_p, "w"))
+json.dump(paper, open(paper_p, "w"))
+PY
+out=$(run_merge 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "0" "dry run with a type-keyed dm map exits 0"
+staged="$LIVE_CFG.merge-staged"
+assert_eq "$(json_get "$staged" discord.dm_channels.hyperliquid-paper)" "D-perps" "a dm value resolved from the bare type key still writes the -paper key"
+assert_eq "$(json_get "$staged" discord.channels.hyperliquid-paper)" "" "the channels map still skips its redundant key"
 
 echo "== --diff names a same-platform type-keyed discord self-conflict"
 setup difftypes
