@@ -332,7 +332,10 @@ func TestModelOnlyClose_ReconciledRowIsDuplicateProof(t *testing.T) {
 
 func TestModelOnlyClose_HedgeLegAdjustsDailyPnLNeverStreak(t *testing.T) {
 	resetModelOnlyReconcileHooks(t)
-	now := time.Now().UTC().Add(-time.Minute)
+	now := time.Now().UTC()
+	if back := now.Add(-time.Minute); back.Format("2006-01-02") == now.Format("2006-01-02") {
+		now = back
+	}
 	s := &StrategyState{
 		ID: "hl-cb-hedge", Type: "perps", Platform: "hyperliquid",
 		RiskState: RiskState{DailyPnL: -50, ConsecutiveLosses: 2, DailyPnLDate: now.Format("2006-01-02")},
