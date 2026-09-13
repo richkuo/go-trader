@@ -440,7 +440,7 @@ func TestSendTradeAlertsRouting(t *testing.T) {
 				},
 			}
 
-			sendTradeAlerts(tc.sc, state, 1, &mu, notifier)
+			sendTradeAlerts(tc.sc, state, 1, &mu, notifier, nil)
 
 			if len(mock.dms) != tc.wantDMs {
 				t.Errorf("dms = %d, want %d (%#v)", len(mock.dms), tc.wantDMs, mock.dms)
@@ -1003,7 +1003,7 @@ func TestSendAuditCloseAlertsGroupsPerStrategy(t *testing.T) {
 		{SC: sc, Symbol: "BTC/USDT", FillPx: 51000, Detail: "close 2"},
 	}
 
-	sendAuditCloseAlerts(details, map[string]*StrategyState{sc.ID: state}, &mu, notifier)
+	sendAuditCloseAlerts(details, map[string]*StrategyState{sc.ID: state}, &mu, notifier, nil)
 
 	if len(mock.dms) != 2 {
 		t.Fatalf("DMs = %d, want 2 (one per booked close)", len(mock.dms))

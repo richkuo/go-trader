@@ -220,7 +220,7 @@ func (t *TelegramNotifier) Close() {
 	t.closed = true
 }
 
-func FormatTradeDMPlain(sc StrategyConfig, trade Trade, mode string) string {
+func FormatTradeDMPlain(sc StrategyConfig, trade Trade, mode string, rc *RegimeConfig) string {
 	isClose := isTradeCloseDetails(trade.Details)
 
 	icon := "🟢"
@@ -245,7 +245,7 @@ func FormatTradeDMPlain(sc StrategyConfig, trade Trade, mode string) string {
 	}
 	sb.WriteString("\n")
 
-	if extras := tradeAlertExtras(sc, trade, isClose); len(extras) > 0 {
+	if extras := tradeAlertExtras(sc, trade, isClose, rc); len(extras) > 0 {
 		sb.WriteString(strings.Join(extras, " | "))
 	}
 

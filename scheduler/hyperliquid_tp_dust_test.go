@@ -220,7 +220,7 @@ func TestReconcileSharedCoin_TPDust_BooksBothTiers(t *testing.T) {
 
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
-	_, _, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, map[string]float64{"BTC": entryPx}, "0xtest", nil, false)
+	_, _, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, nil, positions, map[string]float64{"BTC": entryPx}, "0xtest", nil, false)
 
 	owner := state.Strategies[ownerID]
 	pos := owner.Positions["BTC"]

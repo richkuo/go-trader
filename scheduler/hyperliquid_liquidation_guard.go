@@ -802,7 +802,7 @@ type hlLiquidationCloseDetail struct {
 	Detail string
 }
 
-func sendAuditCloseAlerts(details []hlLiquidationCloseDetail, state map[string]*StrategyState, mu *sync.RWMutex, notifier *MultiNotifier) {
+func sendAuditCloseAlerts(details []hlLiquidationCloseDetail, state map[string]*StrategyState, mu *sync.RWMutex, notifier *MultiNotifier, rc *RegimeConfig) {
 	counts := make(map[string]int, len(details))
 	scByID := make(map[string]StrategyConfig, len(details))
 	order := make([]string, 0, len(details))
@@ -814,7 +814,7 @@ func sendAuditCloseAlerts(details []hlLiquidationCloseDetail, state map[string]*
 		counts[cd.SC.ID]++
 	}
 	for _, id := range order {
-		sendTradeAlerts(scByID[id], state[id], counts[id], mu, notifier)
+		sendTradeAlerts(scByID[id], state[id], counts[id], mu, notifier, rc)
 	}
 }
 
@@ -1075,7 +1075,7 @@ func flushOffCycleLiquidationAuditState(state *AppState, cfg *Config, store *Sta
 	return failed
 }
 
-func runOffCycleLiquidationAudit(strategies []StrategyConfig, state *AppState, mu *sync.RWMutex, notifier *MultiNotifier, logMgr *LogManager) int {
+func runOffCycleLiquidationAudit(strategies []StrategyConfig, state *AppState, mu *sync.RWMutex, notifier *MultiNotifier, logMgr *LogManager, rc *RegimeConfig) int {
 	hlAddr := os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS")
 	if hlAddr == "" {
 		return 0
@@ -1101,7 +1101,7 @@ func runOffCycleLiquidationAudit(strategies []StrategyConfig, state *AppState, m
 			priceCoins[hedgeCoin(cd.SC)] = true
 		}
 	}
-	sendAuditCloseAlerts(auditRes.CloseDetails, state.Strategies, mu, notifier)
+	sendAuditCloseAlerts(auditRes.CloseDetails, state.Strategies, mu, notifier, rc)
 	prices := make(map[string]float64)
 	coins := make([]string, 0, len(priceCoins))
 	for c := range priceCoins {

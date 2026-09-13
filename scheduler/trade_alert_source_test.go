@@ -85,7 +85,7 @@ func TestFormatTradeDMSourceLine(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			msg := FormatTradeDM(tc.sc, tc.trade, "live")
+			msg := FormatTradeDM(tc.sc, tc.trade, "live", nil)
 			for _, want := range tc.wantContains {
 				if !strings.Contains(msg, want) {
 					t.Errorf("message missing %q:\n%s", want, msg)

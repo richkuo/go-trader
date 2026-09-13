@@ -3,8 +3,10 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
+	"time"
 )
 
 const (
@@ -542,4 +544,63 @@ func regimeWindowFieldsEqual(a, b StrategyConfig) bool {
 	return normalizeRegimeWindowKey(a.RegimeGateWindow) == normalizeRegimeWindowKey(b.RegimeGateWindow) &&
 		normalizeRegimeWindowKey(a.RegimeATRWindow) == normalizeRegimeWindowKey(b.RegimeATRWindow) &&
 		normalizeRegimeWindowKey(a.RegimeDirectionalWindow) == normalizeRegimeWindowKey(b.RegimeDirectionalWindow)
+}
+
+func tradeAlertRegimeWindowKey(sc StrategyConfig, trade Trade, rc *RegimeConfig) string {
+	if trade.TradeType == scaleInTradeType || trade.Manual {
+		return resolveStrategyRegimeWindow(sc, "gate", rc)
+	}
+	return primaryRegimeWindowKey(rc)
+}
+
+func tradeAlertRegimeWindowSpan(sc StrategyConfig, trade Trade, rc *RegimeConfig) (string, string) {
+	if rc == nil {
+		return "", ""
+	}
+	key := tradeAlertRegimeWindowKey(sc, trade, rc)
+	period := rc.Period
+	spec, exists := regimeWindowSpec(rc, key)
+	if exists && spec.Period > 0 {
+		period = spec.Period
+	}
+	if period <= 0 {
+		return "", ""
+	}
+	tf := normalizeRegimeTimeframe(rc.Timeframe)
+	if tf == "" {
+		tf = normalizeRegimeTimeframe(strategyDisplayTimeframe(sc))
+	}
+	tfDur, ok := diagTimeframeDuration(tf)
+	if !ok {
+		return "", ""
+	}
+	windowName := ""
+	if exists {
+		windowName = key
+	}
+	return windowName, formatRegimeWindowSpan(time.Duration(period) * tfDur)
+}
+
+func formatRegimeWindowSpan(d time.Duration) string {
+	if d <= 0 {
+		return ""
+	}
+	if d >= 24*time.Hour {
+		return fmt.Sprintf("%dd", int(math.Round(d.Hours()/24)))
+	}
+	if d >= time.Hour {
+		return fmt.Sprintf("%dh", int(math.Round(d.Hours())))
+	}
+	return fmt.Sprintf("%dm", int(math.Round(d.Minutes())))
+}
+
+func formatTradeAlertRegimeExtra(sc StrategyConfig, trade Trade, rc *RegimeConfig) string {
+	window, span := tradeAlertRegimeWindowSpan(sc, trade, rc)
+	switch {
+	case window != "" && span != "":
+		return fmt.Sprintf("Regime %s (%s): %s", window, span, trade.Regime)
+	case span != "":
+		return fmt.Sprintf("Regime (%s): %s", span, trade.Regime)
+	}
+	return "Regime: " + trade.Regime
 }

@@ -147,7 +147,7 @@ func TestReconcileHyperliquidAccountPositions_DetectorOneUsesFillFee(t *testing.
 	var mu sync.RWMutex
 
 	prices := map[string]float64{"BTC": 59000}
-	_, _, _ = reconcileHyperliquidAccountPositions(scs, scs, state, &mu, logMgr, nil, prices, "0xtest", nil, false)
+	_, _, _ = reconcileHyperliquidAccountPositions(scs, scs, state, &mu, logMgr, nil, nil, prices, "0xtest", nil, false)
 
 	ownerSS := state.Strategies["hl-owner"]
 	if _, open := ownerSS.Positions["BTC"]; open {

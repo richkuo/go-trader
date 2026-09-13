@@ -744,7 +744,7 @@ func main() {
 		manualAlerts, manualCriticals := drainPendingManualActions(state, cfg, store)
 		mu.Unlock()
 		for _, ma := range manualAlerts {
-			sendTradeAlerts(ma.sc, ma.ss, ma.trades, &mu, notifier)
+			sendTradeAlerts(ma.sc, ma.ss, ma.trades, &mu, notifier, cfg.Regime)
 		}
 		for _, critical := range manualCriticals {
 			notifyManualCloseRearmFailure(notifier, critical)
@@ -752,7 +752,7 @@ func main() {
 
 		limitAlerts := reconcilePendingLimitOrders(state, cfg, store, &mu, notifier, logMgr)
 		for _, ma := range limitAlerts {
-			sendTradeAlerts(ma.sc, ma.ss, ma.trades, &mu, notifier)
+			sendTradeAlerts(ma.sc, ma.ss, ma.trades, &mu, notifier, cfg.Regime)
 		}
 
 		resolveCapitalPct(cfg.Strategies)
@@ -781,7 +781,7 @@ func main() {
 						lastLiquidationAudit = time.Now().UTC()
 						continue
 					}
-					mutations := runOffCycleLiquidationAudit(cfg.Strategies, state, &mu, notifier, logMgr)
+					mutations := runOffCycleLiquidationAudit(cfg.Strategies, state, &mu, notifier, logMgr, cfg.Regime)
 					lastLiquidationAudit = time.Now().UTC()
 					offCycleAuditSaveDirty = flushOffCycleLiquidationAuditState(state, cfg, store, &mu, mutations, offCycleAuditSaveDirty, false)
 					continue
@@ -1600,7 +1600,7 @@ func main() {
 				}
 				drainOperatorRequiredPendingCloses(state, notifier, &mu)
 				if len(hlReconcileDue) > 0 && hlStateFetched {
-					_, fillHints, orphanCloseJobs := reconcileHyperliquidAccountPositions(hlReconcileDue, hlReconcileAll, state, &mu, logMgr, hlPositions, prices, os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS"), notifier, cfg.NotifyTPSLFillsEnabled())
+					_, fillHints, orphanCloseJobs := reconcileHyperliquidAccountPositions(hlReconcileDue, hlReconcileAll, state, &mu, logMgr, cfg.Regime, hlPositions, prices, os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS"), notifier, cfg.NotifyTPSLFillsEnabled())
 					if len(orphanCloseJobs) > 0 {
 						runRegimeDirectionOrphanCloses(
 							shutdownSideEffectCtx,
@@ -1635,7 +1635,7 @@ func main() {
 							channelTradeDetails[chKey+"|"+extractAsset(cd.SC)] = append(channelTradeDetails[chKey+"|"+extractAsset(cd.SC)], cd.Detail)
 						}
 					}
-					sendAuditCloseAlerts(auditRes.CloseDetails, state.Strategies, &mu, notifier)
+					sendAuditCloseAlerts(auditRes.CloseDetails, state.Strategies, &mu, notifier, cfg.Regime)
 					totalTrades += len(auditRes.CloseDetails)
 					if n := convergeHedgesAfterAuditClose(auditRes.CloseDetails, state.Strategies, &mu, prices, notifier, logMgr.GetStrategyLogger); n > 0 {
 						fmt.Printf("[WARN] #1450 liquidation audit: converged %d hedge leg(s) post-close\n", n)
@@ -2778,7 +2778,7 @@ func main() {
 						key := chKey + "|" + extractAsset(sc)
 						channelTradeDetails[key] = append(channelTradeDetails[key], detail)
 					}
-					sendTradeAlerts(sc, stratState, trades, &mu, notifier)
+					sendTradeAlerts(sc, stratState, trades, &mu, notifier, cfg.Regime)
 				}
 
 				totalTrades += trades
@@ -3369,7 +3369,7 @@ func isFreshPerStrategyCircuitBreaker(reason string) bool {
 		strings.HasPrefix(reason, RiskReasonConsecutiveLosses)
 }
 
-func sendTradeAlerts(sc StrategyConfig, stratState *StrategyState, trades int, mu *sync.RWMutex, notifier tradeAlertRouter) {
+func sendTradeAlerts(sc StrategyConfig, stratState *StrategyState, trades int, mu *sync.RWMutex, notifier tradeAlertRouter, rc *RegimeConfig) {
 	mu.RLock()
 	n := len(stratState.TradeHistory)
 	if n == 0 || trades <= 0 {
@@ -3383,10 +3383,10 @@ func sendTradeAlerts(sc StrategyConfig, stratState *StrategyState, trades int, m
 	newTrades := make([]Trade, trades)
 	copy(newTrades, stratState.TradeHistory[start:n])
 	mu.RUnlock()
-	sendTradeAlertRows(sc, newTrades, notifier)
+	sendTradeAlertRows(sc, newTrades, notifier, rc)
 }
 
-func sendTradeAlertRows(sc StrategyConfig, newTrades []Trade, notifier tradeAlertRouter) {
+func sendTradeAlertRows(sc StrategyConfig, newTrades []Trade, notifier tradeAlertRouter, rc *RegimeConfig) {
 	isLive := isLiveArgs(sc.Args)
 	mode := "paper"
 	if isLive {
@@ -3397,9 +3397,9 @@ func sendTradeAlertRows(sc StrategyConfig, newTrades []Trade, notifier tradeAler
 		for _, t := range newTrades {
 			var msg string
 			if route.plainText {
-				msg = FormatTradeDMPlain(sc, t, mode)
+				msg = FormatTradeDMPlain(sc, t, mode, rc)
 			} else {
-				msg = FormatTradeDM(sc, t, mode)
+				msg = FormatTradeDM(sc, t, mode, rc)
 			}
 			if route.dmDest != "" {
 				if err := sendTradeDestination(route.notifier, route.dmDest, msg); err != nil {

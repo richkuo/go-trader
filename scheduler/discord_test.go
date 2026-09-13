@@ -605,7 +605,7 @@ func TestFormatTradeDM_RatchetSuppressedOnScaleIns(t *testing.T) {
 				TradeType:         scaleInTradeType,
 				Details:           tc.details,
 			}
-			msg := FormatTradeDM(sc, trade, "live")
+			msg := FormatTradeDM(sc, trade, "live", nil)
 			if strings.Contains(msg, "Ratchet:") {
 				t.Errorf("scale-in trade should not render ratchet block, got:\n%s", msg)
 			}
@@ -648,7 +648,7 @@ func TestFormatTradeDM_RatchetSuppressedOnNonDefaultATRWindow(t *testing.T) {
 		Regime:            "ranging",
 		Details:           "Open long 0.403 @ $2479",
 	}
-	msg := FormatTradeDM(sc, trade, "live")
+	msg := FormatTradeDM(sc, trade, "live", nil)
 	if strings.Contains(msg, "Ratchet:") {
 		t.Errorf("non-default regime_atr_window should suppress ratchet block, got:\n%s", msg)
 	}

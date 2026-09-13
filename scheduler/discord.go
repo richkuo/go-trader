@@ -1124,7 +1124,7 @@ func isTradeCloseDetails(details string) bool {
 	return strings.Contains(strings.ToLower(details), "close")
 }
 
-func FormatTradeDM(sc StrategyConfig, trade Trade, mode string) string {
+func FormatTradeDM(sc StrategyConfig, trade Trade, mode string, rc *RegimeConfig) string {
 	isClose := isTradeCloseDetails(trade.Details)
 
 	icon := "🟢"
@@ -1149,14 +1149,14 @@ func FormatTradeDM(sc StrategyConfig, trade Trade, mode string) string {
 	}
 	sb.WriteString("\n")
 
-	if extras := tradeAlertExtras(sc, trade, isClose); len(extras) > 0 {
+	if extras := tradeAlertExtras(sc, trade, isClose, rc); len(extras) > 0 {
 		sb.WriteString(strings.Join(extras, " | "))
 	}
 
 	return sb.String()
 }
 
-func tradeAlertExtras(sc StrategyConfig, trade Trade, isClose bool) []string {
+func tradeAlertExtras(sc StrategyConfig, trade Trade, isClose bool, rc *RegimeConfig) []string {
 	var extras []string
 	if isClose {
 		if src := tradeAlertCloseSource(trade.Details); src != "" {
@@ -1167,7 +1167,7 @@ func tradeAlertExtras(sc StrategyConfig, trade Trade, isClose bool) []string {
 		}
 	}
 	if trade.Regime != "" {
-		extras = append(extras, "Regime: "+trade.Regime)
+		extras = append(extras, formatTradeAlertRegimeExtra(sc, trade, rc))
 	}
 	if trade.RegimeDivergenceNote != "" {
 		extras = append(extras, trade.RegimeDivergenceNote)

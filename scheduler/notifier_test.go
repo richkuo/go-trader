@@ -557,7 +557,7 @@ func TestMultiNotifier_ReloadConfigConcurrentRoutingReads(t *testing.T) {
 			_ = mn.HasChannel("hyperliquid", "perps")
 			_ = mn.resolveChannelKey("hyperliquid", "perps", true)
 			_ = mn.AllChannelKeys()
-			sendTradeAlerts(sc, stratState, 1, &stateMu, mn)
+			sendTradeAlerts(sc, stratState, 1, &stateMu, mn, nil)
 		}
 	}()
 	close(start)

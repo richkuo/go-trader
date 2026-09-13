@@ -579,7 +579,7 @@ func reconcileHyperliquidPositionsWithResolver(stratState *StrategyState, sym st
 	return changed
 }
 
-func syncHyperliquidAccountPositions(hlStrategies []StrategyConfig, state *AppState, mu *sync.RWMutex, logMgr *LogManager) bool {
+func syncHyperliquidAccountPositions(hlStrategies []StrategyConfig, state *AppState, mu *sync.RWMutex, logMgr *LogManager, rc *RegimeConfig) bool {
 	accountAddr := os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS")
 	if accountAddr == "" {
 		return false
@@ -591,11 +591,11 @@ func syncHyperliquidAccountPositions(hlStrategies []StrategyConfig, state *AppSt
 		return false
 	}
 
-	changed, _, _ := reconcileHyperliquidAccountPositions(hlStrategies, hlStrategies, state, mu, logMgr, positions, nil, accountAddr, nil, false)
+	changed, _, _ := reconcileHyperliquidAccountPositions(hlStrategies, hlStrategies, state, mu, logMgr, rc, positions, nil, accountAddr, nil, false)
 	return changed
 }
 
-func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []StrategyConfig, state *AppState, mu *sync.RWMutex, logMgr *LogManager, positions []HLPosition, prices map[string]float64, accountAddress string, notifier ownerDMSender, notifyTPSLFills bool) (bool, []HyperliquidProtectionFillHint, []RegimeDirectionOrphanCloseJob) {
+func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []StrategyConfig, state *AppState, mu *sync.RWMutex, logMgr *LogManager, rc *RegimeConfig, positions []HLPosition, prices map[string]float64, accountAddress string, notifier ownerDMSender, notifyTPSLFills bool) (bool, []HyperliquidProtectionFillHint, []RegimeDirectionOrphanCloseJob) {
 	resolveFee, fillHints := buildCachedHyperliquidReconcileFillResolver(accountAddress, allStrategies, state, mu, positions)
 
 	var pendingAlerts []ProtectionFillAlert
@@ -617,7 +617,7 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 			sort.Strings(ids)
 			for _, id := range ids {
 				alert := tradeAlertStates[id]
-				sendTradeAlertRows(alert.sc, alert.newTrades, tradeNotifier)
+				sendTradeAlertRows(alert.sc, alert.newTrades, tradeNotifier, rc)
 			}
 		}
 		if notifier != nil && !isNilSender(notifier) {
