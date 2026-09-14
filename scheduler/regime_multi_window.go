@@ -553,6 +553,14 @@ func tradeAlertRegimeWindowKey(sc StrategyConfig, trade Trade, rc *RegimeConfig)
 	return primaryRegimeWindowKey(rc)
 }
 
+func tradeAlertRegimeTimeframe(sc StrategyConfig, rc *RegimeConfig) string {
+	if sc.Type == "options" {
+		return optionsRegimeTimeframe
+	}
+	_, timeframe := strategyRegimeSymbolTimeframe(sc.Args, rc)
+	return normalizeRegimeTimeframe(timeframe)
+}
+
 func tradeAlertRegimeWindowSpan(sc StrategyConfig, trade Trade, rc *RegimeConfig) (string, string) {
 	if rc == nil {
 		return "", ""
@@ -566,11 +574,7 @@ func tradeAlertRegimeWindowSpan(sc StrategyConfig, trade Trade, rc *RegimeConfig
 	if period <= 0 {
 		return "", ""
 	}
-	tf := normalizeRegimeTimeframe(rc.Timeframe)
-	if tf == "" {
-		tf = normalizeRegimeTimeframe(strategyDisplayTimeframe(sc))
-	}
-	tfDur, ok := diagTimeframeDuration(tf)
+	tfDur, ok := diagTimeframeDuration(tradeAlertRegimeTimeframe(sc, rc))
 	if !ok {
 		return "", ""
 	}
