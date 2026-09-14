@@ -2019,7 +2019,7 @@
 
 
   function sortValue(row, key) {
-    if (key === "pnl_pct" || key === "win_rate" || key === "sharpe") {
+    if (key === "pnl_pct" || key === "win_rate" || key === "sharpe" || key === "trade_count" || key === "pnl") {
       const n = Number(row[key]);
       return Number.isFinite(n) ? n : -Infinity;
     }
@@ -2044,17 +2044,11 @@
 
   function updateSortButtons() {
     document.querySelectorAll(".mode-filter-button").forEach(function (button) {
-    button.addEventListener("click", function () {
-      state.modeFilter = button.dataset.mode;
-      document.querySelectorAll(".mode-filter-button").forEach(function (b) {
-        const active = b.dataset.mode === state.modeFilter;
-        b.classList.toggle("active", active);
-        b.setAttribute("aria-pressed", active ? "true" : "false");
-      });
-      renderOverviewTable();
+      const active = button.dataset.mode === state.modeFilter;
+      button.classList.toggle("active", active);
+      button.setAttribute("aria-pressed", active ? "true" : "false");
     });
-  });
-  document.querySelectorAll(".sort-button").forEach(function (button) {
+    document.querySelectorAll(".sort-button").forEach(function (button) {
       const key = button.dataset.key;
       const active = key === state.sortKey;
       button.classList.toggle("active", active);
@@ -2622,6 +2616,12 @@
     const row = event.target.closest(".overview-row");
     if (!row || !row.dataset.id) return;
     selectStrategy(row.dataset.id, { switchToDetail: true }).catch(handleRefreshError);
+  });
+  document.querySelectorAll(".mode-filter-button").forEach(function (button) {
+    button.addEventListener("click", function () {
+      state.modeFilter = button.dataset.mode;
+      renderOverviewTable();
+    });
   });
   document.querySelectorAll(".sort-button").forEach(function (button) {
     button.addEventListener("click", function () {
