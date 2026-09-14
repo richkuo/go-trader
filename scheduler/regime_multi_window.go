@@ -553,6 +553,23 @@ func tradeAlertRegimeWindowKey(sc StrategyConfig, trade Trade, rc *RegimeConfig)
 	return primaryRegimeWindowKey(rc)
 }
 
+var optionsAlertRegimeConfig = parseOptionsAlertRegimeConfig()
+
+func parseOptionsAlertRegimeConfig() *RegimeConfig {
+	var windows RegimeWindowsMap
+	if err := json.Unmarshal([]byte(optionsRegimeWindowsSpecJSON), &windows); err != nil || len(windows) == 0 {
+		return nil
+	}
+	return &RegimeConfig{Enabled: true, Timeframe: optionsRegimeTimeframe, Windows: windows}
+}
+
+func tradeAlertRegimeConfig(sc StrategyConfig, rc *RegimeConfig) *RegimeConfig {
+	if sc.Type == "options" {
+		return optionsAlertRegimeConfig
+	}
+	return rc
+}
+
 func tradeAlertRegimeTimeframe(sc StrategyConfig, rc *RegimeConfig) string {
 	if sc.Type == "options" {
 		return optionsRegimeTimeframe
@@ -562,6 +579,7 @@ func tradeAlertRegimeTimeframe(sc StrategyConfig, rc *RegimeConfig) string {
 }
 
 func tradeAlertRegimeWindowSpan(sc StrategyConfig, trade Trade, rc *RegimeConfig) (string, string) {
+	rc = tradeAlertRegimeConfig(sc, rc)
 	if rc == nil {
 		return "", ""
 	}
