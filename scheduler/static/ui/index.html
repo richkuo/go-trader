@@ -79,17 +79,26 @@
 
         <section class="content">
           <div id="overview-panel" class="overview-panel" hidden>
+            <div class="overview-filter" role="group" aria-label="Mode filter">
+              <button type="button" class="mode-filter-button active" data-mode="all" aria-pressed="true">All</button>
+              <button type="button" class="mode-filter-button" data-mode="paper" aria-pressed="false">Paper</button>
+              <button type="button" class="mode-filter-button" data-mode="live" aria-pressed="false">Live</button>
+            </div>
             <table class="overview-table">
               <thead>
                 <tr>
                   <th scope="col"><button type="button" class="sort-button" data-key="id">ID</button></th>
                   <th scope="col"><button type="button" class="sort-button" data-key="platform">Platform</button></th>
                   <th scope="col"><button type="button" class="sort-button" data-key="symbol">Symbol</button></th>
+                  <th scope="col"><button type="button" class="sort-button" data-key="mode">Mode</button></th>
+                  <th scope="col"><button type="button" class="sort-button" data-key="trade_count">Trades</button></th>
+                  <th scope="col"><button type="button" class="sort-button" data-key="pnl">PnL</button></th>
                   <th scope="col"><button type="button" class="sort-button" data-key="pnl_pct">PnL %</button></th>
                   <th scope="col"><button type="button" class="sort-button" data-key="win_rate">Win Rate</button></th>
                   <th scope="col"><button type="button" class="sort-button" data-key="sharpe">Sharpe</button></th>
                   <th scope="col"><button type="button" class="sort-button" data-key="regime">Regime</button></th>
                   <th scope="col"><button type="button" class="sort-button" data-key="direction">Direction</button></th>
+                  <th scope="col"><button type="button" class="sort-button" data-key="close_strategy">Close</button></th>
                 </tr>
               </thead>
               <tbody id="overview-body"></tbody>

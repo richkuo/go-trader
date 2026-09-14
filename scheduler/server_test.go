@@ -755,3 +755,48 @@ func TestUpdateStrategiesDoesNotDeadlockUnderStateLock(t *testing.T) {
 		t.Fatalf("uiStrategies len = %d, want 2 (%+v)", len(got), got)
 	}
 }
+
+func TestUIStrategyOverviewModeAndCloseStrategy(t *testing.T) {
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"paper-eth": {Cash: 1000},
+		"live-btc":  {Cash: 1000},
+	}}
+	var mu sync.RWMutex
+	strategies := []StrategyConfig{
+		{ID: "paper-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"ema", "ETH", "4h"}, InitialCapital: 1000, CloseStrategy: &StrategyRef{Name: "tiered_tp_atr"}},
+		{ID: "live-btc", Platform: "hyperliquid", Type: "perps", Args: []string{"ema", "BTC", "4h", "--mode=live"}, InitialCapital: 1000},
+	}
+	ss := NewStatusServer(state, &mu, "", strategies, nil)
+
+	req := httptest.NewRequest("GET", "/api/strategies/overview", nil)
+	w := httptest.NewRecorder()
+	ss.handleAPIStrategiesOverview(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("overview status = %d, want %d", w.Code, http.StatusOK)
+	}
+	var resp struct {
+		Strategies []UIStrategyOverview `json:"strategies"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode overview: %v", err)
+	}
+	got := map[string]UIStrategyOverview{}
+	for _, row := range resp.Strategies {
+		got[row.ID] = row
+	}
+	cases := []struct {
+		id, mode, closeStrategy string
+	}{
+		{"paper-eth", "paper", "tiered_tp_atr"},
+		{"live-btc", "live", ""},
+	}
+	for _, tc := range cases {
+		row, ok := got[tc.id]
+		if !ok {
+			t.Fatalf("overview missing %s", tc.id)
+		}
+		if row.Mode != tc.mode || row.CloseStrategy != tc.closeStrategy {
+			t.Errorf("%s: mode=%q close=%q, want mode=%q close=%q", tc.id, row.Mode, row.CloseStrategy, tc.mode, tc.closeStrategy)
+		}
+	}
+}

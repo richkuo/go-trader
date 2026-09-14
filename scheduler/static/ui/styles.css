@@ -851,6 +851,28 @@ h3 {
   z-index: 1;
 }
 
+.overview-filter {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.mode-filter-button {
+  font: inherit;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.mode-filter-button.active {
+  background: var(--blue);
+  color: #fff;
+  border-color: transparent;
+}
+
 .sort-button {
   border: 0;
   background: transparent;

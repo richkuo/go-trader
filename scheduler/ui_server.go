@@ -37,6 +37,9 @@ type UIStrategyOverview struct {
 	Sharpe                float64                `json:"sharpe,omitempty"`
 	Regime                string                 `json:"regime,omitempty"`
 	Direction             string                 `json:"direction,omitempty"`
+	Mode                  string                 `json:"mode"`
+	TradeCount            int                    `json:"trade_count"`
+	CloseStrategy         string                 `json:"close_strategy,omitempty"`
 	PnL                   float64                `json:"pnl"`
 	PortfolioValue        float64                `json:"portfolio_value"`
 	InitialCapital        float64                `json:"initial_capital"`
@@ -504,6 +507,9 @@ func (ss *StatusServer) uiStrategyOverview(id string) (UIStrategyOverview, Lifet
 		Sharpe:                sharpe,
 		Regime:                strategyDisplayRegimeLabel(&snapshot, sc, ss.regime),
 		Direction:             strategyDisplayDirection(sc),
+		Mode:                  strategyDisplayMode(sc),
+		TradeCount:            lifetime.Wins + lifetime.Losses,
+		CloseStrategy:         strategyDisplayCloseStrategy(sc),
 		PnL:                   pnl,
 		PortfolioValue:        pv,
 		InitialCapital:        initCap,
@@ -899,4 +905,18 @@ func cloneUIRiskState(in RiskState) RiskState {
 		out.PendingCircuitCloses[k] = &cp
 	}
 	return out
+}
+
+func strategyDisplayMode(sc StrategyConfig) string {
+	if isLiveArgs(sc.Args) {
+		return "live"
+	}
+	return "paper"
+}
+
+func strategyDisplayCloseStrategy(sc StrategyConfig) string {
+	if sc.CloseStrategy == nil {
+		return ""
+	}
+	return sc.CloseStrategy.Name
 }
