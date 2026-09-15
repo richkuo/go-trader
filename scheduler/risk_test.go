@@ -945,7 +945,7 @@ func resetSchedulerStarted(t *testing.T) {
 func latchedSharedWalletState() *AppState {
 	return &AppState{
 		Strategies: map[string]*StrategyState{},
-		PortfolioRisk: map[PortfolioScope]*PortfolioRiskState{ScopeLive: {
+		PortfolioRisk: map[RiskPartition]*PortfolioRiskState{livePartition: {
 			PeakValue:                10000,
 			CurrentDrawdownPct:       50,
 			CurrentMarginDrawdownPct: 26.84,
@@ -985,28 +985,28 @@ func TestClearLatchedKillSwitchSharedWallet_Success(t *testing.T) {
 	if calls != 1 {
 		t.Errorf("expected 1 fetcher call; got %d", calls)
 	}
-	if state.scopeRisk(ScopeLive).KillSwitchActive {
+	if state.partitionRisk(livePartition).KillSwitchActive {
 		t.Error("expected KillSwitchActive=false after clear")
 	}
-	if !state.scopeRisk(ScopeLive).KillSwitchAt.IsZero() {
-		t.Errorf("expected KillSwitchAt zeroed; got %v", state.scopeRisk(ScopeLive).KillSwitchAt)
+	if !state.partitionRisk(livePartition).KillSwitchAt.IsZero() {
+		t.Errorf("expected KillSwitchAt zeroed; got %v", state.partitionRisk(livePartition).KillSwitchAt)
 	}
-	if state.scopeRisk(ScopeLive).WarningSent {
+	if state.partitionRisk(livePartition).WarningSent {
 		t.Error("expected WarningSent reset to false")
 	}
-	if state.scopeRisk(ScopeLive).PeakValue != 4500 {
-		t.Errorf("expected PeakValue re-baselined to 4500; got %.2f", state.scopeRisk(ScopeLive).PeakValue)
+	if state.partitionRisk(livePartition).PeakValue != 4500 {
+		t.Errorf("expected PeakValue re-baselined to 4500; got %.2f", state.partitionRisk(livePartition).PeakValue)
 	}
-	if state.scopeRisk(ScopeLive).CurrentDrawdownPct != 0 {
-		t.Errorf("expected CurrentDrawdownPct reset to 0; got %.2f", state.scopeRisk(ScopeLive).CurrentDrawdownPct)
+	if state.partitionRisk(livePartition).CurrentDrawdownPct != 0 {
+		t.Errorf("expected CurrentDrawdownPct reset to 0; got %.2f", state.partitionRisk(livePartition).CurrentDrawdownPct)
 	}
-	if state.scopeRisk(ScopeLive).CurrentMarginDrawdownPct != 0 {
-		t.Errorf("expected CurrentMarginDrawdownPct reset to 0; got %.2f", state.scopeRisk(ScopeLive).CurrentMarginDrawdownPct)
+	if state.partitionRisk(livePartition).CurrentMarginDrawdownPct != 0 {
+		t.Errorf("expected CurrentMarginDrawdownPct reset to 0; got %.2f", state.partitionRisk(livePartition).CurrentMarginDrawdownPct)
 	}
-	if len(state.scopeRisk(ScopeLive).Events) != 1 {
-		t.Fatalf("expected 1 audit event; got %d", len(state.scopeRisk(ScopeLive).Events))
+	if len(state.partitionRisk(livePartition).Events) != 1 {
+		t.Fatalf("expected 1 audit event; got %d", len(state.partitionRisk(livePartition).Events))
 	}
-	evt := state.scopeRisk(ScopeLive).Events[0]
+	evt := state.partitionRisk(livePartition).Events[0]
 	if evt.Type != "auto_reset" {
 		t.Errorf("expected event type=auto_reset; got %q", evt.Type)
 	}
@@ -1049,8 +1049,8 @@ func TestClearLatchedKillSwitchSharedWallet_NonLegacyMembersPreserveLatch(t *tes
 				calls++
 				return 4500, nil
 			})
-			if cleared || calls != 0 || !state.scopeRisk(ScopeLive).KillSwitchActive {
-				t.Fatalf("non-legacy wallet must preserve latch: cleared=%v calls=%d active=%v", cleared, calls, state.scopeRisk(ScopeLive).KillSwitchActive)
+			if cleared || calls != 0 || !state.partitionRisk(livePartition).KillSwitchActive {
+				t.Fatalf("non-legacy wallet must preserve latch: cleared=%v calls=%d active=%v", cleared, calls, state.partitionRisk(livePartition).KillSwitchActive)
 			}
 		})
 	}
@@ -1060,7 +1060,7 @@ func TestClearLatchedKillSwitchSharedWallet_NoRelatchOnNextTick(t *testing.T) {
 	resetSchedulerStarted(t)
 	state := &AppState{
 		Strategies: map[string]*StrategyState{},
-		PortfolioRisk: map[PortfolioScope]*PortfolioRiskState{ScopeLive: {
+		PortfolioRisk: map[RiskPartition]*PortfolioRiskState{livePartition: {
 			PeakValue:          20000,
 			CurrentDrawdownPct: 75,
 			KillSwitchActive:   true,
@@ -1078,11 +1078,11 @@ func TestClearLatchedKillSwitchSharedWallet_NoRelatchOnNextTick(t *testing.T) {
 	}
 
 	cfg := &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80}
-	allowed, _, _, reason := CheckPortfolioRisk(state.scopeRisk(ScopeLive), cfg, 5000, 0, 0, 0)
+	allowed, _, _, reason := CheckPortfolioRisk(state.partitionRisk(livePartition), cfg, 5000, 0, 0, 0)
 	if !allowed {
 		t.Fatalf("expected kill switch to stay cleared after auto-clear; got reason=%s", reason)
 	}
-	if state.scopeRisk(ScopeLive).KillSwitchActive {
+	if state.partitionRisk(livePartition).KillSwitchActive {
 		t.Error("expected KillSwitchActive=false after first post-clear tick — stale peak re-latched the switch")
 	}
 }
@@ -1091,7 +1091,7 @@ func TestClearLatchedKillSwitchSharedWallet_FetchFailurePreservesLatch(t *testin
 	resetSchedulerStarted(t)
 	state := latchedSharedWalletState()
 	strategies := sharedHLStrategies(t)
-	originalLatchedAt := state.scopeRisk(ScopeLive).KillSwitchAt
+	originalLatchedAt := state.partitionRisk(livePartition).KillSwitchAt
 
 	fetcher := func(platform string) (float64, error) {
 		return 0, fmt.Errorf("simulated network failure")
@@ -1101,14 +1101,14 @@ func TestClearLatchedKillSwitchSharedWallet_FetchFailurePreservesLatch(t *testin
 	if cleared {
 		t.Fatal("expected ClearLatchedKillSwitchSharedWallet to return false on fetch failure")
 	}
-	if !state.scopeRisk(ScopeLive).KillSwitchActive {
+	if !state.partitionRisk(livePartition).KillSwitchActive {
 		t.Error("expected KillSwitchActive to remain true after fetch failure")
 	}
-	if !state.scopeRisk(ScopeLive).KillSwitchAt.Equal(originalLatchedAt) {
-		t.Errorf("expected KillSwitchAt unchanged; got %v", state.scopeRisk(ScopeLive).KillSwitchAt)
+	if !state.partitionRisk(livePartition).KillSwitchAt.Equal(originalLatchedAt) {
+		t.Errorf("expected KillSwitchAt unchanged; got %v", state.partitionRisk(livePartition).KillSwitchAt)
 	}
-	if len(state.scopeRisk(ScopeLive).Events) != 0 {
-		t.Errorf("expected no audit event on failure; got %d", len(state.scopeRisk(ScopeLive).Events))
+	if len(state.partitionRisk(livePartition).Events) != 0 {
+		t.Errorf("expected no audit event on failure; got %d", len(state.partitionRisk(livePartition).Events))
 	}
 }
 
@@ -1132,7 +1132,7 @@ func TestClearLatchedKillSwitchSharedWallet_NoOp(t *testing.T) {
 		{
 			name: "switch already inactive",
 			state: func() *AppState {
-				return &AppState{PortfolioRisk: map[PortfolioScope]*PortfolioRiskState{ScopeLive: {PeakValue: 10000, KillSwitchActive: false}}}
+				return &AppState{PortfolioRisk: map[RiskPartition]*PortfolioRiskState{livePartition: {PeakValue: 10000, KillSwitchActive: false}}}
 			},
 			strategies: sharedHLStrategies,
 		},
@@ -1141,7 +1141,7 @@ func TestClearLatchedKillSwitchSharedWallet_NoOp(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			resetSchedulerStarted(t)
 			state := tc.state()
-			wantActive := state.scopeRisk(ScopeLive).KillSwitchActive
+			wantActive := state.partitionRisk(livePartition).KillSwitchActive
 			calls := 0
 			fetcher := func(platform string) (float64, error) {
 				calls++
@@ -1153,8 +1153,8 @@ func TestClearLatchedKillSwitchSharedWallet_NoOp(t *testing.T) {
 			if calls != 0 {
 				t.Errorf("expected fetcher NOT called; got %d calls", calls)
 			}
-			if state.scopeRisk(ScopeLive).KillSwitchActive != wantActive {
-				t.Errorf("KillSwitchActive = %v, want unchanged %v", state.scopeRisk(ScopeLive).KillSwitchActive, wantActive)
+			if state.partitionRisk(livePartition).KillSwitchActive != wantActive {
+				t.Errorf("KillSwitchActive = %v, want unchanged %v", state.partitionRisk(livePartition).KillSwitchActive, wantActive)
 			}
 		})
 	}
@@ -1185,18 +1185,18 @@ func TestClearLatchedKillSwitchSharedWallet_MultiPlatformAllSuccess(t *testing.T
 	if cleared := ClearLatchedKillSwitchSharedWallet(state, strategies, fetcher); !cleared {
 		t.Fatal("expected kill switch to clear when all platforms fetch successfully")
 	}
-	if state.scopeRisk(ScopeLive).KillSwitchActive {
+	if state.partitionRisk(livePartition).KillSwitchActive {
 		t.Error("expected KillSwitchActive=false")
 	}
-	if state.scopeRisk(ScopeLive).PeakValue != 5000 {
-		t.Errorf("expected PeakValue=5000 (sum of hyperliquid+okx); got %.2f", state.scopeRisk(ScopeLive).PeakValue)
+	if state.partitionRisk(livePartition).PeakValue != 5000 {
+		t.Errorf("expected PeakValue=5000 (sum of hyperliquid+okx); got %.2f", state.partitionRisk(livePartition).PeakValue)
 	}
-	if len(state.scopeRisk(ScopeLive).Events) != 1 {
-		t.Fatalf("expected 1 audit event; got %d", len(state.scopeRisk(ScopeLive).Events))
+	if len(state.partitionRisk(livePartition).Events) != 1 {
+		t.Fatalf("expected 1 audit event; got %d", len(state.partitionRisk(livePartition).Events))
 	}
-	if state.scopeRisk(ScopeLive).Events[0].PortfolioValue != 5000 {
+	if state.partitionRisk(livePartition).Events[0].PortfolioValue != 5000 {
 		t.Errorf("expected audit event portfolio_value=5000 (total); got %.2f",
-			state.scopeRisk(ScopeLive).Events[0].PortfolioValue)
+			state.partitionRisk(livePartition).Events[0].PortfolioValue)
 	}
 }
 
@@ -1205,8 +1205,8 @@ func TestClearLatchedKillSwitchSharedWallet_MultiPlatformAnyFailPreservesLatch(t
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xshared")
 	t.Setenv("OKX_API_KEY", "okx-shared")
 	state := latchedSharedWalletState()
-	originalLatchedAt := state.scopeRisk(ScopeLive).KillSwitchAt
-	originalPeak := state.scopeRisk(ScopeLive).PeakValue
+	originalLatchedAt := state.partitionRisk(livePartition).KillSwitchAt
+	originalPeak := state.partitionRisk(livePartition).PeakValue
 	strategies := []StrategyConfig{
 		{ID: "hl-a", Platform: "hyperliquid", Type: "perps", CapitalPct: 0.5, Capital: 1000, Args: []string{"sma", "BTC", "1h", "--mode=live"}},
 		{ID: "hl-b", Platform: "hyperliquid", Type: "perps", CapitalPct: 0.5, Capital: 1000, Args: []string{"tema", "ETH", "1h", "--mode=live"}},
@@ -1224,25 +1224,25 @@ func TestClearLatchedKillSwitchSharedWallet_MultiPlatformAnyFailPreservesLatch(t
 	if cleared := ClearLatchedKillSwitchSharedWallet(state, strategies, fetcher); cleared {
 		t.Fatal("expected kill switch to remain latched when any platform fails")
 	}
-	if !state.scopeRisk(ScopeLive).KillSwitchActive {
+	if !state.partitionRisk(livePartition).KillSwitchActive {
 		t.Error("expected KillSwitchActive to remain true")
 	}
-	if !state.scopeRisk(ScopeLive).KillSwitchAt.Equal(originalLatchedAt) {
+	if !state.partitionRisk(livePartition).KillSwitchAt.Equal(originalLatchedAt) {
 		t.Error("expected KillSwitchAt unchanged")
 	}
-	if state.scopeRisk(ScopeLive).PeakValue != originalPeak {
-		t.Errorf("expected PeakValue unchanged; got %.2f", state.scopeRisk(ScopeLive).PeakValue)
+	if state.partitionRisk(livePartition).PeakValue != originalPeak {
+		t.Errorf("expected PeakValue unchanged; got %.2f", state.partitionRisk(livePartition).PeakValue)
 	}
-	if len(state.scopeRisk(ScopeLive).Events) != 0 {
-		t.Errorf("expected no audit event on partial failure; got %d", len(state.scopeRisk(ScopeLive).Events))
+	if len(state.partitionRisk(livePartition).Events) != 0 {
+		t.Errorf("expected no audit event on partial failure; got %d", len(state.partitionRisk(livePartition).Events))
 	}
 }
 
 func TestClearLatchedKillSwitchSharedWallet_PanicsAfterSchedulerStarted(t *testing.T) {
 	resetSchedulerStarted(t)
 	state := latchedSharedWalletState()
-	originalPeak := state.scopeRisk(ScopeLive).PeakValue
-	originalLatchedAt := state.scopeRisk(ScopeLive).KillSwitchAt
+	originalPeak := state.partitionRisk(livePartition).PeakValue
+	originalLatchedAt := state.partitionRisk(livePartition).KillSwitchAt
 	strategies := sharedHLStrategies(t)
 
 	markSchedulerStarted()
@@ -1265,17 +1265,17 @@ func TestClearLatchedKillSwitchSharedWallet_PanicsAfterSchedulerStarted(t *testi
 		if fetcherCalls != 0 {
 			t.Errorf("expected fetcher not called on panic path; got %d calls", fetcherCalls)
 		}
-		if !state.scopeRisk(ScopeLive).KillSwitchActive {
+		if !state.partitionRisk(livePartition).KillSwitchActive {
 			t.Error("expected latch untouched after panic")
 		}
-		if state.scopeRisk(ScopeLive).PeakValue != originalPeak {
-			t.Errorf("expected PeakValue untouched; got %.2f", state.scopeRisk(ScopeLive).PeakValue)
+		if state.partitionRisk(livePartition).PeakValue != originalPeak {
+			t.Errorf("expected PeakValue untouched; got %.2f", state.partitionRisk(livePartition).PeakValue)
 		}
-		if !state.scopeRisk(ScopeLive).KillSwitchAt.Equal(originalLatchedAt) {
+		if !state.partitionRisk(livePartition).KillSwitchAt.Equal(originalLatchedAt) {
 			t.Error("expected KillSwitchAt untouched after panic")
 		}
-		if len(state.scopeRisk(ScopeLive).Events) != 0 {
-			t.Errorf("expected no audit event on panic path; got %d", len(state.scopeRisk(ScopeLive).Events))
+		if len(state.partitionRisk(livePartition).Events) != 0 {
+			t.Errorf("expected no audit event on panic path; got %d", len(state.partitionRisk(livePartition).Events))
 		}
 	}()
 
@@ -2322,7 +2322,7 @@ func TestCheckPortfolioRisk_MarginWarningReasons(t *testing.T) {
 func TestBuildPortfolioWarningMessage_IncludesTriageSections(t *testing.T) {
 	now := time.Date(2026, 6, 6, 6, 5, 0, 0, time.UTC)
 	state := &AppState{
-		PortfolioRisk: map[PortfolioScope]*PortfolioRiskState{ScopeLive: {
+		PortfolioRisk: map[RiskPartition]*PortfolioRiskState{livePartition: {
 			PeakValue:                10060,
 			CurrentDrawdownPct:       16.5,
 			CurrentMarginDrawdownPct: 18.2,
@@ -2395,7 +2395,7 @@ func TestBuildPortfolioWarningMessage_IncludesTriageSections(t *testing.T) {
 func TestBuildPortfolioWarningMessage_DailyPnLFallbackLabel(t *testing.T) {
 	now := time.Date(2026, 6, 6, 6, 5, 0, 0, time.UTC)
 	state := &AppState{
-		PortfolioRisk: map[PortfolioScope]*PortfolioRiskState{ScopeLive: {
+		PortfolioRisk: map[RiskPartition]*PortfolioRiskState{livePartition: {
 			PeakValue:          1000,
 			CurrentDrawdownPct: 20,
 			WarningSent:        true,

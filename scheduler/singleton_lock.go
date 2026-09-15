@@ -141,22 +141,20 @@ func (o *stateOwnership) Release() {
 }
 
 func acquireStateOwnership(specs []storageFileSpec) (*stateOwnership, error) {
+	// The layout's file order (primary, paper, then sources by id) is the one
+	// stable lock order every process and every tool takes, so two owners can
+	// never deadlock against each other half way through a set of files.
 	owned := &stateOwnership{}
-	for _, role := range storageRoleOrder {
-		for _, spec := range specs {
-			if spec.Role != role {
-				continue
-			}
-			if spec.InMemory {
-				continue
-			}
-			lock, err := acquireStateDBLock(spec.Path)
-			if err != nil {
-				owned.Release()
-				return nil, err
-			}
-			owned.locks = append(owned.locks, lock)
+	for _, spec := range specs {
+		if spec.InMemory {
+			continue
 		}
+		lock, err := acquireStateDBLock(spec.Path)
+		if err != nil {
+			owned.Release()
+			return nil, err
+		}
+		owned.locks = append(owned.locks, lock)
 	}
 	return owned, nil
 }

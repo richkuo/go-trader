@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"sort"
 	"time"
 )
@@ -109,7 +108,7 @@ func scopeStrategyCounts(cfgs []StrategyConfig) (live, paper int) {
 }
 
 type scopeCycleRisk struct {
-	Scope                   PortfolioScope
+	Partition               RiskPartition
 	Config                  *PortfolioRiskConfig
 	Prs                     *PortfolioRiskState
 	TotalPV                 float64
@@ -132,19 +131,15 @@ type scopeCycleRisk struct {
 	CloseApplied            bool
 }
 
-func scopePrefixedDM(scope PortfolioScope, msg string) string {
-	return fmt.Sprintf("[%s scope] %s", scopeLabel(scope), msg)
-}
-
-func scopeCycleRiskFired(scopeRisk map[PortfolioScope]*scopeCycleRisk, scope PortfolioScope) bool {
-	sr, ok := scopeRisk[scope]
+func scopeCycleRiskFired(scopeRisk map[RiskPartition]*scopeCycleRisk, part RiskPartition) bool {
+	sr, ok := scopeRisk[part]
 	return ok && sr != nil && sr.KillSwitchFired
 }
 
-func dueStrategiesNotLatched(due []StrategyConfig, scopeRisk map[PortfolioScope]*scopeCycleRisk) []StrategyConfig {
+func dueStrategiesNotLatched(due []StrategyConfig, scopeRisk map[RiskPartition]*scopeCycleRisk) []StrategyConfig {
 	out := make([]StrategyConfig, 0, len(due))
 	for _, sc := range due {
-		if scopeCycleRiskFired(scopeRisk, portfolioScopeFor(sc)) {
+		if scopeCycleRiskFired(scopeRisk, partitionFor(sc)) {
 			continue
 		}
 		out = append(out, sc)
@@ -153,7 +148,7 @@ func dueStrategiesNotLatched(due []StrategyConfig, scopeRisk map[PortfolioScope]
 }
 
 func measureScopeCycleRisk(
-	scope PortfolioScope,
+	part RiskPartition,
 	pr *PortfolioRiskConfig,
 	cfgStrategies []StrategyConfig,
 	state *AppState,
@@ -164,10 +159,10 @@ func measureScopeCycleRisk(
 	usedStaleRiskBalance bool,
 	now time.Time,
 ) *scopeCycleRisk {
-	sr := &scopeCycleRisk{Scope: scope, Config: pr}
-	scopedCfgs := strategiesInScope(cfgStrategies, scope)
-	scopedStates := filterStatesByScope(state.Strategies, cfgStrategies, scope)
-	if scope == ScopeLive {
+	sr := &scopeCycleRisk{Partition: part, Config: pr}
+	scopedCfgs := strategiesInPartition(cfgStrategies, part)
+	scopedStates := filterStatesByPartition(state.Strategies, cfgStrategies, part)
+	if part.IsLive() {
 		sr.TotalPV, sr.UsedPVFallback = computeSubsetPortfolioValue(scopedCfgs, state, prices, riskWalletBalances, sharedWallets)
 		sr.EquityAvailable = pooledEquityComplete
 		sr.EquityTrusted = pooledEquityComplete && !sr.UsedPVFallback && !usedStaleRiskBalance
@@ -201,13 +196,4 @@ func applyScopeCycleRisk(sr *scopeCycleRisk, prs *PortfolioRiskState) {
 	sr.KillSwitchFired = !allowed
 	sr.NotionalBlocked = notionalBlocked
 	sr.DailyLossEntriesHeld = sr.DailyLossStatus.Tripped
-}
-
-func scopeHasPersistedState(cfgs []StrategyConfig, scope PortfolioScope, persisted map[string]bool) bool {
-	for _, sc := range strategiesInScope(cfgs, scope) {
-		if persisted[sc.ID] {
-			return true
-		}
-	}
-	return false
 }

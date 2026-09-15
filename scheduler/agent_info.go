@@ -306,7 +306,7 @@ func readStateFilesReadOnly(cfg *Config, statusPort int) ([]agentTable, agentLiv
 	combined := agentLiveState{Source: "state.db snapshot", DBPresent: true}
 	var notes []string
 	for _, spec := range layout.Files {
-		scope := scopeLabel(layout.scopesForRole(spec.Role)[0])
+		scope := storageFilePartitionLabel(layout, spec.Role)
 		fileTables, live := readStateDBReadOnly(spec.Path, statusPort)
 		if len(tables) == 0 {
 			tables = fileTables
@@ -565,4 +565,14 @@ func writeAgentInfoMarkdown(path, md string, appendChangelog bool, info agentInf
 		b.WriteString("\n")
 	}
 	return os.WriteFile(path, []byte(b.String()), 0644)
+}
+
+// storageFilePartitionLabel names the partition a file's rows belong to. A file
+// that owns more than one partition cannot name one, so it reports its role.
+func storageFilePartitionLabel(layout storageLayout, role storageRole) string {
+	parts := layout.partitionsForRole(role)
+	if len(parts) == 1 {
+		return partitionLabel(parts[0])
+	}
+	return string(role)
 }

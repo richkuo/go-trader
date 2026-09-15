@@ -117,21 +117,22 @@ func formatLLMEntryAnalysis(c *LLMEntryAnalysisConfig) string {
 }
 
 type llmEntryAnalysisJob struct {
-	StrategyID string
-	Symbol     string
-	Platform   string
-	StratType  string
-	PositionID string
-	Side       string
-	EntryPrice float64
-	Quantity   float64
-	Leverage   float64
-	EntryATR   float64
-	Timeframe  string
-	Regime     string
-	IsLive     bool
-	Indicators map[string]interface{}
-	Params     llmEntryAnalysisParams
+	StrategyID  string
+	Symbol      string
+	Platform    string
+	StratType   string
+	PaperSource string
+	PositionID  string
+	Side        string
+	EntryPrice  float64
+	Quantity    float64
+	Leverage    float64
+	EntryATR    float64
+	Timeframe   string
+	Regime      string
+	IsLive      bool
+	Indicators  map[string]interface{}
+	Params      llmEntryAnalysisParams
 }
 
 var llmEntryAnalysisEnqueue func(job llmEntryAnalysisJob) bool
@@ -149,21 +150,22 @@ func queueLLMEntryAnalysisIfOpened(sc StrategyConfig, s *StrategyState, symbol s
 	}
 	pos.LLMAnalysisRequested = true
 	job := llmEntryAnalysisJob{
-		StrategyID: s.ID,
-		Symbol:     symbol,
-		Platform:   sc.Platform,
-		StratType:  sc.Type,
-		PositionID: ensurePositionTradeID(s.ID, symbol, pos),
-		Side:       pos.Side,
-		EntryPrice: pos.AvgCost,
-		Quantity:   pos.Quantity,
-		Leverage:   pos.Leverage,
-		EntryATR:   pos.EntryATR,
-		Timeframe:  llmEntryAnalysisTimeframe(sc),
-		Regime:     pos.Regime,
-		IsLive:     isLiveArgs(sc.Args),
-		Indicators: indicators,
-		Params:     resolveLLMEntryAnalysisParams(sc),
+		StrategyID:  s.ID,
+		Symbol:      symbol,
+		Platform:    sc.Platform,
+		StratType:   sc.Type,
+		PaperSource: sc.PaperSource,
+		PositionID:  ensurePositionTradeID(s.ID, symbol, pos),
+		Side:        pos.Side,
+		EntryPrice:  pos.AvgCost,
+		Quantity:    pos.Quantity,
+		Leverage:    pos.Leverage,
+		EntryATR:    pos.EntryATR,
+		Timeframe:   llmEntryAnalysisTimeframe(sc),
+		Regime:      pos.Regime,
+		IsLive:      isLiveArgs(sc.Args),
+		Indicators:  indicators,
+		Params:      resolveLLMEntryAnalysisParams(sc),
 	}
 	if !llmEntryAnalysisEnqueue(job) {
 		log.Printf("[WARN] [llm-analysis] queue full, dropping analysis for %s %s (advisory only, no trade impact)", s.ID, symbol)

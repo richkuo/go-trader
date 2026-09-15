@@ -18,7 +18,7 @@ type PortfolioWarningMessageInputs struct {
 	Reason           string
 	Config           *PortfolioRiskConfig
 	State            *AppState
-	Scope            PortfolioScope
+	Partition        RiskPartition
 	CfgStrategies    []StrategyConfig
 	Prices           map[string]float64
 	TotalValue       float64
@@ -43,23 +43,23 @@ func BuildPortfolioWarningMessage(in PortfolioWarningMessageInputs) string {
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	scope := in.Scope
-	if scope == scopeUnassigned {
-		scope = ScopeLive
+	part := in.Partition
+	if part.Scope == scopeUnassigned {
+		part = livePartition
 	}
 	var prs PortfolioRiskState
 	if in.State != nil {
-		if p := in.State.scopeRiskIfPresent(scope); p != nil {
+		if p := in.State.partitionRiskIfPresent(part); p != nil {
 			prs = *p
 		}
 	}
-	contribs := portfolioWarningContributors(in.State, in.CfgStrategies, scope, in.Prices)
+	contribs := portfolioWarningContributors(in.State, in.CfgStrategies, part, in.Prices)
 
 	var b strings.Builder
 	b.WriteString("**PORTFOLIO WARNING")
-	if in.Scope != scopeUnassigned {
+	if in.Partition.Scope != scopeUnassigned {
 		b.WriteString(" ")
-		b.WriteString(strings.ToUpper(scopeLabel(in.Scope)))
+		b.WriteString(strings.ToUpper(partitionLabel(in.Partition)))
 	}
 	b.WriteString("**")
 	if lead := portfolioWarningLead(contribs); lead != "" {
@@ -149,13 +149,13 @@ func BuildPortfolioWarningMessage(in PortfolioWarningMessageInputs) string {
 	return truncateWarningField(msg, portfolioWarningMaxChars)
 }
 
-func portfolioWarningContributors(state *AppState, cfgStrategies []StrategyConfig, scope PortfolioScope, prices map[string]float64) []portfolioWarningContributor {
+func portfolioWarningContributors(state *AppState, cfgStrategies []StrategyConfig, part RiskPartition, prices map[string]float64) []portfolioWarningContributor {
 	if state == nil {
 		return nil
 	}
 	scoped := state.Strategies
 	if len(cfgStrategies) > 0 {
-		scoped = filterStatesByScope(state.Strategies, cfgStrategies, scope)
+		scoped = filterStatesByPartition(state.Strategies, cfgStrategies, part)
 	}
 	totalNegative := 0.0
 	out := make([]portfolioWarningContributor, 0, len(scoped))

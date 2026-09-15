@@ -130,18 +130,18 @@ func scopeTestState(cfg *Config, live, paper float64) *AppState {
 	return state
 }
 
-func runScopeCycle(t *testing.T, cfg *Config, state *AppState, peaks map[PortfolioScope]float64) map[PortfolioScope]*scopeCycleRisk {
+func runScopeCycle(t *testing.T, cfg *Config, state *AppState, peaks map[RiskPartition]float64) map[RiskPartition]*scopeCycleRisk {
 	t.Helper()
-	out := make(map[PortfolioScope]*scopeCycleRisk)
+	out := make(map[RiskPartition]*scopeCycleRisk)
 	now := time.Now().UTC()
-	for _, scope := range activeScopes(cfg.Strategies) {
-		sr := measureScopeCycleRisk(scope, scopeRiskConfig(cfg, scope), cfg.Strategies, state, nil, nil, nil, true, false, now)
-		prs := state.scopeRisk(scope)
-		if peak, ok := peaks[scope]; ok {
+	for _, part := range activePartitions(cfg.Strategies) {
+		sr := measureScopeCycleRisk(part, partitionRiskConfig(cfg, part), cfg.Strategies, state, nil, nil, nil, true, false, now)
+		prs := state.partitionRisk(part)
+		if peak, ok := peaks[part]; ok {
 			prs.PeakValue = peak
 		}
 		applyScopeCycleRisk(sr, prs)
-		out[scope] = sr
+		out[part] = sr
 	}
 	return out
 }
@@ -149,16 +149,16 @@ func runScopeCycle(t *testing.T, cfg *Config, state *AppState, peaks map[Portfol
 func TestCycleScopeRisk_LiveLatchLeavesPaperFree(t *testing.T) {
 	cfg := scopeTestConfig(true, true)
 	state := scopeTestState(cfg, 5000, 9900)
-	res := runScopeCycle(t, cfg, state, map[PortfolioScope]float64{ScopeLive: 10000, ScopePaper: 10000})
+	res := runScopeCycle(t, cfg, state, map[RiskPartition]float64{livePartition: 10000, defaultPaperPartition: 10000})
 
-	if !res[ScopeLive].KillSwitchFired {
-		t.Fatalf("live 50%% drawdown must latch; reason=%q", res[ScopeLive].Reason)
+	if !res[livePartition].KillSwitchFired {
+		t.Fatalf("live 50%% drawdown must latch; reason=%q", res[livePartition].Reason)
 	}
-	if res[ScopePaper].KillSwitchFired {
-		t.Fatalf("paper under the limit must stay free; reason=%q", res[ScopePaper].Reason)
+	if res[defaultPaperPartition].KillSwitchFired {
+		t.Fatalf("paper under the limit must stay free; reason=%q", res[defaultPaperPartition].Reason)
 	}
-	if !state.scopeLatched(ScopeLive) || state.scopeLatched(ScopePaper) {
-		t.Errorf("latched scopes = %v, want live only", state.latchedScopes())
+	if !state.partitionLatched(livePartition) || state.partitionLatched(defaultPaperPartition) {
+		t.Errorf("latched scopes = %v, want live only", state.latchedPartitions())
 	}
 	due := dueStrategiesNotLatched(cfg.Strategies, res)
 	if len(due) != 1 || due[0].ID != "paper-a" {
@@ -169,19 +169,19 @@ func TestCycleScopeRisk_LiveLatchLeavesPaperFree(t *testing.T) {
 func TestCycleScopeRisk_PaperLatchLeavesLiveFree(t *testing.T) {
 	cfg := scopeTestConfig(true, true)
 	state := scopeTestState(cfg, 9900, 5000)
-	res := runScopeCycle(t, cfg, state, map[PortfolioScope]float64{ScopeLive: 10000, ScopePaper: 10000})
+	res := runScopeCycle(t, cfg, state, map[RiskPartition]float64{livePartition: 10000, defaultPaperPartition: 10000})
 
-	if !res[ScopePaper].KillSwitchFired {
-		t.Fatalf("paper 50%% drawdown must latch; reason=%q", res[ScopePaper].Reason)
+	if !res[defaultPaperPartition].KillSwitchFired {
+		t.Fatalf("paper 50%% drawdown must latch; reason=%q", res[defaultPaperPartition].Reason)
 	}
-	if res[ScopeLive].KillSwitchFired {
-		t.Fatalf("live under the limit must stay free; reason=%q", res[ScopeLive].Reason)
+	if res[livePartition].KillSwitchFired {
+		t.Fatalf("live under the limit must stay free; reason=%q", res[livePartition].Reason)
 	}
-	if state.scopeLatched(ScopeLive) {
+	if state.partitionLatched(livePartition) {
 		t.Error("a paper latch must never latch live")
 	}
-	if len(state.scopeRisk(ScopeLive).Events) != 0 {
-		t.Errorf("live must record no event on a paper latch; got %v", state.scopeRisk(ScopeLive).Events)
+	if len(state.partitionRisk(livePartition).Events) != 0 {
+		t.Errorf("live must record no event on a paper latch; got %v", state.partitionRisk(livePartition).Events)
 	}
 	due := dueStrategiesNotLatched(cfg.Strategies, res)
 	if len(due) != 1 || due[0].ID != "live-a" {
@@ -193,13 +193,13 @@ func TestCycleScopeRisk_PaperEquityAlwaysTrusted(t *testing.T) {
 	cfg := scopeTestConfig(true, true)
 	state := scopeTestState(cfg, 5000, 5000)
 	now := time.Now().UTC()
-	for _, scope := range activeScopes(cfg.Strategies) {
-		sr := measureScopeCycleRisk(scope, scopeRiskConfig(cfg, scope), cfg.Strategies, state, nil, nil, nil, true, true, now)
-		prs := state.scopeRisk(scope)
+	for _, scope := range activePartitions(cfg.Strategies) {
+		sr := measureScopeCycleRisk(scope, partitionRiskConfig(cfg, scope), cfg.Strategies, state, nil, nil, nil, true, true, now)
+		prs := state.partitionRisk(scope)
 		prs.PeakValue = 10000
 		applyScopeCycleRisk(sr, prs)
 	}
-	paper := state.scopeRisk(ScopePaper)
+	paper := state.partitionRisk(defaultPaperPartition)
 	if paper.DrawdownReadingSubstituted {
 		t.Error("paper equity is always trusted, so a reading can never be substituted")
 	}
@@ -209,7 +209,7 @@ func TestCycleScopeRisk_PaperEquityAlwaysTrusted(t *testing.T) {
 	if !paper.KillSwitchActive {
 		t.Error("paper over the limit must latch immediately, with no deferral")
 	}
-	live := state.scopeRisk(ScopeLive)
+	live := state.partitionRisk(livePartition)
 	if live.UntrustedOverLimitSince.IsZero() {
 		t.Error("an untrusted live reading over the limit must open the deferral window")
 	}
@@ -222,11 +222,11 @@ func TestCycleScopeRisk_SingleModeMatchesLegacy(t *testing.T) {
 	for _, live := range []bool{true, false} {
 		cfg := scopeTestConfig(live, !live)
 		state := scopeTestState(cfg, 9000, 9000)
-		scope := ScopeLive
+		scope := livePartition
 		if !live {
-			scope = ScopePaper
+			scope = defaultPaperPartition
 		}
-		res := runScopeCycle(t, cfg, state, map[PortfolioScope]float64{scope: 10000})
+		res := runScopeCycle(t, cfg, state, map[RiskPartition]float64{scope: 10000})
 
 		legacyPrs := &PortfolioRiskState{PeakValue: 10000}
 		legacyStates := map[string]*StrategyState{}
@@ -248,7 +248,7 @@ func TestCycleScopeRisk_SingleModeMatchesLegacy(t *testing.T) {
 			t.Fatalf("scope decision diverged: fired=%v blocked=%v warning=%v reason=%q vs allowed=%v nb=%v warning=%v reason=%q",
 				sr.KillSwitchFired, sr.NotionalBlocked, sr.Warning, sr.Reason, allowed, nb, warning, reason)
 		}
-		got := state.scopeRisk(scope)
+		got := state.partitionRisk(scope)
 		if got.PeakValue != legacyPrs.PeakValue || got.CurrentDrawdownPct != legacyPrs.CurrentDrawdownPct ||
 			got.CurrentMarginDrawdownPct != legacyPrs.CurrentMarginDrawdownPct || got.KillSwitchActive != legacyPrs.KillSwitchActive ||
 			got.WarningSent != legacyPrs.WarningSent {
@@ -396,17 +396,17 @@ func TestComputeCorrelation_PerScope(t *testing.T) {
 	corrCfg := &CorrelationConfig{Enabled: true, MaxConcentrationPct: 50, MaxSameDirectionPct: 50}
 
 	state := NewAppState()
-	for _, scope := range activeScopes(cfgs) {
-		snap := ComputeCorrelation(filterStatesByScope(states, cfgs, scope), strategiesInScope(cfgs, scope), prices, corrCfg)
-		state.setScopeCorrelation(scope, snap)
+	for _, part := range activePartitions(cfgs) {
+		snap := ComputeCorrelation(filterStatesByPartition(states, cfgs, part), strategiesInPartition(cfgs, part), prices, corrCfg)
+		state.setPartitionCorrelation(part, snap)
 	}
-	live := state.scopeCorrelation(ScopeLive)
-	paper := state.scopeCorrelation(ScopePaper)
+	live := state.partitionCorrelation(livePartition)
+	paper := state.partitionCorrelation(defaultPaperPartition)
 	if live == nil || paper == nil {
 		t.Fatal("both scopes must hold their own snapshot")
 	}
-	if live.Scope != ScopeLive || paper.Scope != ScopePaper {
-		t.Errorf("snapshots must carry their scope; live=%q paper=%q", live.Scope, paper.Scope)
+	if live.Partition != livePartition || paper.Partition != defaultPaperPartition {
+		t.Errorf("snapshots must carry their partition; live=%q paper=%q", live.Partition, paper.Partition)
 	}
 	if live.PortfolioGrossUSD != 10000 || paper.PortfolioGrossUSD != 20000 {
 		t.Errorf("gross per scope = %v / %v, want 10000 / 20000", live.PortfolioGrossUSD, paper.PortfolioGrossUSD)
@@ -425,17 +425,17 @@ func TestRebaselinePeakAfterPrune_PerScope(t *testing.T) {
 		s.RiskState.PeakValue = 12000
 		state.Strategies[sc.ID] = s
 	}
-	before := rebaselinePortfolioPeakAfterPruneForScope(state, cfg, ScopeLive, nil)
+	before := rebaselinePortfolioPeakAfterPruneForPartition(state, cfg, livePartition, nil)
 	delete(state.Strategies, "paper-a")
-	after := rebaselinePortfolioPeakAfterPruneForScope(state, cfg, ScopeLive, nil)
+	after := rebaselinePortfolioPeakAfterPruneForPartition(state, cfg, livePartition, nil)
 	if before != after {
 		t.Errorf("pruning a paper strategy must not move the live peak: %v -> %v", before, after)
 	}
-	paperAfter := rebaselinePortfolioPeakAfterPruneForScope(state, cfg, ScopePaper, nil)
+	paperAfter := rebaselinePortfolioPeakAfterPruneForPartition(state, cfg, defaultPaperPartition, nil)
 	if paperAfter >= before+12000 {
 		t.Errorf("the paper peak must fall back to its own configured capital, got %v", paperAfter)
 	}
-	if got := computeInitialPortfolioPeakForScope(cfg.Strategies, ScopeLive, nil); got != 10000 {
+	if got := computeInitialPortfolioPeakForPartition(cfg.Strategies, livePartition, nil); got != 10000 {
 		t.Errorf("live initial peak = %v, want 10000 (its own capital only)", got)
 	}
 }
@@ -446,7 +446,7 @@ func TestPaperKillSwitch_ForceClosesPaperOnly(t *testing.T) {
 	state.Strategies["live-a"] = scopeLongPosState("live-a", 0.2)
 	state.Strategies["paper-a"] = scopeLongPosState("paper-a", 0.4)
 
-	closed := forceClosePaperScopePositions(state, cfg, map[string]float64{"BTC": 50000})
+	closed := forceClosePaperScopePositions(state, cfg, defaultPaperPartition, map[string]float64{"BTC": 50000})
 	if len(closed) != 1 || closed[0] != "paper-a" {
 		t.Fatalf("closed = %v, want the paper strategy only", closed)
 	}
@@ -469,7 +469,7 @@ func TestLiveKillSwitch_LeavesPaperBooks(t *testing.T) {
 	state := NewAppState()
 	state.Strategies["live-a"] = scopeLongPosState("live-a", 0.2)
 	state.Strategies["paper-a"] = scopeLongPosState("paper-a", 0.4)
-	state.scopeRisk(ScopeLive).KillSwitchActive = true
+	state.partitionRisk(livePartition).KillSwitchActive = true
 
 	for _, sc := range strategiesInScope(cfg.Strategies, ScopeLive) {
 		if s, ok := state.Strategies[sc.ID]; ok {
@@ -482,12 +482,12 @@ func TestLiveKillSwitch_LeavesPaperBooks(t *testing.T) {
 	if len(state.Strategies["paper-a"].Positions) != 1 {
 		t.Error("a live latch must never close a paper book")
 	}
-	if state.scopeLatched(ScopePaper) {
+	if state.partitionLatched(defaultPaperPartition) {
 		t.Error("a live latch must never latch paper")
 	}
-	res := map[PortfolioScope]*scopeCycleRisk{
-		ScopeLive:  {Scope: ScopeLive, KillSwitchFired: true},
-		ScopePaper: {Scope: ScopePaper},
+	res := map[RiskPartition]*scopeCycleRisk{
+		livePartition:         {Partition: livePartition, KillSwitchFired: true},
+		defaultPaperPartition: {Partition: defaultPaperPartition},
 	}
 	due := dueStrategiesNotLatched(cfg.Strategies, res)
 	if len(due) != 1 || due[0].ID != "paper-a" {
@@ -497,41 +497,48 @@ func TestLiveKillSwitch_LeavesPaperBooks(t *testing.T) {
 
 func TestAutoResetConfirmedFlat_LiveScopeOnly(t *testing.T) {
 	state := NewAppState()
-	state.scopeRisk(ScopeLive).KillSwitchActive = true
-	state.scopeRisk(ScopeLive).KillSwitchAt = time.Now().UTC()
-	state.scopeRisk(ScopePaper).KillSwitchActive = true
-	state.scopeRisk(ScopePaper).KillSwitchAt = time.Now().UTC()
+	state.partitionRisk(livePartition).KillSwitchActive = true
+	state.partitionRisk(livePartition).KillSwitchAt = time.Now().UTC()
+	state.partitionRisk(defaultPaperPartition).KillSwitchActive = true
+	state.partitionRisk(defaultPaperPartition).KillSwitchAt = time.Now().UTC()
 
-	if !AutoResetConfirmedFlatKillSwitch(state.scopeRisk(ScopeLive), 10000, true, "confirmed flat") {
+	if !AutoResetConfirmedFlatKillSwitch(state.partitionRisk(livePartition), 10000, true, "confirmed flat") {
 		t.Fatal("the live latch must auto-reset when confirmed flat with no owner")
 	}
-	if state.scopeLatched(ScopeLive) {
+	if state.partitionLatched(livePartition) {
 		t.Error("live must be cleared")
 	}
-	if !state.scopeLatched(ScopePaper) {
+	if !state.partitionLatched(defaultPaperPartition) {
 		t.Error("paper must never auto-reset without an owner")
 	}
-	if state.scopeRisk(ScopeLive).KillSwitchCloseApplied {
+	if state.partitionRisk(livePartition).KillSwitchCloseApplied {
 		t.Error("an auto reset must clear the one-shot close marker so a later latch closes again")
 	}
 }
 
 func TestParseKillSwitchResetReply(t *testing.T) {
+	btc := paperSourcePartition("btc")
+	eth := paperSourcePartition("eth")
 	cases := []struct {
 		name    string
 		reply   string
-		latched []PortfolioScope
-		want    PortfolioScope
+		latched []RiskPartition
+		want    RiskPartition
 		wantErr string
 	}{
-		{"bare reset with one latch", "reset", []PortfolioScope{ScopeLive}, ScopeLive, ""},
-		{"bare reset with one paper latch", "reset", []PortfolioScope{ScopePaper}, ScopePaper, ""},
-		{"bare reset with two latches refused", "reset", []PortfolioScope{ScopeLive, ScopePaper}, scopeUnassigned, "reply 'reset live' or 'reset paper'"},
-		{"reset live with two latches", "reset live", []PortfolioScope{ScopeLive, ScopePaper}, ScopeLive, ""},
-		{"reset paper with two latches", "reset paper", []PortfolioScope{ScopeLive, ScopePaper}, ScopePaper, ""},
-		{"reset paper when only live latched", "reset paper", []PortfolioScope{ScopeLive}, scopeUnassigned, "paper scope is not latched"},
-		{"nothing latched", "reset", nil, scopeUnassigned, "nothing to reset"},
-		{"garbage reply", "yes please", []PortfolioScope{ScopeLive}, scopeUnassigned, "unexpected reply"},
+		{"bare reset with one latch", "reset", []RiskPartition{livePartition}, livePartition, ""},
+		{"bare reset with one paper latch", "reset", []RiskPartition{defaultPaperPartition}, defaultPaperPartition, ""},
+		{"bare reset with two latches refused", "reset", []RiskPartition{livePartition, defaultPaperPartition}, unassignedPartition, "'reset live' / 'reset paper'"},
+		{"reset live with two latches", "reset live", []RiskPartition{livePartition, defaultPaperPartition}, livePartition, ""},
+		{"reset paper with two latches", "reset paper", []RiskPartition{livePartition, defaultPaperPartition}, defaultPaperPartition, ""},
+		{"reset paper when only live latched", "reset paper", []RiskPartition{livePartition}, unassignedPartition, "paper scope is not latched"},
+		{"nothing latched", "reset", nil, unassignedPartition, "nothing to reset"},
+		{"garbage reply", "yes please", []RiskPartition{livePartition}, unassignedPartition, "unexpected reply"},
+		{"bare reset with one latched source", "reset", []RiskPartition{btc}, btc, ""},
+		{"named source with two latched sources", "reset paper:eth", []RiskPartition{btc, eth}, eth, ""},
+		{"bare reset with two latched sources refused", "reset", []RiskPartition{btc, eth}, unassignedPartition, "'reset paper:btc' / 'reset paper:eth'"},
+		{"mistyped source id", "reset paper:bct", []RiskPartition{btc, eth}, unassignedPartition, "paper:bct scope is not latched"},
+		{"bare paper never clears a source latch", "reset paper", []RiskPartition{btc}, unassignedPartition, "paper scope is not latched"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -555,21 +562,21 @@ func TestParseKillSwitchResetReply(t *testing.T) {
 func TestManualResetOneScope_OtherStaysLatched(t *testing.T) {
 	state := NewAppState()
 	latchedAt := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
-	for _, scope := range []PortfolioScope{ScopeLive, ScopePaper} {
-		prs := state.scopeRisk(scope)
+	for _, scope := range []RiskPartition{livePartition, defaultPaperPartition} {
+		prs := state.partitionRisk(scope)
 		prs.KillSwitchActive = true
 		prs.KillSwitchAt = latchedAt
 		prs.CurrentDrawdownPct = 40
 	}
-	target, err := parseKillSwitchResetReply("reset paper", state.latchedScopes())
-	if err != nil || target != ScopePaper {
+	target, err := parseKillSwitchResetReply("reset paper", state.latchedPartitions())
+	if err != nil || target != defaultPaperPartition {
 		t.Fatalf("parse = %q, %v; want paper", target, err)
 	}
-	ResetPortfolioKillSwitchManual(state.scopeRisk(target))
-	if state.scopeLatched(ScopePaper) {
+	ResetPortfolioKillSwitchManual(state.partitionRisk(target))
+	if state.partitionLatched(defaultPaperPartition) {
 		t.Error("the paper latch must clear")
 	}
-	live := state.scopeRisk(ScopeLive)
+	live := state.partitionRisk(livePartition)
 	if !live.KillSwitchActive || !live.KillSwitchAt.Equal(latchedAt) {
 		t.Errorf("the live latch must survive a paper reset: %+v", live)
 	}
@@ -577,11 +584,11 @@ func TestManualResetOneScope_OtherStaysLatched(t *testing.T) {
 
 func TestKillSwitchResetPrompt_NamesScope(t *testing.T) {
 	plan := KillSwitchClosePlan{OnChainConfirmedFlat: true, DiscordMessage: "**PORTFOLIO KILL SWITCH**\nreason"}
-	single := formatKillSwitchResetPrompt("live", "0xabc", plan, ScopeLive, []PortfolioScope{ScopeLive})
+	single := formatKillSwitchResetPrompt("live", "0xabc", plan, livePartition, []RiskPartition{livePartition})
 	if !strings.Contains(single, "[KILL SWITCH live]") || !strings.Contains(single, "Reply 'reset' to proceed.") {
 		t.Errorf("single-latch prompt = %s", single)
 	}
-	both := formatKillSwitchResetPrompt("live", "0xabc", plan, ScopePaper, []PortfolioScope{ScopeLive, ScopePaper})
+	both := formatKillSwitchResetPrompt("live", "0xabc", plan, defaultPaperPartition, []RiskPartition{livePartition, defaultPaperPartition})
 	if !strings.Contains(both, "[KILL SWITCH paper]") || !strings.Contains(both, "Reply 'reset paper' to proceed.") {
 		t.Errorf("two-latch paper prompt = %s", both)
 	}
@@ -601,7 +608,7 @@ func TestManualStateView_ScopeLatch(t *testing.T) {
 	state := NewAppState()
 	state.Strategies["live-a"] = scopeState("live-a", 10000)
 	state.Strategies["paper-a"] = scopeState("paper-a", 10000)
-	state.scopeRisk(ScopePaper).KillSwitchActive = true
+	state.partitionRisk(defaultPaperPartition).KillSwitchActive = true
 
 	if v := manualStateViewFromState(cfg, state, "live-a", "BTC"); v.KillSwitch {
 		t.Error("a paper latch must not block a live manual open")
@@ -613,8 +620,8 @@ func TestManualStateView_ScopeLatch(t *testing.T) {
 		t.Error("an unknown strategy id must fail closed while any scope is latched")
 	}
 
-	state.scopeRisk(ScopePaper).KillSwitchActive = false
-	state.scopeRisk(ScopeLive).KillSwitchActive = true
+	state.partitionRisk(defaultPaperPartition).KillSwitchActive = false
+	state.partitionRisk(livePartition).KillSwitchActive = true
 	if v := manualStateViewFromState(cfg, state, "paper-a", "BTC"); v.KillSwitch {
 		t.Error("a live latch must not block a paper manual open")
 	}
@@ -647,13 +654,13 @@ func TestScopeRiskConfig_Merge(t *testing.T) {
 	}
 	cfg := &Config{PortfolioRisk: parent}
 
-	if got := scopeRiskConfig(cfg, ScopePaper); got != parent {
+	if got := partitionRiskConfig(cfg, defaultPaperPartition); got != parent {
 		t.Error("with no override the paper scope must reuse the parent config")
 	}
 
 	parent.Paper = &PortfolioRiskConfig{MaxDrawdownPct: 60, DailyMaxLossUSD: 2000}
-	live := scopeRiskConfig(cfg, ScopeLive)
-	paper := scopeRiskConfig(cfg, ScopePaper)
+	live := partitionRiskConfig(cfg, livePartition)
+	paper := partitionRiskConfig(cfg, defaultPaperPartition)
 	if live.MaxDrawdownPct != 25 || live.DailyMaxLossUSD != 500 {
 		t.Errorf("the live scope must never read the paper override: %+v", live)
 	}
@@ -712,14 +719,14 @@ func TestPaperKillSwitch_AutoResetsWithoutOwner(t *testing.T) {
 			state := NewAppState()
 			state.Strategies["live-a"] = scopeLongPosState("live-a", 0.2)
 			state.Strategies["paper-a"] = scopeLongPosState("paper-a", 0.4)
-			paperPrs := state.scopeRisk(ScopePaper)
+			paperPrs := state.partitionRisk(defaultPaperPartition)
 			paperPrs.KillSwitchActive = true
 			paperPrs.KillSwitchAt = time.Now()
 			paperPrs.PeakValue = 20000
 			paperPrs.KillSwitchCloseApplied = tc.closeApplied
-			livePrs := state.scopeRisk(ScopeLive)
+			livePrs := state.partitionRisk(livePartition)
 			livePrs.KillSwitchActive = true
-			sr := &scopeCycleRisk{Scope: ScopePaper, KillSwitchFired: true, TotalPV: 15000, PeakRebaselineAvailable: true, Reason: "paper drawdown 50.0% exceeds limit 25.0%"}
+			sr := &scopeCycleRisk{Partition: defaultPaperPartition, KillSwitchFired: true, TotalPV: 15000, PeakRebaselineAvailable: true, Reason: "paper drawdown 50.0% exceeds limit 25.0%"}
 
 			out := applyPaperKillSwitchCycle(state, cfg, map[string]float64{"BTC": 50000}, sr, tc.hasOwner)
 			if out.AutoReset != tc.wantAutoReset {
@@ -766,7 +773,7 @@ func TestPaperKillSwitchPromptMessage_CarriesReason(t *testing.T) {
 	if !strings.Contains(msg, reason) || !strings.Contains(msg, "PAPER") {
 		t.Fatalf("prompt message must name the scope and reason:\n%s", msg)
 	}
-	prompt := formatKillSwitchResetPrompt("paper-testing", "0xabc", KillSwitchClosePlan{OnChainConfirmedFlat: true, DiscordMessage: msg}, ScopePaper, []PortfolioScope{ScopePaper})
+	prompt := formatKillSwitchResetPrompt("paper-testing", "0xabc", KillSwitchClosePlan{OnChainConfirmedFlat: true, DiscordMessage: msg}, defaultPaperPartition, []RiskPartition{defaultPaperPartition})
 	if !strings.Contains(prompt, reason) {
 		t.Errorf("a re-issued paper reset prompt must carry the drawdown reason:\n%s", prompt)
 	}
@@ -775,10 +782,10 @@ func TestPaperKillSwitchPromptMessage_CarriesReason(t *testing.T) {
 func TestScopeHasPersistedState(t *testing.T) {
 	cfgs := []StrategyConfig{scopeCfg("live-a", true), scopeCfg("paper-a", false), scopeCfg("paper-new", false)}
 	persisted := map[string]bool{"live-a": true, "paper-a": true}
-	if !scopeHasPersistedState(cfgs, ScopePaper, persisted) {
+	if !partitionHasPersistedState(cfgs, defaultPaperPartition, persisted) {
 		t.Error("a paper scope with one persisted member carries state")
 	}
-	if scopeHasPersistedState(cfgs, ScopePaper, map[string]bool{"live-a": true}) {
+	if partitionHasPersistedState(cfgs, defaultPaperPartition, map[string]bool{"live-a": true}) {
 		t.Error("a paper scope whose members are all new carries no state")
 	}
 }
@@ -786,37 +793,37 @@ func TestScopeHasPersistedState(t *testing.T) {
 func TestCycleScopeRisk_NewScopeSeedsPeakFromCurrentValue(t *testing.T) {
 	cfg := scopeTestConfig(true, true)
 	state := scopeTestState(cfg, 10000, 7000)
-	state.scopeRisk(ScopeLive).PeakValue = 10000
+	state.partitionRisk(livePartition).PeakValue = 10000
 
 	res := runScopeCycle(t, cfg, state, nil)
-	paperPrs := state.scopeRisk(ScopePaper)
-	if paperPrs.PeakValue != res[ScopePaper].TotalPV || paperPrs.PeakValue != 7000 {
-		t.Fatalf("a new paper scope must seed its peak from the current paper value; peak=%v total=%v", paperPrs.PeakValue, res[ScopePaper].TotalPV)
+	paperPrs := state.partitionRisk(defaultPaperPartition)
+	if paperPrs.PeakValue != res[defaultPaperPartition].TotalPV || paperPrs.PeakValue != 7000 {
+		t.Fatalf("a new paper scope must seed its peak from the current paper value; peak=%v total=%v", paperPrs.PeakValue, res[defaultPaperPartition].TotalPV)
 	}
-	if res[ScopePaper].KillSwitchFired || paperPrs.CurrentDrawdownPct != 0 {
-		t.Fatalf("a paper book already below configured capital must not latch on its first cycle; reason=%q dd=%v", res[ScopePaper].Reason, paperPrs.CurrentDrawdownPct)
+	if res[defaultPaperPartition].KillSwitchFired || paperPrs.CurrentDrawdownPct != 0 {
+		t.Fatalf("a paper book already below configured capital must not latch on its first cycle; reason=%q dd=%v", res[defaultPaperPartition].Reason, paperPrs.CurrentDrawdownPct)
 	}
 
 	state.Strategies["paper-a"].Cash = 5000
 	res = runScopeCycle(t, cfg, state, nil)
-	if !res[ScopePaper].KillSwitchFired {
-		t.Errorf("a later paper loss past the limit must latch against the seeded peak; reason=%q", res[ScopePaper].Reason)
+	if !res[defaultPaperPartition].KillSwitchFired {
+		t.Errorf("a later paper loss past the limit must latch against the seeded peak; reason=%q", res[defaultPaperPartition].Reason)
 	}
 
 	above := scopeTestState(cfg, 10000, 13000)
-	above.scopeRisk(ScopeLive).PeakValue = 10000
+	above.partitionRisk(livePartition).PeakValue = 10000
 	runScopeCycle(t, cfg, above, nil)
-	if above.scopeRisk(ScopePaper).PeakValue != 13000 {
-		t.Errorf("a paper book above configured capital must seed at its current value, not lower; got %v", above.scopeRisk(ScopePaper).PeakValue)
+	if above.partitionRisk(defaultPaperPartition).PeakValue != 13000 {
+		t.Errorf("a paper book above configured capital must seed at its current value, not lower; got %v", above.partitionRisk(defaultPaperPartition).PeakValue)
 	}
 }
 
 func TestKillSwitchResetPromptForScopes(t *testing.T) {
 	livePlan := KillSwitchClosePlan{OnChainConfirmedFlat: false, DiscordMessage: "**PORTFOLIO KILL SWITCH**\nlive drawdown 30%"}
 	paperPlan := KillSwitchClosePlan{OnChainConfirmedFlat: true, DiscordMessage: formatPaperKillSwitchPromptMessage("paper drawdown 40%")}
-	plans := map[PortfolioScope]KillSwitchClosePlan{ScopeLive: livePlan, ScopePaper: paperPlan}
-	both := formatKillSwitchResetPromptForScopes("inst", "0xabc", plans, []PortfolioScope{ScopeLive, ScopePaper}, []PortfolioScope{ScopeLive, ScopePaper})
-	for _, want := range []string{"[KILL SWITCH live]", "[KILL SWITCH paper]", "live drawdown 30%", "paper drawdown 40%", "Hyperliquid 0xabc", "Reply 'reset live' or 'reset paper' to proceed.", "resting stop-losses may already be cancelled"} {
+	plans := map[RiskPartition]KillSwitchClosePlan{livePartition: livePlan, defaultPaperPartition: paperPlan}
+	both := formatKillSwitchResetPromptForScopes("inst", "0xabc", plans, []RiskPartition{livePartition, defaultPaperPartition}, []RiskPartition{livePartition, defaultPaperPartition})
+	for _, want := range []string{"[KILL SWITCH live]", "[KILL SWITCH paper]", "live drawdown 30%", "paper drawdown 40%", "Hyperliquid 0xabc", "Reply 'reset live' / 'reset paper' to proceed.", "resting stop-losses may already be cancelled"} {
 		if !strings.Contains(both, want) {
 			t.Errorf("two-scope prompt missing %q:\n%s", want, both)
 		}
@@ -824,14 +831,14 @@ func TestKillSwitchResetPromptForScopes(t *testing.T) {
 	if strings.Count(both, "Hyperliquid 0xabc") != 1 {
 		t.Errorf("only the live section may carry the exchange identity:\n%s", both)
 	}
-	single := formatKillSwitchResetPromptForScopes("inst", "0xabc", plans, []PortfolioScope{ScopePaper}, []PortfolioScope{ScopePaper})
-	if single != formatKillSwitchResetPrompt("inst", "0xabc", paperPlan, ScopePaper, []PortfolioScope{ScopePaper}) {
+	single := formatKillSwitchResetPromptForScopes("inst", "0xabc", plans, []RiskPartition{defaultPaperPartition}, []RiskPartition{defaultPaperPartition})
+	if single != formatKillSwitchResetPrompt("inst", "0xabc", paperPlan, defaultPaperPartition, []RiskPartition{defaultPaperPartition}) {
 		t.Error("a single latched scope must produce the single-scope prompt")
 	}
-	if target, err := parseKillSwitchResetReply("reset paper", []PortfolioScope{ScopeLive, ScopePaper}); err != nil || target != ScopePaper {
+	if target, err := parseKillSwitchResetReply("reset paper", []RiskPartition{livePartition, defaultPaperPartition}); err != nil || target != defaultPaperPartition {
 		t.Errorf("the one reply must resolve the named scope: %q %v", target, err)
 	}
-	if target, err := parseKillSwitchResetReply("reset", []PortfolioScope{ScopeLive}); err != nil || target != ScopeLive {
+	if target, err := parseKillSwitchResetReply("reset", []RiskPartition{livePartition}); err != nil || target != livePartition {
 		t.Errorf("a bare reset must resolve the surviving scope: %q %v", target, err)
 	}
 }

@@ -201,6 +201,16 @@ JSON
 assert_eq "$(update_resolve_db_exclude)" $'scheduler/state.db\n/var/lib/go-trader/paper.db' \
     "an omitted db_file still falls back to the default primary path"
 
+export GO_TRADER_UPDATE_CONFIG="$tmp_cfg_dir/sources.json"
+cat > "$GO_TRADER_UPDATE_CONFIG" <<'JSON'
+{"db_file": "/var/lib/go-trader/live.db",
+ "paper_sources": [{"id": "btc", "db_file": "/var/lib/go-trader/btc.db"},
+                   {"id": "eth", "db_file": "/var/lib/go-trader/eth.db"},
+                   {"id": "blank"}]}
+JSON
+assert_eq "$(update_resolve_db_exclude)" $'/var/lib/go-trader/live.db\n/var/lib/go-trader/btc.db\n/var/lib/go-trader/eth.db' \
+    "every paper source database is excluded from the update (#1561)"
+
 unset GO_TRADER_UPDATE_CONFIG GO_TRADER_UPDATE_PYTHON
 
 norm_in=$'/root/go-trader-live\n/root/.openclaw/workspace/go-trader-paper-1/\n\n  /opt/deploy/go-trader-x  \nrelative/dir\n/root/go-trader-live'

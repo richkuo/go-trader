@@ -54,44 +54,49 @@ func ParseKillSwitchResetDMTimeout(s string) (time.Duration, error) {
 	return d, nil
 }
 
-func parseKillSwitchResetReply(resp string, latched []PortfolioScope) (PortfolioScope, error) {
+// parseKillSwitchResetReply resolves the owner's reply to exactly one latched
+// partition. A bare "reset" is accepted only when one partition is latched, so
+// an ambiguous reply never clears the wrong source's latch.
+func parseKillSwitchResetReply(resp string, latched []RiskPartition) (RiskPartition, error) {
 	reply := strings.ToLower(strings.TrimSpace(resp))
 	if len(latched) == 0 {
-		return scopeUnassigned, fmt.Errorf("no portfolio scope is latched; nothing to reset")
+		return unassignedPartition, fmt.Errorf("no portfolio scope is latched; nothing to reset")
 	}
-	switch reply {
-	case "reset":
+	if reply == "reset" {
 		if len(latched) == 1 {
 			return latched[0], nil
 		}
-		return scopeUnassigned, fmt.Errorf("two portfolio scopes are latched (%s); reply 'reset live' or 'reset paper' to name the one to clear", joinScopeLabels(latched))
-	case "reset live":
-		if !scopeInList(ScopeLive, latched) {
-			return scopeUnassigned, fmt.Errorf("the live scope is not latched; latched scope(s): %s", joinScopeLabels(latched))
-		}
-		return ScopeLive, nil
-	case "reset paper":
-		if !scopeInList(ScopePaper, latched) {
-			return scopeUnassigned, fmt.Errorf("the paper scope is not latched; latched scope(s): %s", joinScopeLabels(latched))
-		}
-		return ScopePaper, nil
+		return unassignedPartition, fmt.Errorf("%d portfolio scopes are latched (%s); reply %s to name the one to clear",
+			len(latched), joinScopeLabels(latched), killSwitchResetReplyOptions(latched))
 	}
-	return scopeUnassigned, fmt.Errorf("unexpected reply %q; reply 'reset' when one scope is latched, or 'reset live' / 'reset paper' when both are", resp)
+	named, ok := strings.CutPrefix(reply, "reset ")
+	if !ok {
+		return unassignedPartition, fmt.Errorf("unexpected reply %q; reply 'reset' when one scope is latched, or %s when several are", resp, killSwitchResetReplyOptions(latched))
+	}
+	part, err := parseRiskPartition(strings.TrimSpace(named))
+	if err != nil {
+		return unassignedPartition, fmt.Errorf("unexpected reply %q; reply 'reset' when one scope is latched, or %s when several are", resp, killSwitchResetReplyOptions(latched))
+	}
+	if !partitionInList(part, latched) {
+		return unassignedPartition, fmt.Errorf("the %s scope is not latched; latched scope(s): %s", partitionLabel(part), joinScopeLabels(latched))
+	}
+	return part, nil
 }
 
-func scopeInList(scope PortfolioScope, list []PortfolioScope) bool {
-	for _, s := range list {
-		if s == scope {
-			return true
-		}
+// killSwitchResetReplyOptions lists the exact replies that clear each latched
+// partition, so the owner never has to guess a source id.
+func killSwitchResetReplyOptions(latched []RiskPartition) string {
+	opts := make([]string, 0, len(latched))
+	for _, p := range latched {
+		opts = append(opts, fmt.Sprintf("'reset %s'", p.String()))
 	}
-	return false
+	return strings.Join(opts, " / ")
 }
 
-func joinScopeLabels(scopes []PortfolioScope) string {
-	labels := make([]string, 0, len(scopes))
-	for _, s := range scopes {
-		labels = append(labels, scopeLabel(s))
+func joinScopeLabels(parts []RiskPartition) string {
+	labels := make([]string, 0, len(parts))
+	for _, p := range parts {
+		labels = append(labels, partitionLabel(p))
 	}
 	return strings.Join(labels, ", ")
 }

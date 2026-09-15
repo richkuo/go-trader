@@ -305,7 +305,7 @@ func TestFormatCircuitBreakersResponse(t *testing.T) {
 		Strategies: map[string]*StrategyState{
 			"hl-a": {ID: "hl-a", RiskState: RiskState{CircuitBreaker: true, CircuitBreakerUntil: now.Add(10 * time.Minute)}},
 		},
-		PortfolioRisk: map[PortfolioScope]*PortfolioRiskState{ScopeLive: {KillSwitchActive: true}},
+		PortfolioRisk: map[RiskPartition]*PortfolioRiskState{livePartition: {KillSwitchActive: true}},
 	}
 	got := formatCircuitBreakersResponse(state, now)
 	if !strings.Contains(got, "hl-a") {
@@ -351,7 +351,7 @@ func TestFormatCorrelationResponse(t *testing.T) {
 		Warnings:          []string{"BTC concentration 80%"},
 		Assets:            map[string]*AssetExposure{"BTC": {NetDeltaUSD: 800, ConcentrationPct: 80}},
 	}
-	got := formatCorrelationResponse(map[PortfolioScope]*CorrelationSnapshot{ScopeLive: snap})
+	got := formatCorrelationResponse(map[RiskPartition]*CorrelationSnapshot{livePartition: snap})
 	if !strings.Contains(got, "BTC") || !strings.Contains(got, "80") {
 		t.Errorf("expected BTC concentration, got: %s", got)
 	}
@@ -366,9 +366,9 @@ func TestFormatCorrelationResponseDeterministicTies(t *testing.T) {
 			"SOL": {NetDeltaUSD: 500, ConcentrationPct: 50},
 		},
 	}
-	first := formatCorrelationResponse(map[PortfolioScope]*CorrelationSnapshot{ScopeLive: snap})
+	first := formatCorrelationResponse(map[RiskPartition]*CorrelationSnapshot{livePartition: snap})
 	for i := 0; i < 20; i++ {
-		if got := formatCorrelationResponse(map[PortfolioScope]*CorrelationSnapshot{ScopeLive: snap}); got != first {
+		if got := formatCorrelationResponse(map[RiskPartition]*CorrelationSnapshot{livePartition: snap}); got != first {
 			t.Fatalf("non-deterministic output on tied concentration:\n%s\n---\n%s", first, got)
 		}
 	}

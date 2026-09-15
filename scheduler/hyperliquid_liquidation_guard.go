@@ -1064,13 +1064,13 @@ func flushOffCycleLiquidationAuditState(state *AppState, cfg *Config, store *Sta
 	outcomes := store.SaveAll(state)
 	mu.Unlock()
 	failed := false
-	for _, out := range sortedScopeErrors(outcomes) {
+	for _, out := range sortedPartitionErrors(outcomes) {
 		if out.err == nil {
 			continue
 		}
 		failed = true
 		fmt.Printf("[CRITICAL] Save state failed after off-cycle liquidation audit for the %s scope (%d/3): %v\n",
-			scopeLabel(out.scope), store.saveFailures(out.scope), out.err)
+			partitionLabel(out.part), store.saveFailures(out.part), out.err)
 	}
 	return failed
 }
@@ -1093,7 +1093,7 @@ func runOffCycleLiquidationAudit(strategies []StrategyConfig, state *AppState, m
 	fmt.Printf("[WARN] #1450 liquidation audit: %d position(s) exited on a clamped stop this cycle\n", auditRes.ImmediateFills)
 	priceCoins := make(map[string]bool)
 	for _, cd := range auditRes.CloseDetails {
-		if chKey := notifier.resolveChannelKey(cd.SC.Platform, cd.SC.Type, isLiveArgs(cd.SC.Args)); chKey != "" {
+		if chKey := notifier.resolveChannelKey(cd.SC.Platform, cd.SC.Type, isLiveArgs(cd.SC.Args), cd.SC.PaperSource); chKey != "" {
 			notifier.SendToChannel(cd.SC.Platform, cd.SC.Type, fmt.Sprintf("**#1450 off-cycle liquidation audit**\n%s", cd.Detail))
 		}
 		priceCoins[cd.Symbol] = true

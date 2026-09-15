@@ -175,7 +175,7 @@ func makeTestState() *AppState {
 				},
 			},
 		},
-		PortfolioRisk: map[PortfolioScope]*PortfolioRiskState{ScopeLive: {
+		PortfolioRisk: map[RiskPartition]*PortfolioRiskState{livePartition: {
 			PeakValue: 2050, CurrentDrawdownPct: 1.5, CurrentMarginDrawdownPct: 18.7,
 			KillSwitchActive:           false,
 			WarningSent:                true,
@@ -191,7 +191,7 @@ func makeTestState() *AppState {
 				{Timestamp: now.Add(-3 * time.Hour), Type: "warning", Source: "margin", DrawdownPct: 18.7, PortfolioValue: 1950, PeakValue: 2050, Details: "approaching threshold"},
 			},
 		}},
-		CorrelationSnapshot: map[PortfolioScope]*CorrelationSnapshot{ScopeLive: {
+		CorrelationSnapshot: map[RiskPartition]*CorrelationSnapshot{livePartition: {
 			Timestamp:         now,
 			PortfolioGrossUSD: 5000,
 			Warnings:          []string{"BTC concentration 70%"},
@@ -287,64 +287,64 @@ func TestSaveAndLoadDBRoundTrip(t *testing.T) {
 		t.Error("CircuitBreakerUntil should not be zero")
 	}
 
-	if loaded.scopeRisk(ScopeLive).PeakValue != 2050 {
-		t.Errorf("PortfolioRisk.PeakValue = %f, want 2050", loaded.scopeRisk(ScopeLive).PeakValue)
+	if loaded.partitionRisk(livePartition).PeakValue != 2050 {
+		t.Errorf("PortfolioRisk.PeakValue = %f, want 2050", loaded.partitionRisk(livePartition).PeakValue)
 	}
-	if loaded.scopeRisk(ScopeLive).CurrentDrawdownPct != 1.5 {
-		t.Errorf("PortfolioRisk.CurrentDrawdownPct = %f, want 1.5", loaded.scopeRisk(ScopeLive).CurrentDrawdownPct)
+	if loaded.partitionRisk(livePartition).CurrentDrawdownPct != 1.5 {
+		t.Errorf("PortfolioRisk.CurrentDrawdownPct = %f, want 1.5", loaded.partitionRisk(livePartition).CurrentDrawdownPct)
 	}
-	if loaded.scopeRisk(ScopeLive).CurrentMarginDrawdownPct != 18.7 {
-		t.Errorf("PortfolioRisk.CurrentMarginDrawdownPct = %f, want 18.7", loaded.scopeRisk(ScopeLive).CurrentMarginDrawdownPct)
+	if loaded.partitionRisk(livePartition).CurrentMarginDrawdownPct != 18.7 {
+		t.Errorf("PortfolioRisk.CurrentMarginDrawdownPct = %f, want 18.7", loaded.partitionRisk(livePartition).CurrentMarginDrawdownPct)
 	}
-	if !loaded.scopeRisk(ScopeLive).ManualMarkBasisRebaselined {
+	if !loaded.partitionRisk(livePartition).ManualMarkBasisRebaselined {
 		t.Error("PortfolioRisk.ManualMarkBasisRebaselined = false, want true (one-shot latch must survive a restart)")
 	}
-	if !loaded.scopeRisk(ScopeLive).DrawdownReadingSubstituted {
+	if !loaded.partitionRisk(livePartition).DrawdownReadingSubstituted {
 		t.Error("PortfolioRisk.DrawdownReadingSubstituted = false, want true (a substituted reading must stay labeled across a restart)")
 	}
-	if loaded.scopeRisk(ScopeLive).UntrustedOverLimitSince.IsZero() ||
-		!loaded.scopeRisk(ScopeLive).UntrustedOverLimitSince.Equal(original.scopeRisk(ScopeLive).UntrustedOverLimitSince) {
+	if loaded.partitionRisk(livePartition).UntrustedOverLimitSince.IsZero() ||
+		!loaded.partitionRisk(livePartition).UntrustedOverLimitSince.Equal(original.partitionRisk(livePartition).UntrustedOverLimitSince) {
 		t.Errorf("PortfolioRisk.UntrustedOverLimitSince = %v, want %v (a restart must not reopen the deferral window)",
-			loaded.scopeRisk(ScopeLive).UntrustedOverLimitSince, original.scopeRisk(ScopeLive).UntrustedOverLimitSince)
+			loaded.partitionRisk(livePartition).UntrustedOverLimitSince, original.partitionRisk(livePartition).UntrustedOverLimitSince)
 	}
-	if !loaded.scopeRisk(ScopeLive).WarningSent {
+	if !loaded.partitionRisk(livePartition).WarningSent {
 		t.Error("PortfolioRisk.WarningSent should be true")
 	}
-	if loaded.scopeRisk(ScopeLive).WarnBandEnteredAt.IsZero() {
+	if loaded.partitionRisk(livePartition).WarnBandEnteredAt.IsZero() {
 		t.Error("PortfolioRisk.WarnBandEnteredAt should round-trip")
 	}
-	if loaded.scopeRisk(ScopeLive).LastWarningEquityDDPct != 1.5 {
-		t.Errorf("PortfolioRisk.LastWarningEquityDDPct = %f, want 1.5", loaded.scopeRisk(ScopeLive).LastWarningEquityDDPct)
+	if loaded.partitionRisk(livePartition).LastWarningEquityDDPct != 1.5 {
+		t.Errorf("PortfolioRisk.LastWarningEquityDDPct = %f, want 1.5", loaded.partitionRisk(livePartition).LastWarningEquityDDPct)
 	}
-	if loaded.scopeRisk(ScopeLive).LastWarningMarginDDPct != 18.7 {
-		t.Errorf("PortfolioRisk.LastWarningMarginDDPct = %f, want 18.7", loaded.scopeRisk(ScopeLive).LastWarningMarginDDPct)
+	if loaded.partitionRisk(livePartition).LastWarningMarginDDPct != 18.7 {
+		t.Errorf("PortfolioRisk.LastWarningMarginDDPct = %f, want 18.7", loaded.partitionRisk(livePartition).LastWarningMarginDDPct)
 	}
-	if loaded.scopeRisk(ScopeLive).WarningEquityDeltaPct != 0.3 {
-		t.Errorf("PortfolioRisk.WarningEquityDeltaPct = %f, want 0.3", loaded.scopeRisk(ScopeLive).WarningEquityDeltaPct)
+	if loaded.partitionRisk(livePartition).WarningEquityDeltaPct != 0.3 {
+		t.Errorf("PortfolioRisk.WarningEquityDeltaPct = %f, want 0.3", loaded.partitionRisk(livePartition).WarningEquityDeltaPct)
 	}
-	if loaded.scopeRisk(ScopeLive).WarningMarginDeltaPct != -0.2 {
-		t.Errorf("PortfolioRisk.WarningMarginDeltaPct = %f, want -0.2", loaded.scopeRisk(ScopeLive).WarningMarginDeltaPct)
+	if loaded.partitionRisk(livePartition).WarningMarginDeltaPct != -0.2 {
+		t.Errorf("PortfolioRisk.WarningMarginDeltaPct = %f, want -0.2", loaded.partitionRisk(livePartition).WarningMarginDeltaPct)
 	}
-	if len(loaded.scopeRisk(ScopeLive).Events) != 1 {
-		t.Fatalf("kill switch events = %d, want 1", len(loaded.scopeRisk(ScopeLive).Events))
+	if len(loaded.partitionRisk(livePartition).Events) != 1 {
+		t.Fatalf("kill switch events = %d, want 1", len(loaded.partitionRisk(livePartition).Events))
 	}
-	if loaded.scopeRisk(ScopeLive).Events[0].Type != "warning" {
-		t.Errorf("event type = %q, want %q", loaded.scopeRisk(ScopeLive).Events[0].Type, "warning")
+	if loaded.partitionRisk(livePartition).Events[0].Type != "warning" {
+		t.Errorf("event type = %q, want %q", loaded.partitionRisk(livePartition).Events[0].Type, "warning")
 	}
-	if loaded.scopeRisk(ScopeLive).Events[0].Source != "margin" {
-		t.Errorf("event source = %q, want %q", loaded.scopeRisk(ScopeLive).Events[0].Source, "margin")
+	if loaded.partitionRisk(livePartition).Events[0].Source != "margin" {
+		t.Errorf("event source = %q, want %q", loaded.partitionRisk(livePartition).Events[0].Source, "margin")
 	}
 
-	if loaded.scopeCorrelation(ScopeLive) == nil {
+	if loaded.partitionCorrelation(livePartition) == nil {
 		t.Fatal("CorrelationSnapshot is nil")
 	}
-	if loaded.scopeCorrelation(ScopeLive).PortfolioGrossUSD != 5000 {
-		t.Errorf("PortfolioGrossUSD = %f, want 5000", loaded.scopeCorrelation(ScopeLive).PortfolioGrossUSD)
+	if loaded.partitionCorrelation(livePartition).PortfolioGrossUSD != 5000 {
+		t.Errorf("PortfolioGrossUSD = %f, want 5000", loaded.partitionCorrelation(livePartition).PortfolioGrossUSD)
 	}
-	if len(loaded.scopeCorrelation(ScopeLive).Warnings) != 1 {
-		t.Fatalf("correlation warnings = %d, want 1", len(loaded.scopeCorrelation(ScopeLive).Warnings))
+	if len(loaded.partitionCorrelation(livePartition).Warnings) != 1 {
+		t.Fatalf("correlation warnings = %d, want 1", len(loaded.partitionCorrelation(livePartition).Warnings))
 	}
-	btcExposure := loaded.scopeCorrelation(ScopeLive).Assets["BTC"]
+	btcExposure := loaded.partitionCorrelation(livePartition).Assets["BTC"]
 	if btcExposure == nil {
 		t.Fatal("missing BTC exposure in correlation snapshot")
 	}
@@ -400,7 +400,7 @@ func TestSaveState_KillSwitchEventsStoredAsIs(t *testing.T) {
 	state := NewAppState()
 	state.CycleCount = 1
 	for i := 0; i < 60; i++ {
-		prs := state.scopeRisk(ScopeLive)
+		prs := state.partitionRisk(livePartition)
 		prs.Events = append(prs.Events, KillSwitchEvent{
 			Timestamp: now.Add(time.Duration(i) * time.Minute), Type: "warning", DrawdownPct: float64(i),
 		})
@@ -605,14 +605,14 @@ func TestCorrelationSnapshotRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadState: %v", err)
 	}
-	if loaded.scopeCorrelation(ScopeLive) == nil {
+	if loaded.partitionCorrelation(livePartition) == nil {
 		t.Fatal("CorrelationSnapshot is nil")
 	}
-	if loaded.scopeCorrelation(ScopeLive).PortfolioGrossUSD != 5000 {
-		t.Errorf("PortfolioGrossUSD = %f, want 5000", loaded.scopeCorrelation(ScopeLive).PortfolioGrossUSD)
+	if loaded.partitionCorrelation(livePartition).PortfolioGrossUSD != 5000 {
+		t.Errorf("PortfolioGrossUSD = %f, want 5000", loaded.partitionCorrelation(livePartition).PortfolioGrossUSD)
 	}
 
-	state.CorrelationSnapshot = map[PortfolioScope]*CorrelationSnapshot{}
+	state.CorrelationSnapshot = map[RiskPartition]*CorrelationSnapshot{}
 	if err := db.SaveState(state); err != nil {
 		t.Fatalf("SaveState nil snapshot: %v", err)
 	}
@@ -620,8 +620,8 @@ func TestCorrelationSnapshotRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadState nil snapshot: %v", err)
 	}
-	if loaded2.scopeCorrelation(ScopeLive) != nil {
-		t.Errorf("expected nil CorrelationSnapshot, got %+v", loaded2.scopeCorrelation(ScopeLive))
+	if loaded2.partitionCorrelation(livePartition) != nil {
+		t.Errorf("expected nil CorrelationSnapshot, got %+v", loaded2.partitionCorrelation(livePartition))
 	}
 }
 

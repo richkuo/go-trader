@@ -151,20 +151,35 @@ func resolveChannel(channels map[string]string, platform, stratType string) stri
 	return ""
 }
 
-func resolveTradeChannel(channels map[string]string, platform, stratType string, isLive bool) string {
+// paperChannelKeys lists the paper routing keys for one strategy, most specific
+// first: the named source, then the default paper key. A folded source reaches
+// its own channel when one is configured and otherwise keeps the route the
+// merged deployment already had.
+func paperChannelKeys(platform, source string) []string {
+	if source == "" {
+		return []string{platform + "-paper"}
+	}
+	return []string{platform + "-paper" + paperSourceSeparator + source, platform + "-paper"}
+}
+
+func resolveTradeChannel(channels map[string]string, platform, stratType string, isLive bool, source string) string {
 	if !isLive {
-		if ch, ok := channels[platform+"-paper"]; ok && ch != "" {
-			return ch
+		for _, key := range paperChannelKeys(platform, source) {
+			if ch, ok := channels[key]; ok && ch != "" {
+				return ch
+			}
 		}
 	}
 	return resolveChannel(channels, platform, stratType)
 }
 
-func resolveTradeAlertChannel(override, channels map[string]string, platform, stratType string, isLive bool) string {
+func resolveTradeAlertChannel(override, channels map[string]string, platform, stratType string, isLive bool, source string) string {
 	if len(override) > 0 {
 		if !isLive {
-			if ch, ok := override[platform+"-paper"]; ok && ch != "" {
-				return ch
+			for _, key := range paperChannelKeys(platform, source) {
+				if ch, ok := override[key]; ok && ch != "" {
+					return ch
+				}
 			}
 		} else {
 			if ch, ok := override[platform+"-live"]; ok && ch != "" {
@@ -178,7 +193,7 @@ func resolveTradeAlertChannel(override, channels map[string]string, platform, st
 			return ch
 		}
 	}
-	return resolveTradeChannel(channels, platform, stratType, isLive)
+	return resolveTradeChannel(channels, platform, stratType, isLive, source)
 }
 
 func channelKeyFromID(channels map[string]string, chID string) string {

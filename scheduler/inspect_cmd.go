@@ -690,8 +690,11 @@ func buildStrategyInspectionJSON(sc StrategyConfig, explicit map[string]bool, cf
 
 func strategyScopeInspectJSON(sc StrategyConfig, cfg *Config) map[string]interface{} {
 	scope := portfolioScopeFor(sc)
+	part := partitionFor(sc)
 	out := map[string]interface{}{
 		"scope":                  scope,
+		"partition":              part.String(),
+		"paper_source":           sc.PaperSource,
 		"storage_strategy_id":    effectiveStorageStrategyID(sc),
 		"capital":                sc.Capital,
 		"capital_pct":            sc.CapitalPct,
@@ -716,7 +719,7 @@ func strategyScopeInspectJSON(sc StrategyConfig, cfg *Config) map[string]interfa
 		"effective_source": replayMirrorSourceID(sc),
 	}
 	out["notification"] = notificationRoutingJSON(sc, cfg, scope == ScopeLive)
-	out["scope_risk"] = scopeRiskInspectJSON(cfg, scope)
+	out["scope_risk"] = scopeRiskInspectJSON(cfg, part)
 	return out
 }
 
@@ -734,9 +737,9 @@ func notificationRoutingJSON(sc StrategyConfig, cfg *Config, isLive bool) map[st
 		alerts = append(alerts, cfg.Discord.TradeAlertChannels, cfg.Telegram.TradeAlertChannels)
 		dms = append(dms, cfg.Discord.DMChannels, cfg.Telegram.DMChannels)
 	}
-	chKey, chVal := resolveChannelKeyOverMaps(channels, sc.Platform, sc.Type, isLive)
-	alertKey, alertVal := resolveTradeAlertKeyOverMaps(alerts, channels, sc.Platform, sc.Type, isLive)
-	dmKey, dmVal := resolveDMKeyOverMaps(dms, sc.Platform, isLive)
+	chKey, chVal := resolveChannelKeyOverMaps(channels, sc.Platform, sc.Type, isLive, sc.PaperSource)
+	alertKey, alertVal := resolveTradeAlertKeyOverMaps(alerts, channels, sc.Platform, sc.Type, isLive, sc.PaperSource)
+	dmKey, dmVal := resolveDMKeyOverMaps(dms, sc.Platform, isLive, sc.PaperSource)
 	return map[string]interface{}{
 		"channel_key":         chKey,
 		"channel":             chVal,
@@ -747,11 +750,13 @@ func notificationRoutingJSON(sc StrategyConfig, cfg *Config, isLive bool) map[st
 	}
 }
 
-func resolveChannelKeyOverMaps(maps []map[string]string, platform, stratType string, isLive bool) (string, string) {
+func resolveChannelKeyOverMaps(maps []map[string]string, platform, stratType string, isLive bool, source string) (string, string) {
 	if !isLive {
-		for _, m := range maps {
-			if ch, ok := m[platform+"-paper"]; ok && ch != "" {
-				return platform + "-paper", ch
+		for _, key := range paperChannelKeys(platform, source) {
+			for _, m := range maps {
+				if ch, ok := m[key]; ok && ch != "" {
+					return key, ch
+				}
 			}
 		}
 	}
@@ -766,10 +771,12 @@ func resolveChannelKeyOverMaps(maps []map[string]string, platform, stratType str
 	return "", ""
 }
 
-func resolveDMKeyOverMaps(maps []map[string]string, platform string, isLive bool) (string, string) {
+// resolveDMKeyOverMaps mirrors tradeAlertRoutes exactly: one literal key, no
+// fallback, so inspect never reports a DM route the send path disagrees with.
+func resolveDMKeyOverMaps(maps []map[string]string, platform string, isLive bool, source string) (string, string) {
 	key := platform
 	if !isLive {
-		key = platform + "-paper"
+		key = paperChannelKeys(platform, source)[0]
 	}
 	for _, m := range maps {
 		if ch, ok := m[key]; ok && ch != "" {
@@ -779,22 +786,22 @@ func resolveDMKeyOverMaps(maps []map[string]string, platform string, isLive bool
 	return "", ""
 }
 
-func resolveTradeAlertKeyOverMaps(overrides, channels []map[string]string, platform, stratType string, isLive bool) (string, string) {
+func resolveTradeAlertKeyOverMaps(overrides, channels []map[string]string, platform, stratType string, isLive bool, source string) (string, string) {
+	modeKeys := []string{platform + "-live"}
+	if !isLive {
+		modeKeys = paperChannelKeys(platform, source)
+	}
 	for _, m := range overrides {
 		if len(m) == 0 {
 			continue
 		}
-		modeKey := platform + "-live"
-		if !isLive {
-			modeKey = platform + "-paper"
-		}
-		for _, key := range []string{modeKey, platform, stratType} {
+		for _, key := range append(append([]string{}, modeKeys...), platform, stratType) {
 			if ch, ok := m[key]; ok && ch != "" {
 				return key, ch
 			}
 		}
 	}
-	return resolveChannelKeyOverMaps(channels, platform, stratType, isLive)
+	return resolveChannelKeyOverMaps(channels, platform, stratType, isLive, source)
 }
 
 var scopeRiskInspectFields = []struct {
@@ -810,24 +817,39 @@ var scopeRiskInspectFields = []struct {
 	{"max_asset_concentration_pct", func(r *PortfolioRiskConfig) float64 { return r.MaxAssetConcentrationPct }},
 }
 
-func scopeRiskInspectJSON(cfg *Config, scope PortfolioScope) interface{} {
-	merged := scopeRiskConfig(cfg, scope)
+func scopeRiskInspectJSON(cfg *Config, part RiskPartition) interface{} {
+	merged := partitionRiskConfig(cfg, part)
 	if merged == nil {
 		return nil
 	}
-	out := make(map[string]interface{}, len(scopeRiskInspectFields)+1)
+	out := make(map[string]interface{}, len(scopeRiskInspectFields)+2)
 	for _, f := range scopeRiskInspectFields {
 		out[f.Key] = f.Get(merged)
 	}
+	// A zero in the innermost override that names this partition inherits the
+	// layer above; the handoff proof compares this list per source.
 	inherits := []string{}
-	if scope == ScopePaper && cfg.PortfolioRisk.Paper != nil {
-		for _, f := range scopeRiskInspectFields {
-			if f.Get(cfg.PortfolioRisk.Paper) == 0 && f.Get(cfg.PortfolioRisk) != 0 {
-				inherits = append(inherits, f.Key)
+	if part.Scope == ScopePaper {
+		override := cfg.PortfolioRisk.Paper
+		above := cfg.PortfolioRisk
+		if part.Source != "" {
+			if src, ok := cfg.paperSource(part.Source); ok && src.PortfolioRisk != nil {
+				override = src.PortfolioRisk
+				above = partitionRiskConfig(cfg, defaultPaperPartition)
+			}
+		}
+		if override != nil && above != nil {
+			for _, f := range scopeRiskInspectFields {
+				if f.Get(override) == 0 && f.Get(above) != 0 {
+					inherits = append(inherits, f.Key)
+				}
 			}
 		}
 	}
 	out["zero_override_inherits"] = inherits
+	if part.Source != "" {
+		out["paper_source"] = part.Source
+	}
 	return out
 }
 

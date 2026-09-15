@@ -400,6 +400,7 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 	}
 	if server != nil {
 		server.UpdateStrategies(cfg.Strategies)
+		server.UpdatePaperSources(cfg.PaperSources)
 		server.SetConfigContext(server.configPath, cfg)
 	}
 
@@ -433,6 +434,7 @@ func validateHotReloadCompatible(cfg, next *Config) error {
 	if cfg.PaperDBFile != next.PaperDBFile {
 		errs = append(errs, fmt.Sprintf("paper_db_file changed (%q -> %q; restart required)", cfg.PaperDBFile, next.PaperDBFile))
 	}
+	errs = append(errs, paperSourceReloadErrors(cfg, next)...)
 	errs = append(errs, storageIdentityReloadErrors(cfg, next)...)
 	if cfg.marketFeedMode() != next.marketFeedMode() {
 		errs = append(errs, fmt.Sprintf("market_feed changed (%q -> %q; restart required)", cfg.marketFeedMode(), next.marketFeedMode()))
@@ -479,6 +481,7 @@ func validateHotReloadCompatible(cfg, next *Config) error {
 			portfolioRiskMaxNotional(portfolioRiskPaperOverride(cfg.PortfolioRisk)),
 			portfolioRiskMaxNotional(portfolioRiskPaperOverride(next.PortfolioRisk))))
 	}
+	errs = append(errs, paperSourceMaxNotionalReloadErrors(cfg, next)...)
 	if cfg.Discord.Enabled != next.Discord.Enabled {
 		errs = append(errs, "discord.enabled changed (restart required)")
 	}
@@ -1120,4 +1123,91 @@ func schedulerTickSeconds(cfg *Config) int {
 		tickSeconds = 60
 	}
 	return tickSeconds
+}
+
+// paperSourceReloadErrors blocks every change that re-binds a file or moves a
+// book between partitions at runtime: the scheduler never rebinds a state file
+// while it is running.
+func paperSourceReloadErrors(cfg, next *Config) []string {
+	if cfg == nil || next == nil {
+		return nil
+	}
+	var errs []string
+	before := make(map[string]string, len(cfg.PaperSources))
+	for _, src := range cfg.PaperSources {
+		before[src.ID] = src.DBFile
+	}
+	after := make(map[string]string, len(next.PaperSources))
+	for _, src := range next.PaperSources {
+		after[src.ID] = src.DBFile
+	}
+	for _, id := range sortedConfigKeys(before, after) {
+		prev, hadPrev := before[id]
+		cur, hasCur := after[id]
+		switch {
+		case hadPrev && !hasCur:
+			errs = append(errs, fmt.Sprintf("paper_sources[%s] removed (restart required)", id))
+		case !hadPrev && hasCur:
+			errs = append(errs, fmt.Sprintf("paper_sources[%s] added (restart required)", id))
+		case prev != cur:
+			errs = append(errs, fmt.Sprintf("paper_sources[%s].db_file changed (%q -> %q; restart required)", id, prev, cur))
+		}
+	}
+	prevSource := make(map[string]string, len(cfg.Strategies))
+	for _, sc := range cfg.Strategies {
+		if sc.ID != "" {
+			prevSource[sc.ID] = sc.PaperSource
+		}
+	}
+	for _, sc := range next.Strategies {
+		if sc.ID == "" {
+			continue
+		}
+		was, ok := prevSource[sc.ID]
+		if !ok || was == sc.PaperSource {
+			continue
+		}
+		errs = append(errs, fmt.Sprintf("strategy[%s]: paper_source changed (%q -> %q; restart required)", sc.ID, was, sc.PaperSource))
+	}
+	return errs
+}
+
+// paperSourceMaxNotionalReloadErrors extends the existing notional-cap restart
+// rule to each source override.
+func paperSourceMaxNotionalReloadErrors(cfg, next *Config) []string {
+	if cfg == nil || next == nil {
+		return nil
+	}
+	before := make(map[string]float64, len(cfg.PaperSources))
+	for _, src := range cfg.PaperSources {
+		before[src.ID] = portfolioRiskMaxNotional(src.PortfolioRisk)
+	}
+	after := make(map[string]float64, len(next.PaperSources))
+	for _, src := range next.PaperSources {
+		after[src.ID] = portfolioRiskMaxNotional(src.PortfolioRisk)
+	}
+	var errs []string
+	for _, id := range sortedConfigKeys(before, after) {
+		if before[id] == after[id] {
+			continue
+		}
+		errs = append(errs, fmt.Sprintf("paper_sources[%s].portfolio_risk.max_notional_usd changed (%.2f -> %.2f; restart required)", id, before[id], after[id]))
+	}
+	return errs
+}
+
+func sortedConfigKeys[V any](a, b map[string]V) []string {
+	seen := make(map[string]bool, len(a)+len(b))
+	for k := range a {
+		seen[k] = true
+	}
+	for k := range b {
+		seen[k] = true
+	}
+	out := make([]string, 0, len(seen))
+	for k := range seen {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

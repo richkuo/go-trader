@@ -76,13 +76,13 @@ func evaluateExposureCap(pr *PortfolioRiskConfig, states map[string]*StrategySta
 	return st
 }
 
-func manualExposureCapStatus(cfg *Config, state *AppState, scope PortfolioScope) ExposureCapStatus {
+func manualExposureCapStatus(cfg *Config, state *AppState, part RiskPartition) ExposureCapStatus {
 	if cfg == nil || state == nil {
 		return ExposureCapStatus{}
 	}
-	return exposureCapStatusForSubset(scopeRiskConfig(cfg, scope),
-		filterStatesByScope(state.Strategies, cfg.Strategies, scope),
-		strategiesInScope(cfg.Strategies, scope))
+	return exposureCapStatusForSubset(partitionRiskConfig(cfg, part),
+		filterStatesByPartition(state.Strategies, cfg.Strategies, part),
+		strategiesInPartition(cfg.Strategies, part))
 }
 
 func exposureCapStatusForSubset(pr *PortfolioRiskConfig, states map[string]*StrategyState, cfgs []StrategyConfig) ExposureCapStatus {
@@ -264,7 +264,7 @@ type exposureCapAlertState struct {
 	PVBasisMissAlerted bool
 }
 
-var exposureCapAlerts = map[PortfolioScope]exposureCapAlertState{}
+var exposureCapAlerts = map[RiskPartition]exposureCapAlertState{}
 
 func exposureCapAlertMessage(st ExposureCapStatus, prev exposureCapAlertState, now time.Time) (string, exposureCapAlertState) {
 	next := exposureCapAlertState{
@@ -317,45 +317,55 @@ func exposureCapStartupSummaryLine(pr *PortfolioRiskConfig) string {
 	return fmt.Sprintf("[config] portfolio: exposure cap %s (blocks capped-direction opens only; closes and SL/TP management unaffected)", strings.Join(parts, " "))
 }
 
-func exposureCapPaperStartupSummaryLine(cfg *Config) string {
-	if cfg == nil || cfg.PortfolioRisk == nil || cfg.PortfolioRisk.Paper == nil {
-		return ""
+// exposureCapPaperStartupSummaryLines prints one line per paper partition whose
+// effective caps differ from the root.
+func exposureCapPaperStartupSummaryLines(cfg *Config) []string {
+	if cfg == nil || cfg.PortfolioRisk == nil {
+		return nil
 	}
-	paper := scopeRiskConfig(cfg, ScopePaper)
-	if paper == nil {
-		return ""
+	var out []string
+	for _, p := range activePartitions(cfg.Strategies) {
+		if p.Scope != ScopePaper {
+			continue
+		}
+		pr := partitionRiskConfig(cfg, p)
+		if pr == nil {
+			continue
+		}
+		if pr.MaxSameDirectionNotionalUSD == cfg.PortfolioRisk.MaxSameDirectionNotionalUSD &&
+			pr.MaxAssetConcentrationPct == cfg.PortfolioRisk.MaxAssetConcentrationPct {
+			continue
+		}
+		line := exposureCapStartupSummaryLine(pr)
+		if line == "" {
+			continue
+		}
+		out = append(out, strings.Replace(line, "[config] portfolio:",
+			fmt.Sprintf("[config] portfolio (%s scope):", partitionLabel(p)), 1))
 	}
-	if paper.MaxSameDirectionNotionalUSD == cfg.PortfolioRisk.MaxSameDirectionNotionalUSD &&
-		paper.MaxAssetConcentrationPct == cfg.PortfolioRisk.MaxAssetConcentrationPct {
-		return ""
-	}
-	line := exposureCapStartupSummaryLine(paper)
-	if line == "" {
-		return ""
-	}
-	return strings.Replace(line, "[config] portfolio:", "[config] portfolio (paper scope):", 1)
+	return out
 }
 
 func exposureCapStatusNote(cfg *Config, state *AppState, prices map[string]float64) string {
 	if cfg == nil || state == nil {
 		return ""
 	}
-	scopes := activeScopes(cfg.Strategies)
+	parts := activePartitions(cfg.Strategies)
 	var note string
-	for _, scope := range scopes {
-		pr := scopeRiskConfig(cfg, scope)
+	for _, part := range parts {
+		pr := partitionRiskConfig(cfg, part)
 		if !exposureCapConfigured(pr) {
 			continue
 		}
-		scoped := filterStatesByScope(state.Strategies, cfg.Strategies, scope)
+		scoped := filterStatesByPartition(state.Strategies, cfg.Strategies, part)
 		var pv float64
 		for _, ss := range scoped {
 			pv += displayStrategyValue(ss, prices)
 		}
-		st := evaluateExposureCap(pr, scoped, strategiesInScope(cfg.Strategies, scope), prices, pv)
+		st := evaluateExposureCap(pr, scoped, strategiesInPartition(cfg.Strategies, part), prices, pv)
 		prefix := ""
-		if len(scopes) > 1 {
-			prefix = "[" + scopeLabel(scope) + "] "
+		if len(parts) > 1 {
+			prefix = "[" + partitionLabel(part) + "] "
 		}
 		if st.CapUSD > 0 {
 			if st.LongBlocked || st.ShortBlocked {

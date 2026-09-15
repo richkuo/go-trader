@@ -589,7 +589,7 @@ func (st *StateStore) liveOnlyReadFileForStrategy(strategyID string) (*StateDB, 
 	if !ok {
 		return nil, false, fmt.Errorf("strategy %q has no storage owner", strategyID)
 	}
-	return db, ident.Scope != ScopeLive, nil
+	return db, !ident.Partition.IsLive(), nil
 }
 
 // liveOwnedFileForStrategy refuses a live-only write that names a paper-scope
@@ -607,7 +607,7 @@ func (st *StateStore) liveOwnedFileForStrategy(strategyID string) (*StateDB, err
 	if !ok {
 		return nil, fmt.Errorf("strategy %q has no storage owner", strategyID)
 	}
-	if ident.Scope != ScopeLive {
+	if !ident.Partition.IsLive() {
 		return nil, fmt.Errorf("strategy %q is in the paper scope; resting limit orders are live-only", strategyID)
 	}
 	return db, nil

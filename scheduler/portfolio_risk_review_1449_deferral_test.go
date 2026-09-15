@@ -148,7 +148,7 @@ func TestUntrustedEquity_DegenerateLimitKeepsExistingMeaning(t *testing.T) {
 func TestPortfolioWarningMessage_NamesTheDeferredLatch(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{},
-		PortfolioRisk: map[PortfolioScope]*PortfolioRiskState{ScopeLive: {
+		PortfolioRisk: map[RiskPartition]*PortfolioRiskState{livePartition: {
 			PeakValue:               10000,
 			CurrentDrawdownPct:      40,
 			UntrustedOverLimitSince: time.Now().UTC().Add(-time.Minute),

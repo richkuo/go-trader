@@ -320,14 +320,14 @@ const maxKillSwitchEvents = 50
 const untrustedEquityLatchDeferral = 15 * time.Minute
 
 type KillSwitchEvent struct {
-	Scope          PortfolioScope `json:"scope,omitempty"`
-	Timestamp      time.Time      `json:"timestamp"`
-	Type           string         `json:"type"`
-	Source         string         `json:"source,omitempty"`
-	DrawdownPct    float64        `json:"drawdown_pct"`
-	PortfolioValue float64        `json:"portfolio_value"`
-	PeakValue      float64        `json:"peak_value"`
-	Details        string         `json:"details"`
+	Partition      RiskPartition `json:"scope,omitempty"`
+	Timestamp      time.Time     `json:"timestamp"`
+	Type           string        `json:"type"`
+	Source         string        `json:"source,omitempty"`
+	DrawdownPct    float64       `json:"drawdown_pct"`
+	PortfolioValue float64       `json:"portfolio_value"`
+	PeakValue      float64       `json:"peak_value"`
+	Details        string        `json:"details"`
 }
 
 type PortfolioRiskState struct {
@@ -393,7 +393,7 @@ func ClearLatchedKillSwitchSharedWallet(state *AppState, strategies []StrategyCo
 	if state == nil {
 		return false
 	}
-	prs := state.scopeRiskIfPresent(ScopeLive)
+	prs := state.partitionRiskIfPresent(livePartition)
 	if prs == nil || !prs.KillSwitchActive {
 		return false
 	}
@@ -1409,12 +1409,12 @@ func recordPositionTradeResult(s *StrategyState, pos *Position, pnl float64) {
 	RecordTradeResult(&s.RiskState, pnl)
 }
 
-func forceClosePaperScopePositions(state *AppState, cfg *Config, prices map[string]float64) []string {
+func forceClosePaperScopePositions(state *AppState, cfg *Config, part RiskPartition, prices map[string]float64) []string {
 	if state == nil || cfg == nil {
 		return nil
 	}
 	var closed []string
-	for _, sc := range strategiesInScope(cfg.Strategies, ScopePaper) {
+	for _, sc := range strategiesInPartition(cfg.Strategies, part) {
 		s, ok := state.Strategies[sc.ID]
 		if !ok || s == nil {
 			continue
@@ -1461,14 +1461,16 @@ type paperKillSwitchOutcome struct {
 	Message      string
 }
 
+// applyPaperKillSwitchCycle runs once per paper partition, on that partition's
+// own strategies: a latch in one folded source never closes another's books.
 func applyPaperKillSwitchCycle(state *AppState, cfg *Config, prices map[string]float64, paperSR *scopeCycleRisk, hasOwner bool) paperKillSwitchOutcome {
 	var out paperKillSwitchOutcome
 	if state == nil || cfg == nil || paperSR == nil || !paperSR.KillSwitchFired {
 		return out
 	}
-	prs := state.scopeRisk(ScopePaper)
+	prs := state.partitionRisk(paperSR.Partition)
 	if !prs.KillSwitchCloseApplied {
-		out.Closed = forceClosePaperScopePositions(state, cfg, prices)
+		out.Closed = forceClosePaperScopePositions(state, cfg, paperSR.Partition, prices)
 		prs.KillSwitchCloseApplied = true
 		out.CloseApplied = true
 		out.Message = formatPaperKillSwitchMessage(paperSR.Reason, out.Closed)

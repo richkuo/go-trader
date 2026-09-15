@@ -208,13 +208,13 @@ func TestMultiNotifier_ResolveChannelKey(t *testing.T) {
 		},
 	)
 
-	if key := mn.resolveChannelKey("hyperliquid", "perps", true); key != "hyperliquid" {
+	if key := mn.resolveChannelKey("hyperliquid", "perps", true, ""); key != "hyperliquid" {
 		t.Errorf("expected 'hyperliquid', got %q", key)
 	}
-	if key := mn.resolveChannelKey("binanceus", "spot", true); key != "spot" {
+	if key := mn.resolveChannelKey("binanceus", "spot", true, ""); key != "spot" {
 		t.Errorf("expected 'spot', got %q", key)
 	}
-	if key := mn.resolveChannelKey("unknown", "unknown", true); key != "" {
+	if key := mn.resolveChannelKey("unknown", "unknown", true, ""); key != "" {
 		t.Errorf("expected '', got %q", key)
 	}
 }
@@ -555,7 +555,7 @@ func TestMultiNotifier_ReloadConfigConcurrentRoutingReads(t *testing.T) {
 			mn.SendToAllChannels("broadcast")
 			mn.SendOwnerDM("owner")
 			_ = mn.HasChannel("hyperliquid", "perps")
-			_ = mn.resolveChannelKey("hyperliquid", "perps", true)
+			_ = mn.resolveChannelKey("hyperliquid", "perps", true, "")
 			_ = mn.AllChannelKeys()
 			sendTradeAlerts(sc, stratState, 1, &stateMu, mn, nil)
 		}
@@ -567,7 +567,7 @@ func TestMultiNotifier_ReloadConfigConcurrentRoutingReads(t *testing.T) {
 func TestResolveTradeAlertChannel_OverrideHit(t *testing.T) {
 	override := map[string]string{"hyperliquid": "override-ch"}
 	channels := map[string]string{"hyperliquid": "summary-ch"}
-	got := resolveTradeAlertChannel(override, channels, "hyperliquid", "perps", true)
+	got := resolveTradeAlertChannel(override, channels, "hyperliquid", "perps", true, "")
 	if got != "override-ch" {
 		t.Errorf("expected override-ch, got %q", got)
 	}
@@ -576,7 +576,7 @@ func TestResolveTradeAlertChannel_OverrideHit(t *testing.T) {
 func TestResolveTradeAlertChannel_OverrideMiss_FallsThrough(t *testing.T) {
 	override := map[string]string{"deribit": "override-ch"}
 	channels := map[string]string{"hyperliquid": "summary-ch"}
-	got := resolveTradeAlertChannel(override, channels, "hyperliquid", "perps", true)
+	got := resolveTradeAlertChannel(override, channels, "hyperliquid", "perps", true, "")
 	if got != "summary-ch" {
 		t.Errorf("expected fallback summary-ch, got %q", got)
 	}
@@ -590,10 +590,10 @@ func TestResolveTradeAlertChannel_PaperLiveOverlay(t *testing.T) {
 	}
 	channels := map[string]string{"hyperliquid": "summary-ch"}
 
-	if got := resolveTradeAlertChannel(override, channels, "hyperliquid", "perps", false); got != "paper-override" {
+	if got := resolveTradeAlertChannel(override, channels, "hyperliquid", "perps", false, ""); got != "paper-override" {
 		t.Errorf("paper: expected paper-override, got %q", got)
 	}
-	if got := resolveTradeAlertChannel(override, channels, "hyperliquid", "perps", true); got != "live-override" {
+	if got := resolveTradeAlertChannel(override, channels, "hyperliquid", "perps", true, ""); got != "live-override" {
 		t.Errorf("live: expected live-override, got %q", got)
 	}
 }
@@ -605,7 +605,7 @@ func TestTradeAlertRoutes_OverrideDoesNotAffectSummaries(t *testing.T) {
 		tradeAlertChannels: map[string]string{"hyperliquid": "trade-ch"},
 	})
 
-	key := mn.resolveChannelKey("hyperliquid", "perps", true)
+	key := mn.resolveChannelKey("hyperliquid", "perps", true, "")
 	if key != "hyperliquid" {
 		t.Errorf("summary key: expected hyperliquid, got %q", key)
 	}
@@ -614,7 +614,7 @@ func TestTradeAlertRoutes_OverrideDoesNotAffectSummaries(t *testing.T) {
 		t.Errorf("summary channel: expected summary-ch, got %q", summaryChID)
 	}
 
-	routes := mn.tradeAlertRoutes("hyperliquid", "perps", true)
+	routes := mn.tradeAlertRoutes("hyperliquid", "perps", true, "")
 	if len(routes) != 1 {
 		t.Fatalf("expected 1 route, got %d", len(routes))
 	}
@@ -638,7 +638,7 @@ func TestTradeAlertRoutes_LiveChanConsultsOverride(t *testing.T) {
 			"hyperliquid-live": "trade-live-ch",
 		},
 	})
-	routes := mn.tradeAlertRoutes("hyperliquid", "perps", true)
+	routes := mn.tradeAlertRoutes("hyperliquid", "perps", true, "")
 	if len(routes) != 1 {
 		t.Fatalf("expected 1 route, got %d", len(routes))
 	}
@@ -662,7 +662,7 @@ func TestTradeAlertRoutes_LiveChanFallbackWhenNoLiveOverride(t *testing.T) {
 			"hyperliquid": "trade-ch",
 		},
 	})
-	routes := mn.tradeAlertRoutes("hyperliquid", "perps", true)
+	routes := mn.tradeAlertRoutes("hyperliquid", "perps", true, "")
 	if len(routes) != 1 {
 		t.Fatalf("expected 1 route, got %d", len(routes))
 	}

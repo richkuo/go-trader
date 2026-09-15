@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -16,13 +17,22 @@ const (
 	storageRolePaper   storageRole = "paper"
 )
 
-var storageRoleOrder = []storageRole{storageRolePrimary, storageRolePaper}
+// paperSourceRole names the physical file of one folded paper deployment. The
+// separator is outside the source id pattern, so a source role can never spell
+// the primary or the default paper role.
+func paperSourceRole(id string) storageRole {
+	return storageRole(string(ScopePaper) + paperSourceSeparator + id)
+}
 
 type storageFileSpec struct {
 	Role      storageRole
 	Path      string
 	Canonical string
 	InMemory  bool
+	// Partitions lists every risk partition this physical file owns. One file
+	// owns at most one partition per scope, so the stored scope column stays
+	// 'live' or 'paper' exactly as a standalone deployment wrote it.
+	Partitions []RiskPartition
 }
 
 type storageLayout struct {
@@ -47,21 +57,64 @@ func (l storageLayout) roles() []storageRole {
 	return out
 }
 
-func (l storageLayout) roleForScope(scope PortfolioScope) storageRole {
-	if l.Split && scope == ScopePaper {
-		return storageRolePaper
+// roleForPartition resolves the file that owns one partition. An unowned
+// partition falls back to the primary, which is the single-file behavior.
+func (l storageLayout) roleForPartition(p RiskPartition) storageRole {
+	for _, f := range l.Files {
+		for _, owned := range f.Partitions {
+			if owned == p {
+				return f.Role
+			}
+		}
 	}
 	return storageRolePrimary
 }
 
+func (l storageLayout) partitionsForRole(role storageRole) []RiskPartition {
+	if spec, ok := l.spec(role); ok && len(spec.Partitions) > 0 {
+		return spec.Partitions
+	}
+	if !l.Split && role == storageRolePrimary {
+		return []RiskPartition{livePartition, defaultPaperPartition}
+	}
+	return nil
+}
+
+// scopesForRole is the per-file SQL filter: the distinct execution modes the
+// file's partitions cover, in the stable order live then paper.
 func (l storageLayout) scopesForRole(role storageRole) []PortfolioScope {
-	if !l.Split {
+	parts := l.partitionsForRole(role)
+	if len(parts) == 0 {
 		return []PortfolioScope{ScopeLive, ScopePaper}
 	}
-	if role == storageRolePaper {
-		return []PortfolioScope{ScopePaper}
+	hasLive := false
+	hasPaper := false
+	for _, p := range parts {
+		if p.Scope == ScopeLive {
+			hasLive = true
+		} else if p.Scope == ScopePaper {
+			hasPaper = true
+		}
 	}
-	return []PortfolioScope{ScopeLive}
+	out := make([]PortfolioScope, 0, 2)
+	if hasLive {
+		out = append(out, ScopeLive)
+	}
+	if hasPaper {
+		out = append(out, ScopePaper)
+	}
+	return out
+}
+
+// partitionForRoleScope maps one loaded row back onto its partition. A file
+// owns at most one partition per scope, so the answer is unambiguous.
+func (l storageLayout) partitionForRoleScope(role storageRole, scope PortfolioScope) (RiskPartition, bool) {
+	for _, p := range l.partitionsForRole(role) {
+		if p.Scope == scope {
+			return p, true
+		}
+	}
+	return unassignedPartition, false
 }
 
 func (l storageLayout) ownsAllScopes(role storageRole) bool {
@@ -73,8 +126,11 @@ func (l storageLayout) describe() string {
 	if !l.Split {
 		return fmt.Sprintf("single-file (primary=%s)", primary.Path)
 	}
-	paper, _ := l.spec(storageRolePaper)
-	return fmt.Sprintf("split (primary=%s, paper=%s)", primary.Path, paper.Path)
+	parts := make([]string, 0, len(l.Files))
+	for _, f := range l.Files {
+		parts = append(parts, fmt.Sprintf("%s=%s", f.Role, f.Path))
+	}
+	return fmt.Sprintf("split (%s)", strings.Join(parts, ", "))
 }
 
 func canonicalStoragePath(path string) (string, error) {
@@ -136,8 +192,8 @@ func validateStorageParentDir(spec storageFileSpec) error {
 	}
 }
 
-func newStorageFileSpec(role storageRole, path string) (storageFileSpec, error) {
-	spec := storageFileSpec{Role: role, Path: path, InMemory: isInMemoryDBPath(path)}
+func newStorageFileSpec(role storageRole, path string, partitions ...RiskPartition) (storageFileSpec, error) {
+	spec := storageFileSpec{Role: role, Path: path, InMemory: isInMemoryDBPath(path), Partitions: partitions}
 	if spec.InMemory {
 		spec.Canonical = path
 		return spec, nil
@@ -185,34 +241,70 @@ func resolveStorageLayout(cfg *Config) (storageLayout, error) {
 	if primaryPath == "" {
 		return storageLayout{}, fmt.Errorf("db_file is empty")
 	}
-	primary, err := newStorageFileSpec(storageRolePrimary, primaryPath)
-	if err != nil {
-		return storageLayout{}, err
-	}
 	paperPath := strings.TrimSpace(cfg.PaperDBFile)
+	primaryPartitions := []RiskPartition{livePartition}
 	if paperPath == "" {
-		return storageLayout{Files: []storageFileSpec{primary}}, nil
+		primaryPartitions = append(primaryPartitions, defaultPaperPartition)
 	}
-	paper, err := newStorageFileSpec(storageRolePaper, paperPath)
+	primary, err := newStorageFileSpec(storageRolePrimary, primaryPath, primaryPartitions...)
 	if err != nil {
 		return storageLayout{}, err
 	}
-	same, err := sameStorageFile(primary, paper)
-	if err != nil {
-		return storageLayout{}, err
+	files := []storageFileSpec{primary}
+	if paperPath != "" {
+		paper, err := newStorageFileSpec(storageRolePaper, paperPath, defaultPaperPartition)
+		if err != nil {
+			return storageLayout{}, err
+		}
+		files = append(files, paper)
 	}
-	if same {
-		return storageLayout{}, fmt.Errorf("paper_db_file %q and db_file %q resolve to the same physical file (%s); the two scopes need distinct files",
-			paper.Path, primary.Path, primary.Canonical)
+	for _, src := range sortedPaperSources(cfg.PaperSources) {
+		path := strings.TrimSpace(src.DBFile)
+		if path == "" {
+			return storageLayout{}, fmt.Errorf("paper_sources[%s].db_file is empty", src.ID)
+		}
+		spec, err := newStorageFileSpec(paperSourceRole(src.ID), path, paperSourcePartition(src.ID))
+		if err != nil {
+			return storageLayout{}, err
+		}
+		files = append(files, spec)
 	}
-	return storageLayout{Split: true, Files: []storageFileSpec{primary, paper}}, nil
+	// Every pair must be a distinct physical file: two partitions sharing one
+	// file would give one scope column two owners and silently merge books.
+	for i := 0; i < len(files); i++ {
+		for j := i + 1; j < len(files); j++ {
+			same, err := sameStorageFile(files[i], files[j])
+			if err != nil {
+				return storageLayout{}, err
+			}
+			if same {
+				return storageLayout{}, fmt.Errorf("%s state file %q and %s state file %q resolve to the same physical file (%s); every partition needs its own file",
+					files[j].Role, files[j].Path, files[i].Role, files[i].Path, files[i].Canonical)
+			}
+		}
+	}
+	if len(files) == 1 {
+		return storageLayout{Files: files}, nil
+	}
+	return storageLayout{Split: true, Files: files}, nil
 }
 
-func storageRoleForScopeInConfig(cfg *Config, scope PortfolioScope) storageRole {
+func sortedPaperSources(sources []PaperSourceConfig) []PaperSourceConfig {
+	out := append([]PaperSourceConfig(nil), sources...)
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+// storageRoleForPartitionInConfig answers from config alone, before any file is
+// resolved, so identity validation runs without touching the filesystem.
+func storageRoleForPartitionInConfig(cfg *Config, p RiskPartition) storageRole {
+	if p.Source != "" {
+		return paperSourceRole(p.Source)
+	}
 	if cfg == nil || strings.TrimSpace(cfg.PaperDBFile) == "" {
 		return storageRolePrimary
 	}
-	if scope == ScopePaper {
+	if p.Scope == ScopePaper {
 		return storageRolePaper
 	}
 	return storageRolePrimary
@@ -244,7 +336,7 @@ func validateStorageIdentityConfig(cfg *Config) []string {
 		if storageID == "" {
 			continue
 		}
-		role := storageRoleForScopeInConfig(cfg, portfolioScopeFor(sc))
+		role := storageRoleForPartitionInConfig(cfg, partitionFor(sc))
 		key := storageKey{Role: role, ID: storageID}
 		if prev, ok := seen[key]; ok {
 			errs = append(errs, fmt.Sprintf("%s: storage_strategy_id %q already used by strategy %q in the %s state file; storage identity must be unique per file",

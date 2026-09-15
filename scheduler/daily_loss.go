@@ -83,7 +83,7 @@ func dailyLossAlertDue(tripped bool, lastAlertDate, today string) bool {
 	return tripped && lastAlertDate != today
 }
 
-var dailyLossLastAlertDate = map[PortfolioScope]string{}
+var dailyLossLastAlertDate = map[RiskPartition]string{}
 
 func dailyLossStartupSummaryLine(pr *PortfolioRiskConfig) string {
 	if !dailyLossLimitConfigured(pr) {
@@ -102,39 +102,50 @@ func dailyLossStartupSummaryLine(pr *PortfolioRiskConfig) string {
 	return fmt.Sprintf("[config] portfolio: daily_max_loss %s (pre-fee realized; blocks new entries for the rest of the UTC day when tripped)", parts)
 }
 
-func dailyLossPaperStartupSummaryLine(cfg *Config) string {
-	if cfg == nil || cfg.PortfolioRisk == nil || cfg.PortfolioRisk.Paper == nil {
-		return ""
+// dailyLossPaperStartupSummaryLines prints one line per paper partition whose
+// effective limits differ from the root, so a folded source's own limits are
+// visible at boot instead of hidden behind the default paper line.
+func dailyLossPaperStartupSummaryLines(cfg *Config) []string {
+	if cfg == nil || cfg.PortfolioRisk == nil {
+		return nil
 	}
-	paper := scopeRiskConfig(cfg, ScopePaper)
-	if paper == nil {
-		return ""
+	var out []string
+	for _, p := range activePartitions(cfg.Strategies) {
+		if p.Scope != ScopePaper {
+			continue
+		}
+		pr := partitionRiskConfig(cfg, p)
+		if pr == nil {
+			continue
+		}
+		if pr.DailyMaxLossUSD == cfg.PortfolioRisk.DailyMaxLossUSD && pr.DailyMaxLossPct == cfg.PortfolioRisk.DailyMaxLossPct {
+			continue
+		}
+		line := dailyLossStartupSummaryLine(pr)
+		if line == "" {
+			continue
+		}
+		out = append(out, strings.Replace(line, "[config] portfolio:",
+			fmt.Sprintf("[config] portfolio (%s scope):", partitionLabel(p)), 1))
 	}
-	if paper.DailyMaxLossUSD == cfg.PortfolioRisk.DailyMaxLossUSD && paper.DailyMaxLossPct == cfg.PortfolioRisk.DailyMaxLossPct {
-		return ""
-	}
-	line := dailyLossStartupSummaryLine(paper)
-	if line == "" {
-		return ""
-	}
-	return strings.Replace(line, "[config] portfolio:", "[config] portfolio (paper scope):", 1)
+	return out
 }
 
 func dailyLossStatusNote(cfg *Config, states map[string]*StrategyState, now time.Time) string {
 	if cfg == nil {
 		return ""
 	}
-	scopes := activeScopes(cfg.Strategies)
+	parts := activePartitions(cfg.Strategies)
 	var note string
-	for _, scope := range scopes {
-		pr := scopeRiskConfig(cfg, scope)
+	for _, part := range parts {
+		pr := partitionRiskConfig(cfg, part)
 		if !dailyLossLimitConfigured(pr) {
 			continue
 		}
-		st := evaluateDailyLossLimit(pr, filterStatesByScope(states, cfg.Strategies, scope), strategiesInScope(cfg.Strategies, scope), now)
+		st := evaluateDailyLossLimit(pr, filterStatesByPartition(states, cfg.Strategies, part), strategiesInPartition(cfg.Strategies, part), now)
 		prefix := ""
-		if len(scopes) > 1 {
-			prefix = "[" + scopeLabel(scope) + "] "
+		if len(parts) > 1 {
+			prefix = "[" + partitionLabel(part) + "] "
 		}
 		switch {
 		case st.Tripped:
@@ -151,7 +162,7 @@ func dailyLossStatusNote(cfg *Config, states map[string]*StrategyState, now time
 
 const dailyLossPctBasisMissWarning = "⚠️ daily loss limit: daily_max_loss_pct is configured but no allocated strategy has initial_capital > 0 — the pct arm CANNOT evaluate and enforces nothing (keep an allocated baseline or use daily_max_loss_usd; pool members cannot set initial_capital)"
 
-var dailyLossPctBasisMissAlertDate = map[PortfolioScope]string{}
+var dailyLossPctBasisMissAlertDate = map[RiskPartition]string{}
 
 func formatDailyLossPctBasisMissDM(st DailyLossLimitStatus, now time.Time) string {
 	usdNote := "No other arm is configured — the daily loss limit is fully inert."

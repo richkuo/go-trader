@@ -285,6 +285,12 @@ try:
     q = cfg.get("paper_db_file") or ""
     if isinstance(q, str) and q.strip():
         out.append(q.strip())
+    for src in cfg.get("paper_sources") or []:
+        if not isinstance(src, dict):
+            continue
+        s = src.get("db_file") or ""
+        if isinstance(s, str) and s.strip():
+            out.append(s.strip())
     print("\n".join(out))
 except Exception:
     pass

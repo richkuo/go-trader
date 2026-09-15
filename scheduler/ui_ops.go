@@ -271,12 +271,12 @@ func (ss *StatusServer) handleAPICorrelation(w http.ResponseWriter, r *http.Requ
 	cfgStrategies := append([]StrategyConfig(nil), ss.strategies...)
 	ss.strategiesMu.RUnlock()
 	byScope := make(map[string]*CorrelationSnapshot)
-	for _, scope := range activeScopes(cfgStrategies) {
-		if snap := ss.state.scopeCorrelation(scope); snap != nil {
-			byScope[string(scope)] = snap
+	for _, part := range activePartitions(cfgStrategies) {
+		if snap := ss.state.partitionCorrelation(part); snap != nil {
+			byScope[part.String()] = snap
 		}
 	}
-	legacy := ss.state.scopeCorrelation(statusLegacyScope(activeScopes(cfgStrategies)))
+	legacy := ss.state.partitionCorrelation(statusLegacyScope(activePartitions(cfgStrategies)))
 	ss.mu.RUnlock()
 	writeJSON(w, map[string]any{"correlation": legacy, "correlation_by_scope": byScope})
 }

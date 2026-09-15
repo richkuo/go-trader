@@ -88,14 +88,14 @@ func manualSubsetStateView(pr *PortfolioRiskConfig, states map[string]*StrategyS
 	return v
 }
 
-func manualScopeStateView(cfg *Config, state *AppState, scope PortfolioScope, now time.Time) manualStateView {
-	v := manualStateView{KillSwitch: state.scopeLatched(scope)}
+func manualScopeStateView(cfg *Config, state *AppState, part RiskPartition, now time.Time) manualStateView {
+	v := manualStateView{KillSwitch: state.partitionLatched(part)}
 	if cfg == nil {
 		return v
 	}
-	scoped := manualSubsetStateView(scopeRiskConfig(cfg, scope),
-		filterStatesByScope(state.Strategies, cfg.Strategies, scope),
-		strategiesInScope(cfg.Strategies, scope), now)
+	scoped := manualSubsetStateView(partitionRiskConfig(cfg, part),
+		filterStatesByPartition(state.Strategies, cfg.Strategies, part),
+		strategiesInPartition(cfg.Strategies, part), now)
 	scoped.KillSwitch = v.KillSwitch
 	return scoped
 }
@@ -138,17 +138,17 @@ func manualStateViewFromState(cfg *Config, state *AppState, strategyID, symbol s
 func manualStateViewFromStateWithStore(cfg *Config, state *AppState, store *StateStore, strategyID, symbol string) manualStateView {
 	now := time.Now().UTC()
 	var v manualStateView
-	scope, known := scopeOfStrategyID(configStrategyList(cfg), strategyID)
+	part, known := partitionOfStrategyID(configStrategyList(cfg), strategyID)
 	if known {
-		v = manualScopeStateView(cfg, state, scope, now)
-		v.PersistenceHold = store.persistenceHoldsScope(scope)
+		v = manualScopeStateView(cfg, state, part, now)
+		v.PersistenceHold = store.persistenceHoldsPartition(part)
 	} else {
 		v.KillSwitch = state.anyScopeLatched()
 		if cfg != nil {
 			v = mergeManualStateViews(v, manualSubsetStateView(cfg.PortfolioRisk, state.Strategies, cfg.Strategies, now))
-			for _, sc := range activeScopes(cfg.Strategies) {
-				v = mergeManualStateViews(v, manualScopeStateView(cfg, state, sc, now))
-				v.PersistenceHold = v.PersistenceHold || store.persistenceHoldsScope(sc)
+			for _, p := range activePartitions(cfg.Strategies) {
+				v = mergeManualStateViews(v, manualScopeStateView(cfg, state, p, now))
+				v.PersistenceHold = v.PersistenceHold || store.persistenceHoldsPartition(p)
 			}
 		}
 	}
