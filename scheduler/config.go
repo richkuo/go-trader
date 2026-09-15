@@ -2148,6 +2148,8 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 	}
 	validateDMChannelsMap(cfg.Discord.DMChannels, "discord", knownPlatforms, knownPaperSources, &errs)
 	validateDMChannelsMap(cfg.Telegram.DMChannels, "telegram", knownPlatforms, knownPaperSources, &errs)
+	warnPaperSourceDMGaps(cfg, cfg.Discord.DMChannels, "discord")
+	warnPaperSourceDMGaps(cfg, cfg.Telegram.DMChannels, "telegram")
 
 	for k, v := range cfg.SummaryFrequency {
 		if strings.TrimSpace(k) == "" {
@@ -2233,6 +2235,37 @@ func validateDMChannelsMap(m map[string]string, label string, knownPlatforms, kn
 		if source != "" && !knownSources[source] {
 			fmt.Printf("[WARN] %s: dm_channels[%q] references paper source %q with no paper_sources entry — this DM route never fires\n", label, k, source)
 		}
+	}
+}
+
+// warnPaperSourceDMGaps names every sourced strategy that had a
+// "<platform>-paper" DM route before its source existed and now reaches no DM
+// key at all: tradeAlertRoutes reads only the sourced key, with no fallback,
+// so the plain key that used to carry these DMs is never consulted again.
+func warnPaperSourceDMGaps(cfg *Config, m map[string]string, label string) {
+	if cfg == nil || len(m) == 0 {
+		return
+	}
+	gaps := make(map[string]string)
+	for _, sc := range cfg.Strategies {
+		source := partitionFor(sc).Source
+		platform := strings.TrimSpace(sc.Platform)
+		if source == "" || platform == "" {
+			continue
+		}
+		keys := paperChannelKeys(platform, source)
+		if strings.TrimSpace(m[keys[0]]) != "" || strings.TrimSpace(m[keys[1]]) == "" {
+			continue
+		}
+		gaps[keys[0]] = keys[1]
+	}
+	missing := make([]string, 0, len(gaps))
+	for key := range gaps {
+		missing = append(missing, key)
+	}
+	sort.Strings(missing)
+	for _, key := range missing {
+		fmt.Printf("[WARN] %s: no dm_channels[%q]; trade DMs for that paper source are dropped because the send path never falls back to dm_channels[%q] — add the key to restore them\n", label, key, gaps[key])
 	}
 }
 

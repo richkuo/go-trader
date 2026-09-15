@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"errors"
+	"io"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -567,6 +570,224 @@ func TestPaperKillSwitchMessageNamesItsPartition(t *testing.T) {
 				t.Errorf("auto-reset must replace this partition's manual line:\n%s", auto)
 			}
 		})
+	}
+}
+
+// captureStdout collects what a validation warning prints, so a test can
+// assert the operator sees the exact key it must add.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	orig := os.Stdout
+	os.Stdout = w
+	done := make(chan string, 1)
+	go func() {
+		var buf bytes.Buffer
+		_, _ = io.Copy(&buf, r)
+		done <- buf.String()
+	}()
+	fn()
+	w.Close()
+	os.Stdout = orig
+	out := <-done
+	r.Close()
+	return out
+}
+
+// TestPaperSourceDMGapWarning pins the load-time warning for the one config
+// that silently disables a routing destination the send path used before: a
+// declared source keeps its plain "-paper" DM key, which tradeAlertRoutes
+// stops reading the moment the strategy carries a source.
+func TestPaperSourceDMGapWarning(t *testing.T) {
+	sourced := StrategyConfig{ID: "hl-btc", Type: "perps", Platform: "hyperliquid", Symbol: "ETH", Args: []string{"--mode=paper"}, PaperSource: "btc"}
+	cases := []struct {
+		name string
+		dms  map[string]string
+		want string
+	}{
+		{
+			name: "plain paper key alone warns and names the key to add",
+			dms:  map[string]string{"hyperliquid-paper": "dm-paper"},
+			want: `no dm_channels["hyperliquid-paper:btc"]`,
+		},
+		{
+			name: "the source's own key warns nothing",
+			dms:  map[string]string{"hyperliquid-paper": "dm-paper", "hyperliquid-paper:btc": "dm-btc"},
+		},
+		{
+			name: "no dm_channels at all warns nothing",
+		},
+		{
+			name: "an unrelated platform key warns nothing",
+			dms:  map[string]string{"okx-paper": "dm-okx"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{
+				PaperSources: []PaperSourceConfig{{ID: "btc", DBFile: "btc.db"}},
+				Strategies:   []StrategyConfig{sourced},
+				Discord:      DiscordConfig{DMChannels: tc.dms},
+			}
+			got := captureStdout(t, func() { warnPaperSourceDMGaps(cfg, cfg.Discord.DMChannels, "discord") })
+			if tc.want == "" {
+				if strings.Contains(got, "[WARN]") {
+					t.Fatalf("expected no warning, got: %s", got)
+				}
+				return
+			}
+			if !strings.Contains(got, tc.want) {
+				t.Fatalf("warning must name the missing key %q, got: %s", tc.want, got)
+			}
+			if !strings.Contains(got, `dm_channels["hyperliquid-paper"]`) {
+				t.Errorf("warning must name the key that no longer routes, got: %s", got)
+			}
+		})
+	}
+}
+
+// TestPaperSourceRelocationRefusedBeforeAnyWrite pins the data-integrity
+// contract that makes `paper_source` safe to add by hand: a strategy whose
+// books still sit in another owned state file is refused at startup, before
+// LoadStateWithStore and before any save, because the first full save of the
+// old file deletes the row it no longer owns. The refusal comes from
+// inspectStorageOwnership, which scheduler/main.go runs ahead of the load.
+func TestPaperSourceRelocationRefusedBeforeAnyWrite(t *testing.T) {
+	live := StrategyConfig{ID: "hl-live", Type: "perps", Platform: "hyperliquid", Symbol: "ETH", Args: []string{"--mode=live"}, StorageStrategyID: "hl"}
+	paper := StrategyConfig{ID: "hl-paper", Type: "perps", Platform: "hyperliquid", Symbol: "ETH", Args: []string{"--mode=paper"}, StorageStrategyID: "hlp"}
+	sourced := paper
+	sourced.PaperSource = "btc"
+
+	cases := []struct {
+		name string
+		// seed builds the deployments that already hold books on disk.
+		seed       func(dir string) []*Config
+		after      func(dir string) *Config
+		wantRefuse bool
+	}{
+		{
+			name: "books still in the primary when the source is added",
+			seed: func(dir string) []*Config {
+				return []*Config{{DBFile: filepath.Join(dir, "live.db"), Strategies: []StrategyConfig{live, paper}}}
+			},
+			after: func(dir string) *Config {
+				return &Config{
+					DBFile:       filepath.Join(dir, "live.db"),
+					PaperSources: []PaperSourceConfig{{ID: "btc", DBFile: filepath.Join(dir, "btc.db")}},
+					Strategies:   []StrategyConfig{live, sourced},
+				}
+			},
+			wantRefuse: true,
+		},
+		{
+			name: "books still in the paper file when the source is added",
+			seed: func(dir string) []*Config {
+				return []*Config{{DBFile: filepath.Join(dir, "live.db"), PaperDBFile: filepath.Join(dir, "paper.db"), Strategies: []StrategyConfig{live, paper}}}
+			},
+			after: func(dir string) *Config {
+				return &Config{
+					DBFile:       filepath.Join(dir, "live.db"),
+					PaperDBFile:  filepath.Join(dir, "paper.db"),
+					PaperSources: []PaperSourceConfig{{ID: "btc", DBFile: filepath.Join(dir, "btc.db")}},
+					Strategies:   []StrategyConfig{live, sourced},
+				}
+			},
+			wantRefuse: true,
+		},
+		{
+			name: "the documented fold, where the source file already holds the books",
+			seed: func(dir string) []*Config {
+				return []*Config{
+					{DBFile: filepath.Join(dir, "live.db"), Strategies: []StrategyConfig{live}},
+					{DBFile: filepath.Join(dir, "btc.db"), Strategies: []StrategyConfig{paper}},
+				}
+			},
+			after: func(dir string) *Config {
+				return &Config{
+					DBFile:       filepath.Join(dir, "live.db"),
+					PaperSources: []PaperSourceConfig{{ID: "btc", DBFile: filepath.Join(dir, "btc.db")}},
+					Strategies:   []StrategyConfig{live, sourced},
+				}
+			},
+		},
+		{
+			name: "a retired strategy still prunes instead of refusing",
+			seed: func(dir string) []*Config {
+				return []*Config{{DBFile: filepath.Join(dir, "live.db"), Strategies: []StrategyConfig{live, paper}}}
+			},
+			after: func(dir string) *Config {
+				return &Config{DBFile: filepath.Join(dir, "live.db"), Strategies: []StrategyConfig{live}}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for _, seed := range tc.seed(dir) {
+				savePaperSourceSeed(t, seed)
+			}
+			after := tc.after(dir)
+			layout, err := resolveStorageLayout(after)
+			if err != nil {
+				t.Fatalf("resolveStorageLayout: %v", err)
+			}
+			ident, err := buildStorageIdentityMap(after, layout)
+			if err != nil {
+				t.Fatalf("buildStorageIdentityMap: %v", err)
+			}
+			si, err := inspectStorageOwnership(layout, ident, after, false)
+			if err != nil {
+				t.Fatalf("inspectStorageOwnership: %v", err)
+			}
+			if tc.wantRefuse {
+				if si.OK() {
+					t.Fatalf("a relocated book must stop startup before any save; rejections = %v", si.Rejections)
+				}
+				joined := strings.Join(si.Rejections, " ")
+				if !strings.Contains(joined, "hlp") || !strings.Contains(joined, string(paperSourceRole("btc"))) {
+					t.Errorf("the refusal must name the moved book and the file that now owns it: %v", si.Rejections)
+				}
+				return
+			}
+			if !si.OK() {
+				t.Fatalf("startup must not refuse here: %v", si.Rejections)
+			}
+		})
+	}
+}
+
+// savePaperSourceSeed writes one deployment's books so a later config can be
+// inspected against state that already exists on disk.
+func savePaperSourceSeed(t *testing.T, cfg *Config) {
+	t.Helper()
+	layout, err := resolveStorageLayout(cfg)
+	if err != nil {
+		t.Fatalf("resolveStorageLayout: %v", err)
+	}
+	ident, err := buildStorageIdentityMap(cfg, layout)
+	if err != nil {
+		t.Fatalf("buildStorageIdentityMap: %v", err)
+	}
+	store, err := OpenStateStore(layout, ident)
+	if err != nil {
+		t.Fatalf("OpenStateStore: %v", err)
+	}
+	defer store.Close()
+	state := NewAppState()
+	for _, sc := range cfg.Strategies {
+		state.Strategies[sc.ID] = &StrategyState{
+			ID: sc.ID, Type: sc.Type, Platform: sc.Platform, Cash: 2222, InitialCapital: 2000,
+			Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{},
+		}
+	}
+	for part, saveErr := range store.SaveAll(state) {
+		if saveErr != nil {
+			t.Fatalf("SaveAll(%s): %v", part, saveErr)
+		}
 	}
 }
 
