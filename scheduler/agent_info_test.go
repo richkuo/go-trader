@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -392,5 +393,72 @@ func TestReadOnlyOpenDoesNotCreateDB(t *testing.T) {
 	db.Close()
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Errorf("read-only open created %s (want absent)", path)
+	}
+}
+
+// TestReadStateFilesReadOnlyLabelsPaperSourcePartitions pins the agent snapshot
+// on a five-file layout: every open position carries the partition of the file
+// it came from, so a position in a folded source is never reported as plain
+// paper. A file that owns more than one partition names its role instead.
+func TestReadStateFilesReadOnlyLabelsPaperSourcePartitions(t *testing.T) {
+	cfg := threeSourceConfig(t)
+	cfg.PaperDBFile = filepath.Join(filepath.Dir(cfg.DBFile), "paper.db")
+
+	seed := func(path, symbol string) {
+		t.Helper()
+		sdb, err := OpenStateDB(path)
+		if err != nil {
+			t.Fatalf("OpenStateDB(%s): %v", path, err)
+		}
+		defer sdb.Close()
+		if _, err := sdb.db.Exec(`INSERT INTO strategies (id, type, platform) VALUES ('hl','perps','hyperliquid')`); err != nil {
+			t.Fatalf("seed strategy in %s: %v", path, err)
+		}
+		if _, err := sdb.db.Exec(`INSERT INTO positions (strategy_id, symbol, quantity, avg_cost, side, regime) VALUES ('hl',?,1,100,'long','trend')`, symbol); err != nil {
+			t.Fatalf("seed position in %s: %v", path, err)
+		}
+	}
+	seed(cfg.DBFile, "SYM-LIVE")
+	seed(cfg.PaperDBFile, "SYM-PAPER")
+	for _, src := range cfg.PaperSources {
+		seed(src.DBFile, "SYM-"+strings.ToUpper(src.ID))
+	}
+
+	_, live := readStateFilesReadOnly(cfg, 8099)
+	if !live.DBPresent {
+		t.Fatalf("expected every configured file present: %s", live.Note)
+	}
+	got := make(map[string]string, len(live.OpenPositions))
+	for _, pos := range live.OpenPositions {
+		got[pos.Symbol] = pos.Scope
+	}
+	want := map[string]string{
+		"SYM-LIVE":  "live",
+		"SYM-PAPER": "paper",
+		"SYM-BTC":   "paper:btc",
+		"SYM-ETH":   "paper:eth",
+		"SYM-SOL":   "paper:sol",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("position partitions = %v, want %v", got, want)
+	}
+	for _, label := range want {
+		if !strings.Contains(live.Note, label) {
+			t.Errorf("note %q omits partition %q", live.Note, label)
+		}
+	}
+
+	// The primary file owns live and the default paper partition when no
+	// paper_db_file splits them, so it cannot name one partition.
+	cfg.PaperDBFile = ""
+	layout, err := resolveStorageLayout(cfg)
+	if err != nil {
+		t.Fatalf("resolveStorageLayout: %v", err)
+	}
+	if label := storageFilePartitionLabel(layout, storageRolePrimary); label != string(storageRolePrimary) {
+		t.Fatalf("shared primary label = %q, want %q", label, storageRolePrimary)
+	}
+	if label := storageFilePartitionLabel(layout, paperSourceRole("btc")); label != "paper:btc" {
+		t.Fatalf("source label = %q, want paper:btc", label)
 	}
 }

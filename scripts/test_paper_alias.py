@@ -5,9 +5,9 @@ import sys
 SCRIPTS = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS))
 
-from paper_alias import paper_alias_base
+from paper_alias import paper_alias_base, paper_alias_suffix
 
-DEFINITION = re.compile(r"^\s*def (?:paper_alias_base|strip_paper_suffix)\(", re.M)
+DEFINITION = re.compile(r"^\s*def (?:paper_alias_base|paper_alias_suffix|strip_paper_suffix)\(", re.M)
 CONSUMER = re.compile(r"^from paper_alias import paper_alias_base$", re.M)
 
 
@@ -32,6 +32,41 @@ def test_paper_alias_base_reads_the_suffix():
         ("hl-rsi-btc-60-paper-paper", "hl-rsi-btc-60-paper"),
     ]
     got = [(sid, paper_alias_base(sid)) for sid, _ in cases]
+    assert got == cases
+
+
+def test_paper_alias_suffix_reads_the_source_id():
+    cases = [
+        (None, "-paper"),
+        ("", "-paper"),
+        ("  ", "-paper"),
+        ("btc", "-paper-btc"),
+        ("eth_2", "-paper-eth_2"),
+        ("live", None),
+        ("paper", None),
+        ("primary", None),
+        ("BTC", None),
+        ("-btc", None),
+        ("btc:eth", None),
+        ("b" * 33, None),
+    ]
+    got = [(src, paper_alias_suffix(src)) for src, _ in cases]
+    assert got == cases
+
+
+def test_paper_alias_base_reads_a_named_source():
+    cases = [
+        (("hl-rsi-btc-60-paper-btc", "btc"), "hl-rsi-btc-60"),
+        (("hl-rsi-btc-60-paper-btc2", "btc"), "hl-rsi-btc-60"),
+        (("hl-rsi-btc-60-paper-btc", "eth"), None),
+        (("hl-rsi-btc-60-paper", "btc"), None),
+        (("hl-rsi-btc-60-paper-btc", None), None),
+        (("hl-rsi-btc-60-paper-btc", "live"), None),
+        (("hl-rsi-btc-60-paper-btc", "BTC"), None),
+        (("-paper-btc", "btc"), None),
+        (("-paper", None), None),
+    ]
+    got = [(args, paper_alias_base(args[0], args[1])) for args, _ in cases]
     assert got == cases
 
 

@@ -70,6 +70,7 @@ import sys
 
 sys.path.insert(0, os.environ["GO_TRADER_SCRIPT_DIR"])
 from paper_alias import paper_alias_base
+from paper_alias import paper_alias_suffix
 
 WATCHED = [
     "interval_seconds",
@@ -114,6 +115,21 @@ def strip_mode(args):
             continue
         out.append(a)
     return out
+
+
+def block_paper_source(block):
+    source = block.get("paper_source")
+    if isinstance(source, str) and source.strip():
+        return source.strip()
+    return ""
+
+
+def alias_base(block):
+    return paper_alias_base(block["id"], block_paper_source(block))
+
+
+def alias_suffix(block):
+    return paper_alias_suffix(block_paper_source(block)) or "-paper"
 
 
 def id_note(block, key):
@@ -223,13 +239,13 @@ for e in entries:
     elif sid in live_ids:
         key = sid
     else:
-        base = paper_alias_base(sid)
+        base = alias_base(block)
         storage = block.get("storage_strategy_id")
         if base is not None and base in live_ids:
             if isinstance(storage, str) and storage.strip() == base:
                 key = base
             else:
-                ambiguous.append(e)
+                ambiguous.append((e, base))
                 continue
         else:
             if base is not None:
@@ -239,13 +255,13 @@ for e in entries:
 
 for e, base in unpaired_alias:
     print()
-    print("UNPAIRED (no live twin) %s at %s — the -paper alias names %s and no audited deployment runs a live strategy with that id; add the live twin or audit the deployment that holds it"
-          % (e["block"]["id"], e["source"], base))
+    print("UNPAIRED (no live twin) %s at %s — the %s alias names %s and no audited deployment runs a live strategy with that id; add the live twin or audit the deployment that holds it"
+          % (e["block"]["id"], e["source"], alias_suffix(e["block"]), base))
 
-for e in ambiguous:
+for e, base in ambiguous:
     print()
-    print("AMBIGUOUS %s at %s — the -paper suffix alone does not prove a twin of %s; set replay_source_id or storage_strategy_id to pair it"
-          % (e["block"]["id"], e["source"], paper_alias_base(e["block"]["id"])))
+    print("AMBIGUOUS %s at %s — the %s suffix alone does not prove a twin of %s; set replay_source_id or storage_strategy_id to pair it"
+          % (e["block"]["id"], e["source"], alias_suffix(e["block"]), base))
 
 drift_pairs = 0
 skip_pairs = 0
@@ -288,7 +304,7 @@ for sid in sorted(by_key):
                 if lv is MISSING or pv is MISSING or lv != pv:
                     watched_diffs.append((k, lv, pv))
             other_diffs = []
-            for k in sorted((set(lblock) | set(pblock)) - set(WATCHED) - {"id", "replay_source_id", "storage_strategy_id"}):
+            for k in sorted((set(lblock) | set(pblock)) - set(WATCHED) - {"id", "replay_source_id", "storage_strategy_id", "paper_source"}):
                 lv = lblock.get(k, MISSING)
                 pv = pblock.get(k, MISSING)
                 if k == "args":
