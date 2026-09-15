@@ -124,6 +124,17 @@ def block_paper_source(block):
     return ""
 
 
+def declared_source_ids(cfg):
+    out = []
+    for src in cfg.get("paper_sources") or []:
+        if not isinstance(src, dict):
+            continue
+        sid = src.get("id")
+        if isinstance(sid, str) and sid.strip():
+            out.append(sid.strip())
+    return out
+
+
 def block_storage_id(block):
     storage = block.get("storage_strategy_id")
     if isinstance(storage, str) and storage.strip():
@@ -144,6 +155,19 @@ def alias_read(block):
     base = paper_alias_base(sid)
     if base is not None:
         return base, paper_alias_suffix()
+    return None, ""
+
+
+# declared_alias_read is the last resort: an id spelled for a source this
+# deployment declares, with neither paper_source nor storage_strategy_id to
+# prove it. It reports only when the base names a live strategy, so adopting
+# the -paper-<id> convention never drops a gate the bare rule applied.
+def declared_alias_read(entry, live_ids):
+    sid = entry["block"]["id"]
+    for source in entry.get("declared") or []:
+        base = paper_alias_base(sid, source)
+        if base is not None and base in live_ids:
+            return base, paper_alias_suffix(source)
     return None, ""
 
 
@@ -222,6 +246,7 @@ for source, path, deploy_dir in rows:
         print("%-40s %-60s %s" % (source, path, "FAIL (effective view unreadable: %s)" % eff_err))
         bad += 1
         continue
+    declared = declared_source_ids(cfg)
     counts = {"live": 0, "paper": 0, "unset": 0}
     for s in strategies:
         if not isinstance(s, dict) or not isinstance(s.get("id"), str):
@@ -233,7 +258,8 @@ for source, path, deploy_dir in rows:
         mode = classify(args)
         counts[mode] += 1
         eff = effective.get(s["id"]) if effective is not None else None
-        entries.append({"source": source, "mode": mode, "block": s, "effective": eff, "has_effective": effective is not None})
+        entries.append({"source": source, "mode": mode, "block": s, "effective": eff,
+                        "has_effective": effective is not None, "declared": declared})
     marker = "" if effective is not None else " (RAW: no go-trader binary beside the config)"
     print("%-40s %-60s %d/%d/%d%s" % (source, path, counts["live"], counts["paper"], counts["unset"], marker))
 
@@ -269,6 +295,11 @@ for e in entries:
         else:
             if base is not None:
                 unpaired_alias.append((e, base, suffix))
+            else:
+                declared_base, declared_suffix = declared_alias_read(e, live_ids)
+                if declared_base is not None:
+                    ambiguous.append((e, declared_base, declared_suffix))
+                    continue
             key = sid
     by_key.setdefault(key, []).append(e)
 

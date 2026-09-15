@@ -1135,6 +1135,69 @@ if [[ "$audit_out" == *"PAIR"* || "$audit_out" == *"AMBIGUOUS"* || "$audit_out" 
     exit 1
 fi
 
+# Adopting the -paper-<id> name must never drop a gate the bare -paper rule
+# applied: an id spelled for a source this deployment declares, with neither
+# paper_source nor storage_strategy_id, is reported when its base is live.
+mkdir -p "$drift/declared/scheduler" "$drift/declared-nolive/scheduler" \
+    "$drift/declared-other/scheduler" "$drift/declared-paperonly/scheduler"
+write_declared_config() {
+    local path="$1" source_id="$2" live_id="$3" paper_id="$4"
+    local live_block=""
+    if [[ -n "$live_id" ]]; then
+        live_block=$(cat <<JSON
+  {"id": "$live_id", "type": "perps", "platform": "hyperliquid",
+   "script": "shared_scripts/check_hyperliquid.py",
+   "args": ["vwap", "ETH", "1h", "--mode=live"],
+   "interval_seconds": 300, "leverage": 20, "margin_per_trade_usd": 50, "capital": 100},
+JSON
+)
+    fi
+    cat > "$path" <<JSON
+{"config_version": 19,
+ "paper_sources": [{"id": "$source_id", "db_file": "/var/lib/go-trader/$source_id.db"}],
+ "strategies": [
+$live_block
+  {"id": "$paper_id", "type": "perps", "platform": "hyperliquid",
+   "script": "shared_scripts/check_hyperliquid.py",
+   "args": ["vwap", "ETH", "1h", "--mode=paper"],
+   "interval_seconds": 3600, "leverage": 20, "margin_per_trade_usd": 50, "capital": 100}
+]}
+JSON
+}
+write_declared_config "$drift/declared/scheduler/config.json" btc hl-y hl-y-paper-btc
+write_declared_config "$drift/declared-nolive/scheduler/config.json" rsi hl-y hl-paper-rsi
+write_declared_config "$drift/declared-other/scheduler/config.json" btc hl-y hl-y-paper-eth
+write_declared_config "$drift/declared-paperonly/scheduler/config.json" btc "" hl-y-paper-btc
+
+audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/declared") && audit_rc=0 || audit_rc=$?
+assert_eq "$audit_rc" "1" "drift audit: a declared-source name with no pairing key is reported and gates"
+if [[ "$audit_out" != *"AMBIGUOUS hl-y-paper-btc"* || "$audit_out" != *"the -paper-btc suffix alone"* ]]; then
+    echo "FAIL: expected an AMBIGUOUS line for the declared-source name, got: $audit_out" >&2
+    exit 1
+fi
+if [[ "$audit_out" == *"PAIR hl-y"* ]]; then
+    echo "FAIL: a name alone must not pair, got: $audit_out" >&2
+    exit 1
+fi
+audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/declared-nolive") && audit_rc=0 || audit_rc=$?
+assert_eq "$audit_rc" "0" "drift audit: a declared-source name whose base is not live stays silent"
+if [[ "$audit_out" == *"AMBIGUOUS"* || "$audit_out" == *"UNPAIRED"* || "$audit_out" == *"PAIR"* ]]; then
+    echo "FAIL: hl-paper-rsi must stay silent when hl is not live, got: $audit_out" >&2
+    exit 1
+fi
+audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/declared-other") && audit_rc=0 || audit_rc=$?
+assert_eq "$audit_rc" "0" "drift audit: a -paper-<id> name for an undeclared source stays silent"
+if [[ "$audit_out" == *"AMBIGUOUS"* || "$audit_out" == *"UNPAIRED"* || "$audit_out" == *"PAIR"* ]]; then
+    echo "FAIL: an undeclared source id must stay silent, got: $audit_out" >&2
+    exit 1
+fi
+audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/declared-paperonly") && audit_rc=0 || audit_rc=$?
+assert_eq "$audit_rc" "0" "drift audit: a paper-only deployment prints no line for a declared-source name"
+if [[ "$audit_out" == *"AMBIGUOUS"* || "$audit_out" == *"UNPAIRED"* || "$audit_out" == *"PAIR"* ]]; then
+    echo "FAIL: an empty live set must print nothing, got: $audit_out" >&2
+    exit 1
+fi
+
 if [[ -n "${GO_TRADER_BIN:-}" && -x "${GO_TRADER_BIN:-}" ]]; then
     mkdir -p "$drift/eff-live/scheduler" "$drift/eff-paper/scheduler"
     cp "$GO_TRADER_BIN" "$drift/eff-live/go-trader"
