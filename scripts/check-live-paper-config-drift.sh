@@ -124,12 +124,27 @@ def block_paper_source(block):
     return ""
 
 
-def alias_base(block):
-    return paper_alias_base(block["id"], block_paper_source(block))
+def block_storage_id(block):
+    storage = block.get("storage_strategy_id")
+    if isinstance(storage, str) and storage.strip():
+        return storage.strip()
+    return ""
 
 
-def alias_suffix(block):
-    return paper_alias_suffix(block_paper_source(block)) or "-paper"
+# alias_read returns the base and the suffix of the first rule that reads this
+# id. A named source is tried first, then the bare -paper rule, so naming a
+# source never unreads an alias the audit read before.
+def alias_read(block):
+    sid = block["id"]
+    source = block_paper_source(block)
+    if source:
+        base = paper_alias_base(sid, source)
+        if base is not None:
+            return base, paper_alias_suffix(source)
+    base = paper_alias_base(sid)
+    if base is not None:
+        return base, paper_alias_suffix()
+    return None, ""
 
 
 def id_note(block, key):
@@ -239,29 +254,33 @@ for e in entries:
     elif sid in live_ids:
         key = sid
     else:
-        base = alias_base(block)
-        storage = block.get("storage_strategy_id")
+        base, suffix = alias_read(block)
+        storage = block_storage_id(block)
         if base is not None and base in live_ids:
-            if isinstance(storage, str) and storage.strip() == base:
+            if storage == base:
                 key = base
             else:
-                ambiguous.append((e, base))
+                ambiguous.append((e, base, suffix))
                 continue
+        elif storage in live_ids:
+            # No alias rule names a live base, but the stored identity does,
+            # which is the same proof the alias branch demands.
+            key = storage
         else:
             if base is not None:
-                unpaired_alias.append((e, base))
+                unpaired_alias.append((e, base, suffix))
             key = sid
     by_key.setdefault(key, []).append(e)
 
-for e, base in unpaired_alias:
+for e, base, suffix in unpaired_alias:
     print()
     print("UNPAIRED (no live twin) %s at %s — the %s alias names %s and no audited deployment runs a live strategy with that id; add the live twin or audit the deployment that holds it"
-          % (e["block"]["id"], e["source"], alias_suffix(e["block"]), base))
+          % (e["block"]["id"], e["source"], suffix, base))
 
-for e, base in ambiguous:
+for e, base, suffix in ambiguous:
     print()
     print("AMBIGUOUS %s at %s — the %s suffix alone does not prove a twin of %s; set replay_source_id or storage_strategy_id to pair it"
-          % (e["block"]["id"], e["source"], alias_suffix(e["block"]), base))
+          % (e["block"]["id"], e["source"], suffix, base))
 
 drift_pairs = 0
 skip_pairs = 0

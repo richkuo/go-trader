@@ -1007,8 +1007,7 @@ cat > "$drift/source-unset/scheduler/config.json" <<'JSON'
    "script": "shared_scripts/check_hyperliquid.py",
    "args": ["vwap", "ETH", "1h", "--mode=live"],
    "interval_seconds": 300, "leverage": 20, "margin_per_trade_usd": 50, "capital": 100},
-  {"id": "hl-y-paper-btc", "storage_strategy_id": "hl-y",
-   "type": "perps", "platform": "hyperliquid",
+  {"id": "hl-y-paper-btc", "type": "perps", "platform": "hyperliquid",
    "script": "shared_scripts/check_hyperliquid.py",
    "args": ["vwap", "ETH", "1h", "--mode=paper"],
    "interval_seconds": 300, "leverage": 20, "margin_per_trade_usd": 50, "capital": 100}
@@ -1038,6 +1037,101 @@ audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/source
 assert_eq "$audit_rc" "0" "drift audit: a -paper-<id> id without paper_source is not read as an alias"
 if [[ "$audit_out" == *"PAIR hl-y"* || "$audit_out" == *"AMBIGUOUS"* || "$audit_out" == *"UNPAIRED (no live twin)"* ]]; then
     echo "FAIL: the suffix must only be read when paper_source names the source, got: $audit_out" >&2
+    exit 1
+fi
+
+# A fleet folded from a pre-source deployment keeps its strategy ids, so a
+# block can carry the bare -paper alias and a paper_source at the same time.
+# Naming a source must never unread an alias the audit read before.
+mkdir -p "$drift/source-bare/scheduler" "$drift/source-bare-drift/scheduler" \
+    "$drift/source-bare-unproven/scheduler" "$drift/source-collision/scheduler" \
+    "$drift/storage-only/scheduler" "$drift/storage-nolive/scheduler"
+write_folded_config() {
+    local path="$1" paper_id="$2" paper_interval="$3" extra="$4"
+    cat > "$path" <<JSON
+{"config_version": 19,
+ "paper_sources": [{"id": "btc", "db_file": "/var/lib/go-trader/btc.db"}],
+ "strategies": [
+  {"id": "hl-y", "type": "perps", "platform": "hyperliquid",
+   "script": "shared_scripts/check_hyperliquid.py",
+   "args": ["vwap", "ETH", "1h", "--mode=live"],
+   "interval_seconds": 300, "leverage": 20, "margin_per_trade_usd": 50, "capital": 100},
+  {"id": "$paper_id", "paper_source": "btc"$extra,
+   "type": "perps", "platform": "hyperliquid",
+   "script": "shared_scripts/check_hyperliquid.py",
+   "args": ["vwap", "ETH", "1h", "--mode=paper"],
+   "interval_seconds": $paper_interval, "leverage": 20, "margin_per_trade_usd": 50, "capital": 100}
+]}
+JSON
+}
+write_folded_config "$drift/source-bare/scheduler/config.json" "hl-y-paper" 300 ', "storage_strategy_id": "hl-y"'
+write_folded_config "$drift/source-bare-drift/scheduler/config.json" "hl-y-paper" 3600 ', "storage_strategy_id": "hl-y"'
+write_folded_config "$drift/source-bare-unproven/scheduler/config.json" "hl-y-paper" 300 ""
+write_folded_config "$drift/source-collision/scheduler/config.json" "hl-y-paper2" 3600 ', "storage_strategy_id": "hl-y"'
+
+audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/source-bare") && audit_rc=0 || audit_rc=$?
+assert_eq "$audit_rc" "0" "drift audit: a bare -paper alias under a named source still pairs"
+if [[ "$audit_out" != *"PAIR hl-y"* || "$audit_out" != *"[id=hl-y-paper]"* || "$audit_out" != *"IN SYNC"* ]]; then
+    echo "FAIL: naming a source must not unread the bare -paper alias, got: $audit_out" >&2
+    exit 1
+fi
+audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/source-bare-drift") && audit_rc=0 || audit_rc=$?
+assert_eq "$audit_rc" "1" "drift audit: cadence drift on a bare-aliased folded twin still gates"
+if [[ "$audit_out" != *"interval_seconds"* || "$audit_out" != *"CANDIDATE"* ]]; then
+    echo "FAIL: expected interval_seconds drift on the bare-aliased folded pair, got: $audit_out" >&2
+    exit 1
+fi
+audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/source-bare-unproven") && audit_rc=0 || audit_rc=$?
+assert_eq "$audit_rc" "1" "drift audit: a bare -paper alias under a named source with no storage id gates"
+if [[ "$audit_out" != *"AMBIGUOUS hl-y-paper"* || "$audit_out" != *"the -paper suffix alone"* ]]; then
+    echo "FAIL: expected an AMBIGUOUS line naming the bare suffix, got: $audit_out" >&2
+    exit 1
+fi
+audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/source-collision") && audit_rc=0 || audit_rc=$?
+assert_eq "$audit_rc" "1" "drift audit: the -paper<n> collision form under a named source still pairs and gates"
+if [[ "$audit_out" != *"PAIR hl-y"* || "$audit_out" != *"[id=hl-y-paper2]"* || "$audit_out" != *"interval_seconds"* ]]; then
+    echo "FAIL: expected the collision-form pair to report drift, got: $audit_out" >&2
+    exit 1
+fi
+
+# storage_strategy_id is the same proof the alias branch demands, so a block
+# that carries it is surfaced even when no alias rule reads its id.
+cat > "$drift/storage-only/scheduler/config.json" <<'JSON'
+{"config_version": 19, "strategies": [
+  {"id": "hl-y", "type": "perps", "platform": "hyperliquid",
+   "script": "shared_scripts/check_hyperliquid.py",
+   "args": ["vwap", "ETH", "1h", "--mode=live"],
+   "interval_seconds": 300, "leverage": 20, "margin_per_trade_usd": 50, "capital": 100},
+  {"id": "hl-shadow", "storage_strategy_id": "hl-y",
+   "type": "perps", "platform": "hyperliquid",
+   "script": "shared_scripts/check_hyperliquid.py",
+   "args": ["vwap", "ETH", "1h", "--mode=paper"],
+   "interval_seconds": 3600, "leverage": 20, "margin_per_trade_usd": 50, "capital": 100}
+]}
+JSON
+cat > "$drift/storage-nolive/scheduler/config.json" <<'JSON'
+{"config_version": 19, "strategies": [
+  {"id": "hl-y", "type": "perps", "platform": "hyperliquid",
+   "script": "shared_scripts/check_hyperliquid.py",
+   "args": ["vwap", "ETH", "1h", "--mode=live"],
+   "interval_seconds": 300, "leverage": 20, "margin_per_trade_usd": 50, "capital": 100},
+  {"id": "hl-shadow", "storage_strategy_id": "hl-absent",
+   "type": "perps", "platform": "hyperliquid",
+   "script": "shared_scripts/check_hyperliquid.py",
+   "args": ["vwap", "ETH", "1h", "--mode=paper"],
+   "interval_seconds": 3600, "leverage": 20, "margin_per_trade_usd": 50, "capital": 100}
+]}
+JSON
+audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/storage-only") && audit_rc=0 || audit_rc=$?
+assert_eq "$audit_rc" "1" "drift audit: a storage_strategy_id naming a live id pairs an unaliased block"
+if [[ "$audit_out" != *"PAIR hl-y"* || "$audit_out" != *"[id=hl-shadow]"* || "$audit_out" != *"interval_seconds"* ]]; then
+    echo "FAIL: expected the storage-id pair to report drift, got: $audit_out" >&2
+    exit 1
+fi
+audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/storage-nolive") && audit_rc=0 || audit_rc=$?
+assert_eq "$audit_rc" "0" "drift audit: a storage_strategy_id matching no live id stays silent"
+if [[ "$audit_out" == *"PAIR"* || "$audit_out" == *"AMBIGUOUS"* || "$audit_out" == *"UNPAIRED"* ]]; then
+    echo "FAIL: an unmatched storage id must not pair or gate, got: $audit_out" >&2
     exit 1
 fi
 
