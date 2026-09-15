@@ -541,7 +541,7 @@ setup journal2
 out=$(run_merge --apply 2>&1) || { echo "$out" >&2; fail "apply before complete-journal dry run"; }
 out=$(run_merge 2>&1) && rc=0 || rc=$?
 [[ "$rc" == "0" ]] || { echo "$out" >&2; fail "dry run over a complete journal exits 0 (rc=$rc)"; }
-assert_contains "$out" "is complete and both deployment files match its result" "dry run reports the complete journal"
+assert_contains "$out" "is complete and every deployment file matches its result" "dry run reports the complete journal"
 assert_contains "$out" "VERDICT: READY" "complete journal dry run still certifies"
 python3 - "$LIVE_CFG" <<'PY'
 import json, sys
@@ -1009,5 +1009,313 @@ assert_contains "$out" "VERDICT: APPLIED" "--apply --align-to-live reaches apply
 assert_eq "$(cat "$PAPER_CFG")" "$paper_before" "--apply --align-to-live never mutates the paper source when aligning a stop default"
 assert_eq "$(json_get "$PAPER_CFG.aligned" default_stop_loss_atr_mult)" "" "aligned file drops paper's default_stop_loss_atr_mult so it matches live"
 assert_eq "$(json_get "$PAPER_CFG.aligned" strategies.1.stop_loss_atr_mult)" "3.0" "aligned file keeps an explicit strategy stop override"
+
+source_cfg_json() {
+    local db="$1" port="$2" channel="${3:-C-src}" risk="${4:-{\"max_drawdown_pct\": 50, \"daily_max_loss_usd\": 500\}}"
+    cat <<JSON
+{
+  "config_version": 19,
+  "interval_seconds": 600,
+  "db_file": "$db",
+  "replay_log_path": "$T/shared/replay.db",
+  "status_port": $port,
+  "portfolio_risk": $risk,
+  "discord": {"enabled": false, "token": "", "channels": {"hyperliquid": "$channel"}},
+  "strategies": [
+    {"id": "hl-x", "type": "perps", "platform": "hyperliquid",
+     "script": "shared_scripts/check_hyperliquid.py",
+     "args": ["vwap", "ETH", "1h", "--mode=paper"],
+     "capital": 100, "leverage": 5, "margin_per_trade_usd": 50}
+  ]
+}
+JSON
+}
+
+add_source() {
+    local instance="$1" port="$2" channel="${3:-C-src}" risk="${4:-}"
+    mkdir -p "$BASE/$instance" "$OPT/go-trader-$instance/scheduler"
+    cp "$GO_TRADER_BIN" "$OPT/go-trader-$instance/go-trader"
+    printf 'HYPERLIQUID_SECRET_KEY=fixture\n' > "$OPT/go-trader-$instance/.env"
+    cp "$MERGE_PAPER_FIXTURE_DIR/paper.db" "$BASE/$instance/state.db"
+    if [[ -n "$risk" ]]; then
+        source_cfg_json "$BASE/$instance/state.db" "$port" "$channel" "$risk" > "$BASE/$instance/config.json"
+    else
+        source_cfg_json "$BASE/$instance/state.db" "$port" "$channel" > "$BASE/$instance/config.json"
+    fi
+}
+
+run_merge_args() {
+    MERGE_PAPER_SYSTEMCTL="$F/bin/systemctl" MERGE_PAPER_SYSTEMD_ANALYZE="/nonexistent/systemd-analyze" \
+        bash "$MERGE" --live live --base "$BASE" --deploy-root "$OPT" --unit-dir "$UNITS" "$@"
+}
+
+db_fingerprints() {
+    local out="" d
+    for d in "$@"; do
+        out+="$(update_db_fingerprint "$d" | tr '\n' ' ')|"
+    done
+    printf '%s' "$out"
+}
+
+echo "== two paper sources fold into their own partitions"
+setup sources
+add_source coin-btc 8101 C-btc
+add_source coin-eth 8102 C-eth
+BTC_DB="$BASE/coin-btc/state.db"
+ETH_DB="$BASE/coin-eth/state.db"
+BTC_CANON=$(update_canonical_db_path "$BTC_DB")
+ETH_CANON=$(update_canonical_db_path "$ETH_DB")
+BTC_DROPIN="$UNITS/go-trader@live.service.d/50-merge-paper-btc.conf"
+ETH_DROPIN="$UNITS/go-trader@live.service.d/50-merge-paper-eth.conf"
+SRC_JOURNAL="$BASE/live/merge-paper-btc+eth.journal"
+before=$(db_fingerprints "$LIVE_DB" "$BTC_DB" "$ETH_DB")
+orig_cfg=$(cat "$LIVE_CFG")
+out=$(run_merge_args --source btc=coin-btc --source eth=coin-eth 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "two-source dry run exits 0 (rc=$rc)"; }
+assert_contains "$out" "VERDICT: READY" "two-source dry run verdict"
+assert_eq "$(db_fingerprints "$LIVE_DB" "$BTC_DB" "$ETH_DB")" "$before" "two-source dry run leaves every database byte-identical"
+assert_contains "$out" "rename hl-x -> hl-x-paper-btc (storage_strategy_id=hl-x)" "the btc source takes its own alias"
+assert_contains "$out" "rename hl-x -> hl-x-paper-eth (storage_strategy_id=hl-x)" "the eth source takes its own alias"
+assert_contains "$out" "stamp hl-x-paper-btc paper_source=btc (partition paper:btc)" "the moved block names its partition"
+assert_contains "$out" "paper:btc file $BTC_CANON: 1 strategies mapped, 0 orphan, 1 positions" "the staged layout maps the btc book"
+assert_contains "$out" "paper:eth file $ETH_CANON: 1 strategies mapped, 0 orphan, 1 positions" "the staged layout maps the eth book"
+assert_contains "$out" "hl-x -> hl-x-paper-btc (1 position(s))" "the btc book keeps its position under the source alias"
+assert_contains "$out" "proof: 3 strategies compared, no effective difference" "every moved strategy is proven"
+assert_contains "$out" "retire the coin-btc instance's status port (8101)" "each folded instance gets a retirement note"
+assert_contains "$out" "retire the coin-eth instance's status port (8102)" "the second folded instance gets one too"
+live_canon=$(update_canonical_db_path "$LIVE_DB")
+assert_contains "$out" "$live_canon.lock $live_canon.manual-action.lock $BTC_CANON.lock $BTC_CANON.manual-action.lock $ETH_CANON.lock $ETH_CANON.manual-action.lock" "the handoff locks the primary file first, then every source by id, in the runtime's order"
+staged="$LIVE_CFG.merge-staged"
+assert_eq "$(json_get "$staged" strategies.1.id)" "hl-x-paper-btc" "staged btc id"
+assert_eq "$(json_get "$staged" strategies.1.paper_source)" "btc" "staged btc paper_source"
+assert_eq "$(json_get "$staged" strategies.1.storage_strategy_id)" "hl-x" "staged btc storage alias"
+assert_eq "$(json_get "$staged" strategies.2.id)" "hl-x-paper-eth" "staged eth id"
+assert_eq "$(json_get "$staged" paper_sources.0.id)" "btc" "paper_sources is ordered by id"
+assert_eq "$(json_get "$staged" paper_sources.0.db_file)" "$BTC_CANON" "the btc entry owns the btc database"
+assert_eq "$(json_get "$staged" paper_sources.0.label)" "coin-btc" "the btc entry is labelled with its instance"
+assert_eq "$(json_get "$staged" paper_sources.0.portfolio_risk.max_drawdown_pct)" "50" "the btc entry carries the source's own drawdown limit"
+assert_eq "$(json_get "$staged" paper_sources.1.id)" "eth" "the eth entry is present"
+assert_eq "$(json_get "$staged" paper_db_file)" "" "a source-only handoff never sets paper_db_file"
+assert_eq "$(json_get "$staged" discord.channels.hyperliquid-paper:btc)" "C-btc" "the btc source gets its own channel key"
+assert_eq "$(json_get "$staged" discord.channels.hyperliquid-paper:eth)" "C-eth" "the eth source gets its own channel key"
+assert_eq "$(json_get "$staged" discord.channels.hyperliquid)" "C-live" "the live channel is kept"
+[[ ! -e "$BTC_DROPIN" ]] || fail "a dry run must not install a source drop-in"
+
+out=$(run_merge_args --source btc=coin-btc --source eth=coin-eth --apply 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "two-source apply exits 0 (rc=$rc)"; }
+assert_contains "$out" "VERDICT: APPLIED" "two-source apply verdict"
+assert_eq "$(db_fingerprints "$LIVE_DB" "$BTC_DB" "$ETH_DB")" "$before" "two-source apply leaves every database byte-identical"
+assert_eq "$(cat "$BTC_DROPIN")" $'[Service]\nReadWritePaths='"$(update_canonical_db_path "$BASE/coin-btc")" "the btc drop-in makes its database directory writable"
+assert_eq "$(cat "$ETH_DROPIN")" $'[Service]\nReadWritePaths='"$(update_canonical_db_path "$BASE/coin-eth")" "the eth drop-in makes its database directory writable"
+assert_eq "$(json_get "$LIVE_CFG" paper_sources.0.id)" "btc" "the installed config declares the btc source"
+assert_eq "$(cat "$LIVE_CFG.pre-merge-btc+eth")" "$orig_cfg" "the previous config is retained under the run key"
+grep -qx complete "$SRC_JOURNAL" || fail "the two-source journal is marked complete"
+grep -qx "folds btc eth" "$SRC_JOURNAL" || fail "the journal names every folded deployment"
+grep -qx "source.btc coin-btc" "$SRC_JOURNAL" || fail "the journal names each source's instance"
+
+installed_cfg=$(cat "$LIVE_CFG")
+out=$(run_merge_args --source btc=coin-btc --source eth=coin-eth --apply 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "0" "a repeated two-source apply is a no-op success"
+assert_contains "$out" "nothing to do" "the repeated apply reports no-op"
+assert_eq "$(cat "$LIVE_CFG")" "$installed_cfg" "the repeated apply changes nothing"
+
+out=$(run_merge_args --source btc=coin-btc --source eth=coin-eth 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "repeat two-source dry run exits 0 (rc=$rc)"; }
+assert_contains "$out" "preflight: live config already declares paper source btc (repeat run)" "a repeat run recognises the declared source"
+assert_contains "$out" "hl-x already merged; skipped" "a repeat run moves no book twice"
+assert_contains "$out" "3 existing + 0 added strategies" "a repeat run appends nothing"
+
+out=$(run_merge_args --source btc=coin-btc --source eth=coin-eth --rollback 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "two-source rollback exits 0 (rc=$rc)"; }
+assert_eq "$(cat "$LIVE_CFG")" "$orig_cfg" "rollback restores the pre-merge config"
+[[ ! -e "$BTC_DROPIN" ]] || fail "rollback removes the btc drop-in"
+[[ ! -e "$ETH_DROPIN" ]] || fail "rollback removes the eth drop-in"
+assert_eq "$(db_fingerprints "$LIVE_DB" "$BTC_DB" "$ETH_DB")" "$before" "two-source rollback leaves every database untouched"
+
+echo "== rollback after the merged process wrote state"
+setup srcwritten
+add_source coin-btc 8101 C-btc
+add_source coin-eth 8102 C-eth
+BTC_DB="$BASE/coin-btc/state.db"
+ETH_DB="$BASE/coin-eth/state.db"
+BTC_DROPIN="$UNITS/go-trader@live.service.d/50-merge-paper-btc.conf"
+ETH_DROPIN="$UNITS/go-trader@live.service.d/50-merge-paper-eth.conf"
+orig_cfg=$(cat "$LIVE_CFG")
+out=$(run_merge_args --source btc=coin-btc --source eth=coin-eth --apply 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "apply before the post-write rollback exits 0 (rc=$rc)"; }
+python3 -c '
+import sqlite3
+import sys
+conn = sqlite3.connect(sys.argv[1])
+conn.execute("CREATE TABLE IF NOT EXISTS merge_rollback_probe (k TEXT)")
+conn.execute("INSERT INTO merge_rollback_probe VALUES (?)", ("written-after-apply",))
+conn.commit()
+conn.close()
+' "$ETH_DB"
+written=$(db_fingerprints "$ETH_DB")
+out=$(run_merge_args --source btc=coin-btc --source eth=coin-eth --rollback 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "rollback after the merged process wrote state exits 0 (rc=$rc)"; }
+assert_eq "$(cat "$LIVE_CFG")" "$orig_cfg" "a post-write rollback still restores the pre-merge config"
+[[ ! -e "$BTC_DROPIN" ]] || fail "a post-write rollback removes the btc drop-in"
+[[ ! -e "$ETH_DROPIN" ]] || fail "a post-write rollback removes the eth drop-in"
+assert_eq "$(db_fingerprints "$ETH_DB")" "$written" "a post-write rollback never rewrites a stored book"
+
+echo "== an interrupted two-source apply restores every installed file"
+setup srcfail
+add_source coin-btc 8101 C-btc
+add_source coin-eth 8102 C-eth
+BTC_DROPIN="$UNITS/go-trader@live.service.d/50-merge-paper-btc.conf"
+ETH_DROPIN="$UNITS/go-trader@live.service.d/50-merge-paper-eth.conf"
+SRC_JOURNAL="$BASE/live/merge-paper-btc+eth.journal"
+orig_cfg=$(cat "$LIVE_CFG")
+out=$(MERGE_PAPER_FAIL_AFTER=config run_merge_args --source btc=coin-btc --source eth=coin-eth --apply 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "4" "an interrupted two-source apply exits 4"
+assert_eq "$(cat "$LIVE_CFG")" "$orig_cfg" "the config step is undone"
+[[ ! -e "$BTC_DROPIN" ]] || fail "no drop-in survives a config-step interruption"
+grep -qx rolled-back "$SRC_JOURNAL" || fail "the interrupted two-source journal is marked rolled-back"
+out=$(MERGE_PAPER_FAIL_AFTER=override run_merge_args --source btc=coin-btc --source eth=coin-eth --apply 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "4" "an interrupted override step exits 4"
+assert_eq "$(cat "$LIVE_CFG")" "$orig_cfg" "the config is restored after an override-step interruption"
+[[ ! -e "$BTC_DROPIN" ]] || fail "the btc drop-in is removed after an override-step interruption"
+[[ ! -e "$ETH_DROPIN" ]] || fail "the eth drop-in is removed after an override-step interruption"
+
+echo "== the default paper partition and a source fold in one run"
+setup bothparts
+add_source coin-btc 8101 C-btc '{"max_drawdown_pct": 60, "daily_max_loss_usd": 500}'
+out=$(run_merge_args --paper paper --source btc=coin-btc 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "--paper with --source exits 0 (rc=$rc)"; }
+staged="$LIVE_CFG.merge-staged"
+assert_eq "$(json_get "$staged" strategies.1.id)" "hl-x-paper" "the default paper partition keeps the bare alias"
+assert_eq "$(json_get "$staged" strategies.1.paper_source)" "" "the default paper partition names no source"
+assert_eq "$(json_get "$staged" strategies.2.id)" "hl-x-paper-btc" "the source takes the named alias"
+assert_eq "$(json_get "$staged" portfolio_risk.paper.max_drawdown_pct)" "50" "the default paper override still comes from the paper deployment"
+assert_eq "$(json_get "$staged" paper_sources.0.portfolio_risk.max_drawdown_pct)" "60" "the source override is written against the default paper partition"
+assert_eq "$(json_get "$staged" paper_db_file)" "$(update_canonical_db_path "$PAPER_DB")" "the default paper partition still owns paper_db_file"
+assert_contains "$out" "proof: 3 strategies compared, no effective difference" "both folded deployments are proven"
+
+echo "== refusals that guard several sources"
+setup srcsamedb
+add_source coin-btc 8101 C-btc
+add_source coin-eth 8102 C-eth
+python3 - "$BASE/coin-eth/config.json" "$BASE/coin-btc/state.db" <<'PY'
+import json, sys
+p = sys.argv[1]
+cfg = json.load(open(p))
+cfg["db_file"] = sys.argv[2]
+json.dump(cfg, open(p, "w"))
+PY
+out=$(run_merge_args --source btc=coin-btc --source eth=coin-eth 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "16" "two sources on one database exit 16"
+assert_contains "$out" "every partition needs its own file" "the same-database refusal names the rule"
+
+setup srcdeclared
+add_source coin-btc 8101 C-btc
+python3 - "$LIVE_CFG" <<'PY'
+import json, sys
+p = sys.argv[1]
+cfg = json.load(open(p))
+cfg["paper_sources"] = [{"id": "btc", "db_file": "/somewhere/else.db"}]
+json.dump(cfg, open(p, "w"))
+PY
+out=$(run_merge_args --source btc=coin-btc 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "17" "a declared source on another database exits 17"
+assert_contains "$out" "already declares paper source btc" "the conflict names the source id"
+
+setup srcnested
+add_source coin-btc 8101 C-btc
+python3 - "$BASE/coin-btc/config.json" <<'PY'
+import json, sys
+p = sys.argv[1]
+cfg = json.load(open(p))
+cfg["paper_sources"] = [{"id": "inner", "db_file": "/tmp/inner.db"}]
+json.dump(cfg, open(p, "w"))
+PY
+out=$(run_merge_args --source btc=coin-btc 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "16" "a source deployment that folded sources of its own exits 16"
+assert_contains "$out" "already declares paper_sources" "the refusal names the key"
+
+setup srcsplit
+add_source coin-btc 8101 C-btc
+python3 - "$BASE/coin-btc/config.json" <<'PY'
+import json, sys
+p = sys.argv[1]
+cfg = json.load(open(p))
+cfg["paper_db_file"] = "/tmp/split.db"
+json.dump(cfg, open(p, "w"))
+PY
+out=$(run_merge_args --source btc=coin-btc 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "16" "a source deployment with its own split exits 16"
+assert_contains "$out" "source btc config already sets paper_db_file" "the split refusal names the source"
+
+setup srcregime
+add_source coin-btc 8101 C-btc
+python3 - "$BASE/coin-btc/config.json" <<'PY'
+import json, sys
+p = sys.argv[1]
+cfg = json.load(open(p))
+cfg["regime"] = {"enabled": True, "period": 14, "adx_threshold": 25}
+json.dump(cfg, open(p, "w"))
+PY
+out=$(run_merge_args --source btc=coin-btc 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "21" "a root-key difference in a source refuses"
+assert_contains "$out" "source btc: root key regime differs" "the root-key refusal names the source"
+
+setup srcreplay
+add_source coin-btc 8101 C-btc
+add_source coin-eth 8102 C-eth
+for inst in coin-btc coin-eth; do
+python3 - "$BASE/$inst/config.json" <<'PY'
+import json, sys
+p = sys.argv[1]
+cfg = json.load(open(p))
+cfg["strategies"][0]["replay_sharing"] = "live_mirror"
+json.dump(cfg, open(p, "w"))
+PY
+done
+out=$(run_merge_args --source btc=coin-btc --source eth=coin-eth 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "21" "two sources mirroring one live strategy refuse"
+assert_contains "$out" "is already mirrored by" "the replay refusal names the second owner"
+
+echo "== --diff previews a source alias, its channel key and a redundant one"
+setup srcdiff
+add_source coin-btc 8101 C-btc
+add_source coin-eth 8102 C-live
+out=$(run_merge_args --source btc=coin-btc --source eth=coin-eth --diff 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "--diff with sources exits 0 (rc=$rc)"; }
+assert_contains "$out" "diff: source btc = instance coin-btc (partition paper:btc)" "--diff names each source"
+assert_contains "$out" "diff: alias hl-x -> hl-x-paper-btc (storage_strategy_id=hl-x)" "--diff previews the source alias"
+assert_contains "$out" "diff: stamp hl-x-paper-btc paper_source=btc" "--diff previews the paper_source stamp"
+assert_contains "$out" "diff: channel-plan discord.channels.hyperliquid-paper:btc=C-btc" "--diff names the source channel key it would add"
+assert_contains "$out" "diff: channel-plan discord.channels.hyperliquid-paper:eth not added" "--diff skips a source key the live route already covers"
+
+echo "== an alias that is taken takes the next suffix"
+setup srcalias
+add_source coin-btc 8101 C-btc
+python3 - "$LIVE_CFG" <<'PY'
+import json, sys
+p = sys.argv[1]
+cfg = json.load(open(p))
+cfg["strategies"].append({"id": "hl-x-paper-btc", "type": "perps", "platform": "hyperliquid",
+    "script": "shared_scripts/check_hyperliquid.py", "args": ["vwap", "BTC", "1h", "--mode=live"],
+    "capital": 100, "leverage": 5, "margin_per_trade_usd": 50})
+json.dump(cfg, open(p, "w"))
+PY
+out=$(run_merge_args --source btc=coin-btc --diff 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "--diff over a taken source alias exits 0 (rc=$rc)"; }
+assert_contains "$out" "diff: alias hl-x -> hl-x-paper-btc2 (storage_strategy_id=hl-x)" "a taken source alias takes the numeric suffix"
+
+echo "== source argument refusals"
+setup srcusage
+out=$(run_merge_args --source coin-btc 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "2" "--source without <id>=<instance> exits 2"
+out=$(run_merge_args --source BTC=coin-btc 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "2" "an upper-case source id exits 2"
+out=$(run_merge_args --source paper=coin-btc 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "2" "a reserved source id exits 2"
+assert_contains "$out" "invalid paper source id 'paper'" "the reserved id is named"
+out=$(run_merge_args --source btc=live 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "2" "folding the live instance exits 2"
+out=$(run_merge_args --source btc=coin-btc --source btc=coin-eth 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "2" "one id naming two deployments exits 2"
 
 echo "OK: merge-paper-instance tests passed"

@@ -32,7 +32,7 @@ cleanup() {
 trap cleanup EXIT
 
 useradd --system --no-create-home --shell /usr/sbin/nologin "$USER_NAME"
-mkdir -p "$DEPLOY/scheduler" "$DEPLOY/logs" "$DEPLOY/shared_scripts" "$DEPLOY/.venv/bin" "$STATE_BASE/live" "$STATE_BASE/paper"
+mkdir -p "$DEPLOY/scheduler" "$DEPLOY/logs" "$DEPLOY/shared_scripts" "$DEPLOY/.venv/bin" "$STATE_BASE/live" "$STATE_BASE/paper" "$STATE_BASE/btc"
 cp "$GO_TRADER_BIN" "$DEPLOY/go-trader"
 ln -s "$PY3" "$DEPLOY/.venv/bin/python3"
 for stub in check_hyperliquid.py fetch_candles.py strategy_tuner_schema.py check_regime.py simulate_strategy.py; do
@@ -61,12 +61,18 @@ cat > "$STATE_BASE/live/config.json" <<JSON
   "interval_seconds": 300,
   "db_file": "$STATE_BASE/live/state.db",
   "paper_db_file": "$STATE_BASE/paper/state.db",
+  "paper_sources": [{"id": "btc", "db_file": "$STATE_BASE/btc/state.db"}],
   "log_dir": "logs",
   "discord": {"enabled": false, "token": "", "channels": {}},
   "strategies": [
     {"id": "hl-fixture", "type": "perps", "platform": "hyperliquid",
      "script": "shared_scripts/check_hyperliquid.py",
      "args": ["vwap", "ETH", "1h", "--mode=paper"],
+     "capital": 100, "leverage": 2, "margin_per_trade_usd": 10},
+    {"id": "hl-fixture-paper-btc", "type": "perps", "platform": "hyperliquid",
+     "script": "shared_scripts/check_hyperliquid.py",
+     "args": ["vwap", "ETH", "1h", "--mode=paper"],
+     "paper_source": "btc",
      "capital": 100, "leverage": 2, "margin_per_trade_usd": 10}
   ]
 }
@@ -76,6 +82,8 @@ chmod 755 "$DEPLOY"
 
 override_directive=$(update_paper_override_directive "$STATE_BASE/paper")
 [[ "$override_directive" == "StateDirectory=go-trader-${ID}/paper" ]] || fail "override directive for the paper state dir: $override_directive"
+source_directive=$(update_paper_override_directive "$STATE_BASE/btc")
+[[ "$source_directive" == "StateDirectory=go-trader-${ID}/btc" ]] || fail "override directive for the paper:btc state dir: $source_directive"
 
 run_unit() {
     systemd-run --wait --pipe --collect --quiet --unit "$UNIT" \
@@ -83,6 +91,7 @@ run_unit() {
         -p WorkingDirectory="$DEPLOY" \
         -p "StateDirectory=go-trader-${ID}/live" \
         -p "$override_directive" \
+        -p "$source_directive" \
         -p ProtectSystem=strict \
         -p PrivateTmp=true \
         -p NoNewPrivileges=true \
@@ -96,16 +105,17 @@ echo "$first_log" | tail -n 40
 [[ "$first_rc" == "0" ]] || fail "first --once exited $first_rc"
 [[ -f "$STATE_BASE/live/state.db" ]] || fail "live state file not written under the sandbox"
 [[ -f "$STATE_BASE/paper/state.db" ]] || fail "paper state file not written under the sandbox"
+[[ -f "$STATE_BASE/btc/state.db" ]] || fail "paper:btc state file not written under the sandbox"
 [[ "$first_log" == *"[storage] layout: split"* ]] || fail "startup did not report the split layout"
 [[ "$first_log" == *"[config] portfolio scopes:"* ]] || fail "startup did not report the scope counts"
-ls -la "$STATE_BASE/live" "$STATE_BASE/paper"
+ls -la "$STATE_BASE/live" "$STATE_BASE/paper" "$STATE_BASE/btc"
 
 echo "== second start while the handoff holds the paper lock"
-rm -f "$STATE_BASE/paper/state.db.manual-action.lock" "$STATE_BASE/live/state.db.lock" "$STATE_BASE/live/state.db.manual-action.lock"
+rm -f "$STATE_BASE/paper/state.db.manual-action.lock" "$STATE_BASE/btc/state.db.manual-action.lock" "$STATE_BASE/live/state.db.lock" "$STATE_BASE/live/state.db.manual-action.lock"
 [[ ! -e "$STATE_BASE/paper/state.db.manual-action.lock" ]] || fail "fixture precondition: paper manual-action lock must not pre-exist"
 [[ ! -e "$STATE_BASE/live/state.db.lock" ]] || fail "fixture precondition: live ownership lock must not pre-exist"
-update_start_state_lock_holder "$STATE_BASE/live/state.db" "$STATE_BASE/paper/state.db" || fail "lock holder did not start"
-for lock in "$STATE_BASE/live/state.db.lock" "$STATE_BASE/live/state.db.manual-action.lock" "$STATE_BASE/paper/state.db.lock" "$STATE_BASE/paper/state.db.manual-action.lock"; do
+update_start_state_lock_holder "$STATE_BASE/live/state.db" "$STATE_BASE/paper/state.db" "$STATE_BASE/btc/state.db" || fail "lock holder did not start"
+for lock in "$STATE_BASE/live/state.db.lock" "$STATE_BASE/live/state.db.manual-action.lock" "$STATE_BASE/paper/state.db.lock" "$STATE_BASE/paper/state.db.manual-action.lock" "$STATE_BASE/btc/state.db.lock" "$STATE_BASE/btc/state.db.manual-action.lock"; do
     [[ -e "$lock" ]] || fail "lock holder did not create $lock"
     owner=$(stat -c '%U:%G' "$lock")
     [[ "$owner" == "$USER_NAME:$USER_NAME" ]] || fail "$lock is owned by $owner, want $USER_NAME:$USER_NAME (the merged service must open it read-write)"
