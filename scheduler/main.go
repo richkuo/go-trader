@@ -1508,7 +1508,7 @@ func main() {
 				if part.IsLive() {
 					promptPlans[part] = plan
 				} else {
-					promptPlans[part] = KillSwitchClosePlan{OnChainConfirmedFlat: true, DiscordMessage: formatPaperKillSwitchPromptMessage(sr.Reason)}
+					promptPlans[part] = KillSwitchClosePlan{OnChainConfirmedFlat: true, DiscordMessage: formatPaperKillSwitchPromptMessage(part, sr.Reason)}
 				}
 			}
 			if len(promptScopes) > 0 && notifier.HasOwner() && tryClaimKillSwitchResetPrompt(&resetGoroutineRunning) {

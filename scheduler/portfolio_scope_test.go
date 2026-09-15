@@ -456,7 +456,7 @@ func TestPaperKillSwitch_ForceClosesPaperOnly(t *testing.T) {
 	if len(state.Strategies["live-a"].Positions) != 1 {
 		t.Error("a paper latch must never touch a live book")
 	}
-	msg := formatPaperKillSwitchMessage("paper drawdown 50.0% exceeds limit 25.0%", closed)
+	msg := formatPaperKillSwitchMessage(defaultPaperPartition, "paper drawdown 50.0% exceeds limit 25.0%", closed)
 	for _, want := range []string{"PAPER", "paper-a", "No exchange order was sent", "reset paper"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("paper kill-switch message missing %q:\n%s", want, msg)
@@ -754,10 +754,10 @@ func TestPaperKillSwitch_AutoResetsWithoutOwner(t *testing.T) {
 				if paperPrs.PeakValue != 15000 {
 					t.Errorf("auto-reset must re-baseline the paper peak; got %v", paperPrs.PeakValue)
 				}
-				if !strings.Contains(out.Message, paperKillSwitchAutoResetLine) || strings.Contains(out.Message, paperKillSwitchManualResetLine) {
+				if !strings.Contains(out.Message, paperKillSwitchAutoResetLine) || strings.Contains(out.Message, paperKillSwitchManualResetLine(sr.Partition)) {
 					t.Errorf("auto-reset message must say the latch cleared itself:\n%s", out.Message)
 				}
-			} else if !strings.Contains(out.Message, paperKillSwitchManualResetLine) {
+			} else if !strings.Contains(out.Message, paperKillSwitchManualResetLine(sr.Partition)) {
 				t.Errorf("an owner-gated latch must ask for the DM reset:\n%s", out.Message)
 			}
 			if !tc.closeApplied && len(state.Strategies["paper-a"].Positions) != 0 {
@@ -769,7 +769,7 @@ func TestPaperKillSwitch_AutoResetsWithoutOwner(t *testing.T) {
 
 func TestPaperKillSwitchPromptMessage_CarriesReason(t *testing.T) {
 	reason := "portfolio kill switch latched at 2026-09-03T05:00:00Z (paper drawdown 50.0%)"
-	msg := formatPaperKillSwitchPromptMessage(reason)
+	msg := formatPaperKillSwitchPromptMessage(defaultPaperPartition, reason)
 	if !strings.Contains(msg, reason) || !strings.Contains(msg, "PAPER") {
 		t.Fatalf("prompt message must name the scope and reason:\n%s", msg)
 	}
@@ -820,7 +820,7 @@ func TestCycleScopeRisk_NewScopeSeedsPeakFromCurrentValue(t *testing.T) {
 
 func TestKillSwitchResetPromptForScopes(t *testing.T) {
 	livePlan := KillSwitchClosePlan{OnChainConfirmedFlat: false, DiscordMessage: "**PORTFOLIO KILL SWITCH**\nlive drawdown 30%"}
-	paperPlan := KillSwitchClosePlan{OnChainConfirmedFlat: true, DiscordMessage: formatPaperKillSwitchPromptMessage("paper drawdown 40%")}
+	paperPlan := KillSwitchClosePlan{OnChainConfirmedFlat: true, DiscordMessage: formatPaperKillSwitchPromptMessage(defaultPaperPartition, "paper drawdown 40%")}
 	plans := map[RiskPartition]KillSwitchClosePlan{livePartition: livePlan, defaultPaperPartition: paperPlan}
 	both := formatKillSwitchResetPromptForScopes("inst", "0xabc", plans, []RiskPartition{livePartition, defaultPaperPartition}, []RiskPartition{livePartition, defaultPaperPartition})
 	for _, want := range []string{"[KILL SWITCH live]", "[KILL SWITCH paper]", "live drawdown 30%", "paper drawdown 40%", "Hyperliquid 0xabc", "Reply 'reset live' / 'reset paper' to proceed.", "resting stop-losses may already be cancelled"} {

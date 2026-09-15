@@ -151,15 +151,19 @@ func resolveChannel(channels map[string]string, platform, stratType string) stri
 	return ""
 }
 
+// paperChannelSuffix marks every paper routing key; a named source appends the
+// partition separator and its id after it.
+const paperChannelSuffix = "-paper"
+
 // paperChannelKeys lists the paper routing keys for one strategy, most specific
 // first: the named source, then the default paper key. A folded source reaches
 // its own channel when one is configured and otherwise keeps the route the
 // merged deployment already had.
 func paperChannelKeys(platform, source string) []string {
 	if source == "" {
-		return []string{platform + "-paper"}
+		return []string{platform + paperChannelSuffix}
 	}
-	return []string{platform + "-paper" + paperSourceSeparator + source, platform + "-paper"}
+	return []string{platform + paperChannelSuffix + paperSourceSeparator + source, platform + paperChannelSuffix}
 }
 
 func resolveTradeChannel(channels map[string]string, platform, stratType string, isLive bool, source string) string {

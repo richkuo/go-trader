@@ -531,6 +531,45 @@ func TestTradeAlertRoutesSourceKeys(t *testing.T) {
 	}
 }
 
+// TestPaperKillSwitchMessageNamesItsPartition pins the operator instruction a
+// paper kill-switch broadcast carries: the reply it prints must be the reply
+// that clears the partition the broadcast announces, and no other. A fixed
+// "reset paper" is refused when only a named source is latched and clears the
+// default paper partition when both are latched.
+func TestPaperKillSwitchMessageNamesItsPartition(t *testing.T) {
+	cases := []struct {
+		name      string
+		part      RiskPartition
+		wantReply string
+	}{
+		{"default paper", defaultPaperPartition, "reset paper"},
+		{"named source", paperSourcePartition("btc"), "reset paper:btc"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			msg := formatPaperKillSwitchMessage(tc.part, "paper drawdown 50.0% exceeds limit 25.0%", []string{"hl-btc"})
+			if !strings.Contains(msg, "'"+tc.wantReply+"'") {
+				t.Fatalf("message must instruct %q:\n%s", tc.wantReply, msg)
+			}
+			if !strings.Contains(msg, strings.ToUpper(partitionLabel(tc.part))) {
+				t.Errorf("message must name the partition that fired:\n%s", msg)
+			}
+			latched := []RiskPartition{defaultPaperPartition, paperSourcePartition("btc")}
+			got, err := parseKillSwitchResetReply(tc.wantReply, latched)
+			if err != nil {
+				t.Fatalf("the instructed reply must parse while both partitions are latched: %v", err)
+			}
+			if got != tc.part {
+				t.Fatalf("the instructed reply cleared %s, want %s", got, tc.part)
+			}
+			auto := formatPaperKillSwitchAutoResetMessage(tc.part, msg)
+			if strings.Contains(auto, tc.wantReply) || !strings.Contains(auto, paperKillSwitchAutoResetLine) {
+				t.Errorf("auto-reset must replace this partition's manual line:\n%s", auto)
+			}
+		})
+	}
+}
+
 func TestPaperSourceReloadErrors(t *testing.T) {
 	cases := []struct {
 		name    string

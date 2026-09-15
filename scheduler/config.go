@@ -2140,8 +2140,14 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 			knownPlatforms[p] = true
 		}
 	}
-	validateDMChannelsMap(cfg.Discord.DMChannels, "discord", knownPlatforms, &errs)
-	validateDMChannelsMap(cfg.Telegram.DMChannels, "telegram", knownPlatforms, &errs)
+	knownPaperSources := make(map[string]bool, len(cfg.PaperSources))
+	for _, ps := range cfg.PaperSources {
+		if id := strings.TrimSpace(ps.ID); id != "" {
+			knownPaperSources[id] = true
+		}
+	}
+	validateDMChannelsMap(cfg.Discord.DMChannels, "discord", knownPlatforms, knownPaperSources, &errs)
+	validateDMChannelsMap(cfg.Telegram.DMChannels, "telegram", knownPlatforms, knownPaperSources, &errs)
 
 	for k, v := range cfg.SummaryFrequency {
 		if strings.TrimSpace(k) == "" {
@@ -2181,7 +2187,25 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 	return nil
 }
 
-func validateDMChannelsMap(m map[string]string, label string, knownPlatforms map[string]bool, errs *[]string) {
+// parseDMChannelKey splits a dm_channels key into the platform and the optional
+// paper source it routes. The accepted shapes are exactly the keys the send
+// path builds in paperChannelKeys: "<platform>", "<platform>-paper" and
+// "<platform>-paper:<source id>".
+func parseDMChannelKey(k string) (platform, source string, ok bool) {
+	base, src, hasSource := strings.Cut(k, paperSourceSeparator)
+	if hasSource {
+		if !strings.HasSuffix(base, paperChannelSuffix) || !paperSourceIDPattern.MatchString(src) {
+			return "", "", false
+		}
+		return strings.TrimSuffix(base, paperChannelSuffix), src, true
+	}
+	if strings.Contains(base, paperChannelSuffix) && !strings.HasSuffix(base, paperChannelSuffix) {
+		return "", "", false
+	}
+	return strings.TrimSuffix(base, paperChannelSuffix), "", true
+}
+
+func validateDMChannelsMap(m map[string]string, label string, knownPlatforms, knownSources map[string]bool, errs *[]string) {
 	if m == nil {
 		return
 	}
@@ -2190,11 +2214,11 @@ func validateDMChannelsMap(m map[string]string, label string, knownPlatforms map
 			*errs = append(*errs, fmt.Sprintf("%s: dm_channels has empty key", label))
 			continue
 		}
-		if strings.Contains(k, "-paper") && !strings.HasSuffix(k, "-paper") {
-			*errs = append(*errs, fmt.Sprintf("%s: dm_channels key %q is invalid (only optional suffix is \"-paper\")", label, k))
+		platform, source, ok := parseDMChannelKey(k)
+		if !ok {
+			*errs = append(*errs, fmt.Sprintf("%s: dm_channels key %q is invalid (want \"<platform>\", \"<platform>-paper\" or \"<platform>-paper%s<source id>\")", label, k, paperSourceSeparator))
 			continue
 		}
-		platform := strings.TrimSuffix(k, "-paper")
 		if platform == "" {
 			*errs = append(*errs, fmt.Sprintf("%s: dm_channels key %q is invalid (platform prefix is empty)", label, k))
 			continue
@@ -2205,6 +2229,9 @@ func validateDMChannelsMap(m map[string]string, label string, knownPlatforms map
 		}
 		if len(knownPlatforms) > 0 && !knownPlatforms[platform] {
 			fmt.Printf("[WARN] %s: dm_channels[%q] references platform %q with no configured strategies — possible typo\n", label, k, platform)
+		}
+		if source != "" && !knownSources[source] {
+			fmt.Printf("[WARN] %s: dm_channels[%q] references paper source %q with no paper_sources entry — this DM route never fires\n", label, k, source)
 		}
 	}
 }
