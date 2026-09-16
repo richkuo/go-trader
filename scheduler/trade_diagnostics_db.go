@@ -274,3 +274,46 @@ func nullFloatPtr(v sql.NullFloat64) *float64 {
 	f := v.Float64
 	return &f
 }
+
+// TradeDiagnosticsRowsPageForStrategies restricts the page and its total to one
+// id set. Ids translate to stored identities here, inside the owning file, so a
+// caller never has to know how this file spells a strategy.
+func (sdb *StateDB) TradeDiagnosticsRowsPageForStrategies(ids []string, limit, offset int) ([]TradeDiagnosticsRow, int, error) {
+	if sdb == nil || sdb.db == nil {
+		return nil, 0, fmt.Errorf("state db unavailable")
+	}
+	if len(ids) == 0 {
+		return []TradeDiagnosticsRow{}, 0, nil
+	}
+	storageIDs := make([]interface{}, 0, len(ids))
+	placeholders := make([]string, 0, len(ids))
+	for _, id := range ids {
+		sid, err := sdb.toStorageID(id)
+		if err != nil {
+			return nil, 0, err
+		}
+		storageIDs = append(storageIDs, sid)
+		placeholders = append(placeholders, "?")
+	}
+	where := ` WHERE strategy_id IN (` + strings.Join(placeholders, ",") + `)`
+	var total int
+	if err := sdb.db.QueryRow(`SELECT COUNT(*) FROM trade_diagnostics`+where, storageIDs...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count trade diagnostics: %w", err)
+	}
+	query := `SELECT rowid, strategy_id, position_id, symbol, side, timeframe, regime_at_open, close_reason,
+			entry_price, exit_price, quantity, realized_pnl, entry_atr, stop_loss_atr_mult,
+			opened_at, closed_at, mfe_price, mae_price, favorable_pct, adverse_pct, capture_ratio,
+			metrics_status, llm_verdict
+		FROM trade_diagnostics` + where + ` ORDER BY closed_at DESC, rowid DESC LIMIT ? OFFSET ?`
+	args := append(append([]interface{}(nil), storageIDs...), limit, offset)
+	rows, err := sdb.db.Query(query, args...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("query trade diagnostics page: %w", err)
+	}
+	defer rows.Close()
+	out, err := sdb.scanTradeDiagnosticsRows(rows)
+	if err != nil {
+		return nil, 0, err
+	}
+	return out, total, nil
+}

@@ -26,6 +26,9 @@ type UIStrategy struct {
 	Timeframe string `json:"timeframe"`
 	Direction string `json:"direction,omitempty"`
 	Paused    bool   `json:"paused,omitempty"`
+
+	Partition   string `json:"partition"`
+	PaperSource string `json:"paper_source,omitempty"`
 }
 
 type UIStrategyOverview struct {
@@ -48,6 +51,9 @@ type UIStrategyOverview struct {
 	Paused                bool                   `json:"paused,omitempty"`
 	RegimeGateFailClosed  bool                   `json:"regime_gate_fail_closed,omitempty"`
 	CashReconcileRequired bool                   `json:"cash_reconcile_required,omitempty"`
+
+	Partition   string `json:"partition"`
+	PaperSource string `json:"paper_source,omitempty"`
 }
 
 type UIStrategyStatus struct {
@@ -187,7 +193,11 @@ func (ss *StatusServer) handleAPIStrategies(w http.ResponseWriter, r *http.Reque
 		http.NotFound(w, r)
 		return
 	}
-	strategies := ss.uiStrategies()
+	filter, ok := ss.uiPartitionParam(w, r)
+	if !ok {
+		return
+	}
+	strategies := ss.uiStrategiesInPartition(filter)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string][]UIStrategy{"strategies": strategies})
 }
@@ -208,11 +218,15 @@ func (ss *StatusServer) handleAPIStrategiesOverview(w http.ResponseWriter, r *ht
 		return
 	}
 
-	configs := ss.uiStrategies()
+	filter, ok := ss.uiPartitionParam(w, r)
+	if !ok {
+		return
+	}
+	configs := ss.uiStrategiesInPartition(filter)
 	out := make([]UIStrategyOverview, 0, len(configs))
 	for _, item := range configs {
-		overview, _, ok := ss.uiStrategyOverview(item.ID)
-		if !ok {
+		overview, _, found := ss.uiStrategyOverview(item.ID)
+		if !found {
 			continue
 		}
 		out = append(out, overview)
@@ -302,12 +316,19 @@ func parseStrategyAPIPath(p string) (id, resource string, ok bool) {
 }
 
 func (ss *StatusServer) uiStrategies() []UIStrategy {
+	return ss.uiStrategiesInPartition(uiPartitionFilter{All: true})
+}
+
+func (ss *StatusServer) uiStrategiesInPartition(filter uiPartitionFilter) []UIStrategy {
 	ss.strategiesMu.RLock()
 	configs := append([]StrategyConfig(nil), ss.strategies...)
 	ss.strategiesMu.RUnlock()
 
 	out := make([]UIStrategy, 0, len(configs))
 	for _, sc := range configs {
+		if !filter.includes(sc) {
+			continue
+		}
 		out = append(out, uiStrategyFromConfig(sc))
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -329,6 +350,9 @@ func uiStrategyFromConfig(sc StrategyConfig) UIStrategy {
 		Timeframe: strategyDisplayTimeframe(sc),
 		Direction: strategyDisplayDirection(sc),
 		Paused:    sc.Paused,
+
+		Partition:   partitionFor(sc).String(),
+		PaperSource: partitionFor(sc).Source,
 	}
 }
 
@@ -518,6 +542,9 @@ func (ss *StatusServer) uiStrategyOverview(id string) (UIStrategyOverview, Lifet
 		Paused:                sc.Paused,
 		RegimeGateFailClosed:  regimeGateFailClosedActive(sc, &snapshot, ss.regime),
 		CashReconcileRequired: snapshot.CashReconcileRequired,
+
+		Partition:   partitionFor(sc).String(),
+		PaperSource: partitionFor(sc).Source,
 	}, lifetime, true
 }
 

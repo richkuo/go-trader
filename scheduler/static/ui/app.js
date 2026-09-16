@@ -133,6 +133,8 @@
     viewMode: "detail",
     sortKey: "id",
     modeFilter: "all",
+    partitionFilter: "all",
+    partitions: [],
     sortDir: "asc",
     chart: null,
     series: null,
@@ -173,6 +175,7 @@
     darkIcon: document.getElementById("dark-mode-icon"),
     refresh: document.getElementById("refresh-button"),
     viewMode: document.getElementById("view-mode-button"),
+    partitionSelect: document.getElementById("partition-select"),
     interval: document.getElementById("refresh-interval"),
     statusDot: document.getElementById("status-dot"),
     statusLabel: document.getElementById("status-label"),
@@ -352,6 +355,84 @@
       throw err;
     }
     return res.json();
+  }
+
+  // Every dashboard read carries the selected partition, so the process
+  // answers with one partition's view instead of the front end hiding rows a
+  // page or a total already counted.
+  function withPartition(url) {
+    if (state.partitionFilter === "all") return url;
+    return url + (url.indexOf("?") === -1 ? "?" : "&") +
+      "partition=" + encodeURIComponent(state.partitionFilter);
+  }
+
+  // A reload can retire a source while the selector still names it. The server
+  // answers 404 for a partition it does not own, and the dashboard falls back
+  // to every partition rather than showing a stale view.
+  async function getJSONForPartition(url) {
+    try {
+      return await getJSON(withPartition(url));
+    } catch (err) {
+      if (err.status === 404 && state.partitionFilter !== "all") {
+        state.partitionFilter = "all";
+        renderPartitionSelect();
+        return await getJSON(url);
+      }
+      throw err;
+    }
+  }
+
+  function partitionSelected(partition) {
+    return state.partitionFilter === "all" || state.partitionFilter === partition;
+  }
+
+  function renderPartitionSelect() {
+    const el = els.partitionSelect;
+    if (!el) return;
+    const list = state.partitions || [];
+    // One partition is the layout that always shipped, so the control stays
+    // out of the way until a source is actually folded in.
+    el.hidden = list.length < 2;
+    if (el.hidden) {
+      el.innerHTML = "";
+      return;
+    }
+    const known = list.some(function (p) { return p.partition === state.partitionFilter; });
+    if (state.partitionFilter !== "all" && !known) {
+      state.partitionFilter = "all";
+    }
+    el.innerHTML = '<option value="all">All partitions</option>' +
+      list.map(function (p) {
+        return '<option value="' + escapeHTML(p.partition) + '">' +
+          escapeHTML(p.label || p.partition) + "</option>";
+      }).join("");
+    el.value = state.partitionFilter;
+  }
+
+  function setPartitionFilter(value) {
+    if (state.partitionFilter === value) return;
+    state.partitionFilter = value;
+    renderPartitionSelect();
+    // A strategy outside the new partition cannot stay selected: its detail
+    // panels would read a partition the operator is no longer looking at.
+    const active = state.strategies.filter(function (item) {
+      return item.id === state.activeID;
+    })[0];
+    if (active && !partitionSelected(active.partition)) {
+      state.activeID = "";
+    }
+    reloadForPartition().catch(handleRefreshError);
+  }
+
+  async function reloadForPartition() {
+    const resp = await getJSONForPartition("/api/strategies");
+    state.strategies = resp.strategies || [];
+    renderStrategies();
+    if (!state.activeID && state.strategies.length) {
+      await selectStrategy(state.strategies[0].id);
+      return;
+    }
+    await refreshAll();
   }
 
   function initTuningPage() {
@@ -2079,7 +2160,7 @@
   }
 
   async function refreshOverview() {
-    const resp = await getJSON("/api/strategies/overview");
+    const resp = await getJSONForPartition("/api/strategies/overview");
     state.overviewRows = resp.strategies || [];
     renderOverviewTable();
     els.statusDot.className = "status-dot ok";
@@ -2108,9 +2189,11 @@
     if (!els.riskContent) return;
     try {
       const status = await getJSON("/status");
+      state.partitions = status.partitions || [];
+      renderPartitionSelect();
       const rows = [];
       const byScope = status.portfolio_risk_by_scope || {};
-      let scopeKeys = Object.keys(byScope).sort();
+      let scopeKeys = Object.keys(byScope).sort().filter(partitionSelected);
       if (!scopeKeys.length) {
         byScope[""] = status.portfolio_risk || {};
         scopeKeys = [""];
@@ -2213,7 +2296,7 @@
   async function refreshLeaderboardPanel() {
     if (!els.leaderboardBody) return;
     try {
-      const resp = await getJSON("/api/leaderboard");
+      const resp = await getJSONForPartition("/api/leaderboard");
       const entries = resp.entries || [];
       els.leaderboardEmpty.textContent = "No strategies to rank";
       els.leaderboardEmpty.hidden = entries.length > 0;
@@ -2242,7 +2325,7 @@
   async function refreshDiagnosticsPanel() {
     if (!els.diagnosticsBody) return;
     try {
-      const resp = await getJSON("/api/diagnostics?limit=25");
+      const resp = await getJSONForPartition("/api/diagnostics?limit=25");
       const rows = resp.rows || [];
       els.diagnosticsEmpty.textContent = "No diagnostics rows yet";
       els.diagnosticsEmpty.hidden = rows.length > 0;
@@ -2276,8 +2359,12 @@
   async function refreshCashflowPanel() {
     if (!els.cashflowContent) return;
     try {
-      const resp = await getJSON("/api/cashflow");
+      const resp = await getJSONForPartition("/api/cashflow");
       const rows = [];
+      if (resp.available === false) {
+        panelFallback(els.cashflowContent, resp.unavailable || "cash flow is owned by the live partition");
+        return;
+      }
       if (!resp.alarm_enabled) {
         rows.push('<div class="panel-row risk-alert">Journal drift alarm operator-disabled</div>');
       }
@@ -2327,7 +2414,7 @@
     try {
       const resp = await getJSON("/api/correlation");
       const byScope = resp.correlation_by_scope || {};
-      let scopeKeys = Object.keys(byScope).sort();
+      let scopeKeys = Object.keys(byScope).sort().filter(partitionSelected);
       if (!scopeKeys.length && resp.correlation) {
         byScope[""] = resp.correlation;
         scopeKeys = [""];
@@ -2365,7 +2452,7 @@
   async function refreshDeadStrategiesPanel() {
     if (!els.deadStrategiesContent) return;
     try {
-      const resp = await getJSON("/api/strategies/dead");
+      const resp = await getJSONForPartition("/api/strategies/dead");
       const dead = resp.dead || [];
       if (!dead.length) {
         panelFallback(els.deadStrategiesContent, "All strategies have opened at least one position");
@@ -2391,7 +2478,10 @@
         panelFallback(els.closingStrategiesContent, "No close evaluators registered");
         return;
       }
-      els.closingStrategiesContent.innerHTML = evaluators.map(function (ev) {
+      const sharedNote = resp.shared
+        ? '<div class="panel-row panel-muted">Shared by every partition</div>'
+        : "";
+      els.closingStrategiesContent.innerHTML = sharedNote + evaluators.map(function (ev) {
         const overrides = ev.user_overrides ? Object.keys(ev.user_overrides).sort() : [];
         return '<div class="panel-row panel-title">' + escapeHTML(ev.name) +
           (overrides.length
@@ -2406,8 +2496,22 @@
     }
   }
 
+  // The table view draws no risk panel, so it reads the partition roster on its
+  // own. The detail view already has it from the risk panel's status read.
+  async function refreshPartitionRoster() {
+    if (!els.partitionSelect) return;
+    try {
+      const status = await getJSON("/status");
+      state.partitions = status.partitions || [];
+      renderPartitionSelect();
+    } catch (_err) {
+      // A failed roster read leaves the last known partitions in place.
+    }
+  }
+
   function refreshOpsPanels() {
     return Promise.all([
+      refreshPartitionRoster(),
       refreshLeaderboardPanel(),
       refreshDiagnosticsPanel(),
       refreshCashflowPanel(),
@@ -2498,7 +2602,7 @@
     applyViewMode();
     updateDarkModeToggle();
     initChart();
-    const resp = await getJSON("/api/strategies");
+    const resp = await getJSONForPartition("/api/strategies");
     state.strategies = resp.strategies || [];
     renderStrategies();
     if (state.strategies.length) {
@@ -2623,6 +2727,11 @@
       renderOverviewTable();
     });
   });
+  if (els.partitionSelect) {
+    els.partitionSelect.addEventListener("change", function () {
+      setPartitionFilter(els.partitionSelect.value);
+    });
+  }
   document.querySelectorAll(".sort-button").forEach(function (button) {
     button.addEventListener("click", function () {
       const key = button.dataset.key;
