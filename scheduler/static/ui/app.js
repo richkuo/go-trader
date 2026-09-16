@@ -368,22 +368,45 @@
 
   // A reload can retire a source while the selector still names it. The server
   // answers 404 for a partition it does not own, and the dashboard falls back
-  // to every partition rather than showing a stale view.
+  // to every partition rather than showing a stale view. Every 404 of a
+  // partitioned read retries bare, so sibling reads inside one refresh recover
+  // in the same cycle instead of painting an error after the first one resets
+  // the selection.
   async function getJSONForPartition(url) {
+    const requested = state.partitionFilter;
+    if (requested === "all") {
+      return { data: await getJSON(url), partition: "all" };
+    }
     try {
-      return await getJSON(withPartition(url));
+      return { data: await getJSON(withPartition(url)), partition: requested };
     } catch (err) {
-      if (err.status === 404 && state.partitionFilter !== "all") {
-        state.partitionFilter = "all";
-        renderPartitionSelect();
-        return await getJSON(url);
+      if (err.status === 404) {
+        if (state.partitionFilter === requested) {
+          state.partitionFilter = "all";
+          renderPartitionSelect();
+        }
+        return { data: await getJSON(url), partition: "all" };
       }
       throw err;
     }
   }
 
+  // A response is rendered only under the selection it was fetched for, so a
+  // reply that lands after the operator switched partitions is dropped rather
+  // than drawn under the new selection.
+  function partitionStillSelected(partition) {
+    return partition === state.partitionFilter;
+  }
+
   function partitionSelected(partition) {
     return state.partitionFilter === "all" || state.partitionFilter === partition;
+  }
+
+  // An alert row whose owner the process cannot name is shown under every
+  // selection: hiding a circuit breaker because its strategy left the roster
+  // would drop a protective alert silently.
+  function partitionRowVisible(partition) {
+    return !partition || partitionSelected(partition);
   }
 
   function renderPartitionSelect() {
@@ -394,6 +417,10 @@
     // out of the way until a source is actually folded in.
     el.hidden = list.length < 2;
     if (el.hidden) {
+      // A hidden selector must not keep scoping the panels: a selection the
+      // operator can no longer see or change would filter every panel against
+      // a partition this process has stopped owning.
+      state.partitionFilter = "all";
       el.innerHTML = "";
       return;
     }
@@ -425,8 +452,9 @@
   }
 
   async function reloadForPartition() {
-    const resp = await getJSONForPartition("/api/strategies");
-    state.strategies = resp.strategies || [];
+    const read = await getJSONForPartition("/api/strategies");
+    if (!partitionStillSelected(read.partition)) return;
+    state.strategies = read.data.strategies || [];
     renderStrategies();
     if (!state.activeID && state.strategies.length) {
       await selectStrategy(state.strategies[0].id);
@@ -2160,8 +2188,9 @@
   }
 
   async function refreshOverview() {
-    const resp = await getJSONForPartition("/api/strategies/overview");
-    state.overviewRows = resp.strategies || [];
+    const read = await getJSONForPartition("/api/strategies/overview");
+    if (!partitionStillSelected(read.partition)) return;
+    state.overviewRows = read.data.strategies || [];
     renderOverviewTable();
     els.statusDot.className = "status-dot ok";
     els.statusLabel.textContent = "Live";
@@ -2194,9 +2223,14 @@
       const rows = [];
       const byScope = status.portfolio_risk_by_scope || {};
       let scopeKeys = Object.keys(byScope).sort().filter(partitionSelected);
-      if (!scopeKeys.length) {
+      // The untagged single-value field is the legacy scope's, so it may be
+      // read only when the operator asked for every partition.
+      if (!scopeKeys.length && state.partitionFilter === "all") {
         byScope[""] = status.portfolio_risk || {};
         scopeKeys = [""];
+      }
+      if (!scopeKeys.length) {
+        rows.push('<div class="panel-row panel-muted">No portfolio risk reading for this partition yet</div>');
       }
       scopeKeys.forEach(function (scope) {
         const pr = byScope[scope] || {};
@@ -2212,7 +2246,9 @@
       const riskHeaderRows = rows.length;
       const now = Date.now();
       Object.keys(status.strategies || {}).sort().forEach(function (id) {
-        const rs = (status.strategies[id] || {}).risk_state || {};
+        const entry = status.strategies[id] || {};
+        if (!partitionRowVisible(entry.partition)) return;
+        const rs = entry.risk_state || {};
         if (rs.circuit_breaker) {
           rows.push('<div class="panel-row risk-alert">' + escapeHTML(id) + ": CB OPEN (" +
             escapeHTML(cbUntilLabel(rs.circuit_breaker_until, now)) + ")</div>");
@@ -2296,8 +2332,9 @@
   async function refreshLeaderboardPanel() {
     if (!els.leaderboardBody) return;
     try {
-      const resp = await getJSONForPartition("/api/leaderboard");
-      const entries = resp.entries || [];
+      const read = await getJSONForPartition("/api/leaderboard");
+      if (!partitionStillSelected(read.partition)) return;
+      const entries = read.data.entries || [];
       els.leaderboardEmpty.textContent = "No strategies to rank";
       els.leaderboardEmpty.hidden = entries.length > 0;
       els.leaderboardBody.innerHTML = entries.map(function (e, i) {
@@ -2325,8 +2362,9 @@
   async function refreshDiagnosticsPanel() {
     if (!els.diagnosticsBody) return;
     try {
-      const resp = await getJSONForPartition("/api/diagnostics?limit=25");
-      const rows = resp.rows || [];
+      const read = await getJSONForPartition("/api/diagnostics?limit=25");
+      if (!partitionStillSelected(read.partition)) return;
+      const rows = read.data.rows || [];
       els.diagnosticsEmpty.textContent = "No diagnostics rows yet";
       els.diagnosticsEmpty.hidden = rows.length > 0;
       els.diagnosticsBody.innerHTML = rows.map(function (row) {
@@ -2359,7 +2397,9 @@
   async function refreshCashflowPanel() {
     if (!els.cashflowContent) return;
     try {
-      const resp = await getJSONForPartition("/api/cashflow");
+      const read = await getJSONForPartition("/api/cashflow");
+      if (!partitionStillSelected(read.partition)) return;
+      const resp = read.data;
       const rows = [];
       if (resp.available === false) {
         panelFallback(els.cashflowContent, resp.unavailable || "cash flow is owned by the live partition");
@@ -2415,7 +2455,10 @@
       const resp = await getJSON("/api/correlation");
       const byScope = resp.correlation_by_scope || {};
       let scopeKeys = Object.keys(byScope).sort().filter(partitionSelected);
-      if (!scopeKeys.length && resp.correlation) {
+      // The untagged snapshot belongs to the legacy scope, so a selected
+      // partition with no snapshot of its own reports none rather than
+      // borrowing another partition's gross exposure and warnings.
+      if (!scopeKeys.length && resp.correlation && state.partitionFilter === "all") {
         byScope[""] = resp.correlation;
         scopeKeys = [""];
       }
@@ -2452,7 +2495,9 @@
   async function refreshDeadStrategiesPanel() {
     if (!els.deadStrategiesContent) return;
     try {
-      const resp = await getJSONForPartition("/api/strategies/dead");
+      const read = await getJSONForPartition("/api/strategies/dead");
+      if (!partitionStillSelected(read.partition)) return;
+      const resp = read.data;
       const dead = resp.dead || [];
       if (!dead.length) {
         panelFallback(els.deadStrategiesContent, "All strategies have opened at least one position");
@@ -2602,8 +2647,8 @@
     applyViewMode();
     updateDarkModeToggle();
     initChart();
-    const resp = await getJSONForPartition("/api/strategies");
-    state.strategies = resp.strategies || [];
+    const read = await getJSONForPartition("/api/strategies");
+    state.strategies = read.data.strategies || [];
     renderStrategies();
     if (state.strategies.length) {
       await selectStrategy(state.strategies[0].id);

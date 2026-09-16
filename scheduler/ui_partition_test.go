@@ -307,3 +307,33 @@ func TestStatusPartitionLabelFallsBackToPartitionText(t *testing.T) {
 		t.Errorf("unlabelled source label = %q, want %q", resp.Partitions[2].Label, "paper:btc")
 	}
 }
+
+func TestStatusNamesNoPartitionForAnUnconfiguredStateRow(t *testing.T) {
+	state := partitionTestState()
+	state.Strategies["orphan-1"] = &StrategyState{ID: "orphan-1", Type: "perps", Cash: 120, InitialCapital: 100,
+		Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{}}
+	ss := newOpsTestServer(t, partitionTestStrategies(), state, true)
+
+	w := opsGet(ss, ss.handleStatus, "/status")
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d, want 200", w.Code)
+	}
+	var resp struct {
+		Strategies map[string]struct {
+			Partition string `json:"partition"`
+		} `json:"strategies"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	want := map[string]string{"live-1": "live", "paper-1": "paper", "btc-1": "paper:btc", "orphan-1": ""}
+	for id, wantPartition := range want {
+		got, ok := resp.Strategies[id]
+		if !ok {
+			t.Fatalf("status omits strategy %q", id)
+		}
+		if got.Partition != wantPartition {
+			t.Errorf("%s partition = %q, want %q", id, got.Partition, wantPartition)
+		}
+	}
+}

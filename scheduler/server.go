@@ -430,7 +430,14 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 	for id, s := range ss.state.Strategies {
 		pv := displayStrategyValue(s, prices)
-		sc := cfgByID[id]
+		sc, configured := cfgByID[id]
+		// A state row the roster no longer configures has no owning partition,
+		// and naming one would file its alerts under a deployment it may not
+		// belong to. An absent field tells the dashboard to show it always.
+		partitionText := ""
+		if configured {
+			partitionText = partitionFor(sc).String()
+		}
 		initCap := EffectiveInitialCapital(sc, s)
 		pnl := pv - initCap
 		pnlPct := 0.0
@@ -466,7 +473,7 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 			RegimeProfile:                  s.RegimeProfile,
 			Paused:                         sc.Paused,
 			Hedge:                          buildHedgeStatus(sc, s),
-			Partition:                      partitionFor(sc).String(),
+			Partition:                      partitionText,
 			PaperSource:                    sc.PaperSource,
 		}
 	}
