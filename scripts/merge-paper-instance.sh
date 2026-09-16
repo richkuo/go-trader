@@ -159,7 +159,8 @@ STAGED_MAP="${LIVE_CFG}.merge-staged.map.json"
 # locks, compose, proof, apply, rollback) walks this table in the same order.
 declare -a FOLD_KEY=() FOLD_ID=() FOLD_SFX=() FOLD_INSTANCE=() FOLD_PARTITION=()
 declare -a FOLD_DEPLOY=() FOLD_BIN=() FOLD_CFG=() FOLD_UNIT=() FOLD_DROPIN=()
-declare -a FOLD_RETAINED_DROPIN=() FOLD_STAGED_OVERRIDE=() FOLD_CFG_COPY=()
+declare -a FOLD_RETAINED_DROPIN=() FOLD_LEGACY_RETAINED_DROPIN=()
+declare -a FOLD_STAGED_OVERRIDE=() FOLD_CFG_COPY=()
 declare -a FOLD_COMPOSE_CFG=() FOLD_INSPECT=() FOLD_DB=() FOLD_COUNT=() FOLD_PORT=()
 declare -a FOLD_FP_CFG=() FOLD_FP_DB=() FOLD_MERGED=()
 
@@ -195,7 +196,6 @@ add_fold() {
         FOLD_UNIT+=("$PAPER_UNIT")
     fi
     FOLD_DROPIN+=("$(update_unit_dropin_path "$UNIT_DIR" "$LIVE_UNIT" "50-merge-paper-${key}")")
-    FOLD_RETAINED_DROPIN+=("$(update_unit_dropin_path "$UNIT_DIR" "$LIVE_UNIT" "50-merge-paper-${key}").pre-merge")
     FOLD_STAGED_OVERRIDE+=("${BASE%/}/${LIVE}/merge-paper-${key}.override.staged")
     FOLD_CFG_COPY+=("")
     FOLD_COMPOSE_CFG+=("")
@@ -229,6 +229,15 @@ FOLD_COUNT_TOTAL=${#FOLD_KEY[@]}
 MERGE_KEY=$(IFS='+'; printf '%s' "${FOLD_KEY[*]}")
 JOURNAL="${BASE%/}/${LIVE}/merge-paper-${MERGE_KEY}.journal"
 RETAINED_CFG="${LIVE_CFG}.pre-merge-${MERGE_KEY}"
+
+# Two runs can share a fold key and still own different journals, so the copy of
+# the drop-in a run replaces carries the whole key set. A path built from the
+# fold key alone would let a later run overwrite the copy an earlier run still
+# needs, and that run's rollback would then have nothing to restore.
+for i in "${!FOLD_KEY[@]}"; do
+    FOLD_RETAINED_DROPIN+=("${FOLD_DROPIN[$i]}.pre-merge-${MERGE_KEY}")
+    FOLD_LEGACY_RETAINED_DROPIN+=("${FOLD_DROPIN[$i]}.pre-merge")
+done
 
 fold_desc() {
     local i="$1"
@@ -582,9 +591,18 @@ def apply_paper_discord_maps(merged_discord, paper_discord, used, source=""):
                 continue
             if mm.get(target) != val or target in pinned:
                 continue
-            route_keys = [merged_channel_route_key(mm, platform, stype, source) for platform, stype in routed.get(target, [])]
-            if route_keys and all(k and mm.get(k) == val for k in route_keys):
-                candidates.append(target)
+            routed_pairs = routed.get(target, [])
+            route_keys = [merged_channel_route_key(mm, p, t, source) for p, t in routed_pairs]
+            if not route_keys or not all(k and mm.get(k) == val for k in route_keys):
+                continue
+            # A later merge can add <platform>-paper between a source key and the
+            # bare platform key it falls through to, and the resolver reads that
+            # key first for every paper strategy. Prune a source key only when
+            # <platform>-paper already carries the value, so no later fold can
+            # move this partition's route.
+            if source and any(k != "%s-paper" % p for k, (p, _t) in zip(route_keys, routed_pairs)):
+                continue
+            candidates.append(target)
         pruned = set(candidates)
         for target, val in added:
             if mm.get(target) != val:
@@ -1404,6 +1422,14 @@ for i in "${!FOLD_KEY[@]}"; do
     FOLD_DB[$i]=$(update_canonical_db_path "$(update_resolve_config_db_path "${FOLD_DEPLOY[$i]}" "$fold_db_rel")")
     FOLD_PORT[$i]=$(classify_field "$fold_class" status_port)
     FOLD_COUNT[$i]=$(classify_field "$fold_class" strategy_count)
+    if [[ "$MODE" == "rollback" && ! -f "${FOLD_DB[$i]}" ]]; then
+        # A retired deployment can take its database directory with it while the
+        # config under $BASE outlives it. There is no book to protect and no
+        # directory to create the lock file in, so cover neither.
+        echo "rollback: $side database ${FOLD_DB[$i]} is gone; it is neither locked nor fingerprinted by this run"
+        FOLD_DB[$i]=""
+        continue
+    fi
     [[ "$MODE" != "rollback" ]] || continue
     fold_live_count=$(classify_field "$fold_class" live)
     [[ "$fold_live_count" == "0" ]] || fail "$EXIT_PAPER_NOT_PAPER" "$side config runs $fold_live_count live strategy(ies); every strategy must be paper"
@@ -1518,6 +1544,19 @@ journal_value() {
     grep "^$1 " "$JOURNAL" | tail -n 1 | cut -d' ' -f2- || true
 }
 
+# A release before this one recorded no fold lines. Such a journal describes
+# exactly one fold, whose key is in its file name and whose partition is always
+# paper, and it named its retained drop-in copy from that key alone.
+journal_is_legacy() {
+    [[ -f "$1" ]] && ! grep -q '^fold ' "$1"
+}
+
+journal_legacy_key() {
+    local base="${1##*/}"
+    base="${base#merge-paper-}"
+    printf '%s' "${base%.journal}"
+}
+
 archive_if_edited() {
     local path="$1" label="$2"; shift 2
     local current known
@@ -1557,6 +1596,9 @@ restore_from_retained() {
         sfx="${FOLD_SFX[$i]}"
         dropin="${FOLD_DROPIN[$i]}"
         retained="${FOLD_RETAINED_DROPIN[$i]}"
+        if [[ ! -f "$retained" ]] && journal_is_legacy "$JOURNAL" && [[ -f "${FOLD_LEGACY_RETAINED_DROPIN[$i]}" ]]; then
+            retained="${FOLD_LEGACY_RETAINED_DROPIN[$i]}"
+        fi
         journal_has "override done${sfx}" || journal_has "override begin${sfx}" || continue
         archive_if_edited "$dropin" "override" "$(journal_value "override_prior_fp${sfx}")" "$(journal_value "staged_override${sfx}")" "$(journal_value "result_override${sfx}")" || { failed=1; continue; }
         if journal_has "override_prior${sfx} absent"; then
@@ -1609,17 +1651,34 @@ journal_value_in() {
 }
 
 journal_fold_partition() {
+    if journal_is_legacy "$1"; then
+        [[ "$(journal_legacy_key "$1")" == "$2" ]] || return 0
+        printf 'paper'
+        return 0
+    fi
     awk -v k="$2" '$1 == "fold" && $2 == k { print $3 }' "$1" | tail -n 1
+}
+
+# An unfinished apply under another fold set can own the live config and some of
+# its drop-ins at once. Every mode reads it, rollback included: restoring over a
+# half-applied merge strands that run's journal and its installed drop-ins.
+scan_other_journals_interrupted() {
+    local action="$1" j
+    while IFS= read -r j; do
+        [[ -n "$j" && "$j" != "$JOURNAL" ]] || continue
+        grep -qx rolled-back "$j" && continue
+        grep -qx complete "$j" && continue
+        fail "$EXIT_JOURNAL_STATE" "journal $j records an interrupted apply; $LIVE_CFG may hold its merged config while some of its drop-ins were never installed. Roll that run back (--rollback with its own --paper and --source arguments) or re-apply it before $action"
+    done < <(merge_journals)
 }
 
 scan_other_journals() {
     local j i owner
+    scan_other_journals_interrupted "certifying this one"
     while IFS= read -r j; do
         [[ -n "$j" && "$j" != "$JOURNAL" ]] || continue
         grep -qx rolled-back "$j" && continue
-        if ! grep -qx complete "$j"; then
-            fail "$EXIT_JOURNAL_STATE" "journal $j records an interrupted apply; $LIVE_CFG may hold its merged config while some of its drop-ins were never installed. Roll that run back (--rollback with its own --paper and --source arguments) or re-apply it before certifying this one"
-        fi
+        grep -qx complete "$j" || continue
         for i in "${!FOLD_KEY[@]}"; do
             owner=$(journal_fold_partition "$j" "${FOLD_KEY[$i]}")
             [[ -n "$owner" ]] || continue
@@ -1647,6 +1706,7 @@ journal_that_installed_live_config() {
 
 if [[ "$MODE" == "rollback" ]]; then
     [[ -f "$JOURNAL" ]] || fail "$EXIT_JOURNAL_STATE" "no journal at $JOURNAL; nothing to roll back"
+    scan_other_journals_interrupted "rolling this one back"
     newer_journal=$(journal_that_installed_live_config || true)
     if [[ -n "$newer_journal" ]]; then
         fail "$EXIT_JOURNAL_STATE" "$LIVE_CFG is the config $newer_journal installed, a merge later than this one; restoring $RETAINED_CFG would discard that merge and leave its own rollback refused. Roll $newer_journal back first"

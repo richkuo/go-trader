@@ -1286,7 +1286,42 @@ assert_contains "$out" "diff: source btc = instance coin-btc (partition paper:bt
 assert_contains "$out" "diff: alias hl-x -> hl-x-paper-btc (storage_strategy_id=hl-x)" "--diff previews the source alias"
 assert_contains "$out" "diff: stamp hl-x-paper-btc paper_source=btc" "--diff previews the paper_source stamp"
 assert_contains "$out" "diff: channel-plan discord.channels.hyperliquid-paper:btc=C-btc" "--diff names the source channel key it would add"
-assert_contains "$out" "diff: channel-plan discord.channels.hyperliquid-paper:eth not added" "--diff skips a source key the live route already covers"
+assert_contains "$out" "diff: channel-plan discord.channels.hyperliquid-paper:eth=C-live" "--diff keeps a source key the bare platform key alone would route"
+
+echo "== a source channel key is pruned only when the paper key already carries it"
+setup srcprune
+add_source coin-btc 8101 C-live
+python3 - "$LIVE_CFG" <<'PY'
+import json, sys
+p = sys.argv[1]
+cfg = json.load(open(p))
+cfg["discord"]["channels"]["hyperliquid-paper"] = "C-live"
+json.dump(cfg, open(p, "w"))
+PY
+out=$(run_merge_args --source btc=coin-btc --diff 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "--diff over a pinned paper key exits 0 (rc=$rc)"; }
+assert_contains "$out" "discord.channels.hyperliquid-paper:btc not added (paper value C-live already routes through discord.channels.hyperliquid-paper)" "a source key falls through to the paper key, never to the bare platform key"
+out=$(run_merge_args --source btc=coin-btc --apply 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "the pinned-key apply exits 0 (rc=$rc)"; }
+assert_eq "$(json_get "$LIVE_CFG" discord.channels.hyperliquid-paper:btc)" "" "the pruned source key stays out of the merged config"
+
+echo "== a later paper fold cannot move a folded source's channel"
+setup srclater
+add_source coin-btc 8101 C-live
+python3 - "$PAPER_CFG" <<'PY'
+import json, sys
+p = sys.argv[1]
+cfg = json.load(open(p))
+cfg["discord"]["channels"]["hyperliquid"] = "C-other-paper"
+json.dump(cfg, open(p, "w"))
+PY
+out=$(run_merge_args --source btc=coin-btc --apply 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "the source apply exits 0 (rc=$rc)"; }
+assert_eq "$(json_get "$LIVE_CFG" discord.channels.hyperliquid-paper:btc)" "C-live" "the source keeps an explicit key while no paper key pins its route"
+out=$(run_merge_args --source btc=coin-btc --paper paper --apply 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "the later paper fold exits 0 (rc=$rc)"; }
+assert_eq "$(json_get "$LIVE_CFG" discord.channels.hyperliquid-paper)" "C-other-paper" "the later fold adds the paper key the resolver reads first"
+assert_eq "$(json_get "$LIVE_CFG" discord.channels.hyperliquid-paper:btc)" "C-live" "the earlier source still routes to its own channel"
 
 echo "== an alias that is taken takes the next suffix"
 setup srcalias
@@ -1409,6 +1444,120 @@ out=$(run_merge_args --source btc=coin-btc --rollback 2>&1) && rc=0 || rc=$?
 assert_contains "$out" "is gone; its database is neither locked nor fingerprinted" "the rollback names the database it cannot cover"
 assert_eq "$(cat "$LIVE_CFG")" "$orig_cfg" "rollback restores the config without the folded config"
 [[ ! -e "$BTC_DROPIN" ]] || fail "rollback removes the drop-in without the folded config"
+
+echo "== stacked merges that share a fold key each keep their own retained drop-in"
+setup stackretain
+add_source coin-a 8101 C-a
+add_source coin-b 8102 C-b
+mkdir -p "$(dirname "$DROPIN")"
+printf '[Service]\nNice=7\n' > "$DROPIN"
+prior_dropin=$(cat "$DROPIN")
+orig_cfg=$(cat "$LIVE_CFG")
+out=$(run_merge_args --paper paper --apply 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "the first stacked apply exits 0 (rc=$rc)"; }
+first_cfg=$(cat "$LIVE_CFG")
+out=$(run_merge_args --paper paper --source a=coin-a --apply 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "the second stacked apply exits 0 (rc=$rc)"; }
+second_cfg=$(cat "$LIVE_CFG")
+out=$(run_merge_args --paper paper --source a=coin-a --source b=coin-b --apply 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "the third stacked apply exits 0 (rc=$rc)"; }
+out=$(run_merge_args --paper paper --source a=coin-a --source b=coin-b --rollback 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "rolling the newest stacked run back exits 0 (rc=$rc)"; }
+assert_eq "$(cat "$LIVE_CFG")" "$second_cfg" "the newest rollback restores the second merge"
+out=$(run_merge_args --paper paper --source a=coin-a --rollback 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "rolling the middle stacked run back exits 0 (rc=$rc)"; }
+assert_eq "$(cat "$LIVE_CFG")" "$first_cfg" "the middle rollback restores the first merge"
+out=$(run_merge_args --paper paper --rollback 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "rolling the oldest stacked run back exits 0 (rc=$rc)"; }
+assert_eq "$(cat "$LIVE_CFG")" "$orig_cfg" "the oldest rollback restores the pre-merge config"
+assert_eq "$(cat "$DROPIN")" "$prior_dropin" "the drop-in that existed before any merge comes back byte-for-byte"
+
+echo "== a repeat apply of one stacked run stays a no-op"
+setup stackrepeat
+add_source coin-a 8101 C-a
+out=$(run_merge_args --paper paper --apply 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "the apply before the repeat exits 0 (rc=$rc)"; }
+out=$(run_merge_args --paper paper --source a=coin-a --apply 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "the stacked apply exits 0 (rc=$rc)"; }
+stacked_cfg=$(cat "$LIVE_CFG")
+out=$(run_merge_args --paper paper --source a=coin-a --apply 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "the repeat apply exits 0 (rc=$rc)"; }
+assert_contains "$out" "nothing to do" "a repeat apply of the same arguments changes nothing"
+assert_eq "$(cat "$LIVE_CFG")" "$stacked_cfg" "the repeat apply leaves the merged config alone"
+
+echo "== a merge from a release that recorded no folds still owns its drop-in name"
+setup legacyjournal
+add_source coin-z 8103 C-z
+add_source coin-b 8102 C-b
+LEGACY_JOURNAL="$BASE/live/merge-paper-p.journal"
+legacy_journal_body() {
+    printf 'run_id 20260101000000-1\nlive_config a\npaper_config b\nlive_db c\npaper_db d\n'
+    printf 'staged_config e\nstaged_override f\noverride_prior absent\n'
+    printf 'config begin\nconfig done\noverride begin\noverride done\n'
+    printf 'result_config g\nresult_override h\ncomplete\n'
+}
+legacy_journal_body > "$LEGACY_JOURNAL"
+out=$(run_merge_args --source p=coin-z --source b=coin-b 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "24" "a source id equal to a legacy merge's key refuses"
+assert_contains "$out" "already folded 'p' as partition paper" "the refusal reads a journal that carries no fold line"
+assert_contains "$out" "50-merge-paper-p.conf" "the refusal names the drop-in both runs would write"
+out=$(run_merge_args --source b=coin-b 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "a legacy journal whose key this run never folds does not refuse (rc=$rc)"; }
+legacy_journal_body > "$BASE/live/merge-paper-paper.journal"
+out=$(run_merge_args --paper paper --source b=coin-b 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "a legacy journal whose key keeps partition paper does not refuse (rc=$rc)"; }
+rm -f "$BASE/live/merge-paper-paper.journal"
+printf 'rolled-back\n' >> "$LEGACY_JOURNAL"
+out=$(run_merge_args --source p=coin-z --source b=coin-b 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "a rolled-back legacy journal does not refuse (rc=$rc)"; }
+
+echo "== a rollback refuses while another journal records an interrupted apply"
+setup rollbackinterrupted
+add_source coin-btc 8101 C-btc
+orig_cfg=$(cat "$LIVE_CFG")
+out=$(run_merge_args --paper paper --apply 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "the apply before the interrupted run exits 0 (rc=$rc)"; }
+first_cfg=$(cat "$LIVE_CFG")
+printf 'run_id z\nfold btc paper:btc coin-btc\nconfig begin\nconfig done\n' > "$BASE/live/merge-paper-btc.journal"
+out=$(run_merge_args --paper paper --rollback 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "24" "a rollback refuses while another journal records an interrupted apply"
+assert_contains "$out" "merge-paper-btc.journal records an interrupted apply" "the rollback refusal names the other journal"
+assert_eq "$(cat "$LIVE_CFG")" "$first_cfg" "the refused rollback leaves the config alone"
+printf 'complete\n' >> "$BASE/live/merge-paper-btc.journal"
+out=$(run_merge_args --paper paper --rollback 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "a complete other journal does not refuse a rollback (rc=$rc)"; }
+assert_eq "$(cat "$LIVE_CFG")" "$orig_cfg" "the rollback restores the pre-merge config"
+printf 'rolled-back\n' >> "$BASE/live/merge-paper-btc.journal"
+out=$(run_merge_args --paper paper --rollback 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "a rolled-back other journal does not refuse a rollback (rc=$rc)"; }
+assert_contains "$out" "already rolled back" "the second rollback stays a no-op"
+
+echo "== a rollback of the interrupted run itself still restores"
+setup rollbackself
+add_source coin-btc 8101 C-btc
+orig_cfg=$(cat "$LIVE_CFG")
+out=$(MERGE_PAPER_FAIL_AFTER=config run_merge_args --source btc=coin-btc --apply 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "4" "the interrupted apply exits 4"
+assert_eq "$(cat "$LIVE_CFG")" "$orig_cfg" "the interrupted apply restores the config itself"
+out=$(run_merge_args --source btc=coin-btc --rollback 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "rolling the interrupted run itself back exits 0 (rc=$rc)"; }
+assert_eq "$(cat "$LIVE_CFG")" "$orig_cfg" "the rollback of the interrupted run keeps the pre-merge config"
+
+echo "== rollback skips a folded database inside a deployment that is gone"
+setup rollbacktree
+add_source coin-btc 8101 C-btc
+mv "$BASE/coin-btc/state.db" "$OPT/go-trader-coin-btc/scheduler/state.db"
+source_cfg_json "scheduler/state.db" 8101 C-btc > "$BASE/coin-btc/config.json"
+BTC_DROPIN="$UNITS/go-trader@live.service.d/50-merge-paper-btc.conf"
+orig_cfg=$(cat "$LIVE_CFG")
+out=$(run_merge_args --source btc=coin-btc --apply 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "apply over a deployment-tree database exits 0 (rc=$rc)"; }
+rm -r "$OPT/go-trader-coin-btc"
+out=$(run_merge_args --source btc=coin-btc --rollback 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "rollback after the deployment tree is deleted exits 0 (rc=$rc)"; }
+assert_contains "$out" "is gone; it is neither locked nor fingerprinted" "the rollback names the database it cannot lock"
+assert_eq "$(cat "$LIVE_CFG")" "$orig_cfg" "rollback restores the config without the deployment tree"
+[[ ! -e "$BTC_DROPIN" ]] || fail "rollback removes the drop-in without the deployment tree"
 
 echo "== rollback still refuses while another process holds a database lock"
 setup rollbacklock
