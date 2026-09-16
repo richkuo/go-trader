@@ -328,6 +328,8 @@ Per-strategy `params` merges under built-in defaults (config wins; runtime data 
 
 ---
 
+**Dashboard partition selector.** When the live process owns folded paper sources, the dashboard toolbar shows a partition selector listing live, the default paper partition and each folded source. The selection is carried on every panel read as `?partition=live|paper|paper:<source id>`, so the strategy list, overview, leaderboard, diagnostics, dead-strategy count, portfolio risk and correlation all show one partition at a time. Diagnostics pages and totals are filtered in the owning state file, so the count matches the rows you can page through. Cash flow stays live-owned and reports itself unavailable for a paper partition; the close-evaluator catalogue is shared by every partition. The selector stays hidden when the process owns one partition.
+
 ## Manual Trading on Hyperliquid
 
 Hand-placed positions (or TradingView alerts) tracked for P&L, stops/TPs, and Discord summaries — declare `type: "manual"` and use:
