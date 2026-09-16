@@ -1318,4 +1318,131 @@ assert_rc "$rc" "2" "folding the live instance exits 2"
 out=$(run_merge_args --source btc=coin-btc --source btc=coin-eth 2>&1) && rc=0 || rc=$?
 assert_rc "$rc" "2" "one id naming two deployments exits 2"
 
+echo "== a source id may not take a drop-in name an applied merge already owns"
+setup keyclash
+add_source coin-a 8101 C-a
+add_source coin-b 8102 C-b
+add_source coin-z 8103 C-z
+A_DROPIN="$UNITS/go-trader@live.service.d/50-merge-paper-coin-a.conf"
+out=$(run_merge_args --paper coin-a --source btc=coin-b --apply 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "apply before the key clash exits 0 (rc=$rc)"; }
+a_dropin_before=$(cat "$A_DROPIN")
+out=$(run_merge_args --source coin-a=coin-z 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "24" "a source id equal to an applied --paper instance name refuses"
+assert_contains "$out" "already folded 'coin-a' as partition paper" "the refusal names the partition that owns the drop-in"
+assert_contains "$out" "50-merge-paper-coin-a.conf" "the refusal names the drop-in both runs would write"
+assert_eq "$(cat "$A_DROPIN")" "$a_dropin_before" "the refused run leaves the applied drop-in alone"
+out=$(run_merge_args --paper coin-a --source btc=coin-b --source eth=coin-z 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "adding a source to an applied merge still certifies (rc=$rc)"; }
+assert_contains "$out" "VERDICT: READY" "a later run that keeps every fold key on its own partition reaches READY"
+
+echo "== the reverse direction is refused too"
+setup keyclash2
+add_source coin-a 8101 C-a
+add_source coin-b 8102 C-b
+add_source a 8103 C-plain
+out=$(run_merge_args --source a=coin-a --source btc=coin-b --apply 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "source-first apply exits 0 (rc=$rc)"; }
+out=$(run_merge_args --paper a 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "24" "a --paper instance named like an applied source refuses"
+assert_contains "$out" "already folded 'a' as partition paper:a" "the reverse refusal names the source partition"
+
+echo "== an interrupted apply under another fold set stops every later run"
+setup otherjournal
+add_source coin-btc 8101 C-btc
+printf 'run_id x\nfold ghost paper:ghost coin-ghost\nconfig begin\nconfig done\n' > "$BASE/live/merge-paper-ghost.journal"
+out=$(run_merge_args --source btc=coin-btc 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "24" "a dry run refuses while another journal records an interrupted apply"
+assert_contains "$out" "merge-paper-ghost.journal records an interrupted apply" "the refusal names the other journal"
+out=$(run_merge_args --source btc=coin-btc --apply 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "24" "an apply refuses on the same evidence"
+printf 'rolled-back\n' >> "$BASE/live/merge-paper-ghost.journal"
+out=$(run_merge_args --source btc=coin-btc 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "a rolled-back other journal does not refuse (rc=$rc)"; }
+printf 'run_id y\nfold other paper:other coin-other\ncomplete\n' > "$BASE/live/merge-paper-other.journal"
+out=$(run_merge_args --source btc=coin-btc 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "a complete other journal does not refuse (rc=$rc)"; }
+
+echo "== rolling an older run back after a newer merge is refused, not silently reverted"
+setup outoforder
+add_source coin-btc 8101 C-btc
+orig_cfg=$(cat "$LIVE_CFG")
+out=$(run_merge_args --paper paper --apply 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "first apply exits 0 (rc=$rc)"; }
+first_cfg=$(cat "$LIVE_CFG")
+out=$(run_merge_args --source btc=coin-btc --apply 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "second apply exits 0 (rc=$rc)"; }
+out=$(run_merge_args --paper paper --rollback 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "24" "rolling the older run back after a newer merge refuses"
+assert_contains "$out" "merge-paper-btc.journal installed" "the refusal names the newer run"
+assert_eq "$(json_get "$LIVE_CFG" paper_sources.0.id)" "btc" "the newer merge is still installed"
+out=$(run_merge_args --source btc=coin-btc --rollback 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "rolling the newest run back stays one command (rc=$rc)"; }
+assert_eq "$(cat "$LIVE_CFG")" "$first_cfg" "the newest rollback restores the previous merge"
+out=$(run_merge_args --paper paper --rollback 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "the older rollback then succeeds (rc=$rc)"; }
+assert_eq "$(cat "$LIVE_CFG")" "$orig_cfg" "rolling back in order restores the pre-merge config"
+
+echo "== rollback needs only the retained files, not the folded deployment"
+setup rollbackgone
+add_source coin-btc 8101 C-btc
+orig_cfg=$(cat "$LIVE_CFG")
+BTC_DROPIN="$UNITS/go-trader@live.service.d/50-merge-paper-btc.conf"
+out=$(run_merge_args --source btc=coin-btc --apply 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "apply before deployment retirement exits 0 (rc=$rc)"; }
+rm -r "$OPT/go-trader-coin-btc"
+out=$(run_merge_args --source btc=coin-btc --rollback 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "rollback after the deployment is retired exits 0 (rc=$rc)"; }
+assert_eq "$(cat "$LIVE_CFG")" "$orig_cfg" "rollback restores the config without the deployment"
+[[ ! -e "$BTC_DROPIN" ]] || fail "rollback removes the drop-in without the deployment"
+
+echo "== rollback without the folded config names the database it cannot lock"
+setup rollbacknocfg
+add_source coin-btc 8101 C-btc
+BTC_DROPIN="$UNITS/go-trader@live.service.d/50-merge-paper-btc.conf"
+orig_cfg=$(cat "$LIVE_CFG")
+out=$(run_merge_args --source btc=coin-btc --apply 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "apply before the config is removed exits 0 (rc=$rc)"; }
+rm "$BASE/coin-btc/config.json"
+out=$(run_merge_args --source btc=coin-btc --rollback 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "rollback without the folded config exits 0 (rc=$rc)"; }
+assert_contains "$out" "is gone; its database is neither locked nor fingerprinted" "the rollback names the database it cannot cover"
+assert_eq "$(cat "$LIVE_CFG")" "$orig_cfg" "rollback restores the config without the folded config"
+[[ ! -e "$BTC_DROPIN" ]] || fail "rollback removes the drop-in without the folded config"
+
+echo "== rollback still refuses while another process holds a database lock"
+setup rollbacklock
+add_source coin-btc 8101 C-btc
+out=$(run_merge_args --source btc=coin-btc --apply 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "apply before the lock test exits 0 (rc=$rc)"; }
+hold_lock_in_background "$(update_canonical_db_path "$BASE/coin-btc/state.db").lock"
+out=$(run_merge_args --source btc=coin-btc --rollback 2>&1) && rc=0 || rc=$?
+kill "$HOLD_PID" 2>/dev/null || true
+wait "$HOLD_PID" 2>/dev/null || true
+assert_rc "$rc" "3" "a held source lock still refuses a rollback"
+
+echo "== a partition's expected books come from the staged config, not from one run's fold"
+setup partitioncount
+paper_cfg_json "$PAPER_DB_CFG" '{"max_drawdown_pct": 25, "daily_max_loss_usd": 500}' > "$PAPER_CFG"
+python3 - "$PAPER_CFG" <<'PY'
+import json, sys
+p = sys.argv[1]
+cfg = json.load(open(p))
+cfg["discord"]["channels"]["hyperliquid"] = "C-live"
+json.dump(cfg, open(p, "w"))
+PY
+python3 - "$LIVE_CFG" <<'PY'
+import json, sys
+p = sys.argv[1]
+cfg = json.load(open(p))
+cfg["strategies"].append({"id": "hl-own-paper", "type": "perps", "platform": "hyperliquid",
+    "script": "shared_scripts/check_hyperliquid.py", "args": ["vwap", "BTC", "1h", "--mode=paper"],
+    "capital": 100, "leverage": 5, "margin_per_trade_usd": 50})
+json.dump(cfg, open(p, "w"))
+PY
+out=$(run_merge_args --paper paper 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "a dry run with a live-side paper strategy exits 0 (rc=$rc)"; }
+assert_contains "$out" "1 configured strategy without a stored book yet" "the paper partition expects the live config's own paper strategy too"
+assert_contains "$out" "proof: 3 strategies compared, no effective difference" "a fold that changes nothing for the live side's own paper strategy still proves"
+
 echo "OK: merge-paper-instance tests passed"

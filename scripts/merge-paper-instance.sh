@@ -161,7 +161,7 @@ declare -a FOLD_KEY=() FOLD_ID=() FOLD_SFX=() FOLD_INSTANCE=() FOLD_PARTITION=()
 declare -a FOLD_DEPLOY=() FOLD_BIN=() FOLD_CFG=() FOLD_UNIT=() FOLD_DROPIN=()
 declare -a FOLD_RETAINED_DROPIN=() FOLD_STAGED_OVERRIDE=() FOLD_CFG_COPY=()
 declare -a FOLD_COMPOSE_CFG=() FOLD_INSPECT=() FOLD_DB=() FOLD_COUNT=() FOLD_PORT=()
-declare -a FOLD_FP_CFG=() FOLD_FP_DB=()
+declare -a FOLD_FP_CFG=() FOLD_FP_DB=() FOLD_MERGED=()
 
 add_fold() {
     local id="$1" instance="$2" key sfx partition
@@ -205,6 +205,7 @@ add_fold() {
     FOLD_PORT+=("")
     FOLD_FP_CFG+=("")
     FOLD_FP_DB+=("")
+    FOLD_MERGED+=("0")
 }
 
 [[ -z "$PAPER" ]] || add_fold "" "$PAPER"
@@ -599,18 +600,13 @@ def apply_paper_discord_maps(merged_discord, paper_discord, used, source=""):
             merged_discord[map_key] = mm
     return report, conflicts
 
-# A repeat run recognises a deployment the live config already carries: the
-# legacy paper deployment by paper_db_file, a source by its paper_sources entry.
-# Only then may a stored book already sit in the merged config.
+# A repeat run recognises a deployment the live config already carries. Preflight
+# decides it by canonical path and hands the verdict down in the plan file, so
+# the shell and this helper can never disagree over a path a symlink or a mount
+# spells differently. Only on a repeat may a stored book already sit in the
+# merged config.
 def fold_already_merged(live, f):
-    if f["id"]:
-        already = False
-        for src in declared_paper_sources(live):
-            if src["id"].strip() == f["id"]:
-                already = (src.get("db_file") or "").strip() == f["db"]
-                break
-    else:
-        already = live.get("paper_db_file", "") == f["db"]
+    already = f.get("merged") == "1"
     mine = set(storage_id(s) for s in strategies(live)
                if strategy_mode(s) == MODE_PAPER and strategy_source(s) == f["id"])
     return already, mine
@@ -672,6 +668,18 @@ def collect_compose_refuse_previews(live, cfg, f, aplan, any_mirror, merged_disc
             seen.add(label)
             previews.append((label, json.dumps(live_v, sort_keys=True), json.dumps(paper_v, sort_keys=True)))
     return previews, report
+
+# The staged file for a partition may hold a book for every strategy the staged
+# config places in that partition, including the live config's own paper
+# strategies once the merged process has run a cycle. Counting only this run's
+# moved strategies would refuse an unchanged repeat certification.
+def cmd_partition_count(path, source):
+    cfg = load(path)
+    n = 0
+    for s in strategies(cfg):
+        if strategy_mode(s) == MODE_PAPER and strategy_source(s) == source:
+            n += 1
+    print(n)
 
 def cmd_classify(path):
     cfg = load(path)
@@ -1133,6 +1141,8 @@ def main():
         cmd_get(*args)
     elif cmd == "storage-check":
         cmd_storage_check(*args)
+    elif cmd == "partition-count":
+        cmd_partition_count(*args)
     elif cmd == "compose":
         cmd_compose(*args)
     elif cmd == "diff":
@@ -1219,7 +1229,7 @@ write_plan() {
     local -a args=()
     for i in "${!FOLD_KEY[@]}"; do
         args+=("${FOLD_KEY[$i]}" "${FOLD_ID[$i]}" "${FOLD_INSTANCE[$i]}" "${FOLD_PARTITION[$i]}" \
-               "${FOLD_COMPOSE_CFG[$i]}" "${FOLD_DB[$i]}" "${FOLD_INSPECT[$i]}")
+               "${FOLD_COMPOSE_CFG[$i]}" "${FOLD_DB[$i]}" "${FOLD_INSPECT[$i]}" "${FOLD_MERGED[$i]}")
     done
     python3 -c '
 import json
@@ -1227,10 +1237,10 @@ import sys
 path, live = sys.argv[1], sys.argv[2]
 rest = sys.argv[3:]
 folds = []
-for i in range(0, len(rest), 7):
-    key, sid, instance, partition, config, db, inspect = rest[i:i + 7]
+for i in range(0, len(rest), 8):
+    key, sid, instance, partition, config, db, inspect, merged = rest[i:i + 8]
     folds.append({"key": key, "id": sid, "instance": instance, "partition": partition,
-                  "config": config, "db": db, "inspect": inspect})
+                  "config": config, "db": db, "inspect": inspect, "merged": merged})
 json.dump({"live_config": live, "folds": folds}, open(path, "w"), indent=2)
 ' "$path" "$LIVE_CFG" "${args[@]}"
 }
@@ -1239,9 +1249,47 @@ classify_field() {
     printf '%s' "$1" | python3 -c 'import json,sys; v = json.load(sys.stdin)[sys.argv[1]]; print("" if v is None else v)' "$2"
 }
 
+[[ -f "$LIVE_CFG" ]] || fail "$EXIT_CONFIG_MISSING" "config $LIVE_CFG is missing"
+live_class=$(py classify "$LIVE_CFG")
+live_cv=$(classify_field "$live_class" config_version)
+live_db_rel=$(classify_field "$live_class" db_file)
+live_paper_db=$(classify_field "$live_class" paper_db_file)
+LIVE_DB=$(update_resolve_config_db_path "$LIVE_DEPLOY" "$live_db_rel")
+LIVE_DB_CANON=$(update_canonical_db_path "$LIVE_DB")
+live_declared_sources=$(printf '%s' "$live_class" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["paper_sources"]))')
+live_declared_db() {
+    printf '%s' "$live_declared_sources" | python3 -c 'import json,sys; print(json.load(sys.stdin).get(sys.argv[1], ""))' "$1"
+}
+live_declared_ids() {
+    printf '%s' "$live_declared_sources" | python3 -c 'import json,sys; print("\n".join(sorted(json.load(sys.stdin))))'
+}
+live_paper_canon=""
+if [[ -n "$live_paper_db" ]]; then
+    live_paper_canon=$(update_canonical_db_path "$(update_resolve_config_db_path "$LIVE_DEPLOY" "$live_paper_db")")
+fi
+
+# Preflight owns the repeat-run verdict and carries it in the plan file, so the
+# Python helper never re-derives it from a raw config string that a symlink or a
+# mount can spell differently than the canonical path.
+fold_merged_flag() {
+    local i="$1" declared canon
+    if [[ -n "${FOLD_ID[$i]}" ]]; then
+        declared=$(live_declared_db "${FOLD_ID[$i]}")
+        [[ -n "$declared" ]] || { printf '0'; return 0; }
+        canon=$(update_canonical_db_path "$(update_resolve_config_db_path "$LIVE_DEPLOY" "$declared")")
+    else
+        [[ -n "$live_paper_canon" ]] || { printf '0'; return 0; }
+        canon="$live_paper_canon"
+    fi
+    if [[ -n "${FOLD_DB[$i]}" && "$canon" == "${FOLD_DB[$i]}" ]]; then
+        printf '1'
+    else
+        printf '0'
+    fi
+}
+
 ALIGN_OUT=""
 if [[ "$MODE" == "diff" ]]; then
-    [[ -f "$LIVE_CFG" ]] || fail "$EXIT_CONFIG_MISSING" "config $LIVE_CFG is missing"
     for i in "${!FOLD_KEY[@]}"; do
         [[ -f "${FOLD_CFG[$i]}" ]] || fail "$EXIT_CONFIG_MISSING" "config ${FOLD_CFG[$i]} is missing"
     done
@@ -1256,6 +1304,9 @@ if [[ "$MODE" == "diff" ]]; then
                 FOLD_DB[$i]=$(update_canonical_db_path "$(update_resolve_config_db_path "${FOLD_DEPLOY[$i]}" "$fold_db_rel")")
             fi
         fi
+    done
+    for i in "${!FOLD_KEY[@]}"; do
+        FOLD_MERGED[$i]=$(fold_merged_flag "$i")
     done
     write_plan "$WORK/plan.json"
     if ! py root-diff "$LIVE_CFG" "$WORK/plan.json"; then
@@ -1274,34 +1325,42 @@ for i in "${!FOLD_KEY[@]}"; do
     echo "  fold: $(fold_desc "$i") deploy ${FOLD_DEPLOY[$i]} config ${FOLD_CFG[$i]} unit ${FOLD_UNIT[$i]}"
 done
 
-[[ -d "$LIVE_DEPLOY" ]] || fail "$EXIT_DEPLOY_MISSING" "deployment directory $LIVE_DEPLOY is missing"
-for i in "${!FOLD_KEY[@]}"; do
-    [[ -d "${FOLD_DEPLOY[$i]}" ]] || fail "$EXIT_DEPLOY_MISSING" "deployment directory ${FOLD_DEPLOY[$i]} is missing"
-done
-[[ -x "$LIVE_BIN" ]] || fail "$EXIT_DEPLOY_MISSING" "binary $LIVE_BIN is missing or not executable"
-for i in "${!FOLD_KEY[@]}"; do
-    [[ -x "${FOLD_BIN[$i]}" ]] || fail "$EXIT_DEPLOY_MISSING" "binary ${FOLD_BIN[$i]} is missing or not executable"
-done
-live_version=$(run_bin "$LIVE_DEPLOY" "$LIVE_BIN" version 2>/dev/null || true)
-[[ -n "$live_version" ]] || fail "$EXIT_VERSION_MISMATCH" "the live binary $LIVE_BIN reports no version; update both deployments to one release first"
-for i in "${!FOLD_KEY[@]}"; do
-    fold_version=$(run_bin "${FOLD_DEPLOY[$i]}" "${FOLD_BIN[$i]}" version 2>/dev/null || true)
-    [[ "$live_version" == "$fold_version" ]] || \
-        fail "$EXIT_VERSION_MISMATCH" "binary versions differ: live='$live_version' $(fold_side "$i")='$fold_version'; update both deployments to one release first"
-done
-[[ -f "$LIVE_CFG" ]] || fail "$EXIT_CONFIG_MISSING" "config $LIVE_CFG is missing"
-for i in "${!FOLD_KEY[@]}"; do
-    [[ -f "${FOLD_CFG[$i]}" ]] || fail "$EXIT_CONFIG_MISSING" "config ${FOLD_CFG[$i]} is missing"
-done
+# A rollback restores the retained config and drop-ins. It needs the journal, the
+# retained files and the database locks, and nothing else: the post-apply notes
+# tell the operator to retire the folded deployments, so demanding them back
+# would make the undo impossible exactly when it is wanted.
+live_version=""
+if [[ "$MODE" != "rollback" ]]; then
+    [[ -d "$LIVE_DEPLOY" ]] || fail "$EXIT_DEPLOY_MISSING" "deployment directory $LIVE_DEPLOY is missing"
+    for i in "${!FOLD_KEY[@]}"; do
+        [[ -d "${FOLD_DEPLOY[$i]}" ]] || fail "$EXIT_DEPLOY_MISSING" "deployment directory ${FOLD_DEPLOY[$i]} is missing"
+    done
+    [[ -x "$LIVE_BIN" ]] || fail "$EXIT_DEPLOY_MISSING" "binary $LIVE_BIN is missing or not executable"
+    for i in "${!FOLD_KEY[@]}"; do
+        [[ -x "${FOLD_BIN[$i]}" ]] || fail "$EXIT_DEPLOY_MISSING" "binary ${FOLD_BIN[$i]} is missing or not executable"
+    done
+    live_version=$(run_bin "$LIVE_DEPLOY" "$LIVE_BIN" version 2>/dev/null || true)
+    [[ -n "$live_version" ]] || fail "$EXIT_VERSION_MISMATCH" "the live binary $LIVE_BIN reports no version; update both deployments to one release first"
+    for i in "${!FOLD_KEY[@]}"; do
+        fold_version=$(run_bin "${FOLD_DEPLOY[$i]}" "${FOLD_BIN[$i]}" version 2>/dev/null || true)
+        [[ "$live_version" == "$fold_version" ]] || \
+            fail "$EXIT_VERSION_MISMATCH" "binary versions differ: live='$live_version' $(fold_side "$i")='$fold_version'; update both deployments to one release first"
+    done
+    for i in "${!FOLD_KEY[@]}"; do
+        [[ -f "${FOLD_CFG[$i]}" ]] || fail "$EXIT_CONFIG_MISSING" "config ${FOLD_CFG[$i]} is missing"
+    done
+fi
 require_units_stopped
 LIVE_CFG_COPY="$WORK/live-config.json"
-cp "$LIVE_CFG" "$LIVE_CFG_COPY"
 fp_live_cfg=$(update_file_fingerprint "$LIVE_CFG")
-for i in "${!FOLD_KEY[@]}"; do
-    FOLD_CFG_COPY[$i]="$WORK/fold-${FOLD_KEY[$i]}-config.json"
-    cp "${FOLD_CFG[$i]}" "${FOLD_CFG_COPY[$i]}"
-    FOLD_FP_CFG[$i]=$(update_file_fingerprint "${FOLD_CFG[$i]}")
-done
+if [[ "$MODE" != "rollback" ]]; then
+    cp "$LIVE_CFG" "$LIVE_CFG_COPY"
+    for i in "${!FOLD_KEY[@]}"; do
+        FOLD_CFG_COPY[$i]="$WORK/fold-${FOLD_KEY[$i]}-config.json"
+        cp "${FOLD_CFG[$i]}" "${FOLD_CFG_COPY[$i]}"
+        FOLD_FP_CFG[$i]=$(update_file_fingerprint "${FOLD_CFG[$i]}")
+    done
+fi
 
 config_copy_intact() {
     local side="$1" copy="$2" want="$3" what="$4"
@@ -1327,35 +1386,27 @@ probe_side() {
     fi
 }
 
-probe_side live "$LIVE_DEPLOY" "$LIVE_BIN" "$LIVE_CFG_COPY" "$fp_live_cfg" live
-for i in "${!FOLD_KEY[@]}"; do
-    probe_side "$(fold_side "$i")" "${FOLD_DEPLOY[$i]}" "${FOLD_BIN[$i]}" "${FOLD_CFG_COPY[$i]}" "${FOLD_FP_CFG[$i]}" "fold-${FOLD_KEY[$i]}"
-done
-
-live_class=$(py classify "$LIVE_CFG")
-live_cv=$(classify_field "$live_class" config_version)
-live_db_rel=$(classify_field "$live_class" db_file)
-live_paper_db=$(classify_field "$live_class" paper_db_file)
-LIVE_DB=$(update_resolve_config_db_path "$LIVE_DEPLOY" "$live_db_rel")
-LIVE_DB_CANON=$(update_canonical_db_path "$LIVE_DB")
-live_declared_sources=$(printf '%s' "$live_class" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["paper_sources"]))')
-live_declared_db() {
-    printf '%s' "$live_declared_sources" | python3 -c 'import json,sys; print(json.load(sys.stdin).get(sys.argv[1], ""))' "$1"
-}
-live_declared_ids() {
-    printf '%s' "$live_declared_sources" | python3 -c 'import json,sys; print("\n".join(sorted(json.load(sys.stdin))))'
-}
-live_paper_canon=""
-if [[ -n "$live_paper_db" ]]; then
-    live_paper_canon=$(update_canonical_db_path "$(update_resolve_config_db_path "$LIVE_DEPLOY" "$live_paper_db")")
+if [[ "$MODE" != "rollback" ]]; then
+    probe_side live "$LIVE_DEPLOY" "$LIVE_BIN" "$LIVE_CFG_COPY" "$fp_live_cfg" live
+    for i in "${!FOLD_KEY[@]}"; do
+        probe_side "$(fold_side "$i")" "${FOLD_DEPLOY[$i]}" "${FOLD_BIN[$i]}" "${FOLD_CFG_COPY[$i]}" "${FOLD_FP_CFG[$i]}" "fold-${FOLD_KEY[$i]}"
+    done
 fi
 
 for i in "${!FOLD_KEY[@]}"; do
     side=$(fold_side "$i")
+    if [[ ! -f "${FOLD_CFG[$i]}" ]]; then
+        echo "rollback: $side config ${FOLD_CFG[$i]} is gone; its database is neither locked nor fingerprinted by this run"
+        continue
+    fi
     fold_class=$(py classify "${FOLD_CFG[$i]}")
+    fold_db_rel=$(classify_field "$fold_class" db_file)
+    FOLD_DB[$i]=$(update_canonical_db_path "$(update_resolve_config_db_path "${FOLD_DEPLOY[$i]}" "$fold_db_rel")")
+    FOLD_PORT[$i]=$(classify_field "$fold_class" status_port)
+    FOLD_COUNT[$i]=$(classify_field "$fold_class" strategy_count)
+    [[ "$MODE" != "rollback" ]] || continue
     fold_live_count=$(classify_field "$fold_class" live)
     [[ "$fold_live_count" == "0" ]] || fail "$EXIT_PAPER_NOT_PAPER" "$side config runs $fold_live_count live strategy(ies); every strategy must be paper"
-    FOLD_COUNT[$i]=$(classify_field "$fold_class" strategy_count)
     [[ "${FOLD_COUNT[$i]}" != "0" ]] || fail "$EXIT_PAPER_NOT_PAPER" "$side config has no strategies"
     fold_cv=$(classify_field "$fold_class" config_version)
     [[ -n "$live_cv" && "$live_cv" == "$fold_cv" ]] || \
@@ -1366,9 +1417,6 @@ for i in "${!FOLD_KEY[@]}"; do
     [[ -z "$fold_split" ]] || fail "$EXIT_DB_IDENTITY" "$side config already sets paper_db_file=$fold_split; the handoff handles one primary file per side"
     fold_sources=$(printf '%s' "$fold_class" | python3 -c 'import json,sys; print(" ".join(sorted(json.load(sys.stdin)["paper_sources"])))')
     [[ -z "$fold_sources" ]] || fail "$EXIT_DB_IDENTITY" "$side config already declares paper_sources ($fold_sources); hand off one deployment per source, never a deployment that folded sources of its own"
-    FOLD_PORT[$i]=$(classify_field "$fold_class" status_port)
-    fold_db_rel=$(classify_field "$fold_class" db_file)
-    FOLD_DB[$i]=$(update_canonical_db_path "$(update_resolve_config_db_path "${FOLD_DEPLOY[$i]}" "$fold_db_rel")")
     [[ "${FOLD_DB[$i]}" != "$LIVE_DB_CANON" ]] || fail "$EXIT_DB_IDENTITY" "$side db_file resolves to the live db_file ($LIVE_DB_CANON)"
     for j in "${!FOLD_KEY[@]}"; do
         [[ "$j" -lt "$i" ]] || continue
@@ -1412,24 +1460,32 @@ if [[ -n "$live_paper_canon" && "$has_legacy" == "0" ]]; then
     echo "preflight: live config keeps its own paper_db_file ($live_paper_canon); this run only adds source partitions"
 fi
 
-fold_db_list=""
 for i in "${!FOLD_KEY[@]}"; do
+    FOLD_MERGED[$i]=$(fold_merged_flag "$i")
+done
+
+fold_db_list=""
+declare -a LOCK_DBS=("$LIVE_DB_CANON")
+for i in "${!FOLD_KEY[@]}"; do
+    [[ -n "${FOLD_DB[$i]}" ]] || continue
     fold_db_list+=" $(fold_side "$i")=${FOLD_DB[$i]}"
+    LOCK_DBS+=("${FOLD_DB[$i]}")
 done
 echo "preflight: versions=$live_version live_db=$LIVE_DB_CANON$fold_db_list"
 
-if ! update_start_state_lock_holder "$LIVE_DB_CANON" "${FOLD_DB[@]}"; then
+if ! update_start_state_lock_holder "${LOCK_DBS[@]}"; then
     fail "$EXIT_LOCK_CONTENDED" "a database lock is held by another process; see the CONTENDED line above"
 fi
 HOLDER_PID="$UPDATE_LOCK_HOLDER_PID"
-lock_list=$(update_state_lock_paths "$LIVE_DB_CANON" | tr '\n' ' ')
-for i in "${!FOLD_KEY[@]}"; do
-    lock_list+=$(update_state_lock_paths "${FOLD_DB[$i]}" | tr '\n' ' ')
+lock_list=""
+for db in "${LOCK_DBS[@]}"; do
+    lock_list+=$(update_state_lock_paths "$db" | tr '\n' ' ')
 done
 echo "locks: held by pid $HOLDER_PID on $lock_list"
 
 fp_live_db=$(update_db_fingerprint "$LIVE_DB_CANON" | tr '\n' ' ')
 for i in "${!FOLD_KEY[@]}"; do
+    [[ -n "${FOLD_DB[$i]}" ]] || continue
     FOLD_FP_DB[$i]=$(update_db_fingerprint "${FOLD_DB[$i]}" | tr '\n' ' ')
 done
 
@@ -1440,6 +1496,7 @@ check_db_fingerprints() {
         changed+=" live before=[$fp_live_db] after=[$now]"
     fi
     for i in "${!FOLD_KEY[@]}"; do
+        [[ -n "${FOLD_DB[$i]}" ]] || continue
         now=$(update_db_fingerprint "${FOLD_DB[$i]}" | tr '\n' ' ')
         if [[ "$now" != "${FOLD_FP_DB[$i]}" ]]; then
             changed+=" $(fold_side "$i") before=[${FOLD_FP_DB[$i]}] after=[$now]"
@@ -1534,8 +1591,66 @@ restore_from_retained() {
     return 0
 }
 
+# Every merge for this live instance leaves one journal beside the live config.
+# A run that reads only its own journal cannot see a half-applied merge under
+# another fold set, and cannot see that an applied merge already owns one of the
+# drop-in names this run would write.
+merge_journals() {
+    local j
+    shopt -s nullglob
+    for j in "${BASE%/}/${LIVE}"/merge-paper-*.journal; do
+        printf '%s\n' "$j"
+    done
+    shopt -u nullglob
+}
+
+journal_value_in() {
+    grep "^$2 " "$1" | tail -n 1 | cut -d' ' -f2- || true
+}
+
+journal_fold_partition() {
+    awk -v k="$2" '$1 == "fold" && $2 == k { print $3 }' "$1" | tail -n 1
+}
+
+scan_other_journals() {
+    local j i owner
+    while IFS= read -r j; do
+        [[ -n "$j" && "$j" != "$JOURNAL" ]] || continue
+        grep -qx rolled-back "$j" && continue
+        if ! grep -qx complete "$j"; then
+            fail "$EXIT_JOURNAL_STATE" "journal $j records an interrupted apply; $LIVE_CFG may hold its merged config while some of its drop-ins were never installed. Roll that run back (--rollback with its own --paper and --source arguments) or re-apply it before certifying this one"
+        fi
+        for i in "${!FOLD_KEY[@]}"; do
+            owner=$(journal_fold_partition "$j" "${FOLD_KEY[$i]}")
+            [[ -n "$owner" ]] || continue
+            [[ "$owner" != "${FOLD_PARTITION[$i]}" ]] || continue
+            fail "$EXIT_JOURNAL_STATE" "journal $j already folded '${FOLD_KEY[$i]}' as partition $owner; this run would hand the same drop-in $(basename "${FOLD_DROPIN[$i]}") to partition ${FOLD_PARTITION[$i]} and leave $owner with no writable-path directive. Name the source differently"
+        done
+    done < <(merge_journals)
+}
+
+# A rollback restores the config this run replaced. When a later merge installed
+# the config that is there now, restoring would discard that merge and strand its
+# journal, so the newer run is rolled back first.
+journal_that_installed_live_config() {
+    local j fp
+    fp=$(update_file_fingerprint "$LIVE_CFG")
+    while IFS= read -r j; do
+        [[ -n "$j" && "$j" != "$JOURNAL" ]] || continue
+        grep -qx rolled-back "$j" && continue
+        grep -qx complete "$j" || continue
+        [[ "$(journal_value_in "$j" result_config)" == "$fp" ]] || continue
+        printf '%s' "$j"
+        return 0
+    done < <(merge_journals)
+}
+
 if [[ "$MODE" == "rollback" ]]; then
     [[ -f "$JOURNAL" ]] || fail "$EXIT_JOURNAL_STATE" "no journal at $JOURNAL; nothing to roll back"
+    newer_journal=$(journal_that_installed_live_config || true)
+    if [[ -n "$newer_journal" ]]; then
+        fail "$EXIT_JOURNAL_STATE" "$LIVE_CFG is the config $newer_journal installed, a merge later than this one; restoring $RETAINED_CFG would discard that merge and leave its own rollback refused. Roll $newer_journal back first"
+    fi
     if journal_has "rolled-back"; then
         echo "rollback: journal already rolled back; nothing to do"
         check_db_fingerprints "rollback" || exit "$EXIT_RESTORE_FAILED"
@@ -1548,6 +1663,8 @@ if [[ "$MODE" == "rollback" ]]; then
     echo "rollback: complete; every unit stays stopped. Re-run the dry run before any new apply."
     exit 0
 fi
+
+scan_other_journals
 
 if [[ -f "$JOURNAL" ]]; then
     if journal_has "complete"; then
@@ -1653,17 +1770,7 @@ run_bin "$LIVE_DEPLOY" "$LIVE_BIN" storage-inspect --json --config "$STAGED_CFG"
 [[ -s "$WORK/storage-staged.json" ]] || { cat "$WORK/storage-staged.err" >&2; fail "$EXIT_PROOF_REFUSED" "staged storage-inspect produced no report"; }
 echo "proof: staged layout"
 for i in "${!FOLD_KEY[@]}"; do
-    staged_count=$(python3 -c '
-import json
-import sys
-m = json.load(open(sys.argv[1]))
-for fold in m["folds"]:
-    if fold["key"] == sys.argv[2]:
-        print(len(fold["ids"]) + len(fold["skipped"]))
-        break
-else:
-    print(0)
-' "$STAGED_MAP" "${FOLD_KEY[$i]}")
+    staged_count=$(py partition-count "$STAGED_CFG" "${FOLD_ID[$i]}")
     if ! py storage-check "$WORK/storage-staged.json" "$HOLDER_PID" "$staged_count" "${FOLD_PARTITION[$i]}"; then
         fail "$EXIT_PROOF_REFUSED" "the live binary rejects the staged storage layout for ${FOLD_PARTITION[$i]}"
     fi
@@ -1754,6 +1861,9 @@ run_id="$(date +%Y%m%d%H%M%S)-$$"
     printf 'live_db %s\n' "$fp_live_db"
     printf 'staged_config %s\n' "$(update_file_fingerprint "$STAGED_CFG")"
     printf 'folds %s\n' "$(IFS=' '; printf '%s' "${FOLD_KEY[*]}")"
+    for i in "${!FOLD_KEY[@]}"; do
+        printf 'fold %s %s %s\n' "${FOLD_KEY[$i]}" "${FOLD_PARTITION[$i]}" "${FOLD_INSTANCE[$i]}"
+    done
     for i in "${!FOLD_KEY[@]}"; do
         sfx="${FOLD_SFX[$i]}"
         if [[ -n "${FOLD_ID[$i]}" ]]; then
