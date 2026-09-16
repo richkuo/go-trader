@@ -503,7 +503,7 @@ Python 3.12+ via [uv](https://github.com/astral-sh/uv); Go 1.26.2; systemd.
 | Live mode fails | Set env vars from Platforms table |
 | "state DB missing but live strategies configured" | Restore `scheduler/state.db` from backup, or `GO_TRADER_ALLOW_MISSING_STATE=1` for first-run. With `paper_db_file` or `paper_sources` set, restore every file together with its `-wal` / `-shm` sidecars, in the order primary, paper, then sources by id |
 | Which files does a backup need? | `./go-trader storage-inspect --json --config <path>` names the canonical path and the partitions of every state file; `update_resolve_db_exclude` in `scripts/update_helpers.sh` enumerates the same list for the updater |
-| A folded paper unit restarted and the live unit exits 79 | Two processes cannot own one database. Disable every folded unit (`systemctl disable go-trader@<instance>.service`) and start only the merged live unit |
+| A unit exits 79 after a fold | Two processes cannot own one state file. Whichever scheduler starts **second** fails to take the ownership lock and refuses to start with exit 79; the process already holding the lock keeps trading, so read `journalctl` for the unit that exited and leave the running one alone. Usually a folded paper unit was restarted or came back after a reboot: disable every folded unit (`systemctl disable go-trader@<instance>.service`) and start only the merged live unit |
 | Exit code 80 on startup | The storage layout was rejected (aliased files, a book in the wrong file, an ambiguous legacy risk row). Run `./go-trader storage-inspect` — it names the file and the identifier |
 
 ---
