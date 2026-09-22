@@ -14,6 +14,12 @@ const (
 	portfolioWarningMaxChars     = 1900
 )
 
+// portfolioWarningPausedExcluded counts how many paused strategies were
+// filtered from the latest contributors list per scope. Read by
+// BuildPortfolioWarningMessage to render a "(N paused excluded)" footnote
+// and reset by portfolioWarningAlertsReset when the scope leaves the band.
+var portfolioWarningPausedExcluded = map[PortfolioScope]int{}
+
 type PortfolioWarningMessageInputs struct {
 	Reason           string
 	Config           *PortfolioRiskConfig
@@ -53,7 +59,8 @@ func BuildPortfolioWarningMessage(in PortfolioWarningMessageInputs) string {
 			prs = *p
 		}
 	}
-	contribs := portfolioWarningContributors(in.State, in.CfgStrategies, scope, in.Prices)
+	includePaused := in.Config != nil && in.Config.IncludePausedInWarning
+	contribs := portfolioWarningContributors(in.State, in.CfgStrategies, scope, in.Prices, includePaused)
 
 	var b strings.Builder
 	b.WriteString("**PORTFOLIO WARNING")
@@ -128,6 +135,11 @@ func BuildPortfolioWarningMessage(in PortfolioWarningMessageInputs) string {
 		}
 		b.WriteString("```\n")
 	}
+	excluded := portfolioWarningPausedExcluded[scope]
+	if excluded > 0 && !includePaused {
+		b.WriteString(fmt.Sprintf("\n(%d paused strateg%s excluded from contributors — frozen book-keeping P&L is not live risk; set portfolio_risk.include_paused_in_warning=true to include)\n",
+			excluded, pluralize(excluded, "y", "ies")))
+	}
 
 	if len(in.Recent) > 0 {
 		b.WriteString("\nRecent activity (last 15m):\n")
@@ -149,13 +161,21 @@ func BuildPortfolioWarningMessage(in PortfolioWarningMessageInputs) string {
 	return truncateWarningField(msg, portfolioWarningMaxChars)
 }
 
-func portfolioWarningContributors(state *AppState, cfgStrategies []StrategyConfig, scope PortfolioScope, prices map[string]float64) []portfolioWarningContributor {
+func portfolioWarningContributors(state *AppState, cfgStrategies []StrategyConfig, scope PortfolioScope, prices map[string]float64, includePaused bool) []portfolioWarningContributor {
 	if state == nil {
 		return nil
 	}
 	scoped := state.Strategies
 	if len(cfgStrategies) > 0 {
 		scoped = filterStatesByScope(state.Strategies, cfgStrategies, scope)
+	}
+	pausedByID := make(map[string]bool, len(cfgStrategies))
+	if !includePaused {
+		for _, sc := range cfgStrategies {
+			if sc.Paused {
+				pausedByID[sc.ID] = true
+			}
+		}
 	}
 	totalNegative := 0.0
 	out := make([]portfolioWarningContributor, 0, len(scoped))
@@ -164,9 +184,14 @@ func portfolioWarningContributors(state *AppState, cfgStrategies []StrategyConfi
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
+	excludedPaused := 0
 	for _, id := range ids {
 		ss := scoped[id]
 		if ss == nil {
+			continue
+		}
+		if pausedByID[id] {
+			excludedPaused++
 			continue
 		}
 		pv := PortfolioValue(ss, prices)
@@ -199,6 +224,7 @@ func portfolioWarningContributors(state *AppState, cfgStrategies []StrategyConfi
 			}
 		}
 	}
+	portfolioWarningPausedExcluded[scope] = excludedPaused
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].PnL == out[j].PnL {
 			return out[i].ID < out[j].ID
@@ -348,6 +374,13 @@ func formatSignedDollar(v float64) string {
 		return fmt.Sprintf("-$%.0f", math.Abs(v))
 	}
 	return fmt.Sprintf("$%.0f", v)
+}
+
+func pluralize(n int, singular, plural string) string {
+	if n == 1 {
+		return singular
+	}
+	return plural
 }
 
 func formatSignedPct(v float64) string {

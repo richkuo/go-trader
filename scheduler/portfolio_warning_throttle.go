@@ -46,4 +46,5 @@ func portfolioWarningShouldNotify(prev portfolioWarningAlertState, equityInBand,
 
 func portfolioWarningAlertsReset(scope PortfolioScope) {
 	delete(portfolioWarningAlerts, scope)
+	delete(portfolioWarningPausedExcluded, scope)
 }

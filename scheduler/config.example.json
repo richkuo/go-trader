@@ -38,6 +38,8 @@
   "portfolio_risk": {
     "max_drawdown_pct": 25,
     "max_notional_usd": 0,
+    "_doc_include_paused_in_warning": "Default false; paused strategies are excluded from the portfolio warning's Top contributors block (their book-keeping P&L is frozen and shouldn't be misattributed as live risk). Set true to keep paused strategies in the contributors list.",
+    "include_paused_in_warning": false,
     "paper": {
       "max_drawdown_pct": 50
     }

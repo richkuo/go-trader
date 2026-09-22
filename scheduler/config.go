@@ -59,6 +59,11 @@ type PortfolioRiskConfig struct {
 	DailyMaxLossPct             float64 `json:"daily_max_loss_pct,omitempty"`
 	MaxSameDirectionNotionalUSD float64 `json:"max_same_direction_notional_usd,omitempty"`
 	MaxAssetConcentrationPct    float64 `json:"max_asset_concentration_pct,omitempty"`
+	// IncludePausedInWarning, when true, keeps paused strategies in the
+	// portfolio warning's "top contributors" block and as the lead attribution.
+	// Default false — paused strategies have frozen book-keeping P&L that
+	// shouldn't be misattributed as live portfolio risk (#1463 follow-up).
+	IncludePausedInWarning bool `json:"include_paused_in_warning,omitempty"`
 
 	Paper *PortfolioRiskConfig `json:"paper,omitempty"`
 }
@@ -95,6 +100,7 @@ func scopeRiskConfig(cfg *Config, scope PortfolioScope) *PortfolioRiskConfig {
 	if override.MaxAssetConcentrationPct != 0 {
 		merged.MaxAssetConcentrationPct = override.MaxAssetConcentrationPct
 	}
+	merged.IncludePausedInWarning = override.IncludePausedInWarning
 	return &merged
 }
 
