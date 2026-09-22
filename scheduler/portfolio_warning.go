@@ -14,7 +14,7 @@ const (
 	portfolioWarningMaxChars     = 1900
 )
 
-var portfolioWarningPausedExcluded = map[RiskPartition]int{}
+var portfolioWarningFlatPausedExcluded = map[RiskPartition]int{}
 
 type PortfolioWarningMessageInputs struct {
 	Reason           string
@@ -131,9 +131,9 @@ func BuildPortfolioWarningMessage(in PortfolioWarningMessageInputs) string {
 		}
 		b.WriteString("```\n")
 	}
-	excluded := portfolioWarningPausedExcluded[part]
+	excluded := portfolioWarningFlatPausedExcluded[part]
 	if excluded > 0 && !includePaused {
-		b.WriteString(fmt.Sprintf("\n(%d paused strateg%s excluded from contributors — frozen book-keeping P&L is not live risk; set portfolio_risk.include_paused_in_warning=true to include)\n",
+		b.WriteString(fmt.Sprintf("\n(%d flat paused strateg%s excluded from contributors; set portfolio_risk.include_paused_in_warning=true to include)\n",
 			excluded, pluralize(excluded, "y", "ies")))
 	}
 
@@ -180,14 +180,14 @@ func portfolioWarningContributors(state *AppState, cfgStrategies []StrategyConfi
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
-	excludedPaused := 0
+	excludedFlatPaused := 0
 	for _, id := range ids {
 		ss := scoped[id]
 		if ss == nil {
 			continue
 		}
-		if pausedByID[id] {
-			excludedPaused++
+		if pausedByID[id] && len(ss.Positions) == 0 && len(ss.OptionPositions) == 0 {
+			excludedFlatPaused++
 			continue
 		}
 		pv := PortfolioValue(ss, prices)
@@ -220,7 +220,7 @@ func portfolioWarningContributors(state *AppState, cfgStrategies []StrategyConfi
 			}
 		}
 	}
-	portfolioWarningPausedExcluded[part] = excludedPaused
+	portfolioWarningFlatPausedExcluded[part] = excludedFlatPaused
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].PnL == out[j].PnL {
 			return out[i].ID < out[j].ID

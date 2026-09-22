@@ -46,5 +46,5 @@ func portfolioWarningShouldNotify(prev portfolioWarningAlertState, equityInBand,
 
 func portfolioWarningAlertsReset(part RiskPartition) {
 	delete(portfolioWarningAlerts, part)
-	delete(portfolioWarningPausedExcluded, part)
+	delete(portfolioWarningFlatPausedExcluded, part)
 }
