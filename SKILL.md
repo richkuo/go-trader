@@ -618,6 +618,7 @@ Global — key, default, notes:
 | `portfolio_risk.max_same_direction_notional_usd` | `0` = off | Blocks a new same-direction open over the cap. Blocking only, direction-aware. Hot-reloadable. |
 | `portfolio_risk.max_asset_concentration_pct` | `0` = off | Same blocking behavior scoped to one asset's share of exposure. Shares its exposure model with `correlation.*`. |
 | `portfolio_risk.paper` | absent = inherit | Optional override block with the same fields, applied to the paper scope only. A zero or omitted field inherits the parent value; a nested `paper.paper` is rejected. `paper.max_notional_usd` is restart-required; the rest hot-reload. |
+| `portfolio_risk.include_paused_in_warning` | `false` | When true, a paused strategy with no open position (regular or option) is still counted in the portfolio warning's Top Contributors block and lead-attribution line. Default excludes flat paused strategies and appends an excluded-count footnote; a paused strategy with an open position is always shown. Layers root > `paper` > `paper_sources[].portfolio_risk` like the other fields; `false` never turns an enabled layer back off. Hot-reloadable. |
 | `alert_throttle_interval` | 6h | Go duration. Coalesces repeat operator alerts. |
 | `kill_switch_reset_dm_timeout` | empty = 6h | Go duration. How long the reset prompt waits. Independent of `alert_throttle_interval`. |
 | `correlation.enabled`, `.max_concentration_pct`, `.max_same_direction_pct` | off, 60, 75 | Warnings to all active channels plus an owner DM; snapshot in `/status`. Restart-required. |
