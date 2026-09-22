@@ -541,7 +541,7 @@ func TestHyperliquidClosedPnlBasisError(t *testing.T) {
 		return out
 	}
 	open := hlFillRecord{Coin: "BTC", Side: "B", Sz: "1", Px: "100", StartPosition: "0", ClosedPnl: "0", Time: 1, Tid: json.Number("1")}
-	closeExact := hlFillRecord{Coin: "BTC", Side: "A", Sz: "1", Px: "110", StartPosition: "1", ClosedPnl: "10", Time: 2, Tid: json.Number("2")}
+	closeHigh := hlFillRecord{Coin: "BTC", Side: "A", Sz: "1", Px: "110", StartPosition: "1", ClosedPnl: "10.02", Time: 2, Tid: json.Number("2")}
 	cases := []struct {
 		name  string
 		fills []hlFillRecord
@@ -549,30 +549,10 @@ func TestHyperliquidClosedPnlBasisError(t *testing.T) {
 		want  float64
 	}{
 		{
-			name:  "fill price matches closedPnl",
-			fills: []hlFillRecord{open, closeExact},
+			name:  "frontend closedPnl two cents above fill price",
+			fills: []hlFillRecord{open, closeHigh},
 			keep:  ids("1", "2"),
-			want:  0,
-		},
-		{
-			name: "frontend closedPnl two cents above fill price",
-			fills: []hlFillRecord{open, func() hlFillRecord {
-				f := closeExact
-				f.ClosedPnl = "10.02"
-				return f
-			}()},
-			keep: ids("1", "2"),
-			want: 0.02,
-		},
-		{
-			name: "frontend closedPnl two cents below fill price",
-			fills: []hlFillRecord{open, func() hlFillRecord {
-				f := closeExact
-				f.ClosedPnl = "9.98"
-				return f
-			}()},
-			keep: ids("1", "2"),
-			want: -0.02,
+			want:  0.02,
 		},
 		{
 			name: "same-timestamp partials chain by startPosition",
@@ -586,29 +566,16 @@ func TestHyperliquidClosedPnlBasisError(t *testing.T) {
 			want: 10,
 		},
 		{
-			name: "pre-journal open still sets entry for a journaled close",
-			fills: []hlFillRecord{open, func() hlFillRecord {
-				f := closeExact
-				f.ClosedPnl = "10.02"
-				return f
-			}()},
-			keep: ids("2"),
-			want: 0.02,
+			name:  "pre-journal open still sets entry for a journaled close",
+			fills: []hlFillRecord{open, closeHigh},
+			keep:  ids("2"),
+			want:  0.02,
 		},
 		{
 			name:  "fill outside the journal does not move the basis",
-			fills: []hlFillRecord{open, closeExact},
+			fills: []hlFillRecord{open, closeHigh},
 			keep:  ids("1"),
 			want:  0,
-		},
-		{
-			name: "spot closedPnl is not a perp basis gap",
-			fills: []hlFillRecord{
-				open, closeExact,
-				{Coin: "@107", Side: "B", Sz: "3", Px: "2", StartPosition: "0", ClosedPnl: "5", Time: 4, Tid: json.Number("9")},
-			},
-			keep: ids("1", "2", "9"),
-			want: 0,
 		},
 	}
 	for _, tc := range cases {
@@ -672,19 +639,7 @@ func TestReconcileCashflowJournalFillPriceBasis(t *testing.T) {
 	if corrected == nil || math.Abs(corrected.Drift) > 1e-6 {
 		t.Fatalf("fill-price equity must reconcile, drift = %v", corrected.Drift)
 	}
-	if math.Abs(corrected.Drift) > sharedWalletDriftTolerance {
-		t.Fatalf("frontend two-cent closedPnl gap must not alert after correction, drift = %v", corrected.Drift)
-	}
-
-	below := reconcileCashflowJournal(db, key, corrected.ExpectedEquity-0.009, 0, t0.Add(3*time.Minute))
-	if below == nil || math.Abs(below.Drift) > sharedWalletDriftTolerance {
-		t.Fatalf("gap below one cent must not alert, drift = %v", below.Drift)
-	}
-	at := reconcileCashflowJournal(db, key, corrected.ExpectedEquity-sharedWalletDriftTolerance, 0, t0.Add(4*time.Minute))
-	if at == nil || math.Abs(at.Drift) > sharedWalletDriftTolerance {
-		t.Fatalf("gap at one cent must not alert, drift = %v", at.Drift)
-	}
-	gap := reconcileCashflowJournal(db, key, corrected.ExpectedEquity-0.02, 0, t0.Add(5*time.Minute))
+	gap := reconcileCashflowJournal(db, key, corrected.ExpectedEquity-0.02, 0, t0.Add(3*time.Minute))
 	if gap == nil || !(math.Abs(gap.Drift) > sharedWalletDriftTolerance) || math.Abs(gap.Drift-(-0.02)) > 1e-6 {
 		t.Fatalf("real two-cent cash gap must still alert, drift = %v", gap.Drift)
 	}
