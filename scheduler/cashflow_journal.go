@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"math/big"
 	"os"
 	"sort"
 	"strings"
@@ -378,6 +379,7 @@ type cashflowJournalReconcile struct {
 	Drift          float64
 	SettledSum     float64
 	DeltaUPnL      float64
+	ClosedPnlBasis float64
 	Incomplete     bool
 	Usable         bool
 }
@@ -404,6 +406,13 @@ func reconcileCashflowJournal(sdb *StateDB, key SharedWalletKey, accountValue, c
 	rec.DeltaUPnL = res.CurrentUPnL - st.BaselineUPnL
 	rec.ExpectedEquity = cashflowJournalExpectedEquity(st.BaselineAccountValue, st.BaselineUPnL, settled, res.CurrentUPnL)
 	rec.Drift = res.AccountValue - rec.ExpectedEquity
+	if basis, applied, err := hlClosedPnlBasisForJournal(sdb, key); err != nil {
+		fmt.Printf("[WARN] cashflow-journal %s: closedPnl basis unavailable: %v — comparing raw closedPnl this cycle\n", sharedWalletKeyLabel(key), err)
+	} else if applied {
+		rec.ClosedPnlBasis = basis
+		rec.ExpectedEquity -= basis
+		rec.Drift = res.AccountValue - rec.ExpectedEquity
+	}
 	rec.Usable = res.FillsFetched && res.FundingFetched && res.TransfersFetched && !st.Incomplete
 	return rec
 }
@@ -520,8 +529,8 @@ func applyCashflowJournalDriftBasis(results []sharedWalletDriftResult, key Share
 		basis = cashflowBasisJournal
 	}
 	cashflowJournalBases.record(label, basis)
-	fmt.Printf("[cashflow-journal] %s: expected_equity $%.2f vs accountValue $%.2f → journal_drift $%+.4f (settled Σ $%+.2f, ΔuPnL $%+.2f); trade-ledger %s; alarm %s\n",
-		sharedWalletKeyLabel(key), rec.ExpectedEquity, rec.AccountValue, rec.Drift, rec.SettledSum, rec.DeltaUPnL, ledgerNote, switchNote)
+	fmt.Printf("[cashflow-journal] %s: expected_equity $%.2f vs accountValue $%.2f → journal_drift $%+.4f (settled Σ $%+.2f, ΔuPnL $%+.2f, closedPnl basis $%+.4f); trade-ledger %s; alarm %s\n",
+		sharedWalletKeyLabel(key), rec.ExpectedEquity, rec.AccountValue, rec.Drift, rec.SettledSum, rec.DeltaUPnL, rec.ClosedPnlBasis, ledgerNote, switchNote)
 
 	if ledger == nil {
 		return
@@ -550,4 +559,282 @@ func sumHLAccountUPnL(positions []HLPosition) float64 {
 		sum += p.UnrealizedPnL
 	}
 	return sum
+}
+
+// hyperliquidClosedPnlBasisError is the accumulated gap closedPnl - fill-price
+// realized PnL for journaled perp fills. Hyperliquid documents closedPnl as a
+// frontend convenience (entry price and pnl); account value follows the margin
+// change of the trades. Same-timestamp partials are chained by startPosition
+// because the exchange does not return them in position order. Fills absent
+// from journaled train entry and do not add to the gap. An unknown entry
+// (no chained open) leaves that fill on raw closedPnl.
+func hyperliquidClosedPnlBasisError(fills []hlFillRecord, journaled map[string]struct{}) float64 {
+	ordered := orderHLFillsByPositionChain(fills)
+	type book struct {
+		sz, ntl *big.Rat
+		known   bool
+	}
+	books := map[string]*book{}
+	sum := new(big.Rat)
+	for _, f := range ordered {
+		if hlFillIsSpot(f.Coin) {
+			continue
+		}
+		coin := strings.ToUpper(strings.TrimSpace(f.Coin))
+		if coin == "" {
+			continue
+		}
+		st := books[coin]
+		if st == nil {
+			st = &book{sz: new(big.Rat), ntl: new(big.Rat)}
+			books[coin] = st
+		}
+		start := hlRat(f.StartPosition)
+		signed := hlFillSignedSize(f)
+		if st.sz.Cmp(start) != 0 {
+			st.known = false
+			st.sz = new(big.Rat).Set(start)
+			st.ntl = new(big.Rat)
+		}
+		if start.Sign() == 0 {
+			st.known = true
+			st.sz = new(big.Rat)
+			st.ntl = new(big.Rat)
+		}
+		if _, ok := journaled[cashflowFillDedupID(f)]; ok && st.known && start.Sign() != 0 && new(big.Rat).Mul(signed, start).Sign() < 0 {
+			closeSz := absRat(signed)
+			if startAbs := absRat(start); closeSz.Cmp(startAbs) > 0 {
+				closeSz = startAbs
+			}
+			entry := new(big.Rat).Quo(new(big.Rat).Set(st.ntl), start)
+			realized := new(big.Rat).Mul(new(big.Rat).Sub(hlRat(f.Px), entry), closeSz)
+			if start.Sign() < 0 {
+				realized.Neg(realized)
+			}
+			sum.Add(sum, new(big.Rat).Sub(hlRat(f.ClosedPnl), realized))
+		}
+		newSz := new(big.Rat).Add(start, signed)
+		if !st.known {
+			st.sz = newSz
+			continue
+		}
+		px := hlRat(f.Px)
+		if start.Sign() == 0 || new(big.Rat).Mul(signed, start).Sign() > 0 {
+			st.ntl = new(big.Rat).Add(st.ntl, new(big.Rat).Mul(px, signed))
+			st.sz = newSz
+			continue
+		}
+		if newSz.Sign() == 0 {
+			st.sz = new(big.Rat)
+			st.ntl = new(big.Rat)
+			continue
+		}
+		if new(big.Rat).Mul(start, newSz).Sign() > 0 {
+			entry := new(big.Rat).Quo(new(big.Rat).Set(st.ntl), start)
+			st.sz = newSz
+			st.ntl = new(big.Rat).Mul(entry, newSz)
+			continue
+		}
+		st.sz = newSz
+		st.ntl = new(big.Rat).Mul(px, newSz)
+	}
+	out, _ := sum.Float64()
+	return out
+}
+
+func hlRat(s string) *big.Rat {
+	r := new(big.Rat)
+	if _, ok := r.SetString(strings.TrimSpace(s)); !ok {
+		return new(big.Rat)
+	}
+	return r
+}
+
+func absRat(r *big.Rat) *big.Rat {
+	if r.Sign() < 0 {
+		return new(big.Rat).Neg(r)
+	}
+	return new(big.Rat).Set(r)
+}
+
+func hlFillSignedSize(f hlFillRecord) *big.Rat {
+	sz := hlRat(f.Sz)
+	switch strings.ToUpper(strings.TrimSpace(f.Side)) {
+	case "B":
+		return sz
+	case "A":
+		return new(big.Rat).Neg(sz)
+	default:
+		return new(big.Rat)
+	}
+}
+
+func orderHLFillsByPositionChain(fills []hlFillRecord) []hlFillRecord {
+	sorted := append([]hlFillRecord(nil), fills...)
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Time < sorted[j].Time })
+	out := make([]hlFillRecord, 0, len(sorted))
+	for i := 0; i < len(sorted); {
+		j := i + 1
+		for j < len(sorted) && sorted[j].Time == sorted[i].Time {
+			j++
+		}
+		out = append(out, chainHLFillsAtTime(sorted[i:j])...)
+		i = j
+	}
+	return out
+}
+
+func chainHLFillsAtTime(fills []hlFillRecord) []hlFillRecord {
+	byCoin := map[string][]hlFillRecord{}
+	var coins []string
+	for _, f := range fills {
+		coin := f.Coin
+		if _, ok := byCoin[coin]; !ok {
+			coins = append(coins, coin)
+		}
+		byCoin[coin] = append(byCoin[coin], f)
+	}
+	sort.Strings(coins)
+	var out []hlFillRecord
+	for _, coin := range coins {
+		out = append(out, chainHLCoinFills(byCoin[coin])...)
+	}
+	return out
+}
+
+func chainHLCoinFills(fills []hlFillRecord) []hlFillRecord {
+	n := len(fills)
+	if n <= 1 {
+		return append([]hlFillRecord(nil), fills...)
+	}
+	used := make([]bool, n)
+	starts := make([]*big.Rat, n)
+	ends := make([]*big.Rat, n)
+	for i, f := range fills {
+		starts[i] = hlRat(f.StartPosition)
+		ends[i] = new(big.Rat).Add(starts[i], hlFillSignedSize(f))
+	}
+	var current *big.Rat
+	for i := range fills {
+		if !hlRatEqualsAny(starts[i], ends) {
+			current = starts[i]
+			break
+		}
+	}
+	if current == nil {
+		current = starts[0]
+	}
+	seq := make([]hlFillRecord, 0, n)
+	for len(seq) < n {
+		found := -1
+		for i := range fills {
+			if used[i] {
+				continue
+			}
+			if starts[i].Cmp(current) == 0 {
+				found = i
+				break
+			}
+		}
+		if found < 0 {
+			for i := range fills {
+				if !used[i] {
+					seq = append(seq, fills[i])
+				}
+			}
+			break
+		}
+		used[found] = true
+		seq = append(seq, fills[found])
+		current = ends[found]
+	}
+	return seq
+}
+
+func hlRatEqualsAny(target *big.Rat, vals []*big.Rat) bool {
+	for _, v := range vals {
+		if target.Cmp(v) == 0 {
+			return true
+		}
+	}
+	return false
+}
+
+const hlUserFillsByTimeLimit = 2000
+
+func fetchHyperliquidFillsForBasis(account string) ([]hlFillRecord, error) {
+	var all []hlFillRecord
+	seen := map[string]struct{}{}
+	start := int64(0)
+	for page := 0; page < 20; page++ {
+		batch, err := fetchHyperliquidUserFillsByTime(account, start)
+		if err != nil {
+			return nil, err
+		}
+		if len(batch) == 0 {
+			break
+		}
+		var maxT int64
+		added := 0
+		for _, f := range batch {
+			if f.Time > maxT {
+				maxT = f.Time
+			}
+			id := cashflowFillDedupID(f)
+			if _, dup := seen[id]; dup {
+				continue
+			}
+			seen[id] = struct{}{}
+			all = append(all, f)
+			added++
+		}
+		if len(batch) < hlUserFillsByTimeLimit || added == 0 {
+			break
+		}
+		if maxT < start {
+			break
+		}
+		start = maxT
+	}
+	return all, nil
+}
+
+func listCashflowFillDedupIDs(sdb *StateDB, platform, account string) (map[string]struct{}, error) {
+	out := map[string]struct{}{}
+	if sdb == nil || sdb.db == nil {
+		return nil, fmt.Errorf("state db unavailable")
+	}
+	rows, err := sdb.db.Query(
+		`SELECT dedup_id FROM cashflow_journal WHERE platform = ? AND account = ? AND kind = 'fill'`,
+		platform, account)
+	if err != nil {
+		return nil, fmt.Errorf("list cashflow fill dedup ids: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan cashflow fill dedup id: %w", err)
+		}
+		out[id] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list cashflow fill dedup ids: %w", err)
+	}
+	return out, nil
+}
+
+func hlClosedPnlBasisForJournal(sdb *StateDB, key SharedWalletKey) (basis float64, applied bool, err error) {
+	ids, err := listCashflowFillDedupIDs(sdb, key.Platform, key.Account)
+	if err != nil {
+		return 0, false, err
+	}
+	if len(ids) == 0 {
+		return 0, true, nil
+	}
+	fills, err := fetchHyperliquidFillsForBasis(key.Account)
+	if err != nil {
+		return 0, false, err
+	}
+	return hyperliquidClosedPnlBasisError(fills, ids), true, nil
 }

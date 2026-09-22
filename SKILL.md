@@ -1110,7 +1110,7 @@ Enabled by `replay_log_path` plus per-strategy `replay_sharing="live_mirror"`. P
 ### Shared wallet, cashflow, limit orders (`shared_wallet*.go`, `cashflow_journal.go`, `kill_switch_limit_orders.go`, `orphan_limit_cancel_alerts.go`, `limit_fill_exposure.go`)
 
 - Shared-wallet drift tolerance is $0.01 over 2 cycles. Pool sizing comes from account equity minus deployed margin; switching a strategy between allocated and pool budgeting needs a flat book and a restart.
-- Cashflow journal: HL total-drift is live; OKX and TopStep run in shadow.
+- Cashflow journal: HL total-drift is live; OKX and TopStep run in shadow. HL expected equity subtracts the gap between frontend `closedPnl` and fill-price realized PnL (same-timestamp fills chained by `startPosition`). Stored fill amounts stay `closedPnl - fee`.
 - Kill-switch limit orders: each row goes cancel → `--limit-status` → delete under a 60s pre-flatten deadline; an unresolved row clears `OnChainConfirmedFlat` and blocks `CanAutoResetWithoutOwner`. Operator view: § Portfolio Kill Switch And Latch Ownership.
 - Orphan cancel lane: rows in `cancel_requested` or expired that fail `killSwitchLimitOrderAdoptionBlock`; roster from `killSwitchLimitOrderRoster` plus `collectKillSwitchLimitOrderCandidates`. Severity-gated throttle; `operator_required_since` backs off the poll. `applyLimitExposureOperatorRequired` sets the marker on `unbacked`, leaves it on `unreadable`, clears otherwise; the marker is the sole gate for `manual-clear-limit-row <oid> --flattened`.
 - The orphan cancel lane is `cancelOrphanedLimitOrder`.

@@ -43,16 +43,18 @@ func splitHyperliquidFillLookupByQty(lookup HLFillLookup, qty, totalQty float64)
 }
 
 type hlFillRecord struct {
-	Coin      string      `json:"coin"`
-	Sz        string      `json:"sz"`
-	Px        string      `json:"px"`
-	OID       json.Number `json:"oid"`
-	Fee       string      `json:"fee"`
-	ClosedPnl string      `json:"closedPnl"`
-	Time      int64       `json:"time"`
-	Dir       string      `json:"dir"`
-	Tid       json.Number `json:"tid"`
-	Hash      string      `json:"hash"`
+	Coin          string      `json:"coin"`
+	Sz            string      `json:"sz"`
+	Px            string      `json:"px"`
+	Side          string      `json:"side"`
+	StartPosition string      `json:"startPosition"`
+	OID           json.Number `json:"oid"`
+	Fee           string      `json:"fee"`
+	ClosedPnl     string      `json:"closedPnl"`
+	Time          int64       `json:"time"`
+	Dir           string      `json:"dir"`
+	Tid           json.Number `json:"tid"`
+	Hash          string      `json:"hash"`
 }
 
 var fetchHyperliquidUserFillsByTime = defaultFetchHyperliquidUserFillsByTime

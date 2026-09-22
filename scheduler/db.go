@@ -301,7 +301,10 @@ CREATE TABLE IF NOT EXISTS wallet_transfers (
 -- correctly priced. amount_usd is the SIGNED settled-cash effect on accountValue:
 --   fill            = closed_pnl_gross - fee_usd  (closed_pnl is GROSS of fees;
 --                     the gross value is retained for attribution/display and is
---                     NEVER summed into equity on its own — #698 / #954 invariant)
+--                     NEVER summed into equity on its own — #698 / #954 invariant).
+--                     Rows keep this frontend closedPnl figure. The HL drift
+--                     alarm subtracts the gap versus fill-price realized PnL
+--                     and does not rewrite the stored amounts (#1570).
 --   funding         = signed funding usdc
 --   <transfer kind> = signedPerpFlowUSD (deposits / withdrawals / transfers / ...)
 -- This is the LIVE total-drift-alarm basis for HL wallets (the drift alarm is

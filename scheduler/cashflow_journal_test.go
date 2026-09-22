@@ -531,3 +531,161 @@ func TestCashflowJournalExcludesSpotFills(t *testing.T) {
 		t.Errorf("cursor = %d, want %d (advanced past the latest spot fill)", st.FillsSinceMs, t0+26)
 	}
 }
+
+func TestHyperliquidClosedPnlBasisError(t *testing.T) {
+	ids := func(tids ...string) map[string]struct{} {
+		out := map[string]struct{}{}
+		for _, id := range tids {
+			out["fill:tid:"+id] = struct{}{}
+		}
+		return out
+	}
+	open := hlFillRecord{Coin: "BTC", Side: "B", Sz: "1", Px: "100", StartPosition: "0", ClosedPnl: "0", Time: 1, Tid: json.Number("1")}
+	closeExact := hlFillRecord{Coin: "BTC", Side: "A", Sz: "1", Px: "110", StartPosition: "1", ClosedPnl: "10", Time: 2, Tid: json.Number("2")}
+	cases := []struct {
+		name  string
+		fills []hlFillRecord
+		keep  map[string]struct{}
+		want  float64
+	}{
+		{
+			name:  "fill price matches closedPnl",
+			fills: []hlFillRecord{open, closeExact},
+			keep:  ids("1", "2"),
+			want:  0,
+		},
+		{
+			name: "frontend closedPnl two cents above fill price",
+			fills: []hlFillRecord{open, func() hlFillRecord {
+				f := closeExact
+				f.ClosedPnl = "10.02"
+				return f
+			}()},
+			keep: ids("1", "2"),
+			want: 0.02,
+		},
+		{
+			name: "frontend closedPnl two cents below fill price",
+			fills: []hlFillRecord{open, func() hlFillRecord {
+				f := closeExact
+				f.ClosedPnl = "9.98"
+				return f
+			}()},
+			keep: ids("1", "2"),
+			want: -0.02,
+		},
+		{
+			name: "same-timestamp partials chain by startPosition",
+			fills: []hlFillRecord{
+				open,
+				{Coin: "BTC", Side: "B", Sz: "0.5", Px: "140", StartPosition: "1.5", ClosedPnl: "0", Time: 2, Tid: json.Number("2")},
+				{Coin: "BTC", Side: "B", Sz: "0.5", Px: "120", StartPosition: "1", ClosedPnl: "0", Time: 2, Tid: json.Number("3")},
+				{Coin: "BTC", Side: "A", Sz: "2", Px: "130", StartPosition: "2", ClosedPnl: "40", Time: 3, Tid: json.Number("4")},
+			},
+			keep: ids("1", "2", "3", "4"),
+			want: 10,
+		},
+		{
+			name: "pre-journal open still sets entry for a journaled close",
+			fills: []hlFillRecord{open, func() hlFillRecord {
+				f := closeExact
+				f.ClosedPnl = "10.02"
+				return f
+			}()},
+			keep: ids("2"),
+			want: 0.02,
+		},
+		{
+			name:  "fill outside the journal does not move the basis",
+			fills: []hlFillRecord{open, closeExact},
+			keep:  ids("1"),
+			want:  0,
+		},
+		{
+			name: "spot closedPnl is not a perp basis gap",
+			fills: []hlFillRecord{
+				open, closeExact,
+				{Coin: "@107", Side: "B", Sz: "3", Px: "2", StartPosition: "0", ClosedPnl: "5", Time: 4, Tid: json.Number("9")},
+			},
+			keep: ids("1", "2", "9"),
+			want: 0,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := hyperliquidClosedPnlBasisError(tc.fills, tc.keep)
+			if math.Abs(got-tc.want) > 1e-9 {
+				t.Fatalf("basis = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestReconcileCashflowJournalFillPriceBasis(t *testing.T) {
+	db := newCashflowJournalTestDB(t)
+	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xabc"}
+	t0 := time.UnixMilli(1_700_000_000_000).UTC()
+
+	origFills := fetchHyperliquidUserFillsByTime
+	origFunding := fetchHyperliquidUserFunding
+	origTransfers := fetchHyperliquidLedgerUpdates
+	defer func() {
+		fetchHyperliquidUserFillsByTime = origFills
+		fetchHyperliquidUserFunding = origFunding
+		fetchHyperliquidLedgerUpdates = origTransfers
+	}()
+	fills := []hlFillRecord{
+		{Coin: "BTC", Side: "B", Sz: "1", Px: "100", StartPosition: "0", ClosedPnl: "0", Fee: "0.1", Time: t0.UnixMilli() + 10, Tid: json.Number("1")},
+		{Coin: "BTC", Side: "A", Sz: "1", Px: "110", StartPosition: "1", ClosedPnl: "10.02", Fee: "0.1", Time: t0.UnixMilli() + 20, Tid: json.Number("2")},
+	}
+	fetchHyperliquidUserFillsByTime = func(string, int64) ([]hlFillRecord, error) { return fills, nil }
+	fetchHyperliquidUserFunding = func(string, int64) ([]hlLedgerEvent, error) { return nil, nil }
+	fetchHyperliquidLedgerUpdates = func(string, int64) ([]hlLedgerEvent, error) { return nil, nil }
+
+	if rec := reconcileCashflowJournal(db, key, 1000, 0, t0); rec == nil || rec.Usable {
+		t.Fatalf("baseline cycle: %+v", rec)
+	}
+	stored, err := db.SumCashflowJournal(key.Platform, key.Account)
+	if err != nil {
+		t.Fatalf("sum: %v", err)
+	}
+	if math.Abs(stored) > 1e-9 {
+		t.Fatalf("baseline must not book fills, settled = %v", stored)
+	}
+
+	flat := reconcileCashflowJournal(db, key, 0, 0, t0.Add(time.Minute))
+	if flat == nil || !flat.Usable {
+		t.Fatalf("steady cycle: %+v", flat)
+	}
+	stored, err = db.SumCashflowJournal(key.Platform, key.Account)
+	if err != nil {
+		t.Fatalf("sum: %v", err)
+	}
+	const rawSettled = -0.1 + (10.02 - 0.1)
+	if math.Abs(stored-rawSettled) > 1e-9 {
+		t.Fatalf("stored settled = %v, want raw closedPnl sum %v", stored, rawSettled)
+	}
+	if math.Abs(flat.ClosedPnlBasis-0.02) > 1e-9 {
+		t.Fatalf("basis = %v, want 0.02", flat.ClosedPnlBasis)
+	}
+	corrected := reconcileCashflowJournal(db, key, flat.ExpectedEquity, 0, t0.Add(2*time.Minute))
+	if corrected == nil || math.Abs(corrected.Drift) > 1e-6 {
+		t.Fatalf("fill-price equity must reconcile, drift = %v", corrected.Drift)
+	}
+	if math.Abs(corrected.Drift) > sharedWalletDriftTolerance {
+		t.Fatalf("frontend two-cent closedPnl gap must not alert after correction, drift = %v", corrected.Drift)
+	}
+
+	below := reconcileCashflowJournal(db, key, corrected.ExpectedEquity-0.009, 0, t0.Add(3*time.Minute))
+	if below == nil || math.Abs(below.Drift) > sharedWalletDriftTolerance {
+		t.Fatalf("gap below one cent must not alert, drift = %v", below.Drift)
+	}
+	at := reconcileCashflowJournal(db, key, corrected.ExpectedEquity-sharedWalletDriftTolerance, 0, t0.Add(4*time.Minute))
+	if at == nil || math.Abs(at.Drift) > sharedWalletDriftTolerance {
+		t.Fatalf("gap at one cent must not alert, drift = %v", at.Drift)
+	}
+	gap := reconcileCashflowJournal(db, key, corrected.ExpectedEquity-0.02, 0, t0.Add(5*time.Minute))
+	if gap == nil || !(math.Abs(gap.Drift) > sharedWalletDriftTolerance) || math.Abs(gap.Drift-(-0.02)) > 1e-6 {
+		t.Fatalf("real two-cent cash gap must still alert, drift = %v", gap.Drift)
+	}
+}
