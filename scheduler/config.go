@@ -121,7 +121,9 @@ func applyPortfolioRiskOverride(dst, override *PortfolioRiskConfig) {
 	if override.MaxAssetConcentrationPct != 0 {
 		dst.MaxAssetConcentrationPct = override.MaxAssetConcentrationPct
 	}
-	dst.IncludePausedInWarning = override.IncludePausedInWarning
+	if override.IncludePausedInWarning {
+		dst.IncludePausedInWarning = true
+	}
 }
 
 // partitionRiskConfig resolves one partition's effective limits: root

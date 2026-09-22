@@ -98,7 +98,6 @@
     "scheduler/portfolio_spot_cash_budget_test.go::TestFormatSpotLiveCashOverBudgetAlert",
     "scheduler/portfolio_spot_cash_budget_test.go::TestFormatSpotLiveCashReconcileReminder",
     "scheduler/portfolio_warning_e2e_test.go::TestPortfolioWarningMessageLiveLikeSample",
-    "scheduler/portfolio_warning_test.go::TestPortfolioWarningMessage_PausedFootnote",
     "scheduler/protection_fill_alert_test.go::TestFormatProtectionFillAlert_BranchMarkers",
     "scheduler/regime_atr_composite_test.go::TestValidateRegimeATRConfig_CompositeMissingLabelRejected",
     "scheduler/regime_atr_composite_test.go::TestValidateRegimeATRConfig_CompositeSubLabelsWithoutBareRejected",

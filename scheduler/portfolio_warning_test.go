@@ -10,6 +10,7 @@ func TestPortfolioWarningContributors_FilterPausedByDefault(t *testing.T) {
 	cfgStrategies := []StrategyConfig{
 		{ID: "live-active-eth", Type: "futures", Args: []string{"--mode=live"}},
 		{ID: "live-paused-flat", Type: "futures", Args: []string{"--mode=live"}, Paused: true},
+		{ID: "live-paused-stale", Type: "futures", Args: []string{"--mode=live"}, Paused: true},
 		{ID: "live-paused-btc", Type: "futures", Args: []string{"--mode=live"}, Paused: true},
 		{ID: "live-paused-options", Type: "options", Args: []string{"--mode=live"}, Paused: true},
 		{ID: "paper-only-sol", Type: "futures"},
@@ -30,6 +31,11 @@ func TestPortfolioWarningContributors_FilterPausedByDefault(t *testing.T) {
 		Positions: map[string]*Position{"BTC": {Symbol: "BTC", Side: "long", Quantity: 0.001, AvgCost: 60000}},
 		RiskState: RiskState{CurrentDrawdownPct: 25},
 	}
+	state.Strategies["live-paused-stale"] = &StrategyState{
+		ID: "live-paused-stale", InitialCapital: 100,
+		Positions: map[string]*Position{"BTC": {Symbol: "BTC", Side: "long", Quantity: 0, AvgCost: 60000}},
+		RiskState: RiskState{CurrentDrawdownPct: 25},
+	}
 	state.Strategies["live-paused-options"] = &StrategyState{
 		ID: "live-paused-options", InitialCapital: 100,
 		Positions:       map[string]*Position{},
@@ -42,27 +48,30 @@ func TestPortfolioWarningContributors_FilterPausedByDefault(t *testing.T) {
 		RiskState: RiskState{CurrentDrawdownPct: 10},
 	}
 	state.Strategies["live-paused-flat"].Cash = 50
+	state.Strategies["live-paused-stale"].Cash = 50
 	state.Strategies["live-paused-btc"].Cash = 0
 	state.Strategies["live-paused-options"].Cash = 0
 	state.Strategies["live-active-eth"].Cash = 110
 
 	prices := map[string]float64{"ETH": 3000, "BTC": 60000, "SOL": 100}
 
-	contribs := portfolioWarningContributors(state, cfgStrategies, livePartition, prices, false)
+	contribs, excluded := portfolioWarningContributors(state, cfgStrategies, livePartition, prices, false)
 	got := make(map[string]bool, len(contribs))
 	for _, c := range contribs {
 		got[c.ID] = true
 	}
-	if got["live-paused-flat"] {
-		t.Fatalf("flat paused strategy surfaced in contributors: %+v", contribs)
+	for _, id := range []string{"live-paused-flat", "live-paused-stale"} {
+		if got[id] {
+			t.Fatalf("flat paused strategy %q surfaced in contributors: %+v", id, contribs)
+		}
 	}
 	for _, id := range []string{"live-active-eth", "live-paused-btc", "live-paused-options"} {
 		if !got[id] {
 			t.Fatalf("strategy %q missing from contributors: %+v", id, contribs)
 		}
 	}
-	if got := portfolioWarningFlatPausedExcluded[livePartition]; got != 1 {
-		t.Fatalf("portfolioWarningFlatPausedExcluded[ScopeLive] = %d, want 1", got)
+	if excluded != 2 {
+		t.Fatalf("excluded flat paused count = %d, want 2", excluded)
 	}
 }
 
@@ -77,18 +86,22 @@ func TestPortfolioWarningContributors_PartitionIsolation(t *testing.T) {
 	state.Strategies["paper-flat"] = &StrategyState{ID: "paper-flat", Positions: map[string]*Position{}}
 	state.Strategies["source-flat"] = &StrategyState{ID: "source-flat", Positions: map[string]*Position{}}
 
-	portfolioWarningContributors(state, cfgStrategies, livePartition, nil, false)
-	portfolioWarningContributors(state, cfgStrategies, defaultPaperPartition, nil, false)
-	portfolioWarningContributors(state, cfgStrategies, paperSourcePartition("source-a"), nil, false)
+	_, liveExcluded := portfolioWarningContributors(state, cfgStrategies, livePartition, nil, false)
+	_, paperExcluded := portfolioWarningContributors(state, cfgStrategies, defaultPaperPartition, nil, false)
+	_, sourceExcluded := portfolioWarningContributors(state, cfgStrategies, paperSourcePartition("source-a"), nil, false)
+	_, nilStateExcluded := portfolioWarningContributors(nil, cfgStrategies, livePartition, nil, false)
 
-	if got := portfolioWarningFlatPausedExcluded[livePartition]; got != 1 {
-		t.Fatalf("live excluded count = %d, want 1", got)
+	if liveExcluded != 1 {
+		t.Fatalf("live excluded count = %d, want 1", liveExcluded)
 	}
-	if got := portfolioWarningFlatPausedExcluded[defaultPaperPartition]; got != 1 {
-		t.Fatalf("paper excluded count = %d, want 1", got)
+	if paperExcluded != 1 {
+		t.Fatalf("paper excluded count = %d, want 1", paperExcluded)
 	}
-	if got := portfolioWarningFlatPausedExcluded[paperSourcePartition("source-a")]; got != 1 {
-		t.Fatalf("paper source excluded count = %d, want 1", got)
+	if sourceExcluded != 1 {
+		t.Fatalf("paper source excluded count = %d, want 1", sourceExcluded)
+	}
+	if nilStateExcluded != 0 {
+		t.Fatalf("nil state excluded count = %d, want 0", nilStateExcluded)
 	}
 }
 
@@ -105,9 +118,12 @@ func TestPortfolioWarningContributors_IncludePausedOptIn(t *testing.T) {
 	state.Strategies["live-paused-btc"].Cash = 50
 	prices := map[string]float64{"BTC": 60000}
 
-	contribs := portfolioWarningContributors(state, cfgStrategies, livePartition, prices, true)
+	contribs, excluded := portfolioWarningContributors(state, cfgStrategies, livePartition, prices, true)
 	if len(contribs) != 1 || contribs[0].ID != "live-paused-btc" {
 		t.Fatalf("IncludePausedInWarning=true should keep paused strategy, got: %+v", contribs)
+	}
+	if excluded != 0 {
+		t.Fatalf("IncludePausedInWarning=true excluded count = %d, want 0", excluded)
 	}
 }
 
@@ -144,32 +160,27 @@ func TestPortfolioWarningMessage_PausedFootnote(t *testing.T) {
 		TotalValue:       150,
 		PerpsMargin:      50,
 		PerpsLoss:        15,
+		Recent:           []Trade{{StrategyID: "live-paused-btc", Side: "buy", Quantity: 1, Price: 1, Timestamp: time.Now().UTC()}},
 		Now:              time.Now().UTC(),
 		EquityGuardArmed: true,
 	})
+	const contributorsPrefix = "Top contributors:\n```\n"
+	start := strings.Index(msg, contributorsPrefix)
+	if start < 0 {
+		t.Fatalf("warning missing contributors block: %s", msg)
+	}
+	blockStart := start + len(contributorsPrefix)
+	end := strings.Index(msg[blockStart:], "```\n")
+	if end < 0 {
+		t.Fatalf("warning contributors block is not closed: %s", msg)
+	}
+	if block := msg[blockStart : blockStart+end]; strings.Contains(block, "live-paused-btc") {
+		t.Fatalf("paused strategy leaked into Top contributors block: %q", block)
+	}
 	if !strings.Contains(msg, "live-paused-btc") {
-		// OK — paused strategy shouldn't appear in Top contributors.
-		for _, line := range strings.Split(msg, "\n") {
-			if strings.Contains(line, "live-paused-btc") {
-				t.Fatalf("paused strategy leaked into Top contributors line: %q", line)
-			}
-		}
+		t.Fatalf("recent activity fixture missing from warning: %s", msg)
 	}
 	if !strings.Contains(msg, "paused strateg") || !strings.Contains(msg, "excluded from contributors") {
 		t.Fatalf("expected paused footnote in message, got:\n%s", msg)
-	}
-}
-
-func TestPortfolioWarningAlertsReset_ClearsExcludedCounter(t *testing.T) {
-	portfolioWarningFlatPausedExcluded[livePartition] = 7
-	portfolioWarningAlerts[livePartition] = portfolioWarningAlertState{Notified: true}
-
-	portfolioWarningAlertsReset(livePartition)
-
-	if _, ok := portfolioWarningFlatPausedExcluded[livePartition]; ok {
-		t.Fatalf("portfolioWarningFlatPausedExcluded[ScopeLive] should be cleared")
-	}
-	if _, ok := portfolioWarningAlerts[livePartition]; ok {
-		t.Fatalf("portfolioWarningAlerts[ScopeLive] should be cleared")
 	}
 }

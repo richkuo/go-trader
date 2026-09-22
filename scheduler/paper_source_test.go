@@ -169,6 +169,31 @@ func TestPartitionRiskConfigLayering(t *testing.T) {
 	}
 }
 
+func TestPartitionRiskConfigIncludePausedLayering(t *testing.T) {
+	cfg := threeSourceConfig(t)
+	cfg.PortfolioRisk = &PortfolioRiskConfig{
+		IncludePausedInWarning: true,
+		Paper:                  &PortfolioRiskConfig{MaxDrawdownPct: 40},
+	}
+	cfg.PaperSources[0].PortfolioRisk = &PortfolioRiskConfig{MaxDrawdownPct: 15}
+
+	if got := partitionRiskConfig(cfg, defaultPaperPartition); !got.IncludePausedInWarning {
+		t.Errorf("paper with an unset flag must inherit root true, got %+v", got)
+	}
+	if got := partitionRiskConfig(cfg, paperSourcePartition("btc")); !got.IncludePausedInWarning {
+		t.Errorf("source with an unset flag must inherit root true, got %+v", got)
+	}
+
+	cfg.PortfolioRisk.IncludePausedInWarning = false
+	cfg.PortfolioRisk.Paper.IncludePausedInWarning = true
+	if got := partitionRiskConfig(cfg, defaultPaperPartition); !got.IncludePausedInWarning {
+		t.Errorf("paper true override must enable paused contributors, got %+v", got)
+	}
+	if got := partitionRiskConfig(cfg, paperSourcePartition("btc")); !got.IncludePausedInWarning {
+		t.Errorf("source with an unset flag must inherit paper true, got %+v", got)
+	}
+}
+
 func TestResolveStorageLayoutPaperSources(t *testing.T) {
 	cfg := threeSourceConfig(t)
 	layout, err := resolveStorageLayout(cfg)

@@ -14,8 +14,6 @@ const (
 	portfolioWarningMaxChars     = 1900
 )
 
-var portfolioWarningFlatPausedExcluded = map[RiskPartition]int{}
-
 type PortfolioWarningMessageInputs struct {
 	Reason           string
 	Config           *PortfolioRiskConfig
@@ -56,7 +54,7 @@ func BuildPortfolioWarningMessage(in PortfolioWarningMessageInputs) string {
 		}
 	}
 	includePaused := in.Config != nil && in.Config.IncludePausedInWarning
-	contribs := portfolioWarningContributors(in.State, in.CfgStrategies, part, in.Prices, includePaused)
+	contribs, excluded := portfolioWarningContributors(in.State, in.CfgStrategies, part, in.Prices, includePaused)
 
 	var b strings.Builder
 	b.WriteString("**PORTFOLIO WARNING")
@@ -131,7 +129,6 @@ func BuildPortfolioWarningMessage(in PortfolioWarningMessageInputs) string {
 		}
 		b.WriteString("```\n")
 	}
-	excluded := portfolioWarningFlatPausedExcluded[part]
 	if excluded > 0 && !includePaused {
 		b.WriteString(fmt.Sprintf("\n(%d flat paused strateg%s excluded from contributors; set portfolio_risk.include_paused_in_warning=true to include)\n",
 			excluded, pluralize(excluded, "y", "ies")))
@@ -157,9 +154,9 @@ func BuildPortfolioWarningMessage(in PortfolioWarningMessageInputs) string {
 	return truncateWarningField(msg, portfolioWarningMaxChars)
 }
 
-func portfolioWarningContributors(state *AppState, cfgStrategies []StrategyConfig, part RiskPartition, prices map[string]float64, includePaused bool) []portfolioWarningContributor {
+func portfolioWarningContributors(state *AppState, cfgStrategies []StrategyConfig, part RiskPartition, prices map[string]float64, includePaused bool) ([]portfolioWarningContributor, int) {
 	if state == nil {
-		return nil
+		return nil, 0
 	}
 	scoped := state.Strategies
 	if len(cfgStrategies) > 0 {
@@ -186,7 +183,7 @@ func portfolioWarningContributors(state *AppState, cfgStrategies []StrategyConfi
 		if ss == nil {
 			continue
 		}
-		if pausedByID[id] && len(ss.Positions) == 0 && len(ss.OptionPositions) == 0 {
+		if pausedByID[id] && !strategyHasOpenPositions(ss) {
 			excludedFlatPaused++
 			continue
 		}
@@ -220,7 +217,6 @@ func portfolioWarningContributors(state *AppState, cfgStrategies []StrategyConfi
 			}
 		}
 	}
-	portfolioWarningFlatPausedExcluded[part] = excludedFlatPaused
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].PnL == out[j].PnL {
 			return out[i].ID < out[j].ID
@@ -230,7 +226,7 @@ func portfolioWarningContributors(state *AppState, cfgStrategies []StrategyConfi
 	if len(out) > portfolioWarningMaxRows {
 		out = out[:portfolioWarningMaxRows]
 	}
-	return out
+	return out, excludedFlatPaused
 }
 
 func portfolioWarningLead(contribs []portfolioWarningContributor) string {
