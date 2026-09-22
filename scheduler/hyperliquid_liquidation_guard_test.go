@@ -852,8 +852,8 @@ func TestFlushOffCycleLiquidationAuditState(t *testing.T) {
 		store := openTestStore(t, db)
 		state := newState()
 		dirty := flushOffCycleLiquidationAuditState(state, cfg, store, &mu, 1, false, false)
-		if dirty || store.saveFailures(ScopeLive) != 0 {
-			t.Fatalf("dirty=%v failures=%d, want false/0", dirty, store.saveFailures(ScopeLive))
+		if dirty || store.saveFailures(livePartition) != 0 {
+			t.Fatalf("dirty=%v failures=%d, want false/0", dirty, store.saveFailures(livePartition))
 		}
 		loaded, err := LoadStateWithDB(cfg, db)
 		if err != nil {
@@ -871,14 +871,14 @@ func TestFlushOffCycleLiquidationAuditState(t *testing.T) {
 	t.Run("nothing changed and nothing pending writes nothing", func(t *testing.T) {
 		db := openTestDB(t)
 		store := openTestStore(t, db)
-		store.recordSaveOutcome(ScopeLive, errors.New("earlier failure"))
-		store.recordSaveOutcome(ScopeLive, errors.New("earlier failure"))
+		store.recordSaveOutcome(livePartition, errors.New("earlier failure"))
+		store.recordSaveOutcome(livePartition, errors.New("earlier failure"))
 		state := newState()
 		dirty := flushOffCycleLiquidationAuditState(state, cfg, store, &mu, 0, false, false)
 		if dirty {
 			t.Errorf("dirty = true, want false")
 		}
-		if got := store.saveFailures(ScopeLive); got != 2 {
+		if got := store.saveFailures(livePartition); got != 2 {
 			t.Errorf("failures = %d, want 2 (untouched — no save attempted)", got)
 		}
 		loaded, err := LoadStateWithDB(cfg, db)
@@ -899,10 +899,10 @@ func TestFlushOffCycleLiquidationAuditState(t *testing.T) {
 		if !dirty {
 			t.Errorf("dirty = false after a failed save, want true (close still only in memory)")
 		}
-		if got := store.saveFailures(ScopeLive); got != 1 {
+		if got := store.saveFailures(livePartition); got != 1 {
 			t.Errorf("live failures = %d, want 1 (reported like the end-of-cycle save failure)", got)
 		}
-		if !store.persistenceHoldsScope(ScopeLive) {
+		if !store.persistenceHoldsPartition(livePartition) {
 			t.Errorf("persistence hold = false after one failed save, want true")
 		}
 	})
@@ -910,13 +910,13 @@ func TestFlushOffCycleLiquidationAuditState(t *testing.T) {
 	t.Run("a latched failure retries on a pass that books nothing", func(t *testing.T) {
 		db := openTestDB(t)
 		store := openTestStore(t, db)
-		store.recordSaveOutcome(ScopeLive, errors.New("earlier failure"))
+		store.recordSaveOutcome(livePartition, errors.New("earlier failure"))
 		state := newState()
 		dirty := flushOffCycleLiquidationAuditState(state, cfg, store, &mu, 0, true, false)
-		if dirty || store.saveFailures(ScopeLive) != 0 {
-			t.Fatalf("dirty=%v failures=%d, want false/0 after the retry succeeded", dirty, store.saveFailures(ScopeLive))
+		if dirty || store.saveFailures(livePartition) != 0 {
+			t.Fatalf("dirty=%v failures=%d, want false/0 after the retry succeeded", dirty, store.saveFailures(livePartition))
 		}
-		if store.persistenceHoldsScope(ScopeLive) {
+		if store.persistenceHoldsPartition(livePartition) {
 			t.Errorf("persistence hold still set after a successful retry, want cleared")
 		}
 		loaded, err := LoadStateWithDB(cfg, db)
@@ -1068,12 +1068,12 @@ func TestFlushOffCycleLiquidationAuditStateForceProbe(t *testing.T) {
 		db := openTestDB(t)
 		store := openTestStore(t, db)
 		for i := 0; i < 3; i++ {
-			store.recordSaveOutcome(ScopeLive, errors.New("earlier failure"))
+			store.recordSaveOutcome(livePartition, errors.New("earlier failure"))
 		}
 		state := newState()
 		dirty := flushOffCycleLiquidationAuditState(state, cfg, store, &mu, 0, false, true)
-		if dirty || store.saveFailures(ScopeLive) != 0 {
-			t.Fatalf("dirty=%v failures=%d, want false/0 (probe save succeeded, halt cleared)", dirty, store.saveFailures(ScopeLive))
+		if dirty || store.saveFailures(livePartition) != 0 {
+			t.Fatalf("dirty=%v failures=%d, want false/0 (probe save succeeded, halt cleared)", dirty, store.saveFailures(livePartition))
 		}
 	})
 
@@ -1081,7 +1081,7 @@ func TestFlushOffCycleLiquidationAuditStateForceProbe(t *testing.T) {
 		db := openTestDB(t)
 		store := openTestStore(t, db)
 		for i := 0; i < 3; i++ {
-			store.recordSaveOutcome(ScopeLive, errors.New("earlier failure"))
+			store.recordSaveOutcome(livePartition, errors.New("earlier failure"))
 		}
 		state := newState()
 		db.Close()
@@ -1089,7 +1089,7 @@ func TestFlushOffCycleLiquidationAuditStateForceProbe(t *testing.T) {
 		if !dirty {
 			t.Errorf("dirty = false after a failed probe save, want true")
 		}
-		if got := store.saveFailures(ScopeLive); got != 4 {
+		if got := store.saveFailures(livePartition); got != 4 {
 			t.Errorf("live failures = %d, want 4 (probe failure counts like any save failure)", got)
 		}
 	})

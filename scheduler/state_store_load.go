@@ -3,27 +3,35 @@ package main
 import (
 	"fmt"
 	"os"
+	"sort"
 	"time"
 )
 
-// legacyScopeTargetForRole decides where one file's unscoped legacy risk row
-// belongs. Current config alone cannot prove the historic mode of an arbitrary
-// row, so an ambiguous split layout is rejected instead of guessed.
-func legacyScopeTargetForRole(cfg *Config, layout storageLayout, role storageRole) (PortfolioScope, error) {
+// legacyPartitionTargetForRole decides where one file's unscoped legacy risk
+// row belongs. A file that owns exactly one partition answers itself, so a
+// folded paper source keeps its own legacy row. Current config alone cannot
+// prove the historic mode of a row in a file that owns both modes, so that case
+// is rejected instead of guessed.
+func legacyPartitionTargetForRole(cfg *Config, layout storageLayout, role storageRole) (RiskPartition, error) {
+	// A non-primary file was a standalone deployment's own file, so its legacy
+	// row belongs to the one partition that file owns. The primary is the only
+	// file whose historic mode config cannot prove.
+	if role != storageRolePrimary {
+		if parts := layout.partitionsForRole(role); len(parts) == 1 {
+			return parts[0], nil
+		}
+	}
 	hasLive := cfg != nil && HasLiveStrategy(cfg.Strategies)
 	if !layout.Split {
 		if hasLive {
-			return ScopeLive, nil
+			return livePartition, nil
 		}
-		return ScopePaper, nil
-	}
-	if role == storageRolePaper {
-		return ScopePaper, nil
+		return defaultPaperPartition, nil
 	}
 	if hasLive {
-		return ScopeLive, nil
+		return livePartition, nil
 	}
-	return scopeUnassigned, fmt.Errorf("the primary state file holds an unscoped legacy portfolio risk row but the roster has no live strategy; resolve the row by hand (it cannot be placed from config alone)")
+	return unassignedPartition, fmt.Errorf("the primary state file holds an unscoped legacy portfolio risk row but the roster has no live strategy; resolve the row by hand (it cannot be placed from config alone)")
 }
 
 // LoadStateWithStore assembles the process state from every owned file. Paper
@@ -54,10 +62,10 @@ func LoadStateWithStore(cfg *Config, store *StateStore) (*AppState, []storageOrp
 	}
 
 	type legacyRow struct {
-		role  storageRole
-		risk  *PortfolioRiskState
-		snap  *CorrelationSnapshot
-		scope PortfolioScope
+		role storageRole
+		risk *PortfolioRiskState
+		snap *CorrelationSnapshot
+		part RiskPartition
 	}
 	var legacy []legacyRow
 
@@ -86,26 +94,39 @@ func LoadStateWithStore(cfg *Config, store *StateStore) (*AppState, []storageOrp
 		}
 		orphans = append(orphans, books.Orphans...)
 		row := legacyRow{role: role}
+		// Each loaded row is mapped from (file, scope) onto the partition that
+		// file owns for that mode, so two paper source files never collide.
 		for scope, prs := range books.PortfolioRisk {
 			if scope == scopeUnassigned {
 				row.risk = prs
 				continue
 			}
-			state.PortfolioRisk[scope] = prs
+			part, ok := store.layout.partitionForRoleScope(role, scope)
+			if !ok {
+				return nil, nil, fmt.Errorf("the %s state file holds a %s portfolio risk row it does not own", role, scopeLabel(scope))
+			}
+			for i := range prs.Events {
+				prs.Events[i].Partition = part
+			}
+			state.PortfolioRisk[part] = prs
 		}
 		for scope, snap := range books.CorrelationSnapshot {
 			if scope == scopeUnassigned {
 				row.snap = snap
 				continue
 			}
-			state.CorrelationSnapshot[scope] = snap
+			part, ok := store.layout.partitionForRoleScope(role, scope)
+			if !ok {
+				return nil, nil, fmt.Errorf("the %s state file holds a %s correlation snapshot it does not own", role, scopeLabel(scope))
+			}
+			state.setPartitionCorrelation(part, snap)
 		}
 		if row.risk != nil || row.snap != nil {
-			target, err := legacyScopeTargetForRole(cfg, store.layout, role)
+			target, err := legacyPartitionTargetForRole(cfg, store.layout, role)
 			if err != nil {
 				return nil, nil, err
 			}
-			row.scope = target
+			row.part = target
 			legacy = append(legacy, row)
 		}
 	}
@@ -116,17 +137,17 @@ func LoadStateWithStore(cfg *Config, store *StateStore) (*AppState, []storageOrp
 
 	moved := false
 	for _, row := range legacy {
-		placeLegacyPortfolioRisk(state, cfg, row.risk, row.snap, row.scope)
-		fmt.Printf("[state] Legacy unscoped portfolio risk row in the %s state file placed in the %s scope\n", row.role, scopeLabel(row.scope))
+		placeLegacyPortfolioRisk(state, cfg, row.risk, row.snap, row.part)
+		fmt.Printf("[state] Legacy unscoped portfolio risk row in the %s state file placed in the %s partition\n", row.role, partitionLabel(row.part))
 		moved = true
 	}
 	if moved {
 		if store.readOnly() {
 			fmt.Fprintln(os.Stderr, "[state] WARN: legacy portfolio risk placement was applied in memory only; the state files are open read-only")
 		} else {
-			for scope, err := range store.SaveAll(state) {
+			for part, err := range store.SaveAll(state) {
 				if err != nil {
-					return nil, nil, fmt.Errorf("persist legacy portfolio scope placement (%s): %w", scopeLabel(scope), err)
+					return nil, nil, fmt.Errorf("persist legacy portfolio partition placement (%s): %w", partitionLabel(part), err)
 				}
 			}
 		}
@@ -155,25 +176,43 @@ func SaveStateWithStore(state *AppState, store *StateStore) error {
 		return fmt.Errorf("state store unavailable")
 	}
 	var firstErr error
-	for _, scope := range sortedScopeErrors(store.SaveAll(state)) {
-		if scope.err != nil && firstErr == nil {
-			firstErr = fmt.Errorf("%s scope: %w", scopeLabel(scope.scope), scope.err)
+	for _, pe := range sortedPartitionErrors(store.SaveAll(state)) {
+		if pe.err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("%s scope: %w", partitionLabel(pe.part), pe.err)
 		}
 	}
 	return firstErr
 }
 
-type scopeErr struct {
-	scope PortfolioScope
-	err   error
+type partitionErr struct {
+	part RiskPartition
+	err  error
 }
 
-func sortedScopeErrors(m map[PortfolioScope]error) []scopeErr {
-	out := make([]scopeErr, 0, len(m))
-	for _, scope := range []PortfolioScope{ScopeLive, ScopePaper} {
-		if err, ok := m[scope]; ok {
-			out = append(out, scopeErr{scope: scope, err: err})
-		}
+// sortedPartitionErrors reports failures in the stable partition order, so the
+// first error an operator sees is deterministic across runs.
+func sortedPartitionErrors(m map[RiskPartition]error) []partitionErr {
+	parts := make([]RiskPartition, 0, len(m))
+	for p := range m {
+		parts = append(parts, p)
+	}
+	sort.Slice(parts, func(i, j int) bool { return partitionSortKey(parts[i]) < partitionSortKey(parts[j]) })
+	out := make([]partitionErr, 0, len(parts))
+	for _, p := range parts {
+		out = append(out, partitionErr{part: p, err: m[p]})
 	}
 	return out
+}
+
+// partitionSortKey puts live first, then the default paper partition, then the
+// named sources by id.
+func partitionSortKey(p RiskPartition) string {
+	switch {
+	case p.IsLive():
+		return "0"
+	case p.Source == "":
+		return "1"
+	default:
+		return "2" + p.Source
+	}
 }

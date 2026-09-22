@@ -269,12 +269,12 @@ func formatCircuitBreakersResponse(state *AppState, now time.Time) string {
 		}
 	}
 	var sb strings.Builder
-	for _, scope := range sortedPortfolioScopes(state.PortfolioRisk) {
-		prs := state.PortfolioRisk[scope]
+	for _, part := range sortedRiskPartitions(state.PortfolioRisk) {
+		prs := state.PortfolioRisk[part]
 		if prs == nil {
 			continue
 		}
-		label := scopeLabel(scope)
+		label := partitionLabel(part)
 		if prs.KillSwitchActive {
 			sb.WriteString(fmt.Sprintf("🛑 Portfolio kill switch ACTIVE [%s] (drawdown %.2f%%)\n", label, prs.CurrentDrawdownPct))
 		}
@@ -310,14 +310,14 @@ func formatDeadStrategiesResponse(state *AppState, lifetime map[string]LifetimeT
 	return fmt.Sprintf("**Dead strategies (0 positions opened) — %d**\n%s", len(dead), strings.Join(dead, "\n"))
 }
 
-func formatCorrelationResponse(snaps map[PortfolioScope]*CorrelationSnapshot) string {
-	scopes := sortedCorrelationScopes(snaps)
+func formatCorrelationResponse(snaps map[RiskPartition]*CorrelationSnapshot) string {
+	parts := sortedCorrelationPartitions(snaps)
 	var blocks []string
-	for _, scope := range scopes {
-		if snaps[scope] == nil {
+	for _, part := range parts {
+		if snaps[part] == nil {
 			continue
 		}
-		blocks = append(blocks, formatCorrelationScopeBlock(scope, snaps[scope], len(scopes) > 1))
+		blocks = append(blocks, formatCorrelationScopeBlock(part, snaps[part], len(parts) > 1))
 	}
 	if len(blocks) == 0 {
 		return "No correlation snapshot yet (computed during the trading cycle)."
@@ -325,10 +325,10 @@ func formatCorrelationResponse(snaps map[PortfolioScope]*CorrelationSnapshot) st
 	return strings.Join(blocks, "\n")
 }
 
-func formatCorrelationScopeBlock(scope PortfolioScope, snap *CorrelationSnapshot, labelScope bool) string {
+func formatCorrelationScopeBlock(part RiskPartition, snap *CorrelationSnapshot, labelScope bool) string {
 	var sb strings.Builder
 	if labelScope {
-		sb.WriteString(fmt.Sprintf("**Correlation / concentration [%s]** (gross $%.2f)\n", scopeLabel(scope), snap.PortfolioGrossUSD))
+		sb.WriteString(fmt.Sprintf("**Correlation / concentration [%s]** (gross $%.2f)\n", partitionLabel(part), snap.PortfolioGrossUSD))
 	} else {
 		sb.WriteString(fmt.Sprintf("**Correlation / concentration** (gross $%.2f)\n", snap.PortfolioGrossUSD))
 	}

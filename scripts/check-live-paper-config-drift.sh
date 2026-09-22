@@ -70,6 +70,7 @@ import sys
 
 sys.path.insert(0, os.environ["GO_TRADER_SCRIPT_DIR"])
 from paper_alias import paper_alias_base
+from paper_alias import paper_alias_suffix
 
 WATCHED = [
     "interval_seconds",
@@ -114,6 +115,60 @@ def strip_mode(args):
             continue
         out.append(a)
     return out
+
+
+def block_paper_source(block):
+    source = block.get("paper_source")
+    if isinstance(source, str) and source.strip():
+        return source.strip()
+    return ""
+
+
+def declared_source_ids(cfg):
+    out = []
+    for src in cfg.get("paper_sources") or []:
+        if not isinstance(src, dict):
+            continue
+        sid = src.get("id")
+        if isinstance(sid, str) and sid.strip():
+            out.append(sid.strip())
+    return out
+
+
+def block_storage_id(block):
+    storage = block.get("storage_strategy_id")
+    if isinstance(storage, str) and storage.strip():
+        return storage.strip()
+    return ""
+
+
+# alias_read returns the base and the suffix of the first rule that reads this
+# id. A named source is tried first, then the bare -paper rule, so naming a
+# source never unreads an alias the audit read before.
+def alias_read(block):
+    sid = block["id"]
+    source = block_paper_source(block)
+    if source:
+        base = paper_alias_base(sid, source)
+        if base is not None:
+            return base, paper_alias_suffix(source)
+    base = paper_alias_base(sid)
+    if base is not None:
+        return base, paper_alias_suffix()
+    return None, ""
+
+
+# declared_alias_read is the last resort: an id spelled for a source this
+# deployment declares, with neither paper_source nor storage_strategy_id to
+# prove it. It reports only when the base names a live strategy, so adopting
+# the -paper-<id> convention never drops a gate the bare rule applied.
+def declared_alias_read(entry, live_ids):
+    sid = entry["block"]["id"]
+    for source in entry.get("declared") or []:
+        base = paper_alias_base(sid, source)
+        if base is not None and base in live_ids:
+            return base, paper_alias_suffix(source)
+    return None, ""
 
 
 def id_note(block, key):
@@ -191,6 +246,7 @@ for source, path, deploy_dir in rows:
         print("%-40s %-60s %s" % (source, path, "FAIL (effective view unreadable: %s)" % eff_err))
         bad += 1
         continue
+    declared = declared_source_ids(cfg)
     counts = {"live": 0, "paper": 0, "unset": 0}
     for s in strategies:
         if not isinstance(s, dict) or not isinstance(s.get("id"), str):
@@ -202,7 +258,8 @@ for source, path, deploy_dir in rows:
         mode = classify(args)
         counts[mode] += 1
         eff = effective.get(s["id"]) if effective is not None else None
-        entries.append({"source": source, "mode": mode, "block": s, "effective": eff, "has_effective": effective is not None})
+        entries.append({"source": source, "mode": mode, "block": s, "effective": eff,
+                        "has_effective": effective is not None, "declared": declared})
     marker = "" if effective is not None else " (RAW: no go-trader binary beside the config)"
     print("%-40s %-60s %d/%d/%d%s" % (source, path, counts["live"], counts["paper"], counts["unset"], marker))
 
@@ -223,29 +280,38 @@ for e in entries:
     elif sid in live_ids:
         key = sid
     else:
-        base = paper_alias_base(sid)
-        storage = block.get("storage_strategy_id")
+        base, suffix = alias_read(block)
+        storage = block_storage_id(block)
         if base is not None and base in live_ids:
-            if isinstance(storage, str) and storage.strip() == base:
+            if storage == base:
                 key = base
             else:
-                ambiguous.append(e)
+                ambiguous.append((e, base, suffix))
                 continue
+        elif storage in live_ids:
+            # No alias rule names a live base, but the stored identity does,
+            # which is the same proof the alias branch demands.
+            key = storage
         else:
             if base is not None:
-                unpaired_alias.append((e, base))
+                unpaired_alias.append((e, base, suffix))
+            else:
+                declared_base, declared_suffix = declared_alias_read(e, live_ids)
+                if declared_base is not None:
+                    ambiguous.append((e, declared_base, declared_suffix))
+                    continue
             key = sid
     by_key.setdefault(key, []).append(e)
 
-for e, base in unpaired_alias:
+for e, base, suffix in unpaired_alias:
     print()
-    print("UNPAIRED (no live twin) %s at %s — the -paper alias names %s and no audited deployment runs a live strategy with that id; add the live twin or audit the deployment that holds it"
-          % (e["block"]["id"], e["source"], base))
+    print("UNPAIRED (no live twin) %s at %s — the %s alias names %s and no audited deployment runs a live strategy with that id; add the live twin or audit the deployment that holds it"
+          % (e["block"]["id"], e["source"], suffix, base))
 
-for e in ambiguous:
+for e, base, suffix in ambiguous:
     print()
-    print("AMBIGUOUS %s at %s — the -paper suffix alone does not prove a twin of %s; set replay_source_id or storage_strategy_id to pair it"
-          % (e["block"]["id"], e["source"], paper_alias_base(e["block"]["id"])))
+    print("AMBIGUOUS %s at %s — the %s suffix alone does not prove a twin of %s; set replay_source_id or storage_strategy_id to pair it"
+          % (e["block"]["id"], e["source"], suffix, base))
 
 drift_pairs = 0
 skip_pairs = 0
@@ -288,7 +354,7 @@ for sid in sorted(by_key):
                 if lv is MISSING or pv is MISSING or lv != pv:
                     watched_diffs.append((k, lv, pv))
             other_diffs = []
-            for k in sorted((set(lblock) | set(pblock)) - set(WATCHED) - {"id", "replay_source_id", "storage_strategy_id"}):
+            for k in sorted((set(lblock) | set(pblock)) - set(WATCHED) - {"id", "replay_source_id", "storage_strategy_id", "paper_source"}):
                 lv = lblock.get(k, MISSING)
                 pv = pblock.get(k, MISSING)
                 if k == "args":

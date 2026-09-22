@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -59,48 +60,94 @@ type PortfolioRiskConfig struct {
 	DailyMaxLossPct             float64 `json:"daily_max_loss_pct,omitempty"`
 	MaxSameDirectionNotionalUSD float64 `json:"max_same_direction_notional_usd,omitempty"`
 	MaxAssetConcentrationPct    float64 `json:"max_asset_concentration_pct,omitempty"`
-	// IncludePausedInWarning, when true, keeps paused strategies in the
-	// portfolio warning's "top contributors" block and as the lead attribution.
-	// Default false — paused strategies have frozen book-keeping P&L that
-	// shouldn't be misattributed as live portfolio risk (#1463 follow-up).
-	IncludePausedInWarning bool `json:"include_paused_in_warning,omitempty"`
+	IncludePausedInWarning      bool    `json:"include_paused_in_warning,omitempty"`
 
 	Paper *PortfolioRiskConfig `json:"paper,omitempty"`
 }
 
-func scopeRiskConfig(cfg *Config, scope PortfolioScope) *PortfolioRiskConfig {
+// PaperSourceConfig names one folded paper deployment. The id is the stable
+// identity: it survives restart because it is config, and it never depends on
+// an alias or a coin name.
+type PaperSourceConfig struct {
+	ID            string               `json:"id"`
+	Label         string               `json:"label,omitempty"`
+	DBFile        string               `json:"db_file"`
+	PortfolioRisk *PortfolioRiskConfig `json:"portfolio_risk,omitempty"`
+}
+
+func (c *Config) paperSource(id string) (PaperSourceConfig, bool) {
+	if c == nil {
+		return PaperSourceConfig{}, false
+	}
+	for _, src := range c.PaperSources {
+		if src.ID == id {
+			return src, true
+		}
+	}
+	return PaperSourceConfig{}, false
+}
+
+func (c *Config) paperSourceLabel(id string) string {
+	if src, ok := c.paperSource(id); ok && strings.TrimSpace(src.Label) != "" {
+		return src.Label
+	}
+	return id
+}
+
+// applyPortfolioRiskOverride layers one override onto a merged copy. Zero means
+// inherit the layer above, exactly as portfolio_risk.paper always did.
+func applyPortfolioRiskOverride(dst, override *PortfolioRiskConfig) {
+	if dst == nil || override == nil {
+		return
+	}
+	if override.MaxDrawdownPct != 0 {
+		dst.MaxDrawdownPct = override.MaxDrawdownPct
+	}
+	if override.MaxNotionalUSD != 0 {
+		dst.MaxNotionalUSD = override.MaxNotionalUSD
+	}
+	if override.WarnThresholdPct != 0 {
+		dst.WarnThresholdPct = override.WarnThresholdPct
+	}
+	if override.DailyMaxLossUSD != 0 {
+		dst.DailyMaxLossUSD = override.DailyMaxLossUSD
+	}
+	if override.DailyMaxLossPct != 0 {
+		dst.DailyMaxLossPct = override.DailyMaxLossPct
+	}
+	if override.MaxSameDirectionNotionalUSD != 0 {
+		dst.MaxSameDirectionNotionalUSD = override.MaxSameDirectionNotionalUSD
+	}
+	if override.MaxAssetConcentrationPct != 0 {
+		dst.MaxAssetConcentrationPct = override.MaxAssetConcentrationPct
+	}
+	dst.IncludePausedInWarning = override.IncludePausedInWarning
+}
+
+// partitionRiskConfig resolves one partition's effective limits: root
+// portfolio_risk, then portfolio_risk.paper, then the named source's override.
+// A source's limits are therefore independent of every other source.
+func partitionRiskConfig(cfg *Config, p RiskPartition) *PortfolioRiskConfig {
 	if cfg == nil || cfg.PortfolioRisk == nil {
 		return nil
 	}
 	parent := cfg.PortfolioRisk
-	if scope != ScopePaper || parent.Paper == nil {
+	if p.Scope != ScopePaper {
+		return parent
+	}
+	var source *PortfolioRiskConfig
+	if p.Source != "" {
+		if src, ok := cfg.paperSource(p.Source); ok {
+			source = src.PortfolioRisk
+		}
+	}
+	if parent.Paper == nil && source == nil {
 		return parent
 	}
 	merged := *parent
 	merged.Paper = nil
-	override := parent.Paper
-	if override.MaxDrawdownPct != 0 {
-		merged.MaxDrawdownPct = override.MaxDrawdownPct
-	}
-	if override.MaxNotionalUSD != 0 {
-		merged.MaxNotionalUSD = override.MaxNotionalUSD
-	}
-	if override.WarnThresholdPct != 0 {
-		merged.WarnThresholdPct = override.WarnThresholdPct
-	}
-	if override.DailyMaxLossUSD != 0 {
-		merged.DailyMaxLossUSD = override.DailyMaxLossUSD
-	}
-	if override.DailyMaxLossPct != 0 {
-		merged.DailyMaxLossPct = override.DailyMaxLossPct
-	}
-	if override.MaxSameDirectionNotionalUSD != 0 {
-		merged.MaxSameDirectionNotionalUSD = override.MaxSameDirectionNotionalUSD
-	}
-	if override.MaxAssetConcentrationPct != 0 {
-		merged.MaxAssetConcentrationPct = override.MaxAssetConcentrationPct
-	}
-	merged.IncludePausedInWarning = override.IncludePausedInWarning
+	applyPortfolioRiskOverride(&merged, parent.Paper)
+	applyPortfolioRiskOverride(&merged, source)
 	return &merged
 }
 
@@ -214,6 +261,7 @@ type Config struct {
 	LogDir                   string                     `json:"log_dir"`
 	DBFile                   string                     `json:"db_file,omitempty"`
 	PaperDBFile              string                     `json:"paper_db_file,omitempty"`
+	PaperSources             []PaperSourceConfig        `json:"paper_sources,omitempty"`
 	ReplayLogPath            string                     `json:"replay_log_path,omitempty"`
 	StatusPort               int                        `json:"status_port,omitempty"`
 	StatusToken              string                     `json:"-"`
@@ -542,6 +590,7 @@ type StrategyRef struct {
 type StrategyConfig struct {
 	ID                          string                   `json:"id"`
 	StorageStrategyID           string                   `json:"storage_strategy_id,omitempty"`
+	PaperSource                 string                   `json:"paper_source,omitempty"`
 	Type                        string                   `json:"type"`
 	Platform                    string                   `json:"platform"`
 	Symbol                      string                   `json:"symbol,omitempty"`
@@ -951,6 +1000,14 @@ func loadConfig(path string, skipLiveCredentialChecks bool, readOnly bool) (*Con
 		cfg.DBFile = "scheduler/state.db"
 	}
 	cfg.PaperDBFile = strings.TrimSpace(cfg.PaperDBFile)
+	for i := range cfg.PaperSources {
+		cfg.PaperSources[i].ID = strings.TrimSpace(cfg.PaperSources[i].ID)
+		cfg.PaperSources[i].Label = strings.TrimSpace(cfg.PaperSources[i].Label)
+		cfg.PaperSources[i].DBFile = strings.TrimSpace(cfg.PaperSources[i].DBFile)
+	}
+	for i := range cfg.Strategies {
+		cfg.Strategies[i].PaperSource = strings.TrimSpace(cfg.Strategies[i].PaperSource)
+	}
 	if cfg.AutoUpdate == "" {
 		cfg.AutoUpdate = "off"
 	}
@@ -1466,6 +1523,8 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 	}
 
 	errs = append(errs, validateUserDefaults(cfg.UserDefaults)...)
+
+	errs = append(errs, validatePaperSourcesConfig(cfg)...)
 
 	errs = append(errs, validateStorageIdentityConfig(cfg)...)
 
@@ -2083,8 +2142,16 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 			knownPlatforms[p] = true
 		}
 	}
-	validateDMChannelsMap(cfg.Discord.DMChannels, "discord", knownPlatforms, &errs)
-	validateDMChannelsMap(cfg.Telegram.DMChannels, "telegram", knownPlatforms, &errs)
+	knownPaperSources := make(map[string]bool, len(cfg.PaperSources))
+	for _, ps := range cfg.PaperSources {
+		if id := strings.TrimSpace(ps.ID); id != "" {
+			knownPaperSources[id] = true
+		}
+	}
+	validateDMChannelsMap(cfg.Discord.DMChannels, "discord", knownPlatforms, knownPaperSources, &errs)
+	validateDMChannelsMap(cfg.Telegram.DMChannels, "telegram", knownPlatforms, knownPaperSources, &errs)
+	warnPaperSourceDMGaps(cfg, cfg.Discord.DMChannels, "discord")
+	warnPaperSourceDMGaps(cfg, cfg.Telegram.DMChannels, "telegram")
 
 	for k, v := range cfg.SummaryFrequency {
 		if strings.TrimSpace(k) == "" {
@@ -2124,7 +2191,25 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 	return nil
 }
 
-func validateDMChannelsMap(m map[string]string, label string, knownPlatforms map[string]bool, errs *[]string) {
+// parseDMChannelKey splits a dm_channels key into the platform and the optional
+// paper source it routes. The accepted shapes are exactly the keys the send
+// path builds in paperChannelKeys: "<platform>", "<platform>-paper" and
+// "<platform>-paper:<source id>".
+func parseDMChannelKey(k string) (platform, source string, ok bool) {
+	base, src, hasSource := strings.Cut(k, paperSourceSeparator)
+	if hasSource {
+		if !strings.HasSuffix(base, paperChannelSuffix) || !paperSourceIDPattern.MatchString(src) {
+			return "", "", false
+		}
+		return strings.TrimSuffix(base, paperChannelSuffix), src, true
+	}
+	if strings.Contains(base, paperChannelSuffix) && !strings.HasSuffix(base, paperChannelSuffix) {
+		return "", "", false
+	}
+	return strings.TrimSuffix(base, paperChannelSuffix), "", true
+}
+
+func validateDMChannelsMap(m map[string]string, label string, knownPlatforms, knownSources map[string]bool, errs *[]string) {
 	if m == nil {
 		return
 	}
@@ -2133,11 +2218,11 @@ func validateDMChannelsMap(m map[string]string, label string, knownPlatforms map
 			*errs = append(*errs, fmt.Sprintf("%s: dm_channels has empty key", label))
 			continue
 		}
-		if strings.Contains(k, "-paper") && !strings.HasSuffix(k, "-paper") {
-			*errs = append(*errs, fmt.Sprintf("%s: dm_channels key %q is invalid (only optional suffix is \"-paper\")", label, k))
+		platform, source, ok := parseDMChannelKey(k)
+		if !ok {
+			*errs = append(*errs, fmt.Sprintf("%s: dm_channels key %q is invalid (want \"<platform>\", \"<platform>-paper\" or \"<platform>-paper%s<source id>\")", label, k, paperSourceSeparator))
 			continue
 		}
-		platform := strings.TrimSuffix(k, "-paper")
 		if platform == "" {
 			*errs = append(*errs, fmt.Sprintf("%s: dm_channels key %q is invalid (platform prefix is empty)", label, k))
 			continue
@@ -2149,7 +2234,106 @@ func validateDMChannelsMap(m map[string]string, label string, knownPlatforms map
 		if len(knownPlatforms) > 0 && !knownPlatforms[platform] {
 			fmt.Printf("[WARN] %s: dm_channels[%q] references platform %q with no configured strategies — possible typo\n", label, k, platform)
 		}
+		if source != "" && !knownSources[source] {
+			fmt.Printf("[WARN] %s: dm_channels[%q] references paper source %q with no paper_sources entry — this DM route never fires\n", label, k, source)
+		}
 	}
+}
+
+// warnPaperSourceDMGaps names every sourced strategy that had a
+// "<platform>-paper" DM route before its source existed and now reaches no DM
+// key at all: tradeAlertRoutes reads only the sourced key, with no fallback,
+// so the plain key that used to carry these DMs is never consulted again.
+func warnPaperSourceDMGaps(cfg *Config, m map[string]string, label string) {
+	if cfg == nil || len(m) == 0 {
+		return
+	}
+	gaps := make(map[string]string)
+	for _, sc := range cfg.Strategies {
+		source := partitionFor(sc).Source
+		platform := strings.TrimSpace(sc.Platform)
+		if source == "" || platform == "" {
+			continue
+		}
+		keys := paperChannelKeys(platform, source)
+		if strings.TrimSpace(m[keys[0]]) != "" || strings.TrimSpace(m[keys[1]]) == "" {
+			continue
+		}
+		gaps[keys[0]] = keys[1]
+	}
+	missing := make([]string, 0, len(gaps))
+	for key := range gaps {
+		missing = append(missing, key)
+	}
+	sort.Strings(missing)
+	for _, key := range missing {
+		fmt.Printf("[WARN] %s: no dm_channels[%q]; trade DMs for that paper source are dropped because the send path never falls back to dm_channels[%q] — add the key to restore them\n", label, key, gaps[key])
+	}
+}
+
+var paperSourceIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
+
+// reservedPaperSourceIDs cannot name a source: they already spell a partition
+// or a storage role, so a source id may never collide with one.
+var reservedPaperSourceIDs = map[string]bool{
+	string(ScopeLive):          true,
+	string(ScopePaper):         true,
+	string(storageRolePrimary): true,
+}
+
+// validatePaperSourcesConfig owns every paper-source refusal: the id shape and
+// uniqueness, the reserved ids, a blank file, a nested paper override, an
+// unknown reference and a source named by a live strategy.
+func validatePaperSourcesConfig(cfg *Config) []string {
+	if cfg == nil {
+		return nil
+	}
+	var errs []string
+	known := make(map[string]bool, len(cfg.PaperSources))
+	for i, src := range cfg.PaperSources {
+		prefix := fmt.Sprintf("paper_sources[%d]", i)
+		if src.ID != "" {
+			prefix = fmt.Sprintf("paper_sources[%s]", src.ID)
+		}
+		switch {
+		case src.ID == "":
+			errs = append(errs, fmt.Sprintf("%s: id is empty", prefix))
+		case reservedPaperSourceIDs[src.ID]:
+			errs = append(errs, fmt.Sprintf("%s: id %q is reserved; pick another source id", prefix, src.ID))
+		case !paperSourceIDPattern.MatchString(src.ID):
+			errs = append(errs, fmt.Sprintf("%s: id %q must match %s", prefix, src.ID, paperSourceIDPattern.String()))
+		case known[src.ID]:
+			errs = append(errs, fmt.Sprintf("%s: duplicate id %q", prefix, src.ID))
+		default:
+			known[src.ID] = true
+		}
+		if src.DBFile == "" {
+			errs = append(errs, fmt.Sprintf("%s: db_file is empty; every paper source owns its own state file", prefix))
+		}
+		if src.PortfolioRisk != nil {
+			errs = append(errs, validatePortfolioRiskFields(src.PortfolioRisk, prefix+".portfolio_risk.", true)...)
+			if src.PortfolioRisk.Paper != nil {
+				errs = append(errs, fmt.Sprintf("%s.portfolio_risk.paper is not allowed (a source override cannot nest another override)", prefix))
+			}
+		}
+	}
+	for i, sc := range cfg.Strategies {
+		if sc.PaperSource == "" {
+			continue
+		}
+		prefix := fmt.Sprintf("strategy[%d]", i)
+		if sc.ID != "" {
+			prefix = fmt.Sprintf("strategy[%s]", sc.ID)
+		}
+		if portfolioScopeFor(sc) == ScopeLive {
+			errs = append(errs, fmt.Sprintf("%s: paper_source %q is set on a live strategy; only paper strategies carry a source", prefix, sc.PaperSource))
+			continue
+		}
+		if !known[sc.PaperSource] {
+			errs = append(errs, fmt.Sprintf("%s: paper_source %q is not declared in paper_sources", prefix, sc.PaperSource))
+		}
+	}
+	return errs
 }
 
 func validatePortfolioRiskFields(pr *PortfolioRiskConfig, prefix string, inheritZero bool) []string {

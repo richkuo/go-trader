@@ -1274,7 +1274,10 @@ var storeCommitHook func(role storageRole) error
 type scopeSaveRequest struct {
 	Strategies []*StrategyState
 	ScopeOf    map[string]PortfolioScope
+	// Scopes drives the per-file SQL filter; Partitions decides which risk,
+	// event and correlation rows this transaction owns.
 	Scopes     []PortfolioScope
+	Partitions []RiskPartition
 	// FullFile marks a request that covers every scope the file owns, so the
 	// whole roster is replaced exactly as the single-file save always did. A
 	// partial request replaces only the rows it names and leaves the other
@@ -1306,6 +1309,7 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 	return sdb.saveStateSubset(state, scopeSaveRequest{
 		Strategies:      sortedStrategyStates(state.Strategies),
 		Scopes:          []PortfolioScope{ScopeLive, ScopePaper},
+		Partitions:      []RiskPartition{livePartition, defaultPaperPartition},
 		FullFile:        true,
 		IncludeUnscoped: true,
 		WriteMeta:       true,
@@ -1666,18 +1670,21 @@ func (sdb *StateDB) saveStateSubset(state *AppState, req scopeSaveRequest) error
 		return fmt.Errorf("prepare kill_switch_event insert: %w", err)
 	}
 	defer stmtEvt.Close()
-	owned := make(map[PortfolioScope]bool, len(req.Scopes)+1)
-	for _, scope := range req.Scopes {
-		owned[scope] = true
+	// Ownership is by PARTITION, never by scope: with several paper files a
+	// scope alone would write every paper source's risk row into every file.
+	owned := make(map[RiskPartition]bool, len(req.Partitions)+1)
+	for _, p := range req.Partitions {
+		owned[p] = true
 	}
 	if req.IncludeUnscoped {
-		owned[scopeUnassigned] = true
+		owned[unassignedPartition] = true
 	}
-	for _, scope := range sortedPortfolioScopes(state.PortfolioRisk) {
-		if !owned[scope] {
+	for _, part := range sortedRiskPartitions(state.PortfolioRisk) {
+		if !owned[part] {
 			continue
 		}
-		prs := state.PortfolioRisk[scope]
+		scope := part.Scope
+		prs := state.PortfolioRisk[part]
 		if prs == nil {
 			continue
 		}
@@ -1710,11 +1717,12 @@ func (sdb *StateDB) saveStateSubset(state *AppState, req scopeSaveRequest) error
 	} else if _, err := tx.Exec("DELETE FROM correlation_snapshot WHERE scope IN ("+scopeFilter+")", scopeArgs...); err != nil {
 		return fmt.Errorf("delete correlation_snapshot: %w", err)
 	}
-	for _, scope := range sortedCorrelationScopes(state.CorrelationSnapshot) {
-		if !owned[scope] {
+	for _, part := range sortedCorrelationPartitions(state.CorrelationSnapshot) {
+		if !owned[part] {
 			continue
 		}
-		snap := state.CorrelationSnapshot[scope]
+		scope := part.Scope
+		snap := state.CorrelationSnapshot[part]
 		snapJSON := "{}"
 		if snap != nil {
 			data, err := json.Marshal(snap)
@@ -2507,7 +2515,9 @@ func (sdb *StateDB) loadScopeBooks(scopes []PortfolioScope) (*scopeLoad, error) 
 		}
 		evt.Timestamp = parseTime(tsStr)
 		scope := PortfolioScope(scopeStr)
-		evt.Scope = scope
+		// The file alone cannot name the paper source; the store re-stamps
+		// every loaded row onto this file's partition.
+		evt.Partition = RiskPartition{Scope: scope}
 		prs, ok := out.PortfolioRisk[scope]
 		if !ok || prs == nil {
 			prs = &PortfolioRiskState{}
@@ -2577,8 +2587,15 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 		LastLeaderboardSummaries: meta.LastLeaderboardSummaries,
 		LastSummaryPost:          meta.LastSummaryPost,
 		Strategies:               books.Strategies,
-		PortfolioRisk:            books.PortfolioRisk,
-		CorrelationSnapshot:      books.CorrelationSnapshot,
+		PortfolioRisk:            make(map[RiskPartition]*PortfolioRiskState, len(books.PortfolioRisk)),
+		CorrelationSnapshot:      make(map[RiskPartition]*CorrelationSnapshot, len(books.CorrelationSnapshot)),
+	}
+	// One file, so every scope maps onto its unnamed partition.
+	for scope, prs := range books.PortfolioRisk {
+		state.PortfolioRisk[RiskPartition{Scope: scope}] = prs
+	}
+	for scope, snap := range books.CorrelationSnapshot {
+		state.CorrelationSnapshot[RiskPartition{Scope: scope}] = snap
 	}
 	return state, nil
 }
@@ -2605,21 +2622,21 @@ func sortedOptionKeys(m map[string]*OptionPosition) []string {
 	return out
 }
 
-func sortedPortfolioScopes(m map[PortfolioScope]*PortfolioRiskState) []PortfolioScope {
-	out := make([]PortfolioScope, 0, len(m))
-	for scope := range m {
-		out = append(out, scope)
+func sortedRiskPartitions(m map[RiskPartition]*PortfolioRiskState) []RiskPartition {
+	out := make([]RiskPartition, 0, len(m))
+	for p := range m {
+		out = append(out, p)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	sort.Slice(out, func(i, j int) bool { return out[i].String() < out[j].String() })
 	return out
 }
 
-func sortedCorrelationScopes(m map[PortfolioScope]*CorrelationSnapshot) []PortfolioScope {
-	out := make([]PortfolioScope, 0, len(m))
-	for scope := range m {
-		out = append(out, scope)
+func sortedCorrelationPartitions(m map[RiskPartition]*CorrelationSnapshot) []RiskPartition {
+	out := make([]RiskPartition, 0, len(m))
+	for p := range m {
+		out = append(out, p)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	sort.Slice(out, func(i, j int) bool { return out[i].String() < out[j].String() })
 	return out
 }
 

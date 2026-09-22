@@ -56,17 +56,17 @@ type ReconciliationGap struct {
 }
 
 type AppState struct {
-	CycleCount                 int                                     `json:"cycle_count"`
-	LastCycle                  time.Time                               `json:"last_cycle"`
-	Strategies                 map[string]*StrategyState               `json:"strategies"`
-	PortfolioRisk              map[PortfolioScope]*PortfolioRiskState  `json:"portfolio_risk"`
-	CorrelationSnapshot        map[PortfolioScope]*CorrelationSnapshot `json:"correlation_snapshot,omitempty"`
-	LatestSharedWalletBalances map[SharedWalletKey]float64             `json:"-"`
-	LatestSharedWalletMembers  map[SharedWalletKey][]string            `json:"-"`
-	ReconciliationGaps         map[string]*ReconciliationGap           `json:"reconciliation_gaps,omitempty"`
-	LastLeaderboardPostDate    string                                  `json:"last_leaderboard_post_date,omitempty"`
-	LastLeaderboardSummaries   map[string]time.Time                    `json:"last_leaderboard_summaries,omitempty"`
-	LastSummaryPost            map[string]time.Time                    `json:"last_summary_post,omitempty"`
+	CycleCount                 int                                    `json:"cycle_count"`
+	LastCycle                  time.Time                              `json:"last_cycle"`
+	Strategies                 map[string]*StrategyState              `json:"strategies"`
+	PortfolioRisk              map[RiskPartition]*PortfolioRiskState  `json:"portfolio_risk"`
+	CorrelationSnapshot        map[RiskPartition]*CorrelationSnapshot `json:"correlation_snapshot,omitempty"`
+	LatestSharedWalletBalances map[SharedWalletKey]float64            `json:"-"`
+	LatestSharedWalletMembers  map[SharedWalletKey][]string           `json:"-"`
+	ReconciliationGaps         map[string]*ReconciliationGap          `json:"reconciliation_gaps,omitempty"`
+	LastLeaderboardPostDate    string                                 `json:"last_leaderboard_post_date,omitempty"`
+	LastLeaderboardSummaries   map[string]time.Time                   `json:"last_leaderboard_summaries,omitempty"`
+	LastSummaryPost            map[string]time.Time                   `json:"last_summary_post,omitempty"`
 }
 
 type StrategyState struct {
@@ -124,49 +124,65 @@ func NewAppState() *AppState {
 	return &AppState{
 		CycleCount:          0,
 		Strategies:          make(map[string]*StrategyState),
-		PortfolioRisk:       make(map[PortfolioScope]*PortfolioRiskState),
-		CorrelationSnapshot: make(map[PortfolioScope]*CorrelationSnapshot),
+		PortfolioRisk:       make(map[RiskPartition]*PortfolioRiskState),
+		CorrelationSnapshot: make(map[RiskPartition]*CorrelationSnapshot),
 	}
 }
 
-func (s *AppState) scopeRisk(scope PortfolioScope) *PortfolioRiskState {
+func (s *AppState) partitionRisk(p RiskPartition) *PortfolioRiskState {
 	if s == nil {
 		return &PortfolioRiskState{}
 	}
 	if s.PortfolioRisk == nil {
-		s.PortfolioRisk = make(map[PortfolioScope]*PortfolioRiskState)
+		s.PortfolioRisk = make(map[RiskPartition]*PortfolioRiskState)
 	}
-	if prs, ok := s.PortfolioRisk[scope]; ok && prs != nil {
+	if prs, ok := s.PortfolioRisk[p]; ok && prs != nil {
 		return prs
 	}
 	prs := &PortfolioRiskState{}
-	if scope == ScopePaper {
+	if p.Scope == ScopePaper {
 		prs.ManualMarkBasisRebaselined = true
 	}
-	s.PortfolioRisk[scope] = prs
+	s.PortfolioRisk[p] = prs
 	return prs
 }
 
-func (s *AppState) scopeRiskIfPresent(scope PortfolioScope) *PortfolioRiskState {
+func (s *AppState) partitionRiskIfPresent(p RiskPartition) *PortfolioRiskState {
 	if s == nil || s.PortfolioRisk == nil {
 		return nil
 	}
-	return s.PortfolioRisk[scope]
+	return s.PortfolioRisk[p]
 }
 
-func (s *AppState) scopeLatched(scope PortfolioScope) bool {
-	prs := s.scopeRiskIfPresent(scope)
+func (s *AppState) partitionLatched(p RiskPartition) bool {
+	prs := s.partitionRiskIfPresent(p)
 	return prs != nil && prs.KillSwitchActive
 }
 
-func (s *AppState) latchedScopes() []PortfolioScope {
-	var out []PortfolioScope
-	for _, scope := range []PortfolioScope{ScopeLive, ScopePaper} {
-		if s.scopeLatched(scope) {
-			out = append(out, scope)
+// latchedPartitions lists every latched partition in the stable order live,
+// default paper, then named sources by id.
+func (s *AppState) latchedPartitions() []RiskPartition {
+	if s == nil {
+		return nil
+	}
+	var sources []RiskPartition
+	var out []RiskPartition
+	for p, prs := range s.PortfolioRisk {
+		if prs == nil || !prs.KillSwitchActive {
+			continue
+		}
+		if p.Source != "" {
+			sources = append(sources, p)
 		}
 	}
-	return out
+	if s.partitionLatched(livePartition) {
+		out = append(out, livePartition)
+	}
+	if s.partitionLatched(defaultPaperPartition) {
+		out = append(out, defaultPaperPartition)
+	}
+	sort.Slice(sources, func(i, j int) bool { return sources[i].Source < sources[j].Source })
+	return append(out, sources...)
 }
 
 func (s *AppState) anyScopeLatched() bool {
@@ -181,24 +197,24 @@ func (s *AppState) anyScopeLatched() bool {
 	return false
 }
 
-func (s *AppState) scopeCorrelation(scope PortfolioScope) *CorrelationSnapshot {
+func (s *AppState) partitionCorrelation(p RiskPartition) *CorrelationSnapshot {
 	if s == nil || s.CorrelationSnapshot == nil {
 		return nil
 	}
-	return s.CorrelationSnapshot[scope]
+	return s.CorrelationSnapshot[p]
 }
 
-func (s *AppState) setScopeCorrelation(scope PortfolioScope, snap *CorrelationSnapshot) {
+func (s *AppState) setPartitionCorrelation(p RiskPartition, snap *CorrelationSnapshot) {
 	if s == nil {
 		return
 	}
 	if s.CorrelationSnapshot == nil {
-		s.CorrelationSnapshot = make(map[PortfolioScope]*CorrelationSnapshot)
+		s.CorrelationSnapshot = make(map[RiskPartition]*CorrelationSnapshot)
 	}
 	if snap != nil {
-		snap.Scope = scope
+		snap.Partition = p
 	}
-	s.CorrelationSnapshot[scope] = snap
+	s.CorrelationSnapshot[p] = snap
 }
 
 type sharedWalletPoolStateTransition string
@@ -472,28 +488,28 @@ func ReconcileConfigInitialCapital(cfg *Config, state *AppState, store *StateSto
 	return infos, errors
 }
 
-func assignLegacyPortfolioScope(state *AppState, cfg *Config) (PortfolioScope, bool) {
+func assignLegacyPortfolioScope(state *AppState, cfg *Config) (RiskPartition, bool) {
 	if state == nil {
-		return scopeUnassigned, false
+		return unassignedPartition, false
 	}
-	legacy := state.PortfolioRisk[scopeUnassigned]
-	legacySnap := state.CorrelationSnapshot[scopeUnassigned]
+	legacy := state.PortfolioRisk[unassignedPartition]
+	legacySnap := state.CorrelationSnapshot[unassignedPartition]
 	if legacy == nil && legacySnap == nil {
-		return scopeUnassigned, false
+		return unassignedPartition, false
 	}
 
-	target := ScopePaper
+	target := defaultPaperPartition
 	if cfg != nil && HasLiveStrategy(cfg.Strategies) {
-		target = ScopeLive
+		target = livePartition
 	}
 	placeLegacyPortfolioRisk(state, cfg, legacy, legacySnap, target)
 	return target, true
 }
 
-// placeLegacyPortfolioRisk moves one file's unscoped legacy rows into the scope
-// that file owns. The caller decides the target, so a split layout places each
-// file's row from that file's own validated scope.
-func placeLegacyPortfolioRisk(state *AppState, cfg *Config, legacy *PortfolioRiskState, legacySnap *CorrelationSnapshot, target PortfolioScope) {
+// placeLegacyPortfolioRisk moves one file's unscoped legacy rows into the
+// partition that file owns. The caller decides the target, so a split layout
+// places each file's row from that file's own validated partition.
+func placeLegacyPortfolioRisk(state *AppState, cfg *Config, legacy *PortfolioRiskState, legacySnap *CorrelationSnapshot, target RiskPartition) {
 	if state == nil || (legacy == nil && legacySnap == nil) {
 		return
 	}
@@ -501,20 +517,20 @@ func placeLegacyPortfolioRisk(state *AppState, cfg *Config, legacy *PortfolioRis
 	if legacy != nil {
 		existing := state.PortfolioRisk[target]
 		if existing == nil {
-			if target == ScopePaper {
+			if target.Scope == ScopePaper {
 				legacy.ManualMarkBasisRebaselined = true
 			}
 			for i := range legacy.Events {
-				legacy.Events[i].Scope = target
+				legacy.Events[i].Partition = target
 			}
 			state.PortfolioRisk[target] = legacy
-			if target == ScopeLive && cfg != nil && len(strategiesInScope(cfg.Strategies, ScopePaper)) > 0 {
+			if target.IsLive() && cfg != nil && len(strategiesInScope(cfg.Strategies, ScopePaper)) > 0 {
 				priorPeak := legacy.PeakValue
 				newPeak := liveScopeRebasedPeak(state, cfg, nil)
 				legacy.PeakValue = newPeak
 				addKillSwitchEvent(legacy, "scope_basis_rebaseline", "equity", legacy.CurrentDrawdownPct, 0, newPeak,
 					fmt.Sprintf("#1509 legacy whole-roster peak $%.2f re-based onto the live-only roster: $%.2f (sum of live per-strategy peaks, configured capital for a strategy with no peak, wallet equity for a shared-wallet pool); latch untouched", priorPeak, newPeak))
-				legacy.Events[len(legacy.Events)-1].Scope = target
+				legacy.Events[len(legacy.Events)-1].Partition = target
 				fmt.Printf("[state] Legacy portfolio peak re-based for the live scope: $%.0f -> $%.0f (paper strategies now measure in their own scope)\n", priorPeak, newPeak)
 			}
 		} else {
@@ -525,18 +541,18 @@ func placeLegacyPortfolioRisk(state *AppState, cfg *Config, legacy *PortfolioRis
 			addKillSwitchEvent(existing, "migration_conflict", "",
 				existing.CurrentDrawdownPct, 0, existing.PeakValue,
 				fmt.Sprintf("legacy unscoped portfolio_risk row found alongside an existing %s row; kept the %s row and OR-ed the latch (legacy latched=%v, kept latched=%v)",
-					scopeLabel(target), scopeLabel(target), legacy.KillSwitchActive, existing.KillSwitchActive))
-			existing.Events[len(existing.Events)-1].Scope = target
+					partitionLabel(target), partitionLabel(target), legacy.KillSwitchActive, existing.KillSwitchActive))
+			existing.Events[len(existing.Events)-1].Partition = target
 		}
-		delete(state.PortfolioRisk, scopeUnassigned)
+		delete(state.PortfolioRisk, unassignedPartition)
 	}
 
 	if legacySnap != nil {
 		if _, ok := state.CorrelationSnapshot[target]; !ok {
-			legacySnap.Scope = target
+			legacySnap.Partition = target
 			state.CorrelationSnapshot[target] = legacySnap
 		}
-		delete(state.CorrelationSnapshot, scopeUnassigned)
+		delete(state.CorrelationSnapshot, unassignedPartition)
 	}
 }
 
@@ -547,7 +563,7 @@ func LoadStateWithDB(cfg *Config, sdb *StateDB) (*AppState, error) {
 	}
 	if state != nil {
 		if target, moved := assignLegacyPortfolioScope(state, cfg); moved {
-			fmt.Printf("[state] Legacy unscoped portfolio risk row placed in the %s scope\n", scopeLabel(target))
+			fmt.Printf("[state] Legacy unscoped portfolio risk row placed in the %s scope\n", partitionLabel(target))
 			if err := sdb.SaveState(state); err != nil {
 				return nil, fmt.Errorf("persist legacy portfolio scope placement: %w", err)
 			}

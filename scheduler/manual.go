@@ -90,14 +90,14 @@ func runManualOpen(args []string) int {
 			if loadErr != nil {
 				fmt.Fprintf(os.Stderr, "warning: could not load state for safety check: %v\n", loadErr)
 			} else {
-				scope := portfolioScopeFor(sc)
-				if state.scopeLatched(scope) {
-					fmt.Fprintf(os.Stderr, "error: portfolio kill switch is active for the %s scope — manual-open blocked (use manual-close to flatten)\n", scopeLabel(scope))
+				part := partitionFor(sc)
+				if state.partitionLatched(part) {
+					fmt.Fprintf(os.Stderr, "error: portfolio kill switch is active for the %s scope — manual-open blocked (use manual-close to flatten)\n", partitionLabel(part))
 					return 1
 				}
-				scopedPR := scopeRiskConfig(cfg, scope)
-				scopedStates := filterStatesByScope(state.Strategies, cfg.Strategies, scope)
-				scopedCfgs := strategiesInScope(cfg.Strategies, scope)
+				scopedPR := partitionRiskConfig(cfg, part)
+				scopedStates := filterStatesByPartition(state.Strategies, cfg.Strategies, part)
+				scopedCfgs := strategiesInPartition(cfg.Strategies, part)
 				if ss := state.Strategies[strategyID]; ss != nil {
 					if ss.RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid) != nil {
 						fmt.Fprintln(os.Stderr, "error: strategy has a pending circuit-breaker close — manual-open blocked")
@@ -112,7 +112,7 @@ func runManualOpen(args []string) int {
 					fmt.Fprintf(os.Stderr, "error: %s — manual-open blocked (closes and SL edits are unaffected)\n", detail)
 					return 1
 				}
-				capSt := manualExposureCapStatus(cfg, state, scope)
+				capSt := manualExposureCapStatus(cfg, state, part)
 				if blocked, why := exposureCapManualEntryBlock(capSt, extractAsset(sc), resolvedSide); blocked {
 					fmt.Fprintf(os.Stderr, "error: %s — manual limit-open (%s) blocked (closes and SL edits are unaffected)\n", why, resolvedSide)
 					return 1
@@ -374,7 +374,7 @@ func drainPendingManualActions(state *AppState, cfg *Config, store *StateStore) 
 
 	applied := make(map[string]*manualAlert)
 	var order []string
-	appliedScopes := make(map[PortfolioScope]bool)
+	appliedPartitions := make(map[RiskPartition]bool)
 	appliedAny := false
 	var criticals []string
 	for _, a := range actions {
@@ -385,13 +385,13 @@ func drainPendingManualActions(state *AppState, cfg *Config, store *StateStore) 
 		if store.manualActionApplied(role, a.ID) {
 			continue
 		}
-		scope, mapped := store.scopeForStrategy(a.StrategyID)
+		part, mapped := store.partitionForStrategy(a.StrategyID)
 		if !mapped {
 			if store.Split() {
 				fmt.Printf("[manual] action %d (%s %s) names no configured strategy; leaving it queued in the %s state file\n", a.ID, a.Action, a.StrategyID, role)
 				continue
 			}
-			scope = ScopeLive
+			part = livePartition
 		}
 		actionCriticals, err := applyManualActionWithCriticals(state, cfg, scByID, a)
 		if err != nil {
@@ -404,13 +404,13 @@ func drainPendingManualActions(state *AppState, cfg *Config, store *StateStore) 
 			fmt.Printf("[manual] %s\n", msg)
 			criticals = append(criticals, msg)
 			store.recordAppliedManualAction(a.StrategyID, role, a.ID)
-			appliedScopes[scope] = true
+			appliedPartitions[part] = true
 			appliedAny = true
 			continue
 		}
 		criticals = append(criticals, actionCriticals...)
 		store.recordAppliedManualAction(a.StrategyID, role, a.ID)
-		appliedScopes[scope] = true
+		appliedPartitions[part] = true
 		appliedAny = true
 		if !manualActionRecordsTrade(a.Action) {
 			continue
@@ -427,18 +427,15 @@ func drainPendingManualActions(state *AppState, cfg *Config, store *StateStore) 
 	// Persist at once so an on-chain fill is durable before the cycle runs.
 	if appliedAny {
 		if !store.Split() {
-			for scope, saveErr := range store.SaveAll(state) {
+			for part, saveErr := range store.SaveAll(state) {
 				if saveErr != nil {
-					fmt.Printf("[manual] failed to persist drained actions for the %s scope: %v\n", scopeLabel(scope), saveErr)
+					fmt.Printf("[manual] failed to persist drained actions for the %s scope: %v\n", partitionLabel(part), saveErr)
 				}
 			}
 		} else {
-			for _, scope := range []PortfolioScope{ScopeLive, ScopePaper} {
-				if !appliedScopes[scope] {
-					continue
-				}
-				if saveErr := store.SaveScope(state, scope); saveErr != nil {
-					fmt.Printf("[manual] failed to persist drained actions for the %s scope: %v\n", scopeLabel(scope), saveErr)
+			for _, part := range sortedAppliedPartitions(appliedPartitions) {
+				if saveErr := store.SavePartition(state, part); saveErr != nil {
+					fmt.Printf("[manual] failed to persist drained actions for the %s scope: %v\n", partitionLabel(part), saveErr)
 				}
 			}
 		}

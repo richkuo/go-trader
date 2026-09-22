@@ -36,23 +36,23 @@ func TestResolveTradeChannel(t *testing.T) {
 		"spot":              "ch-spot",
 	}
 
-	if got := resolveTradeChannel(channels, "hyperliquid", "perps", false); got != "ch-hl-paper" {
+	if got := resolveTradeChannel(channels, "hyperliquid", "perps", false, ""); got != "ch-hl-paper" {
 		t.Errorf("paper with -paper key: expected ch-hl-paper, got %s", got)
 	}
 
-	if got := resolveTradeChannel(channels, "hyperliquid", "perps", true); got != "ch-hl" {
+	if got := resolveTradeChannel(channels, "hyperliquid", "perps", true, ""); got != "ch-hl" {
 		t.Errorf("live trade: expected ch-hl, got %s", got)
 	}
 
-	if got := resolveTradeChannel(channels, "binanceus", "spot", false); got != "ch-spot" {
+	if got := resolveTradeChannel(channels, "binanceus", "spot", false, ""); got != "ch-spot" {
 		t.Errorf("paper fallback to stratType: expected ch-spot, got %s", got)
 	}
 
-	if got := resolveTradeChannel(channels, "unknown", "unknown", false); got != "" {
+	if got := resolveTradeChannel(channels, "unknown", "unknown", false, ""); got != "" {
 		t.Errorf("paper no channel: expected empty, got %s", got)
 	}
 
-	if got := resolveTradeChannel(channels, "binanceus", "spot", true); got != "ch-spot" {
+	if got := resolveTradeChannel(channels, "binanceus", "spot", true, ""); got != "ch-spot" {
 		t.Errorf("live fallback to stratType: expected ch-spot, got %s", got)
 	}
 }

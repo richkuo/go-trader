@@ -412,7 +412,7 @@ func TestManualExposureCapStatus_ConcentrationOnlyEnforced(t *testing.T) {
 	cfg := manualExposureTestConfig()
 	state := &AppState{Strategies: exposureTestStates()}
 
-	st := manualExposureCapStatus(cfg, state, ScopePaper)
+	st := manualExposureCapStatus(cfg, state, defaultPaperPartition)
 	if !st.Configured {
 		t.Fatal("expected Configured=true")
 	}
@@ -483,7 +483,7 @@ func TestManualStateView_CarriesConcentrationArm(t *testing.T) {
 
 func TestManualExposureCapStatus_PVBasisMissSurfaced(t *testing.T) {
 	cfg := manualExposureTestConfig()
-	st := manualExposureCapStatus(cfg, &AppState{Strategies: map[string]*StrategyState{}}, ScopePaper)
+	st := manualExposureCapStatus(cfg, &AppState{Strategies: map[string]*StrategyState{}}, defaultPaperPartition)
 	if !st.PVBasisMiss {
 		t.Error("expected PVBasisMiss=true on a zero-value book")
 	}

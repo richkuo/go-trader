@@ -21,34 +21,34 @@ func TestPortfolioWarningMessageLiveLikeSample(t *testing.T) {
 	state := NewAppState()
 	state.Strategies["hl-vwap-eth-60"] = &StrategyState{
 		ID: "hl-vwap-eth-60", Platform: "hyperliquid", InitialCapital: 50,
-		Positions:       map[string]*Position{},
-		RiskState:       RiskState{CurrentDrawdownPct: 28.75, DailyPnL: -15},
+		Positions: map[string]*Position{},
+		RiskState: RiskState{CurrentDrawdownPct: 28.75, DailyPnL: -15},
 	}
 	state.Strategies["hl-rmc-eth-live"] = &StrategyState{
 		ID: "hl-rmc-eth-live", Platform: "hyperliquid", InitialCapital: 220,
-		Positions:       map[string]*Position{},
-		RiskState:       RiskState{CurrentDrawdownPct: 0, DailyPnL: -220.28},
+		Positions: map[string]*Position{},
+		RiskState: RiskState{CurrentDrawdownPct: 0, DailyPnL: -220.28},
 	}
 	state.Strategies["hl-tcross-eth-live"] = &StrategyState{
 		ID: "hl-tcross-eth-live", Platform: "hyperliquid", InitialCapital: 50,
-		Positions:       map[string]*Position{},
-		RiskState:       RiskState{CurrentDrawdownPct: 0, DailyPnL: -8.12},
+		Positions: map[string]*Position{},
+		RiskState: RiskState{CurrentDrawdownPct: 0, DailyPnL: -8.12},
 	}
 	state.Strategies["manual-eth"] = &StrategyState{
 		ID: "manual-eth", Platform: "hyperliquid", InitialCapital: 100,
-		Positions:       map[string]*Position{},
-		RiskState:       RiskState{CurrentDrawdownPct: 0, DailyPnL: -39.36},
+		Positions: map[string]*Position{},
+		RiskState: RiskState{CurrentDrawdownPct: 0, DailyPnL: -39.36},
 	}
 	// Realistic live-equity state from the recent /status snapshot
-	state.PortfolioRisk = map[PortfolioScope]*PortfolioRiskState{
-		ScopeLive: {
-			PeakValue:                 1014.25,
-			CurrentDrawdownPct:        9.85,
-			CurrentMarginDrawdownPct:  30.5,
-			WarningSent:               true,
-			WarnBandEnteredAt:         time.Now().UTC().Add(-30 * time.Minute),
-			LastWarningMarginDDPct:    30.4,
-			WarningMarginDeltaPct:     0.1,
+	state.PortfolioRisk = map[RiskPartition]*PortfolioRiskState{
+		livePartition: {
+			PeakValue:                1014.25,
+			CurrentDrawdownPct:       9.85,
+			CurrentMarginDrawdownPct: 30.5,
+			WarningSent:              true,
+			WarnBandEnteredAt:        time.Now().UTC().Add(-30 * time.Minute),
+			LastWarningMarginDDPct:   30.4,
+			WarningMarginDeltaPct:    0.1,
 		},
 	}
 
@@ -57,7 +57,7 @@ func TestPortfolioWarningMessageLiveLikeSample(t *testing.T) {
 		Reason:        "portfolio perps margin drawdown 30.5% exceeds limit 30.0%",
 		Config:        &PortfolioRiskConfig{MaxDrawdownPct: 30, WarnThresholdPct: 100},
 		State:         state,
-		Scope:         ScopeLive,
+		Partition:     livePartition,
 		CfgStrategies: cfgStrategies,
 		Prices:        prices,
 		TotalValue:    913.7,

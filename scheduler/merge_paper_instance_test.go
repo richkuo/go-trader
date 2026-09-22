@@ -29,7 +29,7 @@ func writeMergeFixtureDB(t *testing.T, path string, scope PortfolioScope, latche
 			{Timestamp: now.Add(-6 * time.Hour), StrategyID: "hl-x", Symbol: "ETH", Side: "buy", Quantity: 0.4, Price: 2500, Value: 1000, TradeType: "perps"},
 		},
 	}
-	state.PortfolioRisk[scope] = &PortfolioRiskState{PeakValue: 1000, KillSwitchActive: latched}
+	state.PortfolioRisk[RiskPartition{Scope: scope}] = &PortfolioRiskState{PeakValue: 1000, KillSwitchActive: latched}
 	if err := db.SaveState(state); err != nil {
 		t.Fatalf("SaveState %s: %v", path, err)
 	}

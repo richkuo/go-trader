@@ -35,13 +35,13 @@ func TestPortfolioWarningContributors_FilterPausedByDefault(t *testing.T) {
 
 	prices := map[string]float64{"ETH": 3000, "BTC": 60000, "SOL": 100}
 
-	contribs := portfolioWarningContributors(state, cfgStrategies, ScopeLive, prices, false)
+	contribs := portfolioWarningContributors(state, cfgStrategies, livePartition, prices, false)
 	for _, c := range contribs {
 		if c.ID == "live-paused-btc" {
 			t.Fatalf("paused strategy surfaced in contributors: %+v", c)
 		}
 	}
-	if got := portfolioWarningPausedExcluded[ScopeLive]; got != 1 {
+	if got := portfolioWarningPausedExcluded[livePartition]; got != 1 {
 		t.Fatalf("portfolioWarningPausedExcluded[ScopeLive] = %d, want 1", got)
 	}
 }
@@ -59,7 +59,7 @@ func TestPortfolioWarningContributors_IncludePausedOptIn(t *testing.T) {
 	state.Strategies["live-paused-btc"].Cash = 50
 	prices := map[string]float64{"BTC": 60000}
 
-	contribs := portfolioWarningContributors(state, cfgStrategies, ScopeLive, prices, true)
+	contribs := portfolioWarningContributors(state, cfgStrategies, livePartition, prices, true)
 	if len(contribs) != 1 || contribs[0].ID != "live-paused-btc" {
 		t.Fatalf("IncludePausedInWarning=true should keep paused strategy, got: %+v", contribs)
 	}
@@ -83,22 +83,22 @@ func TestPortfolioWarningMessage_PausedFootnote(t *testing.T) {
 	}
 	state.Strategies["live-paused-btc"].Cash = 50
 	state.Strategies["live-active-eth"].Cash = 100
-	state.PortfolioRisk = map[PortfolioScope]*PortfolioRiskState{
-		ScopeLive: {PeakValue: 200, WarningSent: true, WarnBandEnteredAt: time.Now().UTC()},
+	state.PortfolioRisk = map[RiskPartition]*PortfolioRiskState{
+		livePartition: {PeakValue: 200, WarningSent: true, WarnBandEnteredAt: time.Now().UTC()},
 	}
 
 	prices := map[string]float64{"ETH": 3000, "BTC": 60000}
 	msg := BuildPortfolioWarningMessage(PortfolioWarningMessageInputs{
-		Reason:        "test",
-		Config:        &PortfolioRiskConfig{MaxDrawdownPct: 30, WarnThresholdPct: 60},
-		State:         state,
-		Scope:         ScopeLive,
-		CfgStrategies: cfgStrategies,
-		Prices:        prices,
-		TotalValue:    150,
-		PerpsMargin:   50,
-		PerpsLoss:     15,
-		Now:           time.Now().UTC(),
+		Reason:           "test",
+		Config:           &PortfolioRiskConfig{MaxDrawdownPct: 30, WarnThresholdPct: 60},
+		State:            state,
+		Partition:        livePartition,
+		CfgStrategies:    cfgStrategies,
+		Prices:           prices,
+		TotalValue:       150,
+		PerpsMargin:      50,
+		PerpsLoss:        15,
+		Now:              time.Now().UTC(),
 		EquityGuardArmed: true,
 	})
 	if !strings.Contains(msg, "live-paused-btc") {
@@ -115,15 +115,15 @@ func TestPortfolioWarningMessage_PausedFootnote(t *testing.T) {
 }
 
 func TestPortfolioWarningAlertsReset_ClearsExcludedCounter(t *testing.T) {
-	portfolioWarningPausedExcluded[ScopeLive] = 7
-	portfolioWarningAlerts[ScopeLive] = portfolioWarningAlertState{Notified: true}
+	portfolioWarningPausedExcluded[livePartition] = 7
+	portfolioWarningAlerts[livePartition] = portfolioWarningAlertState{Notified: true}
 
-	portfolioWarningAlertsReset(ScopeLive)
+	portfolioWarningAlertsReset(livePartition)
 
-	if _, ok := portfolioWarningPausedExcluded[ScopeLive]; ok {
+	if _, ok := portfolioWarningPausedExcluded[livePartition]; ok {
 		t.Fatalf("portfolioWarningPausedExcluded[ScopeLive] should be cleared")
 	}
-	if _, ok := portfolioWarningAlerts[ScopeLive]; ok {
+	if _, ok := portfolioWarningAlerts[livePartition]; ok {
 		t.Fatalf("portfolioWarningAlerts[ScopeLive] should be cleared")
 	}
 }

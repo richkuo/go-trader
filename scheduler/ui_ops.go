@@ -20,6 +20,11 @@ func (ss *StatusServer) handleAPILeaderboard(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	filter, ok := ss.uiPartitionParam(w, r)
+	if !ok {
+		return
+	}
+
 	var lifetime map[string]LifetimeTradeStats
 	if ss.stateDB != nil {
 		lifetime, _ = ss.stateDB.LifetimeTradeStatsAll()
@@ -27,7 +32,7 @@ func (ss *StatusServer) handleAPILeaderboard(w http.ResponseWriter, r *http.Requ
 	prices := ss.fetchLiveMarkPrices()
 
 	ss.strategiesMu.RLock()
-	configs := append([]StrategyConfig(nil), ss.strategies...)
+	configs := filter.configs(append([]StrategyConfig(nil), ss.strategies...))
 	intervalSeconds := ss.intervalSeconds
 	ss.strategiesMu.RUnlock()
 
@@ -82,6 +87,11 @@ func (ss *StatusServer) handleAPIDiagnostics(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	filter, ok := ss.uiPartitionParam(w, r)
+	if !ok {
+		return
+	}
+
 	q := r.URL.Query()
 	strategyID := q.Get("strategy")
 	limit := 50
@@ -96,7 +106,24 @@ func (ss *StatusServer) handleAPIDiagnostics(w http.ResponseWriter, r *http.Requ
 		offset = v
 	}
 
-	rows, total, err := ss.stateDB.TradeDiagnosticsRowsPage(strategyID, limit, offset)
+	var rows []TradeDiagnosticsRow
+	var total int
+	var err error
+	switch {
+	case strategyID != "":
+		if !ss.strategyInPartition(strategyID, filter) {
+			writeJSON(w, map[string]any{"rows": []uiDiagnosticsRow{}, "total": 0, "limit": limit, "offset": offset})
+			return
+		}
+		rows, total, err = ss.stateDB.TradeDiagnosticsRowsPage(strategyID, limit, offset)
+	case filter.All:
+		rows, total, err = ss.stateDB.TradeDiagnosticsRowsPage("", limit, offset)
+	default:
+		// The partition, not the roster, decides the page: the owning file is
+		// read and counted alone, so the total matches the rows the operator
+		// can page through.
+		rows, total, err = ss.stateDB.TradeDiagnosticsRowsPageForPartition(filter.Partition, ss.partitionStrategyIDs(filter.Partition), limit, offset)
+	}
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -159,8 +186,26 @@ func (ss *StatusServer) handleAPICashflow(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	filter, ok := ss.uiPartitionParam(w, r)
+	if !ok {
+		return
+	}
+
 	if ss.stateDB == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "database not available")
+		return
+	}
+	// The cash-flow journal lives in the live-owned file and has no paper
+	// counterpart, so a paper partition gets an explicit empty view instead of
+	// the live wallets under a paper label.
+	if !filter.All && !filter.Partition.IsLive() {
+		writeJSON(w, map[string]any{
+			"wallets":       []CashflowJournalWalletStatus{},
+			"live_owned":    true,
+			"available":     false,
+			"unavailable":   "cash flow is owned by the live partition",
+			"alarm_enabled": cashflowJournalAlarmEnabled(),
+		})
 		return
 	}
 	wallets, err := ss.stateDB.ListCashflowJournalWallets()
@@ -174,6 +219,8 @@ func (ss *StatusServer) handleAPICashflow(w http.ResponseWriter, r *http.Request
 	writeJSON(w, map[string]any{
 		"wallets":       wallets,
 		"drift":         sharedWalletDriftTracker.Snapshot(),
+		"live_owned":    true,
+		"available":     true,
 		"alarm_enabled": cashflowJournalAlarmEnabled(),
 	})
 }
@@ -195,8 +242,22 @@ func (ss *StatusServer) handleAPIDeadStrategies(w http.ResponseWriter, r *http.R
 		lifetime, _ = ss.stateDB.LifetimeTradeStatsAll()
 	}
 
+	filter, ok := ss.uiPartitionParam(w, r)
+	if !ok {
+		return
+	}
+
+	ss.strategiesMu.RLock()
+	cfgs := append([]StrategyConfig(nil), ss.strategies...)
+	ss.strategiesMu.RUnlock()
+
 	ss.mu.RLock()
-	ids := sortedAppStateIDs(ss.state)
+	var ids []string
+	if filter.All {
+		ids = sortedAppStateIDs(ss.state)
+	} else {
+		ids = stateIDsInPartition(ss.state.Strategies, cfgs, filter.Partition)
+	}
 	ss.mu.RUnlock()
 
 	dead := []string{}
@@ -251,7 +312,7 @@ func (ss *StatusServer) handleAPIClosingStrategies(w http.ResponseWriter, r *htt
 		}
 		out = append(out, ev)
 	}
-	writeJSON(w, map[string]any{"evaluators": out})
+	writeJSON(w, map[string]any{"evaluators": out, "shared": true})
 }
 
 func (ss *StatusServer) handleAPICorrelation(w http.ResponseWriter, r *http.Request) {
@@ -271,12 +332,12 @@ func (ss *StatusServer) handleAPICorrelation(w http.ResponseWriter, r *http.Requ
 	cfgStrategies := append([]StrategyConfig(nil), ss.strategies...)
 	ss.strategiesMu.RUnlock()
 	byScope := make(map[string]*CorrelationSnapshot)
-	for _, scope := range activeScopes(cfgStrategies) {
-		if snap := ss.state.scopeCorrelation(scope); snap != nil {
-			byScope[string(scope)] = snap
+	for _, part := range activePartitions(cfgStrategies) {
+		if snap := ss.state.partitionCorrelation(part); snap != nil {
+			byScope[part.String()] = snap
 		}
 	}
-	legacy := ss.state.scopeCorrelation(statusLegacyScope(activeScopes(cfgStrategies)))
+	legacy := ss.state.partitionCorrelation(statusLegacyScope(activePartitions(cfgStrategies)))
 	ss.mu.RUnlock()
 	writeJSON(w, map[string]any{"correlation": legacy, "correlation_by_scope": byScope})
 }

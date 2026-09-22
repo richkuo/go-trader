@@ -65,7 +65,11 @@ sudo bash scripts/install-service.sh systemd/go-trader@.service paper-testing
 
 Existing in-tree deploy: **stop the service**, then `scripts/migrate-config-out-of-tree.sh --instance <name>` (refuses while daemon is live). `NO_START=1` enables without starting. Detail: [SKILL.md](SKILL.md).
 
-**Folding a paper instance into the live process.** Stop both units, then `bash scripts/merge-paper-instance.sh --live <live> --paper <paper>` (dry run) and, once it prints `VERDICT: READY`, the same command with `--apply`. Both state files stay where they are: the live config gains `paper_db_file`, every paper id gets a `-paper` suffix (numbered on a name clash) with `storage_strategy_id` keeping the stored identity, and a systemd drop-in grants the paper database directory. The script holds both databases' locks for the run, verifies the merged config with the live binary's own `inspect --all --json` and `storage-inspect --json`, and never opens a database for writing. Back up both files first, then `daemon-reload`, disable the paper unit, start the live unit and retire the paper status port. `--rollback` restores the previous config and drop-in. See `scheduler/config.live-paper.example.json` and SKILL.md § Storage Ownership.
+**Folding paper deployments into the live process.** Stop every unit named in the run, then `bash scripts/merge-paper-instance.sh --live <live> --paper <paper>` (dry run) and, once it prints `VERDICT: READY`, the same command with `--apply`. Every state file stays where it is: the live config gains `paper_db_file`, every paper id gets a `-paper` suffix (numbered on a name clash) with `storage_strategy_id` keeping the stored identity, and a systemd drop-in grants each folded database directory.
+
+`--source <id>=<instance>` folds a deployment into its **own** partition `paper:<id>` instead of the shared paper one: it adds a `paper_sources` entry with that id and the deployment's database, aliases each strategy as `<base>-paper-<id>` and stamps `paper_source=<id>`. `--paper` and `--source` may be combined and `--source` may repeat, so several deployments fold in one run, each keeping its own risk limits, latch and state file. `--diff` previews the whole plan from the config files alone, with no unit stopped.
+
+The script holds every database's locks for the run, verifies the merged config with the live binary's own `inspect --all --json` and `storage-inspect --json`, and never opens a database for writing. Back up every state file first, then `daemon-reload`, disable each folded unit, start the live unit, verify the boot `[storage]` lines and the first cycle, and only then retire the folded status ports. `--rollback` takes the same `--paper` and `--source` arguments as the apply it undoes, restores the config and drop-ins, never touches a database, and must run newest merge first. See `scheduler/config.live-paper.example.json` and SKILL.md § Storage Ownership, whose cutover checklist names the exact recovery boundary.
 
 ---
 
@@ -200,15 +204,17 @@ Generate via `./go-trader init` or `--json`. Skeleton:
 
 `config_version` migrates on startup (current **19**: v19 renames the per-regime stop fields to `stop_loss_atr_mult_regime` / `trailing_stop_atr_mult_regime`, after v18's `trail_stop_atr_regime` rename). Configs older than **13** are rejected at load — start the pre-upgrade binary once to migrate first.
 
-### Split live and paper state files
+### Split live, paper and paper-source state files
 
 | Field | Description | Default |
 |-------|-------------|---------|
 | `db_file` | Primary state file. In the split layout it owns the live scope, process metadata, the live-only wallet and cash-flow tables, and shared regime history. Restart-required | `scheduler/state.db` |
 | `paper_db_file` | Optional second file owning the paper scope's books, risk row, kill-switch events and correlation snapshot. Omit it and the single-file layout is unchanged. It must resolve to a different physical file than `db_file` — relative paths, symbolic links and hard links are all checked, and an alias exits with code 80. Restart-required | absent |
-| `storage_strategy_id` (per strategy) | The row identifier this strategy owns inside its file; defaults to `id`. Must be unique **within one file**; the same value in the live and paper files is the supported alias. Set it to the previous `id` to rename a strategy with no stored rewrite and no book reset. Restart-required | `id` |
+| `paper_sources` | Folds several paper deployments into one process. Each entry carries `id` (`[a-z0-9][a-z0-9_-]{0,31}`, never `live`, `paper` or `primary`), `db_file`, and an optional `label` and `portfolio_risk` override. Every path must resolve to a different physical file than every other state file. Restart-required | absent |
+| `paper_source` (per strategy) | The `paper_sources` id this paper strategy belongs to. It selects the strategy's risk partition (`paper:<id>`) and therefore its limits, latch, correlation model and state file. Refused on a live strategy and on an id no entry declares. Restart-required | absent |
+| `storage_strategy_id` (per strategy) | The row identifier this strategy owns inside its file; defaults to `id`. Must be unique **within one file**; the same value in two different files is the supported alias. Set it to the previous `id` to rename a strategy with no stored rewrite and no book reset. Restart-required | `id` |
 
-Both files are locked before any migration or startup write, so a second scheduler — `--once` included — refuses to run. `./go-trader storage-inspect` prints a read-only ownership report for every file. Back up and restore the two files together, with their `-wal` and `-shm` sidecars, while the service is stopped.
+Every file is locked before any migration or startup write, so a second scheduler — `--once` included — refuses to run. `./go-trader storage-inspect` prints a read-only ownership report for every file and is the discovery command for backups. Back up and restore **all** of them together — `db_file`, `paper_db_file` and each `paper_sources[].db_file`, with their `-wal` and `-shm` sidecars — while the service is stopped, restoring in the order primary, paper, then sources by id. `scripts/update.sh` excludes the same list from its rsync.
 
 ### Portfolio Risk
 
@@ -327,6 +333,8 @@ Per-strategy `params` merges under built-in defaults (config wins; runtime data 
 ```
 
 ---
+
+**Dashboard partition selector.** The dashboard toolbar shows a partition selector whenever the process owns two or more partitions, which a live plus default-paper deployment already meets, folded sources or not. The selector lists live, the default paper partition and each folded source. The selection is carried on every panel read as `?partition=live|paper|paper:<source id>`, so the strategy list, overview, leaderboard, diagnostics, dead-strategy count, portfolio risk and correlation all show one partition at a time. Diagnostics pages and totals are filtered in the owning state file, so the count matches the rows you can page through. Cash flow stays live-owned and reports itself unavailable for a paper partition; the close-evaluator catalogue is shared by every partition. The selector stays hidden when the process owns one partition.
 
 ## Manual Trading on Hyperliquid
 
@@ -492,10 +500,12 @@ Python 3.12+ via [uv](https://github.com/astral-sh/uv); Go 1.26.2; systemd.
 | Service won't start | `journalctl -u go-trader -n 50` |
 | Didn't come back after reboot | Re-run `sudo bash scripts/install-service.sh` |
 | Strategy not trading | Circuit breaker in `/status`, verify params |
-| Reset positions | `rm scheduler/state.db && systemctl restart go-trader` (with `paper_db_file` set, remove **both** files) |
+| Reset positions | `rm scheduler/state.db && systemctl restart go-trader` (remove **every** configured state file: `db_file`, `paper_db_file` and each `paper_sources[].db_file`) |
 | Inspect state-file ownership | `./go-trader storage-inspect --config <path>` — read-only; add `--require-idle` to reject while the daemon owns a file |
 | Live mode fails | Set env vars from Platforms table |
-| "state DB missing but live strategies configured" | Restore `scheduler/state.db` from backup, or `GO_TRADER_ALLOW_MISSING_STATE=1` for first-run. With `paper_db_file` set, restore both files together with their `-wal` / `-shm` sidecars |
+| "state DB missing but live strategies configured" | Restore `scheduler/state.db` from backup, or `GO_TRADER_ALLOW_MISSING_STATE=1` for first-run. With `paper_db_file` or `paper_sources` set, restore every file together with its `-wal` / `-shm` sidecars, in the order primary, paper, then sources by id |
+| Which files does a backup need? | `./go-trader storage-inspect --json --config <path>` names the canonical path and the partitions of every state file; `update_resolve_db_exclude` in `scripts/update_helpers.sh` enumerates the same list for the updater |
+| A unit exits 79 after a fold | Two processes cannot own one state file. Whichever scheduler starts **second** fails to take the ownership lock and refuses to start with exit 79; the process already holding the lock keeps trading, so read `journalctl` for the unit that exited and leave the running one alone. Usually a folded paper unit was restarted or came back after a reboot: disable every folded unit (`systemctl disable go-trader@<instance>.service`) and start only the merged live unit |
 | Exit code 80 on startup | The storage layout was rejected (aliased files, a book in the wrong file, an ambiguous legacy risk row). Run `./go-trader storage-inspect` — it names the file and the identifier |
 
 ---

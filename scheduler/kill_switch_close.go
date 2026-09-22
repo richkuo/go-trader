@@ -668,41 +668,41 @@ func killSwitchInstanceLabel(configPath string) string {
 	return "go-trader"
 }
 
-func formatKillSwitchResetPrompt(instanceLabel, hlAddr string, plan KillSwitchClosePlan, scope PortfolioScope, latched []PortfolioScope) string {
+func formatKillSwitchResetPrompt(instanceLabel, hlAddr string, plan KillSwitchClosePlan, part RiskPartition, latched []RiskPartition) string {
 	identity := instanceLabel
-	if hlAddr != "" && scope == ScopeLive {
+	if hlAddr != "" && part.IsLive() {
 		identity = fmt.Sprintf("%s (Hyperliquid %s)", identity, hlAddr)
 	}
 	reply := "reset"
 	if len(latched) > 1 {
-		reply = "reset " + scopeLabel(scope)
+		reply = "reset " + part.String()
 	}
-	resetNote := fmt.Sprintf("Replying '%s' only clears the %s kill switch latch so trading can resume next cycle — it does not itself close or protect any position.", reply, scopeLabel(scope))
-	if scope == ScopeLive && !plan.OnChainConfirmedFlat {
+	resetNote := fmt.Sprintf("Replying '%s' only clears the %s kill switch latch so trading can resume next cycle — it does not itself close or protect any position.", reply, partitionLabel(part))
+	if part.IsLive() && !plan.OnChainConfirmedFlat {
 		resetNote += " On-chain close is still retrying and resting stop-losses may already be cancelled ahead of the flatten attempt — verify positions manually before assuming they're protected."
 	}
 	if len(latched) > 1 {
-		resetNote += fmt.Sprintf(" Both scopes are latched (%s); this prompt clears the %s scope only.", joinScopeLabels(latched), scopeLabel(scope))
+		resetNote += fmt.Sprintf(" %d scopes are latched (%s); this prompt clears the %s scope only.", len(latched), joinScopeLabels(latched), partitionLabel(part))
 	}
-	return fmt.Sprintf("[KILL SWITCH %s] %s\n%s\n\n%s\nReply '%s' to proceed.", scopeLabel(scope), identity, plan.DiscordMessage, resetNote, reply)
+	return fmt.Sprintf("[KILL SWITCH %s] %s\n%s\n\n%s\nReply '%s' to proceed.", partitionLabel(part), identity, plan.DiscordMessage, resetNote, reply)
 }
 
-func formatKillSwitchResetPromptForScopes(instanceLabel, hlAddr string, plans map[PortfolioScope]KillSwitchClosePlan, scopes []PortfolioScope, latched []PortfolioScope) string {
-	if len(scopes) == 1 {
-		return formatKillSwitchResetPrompt(instanceLabel, hlAddr, plans[scopes[0]], scopes[0], latched)
+func formatKillSwitchResetPromptForScopes(instanceLabel, hlAddr string, plans map[RiskPartition]KillSwitchClosePlan, parts []RiskPartition, latched []RiskPartition) string {
+	if len(parts) == 1 {
+		return formatKillSwitchResetPrompt(instanceLabel, hlAddr, plans[parts[0]], parts[0], latched)
 	}
-	sections := make([]string, 0, len(scopes))
-	for _, scope := range scopes {
+	sections := make([]string, 0, len(parts))
+	for _, part := range parts {
 		identity := instanceLabel
-		if hlAddr != "" && scope == ScopeLive {
+		if hlAddr != "" && part.IsLive() {
 			identity = fmt.Sprintf("%s (Hyperliquid %s)", identity, hlAddr)
 		}
-		section := fmt.Sprintf("[KILL SWITCH %s] %s\n%s", scopeLabel(scope), identity, plans[scope].DiscordMessage)
-		if scope == ScopeLive && !plans[scope].OnChainConfirmedFlat {
+		section := fmt.Sprintf("[KILL SWITCH %s] %s\n%s", partitionLabel(part), identity, plans[part].DiscordMessage)
+		if part.IsLive() && !plans[part].OnChainConfirmedFlat {
 			section += "\nOn-chain close is still retrying and resting stop-losses may already be cancelled ahead of the flatten attempt — verify positions manually before assuming they're protected."
 		}
 		sections = append(sections, section)
 	}
-	note := fmt.Sprintf("Both scopes are latched (%s). One reply clears one scope only and does not itself close or protect any position; a new prompt follows for any scope still latched.", joinScopeLabels(latched))
-	return fmt.Sprintf("%s\n\n%s\nReply 'reset live' or 'reset paper' to proceed.", strings.Join(sections, "\n\n"), note)
+	note := fmt.Sprintf("%d scopes are latched (%s). One reply clears one scope only and does not itself close or protect any position; a new prompt follows for any scope still latched.", len(latched), joinScopeLabels(latched))
+	return fmt.Sprintf("%s\n\n%s\nReply %s to proceed.", strings.Join(sections, "\n\n"), note, killSwitchResetReplyOptions(latched))
 }

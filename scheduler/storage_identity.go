@@ -12,9 +12,11 @@ type storageKey struct {
 
 type storageIdentity struct {
 	Role      storageRole
-	Scope     PortfolioScope
+	Partition RiskPartition
 	StorageID string
 }
+
+func (i storageIdentity) Scope() PortfolioScope { return i.Partition.Scope }
 
 type storageIdentityMap struct {
 	procToStore map[string]storageIdentity
@@ -35,8 +37,8 @@ func buildStorageIdentityMap(cfg *Config, layout storageLayout) (storageIdentity
 		if sc.ID == "" {
 			continue
 		}
-		scope := portfolioScopeFor(sc)
-		role := layout.roleForScope(scope)
+		part := partitionFor(sc)
+		role := layout.roleForPartition(part)
 		storageID := effectiveStorageStrategyID(sc)
 		if storageID == "" {
 			return storageIdentityMap{}, fmt.Errorf("strategy %q has an empty storage identity", sc.ID)
@@ -45,7 +47,7 @@ func buildStorageIdentityMap(cfg *Config, layout storageLayout) (storageIdentity
 		if prev, ok := m.storeToProc[key]; ok {
 			return storageIdentityMap{}, fmt.Errorf("strategies %q and %q both map to storage id %q in the %s state file", prev, sc.ID, storageID, role)
 		}
-		m.procToStore[sc.ID] = storageIdentity{Role: role, Scope: scope, StorageID: storageID}
+		m.procToStore[sc.ID] = storageIdentity{Role: role, Partition: part, StorageID: storageID}
 		m.storeToProc[key] = sc.ID
 	}
 	return m, nil
@@ -61,12 +63,20 @@ func (m storageIdentityMap) processFor(role storageRole, storageID string) (stri
 	return id, ok
 }
 
+func (m storageIdentityMap) partitionFor(processID string) (RiskPartition, bool) {
+	id, ok := m.procToStore[processID]
+	if !ok {
+		return unassignedPartition, false
+	}
+	return id.Partition, true
+}
+
 func (m storageIdentityMap) scopeFor(processID string) (PortfolioScope, bool) {
 	id, ok := m.procToStore[processID]
 	if !ok {
 		return scopeUnassigned, false
 	}
-	return id.Scope, true
+	return id.Scope(), true
 }
 
 func (m storageIdentityMap) processIDsForRole(role storageRole) []string {
@@ -80,20 +90,9 @@ func (m storageIdentityMap) processIDsForRole(role storageRole) []string {
 	return out
 }
 
-func (m storageIdentityMap) processIDsForScope(scope PortfolioScope) []string {
-	out := make([]string, 0, len(m.procToStore))
-	for procID, ident := range m.procToStore {
-		if ident.Scope == scope {
-			out = append(out, procID)
-		}
-	}
-	sort.Strings(out)
-	return out
-}
-
 func (m storageIdentityMap) hasScope(scope PortfolioScope) bool {
 	for _, ident := range m.procToStore {
-		if ident.Scope == scope {
+		if ident.Scope() == scope {
 			return true
 		}
 	}

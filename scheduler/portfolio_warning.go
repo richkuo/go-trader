@@ -14,17 +14,13 @@ const (
 	portfolioWarningMaxChars     = 1900
 )
 
-// portfolioWarningPausedExcluded counts how many paused strategies were
-// filtered from the latest contributors list per scope. Read by
-// BuildPortfolioWarningMessage to render a "(N paused excluded)" footnote
-// and reset by portfolioWarningAlertsReset when the scope leaves the band.
-var portfolioWarningPausedExcluded = map[PortfolioScope]int{}
+var portfolioWarningPausedExcluded = map[RiskPartition]int{}
 
 type PortfolioWarningMessageInputs struct {
 	Reason           string
 	Config           *PortfolioRiskConfig
 	State            *AppState
-	Scope            PortfolioScope
+	Partition        RiskPartition
 	CfgStrategies    []StrategyConfig
 	Prices           map[string]float64
 	TotalValue       float64
@@ -49,24 +45,24 @@ func BuildPortfolioWarningMessage(in PortfolioWarningMessageInputs) string {
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	scope := in.Scope
-	if scope == scopeUnassigned {
-		scope = ScopeLive
+	part := in.Partition
+	if part.Scope == scopeUnassigned {
+		part = livePartition
 	}
 	var prs PortfolioRiskState
 	if in.State != nil {
-		if p := in.State.scopeRiskIfPresent(scope); p != nil {
+		if p := in.State.partitionRiskIfPresent(part); p != nil {
 			prs = *p
 		}
 	}
 	includePaused := in.Config != nil && in.Config.IncludePausedInWarning
-	contribs := portfolioWarningContributors(in.State, in.CfgStrategies, scope, in.Prices, includePaused)
+	contribs := portfolioWarningContributors(in.State, in.CfgStrategies, part, in.Prices, includePaused)
 
 	var b strings.Builder
 	b.WriteString("**PORTFOLIO WARNING")
-	if in.Scope != scopeUnassigned {
+	if in.Partition.Scope != scopeUnassigned {
 		b.WriteString(" ")
-		b.WriteString(strings.ToUpper(scopeLabel(in.Scope)))
+		b.WriteString(strings.ToUpper(partitionLabel(in.Partition)))
 	}
 	b.WriteString("**")
 	if lead := portfolioWarningLead(contribs); lead != "" {
@@ -135,7 +131,7 @@ func BuildPortfolioWarningMessage(in PortfolioWarningMessageInputs) string {
 		}
 		b.WriteString("```\n")
 	}
-	excluded := portfolioWarningPausedExcluded[scope]
+	excluded := portfolioWarningPausedExcluded[part]
 	if excluded > 0 && !includePaused {
 		b.WriteString(fmt.Sprintf("\n(%d paused strateg%s excluded from contributors — frozen book-keeping P&L is not live risk; set portfolio_risk.include_paused_in_warning=true to include)\n",
 			excluded, pluralize(excluded, "y", "ies")))
@@ -161,13 +157,13 @@ func BuildPortfolioWarningMessage(in PortfolioWarningMessageInputs) string {
 	return truncateWarningField(msg, portfolioWarningMaxChars)
 }
 
-func portfolioWarningContributors(state *AppState, cfgStrategies []StrategyConfig, scope PortfolioScope, prices map[string]float64, includePaused bool) []portfolioWarningContributor {
+func portfolioWarningContributors(state *AppState, cfgStrategies []StrategyConfig, part RiskPartition, prices map[string]float64, includePaused bool) []portfolioWarningContributor {
 	if state == nil {
 		return nil
 	}
 	scoped := state.Strategies
 	if len(cfgStrategies) > 0 {
-		scoped = filterStatesByScope(state.Strategies, cfgStrategies, scope)
+		scoped = filterStatesByPartition(state.Strategies, cfgStrategies, part)
 	}
 	pausedByID := make(map[string]bool, len(cfgStrategies))
 	if !includePaused {
@@ -224,7 +220,7 @@ func portfolioWarningContributors(state *AppState, cfgStrategies []StrategyConfi
 			}
 		}
 	}
-	portfolioWarningPausedExcluded[scope] = excludedPaused
+	portfolioWarningPausedExcluded[part] = excludedPaused
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].PnL == out[j].PnL {
 			return out[i].ID < out[j].ID

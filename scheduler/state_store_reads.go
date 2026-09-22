@@ -589,7 +589,7 @@ func (st *StateStore) liveOnlyReadFileForStrategy(strategyID string) (*StateDB, 
 	if !ok {
 		return nil, false, fmt.Errorf("strategy %q has no storage owner", strategyID)
 	}
-	return db, ident.Scope != ScopeLive, nil
+	return db, !ident.Partition.IsLive(), nil
 }
 
 // liveOwnedFileForStrategy refuses a live-only write that names a paper-scope
@@ -607,7 +607,7 @@ func (st *StateStore) liveOwnedFileForStrategy(strategyID string) (*StateDB, err
 	if !ok {
 		return nil, fmt.Errorf("strategy %q has no storage owner", strategyID)
 	}
-	if ident.Scope != ScopeLive {
+	if !ident.Partition.IsLive() {
 		return nil, fmt.Errorf("strategy %q is in the paper scope; resting limit orders are live-only", strategyID)
 	}
 	return db, nil
@@ -704,4 +704,27 @@ func (st *StateStore) EarliestTradeTimestamp(strategyIDs []string) (time.Time, e
 		}
 	}
 	return earliest, nil
+}
+
+// TradeDiagnosticsRowsPageForPartition pages one partition's diagnostics from
+// the file that owns it, so the total counts the same rows the page walks.
+// Routing is by storage role, never by scope: a folded source keeps its own
+// file even though its scope is paper.
+func (st *StateStore) TradeDiagnosticsRowsPageForPartition(p RiskPartition, ids []string, limit, offset int) ([]TradeDiagnosticsRow, int, error) {
+	if st == nil {
+		return nil, 0, fmt.Errorf("state store unavailable")
+	}
+	if len(ids) == 0 {
+		return []TradeDiagnosticsRow{}, 0, nil
+	}
+	role := st.layout.roleForPartition(p)
+	db := st.file(role)
+	if db == nil {
+		return nil, 0, fmt.Errorf("state file for partition %s unavailable", p)
+	}
+	rows, total, err := db.TradeDiagnosticsRowsPageForStrategies(ids, limit, offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("trade diagnostics page (%s): %w", role, err)
+	}
+	return st.stampDiagnosticsScope(rows, role), total, nil
 }

@@ -53,7 +53,7 @@ func TestMigrateSchema_PortfolioRiskScope_Idempotent(t *testing.T) {
 	}
 
 	state := NewAppState()
-	prs := state.scopeRisk(ScopeLive)
+	prs := state.partitionRisk(livePartition)
 	prs.PeakValue = 4321
 	prs.KillSwitchActive = true
 	if err := db.SaveState(state); err != nil {
@@ -68,7 +68,7 @@ func TestMigrateSchema_PortfolioRiskScope_Idempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadState: %v", err)
 	}
-	if got := loaded.scopeRisk(ScopeLive); got.PeakValue != 4321 || !got.KillSwitchActive {
+	if got := loaded.partitionRisk(livePartition); got.PeakValue != 4321 || !got.KillSwitchActive {
 		t.Errorf("a repeated migration must be a no-op; got %+v", got)
 	}
 	var count int
@@ -120,7 +120,7 @@ func TestMigrateSchema_PortfolioRiskScope_LegacyRowBecomesUnassigned(t *testing.
 	if err != nil {
 		t.Fatalf("LoadState: %v", err)
 	}
-	legacy := loaded.PortfolioRisk[scopeUnassigned]
+	legacy := loaded.PortfolioRisk[unassignedPartition]
 	if legacy == nil {
 		t.Fatal("the legacy row must load under the unassigned sentinel")
 	}
@@ -133,33 +133,33 @@ func TestAssignLegacyPortfolioScope(t *testing.T) {
 	cases := []struct {
 		name  string
 		cfgs  []StrategyConfig
-		want  PortfolioScope
+		want  RiskPartition
 		moved bool
 	}{
-		{"live only lands in live", []StrategyConfig{scopeCfg("l", true)}, ScopeLive, true},
-		{"paper only lands in paper", []StrategyConfig{scopeCfg("p", false)}, ScopePaper, true},
-		{"empty roster lands in paper", nil, ScopePaper, true},
+		{"live only lands in live", []StrategyConfig{scopeCfg("l", true)}, livePartition, true},
+		{"paper only lands in paper", []StrategyConfig{scopeCfg("p", false)}, defaultPaperPartition, true},
+		{"empty roster lands in paper", nil, defaultPaperPartition, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			state := NewAppState()
-			state.PortfolioRisk[scopeUnassigned] = &PortfolioRiskState{PeakValue: 5000, KillSwitchActive: true}
-			state.CorrelationSnapshot[scopeUnassigned] = &CorrelationSnapshot{PortfolioGrossUSD: 111}
+			state.PortfolioRisk[unassignedPartition] = &PortfolioRiskState{PeakValue: 5000, KillSwitchActive: true}
+			state.CorrelationSnapshot[unassignedPartition] = &CorrelationSnapshot{PortfolioGrossUSD: 111}
 			got, moved := assignLegacyPortfolioScope(state, &Config{Strategies: tc.cfgs})
 			if moved != tc.moved || got != tc.want {
 				t.Fatalf("assignLegacyPortfolioScope = %q,%v; want %q,%v", got, moved, tc.want, tc.moved)
 			}
-			if _, still := state.PortfolioRisk[scopeUnassigned]; still {
+			if _, still := state.PortfolioRisk[unassignedPartition]; still {
 				t.Error("the sentinel row must be removed")
 			}
-			prs := state.scopeRisk(tc.want)
+			prs := state.partitionRisk(tc.want)
 			if prs.PeakValue != 5000 || !prs.KillSwitchActive {
 				t.Errorf("the latch and peak must move intact: %+v", prs)
 			}
-			if snap := state.scopeCorrelation(tc.want); snap == nil || snap.PortfolioGrossUSD != 111 {
+			if snap := state.partitionCorrelation(tc.want); snap == nil || snap.PortfolioGrossUSD != 111 {
 				t.Errorf("the correlation snapshot must move too: %+v", snap)
 			}
-			if tc.want == ScopePaper && !prs.ManualMarkBasisRebaselined {
+			if tc.want == defaultPaperPartition && !prs.ManualMarkBasisRebaselined {
 				t.Error("a paper row must never run the live manual-mark basis migration")
 			}
 			if _, again := assignLegacyPortfolioScope(state, &Config{Strategies: tc.cfgs}); again {
@@ -170,22 +170,22 @@ func TestAssignLegacyPortfolioScope(t *testing.T) {
 
 	t.Run("already assigned untouched", func(t *testing.T) {
 		state := NewAppState()
-		state.scopeRisk(ScopeLive).PeakValue = 7777
+		state.partitionRisk(livePartition).PeakValue = 7777
 		if _, moved := assignLegacyPortfolioScope(state, &Config{Strategies: []StrategyConfig{scopeCfg("l", true)}}); moved {
 			t.Error("a scoped-only state must report nothing moved")
 		}
-		if state.scopeRisk(ScopeLive).PeakValue != 7777 {
+		if state.partitionRisk(livePartition).PeakValue != 7777 {
 			t.Error("an existing scoped row must be untouched")
 		}
 	})
 
 	t.Run("conflict ORs the latch", func(t *testing.T) {
 		state := NewAppState()
-		kept := state.scopeRisk(ScopeLive)
+		kept := state.partitionRisk(livePartition)
 		kept.PeakValue = 1000
-		state.PortfolioRisk[scopeUnassigned] = &PortfolioRiskState{PeakValue: 5000, KillSwitchActive: true}
+		state.PortfolioRisk[unassignedPartition] = &PortfolioRiskState{PeakValue: 5000, KillSwitchActive: true}
 		got, moved := assignLegacyPortfolioScope(state, &Config{Strategies: []StrategyConfig{scopeCfg("l", true)}})
-		if !moved || got != ScopeLive {
+		if !moved || got != livePartition {
 			t.Fatalf("conflict placement = %q,%v", got, moved)
 		}
 		if kept.PeakValue != 1000 {
@@ -203,7 +203,7 @@ func TestAssignLegacyPortfolioScope(t *testing.T) {
 func TestLoadStateWithDB_PlacesLegacyRowAndPersists(t *testing.T) {
 	db := openTestDB(t)
 	state := NewAppState()
-	state.PortfolioRisk[scopeUnassigned] = &PortfolioRiskState{PeakValue: 3210, KillSwitchActive: true}
+	state.PortfolioRisk[unassignedPartition] = &PortfolioRiskState{PeakValue: 3210, KillSwitchActive: true}
 	if err := db.SaveState(state); err != nil {
 		t.Fatalf("SaveState: %v", err)
 	}
@@ -213,15 +213,15 @@ func TestLoadStateWithDB_PlacesLegacyRowAndPersists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadStateWithDB: %v", err)
 	}
-	if loaded.scopeRisk(ScopeLive).PeakValue != 3210 || !loaded.scopeLatched(ScopeLive) {
-		t.Fatalf("legacy row must land in live: %+v", loaded.scopeRisk(ScopeLive))
+	if loaded.partitionRisk(livePartition).PeakValue != 3210 || !loaded.partitionLatched(livePartition) {
+		t.Fatalf("legacy row must land in live: %+v", loaded.partitionRisk(livePartition))
 	}
 
 	again, err := LoadStateWithDB(cfg, db)
 	if err != nil {
 		t.Fatalf("second LoadStateWithDB: %v", err)
 	}
-	if _, still := again.PortfolioRisk[scopeUnassigned]; still {
+	if _, still := again.PortfolioRisk[unassignedPartition]; still {
 		t.Error("the placement must be durable, so a second boot finds no unassigned row")
 	}
 	var scope string
@@ -238,7 +238,7 @@ func TestSaveLoadState_PerScope(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 
 	state := NewAppState()
-	live := state.scopeRisk(ScopeLive)
+	live := state.partitionRisk(livePartition)
 	live.PeakValue = 20000
 	live.CurrentDrawdownPct = 12
 	live.KillSwitchActive = true
@@ -246,13 +246,13 @@ func TestSaveLoadState_PerScope(t *testing.T) {
 	live.KillSwitchCloseApplied = true
 	live.Events = []KillSwitchEvent{{Timestamp: now, Type: "triggered", Source: "equity", PeakValue: 20000}}
 
-	paper := state.scopeRisk(ScopePaper)
+	paper := state.partitionRisk(defaultPaperPartition)
 	paper.PeakValue = 5000
 	paper.CurrentDrawdownPct = 3
 	paper.Events = []KillSwitchEvent{{Timestamp: now, Type: "warning", Source: "equity", PeakValue: 5000}}
 
-	state.setScopeCorrelation(ScopeLive, &CorrelationSnapshot{PortfolioGrossUSD: 1000})
-	state.setScopeCorrelation(ScopePaper, &CorrelationSnapshot{PortfolioGrossUSD: 2000})
+	state.setPartitionCorrelation(livePartition, &CorrelationSnapshot{PortfolioGrossUSD: 1000})
+	state.setPartitionCorrelation(defaultPaperPartition, &CorrelationSnapshot{PortfolioGrossUSD: 2000})
 
 	if err := db.SaveState(state); err != nil {
 		t.Fatalf("SaveState: %v", err)
@@ -262,8 +262,8 @@ func TestSaveLoadState_PerScope(t *testing.T) {
 		t.Fatalf("LoadState: %v", err)
 	}
 
-	gotLive := loaded.scopeRisk(ScopeLive)
-	gotPaper := loaded.scopeRisk(ScopePaper)
+	gotLive := loaded.partitionRisk(livePartition)
+	gotPaper := loaded.partitionRisk(defaultPaperPartition)
 	if gotLive.PeakValue != 20000 || !gotLive.KillSwitchActive || !gotLive.KillSwitchCloseApplied {
 		t.Errorf("live row did not round-trip: %+v", gotLive)
 	}
@@ -276,11 +276,11 @@ func TestSaveLoadState_PerScope(t *testing.T) {
 	if len(gotPaper.Events) != 1 || gotPaper.Events[0].Type != "warning" {
 		t.Errorf("paper events = %+v, want one warning event", gotPaper.Events)
 	}
-	if gotLive.Events[0].Scope != ScopeLive || gotPaper.Events[0].Scope != ScopePaper {
+	if gotLive.Events[0].Partition != livePartition || gotPaper.Events[0].Partition != defaultPaperPartition {
 		t.Error("events must round-trip with their scope")
 	}
-	if loaded.scopeCorrelation(ScopeLive).PortfolioGrossUSD != 1000 ||
-		loaded.scopeCorrelation(ScopePaper).PortfolioGrossUSD != 2000 {
+	if loaded.partitionCorrelation(livePartition).PortfolioGrossUSD != 1000 ||
+		loaded.partitionCorrelation(defaultPaperPartition).PortfolioGrossUSD != 2000 {
 		t.Error("correlation snapshots must round-trip per scope")
 	}
 }
@@ -289,10 +289,10 @@ func TestFormatCircuitBreakersResponse_PerScope(t *testing.T) {
 	state := NewAppState()
 	state.Strategies["live-a"] = scopeState("live-a", 1000)
 	state.Strategies["paper-a"] = scopeState("paper-a", 1000)
-	live := state.scopeRisk(ScopeLive)
+	live := state.partitionRisk(livePartition)
 	live.KillSwitchActive = true
 	live.CurrentDrawdownPct = 41.5
-	paper := state.scopeRisk(ScopePaper)
+	paper := state.partitionRisk(defaultPaperPartition)
 	paper.CurrentDrawdownPct = 30
 	paper.UntrustedOverLimitSince = time.Now().UTC()
 
@@ -326,8 +326,8 @@ func TestHandleStatus_PerScopeFields(t *testing.T) {
 	state := NewAppState()
 	state.Strategies["live-a"] = scopeState("live-a", 1000)
 	state.Strategies["paper-a"] = scopeState("paper-a", 2000)
-	state.scopeRisk(ScopeLive).PeakValue = 11000
-	state.scopeRisk(ScopePaper).PeakValue = 22000
+	state.partitionRisk(livePartition).PeakValue = 11000
+	state.partitionRisk(defaultPaperPartition).PeakValue = 22000
 
 	resp := statusRespForScopes(t, cfgs, state)
 	byScope, ok := resp["portfolio_risk_by_scope"].(map[string]any)
@@ -349,7 +349,7 @@ func TestHandleStatus_PerScopeFields(t *testing.T) {
 
 	paperOnly := NewAppState()
 	paperOnly.Strategies["paper-a"] = scopeState("paper-a", 2000)
-	paperOnly.scopeRisk(ScopePaper).PeakValue = 22000
+	paperOnly.partitionRisk(defaultPaperPartition).PeakValue = 22000
 	resp = statusRespForScopes(t, []StrategyConfig{scopeCfg("paper-a", false)}, paperOnly)
 	byScope, _ = resp["portfolio_risk_by_scope"].(map[string]any)
 	if len(byScope) != 1 || byScope["paper"] == nil {
@@ -370,10 +370,10 @@ func TestResolveChannelKey_PaperPrefersPaperKey(t *testing.T) {
 		notifier: &mockNotifier{},
 		channels: map[string]string{"hyperliquid": "live-ch", "hyperliquid-paper": "paper-ch"},
 	})
-	if key := mn.resolveChannelKey("hyperliquid", "perps", false); key != "hyperliquid-paper" {
+	if key := mn.resolveChannelKey("hyperliquid", "perps", false, ""); key != "hyperliquid-paper" {
 		t.Errorf("paper key = %q, want hyperliquid-paper", key)
 	}
-	if key := mn.resolveChannelKey("hyperliquid", "perps", true); key != "hyperliquid" {
+	if key := mn.resolveChannelKey("hyperliquid", "perps", true, ""); key != "hyperliquid" {
 		t.Errorf("live key = %q, want hyperliquid", key)
 	}
 }
@@ -383,10 +383,10 @@ func TestResolveChannelKey_NoPaperKeyFallsBack(t *testing.T) {
 		notifier: &mockNotifier{},
 		channels: map[string]string{"hyperliquid": "one-ch", "spot": "spot-ch"},
 	})
-	if key := mn.resolveChannelKey("hyperliquid", "perps", false); key != "hyperliquid" {
+	if key := mn.resolveChannelKey("hyperliquid", "perps", false, ""); key != "hyperliquid" {
 		t.Errorf("without a paper key the grouping must stay merged; got %q", key)
 	}
-	if key := mn.resolveChannelKey("binanceus", "spot", false); key != "spot" {
+	if key := mn.resolveChannelKey("binanceus", "spot", false, ""); key != "spot" {
 		t.Errorf("type fallback = %q, want spot", key)
 	}
 
@@ -394,12 +394,12 @@ func TestResolveChannelKey_NoPaperKeyFallsBack(t *testing.T) {
 		notifier: &mockNotifier{},
 		channels: map[string]string{"hyperliquid": "one-ch", "hyperliquid-paper": ""},
 	})
-	if key := empty.resolveChannelKey("hyperliquid", "perps", false); key != "hyperliquid" {
+	if key := empty.resolveChannelKey("hyperliquid", "perps", false, ""); key != "hyperliquid" {
 		t.Errorf("an empty paper channel id must not capture the grouping; got %q", key)
 	}
 }
 
-func TestSendToScopeChannels(t *testing.T) {
+func TestSendToPartitionChannels(t *testing.T) {
 	paperHL := StrategyConfig{ID: "hl-paper", Type: "perps", Platform: "hyperliquid", Args: []string{"--mode=paper"}}
 	liveOKX := StrategyConfig{ID: "okx-live", Type: "perps", Platform: "okx", Args: []string{"--mode=live"}}
 
@@ -412,7 +412,7 @@ func TestSendToScopeChannels(t *testing.T) {
 		Discord:    DiscordConfig{Channels: map[string]string{"hyperliquid": "C", "okx": "C-okx-live"}},
 		Strategies: []StrategyConfig{paperHL, liveOKX},
 	})
-	mnMerged.SendToScopeChannels(ScopePaper, "paper message")
+	mnMerged.SendToPartitionChannels(defaultPaperPartition, "paper message")
 	if len(mockMerged.messages) != 1 || mockMerged.messages[0].channelID != "C" {
 		t.Fatalf("merged live+paper map paper broadcast = %+v, want only C", mockMerged.messages)
 	}
@@ -426,7 +426,7 @@ func TestSendToScopeChannels(t *testing.T) {
 		Discord:    DiscordConfig{Channels: map[string]string{"hyperliquid": "live-ch", "hyperliquid-paper": "paper-ch"}},
 		Strategies: []StrategyConfig{paperHL},
 	})
-	mn.SendToScopeChannels(ScopePaper, "paper message")
+	mn.SendToPartitionChannels(defaultPaperPartition, "paper message")
 	if len(mock.messages) != 1 || mock.messages[0].channelID != "paper-ch" {
 		t.Fatalf("paper broadcast = %+v, want only paper-ch", mock.messages)
 	}
@@ -440,7 +440,7 @@ func TestSendToScopeChannels(t *testing.T) {
 		Discord:    DiscordConfig{Channels: map[string]string{"hyperliquid-paper": "P", "okx-paper": "O"}},
 		Strategies: []StrategyConfig{paperHL},
 	})
-	mnUnused.SendToScopeChannels(ScopePaper, "paper message")
+	mnUnused.SendToPartitionChannels(defaultPaperPartition, "paper message")
 	if len(mockUnused.messages) != 1 || mockUnused.messages[0].channelID != "P" {
 		t.Fatalf("unused -paper key must not receive the paper broadcast; got %+v", mockUnused.messages)
 	}
@@ -450,7 +450,7 @@ func TestSendToScopeChannels(t *testing.T) {
 		notifier: mock2,
 		channels: map[string]string{"hyperliquid": "only-ch"},
 	})
-	mn2.SendToScopeChannels(ScopePaper, "paper message")
+	mn2.SendToPartitionChannels(defaultPaperPartition, "paper message")
 	if len(mock2.messages) != 1 || mock2.messages[0].channelID != "only-ch" {
 		t.Fatalf("with no paper channel the paper broadcast must fall back to all channels; got %+v", mock2.messages)
 	}
@@ -464,7 +464,7 @@ func TestSendToScopeChannels(t *testing.T) {
 		Discord:    DiscordConfig{Channels: map[string]string{"okx": "C-okx-live"}},
 		Strategies: []StrategyConfig{paperHL},
 	})
-	mnEmpty.SendToScopeChannels(ScopePaper, "paper message")
+	mnEmpty.SendToPartitionChannels(defaultPaperPartition, "paper message")
 	if len(mockEmpty.messages) != 1 || mockEmpty.messages[0].channelID != "C-okx-live" {
 		t.Fatalf("unresolved paper strategies must fall through to every channel; got %+v", mockEmpty.messages)
 	}
@@ -474,7 +474,7 @@ func TestSendToScopeChannels(t *testing.T) {
 		notifier: mock3,
 		channels: map[string]string{"hyperliquid": "live-ch", "hyperliquid-paper": "paper-ch"},
 	})
-	mn3.SendToScopeChannels(ScopeLive, "live message")
+	mn3.SendToPartitionChannels(livePartition, "live message")
 	if len(mock3.messages) != 2 {
 		t.Fatalf("a live broadcast must keep reaching every channel; got %+v", mock3.messages)
 	}
@@ -484,10 +484,12 @@ func TestPaperScopeChannelValues(t *testing.T) {
 	paperHL := StrategyConfig{ID: "hl-paper", Type: "perps", Platform: "hyperliquid", Args: []string{"--mode=paper"}}
 	paperOKX := StrategyConfig{ID: "okx-paper", Type: "perps", Platform: "okx", Args: []string{"--mode=paper"}}
 	liveOKX := StrategyConfig{ID: "okx-live", Type: "perps", Platform: "okx", Args: []string{"--mode=live"}}
+	sourcedHL := StrategyConfig{ID: "hl-btc", Type: "perps", Platform: "hyperliquid", Args: []string{"--mode=paper"}, PaperSource: "btc"}
 	cases := []struct {
 		name     string
 		channels map[string]string
 		strats   []StrategyConfig
+		part     RiskPartition
 		want     []string
 	}{
 		{
@@ -530,10 +532,34 @@ func TestPaperScopeChannelValues(t *testing.T) {
 			strats:   []StrategyConfig{paperHL},
 			want:     []string{"type-ch"},
 		},
+		{
+			name:     "source key wins over the bare paper key",
+			channels: map[string]string{"hyperliquid-paper": "paper-ch", "hyperliquid-paper:btc": "btc-ch"},
+			strats:   []StrategyConfig{sourcedHL},
+			part:     paperSourcePartition("btc"),
+			want:     []string{"btc-ch"},
+		},
+		{
+			name:     "source falls back to the bare paper key",
+			channels: map[string]string{"hyperliquid-paper": "paper-ch"},
+			strats:   []StrategyConfig{sourcedHL},
+			part:     paperSourcePartition("btc"),
+			want:     []string{"paper-ch"},
+		},
+		{
+			name:     "one source never reaches another source's channel",
+			channels: map[string]string{"hyperliquid-paper:eth": "eth-ch"},
+			strats:   []StrategyConfig{sourcedHL},
+			part:     paperSourcePartition("btc"),
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := paperScopeChannelValues(tc.channels, tc.strats)
+			part := tc.part
+			if part == (RiskPartition{}) {
+				part = defaultPaperPartition
+			}
+			got := partitionChannelValues(tc.channels, tc.strats)[part]
 			if !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
@@ -569,10 +595,10 @@ func TestHotReload_PortfolioRiskPaperOverride(t *testing.T) {
 			t.Errorf("change list missing %q:\n%s", want, joined)
 		}
 	}
-	if got := scopeRiskConfig(cfg, ScopePaper); got.MaxDrawdownPct != 60 || got.DailyMaxLossUSD != 2000 {
+	if got := partitionRiskConfig(cfg, defaultPaperPartition); got.MaxDrawdownPct != 60 || got.DailyMaxLossUSD != 2000 {
 		t.Errorf("the override must be live after reload: %+v", got)
 	}
-	if got := scopeRiskConfig(cfg, ScopeLive); got.MaxDrawdownPct != 25 || got.DailyMaxLossUSD != 500 {
+	if got := partitionRiskConfig(cfg, livePartition); got.MaxDrawdownPct != 25 || got.DailyMaxLossUSD != 500 {
 		t.Errorf("the live scope must keep the parent values: %+v", got)
 	}
 }
@@ -593,8 +619,8 @@ func TestHotReload_WhileLatched_KeepsLatch(t *testing.T) {
 
 	state := NewAppState()
 	latchedAt := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
-	for _, scope := range []PortfolioScope{ScopeLive, ScopePaper} {
-		prs := state.scopeRisk(scope)
+	for _, scope := range []RiskPartition{livePartition, defaultPaperPartition} {
+		prs := state.partitionRisk(scope)
 		prs.KillSwitchActive = true
 		prs.KillSwitchAt = latchedAt
 		prs.PeakValue = 10000
@@ -604,10 +630,10 @@ func TestHotReload_WhileLatched_KeepsLatch(t *testing.T) {
 	if _, err := applyHotReloadConfig(cfg, next, state, nil, nil); err != nil {
 		t.Fatalf("a limit change while latched must hot-reload: %v", err)
 	}
-	for _, scope := range []PortfolioScope{ScopeLive, ScopePaper} {
-		prs := state.scopeRisk(scope)
+	for _, scope := range []RiskPartition{livePartition, defaultPaperPartition} {
+		prs := state.partitionRisk(scope)
 		if !prs.KillSwitchActive || !prs.KillSwitchAt.Equal(latchedAt) || prs.PeakValue != 10000 || prs.CurrentDrawdownPct != 50 {
-			t.Errorf("%s latch state must survive a reload untouched: %+v", scopeLabel(scope), prs)
+			t.Errorf("%s latch state must survive a reload untouched: %+v", partitionLabel(scope), prs)
 		}
 	}
 }
@@ -620,14 +646,14 @@ func TestConfigExample_PaperOverrideLoads(t *testing.T) {
 	if cfg.PortfolioRisk == nil || cfg.PortfolioRisk.Paper == nil {
 		t.Fatal("config.example.json must document the portfolio_risk.paper override")
 	}
-	paper := scopeRiskConfig(cfg, ScopePaper)
+	paper := partitionRiskConfig(cfg, defaultPaperPartition)
 	if paper.MaxDrawdownPct != 50 {
 		t.Errorf("paper max_drawdown_pct = %v, want the override value 50", paper.MaxDrawdownPct)
 	}
 	if paper.WarnThresholdPct != cfg.PortfolioRisk.WarnThresholdPct {
 		t.Errorf("warn_threshold_pct must inherit; paper=%v parent=%v", paper.WarnThresholdPct, cfg.PortfolioRisk.WarnThresholdPct)
 	}
-	if scopeRiskConfig(cfg, ScopeLive).MaxDrawdownPct != cfg.PortfolioRisk.MaxDrawdownPct {
+	if partitionRiskConfig(cfg, livePartition).MaxDrawdownPct != cfg.PortfolioRisk.MaxDrawdownPct {
 		t.Error("the live scope must keep the parent drawdown limit")
 	}
 }
@@ -642,23 +668,23 @@ func TestAssignLegacyPortfolioScope_MixedRosterRebasesLivePeak(t *testing.T) {
 	state.Strategies["paper-a"] = scopeState("paper-a", 9000)
 	state.Strategies["paper-a"].RiskState.PeakValue = 9000
 	latchedAt := time.Now().UTC().Add(-time.Hour)
-	state.PortfolioRisk[scopeUnassigned] = &PortfolioRiskState{PeakValue: 21000, CurrentDrawdownPct: 5, KillSwitchActive: true, KillSwitchAt: latchedAt}
+	state.PortfolioRisk[unassignedPartition] = &PortfolioRiskState{PeakValue: 21000, CurrentDrawdownPct: 5, KillSwitchActive: true, KillSwitchAt: latchedAt}
 
 	target, moved := assignLegacyPortfolioScope(state, cfg)
-	if !moved || target != ScopeLive {
+	if !moved || target != livePartition {
 		t.Fatalf("placement = %q,%v; want live,true", target, moved)
 	}
-	prs := state.scopeRisk(ScopeLive)
+	prs := state.partitionRisk(livePartition)
 	if prs.PeakValue != 12000 {
 		t.Fatalf("live peak = %v, want the live-only basis 12000 (sum of live per-strategy peaks, with no configured-capital floor)", prs.PeakValue)
 	}
 	if !prs.KillSwitchActive || !prs.KillSwitchAt.Equal(latchedAt) {
 		t.Error("the legacy latch must survive the re-base untouched")
 	}
-	if n := len(prs.Events); n == 0 || prs.Events[n-1].Type != "scope_basis_rebaseline" || prs.Events[n-1].Scope != ScopeLive {
+	if n := len(prs.Events); n == 0 || prs.Events[n-1].Type != "scope_basis_rebaseline" || prs.Events[n-1].Partition != livePartition {
 		t.Errorf("the re-base must be recorded as a live-scope event; got %+v", prs.Events)
 	}
-	if state.scopeRiskIfPresent(ScopePaper) != nil {
+	if state.partitionRiskIfPresent(defaultPaperPartition) != nil {
 		t.Error("placement must not create the paper scope; its peak seeds from the paper book on the first cycle")
 	}
 
@@ -666,12 +692,12 @@ func TestAssignLegacyPortfolioScope_MixedRosterRebasesLivePeak(t *testing.T) {
 	prs.KillSwitchActive = false
 	prs.KillSwitchAt = time.Time{}
 	res := runScopeCycle(t, cfgWithRisk, state, nil)
-	if res[ScopeLive].KillSwitchFired {
-		t.Errorf("live at its own peaks must not latch after the upgrade; reason=%q", res[ScopeLive].Reason)
+	if res[livePartition].KillSwitchFired {
+		t.Errorf("live at its own peaks must not latch after the upgrade; reason=%q", res[livePartition].Reason)
 	}
 	state.Strategies["live-a"].Cash = 2000
 	res = runScopeCycle(t, cfgWithRisk, state, nil)
-	if !res[ScopeLive].KillSwitchFired {
-		t.Errorf("a genuine live drawdown past the limit must still latch on the re-based peak; reason=%q", res[ScopeLive].Reason)
+	if !res[livePartition].KillSwitchFired {
+		t.Errorf("a genuine live drawdown past the limit must still latch on the re-based peak; reason=%q", res[livePartition].Reason)
 	}
 }

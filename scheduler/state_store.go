@@ -27,7 +27,7 @@ type StateStore struct {
 	// effect is still only in memory for another strategy.
 	pendingAcks    map[string][]int64
 	appliedActions map[storageKey]bool
-	failures       map[PortfolioScope]int
+	failures       map[RiskPartition]int
 }
 
 func newStateStore(layout storageLayout, ident storageIdentityMap) *StateStore {
@@ -37,7 +37,7 @@ func newStateStore(layout storageLayout, ident storageIdentityMap) *StateStore {
 		files:          make(map[storageRole]*StateDB, len(layout.Files)),
 		pendingAcks:    make(map[string][]int64),
 		appliedActions: make(map[storageKey]bool),
-		failures:       make(map[PortfolioScope]int),
+		failures:       make(map[RiskPartition]int),
 	}
 }
 
@@ -70,7 +70,11 @@ func openStateStoreWith(layout storageLayout, ident storageIdentityMap, open fun
 // singleFileStore wraps one already-open handle so the legacy single-file
 // helpers and the tests keep working through the same surface.
 func singleFileStore(sdb *StateDB) *StateStore {
-	st := newStateStore(storageLayout{Files: []storageFileSpec{{Role: storageRolePrimary, Path: sdb.path}}}, storageIdentityMap{})
+	st := newStateStore(storageLayout{Files: []storageFileSpec{{
+		Role:       storageRolePrimary,
+		Path:       sdb.path,
+		Partitions: []RiskPartition{livePartition, defaultPaperPartition},
+	}}}, storageIdentityMap{})
 	st.files[storageRolePrimary] = sdb
 	st.order = []storageRole{storageRolePrimary}
 	return st
@@ -130,24 +134,23 @@ func (st *StateStore) hasLiveScope() bool {
 	return st != nil && st.ident.hasScope(ScopeLive)
 }
 
+// scopeForRole stamps combined reads. A file that owns both modes cannot name
+// one, so the row stays unscoped exactly as the single-file store always did.
 func (st *StateStore) scopeForRole(role storageRole) PortfolioScope {
-	if !st.layout.Split {
+	scopes := st.layout.scopesForRole(role)
+	if len(scopes) != 1 {
 		return scopeUnassigned
 	}
-	if role == storageRolePaper {
-		return ScopePaper
-	}
-	return ScopeLive
+	return scopes[0]
 }
 
-func (st *StateStore) fileForScope(scope PortfolioScope) (*StateDB, error) {
+func (st *StateStore) fileForRole(role storageRole) (*StateDB, error) {
 	if st == nil {
 		return nil, fmt.Errorf("state store unavailable")
 	}
-	role := st.layout.roleForScope(scope)
 	db := st.file(role)
 	if db == nil {
-		return nil, fmt.Errorf("no %s state file for the %s scope", role, scopeLabel(scope))
+		return nil, fmt.Errorf("no %s state file", role)
 	}
 	return db, nil
 }
@@ -183,6 +186,13 @@ func (st *StateStore) scopeForStrategy(processID string) (PortfolioScope, bool) 
 	return st.ident.scopeFor(processID)
 }
 
+func (st *StateStore) partitionForStrategy(processID string) (RiskPartition, bool) {
+	if st == nil {
+		return unassignedPartition, false
+	}
+	return st.ident.partitionFor(processID)
+}
+
 func (st *StateStore) ownedProcessIDs(ids []string, role storageRole) []string {
 	if !st.layout.Split {
 		return ids
@@ -198,15 +208,16 @@ func (st *StateStore) ownedProcessIDs(ids []string, role storageRole) []string {
 
 // ---------------------------------------------------------------- saving
 
-func (st *StateStore) buildRequest(state *AppState, role storageRole, scopes []PortfolioScope, fullFile, writeMeta bool) scopeSaveRequest {
-	owned := make(map[PortfolioScope]bool, len(scopes))
-	for _, scope := range scopes {
-		owned[scope] = true
+func (st *StateStore) buildRequest(state *AppState, role storageRole, parts []RiskPartition, fullFile, writeMeta bool) scopeSaveRequest {
+	owned := make(map[RiskPartition]bool, len(parts))
+	for _, p := range parts {
+		owned[p] = true
 	}
+	scopes := scopesOfPartitions(parts)
 	scopeOf := make(map[string]PortfolioScope, len(state.Strategies))
 	ids := make([]string, 0, len(state.Strategies))
 	for id := range state.Strategies {
-		scope, mapped := st.ident.scopeFor(id)
+		part, mapped := st.ident.partitionFor(id)
 		if !mapped {
 			// No identity entry: the legacy single-file store, where the
 			// primary owns every row. A split layout never guesses.
@@ -217,10 +228,10 @@ func (st *StateStore) buildRequest(state *AppState, role storageRole, scopes []P
 			ids = append(ids, id)
 			continue
 		}
-		if !owned[scope] {
+		if !owned[part] {
 			continue
 		}
-		scopeOf[id] = scope
+		scopeOf[id] = part.Scope
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
@@ -234,6 +245,7 @@ func (st *StateStore) buildRequest(state *AppState, role storageRole, scopes []P
 		Strategies:      states,
 		ScopeOf:         scopeOf,
 		Scopes:          scopes,
+		Partitions:      parts,
 		FullFile:        fullFile,
 		IncludeUnscoped: fullFile && !st.layout.Split,
 		WriteMeta:       writeMeta,
@@ -241,48 +253,72 @@ func (st *StateStore) buildRequest(state *AppState, role storageRole, scopes []P
 	}
 }
 
-// SaveAll persists every scope, one transaction per physical file. A failed
-// file leaves its scope's in-memory state untouched for retry; the other
-// file's committed effects are already durable and are never replayed.
-func (st *StateStore) SaveAll(state *AppState) map[PortfolioScope]error {
-	out := make(map[PortfolioScope]error, 2)
+// scopesOfPartitions reduces a file's partitions to the distinct execution
+// modes its SQL filter needs, in the stable order live then paper.
+func scopesOfPartitions(parts []RiskPartition) []PortfolioScope {
+	hasLive := false
+	hasPaper := false
+	for _, p := range parts {
+		switch p.Scope {
+		case ScopeLive:
+			hasLive = true
+		case ScopePaper:
+			hasPaper = true
+		}
+	}
+	out := make([]PortfolioScope, 0, 2)
+	if hasLive {
+		out = append(out, ScopeLive)
+	}
+	if hasPaper {
+		out = append(out, ScopePaper)
+	}
+	return out
+}
+
+// SaveAll persists every partition, one transaction per physical file. A failed
+// file leaves its partitions' in-memory state untouched for retry; the other
+// files' committed effects are already durable and are never replayed.
+func (st *StateStore) SaveAll(state *AppState) map[RiskPartition]error {
+	out := make(map[RiskPartition]error, 2)
 	if st == nil || state == nil {
 		return out
 	}
 	for _, role := range st.order {
 		db := st.file(role)
-		scopes := st.layout.scopesForRole(role)
-		req := st.buildRequest(state, role, scopes, true, role == storageRolePrimary)
+		parts := st.layout.partitionsForRole(role)
+		req := st.buildRequest(state, role, parts, true, role == storageRolePrimary)
 		err := db.saveStateSubset(state, req)
 		if err == nil {
 			st.clearAcks(strategyIDs(req.Strategies))
 		}
-		for _, scope := range scopes {
-			out[scope] = err
-			st.recordSaveOutcome(scope, err)
+		for _, p := range parts {
+			out[p] = err
+			st.recordSaveOutcome(p, err)
 		}
 	}
 	return out
 }
 
-// SaveScope persists one scope's books and risk row. In the single-file layout
-// it replaces only that scope's rows, so the other scope's books survive.
-func (st *StateStore) SaveScope(state *AppState, scope PortfolioScope) error {
+// SavePartition persists one partition's books and risk row. Where one file
+// owns more than one partition it replaces only that partition's rows, so the
+// other partition's books survive.
+func (st *StateStore) SavePartition(state *AppState, p RiskPartition) error {
 	if st == nil || state == nil {
 		return fmt.Errorf("state store unavailable")
 	}
-	role := st.layout.roleForScope(scope)
+	role := st.layout.roleForPartition(p)
 	db := st.file(role)
 	if db == nil {
-		return fmt.Errorf("no %s state file for the %s scope", role, scopeLabel(scope))
+		return fmt.Errorf("no %s state file for the %s partition", role, partitionLabel(p))
 	}
-	fullFile := len(st.layout.scopesForRole(role)) == 1
-	req := st.buildRequest(state, role, []PortfolioScope{scope}, fullFile, fullFile && role == storageRolePrimary)
+	fullFile := len(st.layout.partitionsForRole(role)) == 1
+	req := st.buildRequest(state, role, []RiskPartition{p}, fullFile, fullFile && role == storageRolePrimary)
 	err := db.saveStateSubset(state, req)
 	if err == nil {
 		st.clearAcks(strategyIDs(req.Strategies))
 	}
-	st.recordSaveOutcome(scope, err)
+	st.recordSaveOutcome(p, err)
 	return err
 }
 
@@ -392,33 +428,33 @@ func strategyIDs(states []*StrategyState) []string {
 
 // ------------------------------------------------------- persistence hold
 
-func (st *StateStore) recordSaveOutcome(scope PortfolioScope, err error) {
+func (st *StateStore) recordSaveOutcome(p RiskPartition, err error) {
 	if st == nil {
 		return
 	}
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	if err != nil {
-		st.failures[scope]++
+		st.failures[p]++
 		return
 	}
-	delete(st.failures, scope)
+	delete(st.failures, p)
 }
 
-func (st *StateStore) saveFailures(scope PortfolioScope) int {
+func (st *StateStore) saveFailures(p RiskPartition) int {
 	if st == nil {
 		return 0
 	}
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	return st.failures[scope]
+	return st.failures[p]
 }
 
-// persistenceHoldsScope reports an unacknowledged save failure. While it holds,
-// the scope takes no position-increasing action; closes, trailing stops,
-// ratchet, protection sync and hedge management keep running.
-func (st *StateStore) persistenceHoldsScope(scope PortfolioScope) bool {
-	return st.saveFailures(scope) > 0
+// persistenceHoldsPartition reports an unacknowledged save failure. While it
+// holds, the partition takes no position-increasing action; closes, trailing
+// stops, ratchet, protection sync and hedge management keep running.
+func (st *StateStore) persistenceHoldsPartition(p RiskPartition) bool {
+	return st.saveFailures(p) > 0
 }
 
 // ------------------------------------------------------------ routed writes
@@ -498,16 +534,20 @@ func (st *StateStore) InsertTradeDiagnostics(row *TradeDiagnosticsRow) error {
 	return db.InsertTradeDiagnostics(row)
 }
 
-// UpdateTradeDiagnosticsMetrics needs the owning scope: a bare row identifier
-// cannot choose a file.
-func (st *StateStore) UpdateTradeDiagnosticsMetrics(scope PortfolioScope, rowID int64, timeframe string, m *tradeQualityMetrics, status string) error {
+// UpdateTradeDiagnosticsMetrics needs the owning file's role: a bare row
+// identifier cannot choose a file, and with several paper files a scope alone
+// cannot either.
+func (st *StateStore) UpdateTradeDiagnosticsMetrics(role storageRole, rowID int64, timeframe string, m *tradeQualityMetrics, status string) error {
 	if st == nil {
 		return fmt.Errorf("state store unavailable")
 	}
-	if st.layout.Split && scope == scopeUnassigned {
-		return fmt.Errorf("diagnostics row %d carries no scope; refusing to guess a state file", rowID)
+	if st.layout.Split && role == "" {
+		return fmt.Errorf("diagnostics row %d carries no source file; refusing to guess a state file", rowID)
 	}
-	db, err := st.fileForScope(scope)
+	if role == "" {
+		role = storageRolePrimary
+	}
+	db, err := st.fileForRole(role)
 	if err != nil {
 		return err
 	}
@@ -542,38 +582,39 @@ func storeLiveDB(store *StateStore) *StateDB {
 	return db
 }
 
-// allScopesSaveBlocked reports the existing three-strike rule, now per scope:
-// every active scope must be blocked before a whole cycle is skipped.
-func allScopesSaveBlocked(store *StateStore, cfg *Config) bool {
+// allPartitionsSaveBlocked reports the existing three-strike rule, now per
+// partition: every active partition must be blocked before a whole cycle is
+// skipped.
+func allPartitionsSaveBlocked(store *StateStore, cfg *Config) bool {
 	if store == nil || cfg == nil {
 		return false
 	}
-	scopes := activeScopes(cfg.Strategies)
-	if len(scopes) == 0 {
+	parts := activePartitions(cfg.Strategies)
+	if len(parts) == 0 {
 		return false
 	}
-	for _, scope := range scopes {
-		if store.saveFailures(scope) < 3 {
+	for _, p := range parts {
+		if store.saveFailures(p) < 3 {
 			return false
 		}
 	}
 	return true
 }
 
-// scopeSaveBlocked reports the three-strike skip for one scope.
-func scopeSaveBlocked(store *StateStore, scope PortfolioScope) bool {
-	return store != nil && store.saveFailures(scope) >= 3
+// partitionSaveBlocked reports the three-strike skip for one partition.
+func partitionSaveBlocked(store *StateStore, p RiskPartition) bool {
+	return store != nil && store.saveFailures(p) >= 3
 }
 
-// dueStrategiesPersistable drops the strategies of any scope whose saves have
-// failed three times running; the other scope keeps trading.
+// dueStrategiesPersistable drops the strategies of any partition whose saves
+// have failed three times running; every other partition keeps trading.
 func dueStrategiesPersistable(store *StateStore, due []StrategyConfig) []StrategyConfig {
 	if store == nil {
 		return due
 	}
 	out := make([]StrategyConfig, 0, len(due))
 	for _, sc := range due {
-		if scopeSaveBlocked(store, portfolioScopeFor(sc)) {
+		if partitionSaveBlocked(store, partitionFor(sc)) {
 			continue
 		}
 		out = append(out, sc)

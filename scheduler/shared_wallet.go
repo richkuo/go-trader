@@ -448,13 +448,13 @@ func computeInitialPortfolioPeak(strategies []StrategyConfig, fetcher WalletBala
 	return total
 }
 
-func computeInitialPortfolioPeakForScope(strategies []StrategyConfig, scope PortfolioScope, fetcher WalletBalanceFetcher) float64 {
-	return computeInitialPortfolioPeak(strategiesInScope(strategies, scope), fetcher)
+func computeInitialPortfolioPeakForPartition(strategies []StrategyConfig, part RiskPartition, fetcher WalletBalanceFetcher) float64 {
+	return computeInitialPortfolioPeak(strategiesInPartition(strategies, part), fetcher)
 }
 
-func rebaselinePortfolioPeakAfterPruneForScope(state *AppState, cfg *Config, scope PortfolioScope, fetcher WalletBalanceFetcher) float64 {
-	scopedCfg := &Config{Strategies: strategiesInScope(cfg.Strategies, scope)}
-	scopedState := &AppState{Strategies: filterStatesByScope(state.Strategies, cfg.Strategies, scope)}
+func rebaselinePortfolioPeakAfterPruneForPartition(state *AppState, cfg *Config, part RiskPartition, fetcher WalletBalanceFetcher) float64 {
+	scopedCfg := &Config{Strategies: strategiesInPartition(cfg.Strategies, part)}
+	scopedState := &AppState{Strategies: filterStatesByPartition(state.Strategies, cfg.Strategies, part)}
 	return rebaselinePortfolioPeakAfterPrune(scopedState, scopedCfg, fetcher)
 }
 

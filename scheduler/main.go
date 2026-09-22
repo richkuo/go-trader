@@ -134,13 +134,13 @@ func main() {
 	if line := dailyLossStartupSummaryLine(cfg.PortfolioRisk); line != "" {
 		fmt.Println(line)
 	}
-	if line := dailyLossPaperStartupSummaryLine(cfg); line != "" {
+	for _, line := range dailyLossPaperStartupSummaryLines(cfg) {
 		fmt.Println(line)
 	}
 	if line := exposureCapStartupSummaryLine(cfg.PortfolioRisk); line != "" {
 		fmt.Println(line)
 	}
-	if line := exposureCapPaperStartupSummaryLine(cfg); line != "" {
+	for _, line := range exposureCapPaperStartupSummaryLines(cfg) {
 		fmt.Println(line)
 	}
 
@@ -340,21 +340,27 @@ func main() {
 		pruned = true
 	}
 
-	startupScopes := activeScopes(cfg.Strategies)
+	startupPartitions := activePartitions(cfg.Strategies)
 	liveCount, paperCount := scopeStrategyCounts(cfg.Strategies)
 	fmt.Printf("[config] portfolio scopes: live=%d paper=%d strategies\n", liveCount, paperCount)
+	for _, part := range startupPartitions {
+		if part.Source == "" {
+			continue
+		}
+		fmt.Printf("[config] paper source %q (%s): %d strategies\n", part.Source, cfg.paperSourceLabel(part.Source), len(strategiesInPartition(cfg.Strategies, part)))
+	}
 
 	if pruned {
-		for _, scope := range startupScopes {
-			prs := state.scopeRisk(scope)
+		for _, part := range startupPartitions {
+			prs := state.partitionRisk(part)
 			if prs.PeakValue <= 0 {
 				continue
 			}
 			oldPeak := prs.PeakValue
-			newPeak := rebaselinePortfolioPeakAfterPruneForScope(state, cfg, scope, nil)
+			newPeak := rebaselinePortfolioPeakAfterPruneForPartition(state, cfg, part, nil)
 			if newPeak != oldPeak {
 				prs.PeakValue = newPeak
-				fmt.Printf("  Portfolio peak rebaselined after prune [%s]: $%.0f -> $%.0f\n", scopeLabel(scope), oldPeak, newPeak)
+				fmt.Printf("  Portfolio peak rebaselined after prune [%s]: $%.0f -> $%.0f\n", partitionLabel(part), oldPeak, newPeak)
 			}
 		}
 	}
@@ -365,18 +371,18 @@ func main() {
 
 	hedgeStateWarnings := validateHedgeStateConsistency(state, cfg)
 
-	for _, scope := range startupScopes {
-		prs := state.scopeRisk(scope)
+	for _, part := range startupPartitions {
+		prs := state.partitionRisk(part)
 		if prs.PeakValue != 0 {
 			continue
 		}
-		if scopeHasPersistedState(cfg.Strategies, scope, persistedStrategyIDs) {
-			fmt.Printf("  Portfolio peak for the %s scope will seed from its current book value on the first cycle (strategies already carry state)\n", scopeLabel(scope))
+		if partitionHasPersistedState(cfg.Strategies, part, persistedStrategyIDs) {
+			fmt.Printf("  Portfolio peak for the %s scope will seed from its current book value on the first cycle (strategies already carry state)\n", partitionLabel(part))
 			continue
 		}
-		total := computeInitialPortfolioPeakForScope(cfg.Strategies, scope, nil)
+		total := computeInitialPortfolioPeakForPartition(cfg.Strategies, part, nil)
 		prs.PeakValue = total
-		fmt.Printf("  Portfolio peak initialized [%s]: $%.0f\n", scopeLabel(scope), total)
+		fmt.Printf("  Portfolio peak initialized [%s]: $%.0f\n", partitionLabel(part), total)
 	}
 
 	ClearLatchedKillSwitchSharedWallet(state, cfg.Strategies, defaultSharedWalletBalance)
@@ -394,6 +400,7 @@ func main() {
 
 	statusPort := resolveStatusPort(*statusPortFlag, cfg.StatusPort)
 	server := NewStatusServer(state, &mu, cfg.StatusToken, cfg.Strategies, store)
+	server.UpdatePaperSources(cfg.PaperSources)
 	server.SetConfigContext(*configPath, cfg)
 	tuningManager, tuningErr := newTuningRunManager(*configPath, nil, cfg.tuningMaxRetainedRuns())
 	if tuningErr != nil {
@@ -442,7 +449,7 @@ func main() {
 			}
 		},
 		func(job llmEntryAnalysisJob, res *LLMEntryAnalysisResult) {
-			for _, route := range notifier.tradeAlertRoutes(job.Platform, job.StratType, job.IsLive) {
+			for _, route := range notifier.tradeAlertRoutes(job.Platform, job.StratType, job.IsLive, job.PaperSource) {
 				msg := formatLLMEntryAnalysisDigest(job, res, route.plainText)
 				if job.Params.NotifyDM && route.dmDest != "" {
 					if err := sendTradeDestination(route.notifier, route.dmDest, msg); err != nil {
@@ -775,7 +782,7 @@ func main() {
 			if audSec := liquidationAuditIntervalSeconds(cfg.Strategies, intervals); audSec > 0 && os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS") != "" {
 				now := time.Now().UTC()
 				if lastLiquidationAudit.IsZero() || now.Sub(lastLiquidationAudit) >= time.Duration(audSec)*time.Second {
-					if allScopesSaveBlocked(store, cfg) {
+					if allPartitionsSaveBlocked(store, cfg) {
 						fmt.Println("[CRITICAL] State save failed 3x, skipping off-cycle liquidation audit this pass")
 						offCycleAuditSaveDirty = flushOffCycleLiquidationAuditState(state, cfg, store, &mu, 0, offCycleAuditSaveDirty, true)
 						lastLiquidationAudit = time.Now().UTC()
@@ -941,7 +948,7 @@ func main() {
 		sharedWallets := detectSharedWallets(cfg.Strategies)
 		walletBalances := make(map[SharedWalletKey]float64)
 
-		if allScopesSaveBlocked(store, cfg) {
+		if allPartitionsSaveBlocked(store, cfg) {
 			fmt.Println("[CRITICAL] State save failed 3x, skipping trades this cycle")
 			globalRegimeStore.resetForCycle(time.Now().UTC())
 			mu.Lock()
@@ -959,10 +966,10 @@ func main() {
 			mu.RUnlock()
 		} else {
 			regimeStoreReady := startRegimeStorePopulation(globalRegimeStore, dueStrategies, cfg.Regime, notifier, feedCtx)
-			cycleScopes := activeScopes(cfg.Strategies)
-			scopeRisk := make(map[PortfolioScope]*scopeCycleRisk, len(cycleScopes))
-			for _, scope := range cycleScopes {
-				scopeRisk[scope] = &scopeCycleRisk{Scope: scope, Config: scopeRiskConfig(cfg, scope)}
+			cyclePartitions := activePartitions(cfg.Strategies)
+			scopeRisk := make(map[RiskPartition]*scopeCycleRisk, len(cyclePartitions))
+			for _, part := range cyclePartitions {
+				scopeRisk[part] = &scopeCycleRisk{Partition: part, Config: partitionRiskConfig(cfg, part)}
 			}
 
 			var hlLiveAll []StrategyConfig
@@ -1112,18 +1119,18 @@ func main() {
 				sharedWalletRiskBalances, sharedWalletRiskGeneration)
 			riskOpenSymbols := snapshotOpenSymbolsByStrategy(state)
 			totalPV = 0
-			for _, scope := range cycleScopes {
-				sr := measureScopeCycleRisk(scope, scopeRisk[scope].Config, cfg.Strategies, state, prices,
+			for _, part := range cyclePartitions {
+				sr := measureScopeCycleRisk(part, scopeRisk[part].Config, cfg.Strategies, state, prices,
 					riskWalletBalances, sharedWallets, pooledEquityComplete, usedStaleRiskBalance, time.Now().UTC())
-				scopeRisk[scope] = sr
+				scopeRisk[part] = sr
 				totalPV += sr.TotalPV
 			}
 			mu.RUnlock()
 
 			var manualBasisRebaselineDM string
 			mu.Lock()
-			if liveSR := scopeRisk[ScopeLive]; liveSR != nil {
-				livePrs := state.scopeRisk(ScopeLive)
+			if liveSR := scopeRisk[livePartition]; liveSR != nil {
+				livePrs := state.partitionRisk(livePartition)
 				liveCfgs := strategiesInScope(cfg.Strategies, ScopeLive)
 				if !livePrs.ManualMarkBasisRebaselined {
 					if unmarked := missingManualOnlyMarks(liveCfgs, riskOpenSymbols, prices); len(unmarked) > 0 {
@@ -1148,12 +1155,12 @@ func main() {
 				}
 			}
 
-			for _, scope := range cycleScopes {
-				sr := scopeRisk[scope]
-				applyScopeCycleRisk(sr, state.scopeRisk(scope))
+			for _, part := range cyclePartitions {
+				sr := scopeRisk[part]
+				applyScopeCycleRisk(sr, state.partitionRisk(part))
 				if sr.KillSwitchFired {
-					fmt.Printf("[CRITICAL] Portfolio kill switch [%s]: %s\n", scopeLabel(scope), sr.Reason)
-					for _, id := range stateIDsInScope(state.Strategies, cfg.Strategies, scope) {
+					fmt.Printf("[CRITICAL] Portfolio kill switch [%s]: %s\n", partitionLabel(part), sr.Reason)
+					for _, id := range stateIDsInPartition(state.Strategies, cfg.Strategies, part) {
 						ss := state.Strategies[id]
 						if ss == nil {
 							continue
@@ -1167,13 +1174,13 @@ func main() {
 					}
 				}
 				if sr.NotionalBlocked {
-					fmt.Printf("[WARN] [%s] %s\n", scopeLabel(scope), sr.Reason)
+					fmt.Printf("[WARN] [%s] %s\n", partitionLabel(part), sr.Reason)
 				}
 				if sr.DailyLossEntriesHeld {
-					fmt.Printf("[WARN] [%s] %s — entries held until UTC rollover\n", scopeLabel(scope), dailyLossHoldDetail(sr.DailyLossStatus))
+					fmt.Printf("[WARN] [%s] %s — entries held until UTC rollover\n", partitionLabel(part), dailyLossHoldDetail(sr.DailyLossStatus))
 				}
 				if sr.DailyLossStatus.PctBasisMiss {
-					fmt.Printf("[WARN] [%s] %s\n", scopeLabel(scope), dailyLossPctBasisMissWarning)
+					fmt.Printf("[WARN] [%s] %s\n", partitionLabel(part), dailyLossPctBasisMissWarning)
 				}
 			}
 			ingestSharedWalletLedgers(storeLiveDB(store), state, cfg.Strategies, sharedWallets, walletLedgerFetches)
@@ -1183,34 +1190,34 @@ func main() {
 			if manualBasisRebaselineDM != "" {
 				notifier.SendOwnerDM(manualBasisRebaselineDM)
 			}
-			for _, scope := range cycleScopes {
-				sr := scopeRisk[scope]
+			for _, part := range cyclePartitions {
+				sr := scopeRisk[part]
 				today := time.Now().UTC().Format("2006-01-02")
 				if sr.DailyLossEntriesHeld {
-					if dailyLossAlertDue(true, dailyLossLastAlertDate[scope], today) {
-						dailyLossLastAlertDate[scope] = today
-						notifier.SendOwnerDM(scopePrefixedDM(scope, formatDailyLossTripDM(sr.DailyLossStatus, time.Now().UTC())))
+					if dailyLossAlertDue(true, dailyLossLastAlertDate[part], today) {
+						dailyLossLastAlertDate[part] = today
+						notifier.SendOwnerDM(partitionPrefixedDM(part, formatDailyLossTripDM(sr.DailyLossStatus, time.Now().UTC())))
 					}
 				}
 				if sr.DailyLossStatus.PctBasisMiss {
-					if dailyLossAlertDue(true, dailyLossPctBasisMissAlertDate[scope], today) {
-						dailyLossPctBasisMissAlertDate[scope] = today
-						notifier.SendOwnerDM(scopePrefixedDM(scope, formatDailyLossPctBasisMissDM(sr.DailyLossStatus, time.Now().UTC())))
+					if dailyLossAlertDue(true, dailyLossPctBasisMissAlertDate[part], today) {
+						dailyLossPctBasisMissAlertDate[part] = today
+						notifier.SendOwnerDM(partitionPrefixedDM(part, formatDailyLossPctBasisMissDM(sr.DailyLossStatus, time.Now().UTC())))
 					}
 				}
 				if warnMsg := exposureCapCycleWarning(sr.ExposureCapStatus); warnMsg != "" {
-					fmt.Printf("[WARN] [%s] %s\n", scopeLabel(scope), warnMsg)
+					fmt.Printf("[WARN] [%s] %s\n", partitionLabel(part), warnMsg)
 				}
 				if skipMsg := exposureCapSkippedWarning(sr.ExposureCapStatus); skipMsg != "" {
-					fmt.Printf("[WARN] [%s] %s\n", scopeLabel(scope), skipMsg)
+					fmt.Printf("[WARN] [%s] %s\n", partitionLabel(part), skipMsg)
 				}
 				if sr.ExposureCapStatus.PVBasisMiss {
-					fmt.Printf("[WARN] [%s] %s\n", scopeLabel(scope), exposureCapPVBasisMissWarning)
+					fmt.Printf("[WARN] [%s] %s\n", partitionLabel(part), exposureCapPVBasisMissWarning)
 				}
-				exposureCapDM, exposureCapNextAlerts := exposureCapAlertMessage(sr.ExposureCapStatus, exposureCapAlerts[scope], time.Now().UTC())
-				exposureCapAlerts[scope] = exposureCapNextAlerts
+				exposureCapDM, exposureCapNextAlerts := exposureCapAlertMessage(sr.ExposureCapStatus, exposureCapAlerts[part], time.Now().UTC())
+				exposureCapAlerts[part] = exposureCapNextAlerts
 				if exposureCapDM != "" {
-					notifier.SendOwnerDM(scopePrefixedDM(scope, exposureCapDM))
+					notifier.SendOwnerDM(partitionPrefixedDM(part, exposureCapDM))
 				}
 			}
 
@@ -1231,9 +1238,9 @@ func main() {
 
 			reportSharedWalletDrift(notifier, driftResults)
 
-			liveKillSwitchFired := scopeCycleRiskFired(scopeRisk, ScopeLive)
+			liveKillSwitchFired := scopeCycleRiskFired(scopeRisk, livePartition)
 			var liveReason string
-			if liveSR := scopeRisk[ScopeLive]; liveSR != nil {
+			if liveSR := scopeRisk[livePartition]; liveSR != nil {
 				liveReason = liveSR.Reason
 			}
 
@@ -1325,7 +1332,7 @@ func main() {
 
 			killSwitchAutoReset := false
 			if liveKillSwitchFired && plan.OnChainConfirmedFlat {
-				liveSR := scopeRisk[ScopeLive]
+				liveSR := scopeRisk[livePartition]
 				mu.Lock()
 				for _, sc := range strategiesInScope(cfg.Strategies, ScopeLive) {
 					if s, ok := state.Strategies[sc.ID]; ok {
@@ -1335,7 +1342,7 @@ func main() {
 				if !notifier.HasOwner() {
 					if plan.CanAutoResetWithoutOwner() {
 						peakRebaselineAvailable := liveSR.PeakRebaselineAvailable
-						killSwitchAutoReset = AutoResetConfirmedFlatKillSwitch(state.scopeRisk(ScopeLive), liveSR.TotalPV,
+						killSwitchAutoReset = AutoResetConfirmedFlatKillSwitch(state.partitionRisk(livePartition), liveSR.TotalPV,
 							peakRebaselineAvailable,
 							"confirmed flat after portfolio kill-switch close; no DM owner configured, latch auto-cleared")
 						if killSwitchAutoReset {
@@ -1360,20 +1367,28 @@ func main() {
 				notifier.SendToAllChannels(killSwitchMsg)
 			}
 
-			var paperKillSwitch paperKillSwitchOutcome
-			if paperSR := scopeRisk[ScopePaper]; paperSR != nil && paperSR.KillSwitchFired {
+			// One pass per paper partition: a latch in one folded source closes
+			// only that source's books and alerts only that source's channels.
+			for _, part := range cyclePartitions {
+				if part.IsLive() {
+					continue
+				}
+				paperSR := scopeRisk[part]
+				if paperSR == nil || !paperSR.KillSwitchFired {
+					continue
+				}
 				mu.Lock()
-				paperKillSwitch = applyPaperKillSwitchCycle(state, cfg, prices, paperSR, notifier.HasOwner())
+				paperKillSwitch := applyPaperKillSwitchCycle(state, cfg, prices, paperSR, notifier.HasOwner())
 				mu.Unlock()
 				if paperKillSwitch.CloseApplied {
-					fmt.Printf("[CRITICAL] Portfolio kill switch [paper]: force-closed %d paper strategy book(s) at mark\n", len(paperKillSwitch.Closed))
+					fmt.Printf("[CRITICAL] Portfolio kill switch [%s]: force-closed %d paper strategy book(s) at mark\n", partitionLabel(part), len(paperKillSwitch.Closed))
 				}
 				if paperKillSwitch.AutoReset {
-					fmt.Printf("[CRITICAL] Portfolio kill switch [paper] auto-reset after the virtual close (no owner configured, peak re-baselined to $%.2f)\n", paperSR.TotalPV)
+					fmt.Printf("[CRITICAL] Portfolio kill switch [%s] auto-reset after the virtual close (no owner configured, peak re-baselined to $%.2f)\n", partitionLabel(part), paperSR.TotalPV)
 				}
-			}
-			if paperKillSwitch.Message != "" && notifier.HasBackends() {
-				notifier.SendToScopeChannels(ScopePaper, paperKillSwitch.Message)
+				if paperKillSwitch.Message != "" && notifier.HasBackends() {
+					notifier.SendToPartitionChannels(part, paperKillSwitch.Message)
+				}
 			}
 
 			for _, moAlert := range drainModelOnlyCloseAlerts() {
@@ -1382,10 +1397,10 @@ func main() {
 				}
 			}
 
-			for _, scope := range cycleScopes {
-				sr := scopeRisk[scope]
+			for _, part := range cyclePartitions {
+				sr := scopeRisk[part]
 				if !sr.Warning {
-					portfolioWarningAlertsReset(scope)
+					portfolioWarningAlertsReset(part)
 					continue
 				}
 				if !notifier.HasBackends() {
@@ -1393,7 +1408,7 @@ func main() {
 				}
 				warnNow := time.Now().UTC()
 				mu.RLock()
-				prs := state.scopeRiskIfPresent(scope)
+				prs := state.partitionRiskIfPresent(part)
 				if prs == nil {
 					mu.RUnlock()
 					continue
@@ -1404,8 +1419,8 @@ func main() {
 				warnLatchDeferredSince := prs.UntrustedOverLimitSince
 				mu.RUnlock()
 				notifyWarn, nextWarnAlerts := portfolioWarningShouldNotify(
-					portfolioWarningAlerts[scope], warnEquityInBand, warnMarginInBand, warnEquityDD, warnMarginDD, warnNow)
-				portfolioWarningAlerts[scope] = nextWarnAlerts
+					portfolioWarningAlerts[part], warnEquityInBand, warnMarginInBand, warnEquityDD, warnMarginDD, warnNow)
+				portfolioWarningAlerts[part] = nextWarnAlerts
 				if !warnLatchDeferredSince.IsZero() {
 					notifyWarn = true
 				}
@@ -1428,14 +1443,14 @@ func main() {
 				}
 				if sr.WarnBandEntered {
 					addKillSwitchEvent(prs, "warning", source, warnDD, sr.TotalPV, prs.PeakValue, sr.Reason)
-					prs.Events[len(prs.Events)-1].Scope = scope
+					prs.Events[len(prs.Events)-1].Partition = part
 				}
 				if notifyWarn {
 					warnMsg = BuildPortfolioWarningMessage(PortfolioWarningMessageInputs{
 						Reason:           sr.Reason,
 						Config:           sr.Config,
 						State:            state,
-						Scope:            scope,
+						Partition:        part,
 						CfgStrategies:    cfg.Strategies,
 						Prices:           prices,
 						TotalValue:       sr.TotalPV,
@@ -1448,52 +1463,52 @@ func main() {
 				}
 				mu.Unlock()
 				if notifyWarn {
-					notifier.SendToScopeChannels(scope, warnMsg)
+					notifier.SendToPartitionChannels(part, warnMsg)
 					notifier.SendOwnerDM(warnMsg)
 				}
 				if warnLatchDeferredSince.IsZero() {
-					fmt.Printf("[WARN] [%s] %s\n", scopeLabel(scope), sr.Reason)
+					fmt.Printf("[WARN] [%s] %s\n", partitionLabel(part), sr.Reason)
 				} else {
-					fmt.Printf("[CRITICAL] [%s] %s\n", scopeLabel(scope), sr.Reason)
+					fmt.Printf("[CRITICAL] [%s] %s\n", partitionLabel(part), sr.Reason)
 				}
 			}
 
 			if cfg.Correlation != nil && cfg.Correlation.Enabled {
-				for _, scope := range cycleScopes {
+				for _, part := range cyclePartitions {
 					mu.RLock()
 					corrSnap := ComputeCorrelation(
-						filterStatesByScope(state.Strategies, cfg.Strategies, scope),
-						strategiesInScope(cfg.Strategies, scope),
+						filterStatesByPartition(state.Strategies, cfg.Strategies, part),
+						strategiesInPartition(cfg.Strategies, part),
 						prices, cfg.Correlation)
 					mu.RUnlock()
 
 					mu.Lock()
-					state.setScopeCorrelation(scope, corrSnap)
+					state.setPartitionCorrelation(part, corrSnap)
 					mu.Unlock()
 
 					if len(corrSnap.Warnings) > 0 && notifier.HasBackends() {
-						msg := fmt.Sprintf("**CORRELATION WARNING [%s]**\n%s", scopeLabel(scope), strings.Join(corrSnap.Warnings, "\n"))
-						notifier.SendToScopeChannels(scope, msg)
+						msg := fmt.Sprintf("**CORRELATION WARNING [%s]**\n%s", partitionLabel(part), strings.Join(corrSnap.Warnings, "\n"))
+						notifier.SendToPartitionChannels(part, msg)
 						notifier.SendOwnerDM(msg)
 					}
 				}
 			}
 
 			mu.RLock()
-			latchedNow := state.latchedScopes()
+			latchedNow := state.latchedPartitions()
 			mu.RUnlock()
-			var promptScopes []PortfolioScope
-			promptPlans := map[PortfolioScope]KillSwitchClosePlan{}
-			for _, scope := range cycleScopes {
-				sr := scopeRisk[scope]
-				if !sr.KillSwitchFired || !scopeInList(scope, latchedNow) {
+			var promptScopes []RiskPartition
+			promptPlans := map[RiskPartition]KillSwitchClosePlan{}
+			for _, part := range cyclePartitions {
+				sr := scopeRisk[part]
+				if !sr.KillSwitchFired || !partitionInList(part, latchedNow) {
 					continue
 				}
-				promptScopes = append(promptScopes, scope)
-				if scope == ScopeLive {
-					promptPlans[scope] = plan
+				promptScopes = append(promptScopes, part)
+				if part.IsLive() {
+					promptPlans[part] = plan
 				} else {
-					promptPlans[scope] = KillSwitchClosePlan{OnChainConfirmedFlat: true, DiscordMessage: formatPaperKillSwitchPromptMessage(sr.Reason)}
+					promptPlans[part] = KillSwitchClosePlan{OnChainConfirmedFlat: true, DiscordMessage: formatPaperKillSwitchPromptMessage(part, sr.Reason)}
 				}
 			}
 			if len(promptScopes) > 0 && notifier.HasOwner() && tryClaimKillSwitchResetPrompt(&resetGoroutineRunning) {
@@ -1507,7 +1522,7 @@ func main() {
 						return
 					}
 					mu.RLock()
-					latched := state.latchedScopes()
+					latched := state.latchedPartitions()
 					mu.RUnlock()
 					target, parseErr := parseKillSwitchResetReply(resp, latched)
 					if parseErr != nil {
@@ -1516,22 +1531,22 @@ func main() {
 						return
 					}
 					mu.Lock()
-					prs := state.scopeRisk(target)
+					prs := state.partitionRisk(target)
 					resetDrawdownPct := ResetPortfolioKillSwitchManual(prs)
 					addKillSwitchEvent(prs, "reset", "", resetDrawdownPct, 0, prs.PeakValue,
-						fmt.Sprintf("manual reset via DM (%s scope)", scopeLabel(target)))
-					prs.Events[len(prs.Events)-1].Scope = target
+						fmt.Sprintf("manual reset via DM (%s scope)", partitionLabel(target)))
+					prs.Events[len(prs.Events)-1].Partition = target
 					if err := SaveStateWithStore(state, store); err != nil {
 						fmt.Printf("[CRITICAL] Failed to save state after kill switch reset: %v\n", err)
 					}
-					remaining := state.latchedScopes()
+					remaining := state.latchedPartitions()
 					mu.Unlock()
-					ack := fmt.Sprintf("Kill switch reset (%s scope). Trading will resume next cycle.", scopeLabel(target))
+					ack := fmt.Sprintf("Kill switch reset (%s scope). Trading will resume next cycle.", partitionLabel(target))
 					if len(remaining) > 0 {
 						ack += fmt.Sprintf(" The %s scope stays latched; a new prompt follows next cycle.", joinScopeLabels(remaining))
 					}
 					notifier.SendOwnerDM(ack)
-					fmt.Printf("[update] Kill switch reset by owner via DM (%s scope)\n", scopeLabel(target))
+					fmt.Printf("[update] Kill switch reset by owner via DM (%s scope)\n", partitionLabel(target))
 					return
 				}()
 			}
@@ -1630,7 +1645,7 @@ func main() {
 				if auditRes.ImmediateFills > 0 {
 					fmt.Printf("[WARN] #1450 liquidation audit: %d position(s) exited on a clamped stop this cycle\n", auditRes.ImmediateFills)
 					for _, cd := range auditRes.CloseDetails {
-						if chKey := notifier.resolveChannelKey(cd.SC.Platform, cd.SC.Type, isLiveArgs(cd.SC.Args)); chKey != "" {
+						if chKey := notifier.resolveChannelKey(cd.SC.Platform, cd.SC.Type, isLiveArgs(cd.SC.Args), cd.SC.PaperSource); chKey != "" {
 							channelTrades[chKey]++
 							channelTradeDetails[chKey+"|"+extractAsset(cd.SC)] = append(channelTradeDetails[chKey+"|"+extractAsset(cd.SC)], cd.Detail)
 						}
@@ -1659,11 +1674,12 @@ func main() {
 					fmt.Fprintf(os.Stderr, "[storage] CRITICAL: %v — skipping %s this cycle\n", stratDBErr, sc.ID)
 					continue
 				}
-				stratScope := portfolioScopeFor(sc)
-				persistenceHold := store.persistenceHoldsScope(stratScope)
-				sr := scopeRisk[portfolioScopeFor(sc)]
+				stratPartition := partitionFor(sc)
+				stratScope := stratPartition.Scope
+				persistenceHold := store.persistenceHoldsPartition(stratPartition)
+				sr := scopeRisk[stratPartition]
 				if sr == nil {
-					sr = &scopeCycleRisk{Scope: portfolioScopeFor(sc), Config: scopeRiskConfig(cfg, portfolioScopeFor(sc))}
+					sr = &scopeCycleRisk{Partition: stratPartition, Config: partitionRiskConfig(cfg, stratPartition)}
 				}
 
 				logger, err := logMgr.GetStrategyLogger(sc.ID)
@@ -2083,7 +2099,7 @@ func main() {
 						var harvestDetails []string
 						trades, detail, harvestDetails = executeOptionsResult(sc, stratState, result, signalStr, logger)
 						mu.Unlock()
-						if chKey := notifier.resolveChannelKey(sc.Platform, sc.Type, isLiveArgs(sc.Args)); chKey != "" {
+						if chKey := notifier.resolveChannelKey(sc.Platform, sc.Type, isLiveArgs(sc.Args), sc.PaperSource); chKey != "" {
 							key := chKey + "|" + extractAsset(sc)
 							channelTradeDetails[key] = append(channelTradeDetails[key], harvestDetails...)
 						}
@@ -2773,7 +2789,7 @@ func main() {
 					logger.Error("Unknown strategy type: %s", sc.Type)
 				}
 				if trades > 0 && detail != "" {
-					if chKey := notifier.resolveChannelKey(sc.Platform, sc.Type, isLiveArgs(sc.Args)); chKey != "" {
+					if chKey := notifier.resolveChannelKey(sc.Platform, sc.Type, isLiveArgs(sc.Args), sc.PaperSource); chKey != "" {
 						channelTrades[chKey] += trades
 						key := chKey + "|" + extractAsset(sc)
 						channelTradeDetails[key] = append(channelTradeDetails[key], detail)
@@ -2874,7 +2890,7 @@ func main() {
 		channelStrats := make(map[string][]StrategyConfig)
 		for _, sc := range cfg.Strategies {
 			if _, ok := state.Strategies[sc.ID]; ok {
-				if chKey := notifier.resolveChannelKey(sc.Platform, sc.Type, isLiveArgs(sc.Args)); chKey != "" {
+				if chKey := notifier.resolveChannelKey(sc.Platform, sc.Type, isLiveArgs(sc.Args), sc.PaperSource); chKey != "" {
 					channelStrats[chKey] = append(channelStrats[chKey], sc)
 				}
 			}
@@ -2895,7 +2911,7 @@ func main() {
 			for chKey, chStrats := range channelStrats {
 				chRan := false
 				for _, sc := range dueStrategies {
-					if notifier.resolveChannelKey(sc.Platform, sc.Type, isLiveArgs(sc.Args)) == chKey {
+					if notifier.resolveChannelKey(sc.Platform, sc.Type, isLiveArgs(sc.Args), sc.PaperSource) == chKey {
 						chRan = true
 						break
 					}
@@ -2950,13 +2966,13 @@ func main() {
 
 		saveOutcomes := store.SaveAll(state)
 		savedAll := true
-		for _, out := range sortedScopeErrors(saveOutcomes) {
+		for _, out := range sortedPartitionErrors(saveOutcomes) {
 			if out.err == nil {
 				continue
 			}
 			savedAll = false
 			fmt.Printf("[CRITICAL] Save state failed for the %s scope (%d/3): %v\n",
-				scopeLabel(out.scope), store.saveFailures(out.scope), out.err)
+				partitionLabel(out.part), store.saveFailures(out.part), out.err)
 		}
 		if savedAll {
 			offCycleAuditSaveDirty = false
@@ -3063,7 +3079,7 @@ func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, sdb *Sta
 
 	var chStrats []StrategyConfig
 	for _, sc := range cfg.Strategies {
-		if notifier.resolveChannelKey(sc.Platform, sc.Type, isLiveArgs(sc.Args)) == channelKey {
+		if notifier.resolveChannelKey(sc.Platform, sc.Type, isLiveArgs(sc.Args), sc.PaperSource) == channelKey {
 			chStrats = append(chStrats, sc)
 		}
 	}
@@ -3393,7 +3409,7 @@ func sendTradeAlertRows(sc StrategyConfig, newTrades []Trade, notifier tradeAler
 		mode = "live"
 	}
 
-	for _, route := range notifier.tradeAlertRoutes(sc.Platform, sc.Type, isLive) {
+	for _, route := range notifier.tradeAlertRoutes(sc.Platform, sc.Type, isLive, sc.PaperSource) {
 		for _, t := range newTrades {
 			var msg string
 			if route.plainText {

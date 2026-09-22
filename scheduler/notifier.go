@@ -23,7 +23,9 @@ type notifierBackend struct {
 	leaderboardChannel string
 	dmChannels         map[string]string
 	plainText          bool
-	paperScopeChannels []string
+	// partitionChannels is each paper partition's own destination set, rebuilt
+	// from that partition's roster on every ReloadConfig.
+	partitionChannels map[RiskPartition][]string
 }
 
 type MultiNotifier struct {
@@ -38,7 +40,7 @@ func NewMultiNotifier(backends ...notifierBackend) *MultiNotifier {
 			b.channels = cloneStringMap(b.channels)
 			b.tradeAlertChannels = cloneStringMap(b.tradeAlertChannels)
 			b.dmChannels = cloneStringMap(b.dmChannels)
-			b.paperScopeChannels = cloneStringSlice(b.paperScopeChannels)
+			b.partitionChannels = clonePartitionChannels(b.partitionChannels)
 			valid = append(valid, b)
 		}
 	}
@@ -57,7 +59,7 @@ func (m *MultiNotifier) snapshotBackends() []notifierBackend {
 		b.channels = cloneStringMap(b.channels)
 		b.tradeAlertChannels = cloneStringMap(b.tradeAlertChannels)
 		b.dmChannels = cloneStringMap(b.dmChannels)
-		b.paperScopeChannels = cloneStringSlice(b.paperScopeChannels)
+		b.partitionChannels = clonePartitionChannels(b.partitionChannels)
 		out[i] = b
 	}
 	return out
@@ -144,14 +146,14 @@ func (m *MultiNotifier) ReloadConfig(cfg *Config) {
 			b.channels = cloneStringMap(cfg.Telegram.Channels)
 			b.tradeAlertChannels = cloneStringMap(cfg.Telegram.TradeAlertChannels)
 			b.dmChannels = cloneStringMap(cfg.Telegram.DMChannels)
-			b.paperScopeChannels = paperScopeChannelValues(b.channels, cfg.Strategies)
+			b.partitionChannels = partitionChannelValues(b.channels, cfg.Strategies)
 			continue
 		}
 		b.channels = cloneStringMap(cfg.Discord.Channels)
 		b.tradeAlertChannels = cloneStringMap(cfg.Discord.TradeAlertChannels)
 		b.dmChannels = cloneStringMap(cfg.Discord.DMChannels)
 		b.leaderboardChannel = cfg.Discord.LeaderboardChannel
-		b.paperScopeChannels = paperScopeChannelValues(b.channels, cfg.Strategies)
+		b.partitionChannels = partitionChannelValues(b.channels, cfg.Strategies)
 	}
 }
 
@@ -249,13 +251,14 @@ func (m *MultiNotifier) HasChannel(platform, stratType string) bool {
 	return false
 }
 
-func (m *MultiNotifier) resolveChannelKey(platform, stratType string, isLive bool) string {
+func (m *MultiNotifier) resolveChannelKey(platform, stratType string, isLive bool, source string) string {
 	backends := m.snapshotBackends()
 	if !isLive {
-		paperKey := platform + "-paper"
-		for _, b := range backends {
-			if ch, ok := b.channels[paperKey]; ok && ch != "" {
-				return paperKey
+		for _, paperKey := range paperChannelKeys(platform, source) {
+			for _, b := range backends {
+				if ch, ok := b.channels[paperKey]; ok && ch != "" {
+					return paperKey
+				}
 			}
 		}
 	}
@@ -270,15 +273,18 @@ func (m *MultiNotifier) resolveChannelKey(platform, stratType string, isLive boo
 	return ""
 }
 
-func (m *MultiNotifier) SendToScopeChannels(scope PortfolioScope, content string) {
-	if scope != ScopePaper {
+// SendToPartitionChannels reaches only the destinations that partition's own
+// roster routes to. An empty set falls back to every channel, so a partition
+// with no resolvable route is never silent.
+func (m *MultiNotifier) SendToPartitionChannels(part RiskPartition, content string) {
+	if part.IsLive() {
 		m.SendToAllChannels(content)
 		return
 	}
 	sent := false
 	for _, b := range m.snapshotBackends() {
 		seen := make(map[string]bool)
-		for _, ch := range b.paperScopeChannels {
+		for _, ch := range b.partitionChannels[part] {
 			if ch == "" || seen[ch] {
 				continue
 			}
@@ -294,18 +300,36 @@ func (m *MultiNotifier) SendToScopeChannels(scope PortfolioScope, content string
 	}
 }
 
-func paperScopeChannelValues(channels map[string]string, strats []StrategyConfig) []string {
-	seen := make(map[string]bool)
-	var out []string
-	for _, sc := range strategiesInScope(strats, ScopePaper) {
-		ch := resolveTradeChannel(channels, sc.Platform, sc.Type, false)
-		if ch == "" || seen[ch] {
+func partitionChannelValues(channels map[string]string, strats []StrategyConfig) map[RiskPartition][]string {
+	out := make(map[RiskPartition][]string)
+	for _, part := range activePartitions(strats) {
+		if part.IsLive() {
 			continue
 		}
-		seen[ch] = true
-		out = append(out, ch)
+		seen := make(map[string]bool)
+		var dests []string
+		for _, sc := range strategiesInPartition(strats, part) {
+			ch := resolveTradeChannel(channels, sc.Platform, sc.Type, false, sc.PaperSource)
+			if ch == "" || seen[ch] {
+				continue
+			}
+			seen[ch] = true
+			dests = append(dests, ch)
+		}
+		sort.Strings(dests)
+		out[part] = dests
 	}
-	sort.Strings(out)
+	return out
+}
+
+func clonePartitionChannels(m map[RiskPartition][]string) map[RiskPartition][]string {
+	if m == nil {
+		return nil
+	}
+	out := make(map[RiskPartition][]string, len(m))
+	for part, dests := range m {
+		out[part] = cloneStringSlice(dests)
+	}
 	return out
 }
 
@@ -337,21 +361,23 @@ type tradeAlertRoute struct {
 }
 
 type tradeAlertRouter interface {
-	tradeAlertRoutes(platform, stratType string, isLive bool) []tradeAlertRoute
+	tradeAlertRoutes(platform, stratType string, isLive bool, source string) []tradeAlertRoute
 }
 
-func (m *MultiNotifier) tradeAlertRoutes(platform, stratType string, isLive bool) []tradeAlertRoute {
+func (m *MultiNotifier) tradeAlertRoutes(platform, stratType string, isLive bool, source string) []tradeAlertRoute {
 	var routes []tradeAlertRoute
+	// The DM key stays an exact match with no fallback: a sourced strategy
+	// reads only its own key, so a moved book never DMs another source's route.
 	dmKey := platform
 	if !isLive {
-		dmKey = platform + "-paper"
+		dmKey = paperChannelKeys(platform, source)[0]
 	}
 	for _, b := range m.snapshotBackends() {
 		dmDest := ""
 		if b.dmChannels != nil {
 			dmDest = b.dmChannels[dmKey]
 		}
-		ch := resolveTradeAlertChannel(b.tradeAlertChannels, b.channels, platform, stratType, isLive)
+		ch := resolveTradeAlertChannel(b.tradeAlertChannels, b.channels, platform, stratType, isLive, source)
 
 		var liveCh string
 		if isLive {

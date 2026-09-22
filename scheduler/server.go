@@ -25,11 +25,12 @@ type StatusServer struct {
 	candleCache    *UICandleCache
 	tuning         *tuningRunManager
 
-	strategiesMu  sync.RWMutex
-	strategies    []StrategyConfig
-	configPath    string
-	regime        *RegimeConfig
-	configWriteMu sync.Mutex
+	strategiesMu      sync.RWMutex
+	strategies        []StrategyConfig
+	paperSourceLabels map[string]string
+	configPath        string
+	regime            *RegimeConfig
+	configWriteMu     sync.Mutex
 
 	intervalSeconds   int
 	userCloseDefaults CloseDefaultsMap
@@ -85,6 +86,33 @@ func (ss *StatusServer) UpdateStrategies(strategies []StrategyConfig) {
 	ss.strategiesMu.Lock()
 	defer ss.strategiesMu.Unlock()
 	ss.strategies = append([]StrategyConfig(nil), strategies...)
+}
+
+// UpdatePaperSources records the display labels of the sources this process
+// owns. It is refreshed with the roster on every config reload.
+func (ss *StatusServer) UpdatePaperSources(sources []PaperSourceConfig) {
+	if ss == nil {
+		return
+	}
+	labels := make(map[string]string, len(sources))
+	for _, src := range sources {
+		labels[src.ID] = src.Label
+	}
+	ss.strategiesMu.Lock()
+	defer ss.strategiesMu.Unlock()
+	ss.paperSourceLabels = labels
+}
+
+func (ss *StatusServer) paperSourceLabel(id string) string {
+	if ss == nil {
+		return id
+	}
+	ss.strategiesMu.RLock()
+	defer ss.strategiesMu.RUnlock()
+	if label := strings.TrimSpace(ss.paperSourceLabels[id]); label != "" {
+		return label
+	}
+	return id
 }
 
 func (ss *StatusServer) logFuturesErrThrottled(err error) {
@@ -282,6 +310,25 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		RegimeProfile                  *RegimeProfileState        `json:"regime_profile,omitempty"`
 		Paused                         bool                       `json:"paused,omitempty"`
 		Hedge                          *HedgeStatus               `json:"hedge,omitempty"`
+		Partition                      string                     `json:"partition,omitempty"`
+		PaperSource                    string                     `json:"paper_source,omitempty"`
+	}
+
+	type PaperSourceStatus struct {
+		ID        string `json:"id"`
+		Label     string `json:"label,omitempty"`
+		Partition string `json:"partition"`
+	}
+
+	// PartitionStatus is the dashboard selector's roster. It carries every
+	// partition this process owns, live and default paper included, in the
+	// stable order, so the selector never has to compose one from the
+	// by-scope maps.
+	type PartitionStatus struct {
+		Partition string `json:"partition"`
+		Label     string `json:"label"`
+		Scope     string `json:"scope"`
+		Source    string `json:"source,omitempty"`
 	}
 
 	type StatusResp struct {
@@ -298,6 +345,8 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		CorrelationByScope   map[string]*CorrelationSnapshot `json:"correlation_by_scope,omitempty"`
 		ReconciliationGaps   map[string]*ReconciliationGap   `json:"reconciliation_gaps,omitempty"`
 		MarketFeed           *marketFeedHealth               `json:"market_feed,omitempty"`
+		PaperSources         []PaperSourceStatus             `json:"paper_sources,omitempty"`
+		Partitions           []PartitionStatus               `json:"partitions,omitempty"`
 	}
 
 	ss.strategiesMu.RLock()
@@ -311,28 +360,30 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	totalValue := latestDisplayTotal(ss.state, prices)
 	totalNotional := PortfolioNotional(ss.state.Strategies, prices)
 
-	scopes := activeScopes(cfgStrategies)
-	riskByScope := make(map[string]PortfolioRiskState, len(scopes))
-	valueByScope := make(map[string]float64, len(scopes))
-	notionalByScope := make(map[string]float64, len(scopes))
-	corrByScope := make(map[string]*CorrelationSnapshot, len(scopes))
-	for _, scope := range scopes {
-		key := string(scope)
-		if prs := ss.state.scopeRiskIfPresent(scope); prs != nil {
+	// Every by-scope map is keyed by partition text, so a folded source's own
+	// risk, value, notional and correlation are distinct from every other's.
+	parts := activePartitions(cfgStrategies)
+	riskByScope := make(map[string]PortfolioRiskState, len(parts))
+	valueByScope := make(map[string]float64, len(parts))
+	notionalByScope := make(map[string]float64, len(parts))
+	corrByScope := make(map[string]*CorrelationSnapshot, len(parts))
+	for _, part := range parts {
+		key := part.String()
+		if prs := ss.state.partitionRiskIfPresent(part); prs != nil {
 			riskByScope[key] = *prs
 		} else {
 			riskByScope[key] = PortfolioRiskState{}
 		}
-		valueByScope[key] = latestDisplayTotalForScope(ss.state, cfgStrategies, scope, prices)
-		notionalByScope[key] = PortfolioNotional(filterStatesByScope(ss.state.Strategies, cfgStrategies, scope), prices)
-		if snap := ss.state.scopeCorrelation(scope); snap != nil {
+		valueByScope[key] = latestDisplayTotalForPartition(ss.state, cfgStrategies, part, prices)
+		notionalByScope[key] = PortfolioNotional(filterStatesByPartition(ss.state.Strategies, cfgStrategies, part), prices)
+		if snap := ss.state.partitionCorrelation(part); snap != nil {
 			corrByScope[key] = snap
 		}
 	}
-	legacyScope := statusLegacyScope(scopes)
-	if len(scopes) > 0 {
-		totalValue = valueByScope[string(legacyScope)]
-		totalNotional = notionalByScope[string(legacyScope)]
+	legacyScope := statusLegacyScope(parts)
+	if len(parts) > 0 {
+		totalValue = valueByScope[legacyScope.String()]
+		totalNotional = notionalByScope[legacyScope.String()]
 	}
 
 	resp := StatusResp{
@@ -348,14 +399,45 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		ReconciliationGaps:   ss.state.ReconciliationGaps,
 		MarketFeed:           marketFeedStatusBlock(),
 	}
-	if prs := ss.state.scopeRiskIfPresent(legacyScope); prs != nil {
+	// Only sources this process actually owns are listed, so the dashboard's
+	// selector can never offer a deployment this process does not read.
+	for _, part := range parts {
+		label := partitionLabel(part)
+		if part.Source != "" {
+			// paperSourceLabel falls back to the id, which alone cannot be
+			// told from the default paper partition in the selector, so only
+			// a configured label replaces the partition text.
+			if named := ss.paperSourceLabel(part.Source); named != "" && named != part.Source {
+				label = named
+			}
+			resp.PaperSources = append(resp.PaperSources, PaperSourceStatus{
+				ID:        part.Source,
+				Label:     ss.paperSourceLabel(part.Source),
+				Partition: part.String(),
+			})
+		}
+		resp.Partitions = append(resp.Partitions, PartitionStatus{
+			Partition: part.String(),
+			Label:     label,
+			Scope:     string(part.Scope),
+			Source:    part.Source,
+		})
+	}
+	if prs := ss.state.partitionRiskIfPresent(legacyScope); prs != nil {
 		resp.PortfolioRisk = *prs
 	}
-	resp.Correlation = ss.state.scopeCorrelation(legacyScope)
+	resp.Correlation = ss.state.partitionCorrelation(legacyScope)
 
 	for id, s := range ss.state.Strategies {
 		pv := displayStrategyValue(s, prices)
-		sc := cfgByID[id]
+		sc, configured := cfgByID[id]
+		// A state row the roster no longer configures has no owning partition,
+		// and naming one would file its alerts under a deployment it may not
+		// belong to. An absent field tells the dashboard to show it always.
+		partitionText := ""
+		if configured {
+			partitionText = partitionFor(sc).String()
+		}
 		initCap := EffectiveInitialCapital(sc, s)
 		pnl := pv - initCap
 		pnlPct := 0.0
@@ -391,6 +473,8 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 			RegimeProfile:                  s.RegimeProfile,
 			Paused:                         sc.Paused,
 			Hedge:                          buildHedgeStatus(sc, s),
+			Partition:                      partitionText,
+			PaperSource:                    sc.PaperSource,
 		}
 	}
 
@@ -558,14 +642,16 @@ func (ss *StatusServer) handleHistory(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func statusLegacyScope(scopes []PortfolioScope) PortfolioScope {
-	for _, scope := range scopes {
-		if scope == ScopeLive {
-			return ScopeLive
+// statusLegacyScope keeps the single-value status fields on the live partition
+// when one exists, else the first active partition.
+func statusLegacyScope(parts []RiskPartition) RiskPartition {
+	for _, part := range parts {
+		if part.IsLive() {
+			return livePartition
 		}
 	}
-	if len(scopes) > 0 {
-		return scopes[0]
+	if len(parts) > 0 {
+		return parts[0]
 	}
-	return ScopeLive
+	return livePartition
 }

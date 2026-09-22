@@ -3,6 +3,16 @@
   "interval_seconds": 300,
   "db_file": "/var/lib/go-trader/live/state.db",
   "paper_db_file": "/var/lib/go-trader/paper/state.db",
+  "paper_sources": [
+    {
+      "id": "btc",
+      "label": "Paper BTC",
+      "db_file": "/var/lib/go-trader/paper-btc/state.db",
+      "portfolio_risk": {
+        "max_drawdown_pct": 60
+      }
+    }
+  ],
   "replay_log_path": "/var/lib/go-trader/shared/replay.db",
   "status_port": 8099,
   "market_feed": "rest",
@@ -23,7 +33,8 @@
     "token": "",
     "channels": {
       "hyperliquid": "LIVE_CHANNEL_ID",
-      "hyperliquid-paper": "PAPER_CHANNEL_ID"
+      "hyperliquid-paper": "PAPER_CHANNEL_ID",
+      "hyperliquid-paper:btc": "PAPER_BTC_CHANNEL_ID"
     },
     "trade_alert_channels": {
       "hyperliquid-live": "LIVE_ALERT_CHANNEL_ID",
@@ -62,8 +73,9 @@
       "replay_source_id": "hl-vwap-eth-60"
     },
     {
-      "id": "hl-rsi-btc-60-paper",
+      "id": "hl-rsi-btc-60-paper-btc",
       "storage_strategy_id": "hl-rsi-btc-60",
+      "paper_source": "btc",
       "type": "perps",
       "platform": "hyperliquid",
       "script": "shared_scripts/check_hyperliquid.py",

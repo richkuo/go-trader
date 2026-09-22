@@ -249,7 +249,7 @@ func TestStorageIdentityMap(t *testing.T) {
 		if !ok {
 			t.Fatalf("storageFor(%q) missing", tc.procID)
 		}
-		if got.Role != tc.wantRole || got.Scope != tc.wantScope || got.StorageID != tc.wantStore {
+		if got.Role != tc.wantRole || got.Scope() != tc.wantScope || got.StorageID != tc.wantStore {
 			t.Errorf("storageFor(%q) = %+v, want role %s scope %s id %q", tc.procID, got, tc.wantRole, tc.wantScope, tc.wantStore)
 		}
 		back, ok := ident.processFor(tc.wantRole, tc.wantStore)
@@ -384,12 +384,12 @@ func TestStateStoreSplitRoundTrip(t *testing.T) {
 	state.Strategies["hl-paper"].Positions["ETH"] = &Position{Symbol: "ETH", Side: "short", Quantity: 2, AvgCost: 2100}
 	RecordTrade(state.Strategies["hl-live"], Trade{StrategyID: "hl-live", Symbol: "ETH", Side: "buy", Quantity: 1, Price: 2000, Timestamp: time.Unix(1, 0).UTC()})
 	RecordTrade(state.Strategies["hl-paper"], Trade{StrategyID: "hl-paper", Symbol: "ETH", Side: "sell", Quantity: 2, Price: 2100, Timestamp: time.Unix(1, 0).UTC()})
-	state.scopeRisk(ScopeLive).PeakValue = 1000
-	state.scopeRisk(ScopePaper).PeakValue = 2000
+	state.partitionRisk(livePartition).PeakValue = 1000
+	state.partitionRisk(defaultPaperPartition).PeakValue = 2000
 
-	for scope, err := range store.SaveAll(state) {
+	for part, err := range store.SaveAll(state) {
 		if err != nil {
-			t.Fatalf("SaveAll(%s): %v", scopeLabel(scope), err)
+			t.Fatalf("SaveAll(%s): %v", partitionLabel(part), err)
 		}
 	}
 
@@ -437,9 +437,9 @@ func TestStateStoreSplitRoundTrip(t *testing.T) {
 	if len(paper.TradeHistory) != 1 || paper.TradeHistory[0].StrategyID != "hl-paper" {
 		t.Errorf("paper trades = %+v, want one row attributed to hl-paper", paper.TradeHistory)
 	}
-	if reloaded.scopeRisk(ScopeLive).PeakValue != 1000 || reloaded.scopeRisk(ScopePaper).PeakValue != 2000 {
+	if reloaded.partitionRisk(livePartition).PeakValue != 1000 || reloaded.partitionRisk(defaultPaperPartition).PeakValue != 2000 {
 		t.Errorf("risk peaks = live %.0f / paper %.0f, want 1000 / 2000",
-			reloaded.scopeRisk(ScopeLive).PeakValue, reloaded.scopeRisk(ScopePaper).PeakValue)
+			reloaded.partitionRisk(livePartition).PeakValue, reloaded.partitionRisk(defaultPaperPartition).PeakValue)
 	}
 }
 
@@ -459,7 +459,7 @@ func TestStateStoreProcessAliasResumesTheStoredBook(t *testing.T) {
 		OptionPositions: map[string]*OptionPosition{},
 	}
 	RecordTrade(state.Strategies["hl-perps-eth"], Trade{StrategyID: "hl-perps-eth", Symbol: "ETH", Side: "buy", Quantity: 3, Price: 1800, Timestamp: time.Unix(2, 0).UTC()})
-	state.scopeRisk(ScopeLive).KillSwitchActive = true
+	state.partitionRisk(livePartition).KillSwitchActive = true
 	if err := SaveStateWithStore(state, store); err != nil {
 		t.Fatalf("SaveStateWithStore: %v", err)
 	}
@@ -492,7 +492,7 @@ func TestStateStoreProcessAliasResumesTheStoredBook(t *testing.T) {
 	if len(ss.TradeHistory) != 1 || ss.TradeHistory[0].StrategyID != "hl-eth-momentum" {
 		t.Errorf("trades = %+v, want one row read back under the process identifier", ss.TradeHistory)
 	}
-	if !reloaded.scopeLatched(ScopeLive) {
+	if !reloaded.partitionLatched(livePartition) {
 		t.Error("kill-switch latch did not survive the rename")
 	}
 
@@ -557,19 +557,19 @@ func TestStateStoreFaultInjectionKeepsCommittedScopeIntact(t *testing.T) {
 	outcomes := store.SaveAll(state)
 	storeCommitHook = origHook
 
-	if outcomes[ScopeLive] != nil {
-		t.Fatalf("live save = %v, want success", outcomes[ScopeLive])
+	if outcomes[livePartition] != nil {
+		t.Fatalf("live save = %v, want success", outcomes[livePartition])
 	}
-	if outcomes[ScopePaper] == nil {
+	if outcomes[defaultPaperPartition] == nil {
 		t.Fatal("paper save = nil, want the injected failure")
 	}
-	if store.saveFailures(ScopeLive) != 0 || store.saveFailures(ScopePaper) != 1 {
-		t.Errorf("failures = live %d / paper %d, want 0 / 1", store.saveFailures(ScopeLive), store.saveFailures(ScopePaper))
+	if store.saveFailures(livePartition) != 0 || store.saveFailures(defaultPaperPartition) != 1 {
+		t.Errorf("failures = live %d / paper %d, want 0 / 1", store.saveFailures(livePartition), store.saveFailures(defaultPaperPartition))
 	}
-	if store.persistenceHoldsScope(ScopeLive) {
+	if store.persistenceHoldsPartition(livePartition) {
 		t.Error("the live scope is held although its save committed")
 	}
-	if !store.persistenceHoldsScope(ScopePaper) {
+	if !store.persistenceHoldsPartition(defaultPaperPartition) {
 		t.Error("the paper scope is not held although its save failed")
 	}
 
@@ -583,12 +583,12 @@ func TestStateStoreFaultInjectionKeepsCommittedScopeIntact(t *testing.T) {
 	}
 
 	// Retry: the live file must not double-book its trade.
-	for scope, err := range store.SaveAll(state) {
+	for part, err := range store.SaveAll(state) {
 		if err != nil {
-			t.Fatalf("retry SaveAll(%s): %v", scopeLabel(scope), err)
+			t.Fatalf("retry SaveAll(%s): %v", partitionLabel(part), err)
 		}
 	}
-	if store.persistenceHoldsScope(ScopePaper) {
+	if store.persistenceHoldsPartition(defaultPaperPartition) {
 		t.Error("the paper hold survived a successful retry")
 	}
 	for _, tc := range []struct {
@@ -609,7 +609,7 @@ func TestStateStorePaperBooksLoadWithoutPrimaryMetadata(t *testing.T) {
 	cfg := splitTestConfig(t)
 	store := openSplitStore(t, cfg)
 	state := splitTestState(t)
-	if err := store.SaveScope(state, ScopePaper); err != nil {
+	if err := store.SavePartition(state, defaultPaperPartition); err != nil {
 		t.Fatalf("SaveScope(paper): %v", err)
 	}
 	// The primary file has no process metadata row at all.
@@ -649,16 +649,16 @@ func TestStateStoreLegacyUnscopedRowPlacedPerFile(t *testing.T) {
 	// Each file's row lands in the scope that file owns, and the latch carries
 	// across untouched. The live peak is re-based onto the live-only roster by
 	// the #1509 rule; the paper peak is kept as recorded.
-	if !reloaded.scopeLatched(ScopeLive) {
+	if !reloaded.partitionLatched(livePartition) {
 		t.Error("the primary file's legacy latch did not reach the live scope")
 	}
-	if !reloaded.scopeLatched(ScopePaper) {
+	if !reloaded.partitionLatched(defaultPaperPartition) {
 		t.Error("the paper file's legacy latch did not reach the paper scope")
 	}
-	if reloaded.scopeRisk(ScopePaper).PeakValue != 111 {
-		t.Errorf("paper peak = %.0f, want the paper file's legacy row", reloaded.scopeRisk(ScopePaper).PeakValue)
+	if reloaded.partitionRisk(defaultPaperPartition).PeakValue != 111 {
+		t.Errorf("paper peak = %.0f, want the paper file's legacy row", reloaded.partitionRisk(defaultPaperPartition).PeakValue)
 	}
-	if _, still := reloaded.PortfolioRisk[scopeUnassigned]; still {
+	if _, still := reloaded.PortfolioRisk[unassignedPartition]; still {
 		t.Error("an unscoped row survived placement")
 	}
 
@@ -666,7 +666,7 @@ func TestStateStoreLegacyUnscopedRowPlacedPerFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second LoadStateWithStore: %v", err)
 	}
-	if _, still := again.PortfolioRisk[scopeUnassigned]; still {
+	if _, still := again.PortfolioRisk[unassignedPartition]; still {
 		t.Error("the placement is not durable; a second boot still finds an unscoped row")
 	}
 }
@@ -880,13 +880,13 @@ func TestSaveFailuresPerScope(t *testing.T) {
 	}
 	storeCommitHook = origHook
 
-	if store.saveFailures(ScopeLive) != 0 {
-		t.Errorf("live failures = %d, want 0", store.saveFailures(ScopeLive))
+	if store.saveFailures(livePartition) != 0 {
+		t.Errorf("live failures = %d, want 0", store.saveFailures(livePartition))
 	}
-	if store.saveFailures(ScopePaper) != 3 {
-		t.Errorf("paper failures = %d, want 3", store.saveFailures(ScopePaper))
+	if store.saveFailures(defaultPaperPartition) != 3 {
+		t.Errorf("paper failures = %d, want 3", store.saveFailures(defaultPaperPartition))
 	}
-	if allScopesSaveBlocked(store, cfg) {
+	if allPartitionsSaveBlocked(store, cfg) {
 		t.Error("allScopesSaveBlocked = true although the live scope saves cleanly")
 	}
 	due := dueStrategiesPersistable(store, cfg.Strategies)
@@ -900,7 +900,7 @@ func TestSaveFailuresPerScope(t *testing.T) {
 		store.SaveAll(state)
 	}
 	storeCommitHook = origHook
-	if !allScopesSaveBlocked(store, cfg) {
+	if !allPartitionsSaveBlocked(store, cfg) {
 		t.Error("allScopesSaveBlocked = false although every scope is blocked")
 	}
 }
@@ -920,16 +920,16 @@ func TestPersistenceHoldClearsOnASuccessfulSave(t *testing.T) {
 	store.SaveAll(state)
 	storeCommitHook = origHook
 
-	if !store.persistenceHoldsScope(ScopeLive) {
+	if !store.persistenceHoldsPartition(livePartition) {
 		t.Fatal("the live scope is not held after one failed save")
 	}
-	if store.persistenceHoldsScope(ScopePaper) {
+	if store.persistenceHoldsPartition(defaultPaperPartition) {
 		t.Error("the paper scope is held although its save committed")
 	}
-	if err := store.SaveScope(state, ScopeLive); err != nil {
+	if err := store.SavePartition(state, livePartition); err != nil {
 		t.Fatalf("SaveScope(live): %v", err)
 	}
-	if store.persistenceHoldsScope(ScopeLive) {
+	if store.persistenceHoldsPartition(livePartition) {
 		t.Error("the hold survived a successful save")
 	}
 }

@@ -512,13 +512,13 @@ func latestDisplayTotal(state *AppState, prices map[string]float64) float64 {
 	return total
 }
 
-func latestDisplayTotalForScope(state *AppState, cfgs []StrategyConfig, scope PortfolioScope, prices map[string]float64) float64 {
+func latestDisplayTotalForPartition(state *AppState, cfgs []StrategyConfig, part RiskPartition, prices map[string]float64) float64 {
 	if state == nil {
 		return 0
 	}
 	deduped := make(map[string]bool)
 	total := 0.0
-	if scope == ScopeLive {
+	if part.IsLive() {
 		for key, balance := range state.LatestSharedWalletBalances {
 			total += balance
 			for _, id := range state.LatestSharedWalletMembers[key] {
@@ -526,7 +526,7 @@ func latestDisplayTotalForScope(state *AppState, cfgs []StrategyConfig, scope Po
 			}
 		}
 	}
-	for id, ss := range filterStatesByScope(state.Strategies, cfgs, scope) {
+	for id, ss := range filterStatesByPartition(state.Strategies, cfgs, part) {
 		if !deduped[id] {
 			total += displayStrategyValue(ss, prices)
 		}

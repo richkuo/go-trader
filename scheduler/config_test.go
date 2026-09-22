@@ -2085,6 +2085,37 @@ func TestConfigValidationDMChannels(t *testing.T) {
 			wantErr: "platform prefix is empty",
 		},
 		{
+			name:    "paper source key with a malformed id rejected",
+			body:    `{` + spotStrategies + `, "discord": {"enabled": false, "channels": {}, "dm_channels": {"hyperliquid-paper:BTC!": "123"}}}`,
+			wantErr: "dm_channels key",
+		},
+		{
+			name:    "paper source key with an empty id rejected",
+			body:    `{` + spotStrategies + `, "discord": {"enabled": false, "channels": {}, "dm_channels": {"hyperliquid-paper:": "123"}}}`,
+			wantErr: "dm_channels key",
+		},
+		{
+			name:    "paper suffix typo rejected",
+			body:    `{` + spotStrategies + `, "discord": {"enabled": false, "channels": {}, "dm_channels": {"hyperliquid-paperx": "123"}}}`,
+			wantErr: "dm_channels key",
+		},
+		{
+			name: "paper source dm key loads and the send path reads it",
+			body: `{
+				"db_file": "live.db",
+				"paper_sources": [{"id": "btc", "db_file": "btc.db"}],
+				"strategies": [{"id": "hl-btc", "type": "perps", "platform": "hyperliquid", "script": "shared_scripts/check_hyperliquid.py", "args": ["sma_crossover", "BTC", "1h", "--mode=paper"], "capital": 1000, "max_drawdown_pct": 50, "paper_source": "btc"}],
+				"discord": {"enabled": false, "channels": {}, "dm_channels": {"hyperliquid-paper:btc": "555"}}
+			}`,
+			check: func(t *testing.T, cfg *Config) {
+				mn := NewMultiNotifier(notifierBackend{notifier: &mockNotifier{}, channels: cfg.Discord.Channels, dmChannels: cfg.Discord.DMChannels})
+				routes := mn.tradeAlertRoutes("hyperliquid", "perps", false, "btc")
+				if len(routes) != 1 || routes[0].dmDest != "555" {
+					t.Fatalf("a validated paper-source DM key must reach the send path: %+v", routes)
+				}
+			},
+		},
+		{
 			name: "valid keys load on discord and telegram",
 			body: `{
 				"strategies": [{"id": "hl-test", "type": "perps", "platform": "hyperliquid", "script": "shared_scripts/check_hyperliquid.py", "args": ["sma_crossover", "BTC", "1h", "--mode=paper"], "capital": 1000, "max_drawdown_pct": 50}],

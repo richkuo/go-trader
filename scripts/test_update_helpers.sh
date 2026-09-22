@@ -201,6 +201,16 @@ JSON
 assert_eq "$(update_resolve_db_exclude)" $'scheduler/state.db\n/var/lib/go-trader/paper.db' \
     "an omitted db_file still falls back to the default primary path"
 
+export GO_TRADER_UPDATE_CONFIG="$tmp_cfg_dir/sources.json"
+cat > "$GO_TRADER_UPDATE_CONFIG" <<'JSON'
+{"db_file": "/var/lib/go-trader/live.db",
+ "paper_sources": [{"id": "btc", "db_file": "/var/lib/go-trader/btc.db"},
+                   {"id": "eth", "db_file": "/var/lib/go-trader/eth.db"},
+                   {"id": "blank"}]}
+JSON
+assert_eq "$(update_resolve_db_exclude)" $'/var/lib/go-trader/live.db\n/var/lib/go-trader/btc.db\n/var/lib/go-trader/eth.db' \
+    "every paper source database is excluded from the update (#1561)"
+
 unset GO_TRADER_UPDATE_CONFIG GO_TRADER_UPDATE_PYTHON
 
 norm_in=$'/root/go-trader-live\n/root/.openclaw/workspace/go-trader-paper-1/\n\n  /opt/deploy/go-trader-x  \nrelative/dir\n/root/go-trader-live'
@@ -960,6 +970,234 @@ if [[ "$audit_out" != *"INCOMPATIBLE timeframe"* || "$audit_out" != *"SKIP — I
     exit 1
 fi
 
+mkdir -p "$drift/source/scheduler" "$drift/source-ambiguous/scheduler" "$drift/source-unset/scheduler"
+cat > "$drift/source/scheduler/config.json" <<'JSON'
+{"config_version": 19,
+ "paper_sources": [{"id": "btc", "db_file": "/var/lib/go-trader/btc.db"}],
+ "strategies": [
+  {"id": "hl-y", "type": "perps", "platform": "hyperliquid",
+   "script": "shared_scripts/check_hyperliquid.py",
+   "args": ["vwap", "ETH", "1h", "--mode=live"],
+   "interval_seconds": 300, "leverage": 20, "margin_per_trade_usd": 50, "capital": 100},
+  {"id": "hl-y-paper-btc", "storage_strategy_id": "hl-y", "paper_source": "btc",
+   "type": "perps", "platform": "hyperliquid",
+   "script": "shared_scripts/check_hyperliquid.py",
+   "args": ["vwap", "ETH", "1h", "--mode=paper"],
+   "interval_seconds": 300, "leverage": 20, "margin_per_trade_usd": 50, "capital": 100}
+]}
+JSON
+cat > "$drift/source-ambiguous/scheduler/config.json" <<'JSON'
+{"config_version": 19,
+ "paper_sources": [{"id": "btc", "db_file": "/var/lib/go-trader/btc.db"}],
+ "strategies": [
+  {"id": "hl-y", "type": "perps", "platform": "hyperliquid",
+   "script": "shared_scripts/check_hyperliquid.py",
+   "args": ["vwap", "ETH", "1h", "--mode=live"],
+   "interval_seconds": 300, "leverage": 20, "margin_per_trade_usd": 50, "capital": 100},
+  {"id": "hl-y-paper-btc", "paper_source": "btc",
+   "type": "perps", "platform": "hyperliquid",
+   "script": "shared_scripts/check_hyperliquid.py",
+   "args": ["vwap", "ETH", "1h", "--mode=paper"],
+   "interval_seconds": 300, "leverage": 20, "margin_per_trade_usd": 50, "capital": 100}
+]}
+JSON
+cat > "$drift/source-unset/scheduler/config.json" <<'JSON'
+{"config_version": 19, "strategies": [
+  {"id": "hl-y", "type": "perps", "platform": "hyperliquid",
+   "script": "shared_scripts/check_hyperliquid.py",
+   "args": ["vwap", "ETH", "1h", "--mode=live"],
+   "interval_seconds": 300, "leverage": 20, "margin_per_trade_usd": 50, "capital": 100},
+  {"id": "hl-y-paper-btc", "type": "perps", "platform": "hyperliquid",
+   "script": "shared_scripts/check_hyperliquid.py",
+   "args": ["vwap", "ETH", "1h", "--mode=paper"],
+   "interval_seconds": 300, "leverage": 20, "margin_per_trade_usd": 50, "capital": 100}
+]}
+JSON
+audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/source") && audit_rc=0 || audit_rc=$?
+assert_eq "$audit_rc" "0" "drift audit: a named paper source pairs through storage_strategy_id"
+if [[ "$audit_out" != *"PAIR hl-y"* || "$audit_out" != *"[id=hl-y-paper-btc]"* || "$audit_out" != *"IN SYNC"* ]]; then
+    echo "FAIL: expected the named-source pair in sync, got: $audit_out" >&2
+    exit 1
+fi
+if [[ "$audit_out" == *"OTHER  paper_source"* ]]; then
+    echo "FAIL: paper_source is the pairing key and must not read as drift, got: $audit_out" >&2
+    exit 1
+fi
+audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/source-ambiguous") && audit_rc=0 || audit_rc=$?
+assert_eq "$audit_rc" "1" "drift audit: a -paper-<id> suffix alone is ambiguous and gates"
+if [[ "$audit_out" != *"AMBIGUOUS hl-y-paper-btc"* || "$audit_out" != *"the -paper-btc suffix alone"* ]]; then
+    echo "FAIL: expected an AMBIGUOUS line naming the -paper-btc suffix, got: $audit_out" >&2
+    exit 1
+fi
+if [[ "$audit_out" == *"PAIR hl-y"* ]]; then
+    echo "FAIL: an unproven named-source alias must not pair, got: $audit_out" >&2
+    exit 1
+fi
+audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/source-unset") && audit_rc=0 || audit_rc=$?
+assert_eq "$audit_rc" "0" "drift audit: a -paper-<id> id without paper_source is not read as an alias"
+if [[ "$audit_out" == *"PAIR hl-y"* || "$audit_out" == *"AMBIGUOUS"* || "$audit_out" == *"UNPAIRED (no live twin)"* ]]; then
+    echo "FAIL: the suffix must only be read when paper_source names the source, got: $audit_out" >&2
+    exit 1
+fi
+
+# A fleet folded from a pre-source deployment keeps its strategy ids, so a
+# block can carry the bare -paper alias and a paper_source at the same time.
+# Naming a source must never unread an alias the audit read before.
+mkdir -p "$drift/source-bare/scheduler" "$drift/source-bare-drift/scheduler" \
+    "$drift/source-bare-unproven/scheduler" "$drift/source-collision/scheduler" \
+    "$drift/storage-only/scheduler" "$drift/storage-nolive/scheduler"
+write_folded_config() {
+    local path="$1" paper_id="$2" paper_interval="$3" extra="$4"
+    cat > "$path" <<JSON
+{"config_version": 19,
+ "paper_sources": [{"id": "btc", "db_file": "/var/lib/go-trader/btc.db"}],
+ "strategies": [
+  {"id": "hl-y", "type": "perps", "platform": "hyperliquid",
+   "script": "shared_scripts/check_hyperliquid.py",
+   "args": ["vwap", "ETH", "1h", "--mode=live"],
+   "interval_seconds": 300, "leverage": 20, "margin_per_trade_usd": 50, "capital": 100},
+  {"id": "$paper_id", "paper_source": "btc"$extra,
+   "type": "perps", "platform": "hyperliquid",
+   "script": "shared_scripts/check_hyperliquid.py",
+   "args": ["vwap", "ETH", "1h", "--mode=paper"],
+   "interval_seconds": $paper_interval, "leverage": 20, "margin_per_trade_usd": 50, "capital": 100}
+]}
+JSON
+}
+write_folded_config "$drift/source-bare/scheduler/config.json" "hl-y-paper" 300 ', "storage_strategy_id": "hl-y"'
+write_folded_config "$drift/source-bare-drift/scheduler/config.json" "hl-y-paper" 3600 ', "storage_strategy_id": "hl-y"'
+write_folded_config "$drift/source-bare-unproven/scheduler/config.json" "hl-y-paper" 300 ""
+write_folded_config "$drift/source-collision/scheduler/config.json" "hl-y-paper2" 3600 ', "storage_strategy_id": "hl-y"'
+
+audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/source-bare") && audit_rc=0 || audit_rc=$?
+assert_eq "$audit_rc" "0" "drift audit: a bare -paper alias under a named source still pairs"
+if [[ "$audit_out" != *"PAIR hl-y"* || "$audit_out" != *"[id=hl-y-paper]"* || "$audit_out" != *"IN SYNC"* ]]; then
+    echo "FAIL: naming a source must not unread the bare -paper alias, got: $audit_out" >&2
+    exit 1
+fi
+audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/source-bare-drift") && audit_rc=0 || audit_rc=$?
+assert_eq "$audit_rc" "1" "drift audit: cadence drift on a bare-aliased folded twin still gates"
+if [[ "$audit_out" != *"interval_seconds"* || "$audit_out" != *"CANDIDATE"* ]]; then
+    echo "FAIL: expected interval_seconds drift on the bare-aliased folded pair, got: $audit_out" >&2
+    exit 1
+fi
+audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/source-bare-unproven") && audit_rc=0 || audit_rc=$?
+assert_eq "$audit_rc" "1" "drift audit: a bare -paper alias under a named source with no storage id gates"
+if [[ "$audit_out" != *"AMBIGUOUS hl-y-paper"* || "$audit_out" != *"the -paper suffix alone"* ]]; then
+    echo "FAIL: expected an AMBIGUOUS line naming the bare suffix, got: $audit_out" >&2
+    exit 1
+fi
+audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/source-collision") && audit_rc=0 || audit_rc=$?
+assert_eq "$audit_rc" "1" "drift audit: the -paper<n> collision form under a named source still pairs and gates"
+if [[ "$audit_out" != *"PAIR hl-y"* || "$audit_out" != *"[id=hl-y-paper2]"* || "$audit_out" != *"interval_seconds"* ]]; then
+    echo "FAIL: expected the collision-form pair to report drift, got: $audit_out" >&2
+    exit 1
+fi
+
+# storage_strategy_id is the same proof the alias branch demands, so a block
+# that carries it is surfaced even when no alias rule reads its id.
+cat > "$drift/storage-only/scheduler/config.json" <<'JSON'
+{"config_version": 19, "strategies": [
+  {"id": "hl-y", "type": "perps", "platform": "hyperliquid",
+   "script": "shared_scripts/check_hyperliquid.py",
+   "args": ["vwap", "ETH", "1h", "--mode=live"],
+   "interval_seconds": 300, "leverage": 20, "margin_per_trade_usd": 50, "capital": 100},
+  {"id": "hl-shadow", "storage_strategy_id": "hl-y",
+   "type": "perps", "platform": "hyperliquid",
+   "script": "shared_scripts/check_hyperliquid.py",
+   "args": ["vwap", "ETH", "1h", "--mode=paper"],
+   "interval_seconds": 3600, "leverage": 20, "margin_per_trade_usd": 50, "capital": 100}
+]}
+JSON
+cat > "$drift/storage-nolive/scheduler/config.json" <<'JSON'
+{"config_version": 19, "strategies": [
+  {"id": "hl-y", "type": "perps", "platform": "hyperliquid",
+   "script": "shared_scripts/check_hyperliquid.py",
+   "args": ["vwap", "ETH", "1h", "--mode=live"],
+   "interval_seconds": 300, "leverage": 20, "margin_per_trade_usd": 50, "capital": 100},
+  {"id": "hl-shadow", "storage_strategy_id": "hl-absent",
+   "type": "perps", "platform": "hyperliquid",
+   "script": "shared_scripts/check_hyperliquid.py",
+   "args": ["vwap", "ETH", "1h", "--mode=paper"],
+   "interval_seconds": 3600, "leverage": 20, "margin_per_trade_usd": 50, "capital": 100}
+]}
+JSON
+audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/storage-only") && audit_rc=0 || audit_rc=$?
+assert_eq "$audit_rc" "1" "drift audit: a storage_strategy_id naming a live id pairs an unaliased block"
+if [[ "$audit_out" != *"PAIR hl-y"* || "$audit_out" != *"[id=hl-shadow]"* || "$audit_out" != *"interval_seconds"* ]]; then
+    echo "FAIL: expected the storage-id pair to report drift, got: $audit_out" >&2
+    exit 1
+fi
+audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/storage-nolive") && audit_rc=0 || audit_rc=$?
+assert_eq "$audit_rc" "0" "drift audit: a storage_strategy_id matching no live id stays silent"
+if [[ "$audit_out" == *"PAIR"* || "$audit_out" == *"AMBIGUOUS"* || "$audit_out" == *"UNPAIRED"* ]]; then
+    echo "FAIL: an unmatched storage id must not pair or gate, got: $audit_out" >&2
+    exit 1
+fi
+
+# Adopting the -paper-<id> name must never drop a gate the bare -paper rule
+# applied: an id spelled for a source this deployment declares, with neither
+# paper_source nor storage_strategy_id, is reported when its base is live.
+mkdir -p "$drift/declared/scheduler" "$drift/declared-nolive/scheduler" \
+    "$drift/declared-other/scheduler" "$drift/declared-paperonly/scheduler"
+write_declared_config() {
+    local path="$1" source_id="$2" live_id="$3" paper_id="$4"
+    local live_block=""
+    if [[ -n "$live_id" ]]; then
+        live_block=$(cat <<JSON
+  {"id": "$live_id", "type": "perps", "platform": "hyperliquid",
+   "script": "shared_scripts/check_hyperliquid.py",
+   "args": ["vwap", "ETH", "1h", "--mode=live"],
+   "interval_seconds": 300, "leverage": 20, "margin_per_trade_usd": 50, "capital": 100},
+JSON
+)
+    fi
+    cat > "$path" <<JSON
+{"config_version": 19,
+ "paper_sources": [{"id": "$source_id", "db_file": "/var/lib/go-trader/$source_id.db"}],
+ "strategies": [
+$live_block
+  {"id": "$paper_id", "type": "perps", "platform": "hyperliquid",
+   "script": "shared_scripts/check_hyperliquid.py",
+   "args": ["vwap", "ETH", "1h", "--mode=paper"],
+   "interval_seconds": 3600, "leverage": 20, "margin_per_trade_usd": 50, "capital": 100}
+]}
+JSON
+}
+write_declared_config "$drift/declared/scheduler/config.json" btc hl-y hl-y-paper-btc
+write_declared_config "$drift/declared-nolive/scheduler/config.json" rsi hl-y hl-paper-rsi
+write_declared_config "$drift/declared-other/scheduler/config.json" btc hl-y hl-y-paper-eth
+write_declared_config "$drift/declared-paperonly/scheduler/config.json" btc "" hl-y-paper-btc
+
+audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/declared") && audit_rc=0 || audit_rc=$?
+assert_eq "$audit_rc" "1" "drift audit: a declared-source name with no pairing key is reported and gates"
+if [[ "$audit_out" != *"AMBIGUOUS hl-y-paper-btc"* || "$audit_out" != *"the -paper-btc suffix alone"* ]]; then
+    echo "FAIL: expected an AMBIGUOUS line for the declared-source name, got: $audit_out" >&2
+    exit 1
+fi
+if [[ "$audit_out" == *"PAIR hl-y"* ]]; then
+    echo "FAIL: a name alone must not pair, got: $audit_out" >&2
+    exit 1
+fi
+audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/declared-nolive") && audit_rc=0 || audit_rc=$?
+assert_eq "$audit_rc" "0" "drift audit: a declared-source name whose base is not live stays silent"
+if [[ "$audit_out" == *"AMBIGUOUS"* || "$audit_out" == *"UNPAIRED"* || "$audit_out" == *"PAIR"* ]]; then
+    echo "FAIL: hl-paper-rsi must stay silent when hl is not live, got: $audit_out" >&2
+    exit 1
+fi
+audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/declared-other") && audit_rc=0 || audit_rc=$?
+assert_eq "$audit_rc" "0" "drift audit: a -paper-<id> name for an undeclared source stays silent"
+if [[ "$audit_out" == *"AMBIGUOUS"* || "$audit_out" == *"UNPAIRED"* || "$audit_out" == *"PAIR"* ]]; then
+    echo "FAIL: an undeclared source id must stay silent, got: $audit_out" >&2
+    exit 1
+fi
+audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/declared-paperonly") && audit_rc=0 || audit_rc=$?
+assert_eq "$audit_rc" "0" "drift audit: a paper-only deployment prints no line for a declared-source name"
+if [[ "$audit_out" == *"AMBIGUOUS"* || "$audit_out" == *"UNPAIRED"* || "$audit_out" == *"PAIR"* ]]; then
+    echo "FAIL: an empty live set must print nothing, got: $audit_out" >&2
+    exit 1
+fi
+
 if [[ -n "${GO_TRADER_BIN:-}" && -x "${GO_TRADER_BIN:-}" ]]; then
     mkdir -p "$drift/eff-live/scheduler" "$drift/eff-paper/scheduler"
     cp "$GO_TRADER_BIN" "$drift/eff-live/go-trader"
@@ -991,6 +1229,36 @@ JSON
         echo "FAIL: a deployment with a binary must not report RAW, got: $audit_out" >&2
         exit 1
     fi
+    mkdir -p "$drift/eff-source/scheduler"
+    cp "$GO_TRADER_BIN" "$drift/eff-source/go-trader"
+    printf 'HYPERLIQUID_SECRET_KEY=fixture\n' > "$drift/eff-source/.env"
+    cat > "$drift/eff-source/scheduler/config.json" <<JSON
+{"config_version": 19, "interval_seconds": 300,
+ "db_file": "$drift/eff-source/live.db",
+ "paper_sources": [{"id": "btc", "label": "Paper BTC", "db_file": "$drift/eff-source/btc.db"}],
+ "strategies": [
+  {"id": "hl-z", "type": "perps", "platform": "hyperliquid",
+   "script": "shared_scripts/check_hyperliquid.py",
+   "args": ["vwap", "ETH", "1h", "--mode=live"],
+   "leverage": 20, "margin_per_trade_usd": 50, "capital": 100},
+  {"id": "hl-z-paper-btc", "storage_strategy_id": "hl-z", "paper_source": "btc",
+   "type": "perps", "platform": "hyperliquid",
+   "script": "shared_scripts/check_hyperliquid.py",
+   "args": ["vwap", "ETH", "1h", "--mode=paper"],
+   "leverage": 20, "margin_per_trade_usd": 50, "capital": 100}
+]}
+JSON
+    audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/eff-source") && audit_rc=0 || audit_rc=$?
+    assert_eq "$audit_rc" "0" "drift audit: a folded paper source pairs against the binary's effective view"
+    if [[ "$audit_out" != *"PAIR hl-z"* || "$audit_out" != *"[id=hl-z-paper-btc]"* || "$audit_out" != *"IN SYNC (effective)"* ]]; then
+        echo "FAIL: expected the folded source pair in sync on the effective view, got: $audit_out" >&2
+        exit 1
+    fi
+    if [[ "$audit_out" == *"paper_source"* || "$audit_out" == *"AMBIGUOUS"* || "$audit_out" == *"RAW"* ]]; then
+        echo "FAIL: the pairing keys must not read as drift, got: $audit_out" >&2
+        exit 1
+    fi
+
     mkdir -p "$drift/eff-paper/out"
     mv "$drift/eff-paper/scheduler/config.json" "$drift/eff-paper/out/config.json"
     python3 - "$drift/eff-paper/out/config.json" <<'PY'

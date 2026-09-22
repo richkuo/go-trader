@@ -27,18 +27,19 @@ type storageRiskRow struct {
 }
 
 type storageFileInspection struct {
-	Role           storageRole          `json:"role"`
-	Path           string               `json:"path"`
-	Canonical      string               `json:"canonical_path"`
-	Present        bool                 `json:"present"`
-	LockHeld       bool                 `json:"lock_held"`
-	LockHolderPID  int                  `json:"lock_holder_pid,omitempty"`
-	ScopesOwned    []PortfolioScope     `json:"scopes_owned"`
-	Strategies     []storageStrategyRow `json:"strategies"`
-	Orphans        []storageStrategyRow `json:"orphans"`
-	PendingActions int                  `json:"pending_manual_actions"`
-	RiskRows       []storageRiskRow     `json:"portfolio_risk_rows"`
-	LegacyUnscoped bool                 `json:"legacy_unscoped_risk_row"`
+	Role            storageRole          `json:"role"`
+	Path            string               `json:"path"`
+	Canonical       string               `json:"canonical_path"`
+	Present         bool                 `json:"present"`
+	LockHeld        bool                 `json:"lock_held"`
+	LockHolderPID   int                  `json:"lock_holder_pid,omitempty"`
+	ScopesOwned     []PortfolioScope     `json:"scopes_owned"`
+	PartitionsOwned []string             `json:"partitions_owned"`
+	Strategies      []storageStrategyRow `json:"strategies"`
+	Orphans         []storageStrategyRow `json:"orphans"`
+	PendingActions  int                  `json:"pending_manual_actions"`
+	RiskRows        []storageRiskRow     `json:"portfolio_risk_rows"`
+	LegacyUnscoped  bool                 `json:"legacy_unscoped_risk_row"`
 }
 
 type storageInspection struct {
@@ -56,10 +57,11 @@ func inspectStorageOwnership(layout storageLayout, ident storageIdentityMap, cfg
 
 	for _, spec := range layout.Files {
 		fi := storageFileInspection{
-			Role:        spec.Role,
-			Path:        spec.Path,
-			Canonical:   spec.Canonical,
-			ScopesOwned: layout.scopesForRole(spec.Role),
+			Role:            spec.Role,
+			Path:            spec.Path,
+			Canonical:       spec.Canonical,
+			ScopesOwned:     layout.scopesForRole(spec.Role),
+			PartitionsOwned: partitionTextList(layout.partitionsForRole(spec.Role)),
 		}
 		if pid, held := probeStateDBLockHolder(spec.Path); held {
 			fi.LockHeld = true
@@ -300,6 +302,7 @@ func formatStorageInspection(si storageInspection) string {
 		fmt.Fprintf(&b, "  canonical: %s\n", fi.Canonical)
 		fmt.Fprintf(&b, "  present: %v\n", fi.Present)
 		fmt.Fprintf(&b, "  owns scopes: %s\n", scopeListLabel(fi.ScopesOwned))
+		fmt.Fprintf(&b, "  owns partitions: %s\n", strings.Join(fi.PartitionsOwned, ", "))
 		if fi.LockHeld {
 			fmt.Fprintf(&b, "  lock: held by pid %d\n", fi.LockHolderPID)
 		} else {
@@ -336,4 +339,14 @@ func formatStorageInspection(si storageInspection) string {
 		fmt.Fprintf(&b, "  - %s\n", r)
 	}
 	return b.String()
+}
+
+// partitionTextList renders a file's owned partitions for the inspection view,
+// so an operator can see which folded source each state file holds.
+func partitionTextList(parts []RiskPartition) []string {
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		out = append(out, p.String())
+	}
+	return out
 }

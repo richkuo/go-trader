@@ -447,7 +447,7 @@ func TestAPICorrelation(t *testing.T) {
 		t.Errorf("expected null correlation before first cycle, got %+v", resp.Correlation)
 	}
 
-	state.setScopeCorrelation(ScopeLive, &CorrelationSnapshot{
+	state.setPartitionCorrelation(livePartition, &CorrelationSnapshot{
 		Timestamp:         time.Now(),
 		PortfolioGrossUSD: 1234,
 		Warnings:          []string{"BTC concentration 90%"},

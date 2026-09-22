@@ -320,14 +320,14 @@ const maxKillSwitchEvents = 50
 const untrustedEquityLatchDeferral = 15 * time.Minute
 
 type KillSwitchEvent struct {
-	Scope          PortfolioScope `json:"scope,omitempty"`
-	Timestamp      time.Time      `json:"timestamp"`
-	Type           string         `json:"type"`
-	Source         string         `json:"source,omitempty"`
-	DrawdownPct    float64        `json:"drawdown_pct"`
-	PortfolioValue float64        `json:"portfolio_value"`
-	PeakValue      float64        `json:"peak_value"`
-	Details        string         `json:"details"`
+	Partition      RiskPartition `json:"scope,omitempty"`
+	Timestamp      time.Time     `json:"timestamp"`
+	Type           string        `json:"type"`
+	Source         string        `json:"source,omitempty"`
+	DrawdownPct    float64       `json:"drawdown_pct"`
+	PortfolioValue float64       `json:"portfolio_value"`
+	PeakValue      float64       `json:"peak_value"`
+	Details        string        `json:"details"`
 }
 
 type PortfolioRiskState struct {
@@ -393,7 +393,7 @@ func ClearLatchedKillSwitchSharedWallet(state *AppState, strategies []StrategyCo
 	if state == nil {
 		return false
 	}
-	prs := state.scopeRiskIfPresent(ScopeLive)
+	prs := state.partitionRiskIfPresent(livePartition)
 	if prs == nil || !prs.KillSwitchActive {
 		return false
 	}
@@ -1409,12 +1409,12 @@ func recordPositionTradeResult(s *StrategyState, pos *Position, pnl float64) {
 	RecordTradeResult(&s.RiskState, pnl)
 }
 
-func forceClosePaperScopePositions(state *AppState, cfg *Config, prices map[string]float64) []string {
+func forceClosePaperScopePositions(state *AppState, cfg *Config, part RiskPartition, prices map[string]float64) []string {
 	if state == nil || cfg == nil {
 		return nil
 	}
 	var closed []string
-	for _, sc := range strategiesInScope(cfg.Strategies, ScopePaper) {
+	for _, sc := range strategiesInPartition(cfg.Strategies, part) {
 		s, ok := state.Strategies[sc.ID]
 		if !ok || s == nil {
 			continue
@@ -1430,28 +1430,38 @@ func forceClosePaperScopePositions(state *AppState, cfg *Config, prices map[stri
 	return closed
 }
 
-const paperKillSwitchHeader = "**PORTFOLIO KILL SWITCH (PAPER)**"
+// paperKillSwitchHeader names the partition that fired, so an operator reading
+// one broadcast never has to guess which folded source latched.
+func paperKillSwitchHeader(part RiskPartition) string {
+	return fmt.Sprintf("**PORTFOLIO KILL SWITCH (%s)**", strings.ToUpper(partitionLabel(part)))
+}
 
-const paperKillSwitchManualResetLine = "Reply to the owner DM with 'reset paper' to clear this latch."
+// paperKillSwitchManualResetLine spells the exact reply that clears this
+// partition's latch. A bare "reset paper" would be refused when only a named
+// source is latched and would clear the default paper partition when both are,
+// so the instruction always names the partition it belongs to.
+func paperKillSwitchManualResetLine(part RiskPartition) string {
+	return fmt.Sprintf("Reply to the owner DM with 'reset %s' to clear this latch.", part.String())
+}
 
 const paperKillSwitchAutoResetLine = "Kill switch auto-reset (no DM owner configured); paper trading will resume next cycle."
 
-func formatPaperKillSwitchMessage(reason string, closed []string) string {
+func formatPaperKillSwitchMessage(part RiskPartition, reason string, closed []string) string {
 	detail := "No open paper books to close."
 	if len(closed) > 0 {
 		detail = fmt.Sprintf("Paper books force-closed at mark: %s", strings.Join(closed, ", "))
 	}
 	return fmt.Sprintf("%s\n%s\n%s No exchange order was sent. Live strategies are unaffected. %s",
-		paperKillSwitchHeader, reason, detail, paperKillSwitchManualResetLine)
+		paperKillSwitchHeader(part), reason, detail, paperKillSwitchManualResetLine(part))
 }
 
-func formatPaperKillSwitchPromptMessage(reason string) string {
+func formatPaperKillSwitchPromptMessage(part RiskPartition, reason string) string {
 	return fmt.Sprintf("%s\n%s\nPaper books were force-closed at mark when this latch fired. No exchange order was sent. Live strategies are unaffected.",
-		paperKillSwitchHeader, reason)
+		paperKillSwitchHeader(part), reason)
 }
 
-func formatPaperKillSwitchAutoResetMessage(msg string) string {
-	return strings.Replace(msg, paperKillSwitchManualResetLine, paperKillSwitchAutoResetLine, 1)
+func formatPaperKillSwitchAutoResetMessage(part RiskPartition, msg string) string {
+	return strings.Replace(msg, paperKillSwitchManualResetLine(part), paperKillSwitchAutoResetLine, 1)
 }
 
 type paperKillSwitchOutcome struct {
@@ -1461,17 +1471,19 @@ type paperKillSwitchOutcome struct {
 	Message      string
 }
 
+// applyPaperKillSwitchCycle runs once per paper partition, on that partition's
+// own strategies: a latch in one folded source never closes another's books.
 func applyPaperKillSwitchCycle(state *AppState, cfg *Config, prices map[string]float64, paperSR *scopeCycleRisk, hasOwner bool) paperKillSwitchOutcome {
 	var out paperKillSwitchOutcome
 	if state == nil || cfg == nil || paperSR == nil || !paperSR.KillSwitchFired {
 		return out
 	}
-	prs := state.scopeRisk(ScopePaper)
+	prs := state.partitionRisk(paperSR.Partition)
 	if !prs.KillSwitchCloseApplied {
-		out.Closed = forceClosePaperScopePositions(state, cfg, prices)
+		out.Closed = forceClosePaperScopePositions(state, cfg, paperSR.Partition, prices)
 		prs.KillSwitchCloseApplied = true
 		out.CloseApplied = true
-		out.Message = formatPaperKillSwitchMessage(paperSR.Reason, out.Closed)
+		out.Message = formatPaperKillSwitchMessage(paperSR.Partition, paperSR.Reason, out.Closed)
 	}
 	if hasOwner || !prs.KillSwitchActive {
 		return out
@@ -1482,8 +1494,8 @@ func applyPaperKillSwitchCycle(state *AppState, cfg *Config, prices map[string]f
 		return out
 	}
 	if out.Message == "" {
-		out.Message = formatPaperKillSwitchMessage(paperSR.Reason, nil)
+		out.Message = formatPaperKillSwitchMessage(paperSR.Partition, paperSR.Reason, nil)
 	}
-	out.Message = formatPaperKillSwitchAutoResetMessage(out.Message)
+	out.Message = formatPaperKillSwitchAutoResetMessage(paperSR.Partition, out.Message)
 	return out
 }
