@@ -20,6 +20,8 @@ type manualCloseProtectionSnapshot struct {
 	PeerSameQty     float64
 	PeerOppQty      float64
 	PreSend         hlCloseView
+	AvgCost         float64
+	EntryATR        float64
 }
 
 type manualCloseRearmDecision int
@@ -95,16 +97,17 @@ const (
 )
 
 func restoreManualStopLossAfterFailedClose(d manualCoreDeps, res *manualCoreResult, sc StrategyConfig, strategyID string, snap manualCloseProtectionSnapshot, execResult *HyperliquidExecuteResult, requestedCancelOIDs []int64) bool {
-	return restoreManualStopLoss(d, res, sc, strategyID, snap, execResult, requestedCancelOIDs, manualCloseRearmAfterRejection)
+	positionFlat, _ := restoreManualStopLoss(d, res, sc, strategyID, snap, execResult, requestedCancelOIDs, manualCloseRearmAfterRejection)
+	return positionFlat
 }
 
-func restoreManualStopLoss(d manualCoreDeps, res *manualCoreResult, sc StrategyConfig, strategyID string, snap manualCloseProtectionSnapshot, execResult *HyperliquidExecuteResult, requestedCancelOIDs []int64, cause manualCloseRearmCause) bool {
+func restoreManualStopLoss(d manualCoreDeps, res *manualCoreResult, sc StrategyConfig, strategyID string, snap manualCloseProtectionSnapshot, execResult *HyperliquidExecuteResult, requestedCancelOIDs []int64, cause manualCloseRearmCause) (bool, bool) {
 	if !hyperliquidIsLive(sc.Args) {
-		return false
+		return false, false
 	}
 	decision := decideManualCloseRearm(execResult, requestedCancelOIDs, snap)
 	if decision == manualCloseRearmNoCancelRequested {
-		return false
+		return false, false
 	}
 	shortFill := cause == manualCloseRearmAfterShortFill
 	if decision == manualCloseRearmCancelNotConfirmed {
@@ -140,15 +143,15 @@ func restoreManualStopLoss(d manualCoreDeps, res *manualCoreResult, sc StrategyC
 
 	if snap.TriggerPx <= 0 {
 		criticalf("the book recorded no stop-loss trigger to restore")
-		return false
+		return false, false
 	}
 	if d.updateSL == nil {
 		criticalf("no stop-loss placement path is configured")
-		return false
+		return false, false
 	}
 	if d.recordRearmedStopLoss == nil {
 		criticalf("no re-arm bookkeeping path is configured")
-		return false
+		return false, false
 	}
 
 	unlockSymbol := lockHyperliquidProtectionSync(snap.Symbol)
@@ -171,11 +174,12 @@ func restoreManualStopLoss(d manualCoreDeps, res *manualCoreResult, sc StrategyC
 		res.errf("warning: could not read the Hyperliquid account before re-arming %s (%v) — re-arming %.6f, sized from %s, with no liquidation clamp", snap.Symbol, mapErr, stop.Qty, closeRemainderBasisText(stop))
 	}
 	if stop.Unbacked {
-		msg := fmt.Sprintf("CRITICAL: [%s] %s: %s. No stop-loss was placed: %s shows no on-chain units behind the %.6f remainder (the coin is flat on this side, or every unit left is in the book of a peer strategy). Compare the on-chain position with the books before the next close on %s.%s",
-			strategyID, snap.Symbol, closeOutcome, closeRemainderBasisText(stop), stop.Remainder, snap.Symbol, notes)
+		removal := removeManualUnconfirmedOrders(d, res, sc, strategyID, snap, execResult, requestedCancelOIDs, decision)
+		msg := fmt.Sprintf("CRITICAL: [%s] %s: %s. No stop-loss was placed: %s shows no on-chain units behind the %.6f remainder (the coin is flat on this side, or every unit left is in the book of a peer strategy).%s Compare the on-chain position with the books before the next close on %s.%s",
+			strategyID, snap.Symbol, closeOutcome, closeRemainderBasisText(stop), stop.Remainder, formatCloseRemovalReport(sc, snap.Symbol, removal), snap.Symbol, notes)
 		res.outf("%s", msg)
 		notifyCloseRearm(d.notifier, msg)
-		return true
+		return true, true
 	}
 	qty := stop.Qty
 	if qty < stop.Remainder-hlSharedCloseQtyTolerance {
@@ -198,13 +202,13 @@ func restoreManualStopLoss(d manualCoreDeps, res *manualCoreResult, sc StrategyC
 	switch {
 	case err != nil:
 		criticalf(fmt.Sprintf("%v", err))
-		return false
+		return false, false
 	case result == nil:
 		criticalf("the stop-loss placement returned no result")
-		return false
+		return false, false
 	case result.Error != "":
 		criticalf(result.Error)
-		return false
+		return false, false
 	}
 
 	if recErr := d.recordRearmedStopLoss(strategyID, snap.Symbol, snap.Side, qty, snap.StopLossOID, result); recErr != nil {
@@ -219,11 +223,11 @@ func restoreManualStopLoss(d manualCoreDeps, res *manualCoreResult, sc StrategyC
 		res.outf("The re-armed stop-loss for %s filled immediately at $%.4f — the position closed on-chain and the reconciler books the close, with its venue fill and fee, at the next scheduler cycle.",
 			snap.Symbol, result.StopLossTriggerPx)
 		notifyManualRearmBasis(d, res, strategyID, snap, closeOutcome, stop, fill, qty)
-		return true
+		return true, false
 	case result.StopLossFilledExternally:
 		res.outf("The previous stop-loss for %s (OID=%d) had already filled on-chain, so nothing was re-armed — the reconciler will book the close.",
 			snap.Symbol, snap.StopLossOID)
-		return true
+		return true, false
 	case result.StopLossOID > 0 && shortFill:
 		res.outf("Stop-loss re-armed for the remainder after the short fill: %s %.6f @ $%.4f (OID=%d, superseding the verified OID=%d).",
 			snap.Symbol, qty, result.StopLossTriggerPx, result.StopLossOID, snap.StopLossOID)
@@ -245,7 +249,52 @@ func restoreManualStopLoss(d manualCoreDeps, res *manualCoreResult, sc StrategyC
 	default:
 		criticalf("the replacement stop-loss did not rest on-chain")
 	}
-	return false
+	return false, false
+}
+
+func removeManualUnconfirmedOrders(d manualCoreDeps, res *manualCoreResult, sc StrategyConfig, strategyID string, snap manualCloseProtectionSnapshot, execResult *HyperliquidExecuteResult, requestedCancelOIDs []int64, decision manualCloseRearmDecision) hlCloseRemovalReport {
+	var removal hlCloseRemovalReport
+	stopUnconfirmed := !containsInt64(hyperliquidExecuteSucceededCancelOIDs(execResult, requestedCancelOIDs), snap.StopLossOID)
+	if stopUnconfirmed && (decision == manualCloseRearmCancelNotConfirmed || decision == manualCloseRearmOutcomeUnknown) {
+		removal.StopOID = snap.StopLossOID
+		result, stderr, err := func() (*HyperliquidStopLossUpdateResult, string, error) {
+			unlock := lockHyperliquidTrailingUpdate(snap.Symbol)
+			defer unlock()
+			return d.updateSL(sc.Script, snap.Symbol, snap.Side, 0, 0, snap.StopLossOID)
+		}()
+		if stderr != "" {
+			res.errf("pre-close stop removal stderr: %s", stderr)
+		}
+		if err != nil {
+			res.errf("warning: the pre-close stop removal for %s failed: %v", snap.Symbol, err)
+		}
+		stopRes := classifyStopRearmRemoval(result)
+		switch stopRes.Status {
+		case hlStopRearmRemoved:
+			removal.Removed = append(removal.Removed, snap.StopLossOID)
+			if recErr := d.recordRearmedStopLoss(strategyID, snap.Symbol, snap.Side, 0, snap.StopLossOID, result); recErr != nil {
+				removal.addDetail(fmt.Sprintf("the removal of stop OID=%d could not be recorded in the book (%v), so the book may still list it", snap.StopLossOID, recErr))
+			}
+		case hlStopRearmClosed:
+			removal.Filled = append(removal.Filled, snap.StopLossOID)
+		case hlStopRearmPreCloseStopResting:
+			removal.Resting = append(removal.Resting, snap.StopLossOID)
+			removal.addDetail(fmt.Sprintf("stop OID=%d cancel: %s", snap.StopLossOID, stopRes.Detail))
+		default:
+			removal.Unverified = append(removal.Unverified, snap.StopLossOID)
+			removal.addDetail(fmt.Sprintf("stop OID=%d: %s", snap.StopLossOID, stopRes.Detail))
+		}
+	}
+	tp, recErr := removeManualUnconfirmedTakeProfits(d, sc, strategyID, snap, execResult, requestedCancelOIDs)
+	removal.Removed = append(removal.Removed, tp.Removed...)
+	removal.Filled = append(removal.Filled, tp.Filled...)
+	removal.Resting = append(removal.Resting, tp.Resting...)
+	removal.Unverified = append(removal.Unverified, tp.Unverified...)
+	removal.addDetail(tp.Detail)
+	if recErr != nil {
+		removal.addDetail(fmt.Sprintf("the take-profit removal could not be recorded in the book (%v), so the book may still list the removed ids", recErr))
+	}
+	return removal
 }
 
 func notifyManualRearmBasis(d manualCoreDeps, res *manualCoreResult, strategyID string, snap manualCloseProtectionSnapshot, closeOutcome string, stop hlCloseRemainderStop, fill hlCloseFillOutcome, qty float64) {
@@ -292,7 +341,7 @@ func rearmedStopLossBookValues(result *HyperliquidStopLossUpdateResult) (int64, 
 		return result.StopLossOID, result.StopLossTriggerPx, "update-sl"
 	case result.StopLossOutcomeUnknown:
 		return 0, result.StopLossTriggerPx, "update-sl"
-	case result.StopLossFilledExternally, result.CancelStopLossSucceeded:
+	case result.StopLossFilledExternally, result.CancelStopLossSucceeded, result.StopLossNotOpen:
 		return 0, 0, "cancel-sl"
 	}
 	return 0, 0, ""

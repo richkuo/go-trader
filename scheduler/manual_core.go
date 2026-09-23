@@ -1210,6 +1210,8 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 		PeerSameQty:     view.PeerSameQty,
 		PeerOppQty:      view.PeerOppQty,
 		PreSend:         preSend,
+		AvgCost:         pos.AvgCost,
+		EntryATR:        pos.EntryATR,
 	}
 
 	execResult, stderr, execErr := d.execute(
@@ -1222,6 +1224,10 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 	requestedCancelOIDs := append([]int64{cancelOID}, extraCancelOIDs...)
 	execResult, execErr = confirmHyperliquidExecuteFill(execResult, execErr)
 	if execErr != nil {
+		if execResult != nil && execResult.OrderOutcome == "not_sent" && len(hyperliquidExecuteSucceededCancelOIDs(execResult, requestedCancelOIDs)) == 0 {
+			res.outf("manual-close %s %s: no order was sent and no protection was cancelled; nothing to restore.", strategyID, sc.Symbol)
+			return res, manualFailf("error placing close order: %v", execErr)
+		}
 		reconcileManualExecuteProtection(d, res, strategyID, sc.Symbol, execResult, requestedCancelOIDs)
 		positionFlat := restoreManualStopLossAfterFailedClose(d, res, sc, strategyID, protectionSnapshot, execResult, requestedCancelOIDs)
 		restoreManualTakeProfitsAfterFailedClose(d, res, sc, strategyID, protectionSnapshot, execResult, requestedCancelOIDs, positionFlat)
@@ -1281,7 +1287,9 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 		remainderSnapshot := protectionSnapshot
 		remainderSnapshot.Quantity = pos.Quantity - filledQty
 		remainderSnapshot.FilledQty = filledQty
-		restoreManualStopLoss(d, res, sc, strategyID, remainderSnapshot, execResult, requestedCancelOIDs, manualCloseRearmAfterShortFill)
+		if _, tpHandled := restoreManualStopLoss(d, res, sc, strategyID, remainderSnapshot, execResult, requestedCancelOIDs, manualCloseRearmAfterShortFill); !tpHandled {
+			removeManualTakeProfitsAfterShortFill(d, res, sc, strategyID, remainderSnapshot, execResult, requestedCancelOIDs)
+		}
 	}
 	if queueErr != nil {
 		return res, manualFailf("error queuing close action: %v", queueErr)

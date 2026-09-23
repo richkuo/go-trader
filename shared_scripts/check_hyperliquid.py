@@ -1054,33 +1054,45 @@ def run_sync_protection(
 
         surplus_cancel_failed = []
         surplus_cancel_filled = []
+        surplus_cancel_not_open = []
         for surplus_oid in cancel_tp_oids or []:
             oid = int(surplus_oid)
             if oid <= 0:
                 continue
-            action, fill = _resolve_missing_oid(oid)
-            if action == "filled":
+            if open_oids is None:
+                surplus_cancel_failed.append(oid)
+                continue
+            if _oid_is_open(open_oids, oid):
+                try:
+                    kind, payload = _classify_cancel_response(adapter.cancel_order_by_oid(symbol, oid))
+                    if kind != "ok":
+                        surplus_cancel_failed.append(oid)
+                        print(
+                            f"[WARN] cancel surplus TP OID={oid} rejected: {payload}",
+                            file=sys.stderr,
+                        )
+                except Exception as ce:
+                    surplus_cancel_failed.append(oid)
+                    print(
+                        f"[WARN] cancel surplus TP OID={oid} failed: {ce}",
+                        file=sys.stderr,
+                    )
+                continue
+            fill = _oid_filled_externally(adapter, oid, fill_check_since_ms, fill_hints)
+            if fill.get("filled"):
                 surplus_cancel_filled.append(oid)
                 print(
                     f"[WARN] surplus TP OID={oid} already filled on-chain; not canceling — reconciler will book the close",
                     file=sys.stderr,
                 )
                 continue
-            if action == "unknown":
-                surplus_cancel_failed.append(oid)
-                continue
-            try:
-                adapter.cancel_order_by_oid(symbol, oid)
-            except Exception as ce:
-                surplus_cancel_failed.append(oid)
-                print(
-                    f"[WARN] cancel surplus TP OID={oid} failed: {ce}",
-                    file=sys.stderr,
-                )
+            surplus_cancel_not_open.append(oid)
         if surplus_cancel_failed:
             out["tp_cancel_failed_oids"] = surplus_cancel_failed
         if surplus_cancel_filled:
             out["tp_cancel_filled_oids"] = surplus_cancel_filled
+        if surplus_cancel_not_open:
+            out["tp_cancel_not_open_oids"] = surplus_cancel_not_open
 
         if stop_loss_atr_mult > 0:
             if side == "long":
@@ -1247,7 +1259,11 @@ def run_sync_protection(
                         continue
                     if _oid_is_open(open_oids, prev_oid) and idx < len(force_tp) and force_tp[idx]:
                         try:
-                            adapter.cancel_order_by_oid(symbol, int(prev_oid))
+                            kind, payload = _classify_cancel_response(
+                                adapter.cancel_order_by_oid(symbol, int(prev_oid)))
+                            if kind != "ok":
+                                tp_errors[idx] = f"force replace cancel rejected: {payload}"
+                                continue
                         except Exception as ce:
                             tp_errors[idx] = f"force replace cancel: {ce}"
                             continue
@@ -1567,6 +1583,51 @@ def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_
         sys.exit(1)
 
 
+def _run_cancel_only_stop_loss(adapter, symbol, cancel_oid):
+    out = {
+        "platform": "hyperliquid",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "cancel_only": True,
+    }
+    if cancel_oid <= 0:
+        out["error"] = "--size=0 is the cancel-only mode and needs --cancel-stop-loss-oid"
+        print(json.dumps(out, cls=SafeEncoder))
+        sys.exit(1)
+    try:
+        open_oids = adapter.open_order_oids(symbol)
+    except Exception as oe:
+        out["open_order_check_error"] = str(oe)
+        out["error"] = f"open orders unreadable, stop-loss OID={cancel_oid} not verified: {oe}"
+        print(f"[WARN] open_order_oids({symbol}) failed: {oe}; stop-loss OID={cancel_oid} not verified", file=sys.stderr)
+        print(json.dumps(out, cls=SafeEncoder))
+        sys.exit(1)
+    if _oid_is_open(open_oids, cancel_oid):
+        cancel_err = ""
+        try:
+            kind, payload = _classify_cancel_response(adapter.cancel_trigger_order(symbol, cancel_oid))
+            if kind != "ok":
+                cancel_err = payload
+        except Exception as ce:
+            cancel_err = str(ce)
+        if cancel_err:
+            out["cancel_stop_loss_error"] = cancel_err
+            out["error"] = f"cancel of stop-loss OID={cancel_oid} failed: {cancel_err}"
+            print(f"[WARN] cancel_trigger_order({symbol}, {cancel_oid}) failed: {cancel_err}", file=sys.stderr)
+            print(json.dumps(out, cls=SafeEncoder))
+            sys.exit(1)
+        out["cancel_stop_loss_succeeded"] = True
+        print(json.dumps(out, cls=SafeEncoder))
+        return
+    since_ms = int(time.time() * 1000) - 7 * 24 * 3600 * 1000
+    fill = _oid_filled_externally(adapter, cancel_oid, since_ms, None)
+    if fill.get("filled"):
+        out["stop_loss_filled_externally"] = True
+        print(f"[WARN] stop-loss OID={cancel_oid} already filled on-chain; reconciler will book the close", file=sys.stderr)
+    else:
+        out["stop_loss_not_open"] = True
+    print(json.dumps(out, cls=SafeEncoder))
+
+
 def run_update_stop_loss(symbol, side, size, trigger_px, mode, cancel_oid=0):
     if mode != "live":
         print(json.dumps({"error": "--update-stop-loss requires --mode=live"}, cls=SafeEncoder))
@@ -1593,6 +1654,10 @@ def run_update_stop_loss(symbol, side, size, trigger_px, mode, cancel_oid=0):
                 "error": f"invalid side {side!r}, expected 'long' or 'short'",
             }, cls=SafeEncoder))
             sys.exit(1)
+
+        if size <= 0:
+            _run_cancel_only_stop_loss(adapter, symbol, cancel_oid)
+            return
 
         open_oids = None
         if cancel_attempted:

@@ -474,7 +474,23 @@ func TestManualCloseRestoresTakeProfitsAfterAVenueRejection(t *testing.T) {
 		wantPrevOIDs  []int64
 		wantOutPart   string
 		wantAlertPart string
+		wantQuiet     bool
 	}{
+		{
+			name:        "a close the script never sent restores nothing and alerts nothing",
+			bookTPOIDs:  []int64{7001, 7002, 7003},
+			bookTPArmed: []bool{true, true, true},
+			stopOID:     prevSLOID,
+			stopTrigger: prevTrigger,
+			onChain:     []HLPosition{{Coin: "ETH", Size: bookQty}},
+			execute: func(string, string, string, float64, float64, int64, float64, string, float64, hlCloseMode, hlExecuteSnapshot, ...int64) (*HyperliquidExecuteResult, string, error) {
+				return &HyperliquidExecuteResult{OrderOutcome: "not_sent", Error: "close size floors to zero at lot precision"}, "", nil
+			},
+			wantBookOIDs:  []int64{7001, 7002, 7003},
+			wantBookArmed: []bool{true, true, true},
+			wantOutPart:   "no order was sent and no protection was cancelled; nothing to restore",
+			wantQuiet:     true,
+		},
 		{
 			name:        "a confirmed cancel restores the cancelled tiers and leaves the restored stop alone",
 			bookTPOIDs:  []int64{0, 7002, 7003},
@@ -693,9 +709,14 @@ func TestManualCloseRestoresTakeProfitsAfterAVenueRejection(t *testing.T) {
 			notifier, backend := confirmationNotifier()
 			d := newCLIManualCoreDeps(cfg, openTestStore(t, db), notifier)
 			d.fetchMids = func(coins []string) (map[string]float64, error) { return map[string]float64{"ETH": 2000}, nil }
-			d.fetchPositions = func(addr string) ([]HLPosition, error) { return tc.onChain, nil }
+			reads, updates := 0, 0
+			d.fetchPositions = func(addr string) ([]HLPosition, error) {
+				reads++
+				return tc.onChain, nil
+			}
 			d.execute = tc.execute
 			d.updateSL = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+				updates++
 				return tc.slResult, "", nil
 			}
 			var syncCalls []tpSyncCall
@@ -794,6 +815,14 @@ func TestManualCloseRestoresTakeProfitsAfterAVenueRejection(t *testing.T) {
 			out := res.uiMessage()
 			if tc.wantOutPart != "" && !strings.Contains(out, tc.wantOutPart) {
 				t.Fatalf("operator output = %q, want it to contain %q", out, tc.wantOutPart)
+			}
+			if tc.wantQuiet {
+				backend.mu.Lock()
+				sent := len(backend.messages) + len(backend.dms)
+				backend.mu.Unlock()
+				if sent != 0 || reads != 0 || updates != 0 {
+					t.Fatalf("alerts=%d account reads=%d stop updates=%d, want none after a close that was never sent", sent, reads, updates)
+				}
 			}
 			if tc.wantAlertPart != "" {
 				backend.mu.Lock()

@@ -908,12 +908,71 @@ func TestClassifyProtectionSyncStopRearm(t *testing.T) {
 		{"cancelled and replacement rejected loses protection", &HyperliquidProtectionSyncResult{CancelStopLossSucceeded: true, StopLossError: "open order limit"}, hlStopRearmProtectionLost},
 		{"fresh placement rejected", &HyperliquidProtectionSyncResult{StopLossError: "open order limit"}, hlStopRearmPlacementFailed},
 		{"replacement rests", &HyperliquidProtectionSyncResult{StopLossOID: 9002, StopLossTriggerPx: 2325}, hlStopRearmPlaced},
-		{"sync failed", nil, hlStopRearmPlacementFailed},
+		{"sync failed", nil, hlStopRearmOutcomeUnknown},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := classifyProtectionSyncStopRearm(1, tc.protection).Status; got != tc.want {
 				t.Fatalf("status = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestClassifyStopRearmRemoval(t *testing.T) {
+	cases := []struct {
+		name   string
+		result *HyperliquidStopLossUpdateResult
+		want   hlStopRearmStatus
+	}{
+		{"cancelled", &HyperliquidStopLossUpdateResult{CancelOnly: true, CancelStopLossSucceeded: true}, hlStopRearmRemoved},
+		{"not open and not filled", &HyperliquidStopLossUpdateResult{CancelOnly: true, StopLossNotOpen: true}, hlStopRearmRemoved},
+		{"filled externally", &HyperliquidStopLossUpdateResult{CancelOnly: true, StopLossFilledExternally: true}, hlStopRearmClosed},
+		{"cancel rejected", &HyperliquidStopLossUpdateResult{CancelOnly: true, Error: "cancel failed", CancelStopLossError: "busy"}, hlStopRearmPreCloseStopResting},
+		{"open orders unreadable", &HyperliquidStopLossUpdateResult{CancelOnly: true, Error: "open orders unreadable", OpenOrderCheckError: "indexer down"}, hlStopRearmReadFailed},
+		{"nil result", nil, hlStopRearmOutcomeUnknown},
+		{"bare error", &HyperliquidStopLossUpdateResult{Error: "invalid side"}, hlStopRearmOutcomeUnknown},
+		{"a cancel outcome from a run that was not cancel-only", &HyperliquidStopLossUpdateResult{CancelStopLossSucceeded: true, StopLossOID: 9002}, hlStopRearmOutcomeUnknown},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := classifyStopRearmRemoval(tc.result).Status; got != tc.want {
+				t.Fatalf("status = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestClassifyProtectionSyncTPRearm(t *testing.T) {
+	tiers := []hlProtectionTier{{Multiple: 1, Fraction: 0.5}, {Multiple: 2, Fraction: 1}}
+	full := hlProtectionPlan{Tiers: tiers, TPOIDs: []int64{7001, 7002}, ForceTPReplace: []bool{true, false}}
+	cancel := hlProtectionPlan{CancelTPOIDs: []int64{7001}}
+	cases := []struct {
+		name       string
+		plan       hlProtectionPlan
+		result     *HyperliquidProtectionSyncResult
+		want       hlTPRearmStatus
+		wantDetail string
+	}{
+		{"no take-profit leg", hlProtectionPlan{}, nil, hlTPRearmNone, ""},
+		{"force-replaced tier placed", full, &HyperliquidProtectionSyncResult{TPOIDs: []int64{9101, 7002}}, hlTPRearmPlaced, ""},
+		{"no force and ids unchanged", hlProtectionPlan{Tiers: tiers, TPOIDs: []int64{7001, 7002}}, &HyperliquidProtectionSyncResult{TPOIDs: []int64{7001, 7002}}, hlTPRearmKept, ""},
+		{"removed", cancel, &HyperliquidProtectionSyncResult{}, hlTPRearmRemoved, "7001"},
+		{"tier placement error", full, &HyperliquidProtectionSyncResult{TPOIDs: []int64{0, 7002}, TPErrors: []string{"open order limit", ""}}, hlTPRearmFailed, "tier 1: open order limit"},
+		{"force-replaced tier left at its old id", full, &HyperliquidProtectionSyncResult{TPOIDs: []int64{7001, 7002}}, hlTPRearmFailed, "OID=7001) still rests"},
+		{"cancel failed", cancel, &HyperliquidProtectionSyncResult{TPCancelFailedOIDs: []int64{7001}}, hlTPRearmFailed, "[7001]"},
+		{"outcome unknown", full, &HyperliquidProtectionSyncResult{TPOIDs: []int64{0, 7002}, TPOutcomeUnknown: []bool{true, false}}, hlTPRearmUnknown, "[1]"},
+		{"sync error with tiers", full, &HyperliquidProtectionSyncResult{Error: "avg-cost and entry-atr must be > 0"}, hlTPRearmFailed, "avg-cost"},
+		{"nil result", full, nil, hlTPRearmUnknown, "no result"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := classifyProtectionSyncTPRearm(tc.plan, tc.result)
+			if got.Status != tc.want {
+				t.Fatalf("status = %d, want %d (%s)", got.Status, tc.want, got.Detail)
+			}
+			if !strings.Contains(got.Detail, tc.wantDetail) {
+				t.Fatalf("detail = %q, want it to contain %q", got.Detail, tc.wantDetail)
 			}
 		})
 	}

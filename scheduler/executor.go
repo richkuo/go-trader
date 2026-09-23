@@ -108,6 +108,8 @@ type HyperliquidStopLossUpdateResult struct {
 	StopLossFilledExternally  bool    `json:"stop_loss_filled_externally,omitempty"`
 	StopLossOutcomeUnknown    bool    `json:"stop_loss_outcome_unknown,omitempty"`
 	OpenOrderCheckError       string  `json:"open_order_check_error,omitempty"`
+	CancelOnly                bool    `json:"cancel_only,omitempty"`
+	StopLossNotOpen           bool    `json:"stop_loss_not_open,omitempty"`
 }
 
 type HyperliquidProtectionSyncResult struct {
@@ -137,6 +139,7 @@ type HyperliquidProtectionSyncResult struct {
 	TP2FilledExternally       bool      `json:"tp2_filled_externally,omitempty"`
 	TPCancelFailedOIDs        []int64   `json:"tp_cancel_failed_oids,omitempty"`
 	TPCancelFilledOIDs        []int64   `json:"tp_cancel_filled_oids,omitempty"`
+	TPCancelNotOpenOIDs       []int64   `json:"tp_cancel_not_open_oids,omitempty"`
 	CancelStopLossSucceeded   bool      `json:"cancel_stop_loss_succeeded,omitempty"`
 	CancelStopLossError       string    `json:"cancel_stop_loss_error,omitempty"`
 	StopLossOutcomeUnknown    bool      `json:"stop_loss_outcome_unknown,omitempty"`

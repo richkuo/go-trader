@@ -406,9 +406,16 @@ func closeRearmOutcomeNote(fill hlCloseFillOutcome) string {
 	return " The close outcome is unknown, so the close may have filled after its reply was lost; the reconciler books any fill by order id at the next cycle."
 }
 
-func closeRearmNextAction(sc StrategyConfig, res hlStopRearmResult) string {
+func hlManualCancelStopAction(sc StrategyConfig, symbol string) string {
+	if sc.Type != "manual" {
+		return ""
+	}
+	return fmt.Sprintf(" (for this `type=manual` strategy, `go-trader manual-cancel-sl %s --symbol %s` cancels the booked stop)", sc.ID, symbol)
+}
+
+func closeRearmNextAction(sc StrategyConfig, symbol string, res hlStopRearmResult, prevStopOID int64) string {
 	if res.Status == hlStopRearmPreCloseStopResting {
-		return "Cancel that stop and place the remainder stop by hand, or close the position."
+		return fmt.Sprintf("Cancel the pre-close stop (OID=%d) on the Hyperliquid UI%s, then place the remainder stop by hand, or close the position.", prevStopOID, hlManualCancelStopAction(sc, symbol))
 	}
 	if res.Owner == hlRearmOwnerRecorded {
 		trigger := "<price>"
@@ -433,17 +440,95 @@ func closeRearmFailureText(res hlStopRearmResult, prevStopOID int64) (string, st
 	case hlStopRearmProtectionLost:
 		return fmt.Sprintf("the pre-close stop was cancelled and the replacement did not rest (%s)", res.Detail), "The position has NO exchange-side stop."
 	case hlStopRearmOutcomeUnknown:
-		return fmt.Sprintf("the placement outcome could not be read (%s)", res.Detail), "A stop may rest untracked, so the position may be UNPROTECTED."
+		return fmt.Sprintf("the outcome could not be read (%s)", res.Detail), "The stop state is UNVERIFIED: a stop may rest untracked, or the pre-close stop may still rest. Read the open orders on Hyperliquid before you place anything."
 	}
 	return fmt.Sprintf("the placement was rejected (%s)", res.Detail), "The position has NO exchange-side stop."
 }
 
-func formatCloseRearmReport(sc StrategyConfig, symbol string, stop hlCloseRemainderStop, fill hlCloseFillOutcome, res hlStopRearmResult, prevStopOID int64) (string, bool) {
+func formatCloseRemovalReport(sc StrategyConfig, symbol string, rep hlCloseRemovalReport) string {
+	var parts []string
+	tpList := func(oids []int64) []int64 {
+		var out []int64
+		for _, oid := range oids {
+			if oid != rep.StopOID {
+				out = append(out, oid)
+			}
+		}
+		return out
+	}
+	if rep.StopOID > 0 {
+		switch {
+		case containsInt64(rep.Removed, rep.StopOID):
+			parts = append(parts, fmt.Sprintf("stop OID %d removed", rep.StopOID))
+		case containsInt64(rep.Filled, rep.StopOID):
+			parts = append(parts, fmt.Sprintf("stop OID %d already filled (the reconciler books it)", rep.StopOID))
+		case containsInt64(rep.Resting, rep.StopOID):
+			parts = append(parts, fmt.Sprintf("stop OID %d STILL RESTING at its pre-close size over units that are not this strategy's", rep.StopOID))
+		default:
+			parts = append(parts, fmt.Sprintf("stop OID %d UNVERIFIED", rep.StopOID))
+		}
+	}
+	for _, leg := range []struct {
+		label string
+		oids  []int64
+	}{
+		{"removed", tpList(rep.Removed)},
+		{"already filled (the reconciler books them)", tpList(rep.Filled)},
+		{"STILL RESTING at their pre-close size", tpList(rep.Resting)},
+		{"UNVERIFIED", tpList(rep.Unverified)},
+	} {
+		if len(leg.oids) > 0 {
+			parts = append(parts, fmt.Sprintf("take-profit OIDs %v %s", leg.oids, leg.label))
+		}
+	}
+	if len(parts) == 0 {
+		return " No pre-close stop or take-profit order was left unconfirmed by the close."
+	}
+	text := " Pre-close orders: " + strings.Join(parts, "; ") + "."
+	if rep.Detail != "" {
+		text += " Detail: " + rep.Detail + "."
+	}
+	if len(rep.Resting) > 0 || len(rep.Unverified) > 0 {
+		stopAction := ""
+		if containsInt64(rep.Resting, rep.StopOID) || containsInt64(rep.Unverified, rep.StopOID) {
+			stopAction = hlManualCancelStopAction(sc, symbol)
+		}
+		text += fmt.Sprintf(" Action for a resting or unverified order: read the open orders on Hyperliquid and cancel it on the Hyperliquid UI%s.", stopAction)
+	}
+	return text
+}
+
+func formatCloseTPLegReport(tp hlTPRearmResult) string {
+	detail := ""
+	if tp.Detail != "" {
+		detail = " (" + tp.Detail + ")"
+	}
+	switch tp.Status {
+	case hlTPRearmPlaced:
+		return " Take-profit leg: placed at the remainder size."
+	case hlTPRearmKept:
+		return " Take-profit leg: the resting tiers are kept."
+	case hlTPRearmRemoved:
+		return fmt.Sprintf(" Take-profit leg: the pre-close tiers were removed%s; the next due protection sync places them at the book size.", detail)
+	case hlTPRearmFailed:
+		return fmt.Sprintf(" Take-profit leg FAILED%s. Read the open orders on Hyperliquid and fix the take-profit orders by hand.", detail)
+	case hlTPRearmUnknown:
+		return fmt.Sprintf(" Take-profit leg UNKNOWN%s. Read the open orders on Hyperliquid before you place anything.", detail)
+	}
+	return ""
+}
+
+func formatCloseRearmReport(sc StrategyConfig, symbol string, stop hlCloseRemainderStop, fill hlCloseFillOutcome, res hlStopRearmResult, tp hlTPRearmResult, prevStopOID int64) (string, bool) {
+	report, critical := formatCloseStopRearmReport(sc, symbol, stop, fill, res, prevStopOID)
+	return report + formatCloseTPLegReport(tp), critical || tp.critical()
+}
+
+func formatCloseStopRearmReport(sc StrategyConfig, symbol string, stop hlCloseRemainderStop, fill hlCloseFillOutcome, res hlStopRearmResult, prevStopOID int64) (string, bool) {
 	notes := closeRearmBasisNote(stop) + closeRearmOutcomeNote(fill)
 	fresh := stop.Basis == hlRemainderBasisFresh
 	switch res.Status {
 	case hlStopRearmUnbacked:
-		return fmt.Sprintf("NO STOP: %s shows no on-chain units behind the %.6f remainder (the coin is flat on this side, or every unit left is in the book of a peer strategy), so no stop was placed. Compare the on-chain position with the books before the next close on %s.%s", closeRemainderBasisText(stop), stop.Remainder, symbol, notes), true
+		return fmt.Sprintf("NO STOP PLACED: %s shows no on-chain units behind the %.6f remainder (the coin is flat on this side, or every unit left is in the book of a peer strategy).%s Compare the on-chain position with the books before the next close on %s.%s", closeRemainderBasisText(stop), stop.Remainder, formatCloseRemovalReport(sc, symbol, res.Removal), symbol, notes), true
 	case hlStopRearmUnclaimed:
 		return fmt.Sprintf("This position has no configured stop owner, so no stop was placed for the %.6f remainder.%s", stop.Remainder, notes), false
 	case hlStopRearmClosed:
@@ -458,7 +543,7 @@ func formatCloseRearmReport(sc StrategyConfig, symbol string, stop hlCloseRemain
 		return fmt.Sprintf("The %s now rests for %.6f at $%.4f (OID=%d), sized from %s.%s", res.Owner, res.Qty, res.TriggerPx, res.OID, closeRemainderBasisText(stop), notes), false
 	}
 	reason, state := closeRearmFailureText(res, prevStopOID)
-	return fmt.Sprintf("The %s re-arm for %.6f did not complete: %s. %s%s %s", res.Owner, res.Qty, reason, state, notes, closeRearmNextAction(sc, res)), true
+	return fmt.Sprintf("The %s re-arm for %.6f did not complete: %s. %s%s %s", res.Owner, res.Qty, reason, state, notes, closeRearmNextAction(sc, symbol, res, prevStopOID)), true
 }
 
 func formatSizedCloseShortFillAlert(sc StrategyConfig, symbol, side string, filledQty, bookQty float64, report string, critical bool) string {
@@ -473,9 +558,31 @@ func formatUnfilledCloseRearmAlert(sc StrategyConfig, symbol, side string, bookQ
 	return fmt.Sprintf("CRITICAL: [%s] %s %s close of the %.6f book did not fill after it cancelled, or may have cancelled, the exchange-side protection. Stop re-arm: %s", sc.ID, symbol, side, bookQty, report)
 }
 
+type hlCloseUnconfirmed struct {
+	StopOID int64
+	TPOIDs  []int64
+}
+
+func hlCloseUnconfirmedSet(pos *Position, prevStopOID int64, requestedTPOIDs []int64) hlCloseUnconfirmed {
+	var u hlCloseUnconfirmed
+	if pos == nil {
+		return u
+	}
+	if prevStopOID > 0 && pos.StopLossOID == prevStopOID {
+		u.StopOID = prevStopOID
+	}
+	for _, oid := range requestedTPOIDs {
+		if oid > 0 && containsInt64(pos.TPOIDs, oid) && !containsInt64(u.TPOIDs, oid) {
+			u.TPOIDs = append(u.TPOIDs, oid)
+		}
+	}
+	return u
+}
+
 type hlCloseRearmContext struct {
 	Price         float64
 	PrevStopOID   int64
+	PrevTPOIDs    []int64
 	PrevTriggerPx float64
 	PrevHighWater float64
 	FillHintsJSON []byte
@@ -497,8 +604,14 @@ func rearmAfterSizedClose(sc StrategyConfig, stratState *StrategyState, stratDB 
 	} else {
 		logger.Warn("Close %s left %.6f on the book after cancelling (or possibly cancelling) its protection; re-arming a %.6f stop in this cycle, sized from %s", symbol, stop.Remainder, stop.Qty, closeRemainderBasisText(stop))
 	}
-	trades, detail, res := rearmProtectionForCloseRemainder(sc, stratState, stratDB, symbol, rearm.Price, rearm.PrevStopOID, rearm.PrevTriggerPx, rearm.PrevHighWater, rearm.FillHintsJSON, rearm.LiqPxByCoin, rearm.NetSideByCoin, stop, mu, notifier, logger)
-	report, critical := formatCloseRearmReport(sc, symbol, stop, fill, res, rearm.PrevStopOID)
+	var u hlCloseUnconfirmed
+	if stratState != nil {
+		mu.RLock()
+		u = hlCloseUnconfirmedSet(stratState.Positions[symbol], rearm.PrevStopOID, rearm.PrevTPOIDs)
+		mu.RUnlock()
+	}
+	trades, detail, res, tpRes := rearmProtectionForCloseRemainder(sc, stratState, stratDB, symbol, rearm.Price, rearm.PrevStopOID, rearm.PrevTriggerPx, rearm.PrevHighWater, rearm.FillHintsJSON, rearm.LiqPxByCoin, rearm.NetSideByCoin, u, stop, mu, notifier, logger)
+	report, critical := formatCloseRearmReport(sc, symbol, stop, fill, res, tpRes, rearm.PrevStopOID)
 	msg := ""
 	switch {
 	case stop.AfterFill:

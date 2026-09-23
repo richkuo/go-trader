@@ -505,6 +505,11 @@ func TestManualCloseShortFillRearmsTheRemainderStop(t *testing.T) {
 		peerQty      float64
 		failure      *HyperliquidExecuteResult
 		wantAlertIn  string
+		wantAlsoIn   string
+		syncResult   *HyperliquidProtectionSyncResult
+		wantSyncTPs  []int64
+		wantRestore  []int64
+		wantReads    int
 	}{
 		{name: "a confirmed stop cancel restores the recorded trigger at the remainder", fillSz: 0.3, succeeded: []int64{prevOID, 7001},
 			slResult:   &HyperliquidStopLossUpdateResult{StopLossOID: 6200, StopLossTriggerPx: prevTrigger},
@@ -530,6 +535,23 @@ func TestManualCloseShortFillRearmsTheRemainderStop(t *testing.T) {
 			wantDrainQty: 0.4, wantOutPart: "No stop-loss was placed", wantAlert: true, wantAlertIn: "reconciler books any fill"},
 		{name: "a chain that reads flat after the fill places nothing and alerts", fillSz: 0.3, succeeded: []int64{prevOID, 7001}, chains: []float64{0.9, 0},
 			wantDrainQty: 0.1, wantOutPart: "No stop-loss was placed", wantAlert: true},
+		{name: "a capped shared close after a rejected stop cancel removes the pre-close stop verified first", fillSz: 0.2, succeeded: []int64{7001}, failed: []int64{prevOID}, chains: []float64{0.7, 0.5},
+			slResult:   &HyperliquidStopLossUpdateResult{CancelOnly: true, CancelStopLossSucceeded: true},
+			wantSLCall: &rearmSLCall{symbol: "ETH", side: "long", size: 0, triggerPx: 0, cancelOID: prevOID}, wantDrainQty: 0.2, wantDrainSL: 0,
+			wantOutPart: "No stop-loss was placed", wantAlert: true, wantAlertIn: "stop OID 5150 removed"},
+		{name: "a rejected removal of the pre-close stop names it still resting and the manual cancel", fillSz: 0.2, succeeded: []int64{7001}, failed: []int64{prevOID}, chains: []float64{0.7, 0.5},
+			slResult:   &HyperliquidStopLossUpdateResult{CancelOnly: true, Error: "cancel of stop-loss OID=5150 failed: busy", CancelStopLossError: "busy"},
+			wantSLCall: &rearmSLCall{symbol: "ETH", side: "long", size: 0, triggerPx: 0, cancelOID: prevOID}, wantDrainQty: 0.2, wantDrainSL: prevOID,
+			wantOutPart: "No stop-loss was placed", wantAlert: true, wantAlertIn: "stop OID 5150 STILL RESTING", wantAlsoIn: "manual-cancel-sl hl-manual-eth"},
+		{name: "a take-profit whose cancel failed on a short fill is removed verify-first and cleared by a restore-tp row", fillSz: 0.3, succeeded: []int64{prevOID}, failed: []int64{7001},
+			slResult:   &HyperliquidStopLossUpdateResult{StopLossOID: 6200, StopLossTriggerPx: prevTrigger},
+			wantSLCall: &rearmSLCall{symbol: "ETH", side: "long", size: 0.1, triggerPx: prevTrigger, cancelOID: prevOID}, wantDrainQty: 0.1, wantDrainSL: 6200,
+			syncResult:  &HyperliquidProtectionSyncResult{},
+			wantSyncTPs: []int64{7001}, wantRestore: []int64{0},
+			wantOutPart: "Take-profit OID=7001 for ETH was removed after the short fill"},
+		{name: "a close the script never sent restores nothing and reads nothing after it", failed: nil, chains: []float64{0.9},
+			failure:      &HyperliquidExecuteResult{OrderOutcome: "not_sent", Error: "close size floors to zero at lot precision"},
+			wantDrainQty: 0.4, wantDrainSL: prevOID, wantOutPart: "no order was sent and no protection was cancelled; nothing to restore", wantReads: 1},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -594,7 +616,32 @@ func TestManualCloseShortFillRearmsTheRemainderStop(t *testing.T) {
 				slCalls = append(slCalls, rearmSLCall{symbol: symbol, side: side, size: size, triggerPx: triggerPx, cancelOID: cancelOID})
 				return tc.slResult, "", nil
 			}
+			var syncTPs []int64
+			d.syncProtection = func(sc StrategyConfig, plan hlProtectionPlan) (*HyperliquidProtectionSyncResult, string, error) {
+				if plan.Size != 0 || plan.StopLossATRMult != 0 || len(plan.Tiers) != 0 || plan.AvgCost <= 0 {
+					t.Fatalf("take-profit removal plan = %+v, want size 0, no stop leg, no tiers and a valid anchor", plan)
+				}
+				syncTPs = append(syncTPs, plan.CancelTPOIDs...)
+				return tc.syncResult, "", nil
+			}
 			res, coreErr := manualCloseCore(d, subject, manualCloseInputs{StrategyID: subject.ID})
+			if fmt.Sprint(syncTPs) != fmt.Sprint(tc.wantSyncTPs) {
+				t.Fatalf("take-profit removals = %v, want %v", syncTPs, tc.wantSyncTPs)
+			}
+			if tc.wantReads > 0 && reads != tc.wantReads {
+				t.Fatalf("account reads = %d, want %d", reads, tc.wantReads)
+			}
+			var restore []int64
+			if rows, rowsErr := db.LoadPendingManualActions(); rowsErr == nil {
+				for _, row := range rows {
+					if row.Action == "restore-tp" {
+						restore = row.TPOIDs
+					}
+				}
+			}
+			if fmt.Sprint(restore) != fmt.Sprint(tc.wantRestore) {
+				t.Fatalf("queued restore-tp oids = %v, want %v", restore, tc.wantRestore)
+			}
 			if (coreErr != nil) != (tc.failure != nil) {
 				t.Fatalf("manualCloseCore error = %v, want an error: %t", coreErr, tc.failure != nil)
 			}
@@ -625,8 +672,8 @@ func TestManualCloseShortFillRearmsTheRemainderStop(t *testing.T) {
 			if tc.wantAlert != (len(critical) == 1) || len(critical) > 1 {
 				t.Fatalf("critical alerts = %q, want one: %t", critical, tc.wantAlert)
 			}
-			if tc.wantAlert && !strings.Contains(critical[0], tc.wantAlertIn) {
-				t.Fatalf("critical alert = %q, want it to contain %q", critical[0], tc.wantAlertIn)
+			if tc.wantAlert && (!strings.Contains(critical[0], tc.wantAlertIn) || !strings.Contains(critical[0], tc.wantAlsoIn)) {
+				t.Fatalf("critical alert = %q, want it to contain %q and %q", critical[0], tc.wantAlertIn, tc.wantAlsoIn)
 			}
 			store := openTestStore(t, db)
 			reloaded, _, loadErr := LoadStateWithStore(cfg, store)

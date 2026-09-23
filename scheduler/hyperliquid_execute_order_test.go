@@ -204,11 +204,13 @@ func TestHyperliquidSizedCloseFreshReadingAndBooking(t *testing.T) {
 	originalThrottle := liveExecThrottle
 	originalRecorder := tradeRecorder
 	originalUpdate := runHyperliquidUpdateStopLossFunc
+	originalSync := syncHyperliquidProtection
 	t.Cleanup(func() {
 		runHyperliquidExecuteFn = originalExecute
 		liveExecThrottle = originalThrottle
 		tradeRecorder = originalRecorder
 		runHyperliquidUpdateStopLossFunc = originalUpdate
+		syncHyperliquidProtection = originalSync
 	})
 	tradeRecorder = nil
 	reads := func(signed ...float64) []hlOnChainCoinView {
@@ -219,29 +221,39 @@ func TestHyperliquidSizedCloseFreshReadingAndBooking(t *testing.T) {
 		return out
 	}
 	peer := StrategyConfig{ID: "hl-peer", Type: "perps", Platform: "hyperliquid", Args: []string{"hold", "ETH", "1h", "--mode=live"}}
+	removed := &HyperliquidStopLossUpdateResult{CancelOnly: true, CancelStopLossSucceeded: true}
+	removalRejected := &HyperliquidStopLossUpdateResult{CancelOnly: true, Error: "cancel of stop-loss OID=111 failed: busy", CancelStopLossError: "busy"}
 	cases := []struct {
-		name          string
-		posQty        float64
-		ctx           hlCloseContext
-		refetch       []hlOnChainCoinView
-		refetchErr    error
-		fillCap       float64
-		failedSLOID   bool
-		failure       *HyperliquidExecuteResult
-		wantCalls     int
-		wantMode      hlCloseMode
-		wantSize      float64
-		wantBookQty   float64
-		wantSLOID     int64
-		wantTPOIDs    []int64
-		wantAlert     bool
-		wantCloseFail bool
-		wantRefetch   int
-		wantBookFlat  bool
-		wantStopQty   float64
-		wantStopOID   int64
-		wantCritical  bool
-		wantDetail    string
+		name              string
+		posQty            float64
+		ctx               hlCloseContext
+		refetch           []hlOnChainCoinView
+		refetchErr        error
+		fillCap           float64
+		failedSLOID       bool
+		failedTPOIDs      []int64
+		noCancelMeta      bool
+		tiered            bool
+		slResult          *HyperliquidStopLossUpdateResult
+		syncResult        *HyperliquidProtectionSyncResult
+		wantRemovalCancel int64
+		wantSyncCancel    []int64
+		wantForceTP       []bool
+		failure           *HyperliquidExecuteResult
+		wantCalls         int
+		wantMode          hlCloseMode
+		wantSize          float64
+		wantBookQty       float64
+		wantSLOID         int64
+		wantTPOIDs        []int64
+		wantAlert         bool
+		wantCloseFail     bool
+		wantRefetch       int
+		wantBookFlat      bool
+		wantStopQty       float64
+		wantStopOID       int64
+		wantCritical      bool
+		wantDetail        string
 	}{
 		{name: "same-side peer opened earlier in the cycle closes the whole book", posQty: 10, ctx: hlCloseContext{PeerSameQty: 5, OnChain: hlSignedView("ETH", 10)}, refetch: reads(15), wantCalls: 1, wantMode: hlCloseModeReduceOnly, wantSize: 10, wantBookFlat: true, wantRefetch: 1},
 		{name: "opposite-side peer closed earlier in the cycle sends instead of skipping", posQty: 4, ctx: hlCloseContext{OnChain: hlSignedView("ETH", -6)}, refetch: reads(4), wantCalls: 1, wantMode: hlCloseModeReduceOnly, wantSize: 4, wantBookFlat: true, wantRefetch: 1},
@@ -255,6 +267,10 @@ func TestHyperliquidSizedCloseFreshReadingAndBooking(t *testing.T) {
 		{name: "a failed pre-send and post-fill read on a partial IOC fill derives the stop from the cycle-start reading and alerts", posQty: 10, ctx: hlCloseContext{PeerSameQty: 5, OnChain: hlSignedView("ETH", 15)}, refetchErr: fmt.Errorf("clearinghouseState timeout"), fillCap: 4, wantCalls: 1, wantMode: hlCloseModeReduceOnly, wantSize: 10, wantBookQty: 6, wantTPOIDs: []int64{0, 0}, wantAlert: true, wantRefetch: 2, wantStopQty: 6, wantStopOID: 999, wantCritical: true, wantDetail: "clearinghouseState timeout"},
 		{name: "an explicit rejection after the cancel landed beside an opposite-side peer arms the own-side units", posQty: 10, ctx: hlCloseContext{PeerOppQty: 4, OnChain: hlSignedView("ETH", 6)}, refetch: reads(6, 6), failure: &HyperliquidExecuteResult{OrderOutcome: "rejected", Error: "order rejected"}, wantCalls: 1, wantMode: hlCloseModeCross, wantSize: 10, wantBookQty: 10, wantTPOIDs: []int64{0, 0}, wantAlert: true, wantCloseFail: true, wantRefetch: 2, wantStopQty: 6, wantStopOID: 999, wantCritical: true, wantDetail: "other 4.000000 units"},
 		{name: "a catch-all reply reads the account after the close and caps at the backed units", posQty: 10, ctx: hlCloseContext{PeerSameQty: 5, OnChain: hlSignedView("ETH", 15)}, refetch: reads(15, 11), failure: &HyperliquidExecuteResult{OrderOutcome: "unknown", Error: "socket closed"}, wantCalls: 1, wantMode: hlCloseModeReduceOnly, wantSize: 10, wantBookQty: 10, wantTPOIDs: []int64{0, 0}, wantAlert: true, wantCloseFail: true, wantRefetch: 2, wantStopQty: 6, wantStopOID: 999, wantCritical: true, wantDetail: "reconciler books any fill"},
+		{name: "a capped shared fill after a rejected stop cancel removes the pre-close stop and alerts once", posQty: 10, ctx: hlCloseContext{PeerSameQty: 5, OnChain: hlSignedView("ETH", 12)}, refetch: reads(12, 5), failedSLOID: true, slResult: removed, wantRemovalCancel: 111, wantCalls: 1, wantMode: hlCloseModeReduceOnly, wantSize: 7, wantBookQty: 3, wantTPOIDs: []int64{0, 0}, wantAlert: true, wantRefetch: 2, wantCritical: true, wantDetail: "stop OID 111 removed"},
+		{name: "a capped shared fill whose stop removal is rejected names the resting stop", posQty: 10, ctx: hlCloseContext{PeerSameQty: 5, OnChain: hlSignedView("ETH", 12)}, refetch: reads(12, 5), failedSLOID: true, slResult: removalRejected, wantRemovalCancel: 111, wantCalls: 1, wantMode: hlCloseModeReduceOnly, wantSize: 7, wantBookQty: 3, wantSLOID: 111, wantTPOIDs: []int64{0, 0}, wantAlert: true, wantRefetch: 2, wantCritical: true, wantDetail: "stop OID 111 STILL RESTING"},
+		{name: "a lost-reply full fill with no cancel metadata removes every requested order", posQty: 3, ctx: hlCloseContext{PeerSameQty: 5, OnChain: hlSignedView("ETH", 8)}, refetch: reads(8, 5), noCancelMeta: true, failure: &HyperliquidExecuteResult{OrderOutcome: "unknown", Error: "socket closed"}, slResult: removed, wantRemovalCancel: 111, wantSyncCancel: []int64{201, 202}, wantCalls: 1, wantMode: hlCloseModeReduceOnly, wantSize: 3, wantBookQty: 3, wantTPOIDs: []int64{0, 0}, wantAlert: true, wantCloseFail: true, wantRefetch: 2, wantCritical: true, wantDetail: "take-profit OIDs [201 202] removed"},
+		{name: "a partial IOC fill force-replaces a take-profit whose cancel failed", posQty: 10, ctx: hlCloseContext{PeerSameQty: 5, OnChain: hlSignedView("ETH", 15)}, refetch: reads(15, 11), fillCap: 4, failedTPOIDs: []int64{201}, tiered: true, syncResult: &HyperliquidProtectionSyncResult{TPOIDs: []int64{9101, 0, 0}}, wantForceTP: []bool{true, false, false}, wantCalls: 1, wantMode: hlCloseModeReduceOnly, wantSize: 10, wantBookQty: 6, wantTPOIDs: []int64{9101, 0, 0}, wantAlert: true, wantRefetch: 2, wantStopQty: 6, wantStopOID: 999, wantDetail: "Take-profit leg: placed"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -274,11 +290,21 @@ func TestHyperliquidSizedCloseFreshReadingAndBooking(t *testing.T) {
 					res = &failure
 				}
 				requested := append([]int64{cancelOID}, extraCancelOIDs...)
-				if tc.failedSLOID {
+				switch {
+				case tc.noCancelMeta:
+				case tc.failedSLOID:
 					res.CancelStopLossError = "cancel rejected"
 					res.CancelStopLossFailedOIDs = []int64{cancelOID}
 					res.CancelStopLossSucceededOIDs = extraCancelOIDs
-				} else {
+				case len(tc.failedTPOIDs) > 0:
+					res.CancelStopLossError = "cancel rejected"
+					res.CancelStopLossFailedOIDs = tc.failedTPOIDs
+					for _, oid := range requested {
+						if !containsInt64(tc.failedTPOIDs, oid) {
+							res.CancelStopLossSucceededOIDs = append(res.CancelStopLossSucceededOIDs, oid)
+						}
+					}
+				default:
 					res.CancelStopLossSucceeded = true
 					res.CancelStopLossSucceededOIDs = requested
 				}
@@ -287,13 +313,27 @@ func TestHyperliquidSizedCloseFreshReadingAndBooking(t *testing.T) {
 			var stopCalls []rearmSLCall
 			runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 				stopCalls = append(stopCalls, rearmSLCall{symbol: symbol, side: side, size: size, triggerPx: triggerPx, cancelOID: cancelOID})
+				if tc.slResult != nil {
+					return tc.slResult, "", nil
+				}
 				return &HyperliquidStopLossUpdateResult{StopLossOID: 999, StopLossTriggerPx: triggerPx, CancelStopLossSucceeded: cancelOID > 0}, "", nil
+			}
+			var syncPlans []hlProtectionPlan
+			syncHyperliquidProtection = func(sc StrategyConfig, plan hlProtectionPlan, notifier *MultiNotifier, logger *StrategyLogger, hints []byte) (*HyperliquidProtectionSyncResult, bool) {
+				syncPlans = append(syncPlans, plan)
+				if tc.syncResult != nil {
+					return tc.syncResult, true
+				}
+				return &HyperliquidProtectionSyncResult{}, true
 			}
 			liveExecThrottle = &LiveExecFailureThrottle{}
 			notifier, backend := confirmationNotifier()
 			sc := confirmationTestStrategy(DirectionLong)
 			stopPct := 5.0
 			sc.StopLossPct = &stopPct
+			if tc.tiered {
+				sc.CloseStrategy = &StrategyRef{Name: "tiered_tp_atr_live"}
+			}
 			refetches := 0
 			ctx := tc.ctx
 			ctx.Refetch = func() (hlOnChainCoinView, error) {
@@ -307,7 +347,7 @@ func TestHyperliquidSizedCloseFreshReadingAndBooking(t *testing.T) {
 				return tc.refetch[refetches-1], nil
 			}
 			state := &StrategyState{ID: sc.ID, Platform: "hyperliquid", Type: "perps", Cash: 1000, Positions: map[string]*Position{
-				"ETH": {Symbol: "ETH", Quantity: tc.posQty, InitialQuantity: tc.posQty, AvgCost: 2000, Side: "long", Multiplier: 1, OwnerStrategyID: sc.ID, StopLossOID: 111, StopLossTriggerPx: 1900, TPOIDs: []int64{201, 202}, TPArmedTiers: []bool{true, true}},
+				"ETH": {Symbol: "ETH", Quantity: tc.posQty, InitialQuantity: tc.posQty, AvgCost: 2000, EntryATR: 50, Side: "long", Multiplier: 1, OwnerStrategyID: sc.ID, StopLossOID: 111, StopLossTriggerPx: 1900, TPOIDs: []int64{201, 202}, TPArmedTiers: []bool{true, true}},
 			}}
 			result := &HyperliquidResult{Symbol: "ETH", Signal: -1, Price: 2100}
 			result.CloseFraction = 1.0
@@ -319,7 +359,7 @@ func TestHyperliquidSizedCloseFreshReadingAndBooking(t *testing.T) {
 				t.Fatalf("sent mode=%v size=%g, want mode=%v size=%g", gotMode, gotSize, tc.wantMode, tc.wantSize)
 			}
 			var mu sync.RWMutex
-			rearm := hlCloseRearmContext{Price: 2100, PrevStopOID: 111, PrevTriggerPx: 1900, Backing: hlCloseBacking{PeerSameQty: ctx.PeerSameQty, PeerOppQty: ctx.PeerOppQty, PreSend: result.SizedClosePreSend, Refetch: ctx.Refetch}}
+			rearm := hlCloseRearmContext{Price: 2100, PrevStopOID: 111, PrevTPOIDs: []int64{201, 202}, PrevTriggerPx: 1900, Backing: hlCloseBacking{PeerSameQty: ctx.PeerSameQty, PeerOppQty: ctx.PeerOppQty, PreSend: result.SizedClosePreSend, Refetch: ctx.Refetch}}
 			if ok {
 				executeHyperliquidResultDeferredOpen(sc, state, result, execResult, "SELL", 2100, nil, &Config{}, HurstGateDecision{}, silentStrategyLogger(sc.ID))
 				if result.SizedCloseBookedQty > 0 {
@@ -333,8 +373,22 @@ func TestHyperliquidSizedCloseFreshReadingAndBooking(t *testing.T) {
 					rearmAfterSizedClose(sc, state, nil, result.Symbol, "long", tc.posQty, unfilled, rearm, &mu, notifier, silentStrategyLogger(sc.ID))
 				}
 			}
-			if tc.wantStopQty == 0 && len(stopCalls) != 0 {
+			switch {
+			case tc.wantRemovalCancel > 0:
+				if len(stopCalls) != 1 || stopCalls[0].size != 0 || stopCalls[0].triggerPx != 0 || stopCalls[0].cancelOID != tc.wantRemovalCancel {
+					t.Fatalf("stop calls = %+v, want one cancel-only call for OID %d and no placement", stopCalls, tc.wantRemovalCancel)
+				}
+			case tc.wantStopQty == 0 && len(stopCalls) != 0:
 				t.Fatalf("stop re-arms = %+v, want none", stopCalls)
+			}
+			var syncCancel []int64
+			var forceTP []bool
+			for _, p := range syncPlans {
+				syncCancel = append(syncCancel, p.CancelTPOIDs...)
+				forceTP = append(forceTP, p.ForceTPReplace...)
+			}
+			if fmt.Sprint(syncCancel) != fmt.Sprint(tc.wantSyncCancel) || fmt.Sprint(forceTP) != fmt.Sprint(tc.wantForceTP) {
+				t.Fatalf("protection syncs = %+v, want cancel %v force_tp %v", syncPlans, tc.wantSyncCancel, tc.wantForceTP)
 			}
 			if tc.wantStopQty > 0 && (len(stopCalls) != 1 || math.Abs(stopCalls[0].size-tc.wantStopQty) > 1e-9) {
 				t.Fatalf("stop re-arms = %+v, want one of %g", stopCalls, tc.wantStopQty)

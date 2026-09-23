@@ -322,6 +322,7 @@ const (
 	hlStopRearmPlacementFailed
 	hlStopRearmProtectionLost
 	hlStopRearmOutcomeUnknown
+	hlStopRearmRemoved
 )
 
 const (
@@ -338,14 +339,148 @@ type hlStopRearmResult struct {
 	TriggerPx float64
 	OID       int64
 	Detail    string
+	Removal   hlCloseRemovalReport
 }
 
 func (r hlStopRearmResult) failed() bool {
 	switch r.Status {
-	case hlStopRearmUnclaimed, hlStopRearmPlaced, hlStopRearmClosed:
+	case hlStopRearmUnclaimed, hlStopRearmPlaced, hlStopRearmClosed, hlStopRearmRemoved:
 		return false
 	}
 	return true
+}
+
+const hlStopRearmNoResultDetail = "the update returned no result; a cancel or a placement may have happened"
+
+type hlCloseRemovalReport struct {
+	StopOID    int64
+	Removed    []int64
+	Filled     []int64
+	Resting    []int64
+	Unverified []int64
+	Detail     string
+}
+
+func (r *hlCloseRemovalReport) addDetail(detail string) {
+	if strings.TrimSpace(detail) == "" {
+		return
+	}
+	if r.Detail == "" {
+		r.Detail = detail
+		return
+	}
+	r.Detail += "; " + detail
+}
+
+func classifyStopRearmRemoval(result *HyperliquidStopLossUpdateResult) hlStopRearmResult {
+	out := hlStopRearmResult{Owner: "pre-close stop"}
+	switch {
+	case result == nil:
+		out.Status = hlStopRearmOutcomeUnknown
+		out.Detail = hlStopRearmNoResultDetail
+	case !result.CancelOnly:
+		out.Status = hlStopRearmOutcomeUnknown
+		out.Detail = firstNonEmptyText(result.Error, "the update did not run as a cancel-only removal")
+	case result.CancelStopLossSucceeded, result.StopLossNotOpen:
+		out.Status = hlStopRearmRemoved
+	case result.StopLossFilledExternally:
+		out.Status = hlStopRearmClosed
+		out.Detail = "the pre-close stop had already filled on-chain"
+	case result.OpenOrderCheckError != "":
+		out.Status = hlStopRearmReadFailed
+		out.Detail = result.OpenOrderCheckError
+	case result.CancelStopLossError != "":
+		out.Status = hlStopRearmPreCloseStopResting
+		out.Detail = result.CancelStopLossError
+	default:
+		out.Status = hlStopRearmOutcomeUnknown
+		out.Detail = firstNonEmptyText(result.Error, "the cancel-only removal reported no outcome")
+	}
+	return out
+}
+
+type hlTPRearmStatus int
+
+const (
+	hlTPRearmNone hlTPRearmStatus = iota
+	hlTPRearmPlaced
+	hlTPRearmKept
+	hlTPRearmRemoved
+	hlTPRearmFailed
+	hlTPRearmUnknown
+)
+
+type hlTPRearmResult struct {
+	Status hlTPRearmStatus
+	Detail string
+}
+
+func (r hlTPRearmResult) critical() bool {
+	return r.Status == hlTPRearmFailed || r.Status == hlTPRearmUnknown
+}
+
+func classifyProtectionSyncTPRearm(plan hlProtectionPlan, result *HyperliquidProtectionSyncResult) hlTPRearmResult {
+	if len(plan.Tiers) == 0 && len(plan.CancelTPOIDs) == 0 {
+		return hlTPRearmResult{}
+	}
+	if result == nil {
+		return hlTPRearmResult{Status: hlTPRearmUnknown, Detail: "the protection sync returned no result; a take-profit cancel or placement may have happened"}
+	}
+	if result.Error != "" {
+		return hlTPRearmResult{Status: hlTPRearmFailed, Detail: result.Error}
+	}
+	var failures []string
+	for i, e := range result.TPErrors {
+		if e != "" {
+			failures = append(failures, fmt.Sprintf("tier %d: %s", i+1, e))
+		}
+	}
+	for i, force := range plan.ForceTPReplace {
+		if !force || i >= len(plan.TPOIDs) || plan.TPOIDs[i] <= 0 {
+			continue
+		}
+		if i < len(result.TPErrors) && result.TPErrors[i] != "" {
+			continue
+		}
+		if i < len(result.TPFilledExternally) && result.TPFilledExternally[i] {
+			continue
+		}
+		if i < len(result.TPOutcomeUnknown) && result.TPOutcomeUnknown[i] {
+			continue
+		}
+		after := plan.TPOIDs[i]
+		if i < len(result.TPOIDs) {
+			after = result.TPOIDs[i]
+		}
+		if after == plan.TPOIDs[i] {
+			failures = append(failures, fmt.Sprintf("tier %d (OID=%d) still rests at its pre-close size", i+1, plan.TPOIDs[i]))
+		}
+	}
+	if len(result.TPCancelFailedOIDs) > 0 {
+		reason := "the cancel was rejected"
+		if result.OpenOrderCheckError != "" {
+			reason = fmt.Sprintf("the open orders could not be read (%s)", result.OpenOrderCheckError)
+		}
+		failures = append(failures, fmt.Sprintf("take-profit OIDs %v were not removed: %s", result.TPCancelFailedOIDs, reason))
+	}
+	if len(failures) > 0 {
+		return hlTPRearmResult{Status: hlTPRearmFailed, Detail: strings.Join(failures, "; ")}
+	}
+	if tiers := unknownTPPlacementTiers(result); len(tiers) > 0 {
+		return hlTPRearmResult{Status: hlTPRearmUnknown, Detail: fmt.Sprintf("the placement of tier(s) %v could not be resolved, so a reduce-only order may rest untracked", tiers)}
+	}
+	for i, oid := range result.TPOIDs {
+		if oid <= 0 {
+			continue
+		}
+		if i >= len(plan.TPOIDs) || plan.TPOIDs[i] != oid {
+			return hlTPRearmResult{Status: hlTPRearmPlaced}
+		}
+	}
+	if len(plan.CancelTPOIDs) > 0 {
+		return hlTPRearmResult{Status: hlTPRearmRemoved, Detail: fmt.Sprintf("take-profit OIDs %v", plan.CancelTPOIDs)}
+	}
+	return hlTPRearmResult{Status: hlTPRearmKept}
 }
 
 func firstNonEmptyText(values ...string) string {
@@ -360,8 +495,8 @@ func firstNonEmptyText(values ...string) string {
 func classifyStopRearmUpdate(owner string, qty, requestedTriggerPx float64, result *HyperliquidStopLossUpdateResult) hlStopRearmResult {
 	out := hlStopRearmResult{Owner: owner, Qty: qty, TriggerPx: requestedTriggerPx}
 	if result == nil {
-		out.Status = hlStopRearmPlacementFailed
-		out.Detail = "the stop-loss update returned no result; see the strategy log"
+		out.Status = hlStopRearmOutcomeUnknown
+		out.Detail = hlStopRearmNoResultDetail
 		return out
 	}
 	if result.StopLossTriggerPx > 0 {
@@ -398,9 +533,7 @@ func classifyStopRearmUpdate(owner string, qty, requestedTriggerPx float64, resu
 
 func classifyProtectionSyncStopRearm(qty float64, protection *HyperliquidProtectionSyncResult) hlStopRearmResult {
 	if protection == nil {
-		out := classifyStopRearmUpdate(hlRearmOwnerATR, qty, 0, nil)
-		out.Detail = "the protection sync failed; see the strategy log"
-		return out
+		return classifyStopRearmUpdate(hlRearmOwnerATR, qty, 0, nil)
 	}
 	return classifyStopRearmUpdate(hlRearmOwnerATR, qty, 0, &HyperliquidStopLossUpdateResult{
 		Error:                     protection.Error,
@@ -416,17 +549,19 @@ func classifyProtectionSyncStopRearm(qty float64, protection *HyperliquidProtect
 	})
 }
 
-func rearmProtectionForCloseRemainder(sc StrategyConfig, stratState *StrategyState, db *StateDB, symbol string, price float64, prevStopOID int64, prevTriggerPx, prevHighWater float64, reconcileFillHintsJSON []byte, liqPxByCoin map[string]float64, netSideByCoin map[string]string, stop hlCloseRemainderStop, mu *sync.RWMutex, notifier *MultiNotifier, logger *StrategyLogger) (int, string, hlStopRearmResult) {
+func rearmProtectionForCloseRemainder(sc StrategyConfig, stratState *StrategyState, db *StateDB, symbol string, price float64, prevStopOID int64, prevTriggerPx, prevHighWater float64, reconcileFillHintsJSON []byte, liqPxByCoin map[string]float64, netSideByCoin map[string]string, u hlCloseUnconfirmed, stop hlCloseRemainderStop, mu *sync.RWMutex, notifier *MultiNotifier, logger *StrategyLogger) (int, string, hlStopRearmResult, hlTPRearmResult) {
 	if stratState == nil || symbol == "" {
-		return 0, "", hlStopRearmResult{}
+		return 0, "", hlStopRearmResult{}, hlTPRearmResult{}
 	}
 	if stop.Unbacked || stop.Qty <= 0 {
-		return 0, "", hlStopRearmResult{Status: hlStopRearmUnbacked, Owner: "stop"}
+		res := hlStopRearmResult{Status: hlStopRearmUnbacked, Owner: "stop"}
+		res.Removal = removeHLCloseUnconfirmedOrders(sc, stratState, symbol, u, reconcileFillHintsJSON, mu, logger)
+		return 0, "", res, hlTPRearmResult{}
 	}
 	trades := 0
 	detail := ""
 	var claimed []hlStopRearmResult
-	_, fillPx, syncRes := runHyperliquidProtectionSyncForRemainder(sc, stratState, db, symbol, mu, notifier, logger, "HL protection re-armed after close", reconcileFillHintsJSON, liqPxByCoin, netSideByCoin, hlProtectionGuardStopLegAfterFailedClose, stop.Qty, stop.AfterFill, prevStopOID)
+	_, fillPx, syncRes, tpRes := runHyperliquidProtectionSyncForRemainder(sc, stratState, db, symbol, mu, notifier, logger, "HL protection re-armed after close", reconcileFillHintsJSON, liqPxByCoin, netSideByCoin, hlProtectionGuardStopLegAfterFailedClose, stop.Qty, stop.AfterFill, prevStopOID, u)
 	if fillPx > 0 {
 		trades++
 		detail = fmt.Sprintf("[%s] LIVE PROTECTION SYNC SL %s @ $%.2f", sc.ID, symbol, fillPx)
@@ -444,7 +579,137 @@ func rearmProtectionForCloseRemainder(sc StrategyConfig, stratState *StrategySta
 		detail = slDetail
 	}
 	claimed = append(claimed, scalarRes)
-	return trades, detail, pickStopRearmResult(claimed, prevStopOID)
+	return trades, detail, pickStopRearmResult(claimed, prevStopOID), tpRes
+}
+
+func removeHLStopByOID(script, symbol, side string, oid int64, logger *StrategyLogger) hlStopRearmResult {
+	unlock := lockHyperliquidTrailingUpdate(symbol)
+	result, stderr, err := runHyperliquidUpdateStopLossFunc(script, symbol, side, 0, 0, oid)
+	unlock()
+	if stderr != "" && logger != nil {
+		logger.Info("pre-close stop removal stderr: %s", stderr)
+	}
+	if err != nil && logger != nil {
+		logger.Error("pre-close stop OID=%d removal for %s failed: %v", oid, symbol, err)
+	}
+	out := classifyStopRearmRemoval(result)
+	out.OID = oid
+	return out
+}
+
+func removeHLTakeProfitsByOID(sc StrategyConfig, symbol, side string, avgCost, entryATR float64, oids []int64, reconcileFillHintsJSON []byte, logger *StrategyLogger) hlCloseRemovalReport {
+	var rep hlCloseRemovalReport
+	if len(oids) == 0 {
+		return rep
+	}
+	plan := hlProtectionPlan{Symbol: symbol, Side: side, AvgCost: avgCost, EntryATR: entryATR, CancelTPOIDs: cloneInt64s(oids)}
+	unlock := lockHyperliquidProtectionSync(symbol)
+	result, ok := syncHyperliquidProtection(sc, plan, nil, logger, reconcileFillHintsJSON)
+	unlock()
+	var err error
+	if !ok && result != nil && result.Error == "" {
+		err = fmt.Errorf("the take-profit removal exited with an error; see the strategy log")
+	}
+	return classifyHLTakeProfitRemoval(oids, result, err)
+}
+
+func classifyHLTakeProfitRemoval(oids []int64, result *HyperliquidProtectionSyncResult, err error) hlCloseRemovalReport {
+	var rep hlCloseRemovalReport
+	switch {
+	case result == nil || (err != nil && result.Error == ""):
+		rep.Unverified = cloneInt64s(oids)
+		detail := hlStopRearmNoResultDetail
+		if err != nil {
+			detail = err.Error()
+		}
+		rep.addDetail("take-profit removal: " + detail)
+		return rep
+	case result.Error != "":
+		rep.Unverified = cloneInt64s(oids)
+		rep.addDetail("take-profit removal: " + result.Error)
+		return rep
+	}
+	for _, oid := range oids {
+		switch {
+		case containsInt64(result.TPCancelFilledOIDs, oid):
+			rep.Filled = append(rep.Filled, oid)
+		case containsInt64(result.TPCancelFailedOIDs, oid) && result.OpenOrderCheckError != "":
+			rep.Unverified = append(rep.Unverified, oid)
+		case containsInt64(result.TPCancelFailedOIDs, oid):
+			rep.Resting = append(rep.Resting, oid)
+		default:
+			rep.Removed = append(rep.Removed, oid)
+		}
+	}
+	if result.OpenOrderCheckError != "" && len(rep.Unverified) > 0 {
+		rep.addDetail("take-profit removal: the open orders could not be read (" + result.OpenOrderCheckError + ")")
+	}
+	return rep
+}
+
+func removeHLCloseUnconfirmedOrders(sc StrategyConfig, stratState *StrategyState, symbol string, u hlCloseUnconfirmed, reconcileFillHintsJSON []byte, mu *sync.RWMutex, logger *StrategyLogger) hlCloseRemovalReport {
+	rep := hlCloseRemovalReport{StopOID: u.StopOID}
+	if u.StopOID <= 0 && len(u.TPOIDs) == 0 {
+		return rep
+	}
+	var side string
+	var avgCost, entryATR float64
+	mu.RLock()
+	if pos := stratState.Positions[symbol]; pos != nil {
+		side, avgCost, entryATR = pos.Side, pos.AvgCost, pos.EntryATR
+	}
+	mu.RUnlock()
+	if side == "" {
+		if u.StopOID > 0 {
+			rep.Unverified = append(rep.Unverified, u.StopOID)
+		}
+		rep.Unverified = append(rep.Unverified, u.TPOIDs...)
+		rep.addDetail("the position is no longer in the book, so no pre-close order was verified")
+		return rep
+	}
+	if u.StopOID > 0 {
+		stopRes := removeHLStopByOID(sc.Script, symbol, side, u.StopOID, logger)
+		switch stopRes.Status {
+		case hlStopRearmRemoved:
+			rep.Removed = append(rep.Removed, u.StopOID)
+			mu.Lock()
+			if pos := stratState.Positions[symbol]; pos != nil && pos.StopLossOID == u.StopOID {
+				pos.StopLossOID = 0
+				pos.StopLossTriggerPx = 0
+			}
+			mu.Unlock()
+		case hlStopRearmClosed:
+			rep.Filled = append(rep.Filled, u.StopOID)
+		case hlStopRearmPreCloseStopResting:
+			rep.Resting = append(rep.Resting, u.StopOID)
+			rep.addDetail(fmt.Sprintf("stop OID=%d cancel: %s", u.StopOID, stopRes.Detail))
+		default:
+			rep.Unverified = append(rep.Unverified, u.StopOID)
+			rep.addDetail(fmt.Sprintf("stop OID=%d: %s", u.StopOID, stopRes.Detail))
+		}
+	}
+	if len(u.TPOIDs) > 0 {
+		tp := removeHLTakeProfitsByOID(sc, symbol, side, avgCost, entryATR, u.TPOIDs, reconcileFillHintsJSON, logger)
+		rep.Removed = append(rep.Removed, tp.Removed...)
+		rep.Filled = append(rep.Filled, tp.Filled...)
+		rep.Resting = append(rep.Resting, tp.Resting...)
+		rep.Unverified = append(rep.Unverified, tp.Unverified...)
+		rep.addDetail(tp.Detail)
+		mu.Lock()
+		if pos := stratState.Positions[symbol]; pos != nil {
+			clearHyperliquidProtectionOIDsMatching(pos, tp.Removed)
+			for idx, oid := range pos.TPOIDs {
+				if oid > 0 && containsInt64(tp.Filled, oid) {
+					pos.TPOIDs[idx] = 0
+					if idx < len(pos.TPArmedTiers) {
+						pos.TPArmedTiers[idx] = true
+					}
+				}
+			}
+		}
+		mu.Unlock()
+	}
+	return rep
 }
 
 func pickStopRearmResult(results []hlStopRearmResult, prevStopOID int64) hlStopRearmResult {
