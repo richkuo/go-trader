@@ -33,7 +33,7 @@ jobs:
       invoked: ${{ steps.verify_invocation.outputs.invoked }}
       mode: ${{ steps.classify_mode.outputs.mode }}
       flow: ${{ steps.resolve_model.outputs.flow }}
-      model_id: ${{ steps.resolve_model.outputs.model_id }}
+      model: ${{ steps.resolve_model.outputs.model }}
       effort: ${{ steps.resolve_model.outputs.effort }}
     steps:
       - name: Verify @claude is an actual invocation (not in a code block or example)
@@ -83,7 +83,7 @@ jobs:
             echo "::notice::@claude found but only inside code blocks or examples — skipping."
           fi
 
-      - name: Resolve model from @claude invocation
+      - name: Read model shorthand and effort from @claude invocation
         if: steps.verify_invocation.outputs.invoked == 'true'
         id: resolve_model
         env:
@@ -93,20 +93,10 @@ jobs:
         run: |
           MODEL_SHORT=$(printf '%s' "$STRIPPED" | grep -ioE '(^|(\r?\n))[[:space:]]*@claude[[:space:]]+[a-z]+[0-9]*' | head -1 | awk '{print $NF}' | tr '[:upper:]' '[:lower:]' || true)
 
-          case "$MODEL_SHORT" in
-            opus|opus5)     MODEL_ID="claude-opus-5" ;;
-            sonnet|sonnet5) MODEL_ID="claude-sonnet-5" ;;
-            fable|fable5)   MODEL_ID="claude-fable-5" ;;
-            *)              MODEL_ID="claude-opus-4-8[1m]" ;;  # default (no model specified)
-          esac
-
-          echo "model_id=$MODEL_ID" >> "$GITHUB_OUTPUT"
-          echo "::notice::Using model: $MODEL_ID"
+          echo "model=$MODEL_SHORT" >> "$GITHUB_OUTPUT"
 
           EFFORT_RAW=$(printf '%s' "$STRIPPED" | grep -oiE 'effort:(low|medium|xhigh|high)' | head -1 | tr '[:upper:]' '[:lower:]' | cut -d: -f2 || true)
-          EFFORT="${EFFORT_RAW:-xhigh}"
-          echo "effort=$EFFORT" >> "$GITHUB_OUTPUT"
-          echo "::notice::Using effort: $EFFORT"
+          echo "effort=$EFFORT_RAW" >> "$GITHUB_OUTPUT"
 
           FLOW=""
           if [ "$EVENT_NAME" = "issue_comment" ] && [ "$DOCS_RELEASE_ENABLED" = "true" ]; then
@@ -184,7 +174,7 @@ jobs:
     with:
       mode: review
       flow: ''
-      model_id: ${{ needs.classify.outputs.model_id }}
+      model: ${{ needs.classify.outputs.model }}
       effort: ${{ needs.classify.outputs.effort }}
       timeout_minutes: 90
       go_version: '1.26'
@@ -203,7 +193,7 @@ jobs:
     with:
       mode: implement
       flow: ${{ needs.classify.outputs.flow }}
-      model_id: ${{ needs.classify.outputs.model_id }}
+      model: ${{ needs.classify.outputs.model }}
       effort: ${{ needs.classify.outputs.effort }}
       timeout_minutes: 90
       go_version: '1.26'
@@ -228,7 +218,7 @@ jobs:
     with:
       mode: fix-pr
       flow: ''
-      model_id: ${{ needs.classify.outputs.model_id }}
+      model: ${{ needs.classify.outputs.model }}
       effort: ${{ needs.classify.outputs.effort }}
       timeout_minutes: 90
       go_version: '1.26'
