@@ -59,6 +59,8 @@ type HyperliquidResult struct {
 	SharedCloseEscalateFailureError string                 `json:"-"`
 	LiveOrderSubmitted              bool                   `json:"-"`
 	LiveOrderCancelRequested        bool                   `json:"-"`
+	SizedCloseBookFraction          float64                `json:"-"`
+	SizedCloseCanceledOIDs          []int64                `json:"-"`
 }
 
 type HyperliquidFill struct {

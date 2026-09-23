@@ -1,8 +1,10 @@
 package main
 
 import (
+	"fmt"
 	"math"
 	"testing"
+	"time"
 )
 
 func hlSignedView(coin string, signed float64) hlOnChainCoinView {
@@ -143,6 +145,50 @@ func TestManualCloseFillAttribution(t *testing.T) {
 			qty, fee, full := manualCloseFillAttribution(tc.posQty, tc.fill)
 			if math.Abs(qty-tc.wantQty) > 1e-12 || math.Abs(fee-tc.wantFee) > 1e-12 || full != tc.wantFullBk {
 				t.Fatalf("got qty=%g fee=%g full=%t, want qty=%g fee=%g full=%t", qty, fee, full, tc.wantQty, tc.wantFee, tc.wantFullBk)
+			}
+		})
+	}
+}
+
+func TestBookManualCycleClose(t *testing.T) {
+	sc := StrategyConfig{ID: "hl-manual", Type: "manual", Platform: "hyperliquid", Symbol: "ETH", Args: []string{"--mode=live"}}
+	cases := []struct {
+		name        string
+		intentFull  bool
+		closeQty    float64
+		fillSz      float64
+		requested   []int64
+		succeeded   []int64
+		failed      []int64
+		wantQty     float64
+		wantFull    bool
+		wantShort   bool
+		wantSLOID   int64
+		wantTPOIDs  []int64
+		wantTPArmed []bool
+		wantPnL     float64
+	}{
+		{name: "capped fill with the stop and every take-profit cancelled clears all ids", intentFull: true, closeQty: 7, fillSz: 7, requested: []int64{111, 201, 202}, succeeded: []int64{111, 201, 202}, wantQty: 7, wantShort: true, wantTPOIDs: []int64{0, 0}, wantTPArmed: []bool{false, false}, wantPnL: 699},
+		{name: "partial IOC fill of a full close clears the cancelled ids", intentFull: true, closeQty: 10, fillSz: 4, requested: []int64{111, 201, 202}, succeeded: []int64{111, 201, 202}, wantQty: 4, wantShort: true, wantTPOIDs: []int64{0, 0}, wantTPArmed: []bool{false, false}, wantPnL: 399},
+		{name: "a stop cancel the venue reported as failed keeps its id", intentFull: true, closeQty: 10, fillSz: 4, requested: []int64{111, 201, 202}, succeeded: []int64{201, 202}, failed: []int64{111}, wantQty: 4, wantShort: true, wantSLOID: 111, wantTPOIDs: []int64{0, 0}, wantTPArmed: []bool{false, false}, wantPnL: 399},
+		{name: "a full fill closes the book and leaves the ids to the book delete", intentFull: true, closeQty: 10, fillSz: 10, requested: []int64{111, 201, 202}, succeeded: []int64{111, 201, 202}, wantQty: 10, wantFull: true, wantSLOID: 111, wantTPOIDs: []int64{201, 202}, wantTPArmed: []bool{true, true}, wantPnL: 999},
+		{name: "a partial-intent close requested no cancel and keeps every id", closeQty: 5, fillSz: 5, requested: []int64{0}, wantQty: 5, wantSLOID: 111, wantTPOIDs: []int64{201, 202}, wantTPArmed: []bool{true, true}, wantPnL: 499},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pos := &Position{Symbol: "ETH", Quantity: 10, AvgCost: 2000, Side: "long", OwnerStrategyID: sc.ID, StopLossOID: 111, StopLossTriggerPx: 1900, TPOIDs: []int64{201, 202}, TPArmedTiers: []bool{true, true}}
+			exec := &HyperliquidExecuteResult{Execution: &HyperliquidExecution{Fill: &HyperliquidFill{AvgPx: 2100, TotalSz: tc.fillSz, Fee: 1, OID: 9}}, CancelStopLossSucceededOIDs: tc.succeeded, CancelStopLossFailedOIDs: tc.failed}
+			if len(tc.failed) > 0 {
+				exec.CancelStopLossError = "cancel rejected"
+			}
+			booking := bookManualCycleClose(sc, pos, "sell", tc.closeQty, tc.intentFull, exec, tc.requested, time.Unix(0, 0).UTC())
+			clearHyperliquidProtectionOIDsMatching(pos, booking.ClearOIDs)
+			a := booking.Action
+			if math.Abs(a.Quantity-tc.wantQty) > 1e-9 || a.IsFullClose != tc.wantFull || booking.ShortOfIntent != tc.wantShort || math.Abs(a.RealizedPnL-tc.wantPnL) > 1e-9 || a.ExchangeOrderID != "9" {
+				t.Fatalf("action qty=%g full=%t short=%t pnl=%g oid=%q, want qty=%g full=%t short=%t pnl=%g", a.Quantity, a.IsFullClose, booking.ShortOfIntent, a.RealizedPnL, a.ExchangeOrderID, tc.wantQty, tc.wantFull, tc.wantShort, tc.wantPnL)
+			}
+			if pos.StopLossOID != tc.wantSLOID || fmt.Sprint(pos.TPOIDs) != fmt.Sprint(tc.wantTPOIDs) || fmt.Sprint(pos.TPArmedTiers) != fmt.Sprint(tc.wantTPArmed) {
+				t.Fatalf("book sl=%d tps=%v armed=%v, want sl=%d tps=%v armed=%v", pos.StopLossOID, pos.TPOIDs, pos.TPArmedTiers, tc.wantSLOID, tc.wantTPOIDs, tc.wantTPArmed)
 			}
 		})
 	}

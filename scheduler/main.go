@@ -2518,7 +2518,14 @@ func main() {
 									if execResult.Execution != nil && execResult.Execution.Fill != nil && execResult.Execution.Fill.TotalSz > 0 {
 										filledQty = execResult.Execution.Fill.TotalSz
 									}
-									if extraTrades, slDetail := armTrailingStopAtOpenNow(sc, stratState, result.Symbol, price, hlOnChainAbsQty, filledQty, &mu, notifier, logger); extraTrades > 0 {
+									if result.SizedCloseBookFraction > 0 {
+										if len(result.SizedCloseCanceledOIDs) > 0 {
+											if extraTrades, slDetail := rearmProtectionAfterFailedClose(sc, stratState, stratDB, result.Symbol, price, hlStopLossOID, hlStopLossTriggerPx, hlStopLossHighWaterPx, hlOnChainAbsQty, hlReconcileFillHintsJSON, hlLiquidationPx, hlNetSideByCoin, &mu, notifier, logger); extraTrades > 0 {
+												trades += extraTrades
+												detail = slDetail
+											}
+										}
+									} else if extraTrades, slDetail := armTrailingStopAtOpenNow(sc, stratState, result.Symbol, price, hlOnChainAbsQty, filledQty, &mu, notifier, logger); extraTrades > 0 {
 										trades += extraTrades
 										detail = slDetail
 									}
@@ -2795,41 +2802,27 @@ func main() {
 									sc.ID, sc.Symbol, execResult.CancelStopLossError, cancelOID, extraCancelOIDs)
 							}
 							if execResult.Execution != nil && execResult.Execution.Fill != nil {
-								fill := execResult.Execution.Fill
-								var oid string
-								if fill.OID != 0 {
-									oid = fmt.Sprintf("%d", fill.OID)
+								booking := bookManualCycleClose(sc, pos, closeSide, closeQty, intentFullClose, execResult, requestedCancelOIDs, time.Now().UTC())
+								action := booking.Action
+								if action.Quantity < closeQty-1e-9 {
+									logger.Warn("manual close filled %.6f of the requested %.6f for %s/%s; booking the filled quantity", action.Quantity, closeQty, sc.ID, sc.Symbol)
 								}
-								bookedQty, bookedFee, bookedFull := manualCloseFillAttribution(pos.Quantity, fill)
-								if bookedQty < closeQty-1e-9 {
-									logger.Warn("manual close filled %.6f of the requested %.6f for %s/%s; booking the filled quantity", bookedQty, closeQty, sc.ID, sc.Symbol)
+								if len(booking.ClearOIDs) > 0 {
+									mu.Lock()
+									clearHyperliquidProtectionOIDsMatching(stratState.Positions[sc.Symbol], booking.ClearOIDs)
+									mu.Unlock()
+									logger.Info("cleared canceled protection OIDs=%v after the manual close filled short of the full book", booking.ClearOIDs)
 								}
-								var realizedPnL float64
-								if pos.Side == "long" {
-									realizedPnL = bookedQty * (fill.AvgPx - pos.AvgCost)
-								} else {
-									realizedPnL = bookedQty * (pos.AvgCost - fill.AvgPx)
-								}
-								realizedPnL -= bookedFee
-								action := PendingManualAction{
-									StrategyID:      sc.ID,
-									Action:          "close",
-									Symbol:          sc.Symbol,
-									Side:            closeSide,
-									Quantity:        bookedQty,
-									FillPrice:       fill.AvgPx,
-									FillFee:         bookedFee,
-									ExchangeOrderID: oid,
-									RealizedPnL:     realizedPnL,
-									IsFullClose:     intentFullClose && bookedFull,
-									CreatedAt:       time.Now().UTC(),
+								if booking.ShortOfIntent {
+									logger.Error("CRITICAL: manual full close %s filled %.6f of the %.6f book; the remainder stays on the book", sc.Symbol, action.Quantity, pos.Quantity)
+									notifySizedCloseRemainder(notifier, sc, sc.Symbol, pos.Side, action.Quantity, pos.Quantity)
 								}
 								if err := stratDB.InsertPendingManualAction(action); err != nil {
 									logger.Error("failed to queue manual close action: %v", err)
 								} else {
-									prices[sc.Symbol] = fill.AvgPx
+									prices[sc.Symbol] = action.FillPrice
 									trades = 1
-									detail = fmt.Sprintf("manual close %.4f %s @ $%.2f | PnL=$%.2f", bookedQty, sc.Symbol, fill.AvgPx, realizedPnL)
+									detail = fmt.Sprintf("manual close %.4f %s @ $%.2f | PnL=$%.2f", action.Quantity, sc.Symbol, action.FillPrice, action.RealizedPnL)
 									logger.Info("Queued manual close: %s", detail)
 								}
 							}
@@ -3850,6 +3843,14 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 	if execResult.CancelStopLossError != "" {
 		logger.Warn("SL cancel failed (non-fatal): %s", execResult.CancelStopLossError)
 	}
+	if (closeMode == hlCloseModeReduceOnly || closeMode == hlCloseModeCross) && !partialClose {
+		if bookedQty, _, bookedFull := manualCloseFillAttribution(posQty, execResult.Execution.Fill); !bookedFull {
+			result.SizedCloseBookFraction = bookedQty / posQty
+			result.SizedCloseCanceledOIDs = hyperliquidExecuteSucceededCancelOIDs(execResult, append([]int64{cancelOID}, extraCancelOIDs...))
+			logger.Error("CRITICAL: sized close %s filled %.6f of the %.6f book (sent %.6f); booking the filled quantity and keeping the %.6f remainder on the book", result.Symbol, bookedQty, posQty, size, posQty-bookedQty)
+			notifySizedCloseRemainder(notifier, sc, result.Symbol, posSide, bookedQty, posQty)
+		}
+	}
 	if execResult.StopLossError != "" {
 		if isHLOpenOrderCapRejection(execResult.StopLossError) {
 			logger.Error("CRITICAL: HL open-order-cap rejected SL placement for %s — position is unprotected: %s",
@@ -3917,12 +3918,21 @@ func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, r
 		fillFee = fill.Fee
 	}
 
-	exec, err := ExecutePerpsSignalWithLeverageDeferredOpen(s, result.Signal, result.Symbol, fillPrice, sizing, fillQty, fillOID, fillFee, EffectiveDirection(sc), result.CloseFraction, logger)
+	bookCloseFraction := result.CloseFraction
+	if result.SizedCloseBookFraction > 0 && result.SizedCloseBookFraction < 1 {
+		bookCloseFraction = result.SizedCloseBookFraction
+	}
+	exec, err := ExecutePerpsSignalWithLeverageDeferredOpen(s, result.Signal, result.Symbol, fillPrice, sizing, fillQty, fillOID, fillFee, EffectiveDirection(sc), bookCloseFraction, logger)
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
 		return 0, "", nil, nil
 	}
 	trades := exec.TradesExecuted
+	if trades > 0 && len(result.SizedCloseCanceledOIDs) > 0 {
+		if pos, ok := s.Positions[result.Symbol]; ok && pos != nil {
+			clearHyperliquidProtectionOIDsMatching(pos, result.SizedCloseCanceledOIDs)
+		}
+	}
 	openTrade := exec.OpenTrade
 	stampEntryATRIfOpened(s, result.Symbol, result.Indicators)
 	stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)

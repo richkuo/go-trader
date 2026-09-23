@@ -11,7 +11,7 @@ Guardrails only. Mechanism/flows: SKILL.md, docs/POST_UPDATE_HISTORY.md; <15k by
 - **Never give time/effort estimates.** Complexity=scope+risk
 ## Repo (`scheduler/` = one `package main`)
 - `executor.go`/`shutdown.go`: side-effect wrappers = `runPythonSideEffect`, NEVER `runPython`. Live HL book needs `confirmHyperliquidExecuteFill` (finite `AvgPx>0`+`TotalSz>0` in `Execution.Fill`); `check_hyperliquid.py execute` exits 1 on no fill.
-- `planHLCloseOrder` = SOLE size+mode per sized execute-lane close (not open/flip); `cross` needs fresh refetch, else defer; `--close-mode` in `executeProbeArgv`.
+- `planHLCloseOrder`=SOLE size+mode per sized execute-lane close (not open/flip) on pre-send refetch (fail=defer unless uncapped `reduce_only`); short full-intent fill books the fill; `--close-mode` in `executeProbeArgv`.
 - `server.go`/`ui_*.go`: lock `mu > strategiesMu`; loopback only. `/tuning` never writes config; `ui_tuning.go` = `spawnPythonProcessWithEnv` (NEVER `runPython*`); `POST /api/tuning/apply` = sole promotion. `uiPartitionParam` = sole `?partition=` resolver (`/api/strategies(/overview)?`, `/api/leaderboard`, `/api/strategies/dead`, `/api/diagnostics`); unparseable=400, unowned=404; diagnostics filter `SourceRole` before paging+total; cash flow `live_owned`; selected correlation/portfolio-risk NEVER fall back to the untagged legacy field.
 - `config*.go`: `CurrentConfigVersion=19`, `MinSupportedConfigVersion=13`; 7 exclusive HL stop fields (none = `DefaultStopLossATRMult=1.0`); `close_strategy` canonical, unknown-key guard. On-chain TP gate != `len(tiers)>0`. `CircuitBreaker *bool` ONLY via accessors. `portfolio_risk.paper`/`paper_sources[].portfolio_risk`: evaluators use `partitionRiskConfig`, nested `paper` rejected. `portfolio_risk.include_paused_in_warning` (default false, root>paper>source; false never overrides an enabled layer): `portfolio_warning.go` drops a paused strategy from Top Contributors ONLY when flat (`Quantity==0` regular AND option); open positions stay visible in every partition.
 - `close_defaults.go`: system>user>strategy, explicit `tp_tiers` wins; `applyUserCloseDefaultRatchetRegimeTrails` runs in `loadConfig` BEFORE the scalar ATR-stop default.
@@ -60,8 +60,8 @@ Guardrails only. Mechanism/flows: SKILL.md, docs/POST_UPDATE_HISTORY.md; <15k by
 ## PRs
 - `Closes #<N>` in body; never bare `#N` in lists. Title `type(#<N>): summary [C<score>, <model>, <effort>]` (`, fableplan` if Fable planned). Body: `## Plain simple English` (<55 words), then `## Summary` + verification.
 - Commits, PR and issue bodies end `LLM: <model> | <effort> | Harness: <action>`, no `Co-authored-by`.
-- Bot reviews land on issue-comments endpoint; before merging a long-lived PR diff `origin/main..HEAD` for reverts.
-- Review format: rk-skills `pr-review-format.md` + `.github/prompts/pr-review-format-local.md`, reviews never gate on CI.
+- Bot reviews land on issue comments; before merging a long-lived PR diff `origin/main..HEAD` for reverts.
+- Review format: rk-skills `pr-review-format.md` + `.github/prompts/pr-review-format-local.md`; never gate on CI.
 - Review findings: restate as invariant, list breaking states (inverse, compound), add class tests.
 - `.github/workflows/claude.yml`: mode routing fail-closed (untrusted/fork = review); no-execution in agent; commit/push implement-only; prompt never holds `"`, `` ` ``, `$`; `.github/scripts/` keeps ONLY `test_workflow_logic.py`.
 
@@ -70,7 +70,7 @@ Guardrails only. Mechanism/flows: SKILL.md, docs/POST_UPDATE_HISTORY.md; <15k by
 
 ## Deploy
 - **Update only with `bash scripts/update.sh --restart`. Never rebuild Go alone**: Go+Python share 1 argv contract per SHA; `update_resolve_db_exclude` lists all state files (incl. `paper_sources[].db_file`).
-- Exit codes: probe 78, singleton 79, storage 80, units set `RestartPreventExitStatus=78 79 80`. Ownership over ALL files (incl. `--once`) precedes migration or startup write; unit edits: `daemon-reload`.
+- Exit codes: probe 78, singleton 79, storage 80, units `RestartPreventExitStatus=78 79 80`. Ownership over ALL files (incl. `--once`) precedes migration or startup write; unit edits: `daemon-reload`.
 - Post-update: SKILL.md Post-Update Agent Protocol; after a Python-launcher change smoke `./go-trader --once` (daemon stopped).
 
 ## Backtest

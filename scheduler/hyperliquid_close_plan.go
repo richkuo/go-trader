@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"time"
 )
 
 type hlCloseAction int
@@ -161,22 +162,36 @@ func planHLCloseOrder(symbol, posSide string, posQty, closeQty, peerSameQty, pee
 }
 
 func resolveHLCloseOrder(symbol, posSide string, posQty, closeQty float64, ctx hlCloseContext) hlCloseOrderPlan {
-	plan := planHLCloseOrder(symbol, posSide, posQty, closeQty, ctx.PeerSameQty, ctx.PeerOppQty, ctx.OnChain)
-	if plan.Action != hlCloseSend || plan.Mode != hlCloseModeCross {
-		return plan
-	}
-	if ctx.Refetch == nil {
-		return hlCloseOrderPlan{Action: hlCloseDefer, Reason: fmt.Sprintf("the %s close needs the netted order, but no account refetch is available to confirm the on-chain position", symbol)}
-	}
-	fresh, err := ctx.Refetch()
-	if err != nil || !fresh.Known {
-		detail := "the account state is not readable"
+	snapshot := planHLCloseOrder(symbol, posSide, posQty, closeQty, ctx.PeerSameQty, ctx.PeerOppQty, ctx.OnChain)
+	detail := "no account refetch is available"
+	if ctx.Refetch != nil {
+		fresh, err := ctx.Refetch()
+		if err == nil && fresh.Known {
+			return planHLCloseOrder(symbol, posSide, posQty, closeQty, ctx.PeerSameQty, ctx.PeerOppQty, fresh)
+		}
+		detail = "the account state is not readable"
 		if err != nil {
 			detail = err.Error()
 		}
-		return hlCloseOrderPlan{Action: hlCloseDefer, Reason: fmt.Sprintf("the %s close needs the netted order, but the account refetch failed (%s)", symbol, detail)}
 	}
-	return planHLCloseOrder(symbol, posSide, posQty, closeQty, ctx.PeerSameQty, ctx.PeerOppQty, fresh)
+	if snapshot.Action == hlCloseSend && snapshot.Mode == hlCloseModeReduceOnly && !snapshot.Capped {
+		snapshot.Reason = fmt.Sprintf("%s; the pre-send account refetch failed (%s), and a reduce-only close at the book size cannot cross zero", snapshot.Reason, detail)
+		return snapshot
+	}
+	return hlCloseOrderPlan{Action: hlCloseDefer, Reason: fmt.Sprintf("the %s close would %s on the cycle-start reading, but the pre-send account refetch failed (%s), so no order is sent and no protection is cancelled", symbol, hlSnapshotPlanVerb(snapshot), detail)}
+}
+
+func hlSnapshotPlanVerb(plan hlCloseOrderPlan) string {
+	switch {
+	case plan.Action == hlCloseSkip:
+		return "be skipped"
+	case plan.Action == hlCloseDefer:
+		return "be deferred"
+	case plan.Mode == hlCloseModeCross:
+		return "cross zero"
+	default:
+		return "be capped"
+	}
 }
 
 func hlOnChainRefetcher(accountAddress string) func() (hlOnChainCoinView, error) {
@@ -203,4 +218,56 @@ func manualCloseFillAttribution(posQty float64, fill *HyperliquidFill) (bookedQt
 	}
 	fullClose = posQty-bookedQty <= 0.0001
 	return bookedQty, fee, fullClose
+}
+
+func notifySizedCloseRemainder(notifier *MultiNotifier, sc StrategyConfig, symbol, side string, filledQty, bookQty float64) {
+	if notifier == nil || !notifier.HasBackends() {
+		return
+	}
+	msg := fmt.Sprintf("**SIZED CLOSE FILLED SHORT** [%s] %s %s close filled %.6f of the %.6f book. The %.6f remainder stays on the book, the cancelled protection ids are cleared, and the stop is placed again by the protection path. Compare the on-chain position with the books.", sc.ID, symbol, side, filledQty, bookQty, bookQty-filledQty)
+	notifier.SendToAllChannels(msg)
+	notifier.SendOwnerDM(msg)
+}
+
+type manualCycleCloseBooking struct {
+	Action        PendingManualAction
+	ClearOIDs     []int64
+	ShortOfIntent bool
+}
+
+func bookManualCycleClose(sc StrategyConfig, pos *Position, closeSide string, closeQty float64, intentFullClose bool, execResult *HyperliquidExecuteResult, requestedCancelOIDs []int64, now time.Time) manualCycleCloseBooking {
+	fill := execResult.Execution.Fill
+	bookedQty, bookedFee, bookedFull := manualCloseFillAttribution(pos.Quantity, fill)
+	var realizedPnL float64
+	if pos.Side == "long" {
+		realizedPnL = bookedQty * (fill.AvgPx - pos.AvgCost)
+	} else {
+		realizedPnL = bookedQty * (pos.AvgCost - fill.AvgPx)
+	}
+	realizedPnL -= bookedFee
+	var oid string
+	if fill.OID != 0 {
+		oid = fmt.Sprintf("%d", fill.OID)
+	}
+	fullClose := intentFullClose && bookedFull
+	booking := manualCycleCloseBooking{
+		Action: PendingManualAction{
+			StrategyID:      sc.ID,
+			Action:          "close",
+			Symbol:          sc.Symbol,
+			Side:            closeSide,
+			Quantity:        bookedQty,
+			FillPrice:       fill.AvgPx,
+			FillFee:         bookedFee,
+			ExchangeOrderID: oid,
+			RealizedPnL:     realizedPnL,
+			IsFullClose:     fullClose,
+			CreatedAt:       now,
+		},
+		ShortOfIntent: intentFullClose && !bookedFull,
+	}
+	if !fullClose {
+		booking.ClearOIDs = hyperliquidExecuteSucceededCancelOIDs(execResult, requestedCancelOIDs)
+	}
+	return booking
 }
