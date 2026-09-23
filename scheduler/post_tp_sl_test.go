@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"math"
 	"os"
 	"path/filepath"
@@ -470,7 +471,7 @@ func TestRunPostTPStopLossAdjustment_SkipsNeverArmedTier(t *testing.T) {
 	state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
 	var mu sync.RWMutex
 
-	if runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, nil) {
+	if applied, _, _ := runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, nil, nil, nil); applied {
 		t.Fatal("expected runPostTPStopLossAdjustment to skip never-armed tier")
 	}
 	if calls != 0 {
@@ -516,7 +517,7 @@ func TestRunPostTPStopLossAdjustment_BreakevenAfterTP1(t *testing.T) {
 	state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
 	var mu sync.RWMutex
 
-	if !runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, nil) {
+	if applied, _, _ := runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, nil, nil, nil); !applied {
 		t.Fatal("expected runPostTPStopLossAdjustment to apply")
 	}
 
@@ -592,7 +593,7 @@ func TestRunPostTPStopLossAdjustment_RegimeTPATRFraction(t *testing.T) {
 	state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
 	var mu sync.RWMutex
 
-	if !runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, nil) {
+	if applied, _, _ := runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, nil, nil, nil); !applied {
 		t.Fatal("expected runPostTPStopLossAdjustment to apply")
 	}
 	if gotTrigger != 100 {
@@ -634,8 +635,8 @@ func TestRunPostTPStopLossAdjustment_Idempotent(t *testing.T) {
 	state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
 	var mu sync.RWMutex
 
-	runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, nil)
-	runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, nil)
+	runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, nil, nil, nil)
+	runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, nil, nil, nil)
 	if calls != 1 {
 		t.Fatalf("expected exactly 1 subprocess call, got %d", calls)
 	}
@@ -666,7 +667,7 @@ func TestRunPostTPStopLossAdjustment_TrailFromHereTransition(t *testing.T) {
 	state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
 	var mu sync.RWMutex
 
-	if !runPostTPStopLossAdjustment(sc, state, "ETH", 110, nil, &mu, nil, nil, nil) {
+	if applied, _, _ := runPostTPStopLossAdjustment(sc, state, "ETH", 110, nil, &mu, nil, nil, nil, nil, nil); !applied {
 		t.Fatal("expected runPostTPStopLossAdjustment to apply")
 	}
 	if pos.StopLossTriggerPx != 105 {
@@ -708,7 +709,7 @@ func TestRunPostTPStopLossAdjustment_TPATRFractionUsesFiringTierMultiple(t *test
 	state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
 	var mu sync.RWMutex
 
-	if !runPostTPStopLossAdjustment(sc, state, "ETH", 110, nil, &mu, nil, nil, nil) {
+	if applied, _, _ := runPostTPStopLossAdjustment(sc, state, "ETH", 110, nil, &mu, nil, nil, nil, nil, nil); !applied {
 		t.Fatal("expected runPostTPStopLossAdjustment to apply")
 	}
 	if gotTrigger != 105 {
@@ -744,7 +745,7 @@ func TestRunPostTPStopLossAdjustment_TPATRFractionUsesDefaultTierMultiple(t *tes
 	state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
 	var mu sync.RWMutex
 
-	if !runPostTPStopLossAdjustment(sc, state, "ETH", 110, nil, &mu, nil, nil, nil) {
+	if applied, _, _ := runPostTPStopLossAdjustment(sc, state, "ETH", 110, nil, &mu, nil, nil, nil, nil, nil); !applied {
 		t.Fatal("expected runPostTPStopLossAdjustment to apply")
 	}
 	if gotTrigger != 106.25 {
@@ -782,7 +783,7 @@ func TestRunPostTPStopLossAdjustment_TrailDefersWithoutMark(t *testing.T) {
 	state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
 	var mu sync.RWMutex
 
-	if runPostTPStopLossAdjustment(sc, state, "ETH", 0, nil, &mu, nil, nil, nil) {
+	if applied, _, _ := runPostTPStopLossAdjustment(sc, state, "ETH", 0, nil, &mu, nil, nil, nil, nil, nil); applied {
 		t.Fatal("expected runPostTPStopLossAdjustment to defer without mark")
 	}
 	if calls != 0 {
@@ -815,7 +816,7 @@ func TestRunPostTPStopLossAdjustment_NoRulesShortCircuits(t *testing.T) {
 	state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
 	var mu sync.RWMutex
 
-	if runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, nil) {
+	if applied, _, _ := runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, nil, nil, nil); applied {
 		t.Fatal("expected runPostTPStopLossAdjustment to return false when no rules configured")
 	}
 	if calls != 0 {
@@ -847,7 +848,7 @@ func TestRunPostTPStopLossAdjustment_DefersWhenSLNotArmed(t *testing.T) {
 	state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
 	var mu sync.RWMutex
 
-	if runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, nil) {
+	if applied, _, _ := runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, nil, nil, nil); applied {
 		t.Fatal("expected defer when SL OID is 0")
 	}
 	if calls != 0 {
@@ -881,7 +882,7 @@ func TestRunPostTPStopLossAdjustment_CapsAtOnChainQty(t *testing.T) {
 	var mu sync.RWMutex
 
 	onChain := map[string]float64{"ETH": 0.7}
-	if !runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, onChain) {
+	if applied, _, _ := runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, onChain, nil, nil); !applied {
 		t.Fatal("expected runPostTPStopLossAdjustment to apply")
 	}
 	if gotQty != 0.7 {
@@ -914,11 +915,246 @@ func TestRunPostTPStopLossAdjustment_NoCapWhenOnChainGEVirtual(t *testing.T) {
 	state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
 	var mu sync.RWMutex
 
-	if !runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, map[string]float64{"ETH": 1.0}) {
+	if applied, _, _ := runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, map[string]float64{"ETH": 1.0}, nil, nil); !applied {
 		t.Fatal("expected runPostTPStopLossAdjustment to apply")
 	}
 	if gotQty != 1.0 {
 		t.Fatalf("subprocess size=%v, want 1.0 (uncapped)", gotQty)
+	}
+}
+
+type postTPLockCheckNotifier struct {
+	*mockNotifier
+	t  *testing.T
+	mu *sync.RWMutex
+}
+
+func (n *postTPLockCheckNotifier) assertUnlocked() {
+	n.t.Helper()
+	if !n.mu.TryLock() {
+		n.t.Error("alert sent while mu is held")
+	} else {
+		n.mu.Unlock()
+	}
+	hlTrailingUpdateLocksMu.Lock()
+	m := hlTrailingUpdateLocks["ETH"]
+	hlTrailingUpdateLocksMu.Unlock()
+	if m != nil {
+		if !m.TryLock() {
+			n.t.Error("alert sent while the symbol update lock is held")
+		} else {
+			m.Unlock()
+		}
+	}
+}
+
+func (n *postTPLockCheckNotifier) SendMessage(channelID, content string) error {
+	n.assertUnlocked()
+	return n.mockNotifier.SendMessage(channelID, content)
+}
+
+func (n *postTPLockCheckNotifier) SendDM(userID, content string) error {
+	n.assertUnlocked()
+	return n.mockNotifier.SendDM(userID, content)
+}
+
+func TestRunPostTPStopLossAdjustment_ReadsVenueReply(t *testing.T) {
+	old := runHyperliquidUpdateStopLossFunc
+	defer func() { runHyperliquidUpdateStopLossFunc = old }()
+
+	type reply func(call int, triggerPx float64) (*HyperliquidStopLossUpdateResult, error)
+	fixed := func(r HyperliquidStopLossUpdateResult) reply {
+		return func(_ int, triggerPx float64) (*HyperliquidStopLossUpdateResult, error) {
+			out := r
+			if out.Error == "" && out.StopLossTriggerPx == 0 {
+				out.StopLossTriggerPx = triggerPx
+			}
+			return &out, nil
+		}
+	}
+	clampedPx := 100.5 * (1.0 + hlLiquidationStopBufferPct/100.0)
+	liqLong := map[string]float64{"ETH": 100.5}
+	netLong := map[string]string{"ETH": "long"}
+
+	cases := []struct {
+		name          string
+		trail         bool
+		onChain       map[string]float64
+		liqPx         map[string]float64
+		netSide       map[string]string
+		reply         reply
+		wantCalls     int
+		wantSentPx    float64
+		wantSentQty   float64
+		wantApplied   bool
+		wantFills     int
+		wantGone      bool
+		wantQty       float64
+		wantOID       int64
+		wantTrigger   float64
+		wantWatermark int
+		wantOwner     bool
+		wantHighWater float64
+		wantCloseQty  float64
+		wantDMs       int
+		wantMessages  int
+		wantLiqAction hlLiquidationAlertAction
+	}{
+		{name: "resting", reply: fixed(HyperliquidStopLossUpdateResult{StopLossOID: 999, CancelStopLossSucceeded: true}),
+			wantCalls: 1, wantSentPx: 100, wantSentQty: 0.5, wantApplied: true, wantQty: 0.5, wantOID: 999, wantTrigger: 100, wantWatermark: 1},
+		{name: "resting trail_from_here", trail: true, reply: fixed(HyperliquidStopLossUpdateResult{StopLossOID: 999, CancelStopLossSucceeded: true}),
+			wantCalls: 1, wantSentPx: 100, wantSentQty: 0.5, wantApplied: true, wantQty: 0.5, wantOID: 999, wantTrigger: 100, wantWatermark: 1, wantOwner: true, wantHighWater: 105},
+		{name: "fill at submit books the placed size", reply: fixed(HyperliquidStopLossUpdateResult{StopLossFilledImmediately: true, CancelStopLossSucceeded: true}),
+			wantCalls: 1, wantSentPx: 100, wantSentQty: 0.5, wantApplied: true, wantFills: 1, wantGone: true, wantCloseQty: 0.5},
+		{name: "fill at submit capped leaves a residue", onChain: map[string]float64{"ETH": 0.2}, reply: fixed(HyperliquidStopLossUpdateResult{StopLossFilledImmediately: true, CancelStopLossSucceeded: true}),
+			wantCalls: 1, wantSentPx: 100, wantSentQty: 0.2, wantApplied: true, wantFills: 1, wantQty: 0.3, wantOID: 0, wantTrigger: 0, wantWatermark: 1, wantCloseQty: 0.2},
+		{name: "fill at submit capped trail residue keeps the owner", trail: true, onChain: map[string]float64{"ETH": 0.2}, reply: fixed(HyperliquidStopLossUpdateResult{StopLossFilledImmediately: true, CancelStopLossSucceeded: true}),
+			wantCalls: 1, wantSentPx: 100, wantSentQty: 0.2, wantApplied: true, wantFills: 1, wantQty: 0.3, wantOID: 0, wantTrigger: 0, wantWatermark: 1, wantOwner: true, wantHighWater: 105, wantCloseQty: 0.2},
+		{name: "outcome unknown after a landed cancel", reply: fixed(HyperliquidStopLossUpdateResult{CancelStopLossSucceeded: true, StopLossOutcomeUnknown: true, StopLossError: "no usable status"}),
+			wantCalls: 1, wantSentPx: 100, wantSentQty: 0.5, wantQty: 0.5, wantOID: 0, wantTrigger: 100, wantDMs: 1, wantMessages: 1},
+		{name: "outcome unknown with the old stop already gone", reply: fixed(HyperliquidStopLossUpdateResult{StopLossOutcomeUnknown: true, StopLossError: "no usable status"}),
+			wantCalls: 1, wantSentPx: 100, wantSentQty: 0.5, wantQty: 0.5, wantOID: 0, wantTrigger: 100, wantDMs: 1, wantMessages: 1},
+		{name: "cancel landed placement rejected", reply: fixed(HyperliquidStopLossUpdateResult{CancelStopLossSucceeded: true, StopLossError: "place_stop_loss SDK error"}),
+			wantCalls: 1, wantSentPx: 100, wantSentQty: 0.5, wantQty: 0.5, wantOID: 0, wantTrigger: 0, wantDMs: 1, wantMessages: 1},
+		{name: "script error after a landed cancel", reply: fixed(HyperliquidStopLossUpdateResult{Error: "boom", CancelStopLossSucceeded: true}),
+			wantCalls: 1, wantSentPx: 100, wantSentQty: 0.5, wantQty: 0.5, wantOID: 0, wantTrigger: 0, wantDMs: 1, wantMessages: 1},
+		{name: "cancel failed", reply: fixed(HyperliquidStopLossUpdateResult{CancelStopLossError: "rejected"}),
+			wantCalls: 1, wantSentPx: 100, wantSentQty: 0.5, wantQty: 0.5, wantOID: 111, wantTrigger: 95},
+		{name: "open-order check failed", reply: fixed(HyperliquidStopLossUpdateResult{OpenOrderCheckError: "timeout"}),
+			wantCalls: 1, wantSentPx: 100, wantSentQty: 0.5, wantQty: 0.5, wantOID: 111, wantTrigger: 95},
+		{name: "old stop filled externally", reply: fixed(HyperliquidStopLossUpdateResult{StopLossFilledExternally: true}),
+			wantCalls: 1, wantSentPx: 100, wantSentQty: 0.5, wantQty: 0.5, wantOID: 111, wantTrigger: 95},
+		{name: "script error with no cancel", reply: fixed(HyperliquidStopLossUpdateResult{Error: "boom"}),
+			wantCalls: 1, wantSentPx: 100, wantSentQty: 0.5, wantQty: 0.5, wantOID: 111, wantTrigger: 95},
+		{name: "subprocess failure with no result", reply: func(int, float64) (*HyperliquidStopLossUpdateResult, error) {
+			return nil, errors.New("exec failed")
+		},
+			wantCalls: 1, wantSentPx: 100, wantSentQty: 0.5, wantQty: 0.5, wantOID: 111, wantTrigger: 95},
+		{name: "trigger past liquidation is clamped", liqPx: liqLong, netSide: netLong, reply: fixed(HyperliquidStopLossUpdateResult{StopLossOID: 999, CancelStopLossSucceeded: true}),
+			wantCalls: 1, wantSentPx: clampedPx, wantSentQty: 0.5, wantApplied: true, wantQty: 0.5, wantOID: 999, wantTrigger: clampedPx, wantWatermark: 1, wantDMs: 1, wantMessages: 1, wantLiqAction: hlLiquidationActionClamped},
+		{name: "clamped cancel landed placement rejected retries fresh", liqPx: liqLong, netSide: netLong,
+			reply: func(call int, triggerPx float64) (*HyperliquidStopLossUpdateResult, error) {
+				if call == 0 {
+					return &HyperliquidStopLossUpdateResult{CancelStopLossSucceeded: true, StopLossError: "place_stop_loss SDK error", StopLossTriggerPx: triggerPx}, nil
+				}
+				return &HyperliquidStopLossUpdateResult{StopLossOID: 1001, StopLossTriggerPx: triggerPx}, nil
+			},
+			wantCalls: 2, wantSentPx: clampedPx, wantSentQty: 0.5, wantApplied: true, wantQty: 0.5, wantOID: 1001, wantTrigger: clampedPx, wantWatermark: 1, wantDMs: 1, wantMessages: 1, wantLiqAction: hlLiquidationActionClamped},
+		{name: "clamped retry also rejected sends one alert", liqPx: liqLong, netSide: netLong,
+			reply:     fixed(HyperliquidStopLossUpdateResult{CancelStopLossSucceeded: true, StopLossError: "place_stop_loss SDK error"}),
+			wantCalls: 2, wantSentPx: clampedPx, wantSentQty: 0.5, wantQty: 0.5, wantOID: 0, wantTrigger: 0, wantDMs: 1, wantMessages: 1, wantLiqAction: hlLiquidationActionProtectionLost},
+		{name: "liquidation side mismatch does not clamp", liqPx: liqLong, netSide: map[string]string{"ETH": "short"}, reply: fixed(HyperliquidStopLossUpdateResult{StopLossOID: 999, CancelStopLossSucceeded: true}),
+			wantCalls: 1, wantSentPx: 100, wantSentQty: 0.5, wantApplied: true, wantQty: 0.5, wantOID: 999, wantTrigger: 100, wantWatermark: 1},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			clearHLLiquidationAlert("hl-sl-after", "ETH")
+			defer clearHLLiquidationAlert("hl-sl-after", "ETH")
+
+			var mu sync.RWMutex
+			type call struct {
+				qty, triggerPx float64
+				cancelOID      int64
+			}
+			var calls []call
+			runHyperliquidUpdateStopLossFunc = func(_, symbol, _ string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+				hlTrailingUpdateLocksMu.Lock()
+				m := hlTrailingUpdateLocks[symbol]
+				hlTrailingUpdateLocksMu.Unlock()
+				if m == nil || m.TryLock() {
+					if m != nil {
+						m.Unlock()
+					}
+					t.Error("venue call ran without the symbol update lock")
+				}
+				if !mu.TryLock() {
+					t.Error("venue call ran while mu is held")
+				} else {
+					mu.Unlock()
+				}
+				n := len(calls)
+				calls = append(calls, call{qty: size, triggerPx: triggerPx, cancelOID: cancelOID})
+				res, err := tc.reply(n, triggerPx)
+				return res, "", err
+			}
+
+			var slAfter interface{} = "breakeven"
+			if tc.trail {
+				slAfter = map[string]interface{}{"trail_from_here": map[string]interface{}{"atr_mult": 1.0}}
+			}
+			sc := postTPSLTestStrategy(slAfter, []interface{}{
+				map[string]interface{}{"atr_multiple": 2, "close_fraction": 0.5},
+				map[string]interface{}{"atr_multiple": 3, "close_fraction": 1.0},
+			})
+			state := &StrategyState{ID: sc.ID, Platform: "hyperliquid", Type: "perps", Positions: map[string]*Position{"ETH": {
+				Symbol: "ETH", Quantity: 0.5, InitialQuantity: 1.0,
+				AvgCost: 100, EntryATR: 5, Side: "long",
+				StopLossOID: 111, StopLossTriggerPx: 95,
+				TPOIDs:       []int64{0, 222},
+				TPArmedTiers: []bool{true, true},
+			}}}
+			mock := &mockNotifier{}
+			notifier := &MultiNotifier{backends: []notifierBackend{{
+				notifier: &postTPLockCheckNotifier{mockNotifier: mock, t: t, mu: &mu},
+				ownerID:  "owner",
+				channels: map[string]string{"hyperliquid": "ch"},
+			}}}
+
+			applied, fills, detail := runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, notifier, nil, tc.onChain, tc.liqPx, tc.netSide)
+
+			if len(calls) != tc.wantCalls {
+				t.Fatalf("venue calls = %d, want %d", len(calls), tc.wantCalls)
+			}
+			if math.Abs(calls[0].triggerPx-tc.wantSentPx) > 1e-9 || math.Abs(calls[0].qty-tc.wantSentQty) > 1e-9 || calls[0].cancelOID != 111 {
+				t.Errorf("first call = %+v, want trigger %v qty %v cancel 111", calls[0], tc.wantSentPx, tc.wantSentQty)
+			}
+			if tc.wantCalls == 2 && (calls[1].cancelOID != 0 || math.Abs(calls[1].triggerPx-tc.wantSentPx) > 1e-9 || math.Abs(calls[1].qty-tc.wantSentQty) > 1e-9) {
+				t.Errorf("retry call = %+v, want a fresh placement at %v for %v", calls[1], tc.wantSentPx, tc.wantSentQty)
+			}
+			if applied != tc.wantApplied || fills != tc.wantFills || (fills > 0) != (detail != "") {
+				t.Errorf("returned (%v, %d, %q), want applied %v fills %d", applied, fills, detail, tc.wantApplied, tc.wantFills)
+			}
+			var closes []Trade
+			for _, tr := range state.TradeHistory {
+				if tr.IsClose {
+					closes = append(closes, tr)
+				}
+			}
+			if tc.wantCloseQty > 0 {
+				if len(closes) != 1 || math.Abs(closes[0].Quantity-tc.wantCloseQty) > 1e-9 {
+					t.Errorf("close trades = %+v, want one close of %v", closes, tc.wantCloseQty)
+				}
+			} else if len(closes) != 0 {
+				t.Errorf("close trades = %+v, want none", closes)
+			}
+			pos, ok := state.Positions["ETH"]
+			if tc.wantGone {
+				if ok {
+					t.Errorf("position still open: %+v", pos)
+				}
+				if len(state.ClosedPositions) != 1 || state.ClosedPositions[0].CloseReason != "post_tp_stop_loss_immediate" {
+					t.Errorf("closed positions = %+v, want one post_tp_stop_loss_immediate", state.ClosedPositions)
+				}
+			} else {
+				if !ok {
+					t.Fatal("position was removed")
+				}
+				if math.Abs(pos.Quantity-tc.wantQty) > 1e-9 || pos.StopLossOID != tc.wantOID || math.Abs(pos.StopLossTriggerPx-tc.wantTrigger) > 1e-9 || pos.SLAdjustedTiersProcessed != tc.wantWatermark {
+					t.Errorf("position qty=%v oid=%d trigger=%v watermark=%d, want qty=%v oid=%d trigger=%v watermark=%d",
+						pos.Quantity, pos.StopLossOID, pos.StopLossTriggerPx, pos.SLAdjustedTiersProcessed, tc.wantQty, tc.wantOID, tc.wantTrigger, tc.wantWatermark)
+				}
+				if (pos.PostTPTrailingATRMult != nil) != tc.wantOwner || pos.StopLossHighWaterPx != tc.wantHighWater {
+					t.Errorf("trail owner=%v high water=%v, want owner %v high water %v", pos.PostTPTrailingATRMult, pos.StopLossHighWaterPx, tc.wantOwner, tc.wantHighWater)
+				}
+			}
+			if len(mock.dms) != tc.wantDMs || len(mock.messages) != tc.wantMessages {
+				t.Errorf("owner DMs = %d, channel messages = %d, want %d and %d", len(mock.dms), len(mock.messages), tc.wantDMs, tc.wantMessages)
+			}
+			if got := lastLiqAlertAction("hl-sl-after", "ETH"); got != tc.wantLiqAction {
+				t.Errorf("liquidation alert action = %q, want %q", got, tc.wantLiqAction)
+			}
+		})
 	}
 }
 
