@@ -54,7 +54,11 @@ def test_tiered_tp_atr_regime_frozen_multiplier_ignores_mid_trade_regime_shift()
     assert result["trades"][0]["exit_date"] == str(idx[4])
 
 
-def test_tiered_tp_atr_live_regime_re_resolves_multiplier_mid_trade():
+@pytest.mark.parametrize("platform,want_exit_idx,want_exit_price", [
+    ("binanceus", -1, 100.26),
+    ("hyperliquid", 3, 100.25),
+])
+def test_tiered_tp_atr_live_regime_re_resolves_multiplier_mid_trade(platform, want_exit_idx, want_exit_price):
     idx = pd.date_range("2024-01-01", periods=6, freq="D")
     df = pd.DataFrame(
         {
@@ -82,12 +86,14 @@ def test_tiered_tp_atr_live_regime_re_resolves_multiplier_mid_trade():
         initial_capital=10_000.0,
         commission_pct=0.0,
         slippage_pct=0.0,
+        platform=platform,
         close_strategies=[close_ref],
     )
     result = bt.run(df, save=False)
 
     assert result["total_trades"] == 1
-    assert result["trades"][0]["exit_date"] == str(idx[-1])
+    assert result["trades"][0]["exit_date"] == str(idx[want_exit_idx])
+    assert result["trades"][0]["exit_price"] == pytest.approx(want_exit_price)
 
 
 def test_stop_loss_atr_mult_regime_use_defaults_matches_baseline_table():

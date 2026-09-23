@@ -14,13 +14,17 @@ CLOSE_OWNER_ON_CHAIN_TP = "on_chain_tp"
 VALID_CLOSE_OWNERS = {CLOSE_OWNER_ON_CHAIN_TP}
 VALID_POSITION_SIDES = {"", "long", "short"}
 VALID_OPEN_ACTIONS = {"long", "short", "none"}
-POSITION_CONTEXT_PARAM_KEYS = {"side", "avg_cost", "current_quantity", "initial_quantity", "entry_atr", "regime"}
+POSITION_CONTEXT_PARAM_KEYS = {
+    "side", "avg_cost", "current_quantity", "initial_quantity", "entry_atr", "regime",
+    "risk_anchor_price", "tp_model",
+}
 
 
 @dataclass
 class CloseEvaluation:
     strategy: str
     close_fraction: float
+    tier_fill_price: float = 0.0
 
 
 @dataclass
@@ -114,15 +118,32 @@ def legacy_close_fraction_from_signal(signal: int, position_side: str) -> float:
     return 0.0
 
 
-def max_close_fraction(evaluations: Iterable[CloseEvaluation]) -> tuple[float, str]:
+def best_close_evaluation(evaluations: Iterable[CloseEvaluation]) -> Optional[CloseEvaluation]:
+    best = None
     best_fraction = 0.0
-    best_strategy = ""
     for evaluation in evaluations:
         fraction = clamp_close_fraction(evaluation.close_fraction)
         if fraction > best_fraction:
             best_fraction = fraction
-            best_strategy = evaluation.strategy
-    return best_fraction, best_strategy
+            best = evaluation
+    return best
+
+
+def max_close_fraction(evaluations: Iterable[CloseEvaluation]) -> tuple[float, str]:
+    best = best_close_evaluation(evaluations)
+    if best is None:
+        return 0.0, ""
+    return clamp_close_fraction(best.close_fraction), best.strategy
+
+
+def _positive_price(value) -> float:
+    try:
+        price = float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    if price != price or price in (float("inf"), float("-inf")) or price <= 0:
+        return 0.0
+    return price
 
 
 def compose_signal(open_action: str, close_fraction: float, position_side: str) -> int:
@@ -381,6 +402,7 @@ def evaluate_open_close(
                 close_evals.append(CloseEvaluation(
                     strategy=resolved,
                     close_fraction=result.get("close_fraction", 0.0),
+                    tier_fill_price=_positive_price(result.get("tier_fill_price")),
                 ))
                 continue
             except ValueError as exc:
@@ -422,4 +444,7 @@ def finalize_decision(
     }
     if evaluation.close_owner:
         decision["close_owner"] = evaluation.close_owner
+    best = best_close_evaluation(evaluation.close_evaluations)
+    if best is not None and best.tier_fill_price > 0:
+        decision["close_tier_fill_price"] = best.tier_fill_price
     return decision

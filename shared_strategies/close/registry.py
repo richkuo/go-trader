@@ -1,6 +1,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import sys
 from typing import Any, Callable, Dict, Optional, Tuple
@@ -85,7 +86,14 @@ def _normalize_result(name: str, result: Optional[dict]) -> dict:
         close_fraction = 0.0
     close_fraction = min(max(close_fraction, 0.0), 1.0)
     reason = str(result.get("reason") or f"{name}:no_reason")
-    return {"close_fraction": close_fraction, "reason": reason}
+    out = {"close_fraction": close_fraction, "reason": reason}
+    try:
+        fill_price = float(result.get("tier_fill_price", 0) or 0)
+    except (TypeError, ValueError):
+        fill_price = 0.0
+    if close_fraction > 0 and math.isfinite(fill_price) and fill_price > 0:
+        out["tier_fill_price"] = fill_price
+    return out
 
 
 def _rewrite_deprecated_close(name: str, params: Optional[dict]) -> tuple[str, dict]:
@@ -129,25 +137,25 @@ register(
 
 register(
     "tiered_tp_atr_live",
-    "Tiered take-profit by ATR multiples using live ATR per tick (atr_source: live|entry)",
+    "Tiered take-profit by ATR multiples; Hyperliquid (tp_model resting_limit) uses entry ATR and the risk anchor like the on-chain tiers, live ATR only without an entry ATR; other platforms read live ATR per tick (atr_source: live|entry)",
     {"tp_tiers": list(DEFAULT_ATR_TIERS), "atr_source": "live"},
 )(tiered_tp_atr_live_evaluate)
 
 register(
     "tiered_tp_atr_regime",
-    "Regime-aware tiered TP — ATR multiples resolved at open via Position.Regime (#733)",
+    "Regime-aware tiered TP — ATR multiples resolved at open via Position.Regime (#733); Hyperliquid prices tiers from the risk anchor and rejects a non-increasing ladder like the on-chain tiers (#1576)",
     {},
 )(tiered_tp_atr_regime_evaluate)
 
 register(
     "tiered_tp_atr_live_regime",
-    "Regime-aware tiered TP — live ATR + per-tick regime classification (#733)",
+    "Regime-aware tiered TP — Hyperliquid (tp_model resting_limit) freezes entry ATR, position regime and risk anchor like the on-chain tiers (#1576); other platforms use live ATR + per-tick regime (#733)",
     {"atr_source": "live"},
 )(tiered_tp_atr_live_regime_evaluate)
 
 register(
     "tiered_tp_atr_live_regime_dynamic",
-    "Unified per-regime TP/SL — live ATR-regime re-resolution (#843; HL live uses on-chain sync)",
+    "Unified per-regime TP/SL — Hyperliquid prices tiers from entry ATR, the risk anchor and the confirmed applied regime label, the same inputs as the on-chain sync (#843, #1576)",
     {"atr_source": "live", "regime_confirm_cycles": 2},
 )(tiered_tp_atr_live_regime_dynamic_evaluate)
 

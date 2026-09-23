@@ -356,6 +356,7 @@ _SCENARIOS = {
         expect=[("long", 110.0), ("long", 90.0)],
     ),
     "multi_tier_cleared_same_bar_highest_wins": dict(
+        platform="binanceus",
         opens=[100, 100, 100, 120, 110, 105],
         closes=[100, 100, 120, 120, 105, 105],
         intrabar="bar_close",
@@ -370,6 +371,7 @@ _SCENARIOS = {
         expect=[("long", 120.0), ("long", 105.0)],
     ),
     "no_same_bar_fire_after_bump_long": dict(
+        platform="binanceus",
         opens=[100, 100, 100, 110, 99, 99],
         closes=[100, 100, 110, 99, 99, 99],
         intrabar="bar_close",
@@ -379,6 +381,7 @@ _SCENARIOS = {
         single_sl=(99.0, "2024-01-06 00:00:00"),
     ),
     "no_same_bar_fire_after_bump_short": dict(
+        platform="binanceus",
         opens=[100, 100, 100, 90, 101, 101],
         closes=[100, 100, 90, 101, 101, 101],
         side="short",
@@ -387,6 +390,39 @@ _SCENARIOS = {
         params={"sl_after": "breakeven", "tp_tiers": _STANDARD_TIERS},
         expect=[("short", 90.0), ("short", 101.0)],
         single_sl=(101.0, "2024-01-06 00:00:00"),
+    ),
+    "multi_tier_cleared_same_bar_resting_limit_hyperliquid": dict(
+        opens=[100, 100, 100, 120, 110, 105],
+        closes=[100, 100, 120, 120, 105, 105],
+        intrabar="bar_close",
+        stop_loss_atr_mult=2.0,
+        params={"tp_tiers": [
+            {"atr_multiple": 1.0, "close_fraction": 0.3, "sl_after": "breakeven"},
+            {"atr_multiple": 2.0, "close_fraction": 0.6,
+             "sl_after": {"atr_mult": 1.0}},
+            {"atr_multiple": 3.0, "close_fraction": 1.0,
+             "sl_after": {"atr_mult": 2.0}},
+        ]},
+        expect=[("long", 115.0), ("long", 105.0)],
+    ),
+    "tier_bar_moves_stop_next_bar_fires_long_hyperliquid": dict(
+        opens=[100, 100, 100, 110, 99, 99],
+        closes=[100, 100, 110, 99, 99, 99],
+        intrabar="bar_close",
+        stop_loss_atr_mult=1.0,
+        params={"sl_after": "breakeven", "tp_tiers": _STANDARD_TIERS},
+        expect=[("long", 110.0), ("long", 99.0)],
+        single_sl=(99.0, "2024-01-05 00:00:00"),
+    ),
+    "tier_bar_moves_stop_next_bar_fires_short_hyperliquid": dict(
+        opens=[100, 100, 100, 90, 101, 101],
+        closes=[100, 100, 90, 101, 101, 101],
+        side="short",
+        intrabar="bar_close",
+        stop_loss_atr_mult=1.0,
+        params={"sl_after": "breakeven", "tp_tiers": _STANDARD_TIERS},
+        expect=[("short", 90.0), ("short", 101.0)],
+        single_sl=(101.0, "2024-01-05 00:00:00"),
     ),
     "flag_clears_for_next_bar_long": dict(
         opens=[100, 100, 100, 110, 105, 95],
@@ -413,7 +449,7 @@ def test_backtester_sl_after_scenarios(name):
     )
     kwargs = dict(
         initial_capital=1000, commission_pct=0, slippage_pct=0,
-        platform="hyperliquid", strategy_type="perps",
+        platform=spec.get("platform", "hyperliquid"), strategy_type="perps",
         close_strategies=[{"name": "tiered_tp_atr", "params": spec["params"]}],
     )
     if "intrabar" in spec:
@@ -624,16 +660,17 @@ def test_backtester_sl_after_defers_when_sl_unarmed():
     assert hwm == 0.0
 
 
-def test_backtester_sl_after_does_not_seed_when_no_tier_thresholds():
+@pytest.mark.parametrize("platform", ["binanceus", "hyperliquid"])
+def test_backtester_sl_after_does_not_seed_when_no_tier_thresholds(platform):
     df = _df_open_then_hold(
         opens=[100, 100, 100, 80, 80],
         closes=[100, 100, 80, 80, 80],
         atrs=[10, 10, 10, 10, 10],
     )
-    bt = Backtester(
+    kwargs = dict(
         intrabar_resolution="bar_close",
         initial_capital=1000, commission_pct=0, slippage_pct=0,
-        platform="hyperliquid", strategy_type="perps",
+        platform=platform, strategy_type="perps",
         stop_loss_atr_mult=1.0,
         close_strategies=[{
             "name": "tiered_tp_atr",
@@ -646,6 +683,11 @@ def test_backtester_sl_after_does_not_seed_when_no_tier_thresholds():
             },
         }],
     )
+    if platform == "hyperliquid":
+        with pytest.raises(ValueError, match="close_fraction: must be in"):
+            Backtester(**kwargs)
+        return
+    bt = Backtester(**kwargs)
     assert bt._tp_tier_thresholds_static == []
     result = bt.run(df, save=False)
     sl_fires = [t for t in result["trades"] if t.get("exit_price") in (90.0, 89.0, 91.0)]

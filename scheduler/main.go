@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"math"
 	"os"
 	"os/signal"
 	"strings"
@@ -2393,6 +2394,10 @@ func main() {
 							runPostTPStopLossAdjustment(sc, stratState, result.Symbol, price, cfg, &mu, notifier, logger, hlOnChainAbsQty)
 						}
 						if !hyperliquidIsLive(sc.Args) && result.Signal == 0 && hlPosQty > 0 {
+							if flipTrades, flipDetail := advancePaperDynamicCloseRegime(sc, stratState, stratDB, result.Symbol, price, &mu, logger); flipTrades > 0 {
+								paperStopTrades += flipTrades
+								paperStopDetail = flipDetail
+							}
 							runPaperPostTPStopLossAdjustment(sc, stratState, result.Symbol, price, cfg, &mu, notifier, logger)
 						}
 						scaleInAddQty := 0.0
@@ -3885,6 +3890,30 @@ func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, result *Hyper
 	return trades, detail
 }
 
+func paperTierFillPrice(sc StrategyConfig, result *HyperliquidResult, execResult *HyperliquidExecuteResult) float64 {
+	if execResult != nil || result == nil || sc.Platform != "hyperliquid" || hyperliquidIsLive(sc.Args) {
+		return 0
+	}
+	if result.ForceFullClose || result.CloseFraction <= 0 || result.Signal == 0 {
+		return 0
+	}
+	px := result.CloseTierFillPrice
+	if math.IsNaN(px) || math.IsInf(px, 0) || px <= 0 {
+		return 0
+	}
+	return px
+}
+
+func paperTierFillQty(pos *Position, closeFraction float64) float64 {
+	if pos == nil || pos.Quantity <= 0 || closeFraction <= 0 {
+		return 0
+	}
+	if closeFraction >= 1 {
+		return pos.Quantity
+	}
+	return pos.Quantity * closeFraction
+}
+
 func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, result *HyperliquidResult, execResult *HyperliquidExecuteResult, signalStr string, price float64, regime *RegimeConfig, cfg *Config, hurst HurstGateDecision, logger *StrategyLogger) (int, string, *Trade, *RatchetTriggerAlert) {
 	if execResult != nil {
 		if _, err := confirmHyperliquidExecuteFill(execResult, nil); err != nil {
@@ -3915,7 +3944,16 @@ func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, r
 	if result.SizedCloseBookFraction > 0 && result.SizedCloseBookFraction < 1 {
 		bookCloseFraction = result.SizedCloseBookFraction
 	}
-	exec, err := ExecutePerpsSignalWithLeverageDeferredOpen(s, result.Signal, result.Symbol, fillPrice, sizing, fillQty, fillOID, fillFee, EffectiveDirection(sc), bookCloseFraction, logger)
+	bookPrice := fillPrice
+	if tierPx := paperTierFillPrice(sc, result, execResult); tierPx > 0 {
+		if qty := paperTierFillQty(s.Positions[result.Symbol], result.CloseFraction); qty > 0 {
+			bookPrice = tierPx
+			fillQty = qty
+			logger.Info("Paper take-profit tier fill at tier price $%.4f qty=%.6f (mid was $%.4f)", tierPx, qty, price)
+		}
+	}
+
+	exec, err := ExecutePerpsSignalWithLeverageDeferredOpen(s, result.Signal, result.Symbol, bookPrice, sizing, fillQty, fillOID, fillFee, EffectiveDirection(sc), bookCloseFraction, logger)
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
 		return 0, "", nil, nil
@@ -3998,7 +4036,7 @@ func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, r
 		if execResult != nil {
 			prefix = "LIVE "
 		}
-		detail = fmt.Sprintf("[%s] %s%s %s @ $%.2f", sc.ID, prefix, signalStr, result.Symbol, fillPrice)
+		detail = fmt.Sprintf("[%s] %s%s %s @ $%.2f", sc.ID, prefix, signalStr, result.Symbol, bookPrice)
 	}
 	if execResult == nil {
 		var pos *Position

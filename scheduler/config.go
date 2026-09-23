@@ -1259,6 +1259,7 @@ func loadConfig(path string, skipLiveCredentialChecks bool, readOnly bool) (*Con
 	if err := validateConfig(&cfg, skipLiveCredentialChecks); err != nil {
 		return nil, err
 	}
+	warnHyperliquidTieredATRSourceLive(&cfg)
 	return &cfg, nil
 }
 
@@ -2186,6 +2187,7 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 	}
 
 	errs = append(errs, validateRegimeATRConfig(cfg)...)
+	errs = append(errs, validateTPTierLadders(cfg)...)
 
 	if len(errs) > 0 {
 		return fmt.Errorf("config validation errors:\n  %s", strings.Join(errs, "\n  "))

@@ -21,6 +21,13 @@ var probeArgv = []string{
 	"--regime-atr-window", "",
 	"--regime-payload-json", `{"default":{"regime":"trending_up","score":0.5,"classifier":"adx","metrics":{"adx":25.0,"plus_di":20.0,"minus_di":10.0,"atr_pct":1.0}}}`,
 	"--atr-method=simple",
+	"--position-side", "long",
+	"--position-avg-cost=1",
+	"--position-qty=1",
+	"--position-initial-qty=1",
+	"--position-entry-atr=1",
+	"--position-regime", "trending_up",
+	"--position-risk-anchor-price=1",
 	"--probe-only",
 }
 
@@ -33,6 +40,13 @@ var probeCompositeArgv = []string{
 	"--regime-atr-window", "",
 	"--regime-payload-json", `{"macro":{"regime":"trending_up_clean","score":0.5,"classifier":"composite","metrics":{"adx":30.0}}}`,
 	"--atr-method=simple",
+	"--position-side", "long",
+	"--position-avg-cost=1",
+	"--position-qty=1",
+	"--position-initial-qty=1",
+	"--position-entry-atr=1",
+	"--position-regime", "trending_up",
+	"--position-risk-anchor-price=1",
 	"--probe-only",
 }
 

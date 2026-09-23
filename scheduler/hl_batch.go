@@ -206,6 +206,7 @@ func buildHyperliquidBatchSlot(sc StrategyConfig, posCtx PositionCtx, regime *Re
 		hlBatchPutFloat(ctx, "current_quantity", posCtx.Quantity)
 		hlBatchPutFloat(ctx, "initial_quantity", posCtx.InitialQuantity)
 		hlBatchPutFloat(ctx, "entry_atr", posCtx.EntryATR)
+		hlBatchPutFloat(ctx, "risk_anchor_price", posCtx.RiskAnchorPrice)
 		if r := strings.TrimSpace(posCtx.Regime); r != "" {
 			ctx["regime"] = r
 		}

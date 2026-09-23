@@ -1,6 +1,7 @@
 package main
 
 import (
+	"sync"
 	"testing"
 )
 
@@ -58,6 +59,111 @@ func TestAdvanceDynamicCloseRegime_ConfirmCycles(t *testing.T) {
 	if pos.RegimeAppliedLabel != "ranging" {
 		t.Fatalf("applied=%q want ranging", pos.RegimeAppliedLabel)
 	}
+}
+
+func TestAdvancePaperDynamicCloseRegime(t *testing.T) {
+	dynamic := &StrategyRef{Name: dynamicCloseStrategyName, Params: unifiedBlock()}
+	dynamic.Params["regime_confirm_cycles"] = 2
+	ratchet := &StrategyRef{Name: trailingTPRatchetCloseName, Params: map[string]interface{}{}}
+	minMove := func(v float64) func(*StrategyConfig, *Position) {
+		return func(sc *StrategyConfig, _ *Position) { sc.TrailingStopMinMovePct = &v }
+	}
+	postTPTrail := func(_ *StrategyConfig, pos *Position) {
+		mult := 1.0
+		pos.PostTPTrailingATRMult = &mult
+	}
+	trailOwner := func(sc *StrategyConfig, _ *Position) {
+		mult := 1.5
+		sc.TrailingStopATRMult = &mult
+	}
+	mark := 2000.0
+	markAt := func(v float64) func(*StrategyConfig, *Position) {
+		return func(*StrategyConfig, *Position) { mark = v }
+	}
+	cases := []struct {
+		name        string
+		mode        string
+		close       *StrategyRef
+		mutate      func(*StrategyConfig, *Position)
+		cycles      int
+		stop        float64
+		wantApplied string
+		wantRegime  string
+		wantStop    float64
+		matchesLive bool
+	}{
+		{"paper position confirms after regime_confirm_cycles", "--mode=paper", dynamic, nil, 2, 0, "ranging", "ranging", 0, false},
+		{"paper position holds the old label before confirmation", "--mode=paper", dynamic, nil, 1, 0, "trending_up", "trending_up", 0, false},
+		{"live position is left to the protection sync", "--mode=live", dynamic, nil, 2, 0, "trending_up", "trending_up", 0, false},
+		{"non-dynamic close is untouched", "--mode=paper", &StrategyRef{Name: "tiered_tp_atr_live_regime", Params: unifiedBlock()}, nil, 2, 0, "trending_up", "trending_down", 0, false},
+		{"confirmed flip re-arms the fixed stop at the new label", "--mode=paper", dynamic, nil, 2, 1940, "ranging", "ranging", 1968, true},
+		{"unconfirmed flip keeps the fixed stop", "--mode=paper", dynamic, nil, 1, 1940, "trending_up", "trending_up", 1940, false},
+		{"flip under the min-move gate keeps the fixed stop", "--mode=paper", dynamic, minMove(5), 2, 1940, "ranging", "ranging", 1940, true},
+		{"flip after an sl_after breakeven move re-arms like the live sync", "--mode=paper", dynamic, nil, 2, 2000, "ranging", "ranging", 1968, true},
+		{"flip after an sl_after move inside the min-move gate keeps it", "--mode=paper", dynamic, nil, 2, 1970, "ranging", "ranging", 1970, true},
+		{"flip keeps a post-TP trailing stop", "--mode=paper", dynamic, postTPTrail, 2, 1990, "ranging", "ranging", 1990, false},
+		{"flip keeps a trailing stop owner", "--mode=paper", dynamic, trailOwner, 2, 1990, "ranging", "ranging", 1990, false},
+		{"ratchet trail is untouched", "--mode=paper", ratchet, trailOwner, 2, 1990, "trending_up", "trending_down", 1990, false},
+		{"flip onto a crossed stop closes at the mark", "--mode=paper", dynamic, markAt(1950), 2, 1940, "ranging", "ranging", 1968, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sc := StrategyConfig{ID: "hl-dyn", Type: "perps", Platform: "hyperliquid", Args: []string{"sma", "ETH", "1h", tc.mode}, CloseStrategy: tc.close}
+			pos := &Position{Symbol: "ETH", Side: "long", Quantity: 1, AvgCost: 2000, EntryATR: 40, Regime: "trending_down", RegimeAppliedLabel: "trending_up", StopLossTriggerPx: tc.stop}
+			mark = 2000
+			if tc.mutate != nil {
+				tc.mutate(&sc, pos)
+			}
+			st := &StrategyState{Cash: 1000, Regime: "ranging", Positions: map[string]*Position{"ETH": pos}}
+			var mu sync.RWMutex
+			trades := 0
+			for i := 0; i < tc.cycles; i++ {
+				n, _ := advancePaperDynamicCloseRegime(sc, st, nil, "ETH", mark, &mu, nil)
+				trades += n
+			}
+			_, open := st.Positions["ETH"]
+			wantClosed := trailingStopBreached(pos.Side, mark, tc.wantStop)
+			if open == wantClosed || (trades == 1) != wantClosed {
+				t.Fatalf("open=%v trades=%d, want closed=%v", open, trades, wantClosed)
+			}
+			if wantClosed {
+				last := st.TradeHistory[len(st.TradeHistory)-1]
+				if !last.IsClose || !approxEq(last.Price, mark) {
+					t.Fatalf("stop close = %+v, want a close at the mark %.2f", last, mark)
+				}
+			}
+			if pos.RegimeAppliedLabel != tc.wantApplied {
+				t.Fatalf("applied label = %q, want %q", pos.RegimeAppliedLabel, tc.wantApplied)
+			}
+			if got := positionCtxForCheck(sc, pos, nil).Regime; got != tc.wantRegime {
+				t.Fatalf("check position regime = %q, want %q", got, tc.wantRegime)
+			}
+			if !approxEq(pos.StopLossTriggerPx, tc.wantStop) {
+				t.Fatalf("paper stop = %.4f, want %.4f", pos.StopLossTriggerPx, tc.wantStop)
+			}
+			if tc.matchesLive {
+				if live := liveStopAfterDynamicFlip(t, sc, "trending_up", "ranging", tc.stop); !approxEq(pos.StopLossTriggerPx, live) {
+					t.Fatalf("paper stop = %.4f, live sync places %.4f", pos.StopLossTriggerPx, live)
+				}
+			}
+		})
+	}
+}
+
+func liveStopAfterDynamicFlip(t *testing.T, sc StrategyConfig, oldLabel, newLabel string, stop float64) float64 {
+	t.Helper()
+	live := sc
+	live.Args = []string{"sma", "ETH", "1h", "--mode=live"}
+	pos := &Position{Symbol: "ETH", Side: "long", Quantity: 1, AvgCost: 2000, EntryATR: 40, RegimeAppliedLabel: newLabel, StopLossOID: 7, StopLossTriggerPx: stop}
+	plan, ok := buildHyperliquidProtectionPlan(live, pos, 0)
+	if !ok {
+		t.Fatal("live protection plan did not build")
+	}
+	forceSL, _ := dynamicProtectionForceReplace(live, pos, plan, oldLabel, true)
+	if !forceSL {
+		return stop
+	}
+	return atrStopLossTriggerPx(plan.Side, plan.AvgCost, plan.EntryATR, plan.StopLossATRMult)
 }
 
 func TestTriggerPxMoveExceedsMinPct(t *testing.T) {
