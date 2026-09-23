@@ -80,7 +80,7 @@ func TestManualCloseRestoresTheStopAfterAVenueRejection(t *testing.T) {
 	const prevOID = int64(5150)
 	const prevTrigger = 1900.0
 
-	rejectedWithConfirmedCancel := func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+	rejectedWithConfirmedCancel := func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
 		return &HyperliquidExecuteResult{
 			Error:                       "order value below the venue minimum",
 			CancelStopLossSucceeded:     true,
@@ -91,7 +91,7 @@ func TestManualCloseRestoresTheStopAfterAVenueRejection(t *testing.T) {
 	cases := []struct {
 		name          string
 		onChain       []HLPosition
-		execute       func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error)
+		execute       func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error)
 		slResult      *HyperliquidStopLossUpdateResult
 		slErr         error
 		wantSLCall    *rearmSLCall
@@ -116,7 +116,7 @@ func TestManualCloseRestoresTheStopAfterAVenueRejection(t *testing.T) {
 		{
 			name:    "an unconfirmed cancel is verified on-chain and restored, never assumed live",
 			onChain: []HLPosition{{Coin: "ETH", Size: bookQty}},
-			execute: func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+			execute: func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
 				return &HyperliquidExecuteResult{
 					Error:                    "order value below the venue minimum",
 					CancelStopLossError:      "5150: rejected",
@@ -133,7 +133,7 @@ func TestManualCloseRestoresTheStopAfterAVenueRejection(t *testing.T) {
 		{
 			name:    "a venue that still reports the old stop resting places no duplicate and says so",
 			onChain: []HLPosition{{Coin: "ETH", Size: bookQty}},
-			execute: func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+			execute: func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
 				return &HyperliquidExecuteResult{
 					Error:                    "order value below the venue minimum",
 					CancelStopLossError:      "5150: rejected",
@@ -170,7 +170,7 @@ func TestManualCloseRestoresTheStopAfterAVenueRejection(t *testing.T) {
 		{
 			name:    "an immediate fill after an unconfirmed cancel clears the stale order id",
 			onChain: []HLPosition{{Coin: "ETH", Size: bookQty}},
-			execute: func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+			execute: func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
 				return &HyperliquidExecuteResult{
 					Error:                    "order value below the venue minimum",
 					CancelStopLossError:      "5150: rejected",
@@ -211,7 +211,7 @@ func TestManualCloseRestoresTheStopAfterAVenueRejection(t *testing.T) {
 		{
 			name:    "an unreadable execute outcome still re-arms against the previous order id",
 			onChain: []HLPosition{{Coin: "ETH", Size: bookQty}},
-			execute: func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+			execute: func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
 				return nil, "", fmt.Errorf("execute error: signal: killed")
 			},
 			slResult:     &HyperliquidStopLossUpdateResult{StopLossOID: 6200, StopLossTriggerPx: prevTrigger},

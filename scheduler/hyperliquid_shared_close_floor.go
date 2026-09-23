@@ -174,7 +174,7 @@ func decideOperatorSharedCloseFloor(symbol, posSide string, posQty, price float6
 	gate := hlVenueCloseGateThresholdUSD()
 	if price <= 0 || math.IsNaN(price) || math.IsInf(price, 0) {
 		d.MarkUnreadable = true
-		d.Reason = fmt.Sprintf("no usable mark price for %s, so the closing value cannot be measured against the $%.2f venue minimum gate; %d live strategies share this coin, so the escalation to a whole-position close is withheld and the sized reduce-only close is sent unchanged — the venue rejects it if the value is under the gate",
+		d.Reason = fmt.Sprintf("no usable mark price for %s, so the closing value cannot be measured against the $%.2f venue minimum gate; %d live strategies share this coin, so the escalation to a whole-position close is withheld and the sized close is sent unchanged (manual-close sends it reduce-only and capped at the on-chain quantity, or as the netted cross order when an opposite-side peer shares the coin; force-close sends it reduce-only) — the venue rejects it if the value is under the gate",
 			symbol, gate, peers)
 		return d
 	}

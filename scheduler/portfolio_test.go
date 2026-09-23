@@ -1627,24 +1627,28 @@ func TestPerpsLiveOrderSize_FlipIncludesCloseLeg(t *testing.T) {
 		direction string
 		wantSize  float64
 		wantOK    bool
+		wantKind  perpsLiveOrderKind
 	}{
-		{"long_from_flat", 1, 0, 0, "", DirectionLong, 0.5, true},
-		{"short_from_flat_allowed_both", -1, 0, 0, "", DirectionBoth, 0.5, true},
-		{"short_from_flat_short_only", -1, 0, 0, "", DirectionShort, 0.5, true},
-		{"close_long_legacy", -1, 0.3, 2000, "long", DirectionLong, 0.3, true},
-		{"close_short_short_only", 1, 0.4, 2000, "short", DirectionShort, 0.4, true},
-		{"flip_long_to_short_flat_pnl", -1, 0.5, 2000, "long", DirectionBoth, 1.0, true},
-		{"flip_short_to_long_flat_pnl", 1, 0.5, 2000, "short", DirectionBoth, 1.0, true},
-		{"buy_vs_short_legacy_not_flip", 1, 0.5, 2000, "short", DirectionLong, 0.5, true},
+		{"long_from_flat", 1, 0, 0, "", DirectionLong, 0.5, true, perpsLiveOrderOpen},
+		{"short_from_flat_allowed_both", -1, 0, 0, "", DirectionBoth, 0.5, true, perpsLiveOrderOpen},
+		{"short_from_flat_short_only", -1, 0, 0, "", DirectionShort, 0.5, true, perpsLiveOrderOpen},
+		{"close_long_legacy", -1, 0.3, 2000, "long", DirectionLong, 0.3, true, perpsLiveOrderClose},
+		{"close_short_short_only", 1, 0.4, 2000, "short", DirectionShort, 0.4, true, perpsLiveOrderClose},
+		{"flip_long_to_short_flat_pnl", -1, 0.5, 2000, "long", DirectionBoth, 1.0, true, perpsLiveOrderFlip},
+		{"flip_short_to_long_flat_pnl", 1, 0.5, 2000, "short", DirectionBoth, 1.0, true, perpsLiveOrderFlip},
+		{"buy_vs_short_legacy_not_flip", 1, 0.5, 2000, "short", DirectionLong, 0.5, true, perpsLiveOrderOpen},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			size, ok, reason := perpsLiveOrderSize(tc.signal, 2000, 1000, tc.posQty, tc.avgCost, PerpsSizing{SizingLeverage: 1.0, ExchangeLeverage: 1.0}, tc.posSide, tc.direction, 0)
+			size, kind, ok, reason := perpsLiveOrderSizeKind(tc.signal, 2000, 1000, tc.posQty, tc.avgCost, PerpsSizing{SizingLeverage: 1.0, ExchangeLeverage: 1.0}, tc.posSide, tc.direction, 0)
 			if ok != tc.wantOK {
 				t.Fatalf("ok = %v (reason=%q), want %v", ok, reason, tc.wantOK)
 			}
 			if ok && size != tc.wantSize {
 				t.Errorf("size = %g, want %g", size, tc.wantSize)
+			}
+			if ok && kind != tc.wantKind {
+				t.Errorf("kind = %v, want %v", kind, tc.wantKind)
 			}
 		})
 	}

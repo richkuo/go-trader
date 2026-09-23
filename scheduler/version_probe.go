@@ -54,6 +54,7 @@ var executeProbeArgv = []string{
 	"--mode=paper",
 	"--margin-mode=cross", "--leverage=1",
 	"--account-leverage=1", "--account-margin-mode=cross",
+	"--close-mode=reduce_only",
 	"--probe-only",
 }
 

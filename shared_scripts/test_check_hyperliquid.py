@@ -696,6 +696,70 @@ class TestCloseFullPosition:
         assert fill["oid"] == 888
 
 
+class TestRunExecuteCloseMode:
+
+    _FILLED = {
+        "status": "ok",
+        "response": {"type": "order", "data": {"statuses": [{"filled": {"avgPx": "3000", "totalSz": "0.2", "oid": 77}}]}},
+    }
+
+    @pytest.mark.parametrize("kwargs,mode,floored,want_exit,want_call", [
+        ({"close_mode": "reduce_only"}, "live", 0.2, 0, ("market_close_sized", ("ETH", False, 0.2), {"reduce_only": True})),
+        ({"close_mode": "cross"}, "live", 0.2, 0, ("market_close_sized", ("ETH", False, 0.2), {"reduce_only": False})),
+        ({}, "live", 0.2, 0, ("market_open", ("ETH", False, 0.2), {})),
+        ({"close_full_position": True}, "live", 0.2, 0, ("market_close", ("ETH",), {"sz": None})),
+        ({"close_mode": "reduce_only", "close_full_position": True}, "live", 0.2, 1, None),
+        ({"close_mode": "reduce_only", "stop_loss_pct": 2.0}, "live", 0.2, 1, None),
+        ({"close_mode": "cross", "prev_pos_qty": 0.1}, "live", 0.2, 1, None),
+        ({"close_mode": "reduce_only"}, "paper", 0.2, 1, None),
+        ({"close_mode": "reduce_only", "cancel_oid": [555]}, "live", 0.0, 1, None),
+    ])
+    def test_run_execute_close_mode_routes(self, kwargs, mode, floored, want_exit, want_call):
+        mod, spec = _load_check_module()
+        spec.loader.exec_module(mod)
+
+        mock_adapter_cls = MagicMock()
+        mock_adapter = MagicMock()
+        mock_adapter_cls.return_value = mock_adapter
+        mock_adapter.lookup_fill_fee_by_oid.return_value = {}
+        mock_adapter.floor_size.return_value = floored
+        for name in ("market_open", "market_close", "market_close_sized"):
+            getattr(mock_adapter, name).return_value = self._FILLED
+
+        captured = StringIO()
+        import builtins
+        original_import = builtins.__import__
+
+        def mock_import(name, *args, **kw):
+            if name == "adapter":
+                fake_mod = MagicMock()
+                fake_mod.HyperliquidExchangeAdapter = mock_adapter_cls
+                return fake_mod
+            return original_import(name, *args, **kw)
+
+        exit_code = 0
+        with patch("builtins.__import__", side_effect=mock_import):
+            with patch("sys.stdout", captured):
+                try:
+                    mod.run_execute("ETH", "sell", 0.2, mode, **kwargs)
+                except SystemExit as e:
+                    exit_code = e.code
+
+        order_methods = ("market_open", "market_close", "market_close_sized")
+        assert exit_code == want_exit
+        if want_call is None:
+            for name in order_methods:
+                getattr(mock_adapter, name).assert_not_called()
+            mock_adapter.cancel_trigger_order.assert_not_called()
+            assert json.loads(captured.getvalue()).get("error")
+            return
+        name, args, call_kwargs = want_call
+        getattr(mock_adapter, name).assert_called_once_with(*args, **call_kwargs)
+        for other in order_methods:
+            if other != name:
+                getattr(mock_adapter, other).assert_not_called()
+
+
 class TestSyncProtection:
 
     def _run_sync(

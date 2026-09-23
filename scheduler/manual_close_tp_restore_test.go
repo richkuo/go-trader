@@ -442,8 +442,8 @@ func TestManualCloseRestoresTakeProfitsAfterAVenueRejection(t *testing.T) {
 	const prevSLOID = int64(5150)
 	const prevTrigger = 1900.0
 
-	rejected := func(succeeded ...int64) func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
-		return func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+	rejected := func(succeeded ...int64) func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+		return func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
 			return &HyperliquidExecuteResult{
 				Error:                       "order value below the venue minimum",
 				CancelStopLossSucceeded:     len(succeeded) > 0,
@@ -462,7 +462,7 @@ func TestManualCloseRestoresTakeProfitsAfterAVenueRejection(t *testing.T) {
 		stopTrigger   float64
 		closeQty      float64
 		onChain       []HLPosition
-		execute       func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error)
+		execute       func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error)
 		slResult      *HyperliquidStopLossUpdateResult
 		syncResult    *HyperliquidProtectionSyncResult
 		syncErr       error

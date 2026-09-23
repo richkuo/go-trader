@@ -256,7 +256,7 @@ func runHyperliquidScaleInOrder(sc StrategyConfig, result *HyperliquidResult, ad
 		side = "sell"
 	}
 	logger.Info("Placing live scale-in %s %s size=%.6f", side, result.Symbol, addSize)
-	execResult, stderr, err := runHyperliquidExecuteFn(sc.Script, result.Symbol, side, addSize, 0, 0, 0, "", 0, false, walletSnapshot)
+	execResult, stderr, err := runHyperliquidExecuteFn(sc.Script, result.Symbol, side, addSize, 0, 0, 0, "", 0, hlCloseModeNone, walletSnapshot)
 	if stderr != "" {
 		logger.Info("execute stderr: %s", stderr)
 	}

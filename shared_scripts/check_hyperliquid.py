@@ -177,15 +177,6 @@ def _venue_min_order_notional_margin():
         return 0.03
 
 
-def _floor_lot_size(qty, lot_decimals):
-    from decimal import Decimal, ROUND_DOWN
-
-    if qty <= 0:
-        return 0.0
-    quant = Decimal("1").scaleb(-max(int(lot_decimals), 0))
-    return float(Decimal(str(qty)).quantize(quant, rounding=ROUND_DOWN))
-
-
 def resolve_venue_lot_decimals(shared, symbol):
     try:
         adapter = shared.get("adapter")
@@ -220,8 +211,10 @@ def apply_venue_close_gate(decision, position_ctx, price, lot_decimals, min_noti
         return decision
     if current_qty <= 0:
         return decision
+    from adapter import floor_lot_size
+
     requested_qty = current_qty * close_fraction
-    floored_qty = _floor_lot_size(requested_qty, lot_decimals)
+    floored_qty = floor_lot_size(requested_qty, lot_decimals)
     try:
         px = float(price or 0.0)
     except (TypeError, ValueError):
@@ -1309,9 +1302,43 @@ def run_sync_protection(
         sys.exit(1)
 
 
-def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_pos_qty=0.0, margin_mode="", leverage=0, close_full_position=False, account_leverage=0, account_margin_mode=""):
+EXECUTE_CLOSE_MODES = ("reduce_only", "cross")
+
+
+def execute_close_mode_error(close_mode, close_full_position, size, stop_loss_pct, prev_pos_qty, margin_mode):
+    if not close_mode:
+        return ""
+    if close_mode not in EXECUTE_CLOSE_MODES:
+        return f"invalid --close-mode {close_mode!r}, expected one of {', '.join(EXECUTE_CLOSE_MODES)}"
+    if close_full_position:
+        return "--close-mode cannot be combined with --close-full-position"
+    try:
+        size_ok = float(size) > 0 and math.isfinite(float(size))
+    except (TypeError, ValueError):
+        size_ok = False
+    if not size_ok:
+        return "--close-mode requires --size > 0"
+    if float(stop_loss_pct or 0) > 0:
+        return "--close-mode cannot place a stop-loss (--stop-loss-pct must be 0)"
+    if float(prev_pos_qty or 0) > 0:
+        return "--close-mode cannot be combined with --prev-pos-qty (flip orders are not closes)"
+    if margin_mode:
+        return "--close-mode cannot be combined with --margin-mode (margin is set on opens only)"
+    return ""
+
+
+def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_pos_qty=0.0, margin_mode="", leverage=0, close_full_position=False, account_leverage=0, account_margin_mode="", close_mode=""):
     if mode != "live":
         print(json.dumps({"error": "--execute requires --mode=live"}, cls=SafeEncoder))
+        sys.exit(1)
+    close_mode_err = execute_close_mode_error(close_mode, close_full_position, size, stop_loss_pct, prev_pos_qty, margin_mode)
+    if close_mode_err:
+        print(json.dumps({
+            "execution": None,
+            "platform": "hyperliquid",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "error": close_mode_err,
+        }, cls=SafeEncoder))
         sys.exit(1)
 
     cancel_err = ""
@@ -1369,6 +1396,15 @@ def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_
                     }, cls=SafeEncoder))
                     sys.exit(1)
 
+        if close_mode and adapter.floor_size(symbol, size) <= 0:
+            print(json.dumps({
+                "execution": None,
+                "platform": "hyperliquid",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "error": f"sized close {size} for {symbol} floors to zero lots; no order sent and no protection cancelled",
+            }, cls=SafeEncoder))
+            sys.exit(1)
+
         if cancel_attempted:
             cancel_errors = []
             try:
@@ -1395,6 +1431,8 @@ def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_
 
         if close_full_position:
             result = adapter.market_close(symbol, sz=None)
+        elif close_mode:
+            result = adapter.market_close_sized(symbol, is_buy, size, reduce_only=(close_mode == "reduce_only"))
         else:
             result = adapter.market_open(symbol, is_buy, size)
 
@@ -2034,6 +2072,8 @@ def main():
                             help="on-chain leverage observed in Go's clearinghouseState snapshot; when paired with --account-margin-mode lets Python skip the duplicate get_position_leverage /info call (#768)")
         parser.add_argument("--account-margin-mode", default="",
                             help="on-chain margin mode observed in Go's clearinghouseState snapshot; see --account-leverage (#768)")
+        parser.add_argument("--close-mode", default="", choices=["", "reduce_only", "cross"],
+                            help="sized close lane set by Go for a close only: reduce_only sends a reduce-only IOC, cross sends the netted IOC; both floor the size to the lot (#1577)")
         parser.add_argument("--probe-only", action="store_true",
                             help="Startup compatibility probe (PR #769): validate execute-mode argv shape — including --account-leverage / --account-margin-mode — and exit 0 without trading.")
         args = parser.parse_args()
@@ -2048,7 +2088,8 @@ def main():
                     margin_mode=args.margin_mode, leverage=args.leverage,
                     close_full_position=args.close_full_position,
                     account_leverage=args.account_leverage,
-                    account_margin_mode=args.account_margin_mode)
+                    account_margin_mode=args.account_margin_mode,
+                    close_mode=args.close_mode)
     elif "--limit-open" in sys.argv:
         import argparse
         parser = argparse.ArgumentParser()

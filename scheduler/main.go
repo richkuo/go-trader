@@ -1725,6 +1725,7 @@ func main() {
 				var hlSharedCloseHoldUSD float64
 				var hlSharedCloseHoldReason string
 				var hlPeerVirtualQty float64
+				var hlPeerSameQty, hlPeerOppQty float64
 				var hlPoolBalanceKnown bool
 				var hlProfileState *RegimeProfileState
 				if sc.Type == "perps" && sc.Platform == "hyperliquid" {
@@ -1768,6 +1769,7 @@ func main() {
 						}
 						if hlLiveStrategy {
 							hlPeerVirtualQty = hlPeerVirtualQtyOnCoin(snapshotHyperliquidVirtualQuantities(state.Strategies, hlReconcileAll), sym, sc.ID)
+							hlPeerSameQty, hlPeerOppQty = hlPeerBooksOnCoin(state.Strategies, hlReconcileAll, sym, sc.ID, hlPosSide)
 						}
 					}
 				}
@@ -2409,7 +2411,8 @@ func main() {
 									liveExecFailed = true
 								}
 							} else {
-								er, ok2 := runHyperliquidExecuteOrder(sc, result, price, hlCash, hlPoolBalanceKnown, hlPosQty, hlPosSide, hlAvgCost, hlPosLeverage, hlStopLossOID, hlTPOIDs, hlReconcileAll, walletSnapshot, hurstDecision, notifier, logger)
+								closeCtx := hlCloseContext{PeerSameQty: hlPeerSameQty, PeerOppQty: hlPeerOppQty, OnChain: hlOnChainCoinView{Known: hlStateFetched, AbsQty: hlOnChainAbsQty, NetSide: hlNetSideByCoin}, Refetch: hlOnChainRefetcher(hlAddr)}
+								er, ok2 := runHyperliquidExecuteOrder(sc, result, price, hlCash, hlPoolBalanceKnown, hlPosQty, hlPosSide, hlAvgCost, hlPosLeverage, hlStopLossOID, hlTPOIDs, hlReconcileAll, walletSnapshot, closeCtx, hurstDecision, notifier, logger)
 								switch {
 								case result.SharedCloseStrandedUSD > 0:
 									mu.Lock()
@@ -2732,10 +2735,37 @@ func main() {
 							if intentFullClose {
 								closeFullPosition = shouldCloseFullPosition(1.0, sc.Symbol, hlReconcileAll)
 							}
+							closeMode := hlCloseModeNone
 							if closeFullPosition {
+								closeMode = hlCloseModeWhole
 								logger.Info("Manual full close %s (close_fraction=1.0) — using market_close(sz=None)", sc.Symbol)
-							} else if intentFullClose {
-								logger.Info("Manual full close %s shares coin with HL peers — using sized close to preserve peer exposure", sc.Symbol)
+							} else if hyperliquidIsLive(sc.Args) {
+								if intentFullClose {
+									logger.Info("Manual full close %s shares coin with HL peers — using sized close to preserve peer exposure", sc.Symbol)
+								}
+								mu.RLock()
+								peerSame, peerOpp := hlPeerBooksOnCoin(state.Strategies, hlReconcileAll, sc.Symbol, sc.ID, pos.Side)
+								mu.RUnlock()
+								plan := resolveHLCloseOrder(sc.Symbol, pos.Side, pos.Quantity, closeQty, hlCloseContext{PeerSameQty: peerSame, PeerOppQty: peerOpp, OnChain: hlOnChainCoinView{Known: hlStateFetched, AbsQty: hlOnChainAbsQty, NetSide: hlNetSideByCoin}, Refetch: hlOnChainRefetcher(hlAddr)})
+								manualAlertDirection := directionOpen
+								if closeSide == "sell" {
+									manualAlertDirection = directionClose
+								}
+								if plan.Action == hlCloseSkip {
+									logger.Error("CRITICAL: manual sized close %s not sent: %s", sc.Symbol, plan.Reason)
+									notifyLiveExecFailure(notifier, sc, manualAlertDirection, sc.Symbol, "sized close not sent: "+plan.Reason)
+									break
+								}
+								if plan.Action == hlCloseDefer {
+									logger.Warn("Manual sized close %s deferred to the next cycle: %s", sc.Symbol, plan.Reason)
+									break
+								}
+								if plan.Capped {
+									logger.Warn("Manual sized close %s capped from %.6f to %.6f by the on-chain position: %s", sc.Symbol, closeQty, plan.Size, plan.Reason)
+								}
+								closeQty = plan.Size
+								closeMode = plan.Mode
+								logger.Info("Manual sized close %s sent as %s: %s", sc.Symbol, closeMode, plan.Reason)
 							}
 							var extraCancelOIDs []int64
 							if intentFullClose {
@@ -2743,7 +2773,7 @@ func main() {
 							}
 							execResult, execStderr, execErr := runHyperliquidExecuteFn(
 								sc.Script, sc.Symbol, closeSide, closeQty,
-								0, cancelOID, 0, "", 0, closeFullPosition, hlExecuteSnapshot{}, extraCancelOIDs...,
+								0, cancelOID, 0, "", 0, closeMode, hlExecuteSnapshot{}, extraCancelOIDs...,
 							)
 							if execStderr != "" {
 								logger.Info("HL manual close stderr: %s", execStderr)
@@ -2770,24 +2800,28 @@ func main() {
 								if fill.OID != 0 {
 									oid = fmt.Sprintf("%d", fill.OID)
 								}
+								bookedQty, bookedFee, bookedFull := manualCloseFillAttribution(pos.Quantity, fill)
+								if bookedQty < closeQty-1e-9 {
+									logger.Warn("manual close filled %.6f of the requested %.6f for %s/%s; booking the filled quantity", bookedQty, closeQty, sc.ID, sc.Symbol)
+								}
 								var realizedPnL float64
 								if pos.Side == "long" {
-									realizedPnL = closeQty * (fill.AvgPx - pos.AvgCost)
+									realizedPnL = bookedQty * (fill.AvgPx - pos.AvgCost)
 								} else {
-									realizedPnL = closeQty * (pos.AvgCost - fill.AvgPx)
+									realizedPnL = bookedQty * (pos.AvgCost - fill.AvgPx)
 								}
-								realizedPnL -= fill.Fee
+								realizedPnL -= bookedFee
 								action := PendingManualAction{
 									StrategyID:      sc.ID,
 									Action:          "close",
 									Symbol:          sc.Symbol,
 									Side:            closeSide,
-									Quantity:        closeQty,
+									Quantity:        bookedQty,
 									FillPrice:       fill.AvgPx,
-									FillFee:         fill.Fee,
+									FillFee:         bookedFee,
 									ExchangeOrderID: oid,
 									RealizedPnL:     realizedPnL,
-									IsFullClose:     intentFullClose,
+									IsFullClose:     intentFullClose && bookedFull,
 									CreatedAt:       time.Now().UTC(),
 								}
 								if err := stratDB.InsertPendingManualAction(action); err != nil {
@@ -2795,7 +2829,7 @@ func main() {
 								} else {
 									prices[sc.Symbol] = fill.AvgPx
 									trades = 1
-									detail = fmt.Sprintf("manual close %.4f %s @ $%.2f | PnL=$%.2f", closeQty, sc.Symbol, fill.AvgPx, realizedPnL)
+									detail = fmt.Sprintf("manual close %.4f %s @ $%.2f | PnL=$%.2f", bookedQty, sc.Symbol, fill.AvgPx, realizedPnL)
 									logger.Info("Queued manual close: %s", detail)
 								}
 							}
@@ -3691,7 +3725,7 @@ func shouldCloseFullPosition(closeFraction float64, symbol string, hlLiveAll []S
 	return len(hlLiveStrategiesForCoin(symbol, hlLiveAll)) <= 1
 }
 
-func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, price, cash float64, poolBalanceKnown bool, posQty float64, posSide string, avgCost, posLeverage float64, existingStopLossOID int64, existingTPOIDs []int64, hlLiveAll []StrategyConfig, walletSnapshot hlExecuteSnapshot, hurst HurstGateDecision, notifier *MultiNotifier, logger *StrategyLogger) (*HyperliquidExecuteResult, bool) {
+func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, price, cash float64, poolBalanceKnown bool, posQty float64, posSide string, avgCost, posLeverage float64, existingStopLossOID int64, existingTPOIDs []int64, hlLiveAll []StrategyConfig, walletSnapshot hlExecuteSnapshot, closeCtx hlCloseContext, hurst HurstGateDecision, notifier *MultiNotifier, logger *StrategyLogger) (*HyperliquidExecuteResult, bool) {
 	if result.Signal == 0 {
 		logger.Info("Skipping live order for %s: no signal", result.Symbol)
 		return nil, false
@@ -3711,7 +3745,7 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 		posLeverage,
 		poolBalanceKnown,
 	), hurst.OpenSizeMult())
-	size, ok, reason := perpsLiveOrderSize(result.Signal, price, cash, posQty, avgCost, sizing, posSide, directionEnum, result.CloseFraction)
+	size, orderKind, ok, reason := perpsLiveOrderSizeKind(result.Signal, price, cash, posQty, avgCost, sizing, posSide, directionEnum, result.CloseFraction)
 	if !ok {
 		logger.Info("%s for %s", reason, result.Symbol)
 		return nil, false
@@ -3752,31 +3786,48 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 		}
 	}
 
+	closeFullPosition := shouldCloseFullPosition(result.CloseFraction, result.Symbol, hlLiveAll)
+	if result.ForceFullClose && result.CloseFraction == 1.0 {
+		closeFullPosition = true
+	}
+	direction := directionOpen
+	if side == "sell" {
+		direction = directionClose
+	}
+	closeMode := hlCloseModeNone
+	if closeFullPosition {
+		closeMode = hlCloseModeWhole
+		logger.Info("Final-tier full close %s (close_fraction=1.0) — using market_close(sz=None)", result.Symbol)
+	} else if orderKind == perpsLiveOrderClose {
+		plan := resolveHLCloseOrder(result.Symbol, posSide, posQty, size, closeCtx)
+		switch plan.Action {
+		case hlCloseSkip:
+			logger.Error("CRITICAL: sized close %s not sent: %s", result.Symbol, plan.Reason)
+			notifyLiveExecFailure(notifier, sc, direction, result.Symbol, "sized close not sent: "+plan.Reason)
+			return nil, false
+		case hlCloseDefer:
+			logger.Warn("Sized close %s deferred to the next cycle: %s", result.Symbol, plan.Reason)
+			return nil, false
+		}
+		if plan.Capped {
+			logger.Warn("Sized close %s capped from %.6f to %.6f by the on-chain position: %s", result.Symbol, size, plan.Size, plan.Reason)
+		}
+		size = plan.Size
+		closeMode = plan.Mode
+		logger.Info("Sized close %s sent as %s: %s", result.Symbol, closeMode, plan.Reason)
+	}
+
 	if slPct > 0 || cancelOID > 0 || prevPosQty > 0 || marginMode != "" {
 		logger.Info("Placing live %s %s size=%.6f (sl_pct=%.2f cancel_oid=%d prev_pos_qty=%.6f margin_mode=%q leverage=%g)",
 			side, result.Symbol, size, slPct, cancelOID, prevPosQty, marginMode, leverageForOpen)
 	} else {
 		logger.Info("Placing live %s %s size=%.6f", side, result.Symbol, size)
 	}
-
-	closeFullPosition := shouldCloseFullPosition(result.CloseFraction, result.Symbol, hlLiveAll)
-	if result.ForceFullClose && result.CloseFraction == 1.0 {
-		closeFullPosition = true
-	}
-	if closeFullPosition {
-		logger.Info("Final-tier full close %s (close_fraction=1.0) — using market_close(sz=None)", result.Symbol)
-	} else if result.CloseFraction == 1.0 {
-		logger.Info("Final-tier close %s shares coin with HL perps peers — using sized close to preserve peer exposure", result.Symbol)
-	}
 	result.LiveOrderSubmitted = true
 	result.LiveOrderCancelRequested = cancelOID > 0 || len(extraCancelOIDs) > 0
-	execResult, stderr, err := runHyperliquidExecuteFn(sc.Script, result.Symbol, side, size, slPct, cancelOID, prevPosQty, marginMode, leverageForOpen, closeFullPosition, walletSnapshot, extraCancelOIDs...)
+	execResult, stderr, err := runHyperliquidExecuteFn(sc.Script, result.Symbol, side, size, slPct, cancelOID, prevPosQty, marginMode, leverageForOpen, closeMode, walletSnapshot, extraCancelOIDs...)
 	if stderr != "" {
 		logger.Info("execute stderr: %s", stderr)
-	}
-	direction := directionOpen
-	if side == "sell" {
-		direction = directionClose
 	}
 	execResult, err = confirmHyperliquidExecuteFill(execResult, err)
 	if err != nil {

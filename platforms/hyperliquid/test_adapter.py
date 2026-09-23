@@ -427,6 +427,45 @@ class TestOrderExecution:
         mock_exchange.market_close.assert_not_called()
 
 
+class TestMarketCloseSized:
+    @pytest.mark.parametrize("live,is_buy,size,reduce_only,mids,want", [
+        (True, False, 0.12349, True, {"ETH": "3000"}, (0.1234, 2970.0)),
+        (True, True, 0.12349, True, {"ETH": "3000"}, (0.1234, 3030.0)),
+        (True, False, 0.5, False, {"ETH": "3000"}, (0.5, 2970.0)),
+        (True, True, 0.99999, False, {"ETH": "3000"}, (0.9999, 3030.0)),
+        (True, False, 0.00009, True, {"ETH": "3000"}, ValueError),
+        (True, False, 0.0, True, {"ETH": "3000"}, ValueError),
+        (True, False, 0.5, True, {}, ValueError),
+        (True, False, 0.5, True, {"ETH": "0"}, ValueError),
+        (False, False, 0.5, True, {"ETH": "3000"}, RuntimeError),
+    ])
+    def test_market_close_sized(self, live, is_buy, size, reduce_only, mids, want):
+        mock_info = MagicMock()
+        mock_info.asset_to_sz_decimals = {"ETH": 4}
+        mock_info.all_mids.return_value = mids
+        mock_info_cls = MagicMock(return_value=mock_info)
+        mock_exchange = MagicMock()
+        mock_exchange.order.return_value = {"status": "ok"}
+        mod = _load_hl_adapter(mock_info_cls=mock_info_cls)
+        adapter = mod.HyperliquidExchangeAdapter()
+        adapter._info = mock_info
+        if live:
+            adapter._wallet = MagicMock()
+            adapter._exchange = mock_exchange
+
+        if isinstance(want, type):
+            with pytest.raises(want):
+                adapter.market_close_sized("ETH", is_buy, size, reduce_only=reduce_only)
+            mock_exchange.order.assert_not_called()
+            return
+        adapter.market_close_sized("ETH", is_buy, size, reduce_only=reduce_only)
+        want_sz, want_px = want
+        assert mock_exchange.order.call_args.args == ("ETH", is_buy, want_sz, want_px, {"limit": {"tif": "Ioc"}})
+        assert mock_exchange.order.call_args.kwargs == {"reduce_only": reduce_only}
+        mock_exchange.market_open.assert_not_called()
+        mock_exchange.market_close.assert_not_called()
+
+
 class TestStopLossPlacement:
 
     def _live_adapter(self, sz_decimals=None):

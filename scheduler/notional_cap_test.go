@@ -190,7 +190,7 @@ func TestManualCoreRefusesNotionalHold(t *testing.T) {
 				loadState: func(strategyID, symbol string) (manualStateView, error) {
 					return manualStateView{HasStrategy: true, Pos: tc.pos, NotionalHold: true, NotionalNote: note}, nil
 				},
-				execute: func(string, string, string, float64, float64, int64, float64, string, float64, bool, hlExecuteSnapshot, ...int64) (*HyperliquidExecuteResult, string, error) {
+				execute: func(string, string, string, float64, float64, int64, float64, string, float64, hlCloseMode, hlExecuteSnapshot, ...int64) (*HyperliquidExecuteResult, string, error) {
 					t.Error("execute must not be called while the notional cap is breached")
 					return nil, "", nil
 				},

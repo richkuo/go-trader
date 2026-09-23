@@ -614,7 +614,7 @@ func argsHasPrefix(args []string, prefix string) bool {
 }
 
 func TestBuildHyperliquidExecuteArgs_CloseFullPosition(t *testing.T) {
-	args := buildHyperliquidExecuteArgs("ETH", "sell", 0, 0, 0, 0, "", 0, true, hlExecuteSnapshot{})
+	args := buildHyperliquidExecuteArgs("ETH", "sell", 0, 0, 0, 0, "", 0, hlCloseModeWhole, hlExecuteSnapshot{})
 
 	if !argsContains(args, "--close-full-position") {
 		t.Errorf("expected --close-full-position flag in argv, got %v", args)
@@ -631,7 +631,7 @@ func TestBuildHyperliquidExecuteArgs_CloseFullPosition(t *testing.T) {
 }
 
 func TestBuildHyperliquidExecuteArgs_SizedClose(t *testing.T) {
-	args := buildHyperliquidExecuteArgs("ETH", "sell", 0.42, 0, 0, 0, "", 0, false, hlExecuteSnapshot{})
+	args := buildHyperliquidExecuteArgs("ETH", "sell", 0.42, 0, 0, 0, "", 0, hlCloseModeNone, hlExecuteSnapshot{})
 
 	if argsContains(args, "--close-full-position") {
 		t.Errorf("--close-full-position must be omitted when closeFullPosition=false, got %v", args)
@@ -645,7 +645,7 @@ func TestBuildHyperliquidExecuteArgs_SizedClose(t *testing.T) {
 }
 
 func TestBuildHyperliquidExecuteArgs_ExtraCancelOIDsFullClose(t *testing.T) {
-	args := buildHyperliquidExecuteArgs("ETH", "sell", 0, 0, 0, 0, "", 0, true, hlExecuteSnapshot{}, 111, 222, 333)
+	args := buildHyperliquidExecuteArgs("ETH", "sell", 0, 0, 0, 0, "", 0, hlCloseModeWhole, hlExecuteSnapshot{}, 111, 222, 333)
 
 	for _, want := range []string{"--cancel-stop-loss-oid=111", "--cancel-stop-loss-oid=222", "--cancel-stop-loss-oid=333"} {
 		if !argsContains(args, want) {
@@ -655,7 +655,7 @@ func TestBuildHyperliquidExecuteArgs_ExtraCancelOIDsFullClose(t *testing.T) {
 }
 
 func TestBuildHyperliquidExecuteArgs_ExtraCancelOIDsPartialClose(t *testing.T) {
-	args := buildHyperliquidExecuteArgs("ETH", "sell", 0.5, 0, 0, 0, "", 0, false, hlExecuteSnapshot{})
+	args := buildHyperliquidExecuteArgs("ETH", "sell", 0.5, 0, 0, 0, "", 0, hlCloseModeNone, hlExecuteSnapshot{})
 
 	for _, notWant := range []string{"--cancel-stop-loss-oid=111", "--cancel-stop-loss-oid=222"} {
 		if argsContains(args, notWant) {
@@ -666,7 +666,7 @@ func TestBuildHyperliquidExecuteArgs_ExtraCancelOIDsPartialClose(t *testing.T) {
 
 func TestBuildHyperliquidExecuteArgs_OptionalFlags(t *testing.T) {
 	t.Run("no optional flags", func(t *testing.T) {
-		args := buildHyperliquidExecuteArgs("BTC", "buy", 0.001, 0, 0, 0, "", 0, false, hlExecuteSnapshot{})
+		args := buildHyperliquidExecuteArgs("BTC", "buy", 0.001, 0, 0, 0, "", 0, hlCloseModeNone, hlExecuteSnapshot{})
 		for _, prefix := range []string{"--stop-loss-pct=", "--cancel-stop-loss-oid=", "--prev-pos-qty=", "--margin-mode=", "--leverage="} {
 			if argsHasPrefix(args, prefix) {
 				t.Errorf("expected %s to be omitted, got %v", prefix, args)
@@ -674,7 +674,7 @@ func TestBuildHyperliquidExecuteArgs_OptionalFlags(t *testing.T) {
 		}
 	})
 	t.Run("all optional flags", func(t *testing.T) {
-		args := buildHyperliquidExecuteArgs("BTC", "buy", 0.001, 2.5, 12345, 0.0005, "isolated", 5, false, hlExecuteSnapshot{})
+		args := buildHyperliquidExecuteArgs("BTC", "buy", 0.001, 2.5, 12345, 0.0005, "isolated", 5, hlCloseModeNone, hlExecuteSnapshot{})
 		for _, want := range []string{"--stop-loss-pct=2.5", "--cancel-stop-loss-oid=12345", "--prev-pos-qty=0.0005", "--margin-mode=isolated", "--leverage=5"} {
 			if !argsContains(args, want) {
 				t.Errorf("expected %q in argv, got %v", want, args)
@@ -682,7 +682,7 @@ func TestBuildHyperliquidExecuteArgs_OptionalFlags(t *testing.T) {
 		}
 	})
 	t.Run("margin mode without leverage", func(t *testing.T) {
-		args := buildHyperliquidExecuteArgs("BTC", "buy", 0.001, 0, 0, 0, "cross", 0, false, hlExecuteSnapshot{})
+		args := buildHyperliquidExecuteArgs("BTC", "buy", 0.001, 0, 0, 0, "cross", 0, hlCloseModeNone, hlExecuteSnapshot{})
 		if !argsContains(args, "--margin-mode=cross") {
 			t.Errorf("expected --margin-mode=cross, got %v", args)
 		}
@@ -694,7 +694,7 @@ func TestBuildHyperliquidExecuteArgs_OptionalFlags(t *testing.T) {
 
 func TestBuildHyperliquidExecuteArgs_AccountSnapshotForwarded(t *testing.T) {
 	snap := hlExecuteSnapshot{AccountLeverage: 10, AccountMarginMode: "isolated"}
-	args := buildHyperliquidExecuteArgs("BTC", "buy", 0.001, 0, 0, 0, "isolated", 10, false, snap)
+	args := buildHyperliquidExecuteArgs("BTC", "buy", 0.001, 0, 0, 0, "isolated", 10, hlCloseModeNone, snap)
 	for _, want := range []string{"--account-leverage=10", "--account-margin-mode=isolated"} {
 		if !argsContains(args, want) {
 			t.Errorf("expected %q in argv when snapshot is known, got %v", want, args)
@@ -713,7 +713,7 @@ func TestBuildHyperliquidExecuteArgs_AccountSnapshotOmittedWhenIncomplete(t *tes
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			args := buildHyperliquidExecuteArgs("BTC", "buy", 0.001, 0, 0, 0, "isolated", 10, false, tc.snap)
+			args := buildHyperliquidExecuteArgs("BTC", "buy", 0.001, 0, 0, 0, "isolated", 10, hlCloseModeNone, tc.snap)
 			for _, prefix := range []string{"--account-leverage=", "--account-margin-mode="} {
 				if argsHasPrefix(args, prefix) {
 					t.Errorf("expected %s to be omitted on incomplete snapshot (%s), got %v", prefix, tc.name, args)
@@ -725,7 +725,7 @@ func TestBuildHyperliquidExecuteArgs_AccountSnapshotOmittedWhenIncomplete(t *tes
 
 func TestBuildHyperliquidExecuteArgs_AccountSnapshotOmittedWithoutMarginMode(t *testing.T) {
 	snap := hlExecuteSnapshot{AccountLeverage: 10, AccountMarginMode: "isolated"}
-	args := buildHyperliquidExecuteArgs("BTC", "buy", 0.001, 0, 0, 0, "", 0, false, snap)
+	args := buildHyperliquidExecuteArgs("BTC", "buy", 0.001, 0, 0, 0, "", 0, hlCloseModeNone, snap)
 	for _, prefix := range []string{"--account-leverage=", "--account-margin-mode="} {
 		if argsHasPrefix(args, prefix) {
 			t.Errorf("expected %s to be omitted when margin-mode is empty, got %v", prefix, args)
@@ -827,5 +827,45 @@ func TestPythonScriptTimeoutError_As(t *testing.T) {
 	}
 	if !strings.HasPrefix(toe.Error(), "script timed out after ") {
 		t.Errorf("Error() = %q", toe.Error())
+	}
+}
+
+func TestBuildHyperliquidExecuteArgs_CloseMode(t *testing.T) {
+	probeFlag := ""
+	for _, a := range executeProbeArgv {
+		if strings.HasPrefix(a, "--close-mode=") {
+			probeFlag = a
+		}
+	}
+	cases := []struct {
+		mode      hlCloseMode
+		wantSize  bool
+		wantFull  bool
+		wantClose string
+	}{
+		{hlCloseModeNone, true, false, ""},
+		{hlCloseModeReduceOnly, true, false, "--close-mode=reduce_only"},
+		{hlCloseModeCross, true, false, "--close-mode=cross"},
+		{hlCloseModeWhole, false, true, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.mode.String(), func(t *testing.T) {
+			args := buildHyperliquidExecuteArgs("ETH", "sell", 0.42, 0, 0, 0, "", 0, tc.mode, hlExecuteSnapshot{})
+			if argsContains(args, "--size=0.42") != tc.wantSize || argsContains(args, "--close-full-position") != tc.wantFull {
+				t.Fatalf("argv %v: size=%t full=%t, want size=%t full=%t", args, argsContains(args, "--size=0.42"), argsContains(args, "--close-full-position"), tc.wantSize, tc.wantFull)
+			}
+			if tc.wantClose == "" {
+				if argsHasPrefix(args, "--close-mode=") {
+					t.Fatalf("argv %v must carry no --close-mode", args)
+				}
+				return
+			}
+			if !argsContains(args, tc.wantClose) {
+				t.Fatalf("argv %v missing %s", args, tc.wantClose)
+			}
+		})
+	}
+	if probeFlag == "" || !argsContains(buildHyperliquidExecuteArgs("ETH", "sell", 0.42, 0, 0, 0, "", 0, hlCloseModeReduceOnly, hlExecuteSnapshot{}), probeFlag) {
+		t.Fatalf("executeProbeArgv %v must carry the --close-mode flag the builder emits", executeProbeArgv)
 	}
 }

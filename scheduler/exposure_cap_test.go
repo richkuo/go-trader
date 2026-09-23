@@ -499,7 +499,7 @@ func exposureCapE2EDeps(t *testing.T, view manualStateView, executed *bool) manu
 		loadState: func(strategyID, symbol string) (manualStateView, error) {
 			return view, nil
 		},
-		execute: func(string, string, string, float64, float64, int64, float64, string, float64, bool, hlExecuteSnapshot, ...int64) (*HyperliquidExecuteResult, string, error) {
+		execute: func(string, string, string, float64, float64, int64, float64, string, float64, hlCloseMode, hlExecuteSnapshot, ...int64) (*HyperliquidExecuteResult, string, error) {
 			*executed = true
 			return nil, "", errSentinelStopAfterGuards
 		},

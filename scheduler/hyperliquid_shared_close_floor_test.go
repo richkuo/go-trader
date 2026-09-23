@@ -114,8 +114,8 @@ func TestSharedCoinFullCloseFloorExecutePath(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			fullCloses, sized := 0, 0
-			runHyperliquidExecuteFn = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
-				if closeFullPosition {
+			runHyperliquidExecuteFn = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+				if closeMode == hlCloseModeWhole {
 					fullCloses++
 				} else {
 					sized++
@@ -160,7 +160,7 @@ func TestSharedCoinFullCloseFloorExecutePath(t *testing.T) {
 				}
 				return
 			}
-			_, ok := runHyperliquidExecuteOrder(sc, result, 2000, 1000, false, 0.002, "long", 1900, 2, 111, nil, peers, hlExecuteSnapshot{}, HurstGateDecision{}, notifier, silentStrategyLogger(sc.ID))
+			_, ok := runHyperliquidExecuteOrder(sc, result, 2000, 1000, false, 0.002, "long", 1900, 2, 111, nil, peers, hlExecuteSnapshot{}, hlCloseContext{}, HurstGateDecision{}, notifier, silentStrategyLogger(sc.ID))
 			if ok != tc.wantOK {
 				t.Fatalf("ok = %t, want %t", ok, tc.wantOK)
 			}
@@ -426,7 +426,7 @@ func TestDecideOperatorSharedCloseFloor(t *testing.T) {
 			wantInReason: []string{"not readable"}},
 		{name: "unreadable mark withholds only the escalation and leaves the sized order unchanged", peers: peers, posQty: 0.002, price: 0,
 			wantUnread: true, wantReads: 0,
-			wantInReason: []string{"no usable mark price", "escalation to a whole-position close is withheld", "sized reduce-only close is sent unchanged"}},
+			wantInReason: []string{"no usable mark price", "escalation to a whole-position close is withheld", "the sized close is sent unchanged"}},
 		{name: "unreadable mark on a large position leaves the sized order unchanged", peers: peers, posQty: 5, price: math.NaN(),
 			wantUnread: true, wantReads: 0, wantInReason: []string{"no usable mark price"}},
 		{name: "single owner leaves the order unchanged", peers: single, posQty: 0.002, price: 2000, wantReads: 0},

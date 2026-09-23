@@ -303,16 +303,41 @@ type hlExecuteSnapshot struct {
 	AccountMarginMode string
 }
 
-func buildHyperliquidExecuteArgs(symbol, side string, size, stopLossPct float64, cancelStopLossOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) []string {
+type hlCloseMode int
+
+const (
+	hlCloseModeNone hlCloseMode = iota
+	hlCloseModeWhole
+	hlCloseModeReduceOnly
+	hlCloseModeCross
+)
+
+func (m hlCloseMode) String() string {
+	switch m {
+	case hlCloseModeWhole:
+		return "whole"
+	case hlCloseModeReduceOnly:
+		return "reduce_only"
+	case hlCloseModeCross:
+		return "cross"
+	default:
+		return "none"
+	}
+}
+
+func buildHyperliquidExecuteArgs(symbol, side string, size, stopLossPct float64, cancelStopLossOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) []string {
 	args := []string{
 		"--execute",
 		fmt.Sprintf("--symbol=%s", symbol),
 		fmt.Sprintf("--side=%s", side),
 		"--mode=live",
 	}
-	if closeFullPosition {
+	switch closeMode {
+	case hlCloseModeWhole:
 		args = append(args, "--close-full-position")
-	} else {
+	case hlCloseModeReduceOnly, hlCloseModeCross:
+		args = append(args, fmt.Sprintf("--size=%g", size), "--close-mode="+closeMode.String())
+	default:
 		args = append(args, fmt.Sprintf("--size=%g", size))
 	}
 	if stopLossPct > 0 {
@@ -342,8 +367,8 @@ func buildHyperliquidExecuteArgs(symbol, side string, size, stopLossPct float64,
 	return args
 }
 
-func RunHyperliquidExecute(script, symbol, side string, size, stopLossPct float64, cancelStopLossOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
-	args := buildHyperliquidExecuteArgs(symbol, side, size, stopLossPct, cancelStopLossOID, prevPosQty, marginMode, leverage, closeFullPosition, snapshot, extraCancelOIDs...)
+func RunHyperliquidExecute(script, symbol, side string, size, stopLossPct float64, cancelStopLossOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+	args := buildHyperliquidExecuteArgs(symbol, side, size, stopLossPct, cancelStopLossOID, prevPosQty, marginMode, leverage, closeMode, snapshot, extraCancelOIDs...)
 	stdout, stderr, err := runPythonSideEffect(script, args)
 	return parseHyperliquidExecuteOutput(stdout, string(stderr), err)
 }

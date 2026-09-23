@@ -2,6 +2,8 @@ package main
 
 import (
 	"errors"
+	"fmt"
+	"math"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -362,7 +364,7 @@ func TestManualOpenCoreRefusesQueuedLimitOrder(t *testing.T) {
 	deps.fetchMids = func([]string) (map[string]float64, error) {
 		return map[string]float64{sc.Symbol: 2000}, nil
 	}
-	deps.execute = func(string, string, string, float64, float64, int64, float64, string, float64, bool, hlExecuteSnapshot, ...int64) (*HyperliquidExecuteResult, string, error) {
+	deps.execute = func(string, string, string, float64, float64, int64, float64, string, float64, hlCloseMode, hlExecuteSnapshot, ...int64) (*HyperliquidExecuteResult, string, error) {
 		t.Error("market execute must not be called while a resting limit exists")
 		return nil, "", errors.New("execute called")
 	}
@@ -509,7 +511,7 @@ func TestManualCloseCancelsPartialLimitRemainderBeforeFlatten(t *testing.T) {
 	)
 	deps := newCLIManualCoreDeps(cfg, openTestStore(t, db), nil)
 	execCalls := 0
-	deps.execute = func(string, string, string, float64, float64, int64, float64, string, float64, bool, hlExecuteSnapshot, ...int64) (*HyperliquidExecuteResult, string, error) {
+	deps.execute = func(string, string, string, float64, float64, int64, float64, string, float64, hlCloseMode, hlExecuteSnapshot, ...int64) (*HyperliquidExecuteResult, string, error) {
 		execCalls++
 		return &HyperliquidExecuteResult{Execution: &HyperliquidExecution{Fill: &HyperliquidFill{AvgPx: 2010, TotalSz: 0.4, OID: 4242, Fee: 0.4}}}, "", nil
 	}
@@ -559,9 +561,9 @@ func TestManualCloseReconcilesStaleSnapshotAgainstAdoptedLimitFill(t *testing.T)
 	deps := newCLIManualCoreDeps(cfg, openTestStore(t, db), nil)
 	var gotCloseQty float64
 	var gotFullClose bool
-	deps.execute = func(_ string, _ string, _ string, size float64, _ float64, _ int64, _ float64, _ string, _ float64, closeFull bool, _ hlExecuteSnapshot, _ ...int64) (*HyperliquidExecuteResult, string, error) {
+	deps.execute = func(_ string, _ string, _ string, size float64, _ float64, _ int64, _ float64, _ string, _ float64, closeMode hlCloseMode, _ hlExecuteSnapshot, _ ...int64) (*HyperliquidExecuteResult, string, error) {
 		gotCloseQty = size
-		gotFullClose = closeFull
+		gotFullClose = closeMode == hlCloseModeWhole
 		return &HyperliquidExecuteResult{Execution: &HyperliquidExecution{Fill: &HyperliquidFill{AvgPx: 2010, TotalSz: size, OID: 4242, Fee: 0.4}}}, "", nil
 	}
 
@@ -616,7 +618,7 @@ func TestManualCloseAcceptsExplicitQtyMatchingReconciledSize(t *testing.T) {
 	cfg, sc, db := staleReconcileCloseHarness(t)
 	deps := newCLIManualCoreDeps(cfg, openTestStore(t, db), nil)
 	var gotCloseQty float64
-	deps.execute = func(_ string, _ string, _ string, size float64, _ float64, _ int64, _ float64, _ string, _ float64, _ bool, _ hlExecuteSnapshot, _ ...int64) (*HyperliquidExecuteResult, string, error) {
+	deps.execute = func(_ string, _ string, _ string, size float64, _ float64, _ int64, _ float64, _ string, _ float64, _ hlCloseMode, _ hlExecuteSnapshot, _ ...int64) (*HyperliquidExecuteResult, string, error) {
 		gotCloseQty = size
 		return &HyperliquidExecuteResult{Execution: &HyperliquidExecution{Fill: &HyperliquidFill{AvgPx: 2010, TotalSz: size, OID: 4242, Fee: 0.4}}}, "", nil
 	}
@@ -638,9 +640,9 @@ func TestManualClosePartialQtyBetweenStaleAndReconciledSize(t *testing.T) {
 	deps := newCLIManualCoreDeps(cfg, openTestStore(t, db), nil)
 	var gotCloseQty float64
 	var gotFullClose bool
-	deps.execute = func(_ string, _ string, _ string, size float64, _ float64, _ int64, _ float64, _ string, _ float64, closeFull bool, _ hlExecuteSnapshot, _ ...int64) (*HyperliquidExecuteResult, string, error) {
+	deps.execute = func(_ string, _ string, _ string, size float64, _ float64, _ int64, _ float64, _ string, _ float64, closeMode hlCloseMode, _ hlExecuteSnapshot, _ ...int64) (*HyperliquidExecuteResult, string, error) {
 		gotCloseQty = size
-		gotFullClose = closeFull
+		gotFullClose = closeMode == hlCloseModeWhole
 		return &HyperliquidExecuteResult{Execution: &HyperliquidExecution{Fill: &HyperliquidFill{AvgPx: 2010, TotalSz: size, OID: 4242, Fee: 0.4}}}, "", nil
 	}
 
@@ -662,7 +664,7 @@ func TestManualClosePartialQtyBetweenStaleAndReconciledSize(t *testing.T) {
 func TestManualCloseRejectsQtyExceedingReconciledSize(t *testing.T) {
 	cfg, sc, db := staleReconcileCloseHarness(t)
 	deps := newCLIManualCoreDeps(cfg, openTestStore(t, db), nil)
-	deps.execute = func(string, string, string, float64, float64, int64, float64, string, float64, bool, hlExecuteSnapshot, ...int64) (*HyperliquidExecuteResult, string, error) {
+	deps.execute = func(string, string, string, float64, float64, int64, float64, string, float64, hlCloseMode, hlExecuteSnapshot, ...int64) (*HyperliquidExecuteResult, string, error) {
 		t.Error("execute must not run when --qty exceeds the reconciled position")
 		return nil, "", errors.New("execute called")
 	}
@@ -720,9 +722,9 @@ func TestManualCloseRereadsFreshPositionWhenRowDeletedBeforeClearResting(t *test
 	sc, deps, db := staleReadRowGoneCloseHarness(t)
 	var gotCloseQty float64
 	var gotFullClose bool
-	deps.execute = func(_ string, _ string, _ string, size float64, _ float64, _ int64, _ float64, _ string, _ float64, closeFull bool, _ hlExecuteSnapshot, _ ...int64) (*HyperliquidExecuteResult, string, error) {
+	deps.execute = func(_ string, _ string, _ string, size float64, _ float64, _ int64, _ float64, _ string, _ float64, closeMode hlCloseMode, _ hlExecuteSnapshot, _ ...int64) (*HyperliquidExecuteResult, string, error) {
 		gotCloseQty = size
-		gotFullClose = closeFull
+		gotFullClose = closeMode == hlCloseModeWhole
 		return &HyperliquidExecuteResult{Execution: &HyperliquidExecution{Fill: &HyperliquidFill{AvgPx: 2010, TotalSz: size, OID: 4242, Fee: 0.4}}}, "", nil
 	}
 
@@ -744,7 +746,7 @@ func TestManualCloseRereadsFreshPositionWhenRowDeletedBeforeClearResting(t *test
 func TestManualCloseExplicitQtyValidatedAgainstRereadWhenRowGone(t *testing.T) {
 	sc, deps, db := staleReadRowGoneCloseHarness(t)
 	var gotCloseQty float64
-	deps.execute = func(_ string, _ string, _ string, size float64, _ float64, _ int64, _ float64, _ string, _ float64, _ bool, _ hlExecuteSnapshot, _ ...int64) (*HyperliquidExecuteResult, string, error) {
+	deps.execute = func(_ string, _ string, _ string, size float64, _ float64, _ int64, _ float64, _ string, _ float64, _ hlCloseMode, _ hlExecuteSnapshot, _ ...int64) (*HyperliquidExecuteResult, string, error) {
 		gotCloseQty = size
 		return &HyperliquidExecuteResult{Execution: &HyperliquidExecution{Fill: &HyperliquidFill{AvgPx: 2010, TotalSz: size, OID: 4242, Fee: 0.4}}}, "", nil
 	}
@@ -778,7 +780,7 @@ func TestManualAddCancelsPartialLimitRemainderBeforeAveraging(t *testing.T) {
 		return map[string]float64{sc.Symbol: 2000}, nil
 	}
 	execCalls := 0
-	deps.execute = func(string, string, string, float64, float64, int64, float64, string, float64, bool, hlExecuteSnapshot, ...int64) (*HyperliquidExecuteResult, string, error) {
+	deps.execute = func(string, string, string, float64, float64, int64, float64, string, float64, hlCloseMode, hlExecuteSnapshot, ...int64) (*HyperliquidExecuteResult, string, error) {
 		execCalls++
 		return &HyperliquidExecuteResult{Execution: &HyperliquidExecution{Fill: &HyperliquidFill{AvgPx: 1995, TotalSz: 0.05, OID: 5252, Fee: 0.1}}}, "", nil
 	}
@@ -811,7 +813,7 @@ func TestManualCloseDefersWhenLimitCancelHasUnadoptedFill(t *testing.T) {
 		},
 	)
 	deps := newCLIManualCoreDeps(cfg, openTestStore(t, db), nil)
-	deps.execute = func(string, string, string, float64, float64, int64, float64, string, float64, bool, hlExecuteSnapshot, ...int64) (*HyperliquidExecuteResult, string, error) {
+	deps.execute = func(string, string, string, float64, float64, int64, float64, string, float64, hlCloseMode, hlExecuteSnapshot, ...int64) (*HyperliquidExecuteResult, string, error) {
 		t.Error("execute must not run while a limit fill is unadopted")
 		return nil, "", errors.New("execute called")
 	}
@@ -845,7 +847,7 @@ func TestManualAddDefersWhenLimitCancelBookStateUnknown(t *testing.T) {
 	deps.fetchMids = func([]string) (map[string]float64, error) {
 		return map[string]float64{sc.Symbol: 2000}, nil
 	}
-	deps.execute = func(string, string, string, float64, float64, int64, float64, string, float64, bool, hlExecuteSnapshot, ...int64) (*HyperliquidExecuteResult, string, error) {
+	deps.execute = func(string, string, string, float64, float64, int64, float64, string, float64, hlCloseMode, hlExecuteSnapshot, ...int64) (*HyperliquidExecuteResult, string, error) {
 		t.Error("execute must not run while limit book state is unknown")
 		return nil, "", errors.New("execute called")
 	}
@@ -1188,5 +1190,102 @@ func TestReconcilePendingLimitOrdersDeferOnUnknownBook(t *testing.T) {
 	reconcilePendingLimitOrders(state, cfg, openTestStore(t, db), &mu, nil, nil)
 	if orders, _ := db.LoadPendingLimitOrders(); len(orders) != 1 {
 		t.Errorf("row must be retained when book state is unknown, got %d", len(orders))
+	}
+}
+
+func TestManualCloseSizedCloseMode(t *testing.T) {
+	cases := []struct {
+		name       string
+		peerSide   string
+		peerQty    float64
+		chain      float64
+		fetchErr   error
+		qty        float64
+		dryRun     bool
+		wantCalls  int
+		wantMode   hlCloseMode
+		wantSize   float64
+		wantErr    bool
+		wantDryOut string
+	}{
+		{name: "same-side peer sends reduce-only", peerSide: "long", peerQty: 0.5, chain: 1.5, qty: 0.5, wantCalls: 1, wantMode: hlCloseModeReduceOnly, wantSize: 0.5},
+		{name: "opposite-side peer crossing zero sends cross", peerSide: "short", peerQty: 0.4, chain: 0.6, qty: 0.8, wantCalls: 1, wantMode: hlCloseModeCross, wantSize: 0.8},
+		{name: "sole owner book above chain caps and books the fill", chain: 0.8, qty: 0.5, wantCalls: 1, wantMode: hlCloseModeReduceOnly, wantSize: 0.3},
+		{name: "sole owner chain below the remaining book refuses", chain: 0.3, qty: 0.5, wantErr: true},
+		{name: "fetch error with opposite-side peer refuses", peerSide: "short", peerQty: 0.4, fetchErr: fmt.Errorf("account read timeout"), qty: 0.8, wantErr: true},
+		{name: "fetch error with same-side peer sends reduce-only book size", peerSide: "long", peerQty: 0.5, fetchErr: fmt.Errorf("account read timeout"), qty: 0.5, wantCalls: 1, wantMode: hlCloseModeReduceOnly, wantSize: 0.5},
+		{name: "dry-run prints the cross mode and sends nothing", peerSide: "short", peerQty: 0.4, chain: 0.6, qty: 0.8, dryRun: true, wantDryOut: "sized cross 0.800000"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xabc")
+			sc, state := newLimitTestStrategy()
+			state.Strategies[sc.ID].Positions[sc.Symbol] = &Position{
+				Symbol: sc.Symbol, Quantity: 1.0, InitialQuantity: 1.0, AvgCost: 2000, Side: "long",
+				Multiplier: 1, Leverage: sc.Leverage, OwnerStrategyID: sc.ID, TradePositionID: "pos-sized-close",
+			}
+			cfg := &Config{Strategies: []StrategyConfig{sc}}
+			if tc.peerSide != "" {
+				peer := StrategyConfig{ID: "hl-manual-eth-peer", Type: "manual", Platform: "hyperliquid", Symbol: "ETH", Script: sc.Script, Leverage: 10, Args: []string{"hold", "ETH", "30m", "--mode=live"}}
+				cfg.Strategies = append(cfg.Strategies, peer)
+				state.Strategies[peer.ID] = &StrategyState{ID: peer.ID, Platform: "hyperliquid", Type: "manual", Cash: 10000, Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: tc.peerQty, Side: tc.peerSide, AvgCost: 2000, Multiplier: 1, OwnerStrategyID: peer.ID},
+				}}
+			}
+			dbPath := filepath.Join(t.TempDir(), "state.db")
+			db, err := OpenStateDB(dbPath)
+			if err != nil {
+				t.Fatalf("open db: %v", err)
+			}
+			t.Cleanup(func() { db.Close() })
+			if err := db.SaveState(state); err != nil {
+				t.Fatalf("save state: %v", err)
+			}
+			cfg.DBFile = dbPath
+			deps := newCLIManualCoreDeps(cfg, openTestStore(t, db), nil)
+			deps.fetchMids = func([]string) (map[string]float64, error) { return map[string]float64{"ETH": 2000}, nil }
+			deps.fetchPositions = func(string) ([]HLPosition, error) {
+				if tc.fetchErr != nil {
+					return nil, tc.fetchErr
+				}
+				return []HLPosition{{Coin: "ETH", Size: tc.chain}}, nil
+			}
+			calls := 0
+			var gotMode hlCloseMode
+			var gotSize float64
+			deps.execute = func(_ string, _ string, _ string, size float64, _ float64, _ int64, _ float64, _ string, _ float64, closeMode hlCloseMode, _ hlExecuteSnapshot, _ ...int64) (*HyperliquidExecuteResult, string, error) {
+				calls++
+				gotMode, gotSize = closeMode, size
+				return &HyperliquidExecuteResult{Execution: &HyperliquidExecution{Fill: &HyperliquidFill{AvgPx: 2010, TotalSz: size, OID: 4343, Fee: 0.1}}}, "", nil
+			}
+
+			res, err := manualCloseCore(deps, sc, manualCloseInputs{StrategyID: sc.ID, Qty: tc.qty, DryRun: tc.dryRun})
+			if (err != nil) != tc.wantErr || calls != tc.wantCalls {
+				t.Fatalf("err=%v calls=%d, want err=%t calls=%d", err, calls, tc.wantErr, tc.wantCalls)
+			}
+			actions, _ := db.LoadPendingManualActions()
+			if tc.wantDryOut != "" {
+				found := false
+				for _, line := range res.lines {
+					found = found || strings.Contains(line.text, tc.wantDryOut)
+				}
+				if !found || len(actions) != 0 {
+					t.Fatalf("dry-run lines=%+v actions=%+v, want %q and nothing queued", res.lines, actions, tc.wantDryOut)
+				}
+				return
+			}
+			if tc.wantCalls == 0 {
+				if len(actions) != 0 {
+					t.Fatalf("refused close queued %+v", actions)
+				}
+				return
+			}
+			if gotMode != tc.wantMode || math.Abs(gotSize-tc.wantSize) > 1e-9 {
+				t.Fatalf("mode=%v size=%g, want %v %g", gotMode, gotSize, tc.wantMode, tc.wantSize)
+			}
+			if len(actions) != 1 || math.Abs(actions[0].Quantity-tc.wantSize) > 1e-9 || actions[0].IsFullClose {
+				t.Fatalf("queued actions = %+v, want one partial close of %g", actions, tc.wantSize)
+			}
+		})
 	}
 }

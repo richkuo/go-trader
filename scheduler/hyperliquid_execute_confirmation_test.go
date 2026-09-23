@@ -151,7 +151,7 @@ func TestAutomaticHyperliquidExecuteRejectsUnconfirmedOpenCloseFlip(t *testing.T
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			called := 0
-			runHyperliquidExecuteFn = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+			runHyperliquidExecuteFn = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
 				called++
 				return unconfirmedExecuteResult(), "", nil
 			}
@@ -159,7 +159,7 @@ func TestAutomaticHyperliquidExecuteRejectsUnconfirmedOpenCloseFlip(t *testing.T
 			notifier, backend := confirmationNotifier()
 			sc := confirmationTestStrategy(tc.dir)
 			result := &HyperliquidResult{Symbol: "ETH", Signal: tc.signal, Price: 2000}
-			got, ok := runHyperliquidExecuteOrder(sc, result, 2000, 1000, false, tc.posQty, tc.posSide, 2000, 2, 111, []int64{222}, nil, hlExecuteSnapshot{}, HurstGateDecision{}, notifier, silentStrategyLogger(sc.ID))
+			got, ok := runHyperliquidExecuteOrder(sc, result, 2000, 1000, false, tc.posQty, tc.posSide, 2000, 2, 111, []int64{222}, nil, hlExecuteSnapshot{}, hlCloseContext{}, HurstGateDecision{}, notifier, silentStrategyLogger(sc.ID))
 			if ok || got == nil {
 				t.Fatalf("execute result = %+v, ok=%t, want rejected result", got, ok)
 			}
@@ -194,7 +194,7 @@ func TestHyperliquidScaleInRejectsUnconfirmedBeforeBooking(t *testing.T) {
 		runHyperliquidExecuteFn = originalExecute
 		liveExecThrottle = originalThrottle
 	})
-	runHyperliquidExecuteFn = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+	runHyperliquidExecuteFn = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
 		return unconfirmedExecuteResult(), "", nil
 	}
 	liveExecThrottle = &LiveExecFailureThrottle{}
@@ -307,7 +307,7 @@ func TestManualLiveExecuteRejectsUnconfirmedWithoutQueueing(t *testing.T) {
 			cfg := &Config{DBFile: dbPath, Strategies: []StrategyConfig{sc}}
 			deps := newCLIManualCoreDeps(cfg, openTestStore(t, db), nil)
 			deps.fetchMids = func([]string) (map[string]float64, error) { return map[string]float64{"ETH": 2000}, nil }
-			deps.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+			deps.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
 				result := unconfirmedExecuteResult()
 				if action == "close" {
 					result.CancelStopLossSucceeded = true
@@ -365,7 +365,7 @@ func TestManualLiveExecuteRejectsUnconfirmedWithoutQueueing(t *testing.T) {
 func TestDaemonManualCloseRejectsUnconfirmedAndRestoresTheStop(t *testing.T) {
 	ss, db, _ := newTradeActionTestServer(t)
 	stubs := stubTradeDeps(t, ss)
-	stubs.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+	stubs.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
 		return &HyperliquidExecuteResult{
 			Execution:                   &HyperliquidExecution{Fill: &HyperliquidFill{}},
 			CancelStopLossSucceeded:     true,

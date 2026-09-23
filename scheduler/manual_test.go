@@ -1170,9 +1170,9 @@ func TestManualCoresGuardPositionDoubleFire(t *testing.T) {
 	firingDeps := func(fired *int) manualCoreDeps {
 		d := newCLIManualCoreDeps(cfg, openTestStore(t, db), nil)
 		d.fetchMids = func(coins []string) (map[string]float64, error) { return map[string]float64{"ETH": 2000}, nil }
-		d.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
-			if closeFullPosition {
-				t.Errorf("partial/shared-coin close must be sized (non-reduce-only), got closeFullPosition=true")
+		d.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+			if closeMode == hlCloseModeWhole {
+				t.Errorf("partial/shared-coin close must be sized, got the whole-position close")
 			}
 			*fired++
 			return &HyperliquidExecuteResult{Execution: &HyperliquidExecution{Fill: &HyperliquidFill{AvgPx: 2100, TotalSz: size, OID: 4242, Fee: 1.0}}}, "", nil
@@ -1182,7 +1182,7 @@ func TestManualCoresGuardPositionDoubleFire(t *testing.T) {
 	failLoudDeps := func() manualCoreDeps {
 		d := newCLIManualCoreDeps(cfg, openTestStore(t, db), nil)
 		d.fetchMids = func(coins []string) (map[string]float64, error) { return map[string]float64{"ETH": 2000}, nil }
-		d.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+		d.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
 			t.Error("execute must not be called for a guarded action")
 			return nil, "", fmt.Errorf("stub")
 		}
@@ -1287,7 +1287,7 @@ func TestManualActionLockPreventsCrossProcessDoubleFire(t *testing.T) {
 	releaseSubmit := make(chan struct{})
 
 	depsA := newCLIManualCoreDeps(cfg, openTestStore(t, db), nil)
-	depsA.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+	depsA.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
 		atomic.AddInt32(&aFired, 1)
 		close(enteredSubmit)
 		<-releaseSubmit
@@ -1295,7 +1295,7 @@ func TestManualActionLockPreventsCrossProcessDoubleFire(t *testing.T) {
 	}
 
 	depsB := newCLIManualCoreDeps(cfg, openTestStore(t, db), nil)
-	depsB.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+	depsB.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
 		atomic.AddInt32(&bFired, 1)
 		return &HyperliquidExecuteResult{Execution: &HyperliquidExecution{Fill: &HyperliquidFill{AvgPx: 2100, TotalSz: size, OID: 5252, Fee: 1.0}}}, "", nil
 	}
@@ -2081,10 +2081,10 @@ func TestManualCloseDryRunPreviewsSharedCloseDecision(t *testing.T) {
 		{name: "a peer holding quantity previews the refusal", posQty: 0.002,
 			positions: busy, wantInLines: []string{"REFUSED", "no close order sent"}},
 		{name: "a value above the gate previews the sized close", posQty: 0.4,
-			positions: flat, wantInLines: []string{"sized 0.400000"}},
+			positions: []HLPosition{{Coin: "ETH", Size: 0.4}}, wantInLines: []string{"sized reduce-only 0.400000"}},
 		{name: "an unreadable mark previews the sized close with a warning", posQty: 0.002,
 			positions: flat, midsErr: fmt.Errorf("allMids timeout"),
-			wantInLines: []string{"sized 0.002000", "no usable mark price"}},
+			wantInLines: []string{"sized reduce-only 0.002000", "no usable mark price"}},
 	}
 
 	for _, tc := range cases {
@@ -2127,7 +2127,7 @@ func TestManualCloseDryRunPreviewsSharedCloseDecision(t *testing.T) {
 			}
 			d.fetchPositions = func(addr string) ([]HLPosition, error) { return tc.positions, nil }
 			fired := 0
-			d.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+			d.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
 				fired++
 				return nil, "", fmt.Errorf("dry run must not reach the venue")
 			}
@@ -2264,9 +2264,9 @@ func TestOperatorSharedCloseFloorGatesBothCores(t *testing.T) {
 					}
 					fired := 0
 					gotFullClose := false
-					d.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+					d.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
 						fired++
-						gotFullClose = closeFullPosition
+						gotFullClose = closeMode == hlCloseModeWhole
 						return &HyperliquidExecuteResult{Execution: &HyperliquidExecution{Fill: &HyperliquidFill{AvgPx: 2000, TotalSz: size, OID: 7, Fee: 0.01}}}, "", nil
 					}
 					d.closer = func(symbol string, partialSz *float64, cancelOIDs []int64) (*HyperliquidCloseResult, error) {
@@ -2308,8 +2308,12 @@ func TestOperatorSharedCloseFloorGatesBothCores(t *testing.T) {
 					if gotFullClose != tc.wantFullClose {
 						t.Fatalf("whole-position close = %v, want %v", gotFullClose, tc.wantFullClose)
 					}
-					if tc.midsErr != nil && accountReads != 0 {
-						t.Fatalf("on-chain account reads = %d on an unreadable mark, want 0", accountReads)
+					wantSizingReads := 0
+					if core == "manual-close" {
+						wantSizingReads = 1
+					}
+					if tc.midsErr != nil && accountReads != wantSizingReads {
+						t.Fatalf("on-chain account reads = %d on an unreadable mark, want %d (the floor reads none; only the manual-close sizing reads once)", accountReads, wantSizingReads)
 					}
 				})
 			}
@@ -2381,8 +2385,8 @@ func TestManualCloseBooksTheVenueFillNotTheBookQuantity(t *testing.T) {
 				return []HLPosition{{Coin: "ETH", Size: bookQty}}, nil
 			}
 			gotFullClose := false
-			d.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
-				gotFullClose = closeFullPosition
+			d.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+				gotFullClose = closeMode == hlCloseModeWhole
 				if tc.fillErr {
 					return &HyperliquidExecuteResult{Error: "exchange returned no confirmed fill (sz=0.00000000 px=0.00000000)"}, "", nil
 				}
@@ -2514,7 +2518,7 @@ func TestManualCloseRefusalNamesCancelledRestingLimitOrders(t *testing.T) {
 			d.fetchPositions = func(addr string) ([]HLPosition, error) {
 				return []HLPosition{{Coin: "ETH", Size: 0.5}}, nil
 			}
-			d.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+			d.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
 				t.Fatal("a refusal must not reach the venue with a close order")
 				return nil, "", nil
 			}

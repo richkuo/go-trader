@@ -72,6 +72,8 @@ type manualStateView struct {
 	ExposureCapAsset string
 	Pos              *Position
 	PeerVirtualQty   float64
+	PeerSameQty      float64
+	PeerOppQty       float64
 }
 
 func manualSubsetStateView(pr *PortfolioRiskConfig, states map[string]*StrategyState, cfgs []StrategyConfig, now time.Time) manualStateView {
@@ -176,6 +178,9 @@ func manualStateViewFromStateWithStore(cfg *Config, state *AppState, store *Stat
 		cp.TPOIDs = cloneInt64s(pos.TPOIDs)
 		cp.TPArmedTiers = append([]bool(nil), pos.TPArmedTiers...)
 		v.Pos = &cp
+		if cfg != nil {
+			v.PeerSameQty, v.PeerOppQty = hlPeerBooksOnCoin(state.Strategies, hyperliquidCloseScopeStrategies(cfg.Strategies), symbol, strategyID, pos.Side)
+		}
 	}
 	return v
 }
@@ -187,7 +192,7 @@ type manualCoreDeps struct {
 
 	loadState func(strategyID, symbol string) (manualStateView, error)
 
-	execute        func(script, symbol, side string, size, stopLossPct float64, cancelStopLossOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error)
+	execute        func(script, symbol, side string, size, stopLossPct float64, cancelStopLossOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error)
 	updateSL       func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error)
 	cancelOrder    func(script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error)
 	fetchMids      manualMarkFetcher
@@ -630,7 +635,7 @@ func manualOpenCore(d manualCoreDeps, sc StrategyConfig, in manualOpenInputs) (*
 		execResult, execStderr, execErr := d.execute(
 			script, sc.Symbol, openSide,
 			resolvedOrderSize,
-			effectiveSLPct, 0, 0, sc.MarginMode, sc.Leverage, false,
+			effectiveSLPct, 0, 0, sc.MarginMode, sc.Leverage, hlCloseModeNone,
 			hlExecuteSnapshot{},
 		)
 		if execStderr != "" {
@@ -905,7 +910,7 @@ func manualAddCore(d manualCoreDeps, sc StrategyConfig, in manualAddInputs) (*ma
 		execResult, execStderr, execErr := d.execute(
 			sc.Script, sc.Symbol, addSide,
 			resolvedOrderSize,
-			0, 0, 0, "", 0, false,
+			0, 0, 0, "", 0, hlCloseModeNone,
 			hlExecuteSnapshot{},
 		)
 		if execStderr != "" {
@@ -960,21 +965,44 @@ func operatorSharedCloseFloorDecision(d manualCoreDeps, symbol, posSide string, 
 			price = marks[symbol]
 		}
 	}
-	fetchOnChain := func() (hlOnChainCoinView, error) {
-		if d.fetchPositions == nil {
-			return hlOnChainCoinView{}, fmt.Errorf("no Hyperliquid account reader is configured")
-		}
-		addr := os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS")
-		if addr == "" {
-			return hlOnChainCoinView{}, fmt.Errorf("HYPERLIQUID_ACCOUNT_ADDRESS is not set")
-		}
-		positions, err := d.fetchPositions(addr)
-		if err != nil {
-			return hlOnChainCoinView{}, err
-		}
-		return hlOnChainCoinViewFromPositions(positions), nil
+	return decideOperatorSharedCloseFloor(symbol, posSide, posQty, price, hlLiveAll, peerVirtualQty, d.fetchOnChainView)
+}
+
+func (d manualCoreDeps) fetchOnChainView() (hlOnChainCoinView, error) {
+	if d.fetchPositions == nil {
+		return hlOnChainCoinView{}, fmt.Errorf("no Hyperliquid account reader is configured")
 	}
-	return decideOperatorSharedCloseFloor(symbol, posSide, posQty, price, hlLiveAll, peerVirtualQty, fetchOnChain)
+	addr := os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS")
+	if addr == "" {
+		return hlOnChainCoinView{}, fmt.Errorf("HYPERLIQUID_ACCOUNT_ADDRESS is not set")
+	}
+	positions, err := d.fetchPositions(addr)
+	if err != nil {
+		return hlOnChainCoinView{}, err
+	}
+	return hlOnChainCoinViewFromPositions(positions), nil
+}
+
+func operatorSizedClosePlan(d manualCoreDeps, symbol string, pos *Position, closeQty float64, view manualStateView) (hlCloseOrderPlan, error) {
+	onChain, err := d.fetchOnChainView()
+	if err != nil {
+		onChain = hlOnChainCoinView{}
+	}
+	return planHLCloseOrder(symbol, pos.Side, pos.Quantity, closeQty, view.PeerSameQty, view.PeerOppQty, onChain), err
+}
+
+func operatorSizedCloseRefusal(plan hlCloseOrderPlan) string {
+	if plan.Action == hlCloseDefer {
+		return plan.Reason + " — no close order sent"
+	}
+	return plan.Reason
+}
+
+func operatorSizedCloseLabel(mode hlCloseMode) string {
+	if mode == hlCloseModeCross {
+		return "cross"
+	}
+	return "reduce-only"
 }
 
 type manualCloseInputs struct {
@@ -1034,10 +1062,23 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 				res.outf("[dry-run] manual-close %s: REFUSED — %s", strategyID, floor.Reason)
 				return res, nil
 			case floor.Escalate:
+				dryWholePosition = true
 				mode = "full market_close (escalated: peers flat)"
 			case floor.MarkUnreadable:
 				res.errf("[dry-run] warning: manual-close %s: %s", strategyID, floor.Reason)
 			}
+		}
+		if !dryWholePosition && hyperliquidIsLive(sc.Args) {
+			plan, fetchErr := operatorSizedClosePlan(d, sc.Symbol, pos, dryCloseQty, view)
+			if plan.Action != hlCloseSend {
+				res.outf("[dry-run] manual-close %s: REFUSED — %s", strategyID, operatorSizedCloseRefusal(plan))
+				return res, nil
+			}
+			if fetchErr != nil {
+				res.errf("[dry-run] warning: manual-close %s: the on-chain position read failed (%v); the close would be sent reduce-only at the book size", strategyID, fetchErr)
+			}
+			dryCloseQty = plan.Size
+			mode = fmt.Sprintf("sized %s %.6f", operatorSizedCloseLabel(plan.Mode), plan.Size)
 		}
 		res.outf("[dry-run] manual-close %s: %s %.6f %s (current pos=%.6f, avg_cost=$%.4f, %s)",
 			strategyID, dryCloseSide, dryCloseQty, sc.Symbol, pos.Quantity, pos.AvgCost, mode)
@@ -1131,6 +1172,23 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 			res.errf("warning: manual-close %s: %s", sc.Symbol, floor.Reason)
 		}
 	}
+	closeMode := hlCloseModeNone
+	if closeFullPosition {
+		closeMode = hlCloseModeWhole
+	} else if hyperliquidIsLive(sc.Args) {
+		plan, fetchErr := operatorSizedClosePlan(d, sc.Symbol, pos, closeQty, view)
+		if plan.Action != hlCloseSend {
+			return res, manualFailf("error: %s", operatorRefusalWithCancelledRestingLimits(operatorSizedCloseRefusal(plan), cancelledLimitOIDs))
+		}
+		if fetchErr != nil {
+			res.errf("warning: manual-close %s: the on-chain position read failed (%v); sending the close reduce-only at the book size", sc.Symbol, fetchErr)
+		}
+		if plan.Capped {
+			res.errf("warning: manual-close %s: the close is capped from %.6f to %.6f by the on-chain position (%s)", sc.Symbol, closeQty, plan.Size, plan.Reason)
+		}
+		closeQty = plan.Size
+		closeMode = plan.Mode
+	}
 	var extraCancelOIDs []int64
 	if intentFullClose {
 		extraCancelOIDs = cloneInt64s(pos.TPOIDs)
@@ -1149,7 +1207,7 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 
 	execResult, stderr, execErr := d.execute(
 		sc.Script, sc.Symbol, closeSide, closeQty,
-		0, cancelOID, 0, "", 0, closeFullPosition, hlExecuteSnapshot{}, extraCancelOIDs...,
+		0, cancelOID, 0, "", 0, closeMode, hlExecuteSnapshot{}, extraCancelOIDs...,
 	)
 	if stderr != "" {
 		res.errf("HL close stderr: %s", stderr)
@@ -1170,18 +1228,15 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 	fill := execResult.Execution
 
 	fillAvgPx := fill.Fill.AvgPx
-	fillFee := fill.Fill.Fee
-	filledQty := fill.Fill.TotalSz
-	if filledQty > pos.Quantity+1e-9 {
-		fillFee *= pos.Quantity / fill.Fill.TotalSz
+	filledQty, fillFee, bookedFull := manualCloseFillAttribution(pos.Quantity, fill.Fill)
+	if fill.Fill.TotalSz > pos.Quantity+1e-9 {
 		res.errf("warning: manual-close fill size %.6f exceeds virtual position %.6f for %s/%s; attributing only the virtual quantity",
-			filledQty, pos.Quantity, strategyID, sc.Symbol)
-		filledQty = pos.Quantity
+			fill.Fill.TotalSz, pos.Quantity, strategyID, sc.Symbol)
 	} else if filledQty < closeQty-1e-9 {
 		res.errf("warning: manual-close filled only %.6f of the requested %.6f for %s/%s; booking the filled quantity and leaving the remainder open",
 			filledQty, closeQty, strategyID, sc.Symbol)
 	}
-	actualFullClose := intentFullClose && pos.Quantity-filledQty <= 0.0001
+	actualFullClose := intentFullClose && bookedFull
 	var exchangeOID string
 	if fill.Fill.OID != 0 {
 		exchangeOID = fmt.Sprintf("%d", fill.Fill.OID)
