@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import copy
 import importlib.util
+import json
 import os
 import sys
 
@@ -23,7 +25,7 @@ def _load_post_tp_sl():
 
 sl = _load_post_tp_sl()
 
-from backtester import Backtester
+from backtester import Backtester, _close_refs_use_regime_tiered_tp
 
 
 @pytest.mark.parametrize("raw,kind,attr,value", [
@@ -648,3 +650,81 @@ def test_backtester_sl_after_does_not_seed_when_no_tier_thresholds():
     result = bt.run(df, save=False)
     sl_fires = [t for t in result["trades"] if t.get("exit_price") in (90.0, 89.0, 91.0)]
     assert not sl_fires, f"phantom SL fired at {[t['exit_price'] for t in sl_fires]}"
+
+
+with open(os.path.join(_REPO_ROOT, "backtest", "testdata", "sl_after_paper_parity.json")) as _fh:
+    _PAPER_PARITY = json.load(_fh)
+
+
+def _paper_parity_close_refs(ladder, sl_after=None, tier_sl_after=None):
+    ref = copy.deepcopy(_PAPER_PARITY["ladders"][ladder])
+    tiers = ref["params"]["tp_tiers"]
+    for key, rule in (tier_sl_after or {}).items():
+        tiers[int(key)]["sl_after"] = rule
+    if sl_after is not None:
+        ref["params"]["sl_after"] = sl_after
+    return [ref]
+
+
+def _paper_parity_open_stamp(mod, refs, regime, labels):
+    if _close_refs_use_regime_tiered_tp(refs):
+        rules, errs = mod.parse_strategy_tp_sl_after_rules(refs, regime=regime, labels=labels)
+        thresholds = mod.parse_tp_tier_close_fractions(refs, regime=regime)
+    else:
+        rules, errs = mod.parse_strategy_tp_sl_after_rules(refs, labels=labels)
+        thresholds = mod.parse_tp_tier_close_fractions(refs)
+    assert errs == []
+    return rules, thresholds
+
+
+@pytest.mark.parametrize(
+    "case", _PAPER_PARITY["cleared_tier"], ids=[c["name"] for c in _PAPER_PARITY["cleared_tier"]],
+)
+def test_sl_after_paper_parity_cleared_tier(case):
+    refs = _paper_parity_close_refs(case["ladder"])
+    _, thresholds = _paper_parity_open_stamp(sl, refs, case["regime"], None)
+    got = sl.find_highest_cleared_tier(thresholds, case["closed_ratio"], case["from_idx"])
+    assert got == case["want_idx"]
+
+
+@pytest.mark.parametrize(
+    "case", _PAPER_PARITY["sl_after"], ids=[c["name"] for c in _PAPER_PARITY["sl_after"]],
+)
+def test_sl_after_paper_parity_move(case):
+    bt = Backtester(
+        initial_capital=1000, commission_pct=0, slippage_pct=0,
+        platform="hyperliquid", strategy_type="perps",
+        stop_loss_atr_mult=case["stop_loss_atr_mult"],
+    )
+    pos = case["position"]
+    refs = _paper_parity_close_refs(case["ladder"], case["sl_after"], case["tier_sl_after"])
+    bt._active_sl_after_rules, bt._run_tp_tier_thresholds = _paper_parity_open_stamp(
+        bt._sl_mod, refs, pos["regime"], bt._regime_primary_labels,
+    )
+    bt._run_position_regime = pos["regime"]
+    trigger = pos["stop_loss_trigger_px"]
+    processed = pos["sl_adjusted_tiers_processed"]
+    trail = None
+    high_water = pos["stop_loss_high_water_px"]
+    want = case["want"]
+    for mark in (case["mark"], case["mark"] + 1):
+        trigger, processed, trail, high_water = bt._maybe_apply_sl_after(
+            side=pos["side"],
+            avg_cost=pos["avg_cost"],
+            entry_atr=pos["entry_atr"],
+            position_qty=pos["quantity"],
+            initial_qty=pos["initial_quantity"],
+            mark_price=mark,
+            fill_price=0.0,
+            sl_trigger_px=trigger,
+            sl_tiers_processed=processed,
+            post_tp_trail_mult=trail,
+            sl_high_water_px=high_water,
+        )
+        assert trigger == pytest.approx(want["stop_loss_trigger_px"])
+        assert processed == want["sl_adjusted_tiers_processed"]
+        if want["post_tp_trailing_atr_mult"] is None:
+            assert trail is None
+        else:
+            assert trail == pytest.approx(want["post_tp_trailing_atr_mult"])
+        assert high_water == pytest.approx(want["stop_loss_high_water_px"])

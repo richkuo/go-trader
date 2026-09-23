@@ -1,0 +1,192 @@
+{
+  "ladders": {
+    "scalar": {
+      "name": "tiered_tp_atr",
+      "params": {
+        "tp_tiers": [
+          {"atr_multiple": 1.0, "close_fraction": 0.5},
+          {"atr_multiple": 2.0, "close_fraction": 0.75},
+          {"atr_multiple": 3.0, "close_fraction": 1.0}
+        ]
+      }
+    },
+    "regime": {
+      "name": "tiered_tp_atr_regime",
+      "params": {
+        "tp_tiers": [
+          {
+            "trend_regime": {
+              "trending_up": {"atr_multiple": 1.5, "close_fraction": 0.4},
+              "trending_down": {"atr_multiple": 1.5, "close_fraction": 0.4},
+              "ranging": {"atr_multiple": 1.0, "close_fraction": 0.6}
+            }
+          },
+          {
+            "trend_regime": {
+              "trending_up": {"atr_multiple": 3.0, "close_fraction": 1.0},
+              "trending_down": {"atr_multiple": 3.0, "close_fraction": 1.0},
+              "ranging": {"atr_multiple": 2.0, "close_fraction": 1.0}
+            }
+          }
+        ]
+      }
+    }
+  },
+  "cleared_tier": [
+    {"name": "ratio below the first fraction clears nothing", "ladder": "scalar", "regime": "", "closed_ratio": 0.4999, "from_idx": 0, "want_idx": -1},
+    {"name": "ratio inside the epsilon under a fraction clears it", "ladder": "scalar", "regime": "", "closed_ratio": 0.4999999999, "from_idx": 0, "want_idx": 0},
+    {"name": "ratio at a fraction clears it", "ladder": "scalar", "regime": "", "closed_ratio": 0.5, "from_idx": 0, "want_idx": 0},
+    {"name": "ratio between fractions clears the lower tier", "ladder": "scalar", "regime": "", "closed_ratio": 0.6, "from_idx": 0, "want_idx": 0},
+    {"name": "ratio past two fractions clears the higher tier", "ladder": "scalar", "regime": "", "closed_ratio": 0.8, "from_idx": 0, "want_idx": 1},
+    {"name": "processed tiers are skipped", "ladder": "scalar", "regime": "", "closed_ratio": 0.6, "from_idx": 1, "want_idx": -1},
+    {"name": "regime ladder uses the position regime fractions", "ladder": "regime", "regime": "trending_up", "closed_ratio": 0.4, "from_idx": 0, "want_idx": 0},
+    {"name": "regime ladder in another regime needs its own fraction", "ladder": "regime", "regime": "ranging", "closed_ratio": 0.4, "from_idx": 0, "want_idx": -1},
+    {"name": "regime ladder with no regime clears nothing", "ladder": "regime", "regime": "", "closed_ratio": 0.6, "from_idx": 0, "want_idx": -1}
+  ],
+  "sl_after": [
+    {
+      "name": "breakeven long after tier 0",
+      "ladder": "scalar", "stop_loss_atr_mult": 1.0,
+      "sl_after": "breakeven", "tier_sl_after": {},
+      "position": {"side": "long", "avg_cost": 100, "entry_atr": 2, "quantity": 0.5, "initial_quantity": 1, "stop_loss_trigger_px": 98, "sl_adjusted_tiers_processed": 0, "regime": "", "stop_loss_high_water_px": 0},
+      "mark": 102,
+      "want": {"stop_loss_trigger_px": 100, "sl_adjusted_tiers_processed": 1, "post_tp_trailing_atr_mult": null, "stop_loss_high_water_px": 0}
+    },
+    {
+      "name": "breakeven short after tier 0",
+      "ladder": "scalar", "stop_loss_atr_mult": 1.0,
+      "sl_after": "breakeven", "tier_sl_after": {},
+      "position": {"side": "short", "avg_cost": 100, "entry_atr": 2, "quantity": 0.5, "initial_quantity": 1, "stop_loss_trigger_px": 102, "sl_adjusted_tiers_processed": 0, "regime": "", "stop_loss_high_water_px": 0},
+      "mark": 98,
+      "want": {"stop_loss_trigger_px": 100, "sl_adjusted_tiers_processed": 1, "post_tp_trailing_atr_mult": null, "stop_loss_high_water_px": 0}
+    },
+    {
+      "name": "positive atr offset short locks profit",
+      "ladder": "scalar", "stop_loss_atr_mult": 1.0,
+      "sl_after": {"atr_mult": 0.5}, "tier_sl_after": {},
+      "position": {"side": "short", "avg_cost": 100, "entry_atr": 2, "quantity": 0.5, "initial_quantity": 1, "stop_loss_trigger_px": 102, "sl_adjusted_tiers_processed": 0, "regime": "", "stop_loss_high_water_px": 0},
+      "mark": 98,
+      "want": {"stop_loss_trigger_px": 99, "sl_adjusted_tiers_processed": 1, "post_tp_trailing_atr_mult": null, "stop_loss_high_water_px": 0}
+    },
+    {
+      "name": "negative atr offset long widens the stop with no clamp",
+      "ladder": "scalar", "stop_loss_atr_mult": 0.25,
+      "sl_after": {"atr_mult": -0.5}, "tier_sl_after": {},
+      "position": {"side": "long", "avg_cost": 100, "entry_atr": 2, "quantity": 0.5, "initial_quantity": 1, "stop_loss_trigger_px": 99.5, "sl_adjusted_tiers_processed": 0, "regime": "", "stop_loss_high_water_px": 0},
+      "mark": 102,
+      "want": {"stop_loss_trigger_px": 99, "sl_adjusted_tiers_processed": 1, "post_tp_trailing_atr_mult": null, "stop_loss_high_water_px": 0}
+    },
+    {
+      "name": "trail from here by atr multiple long seeds the high water from the mark",
+      "ladder": "scalar", "stop_loss_atr_mult": 1.0,
+      "sl_after": {"trail_from_here": {"atr_mult": 1.5}}, "tier_sl_after": {},
+      "position": {"side": "long", "avg_cost": 100, "entry_atr": 2, "quantity": 0.5, "initial_quantity": 1, "stop_loss_trigger_px": 98, "sl_adjusted_tiers_processed": 0, "regime": "", "stop_loss_high_water_px": 0},
+      "mark": 103,
+      "want": {"stop_loss_trigger_px": 100, "sl_adjusted_tiers_processed": 1, "post_tp_trailing_atr_mult": 1.5, "stop_loss_high_water_px": 103}
+    },
+    {
+      "name": "trail from here by atr multiple short",
+      "ladder": "scalar", "stop_loss_atr_mult": 1.0,
+      "sl_after": {"trail_from_here": {"atr_mult": 1.0}}, "tier_sl_after": {},
+      "position": {"side": "short", "avg_cost": 100, "entry_atr": 2, "quantity": 0.5, "initial_quantity": 1, "stop_loss_trigger_px": 102, "sl_adjusted_tiers_processed": 0, "regime": "", "stop_loss_high_water_px": 0},
+      "mark": 97,
+      "want": {"stop_loss_trigger_px": 99, "sl_adjusted_tiers_processed": 1, "post_tp_trailing_atr_mult": 1.0, "stop_loss_high_water_px": 97}
+    },
+    {
+      "name": "trail from here by tier fraction uses the cleared tier multiple",
+      "ladder": "scalar", "stop_loss_atr_mult": 1.0,
+      "sl_after": {"trail_from_here": {"tp_atr_fraction": 0.5}}, "tier_sl_after": {},
+      "position": {"side": "long", "avg_cost": 100, "entry_atr": 2, "quantity": 0.25, "initial_quantity": 1, "stop_loss_trigger_px": 98, "sl_adjusted_tiers_processed": 0, "regime": "", "stop_loss_high_water_px": 0},
+      "mark": 104,
+      "want": {"stop_loss_trigger_px": 102, "sl_adjusted_tiers_processed": 2, "post_tp_trailing_atr_mult": 1.0, "stop_loss_high_water_px": 104}
+    },
+    {
+      "name": "per tier rule of the highest cleared tier wins over the default",
+      "ladder": "scalar", "stop_loss_atr_mult": 1.0,
+      "sl_after": "breakeven", "tier_sl_after": {"1": {"atr_mult": 0.25}},
+      "position": {"side": "long", "avg_cost": 100, "entry_atr": 2, "quantity": 0.25, "initial_quantity": 1, "stop_loss_trigger_px": 98, "sl_adjusted_tiers_processed": 0, "regime": "", "stop_loss_high_water_px": 0},
+      "mark": 104,
+      "want": {"stop_loss_trigger_px": 100.5, "sl_adjusted_tiers_processed": 2, "post_tp_trailing_atr_mult": null, "stop_loss_high_water_px": 0}
+    },
+    {
+      "name": "empty tier rule advances the watermark with no move",
+      "ladder": "scalar", "stop_loss_atr_mult": 1.0,
+      "sl_after": null, "tier_sl_after": {"1": "breakeven"},
+      "position": {"side": "long", "avg_cost": 100, "entry_atr": 2, "quantity": 0.5, "initial_quantity": 1, "stop_loss_trigger_px": 98, "sl_adjusted_tiers_processed": 0, "regime": "", "stop_loss_high_water_px": 0},
+      "mark": 102,
+      "want": {"stop_loss_trigger_px": 98, "sl_adjusted_tiers_processed": 1, "post_tp_trailing_atr_mult": null, "stop_loss_high_water_px": 0}
+    },
+    {
+      "name": "unarmed paper stop defers",
+      "ladder": "scalar", "stop_loss_atr_mult": 1.0,
+      "sl_after": "breakeven", "tier_sl_after": {},
+      "position": {"side": "long", "avg_cost": 100, "entry_atr": 2, "quantity": 0.5, "initial_quantity": 1, "stop_loss_trigger_px": 0, "sl_adjusted_tiers_processed": 0, "regime": "", "stop_loss_high_water_px": 0},
+      "mark": 102,
+      "want": {"stop_loss_trigger_px": 0, "sl_adjusted_tiers_processed": 0, "post_tp_trailing_atr_mult": null, "stop_loss_high_water_px": 0}
+    },
+    {
+      "name": "processed tier does not move again",
+      "ladder": "scalar", "stop_loss_atr_mult": 1.0,
+      "sl_after": "breakeven", "tier_sl_after": {},
+      "position": {"side": "long", "avg_cost": 100, "entry_atr": 2, "quantity": 0.5, "initial_quantity": 1, "stop_loss_trigger_px": 98, "sl_adjusted_tiers_processed": 1, "regime": "", "stop_loss_high_water_px": 0},
+      "mark": 102,
+      "want": {"stop_loss_trigger_px": 98, "sl_adjusted_tiers_processed": 1, "post_tp_trailing_atr_mult": null, "stop_loss_high_water_px": 0}
+    },
+    {
+      "name": "closed ratio just under the tier fraction does not move",
+      "ladder": "scalar", "stop_loss_atr_mult": 1.0,
+      "sl_after": "breakeven", "tier_sl_after": {},
+      "position": {"side": "long", "avg_cost": 100, "entry_atr": 2, "quantity": 0.5001, "initial_quantity": 1, "stop_loss_trigger_px": 98, "sl_adjusted_tiers_processed": 0, "regime": "", "stop_loss_high_water_px": 0},
+      "mark": 102,
+      "want": {"stop_loss_trigger_px": 98, "sl_adjusted_tiers_processed": 0, "post_tp_trailing_atr_mult": null, "stop_loss_high_water_px": 0}
+    },
+    {
+      "name": "regime ladder clears tier 0 in trending_up",
+      "ladder": "regime", "stop_loss_atr_mult": 1.0,
+      "sl_after": null, "tier_sl_after": {"0": "breakeven"},
+      "position": {"side": "long", "avg_cost": 100, "entry_atr": 2, "quantity": 0.6, "initial_quantity": 1, "stop_loss_trigger_px": 98, "sl_adjusted_tiers_processed": 0, "regime": "trending_up", "stop_loss_high_water_px": 0},
+      "mark": 103,
+      "want": {"stop_loss_trigger_px": 100, "sl_adjusted_tiers_processed": 1, "post_tp_trailing_atr_mult": null, "stop_loss_high_water_px": 0}
+    },
+    {
+      "name": "regime ladder in ranging needs the larger fraction",
+      "ladder": "regime", "stop_loss_atr_mult": 1.0,
+      "sl_after": null, "tier_sl_after": {"0": "breakeven"},
+      "position": {"side": "long", "avg_cost": 100, "entry_atr": 2, "quantity": 0.6, "initial_quantity": 1, "stop_loss_trigger_px": 98, "sl_adjusted_tiers_processed": 0, "regime": "ranging", "stop_loss_high_water_px": 0},
+      "mark": 103,
+      "want": {"stop_loss_trigger_px": 98, "sl_adjusted_tiers_processed": 0, "post_tp_trailing_atr_mult": null, "stop_loss_high_water_px": 0}
+    },
+    {
+      "name": "regime tier fraction trail on a regime ladder",
+      "ladder": "regime", "stop_loss_atr_mult": 1.0,
+      "sl_after": null, "tier_sl_after": {"0": {"kind": "trail_from_here", "tp_atr_fraction": {"trend_regime": {"trending_up": 0.5, "trending_down": 0.5, "ranging": 0.25}}}},
+      "position": {"side": "long", "avg_cost": 100, "entry_atr": 2, "quantity": 0.6, "initial_quantity": 1, "stop_loss_trigger_px": 98, "sl_adjusted_tiers_processed": 0, "regime": "trending_up", "stop_loss_high_water_px": 0},
+      "mark": 104,
+      "want": {"stop_loss_trigger_px": 102.5, "sl_adjusted_tiers_processed": 1, "post_tp_trailing_atr_mult": 0.75, "stop_loss_high_water_px": 104}
+    },
+    {
+      "name": "regime atr offset rule resolves by the position regime",
+      "ladder": "scalar", "stop_loss_atr_mult": 1.0,
+      "sl_after": {"trend_regime": {"trending_up": {"atr_multiple": 0.25}, "trending_down": {"atr_multiple": 0.25}, "ranging": {"atr_multiple": -0.5}}}, "tier_sl_after": {},
+      "position": {"side": "long", "avg_cost": 100, "entry_atr": 2, "quantity": 0.5, "initial_quantity": 1, "stop_loss_trigger_px": 98, "sl_adjusted_tiers_processed": 0, "regime": "ranging", "stop_loss_high_water_px": 0},
+      "mark": 102,
+      "want": {"stop_loss_trigger_px": 99, "sl_adjusted_tiers_processed": 1, "post_tp_trailing_atr_mult": null, "stop_loss_high_water_px": 0}
+    },
+    {
+      "name": "regime rule with no entry for the position regime defers",
+      "ladder": "scalar", "stop_loss_atr_mult": 1.0,
+      "sl_after": {"trend_regime": {"trending_up": {"atr_multiple": 0.25}, "trending_down": {"atr_multiple": 0.25}, "ranging": {"atr_multiple": -0.5}}}, "tier_sl_after": {},
+      "position": {"side": "long", "avg_cost": 100, "entry_atr": 2, "quantity": 0.5, "initial_quantity": 1, "stop_loss_trigger_px": 98, "sl_adjusted_tiers_processed": 0, "regime": "", "stop_loss_high_water_px": 0},
+      "mark": 102,
+      "want": {"stop_loss_trigger_px": 98, "sl_adjusted_tiers_processed": 0, "post_tp_trailing_atr_mult": null, "stop_loss_high_water_px": 0}
+    },
+    {
+      "name": "regime trail rule resolves by the position regime",
+      "ladder": "scalar", "stop_loss_atr_mult": 1.0,
+      "sl_after": {"trail_from_here": {"trend_regime": {"trending_up": {"atr_multiple": 1.0}, "trending_down": {"atr_multiple": 1.0}, "ranging": {"atr_multiple": 0.5}}}}, "tier_sl_after": {},
+      "position": {"side": "short", "avg_cost": 100, "entry_atr": 2, "quantity": 0.5, "initial_quantity": 1, "stop_loss_trigger_px": 102, "sl_adjusted_tiers_processed": 0, "regime": "ranging", "stop_loss_high_water_px": 0},
+      "mark": 97,
+      "want": {"stop_loss_trigger_px": 98, "sl_adjusted_tiers_processed": 1, "post_tp_trailing_atr_mult": 0.5, "stop_loss_high_water_px": 97}
+    }
+  ]
+}

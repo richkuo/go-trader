@@ -2392,6 +2392,9 @@ func main() {
 							}
 							runPostTPStopLossAdjustment(sc, stratState, result.Symbol, price, cfg, &mu, notifier, logger, hlOnChainAbsQty)
 						}
+						if !hyperliquidIsLive(sc.Args) && result.Signal == 0 && hlPosQty > 0 {
+							runPaperPostTPStopLossAdjustment(sc, stratState, result.Symbol, price, cfg, &mu, notifier, logger)
+						}
 						scaleInAddQty := 0.0
 						if result.Signal != 0 && sc.Type == "perps" && sc.AllowScaleIn {
 							defOpenNotional := PerpsOpenNotional(hlScaleInCash, EffectiveSizingLeverage(sc), EffectiveExchangeLeverage(sc), EffectiveMarginPerTradeUSD(sc))
@@ -2547,6 +2550,9 @@ func main() {
 									detail = slDetail
 								}
 							}
+							if execResult == nil && !hyperliquidIsLive(sc.Args) && result.Signal != 0 && trades > 0 {
+								runPaperPostTPStopLossAdjustment(sc, stratState, result.Symbol, price, cfg, &mu, notifier, logger)
+							}
 						}
 						if hlProfileResolved {
 							mu.Lock()
@@ -2581,6 +2587,7 @@ func main() {
 								if replayTrades > 0 {
 									trades += replayTrades
 									detail = mergeTradeDetails(detail, replayDetails...)
+									runPaperPostTPStopLossAdjustment(sc, stratState, result.Symbol, price, cfg, &mu, notifier, logger)
 								}
 								if len(appliedIDs) > 0 {
 									switch {
