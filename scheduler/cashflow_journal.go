@@ -282,7 +282,8 @@ func ingestCashflowJournalEventsChecked(sdb *StateDB, res cashflowJournalFetchRe
 	insertsOK := true
 
 	if res.FillsFetched {
-		maxTime, failedAt, err := sdb.insertHyperliquidCashflowFills(key, res.Fills, st.FillsSinceMs, cutoffMs)
+		maxTime, failedAt, unpriced, err := sdb.insertHyperliquidCashflowFills(key, res.Fills, st.FillsSinceMs, cutoffMs)
+		logHLUnpricedCloses(key, unpriced)
 		if err != nil {
 			insertsOK = false
 			fmt.Printf("[WARN] cashflow-journal %s: fill insert failed: %v — retrying next cycle\n", sharedWalletKeyLabel(key), err)
@@ -662,7 +663,7 @@ func chainHLCoinFills(fills []hlFillRecord, expected *big.Rat, hasExpected bool)
 	return ordered, true
 }
 
-func applyHLBasisFill(book *hlBasisBook, f hlFillRecord, journaled bool) (*big.Rat, bool) {
+func applyHLBasisFill(book *hlBasisBook, f hlFillRecord, journaled bool) (*big.Rat, bool, bool) {
 	start, startOK := parseHLRat(f.StartPosition)
 	signed, sizeOK := hlFillSignedSize(f)
 	px, pxOK := parseHLRat(f.Px)
@@ -672,7 +673,7 @@ func applyHLBasisFill(book *hlBasisBook, f hlFillRecord, journaled bool) (*big.R
 		book.entryKnown = false
 		book.sz = new(big.Rat)
 		book.ntl = new(big.Rat)
-		return new(big.Rat), false
+		return new(big.Rat), false, journaled
 	}
 	if !book.hasPosition || book.sz.Cmp(start) != 0 {
 		book.hasPosition = true
@@ -686,6 +687,7 @@ func applyHLBasisFill(book *hlBasisBook, f hlFillRecord, journaled bool) (*big.R
 	}
 	basis := new(big.Rat)
 	closing := start.Sign() != 0 && new(big.Rat).Mul(signed, start).Sign() < 0
+	unpriced := journaled && closing && !book.entryKnown
 	if journaled && closing && book.entryKnown {
 		closeSz := absRat(signed)
 		if startAbs := absRat(start); closeSz.Cmp(startAbs) > 0 {
@@ -701,34 +703,35 @@ func applyHLBasisFill(book *hlBasisBook, f hlFillRecord, journaled bool) (*big.R
 	newSz := new(big.Rat).Add(start, signed)
 	if !book.entryKnown {
 		book.sz = newSz
-		return basis, true
+		return basis, true, unpriced
 	}
 	if start.Sign() == 0 || new(big.Rat).Mul(signed, start).Sign() > 0 {
 		book.ntl.Add(book.ntl, new(big.Rat).Mul(px, signed))
 		book.sz = newSz
-		return basis, true
+		return basis, true, unpriced
 	}
 	if newSz.Sign() == 0 {
 		book.sz = new(big.Rat)
 		book.ntl = new(big.Rat)
-		return basis, true
+		return basis, true, unpriced
 	}
 	if new(big.Rat).Mul(start, newSz).Sign() > 0 {
 		entry := new(big.Rat).Quo(new(big.Rat).Set(book.ntl), start)
 		book.sz = newSz
 		book.ntl = new(big.Rat).Mul(entry, newSz)
-		return basis, true
+		return basis, true, unpriced
 	}
 	book.sz = newSz
 	book.ntl = new(big.Rat).Mul(px, newSz)
-	return basis, true
+	return basis, true, unpriced
 }
 
-func processHLBasisFills(books map[string]*hlBasisBook, fills []hlFillRecord, journaled map[string]struct{}) (map[string]float64, float64) {
+func processHLBasisFills(books map[string]*hlBasisBook, fills []hlFillRecord, journaled map[string]struct{}) (map[string]float64, float64, int) {
 	sorted := append([]hlFillRecord(nil), fills...)
 	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Time < sorted[j].Time })
 	contributions := make(map[string]float64)
 	total := new(big.Rat)
+	unpriced := 0
 	for i := 0; i < len(sorted); {
 		j := i + 1
 		for j < len(sorted) && sorted[j].Time == sorted[i].Time {
@@ -777,6 +780,9 @@ func processHLBasisFills(books map[string]*hlBasisBook, fills []hlFillRecord, jo
 				for _, f := range byCoin[coin] {
 					if _, ok := journaled[cashflowFillDedupID(f)]; ok {
 						contributions[cashflowFillDedupID(f)] = 0
+						if pnl, ok := parseHLRat(f.ClosedPnl); !ok || pnl.Sign() != 0 {
+							unpriced++
+						}
 					}
 				}
 				continue
@@ -784,7 +790,10 @@ func processHLBasisFills(books map[string]*hlBasisBook, fills []hlFillRecord, jo
 			for _, f := range ordered {
 				id := cashflowFillDedupID(f)
 				_, keep := journaled[id]
-				basis, valid := applyHLBasisFill(book, f, keep)
+				basis, valid, missed := applyHLBasisFill(book, f, keep)
+				if missed {
+					unpriced++
+				}
 				if keep {
 					value := 0.0
 					if valid {
@@ -798,11 +807,11 @@ func processHLBasisFills(books map[string]*hlBasisBook, fills []hlFillRecord, jo
 		i = j
 	}
 	out, _ := total.Float64()
-	return contributions, out
+	return contributions, out, unpriced
 }
 
 func hyperliquidClosedPnlBasisError(fills []hlFillRecord, journaled map[string]struct{}) float64 {
-	_, total := processHLBasisFills(make(map[string]*hlBasisBook), fills, journaled)
+	_, total, _ := processHLBasisFills(make(map[string]*hlBasisBook), fills, journaled)
 	return total
 }
 
@@ -885,15 +894,10 @@ func ensureHyperliquidCashflowBasis(sdb *StateDB, key SharedWalletKey, journalSt
 		return false, err
 	}
 	if !found {
-		var count int
-		if err := sdb.db.QueryRow(`SELECT COUNT(*) FROM cashflow_journal
-			WHERE platform = ? AND account = ? AND kind = 'fill'`, key.Platform, key.Account).Scan(&count); err != nil {
-			return false, err
-		}
-		st = hlBasisState{targetMs: journalState.FillsSinceMs - 1, ready: count == 0}
+		st = hlBasisState{targetMs: journalState.FillsSinceMs - 1}
 		if _, err := sdb.db.Exec(`INSERT INTO cashflow_hl_basis_state
 			(platform, account, scan_since_ms, target_ms, ready)
-			VALUES (?, ?, 0, ?, ?)`, key.Platform, key.Account, st.targetMs, boolInt(st.ready)); err != nil {
+			VALUES (?, ?, 0, ?, 0)`, key.Platform, key.Account, st.targetMs); err != nil {
 			return false, err
 		}
 	}
@@ -953,7 +957,7 @@ func ensureHyperliquidCashflowBasis(sdb *StateDB, key SharedWalletKey, journalSt
 			unique = append(unique, f)
 		}
 	}
-	contributions, _ := processHLBasisFills(books, unique, journaled)
+	contributions, _, unpriced := processHLBasisFills(books, unique, journaled)
 	for id, basis := range contributions {
 		if _, err := tx.Exec(`UPDATE cashflow_journal SET hl_basis_error = ?, hl_basis_resolved = 1
 			WHERE platform = ? AND account = ? AND dedup_id = ?`, basis, key.Platform, key.Account, id); err != nil {
@@ -998,6 +1002,7 @@ func ensureHyperliquidCashflowBasis(sdb *StateDB, key SharedWalletKey, journalSt
 	if uncovered > 0 {
 		fmt.Printf("[WARN] cashflow-journal %s: %d journaled fills are outside the exchange fill history — they stay on raw closedPnl\n", sharedWalletKeyLabel(key), uncovered)
 	}
+	logHLUnpricedCloses(key, unpriced)
 	return done, nil
 }
 
@@ -1013,9 +1018,15 @@ func (sdb *StateDB) SumHyperliquidCashflowBasis(key SharedWalletKey) (float64, e
 	return sum.Float64, nil
 }
 
-func (sdb *StateDB) insertHyperliquidCashflowFills(key SharedWalletKey, fills []hlFillRecord, sinceMs, cutoffMs int64) (int64, int64, error) {
+func logHLUnpricedCloses(key SharedWalletKey, n int) {
+	if n > 0 {
+		fmt.Printf("[WARN] cashflow-journal %s: %d journaled closes have no known entry price in exchange fill history — they stay on raw closedPnl\n", sharedWalletKeyLabel(key), n)
+	}
+}
+
+func (sdb *StateDB) insertHyperliquidCashflowFills(key SharedWalletKey, fills []hlFillRecord, sinceMs, cutoffMs int64) (int64, int64, int, error) {
 	if sdb == nil || sdb.db == nil {
-		return sinceMs - 1, sinceMs, fmt.Errorf("state db unavailable")
+		return sinceMs - 1, sinceMs, 0, fmt.Errorf("state db unavailable")
 	}
 	pageEndMs := int64(-1)
 	if len(fills) >= hlUserFillsByTimeLimit {
@@ -1044,9 +1055,9 @@ func (sdb *StateDB) insertHyperliquidCashflowFills(key SharedWalletKey, fills []
 		}
 	}
 	if len(eligible) == 0 {
-		return maxTime, -1, nil
+		return maxTime, -1, 0, nil
 	}
-	fail := func(err error) (int64, int64, error) { return sinceMs - 1, sinceMs, err }
+	fail := func(err error) (int64, int64, int, error) { return sinceMs - 1, sinceMs, 0, err }
 	tx, err := sdb.db.Begin()
 	if err != nil {
 		return fail(err)
@@ -1058,8 +1069,13 @@ func (sdb *StateDB) insertHyperliquidCashflowFills(key SharedWalletKey, fills []
 	}
 	newFills := make([]hlFillRecord, 0, len(eligible))
 	journaled := make(map[string]struct{})
+	inPage := make(map[string]struct{}, len(eligible))
 	for _, f := range eligible {
 		id := cashflowFillDedupID(f)
+		if _, dup := inPage[id]; dup {
+			continue
+		}
+		inPage[id] = struct{}{}
 		var exists int
 		err := tx.QueryRow(`SELECT 1 FROM cashflow_journal WHERE dedup_id = ?`, id).Scan(&exists)
 		if err != nil && err != sql.ErrNoRows {
@@ -1073,7 +1089,7 @@ func (sdb *StateDB) insertHyperliquidCashflowFills(key SharedWalletKey, fills []
 			journaled[id] = struct{}{}
 		}
 	}
-	contributions, _ := processHLBasisFills(books, newFills, journaled)
+	contributions, _, unpriced := processHLBasisFills(books, newFills, journaled)
 	for _, f := range newFills {
 		coin := strings.ToUpper(strings.TrimSpace(f.Coin))
 		closedPnl := parseHLFloat(f.ClosedPnl)
@@ -1097,5 +1113,5 @@ func (sdb *StateDB) insertHyperliquidCashflowFills(key SharedWalletKey, fills []
 	if err := tx.Commit(); err != nil {
 		return fail(err)
 	}
-	return maxTime, -1, nil
+	return maxTime, -1, unpriced, nil
 }
