@@ -1544,24 +1544,24 @@ func TestRunHyperliquidTrailingStopPaper(t *testing.T) {
 		want           want
 	}{
 		{
-			name:           "long breach closes at trigger",
+			name:           "long gap past the trigger books the worse mark",
 			sc:             scWithTrailing,
 			side:           "long",
 			pos:            &Position{AvgCost: 100},
 			mark:           96,
 			highWater:      110,
 			currentTrigger: 106.7,
-			want:           want{newHighWater: 110, newTrigger: 0, breach: true, breachPx: 106.7},
+			want:           want{newHighWater: 110, newTrigger: 0, breach: true, breachPx: 96},
 		},
 		{
-			name:           "short breach closes at trigger",
+			name:           "short gap past the trigger books the worse mark",
 			sc:             scWithTrailing,
 			side:           "short",
 			pos:            &Position{AvgCost: 100},
 			mark:           104,
 			highWater:      90,
 			currentTrigger: 92.7,
-			want:           want{newHighWater: 90, newTrigger: 0, breach: true, breachPx: 92.7},
+			want:           want{newHighWater: 90, newTrigger: 0, breach: true, breachPx: 104},
 		},
 		{
 			name:           "long ratchets favorable trigger",
@@ -2189,8 +2189,8 @@ func TestRunHyperliquidFixedATRStopLossPaper(t *testing.T) {
 	if newTrigger != 0 {
 		t.Errorf("cycle3 newTrigger = %g, want 0", newTrigger)
 	}
-	if breachPx != wantTrigger {
-		t.Errorf("cycle3 breachPx = %g, want %g", breachPx, wantTrigger)
+	if breachPx != 1939 {
+		t.Errorf("cycle3 breachPx = %g, want the worse mark 1939", breachPx)
 	}
 
 	shortTrigger := 2060.0
@@ -2205,8 +2205,8 @@ func TestRunHyperliquidFixedATRStopLossPaper(t *testing.T) {
 	if !breach {
 		t.Error("short cycle3 breach=false, want true")
 	}
-	if breachPx != shortTrigger {
-		t.Errorf("short cycle3 breachPx = %g, want %g", breachPx, shortTrigger)
+	if breachPx != 2061 {
+		t.Errorf("short cycle3 breachPx = %g, want the worse mark 2061", breachPx)
 	}
 }
 
@@ -2377,5 +2377,193 @@ func TestHyperliquidProtectionPositionSnapshot_CarriesFullSurface(t *testing.T) 
 
 	if hyperliquidProtectionPositionSnapshot(nil) != nil {
 		t.Error("snapshot of nil position must be nil")
+	}
+}
+
+func paperStopTestState(sc StrategyConfig, pos *Position) *StrategyState {
+	return &StrategyState{ID: sc.ID, Platform: "hyperliquid", Type: "perps", Cash: 1000, Positions: map[string]*Position{"ETH": pos}}
+}
+
+func TestPaperStopArmsTheLiveTriggerForEveryOwner(t *testing.T) {
+	pf := func(v float64) *float64 { return &v }
+	pctLive := func(sc StrategyConfig, pos *Position) float64 {
+		return hlLiquidationScalarRearmTriggerPx(sc, pos.Side, pos.riskAnchorPrice(), 0)
+	}
+	atrLive := func(sc StrategyConfig, pos *Position) float64 {
+		plan, ok := buildHyperliquidProtectionPlan(sc, pos, 0)
+		if !ok {
+			return 0
+		}
+		return hlProtectionSLTriggerPx(pos.Side, plan.AvgCost, plan.EntryATR, plan.StopLossATRMult)
+	}
+	trailingLive := func(sc StrategyConfig, pos *Position) float64 {
+		old := runHyperliquidUpdateStopLossFunc
+		defer func() { runHyperliquidUpdateStopLossFunc = old }()
+		placed := 0.0
+		runHyperliquidUpdateStopLossFunc = func(_, _, _ string, _, triggerPx float64, _ int64) (*HyperliquidStopLossUpdateResult, string, error) {
+			placed = triggerPx
+			return &HyperliquidStopLossUpdateResult{StopLossOID: 1, StopLossTriggerPx: triggerPx}, "", nil
+		}
+		runHyperliquidTrailingStopUpdate(sc, pos.Symbol, pos.Side, pos.Quantity, hyperliquidProtectionPositionSnapshot(pos), pos.AvgCost, 0, 0, 0, trailingReplacePolicy{}, nil, silentStrategyLogger(sc.ID))
+		return placed
+	}
+	regime := func(ranging float64) *RegimeATRBlock {
+		return &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{"trending": {ATR: 3.0}, "ranging": {ATR: ranging}}}
+	}
+	cases := []struct {
+		name       string
+		side       string
+		mutate     func(*StrategyConfig)
+		live       func(StrategyConfig, *Position) float64
+		want       float64
+		wantReason string
+	}{
+		{"stop_loss_pct long", "long", func(sc *StrategyConfig) { sc.StopLossPct = pf(3) }, pctLive, 1940, paperStopReasonPct},
+		{"stop_loss_pct short", "short", func(sc *StrategyConfig) { sc.StopLossPct = pf(3) }, pctLive, 2060, paperStopReasonPct},
+		{"stop_loss_margin_pct over leverage", "long", func(sc *StrategyConfig) { sc.StopLossMarginPct = pf(30); sc.Leverage = 10 }, pctLive, 1940, paperStopReasonPct},
+		{"max_drawdown_pct fallback", "long", func(sc *StrategyConfig) { sc.MaxDrawdownPct = 5 }, pctLive, 1900, paperStopReasonPct},
+		{"trailing_stop_pct", "long", func(sc *StrategyConfig) { sc.TrailingStopPct = pf(2) }, trailingLive, 1960, paperStopReasonTrailing},
+		{"trailing_stop_atr_mult", "short", func(sc *StrategyConfig) { sc.TrailingStopATRMult = pf(1.5) }, trailingLive, 2060, paperStopReasonTrailing},
+		{"trailing_stop_atr_mult_regime", "long", func(sc *StrategyConfig) { sc.TrailingStopATRMultRegime = regime(2) }, trailingLive, 1920, paperStopReasonTrailing},
+		{"stop_loss_atr_mult", "long", func(sc *StrategyConfig) { sc.StopLossATRMult = pf(1.5) }, atrLive, 1940, paperStopReasonATR},
+		{"stop_loss_atr_mult_regime", "short", func(sc *StrategyConfig) { sc.StopLossATRMultRegime = regime(1) }, atrLive, 2040, paperStopReasonATR},
+		{"unified per-regime close", "long", func(sc *StrategyConfig) {
+			sc.CloseStrategy = &StrategyRef{Name: "tiered_tp_atr_regime", Params: unifiedBlock()}
+		}, atrLive, 1968, paperStopReasonATR},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			sc := StrategyConfig{ID: "hl-paper", Platform: "hyperliquid", Type: "perps", Args: []string{"sma", "ETH", "1h"}}
+			c.mutate(&sc)
+			newPos := func() *Position {
+				return &Position{Symbol: "ETH", Quantity: 1, AvgCost: 2000, EntryATR: 40, Side: c.side, Regime: "ranging"}
+			}
+			live := c.live(sc, newPos())
+			if !approxEq(live, c.want) {
+				t.Fatalf("live trigger = %v, want %v", live, c.want)
+			}
+
+			pos := newPos()
+			s := paperStopTestState(sc, pos)
+			var mu sync.RWMutex
+			breach, _, reason := armPaperStopLossAtOpen(sc, s, "ETH", 2000, silentStrategyLogger(sc.ID))
+			if breach || reason != c.wantReason || !approxEq(pos.StopLossTriggerPx, live) {
+				t.Fatalf("paper arm = (breach %v reason %q trigger %v), want (false %q %v)", breach, reason, pos.StopLossTriggerPx, c.wantReason, live)
+			}
+
+			inside, past := live+5, live-5
+			if c.side == "short" {
+				inside, past = live-5, live+5
+			}
+			if n, _ := applyPaperStopLossBreach(sc, s, "ETH", c.side, inside, &mu, silentStrategyLogger(sc.ID)); n != 0 || s.Positions["ETH"] == nil {
+				t.Fatalf("mark inside the trigger closed the position (trades %d)", n)
+			}
+			n, _ := applyPaperStopLossBreach(sc, s, "ETH", c.side, past, &mu, silentStrategyLogger(sc.ID))
+			if n != 1 || s.Positions["ETH"] != nil {
+				t.Fatalf("mark past the trigger: trades %d, position %+v; want one stop close", n, s.Positions["ETH"])
+			}
+			if len(s.ClosedPositions) != 1 || s.ClosedPositions[0].ClosePrice != past || s.ClosedPositions[0].CloseReason != c.wantReason {
+				t.Fatalf("closed = %+v, want one close @ %v reason %q", s.ClosedPositions, past, c.wantReason)
+			}
+		})
+	}
+}
+
+func TestPaperStopBreachesOnEveryCycle(t *testing.T) {
+	pf := func(v float64) *float64 { return &v }
+	sc := StrategyConfig{ID: "hl-paper", Platform: "hyperliquid", Type: "perps", Args: []string{"sma", "ETH", "1h"}, StopLossPct: pf(3), Direction: DirectionBoth, Leverage: 1, SizingLeverage: 1}
+	logger := silentStrategyLogger(sc.ID)
+
+	t.Run("open cycle with the mark already past the trigger", func(t *testing.T) {
+		s := paperStopTestState(sc, &Position{Symbol: "ETH", Quantity: 1, AvgCost: 2000, Side: "long"})
+		breach, fillPx, reason := armPaperStopLossAtOpen(sc, s, "ETH", 1900, logger)
+		if !breach || fillPx != 1900 || reason != paperStopReasonPct || s.Positions["ETH"].StopLossTriggerPx != 1940 {
+			t.Fatalf("open-cycle arm = (breach %v fill %v reason %q trigger %v), want (true 1900 %q 1940)", breach, fillPx, reason, s.Positions["ETH"].StopLossTriggerPx, paperStopReasonPct)
+		}
+	})
+
+	cases := []struct {
+		name          string
+		side          string
+		trigger       float64
+		mark          float64
+		signal        int
+		closeFraction float64
+		wantFill      float64
+		wantOpenSide  string
+	}{
+		{"hold cycle books the trigger when the mark touches it", "long", 1940, 1940, 0, 0, 1940, ""},
+		{"hold cycle gap books the worse mark", "long", 1940, 1900, 0, 0, 1900, ""},
+		{"short gap books the worse mark", "short", 2060, 2100, 0, 0, 2100, ""},
+		{"close signal runs against the flat book", "long", 1940, 1900, -1, 1, 1900, ""},
+		{"same-side repeat signal reopens from flat", "long", 1940, 1900, 1, 0, 1900, "long"},
+		{"flip signal opens the new side from flat", "long", 1940, 1900, -1, 0, 1900, "short"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := paperStopTestState(sc, &Position{Symbol: "ETH", Quantity: 0.5, AvgCost: 2000, Side: c.side, StopLossTriggerPx: c.trigger})
+			var mu sync.RWMutex
+			n, _ := applyPaperStopLossBreach(sc, s, "ETH", c.side, c.mark, &mu, logger)
+			if n != 1 || len(s.ClosedPositions) != 1 || s.ClosedPositions[0].ClosePrice != c.wantFill {
+				t.Fatalf("stop = trades %d closed %+v, want one close @ %v", n, s.ClosedPositions, c.wantFill)
+			}
+			if c.signal == 0 {
+				return
+			}
+			result := &HyperliquidResult{Symbol: "ETH", Signal: c.signal, Price: c.mark}
+			result.CloseFraction = c.closeFraction
+			executeHyperliquidResultDeferredOpen(sc, s, result, nil, "SIGNAL", c.mark, nil, &Config{}, HurstGateDecision{}, logger)
+			pos := s.Positions["ETH"]
+			if len(s.ClosedPositions) != 1 {
+				t.Fatalf("closed positions after the signal = %+v, want only the stop close", s.ClosedPositions)
+			}
+			if c.wantOpenSide == "" {
+				if pos != nil {
+					t.Fatalf("signal opened %+v, want a flat book", pos)
+				}
+				return
+			}
+			want := percentStopLossTriggerPx(sc, c.wantOpenSide, pos.AvgCost)
+			if pos == nil || pos.Side != c.wantOpenSide || want <= 0 || !approxEq(pos.StopLossTriggerPx, want) {
+				t.Fatalf("reopened position = %+v, want %s armed at %v", pos, c.wantOpenSide, want)
+			}
+		})
+	}
+}
+
+func TestDeferredOpenArmsTheStopOnlyForPaper(t *testing.T) {
+	prev := tradeRecorder
+	tradeRecorder = nil
+	t.Cleanup(func() { tradeRecorder = prev })
+	pf := func(v float64) *float64 { return &v }
+	cases := []struct {
+		name        string
+		args        []string
+		exec        *HyperliquidExecuteResult
+		wantTrigger func(pos *Position) float64
+	}{
+		{"paper open arms at the fill", []string{"sma", "ETH", "1h"}, nil, func(pos *Position) float64 { return pos.AvgCost * 0.97 }},
+		{"live open keeps the execute trigger", []string{"sma", "ETH", "1h", "--mode=live"}, &HyperliquidExecuteResult{Execution: &HyperliquidExecution{Fill: &HyperliquidFill{AvgPx: 2000, TotalSz: 0.5, StopLossOID: 77, StopLossTriggerPx: 1941}}}, func(*Position) float64 { return 1941 }},
+		{"live open without an execute stop stays unarmed", []string{"sma", "ETH", "1h", "--mode=live"}, &HyperliquidExecuteResult{Execution: &HyperliquidExecution{Fill: &HyperliquidFill{AvgPx: 2000, TotalSz: 0.5}}}, func(*Position) float64 { return 0 }},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			sc := StrategyConfig{ID: "hl-open", Platform: "hyperliquid", Type: "perps", Args: c.args, StopLossPct: pf(3), Direction: DirectionLong, Leverage: 1, SizingLeverage: 1}
+			s := &StrategyState{ID: sc.ID, Platform: "hyperliquid", Type: "perps", Cash: 1000, Positions: map[string]*Position{}}
+			trades, _, openTrade, _ := executeHyperliquidResultDeferredOpen(sc, s, &HyperliquidResult{Symbol: "ETH", Signal: 1, Price: 2000}, c.exec, "BUY", 2000, nil, &Config{}, HurstGateDecision{}, silentStrategyLogger(sc.ID))
+			pos := s.Positions["ETH"]
+			if trades != 1 || pos == nil {
+				t.Fatalf("open = trades %d position %+v, want one open", trades, pos)
+			}
+			want := c.wantTrigger(pos)
+			if !approxEq(pos.StopLossTriggerPx, want) {
+				t.Fatalf("trigger = %v, want %v", pos.StopLossTriggerPx, want)
+			}
+			if c.exec == nil {
+				if openTrade != nil || len(s.TradeHistory) != 1 || !approxEq(s.TradeHistory[0].StopLossTriggerPx, want) {
+					t.Fatalf("paper open trade row = %+v, want the armed trigger %v recorded", s.TradeHistory, want)
+				}
+			}
+		})
 	}
 }

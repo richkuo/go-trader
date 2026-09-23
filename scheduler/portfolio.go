@@ -345,7 +345,7 @@ func stopLossCloseDetailsPrefix(reason string) string {
 		return "Trailing SL close"
 	case "liquidation_clamp_sl_immediate":
 		return "Liquidation-clamp SL close"
-	case "stop_loss_atr_paper":
+	case "stop_loss_atr_paper", "stop_loss_pct_paper":
 		return "Paper SL close"
 	case "replay_live_mirror":
 		return "Live mirror replay close"

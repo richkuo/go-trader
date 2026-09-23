@@ -469,22 +469,7 @@ func planHyperliquidLiquidationAudit(candidates []hlLiquidationAuditCandidate) [
 }
 
 func hlLiquidationScalarRearmTriggerPx(sc StrategyConfig, side string, anchor, liqPx float64) float64 {
-	if anchor <= 0 {
-		return 0
-	}
-	pct := EffectiveStopLossPct(sc)
-	if pct <= 0 {
-		return 0
-	}
-	var trigger float64
-	switch side {
-	case "long":
-		trigger = anchor * (1.0 - pct/100.0)
-	case "short":
-		trigger = anchor * (1.0 + pct/100.0)
-	default:
-		return 0
-	}
+	trigger := percentStopLossTriggerPx(sc, side, anchor)
 	if trigger <= 0 {
 		return 0
 	}

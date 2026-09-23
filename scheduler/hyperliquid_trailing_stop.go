@@ -181,24 +181,156 @@ func fixedStopLossATRTriggerPx(sc StrategyConfig, side string, pos *Position) fl
 	return 0
 }
 
-func runHyperliquidFixedATRStopLossPaper(sc StrategyConfig, side string, pos *Position, mark, currentTrigger float64) (newTrigger float64, breach bool, breachPx float64) {
-	if sc.StopLossATRMult == nil || *sc.StopLossATRMult <= 0 {
-		return 0, false, 0
+func percentStopLossTriggerPx(sc StrategyConfig, side string, anchor float64) float64 {
+	if anchor <= 0 {
+		return 0
 	}
+	pct := EffectiveStopLossPct(sc)
+	if pct <= 0 {
+		return 0
+	}
+	var trigger float64
+	switch side {
+	case "long":
+		trigger = anchor * (1.0 - pct/100.0)
+	case "short":
+		trigger = anchor * (1.0 + pct/100.0)
+	default:
+		return 0
+	}
+	if trigger <= 0 {
+		return 0
+	}
+	return trigger
+}
+
+func paperStopFillPx(side string, mark, trigger float64) float64 {
+	switch side {
+	case "long":
+		if mark > 0 && mark < trigger {
+			return mark
+		}
+	case "short":
+		if mark > trigger {
+			return mark
+		}
+	}
+	return trigger
+}
+
+func runPaperFixedStopLoss(side string, mark, currentTrigger, armTrigger float64) (newTrigger float64, breach bool, breachPx float64) {
 	if mark <= 0 {
 		return 0, false, 0
 	}
-	if currentTrigger > 0 {
-		if trailingStopBreached(side, mark, currentTrigger) {
-			return 0, true, currentTrigger
+	trigger := currentTrigger
+	if trigger <= 0 {
+		if armTrigger <= 0 {
+			return 0, false, 0
 		}
+		trigger = armTrigger
+		newTrigger = armTrigger
+	}
+	if trailingStopBreached(side, mark, trigger) {
+		return newTrigger, true, paperStopFillPx(side, mark, trigger)
+	}
+	return newTrigger, false, 0
+}
+
+func runHyperliquidFixedATRStopLossPaper(sc StrategyConfig, side string, pos *Position, mark, currentTrigger float64) (newTrigger float64, breach bool, breachPx float64) {
+	if effectiveFixedStopLossATRPct(sc, pos) <= 0 {
 		return 0, false, 0
 	}
-	tp := fixedStopLossATRTriggerPx(sc, side, pos)
-	if tp <= 0 {
+	return runPaperFixedStopLoss(side, mark, currentTrigger, fixedStopLossATRTriggerPx(sc, side, pos))
+}
+
+func runHyperliquidPercentStopLossPaper(sc StrategyConfig, side string, pos *Position, mark, currentTrigger float64) (newTrigger float64, breach bool, breachPx float64) {
+	if pos == nil || pos.AvgCost <= 0 || effectiveTrailingStopPct(sc, pos) > 0 || EffectiveStopLossPct(sc) <= 0 {
 		return 0, false, 0
 	}
-	return tp, false, 0
+	return runPaperFixedStopLoss(side, mark, currentTrigger, percentStopLossTriggerPx(sc, side, pos.riskAnchorPrice()))
+}
+
+const (
+	paperStopReasonTrailing = "trailing_stop_loss_paper"
+	paperStopReasonATR      = "stop_loss_atr_paper"
+	paperStopReasonPct      = "stop_loss_pct_paper"
+)
+
+func paperStopLossCloseReason(sc StrategyConfig, pos *Position) string {
+	switch {
+	case effectiveTrailingStopPct(sc, pos) > 0:
+		return paperStopReasonTrailing
+	case effectiveFixedStopLossATRPct(sc, pos) > 0:
+		return paperStopReasonATR
+	}
+	return paperStopReasonPct
+}
+
+func paperStopLossDetailLabel(reason string) string {
+	switch reason {
+	case paperStopReasonTrailing:
+		return "PAPER TRAILING SL"
+	case paperStopReasonATR:
+		return "PAPER FIXED ATR SL"
+	}
+	return "PAPER PERCENTAGE SL"
+}
+
+func runHyperliquidFixedStopLossPaper(sc StrategyConfig, side string, pos *Position, mark, currentTrigger float64) (newTrigger float64, breach bool, breachPx float64, reason string) {
+	if effectiveFixedStopLossATRPct(sc, pos) > 0 {
+		newTrigger, breach, breachPx = runHyperliquidFixedATRStopLossPaper(sc, side, pos, mark, currentTrigger)
+		return newTrigger, breach, breachPx, paperStopReasonATR
+	}
+	newTrigger, breach, breachPx = runHyperliquidPercentStopLossPaper(sc, side, pos, mark, currentTrigger)
+	return newTrigger, breach, breachPx, paperStopReasonPct
+}
+
+func applyPaperStopLossBreach(sc StrategyConfig, s *StrategyState, symbol, side string, mark float64, mu *sync.RWMutex, logger *StrategyLogger) (int, string) {
+	if hyperliquidIsLive(sc.Args) || s == nil || mu == nil {
+		return 0, ""
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	pos, ok := s.Positions[symbol]
+	if !ok || pos == nil || pos.Quantity <= 0 || pos.Side != side || !trailingStopBreached(side, mark, pos.StopLossTriggerPx) {
+		return 0, ""
+	}
+	fillPx := paperStopFillPx(side, mark, pos.StopLossTriggerPx)
+	reason := paperStopLossCloseReason(sc, hyperliquidProtectionPositionSnapshot(pos))
+	if !recordPerpsStopLossClose(s, symbol, fillPx, reason, logger) {
+		return 0, ""
+	}
+	return 1, fmt.Sprintf("[%s] %s %s @ $%.2f", sc.ID, paperStopLossDetailLabel(reason), symbol, fillPx)
+}
+
+func armPaperStopLossAtOpen(sc StrategyConfig, s *StrategyState, symbol string, mark float64, logger *StrategyLogger) (breach bool, fillPx float64, reason string) {
+	if hyperliquidIsLive(sc.Args) || s == nil || mark <= 0 {
+		return false, 0, ""
+	}
+	pos, ok := s.Positions[symbol]
+	if !ok || pos == nil || pos.Quantity <= 0 || pos.StopLossTriggerPx > 0 {
+		return false, 0, ""
+	}
+	snap := hyperliquidProtectionPositionSnapshot(pos)
+	var trigger float64
+	if effectiveTrailingStopPct(sc, snap) > 0 {
+		var highWater float64
+		highWater, trigger, breach, fillPx = runHyperliquidTrailingStopPaper(sc, pos.Side, snap, mark, pos.riskAnchorPrice(), 0, trailingReplacePolicy{})
+		if highWater > 0 {
+			pos.StopLossHighWaterPx = highWater
+		}
+		reason = paperStopReasonTrailing
+	} else {
+		trigger, breach, fillPx, reason = runHyperliquidFixedStopLossPaper(sc, pos.Side, snap, mark, 0)
+	}
+	if trigger <= 0 {
+		return false, 0, ""
+	}
+	pos.StopLossTriggerPx = trigger
+	if logger != nil {
+		logger.Info("Paper SL armed at open @ $%.4f (%s, anchor $%.4f, mark $%.4f)", trigger, reason, pos.riskAnchorPrice(), mark)
+	}
+	return breach, fillPx, reason
 }
 
 func hyperliquidArmFixedATRStopLossLive(sc StrategyConfig, symbol, side string, qty float64, triggerPx float64, notifier *MultiNotifier, logger *StrategyLogger) (*HyperliquidStopLossUpdateResult, bool) {
@@ -423,7 +555,7 @@ func runHyperliquidTrailingStopPaper(sc StrategyConfig, side string, pos *Positi
 		return highWater, 0, false, 0
 	}
 	if trailingStopBreached(side, mark, currentTrigger) {
-		return highWater, 0, true, currentTrigger
+		return highWater, 0, true, paperStopFillPx(side, mark, currentTrigger)
 	}
 	avgCost := 0.0
 	if pos != nil {
@@ -435,6 +567,9 @@ func runHyperliquidTrailingStopPaper(sc StrategyConfig, side string, pos *Positi
 	allowOneShotWiden := pos != nil && pos.RatchetFallbackNormalizePending
 	nhw, nt, replace := computeTrailingStopUpdateInternal(side, mark, highWater, trailingPct, effectiveTrailingStopMinMovePct(sc), currentTrigger, allowOneShotWiden, policy.ratchetTightened)
 	if replace {
+		if trailingStopBreached(side, mark, nt) {
+			return nhw, nt, true, paperStopFillPx(side, mark, nt)
+		}
 		return nhw, nt, false, 0
 	}
 	return nhw, 0, false, 0

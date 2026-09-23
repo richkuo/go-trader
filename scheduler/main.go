@@ -2183,6 +2183,15 @@ func main() {
 						if cbManageOnly {
 							result.Signal = 0
 						}
+						paperStopTrades, paperStopDetail := 0, ""
+						if !hyperliquidIsLive(sc.Args) && hlPosQty > 0 {
+							paperStopTrades, paperStopDetail = applyPaperStopLossBreach(sc, stratState, result.Symbol, hlPosSide, price, &mu, logger)
+							if paperStopTrades > 0 {
+								hlPosQty, hlPosSide, hlAvgCost, hlEntryATR = 0, "", 0, 0
+								hlStopLossTriggerPx, hlStopLossHighWaterPx, hlPosSnapshot = 0, 0, nil
+								hlScaleInCount, hlLastAddPrice, hlAddedNotionalUSD = 0, 0, 0
+							}
+						}
 						storeRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
 						result.Regime = &storeRegime
 						if gateRegime, regimeBlocked := applyRegimeGate(sc, storeRegime, cfg.Regime, hlPosQty); regimeBlocked {
@@ -2266,9 +2275,12 @@ func main() {
 							mu.Lock()
 							if pos, ok3 := stratState.Positions[result.Symbol]; ok3 && pos.Quantity > 0 && pos.Side == hlPosSide {
 								if breach {
-									if recordPerpsStopLossClose(stratState, result.Symbol, breachPx, "trailing_stop_loss_paper", logger) {
-										trades++
-										detail = fmt.Sprintf("[%s] PAPER TRAILING SL %s @ $%.2f", sc.ID, result.Symbol, breachPx)
+									if newTrigger > 0 {
+										pos.StopLossTriggerPx = newTrigger
+									}
+									if recordPerpsStopLossClose(stratState, result.Symbol, breachPx, paperStopReasonTrailing, logger) {
+										paperStopTrades++
+										paperStopDetail = fmt.Sprintf("[%s] PAPER TRAILING SL %s @ $%.2f", sc.ID, result.Symbol, breachPx)
 									}
 								} else {
 									if newHighWater > 0 {
@@ -2302,20 +2314,20 @@ func main() {
 							}
 							mu.Unlock()
 						}
-						if !hyperliquidIsLive(sc.Args) && result.Signal == 0 && hlPosQty > 0 && sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0 {
-							newTrigger, breach, breachPx := runHyperliquidFixedATRStopLossPaper(sc, hlPosSide, hlPosSnapshot, price, hlStopLossTriggerPx)
+						if !hyperliquidIsLive(sc.Args) && result.Signal == 0 && hlPosQty > 0 && effectiveTrailingStopPct(sc, hlPosSnapshot) <= 0 {
+							newTrigger, breach, breachPx, stopReason := runHyperliquidFixedStopLossPaper(sc, hlPosSide, hlPosSnapshot, price, hlStopLossTriggerPx)
 							mu.Lock()
 							if pos, ok3 := stratState.Positions[result.Symbol]; ok3 && pos.Quantity > 0 && pos.Side == hlPosSide {
-								if breach {
-									if recordPerpsStopLossClose(stratState, result.Symbol, breachPx, "stop_loss_atr_paper", logger) {
-										trades++
-										detail = fmt.Sprintf("[%s] PAPER FIXED ATR SL %s @ $%.2f", sc.ID, result.Symbol, breachPx)
-									}
-								} else if newTrigger > 0 && pos.StopLossTriggerPx == 0 {
+								if newTrigger > 0 && pos.StopLossTriggerPx == 0 {
 									pos.StopLossTriggerPx = newTrigger
 									stampOpenTradeWithProtectionSnapshot(stratState, stratDB, sc, result.Symbol, pos)
-									logger.Info("Paper fixed ATR SL armed @ $%.4f (%.2f%% from entry $%.4f)",
-										newTrigger, effectiveFixedStopLossATRPct(sc, hlPosSnapshot), pos.AvgCost)
+									logger.Info("Paper SL armed @ $%.4f (%s, anchor $%.4f)", newTrigger, stopReason, pos.riskAnchorPrice())
+								}
+								if breach {
+									if recordPerpsStopLossClose(stratState, result.Symbol, breachPx, stopReason, logger) {
+										paperStopTrades++
+										paperStopDetail = fmt.Sprintf("[%s] %s %s @ $%.2f", sc.ID, paperStopLossDetailLabel(stopReason), result.Symbol, breachPx)
+									}
 								}
 							}
 							mu.Unlock()
@@ -2461,6 +2473,10 @@ func main() {
 								trades, detail, openTrade, ratchetAlert = executeHyperliquidScaleInDeferredOpen(sc, stratState, result, execResult, signalStr, price, scaleInAddQty, logger)
 							} else {
 								trades, detail, openTrade, ratchetAlert = executeHyperliquidResultDeferredOpen(sc, stratState, result, execResult, signalStr, price, cfg.Regime, cfg, hurstDecision, logger)
+							}
+							if paperStopTrades > 0 {
+								trades += paperStopTrades
+								detail = mergeTradeDetails(paperStopDetail, detail)
 							}
 							if openTrade != nil {
 								var pos *Position
@@ -3856,6 +3872,21 @@ func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, r
 	if trades > 0 {
 		if pos, ok := s.Positions[result.Symbol]; ok && effectiveTrailingStopPct(sc, pos) > 0 {
 			pos.StopLossHighWaterPx = fillPrice
+		}
+	}
+
+	if trades > 0 && openTrade != nil && execResult == nil && !hyperliquidIsLive(sc.Args) {
+		if breach, stopPx, stopReason := armPaperStopLossAtOpen(sc, s, result.Symbol, price, logger); breach {
+			var pos *Position
+			if p, ok := s.Positions[result.Symbol]; ok {
+				pos = p
+			}
+			if recordPositionOpen(s, sc, openTrade, pos) {
+				openTrade = nil
+			}
+			if recordPerpsStopLossClose(s, result.Symbol, stopPx, stopReason, logger) {
+				trades++
+			}
 		}
 	}
 
