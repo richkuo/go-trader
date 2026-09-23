@@ -786,7 +786,7 @@ func runHyperliquidProtectionSync(
 	}
 	stampOpenTradeWithProtectionSnapshot(stratState, db, sc, symbol, pos)
 	if logger != nil {
-		logger.Info("%s (sl_oid=%d tp_oids=%v)", logTag, pos.StopLossOID, pos.TPOIDs)
+		logger.InfoOnChange("protection", fmt.Sprintf("%d|%v", pos.StopLossOID, pos.TPOIDs), "%s (sl_oid=%d tp_oids=%v)", logTag, pos.StopLossOID, pos.TPOIDs)
 	}
 	return true, 0
 }

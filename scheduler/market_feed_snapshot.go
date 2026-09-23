@@ -449,7 +449,7 @@ func marketPayloadJSON(payload *marketPayload) ([]byte, error) {
 	return blob, nil
 }
 
-func marketSnapshotLogLine(s *marketSnapshot, reqs cycleMarketRequirements) string {
+func marketSnapshotHealth(s *marketSnapshot, reqs cycleMarketRequirements) string {
 	if s == nil {
 		return ""
 	}
@@ -462,6 +462,13 @@ func marketSnapshotLogLine(s *marketSnapshot, reqs cycleMarketRequirements) stri
 			stale++
 		}
 	}
-	return fmt.Sprintf("[feed] snapshot=%s/%d keys=%d ready=%d stale=%d %s",
-		s.EvaluationID, s.ConfigGeneration, len(reqs.Keys), ready, stale, formatFeedMetrics(s.Metrics))
+	return fmt.Sprintf("keys=%d ready=%d stale=%d", len(reqs.Keys), ready, stale)
+}
+
+func marketSnapshotLogLine(s *marketSnapshot, reqs cycleMarketRequirements) string {
+	if s == nil {
+		return ""
+	}
+	return fmt.Sprintf("[feed] snapshot=%s/%d %s %s",
+		s.EvaluationID, s.ConfigGeneration, marketSnapshotHealth(s, reqs), formatFeedMetrics(s.Metrics))
 }

@@ -440,8 +440,8 @@ func startRegimeStorePopulation(store *RegimeStore, due []StrategyConfig, rc *Re
 			fmt.Printf("[WARN] regime store: phase budget %s exceeded; sealed with %d/%d bundles — missing signatures resolve per regime_gate_on_failure this cycle (default fail-open)\n",
 				regimeStorePhaseBudget, kept, len(reqs))
 		}
-		if summary := regimeStoreSummary(store); summary != "" {
-			fmt.Printf("Regime: %s\n", summary)
+		if line := regimeStoreLogLine(store); line != "" {
+			fmt.Println(line)
 		}
 	}
 }
@@ -450,17 +450,33 @@ func populateRegimeStore(store *RegimeStore, due []StrategyConfig, rc *RegimeCon
 	startRegimeStorePopulation(store, due, rc, notifier, feed)()
 }
 
-func regimeStoreSummary(store *RegimeStore) string {
+func regimeStoreLogLine(store *RegimeStore) string {
+	all, changed := regimeStoreSummaryParts(store)
+	if debugLogging() {
+		changed = all
+	}
+	if len(changed) == 0 {
+		return ""
+	}
+	return "Regime: " + strings.Join(changed, "; ")
+}
+
+func regimeStoreSummaryParts(store *RegimeStore) ([]string, []string) {
 	bundles, _ := store.Snapshot()
-	parts := make([]string, 0, len(bundles))
+	all := make([]string, 0, len(bundles))
+	var changed []string
 	for _, b := range bundles {
 		label := b.Payload.PrimaryLabel(nil)
 		if label == "" {
 			label = "-"
 		}
-		parts = append(parts, b.Key.String()+"="+label)
+		part := b.Key.String() + "=" + label
+		all = append(all, part)
+		if logChanges.changed("regime\x00"+b.Key.String(), label) {
+			changed = append(changed, part)
+		}
 	}
-	return strings.Join(parts, "; ")
+	return all, changed
 }
 
 func (s *RegimeStore) PayloadForStrategy(sc StrategyConfig, rc *RegimeConfig) RegimePayload {

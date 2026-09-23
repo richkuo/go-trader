@@ -498,6 +498,7 @@ Python 3.12+ via [uv](https://github.com/astral-sh/uv); Go 1.26.2; systemd.
 |---|---|
 | No Discord messages | Check `DISCORD_BOT_TOKEN`, channel IDs, bot permissions |
 | Service won't start | `journalctl -u go-trader -n 50` |
+| Need the per-check detail (script argv, HOLD signals, prices) | Set `"log_level": "debug"` and `sudo systemctl kill -s HUP go-trader`; set it back to `"info"` after. See `SKILL.md` § Adjustable Settings |
 | Didn't come back after reboot | Re-run `sudo bash scripts/install-service.sh` |
 | Strategy not trading | Circuit breaker in `/status`, verify params |
 | Reset positions | `rm scheduler/state.db && systemctl restart go-trader` (remove **every** configured state file: `db_file`, `paper_db_file` and each `paper_sources[].db_file`) |

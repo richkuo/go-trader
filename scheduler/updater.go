@@ -37,12 +37,12 @@ func checkForUpdates(cfg *Config, notifier *MultiNotifier, lastNotifiedHash *str
 	}
 
 	if localHash == remoteHash {
-		fmt.Println("[update] Already up to date")
+		logOnChangef("update-check", "current:"+localHash, "[update] Already up to date\n")
 		return false
 	}
 
 	if lastNotifiedHash != nil && *lastNotifiedHash == remoteHash {
-		fmt.Printf("[update] Update available (%s), already notified\n", remoteHash[:8])
+		logOnChangef("update-check", "notified:"+remoteHash, "[update] Update available (%s), already notified\n", remoteHash[:8])
 		return true
 	}
 

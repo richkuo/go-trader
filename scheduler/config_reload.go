@@ -48,6 +48,13 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 			return nil, fmt.Errorf("alert_throttle_interval: %w", err)
 		}
 	}
+	if cfg.LogLevel != next.LogLevel {
+		addChange("log_level: %q -> %q", cfg.LogLevel, next.LogLevel)
+		cfg.LogLevel = next.LogLevel
+		if err := applyLogLevelFromConfig(cfg); err != nil {
+			return nil, fmt.Errorf("log_level: %w", err)
+		}
+	}
 	if cfg.KillSwitchResetDMTimeout != next.KillSwitchResetDMTimeout {
 		addChange("kill_switch_reset_dm_timeout: %q -> %q", cfg.KillSwitchResetDMTimeout, next.KillSwitchResetDMTimeout)
 		cfg.KillSwitchResetDMTimeout = next.KillSwitchResetDMTimeout
