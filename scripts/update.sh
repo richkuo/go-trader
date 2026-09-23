@@ -845,6 +845,15 @@ if ! ./go-trader.new probe; then
 fi
 end_phase
 
+if [[ "$restart" == "1" && "$restart_mode" == "systemd" && -n "$unit_sync_source_path" && -n "$unit_sync_installed_path" ]]; then
+    begin_phase journal
+    if ! update_sync_journal_namespace "$repo_root" "$unit_sync_source_path"; then
+        rm -f ./go-trader.new
+        fail "journald namespace config for $unit_sync_source_path could not be installed; the go-trader binary, the unit and the running service were left unchanged"
+    fi
+    end_phase
+fi
+
 begin_phase swap
 rm -f ./go-trader.prev
 if [[ -e ./go-trader ]]; then

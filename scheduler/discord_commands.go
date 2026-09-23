@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os/exec"
 	"sort"
@@ -804,8 +805,27 @@ func (d *DiscordNotifier) lifetimeStats() map[string]LifetimeTradeStats {
 	return stats
 }
 
+func systemdUnitLogNamespace(unit string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "systemctl", "show", "-p", "LogNamespace", "--value", unit).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func journalctlUnitArgs(unit, namespace string, n int) []string {
+	args := make([]string, 0, 6)
+	if namespace != "" {
+		args = append(args, "--namespace=+"+namespace)
+	}
+	return append(args, "-u", unit, "-n", strconv.Itoa(n), "--no-pager")
+}
+
 func runLogs(n int) string {
-	out, err := exec.Command("journalctl", "-u", "go-trader", "-n", strconv.Itoa(n), "--no-pager").CombinedOutput()
+	unit := updateSystemdUnitName()
+	out, err := exec.Command("journalctl", journalctlUnitArgs(unit, systemdUnitLogNamespace(unit), n)...).CombinedOutput()
 	if err != nil {
 		return fmt.Sprintf("journalctl failed: %v\n%s", err, string(out))
 	}
