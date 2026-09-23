@@ -1,8 +1,10 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"math"
+	"sync"
 	"testing"
 	"time"
 )
@@ -189,6 +191,121 @@ func TestBookManualCycleClose(t *testing.T) {
 			}
 			if pos.StopLossOID != tc.wantSLOID || fmt.Sprint(pos.TPOIDs) != fmt.Sprint(tc.wantTPOIDs) || fmt.Sprint(pos.TPArmedTiers) != fmt.Sprint(tc.wantTPArmed) {
 				t.Fatalf("book sl=%d tps=%v armed=%v, want sl=%d tps=%v armed=%v", pos.StopLossOID, pos.TPOIDs, pos.TPArmedTiers, tc.wantSLOID, tc.wantTPOIDs, tc.wantTPArmed)
+			}
+		})
+	}
+}
+
+func TestSettleManualCycleCloseRearmsTheRemainderStop(t *testing.T) {
+	oldUpdate, oldSync, oldRecorder := runHyperliquidUpdateStopLossFunc, syncHyperliquidProtection, tradeRecorder
+	t.Cleanup(func() {
+		runHyperliquidUpdateStopLossFunc, syncHyperliquidProtection, tradeRecorder = oldUpdate, oldSync, oldRecorder
+	})
+	tradeRecorder = func(string, Trade) error { return nil }
+	live := []string{"hold", "ETH", "1h", "--mode=live"}
+	atrMult, trailMult := 2.0, 2.0
+	recorded := StrategyConfig{ID: "hl-manual", Type: "manual", Platform: "hyperliquid", Symbol: "ETH", Script: "x.py", Args: live, Leverage: 2}
+	atr := recorded
+	atr.StopLossATRMult = &atrMult
+	ratchet := recorded
+	ratchet.CloseStrategy = &StrategyRef{Name: "trailing_tp_ratchet"}
+	ratchet.TrailingStopATRMult = &trailMult
+	fill := func(sz float64, succeeded, failed []int64) *HyperliquidExecuteResult {
+		r := &HyperliquidExecuteResult{Execution: &HyperliquidExecution{Fill: &HyperliquidFill{AvgPx: 2100, TotalSz: sz, Fee: 1, OID: 9}}, CancelStopLossSucceededOIDs: succeeded, CancelStopLossFailedOIDs: failed}
+		if len(failed) > 0 {
+			r.CancelStopLossError = "cancel rejected"
+		}
+		return r
+	}
+	rejected := &HyperliquidExecuteResult{Error: "order rejected", CancelStopLossSucceededOIDs: []int64{111}}
+	cases := []struct {
+		name          string
+		sc            StrategyConfig
+		exec          *HyperliquidExecuteResult
+		immediate     bool
+		wantUpdate    bool
+		wantSync      bool
+		wantSize      float64
+		wantCancel    int64
+		wantForce     bool
+		wantTrigger   float64
+		wantDrainQty  float64
+		wantDrainSL   int64
+		wantCloseQtys []float64
+	}{
+		{name: "recorded percentage stop is restored at the remainder with the old oid verified first", sc: recorded, exec: fill(4, []int64{111}, nil), wantUpdate: true, wantSize: 6, wantCancel: 111, wantTrigger: 1900, wantDrainQty: 6, wantDrainSL: 999, wantCloseQtys: []float64{4}},
+		{name: "ATR owner re-arms the stop leg at the remainder while the close row is queued", sc: atr, exec: fill(4, []int64{111}, nil), wantSync: true, wantSize: 6, wantTrigger: 1900, wantDrainQty: 6, wantDrainSL: 999, wantCloseQtys: []float64{4}},
+		{name: "ratchet trail owner re-arms from the high-water at the remainder", sc: ratchet, exec: fill(4, []int64{111}, nil), wantUpdate: true, wantSize: 6, wantCancel: 111, wantTrigger: 1900, wantDrainQty: 6, wantDrainSL: 999, wantCloseQtys: []float64{4}},
+		{name: "a stop cancel the venue reported as failed keeps the id and the recorded re-arm verifies it on-chain", sc: recorded, exec: fill(4, nil, []int64{111}), wantUpdate: true, wantSize: 6, wantCancel: 111, wantTrigger: 1900, wantDrainQty: 6, wantDrainSL: 999, wantCloseQtys: []float64{4}},
+		{name: "a stop cancel the venue reported as failed forces the ATR stop to resize to the remainder", sc: atr, exec: fill(4, nil, []int64{111}), wantSync: true, wantSize: 6, wantCancel: 111, wantForce: true, wantTrigger: 1900, wantDrainQty: 6, wantDrainSL: 999, wantCloseQtys: []float64{4}},
+		{name: "a rejection after the cancel succeeded re-arms the whole book in the same cycle", sc: recorded, exec: rejected, wantUpdate: true, wantSize: 10, wantCancel: 111, wantTrigger: 1900, wantDrainQty: 10, wantDrainSL: 999},
+		{name: "a re-armed stop that fills at once books only the remainder and the drain closes the rest once", sc: recorded, exec: fill(4, []int64{111}, nil), immediate: true, wantUpdate: true, wantSize: 6, wantCancel: 111, wantTrigger: 1900, wantCloseQtys: []float64{6, 4}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var updates []rearmSLCall
+			runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+				updates = append(updates, rearmSLCall{symbol: symbol, side: side, size: size, triggerPx: triggerPx, cancelOID: cancelOID})
+				if tc.immediate {
+					return &HyperliquidStopLossUpdateResult{StopLossFilledImmediately: true, StopLossTriggerPx: triggerPx, CancelStopLossSucceeded: true}, "", nil
+				}
+				return &HyperliquidStopLossUpdateResult{StopLossOID: 999, StopLossTriggerPx: triggerPx, CancelStopLossSucceeded: cancelOID > 0}, "", nil
+			}
+			var plans []hlProtectionPlan
+			syncHyperliquidProtection = func(sc StrategyConfig, plan hlProtectionPlan, notifier *MultiNotifier, logger *StrategyLogger, hints []byte) (*HyperliquidProtectionSyncResult, bool) {
+				plans = append(plans, plan)
+				return &HyperliquidProtectionSyncResult{StopLossOID: 999, StopLossTriggerPx: plan.AvgCost - plan.StopLossATRMult*plan.EntryATR}, true
+			}
+			db := openTestDB(t)
+			pos := &Position{Symbol: "ETH", Side: "long", Quantity: 10, InitialQuantity: 10, AvgCost: 2000, RiskAnchorPrice: 2000, EntryATR: 50, OwnerStrategyID: tc.sc.ID, StopLossOID: 111, StopLossTriggerPx: 1900, StopLossHighWaterPx: 2000, OpenedAt: time.Now().UTC().Add(-time.Hour)}
+			ss := &StrategyState{ID: tc.sc.ID, Type: "manual", Platform: "hyperliquid", Cash: 1000, InitialCapital: 1000, Positions: map[string]*Position{"ETH": pos}}
+			state := &AppState{Strategies: map[string]*StrategyState{tc.sc.ID: ss}}
+			rearm := hlCloseRearmContext{Price: 2000, PrevStopOID: 111, PrevTriggerPx: 1900, PrevHighWater: 2000, OnChainAbsQty: map[string]float64{"ETH": 25}}
+			var mu sync.RWMutex
+			var execErr error
+			if tc.exec.Error != "" {
+				execErr = errors.New(tc.exec.Error)
+			}
+			settleManualCycleClose(tc.sc, ss, db, pos, "sell", 10, true, tc.exec, execErr, []int64{111}, rearm, &mu, nil, newTestLogger(t))
+			if tc.wantUpdate != (len(updates) == 1) || len(updates) > 1 {
+				t.Fatalf("stop updates = %+v, want one: %t", updates, tc.wantUpdate)
+			}
+			if tc.wantSync != (len(plans) == 1) || len(plans) > 1 {
+				t.Fatalf("protection syncs = %+v, want one: %t", plans, tc.wantSync)
+			}
+			if tc.wantUpdate {
+				got := updates[0]
+				if math.Abs(got.size-tc.wantSize) > 1e-9 || got.cancelOID != tc.wantCancel || math.Abs(got.triggerPx-tc.wantTrigger) > 1e-6 {
+					t.Fatalf("stop update = %+v, want size %g cancel %d trigger %g", got, tc.wantSize, tc.wantCancel, tc.wantTrigger)
+				}
+			}
+			if tc.wantSync {
+				got := plans[0]
+				if math.Abs(got.Size-tc.wantSize) > 1e-9 || got.StopLossOID != tc.wantCancel || got.ForceSLReplace != tc.wantForce || got.StopLossATRMult <= 0 || len(got.Tiers) != 0 {
+					t.Fatalf("protection plan size=%g sl_oid=%d force=%t mult=%g tiers=%d, want size %g sl_oid %d force %t and the stop leg only", got.Size, got.StopLossOID, got.ForceSLReplace, got.StopLossATRMult, len(got.Tiers), tc.wantSize, tc.wantCancel, tc.wantForce)
+				}
+			}
+			drainPendingManualActions(state, &Config{Strategies: []StrategyConfig{tc.sc}}, openTestStore(t, db))
+			after := ss.Positions["ETH"]
+			switch {
+			case tc.wantDrainQty == 0 && after != nil:
+				t.Fatalf("book after drain = %+v, want the position closed", after)
+			case tc.wantDrainQty > 0 && after == nil:
+				t.Fatalf("book after drain is empty, want %g", tc.wantDrainQty)
+			case tc.wantDrainQty > 0 && (math.Abs(after.Quantity-tc.wantDrainQty) > 1e-9 || after.StopLossOID != tc.wantDrainSL):
+				t.Fatalf("book after drain qty=%g sl=%d, want qty %g sl %d", after.Quantity, after.StopLossOID, tc.wantDrainQty, tc.wantDrainSL)
+			}
+			var closeQtys []float64
+			for _, tr := range ss.TradeHistory {
+				if tr.IsClose {
+					closeQtys = append(closeQtys, tr.Quantity)
+				}
+			}
+			if fmt.Sprint(closeQtys) != fmt.Sprint(tc.wantCloseQtys) {
+				t.Fatalf("close trades = %v, want %v", closeQtys, tc.wantCloseQtys)
+			}
+			if rows, err := db.LoadPendingManualActions(); err != nil || len(rows) != 0 {
+				t.Fatalf("queued rows after drain = %+v (err %v), want none", rows, err)
 			}
 		})
 	}

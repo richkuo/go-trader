@@ -2519,8 +2519,9 @@ func main() {
 										filledQty = execResult.Execution.Fill.TotalSz
 									}
 									if result.SizedCloseBookFraction > 0 {
-										if len(result.SizedCloseCanceledOIDs) > 0 {
-											if extraTrades, slDetail := rearmProtectionAfterFailedClose(sc, stratState, stratDB, result.Symbol, price, hlStopLossOID, hlStopLossTriggerPx, hlStopLossHighWaterPx, hlOnChainAbsQty, hlReconcileFillHintsJSON, hlLiquidationPx, hlNetSideByCoin, &mu, notifier, logger); extraTrades > 0 {
+										if result.LiveOrderCancelRequested {
+											remainder := hlPosQty * (1 - result.SizedCloseBookFraction)
+											if extraTrades, slDetail := rearmProtectionForCloseRemainder(sc, stratState, stratDB, result.Symbol, price, hlStopLossOID, hlStopLossTriggerPx, hlStopLossHighWaterPx, hlOnChainAbsQty, hlReconcileFillHintsJSON, hlLiquidationPx, hlNetSideByCoin, remainder, &mu, notifier, logger); extraTrades > 0 {
 												trades += extraTrades
 												detail = slDetail
 											}
@@ -2778,6 +2779,7 @@ func main() {
 							if intentFullClose {
 								extraCancelOIDs = cloneInt64s(pos.TPOIDs)
 							}
+							rearmCtx := hlCloseRearmContext{Price: prices[sc.Symbol], PrevStopOID: cancelOID, PrevTriggerPx: pos.StopLossTriggerPx, PrevHighWater: pos.StopLossHighWaterPx, OnChainAbsQty: hlOnChainAbsQty, FillHintsJSON: hlReconcileFillHintsJSON, LiqPxByCoin: hlLiquidationPx, NetSideByCoin: hlNetSideByCoin}
 							execResult, execStderr, execErr := runHyperliquidExecuteFn(
 								sc.Script, sc.Symbol, closeSide, closeQty,
 								0, cancelOID, 0, "", 0, closeMode, hlExecuteSnapshot{}, extraCancelOIDs...,
@@ -2786,45 +2788,13 @@ func main() {
 								logger.Info("HL manual close stderr: %s", execStderr)
 							}
 							requestedCancelOIDs := append([]int64{cancelOID}, extraCancelOIDs...)
-							execResult, execErr = confirmHyperliquidExecuteFill(execResult, execErr)
-							if execErr != nil {
-								logger.Error("manual close execute failed: %v", execErr)
-								canceledOIDs := hyperliquidExecuteSucceededCancelOIDs(execResult, requestedCancelOIDs)
-								if len(canceledOIDs) > 0 {
-									mu.Lock()
-									clearHyperliquidProtectionOIDsMatching(stratState.Positions[sc.Symbol], canceledOIDs)
-									mu.Unlock()
-								}
-								break
+							closeTrades, closeDetail, fillPx := settleManualCycleClose(sc, stratState, stratDB, pos, closeSide, closeQty, intentFullClose, execResult, execErr, requestedCancelOIDs, rearmCtx, &mu, notifier, logger)
+							if fillPx > 0 {
+								prices[sc.Symbol] = fillPx
 							}
-							if execResult.CancelStopLossError != "" {
-								logger.Warn("manual close cancel failed (non-fatal) for %s/%s: %s (sl_oid=%d tp_oids=%v) — verify HL on-chain triggers",
-									sc.ID, sc.Symbol, execResult.CancelStopLossError, cancelOID, extraCancelOIDs)
-							}
-							if execResult.Execution != nil && execResult.Execution.Fill != nil {
-								booking := bookManualCycleClose(sc, pos, closeSide, closeQty, intentFullClose, execResult, requestedCancelOIDs, time.Now().UTC())
-								action := booking.Action
-								if action.Quantity < closeQty-1e-9 {
-									logger.Warn("manual close filled %.6f of the requested %.6f for %s/%s; booking the filled quantity", action.Quantity, closeQty, sc.ID, sc.Symbol)
-								}
-								if len(booking.ClearOIDs) > 0 {
-									mu.Lock()
-									clearHyperliquidProtectionOIDsMatching(stratState.Positions[sc.Symbol], booking.ClearOIDs)
-									mu.Unlock()
-									logger.Info("cleared canceled protection OIDs=%v after the manual close filled short of the full book", booking.ClearOIDs)
-								}
-								if booking.ShortOfIntent {
-									logger.Error("CRITICAL: manual full close %s filled %.6f of the %.6f book; the remainder stays on the book", sc.Symbol, action.Quantity, pos.Quantity)
-									notifySizedCloseRemainder(notifier, sc, sc.Symbol, pos.Side, action.Quantity, pos.Quantity)
-								}
-								if err := stratDB.InsertPendingManualAction(action); err != nil {
-									logger.Error("failed to queue manual close action: %v", err)
-								} else {
-									prices[sc.Symbol] = action.FillPrice
-									trades = 1
-									detail = fmt.Sprintf("manual close %.4f %s @ $%.2f | PnL=$%.2f", action.Quantity, sc.Symbol, action.FillPrice, action.RealizedPnL)
-									logger.Info("Queued manual close: %s", detail)
-								}
+							if closeTrades > 0 {
+								trades += closeTrades
+								detail = closeDetail
 							}
 						}
 					}

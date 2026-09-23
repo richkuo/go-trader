@@ -492,3 +492,59 @@ func TestSharedCloseStrandedAlertRecoveryTextDropsForceCloseClaim(t *testing.T) 
 		}
 	}
 }
+
+func TestRearmProtectionForCloseRemainderResizesThePreCloseStop(t *testing.T) {
+	oldUpdate, oldSync := runHyperliquidUpdateStopLossFunc, syncHyperliquidProtection
+	t.Cleanup(func() { runHyperliquidUpdateStopLossFunc, syncHyperliquidProtection = oldUpdate, oldSync })
+	live := []string{"x.py", "ETH", "1h", "--mode=live"}
+	atrMult, pct := 2.0, 5.0
+	atr := StrategyConfig{ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py", Args: live, StopLossATRMult: &atrMult}
+	pctOwner := StrategyConfig{ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py", Args: live, StopLossPct: &pct}
+	cases := []struct {
+		name       string
+		sc         StrategyConfig
+		bookQty    float64
+		bookOID    int64
+		remainder  float64
+		wantSync   bool
+		wantUpdate bool
+		wantSize   float64
+		wantForce  bool
+	}{
+		{name: "a pre-close stop whose cancel failed is force-replaced at the booked remainder", sc: atr, bookQty: 6, bookOID: 111, remainder: 6, wantSync: true, wantSize: 6, wantForce: true},
+		{name: "a stop already placed after the close is kept without a replace", sc: atr, bookQty: 6, bookOID: 555, remainder: 6, wantSync: true, wantSize: 6},
+		{name: "a pre-drain book is sized down to the remainder", sc: atr, bookQty: 10, remainder: 6, wantSync: true, wantSize: 6},
+		{name: "a percentage owner re-arms at the remainder", sc: pctOwner, bookQty: 10, remainder: 6, wantUpdate: true, wantSize: 6},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var sizes []float64
+			runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+				sizes = append(sizes, size)
+				return &HyperliquidStopLossUpdateResult{StopLossOID: 999, StopLossTriggerPx: triggerPx}, "", nil
+			}
+			var plans []hlProtectionPlan
+			syncHyperliquidProtection = func(sc StrategyConfig, plan hlProtectionPlan, notifier *MultiNotifier, logger *StrategyLogger, hints []byte) (*HyperliquidProtectionSyncResult, bool) {
+				plans = append(plans, plan)
+				return &HyperliquidProtectionSyncResult{StopLossOID: 999, StopLossTriggerPx: 1900}, true
+			}
+			st := &StrategyState{ID: "hl-eth", Positions: map[string]*Position{
+				"ETH": {Symbol: "ETH", Side: "long", Quantity: tc.bookQty, InitialQuantity: 10, AvgCost: 2000, RiskAnchorPrice: 2000, EntryATR: 50, StopLossOID: tc.bookOID, StopLossTriggerPx: 1900},
+			}}
+			var mu sync.RWMutex
+			rearmProtectionForCloseRemainder(tc.sc, st, nil, "ETH", 2000, 111, 1900, 2000, map[string]float64{"ETH": 25}, nil, nil, nil, tc.remainder, &mu, nil, newTestLogger(t))
+			if tc.wantSync != (len(plans) == 1) || tc.wantUpdate != (len(sizes) == 1) || len(plans)+len(sizes) != 1 {
+				t.Fatalf("syncs=%d updates=%d, want sync %t update %t", len(plans), len(sizes), tc.wantSync, tc.wantUpdate)
+			}
+			if tc.wantSync && (math.Abs(plans[0].Size-tc.wantSize) > 1e-9 || plans[0].ForceSLReplace != tc.wantForce) {
+				t.Fatalf("plan size=%g force=%t, want size %g force %t", plans[0].Size, plans[0].ForceSLReplace, tc.wantSize, tc.wantForce)
+			}
+			if tc.wantUpdate && math.Abs(sizes[0]-tc.wantSize) > 1e-9 {
+				t.Fatalf("update size = %g, want %g", sizes[0], tc.wantSize)
+			}
+			if st.Positions["ETH"].StopLossOID != 999 {
+				t.Fatalf("book stop oid = %d, want 999", st.Positions["ETH"].StopLossOID)
+			}
+		})
+	}
+}

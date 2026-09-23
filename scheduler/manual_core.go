@@ -1269,8 +1269,14 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 		IsFullClose:     actualFullClose,
 		CreatedAt:       time.Now().UTC(),
 	}
-	if err := d.stateDB.InsertPendingManualAction(action); err != nil {
-		return res, manualFailf("error queuing close action: %v", err)
+	queueErr := d.stateDB.InsertPendingManualAction(action)
+	if intentFullClose && !actualFullClose {
+		remainderSnapshot := protectionSnapshot
+		remainderSnapshot.Quantity = pos.Quantity - filledQty
+		restoreManualStopLoss(d, res, sc, strategyID, remainderSnapshot, execResult, requestedCancelOIDs, manualCloseRearmAfterShortFill)
+	}
+	if queueErr != nil {
+		return res, manualFailf("error queuing close action: %v", queueErr)
 	}
 
 	res.queued = true

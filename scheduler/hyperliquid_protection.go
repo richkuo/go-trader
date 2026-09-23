@@ -684,6 +684,25 @@ func runHyperliquidProtectionSync(
 	netSideByCoin map[string]string,
 	guardMode hlProtectionGuardMode,
 ) (bool, float64) {
+	return runHyperliquidProtectionSyncForRemainder(sc, stratState, db, symbol, mu, notifier, logger, logTag, reconcileFillHintsJSON, liqPxByCoin, netSideByCoin, guardMode, 0, 0)
+}
+
+func runHyperliquidProtectionSyncForRemainder(
+	sc StrategyConfig,
+	stratState *StrategyState,
+	db *StateDB,
+	symbol string,
+	mu *sync.RWMutex,
+	notifier *MultiNotifier,
+	logger *StrategyLogger,
+	logTag string,
+	reconcileFillHintsJSON []byte,
+	liqPxByCoin map[string]float64,
+	netSideByCoin map[string]string,
+	guardMode hlProtectionGuardMode,
+	remainderQty float64,
+	prevStopOID int64,
+) (bool, float64) {
 	if stratState == nil || symbol == "" {
 		return false, 0
 	}
@@ -761,6 +780,14 @@ func runHyperliquidProtectionSync(
 			return false, 0
 		}
 	}
+	sizedToRemainder := false
+	if remainderQty > 0 && remainderQty < plan.Size-1e-9 {
+		plan.Size = remainderQty
+		sizedToRemainder = true
+	}
+	if remainderQty > 0 && plan.StopLossATRMult > 0 && prevStopOID > 0 && plan.StopLossOID == prevStopOID {
+		plan.ForceSLReplace = true
+	}
 	protection, ok := syncHyperliquidProtection(sc, plan, notifier, logger, reconcileFillHintsJSON)
 	if !ok || protection == nil {
 		return false, 0
@@ -772,7 +799,15 @@ func runHyperliquidProtectionSync(
 		return false, 0
 	}
 	if protection.StopLossFilledImmediately && protection.StopLossTriggerPx > 0 {
-		if recordPerpsStopLossClose(stratState, symbol, protection.StopLossTriggerPx, "protection_sync_sl_immediate", logger) {
+		if sizedToRemainder {
+			if recordPerpsStopLossCloseQty(stratState, symbol, plan.Size, protection.StopLossTriggerPx, "protection_sync_sl_immediate", logger) {
+				if residue, ok := stratState.Positions[symbol]; ok && residue != nil {
+					residue.StopLossOID = 0
+					residue.StopLossTriggerPx = 0
+				}
+				return true, protection.StopLossTriggerPx
+			}
+		} else if recordPerpsStopLossClose(stratState, symbol, protection.StopLossTriggerPx, "protection_sync_sl_immediate", logger) {
 			return true, protection.StopLossTriggerPx
 		}
 	}

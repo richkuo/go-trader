@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -224,7 +225,7 @@ func notifySizedCloseRemainder(notifier *MultiNotifier, sc StrategyConfig, symbo
 	if notifier == nil || !notifier.HasBackends() {
 		return
 	}
-	msg := fmt.Sprintf("**SIZED CLOSE FILLED SHORT** [%s] %s %s close filled %.6f of the %.6f book. The %.6f remainder stays on the book, the cancelled protection ids are cleared, and the stop is placed again by the protection path. Compare the on-chain position with the books.", sc.ID, symbol, side, filledQty, bookQty, bookQty-filledQty)
+	msg := fmt.Sprintf("**SIZED CLOSE FILLED SHORT** [%s] %s %s close filled %.6f of the %.6f book. The %.6f remainder stays on the book and the protection ids this close cancelled are cleared. In this same cycle the close re-arm places the stop again, sized at the remainder: the protection sync for an ATR stop, the trailing arm for a trail or ratchet stop, and the percentage or recorded-stop arm for any other stop. Compare the on-chain position and open orders with the books.", sc.ID, symbol, side, filledQty, bookQty, bookQty-filledQty)
 	notifier.SendToAllChannels(msg)
 	notifier.SendOwnerDM(msg)
 }
@@ -270,4 +271,90 @@ func bookManualCycleClose(sc StrategyConfig, pos *Position, closeSide string, cl
 		booking.ClearOIDs = hyperliquidExecuteSucceededCancelOIDs(execResult, requestedCancelOIDs)
 	}
 	return booking
+}
+
+type hlCloseRearmContext struct {
+	Price         float64
+	PrevStopOID   int64
+	PrevTriggerPx float64
+	PrevHighWater float64
+	OnChainAbsQty map[string]float64
+	FillHintsJSON []byte
+	LiqPxByCoin   map[string]float64
+	NetSideByCoin map[string]string
+}
+
+func settleManualCycleClose(sc StrategyConfig, stratState *StrategyState, stratDB *StateDB, pos *Position, closeSide string, closeQty float64, intentFullClose bool, execResult *HyperliquidExecuteResult, execErr error, requestedCancelOIDs []int64, rearm hlCloseRearmContext, mu *sync.RWMutex, notifier *MultiNotifier, logger *StrategyLogger) (int, string, float64) {
+	cancelRequested := false
+	for _, oid := range requestedCancelOIDs {
+		if oid > 0 {
+			cancelRequested = true
+		}
+	}
+	execResult, execErr = confirmHyperliquidExecuteFill(execResult, execErr)
+	if execErr != nil {
+		logger.Error("manual close execute failed: %v", execErr)
+		canceledOIDs := hyperliquidExecuteSucceededCancelOIDs(execResult, requestedCancelOIDs)
+		if len(canceledOIDs) > 0 {
+			mu.Lock()
+			clearHyperliquidProtectionOIDsMatching(stratState.Positions[sc.Symbol], canceledOIDs)
+			mu.Unlock()
+		}
+		if intentFullClose && cancelRequested && (execResult == nil || len(canceledOIDs) > 0) {
+			return rearmManualCycleCloseStop(sc, stratState, stratDB, 0, rearm, mu, notifier, logger)
+		}
+		return 0, "", 0
+	}
+	if execResult.CancelStopLossError != "" {
+		logger.Warn("manual close cancel failed (non-fatal) for %s/%s: %s (requested oids=%v) — verify HL on-chain triggers",
+			sc.ID, sc.Symbol, execResult.CancelStopLossError, requestedCancelOIDs)
+	}
+	if execResult.Execution == nil || execResult.Execution.Fill == nil {
+		return 0, "", 0
+	}
+	booking := bookManualCycleClose(sc, pos, closeSide, closeQty, intentFullClose, execResult, requestedCancelOIDs, time.Now().UTC())
+	action := booking.Action
+	if action.Quantity < closeQty-1e-9 {
+		logger.Warn("manual close filled %.6f of the requested %.6f for %s/%s; booking the filled quantity", action.Quantity, closeQty, sc.ID, sc.Symbol)
+	}
+	if len(booking.ClearOIDs) > 0 {
+		mu.Lock()
+		clearHyperliquidProtectionOIDsMatching(stratState.Positions[sc.Symbol], booking.ClearOIDs)
+		mu.Unlock()
+		logger.Info("cleared canceled protection OIDs=%v after the manual close filled short of the full book", booking.ClearOIDs)
+	}
+	if booking.ShortOfIntent {
+		logger.Error("CRITICAL: manual full close %s filled %.6f of the %.6f book; the remainder stays on the book", sc.Symbol, action.Quantity, pos.Quantity)
+		notifySizedCloseRemainder(notifier, sc, sc.Symbol, pos.Side, action.Quantity, pos.Quantity)
+	}
+	trades, detail, fillPx := 0, "", 0.0
+	if err := stratDB.InsertPendingManualAction(action); err != nil {
+		logger.Error("failed to queue manual close action: %v", err)
+	} else {
+		trades = 1
+		fillPx = action.FillPrice
+		detail = fmt.Sprintf("manual close %.4f %s @ $%.2f | PnL=$%.2f", action.Quantity, sc.Symbol, action.FillPrice, action.RealizedPnL)
+		logger.Info("Queued manual close: %s", detail)
+	}
+	if booking.ShortOfIntent && cancelRequested {
+		mu.RLock()
+		remainder := pos.Quantity - action.Quantity
+		mu.RUnlock()
+		if extraTrades, slDetail, _ := rearmManualCycleCloseStop(sc, stratState, stratDB, remainder, rearm, mu, notifier, logger); extraTrades > 0 {
+			trades += extraTrades
+			detail = slDetail
+		}
+	}
+	return trades, detail, fillPx
+}
+
+func rearmManualCycleCloseStop(sc StrategyConfig, stratState *StrategyState, stratDB *StateDB, remainderQty float64, rearm hlCloseRearmContext, mu *sync.RWMutex, notifier *MultiNotifier, logger *StrategyLogger) (int, string, float64) {
+	if !hyperliquidIsLive(sc.Args) {
+		return 0, "", 0
+	}
+	if remainderQty > 0 {
+		logger.Warn("Manual close %s left %.6f on the book after cancelling its protection; re-arming the remainder's stop in this cycle", sc.Symbol, remainderQty)
+	}
+	trades, detail := rearmProtectionForCloseRemainder(sc, stratState, stratDB, sc.Symbol, rearm.Price, rearm.PrevStopOID, rearm.PrevTriggerPx, rearm.PrevHighWater, rearm.OnChainAbsQty, rearm.FillHintsJSON, rearm.LiqPxByCoin, rearm.NetSideByCoin, remainderQty, mu, notifier, logger)
+	return trades, detail, 0
 }

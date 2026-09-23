@@ -80,7 +80,18 @@ func (d manualCoreDeps) hyperliquidAccountMaps() (map[string]float64, map[string
 
 const manualRearmUnverifiedState = "The stop-loss state on the exchange is UNVERIFIED, so the position may be UNPROTECTED."
 
+type manualCloseRearmCause int
+
+const (
+	manualCloseRearmAfterRejection manualCloseRearmCause = iota
+	manualCloseRearmAfterShortFill
+)
+
 func restoreManualStopLossAfterFailedClose(d manualCoreDeps, res *manualCoreResult, sc StrategyConfig, strategyID string, snap manualCloseProtectionSnapshot, execResult *HyperliquidExecuteResult, requestedCancelOIDs []int64) bool {
+	return restoreManualStopLoss(d, res, sc, strategyID, snap, execResult, requestedCancelOIDs, manualCloseRearmAfterRejection)
+}
+
+func restoreManualStopLoss(d manualCoreDeps, res *manualCoreResult, sc StrategyConfig, strategyID string, snap manualCloseProtectionSnapshot, execResult *HyperliquidExecuteResult, requestedCancelOIDs []int64, cause manualCloseRearmCause) bool {
 	if !hyperliquidIsLive(sc.Args) {
 		return false
 	}
@@ -88,15 +99,25 @@ func restoreManualStopLossAfterFailedClose(d manualCoreDeps, res *manualCoreResu
 	if decision == manualCloseRearmNoCancelRequested {
 		return false
 	}
+	shortFill := cause == manualCloseRearmAfterShortFill
 	if decision == manualCloseRearmCancelNotConfirmed {
-		res.outf("manual-close %s %s: the venue rejected the close and did not confirm the stop-loss cancel — a cancel whose reply is lost still removes the trigger, so the previous stop (OID=%d) is verified on-chain and restored rather than assumed live.",
-			strategyID, snap.Symbol, snap.StopLossOID)
+		if shortFill {
+			res.outf("manual-close %s %s: the close filled short of the book and did not confirm the stop-loss cancel, so the previous stop (OID=%d) is verified on-chain and replaced at the %.6f remainder size.",
+				strategyID, snap.Symbol, snap.StopLossOID, snap.Quantity)
+		} else {
+			res.outf("manual-close %s %s: the venue rejected the close and did not confirm the stop-loss cancel — a cancel whose reply is lost still removes the trigger, so the previous stop (OID=%d) is verified on-chain and restored rather than assumed live.",
+				strategyID, snap.Symbol, snap.StopLossOID)
+		}
 	}
 
 	cancelledOIDs := manualCloseCancelledOIDsForAlert(execResult, requestedCancelOIDs)
+	closeOutcome := "the venue rejected the manual close"
+	if shortFill {
+		closeOutcome = fmt.Sprintf("the manual close filled short of the book and left %.6f open", snap.Quantity)
+	}
 	alertf := func(state, reason string) {
-		msg := fmt.Sprintf("CRITICAL: [%s] %s: the venue rejected the manual close after a cancel of the exchange-side protection was requested (order ids %v) and the stop-loss re-arm did not complete: %s. %s Verify and re-arm now with `go-trader manual-update-sl %s --trigger %.4f` or close the position.",
-			strategyID, snap.Symbol, cancelledOIDs, reason, state, strategyID, snap.TriggerPx)
+		msg := fmt.Sprintf("CRITICAL: [%s] %s: %s after a cancel of the exchange-side protection was requested (order ids %v) and the stop-loss re-arm did not complete: %s. %s Verify and re-arm now with `go-trader manual-update-sl %s --trigger %.4f` or close the position.",
+			strategyID, snap.Symbol, closeOutcome, cancelledOIDs, reason, state, strategyID, snap.TriggerPx)
 		res.outf("%s", msg)
 		notifyManualCloseRearmFailure(d.notifier, msg)
 	}
@@ -122,8 +143,13 @@ func restoreManualStopLossAfterFailedClose(d manualCoreDeps, res *manualCoreResu
 	if mapErr != nil {
 		res.errf("warning: could not read the Hyperliquid account before re-arming %s (%v) — re-arming at the recorded size with no liquidation clamp", snap.Symbol, mapErr)
 	} else if gone, detail := hlPositionGoneForSide(onChainAbsQty, netSideByCoin, snap.Symbol, snap.Side); gone {
-		res.outf("manual-close %s %s: %s, so the close order most likely filled after the command lost its reply — no stop-loss was placed; the reconciler books the close at the next scheduler cycle.",
-			strategyID, snap.Symbol, detail)
+		if shortFill {
+			res.outf("manual-close %s %s: %s after the short fill — no stop-loss was placed for the remainder; the reconciler books it at the next scheduler cycle.",
+				strategyID, snap.Symbol, detail)
+		} else {
+			res.outf("manual-close %s %s: %s, so the close order most likely filled after the command lost its reply — no stop-loss was placed; the reconciler books the close at the next scheduler cycle.",
+				strategyID, snap.Symbol, detail)
+		}
 		return true
 	}
 	qty, capped := hlSLEffectiveQty(snap.Symbol, snap.Quantity, onChainAbsQty)
@@ -172,6 +198,9 @@ func restoreManualStopLossAfterFailedClose(d manualCoreDeps, res *manualCoreResu
 		res.outf("The previous stop-loss for %s (OID=%d) had already filled on-chain, so nothing was re-armed — the reconciler will book the close.",
 			snap.Symbol, snap.StopLossOID)
 		return true
+	case result.StopLossOID > 0 && shortFill:
+		res.outf("Stop-loss re-armed for the remainder after the short fill: %s %.6f @ $%.4f (OID=%d, superseding the verified OID=%d).",
+			snap.Symbol, qty, result.StopLossTriggerPx, result.StopLossOID, snap.StopLossOID)
 	case result.StopLossOID > 0:
 		res.outf("Stop-loss re-armed after the rejected close: %s %.6f @ $%.4f (OID=%d, superseding the verified OID=%d).",
 			snap.Symbol, qty, result.StopLossTriggerPx, result.StopLossOID, snap.StopLossOID)

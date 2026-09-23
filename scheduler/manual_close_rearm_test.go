@@ -389,3 +389,124 @@ func TestManualCloseRearmWaitsForThePerSymbolStopLock(t *testing.T) {
 	}
 	<-done
 }
+
+func TestManualCloseShortFillRearmsTheRemainderStop(t *testing.T) {
+	t.Setenv("HYPERLIQUID_SECRET_KEY", "test-secret")
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xoperator")
+	oldRecorder := tradeRecorder
+	t.Cleanup(func() { tradeRecorder = oldRecorder })
+	tradeRecorder = func(string, Trade) error { return nil }
+
+	const prevOID = int64(5150)
+	const prevTrigger = 1900.0
+	cases := []struct {
+		name         string
+		fillSz       float64
+		succeeded    []int64
+		failed       []int64
+		slResult     *HyperliquidStopLossUpdateResult
+		wantSLCall   *rearmSLCall
+		wantDrainQty float64
+		wantDrainSL  int64
+		wantOutPart  string
+	}{
+		{name: "a confirmed stop cancel restores the recorded trigger at the remainder", fillSz: 0.3, succeeded: []int64{prevOID, 7001},
+			slResult:   &HyperliquidStopLossUpdateResult{StopLossOID: 6200, StopLossTriggerPx: prevTrigger},
+			wantSLCall: &rearmSLCall{symbol: "ETH", side: "long", size: 0.1, triggerPx: prevTrigger, cancelOID: prevOID}, wantDrainQty: 0.1, wantDrainSL: 6200,
+			wantOutPart: "Stop-loss re-armed for the remainder after the short fill"},
+		{name: "a stop cancel the venue reported as failed is verified on-chain and replaced at the remainder", fillSz: 0.3, succeeded: []int64{7001}, failed: []int64{prevOID},
+			slResult:   &HyperliquidStopLossUpdateResult{StopLossOID: 6200, StopLossTriggerPx: prevTrigger, CancelStopLossSucceeded: true},
+			wantSLCall: &rearmSLCall{symbol: "ETH", side: "long", size: 0.1, triggerPx: prevTrigger, cancelOID: prevOID}, wantDrainQty: 0.1, wantDrainSL: 6200,
+			wantOutPart: "replaced at the 0.100000 remainder size"},
+		{name: "a re-armed stop that fills at once leaves the remainder to the reconciler with no stop id", fillSz: 0.3, succeeded: []int64{prevOID, 7001},
+			slResult:   &HyperliquidStopLossUpdateResult{StopLossFilledImmediately: true, StopLossTriggerPx: prevTrigger},
+			wantSLCall: &rearmSLCall{symbol: "ETH", side: "long", size: 0.1, triggerPx: prevTrigger, cancelOID: prevOID}, wantDrainQty: 0.1,
+			wantOutPart: "filled immediately"},
+		{name: "a full fill places no stop", fillSz: 0.4, succeeded: []int64{prevOID, 7001}, wantOutPart: "Queued"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dbPath := filepath.Join(t.TempDir(), "state.db")
+			db, err := OpenStateDB(dbPath)
+			if err != nil {
+				t.Fatalf("OpenStateDB: %v", err)
+			}
+			defer db.Close()
+			live := []string{"hold", "ETH", "1h", "--mode=live"}
+			subject := StrategyConfig{ID: "hl-manual-eth", Type: "manual", Platform: "hyperliquid", Symbol: "ETH", Script: "shared_scripts/check_hyperliquid.py", Args: live, Capital: 1000, Leverage: 2}
+			peer := StrategyConfig{ID: "hl-manual-eth-peer", Type: "manual", Platform: "hyperliquid", Symbol: "ETH", Script: subject.Script, Args: live, Capital: 1000, Leverage: 2}
+			cfg := &Config{DBFile: dbPath, Strategies: []StrategyConfig{subject, peer}}
+			state := &AppState{Strategies: map[string]*StrategyState{
+				subject.ID: {ID: subject.ID, Type: "manual", Platform: "hyperliquid", Cash: 1000, InitialCapital: 1000, Positions: map[string]*Position{"ETH": {
+					Symbol: "ETH", Quantity: 0.4, InitialQuantity: 0.4, AvgCost: 2000, Side: "long", Multiplier: 1, Leverage: 2, OwnerStrategyID: subject.ID,
+					StopLossOID: prevOID, StopLossTriggerPx: prevTrigger, TPOIDs: []int64{7001}, OpenedAt: time.Now().UTC().Add(-time.Hour),
+				}}},
+				peer.ID: {ID: peer.ID, Type: "manual", Platform: "hyperliquid", Cash: 1000, InitialCapital: 1000, Positions: map[string]*Position{"ETH": {
+					Symbol: "ETH", Quantity: 0.5, InitialQuantity: 0.5, AvgCost: 2000, Side: "long", Multiplier: 1, Leverage: 2, OwnerStrategyID: peer.ID,
+				}}},
+			}}
+			if err := db.SaveState(state); err != nil {
+				t.Fatalf("SaveState: %v", err)
+			}
+			d := newCLIManualCoreDeps(cfg, openTestStore(t, db), nil)
+			d.fetchMids = func([]string) (map[string]float64, error) { return map[string]float64{"ETH": 2000}, nil }
+			d.fetchPositions = func(string) ([]HLPosition, error) { return []HLPosition{{Coin: "ETH", Size: 0.9}}, nil }
+			d.execute = func(_ string, _ string, _ string, size float64, _ float64, _ int64, _ float64, _ string, _ float64, _ hlCloseMode, _ hlExecuteSnapshot, _ ...int64) (*HyperliquidExecuteResult, string, error) {
+				r := &HyperliquidExecuteResult{Execution: &HyperliquidExecution{Fill: &HyperliquidFill{AvgPx: 2100, TotalSz: tc.fillSz, OID: 4343, Fee: 0.1}}, CancelStopLossSucceededOIDs: tc.succeeded, CancelStopLossFailedOIDs: tc.failed}
+				if len(tc.failed) > 0 {
+					r.CancelStopLossError = "cancel rejected"
+				}
+				return r, "", nil
+			}
+			var slCalls []rearmSLCall
+			d.updateSL = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+				slCalls = append(slCalls, rearmSLCall{symbol: symbol, side: side, size: size, triggerPx: triggerPx, cancelOID: cancelOID})
+				return tc.slResult, "", nil
+			}
+			res, coreErr := manualCloseCore(d, subject, manualCloseInputs{StrategyID: subject.ID})
+			if coreErr != nil {
+				t.Fatalf("manualCloseCore: %v", coreErr)
+			}
+			if tc.wantSLCall == nil {
+				if len(slCalls) != 0 {
+					t.Fatalf("updateSL calls = %+v, want none", slCalls)
+				}
+			} else {
+				if len(slCalls) != 1 {
+					t.Fatalf("updateSL calls = %+v, want exactly one", slCalls)
+				}
+				got, want := slCalls[0], *tc.wantSLCall
+				if got.symbol != want.symbol || got.side != want.side || got.cancelOID != want.cancelOID || math.Abs(got.size-want.size) > 1e-9 || math.Abs(got.triggerPx-want.triggerPx) > 1e-9 {
+					t.Fatalf("updateSL call = %+v, want %+v", got, want)
+				}
+			}
+			if out := res.uiMessage(); !strings.Contains(out, tc.wantOutPart) {
+				t.Fatalf("operator output = %q, want it to contain %q", out, tc.wantOutPart)
+			}
+			store := openTestStore(t, db)
+			reloaded, _, loadErr := LoadStateWithStore(cfg, store)
+			if loadErr != nil {
+				t.Fatalf("LoadStateWithStore: %v", loadErr)
+			}
+			drainPendingManualActions(reloaded, cfg, store)
+			pos := reloaded.Strategies[subject.ID].Positions["ETH"]
+			switch {
+			case tc.wantDrainQty == 0 && pos != nil:
+				t.Fatalf("book after drain = %+v, want the position closed", pos)
+			case tc.wantDrainQty > 0 && pos == nil:
+				t.Fatalf("book after drain is empty, want %g", tc.wantDrainQty)
+			case tc.wantDrainQty > 0 && (math.Abs(pos.Quantity-tc.wantDrainQty) > 1e-9 || pos.StopLossOID != tc.wantDrainSL):
+				t.Fatalf("book after drain qty=%g sl=%d, want qty %g sl %d", pos.Quantity, pos.StopLossOID, tc.wantDrainQty, tc.wantDrainSL)
+			}
+			var closeQtys []float64
+			for _, tr := range reloaded.Strategies[subject.ID].TradeHistory {
+				if tr.IsClose {
+					closeQtys = append(closeQtys, tr.Quantity)
+				}
+			}
+			if fmt.Sprint(closeQtys) != fmt.Sprint([]float64{tc.fillSz}) {
+				t.Fatalf("close trades = %v, want one of %g", closeQtys, tc.fillSz)
+			}
+		})
+	}
+}
