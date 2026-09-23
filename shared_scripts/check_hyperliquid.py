@@ -821,22 +821,24 @@ def _classify_cancel_response(sdk_response):
 
 
 def _extract_execute_fill(sdk_response):
-    if not isinstance(sdk_response, dict) or sdk_response.get("status") != "ok":
-        return None, f"exchange rejected order: {sdk_response}"
+    if not isinstance(sdk_response, dict):
+        return None, f"exchange returned no usable order response: {sdk_response!r}", "unknown"
+    if sdk_response.get("status") != "ok":
+        return None, f"exchange rejected order: {sdk_response}", "rejected"
 
     response = sdk_response.get("response")
     data = response.get("data") if isinstance(response, dict) else None
     statuses = data.get("statuses") if isinstance(data, dict) else None
     if not isinstance(statuses, list) or not statuses:
-        return None, "exchange returned no order status"
+        return None, "exchange returned no order status", "unknown"
 
     status = statuses[0]
     if not isinstance(status, dict):
-        return None, "exchange returned a malformed order status"
+        return None, "exchange returned a malformed order status", "unknown"
     if "error" in status:
-        return None, f"exchange rejected order: {status['error']}"
+        return None, f"exchange rejected order: {status['error']}", "rejected"
     if "filled" not in status or not isinstance(status["filled"], dict):
-        return None, "exchange returned no filled status"
+        return None, "exchange returned no filled status", "unknown"
 
     filled = status["filled"]
     raw_avg_px = filled.get("avgPx")
@@ -845,11 +847,13 @@ def _extract_execute_fill(sdk_response):
         avg_px = float(raw_avg_px)
         total_sz = float(raw_total_sz)
     except (TypeError, ValueError):
-        return None, f"exchange returned malformed fill values (avgPx={raw_avg_px!r}, totalSz={raw_total_sz!r})"
+        return None, f"exchange returned malformed fill values (avgPx={raw_avg_px!r}, totalSz={raw_total_sz!r})", "unknown"
     if not math.isfinite(avg_px) or not math.isfinite(total_sz):
-        return None, f"exchange returned malformed fill values (avgPx={raw_avg_px!r}, totalSz={raw_total_sz!r})"
-    if avg_px <= 0 or total_sz <= 0:
-        return None, f"exchange returned no confirmed fill (sz={total_sz:.8f} px={avg_px:.8f})"
+        return None, f"exchange returned malformed fill values (avgPx={raw_avg_px!r}, totalSz={raw_total_sz!r})", "unknown"
+    if total_sz == 0:
+        return None, f"exchange returned no confirmed fill (sz={total_sz:.8f} px={avg_px:.8f})", "rejected"
+    if avg_px <= 0 or total_sz < 0:
+        return None, f"exchange returned no confirmed fill (sz={total_sz:.8f} px={avg_px:.8f})", "unknown"
 
     fill = {"avg_px": avg_px, "total_sz": total_sz}
     oid = filled.get("oid")
@@ -866,7 +870,7 @@ def _extract_execute_fill(sdk_response):
                 fill["fee"] = parsed_fee
         except (TypeError, ValueError):
             print(f"[WARN] ignoring malformed fill fee={fee!r}", file=sys.stderr)
-    return fill, ""
+    return fill, "", "filled"
 
 
 def _add_execute_cancel_metadata(payload, cancel_err, cancel_succeeded, cancel_succeeded_oids, cancel_failed_oids):
@@ -1133,6 +1137,8 @@ def run_sync_protection(
                             out["stop_loss_error"] = f"force replace cancel rejected: {payload}"
                     except Exception as ce:
                         out["stop_loss_error"] = f"force replace cancel: {ce}"
+                    if not cancel_ok:
+                        out["cancel_stop_loss_error"] = out["stop_loss_error"]
                     out["cancel_stop_loss_succeeded"] = cancel_ok
                     if cancel_ok:
                         _place_sl()
@@ -1329,7 +1335,7 @@ def execute_close_mode_error(close_mode, close_full_position, size, stop_loss_pc
 
 def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_pos_qty=0.0, margin_mode="", leverage=0, close_full_position=False, account_leverage=0, account_margin_mode="", close_mode=""):
     if mode != "live":
-        print(json.dumps({"error": "--execute requires --mode=live"}, cls=SafeEncoder))
+        print(json.dumps({"error": "--execute requires --mode=live", "order_outcome": "not_sent"}, cls=SafeEncoder))
         sys.exit(1)
     close_mode_err = execute_close_mode_error(close_mode, close_full_position, size, stop_loss_pct, prev_pos_qty, margin_mode)
     if close_mode_err:
@@ -1338,6 +1344,7 @@ def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_
             "platform": "hyperliquid",
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "error": close_mode_err,
+            "order_outcome": "not_sent",
         }, cls=SafeEncoder))
         sys.exit(1)
 
@@ -1362,6 +1369,7 @@ def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_
                     "platform": "hyperliquid",
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                     "error": f"invalid margin_mode {margin_mode!r}, expected 'isolated' or 'cross'",
+                    "order_outcome": "not_sent",
                 }, cls=SafeEncoder))
                 sys.exit(1)
             if leverage < 1:
@@ -1370,6 +1378,7 @@ def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_
                     "platform": "hyperliquid",
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                     "error": f"--margin-mode requires --leverage >= 1, got {leverage}",
+                    "order_outcome": "not_sent",
                 }, cls=SafeEncoder))
                 sys.exit(1)
             current = None
@@ -1393,6 +1402,7 @@ def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_
                         "platform": "hyperliquid",
                         "timestamp": datetime.now(timezone.utc).isoformat(),
                         "error": f"update_leverage failed (margin_mode={margin_mode}, leverage={leverage}): {ue}",
+                        "order_outcome": "not_sent",
                     }, cls=SafeEncoder))
                     sys.exit(1)
 
@@ -1402,8 +1412,23 @@ def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_
                 "platform": "hyperliquid",
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "error": f"sized close {size} for {symbol} floors to zero lots; no order sent and no protection cancelled",
+                "order_outcome": "not_sent",
             }, cls=SafeEncoder))
             sys.exit(1)
+
+        sized_close_px = 0.0
+        if close_mode:
+            try:
+                sized_close_px = adapter.sized_close_price(symbol, is_buy)
+            except Exception as pe:
+                print(json.dumps({
+                    "execution": None,
+                    "platform": "hyperliquid",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "error": f"sized close {symbol} has no usable mid price ({pe}); no order sent and no protection cancelled",
+                    "order_outcome": "not_sent",
+                }, cls=SafeEncoder))
+                sys.exit(1)
 
         if cancel_attempted:
             cancel_errors = []
@@ -1432,17 +1457,18 @@ def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_
         if close_full_position:
             result = adapter.market_close(symbol, sz=None)
         elif close_mode:
-            result = adapter.market_close_sized(symbol, is_buy, size, reduce_only=(close_mode == "reduce_only"))
+            result = adapter.market_close_sized(symbol, is_buy, size, sized_close_px, reduce_only=(close_mode == "reduce_only"))
         else:
             result = adapter.market_open(symbol, is_buy, size)
 
-        fill, fill_error = _extract_execute_fill(result)
+        fill, fill_error, order_outcome = _extract_execute_fill(result)
         if fill_error:
             err_payload = {
                 "execution": None,
                 "platform": "hyperliquid",
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "error": fill_error,
+                "order_outcome": order_outcome,
             }
             _add_execute_cancel_metadata(
                 err_payload,
@@ -1506,6 +1532,7 @@ def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_
             },
             "platform": "hyperliquid",
             "timestamp": datetime.now(timezone.utc).isoformat(),
+            "order_outcome": "filled",
         }
         _add_execute_cancel_metadata(
             out,
@@ -1527,6 +1554,7 @@ def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_
             "platform": "hyperliquid",
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "error": str(e),
+            "order_outcome": "unknown",
         }
         _add_execute_cancel_metadata(
             err_payload,

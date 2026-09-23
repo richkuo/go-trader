@@ -869,3 +869,52 @@ func TestBuildHyperliquidExecuteArgs_CloseMode(t *testing.T) {
 		t.Fatalf("executeProbeArgv %v must carry the --close-mode flag the builder emits", executeProbeArgv)
 	}
 }
+
+func TestHLExecuteFillOutcome(t *testing.T) {
+	filled := func(sz float64) *HyperliquidExecuteResult {
+		return &HyperliquidExecuteResult{OrderOutcome: "filled", Execution: &HyperliquidExecution{Fill: &HyperliquidFill{AvgPx: 3000, TotalSz: sz}}}
+	}
+	cases := []struct {
+		name string
+		res  *HyperliquidExecuteResult
+		err  error
+		want hlCloseFillOutcome
+	}{
+		{"filled books the fill", filled(4), nil, hlCloseFillOutcome{Filled: 4, Known: true}},
+		{"fill above the book books the book", filled(12), nil, hlCloseFillOutcome{Filled: 10, Known: true}},
+		{"filled without a confirmed fill is unknown", &HyperliquidExecuteResult{OrderOutcome: "filled"}, nil, hlCloseFillOutcome{}},
+		{"rejected is a known zero fill", &HyperliquidExecuteResult{OrderOutcome: "rejected", Error: "exchange rejected order"}, fmt.Errorf("exit 1"), hlCloseFillOutcome{Known: true}},
+		{"not sent is a known zero fill", &HyperliquidExecuteResult{OrderOutcome: "not_sent", Error: "no usable mid price"}, fmt.Errorf("exit 1"), hlCloseFillOutcome{Known: true}},
+		{"catch-all is unknown", &HyperliquidExecuteResult{OrderOutcome: "unknown", Error: "socket closed"}, fmt.Errorf("exit 1"), hlCloseFillOutcome{}},
+		{"missing field is unknown", &HyperliquidExecuteResult{Error: "exchange rejected order"}, fmt.Errorf("exit 1"), hlCloseFillOutcome{}},
+		{"no result is unknown", nil, fmt.Errorf("parse execute output"), hlCloseFillOutcome{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hlExecuteFillOutcome(tc.res, tc.err, 10); got != tc.want {
+				t.Fatalf("hlExecuteFillOutcome = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestClassifyProtectionSyncStopRearm(t *testing.T) {
+	cases := []struct {
+		name       string
+		protection *HyperliquidProtectionSyncResult
+		want       hlStopRearmStatus
+	}{
+		{"force-replace cancel rejected keeps the pre-close stop resting", &HyperliquidProtectionSyncResult{StopLossError: "force replace cancel rejected: busy", CancelStopLossError: "force replace cancel rejected: busy"}, hlStopRearmPreCloseStopResting},
+		{"cancelled and replacement rejected loses protection", &HyperliquidProtectionSyncResult{CancelStopLossSucceeded: true, StopLossError: "open order limit"}, hlStopRearmProtectionLost},
+		{"fresh placement rejected", &HyperliquidProtectionSyncResult{StopLossError: "open order limit"}, hlStopRearmPlacementFailed},
+		{"replacement rests", &HyperliquidProtectionSyncResult{StopLossOID: 9002, StopLossTriggerPx: 2325}, hlStopRearmPlaced},
+		{"sync failed", nil, hlStopRearmPlacementFailed},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := classifyProtectionSyncStopRearm(1, tc.protection).Status; got != tc.want {
+				t.Fatalf("status = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}

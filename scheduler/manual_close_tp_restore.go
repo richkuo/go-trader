@@ -282,7 +282,7 @@ func restoreManualTakeProfitsAfterFailedClose(d manualCoreDeps, res *manualCoreR
 		msg := fmt.Sprintf("CRITICAL: [%s] %s: the venue rejected the manual close after a cancel of the exchange-side take-profit orders was requested (order ids %v) and the take-profit restore did not complete: %s. %s Verify the open orders on Hyperliquid and restore the tiers or close the position.",
 			strategyID, snap.Symbol, lostOIDs, reason, manualTPRestoreUnverifiedState)
 		res.outf("%s", msg)
-		notifyManualCloseRearmFailure(d.notifier, msg)
+		notifyCloseRearm(d.notifier, msg)
 	}
 
 	if positionFlat {
@@ -363,7 +363,7 @@ func restoreManualTakeProfitsAfterFailedClose(d manualCoreDeps, res *manualCoreR
 		msg := fmt.Sprintf("CRITICAL: [%s] %s: the take-profit restore outcome could not be recorded in the book (%v) — the restored order ids %v may be resting untracked. Verify the open orders on Hyperliquid and reconcile before the next close.",
 			strategyID, snap.Symbol, recErr, restoredTakeProfitPlacedOIDs(outcomes))
 		res.outf("%s", msg)
-		notifyManualCloseRearmFailure(d.notifier, msg)
+		notifyCloseRearm(d.notifier, msg)
 	}
 }
 

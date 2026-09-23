@@ -206,6 +206,27 @@ class TestFillExtraction:
         assert result["execution"] is None
         assert result["error"]
 
+    @pytest.mark.parametrize("sdk_response,want_outcome,want_fill", [
+        ({"status": "ok", "response": {"type": "order", "data": {"statuses": [{"filled": {"avgPx": "3000", "totalSz": "0.2", "oid": 7}}]}}}, "filled", True),
+        ({"status": "err", "response": "Insufficient margin"}, "rejected", False),
+        ({"status": "ok", "response": {"type": "order", "data": {"statuses": [{"error": "Order could not immediately match"}]}}}, "rejected", False),
+        ({"status": "ok", "response": {"type": "order", "data": {"statuses": [{"filled": {"avgPx": "3000", "totalSz": "0"}}]}}}, "rejected", False),
+        ({"status": "ok", "response": {"type": "order", "data": {"statuses": []}}}, "unknown", False),
+        ({"status": "ok", "response": {"type": "order"}}, "unknown", False),
+        ({"status": "ok", "response": {"type": "order", "data": {"statuses": ["garbled"]}}}, "unknown", False),
+        ({"status": "ok", "response": {"type": "order", "data": {"statuses": [{"resting": {"oid": 5}}]}}}, "unknown", False),
+        ({"status": "ok", "response": {"type": "order", "data": {"statuses": [{"filled": {"avgPx": "bad", "totalSz": "0.2"}}]}}}, "unknown", False),
+        ({"status": "ok", "response": {"type": "order", "data": {"statuses": [{"filled": {"avgPx": "nan", "totalSz": "0.2"}}]}}}, "unknown", False),
+        (None, "unknown", False),
+    ])
+    def test_extract_execute_fill_outcome(self, sdk_response, want_outcome, want_fill):
+        mod, spec = _load_check_module()
+        spec.loader.exec_module(mod)
+        fill, error, outcome = mod._extract_execute_fill(sdk_response)
+        assert outcome == want_outcome
+        assert (fill is not None) is want_fill
+        assert bool(error) is not want_fill
+
     def test_unconfirmed_fill_preserves_cancel_metadata(self):
         sdk_response = {
             "status": "ok",
@@ -704,8 +725,8 @@ class TestRunExecuteCloseMode:
     }
 
     @pytest.mark.parametrize("kwargs,mode,floored,want_exit,want_call", [
-        ({"close_mode": "reduce_only"}, "live", 0.2, 0, ("market_close_sized", ("ETH", False, 0.2), {"reduce_only": True})),
-        ({"close_mode": "cross"}, "live", 0.2, 0, ("market_close_sized", ("ETH", False, 0.2), {"reduce_only": False})),
+        ({"close_mode": "reduce_only"}, "live", 0.2, 0, ("market_close_sized", ("ETH", False, 0.2, 2970.0), {"reduce_only": True})),
+        ({"close_mode": "cross"}, "live", 0.2, 0, ("market_close_sized", ("ETH", False, 0.2, 2970.0), {"reduce_only": False})),
         ({}, "live", 0.2, 0, ("market_open", ("ETH", False, 0.2), {})),
         ({"close_full_position": True}, "live", 0.2, 0, ("market_close", ("ETH",), {"sz": None})),
         ({"close_mode": "reduce_only", "close_full_position": True}, "live", 0.2, 1, None),
@@ -723,6 +744,7 @@ class TestRunExecuteCloseMode:
         mock_adapter_cls.return_value = mock_adapter
         mock_adapter.lookup_fill_fee_by_oid.return_value = {}
         mock_adapter.floor_size.return_value = floored
+        mock_adapter.sized_close_price.return_value = 2970.0
         for name in ("market_open", "market_close", "market_close_sized"):
             getattr(mock_adapter, name).return_value = self._FILLED
 
@@ -758,6 +780,70 @@ class TestRunExecuteCloseMode:
         for other in order_methods:
             if other != name:
                 getattr(mock_adapter, other).assert_not_called()
+
+
+    @pytest.mark.parametrize("kwargs,mode,floored,mid,order,want_exit,want_outcome,want_cancel", [
+        ({"close_mode": "reduce_only", "cancel_oid": [555]}, "live", 0.2, 2970.0, _FILLED, 0, "filled", True),
+        ({"close_mode": "reduce_only", "cancel_oid": [555]}, "live", 0.2, 2970.0, {"status": "ok", "response": {"type": "order", "data": {"statuses": [{"error": "Order could not immediately match"}]}}}, 1, "rejected", True),
+        ({"close_mode": "reduce_only", "cancel_oid": [555]}, "live", 0.2, 2970.0, {"status": "ok", "response": {"type": "order", "data": {"statuses": []}}}, 1, "unknown", True),
+        ({"close_mode": "reduce_only", "cancel_oid": [555]}, "live", 0.2, 2970.0, RuntimeError("socket closed"), 1, "unknown", True),
+        ({"close_mode": "reduce_only", "cancel_oid": [555]}, "paper", 0.2, 2970.0, _FILLED, 1, "not_sent", False),
+        ({"close_mode": "reduce_only", "cancel_oid": [555], "stop_loss_pct": 2.0}, "live", 0.2, 2970.0, _FILLED, 1, "not_sent", False),
+        ({"close_mode": "reduce_only", "cancel_oid": [555]}, "live", 0.0, 2970.0, _FILLED, 1, "not_sent", False),
+        ({"close_mode": "reduce_only", "cancel_oid": [555]}, "live", 0.2, ValueError("no usable mid price for ETH"), _FILLED, 1, "not_sent", False),
+        ({"close_mode": "cross", "cancel_oid": [555]}, "live", 0.2, ConnectionError("allMids down"), _FILLED, 1, "not_sent", False),
+        ({"cancel_oid": [555], "margin_mode": "bogus", "leverage": 3}, "live", 0.2, 2970.0, _FILLED, 1, "not_sent", False),
+    ])
+    def test_run_execute_order_outcome(self, kwargs, mode, floored, mid, order, want_exit, want_outcome, want_cancel):
+        mod, spec = _load_check_module()
+        spec.loader.exec_module(mod)
+
+        mock_adapter_cls = MagicMock()
+        mock_adapter = MagicMock()
+        mock_adapter_cls.return_value = mock_adapter
+        mock_adapter.lookup_fill_fee_by_oid.return_value = {}
+        mock_adapter.floor_size.return_value = floored
+        mock_adapter.cancel_trigger_order.return_value = _CANCEL_OK_RESPONSE
+        if isinstance(mid, Exception):
+            mock_adapter.sized_close_price.side_effect = mid
+        else:
+            mock_adapter.sized_close_price.return_value = mid
+        for name in ("market_open", "market_close", "market_close_sized"):
+            if isinstance(order, Exception):
+                getattr(mock_adapter, name).side_effect = order
+            else:
+                getattr(mock_adapter, name).return_value = order
+
+        captured = StringIO()
+        import builtins
+        original_import = builtins.__import__
+
+        def mock_import(name, *args, **kw):
+            if name == "adapter":
+                fake_mod = MagicMock()
+                fake_mod.HyperliquidExchangeAdapter = mock_adapter_cls
+                return fake_mod
+            return original_import(name, *args, **kw)
+
+        exit_code = 0
+        with patch("builtins.__import__", side_effect=mock_import):
+            with patch("sys.stdout", captured):
+                try:
+                    mod.run_execute("ETH", "sell", 0.2, mode, **kwargs)
+                except SystemExit as e:
+                    exit_code = e.code
+
+        out = json.loads(captured.getvalue())
+        assert exit_code == want_exit
+        assert out["order_outcome"] == want_outcome
+        if want_cancel:
+            mock_adapter.cancel_trigger_order.assert_called_once_with("ETH", 555)
+            assert out["cancel_stop_loss_succeeded_oids"] == [555]
+            return
+        mock_adapter.cancel_trigger_order.assert_not_called()
+        for name in ("market_open", "market_close", "market_close_sized"):
+            getattr(mock_adapter, name).assert_not_called()
+        assert "cancel_stop_loss_succeeded_oids" not in out
 
 
 class TestSyncProtection:
@@ -1444,6 +1530,14 @@ class TestProtectionSyncStopLossTriggerContract:
         assert "already filled" in out["stop_loss_error"]
         assert "stop_loss_oid" not in out
 
+    @pytest.mark.parametrize("cancel_response", [_CANCEL_REJECTED_RESPONSE, RuntimeError("rpc down")])
+    def test_force_replace_cancel_failure_reports_cancel_error(self, cancel_response):
+        out, adapter = self._run_sync_cancel_response(cancel_response)
+        adapter.place_stop_loss.assert_not_called()
+        assert out.get("cancel_stop_loss_succeeded") is False
+        assert out["cancel_stop_loss_error"]
+        assert out["cancel_stop_loss_error"] == out["stop_loss_error"]
+
     def _run_sync_cancel_response(self, cancel_response):
         import builtins
         mod, spec = _load_check_module()
@@ -1456,7 +1550,10 @@ class TestProtectionSyncStopLossTriggerContract:
         adapter.round_perps_trigger_px.side_effect = lambda _sym, px: round(px, 2)
         adapter.round_size.side_effect = lambda _sym, sz: sz
         adapter.place_stop_loss.return_value = self._resting(9002)
-        adapter.cancel_order_by_oid.return_value = cancel_response
+        if isinstance(cancel_response, Exception):
+            adapter.cancel_order_by_oid.side_effect = cancel_response
+        else:
+            adapter.cancel_order_by_oid.return_value = cancel_response
 
         captured = StringIO()
         original_import = builtins.__import__

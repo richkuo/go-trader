@@ -27,24 +27,45 @@ func TestManualCloseRearmDecision(t *testing.T) {
 		},
 		{
 			name:      "a confirmed stop cancel re-arms",
-			result:    &HyperliquidExecuteResult{Error: "rejected", CancelStopLossSucceededOIDs: []int64{5150}},
+			result:    &HyperliquidExecuteResult{OrderOutcome: "rejected", Error: "rejected", CancelStopLossSucceededOIDs: []int64{5150}},
 			requested: []int64{5150},
 			snap:      snap,
 			want:      manualCloseRearmStopCancelled,
 		},
 		{
 			name:      "a failed stop cancel is unconfirmed, never proof the trigger survived",
-			result:    &HyperliquidExecuteResult{Error: "rejected", CancelStopLossError: "5150: rejected", CancelStopLossFailedOIDs: []int64{5150}},
+			result:    &HyperliquidExecuteResult{OrderOutcome: "rejected", Error: "rejected", CancelStopLossError: "5150: rejected", CancelStopLossFailedOIDs: []int64{5150}},
 			requested: []int64{5150},
 			snap:      snap,
 			want:      manualCloseRearmCancelNotConfirmed,
 		},
 		{
 			name:      "a result that names no cancel outcome is unconfirmed",
-			result:    &HyperliquidExecuteResult{Error: "update_leverage failed"},
+			result:    &HyperliquidExecuteResult{OrderOutcome: "rejected", Error: "exchange rejected order"},
 			requested: []int64{5150},
 			snap:      snap,
 			want:      manualCloseRearmCancelNotConfirmed,
+		},
+		{
+			name:      "a catch-all reply is an unknown outcome",
+			result:    &HyperliquidExecuteResult{OrderOutcome: "unknown", Error: "socket closed"},
+			requested: []int64{5150},
+			snap:      snap,
+			want:      manualCloseRearmOutcomeUnknown,
+		},
+		{
+			name:      "a reply that names no order outcome is unknown",
+			result:    &HyperliquidExecuteResult{Error: "rejected", CancelStopLossSucceededOIDs: []int64{5150}},
+			requested: []int64{5150},
+			snap:      snap,
+			want:      manualCloseRearmOutcomeUnknown,
+		},
+		{
+			name:      "a close the script never sent cancelled nothing and re-arms nothing",
+			result:    &HyperliquidExecuteResult{OrderOutcome: "not_sent", Error: "update_leverage failed"},
+			requested: []int64{5150},
+			snap:      snap,
+			want:      manualCloseRearmNoCancelRequested,
 		},
 		{
 			name:      "an unreadable subprocess outcome re-arms",
@@ -82,6 +103,7 @@ func TestManualCloseRestoresTheStopAfterAVenueRejection(t *testing.T) {
 
 	rejectedWithConfirmedCancel := func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
 		return &HyperliquidExecuteResult{
+			OrderOutcome:                "rejected",
 			Error:                       "order value below the venue minimum",
 			CancelStopLossSucceeded:     true,
 			CancelStopLossSucceededOIDs: []int64{prevOID, 7001},
@@ -101,6 +123,9 @@ func TestManualCloseRestoresTheStopAfterAVenueRejection(t *testing.T) {
 		wantActionPx  float64
 		wantOutPart   string
 		wantAlertPart string
+		shortPeer     float64
+		readFails     bool
+		wantCritical  int
 	}{
 		{
 			name:         "a confirmed cancel restores the recorded trigger at the on-chain size",
@@ -118,6 +143,7 @@ func TestManualCloseRestoresTheStopAfterAVenueRejection(t *testing.T) {
 			onChain: []HLPosition{{Coin: "ETH", Size: bookQty}},
 			execute: func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
 				return &HyperliquidExecuteResult{
+					OrderOutcome:             "rejected",
 					Error:                    "order value below the venue minimum",
 					CancelStopLossError:      "5150: rejected",
 					CancelStopLossFailedOIDs: []int64{prevOID},
@@ -135,6 +161,7 @@ func TestManualCloseRestoresTheStopAfterAVenueRejection(t *testing.T) {
 			onChain: []HLPosition{{Coin: "ETH", Size: bookQty}},
 			execute: func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
 				return &HyperliquidExecuteResult{
+					OrderOutcome:             "rejected",
 					Error:                    "order value below the venue minimum",
 					CancelStopLossError:      "5150: rejected",
 					CancelStopLossFailedOIDs: []int64{prevOID},
@@ -172,6 +199,7 @@ func TestManualCloseRestoresTheStopAfterAVenueRejection(t *testing.T) {
 			onChain: []HLPosition{{Coin: "ETH", Size: bookQty}},
 			execute: func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
 				return &HyperliquidExecuteResult{
+					OrderOutcome:             "rejected",
 					Error:                    "order value below the venue minimum",
 					CancelStopLossError:      "5150: rejected",
 					CancelStopLossFailedOIDs: []int64{prevOID},
@@ -184,18 +212,49 @@ func TestManualCloseRestoresTheStopAfterAVenueRejection(t *testing.T) {
 			wantOutPart: "filled immediately",
 		},
 		{
-			name:        "a venue that reports the position already gone places nothing",
-			onChain:     []HLPosition{{Coin: "BTC", Size: 1}},
-			execute:     rejectedWithConfirmedCancel,
-			wantBookOID: 0,
-			wantOutPart: "the venue reports no open ETH position",
+			name:          "a venue that reports the position already gone places nothing and alerts",
+			onChain:       []HLPosition{{Coin: "BTC", Size: 1}},
+			execute:       rejectedWithConfirmedCancel,
+			wantBookOID:   0,
+			wantOutPart:   "No stop-loss was placed",
+			wantAlertPart: "shows no on-chain units behind the 0.400000 remainder",
 		},
 		{
-			name:        "a venue that reports the coin net short places nothing for a long book",
-			onChain:     []HLPosition{{Coin: "ETH", Size: -bookQty}},
-			execute:     rejectedWithConfirmedCancel,
-			wantBookOID: 0,
-			wantOutPart: `the venue reports the ETH position net "short", not "long"`,
+			name:          "a venue that reports the coin net short places nothing for a long book and alerts",
+			onChain:       []HLPosition{{Coin: "ETH", Size: -bookQty}},
+			execute:       rejectedWithConfirmedCancel,
+			wantBookOID:   0,
+			wantOutPart:   "No stop-loss was placed",
+			wantAlertPart: "shows no on-chain units behind the 0.400000 remainder",
+		},
+		{
+			name:          "a rejection beside an opposite-side peer caps the stop at the own-side units and alerts once",
+			onChain:       []HLPosition{{Coin: "ETH", Size: 0.24}},
+			shortPeer:     0.16,
+			execute:       rejectedWithConfirmedCancel,
+			slResult:      &HyperliquidStopLossUpdateResult{StopLossOID: 6200, StopLossTriggerPx: prevTrigger},
+			wantSLCall:    &rearmSLCall{symbol: "ETH", side: "long", size: 0.24, triggerPx: prevTrigger, cancelOID: prevOID},
+			wantBookOID:   6200,
+			wantBookTrig:  prevTrigger,
+			wantAction:    "update-sl",
+			wantOutPart:   "Stop-loss re-armed after the rejected close",
+			wantAlertPart: "other 0.160000 units",
+			wantCritical:  1,
+		},
+		{
+			name:          "a failed post-close read derives the stop from the pre-send reading and alerts once",
+			onChain:       []HLPosition{{Coin: "ETH", Size: 0.24}},
+			shortPeer:     0.16,
+			readFails:     true,
+			execute:       rejectedWithConfirmedCancel,
+			slResult:      &HyperliquidStopLossUpdateResult{StopLossOID: 6200, StopLossTriggerPx: prevTrigger},
+			wantSLCall:    &rearmSLCall{symbol: "ETH", side: "long", size: 0.24, triggerPx: prevTrigger, cancelOID: prevOID},
+			wantBookOID:   6200,
+			wantBookTrig:  prevTrigger,
+			wantAction:    "update-sl",
+			wantOutPart:   "Stop-loss re-armed after the rejected close",
+			wantAlertPart: "the pre-send account reading less the confirmed fill",
+			wantCritical:  1,
 		},
 		{
 			name:         "a liquidation price inside the recorded trigger tightens the re-arm",
@@ -236,6 +295,10 @@ func TestManualCloseRestoresTheStopAfterAVenueRejection(t *testing.T) {
 				Script: "shared_scripts/check_hyperliquid.py",
 				Args:   []string{"hold", "ETH", "1h", "--mode=live"}, Capital: 1000, Leverage: 2}
 			cfg := &Config{DBFile: dbPath, Strategies: []StrategyConfig{subject}}
+			peer := StrategyConfig{ID: "hl-manual-eth-short", Type: "manual", Platform: "hyperliquid", Symbol: "ETH", Script: subject.Script, Args: subject.Args, Capital: 1000, Leverage: 2}
+			if tc.shortPeer > 0 {
+				cfg.Strategies = append(cfg.Strategies, peer)
+			}
 
 			state := &AppState{Strategies: map[string]*StrategyState{
 				subject.ID: {ID: subject.ID, Type: subject.Type, Platform: "hyperliquid",
@@ -247,6 +310,11 @@ func TestManualCloseRestoresTheStopAfterAVenueRejection(t *testing.T) {
 						OpenedAt: time.Now().UTC().Add(-time.Hour),
 					}}},
 			}}
+			if tc.shortPeer > 0 {
+				state.Strategies[peer.ID] = &StrategyState{ID: peer.ID, Type: "manual", Platform: "hyperliquid", Cash: 1000, InitialCapital: 1000, Positions: map[string]*Position{"ETH": {
+					Symbol: "ETH", Quantity: tc.shortPeer, InitialQuantity: tc.shortPeer, AvgCost: 2000, Side: "short", Multiplier: 1, Leverage: 2, OwnerStrategyID: peer.ID,
+				}}}
+			}
 			if err := db.SaveState(state); err != nil {
 				t.Fatalf("SaveState: %v", err)
 			}
@@ -256,8 +324,17 @@ func TestManualCloseRestoresTheStopAfterAVenueRejection(t *testing.T) {
 			d.fetchMids = func(coins []string) (map[string]float64, error) {
 				return map[string]float64{"ETH": 2000}, nil
 			}
-			d.fetchPositions = func(addr string) ([]HLPosition, error) { return tc.onChain, nil }
-			d.execute = tc.execute
+			closeSent := false
+			d.fetchPositions = func(addr string) ([]HLPosition, error) {
+				if closeSent && tc.readFails {
+					return nil, fmt.Errorf("clearinghouseState timeout")
+				}
+				return tc.onChain, nil
+			}
+			d.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+				closeSent = true
+				return tc.execute(script, symbol, side, size, stopLossPct, cancelOID, prevPosQty, marginMode, leverage, closeMode, snapshot, extraCancelOIDs...)
+			}
 			var slCalls []rearmSLCall
 			d.updateSL = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 				slCalls = append(slCalls, rearmSLCall{symbol: symbol, side: side, size: size, triggerPx: triggerPx, cancelOID: cancelOID})
@@ -342,6 +419,19 @@ func TestManualCloseRestoresTheStopAfterAVenueRejection(t *testing.T) {
 					t.Fatalf("alerts = %q, want the symbol and %q", joined, tc.wantAlertPart)
 				}
 			}
+			if tc.wantCritical > 0 {
+				backend.mu.Lock()
+				critical := 0
+				for _, m := range backend.messages {
+					if strings.HasPrefix(m.content, "CRITICAL") {
+						critical++
+					}
+				}
+				backend.mu.Unlock()
+				if critical != tc.wantCritical {
+					t.Fatalf("critical channel alerts = %d, want %d", critical, tc.wantCritical)
+				}
+			}
 		})
 	}
 }
@@ -411,6 +501,10 @@ func TestManualCloseShortFillRearmsTheRemainderStop(t *testing.T) {
 		wantOutPart  string
 		chains       []float64
 		wantAlert    bool
+		peerSide     string
+		peerQty      float64
+		failure      *HyperliquidExecuteResult
+		wantAlertIn  string
 	}{
 		{name: "a confirmed stop cancel restores the recorded trigger at the remainder", fillSz: 0.3, succeeded: []int64{prevOID, 7001},
 			slResult:   &HyperliquidStopLossUpdateResult{StopLossOID: 6200, StopLossTriggerPx: prevTrigger},
@@ -425,8 +519,15 @@ func TestManualCloseShortFillRearmsTheRemainderStop(t *testing.T) {
 			wantSLCall: &rearmSLCall{symbol: "ETH", side: "long", size: 0.1, triggerPx: prevTrigger, cancelOID: prevOID}, wantDrainQty: 0.1,
 			wantOutPart: "filled immediately"},
 		{name: "a full fill places no stop", fillSz: 0.4, succeeded: []int64{prevOID, 7001}, wantOutPart: "Queued"},
-		{name: "a capped shared close places no stop for the unbacked remainder and alerts", fillSz: 0.2, succeeded: []int64{prevOID, 7001}, chains: []float64{0.7},
+		{name: "a capped shared close places no stop for the unbacked remainder and alerts", fillSz: 0.2, succeeded: []int64{prevOID, 7001}, chains: []float64{0.7, 0.5},
 			wantDrainQty: 0.2, wantOutPart: "No stop-loss was placed", wantAlert: true},
+		{name: "a short fill beside an opposite-side peer caps the stop at the own-side units and alerts", fillSz: 0.1, succeeded: []int64{prevOID, 7001}, chains: []float64{0.3, 0.2}, peerSide: "short", peerQty: 0.1,
+			slResult:   &HyperliquidStopLossUpdateResult{StopLossOID: 6200, StopLossTriggerPx: prevTrigger},
+			wantSLCall: &rearmSLCall{symbol: "ETH", side: "long", size: 0.2, triggerPx: prevTrigger, cancelOID: prevOID}, wantDrainQty: 0.3, wantDrainSL: 6200,
+			wantOutPart: "Stop-loss re-armed for the remainder after the short fill", wantAlert: true, wantAlertIn: "other 0.100000 units"},
+		{name: "a catch-all reply whose post-close read holds only the peer units places no stop and alerts", fillSz: 0, succeeded: []int64{prevOID, 7001}, chains: []float64{0.9, 0.5},
+			failure:      &HyperliquidExecuteResult{OrderOutcome: "unknown", Error: "socket closed"},
+			wantDrainQty: 0.4, wantOutPart: "No stop-loss was placed", wantAlert: true, wantAlertIn: "reconciler books any fill"},
 		{name: "a chain that reads flat after the fill places nothing and alerts", fillSz: 0.3, succeeded: []int64{prevOID, 7001}, chains: []float64{0.9, 0},
 			wantDrainQty: 0.1, wantOutPart: "No stop-loss was placed", wantAlert: true},
 	}
@@ -441,6 +542,10 @@ func TestManualCloseShortFillRearmsTheRemainderStop(t *testing.T) {
 			live := []string{"hold", "ETH", "1h", "--mode=live"}
 			subject := StrategyConfig{ID: "hl-manual-eth", Type: "manual", Platform: "hyperliquid", Symbol: "ETH", Script: "shared_scripts/check_hyperliquid.py", Args: live, Capital: 1000, Leverage: 2}
 			peer := StrategyConfig{ID: "hl-manual-eth-peer", Type: "manual", Platform: "hyperliquid", Symbol: "ETH", Script: subject.Script, Args: live, Capital: 1000, Leverage: 2}
+			peerSide, peerQty := "long", 0.5
+			if tc.peerSide != "" {
+				peerSide, peerQty = tc.peerSide, tc.peerQty
+			}
 			cfg := &Config{DBFile: dbPath, Strategies: []StrategyConfig{subject, peer}}
 			state := &AppState{Strategies: map[string]*StrategyState{
 				subject.ID: {ID: subject.ID, Type: "manual", Platform: "hyperliquid", Cash: 1000, InitialCapital: 1000, Positions: map[string]*Position{"ETH": {
@@ -448,7 +553,7 @@ func TestManualCloseShortFillRearmsTheRemainderStop(t *testing.T) {
 					StopLossOID: prevOID, StopLossTriggerPx: prevTrigger, TPOIDs: []int64{7001}, OpenedAt: time.Now().UTC().Add(-time.Hour),
 				}}},
 				peer.ID: {ID: peer.ID, Type: "manual", Platform: "hyperliquid", Cash: 1000, InitialCapital: 1000, Positions: map[string]*Position{"ETH": {
-					Symbol: "ETH", Quantity: 0.5, InitialQuantity: 0.5, AvgCost: 2000, Side: "long", Multiplier: 1, Leverage: 2, OwnerStrategyID: peer.ID,
+					Symbol: "ETH", Quantity: peerQty, InitialQuantity: peerQty, AvgCost: 2000, Side: peerSide, Multiplier: 1, Leverage: 2, OwnerStrategyID: peer.ID,
 				}}},
 			}}
 			if err := db.SaveState(state); err != nil {
@@ -473,7 +578,12 @@ func TestManualCloseShortFillRearmsTheRemainderStop(t *testing.T) {
 				return []HLPosition{{Coin: "ETH", Size: chain}}, nil
 			}
 			d.execute = func(_ string, _ string, _ string, size float64, _ float64, _ int64, _ float64, _ string, _ float64, _ hlCloseMode, _ hlExecuteSnapshot, _ ...int64) (*HyperliquidExecuteResult, string, error) {
-				r := &HyperliquidExecuteResult{Execution: &HyperliquidExecution{Fill: &HyperliquidFill{AvgPx: 2100, TotalSz: tc.fillSz, OID: 4343, Fee: 0.1}}, CancelStopLossSucceededOIDs: tc.succeeded, CancelStopLossFailedOIDs: tc.failed}
+				r := &HyperliquidExecuteResult{OrderOutcome: "filled", Execution: &HyperliquidExecution{Fill: &HyperliquidFill{AvgPx: 2100, TotalSz: tc.fillSz, OID: 4343, Fee: 0.1}}, CancelStopLossSucceededOIDs: tc.succeeded, CancelStopLossFailedOIDs: tc.failed}
+				if tc.failure != nil {
+					failure := *tc.failure
+					failure.CancelStopLossSucceededOIDs = tc.succeeded
+					r = &failure
+				}
 				if len(tc.failed) > 0 {
 					r.CancelStopLossError = "cancel rejected"
 				}
@@ -485,8 +595,8 @@ func TestManualCloseShortFillRearmsTheRemainderStop(t *testing.T) {
 				return tc.slResult, "", nil
 			}
 			res, coreErr := manualCloseCore(d, subject, manualCloseInputs{StrategyID: subject.ID})
-			if coreErr != nil {
-				t.Fatalf("manualCloseCore: %v", coreErr)
+			if (coreErr != nil) != (tc.failure != nil) {
+				t.Fatalf("manualCloseCore error = %v, want an error: %t", coreErr, tc.failure != nil)
 			}
 			if tc.wantSLCall == nil {
 				if len(slCalls) != 0 {
@@ -515,6 +625,9 @@ func TestManualCloseShortFillRearmsTheRemainderStop(t *testing.T) {
 			if tc.wantAlert != (len(critical) == 1) || len(critical) > 1 {
 				t.Fatalf("critical alerts = %q, want one: %t", critical, tc.wantAlert)
 			}
+			if tc.wantAlert && !strings.Contains(critical[0], tc.wantAlertIn) {
+				t.Fatalf("critical alert = %q, want it to contain %q", critical[0], tc.wantAlertIn)
+			}
 			store := openTestStore(t, db)
 			reloaded, _, loadErr := LoadStateWithStore(cfg, store)
 			if loadErr != nil {
@@ -536,8 +649,12 @@ func TestManualCloseShortFillRearmsTheRemainderStop(t *testing.T) {
 					closeQtys = append(closeQtys, tr.Quantity)
 				}
 			}
-			if fmt.Sprint(closeQtys) != fmt.Sprint([]float64{tc.fillSz}) {
-				t.Fatalf("close trades = %v, want one of %g", closeQtys, tc.fillSz)
+			var wantCloseQtys []float64
+			if tc.failure == nil {
+				wantCloseQtys = []float64{tc.fillSz}
+			}
+			if fmt.Sprint(closeQtys) != fmt.Sprint(wantCloseQtys) {
+				t.Fatalf("close trades = %v, want %v", closeQtys, wantCloseQtys)
 			}
 		})
 	}

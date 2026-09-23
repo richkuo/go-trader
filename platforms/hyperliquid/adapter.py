@@ -627,17 +627,22 @@ class HyperliquidExchangeAdapter:
                 raise ValueError(f"Size rounded to zero for {symbol} (sz_decimals={sz_decimals})")
         return exchange.market_close(symbol, sz)
 
-    def market_close_sized(self, symbol: str, is_buy: bool, size: float, reduce_only: bool) -> dict:
+    def sized_close_price(self, symbol: str, is_buy: bool) -> float:
+        sz_decimals = self._sz_decimals(symbol)
+        mid = _safe_float(self._info.all_mids().get(symbol))
+        if mid <= 0 or not math.isfinite(mid):
+            raise ValueError(f"no usable mid price for {symbol}")
+        return _round_perps_px(mid * (1.01 if is_buy else 0.99), sz_decimals)
+
+    def market_close_sized(self, symbol: str, is_buy: bool, size: float, px: float, reduce_only: bool) -> dict:
         exchange = self._require_exchange("market_close_sized")
         sz_decimals = self._sz_decimals(symbol)
         size = floor_lot_size(size, sz_decimals)
         if size <= 0:
             raise ValueError(f"Size floored to zero for {symbol} (sz_decimals={sz_decimals})")
-        mid = _safe_float(self._info.all_mids().get(symbol))
-        if mid <= 0 or not math.isfinite(mid):
-            raise ValueError(f"no usable mid price for {symbol}")
-        px = mid * (1.01 if is_buy else 0.99)
-        px = _round_perps_px(px, sz_decimals)
+        px = _safe_float(px)
+        if px <= 0 or not math.isfinite(px):
+            raise ValueError(f"no usable limit price for {symbol}")
         order_type = {"limit": {"tif": "Ioc"}}
         return exchange.order(symbol, is_buy, size, px, order_type, reduce_only=bool(reduce_only))
 

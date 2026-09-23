@@ -988,7 +988,9 @@ func operatorSizedClosePlan(d manualCoreDeps, symbol string, pos *Position, clos
 	if err != nil {
 		onChain = hlOnChainCoinView{}
 	}
-	return planHLCloseOrder(symbol, pos.Side, pos.Quantity, closeQty, view.PeerSameQty, view.PeerOppQty, onChain), err
+	plan := planHLCloseOrder(symbol, pos.Side, pos.Quantity, closeQty, view.PeerSameQty, view.PeerOppQty, onChain)
+	plan.PreSend = plan.PreSend.from(hlCloseViewPreSendRefetch)
+	return plan, err
 }
 
 func operatorSizedCloseRefusal(plan hlCloseOrderPlan) string {
@@ -1173,7 +1175,7 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 		}
 	}
 	closeMode := hlCloseModeNone
-	planShare, planShareKnown := 0.0, false
+	var preSend hlCloseView
 	if closeFullPosition {
 		closeMode = hlCloseModeWhole
 	} else if hyperliquidIsLive(sc.Args) {
@@ -1189,7 +1191,7 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 		}
 		closeQty = plan.Size
 		closeMode = plan.Mode
-		planShare, planShareKnown = plan.OwnShare, plan.OwnShareKnown
+		preSend = plan.PreSend
 	}
 	var extraCancelOIDs []int64
 	if intentFullClose {
@@ -1207,8 +1209,7 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 		TPArmedTiers:    append([]bool(nil), pos.TPArmedTiers...),
 		PeerSameQty:     view.PeerSameQty,
 		PeerOppQty:      view.PeerOppQty,
-		PlanShare:       planShare,
-		PlanShareKnown:  planShareKnown,
+		PreSend:         preSend,
 	}
 
 	execResult, stderr, execErr := d.execute(

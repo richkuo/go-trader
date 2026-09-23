@@ -796,7 +796,11 @@ func runHyperliquidProtectionSyncForRemainder(
 		}
 		return classifyProtectionSyncStopRearm(plan.Size, protection)
 	}
-	protection, ok := syncHyperliquidProtection(sc, plan, notifier, logger, reconcileFillHintsJSON)
+	syncNotifier := notifier
+	if guardMode == hlProtectionGuardStopLegAfterFailedClose {
+		syncNotifier = nil
+	}
+	protection, ok := syncHyperliquidProtection(sc, plan, syncNotifier, logger, reconcileFillHintsJSON)
 	if !ok || protection == nil {
 		return false, 0, stopOutcome(protection)
 	}

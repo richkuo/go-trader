@@ -62,8 +62,7 @@ type HyperliquidResult struct {
 	SizedCloseBookFraction          float64                `json:"-"`
 	SizedCloseCanceledOIDs          []int64                `json:"-"`
 	SizedCloseBookedQty             float64                `json:"-"`
-	SizedClosePlanShare             float64                `json:"-"`
-	SizedClosePlanShareKnown        bool                   `json:"-"`
+	SizedClosePreSend               hlCloseView            `json:"-"`
 }
 
 type HyperliquidFill struct {
@@ -93,6 +92,7 @@ type HyperliquidExecuteResult struct {
 	CancelStopLossFailedOIDs    []int64               `json:"cancel_stop_loss_failed_oids,omitempty"`
 	StopLossError               string                `json:"stop_loss_error,omitempty"`
 	StopLossFilledImmediately   bool                  `json:"stop_loss_filled_immediately,omitempty"`
+	OrderOutcome                string                `json:"order_outcome,omitempty"`
 }
 
 type HyperliquidStopLossUpdateResult struct {
@@ -138,6 +138,7 @@ type HyperliquidProtectionSyncResult struct {
 	TPCancelFailedOIDs        []int64   `json:"tp_cancel_failed_oids,omitempty"`
 	TPCancelFilledOIDs        []int64   `json:"tp_cancel_filled_oids,omitempty"`
 	CancelStopLossSucceeded   bool      `json:"cancel_stop_loss_succeeded,omitempty"`
+	CancelStopLossError       string    `json:"cancel_stop_loss_error,omitempty"`
 	StopLossOutcomeUnknown    bool      `json:"stop_loss_outcome_unknown,omitempty"`
 }
 
@@ -524,6 +525,28 @@ func confirmHyperliquidExecuteFill(res *HyperliquidExecuteResult, err error) (*H
 		return res, fmt.Errorf("exchange returned no confirmed fill (sz=%.8f px=%.8f)", fill.TotalSz, fill.AvgPx)
 	}
 	return res, nil
+}
+
+type hlCloseFillOutcome struct {
+	Filled float64
+	Known  bool
+}
+
+func hlExecuteFillOutcome(res *HyperliquidExecuteResult, err error, bookQty float64) hlCloseFillOutcome {
+	if res == nil {
+		return hlCloseFillOutcome{}
+	}
+	switch res.OrderOutcome {
+	case "rejected", "not_sent":
+		return hlCloseFillOutcome{Known: true}
+	case "filled":
+		if _, confirmErr := confirmHyperliquidExecuteFill(res, err); confirmErr != nil {
+			return hlCloseFillOutcome{}
+		}
+		booked, _, _ := manualCloseFillAttribution(bookQty, res.Execution.Fill)
+		return hlCloseFillOutcome{Filled: booked, Known: true}
+	}
+	return hlCloseFillOutcome{}
 }
 
 func hyperliquidExecuteSucceededCancelOIDs(result *HyperliquidExecuteResult, requested []int64) []int64 {

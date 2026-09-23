@@ -275,7 +275,8 @@ func TestRearmTrailingStopAfterFailedCloseKeepsRatchetAndClamp(t *testing.T) {
 				net = map[string]string{"ETH": "long"}
 			}
 			var mu sync.RWMutex
-			rearmProtectionAfterFailedClose(sc, st, nil, "ETH", 2100, tc.prevOID, tc.prevTrigger, tc.prevHighWater, map[string]float64{"ETH": tc.onChainQty}, nil, liq, net, &mu, nil, newTestLogger(t))
+			stop := hlCloseRemainderStop{Remainder: 0.002, Qty: math.Min(0.002, tc.onChainQty), Basis: hlRemainderBasisFresh}
+			rearmProtectionForCloseRemainder(sc, st, nil, "ETH", 2100, tc.prevOID, tc.prevTrigger, tc.prevHighWater, nil, liq, net, stop, &mu, nil, newTestLogger(t))
 			if placed != 1 {
 				t.Fatalf("stop placements = %d, want 1", placed)
 			}
@@ -369,7 +370,7 @@ func TestRearmProtectionAfterFailedCloseCoversPercentageStopOwners(t *testing.T)
 				net = map[string]string{"ETH": "long"}
 			}
 			var mu sync.RWMutex
-			rearmProtectionAfterFailedClose(tc.sc, st, nil, "ETH", 2000, tc.prevOID, tc.bookTrigger, 2000, map[string]float64{"ETH": 0.002}, nil, liq, net, &mu, nil, newTestLogger(t))
+			rearmProtectionForCloseRemainder(tc.sc, st, nil, "ETH", 2000, tc.prevOID, tc.bookTrigger, 2000, nil, liq, net, hlCloseRemainderStop{Remainder: 0.002, Qty: 0.002, Basis: hlRemainderBasisFresh}, &mu, nil, newTestLogger(t))
 			if placed != tc.wantPlaced {
 				t.Fatalf("stop placements = %d, want %d", placed, tc.wantPlaced)
 			}
@@ -497,30 +498,41 @@ func TestRearmProtectionForCloseRemainderResizesThePreCloseStop(t *testing.T) {
 	oldUpdate, oldSync := runHyperliquidUpdateStopLossFunc, syncHyperliquidProtection
 	t.Cleanup(func() { runHyperliquidUpdateStopLossFunc, syncHyperliquidProtection = oldUpdate, oldSync })
 	live := []string{"x.py", "ETH", "1h", "--mode=live"}
-	atrMult, pct := 2.0, 5.0
+	atrMult, pct, trailMult := 2.0, 5.0, 2.0
 	atr := StrategyConfig{ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py", Args: live, StopLossATRMult: &atrMult}
 	pctOwner := StrategyConfig{ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py", Args: live, StopLossPct: &pct}
+	trailOwner := StrategyConfig{ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py", Args: live, TrailingStopATRMult: &trailMult}
 	cases := []struct {
-		name       string
-		sc         StrategyConfig
-		bookQty    float64
-		bookOID    int64
-		remainder  float64
-		wantSync   bool
-		wantUpdate bool
-		wantSize   float64
-		wantForce  bool
+		name        string
+		sc          StrategyConfig
+		bookQty     float64
+		bookOID     int64
+		remainder   float64
+		qty         float64
+		slResult    *HyperliquidStopLossUpdateResult
+		wantSync    bool
+		wantUpdate  bool
+		wantSize    float64
+		wantForce   bool
+		wantBookOID int64
 	}{
-		{name: "a pre-close stop whose cancel failed is force-replaced at the booked remainder", sc: atr, bookQty: 6, bookOID: 111, remainder: 6, wantSync: true, wantSize: 6, wantForce: true},
-		{name: "a stop already placed after the close is kept without a replace", sc: atr, bookQty: 6, bookOID: 555, remainder: 6, wantSync: true, wantSize: 6},
-		{name: "a pre-drain book is sized down to the remainder", sc: atr, bookQty: 10, remainder: 6, wantSync: true, wantSize: 6},
-		{name: "a percentage owner re-arms at the remainder", sc: pctOwner, bookQty: 10, remainder: 6, wantUpdate: true, wantSize: 6},
+		{name: "a pre-close stop whose cancel failed is force-replaced at the booked remainder", sc: atr, bookQty: 6, bookOID: 111, remainder: 6, qty: 6, wantSync: true, wantSize: 6, wantForce: true, wantBookOID: 999},
+		{name: "a stop already placed after the close is kept without a replace", sc: atr, bookQty: 6, bookOID: 555, remainder: 6, qty: 6, wantSync: true, wantSize: 6, wantBookOID: 999},
+		{name: "a pre-drain book is sized down to the remainder", sc: atr, bookQty: 10, remainder: 6, qty: 6, wantSync: true, wantSize: 6, wantBookOID: 999},
+		{name: "a percentage owner re-arms at the remainder", sc: pctOwner, bookQty: 10, remainder: 6, qty: 6, wantUpdate: true, wantSize: 6, wantBookOID: 999},
+		{name: "the ATR arm places the owner size below the remainder", sc: atr, bookQty: 6, bookOID: 111, remainder: 6, qty: 4, wantSync: true, wantSize: 4, wantForce: true, wantBookOID: 999},
+		{name: "the percentage arm places the owner size below the remainder", sc: pctOwner, bookQty: 10, remainder: 6, qty: 4, wantUpdate: true, wantSize: 4, wantBookOID: 999},
+		{name: "the trailing arm places the owner size below the remainder", sc: trailOwner, bookQty: 10, remainder: 6, qty: 4, wantUpdate: true, wantSize: 4, wantBookOID: 999},
+		{name: "a rejected trailing cancel sends no alert from the arm", sc: trailOwner, bookQty: 6, bookOID: 111, remainder: 6, qty: 6, slResult: &HyperliquidStopLossUpdateResult{CancelStopLossError: "111 still resting"}, wantUpdate: true, wantSize: 6, wantBookOID: 111},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var sizes []float64
 			runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 				sizes = append(sizes, size)
+				if tc.slResult != nil {
+					return tc.slResult, "", nil
+				}
 				return &HyperliquidStopLossUpdateResult{StopLossOID: 999, StopLossTriggerPx: triggerPx}, "", nil
 			}
 			var plans []hlProtectionPlan
@@ -529,10 +541,11 @@ func TestRearmProtectionForCloseRemainderResizesThePreCloseStop(t *testing.T) {
 				return &HyperliquidProtectionSyncResult{StopLossOID: 999, StopLossTriggerPx: 1900}, true
 			}
 			st := &StrategyState{ID: "hl-eth", Positions: map[string]*Position{
-				"ETH": {Symbol: "ETH", Side: "long", Quantity: tc.bookQty, InitialQuantity: 10, AvgCost: 2000, RiskAnchorPrice: 2000, EntryATR: 50, StopLossOID: tc.bookOID, StopLossTriggerPx: 1900},
+				"ETH": {Symbol: "ETH", Side: "long", Quantity: tc.bookQty, InitialQuantity: 10, AvgCost: 2000, RiskAnchorPrice: 2000, EntryATR: 50, StopLossOID: tc.bookOID, StopLossTriggerPx: 1900, StopLossHighWaterPx: 2000},
 			}}
+			notifier, backend := confirmationNotifier()
 			var mu sync.RWMutex
-			rearmProtectionForCloseRemainder(tc.sc, st, nil, "ETH", 2000, 111, 1900, 2000, map[string]float64{"ETH": 25}, nil, nil, nil, hlCloseRemainderStop{Remainder: tc.remainder, Qty: tc.remainder, Basis: hlRemainderBasisPlan, AfterFill: true}, &mu, nil, newTestLogger(t))
+			rearmProtectionForCloseRemainder(tc.sc, st, nil, "ETH", 2000, 111, 1900, 2000, nil, nil, nil, hlCloseRemainderStop{Remainder: tc.remainder, Qty: tc.qty, Basis: hlRemainderBasisFresh, AfterFill: true}, &mu, notifier, newTestLogger(t))
 			if tc.wantSync != (len(plans) == 1) || tc.wantUpdate != (len(sizes) == 1) || len(plans)+len(sizes) != 1 {
 				t.Fatalf("syncs=%d updates=%d, want sync %t update %t", len(plans), len(sizes), tc.wantSync, tc.wantUpdate)
 			}
@@ -542,8 +555,14 @@ func TestRearmProtectionForCloseRemainderResizesThePreCloseStop(t *testing.T) {
 			if tc.wantUpdate && math.Abs(sizes[0]-tc.wantSize) > 1e-9 {
 				t.Fatalf("update size = %g, want %g", sizes[0], tc.wantSize)
 			}
-			if st.Positions["ETH"].StopLossOID != 999 {
-				t.Fatalf("book stop oid = %d, want 999", st.Positions["ETH"].StopLossOID)
+			if st.Positions["ETH"].StopLossOID != tc.wantBookOID {
+				t.Fatalf("book stop oid = %d, want %d", st.Positions["ETH"].StopLossOID, tc.wantBookOID)
+			}
+			backend.mu.Lock()
+			sent := len(backend.messages) + len(backend.dms)
+			backend.mu.Unlock()
+			if sent != 0 {
+				t.Fatalf("the arm sent %d alerts, want none: the re-arm report is the single alert", sent)
 			}
 		})
 	}
