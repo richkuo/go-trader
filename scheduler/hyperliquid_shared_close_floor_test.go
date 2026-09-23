@@ -532,7 +532,7 @@ func TestRearmProtectionForCloseRemainderResizesThePreCloseStop(t *testing.T) {
 				"ETH": {Symbol: "ETH", Side: "long", Quantity: tc.bookQty, InitialQuantity: 10, AvgCost: 2000, RiskAnchorPrice: 2000, EntryATR: 50, StopLossOID: tc.bookOID, StopLossTriggerPx: 1900},
 			}}
 			var mu sync.RWMutex
-			rearmProtectionForCloseRemainder(tc.sc, st, nil, "ETH", 2000, 111, 1900, 2000, map[string]float64{"ETH": 25}, nil, nil, nil, tc.remainder, &mu, nil, newTestLogger(t))
+			rearmProtectionForCloseRemainder(tc.sc, st, nil, "ETH", 2000, 111, 1900, 2000, map[string]float64{"ETH": 25}, nil, nil, nil, hlCloseRemainderStop{Remainder: tc.remainder, Qty: tc.remainder, Basis: hlRemainderBasisPlan, AfterFill: true}, &mu, nil, newTestLogger(t))
 			if tc.wantSync != (len(plans) == 1) || tc.wantUpdate != (len(sizes) == 1) || len(plans)+len(sizes) != 1 {
 				t.Fatalf("syncs=%d updates=%d, want sync %t update %t", len(plans), len(sizes), tc.wantSync, tc.wantUpdate)
 			}

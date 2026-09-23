@@ -1173,6 +1173,7 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 		}
 	}
 	closeMode := hlCloseModeNone
+	planShare, planShareKnown := 0.0, false
 	if closeFullPosition {
 		closeMode = hlCloseModeWhole
 	} else if hyperliquidIsLive(sc.Args) {
@@ -1188,6 +1189,7 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 		}
 		closeQty = plan.Size
 		closeMode = plan.Mode
+		planShare, planShareKnown = plan.OwnShare, plan.OwnShareKnown
 	}
 	var extraCancelOIDs []int64
 	if intentFullClose {
@@ -1203,6 +1205,10 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 		OwnerStrategyID: pos.OwnerStrategyID,
 		TPOIDs:          cloneInt64s(pos.TPOIDs),
 		TPArmedTiers:    append([]bool(nil), pos.TPArmedTiers...),
+		PeerSameQty:     view.PeerSameQty,
+		PeerOppQty:      view.PeerOppQty,
+		PlanShare:       planShare,
+		PlanShareKnown:  planShareKnown,
 	}
 
 	execResult, stderr, execErr := d.execute(
@@ -1273,6 +1279,7 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 	if intentFullClose && !actualFullClose {
 		remainderSnapshot := protectionSnapshot
 		remainderSnapshot.Quantity = pos.Quantity - filledQty
+		remainderSnapshot.FilledQty = filledQty
 		restoreManualStopLoss(d, res, sc, strategyID, remainderSnapshot, execResult, requestedCancelOIDs, manualCloseRearmAfterShortFill)
 	}
 	if queueErr != nil {

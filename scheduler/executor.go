@@ -61,6 +61,9 @@ type HyperliquidResult struct {
 	LiveOrderCancelRequested        bool                   `json:"-"`
 	SizedCloseBookFraction          float64                `json:"-"`
 	SizedCloseCanceledOIDs          []int64                `json:"-"`
+	SizedCloseBookedQty             float64                `json:"-"`
+	SizedClosePlanShare             float64                `json:"-"`
+	SizedClosePlanShareKnown        bool                   `json:"-"`
 }
 
 type HyperliquidFill struct {

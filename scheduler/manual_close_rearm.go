@@ -16,6 +16,11 @@ type manualCloseProtectionSnapshot struct {
 	OwnerStrategyID string
 	TPOIDs          []int64
 	TPArmedTiers    []bool
+	FilledQty       float64
+	PeerSameQty     float64
+	PeerOppQty      float64
+	PlanShare       float64
+	PlanShareKnown  bool
 }
 
 type manualCloseRearmDecision int
@@ -102,7 +107,7 @@ func restoreManualStopLoss(d manualCoreDeps, res *manualCoreResult, sc StrategyC
 	shortFill := cause == manualCloseRearmAfterShortFill
 	if decision == manualCloseRearmCancelNotConfirmed {
 		if shortFill {
-			res.outf("manual-close %s %s: the close filled short of the book and did not confirm the stop-loss cancel, so the previous stop (OID=%d) is verified on-chain and replaced at the %.6f remainder size.",
+			res.outf("manual-close %s %s: the close filled short of the book and did not confirm the stop-loss cancel, so the previous stop (OID=%d) is checked on-chain before a stop for the %.6f remainder is placed.",
 				strategyID, snap.Symbol, snap.StopLossOID, snap.Quantity)
 		} else {
 			res.outf("manual-close %s %s: the venue rejected the close and did not confirm the stop-loss cancel — a cancel whose reply is lost still removes the trigger, so the previous stop (OID=%d) is verified on-chain and restored rather than assumed live.",
@@ -140,21 +145,50 @@ func restoreManualStopLoss(d manualCoreDeps, res *manualCoreResult, sc StrategyC
 	defer unlockSymbol()
 
 	onChainAbsQty, liqPxByCoin, netSideByCoin, mapErr := d.hyperliquidAccountMaps()
-	if mapErr != nil {
-		res.errf("warning: could not read the Hyperliquid account before re-arming %s (%v) — re-arming at the recorded size with no liquidation clamp", snap.Symbol, mapErr)
+	stop := resolveHLCloseRemainderStop(snap.Symbol, snap.Side, snap.Quantity+snap.FilledQty, snap.FilledQty, execResult != nil, hlCloseBacking{
+		PlanShare:      snap.PlanShare,
+		PlanShareKnown: snap.PlanShareKnown,
+		PeerSameQty:    snap.PeerSameQty,
+		PeerOppQty:     snap.PeerOppQty,
+		Refetch: func() (hlOnChainCoinView, error) {
+			if mapErr != nil {
+				return hlOnChainCoinView{}, mapErr
+			}
+			return hlOnChainCoinView{Known: true, AbsQty: onChainAbsQty, NetSide: netSideByCoin}, nil
+		},
+	})
+	unbackedf := func(basis string) {
+		msg := fmt.Sprintf("CRITICAL: [%s] %s: %s. No stop-loss was placed: %s shows no on-chain units behind the %.6f remainder (the coin is flat on this side, or every unit left is in the book of a peer strategy). Compare the on-chain position with the books before the next close on %s.",
+			strategyID, snap.Symbol, closeOutcome, basis, snap.Quantity, snap.Symbol)
+		res.outf("%s", msg)
+		notifyManualCloseRearmFailure(d.notifier, msg)
+	}
+	if mapErr != nil && stop.measured() {
+		res.errf("warning: could not read the Hyperliquid account before re-arming %s (%v) — re-arming %.6f, sized from %s, with no liquidation clamp", snap.Symbol, mapErr, stop.Qty, closeRemainderBasisText(stop))
+	} else if mapErr != nil {
+		res.errf("warning: could not read the Hyperliquid account before re-arming %s (%v) — re-arming at the recorded %.6f with no liquidation clamp and no check of which on-chain units back it", snap.Symbol, mapErr, stop.Qty)
 	} else if gone, detail := hlPositionGoneForSide(onChainAbsQty, netSideByCoin, snap.Symbol, snap.Side); gone {
 		if shortFill {
-			res.outf("manual-close %s %s: %s after the short fill — no stop-loss was placed for the remainder; the reconciler books it at the next scheduler cycle.",
-				strategyID, snap.Symbol, detail)
+			unbackedf(fmt.Sprintf("a post-close account reading (%s)", detail))
 		} else {
 			res.outf("manual-close %s %s: %s, so the close order most likely filled after the command lost its reply — no stop-loss was placed; the reconciler books the close at the next scheduler cycle.",
 				strategyID, snap.Symbol, detail)
 		}
 		return true
 	}
-	qty, capped := hlSLEffectiveQty(snap.Symbol, snap.Quantity, onChainAbsQty)
+	if stop.unbacked() {
+		unbackedf(closeRemainderBasisText(stop))
+		return true
+	}
+	qty, capped := stop.Qty, false
+	if !stop.measured() {
+		qty, capped = hlSLEffectiveQty(snap.Symbol, stop.Qty, onChainAbsQty)
+	}
 	if capped {
 		res.errf("warning: re-arm size for %s capped from the recorded %.6f to the on-chain %.6f", snap.Symbol, snap.Quantity, qty)
+	}
+	if stop.measured() && qty < snap.Quantity-hlSharedCloseQtyTolerance {
+		res.errf("warning: re-arm size for %s is %.6f, the on-chain units that back the %.6f remainder per %s", snap.Symbol, qty, snap.Quantity, closeRemainderBasisText(stop))
 	}
 	triggerPx := snap.TriggerPx
 	if clamped, ok := clampStopInsideLiquidation(snap.Side, triggerPx, hlLiquidationPxForSide(liqPxByCoin, netSideByCoin, snap.Symbol, snap.Side)); ok {
@@ -201,9 +235,11 @@ func restoreManualStopLoss(d manualCoreDeps, res *manualCoreResult, sc StrategyC
 	case result.StopLossOID > 0 && shortFill:
 		res.outf("Stop-loss re-armed for the remainder after the short fill: %s %.6f @ $%.4f (OID=%d, superseding the verified OID=%d).",
 			snap.Symbol, qty, result.StopLossTriggerPx, result.StopLossOID, snap.StopLossOID)
+		notifyManualPartlyBackedRearm(d, res, strategyID, snap, closeOutcome, stop, qty)
 	case result.StopLossOID > 0:
 		res.outf("Stop-loss re-armed after the rejected close: %s %.6f @ $%.4f (OID=%d, superseding the verified OID=%d).",
 			snap.Symbol, qty, result.StopLossTriggerPx, result.StopLossOID, snap.StopLossOID)
+		notifyManualPartlyBackedRearm(d, res, strategyID, snap, closeOutcome, stop, qty)
 	case result.StopLossOutcomeUnknown:
 		alertf("The previous stop was cancelled and the replacement's outcome could NOT be read, so it may be resting untracked and the position may be UNPROTECTED.",
 			"the placement outcome could not be read; the recorded trigger was kept with an unknown order id")
@@ -218,6 +254,16 @@ func restoreManualStopLoss(d manualCoreDeps, res *manualCoreResult, sc StrategyC
 		criticalf("the replacement stop-loss did not rest on-chain")
 	}
 	return false
+}
+
+func notifyManualPartlyBackedRearm(d manualCoreDeps, res *manualCoreResult, strategyID string, snap manualCloseProtectionSnapshot, closeOutcome string, stop hlCloseRemainderStop, qty float64) {
+	if !stop.measured() || qty >= snap.Quantity-hlSharedCloseQtyTolerance {
+		return
+	}
+	msg := fmt.Sprintf("CRITICAL: [%s] %s: %s. The stop-loss was re-armed for %.6f, the on-chain units that back the remainder per %s. The other %.6f units of the %.6f remainder have no on-chain units behind them and get no stop. Compare the on-chain position with the books before the next close on %s.",
+		strategyID, snap.Symbol, closeOutcome, qty, closeRemainderBasisText(stop), snap.Quantity-qty, snap.Quantity, snap.Symbol)
+	res.outf("%s", msg)
+	notifyManualCloseRearmFailure(d.notifier, msg)
 }
 
 func notifyManualCloseRearmFailure(notifier *MultiNotifier, msg string) {

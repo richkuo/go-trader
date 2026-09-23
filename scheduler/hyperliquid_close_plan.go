@@ -28,11 +28,13 @@ func (a hlCloseAction) String() string {
 }
 
 type hlCloseOrderPlan struct {
-	Action hlCloseAction
-	Mode   hlCloseMode
-	Size   float64
-	Capped bool
-	Reason string
+	Action        hlCloseAction
+	Mode          hlCloseMode
+	Size          float64
+	Capped        bool
+	Reason        string
+	OwnShare      float64
+	OwnShareKnown bool
 }
 
 type hlCloseContext struct {
@@ -142,12 +144,13 @@ func planHLCloseOrder(symbol, posSide string, posQty, closeQty, peerSameQty, pee
 		return hlCloseOrderPlan{Action: hlCloseDefer, Reason: fmt.Sprintf("the on-chain %s position has no readable side", symbol)}
 	}
 	s := hlSideSign(posSide)
+	ownShare := s*netSigned - peerSameQty + peerOppQty
 	target := s*(posQty-closeQty) + s*peerSameQty - s*peerOppQty
 	requested := s * (netSigned - target)
 	if requested <= tol {
-		return hlCloseOrderPlan{Action: hlCloseSkip, Reason: fmt.Sprintf("the on-chain %s net %.6f is already at or past the %.6f the books state after this close (%s book %.6f, close %.6f, same-side peers %.6f, opposite-side peers %.6f); no close order sent, the reconciler owns the book", symbol, netSigned, target, posSide, posQty, closeQty, peerSameQty, peerOppQty)}
+		return hlCloseOrderPlan{Action: hlCloseSkip, OwnShare: ownShare, OwnShareKnown: true, Reason: fmt.Sprintf("the on-chain %s net %.6f is already at or past the %.6f the books state after this close (%s book %.6f, close %.6f, same-side peers %.6f, opposite-side peers %.6f); no close order sent, the reconciler owns the book", symbol, netSigned, target, posSide, posQty, closeQty, peerSameQty, peerOppQty)}
 	}
-	plan := hlCloseOrderPlan{Action: hlCloseSend, Size: closeQty}
+	plan := hlCloseOrderPlan{Action: hlCloseSend, Size: closeQty, OwnShare: ownShare, OwnShareKnown: true}
 	if requested < closeQty-tol {
 		plan.Size = requested
 		plan.Capped = true
@@ -176,6 +179,7 @@ func resolveHLCloseOrder(symbol, posSide string, posQty, closeQty float64, ctx h
 		}
 	}
 	if snapshot.Action == hlCloseSend && snapshot.Mode == hlCloseModeReduceOnly && !snapshot.Capped {
+		snapshot.OwnShare, snapshot.OwnShareKnown = 0, false
 		snapshot.Reason = fmt.Sprintf("%s; the pre-send account refetch failed (%s), and a reduce-only close at the book size cannot cross zero", snapshot.Reason, detail)
 		return snapshot
 	}
@@ -221,15 +225,6 @@ func manualCloseFillAttribution(posQty float64, fill *HyperliquidFill) (bookedQt
 	return bookedQty, fee, fullClose
 }
 
-func notifySizedCloseRemainder(notifier *MultiNotifier, sc StrategyConfig, symbol, side string, filledQty, bookQty float64) {
-	if notifier == nil || !notifier.HasBackends() {
-		return
-	}
-	msg := fmt.Sprintf("**SIZED CLOSE FILLED SHORT** [%s] %s %s close filled %.6f of the %.6f book. The %.6f remainder stays on the book and the protection ids this close cancelled are cleared. In this same cycle the close re-arm places the stop again, sized at the remainder: the protection sync for an ATR stop, the trailing arm for a trail or ratchet stop, and the percentage or recorded-stop arm for any other stop. Compare the on-chain position and open orders with the books.", sc.ID, symbol, side, filledQty, bookQty, bookQty-filledQty)
-	notifier.SendToAllChannels(msg)
-	notifier.SendOwnerDM(msg)
-}
-
 type manualCycleCloseBooking struct {
 	Action        PendingManualAction
 	ClearOIDs     []int64
@@ -273,6 +268,166 @@ func bookManualCycleClose(sc StrategyConfig, pos *Position, closeSide string, cl
 	return booking
 }
 
+type hlCloseRemainderBasis int
+
+const (
+	hlRemainderBasisBook hlCloseRemainderBasis = iota
+	hlRemainderBasisPlan
+	hlRemainderBasisRead
+	hlRemainderBasisUnverified
+)
+
+type hlCloseRemainderStop struct {
+	Remainder float64
+	Qty       float64
+	Basis     hlCloseRemainderBasis
+	AfterFill bool
+	Detail    string
+}
+
+func (s hlCloseRemainderStop) measured() bool {
+	return s.Basis == hlRemainderBasisPlan || s.Basis == hlRemainderBasisRead
+}
+
+func (s hlCloseRemainderStop) unbacked() bool {
+	return s.measured() && s.Qty <= 0
+}
+
+type hlCloseBacking struct {
+	PlanShare      float64
+	PlanShareKnown bool
+	PeerSameQty    float64
+	PeerOppQty     float64
+	Refetch        func() (hlOnChainCoinView, error)
+}
+
+func resolveHLCloseRemainderStop(symbol, side string, bookQty, filledQty float64, outcomeKnown bool, b hlCloseBacking) hlCloseRemainderStop {
+	tol := hlSharedCloseQtyTolerance
+	remainder := math.Max(bookQty-filledQty, 0)
+	stop := hlCloseRemainderStop{Remainder: remainder, Qty: remainder, AfterFill: filledQty > tol}
+	measured := func(backed float64, basis hlCloseRemainderBasis) hlCloseRemainderStop {
+		stop.Basis = basis
+		switch {
+		case backed >= remainder-tol:
+			stop.Qty = remainder
+		case backed <= tol:
+			stop.Qty = 0
+		default:
+			stop.Qty = backed
+		}
+		return stop
+	}
+	if outcomeKnown && b.PlanShareKnown {
+		return measured(b.PlanShare-filledQty, hlRemainderBasisPlan)
+	}
+	if outcomeKnown && !stop.AfterFill {
+		stop.Basis = hlRemainderBasisBook
+		return stop
+	}
+	stop.Basis = hlRemainderBasisUnverified
+	if b.Refetch == nil {
+		stop.Detail = "no account reader is available"
+		return stop
+	}
+	view, err := b.Refetch()
+	if err != nil {
+		stop.Detail = err.Error()
+		return stop
+	}
+	if !view.Known {
+		stop.Detail = "the account state is not readable"
+		return stop
+	}
+	signed, ok := hlOnChainSignedQty(view, symbol)
+	if !ok {
+		stop.Detail = fmt.Sprintf("the on-chain %s position has no readable side", symbol)
+		return stop
+	}
+	return measured(hlSideSign(side)*signed-b.PeerSameQty+b.PeerOppQty, hlRemainderBasisRead)
+}
+
+func closeRemainderBasisText(stop hlCloseRemainderStop) string {
+	switch stop.Basis {
+	case hlRemainderBasisPlan:
+		return "the pre-send account reading less the fill"
+	case hlRemainderBasisRead:
+		return "a post-close account reading"
+	}
+	return ""
+}
+
+func closeRearmNextAction(sc StrategyConfig, res hlStopRearmResult) string {
+	if res.Owner == hlRearmOwnerRecorded {
+		trigger := "<price>"
+		if res.TriggerPx > 0 {
+			trigger = fmt.Sprintf("%.4f", res.TriggerPx)
+		}
+		return fmt.Sprintf("Check the open orders on Hyperliquid, then re-arm with `go-trader manual-update-sl %s --trigger %s` or close the position.", sc.ID, trigger)
+	}
+	return "Check the open orders on Hyperliquid, then place the stop by hand or close the position. Do not rely on a later cycle to re-arm it."
+}
+
+func closeRearmFailureText(res hlStopRearmResult, stop hlCloseRemainderStop, prevStopOID int64) (string, string) {
+	switch res.Status {
+	case hlStopRearmNoTrigger:
+		return "no trigger price could be resolved", "The position has NO exchange-side stop."
+	case hlStopRearmNoArm:
+		return fmt.Sprintf("no re-arm path owns the cancelled stop (OID=%d)", prevStopOID), "The position has NO exchange-side stop."
+	case hlStopRearmReadFailed:
+		return fmt.Sprintf("the open orders could not be read (%s)", res.Detail), "Nothing was placed, and the stop state is UNVERIFIED."
+	case hlStopRearmPreCloseStopResting:
+		reason := fmt.Sprintf("the cancel of the pre-close stop (OID=%d) was rejected (%s)", prevStopOID, res.Detail)
+		if stop.AfterFill || stop.Qty < stop.Remainder-hlSharedCloseQtyTolerance {
+			return reason, fmt.Sprintf("That stop still rests at its pre-close size, which is larger than the %.6f this position now needs, so on a shared coin it can close units of a peer strategy when it fires.", res.Qty)
+		}
+		return reason, "That stop most likely still rests and protects the position, but its state is not verified."
+	case hlStopRearmProtectionLost:
+		return fmt.Sprintf("the pre-close stop was cancelled and the replacement did not rest (%s)", res.Detail), "The position has NO exchange-side stop."
+	case hlStopRearmOutcomeUnknown:
+		return fmt.Sprintf("the placement outcome could not be read (%s)", res.Detail), "A stop may rest untracked, so the position may be UNPROTECTED."
+	}
+	return fmt.Sprintf("the placement was rejected (%s)", res.Detail), "The position may have NO exchange-side stop."
+}
+
+func formatCloseRearmReport(sc StrategyConfig, symbol string, stop hlCloseRemainderStop, res hlStopRearmResult, prevStopOID int64) (string, bool) {
+	basis := closeRemainderBasisText(stop)
+	unverified := ""
+	if stop.Basis == hlRemainderBasisUnverified {
+		unverified = fmt.Sprintf(" The account read after the close failed (%s), so the stop is sized at the %.6f book remainder with no check of which on-chain units back it.", stop.Detail, stop.Remainder)
+	}
+	switch res.Status {
+	case hlStopRearmUnbacked:
+		return fmt.Sprintf("No stop was placed: %s shows no on-chain units behind the %.6f remainder (the coin is flat on this side, or every unit left is in the book of a peer strategy). Compare the on-chain position with the books before the next close on %s.", basis, stop.Remainder, symbol), true
+	case hlStopRearmUnclaimed:
+		return fmt.Sprintf("This position has no configured stop owner, so no stop was placed for the %.6f remainder.%s", stop.Remainder, unverified), false
+	case hlStopRearmClosed:
+		return fmt.Sprintf("The %s re-arm found that %s; the reconciler books that close.", res.Owner, res.Detail), false
+	case hlStopRearmPlaced:
+		if stop.measured() && res.Qty < stop.Remainder-hlSharedCloseQtyTolerance {
+			return fmt.Sprintf("The %s now rests for %.6f at $%.4f (OID=%d), the on-chain units that back the remainder per %s. The other %.6f units of the %.6f remainder have no on-chain units behind them and get no stop. Compare the on-chain position with the books before the next close on %s.", res.Owner, res.Qty, res.TriggerPx, res.OID, basis, stop.Remainder-res.Qty, stop.Remainder, symbol), true
+		}
+		sized := ""
+		if stop.measured() {
+			sized = ", sized from " + basis
+		}
+		return fmt.Sprintf("The %s now rests for %.6f at $%.4f (OID=%d)%s.%s", res.Owner, res.Qty, res.TriggerPx, res.OID, sized, unverified), false
+	}
+	reason, state := closeRearmFailureText(res, stop, prevStopOID)
+	return fmt.Sprintf("The %s re-arm for %.6f did not complete: %s. %s%s %s", res.Owner, res.Qty, reason, state, unverified, closeRearmNextAction(sc, res)), true
+}
+
+func formatSizedCloseShortFillAlert(sc StrategyConfig, symbol, side string, filledQty, bookQty float64, report string, critical bool) string {
+	prefix := ""
+	if critical {
+		prefix = "CRITICAL: "
+	}
+	return fmt.Sprintf("%s**SIZED CLOSE FILLED SHORT** [%s] %s %s close filled %.6f of the %.6f book. The %.6f remainder stays on the book, and the protection ids this close cancelled are cleared. Stop re-arm: %s", prefix, sc.ID, symbol, side, filledQty, bookQty, bookQty-filledQty, report)
+}
+
+func formatUnfilledCloseRearmAlert(sc StrategyConfig, symbol, side string, bookQty float64, report string) string {
+	return fmt.Sprintf("CRITICAL: [%s] %s %s close of the %.6f book did not fill after it cancelled, or may have cancelled, the exchange-side protection. Stop re-arm: %s", sc.ID, symbol, side, bookQty, report)
+}
+
 type hlCloseRearmContext struct {
 	Price         float64
 	PrevStopOID   int64
@@ -282,6 +437,54 @@ type hlCloseRearmContext struct {
 	FillHintsJSON []byte
 	LiqPxByCoin   map[string]float64
 	NetSideByCoin map[string]string
+	Backing       hlCloseBacking
+}
+
+func rearmCloseRemainderStop(sc StrategyConfig, stratState *StrategyState, stratDB *StateDB, symbol string, stop hlCloseRemainderStop, rearm hlCloseRearmContext, mu *sync.RWMutex, notifier *MultiNotifier, logger *StrategyLogger) (int, string, hlStopRearmResult) {
+	if !hyperliquidIsLive(sc.Args) {
+		return 0, "", hlStopRearmResult{}
+	}
+	if stop.unbacked() {
+		logger.Error("CRITICAL: close %s left %.6f on the book, but %s shows no on-chain units behind it; no stop is placed", symbol, stop.Remainder, closeRemainderBasisText(stop))
+	} else {
+		logger.Warn("Close %s left %.6f on the book after cancelling (or possibly cancelling) its protection; re-arming a %.6f stop in this cycle", symbol, stop.Remainder, stop.Qty)
+	}
+	return rearmProtectionForCloseRemainder(sc, stratState, stratDB, symbol, rearm.Price, rearm.PrevStopOID, rearm.PrevTriggerPx, rearm.PrevHighWater, rearm.OnChainAbsQty, rearm.FillHintsJSON, rearm.LiqPxByCoin, rearm.NetSideByCoin, stop, mu, notifier, logger)
+}
+
+func rearmShortFilledClose(sc StrategyConfig, stratState *StrategyState, stratDB *StateDB, symbol, side string, bookQty, filledQty float64, rearm hlCloseRearmContext, mu *sync.RWMutex, notifier *MultiNotifier, logger *StrategyLogger) (int, string) {
+	stop := resolveHLCloseRemainderStop(symbol, side, bookQty, filledQty, true, rearm.Backing)
+	trades, detail, res := rearmCloseRemainderStop(sc, stratState, stratDB, symbol, stop, rearm, mu, notifier, logger)
+	report, critical := formatCloseRearmReport(sc, symbol, stop, res, rearm.PrevStopOID)
+	msg := formatSizedCloseShortFillAlert(sc, symbol, side, filledQty, bookQty, report, critical)
+	if critical {
+		logger.Error("%s", msg)
+	} else {
+		logger.Warn("%s", msg)
+	}
+	notifyManualCloseRearmFailure(notifier, msg)
+	return trades, detail
+}
+
+func rearmUnfilledClose(sc StrategyConfig, stratState *StrategyState, stratDB *StateDB, symbol, side string, bookQty float64, outcomeKnown bool, rearm hlCloseRearmContext, mu *sync.RWMutex, notifier *MultiNotifier, logger *StrategyLogger) (int, string) {
+	stop := resolveHLCloseRemainderStop(symbol, side, bookQty, 0, outcomeKnown, rearm.Backing)
+	trades, detail, res := rearmCloseRemainderStop(sc, stratState, stratDB, symbol, stop, rearm, mu, notifier, logger)
+	if report, critical := formatCloseRearmReport(sc, symbol, stop, res, rearm.PrevStopOID); critical {
+		msg := formatUnfilledCloseRearmAlert(sc, symbol, side, bookQty, report)
+		logger.Error("%s", msg)
+		notifyManualCloseRearmFailure(notifier, msg)
+	}
+	return trades, detail
+}
+
+func rearmExecuteLaneSizedCloseShortFill(sc StrategyConfig, stratState *StrategyState, stratDB *StateDB, result *HyperliquidResult, posQty float64, posSide string, rearm hlCloseRearmContext, mu *sync.RWMutex, notifier *MultiNotifier, logger *StrategyLogger) (int, string) {
+	rearm.Backing.PlanShare, rearm.Backing.PlanShareKnown = result.SizedClosePlanShare, result.SizedClosePlanShareKnown
+	return rearmShortFilledClose(sc, stratState, stratDB, result.Symbol, posSide, posQty, result.SizedCloseBookedQty, rearm, mu, notifier, logger)
+}
+
+func rearmExecuteLaneUnfilledClose(sc StrategyConfig, stratState *StrategyState, stratDB *StateDB, result *HyperliquidResult, execResult *HyperliquidExecuteResult, posQty float64, posSide string, rearm hlCloseRearmContext, mu *sync.RWMutex, notifier *MultiNotifier, logger *StrategyLogger) (int, string) {
+	rearm.Backing.PlanShare, rearm.Backing.PlanShareKnown = result.SizedClosePlanShare, result.SizedClosePlanShareKnown
+	return rearmUnfilledClose(sc, stratState, stratDB, result.Symbol, posSide, posQty, execResult != nil, rearm, mu, notifier, logger)
 }
 
 func settleManualCycleClose(sc StrategyConfig, stratState *StrategyState, stratDB *StateDB, pos *Position, closeSide string, closeQty float64, intentFullClose bool, execResult *HyperliquidExecuteResult, execErr error, requestedCancelOIDs []int64, rearm hlCloseRearmContext, mu *sync.RWMutex, notifier *MultiNotifier, logger *StrategyLogger) (int, string, float64) {
@@ -291,6 +494,10 @@ func settleManualCycleClose(sc StrategyConfig, stratState *StrategyState, stratD
 			cancelRequested = true
 		}
 	}
+	mu.RLock()
+	bookQty := pos.Quantity
+	side := pos.Side
+	mu.RUnlock()
 	execResult, execErr = confirmHyperliquidExecuteFill(execResult, execErr)
 	if execErr != nil {
 		logger.Error("manual close execute failed: %v", execErr)
@@ -300,8 +507,9 @@ func settleManualCycleClose(sc StrategyConfig, stratState *StrategyState, stratD
 			clearHyperliquidProtectionOIDsMatching(stratState.Positions[sc.Symbol], canceledOIDs)
 			mu.Unlock()
 		}
-		if intentFullClose && cancelRequested && (execResult == nil || len(canceledOIDs) > 0) {
-			return rearmManualCycleCloseStop(sc, stratState, stratDB, 0, rearm, mu, notifier, logger)
+		if intentFullClose && cancelRequested && (execResult == nil || len(canceledOIDs) > 0) && hyperliquidIsLive(sc.Args) {
+			trades, detail := rearmUnfilledClose(sc, stratState, stratDB, sc.Symbol, side, bookQty, execResult != nil, rearm, mu, notifier, logger)
+			return trades, detail, 0
 		}
 		return 0, "", 0
 	}
@@ -323,10 +531,6 @@ func settleManualCycleClose(sc StrategyConfig, stratState *StrategyState, stratD
 		mu.Unlock()
 		logger.Info("cleared canceled protection OIDs=%v after the manual close filled short of the full book", booking.ClearOIDs)
 	}
-	if booking.ShortOfIntent {
-		logger.Error("CRITICAL: manual full close %s filled %.6f of the %.6f book; the remainder stays on the book", sc.Symbol, action.Quantity, pos.Quantity)
-		notifySizedCloseRemainder(notifier, sc, sc.Symbol, pos.Side, action.Quantity, pos.Quantity)
-	}
 	trades, detail, fillPx := 0, "", 0.0
 	if err := stratDB.InsertPendingManualAction(action); err != nil {
 		logger.Error("failed to queue manual close action: %v", err)
@@ -336,25 +540,11 @@ func settleManualCycleClose(sc StrategyConfig, stratState *StrategyState, stratD
 		detail = fmt.Sprintf("manual close %.4f %s @ $%.2f | PnL=$%.2f", action.Quantity, sc.Symbol, action.FillPrice, action.RealizedPnL)
 		logger.Info("Queued manual close: %s", detail)
 	}
-	if booking.ShortOfIntent && cancelRequested {
-		mu.RLock()
-		remainder := pos.Quantity - action.Quantity
-		mu.RUnlock()
-		if extraTrades, slDetail, _ := rearmManualCycleCloseStop(sc, stratState, stratDB, remainder, rearm, mu, notifier, logger); extraTrades > 0 {
+	if booking.ShortOfIntent && hyperliquidIsLive(sc.Args) {
+		if extraTrades, slDetail := rearmShortFilledClose(sc, stratState, stratDB, sc.Symbol, side, bookQty, action.Quantity, rearm, mu, notifier, logger); extraTrades > 0 {
 			trades += extraTrades
 			detail = slDetail
 		}
 	}
 	return trades, detail, fillPx
-}
-
-func rearmManualCycleCloseStop(sc StrategyConfig, stratState *StrategyState, stratDB *StateDB, remainderQty float64, rearm hlCloseRearmContext, mu *sync.RWMutex, notifier *MultiNotifier, logger *StrategyLogger) (int, string, float64) {
-	if !hyperliquidIsLive(sc.Args) {
-		return 0, "", 0
-	}
-	if remainderQty > 0 {
-		logger.Warn("Manual close %s left %.6f on the book after cancelling its protection; re-arming the remainder's stop in this cycle", sc.Symbol, remainderQty)
-	}
-	trades, detail := rearmProtectionForCloseRemainder(sc, stratState, stratDB, sc.Symbol, rearm.Price, rearm.PrevStopOID, rearm.PrevTriggerPx, rearm.PrevHighWater, rearm.OnChainAbsQty, rearm.FillHintsJSON, rearm.LiqPxByCoin, rearm.NetSideByCoin, remainderQty, mu, notifier, logger)
-	return trades, detail, 0
 }

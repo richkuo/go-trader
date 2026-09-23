@@ -684,7 +684,8 @@ func runHyperliquidProtectionSync(
 	netSideByCoin map[string]string,
 	guardMode hlProtectionGuardMode,
 ) (bool, float64) {
-	return runHyperliquidProtectionSyncForRemainder(sc, stratState, db, symbol, mu, notifier, logger, logTag, reconcileFillHintsJSON, liqPxByCoin, netSideByCoin, guardMode, 0, 0)
+	synced, fillPx, _ := runHyperliquidProtectionSyncForRemainder(sc, stratState, db, symbol, mu, notifier, logger, logTag, reconcileFillHintsJSON, liqPxByCoin, netSideByCoin, guardMode, 0, false, 0)
+	return synced, fillPx
 }
 
 func runHyperliquidProtectionSyncForRemainder(
@@ -700,11 +701,12 @@ func runHyperliquidProtectionSyncForRemainder(
 	liqPxByCoin map[string]float64,
 	netSideByCoin map[string]string,
 	guardMode hlProtectionGuardMode,
-	remainderQty float64,
+	stopQty float64,
+	afterFill bool,
 	prevStopOID int64,
-) (bool, float64) {
+) (bool, float64, hlStopRearmResult) {
 	if stratState == nil || symbol == "" {
-		return false, 0
+		return false, 0, hlStopRearmResult{}
 	}
 	unlockManual, blocked := guardHyperliquidProtectionSync(db, sc.ID, symbol)
 	stopLegOnly := false
@@ -726,7 +728,7 @@ func runHyperliquidProtectionSyncForRemainder(
 		} else if logger != nil {
 			logger.Info("%s skipped: %s", logTag, blocked)
 		}
-		return false, 0
+		return false, 0, hlStopRearmResult{}
 	}
 	if unlockManual != nil {
 		defer unlockManual()
@@ -769,7 +771,7 @@ func runHyperliquidProtectionSyncForRemainder(
 		mu.RUnlock()
 	}
 	if !syncOK {
-		return false, 0
+		return false, 0, hlStopRearmResult{}
 	}
 	if stopLegOnly {
 		plan = stopLegOnlyProtectionPlan(plan)
@@ -777,26 +779,32 @@ func runHyperliquidProtectionSyncForRemainder(
 			if logger != nil {
 				logger.Info("%s skipped: the queued manual action gates the take-profit tiers and this strategy has no protection-sync stop-loss leg to re-arm", logTag)
 			}
-			return false, 0
+			return false, 0, hlStopRearmResult{}
 		}
 	}
 	sizedToRemainder := false
-	if remainderQty > 0 && remainderQty < plan.Size-1e-9 {
-		plan.Size = remainderQty
+	if stopQty > 0 && stopQty < plan.Size-1e-9 {
+		plan.Size = stopQty
 		sizedToRemainder = true
 	}
-	if remainderQty > 0 && plan.StopLossATRMult > 0 && prevStopOID > 0 && plan.StopLossOID == prevStopOID {
+	if (afterFill || sizedToRemainder) && plan.StopLossATRMult > 0 && prevStopOID > 0 && plan.StopLossOID == prevStopOID {
 		plan.ForceSLReplace = true
+	}
+	stopOutcome := func(protection *HyperliquidProtectionSyncResult) hlStopRearmResult {
+		if plan.StopLossATRMult <= 0 {
+			return hlStopRearmResult{}
+		}
+		return classifyProtectionSyncStopRearm(plan.Size, protection)
 	}
 	protection, ok := syncHyperliquidProtection(sc, plan, notifier, logger, reconcileFillHintsJSON)
 	if !ok || protection == nil {
-		return false, 0
+		return false, 0, stopOutcome(protection)
 	}
 	mu.Lock()
 	defer mu.Unlock()
 	pos, ok := stratState.Positions[symbol]
 	if !ok || pos == nil || pos.Quantity <= 0 || pos.Side != plan.Side {
-		return false, 0
+		return false, 0, stopOutcome(protection)
 	}
 	if protection.StopLossFilledImmediately && protection.StopLossTriggerPx > 0 {
 		if sizedToRemainder {
@@ -805,10 +813,10 @@ func runHyperliquidProtectionSyncForRemainder(
 					residue.StopLossOID = 0
 					residue.StopLossTriggerPx = 0
 				}
-				return true, protection.StopLossTriggerPx
+				return true, protection.StopLossTriggerPx, stopOutcome(protection)
 			}
 		} else if recordPerpsStopLossClose(stratState, symbol, protection.StopLossTriggerPx, "protection_sync_sl_immediate", logger) {
-			return true, protection.StopLossTriggerPx
+			return true, protection.StopLossTriggerPx, stopOutcome(protection)
 		}
 	}
 	applyHyperliquidProtectionSync(pos, protection, plan.CancelTPOIDs)
@@ -823,7 +831,7 @@ func runHyperliquidProtectionSyncForRemainder(
 	if logger != nil {
 		logger.Info("%s (sl_oid=%d tp_oids=%v)", logTag, pos.StopLossOID, pos.TPOIDs)
 	}
-	return true, 0
+	return true, 0, stopOutcome(protection)
 }
 
 // stopLegOnlyProtectionPlan strips every take-profit input so the sync places

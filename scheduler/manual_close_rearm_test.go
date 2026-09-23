@@ -409,6 +409,8 @@ func TestManualCloseShortFillRearmsTheRemainderStop(t *testing.T) {
 		wantDrainQty float64
 		wantDrainSL  int64
 		wantOutPart  string
+		chains       []float64
+		wantAlert    bool
 	}{
 		{name: "a confirmed stop cancel restores the recorded trigger at the remainder", fillSz: 0.3, succeeded: []int64{prevOID, 7001},
 			slResult:   &HyperliquidStopLossUpdateResult{StopLossOID: 6200, StopLossTriggerPx: prevTrigger},
@@ -417,12 +419,16 @@ func TestManualCloseShortFillRearmsTheRemainderStop(t *testing.T) {
 		{name: "a stop cancel the venue reported as failed is verified on-chain and replaced at the remainder", fillSz: 0.3, succeeded: []int64{7001}, failed: []int64{prevOID},
 			slResult:   &HyperliquidStopLossUpdateResult{StopLossOID: 6200, StopLossTriggerPx: prevTrigger, CancelStopLossSucceeded: true},
 			wantSLCall: &rearmSLCall{symbol: "ETH", side: "long", size: 0.1, triggerPx: prevTrigger, cancelOID: prevOID}, wantDrainQty: 0.1, wantDrainSL: 6200,
-			wantOutPart: "replaced at the 0.100000 remainder size"},
+			wantOutPart: "is checked on-chain before a stop for the 0.100000 remainder is placed"},
 		{name: "a re-armed stop that fills at once leaves the remainder to the reconciler with no stop id", fillSz: 0.3, succeeded: []int64{prevOID, 7001},
 			slResult:   &HyperliquidStopLossUpdateResult{StopLossFilledImmediately: true, StopLossTriggerPx: prevTrigger},
 			wantSLCall: &rearmSLCall{symbol: "ETH", side: "long", size: 0.1, triggerPx: prevTrigger, cancelOID: prevOID}, wantDrainQty: 0.1,
 			wantOutPart: "filled immediately"},
 		{name: "a full fill places no stop", fillSz: 0.4, succeeded: []int64{prevOID, 7001}, wantOutPart: "Queued"},
+		{name: "a capped shared close places no stop for the unbacked remainder and alerts", fillSz: 0.2, succeeded: []int64{prevOID, 7001}, chains: []float64{0.7},
+			wantDrainQty: 0.2, wantOutPart: "No stop-loss was placed", wantAlert: true},
+		{name: "a chain that reads flat after the fill places nothing and alerts", fillSz: 0.3, succeeded: []int64{prevOID, 7001}, chains: []float64{0.9, 0},
+			wantDrainQty: 0.1, wantOutPart: "No stop-loss was placed", wantAlert: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -448,9 +454,24 @@ func TestManualCloseShortFillRearmsTheRemainderStop(t *testing.T) {
 			if err := db.SaveState(state); err != nil {
 				t.Fatalf("SaveState: %v", err)
 			}
-			d := newCLIManualCoreDeps(cfg, openTestStore(t, db), nil)
+			notifier, backend := confirmationNotifier()
+			d := newCLIManualCoreDeps(cfg, openTestStore(t, db), notifier)
 			d.fetchMids = func([]string) (map[string]float64, error) { return map[string]float64{"ETH": 2000}, nil }
-			d.fetchPositions = func(string) ([]HLPosition, error) { return []HLPosition{{Coin: "ETH", Size: 0.9}}, nil }
+			reads := 0
+			d.fetchPositions = func(string) ([]HLPosition, error) {
+				chain := 0.9
+				if len(tc.chains) > 0 {
+					chain = tc.chains[len(tc.chains)-1]
+					if reads < len(tc.chains) {
+						chain = tc.chains[reads]
+					}
+				}
+				reads++
+				if chain == 0 {
+					return nil, nil
+				}
+				return []HLPosition{{Coin: "ETH", Size: chain}}, nil
+			}
 			d.execute = func(_ string, _ string, _ string, size float64, _ float64, _ int64, _ float64, _ string, _ float64, _ hlCloseMode, _ hlExecuteSnapshot, _ ...int64) (*HyperliquidExecuteResult, string, error) {
 				r := &HyperliquidExecuteResult{Execution: &HyperliquidExecution{Fill: &HyperliquidFill{AvgPx: 2100, TotalSz: tc.fillSz, OID: 4343, Fee: 0.1}}, CancelStopLossSucceededOIDs: tc.succeeded, CancelStopLossFailedOIDs: tc.failed}
 				if len(tc.failed) > 0 {
@@ -482,6 +503,17 @@ func TestManualCloseShortFillRearmsTheRemainderStop(t *testing.T) {
 			}
 			if out := res.uiMessage(); !strings.Contains(out, tc.wantOutPart) {
 				t.Fatalf("operator output = %q, want it to contain %q", out, tc.wantOutPart)
+			}
+			backend.mu.Lock()
+			var critical []string
+			for _, m := range backend.messages {
+				if strings.HasPrefix(m.content, "CRITICAL") {
+					critical = append(critical, m.content)
+				}
+			}
+			backend.mu.Unlock()
+			if tc.wantAlert != (len(critical) == 1) || len(critical) > 1 {
+				t.Fatalf("critical alerts = %q, want one: %t", critical, tc.wantAlert)
 			}
 			store := openTestStore(t, db)
 			reloaded, _, loadErr := LoadStateWithStore(cfg, store)

@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"math"
+	"strings"
+	"sync"
 	"testing"
 )
 
@@ -124,10 +126,11 @@ func TestHyperliquidExecuteOrderCloseModeRouting(t *testing.T) {
 		wantSize      float64
 		wantFlipSize  bool
 		wantAlert     bool
+		wantBookedQty float64
 	}{
 		{name: "sole owner partial above chain is capped reduce-only on the refetched reading", direction: DirectionLong, signal: -1, closeFraction: 0.5, posQty: 10, ctx: hlCloseContext{OnChain: hlSignedView("ETH", 7)}, refetch: func() *hlOnChainCoinView { v := hlSignedView("ETH", 7); return &v }(), wantCalls: 1, wantRefetches: 1, wantMode: hlCloseModeReduceOnly, wantSize: 2},
 		{name: "sole owner full close keeps the whole-position close", direction: DirectionLong, signal: -1, closeFraction: 1.0, posQty: 10, ctx: hlCloseContext{OnChain: hlSignedView("ETH", 7)}, wantCalls: 1, wantMode: hlCloseModeWhole, wantSize: 10},
-		{name: "same-side peer full close is reduce-only capped on the refetched reading and alerts on the remainder", direction: DirectionLong, signal: -1, closeFraction: 1.0, posQty: 10, shared: true, ctx: hlCloseContext{PeerSameQty: 5, OnChain: hlSignedView("ETH", 12)}, refetch: func() *hlOnChainCoinView { v := hlSignedView("ETH", 12); return &v }(), wantCalls: 1, wantRefetches: 1, wantMode: hlCloseModeReduceOnly, wantSize: 7, wantAlert: true},
+		{name: "same-side peer full close is reduce-only capped on the refetched reading and hands the short fill to the re-arm", direction: DirectionLong, signal: -1, closeFraction: 1.0, posQty: 10, shared: true, ctx: hlCloseContext{PeerSameQty: 5, OnChain: hlSignedView("ETH", 12)}, refetch: func() *hlOnChainCoinView { v := hlSignedView("ETH", 12); return &v }(), wantCalls: 1, wantRefetches: 1, wantMode: hlCloseModeReduceOnly, wantSize: 7, wantBookedQty: 7},
 		{name: "opposite-side peer full close crosses after one refetch", direction: DirectionLong, signal: -1, closeFraction: 1.0, posQty: 10, shared: true, ctx: hlCloseContext{PeerOppQty: 4, OnChain: hlSignedView("ETH", 6)}, refetch: func() *hlOnChainCoinView { v := hlSignedView("ETH", 6); return &v }(), wantCalls: 1, wantRefetches: 1, wantMode: hlCloseModeCross, wantSize: 10},
 		{name: "opposite-side peer with refetch error sends nothing", direction: DirectionLong, signal: -1, closeFraction: 1.0, posQty: 10, shared: true, ctx: hlCloseContext{PeerOppQty: 4, OnChain: hlSignedView("ETH", 6)}, refetchErr: fmt.Errorf("clearinghouseState timeout"), wantRefetches: 1},
 		{name: "sole owner with flat chain on the refetched reading sends nothing and alerts", direction: DirectionLong, signal: -1, closeFraction: 0.5, posQty: 10, ctx: hlCloseContext{OnChain: hlSignedView("ETH", 0)}, refetch: func() *hlOnChainCoinView { v := hlSignedView("ETH", 0); return &v }(), wantRefetches: 1, wantAlert: true},
@@ -174,6 +177,9 @@ func TestHyperliquidExecuteOrderCloseModeRouting(t *testing.T) {
 			if alerted != tc.wantAlert {
 				t.Fatalf("alerted=%t, want %t", alerted, tc.wantAlert)
 			}
+			if math.Abs(result.SizedCloseBookedQty-tc.wantBookedQty) > 1e-9 {
+				t.Fatalf("short-fill booked qty=%g, want %g", result.SizedCloseBookedQty, tc.wantBookedQty)
+			}
 			if tc.wantCalls == 0 {
 				return
 			}
@@ -197,10 +203,12 @@ func TestHyperliquidSizedCloseFreshReadingAndBooking(t *testing.T) {
 	originalExecute := runHyperliquidExecuteFn
 	originalThrottle := liveExecThrottle
 	originalRecorder := tradeRecorder
+	originalUpdate := runHyperliquidUpdateStopLossFunc
 	t.Cleanup(func() {
 		runHyperliquidExecuteFn = originalExecute
 		liveExecThrottle = originalThrottle
 		tradeRecorder = originalRecorder
+		runHyperliquidUpdateStopLossFunc = originalUpdate
 	})
 	tradeRecorder = nil
 	view := func(signed float64) *hlOnChainCoinView { v := hlSignedView("ETH", signed); return &v }
@@ -222,6 +230,10 @@ func TestHyperliquidSizedCloseFreshReadingAndBooking(t *testing.T) {
 		wantAlert    bool
 		wantRefetch  int
 		wantBookFlat bool
+		wantStopQty  float64
+		wantStopOID  int64
+		wantCritical bool
+		wantDetail   string
 	}{
 		{name: "same-side peer opened earlier in the cycle closes the whole book", posQty: 10, ctx: hlCloseContext{PeerSameQty: 5, OnChain: hlSignedView("ETH", 10)}, refetch: view(15), wantCalls: 1, wantMode: hlCloseModeReduceOnly, wantSize: 10, wantBookFlat: true, wantRefetch: 1},
 		{name: "opposite-side peer closed earlier in the cycle sends instead of skipping", posQty: 4, ctx: hlCloseContext{OnChain: hlSignedView("ETH", -6)}, refetch: view(4), wantCalls: 1, wantMode: hlCloseModeReduceOnly, wantSize: 4, wantBookFlat: true, wantRefetch: 1},
@@ -229,9 +241,10 @@ func TestHyperliquidSizedCloseFreshReadingAndBooking(t *testing.T) {
 		{name: "refetch failure on a capped plan defers and cancels nothing", posQty: 10, ctx: hlCloseContext{PeerSameQty: 5, OnChain: hlSignedView("ETH", 12)}, refetchErr: fmt.Errorf("clearinghouseState timeout"), wantBookQty: 10, wantSLOID: 111, wantTPOIDs: []int64{201, 202}, wantRefetch: 1},
 		{name: "refetch failure on a skip plan defers without a critical alert", posQty: 10, ctx: hlCloseContext{PeerSameQty: 5, OnChain: hlSignedView("ETH", 5)}, refetchErr: fmt.Errorf("clearinghouseState timeout"), wantBookQty: 10, wantSLOID: 111, wantTPOIDs: []int64{201, 202}, wantRefetch: 1},
 		{name: "refetch failure on an uncapped reduce-only plan still sends the book size", posQty: 10, ctx: hlCloseContext{PeerSameQty: 5, OnChain: hlSignedView("ETH", 15)}, refetchErr: fmt.Errorf("clearinghouseState timeout"), wantCalls: 1, wantMode: hlCloseModeReduceOnly, wantSize: 10, wantBookFlat: true, wantRefetch: 1},
-		{name: "real drift on the fresh reading books the fill and keeps the remainder", posQty: 10, ctx: hlCloseContext{PeerSameQty: 5, OnChain: hlSignedView("ETH", 15)}, refetch: view(12), wantCalls: 1, wantMode: hlCloseModeReduceOnly, wantSize: 7, wantBookQty: 3, wantTPOIDs: []int64{0, 0}, wantAlert: true, wantRefetch: 1},
-		{name: "partial IOC fill books the fill and keeps the remainder", posQty: 10, ctx: hlCloseContext{PeerSameQty: 5, OnChain: hlSignedView("ETH", 15)}, refetch: view(15), fillCap: 4, wantCalls: 1, wantMode: hlCloseModeReduceOnly, wantSize: 10, wantBookQty: 6, wantTPOIDs: []int64{0, 0}, wantAlert: true, wantRefetch: 1},
-		{name: "a stop cancel the venue reported as failed keeps its id on the remainder", posQty: 10, ctx: hlCloseContext{PeerSameQty: 5, OnChain: hlSignedView("ETH", 15)}, refetch: view(15), fillCap: 4, failedSLOID: true, wantCalls: 1, wantMode: hlCloseModeReduceOnly, wantSize: 10, wantBookQty: 6, wantSLOID: 111, wantTPOIDs: []int64{0, 0}, wantAlert: true, wantRefetch: 1},
+		{name: "real drift on the fresh reading books the fill and keeps the remainder", posQty: 10, ctx: hlCloseContext{PeerSameQty: 5, OnChain: hlSignedView("ETH", 15)}, refetch: view(12), wantCalls: 1, wantMode: hlCloseModeReduceOnly, wantSize: 7, wantBookQty: 3, wantTPOIDs: []int64{0, 0}, wantAlert: true, wantRefetch: 1, wantCritical: true},
+		{name: "partial IOC fill books the fill and keeps the remainder", posQty: 10, ctx: hlCloseContext{PeerSameQty: 5, OnChain: hlSignedView("ETH", 15)}, refetch: view(15), fillCap: 4, wantCalls: 1, wantMode: hlCloseModeReduceOnly, wantSize: 10, wantBookQty: 6, wantTPOIDs: []int64{0, 0}, wantAlert: true, wantRefetch: 1, wantStopQty: 6, wantStopOID: 999},
+		{name: "a stop cancel the venue reported as failed keeps its id on the remainder", posQty: 10, ctx: hlCloseContext{PeerSameQty: 5, OnChain: hlSignedView("ETH", 15)}, refetch: view(15), fillCap: 4, failedSLOID: true, wantCalls: 1, wantMode: hlCloseModeReduceOnly, wantSize: 10, wantBookQty: 6, wantSLOID: 111, wantTPOIDs: []int64{0, 0}, wantAlert: true, wantRefetch: 1, wantStopQty: 6, wantStopOID: 999},
+		{name: "a failed pre-send and post-fill read on a partial IOC fill arms the remainder and says so", posQty: 10, ctx: hlCloseContext{PeerSameQty: 5, OnChain: hlSignedView("ETH", 15)}, refetchErr: fmt.Errorf("clearinghouseState timeout"), fillCap: 4, wantCalls: 1, wantMode: hlCloseModeReduceOnly, wantSize: 10, wantBookQty: 6, wantTPOIDs: []int64{0, 0}, wantAlert: true, wantRefetch: 2, wantStopQty: 6, wantStopOID: 999, wantDetail: "clearinghouseState timeout"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -257,9 +270,16 @@ func TestHyperliquidSizedCloseFreshReadingAndBooking(t *testing.T) {
 				}
 				return res, "", nil
 			}
+			var stopCalls []rearmSLCall
+			runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+				stopCalls = append(stopCalls, rearmSLCall{symbol: symbol, side: side, size: size, triggerPx: triggerPx, cancelOID: cancelOID})
+				return &HyperliquidStopLossUpdateResult{StopLossOID: 999, StopLossTriggerPx: triggerPx, CancelStopLossSucceeded: cancelOID > 0}, "", nil
+			}
 			liveExecThrottle = &LiveExecFailureThrottle{}
 			notifier, backend := confirmationNotifier()
 			sc := confirmationTestStrategy(DirectionLong)
+			stopPct := 5.0
+			sc.StopLossPct = &stopPct
 			refetches := 0
 			ctx := tc.ctx
 			ctx.Refetch = func() (hlOnChainCoinView, error) {
@@ -283,6 +303,17 @@ func TestHyperliquidSizedCloseFreshReadingAndBooking(t *testing.T) {
 					t.Fatalf("sent mode=%v size=%g, want mode=%v size=%g", gotMode, gotSize, tc.wantMode, tc.wantSize)
 				}
 				executeHyperliquidResultDeferredOpen(sc, state, result, execResult, "SELL", 2100, nil, &Config{}, HurstGateDecision{}, silentStrategyLogger(sc.ID))
+				if result.SizedCloseBookedQty > 0 {
+					var mu sync.RWMutex
+					rearm := hlCloseRearmContext{Price: 2100, PrevStopOID: 111, PrevTriggerPx: 1900, OnChainAbsQty: ctx.OnChain.AbsQty, Backing: hlCloseBacking{PeerSameQty: ctx.PeerSameQty, PeerOppQty: ctx.PeerOppQty, Refetch: ctx.Refetch}}
+					rearmExecuteLaneSizedCloseShortFill(sc, state, nil, result, tc.posQty, "long", rearm, &mu, notifier, silentStrategyLogger(sc.ID))
+				}
+			}
+			if tc.wantStopQty == 0 && len(stopCalls) != 0 {
+				t.Fatalf("stop re-arms = %+v, want none", stopCalls)
+			}
+			if tc.wantStopQty > 0 && (len(stopCalls) != 1 || math.Abs(stopCalls[0].size-tc.wantStopQty) > 1e-9) {
+				t.Fatalf("stop re-arms = %+v, want one of %g", stopCalls, tc.wantStopQty)
 			}
 			if refetches != tc.wantRefetch {
 				t.Fatalf("refetches=%d, want %d", refetches, tc.wantRefetch)
@@ -296,15 +327,26 @@ func TestHyperliquidSizedCloseFreshReadingAndBooking(t *testing.T) {
 				if pos == nil {
 					t.Fatalf("book deleted, want %g left", tc.wantBookQty)
 				}
-				if math.Abs(pos.Quantity-tc.wantBookQty) > 1e-9 || pos.StopLossOID != tc.wantSLOID || fmt.Sprint(pos.TPOIDs) != fmt.Sprint(tc.wantTPOIDs) {
-					t.Fatalf("book qty=%g sl=%d tps=%v, want qty=%g sl=%d tps=%v", pos.Quantity, pos.StopLossOID, pos.TPOIDs, tc.wantBookQty, tc.wantSLOID, tc.wantTPOIDs)
+				wantSL := tc.wantSLOID
+				if tc.wantStopOID > 0 {
+					wantSL = tc.wantStopOID
+				}
+				if math.Abs(pos.Quantity-tc.wantBookQty) > 1e-9 || pos.StopLossOID != wantSL || fmt.Sprint(pos.TPOIDs) != fmt.Sprint(tc.wantTPOIDs) {
+					t.Fatalf("book qty=%g sl=%d tps=%v, want qty=%g sl=%d tps=%v", pos.Quantity, pos.StopLossOID, pos.TPOIDs, tc.wantBookQty, wantSL, tc.wantTPOIDs)
 				}
 			}
 			backend.mu.Lock()
+			var alerts []string
+			for _, m := range backend.messages {
+				alerts = append(alerts, m.content)
+			}
 			alerted := len(backend.messages) > 0 || len(backend.dms) > 0
 			backend.mu.Unlock()
-			if alerted != tc.wantAlert {
-				t.Fatalf("alerted=%t, want %t", alerted, tc.wantAlert)
+			if alerted != tc.wantAlert || len(alerts) > 1 || (tc.wantAlert && len(alerts) != 1) {
+				t.Fatalf("alerted=%t channel alerts=%q, want one: %t", alerted, alerts, tc.wantAlert)
+			}
+			if tc.wantAlert && (strings.HasPrefix(alerts[0], "CRITICAL") != tc.wantCritical || !strings.Contains(alerts[0], tc.wantDetail)) {
+				t.Fatalf("alert = %q, want critical %t and the detail %q", alerts[0], tc.wantCritical, tc.wantDetail)
 			}
 		})
 	}

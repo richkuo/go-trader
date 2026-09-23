@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -218,10 +219,17 @@ func TestSettleManualCycleCloseRearmsTheRemainderStop(t *testing.T) {
 		return r
 	}
 	rejected := &HyperliquidExecuteResult{Error: "order rejected", CancelStopLossSucceededOIDs: []int64{111}}
+	flat := hlSignedView("ETH", 0)
+	cappedShare := hlCloseBacking{PlanShare: 7, PlanShareKnown: true, PeerSameQty: 5}
+	uncappedShare := hlCloseBacking{PlanShare: 10, PlanShareKnown: true, PeerSameQty: 5}
 	cases := []struct {
 		name          string
 		sc            StrategyConfig
 		exec          *HyperliquidExecuteResult
+		backing       hlCloseBacking
+		read          *hlOnChainCoinView
+		readErr       error
+		slResult      *HyperliquidStopLossUpdateResult
 		immediate     bool
 		wantUpdate    bool
 		wantSync      bool
@@ -232,14 +240,27 @@ func TestSettleManualCycleCloseRearmsTheRemainderStop(t *testing.T) {
 		wantDrainQty  float64
 		wantDrainSL   int64
 		wantCloseQtys []float64
+		wantAlert     bool
+		wantCritical  bool
+		wantAlertPart string
 	}{
-		{name: "recorded percentage stop is restored at the remainder with the old oid verified first", sc: recorded, exec: fill(4, []int64{111}, nil), wantUpdate: true, wantSize: 6, wantCancel: 111, wantTrigger: 1900, wantDrainQty: 6, wantDrainSL: 999, wantCloseQtys: []float64{4}},
-		{name: "ATR owner re-arms the stop leg at the remainder while the close row is queued", sc: atr, exec: fill(4, []int64{111}, nil), wantSync: true, wantSize: 6, wantTrigger: 1900, wantDrainQty: 6, wantDrainSL: 999, wantCloseQtys: []float64{4}},
-		{name: "ratchet trail owner re-arms from the high-water at the remainder", sc: ratchet, exec: fill(4, []int64{111}, nil), wantUpdate: true, wantSize: 6, wantCancel: 111, wantTrigger: 1900, wantDrainQty: 6, wantDrainSL: 999, wantCloseQtys: []float64{4}},
-		{name: "a stop cancel the venue reported as failed keeps the id and the recorded re-arm verifies it on-chain", sc: recorded, exec: fill(4, nil, []int64{111}), wantUpdate: true, wantSize: 6, wantCancel: 111, wantTrigger: 1900, wantDrainQty: 6, wantDrainSL: 999, wantCloseQtys: []float64{4}},
-		{name: "a stop cancel the venue reported as failed forces the ATR stop to resize to the remainder", sc: atr, exec: fill(4, nil, []int64{111}), wantSync: true, wantSize: 6, wantCancel: 111, wantForce: true, wantTrigger: 1900, wantDrainQty: 6, wantDrainSL: 999, wantCloseQtys: []float64{4}},
+		{name: "recorded percentage stop is restored at the remainder with the old oid verified first", sc: recorded, exec: fill(4, []int64{111}, nil), wantUpdate: true, wantSize: 6, wantCancel: 111, wantTrigger: 1900, wantDrainQty: 6, wantDrainSL: 999, wantCloseQtys: []float64{4}, wantAlert: true},
+		{name: "ATR owner re-arms the stop leg at the remainder while the close row is queued", sc: atr, exec: fill(4, []int64{111}, nil), wantSync: true, wantSize: 6, wantTrigger: 1900, wantDrainQty: 6, wantDrainSL: 999, wantCloseQtys: []float64{4}, wantAlert: true},
+		{name: "ratchet trail owner re-arms from the high-water at the remainder", sc: ratchet, exec: fill(4, []int64{111}, nil), wantUpdate: true, wantSize: 6, wantCancel: 111, wantTrigger: 1900, wantDrainQty: 6, wantDrainSL: 999, wantCloseQtys: []float64{4}, wantAlert: true},
+		{name: "a stop cancel the venue reported as failed keeps the id and the recorded re-arm verifies it on-chain", sc: recorded, exec: fill(4, nil, []int64{111}), wantUpdate: true, wantSize: 6, wantCancel: 111, wantTrigger: 1900, wantDrainQty: 6, wantDrainSL: 999, wantCloseQtys: []float64{4}, wantAlert: true},
+		{name: "a stop cancel the venue reported as failed forces the ATR stop to resize to the remainder", sc: atr, exec: fill(4, nil, []int64{111}), wantSync: true, wantSize: 6, wantCancel: 111, wantForce: true, wantTrigger: 1900, wantDrainQty: 6, wantDrainSL: 999, wantCloseQtys: []float64{4}, wantAlert: true},
 		{name: "a rejection after the cancel succeeded re-arms the whole book in the same cycle", sc: recorded, exec: rejected, wantUpdate: true, wantSize: 10, wantCancel: 111, wantTrigger: 1900, wantDrainQty: 10, wantDrainSL: 999},
-		{name: "a re-armed stop that fills at once books only the remainder and the drain closes the rest once", sc: recorded, exec: fill(4, []int64{111}, nil), immediate: true, wantUpdate: true, wantSize: 6, wantCancel: 111, wantTrigger: 1900, wantCloseQtys: []float64{6, 4}},
+		{name: "a re-armed stop that fills at once books only the remainder and the drain closes the rest once", sc: recorded, exec: fill(4, []int64{111}, nil), immediate: true, wantUpdate: true, wantSize: 6, wantCancel: 111, wantTrigger: 1900, wantCloseQtys: []float64{6, 4}, wantAlert: true},
+		{name: "a capped shared close places no stop for the unbacked remainder and alerts", sc: recorded, exec: fill(7, []int64{111}, nil), backing: cappedShare, wantDrainQty: 3, wantCloseQtys: []float64{7}, wantAlert: true, wantCritical: true},
+		{name: "a capped shared close places no ATR stop or take-profit for the unbacked remainder", sc: atr, exec: fill(7, []int64{111}, nil), backing: cappedShare, wantDrainQty: 3, wantCloseQtys: []float64{7}, wantAlert: true, wantCritical: true},
+		{name: "a capped shared close places no trailing stop for the unbacked remainder", sc: ratchet, exec: fill(7, []int64{111}, nil), backing: cappedShare, wantDrainQty: 3, wantCloseQtys: []float64{7}, wantAlert: true, wantCritical: true},
+		{name: "a sole-owner whole close that fills short on a flat chain places nothing", sc: recorded, exec: fill(7, []int64{111}, nil), read: &flat, wantDrainQty: 3, wantCloseQtys: []float64{7}, wantAlert: true, wantCritical: true},
+		{name: "an uncapped partial IOC fill arms the full remainder in the same cycle", sc: recorded, exec: fill(4, []int64{111}, nil), backing: uncappedShare, wantUpdate: true, wantSize: 6, wantCancel: 111, wantTrigger: 1900, wantDrainQty: 6, wantDrainSL: 999, wantCloseQtys: []float64{4}, wantAlert: true},
+		{name: "a failed post-fill read arms at the remainder and says so", sc: recorded, exec: fill(4, []int64{111}, nil), readErr: errors.New("clearinghouseState timeout"), wantUpdate: true, wantSize: 6, wantCancel: 111, wantTrigger: 1900, wantDrainQty: 6, wantDrainSL: 999, wantCloseQtys: []float64{4}, wantAlert: true, wantAlertPart: "clearinghouseState timeout"},
+		{name: "an open-order read failure during the recorded-stop re-arm alerts critical", sc: recorded, exec: fill(4, []int64{111}, nil), backing: uncappedShare, slResult: &HyperliquidStopLossUpdateResult{OpenOrderCheckError: "open orders unreadable"}, wantUpdate: true, wantSize: 6, wantCancel: 111, wantTrigger: 1900, wantDrainQty: 6, wantCloseQtys: []float64{4}, wantAlert: true, wantCritical: true, wantAlertPart: "open orders unreadable"},
+		{name: "a rejected cancel that leaves the pre-close stop at the full book alerts critical", sc: recorded, exec: fill(4, nil, []int64{111}), backing: uncappedShare, slResult: &HyperliquidStopLossUpdateResult{CancelStopLossError: "111 still resting"}, wantUpdate: true, wantSize: 6, wantCancel: 111, wantTrigger: 1900, wantDrainQty: 6, wantDrainSL: 111, wantCloseQtys: []float64{4}, wantAlert: true, wantCritical: true, wantAlertPart: "111 still resting"},
+		{name: "a placement error after the close cancel landed alerts critical", sc: recorded, exec: fill(4, []int64{111}, nil), backing: uncappedShare, slResult: &HyperliquidStopLossUpdateResult{StopLossError: "trigger price rejected"}, wantUpdate: true, wantSize: 6, wantCancel: 111, wantTrigger: 1900, wantDrainQty: 6, wantCloseQtys: []float64{4}, wantAlert: true, wantCritical: true, wantAlertPart: "trigger price rejected"},
+		{name: "a placement error after a rejected close alerts critical", sc: recorded, exec: rejected, slResult: &HyperliquidStopLossUpdateResult{StopLossError: "trigger price rejected"}, wantUpdate: true, wantSize: 10, wantCancel: 111, wantTrigger: 1900, wantDrainQty: 10, wantAlert: true, wantCritical: true, wantAlertPart: "trigger price rejected"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -248,6 +269,9 @@ func TestSettleManualCycleCloseRearmsTheRemainderStop(t *testing.T) {
 				updates = append(updates, rearmSLCall{symbol: symbol, side: side, size: size, triggerPx: triggerPx, cancelOID: cancelOID})
 				if tc.immediate {
 					return &HyperliquidStopLossUpdateResult{StopLossFilledImmediately: true, StopLossTriggerPx: triggerPx, CancelStopLossSucceeded: true}, "", nil
+				}
+				if tc.slResult != nil {
+					return tc.slResult, "", nil
 				}
 				return &HyperliquidStopLossUpdateResult{StopLossOID: 999, StopLossTriggerPx: triggerPx, CancelStopLossSucceeded: cancelOID > 0}, "", nil
 			}
@@ -260,13 +284,35 @@ func TestSettleManualCycleCloseRearmsTheRemainderStop(t *testing.T) {
 			pos := &Position{Symbol: "ETH", Side: "long", Quantity: 10, InitialQuantity: 10, AvgCost: 2000, RiskAnchorPrice: 2000, EntryATR: 50, OwnerStrategyID: tc.sc.ID, StopLossOID: 111, StopLossTriggerPx: 1900, StopLossHighWaterPx: 2000, OpenedAt: time.Now().UTC().Add(-time.Hour)}
 			ss := &StrategyState{ID: tc.sc.ID, Type: "manual", Platform: "hyperliquid", Cash: 1000, InitialCapital: 1000, Positions: map[string]*Position{"ETH": pos}}
 			state := &AppState{Strategies: map[string]*StrategyState{tc.sc.ID: ss}}
-			rearm := hlCloseRearmContext{Price: 2000, PrevStopOID: 111, PrevTriggerPx: 1900, PrevHighWater: 2000, OnChainAbsQty: map[string]float64{"ETH": 25}}
+			backing := tc.backing
+			if tc.read != nil || tc.readErr != nil {
+				backing.Refetch = func() (hlOnChainCoinView, error) {
+					if tc.readErr != nil {
+						return hlOnChainCoinView{}, tc.readErr
+					}
+					return *tc.read, nil
+				}
+			}
+			rearm := hlCloseRearmContext{Price: 2000, PrevStopOID: 111, PrevTriggerPx: 1900, PrevHighWater: 2000, OnChainAbsQty: map[string]float64{"ETH": 25}, Backing: backing}
 			var mu sync.RWMutex
 			var execErr error
 			if tc.exec.Error != "" {
 				execErr = errors.New(tc.exec.Error)
 			}
-			settleManualCycleClose(tc.sc, ss, db, pos, "sell", 10, true, tc.exec, execErr, []int64{111}, rearm, &mu, nil, newTestLogger(t))
+			notifier, backend := confirmationNotifier()
+			settleManualCycleClose(tc.sc, ss, db, pos, "sell", 10, true, tc.exec, execErr, []int64{111}, rearm, &mu, notifier, newTestLogger(t))
+			backend.mu.Lock()
+			var alerts []string
+			for _, m := range backend.messages {
+				alerts = append(alerts, m.content)
+			}
+			backend.mu.Unlock()
+			if tc.wantAlert != (len(alerts) == 1) || len(alerts) > 1 {
+				t.Fatalf("channel alerts = %q, want one: %t", alerts, tc.wantAlert)
+			}
+			if tc.wantAlert && (strings.HasPrefix(alerts[0], "CRITICAL") != tc.wantCritical || !strings.Contains(alerts[0], tc.wantAlertPart)) {
+				t.Fatalf("alert = %q, want critical %t and the detail %q", alerts[0], tc.wantCritical, tc.wantAlertPart)
+			}
 			if tc.wantUpdate != (len(updates) == 1) || len(updates) > 1 {
 				t.Fatalf("stop updates = %+v, want one: %t", updates, tc.wantUpdate)
 			}
@@ -306,6 +352,58 @@ func TestSettleManualCycleCloseRearmsTheRemainderStop(t *testing.T) {
 			}
 			if rows, err := db.LoadPendingManualActions(); err != nil || len(rows) != 0 {
 				t.Fatalf("queued rows after drain = %+v (err %v), want none", rows, err)
+			}
+		})
+	}
+}
+
+func TestResolveHLCloseRemainderStop(t *testing.T) {
+	readErr := errors.New("clearinghouseState timeout")
+	cases := []struct {
+		name         string
+		side         string
+		fill         float64
+		outcomeKnown bool
+		backing      hlCloseBacking
+		read         *hlOnChainCoinView
+		readErr      error
+		wantQty      float64
+		wantBasis    hlCloseRemainderBasis
+		wantReads    int
+	}{
+		{name: "a capped shared close leaves no units behind the remainder", side: "long", fill: 7, outcomeKnown: true, backing: hlCloseBacking{PlanShare: 7, PlanShareKnown: true, PeerSameQty: 5}, wantQty: 0, wantBasis: hlRemainderBasisPlan},
+		{name: "an uncapped partial IOC fill keeps the whole remainder backed", side: "long", fill: 4, outcomeKnown: true, backing: hlCloseBacking{PlanShare: 10, PlanShareKnown: true, PeerSameQty: 5}, wantQty: 6, wantBasis: hlRemainderBasisPlan},
+		{name: "a share below the book backs only part of the remainder", side: "long", fill: 4, outcomeKnown: true, backing: hlCloseBacking{PlanShare: 9, PlanShareKnown: true}, wantQty: 5, wantBasis: hlRemainderBasisPlan},
+		{name: "a whole close that fills short on a flat chain leaves nothing to protect", side: "long", fill: 7, outcomeKnown: true, read: func() *hlOnChainCoinView { v := hlSignedView("ETH", 0); return &v }(), wantQty: 0, wantBasis: hlRemainderBasisRead, wantReads: 1},
+		{name: "a post-fill read nets the same-side peers out", side: "long", fill: 4, outcomeKnown: true, backing: hlCloseBacking{PeerSameQty: 5}, read: func() *hlOnChainCoinView { v := hlSignedView("ETH", 9); return &v }(), wantQty: 4, wantBasis: hlRemainderBasisRead, wantReads: 1},
+		{name: "a post-fill read adds the opposite-side peers back", side: "long", fill: 4, outcomeKnown: true, backing: hlCloseBacking{PeerOppQty: 2}, read: func() *hlOnChainCoinView { v := hlSignedView("ETH", 4); return &v }(), wantQty: 6, wantBasis: hlRemainderBasisRead, wantReads: 1},
+		{name: "a short remainder reads the short side", side: "short", fill: 4, outcomeKnown: true, backing: hlCloseBacking{PeerSameQty: 2}, read: func() *hlOnChainCoinView { v := hlSignedView("ETH", -8); return &v }(), wantQty: 6, wantBasis: hlRemainderBasisRead, wantReads: 1},
+		{name: "a net on the other side backs nothing", side: "long", fill: 4, outcomeKnown: true, read: func() *hlOnChainCoinView { v := hlSignedView("ETH", -3); return &v }(), wantQty: 0, wantBasis: hlRemainderBasisRead, wantReads: 1},
+		{name: "a failed post-fill read arms the remainder unverified", side: "long", fill: 4, outcomeKnown: true, readErr: readErr, wantQty: 6, wantBasis: hlRemainderBasisUnverified, wantReads: 1},
+		{name: "a known rejection with no measured share keeps the book size and reads nothing", side: "long", outcomeKnown: true, read: func() *hlOnChainCoinView { v := hlSignedView("ETH", 3); return &v }(), wantQty: 10, wantBasis: hlRemainderBasisBook},
+		{name: "a known rejection of a capped plan arms only the measured share", side: "long", outcomeKnown: true, backing: hlCloseBacking{PlanShare: 7, PlanShareKnown: true}, wantQty: 7, wantBasis: hlRemainderBasisPlan},
+		{name: "an unknown close outcome reads the account even with a plan share", side: "long", backing: hlCloseBacking{PlanShare: 10, PlanShareKnown: true, PeerSameQty: 5}, read: func() *hlOnChainCoinView { v := hlSignedView("ETH", 5); return &v }(), wantQty: 0, wantBasis: hlRemainderBasisRead, wantReads: 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reads := 0
+			b := tc.backing
+			b.Refetch = func() (hlOnChainCoinView, error) {
+				reads++
+				if tc.readErr != nil {
+					return hlOnChainCoinView{}, tc.readErr
+				}
+				if tc.read == nil {
+					return hlOnChainCoinView{}, fmt.Errorf("unexpected read")
+				}
+				return *tc.read, nil
+			}
+			got := resolveHLCloseRemainderStop("ETH", tc.side, 10, tc.fill, tc.outcomeKnown, b)
+			if math.Abs(got.Qty-tc.wantQty) > 1e-9 || got.Basis != tc.wantBasis || reads != tc.wantReads {
+				t.Fatalf("stop qty=%g basis=%d reads=%d, want qty=%g basis=%d reads=%d", got.Qty, got.Basis, reads, tc.wantQty, tc.wantBasis, tc.wantReads)
+			}
+			if math.Abs(got.Remainder-(10-tc.fill)) > 1e-9 || got.AfterFill != (tc.fill > 0) {
+				t.Fatalf("remainder=%g after_fill=%t, want remainder %g after_fill %t", got.Remainder, got.AfterFill, 10-tc.fill, tc.fill > 0)
 			}
 		})
 	}
