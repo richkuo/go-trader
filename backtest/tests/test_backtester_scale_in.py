@@ -438,3 +438,38 @@ def test_loader_accepts_live_trailing_sl(tmp_path):
     ))
     kwargs = run_backtest.load_strategy_config(path, "hl-test")
     assert kwargs["allow_scale_in"] is True
+
+
+def test_hyperliquid_tier_fill_after_scale_in_uses_anchor_and_tier_price():
+    idx = pd.date_range("2024-01-01", periods=6, freq="D")
+    closes = [100.0, 100.0, 101.5, 104.0, 104.0, 104.0]
+    df = pd.DataFrame(
+        {
+            "open": [100.0, 100.0, 100.0, 101.5, 104.0, 104.0],
+            "high": [c + 0.4 for c in closes],
+            "low": [c - 0.4 for c in closes],
+            "close": closes,
+            "volume": [1000.0] * 6,
+            "atr": [2.0] * 6,
+            "open_action": ["long", "none", "long", "none", "none", "none"],
+        },
+        index=idx,
+    )
+    bt = Backtester(
+        initial_capital=10000.0, commission_pct=0.0, slippage_pct=0.001,
+        platform="hyperliquid", allow_scale_in=True,
+        close_strategies=[{"name": "tiered_tp_atr_live", "params": {"tp_tiers": [
+            {"atr_multiple": 1.0, "close_fraction": 0.5},
+            {"atr_multiple": 3.0, "close_fraction": 1.0},
+        ]}}],
+    )
+    res = bt.run(df.copy(), strategy_name="x", symbol="BTC", timeframe="1d", save=False)
+
+    anchor = 100.0 * 1.001
+    first_qty = 10000.0 / anchor
+    add_qty = 10000.0 / 101.5
+    assert res["scale_in_adds"] == 1
+    tier_exit = res["trades"][0]
+    assert tier_exit["exit_date"] == str(idx[3])
+    assert tier_exit["exit_price"] == pytest.approx(anchor + 2.0)
+    assert tier_exit["shares"] == pytest.approx((first_qty + add_qty) * 0.5)

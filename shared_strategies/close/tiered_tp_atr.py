@@ -4,8 +4,12 @@ from __future__ import annotations
 from _helpers import (
     clamp_fraction,
     current_close_fraction,
+    finalize_tp_tiers,
     float_from,
+    parse_resting_tp_tiers,
+    resolve_tp_tier_geometry,
     tier_list_from_params,
+    with_tier_fill_price,
 )
 
 DEFAULT_TIERS = (
@@ -34,6 +38,20 @@ def _tiers(raw) -> list[tuple[float, float]]:
     return sorted(parsed, key=lambda item: item[0])
 
 
+def resting_tiers(raw):
+    parsed = parse_resting_tp_tiers(raw)
+    if not parsed:
+        parsed = parse_resting_tp_tiers(DEFAULT_TIERS)
+    return finalize_tp_tiers(parsed)
+
+
+def ladder_for(params: dict, resting: bool):
+    raw = tier_list_from_params(params)
+    if resting:
+        return resting_tiers(raw)
+    return _tiers(raw)
+
+
 def evaluate(position: dict, market: dict, params: dict) -> dict:
     avg_cost = float_from(position, "avg_cost")
     current_quantity = float_from(position, "current_quantity")
@@ -48,9 +66,15 @@ def evaluate(position: dict, market: dict, params: dict) -> dict:
     if entry_atr <= 0:
         return {"close_fraction": 0.0, "reason": "noop:missing_entry_atr"}
 
-    profit_distance = mark_price - avg_cost if side == "long" else avg_cost - mark_price
-    atr_profit = profit_distance / entry_atr
-    hit_tiers = [(multiple, fraction) for multiple, fraction in _tiers(tier_list_from_params(params)) if atr_profit >= multiple]
+    geometry = resolve_tp_tier_geometry(position, market, params, live_atr=False)
+    tiers = ladder_for(params, geometry.resting_limit)
+    if tiers is None:
+        return {"close_fraction": 0.0, "reason": "noop:tier_ladder_rejected"}
+
+    anchor = geometry.anchor
+    profit_distance = mark_price - anchor if side == "long" else anchor - mark_price
+    atr_profit = profit_distance / geometry.atr
+    hit_tiers = [(multiple, fraction) for multiple, fraction in tiers if atr_profit >= multiple]
     if not hit_tiers:
         return {"close_fraction": 0.0, "reason": "noop:not_hit"}
 
@@ -58,4 +82,7 @@ def evaluate(position: dict, market: dict, params: dict) -> dict:
     close_fraction = current_close_fraction(position, cumulative_fraction)
     if close_fraction <= 0:
         return {"close_fraction": 0.0, "reason": "noop:already_taken"}
-    return {"close_fraction": close_fraction, "reason": f"tiered_tp_atr:{multiple:g}"}
+    return with_tier_fill_price(
+        {"close_fraction": close_fraction, "reason": f"tiered_tp_atr:{multiple:g}"},
+        position, geometry, hit_tiers, side,
+    )

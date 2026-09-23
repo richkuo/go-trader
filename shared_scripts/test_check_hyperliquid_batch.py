@@ -790,3 +790,42 @@ def test_unknown_close_owner_fails_the_slot(mod):
     ]}))
     with pytest.raises(ValueError):
         mod.evaluate_signal_slot(_shared(mod, FakeAdapter()), slots[0], deps=_opposite_signal_deps(mod))
+
+
+def test_slot_and_single_check_evaluate_tiers_under_the_resting_limit_model(mod, monkeypatch, capsys):
+    import argparse
+
+    seen = []
+    recording = types.SimpleNamespace(**vars(mod._signal_check_deps()))
+
+    def close_evaluate(name, position, market, params=None):
+        seen.append(dict(position))
+        return {"close_fraction": 0.5, "reason": "tiered_tp_atr_live:entry:1", "tier_fill_price": 104.0}
+
+    recording.close_evaluate = close_evaluate
+    args = argparse.Namespace(
+        position_side="long", position_avg_cost=98.0, position_qty=1.0, position_initial_qty=1.0,
+        position_entry_atr=2.0, position_risk_anchor_price=100.0, position_regime="",
+    )
+    position_ctx = mod._position_ctx_from_args(args)
+    slot = _slot("hl-tp", "breakout", mode="live", position_side="long", position_ctx=position_ctx,
+                 close_strategies="tiered_tp_atr_live")
+
+    slot_out = mod.evaluate_signal_slot(_shared(mod, FakeAdapter()), slot, deps=recording)
+
+    real_build = mod.build_shared_signal_state
+    monkeypatch.setattr(mod, "_signal_check_deps", lambda: recording)
+    monkeypatch.setattr(mod, "build_shared_signal_state",
+                        lambda symbol, timeframe, **kw: real_build(symbol, timeframe, **{**kw, "adapter": FakeAdapter()}))
+    monkeypatch.setitem(sys.modules, "adapter", types.SimpleNamespace(HyperliquidExchangeAdapter=FakeAdapter))
+    mod.run_signal_check("breakout", "BTC", "1h", "paper", False, None, "breakout",
+                         "tiered_tp_atr_live", "long", position_ctx, mark_price=25_000.0)
+    single_out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+
+    assert len(seen) == 2
+    for position in seen:
+        assert position["tp_model"] == "resting_limit"
+        assert position["risk_anchor_price"] == 100.0
+        assert position["avg_cost"] == 98.0
+    assert slot_out["close_tier_fill_price"] == 104.0
+    assert single_out["close_tier_fill_price"] == 104.0

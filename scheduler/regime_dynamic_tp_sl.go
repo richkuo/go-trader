@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"sync"
 )
 
 const (
@@ -99,6 +100,22 @@ func advanceDynamicCloseRegime(pos *Position, stratState *StrategyState, sc Stra
 	pos.RegimePendingLabel = ""
 	pos.RegimePendingCount = 0
 	return old != current
+}
+
+func advancePaperDynamicCloseRegime(sc StrategyConfig, stratState *StrategyState, symbol string, mu *sync.RWMutex) bool {
+	if sc.Platform != "hyperliquid" || hyperliquidIsLive(sc.Args) || !strategyUsesDynamicRegimeClose(sc) {
+		return false
+	}
+	if stratState == nil || mu == nil || symbol == "" {
+		return false
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	pos, ok := stratState.Positions[symbol]
+	if !ok || pos == nil || pos.Quantity <= 0 {
+		return false
+	}
+	return advanceDynamicCloseRegime(pos, stratState, sc)
 }
 
 func protectionATRRegimeLabel(pos *Position, sc StrategyConfig) string {

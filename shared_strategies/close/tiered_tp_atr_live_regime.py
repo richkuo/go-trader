@@ -1,39 +1,23 @@
 
 from __future__ import annotations
 
-from _helpers import clamp_fraction, current_close_fraction, float_from
-from tiered_tp_atr_regime import _resolve_tiers_for_regime
+from _helpers import (
+    clamp_fraction,
+    current_close_fraction,
+    float_from,
+    resolve_tp_tier_geometry,
+    with_tier_fill_price,
+)
+from tiered_tp_atr_regime import regime_ladder_for
 
 
-def _resolve_atr(market: dict, position: dict, atr_source: str):
-    entry_atr = float_from(position, "entry_atr")
-    if atr_source == "entry":
-        return entry_atr, "entry"
-
-    live_atr = float_from(market, "atr")
-    if live_atr <= 0:
-        live_atr = float_from(market, "live_atr")
-    if live_atr > 0:
-        return live_atr, "live"
-    if entry_atr > 0:
-        return entry_atr, "entry_fallback"
-    return 0.0, "missing"
-
-
-def evaluate(position: dict, market: dict, params: dict) -> dict:
+def evaluate_live_regime_tiers(position: dict, market: dict, params: dict, reason_name: str) -> dict:
     avg_cost = float_from(position, "avg_cost")
     current_quantity = float_from(position, "current_quantity")
     side = str(position.get("side", "") or "").strip().lower()
     mark_price = float_from(market, "mark_price")
-    atr_source = str(params.get("atr_source", "live") or "live").strip().lower()
-    if atr_source not in ("live", "entry"):
-        atr_source = "live"
-
-    regime = str(market.get("regime", "") or "").strip()
-    regime_source = "live"
-    if not regime:
-        regime = str(position.get("regime", "") or "").strip()
-        regime_source = "frozen" if regime else ""
+    geometry = resolve_tp_tier_geometry(position, market, params, live_atr=True, regime_source="live")
+    regime = geometry.regime
 
     if mark_price <= 0:
         return {"close_fraction": 0.0, "reason": "noop:missing_mark_price"}
@@ -42,16 +26,17 @@ def evaluate(position: dict, market: dict, params: dict) -> dict:
     if not regime:
         return {"close_fraction": 0.0, "reason": "noop:missing_regime"}
 
-    atr_value, atr_label = _resolve_atr(market, position, atr_source)
-    if atr_value <= 0:
+    if geometry.atr <= 0:
         return {"close_fraction": 0.0, "reason": "noop:missing_atr"}
 
-    tiers, errs = _resolve_tiers_for_regime(params, regime)
-    if errs or not tiers:
-        return {"close_fraction": 0.0, "reason": "noop:tier_resolution_failed"}
+    ladder = regime_ladder_for(params, regime, geometry.resting_limit)
+    if "tiers" not in ladder:
+        return {"close_fraction": 0.0, "reason": ladder["reason"]}
+    tiers = ladder["tiers"]
 
-    profit_distance = mark_price - avg_cost if side == "long" else avg_cost - mark_price
-    atr_profit = profit_distance / atr_value
+    anchor = geometry.anchor
+    profit_distance = mark_price - anchor if side == "long" else anchor - mark_price
+    atr_profit = profit_distance / geometry.atr
     hit_tiers = [(m, f) for m, f in tiers if atr_profit >= m]
     if not hit_tiers:
         return {"close_fraction": 0.0, "reason": "noop:not_hit"}
@@ -60,7 +45,17 @@ def evaluate(position: dict, market: dict, params: dict) -> dict:
     close_fraction = current_close_fraction(position, clamp_fraction(cumulative_fraction))
     if close_fraction <= 0:
         return {"close_fraction": 0.0, "reason": "noop:already_taken"}
-    return {
-        "close_fraction": close_fraction,
-        "reason": f"tiered_tp_atr_live_regime:atr={atr_label}:regime={regime_source}:{regime}:{multiple:g}",
-    }
+    return with_tier_fill_price(
+        {
+            "close_fraction": close_fraction,
+            "reason": (
+                f"{reason_name}:atr={geometry.atr_label}:"
+                f"regime={geometry.regime_label}:{regime}:{multiple:g}"
+            ),
+        },
+        position, geometry, hit_tiers, side,
+    )
+
+
+def evaluate(position: dict, market: dict, params: dict) -> dict:
+    return evaluate_live_regime_tiers(position, market, params, "tiered_tp_atr_live_regime")

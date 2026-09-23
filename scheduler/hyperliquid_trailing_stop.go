@@ -139,7 +139,7 @@ func effectiveFixedStopLossATRPct(sc StrategyConfig, pos *Position) float64 {
 		return 0
 	}
 	mult := 0.0
-	if v, ok := unifiedCloseStopLossATR(sc, positionATRRegimeLabel(pos, sc)); ok {
+	if v, ok := unifiedCloseStopLossATR(sc, protectionATRRegimeLabel(pos, sc)); ok {
 		mult = v
 	} else if sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0 {
 		mult = *sc.StopLossATRMult

@@ -688,12 +688,27 @@ class Backtester:
             })
         self.close_strategies = [r["name"] for r in self._close_refs]
         self.close_params = {r["name"]: r["params"] for r in self._close_refs}
+        self._resting_tp_model = str(platform or "").strip().lower() == "hyperliquid"
         self.regime_enabled = regime_enabled
         self.regime_timeframe = str(regime_timeframe or "").strip() or None
         self.regime_period = regime_period
         self.regime_adx_threshold = regime_adx_threshold
         self.regime_windows_spec = dict(regime_windows_spec) if regime_windows_spec else None
         self._regime_primary_labels = _regime_primary_labels(self.regime_windows_spec)
+        if self._resting_tp_model:
+            _ensure_close_strategies_path()
+            from tiered_tp_atr_regime import resting_ladder_errors
+            _ladder_errs = []
+            for _ref in self._close_refs:
+                _ladder_errs.extend(resting_ladder_errors(
+                    _ref["name"], _ref["params"], self._regime_primary_labels,
+                ))
+            if _ladder_errs:
+                raise ValueError(
+                    "Invalid Hyperliquid take-profit ladder (cumulative close_fraction "
+                    "must strictly increase with atr_multiple, as the on-chain tiers "
+                    "require): " + "; ".join(_ladder_errs)
+                )
         self.hurst_gate = dict(hurst_gate) if hurst_gate else None
         self.allowed_regimes = list(allowed_regimes or [])
         _norm_gate = str(regime_gate_on_failure or "").strip().lower() or "open"
@@ -1606,6 +1621,89 @@ class Backtester:
             hold.entry_fee += commission
             return True
 
+        def _book_close(idx, close_fraction: float, raw_fill: float, slippage: float,
+                        reason: str, bar_mark: float, seed_price: float) -> bool:
+            nonlocal position, cash, avg_cost, initial_quantity, entry_atr_value
+            nonlocal current_trade, sl_trigger_px, sl_tiers_processed
+            nonlocal post_tp_trail_mult, sl_high_water_px
+            sl_after_moved = False
+            qty_to_close = abs(position) * min(close_fraction, 1.0)
+            if position > 0:
+                effective_price = raw_fill * (1 - slippage)
+                proceeds = qty_to_close * effective_price
+                commission = proceeds * self.commission_pct
+                cash += proceeds - commission
+                position -= qty_to_close
+            else:
+                effective_price = raw_fill * (1 + slippage)
+                cost = qty_to_close * effective_price
+                commission = cost * self.commission_pct
+                cash -= cost + commission
+                position += qty_to_close
+
+            if current_trade:
+                closed = Trade(current_trade.entry_date, current_trade.entry_price, current_trade.side)
+                closed.shares = qty_to_close
+                closed.close(idx, effective_price)
+                qty_frac = (qty_to_close / initial_quantity) if initial_quantity > 0 else 1.0
+                _stamp_hold(closed, hold, entry_atr=entry_atr_value,
+                            exit_fee=commission,
+                            reason=reason or "close_strategy",
+                            qty_frac=qty_frac,
+                            true_up_entry_fee=(
+                                scale.scale_in_count > 0
+                                and abs(position) <= 1e-12
+                            ))
+                closed.scale_in_adds = scale.scale_in_count
+                trades.append(closed)
+                current_trade.shares -= qty_to_close
+                if current_trade.shares <= 1e-12:
+                    current_trade = None
+
+            if abs(position) <= 1e-12:
+                position = 0.0
+                avg_cost = 0.0
+                initial_quantity = 0.0
+                entry_atr_value = 0.0
+                scale.reset()
+                sl_trigger_px = 0.0
+                sl_tiers_processed = 0
+                post_tp_trail_mult = None
+                sl_high_water_px = 0.0
+                sl_after_moved = False
+                self._active_sl_after_rules = self._sl_after_rules_static
+                self._run_tp_tier_thresholds = list(
+                    self._tp_tier_thresholds_static,
+                )
+                self._run_stop_loss_atr_mult = None
+                self._run_trailing_stop_atr_mult = None
+                self._run_position_regime = ""
+            elif sl_after_active and self._run_tp_tier_thresholds:
+                side_now = "long" if position > 0 else "short"
+                prev_trigger = sl_trigger_px
+                prev_post_tp_trail = post_tp_trail_mult
+                sl_trigger_px, sl_tiers_processed, post_tp_trail_mult, \
+                    sl_high_water_px = self._maybe_apply_sl_after(
+                        side=side_now,
+                        avg_cost=scale.geom_cost(avg_cost),
+                        entry_atr=entry_atr_value,
+                        position_qty=abs(position),
+                        initial_qty=initial_quantity,
+                        mark_price=bar_mark,
+                        fill_price=seed_price,
+                        sl_trigger_px=sl_trigger_px,
+                        sl_tiers_processed=sl_tiers_processed,
+                        post_tp_trail_mult=post_tp_trail_mult,
+                        sl_high_water_px=sl_high_water_px,
+                    )
+                if (
+                    sl_trigger_px != prev_trigger
+                    or post_tp_trail_mult != prev_post_tp_trail
+                ):
+                    sl_after_moved = True
+
+            return sl_after_moved
+
         for i, (idx, row) in enumerate(df.iterrows()):
             fill_price = row["open"] if has_open else row["close"]
             mark_price = row["close"]
@@ -1717,81 +1815,9 @@ class Backtester:
                 )
 
                 if close_fraction > 0 and position != 0:
-                    qty_to_close = abs(position) * min(close_fraction, 1.0)
-                    if position > 0:
-                        effective_price = fill_price * (1 - self.slippage_pct)
-                        proceeds = qty_to_close * effective_price
-                        commission = proceeds * self.commission_pct
-                        cash += proceeds - commission
-                        position -= qty_to_close
-                    else:
-                        effective_price = fill_price * (1 + self.slippage_pct)
-                        cost = qty_to_close * effective_price
-                        commission = cost * self.commission_pct
-                        cash -= cost + commission
-                        position += qty_to_close
-
-                    if current_trade:
-                        closed = Trade(current_trade.entry_date, current_trade.entry_price, current_trade.side)
-                        closed.shares = qty_to_close
-                        closed.close(idx, effective_price)
-                        qty_frac = (qty_to_close / initial_quantity) if initial_quantity > 0 else 1.0
-                        _stamp_hold(closed, hold, entry_atr=entry_atr_value,
-                                    exit_fee=commission,
-                                    reason=close_reason or "close_strategy",
-                                    qty_frac=qty_frac,
-                                    true_up_entry_fee=(
-                                        scale.scale_in_count > 0
-                                        and abs(position) <= 1e-12
-                                    ))
-                        closed.scale_in_adds = scale.scale_in_count
-                        trades.append(closed)
-                        current_trade.shares -= qty_to_close
-                        if current_trade.shares <= 1e-12:
-                            current_trade = None
-
-                    if abs(position) <= 1e-12:
-                        position = 0.0
-                        avg_cost = 0.0
-                        initial_quantity = 0.0
-                        entry_atr_value = 0.0
-                        scale.reset()
-                        sl_trigger_px = 0.0
-                        sl_tiers_processed = 0
-                        post_tp_trail_mult = None
-                        sl_high_water_px = 0.0
-                        sl_after_just_applied = False
-                        self._active_sl_after_rules = self._sl_after_rules_static
-                        self._run_tp_tier_thresholds = list(
-                            self._tp_tier_thresholds_static,
-                        )
-                        self._run_stop_loss_atr_mult = None
-                        self._run_trailing_stop_atr_mult = None
-                        self._run_position_regime = ""
-                    elif sl_after_active and self._run_tp_tier_thresholds:
-                        side_now = "long" if position > 0 else "short"
-                        prev_trigger = sl_trigger_px
-                        prev_post_tp_trail = post_tp_trail_mult
-                        sl_trigger_px, sl_tiers_processed, post_tp_trail_mult, \
-                            sl_high_water_px = self._maybe_apply_sl_after(
-                                side=side_now,
-                                avg_cost=scale.geom_cost(avg_cost),
-                                entry_atr=entry_atr_value,
-                                position_qty=abs(position),
-                                initial_qty=initial_quantity,
-                                mark_price=mark_price,
-                                fill_price=fill_price,
-                                sl_trigger_px=sl_trigger_px,
-                                sl_tiers_processed=sl_tiers_processed,
-                                post_tp_trail_mult=post_tp_trail_mult,
-                                sl_high_water_px=sl_high_water_px,
-                            )
-                        if (
-                            sl_trigger_px != prev_trigger
-                            or post_tp_trail_mult != prev_post_tp_trail
-                        ):
-                            sl_after_just_applied = True
-
+                    if _book_close(idx, close_fraction, fill_price, self.slippage_pct,
+                                   close_reason, mark_price, fill_price):
+                        sl_after_just_applied = True
                 if self.regime_directional_policy is not None:
                     entry_direction, entry_invert = self._effective_directional_entry(
                         bar_regime,
@@ -1997,7 +2023,7 @@ class Backtester:
                         self._run_position_regime = ""
 
                 if self.close_strategies and position != 0 and avg_cost > 0:
-                    pending_close_fraction, pending_close_reason = self._evaluate_close_strategies(
+                    pending_close_fraction, pending_close_reason, tier_fill_price = self._evaluate_close_strategies(
                         position, scale.geom_cost(avg_cost), initial_quantity,
                         entry_atr_value,
                         mark_price, atr_series, idx,
@@ -2007,6 +2033,16 @@ class Backtester:
                         zscore_series=zscore_series,
                         avwap_series=avwap_series,
                     )
+                    if (
+                        self._resting_tp_model
+                        and pending_close_fraction > 0
+                        and tier_fill_price > 0
+                    ):
+                        if _book_close(idx, pending_close_fraction, tier_fill_price, 0.0,
+                                       pending_close_reason, mark_price, mark_price):
+                            sl_after_just_applied = True
+                        pending_close_fraction = 0.0
+                        pending_close_reason = ""
                     if (
                         trailing_ratchet_active
                         and self._ratchet_mod
@@ -2462,18 +2498,21 @@ class Backtester:
                                    bars_held: int = 0,
                                    zscore_series: Optional[pd.Series] = None,
                                    avwap_series: Optional[pd.Series] = None
-                                   ) -> Tuple[float, str]:
+                                   ) -> Tuple[float, str, float]:
         evaluate, _list_strategies = _load_close_registry()
         side = "long" if position > 0 else "short"
         position_dict = {
             "side": side,
             "avg_cost": float(avg_cost),
+            "risk_anchor_price": float(avg_cost),
             "current_quantity": float(abs(position)),
             "initial_quantity": float(initial_quantity or abs(position)),
             "entry_atr": float(entry_atr_value),
             "regime": str(position_regime or ""),
             "bars_held": int(bars_held),
         }
+        if self._resting_tp_model:
+            position_dict["tp_model"] = "resting_limit"
         market_dict = {
             "mark_price": float(mark_price),
             "regime": str(market_regime or ""),
@@ -2504,6 +2543,7 @@ class Backtester:
 
         best = 0.0
         best_reason = ""
+        best_fill = 0.0
         for name in self.close_strategies:
             params = self.close_params.get(name)
             result = evaluate(name, position_dict, market_dict, params)
@@ -2511,9 +2551,10 @@ class Backtester:
             if fraction > best:
                 best = fraction
                 best_reason = str(result.get("reason") or name)
+                best_fill = float(result.get("tier_fill_price", 0.0) or 0.0)
                 if best >= 1.0:
-                    return 1.0, best_reason
-        return min(max(best, 0.0), 1.0), best_reason
+                    return 1.0, best_reason, best_fill
+        return min(max(best, 0.0), 1.0), best_reason, best_fill
 
     def _initial_sl_trigger(self, side: str, avg_cost: float,
                             entry_atr: float) -> float:

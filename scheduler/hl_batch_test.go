@@ -221,7 +221,7 @@ func TestSlotCarriesEveryNonKeyArgument(t *testing.T) {
 	})
 	posCtx := PositionCtx{
 		Side: "long", AvgCost: 101.5, Quantity: 1.25, InitialQuantity: 2.0,
-		EntryATR: 3.5, Regime: "trending_up",
+		EntryATR: 3.5, RiskAnchorPrice: 100.25, Regime: "trending_up",
 	}
 
 	slot, err := buildHyperliquidBatchSlot(sc, posCtx, rc)
@@ -236,7 +236,7 @@ func TestSlotCarriesEveryNonKeyArgument(t *testing.T) {
 	}
 	want := map[string]any{
 		"side": "long", "avg_cost": 101.5, "current_quantity": 1.25,
-		"initial_quantity": 2.0, "entry_atr": 3.5, "regime": "trending_up",
+		"initial_quantity": 2.0, "entry_atr": 3.5, "risk_anchor_price": 100.25, "regime": "trending_up",
 	}
 	if !reflect.DeepEqual(slot.PositionCtx, want) {
 		t.Fatalf("PositionCtx = %v, want %v", slot.PositionCtx, want)

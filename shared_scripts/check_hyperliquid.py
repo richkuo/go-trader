@@ -64,6 +64,7 @@ def _position_ctx_from_args(args):
         ("position_qty", "current_quantity"),
         ("position_initial_qty", "initial_quantity"),
         ("position_entry_atr", "entry_atr"),
+        ("position_risk_anchor_price", "risk_anchor_price"),
     ):
         value = getattr(args, attr, None)
         if value is not None:
@@ -73,6 +74,8 @@ def _position_ctx_from_args(args):
         ctx["regime"] = regime
     return ctx
 
+
+TP_MODEL_RESTING_LIMIT = "resting_limit"
 
 BATCH_PROTOCOL_VERSION = 1
 
@@ -398,6 +401,8 @@ def evaluate_signal_slot(shared, slot, deps=None):
     strategy_params_override = slot.get("params") or None
     position_side = slot.get("position_side") or ""
     position_ctx = slot.get("position_ctx") or None
+    if position_ctx:
+        position_ctx = {**position_ctx, "tp_model": TP_MODEL_RESTING_LIMIT}
     htf_filter_enabled = bool(slot.get("htf_filter"))
     regime_atr_window = slot.get("regime_atr_window") or ""
 
@@ -2147,6 +2152,7 @@ def main():
         parser.add_argument("--position-initial-qty", type=float, default=None)
         parser.add_argument("--position-entry-atr", type=float, default=None)
         parser.add_argument("--position-regime", default="")
+        parser.add_argument("--position-risk-anchor-price", type=float, default=None)
         parser.add_argument("--mark-price", type=float, default=0.0,
             help="Optional mid from Go's fetchHyperliquidMids cycle; when >0 skips adapter.get_spot_price's duplicate /info allMids call (#768).")
         parser.add_argument("--market-stdin", action="store_true", default=False,

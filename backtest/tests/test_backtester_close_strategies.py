@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 import pandas as pd
 import pytest
 
@@ -71,14 +74,18 @@ def test_tiered_tp_atr_partial_then_full_close():
     assert result["final_capital"] == 1150.0
 
 
-def test_tiered_tp_atr_live_uses_live_atr_from_market():
+@pytest.mark.parametrize("platform,atrs,want_exit_idx", [
+    ("binanceus", [10, 10, 10, 10, 10], [3, 4]),
+    ("hyperliquid", [10, 10, 30, 30, 30], [2, 3]),
+])
+def test_tiered_tp_atr_live_uses_live_atr_from_market(platform, atrs, want_exit_idx):
     df = _df_open_then_hold(
         opens=[100, 100, 100, 110, 120],
         closes=[100, 100, 110, 120, 120],
-        atrs=[10, 10, 10, 10, 10],
+        atrs=atrs,
     )
     bt = Backtester(
-        initial_capital=1000, commission_pct=0, slippage_pct=0,
+        initial_capital=1000, commission_pct=0, slippage_pct=0, platform=platform,
         close_strategies=[
             {"name": "tiered_tp_atr_live", "params": {
             "atr_source": "live",
@@ -94,6 +101,7 @@ def test_tiered_tp_atr_live_uses_live_atr_from_market():
     assert result["total_trades"] == 2
     assert result["trades"][0]["exit_price"] == 110.0
     assert result["trades"][1]["exit_price"] == 120.0
+    assert [t["exit_date"] for t in result["trades"]] == [str(df.index[i]) for i in want_exit_idx]
     assert result["final_capital"] == 1150.0
 
 
@@ -790,3 +798,54 @@ def test_unified_regime_close_rejected_at_load(kwargs_factory, match):
             initial_capital=1000, commission_pct=0, slippage_pct=0,
             **kwargs_factory(),
         )
+
+
+_TP_TIER_PARITY = json.loads(
+    (Path(__file__).resolve().parents[1] / "testdata" / "tp_tier_parity.json").read_text()
+)
+
+
+@pytest.mark.parametrize("case", _TP_TIER_PARITY["geometry"], ids=lambda c: c["id"])
+def test_hyperliquid_tier_close_matches_the_parity_fixture(case):
+    ref = _TP_TIER_PARITY["ladders"][case["ladder"]]
+    params = {**ref["params"], **case.get("params_override", {})}
+    p = case["position"]
+    market = case["market"]
+    idx = pd.Timestamp("2024-01-02")
+    atr_series = pd.Series([market["atr"]], index=[idx]) if market["atr"] else None
+    bt = Backtester(platform="hyperliquid", close_strategies=[{"name": ref["name"], "params": params}])
+
+    fraction, _reason, fill = bt._evaluate_close_strategies(
+        p["quantity"] if p["side"] == "long" else -p["quantity"],
+        p["risk_anchor_price"] or p["avg_cost"],
+        p["initial_quantity"],
+        p["entry_atr"],
+        market["mark_price"],
+        atr_series,
+        idx,
+        position_regime=p["regime_applied_label"] or p["regime"],
+        market_regime=market["regime"],
+    )
+
+    assert fraction == pytest.approx(case["want"]["close_fraction"])
+    assert fill == pytest.approx(case["want"]["fill_price"])
+
+
+@pytest.mark.parametrize("platform,rejected", [("hyperliquid", True), ("binanceus", False)])
+def test_hyperliquid_backtest_rejects_a_non_increasing_ladder(platform, rejected):
+    unified = {"trend_regime": {
+        label: {"stop_loss_atr": 1.0, "tp_tiers": [
+            {"atr_multiple": 1.0, "close_fraction": 0.6},
+            {"atr_multiple": 2.0, "close_fraction": 0.4},
+        ]}
+        for label in ("trending_up", "trending_down", "ranging")
+    }}
+    kwargs = {
+        "platform": platform, "regime_enabled": True,
+        "close_strategies": [{"name": "tiered_tp_atr_live_regime", "params": unified}],
+    }
+    if rejected:
+        with pytest.raises(ValueError, match="trend_regime.ranging.tp_tiers: tier 1 close_fraction 0.4"):
+            Backtester(**kwargs)
+    else:
+        Backtester(**kwargs)

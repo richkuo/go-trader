@@ -222,7 +222,11 @@ def test_carried_trailing_trigger_is_pierce_eligible_next_bar():
     assert trade["exit_date"] == str(df.index[3])
 
 
-def test_sl_after_bump_bar_suppresses_pierce_until_next_bar():
+@pytest.mark.parametrize("platform,tp_bar,sl_bar", [
+    ("binanceus", 3, 4),
+    ("hyperliquid", 2, 3),
+])
+def test_sl_after_bump_bar_suppresses_pierce_until_next_bar(platform, tp_bar, sl_bar):
     idx = pd.date_range("2024-01-01", periods=5, freq="D")
     df = pd.DataFrame(
         {
@@ -237,7 +241,7 @@ def test_sl_after_bump_bar_suppresses_pierce_until_next_bar():
     )
     bt = Backtester(
         initial_capital=1000.0, commission_pct=0.0, slippage_pct=0.0,
-        platform="hyperliquid", strategy_type="perps",
+        platform=platform, strategy_type="perps",
         stop_loss_atr_mult=1.0,
         close_strategies=[{
             "name": "tiered_tp_atr",
@@ -254,10 +258,10 @@ def test_sl_after_bump_bar_suppresses_pierce_until_next_bar():
     assert res["total_trades"] == 2
     tp_leg, sl_leg = res["trades"]
     assert tp_leg["exit_price"] == pytest.approx(110.0, rel=1e-9)
-    assert tp_leg["exit_date"] == str(idx[3])
+    assert tp_leg["exit_date"] == str(idx[tp_bar])
     assert sl_leg["exit_price"] == pytest.approx(100.0, rel=1e-9)
     assert sl_leg["exit_reason"] == "sl"
-    assert sl_leg["exit_date"] == str(idx[4])
+    assert sl_leg["exit_date"] == str(idx[sl_bar])
     assert res["final_capital"] == pytest.approx(5 * 110.0 + 5 * 100.0, rel=1e-9)
 
 

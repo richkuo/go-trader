@@ -1,6 +1,7 @@
 package main
 
 import (
+	"sync"
 	"testing"
 )
 
@@ -57,6 +58,41 @@ func TestAdvanceDynamicCloseRegime_ConfirmCycles(t *testing.T) {
 	}
 	if pos.RegimeAppliedLabel != "ranging" {
 		t.Fatalf("applied=%q want ranging", pos.RegimeAppliedLabel)
+	}
+}
+
+func TestAdvancePaperDynamicCloseRegime(t *testing.T) {
+	dynamic := &StrategyRef{Name: dynamicCloseStrategyName, Params: unifiedBlock()}
+	dynamic.Params["regime_confirm_cycles"] = 2
+	cases := []struct {
+		name        string
+		mode        string
+		close       *StrategyRef
+		cycles      int
+		wantApplied string
+		wantRegime  string
+	}{
+		{"paper position confirms after regime_confirm_cycles", "--mode=paper", dynamic, 2, "ranging", "ranging"},
+		{"paper position holds the old label before confirmation", "--mode=paper", dynamic, 1, "trending_up", "trending_up"},
+		{"live position is left to the protection sync", "--mode=live", dynamic, 2, "trending_up", "trending_up"},
+		{"non-dynamic close is untouched", "--mode=paper", &StrategyRef{Name: "tiered_tp_atr_live_regime", Params: unifiedBlock()}, 2, "trending_up", "trending_down"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sc := StrategyConfig{ID: "hl-dyn", Type: "perps", Platform: "hyperliquid", Args: []string{"sma", "ETH", "1h", tc.mode}, CloseStrategy: tc.close}
+			pos := &Position{Symbol: "ETH", Side: "long", Quantity: 1, AvgCost: 2000, EntryATR: 40, Regime: "trending_down", RegimeAppliedLabel: "trending_up"}
+			st := &StrategyState{Regime: "ranging", Positions: map[string]*Position{"ETH": pos}}
+			var mu sync.RWMutex
+			for i := 0; i < tc.cycles; i++ {
+				advancePaperDynamicCloseRegime(sc, st, "ETH", &mu)
+			}
+			if pos.RegimeAppliedLabel != tc.wantApplied {
+				t.Fatalf("applied label = %q, want %q", pos.RegimeAppliedLabel, tc.wantApplied)
+			}
+			if got := positionCtxForCheck(sc, pos, nil).Regime; got != tc.wantRegime {
+				t.Fatalf("check position regime = %q, want %q", got, tc.wantRegime)
+			}
+		})
 	}
 }
 

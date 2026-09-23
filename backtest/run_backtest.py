@@ -1009,6 +1009,7 @@ def load_strategy_config(config_path: str, strategy_id: str,
             "allow_scale_in": allow_scale_in,
             "scale_in": dict(scale_in_cfg) if scale_in_cfg else None,
             "atr_method": atr_method,
+            "platform": str(sc.get("platform") or "").strip().lower(),
         }
         if include_promotion_baseline:
             out["promotion_baseline"] = promotion_baseline
@@ -1366,8 +1367,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--platform",
                         choices=["binanceus", "hyperliquid", "robinhood",
                                  "luno", "okx", "okx-perps"],
-                        default="binanceus",
-                        help="Exchange fee model (matches fees.go)")
+                        default=None,
+                        help="Exchange fee model (matches fees.go). Default: "
+                             "the --config strategy's platform when it is "
+                             "hyperliquid, else binanceus")
     parser.add_argument("--symbol", default="BTC/USDT",
                         help="Trading pair")
     parser.add_argument("--symbols", nargs="+", default=None,
@@ -1540,12 +1543,14 @@ def main():
 
     open_params: Optional[dict] = None
     live_stop_kwargs: dict = {}
+    config_platform = ""
     if args.config:
         if args.mode != "single":
             print("--config is only valid with --mode single (loads one strategy by --strategy <id>)")
             sys.exit(1)
         live_kwargs = load_strategy_config(args.config, args.strategy,
                                            inject_user_defaults=(args.defaults == "user"))
+        config_platform = live_kwargs.get("platform", "")
         if close_refs:
             print("--close-strategy is not allowed alongside --config (refs come from the live config)")
             sys.exit(1)
@@ -1607,6 +1612,9 @@ def main():
         )
         _validate_allowed_regimes_vocabulary(
             args.allowed_regimes, live_kwargs.get("regime_windows_spec"))
+
+    if args.platform is None:
+        args.platform = "hyperliquid" if config_platform == "hyperliquid" else "binanceus"
 
     if args.stop_loss_atr_mult is not None:
         live_stop_kwargs.setdefault("stop_loss_atr_mult", args.stop_loss_atr_mult)

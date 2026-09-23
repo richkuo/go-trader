@@ -6,10 +6,14 @@ from typing import List, Tuple
 from _helpers import (
     clamp_fraction,
     current_close_fraction,
+    finalize_tp_tiers,
     float_from,
+    resolve_tp_tier_geometry,
     tier_list_from_params,
+    with_tier_fill_price,
 )
 from regime_atr import (
+    CANONICAL_TREND_REGIME_LABELS,
     REGIME_TP_TIER_GROUP_DEFAULTS,
     RegimeTierSpec,
     close_params_are_unified_regime,
@@ -20,7 +24,7 @@ from regime_atr import (
 )
 
 
-def _resolve_tiers_for_regime(
+def _resolve_tier_pairs_for_regime(
     params: dict, regime: str
 ) -> Tuple[List[Tuple[float, float]], List[str]]:
     if close_params_are_unified_regime(params):
@@ -40,8 +44,6 @@ def _resolve_tiers_for_regime(
                 continue
             parsed.append((mult, max(min(frac, 1.0), 0.0)))
         parsed.sort(key=lambda p: p[0])
-        if parsed:
-            parsed[-1] = (parsed[-1][0], 1.0)
         return parsed, []
 
     use_defaults = bool(params.get("use_defaults"))
@@ -51,9 +53,7 @@ def _resolve_tiers_for_regime(
         ladder = REGIME_TP_TIER_GROUP_DEFAULTS.get(group) if group else None
         if not ladder:
             return [], []
-        resolved = sorted(((m, clamp_fraction(f)) for m, f in ladder), key=lambda p: p[0])
-        resolved[-1] = (resolved[-1][0], 1.0)
-        return resolved, []
+        return sorted(((m, clamp_fraction(f)) for m, f in ladder), key=lambda p: p[0]), []
     specs, errs = parse_regime_tp_tiers(raw_tiers, "tiered_tp_atr_regime", use_defaults)
     if errs:
         return [], errs
@@ -70,10 +70,33 @@ def _resolve_tiers_for_regime(
         resolved.append((atr, clamp_fraction(frac)))
 
     resolved.sort(key=lambda p: p[0])
-    if resolved:
-        atr, _ = resolved[-1]
-        resolved[-1] = (atr, 1.0)
     return resolved, []
+
+
+def _resolve_tiers_for_regime(
+    params: dict, regime: str
+) -> Tuple[List[Tuple[float, float]], List[str]]:
+    resolved, errs = _resolve_tier_pairs_for_regime(params, regime)
+    if resolved:
+        resolved[-1] = (resolved[-1][0], 1.0)
+    return resolved, errs
+
+
+def regime_ladder_for(params: dict, regime: str, resting: bool) -> dict:
+    if not resting:
+        tiers, errs = _resolve_tiers_for_regime(params, regime)
+        if errs or not tiers:
+            return {"reason": "noop:tier_resolution_failed"}
+        return {"tiers": tiers}
+    pairs, errs = _resolve_tier_pairs_for_regime(params, regime)
+    if errs or not pairs:
+        return {"reason": "noop:tier_resolution_failed"}
+    if len(pairs) < 2:
+        return {"tiers": [(pairs[0][0], 1.0)]}
+    tiers = finalize_tp_tiers(pairs)
+    if tiers is None:
+        return {"reason": "noop:tier_ladder_rejected"}
+    return {"tiers": tiers}
 
 
 def evaluate(position: dict, market: dict, params: dict) -> dict:
@@ -81,8 +104,9 @@ def evaluate(position: dict, market: dict, params: dict) -> dict:
     current_quantity = float_from(position, "current_quantity")
     entry_atr = float_from(position, "entry_atr")
     side = str(position.get("side", "") or "").strip().lower()
-    regime = str(position.get("regime", "") or "").strip()
     mark_price = float_from(market, "mark_price")
+    geometry = resolve_tp_tier_geometry(position, market, params, live_atr=False, regime_source="position")
+    regime = geometry.regime
 
     if mark_price <= 0:
         return {"close_fraction": 0.0, "reason": "noop:missing_mark_price"}
@@ -93,11 +117,13 @@ def evaluate(position: dict, market: dict, params: dict) -> dict:
     if not regime:
         return {"close_fraction": 0.0, "reason": "noop:missing_position_regime"}
 
-    tiers, errs = _resolve_tiers_for_regime(params, regime)
-    if errs or not tiers:
-        return {"close_fraction": 0.0, "reason": "noop:tier_resolution_failed"}
+    ladder = regime_ladder_for(params, regime, geometry.resting_limit)
+    if "tiers" not in ladder:
+        return {"close_fraction": 0.0, "reason": ladder["reason"]}
+    tiers = ladder["tiers"]
 
-    profit_distance = mark_price - avg_cost if side == "long" else avg_cost - mark_price
+    anchor = geometry.anchor
+    profit_distance = mark_price - anchor if side == "long" else anchor - mark_price
     atr_profit = profit_distance / entry_atr
     hit_tiers = [(m, f) for m, f in tiers if atr_profit >= m]
     if not hit_tiers:
@@ -107,7 +133,100 @@ def evaluate(position: dict, market: dict, params: dict) -> dict:
     close_fraction = current_close_fraction(position, cumulative_fraction)
     if close_fraction <= 0:
         return {"close_fraction": 0.0, "reason": "noop:already_taken"}
-    return {
-        "close_fraction": close_fraction,
-        "reason": f"tiered_tp_atr_regime:{regime}:{multiple:g}",
-    }
+    return with_tier_fill_price(
+        {
+            "close_fraction": close_fraction,
+            "reason": f"tiered_tp_atr_regime:{regime}:{multiple:g}",
+        },
+        position, geometry, hit_tiers, side,
+    )
+
+
+def _strict_tier_pairs(raw, ctx_label: str):
+    if not isinstance(raw, list):
+        return None, [f"{ctx_label}: must be a list, got {type(raw).__name__}"]
+    errs: List[str] = []
+    pairs: List[Tuple[float, float]] = []
+    for idx, tier in enumerate(raw):
+        if not isinstance(tier, dict):
+            errs.append(f"{ctx_label}[{idx}]: must be an object")
+            continue
+        try:
+            mult = float(tier.get("atr_multiple"))
+        except (TypeError, ValueError):
+            mult = 0.0
+        try:
+            frac = float(tier.get("close_fraction"))
+        except (TypeError, ValueError):
+            frac = 0.0
+        if not mult > 0:
+            errs.append(f"{ctx_label}[{idx}].atr_multiple: must be > 0")
+        if not (0 < frac <= 1):
+            errs.append(f"{ctx_label}[{idx}].close_fraction: must be in (0, 1]")
+        pairs.append((mult, frac))
+    if errs:
+        return None, errs
+    return sorted(pairs, key=lambda p: p[0]), []
+
+
+def _ladder_order_errors(pairs, ctx_label: str) -> List[str]:
+    if len(pairs) < 2:
+        return []
+    errs: List[str] = []
+    for idx in range(1, len(pairs)):
+        if pairs[idx][0] < pairs[idx - 1][0]:
+            errs.append(
+                f"{ctx_label}: tier {idx} atr_multiple {pairs[idx][0]:g} is below tier "
+                f"{idx - 1} atr_multiple {pairs[idx - 1][0]:g}"
+            )
+            continue
+        if pairs[idx][1] <= pairs[idx - 1][1]:
+            errs.append(
+                f"{ctx_label}: tier {idx} close_fraction {pairs[idx][1]:g} must be greater than "
+                f"tier {idx - 1} close_fraction {pairs[idx - 1][1]:g}"
+            )
+    return errs
+
+
+def resting_ladder_errors(name: str, params: dict, labels=None) -> List[str]:
+    labels = tuple(labels or CANONICAL_TREND_REGIME_LABELS)
+    name = (name or "").strip().lower()
+    params = params or {}
+    ctx = f"close_strategy({name}).tp_tiers"
+    if name in ("tiered_tp_atr", "tiered_tp_atr_live"):
+        raw = tier_list_from_params(params)
+        if raw is None:
+            return []
+        pairs, errs = _strict_tier_pairs(raw, ctx)
+        return errs if errs else _ladder_order_errors(pairs, ctx)
+    if name not in ("tiered_tp_atr_regime", "tiered_tp_atr_live_regime", "tiered_tp_atr_live_regime_dynamic"):
+        return []
+    if close_params_are_unified_regime(params):
+        trend = params.get("trend_regime")
+        errs: List[str] = []
+        for label in sorted(trend) if isinstance(trend, dict) else []:
+            block = trend.get(label)
+            if not isinstance(block, dict) or "tp_tiers" not in block:
+                continue
+            label_ctx = f"close_strategy({name}).trend_regime.{label}.tp_tiers"
+            pairs, parse_errs = _strict_tier_pairs(block["tp_tiers"], label_ctx)
+            if not parse_errs:
+                errs.extend(_ladder_order_errors(pairs, label_ctx))
+        return errs
+    raw = tier_list_from_params(params)
+    if raw is None:
+        return []
+    specs, parse_errs = parse_regime_tp_tiers(raw, ctx, False, labels)
+    if parse_errs:
+        return []
+    errs = []
+    for label in labels:
+        pairs = []
+        for spec in specs:
+            pair = resolve_regime_tier(spec, label)
+            if pair is None:
+                pairs = []
+                break
+            pairs.append(pair)
+        errs.extend(_ladder_order_errors(pairs, f"{ctx}[regime {label}]"))
+    return errs

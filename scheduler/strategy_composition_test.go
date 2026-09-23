@@ -179,6 +179,26 @@ func TestAppendOpenCloseArgsPositionCtx(t *testing.T) {
 				"--position-entry-atr=750.25",
 			},
 		},
+		{
+			name: "scaled-in position carries the risk anchor",
+			pos: PositionCtx{
+				Side:            "long",
+				AvgCost:         98.5,
+				Quantity:        2,
+				InitialQuantity: 2,
+				EntryATR:        2,
+				RiskAnchorPrice: 100,
+			},
+			want: []string{
+				"triple_ema", "ETH", "1h",
+				"--position-side", "long",
+				"--position-avg-cost=98.5",
+				"--position-qty=2",
+				"--position-initial-qty=2",
+				"--position-entry-atr=2",
+				"--position-risk-anchor-price=100",
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
