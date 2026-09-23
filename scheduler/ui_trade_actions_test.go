@@ -822,3 +822,67 @@ func TestDaemonManualCloseRestoresTakeProfits(t *testing.T) {
 		t.Fatalf("saved book = %+v, want the restored order ids persisted", saved)
 	}
 }
+
+func TestManualCloseStopRemovalBookWriters(t *testing.T) {
+	notOpen := &HyperliquidStopLossUpdateResult{CancelOnly: true, StopLossNotOpen: true}
+	cancelled := &HyperliquidStopLossUpdateResult{CancelOnly: true, CancelStopLossSucceeded: true}
+	for _, tc := range []struct {
+		name        string
+		dashboard   bool
+		bookOID     int64
+		result      *HyperliquidStopLossUpdateResult
+		wantOID     int64
+		wantTrigger float64
+		wantQueued  string
+	}{
+		{name: "dashboard stop_loss_not_open clears the booked stop", dashboard: true, bookOID: 111, result: notOpen},
+		{name: "dashboard cancel_stop_loss_succeeded clears the booked stop", dashboard: true, bookOID: 111, result: cancelled},
+		{name: "dashboard keeps a newer stop id", dashboard: true, bookOID: 222, result: notOpen, wantOID: 222, wantTrigger: 1900},
+		{name: "cli stop_loss_not_open clears the booked stop", bookOID: 111, result: notOpen, wantQueued: "cancel-sl"},
+		{name: "cli cancel_stop_loss_succeeded clears the booked stop", bookOID: 111, result: cancelled, wantQueued: "cancel-sl"},
+		{name: "cli keeps a newer stop id", bookOID: 222, result: notOpen, wantOID: 222, wantTrigger: 1900},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ss, db, cfg := newTradeActionTestServer(t)
+			strategy := ss.state.Strategies["hl-manual-eth"]
+			strategy.Positions["ETH"].StopLossOID = tc.bookOID
+			store := openTestStore(t, db)
+			if err := store.SaveStrategyBook(strategy); err != nil {
+				t.Fatalf("SaveStrategyBook: %v", err)
+			}
+			var err error
+			if tc.dashboard {
+				err = ss.daemonManualCoreDeps(cfg).recordRearmedStopLoss("hl-manual-eth", "ETH", "long", 0, 111, tc.result)
+			} else {
+				err = recordRearmedStopLossInDB(cfg, store, "hl-manual-eth", "ETH", "long", 0, 111, tc.result)
+			}
+			if err != nil {
+				t.Fatalf("record: %v", err)
+			}
+			reloaded, _, loadErr := LoadStateWithStore(cfg, store)
+			if loadErr != nil {
+				t.Fatalf("LoadStateWithStore: %v", loadErr)
+			}
+			books := []*Position{reloaded.Strategies["hl-manual-eth"].Positions["ETH"]}
+			if tc.dashboard {
+				books = append(books, strategy.Positions["ETH"])
+			}
+			for _, pos := range books {
+				if pos == nil || pos.StopLossOID != tc.wantOID || pos.StopLossTriggerPx != tc.wantTrigger {
+					t.Fatalf("book = %+v, want stop OID=%d trigger=%g", pos, tc.wantOID, tc.wantTrigger)
+				}
+			}
+			actions, err := db.LoadPendingManualActions()
+			if err != nil {
+				t.Fatalf("LoadPendingManualActions: %v", err)
+			}
+			var queued []string
+			for _, a := range actions {
+				queued = append(queued, a.Action)
+			}
+			if strings.Join(queued, ",") != tc.wantQueued {
+				t.Fatalf("queued actions = %v, want %q", queued, tc.wantQueued)
+			}
+		})
+	}
+}

@@ -511,6 +511,9 @@ func formatCloseTPLegReport(tp hlTPRearmResult) string {
 	case hlTPRearmRemoved:
 		return fmt.Sprintf(" Take-profit leg: the pre-close tiers were removed%s; the next due protection sync places them at the book size.", detail)
 	case hlTPRearmFailed:
+		if tp.Unknown != "" {
+			return fmt.Sprintf(" Take-profit leg FAILED%s and UNKNOWN (%s). Read the open orders on Hyperliquid before you place anything, then fix the failed take-profit orders by hand.", detail, tp.Unknown)
+		}
 		return fmt.Sprintf(" Take-profit leg FAILED%s. Read the open orders on Hyperliquid and fix the take-profit orders by hand.", detail)
 	case hlTPRearmUnknown:
 		return fmt.Sprintf(" Take-profit leg UNKNOWN%s. Read the open orders on Hyperliquid before you place anything.", detail)

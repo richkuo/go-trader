@@ -254,6 +254,7 @@ func TestHyperliquidSizedCloseFreshReadingAndBooking(t *testing.T) {
 		wantStopOID       int64
 		wantCritical      bool
 		wantDetail        string
+		notDetail         string
 	}{
 		{name: "same-side peer opened earlier in the cycle closes the whole book", posQty: 10, ctx: hlCloseContext{PeerSameQty: 5, OnChain: hlSignedView("ETH", 10)}, refetch: reads(15), wantCalls: 1, wantMode: hlCloseModeReduceOnly, wantSize: 10, wantBookFlat: true, wantRefetch: 1},
 		{name: "opposite-side peer closed earlier in the cycle sends instead of skipping", posQty: 4, ctx: hlCloseContext{OnChain: hlSignedView("ETH", -6)}, refetch: reads(4), wantCalls: 1, wantMode: hlCloseModeReduceOnly, wantSize: 4, wantBookFlat: true, wantRefetch: 1},
@@ -271,6 +272,8 @@ func TestHyperliquidSizedCloseFreshReadingAndBooking(t *testing.T) {
 		{name: "a capped shared fill whose stop removal is rejected names the resting stop", posQty: 10, ctx: hlCloseContext{PeerSameQty: 5, OnChain: hlSignedView("ETH", 12)}, refetch: reads(12, 5), failedSLOID: true, slResult: removalRejected, wantRemovalCancel: 111, wantCalls: 1, wantMode: hlCloseModeReduceOnly, wantSize: 7, wantBookQty: 3, wantSLOID: 111, wantTPOIDs: []int64{0, 0}, wantAlert: true, wantRefetch: 2, wantCritical: true, wantDetail: "stop OID 111 STILL RESTING"},
 		{name: "a lost-reply full fill with no cancel metadata removes every requested order", posQty: 3, ctx: hlCloseContext{PeerSameQty: 5, OnChain: hlSignedView("ETH", 8)}, refetch: reads(8, 5), noCancelMeta: true, failure: &HyperliquidExecuteResult{OrderOutcome: "unknown", Error: "socket closed"}, slResult: removed, wantRemovalCancel: 111, wantSyncCancel: []int64{201, 202}, wantCalls: 1, wantMode: hlCloseModeReduceOnly, wantSize: 3, wantBookQty: 3, wantTPOIDs: []int64{0, 0}, wantAlert: true, wantCloseFail: true, wantRefetch: 2, wantCritical: true, wantDetail: "take-profit OIDs [201 202] removed"},
 		{name: "a partial IOC fill force-replaces a take-profit whose cancel failed", posQty: 10, ctx: hlCloseContext{PeerSameQty: 5, OnChain: hlSignedView("ETH", 15)}, refetch: reads(15, 11), fillCap: 4, failedTPOIDs: []int64{201}, tiered: true, syncResult: &HyperliquidProtectionSyncResult{TPOIDs: []int64{9101, 0, 0}}, wantForceTP: []bool{true, false, false}, wantCalls: 1, wantMode: hlCloseModeReduceOnly, wantSize: 10, wantBookQty: 6, wantTPOIDs: []int64{9101, 0, 0}, wantAlert: true, wantRefetch: 2, wantStopQty: 6, wantStopOID: 999, wantDetail: "Take-profit leg: placed"},
+		{name: "a partial IOC fill whose take-profit placement is unresolved reports it UNKNOWN in the one re-arm alert", posQty: 10, ctx: hlCloseContext{PeerSameQty: 5, OnChain: hlSignedView("ETH", 15)}, refetch: reads(15, 11), fillCap: 4, failedTPOIDs: []int64{201}, tiered: true, syncResult: &HyperliquidProtectionSyncResult{TPOIDs: []int64{0, 0, 0}, TPErrors: []string{"read timeout", "", ""}, TPOutcomeUnknown: []bool{true, false, false}}, wantForceTP: []bool{true, false, false}, wantCalls: 1, wantMode: hlCloseModeReduceOnly, wantSize: 10, wantBookQty: 6, wantTPOIDs: []int64{0, 0, 0}, wantAlert: true, wantRefetch: 2, wantStopQty: 6, wantStopOID: 999, wantCritical: true, wantDetail: "Take-profit leg UNKNOWN (the placement of tier(s) [1]", notDetail: "by hand"},
+		{name: "a partial IOC fill with one unresolved and one rejected take-profit names both in the one re-arm alert", posQty: 10, ctx: hlCloseContext{PeerSameQty: 5, OnChain: hlSignedView("ETH", 15)}, refetch: reads(15, 11), fillCap: 4, failedTPOIDs: []int64{201}, tiered: true, syncResult: &HyperliquidProtectionSyncResult{TPOIDs: []int64{0, 0, 0}, TPErrors: []string{"read timeout", "open order limit", ""}, TPOutcomeUnknown: []bool{true, false, false}}, wantForceTP: []bool{true, false, false}, wantCalls: 1, wantMode: hlCloseModeReduceOnly, wantSize: 10, wantBookQty: 6, wantTPOIDs: []int64{0, 0, 0}, wantAlert: true, wantRefetch: 2, wantStopQty: 6, wantStopOID: 999, wantCritical: true, wantDetail: "FAILED (tier 2: open order limit) and UNKNOWN (the placement of tier(s) [1]"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -430,8 +433,8 @@ func TestHyperliquidSizedCloseFreshReadingAndBooking(t *testing.T) {
 			if tc.wantAlert != (len(alerts) == 1) || len(alerts) > 1 || tc.wantCloseFail != (len(closeFails) == 1) || len(closeFails) > 1 {
 				t.Fatalf("re-arm alerts=%q close-failure alerts=%q, want one re-arm alert: %t and one close-failure alert: %t", alerts, closeFails, tc.wantAlert, tc.wantCloseFail)
 			}
-			if tc.wantAlert && (strings.HasPrefix(alerts[0], "CRITICAL") != tc.wantCritical || !strings.Contains(alerts[0], tc.wantDetail)) {
-				t.Fatalf("alert = %q, want critical %t and the detail %q", alerts[0], tc.wantCritical, tc.wantDetail)
+			if tc.wantAlert && (strings.HasPrefix(alerts[0], "CRITICAL") != tc.wantCritical || !strings.Contains(alerts[0], tc.wantDetail) || (tc.notDetail != "" && strings.Contains(alerts[0], tc.notDetail))) {
+				t.Fatalf("alert = %q, want critical %t, the detail %q and no %q", alerts[0], tc.wantCritical, tc.wantDetail, tc.notDetail)
 			}
 		})
 	}

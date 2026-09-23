@@ -953,17 +953,21 @@ func TestClassifyProtectionSyncTPRearm(t *testing.T) {
 		result     *HyperliquidProtectionSyncResult
 		want       hlTPRearmStatus
 		wantDetail string
+		wantReport []string
+		notReport  string
 	}{
-		{"no take-profit leg", hlProtectionPlan{}, nil, hlTPRearmNone, ""},
-		{"force-replaced tier placed", full, &HyperliquidProtectionSyncResult{TPOIDs: []int64{9101, 7002}}, hlTPRearmPlaced, ""},
-		{"no force and ids unchanged", hlProtectionPlan{Tiers: tiers, TPOIDs: []int64{7001, 7002}}, &HyperliquidProtectionSyncResult{TPOIDs: []int64{7001, 7002}}, hlTPRearmKept, ""},
-		{"removed", cancel, &HyperliquidProtectionSyncResult{}, hlTPRearmRemoved, "7001"},
-		{"tier placement error", full, &HyperliquidProtectionSyncResult{TPOIDs: []int64{0, 7002}, TPErrors: []string{"open order limit", ""}}, hlTPRearmFailed, "tier 1: open order limit"},
-		{"force-replaced tier left at its old id", full, &HyperliquidProtectionSyncResult{TPOIDs: []int64{7001, 7002}}, hlTPRearmFailed, "OID=7001) still rests"},
-		{"cancel failed", cancel, &HyperliquidProtectionSyncResult{TPCancelFailedOIDs: []int64{7001}}, hlTPRearmFailed, "[7001]"},
-		{"outcome unknown", full, &HyperliquidProtectionSyncResult{TPOIDs: []int64{0, 7002}, TPOutcomeUnknown: []bool{true, false}}, hlTPRearmUnknown, "[1]"},
-		{"sync error with tiers", full, &HyperliquidProtectionSyncResult{Error: "avg-cost and entry-atr must be > 0"}, hlTPRearmFailed, "avg-cost"},
-		{"nil result", full, nil, hlTPRearmUnknown, "no result"},
+		{"no take-profit leg", hlProtectionPlan{}, nil, hlTPRearmNone, "", nil, ""},
+		{"force-replaced tier placed", full, &HyperliquidProtectionSyncResult{TPOIDs: []int64{9101, 7002}}, hlTPRearmPlaced, "", nil, ""},
+		{"no force and ids unchanged", hlProtectionPlan{Tiers: tiers, TPOIDs: []int64{7001, 7002}}, &HyperliquidProtectionSyncResult{TPOIDs: []int64{7001, 7002}}, hlTPRearmKept, "", nil, ""},
+		{"removed", cancel, &HyperliquidProtectionSyncResult{}, hlTPRearmRemoved, "7001", nil, ""},
+		{"tier placement error", full, &HyperliquidProtectionSyncResult{TPOIDs: []int64{0, 7002}, TPErrors: []string{"open order limit", ""}}, hlTPRearmFailed, "tier 1: open order limit", nil, ""},
+		{"force-replaced tier left at its old id", full, &HyperliquidProtectionSyncResult{TPOIDs: []int64{7001, 7002}}, hlTPRearmFailed, "OID=7001) still rests", nil, ""},
+		{"cancel failed", cancel, &HyperliquidProtectionSyncResult{TPCancelFailedOIDs: []int64{7001}}, hlTPRearmFailed, "[7001]", nil, ""},
+		{"outcome unknown", full, &HyperliquidProtectionSyncResult{TPOIDs: []int64{0, 7002}, TPOutcomeUnknown: []bool{true, false}}, hlTPRearmUnknown, "[1]", nil, ""},
+		{"sync error with tiers", full, &HyperliquidProtectionSyncResult{Error: "avg-cost and entry-atr must be > 0"}, hlTPRearmFailed, "avg-cost", nil, ""},
+		{"nil result", full, nil, hlTPRearmUnknown, "no result", nil, ""},
+		{"placement error and unresolved outcome on one tier", full, &HyperliquidProtectionSyncResult{TPOIDs: []int64{0, 7002}, TPErrors: []string{"read timeout", ""}, TPOutcomeUnknown: []bool{true, false}}, hlTPRearmUnknown, "[1]", []string{"Take-profit leg UNKNOWN", "before you place anything"}, "by hand"},
+		{"tier 1 unresolved and tier 2 rejected in one sync", full, &HyperliquidProtectionSyncResult{TPOIDs: []int64{0, 0}, TPErrors: []string{"read timeout", "open order limit"}, TPOutcomeUnknown: []bool{true, false}}, hlTPRearmFailed, "tier 2: open order limit", []string{"FAILED (tier 2: open order limit) and UNKNOWN (the placement of tier(s) [1]", "before you place anything"}, "tier 1: read timeout"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -973,6 +977,15 @@ func TestClassifyProtectionSyncTPRearm(t *testing.T) {
 			}
 			if !strings.Contains(got.Detail, tc.wantDetail) {
 				t.Fatalf("detail = %q, want it to contain %q", got.Detail, tc.wantDetail)
+			}
+			report := formatCloseTPLegReport(got)
+			for _, want := range tc.wantReport {
+				if !strings.Contains(report, want) {
+					t.Fatalf("report = %q, want it to contain %q", report, want)
+				}
+			}
+			if tc.notReport != "" && strings.Contains(report, tc.notReport) {
+				t.Fatalf("report = %q, want no %q", report, tc.notReport)
 			}
 		})
 	}

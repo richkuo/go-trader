@@ -347,12 +347,24 @@ func rearmedStopLossBookValues(result *HyperliquidStopLossUpdateResult) (int64, 
 	return 0, 0, ""
 }
 
+func applyRearmedStopLossToBook(position *Position, prevStopOID int64, result *HyperliquidStopLossUpdateResult) string {
+	newOID, newTrigger, action := rearmedStopLossBookValues(result)
+	if action == "" || position == nil {
+		return ""
+	}
+	if newOID == 0 && position.StopLossOID != 0 && position.StopLossOID != prevStopOID {
+		return ""
+	}
+	position.StopLossOID = newOID
+	position.StopLossTriggerPx = newTrigger
+	return action
+}
+
 func recordRearmedStopLossInDB(cfg *Config, store *StateStore, strategyID, symbol, side string, qty float64, prevStopOID int64, result *HyperliquidStopLossUpdateResult) error {
 	if store == nil {
 		return nil
 	}
-	newOID, newTrigger, action := rearmedStopLossBookValues(result)
-	if action == "" {
+	if _, _, action := rearmedStopLossBookValues(result); action == "" {
 		return nil
 	}
 	state, _, err := LoadStateWithStore(cfg, store)
@@ -367,11 +379,10 @@ func recordRearmedStopLossInDB(cfg *Config, store *StateStore, strategyID, symbo
 	if position == nil {
 		return nil
 	}
-	if action == "cancel-sl" && position.StopLossOID != 0 && position.StopLossOID != prevStopOID {
+	action := applyRearmedStopLossToBook(position, prevStopOID, result)
+	if action == "" {
 		return nil
 	}
-	position.StopLossOID = newOID
-	position.StopLossTriggerPx = newTrigger
 	queued := PendingManualAction{
 		StrategyID: strategyID,
 		Action:     action,
@@ -381,8 +392,8 @@ func recordRearmedStopLossInDB(cfg *Config, store *StateStore, strategyID, symbo
 	}
 	if action == "update-sl" {
 		queued.Quantity = qty
-		queued.StopLossOID = newOID
-		queued.StopLossTriggerPx = newTrigger
+		queued.StopLossOID = position.StopLossOID
+		queued.StopLossTriggerPx = position.StopLossTriggerPx
 	}
 	return store.SaveStrategyBookQueueingManualAction(strategy, queued)
 }

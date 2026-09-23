@@ -846,7 +846,7 @@ func runHyperliquidProtectionSyncForRemainder(
 	}
 	clearHyperliquidProtectionOIDsMatching(pos, hlSurplusTPCancelsRemoved(removedTPOIDs, protection))
 	applyHyperliquidProtectionSync(pos, protection, plan.CancelTPOIDs)
-	notifyHLProtectionTPOutcomeUnknown(notifier, logger, sc, symbol, unknownTPPlacementTiers(protection))
+	notifyHLProtectionTPOutcomeUnknown(syncNotifier, logger, sc, symbol, unknownTPPlacementTiers(protection))
 	if effectiveTrailingStopPct(sc, pos) <= 0 {
 		pos.ScaleInResizePending = false
 	}

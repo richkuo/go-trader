@@ -411,8 +411,9 @@ const (
 )
 
 type hlTPRearmResult struct {
-	Status hlTPRearmStatus
-	Detail string
+	Status  hlTPRearmStatus
+	Detail  string
+	Unknown string
 }
 
 func (r hlTPRearmResult) critical() bool {
@@ -426,14 +427,19 @@ func classifyProtectionSyncTPRearm(plan hlProtectionPlan, result *HyperliquidPro
 	if result == nil {
 		return hlTPRearmResult{Status: hlTPRearmUnknown, Detail: "the protection sync returned no result; a take-profit cancel or placement may have happened"}
 	}
+	unknown := ""
+	if tiers := unknownTPPlacementTiers(result); len(tiers) > 0 {
+		unknown = fmt.Sprintf("the placement of tier(s) %v could not be resolved, so a reduce-only order may rest untracked", tiers)
+	}
 	if result.Error != "" {
-		return hlTPRearmResult{Status: hlTPRearmFailed, Detail: result.Error}
+		return hlTPRearmResult{Status: hlTPRearmFailed, Detail: result.Error, Unknown: unknown}
 	}
 	var failures []string
 	for i, e := range result.TPErrors {
-		if e != "" {
-			failures = append(failures, fmt.Sprintf("tier %d: %s", i+1, e))
+		if e == "" || (i < len(result.TPOutcomeUnknown) && result.TPOutcomeUnknown[i]) {
+			continue
 		}
+		failures = append(failures, fmt.Sprintf("tier %d: %s", i+1, e))
 	}
 	for i, force := range plan.ForceTPReplace {
 		if !force || i >= len(plan.TPOIDs) || plan.TPOIDs[i] <= 0 {
@@ -464,10 +470,10 @@ func classifyProtectionSyncTPRearm(plan hlProtectionPlan, result *HyperliquidPro
 		failures = append(failures, fmt.Sprintf("take-profit OIDs %v were not removed: %s", result.TPCancelFailedOIDs, reason))
 	}
 	if len(failures) > 0 {
-		return hlTPRearmResult{Status: hlTPRearmFailed, Detail: strings.Join(failures, "; ")}
+		return hlTPRearmResult{Status: hlTPRearmFailed, Detail: strings.Join(failures, "; "), Unknown: unknown}
 	}
-	if tiers := unknownTPPlacementTiers(result); len(tiers) > 0 {
-		return hlTPRearmResult{Status: hlTPRearmUnknown, Detail: fmt.Sprintf("the placement of tier(s) %v could not be resolved, so a reduce-only order may rest untracked", tiers)}
+	if unknown != "" {
+		return hlTPRearmResult{Status: hlTPRearmUnknown, Detail: unknown}
 	}
 	for i, oid := range result.TPOIDs {
 		if oid <= 0 {

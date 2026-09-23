@@ -108,7 +108,20 @@ func (ss *StatusServer) daemonManualCoreDeps(cfg *Config) manualCoreDeps {
 		if strategy == nil {
 			return nil
 		}
-		applyTrailingStopUpdateResult(strategy, symbol, side, prevStopOID, 0, false, result, "manual_close_rearm_sl_immediate", logger, qty)
+		if result.StopLossFilledImmediately && result.StopLossTriggerPx > 0 {
+			applyTrailingStopUpdateResult(strategy, symbol, side, prevStopOID, 0, false, result, "manual_close_rearm_sl_immediate", logger, qty)
+			return ss.stateDB.SaveStrategyBook(strategy)
+		}
+		position := strategy.Positions[symbol]
+		if position == nil || position.Quantity <= 0 || (side != "" && position.Side != side) {
+			return nil
+		}
+		if applyRearmedStopLossToBook(position, prevStopOID, result) == "" {
+			return nil
+		}
+		if position.StopLossOID > 0 {
+			position.RatchetFallbackNormalizePending = false
+		}
 		return ss.stateDB.SaveStrategyBook(strategy)
 	}
 	d.recordRestoredTakeProfits = func(strategyID, symbol, side, positionID string, outcomes []manualCloseTPTierOutcome) error {
