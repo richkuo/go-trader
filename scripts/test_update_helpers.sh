@@ -139,6 +139,121 @@ assert_eq "$(update_unit_source_path "$SCRIPT_DIR/.." go-trader)" "$SCRIPT_DIR/.
 [[ -f "$SCRIPT_DIR/../go-trader.service" ]] || { echo "FAIL: shipped plain unit missing" >&2; exit 1; }
 [[ -f "$SCRIPT_DIR/../systemd/go-trader@.service" ]] || { echo "FAIL: shipped template unit missing" >&2; exit 1; }
 
+systemd_version_cases=(
+    "systemd 255 (255.4-1ubuntu8.4)|255|Ubuntu 24.04 banner"
+    "systemd 239 (239-58.el8)|239|RHEL 8 banner"
+    "systemd 256~rc3 (256~rc3-1)|256|a release-candidate suffix keeps the major number"
+    "not systemd|<none>|an unrelated banner yields no version"
+    "|<none>|an empty banner yields no version"
+)
+for row in "${systemd_version_cases[@]}"; do
+    IFS='|' read -r case_text case_want case_msg <<<"$row"
+    [[ "$case_want" == "<none>" ]] && case_want=""
+    assert_eq "$(update_systemd_major_version "$case_text"$'\n+PAM +AUDIT')" "$case_want" "systemd version: $case_msg"
+done
+assert_eq "$(update_journal_namespace_supported 244)" "no" "namespace support: systemd 244 predates LogNamespace="
+assert_eq "$(update_journal_namespace_supported 245)" "yes" "namespace support: systemd 245 added LogNamespace="
+assert_eq "$(update_journal_namespace_supported 255)" "yes" "namespace support: systemd 255 supports LogNamespace="
+assert_eq "$(update_journal_namespace_supported '')" "no" "namespace support: an unknown version is treated as unsupported"
+
+assert_eq "$(update_journalctl_unit_command go-trader@live.service go-trader)" \
+    "journalctl --namespace=+go-trader -u go-trader@live.service" \
+    "journalctl command: a namespaced unit reads its namespace merged with the default journal"
+assert_eq "$(update_journalctl_unit_command go-trader.service '')" "journalctl -u go-trader.service" \
+    "journalctl command: a unit without a namespace reads the default journal"
+
+for shipped_unit in "$SCRIPT_DIR/../go-trader.service" "$SCRIPT_DIR/../systemd/go-trader@.service"; do
+    shipped_ns=$(update_unit_log_namespace "$shipped_unit")
+    [[ -n "$shipped_ns" ]] || { echo "FAIL: $shipped_unit sets no LogNamespace" >&2; exit 1; }
+    shipped_conf="$SCRIPT_DIR/../systemd/journald@${shipped_ns}.conf"
+    [[ -f "$shipped_conf" ]] || { echo "FAIL: $shipped_unit names namespace $shipped_ns but $shipped_conf is not shipped" >&2; exit 1; }
+    grep -qx 'ForwardToSyslog=no' "$shipped_conf" || { echo "FAIL: $shipped_conf must turn syslog forwarding off explicitly" >&2; exit 1; }
+    grep -q '^SystemMaxUse=' "$shipped_conf" || { echo "FAIL: $shipped_conf must cap the namespace size" >&2; exit 1; }
+done
+
+jns=$(mktemp -d)
+mkdir -p "$jns/bin" "$jns/etc" "$jns/repo/systemd"
+cat >"$jns/bin/systemctl" <<EOS
+#!/usr/bin/env bash
+if [[ "\$1" == "--version" ]]; then
+    printf 'systemd %s (test)\n+PAM\n' "\$(cat "$jns/version")"
+    exit 0
+fi
+printf '%s\n' "\$*" >>"$jns/systemctl.log"
+[[ -f "$jns/fail-restart" ]] && exit 1
+exit 0
+EOS
+chmod +x "$jns/bin/systemctl"
+printf '[Service]\nLogNamespace=first\nLogNamespace= go-trader \n' >"$jns/repo/unit.service"
+printf '[Service]\nExecStart=/bin/true\n' >"$jns/repo/plain.service"
+printf '[Journal]\nForwardToSyslog=no\nSystemMaxUse=2G\n' >"$jns/repo/systemd/journald@go-trader.conf"
+jdest="$jns/etc/journald@go-trader.conf"
+assert_eq "$(update_unit_log_namespace "$jns/repo/unit.service")" "go-trader" \
+    "unit namespace: the last LogNamespace= assignment wins, trimmed"
+assert_eq "$(update_journald_conf_path "$jns/etc/" go-trader)" "$jdest" "journald conf path: namespace file under the etc dir"
+
+run_jsync() {
+    PATH="$jns/bin:$PATH" UPDATE_UNIT_SUDO="" update_sync_journal_namespace "$jns/repo" "$1" "$jns/etc" 2>&1
+}
+restart_count() {
+    grep -c '^try-restart systemd-journald@go-trader.service$' "$jns/systemctl.log" 2>/dev/null || true
+}
+
+echo 244 >"$jns/version"
+jout=$(run_jsync "$jns/repo/unit.service") && jrc=0 || jrc=$?
+assert_eq "$jrc" "0" "journal sync: old systemd warns and continues"
+[[ "$jout" == *"older than 245"* ]] || { echo "FAIL: old systemd must warn clearly, got: $jout" >&2; exit 1; }
+[[ ! -e "$jdest" ]] || { echo "FAIL: old systemd must not get a namespace config" >&2; exit 1; }
+
+echo 255 >"$jns/version"
+jout=$(run_jsync "$jns/repo/plain.service") && jrc=0 || jrc=$?
+assert_eq "$jrc" "0" "journal sync: a unit without LogNamespace is a no-op"
+[[ ! -e "$jdest" ]] || { echo "FAIL: a unit without LogNamespace must not install a namespace config" >&2; exit 1; }
+
+jout=$(run_jsync "$jns/repo/unit.service") && jrc=0 || jrc=$?
+assert_eq "$jrc" "0" "journal sync: first install succeeds"
+assert_eq "$(cat "$jdest")" "$(cat "$jns/repo/systemd/journald@go-trader.conf")" "journal sync: the shipped config is installed"
+[[ ! -e "$jdest.prev" ]] || { echo "FAIL: a first install must not invent a .prev" >&2; exit 1; }
+assert_eq "$(restart_count)" "1" "journal sync: an install restarts a running namespace journald (try-restart)"
+
+jout=$(run_jsync "$jns/repo/unit.service") && jrc=0 || jrc=$?
+assert_eq "$jrc" "0" "journal sync: a second run succeeds"
+assert_eq "$(restart_count)" "1" "journal sync: an unchanged config does not restart journald again"
+
+printf '[Journal]\nSystemMaxUse=9G\n' >"$jdest"
+jout=$(run_jsync "$jns/repo/unit.service") && jrc=0 || jrc=$?
+assert_eq "$jrc" "0" "journal sync: an operator-edited config is replaced"
+assert_eq "$(cat "$jdest")" "$(cat "$jns/repo/systemd/journald@go-trader.conf")" "journal sync: the shipped config wins over an edit"
+assert_eq "$(cat "$jdest.prev")" $'[Journal]\nSystemMaxUse=9G' "journal sync: the edited config is kept as .prev"
+[[ "$jout" == *"journald@go-trader.conf.d/*.conf"* ]] || { echo "FAIL: replacing an edit must name the drop-in dir, got: $jout" >&2; exit 1; }
+assert_eq "$(restart_count)" "2" "journal sync: a replaced config restarts journald"
+
+printf '[Journal]\nSystemMaxUse=9G\n' >"$jdest"
+touch "$jns/fail-restart"
+jout=$(run_jsync "$jns/repo/unit.service") && jrc=0 || jrc=$?
+assert_eq "$jrc" "1" "journal sync: a failed journald restart fails the sync"
+assert_eq "$(cat "$jdest")" $'[Journal]\nSystemMaxUse=9G' "journal sync: a failed restart puts the previous config back"
+rm -f "$jdest"
+jout=$(run_jsync "$jns/repo/unit.service") && jrc=0 || jrc=$?
+assert_eq "$jrc" "1" "journal sync: a failed restart after a first install fails the sync"
+[[ ! -e "$jdest" ]] || { echo "FAIL: a failed restart after a first install must remove the new config" >&2; exit 1; }
+rm -f "$jns/fail-restart"
+
+printf 'operator\n' >"$jns/operator.conf"
+ln -s "$jns/operator.conf" "$jdest"
+jout=$(run_jsync "$jns/repo/unit.service") && jrc=0 || jrc=$?
+assert_eq "$jrc" "0" "journal sync: a symlinked config is left alone"
+assert_eq "$(cat "$jns/operator.conf")" "operator" "journal sync: the symlink target is untouched"
+rm -f "$jdest"
+
+rm -f "$jns/repo/systemd/journald@go-trader.conf"
+jout=$(run_jsync "$jns/repo/unit.service") && jrc=0 || jrc=$?
+assert_eq "$jrc" "1" "journal sync: a namespace with no shipped config refuses"
+printf '[Service]\nLogNamespace=../evil\n' >"$jns/repo/bad.service"
+jout=$(run_jsync "$jns/repo/bad.service") && jrc=0 || jrc=$?
+assert_eq "$jrc" "1" "journal sync: a namespace that is not a plain name refuses"
+rm -rf "$jns"
+
 assert_eq "$(update_signal_redirect_decision active /opt/go-trader/go-trader /opt/go-trader/go-trader)" \
     "redirect" "active unit running this binary -> redirect"
 assert_eq "$(update_signal_redirect_decision active /opt/other/go-trader /opt/go-trader/go-trader)" \

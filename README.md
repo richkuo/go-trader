@@ -422,11 +422,13 @@ curl -s localhost:8099/status            # live prices + P&L
 curl -s localhost:8099/health
 open http://localhost:8099/dashboard     # charts, trades, equity, regime badge, tuner, reports
 open http://localhost:8099/tuning        # research-run tuning page (suggest-only)
-journalctl -u go-trader -n 50
+journalctl --namespace=+go-trader -u go-trader -n 50
 ./go-trader inspect <strategy-id>        # resolved config + SL/TP provenance
 ./go-trader inspect --all --json
 ./go-trader agent-info                   # capabilities, schema, env vars, live state
 ```
+
+**Logs live in their own journal namespace.** Both shipped units set `LogNamespace=go-trader`, so every go-trader unit logs to a separate journal with its own size cap, and none of its lines go to `/var/log/syslog`. A plain `journalctl -u go-trader` shows only systemd's start and stop lines. Add `--namespace=go-trader` for the go-trader output alone, or `--namespace=+go-trader` to merge it with the default journal (systemd's own lines for the unit and anything logged before the move). `scripts/install-service.sh` and `scripts/update.sh --restart` install `systemd/journald@go-trader.conf` as `/etc/systemd/journald@go-trader.conf`: `SystemMaxUse=2G`, `ForwardToSyslog=no`, persistent storage. That file is managed by go-trader and replaced on a difference (the old copy is kept as `.prev`). Put local settings in `/etc/systemd/journald@go-trader.conf.d/*.conf` and apply them with `sudo systemctl restart systemd-journald@go-trader.service`. Journal namespaces need systemd 245 or newer; on an older systemd the installers warn, skip the config, and systemd ignores the unit line, so logs stay in the default journal.
 
 Loopback-only status server (`localhost:<port>`). Dashboard includes candle charts, trade history, equity sparklines, strategy tuner, and `/reports`. A separate `/tuning` page launches persistent research retunes across one or more strategies and diffs the ranked results against live config — suggestions are never auto-applied. Set `status_token` for mutating API calls from the browser. Prefer VPN or reverse proxy over binding `0.0.0.0`.
 
@@ -497,7 +499,7 @@ Python 3.12+ via [uv](https://github.com/astral-sh/uv); Go 1.26.2; systemd.
 | Problem | Solution |
 |---|---|
 | No Discord messages | Check `DISCORD_BOT_TOKEN`, channel IDs, bot permissions |
-| Service won't start | `journalctl -u go-trader -n 50` |
+| Service won't start | `journalctl --namespace=+go-trader -u go-trader -n 50` (the `+` merges systemd's start and exit lines with the go-trader output) |
 | Didn't come back after reboot | Re-run `sudo bash scripts/install-service.sh` |
 | Strategy not trading | Circuit breaker in `/status`, verify params |
 | Reset positions | `rm scheduler/state.db && systemctl restart go-trader` (remove **every** configured state file: `db_file`, `paper_db_file` and each `paper_sources[].db_file`) |
@@ -505,7 +507,7 @@ Python 3.12+ via [uv](https://github.com/astral-sh/uv); Go 1.26.2; systemd.
 | Live mode fails | Set env vars from Platforms table |
 | "state DB missing but live strategies configured" | Restore `scheduler/state.db` from backup, or `GO_TRADER_ALLOW_MISSING_STATE=1` for first-run. With `paper_db_file` or `paper_sources` set, restore every file together with its `-wal` / `-shm` sidecars, in the order primary, paper, then sources by id |
 | Which files does a backup need? | `./go-trader storage-inspect --json --config <path>` names the canonical path and the partitions of every state file; `update_resolve_db_exclude` in `scripts/update_helpers.sh` enumerates the same list for the updater |
-| A unit exits 79 after a fold | Two processes cannot own one state file. Whichever scheduler starts **second** fails to take the ownership lock and refuses to start with exit 79; the process already holding the lock keeps trading, so read `journalctl` for the unit that exited and leave the running one alone. Usually a folded paper unit was restarted or came back after a reboot: disable every folded unit (`systemctl disable go-trader@<instance>.service`) and start only the merged live unit |
+| A unit exits 79 after a fold | Two processes cannot own one state file. Whichever scheduler starts **second** fails to take the ownership lock and refuses to start with exit 79; the process already holding the lock keeps trading, so read `journalctl --namespace=+go-trader -u <unit>` for the unit that exited and leave the running one alone. Usually a folded paper unit was restarted or came back after a reboot: disable every folded unit (`systemctl disable go-trader@<instance>.service`) and start only the merged live unit |
 | Exit code 80 on startup | The storage layout was rejected (aliased files, a book in the wrong file, an ambiguous legacy risk row). Run `./go-trader storage-inspect` — it names the file and the identifier |
 
 ---

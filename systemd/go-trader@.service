@@ -15,6 +15,7 @@ RestartPreventExitStatus=78 79 80
 TimeoutStopSec=20
 StandardOutput=journal
 StandardError=journal
+LogNamespace=go-trader
 
 EnvironmentFile=-/opt/go-trader-%i/.env
 

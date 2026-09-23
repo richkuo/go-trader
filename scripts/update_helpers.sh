@@ -127,6 +127,111 @@ update_unit_restore_backup() {
     update_unit_sudo mv -f "$backup" "$installed"
 }
 
+UPDATE_JOURNAL_NAMESPACE_MIN_SYSTEMD=245
+
+update_systemd_major_version() {
+    local text="$1" first word ver
+    first="${text%%$'\n'*}"
+    read -r word ver _ <<<"$first" || true
+    ver="${ver%%[!0-9]*}"
+    if [[ "$word" != "systemd" || -z "$ver" ]]; then
+        printf ''
+        return 0
+    fi
+    printf '%s' "$ver"
+}
+
+update_journal_namespace_supported() {
+    local major="$1"
+    if [[ "$major" =~ ^[0-9]+$ ]] && (( 10#$major >= UPDATE_JOURNAL_NAMESPACE_MIN_SYSTEMD )); then
+        printf 'yes'
+        return 0
+    fi
+    printf 'no'
+}
+
+update_unit_log_namespace() {
+    local unit_file="$1" raw
+    [[ -n "$unit_file" && -f "$unit_file" ]] || { printf ''; return 0; }
+    raw=$(sed -n 's/^[[:space:]]*LogNamespace[[:space:]]*=//p' "$unit_file" | tail -n 1)
+    raw="${raw#"${raw%%[![:space:]]*}"}"
+    raw="${raw%"${raw##*[![:space:]]}"}"
+    printf '%s' "$raw"
+}
+
+update_journald_conf_path() {
+    local etc_dir="${1%/}" namespace="$2"
+    printf '%s/journald@%s.conf' "$etc_dir" "$namespace"
+}
+
+update_journalctl_unit_command() {
+    local unit="$1" namespace="$2"
+    if [[ -n "$namespace" ]]; then
+        printf 'journalctl --namespace=+%s -u %s' "$namespace" "$unit"
+        return 0
+    fi
+    printf 'journalctl -u %s' "$unit"
+}
+
+update_sync_journal_namespace() {
+    local repo_root="${1%/}" unit_source="$2" etc_dir="${3:-/etc/systemd}"
+    local namespace
+    namespace=$(update_unit_log_namespace "$unit_source")
+    if [[ -z "$namespace" ]]; then
+        echo "[journal] $unit_source sets no LogNamespace; no journald namespace config to install"
+        return 0
+    fi
+    if [[ ! "$namespace" =~ ^[A-Za-z0-9_-]+$ ]]; then
+        echo "[journal] LogNamespace '$namespace' in $unit_source is not a plain name (letters, digits, dash, underscore); refusing to install a journald config for it" >&2
+        return 1
+    fi
+    local major
+    major=$(update_systemd_major_version "$(systemctl --version 2>/dev/null || true)")
+    if [[ "$(update_journal_namespace_supported "$major")" != "yes" ]]; then
+        printf '\033[1;31m[journal] WARNING: systemd %s is older than %s or unknown, and it does not support LogNamespace=. systemd ignores that line, so go-trader keeps logging to the default journal (and to syslog when journald forwards there). Skipping the journald@%s config.\033[0m\n' \
+            "${major:-<unknown>}" "$UPDATE_JOURNAL_NAMESPACE_MIN_SYSTEMD" "$namespace" >&2
+        return 0
+    fi
+    local source_conf="$repo_root/systemd/journald@${namespace}.conf"
+    if [[ ! -f "$source_conf" ]]; then
+        echo "[journal] $unit_source sets LogNamespace=$namespace but $source_conf is missing; refusing to run the unit in a namespace with no size cap" >&2
+        return 1
+    fi
+    local dest dropin_dir decision backup
+    dest=$(update_journald_conf_path "$etc_dir" "$namespace")
+    dropin_dir="${dest}.d"
+    decision=$(update_unit_sync_decision "$dest" "$source_conf" no)
+    case "$decision" in
+        install)
+            backup=$(update_unit_install_with_backup "$dest" "$source_conf") || {
+                echo "[journal] could not install $source_conf as $dest" >&2
+                return 1
+            }
+            echo "[journal] installed $dest from $source_conf"
+            if [[ -n "$backup" ]]; then
+                echo "[journal] WARNING: $dest differed from the shipped file; the previous copy is kept as $backup. $dest is managed by go-trader: put local settings in $dropin_dir/*.conf" >&2
+            fi
+            if ! update_unit_sudo systemctl try-restart "systemd-journald@${namespace}.service"; then
+                echo "[journal] systemd-journald@${namespace}.service did not restart with the new $dest; putting the previous config back" >&2
+                if [[ -n "$backup" ]]; then
+                    update_unit_restore_backup "$dest" "$backup" || true
+                else
+                    update_unit_sudo rm -f "$dest" || true
+                fi
+                update_unit_sudo systemctl try-restart "systemd-journald@${namespace}.service" || true
+                return 1
+            fi
+            ;;
+        skip)
+            echo "[journal] $dest is a symlink whose target differs from $source_conf; leaving the operator's link alone" >&2
+            ;;
+        *)
+            echo "[journal] $dest already matches $source_conf"
+            ;;
+    esac
+    return 0
+}
+
 update_signal_redirect_decision() {
     local is_active="$1" exec_bin_abs="$2" swap_bin_abs="$3"
     [[ "$is_active" == "active" ]] || { printf ''; return 0; }
