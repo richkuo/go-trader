@@ -242,7 +242,7 @@ func TestSlotCarriesEveryNonKeyArgument(t *testing.T) {
 		t.Fatalf("PositionCtx = %v, want %v", slot.PositionCtx, want)
 	}
 
-	refsArgs, err := buildStrategyRefsArg(strategyConfigWithOnChainProtectionFilter(sc))
+	refsArgs, err := buildStrategyRefsArg(sc, hlCloseOwnerForCheck(sc, posCtx))
 	if err != nil {
 		t.Fatalf("buildStrategyRefsArg: %v", err)
 	}
@@ -1056,5 +1056,148 @@ func TestBatchSharedStateAlertRendersDistinctly(t *testing.T) {
 		if !strings.Contains(msg, want) {
 			t.Fatalf("alert %q missing %q", msg, want)
 		}
+	}
+}
+
+func TestHyperliquidCheckCloseOwnerContract(t *testing.T) {
+	const id = "hl-close-owner-contract"
+	build := func(openSet bool, direction string, entryATR float64) (StrategyConfig, PositionCtx) {
+		sc := hlBatchStrategy(id, "breakout", "ETH", "1h", func(sc *StrategyConfig) {
+			sc.Args = []string{"breakout", "ETH", "1h", "--mode=live"}
+			sc.Direction = direction
+			sc.CloseStrategy = &StrategyRef{Name: "tiered_tp_atr"}
+			if !openSet {
+				sc.OpenStrategy = StrategyRef{}
+			}
+		})
+		pos := &Position{Symbol: "ETH", Side: "long", Quantity: 1.5, InitialQuantity: 2, AvgCost: 100, EntryATR: entryATR}
+		return sc, positionCtxForCheck(sc, pos, nil)
+	}
+	t.Cleanup(func() { clearHLOnChainTPUnplaceable(id, "ETH") })
+	prices := map[string]float64{"ETH": 100}
+	var captured []string
+	echo := ""
+	degraded := ""
+	orig := runHyperliquidCheckFn
+	runHyperliquidCheckFn = func(script string, args []string) (*HyperliquidResult, string, error) {
+		captured = append([]string(nil), args...)
+		res := &HyperliquidResult{Symbol: "ETH", Price: 100, Mode: "live", Platform: "hyperliquid", Degraded: degraded}
+		res.CloseOwner = echo
+		return res, "", nil
+	}
+	t.Cleanup(func() { runHyperliquidCheckFn = orig })
+	refsOf := func(t *testing.T, args []string) map[string]any {
+		t.Helper()
+		for i, a := range args {
+			if a == "--strategy-refs" && i+1 < len(args) {
+				var payload map[string]any
+				if err := json.Unmarshal([]byte(args[i+1]), &payload); err != nil {
+					t.Fatalf("strategy refs: %v", err)
+				}
+				return payload
+			}
+		}
+		t.Fatalf("argv has no --strategy-refs: %v", args)
+		return nil
+	}
+	hasPositionCtx := func(args []string) bool {
+		side := false
+		qty := false
+		for i, a := range args {
+			if a == "--position-side" && i+1 < len(args) && args[i+1] == "long" {
+				side = true
+			}
+			if strings.HasPrefix(a, "--position-qty=") {
+				qty = true
+			}
+		}
+		return side && qty
+	}
+
+	t.Run("single path sends the owner and position context with or without open_strategy", func(t *testing.T) {
+		echo = hlCloseOwnerOnChainTP
+		var first []string
+		for _, openSet := range []bool{true, false} {
+			for _, direction := range []string{DirectionLong, DirectionBoth} {
+				sc, posCtx := build(openSet, direction, 2)
+				res, _, _, ok := runHyperliquidCheck(&sc, prices, posCtx, nil, "simple", nil, hlBatchTestLogger(), nil, nil)
+				if !ok || res == nil || res.Signal != 0 {
+					t.Fatalf("open=%v direction=%s: ok=%v res=%+v, want an echoed hold", openSet, direction, ok, res)
+				}
+				if !hasPositionCtx(captured) {
+					t.Fatalf("open=%v direction=%s: argv lacks position context: %v", openSet, direction, captured)
+				}
+				refs := refsOf(t, captured)
+				closes, _ := refs["closes"].([]any)
+				if refs["close_owner"] != hlCloseOwnerOnChainTP || len(closes) != 1 || closes[0].(map[string]any)["name"] != "tiered_tp_atr" {
+					t.Fatalf("open=%v direction=%s: refs = %v, want close_owner and the tiered close", openSet, direction, refs)
+				}
+				if first == nil {
+					first = captured
+				} else if !reflect.DeepEqual(first, captured) {
+					t.Fatalf("open=%v direction=%s: argv %v differs from %v", openSet, direction, captured, first)
+				}
+			}
+		}
+	})
+
+	t.Run("batch slot carries the owner and position context without open_strategy", func(t *testing.T) {
+		sc, posCtx := build(false, DirectionBoth, 2)
+		slot, err := buildHyperliquidBatchSlot(sc, posCtx, nil)
+		if err != nil {
+			t.Fatalf("buildHyperliquidBatchSlot: %v", err)
+		}
+		var refs map[string]any
+		if err := json.Unmarshal(slot.StrategyRefs, &refs); err != nil {
+			t.Fatalf("slot refs: %v", err)
+		}
+		if refs["close_owner"] != hlCloseOwnerOnChainTP || slot.PositionSide != "long" || slot.PositionCtx["current_quantity"] != 1.5 {
+			t.Fatalf("slot = %+v refs=%v, want close_owner with position context", slot, refs)
+		}
+	})
+
+	cases := []struct {
+		name     string
+		batch    bool
+		entryATR float64
+		echo     string
+		degraded string
+		wantOK   bool
+	}{
+		{"single path without the echo holds", false, 2, "", "", false},
+		{"single path with the echo passes", false, 2, hlCloseOwnerOnChainTP, "", true},
+		{"single path degraded result passes without the echo", false, 2, "", "feed stale", true},
+		{"batch hit without the echo holds", true, 2, "", "", false},
+		{"batch hit with the echo passes", true, 2, hlCloseOwnerOnChainTP, "", true},
+		{"unplaceable tiers send no owner and need no echo", false, 0, "", "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sc, posCtx := build(false, DirectionBoth, tc.entryATR)
+			echo, degraded, captured = tc.echo, tc.degraded, nil
+			var batch *hlBatchCycleResults
+			if tc.batch {
+				fp, err := hyperliquidBatchSlotFingerprint(sc, posCtx, nil)
+				if err != nil {
+					t.Fatalf("fingerprint: %v", err)
+				}
+				res := HyperliquidResult{Symbol: "ETH", Price: 100, Mode: "live", Platform: "hyperliquid"}
+				res.CloseOwner = tc.echo
+				batch = &hlBatchCycleResults{byStrategy: map[string]hlBatchMemberOutcome{id: {Result: &res, Fingerprint: fp}}}
+			}
+			_, _, _, ok := runHyperliquidCheck(&sc, prices, posCtx, nil, "simple", nil, hlBatchTestLogger(), batch, nil)
+			if ok != tc.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tc.wantOK)
+			}
+			if tc.batch && captured != nil {
+				t.Fatalf("a fingerprint hit must not run a single check: %v", captured)
+			}
+			if tc.entryATR == 0 {
+				refs := refsOf(t, captured)
+				if _, has := refs["close_owner"]; has || !hasPositionCtx(captured) {
+					t.Fatalf("fallback argv = %v, want no close_owner and the position context", captured)
+				}
+			}
+		})
 	}
 }

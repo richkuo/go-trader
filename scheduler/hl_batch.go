@@ -189,15 +189,14 @@ func buildHyperliquidBatchSlot(sc StrategyConfig, posCtx PositionCtx, regime *Re
 		HTFFilter:       sc.HTFFilter,
 		RegimeATRWindow: hlBatchRegimeATRWindow(sc, regime),
 	}
-	scForCheck := strategyConfigWithOnChainProtectionFilter(sc)
-	refsArgs, err := buildStrategyRefsArg(scForCheck)
+	refsArgs, err := buildStrategyRefsArg(sc, hlCloseOwnerForCheck(sc, posCtx))
 	if err != nil {
 		return hlBatchSlot{}, fmt.Errorf("marshal strategy refs: %w", err)
 	}
 	if len(refsArgs) == 2 {
 		slot.StrategyRefs = json.RawMessage(refsArgs[1])
 	}
-	if usesOpenCloseConfig(scForCheck) {
+	if usesOpenCloseConfig(sc) {
 		ctx := map[string]any{}
 		if side := strings.TrimSpace(posCtx.Side); side != "" {
 			slot.PositionSide = side

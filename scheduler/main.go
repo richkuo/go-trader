@@ -3170,7 +3170,7 @@ func runSpotCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionC
 	args = appendStrategyRegimeWindowArgs(args, sc, regime)
 	args = appendRegimePayloadArg(args, sc, regime)
 	args = appendATRMethodArg(args, atrMethod)
-	if refsArgs, err := buildStrategyRefsArg(sc); err != nil {
+	if refsArgs, err := buildStrategyRefsArg(sc, ""); err != nil {
 		logger.Warn("Failed to marshal strategy refs: %v", err)
 	} else if len(refsArgs) > 0 {
 		args = append(args, refsArgs...)
@@ -3474,6 +3474,14 @@ var runHyperliquidCheckFn = RunHyperliquidCheck
 var runHyperliquidCheckWithStdinFn = RunHyperliquidCheckWithStdin
 
 func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, atrMethod string, notifier *MultiNotifier, logger *StrategyLogger, batch *hlBatchCycleResults, feed *marketFeedContext) (*HyperliquidResult, string, float64, bool) {
+	closeOwner := hlCloseOwnerForCheck(*sc, posCtx)
+	if closeStrategySuppressedByOnChainProtection(*sc) {
+		if closeOwner == "" && posCtx.Quantity > 0 {
+			notifyHLOnChainTPUnplaceable(notifier, logger, *sc, hyperliquidSymbol(sc.Args), posCtx.OnChainTPBlocked)
+		} else {
+			clearHLOnChainTPUnplaceable(sc.ID, hyperliquidSymbol(sc.Args))
+		}
+	}
 	if outcome, ok := batch.lookup(sc.ID); ok {
 		fp, fpErr := hyperliquidBatchSlotFingerprint(*sc, posCtx, regime)
 		if fpErr == nil && fp == outcome.Fingerprint {
@@ -3521,8 +3529,7 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 		feed.clearDegradedFor(notifier, sc.ID)
 	}
 	args := append([]string{}, sc.Args...)
-	scForCheck := strategyConfigWithOnChainProtectionFilter(*sc)
-	args = appendOpenCloseArgs(args, scForCheck, posCtx)
+	args = appendOpenCloseArgs(args, *sc, posCtx)
 	if sc.HTFFilter {
 		args = append(args, "--htf-filter")
 	}
@@ -3530,7 +3537,7 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 	args = appendStrategyRegimeWindowArgs(args, *sc, regime)
 	args = appendRegimePayloadArg(args, *sc, regime)
 	args = appendATRMethodArg(args, atrMethod)
-	if refsArgs, err := buildStrategyRefsArg(scForCheck); err != nil {
+	if refsArgs, err := buildStrategyRefsArg(*sc, closeOwner); err != nil {
 		logger.Warn("Failed to marshal strategy refs: %v", err)
 	} else if len(refsArgs) > 0 {
 		args = append(args, refsArgs...)
@@ -3564,6 +3571,13 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 }
 
 func finishHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, notifier *MultiNotifier, logger *StrategyLogger, result *HyperliquidResult, stderr, errMsg string, mode scriptFailureMode) (*HyperliquidResult, string, float64, bool) {
+	if result != nil && errMsg == "" && result.Degraded == "" {
+		if want := hlCloseOwnerForCheck(*sc, posCtx); want != "" && result.CloseOwner != want {
+			errMsg = fmt.Sprintf("close-owner contract mismatch: sent close_owner=%q but the check returned close_owner=%q; holding this signal because the check script may have evaluated a close the on-chain take-profit owns (redeploy with scripts/update.sh so Go and Python match)", want, result.CloseOwner)
+			mode = scriptFailureError
+			result = nil
+		}
+	}
 	if errMsg != "" {
 		switch {
 		case mode == scriptFailureCrash:
@@ -3965,7 +3979,7 @@ func runTopStepCheck(sc StrategyConfig, prices map[string]float64, posCtx Positi
 	args = appendStrategyRegimeWindowArgs(args, sc, regime)
 	args = appendRegimePayloadArg(args, sc, regime)
 	args = appendATRMethodArg(args, atrMethod)
-	if refsArgs, err := buildStrategyRefsArg(sc); err != nil {
+	if refsArgs, err := buildStrategyRefsArg(sc, ""); err != nil {
 		logger.Warn("Failed to marshal strategy refs: %v", err)
 	} else if len(refsArgs) > 0 {
 		args = append(args, refsArgs...)
@@ -4156,7 +4170,7 @@ func runRobinhoodCheck(sc StrategyConfig, prices map[string]float64, posCtx Posi
 	args = appendStrategyRegimeWindowArgs(args, sc, regime)
 	args = appendRegimePayloadArg(args, sc, regime)
 	args = appendATRMethodArg(args, atrMethod)
-	if refsArgs, err := buildStrategyRefsArg(sc); err != nil {
+	if refsArgs, err := buildStrategyRefsArg(sc, ""); err != nil {
 		logger.Warn("Failed to marshal strategy refs: %v", err)
 	} else if len(refsArgs) > 0 {
 		args = append(args, refsArgs...)
@@ -4336,7 +4350,7 @@ func runOKXCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCt
 	args = appendStrategyRegimeWindowArgs(args, sc, regime)
 	args = appendRegimePayloadArg(args, sc, regime)
 	args = appendATRMethodArg(args, atrMethod)
-	if refsArgs, err := buildStrategyRefsArg(sc); err != nil {
+	if refsArgs, err := buildStrategyRefsArg(sc, ""); err != nil {
 		logger.Warn("Failed to marshal strategy refs: %v", err)
 	} else if len(refsArgs) > 0 {
 		args = append(args, refsArgs...)
