@@ -845,6 +845,15 @@ if ! ./go-trader.new probe; then
 fi
 end_phase
 
+if [[ "$restart" == "1" && "$restart_mode" == "systemd" && -n "$unit_sync_source_path" && -n "$unit_sync_installed_path" ]]; then
+    begin_phase journal
+    if ! update_sync_journal_namespace "$repo_root" "$unit_sync_source_path"; then
+        rm -f ./go-trader.new
+        fail "journald namespace config for $unit_sync_source_path could not be installed; the go-trader binary, the unit and the running service were left unchanged"
+    fi
+    end_phase
+fi
+
 begin_phase swap
 rm -f ./go-trader.prev
 if [[ -e ./go-trader ]]; then
@@ -890,8 +899,6 @@ if [[ "$restart_mode" == "systemd" ]]; then
     elif [[ -z "$unit_sync_installed_path" ]]; then
         echo "[update] unit: systemd reports no fragment path for '$service_unit' — skipping the unit install"
     else
-        update_sync_journal_namespace "$repo_root" "$unit_sync_source_path" \
-            || fail "journald namespace config for $unit_sync_source_path could not be installed; the unit and the running service were left unchanged"
         unit_needs_reload=$(trim_space "$(systemctl show -p NeedDaemonReload --value "$service_unit" 2>/dev/null || true)")
         unit_decision=$(update_unit_sync_decision "$unit_sync_installed_path" "$unit_sync_source_path" "$unit_needs_reload")
         case "$unit_decision" in

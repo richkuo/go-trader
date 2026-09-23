@@ -305,3 +305,109 @@ func TestUpdateShellAllDedupesCanonicalAliases1055(t *testing.T) {
 		t.Errorf("expected a single canonicalized entry from both sources\n%s", text)
 	}
 }
+
+func TestUpdateShellJournalSyncFailureLeavesBinaryUnswapped(t *testing.T) {
+	t.Parallel()
+	bash := updateShellBash(t)
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git not available: %v", err)
+	}
+	scriptsDir := filepath.Dir(updateShellScriptPath(t))
+	parent := t.TempDir()
+	origin := filepath.Join(parent, "origin.git")
+	deploy := filepath.Join(parent, "deploy")
+	gitEnv := append(os.Environ(),
+		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com",
+		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com",
+		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1",
+	)
+	runGit := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Env = gitEnv
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	runGit("init", "--bare", "-b", "main", origin)
+	runGit("clone", origin, deploy)
+	for _, name := range []string{"update.sh", "update_helpers.sh"} {
+		body, err := os.ReadFile(filepath.Join(scriptsDir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(deploy, "scripts"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(deploy, "scripts", name), body, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	unit := "[Service]\nExecStart=" + deploy + "/go-trader\nLogNamespace=go-trader\n"
+	if err := os.WriteFile(filepath.Join(deploy, "go-trader.service"), []byte(unit), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(deploy, ".gitignore"), []byte("go-trader\ngo-trader.*\nscheduler/config.json\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit("-C", deploy, "add", ".")
+	runGit("-C", deploy, "commit", "-m", "init")
+	runGit("-C", deploy, "push", "-u", "origin", "HEAD:main")
+
+	if err := os.MkdirAll(filepath.Join(deploy, "scheduler"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(deploy, "scheduler", "config.json"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldBinary := []byte("#!/usr/bin/env bash\necho old-binary\n")
+	if err := os.WriteFile(filepath.Join(deploy, "go-trader"), oldBinary, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	binDir := t.TempDir()
+	stubs := map[string]string{
+		"uv": "#!/usr/bin/env bash\nexit 0\n",
+		"go": "#!/usr/bin/env bash\n" +
+			"dir=. out=\n" +
+			"while [[ $# -gt 0 ]]; do case \"$1\" in -C) dir=\"$2\"; shift 2 ;; -o) out=\"$2\"; shift 2 ;; *) shift ;; esac; done\n" +
+			"printf '#!/usr/bin/env bash\\nexit 0\\n' > \"$dir/$out\"\n" +
+			"chmod +x \"$dir/$out\"\n",
+		"systemctl": "#!/usr/bin/env bash\n" +
+			"case \"$*\" in\n" +
+			"  --version) echo 'systemd 255 (255.4-1ubuntu8)' ;;\n" +
+			"  *FragmentPath*) echo /etc/systemd/system/go-trader.service ;;\n" +
+			"  *MainPID*) echo 0 ;;\n" +
+			"esac\n",
+		"sudo": "#!/usr/bin/env bash\n\"$@\"\n",
+	}
+	for name, body := range stubs {
+		if err := os.WriteFile(filepath.Join(binDir, name), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cmd := exec.Command(bash, filepath.Join(deploy, "scripts", "update.sh"), "--restart")
+	cmd.Dir = deploy
+	cmd.Env = append(gitEnv, "PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	out, err := cmd.CombinedOutput()
+	text := string(out)
+	if err == nil {
+		t.Fatalf("expected update.sh to fail when the journald namespace config is missing\n%s", text)
+	}
+	if !strings.Contains(text, "FAIL phase=journal") {
+		t.Fatalf("expected the failure in the journal phase, before the swap\n%s", text)
+	}
+	got, readErr := os.ReadFile(filepath.Join(deploy, "go-trader"))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != string(oldBinary) {
+		t.Fatalf("./go-trader was swapped although the journald sync failed; got %q\n%s", got, text)
+	}
+	for _, leftover := range []string{"go-trader.new", "go-trader.prev"} {
+		if _, statErr := os.Stat(filepath.Join(deploy, leftover)); !os.IsNotExist(statErr) {
+			t.Fatalf("%s must not exist after a journal-phase failure (stat err: %v)\n%s", leftover, statErr, text)
+		}
+	}
+}
