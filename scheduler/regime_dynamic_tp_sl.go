@@ -272,16 +272,11 @@ func validateDynamicRegimeClose(params map[string]interface{}, labels []string, 
 		errs = append(errs, fmt.Sprintf("%s: params required", ctxLabel))
 		return errs
 	}
-	for k := range params {
-		if k != regimeClassifierKey && k != "atr_source" && k != dynamicCloseParamConfirmCycles {
-			errs = append(errs, fmt.Sprintf("%s: unknown param %q (allowed: trend_regime, atr_source, regime_confirm_cycles)", ctxLabel, k))
-		}
-	}
 	if v, ok := params[dynamicCloseParamConfirmCycles]; ok {
-		if f, err := floatFromAnyChecked(v); err != nil || f < 1 {
-			errs = append(errs, fmt.Sprintf("%s.%s: must be >= 1", ctxLabel, dynamicCloseParamConfirmCycles))
+		if f, err := floatFromAnyChecked(v); err != nil || f < 1 || f != math.Trunc(f) || f >= float64(math.MaxInt64) {
+			errs = append(errs, fmt.Sprintf("%s.%s: must be a whole number >= 1, got %#v", ctxLabel, dynamicCloseParamConfirmCycles, v))
 		}
 	}
-	errs = append(errs, validateUnifiedRegimeClose(params, labels, ctxLabel)...)
+	errs = append(errs, validateUnifiedRegimeClose(params, labels, ctxLabel, dynamicCloseParamConfirmCycles)...)
 	return errs
 }
