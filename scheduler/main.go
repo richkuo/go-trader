@@ -2392,8 +2392,9 @@ func main() {
 							runPostTPStopLossAdjustment(sc, stratState, result.Symbol, price, cfg, &mu, notifier, logger, hlOnChainAbsQty)
 						}
 						if !hyperliquidIsLive(sc.Args) && result.Signal == 0 && hlPosQty > 0 {
-							if advancePaperDynamicCloseRegime(sc, stratState, result.Symbol, &mu) {
-								logger.Info("Paper dynamic close regime confirmed for %s", result.Symbol)
+							if flipTrades, flipDetail := advancePaperDynamicCloseRegime(sc, stratState, stratDB, result.Symbol, price, &mu, logger); flipTrades > 0 {
+								paperStopTrades += flipTrades
+								paperStopDetail = flipDetail
 							}
 							runPaperPostTPStopLossAdjustment(sc, stratState, result.Symbol, price, cfg, &mu, notifier, logger)
 						}

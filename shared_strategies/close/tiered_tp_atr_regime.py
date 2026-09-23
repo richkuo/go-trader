@@ -10,6 +10,7 @@ from _helpers import (
     float_from,
     resolve_tp_tier_geometry,
     tier_list_from_params,
+    tier_number,
     with_tier_fill_price,
 )
 from regime_atr import (
@@ -151,14 +152,10 @@ def _strict_tier_pairs(raw, ctx_label: str):
         if not isinstance(tier, dict):
             errs.append(f"{ctx_label}[{idx}]: must be an object")
             continue
-        try:
-            mult = float(tier.get("atr_multiple"))
-        except (TypeError, ValueError):
-            mult = 0.0
-        try:
-            frac = float(tier.get("close_fraction"))
-        except (TypeError, ValueError):
-            frac = 0.0
+        mult = tier_number(tier.get("atr_multiple"))
+        frac = tier_number(tier.get("close_fraction"))
+        mult = 0.0 if mult is None else mult
+        frac = 0.0 if frac is None else frac
         if not mult > 0:
             errs.append(f"{ctx_label}[{idx}].atr_multiple: must be > 0")
         if not (0 < frac <= 1):
@@ -167,6 +164,28 @@ def _strict_tier_pairs(raw, ctx_label: str):
     if errs:
         return None, errs
     return sorted(pairs, key=lambda p: p[0]), []
+
+
+def _keyed_tier_type_errors(raw, ctx_label: str) -> List[str]:
+    errs: List[str] = []
+    if not isinstance(raw, list):
+        return errs
+    for idx, tier in enumerate(raw):
+        if not isinstance(tier, dict):
+            continue
+        if "close_fraction" in tier and tier_number(tier["close_fraction"]) is None:
+            errs.append(f"{ctx_label}[{idx}].close_fraction: must be a number")
+        trend = tier.get("trend_regime")
+        if not isinstance(trend, dict):
+            continue
+        for label in sorted(trend):
+            entry = trend[label]
+            if not isinstance(entry, dict):
+                continue
+            for key in ("atr_multiple", "close_fraction"):
+                if key in entry and tier_number(entry[key]) is None:
+                    errs.append(f"{ctx_label}[{idx}].trend_regime.{label}.{key}: must be a number")
+    return errs
 
 
 def _ladder_order_errors(pairs, ctx_label: str) -> List[str]:
@@ -210,12 +229,14 @@ def resting_ladder_errors(name: str, params: dict, labels=None) -> List[str]:
                 continue
             label_ctx = f"close_strategy({name}).trend_regime.{label}.tp_tiers"
             pairs, parse_errs = _strict_tier_pairs(block["tp_tiers"], label_ctx)
-            if not parse_errs:
-                errs.extend(_ladder_order_errors(pairs, label_ctx))
+            errs.extend(parse_errs or _ladder_order_errors(pairs, label_ctx))
         return errs
     raw = tier_list_from_params(params)
     if raw is None:
         return []
+    type_errs = _keyed_tier_type_errors(raw, ctx)
+    if type_errs:
+        return type_errs
     specs, parse_errs = parse_regime_tp_tiers(raw, ctx, False, labels)
     if parse_errs:
         return []

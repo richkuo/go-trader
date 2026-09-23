@@ -73,6 +73,13 @@ def geometry_anchor(position: dict) -> float:
     return float_from(position, "avg_cost")
 
 
+def tier_number(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
+
+
 def parse_resting_tp_tiers(raw) -> list[tuple[float, float]]:
     if not isinstance(raw, (list, tuple)):
         return []
@@ -80,12 +87,9 @@ def parse_resting_tp_tiers(raw) -> list[tuple[float, float]]:
     for tier in raw:
         if not isinstance(tier, dict):
             continue
-        try:
-            multiple = float(tier.get("atr_multiple"))
-            fraction = float(tier.get("close_fraction"))
-        except (TypeError, ValueError):
-            continue
-        if not (math.isfinite(multiple) and math.isfinite(fraction)):
+        multiple = tier_number(tier.get("atr_multiple"))
+        fraction = tier_number(tier.get("close_fraction"))
+        if multiple is None or fraction is None:
             continue
         if multiple <= 0 or fraction <= 0:
             continue

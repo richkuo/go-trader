@@ -849,3 +849,27 @@ def test_hyperliquid_backtest_rejects_a_non_increasing_ladder(platform, rejected
             Backtester(**kwargs)
     else:
         Backtester(**kwargs)
+
+
+def _set_fixture_path(params, path, value):
+    node = params
+    for key in path[:-1]:
+        node = node[key]
+    node[path[-1]] = value
+
+
+@pytest.mark.parametrize("case", _TP_TIER_PARITY["ladder_load"], ids=lambda c: c["id"])
+def test_hyperliquid_backtest_ladder_load_matches_the_daemon(case):
+    ref = _TP_TIER_PARITY["ladders"][case["ladder"]]
+    params = json.loads(json.dumps(ref["params"]))
+    if case["path"] is not None:
+        _set_fixture_path(params, case["path"], case["value"])
+    kwargs = {
+        "platform": "hyperliquid", "strategy_type": "perps", "regime_enabled": True,
+        "close_strategies": [{"name": ref["name"], "params": params}],
+    }
+    if case["want_reject"]:
+        with pytest.raises(ValueError, match="Invalid Hyperliquid take-profit ladder"):
+            Backtester(**kwargs)
+    else:
+        Backtester(**kwargs)

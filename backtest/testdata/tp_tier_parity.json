@@ -87,7 +87,14 @@
     ], "want": [[1.0, 0.5], [2.0, 1.0]], "want_resting": true},
     {"id": "single_tier", "tiers": [
       {"atr_multiple": 2.0, "close_fraction": 0.5}
-    ], "want": [[2.0, 0.5]], "want_resting": false}
+    ], "want": [[2.0, 0.5]], "want_resting": false},
+    {"id": "non_numeric_values_skipped", "tiers": [
+      {"atr_multiple": "1.0", "close_fraction": 0.2},
+      {"atr_multiple": 1.0, "close_fraction": true},
+      {"atr_multiple": 1.0, "close_fraction": 0.5},
+      {"atr_multiple": 2.0, "close_fraction": null},
+      {"atr_multiple": 3.0, "close_fraction": 1.0}
+    ], "want": [[1.0, 0.5], [3.0, 1.0]], "want_resting": true}
   ],
   "geometry": [
     {
@@ -154,5 +161,22 @@
       "market": {"mark_price": 104.1, "atr": 3, "regime": "trending_down"},
       "want": {"go_plan": true, "anchor": 100, "atr": 2, "regime": "trending_up", "tier_prices": [102, 104, 108], "fractions": [0.4, 0.7, 1.0], "close_fraction": 0.7, "fill_price": 102.85714285714286}
     }
+  ],
+  "ladder_load": [
+    {"id": "scalar_numbers", "ladder": "scalar", "path": null, "value": null, "want_reject": false},
+    {"id": "scalar_quoted_multiple", "ladder": "scalar", "path": ["tp_tiers", 0, "atr_multiple"], "value": "1.5", "want_reject": true},
+    {"id": "scalar_quoted_fraction", "ladder": "scalar", "path": ["tp_tiers", 1, "close_fraction"], "value": "0.6", "want_reject": true},
+    {"id": "scalar_bool_multiple", "ladder": "scalar", "path": ["tp_tiers", 0, "atr_multiple"], "value": true, "want_reject": true},
+    {"id": "scalar_null_fraction", "ladder": "scalar", "path": ["tp_tiers", 1, "close_fraction"], "value": null, "want_reject": true},
+    {"id": "keyed_numbers", "ladder": "regime", "path": null, "value": null, "want_reject": false},
+    {"id": "keyed_quoted_multiple", "ladder": "regime", "path": ["tp_tiers", 0, "trend_regime", "ranging", "atr_multiple"], "value": "0.5", "want_reject": true},
+    {"id": "keyed_quoted_fraction", "ladder": "regime", "path": ["tp_tiers", 0, "close_fraction"], "value": "0.5", "want_reject": true},
+    {"id": "keyed_bool_multiple", "ladder": "regime", "path": ["tp_tiers", 1, "trend_regime", "trending_up", "atr_multiple"], "value": true, "want_reject": true},
+    {"id": "keyed_null_fraction", "ladder": "regime", "path": ["tp_tiers", 0, "close_fraction"], "value": null, "want_reject": true},
+    {"id": "unified_numbers", "ladder": "regime_live", "path": null, "value": null, "want_reject": false},
+    {"id": "unified_quoted_multiple", "ladder": "regime_live", "path": ["trend_regime", "ranging", "tp_tiers", 0, "atr_multiple"], "value": "0.5", "want_reject": true},
+    {"id": "unified_quoted_fraction", "ladder": "regime_live", "path": ["trend_regime", "ranging", "tp_tiers", 0, "close_fraction"], "value": "0.5", "want_reject": true},
+    {"id": "unified_bool_fraction", "ladder": "regime_live", "path": ["trend_regime", "trending_up", "tp_tiers", 1, "close_fraction"], "value": true, "want_reject": true},
+    {"id": "unified_null_multiple", "ladder": "regime_live", "path": ["trend_regime", "trending_down", "tp_tiers", 0, "atr_multiple"], "value": null, "want_reject": true}
   ]
 }

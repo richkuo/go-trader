@@ -102,20 +102,55 @@ func advanceDynamicCloseRegime(pos *Position, stratState *StrategyState, sc Stra
 	return old != current
 }
 
-func advancePaperDynamicCloseRegime(sc StrategyConfig, stratState *StrategyState, symbol string, mu *sync.RWMutex) bool {
+func advancePaperDynamicCloseRegime(sc StrategyConfig, stratState *StrategyState, db *StateDB, symbol string, mark float64, mu *sync.RWMutex, logger *StrategyLogger) (int, string) {
 	if sc.Platform != "hyperliquid" || hyperliquidIsLive(sc.Args) || !strategyUsesDynamicRegimeClose(sc) {
-		return false
+		return 0, ""
 	}
 	if stratState == nil || mu == nil || symbol == "" {
-		return false
+		return 0, ""
 	}
 	mu.Lock()
 	defer mu.Unlock()
 	pos, ok := stratState.Positions[symbol]
 	if !ok || pos == nil || pos.Quantity <= 0 {
-		return false
+		return 0, ""
 	}
-	return advanceDynamicCloseRegime(pos, stratState, sc)
+	oldLabel := pos.RegimeAppliedLabel
+	if !advanceDynamicCloseRegime(pos, stratState, sc) {
+		return 0, ""
+	}
+	if logger != nil {
+		logger.Info("Paper dynamic close regime confirmed for %s: %s -> %s", symbol, oldLabel, pos.RegimeAppliedLabel)
+	}
+	newTrigger, move := paperDynamicFlipStopTrigger(sc, pos)
+	if !move {
+		return 0, ""
+	}
+	oldTrigger := pos.StopLossTriggerPx
+	pos.StopLossTriggerPx = newTrigger
+	stampOpenTradeWithProtectionSnapshot(stratState, db, sc, symbol, pos)
+	if logger != nil {
+		logger.Info("Paper SL re-armed for the confirmed regime %s: $%.4f -> $%.4f", pos.RegimeAppliedLabel, oldTrigger, newTrigger)
+	}
+	if !trailingStopBreached(pos.Side, mark, newTrigger) {
+		return 0, ""
+	}
+	fillPx := paperStopFillPx(pos.Side, mark, newTrigger)
+	if !recordPerpsStopLossClose(stratState, symbol, fillPx, paperStopReasonATR, logger) {
+		return 0, ""
+	}
+	return 1, fmt.Sprintf("[%s] %s %s @ $%.2f", sc.ID, paperStopLossDetailLabel(paperStopReasonATR), symbol, fillPx)
+}
+
+func paperDynamicFlipStopTrigger(sc StrategyConfig, pos *Position) (float64, bool) {
+	if pos == nil || pos.StopLossTriggerPx <= 0 || effectiveTrailingStopPct(sc, pos) > 0 || strategyUsesTrailingTPRatchetClose(sc) {
+		return 0, false
+	}
+	newPx := fixedStopLossATRTriggerPx(sc, pos.Side, pos)
+	if !triggerPxMoveExceedsMinPct(pos.StopLossTriggerPx, newPx, effectiveTrailingStopMinMovePct(sc)) {
+		return 0, false
+	}
+	return newPx, true
 }
 
 func protectionATRRegimeLabel(pos *Position, sc StrategyConfig) string {
