@@ -15,6 +15,7 @@ type StrategyDecisionFields struct {
 	CloseFraction   float64        `json:"close_fraction"`
 	CloseStrategy   string         `json:"close_strategy,omitempty"`
 	CloseGate       string         `json:"close_gate,omitempty"`
+	CloseOwner      string         `json:"close_owner,omitempty"`
 	Regime          *RegimePayload `json:"regime,omitempty"`
 }
 
@@ -30,6 +31,8 @@ type PositionCtx struct {
 	Profile                        string
 	DirectionCertifiedAtOpen       bool
 	DirectionCertifiedStatesAtOpen map[string]string
+	OnChainTPResting               bool
+	OnChainTPBlocked               string
 }
 
 func usesOpenCloseConfig(sc StrategyConfig) bool {
@@ -82,7 +85,7 @@ func appendOpenCloseArgs(args []string, sc StrategyConfig, pos PositionCtx) []st
 	return out
 }
 
-func buildStrategyRefsArg(sc StrategyConfig) ([]string, error) {
+func buildStrategyRefsArg(sc StrategyConfig, closeOwner string) ([]string, error) {
 	openName := effectiveOpenStrategy(sc)
 	if openName == "" && sc.CloseStrategy == nil {
 		return nil, nil
@@ -93,6 +96,9 @@ func buildStrategyRefsArg(sc StrategyConfig) ([]string, error) {
 	}
 	if refs := sc.closeRefs(); len(refs) > 0 {
 		payload["closes"] = refs
+	}
+	if closeOwner != "" {
+		payload["close_owner"] = closeOwner
 	}
 	blob, err := json.Marshal(payload)
 	if err != nil {

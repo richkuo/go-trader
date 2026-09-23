@@ -57,7 +57,7 @@ func TestAppendOpenCloseArgsOnlyWhenOptedIn(t *testing.T) {
 
 func TestBuildStrategyRefsArg(t *testing.T) {
 	legacy := StrategyConfig{Args: []string{"sma_crossover", "BTC/USDT", "1h"}}
-	got, err := buildStrategyRefsArg(legacy)
+	got, err := buildStrategyRefsArg(legacy, "")
 	if err != nil {
 		t.Fatalf("legacy: unexpected err: %v", err)
 	}
@@ -77,9 +77,12 @@ func TestBuildStrategyRefsArg(t *testing.T) {
 			map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 0.5},
 		}}},
 	}
-	got, err = buildStrategyRefsArg(sc)
+	got, err = buildStrategyRefsArg(sc, "")
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
+	}
+	if strings.Contains(got[1], "close_owner") {
+		t.Fatalf("empty owner must not emit close_owner: %s", got[1])
 	}
 	if len(got) != 2 || got[0] != "--strategy-refs" {
 		t.Fatalf("got %#v, want --strategy-refs JSON", got)
@@ -106,6 +109,24 @@ func TestBuildStrategyRefsArg(t *testing.T) {
 	tiers, ok := payload.Closes[0].Params["tp_tiers"].([]interface{})
 	if !ok || len(tiers) != 1 {
 		t.Errorf("closes[0].params[tp_tiers] = %v, want length 1", payload.Closes[0].Params["tp_tiers"])
+	}
+
+	owned, err := buildStrategyRefsArg(sc, hlCloseOwnerOnChainTP)
+	if err != nil {
+		t.Fatalf("owner: unexpected err: %v", err)
+	}
+	var ownedPayload struct {
+		Closes     []StrategyRef `json:"closes"`
+		CloseOwner string        `json:"close_owner"`
+	}
+	if err := json.Unmarshal([]byte(owned[1]), &ownedPayload); err != nil {
+		t.Fatalf("owner payload unmarshal: %v\n%s", err, owned[1])
+	}
+	if ownedPayload.CloseOwner != hlCloseOwnerOnChainTP {
+		t.Errorf("close_owner = %q, want %q", ownedPayload.CloseOwner, hlCloseOwnerOnChainTP)
+	}
+	if len(ownedPayload.Closes) != 1 || ownedPayload.Closes[0].Name != "tiered_tp_atr" {
+		t.Errorf("owner payload closes = %+v, want tiered_tp_atr kept", ownedPayload.Closes)
 	}
 }
 

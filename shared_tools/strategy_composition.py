@@ -10,6 +10,8 @@ from typing import Callable, Iterable, Optional
 import pandas as pd
 
 
+CLOSE_OWNER_ON_CHAIN_TP = "on_chain_tp"
+VALID_CLOSE_OWNERS = {CLOSE_OWNER_ON_CHAIN_TP}
 VALID_POSITION_SIDES = {"", "long", "short"}
 VALID_OPEN_ACTIONS = {"long", "short", "none"}
 POSITION_CONTEXT_PARAM_KEYS = {"side", "avg_cost", "current_quantity", "initial_quantity", "entry_atr", "regime"}
@@ -28,6 +30,7 @@ class OpenCloseEvaluation:
     open_result_df: pd.DataFrame
     open_signal: int
     close_evaluations: list[CloseEvaluation]
+    close_owner: Optional[str] = None
 
 
 def parse_strategy_refs_arg(raw: Optional[str]) -> Optional[dict]:
@@ -56,6 +59,7 @@ def parse_strategy_refs_arg(raw: Optional[str]) -> Optional[dict]:
         "open_params": open_params,
         "close_csv": ",".join(close_names) if close_names else None,
         "close_params_by_name": close_params_by_name or None,
+        "close_owner": payload.get("close_owner") or None,
     }
 
 
@@ -149,7 +153,12 @@ def effective_close_strategies(
     positional_strategy: str,
     open_strategy: Optional[str],
     close_strategies: Optional[Iterable[str]],
+    close_owner: Optional[str] = None,
 ) -> list[str]:
+    if close_owner is not None:
+        if close_owner not in VALID_CLOSE_OWNERS:
+            raise ValueError(f"close_owner must be one of {sorted(VALID_CLOSE_OWNERS)}, got {close_owner!r}")
+        return []
     explicit = parse_close_strategies(close_strategies)
     if explicit:
         return explicit
@@ -323,10 +332,11 @@ def evaluate_open_close(
     close_evaluate: Optional[Callable[[str, dict, dict, Optional[dict]], dict]] = None,
     market_ctx: Optional[dict] = None,
     close_params_by_name: Optional[dict[str, dict]] = None,
+    close_owner: Optional[str] = None,
 ) -> OpenCloseEvaluation:
     open_name = (open_strategy or positional_strategy).strip()
     close_names = effective_close_strategies(
-        positional_strategy, open_name, close_strategies
+        positional_strategy, open_name, close_strategies, close_owner
     )
     cache: dict[tuple[str, str], pd.DataFrame] = {}
 
@@ -390,6 +400,7 @@ def evaluate_open_close(
         open_result_df=open_result,
         open_signal=open_signal,
         close_evaluations=close_evals,
+        close_owner=close_owner,
     )
 
 
@@ -401,7 +412,7 @@ def finalize_decision(
     signal = evaluation.open_signal if open_signal is None else normalize_signal(open_signal)
     open_action = open_action_from_signal(signal)
     close_fraction, close_strategy = max_close_fraction(evaluation.close_evaluations)
-    return {
+    decision = {
         "open_strategy": evaluation.open_strategy,
         "close_strategies": evaluation.close_strategies,
         "open_action": open_action,
@@ -409,3 +420,6 @@ def finalize_decision(
         "close_strategy": close_strategy,
         "signal": compose_signal(open_action, close_fraction, position_side),
     }
+    if evaluation.close_owner:
+        decision["close_owner"] = evaluation.close_owner
+    return decision

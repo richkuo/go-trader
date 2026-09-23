@@ -414,3 +414,50 @@ def test_validate_close_strategy_names_rejects_backtest_only_open_fallback():
         validate_close_strategy_names(
             ["research_open"], get_open_strategy, get_close_strategy
         )
+
+
+def test_effective_close_strategies_on_chain_owner_evaluates_no_close():
+    calls = []
+    df = pd.DataFrame({"close": [100, 101]})
+
+    def apply_strategy(name, data, params=None):
+        calls.append(name)
+        result = data.copy()
+        result["signal"] = [0, -1]
+        return result
+
+    def close_evaluate(name, position, market, params):
+        raise AssertionError(f"close {name} must not be evaluated when the on-chain TP owns the exit")
+
+    evaluation = evaluate_open_close(
+        apply_strategy,
+        lambda name: None,
+        df,
+        positional_strategy="legacy",
+        open_strategy=None,
+        close_strategies=["tiered_tp_atr"],
+        position_side="long",
+        position_ctx={"side": "long", "avg_cost": 90.0, "current_quantity": 1.0, "entry_atr": 1.0},
+        close_evaluate=close_evaluate,
+        close_owner="on_chain_tp",
+    )
+    decision = finalize_decision(evaluation, position_side="long")
+
+    assert calls == ["legacy"]
+    assert evaluation.close_evaluations == []
+    assert decision["open_action"] == "short"
+    assert decision["close_fraction"] == 0.0
+    assert decision["signal"] == 0
+    assert decision["close_owner"] == "on_chain_tp"
+
+    with pytest.raises(ValueError):
+        evaluate_open_close(
+            apply_strategy,
+            lambda name: None,
+            df,
+            positional_strategy="legacy",
+            open_strategy=None,
+            close_strategies=None,
+            position_side="long",
+            close_owner="somebody_else",
+        )
