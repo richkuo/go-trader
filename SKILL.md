@@ -810,7 +810,7 @@ The identity that matters at runtime is the **risk partition**: `live`, `paper` 
 | `app_state` | primary | The paper file's row is read once at boot and its summary/leaderboard stamps are unioned in with primary precedence; it is never written again. |
 | `strategies`, `positions`, `option_positions`, `trades`, `closed_positions`, `closed_option_positions`, `trade_diagnostics`, `pending_manual_actions` | the strategy's scope | Identifiers are translated in both directions at the SQL boundary. |
 | `portfolio_risk`, `kill_switch_events`, `correlation_snapshot` | the row's explicit scope | A legacy unscoped row is placed using the owning file's validated scope. |
-| `wallet_ledger_state`, `wallet_transfers`, `cashflow_journal`, `cashflow_journal_state`, `pending_limit_orders` | primary, live-only | A write naming a paper-scope strategy is refused. |
+| `wallet_ledger_state`, `wallet_transfers`, `cashflow_journal`, `cashflow_journal_state`, `cashflow_hl_basis_state`, `cashflow_hl_basis_book`, `cashflow_hl_basis_seen`, `pending_limit_orders` | primary, live-only | A write naming a paper-scope strategy is refused. |
 | `regime_window_history`, `regime_window_transitions`, `regime_reversal_alerts` | primary for new writes | A paper file's pre-split history is read with its source named and is never pruned or marked. |
 | `decisions` (replay log) | unchanged | Its own `replay_log_path` file. |
 
@@ -1110,7 +1110,7 @@ Enabled by `replay_log_path` plus per-strategy `replay_sharing="live_mirror"`. P
 ### Shared wallet, cashflow, limit orders (`shared_wallet*.go`, `cashflow_journal.go`, `kill_switch_limit_orders.go`, `orphan_limit_cancel_alerts.go`, `limit_fill_exposure.go`)
 
 - Shared-wallet drift tolerance is $0.01 over 2 cycles. Pool sizing comes from account equity minus deployed margin; switching a strategy between allocated and pool budgeting needs a flat book and a restart.
-- Cashflow journal: HL total-drift is live; OKX and TopStep run in shadow. HL expected equity subtracts the gap between frontend `closedPnl` and fill-price realized PnL (same-timestamp fills chained by `startPosition`). Stored fill amounts stay `closedPnl - fee`.
+- Cashflow journal: HL total-drift is live; OKX and TopStep run in shadow. HL expected equity subtracts the gap between frontend `closedPnl` and fill-price realized PnL. Each fill's gap is stored at ingest (`hl_basis_error`) from per-coin books in the same transaction; an unresolvable same-timestamp chain (by `startPosition` from the held size) or unknown entry books a zero gap. A journal that predates the column backfills one fill page per cycle while the alarm stays pending; fills outside exchange history keep a zero gap. Stored fill amounts stay `closedPnl - fee`.
 - Kill-switch limit orders: each row goes cancel → `--limit-status` → delete under a 60s pre-flatten deadline; an unresolved row clears `OnChainConfirmedFlat` and blocks `CanAutoResetWithoutOwner`. Operator view: § Portfolio Kill Switch And Latch Ownership.
 - Orphan cancel lane: rows in `cancel_requested` or expired that fail `killSwitchLimitOrderAdoptionBlock`; roster from `killSwitchLimitOrderRoster` plus `collectKillSwitchLimitOrderCandidates`. Severity-gated throttle; `operator_required_since` backs off the poll. `applyLimitExposureOperatorRequired` sets the marker on `unbacked`, leaves it on `unreadable`, clears otherwise; the marker is the sole gate for `manual-clear-limit-row <oid> --flattened`.
 - The orphan cancel lane is `cancelOrphanedLimitOrder`.

@@ -320,9 +320,38 @@ CREATE TABLE IF NOT EXISTS cashflow_journal (
     coin TEXT NOT NULL DEFAULT '',
     closed_pnl_gross REAL NOT NULL DEFAULT 0,
     fee_usd REAL NOT NULL DEFAULT 0,
+    hl_basis_error REAL NOT NULL DEFAULT 0,
+    hl_basis_resolved INTEGER NOT NULL DEFAULT 0,
     dedup_id TEXT NOT NULL UNIQUE
 );
 CREATE INDEX IF NOT EXISTS idx_cashflow_journal_account ON cashflow_journal(platform, account);
+
+CREATE TABLE IF NOT EXISTS cashflow_hl_basis_state (
+    platform TEXT NOT NULL,
+    account TEXT NOT NULL,
+    scan_since_ms INTEGER NOT NULL DEFAULT 0,
+    target_ms INTEGER NOT NULL DEFAULT 0,
+    ready INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (platform, account)
+);
+
+CREATE TABLE IF NOT EXISTS cashflow_hl_basis_book (
+    platform TEXT NOT NULL,
+    account TEXT NOT NULL,
+    coin TEXT NOT NULL,
+    position_size TEXT NOT NULL DEFAULT '0',
+    entry_notional TEXT NOT NULL DEFAULT '0',
+    has_position INTEGER NOT NULL DEFAULT 0,
+    entry_known INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (platform, account, coin)
+);
+
+CREATE TABLE IF NOT EXISTS cashflow_hl_basis_seen (
+    platform TEXT NOT NULL,
+    account TEXT NOT NULL,
+    dedup_id TEXT NOT NULL,
+    PRIMARY KEY (platform, account, dedup_id)
+);
 
 -- #1100: per-wallet journal cursors + adoption baseline. fills/funding/transfers
 -- watermarks bound the three incremental fetches; baseline_account_value /
@@ -607,6 +636,8 @@ func (sdb *StateDB) migrateSchema() error {
 		"ALTER TABLE pending_manual_actions ADD COLUMN prev_tp_oids_json TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE pending_manual_actions ADD COLUMN tp_armed_tiers_json TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE pending_manual_actions ADD COLUMN position_id TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE cashflow_journal ADD COLUMN hl_basis_error REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE cashflow_journal ADD COLUMN hl_basis_resolved INTEGER NOT NULL DEFAULT 0",
 	}
 	for _, ddl := range migrations {
 		if _, err := sdb.db.Exec(ddl); err != nil {
