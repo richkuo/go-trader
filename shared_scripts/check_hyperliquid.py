@@ -529,7 +529,7 @@ def evaluate_signal_slot(shared, slot, deps=None):
         "symbol": symbol,
         "timeframe": timeframe,
         "signal": signal,
-        "price": round(price, 2),
+        "price": price,
         "indicators": indicators,
         "regime": stdout_regime,
         "mode": mode,

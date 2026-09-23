@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"math"
 	"os"
 	"sort"
 	"strconv"
@@ -293,10 +292,6 @@ func hyperliquidBatchSlotFingerprint(sc StrategyConfig, posCtx PositionCtx, regi
 		return "", err
 	}
 	return string(blob), nil
-}
-
-func hyperliquidBatchDisplayPrice(markPrice float64) float64 {
-	return math.Round(markPrice*100) / 100
 }
 
 type hlBatchMemberOutcome struct {

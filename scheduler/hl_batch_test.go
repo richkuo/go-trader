@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -786,11 +788,12 @@ func TestRunHyperliquidCheckConsumesTheCachedSlot(t *testing.T) {
 	}
 }
 
-func TestRoundedPriceWriteBackKeepsPeersBatched(t *testing.T) {
+func TestFullPrecisionPriceWriteBackKeepsPeersBatched(t *testing.T) {
 	resetFailureTrackers(t)
 	const rawMid = 0.34567
 	scA := hlBatchStrategy("hl-a", "breakout", "DOGE", "1h")
 	scB := hlBatchStrategy("hl-b", "momentum_pro", "DOGE", "1h")
+	scC := hlBatchStrategy("hl-c", "trend_follow", "DOGE", "1h")
 	posCtx := PositionCtx{Side: "long", Quantity: 1.5, AvgCost: 0.3, EntryATR: 0.01}
 	prices := map[string]float64{"DOGE": rawMid}
 
@@ -803,27 +806,51 @@ func TestRoundedPriceWriteBackKeepsPeersBatched(t *testing.T) {
 		batch.put(sc.ID, hlBatchMemberOutcome{
 			Result: &HyperliquidResult{
 				Strategy: sc.OpenStrategy.Name, Symbol: "DOGE", Timeframe: "1h",
-				Signal: 1, Price: hyperliquidBatchDisplayPrice(rawMid), Mode: "paper",
+				Signal: 1, Price: rawMid, Mode: "paper",
 			},
 			Fingerprint: fp,
 		})
 	}
 
-	_, _, priceA, okA := runHyperliquidCheck(&scA, prices, posCtx, nil, "simple", nil, hlBatchTestLogger(), batch, nil)
-	if !okA {
-		t.Fatal("member 1 must consume its cached slot")
+	origPlain := runHyperliquidCheckFn
+	runHyperliquidCheckFn = func(script string, args []string) (*HyperliquidResult, string, error) {
+		for _, arg := range args {
+			if v, ok := strings.CutPrefix(arg, "--mark-price="); ok {
+				mark, err := strconv.ParseFloat(v, 64)
+				if err != nil {
+					return nil, "", err
+				}
+				return &HyperliquidResult{Strategy: "trend_follow", Symbol: "DOGE", Timeframe: "1h", Signal: 1, Price: mark, Mode: "paper"}, "", nil
+			}
+		}
+		return nil, "", fmt.Errorf("no --mark-price argument in %v", args)
+	}
+	t.Cleanup(func() { runHyperliquidCheckFn = origPlain })
+
+	var logA bytes.Buffer
+	_, _, priceA, okA := runHyperliquidCheck(&scA, prices, posCtx, nil, "simple", nil, &StrategyLogger{stratID: "hl-a", writer: &logA}, batch, nil)
+	if !okA || priceA != rawMid {
+		t.Fatalf("member 1 = (%v, %v), want its cached slot at the full-precision mark %v", priceA, okA, rawMid)
+	}
+	if !strings.Contains(logA.String(), "@ $0.34567") {
+		t.Fatalf("signal log does not name the full-precision mark: %q", logA.String())
 	}
 	prices["DOGE"] = priceA
-	if priceA == rawMid {
-		t.Fatalf("fixture no longer exercises the rounding write-back: %v", priceA)
-	}
 
 	resB, _, priceB, okB := runHyperliquidCheck(&scB, prices, posCtx, nil, "simple", nil, hlBatchTestLogger(), batch, nil)
 	if !okB || resB == nil {
-		t.Fatal("member 2 lost its cached slot to the rounded price write-back")
+		t.Fatal("member 2 lost its cached slot to the price write-back")
 	}
-	if priceB != priceA {
-		t.Fatalf("peer price = %v, want %v", priceB, priceA)
+	if priceB != rawMid {
+		t.Fatalf("batched peer price = %v, want %v", priceB, rawMid)
+	}
+
+	resC, _, priceC, okC := runHyperliquidCheck(&scC, prices, posCtx, nil, "simple", nil, hlBatchTestLogger(), batch, nil)
+	if !okC || resC == nil {
+		t.Fatal("un-batched peer check failed")
+	}
+	if priceC != rawMid {
+		t.Fatalf("single-check peer price = %v, want the batched price %v", priceC, rawMid)
 	}
 }
 
@@ -843,7 +870,7 @@ func TestBatchedMemberReportsDispatchTimeMark(t *testing.T) {
 	if !ok || got == nil {
 		t.Fatal("cached slot must still be consumed")
 	}
-	if price != 26_000.57 || got.Price != 26_000.57 {
+	if price != 26_000.567 || got.Price != 26_000.567 {
 		t.Fatalf("dispatch-time mark not adopted: price=%v result.Price=%v", price, got.Price)
 	}
 	if cached.Price != 25_000 {

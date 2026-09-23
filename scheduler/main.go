@@ -3466,7 +3466,7 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 				res := *result
 				if sym := hyperliquidSymbol(sc.Args); sym != "" {
 					if mid, ok := prices[sym]; ok && mid > 0 {
-						res.Price = hyperliquidBatchDisplayPrice(mid)
+						res.Price = mid
 					}
 				}
 				result = &res
@@ -3609,7 +3609,7 @@ func finishHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCt
 	applySignalInversion(*sc, result, logger)
 
 	signalStr := signalLabel(result.Signal)
-	logger.Info("Signal: %s | %s @ $%.2f [%s]", signalStr, result.Symbol, result.Price, result.Mode)
+	logger.Info("Signal: %s | %s @ $%s [%s]", signalStr, result.Symbol, formatSignalPrice(result.Price), result.Mode)
 	if result.CloseGate != "" {
 		logger.Info("Venue close gate for %s: partial close rewritten to noop (%s); no order this cycle", result.Symbol, result.CloseGate)
 	}
@@ -3634,6 +3634,13 @@ func applySignalInversion(sc StrategyConfig, result *HyperliquidResult, logger *
 	original := result.Signal
 	result.Signal = -result.Signal
 	logger.Info("Signal inversion enabled: %s -> %s", signalLabel(original), signalLabel(result.Signal))
+}
+
+func formatSignalPrice(v float64) string {
+	if v > 0 && v < 1 {
+		return fmt.Sprintf("%.6g", v)
+	}
+	return fmt.Sprintf("%.2f", v)
 }
 
 func signalLabel(signal int) string {

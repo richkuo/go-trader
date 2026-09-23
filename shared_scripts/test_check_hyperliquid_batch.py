@@ -179,6 +179,17 @@ def test_spot_price_fallback_used_once_when_mark_absent(mod):
         assert result["price"] == 31_337.0
 
 
+@pytest.mark.parametrize("mark", [0.1234, 0.006, 0.34567])
+def test_sub_dollar_mark_is_reported_at_full_precision_on_both_paths(mod, mark):
+    envelope, exit_code = mod.run_batch_signal_check(
+        "BTC", "1h", SLOT_MATRIX, mark_price=mark, adapter=FakeAdapter())
+    assert exit_code == 0, envelope
+    for result in envelope["results"]:
+        assert result["price"] == mark, result["id"]
+    solo = mod.evaluate_signal_slot(_shared(mod, FakeAdapter(), mark_price=mark), SLOT_MATRIX[0])
+    assert solo["price"] == mark
+
+
 def test_slot_cannot_mutate_the_shared_frame(mod):
     adapter = FakeAdapter()
     shared = _shared(mod, adapter)
