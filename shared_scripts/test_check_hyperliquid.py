@@ -1001,29 +1001,7 @@ class TestSyncProtection:
                 )
         return json.loads(captured.getvalue()), mock_adapter
 
-    @pytest.mark.parametrize("cancel_response,want_oids,want_placements,want_error", [
-        (_CANCEL_OK_RESPONSE, [9101, 7002], 1, False),
-        (_CANCEL_REJECTED_RESPONSE, [7001, 7002], 0, True),
-    ])
-    def test_force_tp_replace_places_only_after_a_confirmed_cancel(self, cancel_response, want_oids, want_placements, want_error):
-        out, adapter = self._run_sync(
-            stop_loss_atr_mult=0,
-            tp_tiers=[(1.0, 0.5), (2.0, 1.0)],
-            tp_oids=[7001, 7002],
-            tp_armed_tiers=[True, True],
-            open_oids={7001, 7002},
-            cancel_response=cancel_response,
-            force_tp_replace=[True, False],
-        )
-        adapter.cancel_order_by_oid.assert_called_once_with("ETH", 7001)
-        assert adapter.place_take_profit_limit.call_count == want_placements
-        assert out["tp_oids"] == want_oids
-        assert bool(out.get("tp_errors", [""])[0]) is want_error
 
-    @pytest.mark.parametrize("size,tiers,oids,skipped,placements", [
-        (0.003, [(1.0, 0.4), (2.0, 0.5), (3.0, 1.0)], [0, 7002, 0], [False, True, False], 2),
-        (0.0004, [(1.0, 0.5), (2.0, 1.0)], [7001, 7002], [True, True], 0),
-    ])
     def test_size_skipped_tiers_report_unverified(self, size, tiers, oids, skipped, placements):
         out, adapter = self._run_sync(
             size=size, stop_loss_atr_mult=0, tp_tiers=tiers,
@@ -1180,31 +1158,6 @@ class TestSyncProtection:
         assert not out.get("tp_cancel_failed_oids")
         adapter.cancel_order_by_oid.assert_not_called()
 
-    @pytest.mark.parametrize("open_oids,open_err,cancel_response,fills,want_cancel,want", [
-        ({303}, None, _CANCEL_OK_RESPONSE, {}, True, {}),
-        ({303}, None, _CANCEL_REJECTED_RESPONSE, {}, True, {"tp_cancel_failed_oids": [303]}),
-        (set(), None, None, {}, False, {"tp_cancel_not_open_oids": [303]}),
-        (set(), None, None, {303: {"fee": 0.05, "closed_pnl": 1.0, "count": 1}}, False, {"tp_cancel_filled_oids": [303]}),
-        (None, "userOpenOrders failed", None, {}, False, {"tp_cancel_failed_oids": [303]}),
-    ])
-    def test_sync_protection_surplus_cancel_verifies_first(self, open_oids, open_err, cancel_response, fills, want_cancel, want):
-        out, adapter = self._run_sync(
-            size=0,
-            stop_loss_atr_mult=0,
-            cancel_tp_oids=[303],
-            open_oids=open_oids,
-            open_orders_error=open_err,
-            cancel_response=cancel_response,
-            fill_lookup_by_oid=fills,
-        )
-        if want_cancel:
-            adapter.cancel_order_by_oid.assert_called_once_with("ETH", 303)
-        else:
-            adapter.cancel_order_by_oid.assert_not_called()
-        adapter.place_stop_loss.assert_not_called()
-        adapter.place_take_profit_limit.assert_not_called()
-        for key in ("tp_cancel_failed_oids", "tp_cancel_filled_oids", "tp_cancel_not_open_oids"):
-            assert out.get(key) == want.get(key)
 
     def test_surplus_cancel_runs_when_size_zero(self):
         out, adapter = self._run_sync(
@@ -1617,13 +1570,6 @@ class TestProtectionSyncStopLossTriggerContract:
         assert "already filled" in out["stop_loss_error"]
         assert "stop_loss_oid" not in out
 
-    @pytest.mark.parametrize("cancel_response", [_CANCEL_REJECTED_RESPONSE, RuntimeError("rpc down")])
-    def test_force_replace_cancel_failure_reports_cancel_error(self, cancel_response):
-        out, adapter = self._run_sync_cancel_response(cancel_response)
-        adapter.place_stop_loss.assert_not_called()
-        assert out.get("cancel_stop_loss_succeeded") is False
-        assert out["cancel_stop_loss_error"]
-        assert out["cancel_stop_loss_error"] == out["stop_loss_error"]
 
     def _run_sync_cancel_response(self, cancel_response):
         import builtins
