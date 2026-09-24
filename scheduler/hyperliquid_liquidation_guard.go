@@ -616,14 +616,17 @@ const (
 	hlReplaceOutcomeUnknown
 )
 
-func hlLiquidationClampReplace(candidate hlLiquidationAuditCandidate, clampedTriggerPx float64, logger *StrategyLogger) (*HyperliquidStopLossUpdateResult, hlLiquidationReplaceOutcome) {
+func hlLiquidationClampReplace(candidate hlLiquidationAuditCandidate, clampedTriggerPx float64, logger *StrategyLogger, notifier *MultiNotifier) (*HyperliquidStopLossUpdateResult, hlLiquidationReplaceOutcome) {
 	if clampedTriggerPx <= 0 || candidate.Qty <= 0 {
 		return nil, hlReplaceDeferred
 	}
 	if candidate.StopLossOID > 0 && hlStopPlaceUnread(candidate.Symbol, candidate.StopLossOID) {
 		released, adopted, alert := hlReleaseUnreadableStop(candidate.Script, candidate.Symbol, candidate.Side, candidate.StopLossOID, candidate.Qty, clampedTriggerPx)
-		if alert != "" && logger != nil {
-			logger.Error("CRITICAL: %s", alert)
+		if alert != "" {
+			if logger != nil {
+				logger.Error("CRITICAL: %s", alert)
+			}
+			hlStopReplaceNotifyOnce(candidate.StrategyID+"|unread-end|"+candidate.Symbol+"|"+strconv.FormatInt(candidate.StopLossOID, 10), notifier, alert)
 		}
 		if !released {
 			return &HyperliquidStopLossUpdateResult{StopLossOutcomeUnknown: true, StopLossOldStillOpen: true}, hlReplaceOutcomeUnknown
@@ -902,7 +905,7 @@ func runHyperliquidLiquidationAudit(
 			})
 			continue
 		}
-		result, outcome := hlLiquidationClampReplace(c, act.ClampedTriggerPx, logger)
+		result, outcome := hlLiquidationClampReplace(c, act.ClampedTriggerPx, logger, notifier)
 		action := hlLiquidationActionClamped
 		if act.Kind == hlAuditRearm {
 			action = hlLiquidationActionRearmed

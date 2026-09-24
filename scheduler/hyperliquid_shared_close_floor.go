@@ -373,7 +373,7 @@ func rearmScalarStopAfterFailedClose(sc StrategyConfig, stratState *StrategyStat
 		QtyCapped:   capped,
 		StopLossOID: cancelOID,
 	}
-	result, _ := hlLiquidationClampReplace(candidate, triggerPx, logger)
+	result, _ := hlLiquidationClampReplace(candidate, triggerPx, logger, notifier)
 	mu.Lock()
 	defer mu.Unlock()
 	if immediateFill, fillPx := applyTrailingStopUpdateResult(stratState, symbol, side, cancelOID, 0, true, result, "stop_loss_pct_immediate", logger, slEffectiveQty); immediateFill {

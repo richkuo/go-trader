@@ -779,10 +779,10 @@ class HyperliquidExchangeAdapter:
         sz_decimals = self._sz_decimals(symbol) if self._info else 3
         return round(sz, sz_decimals)
 
-    def open_orders(self, symbol: str | None = None) -> list:
+    def frontend_open_orders(self, symbol: str | None = None) -> list:
         if not self._account_address:
             return []
-        orders = self._info.open_orders(self._account_address)
+        orders = self._info.frontend_open_orders(self._account_address)
         out = []
         for order in orders or []:
             if not isinstance(order, dict):
@@ -790,6 +790,9 @@ class HyperliquidExchangeAdapter:
             if symbol and order.get("coin") != symbol:
                 continue
             out.append(order)
+            for child in order.get("children") or []:
+                if isinstance(child, dict):
+                    out.append(child)
         return out
 
     def open_order_oids(self, symbol: str | None = None) -> set[int]:

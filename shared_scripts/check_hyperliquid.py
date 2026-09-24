@@ -1519,7 +1519,7 @@ def run_list_open_order_oids(symbol):
         from adapter import HyperliquidExchangeAdapter
         adapter = HyperliquidExchangeAdapter()
         listed = []
-        for order in adapter.open_orders(symbol):
+        for order in adapter.frontend_open_orders(symbol):
             try:
                 oid = int(order.get("oid") or 0)
             except (TypeError, ValueError):

@@ -809,7 +809,7 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 		if adopted != nil {
 			msg := fmt.Sprintf("**HL TRAILING SL OUTCOME UNKNOWN** [%s] %s: the earlier replacement could not be read. Open order %d is now recorded and old OID %d may still be resting.",
 				sc.ID, symbol, adopted.StopLossOID, currentOID)
-			hlStopReplaceNotifyOnce(sc.ID+"|unread|"+symbol+"|"+strconv.FormatInt(currentOID, 10), notifier, msg)
+			hlStopReplaceNotifyOnce(sc.ID+"|adopt|"+symbol+"|"+strconv.FormatInt(currentOID, 10), notifier, msg)
 			return newHighWater, adopted, true
 		}
 	}

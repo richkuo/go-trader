@@ -672,6 +672,45 @@ class TestUpdateStopLoss:
         adapter.place_stop_loss.assert_called_once_with("ETH", 0.5, 3104.12, False)
         assert out["stop_loss_oid"] == 22222
 
+    def test_list_open_orders_reads_frontend_stop_fields(self):
+        mod, spec = _load_check_module()
+        spec.loader.exec_module(mod)
+        mock_adapter_cls = MagicMock()
+        mock_adapter = MagicMock()
+        mock_adapter_cls.return_value = mock_adapter
+        mock_adapter.frontend_open_orders.return_value = [{
+            "coin": "ETH",
+            "oid": 44444,
+            "side": "A",
+            "sz": "0.5",
+            "isTrigger": True,
+            "reduceOnly": True,
+            "orderType": "Stop Market",
+            "triggerPx": "3104.12",
+        }]
+        captured = StringIO()
+        import builtins
+        original_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "adapter":
+                fake_mod = MagicMock()
+                fake_mod.HyperliquidExchangeAdapter = mock_adapter_cls
+                return fake_mod
+            return original_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=mock_import):
+            with patch("sys.stdout", captured):
+                mod.run_list_open_order_oids("ETH")
+        out = json.loads(captured.getvalue())
+        mock_adapter.open_order_oids.assert_not_called()
+        order = out["open_orders"][0]
+        assert order["oid"] == 44444
+        assert order["is_trigger"] is True
+        assert order["reduce_only"] is True
+        assert order["order_type"] == "Stop Market"
+        assert order["trigger_px"] == 3104.12
+
 
 class TestCloseFullPosition:
 
