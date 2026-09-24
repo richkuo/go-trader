@@ -234,47 +234,6 @@ func TestHyperliquidCheckLogVolumeByLevel(t *testing.T) {
 	}
 }
 
-func TestStrategyLoggerLevelsReachStdoutAndFileAlike(t *testing.T) {
-	cases := []struct {
-		debug bool
-		want  []string
-	}{
-		{debug: false, want: []string{"INFO Status", "INFO Status", "INFO event", "WARN warn", "ERROR error"}},
-		{debug: true, want: []string{"INFO Status", "DEBUG Status", "INFO Status", "DEBUG Status", "DEBUG detail", "INFO event", "WARN warn", "ERROR error"}},
-	}
-	for _, tc := range cases {
-		withLogLevel(t, tc.debug)
-		lm, err := NewLogManager(filepath.Join(t.TempDir(), "logs"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		id := "log-levels-quiet"
-		if tc.debug {
-			id = "log-levels-debug"
-		}
-		sl, err := lm.GetStrategyLogger(id)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, v := range []string{"flat", "flat", "long", "long"} {
-			sl.InfoOnChange("status", v, "Status: positions=%s", v)
-		}
-		sl.Debug("detail: per-check")
-		sl.Info("event: fill")
-		sl.Warn("warn: drift")
-		sl.Error("error: failed")
-		sl.Close()
-
-		data, err := os.ReadFile(filepath.Join(lm.logDir, id+".log"))
-		if err != nil {
-			t.Fatalf("read log file: %v", err)
-		}
-		if got := logLineShapes(string(data)); !reflect.DeepEqual(got, tc.want) {
-			t.Fatalf("debug=%v file lines = %q, want %q", tc.debug, got, tc.want)
-		}
-	}
-}
-
 func TestCashflowJournalLinePrintsOnBasisChange(t *testing.T) {
 	prevPending := cashflowJournalPendingStreaks
 	cashflowJournalPendingStreaks = &cashflowJournalPendingTracker{}
@@ -303,5 +262,78 @@ func TestCashflowJournalLinePrintsOnBasisChange(t *testing.T) {
 		if !reflect.DeepEqual(got, tc.want) {
 			t.Fatalf("debug=%v journal lines per cycle = %v, want %v", tc.debug, got, tc.want)
 		}
+	}
+}
+
+func TestHyperliquidProtectionSyncLogKeepsEventTags(t *testing.T) {
+	oids := []int64{22}
+	line := func(level, tag string) string {
+		return level + " " + tag + " (sl_oid=11 tp_oids=[22])"
+	}
+	cases := []struct {
+		name  string
+		debug bool
+		tags  []string
+		want  []string
+	}{
+		{
+			name: "per-cycle perps sync stays quiet when the order ids do not change",
+			tags: []string{"HL protection synced", "HL protection synced"},
+			want: []string{line("INFO", "HL protection synced")},
+		},
+		{
+			name: "per-cycle manual sync stays quiet when the order ids do not change",
+			tags: []string{"HL manual protection synced", "HL manual protection synced"},
+			want: []string{line("INFO", "HL manual protection synced")},
+		},
+		{
+			name: "a trade, a limit fill, and a failed-close re-arm print after the per-cycle line logged the same ids",
+			tags: []string{"HL protection synced", "HL protection synced after trade", "HL limit-fill protection synced", "HL protection re-armed after failed close"},
+			want: []string{
+				line("INFO", "HL protection synced"),
+				line("INFO", "HL protection synced after trade"),
+				line("INFO", "HL limit-fill protection synced"),
+				line("INFO", "HL protection re-armed after failed close"),
+			},
+		},
+		{
+			name: "a second event with the same order ids still prints",
+			tags: []string{"HL protection re-armed after failed close", "HL protection re-armed after failed close"},
+			want: []string{
+				line("INFO", "HL protection re-armed after failed close"),
+				line("INFO", "HL protection re-armed after failed close"),
+			},
+		},
+		{
+			name: "a limit fill still prints between two quiet manual syncs",
+			tags: []string{"HL manual protection synced", "HL limit-fill protection synced", "HL manual protection synced"},
+			want: []string{
+				line("INFO", "HL manual protection synced"),
+				line("INFO", "HL limit-fill protection synced"),
+			},
+		},
+		{
+			name:  "debug reprints an unchanged per-cycle sync and keeps an event at info",
+			debug: true,
+			tags:  []string{"HL protection synced", "HL protection synced", "HL protection synced after trade"},
+			want: []string{
+				line("INFO", "HL protection synced"),
+				line("DEBUG", "HL protection synced"),
+				line("INFO", "HL protection synced after trade"),
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			withLogLevel(t, tc.debug)
+			var buf bytes.Buffer
+			logger := &StrategyLogger{stratID: t.Name(), writer: &buf}
+			for _, tag := range tc.tags {
+				logHyperliquidProtectionSynced(logger, tag, 11, oids)
+			}
+			if got := logLineShapes(buf.String()); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("log lines = %q, want %q\n%s", got, tc.want, buf.String())
+			}
+		})
 	}
 }

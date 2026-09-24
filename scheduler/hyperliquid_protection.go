@@ -785,10 +785,28 @@ func runHyperliquidProtectionSync(
 		logger.Info("surplus TP OIDs filled on-chain (reconciler will book): %v", protection.TPCancelFilledOIDs)
 	}
 	stampOpenTradeWithProtectionSnapshot(stratState, db, sc, symbol, pos)
-	if logger != nil {
-		logger.InfoOnChange("protection", fmt.Sprintf("%d|%v", pos.StopLossOID, pos.TPOIDs), "%s (sl_oid=%d tp_oids=%v)", logTag, pos.StopLossOID, pos.TPOIDs)
-	}
+	logHyperliquidProtectionSynced(logger, logTag, pos.StopLossOID, pos.TPOIDs)
 	return true, 0
+}
+
+// logHyperliquidProtectionSynced prints the sync result. The two per-cycle
+// tags ("HL protection synced" on a quiet perps hold, "HL manual protection
+// synced" on every check of a live manual position) print only when the order
+// ids change. Every other tag is an event — after a trade, a limit fill, or a
+// failed-close re-arm — and prints every time: those callers share this
+// strategy's protection key, so an on-change gate would hide the event when
+// the ids match the last per-cycle sync.
+func logHyperliquidProtectionSynced(logger *StrategyLogger, logTag string, slOID int64, tpOIDs []int64) {
+	if logger == nil {
+		return
+	}
+	format := "%s (sl_oid=%d tp_oids=%v)"
+	switch logTag {
+	case "HL protection synced", "HL manual protection synced":
+		logger.InfoOnChange("protection", fmt.Sprintf("%d|%v", slOID, tpOIDs), format, logTag, slOID, tpOIDs)
+	default:
+		logger.Info(format, logTag, slOID, tpOIDs)
+	}
 }
 
 // stopLegOnlyProtectionPlan strips every take-profit input so the sync places
