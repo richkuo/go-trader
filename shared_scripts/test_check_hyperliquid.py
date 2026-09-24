@@ -498,6 +498,7 @@ class TestUpdateStopLoss:
         cancel_oid=11111,
         post_place_oids=_UNSET,
         size=0.5,
+        frontend_reads=None,
     ):
         mod, spec = _load_check_module()
         spec.loader.exec_module(mod)
@@ -540,6 +541,10 @@ class TestUpdateStopLoss:
             mock_adapter.modify_stop_loss.side_effect = place_side_effect
         else:
             mock_adapter.modify_stop_loss.return_value = mock_adapter.place_stop_loss.return_value
+        if frontend_reads is not None:
+            mock_adapter.frontend_open_orders.side_effect = frontend_reads
+        else:
+            mock_adapter.frontend_open_orders.return_value = []
 
         captured = StringIO()
         import builtins
@@ -698,6 +703,35 @@ class TestUpdateStopLoss:
         adapter.cancel_trigger_order.assert_not_called()
         assert "stop_loss_oid" not in out
         assert out.get("stop_loss_old_still_open") is True
+
+    def test_modify_exception_adopts_the_landed_stop(self):
+        landed = {
+            "oid": 77, "side": "A", "sz": "0.5", "reduceOnly": True,
+            "isTrigger": True, "orderType": "Stop Market", "triggerPx": "3104.12",
+        }
+        out, adapter = self._run_update(
+            place_side_effect=RuntimeError("connection reset after submit"),
+            frontend_reads=[[], [landed]],
+        )
+        adapter.place_stop_loss.assert_not_called()
+        assert out["stop_loss_oid"] == 77
+        assert "stop_loss_outcome_unknown" not in out
+
+    def test_modify_value_error_is_a_plain_rejection(self):
+        out, adapter = self._run_update(place_side_effect=ValueError("Size rounded to zero"))
+        adapter.place_stop_loss.assert_not_called()
+        assert "stop_loss_outcome_unknown" not in out
+        assert out.get("stop_loss_old_still_open") is True
+
+    def test_fresh_place_unreadable_reply_resolves_by_book_diff(self):
+        out, _ = self._run_update(
+            open_oids=set(),
+            lookup_result=None,
+            place_response={"status": "weird"},
+            post_place_oids={22222},
+        )
+        assert out["stop_loss_oid"] == 22222
+        assert "stop_loss_outcome_unknown" not in out
 
     def test_resting_modify_does_not_cancel(self):
         out, adapter = self._run_update(cancel_response=_CANCEL_REJECTED_RESPONSE)

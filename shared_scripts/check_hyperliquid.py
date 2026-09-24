@@ -754,14 +754,6 @@ def run_batch_signal_check(symbol, timeframe, slots, *, ohlcv_limit=200, atr_met
     return envelope, (1 if failed else 0)
 
 
-def _is_open_order_cap_rejection(err):
-    lower = (err or "").lower()
-    has_cap = any(w in lower for w in ("too many", "rate limit", "max", "limit", "exceed"))
-    if not has_cap:
-        return False
-    return "trigger order" in lower or "open order" in lower or "open orders" in lower
-
-
 def _classify_sl_response(sdk_response: dict):
     try:
         statuses = sdk_response.get("response", {}).get("data", {}).get("statuses", [])
@@ -1678,6 +1670,39 @@ def _run_cancel_only_stop_loss(adapter, symbol, cancel_oid):
     print(json.dumps(out, cls=SafeEncoder))
 
 
+def _resolve_modify_on_book(adapter, symbol, pre_oids, is_buy, size, trigger_px):
+    try:
+        orders = adapter.frontend_open_orders(symbol)
+    except Exception as oe:
+        print(f"[WARN] frontend_open_orders({symbol}) failed after modify: {oe}", file=sys.stderr)
+        return "unknown", None
+    want_side = "B" if is_buy else "A"
+    for order in orders or []:
+        if not isinstance(order, dict):
+            continue
+        try:
+            oid = int(order.get("oid") or 0)
+            sz = float(order.get("sz") or 0)
+            trigger = float(order.get("triggerPx") or 0)
+        except (TypeError, ValueError):
+            continue
+        if oid <= 0 or not order.get("reduceOnly") or not order.get("isTrigger"):
+            continue
+        kind = str(order.get("orderType") or order.get("origType") or "").lower()
+        if "stop" not in kind or "take" in kind or str(order.get("side") or "") != want_side:
+            continue
+        if abs(sz - size) > 1e-6 and size > 0 and abs(sz - size) / size > 1e-4:
+            continue
+        if trigger_px <= 0 or (abs(trigger - trigger_px) > 0.01 and abs(trigger - trigger_px) / trigger_px > 1e-3):
+            continue
+        if pre_oids is not None and oid in pre_oids and oid:
+            # The same OID at the new trigger means the modify landed in place.
+            return "resting", oid
+        if pre_oids is None or oid not in pre_oids:
+            return "resting", oid
+    return "unknown", None
+
+
 def run_update_stop_loss(symbol, side, size, trigger_px, mode, cancel_oid=0):
     if mode != "live":
         print(json.dumps({"error": "--update-stop-loss requires --mode=live"}, cls=SafeEncoder))
@@ -1741,31 +1766,56 @@ def run_update_stop_loss(symbol, side, size, trigger_px, mode, cancel_oid=0):
         modified_in_place = False
         if old_is_open and should_place:
             try:
-                sl_resp = adapter.modify_stop_loss(symbol, cancel_oid, size, trigger_px, sl_is_buy)
-                if isinstance(sl_resp, dict) and str(sl_resp.get("status")) == "err":
-                    sl_err = f"modify_stop_loss SDK error: {sl_resp.get('response')}"
-                    print(f"[WARN] {sl_err}", file=sys.stderr)
-                else:
-                    kind, payload = _classify_sl_response(sl_resp)
-                    if kind == "resting":
-                        resting_oid = payload or cancel_oid
-                        modified_in_place = True
-                    elif kind == "filled":
-                        sl_filled_immediately = True
-                        modified_in_place = True
-                        print(f"[WARN] stop-loss filled immediately at submit (price already through {trigger_px})", file=sys.stderr)
-                    elif kind == "error":
-                        sl_err = f"modify_stop_loss SDK error: {payload}"
+                pre_oids = {int(order.get("oid") or 0) for order in adapter.frontend_open_orders(symbol)}
+                pre_oids.discard(0)
+            except Exception as oe:
+                open_order_check_error = str(oe)
+                sl_err = f"open orders unreadable before modify: {oe}"
+                print(f"[WARN] {sl_err}", file=sys.stderr)
+                should_place = False
+            else:
+                try:
+                    sl_resp = adapter.modify_stop_loss(symbol, cancel_oid, size, trigger_px, sl_is_buy)
+                    if isinstance(sl_resp, dict) and str(sl_resp.get("status")) == "err":
+                        sl_err = f"modify_stop_loss SDK error: {sl_resp.get('response')}"
                         print(f"[WARN] {sl_err}", file=sys.stderr)
                     else:
-                        sl_err = f"modify_stop_loss returned no usable status: {sl_resp}"
+                        kind, payload = _classify_sl_response(sl_resp)
+                        if kind == "resting":
+                            resting_oid = payload or cancel_oid
+                            modified_in_place = True
+                        elif kind == "filled":
+                            sl_filled_immediately = True
+                            modified_in_place = True
+                            print(f"[WARN] stop-loss filled immediately at submit (price already through {trigger_px})", file=sys.stderr)
+                        elif kind == "error":
+                            sl_err = f"modify_stop_loss SDK error: {payload}"
+                            print(f"[WARN] {sl_err}", file=sys.stderr)
+                        else:
+                            resolved, oid = _resolve_modify_on_book(adapter, symbol, pre_oids, sl_is_buy, size, trigger_px)
+                            if resolved == "resting":
+                                resting_oid = oid
+                                modified_in_place = True
+                                sl_err = ""
+                            else:
+                                sl_err = f"modify_stop_loss returned no usable status: {sl_resp}"
+                                place_unknown = True
+                                print(f"[WARN] {sl_err}", file=sys.stderr)
+                except ValueError as ve:
+                    sl_err = str(ve)
+                    print(f"[WARN] modify_stop_loss rejected before send: {ve}", file=sys.stderr)
+                except Exception as se:
+                    sl_err = str(se)
+                    print(f"[WARN] modify_stop_loss({symbol}, {cancel_oid}) failed: {se}", file=sys.stderr)
+                    resolved, oid = _resolve_modify_on_book(adapter, symbol, pre_oids, sl_is_buy, size, trigger_px)
+                    if resolved == "resting":
+                        resting_oid = oid
+                        modified_in_place = True
+                        sl_err = ""
+                        place_unknown = False
+                    else:
                         place_unknown = True
-                        print(f"[WARN] {sl_err}", file=sys.stderr)
-            except Exception as se:
-                sl_err = str(se)
-                print(f"[WARN] modify_stop_loss({symbol}, {cancel_oid}) failed: {se}", file=sys.stderr)
-            # A failed or unreadable modify leaves the old stop. Do not add another.
-            should_place = False
+                should_place = False
         if should_place:
             pre_oids = set(int(o) for o in open_oids) if open_oids is not None else _snapshot_open_oids(adapter, symbol)
             try:
@@ -1801,21 +1851,6 @@ def run_update_stop_loss(symbol, side, size, trigger_px, mode, cancel_oid=0):
                     resting_oid = oid
                 elif resolved == "unknown":
                     place_unknown = True
-
-        # Cancel only after the new stop rests or fills. A rejection or an
-        # unreadable place leaves the old stop in place.
-        if old_is_open and not modified_in_place and (resting_oid or sl_filled_immediately) and not place_unknown and not cancel_succeeded:
-            try:
-                kind, payload = _classify_cancel_response(
-                    adapter.cancel_trigger_order(symbol, cancel_oid))
-                if kind == "ok":
-                    cancel_succeeded = True
-                else:
-                    cancel_err = payload
-                    print(f"[WARN] cancel_trigger_order({symbol}, {cancel_oid}) rejected after the replacement was placed: {payload}", file=sys.stderr)
-            except Exception as ce:
-                cancel_err = str(ce)
-                print(f"[WARN] cancel_trigger_order({symbol}, {cancel_oid}) failed after the replacement was placed: {ce}", file=sys.stderr)
 
         out = {
             "platform": "hyperliquid",
