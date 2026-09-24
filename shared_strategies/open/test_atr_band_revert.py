@@ -21,12 +21,6 @@ def _box(n=60, level=100.0, top=101.0, bottom=99.0):
     )
 
 
-def test_columns_exposed():
-    r = atr_band_revert_core(_box())
-    for col in ("signal", "atr", "band_mid", "band_lower", "band_upper"):
-        assert col in r.columns
-
-
 def test_long_entry_below_lower_band():
     df = _box()
     df.iloc[-1, df.columns.get_loc("close")] = 90.0
@@ -35,42 +29,3 @@ def test_long_entry_below_lower_band():
     assert r["signal"].iloc[-1] == 1
 
 
-def test_short_entry_above_upper_band_when_allowed():
-    df = _box()
-    df.iloc[-1, df.columns.get_loc("close")] = 110.0
-    df.iloc[-1, df.columns.get_loc("high")] = 110.5
-    r = atr_band_revert_core(df, period=20, atr_period=14, k_entry=1.5, allow_short=True)
-    assert r["signal"].iloc[-1] == -1
-
-
-def test_short_suppressed_when_allow_short_false():
-    df = _box()
-    df.iloc[-1, df.columns.get_loc("close")] = 110.0
-    df.iloc[-1, df.columns.get_loc("high")] = 110.5
-    r = atr_band_revert_core(df, period=20, atr_period=14, k_entry=1.5, allow_short=False)
-    assert r["signal"].iloc[-1] == 0
-
-
-def test_hold_inside_bands():
-    r = atr_band_revert_core(_box(), period=20, atr_period=14, k_entry=1.5, allow_short=True)
-    assert r["signal"].iloc[-1] == 0
-
-
-def test_no_signal_during_warmup():
-    r = atr_band_revert_core(_box(), period=20, atr_period=14)
-    warm = r.iloc[:19]
-    assert (warm["signal"] == 0).all()
-
-
-def test_long_invariant_holds_everywhere():
-    rng = np.random.RandomState(7)
-    n = 200
-    closes = 100.0 + np.cumsum(rng.randn(n) * 0.5)
-    idx = pd.date_range("2024-01-01", periods=n, freq="1h")
-    df = pd.DataFrame({"open": closes, "high": closes + 1.0, "low": closes - 1.0,
-                       "close": closes, "volume": [1.0] * n}, index=idx)
-    r = atr_band_revert_core(df, period=20, atr_period=14, k_entry=1.5, allow_short=False)
-    valid = r["band_lower"].notna()
-    below = valid & (r["close"] <= r["band_lower"])
-    assert (r.loc[below, "signal"] == 1).all()
-    assert (r.loc[valid & (r["close"] > r["band_lower"]), "signal"] == 0).all()

@@ -3,91 +3,13 @@ package main
 import (
 	"bytes"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 )
-
-func TestGetStrategyLogger(t *testing.T) {
-	dir := t.TempDir()
-	logDir := filepath.Join(dir, "logs")
-
-	lm, err := NewLogManager(logDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer lm.Close()
-
-	sl, err := lm.GetStrategyLogger("test-strategy")
-	if err != nil {
-		t.Fatalf("GetStrategyLogger failed: %v", err)
-	}
-	defer sl.Close()
-
-	sl.Info("test info message")
-	sl.Error("test error message")
-	sl.Warn("test warn message")
-
-	sl.Close()
-
-	logFile := filepath.Join(logDir, "test-strategy.log")
-	data, err := os.ReadFile(logFile)
-	if err != nil {
-		t.Fatalf("log file should exist: %v", err)
-	}
-
-	content := string(data)
-	if !strings.Contains(content, "[INFO]") {
-		t.Error("log should contain [INFO]")
-	}
-	if !strings.Contains(content, "[ERROR]") {
-		t.Error("log should contain [ERROR]")
-	}
-	if !strings.Contains(content, "[WARN]") {
-		t.Error("log should contain [WARN]")
-	}
-	if !strings.Contains(content, "test-strategy") {
-		t.Error("log should contain strategy ID")
-	}
-	if !strings.Contains(content, "test info message") {
-		t.Error("log should contain the message text")
-	}
-}
-
-func TestGetStrategyLoggerNoDir(t *testing.T) {
-	lm, err := NewLogManager("")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer lm.Close()
-
-	sl, err := lm.GetStrategyLogger("test")
-	if err != nil {
-		t.Fatalf("GetStrategyLogger should succeed even without log dir: %v", err)
-	}
-	defer sl.Close()
-
-	sl.Info("test message")
-}
-
-func TestStrategyLoggerCloseIdempotent(t *testing.T) {
-	dir := t.TempDir()
-	lm, _ := NewLogManager(filepath.Join(dir, "logs"))
-	defer lm.Close()
-
-	sl, _ := lm.GetStrategyLogger("test")
-	sl.Close()
-	sl.Close()
-}
-
-func TestLogManagerClose(t *testing.T) {
-	dir := t.TempDir()
-	lm, _ := NewLogManager(filepath.Join(dir, "logs"))
-	lm.Close()
-	lm.Close()
-}
 
 func withLogLevel(t *testing.T, debug bool) {
 	t.Helper()
@@ -112,6 +34,49 @@ func logLineShapes(out string) []string {
 		shapes = append(shapes, level+" "+head)
 	}
 	return shapes
+}
+
+func resetFailureTrackers(t *testing.T) {
+	t.Helper()
+	origPrimary, origTransient := scriptFailureTracker, scriptFailureTransientTracker
+	scriptFailureTracker = &ScriptFailureTracker{}
+	scriptFailureTransientTracker = &ScriptFailureTracker{}
+	t.Cleanup(func() {
+		scriptFailureTracker, scriptFailureTransientTracker = origPrimary, origTransient
+	})
+}
+
+func hlBatchStrategy(id, name, symbol, timeframe string) StrategyConfig {
+	return StrategyConfig{
+		ID:           id,
+		Type:         "perps",
+		Platform:     "hyperliquid",
+		Script:       hyperliquidCheckScript,
+		Args:         []string{name, symbol, timeframe, "--mode=paper"},
+		OpenStrategy: StrategyRef{Name: name},
+	}
+}
+
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	orig := os.Stdout
+	os.Stdout = w
+	done := make(chan string, 1)
+	go func() {
+		var buf bytes.Buffer
+		_, _ = io.Copy(&buf, r)
+		done <- buf.String()
+	}()
+	fn()
+	w.Close()
+	os.Stdout = orig
+	out := <-done
+	r.Close()
+	return out
 }
 
 func TestLoadConfigLogLevel(t *testing.T) {

@@ -13,6 +13,30 @@ import (
 	"time"
 )
 
+func threeSourceConfig(t *testing.T) *Config {
+	t.Helper()
+	dir := t.TempDir()
+	cfg := &Config{
+		DBFile: filepath.Join(dir, "live.db"),
+		PaperSources: []PaperSourceConfig{
+			{ID: "btc", Label: "Paper BTC", DBFile: filepath.Join(dir, "btc.db")},
+			{ID: "eth", DBFile: filepath.Join(dir, "eth.db")},
+			{ID: "sol", DBFile: filepath.Join(dir, "sol.db")},
+		},
+		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 60},
+		Strategies: []StrategyConfig{
+			{ID: "hl-live", Type: "perps", Platform: "hyperliquid", Symbol: "ETH", Args: []string{"--mode=live"}, StorageStrategyID: "hl"},
+		},
+	}
+	for _, id := range []string{"btc", "eth", "sol"} {
+		cfg.Strategies = append(cfg.Strategies, StrategyConfig{
+			ID: "hl-" + id, Type: "perps", Platform: "hyperliquid", Symbol: "ETH",
+			Args: []string{"--mode=paper"}, PaperSource: id, StorageStrategyID: "hl",
+		})
+	}
+	return cfg
+}
+
 func TestAgentInfoCommandsCoverKnownSubcommands(t *testing.T) {
 	documented := map[string]bool{}
 	for _, c := range agentInfoCommands {

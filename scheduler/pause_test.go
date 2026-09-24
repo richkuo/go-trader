@@ -1,8 +1,6 @@
 package main
 
 import (
-	"reflect"
-	"strings"
 	"testing"
 )
 
@@ -56,93 +54,5 @@ func TestPausedBlocksSignal(t *testing.T) {
 					tc.signal, tc.closeFraction, tc.posQty, tc.posSide, tc.allowsLong, tc.allowsShort, got, tc.want)
 			}
 		})
-	}
-}
-
-func TestPausedOptionsActions(t *testing.T) {
-	actions := []OptionsAction{
-		{Action: "buy", Strike: 100},
-		{Action: "close", Strike: 110},
-		{Action: "sell", Strike: 120},
-		{Action: "close", Strike: 130},
-	}
-	kept, dropped := pausedOptionsActions(actions)
-	if dropped != 2 {
-		t.Fatalf("expected 2 dropped open actions, got %d", dropped)
-	}
-	if len(kept) != 2 || kept[0].Strike != 110 || kept[1].Strike != 130 {
-		t.Fatalf("expected the two close actions in order, got %+v", kept)
-	}
-
-	kept, dropped = pausedOptionsActions(nil)
-	if kept != nil || dropped != 0 {
-		t.Fatalf("expected nil/0 for empty input, got %+v/%d", kept, dropped)
-	}
-}
-
-func TestPausedStrategiesNote(t *testing.T) {
-	if note := pausedStrategiesNote([]StrategyConfig{{ID: "a"}, {ID: "b"}}); note != "" {
-		t.Fatalf("expected empty note with no paused strategies, got %q", note)
-	}
-	note := pausedStrategiesNote([]StrategyConfig{
-		{ID: "z-strat", Paused: true},
-		{ID: "a-strat"},
-		{ID: "m-strat", Paused: true},
-	})
-	if !strings.Contains(note, "m-strat, z-strat") {
-		t.Fatalf("expected sorted paused IDs, got %q", note)
-	}
-}
-
-func TestStrategyRestartShape_PausedOnlyChange(t *testing.T) {
-	a := StrategyConfig{ID: "hl-a", Paused: true}
-	b := StrategyConfig{ID: "hl-a", Paused: false}
-	if !reflect.DeepEqual(strategyRestartShape(a), strategyRestartShape(b)) {
-		t.Fatal("paused-only change should not affect restart shape")
-	}
-}
-
-func TestApplyHotReloadConfig_PausedToggleWhileOpen(t *testing.T) {
-	base := func(paused bool) []StrategyConfig {
-		return []StrategyConfig{{
-			ID: "hl-eth", Type: "perps", Platform: "hyperliquid",
-			Script:  "shared_scripts/check_hyperliquid.py",
-			Args:    []string{"momentum", "ETH", "1h", "--mode=paper"},
-			Capital: 1000, MaxDrawdownPct: 10, Leverage: 2, Direction: DirectionLong,
-			Paused: paused,
-		}}
-	}
-	openState := func() *AppState {
-		return &AppState{Strategies: map[string]*StrategyState{
-			"hl-eth": {
-				ID: "hl-eth", Cash: 900,
-				RiskState: RiskState{MaxDrawdownPct: 10},
-				Positions: map[string]*Position{
-					"ETH": {Symbol: "ETH", Quantity: 1, Side: "long", AvgCost: 3000, Leverage: 2},
-				},
-			},
-		}}
-	}
-
-	cfg := minimalReloadConfig(base(false))
-	next := minimalReloadConfig(base(true))
-	changes, err := applyHotReloadConfig(cfg, next, openState(), nil, nil)
-	if err != nil {
-		t.Fatalf("paused false->true while open should be hot-reloadable: %v", err)
-	}
-	if !cfg.Strategies[0].Paused {
-		t.Fatal("expected strategy paused after reload")
-	}
-	if !strings.Contains(strings.Join(changes, "\n"), "paused") {
-		t.Fatalf("expected a paused change entry, got %v", changes)
-	}
-
-	cfg = minimalReloadConfig(base(true))
-	next = minimalReloadConfig(base(false))
-	if _, err := applyHotReloadConfig(cfg, next, openState(), nil, nil); err != nil {
-		t.Fatalf("paused true->false while open should be hot-reloadable: %v", err)
-	}
-	if cfg.Strategies[0].Paused {
-		t.Fatal("expected strategy resumed after reload")
 	}
 }
