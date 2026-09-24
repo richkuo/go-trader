@@ -10,6 +10,26 @@ import (
 	"time"
 )
 
+func scopeCfg(id string, live bool) StrategyConfig {
+	args := []string{"momentum", "BTC", "1h"}
+	if live {
+		args = append(args, "--mode=live")
+	}
+	return StrategyConfig{ID: id, Type: "perps", Platform: "hyperliquid", Capital: 10000, InitialCapital: 10000, Leverage: 3, Args: args}
+}
+
+func scopeState(id string, cash float64) *StrategyState {
+	return &StrategyState{
+		ID:              id,
+		Type:            "perps",
+		Platform:        "hyperliquid",
+		Cash:            cash,
+		InitialCapital:  10000,
+		Positions:       map[string]*Position{},
+		OptionPositions: map[string]*OptionPosition{},
+	}
+}
+
 func portfolioRiskTableColumns(t *testing.T, db *StateDB, table string) map[string]bool {
 	t.Helper()
 	rows, err := db.db.Query("PRAGMA table_info(" + table + ")")

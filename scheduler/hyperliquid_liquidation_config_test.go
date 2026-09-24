@@ -9,6 +9,30 @@ import (
 	"testing"
 )
 
+func ratchetRegimeUserTiers() map[string]interface{} {
+	tierList := func() []interface{} {
+		return []interface{}{
+			map[string]interface{}{"atr_multiple": 1.0, "trailing_mult_after": 1.0, "close_fraction": 0.0},
+			map[string]interface{}{"atr_multiple": 2.0, "trailing_mult_after": 0.75, "close_fraction": 0.0},
+		}
+	}
+	return map[string]interface{}{
+		"trending_up":   tierList(),
+		"trending_down": tierList(),
+		"ranging":       tierList(),
+	}
+}
+
+func ratchetRegimeTrailRaw(up, down, ranging float64) map[string]interface{} {
+	return map[string]interface{}{
+		"trend_regime": map[string]interface{}{
+			"trending_up":   map[string]interface{}{"atr_multiple": up},
+			"trending_down": map[string]interface{}{"atr_multiple": down},
+			"ranging":       map[string]interface{}{"atr_multiple": ranging},
+		},
+	}
+}
+
 func liqValidationConfig(stopPct, leverage float64, mode, marginMode string) Config {
 	sc := StrategyConfig{
 		ID:             "hl-eth",
