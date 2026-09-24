@@ -780,7 +780,7 @@ func applyTrailingStopUpdateResult(s *StrategyState, symbol, expectedSide string
 			logger.Info("Trailing SL trigger updated oid=%d @ $%.4f", slUpdate.StopLossOID, slUpdate.StopLossTriggerPx)
 		}
 	case slUpdate.StopLossOutcomeUnknown && slUpdate.StopLossOldStillOpen && !slUpdate.CancelStopLossSucceeded:
-		if prevSLOID > 0 {
+		if prevSLOID > 0 && (slUpdate.StopLossTriggerPx > 0 || len(slUpdate.PrePlaceOpenOIDs) > 0) {
 			hlRememberUnreadableStop(symbol, prevSLOID, slUpdate.PrePlaceOpenOIDs, slUpdate.StopLossTriggerPx, placedQty)
 		}
 		if logger != nil {
@@ -918,11 +918,12 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 		}
 		return highWater, result, false
 	}
-	if result.CancelStopLossError != "" && result.StopLossOID > 0 {
+	if result.CancelStopLossError != "" && (result.StopLossOID > 0 || (result.StopLossFilledImmediately && result.StopLossTriggerPx > 0)) {
 		logger.Warn("Trailing SL cancel failed after the replacement was placed: %s", result.CancelStopLossError)
 		if currentOID > 0 && notifier != nil && notifier.HasBackends() {
-			msg := fmt.Sprintf("**HL TRAILING SL CANCEL FAILED** [%s] %s old trigger OID %d may still be resting while new trigger OID %d was placed. Error: %s",
-				sc.ID, symbol, currentOID, result.StopLossOID, result.CancelStopLossError)
+			newID := result.StopLossOID
+			msg := fmt.Sprintf("**HL TRAILING SL CANCEL FAILED** [%s] %s old trigger OID %d may still be resting while the replacement filled or rested (new OID %d). Error: %s",
+				sc.ID, symbol, currentOID, newID, result.CancelStopLossError)
 			hlStopReplaceNotifyOnce(sc.ID+"|cancel|"+symbol+"|"+strconv.FormatInt(currentOID, 10), notifier, msg)
 		}
 	}

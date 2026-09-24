@@ -631,8 +631,17 @@ func hlLiquidationClampReplace(candidate hlLiquidationAuditCandidate, clampedTri
 		if !released {
 			return &HyperliquidStopLossUpdateResult{StopLossOutcomeUnknown: true, StopLossOldStillOpen: true}, hlReplaceOutcomeUnknown
 		}
-		if adopted != nil {
+		if adopted != nil && !hlTriggerStrictlyTighter(candidate.Side, clampedTriggerPx, adopted.StopLossTriggerPx) {
 			return adopted, hlReplacePlaced
+		}
+		if adopted != nil {
+			oldOID := candidate.StopLossOID
+			if adopted.CancelStopLossError != "" {
+				msg := fmt.Sprintf("**HL STOP CANCEL FAILED** [%s] %s old trigger OID %d may still be resting while new trigger OID %d was placed. Error: %s",
+					candidate.StrategyID, candidate.Symbol, oldOID, adopted.StopLossOID, adopted.CancelStopLossError)
+				hlStopReplaceNotifyOnce(candidate.StrategyID+"|cancel|"+candidate.Symbol+"|"+strconv.FormatInt(oldOID, 10), notifier, msg)
+			}
+			candidate.StopLossOID = adopted.StopLossOID
 		}
 	}
 	unlock := lockHyperliquidTrailingUpdate(candidate.Symbol)
@@ -980,8 +989,8 @@ func runHyperliquidLiquidationAudit(
 			if outcome == hlReplaceFilled {
 				action = hlLiquidationActionExited
 			}
-			if result != nil && result.CancelStopLossError != "" && result.StopLossOID > 0 {
-				msg := fmt.Sprintf("**HL STOP CANCEL FAILED** [%s] %s old trigger OID %d may still be resting while new trigger OID %d was placed. Error: %s",
+			if result != nil && result.CancelStopLossError != "" && (result.StopLossOID > 0 || (result.StopLossFilledImmediately && result.StopLossTriggerPx > 0)) {
+				msg := fmt.Sprintf("**HL STOP CANCEL FAILED** [%s] %s old trigger OID %d may still be resting while the replacement filled or rested (new OID %d). Error: %s",
 					sc.ID, c.Symbol, c.StopLossOID, result.StopLossOID, result.CancelStopLossError)
 				hlStopReplaceNotifyOnce(sc.ID+"|cancel|"+c.Symbol+"|"+strconv.FormatInt(c.StopLossOID, 10), notifier, msg)
 			}

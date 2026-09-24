@@ -382,8 +382,8 @@ func rearmScalarStopAfterFailedClose(sc StrategyConfig, stratState *StrategyStat
 	if result != nil && result.StopLossOID > 0 {
 		logger.Info("Percentage SL re-armed after failed close for %s (qty=%.6f trigger=$%.4f)", symbol, slEffectiveQty, result.StopLossTriggerPx)
 	}
-	if result != nil && result.CancelStopLossError != "" && result.StopLossOID > 0 {
-		msg := fmt.Sprintf("**HL STOP CANCEL FAILED** [%s] %s old trigger OID %d may still be resting while new trigger OID %d was placed. Error: %s",
+	if result != nil && result.CancelStopLossError != "" && (result.StopLossOID > 0 || (result.StopLossFilledImmediately && result.StopLossTriggerPx > 0)) {
+		msg := fmt.Sprintf("**HL STOP CANCEL FAILED** [%s] %s old trigger OID %d may still be resting while the replacement filled or rested (new OID %d). Error: %s",
 			sc.ID, symbol, cancelOID, result.StopLossOID, result.CancelStopLossError)
 		hlStopReplaceNotifyOnce(sc.ID+"|cancel|"+symbol+"|"+strconv.FormatInt(cancelOID, 10), notifier, msg)
 	}
