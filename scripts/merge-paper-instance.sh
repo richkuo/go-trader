@@ -294,6 +294,7 @@ REFUSE_ON_DIFFERENCE = [
 DROPPED = [
     "status_port",
     "log_dir",
+    "log_level",
     "auto_update",
     "leaderboard_post_time",
     "leaderboard_summaries",

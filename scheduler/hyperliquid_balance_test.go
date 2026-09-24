@@ -14,6 +14,113 @@ import (
 	"time"
 )
 
+type mockNotifier struct {
+	mu         sync.Mutex
+	messages   []mockMessage
+	dms        []mockDM
+	askResp    string
+	askErr     error
+	closed     bool
+	failSendDM bool
+}
+
+type mockMessage struct {
+	channelID string
+	content   string
+}
+
+type mockDM struct {
+	userID  string
+	content string
+}
+
+func (m *mockNotifier) SendMessage(channelID string, content string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.messages = append(m.messages, mockMessage{channelID, content})
+	return nil
+}
+
+func (m *mockNotifier) SendDM(userID, content string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.failSendDM {
+		return fmt.Errorf("mock SendDM failed")
+	}
+	m.dms = append(m.dms, mockDM{userID, content})
+	return nil
+}
+
+func (m *mockNotifier) AskDM(userID, question string, timeout time.Duration) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.dms = append(m.dms, mockDM{userID, question})
+	return m.askResp, m.askErr
+}
+
+func (m *mockNotifier) Close() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.closed = true
+}
+
+const (
+	testPrimaryPx = 2000.0
+	testHedgePx   = 50000.0
+)
+
+func hedgeTestState(id string) *StrategyState {
+	return &StrategyState{
+		ID:        id,
+		Type:      "perps",
+		Platform:  "hyperliquid",
+		Cash:      10000,
+		Positions: map[string]*Position{},
+	}
+}
+
+func withHedge(sc StrategyConfig, h *HedgeConfig) StrategyConfig {
+	sc.Hedge = h
+	return sc
+}
+
+func hedgePerpsStrategy(id, coin string) StrategyConfig {
+	return StrategyConfig{
+		ID:       id,
+		Type:     "perps",
+		Platform: "hyperliquid",
+		Script:   "shared_scripts/check_hyperliquid.py",
+		Args:     []string{"--symbol", coin, "--mode", "live"},
+	}
+}
+
+type countingDMSender struct {
+	count int
+	last  string
+}
+
+func (c *countingDMSender) SendOwnerDM(s string) {
+	c.count++
+	c.last = s
+}
+
+func hedgeTestConfig() StrategyConfig {
+	return withHedge(hedgePerpsStrategy("eth-long", "ETH"), &HedgeConfig{
+		Enabled: true, Symbol: "BTC", Ratio: 1.0, Leverage: 3, MarginMode: "cross",
+	})
+}
+
+func primaryPos(qty float64, side string) *Position {
+	return &Position{Symbol: "ETH", Quantity: qty, AvgCost: testPrimaryPx, Side: side, Multiplier: 1, OwnerStrategyID: "eth-long"}
+}
+
+func hedgePos(qty float64, side string, basis float64) *Position {
+	return &Position{
+		Symbol: "BTC", Quantity: qty, InitialQuantity: qty, AvgCost: testHedgePx, Side: side,
+		Multiplier: 1, OwnerStrategyID: "eth-long", HedgeFor: "ETH", HedgePrimaryQtyBasis: basis,
+	}
+}
+
 func TestSyncHyperliquidLiveCapitalIsNoOp(t *testing.T) {
 	sc := &StrategyConfig{
 		ID:       "hl-btc",

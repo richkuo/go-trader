@@ -12,6 +12,19 @@ import (
 	"testing"
 )
 
+func readRawConfig(t *testing.T, path string) map[string]interface{} {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+	return raw
+}
+
 func TestNewFieldsSince(t *testing.T) {
 	cases := []int{0, 1, MinSupportedConfigVersion, CurrentConfigVersion, 999}
 	for _, version := range cases {

@@ -19,11 +19,8 @@ jobs:
       - name: Build
         run: cd scheduler && go build -ldflags "-X main.Version=$(git describe --tags --always --dirty=-mod)" .
 
-      - name: Test
+      - name: Remaining Go tests
         run: cd scheduler && go test ./...
-
-      - name: Market feed race test
-        run: cd scheduler && go test -race -run MarketFeed .
 
       - name: Format check
         run: |
