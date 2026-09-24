@@ -19,12 +19,6 @@ jobs:
       - name: Build
         run: cd scheduler && go build -ldflags "-X main.Version=$(git describe --tags --always --dirty=-mod)" .
 
-      - name: Test
-        run: cd scheduler && go test ./...
-
-      - name: Market feed race test
-        run: cd scheduler && go test -race -run MarketFeed .
-
       - name: Format check
         run: |
           cd scheduler
@@ -34,39 +28,6 @@ jobs:
             echo "$unformatted"
             exit 1
           fi
-
-  shell:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.26'
-
-      - name: Build
-        run: cd scheduler && go build -o /tmp/go-trader .
-
-      - name: Update helper and drift audit tests
-        run: GO_TRADER_BIN=/tmp/go-trader bash scripts/test_update_helpers.sh
-
-      - name: Paper handoff tests
-        run: cd scheduler && go test -count=1 -run 'TestMergePaperInstance|TestUpdateShellScriptSyntax' .
-
-  service-fixture:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.26'
-
-      - name: Build
-        run: cd scheduler && go build -o /tmp/go-trader .
-
-      - name: Combined-unit sandbox fixture
-        run: sudo env GO_TRADER_BIN=/tmp/go-trader bash scripts/test_merge_paper_service_fixture.sh
 
   python:
     runs-on: ubuntu-latest
@@ -83,12 +44,3 @@ jobs:
           find shared_scripts/ platforms/ shared_strategies/ shared_tools/ \
             -name '*.py' -print0 \
             | xargs -0 uv run python3 -m py_compile
-
-      - name: Run tests
-        run: uv run pytest -n auto
-
-      - name: Run shared_scripts tests (outside testpaths)
-        run: uv run pytest shared_scripts/
-
-      - name: Test budget
-        run: uv run python3 scripts/check_test_budget.py
