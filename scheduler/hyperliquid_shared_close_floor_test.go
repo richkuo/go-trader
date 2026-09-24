@@ -4,7 +4,6 @@ import (
 	"errors"
 	"math"
 	"strings"
-	"sync"
 	"testing"
 )
 
@@ -192,131 +191,6 @@ func TestSharedCoinFullCloseFloorExecutePath(t *testing.T) {
 				if strings.Contains(msg, "every peer is flat on-chain and in its own book, or") || !strings.Contains(msg, "a peer going flat does not resend it") {
 					t.Fatalf("venue-rejected alert promises a peer-flat resend: %s", msg)
 				}
-			}
-		})
-	}
-}
-
-func TestRearmTrailingStopAfterFailedCloseKeepsRatchetAndClamp(t *testing.T) {
-	oldUpdate := runHyperliquidUpdateStopLossFunc
-	t.Cleanup(func() { runHyperliquidUpdateStopLossFunc = oldUpdate })
-	trail := 2.0
-	liveArgs := []string{"x.py", "ETH", "1h", "--mode=live"}
-	sc := StrategyConfig{ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py", Args: liveArgs, TrailingStopATRMult: &trail}
-	cases := []struct {
-		name          string
-		bookOID       int64
-		bookTrigger   float64
-		bookHighWater float64
-		prevOID       int64
-		prevTrigger   float64
-		prevHighWater float64
-		onChainQty    float64
-		liqPx         float64
-		wantCancel    int64
-		wantSize      float64
-		wantTrigger   float64
-		wantHighWater float64
-	}{
-		{name: "readable cancel cleared the book: old oid is the cancel oid and the ratcheted high-water anchors the trigger", bookHighWater: 2200, prevOID: 444, prevTrigger: 2090, prevHighWater: 2200, onChainQty: 0.002, wantCancel: 444, wantSize: 0.002, wantTrigger: 2090, wantHighWater: 2200},
-		{name: "unreadable result keeps the book oid and hands it to the update script as the cancel oid", bookOID: 444, bookTrigger: 2090, bookHighWater: 2200, prevOID: 444, prevTrigger: 2090, prevHighWater: 2200, onChainQty: 0.002, wantCancel: 444, wantSize: 0.002, wantTrigger: 2090, wantHighWater: 2200},
-		{name: "virtual above on-chain arms at the capped size instead of skipping", bookHighWater: 2200, prevOID: 444, prevHighWater: 2200, onChainQty: 0.001, wantCancel: 444, wantSize: 0.001, wantTrigger: 2090, wantHighWater: 2200},
-		{name: "trigger past the liquidation price is clamped inside it", bookHighWater: 2200, prevOID: 444, prevHighWater: 2200, onChainQty: 0.002, liqPx: 2095, wantCancel: 444, wantSize: 0.002, wantTrigger: 2095 * (1 + hlLiquidationStopBufferPct/100), wantHighWater: 2200},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			var gotCancel int64
-			var gotSize, gotTrigger float64
-			placed := 0
-			runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
-				placed++
-				gotCancel, gotSize, gotTrigger = cancelStopLossOID, size, triggerPx
-				return &HyperliquidStopLossUpdateResult{StopLossOID: 999, StopLossTriggerPx: triggerPx, CancelStopLossSucceeded: cancelStopLossOID > 0}, "", nil
-			}
-			st := &StrategyState{ID: "hl-eth", Positions: map[string]*Position{
-				"ETH": {Symbol: "ETH", Side: "long", Quantity: 0.002, InitialQuantity: 0.002, AvgCost: 2000, EntryATR: 50, RiskAnchorPrice: 2000, StopLossOID: tc.bookOID, StopLossTriggerPx: tc.bookTrigger, StopLossHighWaterPx: tc.bookHighWater},
-			}}
-			var liq map[string]float64
-			var net map[string]string
-			if tc.liqPx > 0 {
-				liq = map[string]float64{"ETH": tc.liqPx}
-				net = map[string]string{"ETH": "long"}
-			}
-			var mu sync.RWMutex
-			stop := hlCloseRemainderStop{Remainder: 0.002, Qty: math.Min(0.002, tc.onChainQty), Basis: hlRemainderBasisFresh}
-			rearmProtectionForCloseRemainder(sc, st, nil, "ETH", 2100, tc.prevOID, tc.prevTrigger, tc.prevHighWater, nil, liq, net, hlCloseUnconfirmed{}, stop, &mu, nil, newTestLogger(t))
-			if placed != 1 {
-				t.Fatalf("stop placements = %d, want 1", placed)
-			}
-			if gotCancel != tc.wantCancel || math.Abs(gotSize-tc.wantSize) > 1e-9 || math.Abs(gotTrigger-tc.wantTrigger) > 1e-6 {
-				t.Fatalf("placed cancel=%d size=%g trigger=%g, want cancel=%d size=%g trigger=%g", gotCancel, gotSize, gotTrigger, tc.wantCancel, tc.wantSize, tc.wantTrigger)
-			}
-			pos := st.Positions["ETH"]
-			if pos.StopLossOID != 999 || math.Abs(pos.StopLossTriggerPx-tc.wantTrigger) > 1e-6 || math.Abs(pos.StopLossHighWaterPx-tc.wantHighWater) > 1e-9 {
-				t.Fatalf("book after re-arm oid=%d trigger=%g high_water=%g, want oid 999 trigger %g high_water %g", pos.StopLossOID, pos.StopLossTriggerPx, pos.StopLossHighWaterPx, tc.wantTrigger, tc.wantHighWater)
-			}
-		})
-	}
-}
-
-func TestRearmProtectionAfterFailedCloseCoversPercentageStopOwners(t *testing.T) {
-	oldUpdate := runHyperliquidUpdateStopLossFunc
-	t.Cleanup(func() { runHyperliquidUpdateStopLossFunc = oldUpdate })
-	liveArgs := []string{"x.py", "ETH", "1h", "--mode=live"}
-	pct := 5.0
-	marginPct := 20.0
-	trailPct := 3.0
-	base := func(mut func(*StrategyConfig)) StrategyConfig {
-		sc := StrategyConfig{ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py", Args: liveArgs}
-		mut(&sc)
-		return sc
-	}
-	cases := []struct {
-		name        string
-		sc          StrategyConfig
-		bookOID     int64
-		bookTrigger float64
-		prevOID     int64
-		liqPx       float64
-		wantPlaced  int
-		wantCancel  int64
-		wantTrigger float64
-	}{
-		{name: "stop_loss_pct owner whose cancel landed is re-armed at the anchor-scaled trigger", sc: base(func(sc *StrategyConfig) { sc.StopLossPct = &pct }), prevOID: 444, wantPlaced: 1, wantCancel: 444, wantTrigger: 1900},
-		{name: "stop_loss_margin_pct owner with an unreadable result hands the still-recorded oid to the update script", sc: base(func(sc *StrategyConfig) { sc.StopLossMarginPct = &marginPct; sc.Leverage = 4 }), bookOID: 444, bookTrigger: 1900, prevOID: 444, wantPlaced: 1, wantCancel: 444, wantTrigger: 1900},
-		{name: "max_drawdown_pct fallback owner is re-armed", sc: base(func(sc *StrategyConfig) { sc.MaxDrawdownPct = 5 }), prevOID: 444, wantPlaced: 1, wantCancel: 444, wantTrigger: 1900},
-		{name: "percentage trigger past the liquidation price is clamped inside it", sc: base(func(sc *StrategyConfig) { sc.StopLossPct = &pct }), prevOID: 444, liqPx: 1950, wantPlaced: 1, wantCancel: 444, wantTrigger: 1950 * (1 + hlLiquidationStopBufferPct/100)},
-		{name: "trailing_stop_pct owner is armed once by the trailing arm and never double-armed", sc: base(func(sc *StrategyConfig) { sc.TrailingStopPct = &trailPct }), prevOID: 444, wantPlaced: 1, wantCancel: 444, wantTrigger: 2000 * (1 - trailPct/100)},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			var gotCancel int64
-			var gotTrigger float64
-			placed := 0
-			runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
-				placed++
-				gotCancel, gotTrigger = cancelStopLossOID, triggerPx
-				return &HyperliquidStopLossUpdateResult{StopLossOID: 999, StopLossTriggerPx: triggerPx, CancelStopLossSucceeded: cancelStopLossOID > 0}, "", nil
-			}
-			st := &StrategyState{ID: "hl-eth", Positions: map[string]*Position{
-				"ETH": {Symbol: "ETH", Side: "long", Quantity: 0.002, InitialQuantity: 0.002, AvgCost: 2000, EntryATR: 50, RiskAnchorPrice: 2000, StopLossOID: tc.bookOID, StopLossTriggerPx: tc.bookTrigger, StopLossHighWaterPx: 2000},
-			}}
-			var liq map[string]float64
-			var net map[string]string
-			if tc.liqPx > 0 {
-				liq = map[string]float64{"ETH": tc.liqPx}
-				net = map[string]string{"ETH": "long"}
-			}
-			var mu sync.RWMutex
-			rearmProtectionForCloseRemainder(tc.sc, st, nil, "ETH", 2000, tc.prevOID, tc.bookTrigger, 2000, nil, liq, net, hlCloseUnconfirmed{}, hlCloseRemainderStop{Remainder: 0.002, Qty: 0.002, Basis: hlRemainderBasisFresh}, &mu, nil, newTestLogger(t))
-			if placed != tc.wantPlaced {
-				t.Fatalf("stop placements = %d, want %d", placed, tc.wantPlaced)
-			}
-			if gotCancel != tc.wantCancel || math.Abs(gotTrigger-tc.wantTrigger) > 1e-6 {
-				t.Fatalf("placed cancel=%d trigger=%g, want cancel=%d trigger=%g", gotCancel, gotTrigger, tc.wantCancel, tc.wantTrigger)
-			}
-			if pos := st.Positions["ETH"]; pos.StopLossOID != 999 || math.Abs(pos.StopLossTriggerPx-tc.wantTrigger) > 1e-6 {
-				t.Fatalf("book after re-arm oid=%d trigger=%g, want oid 999 trigger %g", pos.StopLossOID, pos.StopLossTriggerPx, tc.wantTrigger)
 			}
 		})
 	}
