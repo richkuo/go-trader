@@ -1,0 +1,92 @@
+import importlib.util
+import os
+import re
+import sys
+
+import pytest
+
+
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+_CLOSE_DIR = os.path.join(_REPO_ROOT, "shared_strategies", "close")
+_HYPERLIQUID_PROTECTION_GO = os.path.join(
+    _REPO_ROOT, "scheduler", "hyperliquid_protection.go"
+)
+
+EXPECTED_LADDER = (
+    (1.5, 0.40),
+    (3.0, 0.80),
+    (5.0, 1.00),
+)
+
+
+def _load_close_module(filename: str, attr: str, mod_name: str):
+    for p in (_REPO_ROOT, _CLOSE_DIR):
+        if p not in sys.path:
+            sys.path.insert(0, p)
+    path = os.path.join(_CLOSE_DIR, filename)
+    spec = importlib.util.spec_from_file_location(mod_name, path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[mod_name] = mod
+    spec.loader.exec_module(mod)
+    return getattr(mod, attr)
+
+
+def _python_tiered_tp_atr_ladder():
+    raw = _load_close_module(
+        "tiered_tp_atr.py", "DEFAULT_TIERS", "_ladder_probe_tiered_tp_atr"
+    )
+    return tuple(
+        (float(t["atr_multiple"]), float(t["close_fraction"])) for t in raw
+    )
+
+
+def _python_scalar_tp_ladder():
+    raw = _load_close_module(
+        "post_tp_sl.py", "_DEFAULT_SCALAR_TP_TIERS", "_ladder_probe_post_tp_sl"
+    )
+    return tuple((float(m), float(f)) for m, f in raw)
+
+
+def _go_default_protection_tiers():
+    text = open(_HYPERLIQUID_PROTECTION_GO, encoding="utf-8").read()
+    body = re.search(
+        r"func defaultHLProtectionTiers\(\)\s*\[\]hlProtectionTier\s*\{(.*?)\n\}",
+        text,
+        re.DOTALL,
+    )
+    assert body, "defaultHLProtectionTiers() not found in hyperliquid_protection.go"
+    rows = re.findall(
+        r"\{\s*Multiple:\s*([0-9.]+),\s*Fraction:\s*([0-9.]+)\s*\}", body.group(1)
+    )
+    assert rows, "no {Multiple:..,Fraction:..} rows parsed from the Go ladder"
+    return tuple((float(m), float(f)) for m, f in rows)
+
+
+_LADDERS = {
+    "go_default_protection": _go_default_protection_tiers,
+    "python_scalar_tp": _python_scalar_tp_ladder,
+    "python_tiered_tp_atr": _python_tiered_tp_atr_ladder,
+}
+
+
+@pytest.mark.parametrize("name", sorted(_LADDERS))
+def test_default_tier_ladders_match_expected(name):
+    assert _LADDERS[name]() == EXPECTED_LADDER, (
+        "Default tier ladder desync — defaultHLProtectionTiers() (Go), "
+        "DEFAULT_TIERS (tiered_tp_atr.py) and _DEFAULT_SCALAR_TP_TIERS "
+        "(post_tp_sl.py) MUST be updated together."
+    )
+
+
+@pytest.mark.parametrize("name", sorted(_LADDERS))
+def test_final_tier_closes_everything_remaining(name):
+    assert _LADDERS[name]()[-1][1] == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize("name", sorted(_LADDERS))
+def test_tier_multiples_and_fractions_are_monotonic(name):
+    ladder = _LADDERS[name]()
+    mults = [m for m, _ in ladder]
+    fracs = [f for _, f in ladder]
+    assert mults == sorted(mults) and len(set(mults)) == len(mults)
+    assert fracs == sorted(fracs)
