@@ -261,6 +261,7 @@ type Config struct {
 	ConfigVersion            int                        `json:"config_version,omitempty"`
 	IntervalSeconds          int                        `json:"interval_seconds"`
 	LogDir                   string                     `json:"log_dir"`
+	LogLevel                 string                     `json:"log_level,omitempty"`
 	DBFile                   string                     `json:"db_file,omitempty"`
 	PaperDBFile              string                     `json:"paper_db_file,omitempty"`
 	PaperSources             []PaperSourceConfig        `json:"paper_sources,omitempty"`
@@ -2167,6 +2168,9 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 	}
 
 	if _, err := ParseAlertThrottleInterval(cfg.AlertThrottleInterval); err != nil {
+		errs = append(errs, err.Error())
+	}
+	if _, err := parseLogLevel(cfg.LogLevel); err != nil {
 		errs = append(errs, err.Error())
 	}
 	if _, err := ParseKillSwitchResetDMTimeout(cfg.KillSwitchResetDMTimeout); err != nil {

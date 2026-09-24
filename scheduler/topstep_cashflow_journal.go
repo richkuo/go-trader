@@ -227,6 +227,6 @@ func logTopStepCashflowJournalShadow(driftResults []sharedWalletDriftResult, key
 	case !rec.Usable:
 		state = "shadow-pending (no usable reading this cycle)"
 	}
-	fmt.Printf("[topstep-cashflow-journal] %s: expected_equity $%.2f vs equity $%.2f → journal_drift $%+.4f (settled Σ $%+.2f, ΔuPnL $%+.2f); display %s; %s — SHADOW, no alarm\n",
+	logOnChangef("topstep-cashflow-journal\x00"+sharedWalletKeyLabel(key), state, "[topstep-cashflow-journal] %s: expected_equity $%.2f vs equity $%.2f → journal_drift $%+.4f (settled Σ $%+.2f, ΔuPnL $%+.2f); display %s; %s — SHADOW, no alarm\n",
 		sharedWalletKeyLabel(key), rec.ExpectedEquity, rec.AccountValue, rec.Drift, rec.SettledSum, rec.DeltaUPnL, splitNote, state)
 }

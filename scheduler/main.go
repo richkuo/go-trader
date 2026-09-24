@@ -110,11 +110,16 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Failed to apply alert throttle interval: %v\n", err)
 		os.Exit(1)
 	}
+	if err := applyLogLevelFromConfig(cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to apply log level: %v\n", err)
+		os.Exit(1)
+	}
 	if err := applyKillSwitchResetDMTimeoutFromConfig(cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to apply kill-switch reset DM timeout: %v\n", err)
 		os.Exit(1)
 	}
 	fmt.Printf("Loaded config: %d strategies, interval=%ds\n", len(cfg.Strategies), cfg.IntervalSeconds)
+	fmt.Println(logLevelStartupLine())
 
 	setDirectionalCertStore(LoadDirectionalCertSetFailClosed(directionalCertPath(), func(f string, a ...interface{}) {
 		fmt.Fprintf(os.Stderr, f+"\n", a...)
@@ -833,7 +838,7 @@ func main() {
 			}
 		}
 
-		fmt.Printf("\n=== Cycle %d starting at %s (%d/%d strategies due) ===\n",
+		logDebugf("\n=== Cycle %d starting at %s (%d/%d strategies due) ===\n",
 			cycle, cycleStart.UTC().Format("2006-01-02 15:04:05 UTC"),
 			len(dueStrategies), len(cfg.Strategies))
 
@@ -848,7 +853,9 @@ func main() {
 			evalID := cycleEvaluationID(evaluationMarks, cycle)
 			feedCtx.Snapshot = sealCycleMarketSnapshot(shutdownReadOnlyCtx, feedOwner, cycleFeedReqs, evalID, time.Now().UTC())
 			globalMarketFeedStatus.setSnapshotID(evalID)
-			fmt.Println(marketSnapshotLogLine(feedCtx.Snapshot, cycleFeedReqs))
+			if line := marketSnapshotLogLine(feedCtx.Snapshot, cycleFeedReqs); line != "" {
+				logOnChangef("feed-snapshot", marketSnapshotHealth(feedCtx.Snapshot, cycleFeedReqs), "%s\n", line)
+			}
 			for _, line := range formatFeedAlerts(feedOwner.DrainAlerts()) {
 				fmt.Println(line)
 			}
@@ -937,12 +944,8 @@ func main() {
 				}
 			}
 		}
-		if len(prices) > 0 {
-			fmt.Printf("Prices: ")
-			for sym, price := range prices {
-				fmt.Printf("%s=$%.2f ", sym, price)
-			}
-			fmt.Println()
+		if len(prices) > 0 && debugLogging() {
+			fmt.Println(formatPricesLogLine(prices))
 		}
 
 		var totalPV float64
@@ -2118,7 +2121,8 @@ func main() {
 						hlProfileActive, hlProfileNext = resolveRegimeProfile(sc.RegimeProfileAllocation, palLabel, palBarTime, hlProfileState, hlPosQty, hlPosCtx.Profile)
 						applyRegimeProfileParams(&sc, sc.RegimeProfileAllocation, hlProfileActive)
 						hlProfileResolved = true
-						logger.Info("Regime profile: window=%s label=%s active=%q (pending=%q seen=%d)",
+						logger.InfoOnChange("regime-profile", fmt.Sprintf("%s|%s|%s|%s|%d", sc.RegimeProfileAllocation.Window, palLabel, hlProfileActive, hlProfileNext.PendingProfile, hlProfileNext.PendingBarsSeen),
+							"Regime profile: window=%s label=%s active=%q (pending=%q seen=%d)",
 							sc.RegimeProfileAllocation.Window, palLabel, hlProfileActive, hlProfileNext.PendingProfile, hlProfileNext.PendingBarsSeen)
 					}
 					if sc.Platform == "okx" {
@@ -2871,10 +2875,12 @@ func main() {
 				if cashReconcile {
 					statusLine += " | CASH RECONCILE REQUIRED"
 				}
-				if marker := hurstGateStatusMarkerForStrategy(sc, stratState, cfg.Regime, &mu); marker != "" {
+				marker := hurstGateStatusMarkerForStrategy(sc, stratState, cfg.Regime, &mu)
+				if marker != "" {
 					statusLine += " | " + marker
 				}
-				logger.Info("%s", statusLine)
+				statusChanged := logger.Changed("status", fmt.Sprintf("%d|%s|%t|%s", posCount, regimeLabel, cashReconcile, marker))
+				logger.InfoOrDebug(trades > 0 || statusChanged, "%s", statusLine)
 
 				logger.Close()
 				markStrategyEvaluated(sc, websocketFeed, evaluationMarks, lastRun, lastEvaluated, time.Now())
@@ -3198,10 +3204,11 @@ func runSpotCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionC
 	} else if len(refsArgs) > 0 {
 		args = append(args, refsArgs...)
 	}
-	logger.Info("Running: python3 %s %v", sc.Script, args)
+	logger.Running(sc.Script, args)
 
 	result, stderr, err := RunSpotCheck(sc.Script, args)
 	if err != nil {
+		logger.RunningOnFailure(sc.Script, args)
 		logger.Error("Script failed: %v", err)
 		if stderr != "" {
 			logger.Error("stderr: %s", stderr)
@@ -3209,11 +3216,10 @@ func runSpotCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionC
 		notifyScriptFailure(notifier, sc, scriptFailureCrash, err.Error())
 		return nil, "", 0, false
 	}
-	if stderr != "" {
-		logger.Info("stderr: %s", stderr)
-	}
+	logger.ScriptStderr(stderr)
 
 	if result.Error != "" {
+		logger.RunningOnFailure(sc.Script, args)
 		logger.Error("Script returned error: %s", result.Error)
 		notifyScriptFailure(notifier, sc, scriptFailureError, result.Error)
 		return nil, "", 0, false
@@ -3226,7 +3232,7 @@ func runSpotCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionC
 	} else if result.Signal == -1 {
 		signalStr = "SELL"
 	}
-	logger.Info("Signal: %s | %s @ $%.2f", signalStr, result.Symbol, result.Price)
+	logger.InfoOrDebug(result.Signal != 0 || result.CloseFraction > 0, "Signal: %s | %s @ $%.2f", signalStr, result.Symbol, result.Price)
 
 	price := result.Price
 	if price <= 0 {
@@ -3327,10 +3333,11 @@ func runOptionsCheck(sc StrategyConfig, posJSON string, notifier *MultiNotifier,
 	if raw, ok := globalRegimeStore.InjectionJSONForStrategy(sc, nil); ok {
 		args = append(args, "--regime-payload-json="+raw)
 	}
-	logger.Info("Running: python3 %s %v", sc.Script, args)
+	logger.Running(sc.Script, args)
 
 	result, stderr, err := RunOptionsCheckWithStdin(sc.Script, args, posJSON)
 	if err != nil {
+		logger.RunningOnFailure(sc.Script, args)
 		logger.Error("Script failed: %v", err)
 		if stderr != "" {
 			logger.Error("stderr: %s", stderr)
@@ -3338,11 +3345,10 @@ func runOptionsCheck(sc StrategyConfig, posJSON string, notifier *MultiNotifier,
 		notifyScriptFailure(notifier, sc, scriptFailureCrash, err.Error())
 		return nil, "", false
 	}
-	if stderr != "" {
-		logger.Info("stderr: %s", stderr)
-	}
+	logger.ScriptStderr(stderr)
 
 	if result.Error != "" {
+		logger.RunningOnFailure(sc.Script, args)
 		logger.Error("Script returned error: %s", result.Error)
 		notifyScriptFailure(notifier, sc, scriptFailureError, result.Error)
 		return nil, "", false
@@ -3355,7 +3361,7 @@ func runOptionsCheck(sc StrategyConfig, posJSON string, notifier *MultiNotifier,
 	} else if result.Signal == -1 {
 		signalStr = "BEARISH"
 	}
-	logger.Info("Signal: %s | %s spot=$%.2f | IV rank=%.1f | %d actions",
+	logger.InfoOrDebug(result.Signal != 0 || len(result.Actions) > 0, "Signal: %s | %s spot=$%.2f | IV rank=%.1f | %d actions",
 		signalStr, result.Underlying, result.SpotPrice, result.IVRank, len(result.Actions))
 
 	return result, signalStr, true
@@ -3573,7 +3579,7 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 	if marketStdin != nil {
 		args = append(args, marketStdinFlag)
 	}
-	logger.Info("Running: python3 %s %v", sc.Script, args)
+	logger.Running(sc.Script, args)
 
 	var result *HyperliquidResult
 	var stderr string
@@ -3589,6 +3595,9 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 		errMsg, result = err.Error(), nil
 	case result.Error != "":
 		errMsg, mode, result = result.Error, scriptFailureError, nil
+	}
+	if errMsg != "" {
+		logger.RunningOnFailure(sc.Script, args)
 	}
 	return finishHyperliquidCheck(sc, prices, posCtx, regime, notifier, logger, result, stderr, errMsg, mode)
 }
@@ -3618,9 +3627,7 @@ func finishHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCt
 		}
 		return nil, "", 0, false
 	}
-	if stderr != "" {
-		logger.Info("stderr: %s", stderr)
-	}
+	logger.ScriptStderr(stderr)
 	if result.Degraded == "" {
 		clearScriptFailure(notifier, *sc)
 	}
@@ -3636,7 +3643,8 @@ func finishHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCt
 	}
 	if entry, applied, legacyFallback := applyRegimeDirectionalPolicy(sc, currentDirRegime, posDirRegime, posCtx.Quantity, dirCertStates); applied {
 		regimeKey := effectiveRegimeForPolicy(currentDirRegime, posDirRegime, posCtx.Quantity)
-		logger.Info("Regime directional policy: regime=%s -> direction=%q invert_signal=%t",
+		logger.InfoOnChange("directional-policy", fmt.Sprintf("%s|%s|%t", regimeKey, entry.Direction, entry.InvertSignal),
+			"Regime directional policy: regime=%s -> direction=%q invert_signal=%t",
 			regimeKey, entry.Direction, entry.InvertSignal)
 		if legacyFallback {
 			if _, loaded := regimeDirectionalLegacyWarned.LoadOrStore(sc.ID, struct{}{}); !loaded {
@@ -3649,20 +3657,25 @@ func finishHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCt
 		divResult := applyRegimeDivergenceOverride(sc, payload, regime, posCtx.Quantity)
 		result.Divergence = divResult
 		if divResult.IsActive() && posCtx.Quantity <= 0 {
-			logger.Info("Regime divergence override: short=%s medium=%s -> direction=%q (was policy-resolved)",
+			logger.InfoOnChange("divergence", "override|"+divResult.ShortLabel+"|"+divResult.MediumLabel+"|"+divResult.OverrideDir,
+				"Regime divergence override: short=%s medium=%s -> direction=%q (was policy-resolved)",
 				divResult.ShortLabel, divResult.MediumLabel, divResult.OverrideDir)
 		} else if divResult.Kind == DivergenceHard {
-			logger.Info("Regime divergence: hard divergence short=%s medium=%s (position open, holding direction)",
+			logger.InfoOnChange("divergence", "hard|"+divResult.ShortLabel+"|"+divResult.MediumLabel,
+				"Regime divergence: hard divergence short=%s medium=%s (position open, holding direction)",
 				divResult.ShortLabel, divResult.MediumLabel)
 		} else if divResult.Kind == DivergenceSoft {
-			logger.Info("Regime divergence: soft divergence short=%s medium=%s (no override)",
+			logger.InfoOnChange("divergence", "soft|"+divResult.ShortLabel+"|"+divResult.MediumLabel,
+				"Regime divergence: soft divergence short=%s medium=%s (no override)",
 				divResult.ShortLabel, divResult.MediumLabel)
+		} else {
+			logger.Changed("divergence", "none")
 		}
 	}
 	applySignalInversion(*sc, result, logger)
 
 	signalStr := signalLabel(result.Signal)
-	logger.Info("Signal: %s | %s @ $%s [%s]", signalStr, result.Symbol, formatSignalPrice(result.Price), result.Mode)
+	logger.InfoOrDebug(result.Signal != 0 || result.CloseFraction > 0, "Signal: %s | %s @ $%s [%s]", signalStr, result.Symbol, formatSignalPrice(result.Price), result.Mode)
 	if result.CloseGate != "" {
 		logger.Info("Venue close gate for %s: partial close rewritten to noop (%s); no order this cycle", result.Symbol, result.CloseGate)
 	}
@@ -4076,10 +4089,11 @@ func runTopStepCheck(sc StrategyConfig, prices map[string]float64, posCtx Positi
 	} else if len(refsArgs) > 0 {
 		args = append(args, refsArgs...)
 	}
-	logger.Info("Running: python3 %s %v", sc.Script, args)
+	logger.Running(sc.Script, args)
 
 	result, stderr, err := RunTopStepCheck(sc.Script, args)
 	if err != nil {
+		logger.RunningOnFailure(sc.Script, args)
 		logger.Error("Script failed: %v", err)
 		if stderr != "" {
 			logger.Error("stderr: %s", stderr)
@@ -4087,10 +4101,9 @@ func runTopStepCheck(sc StrategyConfig, prices map[string]float64, posCtx Positi
 		notifyScriptFailure(notifier, sc, scriptFailureCrash, err.Error())
 		return nil, "", 0, false
 	}
-	if stderr != "" {
-		logger.Info("stderr: %s", stderr)
-	}
+	logger.ScriptStderr(stderr)
 	if result.Error != "" {
+		logger.RunningOnFailure(sc.Script, args)
 		logger.Error("Script returned error: %s", result.Error)
 		notifyScriptFailure(notifier, sc, scriptFailureError, result.Error)
 		return nil, "", 0, false
@@ -4098,9 +4111,10 @@ func runTopStepCheck(sc StrategyConfig, prices map[string]float64, posCtx Positi
 	clearScriptFailure(notifier, sc)
 
 	if !result.MarketOpen {
-		logger.Info("Market closed for %s, skipping", result.Symbol)
+		logger.InfoOnChange("market", "closed", "Market closed for %s, skipping", result.Symbol)
 		return nil, "", 0, false
 	}
+	logger.Changed("market", "open")
 
 	signalStr := "HOLD"
 	if result.Signal == 1 {
@@ -4108,7 +4122,7 @@ func runTopStepCheck(sc StrategyConfig, prices map[string]float64, posCtx Positi
 	} else if result.Signal == -1 {
 		signalStr = "SELL"
 	}
-	logger.Info("Signal: %s | %s @ $%.2f [%s]", signalStr, result.Symbol, result.Price, result.Mode)
+	logger.InfoOrDebug(result.Signal != 0 || result.CloseFraction > 0, "Signal: %s | %s @ $%.2f [%s]", signalStr, result.Symbol, result.Price, result.Mode)
 
 	price := result.Price
 	if price <= 0 {
@@ -4267,10 +4281,11 @@ func runRobinhoodCheck(sc StrategyConfig, prices map[string]float64, posCtx Posi
 	} else if len(refsArgs) > 0 {
 		args = append(args, refsArgs...)
 	}
-	logger.Info("Running: python3 %s %v", sc.Script, args)
+	logger.Running(sc.Script, args)
 
 	result, stderr, err := RunRobinhoodCheck(sc.Script, args)
 	if err != nil {
+		logger.RunningOnFailure(sc.Script, args)
 		logger.Error("Script failed: %v", err)
 		if stderr != "" {
 			logger.Error("stderr: %s", stderr)
@@ -4278,10 +4293,9 @@ func runRobinhoodCheck(sc StrategyConfig, prices map[string]float64, posCtx Posi
 		notifyScriptFailure(notifier, sc, scriptFailureCrash, err.Error())
 		return nil, "", 0, false
 	}
-	if stderr != "" {
-		logger.Info("stderr: %s", stderr)
-	}
+	logger.ScriptStderr(stderr)
 	if result.Error != "" {
+		logger.RunningOnFailure(sc.Script, args)
 		logger.Error("Script returned error: %s", result.Error)
 		notifyScriptFailure(notifier, sc, scriptFailureError, result.Error)
 		return nil, "", 0, false
@@ -4294,7 +4308,7 @@ func runRobinhoodCheck(sc StrategyConfig, prices map[string]float64, posCtx Posi
 	} else if result.Signal == -1 {
 		signalStr = "SELL"
 	}
-	logger.Info("Signal: %s | %s @ $%.2f [%s]", signalStr, result.Symbol, result.Price, result.Mode)
+	logger.InfoOrDebug(result.Signal != 0 || result.CloseFraction > 0, "Signal: %s | %s @ $%.2f [%s]", signalStr, result.Symbol, result.Price, result.Mode)
 
 	price := result.Price
 	if price <= 0 {
@@ -4447,10 +4461,11 @@ func runOKXCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCt
 	} else if len(refsArgs) > 0 {
 		args = append(args, refsArgs...)
 	}
-	logger.Info("Running: python3 %s %v", sc.Script, args)
+	logger.Running(sc.Script, args)
 
 	result, stderr, err := RunOKXCheck(sc.Script, args)
 	if err != nil {
+		logger.RunningOnFailure(sc.Script, args)
 		logger.Error("Script failed: %v", err)
 		if stderr != "" {
 			logger.Error("stderr: %s", stderr)
@@ -4458,10 +4473,9 @@ func runOKXCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCt
 		notifyScriptFailure(notifier, sc, scriptFailureCrash, err.Error())
 		return nil, "", 0, false
 	}
-	if stderr != "" {
-		logger.Info("stderr: %s", stderr)
-	}
+	logger.ScriptStderr(stderr)
 	if result.Error != "" {
+		logger.RunningOnFailure(sc.Script, args)
 		logger.Error("Script returned error: %s", result.Error)
 		notifyScriptFailure(notifier, sc, scriptFailureError, result.Error)
 		return nil, "", 0, false
@@ -4474,7 +4488,7 @@ func runOKXCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCt
 	} else if result.Signal == -1 {
 		signalStr = "SELL"
 	}
-	logger.Info("Signal: %s | %s @ $%.2f [%s]", signalStr, result.Symbol, result.Price, result.Mode)
+	logger.InfoOrDebug(result.Signal != 0 || result.CloseFraction > 0, "Signal: %s | %s @ $%.2f [%s]", signalStr, result.Symbol, result.Price, result.Mode)
 
 	price := result.Price
 	if price <= 0 {

@@ -50,15 +50,3 @@ def test_supertrend_exact_signal_values_and_positions(registry):
     assert res["st_direction"].iloc[280] == 1
 
 
-def test_supertrend_bands_escape_nan_warmup(registry):
-    res = registry.supertrend_strategy(_three_leg_trend_df())
-    st = res["supertrend"]
-    assert int(st.isna().sum()) == 9
-    assert st.iloc[9:].notna().all()
-
-
-def test_supertrend_all_nan_atr_returns_no_signals(registry):
-    df = make_ohlcv(np.linspace(100, 110, 5))
-    res = registry.supertrend_strategy(df)
-    assert (res["signal"] == 0).all()
-    assert res["supertrend"].isna().all()

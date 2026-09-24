@@ -476,7 +476,9 @@ func runHyperliquidBatchGroups(inputs []hlBatchGroupInput, cfg *Config, notifier
 			logf("[WARN] hl-batch %s: request is %d bytes, over the %d-byte cap; members fall back to their own sealed-snapshot checks", in.Key, len(stdin), marketPayloadMaxBytes)
 			continue
 		}
-		logf("[INFO] hl-batch %s: %d strategies in one call (%s)", in.Key, len(in.Members), strings.Join(in.MemberIDsOrdered(), ", "))
+		if debugLogging() {
+			logf("[INFO] hl-batch %s: %d strategies in one call (%s)", in.Key, len(in.Members), strings.Join(in.MemberIDsOrdered(), ", "))
+		}
 		started := time.Now()
 		out, stderr, err := runHyperliquidBatchCheckFn(hyperliquidCheckScript, args, stdin)
 		elapsed := time.Since(started)
@@ -493,8 +495,8 @@ func runHyperliquidBatchGroups(inputs []hlBatchGroupInput, cfg *Config, notifier
 			continue
 		}
 		drift := hlBatchApplySlots(results, in, fingerprints, out, stderr, logf)
-		if stderr != "" {
-			logf("[INFO] hl-batch %s: stderr: %s", in.Key, stderr)
+		if text, show, _ := scriptStderrLogText(stderr); show {
+			logf("[INFO] hl-batch %s: stderr: %s", in.Key, text)
 		}
 		if drift > 0 {
 			msg := fmt.Sprintf("batch response accounted for %d of %d strategies; the rest ran their own checks",
@@ -510,7 +512,9 @@ func runHyperliquidBatchGroups(inputs []hlBatchGroupInput, cfg *Config, notifier
 				logf("[INFO] hl-batch %s: shared state recovered; batching resumed", in.Key)
 			}
 		}
-		logf("[INFO] hl-batch %s: %d slots returned in %s", in.Key, len(out.Results), elapsed.Round(time.Millisecond))
+		if debugLogging() {
+			logf("[INFO] hl-batch %s: %d slots returned in %s", in.Key, len(out.Results), elapsed.Round(time.Millisecond))
+		}
 	}
 	return results
 }

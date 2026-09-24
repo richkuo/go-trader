@@ -11,16 +11,6 @@ import (
 	"time"
 )
 
-func tieredTPCloseStrategy() *StrategyRef {
-	return &StrategyRef{Name: "tiered_tp_atr", Params: map[string]interface{}{
-		"tp_tiers": []interface{}{
-			map[string]interface{}{"atr_multiple": 1.0, "close_fraction": 0.4},
-			map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 0.8},
-			map[string]interface{}{"atr_multiple": 3.0, "close_fraction": 1.0},
-		},
-	}}
-}
-
 func TestClassifyManualCloseTPTiers(t *testing.T) {
 	requested := []int64{5150, 7001, 7002, 7003}
 	cases := []struct {

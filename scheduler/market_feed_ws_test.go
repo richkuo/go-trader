@@ -7,11 +7,46 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/gorilla/websocket"
 )
+
+const testFeedIntervalMs int64 = 3_600_000
+
+func testFeedKey() marketFeedKey {
+	return marketFeedKey{Host: "https://api.hyperliquid.xyz", Namespace: feedNamespacePerps, Symbol: "BTC", Timeframe: "1h"}
+}
+
+func testRawBar(openMs int64, close float64) hlCandleRaw {
+	return hlCandleRaw{
+		OpenMs:   openMs,
+		CloseMs:  openMs + testFeedIntervalMs - 1,
+		HasClose: true,
+		Open:     close - 1,
+		High:     close + 2,
+		Low:      close - 3,
+		Close:    close,
+		Volume:   10,
+	}
+}
+
+func testRawSeries(startOpen int64, n int) []hlCandleRaw {
+	out := make([]hlCandleRaw, 0, n)
+	for i := 0; i < n; i++ {
+		out = append(out, testRawBar(startOpen+int64(i)*testFeedIntervalMs, 100+float64(i)))
+	}
+	return out
+}
+
+func resetShutdownState(t *testing.T) {
+	t.Helper()
+	shutdownDraining = atomic.Bool{}
+	sideEffectWG = sync.WaitGroup{}
+	initShutdownContexts()
+}
 
 type feedSocketServer struct {
 	server   *httptest.Server

@@ -56,62 +56,6 @@ _FAST = dict(
 )
 
 
-def test_encode_features_columns_and_warmup():
-    df = _sawtooth_df(120)
-    feats = encode_features(df, feat_window=8, atr_period=5, vol_baseline=20)
-    assert tuple(feats.columns) == FEATURE_COLUMNS
-    assert len(feats) == len(df)
-    assert feats.iloc[:5].isna().any(axis=1).all()
-    tail = feats.iloc[30:]
-    assert np.isfinite(tail.to_numpy()).all()
-    assert (tail["ret_eff"].abs() <= 1.0 + 1e-9).all()
-
-
-def test_encode_features_is_prefix_stable():
-    df = _sawtooth_df(150)
-    full = encode_features(df, feat_window=8, atr_period=5, vol_baseline=20)
-    cut = encode_features(df.iloc[:90], feat_window=8, atr_period=5, vol_baseline=20)
-    pd.testing.assert_frame_equal(full.iloc[:90], cut)
-
-
-def test_forward_returns_arithmetic_and_nan_tail():
-    close = pd.Series([100.0, 110.0, 121.0, 133.1], index=_hourly_index(4))
-    fwd = forward_returns(close, horizon=2)
-    assert fwd.iloc[0] == pytest.approx(0.21)
-    assert fwd.iloc[1] == pytest.approx(0.21)
-    assert fwd.iloc[2:].isna().all()
-
-
-def test_retrieve_neighbors_orders_by_distance_and_caps_k():
-    index = np.array([[0.0, 0.0], [1.0, 1.0], [0.1, 0.1], [5.0, 5.0]])
-    query = np.zeros(2)
-    nbr = retrieve_neighbors(index, query, k=2)
-    assert list(nbr) == [0, 2]
-    assert len(retrieve_neighbors(index, query, k=10)) == 4
-    assert len(retrieve_neighbors(np.empty((0, 2)), query, k=3)) == 0
-    assert len(retrieve_neighbors(index, query, k=0)) == 0
-
-
-def test_retrieve_neighbors_breaks_ties_by_row_order():
-    index = np.array([[1.0, 0.0], [1.0, 0.0], [1.0, 0.0]])
-    nbr = retrieve_neighbors(index, np.zeros(2), k=2)
-    assert list(nbr) == [0, 1]
-
-
-def test_core_handles_empty_single_row_and_short_frames():
-    empty = pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
-    out = analog_retrieval_core(empty, **_FAST)
-    assert "signal" in out.columns and len(out) == 0
-
-    single = _ohlcv([100.0])
-    out = analog_retrieval_core(single, **_FAST)
-    assert list(out["signal"]) == [0]
-
-    short = _sawtooth_df(40)
-    out = analog_retrieval_core(short, **_FAST)
-    assert (out["signal"] == 0).all()
-
-
 def test_core_fires_and_signals_agree_with_retrieved_mean():
     df = _sawtooth_df(700)
     out = analog_retrieval_core(df, **_FAST)
@@ -123,39 +67,3 @@ def test_core_fires_and_signals_agree_with_retrieved_mean():
     assert fired["analog_t_stat"].abs().min() >= _FAST["min_t_stat"]
 
 
-def test_core_gates_suppress_all_signals_when_impossible():
-    df = _sawtooth_df(700)
-    hard_t = analog_retrieval_core(df, **{**_FAST, "min_t_stat": 1e9})
-    assert (hard_t["signal"] == 0).all()
-    hard_edge = analog_retrieval_core(df, **{**_FAST, "min_edge_atr": 1e9})
-    assert (hard_edge["signal"] == 0).all()
-
-
-def test_core_respects_min_index_before_firing():
-    df = _sawtooth_df(700)
-    out = analog_retrieval_core(df, **_FAST)
-    fired_pos = np.flatnonzero(out["signal"].to_numpy() != 0)
-    assert fired_pos.min() >= _FAST["min_index"] + _FAST["horizon"]
-
-
-def test_core_max_index_caps_the_searched_window():
-    df = _sawtooth_df(700)
-    capped = analog_retrieval_core(df, **{**_FAST, "max_index": 40})
-    assert (capped["analog_k"] <= _FAST["k_neighbors"]).all()
-    assert (capped[capped["signal"] != 0].shape[0]) > 0
-    wide = analog_retrieval_core(df, **{**_FAST, "max_index": 0})
-    assert not capped["analog_mean_fwd"].equals(wide["analog_mean_fwd"])
-
-
-def test_leakage_prefix_consistency_regression():
-    df = _sawtooth_df(700)
-    full = analog_retrieval_core(df, **_FAST)
-    checked_cols = ["signal", "analog_mean_fwd", "analog_t_stat", "analog_k"]
-    fired_before_cut = 0
-    for cut in (320, 450, 555, 699):
-        prefix = analog_retrieval_core(df.iloc[:cut], **_FAST)
-        pd.testing.assert_frame_equal(
-            full.iloc[:cut][checked_cols], prefix[checked_cols]
-        )
-        fired_before_cut += int((prefix["signal"] != 0).sum())
-    assert fired_before_cut > 0

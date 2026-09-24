@@ -524,7 +524,7 @@ func applyCashflowJournalDriftBasis(results []sharedWalletDriftResult, key Share
 		basis = cashflowBasisJournal
 	}
 	cashflowJournalBases.record(label, basis)
-	fmt.Printf("[cashflow-journal] %s: expected_equity $%.2f vs accountValue $%.2f → journal_drift $%+.4f (settled Σ $%+.2f, ΔuPnL $%+.2f, closedPnl basis $%+.4f); trade-ledger %s; alarm %s\n",
+	logOnChangef("cashflow-journal\x00"+label, basis, "[cashflow-journal] %s: expected_equity $%.2f vs accountValue $%.2f → journal_drift $%+.4f (settled Σ $%+.2f, ΔuPnL $%+.2f, closedPnl basis $%+.4f); trade-ledger %s; alarm %s\n",
 		sharedWalletKeyLabel(key), rec.ExpectedEquity, rec.AccountValue, rec.Drift, rec.SettledSum, rec.DeltaUPnL, rec.ClosedPnlBasis, ledgerNote, switchNote)
 
 	if ledger == nil {

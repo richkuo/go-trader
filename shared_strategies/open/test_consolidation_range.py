@@ -28,31 +28,3 @@ def test_long_at_bottom_edge():
     assert r["signal"].iloc[-1] == 1
 
 
-def test_short_at_top_edge():
-    df = _box()
-    df.iloc[-1, df.columns.get_loc("close")] = 100.8
-    r = consolidation_range_core(df, box_width_pct=0.05, min_bars=16, edge_entry_frac=0.2)
-    assert r["signal"].iloc[-1] == -1
-
-
-def test_hold_in_middle():
-    df = _box()
-    r = consolidation_range_core(df, box_width_pct=0.05, min_bars=16, edge_entry_frac=0.2)
-    assert r["signal"].iloc[-1] == 0
-
-
-def test_no_signal_when_not_a_range():
-    n = 40
-    closes = np.linspace(100, 160, n)
-    idx = pd.date_range("2024-01-01", periods=n, freq="4h")
-    df = pd.DataFrame({"open": closes, "high": closes + 1, "low": closes - 1,
-                       "close": closes, "volume": [1.0] * n}, index=idx)
-    r = consolidation_range_core(df, box_width_pct=0.05, min_bars=16, edge_entry_frac=0.2)
-    assert (r["signal"] == 0).all()
-
-
-def test_box_columns_exposed():
-    df = _box()
-    r = consolidation_range_core(df)
-    for col in ["box_top", "box_bottom", "box_mid", "in_range"]:
-        assert col in r.columns

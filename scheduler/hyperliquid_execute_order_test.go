@@ -439,3 +439,26 @@ func TestHyperliquidSizedCloseFreshReadingAndBooking(t *testing.T) {
 		})
 	}
 }
+
+func confirmationTestStrategy(direction string) StrategyConfig {
+	return StrategyConfig{
+		ID: "hl-confirmation", Type: "perps", Platform: "hyperliquid", Symbol: "ETH",
+		Script: "shared_scripts/check_hyperliquid.py", Args: []string{"hold", "ETH", "1h", "--mode=live"},
+		Direction: direction, Leverage: 2, SizingLeverage: 1,
+	}
+}
+
+func unconfirmedExecuteResult() *HyperliquidExecuteResult {
+	return &HyperliquidExecuteResult{
+		Execution: &HyperliquidExecution{Fill: &HyperliquidFill{}},
+	}
+}
+
+func confirmationNotifier() (*MultiNotifier, *mockNotifier) {
+	backend := &mockNotifier{}
+	return NewMultiNotifier(notifierBackend{
+		notifier: backend,
+		channels: map[string]string{"alerts": "alerts"},
+		ownerID:  "owner",
+	}), backend
+}
