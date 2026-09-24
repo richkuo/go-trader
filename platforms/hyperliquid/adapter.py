@@ -770,6 +770,36 @@ class HyperliquidExchangeAdapter:
             symbol, is_buy, sz, limit_px, order_type, reduce_only=True
         )
 
+    def modify_stop_loss(
+        self,
+        symbol: str,
+        oid: int,
+        sz: float,
+        trigger_px: float,
+        is_buy: bool,
+        limit_slippage_pct: float = 5.0,
+    ) -> dict:
+        exchange = self._require_exchange("modify_stop_loss")
+        sz_decimals = self._sz_decimals(symbol)
+        sz = round(sz, sz_decimals)
+        if sz <= 0:
+            raise ValueError(f"Size rounded to zero for {symbol} (sz_decimals={sz_decimals})")
+        if trigger_px <= 0:
+            raise ValueError(f"trigger_px must be > 0, got {trigger_px}")
+        if oid <= 0:
+            raise ValueError(f"oid must be > 0, got {oid}")
+        slip = max(limit_slippage_pct, 0.0) / 100.0
+        if is_buy:
+            limit_px = trigger_px * (1.0 + slip)
+        else:
+            limit_px = trigger_px * (1.0 - slip)
+        limit_px = _round_perps_px(limit_px, sz_decimals)
+        trigger_px = _round_perps_px(trigger_px, sz_decimals)
+        order_type = {"trigger": {"triggerPx": trigger_px, "isMarket": True, "tpsl": "sl"}}
+        return exchange.modify_order(
+            int(oid), symbol, is_buy, sz, limit_px, order_type, reduce_only=True
+        )
+
     def place_take_profit_limit(
         self,
         symbol: str,

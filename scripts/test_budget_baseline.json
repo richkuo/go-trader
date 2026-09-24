@@ -54,7 +54,6 @@
     "shared_scripts/test_check_hyperliquid.py::test_single_tier_config_is_rejected",
     "shared_scripts/test_check_hyperliquid.py::test_size_rounds_to_zero_skips_tier_block",
     "shared_scripts/test_check_hyperliquid.py::test_unreadable_placement_nothing_resting_keeps_the_error",
-    "shared_scripts/test_check_hyperliquid.py::test_unreadable_placement_with_nothing_resting_is_a_genuine_failure",
     "shared_scripts/test_regime_wiring.py::test_adx_classifier_never_emits_hurst_metric",
     "shared_scripts/test_regime_wiring.py::test_apply_strategy_does_not_crash_on_regime_injection",
     "shared_scripts/test_regime_wiring.py::test_composite_json_never_contains_nan_token_when_hurst_omitted"

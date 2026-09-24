@@ -1724,8 +1724,8 @@ def run_update_stop_loss(symbol, side, size, trigger_px, mode, cancel_oid=0):
             if open_oids is None:
                 should_place = False
             elif _oid_is_open(open_oids, cancel_oid):
-                # Place the replacement before cancelling. A rejected place then
-                # leaves this stop resting.
+                # Change the resting stop in place so a second full-size stop is never
+                # added beside it.
                 old_is_open = True
             else:
                 fill = _oid_filled_externally(adapter, cancel_oid, fill_check_since_ms, None)
@@ -1738,6 +1738,34 @@ def run_update_stop_loss(symbol, side, size, trigger_px, mode, cancel_oid=0):
         place_unknown = False
         pre_oids = None
         trigger_px = adapter.round_perps_trigger_px(symbol, trigger_px)
+        modified_in_place = False
+        if old_is_open and should_place:
+            try:
+                sl_resp = adapter.modify_stop_loss(symbol, cancel_oid, size, trigger_px, sl_is_buy)
+                if isinstance(sl_resp, dict) and str(sl_resp.get("status")) == "err":
+                    sl_err = f"modify_stop_loss SDK error: {sl_resp.get('response')}"
+                    print(f"[WARN] {sl_err}", file=sys.stderr)
+                else:
+                    kind, payload = _classify_sl_response(sl_resp)
+                    if kind == "resting":
+                        resting_oid = payload or cancel_oid
+                        modified_in_place = True
+                    elif kind == "filled":
+                        sl_filled_immediately = True
+                        modified_in_place = True
+                        print(f"[WARN] stop-loss filled immediately at submit (price already through {trigger_px})", file=sys.stderr)
+                    elif kind == "error":
+                        sl_err = f"modify_stop_loss SDK error: {payload}"
+                        print(f"[WARN] {sl_err}", file=sys.stderr)
+                    else:
+                        sl_err = f"modify_stop_loss returned no usable status: {sl_resp}"
+                        place_unknown = True
+                        print(f"[WARN] {sl_err}", file=sys.stderr)
+            except Exception as se:
+                sl_err = str(se)
+                print(f"[WARN] modify_stop_loss({symbol}, {cancel_oid}) failed: {se}", file=sys.stderr)
+            # A failed or unreadable modify leaves the old stop. Do not add another.
+            should_place = False
         if should_place:
             pre_oids = set(int(o) for o in open_oids) if open_oids is not None else _snapshot_open_oids(adapter, symbol)
             try:
@@ -1774,65 +1802,9 @@ def run_update_stop_loss(symbol, side, size, trigger_px, mode, cancel_oid=0):
                 elif resolved == "unknown":
                     place_unknown = True
 
-        # At the open-order cap the new stop cannot rest beside the old one.
-        # Cancel once, then place once. Any other rejection leaves the old stop.
-        if (
-            old_is_open
-            and not resting_oid
-            and not sl_filled_immediately
-            and not place_unknown
-            and _is_open_order_cap_rejection(sl_err)
-        ):
-            try:
-                kind, payload = _classify_cancel_response(
-                    adapter.cancel_trigger_order(symbol, cancel_oid))
-                if kind == "ok":
-                    cancel_succeeded = True
-                else:
-                    cancel_err = payload
-                    print(f"[WARN] cancel_trigger_order({symbol}, {cancel_oid}) rejected on cap fallback: {payload}", file=sys.stderr)
-            except Exception as ce:
-                cancel_err = str(ce)
-                print(f"[WARN] cancel_trigger_order({symbol}, {cancel_oid}) failed on cap fallback: {ce}", file=sys.stderr)
-            if cancel_succeeded:
-                resting_oid = 0
-                sl_filled_immediately = False
-                place_unknown = False
-                sl_err = ""
-                try:
-                    sl_resp = adapter.place_stop_loss(symbol, size, trigger_px, sl_is_buy)
-                    if isinstance(sl_resp, dict) and str(sl_resp.get("status")) == "err":
-                        sl_err = f"place_stop_loss SDK error: {sl_resp.get('response')}"
-                        kind = "error"
-                    else:
-                        kind, payload = _classify_sl_response(sl_resp)
-                    if kind == "resting":
-                        resting_oid = payload
-                    elif kind == "filled":
-                        sl_filled_immediately = True
-                    elif kind == "error":
-                        if not sl_err:
-                            sl_err = f"place_stop_loss SDK error: {payload}"
-                    else:
-                        sl_err = f"place_stop_loss returned no usable status: {sl_resp}"
-                        resolved, oid = _resolve_sl_placement_by_book_diff(adapter, symbol, pre_oids)
-                        if resolved == "resting":
-                            resting_oid = oid
-                            sl_err = ""
-                        elif resolved == "unknown":
-                            place_unknown = True
-                except Exception as se:
-                    sl_err = str(se)
-                    resolved, oid = _resolve_sl_placement_by_book_diff(adapter, symbol, pre_oids)
-                    if resolved == "resting":
-                        resting_oid = oid
-                        sl_err = ""
-                    elif resolved == "unknown":
-                        place_unknown = True
-
         # Cancel only after the new stop rests or fills. A rejection or an
         # unreadable place leaves the old stop in place.
-        if old_is_open and (resting_oid or sl_filled_immediately) and not place_unknown and not cancel_succeeded:
+        if old_is_open and not modified_in_place and (resting_oid or sl_filled_immediately) and not place_unknown and not cancel_succeeded:
             try:
                 kind, payload = _classify_cancel_response(
                     adapter.cancel_trigger_order(symbol, cancel_oid))
