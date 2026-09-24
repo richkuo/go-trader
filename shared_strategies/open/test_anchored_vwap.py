@@ -3,7 +3,6 @@ import importlib.util
 import os
 
 import numpy as np
-import pandas as pd
 
 from shared_strategies.open.conftest import load_module, make_ohlcv
 
@@ -50,3 +49,13 @@ def _load_registry():
     return mod
 
 
+def test_gated_signal_independent_of_future_bars():
+    df = _high_prior_long_reclaim_df()
+    kw = dict(_GATE_BASE_KW, gate_rsi_period=6, gate_rsi_level=50.0, gate_ema_period=3)
+    full = anchored_vwap_core(df, **kw)
+    for k in range(8, len(df)):
+        partial = anchored_vwap_core(df.iloc[:k + 1], **kw)
+        assert (
+            partial["signal"].to_numpy()
+            == full["signal"].to_numpy()[:k + 1]
+        ).all(), k

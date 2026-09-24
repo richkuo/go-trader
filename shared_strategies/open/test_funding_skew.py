@@ -52,3 +52,9 @@ def test_crowded_longs_with_breakdown_goes_short():
     assert out["funding_z"].iloc[250] >= 1.5
 
 
+def test_records_alignment_is_backward_only():
+    df = make_ohlcv([100.0] * 5).drop(columns=[], errors="ignore")
+    recs = [{"rate": 5e-5, "time": int(df.index[2].timestamp() * 1000) + 1}]
+    out = funding_skew_core(df, funding_records=recs)
+    assert np.isnan(out["funding_rate"].iloc[2])
+    assert out["funding_rate"].iloc[3] == 5e-5
