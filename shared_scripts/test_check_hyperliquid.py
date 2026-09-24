@@ -1002,6 +1002,10 @@ class TestSyncProtection:
         return json.loads(captured.getvalue()), mock_adapter
 
 
+    @pytest.mark.parametrize("size,tiers,oids,skipped,placements", [
+        (0.003, [(1.0, 0.4), (2.0, 0.5), (3.0, 1.0)], [0, 7002, 0], [False, True, False], 2),
+        (0.0004, [(1.0, 0.5), (2.0, 1.0)], [7001, 7002], [True, True], 0),
+    ])
     def test_size_skipped_tiers_report_unverified(self, size, tiers, oids, skipped, placements):
         out, adapter = self._run_sync(
             size=size, stop_loss_atr_mult=0, tp_tiers=tiers,
