@@ -2417,26 +2417,30 @@ func TestPaperStopArmsTheLiveTriggerForEveryOwner(t *testing.T) {
 		live       func(StrategyConfig, *Position) float64
 		want       float64
 		wantReason string
+		applied    string
 	}{
-		{"stop_loss_pct long", "long", func(sc *StrategyConfig) { sc.StopLossPct = pf(3) }, pctLive, 1940, paperStopReasonPct},
-		{"stop_loss_pct short", "short", func(sc *StrategyConfig) { sc.StopLossPct = pf(3) }, pctLive, 2060, paperStopReasonPct},
-		{"stop_loss_margin_pct over leverage", "long", func(sc *StrategyConfig) { sc.StopLossMarginPct = pf(30); sc.Leverage = 10 }, pctLive, 1940, paperStopReasonPct},
-		{"max_drawdown_pct fallback", "long", func(sc *StrategyConfig) { sc.MaxDrawdownPct = 5 }, pctLive, 1900, paperStopReasonPct},
-		{"trailing_stop_pct", "long", func(sc *StrategyConfig) { sc.TrailingStopPct = pf(2) }, trailingLive, 1960, paperStopReasonTrailing},
-		{"trailing_stop_atr_mult", "short", func(sc *StrategyConfig) { sc.TrailingStopATRMult = pf(1.5) }, trailingLive, 2060, paperStopReasonTrailing},
-		{"trailing_stop_atr_mult_regime", "long", func(sc *StrategyConfig) { sc.TrailingStopATRMultRegime = regime(2) }, trailingLive, 1920, paperStopReasonTrailing},
-		{"stop_loss_atr_mult", "long", func(sc *StrategyConfig) { sc.StopLossATRMult = pf(1.5) }, atrLive, 1940, paperStopReasonATR},
-		{"stop_loss_atr_mult_regime", "short", func(sc *StrategyConfig) { sc.StopLossATRMultRegime = regime(1) }, atrLive, 2040, paperStopReasonATR},
+		{"stop_loss_pct long", "long", func(sc *StrategyConfig) { sc.StopLossPct = pf(3) }, pctLive, 1940, paperStopReasonPct, ""},
+		{"stop_loss_pct short", "short", func(sc *StrategyConfig) { sc.StopLossPct = pf(3) }, pctLive, 2060, paperStopReasonPct, ""},
+		{"stop_loss_margin_pct over leverage", "long", func(sc *StrategyConfig) { sc.StopLossMarginPct = pf(30); sc.Leverage = 10 }, pctLive, 1940, paperStopReasonPct, ""},
+		{"max_drawdown_pct fallback", "long", func(sc *StrategyConfig) { sc.MaxDrawdownPct = 5 }, pctLive, 1900, paperStopReasonPct, ""},
+		{"trailing_stop_pct", "long", func(sc *StrategyConfig) { sc.TrailingStopPct = pf(2) }, trailingLive, 1960, paperStopReasonTrailing, ""},
+		{"trailing_stop_atr_mult", "short", func(sc *StrategyConfig) { sc.TrailingStopATRMult = pf(1.5) }, trailingLive, 2060, paperStopReasonTrailing, ""},
+		{"trailing_stop_atr_mult_regime", "long", func(sc *StrategyConfig) { sc.TrailingStopATRMultRegime = regime(2) }, trailingLive, 1920, paperStopReasonTrailing, ""},
+		{"stop_loss_atr_mult", "long", func(sc *StrategyConfig) { sc.StopLossATRMult = pf(1.5) }, atrLive, 1940, paperStopReasonATR, ""},
+		{"stop_loss_atr_mult_regime", "short", func(sc *StrategyConfig) { sc.StopLossATRMultRegime = regime(1) }, atrLive, 2040, paperStopReasonATR, ""},
 		{"unified per-regime close", "long", func(sc *StrategyConfig) {
 			sc.CloseStrategy = &StrategyRef{Name: "tiered_tp_atr_regime", Params: unifiedBlock()}
-		}, atrLive, 1968, paperStopReasonATR},
+		}, atrLive, 1968, paperStopReasonATR, ""},
+		{"dynamic unified close follows the applied label", "long", func(sc *StrategyConfig) {
+			sc.CloseStrategy = &StrategyRef{Name: dynamicCloseStrategyName, Params: unifiedBlock()}
+		}, atrLive, 1940, paperStopReasonATR, "trending_up"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			sc := StrategyConfig{ID: "hl-paper", Platform: "hyperliquid", Type: "perps", Args: []string{"sma", "ETH", "1h"}}
 			c.mutate(&sc)
 			newPos := func() *Position {
-				return &Position{Symbol: "ETH", Quantity: 1, AvgCost: 2000, EntryATR: 40, Side: c.side, Regime: "ranging"}
+				return &Position{Symbol: "ETH", Quantity: 1, AvgCost: 2000, EntryATR: 40, Side: c.side, Regime: "ranging", RegimeAppliedLabel: c.applied}
 			}
 			live := c.live(sc, newPos())
 			if !approxEq(live, c.want) {

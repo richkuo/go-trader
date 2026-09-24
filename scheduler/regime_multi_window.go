@@ -472,6 +472,12 @@ func positionCtxForCheck(sc StrategyConfig, pos *Position, regime *RegimeConfig)
 	} else {
 		ctx.DirectionalRegime = ctx.Regime
 	}
+	if label := protectionATRRegimeLabel(pos, sc); label != "" {
+		ctx.Regime = label
+	}
+	if sc.Platform == "hyperliquid" {
+		ctx.OnChainTPResting, ctx.OnChainTPBlocked = hlOnChainTPState(sc, pos)
+	}
 	return ctx
 }
 

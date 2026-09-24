@@ -46,6 +46,7 @@ def _position_ctx(position_side):
         ("--position-qty", "current_quantity"),
         ("--position-initial-qty", "initial_quantity"),
         ("--position-entry-atr", "entry_atr"),
+        ("--position-risk-anchor-price", "risk_anchor_price"),
     ):
         value = _arg_float(flag)
         if value is not None:
@@ -102,7 +103,7 @@ def main():
             "--params", "--open-strategy", "--close-strategies", "--strategy-refs",
             "--position-side", "--position-avg-cost", "--position-qty",
             "--position-initial-qty", "--position-entry-atr",
-            "--position-regime",
+            "--position-regime", "--position-risk-anchor-price",
             "--regime-windows-spec-json", "--ohlcv-limit",
             "--regime-atr-window", "--regime-directional-window",
             "--regime-payload-json", "--atr-method",

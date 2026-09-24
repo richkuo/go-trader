@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -424,5 +426,42 @@ func TestTruncateForDiscord(t *testing.T) {
 	}
 	if !utf8.ValidString(got) {
 		t.Errorf("truncation split a rune (invalid UTF-8): %q", got)
+	}
+}
+
+func TestLogsJournalctlArgsFollowUnitNamespace(t *testing.T) {
+	cases := []struct {
+		name   string
+		script string
+		want   []string
+	}{
+		{
+			name:   "migrated unit reads its namespace merged with the default journal",
+			script: "#!/bin/sh\n[ \"$1 $2 $3 $4 $5\" = \"show -p LogNamespace --value go-trader@live\" ] || exit 3\necho go-trader\n",
+			want:   []string{"--namespace=+go-trader", "-u", "go-trader@live", "-n", "25", "--no-pager"},
+		},
+		{
+			name:   "unit without a namespace reads the default journal",
+			script: "#!/bin/sh\necho\n",
+			want:   []string{"-u", "go-trader@live", "-n", "25", "--no-pager"},
+		},
+		{
+			name:   "systemctl failure falls back to the default journal",
+			script: "#!/bin/sh\necho go-trader\nexit 1\n",
+			want:   []string{"-u", "go-trader@live", "-n", "25", "--no-pager"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "systemctl"), []byte(tc.script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", dir)
+			got := journalctlUnitArgs("go-trader@live", systemdUnitLogNamespace("go-trader@live"), 25)
+			if strings.Join(got, " ") != strings.Join(tc.want, " ") {
+				t.Fatalf("journalctl args = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

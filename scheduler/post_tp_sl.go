@@ -1110,3 +1110,132 @@ func runPostTPStopLossAdjustment(
 	}
 	return true
 }
+
+func paperSLAfterTierThresholds(sc StrategyConfig, regime string) []float64 {
+	tiers := strategyTPTiersForRegime(sc, regime)
+	if len(tiers) == 0 {
+		return nil
+	}
+	sorted := append([]hlProtectionTier(nil), tiers...)
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Multiple < sorted[j].Multiple })
+	out := make([]float64, len(sorted))
+	for i, tier := range sorted {
+		out[i] = tier.Fraction
+	}
+	out[len(out)-1] = 1
+	return out
+}
+
+func findHighestClearedTierByClosedRatio(thresholds []float64, closedRatio float64, fromIdx int) (int, bool) {
+	if fromIdx < 0 {
+		fromIdx = 0
+	}
+	highest := -1
+	for i := fromIdx; i < len(thresholds); i++ {
+		if closedRatio+1e-9 >= thresholds[i] {
+			highest = i
+		}
+	}
+	if highest >= 0 {
+		return highest, true
+	}
+	return 0, false
+}
+
+func runPaperPostTPStopLossAdjustment(
+	sc StrategyConfig,
+	stratState *StrategyState,
+	symbol string,
+	mark float64,
+	cfg *Config,
+	mu *sync.RWMutex,
+	notifier *MultiNotifier,
+	logger *StrategyLogger,
+) bool {
+	if sc.Platform != "hyperliquid" || sc.Type != "perps" || hyperliquidIsLive(sc.Args) {
+		return false
+	}
+	if stratState == nil || symbol == "" || mu == nil {
+		return false
+	}
+	rules, _ := parseStrategyTPSLAfterRules(sc)
+	if !rules.HasAny() {
+		return false
+	}
+
+	mu.Lock()
+	pos, ok := stratState.Positions[symbol]
+	if !ok || pos == nil || pos.Quantity <= 0 || pos.InitialQuantity <= 0 {
+		mu.Unlock()
+		return false
+	}
+	closedRatio := 1 - pos.Quantity/pos.InitialQuantity
+	if closedRatio <= 0 {
+		mu.Unlock()
+		return false
+	}
+	posRegime := protectionATRRegimeLabel(pos, sc)
+	clearedIdx, clearedOK := findHighestClearedTierByClosedRatio(paperSLAfterTierThresholds(sc, posRegime), closedRatio, pos.SLAdjustedTiersProcessed)
+	if !clearedOK {
+		mu.Unlock()
+		return false
+	}
+	if strategyUsesRegimeTieredTPATRClose(sc) {
+		rules, _ = parseStrategyTPSLAfterRulesForRegime(sc, nil, posRegime)
+	}
+	rawRule := rules.ForTier(clearedIdx)
+	if rawRule.IsEmpty() {
+		pos.SLAdjustedTiersProcessed = clearedIdx + 1
+		mu.Unlock()
+		return false
+	}
+	if pos.StopLossTriggerPx <= 0 {
+		mu.Unlock()
+		return false
+	}
+	rule, resolved := rawRule.resolveForRegimeAndTier(posRegime, rules.TierMultiple(clearedIdx))
+	if !resolved {
+		mu.Unlock()
+		if logger != nil {
+			logger.Info("paper post-TP SL adjustment for %s deferred: tier %d rule is regime-aware but pos.Regime=%q yields no entry",
+				symbol, clearedIdx, posRegime)
+		}
+		return false
+	}
+	side := pos.Side
+	triggerPx, mode, computeOK := computePostTPStopLossTrigger(rule, side, pos.riskAnchorPrice(), pos.EntryATR, mark)
+	if !computeOK {
+		mu.Unlock()
+		return false
+	}
+	oldTrigger := pos.StopLossTriggerPx
+	pos.StopLossTriggerPx = triggerPx
+	pos.SLAdjustedTiersProcessed = clearedIdx + 1
+	transitionedToTrailing := false
+	if rule.Kind == "trail_from_here" && rule.TrailATRMult > 0 {
+		mult := rule.TrailATRMult
+		pos.PostTPTrailingATRMult = &mult
+		if mark > 0 {
+			pos.StopLossHighWaterPx = mark
+		}
+		transitionedToTrailing = true
+	}
+	mu.Unlock()
+
+	if logger != nil {
+		logger.Info("paper post-TP SL adjusted: trigger=$%.4f→$%.4f (mode=%s tier=%d)", oldTrigger, triggerPx, mode, clearedIdx)
+	}
+	if cfg != nil {
+		notifySLAdjustment(notifier, cfg.NotifyTPSLFillsEnabled(), SLAdjustmentAlert{
+			StrategyID:           sc.ID,
+			Symbol:               symbol,
+			Side:                 side,
+			TierIdx:              clearedIdx,
+			OldTriggerPx:         oldTrigger,
+			NewTriggerPx:         triggerPx,
+			Mode:                 mode,
+			TransitionToTrailing: transitionedToTrailing,
+		})
+	}
+	return true
+}

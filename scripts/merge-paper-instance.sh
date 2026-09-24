@@ -1891,7 +1891,8 @@ fi
     done
     echo "  $step. $SYSTEMCTL start $LIVE_UNIT"
     step=$((step + 1))
-    echo "  $step. journalctl -u $LIVE_UNIT -n 50 | grep '\[storage\]'"
+    live_log_namespace=$("$SYSTEMCTL" show -p LogNamespace --value "$LIVE_UNIT" 2>/dev/null || true)
+    echo "  $step. $(update_journalctl_unit_command "$LIVE_UNIT" "$live_log_namespace") -n 50 | grep '\[storage\]'"
     step=$((step + 1))
     for i in "${!FOLD_KEY[@]}"; do
         echo "  $step. retire the ${FOLD_INSTANCE[$i]} instance's status port${FOLD_PORT[$i]:+ (${FOLD_PORT[$i]})} and any tunnel mapping that pointed at it; the combined process serves every partition on the live port"

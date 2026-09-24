@@ -114,12 +114,22 @@ func validateUnifiedCloseSoleOwner(sc StrategyConfig, ctxLabel string) []string 
 	return errs
 }
 
-func validateUnifiedRegimeClose(params map[string]interface{}, labels []string, ctxLabel string) []string {
+func validateUnifiedRegimeClose(params map[string]interface{}, labels []string, ctxLabel string, extraKeys ...string) []string {
 	var errs []string
+	allowed := append([]string{regimeClassifierKey, "atr_source"}, extraKeys...)
+	permitted := make(map[string]bool, len(allowed))
+	for _, k := range allowed {
+		permitted[k] = true
+	}
+	keys := make([]string, 0, len(params))
 	for k := range params {
-		if k != regimeClassifierKey && k != "atr_source" {
-			errs = append(errs, fmt.Sprintf("%s: unknown param %q (allowed: trend_regime, atr_source)", ctxLabel, k))
+		if !permitted[k] {
+			keys = append(keys, k)
 		}
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		errs = append(errs, fmt.Sprintf("%s: unknown param %q (allowed: %s)", ctxLabel, k, strings.Join(allowed, ", ")))
 	}
 	trendRaw, ok := params[regimeClassifierKey].(map[string]interface{})
 	if !ok {

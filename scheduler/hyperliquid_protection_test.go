@@ -5,7 +5,6 @@ import (
 	"math"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -211,83 +210,169 @@ func TestApplySurplusTPCancelOutcome(t *testing.T) {
 	})
 }
 
-func TestStrategyConfigWithOnChainProtectionFilter(t *testing.T) {
-	mult := 1.0
-	hlLiveArgs := []string{"bollinger_bands", "ETH", "30m", "--mode=live"}
-	hlPaperArgs := []string{"bollinger_bands", "ETH", "30m", "--mode=paper"}
+func TestHLOnChainTPState(t *testing.T) {
+	liveArgs := []string{"bollinger_bands", "ETH", "30m", "--mode=live"}
+	tiered := func(name string, params map[string]interface{}) StrategyConfig {
+		return StrategyConfig{
+			ID: "hl-tp-state", Args: liveArgs, Type: "perps", Platform: "hyperliquid",
+			CloseStrategy: &StrategyRef{Name: name, Params: params},
+		}
+	}
+	unified := map[string]interface{}{
+		regimeClassifierKey: map[string]interface{}{
+			"trending_up": map[string]interface{}{
+				"tp_tiers": []interface{}{
+					map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 0.5},
+					map[string]interface{}{"atr_multiple": 4.0, "close_fraction": 1.0},
+				},
+			},
+		},
+	}
+	singleTier := map[string]interface{}{"tp_tiers": []interface{}{
+		map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 1.0},
+	}}
 	cases := []struct {
-		name    string
-		sc      StrategyConfig
-		dropped bool
+		name        string
+		sc          StrategyConfig
+		pos         *Position
+		wantResting bool
+		wantBlocked string
 	}{
-		{
-			name: "tiered_tp_atr_live live → dropped (placed on-chain)",
-			sc: StrategyConfig{
-				Args: hlLiveArgs, Type: "perps", Platform: "hyperliquid",
-				StopLossATRMult: &mult,
-				CloseStrategy:   &StrategyRef{Name: "tiered_tp_atr_live"},
-			},
-			dropped: true,
-		},
-		{
-			name: "manual tiered_tp_atr_live live → dropped",
-			sc: StrategyConfig{
-				Args: hlLiveArgs, Type: "manual", Platform: "hyperliquid",
-				StopLossATRMult: &mult,
-				CloseStrategy:   &StrategyRef{Name: "tiered_tp_atr_live"},
-			},
-			dropped: true,
-		},
-		{
-			name: "tiered_tp_atr live → dropped",
-			sc: StrategyConfig{
-				Args: hlLiveArgs, Type: "perps", Platform: "hyperliquid",
-				StopLossATRMult: &mult,
-				CloseStrategy:   &StrategyRef{Name: "tiered_tp_atr"},
-			},
-			dropped: true,
-		},
-		{
-			name: "non-tiered close (tp_at_pct) → kept",
-			sc: StrategyConfig{
-				Type: "perps", Platform: "hyperliquid",
-				StopLossATRMult: &mult,
-				CloseStrategy:   &StrategyRef{Name: "tp_at_pct"},
-			},
-			dropped: false,
-		},
-		{
-			name: "non-perps (spot) → kept",
-			sc: StrategyConfig{
-				Type: "spot", Platform: "hyperliquid",
-				CloseStrategy: &StrategyRef{Name: "tiered_tp_atr_live"},
-			},
-			dropped: false,
-		},
-		{
-			name: "paper tiered_tp_atr → kept (#781)",
-			sc: StrategyConfig{
-				Args: hlPaperArgs, Type: "perps", Platform: "hyperliquid",
-				StopLossATRMult: &mult,
-				CloseStrategy:   &StrategyRef{Name: "tiered_tp_atr"},
-			},
-			dropped: false,
-		},
+		{"resting tier oid", tiered("tiered_tp_atr", nil),
+			&Position{Symbol: "ETH", Side: "long", Quantity: 1, AvgCost: 100, EntryATR: 2, TPOIDs: []int64{0, 55, 0}},
+			true, ""},
+		{"armed tier with oid 0 counts as resting", tiered("tiered_tp_atr", nil),
+			&Position{Symbol: "ETH", Side: "long", Quantity: 1, AvgCost: 100, TPOIDs: []int64{0, 0, 0}, TPArmedTiers: []bool{false, true, false}},
+			true, hlOnChainTPBlockedEntryATR},
+		{"entry ATR missing blocks placement", tiered("tiered_tp_atr", nil),
+			&Position{Symbol: "ETH", Side: "long", Quantity: 1, AvgCost: 100},
+			false, hlOnChainTPBlockedEntryATR},
+		{"single-tier ladder is unplaceable", tiered("tiered_tp_atr", singleTier),
+			&Position{Symbol: "ETH", Side: "long", Quantity: 1, AvgCost: 100, EntryATR: 2},
+			false, hlOnChainTPBlockedTiersUnplaced},
+		{"default ladder is plannable", tiered("tiered_tp_atr", nil),
+			&Position{Symbol: "ETH", Side: "long", Quantity: 1, AvgCost: 100, EntryATR: 2},
+			false, ""},
+		{"regime ref with an unresolved label is unplaceable", tiered("tiered_tp_atr_live_regime", unified),
+			&Position{Symbol: "ETH", Side: "long", Quantity: 1, AvgCost: 100, EntryATR: 2, Regime: "ranging"},
+			false, hlOnChainTPBlockedTiersUnplaced},
+		{"dynamic ref ignores the label that moves inside the sync", tiered(dynamicCloseStrategyName, unified),
+			&Position{Symbol: "ETH", Side: "long", Quantity: 1, AvgCost: 100, EntryATR: 2, Regime: "ranging"},
+			false, ""},
+		{"dynamic ref still needs entry ATR", tiered(dynamicCloseStrategyName, unified),
+			&Position{Symbol: "ETH", Side: "long", Quantity: 1, AvgCost: 100, Regime: "trending_up"},
+			false, hlOnChainTPBlockedEntryATR},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := strategyConfigWithOnChainProtectionFilter(tc.sc)
-			if tc.dropped {
-				if got.CloseStrategy != nil {
-					t.Fatalf("close ref = %v, want nil (dropped for on-chain TP)", got.CloseStrategy)
-				}
-				return
+			resting, blocked := hlOnChainTPState(tc.sc, tc.pos)
+			if resting != tc.wantResting || blocked != tc.wantBlocked {
+				t.Fatalf("hlOnChainTPState = (%v, %q), want (%v, %q)", resting, blocked, tc.wantResting, tc.wantBlocked)
 			}
-			if got.CloseStrategy == nil || tc.sc.CloseStrategy == nil ||
-				got.CloseStrategy.Name != tc.sc.CloseStrategy.Name {
-				t.Fatalf("close ref = %v, want %v retained", got.CloseStrategy, tc.sc.CloseStrategy)
+			ctx := positionCtxForCheck(tc.sc, tc.pos, nil)
+			if ctx.OnChainTPResting != tc.wantResting || ctx.OnChainTPBlocked != tc.wantBlocked {
+				t.Fatalf("positionCtxForCheck on-chain TP state = (%v, %q), want (%v, %q)", ctx.OnChainTPResting, ctx.OnChainTPBlocked, tc.wantResting, tc.wantBlocked)
 			}
 		})
+	}
+}
+
+func TestHLCloseOwnerForCheck(t *testing.T) {
+	mult := 1.0
+	liveArgs := []string{"bollinger_bands", "ETH", "30m", "--mode=live"}
+	paperArgs := []string{"bollinger_bands", "ETH", "30m", "--mode=paper"}
+	build := func(typ string, args []string, closeName string, params map[string]interface{}) StrategyConfig {
+		sc := StrategyConfig{ID: "hl-owner", Args: args, Type: typ, Platform: "hyperliquid", StopLossATRMult: &mult}
+		if closeName != "" {
+			sc.CloseStrategy = &StrategyRef{Name: closeName, Params: params}
+		}
+		return sc
+	}
+	singleTier := map[string]interface{}{"tp_tiers": []interface{}{
+		map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 1.0},
+	}}
+	dynamicUnified := map[string]interface{}{
+		regimeClassifierKey: map[string]interface{}{
+			"trending_up": map[string]interface{}{
+				"tp_tiers": []interface{}{
+					map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 0.5},
+					map[string]interface{}{"atr_multiple": 4.0, "close_fraction": 1.0},
+				},
+			},
+		},
+	}
+	open := func(entryATR float64, oids []int64, armed []bool) *Position {
+		return &Position{Symbol: "ETH", Side: "long", Quantity: 1, AvgCost: 100, EntryATR: entryATR, TPOIDs: oids, TPArmedTiers: armed}
+	}
+	cases := []struct {
+		name string
+		sc   StrategyConfig
+		pos  *Position
+		want string
+	}{
+		{"paper tiered keeps the in-process evaluator", build("perps", paperArgs, "tiered_tp_atr", nil), open(2, nil, nil), ""},
+		{"live tiered while flat is on-chain owned", build("perps", liveArgs, "tiered_tp_atr", nil), nil, hlCloseOwnerOnChainTP},
+		{"live tiered with a resting tier is on-chain owned", build("perps", liveArgs, "tiered_tp_atr", nil), open(2, []int64{11, 12, 13}, nil), hlCloseOwnerOnChainTP},
+		{"live tiered with an armed oid-0 tier stays on-chain owned", build("perps", liveArgs, "tiered_tp_atr", nil), open(0, []int64{0, 0, 0}, []bool{true, false, false}), hlCloseOwnerOnChainTP},
+		{"live tiered with no entry ATR falls back to the evaluator", build("perps", liveArgs, "tiered_tp_atr_live", nil), open(0, nil, nil), ""},
+		{"live tiered plannable but not yet placed stays on-chain owned", build("perps", liveArgs, "tiered_tp_atr", nil), open(2, nil, nil), hlCloseOwnerOnChainTP},
+		{"live single-tier ladder falls back to the evaluator", build("perps", liveArgs, "tiered_tp_atr", singleTier), open(2, nil, nil), ""},
+		{"live dynamic ref stays on-chain owned", build("perps", liveArgs, dynamicCloseStrategyName, dynamicUnified), open(2, nil, nil), hlCloseOwnerOnChainTP},
+		{"trailing ratchet is not an on-chain TP", build("perps", liveArgs, "trailing_tp_ratchet", nil), open(2, nil, nil), ""},
+		{"tp_at_pct is not an on-chain TP", build("perps", liveArgs, "tp_at_pct", nil), open(2, nil, nil), ""},
+		{"no close ref", build("perps", liveArgs, "", nil), open(2, nil, nil), ""},
+		{"manual live tiered is on-chain owned", build("manual", []string{"hold", "ETH", "1h", "--mode=live"}, "tiered_tp_atr_live", nil), open(2, []int64{21, 22, 23}, nil), hlCloseOwnerOnChainTP},
+		{"spot never places on-chain TPs", build("spot", liveArgs, "tiered_tp_atr_live", nil), open(2, nil, nil), ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := hlCloseOwnerForCheck(tc.sc, positionCtxForCheck(tc.sc, tc.pos, nil))
+			if got != tc.want {
+				t.Fatalf("hlCloseOwnerForCheck = %q, want %q", got, tc.want)
+			}
+			if tc.sc.CloseStrategy == nil {
+				return
+			}
+			refs, err := buildStrategyRefsArg(tc.sc, got)
+			if err != nil {
+				t.Fatalf("buildStrategyRefsArg: %v", err)
+			}
+			var payload struct {
+				Closes     []StrategyRef `json:"closes"`
+				CloseOwner string        `json:"close_owner"`
+			}
+			if err := json.Unmarshal([]byte(refs[1]), &payload); err != nil {
+				t.Fatalf("payload unmarshal: %v", err)
+			}
+			if len(payload.Closes) != 1 || payload.Closes[0].Name != tc.sc.CloseStrategy.Name {
+				t.Fatalf("closes = %+v, want the configured %q ref kept", payload.Closes, tc.sc.CloseStrategy.Name)
+			}
+			if payload.CloseOwner != tc.want {
+				t.Fatalf("close_owner = %q, want %q", payload.CloseOwner, tc.want)
+			}
+		})
+	}
+}
+
+func TestNotifyHLOnChainTPUnplaceableAlertsOnce(t *testing.T) {
+	sc := StrategyConfig{ID: "hl-unplaceable-once", CloseStrategy: &StrategyRef{Name: "tiered_tp_atr_live"}}
+	t.Cleanup(func() { clearHLOnChainTPUnplaceable(sc.ID, "ETH") })
+	steps := []struct {
+		name  string
+		clear bool
+		want  bool
+	}{
+		{"first takeover alerts", false, true},
+		{"repeat takeover stays silent", false, false},
+		{"after the owner returns on-chain the next takeover alerts again", true, true},
+	}
+	for _, step := range steps {
+		if step.clear {
+			clearHLOnChainTPUnplaceable(sc.ID, "ETH")
+		}
+		if got := notifyHLOnChainTPUnplaceable(nil, nil, sc, "ETH", hlOnChainTPBlockedEntryATR); got != step.want {
+			t.Fatalf("%s: alerted = %v, want %v", step.name, got, step.want)
+		}
 	}
 }
 
@@ -713,37 +798,6 @@ func TestHyperliquidPlacesOnChainTPs(t *testing.T) {
 		})
 	}
 }
-func TestStrategyConfigWithOnChainProtectionFilter_PaperKeepsTieredTP(t *testing.T) {
-	sc := StrategyConfig{
-		Args: []string{"bollinger_bands", "ETH", "30m", "--mode=paper"},
-		Type: "perps", Platform: "hyperliquid",
-		OpenStrategy: StrategyRef{Name: "bollinger_bands"},
-		CloseStrategy: &StrategyRef{
-			Name: "tiered_tp_atr",
-			Params: map[string]interface{}{
-				"tp_tiers": []interface{}{
-					map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 0.5},
-					map[string]interface{}{"atr_multiple": 3.0, "close_fraction": 1.0},
-				},
-			},
-		},
-	}
-	filtered := strategyConfigWithOnChainProtectionFilter(sc)
-	if filtered.CloseStrategy == nil || filtered.CloseStrategy.Name != "tiered_tp_atr" {
-		t.Fatalf("paper close strategy = %#v, want tiered_tp_atr retained", filtered.CloseStrategy)
-	}
-	got, err := buildStrategyRefsArg(filtered)
-	if err != nil {
-		t.Fatalf("buildStrategyRefsArg: %v", err)
-	}
-	if len(got) != 2 || got[0] != "--strategy-refs" {
-		t.Fatalf("got %#v, want --strategy-refs", got)
-	}
-	if !strings.Contains(got[1], `"tiered_tp_atr"`) {
-		t.Fatalf("strategy-refs missing tiered_tp_atr close: %s", got[1])
-	}
-}
-
 func TestTieredTPATRPricesForRegimeUsesFleetDefaults(t *testing.T) {
 	sc := StrategyConfig{
 		Platform: "hyperliquid",

@@ -7,6 +7,8 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$REPO_ROOT/scripts/update_helpers.sh"
+UPDATE_UNIT_SUDO=""
 SRC="${1:-$REPO_ROOT/go-trader.service}"
 INSTANCE="${2:-}"
 
@@ -61,6 +63,11 @@ if [[ -n "$WORKING_DIR" ]]; then
   LOG_DIR="$WORKING_DIR/logs"
 fi
 
+update_sync_journal_namespace "$REPO_ROOT" "$SRC" || {
+  echo "error: journald namespace setup failed; $DEST was not installed" >&2
+  exit 1
+}
+
 echo "Installing $SRC -> $DEST"
 install -m 0644 "$SRC" "$DEST"
 
@@ -95,4 +102,5 @@ ACTIVE_STATE="$(systemctl is-active "$SERVICE_NAME" 2>/dev/null || true)"
 echo "enabled: $ENABLED_STATE"
 echo "active:  $ACTIVE_STATE"
 echo
-echo "Done. Tail logs: journalctl -u $SERVICE_NAME -f"
+LOG_NAMESPACE="$(systemctl show -p LogNamespace --value "$SERVICE_NAME" 2>/dev/null || true)"
+echo "Done. Tail logs: $(update_journalctl_unit_command "$SERVICE_NAME" "$LOG_NAMESPACE") -f"

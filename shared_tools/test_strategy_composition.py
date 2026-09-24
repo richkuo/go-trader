@@ -12,6 +12,7 @@ evaluate_open_close = _STRATEGY_COMPOSITION.evaluate_open_close
 finalize_decision = _STRATEGY_COMPOSITION.finalize_decision
 max_close_fraction = _STRATEGY_COMPOSITION.max_close_fraction
 validate_close_strategy_names = _STRATEGY_COMPOSITION.validate_close_strategy_names
+strip_unsupported_position_context = _STRATEGY_COMPOSITION.strip_unsupported_position_context
 
 
 def test_compose_signal_close_before_open():
@@ -110,6 +111,43 @@ def test_evaluate_open_close_passes_position_ctx_to_close_only():
     )
     assert decision["close_fraction"] == 1.0
     assert decision["signal"] == -1
+
+
+@pytest.mark.parametrize("close_results,want_fraction,want_fill", [
+    ({"tier": {"close_fraction": 0.5, "tier_fill_price": 104.0}}, 0.5, 104.0),
+    ({"tier": {"close_fraction": 0.5, "tier_fill_price": 104.0},
+      "stop": {"close_fraction": 1.0}}, 1.0, None),
+    ({"tier": {"close_fraction": 0.0, "tier_fill_price": 104.0}}, 0.0, None),
+])
+def test_close_tier_fill_price_follows_the_winning_close(close_results, want_fraction, want_fill):
+    df = pd.DataFrame({"close": [100, 106]})
+
+    def apply_strategy(name, data, params=None):
+        result = data.copy()
+        result["signal"] = 0
+        return result
+
+    evaluation = evaluate_open_close(
+        apply_strategy,
+        lambda name: None,
+        df,
+        positional_strategy="open",
+        open_strategy="open",
+        close_strategies=list(close_results),
+        position_side="long",
+        position_ctx={"side": "long", "avg_cost": 100, "risk_anchor_price": 99, "tp_model": "resting_limit"},
+        close_evaluate=lambda name, position, market, params: close_results[name],
+    )
+    decision = finalize_decision(evaluation, position_side="long")
+
+    def legacy_close(df, avg_cost=None):
+        return df
+
+    assert decision["close_fraction"] == want_fraction
+    assert decision.get("close_tier_fill_price") == want_fill
+    assert strip_unsupported_position_context(
+        legacy_close, {"avg_cost": 100, "risk_anchor_price": 99, "tp_model": "resting_limit", "lookback": 5},
+    ) == {"avg_cost": 100, "lookback": 5}
 
 
 def test_evaluate_open_close_uses_close_registry_before_open_fallback():
@@ -413,4 +451,51 @@ def test_validate_close_strategy_names_rejects_backtest_only_open_fallback():
     with pytest.raises(ValueError, match="backtest_only"):
         validate_close_strategy_names(
             ["research_open"], get_open_strategy, get_close_strategy
+        )
+
+
+def test_effective_close_strategies_on_chain_owner_evaluates_no_close():
+    calls = []
+    df = pd.DataFrame({"close": [100, 101]})
+
+    def apply_strategy(name, data, params=None):
+        calls.append(name)
+        result = data.copy()
+        result["signal"] = [0, -1]
+        return result
+
+    def close_evaluate(name, position, market, params):
+        raise AssertionError(f"close {name} must not be evaluated when the on-chain TP owns the exit")
+
+    evaluation = evaluate_open_close(
+        apply_strategy,
+        lambda name: None,
+        df,
+        positional_strategy="legacy",
+        open_strategy=None,
+        close_strategies=["tiered_tp_atr"],
+        position_side="long",
+        position_ctx={"side": "long", "avg_cost": 90.0, "current_quantity": 1.0, "entry_atr": 1.0},
+        close_evaluate=close_evaluate,
+        close_owner="on_chain_tp",
+    )
+    decision = finalize_decision(evaluation, position_side="long")
+
+    assert calls == ["legacy"]
+    assert evaluation.close_evaluations == []
+    assert decision["open_action"] == "short"
+    assert decision["close_fraction"] == 0.0
+    assert decision["signal"] == 0
+    assert decision["close_owner"] == "on_chain_tp"
+
+    with pytest.raises(ValueError):
+        evaluate_open_close(
+            apply_strategy,
+            lambda name: None,
+            df,
+            positional_strategy="legacy",
+            open_strategy=None,
+            close_strategies=None,
+            position_side="long",
+            close_owner="somebody_else",
         )

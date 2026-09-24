@@ -9,13 +9,15 @@ import (
 )
 
 type StrategyDecisionFields struct {
-	OpenStrategy    string         `json:"open_strategy,omitempty"`
-	CloseStrategies []string       `json:"close_strategies,omitempty"`
-	OpenAction      string         `json:"open_action,omitempty"`
-	CloseFraction   float64        `json:"close_fraction"`
-	CloseStrategy   string         `json:"close_strategy,omitempty"`
-	CloseGate       string         `json:"close_gate,omitempty"`
-	Regime          *RegimePayload `json:"regime,omitempty"`
+	OpenStrategy       string         `json:"open_strategy,omitempty"`
+	CloseStrategies    []string       `json:"close_strategies,omitempty"`
+	OpenAction         string         `json:"open_action,omitempty"`
+	CloseFraction      float64        `json:"close_fraction"`
+	CloseStrategy      string         `json:"close_strategy,omitempty"`
+	CloseGate          string         `json:"close_gate,omitempty"`
+	CloseOwner         string         `json:"close_owner,omitempty"`
+	CloseTierFillPrice float64        `json:"close_tier_fill_price,omitempty"`
+	Regime             *RegimePayload `json:"regime,omitempty"`
 }
 
 type PositionCtx struct {
@@ -24,12 +26,15 @@ type PositionCtx struct {
 	Quantity                       float64
 	InitialQuantity                float64
 	EntryATR                       float64
+	RiskAnchorPrice                float64
 	Regime                         string
 	DirectionalRegime              string
 	RegimeWindows                  map[string]string
 	Profile                        string
 	DirectionCertifiedAtOpen       bool
 	DirectionCertifiedStatesAtOpen map[string]string
+	OnChainTPResting               bool
+	OnChainTPBlocked               string
 }
 
 func usesOpenCloseConfig(sc StrategyConfig) bool {
@@ -76,13 +81,14 @@ func appendOpenCloseArgs(args []string, sc StrategyConfig, pos PositionCtx) []st
 	out = appendPositionFloatArg(out, "--position-qty", pos.Quantity)
 	out = appendPositionFloatArg(out, "--position-initial-qty", pos.InitialQuantity)
 	out = appendPositionFloatArg(out, "--position-entry-atr", pos.EntryATR)
+	out = appendPositionFloatArg(out, "--position-risk-anchor-price", pos.RiskAnchorPrice)
 	if r := strings.TrimSpace(pos.Regime); r != "" {
 		out = append(out, "--position-regime", r)
 	}
 	return out
 }
 
-func buildStrategyRefsArg(sc StrategyConfig) ([]string, error) {
+func buildStrategyRefsArg(sc StrategyConfig, closeOwner string) ([]string, error) {
 	openName := effectiveOpenStrategy(sc)
 	if openName == "" && sc.CloseStrategy == nil {
 		return nil, nil
@@ -93,6 +99,9 @@ func buildStrategyRefsArg(sc StrategyConfig) ([]string, error) {
 	}
 	if refs := sc.closeRefs(); len(refs) > 0 {
 		payload["closes"] = refs
+	}
+	if closeOwner != "" {
+		payload["close_owner"] = closeOwner
 	}
 	blob, err := json.Marshal(payload)
 	if err != nil {
@@ -156,6 +165,7 @@ func positionCtxFromPosition(pos *Position) PositionCtx {
 		Quantity:                       pos.Quantity,
 		InitialQuantity:                pos.InitialQuantity,
 		EntryATR:                       pos.EntryATR,
+		RiskAnchorPrice:                pos.RiskAnchorPrice,
 		Regime:                         pos.Regime,
 		DirectionalRegime:              pos.Regime,
 		RegimeWindows:                  cloneStringMap(pos.RegimeWindows),

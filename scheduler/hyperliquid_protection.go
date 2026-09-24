@@ -840,13 +840,87 @@ func closeStrategySuppressedByOnChainProtection(sc StrategyConfig) bool {
 	return suppress
 }
 
-func strategyConfigWithOnChainProtectionFilter(sc StrategyConfig) StrategyConfig {
-	if !closeStrategySuppressedByOnChainProtection(sc) {
-		return sc
+const (
+	hlCloseOwnerOnChainTP           = "on_chain_tp"
+	hlOnChainTPBlockedEntryATR      = "entry_atr_missing"
+	hlOnChainTPBlockedTiersUnplaced = "tiers_unresolved"
+)
+
+func hlOnChainTPState(sc StrategyConfig, pos *Position) (bool, string) {
+	if pos == nil || !strategyUsesTieredTPATRClose(sc) {
+		return false, ""
 	}
-	clone := sc
-	clone.CloseStrategy = nil
-	return clone
+	resting := false
+	for _, oid := range pos.TPOIDs {
+		if oid > 0 {
+			resting = true
+			break
+		}
+	}
+	if !resting {
+		for _, armed := range pos.TPArmedTiers {
+			if armed {
+				resting = true
+				break
+			}
+		}
+	}
+	if pos.EntryATR <= 0 {
+		return resting, hlOnChainTPBlockedEntryATR
+	}
+	if !strategyUsesDynamicRegimeClose(sc) && len(strategyTPTiersForRegime(sc, protectionATRRegimeLabel(pos, sc))) == 0 {
+		return resting, hlOnChainTPBlockedTiersUnplaced
+	}
+	return resting, ""
+}
+
+func hlCloseOwnerForCheck(sc StrategyConfig, pos PositionCtx) string {
+	if !closeStrategySuppressedByOnChainProtection(sc) {
+		return ""
+	}
+	if pos.Quantity > 0 && !pos.OnChainTPResting && pos.OnChainTPBlocked != "" {
+		return ""
+	}
+	return hlCloseOwnerOnChainTP
+}
+
+var (
+	hlOnChainTPUnplaceableMu      sync.Mutex
+	hlOnChainTPUnplaceableAlerted = map[string]bool{}
+)
+
+func notifyHLOnChainTPUnplaceable(notifier *MultiNotifier, logger *StrategyLogger, sc StrategyConfig, symbol, reason string) bool {
+	key := hlProtectionGuardKey(sc.ID, symbol)
+	hlOnChainTPUnplaceableMu.Lock()
+	if hlOnChainTPUnplaceableAlerted[key] {
+		hlOnChainTPUnplaceableMu.Unlock()
+		return false
+	}
+	hlOnChainTPUnplaceableAlerted[key] = true
+	hlOnChainTPUnplaceableMu.Unlock()
+	closeName := closeStrategySummaryName(sc)
+	why := "its take-profit tiers resolve to no placeable ladder of two or more tiers for the position's regime"
+	scope := ""
+	if reason == hlOnChainTPBlockedEntryATR {
+		why = "the position has no recorded entry ATR"
+		scope = " With no entry ATR only a tiered_tp_atr_live* ref on the default atr_source=live can fire, because it reads live ATR; every other tiered ref holds."
+	}
+	msg := fmt.Sprintf("**HL ON-CHAIN TP UNPLACEABLE** [%s] %s: no take-profit order rests on Hyperliquid and the protection sync cannot place the %s tiers because %s (%s). The in-process %s evaluator now owns the take-profit for this position, the same way paper runs it.%s The stop-loss is unaffected.",
+		sc.ID, symbol, closeName, why, reason, closeName, scope)
+	if logger != nil {
+		logger.Warn("%s", msg)
+	}
+	if notifier != nil && notifier.HasBackends() {
+		notifier.SendToAllChannels(msg)
+		notifier.SendOwnerDM(msg)
+	}
+	return true
+}
+
+func clearHLOnChainTPUnplaceable(strategyID, symbol string) {
+	hlOnChainTPUnplaceableMu.Lock()
+	delete(hlOnChainTPUnplaceableAlerted, hlProtectionGuardKey(strategyID, symbol))
+	hlOnChainTPUnplaceableMu.Unlock()
 }
 
 func notifyHLProtectionFailure(notifier *MultiNotifier, sc StrategyConfig, symbol, reason string) {

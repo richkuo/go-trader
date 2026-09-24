@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import copy
 import importlib.util
+import json
 import os
 import sys
 
@@ -23,7 +25,7 @@ def _load_post_tp_sl():
 
 sl = _load_post_tp_sl()
 
-from backtester import Backtester
+from backtester import Backtester, _close_refs_use_regime_tiered_tp
 
 
 @pytest.mark.parametrize("raw,kind,attr,value", [
@@ -354,6 +356,7 @@ _SCENARIOS = {
         expect=[("long", 110.0), ("long", 90.0)],
     ),
     "multi_tier_cleared_same_bar_highest_wins": dict(
+        platform="binanceus",
         opens=[100, 100, 100, 120, 110, 105],
         closes=[100, 100, 120, 120, 105, 105],
         intrabar="bar_close",
@@ -368,6 +371,7 @@ _SCENARIOS = {
         expect=[("long", 120.0), ("long", 105.0)],
     ),
     "no_same_bar_fire_after_bump_long": dict(
+        platform="binanceus",
         opens=[100, 100, 100, 110, 99, 99],
         closes=[100, 100, 110, 99, 99, 99],
         intrabar="bar_close",
@@ -377,6 +381,7 @@ _SCENARIOS = {
         single_sl=(99.0, "2024-01-06 00:00:00"),
     ),
     "no_same_bar_fire_after_bump_short": dict(
+        platform="binanceus",
         opens=[100, 100, 100, 90, 101, 101],
         closes=[100, 100, 90, 101, 101, 101],
         side="short",
@@ -385,6 +390,39 @@ _SCENARIOS = {
         params={"sl_after": "breakeven", "tp_tiers": _STANDARD_TIERS},
         expect=[("short", 90.0), ("short", 101.0)],
         single_sl=(101.0, "2024-01-06 00:00:00"),
+    ),
+    "multi_tier_cleared_same_bar_resting_limit_hyperliquid": dict(
+        opens=[100, 100, 100, 120, 110, 105],
+        closes=[100, 100, 120, 120, 105, 105],
+        intrabar="bar_close",
+        stop_loss_atr_mult=2.0,
+        params={"tp_tiers": [
+            {"atr_multiple": 1.0, "close_fraction": 0.3, "sl_after": "breakeven"},
+            {"atr_multiple": 2.0, "close_fraction": 0.6,
+             "sl_after": {"atr_mult": 1.0}},
+            {"atr_multiple": 3.0, "close_fraction": 1.0,
+             "sl_after": {"atr_mult": 2.0}},
+        ]},
+        expect=[("long", 115.0), ("long", 105.0)],
+    ),
+    "tier_bar_moves_stop_next_bar_fires_long_hyperliquid": dict(
+        opens=[100, 100, 100, 110, 99, 99],
+        closes=[100, 100, 110, 99, 99, 99],
+        intrabar="bar_close",
+        stop_loss_atr_mult=1.0,
+        params={"sl_after": "breakeven", "tp_tiers": _STANDARD_TIERS},
+        expect=[("long", 110.0), ("long", 99.0)],
+        single_sl=(99.0, "2024-01-05 00:00:00"),
+    ),
+    "tier_bar_moves_stop_next_bar_fires_short_hyperliquid": dict(
+        opens=[100, 100, 100, 90, 101, 101],
+        closes=[100, 100, 90, 101, 101, 101],
+        side="short",
+        intrabar="bar_close",
+        stop_loss_atr_mult=1.0,
+        params={"sl_after": "breakeven", "tp_tiers": _STANDARD_TIERS},
+        expect=[("short", 90.0), ("short", 101.0)],
+        single_sl=(101.0, "2024-01-05 00:00:00"),
     ),
     "flag_clears_for_next_bar_long": dict(
         opens=[100, 100, 100, 110, 105, 95],
@@ -411,7 +449,7 @@ def test_backtester_sl_after_scenarios(name):
     )
     kwargs = dict(
         initial_capital=1000, commission_pct=0, slippage_pct=0,
-        platform="hyperliquid", strategy_type="perps",
+        platform=spec.get("platform", "hyperliquid"), strategy_type="perps",
         close_strategies=[{"name": "tiered_tp_atr", "params": spec["params"]}],
     )
     if "intrabar" in spec:
@@ -622,16 +660,17 @@ def test_backtester_sl_after_defers_when_sl_unarmed():
     assert hwm == 0.0
 
 
-def test_backtester_sl_after_does_not_seed_when_no_tier_thresholds():
+@pytest.mark.parametrize("platform", ["binanceus", "hyperliquid"])
+def test_backtester_sl_after_does_not_seed_when_no_tier_thresholds(platform):
     df = _df_open_then_hold(
         opens=[100, 100, 100, 80, 80],
         closes=[100, 100, 80, 80, 80],
         atrs=[10, 10, 10, 10, 10],
     )
-    bt = Backtester(
+    kwargs = dict(
         intrabar_resolution="bar_close",
         initial_capital=1000, commission_pct=0, slippage_pct=0,
-        platform="hyperliquid", strategy_type="perps",
+        platform=platform, strategy_type="perps",
         stop_loss_atr_mult=1.0,
         close_strategies=[{
             "name": "tiered_tp_atr",
@@ -644,7 +683,90 @@ def test_backtester_sl_after_does_not_seed_when_no_tier_thresholds():
             },
         }],
     )
+    if platform == "hyperliquid":
+        with pytest.raises(ValueError, match="close_fraction: must be in"):
+            Backtester(**kwargs)
+        return
+    bt = Backtester(**kwargs)
     assert bt._tp_tier_thresholds_static == []
     result = bt.run(df, save=False)
     sl_fires = [t for t in result["trades"] if t.get("exit_price") in (90.0, 89.0, 91.0)]
     assert not sl_fires, f"phantom SL fired at {[t['exit_price'] for t in sl_fires]}"
+
+
+with open(os.path.join(_REPO_ROOT, "backtest", "testdata", "sl_after_paper_parity.json")) as _fh:
+    _PAPER_PARITY = json.load(_fh)
+
+
+def _paper_parity_close_refs(ladder, sl_after=None, tier_sl_after=None):
+    ref = copy.deepcopy(_PAPER_PARITY["ladders"][ladder])
+    tiers = ref["params"]["tp_tiers"]
+    for key, rule in (tier_sl_after or {}).items():
+        tiers[int(key)]["sl_after"] = rule
+    if sl_after is not None:
+        ref["params"]["sl_after"] = sl_after
+    return [ref]
+
+
+def _paper_parity_open_stamp(mod, refs, regime, labels):
+    if _close_refs_use_regime_tiered_tp(refs):
+        rules, errs = mod.parse_strategy_tp_sl_after_rules(refs, regime=regime, labels=labels)
+        thresholds = mod.parse_tp_tier_close_fractions(refs, regime=regime)
+    else:
+        rules, errs = mod.parse_strategy_tp_sl_after_rules(refs, labels=labels)
+        thresholds = mod.parse_tp_tier_close_fractions(refs)
+    assert errs == []
+    return rules, thresholds
+
+
+@pytest.mark.parametrize(
+    "case", _PAPER_PARITY["cleared_tier"], ids=[c["name"] for c in _PAPER_PARITY["cleared_tier"]],
+)
+def test_sl_after_paper_parity_cleared_tier(case):
+    refs = _paper_parity_close_refs(case["ladder"])
+    _, thresholds = _paper_parity_open_stamp(sl, refs, case["regime"], None)
+    got = sl.find_highest_cleared_tier(thresholds, case["closed_ratio"], case["from_idx"])
+    assert got == case["want_idx"]
+
+
+@pytest.mark.parametrize(
+    "case", _PAPER_PARITY["sl_after"], ids=[c["name"] for c in _PAPER_PARITY["sl_after"]],
+)
+def test_sl_after_paper_parity_move(case):
+    bt = Backtester(
+        initial_capital=1000, commission_pct=0, slippage_pct=0,
+        platform="hyperliquid", strategy_type="perps",
+        stop_loss_atr_mult=case["stop_loss_atr_mult"],
+    )
+    pos = case["position"]
+    refs = _paper_parity_close_refs(case["ladder"], case["sl_after"], case["tier_sl_after"])
+    bt._active_sl_after_rules, bt._run_tp_tier_thresholds = _paper_parity_open_stamp(
+        bt._sl_mod, refs, pos["regime"], bt._regime_primary_labels,
+    )
+    bt._run_position_regime = pos["regime"]
+    trigger = pos["stop_loss_trigger_px"]
+    processed = pos["sl_adjusted_tiers_processed"]
+    trail = None
+    high_water = pos["stop_loss_high_water_px"]
+    want = case["want"]
+    for mark in (case["mark"], case["mark"] + 1):
+        trigger, processed, trail, high_water = bt._maybe_apply_sl_after(
+            side=pos["side"],
+            avg_cost=pos["avg_cost"],
+            entry_atr=pos["entry_atr"],
+            position_qty=pos["quantity"],
+            initial_qty=pos["initial_quantity"],
+            mark_price=mark,
+            fill_price=0.0,
+            sl_trigger_px=trigger,
+            sl_tiers_processed=processed,
+            post_tp_trail_mult=trail,
+            sl_high_water_px=high_water,
+        )
+        assert trigger == pytest.approx(want["stop_loss_trigger_px"])
+        assert processed == want["sl_adjusted_tiers_processed"]
+        if want["post_tp_trailing_atr_mult"] is None:
+            assert trail is None
+        else:
+            assert trail == pytest.approx(want["post_tp_trailing_atr_mult"])
+        assert high_water == pytest.approx(want["stop_loss_high_water_px"])

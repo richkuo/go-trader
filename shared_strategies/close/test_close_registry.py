@@ -127,6 +127,9 @@ _LIVE_POS = {"side": "long", "avg_cost": 100, "current_quantity": 1,
       "initial_quantity": 1, "entry_atr": 5},
      {"mark_price": 90, "atr": 2}, {},
      {"close_fraction": 1.0, "reason": "tiered_tp_atr_live:live:5"}),
+    ({**_LIVE_POS, "risk_anchor_price": 99, "tp_model": "resting_limit"},
+     {"mark_price": 105, "atr": 3}, {},
+     {"close_fraction": 0.8, "reason": "tiered_tp_atr_live:entry:3", "tier_fill_price": pytest.approx(103.5)}),
 ])
 def test_tiered_tp_atr_live_atr_source_resolution(registry, position, market, params, expected):
     assert registry.evaluate("tiered_tp_atr_live", position, market, params) == expected

@@ -717,3 +717,115 @@ def test_venue_close_gate_uses_the_meta_cache_on_the_sealed_path(mod, monkeypatc
     assert seen == ["BTC"]
     assert out["close_fraction"] == 0.0
     assert out["close_gate"] == "below_venue_minimum"
+
+
+def _opposite_signal_deps(mod):
+    deps = mod._signal_check_deps()
+    real_apply = deps.apply_strategy
+
+    def apply_strategy(name, df, params=None):
+        out = real_apply(name, df, params).copy()
+        out["signal"] = 0
+        out.iloc[-1, out.columns.get_loc("signal")] = -1
+        return out
+
+    deps.apply_strategy = apply_strategy
+    return deps
+
+
+def _tiered_refs(owner):
+    refs = {"open": {"name": "breakout"}, "closes": [{"name": "tiered_tp_atr"}]}
+    if owner:
+        refs["close_owner"] = owner
+    return refs
+
+
+@pytest.mark.parametrize("tier_reached", [False, True])
+def test_on_chain_tp_owner_holds_the_opposite_open_signal_on_every_path(mod, monkeypatch, tier_reached):
+    last_close = _candles()[-1][4]
+    avg_cost = last_close - 20.0 if tier_reached else last_close + 20.0
+    position_ctx = {"side": "long", "avg_cost": avg_cost, "current_quantity": 1.5,
+                    "initial_quantity": 1.5, "entry_atr": 1.0}
+    deps = _opposite_signal_deps(mod)
+
+    slots, _ = mod.parse_batch_request(json.dumps({"v": 1, "slots": [
+        {"id": "hl-live", "strategy": "breakout", "mode": "live", "position_side": "long",
+         "position_ctx": position_ctx, "strategy_refs": _tiered_refs("on_chain_tp")},
+        {"id": "hl-paper", "strategy": "breakout", "mode": "paper", "position_side": "long",
+         "position_ctx": position_ctx, "strategy_refs": _tiered_refs(None)},
+    ]}))
+    live = mod.evaluate_signal_slot(_shared(mod, FakeAdapter(), mark_price=0.0), slots[0], deps=deps)
+    paper = mod.evaluate_signal_slot(_shared(mod, FakeAdapter(), mark_price=0.0), slots[1], deps=deps)
+
+    assert live["open_action"] == "short"
+    assert live["signal"] == 0
+    assert live["close_fraction"] == 0.0
+    assert live["close_owner"] == "on_chain_tp"
+    assert "close_owner" not in paper
+    if tier_reached:
+        assert paper["close_fraction"] > 0
+        assert paper["signal"] == -1
+    else:
+        assert paper["signal"] == 0
+
+    monkeypatch.setattr(mod, "_signal_check_deps", lambda: deps)
+    out, code = _run_main(mod, monkeypatch, [
+        "breakout", "BTC", "1h", "--mode=live",
+        "--strategy-refs", json.dumps(_tiered_refs("on_chain_tp")),
+        "--position-side", "long", f"--position-avg-cost={avg_cost}",
+        "--position-qty=1.5", "--position-initial-qty=1.5", "--position-entry-atr=1.0",
+    ], "", FakeAdapter())
+    assert code == 0, out
+    single = json.loads(out)
+    assert single["signal"] == 0
+    assert single["close_fraction"] == 0.0
+    assert single["close_owner"] == "on_chain_tp"
+
+
+def test_unknown_close_owner_fails_the_slot(mod):
+    slots, _ = mod.parse_batch_request(json.dumps({"v": 1, "slots": [
+        {"id": "hl-bad", "strategy": "breakout", "mode": "live", "position_side": "long",
+         "position_ctx": {"side": "long", "avg_cost": 100.0, "current_quantity": 1.0},
+         "strategy_refs": _tiered_refs("somebody_else")},
+    ]}))
+    with pytest.raises(ValueError):
+        mod.evaluate_signal_slot(_shared(mod, FakeAdapter()), slots[0], deps=_opposite_signal_deps(mod))
+
+
+def test_slot_and_single_check_evaluate_tiers_under_the_resting_limit_model(mod, monkeypatch, capsys):
+    import argparse
+
+    seen = []
+    recording = types.SimpleNamespace(**vars(mod._signal_check_deps()))
+
+    def close_evaluate(name, position, market, params=None):
+        seen.append(dict(position))
+        return {"close_fraction": 0.5, "reason": "tiered_tp_atr_live:entry:1", "tier_fill_price": 104.0}
+
+    recording.close_evaluate = close_evaluate
+    args = argparse.Namespace(
+        position_side="long", position_avg_cost=98.0, position_qty=1.0, position_initial_qty=1.0,
+        position_entry_atr=2.0, position_risk_anchor_price=100.0, position_regime="",
+    )
+    position_ctx = mod._position_ctx_from_args(args)
+    slot = _slot("hl-tp", "breakout", mode="live", position_side="long", position_ctx=position_ctx,
+                 close_strategies="tiered_tp_atr_live")
+
+    slot_out = mod.evaluate_signal_slot(_shared(mod, FakeAdapter()), slot, deps=recording)
+
+    real_build = mod.build_shared_signal_state
+    monkeypatch.setattr(mod, "_signal_check_deps", lambda: recording)
+    monkeypatch.setattr(mod, "build_shared_signal_state",
+                        lambda symbol, timeframe, **kw: real_build(symbol, timeframe, **{**kw, "adapter": FakeAdapter()}))
+    monkeypatch.setitem(sys.modules, "adapter", types.SimpleNamespace(HyperliquidExchangeAdapter=FakeAdapter))
+    mod.run_signal_check("breakout", "BTC", "1h", "paper", False, None, "breakout",
+                         "tiered_tp_atr_live", "long", position_ctx, mark_price=25_000.0)
+    single_out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+
+    assert len(seen) == 2
+    for position in seen:
+        assert position["tp_model"] == "resting_limit"
+        assert position["risk_anchor_price"] == 100.0
+        assert position["avg_cost"] == 98.0
+    assert slot_out["close_tier_fill_price"] == 104.0
+    assert single_out["close_tier_fill_price"] == 104.0

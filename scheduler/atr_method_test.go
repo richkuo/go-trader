@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -246,6 +247,35 @@ func TestProbeArgvsCarryATRMethod(t *testing.T) {
 	}
 	if has(executeProbeArgv) {
 		t.Error("executeProbeArgv must stay a faithful mirror of the execute argv (no --atr-method)")
+	}
+}
+
+func TestCheckProbeArgvsCarryTheRiskAnchorFlag(t *testing.T) {
+	argvs := map[string][]string{
+		"probeArgv":                                probeArgv,
+		"probeCompositeArgv":                       probeCompositeArgv,
+		"hyperliquidMarketCheckProbeArgv":          hyperliquidMarketCheckProbeArgv,
+		"hyperliquidMarketCheckCompositeProbeArgv": hyperliquidMarketCheckCompositeProbeArgv,
+	}
+	names := make([]string, 0, len(argvs))
+	for name := range argvs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		argv := argvs[name]
+		found := false
+		for _, a := range argv {
+			if strings.HasPrefix(a, "--position-risk-anchor-price=") {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s missing --position-risk-anchor-price", name)
+		}
+		if argv[len(argv)-1] != "--probe-only" {
+			t.Errorf("%s must end with --probe-only, got %q", name, argv[len(argv)-1])
+		}
 	}
 }
 

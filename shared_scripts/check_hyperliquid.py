@@ -64,6 +64,7 @@ def _position_ctx_from_args(args):
         ("position_qty", "current_quantity"),
         ("position_initial_qty", "initial_quantity"),
         ("position_entry_atr", "entry_atr"),
+        ("position_risk_anchor_price", "risk_anchor_price"),
     ):
         value = getattr(args, attr, None)
         if value is not None:
@@ -73,6 +74,8 @@ def _position_ctx_from_args(args):
         ctx["regime"] = regime
     return ctx
 
+
+TP_MODEL_RESTING_LIMIT = "resting_limit"
 
 BATCH_PROTOCOL_VERSION = 1
 
@@ -394,9 +397,12 @@ def evaluate_signal_slot(shared, slot, deps=None):
     open_strategy = slot.get("open_strategy") or None
     close_strategies = slot.get("close_strategies") or None
     close_params_by_name = slot.get("close_params_by_name") or None
+    close_owner = slot.get("close_owner") or None
     strategy_params_override = slot.get("params") or None
     position_side = slot.get("position_side") or ""
     position_ctx = slot.get("position_ctx") or None
+    if position_ctx:
+        position_ctx = {**position_ctx, "tp_model": TP_MODEL_RESTING_LIMIT}
     htf_filter_enabled = bool(slot.get("htf_filter"))
     regime_atr_window = slot.get("regime_atr_window") or ""
 
@@ -407,7 +413,7 @@ def evaluate_signal_slot(shared, slot, deps=None):
     atr_method = shared["atr_method"]
     df = shared["df"].copy()
 
-    open_close_enabled = bool(open_strategy or close_strategies)
+    open_close_enabled = bool(open_strategy or close_strategies or close_owner)
     funding_aware_name = open_strategy or strategy_name
 
     strategy_params = {}
@@ -452,6 +458,7 @@ def evaluate_signal_slot(shared, slot, deps=None):
             close_evaluate=deps.close_evaluate,
             market_ctx=market_ctx,
             close_params_by_name=close_params_by_name,
+            close_owner=close_owner,
         )
         result_df = evaluation.open_result_df
         signal = evaluation.open_signal
@@ -550,7 +557,8 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                      close_params_by_name=None,
                      atr_method="simple",
                      mark_price=0.0,
-                     market=None):
+                     market=None,
+                     close_owner=None):
     try:
         deps = _signal_check_deps()
         _validate_slot_strategy_names(deps, strategy_name, open_strategy, close_strategies)
@@ -582,6 +590,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             "open_strategy": open_strategy,
             "close_strategies": close_strategies,
             "close_params_by_name": close_params_by_name,
+            "close_owner": close_owner,
             "position_side": position_side,
             "position_ctx": position_ctx,
             "regime_atr_window": regime_atr_window,
@@ -676,6 +685,7 @@ def parse_batch_request(raw_stdin):
                 slot["close_strategies"] = parsed["close_csv"]
                 slot["params"] = parsed["open_params"]
                 slot["close_params_by_name"] = parsed["close_params_by_name"]
+                slot["close_owner"] = parsed["close_owner"]
         if not str(slot.get("strategy") or "").strip():
             raise ValueError(f"slot {slot_id!r} is missing 'strategy'")
         out.append(slot)
@@ -2142,6 +2152,7 @@ def main():
         parser.add_argument("--position-initial-qty", type=float, default=None)
         parser.add_argument("--position-entry-atr", type=float, default=None)
         parser.add_argument("--position-regime", default="")
+        parser.add_argument("--position-risk-anchor-price", type=float, default=None)
         parser.add_argument("--mark-price", type=float, default=0.0,
             help="Optional mid from Go's fetchHyperliquidMids cycle; when >0 skips adapter.get_spot_price's duplicate /info allMids call (#768).")
         parser.add_argument("--market-stdin", action="store_true", default=False,
@@ -2193,6 +2204,7 @@ def main():
             atr_method=args.atr_method,
             mark_price=args.mark_price,
             market=market,
+            close_owner=refs["close_owner"] if refs else None,
         )
 
 
