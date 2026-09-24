@@ -826,6 +826,7 @@ func TestDaemonManualCloseRestoresTakeProfits(t *testing.T) {
 func TestManualCloseStopRemovalBookWriters(t *testing.T) {
 	notOpen := &HyperliquidStopLossUpdateResult{CancelOnly: true, StopLossNotOpen: true}
 	cancelled := &HyperliquidStopLossUpdateResult{CancelOnly: true, CancelStopLossSucceeded: true}
+	filled := &HyperliquidStopLossUpdateResult{StopLossFilledExternally: true}
 	for _, tc := range []struct {
 		name        string
 		dashboard   bool
@@ -838,9 +839,11 @@ func TestManualCloseStopRemovalBookWriters(t *testing.T) {
 		{name: "dashboard stop_loss_not_open clears the booked stop", dashboard: true, bookOID: 111, result: notOpen},
 		{name: "dashboard cancel_stop_loss_succeeded clears the booked stop", dashboard: true, bookOID: 111, result: cancelled},
 		{name: "dashboard keeps a newer stop id", dashboard: true, bookOID: 222, result: notOpen, wantOID: 222, wantTrigger: 1900},
+		{name: "dashboard stop_loss_filled_externally keeps the booked stop", dashboard: true, bookOID: 111, result: filled, wantOID: 111, wantTrigger: 1900},
 		{name: "cli stop_loss_not_open clears the booked stop", bookOID: 111, result: notOpen, wantQueued: "cancel-sl"},
 		{name: "cli cancel_stop_loss_succeeded clears the booked stop", bookOID: 111, result: cancelled, wantQueued: "cancel-sl"},
 		{name: "cli keeps a newer stop id", bookOID: 222, result: notOpen, wantOID: 222, wantTrigger: 1900},
+		{name: "cli stop_loss_filled_externally keeps the booked stop and queues nothing", bookOID: 111, result: filled, wantOID: 111, wantTrigger: 1900},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ss, db, cfg := newTradeActionTestServer(t)

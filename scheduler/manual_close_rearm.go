@@ -341,7 +341,9 @@ func rearmedStopLossBookValues(result *HyperliquidStopLossUpdateResult) (int64, 
 		return result.StopLossOID, result.StopLossTriggerPx, "update-sl"
 	case result.StopLossOutcomeUnknown:
 		return 0, result.StopLossTriggerPx, "update-sl"
-	case result.StopLossFilledExternally, result.CancelStopLossSucceeded, result.StopLossNotOpen:
+	case result.StopLossFilledExternally:
+		return 0, 0, ""
+	case result.CancelStopLossSucceeded, result.StopLossNotOpen:
 		return 0, 0, "cancel-sl"
 	}
 	return 0, 0, ""
