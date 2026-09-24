@@ -1506,6 +1506,19 @@ def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_
         sys.exit(1)
 
 
+def run_list_open_order_oids(symbol):
+    try:
+        from adapter import HyperliquidExchangeAdapter
+        adapter = HyperliquidExchangeAdapter()
+        oids = sorted(int(o) for o in adapter.open_order_oids(symbol))
+        print(json.dumps({"platform": "hyperliquid", "open_order_oids": oids}, cls=SafeEncoder))
+    except Exception as e:
+        print(json.dumps({
+            "platform": "hyperliquid",
+            "open_order_check_error": str(e),
+        }, cls=SafeEncoder))
+
+
 def run_update_stop_loss(symbol, side, size, trigger_px, mode, cancel_oid=0):
     if mode != "live":
         print(json.dumps({"error": "--update-stop-loss requires --mode=live"}, cls=SafeEncoder))
@@ -1560,6 +1573,7 @@ def run_update_stop_loss(symbol, side, size, trigger_px, mode, cancel_oid=0):
 
         sl_is_buy = side == "short"
         place_unknown = False
+        pre_oids = None
         trigger_px = adapter.round_perps_trigger_px(symbol, trigger_px)
         if should_place:
             pre_oids = set(int(o) for o in open_oids) if open_oids is not None else _snapshot_open_oids(adapter, symbol)
@@ -1629,6 +1643,8 @@ def run_update_stop_loss(symbol, side, size, trigger_px, mode, cancel_oid=0):
             out["stop_loss_outcome_unknown"] = True
         if old_is_open and not cancel_succeeded:
             out["stop_loss_old_still_open"] = True
+        if place_unknown and pre_oids is not None:
+            out["pre_place_open_oids"] = sorted(int(o) for o in pre_oids)
         print(json.dumps(out, cls=SafeEncoder))
 
     except SystemExit:
@@ -2019,10 +2035,17 @@ def main():
         parser.add_argument("--trigger-px", type=float, required=True)
         parser.add_argument("--mode", default="live")
         parser.add_argument("--cancel-stop-loss-oid", type=int, default=0,
-                            help="cancel this trigger OID before placing the replacement (#501)")
+                            help="cancel this trigger OID after the replacement rests or fills")
         args = parser.parse_args()
         run_update_stop_loss(args.symbol, args.side, args.size, args.trigger_px, args.mode,
                              cancel_oid=args.cancel_stop_loss_oid)
+    elif "--list-open-order-oids" in sys.argv:
+        import argparse
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--list-open-order-oids", action="store_true")
+        parser.add_argument("--symbol", required=True)
+        args = parser.parse_args()
+        run_list_open_order_oids(args.symbol)
     elif "--execute" in sys.argv:
         import argparse
         parser = argparse.ArgumentParser()

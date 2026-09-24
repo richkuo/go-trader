@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -322,14 +323,14 @@ func rearmProtectionAfterFailedClose(sc StrategyConfig, stratState *StrategyStat
 		trades += extraTrades
 		detail = slDetail
 	}
-	if extraTrades, slDetail := rearmScalarStopAfterFailedClose(sc, stratState, symbol, prevStopOID, onChainAbsQty, liqPxByCoin, netSideByCoin, mu, logger); extraTrades > 0 {
+	if extraTrades, slDetail := rearmScalarStopAfterFailedClose(sc, stratState, symbol, prevStopOID, onChainAbsQty, liqPxByCoin, netSideByCoin, mu, notifier, logger); extraTrades > 0 {
 		trades += extraTrades
 		detail = slDetail
 	}
 	return trades, detail
 }
 
-func rearmScalarStopAfterFailedClose(sc StrategyConfig, stratState *StrategyState, symbol string, prevStopOID int64, onChainAbsQty map[string]float64, liqPxByCoin map[string]float64, netSideByCoin map[string]string, mu *sync.RWMutex, logger *StrategyLogger) (int, string) {
+func rearmScalarStopAfterFailedClose(sc StrategyConfig, stratState *StrategyState, symbol string, prevStopOID int64, onChainAbsQty map[string]float64, liqPxByCoin map[string]float64, netSideByCoin map[string]string, mu *sync.RWMutex, notifier *MultiNotifier, logger *StrategyLogger) (int, string) {
 	if !hyperliquidIsLive(sc.Args) || stratState == nil || symbol == "" {
 		return 0, ""
 	}
@@ -380,6 +381,11 @@ func rearmScalarStopAfterFailedClose(sc StrategyConfig, stratState *StrategyStat
 	}
 	if result != nil && result.StopLossOID > 0 {
 		logger.Info("Percentage SL re-armed after failed close for %s (qty=%.6f trigger=$%.4f)", symbol, slEffectiveQty, result.StopLossTriggerPx)
+	}
+	if result != nil && result.CancelStopLossError != "" && result.StopLossOID > 0 {
+		msg := fmt.Sprintf("**HL STOP CANCEL FAILED** [%s] %s old trigger OID %d may still be resting while new trigger OID %d was placed. Error: %s",
+			sc.ID, symbol, cancelOID, result.StopLossOID, result.CancelStopLossError)
+		hlStopReplaceNotifyOnce(sc.ID+"|cancel|"+symbol+"|"+strconv.FormatInt(cancelOID, 10), notifier, msg)
 	}
 	return 0, ""
 }

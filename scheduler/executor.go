@@ -103,6 +103,7 @@ type HyperliquidStopLossUpdateResult struct {
 	StopLossFilledExternally  bool    `json:"stop_loss_filled_externally,omitempty"`
 	StopLossOutcomeUnknown    bool    `json:"stop_loss_outcome_unknown,omitempty"`
 	StopLossOldStillOpen      bool    `json:"stop_loss_old_still_open,omitempty"`
+	PrePlaceOpenOIDs          []int64 `json:"pre_place_open_oids,omitempty"`
 	OpenOrderCheckError       string  `json:"open_order_check_error,omitempty"`
 }
 
@@ -365,6 +366,26 @@ func RunHyperliquidUpdateStopLoss(script, symbol, side string, size, triggerPx f
 	}
 	stdout, stderr, err := runPythonSideEffect(script, args)
 	return parseHyperliquidUpdateStopLossOutput(stdout, string(stderr), err)
+}
+
+var runHyperliquidListOpenOrderOIDsFunc = RunHyperliquidListOpenOrderOIDs
+
+func RunHyperliquidListOpenOrderOIDs(script, symbol string) (oids []int64, readErr string, err error) {
+	stdout, _, err := runPythonSideEffect(script, []string{"--list-open-order-oids", fmt.Sprintf("--symbol=%s", symbol)})
+	if err != nil && len(stdout) == 0 {
+		return nil, "", err
+	}
+	var payload struct {
+		OpenOrderOIDs       []int64 `json:"open_order_oids"`
+		OpenOrderCheckError string  `json:"open_order_check_error"`
+	}
+	if uerr := json.Unmarshal(stdout, &payload); uerr != nil {
+		return nil, "", uerr
+	}
+	if payload.OpenOrderCheckError != "" {
+		return nil, payload.OpenOrderCheckError, nil
+	}
+	return payload.OpenOrderOIDs, "", nil
 }
 
 func buildHyperliquidSyncProtectionArgv(symbol, side string, size, avgCost, entryATR, stopLossATRMult float64, tiers []hlProtectionTier, stopLossOID int64, tpOIDs []int64, tpArmedTiers []bool, forceSLReplace bool, forceTPReplace []bool, cancelTPOIDs []int64, reconcileFillHintsJSON []byte) []string {

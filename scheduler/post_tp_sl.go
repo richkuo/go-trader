@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1042,10 +1043,24 @@ func runPostTPStopLossAdjustment(
 			symbol, clearedIdx, mode, triggerPx, currentOID)
 	}
 	if hlStopPlaceUnread(symbol, currentOID) {
-		if logger != nil {
-			logger.Info("post-TP SL for %s held: the previous place for OID %d could not be read, so the old stop stays", symbol, currentOID)
+		released, adopted := hlReleaseUnreadableStop(sc.Script, symbol, currentOID)
+		if !released {
+			if logger != nil {
+				logger.Info("post-TP SL for %s held: the order book could not be read, so old OID %d stays", symbol, currentOID)
+			}
+			return false, 0, ""
 		}
-		return false, 0, ""
+		if adopted != nil {
+			msg := fmt.Sprintf("**HL POST-TP SL OUTCOME UNKNOWN** [%s] %s: the earlier replacement could not be read. Open order %d is now recorded and old OID %d may still be resting.",
+				sc.ID, symbol, adopted.StopLossOID, currentOID)
+			hlStopReplaceNotifyOnce(sc.ID+"|unread|"+symbol+"|"+strconv.FormatInt(currentOID, 10), notifier, msg)
+			mu.Lock()
+			if p, ok := stratState.Positions[symbol]; ok && p != nil && p.Side == side && p.StopLossOID == currentOID {
+				p.StopLossOID = adopted.StopLossOID
+			}
+			mu.Unlock()
+			return false, 0, ""
+		}
 	}
 	first, result, retryOutcomeUnknown, err := func() (*HyperliquidStopLossUpdateResult, *HyperliquidStopLossUpdateResult, bool, error) {
 		unlock := lockHyperliquidTrailingUpdate(symbol)
@@ -1186,6 +1201,7 @@ func runPostTPStopLossAdjustment(
 				TransitionToTrailing: transitionedToTrailing,
 			})
 		}
+		hlStopReplaceAlertOnce.Delete(sc.ID + "|post-tp-cap|" + symbol)
 		return true, 0, ""
 	}
 

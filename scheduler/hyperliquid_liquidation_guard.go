@@ -5,6 +5,7 @@ import (
 	"math"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -619,6 +620,15 @@ func hlLiquidationClampReplace(candidate hlLiquidationAuditCandidate, clampedTri
 	if clampedTriggerPx <= 0 || candidate.Qty <= 0 {
 		return nil, hlReplaceDeferred
 	}
+	if candidate.StopLossOID > 0 && hlStopPlaceUnread(candidate.Symbol, candidate.StopLossOID) {
+		released, adopted := hlReleaseUnreadableStop(candidate.Script, candidate.Symbol, candidate.StopLossOID)
+		if !released {
+			return &HyperliquidStopLossUpdateResult{StopLossOutcomeUnknown: true, StopLossOldStillOpen: true}, hlReplaceOutcomeUnknown
+		}
+		if adopted != nil {
+			return adopted, hlReplacePlaced
+		}
+	}
 	unlock := lockHyperliquidTrailingUpdate(candidate.Symbol)
 	defer unlock()
 
@@ -674,7 +684,7 @@ func hlLiquidationClampReplace(candidate hlLiquidationAuditCandidate, clampedTri
 		}
 		return result, hlReplaceFilledExternally
 	}
-	if result.CancelStopLossError != "" {
+	if result.CancelStopLossError != "" && result.StopLossOID == 0 && !(result.StopLossFilledImmediately && result.StopLossTriggerPx > 0) {
 		if logger != nil {
 			logger.Warn("Liquidation-clamp SL cancel failed for %s; original stop still resting: %s", candidate.Symbol, result.CancelStopLossError)
 		}
@@ -904,7 +914,7 @@ func runHyperliquidLiquidationAudit(
 			action = hlLiquidationActionFilledOnChain
 		case hlReplaceOutcomeUnknown:
 			action = hlLiquidationActionOutcomeUnknown
-			if c.StopLossOID == 0 {
+			if c.StopLossOID == 0 || (result != nil && result.StopLossOldStillOpen) {
 				action = hlLiquidationActionPlacementUnknown
 			}
 			mu.Lock()
@@ -963,6 +973,11 @@ func runHyperliquidLiquidationAudit(
 		case hlReplacePlaced, hlReplaceFilled:
 			if outcome == hlReplaceFilled {
 				action = hlLiquidationActionExited
+			}
+			if result != nil && result.CancelStopLossError != "" && result.StopLossOID > 0 {
+				msg := fmt.Sprintf("**HL STOP CANCEL FAILED** [%s] %s old trigger OID %d may still be resting while new trigger OID %d was placed. Error: %s",
+					sc.ID, c.Symbol, c.StopLossOID, result.StopLossOID, result.CancelStopLossError)
+				hlStopReplaceNotifyOnce(sc.ID+"|cancel|"+c.Symbol+"|"+strconv.FormatInt(c.StopLossOID, 10), notifier, msg)
 			}
 			mu.Lock()
 			ss := state.Strategies[c.StrategyID]
