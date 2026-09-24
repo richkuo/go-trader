@@ -305,7 +305,7 @@ func defaultHedgeExecutor() hedgeExecutor {
 				marginMode = hedgeMarginMode(sc)
 				leverage = hedgeLeverage(sc)
 			}
-			res, stderr, err := runHyperliquidExecuteFn(sc.Script, coin, side, qty, 0, 0, 0, marginMode, leverage, false, hlExecuteSnapshot{})
+			res, stderr, err := runHyperliquidExecuteFn(sc.Script, coin, side, qty, 0, 0, 0, marginMode, leverage, hlCloseModeNone, hlExecuteSnapshot{})
 			if stderr != "" {
 				fmt.Printf("[hedge] %s execute stderr: %s\n", coin, stderr)
 			}

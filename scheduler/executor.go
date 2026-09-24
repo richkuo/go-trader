@@ -59,6 +59,10 @@ type HyperliquidResult struct {
 	SharedCloseEscalateFailureError string                 `json:"-"`
 	LiveOrderSubmitted              bool                   `json:"-"`
 	LiveOrderCancelRequested        bool                   `json:"-"`
+	SizedCloseBookFraction          float64                `json:"-"`
+	SizedCloseCanceledOIDs          []int64                `json:"-"`
+	SizedCloseBookedQty             float64                `json:"-"`
+	SizedClosePreSend               hlCloseView            `json:"-"`
 }
 
 type HyperliquidFill struct {
@@ -88,6 +92,7 @@ type HyperliquidExecuteResult struct {
 	CancelStopLossFailedOIDs    []int64               `json:"cancel_stop_loss_failed_oids,omitempty"`
 	StopLossError               string                `json:"stop_loss_error,omitempty"`
 	StopLossFilledImmediately   bool                  `json:"stop_loss_filled_immediately,omitempty"`
+	OrderOutcome                string                `json:"order_outcome,omitempty"`
 }
 
 type HyperliquidStopLossUpdateResult struct {
@@ -107,6 +112,8 @@ type HyperliquidStopLossUpdateResult struct {
 	OpenOrderCheckError       string  `json:"open_order_check_error,omitempty"`
 	SentCancelOID             int64   `json:"-"`
 	MatchedSize               float64 `json:"-"`
+	CancelOnly                bool    `json:"cancel_only,omitempty"`
+	StopLossNotOpen           bool    `json:"stop_loss_not_open,omitempty"`
 }
 
 type HyperliquidProtectionSyncResult struct {
@@ -136,7 +143,9 @@ type HyperliquidProtectionSyncResult struct {
 	TP2FilledExternally       bool      `json:"tp2_filled_externally,omitempty"`
 	TPCancelFailedOIDs        []int64   `json:"tp_cancel_failed_oids,omitempty"`
 	TPCancelFilledOIDs        []int64   `json:"tp_cancel_filled_oids,omitempty"`
+	TPCancelNotOpenOIDs       []int64   `json:"tp_cancel_not_open_oids,omitempty"`
 	CancelStopLossSucceeded   bool      `json:"cancel_stop_loss_succeeded,omitempty"`
+	CancelStopLossError       string    `json:"cancel_stop_loss_error,omitempty"`
 	StopLossOutcomeUnknown    bool      `json:"stop_loss_outcome_unknown,omitempty"`
 }
 
@@ -307,16 +316,41 @@ type hlExecuteSnapshot struct {
 	AccountMarginMode string
 }
 
-func buildHyperliquidExecuteArgs(symbol, side string, size, stopLossPct float64, cancelStopLossOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) []string {
+type hlCloseMode int
+
+const (
+	hlCloseModeNone hlCloseMode = iota
+	hlCloseModeWhole
+	hlCloseModeReduceOnly
+	hlCloseModeCross
+)
+
+func (m hlCloseMode) String() string {
+	switch m {
+	case hlCloseModeWhole:
+		return "whole"
+	case hlCloseModeReduceOnly:
+		return "reduce_only"
+	case hlCloseModeCross:
+		return "cross"
+	default:
+		return "none"
+	}
+}
+
+func buildHyperliquidExecuteArgs(symbol, side string, size, stopLossPct float64, cancelStopLossOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) []string {
 	args := []string{
 		"--execute",
 		fmt.Sprintf("--symbol=%s", symbol),
 		fmt.Sprintf("--side=%s", side),
 		"--mode=live",
 	}
-	if closeFullPosition {
+	switch closeMode {
+	case hlCloseModeWhole:
 		args = append(args, "--close-full-position")
-	} else {
+	case hlCloseModeReduceOnly, hlCloseModeCross:
+		args = append(args, fmt.Sprintf("--size=%g", size), "--close-mode="+closeMode.String())
+	default:
 		args = append(args, fmt.Sprintf("--size=%g", size))
 	}
 	if stopLossPct > 0 {
@@ -346,8 +380,8 @@ func buildHyperliquidExecuteArgs(symbol, side string, size, stopLossPct float64,
 	return args
 }
 
-func RunHyperliquidExecute(script, symbol, side string, size, stopLossPct float64, cancelStopLossOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
-	args := buildHyperliquidExecuteArgs(symbol, side, size, stopLossPct, cancelStopLossOID, prevPosQty, marginMode, leverage, closeFullPosition, snapshot, extraCancelOIDs...)
+func RunHyperliquidExecute(script, symbol, side string, size, stopLossPct float64, cancelStopLossOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+	args := buildHyperliquidExecuteArgs(symbol, side, size, stopLossPct, cancelStopLossOID, prevPosQty, marginMode, leverage, closeMode, snapshot, extraCancelOIDs...)
 	stdout, stderr, err := runPythonSideEffect(script, args)
 	return parseHyperliquidExecuteOutput(stdout, string(stderr), err)
 }
@@ -528,6 +562,28 @@ func confirmHyperliquidExecuteFill(res *HyperliquidExecuteResult, err error) (*H
 		return res, fmt.Errorf("exchange returned no confirmed fill (sz=%.8f px=%.8f)", fill.TotalSz, fill.AvgPx)
 	}
 	return res, nil
+}
+
+type hlCloseFillOutcome struct {
+	Filled float64
+	Known  bool
+}
+
+func hlExecuteFillOutcome(res *HyperliquidExecuteResult, err error, bookQty float64) hlCloseFillOutcome {
+	if res == nil {
+		return hlCloseFillOutcome{}
+	}
+	switch res.OrderOutcome {
+	case "rejected", "not_sent":
+		return hlCloseFillOutcome{Known: true}
+	case "filled":
+		if _, confirmErr := confirmHyperliquidExecuteFill(res, err); confirmErr != nil {
+			return hlCloseFillOutcome{}
+		}
+		booked, _, _ := manualCloseFillAttribution(bookQty, res.Execution.Fill)
+		return hlCloseFillOutcome{Filled: booked, Known: true}
+	}
+	return hlCloseFillOutcome{}
 }
 
 func hyperliquidExecuteSucceededCancelOIDs(result *HyperliquidExecuteResult, requested []int64) []int64 {

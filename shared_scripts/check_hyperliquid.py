@@ -180,15 +180,6 @@ def _venue_min_order_notional_margin():
         return 0.03
 
 
-def _floor_lot_size(qty, lot_decimals):
-    from decimal import Decimal, ROUND_DOWN
-
-    if qty <= 0:
-        return 0.0
-    quant = Decimal("1").scaleb(-max(int(lot_decimals), 0))
-    return float(Decimal(str(qty)).quantize(quant, rounding=ROUND_DOWN))
-
-
 def resolve_venue_lot_decimals(shared, symbol):
     try:
         adapter = shared.get("adapter")
@@ -223,8 +214,10 @@ def apply_venue_close_gate(decision, position_ctx, price, lot_decimals, min_noti
         return decision
     if current_qty <= 0:
         return decision
+    from adapter import floor_lot_size
+
     requested_qty = current_qty * close_fraction
-    floored_qty = _floor_lot_size(requested_qty, lot_decimals)
+    floored_qty = floor_lot_size(requested_qty, lot_decimals)
     try:
         px = float(price or 0.0)
     except (TypeError, ValueError):
@@ -841,22 +834,24 @@ def _classify_cancel_response(sdk_response):
 
 
 def _extract_execute_fill(sdk_response):
-    if not isinstance(sdk_response, dict) or sdk_response.get("status") != "ok":
-        return None, f"exchange rejected order: {sdk_response}"
+    if not isinstance(sdk_response, dict):
+        return None, f"exchange returned no usable order response: {sdk_response!r}", "unknown"
+    if sdk_response.get("status") != "ok":
+        return None, f"exchange rejected order: {sdk_response}", "rejected"
 
     response = sdk_response.get("response")
     data = response.get("data") if isinstance(response, dict) else None
     statuses = data.get("statuses") if isinstance(data, dict) else None
     if not isinstance(statuses, list) or not statuses:
-        return None, "exchange returned no order status"
+        return None, "exchange returned no order status", "unknown"
 
     status = statuses[0]
     if not isinstance(status, dict):
-        return None, "exchange returned a malformed order status"
+        return None, "exchange returned a malformed order status", "unknown"
     if "error" in status:
-        return None, f"exchange rejected order: {status['error']}"
+        return None, f"exchange rejected order: {status['error']}", "rejected"
     if "filled" not in status or not isinstance(status["filled"], dict):
-        return None, "exchange returned no filled status"
+        return None, "exchange returned no filled status", "unknown"
 
     filled = status["filled"]
     raw_avg_px = filled.get("avgPx")
@@ -865,11 +860,13 @@ def _extract_execute_fill(sdk_response):
         avg_px = float(raw_avg_px)
         total_sz = float(raw_total_sz)
     except (TypeError, ValueError):
-        return None, f"exchange returned malformed fill values (avgPx={raw_avg_px!r}, totalSz={raw_total_sz!r})"
+        return None, f"exchange returned malformed fill values (avgPx={raw_avg_px!r}, totalSz={raw_total_sz!r})", "unknown"
     if not math.isfinite(avg_px) or not math.isfinite(total_sz):
-        return None, f"exchange returned malformed fill values (avgPx={raw_avg_px!r}, totalSz={raw_total_sz!r})"
-    if avg_px <= 0 or total_sz <= 0:
-        return None, f"exchange returned no confirmed fill (sz={total_sz:.8f} px={avg_px:.8f})"
+        return None, f"exchange returned malformed fill values (avgPx={raw_avg_px!r}, totalSz={raw_total_sz!r})", "unknown"
+    if total_sz == 0:
+        return None, f"exchange returned no confirmed fill (sz={total_sz:.8f} px={avg_px:.8f})", "rejected"
+    if avg_px <= 0 or total_sz < 0:
+        return None, f"exchange returned no confirmed fill (sz={total_sz:.8f} px={avg_px:.8f})", "unknown"
 
     fill = {"avg_px": avg_px, "total_sz": total_sz}
     oid = filled.get("oid")
@@ -886,7 +883,7 @@ def _extract_execute_fill(sdk_response):
                 fill["fee"] = parsed_fee
         except (TypeError, ValueError):
             print(f"[WARN] ignoring malformed fill fee={fee!r}", file=sys.stderr)
-    return fill, ""
+    return fill, "", "filled"
 
 
 def _add_execute_cancel_metadata(payload, cancel_err, cancel_succeeded, cancel_succeeded_oids, cancel_failed_oids):
@@ -1070,33 +1067,45 @@ def run_sync_protection(
 
         surplus_cancel_failed = []
         surplus_cancel_filled = []
+        surplus_cancel_not_open = []
         for surplus_oid in cancel_tp_oids or []:
             oid = int(surplus_oid)
             if oid <= 0:
                 continue
-            action, fill = _resolve_missing_oid(oid)
-            if action == "filled":
+            if open_oids is None:
+                surplus_cancel_failed.append(oid)
+                continue
+            if _oid_is_open(open_oids, oid):
+                try:
+                    kind, payload = _classify_cancel_response(adapter.cancel_order_by_oid(symbol, oid))
+                    if kind != "ok":
+                        surplus_cancel_failed.append(oid)
+                        print(
+                            f"[WARN] cancel surplus TP OID={oid} rejected: {payload}",
+                            file=sys.stderr,
+                        )
+                except Exception as ce:
+                    surplus_cancel_failed.append(oid)
+                    print(
+                        f"[WARN] cancel surplus TP OID={oid} failed: {ce}",
+                        file=sys.stderr,
+                    )
+                continue
+            fill = _oid_filled_externally(adapter, oid, fill_check_since_ms, fill_hints)
+            if fill.get("filled"):
                 surplus_cancel_filled.append(oid)
                 print(
                     f"[WARN] surplus TP OID={oid} already filled on-chain; not canceling — reconciler will book the close",
                     file=sys.stderr,
                 )
                 continue
-            if action == "unknown":
-                surplus_cancel_failed.append(oid)
-                continue
-            try:
-                adapter.cancel_order_by_oid(symbol, oid)
-            except Exception as ce:
-                surplus_cancel_failed.append(oid)
-                print(
-                    f"[WARN] cancel surplus TP OID={oid} failed: {ce}",
-                    file=sys.stderr,
-                )
+            surplus_cancel_not_open.append(oid)
         if surplus_cancel_failed:
             out["tp_cancel_failed_oids"] = surplus_cancel_failed
         if surplus_cancel_filled:
             out["tp_cancel_filled_oids"] = surplus_cancel_filled
+        if surplus_cancel_not_open:
+            out["tp_cancel_not_open_oids"] = surplus_cancel_not_open
 
         if stop_loss_atr_mult > 0:
             if side == "long":
@@ -1153,6 +1162,8 @@ def run_sync_protection(
                             out["stop_loss_error"] = f"force replace cancel rejected: {payload}"
                     except Exception as ce:
                         out["stop_loss_error"] = f"force replace cancel: {ce}"
+                    if not cancel_ok:
+                        out["cancel_stop_loss_error"] = out["stop_loss_error"]
                     out["cancel_stop_loss_succeeded"] = cancel_ok
                     if cancel_ok:
                         _place_sl()
@@ -1261,7 +1272,11 @@ def run_sync_protection(
                         continue
                     if _oid_is_open(open_oids, prev_oid) and idx < len(force_tp) and force_tp[idx]:
                         try:
-                            adapter.cancel_order_by_oid(symbol, int(prev_oid))
+                            kind, payload = _classify_cancel_response(
+                                adapter.cancel_order_by_oid(symbol, int(prev_oid)))
+                            if kind != "ok":
+                                tp_errors[idx] = f"force replace cancel rejected: {payload}"
+                                continue
                         except Exception as ce:
                             tp_errors[idx] = f"force replace cancel: {ce}"
                             continue
@@ -1322,9 +1337,44 @@ def run_sync_protection(
         sys.exit(1)
 
 
-def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_pos_qty=0.0, margin_mode="", leverage=0, close_full_position=False, account_leverage=0, account_margin_mode=""):
+EXECUTE_CLOSE_MODES = ("reduce_only", "cross")
+
+
+def execute_close_mode_error(close_mode, close_full_position, size, stop_loss_pct, prev_pos_qty, margin_mode):
+    if not close_mode:
+        return ""
+    if close_mode not in EXECUTE_CLOSE_MODES:
+        return f"invalid --close-mode {close_mode!r}, expected one of {', '.join(EXECUTE_CLOSE_MODES)}"
+    if close_full_position:
+        return "--close-mode cannot be combined with --close-full-position"
+    try:
+        size_ok = float(size) > 0 and math.isfinite(float(size))
+    except (TypeError, ValueError):
+        size_ok = False
+    if not size_ok:
+        return "--close-mode requires --size > 0"
+    if float(stop_loss_pct or 0) > 0:
+        return "--close-mode cannot place a stop-loss (--stop-loss-pct must be 0)"
+    if float(prev_pos_qty or 0) > 0:
+        return "--close-mode cannot be combined with --prev-pos-qty (flip orders are not closes)"
+    if margin_mode:
+        return "--close-mode cannot be combined with --margin-mode (margin is set on opens only)"
+    return ""
+
+
+def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_pos_qty=0.0, margin_mode="", leverage=0, close_full_position=False, account_leverage=0, account_margin_mode="", close_mode=""):
     if mode != "live":
-        print(json.dumps({"error": "--execute requires --mode=live"}, cls=SafeEncoder))
+        print(json.dumps({"error": "--execute requires --mode=live", "order_outcome": "not_sent"}, cls=SafeEncoder))
+        sys.exit(1)
+    close_mode_err = execute_close_mode_error(close_mode, close_full_position, size, stop_loss_pct, prev_pos_qty, margin_mode)
+    if close_mode_err:
+        print(json.dumps({
+            "execution": None,
+            "platform": "hyperliquid",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "error": close_mode_err,
+            "order_outcome": "not_sent",
+        }, cls=SafeEncoder))
         sys.exit(1)
 
     cancel_err = ""
@@ -1348,6 +1398,7 @@ def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_
                     "platform": "hyperliquid",
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                     "error": f"invalid margin_mode {margin_mode!r}, expected 'isolated' or 'cross'",
+                    "order_outcome": "not_sent",
                 }, cls=SafeEncoder))
                 sys.exit(1)
             if leverage < 1:
@@ -1356,6 +1407,7 @@ def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_
                     "platform": "hyperliquid",
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                     "error": f"--margin-mode requires --leverage >= 1, got {leverage}",
+                    "order_outcome": "not_sent",
                 }, cls=SafeEncoder))
                 sys.exit(1)
             current = None
@@ -1379,8 +1431,33 @@ def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_
                         "platform": "hyperliquid",
                         "timestamp": datetime.now(timezone.utc).isoformat(),
                         "error": f"update_leverage failed (margin_mode={margin_mode}, leverage={leverage}): {ue}",
+                        "order_outcome": "not_sent",
                     }, cls=SafeEncoder))
                     sys.exit(1)
+
+        if close_mode and adapter.floor_size(symbol, size) <= 0:
+            print(json.dumps({
+                "execution": None,
+                "platform": "hyperliquid",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "error": f"sized close {size} for {symbol} floors to zero lots; no order sent and no protection cancelled",
+                "order_outcome": "not_sent",
+            }, cls=SafeEncoder))
+            sys.exit(1)
+
+        sized_close_px = 0.0
+        if close_mode:
+            try:
+                sized_close_px = adapter.sized_close_price(symbol, is_buy)
+            except Exception as pe:
+                print(json.dumps({
+                    "execution": None,
+                    "platform": "hyperliquid",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "error": f"sized close {symbol} has no usable mid price ({pe}); no order sent and no protection cancelled",
+                    "order_outcome": "not_sent",
+                }, cls=SafeEncoder))
+                sys.exit(1)
 
         if cancel_attempted:
             cancel_errors = []
@@ -1408,16 +1485,19 @@ def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_
 
         if close_full_position:
             result = adapter.market_close(symbol, sz=None)
+        elif close_mode:
+            result = adapter.market_close_sized(symbol, is_buy, size, sized_close_px, reduce_only=(close_mode == "reduce_only"))
         else:
             result = adapter.market_open(symbol, is_buy, size)
 
-        fill, fill_error = _extract_execute_fill(result)
+        fill, fill_error, order_outcome = _extract_execute_fill(result)
         if fill_error:
             err_payload = {
                 "execution": None,
                 "platform": "hyperliquid",
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "error": fill_error,
+                "order_outcome": order_outcome,
             }
             _add_execute_cancel_metadata(
                 err_payload,
@@ -1481,6 +1561,7 @@ def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_
             },
             "platform": "hyperliquid",
             "timestamp": datetime.now(timezone.utc).isoformat(),
+            "order_outcome": "filled",
         }
         _add_execute_cancel_metadata(
             out,
@@ -1502,6 +1583,7 @@ def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_
             "platform": "hyperliquid",
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "error": str(e),
+            "order_outcome": "unknown",
         }
         _add_execute_cancel_metadata(
             err_payload,
@@ -1551,6 +1633,51 @@ def run_list_open_order_oids(symbol):
         }, cls=SafeEncoder))
 
 
+def _run_cancel_only_stop_loss(adapter, symbol, cancel_oid):
+    out = {
+        "platform": "hyperliquid",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "cancel_only": True,
+    }
+    if cancel_oid <= 0:
+        out["error"] = "--size=0 is the cancel-only mode and needs --cancel-stop-loss-oid"
+        print(json.dumps(out, cls=SafeEncoder))
+        sys.exit(1)
+    try:
+        open_oids = adapter.open_order_oids(symbol)
+    except Exception as oe:
+        out["open_order_check_error"] = str(oe)
+        out["error"] = f"open orders unreadable, stop-loss OID={cancel_oid} not verified: {oe}"
+        print(f"[WARN] open_order_oids({symbol}) failed: {oe}; stop-loss OID={cancel_oid} not verified", file=sys.stderr)
+        print(json.dumps(out, cls=SafeEncoder))
+        sys.exit(1)
+    if _oid_is_open(open_oids, cancel_oid):
+        cancel_err = ""
+        try:
+            kind, payload = _classify_cancel_response(adapter.cancel_trigger_order(symbol, cancel_oid))
+            if kind != "ok":
+                cancel_err = payload
+        except Exception as ce:
+            cancel_err = str(ce)
+        if cancel_err:
+            out["cancel_stop_loss_error"] = cancel_err
+            out["error"] = f"cancel of stop-loss OID={cancel_oid} failed: {cancel_err}"
+            print(f"[WARN] cancel_trigger_order({symbol}, {cancel_oid}) failed: {cancel_err}", file=sys.stderr)
+            print(json.dumps(out, cls=SafeEncoder))
+            sys.exit(1)
+        out["cancel_stop_loss_succeeded"] = True
+        print(json.dumps(out, cls=SafeEncoder))
+        return
+    since_ms = int(time.time() * 1000) - 7 * 24 * 3600 * 1000
+    fill = _oid_filled_externally(adapter, cancel_oid, since_ms, None)
+    if fill.get("filled"):
+        out["stop_loss_filled_externally"] = True
+        print(f"[WARN] stop-loss OID={cancel_oid} already filled on-chain; reconciler will book the close", file=sys.stderr)
+    else:
+        out["stop_loss_not_open"] = True
+    print(json.dumps(out, cls=SafeEncoder))
+
+
 def run_update_stop_loss(symbol, side, size, trigger_px, mode, cancel_oid=0):
     if mode != "live":
         print(json.dumps({"error": "--update-stop-loss requires --mode=live"}, cls=SafeEncoder))
@@ -1577,6 +1704,10 @@ def run_update_stop_loss(symbol, side, size, trigger_px, mode, cancel_oid=0):
                 "error": f"invalid side {side!r}, expected 'long' or 'short'",
             }, cls=SafeEncoder))
             sys.exit(1)
+
+        if size <= 0:
+            _run_cancel_only_stop_loss(adapter, symbol, cancel_oid)
+            return
 
         open_oids = None
         if cancel_attempted:
@@ -2164,6 +2295,8 @@ def main():
                             help="on-chain leverage observed in Go's clearinghouseState snapshot; when paired with --account-margin-mode lets Python skip the duplicate get_position_leverage /info call (#768)")
         parser.add_argument("--account-margin-mode", default="",
                             help="on-chain margin mode observed in Go's clearinghouseState snapshot; see --account-leverage (#768)")
+        parser.add_argument("--close-mode", default="", choices=["", "reduce_only", "cross"],
+                            help="sized close lane set by Go for a close only: reduce_only sends a reduce-only IOC, cross sends the netted IOC; both floor the size to the lot (#1577)")
         parser.add_argument("--probe-only", action="store_true",
                             help="Startup compatibility probe (PR #769): validate execute-mode argv shape — including --account-leverage / --account-margin-mode — and exit 0 without trading.")
         args = parser.parse_args()
@@ -2178,7 +2311,8 @@ def main():
                     margin_mode=args.margin_mode, leverage=args.leverage,
                     close_full_position=args.close_full_position,
                     account_leverage=args.account_leverage,
-                    account_margin_mode=args.account_margin_mode)
+                    account_margin_mode=args.account_margin_mode,
+                    close_mode=args.close_mode)
     elif "--limit-open" in sys.argv:
         import argparse
         parser = argparse.ArgumentParser()

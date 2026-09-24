@@ -74,10 +74,10 @@ def _round_perps_px(px: float, sz_decimals: int) -> float:
     return round(px, decimals)
 
 
-def _floor_size(sz: float, sz_decimals: int) -> float:
+def floor_lot_size(sz: float, sz_decimals: int) -> float:
     if sz <= 0:
-        return sz
-    quant = Decimal("1").scaleb(-max(sz_decimals, 0))
+        return 0.0
+    quant = Decimal("1").scaleb(-max(int(sz_decimals), 0))
     return float(Decimal(str(sz)).quantize(quant, rounding=ROUND_DOWN))
 
 
@@ -627,6 +627,25 @@ class HyperliquidExchangeAdapter:
                 raise ValueError(f"Size rounded to zero for {symbol} (sz_decimals={sz_decimals})")
         return exchange.market_close(symbol, sz)
 
+    def sized_close_price(self, symbol: str, is_buy: bool) -> float:
+        sz_decimals = self._sz_decimals(symbol)
+        mid = _safe_float(self._info.all_mids().get(symbol))
+        if mid <= 0 or not math.isfinite(mid):
+            raise ValueError(f"no usable mid price for {symbol}")
+        return _round_perps_px(mid * (1.01 if is_buy else 0.99), sz_decimals)
+
+    def market_close_sized(self, symbol: str, is_buy: bool, size: float, px: float, reduce_only: bool) -> dict:
+        exchange = self._require_exchange("market_close_sized")
+        sz_decimals = self._sz_decimals(symbol)
+        size = floor_lot_size(size, sz_decimals)
+        if size <= 0:
+            raise ValueError(f"Size floored to zero for {symbol} (sz_decimals={sz_decimals})")
+        px = _safe_float(px)
+        if px <= 0 or not math.isfinite(px):
+            raise ValueError(f"no usable limit price for {symbol}")
+        order_type = {"limit": {"tif": "Ioc"}}
+        return exchange.order(symbol, is_buy, size, px, order_type, reduce_only=bool(reduce_only))
+
     def lookup_fill_fee_by_oid(
         self,
         oid: int,
@@ -760,7 +779,7 @@ class HyperliquidExchangeAdapter:
     ) -> dict:
         exchange = self._require_exchange("place_take_profit_limit")
         sz_decimals = self._sz_decimals(symbol)
-        sz = _floor_size(sz, sz_decimals)
+        sz = floor_lot_size(sz, sz_decimals)
         if sz <= 0:
             raise ValueError(f"Size floored to zero for {symbol} (sz_decimals={sz_decimals})")
         if limit_px <= 0:
@@ -773,7 +792,7 @@ class HyperliquidExchangeAdapter:
 
     def floor_size(self, symbol: str, sz: float) -> float:
         sz_decimals = self._sz_decimals(symbol) if self._info else 3
-        return _floor_size(sz, sz_decimals)
+        return floor_lot_size(sz, sz_decimals)
 
     def round_size(self, symbol: str, sz: float) -> float:
         sz_decimals = self._sz_decimals(symbol) if self._info else 3

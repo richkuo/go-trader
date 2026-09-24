@@ -544,7 +544,7 @@ func applyManualActionWithCriticals(state *AppState, cfg *Config, scByID map[str
 		if !manualPositionOwnedByStrategy(pos, a.StrategyID) {
 			return nil, fmt.Errorf("position %s/%s is owned by %q, not %q", a.StrategyID, a.Symbol, pos.OwnerStrategyID, a.StrategyID)
 		}
-		closedFull := a.IsFullClose
+		closedFull := a.IsFullClose || pos.Quantity-a.Quantity <= 1e-9
 		side := closeTradeSide(pos.Side)
 		closeLabel := operatorCloseLabel(sc)
 
