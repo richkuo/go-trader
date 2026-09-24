@@ -999,6 +999,7 @@ func TestRunPostTPStopLossAdjustment_ReadsVenueReply(t *testing.T) {
 		wantDMs       int
 		wantMessages  int
 		wantLiqAction hlLiquidationAlertAction
+		wantHeld      bool
 	}{
 		{name: "resting", reply: fixed(HyperliquidStopLossUpdateResult{StopLossOID: 999, CancelStopLossSucceeded: true}),
 			wantCalls: 1, wantSentPx: 100, wantSentQty: 0.5, wantApplied: true, wantQty: 0.5, wantOID: 999, wantTrigger: 100, wantWatermark: 1},
@@ -1014,6 +1015,8 @@ func TestRunPostTPStopLossAdjustment_ReadsVenueReply(t *testing.T) {
 			wantCalls: 1, wantSentPx: 100, wantSentQty: 0.5, wantQty: 0.5, wantOID: 0, wantTrigger: 100, wantDMs: 1, wantMessages: 1},
 		{name: "outcome unknown with the old stop already gone", reply: fixed(HyperliquidStopLossUpdateResult{StopLossOutcomeUnknown: true, StopLossError: "no usable status"}),
 			wantCalls: 1, wantSentPx: 100, wantSentQty: 0.5, wantQty: 0.5, wantOID: 0, wantTrigger: 100, wantDMs: 1, wantMessages: 1},
+		{name: "unreadable place leaves the old stop", reply: fixed(HyperliquidStopLossUpdateResult{StopLossOutcomeUnknown: true, StopLossError: "no usable status", StopLossOldStillOpen: true}),
+			wantCalls: 1, wantSentPx: 100, wantSentQty: 0.5, wantQty: 0.5, wantOID: 111, wantTrigger: 95, wantDMs: 1, wantMessages: 1, wantHeld: true},
 		{name: "cancel landed placement rejected", reply: fixed(HyperliquidStopLossUpdateResult{CancelStopLossSucceeded: true, StopLossError: "place_stop_loss SDK error"}),
 			wantCalls: 1, wantSentPx: 100, wantSentQty: 0.5, wantQty: 0.5, wantOID: 0, wantTrigger: 0, wantDMs: 1, wantMessages: 1},
 		{name: "script error after a landed cancel", reply: fixed(HyperliquidStopLossUpdateResult{Error: "boom", CancelStopLossSucceeded: true}),
@@ -1051,6 +1054,10 @@ func TestRunPostTPStopLossAdjustment_ReadsVenueReply(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			clearHLLiquidationAlert("hl-sl-after", "ETH")
 			defer clearHLLiquidationAlert("hl-sl-after", "ETH")
+			hlUnreadableStopPlace.Range(func(k, _ any) bool {
+				hlUnreadableStopPlace.Delete(k)
+				return true
+			})
 
 			var mu sync.RWMutex
 			type call struct {
@@ -1153,6 +1160,14 @@ func TestRunPostTPStopLossAdjustment_ReadsVenueReply(t *testing.T) {
 			}
 			if got := lastLiqAlertAction("hl-sl-after", "ETH"); got != tc.wantLiqAction {
 				t.Errorf("liquidation alert action = %q, want %q", got, tc.wantLiqAction)
+			}
+			if tc.wantHeld {
+				if _, _, _ = runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, notifier, nil, tc.onChain, tc.liqPx, tc.netSide); len(calls) != 1 {
+					t.Errorf("held retry made %d venue calls, want 1", len(calls))
+				}
+				if pos.StopLossOID != 111 {
+					t.Errorf("held retry changed oid to %d", pos.StopLossOID)
+				}
 			}
 		})
 	}

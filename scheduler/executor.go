@@ -102,6 +102,7 @@ type HyperliquidStopLossUpdateResult struct {
 	StopLossFilledImmediately bool    `json:"stop_loss_filled_immediately,omitempty"`
 	StopLossFilledExternally  bool    `json:"stop_loss_filled_externally,omitempty"`
 	StopLossOutcomeUnknown    bool    `json:"stop_loss_outcome_unknown,omitempty"`
+	StopLossOldStillOpen      bool    `json:"stop_loss_old_still_open,omitempty"`
 	OpenOrderCheckError       string  `json:"open_order_check_error,omitempty"`
 }
 

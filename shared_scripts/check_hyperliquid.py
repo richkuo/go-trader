@@ -1543,23 +1543,14 @@ def run_update_stop_loss(symbol, side, size, trigger_px, mode, cancel_oid=0):
 
         fill_check_since_ms = int(time.time() * 1000) - 7 * 24 * 3600 * 1000
         should_place = True
+        old_is_open = False
         if cancel_attempted:
             if open_oids is None:
                 should_place = False
             elif _oid_is_open(open_oids, cancel_oid):
-                try:
-                    kind, payload = _classify_cancel_response(
-                        adapter.cancel_trigger_order(symbol, cancel_oid))
-                    if kind == "ok":
-                        cancel_succeeded = True
-                    else:
-                        cancel_err = payload
-                        should_place = False
-                        print(f"[WARN] cancel_trigger_order({symbol}, {cancel_oid}) rejected: {payload}; not placing replacement", file=sys.stderr)
-                except Exception as ce:
-                    cancel_err = str(ce)
-                    should_place = False
-                    print(f"[WARN] cancel_trigger_order({symbol}, {cancel_oid}) failed: {ce}; not placing replacement", file=sys.stderr)
+                # Place the replacement before cancelling. A rejected place then
+                # leaves this stop resting.
+                old_is_open = True
             else:
                 fill = _oid_filled_externally(adapter, cancel_oid, fill_check_since_ms, None)
                 if fill.get("filled"):
@@ -1600,6 +1591,21 @@ def run_update_stop_loss(symbol, side, size, trigger_px, mode, cancel_oid=0):
                 elif resolved == "unknown":
                     place_unknown = True
 
+        # Cancel only after the new stop rests or fills. A rejection or an
+        # unreadable place leaves the old stop in place.
+        if old_is_open and (resting_oid or sl_filled_immediately) and not place_unknown:
+            try:
+                kind, payload = _classify_cancel_response(
+                    adapter.cancel_trigger_order(symbol, cancel_oid))
+                if kind == "ok":
+                    cancel_succeeded = True
+                else:
+                    cancel_err = payload
+                    print(f"[WARN] cancel_trigger_order({symbol}, {cancel_oid}) rejected after the replacement was placed: {payload}", file=sys.stderr)
+            except Exception as ce:
+                cancel_err = str(ce)
+                print(f"[WARN] cancel_trigger_order({symbol}, {cancel_oid}) failed after the replacement was placed: {ce}", file=sys.stderr)
+
         out = {
             "platform": "hyperliquid",
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -1621,6 +1627,8 @@ def run_update_stop_loss(symbol, side, size, trigger_px, mode, cancel_oid=0):
             out["stop_loss_filled_externally"] = True
         if place_unknown:
             out["stop_loss_outcome_unknown"] = True
+        if old_is_open and not cancel_succeeded:
+            out["stop_loss_old_still_open"] = True
         print(json.dumps(out, cls=SafeEncoder))
 
     except SystemExit:

@@ -1041,6 +1041,12 @@ func runPostTPStopLossAdjustment(
 		logger.Info("post-TP SL adjustment for %s: tier %d cleared, mode=%s new_trigger=$%.4f (cancel oid=%d)",
 			symbol, clearedIdx, mode, triggerPx, currentOID)
 	}
+	if hlStopPlaceUnread(symbol, currentOID) {
+		if logger != nil {
+			logger.Info("post-TP SL for %s held: the previous place for OID %d could not be read, so the old stop stays", symbol, currentOID)
+		}
+		return false, 0, ""
+	}
 	first, result, retryOutcomeUnknown, err := func() (*HyperliquidStopLossUpdateResult, *HyperliquidStopLossUpdateResult, bool, error) {
 		unlock := lockHyperliquidTrailingUpdate(symbol)
 		defer unlock()
@@ -1098,8 +1104,7 @@ func runPostTPStopLossAdjustment(
 			if notifier != nil && notifier.HasBackends() {
 				msg := fmt.Sprintf("**HL OPEN-ORDER CAP HIT** [%s] %s post-TP SL update rejected: %s",
 					sc.ID, symbol, first.StopLossError)
-				notifier.SendToAllChannels(msg)
-				notifier.SendOwnerDM(msg)
+				hlStopReplaceNotifyOnce(sc.ID+"|post-tp-cap|"+symbol, notifier, msg)
 			}
 		} else if logger != nil {
 			logger.Warn("post-TP SL placement failed (non-fatal): %s", first.StopLossError)
@@ -1186,6 +1191,13 @@ func runPostTPStopLossAdjustment(
 
 	var msg string
 	switch {
+	case cls.outcomeUnknown && result.StopLossOldStillOpen:
+		if logger != nil {
+			logger.Error("CRITICAL: post-TP SL for %s: replacement at $%.4f could NOT be read; old OID=%d still rests, tier %d not marked done, and no further place is made for that OID",
+				symbol, triggerPx, currentOID, clearedIdx)
+		}
+		msg = fmt.Sprintf("**HL POST-TP SL OUTCOME UNKNOWN** [%s] %s %s: the replacement at $%.4f could NOT be read. The old stop OID %d was left resting. No further stop is placed for that OID. Verify the order book on Hyperliquid.",
+			sc.ID, symbol, side, triggerPx, currentOID)
 	case cls.outcomeUnknown:
 		if logger != nil {
 			logger.Error("CRITICAL: post-TP SL for %s: old OID=%d is no longer resting and the replacement's outcome at $%.4f could NOT be read; recorded trigger kept with oid unknown, tier %d not marked done",

@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"math"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -15,6 +16,35 @@ var (
 	hlTrailingUpdateLocksMu sync.Mutex
 	hlTrailingUpdateLocks   = make(map[string]*sync.Mutex)
 )
+
+// hlUnreadableStopPlace blocks another place for an OID whose last replacement
+// could not be read and whose old stop was left resting.
+var hlUnreadableStopPlace sync.Map
+
+func hlStopPlaceUnreadKey(symbol string, oid int64) string {
+	return symbol + "|" + strconv.FormatInt(oid, 10)
+}
+
+func hlStopPlaceUnread(symbol string, oid int64) bool {
+	if oid <= 0 {
+		return false
+	}
+	_, ok := hlUnreadableStopPlace.Load(hlStopPlaceUnreadKey(symbol, oid))
+	return ok
+}
+
+var hlStopReplaceAlertOnce sync.Map
+
+func hlStopReplaceNotifyOnce(key string, notifier *MultiNotifier, msg string) {
+	if _, loaded := hlStopReplaceAlertOnce.LoadOrStore(key, struct{}{}); loaded {
+		return
+	}
+	if notifier == nil || !notifier.HasBackends() {
+		return
+	}
+	notifier.SendToAllChannels(msg)
+	notifier.SendOwnerDM(msg)
+}
 
 func hyperliquidProtectionPositionSnapshot(pos *Position) *Position {
 	if pos == nil {
@@ -613,6 +643,13 @@ func applyTrailingStopUpdateResult(s *StrategyState, symbol, expectedSide string
 		if logger != nil {
 			logger.Info("Trailing SL trigger updated oid=%d @ $%.4f", slUpdate.StopLossOID, slUpdate.StopLossTriggerPx)
 		}
+	case slUpdate.StopLossOutcomeUnknown && slUpdate.StopLossOldStillOpen && !slUpdate.CancelStopLossSucceeded:
+		if prevSLOID > 0 {
+			hlUnreadableStopPlace.Store(hlStopPlaceUnreadKey(symbol, prevSLOID), struct{}{})
+		}
+		if logger != nil {
+			logger.Warn("Trailing SL replacement for %s OID=%d could not be read; the old stop stays and no further place is made for that OID", symbol, prevSLOID)
+		}
 	case slUpdate.StopLossOutcomeUnknown:
 		if pos.StopLossOID == prevSLOID {
 			pos.StopLossOID = 0
@@ -679,6 +716,10 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 	if !replace {
 		return newHighWater, nil, true
 	}
+	if hlStopPlaceUnread(symbol, currentOID) {
+		logger.Info("Trailing SL replace for %s OID=%d held: the previous place could not be read, so the old stop stays", symbol, currentOID)
+		return highWater, nil, false
+	}
 
 	logger.Info("Updating trailing SL for %s: side=%s mark=$%.4f high_water=$%.4f trigger=$%.4f cancel_oid=%d",
 		symbol, side, mark, newHighWater, newTrigger, currentOID)
@@ -718,7 +759,8 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 		clampOutcome = hlLiquidationActionFilledOnChain
 		return highWater, result, false
 	}
-	if result.CancelStopLossError != "" {
+	newStopResting := result.StopLossOID > 0 || (result.StopLossFilledImmediately && result.StopLossTriggerPx > 0)
+	if result.CancelStopLossError != "" && !newStopResting {
 		logger.Warn("Trailing SL cancel failed; replacement deferred: %s", result.CancelStopLossError)
 		if currentOID > 0 && notifier != nil && notifier.HasBackends() {
 			msg := fmt.Sprintf("**HL TRAILING SL CANCEL FAILED** [%s] %s old trigger OID %d was not replaced. The scheduler will retry next cycle. Error: %s",
@@ -728,6 +770,14 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 		}
 		return highWater, result, false
 	}
+	if result.CancelStopLossError != "" && result.StopLossOID > 0 {
+		logger.Warn("Trailing SL cancel failed after the replacement was placed: %s", result.CancelStopLossError)
+		if currentOID > 0 && notifier != nil && notifier.HasBackends() {
+			msg := fmt.Sprintf("**HL TRAILING SL CANCEL FAILED** [%s] %s old trigger OID %d may still be resting while new trigger OID %d was placed. Error: %s",
+				sc.ID, symbol, currentOID, result.StopLossOID, result.CancelStopLossError)
+			hlStopReplaceNotifyOnce(sc.ID+"|cancel|"+symbol, notifier, msg)
+		}
+	}
 	if result.StopLossError != "" {
 		if isHLOpenOrderCapRejection(result.StopLossError) {
 			logger.Error("CRITICAL: HL open-order-cap rejected trailing SL update for %s - position may be under-protected: %s",
@@ -735,8 +785,7 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 			if notifier != nil && notifier.HasBackends() {
 				msg := fmt.Sprintf("**HL OPEN-ORDER CAP HIT** [%s] %s trailing SL update rejected: %s",
 					sc.ID, symbol, result.StopLossError)
-				notifier.SendToAllChannels(msg)
-				notifier.SendOwnerDM(msg)
+				hlStopReplaceNotifyOnce(sc.ID+"|cap|"+symbol, notifier, msg)
 			}
 		} else {
 			logger.Warn("Trailing SL placement failed (non-fatal): %s", result.StopLossError)
