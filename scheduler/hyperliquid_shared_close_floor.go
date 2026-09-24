@@ -835,17 +835,21 @@ func rearmScalarStopAfterFailedClose(sc StrategyConfig, stratState *StrategyStat
 	}
 	outcome := classifyStopRearmUpdate(ownerLabel, slEffectiveQty, triggerPx, result)
 	mu.Lock()
-	defer mu.Unlock()
-	if immediateFill, fillPx := applyTrailingStopUpdateResult(stratState, symbol, side, prevOID, 0, true, result, "stop_loss_pct_immediate", logger, slEffectiveQty); immediateFill {
-		return 1, fmt.Sprintf("[%s] LIVE PERCENTAGE SL %s @ $%.2f", sc.ID, symbol, fillPx), outcome
+	immediateFill, fillPx := applyTrailingStopUpdateResult(stratState, symbol, side, prevOID, 0, true, result, "stop_loss_pct_immediate", logger, slEffectiveQty)
+	var cancelAlert string
+	if result != nil && result.CancelStopLossError != "" && (result.StopLossOID > 0 || (result.StopLossFilledImmediately && result.StopLossTriggerPx > 0)) {
+		cancelAlert = fmt.Sprintf("**HL STOP CANCEL FAILED** [%s] %s old trigger OID %d may still be resting while the replacement filled or rested (new OID %d). Error: %s",
+			sc.ID, symbol, prevOID, result.StopLossOID, result.CancelStopLossError)
 	}
-	if outcome.Status == hlStopRearmPlaced {
+	if outcome.Status == hlStopRearmPlaced && result != nil {
 		logger.Info("%s re-armed after close for %s (qty=%.6f trigger=$%.4f)", ownerLabel, symbol, slEffectiveQty, result.StopLossTriggerPx)
 	}
-	if result != nil && result.CancelStopLossError != "" && (result.StopLossOID > 0 || (result.StopLossFilledImmediately && result.StopLossTriggerPx > 0)) {
-		msg := fmt.Sprintf("**HL STOP CANCEL FAILED** [%s] %s old trigger OID %d may still be resting while the replacement filled or rested (new OID %d). Error: %s",
-			sc.ID, symbol, prevOID, result.StopLossOID, result.CancelStopLossError)
-		hlStopReplaceNotifyOnce(sc.ID+"|cancel|"+symbol+"|"+strconv.FormatInt(prevOID, 10), notifier, msg)
+	mu.Unlock()
+	if cancelAlert != "" {
+		hlStopReplaceNotifyOnce(sc.ID+"|cancel|"+symbol+"|"+strconv.FormatInt(prevOID, 10), notifier, cancelAlert)
+	}
+	if immediateFill {
+		return 1, fmt.Sprintf("[%s] LIVE PERCENTAGE SL %s @ $%.2f", sc.ID, symbol, fillPx), outcome
 	}
 	return 0, "", outcome
 }

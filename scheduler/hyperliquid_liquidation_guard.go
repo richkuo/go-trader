@@ -924,6 +924,8 @@ func runHyperliquidLiquidationAudit(
 			})
 			continue
 		}
+		mutationsBefore := res.StateMutations
+		booked := false
 		result, outcome := hlLiquidationClampReplace(c, act.ClampedTriggerPx, logger, notifier, func(oid int64, trigger float64) {
 			mu.Lock()
 			if ss := state.Strategies[c.StrategyID]; ss != nil {
@@ -932,6 +934,7 @@ func runHyperliquidLiquidationAudit(
 					if trigger > 0 {
 						p.StopLossTriggerPx = trigger
 					}
+					booked = true
 				}
 			}
 			mu.Unlock()
@@ -1031,6 +1034,9 @@ func runHyperliquidLiquidationAudit(
 					Detail: fmt.Sprintf("[%s] LIQUIDATION-CLAMP SL %s @ $%.2f", sc.ID, c.Symbol, fillPx),
 				})
 			}
+		}
+		if booked && res.StateMutations == mutationsBefore {
+			res.StateMutations++
 		}
 		pending = append(pending, hlLiquidationPendingAlert{
 			sc: sc, symbol: c.Symbol, side: c.Side,
