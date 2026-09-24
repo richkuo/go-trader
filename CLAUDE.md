@@ -7,11 +7,11 @@ Guardrails only. Mechanism/flows: SKILL.md, docs/POST_UPDATE_HISTORY.md; <15k by
 - systemd: `ProtectSystem=strict`, no `PATH`/`UV_CACHE_DIR` injected, secrets `/opt/go-trader/.env`, config `/var/lib/go-trader[/<instance>]/config.json`; `scheduler/config.json`=transition symlink.
 
 ## Priorities
-- **Always best solution.** Cost/compute/time/effort/tests/code never narrow options; branch+PR, issue-claim vs code, destructive-action safety win.
+- **Always the best solution.** Cost/compute/time/effort/code never narrow options; branch+PR, issue-claim vs code, destructive-action safety win.
 - **Never give time/effort estimates.** Complexity=scope+risk
 ## Repo (`scheduler/`=one `package main`)
 - `executor.go`/`shutdown.go`: side-effect wrappers=`runPythonSideEffect`, NEVER `runPython`. Live HL book needs `confirmHyperliquidExecuteFill` (finite `Fill.AvgPx>0`+`TotalSz>0`); `check_hyperliquid.py execute` exits 1 on no fill.
-- `planHLCloseOrder`=SOLE size+mode of execute/`type=manual` SIZED close (not whole/`ForceFullClose`/open cleanup); refetch fail=defer unless uncapped `reduce_only`. Short fill books fill. Re-arm `resolveHLCloseRemainderStop`; Q=0 verify-first cancels unconfirmed SL/TP; unverified/unbacked/unplaced=CRITICAL; `order_outcome`=SOLE known outcome.
+- `planHLCloseOrder`=SOLE size+mode of execute/`type=manual` close (not whole/`ForceFullClose`/cleanup); refetch fail=defer unless uncapped `reduce_only`. Short fill books fill. rearm `resolveHLCloseRemainderStop`; Q=0 cancels unconfirmed SL/TP; `order_outcome`=SOLE known outcome.
 - `server.go`/`ui_*.go`: lock `mu>strategiesMu`, loopback only. `/tuning` never writes config; `ui_tuning.go`=`spawnPythonProcessWithEnv` (NEVER `runPython*`); `POST /api/tuning/apply`=sole promotion. `uiPartitionParam`=sole `?partition=` resolver (`/api/{strategies{,/overview,/dead},leaderboard,diagnostics}`); unparseable=400, unowned=404; diagnostics filter `SourceRole` before paging+total; cash flow `live_owned`; selected correlation/portfolio-risk NEVER use untagged legacy.
 - `config*.go`: `CurrentConfigVersion=19`, `MinSupportedConfigVersion=13`; 7 exclusive HL stop fields (none=`DefaultStopLossATRMult=1.0`); `close_strategy` canonical, unknown-key guard. On-chain TP gate!=`len(tiers)>0`. `CircuitBreaker *bool` via accessors ONLY. `portfolio_risk.paper`/`paper_sources[].portfolio_risk`: evaluators use `partitionRiskConfig`; nested `paper` rejected. `portfolio_risk.include_paused_in_warning` (default false, root>paper>source; false never overrides enabled layer): `portfolio_warning.go` drops paused strategy from Top Contributors ONLY if flat (`Quantity==0` regular+option); open ones always visible.
 - `close_defaults.go`: system>user>strategy; explicit `tp_tiers` wins; `applyUserCloseDefaultRatchetRegimeTrails` runs in `loadConfig` BEFORE scalar ATR-stop default.
@@ -59,12 +59,12 @@ Guardrails only. Mechanism/flows: SKILL.md, docs/POST_UPDATE_HISTORY.md; <15k by
 - Notifications: `MultiNotifier`; paper routes via `resolveChannelKey` (`<platform>-paper:<id>`>`-paper`>bare). `SendToPartitionChannels`: each partition's own roster (`resolveTradeChannel`, rebuilt on `ReloadConfig`), never suffix scan; `SendToAllChannels` only if that set is empty.
 
 ## PRs
-- `Closes #<N>` in body; never bare `#N` in lists. Title `type(#<N>): summary [C<score>, <model>, <effort>]` (`, fableplan` if Fable planned). Body: `## Plain simple English` (<55 words), then `## Summary`+verification.
-- Commits, PR+issue bodies end `LLM: <model> | <effort> | Harness: <action>`, no `Co-authored-by`.
-- Bot reviews land on issue comments; before merging long-lived PR diff `origin/main..HEAD` for reverts.
-- Review format: rk-skills `pr-review-format.md`+`.github/prompts/pr-review-format-local.md`; never gate on CI.
-- Review findings: restate as invariant, list breaking states (inverse/compound), add class tests.
-- `.github/workflows/claude.yml`: mode routing fail-closed (untrusted/fork=review); agent never executes; commit/push implement-only; prompt never holds `"`, `` ` ``, `$`; `.github/scripts/` keeps ONLY `test_workflow_logic.py`.
+- `Closes #<N>` in body; never bare `#N` in lists. Title `type(#<N>): summary [C<score>, <model>, <effort>]` (`, fableplan` if Fable planned). Body: `## Plain simple English` (<55 words), then `## Summary` + verification.
+- Commits, PR and issue bodies end `LLM: <model> | <effort> | Harness: <action>`, no `Co-authored-by`.
+- Bot reviews land on issue-comments endpoint; before merging long-lived PR diff `origin/main..HEAD` for reverts.
+- Review format: rk-skills `pr-review-format.md`+`.github/prompts/pr-review-format-local.md`, reviews never gate on CI.
+- Review findings: restate as invariant, list breaking states (inverse, compound).
+- `.github/workflows/claude.yml`: mode routing fail-closed (untrusted/fork = review); no-execution in agent; commit/push implement-only; prompt never holds `"`, `` ` ``, `$`; `.github/scripts/` keeps ONLY `test_workflow_logic.py`.
 
 ## Issues
 - `gh issue create`, title `[C<0-100>] <title>`; body line 1 `**Complexity: N/100** - scope; risk; uncertainty` (money/data/protection risk>time). rk-skills workflow skills=CI-only, no settings pin.
@@ -82,10 +82,9 @@ Guardrails only. Mechanism/flows: SKILL.md, docs/POST_UPDATE_HISTORY.md; <15k by
 - M1-M6, auto_suggest, regime promotion, `tune_live.py`=SUGGEST-ONLY: **never write live defaults/config/PRs.**
 
 ## Testing
-- Each feature/fix: table-driven test of behavior contract (money/state/protection/subprocess/migration/backtest parity); assert outcomes, pin only operator-decision wording, no constants/round-trips.
-- **Test budget.** Only that contract list; max 1 table-driven test per new function. `check_test_budget.py` fails CI on wording-only test outside `scripts/test_budget_baseline.json` or stale entry (entries: operator-decision wording only); `--write-baseline` after delete.
-- Go CI never spawns Python: pure helpers outside wrappers; Go tests check `json.Unmarshal` errors.
-- `go test ./...` after edits, then `gofmt -w`; tabbed Go: Python `replace(old,new,1)`.
-- Pytest: `uv run --no-sync python -m pytest shared_strategies/ shared_tools/ platforms/ backtest/`; `shared_scripts/test_*.py` by path; Registry/sys.path tests: FULL suite. CI `-n auto`: never bare-`import` ambiguous name; intermittent fail=isolation bug.
-- `stampEntryATRIfOpened` rejects ATR>50% AvgCost; strategy tests assert real signals, smoke tests need `DatetimeIndex`.
-- `tiered_tp_atr`/`trailing_stop_atr_mult` need `Position.EntryATR`; `*_live` recompute via `atr_source`; `avwap_stop`=virtual exit only.
+- **Never write unit tests, except** where a run can't prove it or a regression is silent: rare venue states (partial fill, rejected/unknown order), money math (sizing, PnL, fees), paper/live parity, DB migrations, large refactors. Else verify by running real binaries/scripts (build, `probe`, `--once`, local runs); PR lists commands+log lines per criterion. Suites #1597 kept stay.
+- Touching a kept test: Outdated/Wrong/Obsolete with checkable ground, disclosed in commit+PR (`fix-pr-review` step 6); no ground = fix code.
+- Kept suites pass: `go -C scheduler test ./...`, pytest `uv run --no-sync python -m pytest shared_strategies/ shared_tools/ backtest/`, `shared_scripts/test_*.py` by path, `scripts/test_*.sh`. CI `-n auto`: never bare-`import` ambiguous name. Go CI never spawns Python.
+- `gofmt -w` after Go edits; tabbed Go: Python `replace(old,new,1)`.
+- `stampEntryATRIfOpened` rejects ATR>50% of AvgCost.
+- `tiered_tp_atr`/`trailing_stop_atr_mult` need `Position.EntryATR`; `*_live` recompute via `atr_source`; `avwap_stop` = virtual exit only.
