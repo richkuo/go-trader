@@ -7,7 +7,7 @@ Guardrails only. Mechanism/flows: SKILL.md, docs/POST_UPDATE_HISTORY.md; <15k by
 - systemd units: `ProtectSystem=strict`, no `PATH`/`UV_CACHE_DIR` injection, secrets `/opt/go-trader/.env`, config `/var/lib/go-trader[/<instance>]/config.json`; `scheduler/config.json` = transition symlink.
 
 ## Priorities
-- **Always the best solution.** Cost/compute/time/effort/tests/code never narrow options; branch+PR, issue-claim vs code, destructive-action safety win.
+- **Always the best solution.** Cost/compute/time/effort/code never narrow options; branch+PR, issue-claim vs code, destructive-action safety win.
 - **Never give time/effort estimates.** Complexity=scope+risk
 ## Repo (`scheduler/` = one `package main`)
 - `executor.go`/`shutdown.go`: side-effect wrappers = `runPythonSideEffect`, NEVER `runPython`. Live HL book needs `confirmHyperliquidExecuteFill` (finite `AvgPx>0`+`TotalSz>0` in `Execution.Fill`); `check_hyperliquid.py execute` exits 1 on no fill.
@@ -62,7 +62,7 @@ Guardrails only. Mechanism/flows: SKILL.md, docs/POST_UPDATE_HISTORY.md; <15k by
 - Commits, PR and issue bodies end `LLM: <model> | <effort> | Harness: <action>`, no `Co-authored-by`.
 - Bot reviews land on issue-comments endpoint; before merging long-lived PR diff `origin/main..HEAD` for reverts.
 - Review format: rk-skills `pr-review-format.md`+`.github/prompts/pr-review-format-local.md`, reviews never gate on CI.
-- Review findings: restate as invariant, list breaking states (inverse, compound), add class tests.
+- Review findings: restate as invariant, list breaking states (inverse, compound).
 - `.github/workflows/claude.yml`: mode routing fail-closed (untrusted/fork = review); no-execution in agent; commit/push implement-only; prompt never holds `"`, `` ` ``, `$`; `.github/scripts/` keeps ONLY `test_workflow_logic.py`.
 
 ## Issues
@@ -81,10 +81,9 @@ Guardrails only. Mechanism/flows: SKILL.md, docs/POST_UPDATE_HISTORY.md; <15k by
 - M1-M6, auto_suggest, regime promotion, `tune_live.py` = SUGGEST-ONLY: **never write live defaults, config or PRs.**
 
 ## Testing
-- Each feature/bug fix needs table-driven test guarding behavior contract (money, state, protection, subprocess, migration, backtest parity); assert outcomes, pin only operator-decision wording, no constants/round-trips.
-- **Test budget.** Only that contract list; max 1 table-driven test per new function. `check_test_budget.py` fails CI on wording-only test outside `scripts/test_budget_baseline.json` or stale entry (entries only for operator-decision wording); `--write-baseline` after delete.
-- Go CI never spawns Python: pure helpers out of wrappers; Go tests check `json.Unmarshal` errors.
-- `go test ./...` after edits, then `gofmt -w`; tabbed Go: Python `replace(old,new,1)`.
-- Pytest: `uv run --no-sync python -m pytest shared_strategies/ shared_tools/ platforms/ backtest/`; `shared_scripts/test_*.py` by path; Registry/sys.path tests: FULL suite. CI `-n auto`: never bare-`import` ambiguous name; intermittent fail = isolation, not flake.
-- `stampEntryATRIfOpened` rejects ATR>50% of AvgCost; strategy tests assert real signals, smoke tests need `DatetimeIndex`.
+- **Never write unit tests.** Verify by running real binaries/scripts (build, `probe`, `--once`, local runs); PR lists commands+log lines per criterion. Suites #1597 kept stay.
+- Touching a kept test: Outdated/Wrong/Obsolete with checkable ground, disclosed in commit+PR (`fix-pr-review` step 6); no ground = fix code.
+- Kept suites pass: `go -C scheduler test ./...`, pytest `uv run --no-sync python -m pytest shared_strategies/ shared_tools/ backtest/`, `shared_scripts/test_*.py` by path, `scripts/test_*.sh`. CI `-n auto`: never bare-`import` ambiguous name. Go CI never spawns Python.
+- `gofmt -w` after Go edits; tabbed Go: Python `replace(old,new,1)`.
+- `stampEntryATRIfOpened` rejects ATR>50% of AvgCost.
 - `tiered_tp_atr`/`trailing_stop_atr_mult` need `Position.EntryATR`; `*_live` recompute via `atr_source`; `avwap_stop` = virtual exit only.
