@@ -373,10 +373,23 @@ func rearmScalarStopAfterFailedClose(sc StrategyConfig, stratState *StrategyStat
 		QtyCapped:   capped,
 		StopLossOID: cancelOID,
 	}
-	result, _ := hlLiquidationClampReplace(candidate, triggerPx, logger, notifier)
+	result, _ := hlLiquidationClampReplace(candidate, triggerPx, logger, notifier, func(oid int64, trigger float64) {
+		mu.Lock()
+		if p := stratState.Positions[symbol]; p != nil {
+			p.StopLossOID = oid
+			if trigger > 0 {
+				p.StopLossTriggerPx = trigger
+			}
+		}
+		mu.Unlock()
+	})
+	prevOID := cancelOID
+	if result != nil && result.SentCancelOID > 0 {
+		prevOID = result.SentCancelOID
+	}
 	mu.Lock()
 	defer mu.Unlock()
-	if immediateFill, fillPx := applyTrailingStopUpdateResult(stratState, symbol, side, cancelOID, 0, true, result, "stop_loss_pct_immediate", logger, slEffectiveQty); immediateFill {
+	if immediateFill, fillPx := applyTrailingStopUpdateResult(stratState, symbol, side, prevOID, 0, true, result, "stop_loss_pct_immediate", logger, slEffectiveQty); immediateFill {
 		return 1, fmt.Sprintf("[%s] LIVE PERCENTAGE SL %s @ $%.2f", sc.ID, symbol, fillPx)
 	}
 	if result != nil && result.StopLossOID > 0 {
@@ -384,8 +397,8 @@ func rearmScalarStopAfterFailedClose(sc StrategyConfig, stratState *StrategyStat
 	}
 	if result != nil && result.CancelStopLossError != "" && (result.StopLossOID > 0 || (result.StopLossFilledImmediately && result.StopLossTriggerPx > 0)) {
 		msg := fmt.Sprintf("**HL STOP CANCEL FAILED** [%s] %s old trigger OID %d may still be resting while the replacement filled or rested (new OID %d). Error: %s",
-			sc.ID, symbol, cancelOID, result.StopLossOID, result.CancelStopLossError)
-		hlStopReplaceNotifyOnce(sc.ID+"|cancel|"+symbol+"|"+strconv.FormatInt(cancelOID, 10), notifier, msg)
+			sc.ID, symbol, prevOID, result.StopLossOID, result.CancelStopLossError)
+		hlStopReplaceNotifyOnce(sc.ID+"|cancel|"+symbol+"|"+strconv.FormatInt(prevOID, 10), notifier, msg)
 	}
 	return 0, ""
 }

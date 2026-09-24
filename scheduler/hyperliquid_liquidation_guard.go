@@ -616,7 +616,7 @@ const (
 	hlReplaceOutcomeUnknown
 )
 
-func hlLiquidationClampReplace(candidate hlLiquidationAuditCandidate, clampedTriggerPx float64, logger *StrategyLogger, notifier *MultiNotifier) (*HyperliquidStopLossUpdateResult, hlLiquidationReplaceOutcome) {
+func hlLiquidationClampReplace(candidate hlLiquidationAuditCandidate, clampedTriggerPx float64, logger *StrategyLogger, notifier *MultiNotifier, book func(oid int64, trigger float64)) (*HyperliquidStopLossUpdateResult, hlLiquidationReplaceOutcome) {
 	if clampedTriggerPx <= 0 || candidate.Qty <= 0 {
 		return nil, hlReplaceDeferred
 	}
@@ -642,7 +642,17 @@ func hlLiquidationClampReplace(candidate hlLiquidationAuditCandidate, clampedTri
 				hlStopReplaceNotifyOnce(candidate.StrategyID+"|cancel|"+candidate.Symbol+"|"+strconv.FormatInt(oldOID, 10), notifier, msg)
 			}
 			candidate.StopLossOID = adopted.StopLossOID
+			if book != nil {
+				book(adopted.StopLossOID, adopted.StopLossTriggerPx)
+			}
 		}
+	}
+	cancelSent := candidate.StopLossOID
+	stamp := func(r *HyperliquidStopLossUpdateResult, o hlLiquidationReplaceOutcome) (*HyperliquidStopLossUpdateResult, hlLiquidationReplaceOutcome) {
+		if r != nil {
+			r.SentCancelOID = cancelSent
+		}
+		return r, o
 	}
 	unlock := lockHyperliquidTrailingUpdate(candidate.Symbol)
 	defer unlock()
@@ -655,13 +665,13 @@ func hlLiquidationClampReplace(candidate hlLiquidationAuditCandidate, clampedTri
 		if logger != nil {
 			logger.Error("Liquidation-clamp SL replace failed for %s: %v", candidate.Symbol, err)
 		}
-		return result, hlReplaceDeferred
+		return stamp(result, hlReplaceDeferred)
 	}
 	if result == nil {
 		if logger != nil {
 			logger.Error("Liquidation-clamp SL replace returned no result for %s", candidate.Symbol)
 		}
-		return nil, hlReplaceDeferred
+		return stamp(nil, hlReplaceDeferred)
 	}
 	if result.Error != "" {
 		if result.CancelStopLossSucceeded {
@@ -669,41 +679,41 @@ func hlLiquidationClampReplace(candidate hlLiquidationAuditCandidate, clampedTri
 				if logger != nil {
 					logger.Error("CRITICAL: liquidation-clamp cancelled SL OID=%d for %s and the replacement's outcome could NOT be read — it may be resting untracked: %s", candidate.StopLossOID, candidate.Symbol, result.Error)
 				}
-				return result, hlReplaceOutcomeUnknown
+				return stamp(result, hlReplaceOutcomeUnknown)
 			}
 			if logger != nil {
 				logger.Error("CRITICAL: liquidation-clamp cancelled SL OID=%d for %s and the subprocess failed before placing — the position has NO exchange-side stop: %s", candidate.StopLossOID, candidate.Symbol, result.Error)
 			}
-			return result, hlReplaceProtectionLost
+			return stamp(result, hlReplaceProtectionLost)
 		}
 		if result.StopLossOutcomeUnknown {
 			if logger != nil {
 				logger.Error("CRITICAL: liquidation-clamp placement for %s returned an error and its outcome could NOT be read — it may be resting untracked: %s", candidate.Symbol, result.Error)
 			}
-			return result, hlReplaceOutcomeUnknown
+			return stamp(result, hlReplaceOutcomeUnknown)
 		}
 		if logger != nil {
 			logger.Error("Liquidation-clamp SL replace returned error for %s: %s", candidate.Symbol, result.Error)
 		}
-		return result, hlReplaceDeferred
+		return stamp(result, hlReplaceDeferred)
 	}
 	if result.OpenOrderCheckError != "" {
 		if logger != nil {
 			logger.Warn("Liquidation-clamp SL replace deferred for %s (open-order lookup failed): %s", candidate.Symbol, result.OpenOrderCheckError)
 		}
-		return result, hlReplaceDeferred
+		return stamp(result, hlReplaceDeferred)
 	}
 	if result.StopLossFilledExternally {
 		if logger != nil {
 			logger.Warn("Liquidation-clamp: SL OID=%d for %s already filled on-chain — reconciler will book the close", candidate.StopLossOID, candidate.Symbol)
 		}
-		return result, hlReplaceFilledExternally
+		return stamp(result, hlReplaceFilledExternally)
 	}
 	if result.CancelStopLossError != "" && result.StopLossOID == 0 && !(result.StopLossFilledImmediately && result.StopLossTriggerPx > 0) {
 		if logger != nil {
 			logger.Warn("Liquidation-clamp SL cancel failed for %s; original stop still resting: %s", candidate.Symbol, result.CancelStopLossError)
 		}
-		return result, hlReplaceDeferred
+		return stamp(result, hlReplaceDeferred)
 	}
 	if result.StopLossError != "" {
 		if isHLOpenOrderCapRejection(result.StopLossError) {
@@ -719,21 +729,21 @@ func hlLiquidationClampReplace(candidate hlLiquidationAuditCandidate, clampedTri
 		if logger != nil {
 			logger.Warn("Liquidation-clamp SL filled at submit for %s — position exited inside the liquidation price", candidate.Symbol)
 		}
-		return result, hlReplaceFilled
+		return stamp(result, hlReplaceFilled)
 	case result.StopLossOID > 0:
-		return result, hlReplacePlaced
+		return stamp(result, hlReplacePlaced)
 	case result.StopLossOutcomeUnknown:
 		if logger != nil {
 			logger.Error("CRITICAL: liquidation-clamp SL for %s (old OID=%d) could not read the placement's outcome — it may be resting untracked; recorded state kept", candidate.Symbol, candidate.StopLossOID)
 		}
-		return result, hlReplaceOutcomeUnknown
+		return stamp(result, hlReplaceOutcomeUnknown)
 	case result.CancelStopLossSucceeded:
 		if logger != nil {
 			logger.Error("CRITICAL: liquidation-clamp cancelled SL OID=%d for %s but the replacement did not rest — the position has NO exchange-side stop", candidate.StopLossOID, candidate.Symbol)
 		}
-		return result, hlReplaceProtectionLost
+		return stamp(result, hlReplaceProtectionLost)
 	}
-	return result, hlReplaceDeferred
+	return stamp(result, hlReplaceDeferred)
 }
 
 func hlLiquidationMayRetryReplace(result *HyperliquidStopLossUpdateResult) bool {
@@ -914,7 +924,22 @@ func runHyperliquidLiquidationAudit(
 			})
 			continue
 		}
-		result, outcome := hlLiquidationClampReplace(c, act.ClampedTriggerPx, logger, notifier)
+		result, outcome := hlLiquidationClampReplace(c, act.ClampedTriggerPx, logger, notifier, func(oid int64, trigger float64) {
+			mu.Lock()
+			if ss := state.Strategies[c.StrategyID]; ss != nil {
+				if p := ss.Positions[c.Symbol]; p != nil {
+					p.StopLossOID = oid
+					if trigger > 0 {
+						p.StopLossTriggerPx = trigger
+					}
+				}
+			}
+			mu.Unlock()
+		})
+		cancelOID := c.StopLossOID
+		if result != nil && result.SentCancelOID > 0 {
+			cancelOID = result.SentCancelOID
+		}
 		action := hlLiquidationActionClamped
 		if act.Kind == hlAuditRearm {
 			action = hlLiquidationActionRearmed
@@ -933,7 +958,7 @@ func runHyperliquidLiquidationAudit(
 				action = hlLiquidationActionPlacementUnknown
 			}
 			mu.Lock()
-			if immediateFill, fillPx := applyAuditStopUpdate(&res, state.Strategies[c.StrategyID], c.Symbol, c.Side, c.StopLossOID, c.Qty, result, logger); immediateFill {
+			if immediateFill, fillPx := applyAuditStopUpdate(&res, state.Strategies[c.StrategyID], c.Symbol, c.Side, cancelOID, c.Qty, result, logger); immediateFill {
 				res.ImmediateFills++
 				action = hlLiquidationActionExited
 				logger.Warn("Liquidation-clamp SL booked an immediate close for %s @ $%.4f", c.Symbol, fillPx)
@@ -975,7 +1000,7 @@ func runHyperliquidLiquidationAudit(
 			}
 			if clearDeadState {
 				mu.Lock()
-				if immediateFill, fillPx := applyAuditStopUpdate(&res, state.Strategies[c.StrategyID], c.Symbol, c.Side, c.StopLossOID, c.Qty, result, logger); immediateFill {
+				if immediateFill, fillPx := applyAuditStopUpdate(&res, state.Strategies[c.StrategyID], c.Symbol, c.Side, cancelOID, c.Qty, result, logger); immediateFill {
 					res.ImmediateFills++
 					logger.Warn("Liquidation-clamp SL booked an immediate close for %s @ $%.4f", c.Symbol, fillPx)
 					res.CloseDetails = append(res.CloseDetails, hlLiquidationCloseDetail{
@@ -991,12 +1016,12 @@ func runHyperliquidLiquidationAudit(
 			}
 			if result != nil && result.CancelStopLossError != "" && (result.StopLossOID > 0 || (result.StopLossFilledImmediately && result.StopLossTriggerPx > 0)) {
 				msg := fmt.Sprintf("**HL STOP CANCEL FAILED** [%s] %s old trigger OID %d may still be resting while the replacement filled or rested (new OID %d). Error: %s",
-					sc.ID, c.Symbol, c.StopLossOID, result.StopLossOID, result.CancelStopLossError)
-				hlStopReplaceNotifyOnce(sc.ID+"|cancel|"+c.Symbol+"|"+strconv.FormatInt(c.StopLossOID, 10), notifier, msg)
+					sc.ID, c.Symbol, cancelOID, result.StopLossOID, result.CancelStopLossError)
+				hlStopReplaceNotifyOnce(sc.ID+"|cancel|"+c.Symbol+"|"+strconv.FormatInt(cancelOID, 10), notifier, msg)
 			}
 			mu.Lock()
 			ss := state.Strategies[c.StrategyID]
-			immediateFill, fillPx := applyAuditStopUpdate(&res, ss, c.Symbol, c.Side, c.StopLossOID, c.Qty, result, logger)
+			immediateFill, fillPx := applyAuditStopUpdate(&res, ss, c.Symbol, c.Side, cancelOID, c.Qty, result, logger)
 			mu.Unlock()
 			if immediateFill {
 				res.ImmediateFills++

@@ -144,6 +144,7 @@ func hlReleaseUnreadableStop(script, symbol, side string, oid int64, qty, trigge
 		return true, &HyperliquidStopLossUpdateResult{
 			StopLossOID:         matches[0].OID,
 			StopLossTriggerPx:   matches[0].TriggerPx,
+			MatchedSize:         matches[0].Sz,
 			CancelStopLossError: fmt.Sprintf("old stop OID %d still open", oid),
 		}, alert
 	}
@@ -865,7 +866,11 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 			msg := fmt.Sprintf("**HL TRAILING SL OUTCOME UNKNOWN** [%s] %s: the earlier replacement could not be read. Open order %d is now recorded and old OID %d may still be resting.",
 				sc.ID, symbol, adopted.StopLossOID, currentOID)
 			hlStopReplaceNotifyOnce(sc.ID+"|adopt|"+symbol+"|"+strconv.FormatInt(currentOID, 10), notifier, msg)
-			return newHighWater, adopted, true
+			confirmed := hlListedStopMatches(hlListedOpenOrder{
+				ReduceOnly: true, IsTrigger: true, Side: map[bool]string{true: "B", false: "A"}[side == "short"],
+				Sz: adopted.MatchedSize, TriggerPx: adopted.StopLossTriggerPx, OrderType: "Stop Market",
+			}, side, qty, newTrigger)
+			return newHighWater, adopted, confirmed
 		}
 	}
 

@@ -105,6 +105,8 @@ type HyperliquidStopLossUpdateResult struct {
 	StopLossOldStillOpen      bool    `json:"stop_loss_old_still_open,omitempty"`
 	PrePlaceOpenOIDs          []int64 `json:"pre_place_open_oids,omitempty"`
 	OpenOrderCheckError       string  `json:"open_order_check_error,omitempty"`
+	SentCancelOID             int64   `json:"-"`
+	MatchedSize               float64 `json:"-"`
 }
 
 type HyperliquidProtectionSyncResult struct {
