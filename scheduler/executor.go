@@ -370,14 +370,24 @@ func RunHyperliquidUpdateStopLoss(script, symbol, side string, size, triggerPx f
 
 var runHyperliquidListOpenOrderOIDsFunc = RunHyperliquidListOpenOrderOIDs
 
-func RunHyperliquidListOpenOrderOIDs(script, symbol string) (oids []int64, readErr string, err error) {
+type hlListedOpenOrder struct {
+	OID        int64   `json:"oid"`
+	Side       string  `json:"side"`
+	Sz         float64 `json:"sz"`
+	ReduceOnly bool    `json:"reduce_only"`
+	IsTrigger  bool    `json:"is_trigger"`
+	OrderType  string  `json:"order_type"`
+	TriggerPx  float64 `json:"trigger_px"`
+}
+
+func RunHyperliquidListOpenOrderOIDs(script, symbol string) (orders []hlListedOpenOrder, readErr string, err error) {
 	stdout, _, err := runPythonSideEffect(script, []string{"--list-open-order-oids", fmt.Sprintf("--symbol=%s", symbol)})
 	if err != nil && len(stdout) == 0 {
 		return nil, "", err
 	}
 	var payload struct {
-		OpenOrderOIDs       []int64 `json:"open_order_oids"`
-		OpenOrderCheckError string  `json:"open_order_check_error"`
+		OpenOrders          []hlListedOpenOrder `json:"open_orders"`
+		OpenOrderCheckError string              `json:"open_order_check_error"`
 	}
 	if uerr := json.Unmarshal(stdout, &payload); uerr != nil {
 		return nil, "", uerr
@@ -385,7 +395,7 @@ func RunHyperliquidListOpenOrderOIDs(script, symbol string) (oids []int64, readE
 	if payload.OpenOrderCheckError != "" {
 		return nil, payload.OpenOrderCheckError, nil
 	}
-	return payload.OpenOrderOIDs, "", nil
+	return payload.OpenOrders, "", nil
 }
 
 func buildHyperliquidSyncProtectionArgv(symbol, side string, size, avgCost, entryATR, stopLossATRMult float64, tiers []hlProtectionTier, stopLossOID int64, tpOIDs []int64, tpArmedTiers []bool, forceSLReplace bool, forceTPReplace []bool, cancelTPOIDs []int64, reconcileFillHintsJSON []byte) []string {

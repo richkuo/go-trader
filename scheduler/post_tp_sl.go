@@ -1043,12 +1043,15 @@ func runPostTPStopLossAdjustment(
 			symbol, clearedIdx, mode, triggerPx, currentOID)
 	}
 	if hlStopPlaceUnread(symbol, currentOID) {
-		released, adopted := hlReleaseUnreadableStop(sc.Script, symbol, currentOID)
+		released, adopted, alert := hlReleaseUnreadableStop(sc.Script, symbol, side, currentOID, placedQty, triggerPx)
 		if !released {
 			if logger != nil {
 				logger.Info("post-TP SL for %s held: the order book could not be read, so old OID %d stays", symbol, currentOID)
 			}
 			return false, 0, ""
+		}
+		if alert != "" {
+			hlStopReplaceNotifyOnce(sc.ID+"|unread-end|"+symbol+"|"+strconv.FormatInt(currentOID, 10), notifier, alert)
 		}
 		if adopted != nil {
 			msg := fmt.Sprintf("**HL POST-TP SL OUTCOME UNKNOWN** [%s] %s: the earlier replacement could not be read. Open order %d is now recorded and old OID %d may still be resting.",
@@ -1057,6 +1060,9 @@ func runPostTPStopLossAdjustment(
 			mu.Lock()
 			if p, ok := stratState.Positions[symbol]; ok && p != nil && p.Side == side && p.StopLossOID == currentOID {
 				p.StopLossOID = adopted.StopLossOID
+				if adopted.StopLossTriggerPx > 0 {
+					p.StopLossTriggerPx = adopted.StopLossTriggerPx
+				}
 			}
 			mu.Unlock()
 			return false, 0, ""

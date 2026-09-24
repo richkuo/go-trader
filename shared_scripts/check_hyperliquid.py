@@ -761,6 +761,14 @@ def run_batch_signal_check(symbol, timeframe, slots, *, ohlcv_limit=200, atr_met
     return envelope, (1 if failed else 0)
 
 
+def _is_open_order_cap_rejection(err):
+    lower = (err or "").lower()
+    has_cap = any(w in lower for w in ("too many", "rate limit", "max", "limit", "exceed"))
+    if not has_cap:
+        return False
+    return "trigger order" in lower or "open order" in lower or "open orders" in lower
+
+
 def _classify_sl_response(sdk_response: dict):
     try:
         statuses = sdk_response.get("response", {}).get("data", {}).get("statuses", [])
@@ -1510,8 +1518,32 @@ def run_list_open_order_oids(symbol):
     try:
         from adapter import HyperliquidExchangeAdapter
         adapter = HyperliquidExchangeAdapter()
-        oids = sorted(int(o) for o in adapter.open_order_oids(symbol))
-        print(json.dumps({"platform": "hyperliquid", "open_order_oids": oids}, cls=SafeEncoder))
+        listed = []
+        for order in adapter.open_orders(symbol):
+            try:
+                oid = int(order.get("oid") or 0)
+            except (TypeError, ValueError):
+                oid = 0
+            if not oid:
+                continue
+            try:
+                sz = float(order.get("sz") or 0)
+            except (TypeError, ValueError):
+                sz = 0.0
+            try:
+                trigger_px = float(order.get("triggerPx") or 0)
+            except (TypeError, ValueError):
+                trigger_px = 0.0
+            listed.append({
+                "oid": oid,
+                "side": str(order.get("side") or ""),
+                "sz": sz,
+                "reduce_only": bool(order.get("reduceOnly")),
+                "is_trigger": bool(order.get("isTrigger")),
+                "order_type": str(order.get("orderType") or order.get("origType") or ""),
+                "trigger_px": trigger_px,
+            })
+        print(json.dumps({"platform": "hyperliquid", "open_orders": listed}, cls=SafeEncoder))
     except Exception as e:
         print(json.dumps({
             "platform": "hyperliquid",
@@ -1579,15 +1611,21 @@ def run_update_stop_loss(symbol, side, size, trigger_px, mode, cancel_oid=0):
             pre_oids = set(int(o) for o in open_oids) if open_oids is not None else _snapshot_open_oids(adapter, symbol)
             try:
                 sl_resp = adapter.place_stop_loss(symbol, size, trigger_px, sl_is_buy)
-                kind, payload = _classify_sl_response(sl_resp)
+                if isinstance(sl_resp, dict) and str(sl_resp.get("status")) == "err":
+                    sl_err = f"place_stop_loss SDK error: {sl_resp.get('response')}"
+                    print(f"[WARN] {sl_err}", file=sys.stderr)
+                    kind, payload = ("error", sl_err)
+                else:
+                    kind, payload = _classify_sl_response(sl_resp)
                 if kind == "resting":
                     resting_oid = payload
                 elif kind == "filled":
                     sl_filled_immediately = True
                     print(f"[WARN] stop-loss filled immediately at submit (price already through {trigger_px})", file=sys.stderr)
                 elif kind == "error":
-                    sl_err = f"place_stop_loss SDK error: {payload}"
-                    print(f"[WARN] {sl_err}", file=sys.stderr)
+                    if not sl_err:
+                        sl_err = f"place_stop_loss SDK error: {payload}"
+                        print(f"[WARN] {sl_err}", file=sys.stderr)
                 else:
                     sl_err = f"place_stop_loss returned no usable status: {sl_resp}"
                     print(f"[WARN] {sl_err}", file=sys.stderr)
@@ -1605,9 +1643,65 @@ def run_update_stop_loss(symbol, side, size, trigger_px, mode, cancel_oid=0):
                 elif resolved == "unknown":
                     place_unknown = True
 
+        # At the open-order cap the new stop cannot rest beside the old one.
+        # Cancel once, then place once. Any other rejection leaves the old stop.
+        if (
+            old_is_open
+            and not resting_oid
+            and not sl_filled_immediately
+            and not place_unknown
+            and _is_open_order_cap_rejection(sl_err)
+        ):
+            try:
+                kind, payload = _classify_cancel_response(
+                    adapter.cancel_trigger_order(symbol, cancel_oid))
+                if kind == "ok":
+                    cancel_succeeded = True
+                else:
+                    cancel_err = payload
+                    print(f"[WARN] cancel_trigger_order({symbol}, {cancel_oid}) rejected on cap fallback: {payload}", file=sys.stderr)
+            except Exception as ce:
+                cancel_err = str(ce)
+                print(f"[WARN] cancel_trigger_order({symbol}, {cancel_oid}) failed on cap fallback: {ce}", file=sys.stderr)
+            if cancel_succeeded:
+                resting_oid = 0
+                sl_filled_immediately = False
+                place_unknown = False
+                sl_err = ""
+                try:
+                    sl_resp = adapter.place_stop_loss(symbol, size, trigger_px, sl_is_buy)
+                    if isinstance(sl_resp, dict) and str(sl_resp.get("status")) == "err":
+                        sl_err = f"place_stop_loss SDK error: {sl_resp.get('response')}"
+                        kind = "error"
+                    else:
+                        kind, payload = _classify_sl_response(sl_resp)
+                    if kind == "resting":
+                        resting_oid = payload
+                    elif kind == "filled":
+                        sl_filled_immediately = True
+                    elif kind == "error":
+                        if not sl_err:
+                            sl_err = f"place_stop_loss SDK error: {payload}"
+                    else:
+                        sl_err = f"place_stop_loss returned no usable status: {sl_resp}"
+                        resolved, oid = _resolve_sl_placement_by_book_diff(adapter, symbol, pre_oids)
+                        if resolved == "resting":
+                            resting_oid = oid
+                            sl_err = ""
+                        elif resolved == "unknown":
+                            place_unknown = True
+                except Exception as se:
+                    sl_err = str(se)
+                    resolved, oid = _resolve_sl_placement_by_book_diff(adapter, symbol, pre_oids)
+                    if resolved == "resting":
+                        resting_oid = oid
+                        sl_err = ""
+                    elif resolved == "unknown":
+                        place_unknown = True
+
         # Cancel only after the new stop rests or fills. A rejection or an
         # unreadable place leaves the old stop in place.
-        if old_is_open and (resting_oid or sl_filled_immediately) and not place_unknown:
+        if old_is_open and (resting_oid or sl_filled_immediately) and not place_unknown and not cancel_succeeded:
             try:
                 kind, payload = _classify_cancel_response(
                     adapter.cancel_trigger_order(symbol, cancel_oid))

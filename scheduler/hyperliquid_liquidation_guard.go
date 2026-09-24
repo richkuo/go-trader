@@ -621,7 +621,10 @@ func hlLiquidationClampReplace(candidate hlLiquidationAuditCandidate, clampedTri
 		return nil, hlReplaceDeferred
 	}
 	if candidate.StopLossOID > 0 && hlStopPlaceUnread(candidate.Symbol, candidate.StopLossOID) {
-		released, adopted := hlReleaseUnreadableStop(candidate.Script, candidate.Symbol, candidate.StopLossOID)
+		released, adopted, alert := hlReleaseUnreadableStop(candidate.Script, candidate.Symbol, candidate.Side, candidate.StopLossOID, candidate.Qty, clampedTriggerPx)
+		if alert != "" && logger != nil {
+			logger.Error("CRITICAL: %s", alert)
+		}
 		if !released {
 			return &HyperliquidStopLossUpdateResult{StopLossOutcomeUnknown: true, StopLossOldStillOpen: true}, hlReplaceOutcomeUnknown
 		}

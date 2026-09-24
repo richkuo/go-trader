@@ -590,12 +590,27 @@ class TestUpdateStopLoss:
 
     def test_rejected_placement_leaves_the_old_stop(self):
         out, adapter = self._run_update(
-            place_response={"status": "err", "response": "open order limit"},
+            place_response={"status": "err", "response": "invalid trigger price"},
         )
         adapter.cancel_trigger_order.assert_not_called()
         assert out.get("stop_loss_old_still_open") is True
         assert "stop_loss_outcome_unknown" not in out
         assert "cancel_stop_loss_succeeded" not in out
+
+    def test_cap_rejection_cancels_then_places_once(self):
+        calls = {"n": 0}
+
+        def _place(*_a, **_k):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return {"status": "err", "response": "open order limit"}
+            return {"response": {"data": {"statuses": [{"resting": {"oid": 33333}}]}}}
+
+        out, adapter = self._run_update(place_side_effect=_place)
+        adapter.cancel_trigger_order.assert_called_once_with("ETH", 11111)
+        assert adapter.place_stop_loss.call_count == 2
+        assert out["cancel_stop_loss_succeeded"] is True
+        assert out["stop_loss_oid"] == 33333
 
     def test_unreadable_place_does_not_cancel(self):
         out, adapter = self._run_update(

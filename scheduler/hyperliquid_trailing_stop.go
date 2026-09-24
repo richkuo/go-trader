@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -37,54 +38,80 @@ func hlRememberUnreadableStop(symbol string, oid int64, before []int64) {
 	if oid <= 0 {
 		return
 	}
-	hlUnreadableStopPlace.Store(hlStopPlaceUnreadKey(symbol, oid), append([]int64(nil), before...))
+	key := hlStopPlaceUnreadKey(symbol, oid)
+	if len(before) == 0 {
+		if _, exists := hlUnreadableStopPlace.Load(key); exists {
+			return
+		}
+	}
+	hlUnreadableStopPlace.Store(key, append([]int64(nil), before...))
+}
+
+func hlListedStopMatches(order hlListedOpenOrder, side string, qty, trigger float64) bool {
+	if !order.ReduceOnly || !order.IsTrigger || order.TriggerPx <= 0 || order.Sz <= 0 || qty <= 0 || trigger <= 0 {
+		return false
+	}
+	kind := strings.ToLower(order.OrderType)
+	if !strings.Contains(kind, "stop") || strings.Contains(kind, "take") {
+		return false
+	}
+	wantSide := "A"
+	if side == "short" {
+		wantSide = "B"
+	}
+	if order.Side != wantSide {
+		return false
+	}
+	if math.Abs(order.Sz-qty) > 1e-6 && math.Abs(order.Sz-qty)/qty > 1e-4 {
+		return false
+	}
+	if math.Abs(order.TriggerPx-trigger) > 0.01 && math.Abs(order.TriggerPx-trigger)/trigger > 1e-3 {
+		return false
+	}
+	return true
 }
 
 // hlReleaseUnreadableStop reads the open orders once. A failed read keeps the
-// hold and places nothing. A readable book with no new order, or with the old
-// order gone, clears the hold so the replace can run. One new order is adopted
-// and not placed again.
-func hlReleaseUnreadableStop(script, symbol string, oid int64) (released bool, adopted *HyperliquidStopLossUpdateResult) {
+// hold and places nothing. A readable book clears the hold. The only order that
+// can be adopted is one new reduce-only stop for this side, size and trigger.
+func hlReleaseUnreadableStop(script, symbol, side string, oid int64, qty, trigger float64) (released bool, adopted *HyperliquidStopLossUpdateResult, alert string) {
 	raw, ok := hlUnreadableStopPlace.Load(hlStopPlaceUnreadKey(symbol, oid))
 	if !ok {
-		return true, nil
+		return true, nil, ""
 	}
 	before, _ := raw.([]int64)
-	oids, readErr, err := runHyperliquidListOpenOrderOIDsFunc(script, symbol)
+	orders, readErr, err := runHyperliquidListOpenOrderOIDsFunc(script, symbol)
 	if err != nil || readErr != "" {
-		return false, nil
-	}
-	open := map[int64]struct{}{}
-	for _, id := range oids {
-		open[id] = struct{}{}
+		return false, nil, ""
 	}
 	key := hlStopPlaceUnreadKey(symbol, oid)
-	if _, still := open[oid]; !still {
-		hlUnreadableStopPlace.Delete(key)
-		return true, nil
-	}
-	seen := map[int64]struct{}{}
+	seen := map[int64]struct{}{oid: {}}
 	for _, id := range before {
 		seen[id] = struct{}{}
 	}
-	var fresh []int64
-	for _, id := range oids {
-		if _, had := seen[id]; !had {
-			fresh = append(fresh, id)
+	var matches []hlListedOpenOrder
+	fresh := 0
+	for _, order := range orders {
+		if _, had := seen[order.OID]; had {
+			continue
+		}
+		fresh++
+		if hlListedStopMatches(order, side, qty, trigger) {
+			matches = append(matches, order)
 		}
 	}
-	if len(fresh) == 0 {
-		hlUnreadableStopPlace.Delete(key)
-		return true, nil
-	}
-	if len(fresh) == 1 {
-		hlUnreadableStopPlace.Delete(key)
+	hlUnreadableStopPlace.Delete(key)
+	if len(matches) == 1 {
 		return true, &HyperliquidStopLossUpdateResult{
-			StopLossOID:         fresh[0],
+			StopLossOID:         matches[0].OID,
+			StopLossTriggerPx:   matches[0].TriggerPx,
 			CancelStopLossError: fmt.Sprintf("old stop OID %d still open", oid),
-		}
+		}, ""
 	}
-	return false, nil
+	if fresh > 0 {
+		return true, nil, fmt.Sprintf("**HL STOP OUTCOME UNKNOWN** %s: the unreadable replacement for OID %d could not be matched to one reduce-only stop. The hold ended and the old stop stays until the next replace.", symbol, oid)
+	}
+	return true, nil, ""
 }
 
 var hlStopReplaceAlertOnce sync.Map
@@ -771,10 +798,13 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 		return newHighWater, nil, true
 	}
 	if hlStopPlaceUnread(symbol, currentOID) {
-		released, adopted := hlReleaseUnreadableStop(sc.Script, symbol, currentOID)
+		released, adopted, alert := hlReleaseUnreadableStop(sc.Script, symbol, side, currentOID, qty, newTrigger)
 		if !released {
 			logger.Info("Trailing SL replace for %s OID=%d held: the order book could not be read, so the old stop stays", symbol, currentOID)
 			return highWater, nil, false
+		}
+		if alert != "" {
+			hlStopReplaceNotifyOnce(sc.ID+"|unread-end|"+symbol+"|"+strconv.FormatInt(currentOID, 10), notifier, alert)
 		}
 		if adopted != nil {
 			msg := fmt.Sprintf("**HL TRAILING SL OUTCOME UNKNOWN** [%s] %s: the earlier replacement could not be read. Open order %d is now recorded and old OID %d may still be resting.",
