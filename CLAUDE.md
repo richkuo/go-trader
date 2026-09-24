@@ -81,7 +81,7 @@ Guardrails only. Mechanism/flows: SKILL.md, docs/POST_UPDATE_HISTORY.md; <15k by
 - M1-M6, auto_suggest, regime promotion, `tune_live.py` = SUGGEST-ONLY: **never write live defaults, config or PRs.**
 
 ## Testing
-- **Never write unit tests.** Verify by running real binaries/scripts (build, `probe`, `--once`, local runs); PR lists commands+log lines per criterion. Suites #1597 kept stay.
+- **Never write unit tests, except** where a run can't prove it or a regression is silent: rare venue states (partial fill, rejected/unknown order), money math (sizing, PnL, fees), paper/live parity, DB migrations, large refactors. Else verify by running real binaries/scripts (build, `probe`, `--once`, local runs); PR lists commands+log lines per criterion. Suites #1597 kept stay.
 - Touching a kept test: Outdated/Wrong/Obsolete with checkable ground, disclosed in commit+PR (`fix-pr-review` step 6); no ground = fix code.
 - Kept suites pass: `go -C scheduler test ./...`, pytest `uv run --no-sync python -m pytest shared_strategies/ shared_tools/ backtest/`, `shared_scripts/test_*.py` by path, `scripts/test_*.sh`. CI `-n auto`: never bare-`import` ambiguous name. Go CI never spawns Python.
 - `gofmt -w` after Go edits; tabbed Go: Python `replace(old,new,1)`.
