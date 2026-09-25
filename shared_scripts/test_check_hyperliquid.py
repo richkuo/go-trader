@@ -598,7 +598,7 @@ class TestUpdateStopLoss:
             else:
                 assert out[key] == want
 
-    def test_place_then_cancel_long_stop(self):
+    def test_modify_in_place_long_stop(self):
         out, adapter = self._run_update(side="long")
         adapter.modify_stop_loss.assert_called_once_with("ETH", 11111, 0.5, 3104.12, False)
         adapter.place_stop_loss.assert_not_called()
