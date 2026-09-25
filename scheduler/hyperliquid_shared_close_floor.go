@@ -574,7 +574,7 @@ func rearmProtectionForCloseRemainder(sc StrategyConfig, stratState *StrategySta
 		detail = fmt.Sprintf("[%s] LIVE PROTECTION SYNC SL %s @ $%.2f", sc.ID, symbol, fillPx)
 	}
 	claimed = append(claimed, syncRes)
-	extraTrades, slDetail, trailRes := rearmTrailingStopAfterFailedClose(sc, stratState, symbol, price, prevStopOID, prevTriggerPx, prevHighWater, liqPxByCoin, netSideByCoin, stop, mu, logger)
+	extraTrades, slDetail, trailRes := rearmTrailingStopAfterFailedClose(sc, stratState, symbol, price, prevStopOID, prevTriggerPx, prevHighWater, liqPxByCoin, netSideByCoin, stop, mu, notifier, logger)
 	if extraTrades > 0 {
 		trades += extraTrades
 		detail = slDetail
@@ -854,7 +854,7 @@ func rearmScalarStopAfterFailedClose(sc StrategyConfig, stratState *StrategyStat
 	return 0, "", outcome
 }
 
-func rearmTrailingStopAfterFailedClose(sc StrategyConfig, stratState *StrategyState, symbol string, mark float64, prevStopOID int64, prevTriggerPx, prevHighWater float64, liqPxByCoin map[string]float64, netSideByCoin map[string]string, stop hlCloseRemainderStop, mu *sync.RWMutex, logger *StrategyLogger) (int, string, hlStopRearmResult) {
+func rearmTrailingStopAfterFailedClose(sc StrategyConfig, stratState *StrategyState, symbol string, mark float64, prevStopOID int64, prevTriggerPx, prevHighWater float64, liqPxByCoin map[string]float64, netSideByCoin map[string]string, stop hlCloseRemainderStop, mu *sync.RWMutex, notifier *MultiNotifier, logger *StrategyLogger) (int, string, hlStopRearmResult) {
 	if !hyperliquidIsLive(sc.Args) || stratState == nil || symbol == "" {
 		return 0, "", hlStopRearmResult{}
 	}
@@ -891,7 +891,7 @@ func rearmTrailingStopAfterFailedClose(sc StrategyConfig, stratState *StrategySt
 	placedQty := slEffectiveQty
 	logger.Warn("Failed close %s cancelled its on-chain stop (oid=%d); re-arming the trailing SL from high-water $%.4f with the old oid verified on-chain before any cancel", symbol, cancelOID, highWater)
 	policy := trailingReplacePolicy{forceResize: true, liquidationPx: hlLiquidationPxForSide(liqPxByCoin, netSideByCoin, symbol, side)}
-	newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, symbol, side, slEffectiveQty, &posSnap, mark, highWater, triggerPx, cancelOID, policy, nil, logger)
+	newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, symbol, side, slEffectiveQty, &posSnap, mark, highWater, triggerPx, cancelOID, policy, notifier, logger)
 	outcome := classifyStopRearmUpdate(hlRearmOwnerTrailing, slEffectiveQty, triggerPx, slUpdate)
 	mu.Lock()
 	defer mu.Unlock()
