@@ -1068,7 +1068,7 @@ func runPostTPStopLossAdjustment(
 			return false, 0, ""
 		}
 	}
-	first, result, retryOutcomeUnknown, err := func() (*HyperliquidStopLossUpdateResult, *HyperliquidStopLossUpdateResult, bool, error) {
+	first, result, retryOutcomeUnknown, retryReason, err := func() (*HyperliquidStopLossUpdateResult, *HyperliquidStopLossUpdateResult, bool, string, error) {
 		unlock := lockHyperliquidTrailingUpdate(symbol)
 		defer unlock()
 		res, stderr, runErr := runHyperliquidUpdateStopLossFunc(sc.Script, symbol, side, placedQty, triggerPx, currentOID)
@@ -1076,19 +1076,28 @@ func runPostTPStopLossAdjustment(
 			logger.Info("post-TP SL stderr: %s", stderr)
 		}
 		if runErr != nil || res == nil {
-			return nil, nil, false, runErr
+			return nil, nil, false, "", runErr
 		}
 		if !clampTriggered || !classifyPostTPStopReply(res).protectionLost {
-			return res, res, false, nil
+			return res, res, false, "", nil
 		}
 		retry, outcome := hlLiquidationPlaceFresh(sc.Script, symbol, side, placedQty, triggerPx, logger)
 		switch outcome {
 		case hlReplacePlaced, hlReplaceFilled:
-			return res, retry, false, nil
+			return res, retry, false, "", nil
 		case hlReplaceOutcomeUnknown:
-			return res, retry, true, nil
+			return res, retry, true, "", nil
 		}
-		return res, res, false, nil
+		// The retry is the attempt that left the position unprotected; its
+		// error, not the first attempt's, belongs in the protection-lost line.
+		reason := ""
+		if retry != nil {
+			reason = retry.StopLossError
+			if reason == "" {
+				reason = retry.Error
+			}
+		}
+		return res, res, false, reason, nil
 	}()
 	if err != nil || result == nil {
 		if logger != nil {
@@ -1230,6 +1239,9 @@ func runPostTPStopLossAdjustment(
 		reason := result.StopLossError
 		if reason == "" {
 			reason = result.Error
+		}
+		if retryReason != "" {
+			reason = retryReason
 		}
 		if logger != nil {
 			logger.Error("CRITICAL: post-TP SL for %s cancelled OID=%d but the replacement at $%.4f did not rest: the position has NO exchange-side stop (%s)",
