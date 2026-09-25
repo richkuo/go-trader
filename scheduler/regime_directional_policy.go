@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 var regimeDirectionalLegacyWarned sync.Map
@@ -265,6 +266,54 @@ func EffectiveInvertSignalForPositionGated(sc StrategyConfig, currentRegime, pos
 		return entry.InvertSignal
 	}
 	return sc.InvertSignal
+}
+
+type checkDirectionalOverride struct {
+	CurrentLabel         string
+	PolicyEntry          RegimeDirectionalEntry
+	PolicyApplied        bool
+	LegacyFallback       bool
+	Divergence           DivergenceResult
+	DivergenceConfigured bool
+}
+
+func applyCheckDirectionalOverrides(sc *StrategyConfig, payload RegimePayload, posCtx PositionCtx, regime *RegimeConfig) checkDirectionalOverride {
+	if sc == nil {
+		return checkDirectionalOverride{}
+	}
+	current := regimeDirectionalLabel(*sc, payload, regime)
+	var certs map[string]string
+	if sc.RegimeDirectionalPolicy.IsConfigured() {
+		if posCtx.Quantity > 0 {
+			certs = posCtx.DirectionCertifiedStatesAtOpen
+		} else {
+			certs, _ = strategyDirectionalCertified(*sc, regime, time.Now().UTC())
+		}
+	}
+	entry, applied, legacy := applyRegimeDirectionalPolicy(sc, current, posCtx.DirectionalRegime, posCtx.Quantity, certs)
+	out := checkDirectionalOverride{
+		CurrentLabel:   current,
+		PolicyEntry:    entry,
+		PolicyApplied:  applied,
+		LegacyFallback: legacy,
+	}
+	if sc.RegimeWindowDivergence.IsConfigured() {
+		out.DivergenceConfigured = true
+		out.Divergence = applyRegimeDivergenceOverride(sc, payload, regime, posCtx.Quantity)
+	}
+	return out
+}
+
+func hlInvertOpenSignalForCheck(sc StrategyConfig, posCtx PositionCtx, regime *RegimeConfig) bool {
+	if sc.Type == "manual" {
+		return false
+	}
+	if !sc.RegimeDirectionalPolicy.IsConfigured() && sc.RegimeWindowDivergence.IsZero() {
+		return sc.InvertSignal
+	}
+	copySC := sc
+	applyCheckDirectionalOverrides(&copySC, globalRegimeStore.PayloadForStrategy(sc, regime), posCtx, regime)
+	return copySC.InvertSignal
 }
 
 func policyAllowsPositionSide(sc StrategyConfig, posSide string) bool {

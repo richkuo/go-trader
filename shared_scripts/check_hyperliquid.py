@@ -136,6 +136,7 @@ def _signal_check_deps():
         finalize_decision,
         normalize_signal,
         parse_close_strategies,
+        parse_invert_open_signal,
         reject_backtest_only_strategies,
         validate_close_strategy_names,
     )
@@ -149,6 +150,7 @@ def _signal_check_deps():
         list_close_strategies=list_close_strategies,
         evaluate_open_close=evaluate_open_close,
         finalize_decision=finalize_decision,
+        parse_invert_open_signal=parse_invert_open_signal,
         normalize_signal=normalize_signal,
         parse_close_strategies=parse_close_strategies,
         reject_backtest_only_strategies=reject_backtest_only_strategies,
@@ -398,6 +400,8 @@ def evaluate_signal_slot(shared, slot, deps=None):
         position_ctx = {**position_ctx, "tp_model": TP_MODEL_RESTING_LIMIT}
     htf_filter_enabled = bool(slot.get("htf_filter"))
     regime_atr_window = slot.get("regime_atr_window") or ""
+    invert_present = "invert_open_signal" in slot
+    invert_open_signal = deps.parse_invert_open_signal(slot.get("invert_open_signal")) if invert_present else False
 
     _validate_slot_strategy_names(deps, strategy_name, open_strategy, close_strategies)
 
@@ -406,7 +410,7 @@ def evaluate_signal_slot(shared, slot, deps=None):
     atr_method = shared["atr_method"]
     df = shared["df"].copy()
 
-    open_close_enabled = bool(open_strategy or close_strategies or close_owner)
+    open_close_enabled = bool(open_strategy or close_strategies or close_owner or invert_present)
     funding_aware_name = open_strategy or strategy_name
 
     strategy_params = {}
@@ -452,6 +456,7 @@ def evaluate_signal_slot(shared, slot, deps=None):
             market_ctx=market_ctx,
             close_params_by_name=close_params_by_name,
             close_owner=close_owner,
+            invert_open_signal=invert_open_signal,
         )
         result_df = evaluation.open_result_df
         signal = evaluation.open_signal
@@ -481,7 +486,7 @@ def evaluate_signal_slot(shared, slot, deps=None):
         price = shared["price_override"]
 
     if open_close_enabled:
-        decision = deps.finalize_decision(evaluation, position_side, signal)
+        decision = deps.finalize_decision(evaluation, position_side, signal, invert_open_signal)
         if mode == "live" and 0 < float(decision.get("close_fraction", 0.0) or 0.0) < 1:
             gated = apply_venue_close_gate(
                 decision, position_ctx, price,
@@ -551,7 +556,8 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                      atr_method="simple",
                      mark_price=0.0,
                      market=None,
-                     close_owner=None):
+                     close_owner=None,
+                     invert_open_signal=None):
     try:
         deps = _signal_check_deps()
         _validate_slot_strategy_names(deps, strategy_name, open_strategy, close_strategies)
@@ -574,7 +580,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             mode=mode,
             market=market,
         )
-        output = evaluate_signal_slot(shared, {
+        slot = {
             "id": strategy_name,
             "strategy": strategy_name,
             "mode": mode,
@@ -587,7 +593,10 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             "position_side": position_side,
             "position_ctx": position_ctx,
             "regime_atr_window": regime_atr_window,
-        }, deps=deps)
+        }
+        if invert_open_signal is not None:
+            slot["invert_open_signal"] = invert_open_signal
+        output = evaluate_signal_slot(shared, slot, deps=deps)
         print(json.dumps(output, cls=SafeEncoder))
 
     except InsufficientCandlesError as e:
@@ -679,6 +688,8 @@ def parse_batch_request(raw_stdin):
                 slot["params"] = parsed["open_params"]
                 slot["close_params_by_name"] = parsed["close_params_by_name"]
                 slot["close_owner"] = parsed["close_owner"]
+                if "invert_open_signal" in parsed:
+                    slot["invert_open_signal"] = parsed["invert_open_signal"]
         if not str(slot.get("strategy") or "").strip():
             raise ValueError(f"slot {slot_id!r} is missing 'strategy'")
         out.append(slot)
@@ -2476,6 +2487,7 @@ def main():
             mark_price=args.mark_price,
             market=market,
             close_owner=refs["close_owner"] if refs else None,
+            invert_open_signal=refs.get("invert_open_signal") if refs and "invert_open_signal" in refs else None,
         )
 
 

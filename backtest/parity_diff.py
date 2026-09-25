@@ -20,6 +20,7 @@ from strategy_composition import (
     compose_signal,
     evaluate_open_close,
     finalize_decision,
+    legacy_close_fraction_from_signal,
     open_action_from_signal,
     rewrite_deprecated_close_ref,
 )
@@ -65,6 +66,7 @@ class ParityConfig:
     hurst_gate: Optional[dict] = None
     regime_windows_spec: Optional[dict] = None
     batched: bool = False
+    open_close_config: bool = False
 
     def __post_init__(self):
         self.regime_directional_policy = _normalize_regime_directional_policy(
@@ -120,6 +122,7 @@ def config_from_live_config(config_path: str, strategy_id: str,
         regime_directional_certified_states=rdp_cert_states,
         hurst_gate=loaded.get("hurst_gate"),
         regime_windows_spec=loaded.get("regime_windows_spec"),
+        open_close_config=bool(entry.get("open_strategy") or entry.get("close_strategy")),
     )
 
 
@@ -159,6 +162,23 @@ def _effective_directional_pair(cfg: ParityConfig, current_regime: str,
         direction = str(entry["direction"])
         invert = bool(entry["invert_signal"])
     return direction, invert
+
+
+def _surviving_raw_signal(signal: int, cfg: ParityConfig,
+                          current_regime: str,
+                          position_ctx: Optional[dict]) -> tuple[int, bool]:
+    direction, invert = _effective_directional_pair(
+        cfg, current_regime, position_ctx,
+    )
+    post = int(signal)
+    if invert and post:
+        post = -post
+    d = (direction or "").strip().lower()
+    if d == "long" and post < 0:
+        return 0, invert
+    if d == "short" and post > 0:
+        return 0, invert
+    return int(signal), invert
 
 
 def _transform_entry_signal(signal: int, cfg: ParityConfig,
@@ -217,13 +237,16 @@ def _live_bar_decision(window: pd.DataFrame, cfg: ParityConfig, reg,
 
     close_names = _close_names(cfg.close_refs)
     decision = {"regime": str(live_regime or "")}
-    if close_names:
+    if close_names or cfg.open_close_config:
         market_ctx = {"mark_price": float(window["close"].iloc[-1])}
         atr_now = latest_atr(window)
         if atr_now > 0:
             market_ctx["atr"] = atr_now
         if live_regime:
             market_ctx["regime"] = live_regime
+        _, invert = _effective_directional_pair(
+            cfg, str(live_regime or ""), position_ctx,
+        )
         evaluation = evaluate_open_close(
             reg.apply_strategy,
             reg.get_strategy,
@@ -237,15 +260,17 @@ def _live_bar_decision(window: pd.DataFrame, cfg: ParityConfig, reg,
             close_evaluate=close_evaluate,
             market_ctx=market_ctx,
             close_params_by_name=_close_params_by_name(cfg.close_refs),
+            invert_open_signal=invert,
         )
-        open_signal = _transform_entry_signal(
+        open_signal, invert = _surviving_raw_signal(
             int(evaluation.open_signal),
             cfg,
             str(live_regime or ""),
             position_ctx,
-            uses_open_close=True,
         )
-        final = finalize_decision(evaluation, position_side, open_signal)
+        final = finalize_decision(
+            evaluation, position_side, open_signal, invert_open_signal=invert,
+        )
         decision["signal"] = int(final["signal"])
         decision["open_action"] = str(final["open_action"])
         decision["close_fraction"] = float(final["close_fraction"])
@@ -462,9 +487,17 @@ def _simulate_position_contexts(bt: pd.DataFrame, df: pd.DataFrame,
             if regime_full is not None:
                 raw_label = regime_full.iloc[i]
                 label = "" if pd.isna(raw_label) else str(raw_label)
-            if _close_names(cfg.close_refs):
+            if _close_names(cfg.close_refs) or cfg.open_close_config:
+                raw_open = _signal_from_open_action(bt["open_action"].iloc[i])
+                if cfg.open_close_config and not _close_names(cfg.close_refs):
+                    raw_open = int(bt["signal"].iloc[i])
+                _, invert = _effective_directional_pair(cfg, label, ctx)
+                inverted = -raw_open if invert and raw_open else raw_open
+                if "inverted_open" not in decisions.columns:
+                    decisions["inverted_open"] = 0
+                decisions.iloc[i, decisions.columns.get_loc("inverted_open")] = inverted
                 transformed = _transform_entry_signal(
-                    _signal_from_open_action(bt["open_action"].iloc[i]),
+                    raw_open,
                     cfg,
                     label,
                     ctx,
@@ -550,6 +583,7 @@ def compute_parity_frame(
                 )
     needs_decision_walk = (
         has_close_refs
+        or bool(cfg.open_close_config)
         or bool(cfg.direction)
         or bool(cfg.invert_signal)
         or cfg.regime_directional_policy is not None
@@ -589,6 +623,11 @@ def compute_parity_frame(
         bt_signal = int(bt["signal"].iloc[i])
         if has_close_refs:
             bt_close = max(bt_close, registry_fracs[i])
+            bt_signal = compose_signal(
+                str(bt["open_action"].iloc[i]), bt_close, side)
+        elif cfg.open_close_config:
+            inverted = int(bt["inverted_open"].iloc[i]) if "inverted_open" in bt.columns else bt_signal
+            bt_close = legacy_close_fraction_from_signal(inverted, side)
             bt_signal = compose_signal(
                 str(bt["open_action"].iloc[i]), bt_close, side)
 

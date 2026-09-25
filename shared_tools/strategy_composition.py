@@ -58,13 +58,24 @@ def parse_strategy_refs_arg(raw: Optional[str]) -> Optional[dict]:
         ref_params = ref.get("params")
         if ref_params:
             close_params_by_name[name] = ref_params
-    return {
+    parsed = {
         "open_name": open_name,
         "open_params": open_params,
         "close_csv": ",".join(close_names) if close_names else None,
         "close_params_by_name": close_params_by_name or None,
         "close_owner": payload.get("close_owner") or None,
     }
+    if "invert_open_signal" in payload:
+        parsed["invert_open_signal"] = payload.get("invert_open_signal")
+    return parsed
+
+
+def parse_invert_open_signal(value) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    raise ValueError(f"invert_open_signal must be a bool, got {value!r}")
 
 
 def parse_close_strategies(raw: Optional[str | Iterable[str]]) -> list[str]:
@@ -354,6 +365,7 @@ def evaluate_open_close(
     market_ctx: Optional[dict] = None,
     close_params_by_name: Optional[dict[str, dict]] = None,
     close_owner: Optional[str] = None,
+    invert_open_signal: bool = False,
 ) -> OpenCloseEvaluation:
     open_name = (open_strategy or positional_strategy).strip()
     close_names = effective_close_strategies(
@@ -411,6 +423,8 @@ def evaluate_open_close(
         close_params = _merge_close_params(base_close_params, position_ctx)
         result = run(resolved, close_params)
         signal = _last_signal(result)
+        if invert_open_signal and resolved == open_name and signal:
+            signal = -signal
         close_evals.append(CloseEvaluation(
             strategy=resolved,
             close_fraction=_last_close_fraction(result, signal, position_side),
@@ -430,8 +444,11 @@ def finalize_decision(
     evaluation: OpenCloseEvaluation,
     position_side: str,
     open_signal: Optional[int] = None,
+    invert_open_signal: bool = False,
 ) -> dict:
     signal = evaluation.open_signal if open_signal is None else normalize_signal(open_signal)
+    if invert_open_signal and signal:
+        signal = -signal
     open_action = open_action_from_signal(signal)
     close_fraction, close_strategy = max_close_fraction(evaluation.close_evaluations)
     decision = {
@@ -442,6 +459,8 @@ def finalize_decision(
         "close_strategy": close_strategy,
         "signal": compose_signal(open_action, close_fraction, position_side),
     }
+    if invert_open_signal:
+        decision["open_signal_inverted"] = True
     if evaluation.close_owner:
         decision["close_owner"] = evaluation.close_owner
     best = best_close_evaluation(evaluation.close_evaluations)

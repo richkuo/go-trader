@@ -249,7 +249,7 @@ func TestReplayChokePointsSeeIdenticalResults(t *testing.T) {
 			scDirect := paper
 			direct := tc.result
 			fromDirect, _, _, ok := finishHyperliquidCheck(&scDirect, prices, tc.posCtx, nil, nil, hlBatchTestLogger(),
-				&direct, "", "", scriptFailureCrash)
+				&direct, "", "", scriptFailureCrash, false)
 			if !ok {
 				t.Fatal("per-strategy path did not produce a decision")
 			}

@@ -2187,6 +2187,7 @@ func main() {
 						}
 					} else if result, signalStr, price, ok := runHyperliquidCheck(&sc, prices, hlPosCtx, cfg.Regime, resolveATRMethod(sc, cfg), notifier, logger, hlBatchResults, feedCtx); ok {
 						prices[result.Symbol] = price
+						guardSameSideClose(sc, result, hlPosSide, hlPosQty, notifier, logger)
 						if cbManageOnly {
 							result.Signal = 0
 						}
@@ -3208,7 +3209,7 @@ func runSpotCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionC
 	args = appendStrategyRegimeWindowArgs(args, sc, regime)
 	args = appendRegimePayloadArg(args, sc, regime)
 	args = appendATRMethodArg(args, atrMethod)
-	if refsArgs, err := buildStrategyRefsArg(sc, ""); err != nil {
+	if refsArgs, err := buildStrategyRefsArg(sc, "", false); err != nil {
 		logger.Warn("Failed to marshal strategy refs: %v", err)
 	} else if len(refsArgs) > 0 {
 		args = append(args, refsArgs...)
@@ -3513,6 +3514,7 @@ var runHyperliquidCheckWithStdinFn = RunHyperliquidCheckWithStdin
 
 func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, atrMethod string, notifier *MultiNotifier, logger *StrategyLogger, batch *hlBatchCycleResults, feed *marketFeedContext) (*HyperliquidResult, string, float64, bool) {
 	closeOwner := hlCloseOwnerForCheck(*sc, posCtx)
+	sentInvert := hlInvertOpenSignalForCheck(*sc, posCtx, regime)
 	if closeStrategySuppressedByOnChainProtection(*sc) {
 		if closeOwner == "" && posCtx.Quantity > 0 {
 			notifyHLOnChainTPUnplaceable(notifier, logger, *sc, hyperliquidSymbol(sc.Args), posCtx.OnChainTPBlocked)
@@ -3537,7 +3539,7 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 				feed.clearDegradedFor(notifier, sc.ID)
 			}
 			return finishHyperliquidCheck(sc, prices, posCtx, regime, notifier, logger,
-				result, outcome.Stderr, outcome.Err, outcome.Mode)
+				result, outcome.Stderr, outcome.Err, outcome.Mode, sentInvert)
 		}
 		logger.Warn("Batched check inputs changed since the pre-pass snapshot; running this strategy's own check (#1442)")
 	}
@@ -3562,7 +3564,7 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 				return nil, "", 0, false
 			}
 			result := degradedHyperliquidResult(*sc, hyperliquidSymbol(sc.Args), hyperliquidModeFromArgs(sc.Args), degradedReason, price)
-			return finishHyperliquidCheck(sc, prices, posCtx, regime, notifier, logger, result, "", "", scriptFailureError)
+			return finishHyperliquidCheck(sc, prices, posCtx, regime, notifier, logger, result, "", "", scriptFailureError, sentInvert)
 		}
 		feed.clearDegradedFor(notifier, sc.ID)
 	}
@@ -3575,7 +3577,7 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 	args = appendStrategyRegimeWindowArgs(args, *sc, regime)
 	args = appendRegimePayloadArg(args, *sc, regime)
 	args = appendATRMethodArg(args, atrMethod)
-	if refsArgs, err := buildStrategyRefsArg(*sc, closeOwner); err != nil {
+	if refsArgs, err := buildStrategyRefsArg(*sc, closeOwner, sentInvert); err != nil {
 		logger.Warn("Failed to marshal strategy refs: %v", err)
 	} else if len(refsArgs) > 0 {
 		args = append(args, refsArgs...)
@@ -3608,13 +3610,17 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 	if errMsg != "" {
 		logger.RunningOnFailure(sc.Script, args)
 	}
-	return finishHyperliquidCheck(sc, prices, posCtx, regime, notifier, logger, result, stderr, errMsg, mode)
+	return finishHyperliquidCheck(sc, prices, posCtx, regime, notifier, logger, result, stderr, errMsg, mode, sentInvert)
 }
 
-func finishHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, notifier *MultiNotifier, logger *StrategyLogger, result *HyperliquidResult, stderr, errMsg string, mode scriptFailureMode) (*HyperliquidResult, string, float64, bool) {
+func finishHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, notifier *MultiNotifier, logger *StrategyLogger, result *HyperliquidResult, stderr, errMsg string, mode scriptFailureMode, sentInvert bool) (*HyperliquidResult, string, float64, bool) {
 	if result != nil && errMsg == "" && result.Degraded == "" {
 		if want := hlCloseOwnerForCheck(*sc, posCtx); want != "" && result.CloseOwner != want {
 			errMsg = fmt.Sprintf("close-owner contract mismatch: sent close_owner=%q but the check returned close_owner=%q; holding this signal because the check script may have evaluated a close the on-chain take-profit owns (redeploy with scripts/update.sh so Go and Python match)", want, result.CloseOwner)
+			mode = scriptFailureError
+			result = nil
+		} else if result.OpenSignalInverted != sentInvert {
+			errMsg = fmt.Sprintf("open-signal-inverted contract mismatch: sent invert_open_signal=%t but the check returned open_signal_inverted=%t; holding this signal because the check script may have inverted a side Go did not ask for (redeploy with scripts/update.sh so Go and Python match)", sentInvert, result.OpenSignalInverted)
 			mode = scriptFailureError
 			result = nil
 		}
@@ -3640,30 +3646,20 @@ func finishHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCt
 	if result.Degraded == "" {
 		clearScriptFailure(notifier, *sc)
 	}
-	currentDirRegime := regimeDirectionalLabel(*sc, regimePayloadValue(result.Regime), regime)
-	posDirRegime := posCtx.DirectionalRegime
-	var dirCertStates map[string]string
-	if sc.RegimeDirectionalPolicy.IsConfigured() {
-		if posCtx.Quantity > 0 {
-			dirCertStates = posCtx.DirectionCertifiedStatesAtOpen
-		} else {
-			dirCertStates, _ = strategyDirectionalCertified(*sc, regime, time.Now().UTC())
-		}
-	}
-	if entry, applied, legacyFallback := applyRegimeDirectionalPolicy(sc, currentDirRegime, posDirRegime, posCtx.Quantity, dirCertStates); applied {
-		regimeKey := effectiveRegimeForPolicy(currentDirRegime, posDirRegime, posCtx.Quantity)
-		logger.InfoOnChange("directional-policy", fmt.Sprintf("%s|%s|%t", regimeKey, entry.Direction, entry.InvertSignal),
+	overrides := applyCheckDirectionalOverrides(sc, regimePayloadValue(result.Regime), posCtx, regime)
+	if overrides.PolicyApplied {
+		regimeKey := effectiveRegimeForPolicy(overrides.CurrentLabel, posCtx.DirectionalRegime, posCtx.Quantity)
+		logger.InfoOnChange("directional-policy", fmt.Sprintf("%s|%s|%t", regimeKey, overrides.PolicyEntry.Direction, overrides.PolicyEntry.InvertSignal),
 			"Regime directional policy: regime=%s -> direction=%q invert_signal=%t",
-			regimeKey, entry.Direction, entry.InvertSignal)
-		if legacyFallback {
+			regimeKey, overrides.PolicyEntry.Direction, overrides.PolicyEntry.InvertSignal)
+		if overrides.LegacyFallback {
 			if _, loaded := regimeDirectionalLegacyWarned.LoadOrStore(sc.ID, struct{}{}); !loaded {
 				logger.Warn("Regime directional policy: open position has no stamped regime (legacy pre-#741); resolving against current regime=%q. Hold-on-transition not guaranteed for this position; self-heals on next entry.", regimeKey)
 			}
 		}
 	}
-	if sc.RegimeWindowDivergence.IsConfigured() {
-		payload := regimePayloadValue(result.Regime)
-		divResult := applyRegimeDivergenceOverride(sc, payload, regime, posCtx.Quantity)
+	if overrides.DivergenceConfigured {
+		divResult := overrides.Divergence
 		result.Divergence = divResult
 		if divResult.IsActive() && posCtx.Quantity <= 0 {
 			logger.InfoOnChange("divergence", "override|"+divResult.ShortLabel+"|"+divResult.MediumLabel+"|"+divResult.OverrideDir,
@@ -3681,7 +3677,11 @@ func finishHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCt
 			logger.Changed("divergence", "none")
 		}
 	}
-	applySignalInversion(*sc, result, logger)
+	if effective := sc.Type != "manual" && sc.InvertSignal; effective != sentInvert {
+		logger.Warn("invert_open_signal changed between the check and this result (sent %t, effective %t); holding this signal for one cycle", sentInvert, effective)
+		result.Signal = 0
+		result.CloseFraction = 0
+	}
 
 	signalStr := signalLabel(result.Signal)
 	logger.InfoOrDebug(result.Signal != 0 || result.CloseFraction > 0, "Signal: %s | %s @ $%s [%s]", signalStr, result.Symbol, formatSignalPrice(result.Price), result.Mode)
@@ -3700,15 +3700,6 @@ func finishHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCt
 		return nil, "", 0, false
 	}
 	return result, signalStr, price, true
-}
-
-func applySignalInversion(sc StrategyConfig, result *HyperliquidResult, logger *StrategyLogger) {
-	if !sc.InvertSignal || result == nil || result.Signal == 0 {
-		return
-	}
-	original := result.Signal
-	result.Signal = -result.Signal
-	logger.Info("Signal inversion enabled: %s -> %s", signalLabel(original), signalLabel(result.Signal))
 }
 
 func formatSignalPrice(v float64) string {
@@ -4093,7 +4084,7 @@ func runTopStepCheck(sc StrategyConfig, prices map[string]float64, posCtx Positi
 	args = appendStrategyRegimeWindowArgs(args, sc, regime)
 	args = appendRegimePayloadArg(args, sc, regime)
 	args = appendATRMethodArg(args, atrMethod)
-	if refsArgs, err := buildStrategyRefsArg(sc, ""); err != nil {
+	if refsArgs, err := buildStrategyRefsArg(sc, "", false); err != nil {
 		logger.Warn("Failed to marshal strategy refs: %v", err)
 	} else if len(refsArgs) > 0 {
 		args = append(args, refsArgs...)
@@ -4285,7 +4276,7 @@ func runRobinhoodCheck(sc StrategyConfig, prices map[string]float64, posCtx Posi
 	args = appendStrategyRegimeWindowArgs(args, sc, regime)
 	args = appendRegimePayloadArg(args, sc, regime)
 	args = appendATRMethodArg(args, atrMethod)
-	if refsArgs, err := buildStrategyRefsArg(sc, ""); err != nil {
+	if refsArgs, err := buildStrategyRefsArg(sc, "", false); err != nil {
 		logger.Warn("Failed to marshal strategy refs: %v", err)
 	} else if len(refsArgs) > 0 {
 		args = append(args, refsArgs...)
@@ -4465,7 +4456,7 @@ func runOKXCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCt
 	args = appendStrategyRegimeWindowArgs(args, sc, regime)
 	args = appendRegimePayloadArg(args, sc, regime)
 	args = appendATRMethodArg(args, atrMethod)
-	if refsArgs, err := buildStrategyRefsArg(sc, ""); err != nil {
+	if refsArgs, err := buildStrategyRefsArg(sc, "", false); err != nil {
 		logger.Warn("Failed to marshal strategy refs: %v", err)
 	} else if len(refsArgs) > 0 {
 		args = append(args, refsArgs...)

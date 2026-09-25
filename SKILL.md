@@ -656,7 +656,7 @@ Per-strategy:
 | `open_strategy` | all | `{name, params}`; otherwise the name comes from `args[0]` |
 | `close_strategy` | all | The single exit ref `{name, params}`; nil = open-as-close. A legacy `close_strategies` array of length ≤1 still parses, length >1 is rejected. |
 | `direction` | perps | `"long"` (default), `"short"` (opens shorts only), `"both"`. Hot-reloadable when flat. |
-| `invert_signal` | HL perps, manual | `true` flips BUY↔SELL on every non-zero signal; HOLD is never flipped. Composes with `direction="short"`. Blocked while open. |
+| `invert_signal` | HL perps, manual | Inversion applies to the open signal only. A composed close is never inverted. HL checks send `invert_open_signal` on `--strategy-refs` and require the `open_signal_inverted` echo; a mismatch holds the signal. `type: manual` does not send the key. Composes with `direction="short"`. Blocked while open. |
 | `stop_loss_pct` | HL perps | Sole owner auto-derives from `max_drawdown_pct` (cap 50) when omitted; same-coin peers need one explicit positive owner. `0` opts out. |
 | `stop_loss_margin_pct` | HL perps | Leverage-aware. `0` opts out. |
 | `stop_loss_atr_mult` | HL perps | Trigger at `avg_cost ± mult × entry_atr`, armed once after open. Live and paper. `0` restores the `max_drawdown_pct` fallback. |
@@ -1106,6 +1106,7 @@ Enabled by `replay_log_path` plus per-strategy `replay_sharing="live_mirror"`. P
 
 - `hlLiquidationPx` is a NET per-coin map read via `hlLiquidationPxForSide` against `hlNetSideByCoin`. Healing runs through the trailing `trailingReplacePolicy.liquidationPx` or the static/regime `buildHyperliquidProtectionPlan`, strictly tighter only. `runHyperliquidLiquidationAudit` tightens every owner; `hlLiquidationClampReplace` is tri-state (`protection lost` / re-arm / refuse over-virtual-net). One in-cycle retry on a positively rejected cancel-with-nothing-resting; classification comes from what rests. The off-cycle pass runs at `liquidationAuditIntervalSeconds`, floored at 60s. Preflight: `scripts/check-hl-stop-bankruptcy-bound.sh`. `recordPositionOpen` runs after the deferred-open execute leg. Operator view: § Hyperliquid Liquidation Guard.
 - On-chain TP suppression never nils `CloseStrategy`: live tiered-TP checks send `close_owner: on_chain_tp` with `closes` and the position context, Python evaluates no close and echoes the owner, and Go holds a signal whose result lacks the echo. `hlCloseOwnerForCheck` hands the exit to the in-process evaluator (one alert) only when nothing rests or is armed and the tiers are unplaceable. Paper never places on-chain TPs.
+- `invert_signal` flips only the open signal, inside the Python composer (`invert_open_signal` on the refs, echoed as `open_signal_inverted`). Go never negates a check result. A same-side close (`CloseFraction > 0` on the position side) is zeroed before the gate chain, so it cannot become a scale-in add. A missing or extra echo holds the signal. `type: manual` is not inverted.
 
 ### Probes, diagnostics, alerts, commands
 

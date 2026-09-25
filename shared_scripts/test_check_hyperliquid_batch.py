@@ -829,3 +829,82 @@ def test_slot_and_single_check_evaluate_tiers_under_the_resting_limit_model(mod,
         assert position["avg_cost"] == 98.0
     assert slot_out["close_tier_fill_price"] == 104.0
     assert single_out["close_tier_fill_price"] == 104.0
+
+
+def _fixed_signal_deps(mod, signal, registry_fraction=None):
+    deps = mod._signal_check_deps()
+
+    def apply_strategy(name, df, params=None):
+        out = df.copy()
+        out["signal"] = signal
+        return out
+
+    def close_evaluate(name, position, market, params):
+        if registry_fraction is None:
+            raise ValueError(f"Unknown close strategy: {name}")
+        return {"close_fraction": registry_fraction}
+
+    deps.apply_strategy = apply_strategy
+    deps.close_evaluate = close_evaluate
+    return deps
+
+
+def _invert_refs(raw_signal_unused=None, close_name=None, invert=True):
+    refs = {"open": {"name": "breakout"}}
+    if close_name:
+        refs["closes"] = [{"name": close_name}]
+    if invert:
+        refs["invert_open_signal"] = True
+    return refs
+
+
+@pytest.mark.parametrize("case", [
+    {"side": "long", "raw": 1, "registry": 0.4, "close": "atr_stop", "signal": -1, "fraction": 0.4},
+    {"side": "short", "raw": -1, "registry": 1.0, "close": "atr_stop", "signal": 1, "fraction": 1.0},
+    {"side": "", "raw": 1, "registry": None, "close": None, "signal": -1, "fraction": 0.0},
+    {"side": "short", "raw": -1, "registry": None, "close": None, "signal": 1, "fraction": 1.0},
+    {"side": "short", "raw": 1, "registry": None, "close": None, "signal": 0, "fraction": 0.0},
+])
+def test_invert_open_signal_echo_on_batch_slot_and_single_path(mod, monkeypatch, case):
+    deps = _fixed_signal_deps(mod, case["raw"], case["registry"])
+    refs = _invert_refs(close_name=case["close"])
+    ctx = None
+    if case["side"]:
+        ctx = {"side": case["side"], "avg_cost": 100.0, "current_quantity": 1.0, "initial_quantity": 1.0}
+    slots, _ = mod.parse_batch_request(json.dumps({"v": 1, "slots": [{
+        "id": "hl-inv", "strategy": "breakout", "mode": "paper",
+        "position_side": case["side"], "position_ctx": ctx, "strategy_refs": refs,
+    }]}))
+    slot_out = mod.evaluate_signal_slot(_shared(mod, FakeAdapter(), mark_price=100.0), slots[0], deps=deps)
+    assert slot_out["signal"] == case["signal"]
+    assert slot_out["close_fraction"] == case["fraction"]
+    assert slot_out["open_signal_inverted"] is True
+
+    monkeypatch.setattr(mod, "_signal_check_deps", lambda: deps)
+    argv = ["breakout", "BTC", "1h", "--mode=paper", "--strategy-refs", json.dumps(refs)]
+    if case["side"]:
+        argv += ["--position-side", case["side"], "--position-avg-cost=100", "--position-qty=1", "--position-initial-qty=1"]
+    out, code = _run_main(mod, monkeypatch, argv, "", FakeAdapter())
+    assert code == 0, out
+    single = json.loads(out)
+    assert single["signal"] == case["signal"]
+    assert single["close_fraction"] == case["fraction"]
+    assert single["open_signal_inverted"] is True
+
+
+@pytest.mark.parametrize("bad", ["yes", 1])
+def test_non_boolean_invert_open_signal_fails_the_slot_and_the_single_path(mod, monkeypatch, bad):
+    refs = {"open": {"name": "breakout"}, "invert_open_signal": bad}
+    slots, _ = mod.parse_batch_request(json.dumps({"v": 1, "slots": [{
+        "id": "hl-bad-invert", "strategy": "breakout", "strategy_refs": refs,
+    }]}))
+    envelope, code = mod.run_batch_signal_check("BTC", "1h", slots, adapter=FakeAdapter(), mark_price=100.0)
+    assert code == 1
+    assert "invert_open_signal" in envelope["results"][0]["error"]
+
+    out, exit_code = _run_main(mod, monkeypatch, [
+        "breakout", "BTC", "1h", "--mode=paper", "--strategy-refs", json.dumps(refs),
+    ], "", FakeAdapter())
+    assert exit_code == 1
+    payload = json.loads(out)
+    assert "invert_open_signal" in payload["error"]

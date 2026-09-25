@@ -686,3 +686,65 @@ def test_batched_dimension_catches_a_divergent_slot(monkeypatch):
     result = summarize(frame)
     assert result["batch_mismatches"] == result["bars_compared"]
     assert not result["clean"]
+
+
+def _register_flip(name):
+    reg = load_registry("futures")
+
+    def flip(frame: pd.DataFrame) -> pd.DataFrame:
+        out = frame.copy()
+        enter = pd.Timestamp("2024-01-02 12:00:00")
+        flip = pd.Timestamp("2024-01-03 00:00:00")
+        out["signal"] = 0
+        out.loc[out.index >= enter, "signal"] = 1
+        out.loc[out.index >= flip, "signal"] = -1
+        return out
+
+    reg.STRATEGY_REGISTRY[name] = {
+        "fn": flip,
+        "description": "test-only flip",
+        "default_params": {},
+        "backtest_only": False,
+    }
+    return name
+
+
+def test_inverted_short_registry_close_and_open_as_close_match():
+    name = _register_flip("_parity_invert_flip")
+    reg = load_registry("futures")
+    try:
+        _assert_inverted_short_parity(name)
+    finally:
+        reg.STRATEGY_REGISTRY.pop(name, None)
+
+
+def _assert_inverted_short_parity(name):
+    df = _ohlcv(80, seed=3)
+    registry = ParityConfig(
+        strategy_name=name,
+        registry="futures",
+        platform="hyperliquid",
+        direction="short",
+        invert_signal=True,
+        close_refs=[{"name": "atr_stop", "params": {"atr_mult": 0.05}}],
+        open_close_config=True,
+    )
+    frame = compute_parity_frame(df, cfg=registry, window=30)
+    summary = summarize(frame)
+    assert summary["clean"], summary
+    assert (frame["live_signal"] == -1).any()
+    assert ((frame["live_close_fraction"] > 0) & (frame["live_signal"] == 1)).any()
+
+    fallback = ParityConfig(
+        strategy_name=name,
+        registry="futures",
+        platform="hyperliquid",
+        direction="short",
+        invert_signal=True,
+        open_close_config=True,
+    )
+    fallback_frame = compute_parity_frame(df, cfg=fallback, window=30)
+    fallback_summary = summarize(fallback_frame)
+    assert fallback_summary["clean"], fallback_summary
+    assert (fallback_frame["live_signal"] == -1).any()
+    assert ((fallback_frame["live_close_fraction"] > 0) & (fallback_frame["live_signal"] == 1)).any()
