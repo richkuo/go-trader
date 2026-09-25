@@ -931,26 +931,6 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 		clampOutcome = hlLiquidationActionFilledOnChain
 		return highWater, result, false
 	}
-	newStopResting := result.StopLossOID > 0 || (result.StopLossFilledImmediately && result.StopLossTriggerPx > 0)
-	if result.CancelStopLossError != "" && !newStopResting {
-		logger.Warn("Trailing SL cancel failed; replacement deferred: %s", result.CancelStopLossError)
-		if currentOID > 0 && notifier != nil && notifier.HasBackends() {
-			msg := fmt.Sprintf("**HL TRAILING SL CANCEL FAILED** [%s] %s old trigger OID %d was not replaced. The scheduler will retry next cycle. Error: %s",
-				sc.ID, symbol, currentOID, result.CancelStopLossError)
-			notifier.SendToAllChannels(msg)
-			notifier.SendOwnerDM(msg)
-		}
-		return highWater, result, false
-	}
-	if result.CancelStopLossError != "" && (result.StopLossOID > 0 || (result.StopLossFilledImmediately && result.StopLossTriggerPx > 0)) {
-		logger.Warn("Trailing SL cancel failed after the replacement was placed: %s", result.CancelStopLossError)
-		if currentOID > 0 && notifier != nil && notifier.HasBackends() {
-			newID := result.StopLossOID
-			msg := fmt.Sprintf("**HL TRAILING SL CANCEL FAILED** [%s] %s old trigger OID %d may still be resting while the replacement filled or rested (new OID %d). Error: %s",
-				sc.ID, symbol, currentOID, newID, result.CancelStopLossError)
-			hlStopReplaceNotifyOnce(sc.ID+"|cancel|"+symbol+"|"+strconv.FormatInt(currentOID, 10), notifier, msg)
-		}
-	}
 	if result.StopLossError != "" {
 		if isHLOpenOrderCapRejection(result.StopLossError) {
 			logger.Error("CRITICAL: HL open-order-cap rejected trailing SL update for %s - position may be under-protected: %s",

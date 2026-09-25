@@ -1116,14 +1116,6 @@ func runPostTPStopLossAdjustment(
 			logger.Error("post-TP SL update returned error: %s", first.Error)
 		}
 	}
-	if first.CancelStopLossError != "" && logger != nil {
-		logger.Warn("post-TP SL cancel failed (non-fatal): %s", first.CancelStopLossError)
-		if currentOID > 0 && (first.StopLossOID > 0 || (first.StopLossFilledImmediately && first.StopLossTriggerPx > 0)) && notifier != nil && notifier.HasBackends() {
-			msg := fmt.Sprintf("**HL POST-TP SL CANCEL FAILED** [%s] %s old trigger OID %d may still be resting while the replacement filled or rested (new OID %d). Error: %s",
-				sc.ID, symbol, currentOID, first.StopLossOID, first.CancelStopLossError)
-			hlStopReplaceNotifyOnce(sc.ID+"|cancel|"+symbol+"|"+strconv.FormatInt(currentOID, 10), notifier, msg)
-		}
-	}
 	if first.StopLossError != "" {
 		if isHLOpenOrderCapRejection(first.StopLossError) {
 			if logger != nil {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -95,9 +96,10 @@ func TestRunPostTPStopLossAdjustment_LiquidationClampFallback(t *testing.T) {
 	onChain := map[string]float64{"ETH": 1.0}
 	const clampedTrigger = 100.4 * 1.005
 
-	run := func(t *testing.T, firstReply, retryReply *HyperliquidStopLossUpdateResult) (*StrategyState, *mockNotifier, bool) {
+	run := func(t *testing.T, firstReply, retryReply *HyperliquidStopLossUpdateResult) (*StrategyState, *mockNotifier, bool, string) {
 		t.Helper()
 		clearHLLiquidationAlert("hl-sl-after", "ETH")
+		var logOutput bytes.Buffer
 		mock := &mockNotifier{}
 		mn := NewMultiNotifier(notifierBackend{
 			notifier:           mock,
@@ -112,12 +114,13 @@ func TestRunPostTPStopLossAdjustment_LiquidationClampFallback(t *testing.T) {
 			}
 			return retryReply, "", nil
 		}
-		applied, _, _ := runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, mn, newTestLogger(t), onChain, liqPx, netSide)
-		return state, mock, applied
+		logger := &StrategyLogger{stratID: "test", writer: &logOutput}
+		applied, _, _ := runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, mn, logger, onChain, liqPx, netSide)
+		return state, mock, applied, logOutput.String()
 	}
 
 	t.Run("clamped replace rests on the first attempt", func(t *testing.T) {
-		state, mock, applied := run(t, &HyperliquidStopLossUpdateResult{StopLossOID: 555, StopLossTriggerPx: clampedTrigger}, nil)
+		state, mock, applied, _ := run(t, &HyperliquidStopLossUpdateResult{StopLossOID: 555, StopLossTriggerPx: clampedTrigger}, nil)
 		if !applied {
 			t.Fatal("expected the clamped replace to apply")
 		}
@@ -131,7 +134,7 @@ func TestRunPostTPStopLossAdjustment_LiquidationClampFallback(t *testing.T) {
 	})
 
 	t.Run("protection-lost first reply, retry places", func(t *testing.T) {
-		state, _, applied := run(t,
+		state, _, applied, _ := run(t,
 			&HyperliquidStopLossUpdateResult{CancelStopLossSucceeded: true, StopLossError: "first boom"},
 			&HyperliquidStopLossUpdateResult{StopLossOID: 888, StopLossTriggerPx: clampedTrigger})
 		if !applied {
@@ -144,7 +147,7 @@ func TestRunPostTPStopLossAdjustment_LiquidationClampFallback(t *testing.T) {
 	})
 
 	t.Run("protection-lost first reply, retry also fails", func(t *testing.T) {
-		state, mock, applied := run(t,
+		state, mock, applied, logOutput := run(t,
 			&HyperliquidStopLossUpdateResult{CancelStopLossSucceeded: true, StopLossError: "first boom"},
 			&HyperliquidStopLossUpdateResult{StopLossError: "retry boom"})
 		if applied {
@@ -159,6 +162,16 @@ func TestRunPostTPStopLossAdjustment_LiquidationClampFallback(t *testing.T) {
 		}
 		if strings.Contains(mock.dms[0].content, "first boom") {
 			t.Errorf("clamp alert cites the first attempt's error: %s", mock.dms[0].content)
+		}
+		var criticalLog string
+		for _, line := range strings.Split(logOutput, "\n") {
+			if strings.Contains(line, "CRITICAL: post-TP SL for ETH cancelled OID=111") {
+				criticalLog = line
+				break
+			}
+		}
+		if !strings.Contains(criticalLog, "retry boom") || strings.Contains(criticalLog, "first boom") {
+			t.Errorf("critical log = %q, want the retry error only", criticalLog)
 		}
 	})
 }

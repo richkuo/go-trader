@@ -709,12 +709,6 @@ func hlLiquidationClampReplace(candidate hlLiquidationAuditCandidate, clampedTri
 		}
 		return stamp(result, hlReplaceFilledExternally)
 	}
-	if result.CancelStopLossError != "" && result.StopLossOID == 0 && !(result.StopLossFilledImmediately && result.StopLossTriggerPx > 0) {
-		if logger != nil {
-			logger.Warn("Liquidation-clamp SL cancel failed for %s; original stop still resting: %s", candidate.Symbol, result.CancelStopLossError)
-		}
-		return stamp(result, hlReplaceDeferred)
-	}
 	if result.StopLossError != "" {
 		if isHLOpenOrderCapRejection(result.StopLossError) {
 			if logger != nil {
