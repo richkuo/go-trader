@@ -84,7 +84,10 @@ func hlListedStopMatches(order hlListedOpenOrder, side string, qty, trigger floa
 	if math.Abs(order.Sz-qty) > 1e-6 && math.Abs(order.Sz-qty)/qty > 1e-4 {
 		return false
 	}
-	if math.Abs(order.TriggerPx-trigger) > 0.01 && math.Abs(order.TriggerPx-trigger)/trigger > 1e-3 {
+	// Both sides are rounded to 5 significant figures, so a stop at any other
+	// tick differs by far more than this; a looser match can adopt the unchanged
+	// old stop (or a peer's stop) as the moved one.
+	if math.Abs(order.TriggerPx-trigger) > trigger*1e-6 {
 		return false
 	}
 	return true

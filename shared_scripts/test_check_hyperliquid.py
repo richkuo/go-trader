@@ -717,6 +717,50 @@ class TestUpdateStopLoss:
         assert out["stop_loss_oid"] == 77
         assert "stop_loss_outcome_unknown" not in out
 
+    def test_modify_exception_old_stop_at_old_trigger_is_unknown(self):
+        old = {
+            "oid": 11111, "side": "A", "sz": "0.5", "reduceOnly": True,
+            "isTrigger": True, "orderType": "Stop Market", "triggerPx": "3104.11",
+        }
+        out, adapter = self._run_update(
+            place_side_effect=RuntimeError("connection reset after submit"),
+            frontend_reads=[[old], [old]],
+        )
+        adapter.place_stop_loss.assert_not_called()
+        assert "stop_loss_oid" not in out
+        assert out.get("stop_loss_outcome_unknown") is True
+        assert out.get("stop_loss_old_still_open") is True
+
+    def test_modify_exception_old_stop_at_new_trigger_confirms_in_place(self):
+        moved = {
+            "oid": 11111, "side": "A", "sz": "0.5", "reduceOnly": True,
+            "isTrigger": True, "orderType": "Stop Market", "triggerPx": "3104.12",
+        }
+        out, adapter = self._run_update(
+            place_side_effect=RuntimeError("connection reset after submit"),
+            frontend_reads=[[moved], [moved]],
+        )
+        adapter.place_stop_loss.assert_not_called()
+        assert out["stop_loss_oid"] == 11111
+        assert "stop_loss_outcome_unknown" not in out
+
+    def test_modify_exception_ignores_a_peers_matching_stop(self):
+        old = {
+            "oid": 11111, "side": "A", "sz": "0.5", "reduceOnly": True,
+            "isTrigger": True, "orderType": "Stop Market", "triggerPx": "3104.11",
+        }
+        peer = {
+            "oid": 22222, "side": "A", "sz": "0.5", "reduceOnly": True,
+            "isTrigger": True, "orderType": "Stop Market", "triggerPx": "3104.12",
+        }
+        out, adapter = self._run_update(
+            place_side_effect=RuntimeError("connection reset after submit"),
+            frontend_reads=[[old, peer], [old, peer]],
+        )
+        adapter.place_stop_loss.assert_not_called()
+        assert "stop_loss_oid" not in out
+        assert out.get("stop_loss_outcome_unknown") is True
+
     def test_modify_value_error_is_a_plain_rejection(self):
         out, adapter = self._run_update(place_side_effect=ValueError("Size rounded to zero"))
         adapter.place_stop_loss.assert_not_called()

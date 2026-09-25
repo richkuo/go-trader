@@ -1670,7 +1670,7 @@ def _run_cancel_only_stop_loss(adapter, symbol, cancel_oid):
     print(json.dumps(out, cls=SafeEncoder))
 
 
-def _resolve_modify_on_book(adapter, symbol, pre_oids, is_buy, size, trigger_px):
+def _resolve_modify_on_book(adapter, symbol, pre_oids, is_buy, size, trigger_px, cancel_oid=0):
     try:
         orders = adapter.frontend_open_orders(symbol)
     except Exception as oe:
@@ -1693,13 +1693,18 @@ def _resolve_modify_on_book(adapter, symbol, pre_oids, is_buy, size, trigger_px)
             continue
         if abs(sz - size) > 1e-6 and size > 0 and abs(sz - size) / size > 1e-4:
             continue
-        if trigger_px <= 0 or (abs(trigger - trigger_px) > 0.01 and abs(trigger - trigger_px) / trigger_px > 1e-3):
+        # Both sides are rounded to 5 significant figures, so a resting stop at
+        # any other tick differs by far more than this; a looser match can adopt
+        # the unchanged old stop (or a peer's stop) as the moved one.
+        if trigger_px <= 0 or abs(trigger - trigger_px) > trigger_px * 1e-6:
             continue
-        if pre_oids is not None and oid in pre_oids and oid:
-            # The same OID at the new trigger means the modify landed in place.
-            return "resting", oid
-        if pre_oids is None or oid not in pre_oids:
-            return "resting", oid
+        if pre_oids is not None and oid in pre_oids:
+            if oid == cancel_oid:
+                # The same OID at the new trigger means the modify landed in place.
+                return "resting", oid
+            # Any other pre-existing order proves nothing about the modify.
+            continue
+        return "resting", oid
     return "unknown", None
 
 
@@ -1792,7 +1797,7 @@ def run_update_stop_loss(symbol, side, size, trigger_px, mode, cancel_oid=0):
                             sl_err = f"modify_stop_loss SDK error: {payload}"
                             print(f"[WARN] {sl_err}", file=sys.stderr)
                         else:
-                            resolved, oid = _resolve_modify_on_book(adapter, symbol, pre_oids, sl_is_buy, size, trigger_px)
+                            resolved, oid = _resolve_modify_on_book(adapter, symbol, pre_oids, sl_is_buy, size, trigger_px, cancel_oid)
                             if resolved == "resting":
                                 resting_oid = oid
                                 modified_in_place = True
@@ -1807,7 +1812,7 @@ def run_update_stop_loss(symbol, side, size, trigger_px, mode, cancel_oid=0):
                 except Exception as se:
                     sl_err = str(se)
                     print(f"[WARN] modify_stop_loss({symbol}, {cancel_oid}) failed: {se}", file=sys.stderr)
-                    resolved, oid = _resolve_modify_on_book(adapter, symbol, pre_oids, sl_is_buy, size, trigger_px)
+                    resolved, oid = _resolve_modify_on_book(adapter, symbol, pre_oids, sl_is_buy, size, trigger_px, cancel_oid)
                     if resolved == "resting":
                         resting_oid = oid
                         modified_in_place = True
@@ -2267,7 +2272,7 @@ def main():
         parser.add_argument("--trigger-px", type=float, required=True)
         parser.add_argument("--mode", default="live")
         parser.add_argument("--cancel-stop-loss-oid", type=int, default=0,
-                            help="cancel this trigger OID after the replacement rests or fills")
+                            help="the resting stop OID to modify in place; a fresh stop is placed only when it is already gone")
         args = parser.parse_args()
         run_update_stop_loss(args.symbol, args.side, args.size, args.trigger_px, args.mode,
                              cancel_oid=args.cancel_stop_loss_oid)
