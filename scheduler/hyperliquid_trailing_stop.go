@@ -93,6 +93,21 @@ func hlListedStopMatches(order hlListedOpenOrder, side string, qty, trigger floa
 	return true
 }
 
+// hlTriggerMatchesVenueRounding reports whether a listed trigger is the venue
+// rounding of the requested trigger. The venue rounds to 5 significant figures
+// (platforms/hyperliquid/adapter.py _round_perps_px), so half of one such tick
+// is the widest gap the rounding can produce; a stop one or more ticks away is
+// not this request. When a coin's per-coin decimal cap sets a coarser tick the
+// confirm can miss; the next cycle's modify converges and the resting stop is
+// already at the venue value of the request.
+func hlTriggerMatchesVenueRounding(listed, requested float64) bool {
+	if listed <= 0 || requested <= 0 {
+		return false
+	}
+	tick := math.Pow(10, math.Floor(math.Log10(requested))-4)
+	return math.Abs(listed-requested) <= tick/2+requested*1e-9
+}
+
 // hlReleaseUnreadableStop reads the open orders once. A failed read keeps the
 // hold and places nothing. A readable book clears the hold. The only order that
 // can be adopted is one new reduce-only stop for this side, size and trigger.
@@ -869,10 +884,11 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 			msg := fmt.Sprintf("**HL TRAILING SL OUTCOME UNKNOWN** [%s] %s: the earlier replacement could not be read. Open order %d is now recorded and old OID %d may still be resting.",
 				sc.ID, symbol, adopted.StopLossOID, currentOID)
 			hlStopReplaceNotifyOnce(sc.ID+"|adopt|"+symbol+"|"+strconv.FormatInt(currentOID, 10), notifier, msg)
-			confirmed := hlListedStopMatches(hlListedOpenOrder{
-				ReduceOnly: true, IsTrigger: true, Side: map[bool]string{true: "B", false: "A"}[side == "short"],
-				Sz: adopted.MatchedSize, TriggerPx: adopted.StopLossTriggerPx, OrderType: "Stop Market",
-			}, side, qty, newTrigger)
+			// The adopted trigger is venue-rounded while newTrigger is not, so
+			// the strict listed-stop match would never confirm; a half-tick
+			// match answers "is this the stop this call asked for".
+			sizeMatches := math.Abs(adopted.MatchedSize-qty) <= 1e-6 || math.Abs(adopted.MatchedSize-qty)/qty <= 1e-4
+			confirmed := sizeMatches && hlTriggerMatchesVenueRounding(adopted.StopLossTriggerPx, newTrigger)
 			return newHighWater, adopted, confirmed
 		}
 	}

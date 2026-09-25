@@ -423,21 +423,21 @@ func TestLiquidationClampReplaceClassifiesErrorAfterCancelLanded(t *testing.T) {
 	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 		return &HyperliquidStopLossUpdateResult{Error: "boom after cancel", CancelStopLossSucceeded: true}, "", nil
 	}
-	if _, outcome := hlLiquidationClampReplace(candidate, 2335, newTestLogger(t)); outcome != hlReplaceProtectionLost {
+	if _, outcome := hlLiquidationClampReplace(candidate, 2335, newTestLogger(t), nil, nil); outcome != hlReplaceProtectionLost {
 		t.Errorf("outcome = %v, want hlReplaceProtectionLost (cancel landed, nothing rests)", outcome)
 	}
 
 	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 		return &HyperliquidStopLossUpdateResult{Error: "pre-cancel boom"}, "", nil
 	}
-	if _, outcome := hlLiquidationClampReplace(candidate, 2335, newTestLogger(t)); outcome != hlReplaceDeferred {
+	if _, outcome := hlLiquidationClampReplace(candidate, 2335, newTestLogger(t), nil, nil); outcome != hlReplaceDeferred {
 		t.Errorf("outcome = %v, want hlReplaceDeferred (no landed cancel — the old order may rest)", outcome)
 	}
 
 	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 		return &HyperliquidStopLossUpdateResult{CancelStopLossError: "cancel down"}, "", nil
 	}
-	if _, outcome := hlLiquidationClampReplace(candidate, 2335, newTestLogger(t)); outcome != hlReplaceDeferred {
+	if _, outcome := hlLiquidationClampReplace(candidate, 2335, newTestLogger(t), nil, nil); outcome != hlReplaceDeferred {
 		t.Errorf("outcome = %v, want hlReplaceDeferred for a FAILED cancel", outcome)
 	}
 }
@@ -502,7 +502,7 @@ func TestLiquidationClampReplaceOutcomeUnknownSuppressesRetry(t *testing.T) {
 			StopLossOutcomeUnknown:  true,
 		}, "", nil
 	}
-	result, outcome := hlLiquidationClampReplace(candidate, 2335, newTestLogger(t))
+	result, outcome := hlLiquidationClampReplace(candidate, 2335, newTestLogger(t), nil, nil)
 	if outcome != hlReplaceOutcomeUnknown {
 		t.Errorf("outcome = %v, want hlReplaceOutcomeUnknown", outcome)
 	}

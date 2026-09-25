@@ -55,7 +55,8 @@ func TestRunPostTPStopLossAdjustment_CapsAtOnChainQty(t *testing.T) {
 	var mu sync.RWMutex
 
 	onChain := map[string]float64{"ETH": 0.7}
-	if !runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, onChain) {
+	applied, _, _ := runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, onChain, nil, nil)
+	if !applied {
 		t.Fatal("expected runPostTPStopLossAdjustment to apply")
 	}
 	if gotQty != 0.7 {
