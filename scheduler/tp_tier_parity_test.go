@@ -163,3 +163,68 @@ func TestTPTierParityFixtureMatchesTheOnChainPlan(t *testing.T) {
 		})
 	}
 }
+
+func setFixturePath(t *testing.T, node interface{}, path []interface{}, value interface{}) {
+	t.Helper()
+	for i, key := range path {
+		last := i == len(path)-1
+		switch k := key.(type) {
+		case string:
+			m, ok := node.(map[string]interface{})
+			if !ok {
+				t.Fatalf("path %v: %T is not an object", path, node)
+			}
+			if last {
+				m[k] = value
+				return
+			}
+			node = m[k]
+		case float64:
+			list, ok := node.([]interface{})
+			if !ok || int(k) >= len(list) {
+				t.Fatalf("path %v: %T has no index %v", path, node, k)
+			}
+			if last {
+				list[int(k)] = value
+				return
+			}
+			node = list[int(k)]
+		default:
+			t.Fatalf("path %v: unsupported key %T", path, key)
+		}
+	}
+}
+
+func TestTPTierLadderLoadMatchesTheBacktester(t *testing.T) {
+	f := loadTPTierParityFixture(t)
+	for _, tc := range f.LadderLoad {
+		t.Run(tc.ID, func(t *testing.T) {
+			ref := f.Ladders[tc.Ladder]
+			blob, err := json.Marshal(ref.Params)
+			if err != nil {
+				t.Fatalf("encode params: %v", err)
+			}
+			var params map[string]interface{}
+			if err := json.Unmarshal(blob, &params); err != nil {
+				t.Fatalf("decode params: %v", err)
+			}
+			if tc.Path != nil {
+				setFixturePath(t, params, tc.Path, tc.Value)
+			}
+			closeRef, err := json.Marshal(map[string]interface{}{"name": ref.Name, "params": params})
+			if err != nil {
+				t.Fatalf("encode close: %v", err)
+			}
+			cfg := `{"regime": {"enabled": true}, "strategies": [{
+				"id": "hl-tp-load", "type": "perps", "platform": "hyperliquid",
+				"script": "shared_scripts/check_hyperliquid.py",
+				"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
+				"capital": 1000, "leverage": 5,
+				"close_strategy": ` + string(closeRef) + `}]}`
+			_, err = LoadConfigReadOnly(writeTestConfig(t, t.TempDir(), cfg))
+			if (err != nil) != tc.WantReject {
+				t.Fatalf("LoadConfigReadOnly error = %v, want reject %v", err, tc.WantReject)
+			}
+		})
+	}
+}

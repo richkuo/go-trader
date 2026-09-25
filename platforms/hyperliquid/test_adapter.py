@@ -123,3 +123,145 @@ class TestMarketCloseSized:
             assert adapter.sized_close_price("ETH", is_buy) == want
         mock_exchange.order.assert_not_called()
 
+
+
+class TestOrderExecution:
+
+    def test_market_close_partial_size_rounds_to_sz_decimals(self):
+        mock_info = MagicMock()
+        mock_info.asset_to_sz_decimals = {"ETH": 4}
+        mock_info_cls = MagicMock(return_value=mock_info)
+        mock_exchange = MagicMock()
+        mock_exchange.market_close.return_value = {"status": "closed"}
+        mod = _load_hl_adapter(mock_info_cls=mock_info_cls)
+        adapter = mod.HyperliquidExchangeAdapter()
+        adapter._wallet = MagicMock()
+        adapter._exchange = mock_exchange
+        adapter._info = mock_info
+
+        adapter.market_close("ETH", 0.2509645272613055)
+        mock_exchange.market_close.assert_called_once_with("ETH", 0.251)
+
+
+class TestStopLossPlacement:
+
+    def _live_adapter(self, sz_decimals=None):
+        mock_info = MagicMock()
+        mock_info.asset_to_sz_decimals = sz_decimals or {"BTC": 5, "ETH": 4}
+        mock_info_cls = MagicMock(return_value=mock_info)
+        mod = _load_hl_adapter(mock_info_cls=mock_info_cls)
+        adapter = mod.HyperliquidExchangeAdapter()
+        mock_exchange = MagicMock()
+        adapter._wallet = MagicMock()
+        adapter._exchange = mock_exchange
+        adapter._info = mock_info
+        return adapter, mock_exchange, mod
+
+    def test_place_stop_loss_long_uses_sell_with_lower_limit(self):
+        adapter, ex, _ = self._live_adapter()
+        ex.order.return_value = {"status": "ok"}
+        adapter.place_stop_loss("ETH", 0.5, 3000.0, is_buy=False, limit_slippage_pct=5.0)
+        args, kwargs = ex.order.call_args
+        sym, is_buy, sz, limit_px, order_type = args
+        assert sym == "ETH"
+        assert is_buy is False
+        assert limit_px < 3000.0
+        assert kwargs == {"reduce_only": True}
+        assert order_type["trigger"]["tpsl"] == "sl"
+        assert order_type["trigger"]["isMarket"] is True
+
+    def test_place_stop_loss_short_uses_buy_with_higher_limit(self):
+        adapter, ex, _ = self._live_adapter()
+        ex.order.return_value = {"status": "ok"}
+        adapter.place_stop_loss("ETH", 0.5, 3000.0, is_buy=True, limit_slippage_pct=5.0)
+        _, _, _, limit_px, _ = ex.order.call_args.args
+        assert limit_px > 3000.0
+
+    def test_place_take_profit_limit_uses_reduce_only_limit(self):
+        adapter, ex, _ = self._live_adapter(sz_decimals={"ETH": 4})
+        ex.order.return_value = {"status": "ok"}
+        adapter.place_take_profit_limit("ETH", 0.123456, 3100.0, is_buy=False)
+        sym, is_buy, sz, limit_px, order_type = ex.order.call_args.args
+        assert sym == "ETH"
+        assert is_buy is False
+        assert sz == 0.1234
+        assert limit_px == 3100.0
+        assert order_type == {"limit": {"tif": "Gtc"}}
+        assert ex.order.call_args.kwargs == {"reduce_only": True}
+
+
+class TestLookupFillFeeByOID:
+    def _make_adapter(self):
+        mock_info = MagicMock()
+        mock_info_cls = MagicMock(return_value=mock_info)
+        mod = _load_hl_adapter(mock_info_cls=mock_info_cls)
+        adapter = mod.HyperliquidExchangeAdapter()
+        adapter._account_address = "0xABC123"
+        return adapter, mock_info
+
+    def test_aggregates_fee_and_pnl_across_partial_fills(self):
+        adapter, mock_info = self._make_adapter()
+        mock_info.user_fills_by_time.return_value = [
+            {"oid": 100, "fee": "0.50", "closedPnl": "1.25"},
+            {"oid": 100, "fee": "0.30", "closedPnl": "0.75"},
+            {"oid": 999, "fee": "5.00", "closedPnl": "10.00"},
+        ]
+        result = adapter.lookup_fill_fee_by_oid(100, since_ms=1000)
+        assert result["fee"] == pytest.approx(0.80)
+        assert result["closed_pnl"] == pytest.approx(2.00)
+        assert result["count"] == 2
+
+    def test_retries_until_indexer_catches_up(self, monkeypatch):
+        adapter, mock_info = self._make_adapter()
+        mock_info.user_fills_by_time.side_effect = [
+            [],
+            [{"oid": 999, "fee": "1", "closedPnl": "0"}],
+            [{"oid": 100, "fee": "0.65", "closedPnl": "0"}],
+        ]
+        sleeps = []
+        monkeypatch.setattr("time.sleep", lambda s: sleeps.append(s))
+        result = adapter.lookup_fill_fee_by_oid(100, since_ms=1000, max_retries=4, retry_delay_s=0.1)
+        assert result["fee"] == pytest.approx(0.65)
+        assert mock_info.user_fills_by_time.call_count == 3
+        assert sleeps == [0.1, 0.1]
+
+
+class TestFillsSummaryByOID:
+
+    def _make_adapter(self):
+        mock_info = MagicMock()
+        mock_info_cls = MagicMock(return_value=mock_info)
+        mod = _load_hl_adapter(mock_info_cls=mock_info_cls)
+        adapter = mod.HyperliquidExchangeAdapter()
+        adapter._account_address = "0xABC123"
+        return adapter, mock_info
+
+    def test_sums_size_and_size_weighted_vwap(self):
+        adapter, mock_info = self._make_adapter()
+        mock_info.user_fills_by_time.return_value = [
+            {"oid": 100, "sz": "0.4", "px": "2000", "fee": "0.20"},
+            {"oid": 100, "sz": "0.6", "px": "2010", "fee": "0.30"},
+            {"oid": 999, "sz": "5", "px": "1", "fee": "9"},
+        ]
+        out = adapter.fills_summary_by_oid(100, since_ms=1000)
+        assert out["filled_size"] == pytest.approx(1.0)
+        assert out["fee"] == pytest.approx(0.50)
+        assert out["count"] == 2
+        assert out["avg_px"] == pytest.approx(2006.0)
+
+
+@pytest.mark.parametrize("symbol,strict,rounded", [
+    ("BTC", 5, 5),
+    ("UNLISTED", None, 3),
+])
+def test_lot_size_decimals_is_strict_while_sz_decimals_keeps_the_default(symbol, strict, rounded):
+    mod = _load_hl_adapter()
+    adapter = mod.HyperliquidExchangeAdapter()
+    adapter._info = MagicMock()
+    adapter._info.asset_to_sz_decimals = {"BTC": 5}
+    refreshed = MagicMock()
+    refreshed.asset_to_sz_decimals = {"BTC": 5}
+    adapter._build_info = lambda base_url, allow_cache: refreshed
+
+    assert adapter.lot_size_decimals(symbol) == strict
+    assert adapter._sz_decimals(symbol) == rounded

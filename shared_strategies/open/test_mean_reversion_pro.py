@@ -1,6 +1,5 @@
 
 import numpy as np
-import pandas as pd
 import pytest
 
 from shared_strategies.open.conftest import load_module, make_ohlcv
@@ -52,3 +51,15 @@ def test_oscillating_range_fires_both_sides(kwargs):
     assert (out["signal"] == -1).any(), "expected at least one short reversion"
 
 
+def test_extra_triggers_prefix_stable():
+    df = make_ohlcv(make_choppy_with_extremes())
+    kwargs = dict(entry_std=1.5, touch_entry=1, turn_entry=1)
+    full = mean_reversion_pro_core(df, **kwargs)
+    signal_bars = list(np.where(full["signal"].values != 0)[0])
+    assert len(signal_bars) >= 1
+    for k in signal_bars:
+        partial = mean_reversion_pro_core(df.iloc[: k + 1], **kwargs)
+        assert partial["signal"].iloc[k] == full["signal"].iloc[k], (
+            f"signal at bar {k} flipped under truncation: "
+            f"full={full['signal'].iloc[k]} truncated={partial['signal'].iloc[k]}"
+        )

@@ -1,7 +1,6 @@
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from shared_strategies.open.conftest import load_module, make_ohlcv
 
@@ -60,3 +59,27 @@ def _double_top_fixture(prefix=None):
     return make_ohlcv(prices, volume=vol)
 
 
+class TestHTFGate:
+    def test_gated_signal_independent_of_future_bars(self):
+        df = _double_top_fixture(prefix=np.linspace(20, 80, 400))
+        df.index = pd.date_range("2024-01-01", periods=len(df), freq="1h")
+        kwargs = dict(
+            pivot_lookback=3, tolerance=0.03, vol_multiplier=1.0,
+            htf_gate_factor=4, htf_gate_ema_fast=10, htf_gate_ema_slow=20,
+        )
+        full = chart_pattern_core(df, **kwargs)
+        base = chart_pattern_core(df, pivot_lookback=3, tolerance=0.03,
+                                  vol_multiplier=1.0)
+        signal_bars = list(np.where(base["signal"].values != 0)[0])
+        assert len(signal_bars) >= 1
+        for k in signal_bars:
+            partial = chart_pattern_core(df.iloc[: k + 1], **kwargs)
+            assert partial["signal"].iloc[k] == full["signal"].iloc[k], (
+                f"gated signal at bar {k} flipped under truncation"
+            )
+        k = signal_bars[-1]
+        partial = chart_pattern_core(df.iloc[: k + 1], **kwargs)
+        assert (
+            partial["htf_gate_trend"].values
+            == full["htf_gate_trend"].values[: k + 1]
+        ).all()

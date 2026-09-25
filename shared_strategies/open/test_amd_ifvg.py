@@ -1,7 +1,5 @@
 
-import numpy as np
 import pandas as pd
-import pytest
 
 from shared_strategies.open.conftest import load_module
 
@@ -114,3 +112,17 @@ class TestDSTInvariance:
         assert (out["signal"] == 1).any(), "expected a bullish signal under NY-canon windows"
 
 
+class TestTruncationDefaultPath:
+    def _assert_truncation_invariant(self, df):
+        full = amd_ifvg_core(df)
+        signal_bars = full.index[full["signal"] != 0]
+        assert len(signal_bars) >= 1, "fixture produced no signal to test against"
+        for k in signal_bars:
+            partial = amd_ifvg_core(df.loc[:k])
+            assert partial.loc[k, "signal"] == full.loc[k, "signal"], (
+                f"signal at {k} changed after truncation at K: "
+                f"full={full.loc[k,'signal']} truncated={partial.loc[k,'signal']}"
+            )
+
+    def test_dst_boundary_truncation_invariant(self):
+        self._assert_truncation_invariant(_make_dst_crossing_df())
