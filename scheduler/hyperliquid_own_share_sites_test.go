@@ -419,3 +419,43 @@ func TestSoleOwnerDriftAlertsOnlyAfterItsReconcile(t *testing.T) {
 		t.Fatalf("reconciled sole owner still above the chain sent %d alerts, want 1", len(mock.dms))
 	}
 }
+
+func TestSoleManualStopCancelAlertsOnlyAfterItsReconcile(t *testing.T) {
+	resetHLShareAlerts()
+	t.Cleanup(resetHLShareAlerts)
+	m := StrategyConfig{ID: "M", Type: "manual", Platform: "hyperliquid", Script: "x.py", Symbol: "SOL", Args: []string{"--mode=live"}}
+	pos := &Position{Symbol: "SOL", Side: "long", Quantity: 10, AvgCost: 100, StopLossOID: 7, StopLossTriggerPx: 90}
+	states := map[string]*StrategyState{"M": {ID: "M", Positions: map[string]*Position{"SOL": pos}}}
+	if !manualRecordedStopOwner(m, pos) {
+		t.Fatal("fixture is not a manual recorded stop owner")
+	}
+	var mu sync.RWMutex
+	state := &AppState{Strategies: states}
+	oldCancel := runHyperliquidCancelOrderFn
+	t.Cleanup(func() { runHyperliquidCancelOrderFn = oldCancel })
+	runHyperliquidCancelOrderFn = func(_, _ string, oid int64) (*HyperliquidCancelOrderResult, string, error) {
+		return &HyperliquidCancelOrderResult{Cancelled: true, OID: oid}, "", nil
+	}
+	mock := &mockNotifier{}
+	mn := NewMultiNotifier(notifierBackend{notifier: mock, ownerID: "owner"})
+	flat := hlOnChainCoinView{Known: true, AbsQty: map[string]float64{}, NetSide: map[string]string{}}
+	listed := hlAllOpenOrders{Decimals: map[string]int{"SOL": 2}, Orders: []hlListedOpenOrder{{OID: 7, Coin: "SOL", Sz: 10, TriggerPx: 90}}}
+	runHyperliquidShareResize([]StrategyConfig{m}, state, newHLCycleShare(flat, hlCoinSubmitSnapshot(), nil, states, []StrategyConfig{m}, mn), listed, false, nil, &mu, mn)
+	if pos.StopLossOID != 0 || len(mock.dms) != 0 {
+		t.Fatalf("unreconciled sole manual book: oid=%d alerts=%d, want cancelled and no alert", pos.StopLossOID, len(mock.dms))
+	}
+	pos.StopLossOID, pos.StopLossTriggerPx = 7, 90
+	resetHLShareAlerts()
+	share := newHLCycleShare(flat, hlCoinSubmitSnapshot(), nil, states, []StrategyConfig{m}, mn)
+	share.markReconciled([]StrategyConfig{m})
+	runHyperliquidShareResize([]StrategyConfig{m}, state, share, listed, false, nil, &mu, mn)
+	found := false
+	for _, dm := range mock.dms {
+		if strings.Contains(dm.content, "trigger $90.0000") {
+			found = true
+		}
+	}
+	if pos.StopLossOID != 0 || !found {
+		t.Fatalf("reconciled sole manual book: oid=%d alerts=%v, want cancelled and one trigger alert", pos.StopLossOID, mock.dms)
+	}
+}

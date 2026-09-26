@@ -165,7 +165,7 @@ func runHyperliquidShareResize(
 		orders := byOID[coin]
 		if slOID > 0 {
 			if order, ok := orders[slOID]; ok {
-				hlShareResizeStop(sc, state, symbol, side, slOID, floorQ, oneLot, haveLot, order, mu, notifier)
+				hlShareResizeStop(sc, state, symbol, side, slOID, floorQ, oneLot, haveLot, order, len(peers) > 0 || opp > hlSharedCloseQtyTolerance || share.wasReconciled(sc.ID), mu, notifier)
 			}
 		}
 		hlShareResizeTiers(sc, state, symbol, floorQ, tpOIDs, orders, mu, notifier)
@@ -183,9 +183,9 @@ func hlShareStopNeedsReplace(listed, floorQ, oneLot float64, haveLot bool) bool 
 	return floorQ-listed > oneLot+tol
 }
 
-func hlShareResizeStop(sc StrategyConfig, state *AppState, symbol, side string, oid int64, floorQ, oneLot float64, haveLot bool, order hlListedOpenOrder, mu *sync.RWMutex, notifier *MultiNotifier) {
+func hlShareResizeStop(sc StrategyConfig, state *AppState, symbol, side string, oid int64, floorQ, oneLot float64, haveLot bool, order hlListedOpenOrder, alertRecorded bool, mu *sync.RWMutex, notifier *MultiNotifier) {
 	if floorQ <= hlSharedCloseQtyTolerance {
-		hlShareCancelRestingStop(sc, state, symbol, oid, mu, notifier)
+		hlShareCancelRestingStop(sc, state, symbol, oid, alertRecorded, mu, notifier)
 		return
 	}
 	if !hlShareStopNeedsReplace(order.Sz, floorQ, oneLot, haveLot) {
@@ -223,7 +223,7 @@ func hlShareResizeStop(sc StrategyConfig, state *AppState, symbol, side string, 
 	}
 }
 
-func hlShareCancelRestingStop(sc StrategyConfig, state *AppState, symbol string, oid int64, mu *sync.RWMutex, notifier *MultiNotifier) {
+func hlShareCancelRestingStop(sc StrategyConfig, state *AppState, symbol string, oid int64, alertRecorded bool, mu *sync.RWMutex, notifier *MultiNotifier) {
 	unlock := lockHyperliquidTrailingUpdate(symbol)
 	result, _, err := runHyperliquidCancelOrderFn(sc.Script, symbol, oid)
 	unlock()
@@ -240,7 +240,10 @@ func hlShareCancelRestingStop(sc StrategyConfig, state *AppState, symbol string,
 			}
 		}
 		mu.Unlock()
-		if recorded > 0 {
+		if recorded > 0 && !alertRecorded {
+			fmt.Printf("[INFO] [%s] %s: stop OID %d at trigger $%.4f was cancelled on a flat own side with no peer on the coin; the strategy's own reconcile books the close.\n",
+				sc.ID, symbol, oid, recorded)
+		} else if recorded > 0 {
 			hlSendShareCritical(notifier, fmt.Sprintf("CRITICAL: [%s] %s: stop OID %d at trigger $%.4f was cancelled because no own-side chain units back this book. No config owner can re-place it. After the book is reconciled, set it again with `go-trader manual-update-sl %s --symbol %s`.",
 				sc.ID, symbol, oid, recorded, sc.ID, symbol))
 		}
