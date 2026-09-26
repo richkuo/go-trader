@@ -248,3 +248,52 @@ func TestShareResize(t *testing.T) {
 		t.Fatalf("listing failures did not alert once on the third cycle: %v", mock.dms)
 	}
 }
+
+func TestShareRearmAfterNettingShrinks(t *testing.T) {
+	resetHLShareAlerts()
+	t.Cleanup(resetHLShareAlerts)
+	a, b, states, _ := ownSharePair()
+	pa := states["A"].Positions["ETH"]
+	pa.StopLossOID, pa.StopLossTriggerPx = 0, 0
+	pb := states["B"].Positions["ETH"]
+	pb.Side, pb.Quantity, pb.StopLossOID, pb.StopLossTriggerPx = "short", 10, 0, 0
+	var mu sync.RWMutex
+	state := &AppState{Strategies: states}
+	var sizes []float64
+	old := runHyperliquidUpdateStopLossFunc
+	t.Cleanup(func() { runHyperliquidUpdateStopLossFunc = old })
+	runHyperliquidUpdateStopLossFunc = func(_, _, _ string, size, trigger float64, _ int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		sizes = append(sizes, size)
+		return &HyperliquidStopLossUpdateResult{StopLossOID: 55, StopLossTriggerPx: trigger}, "", nil
+	}
+	prices := map[string]float64{"ETH": 100}
+	netted := newHLCycleShare(hlOnChainCoinView{Known: true, AbsQty: map[string]float64{}, NetSide: map[string]string{}}, hlCoinSubmitSnapshot(), nil, states, []StrategyConfig{a, b}, nil)
+	runHyperliquidShareRearm([]StrategyConfig{a, b}, state, netted, prices, nil, nil, nil, &mu, nil)
+	if len(sizes) != 0 {
+		t.Fatalf("netted-flat coin armed %v, want nothing", sizes)
+	}
+
+	delete(states["B"].Positions, "ETH")
+	back := newHLCycleShare(hlOnChainCoinView{Known: true, AbsQty: map[string]float64{"ETH": 10}, NetSide: map[string]string{"ETH": "long"}}, hlCoinSubmitSnapshot(), nil, states, []StrategyConfig{a, b}, nil)
+	runHyperliquidShareRearm([]StrategyConfig{a, b}, state, back, prices, nil, nil, nil, &mu, nil)
+	if len(sizes) != 1 || math.Abs(sizes[0]-10) > 1e-9 || pa.StopLossOID != 55 {
+		t.Fatalf("after the opposite book closed sizes=%v oid=%d, want one arm at 10 and oid 55", sizes, pa.StopLossOID)
+	}
+	runHyperliquidShareRearm([]StrategyConfig{a, b}, state, back, prices, nil, nil, nil, &mu, nil)
+	if len(sizes) != 1 {
+		t.Fatalf("armed book re-armed again: %v", sizes)
+	}
+}
+
+func TestParseHLAllOpenOrdersNormalizesLotKeys(t *testing.T) {
+	got, err := parseHLAllOpenOrders([]byte(`{"open_orders":[],"sz_decimals_by_coin":{"kPEPE":0,"BTC":5}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d, ok := got.Decimals[hlCoinKey("kPEPE")]; !ok || d != 0 {
+		t.Fatalf("kPEPE lot missing under %q: %v", hlCoinKey("kPEPE"), got.Decimals)
+	}
+	if got.Decimals["BTC"] != 5 {
+		t.Fatalf("BTC lot %v", got.Decimals)
+	}
+}

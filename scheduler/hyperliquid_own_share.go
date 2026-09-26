@@ -27,6 +27,7 @@ type hlShareResult struct {
 	Qty      float64
 	Unbacked float64
 	Known    bool
+	Drift    bool
 }
 
 // hlOwnStopShare is the only size of a live Hyperliquid stop or take-profit.
@@ -59,7 +60,8 @@ func hlOwnStopShare(in hlShareInput) hlShareResult {
 		sameSum += p.Qty
 	}
 	var q float64
-	if b+sameSum <= avail+tol {
+	drift := b+sameSum > avail+tol
+	if !drift {
 		q = math.Min(b, own)
 	} else {
 		q = hlShareDriftQty(in.Self, same, own, avail)
@@ -71,7 +73,7 @@ func hlOwnStopShare(in hlShareInput) hlShareResult {
 	if q <= tol {
 		q = 0
 	}
-	return hlShareResult{Qty: q, Unbacked: math.Max(b-q, 0), Known: true}
+	return hlShareResult{Qty: q, Unbacked: math.Max(b-q, 0), Known: true, Drift: drift}
 }
 
 func hlShareDriftQty(self hlShareBook, same []hlShareBook, own, avail float64) float64 {
@@ -378,6 +380,11 @@ func (c *hlCycleShare) noteUnbacked(sc StrategyConfig, coin string, book float64
 		return
 	}
 	hlShareLatch[key] = res.Qty
+	if !res.Drift {
+		fmt.Printf("[INFO] [%s] %s: chain share Q=%.6f is below the book %.6f because an opposite-side book of %.6f nets the coin; no book change is needed.\n",
+			sc.ID, coin, res.Qty, book, opp)
+		return
+	}
 	msg := fmt.Sprintf("CRITICAL: [%s] %s: chain share Q=%.6f is below the book %.6f (unbacked %.6f). Same-side peer books: %s. Opposite-side book netting the coin: %.6f.",
 		sc.ID, coin, res.Qty, book, res.Unbacked, formatHLShareBooks(peers), opp)
 	hlSendShareCritical(c.notifier, msg)

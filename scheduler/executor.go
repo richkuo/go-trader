@@ -460,7 +460,13 @@ func parseHLAllOpenOrders(stdout []byte) (hlAllOpenOrders, error) {
 	if payload.OpenOrderCheckError != "" {
 		return hlAllOpenOrders{ReadErr: payload.OpenOrderCheckError}, nil
 	}
-	return hlAllOpenOrders{Orders: payload.OpenOrders, Decimals: payload.SzDecimalsByCoin}, nil
+	decimals := make(map[string]int, len(payload.SzDecimalsByCoin))
+	for coin, d := range payload.SzDecimalsByCoin {
+		if key := hlCoinKey(coin); key != "" {
+			decimals[key] = d
+		}
+	}
+	return hlAllOpenOrders{Orders: payload.OpenOrders, Decimals: decimals}, nil
 }
 
 func RunHyperliquidListAllOpenOrders(script string) (hlAllOpenOrders, error) {

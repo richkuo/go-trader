@@ -1044,7 +1044,7 @@ func main() {
 			var hlSnapshotAt time.Time
 			var hlCycle *hlCycleShare
 			hlShareSnap := hlCoinSubmitSnapshot()
-			if hlAddr != "" && len(hlLiveAll) > 0 {
+			if hlAddr != "" && len(hlReconcileAll) > 0 {
 				bal, pos, err := fetchHyperliquidState(hlAddr)
 				if err != nil {
 					fmt.Printf("[WARN] hyperliquid clearinghouseState fetch failed: %v — falling back to per-wallet max and skipping position sync this cycle\n", err)
@@ -1559,7 +1559,7 @@ func main() {
 
 			var hlReconcileFillHintsJSON []byte
 			hlOnChainAbsQty, hlLiquidationPx, hlNetSideByCoin := buildHLLiquidationMaps(hlPositions)
-			if len(hlLiveAll) > 0 {
+			if len(hlReconcileAll) > 0 {
 				hlCycle = newHLCycleShare(
 					hlOnChainCoinView{Known: hlStateFetched, AbsQty: hlOnChainAbsQty, NetSide: hlNetSideByCoin},
 					hlShareSnap,
@@ -1675,6 +1675,7 @@ func main() {
 						listFailed = listErr != nil || listed.ReadErr != ""
 					}
 					runHyperliquidShareResize(cfg.Strategies, state, hlCycle, listed, listFailed, store, &mu, notifier)
+					runHyperliquidShareRearm(cfg.Strategies, state, hlCycle, prices, hlLiquidationPx, hlNetSideByCoin, store, &mu, notifier)
 				}
 				if auditRes.ImmediateFills > 0 {
 					fmt.Printf("[WARN] #1450 liquidation audit: %d position(s) exited on a clamped stop this cycle\n", auditRes.ImmediateFills)

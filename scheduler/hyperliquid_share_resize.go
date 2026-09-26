@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"math"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -300,5 +301,88 @@ func hlShareResizeTiers(sc StrategyConfig, state *AppState, symbol string, floor
 	}
 	if sum > floorQ+hlSharedCloseQtyTolerance {
 		hlShareMarkForceTP(sc.ID, symbol)
+	}
+}
+
+// runHyperliquidShareRearm arms a trailing stop for a live book that has no
+// stop and no recorded trigger once a fresh known Q is above zero again, for
+// example after an opposite-side book that netted the coin to zero shrinks.
+// Static-scalar owners are re-armed by the liquidation audit.
+func runHyperliquidShareRearm(
+	strategies []StrategyConfig,
+	state *AppState,
+	share *hlCycleShare,
+	prices map[string]float64,
+	hlLiquidationPx map[string]float64,
+	hlNetSideByCoin map[string]string,
+	store *StateStore,
+	mu *sync.RWMutex,
+	notifier *MultiNotifier,
+) {
+	if share == nil || state == nil {
+		return
+	}
+	ids := make([]string, 0, len(strategies))
+	byID := map[string]StrategyConfig{}
+	for _, sc := range strategies {
+		if !hlShareResizeDue(sc) {
+			continue
+		}
+		ids = append(ids, sc.ID)
+		byID[sc.ID] = sc
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		sc := byID[id]
+		symbol := hyperliquidSymbol(sc.Args)
+		if sc.Type == "manual" && sc.Symbol != "" {
+			symbol = sc.Symbol
+		}
+		mark := prices[symbol]
+		if symbol == "" || !(mark > 0) {
+			continue
+		}
+		mu.RLock()
+		ss := state.Strategies[sc.ID]
+		var pos *Position
+		if ss != nil {
+			pos = ss.Positions[symbol]
+		}
+		if pos == nil || pos.Quantity <= 0 || pos.isHedgeLeg() || (pos.Side != "long" && pos.Side != "short") ||
+			pos.StopLossOID != 0 || pos.StopLossTriggerPx != 0 || effectiveTrailingStopPct(sc, pos) <= 0 {
+			mu.RUnlock()
+			continue
+		}
+		book := pos.Quantity
+		side := pos.Side
+		highWater := pos.StopLossHighWaterPx
+		posSnap := *pos
+		peers, opp := share.peers(symbol, sc.ID, side)
+		mu.RUnlock()
+
+		q := share.StopQty(sc, symbol, side, book, false, peers, opp)
+		if !q.Fresh || !q.Known || q.Qty <= hlSharedCloseQtyTolerance {
+			continue
+		}
+		if pending, err := pendingManualActionOnSymbolFn(store, symbol); err != nil || pending {
+			continue
+		}
+		logger := &StrategyLogger{stratID: sc.ID, writer: os.Stderr}
+		policy := trailingReplacePolicy{liquidationPx: hlLiquidationPxForSide(hlLiquidationPx, hlNetSideByCoin, symbol, side)}
+		newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, symbol, side, q.Qty, &posSnap, mark, highWater, 0, 0, policy, notifier, logger)
+		mu.Lock()
+		filled, fillPx := false, 0.0
+		if cur := state.Strategies[sc.ID]; cur != nil {
+			filled, fillPx = applyTrailingStopUpdateResult(cur, symbol, side, 0, newHighWater, updateConfirmed, slUpdate, "trailing_stop_loss_immediate", logger, q.Qty)
+		}
+		mu.Unlock()
+		if filled {
+			hlSendShareCritical(notifier, fmt.Sprintf("[%s] LIVE TRAILING SL %s filled @ $%.2f while re-arming at the chain share; booked a close of %.6f.",
+				sc.ID, symbol, fillPx, q.Qty))
+			continue
+		}
+		if updateConfirmed && slUpdate != nil && slUpdate.StopLossOID > 0 {
+			logger.Info("Trailing SL re-armed at the chain share for %s (qty=%.6f)", symbol, q.Qty)
+		}
 	}
 }

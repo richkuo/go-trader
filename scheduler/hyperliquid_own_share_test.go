@@ -196,6 +196,11 @@ func TestHLCycleShareFreshnessAndLatch(t *testing.T) {
 	if math.Abs(second.Qty-first.Qty) > 1e-9 || len(mock.dms) != 1 {
 		t.Fatalf("repeat sent %d alerts, want 1", len(mock.dms))
 	}
+	netShare := newHLCycleShare(hlOnChainCoinView{Known: true, AbsQty: map[string]float64{"ETH": 6}, NetSide: map[string]string{"ETH": "long"}}, hlCoinSubmitSnapshot(), nil, states, live, mn)
+	netQ := netShare.StopQty(StrategyConfig{ID: "N"}, "ETH", "long", 10, true, nil, 4)
+	if math.Abs(netQ.Qty-6) > 1e-9 || len(mock.dms) != 1 {
+		t.Fatalf("opposite-side netting Q=%g alerts=%d, want Q 6 and no new alert", netQ.Qty, len(mock.dms))
+	}
 	changed := newHLCycleShare(hlOnChainCoinView{Known: true, AbsQty: map[string]float64{"ETH": 6}, NetSide: map[string]string{"ETH": "long"}}, hlCoinSubmitSnapshot(), nil, states, live, mn)
 	changed.StopQty(longA, "ETH", "long", 10, true, aPeers, 0)
 	if len(mock.dms) != 2 {
