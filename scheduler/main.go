@@ -1631,7 +1631,7 @@ func main() {
 					)
 				}
 				drainOperatorRequiredPendingCloses(state, notifier, &mu)
-				if len(hlReconcileDue) > 0 && hlStateFetched {
+				if len(hlReconcileAll) > 0 && hlStateFetched {
 					_, fillHints, orphanCloseJobs := reconcileHyperliquidAccountPositions(hlReconcileDue, hlReconcileAll, state, &mu, logMgr, cfg.Regime, hlPositions, prices, os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS"), notifier, cfg.NotifyTPSLFillsEnabled())
 					if len(orphanCloseJobs) > 0 {
 						runRegimeDirectionOrphanCloses(
@@ -1675,7 +1675,7 @@ func main() {
 						listFailed = listErr != nil || listed.ReadErr != ""
 					}
 					runHyperliquidShareResize(cfg.Strategies, state, hlCycle, listed, listFailed, store, &mu, notifier)
-					runHyperliquidShareRearm(cfg.Strategies, state, hlCycle, prices, hlLiquidationPx, hlNetSideByCoin, store, &mu, notifier)
+					runHyperliquidShareRearm(cfg.Strategies, state, hlCycle, prices, hlLiquidationPx, hlNetSideByCoin, hlReconcileFillHintsJSON, store, &mu, notifier)
 				}
 				if auditRes.ImmediateFills > 0 {
 					fmt.Printf("[WARN] #1450 liquidation audit: %d position(s) exited on a clamped stop this cycle\n", auditRes.ImmediateFills)
@@ -2413,7 +2413,7 @@ func main() {
 										mu.Lock()
 										if pos, ok3 := stratState.Positions[result.Symbol]; ok3 && pos.Quantity > 0 && pos.Side == hlPosSide && pos.StopLossOID == 0 {
 											if slResult.StopLossFilledImmediately && slResult.StopLossTriggerPx > 0 {
-												if recordPerpsStopLossCloseQty(stratState, result.Symbol, slEffectiveQty, slResult.StopLossTriggerPx, "stop_loss_atr_immediate", logger) {
+												if recordPerpsStopLossCloseQty(stratState, result.Symbol, hlPlacedStopQty(slEffectiveQty, slResult.StopLossSize), slResult.StopLossTriggerPx, "stop_loss_atr_immediate", logger) {
 													trades++
 													detail = fmt.Sprintf("[%s] LIVE FIXED ATR SL %s @ $%.2f", sc.ID, result.Symbol, slResult.StopLossTriggerPx)
 												}

@@ -268,18 +268,18 @@ func TestShareRearmAfterNettingShrinks(t *testing.T) {
 	}
 	prices := map[string]float64{"ETH": 100}
 	netted := newHLCycleShare(hlOnChainCoinView{Known: true, AbsQty: map[string]float64{}, NetSide: map[string]string{}}, hlCoinSubmitSnapshot(), nil, states, []StrategyConfig{a, b}, nil)
-	runHyperliquidShareRearm([]StrategyConfig{a, b}, state, netted, prices, nil, nil, nil, &mu, nil)
+	runHyperliquidShareRearm([]StrategyConfig{a, b}, state, netted, prices, nil, nil, nil, nil, &mu, nil)
 	if len(sizes) != 0 {
 		t.Fatalf("netted-flat coin armed %v, want nothing", sizes)
 	}
 
 	delete(states["B"].Positions, "ETH")
 	back := newHLCycleShare(hlOnChainCoinView{Known: true, AbsQty: map[string]float64{"ETH": 10}, NetSide: map[string]string{"ETH": "long"}}, hlCoinSubmitSnapshot(), nil, states, []StrategyConfig{a, b}, nil)
-	runHyperliquidShareRearm([]StrategyConfig{a, b}, state, back, prices, nil, nil, nil, &mu, nil)
+	runHyperliquidShareRearm([]StrategyConfig{a, b}, state, back, prices, nil, nil, nil, nil, &mu, nil)
 	if len(sizes) != 1 || math.Abs(sizes[0]-10) > 1e-9 || pa.StopLossOID != 55 {
 		t.Fatalf("after the opposite book closed sizes=%v oid=%d, want one arm at 10 and oid 55", sizes, pa.StopLossOID)
 	}
-	runHyperliquidShareRearm([]StrategyConfig{a, b}, state, back, prices, nil, nil, nil, &mu, nil)
+	runHyperliquidShareRearm([]StrategyConfig{a, b}, state, back, prices, nil, nil, nil, nil, &mu, nil)
 	if len(sizes) != 1 {
 		t.Fatalf("armed book re-armed again: %v", sizes)
 	}
@@ -295,5 +295,86 @@ func TestParseHLAllOpenOrdersNormalizesLotKeys(t *testing.T) {
 	}
 	if got.Decimals["BTC"] != 5 {
 		t.Fatalf("BTC lot %v", got.Decimals)
+	}
+}
+
+func TestShareNettingKeepsRestingOrders(t *testing.T) {
+	resetHLShareAlerts()
+	t.Cleanup(resetHLShareAlerts)
+	a, b, states, _ := ownSharePair()
+	pb := states["B"].Positions["ETH"]
+	pb.Side, pb.Quantity, pb.StopLossOID, pb.StopLossTriggerPx = "short", 10, 0, 0
+	delete(states, "B")
+	states["B"] = &StrategyState{ID: "B", Positions: map[string]*Position{"ETH": pb}}
+	var mu sync.RWMutex
+	state := &AppState{Strategies: states}
+	calls := 0
+	oldUpdate := runHyperliquidUpdateStopLossFunc
+	oldCancel := runHyperliquidCancelOrderFn
+	t.Cleanup(func() {
+		runHyperliquidUpdateStopLossFunc = oldUpdate
+		runHyperliquidCancelOrderFn = oldCancel
+	})
+	runHyperliquidUpdateStopLossFunc = func(_, _, _ string, _, _ float64, _ int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		calls++
+		return &HyperliquidStopLossUpdateResult{}, "", nil
+	}
+	runHyperliquidCancelOrderFn = func(_, _ string, oid int64) (*HyperliquidCancelOrderResult, string, error) {
+		calls++
+		return &HyperliquidCancelOrderResult{Cancelled: true, OID: oid}, "", nil
+	}
+	netted := newHLCycleShare(hlOnChainCoinView{Known: true, AbsQty: map[string]float64{}, NetSide: map[string]string{}}, hlCoinSubmitSnapshot(), nil, states, []StrategyConfig{a, b}, nil)
+	listed := hlAllOpenOrders{Decimals: map[string]int{"ETH": 1}, Orders: []hlListedOpenOrder{{OID: 11, Coin: "ETH", Sz: 10, TriggerPx: 90}}}
+	runHyperliquidShareResize([]StrategyConfig{a}, state, netted, listed, false, nil, &mu, nil)
+	pa := states["A"].Positions["ETH"]
+	if calls != 0 || pa.StopLossOID != 11 || pa.StopLossTriggerPx != 90 {
+		t.Fatalf("netted zero share: calls=%d oid=%d trigger=%g, want the stop kept", calls, pa.StopLossOID, pa.StopLossTriggerPx)
+	}
+}
+
+func TestShareRearmSyncsAnATROwner(t *testing.T) {
+	resetHLShareAlerts()
+	t.Cleanup(resetHLShareAlerts)
+	a, b, states, _ := ownSharePair()
+	a.TrailingStopATRMult = nil
+	pa := states["A"].Positions["ETH"]
+	pa.StopLossOID, pa.StopLossTriggerPx = 0, 0
+	delete(states, "B")
+	var mu sync.RWMutex
+	state := &AppState{Strategies: states}
+	var got []float64
+	orig := syncHyperliquidProtection
+	syncHyperliquidProtection = func(_ StrategyConfig, plan hlProtectionPlan, _ *MultiNotifier, _ *StrategyLogger, _ []byte) (*HyperliquidProtectionSyncResult, bool) {
+		got = append(got, plan.Size)
+		return &HyperliquidProtectionSyncResult{StopLossOID: 3, StopLossTriggerPx: 92.5}, true
+	}
+	t.Cleanup(func() { syncHyperliquidProtection = orig })
+	share := newHLCycleShare(hlOnChainCoinView{Known: true, AbsQty: map[string]float64{"ETH": 10}, NetSide: map[string]string{"ETH": "long"}}, hlCoinSubmitSnapshot(), nil, states, []StrategyConfig{a, b}, nil)
+	runHyperliquidShareRearm([]StrategyConfig{a}, state, share, map[string]float64{"ETH": 100}, nil, nil, nil, nil, &mu, nil)
+	if len(got) != 1 || pa.StopLossOID != 3 {
+		t.Fatalf("ATR owner re-arm syncs=%v oid=%d, want one sync and oid 3", got, pa.StopLossOID)
+	}
+	runHyperliquidShareRearm([]StrategyConfig{a}, state, share, map[string]float64{"ETH": 100}, nil, nil, nil, nil, &mu, nil)
+	if len(got) != 1 {
+		t.Fatalf("armed ATR owner synced again: %v", got)
+	}
+	stale := newHLCycleShare(hlOnChainCoinView{Known: true, AbsQty: map[string]float64{}, NetSide: map[string]string{}}, hlCoinSubmitSnapshot(), nil, states, []StrategyConfig{a, b}, nil)
+	pa.StopLossOID, pa.StopLossTriggerPx = 0, 0
+	runHyperliquidShareRearm([]StrategyConfig{a}, state, stale, map[string]float64{"ETH": 100}, nil, nil, nil, nil, &mu, nil)
+	if len(got) != 1 {
+		t.Fatalf("stale book on a flat chain synced: %v", got)
+	}
+}
+
+func TestImmediateStopFillBooksTheFlooredSize(t *testing.T) {
+	st := &StrategyState{ID: "A", Cash: 10000, Positions: map[string]*Position{
+		"ETH": {Symbol: "ETH", Side: "long", Quantity: 10, InitialQuantity: 10, AvgCost: 100, RiskAnchorPrice: 100},
+	}}
+	ok, _ := applyTrailingStopUpdateResult(st, "ETH", "long", 0, 0, true, &HyperliquidStopLossUpdateResult{StopLossFilledImmediately: true, StopLossTriggerPx: 90, StopLossSize: 6.66}, "trailing_stop_loss_immediate", nil, 20.0/3)
+	if pos := st.Positions["ETH"]; !ok || pos == nil || math.Abs(pos.Quantity-3.34) > 1e-9 {
+		t.Fatalf("fill ok=%t book=%+v, want quantity 3.34", ok, pos)
+	}
+	if got := hlPlacedStopQty(8, 0); got != 8 {
+		t.Fatalf("no reported size booked %g, want 8", got)
 	}
 }

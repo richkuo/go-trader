@@ -219,6 +219,7 @@ type hlStopQty struct {
 	Known  bool
 	Fresh  bool
 	Capped bool
+	Netted bool
 }
 
 // hlCycleShare is one cycle's account view. A coin whose submission counter
@@ -318,6 +319,7 @@ func (c *hlCycleShare) StopQty(sc StrategyConfig, coin, side string, book float6
 		Known:  true,
 		Fresh:  true,
 		Capped: res.Qty < book-hlSharedCloseQtyTolerance,
+		Netted: !res.Drift && opp > hlSharedCloseQtyTolerance,
 	}
 }
 
@@ -549,6 +551,12 @@ func hlShareTakeForceTP(strategyID, symbol string) bool {
 	return true
 }
 
+func hlSharePeekForceTP(strategyID, symbol string) bool {
+	hlShareForceMu.Lock()
+	defer hlShareForceMu.Unlock()
+	return hlShareForceTP[hlShareLatchKey(strategyID, symbol)]
+}
+
 func hlShareClearForceTP() {
 	hlShareForceMu.Lock()
 	hlShareForceTP = map[string]bool{}
@@ -572,6 +580,7 @@ func hlQtyFromAccountMaps(symbol, side string, book float64, armed bool, peers [
 		Known:  true,
 		Fresh:  true,
 		Capped: res.Qty < book-hlSharedCloseQtyTolerance,
+		Netted: !res.Drift && opp > hlSharedCloseQtyTolerance,
 	}
 }
 

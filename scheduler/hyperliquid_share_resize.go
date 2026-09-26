@@ -66,9 +66,11 @@ func hlShareResizeDue(sc StrategyConfig) bool {
 }
 
 // runHyperliquidShareResize replaces a resting stop that is above the chain
-// share, or more than one lot below it, and shrinks resting take-profit tiers.
-// A not-fresh view, a failed listing, a queued manual row, or an unreadable
-// stop skips the coin.
+// share, or more than one lot below it, and flags resting take-profit tiers
+// above it for a force-replace. A not-fresh view, a failed listing, a queued
+// manual row, or an unreadable stop skips the coin. A zero share that only an
+// opposite-side book explains keeps the resting orders: they are reduce-only
+// and protect the book again when that book shrinks.
 func runHyperliquidShareResize(
 	strategies []StrategyConfig,
 	state *AppState,
@@ -157,6 +159,9 @@ func runHyperliquidShareResize(
 			floorQ = hlFloorToLot(q.Qty, decimals)
 			oneLot = hlLotStep(decimals)
 		}
+		if floorQ <= hlSharedCloseQtyTolerance && q.Netted {
+			continue
+		}
 		orders := byOID[coin]
 		if slOID > 0 {
 			if order, ok := orders[slOID]; ok {
@@ -224,13 +229,21 @@ func hlShareCancelRestingStop(sc StrategyConfig, state *AppState, symbol string,
 	unlock()
 	if err == nil && result != nil && result.Cancelled {
 		mu.Lock()
+		recorded := 0.0
 		if ss := state.Strategies[sc.ID]; ss != nil {
 			if pos := ss.Positions[symbol]; pos != nil && pos.StopLossOID == oid {
+				if manualRecordedStopOwner(sc, pos) {
+					recorded = pos.StopLossTriggerPx
+				}
 				pos.StopLossOID = 0
 				pos.StopLossTriggerPx = 0
 			}
 		}
 		mu.Unlock()
+		if recorded > 0 {
+			hlSendShareCritical(notifier, fmt.Sprintf("CRITICAL: [%s] %s: stop OID %d at trigger $%.4f was cancelled because no own-side chain units back this book. No config owner can re-place it. After the book is reconciled, set it again with `go-trader manual-update-sl %s --symbol %s`.",
+				sc.ID, symbol, oid, recorded, sc.ID, symbol))
+		}
 		return
 	}
 	detail := "the cancel was refused"
@@ -304,10 +317,12 @@ func hlShareResizeTiers(sc StrategyConfig, state *AppState, symbol string, floor
 	}
 }
 
-// runHyperliquidShareRearm arms a trailing stop for a live book that has no
-// stop and no recorded trigger once a fresh known Q is above zero again, for
-// example after an opposite-side book that netted the coin to zero shrinks.
-// Static-scalar owners are re-armed by the liquidation audit.
+// runHyperliquidShareRearm restores protection before the due loop once a
+// fresh known Q is above zero. A book with no stop and no recorded trigger is
+// armed by its owner: the trailing arm, or the protection sync for an ATR or
+// tiered owner. A book whose tiers the resize pass flagged is synced so the
+// tiers shrink this cycle. Static-scalar owners are re-armed by the
+// liquidation audit.
 func runHyperliquidShareRearm(
 	strategies []StrategyConfig,
 	state *AppState,
@@ -315,6 +330,7 @@ func runHyperliquidShareRearm(
 	prices map[string]float64,
 	hlLiquidationPx map[string]float64,
 	hlNetSideByCoin map[string]string,
+	reconcileFillHintsJSON []byte,
 	store *StateStore,
 	mu *sync.RWMutex,
 	notifier *MultiNotifier,
@@ -338,8 +354,7 @@ func runHyperliquidShareRearm(
 		if sc.Type == "manual" && sc.Symbol != "" {
 			symbol = sc.Symbol
 		}
-		mark := prices[symbol]
-		if symbol == "" || !(mark > 0) {
+		if symbol == "" {
 			continue
 		}
 		mu.RLock()
@@ -348,19 +363,28 @@ func runHyperliquidShareRearm(
 		if ss != nil {
 			pos = ss.Positions[symbol]
 		}
-		if pos == nil || pos.Quantity <= 0 || pos.isHedgeLeg() || (pos.Side != "long" && pos.Side != "short") ||
-			pos.StopLossOID != 0 || pos.StopLossTriggerPx != 0 || effectiveTrailingStopPct(sc, pos) <= 0 {
+		if pos == nil || pos.Quantity <= 0 || pos.isHedgeLeg() || (pos.Side != "long" && pos.Side != "short") {
 			mu.RUnlock()
 			continue
 		}
+		unarmed := pos.StopLossOID == 0 && pos.StopLossTriggerPx == 0
+		trailing := effectiveTrailingStopPct(sc, pos) > 0
+		syncOwned := !trailing && hlProtectionSyncOwnsStop(sc, pos)
+		forceTP := hlSharePeekForceTP(sc.ID, symbol)
 		book := pos.Quantity
 		side := pos.Side
+		armed := hlBookArmed(pos)
 		highWater := pos.StopLossHighWaterPx
 		posSnap := *pos
 		peers, opp := share.peers(symbol, sc.ID, side)
 		mu.RUnlock()
+		needSync := (unarmed && syncOwned) || forceTP
+		needTrail := unarmed && trailing
+		if !needSync && !needTrail {
+			continue
+		}
 
-		q := share.StopQty(sc, symbol, side, book, false, peers, opp)
+		q := share.StopQty(sc, symbol, side, book, armed, peers, opp)
 		if !q.Fresh || !q.Known || q.Qty <= hlSharedCloseQtyTolerance {
 			continue
 		}
@@ -368,6 +392,27 @@ func runHyperliquidShareRearm(
 			continue
 		}
 		logger := &StrategyLogger{stratID: sc.ID, writer: os.Stderr}
+		if needSync {
+			var db *StateDB
+			if store != nil {
+				d, err := store.dbForStrategy(sc.ID)
+				if err != nil {
+					logger.Warn("share re-arm: state file for %s unavailable: %v", sc.ID, err)
+					continue
+				}
+				db = d
+			}
+			if _, fillPx := runHyperliquidProtectionSync(sc, ss, db, symbol, mu, notifier, logger, "HL protection re-armed at the chain share", reconcileFillHintsJSON, hlLiquidationPx, hlNetSideByCoin, hlProtectionGuardFull, share); fillPx > 0 {
+				hlSendShareCritical(notifier, fmt.Sprintf("[%s] LIVE PROTECTION SYNC SL %s filled @ $%.2f while re-arming at the chain share.", sc.ID, symbol, fillPx))
+			}
+			if !needTrail {
+				continue
+			}
+		}
+		mark := prices[symbol]
+		if !(mark > 0) {
+			continue
+		}
 		policy := trailingReplacePolicy{liquidationPx: hlLiquidationPxForSide(hlLiquidationPx, hlNetSideByCoin, symbol, side)}
 		newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, symbol, side, q.Qty, &posSnap, mark, highWater, 0, 0, policy, notifier, logger)
 		mu.Lock()
@@ -385,4 +430,15 @@ func runHyperliquidShareRearm(
 			logger.Info("Trailing SL re-armed at the chain share for %s (qty=%.6f)", symbol, q.Qty)
 		}
 	}
+}
+
+func hlProtectionSyncOwnsStop(sc StrategyConfig, pos *Position) bool {
+	if pos == nil {
+		return false
+	}
+	probe := *pos
+	probe.StopLossOID = 0
+	probe.StopLossTriggerPx = 0
+	plan, ok := buildHyperliquidProtectionPlan(sc, &probe, 0)
+	return ok && plan.StopLossATRMult > 0
 }

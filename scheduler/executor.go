@@ -114,6 +114,14 @@ type HyperliquidStopLossUpdateResult struct {
 	MatchedSize               float64 `json:"-"`
 	CancelOnly                bool    `json:"cancel_only,omitempty"`
 	StopLossNotOpen           bool    `json:"stop_loss_not_open,omitempty"`
+	StopLossSize              float64 `json:"stop_loss_size,omitempty"`
+}
+
+func hlPlacedStopQty(sent, reported float64) float64 {
+	if reported > 0 && reported < sent {
+		return reported
+	}
+	return sent
 }
 
 type HyperliquidProtectionSyncResult struct {
@@ -147,6 +155,7 @@ type HyperliquidProtectionSyncResult struct {
 	CancelStopLossSucceeded   bool      `json:"cancel_stop_loss_succeeded,omitempty"`
 	CancelStopLossError       string    `json:"cancel_stop_loss_error,omitempty"`
 	StopLossOutcomeUnknown    bool      `json:"stop_loss_outcome_unknown,omitempty"`
+	StopLossSize              float64   `json:"stop_loss_size,omitempty"`
 }
 
 func runPython(parentCtx context.Context, script string, args []string, stdinData []byte) ([]byte, []byte, error) {

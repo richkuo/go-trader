@@ -1142,6 +1142,9 @@ def run_sync_protection(
                     elif kind == "filled":
                         out["stop_loss_filled_immediately"] = True
                         _sl_placed(sl_px)
+                        placed_sz = _placed_stop_size(adapter, symbol, size)
+                        if placed_sz > 0:
+                            out["stop_loss_size"] = placed_sz
                     elif kind == "error":
                         out["stop_loss_error"] = f"place_stop_loss SDK error: {payload}"
                     else:
@@ -1733,6 +1736,13 @@ def _resolve_modify_on_book(adapter, symbol, pre_oids, is_buy, size, trigger_px,
     return "unknown", None
 
 
+def _placed_stop_size(adapter, symbol, size):
+    try:
+        return float(adapter.floor_size(symbol, size))
+    except Exception:
+        return 0.0
+
+
 def run_update_stop_loss(symbol, side, size, trigger_px, mode, cancel_oid=0):
     if mode != "live":
         print(json.dumps({"error": "--update-stop-loss requires --mode=live"}, cls=SafeEncoder))
@@ -1899,6 +1909,9 @@ def run_update_stop_loss(symbol, side, size, trigger_px, mode, cancel_oid=0):
             out["stop_loss_error"] = sl_err
         if sl_filled_immediately:
             out["stop_loss_filled_immediately"] = True
+            placed_sz = _placed_stop_size(adapter, symbol, size)
+            if placed_sz > 0:
+                out["stop_loss_size"] = placed_sz
         if sl_filled_externally:
             out["stop_loss_filled_externally"] = True
         if place_unknown:

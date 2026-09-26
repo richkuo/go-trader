@@ -870,7 +870,7 @@ func runHyperliquidProtectionSyncForRemainder(
 	}
 	if protection.StopLossFilledImmediately && protection.StopLossTriggerPx > 0 {
 		if sizedToRemainder {
-			if recordPerpsStopLossCloseQty(stratState, symbol, plan.Size, protection.StopLossTriggerPx, "protection_sync_sl_immediate", logger) {
+			if recordPerpsStopLossCloseQty(stratState, symbol, hlPlacedStopQty(plan.Size, protection.StopLossSize), protection.StopLossTriggerPx, "protection_sync_sl_immediate", logger) {
 				if residue, ok := stratState.Positions[symbol]; ok && residue != nil {
 					residue.StopLossOID = 0
 					residue.StopLossTriggerPx = 0

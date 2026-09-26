@@ -776,7 +776,7 @@ func applyTrailingStopUpdateResult(s *StrategyState, symbol, expectedSide string
 	switch {
 	case slUpdate.StopLossFilledImmediately && slUpdate.StopLossTriggerPx > 0:
 		pos.RatchetFallbackNormalizePending = false
-		if recordPerpsStopLossCloseQty(s, symbol, placedQty, slUpdate.StopLossTriggerPx, closeReason, logger) {
+		if recordPerpsStopLossCloseQty(s, symbol, hlPlacedStopQty(placedQty, slUpdate.StopLossSize), slUpdate.StopLossTriggerPx, closeReason, logger) {
 			if residue, ok := s.Positions[symbol]; ok && residue != nil && residue.Quantity > 0 {
 				residue.StopLossOID = 0
 				residue.StopLossTriggerPx = 0
