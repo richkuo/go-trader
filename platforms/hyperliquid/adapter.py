@@ -77,8 +77,10 @@ def _round_perps_px(px: float, sz_decimals: int) -> float:
 def floor_lot_size(sz: float, sz_decimals: int) -> float:
     if sz <= 0:
         return 0.0
-    quant = Decimal("1").scaleb(-max(int(sz_decimals), 0))
-    return float(Decimal(str(sz)).quantize(quant, rounding=ROUND_DOWN))
+    decimals = max(int(sz_decimals), 0)
+    quant = Decimal("1").scaleb(-decimals)
+    slack = Decimal("1e-9").scaleb(-decimals)
+    return float((Decimal(str(sz)) + slack).quantize(quant, rounding=ROUND_DOWN))
 
 
 def _load_meta_cache(path: str = META_CACHE_PATH, ttl_s: int = META_CACHE_TTL_S, now: float = None):

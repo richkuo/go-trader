@@ -1106,7 +1106,7 @@ class TestSyncProtection:
             )
         mock_adapter.round_perps_trigger_px.side_effect = lambda _sym, px: round(px, 4)
         mock_adapter.round_size.side_effect = lambda _sym, sz: round(sz, 3)
-        mock_adapter.floor_size.side_effect = lambda _sym, sz: math.floor(sz * 1000) / 1000
+        mock_adapter.floor_size.side_effect = lambda _sym, sz: math.floor(sz * 1000 + 1e-9) / 1000
         if cancel_response is not None:
             mock_adapter.cancel_order_by_oid.return_value = cancel_response
 
@@ -1312,7 +1312,7 @@ class TestSyncProtection:
         mock_adapter.open_order_oids.return_value = {303}
         mock_adapter.round_perps_trigger_px.side_effect = lambda _sym, px: round(px, 4)
         mock_adapter.round_size.side_effect = lambda _sym, sz: round(sz, 3)
-        mock_adapter.floor_size.side_effect = lambda _sym, sz: math.floor(sz * 1000) / 1000
+        mock_adapter.floor_size.side_effect = lambda _sym, sz: math.floor(sz * 1000 + 1e-9) / 1000
         mock_adapter.lookup_fill_fee_by_oid.return_value = {}
         mock_adapter.cancel_order_by_oid.side_effect = Exception("rpc down")
         captured = StringIO()
@@ -1603,7 +1603,7 @@ class TestSyncProtection:
         mock_adapter.open_order_oids.side_effect = RuntimeError("indexer down")
         mock_adapter.round_perps_trigger_px.side_effect = lambda _sym, px: round(px, 4)
         mock_adapter.round_size.side_effect = lambda _sym, sz: round(sz, 3)
-        mock_adapter.floor_size.side_effect = lambda _sym, sz: math.floor(sz * 1000) / 1000
+        mock_adapter.floor_size.side_effect = lambda _sym, sz: math.floor(sz * 1000 + 1e-9) / 1000
 
         captured = StringIO()
         import builtins
@@ -1644,9 +1644,7 @@ class TestSyncProtection:
         assert sizes == pytest.approx([0.001, 0.002])
         assert sum(sizes) == pytest.approx(0.003)
 
-    def test_float_drift_below_lot_boundary_floors_to_zero(self):
-        # Outdated: this pinned round() lifting a sub-lot remainder to one lot.
-        # Ground: issue 1592 floors the take-profit total, so a size under one lot places nothing.
+    def test_float_drift_below_lot_boundary_normalizes(self):
         drifted = 0.011 - 0.010
         assert drifted < 0.001
         out, adapter = self._run_sync(
@@ -1658,8 +1656,9 @@ class TestSyncProtection:
             tp_oids=[0, 0],
             open_oids=set(),
         )
-        adapter.place_take_profit_limit.assert_not_called()
-        assert "tp_oids" not in out
+        assert out["tp_oids"]
+        sizes = [call.args[1] for call in adapter.place_take_profit_limit.call_args_list]
+        assert sum(sizes) == pytest.approx(0.001)
 
     def test_size_rounds_to_zero_skips_tier_block(self):
         out, adapter = self._run_sync(

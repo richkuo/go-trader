@@ -220,9 +220,9 @@ type hlStopQty struct {
 }
 
 // hlCycleShare is one cycle's account view. A coin whose submission counter
-// moved since the snapshot taken before the cycle-start read is read again
-// once. One refetch refreshes every coin. A failed refetch is not fresh, and
-// a not-fresh or unknown view places at the book.
+// moved since the last successful read is read again. A failed read is not
+// fresh for that coin until its counter moves again, and a not-fresh or
+// unknown view places at the book.
 type hlCycleShare struct {
 	view        hlOnChainCoinView
 	snapshot    map[string]uint64
@@ -231,10 +231,10 @@ type hlCycleShare struct {
 	live        []StrategyConfig
 	notifier    *MultiNotifier
 	mu          sync.Mutex
-	refreshed   bool
 	refreshView hlOnChainCoinView
 	refreshOK   bool
 	refreshSnap map[string]uint64
+	failedAt    map[string]uint64
 	unknownNote map[string]bool
 }
 
@@ -245,6 +245,7 @@ func newHLCycleShare(view hlOnChainCoinView, snapshot map[string]uint64, refetch
 	return &hlCycleShare{
 		view: view, snapshot: snapshot, refetch: refetch,
 		strategies: strategies, live: live, notifier: notifier,
+		failedAt:    map[string]uint64{},
 		unknownNote: map[string]bool{},
 	}
 }
@@ -256,23 +257,30 @@ func (c *hlCycleShare) viewFor(coin string) (hlOnChainCoinView, bool) {
 	key := hlCoinKey(coin)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if hlCoinSubmitCount(key) == c.snapshot[key] {
+	count := hlCoinSubmitCount(key)
+	if count == c.snapshot[key] {
 		return c.view, true
 	}
-	if !c.refreshed {
-		c.refreshed = true
-		if c.refetch != nil {
-			v, err := c.refetch()
-			if err == nil && v.Known {
-				c.refreshView = v
-				c.refreshOK = true
-			}
-		}
-		c.refreshSnap = hlCoinSubmitSnapshot()
-	}
-	if c.refreshOK && hlCoinSubmitCount(key) == c.refreshSnap[key] {
+	if c.refreshOK && count == c.refreshSnap[key] {
 		return c.refreshView, true
 	}
+	if failed, ok := c.failedAt[key]; ok && failed == count {
+		return hlOnChainCoinView{}, false
+	}
+	snap := hlCoinSubmitSnapshot()
+	if c.refetch != nil {
+		v, err := c.refetch()
+		if err == nil && v.Known {
+			c.refreshView = v
+			c.refreshOK = true
+			c.refreshSnap = snap
+			if hlCoinSubmitCount(key) == snap[key] {
+				return v, true
+			}
+			return hlOnChainCoinView{}, false
+		}
+	}
+	c.failedAt[key] = snap[key]
 	return hlOnChainCoinView{}, false
 }
 

@@ -187,15 +187,34 @@ func hlShareResizeStop(sc StrategyConfig, state *AppState, symbol, side string, 
 	}
 	trigger := order.TriggerPx
 	unlock := lockHyperliquidTrailingUpdate(symbol)
-	result, _, _ := runHyperliquidUpdateStopLossFunc(sc.Script, symbol, side, floorQ, trigger, oid)
+	result, _, err := runHyperliquidUpdateStopLossFunc(sc.Script, symbol, side, floorQ, trigger, oid)
 	unlock()
+	if err != nil {
+		fmt.Printf("[WARN] share resize: [%s] %s stop OID %d resize to %.6f failed: %v\n", sc.ID, symbol, oid, floorQ, err)
+	}
 	mu.Lock()
-	defer mu.Unlock()
 	ss := state.Strategies[sc.ID]
 	if ss == nil {
+		mu.Unlock()
 		return
 	}
-	applyTrailingStopUpdateResult(ss, symbol, side, oid, 0, true, result, "trailing_stop_loss_immediate", nil, floorQ)
+	filled, fillPx := applyTrailingStopUpdateResult(ss, symbol, side, oid, 0, true, result, "trailing_stop_loss_immediate", nil, floorQ)
+	cleared := false
+	if !filled && result != nil && result.CancelStopLossSucceeded && !result.StopLossOutcomeUnknown && result.StopLossOID <= 0 {
+		if pos := ss.Positions[symbol]; pos != nil && pos.Quantity > 0 && pos.StopLossOID == 0 {
+			cleared = true
+		}
+	}
+	mu.Unlock()
+	if filled {
+		hlSendShareCritical(notifier, fmt.Sprintf("[%s] LIVE SL %s filled @ $%.2f while resizing stop OID %d to the chain share; booked a close of %.6f.",
+			sc.ID, symbol, fillPx, oid, floorQ))
+		return
+	}
+	if cleared {
+		hlSendShareCritical(notifier, fmt.Sprintf("CRITICAL: [%s] %s: stop OID %d was cancelled while resizing to the chain share and the replacement did not rest. The position has no stop until the next arm.",
+			sc.ID, symbol, oid))
+	}
 }
 
 func hlShareCancelRestingStop(sc StrategyConfig, state *AppState, symbol string, oid int64, mu *sync.RWMutex, notifier *MultiNotifier) {

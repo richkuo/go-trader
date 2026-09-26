@@ -182,6 +182,10 @@ class TestStopLossPlacement:
         ex.order.return_value = {"status": "ok"}
         adapter.place_stop_loss("ETH", 0.127, 3000.0, is_buy=False)
         assert ex.order.call_args.args[2] == 0.12
+        adapter.place_stop_loss("ETH", 0.3 - 0.1, 3000.0, is_buy=False)
+        assert ex.order.call_args.args[2] == 0.2
+        adapter.place_stop_loss("ETH", 0.1999, 3000.0, is_buy=False)
+        assert ex.order.call_args.args[2] == 0.19
 
     def test_place_take_profit_limit_uses_reduce_only_limit(self):
         adapter, ex, _ = self._live_adapter(sz_decimals={"ETH": 4})

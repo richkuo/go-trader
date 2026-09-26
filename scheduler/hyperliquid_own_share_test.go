@@ -151,6 +151,17 @@ func TestHLCycleShareFreshnessAndLatch(t *testing.T) {
 	if reads != 1 || math.Abs(q.Qty-6) > 1e-9 || !q.Capped {
 		t.Fatalf("after B's submission: qty=%g capped=%t reads=%d, want 6 and one read", q.Qty, q.Capped, reads)
 	}
+	hlNoteCoinSubmission("BTC")
+	if _, fresh := share.viewFor("BTC"); !fresh || reads != 2 {
+		t.Fatalf("second coin after the refetch: fresh=%t reads=%d, want fresh and a second read", fresh, reads)
+	}
+	if _, fresh := share.viewFor("ETH"); !fresh || reads != 2 {
+		t.Fatalf("unmoved coin after the second read: fresh=%t reads=%d, want fresh and no read", fresh, reads)
+	}
+	hlNoteCoinSubmission("ETH")
+	if _, fresh := share.viewFor("ETH"); !fresh || reads != 3 {
+		t.Fatalf("same coin moved again: fresh=%t reads=%d, want fresh and a third read", fresh, reads)
+	}
 
 	failShare := newHLCycleShare(start, hlCoinSubmitSnapshot(), func() (hlOnChainCoinView, error) {
 		return hlOnChainCoinView{}, errors.New("timeout")
@@ -159,6 +170,17 @@ func TestHLCycleShareFreshnessAndLatch(t *testing.T) {
 	failed := failShare.StopQty(longA, "ETH", "long", 10, true, peers, opp)
 	if failed.Fresh || failed.Known || math.Abs(failed.Qty-10) > 1e-9 {
 		t.Fatalf("failed refetch: %+v, want the book and not fresh", failed)
+	}
+	failReads := 0
+	retryShare := newHLCycleShare(start, hlCoinSubmitSnapshot(), func() (hlOnChainCoinView, error) {
+		failReads++
+		return hlOnChainCoinView{}, errors.New("timeout")
+	}, states, live, nil)
+	hlNoteCoinSubmission("ETH")
+	retryShare.viewFor("ETH")
+	retryShare.viewFor("ETH")
+	if failReads != 1 {
+		t.Fatalf("failed read retried %d times for one submission, want 1", failReads)
 	}
 
 	mock := &mockNotifier{}
