@@ -487,9 +487,11 @@ def _simulate_position_contexts(bt: pd.DataFrame, df: pd.DataFrame,
             if regime_full is not None:
                 raw_label = regime_full.iloc[i]
                 label = "" if pd.isna(raw_label) else str(raw_label)
+            open_as_close = (cfg.open_close_config
+                             and not _close_names(cfg.close_refs))
             if _close_names(cfg.close_refs) or cfg.open_close_config:
                 raw_open = _signal_from_open_action(bt["open_action"].iloc[i])
-                if cfg.open_close_config and not _close_names(cfg.close_refs):
+                if open_as_close:
                     raw_open = int(bt["signal"].iloc[i])
                 _, invert = _effective_directional_pair(cfg, label, ctx)
                 inverted = -raw_open if invert and raw_open else raw_open
@@ -515,6 +517,10 @@ def _simulate_position_contexts(bt: pd.DataFrame, df: pd.DataFrame,
             decisions.iloc[i, decisions.columns.get_loc("open_action")] = (
                 _open_action_from_signal(transformed)
             )
+            if open_as_close:
+                decisions.iloc[i, decisions.columns.get_loc("close_fraction")] = (
+                    legacy_close_fraction_from_signal(inverted, side)
+                )
         contexts.append(ctx)
         registry_fractions.append(
             _bt_close_evaluator_fraction(cfg, i, df, atr_full,

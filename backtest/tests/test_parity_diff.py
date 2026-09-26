@@ -748,3 +748,11 @@ def _assert_inverted_short_parity(name):
     assert fallback_summary["clean"], fallback_summary
     assert (fallback_frame["live_signal"] == -1).any()
     assert ((fallback_frame["live_close_fraction"] > 0) & (fallback_frame["live_signal"] == 1)).any()
+    close_rows = fallback_frame.index[fallback_frame["live_close_fraction"] > 0]
+    assert len(close_rows) == 1
+    after = fallback_frame.loc[close_rows[0] + 1:]
+    assert not after.empty
+    assert (after["live_close_fraction"] == 0).all()
+    assert (after["bt_close_fraction"] == 0).all()
+    assert (after["live_signal"] == 0).all()
+    assert (after["bt_signal"] == 0).all()
