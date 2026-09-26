@@ -239,6 +239,7 @@ type hlCycleShare struct {
 	refreshSnap map[string]uint64
 	failedAt    map[string]uint64
 	unknownNote map[string]bool
+	reconciled  map[string]bool
 }
 
 func newHLCycleShare(view hlOnChainCoinView, snapshot map[string]uint64, refetch func() (hlOnChainCoinView, error), strategies map[string]*StrategyState, live []StrategyConfig, notifier *MultiNotifier) *hlCycleShare {
@@ -251,6 +252,32 @@ func newHLCycleShare(view hlOnChainCoinView, snapshot map[string]uint64, refetch
 		failedAt:    map[string]uint64{},
 		unknownNote: map[string]bool{},
 	}
+}
+
+// markReconciled records the strategies whose own reconcile ran on this
+// cycle's account read. A book with no peer on its coin is booked only by its
+// own reconcile, so before that its drift is an unbooked fill.
+func (c *hlCycleShare) markReconciled(strategies []StrategyConfig) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.reconciled == nil {
+		c.reconciled = map[string]bool{}
+	}
+	for _, sc := range strategies {
+		c.reconciled[sc.ID] = true
+	}
+}
+
+func (c *hlCycleShare) wasReconciled(strategyID string) bool {
+	if c == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.reconciled[strategyID]
 }
 
 func (c *hlCycleShare) viewFor(coin string) (hlOnChainCoinView, bool) {
@@ -372,6 +399,7 @@ func hlShareLatchKey(strategyID, coin string) string {
 func (c *hlCycleShare) noteUnbacked(sc StrategyConfig, coin string, book float64, res hlShareResult, peers []hlShareBook, opp float64) {
 	tol := hlSharedCloseQtyTolerance
 	key := hlShareLatchKey(sc.ID, coin)
+	reconciled := c.wasReconciled(sc.ID)
 	hlShareLatchMu.Lock()
 	defer hlShareLatchMu.Unlock()
 	if res.Qty >= book-tol {
@@ -379,6 +407,11 @@ func (c *hlCycleShare) noteUnbacked(sc StrategyConfig, coin string, book float64
 		return
 	}
 	if prev, ok := hlShareLatch[key]; ok && math.Abs(prev-res.Qty) <= tol {
+		return
+	}
+	if len(peers) == 0 && !(opp > tol) && !reconciled {
+		fmt.Printf("[INFO] [%s] %s: chain share Q=%.6f is below the book %.6f with no peer on the coin; the strategy's own reconcile books the fill.\n",
+			sc.ID, coin, res.Qty, book)
 		return
 	}
 	hlShareLatch[key] = res.Qty

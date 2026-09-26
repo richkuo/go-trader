@@ -1633,6 +1633,7 @@ func main() {
 				drainOperatorRequiredPendingCloses(state, notifier, &mu)
 				if len(hlReconcileAll) > 0 && hlStateFetched {
 					_, fillHints, orphanCloseJobs := reconcileHyperliquidAccountPositions(hlReconcileDue, hlReconcileAll, state, &mu, logMgr, cfg.Regime, hlPositions, prices, os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS"), notifier, cfg.NotifyTPSLFillsEnabled())
+					hlCycle.markReconciled(hlReconcileDue)
 					if len(orphanCloseJobs) > 0 {
 						runRegimeDirectionOrphanCloses(
 							shutdownSideEffectCtx,

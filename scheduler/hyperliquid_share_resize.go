@@ -402,7 +402,7 @@ func runHyperliquidShareRearm(
 				}
 				db = d
 			}
-			if _, fillPx := runHyperliquidProtectionSync(sc, ss, db, symbol, mu, notifier, logger, "HL protection re-armed at the chain share", reconcileFillHintsJSON, hlLiquidationPx, hlNetSideByCoin, hlProtectionGuardFull, share); fillPx > 0 {
+			if _, fillPx := runHyperliquidProtectionSync(sc, ss, db, symbol, mu, notifier, logger, "HL protection re-armed at the chain share", reconcileFillHintsJSON, hlLiquidationPx, hlNetSideByCoin, hlProtectionGuardFullHoldRegime, share); fillPx > 0 {
 				hlSendShareCritical(notifier, fmt.Sprintf("[%s] LIVE PROTECTION SYNC SL %s filled @ $%.2f while re-arming at the chain share.", sc.ID, symbol, fillPx))
 			}
 			if !needTrail {

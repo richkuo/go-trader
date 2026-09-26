@@ -378,3 +378,44 @@ func TestImmediateStopFillBooksTheFlooredSize(t *testing.T) {
 		t.Fatalf("no reported size booked %g, want 8", got)
 	}
 }
+
+func TestPreLoopSyncHoldsTheRegimeCount(t *testing.T) {
+	dynamic := &StrategyRef{Name: dynamicCloseStrategyName, Params: unifiedBlock()}
+	dynamic.Params["regime_confirm_cycles"] = 2
+	sc := StrategyConfig{ID: "hl-dyn", Type: "perps", Platform: "hyperliquid", Args: []string{"sma", "ETH", "1h", "--mode=live"}, CloseStrategy: dynamic}
+	pos := &Position{Symbol: "ETH", Side: "long", Quantity: 1, AvgCost: 2000, EntryATR: 40, Regime: "trending_down", RegimeAppliedLabel: "trending_up", RegimePendingLabel: "ranging", RegimePendingCount: 1}
+	st := &StrategyState{ID: "hl-dyn", Regime: "ranging", Positions: map[string]*Position{"ETH": pos}}
+	var mu sync.RWMutex
+	orig := syncHyperliquidProtection
+	syncHyperliquidProtection = func(_ StrategyConfig, _ hlProtectionPlan, _ *MultiNotifier, _ *StrategyLogger, _ []byte) (*HyperliquidProtectionSyncResult, bool) {
+		return &HyperliquidProtectionSyncResult{}, true
+	}
+	t.Cleanup(func() { syncHyperliquidProtection = orig })
+	runHyperliquidProtectionSync(sc, st, nil, "ETH", &mu, nil, nil, "test", nil, nil, nil, hlProtectionGuardFullHoldRegime, nil)
+	if pos.RegimeAppliedLabel != "trending_up" || pos.RegimePendingLabel != "ranging" || pos.RegimePendingCount != 1 {
+		t.Fatalf("pre-loop sync moved the regime: applied=%q pending=%q count=%d", pos.RegimeAppliedLabel, pos.RegimePendingLabel, pos.RegimePendingCount)
+	}
+	runHyperliquidProtectionSync(sc, st, nil, "ETH", &mu, nil, nil, "test", nil, nil, nil, hlProtectionGuardFull, nil)
+	if pos.RegimeAppliedLabel != "ranging" {
+		t.Fatalf("due sync applied %q, want ranging on the second confirmation", pos.RegimeAppliedLabel)
+	}
+}
+
+func TestSoleOwnerDriftAlertsOnlyAfterItsReconcile(t *testing.T) {
+	resetHLShareAlerts()
+	t.Cleanup(resetHLShareAlerts)
+	sc := StrategyConfig{ID: "S", Type: "perps", Platform: "hyperliquid", Args: []string{"x", "SOL", "1h", "--mode=live"}}
+	states := map[string]*StrategyState{"S": {ID: "S", Positions: map[string]*Position{"SOL": {Symbol: "SOL", Side: "long", Quantity: 10, StopLossOID: 1}}}}
+	mock := &mockNotifier{}
+	mn := NewMultiNotifier(notifierBackend{notifier: mock, ownerID: "owner"})
+	view := hlOnChainCoinView{Known: true, AbsQty: map[string]float64{"SOL": 6}, NetSide: map[string]string{"SOL": "long"}}
+	share := newHLCycleShare(view, hlCoinSubmitSnapshot(), nil, states, []StrategyConfig{sc}, mn)
+	if q := share.StopQty(sc, "SOL", "long", 10, true, nil, 0); math.Abs(q.Qty-6) > 1e-9 || len(mock.dms) != 0 {
+		t.Fatalf("unreconciled sole owner Q=%g alerts=%d, want Q 6 and no alert", q.Qty, len(mock.dms))
+	}
+	share.markReconciled([]StrategyConfig{sc})
+	share.StopQty(sc, "SOL", "long", 10, true, nil, 0)
+	if len(mock.dms) != 1 {
+		t.Fatalf("reconciled sole owner still above the chain sent %d alerts, want 1", len(mock.dms))
+	}
+}

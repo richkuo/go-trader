@@ -33,9 +33,13 @@ func lockHyperliquidProtectionSync(symbol string) func() {
 // is the worse outcome.
 type hlProtectionGuardMode int
 
+// hlProtectionGuardFullHoldRegime is the full sync run outside a due
+// evaluation. It plans from the applied regime label and never advances the
+// dynamic-regime confirmation count, which counts due evaluations only.
 const (
 	hlProtectionGuardFull hlProtectionGuardMode = iota
 	hlProtectionGuardStopLegAfterFailedClose
+	hlProtectionGuardFullHoldRegime
 )
 
 // hlProtectionGuardAlertAfterBlocks is the number of consecutive blocked syncs
@@ -770,7 +774,10 @@ func runHyperliquidProtectionSyncForRemainder(
 		mu.Lock()
 		if pos, ok := stratState.Positions[symbol]; ok {
 			oldAppliedRegime := pos.RegimeAppliedLabel
-			regimeChanged := advanceDynamicCloseRegime(pos, stratState, sc)
+			regimeChanged := false
+			if guardMode != hlProtectionGuardFullHoldRegime {
+				regimeChanged = advanceDynamicCloseRegime(pos, stratState, sc)
+			}
 			plan, syncOK = buildHyperliquidProtectionPlan(sc, pos, hlLiquidationPxForSide(liqPxByCoin, netSideByCoin, symbol, pos.Side))
 			if syncOK {
 				plan.CancelTPOIDs = dynamicProtectionSurplusTPOIDs(pos.TPOIDs, len(plan.Tiers))
