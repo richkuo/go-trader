@@ -254,9 +254,6 @@ func newHLCycleShare(view hlOnChainCoinView, snapshot map[string]uint64, refetch
 	}
 }
 
-// markReconciled records the strategies whose own reconcile ran on this
-// cycle's account read. A book with no peer on its coin is booked only by its
-// own reconcile, so before that its drift is an unbooked fill.
 func (c *hlCycleShare) markReconciled(strategies []StrategyConfig) {
 	if c == nil {
 		return

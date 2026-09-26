@@ -317,12 +317,6 @@ func hlShareResizeTiers(sc StrategyConfig, state *AppState, symbol string, floor
 	}
 }
 
-// runHyperliquidShareRearm restores protection before the due loop once a
-// fresh known Q is above zero. A book with no stop and no recorded trigger is
-// armed by its owner: the trailing arm, or the protection sync for an ATR or
-// tiered owner. A book whose tiers the resize pass flagged is synced so the
-// tiers shrink this cycle. Static-scalar owners are re-armed by the
-// liquidation audit.
 func runHyperliquidShareRearm(
 	strategies []StrategyConfig,
 	state *AppState,
