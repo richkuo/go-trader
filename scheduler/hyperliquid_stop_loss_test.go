@@ -222,33 +222,6 @@ func TestExecuteHyperliquidResult_StopLossFilledImmediately_ReconcilesState(t *t
 	}
 }
 
-func TestHLSLEffectiveQty(t *testing.T) {
-	cases := []struct {
-		name       string
-		onChain    map[string]float64
-		virtualQty float64
-		wantQty    float64
-		wantCapped bool
-	}{
-		{"on-chain equals virtual", map[string]float64{"ETH": 0.422}, 0.422, 0.422, false},
-		{"on-chain above virtual", map[string]float64{"ETH": 0.500}, 0.422, 0.422, false},
-		{"on-chain below virtual caps to on-chain", map[string]float64{"ETH": 0.211}, 0.422, 0.211, true},
-		{"symbol absent from the map", map[string]float64{"BTC": 0.01}, 0.422, 0.422, false},
-		{"on-chain qty is zero", map[string]float64{"ETH": 0}, 0.422, 0.422, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got, capped := hlSLEffectiveQty("ETH", tc.virtualQty, tc.onChain)
-			if capped != tc.wantCapped {
-				t.Errorf("capped = %v, want %v", capped, tc.wantCapped)
-			}
-			if got < tc.wantQty-1e-9 || got > tc.wantQty+1e-9 {
-				t.Errorf("qty = %g, want %g", got, tc.wantQty)
-			}
-		})
-	}
-}
-
 func paperStopTestState(sc StrategyConfig, pos *Position) *StrategyState {
 	return &StrategyState{ID: sc.ID, Platform: "hyperliquid", Type: "perps", Cash: 1000, Positions: map[string]*Position{"ETH": pos}}
 }

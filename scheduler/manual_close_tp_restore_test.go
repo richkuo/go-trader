@@ -379,7 +379,7 @@ func TestManualCloseTPRestoreSerialisesWithTheProtectionSync(t *testing.T) {
 		go func() {
 			defer close(done)
 			var mu sync.RWMutex
-			runHyperliquidProtectionSync(sc, stratState, nil, "ETH-LOCK", &mu, nil, nil, "test", nil, nil, nil, hlProtectionGuardFull)
+			runHyperliquidProtectionSync(sc, stratState, nil, "ETH-LOCK", &mu, nil, nil, "test", nil, nil, nil, hlProtectionGuardFull, nil)
 		}()
 		select {
 		case <-placed:
@@ -436,7 +436,7 @@ func TestManualCloseRearmSerialisesWithProtectionSync(t *testing.T) {
 				defer close(cycleDone)
 				var mu sync.RWMutex
 				state := &StrategyState{Positions: map[string]*Position{sc.Symbol: {Symbol: sc.Symbol, Side: "long", Quantity: 1, AvgCost: 2000, EntryATR: 50}}}
-				runHyperliquidProtectionSync(sc, state, nil, sc.Symbol, &mu, nil, nil, "test", nil, nil, nil, hlProtectionGuardFull)
+				runHyperliquidProtectionSync(sc, state, nil, sc.Symbol, &mu, nil, nil, "test", nil, nil, nil, hlProtectionGuardFull, nil)
 			}
 			if cycleFirst {
 				go cycle()

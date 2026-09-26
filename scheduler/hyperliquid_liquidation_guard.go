@@ -504,7 +504,20 @@ func collectHLLiquidationAuditCandidates(
 	if state == nil {
 		return nil
 	}
+	var liveHL []StrategyConfig
+	for _, sc := range strategies {
+		if sc.Platform != "hyperliquid" || (sc.Type != "perps" && sc.Type != "manual") || !hyperliquidIsLive(sc.Args) {
+			continue
+		}
+		liveHL = append(liveHL, sc)
+	}
 	var out []hlLiquidationAuditCandidate
+	type hlAuditPeerSnap struct {
+		peers []hlShareBook
+		opp   float64
+		armed bool
+	}
+	var snaps []hlAuditPeerSnap
 	virtualByCoin := make(map[string]float64)
 	ownersByCoin := make(map[string]int)
 	mu.RLock()
@@ -549,21 +562,23 @@ func collectHLLiquidationAuditCandidates(
 			if unprotected && !staticScalar {
 				continue
 			}
+			peers, opp := hlPeerBookListOnCoin(state.Strategies, liveHL, symbol, sc.ID, pos.Side)
+			snap := hlAuditPeerSnap{peers: peers, opp: opp, armed: hlBookArmed(pos)}
 			if unresolvedPlacement {
-				slQty, capped := hlSLEffectiveQty(symbol, pos.Quantity, hlOnChainAbsQty)
 				out = append(out, hlLiquidationAuditCandidate{
 					StrategyID:          sc.ID,
 					Script:              sc.Script,
 					Symbol:              symbol,
 					Side:                pos.Side,
-					Qty:                 slQty,
+					Qty:                 pos.Quantity,
 					VirtualQty:          pos.Quantity,
-					QtyCapped:           capped,
+					QtyCapped:           false,
 					StopLossOID:         0,
 					StopLossTriggerPx:   pos.StopLossTriggerPx,
 					StaticScalarOwner:   staticScalar,
 					UnresolvedPlacement: true,
 				})
+				snaps = append(snaps, snap)
 				continue
 			}
 			liqPx := hlLiquidationPxForSide(hlLiquidationPx, hlNetSideByCoin, symbol, pos.Side)
@@ -574,7 +589,6 @@ func collectHLLiquidationAuditCandidates(
 			if unprotected && !sideConfirmed {
 				continue
 			}
-			slQty, capped := hlSLEffectiveQty(symbol, pos.Quantity, hlOnChainAbsQty)
 			rearmPx := 0.0
 			if unprotected {
 				rearmPx = hlLiquidationScalarRearmTriggerPx(sc, pos.Side, pos.riskAnchorPrice(), liqPx)
@@ -584,9 +598,9 @@ func collectHLLiquidationAuditCandidates(
 				Script:            sc.Script,
 				Symbol:            symbol,
 				Side:              pos.Side,
-				Qty:               slQty,
+				Qty:               pos.Quantity,
 				VirtualQty:        pos.Quantity,
-				QtyCapped:         capped,
+				QtyCapped:         false,
 				StopLossOID:       pos.StopLossOID,
 				StopLossTriggerPx: pos.StopLossTriggerPx,
 				LiquidationPx:     liqPx,
@@ -594,15 +608,32 @@ func collectHLLiquidationAuditCandidates(
 				RearmTriggerPx:    rearmPx,
 				Unprotected:       unprotected,
 			})
+			snaps = append(snaps, snap)
 		}
 	}
 	mu.RUnlock()
 
 	consistent := hlLiquidationCoinBookConsistent(virtualByCoin, ownersByCoin, hlOnChainAbsQty)
+	share := currentHLCycleShare()
+	kept := out[:0]
 	for i := range out {
 		out[i].BookConsistent = consistent[out[i].Symbol]
+		var q hlStopQty
+		if share != nil {
+			q = share.StopQty(StrategyConfig{ID: out[i].StrategyID}, out[i].Symbol, out[i].Side, out[i].VirtualQty, snaps[i].armed, snaps[i].peers, snaps[i].opp)
+		} else {
+			q = hlQtyFromAccountMaps(out[i].Symbol, out[i].Side, out[i].VirtualQty, snaps[i].armed, snaps[i].peers, snaps[i].opp, hlOnChainAbsQty, hlNetSideByCoin)
+		}
+		if (out[i].Unprotected || out[i].UnresolvedPlacement) && q.Known && q.Fresh && q.Qty <= hlSharedCloseQtyTolerance {
+			continue
+		}
+		if q.Known && q.Fresh {
+			out[i].Qty = q.Qty
+			out[i].QtyCapped = q.Capped
+		}
+		kept = append(kept, out[i])
 	}
-	return out
+	return kept
 }
 
 type hlLiquidationReplaceOutcome int

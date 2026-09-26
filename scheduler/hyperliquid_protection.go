@@ -683,8 +683,36 @@ func runHyperliquidProtectionSync(
 	liqPxByCoin map[string]float64,
 	netSideByCoin map[string]string,
 	guardMode hlProtectionGuardMode,
+	share *hlCycleShare,
 ) (bool, float64) {
-	synced, fillPx, _, _ := runHyperliquidProtectionSyncForRemainder(sc, stratState, db, symbol, mu, notifier, logger, logTag, reconcileFillHintsJSON, liqPxByCoin, netSideByCoin, guardMode, 0, false, 0, hlCloseUnconfirmed{})
+	stopQty := 0.0
+	if share != nil && stratState != nil && symbol != "" && mu != nil {
+		mu.RLock()
+		var book float64
+		var side string
+		armed := false
+		if pos, ok := stratState.Positions[symbol]; ok && pos != nil {
+			book = pos.Quantity
+			side = pos.Side
+			armed = hlBookArmed(pos)
+		}
+		peers, opp := share.peers(symbol, sc.ID, side)
+		mu.RUnlock()
+		if book > hlSharedCloseQtyTolerance {
+			q := share.StopQty(sc, symbol, side, book, armed, peers, opp)
+			qty, _, place := hlReplaceQty(q, book)
+			if q.Fresh && q.Known && !place {
+				if logger != nil {
+					logger.Info("%s skipped: the chain share for %s is zero, so nothing is placed", logTag, symbol)
+				}
+				return false, 0
+			}
+			if q.Fresh && q.Known && qty < book-hlSharedCloseQtyTolerance {
+				stopQty = qty
+			}
+		}
+	}
+	synced, fillPx, _, _ := runHyperliquidProtectionSyncForRemainder(sc, stratState, db, symbol, mu, notifier, logger, logTag, reconcileFillHintsJSON, liqPxByCoin, netSideByCoin, guardMode, stopQty, false, 0, hlCloseUnconfirmed{})
 	return synced, fillPx
 }
 
@@ -773,6 +801,15 @@ func runHyperliquidProtectionSyncForRemainder(
 	}
 	if !syncOK {
 		return false, 0, hlStopRearmResult{}, hlTPRearmResult{}
+	}
+	if hlShareTakeForceTP(sc.ID, symbol) && len(plan.Tiers) > 0 {
+		flags := make([]bool, len(plan.Tiers))
+		for i := range plan.Tiers {
+			if i < len(plan.TPOIDs) && plan.TPOIDs[i] > 0 {
+				flags[i] = true
+			}
+		}
+		plan.ForceTPReplace = orForceReplace(plan.ForceTPReplace, flags)
 	}
 	sizedToRemainder := stopQty > 0 && stopQty < plan.Size-1e-9
 	resizeUnconfirmedTPs := (afterFill || sizedToRemainder) && len(u.TPOIDs) > 0

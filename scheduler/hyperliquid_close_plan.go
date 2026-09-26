@@ -80,39 +80,8 @@ func hlSideSign(side string) float64 {
 }
 
 func hlPeerBooksOnCoin(strategies map[string]*StrategyState, hlLiveAll []StrategyConfig, coin, selfID, selfSide string) (sameQty, oppQty float64) {
-	target := strings.ToUpper(strings.TrimSpace(coin))
-	if target == "" {
-		return 0, 0
-	}
-	selfSign := hlSideSign(selfSide)
-	add := func(pos *Position) {
-		if pos == nil || pos.Quantity <= 0 {
-			return
-		}
-		if hlSideSign(pos.Side) == selfSign {
-			sameQty += pos.Quantity
-		} else {
-			oppQty += pos.Quantity
-		}
-	}
-	for _, sc := range hlLiveAll {
-		if sc.ID == selfID {
-			continue
-		}
-		ss := strategies[sc.ID]
-		if ss == nil {
-			continue
-		}
-		if raw := hyperliquidRawCoin(sc); raw != "" && strings.ToUpper(strings.TrimSpace(raw)) == target {
-			add(hlVirtualPositionFor(ss, sc, raw))
-		}
-		if hCoin := hedgeCoin(sc); hCoin != "" && strings.ToUpper(strings.TrimSpace(hCoin)) == target {
-			if hPos := ss.Positions[hCoin]; hPos.isHedgeLeg() {
-				add(hPos)
-			}
-		}
-	}
-	return sameQty, oppQty
+	same, oppQty := hlPeerBookListOnCoin(strategies, hlLiveAll, coin, selfID, selfSide)
+	return hlShareBookSum(same), oppQty
 }
 
 func hlOnChainSignedQty(view hlOnChainCoinView, symbol string) (float64, bool) {
@@ -319,6 +288,7 @@ type hlCloseRemainderStop struct {
 type hlCloseBacking struct {
 	PeerSameQty float64
 	PeerOppQty  float64
+	PeerSame    []hlShareBook
 	PreSend     hlCloseView
 	Refetch     func() (hlOnChainCoinView, error)
 }
@@ -336,19 +306,22 @@ func resolveHLCloseRemainderStop(symbol, side string, bookQty float64, fill hlCl
 		return stop
 	}
 	s := hlSideSign(side)
-	claim := math.Max(b.PeerSameQty-b.PeerOppQty, 0)
 	sized := func(signed float64, basis hlCloseRemainderBasis) hlCloseRemainderStop {
-		backed := math.Max(s*signed, 0) - claim
-		stop.Basis = basis
-		switch {
-		case backed >= remainder-tol:
-			stop.Qty = remainder
-		case backed <= tol:
-			stop.Qty = 0
-			stop.Unbacked = true
-		default:
-			stop.Qty = backed
+		peers := b.PeerSame
+		if len(peers) == 0 && b.PeerSameQty > tol {
+			peers = []hlShareBook{{Qty: b.PeerSameQty, Armed: true}}
 		}
+		res := hlOwnStopShare(hlShareInput{
+			Side:   side,
+			Self:   hlShareBook{Qty: remainder, Armed: false},
+			Same:   peers,
+			Opp:    b.PeerOppQty,
+			Signed: signed,
+			Known:  true,
+		})
+		stop.Basis = basis
+		stop.Qty = res.Qty
+		stop.Unbacked = res.Qty <= tol
 		return stop
 	}
 	stop.Detail = "no account reader is available"

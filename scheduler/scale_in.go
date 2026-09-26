@@ -11,10 +11,9 @@ func scaleInResizeTrailingSLNow(
 	stratState *StrategyState,
 	symbol string,
 	mark float64,
-	preAddOnChainAbsQty map[string]float64,
+	share *hlCycleShare,
 	hlLiquidationPx map[string]float64,
 	hlNetSideByCoin map[string]string,
-	filledAddQty float64,
 	ratchetTightened bool,
 	mu *sync.RWMutex,
 	notifier *MultiNotifier,
@@ -30,16 +29,31 @@ func scaleInResizeTrailingSLNow(
 		return 0, ""
 	}
 	side := pos.Side
+	book := pos.Quantity
+	armed := hlBookArmed(pos)
+	var peers []hlShareBook
+	var opp float64
+	if share != nil {
+		peers, opp = share.peers(symbol, sc.ID, side)
+	}
 	highWater := pos.StopLossHighWaterPx
 	triggerPx := pos.StopLossTriggerPx
 	slOID := pos.StopLossOID
 	posSnap := *pos
 	mu.RUnlock()
 
-	grownOnChain := map[string]float64{symbol: preAddOnChainAbsQty[symbol] + filledAddQty}
-	slEffectiveQty, capped := hlSLEffectiveQty(symbol, posSnap.Quantity, grownOnChain)
-	if capped {
-		logger.Warn("scale-in eager SL resize: %s still capped (virtual %.6f > on-chain %.6f); deferring to next walker cycle", symbol, posSnap.Quantity, slEffectiveQty)
+	q := hlStopQty{Qty: book, Fresh: true}
+	if share != nil {
+		q = share.StopQty(sc, symbol, side, book, armed, peers, opp)
+	}
+	slEffectiveQty, deferArm, place := hlFreshArmQty(q, book)
+	if deferArm {
+		if logger != nil {
+			logger.Warn("scale-in eager SL resize: %s account read failed after the add; deferring to next walker cycle", symbol)
+		}
+		return 0, ""
+	}
+	if !place {
 		return 0, ""
 	}
 	newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, symbol, side, slEffectiveQty, &posSnap, mark, highWater, triggerPx, slOID, trailingReplacePolicy{forceResize: true, ratchetTightened: ratchetTightened, liquidationPx: hlLiquidationPxForSide(hlLiquidationPx, hlNetSideByCoin, symbol, side)}, notifier, logger)
@@ -47,7 +61,7 @@ func scaleInResizeTrailingSLNow(
 	defer mu.Unlock()
 	trades := 0
 	detail := ""
-	if immediateFill, fillPx := applyTrailingStopUpdateResult(stratState, symbol, side, slOID, newHighWater, updateConfirmed, slUpdate, "trailing_stop_loss_immediate", logger, 0); immediateFill {
+	if immediateFill, fillPx := applyTrailingStopUpdateResult(stratState, symbol, side, slOID, newHighWater, updateConfirmed, slUpdate, "trailing_stop_loss_immediate", logger, slEffectiveQty); immediateFill {
 		trades = 1
 		detail = fmt.Sprintf("[%s] LIVE TRAILING SL %s @ $%.2f", sc.ID, symbol, fillPx)
 	}

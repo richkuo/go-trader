@@ -278,8 +278,12 @@ func TestTradeActionsEnforceConfiguredToken(t *testing.T) {
 }
 
 func TestUIUpdateSLQueuesPendingActionLikeCLI(t *testing.T) {
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xstub")
 	ss, db, cfg := newTradeActionTestServer(t)
 	stubs := stubTradeDeps(t, ss)
+	stubs.fetchPositions = func(string) ([]HLPosition, error) {
+		return []HLPosition{{Coin: "ETH", Size: 100}}, nil
+	}
 	stubs.updateSL = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 		if cancelOID != 111 {
 			t.Errorf("cancelOID = %d, want 111 (cancel-then-queue)", cancelOID)
@@ -295,6 +299,9 @@ func TestUIUpdateSLQueuesPendingActionLikeCLI(t *testing.T) {
 		return &HyperliquidStopLossUpdateResult{StopLossOID: 555, StopLossTriggerPx: triggerPx, CancelStopLossSucceeded: true}, "", nil
 	}
 	cliDeps.fetchMids = func(coins []string) (map[string]float64, error) { return map[string]float64{"ETH": 2000}, nil }
+	cliDeps.fetchPositions = func(string) ([]HLPosition, error) {
+		return []HLPosition{{Coin: "ETH", Size: 100}}, nil
+	}
 	sc, err := lookupManualStrategy(cfg, "hl-manual-eth")
 	if err != nil {
 		t.Fatalf("lookup: %v", err)
@@ -720,8 +727,12 @@ func TestUICrossClassPendingGuard(t *testing.T) {
 }
 
 func TestUISLEditGuardedWhileCloseQueued(t *testing.T) {
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xstub")
 	ss, db, _ := newTradeActionTestServer(t)
 	stubs := stubTradeDeps(t, ss)
+	stubs.fetchPositions = func(string) ([]HLPosition, error) {
+		return []HLPosition{{Coin: "ETH", Size: 100}}, nil
+	}
 
 	if err := db.InsertPendingManualAction(PendingManualAction{
 		StrategyID: "hl-manual-eth", Action: "close", Symbol: "ETH", Side: "sell",

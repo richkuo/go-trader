@@ -91,6 +91,7 @@ func parseHyperliquidLimitOpenOutput(stdout []byte, stderrStr string, runErr err
 func RunHyperliquidLimitOpen(script, symbol, side string, size, limitPx float64, tif, marginMode string, leverage float64, snapshot hlExecuteSnapshot) (*HyperliquidLimitOpenResult, string, error) {
 	args := buildHyperliquidLimitOpenArgs(symbol, side, size, limitPx, tif, marginMode, leverage, snapshot)
 	stdout, stderr, err := runPythonSideEffect(script, args)
+	hlNoteCoinSubmission(symbol)
 	return parseHyperliquidLimitOpenOutput(stdout, string(stderr), err)
 }
 
@@ -899,7 +900,11 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, store *StateStore
 				fmt.Printf("[limit] %v\n", protectionErr)
 				continue
 			}
-			if _, fillPx := runHyperliquidProtectionSync(r.sc, state.Strategies[r.order.StrategyID], protectionDB, coin, mu, notifier, r.logger, "HL limit-fill protection synced", nil, nil, nil, hlProtectionGuardFull); fillPx > 0 {
+			var fillShare *hlCycleShare
+			if readErr == nil {
+				fillShare = newHLCycleShare(hlOnChainCoinViewFromPositions(positions), hlCoinSubmitSnapshot(), nil, state.Strategies, hyperliquidCloseScopeStrategies(cfg.Strategies), notifier)
+			}
+			if _, fillPx := runHyperliquidProtectionSync(r.sc, state.Strategies[r.order.StrategyID], protectionDB, coin, mu, notifier, r.logger, "HL limit-fill protection synced", nil, nil, nil, hlProtectionGuardFull, fillShare); fillPx > 0 {
 				booked++
 			}
 			if ma := applied[r.order.StrategyID]; ma == nil {

@@ -88,6 +88,10 @@ var cancelOrderProbeArgv = []string{
 	"--cancel-order", "--symbol=BTC", "--oid=1", "--probe-only",
 }
 
+var listOpenOrdersProbeArgv = []string{
+	"--list-open-order-oids", "--probe-only",
+}
+
 var hyperliquidBatchProbeArgv = []string{
 	"--batch-check", "--symbol=BTC", "--timeframe=1h",
 	"--ohlcv-limit", "200", "--atr-method=simple", "--mark-price=0",
@@ -149,6 +153,9 @@ func probeCheckScripts(cfg *Config) error {
 				return err
 			}
 			if err := probeOneCheckScriptFn(script, cancelOrderProbeArgv); err != nil {
+				return err
+			}
+			if err := probeOneCheckScriptFn(script, listOpenOrdersProbeArgv); err != nil {
 				return err
 			}
 			if err := probeOneCheckScriptFn(script, hyperliquidBatchProbeArgv); err != nil {

@@ -177,6 +177,12 @@ class TestStopLossPlacement:
         _, _, _, limit_px, _ = ex.order.call_args.args
         assert limit_px > 3000.0
 
+    def test_place_stop_loss_floors_to_the_lot(self):
+        adapter, ex, _ = self._live_adapter(sz_decimals={"ETH": 2})
+        ex.order.return_value = {"status": "ok"}
+        adapter.place_stop_loss("ETH", 0.127, 3000.0, is_buy=False)
+        assert ex.order.call_args.args[2] == 0.12
+
     def test_place_take_profit_limit_uses_reduce_only_limit(self):
         adapter, ex, _ = self._live_adapter(sz_decimals={"ETH": 4})
         ex.order.return_value = {"status": "ok"}

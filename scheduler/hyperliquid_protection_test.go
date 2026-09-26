@@ -111,7 +111,7 @@ func TestRunHyperliquidProtectionSyncSkipsApplyAfterExternalClose(t *testing.T) 
 	})
 
 	var mu sync.RWMutex
-	if syncedNeg, _ := runHyperliquidProtectionSync(sc, state, nil, "ETH", &mu, nil, nil, "test", nil, nil, nil, hlProtectionGuardFull); syncedNeg {
+	if syncedNeg, _ := runHyperliquidProtectionSync(sc, state, nil, "ETH", &mu, nil, nil, "test", nil, nil, nil, hlProtectionGuardFull, nil); syncedNeg {
 		t.Fatal("expected apply to be skipped after position closed externally")
 	}
 	pos := state.Positions["ETH"]
@@ -170,7 +170,7 @@ func TestRunHyperliquidProtectionSyncBooksFillAtSubmit(t *testing.T) {
 		}, true
 	})
 	var mu sync.RWMutex
-	synced, fillPx := runHyperliquidProtectionSync(sc, state, nil, "ETH", &mu, nil, nil, "test", nil, nil, nil, hlProtectionGuardFull)
+	synced, fillPx := runHyperliquidProtectionSync(sc, state, nil, "ETH", &mu, nil, nil, "test", nil, nil, nil, hlProtectionGuardFull, nil)
 	if !synced {
 		t.Fatal("expected sync to report success after booking the submit-fill close")
 	}
@@ -301,7 +301,7 @@ func TestRunHyperliquidProtectionSyncManualActionGuard(t *testing.T) {
 			pos := &Position{Symbol: "ETH", Quantity: 1, AvgCost: 2000, EntryATR: 50, Side: "long", TPOIDs: []int64{701, 702, 703}}
 			state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
 			var mu sync.RWMutex
-			synced, _ := runHyperliquidProtectionSync(sc, state, db, "ETH", &mu, nil, nil, "test", nil, nil, nil, hlProtectionGuardFull)
+			synced, _ := runHyperliquidProtectionSync(sc, state, db, "ETH", &mu, nil, nil, "test", nil, nil, nil, hlProtectionGuardFull, nil)
 			if tc.blocked {
 				if synced || calls != 0 || !reflect.DeepEqual(pos.TPOIDs, []int64{701, 702, 703}) {
 					t.Fatalf("blocked sync mutated protection: synced=%v calls=%d oids=%v", synced, calls, pos.TPOIDs)
@@ -378,7 +378,7 @@ func TestRunHyperliquidProtectionSyncStopLegAfterFailedClose(t *testing.T) {
 			pos := &Position{Symbol: "ETH", Quantity: 1, AvgCost: 2000, EntryATR: 50, Side: "long", TPOIDs: []int64{701, 702, 703}, TPArmedTiers: []bool{true, true, true}}
 			state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
 			var mu sync.RWMutex
-			runHyperliquidProtectionSync(sc, state, db, "ETH", &mu, nil, nil, "test", nil, nil, nil, hlProtectionGuardStopLegAfterFailedClose)
+			runHyperliquidProtectionSync(sc, state, db, "ETH", &mu, nil, nil, "test", nil, nil, nil, hlProtectionGuardStopLegAfterFailedClose, nil)
 			if calls != tc.wantCalls {
 				t.Fatalf("placement calls=%d want %d", calls, tc.wantCalls)
 			}

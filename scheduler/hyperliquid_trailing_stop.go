@@ -236,13 +236,6 @@ func lockHyperliquidTrailingUpdate(symbol string) func() {
 	return m.Unlock
 }
 
-func hlSLEffectiveQty(symbol string, virtualQty float64, onChainQtyMap map[string]float64) (float64, bool) {
-	if onChainQty, ok := onChainQtyMap[symbol]; ok && onChainQty > 1e-9 && onChainQty < virtualQty-1e-9 {
-		return onChainQty, true
-	}
-	return virtualQty, false
-}
-
 func effectiveTrailingStopPct(sc StrategyConfig, pos *Position) float64 {
 	if sc.Platform != "hyperliquid" {
 		return 0

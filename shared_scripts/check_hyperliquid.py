@@ -1193,7 +1193,7 @@ def run_sync_protection(
             if len(existing_tp_oids) < len(tiers):
                 existing_tp_oids.extend([0] * (len(tiers) - len(existing_tp_oids)))
 
-            size = adapter.round_size(symbol, size)
+            size = adapter.floor_size(symbol, size)
             if size <= 0:
                 out["tp_size_skipped"] = [True] * len(tiers)
                 print(
@@ -1599,12 +1599,13 @@ def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_
         sys.exit(1)
 
 
-def run_list_open_order_oids(symbol):
+def run_list_open_order_oids(symbol=None):
     try:
         from adapter import HyperliquidExchangeAdapter
         adapter = HyperliquidExchangeAdapter()
         listed = []
-        for order in adapter.frontend_open_orders(symbol):
+        decimals = {}
+        for order in adapter.frontend_open_orders(symbol or None):
             try:
                 oid = int(order.get("oid") or 0)
             except (TypeError, ValueError):
@@ -1619,8 +1620,14 @@ def run_list_open_order_oids(symbol):
                 trigger_px = float(order.get("triggerPx") or 0)
             except (TypeError, ValueError):
                 trigger_px = 0.0
+            coin = str(order.get("coin") or symbol or "")
+            if coin and coin not in decimals:
+                lot = adapter.lot_size_decimals(coin)
+                if isinstance(lot, int):
+                    decimals[coin] = lot
             listed.append({
                 "oid": oid,
+                "coin": coin,
                 "side": str(order.get("side") or ""),
                 "sz": sz,
                 "reduce_only": bool(order.get("reduceOnly")),
@@ -1628,7 +1635,14 @@ def run_list_open_order_oids(symbol):
                 "order_type": str(order.get("orderType") or order.get("origType") or ""),
                 "trigger_px": trigger_px,
             })
-        print(json.dumps({"platform": "hyperliquid", "open_orders": listed}, cls=SafeEncoder))
+        payload = {
+            "platform": "hyperliquid",
+            "open_orders": listed,
+            "sz_decimals_by_coin": decimals,
+        }
+        if symbol and symbol in decimals:
+            payload["sz_decimals"] = decimals[symbol]
+        print(json.dumps(payload, cls=SafeEncoder))
     except Exception as e:
         print(json.dumps({
             "platform": "hyperliquid",
@@ -2291,9 +2305,12 @@ def main():
         import argparse
         parser = argparse.ArgumentParser()
         parser.add_argument("--list-open-order-oids", action="store_true")
-        parser.add_argument("--symbol", required=True)
+        parser.add_argument("--symbol", default="")
+        parser.add_argument("--probe-only", action="store_true")
         args = parser.parse_args()
-        run_list_open_order_oids(args.symbol)
+        if args.probe_only:
+            sys.exit(0)
+        run_list_open_order_oids(args.symbol or None)
     elif "--execute" in sys.argv:
         import argparse
         parser = argparse.ArgumentParser()

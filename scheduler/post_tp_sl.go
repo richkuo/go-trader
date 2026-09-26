@@ -946,7 +946,7 @@ func runPostTPStopLossAdjustment(
 	mu *sync.RWMutex,
 	notifier *MultiNotifier,
 	logger *StrategyLogger,
-	hlOnChainAbsQty map[string]float64,
+	share *hlCycleShare,
 	hlLiquidationPx map[string]float64,
 	hlNetSideByCoin map[string]string,
 ) (applied bool, fills int, detail string) {
@@ -981,6 +981,12 @@ func runPostTPStopLossAdjustment(
 	entryATR := pos.EntryATR
 	qty := pos.Quantity
 	currentOID := pos.StopLossOID
+	armed := hlBookArmed(pos)
+	var peers []hlShareBook
+	var opp float64
+	if share != nil {
+		peers, opp = share.peers(symbol, sc.ID, side)
+	}
 	posRegime := protectionATRRegimeLabel(pos, sc)
 	mu.RUnlock()
 
@@ -1033,9 +1039,16 @@ func runPostTPStopLossAdjustment(
 		}()
 	}
 
-	placedQty, capped := hlSLEffectiveQty(symbol, qty, hlOnChainAbsQty)
+	q := hlStopQty{Qty: qty, Fresh: true}
+	if share != nil {
+		q = share.StopQty(sc, symbol, side, qty, armed, peers, opp)
+	}
+	placedQty, capped, place := hlReplaceQty(q, qty)
+	if !place {
+		return false, 0, ""
+	}
 	if capped && logger != nil {
-		logger.Warn("post-TP SL replace: virtual qty %.6f > on-chain %.6f for %s; capping SL size to on-chain qty (#621)", qty, placedQty, symbol)
+		logger.Warn("post-TP SL replace: virtual qty %.6f > chain share %.6f for %s; capping", qty, placedQty, symbol)
 	}
 
 	if logger != nil {

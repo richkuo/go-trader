@@ -19,6 +19,7 @@ type manualCloseProtectionSnapshot struct {
 	FilledQty       float64
 	PeerSameQty     float64
 	PeerOppQty      float64
+	PeerSame        []hlShareBook
 	PreSend         hlCloseView
 	AvgCost         float64
 	EntryATR        float64
@@ -161,6 +162,7 @@ func restoreManualStopLoss(d manualCoreDeps, res *manualCoreResult, sc StrategyC
 	stop := resolveHLCloseRemainderStop(snap.Symbol, snap.Side, snap.Quantity+snap.FilledQty, fill, hlCloseBacking{
 		PeerSameQty: snap.PeerSameQty,
 		PeerOppQty:  snap.PeerOppQty,
+		PeerSame:    snap.PeerSame,
 		PreSend:     snap.PreSend,
 		Refetch: func() (hlOnChainCoinView, error) {
 			if mapErr != nil {

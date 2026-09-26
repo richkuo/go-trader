@@ -751,9 +751,9 @@ class HyperliquidExchangeAdapter:
     ) -> dict:
         exchange = self._require_exchange("place_stop_loss")
         sz_decimals = self._sz_decimals(symbol)
-        sz = round(sz, sz_decimals)
+        sz = floor_lot_size(sz, sz_decimals)
         if sz <= 0:
-            raise ValueError(f"Size rounded to zero for {symbol} (sz_decimals={sz_decimals})")
+            raise ValueError(f"Size floored to zero for {symbol} (sz_decimals={sz_decimals})")
         if trigger_px <= 0:
             raise ValueError(f"trigger_px must be > 0, got {trigger_px}")
 
@@ -781,9 +781,9 @@ class HyperliquidExchangeAdapter:
     ) -> dict:
         exchange = self._require_exchange("modify_stop_loss")
         sz_decimals = self._sz_decimals(symbol)
-        sz = round(sz, sz_decimals)
+        sz = floor_lot_size(sz, sz_decimals)
         if sz <= 0:
-            raise ValueError(f"Size rounded to zero for {symbol} (sz_decimals={sz_decimals})")
+            raise ValueError(f"Size floored to zero for {symbol} (sz_decimals={sz_decimals})")
         if trigger_px <= 0:
             raise ValueError(f"trigger_px must be > 0, got {trigger_px}")
         if oid <= 0:

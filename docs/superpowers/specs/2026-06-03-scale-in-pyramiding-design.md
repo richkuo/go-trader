@@ -38,7 +38,7 @@ All file:line references verified against the worktree at design time.
 - **`InitialQuantity` as high-water mark:** tier-fill detection `pos.Quantity+1e-9 < pos.InitialQuantity` (`discord.go:1135`); sl_after gate `pos.Quantity >= pos.InitialQuantity-1e-9 → return false` (`post_tp_sl.go:1134`) and `InitialQuantity<=0` guard (`:1123`); tier-split baseline `initQty := pos.InitialQuantity` in `hyperliquid_fills.go:472` and `hyperliquid_balance.go:1558`, feeding `hyperliquidTPTierIncrementalCloseQty(initQty, tiers, i)`.
 - **Stamp-once:** `stampEntryATRIfOpened` (`main.go:2316`) returns early when `pos.EntryATR != 0`; `stampPositionRegimeFromPayload` (`regime_multi_window.go:515`) returns early when `pos.Regime != ""`.
 - **On-chain protection:** `TPArmedTiers` (`portfolio.go:26-31`) and `SLAdjustedTiersProcessed` (`:41-44`) are the idempotency watermarks; live cancel+replace at `main.go:2742-2749` skips SL/TP cancel on partial close, cancels stale SL + all TP OIDs on flip/open.
-- **Trailing stop:** `hlSLEffectiveQty(symbol, virtualQty, onChainQtyMap)` (`hyperliquid_trailing_stop.go:18`) returns `min(virtualQty, onChainQty)`; callers `main.go:1577/1618/1744`, `post_tp_sl.go:1199`.
+- **Trailing stop:** `hlOwnStopShare` supersedes `hlSLEffectiveQty`. It returns `Q`, at most the book and at most the own-side chain units.
 - **Live order path:** leverage/margin-mode only from flat — `posQty == 0` gate at `main.go:2771`; `perpsLiveOrderSize(...)` (`portfolio.go:688`) has flat-open / flip / close branches only.
 - **Trade stats:** `LifetimeTradeStatsAll` (`db.go:1484`) counts `is_close = 0` rows for `#T` and groups close legs by `(strategy_id, position_id)` for W/L. `Trade` struct (`portfolio.go:410-458`) has `IsClose`, `RealizedPnL`, `PositionID`, `TradeType`. `RecordTrade` (`state.go:41`) → `StateDB.InsertTrade` (`db.go:647`).
 - **Partial-close mirror:** `pos.Quantity -= closeQty` preserving `InitialQuantity`/`AvgCost`/`EntryATR` at `portfolio.go:1003` (perps), `:1377` (spot), `:1628` (futures), `manual.go:697`. Partial-open mirrors this (increment instead of decrement; `IsClose:false`).
@@ -73,7 +73,7 @@ Rejected: (B) overloading the open path with an add-mode flag — entangles add 
 - After `applyScaleIn` mutates the position (Quantity + InitialQuantity grown, watermark preserved), trigger a forced cancel+replace of:
   - **SL** sized to the full new `Quantity` at the frozen trigger (existing ATR/regime/trailing geometry from the original entry).
   - **Un-cleared TP tiers** sized from the grown `InitialQuantity` via the existing `hyperliquidTPTierIncrementalCloseQty` resolver, at frozen trigger prices. Cleared tiers (below the watermark) are NOT re-placed.
-- `hlSLEffectiveQty = min(virtualQty, onChainQty)` naturally tracks the larger qty once the SL is re-placed.
+- `hlOwnStopShare` supersedes `hlSLEffectiveQty`. A resting stop more than one lot under `Q` is grown on the next fresh cycle.
 - Paper: blend only, no on-chain calls.
 
 **5. `manual-add` CLI** (`manual.go`) mirroring `manual-open`

@@ -345,9 +345,20 @@ func restoreManualTakeProfitsAfterFailedClose(d manualCoreDeps, res *manualCoreR
 		alertf(fmt.Sprintf("the strategy now resolves %d take-profit tiers, so the cancelled order ids %v have no tier to restore", len(plan.Tiers), dropped))
 	}
 
-	size, capped := hlSLEffectiveQty(snap.Symbol, pos.Quantity, onChainAbsQty)
+	account := hlOnChainCoinView{Known: true, AbsQty: onChainAbsQty, NetSide: netSideByCoin}
+	shareRes := hlOwnStopShareOnView(snap.Symbol, pos.Side, hlShareBook{Qty: pos.Quantity, Armed: hlBookArmed(pos)}, view.PeerSame, view.PeerOppQty, account)
+	size := pos.Quantity
+	capped := false
+	if shareRes.Known {
+		size = shareRes.Qty
+		capped = size < pos.Quantity-hlSharedCloseQtyTolerance
+	}
+	if shareRes.Known && size <= hlSharedCloseQtyTolerance {
+		res.outf("manual-close %s %s: the chain share is zero, so the cancelled take-profit tiers (order ids %v) were not restored.", strategyID, snap.Symbol, lostOIDs)
+		return
+	}
 	if capped {
-		res.errf("warning: take-profit restore size for %s capped from the book %.6f to the on-chain %.6f", snap.Symbol, pos.Quantity, size)
+		res.errf("warning: take-profit restore size for %s capped from the book %.6f to the chain share %.6f", snap.Symbol, pos.Quantity, size)
 	}
 	planClasses := classifyManualCloseTPTiers(len(plan.Tiers), snap.TPOIDs, snap.TPArmedTiers, requestedCancelOIDs, execResult)
 	prevOIDs := tpOIDsForTierCount(snap.TPOIDs, len(plan.Tiers))

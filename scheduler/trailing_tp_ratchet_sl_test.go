@@ -41,7 +41,7 @@ func TestRunTrailingStopUpdateAfterRatchetTighten_LiveReplacesWiderTrigger(t *te
 
 	wantTrigger := 102.0 * (1.0 - 0.75*5.0/100.0)
 
-	n, _ := runTrailingStopUpdateAfterRatchetTighten(sc, st, "ETH", 102.0, map[string]float64{"ETH": 0.2}, nil, nil, &mu, nil, newTestLogger(t))
+	n, _ := runTrailingStopUpdateAfterRatchetTighten(sc, st, "ETH", 102.0, hlAbsShare(map[string]float64{"ETH": 0.2}, "long"), nil, nil, &mu, nil, newTestLogger(t))
 	if n != 0 {
 		t.Fatalf("trades = %d, want 0 (resting replacement, not immediate fill)", n)
 	}
@@ -134,7 +134,7 @@ func TestRunTrailingStopUpdateAfterRatchetTighten_UsesResidualNotPreCloseOnChain
 		gotSize = size
 		return &HyperliquidStopLossUpdateResult{StopLossOID: 8, StopLossTriggerPx: triggerPx}, "", nil
 	}
-	runTrailingStopUpdateAfterRatchetTighten(sc, st, "ETH", 102, map[string]float64{"ETH": 1.0}, nil, nil, &mu, nil, newTestLogger(t))
+	runTrailingStopUpdateAfterRatchetTighten(sc, st, "ETH", 102, hlAbsShare(map[string]float64{"ETH": 1.0}, "long"), nil, nil, &mu, nil, newTestLogger(t))
 	if !approxEq(gotSize, 0.2) {
 		t.Fatalf("SL size = %v, want residual 0.2 (not stale on-chain 1.0)", gotSize)
 	}

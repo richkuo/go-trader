@@ -74,6 +74,7 @@ type manualStateView struct {
 	PeerVirtualQty   float64
 	PeerSameQty      float64
 	PeerOppQty       float64
+	PeerSame         []hlShareBook
 }
 
 func manualSubsetStateView(pr *PortfolioRiskConfig, states map[string]*StrategyState, cfgs []StrategyConfig, now time.Time) manualStateView {
@@ -179,7 +180,8 @@ func manualStateViewFromStateWithStore(cfg *Config, state *AppState, store *Stat
 		cp.TPArmedTiers = append([]bool(nil), pos.TPArmedTiers...)
 		v.Pos = &cp
 		if cfg != nil {
-			v.PeerSameQty, v.PeerOppQty = hlPeerBooksOnCoin(state.Strategies, hyperliquidCloseScopeStrategies(cfg.Strategies), symbol, strategyID, pos.Side)
+			v.PeerSame, v.PeerOppQty = hlPeerBookListOnCoin(state.Strategies, hyperliquidCloseScopeStrategies(cfg.Strategies), symbol, strategyID, pos.Side)
+			v.PeerSameQty = hlShareBookSum(v.PeerSame)
 		}
 	}
 	return v
@@ -1209,6 +1211,7 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 		TPArmedTiers:    append([]bool(nil), pos.TPArmedTiers...),
 		PeerSameQty:     view.PeerSameQty,
 		PeerOppQty:      view.PeerOppQty,
+		PeerSame:        view.PeerSame,
 		PreSend:         preSend,
 		AvgCost:         pos.AvgCost,
 		EntryATR:        pos.EntryATR,
@@ -1703,13 +1706,38 @@ func manualUpdateSLCore(d manualCoreDeps, sc StrategyConfig, in manualSLInputs) 
 		return res, manualFailf("error: trigger $%.4f would fill immediately against mark $%.4f for a %s position", in.Trigger, mark, pos.Side)
 	}
 
+	placeQty := pos.Quantity
+	var peers []hlShareBook
+	var peerOpp float64
+	if d.loadState != nil {
+		if v, loadErr := d.loadState(strategyID, symbol); loadErr == nil {
+			peers = v.PeerSame
+			peerOpp = v.PeerOppQty
+		}
+	}
+	onChain, chainErr := d.fetchOnChainView()
+	switch {
+	case chainErr != nil || !onChain.Known:
+		if len(peers) > 0 || peerOpp > hlSharedCloseQtyTolerance {
+			return res, manualFailf("error: the on-chain %s position is unknown and a peer book shares the coin, so the stop size cannot be chosen", symbol)
+		}
+	default:
+		shareRes := hlOwnStopShareOnView(symbol, pos.Side, hlShareBook{Qty: pos.Quantity, Armed: true}, peers, peerOpp, onChain)
+		if shareRes.Known {
+			placeQty = shareRes.Qty
+		}
+	}
+	if placeQty <= hlSharedCloseQtyTolerance {
+		return res, manualFailf("error: the chain share for %s is zero, so no stop-loss was placed", symbol)
+	}
+
 	if in.DryRun {
 		res.outf("[dry-run] manual-update-sl %s: %s stop-loss $%.4f -> $%.4f (qty %.6f, cancel OID=%d)",
-			strategyID, symbol, pos.StopLossTriggerPx, in.Trigger, pos.Quantity, pos.StopLossOID)
+			strategyID, symbol, pos.StopLossTriggerPx, in.Trigger, placeQty, pos.StopLossOID)
 		return res, nil
 	}
 
-	slResult, slStderr, slErr := d.updateSL(sc.Script, symbol, pos.Side, pos.Quantity, in.Trigger, pos.StopLossOID)
+	slResult, slStderr, slErr := d.updateSL(sc.Script, symbol, pos.Side, placeQty, in.Trigger, pos.StopLossOID)
 	if slStderr != "" {
 		res.errf("SL update stderr: %s", slStderr)
 	}

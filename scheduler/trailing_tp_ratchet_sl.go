@@ -12,7 +12,7 @@ func runTrailingStopUpdateAfterRatchetTighten(
 	stratState *StrategyState,
 	symbol string,
 	mark float64,
-	hlOnChainAbsQty map[string]float64,
+	share *hlCycleShare,
 	hlLiquidationPx map[string]float64,
 	hlNetSideByCoin map[string]string,
 	mu *sync.RWMutex,
@@ -37,13 +37,26 @@ func runTrailingStopUpdateAfterRatchetTighten(
 	triggerPx := pos.StopLossTriggerPx
 	slOID := pos.StopLossOID
 	qty := pos.Quantity
+	armed := hlBookArmed(pos)
+	var peers []hlShareBook
+	var opp float64
+	if share != nil {
+		peers, opp = share.peers(symbol, sc.ID, side)
+	}
 	posSnap := *pos
 	mu.RUnlock()
 
 	if hyperliquidIsLive(sc.Args) {
-		slEffectiveQty, capped := hlSLEffectiveQty(symbol, qty, hlOnChainAbsQty)
+		q := hlStopQty{Qty: qty, Fresh: true}
+		if share != nil {
+			q = share.StopQty(sc, symbol, side, qty, armed, peers, opp)
+		}
+		slEffectiveQty, capped, place := hlReplaceQty(q, qty)
+		if !place {
+			return 0, ""
+		}
 		if capped && logger != nil {
-			logger.Warn("ratchet same-cycle trailing SL: virtual qty %.6f > on-chain %.6f for %s; capping (#621)", qty, slEffectiveQty, symbol)
+			logger.Warn("ratchet same-cycle trailing SL: virtual qty %.6f > chain share %.6f for %s; capping", qty, slEffectiveQty, symbol)
 		}
 		livePolicy := ratchetTightenReplacePolicy
 		livePolicy.liquidationPx = hlLiquidationPxForSide(hlLiquidationPx, hlNetSideByCoin, symbol, side)
@@ -51,7 +64,7 @@ func runTrailingStopUpdateAfterRatchetTighten(
 			sc, symbol, side, slEffectiveQty, &posSnap, mark, highWater, triggerPx, slOID, livePolicy, notifier, logger)
 		mu.Lock()
 		defer mu.Unlock()
-		if immediateFill, fillPx := applyTrailingStopUpdateResult(stratState, symbol, side, slOID, newHighWater, updateConfirmed, slUpdate, "trailing_stop_loss_immediate", logger, 0); immediateFill {
+		if immediateFill, fillPx := applyTrailingStopUpdateResult(stratState, symbol, side, slOID, newHighWater, updateConfirmed, slUpdate, "trailing_stop_loss_immediate", logger, slEffectiveQty); immediateFill {
 			return 1, fmt.Sprintf("[%s] LIVE TRAILING SL %s @ $%.2f", sc.ID, symbol, fillPx)
 		}
 		return 0, ""

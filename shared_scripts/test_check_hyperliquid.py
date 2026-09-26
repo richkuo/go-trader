@@ -851,6 +851,19 @@ class TestUpdateStopLoss:
         assert order["reduce_only"] is True
         assert order["order_type"] == "Stop Market"
         assert order["trigger_px"] == 3104.12
+        assert order["coin"] == "ETH"
+        assert order["sz"] == 0.5
+
+
+def test_compute_tp_tier_sizes_never_sums_above_the_floored_input():
+    mod, spec = _load_check_module()
+    spec.loader.exec_module(mod)
+
+    def floor(sz):
+        return math.floor(sz * 100) / 100.0
+
+    sizes = mod.compute_tp_tier_sizes(8.127, [(1.0, 0.5), (2.0, 1.0)], floor)
+    assert sum(sizes) <= floor(8.127) + 1e-9
 
 
 class TestCloseFullPosition:
@@ -1631,7 +1644,9 @@ class TestSyncProtection:
         assert sizes == pytest.approx([0.001, 0.002])
         assert sum(sizes) == pytest.approx(0.003)
 
-    def test_float_drift_below_lot_boundary_normalizes(self):
+    def test_float_drift_below_lot_boundary_floors_to_zero(self):
+        # Outdated: this pinned round() lifting a sub-lot remainder to one lot.
+        # Ground: issue 1592 floors the take-profit total, so a size under one lot places nothing.
         drifted = 0.011 - 0.010
         assert drifted < 0.001
         out, adapter = self._run_sync(
@@ -1643,9 +1658,8 @@ class TestSyncProtection:
             tp_oids=[0, 0],
             open_oids=set(),
         )
-        assert out["tp_oids"]
-        sizes = [call.args[1] for call in adapter.place_take_profit_limit.call_args_list]
-        assert sum(sizes) == pytest.approx(0.001)
+        adapter.place_take_profit_limit.assert_not_called()
+        assert "tp_oids" not in out
 
     def test_size_rounds_to_zero_skips_tier_block(self):
         out, adapter = self._run_sync(

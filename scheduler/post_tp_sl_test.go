@@ -57,7 +57,7 @@ func TestRunPostTPStopLossAdjustment_CapsAtOnChainQty(t *testing.T) {
 	var mu sync.RWMutex
 
 	onChain := map[string]float64{"ETH": 0.7}
-	applied, _, _ := runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, onChain, nil, nil)
+	applied, _, _ := runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, hlAbsShare(onChain, "long"), nil, nil)
 	if !applied {
 		t.Fatal("expected runPostTPStopLossAdjustment to apply")
 	}
@@ -115,7 +115,7 @@ func TestRunPostTPStopLossAdjustment_LiquidationClampFallback(t *testing.T) {
 			return retryReply, "", nil
 		}
 		logger := &StrategyLogger{stratID: "test", writer: &logOutput}
-		applied, _, _ := runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, mn, logger, onChain, liqPx, netSide)
+		applied, _, _ := runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, mn, logger, hlAbsShare(onChain, "long"), liqPx, netSide)
 		return state, mock, applied, logOutput.String()
 	}
 
