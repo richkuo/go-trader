@@ -427,10 +427,24 @@ func watchHLStopFillAfterResync(strategyID string, stratState *StrategyState, sy
 	}
 }
 
+func hlSameSideChainQty(positions []HLPosition, sym, side string) float64 {
+	for _, p := range positions {
+		if p.Coin != sym {
+			continue
+		}
+		if (p.Size > 0 && side == "long") || (p.Size < 0 && side == "short") {
+			return math.Abs(p.Size)
+		}
+		return 0
+	}
+	return 0
+}
+
 func settleHLStopFillWatch(
 	sc StrategyConfig,
 	stratState *StrategyState,
 	sym string,
+	positions []HLPosition,
 	resolveFee hlReconcileFillResolver,
 	logger *StrategyLogger,
 	pendingAlerts *[]ProtectionFillAlert,
@@ -456,6 +470,11 @@ func settleHLStopFillWatch(
 	}
 	dropHLStopFillWatch(sc.ID, sym)
 	oidStr := strconv.FormatInt(w.oid, 10)
+	if pos != nil && pos.StopLossOID == w.oid && pos.Side == w.side && pos.TradePositionID == w.positionID && pos.Quantity-hlSameSideChainQty(positions, sym, pos.Side) >= lookup.FilledQty-1e-9 {
+		sendHLStopFillDM(fmt.Sprintf("**HL STOP FILL AFTER DROP** [%s] %s on-chain size fell by %.6f from the booked %.6f before SL OID %s filled %.6f, so the drop is not booked as stop_loss and the reconciler books the stop fill against the current position. Check the %.6f drop on Hyperliquid.",
+			sc.ID, sym, w.qty, w.bookQty, oidStr, lookup.FilledQty, w.qty), logger, ownerDMs)
+		return false
+	}
 	if pos == nil || pos.Quantity <= 1e-9 || pos.Side != w.side || pos.TradePositionID != w.positionID {
 		sendHLStopFillDM(fmt.Sprintf("**HL STOP FILL UNBOOKED** [%s] %s SL OID %s fill was confirmed late, but the position it partly closed is no longer open, so no stop_loss PnL is booked for its %.6f. Check the realized PnL on Hyperliquid.",
 			sc.ID, sym, oidStr, w.qty), logger, ownerDMs)
@@ -510,7 +529,7 @@ func reconcileSoleOwnerOpenStopFill(
 	pendingAlerts *[]ProtectionFillAlert,
 	ownerDMs *[]string,
 ) (bool, *hlStopFillWatch) {
-	changed := settleHLStopFillWatch(sc, stratState, sym, resolveFee, logger, pendingAlerts, ownerDMs)
+	changed := settleHLStopFillWatch(sc, stratState, sym, positions, resolveFee, logger, pendingAlerts, ownerDMs)
 	syncFilledOID := takeHLProtectionSyncStopFilled(sc.ID, sym)
 	statePos := stratState.Positions[sym]
 	if statePos == nil || statePos.Quantity <= 0 || statePos.StopLossOID <= 0 || statePos.StopLossTriggerPx <= 0 {
