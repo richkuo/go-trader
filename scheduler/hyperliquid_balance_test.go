@@ -4140,6 +4140,84 @@ func TestReconcilePositionSLClose_NoFillFallsThroughToExternal(t *testing.T) {
 	}
 }
 
+func TestReconcileSoleOwnerStopFillWithOpenRemainder(t *testing.T) {
+	const (
+		stopOID     int64 = 42
+		stopTrigger       = 1850.0
+	)
+	mult := 1.5
+	sc := StrategyConfig{
+		ID:              "hl-eth",
+		Type:            "manual",
+		Platform:        "hyperliquid",
+		CloseStrategy:   &StrategyRef{Name: "tiered_tp_atr_live"},
+		StopLossATRMult: &mult,
+	}
+	for _, tc := range []struct {
+		name      string
+		confirmed bool
+	}{
+		{name: "confirmed partial stop fill", confirmed: true},
+		{name: "stop fill not confirmed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ss := &StrategyState{
+				ID: sc.ID, Cash: 1000, Platform: "hyperliquid", Type: "manual",
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 2000, EntryATR: 100, Side: "long",
+						Multiplier: 1, Leverage: 5, OwnerStrategyID: sc.ID,
+						StopLossOID: stopOID, StopLossTriggerPx: stopTrigger},
+				},
+			}
+			positions := []HLPosition{{Coin: "ETH", Size: 0.4, EntryPrice: 2000, Leverage: 5}}
+			resolver := hlReconcileFillResolver(func(_ string, oid int64, _ float64) (HLFillLookup, bool) {
+				if tc.confirmed && oid == stopOID {
+					return HLFillLookup{Fee: 0.06, FilledQty: 0.6, Px: stopTrigger, Count: 1, OID: stopOID}, true
+				}
+				return HLFillLookup{}, false
+			})
+			var alerts []ProtectionFillAlert
+			reconcileHyperliquidPositionsForStrategy(sc, ss, "ETH", positions, resolver, newTestLogger(t), &alerts, nil)
+
+			pos := ss.Positions["ETH"]
+			if pos == nil || math.Abs(pos.Quantity-0.4) > 1e-9 {
+				t.Fatalf("position = %+v, want 0.4 ETH left open", pos)
+			}
+			if !tc.confirmed {
+				if pos.StopLossOID != stopOID || pos.StopLossTriggerPx != stopTrigger {
+					t.Errorf("SL = oid %d @ %g, want %d @ %g kept without a confirmed fill", pos.StopLossOID, pos.StopLossTriggerPx, stopOID, stopTrigger)
+				}
+				for _, tr := range ss.TradeHistory {
+					if tr.ExchangeOrderID == "42" {
+						t.Errorf("stop trade booked without a confirmed fill: %+v", tr)
+					}
+				}
+				return
+			}
+			if pos.StopLossOID != 0 || pos.StopLossTriggerPx != 0 {
+				t.Errorf("SL = oid %d @ %g, want both cleared so the remainder gets a new stop", pos.StopLossOID, pos.StopLossTriggerPx)
+			}
+			if len(ss.TradeHistory) != 1 {
+				t.Fatalf("TradeHistory = %d rows, want 1 stop partial close", len(ss.TradeHistory))
+			}
+			tr := ss.TradeHistory[0]
+			if !tr.IsClose || tr.ExchangeOrderID != "42" || math.Abs(tr.Quantity-0.6) > 1e-9 || tr.Price != stopTrigger {
+				t.Errorf("trade = %+v, want 0.6 closed @ %g with OID 42", tr, stopTrigger)
+			}
+			if math.Abs(tr.RealizedPnL-0.6*(stopTrigger-2000)) > 1e-9 || math.Abs(tr.ExchangeFee-0.06) > 1e-9 {
+				t.Errorf("RealizedPnL = %g fee = %g, want %g gross and 0.06 fee", tr.RealizedPnL, tr.ExchangeFee, 0.6*(stopTrigger-2000))
+			}
+			if len(alerts) != 1 || alerts[0].FillType != "SL" || !alerts[0].IsPartial || math.Abs(alerts[0].RemainingQty-0.4) > 1e-9 || alerts[0].ExchangeOrderID != "42" {
+				t.Errorf("alerts = %+v, want one partial SL alert for OID 42 with 0.4 remaining", alerts)
+			}
+			plan, ok := buildHyperliquidProtectionPlan(sc, pos, 0)
+			if !ok || plan.StopLossATRMult <= 0 || plan.StopLossOID != 0 || math.Abs(plan.Size-0.4) > 1e-9 {
+				t.Errorf("next protection plan = %+v ok=%v, want a new stop placed for 0.4", plan, ok)
+			}
+		})
+	}
+}
+
 func TestReconcileManualPositionSLFired(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{

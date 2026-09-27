@@ -302,12 +302,84 @@ func reconcileHyperliquidPositionsForStrategy(
 		return false
 	}
 
+	stopFilled := reconcileSoleOwnerOpenStopFill(sc, stratState, sym, positions, resolveFee, logger, pendingAlerts)
+
 	if booked := tryBookSoleOwnerTPFill(sc, stratState, sym, positions, resolveFee, logger, pendingAlerts); booked {
 		reconcileHyperliquidPositionsWithResolver(stratState, sym, positions, resolveFee, logger, pendingAlerts, pendingOrphanCloses, sc)
 		return true
 	}
 
-	return reconcileHyperliquidPositionsWithResolver(stratState, sym, positions, resolveFee, logger, pendingAlerts, pendingOrphanCloses, sc)
+	return reconcileHyperliquidPositionsWithResolver(stratState, sym, positions, resolveFee, logger, pendingAlerts, pendingOrphanCloses, sc) || stopFilled
+}
+
+func reconcileSoleOwnerOpenStopFill(
+	sc StrategyConfig,
+	stratState *StrategyState,
+	sym string,
+	positions []HLPosition,
+	resolveFee hlReconcileFillResolver,
+	logger *StrategyLogger,
+	pendingAlerts *[]ProtectionFillAlert,
+) bool {
+	statePos := stratState.Positions[sym]
+	if statePos == nil || statePos.Quantity <= 0 || statePos.StopLossOID <= 0 || statePos.StopLossTriggerPx <= 0 {
+		return false
+	}
+	var onChainPos *HLPosition
+	for i := range positions {
+		if positions[i].Coin == sym {
+			onChainPos = &positions[i]
+			break
+		}
+	}
+	if onChainPos == nil {
+		return false
+	}
+	lookup, useFillFee := resolveFee(sym, statePos.StopLossOID, statePos.Quantity)
+	logHyperliquidReconcileFillLookup(logger, sym, statePos.StopLossOID, statePos.Quantity, lookup, useFillFee)
+	if !hlReconcileSLFillConfirmed(lookup, useFillFee, statePos.StopLossOID) {
+		return false
+	}
+	oidStr := strconv.FormatInt(statePos.StopLossOID, 10)
+	triggerPx := statePos.StopLossTriggerPx
+	side := statePos.Side
+	onChainAbs := math.Abs(onChainPos.Size)
+	sameDirection := (onChainPos.Size > 0 && side == "long") || (onChainPos.Size < 0 && side == "short")
+	closeQty := 0.0
+	if sameDirection {
+		closeQty = math.Min(lookup.FilledQty, statePos.Quantity-onChainAbs)
+	}
+	booked := false
+	if closeQty > 1e-9 {
+		share, _ := splitHyperliquidFillLookupByQty(lookup, closeQty, lookup.FilledQty)
+		booked = bookPerpsPartialCloseWithFillFee(stratState, sym, closeQty, triggerPx, share.Fee, useFillFee, oidStr, "stop_loss", stopLossCloseDetailsPrefix("stop_loss"), "SL partial close reconciled", logger)
+	}
+	remaining := 0.0
+	if pos := stratState.Positions[sym]; pos != nil {
+		pos.StopLossOID = 0
+		pos.StopLossTriggerPx = 0
+		remaining = pos.Quantity
+	}
+	if logger != nil {
+		logger.Warn("hl-sync: %s SL OID %s filled %.6f but the position is still open on-chain (%.6f); booked %.6f as stop_loss and cleared the filled stop so the next protection sync places a stop for the remaining %.6f",
+			sym, oidStr, lookup.FilledQty, onChainPos.Size, closeQty, remaining)
+	}
+	if booked && pendingAlerts != nil {
+		*pendingAlerts = append(*pendingAlerts, ProtectionFillAlert{
+			StrategyID:      sc.ID,
+			Symbol:          sym,
+			Side:            side,
+			FillType:        "SL",
+			IsPartial:       remaining > 1e-9,
+			FillPrice:       triggerPx,
+			CloseQty:        closeQty,
+			RemainingQty:    remaining,
+			RealizedPnL:     lastBookedTradePnL(stratState),
+			HasPnL:          true,
+			ExchangeOrderID: oidStr,
+		})
+	}
+	return true
 }
 
 func stampSoleOwnerRecoveryTierConsumed(pos *Position, tierIdx int) {
