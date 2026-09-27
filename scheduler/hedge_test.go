@@ -431,6 +431,8 @@ type fakeHedgeExec struct {
 	lastSetMargin  bool
 	lastUnwindQty  float64
 	lastUnwindOIDs []int64
+	lastUnwindReq  hlSizedCloseRequest
+	refetch        func() (hlOnChainCoinView, error)
 }
 
 func (f *fakeHedgeExec) executor() hedgeExecutor {
@@ -440,25 +442,23 @@ func (f *fakeHedgeExec) executor() hedgeExecutor {
 			f.lastSetMargin = setMargin
 			return f.openResult, f.openErr
 		},
-		Reduce: func(sc StrategyConfig, coin string, qty *float64) (*HyperliquidCloseResult, error) {
-			q := -1.0
-			if qty != nil {
-				q = *qty
-			}
-			f.reduceCalls = append(f.reduceCalls, fmt.Sprintf("%s %.8f", coin, q))
+		Reduce: func(sc StrategyConfig, req hlSizedCloseRequest) (*HyperliquidCloseResult, error) {
+			f.reduceCalls = append(f.reduceCalls, fmt.Sprintf("%s %.8f", req.Symbol, req.Size))
 			return f.reduceResult, nil
 		},
-		UnwindPrimary: func(sc StrategyConfig, coin string, qty float64, cancelOIDs []int64) (*HyperliquidCloseResult, error) {
-			f.unwindCalls = append(f.unwindCalls, fmt.Sprintf("%s %.8f", coin, qty))
-			f.lastUnwindQty = qty
-			f.lastUnwindOIDs = cancelOIDs
+		UnwindPrimary: func(sc StrategyConfig, req hlSizedCloseRequest) (*HyperliquidCloseResult, error) {
+			f.unwindCalls = append(f.unwindCalls, fmt.Sprintf("%s %.8f", req.Symbol, req.Size))
+			f.lastUnwindQty = req.Size
+			f.lastUnwindOIDs = req.CancelOIDs
+			f.lastUnwindReq = req
 			return f.unwindResult, f.unwindErr
 		},
+		Refetch: f.refetch,
 	}
 }
 
 func closeFill(px, sz, fee float64) *HyperliquidCloseResult {
-	return &HyperliquidCloseResult{Close: &HyperliquidClose{Fill: &HyperliquidCloseFill{AvgPx: px, TotalSz: sz, Fee: fee, OID: 43}}}
+	return &HyperliquidCloseResult{OrderOutcome: "filled", Close: &HyperliquidClose{Fill: &HyperliquidCloseFill{AvgPx: px, TotalSz: sz, Fee: fee, OID: 43}}}
 }
 
 func TestRunHedgeSyncUnwindsPrimaryWhenFreshOpenHedgeFails(t *testing.T) {
@@ -479,7 +479,7 @@ func TestRunHedgeSyncUnwindsPrimaryWhenFreshOpenHedgeFails(t *testing.T) {
 
 	runHedgeSync(sc, s, &mu, f.executor(), hedgeSyncInputs{
 		PrimaryPx: testPrimaryPx, HedgePx: testHedgePx, FreshExposureQty: 10,
-		PrimaryCancelOIDs: []int64{555}, Live: true,
+		PrimaryCancelOIDs: []int64{555}, PrimaryPeers: hedgePrimaryPeers{Known: true, Side: "long"}, Live: true,
 	}, nil, silentStrategyLogger("eth-long"))
 
 	if len(f.unwindCalls) != 1 {
@@ -518,7 +518,7 @@ func TestRunHedgeSyncUnwindsOnlyTheIncrementWhenAddHedgeFails(t *testing.T) {
 
 	runHedgeSync(sc, s, &mu, f.executor(), hedgeSyncInputs{
 		PrimaryPx: testPrimaryPx, HedgePx: testHedgePx, FreshExposureQty: 5,
-		PrimaryCancelOIDs: []int64{777}, Live: true,
+		PrimaryCancelOIDs: []int64{777}, PrimaryPeers: hedgePrimaryPeers{Known: true, Side: "long"}, Live: true,
 	}, nil, silentStrategyLogger("eth-long"))
 
 	if f.lastUnwindQty != 5 {
@@ -1204,8 +1204,11 @@ func forceCloseCoupledHedgeQueuedFullFlag(t *testing.T, heldQty, filled float64,
 			}
 			return manualStateView{HasStrategy: true, Pos: hedgePos(heldQty, "short", 10)}, nil
 		},
-		closer: func(symbol string, partialSz *float64, oids []int64) (*HyperliquidCloseResult, error) {
-			return &HyperliquidCloseResult{Close: &HyperliquidClose{
+		sizedCloser: func(req hlSizedCloseRequest) (*HyperliquidCloseResult, error) {
+			if req.Side != "buy" || req.Mode != hlCloseModeReduceOnly || len(req.CancelOIDs) != 0 {
+				t.Fatalf("hedge leg close = %+v, want a reduce-only buy with no protection cancel", req)
+			}
+			return &HyperliquidCloseResult{OrderOutcome: "filled", Close: &HyperliquidClose{
 				Fill: &HyperliquidCloseFill{AvgPx: 51000, TotalSz: filled, Fee: 1, OID: 7},
 			}}, nil
 		},

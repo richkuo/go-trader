@@ -262,10 +262,10 @@ func runManualClose(args []string) int {
 }
 
 func runForceClose(args []string) int {
-	return runForceCloseWithCloser(args, defaultHyperliquidForceCloseCloser)
+	return runForceCloseWithClosers(args, defaultHyperliquidForceCloseCloser, defaultHyperliquidSizedCloser)
 }
 
-func runForceCloseWithCloser(args []string, closer HyperliquidLiveCloser) int {
+func runForceCloseWithClosers(args []string, closer HyperliquidLiveCloser, sizedCloser hlSizedCloser) int {
 	fs := flag.NewFlagSet("force-close", flag.ContinueOnError)
 	configPath := fs.String("config", "scheduler/config.json", "Path to config file")
 	qty := fs.Float64("qty", 0, "Quantity to close in base units (0 = full strategy position)")
@@ -302,6 +302,7 @@ func runForceCloseWithCloser(args []string, closer HyperliquidLiveCloser) int {
 
 	deps := newCLIManualCoreDeps(cfg, stateDB, nil)
 	deps.closer = closer
+	deps.sizedCloser = sizedCloser
 	res, coreErr := forceCloseCore(deps, sc, sym, forceCloseInputs{
 		StrategyID: strategyID,
 		Qty:        *qty,

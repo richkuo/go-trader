@@ -72,6 +72,13 @@ var executeProbeArgv = []string{
 	"--probe-only",
 }
 
+var sizedCloseProbeArgv = []string{
+	"--symbol=BTC", "--mode=live", "--sz=0.01",
+	"--side=sell", "--close-mode=reduce_only",
+	"--cancel-stop-loss-oid=1", "--cancel-protection-after-close", "--cancel-min-fill=0.01",
+	"--probe-only",
+}
+
 var limitOpenProbeArgv = []string{
 	"--limit-open",
 	"--symbol=BTC", "--side=buy", "--size=0.01", "--limit-price=1",
@@ -169,6 +176,11 @@ func probeCheckScripts(cfg *Config) error {
 			}
 		}
 	}
+	if anyHLLiveReconcilable(cfg) {
+		if err := probeOneCheckScriptFn(hyperliquidLiveCloseScript, sizedCloseProbeArgv); err != nil {
+			return err
+		}
+	}
 	if anyStrategyUsesLLMEntryAnalysis(cfg) {
 		if err := probeOneCheckScriptFn(llmEntryAnalysisScript, llmReviewProbeArgv); err != nil {
 			return err
@@ -192,6 +204,15 @@ func probeCheckScripts(cfg *Config) error {
 		}
 	}
 	return nil
+}
+
+func anyHLLiveReconcilable(cfg *Config) bool {
+	for _, sc := range cfg.Strategies {
+		if isHLLiveReconcilable(sc) {
+			return true
+		}
+	}
+	return false
 }
 
 func uniqueCheckScripts(cfg *Config) []string {

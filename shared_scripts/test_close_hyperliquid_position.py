@@ -394,5 +394,159 @@ class TestCancelStopLossOID:
         assert out.get("cancel_stop_loss_succeeded_oids") == [12345]
 
 
+def _run_sized(order_response, argv, floored=0.5, px=2970.0, cancel_response=None):
+    script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "close_hyperliquid_position.py")
+    spec = importlib.util.spec_from_file_location("close_hyperliquid_position", script_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    adapter = MagicMock()
+    adapter.floor_size.return_value = floored
+    if isinstance(px, Exception):
+        adapter.sized_close_price.side_effect = px
+    else:
+        adapter.sized_close_price.return_value = px
+    if isinstance(order_response, Exception):
+        adapter.market_close_sized.side_effect = order_response
+    else:
+        adapter.market_close_sized.return_value = order_response
+    adapter.cancel_trigger_order.return_value = cancel_response or {"status": "ok", "response": {"data": {"statuses": ["success"]}}}
+    adapter.lookup_fill_fee_by_oid.return_value = {}
+    adapter_cls = MagicMock(return_value=adapter)
+
+    captured = StringIO()
+    exit_code = {"value": 0}
+    original_import = builtins.__import__
+
+    def mock_import(name, *args, **kwargs):
+        if name == "adapter":
+            fake_mod = MagicMock()
+            fake_mod.HyperliquidExchangeAdapter = adapter_cls
+            return fake_mod
+        return original_import(name, *args, **kwargs)
+
+    def mock_exit(code=0):
+        exit_code["value"] = code
+        raise SystemExit(code)
+
+    with patch("builtins.__import__", side_effect=mock_import), \
+         patch("sys.stdout", captured), \
+         patch("sys.argv", ["close_hyperliquid_position.py"] + argv), \
+         patch.object(mod.sys, "exit", side_effect=mock_exit):
+        try:
+            mod.main()
+        except SystemExit:
+            pass
+    raw = captured.getvalue().strip()
+    return (json.loads(raw) if raw else {}), exit_code["value"], adapter
+
+
+_SIZED = ["--symbol=ETH", "--mode=live", "--sz=0.5", "--side=sell", "--close-mode=reduce_only"]
+_SIZED_CANCEL = _SIZED + ["--cancel-stop-loss-oid=111", "--cancel-stop-loss-oid=222",
+                          "--cancel-protection-after-close", "--cancel-min-fill=0.4999"]
+
+
+def _filled(sz):
+    return {"status": "ok", "response": {"type": "order", "data": {"statuses": [
+        {"filled": {"avgPx": "2990", "totalSz": str(sz), "oid": 4242}}]}}}
+
+
+class TestSizedClose:
+
+    def test_sends_the_strategy_side_and_mode_at_the_floored_size(self):
+        out, code, adapter = _run_sized(_filled(0.5), _SIZED[:-2] + ["--side=buy", "--close-mode=cross"], floored=0.5)
+        assert code == 0, out
+        adapter.market_close.assert_not_called()
+        adapter.floor_size.assert_called_once_with("ETH", 0.5)
+        adapter.market_close_sized.assert_called_once_with("ETH", True, 0.5, 2970.0, reduce_only=False)
+        assert out["order_outcome"] == "filled"
+        assert out["close"]["submitted_sz"] == 0.5
+        assert out["close"]["fill"]["total_sz"] == 0.5
+
+    def test_submits_the_lot_floor_never_a_rounded_up_size(self):
+        out, code, adapter = _run_sized(_filled(0.4), _SIZED, floored=0.4)
+        assert code == 0, out
+        assert adapter.market_close_sized.call_args[0][2] == 0.4
+        assert out["close"]["submitted_sz"] == 0.4
+
+    @pytest.mark.parametrize("fill_sz,want_cancel", [(0.5, True), (0.4999, True), (0.45, False)])
+    def test_cancels_protection_only_after_the_fill_reaches_the_threshold(self, fill_sz, want_cancel):
+        out, code, adapter = _run_sized(_filled(fill_sz), _SIZED_CANCEL)
+        assert code == 0, out
+        order_index = [c[0] for c in adapter.method_calls].index("market_close_sized")
+        cancel_calls = [i for i, c in enumerate(adapter.method_calls) if c[0] == "cancel_trigger_order"]
+        if want_cancel:
+            assert cancel_calls and min(cancel_calls) > order_index
+            assert out["cancel_stop_loss_succeeded_oids"] == [111, 222]
+        else:
+            assert not cancel_calls
+            assert "cancel_stop_loss_succeeded_oids" not in out
+
+    def test_a_rejected_cancel_is_reported_failed(self):
+        out, code, adapter = _run_sized(_filled(0.5), _SIZED_CANCEL,
+                                        cancel_response={"status": "ok", "response": {"data": {"statuses": [{"error": "Order was never placed"}]}}})
+        assert code == 0, out
+        assert out["cancel_stop_loss_failed_oids"] == [111, 222]
+        assert "cancel_stop_loss_succeeded_oids" not in out
+
+    @pytest.mark.parametrize("argv_extra,floored,px,why", [
+        (["--sz=0.5", "--side=sell"], 0.0, 2970.0, "floors to zero"),
+        (["--sz=0.5", "--side=sell"], 0.5, ValueError("no usable mid price for ETH"), "preflight failed"),
+        (["--sz=0.5", "--side=hold"], 0.5, 2970.0, "--side=buy or --side=sell"),
+        (["--sz=0", "--side=sell"], 0.5, 2970.0, "--sz > 0"),
+        (["--sz=nan", "--side=sell"], 0.5, 2970.0, "--sz > 0"),
+        (["--sz=0.5", "--side=sell", "--cancel-stop-loss-oid=111"], 0.5, 2970.0, "only after the fill"),
+        (["--sz=0.5", "--side=sell", "--cancel-stop-loss-oid=111", "--cancel-protection-after-close"], 0.5, 2970.0, "--cancel-min-fill"),
+    ])
+    def test_invalid_or_unplaceable_requests_send_nothing(self, argv_extra, floored, px, why):
+        argv = ["--symbol=ETH", "--mode=live", "--close-mode=reduce_only"] + argv_extra
+        out, code, adapter = _run_sized(_filled(0.5), argv, floored=floored, px=px)
+        assert code == 1
+        assert out["order_outcome"] == "not_sent"
+        assert why in out["error"]
+        adapter.market_close_sized.assert_not_called()
+        adapter.cancel_trigger_order.assert_not_called()
+
+    def test_invalid_close_mode_sends_nothing(self):
+        out, code, adapter = _run_sized(_filled(0.5), _SIZED[:-1] + ["--close-mode=whole"])
+        assert code == 1 and out["order_outcome"] == "not_sent"
+        adapter.market_close_sized.assert_not_called()
+
+    @pytest.mark.parametrize("response,outcome", [
+        ({"status": "ok", "response": {"type": "order", "data": {"statuses": [{"error": "Order could not immediately match"}]}}}, "rejected"),
+        ({"status": "ok", "response": {"type": "order", "data": {"statuses": []}}}, "unknown"),
+        ({"status": "ok", "response": {"type": "order", "data": {"statuses": [{"resting": {"oid": 1}}]}}}, "unknown"),
+        (_filled(0), "rejected"),
+        ({"status": "ok", "response": {"type": "order", "data": {"statuses": [{"filled": {"avgPx": "nan", "totalSz": "0.5"}}]}}}, "unknown"),
+        (RuntimeError("socket closed"), "unknown"),
+    ])
+    def test_non_fills_never_cancel_and_report_their_outcome(self, response, outcome):
+        out, code, adapter = _run_sized(response, _SIZED_CANCEL)
+        assert code == 1
+        assert out["order_outcome"] == outcome
+        assert out["close"]["fill"] == {}
+        adapter.cancel_trigger_order.assert_not_called()
+        adapter.market_close.assert_not_called()
+
+
+class TestLegacyCancelCoverage:
+
+    def test_legacy_sized_close_no_longer_accepts_99_percent(self):
+        sdk_response = {"status": "ok", "response": {"type": "order", "data": {"statuses": [
+            {"filled": {"avgPx": "3000", "totalSz": "0.995", "oid": 999}}]}}}
+        out, code, adapter = _run_script_with_cancel(
+            sdk_response, {"status": "ok"},
+            ["--symbol=ETH", "--mode=live", "--sz=1.0", "--cancel-stop-loss-oid=12345", "--cancel-protection-after-close"])
+        assert code == 0
+        adapter.cancel_trigger_order.assert_not_called()
+
+
+def test_probe_only_accepts_the_sized_close_argv():
+    out, code, adapter = _run_sized(_filled(0.5), _SIZED_CANCEL + ["--probe-only"])
+    assert code == 0
+    adapter.market_close_sized.assert_not_called()
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

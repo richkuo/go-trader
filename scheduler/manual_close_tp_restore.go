@@ -438,8 +438,8 @@ func removeManualTakeProfitsAfterShortFill(d manualCoreDeps, res *manualCoreResu
 		res.outf("Take-profit OID=%d for %s had already filled on-chain, so nothing was removed — the reconciler books the fill.", oid, snap.Symbol)
 	}
 	if len(rep.Resting) > 0 || len(rep.Unverified) > 0 {
-		msg := fmt.Sprintf("CRITICAL: [%s] %s: the manual close filled short of the book and left %.6f open, and the take-profit orders whose cancel was not confirmed were not all removed, so they can rest at their pre-close size.%s",
-			strategyID, snap.Symbol, snap.Quantity, formatCloseRemovalReport(sc, snap.Symbol, rep))
+		msg := fmt.Sprintf("CRITICAL: [%s] %s: the %s filled short of the book and left %.6f open, and the take-profit orders whose cancel was not confirmed were not all removed, so they can rest at their pre-close size.%s",
+			strategyID, snap.Symbol, snap.closeName(), snap.Quantity, formatCloseRemovalReport(sc, snap.Symbol, rep))
 		res.outf("%s", msg)
 		notifyCloseRearm(d.notifier, msg)
 	}

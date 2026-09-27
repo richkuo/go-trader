@@ -705,6 +705,7 @@ type HyperliquidClose struct {
 	Symbol      string                `json:"symbol"`
 	Fill        *HyperliquidCloseFill `json:"fill,omitempty"`
 	AlreadyFlat bool                  `json:"already_flat,omitempty"`
+	SubmittedSz float64               `json:"submitted_sz,omitempty"`
 }
 
 type HyperliquidCloseResult struct {
@@ -716,6 +717,128 @@ type HyperliquidCloseResult struct {
 	CancelStopLossSucceeded     bool              `json:"cancel_stop_loss_succeeded,omitempty"`
 	CancelStopLossSucceededOIDs []int64           `json:"cancel_stop_loss_succeeded_oids,omitempty"`
 	CancelStopLossFailedOIDs    []int64           `json:"cancel_stop_loss_failed_oids,omitempty"`
+	OrderOutcome                string            `json:"order_outcome,omitempty"`
+}
+
+type hlSizedCloseRequest struct {
+	Symbol        string
+	Side          string
+	Mode          hlCloseMode
+	Size          float64
+	CancelOIDs    []int64
+	CancelMinFill float64
+}
+
+type hlSizedCloser func(req hlSizedCloseRequest) (*HyperliquidCloseResult, error)
+
+func hlSizedCloseRequestError(req hlSizedCloseRequest) string {
+	if strings.TrimSpace(req.Symbol) == "" {
+		return "sized close has no symbol"
+	}
+	if req.Side != "buy" && req.Side != "sell" {
+		return fmt.Sprintf("sized close %s side %q is neither buy nor sell", req.Symbol, req.Side)
+	}
+	if req.Mode != hlCloseModeReduceOnly && req.Mode != hlCloseModeCross {
+		return fmt.Sprintf("sized close %s mode %s is neither reduce_only nor cross", req.Symbol, req.Mode)
+	}
+	if !finitePositive(req.Size) {
+		return fmt.Sprintf("sized close %s size %v is not a positive finite quantity", req.Symbol, req.Size)
+	}
+	for _, oid := range req.CancelOIDs {
+		if oid > 0 && !finitePositive(req.CancelMinFill) {
+			return fmt.Sprintf("sized close %s cancels protection but has no positive fill threshold", req.Symbol)
+		}
+	}
+	return ""
+}
+
+func buildHyperliquidSizedCloseArgs(req hlSizedCloseRequest) []string {
+	args := []string{
+		fmt.Sprintf("--symbol=%s", req.Symbol),
+		"--mode=live",
+		fmt.Sprintf("--sz=%s", strconv.FormatFloat(req.Size, 'f', -1, 64)),
+		fmt.Sprintf("--side=%s", req.Side),
+		"--close-mode=" + req.Mode.String(),
+	}
+	cancel := false
+	for _, oid := range req.CancelOIDs {
+		if oid > 0 {
+			args = append(args, fmt.Sprintf("--cancel-stop-loss-oid=%d", oid))
+			cancel = true
+		}
+	}
+	if cancel {
+		args = append(args, "--cancel-protection-after-close", fmt.Sprintf("--cancel-min-fill=%s", strconv.FormatFloat(req.CancelMinFill, 'f', -1, 64)))
+	}
+	return args
+}
+
+func RunHyperliquidSizedClose(script string, req hlSizedCloseRequest) (*HyperliquidCloseResult, string, error) {
+	if msg := hlSizedCloseRequestError(req); msg != "" {
+		return &HyperliquidCloseResult{Close: &HyperliquidClose{Symbol: req.Symbol}, Platform: "hyperliquid", Error: msg, OrderOutcome: "not_sent"}, "", fmt.Errorf("%s", msg)
+	}
+	stdout, stderr, runErr := runPythonSideEffect(script, buildHyperliquidSizedCloseArgs(req))
+	hlNoteCoinSubmission(req.Symbol)
+	return parseHyperliquidCloseOutput(stdout, string(stderr), runErr)
+}
+
+func defaultHyperliquidSizedCloser(req hlSizedCloseRequest) (*HyperliquidCloseResult, error) {
+	result, stderr, err := RunHyperliquidSizedClose(hyperliquidLiveCloseScript, req)
+	if stderr != "" {
+		fmt.Fprintf(os.Stderr, "[hl-sized-close] %s stderr: %s\n", req.Symbol, stderr)
+	}
+	return result, err
+}
+
+type hlSizedCloseOutcome struct {
+	Filled  float64
+	AvgPx   float64
+	Fee     float64
+	OID     int64
+	Known   bool
+	NotSent bool
+	Detail  string
+}
+
+func classifyHLSizedClose(res *HyperliquidCloseResult, err error) hlSizedCloseOutcome {
+	detail := ""
+	if err != nil {
+		detail = err.Error()
+	} else if res == nil {
+		detail = "no close result returned"
+	} else if res.Error != "" {
+		detail = res.Error
+	}
+	if res == nil {
+		return hlSizedCloseOutcome{Detail: detail}
+	}
+	switch res.OrderOutcome {
+	case "not_sent":
+		return hlSizedCloseOutcome{Known: true, NotSent: true, Detail: detail}
+	case "rejected":
+		return hlSizedCloseOutcome{Known: true, Detail: detail}
+	case "filled":
+		if err != nil || res.Error != "" || res.Close == nil || res.Close.Fill == nil {
+			break
+		}
+		f := res.Close.Fill
+		if !finitePositive(f.TotalSz) || !finitePositive(f.AvgPx) {
+			detail = fmt.Sprintf("the close reported a fill with no usable size or price (sz=%v px=%v)", f.TotalSz, f.AvgPx)
+			break
+		}
+		return hlSizedCloseOutcome{Filled: f.TotalSz, AvgPx: f.AvgPx, Fee: f.Fee, OID: f.OID, Known: true}
+	}
+	if detail == "" {
+		detail = fmt.Sprintf("the close reported no readable outcome (order_outcome=%q)", res.OrderOutcome)
+	}
+	return hlSizedCloseOutcome{Detail: detail}
+}
+
+func (o hlSizedCloseOutcome) fillOutcome(bookQty float64) hlCloseFillOutcome {
+	if !o.Known {
+		return hlCloseFillOutcome{}
+	}
+	return hlCloseFillOutcome{Filled: math.Min(o.Filled, math.Max(bookQty, 0)), Known: true}
 }
 
 func RunHyperliquidClose(script, symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, string, error) {

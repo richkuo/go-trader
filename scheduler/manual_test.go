@@ -596,9 +596,9 @@ func TestRunForceCloseQueuesCanceledProtectionOnSoleOwnerUnderfill(t *testing.T)
 		}, nil
 	}
 
-	rc := runForceCloseWithCloser([]string{"--config", cfgPath, stratID}, closer)
+	rc := runForceCloseWithClosers([]string{"--config", cfgPath, stratID}, closer, nil)
 	if rc != 0 {
-		t.Fatalf("runForceCloseWithCloser rc=%d, want 0", rc)
+		t.Fatalf("runForceCloseWithClosers rc=%d, want 0", rc)
 	}
 	if !gotPartialNil {
 		t.Fatal("partialSz was non-nil for sole-owner full intent")
@@ -680,27 +680,30 @@ func TestRunForceCloseQueuesActualFillQuantity(t *testing.T) {
 		}]
 	}`, dbPath, stratID))
 
-	var gotPartial float64
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "")
+	var got hlSizedCloseRequest
 	closer := func(symbol string, partialSz *float64, cancelOIDs []int64) (*HyperliquidCloseResult, error) {
-		if partialSz == nil {
-			t.Fatal("partialSz = nil, want sized partial close")
-		}
-		gotPartial = *partialSz
+		t.Fatal("a partial force-close must go through the sized closer, not the whole-position closer")
+		return nil, nil
+	}
+	sizedCloser := func(req hlSizedCloseRequest) (*HyperliquidCloseResult, error) {
+		got = req
 		return &HyperliquidCloseResult{
+			OrderOutcome: "filled",
 			Close: &HyperliquidClose{
-				Symbol: symbol,
+				Symbol: req.Symbol,
 				Fill:   &HyperliquidCloseFill{AvgPx: 2100, TotalSz: 0.5, OID: 98765, Fee: 1.25},
 			},
 			Platform: "hyperliquid",
 		}, nil
 	}
 
-	rc := runForceCloseWithCloser([]string{"--config", cfgPath, "--qty", "0.8", stratID}, closer)
+	rc := runForceCloseWithClosers([]string{"--config", cfgPath, "--qty", "0.8", stratID}, closer, sizedCloser)
 	if rc != 0 {
-		t.Fatalf("runForceCloseWithCloser rc=%d, want 0", rc)
+		t.Fatalf("runForceCloseWithClosers rc=%d, want 0", rc)
 	}
-	if gotPartial != 0.8 {
-		t.Fatalf("partial close size = %g, want 0.8", gotPartial)
+	if got.Size != 0.8 || got.Side != "sell" || got.Mode != hlCloseModeReduceOnly || len(got.CancelOIDs) != 0 {
+		t.Fatalf("sized close = %+v, want a reduce-only sell of 0.8 with no protection cancel (unreadable account, partial intent)", got)
 	}
 
 	db2, err := OpenStateDB(dbPath)
@@ -939,6 +942,11 @@ func TestOperatorSharedCloseFloorGatesBothCores(t *testing.T) {
 						gotFullClose = partialSz == nil
 						return &HyperliquidCloseResult{Close: &HyperliquidClose{Fill: &HyperliquidCloseFill{AvgPx: 2000, TotalSz: tc.posQty, OID: 7, Fee: 0.01}}}, nil
 					}
+					d.sizedCloser = func(req hlSizedCloseRequest) (*HyperliquidCloseResult, error) {
+						fired++
+						gotFullClose = false
+						return &HyperliquidCloseResult{OrderOutcome: "filled", Close: &HyperliquidClose{Fill: &HyperliquidCloseFill{AvgPx: 2000, TotalSz: req.Size, OID: 7, Fee: 0.01}}}, nil
+					}
 
 					var coreErr error
 					if core == "manual-close" {
@@ -973,12 +981,8 @@ func TestOperatorSharedCloseFloorGatesBothCores(t *testing.T) {
 					if gotFullClose != tc.wantFullClose {
 						t.Fatalf("whole-position close = %v, want %v", gotFullClose, tc.wantFullClose)
 					}
-					wantSizingReads := 0
-					if core == "manual-close" {
-						wantSizingReads = 1
-					}
-					if tc.midsErr != nil && accountReads != wantSizingReads {
-						t.Fatalf("on-chain account reads = %d on an unreadable mark, want %d (the floor reads none; only the manual-close sizing reads once)", accountReads, wantSizingReads)
+					if tc.midsErr != nil && accountReads != 1 {
+						t.Fatalf("on-chain account reads = %d on an unreadable mark, want 1 (the floor reads none; the sized-close planner reads once)", accountReads)
 					}
 				})
 			}

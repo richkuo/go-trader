@@ -292,8 +292,9 @@ func hedgeSnapshotFromState(sc StrategyConfig, s *StrategyState) hedgeSnapshot {
 
 type hedgeExecutor struct {
 	Open          func(sc StrategyConfig, coin, side string, qty float64, setMargin bool) (*HyperliquidExecuteResult, error)
-	Reduce        func(sc StrategyConfig, coin string, qty *float64) (*HyperliquidCloseResult, error)
-	UnwindPrimary func(sc StrategyConfig, coin string, qty float64, cancelOIDs []int64) (*HyperliquidCloseResult, error)
+	Reduce        func(sc StrategyConfig, req hlSizedCloseRequest) (*HyperliquidCloseResult, error)
+	UnwindPrimary func(sc StrategyConfig, req hlSizedCloseRequest) (*HyperliquidCloseResult, error)
+	Refetch       func() (hlOnChainCoinView, error)
 }
 
 func defaultHedgeExecutor() hedgeExecutor {
@@ -311,20 +312,26 @@ func defaultHedgeExecutor() hedgeExecutor {
 			}
 			return res, err
 		},
-		Reduce: func(sc StrategyConfig, coin string, qty *float64) (*HyperliquidCloseResult, error) {
-			res, stderr, err := RunHyperliquidClose(hyperliquidLiveCloseScript, coin, qty, nil)
+		Reduce: func(sc StrategyConfig, req hlSizedCloseRequest) (*HyperliquidCloseResult, error) {
+			res, stderr, err := RunHyperliquidSizedClose(hyperliquidLiveCloseScript, req)
 			if stderr != "" {
-				fmt.Printf("[hedge] %s close stderr: %s\n", coin, stderr)
+				fmt.Printf("[hedge] %s close stderr: %s\n", req.Symbol, stderr)
 			}
 			return res, err
 		},
-		UnwindPrimary: func(sc StrategyConfig, coin string, qty float64, cancelOIDs []int64) (*HyperliquidCloseResult, error) {
-			sz := qty
-			res, stderr, err := RunHyperliquidClose(hyperliquidLiveCloseScript, coin, &sz, cancelOIDs)
+		UnwindPrimary: func(sc StrategyConfig, req hlSizedCloseRequest) (*HyperliquidCloseResult, error) {
+			res, stderr, err := RunHyperliquidSizedClose(hyperliquidLiveCloseScript, req)
 			if stderr != "" {
-				fmt.Printf("[hedge] %s unwind stderr: %s\n", coin, stderr)
+				fmt.Printf("[hedge] %s unwind stderr: %s\n", req.Symbol, stderr)
 			}
 			return res, err
+		},
+		Refetch: func() (hlOnChainCoinView, error) {
+			addr := os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS")
+			if addr == "" {
+				return hlOnChainCoinView{}, fmt.Errorf("HYPERLIQUID_ACCOUNT_ADDRESS is not set")
+			}
+			return hlOnChainRefetcher(addr)()
 		},
 	}
 }
@@ -334,7 +341,15 @@ type hedgeSyncInputs struct {
 	HedgePx           float64
 	FreshExposureQty  float64
 	PrimaryCancelOIDs []int64
+	PrimaryPeers      hedgePrimaryPeers
 	Live              bool
+}
+
+type hedgePrimaryPeers struct {
+	Known   bool
+	Side    string
+	SameQty float64
+	OppQty  float64
 }
 
 func runHedgeSync(
@@ -424,29 +439,56 @@ func runHedgeSync(
 		return action.Kind
 
 	case hedgeActionReduce, hedgeActionCloseFull:
-		sz := action.Qty
-		res, err := exec.Reduce(sc, snap.HedgeSymbol, &sz)
-		if ok, why := hedgeCloseConfirmed(res, err); !ok {
-			logger.Error("hedge %s failed on %s: %s", action.Kind, snap.HedgeSymbol, why)
-			notifyLiveExecFailure(notifier, sc, directionClose, snap.HedgeSymbol, why)
-			notifyHedgeProblem(notifier, sc, snap.HedgeSymbol,
-				fmt.Sprintf("hedge %s failed: %s — an oversized hedge leg remains against %s. Retrying next cycle.", action.Kind, why, snap.PrimarySymbol))
-			return hedgeActionNone
-		}
-		clearLiveExecThrottle(sc, directionClose, snap.HedgeSymbol)
-		if res.Close != nil && res.Close.AlreadyFlat {
+		return runHedgeLegClose(sc, s, mu, exec, snap, spawnSnap, action, in, notifier, logger)
+	}
+	return hedgeActionNone
+}
+
+func runHedgeLegClose(sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, exec hedgeExecutor, snap, spawnSnap hedgeSnapshot, action hedgeAction, in hedgeSyncInputs, notifier *MultiNotifier, logger *StrategyLogger) hedgeActionKind {
+	coin := snap.HedgeSymbol
+	closeQty := math.Min(action.Qty, spawnSnap.HedgeQty)
+	fail := func(why string) hedgeActionKind {
+		logger.Error("hedge %s failed on %s: %s", action.Kind, coin, why)
+		notifyLiveExecFailure(notifier, sc, directionClose, coin, why)
+		notifyHedgeProblem(notifier, sc, coin,
+			fmt.Sprintf("hedge %s failed: %s — an oversized hedge leg remains against %s. Retrying next cycle.", action.Kind, why, snap.PrimarySymbol))
+		return hedgeActionNone
+	}
+	plan := resolveHLCloseOrder(coin, spawnSnap.HedgeSide, spawnSnap.HedgeQty, closeQty, hlCloseContext{Refetch: exec.Refetch})
+	switch plan.Action {
+	case hlCloseDefer:
+		return fail("close not sent: " + plan.Reason)
+	case hlCloseSkip:
+		if plan.PreSend.Known && math.Abs(plan.PreSend.Signed) <= hlSharedCloseQtyTolerance {
 			mu.Lock()
-			clearHedgeLegAfterExternalFlat(s, snap.HedgeSymbol, in.HedgePx, logger)
+			clearHedgeLegAfterExternalFlat(s, coin, in.HedgePx, logger)
 			mu.Unlock()
 			return hedgeActionCloseFull
 		}
-		fill := res.Close.Fill
-		mu.Lock()
-		applyHedgeFill(sc, s, snap.PrimarySymbol, action, fill.TotalSz, fill.AvgPx, fill.Fee, true, formatHedgeOID(fill.OID), logger)
-		mu.Unlock()
-		return action.Kind
+		logger.Warn("hedge: %s on %s not sent: %s", action.Kind, coin, plan.Reason)
+		notifyHedgeProblem(notifier, sc, coin,
+			fmt.Sprintf("hedge %s not sent: %s. The %s hedge book does not match the on-chain position; the reconciler owns the book.", action.Kind, plan.Reason, coin))
+		return hedgeActionNone
 	}
-	return hedgeActionNone
+	res, err := exec.Reduce(sc, hlSizedCloseRequest{Symbol: coin, Side: closeTradeSide(spawnSnap.HedgeSide), Mode: plan.Mode, Size: plan.Size})
+	outcome := classifyHLSizedClose(res, err)
+	switch {
+	case outcome.NotSent:
+		return fail("close not sent: " + outcome.Detail)
+	case !outcome.Known:
+		return fail(fmt.Sprintf("close outcome UNKNOWN (%s); nothing is booked and no second order is sent this cycle — the reconciler books any fill by order id", outcome.Detail))
+	case outcome.Filled <= 0:
+		return fail(outcome.Detail)
+	}
+	clearLiveExecThrottle(sc, directionClose, coin)
+	if plan.Capped {
+		notifyHedgeProblem(notifier, sc, coin,
+			fmt.Sprintf("hedge %s was capped from %.8f to %.8f by the on-chain position (%s). The hedge book still overstates the chain; the reconciler owns the book.", action.Kind, closeQty, plan.Size, plan.Reason))
+	}
+	mu.Lock()
+	applyHedgeFill(sc, s, snap.PrimarySymbol, action, outcome.Filled, outcome.AvgPx, outcome.Fee, true, formatHedgeOID(outcome.OID), logger)
+	mu.Unlock()
+	return action.Kind
 }
 
 func hedgeCloseConfirmed(res *HyperliquidCloseResult, err error) (bool, string) {
@@ -715,46 +757,78 @@ func unwindPrimaryAfterHedgeOpenFailure(
 		return
 	}
 
-	var cancelOIDs []int64
-	if fullUnwind {
-		cancelOIDs = in.PrimaryCancelOIDs
-	}
-	res, err := exec.UnwindPrimary(sc, snap.PrimarySymbol, unwindQty, cancelOIDs)
-	if ok, why := hedgeCloseConfirmed(res, err); !ok {
-		logger.Error("hedge: FAIL-CLOSED UNWIND FAILED for %s: %s — the primary is running UNHEDGED", snap.PrimarySymbol, why)
+	unresolved := func(why string, remaining float64) {
+		logger.Error("hedge: FAIL-CLOSED UNWIND INCOMPLETE for %s: %s — %.8f of the %.8f increment is still open and UNHEDGED", snap.PrimarySymbol, why, remaining, unwindQty)
 		notifyHedgeCritical(notifier, sc, fmt.Sprintf(
-			"**CRITICAL — unhedged position running**\nStrategy `%s` opened %s %s but the %s hedge failed (%s) AND the fail-closed unwind of the primary also failed (%s).\n\nThe position is live and UNHEDGED. The scheduler will retry the hedge every cycle, but intervene manually if that does not clear.",
-			sc.ID, snap.PrimarySide, snap.PrimarySymbol, snap.HedgeSymbol, hedgeErr, why))
+			"**CRITICAL — unhedged position running**\nStrategy `%s` opened %s %s but the %s hedge failed (%s), and the fail-closed unwind of the %.8f increment did not complete (%s).\n\n%.8f of the increment is still open and UNHEDGED. The scheduler retries the hedge every cycle; read the position on Hyperliquid and intervene if that does not clear.",
+			sc.ID, snap.PrimarySide, snap.PrimarySymbol, snap.HedgeSymbol, hedgeErr, unwindQty, why, remaining))
+	}
+
+	ctx := hlCloseContext{Refetch: exec.Refetch}
+	switch {
+	case !in.PrimaryPeers.Known:
+		unresolved("the peer books on the primary coin were not captured, so the close cannot be sized against them; no order was sent", unwindQty)
+		return
+	case in.PrimaryPeers.Side != snap.PrimarySide:
+		unresolved(fmt.Sprintf("the peer books were captured for a %q primary, but the primary is now %q; no order was sent", in.PrimaryPeers.Side, snap.PrimarySide), unwindQty)
+		return
+	}
+	ctx.PeerSameQty = in.PrimaryPeers.SameQty
+	ctx.PeerOppQty = in.PrimaryPeers.OppQty
+	plan := resolveHLCloseOrder(snap.PrimarySymbol, snap.PrimarySide, snap.PrimaryQty, unwindQty, ctx)
+	if plan.Action != hlCloseSend {
+		unresolved(fmt.Sprintf("no order was sent: %s", plan.Reason), unwindQty)
+		return
+	}
+	req := hlSizedCloseRequest{Symbol: snap.PrimarySymbol, Side: closeTradeSide(snap.PrimarySide), Mode: plan.Mode, Size: plan.Size}
+	if fullUnwind && !plan.Capped {
+		req.CancelOIDs = positiveInt64s(in.PrimaryCancelOIDs)
+		if len(req.CancelOIDs) > 0 {
+			req.CancelMinFill = unwindQty - 0.0001
+		}
+	}
+	res, err := exec.UnwindPrimary(sc, req)
+	outcome := classifyHLSizedClose(res, err)
+	switch {
+	case outcome.NotSent:
+		unresolved(fmt.Sprintf("the close was not sent: %s", outcome.Detail), unwindQty)
+		return
+	case !outcome.Known:
+		unresolved(fmt.Sprintf("the close outcome is UNKNOWN (%s); nothing is booked and no second order is sent — the reconciler books any fill by order id", outcome.Detail), unwindQty)
+		return
+	case outcome.Filled <= 0:
+		unresolved(fmt.Sprintf("the venue rejected the close: %s", outcome.Detail), unwindQty)
 		return
 	}
 
-	if res.Close != nil && res.Close.AlreadyFlat {
-		logger.Warn("hedge: primary %s already flat on-chain during fail-closed unwind", snap.PrimarySymbol)
+	filled := math.Min(outcome.Filled, unwindQty)
+	if filled < unwindQty-hedgeQtyEpsilon {
+		fullUnwind = false
 	}
-
+	unwindQty, requested := filled, unwindQty
 	mu.Lock()
-	px := in.PrimaryPx
-	fee := 0.0
-	useFillFee := false
-	oid := ""
-	if res.Close != nil && res.Close.Fill != nil {
-		if res.Close.Fill.AvgPx > 0 {
-			px = res.Close.Fill.AvgPx
-		}
-		if res.Close.Fill.TotalSz > 0 && res.Close.Fill.TotalSz < unwindQty {
-			unwindQty = res.Close.Fill.TotalSz
-			fullUnwind = snap.PrimaryQty-unwindQty <= hedgeQtyEpsilon
-		}
-		fee = res.Close.Fill.Fee
-		useFillFee = true
-		oid = formatHedgeOID(res.Close.Fill.OID)
-	}
-	bookUnwind(px, fee, useFillFee, oid)
+	bookUnwind(outcome.AvgPx, outcome.Fee, true, formatHedgeOID(outcome.OID))
 	mu.Unlock()
 
+	if filled < requested-hedgeQtyEpsilon {
+		why := fmt.Sprintf("the %s close filled %.8f of the %.8f increment", operatorSizedCloseLabel(plan.Mode), filled, requested)
+		if plan.Capped {
+			why += fmt.Sprintf(" after it was capped to %.8f by the on-chain position (%s)", plan.Size, plan.Reason)
+		}
+		why += "; the pre-close protection is kept and the next protection sync resizes it to the book"
+		unwindQty = requested
+		unresolved(why, requested-filled)
+		return
+	}
+	if res.CancelStopLossError != "" || len(hyperliquidSucceededCancelOIDs(res, req.CancelOIDs)) < len(req.CancelOIDs) {
+		notifyHedgeCritical(notifier, sc, fmt.Sprintf(
+			"**CRITICAL — hedge unwind left protection unconfirmed**\nStrategy `%s`: the fail-closed unwind closed %s on %s %s, but the cancel of the pre-close protection %v was not confirmed (%s). Read the open orders on Hyperliquid and cancel them by hand.",
+			sc.ID, scope, snap.PrimarySide, snap.PrimarySymbol, req.CancelOIDs, res.CancelStopLossError))
+	}
+
 	notifyHedgeCritical(notifier, sc, fmt.Sprintf(
-		"**CRITICAL — hedge open failed, primary unwound**\nStrategy `%s`: the %s hedge leg could not be opened (%s), so %s on %s %s was closed reduce-only on the same cycle. No unhedged exposure was left running.\n\nCheck the hedge coin's margin availability and order limits before the next signal.",
-		sc.ID, snap.HedgeSymbol, hedgeErr, scope, snap.PrimarySide, snap.PrimarySymbol))
+		"**CRITICAL — hedge open failed, primary unwound**\nStrategy `%s`: the %s hedge leg could not be opened (%s), so %s on %s %s was closed %s on the same cycle. No unhedged exposure was left running.\n\nCheck the hedge coin's margin availability and order limits before the next signal.",
+		sc.ID, snap.HedgeSymbol, hedgeErr, scope, snap.PrimarySide, snap.PrimarySymbol, operatorSizedCloseLabel(plan.Mode)))
 }
 
 func reconcileHyperliquidHedgeLeg(
@@ -851,6 +925,20 @@ func hedgeUnwindCancelOIDs(s *StrategyState, mu *sync.RWMutex, primarySymbol str
 		return nil
 	}
 	return hyperliquidProtectionCancelOIDs(pos)
+}
+
+func hedgePrimaryPeersFor(strategies map[string]*StrategyState, hlLiveAll []StrategyConfig, s *StrategyState, mu *sync.RWMutex, selfID, primarySymbol string) hedgePrimaryPeers {
+	if s == nil || mu == nil || primarySymbol == "" {
+		return hedgePrimaryPeers{}
+	}
+	mu.RLock()
+	defer mu.RUnlock()
+	pos := s.Positions[primarySymbol]
+	if pos == nil || (pos.Side != "long" && pos.Side != "short") {
+		return hedgePrimaryPeers{}
+	}
+	same, opp := hlPeerBooksOnCoin(strategies, hlLiveAll, primarySymbol, selfID, pos.Side)
+	return hedgePrimaryPeers{Known: true, Side: pos.Side, SameQty: same, OppQty: opp}
 }
 
 func notifyHedgeProblem(notifier *MultiNotifier, sc StrategyConfig, coin, msg string) {

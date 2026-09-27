@@ -2,23 +2,159 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 )
 
-func TestAttemptManualOpenCleanup_CloseFails(t *testing.T) {
-	orig := manualOpenCleanupCloseFn
-	defer func() { manualOpenCleanupCloseFn = orig }()
-
-	manualOpenCleanupCloseFn = func(symbol string, partialSz *float64, cancelOIDs []int64) (*HyperliquidCloseResult, string, error) {
-		return nil, "stderr noise", fmt.Errorf("rpc timeout")
+func hlCoinView(coin string, signed float64) hlOnChainCoinView {
+	v := hlOnChainCoinView{Known: true, AbsQty: map[string]float64{}, NetSide: map[string]string{}}
+	if signed > 0 {
+		v.AbsQty[coin] = signed
+		v.NetSide[coin] = "long"
+	} else if signed < 0 {
+		v.AbsQty[coin] = -signed
+		v.NetSide[coin] = "short"
 	}
+	return v
+}
 
-	cleanedUp, msg := attemptManualOpenCleanup("ETH", 0.8, 12345, []int64{67890})
+func stubCleanupClose(t *testing.T, res *HyperliquidCloseResult, err error) *[]hlSizedCloseRequest {
+	t.Helper()
+	orig := manualOpenCleanupCloseFn
+	t.Cleanup(func() { manualOpenCleanupCloseFn = orig })
+	var calls []hlSizedCloseRequest
+	manualOpenCleanupCloseFn = func(req hlSizedCloseRequest) (*HyperliquidCloseResult, error) {
+		calls = append(calls, req)
+		return res, err
+	}
+	return &calls
+}
+
+func filledClose(sz float64, cancelled ...int64) *HyperliquidCloseResult {
+	return &HyperliquidCloseResult{
+		OrderOutcome:                "filled",
+		Close:                       &HyperliquidClose{Symbol: "ETH", Fill: &HyperliquidCloseFill{AvgPx: 3000, TotalSz: sz, OID: 9}},
+		CancelStopLossSucceeded:     len(cancelled) > 0,
+		CancelStopLossSucceededOIDs: cancelled,
+	}
+}
+
+func cleanupInput(side string, fill float64, view manualStateView, chain hlOnChainCoinView) manualOpenCleanupInput {
+	return manualOpenCleanupInput{
+		StrategyID: "m1", Symbol: "ETH", Side: side, FillQty: fill,
+		StopLossOID: 12345, TPOIDs: []int64{67890},
+		View: view, ViewKnown: true,
+		Refetch: func() (hlOnChainCoinView, error) { return chain, nil },
+	}
+}
+
+func TestAttemptManualOpenCleanup_CloseFails(t *testing.T) {
+	stubCleanupClose(t, nil, fmt.Errorf("rpc timeout"))
+	cleanedUp, msg := attemptManualOpenCleanup(cleanupInput("long", 0.8, manualStateView{}, hlCoinView("ETH", 0.8)))
 	if cleanedUp {
 		t.Fatalf("expected cleanedUp=false, got msg=%q", msg)
 	}
-	if !strings.Contains(msg, "rpc timeout") {
-		t.Errorf("msg should mention close failure cause; got %q", msg)
+	if !strings.Contains(msg, "rpc timeout") || !strings.Contains(msg, "UNKNOWN") {
+		t.Errorf("msg should report the unknown outcome and its cause; got %q", msg)
 	}
+}
+
+func TestAttemptManualOpenCleanupSizesAgainstPeersAndTheFreshChain(t *testing.T) {
+	cases := []struct {
+		name       string
+		side       string
+		fill       float64
+		view       manualStateView
+		chain      float64
+		wantSide   string
+		wantMode   hlCloseMode
+		wantSize   float64
+		wantCancel bool
+	}{
+		{"sole owner long", "long", 1, manualStateView{}, 1, "sell", hlCloseModeReduceOnly, 1, true},
+		{"sole owner short", "short", 1, manualStateView{}, -1, "buy", hlCloseModeReduceOnly, 1, true},
+		{"same-side peer keeps its units", "long", 1, manualStateView{PeerLongQty: 2}, 3, "sell", hlCloseModeReduceOnly, 1, true},
+		{"opposite-side peer long: sell, not a buy from the net", "long", 1, manualStateView{PeerShortQty: 3}, -2, "sell", hlCloseModeCross, 1, true},
+		{"opposite-side peer short: buy crosses", "short", 1, manualStateView{PeerLongQty: 3}, 2, "buy", hlCloseModeCross, 1, true},
+		{"chain below the book caps the close", "long", 1, manualStateView{PeerLongQty: 2}, 2.4, "sell", hlCloseModeReduceOnly, 0.4, false},
+		{"own queued book counts once", "long", 1, manualStateView{Pos: &Position{Side: "long", Quantity: 2}}, 3, "sell", hlCloseModeReduceOnly, 1, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := stubCleanupClose(t, filledClose(tc.wantSize, 12345, 67890), nil)
+			ok, msg := attemptManualOpenCleanup(cleanupInput(tc.side, tc.fill, tc.view, hlCoinView("ETH", tc.chain)))
+			if len(*calls) != 1 {
+				t.Fatalf("close calls = %d, want 1 (%s)", len(*calls), msg)
+			}
+			req := (*calls)[0]
+			if req.Side != tc.wantSide || req.Mode != tc.wantMode || math.Abs(req.Size-tc.wantSize) > 1e-9 {
+				t.Fatalf("req = %+v, want side=%s mode=%s size=%v", req, tc.wantSide, tc.wantMode, tc.wantSize)
+			}
+			if got := len(req.CancelOIDs) > 0; got != tc.wantCancel {
+				t.Fatalf("cancel OIDs = %v, want cancel=%v", req.CancelOIDs, tc.wantCancel)
+			}
+			if tc.wantCancel && math.Abs(req.CancelMinFill-(tc.fill-0.0001)) > 1e-12 {
+				t.Fatalf("cancel threshold = %v, want the full fill less the close tolerance", req.CancelMinFill)
+			}
+			wantOK := tc.wantSize >= tc.fill-1e-9
+			if ok != wantOK {
+				t.Fatalf("cleanedUp = %v, want %v (%s)", ok, wantOK, msg)
+			}
+			if !ok && !strings.Contains(msg, "NOT proven closed") {
+				t.Fatalf("a capped cleanup must name the unresolved exposure; got %q", msg)
+			}
+		})
+	}
+}
+
+func TestAttemptManualOpenCleanupNeverTreatsAFlatNetAsResolved(t *testing.T) {
+	calls := stubCleanupClose(t, filledClose(1), nil)
+	ok, msg := attemptManualOpenCleanup(cleanupInput("long", 1, manualStateView{}, hlCoinView("ETH", 0)))
+	if len(*calls) != 0 {
+		t.Fatalf("a skipped plan must send no order, got %v", *calls)
+	}
+	if ok || !strings.Contains(msg, "NOT proven closed") {
+		t.Fatalf("a flat shared net must not report success; got ok=%v msg=%q", ok, msg)
+	}
+}
+
+func TestAttemptManualOpenCleanupReportsPartialAndUnconfirmedOutcomes(t *testing.T) {
+	t.Run("partial fill", func(t *testing.T) {
+		stubCleanupClose(t, filledClose(0.4), nil)
+		ok, msg := attemptManualOpenCleanup(cleanupInput("long", 1, manualStateView{}, hlCoinView("ETH", 1)))
+		if ok || !strings.Contains(msg, "0.600000 of the 1.000000") {
+			t.Fatalf("partial fill must report the 0.6 remainder; got ok=%v msg=%q", ok, msg)
+		}
+	})
+	t.Run("zero fill is a rejection, not a close", func(t *testing.T) {
+		stubCleanupClose(t, &HyperliquidCloseResult{OrderOutcome: "rejected", Error: "could not match"}, fmt.Errorf("close failed: could not match"))
+		ok, msg := attemptManualOpenCleanup(cleanupInput("long", 1, manualStateView{}, hlCoinView("ETH", 1)))
+		if ok || !strings.Contains(msg, "rejected") {
+			t.Fatalf("got ok=%v msg=%q", ok, msg)
+		}
+	})
+	t.Run("filled without a usable size", func(t *testing.T) {
+		stubCleanupClose(t, &HyperliquidCloseResult{OrderOutcome: "filled", Close: &HyperliquidClose{Fill: &HyperliquidCloseFill{AvgPx: 3000, TotalSz: math.NaN()}}}, nil)
+		ok, msg := attemptManualOpenCleanup(cleanupInput("long", 1, manualStateView{}, hlCoinView("ETH", 1)))
+		if ok || !strings.Contains(msg, "UNKNOWN") {
+			t.Fatalf("a non-finite fill must be unknown, got ok=%v msg=%q", ok, msg)
+		}
+	})
+	t.Run("trigger cancel not confirmed", func(t *testing.T) {
+		stubCleanupClose(t, filledClose(1, 12345), nil)
+		ok, msg := attemptManualOpenCleanup(cleanupInput("long", 1, manualStateView{}, hlCoinView("ETH", 1)))
+		if ok || !strings.Contains(msg, "not confirmed") {
+			t.Fatalf("got ok=%v msg=%q", ok, msg)
+		}
+	})
+	t.Run("unreadable books send nothing", func(t *testing.T) {
+		calls := stubCleanupClose(t, filledClose(1, 12345, 67890), nil)
+		in := cleanupInput("long", 1, manualStateView{}, hlCoinView("ETH", 1))
+		in.ViewKnown = false
+		ok, _ := attemptManualOpenCleanup(in)
+		if ok || len(*calls) != 0 {
+			t.Fatalf("got ok=%v calls=%v", ok, *calls)
+		}
+	})
 }

@@ -2683,6 +2683,7 @@ func main() {
 								HedgePx:           prices[hedgeCoin(sc)],
 								FreshExposureQty:  hedgeFreshExposureQty,
 								PrimaryCancelOIDs: hedgeUnwindCancelOIDs(stratState, &mu, result.Symbol),
+								PrimaryPeers:      hedgePrimaryPeersFor(state.Strategies, hlReconcileAll, stratState, &mu, sc.ID, result.Symbol),
 								Live:              hyperliquidIsLive(sc.Args),
 							}, notifier, logger)
 						}

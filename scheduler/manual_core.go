@@ -75,6 +75,8 @@ type manualStateView struct {
 	PeerSameQty      float64
 	PeerOppQty       float64
 	PeerSame         []hlShareBook
+	PeerLongQty      float64
+	PeerShortQty     float64
 }
 
 func manualSubsetStateView(pr *PortfolioRiskConfig, states map[string]*StrategyState, cfgs []StrategyConfig, now time.Time) manualStateView {
@@ -168,6 +170,9 @@ func manualStateViewFromStateWithStore(cfg *Config, state *AppState, store *Stat
 			snapshotHyperliquidVirtualQuantities(state.Strategies, hyperliquidCloseScopeStrategies(cfg.Strategies)),
 			symbol, strategyID)
 	}
+	if cfg != nil && state != nil {
+		v.PeerLongQty, v.PeerShortQty = hlPeerBooksOnCoin(state.Strategies, hyperliquidCloseScopeStrategies(cfg.Strategies), symbol, strategyID, "long")
+	}
 	ss := state.Strategies[strategyID]
 	if ss == nil {
 		return v
@@ -200,6 +205,7 @@ type manualCoreDeps struct {
 	cancelOrder    func(script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error)
 	fetchMids      manualMarkFetcher
 	closer         HyperliquidLiveCloser
+	sizedCloser    hlSizedCloser
 	fetchPositions func(accountAddress string) ([]HLPosition, error)
 
 	// lockManualActions takes the manual-action lock of the file that owns the
@@ -240,6 +246,7 @@ func newManualCoreDeps(cfg *Config, stateDB *StateStore, notifier *MultiNotifier
 		cancelOrder: RunHyperliquidCancelOrder,
 		fetchMids:   fetchHyperliquidMids,
 		closer:      defaultHyperliquidForceCloseCloser,
+		sizedCloser: defaultHyperliquidSizedCloser,
 		fetchPositions: func(accountAddress string) ([]HLPosition, error) {
 			_, positions, err := fetchHyperliquidStateFn(accountAddress)
 			return positions, err
@@ -777,7 +784,18 @@ func manualOpenCore(d manualCoreDeps, sc StrategyConfig, in manualOpenInputs) (*
 			return res, manualFailf("error queuing action: %v", err)
 		}
 		res.errf("CRITICAL: queue insert failed (%v); on-chain position is open but the scheduler cannot adopt it. Attempting cleanup...", err)
-		cleanedUp, cleanupMsg := attemptManualOpenCleanup(sc.Symbol, fillQty, stopLossOID, tpOIDs)
+		cleanupView, cleanupViewErr := d.loadState(strategyID, sc.Symbol)
+		cleanedUp, cleanupMsg := attemptManualOpenCleanup(manualOpenCleanupInput{
+			StrategyID:  strategyID,
+			Symbol:      sc.Symbol,
+			Side:        side,
+			FillQty:     fillQty,
+			StopLossOID: stopLossOID,
+			TPOIDs:      tpOIDs,
+			View:        cleanupView,
+			ViewKnown:   cleanupViewErr == nil,
+			Refetch:     d.fetchOnChainView,
+		})
 		if cleanedUp {
 			warnNotifier(notifier, fmt.Sprintf(
 				"[manual-open] %s %s: queue insert failed (%v); position auto-flattened: %s",
@@ -1404,30 +1422,54 @@ func forceCloseCore(d manualCoreDeps, sc StrategyConfig, sym string, in forceClo
 	if intentFullClose {
 		cancelOIDs = hyperliquidProtectionCancelOIDs(pos)
 	}
-	var partialSz *float64
-	if !closeFullPosition {
-		partial := closeQty
-		partialSz = &partial
-	}
 
-	if in.DryRun {
-		mode := fmt.Sprintf("sized %.6f", closeQty)
-		if closeFullPosition {
-			mode = "full market_close"
+	if closeFullPosition {
+		if in.DryRun {
+			mode := "full market_close"
 			if escalatedSharedClose {
 				mode = "full market_close (escalated: peers flat)"
 			}
+			res.outf("[dry-run] force-close %s: %s %.6f %s (current pos=%.6f, avg_cost=$%.4f, %s)",
+				strategyID, closeSide, closeQty, sym, pos.Quantity, pos.AvgCost, mode)
+			return res, nil
 		}
-		res.outf("[dry-run] force-close %s: %s %.6f %s (current pos=%.6f, avg_cost=$%.4f, %s)",
-			strategyID, closeSide, closeQty, sym, pos.Quantity, pos.AvgCost, mode)
-		return res, nil
+		if err := refuseIfPositionActionQueued(d, "force-close", strategyID, sym); err != nil {
+			return res, err
+		}
+		return forceCloseWholePosition(d, sc, res, strategyID, sym, pos, closeSide, cancelOIDs)
 	}
 
+	plan, fetchErr := operatorSizedClosePlan(d, sym, pos, closeQty, view)
+	if plan.Action != hlCloseSend {
+		if in.DryRun {
+			res.outf("[dry-run] force-close %s: REFUSED — %s", strategyID, operatorSizedCloseRefusal(plan))
+			return res, nil
+		}
+		return res, manualFailf("error: %s; no protection was cancelled", operatorSizedCloseRefusal(plan))
+	}
+	prefix := ""
+	if in.DryRun {
+		prefix = "[dry-run] "
+	}
+	if fetchErr != nil {
+		res.errf("%swarning: force-close %s: the on-chain position read failed (%v); the close is sent reduce-only at the book size", prefix, sym, fetchErr)
+	}
+	if plan.Capped {
+		res.errf("%swarning: force-close %s: the close is capped from %.6f to %.6f by the on-chain position (%s)", prefix, sym, closeQty, plan.Size, plan.Reason)
+	}
+	if in.DryRun {
+		res.outf("[dry-run] force-close %s: %s %.6f %s (current pos=%.6f, avg_cost=$%.4f, sized %s %.6f)",
+			strategyID, closeSide, plan.Size, sym, pos.Quantity, pos.AvgCost, operatorSizedCloseLabel(plan.Mode), plan.Size)
+		return res, nil
+	}
 	if err := refuseIfPositionActionQueued(d, "force-close", strategyID, sym); err != nil {
 		return res, err
 	}
+	return forceCloseSized(d, sc, res, strategyID, sym, pos, view, closeSide, closeQty, intentFullClose, plan, cancelOIDs)
+}
 
-	result, execErr := d.closer(sym, partialSz, cancelOIDs)
+func forceCloseWholePosition(d manualCoreDeps, sc StrategyConfig, res *manualCoreResult, strategyID, sym string, pos *Position, closeSide string, cancelOIDs []int64) (*manualCoreResult, error) {
+	result, execErr := d.closer(sym, nil, cancelOIDs)
 	if execErr != nil {
 		return res, manualFailf("error placing force-close order: %v", execErr)
 	}
@@ -1448,50 +1490,148 @@ func forceCloseCore(d manualCoreDeps, sc StrategyConfig, sym string, in forceClo
 	if fill == nil {
 		return res, manualFailf("error: no fill returned from force-close")
 	}
+	if !finitePositive(fill.AvgPx) {
+		return res, manualFailf("error: invalid force-close fill price %.6f", fill.AvgPx)
+	}
+	if !finitePositive(fill.TotalSz) {
+		return res, manualFailf("error: force-close returned no confirmed fill quantity (%.6f); nothing is booked — run the scheduler once so the reconciler books any fill by order id", fill.TotalSz)
+	}
+	filledQty, fillFee := forceCloseAttributedFill(res, strategyID, sym, pos, fill)
+	actualFullClose := pos.Quantity-filledQty <= 0.0001
+	var canceledSLOID int64
+	var canceledTPOIDs []int64
+	if !actualFullClose {
+		canceledSLOID, canceledTPOIDs = forceCloseCanceledProtectionSnapshot(pos, hyperliquidSucceededCancelOIDs(result, cancelOIDs))
+	}
+	if err := queueForceCloseFill(d, res, strategyID, sym, pos, closeSide, fill, filledQty, fillFee, actualFullClose, canceledSLOID, canceledTPOIDs); err != nil {
+		return res, err
+	}
+	forceCloseCoupledHedgeLeg(d, sc, res, strategyID, sym, filledQty, pos.Quantity, actualFullClose)
+	return res, nil
+}
 
-	fillAvgPx := fill.AvgPx
-	if fillAvgPx <= 0 {
-		return res, manualFailf("error: invalid force-close fill price %.6f", fillAvgPx)
+func forceCloseSized(d manualCoreDeps, sc StrategyConfig, res *manualCoreResult, strategyID, sym string, pos *Position, view manualStateView, closeSide string, closeQty float64, intentFullClose bool, plan hlCloseOrderPlan, protectionOIDs []int64) (*manualCoreResult, error) {
+	if d.sizedCloser == nil {
+		return res, manualFailf("error: hyperliquid sized closer unavailable; no order sent and no protection cancelled")
 	}
+	req := hlSizedCloseRequest{Symbol: sym, Side: closeSide, Mode: plan.Mode, Size: plan.Size}
+	if intentFullClose && !plan.Capped && len(protectionOIDs) > 0 {
+		req.CancelOIDs = cloneInt64s(protectionOIDs)
+		req.CancelMinFill = pos.Quantity - 0.0001
+	}
+	result, execErr := d.sizedCloser(req)
+	outcome := classifyHLSizedClose(result, execErr)
+	if result != nil && result.Close != nil && result.Close.SubmittedSz > 0 {
+		res.outf("force-close %s: book %.6f, requested close %.6f, planned %s order %.6f, submitted %.6f after the lot floor",
+			sym, pos.Quantity, closeQty, operatorSizedCloseLabel(plan.Mode), plan.Size, result.Close.SubmittedSz)
+	}
+	switch {
+	case outcome.NotSent:
+		return res, manualFailf("error: force-close %s was not sent (%s); no protection was cancelled", sym, outcome.Detail)
+	case !outcome.Known:
+		msg := fmt.Sprintf("CRITICAL: [%s] %s: the force-close outcome is UNKNOWN (%s). No second order is sent and nothing is booked; the pre-close protection was not cancelled. The reconciler books any fill by order id at the next scheduler cycle. Read the position and open orders on Hyperliquid before you act.",
+			strategyID, sym, outcome.Detail)
+		res.outf("%s", msg)
+		notifyCloseRearm(d.notifier, msg)
+		return res, manualFailf("error: force-close %s outcome unknown: %s", sym, outcome.Detail)
+	case outcome.Filled <= 0:
+		return res, manualFailf("error: the venue rejected the force-close of %s (%s); nothing filled and no protection was cancelled", sym, outcome.Detail)
+	}
+	if result.CancelStopLossError != "" {
+		res.errf("warning: force-close cancel failed for %s/%s: %s (oids=%v) - verify HL on-chain triggers",
+			strategyID, sym, result.CancelStopLossError, req.CancelOIDs)
+	}
+	fill := result.Close.Fill
+	filledQty, fillFee := forceCloseAttributedFill(res, strategyID, sym, pos, fill)
+	actualFullClose := intentFullClose && pos.Quantity-filledQty <= 0.0001
+	cancelled := hyperliquidSucceededCancelOIDs(result, req.CancelOIDs)
+	var canceledSLOID int64
+	var canceledTPOIDs []int64
+	if !actualFullClose {
+		canceledSLOID, canceledTPOIDs = forceCloseCanceledProtectionSnapshot(pos, cancelled)
+	}
+	queueErr := queueForceCloseFill(d, res, strategyID, sym, pos, closeSide, fill, filledQty, fillFee, actualFullClose, canceledSLOID, canceledTPOIDs)
+	if actualFullClose && len(req.CancelOIDs) > 0 && len(cancelled) < len(positiveInt64s(req.CancelOIDs)) {
+		msg := fmt.Sprintf("CRITICAL: [%s] %s: the force-close filled the whole %.6f book, but the cancel of the pre-close protection was not confirmed (requested %v, confirmed %v: %s). Those orders can rest over units that are not this strategy's. Read the open orders on Hyperliquid and cancel them by hand.",
+			strategyID, sym, pos.Quantity, positiveInt64s(req.CancelOIDs), cancelled, result.CancelStopLossError)
+		res.outf("%s", msg)
+		notifyCloseRearm(d.notifier, msg)
+	}
+	if intentFullClose && !actualFullClose && hyperliquidIsLive(sc.Args) {
+		snap := manualCloseProtectionSnapshot{
+			Command:         "force-close",
+			Symbol:          sym,
+			Side:            pos.Side,
+			Quantity:        pos.Quantity - filledQty,
+			FilledQty:       filledQty,
+			StopLossOID:     pos.StopLossOID,
+			TriggerPx:       pos.StopLossTriggerPx,
+			PositionID:      pos.TradePositionID,
+			OwnerStrategyID: pos.OwnerStrategyID,
+			TPOIDs:          cloneInt64s(pos.TPOIDs),
+			TPArmedTiers:    append([]bool(nil), pos.TPArmedTiers...),
+			PeerSameQty:     view.PeerSameQty,
+			PeerOppQty:      view.PeerOppQty,
+			PeerSame:        view.PeerSame,
+			PreSend:         plan.PreSend,
+			AvgCost:         pos.AvgCost,
+			EntryATR:        pos.EntryATR,
+		}
+		shim := hlSizedCloseExecuteShim(result, outcome)
+		res.errf("warning: force-close %s filled %.6f of the %.6f book; the %.6f remainder stays open and its protection is resized to the remainder", sym, filledQty, pos.Quantity, pos.Quantity-filledQty)
+		if _, tpHandled := restoreManualStopLoss(d, res, sc, strategyID, snap, shim, protectionOIDs, manualCloseRearmAfterShortFill); !tpHandled {
+			removeManualTakeProfitsAfterShortFill(d, res, sc, strategyID, snap, shim, protectionOIDs)
+		}
+	} else if !intentFullClose && filledQty < closeQty-1e-9 {
+		res.errf("warning: force-close filled only %.6f of the requested %.6f for %s/%s; booking the filled quantity and leaving the remainder open",
+			filledQty, closeQty, strategyID, sym)
+	}
+	if queueErr != nil {
+		return res, queueErr
+	}
+	forceCloseCoupledHedgeLeg(d, sc, res, strategyID, sym, filledQty, pos.Quantity, actualFullClose)
+	return res, nil
+}
+
+func positiveInt64s(in []int64) []int64 {
+	var out []int64
+	for _, v := range in {
+		if v > 0 {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+func forceCloseAttributedFill(res *manualCoreResult, strategyID, sym string, pos *Position, fill *HyperliquidCloseFill) (float64, float64) {
 	filledQty := fill.TotalSz
-	if filledQty <= 0 {
-		filledQty = closeQty
-	}
-	if filledQty <= 0 {
-		return res, manualFailf("error: force-close fill quantity is zero")
-	}
 	fillFee := fill.Fee
 	if filledQty > pos.Quantity+1e-9 {
-		if fill.TotalSz > 0 {
-			fillFee *= pos.Quantity / fill.TotalSz
-		}
+		fillFee *= pos.Quantity / fill.TotalSz
 		res.errf("warning: force-close fill size %.6f exceeds virtual position %.6f for %s/%s; attributing only the virtual quantity",
 			filledQty, pos.Quantity, strategyID, sym)
 		filledQty = pos.Quantity
 	} else if filledQty > pos.Quantity {
 		filledQty = pos.Quantity
 	}
-	actualFullClose := intentFullClose && pos.Quantity-filledQty <= 0.0001
-	var canceledSLOID int64
-	var canceledTPOIDs []int64
-	if !actualFullClose {
-		canceledSLOID, canceledTPOIDs = forceCloseCanceledProtectionSnapshot(pos, hyperliquidSucceededCancelOIDs(result, cancelOIDs))
-	}
+	return filledQty, fillFee
+}
+
+func queueForceCloseFill(d manualCoreDeps, res *manualCoreResult, strategyID, sym string, pos *Position, closeSide string, fill *HyperliquidCloseFill, filledQty, fillFee float64, actualFullClose bool, canceledSLOID int64, canceledTPOIDs []int64) error {
 	var exchangeOID string
 	if fill.OID != 0 {
 		exchangeOID = fmt.Sprintf("%d", fill.OID)
 	}
-
 	var realizedPnL float64
 	if pos.Side == "long" {
-		realizedPnL = filledQty * (fillAvgPx - pos.AvgCost)
+		realizedPnL = filledQty * (fill.AvgPx - pos.AvgCost)
 	} else {
-		realizedPnL = filledQty * (pos.AvgCost - fillAvgPx)
+		realizedPnL = filledQty * (pos.AvgCost - fill.AvgPx)
 	}
 	realizedPnL -= fillFee
 
 	res.outf("Force-closed: %.6f %s @ $%.4f | PnL=$%.2f (fee=$%.4f)",
-		filledQty, sym, fillAvgPx, realizedPnL, fillFee)
+		filledQty, sym, fill.AvgPx, realizedPnL, fillFee)
 
 	action := PendingManualAction{
 		StrategyID:      strategyID,
@@ -1499,7 +1639,7 @@ func forceCloseCore(d manualCoreDeps, sc StrategyConfig, sym string, in forceClo
 		Symbol:          sym,
 		Side:            closeSide,
 		Quantity:        filledQty,
-		FillPrice:       fillAvgPx,
+		FillPrice:       fill.AvgPx,
 		FillFee:         fillFee,
 		ExchangeOrderID: exchangeOID,
 		RealizedPnL:     realizedPnL,
@@ -1509,18 +1649,15 @@ func forceCloseCore(d manualCoreDeps, sc StrategyConfig, sym string, in forceClo
 		CreatedAt:       time.Now().UTC(),
 	}
 	if err := d.stateDB.InsertPendingManualAction(action); err != nil {
-		return res, manualFailf("error queuing force-close action: %v", err)
+		return manualFailf("error queuing force-close action: %v", err)
 	}
-
 	res.queued = true
 	res.outf("Queued: force-close will be reflected in the dashboard after the next scheduler cycle.")
-
-	forceCloseCoupledHedgeLeg(d, sc, res, strategyID, sym, filledQty, pos.Quantity, actualFullClose)
-	return res, nil
+	return nil
 }
 
 func forceCloseCoupledHedgeLeg(d manualCoreDeps, sc StrategyConfig, res *manualCoreResult, strategyID, primarySym string, primaryClosedQty, primaryQtyBefore float64, primaryFullClose bool) {
-	if !HedgeEnabled(sc) || d.closer == nil {
+	if !HedgeEnabled(sc) {
 		return
 	}
 	hCoin := hedgeCoin(sc)
@@ -1551,41 +1688,42 @@ func forceCloseCoupledHedgeLeg(d manualCoreDeps, sc StrategyConfig, res *manualC
 			return
 		}
 	}
-	var partialSz *float64
-	if !fullClose {
-		q := closeQty
-		partialSz = &q
-	} else {
-		q := hPos.Quantity
-		partialSz = &q
+	if fullClose {
 		closeQty = hPos.Quantity
 	}
-
-	result, execErr := d.closer(hCoin, partialSz, nil)
-	if execErr != nil {
-		res.errf("CRITICAL: force-close of the coupled hedge leg on %s failed: %v — the hedge is now OVERSIZED against %s. The scheduler will reconcile it next cycle; verify on-chain.", hCoin, execErr, primarySym)
+	if d.sizedCloser == nil {
+		res.errf("CRITICAL: no sized closer is configured for the coupled hedge leg on %s — the hedge is now OVERSIZED against %s. The scheduler will reconcile it next cycle; verify on-chain.", hCoin, primarySym)
 		return
 	}
-	if result == nil || result.Close == nil || result.Error != "" {
-		msg := "no close result"
-		if result != nil && result.Error != "" {
-			msg = result.Error
-		}
-		res.errf("CRITICAL: force-close of the coupled hedge leg on %s failed: %s — the hedge is now OVERSIZED against %s. The scheduler will reconcile it next cycle; verify on-chain.", hCoin, msg, primarySym)
+	plan := resolveHLCloseOrder(hCoin, hPos.Side, hPos.Quantity, closeQty, hlCloseContext{Refetch: d.fetchOnChainView})
+	switch plan.Action {
+	case hlCloseSkip:
+		res.errf("warning: the coupled hedge leg close on %s was not sent: %s. The scheduler will reconcile the hedge book next cycle; verify on-chain.", hCoin, plan.Reason)
+		return
+	case hlCloseDefer:
+		res.errf("CRITICAL: the coupled hedge leg close on %s was not sent: %s — the hedge may be OVERSIZED against %s. The scheduler will reconcile it next cycle; verify on-chain.", hCoin, plan.Reason, primarySym)
 		return
 	}
-	if result.Close.AlreadyFlat {
-		res.errf("warning: HL reports the %s hedge leg already flat; the scheduler will clear the virtual leg next cycle.", hCoin)
+	if plan.Capped {
+		res.errf("warning: the coupled hedge leg close on %s is capped from %.6f to %.6f by the on-chain position (%s)", hCoin, closeQty, plan.Size, plan.Reason)
+	}
+	result, execErr := d.sizedCloser(hlSizedCloseRequest{Symbol: hCoin, Side: closeTradeSide(hPos.Side), Mode: plan.Mode, Size: plan.Size})
+	outcome := classifyHLSizedClose(result, execErr)
+	switch {
+	case outcome.NotSent:
+		res.errf("CRITICAL: force-close of the coupled hedge leg on %s was not sent (%s) — the hedge is now OVERSIZED against %s. The scheduler will reconcile it next cycle; verify on-chain.", hCoin, outcome.Detail, primarySym)
+		return
+	case !outcome.Known:
+		res.errf("CRITICAL: the force-close of the coupled hedge leg on %s has an UNKNOWN outcome (%s); no second order is sent and nothing is booked — the hedge may be OVERSIZED against %s. The reconciler books any fill by order id next cycle; verify on-chain.", hCoin, outcome.Detail, primarySym)
+		return
+	case outcome.Filled <= 0:
+		res.errf("CRITICAL: force-close of the coupled hedge leg on %s failed: %s — the hedge is now OVERSIZED against %s. The scheduler will reconcile it next cycle; verify on-chain.", hCoin, outcome.Detail, primarySym)
 		return
 	}
 	fill := result.Close.Fill
-	if fill == nil || fill.AvgPx <= 0 {
-		res.errf("CRITICAL: the %s hedge close returned no usable fill — the hedge may be OVERSIZED against %s. Verify on-chain.", hCoin, primarySym)
-		return
-	}
 	filled := fill.TotalSz
-	if filled <= 0 {
-		filled = closeQty
+	if filled < closeQty-1e-9 {
+		res.errf("CRITICAL: the coupled hedge leg close on %s filled %.6f of the %.6f requested — %.6f of the hedge stays OVERSIZED against %s. The scheduler will reconcile it next cycle; verify on-chain.", hCoin, filled, closeQty, closeQty-filled, primarySym)
 	}
 	if filled > hPos.Quantity {
 		filled = hPos.Quantity

@@ -7,6 +7,7 @@ import (
 )
 
 type manualCloseProtectionSnapshot struct {
+	Command         string
 	Symbol          string
 	Side            string
 	Quantity        float64
@@ -23,6 +24,20 @@ type manualCloseProtectionSnapshot struct {
 	PreSend         hlCloseView
 	AvgCost         float64
 	EntryATR        float64
+}
+
+func (s manualCloseProtectionSnapshot) command() string {
+	if s.Command != "" {
+		return s.Command
+	}
+	return "manual-close"
+}
+
+func (s manualCloseProtectionSnapshot) closeName() string {
+	if s.Command == "force-close" {
+		return "force-close"
+	}
+	return "manual close"
 }
 
 type manualCloseRearmDecision int
@@ -113,8 +128,8 @@ func restoreManualStopLoss(d manualCoreDeps, res *manualCoreResult, sc StrategyC
 	shortFill := cause == manualCloseRearmAfterShortFill
 	if decision == manualCloseRearmCancelNotConfirmed {
 		if shortFill {
-			res.outf("manual-close %s %s: the close filled short of the book and did not confirm the stop-loss cancel, so the previous stop (OID=%d) is checked on-chain before a stop for the %.6f remainder is placed.",
-				strategyID, snap.Symbol, snap.StopLossOID, snap.Quantity)
+			res.outf("%s %s %s: the close filled short of the book and did not confirm the stop-loss cancel, so the previous stop (OID=%d) is checked on-chain before a stop for the %.6f remainder is placed.",
+				snap.command(), strategyID, snap.Symbol, snap.StopLossOID, snap.Quantity)
 		} else {
 			res.outf("manual-close %s %s: the venue rejected the close and did not confirm the stop-loss cancel — a cancel whose reply is lost still removes the trigger, so the previous stop (OID=%d) is verified on-chain and restored rather than assumed live.",
 				strategyID, snap.Symbol, snap.StopLossOID)
@@ -129,7 +144,7 @@ func restoreManualStopLoss(d manualCoreDeps, res *manualCoreResult, sc StrategyC
 	closeOutcome := "the venue rejected the manual close"
 	switch {
 	case shortFill:
-		closeOutcome = fmt.Sprintf("the manual close filled short of the book and left %.6f open", snap.Quantity)
+		closeOutcome = fmt.Sprintf("the %s filled short of the book and left %.6f open", snap.closeName(), snap.Quantity)
 	case !fill.Known:
 		closeOutcome = "the manual close returned no readable outcome"
 	}
