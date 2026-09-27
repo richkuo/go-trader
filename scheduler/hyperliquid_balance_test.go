@@ -4144,6 +4144,7 @@ func TestReconcileSoleOwnerStopFillWithOpenRemainder(t *testing.T) {
 	const (
 		stopOID     int64 = 42
 		stopTrigger       = 1850.0
+		chainEntry        = 2010.0
 	)
 	mult := 1.5
 	sc := StrategyConfig{
@@ -4165,7 +4166,10 @@ func TestReconcileSoleOwnerStopFillWithOpenRemainder(t *testing.T) {
 	}
 	reconcile := func(t *testing.T, ss *StrategyState, chainQty float64, confirmed bool) ([]ProtectionFillAlert, []string) {
 		t.Helper()
-		positions := []HLPosition{{Coin: "ETH", Size: chainQty, EntryPrice: 2000, Leverage: 5}}
+		var positions []HLPosition
+		if chainQty > 0 {
+			positions = []HLPosition{{Coin: "ETH", Size: chainQty, EntryPrice: chainEntry, Leverage: 5}}
+		}
 		resolver := hlReconcileFillResolver(func(_ string, oid int64, _ float64) (HLFillLookup, bool) {
 			if confirmed && oid == stopOID {
 				return HLFillLookup{Fee: 0.06, FilledQty: 0.6, Px: stopTrigger, Count: 1, OID: stopOID}, true
@@ -4177,22 +4181,43 @@ func TestReconcileSoleOwnerStopFillWithOpenRemainder(t *testing.T) {
 		reconcileHyperliquidPositionsForStrategy(sc, ss, "ETH", positions, resolver, newTestLogger(t), &alerts, nil, &dms)
 		return alerts, dms
 	}
-	resetWatch := func(t *testing.T) {
-		clearHLStopFillWatch(sc.ID, "ETH", stopOID)
-		t.Cleanup(func() { clearHLStopFillWatch(sc.ID, "ETH", stopOID) })
+	forgetWatches := func() {
+		dropHLStopFillWatch(sc.ID, "ETH")
+		takeHLProtectionSyncStopFilled(sc.ID, "ETH")
 	}
-	assertHeld := func(t *testing.T, ss *StrategyState, cycle int) {
+	reset := func(t *testing.T) {
+		forgetWatches()
+		clearHLProtectionGuardBlocks(sc.ID, "ETH")
+		t.Cleanup(func() {
+			forgetWatches()
+			clearHLProtectionGuardBlocks(sc.ID, "ETH")
+		})
+	}
+	syncReportsStopFilled := func(t *testing.T, ss *StrategyState) {
 		t.Helper()
-		pos := ss.Positions["ETH"]
-		if pos == nil || pos.Quantity != 1 || pos.StopLossOID != stopOID || pos.StopLossTriggerPx != stopTrigger || len(ss.TradeHistory) != 0 {
-			t.Fatalf("cycle %d: position = %+v trades = %d, want qty 1 held with SL %d @ %g and nothing booked", cycle, pos, len(ss.TradeHistory), stopOID, stopTrigger)
+		withStubbedSyncHyperliquidProtection(t, func(StrategyConfig, hlProtectionPlan, *MultiNotifier, *StrategyLogger, []byte) (*HyperliquidProtectionSyncResult, bool) {
+			return &HyperliquidProtectionSyncResult{StopLossFilledExternally: true}, true
+		})
+		var mu sync.RWMutex
+		if synced, _ := runHyperliquidProtectionSync(sc, ss, nil, "ETH", &mu, nil, nil, "test", nil, nil, nil, hlProtectionGuardFull, nil); !synced {
+			t.Fatal("protection sync did not apply the result")
+		}
+		if pos := ss.Positions["ETH"]; pos == nil || pos.StopLossOID != stopOID {
+			t.Fatalf("position = %+v, want the protection sync to keep SL OID %d", pos, stopOID)
 		}
 	}
-	assertStopBooked := func(t *testing.T, ss *StrategyState, alerts []ProtectionFillAlert) {
+	assertResynced := func(t *testing.T, ss *StrategyState, cycle int, wantOID int64) {
 		t.Helper()
 		pos := ss.Positions["ETH"]
-		if pos == nil || math.Abs(pos.Quantity-0.4) > 1e-9 {
-			t.Fatalf("position = %+v, want 0.4 ETH left open", pos)
+		if pos == nil || math.Abs(pos.Quantity-0.4) > 1e-9 || pos.StopLossOID != wantOID || len(ss.TradeHistory) != 0 {
+			t.Fatalf("cycle %d: position = %+v trades = %d, want qty 0.4 with SL OID %d and nothing booked", cycle, pos, len(ss.TradeHistory), wantOID)
+		}
+	}
+	assertStopBooked := func(t *testing.T, ss *StrategyState, alerts []ProtectionFillAlert, costBasis, wantAvgCost float64) {
+		t.Helper()
+		pos := ss.Positions["ETH"]
+		if pos == nil || math.Abs(pos.Quantity-0.4) > 1e-9 || pos.AvgCost != wantAvgCost {
+			t.Fatalf("position = %+v, want 0.4 ETH left open at avg cost %g", pos, wantAvgCost)
 		}
 		if pos.StopLossOID != 0 || pos.StopLossTriggerPx != 0 {
 			t.Errorf("SL = oid %d @ %g, want both cleared so the remainder gets a new stop", pos.StopLossOID, pos.StopLossTriggerPx)
@@ -4204,8 +4229,12 @@ func TestReconcileSoleOwnerStopFillWithOpenRemainder(t *testing.T) {
 		if !tr.IsClose || tr.ExchangeOrderID != "42" || math.Abs(tr.Quantity-0.6) > 1e-9 || tr.Price != stopTrigger {
 			t.Errorf("trade = %+v, want 0.6 closed @ %g with OID 42", tr, stopTrigger)
 		}
-		if math.Abs(tr.RealizedPnL-0.6*(stopTrigger-2000)) > 1e-9 || math.Abs(tr.ExchangeFee-0.06) > 1e-9 {
-			t.Errorf("RealizedPnL = %g fee = %g, want %g gross and 0.06 fee", tr.RealizedPnL, tr.ExchangeFee, 0.6*(stopTrigger-2000))
+		wantPnL := 0.6 * (stopTrigger - costBasis)
+		if math.Abs(tr.RealizedPnL-wantPnL) > 1e-9 || math.Abs(tr.ExchangeFee-0.06) > 1e-9 {
+			t.Errorf("RealizedPnL = %g fee = %g, want %g gross and 0.06 fee", tr.RealizedPnL, tr.ExchangeFee, wantPnL)
+		}
+		if math.Abs(ss.Cash-(1000+wantPnL-0.06)) > 1e-9 {
+			t.Errorf("cash = %g, want %g", ss.Cash, 1000+wantPnL-0.06)
 		}
 		if len(alerts) != 1 || alerts[0].FillType != "SL" || !alerts[0].IsPartial || math.Abs(alerts[0].RemainingQty-0.4) > 1e-9 || alerts[0].ExchangeOrderID != "42" {
 			t.Errorf("alerts = %+v, want one partial SL alert for OID 42 with 0.4 remaining", alerts)
@@ -4217,89 +4246,105 @@ func TestReconcileSoleOwnerStopFillWithOpenRemainder(t *testing.T) {
 	}
 
 	t.Run("confirmed on the first cycle", func(t *testing.T) {
-		resetWatch(t)
+		reset(t)
 		ss := newState()
 		alerts, dms := reconcile(t, ss, 0.4, true)
-		assertStopBooked(t, ss, alerts)
+		assertStopBooked(t, ss, alerts, 2000, 2000)
 		if len(dms) != 0 {
 			t.Errorf("owner DMs = %v, want none", dms)
 		}
 	})
 
-	t.Run("first lookup fails and the second confirms", func(t *testing.T) {
-		resetWatch(t)
+	t.Run("first lookup fails and a retry confirms", func(t *testing.T) {
+		reset(t)
 		ss := newState()
 		if _, dms := reconcile(t, ss, 0.4, false); len(dms) != 0 {
-			t.Errorf("owner DMs = %v, want none while held", dms)
+			t.Errorf("owner DMs = %v, want none while the lookup is retried", dms)
 		}
-		assertHeld(t, ss, 1)
+		assertResynced(t, ss, 1, stopOID)
+		pos := ss.Positions["ETH"]
+		size, kind, ok, _ := perpsLiveOrderSizeKind(-1, 1900, 0, pos.Quantity, pos.AvgCost, PerpsSizing{}, pos.Side, DirectionBoth, 0)
+		if !ok || kind != perpsLiveOrderFlip || math.Abs(size-0.4) > 1e-9 {
+			t.Errorf("reversal order = %g kind %v ok %v, want a flip sized from the on-chain 0.4", size, kind, ok)
+		}
 		alerts, _ := reconcile(t, ss, 0.4, true)
-		assertStopBooked(t, ss, alerts)
+		assertStopBooked(t, ss, alerts, 2000, chainEntry)
 	})
 
-	t.Run("never confirmed after the protection sync reported the stop filled", func(t *testing.T) {
-		resetWatch(t)
+	t.Run("never confirmed sends one alert", func(t *testing.T) {
+		reset(t)
 		ss := newState()
-		if noteHLProtectionSyncStopFilled(sc.ID, "ETH", stopOID) {
-			t.Fatal("a filled report before any release must not clear the stop")
-		}
-		for cycle := 1; cycle <= hlStopFillConfirmHoldCycles; cycle++ {
-			reconcile(t, ss, 0.4, false)
-			assertHeld(t, ss, cycle)
-		}
-		_, dms := reconcile(t, ss, 0.4, false)
-		pos := ss.Positions["ETH"]
-		if pos == nil || math.Abs(pos.Quantity-0.4) > 1e-9 || pos.StopLossOID != 0 || pos.StopLossTriggerPx != 0 {
-			t.Fatalf("after release position = %+v, want 0.4 with the filled stop cleared", pos)
-		}
-		if len(ss.TradeHistory) != 0 {
-			t.Errorf("TradeHistory = %+v, want no stop trade without a readable fill", ss.TradeHistory)
-		}
-		if len(dms) != 1 || !strings.Contains(dms[0], "HL STOP FILL UNBOOKED") {
-			t.Errorf("owner DMs = %v, want one unbooked-stop alert", dms)
-		}
-		plan, ok := buildHyperliquidProtectionPlan(sc, pos, 0)
-		if !ok || plan.StopLossATRMult <= 0 || math.Abs(plan.Size-0.4) > 1e-9 {
-			t.Errorf("next protection plan = %+v ok=%v, want a new stop placed for 0.4", plan, ok)
-		}
-	})
-
-	t.Run("never confirmed and the next protection sync reports the stop filled", func(t *testing.T) {
-		resetWatch(t)
-		ss := newState()
-		for cycle := 1; cycle <= hlStopFillConfirmHoldCycles; cycle++ {
-			reconcile(t, ss, 0.4, false)
-		}
-		_, dms := reconcile(t, ss, 0.4, false)
-		pos := ss.Positions["ETH"]
-		if pos == nil || math.Abs(pos.Quantity-0.4) > 1e-9 || pos.StopLossOID != stopOID || pos.StopLossTriggerPx != stopTrigger {
-			t.Fatalf("after release position = %+v, want 0.4 with the unconfirmed stop kept", pos)
+		var dms []string
+		for cycle := 1; cycle <= hlStopFillLookupRetryCycles+5; cycle++ {
+			_, got := reconcile(t, ss, 0.4, false)
+			dms = append(dms, got...)
+			assertResynced(t, ss, cycle, stopOID)
 		}
 		if len(dms) != 1 || !strings.Contains(dms[0], "HL STOP FILL UNCONFIRMED") {
 			t.Errorf("owner DMs = %v, want one unconfirmed-stop alert", dms)
 		}
-		clearHLProtectionGuardBlocks(sc.ID, "ETH")
-		t.Cleanup(func() { clearHLProtectionGuardBlocks(sc.ID, "ETH") })
-		withStubbedSyncHyperliquidProtection(t, func(StrategyConfig, hlProtectionPlan, *MultiNotifier, *StrategyLogger, []byte) (*HyperliquidProtectionSyncResult, bool) {
-			return &HyperliquidProtectionSyncResult{StopLossFilledExternally: true}, true
-		})
-		var mu sync.RWMutex
-		if synced, _ := runHyperliquidProtectionSync(sc, ss, nil, "ETH", &mu, nil, nil, "test", nil, nil, nil, hlProtectionGuardFull, nil); !synced {
-			t.Fatal("protection sync did not apply the result")
+	})
+
+	t.Run("protection sync reports the stop filled while the lookup is retried", func(t *testing.T) {
+		reset(t)
+		ss := newState()
+		reconcile(t, ss, 0.4, false)
+		syncReportsStopFilled(t, ss)
+		if _, dms := reconcile(t, ss, 0.4, false); len(dms) != 0 {
+			t.Errorf("owner DMs = %v, want none while the lookup is still retried", dms)
 		}
-		if pos.StopLossOID != 0 || pos.StopLossTriggerPx != 0 {
-			t.Errorf("SL = oid %d @ %g, want both cleared once the sync reports the released stop filled", pos.StopLossOID, pos.StopLossTriggerPx)
+		assertResynced(t, ss, 2, 0)
+		alerts, _ := reconcile(t, ss, 0.4, true)
+		assertStopBooked(t, ss, alerts, 2000, chainEntry)
+	})
+
+	t.Run("restart after the resync clears the filled stop", func(t *testing.T) {
+		reset(t)
+		ss := newState()
+		reconcile(t, ss, 0.4, false)
+		forgetWatches()
+		syncReportsStopFilled(t, ss)
+		_, dms := reconcile(t, ss, 0.4, false)
+		assertResynced(t, ss, 2, 0)
+		if len(dms) != 1 || !strings.Contains(dms[0], "HL STOP FILL UNBOOKED") {
+			t.Errorf("owner DMs = %v, want one unbooked-stop alert", dms)
+		}
+		plan, ok := buildHyperliquidProtectionPlan(sc, ss.Positions["ETH"], 0)
+		if !ok || plan.StopLossATRMult <= 0 || plan.StopLossOID != 0 || math.Abs(plan.Size-0.4) > 1e-9 {
+			t.Errorf("next protection plan = %+v ok=%v, want a new stop placed for 0.4", plan, ok)
+		}
+		if _, dms := reconcile(t, ss, 0.4, false); len(dms) != 0 {
+			t.Errorf("owner DMs = %v, want no repeat", dms)
+		}
+	})
+
+	t.Run("protection sync reports the stop filled before a flat chain is reconciled", func(t *testing.T) {
+		reset(t)
+		ss := newState()
+		syncReportsStopFilled(t, ss)
+		reconcile(t, ss, 0, true)
+		if _, open := ss.Positions["ETH"]; open {
+			t.Fatalf("position = %+v, want it closed", ss.Positions["ETH"])
+		}
+		if len(ss.TradeHistory) != 1 || ss.TradeHistory[0].ExchangeOrderID != "42" {
+			t.Fatalf("TradeHistory = %+v, want one stop close with OID 42", ss.TradeHistory)
+		}
+		if n := len(ss.ClosedPositions); n != 1 || ss.ClosedPositions[n-1].CloseReason != "stop_loss" {
+			t.Errorf("ClosedPositions = %+v, want one stop_loss close", ss.ClosedPositions)
 		}
 	})
 
 	t.Run("healthy resting stop with no drift", func(t *testing.T) {
-		resetWatch(t)
+		reset(t)
 		ss := newState()
-		for cycle := 1; cycle <= hlStopFillConfirmHoldCycles+1; cycle++ {
+		for cycle := 1; cycle <= hlStopFillLookupRetryCycles+1; cycle++ {
 			if _, dms := reconcile(t, ss, 1, false); len(dms) != 0 {
 				t.Fatalf("cycle %d: owner DMs = %v, want none", cycle, dms)
 			}
-			assertHeld(t, ss, cycle)
+			pos := ss.Positions["ETH"]
+			if pos == nil || pos.Quantity != 1 || pos.StopLossOID != stopOID || pos.StopLossTriggerPx != stopTrigger || len(ss.TradeHistory) != 0 {
+				t.Fatalf("cycle %d: position = %+v, want qty 1 with SL %d kept", cycle, pos, stopOID)
+			}
 		}
 	})
 }

@@ -325,6 +325,9 @@ func buildCachedHyperliquidReconcileFillResolver(accountAddress string, allStrat
 		if sym == "" {
 			continue
 		}
+		if w, ok := pendingHLStopFillWatch(sc.ID, sym); ok {
+			addCandidate(sym, w.oid, w.qty)
+		}
 		pos := ss.Positions[sym]
 		if pos == nil || pos.Quantity <= 0 {
 			continue
