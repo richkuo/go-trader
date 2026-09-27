@@ -470,9 +470,6 @@ func applyHyperliquidProtectionSync(pos *Position, result *HyperliquidProtection
 	if pos == nil || result == nil {
 		return
 	}
-	if result.StopLossFilledExternally {
-		pos.StopLossOID = 0
-	}
 	if result.StopLossOID > 0 {
 		pos.StopLossOID = result.StopLossOID
 	} else if result.CancelStopLossSucceeded && !result.StopLossOutcomeUnknown {
