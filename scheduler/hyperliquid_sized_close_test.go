@@ -156,6 +156,26 @@ func TestForceCloseSizesSharedCoinClosesAgainstTheStrategyAndPeers(t *testing.T)
 	}
 }
 
+func TestForceCloseCapInsideTheFullCloseToleranceKeepsTheBook(t *testing.T) {
+	pos := book("long", 0.01)
+	h := newForceCloseHarness(t, pos, []*Position{book("long", 0.02)})
+	h.chain = []HLPosition{{Coin: "ETH", Size: 0.02995}}
+	res, err := h.run(t, 0)
+	if err != nil {
+		t.Fatalf("forceCloseCore: %v", err)
+	}
+	if len(h.sized) != 1 || len(h.sized[0].CancelOIDs) != 0 || math.Abs(h.sized[0].Size-0.00995) > 1e-9 {
+		t.Fatalf("sized = %+v, want a capped 0.00995 close with no protection cancel", h.sized)
+	}
+	closes := h.queuedCloses(t)
+	if len(closes) != 1 || closes[0].IsFullClose || math.Abs(closes[0].Quantity-0.00995) > 1e-9 {
+		t.Fatalf("queued = %+v, want the capped fill booked as a partial", closes)
+	}
+	if len(h.updateSLs) != 1 {
+		t.Fatalf("stop updates = %v, want the short-fill re-arm (%v)", h.updateSLs, res.lines)
+	}
+}
+
 func TestForceCloseCappedFullCloseResizesTheRemainderProtection(t *testing.T) {
 	h := newForceCloseHarness(t, book("long", 1), []*Position{book("long", 2)})
 	h.chain = []HLPosition{{Coin: "ETH", Size: 2.5}}
@@ -297,6 +317,57 @@ func TestForceCloseCoupledHedgeLegUsesTheLegSideAndChain(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestForceCloseCoupledHedgeLegLotFloorIsNotOversized(t *testing.T) {
+	run := func(t *testing.T, held, submitted, filled float64, primaryFull bool, primaryClosed, primaryBefore float64) *manualCoreResult {
+		t.Helper()
+		t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xoperator")
+		db := openTestDB(t)
+		sc := hedgeTestConfig()
+		d := manualCoreDeps{
+			cfg:     &Config{Strategies: []StrategyConfig{sc}},
+			stateDB: openTestStore(t, db),
+			loadState: func(strategyID, symbol string) (manualStateView, error) {
+				return manualStateView{HasStrategy: true, Pos: hedgePos(held, "short", 10)}, nil
+			},
+			sizedCloser: func(req hlSizedCloseRequest) (*HyperliquidCloseResult, error) {
+				return &HyperliquidCloseResult{OrderOutcome: "filled", Close: &HyperliquidClose{
+					SubmittedSz: submitted,
+					Fill:        &HyperliquidCloseFill{AvgPx: 51000, TotalSz: filled, OID: 5},
+				}}, nil
+			},
+		}
+		res := &manualCoreResult{}
+		forceCloseCoupledHedgeLeg(d, sc, res, "eth-long", "ETH", primaryClosed, primaryBefore, primaryFull)
+		return res
+	}
+	oversized := func(res *manualCoreResult) bool {
+		for _, l := range res.lines {
+			if strings.Contains(l.text, "OVERSIZED") {
+				return true
+			}
+		}
+		return false
+	}
+	t.Run("fill equals the lot-floored submitted size", func(t *testing.T) {
+		res := run(t, 0.37, 0.1233, 0.1233, false, 1, 3)
+		if oversized(res) {
+			t.Fatalf("a complete fill of the submitted size must not be OVERSIZED: %v", res.lines)
+		}
+	})
+	t.Run("fill below the submitted size", func(t *testing.T) {
+		res := run(t, 0.37, 0.1233, 0.12, false, 1, 3)
+		if !oversized(res) {
+			t.Fatalf("a fill below the submitted size must name the gap: %v", res.lines)
+		}
+	})
+	t.Run("full close of a whole-lot book", func(t *testing.T) {
+		res := run(t, 0.4, 0.4, 0.4, true, 10, 10)
+		if oversized(res) {
+			t.Fatalf("a complete whole-lot hedge close must not be OVERSIZED: %v", res.lines)
+		}
+	})
 }
 
 func TestHedgeLegReduceUsesThePlanner(t *testing.T) {

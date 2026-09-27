@@ -188,6 +188,11 @@ func attemptManualOpenCleanup(in manualOpenCleanupInput) (bool, string) {
 		}
 		return unresolved(in.FillQty-filled, why)
 	}
+	if plan.Capped && len(cancelOIDs) > 0 {
+		why := fmt.Sprintf("the %s close filled %.6f of the %.6f fill after it was capped to %.6f by the on-chain position (%s); a capped close does not cancel protection",
+			operatorSizedCloseLabel(plan.Mode), filled, in.FillQty, plan.Size, plan.Reason)
+		return unresolved(in.FillQty-filled, why)
+	}
 	cancelled := hyperliquidSucceededCancelOIDs(result, req.CancelOIDs)
 	if len(cancelled) < len(req.CancelOIDs) {
 		return false, fmt.Sprintf("position closed (%.6f %s) but the cancel of the orphan triggers was not confirmed (requested %v, confirmed %v: %s) — cancel them on the Hyperliquid UI", filled, operatorSizedCloseLabel(plan.Mode), req.CancelOIDs, cancelled, result.CancelStopLossError)

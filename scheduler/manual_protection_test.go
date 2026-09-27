@@ -108,6 +108,21 @@ func TestAttemptManualOpenCleanupSizesAgainstPeersAndTheFreshChain(t *testing.T)
 	}
 }
 
+func TestAttemptManualOpenCleanupCappedNearTheFillDoesNotClaimTriggersCancelled(t *testing.T) {
+	calls := stubCleanupClose(t, filledClose(0.99995), nil)
+	in := cleanupInput("long", 1, manualStateView{PeerLongQty: 2}, hlCoinView("ETH", 2.99995))
+	ok, msg := attemptManualOpenCleanup(in)
+	if len(*calls) != 1 || len((*calls)[0].CancelOIDs) != 0 {
+		t.Fatalf("calls=%v, want one capped close with no cancel request", *calls)
+	}
+	if ok || !strings.Contains(msg, "NOT proven closed") || !strings.Contains(msg, "12345") || !strings.Contains(msg, "67890") {
+		t.Fatalf("ok=%v msg=%q", ok, msg)
+	}
+	if strings.Contains(msg, "orphan triggers cancelled") {
+		t.Fatalf("a capped cleanup must not claim the triggers were cancelled: %q", msg)
+	}
+}
+
 func TestAttemptManualOpenCleanupNeverTreatsAFlatNetAsResolved(t *testing.T) {
 	calls := stubCleanupClose(t, filledClose(1), nil)
 	ok, msg := attemptManualOpenCleanup(cleanupInput("long", 1, manualStateView{}, hlCoinView("ETH", 0)))

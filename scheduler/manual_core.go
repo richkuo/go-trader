@@ -1544,7 +1544,7 @@ func forceCloseSized(d manualCoreDeps, sc StrategyConfig, res *manualCoreResult,
 	}
 	fill := result.Close.Fill
 	filledQty, fillFee := forceCloseAttributedFill(res, strategyID, sym, pos, fill)
-	actualFullClose := intentFullClose && pos.Quantity-filledQty <= 0.0001
+	actualFullClose := intentFullClose && !plan.Capped && pos.Quantity-filledQty <= 0.0001
 	cancelled := hyperliquidSucceededCancelOIDs(result, req.CancelOIDs)
 	var canceledSLOID int64
 	var canceledTPOIDs []int64
@@ -1723,8 +1723,14 @@ func forceCloseCoupledHedgeLeg(d manualCoreDeps, sc StrategyConfig, res *manualC
 	}
 	fill := result.Close.Fill
 	filled := fill.TotalSz
-	if filled < closeQty-1e-9 {
-		res.errf("CRITICAL: the coupled hedge leg close on %s filled %.6f of the %.6f requested — %.6f of the hedge stays OVERSIZED against %s. The scheduler will reconcile it next cycle; verify on-chain.", hCoin, filled, closeQty, closeQty-filled, primarySym)
+	sent := closeQty
+	sentLabel := "requested"
+	if result.Close.SubmittedSz > 0 {
+		sent = result.Close.SubmittedSz
+		sentLabel = "submitted"
+	}
+	if filled < sent-1e-9 {
+		res.errf("CRITICAL: the coupled hedge leg close on %s filled %.6f of the %.6f %s — %.6f of the hedge stays OVERSIZED against %s. The scheduler will reconcile it next cycle; verify on-chain.", hCoin, filled, sent, sentLabel, sent-filled, primarySym)
 	}
 	if filled > hPos.Quantity {
 		filled = hPos.Quantity
