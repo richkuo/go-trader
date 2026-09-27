@@ -538,9 +538,8 @@ func reconcileSoleOwnerOpenStopFill(
 		statePos.StopLossOID = 0
 		statePos.StopLossTriggerPx = 0
 		if w, ok := pendingHLStopFillWatch(sc.ID, sym); ok && w.oid == syncFilledOID {
-			if logger != nil {
-				logger.Warn("hl-sync: %s SL OID %s filled on-chain (protection sync) and the book already matches the on-chain %.6f; cleared so the next protection sync places a stop, and the pending fill lookup still books it", sym, oidStr, onChainAbs)
-			}
+			sendHLStopFillDM(fmt.Sprintf("**HL STOP FILL PENDING** [%s] %s SL OID %s filled on-chain (protection sync) and the book was resynced to the on-chain %.6f. The filled stop is cleared so the next protection sync places a stop for the open position. The fill lookup for the %.6f it closed is still retried; if it does not confirm, or the scheduler restarts first, no stop_loss PnL is booked for that %.6f. Check the realized PnL on Hyperliquid if no SL fill alert follows.",
+				sc.ID, sym, oidStr, onChainAbs, w.qty, w.qty), logger, ownerDMs)
 			return true, nil
 		}
 		sendHLStopFillDM(fmt.Sprintf("**HL STOP FILL UNBOOKED** [%s] %s SL OID %s filled on-chain (protection sync), but the book already matches the on-chain %.6f, so no stop_loss close is booked for it. The filled stop is cleared and the next protection sync places a stop for the open position. Check the realized PnL on Hyperliquid.",

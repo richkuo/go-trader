@@ -4290,12 +4290,35 @@ func TestReconcileSoleOwnerStopFillWithOpenRemainder(t *testing.T) {
 		ss := newState()
 		reconcile(t, ss, 0.4, false)
 		syncReportsStopFilled(t, ss)
-		if _, dms := reconcile(t, ss, 0.4, false); len(dms) != 0 {
-			t.Errorf("owner DMs = %v, want none while the lookup is still retried", dms)
+		if _, dms := reconcile(t, ss, 0.4, false); len(dms) != 1 || !strings.Contains(dms[0], "HL STOP FILL PENDING") || !strings.Contains(dms[0], "OID 42") || !strings.Contains(dms[0], "0.600000") {
+			t.Errorf("owner DMs = %v, want one pending-stop alert naming OID 42 and 0.6", dms)
 		}
 		assertResynced(t, ss, 2, 0)
 		alerts, _ := reconcile(t, ss, 0.4, true)
 		assertStopBooked(t, ss, alerts, 2000, chainEntry)
+	})
+
+	t.Run("restart after the stop is cleared while the lookup is retried", func(t *testing.T) {
+		reset(t)
+		ss := newState()
+		reconcile(t, ss, 0.4, false)
+		syncReportsStopFilled(t, ss)
+		_, dms := reconcile(t, ss, 0.4, false)
+		forgetWatches()
+		for cycle := 3; cycle <= hlStopFillLookupRetryCycles+4; cycle++ {
+			_, got := reconcile(t, ss, 0.4, false)
+			dms = append(dms, got...)
+			assertResynced(t, ss, cycle, 0)
+		}
+		named := 0
+		for _, dm := range dms {
+			if strings.Contains(dm, "OID 42") && strings.Contains(dm, "0.600000") {
+				named++
+			}
+		}
+		if named != 1 {
+			t.Errorf("owner DMs = %v, want one alert naming OID 42 and the unbooked 0.6", dms)
+		}
 	})
 
 	t.Run("restart after the resync clears the filled stop", func(t *testing.T) {
