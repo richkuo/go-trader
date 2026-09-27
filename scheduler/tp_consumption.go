@@ -289,7 +289,7 @@ func tierOutcomeUnknown(result *HyperliquidProtectionSyncResult, idx int) bool {
 	return result != nil && idx >= 0 && idx < len(result.TPOutcomeUnknown) && result.TPOutcomeUnknown[idx]
 }
 
-func recordDiscoveredTPConsumptions(pos *Position, label string, planTPOIDs []int64, result *HyperliquidProtectionSyncResult) {
+func recordDiscoveredTPConsumptions(pos *Position, restingLabel, placedLabel string, planTPOIDs []int64, result *HyperliquidProtectionSyncResult) {
 	if pos == nil || result == nil {
 		return
 	}
@@ -302,13 +302,13 @@ func recordDiscoveredTPConsumptions(pos *Position, label string, planTPOIDs []in
 		if idx >= 0 && idx < len(planTPOIDs) {
 			oid = planTPOIDs[idx]
 		}
-		upsertDiscoveredConsumption(pos, label, idx, oid, now)
+		upsertDiscoveredConsumption(pos, restingLabel, idx, oid, now)
 	}
 	for idx, filled := range result.TPFilledImmediately {
 		if !filled || tierOutcomeUnknown(result, idx) {
 			continue
 		}
-		upsertDiscoveredConsumption(pos, label, idx, 0, now)
+		upsertDiscoveredConsumption(pos, placedLabel, idx, 0, now)
 	}
 	for _, oid := range result.TPCancelFilledOIDs {
 		if oid <= 0 {
@@ -324,7 +324,7 @@ func recordDiscoveredTPConsumptions(pos *Position, label string, planTPOIDs []in
 		if idx < 0 || tierOutcomeUnknown(result, idx) {
 			continue
 		}
-		upsertDiscoveredConsumption(pos, label, idx, oid, now)
+		upsertDiscoveredConsumption(pos, restingLabel, idx, oid, now)
 	}
 }
 

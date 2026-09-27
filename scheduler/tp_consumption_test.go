@@ -102,7 +102,7 @@ func TestBookedConsumptionSurvivesDelayRestartAndRepeat(t *testing.T) {
 		TPOIDs: []int64{11, 22},
 	}
 	now := time.Now().UTC().Truncate(time.Second)
-	recordDiscoveredTPConsumptions(pos, "ranging", pos.TPOIDs, &HyperliquidProtectionSyncResult{TPFilledExternally: []bool{true, false}})
+	recordDiscoveredTPConsumptions(pos, "ranging", "ranging", pos.TPOIDs, &HyperliquidProtectionSyncResult{TPFilledExternally: []bool{true, false}})
 	if len(pos.TPConsumptions) != 1 || pos.TPConsumptions[0].Stage != tpConsumptionDiscovered {
 		t.Fatalf("discover = %+v", pos.TPConsumptions)
 	}
@@ -648,5 +648,63 @@ func TestDiscoveredPriorLabelStillBooks(t *testing.T) {
 	recordTPConsumptionAtBooking(sc, gone, 0.4, 0, 0)
 	if gone.TPConsumptions[0].Stage != tpConsumptionDeferred || gone.TPConsumptions[0].DeferReason != tpDeferLabelConflict {
 		t.Fatalf("unresolvable label = %+v", gone.TPConsumptions)
+	}
+}
+
+func TestFlipSyncRecordsImmediateFillUnderTheNewLabel(t *testing.T) {
+	sc := unifiedSLStrategy(dynamicCloseStrategyName, "perps", true, "breakeven")
+	sc.CloseStrategy.Params["regime_confirm_cycles"] = 1
+	orig := syncHyperliquidProtection
+	t.Cleanup(func() { syncHyperliquidProtection = orig })
+	syncHyperliquidProtection = func(StrategyConfig, hlProtectionPlan, *MultiNotifier, *StrategyLogger, []byte) (*HyperliquidProtectionSyncResult, bool) {
+		return &HyperliquidProtectionSyncResult{
+			StopLossOID:         7,
+			StopLossTriggerPx:   1960,
+			TPOIDs:              []int64{0, 22},
+			TPFilledImmediately: []bool{true, false},
+			TPFilledExternally:  []bool{false, true},
+		}, true
+	}
+	pos := &Position{
+		Symbol: "ETH", Side: "long", Quantity: 1, InitialQuantity: 2,
+		AvgCost: 2000, EntryATR: 40, RegimeAppliedLabel: "trending_up",
+		StopLossOID: 7, StopLossTriggerPx: 1960,
+		TPOIDs: []int64{11, 22}, TPArmedTiers: []bool{true, true},
+	}
+	st := &StrategyState{ID: sc.ID, Regime: "ranging", Cash: 1000, Positions: map[string]*Position{"ETH": pos}}
+	var mu sync.RWMutex
+	runHyperliquidProtectionSyncForRemainder(sc, st, nil, "ETH", &mu, nil, &StrategyLogger{stratID: sc.ID, writer: &bytes.Buffer{}}, "test", nil, nil, nil, hlProtectionGuardFull, 0, false, 0, hlCloseUnconfirmed{})
+	if pos.RegimeAppliedLabel != "ranging" {
+		t.Fatalf("applied label %q, want ranging", pos.RegimeAppliedLabel)
+	}
+	var immediate, external TPConsumption
+	for _, rec := range pos.TPConsumptions {
+		switch rec.Tier {
+		case 0:
+			immediate = rec
+		case 1:
+			external = rec
+		}
+	}
+	if immediate.Stage != tpConsumptionDiscovered || immediate.Label != "ranging" || immediate.OID != 0 {
+		t.Fatalf("immediate fill = %+v, want discovered under ranging", immediate)
+	}
+	if external.Stage != tpConsumptionDiscovered || external.Label != "trending_up" || external.OID != 22 {
+		t.Fatalf("external fill = %+v, want discovered under trending_up oid 22", external)
+	}
+
+	held := &Position{
+		Symbol: "ETH", Side: "long", Quantity: 1, InitialQuantity: 2,
+		AvgCost: 2000, EntryATR: 40, RegimeAppliedLabel: "ranging",
+		StopLossOID: 7, StopLossTriggerPx: 1960,
+		TPOIDs: []int64{11, 22}, TPArmedTiers: []bool{true, true},
+	}
+	st.Positions["ETH"] = held
+	st.Regime = "ranging"
+	runHyperliquidProtectionSyncForRemainder(sc, st, nil, "ETH", &mu, nil, &StrategyLogger{stratID: sc.ID, writer: &bytes.Buffer{}}, "test", nil, nil, nil, hlProtectionGuardFull, 0, false, 0, hlCloseUnconfirmed{})
+	for _, rec := range held.TPConsumptions {
+		if rec.Label != "ranging" {
+			t.Fatalf("no-change discovery = %+v, want ranging", held.TPConsumptions)
+		}
 	}
 }

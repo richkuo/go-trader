@@ -765,6 +765,7 @@ func runHyperliquidProtectionSyncForRemainder(
 	var plan hlProtectionPlan
 	var syncOK bool
 	var discoveryLabel string
+	var placedLabel string
 	unifiedClose := strategyUsesUnifiedRegimeClose(sc)
 	if strategyUsesDynamicRegimeClose(sc) {
 		mu.Lock()
@@ -777,10 +778,11 @@ func runHyperliquidProtectionSyncForRemainder(
 				logger.InfoOnChange("tp-consumption-hold", symbol, "dynamic close regime held for %s: confirmed take-profit consumption is still unprocessed", symbol)
 			}
 			if unifiedClose {
+				placedLabel = protectionATRRegimeLabel(pos, sc)
 				if regimeChanged {
 					discoveryLabel = oldAppliedRegime
 				} else {
-					discoveryLabel = protectionATRRegimeLabel(pos, sc)
+					discoveryLabel = placedLabel
 				}
 			}
 			plan, syncOK = buildHyperliquidProtectionPlan(sc, pos, hlLiquidationPxForSide(liqPxByCoin, netSideByCoin, symbol, pos.Side))
@@ -804,6 +806,7 @@ func runHyperliquidProtectionSyncForRemainder(
 		if pos, ok := stratState.Positions[symbol]; ok {
 			if unifiedClose {
 				discoveryLabel = protectionATRRegimeLabel(pos, sc)
+				placedLabel = discoveryLabel
 			}
 			plan, syncOK = buildHyperliquidProtectionPlan(sc, pos, hlLiquidationPxForSide(liqPxByCoin, netSideByCoin, symbol, pos.Side))
 			if syncOK && pos.ScaleInResizePending {
@@ -901,7 +904,7 @@ func runHyperliquidProtectionSyncForRemainder(
 	}
 	clearHyperliquidProtectionOIDsMatching(pos, hlSurplusTPCancelsRemoved(removedTPOIDs, protection))
 	if unifiedClose {
-		recordDiscoveredTPConsumptions(pos, discoveryLabel, plan.TPOIDs, protection)
+		recordDiscoveredTPConsumptions(pos, discoveryLabel, placedLabel, plan.TPOIDs, protection)
 	}
 	applyHyperliquidProtectionSync(pos, protection, plan.CancelTPOIDs)
 	notifyHLProtectionTPOutcomeUnknown(syncNotifier, logger, sc, symbol, unknownTPPlacementTiers(protection))
