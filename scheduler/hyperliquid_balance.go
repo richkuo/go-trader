@@ -746,11 +746,11 @@ func tryBookSoleOwnerTPFill(
 		return false
 	}
 	posAfter := stratState.Positions[sym]
-	if soleOwnerRecoveryBook && posAfter != nil {
-		stampSoleOwnerRecoveryTierConsumed(posAfter, tierIdx)
-	}
 	if posAfter != nil {
 		recordTPConsumptionAtBooking(sc, posAfter, closeQty, lookup.OID, tierIdx)
+	}
+	if soleOwnerRecoveryBook && posAfter != nil {
+		stampSoleOwnerRecoveryTierConsumed(posAfter, tierIdx)
 	}
 
 	remaining := 0.0

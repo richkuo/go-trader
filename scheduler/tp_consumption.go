@@ -360,28 +360,38 @@ func recordTPConsumptionAtBooking(sc StrategyConfig, pos *Position, bookedQty fl
 	now := time.Now().UTC()
 	tier, discLabel, fromDiscovery := attributeConsumptionTier(pos, lookupOID, candidateTier)
 	if !unifiedCloseLabelResolves(sc, label) {
-		promoteDiscoveredConsumptions(pos, sc.ID, pos.Symbol, label, now, tpDeferLabelUnresolved)
+		promoteDiscoveredConsumptions(pos, sc, label, now, tpDeferLabelUnresolved)
 		addUnattributedDeferred(pos, tpDeferLabelUnresolved, bookedQty, now)
 		queueTPConsumptionDeferNotice(sc.ID, pos.Symbol, tpConsumptionPositionKey(pos), tpDeferLabelUnresolved)
 		return
 	}
-	promoteDiscoveredConsumptions(pos, sc.ID, pos.Symbol, label, now, "")
-	if fromDiscovery && discLabel != label {
-		for i := range pos.TPConsumptions {
-			rec := &pos.TPConsumptions[i]
-			if rec.Label == discLabel && rec.Tier == tier && rec.DeferReason == tpDeferLabelConflict {
-				rec.BookedQty += bookedQty
-				if lookupOID > 0 && rec.OID == 0 {
-					rec.OID = lookupOID
-				}
-				break
-			}
-		}
-		return
-	}
-	if tier < 0 {
+	if tier < 0 && !(fromDiscovery && discLabel != label) {
 		addUnattributedDeferred(pos, tpDeferUnattributed, bookedQty, now)
 		queueTPConsumptionDeferNotice(sc.ID, pos.Symbol, tpConsumptionPositionKey(pos), tpDeferUnattributed)
+		return
+	}
+	promoteDiscoveredConsumptions(pos, sc, label, now, "")
+	if fromDiscovery && discLabel != label {
+		if !unifiedCloseLabelResolves(sc, discLabel) {
+			for i := range pos.TPConsumptions {
+				rec := &pos.TPConsumptions[i]
+				if rec.Label == discLabel && rec.Tier == tier && rec.DeferReason == tpDeferLabelConflict {
+					rec.BookedQty += bookedQty
+					if lookupOID > 0 && rec.OID == 0 {
+						rec.OID = lookupOID
+					}
+					break
+				}
+			}
+			return
+		}
+		discLadder := strategyTPTiersForRegime(sc, discLabel)
+		if tier < 0 || tier >= len(discLadder) {
+			upsertDeferredConsumption(pos, discLabel, tier, lookupOID, tpDeferTierOutside, bookedQty, now)
+			queueTPConsumptionDeferNotice(sc.ID, pos.Symbol, tpConsumptionPositionKey(pos), tpDeferTierOutside)
+			return
+		}
+		upsertBookedConsumption(pos, discLabel, tier, lookupOID, bookedQty, now)
 		return
 	}
 	ladder := strategyTPTiersForRegime(sc, label)
@@ -411,7 +421,7 @@ func attributeConsumptionTier(pos *Position, lookupOID int64, candidateTier int)
 	}
 	if candidateTier >= 0 {
 		for _, rec := range pos.TPConsumptions {
-			if rec.Stage == tpConsumptionDiscovered && rec.OID == 0 && rec.Tier == candidateTier {
+			if rec.Stage == tpConsumptionDiscovered && rec.Tier == candidateTier {
 				return candidateTier, rec.Label, true
 			}
 		}
@@ -430,7 +440,7 @@ func attributeConsumptionTier(pos *Position, lookupOID int64, candidateTier int)
 	return best, bestLabel, true
 }
 
-func promoteDiscoveredConsumptions(pos *Position, strategyID, symbol, bookingLabel string, now time.Time, forceReason string) {
+func promoteDiscoveredConsumptions(pos *Position, sc StrategyConfig, bookingLabel string, now time.Time, forceReason string) {
 	if pos == nil {
 		return
 	}
@@ -445,7 +455,7 @@ func promoteDiscoveredConsumptions(pos *Position, strategyID, symbol, bookingLab
 			rec.Stage = tpConsumptionDeferred
 			rec.DeferReason = forceReason
 			rec.UpdatedAt = now
-		case rec.Label != bookingLabel:
+		case rec.Label != bookingLabel && !unifiedCloseLabelResolves(sc, rec.Label):
 			rec.Stage = tpConsumptionDeferred
 			rec.DeferReason = tpDeferLabelConflict
 			rec.UpdatedAt = now
@@ -456,7 +466,7 @@ func promoteDiscoveredConsumptions(pos *Position, strategyID, symbol, bookingLab
 		}
 	}
 	if conflict {
-		queueTPConsumptionDeferNotice(strategyID, symbol, tpConsumptionPositionKey(pos), tpDeferLabelConflict)
+		queueTPConsumptionDeferNotice(sc.ID, pos.Symbol, tpConsumptionPositionKey(pos), tpDeferLabelConflict)
 	}
 }
 

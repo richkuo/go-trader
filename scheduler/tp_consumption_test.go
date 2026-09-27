@@ -541,3 +541,112 @@ func TestUnifiedCrossLabelRuleDoesNotLoosen(t *testing.T) {
 		t.Fatalf("unmarked first rule trigger %v, want 1960", pos3.StopLossTriggerPx)
 	}
 }
+
+func TestBookingWithoutLookupOIDUsesDiscoveredTier(t *testing.T) {
+	sc := unifiedSLStrategy("tiered_tp_atr_live_regime", "perps", true, "breakeven")
+	base := func(recs []TPConsumption) *Position {
+		return &Position{
+			Symbol: "ETH", Side: "long", Quantity: 1, InitialQuantity: 2,
+			AvgCost: 2000, EntryATR: 40, Regime: "ranging",
+			TPConsumptions: recs,
+		}
+	}
+	t.Run("candidate matches a discovered tier that already has an order id", func(t *testing.T) {
+		pos := base([]TPConsumption{{Label: "ranging", Tier: 0, OID: 11, Stage: tpConsumptionDiscovered}})
+		recordTPConsumptionAtBooking(sc, pos, 0.5, 0, 0)
+		if len(pos.TPConsumptions) != 1 || pos.TPConsumptions[0].Stage != tpConsumptionBooked || pos.TPConsumptions[0].Tier != 0 {
+			t.Fatalf("got %+v", pos.TPConsumptions)
+		}
+	})
+	t.Run("candidate does not adopt a different discovered tier", func(t *testing.T) {
+		pos := base([]TPConsumption{{Label: "ranging", Tier: 1, OID: 22, Stage: tpConsumptionDiscovered}})
+		recordTPConsumptionAtBooking(sc, pos, 0.5, 0, 0)
+		for _, rec := range pos.TPConsumptions {
+			if rec.Tier == 1 && rec.Stage == tpConsumptionBooked {
+				t.Fatalf("tier 1 was booked under candidate 0: %+v", pos.TPConsumptions)
+			}
+		}
+		if pos.TPConsumptions[len(pos.TPConsumptions)-1].Stage != tpConsumptionDeferred {
+			t.Fatalf("got %+v, want an unattributed deferral", pos.TPConsumptions)
+		}
+	})
+	t.Run("a matching lookup id wins over the candidate tier", func(t *testing.T) {
+		pos := base([]TPConsumption{
+			{Label: "ranging", Tier: 0, OID: 11, Stage: tpConsumptionDiscovered},
+			{Label: "ranging", Tier: 1, OID: 22, Stage: tpConsumptionDiscovered},
+		})
+		recordTPConsumptionAtBooking(sc, pos, 0.5, 22, 0)
+		var tier1 TPConsumption
+		for _, rec := range pos.TPConsumptions {
+			if rec.Tier == 1 {
+				tier1 = rec
+			}
+		}
+		if tier1.Stage != tpConsumptionBooked || tier1.BookedQty != 0.5 {
+			t.Fatalf("tier 1 = %+v, want the booked fill", tier1)
+		}
+	})
+}
+
+func TestSoleOwnerRecoveryBooksBeforeClearingTheTierID(t *testing.T) {
+	sc := unifiedSLStrategy("tiered_tp_atr_live_regime", "perps", true, "breakeven")
+	pos := &Position{
+		Symbol: "ETH", Quantity: 2, InitialQuantity: 2, AvgCost: 2000, EntryATR: 40, Side: "long",
+		Regime: "ranging", TPOIDs: []int64{111, 222},
+	}
+	ss := &StrategyState{ID: sc.ID, Cash: 1000, Positions: map[string]*Position{"ETH": pos}}
+	onChain := []HLPosition{{Coin: "ETH", Size: 1, EntryPrice: 2000}}
+	resolver := hlReconcileFillResolver(func(_ string, _ int64, _ float64) (HLFillLookup, bool) {
+		return HLFillLookup{Px: 2100, FilledQty: 1, OID: 222, Count: 1}, true
+	})
+	if !tryBookSoleOwnerTPFill(sc, ss, "ETH", onChain, resolver, newTestLogger(t), nil) {
+		t.Fatal("recovery booking did not book")
+	}
+	if len(pos.TPConsumptions) != 1 || pos.TPConsumptions[0].Stage != tpConsumptionBooked || pos.TPConsumptions[0].Tier != 1 {
+		t.Fatalf("consumption = %+v, want booked tier 1", pos.TPConsumptions)
+	}
+	if pos.TPOIDs[1] != 0 {
+		t.Fatalf("slot 1 = %d, want cleared after the record", pos.TPOIDs[1])
+	}
+	if tryBookSoleOwnerTPFill(sc, ss, "ETH", []HLPosition{{Coin: "ETH", Size: pos.Quantity, EntryPrice: 2000}}, resolver, newTestLogger(t), nil) {
+		t.Fatal("a repeated reconcile of the same fill booked again")
+	}
+	if len(pos.TPConsumptions) != 1 {
+		t.Fatalf("records after repeat = %+v", pos.TPConsumptions)
+	}
+
+	plain := soleOwnerTPSC()
+	plainPos := &Position{
+		Symbol: "ETH", Quantity: 2, InitialQuantity: 2, AvgCost: 2000, EntryATR: 40, Side: "long",
+		TPOIDs: []int64{111, 222},
+	}
+	plainSS := &StrategyState{ID: plain.ID, Cash: 1000, Positions: map[string]*Position{"ETH": plainPos}}
+	if !tryBookSoleOwnerTPFill(plain, plainSS, "ETH", onChain, resolver, newTestLogger(t), nil) {
+		t.Fatal("non-unified recovery did not book")
+	}
+	if plainPos.TPOIDs[1] != 0 || len(plainPos.TPConsumptions) != 0 {
+		t.Fatalf("non-unified slot %d records %+v", plainPos.TPOIDs[1], plainPos.TPConsumptions)
+	}
+}
+
+func TestDiscoveredPriorLabelStillBooks(t *testing.T) {
+	sc := unifiedSLStrategy(dynamicCloseStrategyName, "perps", true, "breakeven")
+	pos := &Position{
+		Symbol: "ETH", Side: "long", Quantity: 1, InitialQuantity: 2,
+		AvgCost: 2000, EntryATR: 40, RegimeAppliedLabel: "ranging",
+		TPConsumptions: []TPConsumption{{Label: "trending_up", Tier: 0, OID: 11, Stage: tpConsumptionDiscovered}},
+	}
+	recordTPConsumptionAtBooking(sc, pos, 0.4, 0, 0)
+	if len(pos.TPConsumptions) != 1 || pos.TPConsumptions[0].Stage != tpConsumptionBooked || pos.TPConsumptions[0].Label != "trending_up" {
+		t.Fatalf("prior label = %+v, want booked under trending_up", pos.TPConsumptions)
+	}
+	gone := &Position{
+		Symbol: "ETH", Side: "long", Quantity: 1, InitialQuantity: 2,
+		AvgCost: 2000, EntryATR: 40, RegimeAppliedLabel: "ranging",
+		TPConsumptions: []TPConsumption{{Label: "not-a-label", Tier: 0, OID: 11, Stage: tpConsumptionDiscovered}},
+	}
+	recordTPConsumptionAtBooking(sc, gone, 0.4, 0, 0)
+	if gone.TPConsumptions[0].Stage != tpConsumptionDeferred || gone.TPConsumptions[0].DeferReason != tpDeferLabelConflict {
+		t.Fatalf("unresolvable label = %+v", gone.TPConsumptions)
+	}
+}
