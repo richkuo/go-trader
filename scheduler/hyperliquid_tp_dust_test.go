@@ -54,7 +54,7 @@ func TestSoleOwnerTPDust_BooksBothTiersAtUserFills(t *testing.T) {
 	})
 	logger := newTestLogger(t)
 
-	changed := reconcileHyperliquidPositionsForStrategy(sc, ss, "BTC", positions, resolver, logger, nil, nil)
+	changed := reconcileHyperliquidPositionsForStrategy(sc, ss, "BTC", positions, resolver, logger, nil, nil, nil)
 	if !changed {
 		t.Fatal("expected changed=true")
 	}

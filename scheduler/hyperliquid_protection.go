@@ -882,6 +882,17 @@ func runHyperliquidProtectionSyncForRemainder(
 			return true, protection.StopLossTriggerPx, stopOutcome(protection), tpOutcome(protection)
 		}
 	}
+	if pos.StopLossOID > 0 && protection.StopLossFilledExternally && protection.StopLossOID <= 0 {
+		if noteHLProtectionSyncStopFilled(sc.ID, symbol, pos.StopLossOID) {
+			if logger != nil {
+				logger.Warn("%s: SL OID %d filled on-chain while the position stays open and its fill was never booked; clearing it so the next protection sync places a stop", logTag, pos.StopLossOID)
+			}
+			pos.StopLossOID = 0
+			pos.StopLossTriggerPx = 0
+		}
+	} else if pos.StopLossOID > 0 && protection.StopLossOID == pos.StopLossOID {
+		noteHLProtectionSyncStopResting(sc.ID, symbol, pos.StopLossOID)
+	}
 	clearHyperliquidProtectionOIDsMatching(pos, hlSurplusTPCancelsRemoved(removedTPOIDs, protection))
 	applyHyperliquidProtectionSync(pos, protection, plan.CancelTPOIDs)
 	notifyHLProtectionTPOutcomeUnknown(syncNotifier, logger, sc, symbol, unknownTPPlacementTiers(protection))

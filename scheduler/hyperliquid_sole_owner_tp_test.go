@@ -52,7 +52,7 @@ func TestSoleOwnerTPPartial_PrefersUserFillsPxOverConfiguredTP(t *testing.T) {
 	var alerts []ProtectionFillAlert
 	logger := newTestLogger(t)
 
-	reconcileHyperliquidPositionsForStrategy(soleOwnerTPSC(), ss, "ETH", positions, resolver, logger, &alerts, nil)
+	reconcileHyperliquidPositionsForStrategy(soleOwnerTPSC(), ss, "ETH", positions, resolver, logger, &alerts, nil, nil)
 
 	if len(ss.TradeHistory) != 1 {
 		t.Fatalf("TradeHistory = %d, want 1", len(ss.TradeHistory))
@@ -96,7 +96,7 @@ func TestSoleOwnerTP_SkipsWhenNoTierCleared(t *testing.T) {
 	var alerts []ProtectionFillAlert
 	logger := newTestLogger(t)
 
-	reconcileHyperliquidPositionsForStrategy(soleOwnerTPSC(), ss, "ETH", positions, resolver, logger, &alerts, nil)
+	reconcileHyperliquidPositionsForStrategy(soleOwnerTPSC(), ss, "ETH", positions, resolver, logger, &alerts, nil, nil)
 
 	if len(ss.TradeHistory) != 0 {
 		t.Errorf("TradeHistory = %d, want 0 (no TP cleared, legacy resync should be silent)", len(ss.TradeHistory))
@@ -169,7 +169,7 @@ func TestSoleOwnerTPPartial_FallsBackToConfiguredTPWhenLookupPxZero(t *testing.T
 	var alerts []ProtectionFillAlert
 	logger := newTestLogger(t)
 
-	reconcileHyperliquidPositionsForStrategy(soleOwnerTPSC(), ss, "ETH", positions, resolver, logger, &alerts, nil)
+	reconcileHyperliquidPositionsForStrategy(soleOwnerTPSC(), ss, "ETH", positions, resolver, logger, &alerts, nil, nil)
 
 	if len(ss.TradeHistory) != 1 {
 		t.Fatalf("TradeHistory = %d, want 1", len(ss.TradeHistory))
@@ -213,7 +213,7 @@ func TestSoleOwnerTP_FullCloseWithStaleClearedTier_DefersToSL(t *testing.T) {
 	var alerts []ProtectionFillAlert
 	logger := newTestLogger(t)
 
-	changed := reconcileHyperliquidPositionsForStrategy(soleOwnerTPSC(), ss, "ETH", nil, resolver, logger, &alerts, nil)
+	changed := reconcileHyperliquidPositionsForStrategy(soleOwnerTPSC(), ss, "ETH", nil, resolver, logger, &alerts, nil, nil)
 	if !changed {
 		t.Fatal("expected changed=true (legacy SL-owner branch should still book)")
 	}
@@ -270,7 +270,7 @@ func TestSoleOwnerTP758_RecoveryStampsTierSoHlAttemptSkipsOID(t *testing.T) {
 		return HLFillLookup{}, false
 	})
 	logger := newTestLogger(t)
-	if !reconcileHyperliquidPositionsForStrategy(soleOwnerTPSC(), ss, "ETH", positions, resolver, logger, nil, nil) {
+	if !reconcileHyperliquidPositionsForStrategy(soleOwnerTPSC(), ss, "ETH", positions, resolver, logger, nil, nil, nil) {
 		t.Fatal("expected reconcile to return true")
 	}
 	if len(ss.TradeHistory) != 1 {

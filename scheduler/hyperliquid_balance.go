@@ -297,19 +297,96 @@ func reconcileHyperliquidPositionsForStrategy(
 	logger *StrategyLogger,
 	pendingAlerts *[]ProtectionFillAlert,
 	pendingOrphanCloses *[]RegimeDirectionOrphanCloseJob,
+	ownerDMs *[]string,
 ) bool {
 	if stratState == nil || sym == "" {
 		return false
 	}
 
-	stopFilled := reconcileSoleOwnerOpenStopFill(sc, stratState, sym, positions, resolveFee, logger, pendingAlerts)
+	stopChanged, holdQtyResync := reconcileSoleOwnerOpenStopFill(sc, stratState, sym, positions, resolveFee, logger, pendingAlerts, ownerDMs)
 
 	if booked := tryBookSoleOwnerTPFill(sc, stratState, sym, positions, resolveFee, logger, pendingAlerts); booked {
-		reconcileHyperliquidPositionsWithResolver(stratState, sym, positions, resolveFee, logger, pendingAlerts, pendingOrphanCloses, sc)
+		reconcileHyperliquidPositionsWithResolverHold(stratState, sym, positions, resolveFee, logger, pendingAlerts, pendingOrphanCloses, sc, false)
 		return true
 	}
 
-	return reconcileHyperliquidPositionsWithResolver(stratState, sym, positions, resolveFee, logger, pendingAlerts, pendingOrphanCloses, sc) || stopFilled
+	return reconcileHyperliquidPositionsWithResolverHold(stratState, sym, positions, resolveFee, logger, pendingAlerts, pendingOrphanCloses, sc, holdQtyResync) || stopChanged
+}
+
+const hlStopFillConfirmHoldCycles = 3
+
+type hlStopFillWatch struct {
+	holds      int
+	syncFilled bool
+	released   bool
+}
+
+var hlStopFillWatches = struct {
+	sync.Mutex
+	m map[string]*hlStopFillWatch
+}{m: make(map[string]*hlStopFillWatch)}
+
+func hlStopFillWatchKey(strategyID, symbol string, oid int64) string {
+	return fmt.Sprintf("%s|%s|%d", strategyID, symbol, oid)
+}
+
+func clearHLStopFillWatch(strategyID, symbol string, oid int64) {
+	hlStopFillWatches.Lock()
+	defer hlStopFillWatches.Unlock()
+	delete(hlStopFillWatches.m, hlStopFillWatchKey(strategyID, symbol, oid))
+}
+
+func noteHLProtectionSyncStopFilled(strategyID, symbol string, oid int64) bool {
+	hlStopFillWatches.Lock()
+	defer hlStopFillWatches.Unlock()
+	key := hlStopFillWatchKey(strategyID, symbol, oid)
+	w := hlStopFillWatches.m[key]
+	if w == nil {
+		w = &hlStopFillWatch{}
+		hlStopFillWatches.m[key] = w
+	}
+	if w.released {
+		delete(hlStopFillWatches.m, key)
+		return true
+	}
+	w.syncFilled = true
+	return false
+}
+
+func noteHLProtectionSyncStopResting(strategyID, symbol string, oid int64) {
+	hlStopFillWatches.Lock()
+	defer hlStopFillWatches.Unlock()
+	key := hlStopFillWatchKey(strategyID, symbol, oid)
+	w := hlStopFillWatches.m[key]
+	if w == nil {
+		return
+	}
+	if w.released {
+		delete(hlStopFillWatches.m, key)
+		return
+	}
+	w.syncFilled = false
+}
+
+func holdOrReleaseHLStopFillWatch(strategyID, symbol string, oid int64) (hold, syncFilled bool) {
+	hlStopFillWatches.Lock()
+	defer hlStopFillWatches.Unlock()
+	key := hlStopFillWatchKey(strategyID, symbol, oid)
+	w := hlStopFillWatches.m[key]
+	if w == nil {
+		w = &hlStopFillWatch{}
+		hlStopFillWatches.m[key] = w
+	}
+	w.holds++
+	if w.holds <= hlStopFillConfirmHoldCycles {
+		return true, false
+	}
+	if w.syncFilled {
+		delete(hlStopFillWatches.m, key)
+		return false, true
+	}
+	w.released = true
+	return false, false
 }
 
 func reconcileSoleOwnerOpenStopFill(
@@ -320,10 +397,11 @@ func reconcileSoleOwnerOpenStopFill(
 	resolveFee hlReconcileFillResolver,
 	logger *StrategyLogger,
 	pendingAlerts *[]ProtectionFillAlert,
-) bool {
+	ownerDMs *[]string,
+) (bool, bool) {
 	statePos := stratState.Positions[sym]
 	if statePos == nil || statePos.Quantity <= 0 || statePos.StopLossOID <= 0 || statePos.StopLossTriggerPx <= 0 {
-		return false
+		return false, false
 	}
 	var onChainPos *HLPosition
 	for i := range positions {
@@ -333,21 +411,50 @@ func reconcileSoleOwnerOpenStopFill(
 		}
 	}
 	if onChainPos == nil {
-		return false
-	}
-	lookup, useFillFee := resolveFee(sym, statePos.StopLossOID, statePos.Quantity)
-	logHyperliquidReconcileFillLookup(logger, sym, statePos.StopLossOID, statePos.Quantity, lookup, useFillFee)
-	if !hlReconcileSLFillConfirmed(lookup, useFillFee, statePos.StopLossOID) {
-		return false
+		return false, false
 	}
 	oidStr := strconv.FormatInt(statePos.StopLossOID, 10)
-	triggerPx := statePos.StopLossTriggerPx
 	side := statePos.Side
 	onChainAbs := math.Abs(onChainPos.Size)
 	sameDirection := (onChainPos.Size > 0 && side == "long") || (onChainPos.Size < 0 && side == "short")
+	drift := statePos.Quantity - onChainAbs
+	lookup, useFillFee := resolveFee(sym, statePos.StopLossOID, statePos.Quantity)
+	logHyperliquidReconcileFillLookup(logger, sym, statePos.StopLossOID, statePos.Quantity, lookup, useFillFee)
+	if !hlReconcileSLFillConfirmed(lookup, useFillFee, statePos.StopLossOID) {
+		if !sameDirection || drift <= 1e-9 {
+			return false, false
+		}
+		hold, syncFilled := holdOrReleaseHLStopFillWatch(sc.ID, sym, statePos.StopLossOID)
+		if hold {
+			if logger != nil {
+				logger.Warn("hl-sync: %s qty drift state=%.6f on-chain=%.6f with SL OID %s booked and no confirmed fill; holding the qty resync so the next cycle retries the fill lookup (max %d cycles)",
+					sym, statePos.Quantity, onChainAbs, oidStr, hlStopFillConfirmHoldCycles)
+			}
+			return false, true
+		}
+		var msg string
+		if syncFilled {
+			statePos.StopLossOID = 0
+			statePos.StopLossTriggerPx = 0
+			msg = fmt.Sprintf("**HL STOP FILL UNBOOKED** [%s] %s SL OID %s filled on-chain (protection sync confirmed), but its fill could not be read after %d cycles. The qty resync from the booked %.6f to the on-chain %.6f is no longer held and books no stop_loss PnL, and the filled stop is cleared so the next protection sync places a stop for the remainder. Check the realized PnL against Hyperliquid.",
+				sc.ID, sym, oidStr, hlStopFillConfirmHoldCycles, statePos.Quantity, onChainAbs)
+		} else {
+			msg = fmt.Sprintf("**HL STOP FILL UNCONFIRMED** [%s] %s on-chain size fell from the booked %.6f to %.6f, and whether SL OID %s filled could not be confirmed after %d cycles. The qty resync is no longer held and the stop id is kept. If the stop filled, the next protection sync that reports it filled clears it and a new stop is placed. Verify the stop on Hyperliquid.",
+				sc.ID, sym, statePos.Quantity, onChainAbs, oidStr, hlStopFillConfirmHoldCycles)
+		}
+		if logger != nil {
+			logger.Error("%s", msg)
+		}
+		if ownerDMs != nil {
+			*ownerDMs = append(*ownerDMs, msg)
+		}
+		return syncFilled, false
+	}
+	clearHLStopFillWatch(sc.ID, sym, statePos.StopLossOID)
+	triggerPx := statePos.StopLossTriggerPx
 	closeQty := 0.0
 	if sameDirection {
-		closeQty = math.Min(lookup.FilledQty, statePos.Quantity-onChainAbs)
+		closeQty = math.Min(lookup.FilledQty, drift)
 	}
 	booked := false
 	if closeQty > 1e-9 {
@@ -379,7 +486,7 @@ func reconcileSoleOwnerOpenStopFill(
 			ExchangeOrderID: oidStr,
 		})
 	}
-	return true
+	return true, false
 }
 
 func stampSoleOwnerRecoveryTierConsumed(pos *Position, tierIdx int) {
@@ -536,6 +643,10 @@ func tryBookSoleOwnerTPFill(
 }
 
 func reconcileHyperliquidPositionsWithResolver(stratState *StrategyState, sym string, positions []HLPosition, resolveFee hlReconcileFillResolver, logger *StrategyLogger, pendingAlerts *[]ProtectionFillAlert, pendingOrphanCloses *[]RegimeDirectionOrphanCloseJob, sc StrategyConfig) bool {
+	return reconcileHyperliquidPositionsWithResolverHold(stratState, sym, positions, resolveFee, logger, pendingAlerts, pendingOrphanCloses, sc, false)
+}
+
+func reconcileHyperliquidPositionsWithResolverHold(stratState *StrategyState, sym string, positions []HLPosition, resolveFee hlReconcileFillResolver, logger *StrategyLogger, pendingAlerts *[]ProtectionFillAlert, pendingOrphanCloses *[]RegimeDirectionOrphanCloseJob, sc StrategyConfig, holdQtyResync bool) bool {
 	changed := false
 
 	var onChainPos *HLPosition
@@ -558,7 +669,10 @@ func reconcileHyperliquidPositionsWithResolver(stratState *StrategyState, sym st
 			skipQtyResync := sc.ID != "" &&
 				math.Abs(statePos.Quantity-qty) > 1e-6 &&
 				hyperliquidAllTiersArmedAndCleared(sc, statePos)
-			if skipQtyResync {
+			if holdQtyResync {
+				logger.Info("hl-sync: %s qty drift state=%.6f %s on-chain=%.6f %s (resync held until the booked SL fill is confirmed)",
+					sym, statePos.Quantity, statePos.Side, qty, side)
+			} else if skipQtyResync {
 				logger.Info("hl-sync: %s qty drift state=%.6f %s on-chain=%.6f %s (not auto-resyncing — all TP tiers armed/cleared, #777)",
 					sym, statePos.Quantity, statePos.Side, qty, side)
 			} else {
@@ -672,7 +786,7 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 
 	var pendingAlerts []ProtectionFillAlert
 	var pendingOrphanCloses []RegimeDirectionOrphanCloseJob
-	var pendingHedgeAlerts []string
+	var pendingOwnerDMs []string
 	tradeAlertStates := make(map[string]hyperliquidTradeAlertState, len(allStrategies))
 	defer func() {
 		for _, a := range pendingAlerts {
@@ -693,7 +807,7 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 			}
 		}
 		if notifier != nil && !isNilSender(notifier) {
-			for _, msg := range pendingHedgeAlerts {
+			for _, msg := range pendingOwnerDMs {
 				notifier.SendOwnerDM(msg)
 			}
 		}
@@ -753,7 +867,7 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 			fmt.Printf("[ERROR] hl-sync: logger for %s: %v\n", sc.ID, err)
 			continue
 		}
-		if reconcileHyperliquidPositionsForStrategy(sc, ss, sym, positions, resolveFee, logger, &pendingAlerts, &pendingOrphanCloses) {
+		if reconcileHyperliquidPositionsForStrategy(sc, ss, sym, positions, resolveFee, logger, &pendingAlerts, &pendingOrphanCloses, &pendingOwnerDMs) {
 			changed = true
 		}
 	}
@@ -771,7 +885,7 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 			fmt.Printf("[ERROR] hl-sync: logger for %s: %v\n", sc.ID, err)
 			continue
 		}
-		if reconcileHyperliquidHedgeLeg(sc, ss, positions, resolveFee, logger, &pendingAlerts, &pendingHedgeAlerts) {
+		if reconcileHyperliquidHedgeLeg(sc, ss, positions, resolveFee, logger, &pendingAlerts, &pendingOwnerDMs) {
 			changed = true
 		}
 	}
