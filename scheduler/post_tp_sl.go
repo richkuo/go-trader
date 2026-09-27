@@ -1074,6 +1074,8 @@ func runPostTPStopLossAdjustment(
 	avgCost := pos.riskAnchorPrice()
 	entryATR := pos.EntryATR
 	qty := pos.Quantity
+	currentTrigger := pos.StopLossTriggerPx
+	crossLabelDone := unified && unifiedCrossLabelDone(pos, consumptionLabel)
 	currentOID := pos.StopLossOID
 	armed := hlBookArmed(pos)
 	var peers []hlShareBook
@@ -1145,6 +1147,21 @@ func runPostTPStopLossAdjustment(
 
 	triggerPx, mode, computeOK := computePostTPStopLossTrigger(rule, side, avgCost, entryATR, mark)
 	if !computeOK {
+		return false, 0, ""
+	}
+	restPx := triggerPx
+	if clamped, wasClamped := clampStopInsideLiquidation(side, triggerPx, hlLiquidationPxForSide(hlLiquidationPx, hlNetSideByCoin, symbol, side)); wasClamped {
+		restPx = clamped
+	}
+	if crossLabelDone && !hlTriggerStrictlyTighter(side, restPx, currentTrigger) {
+		mu.Lock()
+		if p, ok := stratState.Positions[symbol]; ok && p != nil {
+			completeBookedConsumptionGroup(p, consumptionLabel, false)
+		}
+		mu.Unlock()
+		if logger != nil {
+			logger.Info("post-TP SL for %s label %q is not tighter than $%.4f; completing the group without a stop replace", symbol, consumptionLabel, currentTrigger)
+		}
 		return false, 0, ""
 	}
 
@@ -1604,6 +1621,14 @@ func runUnifiedPaperPostTPStopLossAdjustment(
 	triggerPx, mode, computeOK := computePostTPStopLossTrigger(rule, side, pos.riskAnchorPrice(), pos.EntryATR, mark)
 	if !computeOK {
 		mu.Unlock()
+		return false
+	}
+	if unifiedCrossLabelDone(pos, label) && !hlTriggerStrictlyTighter(side, triggerPx, pos.StopLossTriggerPx) {
+		completeBookedConsumptionGroup(pos, label, false)
+		mu.Unlock()
+		if logger != nil {
+			logger.Info("paper post-TP SL for %s label %q is not tighter than the stop a prior label moved; completing the group", symbol, label)
+		}
 		return false
 	}
 	oldTrigger := pos.StopLossTriggerPx

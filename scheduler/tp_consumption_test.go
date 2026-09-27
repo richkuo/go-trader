@@ -50,17 +50,6 @@ func unifiedSLStrategy(name, typ string, live bool, rule interface{}) StrategyCo
 	}
 }
 
-func TestStrategyHasPostTPStopRules_UnifiedLabel(t *testing.T) {
-	sc := unifiedSLStrategy("tiered_tp_atr_live_regime", "perps", false, "breakeven")
-	if !strategyHasPostTPStopRules(sc) {
-		t.Fatal("label-level sl_after should report rules present")
-	}
-	rules, errs := parseStrategyTPSLAfterRules(sc)
-	if len(errs) != 0 || rules.HasAny() {
-		t.Fatalf("empty-label parse = rules %v errs %v, want empty and no error", rules, errs)
-	}
-}
-
 func TestUnifiedDiscoveryDoesNotBook(t *testing.T) {
 	sc := unifiedSLStrategy("tiered_tp_atr_live_regime", "perps", true, "breakeven")
 	pos := &Position{
@@ -467,6 +456,7 @@ func TestLegacyPartialCloseDoesNotMoveStop(t *testing.T) {
 	pos := &Position{
 		Symbol: "ETH", Side: "long", Quantity: 1, InitialQuantity: 2,
 		AvgCost: 2000, EntryATR: 40, Regime: "ranging", StopLossTriggerPx: 1900,
+		TPOIDs: []int64{0, 22}, TPArmedTiers: []bool{true, true},
 	}
 	var buf bytes.Buffer
 	st := &AppState{Strategies: map[string]*StrategyState{
@@ -482,16 +472,72 @@ func TestLegacyPartialCloseDoesNotMoveStop(t *testing.T) {
 	if runPaperPostTPStopLossAdjustment(sc, st.Strategies[sc.ID], "ETH", 2100, nil, &mu, nil, nil) || pos.StopLossTriggerPx != 1900 {
 		t.Fatal("legacy partial close moved the stop")
 	}
+	stopFill := &Position{
+		Symbol: "BTC", Side: "long", Quantity: 1, InitialQuantity: 2,
+		AvgCost: 2000, EntryATR: 40, Regime: "ranging", StopLossTriggerPx: 1900,
+		TPOIDs: []int64{11, 22}, TPArmedTiers: []bool{true, true},
+	}
+	var quiet bytes.Buffer
+	st2 := &AppState{Strategies: map[string]*StrategyState{
+		sc.ID: {ID: sc.ID, Positions: map[string]*Position{"BTC": stopFill}},
+	}}
+	reportLegacyUnifiedSLAfterGaps(&Config{Strategies: []StrategyConfig{sc}}, st2, &mu, nil, func(string) *StrategyLogger {
+		return &StrategyLogger{stratID: sc.ID, writer: &quiet}
+	})
+	if quiet.Len() != 0 {
+		t.Fatalf("partial stop fill with live take-profit ids notified: %s", quiet.String())
+	}
 }
 
-func TestDynamicRegimeHoldsTrailingOwner(t *testing.T) {
-	sc := unifiedSLStrategy(dynamicCloseStrategyName, "perps", false, nil)
-	mult := 1.0
+func TestUnifiedCrossLabelRuleDoesNotLoosen(t *testing.T) {
+	sc := unifiedSLStrategy(dynamicCloseStrategyName, "perps", false, "breakeven")
+	now := time.Now().UTC()
 	pos := &Position{
-		Symbol: "ETH", Side: "long", Quantity: 1, AvgCost: 2000, EntryATR: 40,
-		RegimeAppliedLabel: "ranging", StopLossTriggerPx: 1990, PostTPTrailingATRMult: &mult,
+		Symbol: "ETH", Side: "long", Quantity: 1, InitialQuantity: 2,
+		AvgCost: 2000, EntryATR: 40, Regime: "ranging", RegimeAppliedLabel: "ranging",
+		StopLossTriggerPx: 2080, SLAfterMoved: true,
+		PostTPTrailingATRMult: func() *float64 { v := 1.0; return &v }(),
+		TPConsumptions: []TPConsumption{
+			{Label: "trending_up", Tier: 1, Stage: tpConsumptionDone, UpdatedAt: now},
+			{Label: "ranging", Tier: 0, Stage: tpConsumptionBooked, UpdatedAt: now.Add(time.Second)},
+		},
 	}
-	if _, ok := paperDynamicFlipStopTrigger(sc, pos); ok {
-		t.Fatal("trailing owner moved")
+	st := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
+	var mu sync.RWMutex
+	if runPaperPostTPStopLossAdjustment(sc, st, "ETH", 2100, nil, &mu, nil, nil) {
+		t.Fatal("a looser breakeven under the new label moved the stop")
+	}
+	if pos.StopLossTriggerPx != 2080 || pos.TPConsumptions[1].Stage != tpConsumptionDone || !pos.SLAfterMoved {
+		t.Fatalf("after looser rule: trigger %v stage %s moved %v", pos.StopLossTriggerPx, pos.TPConsumptions[1].Stage, pos.SLAfterMoved)
+	}
+	if pos.PostTPTrailingATRMult == nil || *pos.PostTPTrailingATRMult != 1 {
+		t.Fatal("trail owner was cleared")
+	}
+
+	tighter := unifiedSLStrategy(dynamicCloseStrategyName, "perps", false, map[string]interface{}{"kind": "atr_offset", "atr_mult": 2})
+	pos2 := &Position{
+		Symbol: "ETH", Side: "long", Quantity: 1, InitialQuantity: 2,
+		AvgCost: 2000, EntryATR: 40, Regime: "ranging", RegimeAppliedLabel: "ranging",
+		StopLossTriggerPx: 2040, SLAfterMoved: true,
+		TPConsumptions: []TPConsumption{
+			{Label: "trending_up", Tier: 0, Stage: tpConsumptionDone, UpdatedAt: now},
+			{Label: "ranging", Tier: 0, Stage: tpConsumptionBooked, UpdatedAt: now.Add(time.Second)},
+		},
+	}
+	st2 := &StrategyState{ID: tighter.ID, Positions: map[string]*Position{"ETH": pos2}}
+	if !runPaperPostTPStopLossAdjustment(tighter, st2, "ETH", 2200, nil, &mu, nil, nil) || pos2.StopLossTriggerPx != 2080 {
+		t.Fatalf("tighter cross-label rule trigger %v, want 2080", pos2.StopLossTriggerPx)
+	}
+
+	first := unifiedSLStrategy("tiered_tp_atr_live_regime", "perps", false, map[string]interface{}{"kind": "atr_offset", "atr_mult": -1})
+	pos3 := &Position{
+		Symbol: "ETH", Side: "long", Quantity: 1, InitialQuantity: 2,
+		AvgCost: 2000, EntryATR: 40, Regime: "ranging",
+		StopLossTriggerPx: 2000,
+		TPConsumptions:    []TPConsumption{{Label: "ranging", Tier: 0, Stage: tpConsumptionBooked, UpdatedAt: now}},
+	}
+	st3 := &StrategyState{ID: first.ID, Positions: map[string]*Position{"ETH": pos3}}
+	if !runPaperPostTPStopLossAdjustment(first, st3, "ETH", 2100, nil, &mu, nil, nil) || pos3.StopLossTriggerPx != 1960 {
+		t.Fatalf("unmarked first rule trigger %v, want 1960", pos3.StopLossTriggerPx)
 	}
 }

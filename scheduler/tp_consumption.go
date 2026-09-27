@@ -211,8 +211,23 @@ func deferBookedConsumptionGroup(pos *Position, strategyID, symbol, label, reaso
 		changed = true
 	}
 	if changed {
-		queueTPConsumptionDeferNotice(strategyID, symbol, reason)
+		queueTPConsumptionDeferNotice(strategyID, symbol, tpConsumptionPositionKey(pos), reason)
 	}
+}
+
+// unifiedCrossLabelDone reports that a profit rule under a different label
+// already moved this stop. A later label's rule may tighten that stop and
+// must not loosen it.
+func unifiedCrossLabelDone(pos *Position, consumptionLabel string) bool {
+	if pos == nil || !pos.SLAfterMoved {
+		return false
+	}
+	for _, rec := range pos.TPConsumptions {
+		if rec.Stage == tpConsumptionDone && rec.Tier >= 0 && rec.Label != consumptionLabel {
+			return true
+		}
+	}
+	return false
 }
 
 var (
@@ -226,11 +241,24 @@ func formatTPConsumptionDeferNotice(strategyID, symbol, reason string) string {
 	return fmt.Sprintf("**HL POST-TP SL DEFERRED** [%s] %s: take-profit evidence (%s) does not resolve to a stop rule. The evidence stays on the position. No stop is moved.", strategyID, symbol, reason)
 }
 
-func queueTPConsumptionDeferNotice(strategyID, symbol, reason string) {
+func tpConsumptionPositionKey(pos *Position) string {
+	if pos == nil {
+		return ""
+	}
+	if id := strings.TrimSpace(pos.TradePositionID); id != "" {
+		return id
+	}
+	if !pos.OpenedAt.IsZero() {
+		return pos.OpenedAt.UTC().Format(time.RFC3339Nano)
+	}
+	return ""
+}
+
+func queueTPConsumptionDeferNotice(strategyID, symbol, positionKey, reason string) {
 	if strategyID == "" || symbol == "" || reason == "" {
 		return
 	}
-	key := strategyID + "|" + symbol + "|" + reason
+	key := strategyID + "|" + symbol + "|" + positionKey + "|" + reason
 	if _, loaded := tpConsumptionDeferOnce.LoadOrStore(key, true); loaded {
 		return
 	}
@@ -334,7 +362,7 @@ func recordTPConsumptionAtBooking(sc StrategyConfig, pos *Position, bookedQty fl
 	if !unifiedCloseLabelResolves(sc, label) {
 		promoteDiscoveredConsumptions(pos, sc.ID, pos.Symbol, label, now, tpDeferLabelUnresolved)
 		addUnattributedDeferred(pos, tpDeferLabelUnresolved, bookedQty, now)
-		queueTPConsumptionDeferNotice(sc.ID, pos.Symbol, tpDeferLabelUnresolved)
+		queueTPConsumptionDeferNotice(sc.ID, pos.Symbol, tpConsumptionPositionKey(pos), tpDeferLabelUnresolved)
 		return
 	}
 	promoteDiscoveredConsumptions(pos, sc.ID, pos.Symbol, label, now, "")
@@ -353,13 +381,13 @@ func recordTPConsumptionAtBooking(sc StrategyConfig, pos *Position, bookedQty fl
 	}
 	if tier < 0 {
 		addUnattributedDeferred(pos, tpDeferUnattributed, bookedQty, now)
-		queueTPConsumptionDeferNotice(sc.ID, pos.Symbol, tpDeferUnattributed)
+		queueTPConsumptionDeferNotice(sc.ID, pos.Symbol, tpConsumptionPositionKey(pos), tpDeferUnattributed)
 		return
 	}
 	ladder := strategyTPTiersForRegime(sc, label)
 	if tier >= len(ladder) {
 		upsertDeferredConsumption(pos, label, tier, lookupOID, tpDeferTierOutside, bookedQty, now)
-		queueTPConsumptionDeferNotice(sc.ID, pos.Symbol, tpDeferTierOutside)
+		queueTPConsumptionDeferNotice(sc.ID, pos.Symbol, tpConsumptionPositionKey(pos), tpDeferTierOutside)
 		return
 	}
 	upsertBookedConsumption(pos, label, tier, lookupOID, bookedQty, now)
@@ -428,7 +456,7 @@ func promoteDiscoveredConsumptions(pos *Position, strategyID, symbol, bookingLab
 		}
 	}
 	if conflict {
-		queueTPConsumptionDeferNotice(strategyID, symbol, tpDeferLabelConflict)
+		queueTPConsumptionDeferNotice(strategyID, symbol, tpConsumptionPositionKey(pos), tpDeferLabelConflict)
 	}
 }
 
@@ -548,7 +576,7 @@ func recordPaperUnifiedTPConsumption(sc StrategyConfig, pos *Position, preQty, p
 	}
 	if !unifiedCloseLabelResolves(sc, label) {
 		addUnattributedDeferred(pos, tpDeferLabelUnresolved, delta, now)
-		queueTPConsumptionDeferNotice(sc.ID, pos.Symbol, tpDeferLabelUnresolved)
+		queueTPConsumptionDeferNotice(sc.ID, pos.Symbol, tpConsumptionPositionKey(pos), tpDeferLabelUnresolved)
 		return
 	}
 	thresholds := paperSLAfterTierThresholds(sc, label)
@@ -601,7 +629,11 @@ func positionNeedsLegacySLAfterNotice(sc StrategyConfig, pos *Position) bool {
 	if len(pos.TPConsumptions) > 0 || pos.InitialQuantity <= 0 {
 		return false
 	}
-	return pos.Quantity+1e-9 < pos.InitialQuantity
+	if pos.Quantity+1e-9 >= pos.InitialQuantity {
+		return false
+	}
+	_, cleared := findHighestClearedTier(pos.TPOIDs, pos.TPArmedTiers, 0)
+	return cleared
 }
 
 func reportLegacyUnifiedSLAfterGaps(cfg *Config, state *AppState, mu *sync.RWMutex, notifier *MultiNotifier, loggerFor func(string) *StrategyLogger) {
