@@ -40,6 +40,7 @@ func scaleInResizeTrailingSLNow(
 	triggerPx := pos.StopLossTriggerPx
 	slOID := pos.StopLossOID
 	posSnap := *pos
+	posSnap.TPConsumptions = cloneTPConsumptions(pos.TPConsumptions)
 	mu.RUnlock()
 
 	q := hlStopQty{Qty: book, Fresh: true}

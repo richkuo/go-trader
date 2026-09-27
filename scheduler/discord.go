@@ -1078,6 +1078,9 @@ func collectPositions(sc StrategyConfig, ss *StrategyState, prices map[string]fl
 		if pos.ScaleInCount > 0 {
 			extras += fmt.Sprintf(" | scaled-in: %d (+$%s)", pos.ScaleInCount, fmtComma2(pos.AddedNotionalUSD))
 		}
+		if pending, deferred := tpConsumptionStatusCounts(pos); pending > 0 || deferred > 0 {
+			extras += fmt.Sprintf(" | SL-after pending: %d deferred: %d", pending, deferred)
+		}
 		if pos.StopLossTriggerPx > 0 {
 			slPct := percentFromEntry(pos.Side, anchor, pos.StopLossTriggerPx)
 			if pos.StopLossATRMult != nil {

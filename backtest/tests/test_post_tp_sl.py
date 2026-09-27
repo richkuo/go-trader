@@ -467,6 +467,40 @@ def test_backtester_sl_after_scenarios(name):
         assert sl_closes[0]["exit_date"] == exit_date, sl_closes[0]
 
 
+def test_unified_backtest_moves_stop_on_the_bar_after_the_tier():
+    df = _df_open_then_hold(
+        opens=[100, 100, 100, 110, 99, 99],
+        closes=[100, 100, 110, 99, 99, 99],
+        atrs=[10] * 6,
+        open_actions=["long"] + ["none"] * 5,
+    )
+    df["regime"] = "ranging"
+    def label():
+        return {
+            "stop_loss_atr": 1.0,
+            "tp_tiers": [
+                {"atr_multiple": 1.0, "close_fraction": 0.5, "sl_after": "breakeven"},
+                {"atr_multiple": 2.0, "close_fraction": 1.0},
+            ],
+        }
+    result = Backtester(
+        initial_capital=1000, commission_pct=0, slippage_pct=0,
+        platform="hyperliquid", strategy_type="perps",
+        intrabar_resolution="bar_close",
+        close_strategies=[{
+            "name": "tiered_tp_atr_live_regime",
+            "params": {"trend_regime": {
+                "trending_up": label(),
+                "trending_down": label(),
+                "ranging": label(),
+            }},
+        }],
+    ).run(df, save=False)
+    sl_closes = [t for t in result["trades"] if t["exit_price"] == 99.0]
+    assert len(sl_closes) == 1, result["trades"]
+    assert sl_closes[0]["exit_date"] == "2024-01-05 00:00:00"
+
+
 _REGIME_STOP_BLOCK = {
     "trend_regime": {"trending_up": {"atr_multiple": 0.25},
                      "trending_down": {"atr_multiple": 0.25},
@@ -698,13 +732,19 @@ with open(os.path.join(_REPO_ROOT, "backtest", "testdata", "sl_after_paper_parit
     _PAPER_PARITY = json.load(_fh)
 
 
-def _paper_parity_close_refs(ladder, sl_after=None, tier_sl_after=None):
+def _paper_parity_close_refs(ladder, sl_after=None, tier_sl_after=None, label=""):
     ref = copy.deepcopy(_PAPER_PARITY["ladders"][ladder])
-    tiers = ref["params"]["tp_tiers"]
+    params = ref["params"]
+    trend = params.get("trend_regime")
+    if isinstance(trend, dict) and label:
+        block = trend[label]
+        tiers = block["tp_tiers"]
+    else:
+        tiers = params["tp_tiers"]
     for key, rule in (tier_sl_after or {}).items():
         tiers[int(key)]["sl_after"] = rule
-    if sl_after is not None:
-        ref["params"]["sl_after"] = sl_after
+    if sl_after is not None and not isinstance(trend, dict):
+        params["sl_after"] = sl_after
     return [ref]
 
 
@@ -723,7 +763,7 @@ def _paper_parity_open_stamp(mod, refs, regime, labels):
     "case", _PAPER_PARITY["cleared_tier"], ids=[c["name"] for c in _PAPER_PARITY["cleared_tier"]],
 )
 def test_sl_after_paper_parity_cleared_tier(case):
-    refs = _paper_parity_close_refs(case["ladder"])
+    refs = _paper_parity_close_refs(case["ladder"], label=case.get("label") or case.get("regime") or "")
     _, thresholds = _paper_parity_open_stamp(sl, refs, case["regime"], None)
     got = sl.find_highest_cleared_tier(thresholds, case["closed_ratio"], case["from_idx"])
     assert got == case["want_idx"]
@@ -739,7 +779,7 @@ def test_sl_after_paper_parity_move(case):
         stop_loss_atr_mult=case["stop_loss_atr_mult"],
     )
     pos = case["position"]
-    refs = _paper_parity_close_refs(case["ladder"], case["sl_after"], case["tier_sl_after"])
+    refs = _paper_parity_close_refs(case["ladder"], case["sl_after"], case["tier_sl_after"], case.get("label") or "")
     bt._active_sl_after_rules, bt._run_tp_tier_thresholds = _paper_parity_open_stamp(
         bt._sl_mod, refs, pos["regime"], bt._regime_primary_labels,
     )
@@ -770,3 +810,52 @@ def test_sl_after_paper_parity_move(case):
         else:
             assert trail == pytest.approx(want["post_tp_trailing_atr_mult"])
         assert high_water == pytest.approx(want["stop_loss_high_water_px"])
+
+
+def _unified_ref(rule):
+    def label(sl):
+        return {
+            "stop_loss_atr": sl,
+            "tp_tiers": [
+                {"atr_multiple": 1.5, "close_fraction": 0.5, "sl_after": rule},
+                {"atr_multiple": 3.0, "close_fraction": 1.0},
+            ],
+        }
+    return {
+        "name": "tiered_tp_atr_live_regime",
+        "params": {
+            "trend_regime": {
+                "trending_up": label(1.5),
+                "trending_down": label(1.5),
+                "ranging": label(1.0),
+            }
+        },
+    }
+
+
+def test_unified_empty_label_parse_is_empty():
+    ref = _unified_ref("breakeven")
+    rules, errs = sl.parse_strategy_tp_sl_after_rules([ref], regime="")
+    assert errs == []
+    assert not rules.has_any()
+    absent, absent_errs = sl.parse_strategy_tp_sl_after_rules([ref], regime="not_a_label")
+    assert absent_errs == []
+    assert not absent.has_any()
+
+
+def test_unified_label_parse_and_fractions():
+    ref = _unified_ref("breakeven")
+    rules, errs = sl.parse_strategy_tp_sl_after_rules([ref], regime="ranging")
+    assert errs == []
+    assert rules.per_tier[0].kind == "breakeven"
+    assert sl.parse_tp_tier_close_fractions([ref], regime="ranging") == [0.5, 1.0]
+    assert sl.parse_tp_tier_close_fractions([ref], regime="") == []
+
+
+def test_unified_validation_counts_label_stop_and_rejects_manual_trail():
+    ref = _unified_ref("breakeven")
+    errs = sl.validate_post_tp_stop_loss_rules([ref], strategy_type="perps")
+    assert not any("fixed stop-loss" in e for e in errs)
+    trail = _unified_ref({"kind": "trail_from_here", "atr_mult": 1.0})
+    manual = sl.validate_post_tp_stop_loss_rules([trail], strategy_type="manual")
+    assert any("ranging tier[0]" in e and "trail_from_here" in e for e in manual)

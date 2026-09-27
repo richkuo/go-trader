@@ -747,6 +747,7 @@ func manualRecordedStopOwner(sc StrategyConfig, pos *Position) bool {
 		return false
 	}
 	probe := *pos
+	probe.TPConsumptions = cloneTPConsumptions(pos.TPConsumptions)
 	probe.StopLossOID = 0
 	probe.StopLossTriggerPx = 0
 	plan, ok := buildHyperliquidProtectionPlan(sc, &probe, 0)
@@ -878,6 +879,7 @@ func rearmTrailingStopAfterFailedClose(sc StrategyConfig, stratState *StrategySt
 		cancelOID = prevStopOID
 	}
 	posSnap := *pos
+	posSnap.TPConsumptions = cloneTPConsumptions(pos.TPConsumptions)
 	mu.RUnlock()
 
 	slEffectiveQty := stop.Qty

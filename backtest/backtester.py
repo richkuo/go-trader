@@ -1029,6 +1029,19 @@ class Backtester:
             ):
                 any_sl_after_key = True
                 break
+            trend = params.get("trend_regime")
+            if isinstance(trend, dict):
+                for block in trend.values():
+                    if not isinstance(block, dict):
+                        continue
+                    nested = block.get("tp_tiers")
+                    if isinstance(nested, list) and any(
+                        isinstance(t, dict) and "sl_after" in t for t in nested
+                    ):
+                        any_sl_after_key = True
+                        break
+            if any_sl_after_key:
+                break
         self._any_sl_after_key = any_sl_after_key
         self._sl_after_pipeline_enabled = (
             self._sl_after_rules_static.has_any() or any_sl_after_key

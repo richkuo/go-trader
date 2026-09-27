@@ -824,6 +824,9 @@ func validatePostTPStopLossRules(sc StrategyConfig) []string {
 }
 
 func validatePostTPStopLossRulesWithLabels(sc StrategyConfig, labels []string) []string {
+	if strategyUsesUnifiedRegimeClose(sc) {
+		return validateUnifiedPostTPStopLossRules(sc, labels)
+	}
 	rules, errs := parseStrategyTPSLAfterRulesWithLabels(sc, labels)
 	out := append([]string(nil), errs...)
 	for _, ref := range sc.closeRefs() {
@@ -875,6 +878,86 @@ func validatePostTPStopLossRulesWithLabels(sc StrategyConfig, labels []string) [
 				out = append(out, fmt.Sprintf("sl_after (tier[%d]): trail_from_here is not supported on manual strategies (perps only in v1) — use breakeven or atr_mult instead", i))
 			}
 		}
+	}
+	return out
+}
+
+func validateUnifiedPostTPStopLossRules(sc StrategyConfig, labels []string) []string {
+	var out []string
+	for _, ref := range sc.closeRefs() {
+		n := strings.ToLower(strings.TrimSpace(ref.Name))
+		if isTieredTPATRCloseName(n) {
+			continue
+		}
+		if isTrailingTPRatchetCloseName(n) {
+			if _, ok := ref.Params["sl_after"]; ok {
+				out = append(out, fmt.Sprintf("sl_after is not used with %q — use per-tier trailing_mult_after / tp_atr_fraction instead", ref.Name))
+			}
+			continue
+		}
+		if _, ok := ref.Params["sl_after"]; ok {
+			out = append(out, fmt.Sprintf("sl_after is only honored on tiered_tp_atr / tiered_tp_atr_live close refs; found on %q", ref.Name))
+		}
+	}
+	hasAny := false
+	hasLabelStop := false
+	for _, label := range unifiedCloseConfiguredLabels(sc) {
+		rules, _ := parseStrategyTPSLAfterRulesForRegime(sc, labels, label)
+		if rules.HasAny() {
+			hasAny = true
+		}
+		if sl, ok := unifiedCloseStopLossATR(sc, label); ok && sl > 0 {
+			hasLabelStop = true
+		}
+		if sc.Type == "manual" {
+			out = append(out, manualUnifiedTrailFromHereErrors(sc, label)...)
+		}
+	}
+	if !hasAny {
+		return out
+	}
+	if (sc.TrailingStopATRMult != nil && *sc.TrailingStopATRMult > 0) ||
+		(sc.TrailingStopPct != nil && *sc.TrailingStopPct > 0) {
+		out = append(out, "sl_after cannot be combined with trailing_stop_atr_mult or trailing_stop_pct — trailing already walks the SL continuously")
+	}
+	if !hasLabelStop {
+		out = append(out, "sl_after requires a fixed stop-loss to adjust (set stop_loss_atr_mult, stop_loss_atr_mult_regime, stop_loss_pct, or stop_loss_margin_pct)")
+	}
+	return out
+}
+
+func manualUnifiedTrailFromHereErrors(sc StrategyConfig, label string) []string {
+	params := unifiedCloseRefParams(sc)
+	if params == nil {
+		return nil
+	}
+	trend, ok := params[regimeClassifierKey].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	block, ok := trend[label].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	items, ok := block["tp_tiers"].([]interface{})
+	if !ok {
+		return nil
+	}
+	var out []string
+	for i, item := range items {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		raw, ok := m["sl_after"]
+		if !ok || raw == nil {
+			continue
+		}
+		rule, err := parseSLAfterRuleRuntime(raw)
+		if err != nil || rule.Kind != "trail_from_here" {
+			continue
+		}
+		out = append(out, fmt.Sprintf("sl_after (%s tier[%d]): trail_from_here is not supported on manual strategies (perps only in v1) — use breakeven or atr_mult instead", label, i))
 	}
 	return out
 }
@@ -956,10 +1039,11 @@ func runPostTPStopLossAdjustment(
 	if stratState == nil || symbol == "" {
 		return false, 0, ""
 	}
-	rules, _ := parseStrategyTPSLAfterRules(sc)
-	if !rules.HasAny() {
+	defer sendTPConsumptionDeferNotices(notifier)
+	if !strategyHasPostTPStopRules(sc) {
 		return false, 0, ""
 	}
+	unified := strategyUsesUnifiedRegimeClose(sc)
 
 	mu.RLock()
 	pos, ok := stratState.Positions[symbol]
@@ -971,7 +1055,17 @@ func runPostTPStopLossAdjustment(
 		mu.RUnlock()
 		return false, 0, ""
 	}
-	clearedIdx, clearedOK := findHighestClearedTier(pos.TPOIDs, pos.TPArmedTiers, pos.SLAdjustedTiersProcessed)
+	var clearedIdx int
+	var clearedOK bool
+	var consumptionLabel string
+	var posRegime string
+	if unified {
+		consumptionLabel, clearedIdx, clearedOK = nextBookedConsumptionGroup(pos)
+		posRegime = consumptionLabel
+	} else {
+		clearedIdx, clearedOK = findHighestClearedTier(pos.TPOIDs, pos.TPArmedTiers, pos.SLAdjustedTiersProcessed)
+		posRegime = protectionATRRegimeLabel(pos, sc)
+	}
 	if !clearedOK {
 		mu.RUnlock()
 		return false, 0, ""
@@ -987,19 +1081,43 @@ func runPostTPStopLossAdjustment(
 	if share != nil {
 		peers, opp = share.peers(symbol, sc.ID, side)
 	}
-	posRegime := protectionATRRegimeLabel(pos, sc)
 	mu.RUnlock()
 
-	if strategyUsesRegimeTieredTPATRClose(sc) {
+	var rules tierSLAfterRules
+	if unified {
+		if !unifiedCloseLabelResolves(sc, consumptionLabel) {
+			mu.Lock()
+			if p, ok := stratState.Positions[symbol]; ok && p != nil {
+				deferBookedConsumptionGroup(p, sc.ID, symbol, consumptionLabel, tpDeferLabelUnresolved)
+			}
+			mu.Unlock()
+			return false, 0, ""
+		}
+		if clearedIdx >= len(strategyTPTiersForRegime(sc, consumptionLabel)) {
+			mu.Lock()
+			if p, ok := stratState.Positions[symbol]; ok && p != nil {
+				deferBookedConsumptionGroup(p, sc.ID, symbol, consumptionLabel, tpDeferTierOutside)
+			}
+			mu.Unlock()
+			return false, 0, ""
+		}
+		rules, _ = parseStrategyTPSLAfterRulesForRegime(sc, nil, consumptionLabel)
+	} else if strategyUsesRegimeTieredTPATRClose(sc) {
 		rules, _ = parseStrategyTPSLAfterRulesForRegime(sc, nil, posRegime)
+	} else {
+		rules, _ = parseStrategyTPSLAfterRules(sc)
 	}
 	rawRule := rules.ForTier(clearedIdx)
 	tierMultiple := rules.TierMultiple(clearedIdx)
 
 	if rawRule.IsEmpty() {
 		mu.Lock()
-		if p, ok := stratState.Positions[symbol]; ok && p != nil && p.SLAdjustedTiersProcessed <= clearedIdx {
-			p.SLAdjustedTiersProcessed = clearedIdx + 1
+		if p, ok := stratState.Positions[symbol]; ok && p != nil {
+			if unified {
+				completeBookedConsumptionGroup(p, consumptionLabel, false)
+			} else if p.SLAdjustedTiersProcessed <= clearedIdx {
+				p.SLAdjustedTiersProcessed = clearedIdx + 1
+			}
 		}
 		mu.Unlock()
 		return false, 0, ""
@@ -1011,6 +1129,13 @@ func runPostTPStopLossAdjustment(
 
 	rule, resolved := rawRule.resolveForRegimeAndTier(posRegime, tierMultiple)
 	if !resolved {
+		if unified {
+			mu.Lock()
+			if p, ok := stratState.Positions[symbol]; ok && p != nil {
+				deferBookedConsumptionGroup(p, sc.ID, symbol, consumptionLabel, tpDeferRuleUnresolved)
+			}
+			mu.Unlock()
+		}
 		if logger != nil {
 			logger.Info("post-TP SL adjustment for %s deferred: tier %d rule is regime-aware but pos.Regime=%q yields no entry",
 				symbol, clearedIdx, posRegime)
@@ -1183,7 +1308,9 @@ func runPostTPStopLossAdjustment(
 			if cls.restingConfirmed && !cls.filledAtSubmit && cur.StopLossTriggerPx <= 0 {
 				cur.StopLossTriggerPx = triggerPx
 			}
-			if cur.SLAdjustedTiersProcessed <= clearedIdx {
+			if unified {
+				completeBookedConsumptionGroup(cur, consumptionLabel, true)
+			} else if cur.SLAdjustedTiersProcessed <= clearedIdx {
 				cur.SLAdjustedTiersProcessed = clearedIdx + 1
 			}
 			if rule.Kind == "trail_from_here" && rule.TrailATRMult > 0 {
@@ -1334,6 +1461,13 @@ func runPaperPostTPStopLossAdjustment(
 	if stratState == nil || symbol == "" || mu == nil {
 		return false
 	}
+	defer sendTPConsumptionDeferNotices(notifier)
+	if !strategyHasPostTPStopRules(sc) {
+		return false
+	}
+	if strategyUsesUnifiedRegimeClose(sc) {
+		return runUnifiedPaperPostTPStopLossAdjustment(sc, stratState, symbol, mark, cfg, mu, notifier, logger)
+	}
 	rules, _ := parseStrategyTPSLAfterRules(sc)
 	if !rules.HasAny() {
 		return false
@@ -1400,6 +1534,94 @@ func runPaperPostTPStopLossAdjustment(
 
 	if logger != nil {
 		logger.Info("paper post-TP SL adjusted: trigger=$%.4f→$%.4f (mode=%s tier=%d)", oldTrigger, triggerPx, mode, clearedIdx)
+	}
+	if cfg != nil {
+		notifySLAdjustment(notifier, cfg.NotifyTPSLFillsEnabled(), SLAdjustmentAlert{
+			StrategyID:           sc.ID,
+			Symbol:               symbol,
+			Side:                 side,
+			TierIdx:              clearedIdx,
+			OldTriggerPx:         oldTrigger,
+			NewTriggerPx:         triggerPx,
+			Mode:                 mode,
+			TransitionToTrailing: transitionedToTrailing,
+		})
+	}
+	return true
+}
+
+func runUnifiedPaperPostTPStopLossAdjustment(
+	sc StrategyConfig,
+	stratState *StrategyState,
+	symbol string,
+	mark float64,
+	cfg *Config,
+	mu *sync.RWMutex,
+	notifier *MultiNotifier,
+	logger *StrategyLogger,
+) bool {
+	mu.Lock()
+	pos, ok := stratState.Positions[symbol]
+	if !ok || pos == nil || pos.Quantity <= 0 || pos.InitialQuantity <= 0 {
+		mu.Unlock()
+		return false
+	}
+	label, clearedIdx, clearedOK := nextBookedConsumptionGroup(pos)
+	if !clearedOK {
+		mu.Unlock()
+		return false
+	}
+	if !unifiedCloseLabelResolves(sc, label) || clearedIdx >= len(strategyTPTiersForRegime(sc, label)) {
+		reason := tpDeferLabelUnresolved
+		if unifiedCloseLabelResolves(sc, label) {
+			reason = tpDeferTierOutside
+		}
+		deferBookedConsumptionGroup(pos, sc.ID, symbol, label, reason)
+		mu.Unlock()
+		return false
+	}
+	rules, _ := parseStrategyTPSLAfterRulesForRegime(sc, nil, label)
+	rawRule := rules.ForTier(clearedIdx)
+	if rawRule.IsEmpty() {
+		completeBookedConsumptionGroup(pos, label, false)
+		mu.Unlock()
+		return false
+	}
+	if pos.StopLossTriggerPx <= 0 {
+		mu.Unlock()
+		return false
+	}
+	rule, resolved := rawRule.resolveForRegimeAndTier(label, rules.TierMultiple(clearedIdx))
+	if !resolved {
+		deferBookedConsumptionGroup(pos, sc.ID, symbol, label, tpDeferRuleUnresolved)
+		mu.Unlock()
+		if logger != nil {
+			logger.Info("paper post-TP SL adjustment for %s deferred: tier %d rule does not resolve under label %q", symbol, clearedIdx, label)
+		}
+		return false
+	}
+	side := pos.Side
+	triggerPx, mode, computeOK := computePostTPStopLossTrigger(rule, side, pos.riskAnchorPrice(), pos.EntryATR, mark)
+	if !computeOK {
+		mu.Unlock()
+		return false
+	}
+	oldTrigger := pos.StopLossTriggerPx
+	pos.StopLossTriggerPx = triggerPx
+	completeBookedConsumptionGroup(pos, label, true)
+	transitionedToTrailing := false
+	if rule.Kind == "trail_from_here" && rule.TrailATRMult > 0 {
+		mult := rule.TrailATRMult
+		pos.PostTPTrailingATRMult = &mult
+		if mark > 0 {
+			pos.StopLossHighWaterPx = mark
+		}
+		transitionedToTrailing = true
+	}
+	mu.Unlock()
+
+	if logger != nil {
+		logger.Info("paper post-TP SL adjusted: trigger=$%.4f→$%.4f (mode=%s tier=%d label=%s)", oldTrigger, triggerPx, mode, clearedIdx, label)
 	}
 	if cfg != nil {
 		notifySLAdjustment(notifier, cfg.NotifyTPSLFillsEnabled(), SLAdjustmentAlert{

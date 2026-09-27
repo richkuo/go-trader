@@ -206,7 +206,14 @@ func applyReplayedLiveDecisions(sc StrategyConfig, s *StrategyState, pending []R
 				markApplied(row.DecisionID)
 				continue
 			}
+			preQty := pos.Quantity
+			preInit := pos.InitialQuantity
 			if bookPerpsPartialCloseWithFillFee(s, row.Symbol, row.Quantity, price, 0, false, "", "replay_live_mirror", "Live mirror partial close", "Live mirror partial close", logger) {
+				if replayCloseReasonIsTakeProfit(row.CloseReason) {
+					if cur := s.Positions[row.Symbol]; cur != nil && cur.Quantity > 0 {
+						recordPaperUnifiedTPConsumption(sc, cur, preQty, preInit)
+					}
+				}
 				trades++
 				details = append(details, fmt.Sprintf("[%s] REPLAY PARTIAL CLOSE %s %.6f @ $%.2f", sc.ID, row.Symbol, row.Quantity, price))
 			} else {

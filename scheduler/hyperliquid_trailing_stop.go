@@ -215,6 +215,8 @@ func hyperliquidProtectionPositionSnapshot(pos *Position) *Position {
 		RegimePendingLabel:              pos.RegimePendingLabel,
 		RegimePendingCount:              pos.RegimePendingCount,
 		SLAdjustedTiersProcessed:        pos.SLAdjustedTiersProcessed,
+		SLAfterMoved:                    pos.SLAfterMoved,
+		TPConsumptions:                  cloneTPConsumptions(pos.TPConsumptions),
 		RatchetFallbackNormalizePending: pos.RatchetFallbackNormalizePending,
 	}
 	if pos.PostTPTrailingATRMult != nil {

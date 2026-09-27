@@ -373,6 +373,7 @@ func runHyperliquidShareRearm(
 		armed := hlBookArmed(pos)
 		highWater := pos.StopLossHighWaterPx
 		posSnap := *pos
+		posSnap.TPConsumptions = cloneTPConsumptions(pos.TPConsumptions)
 		peers, opp := share.peers(symbol, sc.ID, side)
 		mu.RUnlock()
 		needSync := (unarmed && syncOwned) || forceTP
@@ -434,6 +435,7 @@ func hlProtectionSyncOwnsStop(sc StrategyConfig, pos *Position) bool {
 		return false
 	}
 	probe := *pos
+	probe.TPConsumptions = cloneTPConsumptions(pos.TPConsumptions)
 	probe.StopLossOID = 0
 	probe.StopLossTriggerPx = 0
 	plan, ok := buildHyperliquidProtectionPlan(sc, &probe, 0)

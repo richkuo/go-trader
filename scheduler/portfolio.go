@@ -38,6 +38,8 @@ type Position struct {
 	RegimePendingCount              int               `json:"regime_pending_count,omitempty"`
 	RegimeAppliedLabel              string            `json:"regime_applied_label,omitempty"`
 	SLAdjustedTiersProcessed        int               `json:"sl_adjusted_tiers_processed,omitempty"`
+	SLAfterMoved                    bool              `json:"sl_after_moved,omitempty"`
+	TPConsumptions                  []TPConsumption   `json:"tp_consumptions,omitempty"`
 	PostTPTrailingATRMult           *float64          `json:"post_tp_trailing_atr_mult,omitempty"`
 	ScaleInCount                    int               `json:"scale_in_count,omitempty"`
 	LastAddPrice                    float64           `json:"last_add_price,omitempty"`

@@ -37,6 +37,7 @@ func armTrailingStopAtOpenNow(
 		peers, opp = share.peers(symbol, sc.ID, side)
 	}
 	posSnap := *pos
+	posSnap.TPConsumptions = cloneTPConsumptions(pos.TPConsumptions)
 	mu.RUnlock()
 
 	q := hlStopQty{Qty: book, Fresh: true}

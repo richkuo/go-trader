@@ -26,6 +26,10 @@ func TestAdvancePaperDynamicCloseRegime(t *testing.T) {
 	markAt := func(v float64) func(*StrategyConfig, *Position) {
 		return func(*StrategyConfig, *Position) { mark = v }
 	}
+	markSLAfterMoved := func(_ *StrategyConfig, pos *Position) {
+		pos.SLAfterMoved = true
+		mark = 2010
+	}
 	cases := []struct {
 		name        string
 		mode        string
@@ -45,7 +49,7 @@ func TestAdvancePaperDynamicCloseRegime(t *testing.T) {
 		{"confirmed flip re-arms the fixed stop at the new label", "--mode=paper", dynamic, nil, 2, 1940, "ranging", "ranging", 1968, true},
 		{"unconfirmed flip keeps the fixed stop", "--mode=paper", dynamic, nil, 1, 1940, "trending_up", "trending_up", 1940, false},
 		{"flip under the min-move gate keeps the fixed stop", "--mode=paper", dynamic, minMove(5), 2, 1940, "ranging", "ranging", 1940, true},
-		{"flip after an sl_after breakeven move re-arms like the live sync", "--mode=paper", dynamic, nil, 2, 2000, "ranging", "ranging", 1968, true},
+		{"flip after a marked sl_after breakeven holds the stop", "--mode=paper", dynamic, markSLAfterMoved, 2, 2000, "ranging", "ranging", 2000, true},
 		{"flip after an sl_after move inside the min-move gate keeps it", "--mode=paper", dynamic, nil, 2, 1970, "ranging", "ranging", 1970, true},
 		{"flip keeps a post-TP trailing stop", "--mode=paper", dynamic, postTPTrail, 2, 1990, "ranging", "ranging", 1990, false},
 		{"flip keeps a trailing stop owner", "--mode=paper", dynamic, trailOwner, 2, 1990, "ranging", "ranging", 1990, false},
@@ -88,7 +92,7 @@ func TestAdvancePaperDynamicCloseRegime(t *testing.T) {
 				t.Fatalf("paper stop = %.4f, want %.4f", pos.StopLossTriggerPx, tc.wantStop)
 			}
 			if tc.matchesLive {
-				if live := liveStopAfterDynamicFlip(t, sc, "trending_up", "ranging", tc.stop); !approxEq(pos.StopLossTriggerPx, live) {
+				if live := liveStopAfterDynamicFlip(t, sc, "trending_up", "ranging", tc.stop, pos.SLAfterMoved); !approxEq(pos.StopLossTriggerPx, live) {
 					t.Fatalf("paper stop = %.4f, live sync places %.4f", pos.StopLossTriggerPx, live)
 				}
 			}
@@ -175,11 +179,11 @@ func TestLoadConfigDynamicCloseConfirmCycles(t *testing.T) {
 	}
 }
 
-func liveStopAfterDynamicFlip(t *testing.T, sc StrategyConfig, oldLabel, newLabel string, stop float64) float64 {
+func liveStopAfterDynamicFlip(t *testing.T, sc StrategyConfig, oldLabel, newLabel string, stop float64, moved bool) float64 {
 	t.Helper()
 	live := sc
 	live.Args = []string{"sma", "ETH", "1h", "--mode=live"}
-	pos := &Position{Symbol: "ETH", Side: "long", Quantity: 1, AvgCost: 2000, EntryATR: 40, RegimeAppliedLabel: newLabel, StopLossOID: 7, StopLossTriggerPx: stop}
+	pos := &Position{Symbol: "ETH", Side: "long", Quantity: 1, AvgCost: 2000, EntryATR: 40, RegimeAppliedLabel: newLabel, StopLossOID: 7, StopLossTriggerPx: stop, SLAfterMoved: moved}
 	plan, ok := buildHyperliquidProtectionPlan(live, pos, 0)
 	if !ok {
 		t.Fatal("live protection plan did not build")

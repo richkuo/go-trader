@@ -11,9 +11,11 @@ from shared_strategies.close.regime_atr import (
     SURFACE_SL_AFTER_TRAIL,
     SURFACE_STOP_LOSS,
     RegimeATRBlock,
+    close_params_are_unified_regime,
     parse_regime_atr_block,
     parse_regime_tp_tiers,
     resolve_regime_tier,
+    unified_regime_scalar_params,
 )
 from shared_strategies.close._helpers import tier_list_from_params
 
@@ -524,18 +526,33 @@ def parse_strategy_tp_sl_after_rules(
     default_raw: Any = None
     tiers_raw: Any = None
     tiered_name = ""
+    matched_params: dict = {}
     for ref in close_refs:
         name = (ref.get("name") or "").strip().lower()
         if name not in _TIERED_TP_NAMES:
             continue
         tiered_name = name
         params = ref.get("params") or {}
+        matched_params = params
         if "sl_after" in params:
             default_raw = params["sl_after"]
         _tiers = tier_list_from_params(params)
         if _tiers is not None:
             tiers_raw = _tiers
         break
+    unified = tiered_name in (
+        "tiered_tp_atr_regime",
+        "tiered_tp_atr_live_regime",
+    ) and close_params_are_unified_regime(matched_params)
+    if unified:
+        reg = (regime or "").strip()
+        if not reg:
+            return rules, errs
+        scalar, _sl = unified_regime_scalar_params(matched_params, reg)
+        if not isinstance(scalar, dict):
+            return rules, errs
+        tiers_raw = scalar.get("tp_tiers")
+        default_raw = None
     if default_raw is not None:
         try:
             r = parse_sl_after_rule(default_raw, labels=labels)
@@ -543,7 +560,7 @@ def parse_strategy_tp_sl_after_rules(
             rules.default = r
         except ValueError as e:
             errs.append(f"sl_after (strategy-level): {e}")
-    if tiered_name in ("tiered_tp_atr_regime", "tiered_tp_atr_live_regime"):
+    if not unified and tiered_name in ("tiered_tp_atr_regime", "tiered_tp_atr_live_regime"):
         reg = (regime or "").strip()
         if not reg:
             if isinstance(tiers_raw, list):
@@ -637,6 +654,88 @@ def parse_strategy_tp_sl_after_rules(
     return rules, errs
 
 
+def _unified_sl_after_refs(close_refs: Iterable[dict]) -> bool:
+    for ref in close_refs:
+        name = (ref.get("name") or "").strip().lower()
+        if name not in ("tiered_tp_atr_regime", "tiered_tp_atr_live_regime"):
+            continue
+        if close_params_are_unified_regime(ref.get("params") or {}):
+            return True
+    return False
+
+
+def _validate_unified_post_tp_stop_loss_rules(
+    close_refs: Iterable[dict],
+    *,
+    trailing_stop_atr_mult: Optional[float] = None,
+    trailing_stop_pct: Optional[float] = None,
+    strategy_type: str = "perps",
+    labels: Optional[Iterable[str]] = None,
+) -> List[str]:
+    out: List[str] = []
+    has_any = False
+    has_label_stop = False
+    for ref in close_refs:
+        name = (ref.get("name") or "").strip().lower()
+        params = ref.get("params") or {}
+        if name not in ("tiered_tp_atr_regime", "tiered_tp_atr_live_regime"):
+            continue
+        if not close_params_are_unified_regime(params):
+            continue
+        trend = params.get(REGIME_CLASSIFIER_KEY)
+        if not isinstance(trend, dict):
+            continue
+        for label in sorted(trend):
+            block = trend[label]
+            if not isinstance(block, dict):
+                continue
+            rules, _errs = parse_strategy_tp_sl_after_rules(
+                [ref], regime=label, labels=labels,
+            )
+            if rules.has_any():
+                has_any = True
+            try:
+                if float(block.get("stop_loss_atr") or 0) > 0:
+                    has_label_stop = True
+            except (TypeError, ValueError):
+                pass
+            if (strategy_type or "").strip().lower() != "manual":
+                continue
+            tiers = block.get("tp_tiers")
+            if not isinstance(tiers, list):
+                continue
+            for i, item in enumerate(tiers):
+                if not isinstance(item, dict) or item.get("sl_after") is None:
+                    continue
+                try:
+                    rule = parse_sl_after_rule(item["sl_after"], labels=labels)
+                    validate_sl_after_rule(rule)
+                except ValueError:
+                    continue
+                if rule.kind == "trail_from_here":
+                    out.append(
+                        f"sl_after ({label} tier[{i}]): trail_from_here is not "
+                        "supported on manual strategies (perps only in v1) — "
+                        "use breakeven or atr_mult instead"
+                    )
+    if not has_any:
+        return out
+    if (trailing_stop_atr_mult is not None and trailing_stop_atr_mult > 0) or (
+        trailing_stop_pct is not None and trailing_stop_pct > 0
+    ):
+        out.append(
+            "sl_after cannot be combined with trailing_stop_atr_mult or "
+            "trailing_stop_pct — trailing already walks the SL continuously"
+        )
+    if not has_label_stop:
+        out.append(
+            "sl_after requires a fixed stop-loss to adjust (set "
+            "stop_loss_atr_mult, stop_loss_atr_mult_regime, stop_loss_pct, "
+            "or stop_loss_margin_pct)"
+        )
+    return out
+
+
 def validate_post_tp_stop_loss_rules(
     close_refs: Iterable[dict],
     *,
@@ -650,6 +749,14 @@ def validate_post_tp_stop_loss_rules(
     labels: Optional[Iterable[str]] = None,
 ) -> List[str]:
     close_refs = list(close_refs)
+    if _unified_sl_after_refs(close_refs):
+        return _validate_unified_post_tp_stop_loss_rules(
+            close_refs,
+            trailing_stop_atr_mult=trailing_stop_atr_mult,
+            trailing_stop_pct=trailing_stop_pct,
+            strategy_type=strategy_type,
+            labels=labels,
+        )
     rules, parse_errs = parse_strategy_tp_sl_after_rules(close_refs, labels=labels)
     out: List[str] = list(parse_errs)
     for ref in close_refs:
@@ -775,6 +882,37 @@ def parse_tp_tier_close_fractions(
         if name not in _TIERED_TP_NAMES:
             continue
         params = ref.get("params") or {}
+        if name in ("tiered_tp_atr_regime", "tiered_tp_atr_live_regime") and close_params_are_unified_regime(params):
+            reg = (regime or "").strip()
+            if not reg:
+                return []
+            scalar, _sl = unified_regime_scalar_params(params, reg)
+            if not isinstance(scalar, dict):
+                return []
+            tiers_raw = scalar.get("tp_tiers")
+            if not isinstance(tiers_raw, list) or len(tiers_raw) == 0:
+                return []
+            pairs = []
+            for item in tiers_raw:
+                if not isinstance(item, dict):
+                    continue
+                mult_raw = item.get("atr_multiple")
+                frac_raw = item.get("close_fraction")
+                try:
+                    mult = float(mult_raw) if mult_raw is not None else 0.0
+                    frac = float(frac_raw) if frac_raw is not None else 0.0
+                except (TypeError, ValueError):
+                    continue
+                if mult <= 0 or frac <= 0:
+                    continue
+                pairs.append((mult, max(min(frac, 1.0), 0.0)))
+            if not pairs:
+                return []
+            pairs.sort(key=lambda p: p[0])
+            out = [p[1] for p in pairs]
+            if out:
+                out[-1] = 1.0
+            return out
         if name in ("tiered_tp_atr_regime", "tiered_tp_atr_live_regime"):
             reg = (regime or "").strip()
             if not reg:

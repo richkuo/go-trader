@@ -30,6 +30,16 @@
           }
         ]
       }
+    },
+    "unified": {
+      "name": "tiered_tp_atr_live_regime",
+      "params": {
+        "trend_regime": {
+          "trending_up": {"stop_loss_atr": 1.5, "tp_tiers": [{"atr_multiple": 1.0, "close_fraction": 0.4}, {"atr_multiple": 2.0, "close_fraction": 1.0}]},
+          "trending_down": {"stop_loss_atr": 1.5, "tp_tiers": [{"atr_multiple": 1.0, "close_fraction": 0.4}, {"atr_multiple": 2.0, "close_fraction": 1.0}]},
+          "ranging": {"stop_loss_atr": 1.0, "tp_tiers": [{"atr_multiple": 1.5, "close_fraction": 0.5}, {"atr_multiple": 3.0, "close_fraction": 1.0}]}
+        }
+      }
     }
   },
   "cleared_tier": [
@@ -41,7 +51,9 @@
     {"name": "processed tiers are skipped", "ladder": "scalar", "regime": "", "closed_ratio": 0.6, "from_idx": 1, "want_idx": -1},
     {"name": "regime ladder uses the position regime fractions", "ladder": "regime", "regime": "trending_up", "closed_ratio": 0.4, "from_idx": 0, "want_idx": 0},
     {"name": "regime ladder in another regime needs its own fraction", "ladder": "regime", "regime": "ranging", "closed_ratio": 0.4, "from_idx": 0, "want_idx": -1},
-    {"name": "regime ladder with no regime clears nothing", "ladder": "regime", "regime": "", "closed_ratio": 0.6, "from_idx": 0, "want_idx": -1}
+    {"name": "regime ladder with no regime clears nothing", "ladder": "regime", "regime": "", "closed_ratio": 0.6, "from_idx": 0, "want_idx": -1},
+    {"name": "unified ranging ratio under the first fraction clears nothing", "ladder": "unified", "regime": "ranging", "label": "ranging", "closed_ratio": 0.4999, "from_idx": 0, "want_idx": -1},
+    {"name": "unified ranging ratio at the first fraction clears tier 0", "ladder": "unified", "regime": "ranging", "label": "ranging", "closed_ratio": 0.5, "from_idx": 0, "want_idx": 0}
   ],
   "sl_after": [
     {
@@ -187,6 +199,38 @@
       "position": {"side": "short", "avg_cost": 100, "entry_atr": 2, "quantity": 0.5, "initial_quantity": 1, "stop_loss_trigger_px": 102, "sl_adjusted_tiers_processed": 0, "regime": "ranging", "stop_loss_high_water_px": 0},
       "mark": 97,
       "want": {"stop_loss_trigger_px": 98, "sl_adjusted_tiers_processed": 1, "post_tp_trailing_atr_mult": 0.5, "stop_loss_high_water_px": 97}
+    },
+    {
+      "name": "unified ranging breakeven long after tier 0",
+      "ladder": "unified", "label": "ranging", "stop_loss_atr_mult": 1.0,
+      "sl_after": null, "tier_sl_after": {"0": "breakeven"},
+      "position": {"side": "long", "avg_cost": 100, "entry_atr": 2, "quantity": 0.5, "initial_quantity": 1, "stop_loss_trigger_px": 98, "sl_adjusted_tiers_processed": 0, "regime": "ranging", "stop_loss_high_water_px": 0},
+      "mark": 102,
+      "want": {"stop_loss_trigger_px": 100, "sl_adjusted_tiers_processed": 1, "post_tp_trailing_atr_mult": null, "stop_loss_high_water_px": 0}
+    },
+    {
+      "name": "unified ranging atr offset long after tier 0",
+      "ladder": "unified", "label": "ranging", "stop_loss_atr_mult": 1.0,
+      "sl_after": null, "tier_sl_after": {"0": {"kind": "atr_offset", "atr_mult": 0.5}},
+      "position": {"side": "long", "avg_cost": 100, "entry_atr": 2, "quantity": 0.5, "initial_quantity": 1, "stop_loss_trigger_px": 98, "sl_adjusted_tiers_processed": 0, "regime": "ranging", "stop_loss_high_water_px": 0},
+      "mark": 102,
+      "want": {"stop_loss_trigger_px": 101, "sl_adjusted_tiers_processed": 1, "post_tp_trailing_atr_mult": null, "stop_loss_high_water_px": 0}
+    },
+    {
+      "name": "unified ranging trail from here long after tier 0",
+      "ladder": "unified", "label": "ranging", "stop_loss_atr_mult": 1.0,
+      "sl_after": null, "tier_sl_after": {"0": {"kind": "trail_from_here", "atr_mult": 1.5}},
+      "position": {"side": "long", "avg_cost": 100, "entry_atr": 2, "quantity": 0.5, "initial_quantity": 1, "stop_loss_trigger_px": 98, "sl_adjusted_tiers_processed": 0, "regime": "ranging", "stop_loss_high_water_px": 0},
+      "mark": 103,
+      "want": {"stop_loss_trigger_px": 100, "sl_adjusted_tiers_processed": 1, "post_tp_trailing_atr_mult": 1.5, "stop_loss_high_water_px": 103}
+    },
+    {
+      "name": "unified ranging tier fraction trail uses the label multiple",
+      "ladder": "unified", "label": "ranging", "stop_loss_atr_mult": 1.0,
+      "sl_after": null, "tier_sl_after": {"0": {"kind": "trail_from_here", "tp_atr_fraction": 0.5}},
+      "position": {"side": "long", "avg_cost": 100, "entry_atr": 2, "quantity": 0.5, "initial_quantity": 1, "stop_loss_trigger_px": 98, "sl_adjusted_tiers_processed": 0, "regime": "ranging", "stop_loss_high_water_px": 0},
+      "mark": 104,
+      "want": {"stop_loss_trigger_px": 102.5, "sl_adjusted_tiers_processed": 1, "post_tp_trailing_atr_mult": 0.75, "stop_loss_high_water_px": 104}
     }
   ]
 }

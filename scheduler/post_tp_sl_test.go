@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func postTPSLTestStrategy(slAfter interface{}, tiers []interface{}) StrategyConfig {
@@ -201,6 +202,7 @@ type slAfterParityFixture struct {
 		Name        string  `json:"name"`
 		Ladder      string  `json:"ladder"`
 		Regime      string  `json:"regime"`
+		Label       string  `json:"label"`
 		ClosedRatio float64 `json:"closed_ratio"`
 		FromIdx     int     `json:"from_idx"`
 		WantIdx     int     `json:"want_idx"`
@@ -208,6 +210,7 @@ type slAfterParityFixture struct {
 	SLAfter []struct {
 		Name            string                 `json:"name"`
 		Ladder          string                 `json:"ladder"`
+		Label           string                 `json:"label"`
 		StopLossATRMult float64                `json:"stop_loss_atr_mult"`
 		SLAfter         interface{}            `json:"sl_after"`
 		TierSLAfter     map[string]interface{} `json:"tier_sl_after"`
@@ -230,7 +233,43 @@ func loadSLAfterParityFixture(t *testing.T) slAfterParityFixture {
 	return f
 }
 
-func (f slAfterParityFixture) strategy(t *testing.T, ladder string, slMult float64, slAfter interface{}, tierSLAfter map[string]interface{}) StrategyConfig {
+func seedBookedConsumptionsForClosedRatio(sc StrategyConfig, pos *Position) {
+	if pos == nil || pos.InitialQuantity <= 0 {
+		return
+	}
+	label := pos.Regime
+	if strategyUsesDynamicRegimeClose(sc) && pos.RegimeAppliedLabel != "" {
+		label = pos.RegimeAppliedLabel
+	}
+	ratio := 1 - pos.Quantity/pos.InitialQuantity
+	now := time.Now().UTC()
+	for i, th := range paperSLAfterTierThresholds(sc, label) {
+		if i < pos.SLAdjustedTiersProcessed || ratio+1e-9 < th {
+			continue
+		}
+		pos.TPConsumptions = append(pos.TPConsumptions, TPConsumption{
+			Label: label, Tier: i, Stage: tpConsumptionBooked,
+			UpdatedAt: now.Add(time.Duration(i) * time.Millisecond),
+		})
+	}
+}
+
+func parityTierList(t *testing.T, ladder string, ref *StrategyRef, label string) []interface{} {
+	t.Helper()
+	if closeParamsAreUnifiedRegime(ref.Params) {
+		trend, _ := ref.Params["trend_regime"].(map[string]interface{})
+		block, _ := trend[label].(map[string]interface{})
+		tiers, _ := block["tp_tiers"].([]interface{})
+		if tiers == nil {
+			t.Fatalf("ladder %q label %q has no tp_tiers", ladder, label)
+		}
+		return tiers
+	}
+	tiers, _ := ref.Params["tp_tiers"].([]interface{})
+	return tiers
+}
+
+func (f slAfterParityFixture) strategy(t *testing.T, ladder, label string, slMult float64, slAfter interface{}, tierSLAfter map[string]interface{}) StrategyConfig {
 	t.Helper()
 	raw, ok := f.Ladders[ladder]
 	if !ok {
@@ -240,7 +279,7 @@ func (f slAfterParityFixture) strategy(t *testing.T, ladder string, slMult float
 	if err := json.Unmarshal(raw, &ref); err != nil {
 		t.Fatalf("decode ladder %q: %v", ladder, err)
 	}
-	tiers, _ := ref.Params["tp_tiers"].([]interface{})
+	tiers := parityTierList(t, ladder, &ref, label)
 	for key, rule := range tierSLAfter {
 		var idx int
 		if err := json.Unmarshal([]byte(key), &idx); err != nil || idx < 0 || idx >= len(tiers) {
@@ -248,7 +287,7 @@ func (f slAfterParityFixture) strategy(t *testing.T, ladder string, slMult float
 		}
 		tiers[idx].(map[string]interface{})["sl_after"] = rule
 	}
-	if slAfter != nil {
+	if slAfter != nil && !closeParamsAreUnifiedRegime(ref.Params) {
 		ref.Params["sl_after"] = slAfter
 	}
 	return StrategyConfig{
@@ -269,7 +308,11 @@ func TestPaperSLAfterClearedTier(t *testing.T) {
 	}
 	for _, c := range f.ClearedTier {
 		t.Run(c.Name, func(t *testing.T) {
-			sc := f.strategy(t, c.Ladder, 1, nil, nil)
+			label := c.Label
+			if label == "" {
+				label = c.Regime
+			}
+			sc := f.strategy(t, c.Ladder, label, 1, nil, nil)
 			idx, ok := findHighestClearedTierByClosedRatio(paperSLAfterTierThresholds(sc, c.Regime), c.ClosedRatio, c.FromIdx)
 			got := -1
 			if ok {
@@ -301,7 +344,7 @@ func TestRunPaperPostTPStopLossAdjustment(t *testing.T) {
 	for _, c := range f.SLAfter {
 		for _, sp := range scopes {
 			t.Run(c.Name+"/"+sp.name, func(t *testing.T) {
-				sc := f.strategy(t, c.Ladder, c.StopLossATRMult, c.SLAfter, c.TierSLAfter)
+				sc := f.strategy(t, c.Ladder, c.Label, c.StopLossATRMult, c.SLAfter, c.TierSLAfter)
 				sc.Args = sp.args
 				sc.Type = sp.typ
 				p := c.Position
@@ -316,6 +359,9 @@ func TestRunPaperPostTPStopLossAdjustment(t *testing.T) {
 					SLAdjustedTiersProcessed: p.SLAdjustedTiersProcessed,
 					Regime:                   p.Regime,
 					StopLossHighWaterPx:      p.StopLossHighWaterPx,
+				}
+				if strategyUsesUnifiedRegimeClose(sc) && sp.moves {
+					seedBookedConsumptionsForClosedRatio(sc, pos)
 				}
 				state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
 				var mu sync.RWMutex

@@ -749,6 +749,9 @@ func tryBookSoleOwnerTPFill(
 	if soleOwnerRecoveryBook && posAfter != nil {
 		stampSoleOwnerRecoveryTierConsumed(posAfter, tierIdx)
 	}
+	if posAfter != nil {
+		recordTPConsumptionAtBooking(sc, posAfter, closeQty, lookup.OID, tierIdx)
+	}
 
 	remaining := 0.0
 	if posAfter != nil {
@@ -931,6 +934,9 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 		}
 		if notifier != nil && !isNilSender(notifier) {
 			for _, msg := range pendingOwnerDMs {
+				notifier.SendOwnerDM(msg)
+			}
+			for _, msg := range takeTPConsumptionDeferNotices() {
 				notifier.SendOwnerDM(msg)
 			}
 		}
@@ -1367,6 +1373,9 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 							}
 							closePx := hlReconcileExternalClosePx(mark, lookup, useFillFee)
 							if recordPerpsExternalPartialCloseWithFillFee(candidateSS, coin, closeQty, closePx, lookup.Fee, useFillFee, detector3OID, "hl_sync_external_partial", logger) {
+								if posAfter := candidateSS.Positions[coin]; posAfter != nil && scOK {
+									recordTPConsumptionAtBooking(sc, posAfter, closeQty, lookup.OID, candidateTierIdx)
+								}
 								changed = true
 								if closeSide == "long" {
 									virtualQty -= closeQty
@@ -1749,6 +1758,9 @@ func hlAttemptCloseFromArmedTPClears(
 		logPrefix := fmt.Sprintf("TP%d fill reconciled", i+1)
 		if !bookPerpsPartialCloseWithFillFee(s, sym, closeQty, lookup.Px, lookup.Fee, true, oidStr, reason, detailsPrefix, logPrefix, logger) {
 			break
+		}
+		if posAfter := s.Positions[sym]; posAfter != nil {
+			recordTPConsumptionAtBooking(sc, posAfter, closeQty, lookup.OID, i)
 		}
 		booked = true
 		if pendingAlerts != nil {

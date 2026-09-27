@@ -178,6 +178,7 @@ func manualStateViewFromStateWithStore(cfg *Config, state *AppState, store *Stat
 		cp := *pos
 		cp.TPOIDs = cloneInt64s(pos.TPOIDs)
 		cp.TPArmedTiers = append([]bool(nil), pos.TPArmedTiers...)
+		cp.TPConsumptions = cloneTPConsumptions(pos.TPConsumptions)
 		v.Pos = &cp
 		if cfg != nil {
 			v.PeerSame, v.PeerOppQty = hlPeerBookListOnCoin(state.Strategies, hyperliquidCloseScopeStrategies(cfg.Strategies), symbol, strategyID, pos.Side)

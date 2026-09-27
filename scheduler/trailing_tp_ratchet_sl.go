@@ -44,6 +44,7 @@ func runTrailingStopUpdateAfterRatchetTighten(
 		peers, opp = share.peers(symbol, sc.ID, side)
 	}
 	posSnap := *pos
+	posSnap.TPConsumptions = cloneTPConsumptions(pos.TPConsumptions)
 	mu.RUnlock()
 
 	if hyperliquidIsLive(sc.Args) {

@@ -889,6 +889,7 @@ func cloneUIPositions(in map[string]*Position) map[string]*Position {
 		cp := *v
 		cp.TPOIDs = append([]int64(nil), v.TPOIDs...)
 		cp.TPArmedTiers = append([]bool(nil), v.TPArmedTiers...)
+		cp.TPConsumptions = cloneTPConsumptions(v.TPConsumptions)
 		if v.StopLossATRMult != nil {
 			x := *v.StopLossATRMult
 			cp.StopLossATRMult = &x

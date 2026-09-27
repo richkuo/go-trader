@@ -764,13 +764,24 @@ func runHyperliquidProtectionSyncForRemainder(
 	defer unlockSymbol()
 	var plan hlProtectionPlan
 	var syncOK bool
+	var discoveryLabel string
+	unifiedClose := strategyUsesUnifiedRegimeClose(sc)
 	if strategyUsesDynamicRegimeClose(sc) {
 		mu.Lock()
 		if pos, ok := stratState.Positions[symbol]; ok {
 			oldAppliedRegime := pos.RegimeAppliedLabel
 			regimeChanged := false
-			if guardMode != hlProtectionGuardFullHoldRegime {
+			if guardMode != hlProtectionGuardFullHoldRegime && !tpConsumptionHoldsRegime(pos) {
 				regimeChanged = advanceDynamicCloseRegime(pos, stratState, sc)
+			} else if tpConsumptionHoldsRegime(pos) && logger != nil {
+				logger.InfoOnChange("tp-consumption-hold", symbol, "dynamic close regime held for %s: confirmed take-profit consumption is still unprocessed", symbol)
+			}
+			if unifiedClose {
+				if regimeChanged {
+					discoveryLabel = oldAppliedRegime
+				} else {
+					discoveryLabel = protectionATRRegimeLabel(pos, sc)
+				}
 			}
 			plan, syncOK = buildHyperliquidProtectionPlan(sc, pos, hlLiquidationPxForSide(liqPxByCoin, netSideByCoin, symbol, pos.Side))
 			if syncOK {
@@ -791,6 +802,9 @@ func runHyperliquidProtectionSyncForRemainder(
 	} else {
 		mu.RLock()
 		if pos, ok := stratState.Positions[symbol]; ok {
+			if unifiedClose {
+				discoveryLabel = protectionATRRegimeLabel(pos, sc)
+			}
 			plan, syncOK = buildHyperliquidProtectionPlan(sc, pos, hlLiquidationPxForSide(liqPxByCoin, netSideByCoin, symbol, pos.Side))
 			if syncOK && pos.ScaleInResizePending {
 				fSL, fTP := scaleInProtectionForceReplace(pos, plan)
@@ -886,6 +900,9 @@ func runHyperliquidProtectionSyncForRemainder(
 		markHLProtectionSyncStopFilled(sc.ID, symbol, pos.StopLossOID)
 	}
 	clearHyperliquidProtectionOIDsMatching(pos, hlSurplusTPCancelsRemoved(removedTPOIDs, protection))
+	if unifiedClose {
+		recordDiscoveredTPConsumptions(pos, discoveryLabel, plan.TPOIDs, protection)
+	}
 	applyHyperliquidProtectionSync(pos, protection, plan.CancelTPOIDs)
 	notifyHLProtectionTPOutcomeUnknown(syncNotifier, logger, sc, symbol, unknownTPPlacementTiers(protection))
 	if effectiveTrailingStopPct(sc, pos) <= 0 {

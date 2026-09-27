@@ -1696,6 +1696,16 @@ func main() {
 
 			regimeStoreReady()
 			processRegimeTransitionAlerts(store.primary(), globalRegimeStore, cfg.Regime, notifier, time.Now().UTC())
+			reportLegacyUnifiedSLAfterGaps(cfg, state, &mu, notifier, func(id string) *StrategyLogger {
+				if logMgr == nil {
+					return nil
+				}
+				lg, err := logMgr.GetStrategyLogger(id)
+				if err != nil {
+					return nil
+				}
+				return lg
+			})
 			dueUnlatched := dueStrategiesPersistable(store, dueStrategiesNotLatched(dueStrategies, scopeRisk))
 			hlBatchResults := runHyperliquidBatchPrePass(dueUnlatched, state, &mu, cfg, prices, notifier, func(format string, a ...any) {
 				fmt.Printf(format+"\n", a...)
@@ -4024,6 +4034,11 @@ func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, r
 	if result.SizedCloseBookFraction > 0 && result.SizedCloseBookFraction < 1 {
 		bookCloseFraction = result.SizedCloseBookFraction
 	}
+	preCloseQty, preCloseInit := 0.0, 0.0
+	if prePos := s.Positions[result.Symbol]; prePos != nil {
+		preCloseQty = prePos.Quantity
+		preCloseInit = prePos.InitialQuantity
+	}
 	bookPrice := fillPrice
 	if tierPx := paperTierFillPrice(sc, result, execResult); tierPx > 0 {
 		if qty := paperTierFillQty(s.Positions[result.Symbol], result.CloseFraction); qty > 0 {
@@ -4039,6 +4054,11 @@ func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, r
 		return 0, "", nil, nil
 	}
 	trades := exec.TradesExecuted
+	if trades > 0 && paperSignalCloseOwnsUnifiedTier(sc, result) {
+		if pos := s.Positions[result.Symbol]; pos != nil && pos.Quantity > 0 && preCloseQty > pos.Quantity+1e-9 {
+			recordPaperUnifiedTPConsumption(sc, pos, preCloseQty, preCloseInit)
+		}
+	}
 	if trades > 0 && len(result.SizedCloseCanceledOIDs) > 0 {
 		if pos, ok := s.Positions[result.Symbol]; ok && pos != nil {
 			clearHyperliquidProtectionOIDsMatching(pos, result.SizedCloseCanceledOIDs)
