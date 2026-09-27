@@ -848,13 +848,6 @@ func classifyHLSizedClose(res *HyperliquidCloseResult, err error) hlSizedCloseOu
 	return hlSizedCloseOutcome{Detail: detail}
 }
 
-func (o hlSizedCloseOutcome) fillOutcome(bookQty float64) hlCloseFillOutcome {
-	if !o.Known {
-		return hlCloseFillOutcome{}
-	}
-	return hlCloseFillOutcome{Filled: math.Min(o.Filled, math.Max(bookQty, 0)), Known: true}
-}
-
 func RunHyperliquidClose(script, symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, string, error) {
 	return runHyperliquidClose(script, symbol, partialSz, cancelStopLossOIDs, false)
 }
