@@ -806,8 +806,15 @@ func unwindPrimaryAfterHedgeOpenFailure(
 		fullUnwind = false
 	}
 	unwindQty, requested := filled, unwindQty
+	cancelled := hyperliquidSucceededCancelOIDs(res, req.CancelOIDs)
 	mu.Lock()
 	bookUnwind(outcome.AvgPx, outcome.Fee, true, formatHedgeOID(outcome.OID))
+	if !fullUnwind && len(cancelled) > 0 {
+		if pos := s.Positions[snap.PrimarySymbol]; pos != nil {
+			sl, tps := forceCloseCanceledProtectionSnapshot(pos, cancelled)
+			clearForceCloseCanceledProtectionOIDs(pos, sl, tps)
+		}
+	}
 	mu.Unlock()
 
 	if filled < requested-hedgeQtyEpsilon {
@@ -815,7 +822,14 @@ func unwindPrimaryAfterHedgeOpenFailure(
 		if plan.Capped {
 			why += fmt.Sprintf(" after it was capped to %.8f by the on-chain position (%s)", plan.Size, plan.Reason)
 		}
-		why += "; the pre-close protection is kept and the next protection sync resizes it to the book"
+		switch {
+		case len(cancelled) > 0:
+			why += "; the pre-close protection was cancelled and removed from the book, and the next protection sync places it again for the remainder"
+		case len(req.CancelOIDs) > 0 && filled+1e-12 >= req.CancelMinFill:
+			why += "; the cancel of the pre-close protection was requested and not confirmed"
+		default:
+			why += "; the pre-close protection is kept and the next protection sync resizes it to the book"
+		}
 		unwindQty = requested
 		unresolved(why, requested-filled)
 		return

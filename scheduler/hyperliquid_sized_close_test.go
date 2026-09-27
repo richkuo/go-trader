@@ -498,3 +498,77 @@ func TestHedgeUnwindSizesThePrimaryAgainstPeers(t *testing.T) {
 		})
 	}
 }
+
+func TestHedgeUnwindNearFullFillClearsCancelledProtection(t *testing.T) {
+	run := func(t *testing.T, fill float64, confirmCancel bool) (*StrategyState, []string) {
+		t.Helper()
+		prev := tradeRecorder
+		tradeRecorder = nil
+		t.Cleanup(func() { tradeRecorder = prev })
+		sc := hedgeTestConfig()
+		s := hedgeTestState("eth-long")
+		pos := primaryPos(0.01, "long")
+		pos.StopLossOID = 555
+		pos.StopLossTriggerPx = 100
+		pos.TPOIDs = []int64{666}
+		s.Positions["ETH"] = pos
+		var mu sync.RWMutex
+		f := &fakeHedgeExec{openResult: &HyperliquidExecuteResult{Error: "insufficient margin"}}
+		exec := f.executor()
+		exec.Refetch = func() (hlOnChainCoinView, error) { return hlCoinView("ETH", 0.01), nil }
+		exec.UnwindPrimary = func(sc StrategyConfig, req hlSizedCloseRequest) (*HyperliquidCloseResult, error) {
+			res := closeFill(testPrimaryPx, fill, 1)
+			if confirmCancel {
+				res.CancelStopLossSucceeded = true
+				res.CancelStopLossSucceededOIDs = append([]int64(nil), req.CancelOIDs...)
+			}
+			return res, nil
+		}
+		n := &mockNotifier{}
+		notifier := NewMultiNotifier(notifierBackend{notifier: n, ownerID: "o"})
+		runHedgeSync(sc, s, &mu, exec, hedgeSyncInputs{
+			PrimaryPx: testPrimaryPx, HedgePx: testHedgePx, FreshExposureQty: 0.01,
+			PrimaryCancelOIDs: []int64{555, 666}, PrimaryPeers: hedgePrimaryPeers{Known: true, Side: "long"}, Live: true,
+		}, notifier, silentStrategyLogger("eth-long"))
+		var alerts []string
+		n.mu.Lock()
+		for _, dm := range n.dms {
+			alerts = append(alerts, dm.content)
+		}
+		n.mu.Unlock()
+		return s, alerts
+	}
+	t.Run("fill inside the cancel window", func(t *testing.T) {
+		s, alerts := run(t, 0.00996, true)
+		pos := s.Positions["ETH"]
+		if pos == nil || math.Abs(pos.Quantity-0.00004) > 1e-9 {
+			t.Fatalf("primary = %+v, want the 0.00004 remainder", pos)
+		}
+		if pos.StopLossOID != 0 || (len(pos.TPOIDs) > 0 && pos.TPOIDs[0] != 0) {
+			t.Fatalf("protection = sl %d tp %v, want the cancelled ids cleared", pos.StopLossOID, pos.TPOIDs)
+		}
+		text := strings.Join(alerts, "\n")
+		if strings.Contains(text, "protection is kept") || !strings.Contains(text, "protection was cancelled") {
+			t.Fatalf("alerts = %q", alerts)
+		}
+	})
+	t.Run("fill equal to the increment", func(t *testing.T) {
+		s, alerts := run(t, 0.01, true)
+		if _, ok := s.Positions["ETH"]; ok {
+			t.Fatal("a complete fill must delete the primary")
+		}
+		if strings.Contains(strings.Join(alerts, "\n"), "protection is kept") {
+			t.Fatalf("alerts = %q", alerts)
+		}
+	})
+	t.Run("fill below the cancel threshold", func(t *testing.T) {
+		s, alerts := run(t, 0.0098, false)
+		pos := s.Positions["ETH"]
+		if pos == nil || pos.StopLossOID != 555 || math.Abs(pos.Quantity-0.0002) > 1e-9 {
+			t.Fatalf("primary = %+v, want the remainder still listing stop 555", pos)
+		}
+		if !strings.Contains(strings.Join(alerts, "\n"), "protection is kept") {
+			t.Fatalf("alerts = %q", alerts)
+		}
+	})
+}
