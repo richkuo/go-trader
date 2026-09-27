@@ -795,6 +795,7 @@ func manualOpenCore(d manualCoreDeps, sc StrategyConfig, in manualOpenInputs) (*
 			View:        cleanupView,
 			ViewKnown:   cleanupViewErr == nil,
 			Refetch:     d.fetchOnChainView,
+			Cfg:         cfg,
 		})
 		if cleanedUp {
 			warnNotifier(notifier, fmt.Sprintf(

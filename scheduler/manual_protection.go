@@ -90,14 +90,43 @@ type manualOpenCleanupInput struct {
 	View        manualStateView
 	ViewKnown   bool
 	Refetch     func() (hlOnChainCoinView, error)
+	Cfg         *Config
+}
+
+// manualOpenCleanupSoleCoin reports whether config proves no other live
+// Hyperliquid strategy uses symbol as its coin or its hedge coin. A nil
+// config is not that proof.
+func manualOpenCleanupSoleCoin(cfg *Config, selfID, symbol string) bool {
+	if cfg == nil {
+		return false
+	}
+	target := strings.ToUpper(strings.TrimSpace(symbol))
+	if target == "" {
+		return false
+	}
+	for _, sc := range hyperliquidCloseScopeStrategies(cfg.Strategies) {
+		if sc.ID == selfID {
+			continue
+		}
+		if hyperliquidConfiguredCoin(sc) == target {
+			return false
+		}
+		if h := strings.ToUpper(strings.TrimSpace(hedgeCoin(sc))); h == target {
+			return false
+		}
+	}
+	return true
 }
 
 func manualOpenCleanupPlanInputs(in manualOpenCleanupInput) (posQty, peerSame, peerOpp float64, reason string) {
-	if !in.ViewKnown {
-		return 0, 0, 0, "the strategy books could not be read, so the close cannot be sized against the peers on the coin"
-	}
 	if in.Side != "long" && in.Side != "short" {
 		return 0, 0, 0, fmt.Sprintf("the opened side %q is neither long nor short", in.Side)
+	}
+	if !in.ViewKnown {
+		if !manualOpenCleanupSoleCoin(in.Cfg, in.StrategyID, in.Symbol) {
+			return 0, 0, 0, "the strategy books could not be read, so the close cannot be sized against the peers on the coin"
+		}
+		return in.FillQty, 0, 0, ""
 	}
 	posQty = in.FillQty
 	if in.Side == "long" {

@@ -148,13 +148,112 @@ func TestAttemptManualOpenCleanupReportsPartialAndUnconfirmedOutcomes(t *testing
 			t.Fatalf("got ok=%v msg=%q", ok, msg)
 		}
 	})
-	t.Run("unreadable books send nothing", func(t *testing.T) {
+	t.Run("unreadable books with no config send nothing", func(t *testing.T) {
 		calls := stubCleanupClose(t, filledClose(1, 12345, 67890), nil)
 		in := cleanupInput("long", 1, manualStateView{}, hlCoinView("ETH", 1))
 		in.ViewKnown = false
 		ok, _ := attemptManualOpenCleanup(in)
 		if ok || len(*calls) != 0 {
 			t.Fatalf("got ok=%v calls=%v", ok, *calls)
+		}
+	})
+}
+
+func livePerps(id, coin string) StrategyConfig {
+	return StrategyConfig{
+		ID: id, Platform: "hyperliquid", Type: "perps",
+		Args: []string{"check_hyperliquid.py", coin, "1h", "--mode", "live"},
+	}
+}
+
+func TestAttemptManualOpenCleanupUnreadableBooksUsesConfig(t *testing.T) {
+	sole := &Config{Strategies: []StrategyConfig{livePerps("m1", "ETH")}}
+	peer := &Config{Strategies: []StrategyConfig{livePerps("m1", "ETH"), livePerps("peer", "ETH")}}
+	hedger := livePerps("hedger", "BTC")
+	hedger.Hedge = &HedgeConfig{Enabled: true, Symbol: "eth"}
+	hedged := &Config{Strategies: []StrategyConfig{livePerps("m1", "ETH"), hedger}}
+	paper := StrategyConfig{
+		ID: "paper", Platform: "hyperliquid", Type: "perps",
+		Args: []string{"check_hyperliquid.py", "ETH", "1h", "--mode", "paper"},
+	}
+	paperOnly := &Config{Strategies: []StrategyConfig{livePerps("m1", "ETH"), paper}}
+
+	t.Run("sole coin flattens the fill", func(t *testing.T) {
+		calls := stubCleanupClose(t, filledClose(0.8, 12345, 67890), nil)
+		in := cleanupInput("long", 0.8, manualStateView{}, hlCoinView("ETH", 0.8))
+		in.ViewKnown = false
+		in.Cfg = sole
+		ok, msg := attemptManualOpenCleanup(in)
+		if !ok || len(*calls) != 1 {
+			t.Fatalf("ok=%v calls=%d msg=%q", ok, len(*calls), msg)
+		}
+		req := (*calls)[0]
+		if req.Side != "sell" || req.Mode != hlCloseModeReduceOnly || math.Abs(req.Size-0.8) > 1e-9 {
+			t.Fatalf("req=%+v", req)
+		}
+		if len(req.CancelOIDs) != 2 || math.Abs(req.CancelMinFill-(0.8-0.0001)) > 1e-12 {
+			t.Fatalf("cancel=%v threshold=%v", req.CancelOIDs, req.CancelMinFill)
+		}
+	})
+	t.Run("sole coin closes only the fill when the chain is larger", func(t *testing.T) {
+		calls := stubCleanupClose(t, filledClose(0.8, 12345, 67890), nil)
+		in := cleanupInput("long", 0.8, manualStateView{}, hlCoinView("ETH", 1.3))
+		in.ViewKnown = false
+		in.Cfg = sole
+		ok, msg := attemptManualOpenCleanup(in)
+		if !ok || len(*calls) != 1 {
+			t.Fatalf("ok=%v calls=%d msg=%q", ok, len(*calls), msg)
+		}
+		req := (*calls)[0]
+		if req.Side != "sell" || req.Mode != hlCloseModeReduceOnly || math.Abs(req.Size-0.8) > 1e-9 || len(req.CancelOIDs) != 2 {
+			t.Fatalf("req=%+v", req)
+		}
+	})
+	t.Run("configured peer sends nothing", func(t *testing.T) {
+		calls := stubCleanupClose(t, filledClose(0.8, 12345, 67890), nil)
+		in := cleanupInput("long", 0.8, manualStateView{}, hlCoinView("ETH", 0.8))
+		in.ViewKnown = false
+		in.Cfg = peer
+		ok, msg := attemptManualOpenCleanup(in)
+		if ok || len(*calls) != 0 || !strings.Contains(msg, "could not be read") {
+			t.Fatalf("ok=%v calls=%d msg=%q", ok, len(*calls), msg)
+		}
+	})
+	t.Run("hedge peer sends nothing", func(t *testing.T) {
+		calls := stubCleanupClose(t, filledClose(0.8, 12345, 67890), nil)
+		in := cleanupInput("long", 0.8, manualStateView{}, hlCoinView("ETH", 0.8))
+		in.ViewKnown = false
+		in.Cfg = hedged
+		ok, msg := attemptManualOpenCleanup(in)
+		if ok || len(*calls) != 0 || !strings.Contains(msg, "could not be read") {
+			t.Fatalf("ok=%v calls=%d msg=%q", ok, len(*calls), msg)
+		}
+	})
+	t.Run("paper strategy on the coin does not block", func(t *testing.T) {
+		calls := stubCleanupClose(t, filledClose(0.8, 12345, 67890), nil)
+		in := cleanupInput("long", 0.8, manualStateView{}, hlCoinView("ETH", 0.8))
+		in.ViewKnown = false
+		in.Cfg = paperOnly
+		ok, msg := attemptManualOpenCleanup(in)
+		if !ok || len(*calls) != 1 || math.Abs((*calls)[0].Size-0.8) > 1e-9 {
+			t.Fatalf("ok=%v calls=%v msg=%q", ok, *calls, msg)
+		}
+	})
+	t.Run("unread opposite book is capped and not treated as closed", func(t *testing.T) {
+		calls := stubCleanupClose(t, filledClose(0.3), nil)
+		in := cleanupInput("long", 0.8, manualStateView{}, hlCoinView("ETH", 0.3))
+		in.ViewKnown = false
+		in.Cfg = sole
+		ok, msg := attemptManualOpenCleanup(in)
+		if ok || len(*calls) != 1 {
+			t.Fatalf("ok=%v calls=%d msg=%q", ok, len(*calls), msg)
+		}
+		req := (*calls)[0]
+		if req.Mode != hlCloseModeReduceOnly || math.Abs(req.Size-0.3) > 1e-9 || len(req.CancelOIDs) != 0 {
+			t.Fatalf("req=%+v", req)
+		}
+		if !strings.Contains(msg, "NOT proven closed") {
+			t.Fatalf("msg=%q", msg)
 		}
 	})
 }
