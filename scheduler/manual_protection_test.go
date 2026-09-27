@@ -108,6 +108,22 @@ func TestAttemptManualOpenCleanupSizesAgainstPeersAndTheFreshChain(t *testing.T)
 	}
 }
 
+func TestAttemptManualOpenCleanupSmallFillIsSentAndADustFillIsNotFlattened(t *testing.T) {
+	calls := stubCleanupClose(t, filledClose(0.00001), nil)
+	in := cleanupInput("long", 0.00008, manualStateView{}, hlCoinView("ETH", 0.00008))
+	ok, msg := attemptManualOpenCleanup(in)
+	if len(*calls) != 1 {
+		t.Fatalf("calls=%v, want the close to be sent", *calls)
+	}
+	req := (*calls)[0]
+	if req.Mode != hlCloseModeReduceOnly || math.Abs(req.Size-0.00008) > 1e-12 || !finitePositive(req.CancelMinFill) {
+		t.Fatalf("req=%+v, want a reduce-only close of 0.00008 with a positive cancel threshold", req)
+	}
+	if ok || strings.Contains(msg, "flattened") || !strings.Contains(msg, "NOT proven closed") {
+		t.Fatalf("ok=%v msg=%q", ok, msg)
+	}
+}
+
 func TestAttemptManualOpenCleanupCappedNearTheFillDoesNotClaimTriggersCancelled(t *testing.T) {
 	calls := stubCleanupClose(t, filledClose(0.99995), nil)
 	in := cleanupInput("long", 1, manualStateView{PeerLongQty: 2}, hlCoinView("ETH", 2.99995))

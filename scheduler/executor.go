@@ -752,6 +752,20 @@ func hlSizedCloseRequestError(req hlSizedCloseRequest) string {
 	return ""
 }
 
+// hlFullCloseTolerance is the slack under which a fill still covers a
+// protective close. It is always below a positive quantity, so qty minus
+// this tolerance stays a positive cancel threshold.
+func hlFullCloseTolerance(qty float64) float64 {
+	if !finitePositive(qty) {
+		return 0
+	}
+	tol := qty * 0.01
+	if tol > 0.0001 {
+		return 0.0001
+	}
+	return tol
+}
+
 func buildHyperliquidSizedCloseArgs(req hlSizedCloseRequest) []string {
 	args := []string{
 		fmt.Sprintf("--symbol=%s", req.Symbol),

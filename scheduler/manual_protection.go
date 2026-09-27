@@ -168,7 +168,7 @@ func attemptManualOpenCleanup(in manualOpenCleanupInput) (bool, string) {
 	req := hlSizedCloseRequest{Symbol: in.Symbol, Side: closeTradeSide(in.Side), Mode: plan.Mode, Size: plan.Size}
 	if !plan.Capped && len(cancelOIDs) > 0 {
 		req.CancelOIDs = cancelOIDs
-		req.CancelMinFill = in.FillQty - 0.0001
+		req.CancelMinFill = in.FillQty - hlFullCloseTolerance(in.FillQty)
 	}
 	result, err := manualOpenCleanupCloseFn(req)
 	outcome := classifyHLSizedClose(result, err)
@@ -181,7 +181,7 @@ func attemptManualOpenCleanup(in manualOpenCleanupInput) (bool, string) {
 		return unresolved(in.FillQty, "the venue rejected the close: "+outcome.Detail)
 	}
 	filled := math.Min(outcome.Filled, in.FillQty)
-	if filled < in.FillQty-0.0001 {
+	if filled < in.FillQty-hlFullCloseTolerance(in.FillQty) {
 		why := fmt.Sprintf("the %s close filled %.6f of the %.6f fill", operatorSizedCloseLabel(plan.Mode), filled, in.FillQty)
 		if plan.Capped {
 			why += fmt.Sprintf(" after it was capped to %.6f by the on-chain position (%s)", plan.Size, plan.Reason)

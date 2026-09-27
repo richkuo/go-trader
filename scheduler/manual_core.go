@@ -1518,7 +1518,7 @@ func forceCloseSized(d manualCoreDeps, sc StrategyConfig, res *manualCoreResult,
 	req := hlSizedCloseRequest{Symbol: sym, Side: closeSide, Mode: plan.Mode, Size: plan.Size}
 	if intentFullClose && !plan.Capped && len(protectionOIDs) > 0 {
 		req.CancelOIDs = cloneInt64s(protectionOIDs)
-		req.CancelMinFill = pos.Quantity - 0.0001
+		req.CancelMinFill = pos.Quantity - hlFullCloseTolerance(pos.Quantity)
 	}
 	result, execErr := d.sizedCloser(req)
 	outcome := classifyHLSizedClose(result, execErr)
@@ -1544,7 +1544,7 @@ func forceCloseSized(d manualCoreDeps, sc StrategyConfig, res *manualCoreResult,
 	}
 	fill := result.Close.Fill
 	filledQty, fillFee := forceCloseAttributedFill(res, strategyID, sym, pos, fill)
-	actualFullClose := intentFullClose && !plan.Capped && pos.Quantity-filledQty <= 0.0001
+	actualFullClose := intentFullClose && !plan.Capped && pos.Quantity-filledQty <= hlFullCloseTolerance(pos.Quantity)
 	cancelled := hyperliquidSucceededCancelOIDs(result, req.CancelOIDs)
 	var canceledSLOID int64
 	var canceledTPOIDs []int64

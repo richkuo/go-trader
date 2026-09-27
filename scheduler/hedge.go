@@ -784,7 +784,7 @@ func unwindPrimaryAfterHedgeOpenFailure(
 	if fullUnwind && !plan.Capped {
 		req.CancelOIDs = positiveInt64s(in.PrimaryCancelOIDs)
 		if len(req.CancelOIDs) > 0 {
-			req.CancelMinFill = unwindQty - 0.0001
+			req.CancelMinFill = unwindQty - hlFullCloseTolerance(unwindQty)
 		}
 	}
 	res, err := exec.UnwindPrimary(sc, req)

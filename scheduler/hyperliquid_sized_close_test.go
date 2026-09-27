@@ -572,3 +572,46 @@ func TestHedgeUnwindNearFullFillClearsCancelledProtection(t *testing.T) {
 		}
 	})
 }
+
+func TestHedgeUnwindOfOneLotStillSendsTheClose(t *testing.T) {
+	prev := tradeRecorder
+	tradeRecorder = nil
+	t.Cleanup(func() { tradeRecorder = prev })
+	sc := hedgeTestConfig()
+	s := hedgeTestState("eth-long")
+	pos := primaryPos(0.0001, "long")
+	pos.StopLossOID = 555
+	s.Positions["ETH"] = pos
+	var mu sync.RWMutex
+	mu.RLock()
+	snap := hedgeSnapshotFromState(sc, s)
+	mu.RUnlock()
+	var sent []hlSizedCloseRequest
+	exec := hedgeExecutor{
+		Refetch: func() (hlOnChainCoinView, error) { return hlCoinView("ETH", 0.0001), nil },
+		UnwindPrimary: func(sc StrategyConfig, req hlSizedCloseRequest) (*HyperliquidCloseResult, error) {
+			sent = append(sent, req)
+			res := closeFill(testPrimaryPx, 0.0001, 0.01)
+			res.CancelStopLossSucceeded = true
+			res.CancelStopLossSucceededOIDs = append([]int64(nil), req.CancelOIDs...)
+			return res, nil
+		},
+	}
+	unwindPrimaryAfterHedgeOpenFailure(sc, s, &mu, exec, snap, "insufficient margin", hedgeSyncInputs{
+		FreshExposureQty: 0.0001, PrimaryCancelOIDs: []int64{555},
+		PrimaryPeers: hedgePrimaryPeers{Known: true, Side: "long"}, Live: true,
+	}, nil, silentStrategyLogger("eth-long"))
+	if len(sent) != 1 {
+		t.Fatalf("sends = %+v, want one close", sent)
+	}
+	req := sent[0]
+	if req.Side != "sell" || req.Mode != hlCloseModeReduceOnly || math.Abs(req.Size-0.0001) > 1e-12 {
+		t.Fatalf("req = %+v, want a reduce-only sell of 0.0001", req)
+	}
+	if len(req.CancelOIDs) != 1 || req.CancelOIDs[0] != 555 || !finitePositive(req.CancelMinFill) || req.CancelMinFill >= 0.0001 {
+		t.Fatalf("cancel = %v threshold = %v, want stop 555 cancelled only after a fill that covers 0.0001", req.CancelOIDs, req.CancelMinFill)
+	}
+	if _, ok := s.Positions["ETH"]; ok {
+		t.Fatal("a 0.0001 fill must delete the primary")
+	}
+}
