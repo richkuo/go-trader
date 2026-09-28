@@ -414,7 +414,7 @@ func closeRearmFailureText(res hlStopRearmResult, prevStopOID int64) (string, st
 	case hlStopRearmReadFailed:
 		return fmt.Sprintf("the open orders could not be read (%s)", res.Detail), "Nothing was placed, and the stop state is UNVERIFIED."
 	case hlStopRearmPreCloseStopResting:
-		return fmt.Sprintf("the cancel of the pre-close stop (OID=%d) was rejected (%s)", prevStopOID, res.Detail), "The pre-close stop still rests at its pre-close size, so on a shared coin it can close units of a peer strategy when it fires."
+		return fmt.Sprintf("the pre-close stop (OID=%d) was not cancelled (%s)", prevStopOID, res.Detail), "The pre-close stop still rests at its pre-close size, so on a shared coin it can close units of a peer strategy when it fires."
 	case hlStopRearmProtectionLost:
 		return fmt.Sprintf("the pre-close stop was cancelled and the replacement did not rest (%s)", res.Detail), "The position has NO exchange-side stop."
 	case hlStopRearmOutcomeUnknown:

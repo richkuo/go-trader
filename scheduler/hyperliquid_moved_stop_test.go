@@ -119,6 +119,25 @@ func TestRunHyperliquidProtectionSyncForRemainderPreservesMovedTrigger(t *testin
 		}
 	})
 
+	t.Run("unroundable trigger on a forced replace reports the pre-close stop resting", func(t *testing.T) {
+		plans = nil
+		msg := "the forced replace was refused before the cancel: the supplied stop trigger 2000.004 cannot be rounded to a venue price without loosening it; no stop was cancelled or placed"
+		stubResult(&HyperliquidProtectionSyncResult{CancelStopLossError: msg, StopLossError: msg, TPOIDs: []int64{0, 22}})
+		st := newState(moved)
+		res := run(sc, st, 0.5, true, 7, &bytes.Buffer{})
+		if res.Status != hlStopRearmPreCloseStopResting {
+			t.Fatalf("status = %v, want hlStopRearmPreCloseStopResting", res.Status)
+		}
+		got := st.Positions["ETH"]
+		if got.StopLossOID != 7 || got.StopLossTriggerPx != 2000 || got.SLAfterTriggerPx != 2000 {
+			t.Fatalf("book = oid %d trigger %g preserved %g, want the pre-close stop 7 / 2000 / 2000 kept", got.StopLossOID, got.StopLossTriggerPx, got.SLAfterTriggerPx)
+		}
+		report, critical := formatCloseStopRearmReport(sc, "ETH", hlCloseRemainderStop{Remainder: 0.5, Qty: 0.5, Basis: hlRemainderBasisFresh}, hlCloseFillOutcome{Filled: 0.5, Known: true}, res, 7)
+		if !critical || !strings.Contains(report, "pre-close stop (OID=7) was not cancelled") || strings.Contains(report, "now rests") {
+			t.Fatalf("report critical=%v %q, want a critical pre-close-stop-resting report", critical, report)
+		}
+	})
+
 	t.Run("cancel landed and placement failed keeps the trigger for the retry", func(t *testing.T) {
 		plans = nil
 		stubResult(&HyperliquidProtectionSyncResult{CancelStopLossSucceeded: true, StopLossError: "place_stop_loss SDK error: open order cap"})

@@ -2005,7 +2005,27 @@ class TestSyncProtectionPreservedTrigger:
         assert code is None
         adapter.cancel_order_by_oid.assert_not_called()
         adapter.place_stop_loss.assert_not_called()
+        assert "stop_loss_oid" not in out
+        assert out["cancel_stop_loss_succeeded"] is False
+        assert "without loosening" in out["cancel_stop_loss_error"]
+        assert "without loosening" in out["stop_loss_error"]
+
+    def test_unroundable_moved_trigger_without_force_echoes_the_resting_stop(self):
+        out, adapter, _, code = self._run(trigger=2400.004, preserve=True, tick=0.0, force=False)
+        assert code is None
+        adapter.cancel_order_by_oid.assert_not_called()
+        adapter.place_stop_loss.assert_not_called()
         assert out["stop_loss_oid"] == 4242
+        assert "cancel_stop_loss_error" not in out
+        assert "without loosening" in out["stop_loss_error"]
+
+    def test_unroundable_moved_trigger_with_no_resting_stop_places_nothing(self):
+        out, adapter, _, code = self._run(trigger=2400.004, preserve=True, tick=0.0, open_oids=())
+        assert code is None
+        adapter.cancel_order_by_oid.assert_not_called()
+        adapter.place_stop_loss.assert_not_called()
+        assert "stop_loss_oid" not in out
+        assert "cancel_stop_loss_error" not in out
         assert "without loosening" in out["stop_loss_error"]
 
     def test_parser_routes_the_moved_stop_flags(self):

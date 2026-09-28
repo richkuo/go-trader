@@ -1194,12 +1194,18 @@ def run_sync_protection(
                     _resolve_unknown_sl(str(se), pre_oids)
 
             if sl_px is None:
-                if _oid_is_open(open_oids, stop_loss_oid):
-                    out["stop_loss_oid"] = int(stop_loss_oid)
                 out["stop_loss_error"] = (
                     f"the supplied stop trigger {stop_loss_trigger_px!r} cannot be rounded to a venue price "
                     f"without loosening it; no stop was cancelled or placed"
                 )
+                if _oid_is_open(open_oids, stop_loss_oid):
+                    if force_sl_replace and size > 0:
+                        out["cancel_stop_loss_succeeded"] = False
+                        out["cancel_stop_loss_error"] = (
+                            f"the forced replace was refused before the cancel: {out['stop_loss_error']}"
+                        )
+                    else:
+                        out["stop_loss_oid"] = int(stop_loss_oid)
             elif _oid_is_open(open_oids, stop_loss_oid) and not force_sl_replace:
                 out["stop_loss_oid"] = int(stop_loss_oid)
             elif _oid_is_open(open_oids, stop_loss_oid) and force_sl_replace:
