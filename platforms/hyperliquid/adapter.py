@@ -64,14 +64,17 @@ def _safe_int(v) -> int:
         return 0
 
 
-def _round_perps_px(px: float, sz_decimals: int) -> float:
-    if px <= 0:
-        return px
+def _perps_px_decimals(px: float, sz_decimals: int) -> int:
     px_decimals = max(0, 6 - sz_decimals)
     log = math.floor(math.log10(abs(px)))
     sig_decimals = max(0, 5 - 1 - int(log))
-    decimals = min(px_decimals, sig_decimals)
-    return round(px, decimals)
+    return min(px_decimals, sig_decimals)
+
+
+def _round_perps_px(px: float, sz_decimals: int) -> float:
+    if px <= 0:
+        return px
+    return round(px, _perps_px_decimals(px, sz_decimals))
 
 
 def floor_lot_size(sz: float, sz_decimals: int) -> float:
@@ -742,6 +745,12 @@ class HyperliquidExchangeAdapter:
     def round_perps_trigger_px(self, symbol: str, px: float) -> float:
         sz_decimals = self._sz_decimals(symbol) if self._info else 3
         return _round_perps_px(px, sz_decimals)
+
+    def perps_trigger_px_tick(self, symbol: str, px: float) -> float:
+        if px <= 0:
+            return 0.0
+        sz_decimals = self._sz_decimals(symbol) if self._info else 3
+        return 10.0 ** -_perps_px_decimals(px, sz_decimals)
 
     def place_stop_loss(
         self,

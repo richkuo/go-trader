@@ -258,11 +258,7 @@ func newManualCoreDeps(cfg *Config, stateDB *StateStore, notifier *MultiNotifier
 			return recordRearmedStopLossInDB(cfg, stateDB, strategyID, symbol, side, qty, prevStopOID, result)
 		},
 		syncProtection: func(sc StrategyConfig, plan hlProtectionPlan) (*HyperliquidProtectionSyncResult, string, error) {
-			return RunHyperliquidSyncProtection(
-				sc.Script, plan.Symbol, plan.Side, plan.Size, plan.AvgCost, plan.EntryATR,
-				plan.StopLossATRMult, plan.Tiers, plan.StopLossOID, plan.TPOIDs, plan.TPArmedTiers,
-				plan.ForceSLReplace, plan.ForceTPReplace, plan.CancelTPOIDs, nil,
-			)
+			return RunHyperliquidSyncProtection(sc.Script, plan, nil)
 		},
 		recordRestoredTakeProfits: func(strategyID, symbol, side, positionID string, outcomes []manualCloseTPTierOutcome) error {
 			return recordRestoredTakeProfitsInDB(cfg, stateDB, strategyID, symbol, side, positionID, outcomes)

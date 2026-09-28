@@ -735,6 +735,7 @@ func main() {
 	var resetGoroutineRunning atomic.Bool
 	sharedWalletRiskBalances := make(map[SharedWalletKey]sharedWalletRiskBalanceSnapshot)
 	sharedWalletRiskGeneration := 0
+	backfillMovedStopMarkers(cfg, state, &mu)
 
 	for {
 		if isDraining() {
@@ -2392,7 +2393,7 @@ func main() {
 							}
 							mu.Unlock()
 						}
-						if hyperliquidIsLive(sc.Args) && result.Signal == 0 && hlPosQty > 0 && sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0 && hlStopLossOID == 0 && hlStopLossTriggerPx == 0 {
+						if hyperliquidIsLive(sc.Args) && result.Signal == 0 && hlPosQty > 0 && sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0 && hlStopLossOID == 0 && hlStopLossTriggerPx == 0 && (hlPosSnapshot == nil || !hlPosSnapshot.SLAfterMoved) {
 							triggerPx := fixedStopLossATRTriggerPx(sc, hlPosSide, hlPosSnapshot)
 							clampOffendingPx := 0.0
 							clampedTriggerPx := 0.0

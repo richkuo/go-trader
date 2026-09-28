@@ -216,6 +216,7 @@ func hyperliquidProtectionPositionSnapshot(pos *Position) *Position {
 		RegimePendingCount:              pos.RegimePendingCount,
 		SLAdjustedTiersProcessed:        pos.SLAdjustedTiersProcessed,
 		SLAfterMoved:                    pos.SLAfterMoved,
+		SLAfterTriggerPx:                pos.SLAfterTriggerPx,
 		TPConsumptions:                  cloneTPConsumptions(pos.TPConsumptions),
 		RatchetFallbackNormalizePending: pos.RatchetFallbackNormalizePending,
 	}
@@ -780,8 +781,7 @@ func applyTrailingStopUpdateResult(s *StrategyState, symbol, expectedSide string
 		pos.RatchetFallbackNormalizePending = false
 		if recordPerpsStopLossCloseQty(s, symbol, hlPlacedStopQty(placedQty, slUpdate.StopLossSize), slUpdate.StopLossTriggerPx, closeReason, logger) {
 			if residue, ok := s.Positions[symbol]; ok && residue != nil && residue.Quantity > 0 {
-				residue.StopLossOID = 0
-				residue.StopLossTriggerPx = 0
+				clearRecordedStopLoss(residue)
 				residue.RatchetFallbackNormalizePending = false
 			}
 			return true, slUpdate.StopLossTriggerPx
@@ -790,6 +790,7 @@ func applyTrailingStopUpdateResult(s *StrategyState, symbol, expectedSide string
 		pos.StopLossOID = slUpdate.StopLossOID
 		pos.StopLossTriggerPx = slUpdate.StopLossTriggerPx
 		pos.RatchetFallbackNormalizePending = false
+		noteMovedStopTrigger(pos)
 		if logger != nil {
 			logger.Info("Trailing SL trigger updated oid=%d @ $%.4f", slUpdate.StopLossOID, slUpdate.StopLossTriggerPx)
 		}
@@ -814,8 +815,7 @@ func applyTrailingStopUpdateResult(s *StrategyState, symbol, expectedSide string
 			logger.Warn("Trailing SL old OID=%d was cancelled and the replacement's outcome could NOT be read — recorded trigger kept, oid unknown; no re-place is licensed until a readable attempt", prevSLOID)
 		}
 	case slUpdate.CancelStopLossSucceeded && prevSLOID > 0 && pos.StopLossOID == prevSLOID:
-		pos.StopLossOID = 0
-		pos.StopLossTriggerPx = 0
+		clearRecordedStopLoss(pos)
 		if logger != nil {
 			logger.Warn("Trailing SL old OID=%d was cancelled but replacement did not rest", prevSLOID)
 		}

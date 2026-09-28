@@ -639,6 +639,7 @@ func applyManualActionWithCriticals(state *AppState, cfg *Config, scByID map[str
 		}
 		pos.StopLossOID = a.StopLossOID
 		pos.StopLossTriggerPx = a.StopLossTriggerPx
+		noteMovedStopTrigger(pos)
 		fmt.Printf("[manual] applied update-sl: %s %s stop-loss -> $%.4f (OID=%d)\n",
 			a.StrategyID, a.Symbol, a.StopLossTriggerPx, a.StopLossOID)
 
@@ -650,8 +651,7 @@ func applyManualActionWithCriticals(state *AppState, cfg *Config, scByID map[str
 		if !manualPositionOwnedByStrategy(pos, a.StrategyID) {
 			return nil, fmt.Errorf("position %s/%s is owned by %q, not %q", a.StrategyID, a.Symbol, pos.OwnerStrategyID, a.StrategyID)
 		}
-		pos.StopLossOID = 0
-		pos.StopLossTriggerPx = 0
+		clearRecordedStopLoss(pos)
 		fmt.Printf("[manual] applied cancel-sl: %s %s (stop-loss removed)\n",
 			a.StrategyID, a.Symbol)
 
@@ -780,8 +780,7 @@ func clearForceCloseCanceledProtectionOIDs(pos *Position, canceledSLOID int64, c
 		return
 	}
 	if canceledSLOID > 0 && pos.StopLossOID == canceledSLOID {
-		pos.StopLossOID = 0
-		pos.StopLossTriggerPx = 0
+		clearRecordedStopLoss(pos)
 	}
 	for idx, canceledOID := range canceledTPOIDs {
 		if canceledOID <= 0 {

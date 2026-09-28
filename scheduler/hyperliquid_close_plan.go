@@ -404,6 +404,11 @@ func closeRearmFailureText(res hlStopRearmResult, prevStopOID int64) (string, st
 	switch res.Status {
 	case hlStopRearmNoTrigger:
 		return "no trigger price could be resolved", "The position has NO exchange-side stop."
+	case hlStopRearmMovedTriggerLost:
+		if res.OID > 0 {
+			return "a take-profit rule moved the stop but its last confirmed trigger is not recorded, so the stop was not replaced", fmt.Sprintf("The earlier stop (OID=%d) still rests at its earlier size, and no looser stop was placed.", res.OID)
+		}
+		return "a take-profit rule moved the stop but its last confirmed trigger is not recorded, so no looser stop was placed", "The position has NO exchange-side stop."
 	case hlStopRearmNoArm:
 		return fmt.Sprintf("no re-arm path owns the cancelled stop (OID=%d)", prevStopOID), "The position has NO exchange-side stop."
 	case hlStopRearmReadFailed:

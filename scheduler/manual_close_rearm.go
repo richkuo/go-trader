@@ -376,6 +376,7 @@ func applyRearmedStopLossToBook(position *Position, prevStopOID int64, result *H
 	}
 	position.StopLossOID = newOID
 	position.StopLossTriggerPx = newTrigger
+	noteMovedStopTrigger(position)
 	return action
 }
 

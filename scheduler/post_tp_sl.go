@@ -1218,6 +1218,7 @@ func runPostTPStopLossAdjustment(
 				if adopted.StopLossTriggerPx > 0 {
 					p.StopLossTriggerPx = adopted.StopLossTriggerPx
 				}
+				noteMovedStopTrigger(p)
 			}
 			mu.Unlock()
 			return false, 0, ""
@@ -1327,9 +1328,13 @@ func runPostTPStopLossAdjustment(
 			}
 			if unified {
 				completeBookedConsumptionGroup(cur, consumptionLabel, true)
-			} else if cur.SLAdjustedTiersProcessed <= clearedIdx {
-				cur.SLAdjustedTiersProcessed = clearedIdx + 1
+			} else {
+				cur.SLAfterMoved = true
+				if cur.SLAdjustedTiersProcessed <= clearedIdx {
+					cur.SLAdjustedTiersProcessed = clearedIdx + 1
+				}
 			}
+			noteMovedStopTrigger(cur)
 			if rule.Kind == "trail_from_here" && rule.TrailATRMult > 0 {
 				mult := rule.TrailATRMult
 				cur.PostTPTrailingATRMult = &mult
@@ -1396,7 +1401,7 @@ func runPostTPStopLossAdjustment(
 			logger.Error("CRITICAL: post-TP SL for %s cancelled OID=%d but the replacement at $%.4f did not rest: the position has NO exchange-side stop (%s)",
 				symbol, currentOID, triggerPx, reason)
 		}
-		msg = fmt.Sprintf("**HL POST-TP SL PROTECTION LOST** [%s] %s %s: the old stop OID %d was cancelled but the replacement at $%.4f did NOT rest, so the position has no exchange-side stop right now. The next protection sync re-arms the label stop, and the post-%s stop rule runs again once a stop OID exists. Error: %s",
+		msg = fmt.Sprintf("**HL POST-TP SL PROTECTION LOST** [%s] %s %s: the old stop OID %d was cancelled but the replacement at $%.4f did NOT rest, so the position has no exchange-side stop right now. The next protection sync re-arms the stop (at the preserved trigger if an earlier rule moved it, else the label stop), and the post-%s stop rule runs again once a stop OID exists. Error: %s",
 			sc.ID, symbol, side, currentOID, triggerPx, tpTierLabel(clearedIdx), reason)
 	default:
 		if logger != nil {
@@ -1538,6 +1543,7 @@ func runPaperPostTPStopLossAdjustment(
 	oldTrigger := pos.StopLossTriggerPx
 	pos.StopLossTriggerPx = triggerPx
 	pos.SLAdjustedTiersProcessed = clearedIdx + 1
+	pos.SLAfterMoved = true
 	transitionedToTrailing := false
 	if rule.Kind == "trail_from_here" && rule.TrailATRMult > 0 {
 		mult := rule.TrailATRMult

@@ -108,19 +108,21 @@ func guardHyperliquidProtectionSync(db *StateDB, strategyID, symbol string) (fun
 }
 
 type hlProtectionPlan struct {
-	Symbol          string
-	Side            string
-	Size            float64
-	AvgCost         float64
-	EntryATR        float64
-	StopLossATRMult float64
-	StopLossOID     int64
-	Tiers           []hlProtectionTier
-	TPOIDs          []int64
-	TPArmedTiers    []bool
-	ForceSLReplace  bool
-	ForceTPReplace  []bool
-	CancelTPOIDs    []int64
+	Symbol            string
+	Side              string
+	Size              float64
+	AvgCost           float64
+	EntryATR          float64
+	StopLossATRMult   float64
+	StopLossTriggerPx float64
+	PreserveMovedStop bool
+	StopLossOID       int64
+	Tiers             []hlProtectionTier
+	TPOIDs            []int64
+	TPArmedTiers      []bool
+	ForceSLReplace    bool
+	ForceTPReplace    []bool
+	CancelTPOIDs      []int64
 }
 
 func buildHyperliquidProtectionPlan(sc StrategyConfig, pos *Position, liquidationPx float64) (hlProtectionPlan, bool) {
@@ -166,7 +168,7 @@ func buildHyperliquidProtectionPlan(sc StrategyConfig, pos *Position, liquidatio
 		forceSLPastLiquidation = false
 	}
 	tierCount := len(tiers)
-	return hlProtectionPlan{
+	plan := hlProtectionPlan{
 		ForceSLReplace:  forceSLPastLiquidation,
 		Symbol:          pos.Symbol,
 		Side:            pos.Side,
@@ -178,7 +180,37 @@ func buildHyperliquidProtectionPlan(sc StrategyConfig, pos *Position, liquidatio
 		Tiers:           tiers,
 		TPOIDs:          tpOIDsForTierCount(pos.TPOIDs, tierCount),
 		TPArmedTiers:    tpArmedTiersForTierCount(pos.TPArmedTiers, tierCount),
-	}, true
+	}
+	if slMult > 0 && pos.SLAfterMoved {
+		trigger, force := hlMovedStopTrigger(pos, slMult, liquidationPx)
+		plan.PreserveMovedStop = true
+		plan.StopLossTriggerPx = trigger
+		plan.ForceSLReplace = plan.ForceSLReplace || force
+	}
+	return plan, true
+}
+
+func hlMovedStopTrigger(pos *Position, slMult, liquidationPx float64) (float64, bool) {
+	preserved := pos.SLAfterTriggerPx
+	if pos.StopLossOID > 0 && finitePositive(pos.StopLossTriggerPx) {
+		preserved = pos.StopLossTriggerPx
+	}
+	if !finitePositive(preserved) {
+		return 0, false
+	}
+	selected := preserved
+	if label := hlProtectionSLTriggerPx(pos.Side, pos.riskAnchorPrice(), pos.EntryATR, slMult); hlTriggerStrictlyTighter(pos.Side, label, preserved) {
+		selected = label
+	}
+	force := false
+	if clamped, ok := clampStopInsideLiquidation(pos.Side, selected, liquidationPx); ok {
+		selected = clamped
+		force = pos.StopLossOID > 0 && hlTriggerStrictlyTighter(pos.Side, selected, pos.StopLossTriggerPx)
+	}
+	if !finitePositive(selected) {
+		return 0, false
+	}
+	return selected, force
 }
 
 func strategyTPTiers(sc StrategyConfig) []hlProtectionTier {
@@ -393,12 +425,7 @@ type jsonNumber interface {
 }
 
 var syncHyperliquidProtection = func(sc StrategyConfig, plan hlProtectionPlan, notifier *MultiNotifier, logger *StrategyLogger, reconcileFillHintsJSON []byte) (*HyperliquidProtectionSyncResult, bool) {
-	result, stderr, err := RunHyperliquidSyncProtection(
-		sc.Script, plan.Symbol, plan.Side, plan.Size, plan.AvgCost, plan.EntryATR,
-		plan.StopLossATRMult, plan.Tiers, plan.StopLossOID, plan.TPOIDs, plan.TPArmedTiers,
-		plan.ForceSLReplace, plan.ForceTPReplace, plan.CancelTPOIDs,
-		reconcileFillHintsJSON,
-	)
+	result, stderr, err := RunHyperliquidSyncProtection(sc.Script, plan, reconcileFillHintsJSON)
 	if stderr != "" && logger != nil {
 		logger.Info("protection sync stderr: %s", stderr)
 	}
@@ -429,6 +456,9 @@ var syncHyperliquidProtection = func(sc StrategyConfig, plan hlProtectionPlan, n
 	}
 	if hlProtectionLostExchangeStop(result) {
 		msg := fmt.Sprintf("**HL PROTECTION CRITICAL** [%s] %s force-replace cancelled the resting stop-loss but the replacement did NOT rest — the position has NO exchange-side stop; recorded state cleared, next sync re-places", sc.ID, plan.Symbol)
+		if plan.PreserveMovedStop {
+			msg += " at the moved stop's preserved trigger, never at the looser configured stop"
+		}
 		if logger != nil {
 			logger.Error("%s", msg)
 		}
@@ -473,12 +503,12 @@ func applyHyperliquidProtectionSync(pos *Position, result *HyperliquidProtection
 	if result.StopLossOID > 0 {
 		pos.StopLossOID = result.StopLossOID
 	} else if result.CancelStopLossSucceeded && !result.StopLossOutcomeUnknown {
-		pos.StopLossOID = 0
-		pos.StopLossTriggerPx = 0
+		clearRecordedStopLoss(pos)
 	}
 	if result.StopLossTriggerPx > 0 {
 		pos.StopLossTriggerPx = result.StopLossTriggerPx
 	}
+	noteMovedStopTrigger(pos)
 	if result.TPOIDs != nil {
 		pos.TPOIDs = cloneInt64s(result.TPOIDs)
 	} else if result.TP1OID > 0 || result.TP2OID > 0 {
@@ -863,7 +893,18 @@ func runHyperliquidProtectionSyncForRemainder(
 	if (afterFill || sizedToRemainder) && plan.StopLossATRMult > 0 && prevStopOID > 0 && plan.StopLossOID == prevStopOID {
 		plan.ForceSLReplace = true
 	}
+	syncNotifier := notifier
+	if guardMode == hlProtectionGuardStopLegAfterFailedClose {
+		syncNotifier = nil
+	}
+	movedTriggerLost := plan.StopLossATRMult > 0 && plan.PreserveMovedStop && !finitePositive(plan.StopLossTriggerPx)
+	if movedTriggerLost {
+		plan = refuseMovedStopLeg(sc, plan, syncNotifier, logger)
+	}
 	stopOutcome := func(protection *HyperliquidProtectionSyncResult) hlStopRearmResult {
+		if movedTriggerLost {
+			return hlStopRearmResult{Status: hlStopRearmMovedTriggerLost, Owner: hlRearmOwnerATR, Qty: plan.Size, OID: plan.StopLossOID}
+		}
 		if plan.StopLossATRMult <= 0 {
 			return hlStopRearmResult{}
 		}
@@ -872,9 +913,8 @@ func runHyperliquidProtectionSyncForRemainder(
 	tpOutcome := func(protection *HyperliquidProtectionSyncResult) hlTPRearmResult {
 		return classifyProtectionSyncTPRearm(plan, protection)
 	}
-	syncNotifier := notifier
-	if guardMode == hlProtectionGuardStopLegAfterFailedClose {
-		syncNotifier = nil
+	if movedTriggerLost && len(plan.Tiers) == 0 && len(plan.CancelTPOIDs) == 0 {
+		return false, 0, stopOutcome(nil), tpOutcome(nil)
 	}
 	protection, ok := syncHyperliquidProtection(sc, plan, syncNotifier, logger, reconcileFillHintsJSON)
 	if !ok || protection == nil {
@@ -890,8 +930,7 @@ func runHyperliquidProtectionSyncForRemainder(
 		if sizedToRemainder {
 			if recordPerpsStopLossCloseQty(stratState, symbol, hlPlacedStopQty(plan.Size, protection.StopLossSize), protection.StopLossTriggerPx, "protection_sync_sl_immediate", logger) {
 				if residue, ok := stratState.Positions[symbol]; ok && residue != nil {
-					residue.StopLossOID = 0
-					residue.StopLossTriggerPx = 0
+					clearRecordedStopLoss(residue)
 				}
 				return true, protection.StopLossTriggerPx, stopOutcome(protection), tpOutcome(protection)
 			}
@@ -907,6 +946,9 @@ func runHyperliquidProtectionSyncForRemainder(
 		recordDiscoveredTPConsumptions(pos, discoveryLabel, placedLabel, plan.TPOIDs, protection)
 	}
 	applyHyperliquidProtectionSync(pos, protection, plan.CancelTPOIDs)
+	if plan.PreserveMovedStop && pos.StopLossOID > 0 {
+		hlStopReplaceAlertOnce.Delete(sc.ID + "|moved-trigger-lost|" + symbol)
+	}
 	notifyHLProtectionTPOutcomeUnknown(syncNotifier, logger, sc, symbol, unknownTPPlacementTiers(protection))
 	if effectiveTrailingStopPct(sc, pos) <= 0 {
 		pos.ScaleInResizePending = false
@@ -951,6 +993,22 @@ func logHyperliquidProtectionSynced(logger *StrategyLogger, logTag string, slOID
 	default:
 		logger.Info(format, logTag, slOID, tpOIDs)
 	}
+}
+
+func refuseMovedStopLeg(sc StrategyConfig, plan hlProtectionPlan, notifier *MultiNotifier, logger *StrategyLogger) hlProtectionPlan {
+	msg := fmt.Sprintf("CRITICAL: [%s] %s: a take-profit rule moved this stop, but its last confirmed trigger is not recorded. The protection sync did not place or replace the stop, because the configured stop price is looser than the moved stop. Verify the stop on Hyperliquid and set it with a manual stop edit.",
+		sc.ID, plan.Symbol)
+	if logger != nil {
+		logger.Error("%s", msg)
+	}
+	if notifier != nil {
+		hlStopReplaceNotifyOnce(sc.ID+"|moved-trigger-lost|"+plan.Symbol, notifier, msg)
+	}
+	plan.StopLossATRMult = 0
+	plan.StopLossTriggerPx = 0
+	plan.PreserveMovedStop = false
+	plan.ForceSLReplace = false
+	return plan
 }
 
 // stopLegOnlyProtectionPlan strips every take-profit input so the sync places

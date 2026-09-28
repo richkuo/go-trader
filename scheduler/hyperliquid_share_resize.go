@@ -235,8 +235,7 @@ func hlShareCancelRestingStop(sc StrategyConfig, state *AppState, symbol string,
 				if manualRecordedStopOwner(sc, pos) {
 					recorded = pos.StopLossTriggerPx
 				}
-				pos.StopLossOID = 0
-				pos.StopLossTriggerPx = 0
+				clearRecordedStopLoss(pos)
 			}
 		}
 		mu.Unlock()

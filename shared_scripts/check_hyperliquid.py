@@ -904,6 +904,34 @@ def _oid_is_open(open_oids: set[int] | None, oid: int) -> bool:
     return oid > 0 and open_oids is not None and int(oid) in open_oids
 
 
+def _stop_trigger_looser(side: str, candidate: float, requested: float) -> bool:
+    eps = abs(requested) * 1e-9
+    if side == "long":
+        return candidate < requested - eps
+    return candidate > requested + eps
+
+
+def _preserved_stop_trigger_px(adapter, symbol: str, side: str, requested: float, preserve_moved_stop: bool):
+    rounded = adapter.round_perps_trigger_px(symbol, requested)
+    valid = isinstance(rounded, (int, float)) and math.isfinite(rounded) and rounded > 0
+    if valid and not (preserve_moved_stop and _stop_trigger_looser(side, rounded, requested)):
+        return rounded
+    if not preserve_moved_stop:
+        return None
+    tick = adapter.perps_trigger_px_tick(symbol, requested)
+    if not isinstance(tick, (int, float)) or not math.isfinite(tick) or tick <= 0:
+        return None
+    stepped = requested + tick if side == "long" else requested - tick
+    if stepped <= 0:
+        return None
+    nudged = adapter.round_perps_trigger_px(symbol, stepped)
+    if not isinstance(nudged, (int, float)) or not math.isfinite(nudged) or nudged <= 0:
+        return None
+    if _stop_trigger_looser(side, nudged, requested):
+        return None
+    return nudged
+
+
 def _oid_filled_externally(adapter, oid: int, since_ms: int, fill_hints=None) -> dict:
     if oid <= 0:
         return {"filled": False}
@@ -1012,10 +1040,19 @@ def run_sync_protection(
     force_tp_replace=None,
     cancel_tp_oids=None,
     reconcile_fill_hints_json="",
+    stop_loss_trigger_px=None,
+    preserve_moved_stop=False,
 ):
     if mode != "live":
         print(json.dumps({"error": "--sync-protection requires --mode=live"}, cls=SafeEncoder))
         sys.exit(1)
+    if stop_loss_atr_mult > 0 and (preserve_moved_stop or stop_loss_trigger_px is not None):
+        px = stop_loss_trigger_px
+        if not isinstance(px, (int, float)) or not math.isfinite(px) or px <= 0:
+            print(json.dumps({
+                "error": f"--stop-loss-trigger-px must be a positive finite price (got {px!r}, preserve_moved_stop={bool(preserve_moved_stop)}); no stop was cancelled or placed",
+            }, cls=SafeEncoder))
+            sys.exit(1)
     side = side.lower()
     if side not in ("long", "short"):
         print(json.dumps({"error": f"invalid side {side!r}"}, cls=SafeEncoder))
@@ -1111,11 +1148,15 @@ def run_sync_protection(
             out["tp_cancel_not_open_oids"] = surplus_cancel_not_open
 
         if stop_loss_atr_mult > 0:
-            if side == "long":
-                sl_px = avg_cost - stop_loss_atr_mult * entry_atr
+            if stop_loss_trigger_px is not None:
+                sl_px = _preserved_stop_trigger_px(
+                    adapter, symbol, side, float(stop_loss_trigger_px), bool(preserve_moved_stop))
             else:
-                sl_px = avg_cost + stop_loss_atr_mult * entry_atr
-            sl_px = adapter.round_perps_trigger_px(symbol, sl_px)
+                if side == "long":
+                    sl_px = avg_cost - stop_loss_atr_mult * entry_atr
+                else:
+                    sl_px = avg_cost + stop_loss_atr_mult * entry_atr
+                sl_px = adapter.round_perps_trigger_px(symbol, sl_px)
 
             def _sl_placed(px):
                 out["stop_loss_trigger_px"] = px
@@ -1152,7 +1193,14 @@ def run_sync_protection(
                 except Exception as se:
                     _resolve_unknown_sl(str(se), pre_oids)
 
-            if _oid_is_open(open_oids, stop_loss_oid) and not force_sl_replace:
+            if sl_px is None:
+                if _oid_is_open(open_oids, stop_loss_oid):
+                    out["stop_loss_oid"] = int(stop_loss_oid)
+                out["stop_loss_error"] = (
+                    f"the supplied stop trigger {stop_loss_trigger_px!r} cannot be rounded to a venue price "
+                    f"without loosening it; no stop was cancelled or placed"
+                )
+            elif _oid_is_open(open_oids, stop_loss_oid) and not force_sl_replace:
                 out["stop_loss_oid"] = int(stop_loss_oid)
             elif _oid_is_open(open_oids, stop_loss_oid) and force_sl_replace:
                 if size <= 0:
@@ -2265,8 +2313,14 @@ def main():
             default="",
             help="#843: JSON int[] — surplus resting TP OIDs to cancel after tier-count shrink.",
         )
+        parser.add_argument("--stop-loss-trigger-px", type=float, default=None)
+        parser.add_argument("--preserve-moved-stop", action="store_true")
         parser.add_argument("--mode", default="live")
+        parser.add_argument("--probe-only", action="store_true",
+            help="Startup compatibility probe: validate argv shape and exit 0.")
         args = parser.parse_args()
+        if args.probe_only:
+            sys.exit(0)
         tp_tiers = json.loads(args.tp_tiers_json) if args.tp_tiers_json else None
         tp_oids = json.loads(args.tp_oids_json) if args.tp_oids_json else None
         tp_armed_tiers = (
@@ -2299,6 +2353,8 @@ def main():
             force_tp_replace=force_tp_replace,
             cancel_tp_oids=cancel_tp_oids,
             reconcile_fill_hints_json=args.reconcile_fill_hints_json or "",
+            stop_loss_trigger_px=args.stop_loss_trigger_px,
+            preserve_moved_stop=bool(args.preserve_moved_stop),
         )
     elif "--update-stop-loss" in sys.argv:
         import argparse

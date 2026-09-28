@@ -194,6 +194,83 @@ func completeBookedConsumptionGroup(pos *Position, label string, setMarker bool)
 	}
 }
 
+func backfillMovedStopMarkers(cfg *Config, state *AppState, mu *sync.RWMutex) int {
+	if cfg == nil || state == nil || mu == nil {
+		return 0
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	marked := 0
+	for _, sc := range cfg.Strategies {
+		if sc.Platform != "hyperliquid" || (sc.Type != "perps" && sc.Type != "manual") {
+			continue
+		}
+		if strategyUsesUnifiedRegimeClose(sc) || !strategyHasPostTPStopRules(sc) {
+			continue
+		}
+		ss := state.Strategies[sc.ID]
+		if ss == nil {
+			continue
+		}
+		syms := make([]string, 0, len(ss.Positions))
+		for sym := range ss.Positions {
+			syms = append(syms, sym)
+		}
+		sort.Strings(syms)
+		for _, sym := range syms {
+			pos := ss.Positions[sym]
+			if pos == nil || pos.Quantity <= 0 || pos.SLAfterMoved || pos.SLAdjustedTiersProcessed <= 0 {
+				continue
+			}
+			if !processedTiersHoldSLAfterRule(sc, pos) {
+				continue
+			}
+			pos.SLAfterMoved = true
+			noteMovedStopTrigger(pos)
+			fmt.Printf("[WARN] [%s] %s: a take-profit stop rule already moved this stop (processed tiers=%d); the moved stop is now kept tighter-only, preserved trigger $%.4f\n",
+				sc.ID, sym, pos.SLAdjustedTiersProcessed, pos.SLAfterTriggerPx)
+			marked++
+		}
+	}
+	return marked
+}
+
+func processedTiersHoldSLAfterRule(sc StrategyConfig, pos *Position) bool {
+	ruleSets := make([]tierSLAfterRules, 0, 2)
+	base, _ := parseStrategyTPSLAfterRules(sc)
+	ruleSets = append(ruleSets, base)
+	if strategyUsesRegimeTieredTPATRClose(sc) {
+		regimeRules, _ := parseStrategyTPSLAfterRulesForRegime(sc, nil, protectionATRRegimeLabel(pos, sc))
+		ruleSets = append(ruleSets, regimeRules)
+	}
+	for _, rules := range ruleSets {
+		for i := 0; i < pos.SLAdjustedTiersProcessed; i++ {
+			if !rules.ForTier(i).IsEmpty() {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func clearRecordedStopLoss(pos *Position) {
+	if pos == nil {
+		return
+	}
+	noteMovedStopTrigger(pos)
+	pos.StopLossOID = 0
+	pos.StopLossTriggerPx = 0
+}
+
+func noteMovedStopTrigger(pos *Position) {
+	if pos == nil || !pos.SLAfterMoved || pos.StopLossOID <= 0 {
+		return
+	}
+	if finitePositive(pos.StopLossTriggerPx) {
+		pos.SLAfterTriggerPx = pos.StopLossTriggerPx
+	}
+}
+
 func deferBookedConsumptionGroup(pos *Position, strategyID, symbol, label, reason string) {
 	if pos == nil {
 		return

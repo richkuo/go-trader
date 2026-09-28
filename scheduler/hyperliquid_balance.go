@@ -494,8 +494,7 @@ func settleHLStopFillWatch(
 	pos.AvgCost = openAvgCost
 	pos.StopLossTriggerPx = openTriggerPx
 	if pos.StopLossOID == w.oid {
-		pos.StopLossOID = 0
-		pos.StopLossTriggerPx = 0
+		clearRecordedStopLoss(pos)
 	}
 	if logger != nil {
 		logger.Warn("hl-sync: %s SL OID %s fill confirmed on a retry; booked %.6f as stop_loss at the recorded cost $%.4f, %.6f stays open",
@@ -554,8 +553,7 @@ func reconcileSoleOwnerOpenStopFill(
 		if syncFilledOID != statePos.StopLossOID {
 			return changed, nil
 		}
-		statePos.StopLossOID = 0
-		statePos.StopLossTriggerPx = 0
+		clearRecordedStopLoss(statePos)
 		if w, ok := pendingHLStopFillWatch(sc.ID, sym); ok && w.oid == syncFilledOID {
 			sendHLStopFillDM(fmt.Sprintf("**HL STOP FILL PENDING** [%s] %s SL OID %s filled on-chain (protection sync) and the book was resynced to the on-chain %.6f. The filled stop is cleared so the next protection sync places a stop for the open position. The fill lookup for the %.6f it closed is still retried; if it does not confirm, or the scheduler restarts first, no stop_loss PnL is booked for that %.6f. Check the realized PnL on Hyperliquid if no SL fill alert follows.",
 				sc.ID, sym, oidStr, onChainAbs, w.qty, w.qty), logger, ownerDMs)
@@ -593,8 +591,7 @@ func reconcileSoleOwnerOpenStopFill(
 	}
 	remaining := 0.0
 	if pos := stratState.Positions[sym]; pos != nil {
-		pos.StopLossOID = 0
-		pos.StopLossTriggerPx = 0
+		clearRecordedStopLoss(pos)
 		remaining = pos.Quantity
 	}
 	if logger != nil {
@@ -1474,8 +1471,7 @@ func clearHyperliquidProtectionOIDsMatching(pos *Position, cancelOIDs []int64) {
 	}
 	for _, cancelOID := range cancelOIDs {
 		if cancelOID > 0 && pos.StopLossOID == cancelOID {
-			pos.StopLossOID = 0
-			pos.StopLossTriggerPx = 0
+			clearRecordedStopLoss(pos)
 		}
 		for idx, tpOID := range pos.TPOIDs {
 			if cancelOID > 0 && tpOID == cancelOID {
@@ -2463,6 +2459,7 @@ func runPendingHyperliquidCircuitCloses(
 					if pos, ok := ss.Positions[c.Symbol]; ok && pos != nil {
 						for _, cancelOID := range cancelOIDs {
 							if cancelOID > 0 && pos.StopLossOID == cancelOID {
+								noteMovedStopTrigger(pos)
 								pos.StopLossOID = 0
 							}
 							for idx, tpOID := range pos.TPOIDs {

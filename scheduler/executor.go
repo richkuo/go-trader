@@ -488,16 +488,23 @@ func RunHyperliquidListAllOpenOrders(script string) (hlAllOpenOrders, error) {
 
 var runHyperliquidListAllOpenOrdersFn = RunHyperliquidListAllOpenOrders
 
-func buildHyperliquidSyncProtectionArgv(symbol, side string, size, avgCost, entryATR, stopLossATRMult float64, tiers []hlProtectionTier, stopLossOID int64, tpOIDs []int64, tpArmedTiers []bool, forceSLReplace bool, forceTPReplace []bool, cancelTPOIDs []int64, reconcileFillHintsJSON []byte) []string {
+func buildHyperliquidSyncProtectionArgv(plan hlProtectionPlan, reconcileFillHintsJSON []byte) []string {
+	tiers := plan.Tiers
 	args := []string{
 		"--sync-protection",
-		fmt.Sprintf("--symbol=%s", symbol),
-		fmt.Sprintf("--side=%s", side),
-		fmt.Sprintf("--size=%g", size),
-		fmt.Sprintf("--avg-cost=%g", avgCost),
-		fmt.Sprintf("--entry-atr=%g", entryATR),
-		fmt.Sprintf("--stop-loss-atr-mult=%g", stopLossATRMult),
+		fmt.Sprintf("--symbol=%s", plan.Symbol),
+		fmt.Sprintf("--side=%s", plan.Side),
+		fmt.Sprintf("--size=%g", plan.Size),
+		fmt.Sprintf("--avg-cost=%g", plan.AvgCost),
+		fmt.Sprintf("--entry-atr=%g", plan.EntryATR),
+		fmt.Sprintf("--stop-loss-atr-mult=%g", plan.StopLossATRMult),
 		"--mode=live",
+	}
+	if plan.StopLossATRMult > 0 && (plan.PreserveMovedStop || plan.StopLossTriggerPx != 0) {
+		args = append(args, fmt.Sprintf("--stop-loss-trigger-px=%g", plan.StopLossTriggerPx))
+	}
+	if plan.StopLossATRMult > 0 && plan.PreserveMovedStop {
+		args = append(args, "--preserve-moved-stop")
 	}
 	if len(tiers) > 0 {
 		tierArgs := make([]map[string]float64, 0, len(tiers))
@@ -511,32 +518,32 @@ func buildHyperliquidSyncProtectionArgv(symbol, side string, size, avgCost, entr
 			args = append(args, fmt.Sprintf("--tp-tiers-json=%s", string(b)))
 		}
 	}
-	if stopLossOID > 0 {
-		args = append(args, fmt.Sprintf("--stop-loss-oid=%d", stopLossOID))
+	if plan.StopLossOID > 0 {
+		args = append(args, fmt.Sprintf("--stop-loss-oid=%d", plan.StopLossOID))
 	}
-	if len(tpOIDs) > 0 {
-		if b, err := json.Marshal(tpOIDs); err == nil {
+	if len(plan.TPOIDs) > 0 {
+		if b, err := json.Marshal(plan.TPOIDs); err == nil {
 			args = append(args, fmt.Sprintf("--tp-oids-json=%s", string(b)))
 		}
 	}
 	if len(tiers) > 0 {
-		armed := tpArmedTiersForTierCount(tpArmedTiers, len(tiers))
+		armed := tpArmedTiersForTierCount(plan.TPArmedTiers, len(tiers))
 		if b, err := json.Marshal(armed); err == nil {
 			args = append(args, fmt.Sprintf("--tp-armed-tiers-json=%s", string(b)))
 		} else {
 			fmt.Fprintf(os.Stderr, "[WARN] json.Marshal(tp armed tiers) failed: %v — sync-protection omitting --tp-armed-tiers-json\n", err)
 		}
 	}
-	if forceSLReplace {
+	if plan.ForceSLReplace {
 		args = append(args, "--force-sl-replace")
 	}
-	if len(forceTPReplace) > 0 {
-		if b, err := json.Marshal(forceTPReplace); err == nil {
+	if len(plan.ForceTPReplace) > 0 {
+		if b, err := json.Marshal(plan.ForceTPReplace); err == nil {
 			args = append(args, fmt.Sprintf("--force-tp-replace-json=%s", string(b)))
 		}
 	}
-	if len(cancelTPOIDs) > 0 {
-		if b, err := json.Marshal(cancelTPOIDs); err == nil {
+	if len(plan.CancelTPOIDs) > 0 {
+		if b, err := json.Marshal(plan.CancelTPOIDs); err == nil {
 			args = append(args, fmt.Sprintf("--cancel-tp-oids-json=%s", string(b)))
 		}
 	}
@@ -546,8 +553,8 @@ func buildHyperliquidSyncProtectionArgv(symbol, side string, size, avgCost, entr
 	return args
 }
 
-func RunHyperliquidSyncProtection(script, symbol, side string, size, avgCost, entryATR, stopLossATRMult float64, tiers []hlProtectionTier, stopLossOID int64, tpOIDs []int64, tpArmedTiers []bool, forceSLReplace bool, forceTPReplace []bool, cancelTPOIDs []int64, reconcileFillHintsJSON []byte) (*HyperliquidProtectionSyncResult, string, error) {
-	args := buildHyperliquidSyncProtectionArgv(symbol, side, size, avgCost, entryATR, stopLossATRMult, tiers, stopLossOID, tpOIDs, tpArmedTiers, forceSLReplace, forceTPReplace, cancelTPOIDs, reconcileFillHintsJSON)
+func RunHyperliquidSyncProtection(script string, plan hlProtectionPlan, reconcileFillHintsJSON []byte) (*HyperliquidProtectionSyncResult, string, error) {
+	args := buildHyperliquidSyncProtectionArgv(plan, reconcileFillHintsJSON)
 	stdout, stderr, err := runPythonSideEffect(script, args)
 	stderrStr := string(stderr)
 	var result HyperliquidProtectionSyncResult
@@ -558,7 +565,7 @@ func RunHyperliquidSyncProtection(script, symbol, side string, size, avgCost, en
 		return nil, stderrStr, fmt.Errorf("parse output: %w (stdout: %s)", jsonErr, string(stdout))
 	}
 	if hlProtectionSyncMovesChain(&result) {
-		hlNoteCoinSubmission(symbol)
+		hlNoteCoinSubmission(plan.Symbol)
 	}
 	if err != nil && result.Error == "" {
 		return &result, stderrStr, fmt.Errorf("script error: %w (stderr: %s)", err, stderrStr)

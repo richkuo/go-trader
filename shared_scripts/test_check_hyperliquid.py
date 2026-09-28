@@ -1903,3 +1903,146 @@ class TestProtectionSyncStopLossTriggerContract:
         assert "stop_loss_oid" not in out
         assert "stop_loss_outcome_unknown" not in out
         assert "no usable status" in out.get("stop_loss_error", "")
+
+
+class TestSyncProtectionPreservedTrigger:
+
+    @staticmethod
+    def _resting(oid):
+        return {"status": "ok", "response": {"data": {"statuses": [{"resting": {"oid": oid}}]}}}
+
+    def _run(self, *, trigger, preserve, side="long", decimals=2, tick=0.01,
+             open_oids=(4242,), stop_loss_oid=4242, force=True, place_response=None):
+        import builtins
+        mod, spec = _load_check_module()
+        spec.loader.exec_module(mod)
+
+        mock_adapter_cls = MagicMock()
+        adapter = MagicMock()
+        mock_adapter_cls.return_value = adapter
+        adapter.open_order_oids.return_value = set(open_oids)
+        adapter.round_perps_trigger_px.side_effect = lambda _sym, px: round(px, decimals)
+        adapter.perps_trigger_px_tick.return_value = tick
+        adapter.round_size.side_effect = lambda _sym, sz: sz
+        adapter.place_stop_loss.return_value = place_response or self._resting(9002)
+        adapter.cancel_order_by_oid.return_value = _CANCEL_OK_RESPONSE
+
+        captured = StringIO()
+        original_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "adapter":
+                fake_mod = MagicMock()
+                fake_mod.HyperliquidExchangeAdapter = mock_adapter_cls
+                return fake_mod
+            return original_import(name, *args, **kwargs)
+
+        exit_code = None
+        with patch("builtins.__import__", side_effect=mock_import):
+            with patch("sys.stdout", captured):
+                try:
+                    mod.run_sync_protection(
+                        "ETH", side, 1.0, 2400.0, 30.0, "live",
+                        stop_loss_atr_mult=2.5,
+                        stop_loss_oid=stop_loss_oid,
+                        force_sl_replace=force,
+                        stop_loss_trigger_px=trigger,
+                        preserve_moved_stop=preserve,
+                    )
+                except SystemExit as e:
+                    exit_code = e.code
+        return json.loads(captured.getvalue()), adapter, mock_adapter_cls, exit_code
+
+    def test_moved_trigger_replaces_the_label_after_a_confirmed_cancel(self):
+        out, adapter, _, code = self._run(trigger=2400.0, preserve=True)
+        assert code is None
+        adapter.cancel_order_by_oid.assert_called_once()
+        adapter.place_stop_loss.assert_called_once()
+        assert adapter.place_stop_loss.call_args.args[2] == pytest.approx(2400.0)
+        assert out["stop_loss_oid"] == 9002
+        assert out["stop_loss_trigger_px"] == pytest.approx(2400.0)
+
+    def test_moved_trigger_places_a_missing_stop_at_the_moved_price(self):
+        out, adapter, _, _ = self._run(trigger=2410.0, preserve=True, open_oids=(), stop_loss_oid=0, force=False)
+        adapter.cancel_order_by_oid.assert_not_called()
+        assert adapter.place_stop_loss.call_args.args[2] == pytest.approx(2410.0)
+        assert out["stop_loss_trigger_px"] == pytest.approx(2410.0)
+
+    def test_resting_moved_stop_is_kept_without_replacement(self):
+        out, adapter, _, _ = self._run(trigger=2400.0, preserve=True, force=False)
+        adapter.cancel_order_by_oid.assert_not_called()
+        adapter.place_stop_loss.assert_not_called()
+        assert out["stop_loss_oid"] == 4242
+
+    @pytest.mark.parametrize("trigger", [None, 0.0, -1.0, float("nan"), float("inf")])
+    def test_invalid_moved_trigger_fails_before_any_cancel_or_place(self, trigger):
+        out, adapter, adapter_cls, code = self._run(trigger=trigger, preserve=True)
+        assert code == 1
+        assert "stop-loss-trigger-px" in out["error"]
+        adapter_cls.assert_not_called()
+        adapter.cancel_order_by_oid.assert_not_called()
+        adapter.place_stop_loss.assert_not_called()
+
+    @pytest.mark.parametrize("trigger", [-1.0, float("nan")])
+    def test_invalid_supplied_trigger_fails_without_the_preserve_flag(self, trigger):
+        _, adapter, adapter_cls, code = self._run(trigger=trigger, preserve=False)
+        assert code == 1
+        adapter_cls.assert_not_called()
+        adapter.place_stop_loss.assert_not_called()
+
+    @pytest.mark.parametrize("side,requested", [("long", 2400.004), ("short", 2399.996)])
+    def test_venue_rounding_never_loosens_a_moved_trigger(self, side, requested):
+        _, adapter, _, _ = self._run(trigger=requested, preserve=True, side=side)
+        placed = adapter.place_stop_loss.call_args.args[2]
+        if side == "long":
+            assert placed >= requested
+        else:
+            assert placed <= requested
+        assert placed == pytest.approx(requested, abs=0.011)
+
+    def test_unroundable_moved_trigger_keeps_the_resting_stop(self):
+        out, adapter, _, code = self._run(trigger=2400.004, preserve=True, tick=0.0)
+        assert code is None
+        adapter.cancel_order_by_oid.assert_not_called()
+        adapter.place_stop_loss.assert_not_called()
+        assert out["stop_loss_oid"] == 4242
+        assert "without loosening" in out["stop_loss_error"]
+
+    def test_parser_routes_the_moved_stop_flags(self):
+        mod, spec = _load_check_module()
+        spec.loader.exec_module(mod)
+        argv = [
+            "check_hyperliquid.py", "--sync-protection", "--symbol=ETH", "--side=long",
+            "--size=1", "--avg-cost=2400", "--entry-atr=30", "--stop-loss-atr-mult=2.5",
+            "--stop-loss-trigger-px=2400.5", "--preserve-moved-stop", "--mode=live",
+        ]
+        with patch.object(mod, "run_sync_protection") as run, patch.object(sys, "argv", argv):
+            mod.main()
+        kwargs = run.call_args.kwargs
+        assert kwargs["stop_loss_trigger_px"] == pytest.approx(2400.5)
+        assert kwargs["preserve_moved_stop"] is True
+
+    def test_parser_defaults_keep_the_label_contract(self):
+        mod, spec = _load_check_module()
+        spec.loader.exec_module(mod)
+        argv = [
+            "check_hyperliquid.py", "--sync-protection", "--symbol=ETH", "--side=long",
+            "--size=1", "--avg-cost=2400", "--entry-atr=30", "--stop-loss-atr-mult=2.5", "--mode=live",
+        ]
+        with patch.object(mod, "run_sync_protection") as run, patch.object(sys, "argv", argv):
+            mod.main()
+        kwargs = run.call_args.kwargs
+        assert kwargs["stop_loss_trigger_px"] is None
+        assert kwargs["preserve_moved_stop"] is False
+
+    def test_probe_only_exits_before_any_exchange_call(self):
+        import subprocess
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "check_hyperliquid.py")
+        proc = subprocess.run(
+            [sys.executable, script, "--sync-protection", "--symbol=BTC", "--side=long",
+             "--size=0.01", "--avg-cost=1", "--entry-atr=1", "--stop-loss-atr-mult=1",
+             "--stop-loss-trigger-px=1", "--preserve-moved-stop", "--mode=live", "--probe-only"],
+            capture_output=True, text=True, timeout=60,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout == ""

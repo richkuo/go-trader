@@ -959,6 +959,7 @@ func runHyperliquidLiquidationAudit(
 					if trigger > 0 {
 						p.StopLossTriggerPx = trigger
 					}
+					noteMovedStopTrigger(p)
 					booked = true
 				}
 			}

@@ -324,6 +324,7 @@ const (
 	hlStopRearmProtectionLost
 	hlStopRearmOutcomeUnknown
 	hlStopRearmRemoved
+	hlStopRearmMovedTriggerLost
 )
 
 const (
@@ -681,8 +682,7 @@ func removeHLCloseUnconfirmedOrders(sc StrategyConfig, stratState *StrategyState
 			rep.Removed = append(rep.Removed, u.StopOID)
 			mu.Lock()
 			if pos := stratState.Positions[symbol]; pos != nil && pos.StopLossOID == u.StopOID {
-				pos.StopLossOID = 0
-				pos.StopLossTriggerPx = 0
+				clearRecordedStopLoss(pos)
 			}
 			mu.Unlock()
 		case hlStopRearmClosed:
@@ -827,6 +827,7 @@ func rearmScalarStopAfterFailedClose(sc StrategyConfig, stratState *StrategyStat
 			if trigger > 0 {
 				p.StopLossTriggerPx = trigger
 			}
+			noteMovedStopTrigger(p)
 		}
 		mu.Unlock()
 	})

@@ -91,6 +91,23 @@ var limitStatusProbeArgv = []string{
 	"--limit-status", "--symbol=BTC", "--oids-json=[1]", "--probe-only",
 }
 
+var syncProtectionProbeArgv = []string{
+	"--sync-protection",
+	"--symbol=BTC", "--side=long", "--size=0.01",
+	"--avg-cost=1", "--entry-atr=1", "--stop-loss-atr-mult=1",
+	"--mode=live",
+	"--stop-loss-trigger-px=1", "--preserve-moved-stop",
+	`--tp-tiers-json=[{"atr_multiple":1,"close_fraction":0.5},{"atr_multiple":2,"close_fraction":1}]`,
+	"--stop-loss-oid=1",
+	"--tp-oids-json=[1,2]",
+	"--tp-armed-tiers-json=[true,false]",
+	"--force-sl-replace",
+	"--force-tp-replace-json=[true,false]",
+	"--cancel-tp-oids-json=[3]",
+	"--reconcile-fill-hints-json=[]",
+	"--probe-only",
+}
+
 var cancelOrderProbeArgv = []string{
 	"--cancel-order", "--symbol=BTC", "--oid=1", "--probe-only",
 }
@@ -157,6 +174,9 @@ func probeCheckScripts(cfg *Config) error {
 				return err
 			}
 			if err := probeOneCheckScriptFn(script, limitStatusProbeArgv); err != nil {
+				return err
+			}
+			if err := probeOneCheckScriptFn(script, syncProtectionProbeArgv); err != nil {
 				return err
 			}
 			if err := probeOneCheckScriptFn(script, cancelOrderProbeArgv); err != nil {

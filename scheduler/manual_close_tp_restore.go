@@ -92,6 +92,8 @@ func manualCloseTPAffectedOIDs(classes []manualCloseTPTierClass, tpOIDs []int64,
 
 func manualCloseTPRestorePlanInputs(plan hlProtectionPlan, classes []manualCloseTPTierClass, tpOIDs []int64, size float64) hlProtectionPlan {
 	plan.StopLossATRMult = 0
+	plan.StopLossTriggerPx = 0
+	plan.PreserveMovedStop = false
 	plan.StopLossOID = 0
 	plan.ForceSLReplace = false
 	plan.ForceTPReplace = nil
