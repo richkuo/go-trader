@@ -32,26 +32,31 @@ Subcommands:
         periods of the longest cadence) and writes its request_budget: the
         measured values times 1.5, or the fixed operator values. Fixed values
         are refused when the measured peak plus the mids reserve does not fit.
+        verify and switch refuse until calibrate passes.
   verify [--accept-differences]
         Both feeds healthy and scripts/feed-source-compare.sh exits 0. A
         difference or an inconclusive result is re-checked once on newer keys;
         differences that remain stop the stage until the operator reviews them
         and re-runs with --accept-differences, which records the count.
   switch --consumer <unit> [--confirm-live <unit>] [--dropin]
-        Switches one consumer to market_feed "shared" and restarts it, then
-        requires three sealed primary keys and feed-parity PASS. Any failure
-        restores the saved config and restarts the unit. A unit with a live or
+        Switches one running consumer to market_feed "shared" and restarts it,
+        then requires three sealed primary keys and feed-parity PASS. Any
+        failure, interruption or early exit restores the saved config and
+        restarts the unit. A unit with a live or
         manual strategy needs --confirm-live <unit> or the unit name typed.
   consumers --consumer <unit>...
         Sets the full list of consumers both feeds serve, for example after a
         paper fold with scripts/merge-paper-instance.sh: adds new units (as a
         shadow until they are switched), drops units no longer named, and
-        reloads both feeds. On any failure both feeds keep their previous list.
+        reloads both feeds. Refuses to drop a running or enabled unit whose
+        config is in shared mode. On any failure both feeds get their previous
+        list back, checked on each running feed.
   rollback (--consumer <unit> | --all)
-        Restores saved consumer configs and restarts those units. When a config
-        changed after its switch (for example a fold), only market_feed and
-        shared_market_feed are reverted. --all covers the current consumers,
-        then stops and disables both feed units.
+        Restores saved consumer configs and restarts the units that run; a
+        stopped unit stays stopped. When a config changed after its switch
+        (for example a fold), only market_feed and shared_market_feed are
+        reverted. --all covers the current consumers and every unit with a
+        switch not rolled back, then stops and disables both feed units.
   status
         Prints the journal, the feed units and each recorded consumer.
 
@@ -128,10 +133,23 @@ def load(path):
 
 def dump(obj, path, mode):
     tmp = path + ".tmp-shared-feed"
-    with open(tmp, "w") as f:
+    try:
+        os.unlink(tmp)
+    except FileNotFoundError:
+        pass
+    owner = None
+    try:
+        st = os.stat(path)
+        owner = (st.st_uid, st.st_gid)
+    except FileNotFoundError:
+        pass
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as f:
         json.dump(obj, f, indent=2, ensure_ascii=False)
         f.write("\n")
-    os.chmod(tmp, mode)
+        if owner is not None:
+            os.fchown(f.fileno(), owner[0], owner[1])
+        os.fchmod(f.fileno(), mode)
     os.replace(tmp, path)
 
 def is_live_args(args):
@@ -174,7 +192,7 @@ def write_feed(path, consumer_cfg, source, socket, port, consumers, per_minute, 
         feed["request_budget"] = {"per_minute": int(per_minute), "startup": int(startup)}
     out["feed"] = feed
     out["strategies"] = []
-    dump(out, path, 0o644)
+    dump(out, path, 0o600)
 
 def replace_consumer(path, old, new):
     c = load(path)
@@ -184,12 +202,12 @@ def replace_consumer(path, old, new):
     if old not in lst:
         sys.exit(f"{old} is not listed in {path}")
     c["feed"]["consumer_configs"] = [new if p == old else p for p in lst]
-    dump(c, path, 0o644)
+    dump(c, path, 0o600)
 
 def set_consumers(path, consumers):
     c = load(path)
     c["feed"]["consumer_configs"] = json.loads(consumers)
-    dump(c, path, 0o644)
+    dump(c, path, 0o600)
 
 def is_shared(path, primary, backup):
     c = load(path)
@@ -217,7 +235,7 @@ def feed_keys_match(path, backup_path):
 def set_budget(path, per_minute, startup):
     c = load(path)
     c["feed"]["request_budget"] = {"per_minute": int(per_minute), "startup": int(startup)}
-    dump(c, path, 0o644)
+    dump(c, path, 0o600)
 
 def get(url_json_path, dotted):
     c = json.load(open(url_json_path))
@@ -268,6 +286,19 @@ PY
 )
 
 py() { python3 -c "$PY_HELPER" "$@"; }
+
+prepare_shadow_dir() {
+    install -d -m 0755 "$STATE_DIR"
+    install -d -m 0700 -o "$FEED_USER" -g "$FEED_GROUP" "$SHADOW_DIR"
+    chown "$FEED_USER:$FEED_GROUP" "$SHADOW_DIR"
+    chmod 0700 "$SHADOW_DIR"
+}
+
+write_shadow() {
+    local cfg="$1" shadow="$2"
+    py write-shared "$cfg" "$shadow" "$(feed_socket primary)" "$(feed_socket backup)" 0600
+    chown --reference="$SHADOW_DIR" "$shadow"
+}
 
 unit_prop() { systemctl show "$1" -p "$2" --value 2>/dev/null | head -n 1 || true; }
 
@@ -521,8 +552,10 @@ cmd_plan() {
 install_feed_unit() {
     local name="$1" unit dropin
     unit=$(feed_unit "$name")
-    local src="$REPO_ROOT/systemd/go-trader@.service" dest="/etc/systemd/system/go-trader@.service"
-    update_sync_journal_namespace "$REPO_ROOT" "$src" || die 21 "journald namespace setup failed"
+    local src dest="/etc/systemd/system/go-trader@.service"
+    src="$(feed_dir "$name")/systemd/go-trader@.service"
+    [[ -f "$src" ]] || die 21 "$src is missing after the build"
+    update_sync_journal_namespace "$(feed_dir "$name")" "$src" || die 21 "journald namespace setup failed"
     if [[ ! -f "$dest" ]] || ! cmp -s "$src" "$dest"; then
         install -m 0644 "$src" "$dest"
         log "installed $dest"
@@ -566,13 +599,12 @@ cmd_feeds() {
     first_cfg=$(unit_config_path "${CONSUMERS[0]}")
     origin=$(git -C "$first_wd" remote get-url origin 2>/dev/null || true)
     [[ -n "$origin" ]] || die 20 "$first_wd has no git origin; the feed deployments clone it so update.sh can update them later"
-    mkdir -p "$SHADOW_DIR"
-    chmod 0755 "$STATE_DIR" "$SHADOW_DIR"
+    prepare_shadow_dir
     local -a shadows=()
     for unit in "${CONSUMERS[@]}"; do
         cfg=$(unit_config_path "$unit")
         shadow="$SHADOW_DIR/${unit%.service}.json"
-        py write-shared "$cfg" "$shadow" "$(feed_socket primary)" "$(feed_socket backup)" 0644
+        write_shadow "$cfg" "$shadow"
         journal_add "consumer $unit config=$cfg shadow=$shadow"
         shadows+=("$shadow")
     done
@@ -678,6 +710,15 @@ current_consumers() {
     grep -E '^consumer ' "$JOURNAL" 2>/dev/null | awk '{print $2}' | sort -u || true
 }
 
+switched_units() {
+    [[ -f "$JOURNAL" ]] || return 0
+    local unit rec
+    for unit in $(grep -E '^switch ' "$JOURNAL" | awk '{print $2}' | sort -u); do
+        rec=$(journal_last "switch $unit")
+        [[ "$rec" == *" rolled_back "* ]] || printf '%s\n' "$unit"
+    done
+}
+
 in_current_consumers() {
     local unit="$1" u
     while IFS= read -r u; do
@@ -707,16 +748,28 @@ cmd_consumers() {
     check_selection "${SELECTED[@]}"
     [[ "$(source_fingerprint "$(feed_dir primary)")" == "$(source_fingerprint "$(unit_prop "${CONSUMERS[0]}" WorkingDirectory)")" ]] \
         || die 14 "the consumers run a different scheduler source than the feeds; update every deployment with update.sh --all --restart first"
-    local unit cfg shadow entry name
+    local unit cfg shadow entry name old state
     local -a entries=()
-    mkdir -p "$SHADOW_DIR"
+    while IFS= read -r old; do
+        [[ -n "$old" ]] || continue
+        case $'\n'"$(printf '%s\n' "${CONSUMERS[@]}")"$'\n' in *$'\n'"$old"$'\n'*) continue ;; esac
+        cfg=$(journal_field "$(journal_last "consumer $old")" config)
+        [[ -n "$cfg" && -f "$cfg" ]] || continue
+        [[ "$(py is-shared "$cfg" "$(feed_socket primary)" "$(feed_socket backup)")" == "yes" ]] || continue
+        state=$(systemctl is-active "$old" 2>/dev/null || true)
+        if [[ "$state" != "inactive" && "$state" != "failed" ]] || systemctl is-enabled --quiet "$old" 2>/dev/null; then
+            die 17 "$old is $state$(systemctl is-enabled --quiet "$old" 2>/dev/null && echo ", enabled") and its config is in shared mode on these feeds, so dropping it would leave it with no feed. Name it with --consumer, or roll it back (rollback --consumer $old) or stop and disable it first. Nothing changed"
+        fi
+        log "  $old: stopped and disabled with a shared-mode config; dropped from the feeds (rollback --consumer $old still restores its config)"
+    done < <(current_consumers)
+    prepare_shadow_dir
     for unit in "${CONSUMERS[@]}"; do
         cfg=$(unit_config_path "$unit")
         shadow="$SHADOW_DIR/${unit%.service}.json"
         if [[ "$(py is-shared "$cfg" "$(feed_socket primary)" "$(feed_socket backup)")" == "yes" ]]; then
             entry="$cfg"
         else
-            py write-shared "$cfg" "$shadow" "$(feed_socket primary)" "$(feed_socket backup)" 0644
+            write_shadow "$cfg" "$shadow"
             entry="$shadow"
         fi
         journal_add "consumer $unit config=$cfg shadow=$shadow"
@@ -745,12 +798,26 @@ cmd_consumers() {
         done
     done
     if [[ -n "$failed" ]]; then
+        local restore_failed="" prev
         for name in "${FEEDS[@]}"; do
             cp -p "$keep/$name.json" "$(feed_config "$name")"
-            systemctl kill -s HUP "$(feed_unit "$name")" || true
+            if ! systemctl is-active --quiet "$(feed_unit "$name")"; then
+                log "$(feed_unit "$name") is not running; it loads its previous consumer list when it starts"
+                continue
+            fi
+            if ! reload_feed "$name"; then
+                restore_failed="${restore_failed} $(feed_unit "$name") published no new generation after the restore"
+                continue
+            fi
+            while IFS= read -r prev; do
+                [[ -n "$prev" ]] || continue
+                local pst
+                pst=$(wait_feed_loaded "$name" "$prev") || restore_failed="${restore_failed} $(feed_unit "$name") did not load $prev again ($pst)"
+            done < <(python3 -c 'import json,sys; print("\n".join(json.load(open(sys.argv[1]))["feed"]["consumer_configs"]))' "$keep/$name.json")
         done
         rm -rf "$keep"
-        die 27 "$failed; both feeds keep their previous consumer list"
+        [[ -z "$restore_failed" ]] || die 30 "$failed; the previous feed configs are back on disk, but:${restore_failed}. Check both feeds' /status"
+        die 27 "$failed; both feeds loaded their previous consumer list again"
     fi
     rm -rf "$keep"
     journal_add "consumers-set units=$(IFS=,; echo "${CONSUMERS[*]}") at=$(date -u +%s)"
@@ -767,6 +834,7 @@ PREV_PER_MINUTE=""
 PREV_STARTUP=""
 
 calibrate_fail() {
+    guard_clear
     py set-budget "$(feed_config backup)" "$PREV_PER_MINUTE" "$PREV_STARTUP"
     systemctl kill -s HUP "$(feed_unit backup)" || true
     die 24 "$1; the backup keeps its previous budget per_minute=$PREV_PER_MINUTE startup=$PREV_STARTUP"
@@ -781,6 +849,7 @@ cmd_calibrate() {
     window="${OPT_WINDOW:-$(( ${cad:-300} * 2 ))}"
     PREV_PER_MINUTE=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["feed"]["request_budget"]["per_minute"])' "$(feed_config backup)")
     PREV_STARTUP=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["feed"]["request_budget"]["startup"])' "$(feed_config backup)")
+    guard_set calibrate
     if [[ -n "$OPT_PER_MINUTE" ]]; then
         py set-budget "$(feed_config backup)" "$OPT_PER_MINUTE" "$OPT_STARTUP"
         systemctl kill -s HUP "$(feed_unit backup)"
@@ -825,6 +894,7 @@ cmd_calibrate() {
     sleep 5
     [[ "$(health_get "$port" request_budget.per_minute)" == "$per_minute" ]] || calibrate_fail "the backup did not apply per_minute $per_minute after SIGHUP"
     journal_add "budget calibrated per_minute=$per_minute startup=$startup peak=$peak bootstrap=$bootstrap baseline_peak=${cap_peak:-none} fixed=$([[ -n "$OPT_PER_MINUTE" ]] && echo yes || echo no)"
+    guard_clear
     log "calibrate OK: per_minute=$per_minute startup=$startup (measured peak $peak, bootstrap $bootstrap). Next: verify"
 }
 
@@ -847,9 +917,14 @@ PY
     rm -f "$tp" "$tb"
 }
 
+budget_calibrated() {
+    [[ "$(journal_last "budget")" == "budget calibrated "* ]]
+}
+
 cmd_verify() {
     need_root
     [[ -n "$(journal_last "feeds ready")" ]] || die 20 "run 'feeds' first"
+    budget_calibrated || die 20 "the backup request budget is still provisional; run 'calibrate' first"
     local name port rc
     for name in "${FEEDS[@]}"; do
         port=$(feed_port "$name")
@@ -917,7 +992,7 @@ wait_active_fresh() {
 }
 
 restore_consumer() {
-    local unit="$1" rec cfg backup shadow pre post port old_pid mode="byte"
+    local unit="$1" policy="${2:-if-running}" rec cfg backup shadow pre post port old_pid mode="byte" state run=1
     rec=$(journal_last "switch $unit")
     cfg=$(journal_field "$rec" config)
     backup=$(journal_field "$rec" backup)
@@ -940,7 +1015,7 @@ restore_consumer() {
         chown --reference="$kept" "$cfg"
         log "$unit: the config changed after the switch (for example a paper fold), so only market_feed and shared_market_feed are reverted; the changed config is kept as $kept"
     fi
-    [[ -z "$shadow" ]] || py write-shared "$cfg" "$shadow" "$(feed_socket primary)" "$(feed_socket backup)" 0644
+    [[ -z "$shadow" ]] || write_shadow "$cfg" "$shadow"
     local dropin
     dropin=$(update_unit_dropin_path /etc/systemd/system "$unit" 50-shared-feed)
     if [[ -f "$dropin" ]]; then
@@ -954,23 +1029,79 @@ restore_consumer() {
             systemctl is-active --quiet "$(feed_unit "$name")" && systemctl kill -s HUP "$(feed_unit "$name")" || true
         fi
     done
-    port=$(journal_field "$(py summary "$cfg")" status_port)
-    old_pid=$(unit_prop "$unit" MainPID)
-    systemctl restart "$unit"
-    wait_active_fresh "$unit" "$old_pid" "$port" >/dev/null || { warn "$unit did not come back healthy after the restore"; return 1; }
+    state=$(systemctl is-active "$unit" 2>/dev/null || true)
+    if [[ "$policy" != "always" && ( "$state" == "inactive" || "$state" == "failed" ) ]]; then
+        run=0
+        log "$unit is $state; its config is restored and the unit stays stopped (no restart, no health wait)"
+    fi
+    if [[ $run -eq 1 ]]; then
+        port=$(journal_field "$(py summary "$cfg")" status_port)
+        old_pid=$(unit_prop "$unit" MainPID)
+        systemctl restart "$unit"
+        wait_active_fresh "$unit" "$old_pid" "$port" >/dev/null || { warn "$unit did not come back healthy after the restore"; return 1; }
+    fi
     if [[ "$mode" == "byte" ]]; then
         [[ "$(update_file_fingerprint "$cfg")" == "$pre" ]] || { warn "$unit: restored config fingerprint differs"; return 1; }
     else
         [[ "$(py feed-keys-match "$cfg" "$backup")" == "yes" ]] || { warn "$unit: market_feed keys differ from the saved config after the revert"; return 1; }
     fi
-    journal_add "switch $unit config=$cfg backup=$backup pre=$pre rolled_back mode=$mode at=$(date -u +%s)"
-    log "$unit restored ($mode) and healthy"
+    journal_add "switch $unit config=$cfg backup=$backup pre=$pre rolled_back mode=$mode restarted=$([[ $run -eq 1 ]] && echo yes || echo no) at=$(date -u +%s)"
+    if [[ $run -eq 1 ]]; then
+        log "$unit restored ($mode) and healthy"
+    else
+        log "$unit restored ($mode); left stopped"
+    fi
+}
+
+GUARD_KIND=""
+GUARD_UNIT=""
+
+guard_set() {
+    GUARD_KIND="$1"
+    GUARD_UNIT="${2:-}"
+    trap 'guard_signal INT' INT
+    trap 'guard_signal TERM' TERM
+    trap 'guard_signal HUP' HUP
+    trap 'guard_exit' EXIT
+}
+
+guard_clear() {
+    GUARD_KIND=""
+    GUARD_UNIT=""
+    trap - INT TERM HUP EXIT
+}
+
+guard_undo() {
+    local kind="$GUARD_KIND" unit="$GUARD_UNIT" why="$1"
+    guard_clear
+    trap '' INT TERM HUP
+    case "$kind" in
+        switch) switch_fail "$unit" "$why" ;;
+        calibrate) calibrate_fail "$why" ;;
+    esac
+}
+
+guard_signal() {
+    local sig="$1"
+    if [[ "$sig" == "HUP" ]]; then
+        exec >>"$STATE_DIR/interrupted.log" 2>&1
+        echo "[shared-feed] $(date -u +%Y-%m-%dT%H:%M:%SZ) SIGHUP (terminal lost); undoing the unfinished $GUARD_KIND"
+    fi
+    [[ -n "$GUARD_KIND" ]] || exit 130
+    guard_undo "interrupted by SIG$sig before its checks finished"
+}
+
+guard_exit() {
+    local rc=$?
+    [[ -n "$GUARD_KIND" ]] || exit "$rc"
+    guard_undo "the script stopped early (exit $rc) before its checks finished"
 }
 
 switch_fail() {
     local unit="$1" why="$2"
+    guard_clear
     warn "$unit: $why; restoring the saved config"
-    if restore_consumer "$unit"; then
+    if restore_consumer "$unit" always; then
         die 26 "$unit: switch failed ($why); the unit runs its original config again"
     fi
     die 30 "$unit: switch failed ($why) and the automatic restore also failed; restore $(journal_field "$(journal_last "switch $unit")" backup) by hand"
@@ -982,15 +1113,21 @@ cmd_switch() {
     local unit="${SELECTED[0]}"
     [[ "$unit" == *.service ]] || unit="${unit}.service"
     [[ -n "$(journal_last "verify pass")" ]] || die 20 "run 'verify' first"
-    local crec cfg shadow
+    budget_calibrated || die 20 "the backup request budget is still provisional; run 'calibrate' first"
+    local crec cfg shadow srec
     crec=$(journal_last "consumer $unit")
     [[ -n "$crec" ]] && in_current_consumers "$unit" || die 20 "$unit is not a current consumer; add it with 'consumers' (or 'feeds') first"
     cfg=$(journal_field "$crec" config)
     shadow=$(journal_field "$crec" shadow)
+    srec=$(journal_last "switch $unit")
     if [[ "$(py is-shared "$cfg" "$(feed_socket primary)" "$(feed_socket backup)")" == "yes" ]]; then
+        if [[ -n "$srec" && "$srec" != *" done" && "$srec" != *" rolled_back "* ]]; then
+            die 20 "an earlier switch of $unit stopped before its checks finished and was not undone; run 'rollback --consumer $unit', then switch it again"
+        fi
         log "$unit is already in shared mode on these feeds; nothing to do"
         return 0
     fi
+    systemctl is-active --quiet "$unit" || die 20 "$unit is not running; switch checks a running unit, so start it first"
     local summary live port old_pid
     summary=$(py summary "$cfg")
     live=$(journal_field "$summary" live)
@@ -1010,9 +1147,11 @@ cmd_switch() {
     cp -p "$cfg" "$backup"
     old_pid=$(unit_prop "$unit" MainPID)
     journal_add "switch $unit config=$cfg backup=$backup pre=$pre pid=$old_pid begin"
+    guard_set switch "$unit"
     py write-shared "$cfg" "$cfg" "$(feed_socket primary)" "$(feed_socket backup)" "$(stat -c '%a' "$backup")"
     chown --reference="$backup" "$cfg"
     post=$(update_file_fingerprint "$cfg")
+    journal_add "switch $unit config=$cfg backup=$backup pre=$pre post=$post pid=$old_pid written"
     local name tmp state waited
     tmp=$(mktemp)
     for name in "${FEEDS[@]}"; do
@@ -1081,6 +1220,7 @@ cmd_switch() {
     fi
     rm -f "$tmp2"
     journal_add "switch $unit config=$cfg backup=$backup pre=$pre post=$post pid=$new_pid done"
+    guard_clear
     log "$unit switched: $sealed sealed primary keys and feed-parity PASS"
 }
 
@@ -1101,6 +1241,10 @@ cmd_rollback() {
             [[ -n "$cfg" && -f "$cfg" && "$(py is-shared "$cfg" "$(feed_socket primary)" "$(feed_socket backup)")" == "yes" ]] && orphans+=("$unit")
         done
         [[ ${#orphans[@]} -eq 0 ]] || die 30 "${orphans[*]}: in shared mode with no saved pre-switch config (for example a unit created by a paper fold); set its market_feed by hand before rollback --all, because stopping the feeds would leave it degraded. Nothing changed"
+        while IFS= read -r unit; do
+            [[ -n "$unit" ]] || continue
+            case $'\n'"$(printf '%s\n' "${units[@]}")"$'\n' in *$'\n'"$unit"$'\n'*) ;; *) units+=("$unit") ;; esac
+        done < <(switched_units)
     else
         [[ ${#SELECTED[@]} -eq 1 ]] || die 2 "rollback takes --consumer <unit> or --all"
         unit="${SELECTED[0]}"
