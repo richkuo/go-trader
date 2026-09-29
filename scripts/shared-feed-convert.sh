@@ -32,16 +32,26 @@ Subcommands:
         periods of the longest cadence) and writes its request_budget: the
         measured values times 1.5, or the fixed operator values. Fixed values
         are refused when the measured peak plus the mids reserve does not fit.
-  verify
-        Both feeds healthy and scripts/feed-source-compare.sh exits 0.
+  verify [--accept-differences]
+        Both feeds healthy and scripts/feed-source-compare.sh exits 0. A
+        difference or an inconclusive result is re-checked once on newer keys;
+        differences that remain stop the stage until the operator reviews them
+        and re-runs with --accept-differences, which records the count.
   switch --consumer <unit> [--confirm-live <unit>] [--dropin]
         Switches one consumer to market_feed "shared" and restarts it, then
         requires three sealed primary keys and feed-parity PASS. Any failure
         restores the saved config and restarts the unit. A unit with a live or
         manual strategy needs --confirm-live <unit> or the unit name typed.
+  consumers --consumer <unit>...
+        Sets the full list of consumers both feeds serve, for example after a
+        paper fold with scripts/merge-paper-instance.sh: adds new units (as a
+        shadow until they are switched), drops units no longer named, and
+        reloads both feeds. On any failure both feeds keep their previous list.
   rollback (--consumer <unit> | --all)
-        Restores saved consumer configs and restarts those units. --all also
-        stops and disables both feed units.
+        Restores saved consumer configs and restarts those units. When a config
+        changed after its switch (for example a fold), only market_feed and
+        shared_market_feed are reverted. --all covers the current consumers,
+        then stops and disables both feed units.
   status
         Prints the journal, the feed units and each recorded consumer.
 
@@ -176,6 +186,34 @@ def replace_consumer(path, old, new):
     c["feed"]["consumer_configs"] = [new if p == old else p for p in lst]
     dump(c, path, 0o644)
 
+def set_consumers(path, consumers):
+    c = load(path)
+    c["feed"]["consumer_configs"] = json.loads(consumers)
+    dump(c, path, 0o644)
+
+def is_shared(path, primary, backup):
+    c = load(path)
+    s = c.get("shared_market_feed") or {}
+    ok = (c.get("market_feed") or "").strip() == "shared" and s.get("primary_socket") == primary and s.get("backup_socket") == backup
+    print("yes" if ok else "no")
+
+def revert_feed_keys(path, backup_path):
+    c = load(path)
+    b = load(backup_path)
+    for key in ("market_feed", "shared_market_feed"):
+        if key in b:
+            c[key] = b[key]
+        else:
+            c.pop(key, None)
+    mode = os.stat(path).st_mode & 0o777
+    dump(c, path, mode)
+
+def feed_keys_match(path, backup_path):
+    c = load(path)
+    b = load(backup_path)
+    same = all(c.get(k) == b.get(k) for k in ("market_feed", "shared_market_feed"))
+    print("yes" if same else "no")
+
 def set_budget(path, per_minute, startup):
     c = load(path)
     c["feed"]["request_budget"] = {"per_minute": int(per_minute), "startup": int(startup)}
@@ -217,6 +255,10 @@ args = sys.argv[2:]
     "write-shared": write_shared,
     "write-feed": write_feed,
     "replace-consumer": replace_consumer,
+    "set-consumers": set_consumers,
+    "is-shared": is_shared,
+    "revert-feed-keys": revert_feed_keys,
+    "feed-keys-match": feed_keys_match,
     "set-budget": set_budget,
     "get": get,
     "feed-consumer-state": feed_consumer_state,
@@ -596,6 +638,7 @@ cmd_feeds() {
     done
     keys=$(run_probe_live primary | grep -c '^probe: key ' || true)
     journal_add "feeds ready keys=$keys"
+    [[ -n "$(journal_last "consumers-set")" ]] || journal_add "consumers-set units=$(IFS=,; echo "${CONSUMERS[*]}") at=$(date -u +%s)"
     log "feeds OK: both feeds seal from shadow configs; no consumer changed. Next: calibrate"
 }
 
@@ -622,6 +665,96 @@ reload_feed() {
         fi
     done
     return 1
+}
+
+current_consumers() {
+    local rec units
+    rec=$(journal_last "consumers-set")
+    if [[ -n "$rec" ]]; then
+        units=$(journal_field "$rec" units)
+        printf '%s\n' "${units//,/$'\n'}"
+        return 0
+    fi
+    grep -E '^consumer ' "$JOURNAL" 2>/dev/null | awk '{print $2}' | sort -u || true
+}
+
+in_current_consumers() {
+    local unit="$1" u
+    while IFS= read -r u; do
+        [[ "$u" == "$unit" ]] && return 0
+    done < <(current_consumers)
+    return 1
+}
+
+wait_feed_loaded() {
+    local name="$1" cfg="$2" tmp waited=0 state=""
+    tmp=$(mktemp)
+    while [[ $waited -lt 60 ]]; do
+        http_to_file "http://127.0.0.1:$(feed_port "$name")/status" "$tmp" || true
+        state=$(py feed-consumer-state "$tmp" "$cfg" 2>/dev/null || true)
+        [[ "$state" == "loaded" ]] && break
+        sleep 3
+        waited=$((waited + 3))
+    done
+    rm -f "$tmp"
+    [[ "$state" == "loaded" ]] || { printf '%s' "$state"; return 1; }
+}
+
+cmd_consumers() {
+    need_root
+    need_tools
+    [[ -n "$(journal_last "feeds ready")" ]] || die 20 "run 'feeds' first"
+    check_selection "${SELECTED[@]}"
+    [[ "$(source_fingerprint "$(feed_dir primary)")" == "$(source_fingerprint "$(unit_prop "${CONSUMERS[0]}" WorkingDirectory)")" ]] \
+        || die 14 "the consumers run a different scheduler source than the feeds; update every deployment with update.sh --all --restart first"
+    local unit cfg shadow entry name
+    local -a entries=()
+    mkdir -p "$SHADOW_DIR"
+    for unit in "${CONSUMERS[@]}"; do
+        cfg=$(unit_config_path "$unit")
+        shadow="$SHADOW_DIR/${unit%.service}.json"
+        if [[ "$(py is-shared "$cfg" "$(feed_socket primary)" "$(feed_socket backup)")" == "yes" ]]; then
+            entry="$cfg"
+        else
+            py write-shared "$cfg" "$shadow" "$(feed_socket primary)" "$(feed_socket backup)" 0644
+            entry="$shadow"
+        fi
+        journal_add "consumer $unit config=$cfg shadow=$shadow"
+        entries+=("$entry")
+        log "  $unit -> $entry"
+    done
+    local list keep
+    list=$(printf '%s\n' "${entries[@]}" | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))')
+    keep=$(mktemp -d)
+    for name in "${FEEDS[@]}"; do
+        cp -p "$(feed_config "$name")" "$keep/$name.json"
+    done
+    local failed=""
+    for name in "${FEEDS[@]}"; do
+        py set-consumers "$(feed_config "$name")" "$list"
+        if ! reload_feed "$name"; then
+            failed="$(feed_unit "$name") published no new generation after SIGHUP"
+            break
+        fi
+        for entry in "${entries[@]}"; do
+            local st
+            if ! st=$(wait_feed_loaded "$name" "$entry"); then
+                failed="$(feed_unit "$name") did not load $entry ($st)"
+                break 2
+            fi
+        done
+    done
+    if [[ -n "$failed" ]]; then
+        for name in "${FEEDS[@]}"; do
+            cp -p "$keep/$name.json" "$(feed_config "$name")"
+            systemctl kill -s HUP "$(feed_unit "$name")" || true
+        done
+        rm -rf "$keep"
+        die 27 "$failed; both feeds keep their previous consumer list"
+    fi
+    rm -rf "$keep"
+    journal_add "consumers-set units=$(IFS=,; echo "${CONSUMERS[*]}") at=$(date -u +%s)"
+    log "consumers OK: both feeds serve ${#CONSUMERS[@]} consumer(s); units no longer listed are dropped from the feeds and from rollback --all"
 }
 
 feed_port() {
@@ -695,6 +828,25 @@ cmd_calibrate() {
     log "calibrate OK: per_minute=$per_minute startup=$startup (measured peak $peak, bootstrap $bootstrap). Next: verify"
 }
 
+common_retained_keys() {
+    local tp tb
+    tp=$(mktemp)
+    tb=$(mktemp)
+    "$(feed_dir primary)/go-trader" feed-fetch --socket "$(feed_socket primary)" --describe >"$tp" 2>/dev/null || true
+    "$(feed_dir primary)/go-trader" feed-fetch --socket "$(feed_socket backup)" --describe >"$tb" 2>/dev/null || true
+    python3 - "$tp" "$tb" <<'PY' || true
+import json, sys
+try:
+    a = set(json.load(open(sys.argv[1]))["describe"]["retained_keys"])
+    b = set(json.load(open(sys.argv[2]))["describe"]["retained_keys"])
+except Exception:
+    sys.exit(0)
+for k in sorted(a & b):
+    print(k)
+PY
+    rm -f "$tp" "$tb"
+}
+
 cmd_verify() {
     need_root
     [[ -n "$(journal_last "feeds ready")" ]] || die 20 "run 'feeds' first"
@@ -703,21 +855,43 @@ cmd_verify() {
         port=$(feed_port "$name")
         [[ "$(health_get "$port" status)" == "ok" && "$(health_get "$port" serving)" == "true" ]] || die 25 "$(feed_unit "$name") is not healthy and serving"
     done
-    local attempt
+    local attempt after="" wait_s diffs="" accepted=0
+    local -a key_args=()
     for attempt in 1 2; do
+        if [[ -n "$after" ]]; then
+            key_args=()
+            local k
+            for k in $(common_retained_keys); do
+                [[ $k -gt $after ]] && key_args+=(--key "$k")
+            done
+            [[ ${#key_args[@]} -gt 0 ]] || die 25 "no new common key was sealed by both feeds after ${wait_s:-300}s"
+        fi
+        local out
+        out=$(mktemp)
         set +e
         bash "$REPO_ROOT/scripts/feed-source-compare.sh" --binary "$(feed_dir primary)/go-trader" \
-            --primary-socket "$(feed_socket primary)" --backup-socket "$(feed_socket backup)"
-        rc=$?
+            --primary-socket "$(feed_socket primary)" --backup-socket "$(feed_socket backup)" "${key_args[@]}" | tee "$out"
+        rc=${PIPESTATUS[0]}
         set -e
+        diffs=$(sed -n 's/.* \([0-9][0-9]*\) difference(s)$/\1/p' "$out" | tail -n 1)
+        rm -f "$out"
         [[ $rc -eq 0 ]] && break
-        [[ $rc -eq 1 && $attempt -eq 1 ]] || die 25 "feed-source-compare exited $rc"
-        local wait_s
+        if [[ $rc -eq 3 && $attempt -eq 2 ]]; then
+            [[ "$OPT_ACCEPT_DIFF" == "1" ]] || die 25 "the sources still differ on newer keys (${diffs:-?} difference(s) listed above). Review them; a venue revision of a closed bar that one source missed is a known cause. Re-run 'verify --accept-differences' to record them and continue"
+            accepted="${diffs:-unknown}"
+            break
+        fi
+        [[ ($rc -eq 1 || $rc -eq 3) && $attempt -eq 1 ]] || die 25 "feed-source-compare exited $rc"
+        after=$(common_retained_keys | tail -n 1)
         wait_s=$(max_cadence)
-        log "comparison inconclusive; retrying after ${wait_s:-300}s"
-        sleep "${wait_s:-300}"
+        if [[ $rc -eq 3 ]]; then
+            log "the sources differ (listed above; a late venue update to the newest closed bar can do this); comparing only newer keys after ${wait_s:-300}s"
+        else
+            log "comparison inconclusive; comparing only newer keys after ${wait_s:-300}s"
+        fi
+        sleep $(( ${wait_s:-300} + 10 ))
     done
-    journal_add "verify pass at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    journal_add "verify pass accepted_differences=$accepted at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     log "verify OK. Next: switch --consumer <unit>, paper units first"
 }
 
@@ -743,16 +917,30 @@ wait_active_fresh() {
 }
 
 restore_consumer() {
-    local unit="$1" rec cfg backup shadow pre port old_pid
+    local unit="$1" rec cfg backup shadow pre post port old_pid mode="byte"
     rec=$(journal_last "switch $unit")
     cfg=$(journal_field "$rec" config)
     backup=$(journal_field "$rec" backup)
     pre=$(journal_field "$rec" pre)
+    post=$(journal_field "$rec" post)
     shadow=$(journal_field "$(journal_last "consumer $unit")" shadow)
     [[ -n "$cfg" && -f "$backup" ]] || { warn "$unit: no saved config recorded"; return 1; }
     [[ "$(update_file_fingerprint "$backup")" == "$pre" ]] || { warn "$unit: $backup no longer matches the recorded pre-switch fingerprint"; return 1; }
-    cp -p "$backup" "$cfg.restore-shared-feed"
-    mv -f "$cfg.restore-shared-feed" "$cfg"
+    if [[ -n "$post" && "$(update_file_fingerprint "$cfg")" != "$post" ]]; then
+        mode="keys"
+    fi
+    if [[ "$mode" == "byte" ]]; then
+        cp -p "$backup" "$cfg.restore-shared-feed"
+        mv -f "$cfg.restore-shared-feed" "$cfg"
+    else
+        local kept
+        kept="${cfg}.pre-rollback.$(date -u +%Y%m%dT%H%M%SZ)"
+        cp -p "$cfg" "$kept"
+        py revert-feed-keys "$cfg" "$backup"
+        chown --reference="$kept" "$cfg"
+        log "$unit: the config changed after the switch (for example a paper fold), so only market_feed and shared_market_feed are reverted; the changed config is kept as $kept"
+    fi
+    [[ -z "$shadow" ]] || py write-shared "$cfg" "$shadow" "$(feed_socket primary)" "$(feed_socket backup)" 0644
     local dropin
     dropin=$(update_unit_dropin_path /etc/systemd/system "$unit" 50-shared-feed)
     if [[ -f "$dropin" ]]; then
@@ -770,9 +958,13 @@ restore_consumer() {
     old_pid=$(unit_prop "$unit" MainPID)
     systemctl restart "$unit"
     wait_active_fresh "$unit" "$old_pid" "$port" >/dev/null || { warn "$unit did not come back healthy after the restore"; return 1; }
-    [[ "$(update_file_fingerprint "$cfg")" == "$pre" ]] || { warn "$unit: restored config fingerprint differs"; return 1; }
-    journal_add "switch $unit config=$cfg backup=$backup pre=$pre rolled_back at=$(date -u +%s)"
-    log "$unit restored to its saved config and healthy"
+    if [[ "$mode" == "byte" ]]; then
+        [[ "$(update_file_fingerprint "$cfg")" == "$pre" ]] || { warn "$unit: restored config fingerprint differs"; return 1; }
+    else
+        [[ "$(py feed-keys-match "$cfg" "$backup")" == "yes" ]] || { warn "$unit: market_feed keys differ from the saved config after the revert"; return 1; }
+    fi
+    journal_add "switch $unit config=$cfg backup=$backup pre=$pre rolled_back mode=$mode at=$(date -u +%s)"
+    log "$unit restored ($mode) and healthy"
 }
 
 switch_fail() {
@@ -792,13 +984,11 @@ cmd_switch() {
     [[ -n "$(journal_last "verify pass")" ]] || die 20 "run 'verify' first"
     local crec cfg shadow
     crec=$(journal_last "consumer $unit")
-    [[ -n "$crec" ]] || die 20 "$unit was not selected in the 'feeds' stage"
+    [[ -n "$crec" ]] && in_current_consumers "$unit" || die 20 "$unit is not a current consumer; add it with 'consumers' (or 'feeds') first"
     cfg=$(journal_field "$crec" config)
     shadow=$(journal_field "$crec" shadow)
-    local srec
-    srec=$(journal_last "switch $unit")
-    if [[ "$srec" == *" done "* || "$srec" == *" done" ]] && [[ "$(update_file_fingerprint "$cfg")" == "$(journal_field "$srec" post)" ]]; then
-        log "$unit is already switched; nothing to do"
+    if [[ "$(py is-shared "$cfg" "$(feed_socket primary)" "$(feed_socket backup)")" == "yes" ]]; then
+        log "$unit is already in shared mode on these feeds; nothing to do"
         return 0
     fi
     local summary live port old_pid
@@ -899,10 +1089,18 @@ cmd_rollback() {
     local -a units=()
     local unit rec
     if [[ "$OPT_ALL" == "1" ]]; then
-        while IFS= read -r rec; do
-            unit=$(printf '%s' "$rec" | awk '{print $2}')
+        while IFS= read -r unit; do
             [[ -n "$unit" ]] && units+=("$unit")
-        done < <(grep -E '^consumer ' "$JOURNAL" 2>/dev/null || true)
+        done < <(current_consumers)
+        local -a orphans=()
+        local cfg
+        for unit in "${units[@]}"; do
+            rec=$(journal_last "switch $unit")
+            [[ -n "$rec" && "$rec" != *" rolled_back "* ]] && continue
+            cfg=$(journal_field "$(journal_last "consumer $unit")" config)
+            [[ -n "$cfg" && -f "$cfg" && "$(py is-shared "$cfg" "$(feed_socket primary)" "$(feed_socket backup)")" == "yes" ]] && orphans+=("$unit")
+        done
+        [[ ${#orphans[@]} -eq 0 ]] || die 30 "${orphans[*]}: in shared mode with no saved pre-switch config (for example a unit created by a paper fold); set its market_feed by hand before rollback --all, because stopping the feeds would leave it degraded. Nothing changed"
     else
         [[ ${#SELECTED[@]} -eq 1 ]] || die 2 "rollback takes --consumer <unit> or --all"
         unit="${SELECTED[0]}"
@@ -925,7 +1123,7 @@ cmd_rollback() {
             systemctl disable --now "$(feed_unit "$name")" >/dev/null 2>&1 || true
             journal_add "feed $name stopped_disabled at=$(date -u +%s)"
         done
-        log "rollback OK: every consumer runs its saved config; both feeds are stopped and disabled"
+        log "rollback OK: every current consumer is back on its pre-switch market_feed; both feeds are stopped and disabled"
     fi
 }
 
@@ -938,12 +1136,12 @@ cmd_status() {
         [[ -n "$port" ]] || continue
         log "$(feed_unit "$name"): $(systemctl is-active "$(feed_unit "$name")" 2>/dev/null || true) status=$(health_get "$port" status) serving=$(health_get "$port" serving) last_seal_key=$(health_get "$port" last_seal_key) window_used=$(health_get "$port" request_budget.window_used) per_minute=$(health_get "$port" request_budget.per_minute)"
     done
-    local rec unit cfg
-    while IFS= read -r rec; do
-        unit=$(printf '%s' "$rec" | awk '{print $2}')
-        cfg=$(journal_field "$rec" config)
+    local unit cfg
+    while IFS= read -r unit; do
+        [[ -n "$unit" ]] || continue
+        cfg=$(journal_field "$(journal_last "consumer $unit")" config)
         log "$unit: $(systemctl is-active "$unit" 2>/dev/null || true) $(py summary "$cfg" 2>/dev/null || echo 'config unreadable')"
-    done < <(grep -E '^consumer ' "$JOURNAL" 2>/dev/null || true)
+    done < <(current_consumers)
 }
 
 [[ $# -gt 0 ]] || { usage; exit 2; }
@@ -956,6 +1154,7 @@ OPT_LEDGER=""
 OPT_WINDOW=""
 OPT_CONFIRM_LIVE=""
 OPT_DROPIN=0
+OPT_ACCEPT_DIFF=0
 OPT_ALL=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -966,6 +1165,7 @@ while [[ $# -gt 0 ]]; do
         --window) OPT_WINDOW="${2:-}"; shift 2 ;;
         --confirm-live) OPT_CONFIRM_LIVE="${2:-}"; shift 2 ;;
         --dropin) OPT_DROPIN=1; shift ;;
+        --accept-differences) OPT_ACCEPT_DIFF=1; shift ;;
         --all) OPT_ALL=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "unknown arg: $1" >&2; usage >&2; exit 2 ;;
@@ -982,6 +1182,7 @@ case "$SUBCOMMAND" in
     calibrate) cmd_calibrate ;;
     verify) cmd_verify ;;
     switch) cmd_switch ;;
+    consumers) cmd_consumers ;;
     rollback) cmd_rollback ;;
     status) cmd_status ;;
     -h|--help|help) usage ;;
