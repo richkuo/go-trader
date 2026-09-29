@@ -83,14 +83,14 @@ func TestSharedFeedFailover(t *testing.T) {
 
 	var alertMu sync.Mutex
 	var feedAlerts []string
-	newFeed := func(source string, ledger *feedRequestLedger) (*marketFeedOwner, *feedSealer) {
+	newFeed := func(source string, ledger *feedRequestLedger, u feedRequirements) (*marketFeedOwner, *feedSealer) {
 		owner := newMarketFeedOwner(nil, t.Logf)
 		lctx := withFeedLedger(ctx, ledger)
 		if ledger != nil {
 			ledger.openStartup()
 		}
 		select {
-		case <-owner.ApplyGeneration(lctx, union):
+		case <-owner.ApplyGeneration(lctx, u):
 		case <-time.After(5 * time.Second):
 			t.Fatalf("%s generation did not publish", source)
 		}
@@ -111,7 +111,7 @@ func TestSharedFeedFailover(t *testing.T) {
 		} else {
 			sealer.prepareFn = websocketFeedPrepare(owner)
 		}
-		sealer.setGeneration(union, []int{60}, now.Add(-10*time.Minute))
+		sealer.setGeneration(u, []int{60}, now.Add(-10*time.Minute))
 		sealer.startServing(now.Add(-10 * time.Minute))
 		return owner, sealer
 	}
@@ -125,8 +125,8 @@ func TestSharedFeedFailover(t *testing.T) {
 	}
 
 	backupLedger := newFeedRequestLedger(&feedBudgetConfig{PerMinute: 1000, Startup: 100}, true, nil)
-	_, primary := newFeed(feedSourceWebsocket, nil)
-	_, backup := newFeed(feedSourceREST, backupLedger)
+	_, primary := newFeed(feedSourceWebsocket, nil, union)
+	_, backup := newFeed(feedSourceREST, backupLedger, union)
 	primarySrv := listen("p", primary)
 	backupSrv := listen("b", backup)
 	defer func() { primarySrv.close(); backupSrv.close() }()
@@ -232,7 +232,7 @@ func TestSharedFeedFailover(t *testing.T) {
 		defer clockMu.Unlock()
 		return clock
 	})
-	_, tight := newFeed(feedSourceREST, tightLedger)
+	_, tight := newFeed(feedSourceREST, tightLedger, union)
 	tctx := withFeedLedger(ctx, tightLedger)
 	tight.sealOne(tctx, kb)
 	if s := tight.lookup(kb); s.Status != feedWireStatusSealed {
@@ -269,5 +269,44 @@ func TestSharedFeedFailover(t *testing.T) {
 	alertMu.Unlock()
 	if len(got) != 2 || !strings.Contains(got[0], "BUDGET EXHAUSTED") || !strings.Contains(got[1], "BUDGET RECOVERED") {
 		t.Fatalf("budget alerts %q, want one EXHAUSTED and one RECOVERED", got)
+	}
+
+	mixed := unionFeedRequirements([]feedConsumer{
+		{Loaded: true, Req: consumerA, Cadences: []int{60}},
+		{Loaded: true, Req: consumerB, Cadences: []int{120}},
+	})
+	due := k / 120 * 120
+	if due == k {
+		due -= 120
+	}
+	notDue := due - 60
+	restOwner, restMixed := newFeed(feedSourceREST, newFeedRequestLedger(&feedBudgetConfig{PerMinute: 1000, Startup: 100}, true, nil), mixed)
+	_, wsMixed := newFeed(feedSourceWebsocket, nil, mixed)
+	sealedReadiness := func(sealer *feedSealer, key int64) map[string]feedSealReadiness {
+		sealer.sealOne(ctx, key)
+		doc, err := decodeFeedSeal(sealer.sealBytes(key), key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := make(map[string]feedSealReadiness, len(doc.Keys))
+		for _, sk := range doc.Keys {
+			out[sk.Symbol] = sk.Readiness
+		}
+		return out
+	}
+	r := sealedReadiness(restMixed, notDue)
+	if r["ETH"].Ready || r["ETH"].Status != string(feedStatusNotDue) || !r["BTC"].Ready {
+		t.Fatalf("REST seal at %d with ETH cadence 120: %+v, want ETH not_due and BTC ready", notDue, r)
+	}
+	if own, ok := restOwner.readinessFor(eth); !ok || !own.Ready || own.Status == feedStatusNotDue {
+		t.Fatalf("owner readiness for ETH after a not_due seal: %+v, want it unchanged and ready", own)
+	}
+	if r = sealedReadiness(restMixed, due); !r["ETH"].Ready || !r["BTC"].Ready {
+		t.Fatalf("REST seal at %d, a multiple of 120: %+v, want every key ready", due, r)
+	}
+	for sym, rd := range sealedReadiness(wsMixed, notDue) {
+		if rd.Status == string(feedStatusNotDue) {
+			t.Fatalf("websocket seal marked %s not_due: %+v", sym, rd)
+		}
 	}
 }

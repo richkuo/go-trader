@@ -285,6 +285,12 @@ func (c *sharedFeedClient) Fetch(ctx context.Context, key int64, reqs cycleMarke
 	report := sharedFeedFetchReport{Key: key}
 	var snap *marketSnapshot
 	for i, ep := range c.endpoints {
+		if !c.clock().Before(giveUp) {
+			err := &feedEndpointError{Kind: feedErrPendingLimit, Detail: fmt.Sprintf("key %d give-up time %s passed before this endpoint was asked", key, giveUp.Format(time.RFC3339))}
+			c.recordEndpoint(ep, key, feedWireHeader{}, err, &report)
+			report.Attempts = append(report.Attempts, fmt.Sprintf("%s=%v", ep.Name, err))
+			continue
+		}
 		epGiveUp := giveUp
 		epCtx, cancel := ctx, context.CancelFunc(func() {})
 		if i < len(c.endpoints)-1 {
@@ -292,6 +298,9 @@ func (c *sharedFeedClient) Fetch(ctx context.Context, key int64, reqs cycleMarke
 			bound := epGiveUp
 			if floor := c.clock().Add(feedClientProbeFloor); floor.After(bound) {
 				bound = floor
+			}
+			if bound.After(giveUp) {
+				bound = giveUp
 			}
 			epCtx, cancel = context.WithDeadline(ctx, time.Now().Add(bound.Sub(c.clock())))
 		}
