@@ -121,6 +121,20 @@ func (s *feedSealer) budgetLines(key int64, before feedBudgetTotals, rep feedPre
 	return delta, []string{line}
 }
 
+func markUnrefreshedKeysNotReady(snap *marketSnapshot, refreshed map[marketFeedKey]bool, deadline int64) {
+	if snap == nil {
+		return
+	}
+	for k, entry := range snap.keys {
+		if entry == nil || refreshed[k] || !entry.Readiness.Ready {
+			continue
+		}
+		entry.Readiness.Ready = false
+		entry.Readiness.Status = feedStatusNotDue
+		entry.Readiness.Detail = fmt.Sprintf("not refreshed for deadline %d: no consumer cadence this feed loaded divides it", deadline)
+	}
+}
+
 func joinFeedNames(names []string) string {
 	if len(names) == 0 {
 		return "none"
@@ -309,6 +323,9 @@ func (s *feedSealer) sealOne(ctx context.Context, key int64) {
 	s.budgetAlert(key, delta, rep)
 	frozenAt := s.owner.now()
 	snap := freezeMarketSnapshot(s.owner, reqs, feedSealEvaluationID(key), frozenAt)
+	if rep.ReadyOnlyRefreshed {
+		markUnrefreshedKeysNotReady(snap, rep.RefreshedKeys, key)
+	}
 	doc, err := feedSealDocFromSnapshot(snap, key, s.source, s.instance)
 	var blob []byte
 	var hash string

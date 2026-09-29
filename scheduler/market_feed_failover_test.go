@@ -188,6 +188,12 @@ func TestSharedFeedFailover(t *testing.T) {
 	if rep.Endpoint != "primary" || !hasAlert(rep, "PRIMARY RESTORED") {
 		t.Fatalf("primary return: %+v, want the primary with PRIMARY RESTORED", rep)
 	}
+	client.prepare = time.Now().Add(time.Second).Sub(time.Unix(kd, 0)) - client.grace - feedClientSlack
+	_, rep = client.Fetch(ctx, kd, reqsA)
+	if rep.Endpoint != "primary" || len(rep.Alerts) != 0 {
+		t.Fatalf("fetch started after the primary's reserve bound: %+v, want the sealed primary with no alert", rep)
+	}
+	client.prepare = time.Hour
 
 	primarySrv.close()
 	_, rep = client.Fetch(ctx, kd, reqsA)

@@ -43,6 +43,7 @@ const (
 	feedStatusInvalid       feedKeyStatus = "invalid"
 	feedStatusFailed        feedKeyStatus = "failed"
 	feedStatusBudget        feedKeyStatus = "budget_exhausted"
+	feedStatusNotDue        feedKeyStatus = "not_due"
 )
 
 type marketFeedKey struct {

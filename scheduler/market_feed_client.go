@@ -17,6 +17,7 @@ const (
 	feedClientIOTimeout     = 10 * time.Second
 	feedClientSlack         = 5 * time.Second
 	feedClientBackupReserve = 3 * time.Second
+	feedClientProbeFloor    = 2 * time.Second
 
 	feedFetchSealed   = "sealed"
 	feedFetchDegraded = "degraded"
@@ -288,7 +289,11 @@ func (c *sharedFeedClient) Fetch(ctx context.Context, key int64, reqs cycleMarke
 		epCtx, cancel := ctx, context.CancelFunc(func() {})
 		if i < len(c.endpoints)-1 {
 			epGiveUp = giveUp.Add(-feedClientBackupReserve)
-			epCtx, cancel = context.WithDeadline(ctx, time.Now().Add(epGiveUp.Sub(c.clock())))
+			bound := epGiveUp
+			if floor := c.clock().Add(feedClientProbeFloor); floor.After(bound) {
+				bound = floor
+			}
+			epCtx, cancel = context.WithDeadline(ctx, time.Now().Add(bound.Sub(c.clock())))
 		}
 		doc, h, err := c.fetchFrom(epCtx, ep, key, epGiveUp)
 		cancel()

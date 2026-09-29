@@ -14,9 +14,11 @@ const (
 )
 
 type feedPrepareReport struct {
-	Refreshed int
-	Refused   []string
-	Failed    []string
+	Refreshed          int
+	Refused            []string
+	Failed             []string
+	RefreshedKeys      map[marketFeedKey]bool
+	ReadyOnlyRefreshed bool
 }
 
 type feedPrepareFunc func(ctx context.Context, deadline int64, reqs cycleMarketRequirements, coverage feedRequirements) feedPrepareReport
@@ -77,28 +79,23 @@ func (r *feedRESTSource) canRetry(ctx context.Context, err error) bool {
 }
 
 func (r *feedRESTSource) prepare(ctx context.Context, deadline int64, reqs cycleMarketRequirements, coverage feedRequirements) feedPrepareReport {
-	var rep feedPrepareReport
+	rep := feedPrepareReport{RefreshedKeys: make(map[marketFeedKey]bool), ReadyOnlyRefreshed: true}
 	keyed := withFeedKeep(ctx, 1)
 	for _, cr := range restRefreshOrder(reqs, coverage) {
 		key := cr.Key
-		readiness, tracked := r.owner.readinessFor(key)
-		if !tracked || !r.owner.publishedKey(key) {
+		if _, tracked := r.owner.readinessFor(key); !tracked || !r.owner.publishedKey(key) {
 			continue
 		}
-		due := feedKeyDueAt(coverage.KeyCadences[key], deadline)
-		if !due && readiness.Ready && !readiness.Stale {
+		if !feedKeyDueAt(coverage.KeyCadences[key], deadline) {
 			continue
 		}
-		reason := feedRestRefresh
-		if !due {
-			reason = feedRestRecovery
-		}
-		err := r.owner.fetchAndMerge(keyed, key, reason)
+		err := r.owner.fetchAndMerge(keyed, key, feedRestRefresh)
 		if r.canRetry(ctx, err) && sleepCtx(ctx, r.backoff) == nil {
 			err = r.owner.fetchAndMerge(keyed, key, feedRestRetry)
 		}
 		if err == nil {
 			rep.Refreshed++
+			rep.RefreshedKeys[key] = true
 			continue
 		}
 		if errors.Is(err, errFeedBudgetExhausted) {
