@@ -1,6 +1,6 @@
 # go-trader
 
-Guardrails only; mechanism/flows in SKILL.md, docs/POST_UPDATE_HISTORY.md; global agent rules not restated. Ceiling 17,000 bytes (CI job `docs` fails at it), target 16,000. Never split: root `CLAUDE.md`, `AGENTS.md` symlink. Shorten wording, drop no guardrail.
+Guardrails only; mechanism/flows in SKILL.md, docs/POST_UPDATE_HISTORY.md. Ceiling 17,000 bytes (CI job `docs` fails at it), target 16,000. Never split: root `CLAUDE.md`, `AGENTS.md` symlink. Shorten wording, drop no guardrail.
 
 ## Env
 - Go 1.26.2 (`/opt/homebrew/bin/go`). Python: `uv run --no-sync python`; scheduler `.venv/bin/python3`; `uv sync` per worktree.
@@ -19,7 +19,7 @@ Guardrails only; mechanism/flows in SKILL.md, docs/POST_UPDATE_HISTORY.md; globa
 - `risk.go`: `CheckRisk` skips `manual`. Corrupt pos (qty/avgCost<=0)=zero-PnL `*_corrupt` leg, cash untouched. Latch: ONE owner per cycle+partition; `DrawdownReadingSubstituted` always labelled; untrusted over-limit defers, never vetoes. Paper `equityTrusted` always true. `ResetPortfolioKillSwitchManual`=sole DM reset; `AutoResetConfirmedFlatKillSwitch`/`ClearLatchedKillSwitchSharedWallet` `ScopeLive` only.
 - `daily_loss.go`: hold-only, UNLATCHED pure read, PRE-FEE realized PnL, never force-closes, per partition; new `portfolio_risk` gates copy it.
 - `exposure_cap.go`: blocking-only, direction-aware; one exposure model `computeAssetDeltas` (`ComputeCorrelation` too). `notional_cap.go`: hold-only via `pausedBlocksSignal`, never skips cycle, restart-required.
-- `replay_{log,mirror}.go`: DEFAULT-OFF, HL perps, flat-only hot-reload, 1 mirror/source (`replayMirrorSourceID`).
+- `replay_{log,mirror}.go`: DEFAULT-OFF, HL perps, flat-only hot-reload, 1 mirror/source.
 - `hl_batch.go`: shared-state failure=same-cycle per-strategy fallback, never blank close/SL/ratchet/protection/hedge; `GO_TRADER_HL_BATCH=0` disables. `market_feed=websocket|shared`: checks read one sealed stdin `marketSnapshot`; missing frame=error, NEVER private fetch.
 - `market_feed_*.go`: `role: feed` runs BEFORE `LoadConfig` (no state/lock/probe). Seal bytes immutable; missed/evicted/pre-start key=`unavailable`, NEVER current data; sealer never takes `mu`. Consumer: 1 deadline/cycle, non-nil degraded snapshot, primary>backup. REST feed: `/info` via `feedBudgetAcquire`; key ready ONLY if refreshed that deadline.
 - `hyperliquid_fills.go`: `HLFillLookup.Px`=VWAP; `ClosedPnLGross` never into `Trade.RealizedPnL`; unconfirmed SL fills=gaps, never books.
@@ -54,11 +54,11 @@ Guardrails only; mechanism/flows in SKILL.md, docs/POST_UPDATE_HISTORY.md; globa
 - HL stops (`EffectiveStopLossPct`): 7 exclusive owners (none=`DefaultStopLossATRMult=1.0`); scalar-regime swap blocked while open. `risk_per_trade_pct` fails closed on unresolvable stop, exclusive vs sizing_leverage/margin/scale_in. Trailing SL replace only past `TrailingStopMinMovePct`; `stop/TP Q=hlOwnStopShare`; snapshot=full protection surface. Peers share `margin_mode`+`leverage`; `update_leverage` if flat.
 - SIGHUP `validateHotReloadCompatible` blocks add/remove, script/args/type/platform/HTFFilter, kill-switch identity, `db_file`/`paper_db_file`/`paper_source(s)`, effective `storage_strategy_id`, `max_notional_usd` (per partition), `market_feed`.
 - New per-strategy flag: field, `run*Check` CLI, Python parse, InitOptions/wizard (+probe argvs if runtime-required).
-- Notifications: `MultiNotifier`; paper routes via `resolveChannelKey`. `SendToPartitionChannels`: each partition's own roster (`resolveTradeChannel`, rebuilt on `ReloadConfig`), never suffix scan; `SendToAllChannels` only if that set is empty.
+- Notifications: `MultiNotifier`; paper routes via `resolveChannelKey`. `SendToPartitionChannels`: live=`SendToAllChannels`; paper=own roster (`resolveTradeChannel`, rebuilt on `ReloadConfig`), never suffix scan, `SendToAllChannels` only if empty.
 
 ## PRs and issues
-- Body: `## Plain simple English` (<55 words), then `## Summary`+verification. Footer `LLM: <model> | <effort> | Harness: <action>`, no `Co-authored-by`.
-- Bot reviews land on issue-comments endpoint; before merging long-lived PR diff `origin/main..HEAD` for reverts.
+- Title `type(#<N>): summary [C<score>, <model>, <effort>]`; never bare `#N` in lists. Body: `## Plain simple English` (<55 words), then `## Summary`+verification. Footer `LLM: <model> | <effort> | Harness: <action>`, no `Co-authored-by`.
+- Before merging a long-lived PR, diff `origin/main..HEAD` for reverts.
 - Reviews also follow `.github/prompts/pr-review-format-local.md`, never gate on CI; findings restate as invariant, list breaking states (inverse, compound).
 - `.github/workflows/claude.yml`: mode routing fail-closed (untrusted/fork=review); no-execution in agent; commit/push implement-only; prompt never holds `"`, `` ` ``, `$`; `.github/scripts/` keeps ONLY `test_workflow_logic.py`.
 - rk-skills workflow skills=CI-only, no settings pin.

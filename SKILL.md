@@ -1181,7 +1181,7 @@ Enabled by `replay_log_path` plus per-strategy `replay_sharing="live_mirror"`. P
 
 ### Notifications and channels
 
-Channels are `spot`, `options`, `<platform>`, `<platform>-paper`. `resolveChannelKey(platform, type, isLive)` resolves a paper strategy's channel in the order `<platform>-paper:<id>` (a named paper source), then `<platform>-paper`, then the bare key, so summaries, leaderboards, and Sharpe groups split by mode only when a paper key is configured. `SendToPartitionChannels(part, msg)` sends a partition message to the channels that partition's own roster resolves to (`resolveTradeChannel` order, rebuilt on `ReloadConfig`), never by scanning key suffixes, and falls back to `SendToAllChannels` only when that set is empty.
+Channels are `spot`, `options`, `<platform>`, `<platform>-paper`, `<platform>-paper:<id>`. `resolveChannelKey(platform, type, isLive, source)` resolves a paper strategy's key in the order `<platform>-paper:<source>` (only when `source` names a paper source), then `<platform>-paper`; after those, and first for a live strategy, it takes the first backend holding a `<platform>` key, else a `<type>` key. Summaries, leaderboards, and Sharpe groups therefore split by mode only when a paper key is configured. `SendToPartitionChannels(part, msg)` sends a live-partition message to every channel through `SendToAllChannels`. For a paper partition it sends to the channels that partition's own roster resolves to (`partitionChannelValues` with `resolveTradeChannel`, rebuilt on `ReloadConfig`), never by scanning key suffixes, and falls back to `SendToAllChannels` only when that set is empty.
 
 ### Build, deploy, and test mechanics
 
