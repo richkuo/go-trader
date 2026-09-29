@@ -26,7 +26,9 @@ Subcommands:
         /opt/go-trader-feed-backup (rest) from the first consumer's tree, writes
         their configs over read-only shadow copies of the consumer configs,
         installs go-trader@feed-primary and go-trader@feed-backup, and waits for
-        both to seal. No consumer config changes.
+        both to seal. No consumer config changes. A re-run with another
+        selection resets the list only while no switched consumer uses the
+        feeds; otherwise use consumers.
   calibrate [--per-minute <n> --startup <n>] [--baseline-ledger <file>] [--window <seconds>]
         Measures the backup's peak request use over the window (default two
         periods of the longest cadence) and writes its request_budget: the
@@ -62,8 +64,9 @@ Subcommands:
   status
         Prints the journal, the feed units and each recorded consumer.
 
-Exit status: 0 success, 2 usage, 10-19 plan refusals, 20-29 stage failures,
-30 rollback failed.
+Every stage except plan and status holds an exclusive lock while it runs.
+Exit status: 0 success, 2 usage, 10-19 plan refusals (18: another stage
+runs), 20-29 stage failures, 30 rollback failed.
 EOF
 }
 
@@ -110,6 +113,13 @@ journal_add() {
 journal_last() {
     [[ -f "$JOURNAL" ]] || return 0
     grep -E -- "^$1( |$)" "$JOURNAL" | tail -n 1 || true
+}
+
+acquire_lock() {
+    command -v flock >/dev/null 2>&1 || die 10 "flock is not on PATH"
+    install -d -m 0755 "$STATE_DIR"
+    exec 9>>"$STATE_DIR/convert.lock"
+    flock -n 9 || die 18 "another shared-feed-convert.sh stage is running (lock $STATE_DIR/convert.lock); wait for it to finish, or check it with 'status'. Nothing changed"
 }
 
 journal_stage() {
@@ -613,16 +623,15 @@ cmd_feeds() {
     origin=$(git -C "$first_wd" remote get-url origin 2>/dev/null || true)
     [[ -n "$origin" ]] || die 20 "$first_wd has no git origin; the feed deployments clone it so update.sh can update them later"
     prepare_shadow_dir
-    local -a shadows=()
+    local -a entries=()
+    local entry
     for unit in "${CONSUMERS[@]}"; do
-        cfg=$(unit_config_path "$unit")
-        shadow="$SHADOW_DIR/${unit%.service}.json"
-        write_shadow "$cfg" "$shadow"
-        journal_add "consumer $unit config=$cfg shadow=$shadow"
-        shadows+=("$shadow")
+        entry=$(consumer_entry "$unit")
+        entries+=("$entry")
     done
-    local list per_minute startup keys
-    list=$(printf '%s\n' "${shadows[@]}" | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))')
+    local list per_minute startup keys list_changed=0
+    local -a relist=()
+    list=$(printf '%s\n' "${entries[@]}" | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))')
     for name in "${FEEDS[@]}"; do
         local dir config portvar="PORT_$name"
         dir=$(feed_dir "$name")
@@ -650,7 +659,23 @@ cmd_feeds() {
             fi
         fi
         if [[ -f "$config" && -n "$(journal_last "feed $name")" ]]; then
-            log "$config exists from a finished feeds run; keeping it"
+            if [[ "$name" == "backup" && -n "$OPT_PER_MINUTE" && "$(feed_budget_matches "$config" "$OPT_PER_MINUTE" "$OPT_STARTUP")" != "yes" ]]; then
+                die 20 "$config exists with another request budget; --per-minute and --startup apply only to a new feed, and 'calibrate --per-minute $OPT_PER_MINUTE --startup $OPT_STARTUP' changes an existing one. Nothing changed for the backup"
+            fi
+            case "$(feed_list_state "$config" "$list")" in
+                same)
+                    log "$config exists from an earlier feeds run; keeping it"
+                    ;;
+                shadows)
+                    py set-consumers "$config" "$list"
+                    list_changed=1
+                    relist+=("$name")
+                    log "$config exists; no switched consumer uses it, so its consumer list is set to this selection"
+                    ;;
+                *)
+                    die 20 "$config serves a different consumer list that includes switched consumers; change the list with 'consumers --consumer <unit>...'. Nothing changed for $(feed_unit "$name")"
+                    ;;
+            esac
         else
             py write-feed "$config" "$first_cfg" "$(feed_source "$name")" "$(feed_socket "$name")" "${!portvar}" "$list" "$per_minute" "$startup"
         fi
@@ -676,6 +701,8 @@ cmd_feeds() {
         install_feed_unit "$name"
         if ! systemctl is-active --quiet "$(feed_unit "$name")"; then
             systemctl start "$(feed_unit "$name")"
+        elif [[ " ${relist[*]} " == *" $name "* ]]; then
+            reload_feed "$name" || die 23 "$(feed_unit "$name") published no new generation after SIGHUP with the new consumer list"
         fi
         journal_add "feed $name dir=$dir config=$config unit=$(feed_unit "$name") installed at=$(date -u +%s)"
     done
@@ -683,11 +710,52 @@ cmd_feeds() {
         local portvar="PORT_$name"
         wait_feed_serving "$name" "${SHARED_FEED_CONVERT_SEAL_TIMEOUT:-900}" "${!portvar}" \
             || die 23 "$(feed_unit "$name") did not seal a key; see $(update_journalctl_unit_command "$(feed_unit "$name")" go-trader)"
+        local st
+        for entry in "${entries[@]}"; do
+            st=$(wait_feed_loaded "$name" "$entry") || die 23 "$(feed_unit "$name") did not load $entry ($st)"
+        done
     done
     keys=$(run_probe_live primary | grep -c '^probe: key ' || true)
     journal_add "feeds ready keys=$keys at=$(date -u +%s)"
-    [[ -n "$(journal_last "consumers-set")" ]] || journal_add "consumers-set units=$(IFS=,; echo "${CONSUMERS[*]}") at=$(date -u +%s)"
+    if [[ -z "$(journal_last "consumers-set")" || $list_changed -eq 1 ]]; then
+        journal_add "consumers-set units=$(IFS=,; echo "${CONSUMERS[*]}") at=$(date -u +%s)"
+    fi
     log "feeds OK: both feeds seal from shadow configs; no consumer changed. Next: calibrate"
+}
+
+consumer_entry() {
+    local unit="$1" cfg shadow
+    cfg=$(unit_config_path "$unit")
+    shadow="$SHADOW_DIR/${unit%.service}.json"
+    journal_add "consumer $unit config=$cfg shadow=$shadow"
+    if [[ "$(py is-shared "$cfg" "$(feed_socket primary)" "$(feed_socket backup)")" == "yes" ]]; then
+        printf '%s' "$cfg"
+    else
+        write_shadow "$cfg" "$shadow"
+        printf '%s' "$shadow"
+    fi
+}
+
+feed_list_state() {
+    python3 - "$1" "$2" "$SHADOW_DIR" <<'PY'
+import json, sys
+kept = json.load(open(sys.argv[1]))["feed"]["consumer_configs"]
+want = json.loads(sys.argv[2])
+if sorted(kept) == sorted(want):
+    print("same")
+elif all(p.startswith(sys.argv[3].rstrip("/") + "/") for p in kept):
+    print("shadows")
+else:
+    print("serving")
+PY
+}
+
+feed_budget_matches() {
+    python3 - "$1" "$2" "$3" <<'PY'
+import json, sys
+b = json.load(open(sys.argv[1]))["feed"].get("request_budget") or {}
+print("yes" if str(b.get("per_minute")) == sys.argv[2] and str(b.get("startup")) == sys.argv[3] else "no")
+PY
 }
 
 run_probe_live() {
@@ -780,15 +848,7 @@ cmd_consumers() {
     done < <(current_consumers)
     prepare_shadow_dir
     for unit in "${CONSUMERS[@]}"; do
-        cfg=$(unit_config_path "$unit")
-        shadow="$SHADOW_DIR/${unit%.service}.json"
-        if [[ "$(py is-shared "$cfg" "$(feed_socket primary)" "$(feed_socket backup)")" == "yes" ]]; then
-            entry="$cfg"
-        else
-            write_shadow "$cfg" "$shadow"
-            entry="$shadow"
-        fi
-        journal_add "consumer $unit config=$cfg shadow=$shadow"
+        entry=$(consumer_entry "$unit")
         entries+=("$entry")
         log "  $unit -> $entry"
     done
@@ -1339,12 +1399,12 @@ fi
 
 case "$SUBCOMMAND" in
     plan) cmd_plan ;;
-    feeds) cmd_feeds ;;
-    calibrate) cmd_calibrate ;;
-    verify) cmd_verify ;;
-    switch) cmd_switch ;;
-    consumers) cmd_consumers ;;
-    rollback) cmd_rollback ;;
+    feeds) need_root; acquire_lock; cmd_feeds ;;
+    calibrate) need_root; acquire_lock; cmd_calibrate ;;
+    verify) need_root; acquire_lock; cmd_verify ;;
+    switch) need_root; acquire_lock; cmd_switch ;;
+    consumers) need_root; acquire_lock; cmd_consumers ;;
+    rollback) need_root; acquire_lock; cmd_rollback ;;
     status) cmd_status ;;
     -h|--help|help) usage ;;
     *) echo "unknown subcommand: $SUBCOMMAND" >&2; usage >&2; exit 2 ;;
