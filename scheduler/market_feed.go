@@ -496,9 +496,11 @@ type marketFeedOwner struct {
 
 	metrics feedMetrics
 
-	corrOffsets   []time.Duration
-	correction    feedCorrectionStats
-	requestLedger *feedRequestLedger
+	corrOffsets    []time.Duration
+	correction     feedCorrectionStats
+	corrWindow     []time.Time
+	corrPauseUntil time.Time
+	requestLedger  *feedRequestLedger
 
 	alerts chan feedAlert
 	clock  func() time.Time

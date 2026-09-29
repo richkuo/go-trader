@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,6 +20,8 @@ const (
 	feedCorrectionRetryMin    = 2 * time.Second
 	feedCorrectionRetryMax    = 30 * time.Second
 	feedCorrectionParallel    = 4
+	feedCorrectionMaxPerMin   = 20
+	feedCorrectionRatePause   = feedBudgetWindow
 )
 
 var feedCorrectionOffsets = []time.Duration{5 * time.Second, 20 * time.Second, 60 * time.Second}
@@ -31,6 +34,8 @@ type feedKeyCorrection struct {
 	lastErr     string
 	finalized   int64
 	overdue     bool
+	abandoned   bool
+	deferred    string
 	pendingBars int
 	overdueBars int
 }
@@ -44,13 +49,18 @@ type feedCorrectionStats struct {
 	Added          int    `json:"added"`
 	RestOlder      int    `json:"rest_older"`
 	Unverified     int    `json:"unverified"`
+	Capped         int    `json:"capped"`
+	RateLimited    int    `json:"rate_limited"`
 	LastCorrection string `json:"last_correction,omitempty"`
 }
 
 type feedCorrectionHealth struct {
-	Offsets []string `json:"offsets"`
-	Pending int      `json:"pending"`
-	Overdue int      `json:"overdue"`
+	Offsets     []string `json:"offsets"`
+	MaxPerMin   int      `json:"max_reads_per_minute"`
+	WindowReads int      `json:"window_reads"`
+	PausedUntil string   `json:"paused_until,omitempty"`
+	Pending     int      `json:"pending"`
+	Overdue     int      `json:"overdue"`
 	feedCorrectionStats
 }
 
@@ -172,9 +182,9 @@ func mergeCorrectionRows(s *feedKeyState, raws []hlCandleRaw, requestedAt time.T
 	return out
 }
 
-func correctionDueFrom(s *feedKeyState, now time.Time, offsets []time.Duration) (int64, bool) {
+func correctionDueFrom(s *feedKeyState, now time.Time, offsets []time.Duration) (int64, time.Time, bool) {
 	if len(offsets) == 0 {
-		return 0, false
+		return 0, time.Time{}, false
 	}
 	last := offsets[len(offsets)-1]
 	var earliestDue, nextUpcoming time.Time
@@ -205,12 +215,12 @@ func correctionDueFrom(s *feedKeyState, now time.Time, offsets []time.Duration) 
 		}
 	}
 	if earliestDue.IsZero() {
-		return 0, false
+		return 0, time.Time{}, false
 	}
 	if !nextUpcoming.IsZero() && nextUpcoming.Sub(earliestDue) <= feedCorrectionCoalesce {
-		return 0, false
+		return 0, time.Time{}, false
 	}
-	return from, true
+	return from, earliestDue, true
 }
 
 func correctionUnconfirmed(s *feedKeyState, requestedAt time.Time, fromOpenMs int64, offsets []time.Duration) (int, int64) {
@@ -267,6 +277,7 @@ func (o *marketFeedOwner) finalizeCorrectionLocked(st *feedKeyState, now time.Ti
 		if now.After(final.Add(feedCorrectionGiveUp)) {
 			if b.OpenMs > st.corr.finalized {
 				if !verified && !silent {
+					st.corr.abandoned = true
 					o.correction.Unverified++
 					detail := st.corr.lastErr
 					if detail == "" {
@@ -297,7 +308,14 @@ func (o *marketFeedOwner) finalizeCorrectionLocked(st *feedKeyState, now time.Ti
 		o.raiseAlert(st.Key, "correction_overdue", detail)
 	case overdue == 0 && st.corr.overdue:
 		st.corr.overdue = false
-		o.logf("[feed-correction] key=%s status=recovered: no closed bar is overdue", st.Key)
+		if st.corr.abandoned {
+			o.logf("[feed-correction] key=%s status=abandoned: no closed bar is overdue, but at least one overdue bar was given up as unverified", st.Key)
+		} else {
+			o.logf("[feed-correction] key=%s status=recovered: every overdue bar was confirmed by a read", st.Key)
+		}
+	}
+	if overdue == 0 {
+		st.corr.abandoned = false
 	}
 }
 
@@ -310,28 +328,73 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func (o *marketFeedOwner) correctionPass() []feedCorrectionJob {
+func (o *marketFeedOwner) pruneCorrectionWindowLocked(now time.Time) {
+	cut := 0
+	for cut < len(o.corrWindow) && now.Sub(o.corrWindow[cut]) >= feedBudgetWindow {
+		cut++
+	}
+	if cut > 0 {
+		o.corrWindow = append([]time.Time(nil), o.corrWindow[cut:]...)
+	}
+}
+
+func (o *marketFeedOwner) deferCorrectionLocked(st *feedKeyState, reason string, capped bool) {
+	st.corr.lastErr = reason
+	if st.corr.deferred == reason {
+		return
+	}
+	st.corr.deferred = reason
+	if capped {
+		o.correction.Capped++
+	}
+	o.logf("[feed-correction] key=%s status=deferred reason=%q", st.Key, reason)
+}
+
+func (o *marketFeedOwner) correctionPass(slots int) []feedCorrectionJob {
 	o.feedMu.Lock()
 	defer o.feedMu.Unlock()
 	now := o.now()
+	o.pruneCorrectionWindowLocked(now)
 	keys := make([]marketFeedKey, 0, len(o.keys))
 	for k := range o.keys {
 		keys = append(keys, k)
 	}
 	sortMarketFeedKeys(keys)
-	var jobs []feedCorrectionJob
+	type candidate struct {
+		job feedCorrectionJob
+		due time.Time
+	}
+	var cands []candidate
 	for _, key := range keys {
 		st := o.keys[key]
 		o.finalizeCorrectionLocked(st, now)
 		if st.Status != feedStatusReady || st.corr.inflight || now.Before(st.corr.retryAt) {
 			continue
 		}
-		from, ok := correctionDueFrom(st, now, o.corrOffsets)
+		from, due, ok := correctionDueFrom(st, now, o.corrOffsets)
 		if !ok {
 			continue
 		}
+		cands = append(cands, candidate{job: feedCorrectionJob{key: key, st: st, fromOpenMs: from, retry: st.corr.failures > 0}, due: due})
+	}
+	sort.SliceStable(cands, func(i, j int) bool { return cands[i].due.Before(cands[j].due) })
+	var jobs []feedCorrectionJob
+	for _, c := range cands {
+		st := c.job.st
+		switch {
+		case now.Before(o.corrPauseUntil):
+			o.deferCorrectionLocked(st, fmt.Sprintf("correction paused until %s after a venue rate limit", o.corrPauseUntil.Format(time.RFC3339)), false)
+			continue
+		case len(jobs) >= slots:
+			continue
+		case len(o.corrWindow) >= feedCorrectionMaxPerMin:
+			o.deferCorrectionLocked(st, fmt.Sprintf("correction read cap of %d per %s reached", feedCorrectionMaxPerMin, feedBudgetWindow), true)
+			continue
+		}
+		o.corrWindow = append(o.corrWindow, now)
+		st.corr.deferred = ""
 		st.corr.inflight = true
-		jobs = append(jobs, feedCorrectionJob{key: key, st: st, fromOpenMs: from, retry: st.corr.failures > 0})
+		jobs = append(jobs, c.job)
 	}
 	return jobs
 }
@@ -394,6 +457,13 @@ func (o *marketFeedOwner) runCorrectionJob(ctx context.Context, job feedCorrecti
 	}
 	if err != nil {
 		o.correctionFailedLocked(st, err, refused, reason)
+		if errors.Is(err, errHLInfoRateLimited) {
+			o.correction.RateLimited++
+			o.corrPauseUntil = o.now().Add(feedCorrectionRatePause)
+			st.corr.retryAt = o.corrPauseUntil
+			o.logf("[feed-correction] key=%s status=rate_limited pause=%s: every correction read waits until %s",
+				st.Key, feedCorrectionRatePause, o.corrPauseUntil.Format(time.RFC3339))
+		}
 		return
 	}
 	if len(raws) == 0 {
@@ -442,7 +512,7 @@ func (o *marketFeedOwner) runCorrection(ctx context.Context) {
 			return
 		case <-ticker.C:
 		}
-		for _, job := range o.correctionPass() {
+		for _, job := range o.correctionPass(cap(sem) - len(sem)) {
 			job := job
 			select {
 			case sem <- struct{}{}:
@@ -463,7 +533,12 @@ func (o *marketFeedOwner) correctionHealthLocked() *feedCorrectionHealth {
 	if len(o.corrOffsets) == 0 {
 		return nil
 	}
-	h := &feedCorrectionHealth{feedCorrectionStats: o.correction}
+	now := o.now()
+	o.pruneCorrectionWindowLocked(now)
+	h := &feedCorrectionHealth{feedCorrectionStats: o.correction, MaxPerMin: feedCorrectionMaxPerMin, WindowReads: len(o.corrWindow)}
+	if now.Before(o.corrPauseUntil) {
+		h.PausedUntil = o.corrPauseUntil.Format(time.RFC3339)
+	}
 	for _, off := range o.corrOffsets {
 		h.Offsets = append(h.Offsets, off.String())
 	}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -203,6 +204,8 @@ func parseHyperliquidCandleRaws(data []byte) ([]hlCandleRaw, error) {
 	return out, nil
 }
 
+var errHLInfoRateLimited = errors.New("rate limited by the venue")
+
 var fetchHyperliquidCandleSnapshotFn = fetchHyperliquidCandleSnapshot
 
 func fetchHyperliquidCandleSnapshot(ctx context.Context, coin, interval string, startMs, endMs int64) ([]hlCandleRaw, error) {
@@ -236,6 +239,9 @@ func fetchHyperliquidCandleSnapshot(ctx context.Context, coin, interval string, 
 		return nil, fmt.Errorf("http request: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return nil, fmt.Errorf("http %d from %s/info candleSnapshot: %w", resp.StatusCode, hlMainnetURL, errHLInfoRateLimited)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("http %d from %s/info candleSnapshot", resp.StatusCode, hlMainnetURL)
 	}
