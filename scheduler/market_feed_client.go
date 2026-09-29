@@ -13,9 +13,10 @@ import (
 )
 
 const (
-	feedClientDialTimeout = 2 * time.Second
-	feedClientIOTimeout   = 10 * time.Second
-	feedClientSlack       = 5 * time.Second
+	feedClientDialTimeout   = 2 * time.Second
+	feedClientIOTimeout     = 10 * time.Second
+	feedClientSlack         = 5 * time.Second
+	feedClientBackupReserve = 3 * time.Second
 
 	feedFetchSealed   = "sealed"
 	feedFetchDegraded = "degraded"
@@ -87,6 +88,7 @@ type sharedFeedClient struct {
 	mu       sync.Mutex
 	states   map[string]*feedEndpointState
 	outage   bool
+	servedBy string
 	lastGaps string
 	last     *sharedFeedFetchReport
 }
@@ -281,8 +283,15 @@ func (c *sharedFeedClient) Fetch(ctx context.Context, key int64, reqs cycleMarke
 	giveUp := c.giveUpAt(key)
 	report := sharedFeedFetchReport{Key: key}
 	var snap *marketSnapshot
-	for _, ep := range c.endpoints {
-		doc, h, err := c.fetchFrom(ctx, ep, key, giveUp)
+	for i, ep := range c.endpoints {
+		epGiveUp := giveUp
+		epCtx, cancel := ctx, context.CancelFunc(func() {})
+		if i < len(c.endpoints)-1 {
+			epGiveUp = giveUp.Add(-feedClientBackupReserve)
+			epCtx, cancel = context.WithDeadline(ctx, time.Now().Add(epGiveUp.Sub(c.clock())))
+		}
+		doc, h, err := c.fetchFrom(epCtx, ep, key, epGiveUp)
+		cancel()
 		c.recordEndpoint(ep, key, h, err, &report)
 		if err != nil {
 			report.Attempts = append(report.Attempts, fmt.Sprintf("%s=%v", ep.Name, err))
@@ -330,6 +339,25 @@ func (c *sharedFeedClient) Fetch(ctx context.Context, key int64, reqs cycleMarke
 	case report.Status == feedFetchSealed && c.outage:
 		c.outage = false
 		report.Alerts = append(report.Alerts, fmt.Sprintf("**SHARED MARKET FEED RECOVERED** key %d served by %s (source %s, instance %s, generation %d).", key, report.Endpoint, report.Source, report.Instance, report.Generation))
+	}
+	if report.Status == feedFetchSealed {
+		prev := c.servedBy
+		c.servedBy = report.Endpoint
+		primary := c.endpoints[0].Name
+		switch {
+		case report.Endpoint != primary && prev != report.Endpoint:
+			why := "no attempt recorded"
+			if len(report.Attempts) > 0 {
+				why = report.Attempts[0]
+			}
+			report.Alerts = append(report.Alerts, fmt.Sprintf("**SHARED MARKET FEED FAILOVER** key %d served by %s (source %s, instance %s, generation %d, hash %s); the %s endpoint did not serve it (%s).",
+				key, report.Endpoint, report.Source, report.Instance, report.Generation, report.Hash, primary, why))
+		case report.Endpoint == primary && prev != "" && prev != primary:
+			report.Alerts = append(report.Alerts, fmt.Sprintf("**SHARED MARKET FEED PRIMARY RESTORED** key %d served by %s again (source %s, instance %s, generation %d, hash %s).",
+				key, primary, report.Source, report.Instance, report.Generation, report.Hash))
+		}
+	} else if !stopping {
+		c.servedBy = ""
 	}
 	if report.Status == feedFetchSealed {
 		gaps := strings.Join(report.Gaps, "; ")
@@ -534,7 +562,7 @@ func (c *sharedFeedClient) status() *sharedFeedStatus {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	out := &sharedFeedStatus{Outage: c.outage}
+	out := &sharedFeedStatus{Outage: c.outage, ServedBy: c.servedBy}
 	names := make([]string, 0, len(c.states))
 	for n := range c.states {
 		names = append(names, n)
@@ -552,6 +580,7 @@ func (c *sharedFeedClient) status() *sharedFeedStatus {
 
 type sharedFeedStatus struct {
 	Outage    bool                   `json:"outage"`
+	ServedBy  string                 `json:"served_by,omitempty"`
 	Endpoints []feedEndpointState    `json:"endpoints"`
 	Last      *sharedFeedFetchReport `json:"last,omitempty"`
 }

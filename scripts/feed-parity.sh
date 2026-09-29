@@ -22,8 +22,12 @@ Joins the market feed's [feed-seal] records with each shared-mode scheduler's
     specification, or a consumer audited a key the feed never sealed.
 Accepted exceptions are listed and do not fail the run: degraded keys (no
 compatible seal, reason logged), skipped keys (the key passed its give-up time
-before the consumer evaluated it, for example after a restart), consumers served by different sources or
+before the consumer evaluated it, for example after a restart), keys served by
+the backup endpoint (failover), consumers served by different sources or
 instances for one key (source-switch race), and REST mark fallback coins.
+Pass every feed (primary and backup) as a feed input so each served seal is
+checked against the feed that sealed it. scripts/feed-source-compare.sh
+compares closed bars between the two sources.
 
 Journal inputs read the unit's own LogNamespace (journalctl --namespace=+<ns>).
 --since/--until are passed to journalctl; file inputs are read whole.
@@ -290,7 +294,15 @@ for label in labels:
     recs = audits[label]
     sealed = sum(1 for f in recs.values() if f.get("status") == "sealed")
     skipped = sum(1 for f in recs.values() if f.get("status") == "skipped")
-    print(f"feed-parity: consumer {label}: {len(recs)} audited keys ({sealed} sealed, {len(recs) - sealed - skipped} degraded, {skipped} skipped)")
+    served = defaultdict(list)
+    for k, f in sorted(recs.items()):
+        if f.get("status") == "sealed":
+            served[(f.get("endpoint", "?"), f.get("source", "?"))].append(k)
+    served_text = ", ".join(f"{ep}/{src}={len(ks)}" for (ep, src), ks in sorted(served.items())) or "none"
+    print(f"feed-parity: consumer {label}: {len(recs)} audited keys ({sealed} sealed, {len(recs) - sealed - skipped} degraded, {skipped} skipped); served by {served_text}")
+    for (ep, src), ks in sorted(served.items()):
+        if ep != "primary":
+            exceptions.append(f"consumer {label}: {len(ks)} key(s) served by the {ep} endpoint (source {src}): {', '.join(map(str, ks[:20]))}{' ...' if len(ks) > 20 else ''}")
 print(f"feed-parity: {same_source} cross-consumer same-source key matches, {switch} source-switch exceptions, {payload_matches} shared payload specs matched")
 for line in fallbacks:
     print("feed-parity: EXCEPTION " + line)

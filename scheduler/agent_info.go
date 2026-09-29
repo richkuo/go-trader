@@ -41,6 +41,7 @@ var agentInfoCommands = []agentCommand{
 	{Name: "inspect", Summary: "Print a strategy's effective (post-migration, post-default) config.", Usage: "go-trader inspect [--config <path>] [--json] <strategy-id>|--all"},
 	{Name: "storage-inspect", Summary: "Read-only ownership report for every state file: strategy mapping, orphans, risk-row scopes, held locks. Writes nothing.", Usage: "go-trader storage-inspect [--config <path>] [--json] [--require-idle]", Flags: []string{"--config", "--json", "--require-idle"}},
 	{Name: "diagnostics", Summary: "Read-only per-strategy trade-quality report (MFE/MAE/capture ratio) with backtestable tuning hypotheses (#1147).", Usage: "go-trader diagnostics [--config <path>] [--db <path>] [--strategy <id>] [--min-trades N] [--min-bucket N]", Flags: []string{"--config", "--db", "--strategy", "--min-trades", "--min-bucket"}},
+	{Name: "feed-fetch", Summary: "Read-only client of a market feed service socket: print its describe reply, or write one verified seal's bytes to a file for source comparison.", Usage: "go-trader feed-fetch --socket <path> [--key <unix>] [--out <file>] [--describe]", Flags: []string{"--socket", "--key", "--out", "--describe"}},
 	{Name: "version", Summary: "Print the binary version.", Usage: "go-trader version"},
 }
 
@@ -150,11 +151,12 @@ type agentInfo struct {
 }
 
 type agentFeedInfo struct {
-	Source          string   `json:"source"`
-	SocketPath      string   `json:"socket_path"`
-	StatusPort      int      `json:"status_port"`
-	ConsumerConfigs []string `json:"consumer_configs"`
-	Note            string   `json:"note"`
+	Source          string            `json:"source"`
+	SocketPath      string            `json:"socket_path"`
+	StatusPort      int               `json:"status_port"`
+	ConsumerConfigs []string          `json:"consumer_configs"`
+	RequestBudget   *feedBudgetConfig `json:"request_budget,omitempty"`
+	Note            string            `json:"note"`
 }
 
 func runAgentInfo(args []string) int {
@@ -245,7 +247,11 @@ func buildFeedAgentInfo(cfg *Config, version string, now time.Time) agentInfo {
 			SocketPath:      cfg.Feed.SocketPath,
 			StatusPort:      cfg.StatusPort,
 			ConsumerConfigs: append([]string{}, cfg.Feed.ConsumerConfigs...),
+			RequestBudget:   cfg.Feed.RequestBudget,
 			Note:            "Seals one immutable market snapshot per scheduled deadline and serves it to shared-mode schedulers over a Unix socket; probe loads each consumer config read-only and skips check scripts.",
+		}
+		if cfg.Feed.Source == feedSourceREST {
+			info.Feed.Note += " Source rest is the backup feed: it reads the venue REST interface at each deadline and refuses any request past feed.request_budget, which marks the affected inputs not ready so consumers hold entries on them."
 		}
 	}
 	return info
@@ -520,6 +526,9 @@ func renderAgentInfoMarkdown(info agentInfo) string {
 			b.WriteString("_The feed config could not be loaded._\n\n")
 		} else {
 			fmt.Fprintf(&b, "- source: `%s`\n- socket: `%s`\n- status port: `%d`\n", info.Feed.Source, info.Feed.SocketPath, info.Feed.StatusPort)
+			if rb := info.Feed.RequestBudget; rb != nil {
+				fmt.Fprintf(&b, "- request budget: `%d` per minute, `%d` at startup\n", rb.PerMinute, rb.Startup)
+			}
 			for _, c := range info.Feed.ConsumerConfigs {
 				fmt.Fprintf(&b, "- consumer config: `%s`\n", c)
 			}

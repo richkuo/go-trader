@@ -25,9 +25,10 @@ const (
 )
 
 type FeedRoleConfig struct {
-	Source          string   `json:"source"`
-	SocketPath      string   `json:"socket_path"`
-	ConsumerConfigs []string `json:"consumer_configs"`
+	Source          string            `json:"source"`
+	SocketPath      string            `json:"socket_path"`
+	ConsumerConfigs []string          `json:"consumer_configs"`
+	RequestBudget   *feedBudgetConfig `json:"request_budget,omitempty"`
 }
 
 var feedRoleRootKeys = map[string]bool{
@@ -76,7 +77,11 @@ func sharedMarketFeedConfigErrors(cfg *Config) []string {
 	primary, backup := cfg.sharedMarketFeedSockets()
 	errs := feedSocketPathErrors("shared_market_feed.primary_socket", primary)
 	if backup != "" {
-		errs = append(errs, "shared_market_feed.backup_socket is not supported by this release; the backup feed service arrives with the REST backup source, so leave it empty")
+		backupErrs := feedSocketPathErrors("shared_market_feed.backup_socket", backup)
+		errs = append(errs, backupErrs...)
+		if len(backupErrs) == 0 && cleanFeedPath(backup) == cleanFeedPath(primary) {
+			errs = append(errs, fmt.Sprintf("shared_market_feed.backup_socket %q is the primary socket; the backup must be a separate feed service", backup))
+		}
 	}
 	return errs
 }
@@ -150,10 +155,11 @@ func loadFeedRoleConfig(path string) (*Config, error) {
 		cfg.Feed.SocketPath = strings.TrimSpace(cfg.Feed.SocketPath)
 		switch cfg.Feed.Source {
 		case feedSourceWebsocket:
-		case "rest":
-			errs = append(errs, "feed.source \"rest\" (the backup source) is not available in this release; use \"websocket\"")
+			errs = append(errs, feedBudgetConfigErrors("feed.request_budget", cfg.Feed.RequestBudget, false)...)
+		case feedSourceREST:
+			errs = append(errs, feedBudgetConfigErrors("feed.request_budget", cfg.Feed.RequestBudget, true)...)
 		default:
-			errs = append(errs, fmt.Sprintf("feed.source must be %q, got %q", feedSourceWebsocket, cfg.Feed.Source))
+			errs = append(errs, fmt.Sprintf("feed.source must be %q or %q, got %q", feedSourceWebsocket, feedSourceREST, cfg.Feed.Source))
 		}
 		errs = append(errs, feedSocketPathErrors("feed.socket_path", cfg.Feed.SocketPath)...)
 		if len(cfg.Feed.ConsumerConfigs) == 0 {
@@ -288,17 +294,31 @@ func feedConsumerCadences(cfg *Config) []int {
 
 func unionFeedRequirements(consumers []feedConsumer) feedRequirements {
 	union := feedRequirements{
-		Keys:       make(map[marketFeedKey]int),
-		Funding:    make(map[string]feedFundingNeed),
-		Strategies: make(map[string]feedStrategyRequirement),
+		Keys:        make(map[marketFeedKey]int),
+		Funding:     make(map[string]feedFundingNeed),
+		Strategies:  make(map[string]feedStrategyRequirement),
+		KeyCadences: make(map[marketFeedKey][]int),
+		SignalKeys:  make(map[marketFeedKey]bool),
 	}
 	coins := make(map[string]bool)
+	cadenceSets := make(map[marketFeedKey]map[int]bool)
 	for _, c := range consumers {
 		if !c.Loaded {
 			continue
 		}
 		for key, lookback := range c.Req.Keys {
 			union.addKey(key, lookback)
+			set := cadenceSets[key]
+			if set == nil {
+				set = make(map[int]bool)
+				cadenceSets[key] = set
+			}
+			for _, cad := range c.Cadences {
+				set[cad] = true
+			}
+		}
+		for _, entry := range c.Req.Strategies {
+			union.SignalKeys[entry.Signal] = true
 		}
 		for _, coin := range c.Req.MidCoins {
 			coins[coin] = true
@@ -312,6 +332,14 @@ func unionFeedRequirements(consumers []feedConsumer) feedRequirements {
 	}
 	for coin := range coins {
 		union.MidCoins = append(union.MidCoins, coin)
+	}
+	for key, set := range cadenceSets {
+		cads := make([]int, 0, len(set))
+		for cad := range set {
+			cads = append(cads, cad)
+		}
+		sort.Ints(cads)
+		union.KeyCadences[key] = cads
 	}
 	union.finalize()
 	return union
@@ -391,6 +419,7 @@ type feedRuntime struct {
 	notifier   *MultiNotifier
 	owner      *marketFeedOwner
 	sealer     *feedSealer
+	ledger     *feedRequestLedger
 	instance   string
 	startedAt  time.Time
 	ctx        context.Context
@@ -399,6 +428,17 @@ type feedRuntime struct {
 	consumers []feedConsumer
 	draining  bool
 	reloads   int
+}
+
+func formatFeedBudgetConfig(source string, b *feedBudgetConfig) string {
+	if b == nil {
+		return fmt.Sprintf("request budget: none configured (source %s counts requests without a limit)", source)
+	}
+	mode := "enforced"
+	if source != feedSourceREST {
+		mode = "logged only"
+	}
+	return fmt.Sprintf("request budget: per_minute=%d startup=%d (%s, source %s)", b.PerMinute, b.Startup, mode, source)
 }
 
 func newFeedInstanceID(now time.Time) string {
@@ -485,13 +525,23 @@ func runFeedRole(configPath string, statusPortFlag int, once bool, summary strin
 	fmt.Printf("[feed] union: %d keys, %d mid coins, %d funding coins, cadences %s, estimated seal size %d bytes (cap %d)\n",
 		len(union.Order), len(union.MidCoins), len(union.Funding), formatCadences(cadences), estimateFeedSealBytes(union), feedSealMaxBytes)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	baseCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	ledger := newFeedRequestLedger(cfg.Feed.RequestBudget, cfg.Feed.Source == feedSourceREST, nil)
+	ctx := withFeedLedger(baseCtx, ledger)
+	fmt.Printf("[feed] %s\n", formatFeedBudgetConfig(cfg.Feed.Source, cfg.Feed.RequestBudget))
 
 	owner := newMarketFeedOwner(nil, feedLogf)
 	globalMarketFeedStatus.setOwner(owner)
 	sealer := newFeedSealer(owner, cfg.Feed.Source, instance, nil, feedLogf)
+	sealer.ledger = ledger
+	if cfg.Feed.Source == feedSourceREST {
+		sealer.prepareFn = newFeedRESTSource(owner, feedLogf).prepare
+	} else {
+		sealer.prepareFn = websocketFeedPrepare(owner)
+	}
 	sealer.alertHook = func(msg string) {
+		fmt.Printf("[feed] %s\n", msg)
 		if notifier != nil && notifier.HasOwner() {
 			notifier.SendOwnerDM(msg)
 		}
@@ -504,6 +554,7 @@ func runFeedRole(configPath string, statusPortFlag int, once bool, summary strin
 		notifier:   notifier,
 		owner:      owner,
 		sealer:     sealer,
+		ledger:     ledger,
 		instance:   instance,
 		startedAt:  startedAt,
 		ctx:        ctx,
@@ -533,8 +584,11 @@ func runFeedRole(configPath string, statusPortFlag int, once bool, summary strin
 	go srv.serve()
 	fmt.Printf("[feed] listening on %s (mode %o)\n", cfg.Feed.SocketPath, feedSocketFileMode)
 
+	ledger.openStartup()
 	ready := owner.ApplyGeneration(ctx, union)
-	go owner.Run(ctx)
+	if cfg.Feed.Source == feedSourceWebsocket {
+		go owner.Run(ctx)
+	}
 	select {
 	case <-ready:
 		sealer.setGeneration(union, cadences, startedAt)
@@ -661,6 +715,9 @@ func (rt *feedRuntime) reload() {
 		fmt.Fprintf(os.Stderr, "[reload] ERROR: the new union needs about %d bytes per seal, over the %d-byte cap; keeping the previous feed generation\n", est, feedSealMaxBytes)
 		return
 	}
+	rt.ledger.setLimits(next.Feed.RequestBudget)
+	fmt.Printf("[reload] %s\n", formatFeedBudgetConfig(next.Feed.Source, next.Feed.RequestBudget))
+	rt.ledger.openStartup()
 	select {
 	case <-rt.owner.ApplyGeneration(rt.ctx, union):
 	case <-rt.ctx.Done():
@@ -707,6 +764,7 @@ func (rt *feedRuntime) handleHealth(w http.ResponseWriter, r *http.Request) {
 	resp["last_seal_key"] = d.LastSealKey
 	resp["last_seal_ready_keys"] = d.LastSealReady
 	resp["last_seal_keys"] = d.LastSealKeysTotal
+	resp["request_budget"] = rt.ledger.status()
 	if last := rt.sealer.lastSealSnapshot(); last != nil {
 		age := time.Since(last.SealedAt)
 		resp["last_seal_age_s"] = int64(age.Seconds())
@@ -757,15 +815,17 @@ func (rt *feedRuntime) handleStatus(w http.ResponseWriter, r *http.Request) {
 		lastID = feedSealEvaluationID(last.Key)
 	}
 	health := rt.owner.Health(lastID)
+	health.Mode = rt.sealer.source
 	resp := map[string]any{
-		"role":        configRoleFeed,
-		"version":     Version,
-		"instance":    rt.instance,
-		"source":      rt.sealer.source,
-		"socket_path": cfg.Feed.SocketPath,
-		"market_feed": health,
-		"sealer":      rt.sealer.describe(),
-		"consumers":   consumers,
+		"role":           configRoleFeed,
+		"version":        Version,
+		"instance":       rt.instance,
+		"source":         rt.sealer.source,
+		"socket_path":    cfg.Feed.SocketPath,
+		"market_feed":    health,
+		"sealer":         rt.sealer.describe(),
+		"consumers":      consumers,
+		"request_budget": rt.ledger.status(),
 	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
@@ -794,6 +854,10 @@ func runFeedProbe(configPath string) int {
 	if est := estimateFeedSealBytes(union); est > feedSealMaxBytes {
 		fmt.Fprintf(os.Stderr, "probe: the consumer union needs about %d bytes per seal, over the %d-byte cap\n", est, feedSealMaxBytes)
 		return ExitProbeFailure
+	}
+	fmt.Printf("probe: %s\n", formatFeedBudgetConfig(cfg.Feed.Source, cfg.Feed.RequestBudget))
+	for _, key := range union.Order {
+		fmt.Printf("probe: key %s lookback=%d cadences=%s\n", key.PayloadID(), union.Keys[key], formatCadences(union.KeyCadences[key]))
 	}
 	fmt.Printf("probe: OK (role=feed, source=%s, %d of %d consumer configs, %d keys, cadences %s, check scripts not probed, version=%s)\n",
 		cfg.Feed.Source, feedConsumersLoaded(consumers), len(consumers), len(union.Order), formatCadences(unionFeedCadences(consumers)), Version)

@@ -1,0 +1,20 @@
+{
+  "role": "feed",
+  "status_port": 8191,
+  "log_level": "info",
+  "feed": {
+    "source": "rest",
+    "socket_path": "/run/go-trader-feed-backup/feed.sock",
+    "consumer_configs": [
+      "/var/lib/go-trader/live/config.json",
+      "/var/lib/go-trader/paper/config.json"
+    ],
+    "request_budget": {
+      "per_minute": 120,
+      "startup": 400
+    }
+  },
+  "discord": {
+    "enabled": true
+  }
+}

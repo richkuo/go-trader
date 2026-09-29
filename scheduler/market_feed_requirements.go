@@ -84,11 +84,13 @@ type feedStrategyRequirement struct {
 }
 
 type feedRequirements struct {
-	Keys       map[marketFeedKey]int
-	Order      []marketFeedKey
-	MidCoins   []string
-	Funding    map[string]feedFundingNeed
-	Strategies map[string]feedStrategyRequirement
+	Keys        map[marketFeedKey]int
+	Order       []marketFeedKey
+	MidCoins    []string
+	Funding     map[string]feedFundingNeed
+	Strategies  map[string]feedStrategyRequirement
+	KeyCadences map[marketFeedKey][]int
+	SignalKeys  map[marketFeedKey]bool
 }
 
 func (r feedRequirements) requires(key marketFeedKey) bool {
@@ -332,6 +334,7 @@ func (o *marketFeedOwner) EnsureFunding(ctx context.Context, earliestBarMs map[s
 	if len(needs) == 0 {
 		return
 	}
+	ctx = withFeedReason(ctx, string(feedRestFunding))
 	coins := make([]string, 0, len(needs))
 	for coin := range needs {
 		coins = append(coins, coin)

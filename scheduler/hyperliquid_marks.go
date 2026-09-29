@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,6 +12,12 @@ import (
 )
 
 func fetchHyperliquidMids(coins []string) (map[string]float64, error) {
+	return fetchHyperliquidMidsCtx(context.Background(), coins)
+}
+
+var fetchHyperliquidMidsCtxFn = fetchHyperliquidMidsCtx
+
+func fetchHyperliquidMidsCtx(ctx context.Context, coins []string) (map[string]float64, error) {
 	if len(coins) == 0 {
 		return map[string]float64{}, nil
 	}
@@ -20,9 +27,19 @@ func fetchHyperliquidMids(coins []string) (map[string]float64, error) {
 	if err != nil {
 		return nil, fmt.Errorf("marshal allMids request: %w", err)
 	}
+	if err := feedBudgetAcquire(ctx, "allMids"); err != nil {
+		return nil, err
+	}
 
+	reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, hlMainnetURL+"/info", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("build allMids request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
 	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Post(hlMainnetURL+"/info", "application/json", bytes.NewReader(body))
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("http request: %w", err)
 	}

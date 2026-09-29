@@ -23,6 +23,20 @@ func hlPostInfo(ctx context.Context, payload any) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("marshal info request: %w", err)
 	}
+	reqType := "info"
+	switch m := payload.(type) {
+	case map[string]any:
+		if t, ok := m["type"].(string); ok {
+			reqType = t
+		}
+	case map[string]string:
+		if t, ok := m["type"]; ok {
+			reqType = t
+		}
+	}
+	if err := feedBudgetAcquire(ctx, reqType); err != nil {
+		return nil, err
+	}
 	reqCtx, cancel := context.WithTimeout(ctx, hlFundingFetchTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, hlMainnetURL+"/info", bytes.NewReader(body))

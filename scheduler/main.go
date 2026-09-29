@@ -31,6 +31,7 @@ var knownSubcommands = []string{
 	"storage-inspect",
 	"agent-info",
 	"diagnostics",
+	"feed-fetch",
 	"version",
 }
 
@@ -83,6 +84,8 @@ func main() {
 			os.Exit(runAgentInfo(os.Args[2:]))
 		case "diagnostics":
 			os.Exit(runDiagnostics(os.Args[2:]))
+		case "feed-fetch":
+			os.Exit(runFeedFetch(os.Args[2:]))
 		case "version", "--version", "-version":
 			fmt.Println(Version)
 			os.Exit(0)

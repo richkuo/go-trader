@@ -219,6 +219,9 @@ func fetchHyperliquidCandleSnapshot(ctx context.Context, coin, interval string, 
 	if err != nil {
 		return nil, fmt.Errorf("marshal candleSnapshot request: %w", err)
 	}
+	if err := feedBudgetAcquire(ctx, "candleSnapshot"); err != nil {
+		return nil, err
+	}
 	reqCtx, cancel := context.WithTimeout(ctx, hlCandleFetchTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, hlMainnetURL+"/info", bytes.NewReader(body))

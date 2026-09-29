@@ -42,6 +42,7 @@ const (
 	feedStatusRepairing     feedKeyStatus = "repairing"
 	feedStatusInvalid       feedKeyStatus = "invalid"
 	feedStatusFailed        feedKeyStatus = "failed"
+	feedStatusBudget        feedKeyStatus = "budget_exhausted"
 )
 
 type marketFeedKey struct {
@@ -360,7 +361,7 @@ func keyReadiness(s *feedKeyState, now time.Time, connected bool) feedKeyReadine
 		out.LastOpenMs = s.Bars[len(s.Bars)-1].OpenMs
 		out.LastCloseMs = s.Bars[len(s.Bars)-1].CloseMs
 	}
-	if s.Status == feedStatusFailed {
+	if s.Status == feedStatusFailed || s.Status == feedStatusBudget {
 		return out
 	}
 	if s.Status == feedStatusRepairing {
@@ -434,6 +435,10 @@ const (
 	feedRestRepair    feedRestReason = "repair"
 	feedRestRecovery  feedRestReason = "recovery"
 	feedRestSteady    feedRestReason = "steady"
+	feedRestRefresh   feedRestReason = "refresh"
+	feedRestRetry     feedRestReason = "retry"
+	feedRestFunding   feedRestReason = "funding"
+	feedRestMids      feedRestReason = "mids"
 )
 
 type feedMetrics struct {
@@ -672,6 +677,7 @@ func (o *marketFeedOwner) fetchAndMerge(ctx context.Context, key marketFeedKey, 
 	if !ok {
 		return fmt.Errorf("feed key %s is not tracked", key)
 	}
+	ctx = withFeedReason(ctx, string(reason))
 	requestedAt := o.now()
 	var raws []hlCandleRaw
 	var err error
@@ -720,6 +726,15 @@ func (o *marketFeedOwner) fetchAndMerge(ctx context.Context, key marketFeedKey, 
 		st.StatusDetail = fmt.Sprintf("venue history is shorter than required (%d of %d bars)", len(st.Bars), st.Required)
 	}
 	return nil
+}
+
+func (o *marketFeedOwner) markKeyUnready(key marketFeedKey, status feedKeyStatus, detail string) {
+	o.feedMu.Lock()
+	defer o.feedMu.Unlock()
+	if st := o.keys[key]; st != nil {
+		st.Status = status
+		st.StatusDetail = detail
+	}
 }
 
 func (o *marketFeedOwner) Readiness() []feedKeyReadiness {

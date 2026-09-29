@@ -31,6 +31,7 @@ const (
 	feedWireStatusError       = "error"
 
 	feedSourceWebsocket = "websocket"
+	feedSourceREST      = "rest"
 )
 
 type feedWireRequest struct {

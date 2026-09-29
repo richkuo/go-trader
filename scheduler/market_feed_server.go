@@ -71,6 +71,9 @@ type feedSealer struct {
 	missedStreak  int
 	wake          chan struct{}
 	alertHook     func(string)
+	prepareFn     feedPrepareFunc
+	ledger        *feedRequestLedger
+	budgetShort   bool
 }
 
 func newFeedSealer(owner *marketFeedOwner, source, instance string, clock func() time.Time, logf func(string, ...any)) *feedSealer {
@@ -95,6 +98,54 @@ func newFeedSealer(owner *marketFeedOwner, source, instance string, clock func()
 		outcomes: make(map[int64]feedSealOutcome),
 		wake:     make(chan struct{}, 1),
 	}
+}
+
+func (s *feedSealer) prepareFor(ctx context.Context, key int64, reqs cycleMarketRequirements, coverage feedRequirements) feedPrepareReport {
+	if s.prepareFn != nil {
+		return s.prepareFn(ctx, key, reqs, coverage)
+	}
+	prepareMarketSnapshot(ctx, s.owner, reqs)
+	return feedPrepareReport{}
+}
+
+func (s *feedSealer) budgetLines(key int64, before feedBudgetTotals, rep feedPrepareReport) (feedBudgetTotals, []string) {
+	if s.ledger == nil {
+		return feedBudgetTotals{}, nil
+	}
+	delta := s.ledger.snapshot().since(before)
+	st := s.ledger.status()
+	line := fmt.Sprintf("[feed-budget] key=%d source=%s instance=%s requests=%d refused=%d by_reason=%s by_type=%s refused_by_reason=%s window_used=%d per_minute=%d startup_left=%d enforced=%t refreshed=%d refused_keys=%s failed_keys=%s",
+		key, s.source, s.instance, delta.Total, delta.Refused, formatFeedCounts(delta.ByReason), formatFeedCounts(delta.ByType),
+		formatFeedCounts(delta.RefusedByReason), st.WindowUsed, st.PerMinute, st.StartupLeft, st.Enforced, rep.Refreshed,
+		joinFeedNames(rep.Refused), joinFeedNames(rep.Failed))
+	return delta, []string{line}
+}
+
+func joinFeedNames(names []string) string {
+	if len(names) == 0 {
+		return "none"
+	}
+	return strings.Join(names, ",")
+}
+
+func (s *feedSealer) budgetAlert(key int64, delta feedBudgetTotals, rep feedPrepareReport) {
+	if s.ledger == nil || !s.ledger.status().Enforced {
+		return
+	}
+	s.mu.Lock()
+	was := s.budgetShort
+	now := delta.Refused > 0
+	s.budgetShort = now
+	s.mu.Unlock()
+	if s.alertHook == nil || was == now {
+		return
+	}
+	if now {
+		s.alertHook(fmt.Sprintf("**MARKET FEED REQUEST BUDGET EXHAUSTED** [%s] key %d: %d request(s) refused (%s); refused inputs: %s. Consumers hold entries on those inputs; protection continues on verified inputs (instance %s).",
+			s.source, key, delta.Refused, formatFeedCounts(delta.RefusedByReason), joinFeedNames(rep.Refused), s.instance))
+		return
+	}
+	s.alertHook(fmt.Sprintf("**MARKET FEED REQUEST BUDGET RECOVERED** [%s] key %d prepared with no refused request (instance %s).", s.source, key, s.instance))
 }
 
 func (s *feedSealer) now() time.Time {
@@ -242,10 +293,20 @@ func (s *feedSealer) sealOne(ctx context.Context, key int64) {
 	}
 	s.mu.Lock()
 	reqs := s.reqs
+	coverage := s.coverage
 	s.mu.Unlock()
+	var before feedBudgetTotals
+	if s.ledger != nil {
+		before = s.ledger.snapshot()
+	}
 	prepCtx, cancel := context.WithDeadline(ctx, s.sealAt(key).Add(s.prepare))
-	prepareMarketSnapshot(prepCtx, s.owner, reqs)
+	rep := s.prepareFor(prepCtx, key, reqs, coverage)
 	cancel()
+	delta, budgetLines := s.budgetLines(key, before, rep)
+	for _, line := range budgetLines {
+		s.logf("%s", line)
+	}
+	s.budgetAlert(key, delta, rep)
 	frozenAt := s.owner.now()
 	snap := freezeMarketSnapshot(s.owner, reqs, feedSealEvaluationID(key), frozenAt)
 	doc, err := feedSealDocFromSnapshot(snap, key, s.source, s.instance)
@@ -306,9 +367,9 @@ func (s *feedSealer) sealOne(ctx context.Context, key int64) {
 	s.recordOutcomeLocked(key, feedWireStatusSealed, "")
 	evicted := s.retainLocked()
 	s.mu.Unlock()
-	s.logf("[feed-seal] key=%d status=sealed source=%s instance=%s generation=%d hash=%s bytes=%d keys=%d ready=%d stale=%d mids=%d prepare_ms=%d sealed_at_ms=%d",
+	s.logf("[feed-seal] key=%d status=sealed source=%s instance=%s generation=%d hash=%s bytes=%d keys=%d ready=%d stale=%d mids=%d prepare_ms=%d sealed_at_ms=%d requests=%d refused=%d",
 		key, seal.Source, s.instance, seal.Generation, seal.Hash, len(seal.Bytes), seal.KeysTotal, seal.KeysReady, seal.KeysStale, seal.Mids,
-		prepDur.Milliseconds(), doc.SealedAtMs)
+		prepDur.Milliseconds(), doc.SealedAtMs, delta.Total, delta.Refused)
 	for _, ev := range evicted {
 		s.logf("[feed-seal] key=%d status=evicted instance=%s", ev, s.instance)
 	}
