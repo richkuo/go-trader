@@ -14,7 +14,8 @@ Usage: scripts/feed-parity.sh [--since <time>] [--until <time>]
 Joins the market feed's [feed-seal] records with each shared-mode scheduler's
 [feed-audit] and [feed-payload] records by key and fails when:
   - a feed or consumer input has no records (empty input),
-  - a consumer skipped a key its cadences expect (missing coverage),
+  - a consumer skipped a key of a cadence while its audit records listed that
+    cadence as active (missing coverage),
   - a consumer's seal hash differs from the feed's hash for that key and instance,
   - two consumers built different market payloads from the same seal and frame
     specification, or a consumer audited a key the feed never sealed.
@@ -181,27 +182,35 @@ for label, recs in audits.items():
     if not recs:
         continue
     keys = sorted(recs)
-    cadences = set()
     started = None
     for f in recs.values():
-        for c in f.get("cadences", "none").split(","):
-            if c.isdigit():
-                cadences.add(int(c))
         if f.get("at", "").isdigit():
             at = int(f["at"])
             started = at if started is None else min(started, at)
-    first, last = keys[0], keys[-1]
-    if lo is not None:
-        first = max(first, lo)
-        last = min(last, hi)
+    runs = defaultdict(list)
+    open_runs = {}
+    for k in keys:
+        active = {int(c) for c in recs[k].get("cadences", "none").split(",") if c.isdigit()}
+        for c in [c for c in open_runs if c not in active]:
+            runs[c].append(open_runs.pop(c))
+        for c in active:
+            if c in open_runs:
+                open_runs[c][1] = k
+            else:
+                open_runs[c] = [k, k]
+    for c, run in open_runs.items():
+        runs[c].append(run)
     expected = set()
-    for c in cadences:
-        if started is not None:
-            start = max((started // c) * c, ((first + c - 1) // c) * c)
-        else:
+    for c, spans in runs.items():
+        for first, last in spans:
+            if lo is not None:
+                first = max(first, lo)
+                last = min(last, hi)
             start = ((first + c - 1) // c) * c
-        for k in range(start, last + 1, c):
-            expected.add(k)
+            if started is not None:
+                start = max(start, (started // c) * c)
+            for k in range(start, last + 1, c):
+                expected.add(k)
     missing = sorted(expected - set(recs))
     if missing:
         failures.append(f"consumer {label}: {len(missing)} expected key(s) missing: {', '.join(map(str, missing[:20]))}{' ...' if len(missing) > 20 else ''}")

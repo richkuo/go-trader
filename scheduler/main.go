@@ -950,6 +950,9 @@ func main() {
 		if len(hlPerpsCoins) > 0 && feedCtx.active() {
 			feedMarks := feedCtx.Snapshot.freshMids()
 			mergePerpsMarks(prices, feedMarks)
+			if feedCtx.SharedKey != 0 {
+				feedCtx.SharedPrices = prices
+			}
 			missing := make([]string, 0, len(hlPerpsCoins))
 			for _, coin := range hlPerpsCoins {
 				if _, ok := prices[coin]; !ok {
@@ -3678,6 +3681,8 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 		degradedKey := entry.Signal
 		if hold := feed.holdFor(*sc); hold.Held {
 			degradedReason, degradedKey = hold.Reason, hold.Key
+		} else if sym := hyperliquidSymbol(sc.Args); feed.sharedMarkMissing(prices, sym) {
+			degradedReason = fmt.Sprintf("no verified mark for %s: the sealed mid is older than %s and the REST mark fallback returned none", sym, feedMidStaleAfter)
 		} else if blob, err := feed.singleCheckPayload(*sc); err != nil {
 			degradedReason = err.Error()
 		} else {

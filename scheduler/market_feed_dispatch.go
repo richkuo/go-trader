@@ -17,6 +17,7 @@ type marketFeedContext struct {
 	Snapshot     *marketSnapshot
 	Interval     int
 	SharedKey    int64
+	SharedPrices map[string]float64
 }
 
 func (c *marketFeedContext) logSharedPayload(kind, owner string, specs []marketPayloadFrameSpec, coins []string, payload *marketPayload) {
@@ -40,6 +41,21 @@ func (c *marketFeedContext) logSharedPayload(kind, owner string, specs []marketP
 
 func (c *marketFeedContext) active() bool {
 	return c != nil && c.Enabled && c.Snapshot != nil
+}
+
+func (c *marketFeedContext) sharedMarkMissing(prices map[string]float64, symbol string) bool {
+	if c == nil || c.SharedKey == 0 {
+		return false
+	}
+	px, ok := prices[symbol]
+	return !ok || px <= 0
+}
+
+func (c *marketFeedContext) manualCheckPrices() map[string]float64 {
+	if c == nil || c.SharedKey == 0 {
+		return nil
+	}
+	return c.SharedPrices
 }
 
 func (c *marketFeedContext) entryFor(id string) (feedStrategyRequirement, bool) {

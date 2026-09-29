@@ -433,6 +433,10 @@ func runHyperliquidBatchGroups(inputs []hlBatchGroupInput, cfg *Config, notifier
 			continue
 		}
 		var market *marketPayload
+		if feed.active() && feed.SharedKey != 0 && in.MarkPrice <= 0 {
+			logf("[WARN] hl-batch %s: no verified mark for the shared cycle; members fall back to their own checks", in.Key)
+			continue
+		}
 		if feed.active() {
 			built, err := feed.batchPayload(in.Key, in.Members)
 			if err != nil {

@@ -1038,7 +1038,7 @@ func runManualCloseEval(sc StrategyConfig, ss *StrategyState, cfg *Config, notif
 	}
 
 	posCtx := positionCtxForCheck(sc, pos, cfg.Regime)
-	result, _, price, ok := runHyperliquidCheck(&sc, nil, posCtx, cfg.Regime, resolveATRMethod(sc, cfg), notifier, logger, nil, feed)
+	result, _, price, ok := runHyperliquidCheck(&sc, feed.manualCheckPrices(), posCtx, cfg.Regime, resolveATRMethod(sc, cfg), notifier, logger, nil, feed)
 	if !ok {
 		return 0, 0, false
 	}
