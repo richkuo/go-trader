@@ -56,7 +56,9 @@ Subcommands:
         stopped unit stays stopped. When a config changed after its switch
         (for example a fold), only market_feed and shared_market_feed are
         reverted. --all covers the current consumers and every unit with a
-        switch not rolled back, then stops and disables both feed units.
+        switch not rolled back, then stops and disables both feed units and
+        journals a reset: feeds, calibrate and verify must pass again before
+        the next switch.
   status
         Prints the journal, the feed units and each recorded consumer.
 
@@ -108,6 +110,17 @@ journal_add() {
 journal_last() {
     [[ -f "$JOURNAL" ]] || return 0
     grep -E -- "^$1( |$)" "$JOURNAL" | tail -n 1 || true
+}
+
+journal_stage() {
+    [[ -f "$JOURNAL" ]] || return 0
+    awk -v p="$1" 'index($0, "reset ") == 1 { last = ""; next } index($0, p " ") == 1 || $0 == p { last = $0 } END { if (last != "") print last }' "$JOURNAL"
+}
+
+reset_note() {
+    if [[ -n "$(journal_last "$1")" && -z "$(journal_stage "$1")" ]]; then
+        printf '; rollback --all stopped the feeds after the last one, so run it again'
+    fi
 }
 
 journal_field() {
@@ -346,7 +359,7 @@ unit_journal() {
 http_to_file() {
     local url="$1" out="$2" token="${3:-}"
     if [[ -n "$token" ]]; then
-        curl -sS -m 5 -o "$out" -H "Authorization: Bearer $token" "$url" 2>/dev/null
+        printf 'Authorization: Bearer %s\n' "$token" | curl -sS -m 5 -o "$out" -H @- "$url" 2>/dev/null
     else
         curl -sS -m 5 -o "$out" "$url" 2>/dev/null
     fi
@@ -646,11 +659,14 @@ cmd_feeds() {
         local envfile
         envfile=$(update_systemd_envfile_check_path "$(unit_prop "${CONSUMERS[0]}" EnvironmentFiles)")
         if [[ ! -f "$dir/.env" ]]; then
-            if [[ -n "$envfile" && -f "$envfile" ]]; then
-                grep -E '^(export[[:space:]]+)?(DISCORD_|TELEGRAM_)' "$envfile" >"$dir/.env" || true
-            else
-                : >"$dir/.env"
-            fi
+            (
+                umask 077
+                if [[ -n "$envfile" && -f "$envfile" ]]; then
+                    grep -E '^(export[[:space:]]+)?(DISCORD_|TELEGRAM_)' "$envfile" >"$dir/.env" || true
+                else
+                    : >"$dir/.env"
+                fi
+            )
             chmod 0600 "$dir/.env"
         fi
         log "building $dir from $first_wd"
@@ -669,7 +685,7 @@ cmd_feeds() {
             || die 23 "$(feed_unit "$name") did not seal a key; see $(update_journalctl_unit_command "$(feed_unit "$name")" go-trader)"
     done
     keys=$(run_probe_live primary | grep -c '^probe: key ' || true)
-    journal_add "feeds ready keys=$keys"
+    journal_add "feeds ready keys=$keys at=$(date -u +%s)"
     [[ -n "$(journal_last "consumers-set")" ]] || journal_add "consumers-set units=$(IFS=,; echo "${CONSUMERS[*]}") at=$(date -u +%s)"
     log "feeds OK: both feeds seal from shadow configs; no consumer changed. Next: calibrate"
 }
@@ -744,7 +760,7 @@ wait_feed_loaded() {
 cmd_consumers() {
     need_root
     need_tools
-    [[ -n "$(journal_last "feeds ready")" ]] || die 20 "run 'feeds' first"
+    [[ -n "$(journal_stage "feeds ready")" ]] || die 20 "run 'feeds' first$(reset_note "feeds ready")"
     check_selection "${SELECTED[@]}"
     [[ "$(source_fingerprint "$(feed_dir primary)")" == "$(source_fingerprint "$(unit_prop "${CONSUMERS[0]}" WorkingDirectory)")" ]] \
         || die 14 "the consumers run a different scheduler source than the feeds; update every deployment with update.sh --all --restart first"
@@ -842,7 +858,7 @@ calibrate_fail() {
 
 cmd_calibrate() {
     need_root
-    [[ -n "$(journal_last "feeds ready")" ]] || die 20 "run 'feeds' first"
+    [[ -n "$(journal_stage "feeds ready")" ]] || die 20 "run 'feeds' first$(reset_note "feeds ready")"
     local port window cad sampled=0 peak=0 used refused_before refused bootstrap per_minute startup cap_peak="" cap_cold=""
     port=$(feed_port backup)
     cad=$(max_cadence)
@@ -893,7 +909,7 @@ cmd_calibrate() {
     systemctl kill -s HUP "$(feed_unit backup)"
     sleep 5
     [[ "$(health_get "$port" request_budget.per_minute)" == "$per_minute" ]] || calibrate_fail "the backup did not apply per_minute $per_minute after SIGHUP"
-    journal_add "budget calibrated per_minute=$per_minute startup=$startup peak=$peak bootstrap=$bootstrap baseline_peak=${cap_peak:-none} fixed=$([[ -n "$OPT_PER_MINUTE" ]] && echo yes || echo no)"
+    journal_add "budget calibrated per_minute=$per_minute startup=$startup peak=$peak bootstrap=$bootstrap baseline_peak=${cap_peak:-none} fixed=$([[ -n "$OPT_PER_MINUTE" ]] && echo yes || echo no) at=$(date -u +%s)"
     guard_clear
     log "calibrate OK: per_minute=$per_minute startup=$startup (measured peak $peak, bootstrap $bootstrap). Next: verify"
 }
@@ -918,13 +934,13 @@ PY
 }
 
 budget_calibrated() {
-    [[ "$(journal_last "budget")" == "budget calibrated "* ]]
+    [[ "$(journal_stage "budget")" == "budget calibrated "* ]]
 }
 
 cmd_verify() {
     need_root
-    [[ -n "$(journal_last "feeds ready")" ]] || die 20 "run 'feeds' first"
-    budget_calibrated || die 20 "the backup request budget is still provisional; run 'calibrate' first"
+    [[ -n "$(journal_stage "feeds ready")" ]] || die 20 "run 'feeds' first$(reset_note "feeds ready")"
+    budget_calibrated || die 20 "the backup request budget is not calibrated; run 'calibrate' first$(reset_note budget)"
     local name port rc
     for name in "${FEEDS[@]}"; do
         port=$(feed_port "$name")
@@ -1112,8 +1128,8 @@ cmd_switch() {
     [[ ${#SELECTED[@]} -eq 1 ]] || die 2 "switch takes exactly one --consumer <unit>"
     local unit="${SELECTED[0]}"
     [[ "$unit" == *.service ]] || unit="${unit}.service"
-    [[ -n "$(journal_last "verify pass")" ]] || die 20 "run 'verify' first"
-    budget_calibrated || die 20 "the backup request budget is still provisional; run 'calibrate' first"
+    [[ -n "$(journal_stage "verify pass")" ]] || die 20 "run 'verify' first$(reset_note "verify pass")"
+    budget_calibrated || die 20 "the backup request budget is not calibrated; run 'calibrate' first$(reset_note budget)"
     local crec cfg shadow srec
     crec=$(journal_last "consumer $unit")
     [[ -n "$crec" ]] && in_current_consumers "$unit" || die 20 "$unit is not a current consumer; add it with 'consumers' (or 'feeds') first"
@@ -1263,6 +1279,7 @@ cmd_rollback() {
     [[ $failed -eq 0 ]] || die 30 "at least one consumer could not be restored; see the warnings above"
     if [[ "$OPT_ALL" == "1" ]]; then
         local name
+        journal_add "reset rollback_all at=$(date -u +%s)"
         for name in "${FEEDS[@]}"; do
             systemctl disable --now "$(feed_unit "$name")" >/dev/null 2>&1 || true
             journal_add "feed $name stopped_disabled at=$(date -u +%s)"
