@@ -13,6 +13,10 @@ func runProbe(args []string) int {
 		return 2
 	}
 
+	if role, roleErr := peekConfigRole(*configPath); roleErr == nil && role == configRoleFeed {
+		return runFeedProbe(*configPath)
+	}
+
 	cfg, err := LoadConfigForProbe(*configPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "probe: failed to load config %s: %v\n", *configPath, err)

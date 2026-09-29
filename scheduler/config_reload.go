@@ -446,6 +446,17 @@ func validateHotReloadCompatible(cfg, next *Config) error {
 	if cfg.marketFeedMode() != next.marketFeedMode() {
 		errs = append(errs, fmt.Sprintf("market_feed changed (%q -> %q; restart required)", cfg.marketFeedMode(), next.marketFeedMode()))
 	}
+	if strings.TrimSpace(cfg.Role) != strings.TrimSpace(next.Role) {
+		errs = append(errs, fmt.Sprintf("role changed (%q -> %q; restart required)", cfg.Role, next.Role))
+	}
+	curPrimary, curBackup := cfg.sharedMarketFeedSockets()
+	nextPrimary, nextBackup := next.sharedMarketFeedSockets()
+	if curPrimary != nextPrimary {
+		errs = append(errs, fmt.Sprintf("shared_market_feed.primary_socket changed (%q -> %q; restart required)", curPrimary, nextPrimary))
+	}
+	if curBackup != nextBackup {
+		errs = append(errs, fmt.Sprintf("shared_market_feed.backup_socket changed (%q -> %q; restart required)", curBackup, nextBackup))
+	}
 	if cfg.ReplayLogPath != next.ReplayLogPath {
 		errs = append(errs, fmt.Sprintf("replay_log_path changed (%q -> %q; restart required)", cfg.ReplayLogPath, next.ReplayLogPath))
 	}

@@ -101,6 +101,10 @@ func main() {
 		os.Exit(2)
 	}
 
+	if role, roleErr := peekConfigRole(*configPath); roleErr == nil && role == configRoleFeed {
+		os.Exit(runFeedRole(*configPath, *statusPortFlag, *once, *summary, *leaderboard))
+	}
+
 	cfg, err := LoadConfig(*configPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
@@ -625,10 +629,26 @@ func main() {
 	fmt.Println("Option pricers ready (deribit: live API, ibkr: Black-Scholes)")
 
 	websocketFeed := cfg.marketFeedWebsocketEnabled()
+	sharedFeed := cfg.marketFeedSharedEnabled()
+	deadlineFeed := cfg.marketFeedDeadlineScheduled()
 	fmt.Println(marketFeedStartupLine(cfg))
 	var feedOwner *marketFeedOwner
 	var feedReq feedRequirements
+	var sharedClient *sharedFeedClient
 	lastEvaluated := make(map[string]feedEvaluationMark)
+	if sharedFeed {
+		derived, ferr := deriveFeedRequirements(cfg)
+		if ferr != nil {
+			fmt.Fprintf(os.Stderr, "[feed] CRITICAL: %v\n", ferr)
+			sendStartupRefusalDM(notifier, "Market feed", ferr.Error())
+			cleanupNotifier()
+			os.Exit(1)
+		}
+		feedReq = derived
+		sharedClient = newSharedFeedClient(cfg)
+		globalMarketFeedStatus.setShared(sharedClient)
+		checkSharedFeedCoverage(sharedClient, "startup", feedReq, feedConsumerCadences(cfg), notifier)
+	}
 	if websocketFeed {
 		derived, ferr := deriveFeedRequirements(cfg)
 		if ferr != nil {
@@ -682,6 +702,16 @@ func main() {
 
 		diagWorker.UpdateStrategies(cfg.Strategies)
 
+		if sharedFeed && sharedClient != nil {
+			nextReq, reqErr := deriveFeedRequirements(cfg)
+			if reqErr != nil {
+				fmt.Fprintf(os.Stderr, "[reload] ERROR: market feed requirements rejected; keeping the previous requirements: %v\n", reqErr)
+			} else {
+				feedReq = nextReq
+				fmt.Printf("[reload] shared market feed requirements refreshed (%d keys); each seal is checked against them\n", len(nextReq.Order))
+				checkSharedFeedCoverage(sharedClient, "reload", feedReq, feedConsumerCadences(cfg), notifier)
+			}
+		}
 		if websocketFeed && feedOwner != nil {
 			nextReq, reqErr := deriveFeedRequirements(cfg)
 			if reqErr != nil {
@@ -777,9 +807,17 @@ func main() {
 		intervals := effectiveStrategyIntervals(cfg.Strategies, state.Strategies, cfg.IntervalSeconds, drawdownWarnThresholdPct)
 		mu.RUnlock()
 
-		dueStrategies, evaluationMarks, zeroCapitalSkipped := computeDueSet(cycleStart, cfg, intervals, lastRun, lastEvaluated, websocketFeed)
+		dueStrategies, evaluationMarks, zeroCapitalSkipped := computeDueSet(cycleStart, cfg, intervals, lastRun, lastEvaluated, deadlineFeed)
 		for _, id := range zeroCapitalSkipped {
 			fmt.Printf("[ERROR] %s: capital_pct set but capital resolved to $0 — skipping\n", id)
+		}
+		var sharedDeadline time.Time
+		if sharedFeed {
+			var deferred int
+			dueStrategies, evaluationMarks, sharedDeadline, deferred = splitDueByDeadline(dueStrategies, evaluationMarks)
+			if deferred > 0 {
+				fmt.Printf("[feed] shared cycle key=%d: %d strategies on a later deadline run in their own cycle next\n", sharedDeadline.Unix(), deferred)
+			}
 		}
 		for _, line := range feedCycleEvaluationSummary(evaluationMarks) {
 			fmt.Println(line)
@@ -802,7 +840,7 @@ func main() {
 					offCycleAuditSaveDirty = flushOffCycleLiquidationAuditState(state, cfg, store, &mu, mutations, offCycleAuditSaveDirty, false)
 					continue
 				}
-				delay := cycleSchedulerDelay(cfg, intervals, lastRun, lastEvaluated, time.Now(), tickSeconds, websocketFeed)
+				delay := cycleSchedulerDelay(cfg, intervals, lastRun, lastEvaluated, time.Now(), tickSeconds, deadlineFeed)
 				if wait := time.Until(lastLiquidationAudit.Add(time.Duration(audSec) * time.Second)); wait < delay {
 					delay = wait
 				}
@@ -824,7 +862,7 @@ func main() {
 					return
 				}
 			}
-			delay := cycleSchedulerDelay(cfg, intervals, lastRun, lastEvaluated, time.Now(), tickSeconds, websocketFeed)
+			delay := cycleSchedulerDelay(cfg, intervals, lastRun, lastEvaluated, time.Now(), tickSeconds, deadlineFeed)
 			timer := time.NewTimer(delay)
 			select {
 			case <-timer.C:
@@ -849,8 +887,24 @@ func main() {
 		futuresSymbols := collectFuturesMarkSymbols(cfg.Strategies)
 		hlPerpsCoins, okxPerpsCoins := collectPerpsMarkSymbols(cfg.Strategies)
 
-		feedCtx := &marketFeedContext{Enabled: websocketFeed, Requirements: feedReq, Interval: cfg.IntervalSeconds}
+		feedCtx := &marketFeedContext{Enabled: deadlineFeed, Requirements: feedReq, Interval: cfg.IntervalSeconds}
 		var cycleFeedReqs cycleMarketRequirements
+		if sharedFeed && sharedClient != nil && len(evaluationMarks) > 0 {
+			cycleFeedReqs = cycleRequirementsForDue(dueStrategies, feedReq)
+			sharedKey := sharedDeadline.Unix()
+			snap, report := sharedClient.Fetch(shutdownReadOnlyCtx, sharedKey, cycleFeedReqs)
+			feedCtx.Snapshot = snap
+			feedCtx.SharedKey = sharedKey
+			globalMarketFeedStatus.setSnapshotID(snap.EvaluationID)
+			fmt.Println(sharedFeedAuditLine(report, len(evaluationMarks), feedEffectiveCadences(cfg, intervals)))
+			for _, alert := range report.Alerts {
+				fmt.Println("[feed] " + alert)
+				if notifier != nil && notifier.HasBackends() {
+					notifier.SendToAllChannels(alert)
+					notifier.SendOwnerDM(alert)
+				}
+			}
+		}
 		if websocketFeed && feedOwner != nil {
 			cycleFeedReqs = cycleRequirementsForDue(dueStrategies, feedReq)
 			evalID := cycleEvaluationID(evaluationMarks, cycle)
@@ -898,6 +952,9 @@ func main() {
 					fmt.Printf("[WARN] HL perps marks REST fallback failed for %v: %v — portfolio notional will use entry cost for those coins\n", missing, err)
 				} else {
 					mergePerpsMarks(prices, restMarks)
+					if feedCtx.SharedKey != 0 {
+						fmt.Println(sharedFeedMarkFallbackLine(feedCtx.SharedKey, missing, prices))
+					}
 				}
 				for _, coin := range missing {
 					if _, ok := prices[coin]; !ok {
@@ -1941,7 +1998,7 @@ func main() {
 						logger.Info("Circuit breaker latched — suppressing new entries but continuing trailing-SL/TP management for open position (#1046)")
 					} else {
 						logger.Close()
-						markStrategyEvaluated(sc, websocketFeed, evaluationMarks, lastRun, lastEvaluated, time.Now())
+						markStrategyEvaluated(sc, deadlineFeed, evaluationMarks, lastRun, lastEvaluated, time.Now())
 						continue
 					}
 				}
@@ -1949,7 +2006,7 @@ func main() {
 				if notionalCapSkipsStrategyCycle(sr.NotionalBlocked) {
 					logger.Warn("Notional cap exceeded — skipping strategy cycle")
 					logger.Close()
-					markStrategyEvaluated(sc, websocketFeed, evaluationMarks, lastRun, lastEvaluated, time.Now())
+					markStrategyEvaluated(sc, deadlineFeed, evaluationMarks, lastRun, lastEvaluated, time.Now())
 					continue
 				}
 
@@ -2952,7 +3009,7 @@ func main() {
 				logger.InfoOrDebug(trades > 0 || statusChanged, "%s", statusLine)
 
 				logger.Close()
-				markStrategyEvaluated(sc, websocketFeed, evaluationMarks, lastRun, lastEvaluated, time.Now())
+				markStrategyEvaluated(sc, deadlineFeed, evaluationMarks, lastRun, lastEvaluated, time.Now())
 			}
 			if hlCycle != nil {
 				mu.RLock()
@@ -3161,7 +3218,7 @@ func main() {
 		mu.RLock()
 		endIntervals := effectiveStrategyIntervals(cfg.Strategies, state.Strategies, cfg.IntervalSeconds, drawdownWarnThresholdPct)
 		mu.RUnlock()
-		delay := cycleSchedulerDelay(cfg, endIntervals, lastRun, lastEvaluated, time.Now(), tickSeconds, websocketFeed)
+		delay := cycleSchedulerDelay(cfg, endIntervals, lastRun, lastEvaluated, time.Now(), tickSeconds, deadlineFeed)
 		timer := time.NewTimer(delay)
 		select {
 		case <-timer.C:

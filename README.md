@@ -99,7 +99,7 @@ flowchart TB
             PROT["Protection<br/>on-chain SL/TP, trailing,<br/>liquidation clamp"]
             RECON["Reconciliation<br/>shared wallet, cashflow, fills"]
             MIRROR["Replay mirror<br/>live decisions to paper"]
-            FEED["Market feed (market_feed=websocket)<br/>one HL websocket, history repair,<br/>sealed per-evaluation snapshot"]
+            FEED["Market feed (market_feed=websocket, or shared from a role=feed service over a Unix socket)<br/>one HL websocket, history repair,<br/>sealed per-evaluation snapshot"]
             OPS["Operator surfaces<br/>Discord bot, loopback dashboard,<br/>owner DMs"]
         end
         subgraph Py["One-shot Python subprocesses (per cycle)"]

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -15,6 +16,26 @@ type marketFeedContext struct {
 	Requirements feedRequirements
 	Snapshot     *marketSnapshot
 	Interval     int
+	SharedKey    int64
+}
+
+func (c *marketFeedContext) logSharedPayload(kind, owner string, specs []marketPayloadFrameSpec, coins []string, payload *marketPayload) {
+	if c == nil || c.SharedKey == 0 || payload == nil {
+		return
+	}
+	blob, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	frames := make([]string, 0, len(specs))
+	for _, spec := range specs {
+		frames = append(frames, fmt.Sprintf("%s:%d", spec.Key.PayloadID(), spec.Required))
+	}
+	sort.Strings(frames)
+	cs := append([]string(nil), coins...)
+	sort.Strings(cs)
+	fmt.Printf("[feed-payload] key=%d kind=%s owner=%s frames=%s coins=%s sha256=%s bytes=%d\n",
+		c.SharedKey, kind, owner, strings.Join(frames, ","), strings.Join(cs, ","), feedSealHash(blob), len(blob))
 }
 
 func (c *marketFeedContext) active() bool {
@@ -61,6 +82,7 @@ func (c *marketFeedContext) singleCheckPayload(sc StrategyConfig) ([]byte, error
 	if err != nil {
 		return nil, err
 	}
+	c.logSharedPayload("single", sc.ID, specs, []string{coin}, payload)
 	return marketStdinJSON(payload)
 }
 
@@ -100,15 +122,22 @@ func (c *marketFeedContext) batchPayload(key hlBatchKey, members []StrategyConfi
 	for i := range specs {
 		specs[i].Required = seen[specs[i].Key]
 	}
-	return marketPayloadFor(c.Snapshot, specs, []string{key.Symbol})
+	payload, err := marketPayloadFor(c.Snapshot, specs, []string{key.Symbol})
+	if err != nil {
+		return nil, err
+	}
+	c.logSharedPayload("batch", key.String(), specs, []string{key.Symbol}, payload)
+	return payload, nil
 }
 
 func (c *marketFeedContext) regimeBundlePayload(req regimeBundleRequest) ([]byte, error) {
 	key := feedKeyFor(req.Key.Symbol, req.Key.Timeframe)
-	payload, err := marketPayloadFor(c.Snapshot, []marketPayloadFrameSpec{{Key: key, Required: req.OhlcvLimit}}, nil)
+	specs := []marketPayloadFrameSpec{{Key: key, Required: req.OhlcvLimit}}
+	payload, err := marketPayloadFor(c.Snapshot, specs, nil)
 	if err != nil {
 		return nil, err
 	}
+	c.logSharedPayload("regime", req.Key.Symbol+"|"+req.Key.Timeframe, specs, nil, payload)
 	return marketStdinJSON(payload)
 }
 

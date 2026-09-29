@@ -283,6 +283,8 @@ REFUSE_ON_DIFFERENCE = [
     "user_defaults",
     "default_stop_loss_atr_mult",
     "market_feed",
+    "shared_market_feed",
+    "role",
     "notify_tp_sl_fills",
     "notify_ratchet_triggers",
     "platforms",
@@ -353,6 +355,8 @@ def root_value(cfg, key):
     v = cfg.get(key)
     if key == "market_feed":
         return (v or "").strip() or "rest"
+    if key == "role":
+        return (v or "").strip() or "scheduler"
     return v
 
 def dump_root(cfg, key):

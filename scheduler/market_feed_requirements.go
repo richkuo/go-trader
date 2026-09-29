@@ -196,7 +196,7 @@ func deriveFeedRequirements(cfg *Config) (feedRequirements, error) {
 	}
 	if len(errs) > 0 {
 		sort.Strings(errs)
-		return feedRequirements{}, fmt.Errorf("market_feed=websocket rejects this config:\n  %s", strings.Join(errs, "\n  "))
+		return feedRequirements{}, fmt.Errorf("market_feed=%s rejects this config:\n  %s", cfg.marketFeedMode(), strings.Join(errs, "\n  "))
 	}
 	hlCoins, _ := collectPerpsMarkSymbols(cfg.Strategies)
 	req.MidCoins = hlCoins
@@ -210,12 +210,24 @@ func validateMarketFeedConfig(cfg *Config) error {
 	}
 	switch cfg.marketFeedMode() {
 	case marketFeedREST:
+		if errs := sharedMarketFeedConfigErrors(cfg); len(errs) > 0 {
+			return fmt.Errorf("%s", strings.Join(errs, "; "))
+		}
 		return nil
 	case marketFeedWebsocket:
+		if errs := sharedMarketFeedConfigErrors(cfg); len(errs) > 0 {
+			return fmt.Errorf("%s", strings.Join(errs, "; "))
+		}
+		_, err := deriveFeedRequirements(cfg)
+		return err
+	case marketFeedShared:
+		if errs := sharedMarketFeedConfigErrors(cfg); len(errs) > 0 {
+			return fmt.Errorf("%s", strings.Join(errs, "; "))
+		}
 		_, err := deriveFeedRequirements(cfg)
 		return err
 	default:
-		return fmt.Errorf("market_feed must be %q or %q, got %q", marketFeedREST, marketFeedWebsocket, cfg.MarketFeed)
+		return fmt.Errorf("market_feed must be %q, %q or %q, got %q", marketFeedREST, marketFeedWebsocket, marketFeedShared, cfg.MarketFeed)
 	}
 }
 

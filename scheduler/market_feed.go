@@ -752,6 +752,7 @@ type marketFeedHealth struct {
 	Metrics      feedMetrics           `json:"metrics"`
 	Keys         []marketFeedHealthKey `json:"keys"`
 	Mids         []marketFeedHealthMid `json:"mids,omitempty"`
+	Shared       *sharedFeedStatus     `json:"shared,omitempty"`
 }
 
 type marketFeedHealthKey struct {
@@ -823,7 +824,14 @@ func (o *marketFeedOwner) Health(lastSnapshotID string) marketFeedHealth {
 type marketFeedStatusHolder struct {
 	statusMu   sync.Mutex
 	owner      *marketFeedOwner
+	shared     *sharedFeedClient
 	snapshotID string
+}
+
+func (h *marketFeedStatusHolder) setShared(client *sharedFeedClient) {
+	h.statusMu.Lock()
+	defer h.statusMu.Unlock()
+	h.shared = client
 }
 
 var globalMarketFeedStatus = &marketFeedStatusHolder{}
@@ -847,6 +855,13 @@ func (h *marketFeedStatusHolder) read() (*marketFeedOwner, string) {
 }
 
 func marketFeedStatusBlock() *marketFeedHealth {
+	globalMarketFeedStatus.statusMu.Lock()
+	shared := globalMarketFeedStatus.shared
+	sharedID := globalMarketFeedStatus.snapshotID
+	globalMarketFeedStatus.statusMu.Unlock()
+	if shared != nil {
+		return &marketFeedHealth{Mode: marketFeedShared, LastSnapshot: sharedID, Keys: []marketFeedHealthKey{}, Shared: shared.status()}
+	}
 	owner, snapshotID := globalMarketFeedStatus.read()
 	if owner == nil {
 		return &marketFeedHealth{Mode: marketFeedREST}

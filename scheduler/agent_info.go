@@ -24,7 +24,7 @@ type agentCommand struct {
 }
 
 var agentInfoCommands = []agentCommand{
-	{Name: "(daemon)", Summary: "Run the scheduler loop (default when no subcommand is given).", Usage: "go-trader [--config <path>] [--once] [--summary <channel>] [--leaderboard] [--status-port <n>]", Flags: []string{"--config", "--once", "--summary", "--leaderboard", "--status-port"}},
+	{Name: "(daemon)", Summary: "Run the scheduler loop (default when no subcommand is given), or the market feed service when the config sets role=feed.", Usage: "go-trader [--config <path>] [--once] [--summary <channel>] [--leaderboard] [--status-port <n>]", Flags: []string{"--config", "--once", "--summary", "--leaderboard", "--status-port"}},
 	{Name: "agent-info", Summary: "Emit this self-describing capability + runtime-state report.", Usage: "go-trader agent-info [--config <path>] [--bootstrap-md] [--append-changelog] [--output <path>]", Flags: []string{"--config", "--bootstrap-md", "--append-changelog", "--output"}},
 	{Name: "init", Summary: "Generate a config.json interactively or from JSON.", Usage: "go-trader init [--json <json>] [--output <path>]"},
 	{Name: "export", Summary: "Export trade history (e.g. TradingView CSV).", Usage: "go-trader export tradingview [...]"},
@@ -37,7 +37,7 @@ var agentInfoCommands = []agentCommand{
 	{Name: "manual-update-sl", Summary: "Move the stop-loss trigger on a manual position.", Usage: "go-trader manual-update-sl <strategy-id> --trigger N [--symbol Y] [--dry-run]"},
 	{Name: "manual-cancel-sl", Summary: "Cancel the resting stop-loss on a manual position.", Usage: "go-trader manual-cancel-sl <strategy-id> [--symbol Y] [--dry-run]"},
 	{Name: "backfill", Summary: "Backfill derived data (trade-ledger fees/PnL, HL fees).", Usage: "go-trader backfill <trade-ledger|hl-fees> [...]"},
-	{Name: "probe", Summary: "Run startup probes against the configured check scripts.", Usage: "go-trader probe [--config <path>]"},
+	{Name: "probe", Summary: "Run startup probes against the configured check scripts (a role=feed config loads its consumer configs instead).", Usage: "go-trader probe [--config <path>]"},
 	{Name: "inspect", Summary: "Print a strategy's effective (post-migration, post-default) config.", Usage: "go-trader inspect [--config <path>] [--json] <strategy-id>|--all"},
 	{Name: "storage-inspect", Summary: "Read-only ownership report for every state file: strategy mapping, orphans, risk-row scopes, held locks. Writes nothing.", Usage: "go-trader storage-inspect [--config <path>] [--json] [--require-idle]", Flags: []string{"--config", "--json", "--require-idle"}},
 	{Name: "diagnostics", Summary: "Read-only per-strategy trade-quality report (MFE/MAE/capture ratio) with backtestable tuning hypotheses (#1147).", Usage: "go-trader diagnostics [--config <path>] [--db <path>] [--strategy <id>] [--min-trades N] [--min-bucket N]", Flags: []string{"--config", "--db", "--strategy", "--min-trades", "--min-bucket"}},
@@ -145,6 +145,16 @@ type agentInfo struct {
 	StateDB      []agentTable        `json:"state_db_schema"`
 	LiveState    agentLiveState      `json:"live_state"`
 	Strategies   []agentStrategyInfo `json:"strategies"`
+	Role         string              `json:"role"`
+	Feed         *agentFeedInfo      `json:"feed,omitempty"`
+}
+
+type agentFeedInfo struct {
+	Source          string   `json:"source"`
+	SocketPath      string   `json:"socket_path"`
+	StatusPort      int      `json:"status_port"`
+	ConsumerConfigs []string `json:"consumer_configs"`
+	Note            string   `json:"note"`
 }
 
 func runAgentInfo(args []string) int {
@@ -157,18 +167,27 @@ func runAgentInfo(args []string) int {
 		return 2
 	}
 
-	cfg, err := func() (*Config, error) {
-		realStdout := os.Stdout
-		defer func() { os.Stdout = realStdout }()
-		os.Stdout = os.Stderr
-		return loadConfigSnapshot(*configPath)
-	}()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "agent-info: warning: could not load config %s: %v\n", *configPath, err)
-		cfg = nil
+	var info agentInfo
+	if role, roleErr := peekConfigRole(*configPath); roleErr == nil && role == configRoleFeed {
+		feedCfg, err := loadFeedRoleConfig(*configPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "agent-info: warning: could not load feed config %s: %v\n", *configPath, err)
+			feedCfg = nil
+		}
+		info = buildFeedAgentInfo(feedCfg, Version, time.Now().UTC())
+	} else {
+		cfg, err := func() (*Config, error) {
+			realStdout := os.Stdout
+			defer func() { os.Stdout = realStdout }()
+			os.Stdout = os.Stderr
+			return loadConfigSnapshot(*configPath)
+		}()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "agent-info: warning: could not load config %s: %v\n", *configPath, err)
+			cfg = nil
+		}
+		info = buildAgentInfo(cfg, Version, time.Now().UTC())
 	}
-
-	info := buildAgentInfo(cfg, Version, time.Now().UTC())
 
 	if *bootstrapMD {
 		md := renderAgentInfoMarkdown(info)
@@ -210,6 +229,28 @@ func loadConfigSnapshot(path string) (*Config, error) {
 	return LoadConfig(tmpPath)
 }
 
+func buildFeedAgentInfo(cfg *Config, version string, now time.Time) agentInfo {
+	info := agentInfo{
+		Version:      version,
+		GeneratedAt:  now.Format(time.RFC3339),
+		Capabilities: agentInfoCommands,
+		ConfigSchema: reflectConfigSchema(),
+		EnvVars:      resolveEnvVarPresence(agentInfoEnvVars),
+		LiveState:    agentLiveState{Source: "none", Note: "role=feed: a market feed service owns no strategies and no state files"},
+		Role:         configRoleFeed,
+	}
+	if cfg != nil && cfg.Feed != nil {
+		info.Feed = &agentFeedInfo{
+			Source:          cfg.Feed.Source,
+			SocketPath:      cfg.Feed.SocketPath,
+			StatusPort:      cfg.StatusPort,
+			ConsumerConfigs: append([]string{}, cfg.Feed.ConsumerConfigs...),
+			Note:            "Seals one immutable market snapshot per scheduled deadline and serves it to shared-mode schedulers over a Unix socket; probe loads each consumer config read-only and skips check scripts.",
+		}
+	}
+	return info
+}
+
 func buildAgentInfo(cfg *Config, version string, now time.Time) agentInfo {
 	info := agentInfo{
 		Version:      version,
@@ -218,6 +259,7 @@ func buildAgentInfo(cfg *Config, version string, now time.Time) agentInfo {
 		ConfigSchema: reflectConfigSchema(),
 		EnvVars:      resolveEnvVarPresence(agentInfoEnvVars),
 		LiveState:    agentLiveState{Source: "none", Note: "no config loaded"},
+		Role:         configRoleScheduler,
 	}
 
 	if cfg != nil {
@@ -472,6 +514,18 @@ func renderAgentInfoMarkdown(info agentInfo) string {
 	b.WriteString(agentInfoMarkdownHeader)
 	b.WriteString("\n\n# go-trader — agent capabilities\n\n")
 	fmt.Fprintf(&b, "Version: `%s`  ·  Generated: %s\n\n", info.Version, info.GeneratedAt)
+	if info.Role == configRoleFeed {
+		b.WriteString("## Role: market feed service\n\n")
+		if info.Feed == nil {
+			b.WriteString("_The feed config could not be loaded._\n\n")
+		} else {
+			fmt.Fprintf(&b, "- source: `%s`\n- socket: `%s`\n- status port: `%d`\n", info.Feed.Source, info.Feed.SocketPath, info.Feed.StatusPort)
+			for _, c := range info.Feed.ConsumerConfigs {
+				fmt.Fprintf(&b, "- consumer config: `%s`\n", c)
+			}
+			fmt.Fprintf(&b, "\n%s\n\n", info.Feed.Note)
+		}
+	}
 
 	b.WriteString("## Capabilities (CLI subcommands)\n\n")
 	for _, c := range info.Capabilities {

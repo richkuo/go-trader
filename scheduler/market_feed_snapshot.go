@@ -74,6 +74,7 @@ type marketSnapshot struct {
 	SealedAt         time.Time
 	Connected        bool
 	Metrics          feedMetrics
+	Deadline         time.Time
 
 	keys    map[marketFeedKey]*marketSnapshotKey
 	mids    map[string]feedMid
@@ -171,6 +172,11 @@ func sealCycleMarketSnapshot(ctx context.Context, o *marketFeedOwner, reqs cycle
 	if o == nil {
 		return nil
 	}
+	prepareMarketSnapshot(ctx, o, reqs)
+	return freezeMarketSnapshot(o, reqs, evaluationID, now)
+}
+
+func prepareMarketSnapshot(ctx context.Context, o *marketFeedOwner, reqs cycleMarketRequirements) {
 	for _, cr := range reqs.Keys {
 		readiness, tracked := o.readinessFor(cr.Key)
 		if !tracked {
@@ -185,7 +191,9 @@ func sealCycleMarketSnapshot(ctx context.Context, o *marketFeedOwner, reqs cycle
 		}
 	}
 	o.EnsureFunding(ctx, o.earliestFrameBarMs(reqs))
+}
 
+func freezeMarketSnapshot(o *marketFeedOwner, reqs cycleMarketRequirements, evaluationID string, now time.Time) *marketSnapshot {
 	o.feedMu.Lock()
 	defer o.feedMu.Unlock()
 	snap := &marketSnapshot{
@@ -246,7 +254,13 @@ func (s *marketSnapshot) age(now time.Time) time.Duration {
 	if s == nil {
 		return 0
 	}
-	return now.UTC().Sub(s.SealedAt)
+	age := now.UTC().Sub(s.SealedAt)
+	if !s.Deadline.IsZero() {
+		if sinceDeadline := now.UTC().Sub(s.Deadline); sinceDeadline > age {
+			age = sinceDeadline
+		}
+	}
+	return age
 }
 
 func feedDecisionAgeLimit(intervalSeconds int) time.Duration {

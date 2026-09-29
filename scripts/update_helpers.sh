@@ -271,6 +271,31 @@ normalize_systemd_deployment_dirs() {
     done
 }
 
+discover_enabled_inactive_units() {
+    command -v systemctl >/dev/null 2>&1 || return 0
+    local -a globs=()
+    local g
+    while IFS= read -r g; do
+        [[ -n "$g" ]] && globs+=("$g")
+    done < <(update_systemd_unit_globs)
+    local active=$'\n' unit seen=$'\n'
+    while IFS= read -r unit; do
+        [[ -n "$unit" ]] && active="${active}${unit}"$'\n'
+    done < <(systemctl list-units --type=service --state=active --no-legend --plain "${globs[@]}" 2>/dev/null | awk '{print $1}')
+    while IFS= read -r unit; do
+        [[ -n "$unit" ]] || continue
+        [[ "$unit" == *@.service ]] && continue
+        case "$active" in *$'\n'"$unit"$'\n'*) continue ;; esac
+        case "$seen" in *$'\n'"$unit"$'\n'*) continue ;; esac
+        [[ "$(systemctl is-enabled "$unit" 2>/dev/null || true)" == "enabled" ]] || continue
+        seen="${seen}${unit}"$'\n'
+        printf '%s\n' "$unit"
+    done < <(
+        systemctl list-units --type=service --all --no-legend --plain "${globs[@]}" 2>/dev/null | awk '{print $1}'
+        systemctl list-unit-files --type=service --state=enabled --no-legend --plain "${globs[@]}" 2>/dev/null | awk '{print $1}'
+    )
+}
+
 discover_deployment_dirs_from_systemd() {
     command -v systemctl >/dev/null 2>&1 || return 0
     local -a globs=()
@@ -282,7 +307,7 @@ discover_deployment_dirs_from_systemd() {
     local unit
     while IFS= read -r unit; do
         [[ -n "$unit" ]] && units+=("$unit")
-    done < <(systemctl list-units --type=service --state=active --no-legend --plain "${globs[@]}" 2>/dev/null | awk '{print $1}')
+    done < <(systemctl list-units --type=service --state=active --no-legend --plain "${globs[@]}" 2>/dev/null | awk '{print $1}'; discover_enabled_inactive_units)
     [[ ${#units[@]} -gt 0 ]] || return 0
     for unit in "${units[@]}"; do
         systemctl show "$unit" -p WorkingDirectory --value 2>/dev/null
@@ -300,7 +325,7 @@ discover_deployment_unit_map() {
     local unit
     while IFS= read -r unit; do
         [[ -n "$unit" ]] && units+=("$unit")
-    done < <(systemctl list-units --type=service --state=active --no-legend --plain "${globs[@]}" 2>/dev/null | awk '{print $1}')
+    done < <(systemctl list-units --type=service --state=active --no-legend --plain "${globs[@]}" 2>/dev/null | awk '{print $1}'; discover_enabled_inactive_units)
     [[ ${#units[@]} -gt 0 ]] || return 0
     local wd canon
     for unit in "${units[@]}"; do
@@ -309,6 +334,64 @@ discover_deployment_unit_map() {
         canon=$(canonicalize_deployment_dir "$wd")
         printf '%s|%s\n' "$canon" "$unit"
     done
+}
+
+update_convention_unit_for_dir() {
+    local dir="${1%/}" base instance unit wd
+    command -v systemctl >/dev/null 2>&1 || { printf ''; return 0; }
+    base="${dir##*/}"
+    [[ "$base" == go-trader-* ]] || { printf ''; return 0; }
+    instance="${base#go-trader-}"
+    [[ "$(update_validate_instance_name "$instance")" == "ok" ]] || { printf ''; return 0; }
+    unit="go-trader@${instance}.service"
+    if [[ "$(systemctl is-enabled "$unit" 2>/dev/null || true)" != "enabled" ]] && ! systemctl is-active --quiet "$unit" 2>/dev/null; then
+        printf ''
+        return 0
+    fi
+    wd=$(systemctl show "$unit" -p WorkingDirectory --value 2>/dev/null || true)
+    [[ -n "$wd" ]] || { printf ''; return 0; }
+    if [[ "$(canonicalize_deployment_dir "$wd")" == "$(canonicalize_deployment_dir "$dir")" ]]; then
+        printf '%s' "$unit"
+        return 0
+    fi
+    printf ''
+}
+
+update_deployment_role() {
+    update_deployment_role_for_config "${1%/}/scheduler/config.json"
+}
+
+update_deployment_role_for_config() {
+    local config="$1"
+    [[ -f "$config" ]] || { printf 'scheduler'; return 0; }
+    local role
+    role=$(python3 -c '
+import json, sys
+try:
+    cfg = json.load(open(sys.argv[1]))
+    role = cfg.get("role") if isinstance(cfg, dict) else None
+    print(role.strip() if isinstance(role, str) and role.strip() else "scheduler")
+except Exception:
+    print("scheduler")
+' "$config" 2>/dev/null || true)
+    [[ "$role" == "feed" ]] && { printf 'feed'; return 0; }
+    printf 'scheduler'
+}
+
+order_deployments_feeds_first() {
+    local -a feeds=() others=()
+    local d
+    while IFS= read -r d; do
+        [[ -n "$d" ]] || continue
+        if [[ "$(update_deployment_role "$d")" == "feed" ]]; then
+            feeds+=("$d")
+        else
+            others+=("$d")
+        fi
+    done
+    [[ ${#feeds[@]} -gt 0 ]] && printf '%s\n' "${feeds[@]}"
+    [[ ${#others[@]} -gt 0 ]] && printf '%s\n' "${others[@]}"
+    return 0
 }
 
 update_execstart_config_path() {
@@ -378,6 +461,10 @@ update_db_rsync_excludes() {
 # paper_db_file when the split live/paper layout is configured (#1523).
 update_resolve_db_exclude() {
     local db_paths="scheduler/state.db"
+    if [[ "$(update_deployment_role_for_config "${GO_TRADER_UPDATE_CONFIG:-scheduler/config.json}")" == "feed" ]]; then
+        printf '%s\n' "$db_paths"
+        return 0
+    fi
     if [[ -f ${GO_TRADER_UPDATE_CONFIG:-scheduler/config.json} && -x "${GO_TRADER_UPDATE_PYTHON:-.venv/bin/python3}" ]]; then
         local custom
         custom=$("${GO_TRADER_UPDATE_PYTHON:-.venv/bin/python3}" -c '

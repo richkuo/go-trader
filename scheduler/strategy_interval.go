@@ -41,6 +41,19 @@ func effectiveStrategyIntervalSeconds(sc StrategyConfig, s *StrategyState, globa
 	return interval
 }
 
+func feedPossibleIntervals(sc StrategyConfig, globalIntervalSeconds int, warnThresholdPct float64) []int {
+	configured := configuredStrategyIntervalSeconds(sc, globalIntervalSeconds)
+	base := configured
+	if base <= 0 {
+		base = 60
+	}
+	out := []int{base}
+	if sc.MaxDrawdownPct > 0 && warnThresholdPct > 0 && (configured <= 0 || configured > strategyDrawdownFastIntervalSeconds) {
+		out = append(out, strategyDrawdownFastIntervalSeconds)
+	}
+	return out
+}
+
 func effectiveStrategyIntervals(strategies []StrategyConfig, states map[string]*StrategyState, globalIntervalSeconds int, warnThresholdPct float64) map[string]int {
 	out := make(map[string]int, len(strategies))
 	for _, sc := range strategies {
