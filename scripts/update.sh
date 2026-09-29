@@ -682,7 +682,7 @@ if [[ "$update_all" == "1" ]]; then
 fi
 
 if ! command -v uv >/dev/null 2>&1; then
-    fail "uv not on PATH — install uv first (see CLAUDE.md → Setup)"
+    fail "uv not on PATH — install uv first (see SKILL.md → Prerequisites)"
 fi
 
 go_bin=""
@@ -705,7 +705,7 @@ exists). scheduler/config.json is gitignored, so a bare source clone has none
 and the probe phase would later fail without it.
 
 If this IS your deployment directory, copy scheduler/config.example.json to
-scheduler/config.json and fill in API keys (see CLAUDE.md → Setup).
+scheduler/config.json and fill in API keys (see SKILL.md → Configure).
 
 If you moved config out of the tree (#1056), scheduler/config.json should be a
 symlink to e.g. /var/lib/go-trader/<instance>/config.json — recreate it with

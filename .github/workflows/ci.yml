@@ -7,6 +7,38 @@ on:
     types: [opened, synchronize, ready_for_review, reopened]
 
 jobs:
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Agent instructions size and layout
+        run: |
+          fail=0
+          if [ -L AGENTS.md ] || [ ! -f AGENTS.md ]; then
+            echo "::error::AGENTS.md must be a regular file at the repository root."
+            fail=1
+          fi
+          extra=$(git ls-files | grep -E '(^|/)(CLAUDE(\.local)?\.md|AGENTS\.md)$' | grep -vx 'AGENTS.md' || true)
+          if [ -n "$extra" ]; then
+            echo "::error::Agent instructions stay in one root AGENTS.md. Remove these files:"
+            echo "$extra"
+            fail=1
+          fi
+          if [ -f AGENTS.md ] && [ ! -L AGENTS.md ]; then
+            bytes=$(wc -c < AGENTS.md | tr -d ' ')
+            echo "AGENTS.md: $bytes bytes (ceiling 17000, target 16000)"
+            if [ "$bytes" -ge 17000 ]; then
+              echo "::error::AGENTS.md is $bytes bytes, at or above the 17000-byte ceiling. Move mechanism to SKILL.md, shorten wording, drop no guardrail."
+              echo "Bytes per section:"
+              LC_ALL=C awk 'BEGIN{h="(header)"} /^## /{printf "%6d  %s\n",n,h; h=$0; n=0} {n+=length($0)+1} END{printf "%6d  %s\n",n,h}' AGENTS.md
+              fail=1
+            elif [ "$bytes" -gt 16000 ]; then
+              echo "::warning::AGENTS.md is $bytes bytes, above the 16000-byte target. The CI check fails at 17000."
+            fi
+          fi
+          exit $fail
+
   go:
     runs-on: ubuntu-latest
     steps:
