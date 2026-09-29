@@ -1,10 +1,14 @@
 # go-trader
 
-Guardrails only; mechanism/flows in SKILL.md, docs/POST_UPDATE_HISTORY.md. Ceiling 17,000 bytes (CI job `docs` fails at it), target 16,000. Never split: root `CLAUDE.md`, `AGENTS.md` symlink. Shorten wording, drop no guardrail.
+Guardrails only; mechanism/flows in SKILL.md, docs/POST_UPDATE_HISTORY.md. Ceiling 17,000 bytes (CI job `docs` fails at it), target 16,500. Never split: root `CLAUDE.md`, `AGENTS.md` symlink. Shorten wording, drop no guardrail.
 
 ## Env
 - Go 1.26.2 (`/opt/homebrew/bin/go`). Python: `uv run --no-sync python`; scheduler `.venv/bin/python3`; `uv sync` per worktree.
 - systemd: `ProtectSystem=strict`, no `PATH`/`UV_CACHE_DIR` injected, secrets `/opt/go-trader/.env`, config `/var/lib/go-trader[/<instance>]/config.json`; `scheduler/config.json`=transition symlink.
+
+## Priorities
+- **Always the best solution.** Cost/compute/time/effort/code never narrow options; branch+PR, issue-claim vs code, destructive-action safety win.
+- **Never give time/effort estimates.** Complexity=scope+risk
 
 ## Repo (`scheduler/`=one `package main`)
 - `executor.go`/`shutdown.go`: side effects via `runPythonSideEffect`, NEVER `runPython`. Live HL book needs `confirmHyperliquidExecuteFill` (finite `Fill.AvgPx>0`+`TotalSz>0`); `check_hyperliquid.py execute` exits 1 if no fill.
@@ -15,7 +19,7 @@ Guardrails only; mechanism/flows in SKILL.md, docs/POST_UPDATE_HISTORY.md. Ceili
 - `portfolio_scope.go`/`risk_partition.go`: `PortfolioScope` from `isLiveArgs`=SOLE mode classifier; `RiskPartition{Scope,Source}` (`live`/`paper`/`paper:<id>`; `paper_source`=`paper_sources` id, never live)=SOLE risk+storage owner. New surface: `activePartitions`, `filterStatesByPartition`/`strategiesInPartition`, never roster.
 - `state.go`/`db.go`: SQLite-only, idempotent migrations. `AppState.PortfolioRisk`/`CorrelationSnapshot`=per-`RiskPartition` maps, read only via `partitionRisk(IfPresent)`/`partitionCorrelation`; `initial_capital` only via `SetInitialCapital`.
 - `state_store*.go`/`storage_*.go`: identity map immutable; 1 distinct file/partition; lock+save order primary>paper>sources by id. EVERY DB caller via `StateStore` (`dbForStrategy`, live-only `liveFile`); ids translate INSIDE `StateDB`; load maps (file,scope)->partition; diagnostics route by `SourceRole`, NEVER scope. New table=SKILL.md Storage Ownership row. Manual acks by ROW ID in-tx, NEVER high-water mark; book+queued row=ONE tx; failing rows end; unknown ownership errs BEFORE mutation; combined reads fail whole.
-- `merge-paper-instance.sh`: binaries on config COPIES; `inspect`/`storage-inspect`=`LoadConfigReadOnly`; both locks preflight>apply except `--diff` (config-only); `--align-to-live` writes only `.aligned`; compose lists ALL root-key conflicts+refuses; alias always via `paper_alias.py`; `--once`/`--probe-only` never proof; zero paper override inherits. `channels`/`trade_alert_channels` `-paper` keys skip if merged bare key routes there; `dm_channels` `-paper`/`-paper:<id>` NEVER skip; proof refuses a paper DM route the send path disagrees with.
+- `merge-paper-instance.sh`: binaries on config COPIES; `inspect`/`storage-inspect`=`LoadConfigReadOnly`; both locks preflight>apply except `--diff` (config-only); `--align-to-live` writes only `.aligned`; compose lists ALL root-key conflicts+refuses; alias always via `paper_alias.py`; `--once`/`--probe-only` never proof; zero paper override inherits. `channels`/`trade_alert_channels` `-paper` keys skip if merged bare key routes there (=`resolveChannel`); `dm_channels` `-paper`/`-paper:<id>` NEVER skip; proof refuses a paper DM route the send path disagrees with.
 - `risk.go`: `CheckRisk` skips `manual`. Corrupt pos (qty/avgCost<=0)=zero-PnL `*_corrupt` leg, cash untouched. Latch: ONE owner per cycle+partition; `DrawdownReadingSubstituted` always labelled; untrusted over-limit defers, never vetoes. Paper `equityTrusted` always true. `ResetPortfolioKillSwitchManual`=sole DM reset; `AutoResetConfirmedFlatKillSwitch`/`ClearLatchedKillSwitchSharedWallet` `ScopeLive` only.
 - `daily_loss.go`: hold-only, UNLATCHED pure read, PRE-FEE realized PnL, never force-closes, per partition; new `portfolio_risk` gates copy it.
 - `exposure_cap.go`: blocking-only, direction-aware; one exposure model `computeAssetDeltas` (`ComputeCorrelation` too). `notional_cap.go`: hold-only via `pausedBlocksSignal`, never skips cycle, restart-required.
@@ -57,7 +61,8 @@ Guardrails only; mechanism/flows in SKILL.md, docs/POST_UPDATE_HISTORY.md. Ceili
 - Notifications: `MultiNotifier`; paper routes via `resolveChannelKey`. `SendToPartitionChannels`: live=`SendToAllChannels`; paper=own roster (`resolveTradeChannel`, rebuilt on `ReloadConfig`), never suffix scan, `SendToAllChannels` only if empty.
 
 ## PRs and issues
-- Title `type(#<N>): summary [C<score>, <model>, <effort>]`; never bare `#N` in lists. Body: `## Plain simple English` (<55 words), then `## Summary`+verification. Footer `LLM: <model> | <effort> | Harness: <action>`, no `Co-authored-by`.
+- Title `type(#<N>): summary [C<score>, <model>, <effort>]`; never bare `#N` in lists. Body: `## Plain simple English` (<55 words), then `## Summary`+verification.
+- Commits, PR and issue bodies end `LLM: <model> | <effort> | Harness: <action>`, no `Co-authored-by`.
 - Before merging a long-lived PR, diff `origin/main..HEAD` for reverts.
 - Reviews also follow `.github/prompts/pr-review-format-local.md`, never gate on CI; findings restate as invariant, list breaking states (inverse, compound).
 - `.github/workflows/claude.yml`: mode routing fail-closed (untrusted/fork=review); no-execution in agent; commit/push implement-only; prompt never holds `"`, `` ` ``, `$`; `.github/scripts/` keeps ONLY `test_workflow_logic.py`.
