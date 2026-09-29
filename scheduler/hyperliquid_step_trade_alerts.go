@@ -70,6 +70,11 @@ func (a *hlStepTradeAlerts) bindExecuteLocked(before int, execDetail string) {
 }
 
 func (a *hlStepTradeAlerts) finish(mu *sync.RWMutex, notifier tradeAlertRouter, rc *RegimeConfig, logger *StrategyLogger) (int, string) {
+	n, lines := a.finishLines(mu, notifier, rc, logger)
+	return n, strings.Join(lines, "; ")
+}
+
+func (a *hlStepTradeAlerts) finishLines(mu *sync.RWMutex, notifier tradeAlertRouter, rc *RegimeConfig, logger *StrategyLogger) (int, []string) {
 	mu.RLock()
 	n := len(a.ss.TradeHistory)
 	if a.baseline > n {
@@ -77,7 +82,7 @@ func (a *hlStepTradeAlerts) finish(mu *sync.RWMutex, notifier tradeAlertRouter, 
 		if logger != nil {
 			logger.Error("trade-alert interval invariant failure for %s: baseline %d exceeds history length %d; no rows selected", a.sc.ID, a.baseline, n)
 		}
-		return 0, ""
+		return 0, nil
 	}
 	rows := make([]Trade, 0, n-a.baseline)
 	lines := make([]string, 0, n-a.baseline)
@@ -95,10 +100,10 @@ func (a *hlStepTradeAlerts) finish(mu *sync.RWMutex, notifier tradeAlertRouter, 
 	}
 	mu.RUnlock()
 	if len(rows) == 0 {
-		return 0, ""
+		return 0, nil
 	}
 	sendTradeAlertRows(a.sc, rows, notifier, rc)
-	return len(rows), strings.Join(lines, "; ")
+	return len(rows), lines
 }
 
 func hlStepTradeLine(sc StrategyConfig, t Trade) string {

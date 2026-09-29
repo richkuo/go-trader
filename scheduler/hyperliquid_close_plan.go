@@ -675,16 +675,11 @@ func settleManualCycleClose(sc StrategyConfig, stratState *StrategyState, stratD
 	if err := stratDB.InsertPendingManualAction(action); err != nil {
 		logger.Error("failed to queue manual close action: %v", err)
 	} else {
-		trades = 1
 		fillPx = action.FillPrice
-		detail = fmt.Sprintf("manual close %.4f %s @ $%.2f | PnL=$%.2f", action.Quantity, sc.Symbol, action.FillPrice, action.RealizedPnL)
-		logger.Info("Queued manual close: %s", detail)
+		logger.Info("Queued manual close: manual close %.4f %s @ $%.2f | PnL=$%.2f", action.Quantity, sc.Symbol, action.FillPrice, action.RealizedPnL)
 	}
 	if booking.ShortOfIntent && live {
-		if extraTrades, slDetail := rearmAfterSizedClose(sc, stratState, stratDB, sc.Symbol, side, bookQty, hlCloseFillOutcome{Filled: action.Quantity, Known: true}, rearm, mu, notifier, logger); extraTrades > 0 {
-			trades += extraTrades
-			detail = slDetail
-		}
+		trades, detail = rearmAfterSizedClose(sc, stratState, stratDB, sc.Symbol, side, bookQty, hlCloseFillOutcome{Filled: action.Quantity, Known: true}, rearm, mu, notifier, logger)
 	}
 	return trades, detail, fillPx
 }

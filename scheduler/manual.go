@@ -349,6 +349,7 @@ type manualAlert struct {
 	sc     StrategyConfig
 	ss     *StrategyState
 	trades int
+	rows   []Trade
 }
 
 // drainPendingManualActions applies every queued action and records its
@@ -394,6 +395,10 @@ func drainPendingManualActions(state *AppState, cfg *Config, store *StateStore) 
 			}
 			part = livePartition
 		}
+		var historyBefore int
+		if applyState := state.Strategies[a.StrategyID]; applyState != nil {
+			historyBefore = len(applyState.TradeHistory)
+		}
 		actionCriticals, err := applyManualActionWithCriticals(state, cfg, scByID, a)
 		if err != nil {
 			if !manualActionRetryExpired(a, time.Now().UTC()) {
@@ -413,7 +418,8 @@ func drainPendingManualActions(state *AppState, cfg *Config, store *StateStore) 
 		store.recordAppliedManualAction(a.StrategyID, role, a.ID)
 		appliedPartitions[part] = true
 		appliedAny = true
-		if !manualActionRecordsTrade(a.Action) {
+		booked := drainedPublicRows(state.Strategies[a.StrategyID], historyBefore)
+		if len(booked) == 0 {
 			continue
 		}
 		ma := applied[a.StrategyID]
@@ -422,7 +428,8 @@ func drainPendingManualActions(state *AppState, cfg *Config, store *StateStore) 
 			applied[a.StrategyID] = ma
 			order = append(order, a.StrategyID)
 		}
-		ma.trades++
+		ma.rows = append(ma.rows, booked...)
+		ma.trades = len(ma.rows)
 	}
 
 	// Persist at once so an on-chain fill is durable before the cycle runs.
@@ -447,6 +454,51 @@ func drainPendingManualActions(state *AppState, cfg *Config, store *StateStore) 
 		alerts = append(alerts, *applied[id])
 	}
 	return alerts, criticals
+}
+
+func drainedPublicRows(ss *StrategyState, before int) []Trade {
+	if ss == nil || before < 0 || before >= len(ss.TradeHistory) {
+		return nil
+	}
+	return hyperliquidPublicTradeAlertRows(ss.TradeHistory[before:])
+}
+
+type manualDrainReport struct {
+	sc   StrategyConfig
+	rows []Trade
+}
+
+func foldManualDrainTrades(reports []manualDrainReport, notifier *MultiNotifier, totalTrades *int, channelTrades map[string]int, channelTradeDetails map[string][]string) map[string]bool {
+	drained := make(map[string]bool)
+	for _, report := range reports {
+		if len(report.rows) == 0 {
+			continue
+		}
+		chKey := notifier.resolveChannelKey(report.sc.Platform, report.sc.Type, isLiveArgs(report.sc.Args), report.sc.PaperSource)
+		if chKey == "" {
+			continue
+		}
+		drained[chKey] = true
+		*totalTrades += len(report.rows)
+		channelTrades[chKey] += len(report.rows)
+		key := chKey + "|" + extractAsset(report.sc)
+		for _, row := range report.rows {
+			channelTradeDetails[key] = append(channelTradeDetails[key], hlStepTradeLine(report.sc, row))
+		}
+	}
+	return drained
+}
+
+func summaryChannelActive(notifier *MultiNotifier, chKey string, due []StrategyConfig, drained map[string]bool) bool {
+	if drained[chKey] {
+		return true
+	}
+	for _, sc := range due {
+		if notifier.resolveChannelKey(sc.Platform, sc.Type, isLiveArgs(sc.Args), sc.PaperSource) == chKey {
+			return true
+		}
+	}
+	return false
 }
 
 func applyManualAction(state *AppState, cfg *Config, scByID map[string]StrategyConfig, a PendingManualAction) error {

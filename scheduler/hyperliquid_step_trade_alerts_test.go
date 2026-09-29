@@ -834,8 +834,8 @@ func TestManualTrailingStopFillIsCountedAndMerged(t *testing.T) {
 	historyBefore := len(st.TradeHistory)
 	execResult := &HyperliquidExecuteResult{Execution: &HyperliquidExecution{Action: "sell", Symbol: "ETH", Size: 1, Fill: &HyperliquidFill{AvgPx: 110, TotalSz: 1, OID: 9}}}
 	closeTrades, closeDetail, _ := settleManualCycleClose(sc, st, db, closePos, "sell", 1, true, execResult, nil, nil, hlCloseRearmContext{}, &mu, nil, silentStrategyLogger(sc.ID))
-	if closeTrades != 1 || closeDetail == "" {
-		t.Fatalf("queued close = (%d, %q), want the queued action counted", closeTrades, closeDetail)
+	if closeTrades != 0 || closeDetail != "" {
+		t.Fatalf("queued close = (%d, %q), want no count or line at queue time", closeTrades, closeDetail)
 	}
 	if len(st.TradeHistory) != historyBefore {
 		t.Fatalf("queued close appended %d history rows; it books on the next drain, which is the separate queued-close defect", len(st.TradeHistory)-historyBefore)

@@ -7,15 +7,6 @@ import (
 	"strings"
 )
 
-func manualActionRecordsTrade(action string) bool {
-	switch action {
-	case "open", "close", "add":
-		return true
-	default:
-		return false
-	}
-}
-
 func manualSLAutoManaged(sc StrategyConfig, pos *Position) (bool, string) {
 	if plan, ok := buildHyperliquidProtectionPlan(sc, pos, 0); ok && plan.StopLossATRMult > 0 {
 		return true, fmt.Sprintf("an ATR stop-loss is armed (effective stop_loss_atr_mult=%g)", plan.StopLossATRMult)

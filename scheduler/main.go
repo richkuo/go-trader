@@ -736,6 +736,7 @@ func main() {
 	sharedWalletRiskBalances := make(map[SharedWalletKey]sharedWalletRiskBalanceSnapshot)
 	sharedWalletRiskGeneration := 0
 	backfillMovedStopMarkers(cfg, state, &mu)
+	var pendingDrainReports []manualDrainReport
 
 	for {
 		if isDraining() {
@@ -758,7 +759,8 @@ func main() {
 		manualAlerts, manualCriticals := drainPendingManualActions(state, cfg, store)
 		mu.Unlock()
 		for _, ma := range manualAlerts {
-			sendTradeAlerts(ma.sc, ma.ss, ma.trades, &mu, notifier, cfg.Regime)
+			sendTradeAlertRows(ma.sc, ma.rows, notifier, cfg.Regime)
+			pendingDrainReports = append(pendingDrainReports, manualDrainReport{sc: ma.sc, rows: ma.rows})
 		}
 		for _, critical := range manualCriticals {
 			notifyCloseRearm(notifier, critical)
@@ -2741,6 +2743,7 @@ func main() {
 						}
 					}
 				case "manual":
+					hlStep = beginHyperliquidStepTradeAlerts(sc, stratState, &mu)
 					mu.RLock()
 					pos := stratState.Positions[sc.Symbol]
 					mu.RUnlock()
@@ -2749,9 +2752,9 @@ func main() {
 						break
 					}
 					if pos != nil && hyperliquidIsLive(sc.Args) {
+						syncAt := hlStep.historyLen(&mu)
 						if _, fillPx := runHyperliquidProtectionSync(sc, stratState, stratDB, sc.Symbol, &mu, notifier, logger, "HL manual protection synced", hlReconcileFillHintsJSON, hlLiquidationPx, hlNetSideByCoin, hlProtectionGuardFull, hlCycle); fillPx > 0 {
-							trades++
-							detail = mergeTradeDetails(detail, fmt.Sprintf("[%s] LIVE PROTECTION SYNC SL %s @ $%.2f", sc.ID, sc.Symbol, fillPx))
+							hlStep.bindWindow(&mu, syncAt, fmt.Sprintf("[%s] LIVE PROTECTION SYNC SL %s @ $%.2f", sc.ID, sc.Symbol, fillPx))
 						}
 					}
 					if feedHeld, feedWhy := feedCtx.feedHoldsSignal(sc); feedHeld {
@@ -2782,9 +2785,9 @@ func main() {
 						}
 					}
 					if pos != nil && hyperliquidIsLive(sc.Args) {
+						postTPAt := hlStep.historyLen(&mu)
 						if _, slFills, slDetail := runPostTPStopLossAdjustment(sc, stratState, sc.Symbol, prices[sc.Symbol], cfg, &mu, notifier, logger, hlCycle, hlLiquidationPx, hlNetSideByCoin); slFills > 0 {
-							trades += slFills
-							detail = mergeTradeDetails(detail, slDetail)
+							hlStep.bindWindow(&mu, postTPAt, slDetail)
 						}
 						mark := prices[sc.Symbol]
 						manualRatchetTightened := false
@@ -2793,9 +2796,9 @@ func main() {
 							notifyRatchetTrigger(notifier, sc.NotifyRatchetTriggersEnabled(cfg), ratchetAlert)
 							manualRatchetTightened = ratchetAlert != nil
 						}
+						trailAt := hlStep.historyLen(&mu)
 						if manualFills, manualDetail := runManualTrailingStopUpdate(sc, stratState, state.Strategies, hlReconcileAll, hlCycle, hlLiquidationPx, hlNetSideByCoin, mark, manualRatchetTightened, &mu, notifier, logger); manualFills > 0 {
-							trades += manualFills
-							detail = mergeTradeDetails(detail, manualDetail)
+							hlStep.bindWindow(&mu, trailAt, manualDetail)
 						}
 					}
 					if manualOK && closeFraction > 0 {
@@ -2874,24 +2877,32 @@ func main() {
 								logger.Info("HL manual close stderr: %s", execStderr)
 							}
 							requestedCancelOIDs := append([]int64{cancelOID}, extraCancelOIDs...)
+							closeAt := hlStep.historyLen(&mu)
 							closeTrades, closeDetail, fillPx := settleManualCycleClose(sc, stratState, stratDB, pos, closeSide, closeQty, intentFullClose, execResult, execErr, requestedCancelOIDs, rearmCtx, &mu, notifier, logger)
 							if fillPx > 0 {
 								prices[sc.Symbol] = fillPx
 							}
 							if closeTrades > 0 {
-								trades += closeTrades
-								detail = mergeTradeDetails(detail, closeDetail)
+								hlStep.bindWindow(&mu, closeAt, closeDetail)
 							}
 						}
 					}
 				default:
 					logger.Error("Unknown strategy type: %s", sc.Type)
 				}
-				if trades > 0 && detail != "" {
+				var detailLines []string
+				if sc.Type == "manual" && hlStep != nil {
+					trades, detailLines = hlStep.finishLines(&mu, notifier, cfg.Regime, logger)
+				}
+				if trades > 0 && (detail != "" || len(detailLines) > 0) {
 					if chKey := notifier.resolveChannelKey(sc.Platform, sc.Type, isLiveArgs(sc.Args), sc.PaperSource); chKey != "" {
 						channelTrades[chKey] += trades
 						key := chKey + "|" + extractAsset(sc)
-						channelTradeDetails[key] = append(channelTradeDetails[key], detail)
+						if len(detailLines) > 0 {
+							channelTradeDetails[key] = append(channelTradeDetails[key], detailLines...)
+						} else {
+							channelTradeDetails[key] = append(channelTradeDetails[key], detail)
+						}
 					}
 					if hlStep == nil {
 						sendTradeAlerts(sc, stratState, trades, &mu, notifier, cfg.Regime)
@@ -3006,6 +3017,9 @@ func main() {
 		}
 		mu.RUnlock()
 
+		drainedChannels := foldManualDrainTrades(pendingDrainReports, notifier, &totalTrades, channelTrades, channelTradeDetails)
+		pendingDrainReports = nil
+
 		elapsed := time.Since(cycleStart)
 		logMgr.LogSummary(cycle, elapsed, len(dueStrategies), totalTrades, totalPV)
 
@@ -3018,14 +3032,7 @@ func main() {
 			summaryNow := time.Now().UTC()
 			mu.RLock()
 			for chKey, chStrats := range channelStrats {
-				chRan := false
-				for _, sc := range dueStrategies {
-					if notifier.resolveChannelKey(sc.Platform, sc.Type, isLiveArgs(sc.Args), sc.PaperSource) == chKey {
-						chRan = true
-						break
-					}
-				}
-				if !chRan {
+				if !summaryChannelActive(notifier, chKey, dueStrategies, drainedChannels) {
 					continue
 				}
 				chTrades := channelTrades[chKey]
