@@ -2,7 +2,7 @@
 
 Repository: `https://github.com/richkuo/go-trader.git`
 
-Operator runbook for agents that install, configure, run, update, and operate go-trader. Reader-facing overview: [README.md](README.md). Coding constraints and PR conventions: [AGENTS.md](AGENTS.md).
+Operator runbook for agents that install, configure, run, update, and operate go-trader. Reader-facing overview: [README.md](README.md). Coding constraints and PR conventions: [CLAUDE.md](CLAUDE.md) and [AGENTS.md](AGENTS.md).
 
 Quick flow for a new server: tell OpenClaw `install https://github.com/richkuo/go-trader and init`.
 
@@ -1054,7 +1054,7 @@ A live spot fill that overshoots virtual cash is always booked, because the venu
 
 ## Implementation Patterns
 
-Full coding constraints live in [AGENTS.md](AGENTS.md) § Patterns. Notes that bite most often:
+Full coding constraints live in [CLAUDE.md](CLAUDE.md) § Patterns. Notes that bite most often:
 
 - A new trade-recording path must populate `Trade.PositionID`, or rely on the recorder's lookup against the strategy's positions, so partial closes collapse into one round trip.
 - A new summary-posting path must thread the last-post map and call the shared cadence helper.
@@ -1073,7 +1073,7 @@ grep -n "liveExecFailed" scheduler/main.go
 
 ## Subsystem Mechanism Reference
 
-Per-subsystem mechanism notes for coding agents. `AGENTS.md` keeps only the guardrail for each file; the mechanism behind it lives here. Grouped by `scheduler/` file.
+Per-subsystem mechanism notes for coding agents. `CLAUDE.md` keeps only the guardrail for each file; the mechanism behind it lives here. Grouped by `scheduler/` file.
 
 ### Execution and fill confirmation (`executor.go`, `shutdown.go`)
 

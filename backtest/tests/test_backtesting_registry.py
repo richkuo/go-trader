@@ -47,7 +47,7 @@ def test_every_harness_has_exactly_one_row():
             problems.append(f"{tok}: {n} rows (want exactly 1)")
     assert not problems, (
         "backtest/ harness scripts must each have exactly one registry row in "
-        f"docs/backtesting-registry.md (add one per the AGENTS.md upkeep rule): {problems}"
+        f"docs/backtesting-registry.md (add one per the CLAUDE.md upkeep rule): {problems}"
     )
 
 
