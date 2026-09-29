@@ -858,6 +858,8 @@ cmd_consumers() {
     for name in "${FEEDS[@]}"; do
         cp -p "$(feed_config "$name")" "$keep/$name.json"
     done
+    CONSUMERS_KEEP="$keep"
+    guard_set consumers
     local failed=""
     for name in "${FEEDS[@]}"; do
         py set-consumers "$(feed_config "$name")" "$list"
@@ -872,32 +874,42 @@ cmd_consumers() {
                 break 2
             fi
         done
+        [[ "$FAIL_AFTER" == "consumers-$name" ]] && kill -TERM $$
     done
-    if [[ -n "$failed" ]]; then
-        local restore_failed="" prev
-        for name in "${FEEDS[@]}"; do
-            cp -p "$keep/$name.json" "$(feed_config "$name")"
-            if ! systemctl is-active --quiet "$(feed_unit "$name")"; then
-                log "$(feed_unit "$name") is not running; it loads its previous consumer list when it starts"
-                continue
-            fi
-            if ! reload_feed "$name"; then
-                restore_failed="${restore_failed} $(feed_unit "$name") published no new generation after the restore"
-                continue
-            fi
-            while IFS= read -r prev; do
-                [[ -n "$prev" ]] || continue
-                local pst
-                pst=$(wait_feed_loaded "$name" "$prev") || restore_failed="${restore_failed} $(feed_unit "$name") did not load $prev again ($pst)"
-            done < <(python3 -c 'import json,sys; print("\n".join(json.load(open(sys.argv[1]))["feed"]["consumer_configs"]))' "$keep/$name.json")
-        done
-        rm -rf "$keep"
-        [[ -z "$restore_failed" ]] || die 30 "$failed; the previous feed configs are back on disk, but:${restore_failed}. Check both feeds' /status"
-        die 27 "$failed; both feeds loaded their previous consumer list again"
-    fi
+    [[ -z "$failed" ]] || consumers_fail "$failed"
+    guard_clear
     rm -rf "$keep"
+    CONSUMERS_KEEP=""
     journal_add "consumers-set units=$(IFS=,; echo "${CONSUMERS[*]}") at=$(date -u +%s)"
     log "consumers OK: both feeds serve ${#CONSUMERS[@]} consumer(s); units no longer listed are dropped from the feeds and from rollback --all"
+}
+
+consumers_fail() {
+    local failed="$1" keep="$CONSUMERS_KEEP" name
+    guard_clear
+    trap '' INT TERM HUP
+    local restore_failed="" prev
+    for name in "${FEEDS[@]}"; do
+        cp -p "$keep/$name.json" "$(feed_config "$name").restore-shared-feed"
+        mv -f "$(feed_config "$name").restore-shared-feed" "$(feed_config "$name")"
+        if ! systemctl is-active --quiet "$(feed_unit "$name")"; then
+            log "$(feed_unit "$name") is not running; it loads its previous consumer list when it starts"
+            continue
+        fi
+        if ! reload_feed "$name"; then
+            restore_failed="${restore_failed} $(feed_unit "$name") published no new generation after the restore"
+            continue
+        fi
+        while IFS= read -r prev; do
+            [[ -n "$prev" ]] || continue
+            local pst
+            pst=$(wait_feed_loaded "$name" "$prev") || restore_failed="${restore_failed} $(feed_unit "$name") did not load $prev again ($pst)"
+        done < <(python3 -c 'import json,sys; print("\n".join(json.load(open(sys.argv[1]))["feed"]["consumer_configs"]))' "$keep/$name.json")
+    done
+    rm -rf "$keep"
+    CONSUMERS_KEEP=""
+    [[ -z "$restore_failed" ]] || die 30 "$failed; the previous feed configs are back on disk, but:${restore_failed}. Check both feeds' /status"
+    die 27 "$failed; both feeds loaded their previous consumer list again"
 }
 
 feed_port() {
@@ -1131,6 +1143,7 @@ restore_consumer() {
 
 GUARD_KIND=""
 GUARD_UNIT=""
+CONSUMERS_KEEP=""
 
 guard_set() {
     GUARD_KIND="$1"
@@ -1154,6 +1167,7 @@ guard_undo() {
     case "$kind" in
         switch) switch_fail "$unit" "$why" ;;
         calibrate) calibrate_fail "$why" ;;
+        consumers) consumers_fail "$why" ;;
     esac
 }
 
