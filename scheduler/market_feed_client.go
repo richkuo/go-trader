@@ -134,8 +134,42 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 	}
 }
 
+func (c *sharedFeedClient) giveUpWindow() time.Duration {
+	return c.settle + c.prepare + c.grace + feedClientSlack
+}
+
 func (c *sharedFeedClient) giveUpAt(key int64) time.Time {
-	return time.Unix(key, 0).UTC().Add(c.settle + c.prepare + c.grace + feedClientSlack)
+	return time.Unix(key, 0).UTC().Add(c.giveUpWindow())
+}
+
+func sharedFeedScheduleFor(cfg *Config, client *sharedFeedClient) *sharedFeedSchedule {
+	if client == nil || !cfg.marketFeedSharedEnabled() {
+		return nil
+	}
+	return &sharedFeedSchedule{Cadences: feedConsumerCadences(cfg), Window: client.giveUpWindow()}
+}
+
+func sharedFeedSkipLines(stale map[int64][]string, logged map[int64]bool, now time.Time, cadences []int) []string {
+	for k := range logged {
+		if k < now.Unix()-2*86400 {
+			delete(logged, k)
+		}
+	}
+	keys := make([]int64, 0, len(stale))
+	for k := range stale {
+		if !logged[k] {
+			keys = append(keys, k)
+		}
+	}
+	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
+	out := make([]string, 0, len(keys))
+	for _, k := range keys {
+		logged[k] = true
+		out = append(out, fmt.Sprintf("[feed-audit] key=%d status=skipped strategies=%d ids=%s cadences=%s at=%d reason=%q",
+			k, len(stale[k]), strings.Join(stale[k], ","), joinInts(cadences), now.Unix(),
+			"the key passed its give-up time before this consumer evaluated it; its strategies run on the next fresh key and never on this seal"))
+	}
+	return out
 }
 
 func (c *sharedFeedClient) roundTrip(ctx context.Context, socket string, req feedWireRequest) (feedWireHeader, []byte, error) {
@@ -321,13 +355,18 @@ func (c *sharedFeedClient) recordEndpoint(ep sharedFeedEndpoint, key int64, h fe
 	if h.Instance != "" {
 		st.Instance = h.Instance
 	}
-	incompatible := false
+	incompatible := st.Incompatible
 	if err != nil {
 		var fe *feedEndpointError
 		if errors.As(err, &fe) {
 			st.LastStatus = fe.Kind
 			st.LastDetail = fe.Detail
-			incompatible = fe.Kind == feedErrIncompatible
+			switch fe.Kind {
+			case feedErrIncompatible:
+				incompatible = true
+			case feedErrUnavailable, feedErrPendingLimit, feedErrServer:
+				incompatible = false
+			}
 		} else {
 			st.LastStatus = "error"
 			st.LastDetail = err.Error()
@@ -335,6 +374,7 @@ func (c *sharedFeedClient) recordEndpoint(ep sharedFeedEndpoint, key int64, h fe
 	} else {
 		st.LastStatus = feedFetchSealed
 		st.LastDetail = ""
+		incompatible = false
 	}
 	if incompatible != st.Incompatible {
 		st.Incompatible = incompatible

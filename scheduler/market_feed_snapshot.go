@@ -75,6 +75,7 @@ type marketSnapshot struct {
 	Connected        bool
 	Metrics          feedMetrics
 	Deadline         time.Time
+	MarksAgeFromNow  bool
 
 	keys    map[marketFeedKey]*marketSnapshotKey
 	mids    map[string]feedMid
@@ -329,7 +330,13 @@ func (s *marketSnapshot) midFor(coin string) (float64, bool) {
 	if !ok || mid.Px <= 0 {
 		return 0, false
 	}
-	if s.SealedAt.Sub(mid.RecvAt) > feedMidStaleAfter {
+	ref := s.SealedAt
+	if s.MarksAgeFromNow {
+		if now := time.Now().UTC(); now.After(ref) {
+			ref = now
+		}
+	}
+	if ref.Sub(mid.RecvAt) > feedMidStaleAfter {
 		return 0, false
 	}
 	return mid.Px, true

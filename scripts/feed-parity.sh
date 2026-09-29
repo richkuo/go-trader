@@ -19,7 +19,8 @@ Joins the market feed's [feed-seal] records with each shared-mode scheduler's
   - two consumers built different market payloads from the same seal and frame
     specification, or a consumer audited a key the feed never sealed.
 Accepted exceptions are listed and do not fail the run: degraded keys (no
-compatible seal, reason logged), consumers served by different sources or
+compatible seal, reason logged), skipped keys (the key passed its give-up time
+before the consumer evaluated it, for example after a restart), consumers served by different sources or
 instances for one key (source-switch race), and REST mark fallback coins.
 
 Journal inputs read the unit's own LogNamespace (journalctl --namespace=+<ns>).
@@ -159,7 +160,10 @@ for label, path in consumers:
                     if f["mark_fallback"]:
                         fallbacks.append(f"consumer {label}: key {f['key']} REST mark fallback for {f['mark_fallback']}")
                     continue
-                recs[int(f["key"])] = f
+                key = int(f["key"])
+                if f.get("status") == "skipped" and key in recs:
+                    continue
+                recs[key] = f
                 continue
             idx = line.find("[feed-payload]")
             if idx >= 0:
@@ -205,6 +209,9 @@ for label, recs in audits.items():
         f = recs[k]
         if f.get("status") == "degraded":
             exceptions.append(f"consumer {label}: key {k} degraded ({f.get('reason', '')})")
+            continue
+        if f.get("status") == "skipped":
+            exceptions.append(f"consumer {label}: key {k} skipped for {f.get('ids', '')} ({f.get('reason', '')})")
             continue
         if lo is None or not (lo <= k <= hi):
             continue
@@ -258,7 +265,8 @@ print(f"feed-parity: {len(seals)} sealed feed records, keys {lo}..{hi}")
 for label in labels:
     recs = audits[label]
     sealed = sum(1 for f in recs.values() if f.get("status") == "sealed")
-    print(f"feed-parity: consumer {label}: {len(recs)} audited keys ({sealed} sealed, {len(recs) - sealed} degraded)")
+    skipped = sum(1 for f in recs.values() if f.get("status") == "skipped")
+    print(f"feed-parity: consumer {label}: {len(recs)} audited keys ({sealed} sealed, {len(recs) - sealed - skipped} degraded, {skipped} skipped)")
 print(f"feed-parity: {same_source} cross-consumer same-source key matches, {switch} source-switch exceptions, {payload_matches} shared payload specs matched")
 for line in fallbacks:
     print("feed-parity: EXCEPTION " + line)

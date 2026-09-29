@@ -38,8 +38,56 @@ func feedEvaluationInterval(sc StrategyConfig, intervals map[string]int, globalI
 	return interval
 }
 
+type sharedFeedSchedule struct {
+	Cadences []int
+	Window   time.Duration
+}
+
+func (s *sharedFeedSchedule) stale(now, deadline time.Time) bool {
+	return s != nil && now.Sub(deadline) > s.Window
+}
+
+func (s *sharedFeedSchedule) latestFreshKey(now, after time.Time) (time.Time, bool) {
+	var best time.Time
+	found := false
+	if s == nil {
+		return best, false
+	}
+	for _, c := range s.Cadences {
+		if c <= 0 {
+			continue
+		}
+		k := evaluationDeadline(now, c)
+		if now.Sub(k) > s.Window || !k.After(after) {
+			continue
+		}
+		if !found || k.After(best) {
+			best, found = k, true
+		}
+	}
+	return best, found
+}
+
+func (s *sharedFeedSchedule) nextKey(now time.Time) (time.Time, bool) {
+	var best time.Time
+	found := false
+	if s == nil {
+		return best, false
+	}
+	for _, c := range s.Cadences {
+		if c <= 0 {
+			continue
+		}
+		k := evaluationDeadline(now, c).Add(time.Duration(c) * time.Second)
+		if !found || k.Before(best) {
+			best, found = k, true
+		}
+	}
+	return best, found
+}
+
 func feedDeadlineDue(sc StrategyConfig, now time.Time, intervals map[string]int, globalIntervalSeconds int,
-	lastEvaluated map[string]feedEvaluationMark) (feedEvaluationMark, bool) {
+	lastEvaluated map[string]feedEvaluationMark, sched *sharedFeedSchedule) (feedEvaluationMark, bool) {
 	interval := feedEvaluationInterval(sc, intervals, globalIntervalSeconds)
 	deadline := evaluationDeadline(now, interval)
 	mark := feedEvaluationMark{
@@ -51,11 +99,51 @@ func feedDeadlineDue(sc StrategyConfig, now time.Time, intervals map[string]int,
 	if seen && !deadline.After(prev.Deadline) {
 		return mark, false
 	}
-	return mark, true
+	if !sched.stale(now, deadline) {
+		return mark, true
+	}
+	var after time.Time
+	if seen {
+		after = prev.Deadline
+	}
+	key, ok := sched.latestFreshKey(now, after)
+	if !ok {
+		return mark, false
+	}
+	return feedEvaluationMark{
+		ID:              evaluationID(interval, key),
+		Deadline:        key,
+		IntervalSeconds: interval,
+	}, true
+}
+
+func sharedFeedStaleDeadlines(now time.Time, cfg *Config, intervals map[string]int,
+	lastEvaluated map[string]feedEvaluationMark, sched *sharedFeedSchedule) map[int64][]string {
+	out := make(map[int64][]string)
+	if sched == nil {
+		return out
+	}
+	for _, sc := range cfg.Strategies {
+		if !feedScopedStrategy(sc) || shouldSkipZeroCapital(sc) {
+			continue
+		}
+		interval := feedEvaluationInterval(sc, intervals, cfg.IntervalSeconds)
+		deadline := evaluationDeadline(now, interval)
+		if prev, seen := lastEvaluated[sc.ID]; seen && !deadline.After(prev.Deadline) {
+			continue
+		}
+		if sched.stale(now, deadline) {
+			out[deadline.Unix()] = append(out[deadline.Unix()], sc.ID)
+		}
+	}
+	for k := range out {
+		sort.Strings(out[k])
+	}
+	return out
 }
 
 func computeDueSet(now time.Time, cfg *Config, intervals map[string]int, lastRun map[string]time.Time,
-	lastEvaluated map[string]feedEvaluationMark, websocketFeed bool) ([]StrategyConfig, map[string]feedEvaluationMark, []string) {
+	lastEvaluated map[string]feedEvaluationMark, websocketFeed bool, sched *sharedFeedSchedule) ([]StrategyConfig, map[string]feedEvaluationMark, []string) {
 	due := make([]StrategyConfig, 0, len(cfg.Strategies))
 	marks := make(map[string]feedEvaluationMark)
 	var zeroCapital []string
@@ -65,7 +153,7 @@ func computeDueSet(now time.Time, cfg *Config, intervals map[string]int, lastRun
 			continue
 		}
 		if websocketFeed && feedScopedStrategy(sc) {
-			mark, isDue := feedDeadlineDue(sc, now, intervals, cfg.IntervalSeconds, lastEvaluated)
+			mark, isDue := feedDeadlineDue(sc, now, intervals, cfg.IntervalSeconds, lastEvaluated, sched)
 			if !isDue {
 				continue
 			}
@@ -94,7 +182,7 @@ func markStrategyEvaluated(sc StrategyConfig, websocketFeed bool, marks map[stri
 }
 
 func nextFeedDeadlineDelay(cfg *Config, intervals map[string]int, lastEvaluated map[string]feedEvaluationMark,
-	now time.Time) time.Duration {
+	now time.Time, sched *sharedFeedSchedule) time.Duration {
 	var minDelay time.Duration
 	has := false
 	for _, sc := range cfg.Strategies {
@@ -104,10 +192,15 @@ func nextFeedDeadlineDelay(cfg *Config, intervals map[string]int, lastEvaluated 
 		interval := feedEvaluationInterval(sc, intervals, cfg.IntervalSeconds)
 		deadline := evaluationDeadline(now, interval)
 		prev, seen := lastEvaluated[sc.ID]
-		if !seen || deadline.After(prev.Deadline) {
-			return 0
-		}
 		next := deadline.Add(time.Duration(interval) * time.Second)
+		if !seen || deadline.After(prev.Deadline) {
+			if _, due := feedDeadlineDue(sc, now, intervals, cfg.IntervalSeconds, lastEvaluated, sched); due {
+				return 0
+			}
+			if nk, ok := sched.nextKey(now); ok && nk.Before(next) {
+				next = nk
+			}
+		}
 		delay := next.Sub(now)
 		if delay < 0 {
 			delay = 0
@@ -200,13 +293,13 @@ func schedulerDelayScoped(strategies []StrategyConfig, intervals map[string]int,
 }
 
 func cycleSchedulerDelay(cfg *Config, intervals map[string]int, lastRun map[string]time.Time,
-	lastEvaluated map[string]feedEvaluationMark, now time.Time, fallbackSeconds int, websocketFeed bool) time.Duration {
+	lastEvaluated map[string]feedEvaluationMark, now time.Time, fallbackSeconds int, websocketFeed bool, sched *sharedFeedSchedule) time.Duration {
 	if !websocketFeed {
 		return schedulerDelay(cfg.Strategies, intervals, lastRun, cfg.IntervalSeconds, now, fallbackSeconds)
 	}
 	skip := func(sc StrategyConfig) bool { return feedScopedStrategy(sc) }
 	delay := schedulerDelayScoped(cfg.Strategies, intervals, lastRun, cfg.IntervalSeconds, now, fallbackSeconds, skip)
-	feedDelay := nextFeedDeadlineDelay(cfg, intervals, lastEvaluated, now)
+	feedDelay := nextFeedDeadlineDelay(cfg, intervals, lastEvaluated, now, sched)
 	if feedDelay < 0 {
 		return delay
 	}

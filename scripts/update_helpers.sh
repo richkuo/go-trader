@@ -271,7 +271,7 @@ normalize_systemd_deployment_dirs() {
     done
 }
 
-discover_enabled_inactive_units() {
+discover_enabled_inactive_feed_units() {
     command -v systemctl >/dev/null 2>&1 || return 0
     local -a globs=()
     local g
@@ -288,6 +288,7 @@ discover_enabled_inactive_units() {
         case "$active" in *$'\n'"$unit"$'\n'*) continue ;; esac
         case "$seen" in *$'\n'"$unit"$'\n'*) continue ;; esac
         [[ "$(systemctl is-enabled "$unit" 2>/dev/null || true)" == "enabled" ]] || continue
+        [[ "$(update_unit_role "$unit")" == "feed" ]] || continue
         seen="${seen}${unit}"$'\n'
         printf '%s\n' "$unit"
     done < <(
@@ -307,7 +308,7 @@ discover_deployment_dirs_from_systemd() {
     local unit
     while IFS= read -r unit; do
         [[ -n "$unit" ]] && units+=("$unit")
-    done < <(systemctl list-units --type=service --state=active --no-legend --plain "${globs[@]}" 2>/dev/null | awk '{print $1}'; discover_enabled_inactive_units)
+    done < <(systemctl list-units --type=service --state=active --no-legend --plain "${globs[@]}" 2>/dev/null | awk '{print $1}'; discover_enabled_inactive_feed_units)
     [[ ${#units[@]} -gt 0 ]] || return 0
     for unit in "${units[@]}"; do
         systemctl show "$unit" -p WorkingDirectory --value 2>/dev/null
@@ -325,7 +326,7 @@ discover_deployment_unit_map() {
     local unit
     while IFS= read -r unit; do
         [[ -n "$unit" ]] && units+=("$unit")
-    done < <(systemctl list-units --type=service --state=active --no-legend --plain "${globs[@]}" 2>/dev/null | awk '{print $1}'; discover_enabled_inactive_units)
+    done < <(systemctl list-units --type=service --state=active --no-legend --plain "${globs[@]}" 2>/dev/null | awk '{print $1}'; discover_enabled_inactive_feed_units)
     [[ ${#units[@]} -gt 0 ]] || return 0
     local wd canon
     for unit in "${units[@]}"; do
@@ -344,9 +345,11 @@ update_convention_unit_for_dir() {
     instance="${base#go-trader-}"
     [[ "$(update_validate_instance_name "$instance")" == "ok" ]] || { printf ''; return 0; }
     unit="go-trader@${instance}.service"
-    if [[ "$(systemctl is-enabled "$unit" 2>/dev/null || true)" != "enabled" ]] && ! systemctl is-active --quiet "$unit" 2>/dev/null; then
-        printf ''
-        return 0
+    if ! systemctl is-active --quiet "$unit" 2>/dev/null; then
+        if [[ "$(systemctl is-enabled "$unit" 2>/dev/null || true)" != "enabled" || "$(update_unit_role "$unit")" != "feed" ]]; then
+            printf ''
+            return 0
+        fi
     fi
     wd=$(systemctl show "$unit" -p WorkingDirectory --value 2>/dev/null || true)
     [[ -n "$wd" ]] || { printf ''; return 0; }
@@ -359,6 +362,21 @@ update_convention_unit_for_dir() {
 
 update_deployment_role() {
     update_deployment_role_for_config "${1%/}/scheduler/config.json"
+}
+
+update_unit_role() {
+    local unit="$1" wd execstart cfg
+    wd=$(systemctl show "$unit" -p WorkingDirectory --value 2>/dev/null || true)
+    execstart=$(systemctl show "$unit" -p ExecStart --value 2>/dev/null | head -n 1 || true)
+    cfg=$(update_execstart_config_path "$execstart")
+    if [[ -z "$cfg" ]]; then
+        [[ -n "$wd" ]] || { printf 'scheduler'; return 0; }
+        cfg="${wd%/}/scheduler/config.json"
+    elif [[ "$cfg" != /* ]]; then
+        [[ -n "$wd" ]] || { printf 'scheduler'; return 0; }
+        cfg="${wd%/}/$cfg"
+    fi
+    update_deployment_role_for_config "$cfg"
 }
 
 update_deployment_role_for_config() {

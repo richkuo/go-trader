@@ -636,6 +636,7 @@ func main() {
 	var feedReq feedRequirements
 	var sharedClient *sharedFeedClient
 	lastEvaluated := make(map[string]feedEvaluationMark)
+	sharedSkipLogged := make(map[int64]bool)
 	if sharedFeed {
 		derived, ferr := deriveFeedRequirements(cfg)
 		if ferr != nil {
@@ -807,7 +808,16 @@ func main() {
 		intervals := effectiveStrategyIntervals(cfg.Strategies, state.Strategies, cfg.IntervalSeconds, drawdownWarnThresholdPct)
 		mu.RUnlock()
 
-		dueStrategies, evaluationMarks, zeroCapitalSkipped := computeDueSet(cycleStart, cfg, intervals, lastRun, lastEvaluated, deadlineFeed)
+		dueAt := cycleStart
+		sharedSched := sharedFeedScheduleFor(cfg, sharedClient)
+		if sharedSched != nil {
+			dueAt = time.Now()
+			stale := sharedFeedStaleDeadlines(dueAt, cfg, intervals, lastEvaluated, sharedSched)
+			for _, line := range sharedFeedSkipLines(stale, sharedSkipLogged, dueAt, feedEffectiveCadences(cfg, intervals)) {
+				fmt.Println(line)
+			}
+		}
+		dueStrategies, evaluationMarks, zeroCapitalSkipped := computeDueSet(dueAt, cfg, intervals, lastRun, lastEvaluated, deadlineFeed, sharedSched)
 		for _, id := range zeroCapitalSkipped {
 			fmt.Printf("[ERROR] %s: capital_pct set but capital resolved to $0 — skipping\n", id)
 		}
@@ -840,7 +850,7 @@ func main() {
 					offCycleAuditSaveDirty = flushOffCycleLiquidationAuditState(state, cfg, store, &mu, mutations, offCycleAuditSaveDirty, false)
 					continue
 				}
-				delay := cycleSchedulerDelay(cfg, intervals, lastRun, lastEvaluated, time.Now(), tickSeconds, deadlineFeed)
+				delay := cycleSchedulerDelay(cfg, intervals, lastRun, lastEvaluated, time.Now(), tickSeconds, deadlineFeed, sharedFeedScheduleFor(cfg, sharedClient))
 				if wait := time.Until(lastLiquidationAudit.Add(time.Duration(audSec) * time.Second)); wait < delay {
 					delay = wait
 				}
@@ -862,7 +872,7 @@ func main() {
 					return
 				}
 			}
-			delay := cycleSchedulerDelay(cfg, intervals, lastRun, lastEvaluated, time.Now(), tickSeconds, deadlineFeed)
+			delay := cycleSchedulerDelay(cfg, intervals, lastRun, lastEvaluated, time.Now(), tickSeconds, deadlineFeed, sharedFeedScheduleFor(cfg, sharedClient))
 			timer := time.NewTimer(delay)
 			select {
 			case <-timer.C:
@@ -3218,7 +3228,7 @@ func main() {
 		mu.RLock()
 		endIntervals := effectiveStrategyIntervals(cfg.Strategies, state.Strategies, cfg.IntervalSeconds, drawdownWarnThresholdPct)
 		mu.RUnlock()
-		delay := cycleSchedulerDelay(cfg, endIntervals, lastRun, lastEvaluated, time.Now(), tickSeconds, deadlineFeed)
+		delay := cycleSchedulerDelay(cfg, endIntervals, lastRun, lastEvaluated, time.Now(), tickSeconds, deadlineFeed, sharedFeedScheduleFor(cfg, sharedClient))
 		timer := time.NewTimer(delay)
 		select {
 		case <-timer.C:
