@@ -1,0 +1,989 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+THIS_SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+REPO_ROOT=$(cd "$THIS_SCRIPT_DIR/.." && pwd)
+source "${THIS_SCRIPT_DIR}/update_helpers.sh"
+UPDATE_UNIT_SUDO=""
+
+usage() {
+    cat <<'EOF'
+Usage: scripts/shared-feed-convert.sh <subcommand> [options]
+
+Optional, operator-run conversion of an existing systemd deployment to the
+shared market feed (SKILL.md "Shared market feed"). Nothing here runs during
+an update: a deployment that never runs this script keeps its market_feed mode.
+Run the stages in order; each checks its result, records it in the journal
+(/var/lib/go-trader/shared-feed/convert.journal) and can be re-run.
+
+Subcommands:
+  plan [--consumer <unit>]...
+        Read-only. Lists every scheduler unit and, with --consumer, checks the
+        selection and prints the full target. Changes nothing on the host.
+  feeds --consumer <unit>... [--per-minute <n> --startup <n>]
+        Creates /opt/go-trader-feed-primary (websocket) and
+        /opt/go-trader-feed-backup (rest) from the first consumer's tree, writes
+        their configs over read-only shadow copies of the consumer configs,
+        installs go-trader@feed-primary and go-trader@feed-backup, and waits for
+        both to seal. No consumer config changes.
+  calibrate [--per-minute <n> --startup <n>] [--baseline-ledger <file>] [--window <seconds>]
+        Measures the backup's peak request use over the window (default two
+        periods of the longest cadence) and writes its request_budget: the
+        measured values times 1.5, or the fixed operator values. Fixed values
+        are refused when the measured peak plus the mids reserve does not fit.
+  verify
+        Both feeds healthy and scripts/feed-source-compare.sh exits 0.
+  switch --consumer <unit> [--confirm-live <unit>] [--dropin]
+        Switches one consumer to market_feed "shared" and restarts it, then
+        requires three sealed primary keys and feed-parity PASS. Any failure
+        restores the saved config and restarts the unit. A unit with a live or
+        manual strategy needs --confirm-live <unit> or the unit name typed.
+  rollback (--consumer <unit> | --all)
+        Restores saved consumer configs and restarts those units. --all also
+        stops and disables both feed units.
+  status
+        Prints the journal, the feed units and each recorded consumer.
+
+Exit status: 0 success, 2 usage, 10-19 plan refusals, 20-29 stage failures,
+30 rollback failed.
+EOF
+}
+
+STATE_DIR="/var/lib/go-trader/shared-feed"
+JOURNAL="$STATE_DIR/convert.journal"
+SHADOW_DIR="$STATE_DIR/shadow"
+FEEDS=(primary backup)
+AUDIT_KEYS="${SHARED_FEED_CONVERT_AUDIT_KEYS:-3}"
+FAIL_AFTER="${SHARED_FEED_CONVERT_FAIL_AFTER:-}"
+
+log() { echo "[shared-feed] $*"; }
+warn() { echo "[shared-feed] WARN $*" >&2; }
+die() {
+    local code="$1"
+    shift
+    echo "[shared-feed] ERROR $*" >&2
+    exit "$code"
+}
+
+need_root() {
+    [[ $EUID -eq 0 ]] || die 2 "must be run as root (the script reads every consumer config and installs units)"
+}
+
+need_tools() {
+    local t
+    for t in systemctl python3 curl journalctl rsync git; do
+        command -v "$t" >/dev/null 2>&1 || die 10 "$t is not on PATH"
+    done
+}
+
+feed_dir() { printf '/opt/go-trader-feed-%s' "$1"; }
+feed_config() { printf '/var/lib/go-trader/feed-%s/config.json' "$1"; }
+feed_unit() { printf 'go-trader@feed-%s.service' "$1"; }
+feed_socket() { printf '/run/go-trader-feed-%s/feed.sock' "$1"; }
+feed_source() { [[ "$1" == "primary" ]] && printf 'websocket' || printf 'rest'; }
+
+journal_add() {
+    mkdir -p "$STATE_DIR"
+    chmod 0755 "$STATE_DIR"
+    touch "$JOURNAL"
+    grep -qxF -- "$1" "$JOURNAL" 2>/dev/null || printf '%s\n' "$1" >>"$JOURNAL"
+}
+
+journal_last() {
+    [[ -f "$JOURNAL" ]] || return 0
+    grep -E -- "^$1( |$)" "$JOURNAL" | tail -n 1 || true
+}
+
+journal_field() {
+    local line="$1" key="$2" tok
+    for tok in $line; do
+        if [[ "$tok" == "$key="* ]]; then
+            printf '%s' "${tok#"$key="}"
+            return 0
+        fi
+    done
+    printf ''
+}
+
+PY_HELPER=$(cat <<'PY'
+import json
+import os
+import re
+import sys
+
+def load(path):
+    with open(path) as f:
+        return json.load(f)
+
+def dump(obj, path, mode):
+    tmp = path + ".tmp-shared-feed"
+    with open(tmp, "w") as f:
+        json.dump(obj, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+    os.chmod(tmp, mode)
+    os.replace(tmp, path)
+
+def is_live_args(args):
+    args = args or []
+    for i, a in enumerate(args):
+        if a == "--mode=live":
+            return True
+        if a == "--mode" and i + 1 < len(args) and args[i + 1] == "live":
+            return True
+    return False
+
+def summary(path):
+    c = load(path)
+    strategies = c.get("strategies") or []
+    live = any(is_live_args(s.get("args")) or s.get("type") == "manual" for s in strategies)
+    covered = 0
+    for s in strategies:
+        script = os.path.basename(s.get("script") or "")
+        if (s.get("platform") == "hyperliquid" and s.get("type") in ("perps", "manual")
+                and script == "check_hyperliquid.py"):
+            covered += 1
+    port = c.get("status_port") or 8099
+    mode = c.get("market_feed") or "rest"
+    print(f"live={'yes' if live else 'no'} strategies={len(strategies)} covered={covered} status_port={int(port)} market_feed={mode} config_version={c.get('config_version')}")
+
+def write_shared(src, dst, primary, backup, mode):
+    c = load(src)
+    c["market_feed"] = "shared"
+    c["shared_market_feed"] = {"primary_socket": primary, "backup_socket": backup}
+    dump(c, dst, int(mode, 8))
+
+def write_feed(path, consumer_cfg, source, socket, port, consumers, per_minute, startup):
+    base = load(consumer_cfg)
+    out = {"role": "feed", "config_version": base.get("config_version"), "status_port": int(port)}
+    for key in ("log_level", "discord", "telegram", "alert_throttle_interval"):
+        if key in base:
+            out[key] = base[key]
+    feed = {"source": source, "socket_path": socket, "consumer_configs": json.loads(consumers)}
+    if per_minute and int(per_minute) > 0:
+        feed["request_budget"] = {"per_minute": int(per_minute), "startup": int(startup)}
+    out["feed"] = feed
+    out["strategies"] = []
+    dump(out, path, 0o644)
+
+def replace_consumer(path, old, new):
+    c = load(path)
+    lst = c["feed"]["consumer_configs"]
+    if new in lst:
+        return
+    if old not in lst:
+        sys.exit(f"{old} is not listed in {path}")
+    c["feed"]["consumer_configs"] = [new if p == old else p for p in lst]
+    dump(c, path, 0o644)
+
+def set_budget(path, per_minute, startup):
+    c = load(path)
+    c["feed"]["request_budget"] = {"per_minute": int(per_minute), "startup": int(startup)}
+    dump(c, path, 0o644)
+
+def get(url_json_path, dotted):
+    c = json.load(open(url_json_path))
+    for part in dotted.split("."):
+        if isinstance(c, dict):
+            c = c.get(part)
+        else:
+            c = None
+    if c is None:
+        print("")
+    elif isinstance(c, bool):
+        print("true" if c else "false")
+    else:
+        print(c)
+
+def feed_consumer_state(status_path, consumer):
+    s = json.load(open(status_path))
+    for c in s.get("consumers") or []:
+        if c.get("path") == consumer:
+            ok = c.get("loaded") and not c.get("error") and not c.get("retained")
+            print("loaded" if ok else "not_loaded:" + (c.get("error") or ("retained" if c.get("retained") else "not loaded")))
+            return
+    print("absent")
+
+def ledger_caps(report_path):
+    text = open(report_path).read()
+    peak = re.search(r"summed steady load:.*?peak=(\d+)", text)
+    cold = re.search(r"summed cold start:\s*(\d+)", text)
+    print(f"{peak.group(1) if peak else ''} {cold.group(1) if cold else ''}")
+
+op = sys.argv[1]
+args = sys.argv[2:]
+{
+    "summary": summary,
+    "write-shared": write_shared,
+    "write-feed": write_feed,
+    "replace-consumer": replace_consumer,
+    "set-budget": set_budget,
+    "get": get,
+    "feed-consumer-state": feed_consumer_state,
+    "ledger-caps": ledger_caps,
+}[op](*args)
+PY
+)
+
+py() { python3 -c "$PY_HELPER" "$@"; }
+
+unit_prop() { systemctl show "$1" -p "$2" --value 2>/dev/null | head -n 1 || true; }
+
+unit_config_path() {
+    local unit="$1" wd execstart cfg
+    wd=$(unit_prop "$unit" WorkingDirectory)
+    execstart=$(unit_prop "$unit" ExecStart)
+    cfg=$(update_execstart_config_path "$execstart")
+    if [[ -z "$cfg" ]]; then
+        [[ -n "$wd" ]] || { printf ''; return 0; }
+        cfg="${wd%/}/scheduler/config.json"
+    elif [[ "$cfg" != /* ]]; then
+        cfg="${wd%/}/$cfg"
+    fi
+    readlink -f "$cfg" 2>/dev/null || printf '%s' "$cfg"
+}
+
+unit_user() {
+    local u
+    u=$(unit_prop "$1" User)
+    printf '%s' "${u:-root}"
+}
+
+unit_group() {
+    local g u
+    g=$(unit_prop "$1" Group)
+    if [[ -z "$g" ]]; then
+        u=$(unit_user "$1")
+        g=$(id -gn "$u" 2>/dev/null || printf '%s' "$u")
+    fi
+    printf '%s' "$g"
+}
+
+unit_journal() {
+    local unit="$1" since="$2" frag ns
+    frag=$(unit_prop "$unit" FragmentPath)
+    ns=$(update_unit_log_namespace "$frag")
+    if [[ -n "$ns" ]]; then
+        journalctl --namespace="+$ns" -u "$unit" --since "$since" -o cat --no-pager 2>/dev/null || true
+    else
+        journalctl -u "$unit" --since "$since" -o cat --no-pager 2>/dev/null || true
+    fi
+}
+
+http_to_file() {
+    local url="$1" out="$2" token="${3:-}"
+    if [[ -n "$token" ]]; then
+        curl -sS -m 5 -o "$out" -H "Authorization: Bearer $token" "$url" 2>/dev/null
+    else
+        curl -sS -m 5 -o "$out" "$url" 2>/dev/null
+    fi
+}
+
+health_get() {
+    local port="$1" field="$2" tmp
+    tmp=$(mktemp)
+    if http_to_file "http://127.0.0.1:${port}/health" "$tmp"; then
+        py get "$tmp" "$field" 2>/dev/null || printf ''
+    fi
+    rm -f "$tmp"
+}
+
+source_fingerprint() {
+    local wd="$1"
+    (cd "$wd" && find scheduler -maxdepth 1 -type f \( -name '*.go' -o -name 'go.mod' -o -name 'go.sum' \) -print0 \
+        | sort -z | xargs -0 sha256sum | sha256sum | awk '{print $1}')
+}
+
+binary_has_feed() {
+    grep -aq 'feed.request_budget' "$1" 2>/dev/null
+}
+
+running_matches_disk() {
+    local unit="$1" wd="$2" pid exe_sum disk_sum
+    pid=$(unit_prop "$unit" MainPID)
+    [[ -n "$pid" && "$pid" != "0" && -e "/proc/$pid/exe" ]] || return 1
+    exe_sum=$(sha256sum "/proc/$pid/exe" | awk '{print $1}')
+    disk_sum=$(sha256sum "$wd/go-trader" 2>/dev/null | awk '{print $1}')
+    [[ -n "$disk_sum" && "$exe_sum" == "$disk_sum" ]]
+}
+
+port_in_use() {
+    local port="$1"
+    if command -v ss >/dev/null 2>&1; then
+        ss -ltnH 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]${port}\$"
+        return $?
+    fi
+    return 1
+}
+
+scheduler_units() {
+    local line unit
+    while IFS= read -r line; do
+        unit="${line#*|}"
+        [[ -n "$unit" ]] || continue
+        [[ "$(update_unit_role "$unit")" == "feed" ]] && continue
+        printf '%s\n' "$unit"
+    done < <(discover_deployment_unit_map) | sort -u
+}
+
+declare -a CONSUMERS=()
+PORT_primary=""
+PORT_backup=""
+FEED_USER=""
+FEED_GROUP=""
+
+check_selection() {
+    local -a units=("$@")
+    [[ ${#units[@]} -gt 0 ]] || die 10 "name at least one consumer with --consumer <unit>"
+    local known unit user first_fp="" fp wd cfg summary seen=$'\n'
+    known=$'\n'"$(scheduler_units)"$'\n'
+    FEED_USER=""
+    for unit in "${units[@]}"; do
+        [[ "$unit" == *.service ]] || unit="${unit}.service"
+        case "$seen" in *$'\n'"$unit"$'\n'*) die 10 "$unit is named twice" ;; esac
+        seen="${seen}${unit}"$'\n'
+        case "$known" in *$'\n'"$unit"$'\n'*) ;; *) die 11 "$unit is not an active go-trader scheduler unit (signal-mode and bare-process deployments are not supported)" ;; esac
+        wd=$(unit_prop "$unit" WorkingDirectory)
+        cfg=$(unit_config_path "$unit")
+        [[ -f "$cfg" ]] || die 11 "$unit: config $cfg does not exist"
+        summary=$(py summary "$cfg") || die 11 "$unit: config $cfg does not parse"
+        [[ "$(journal_field "$summary" covered)" -gt 0 ]] || die 12 "$unit: no Hyperliquid perps or manual strategy uses check_hyperliquid.py, so the shared feed covers nothing"
+        [[ -x "$wd/go-trader" ]] || die 13 "$unit: no binary at $wd/go-trader"
+        binary_has_feed "$wd/go-trader" || die 13 "$unit: the binary at $wd/go-trader predates the shared feed with a backup; run bash scripts/update.sh --restart in $wd first"
+        running_matches_disk "$unit" "$wd" || die 13 "$unit: the running process does not run $wd/go-trader (restart pending or updated without restart); restart it with bash scripts/update.sh --restart first"
+        fp=$(source_fingerprint "$wd")
+        if [[ -z "$first_fp" ]]; then
+            first_fp="$fp"
+        elif [[ "$fp" != "$first_fp" ]]; then
+            die 14 "$unit: its scheduler source differs from the first consumer's; update every consumer to the same release first"
+        fi
+        user=$(unit_user "$unit")
+        if [[ -z "$FEED_USER" ]]; then
+            FEED_USER="$user"
+            FEED_GROUP=$(unit_group "$unit")
+        elif [[ "$user" != "$FEED_USER" ]]; then
+            die 15 "$unit runs as $user but another consumer runs as $FEED_USER; the feed sockets need one user"
+        fi
+        CONSUMERS+=("$unit")
+    done
+    id "$FEED_USER" >/dev/null 2>&1 || die 15 "consumer user $FEED_USER does not exist"
+    for unit in "${CONSUMERS[@]}"; do
+        cfg=$(unit_config_path "$unit")
+        if [[ "$FEED_USER" != "root" ]] && ! runuser -u "$FEED_USER" -- test -r "$cfg" 2>/dev/null; then
+            die 15 "$FEED_USER cannot read $cfg; the feed must read each consumer config after the switch"
+        fi
+    done
+}
+
+pick_ports() {
+    local name port used rec
+    for name in "${FEEDS[@]}"; do
+        rec=$(journal_last "port $name")
+        if [[ -n "$rec" ]]; then
+            printf -v "PORT_$name" '%s' "${rec##* }"
+            continue
+        fi
+        port=$([[ "$name" == "primary" ]] && echo 8190 || echo 8191)
+        used=" "
+        local unit
+        for unit in $(scheduler_units); do
+            used="${used}$(journal_field "$(py summary "$(unit_config_path "$unit")" 2>/dev/null || true)" status_port) "
+        done
+        [[ "$name" == "backup" ]] && used="${used}${PORT_primary} "
+        while [[ "$used" == *" $port "* ]] || port_in_use "$port"; do
+            port=$((port + 1))
+        done
+        printf -v "PORT_$name" '%s' "$port"
+    done
+}
+
+print_inventory() {
+    local unit cfg wd summary ver pid
+    log "scheduler units on this host:"
+    while IFS= read -r unit; do
+        [[ -n "$unit" ]] || continue
+        cfg=$(unit_config_path "$unit")
+        wd=$(unit_prop "$unit" WorkingDirectory)
+        summary=$(py summary "$cfg" 2>/dev/null || echo "config unreadable")
+        ver=$(health_get "$(journal_field "$summary" status_port)" version)
+        pid=$(unit_prop "$unit" MainPID)
+        log "  $unit user=$(unit_user "$unit") dir=$wd config=$cfg pid=$pid version=${ver:-unknown} $summary"
+    done < <(scheduler_units)
+}
+
+run_probe() {
+    local tmp="$1" binary="$2" name="$3"
+    (cd "$tmp" && "$binary" probe --config "$tmp/feed-$name.json")
+}
+
+build_temp_probe() {
+    local tmp="$1" unit cfg
+    local -a shadows=()
+    for unit in "${CONSUMERS[@]}"; do
+        cfg=$(unit_config_path "$unit")
+        py write-shared "$cfg" "$tmp/${unit%.service}.json" "$(feed_socket primary)" "$(feed_socket backup)" 0600
+        shadows+=("$tmp/${unit%.service}.json")
+    done
+    local list
+    list=$(printf '%s\n' "${shadows[@]}" | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))')
+    python3 - "$tmp/feed-backup.json" "$list" <<'PY'
+import json, sys
+json.dump({"role": "feed", "status_port": 8191, "feed": {"source": "rest", "socket_path": "/run/go-trader-feed-backup/feed.sock",
+           "consumer_configs": json.loads(sys.argv[2]), "request_budget": {"per_minute": 1000, "startup": 1000}}, "strategies": []},
+          open(sys.argv[1], "w"), indent=2)
+PY
+}
+
+cmd_plan() {
+    need_root
+    need_tools
+    print_inventory
+    [[ ${#SELECTED[@]} -gt 0 ]] || { log "name consumers with --consumer <unit> to check a selection and print the target"; return 0; }
+    check_selection "${SELECTED[@]}"
+    pick_ports
+    local tmp first_wd probe_out rc unit cfg summary papers=0
+    tmp=$(mktemp -d)
+    build_temp_probe "$tmp"
+    first_wd=$(unit_prop "${CONSUMERS[0]}" WorkingDirectory)
+    set +e
+    probe_out=$(run_probe "$tmp" "$first_wd/go-trader" backup 2>&1)
+    rc=$?
+    set -e
+    rm -rf "$tmp"
+    printf '%s\n' "$probe_out" | sed 's/^/[shared-feed]   /'
+    [[ $rc -eq 0 ]] || die 16 "the feed probe over the selected consumers failed (exit $rc)"
+    if printf '%s\n' "$probe_out" | grep -Eq 'probe: consumer .*(skipped|: 0 feed strategies)'; then
+        die 16 "a selected consumer is skipped or has no feed strategy in the probe above"
+    fi
+    log "target:"
+    local name
+    for name in "${FEEDS[@]}"; do
+        local portvar="PORT_$name"
+        log "  $(feed_unit "$name"): dir=$(feed_dir "$name") config=$(feed_config "$name") source=$(feed_source "$name") socket=$(feed_socket "$name") status_port=${!portvar} user=$FEED_USER"
+    done
+    if [[ "$FEED_USER" != "go-trader" ]]; then
+        log "  feed units get a User=$FEED_USER Group=$FEED_GROUP drop-in, because the consumers run as $FEED_USER"
+    fi
+    for unit in "${CONSUMERS[@]}"; do
+        cfg=$(unit_config_path "$unit")
+        summary=$(py summary "$cfg")
+        [[ "$(journal_field "$summary" live)" == "no" ]] && papers=$((papers + 1))
+        log "  $unit: $cfg gets market_feed \"shared\", primary_socket $(feed_socket primary), backup_socket $(feed_socket backup); restart required$([[ "$(journal_field "$summary" live)" == "yes" ]] && echo "; LIVE: needs --confirm-live $unit")"
+    done
+    if [[ $papers -gt 1 ]]; then
+        log "optional: $papers paper units can be folded into one paper service first with scripts/merge-paper-instance.sh (SKILL.md cutover checklist)"
+    fi
+    log "plan OK: next run 'feeds' with the same --consumer list"
+}
+
+install_feed_unit() {
+    local name="$1" unit dropin
+    unit=$(feed_unit "$name")
+    local src="$REPO_ROOT/systemd/go-trader@.service" dest="/etc/systemd/system/go-trader@.service"
+    update_sync_journal_namespace "$REPO_ROOT" "$src" || die 21 "journald namespace setup failed"
+    if [[ ! -f "$dest" ]] || ! cmp -s "$src" "$dest"; then
+        install -m 0644 "$src" "$dest"
+        log "installed $dest"
+    fi
+    install -d -m 0755 "$(feed_dir "$name")/logs"
+    dropin=$(update_unit_dropin_path /etc/systemd/system "$unit" 10-shared-feed-user)
+    if [[ "$FEED_USER" != "go-trader" ]]; then
+        install -d -m 0755 "$(dirname "$dropin")"
+        printf '[Service]\nUser=%s\nGroup=%s\n' "$FEED_USER" "$FEED_GROUP" >"$dropin"
+        chmod 0644 "$dropin"
+        journal_add "feed-dropin $name $dropin"
+    fi
+    chown -R "$FEED_USER:$FEED_GROUP" "$(feed_dir "$name")/logs" "$(dirname "$(feed_config "$name")")"
+    systemctl daemon-reload
+    systemctl enable "$unit" >/dev/null
+}
+
+wait_feed_serving() {
+    local name="$1" timeout="$2" port="$3" waited=0 status serving key
+    while [[ $waited -lt $timeout ]]; do
+        status=$(health_get "$port" status)
+        serving=$(health_get "$port" serving)
+        key=$(health_get "$port" last_seal_key)
+        if [[ "$status" == "ok" && "$serving" == "true" && -n "$key" && "$key" != "0" ]]; then
+            log "$(feed_unit "$name") sealed key $key"
+            return 0
+        fi
+        sleep 5
+        waited=$((waited + 5))
+    done
+    return 1
+}
+
+cmd_feeds() {
+    need_root
+    need_tools
+    check_selection "${SELECTED[@]}"
+    pick_ports
+    local first_wd first_cfg origin unit cfg shadow name
+    first_wd=$(unit_prop "${CONSUMERS[0]}" WorkingDirectory)
+    first_cfg=$(unit_config_path "${CONSUMERS[0]}")
+    origin=$(git -C "$first_wd" remote get-url origin 2>/dev/null || true)
+    [[ -n "$origin" ]] || die 20 "$first_wd has no git origin; the feed deployments clone it so update.sh can update them later"
+    mkdir -p "$SHADOW_DIR"
+    chmod 0755 "$STATE_DIR" "$SHADOW_DIR"
+    local -a shadows=()
+    for unit in "${CONSUMERS[@]}"; do
+        cfg=$(unit_config_path "$unit")
+        shadow="$SHADOW_DIR/${unit%.service}.json"
+        py write-shared "$cfg" "$shadow" "$(feed_socket primary)" "$(feed_socket backup)" 0644
+        journal_add "consumer $unit config=$cfg shadow=$shadow"
+        shadows+=("$shadow")
+    done
+    local list per_minute startup keys
+    list=$(printf '%s\n' "${shadows[@]}" | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))')
+    for name in "${FEEDS[@]}"; do
+        local dir config portvar="PORT_$name"
+        dir=$(feed_dir "$name")
+        config=$(feed_config "$name")
+        journal_add "port $name ${!portvar}"
+        if [[ ! -d "$dir/.git" ]]; then
+            [[ ! -e "$dir" ]] || die 20 "$dir exists but is not a git checkout; remove it or finish it by hand"
+            git clone --quiet "$origin" "$dir"
+        fi
+        install -d -m 0755 "$(dirname "$config")"
+        per_minute=""
+        startup=""
+        if [[ "$name" == "backup" ]]; then
+            local rec
+            rec=$(journal_last "budget")
+            if [[ -n "$rec" ]]; then
+                per_minute=$(journal_field "$rec" per_minute)
+                startup=$(journal_field "$rec" startup)
+            elif [[ -n "$OPT_PER_MINUTE" ]]; then
+                per_minute="$OPT_PER_MINUTE"
+                startup="$OPT_STARTUP"
+            else
+                per_minute=1000
+                startup=1000
+            fi
+        fi
+        if [[ -f "$config" && -n "$(journal_last "feed $name")" ]]; then
+            log "$config exists from a finished feeds run; keeping it"
+        else
+            py write-feed "$config" "$first_cfg" "$(feed_source "$name")" "$(feed_socket "$name")" "${!portvar}" "$list" "$per_minute" "$startup"
+        fi
+        [[ "$name" == "backup" && -z "$(journal_last budget)" ]] && journal_add "budget provisional per_minute=$per_minute startup=$startup"
+        ln -sfn "$config" "$dir/scheduler/config.json"
+        local envfile
+        envfile=$(update_systemd_envfile_check_path "$(unit_prop "${CONSUMERS[0]}" EnvironmentFiles)")
+        if [[ ! -f "$dir/.env" ]]; then
+            if [[ -n "$envfile" && -f "$envfile" ]]; then
+                grep -E '^(export[[:space:]]+)?(DISCORD_|TELEGRAM_)' "$envfile" >"$dir/.env" || true
+            else
+                : >"$dir/.env"
+            fi
+            chmod 0600 "$dir/.env"
+        fi
+        log "building $dir from $first_wd"
+        (cd "$dir" && bash scripts/update.sh --rsync-from "$first_wd") || die 22 "update.sh --rsync-from failed in $dir"
+        [[ "$(source_fingerprint "$dir")" == "$(source_fingerprint "$first_wd")" ]] || die 22 "$dir source differs from $first_wd after the build"
+        [[ "$FEED_USER" == "root" ]] || chown -R "$FEED_USER:$FEED_GROUP" "$dir"
+        install_feed_unit "$name"
+        if ! systemctl is-active --quiet "$(feed_unit "$name")"; then
+            systemctl start "$(feed_unit "$name")"
+        fi
+        journal_add "feed $name dir=$dir config=$config unit=$(feed_unit "$name") installed at=$(date -u +%s)"
+    done
+    for name in "${FEEDS[@]}"; do
+        local portvar="PORT_$name"
+        wait_feed_serving "$name" "${SHARED_FEED_CONVERT_SEAL_TIMEOUT:-900}" "${!portvar}" \
+            || die 23 "$(feed_unit "$name") did not seal a key; see $(update_journalctl_unit_command "$(feed_unit "$name")" go-trader)"
+    done
+    keys=$(run_probe_live primary | grep -c '^probe: key ' || true)
+    journal_add "feeds ready keys=$keys"
+    log "feeds OK: both feeds seal from shadow configs; no consumer changed. Next: calibrate"
+}
+
+run_probe_live() {
+    local name="$1"
+    (cd "$(feed_dir "$name")" && ./go-trader probe --config "$(feed_config "$name")" 2>/dev/null) || true
+}
+
+max_cadence() {
+    run_probe_live backup | sed -n 's/^probe: key .* cadences=//p' | tr ',' '\n' | tr -d 's' | sort -n | tail -n 1
+}
+
+reload_feed() {
+    local name="$1" port gen_before waited=0 gen
+    port=$(feed_port "$name")
+    gen_before=$(health_get "$port" generation)
+    systemctl kill -s HUP "$(feed_unit "$name")"
+    while [[ $waited -lt 180 ]]; do
+        sleep 3
+        waited=$((waited + 3))
+        gen=$(health_get "$port" generation)
+        if [[ -n "$gen" && "$gen" != "$gen_before" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+feed_port() {
+    local rec
+    rec=$(journal_last "port $1")
+    printf '%s' "${rec##* }"
+}
+
+PREV_PER_MINUTE=""
+PREV_STARTUP=""
+
+calibrate_fail() {
+    py set-budget "$(feed_config backup)" "$PREV_PER_MINUTE" "$PREV_STARTUP"
+    systemctl kill -s HUP "$(feed_unit backup)" || true
+    die 24 "$1; the backup keeps its previous budget per_minute=$PREV_PER_MINUTE startup=$PREV_STARTUP"
+}
+
+cmd_calibrate() {
+    need_root
+    [[ -n "$(journal_last "feeds ready")" ]] || die 20 "run 'feeds' first"
+    local port window cad sampled=0 peak=0 used refused_before refused bootstrap per_minute startup cap_peak="" cap_cold=""
+    port=$(feed_port backup)
+    cad=$(max_cadence)
+    window="${OPT_WINDOW:-$(( ${cad:-300} * 2 ))}"
+    PREV_PER_MINUTE=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["feed"]["request_budget"]["per_minute"])' "$(feed_config backup)")
+    PREV_STARTUP=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["feed"]["request_budget"]["startup"])' "$(feed_config backup)")
+    if [[ -n "$OPT_PER_MINUTE" ]]; then
+        py set-budget "$(feed_config backup)" "$OPT_PER_MINUTE" "$OPT_STARTUP"
+        systemctl kill -s HUP "$(feed_unit backup)"
+        sleep 5
+    fi
+    refused_before=$(health_get "$port" request_budget.totals.refused)
+    log "sampling the backup's request window for ${window}s (longest cadence ${cad:-unknown}s)"
+    while [[ $sampled -lt $window ]]; do
+        used=$(health_get "$port" request_budget.window_used)
+        [[ -n "$used" && "$used" -gt "$peak" ]] && peak="$used"
+        sleep 2
+        sampled=$((sampled + 2))
+    done
+    refused=$(health_get "$port" request_budget.totals.refused)
+    [[ "${refused:-0}" == "${refused_before:-0}" ]] || calibrate_fail "the backup refused $((refused - refused_before)) request(s) during calibration; raise the budget and re-run"
+    bootstrap=$(health_get "$port" request_budget.totals.by_reason.bootstrap)
+    bootstrap="${bootstrap:-0}"
+    if [[ -n "$OPT_PER_MINUTE" ]]; then
+        per_minute="$OPT_PER_MINUTE"
+        startup="$OPT_STARTUP"
+        [[ $((peak + 1)) -lt $per_minute ]] || calibrate_fail "measured peak $peak plus the mids reserve does not fit per_minute $per_minute"
+        [[ $bootstrap -le $startup ]] || warn "bootstrap used $bootstrap requests, above startup $startup; the rest came from the per-minute window"
+    else
+        per_minute=$(( (peak * 3 + 1) / 2 ))
+        [[ $per_minute -ge $((peak + 2)) ]] || per_minute=$((peak + 2))
+        startup=$(( (bootstrap * 3 + 1) / 2 ))
+        [[ $startup -ge 1 ]] || startup=1
+    fi
+    if [[ -n "$OPT_LEDGER" ]]; then
+        local report
+        report=$(mktemp)
+        python3 "$REPO_ROOT/scripts/hl-request-ledger.py" report --ledger "$OPT_LEDGER" >"$report" || calibrate_fail "hl-request-ledger.py report failed for $OPT_LEDGER"
+        read -r cap_peak cap_cold < <(py ledger-caps "$report")
+        rm -f "$report"
+        [[ -n "$cap_peak" ]] || calibrate_fail "no summed steady peak in the ledger report"
+        [[ $((peak + 2)) -le $cap_peak ]] || calibrate_fail "the backup needs $((peak + 2)) requests per minute, above today's measured peak $cap_peak"
+        [[ $per_minute -le $cap_peak ]] || per_minute=$cap_peak
+        if [[ -n "$cap_cold" && $startup -gt $cap_cold ]]; then startup=$cap_cold; fi
+    fi
+    py set-budget "$(feed_config backup)" "$per_minute" "$startup"
+    systemctl kill -s HUP "$(feed_unit backup)"
+    sleep 5
+    [[ "$(health_get "$port" request_budget.per_minute)" == "$per_minute" ]] || calibrate_fail "the backup did not apply per_minute $per_minute after SIGHUP"
+    journal_add "budget calibrated per_minute=$per_minute startup=$startup peak=$peak bootstrap=$bootstrap baseline_peak=${cap_peak:-none} fixed=$([[ -n "$OPT_PER_MINUTE" ]] && echo yes || echo no)"
+    log "calibrate OK: per_minute=$per_minute startup=$startup (measured peak $peak, bootstrap $bootstrap). Next: verify"
+}
+
+cmd_verify() {
+    need_root
+    [[ -n "$(journal_last "feeds ready")" ]] || die 20 "run 'feeds' first"
+    local name port rc
+    for name in "${FEEDS[@]}"; do
+        port=$(feed_port "$name")
+        [[ "$(health_get "$port" status)" == "ok" && "$(health_get "$port" serving)" == "true" ]] || die 25 "$(feed_unit "$name") is not healthy and serving"
+    done
+    local attempt
+    for attempt in 1 2; do
+        set +e
+        bash "$REPO_ROOT/scripts/feed-source-compare.sh" --binary "$(feed_dir primary)/go-trader" \
+            --primary-socket "$(feed_socket primary)" --backup-socket "$(feed_socket backup)"
+        rc=$?
+        set -e
+        [[ $rc -eq 0 ]] && break
+        [[ $rc -eq 1 && $attempt -eq 1 ]] || die 25 "feed-source-compare exited $rc"
+        local wait_s
+        wait_s=$(max_cadence)
+        log "comparison inconclusive; retrying after ${wait_s:-300}s"
+        sleep "${wait_s:-300}"
+    done
+    journal_add "verify pass at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    log "verify OK. Next: switch --consumer <unit>, paper units first"
+}
+
+status_token_for() {
+    local unit="$1" envfile
+    envfile=$(update_systemd_envfile_check_path "$(unit_prop "$unit" EnvironmentFiles)")
+    [[ -n "$envfile" && -f "$envfile" ]] || { printf ''; return 0; }
+    sed -n 's/^\(export[[:space:]]\+\)\?STATUS_AUTH_TOKEN=//p' "$envfile" | tail -n 1 | tr -d '"'"'"
+}
+
+wait_active_fresh() {
+    local unit="$1" old_pid="$2" port="$3" waited=0 pid hpid
+    while [[ $waited -lt 180 ]]; do
+        sleep 3
+        waited=$((waited + 3))
+        systemctl is-active --quiet "$unit" || continue
+        pid=$(unit_prop "$unit" MainPID)
+        [[ -n "$pid" && "$pid" != "0" && "$pid" != "$old_pid" ]] || continue
+        hpid=$(health_get "$port" pid)
+        [[ "$hpid" == "$pid" ]] && { printf '%s' "$pid"; return 0; }
+    done
+    return 1
+}
+
+restore_consumer() {
+    local unit="$1" rec cfg backup shadow pre port old_pid
+    rec=$(journal_last "switch $unit")
+    cfg=$(journal_field "$rec" config)
+    backup=$(journal_field "$rec" backup)
+    pre=$(journal_field "$rec" pre)
+    shadow=$(journal_field "$(journal_last "consumer $unit")" shadow)
+    [[ -n "$cfg" && -f "$backup" ]] || { warn "$unit: no saved config recorded"; return 1; }
+    [[ "$(update_file_fingerprint "$backup")" == "$pre" ]] || { warn "$unit: $backup no longer matches the recorded pre-switch fingerprint"; return 1; }
+    cp -p "$backup" "$cfg.restore-shared-feed"
+    mv -f "$cfg.restore-shared-feed" "$cfg"
+    local dropin
+    dropin=$(update_unit_dropin_path /etc/systemd/system "$unit" 50-shared-feed)
+    if [[ -f "$dropin" ]]; then
+        rm -f "$dropin"
+        systemctl daemon-reload
+    fi
+    local name
+    for name in "${FEEDS[@]}"; do
+        if [[ -n "$shadow" ]] && python3 -c 'import json,sys; sys.exit(0 if sys.argv[2] in json.load(open(sys.argv[1]))["feed"]["consumer_configs"] else 1)' "$(feed_config "$name")" "$cfg" 2>/dev/null; then
+            py replace-consumer "$(feed_config "$name")" "$cfg" "$shadow"
+            systemctl is-active --quiet "$(feed_unit "$name")" && systemctl kill -s HUP "$(feed_unit "$name")" || true
+        fi
+    done
+    port=$(journal_field "$(py summary "$cfg")" status_port)
+    old_pid=$(unit_prop "$unit" MainPID)
+    systemctl restart "$unit"
+    wait_active_fresh "$unit" "$old_pid" "$port" >/dev/null || { warn "$unit did not come back healthy after the restore"; return 1; }
+    [[ "$(update_file_fingerprint "$cfg")" == "$pre" ]] || { warn "$unit: restored config fingerprint differs"; return 1; }
+    journal_add "switch $unit config=$cfg backup=$backup pre=$pre rolled_back at=$(date -u +%s)"
+    log "$unit restored to its saved config and healthy"
+}
+
+switch_fail() {
+    local unit="$1" why="$2"
+    warn "$unit: $why; restoring the saved config"
+    if restore_consumer "$unit"; then
+        die 26 "$unit: switch failed ($why); the unit runs its original config again"
+    fi
+    die 30 "$unit: switch failed ($why) and the automatic restore also failed; restore $(journal_field "$(journal_last "switch $unit")" backup) by hand"
+}
+
+cmd_switch() {
+    need_root
+    [[ ${#SELECTED[@]} -eq 1 ]] || die 2 "switch takes exactly one --consumer <unit>"
+    local unit="${SELECTED[0]}"
+    [[ "$unit" == *.service ]] || unit="${unit}.service"
+    [[ -n "$(journal_last "verify pass")" ]] || die 20 "run 'verify' first"
+    local crec cfg shadow
+    crec=$(journal_last "consumer $unit")
+    [[ -n "$crec" ]] || die 20 "$unit was not selected in the 'feeds' stage"
+    cfg=$(journal_field "$crec" config)
+    shadow=$(journal_field "$crec" shadow)
+    local srec
+    srec=$(journal_last "switch $unit")
+    if [[ "$srec" == *" done "* || "$srec" == *" done" ]] && [[ "$(update_file_fingerprint "$cfg")" == "$(journal_field "$srec" post)" ]]; then
+        log "$unit is already switched; nothing to do"
+        return 0
+    fi
+    local summary live port old_pid
+    summary=$(py summary "$cfg")
+    live=$(journal_field "$summary" live)
+    port=$(journal_field "$summary" status_port)
+    if [[ "$live" == "yes" ]]; then
+        if [[ "$OPT_CONFIRM_LIVE" != "$unit" && "$OPT_CONFIRM_LIVE" != "${unit%.service}" ]]; then
+            [[ -t 0 ]] || die 2 "$unit has live or manual strategies; pass --confirm-live $unit"
+            local typed
+            read -r -p "[shared-feed] $unit trades live. Type the unit name to switch it: " typed
+            [[ "$typed" == "$unit" || "$typed" == "${unit%.service}" ]] || die 2 "confirmation did not match; nothing changed"
+        fi
+    fi
+    local stamp backup pre post
+    stamp=$(date -u +%Y%m%dT%H%M%SZ)
+    backup="${cfg}.pre-shared-feed.${stamp}"
+    pre=$(update_file_fingerprint "$cfg")
+    cp -p "$cfg" "$backup"
+    old_pid=$(unit_prop "$unit" MainPID)
+    journal_add "switch $unit config=$cfg backup=$backup pre=$pre pid=$old_pid begin"
+    py write-shared "$cfg" "$cfg" "$(feed_socket primary)" "$(feed_socket backup)" "$(stat -c '%a' "$backup")"
+    chown --reference="$backup" "$cfg"
+    post=$(update_file_fingerprint "$cfg")
+    local name tmp state waited
+    tmp=$(mktemp)
+    for name in "${FEEDS[@]}"; do
+        py replace-consumer "$(feed_config "$name")" "$shadow" "$cfg" || switch_fail "$unit" "could not repoint $(feed_config "$name")"
+        reload_feed "$name" || switch_fail "$unit" "$(feed_unit "$name") published no new generation after SIGHUP"
+        waited=0
+        state=""
+        while [[ $waited -lt 60 ]]; do
+            http_to_file "http://127.0.0.1:$(feed_port "$name")/status" "$tmp" || true
+            state=$(py feed-consumer-state "$tmp" "$cfg" 2>/dev/null || true)
+            [[ "$state" == "loaded" ]] && break
+            sleep 3
+            waited=$((waited + 3))
+        done
+        [[ "$state" == "loaded" ]] || switch_fail "$unit" "$(feed_unit "$name") did not load $cfg ($state)"
+    done
+    rm -f "$tmp"
+    [[ "$FAIL_AFTER" == "feeds-reload" ]] && switch_fail "$unit" "SHARED_FEED_CONVERT_FAIL_AFTER=feeds-reload"
+    if [[ "$OPT_DROPIN" == "1" ]]; then
+        local dropin
+        dropin=$(update_unit_dropin_path /etc/systemd/system "$unit" 50-shared-feed)
+        install -d -m 0755 "$(dirname "$dropin")"
+        printf '[Unit]\nWants=%s %s\nAfter=%s %s\n' "$(feed_unit primary)" "$(feed_unit backup)" "$(feed_unit primary)" "$(feed_unit backup)" >"$dropin"
+        chmod 0644 "$dropin"
+        systemctl daemon-reload
+    fi
+    local since new_pid
+    since="@$(date +%s)"
+    systemctl restart "$unit" || switch_fail "$unit" "systemctl restart failed"
+    new_pid=$(wait_active_fresh "$unit" "$old_pid" "$port") || switch_fail "$unit" "the unit did not come back active and healthy with a fresh pid"
+    [[ "$FAIL_AFTER" == "restart" ]] && switch_fail "$unit" "SHARED_FEED_CONVERT_FAIL_AFTER=restart"
+    local cad timeout sealed=0 bad
+    cad=$(max_cadence)
+    timeout=$(( (${cad:-300}) * (AUDIT_KEYS + 1) + 120 ))
+    waited=0
+    log "$unit restarted (pid $new_pid); waiting up to ${timeout}s for $AUDIT_KEYS sealed primary keys"
+    while [[ $waited -lt $timeout ]]; do
+        sleep 10
+        waited=$((waited + 10))
+        local lines
+        lines=$(unit_journal "$unit" "$since" | grep '^\[feed-audit\]' || true)
+        bad=$(printf '%s\n' "$lines" | grep -E 'status=(sealed endpoint=backup|degraded)' | head -n 1 || true)
+        [[ -z "$bad" ]] || switch_fail "$unit" "a key was not served by the primary: $bad"
+        sealed=$(printf '%s\n' "$lines" | grep -c 'status=sealed endpoint=primary' || true)
+        [[ $sealed -ge $AUDIT_KEYS ]] && break
+    done
+    [[ $sealed -ge $AUDIT_KEYS ]] || switch_fail "$unit" "only $sealed sealed primary key(s) in ${timeout}s"
+    [[ "$FAIL_AFTER" == "audit" ]] && switch_fail "$unit" "SHARED_FEED_CONVERT_FAIL_AFTER=audit"
+    local parity
+    set +e
+    parity=$(bash "$REPO_ROOT/scripts/feed-parity.sh" --since "$since" --feed-unit "$(feed_unit primary)" --feed-unit "$(feed_unit backup)" --consumer-unit "$unit" 2>&1)
+    local prc=$?
+    set -e
+    printf '%s\n' "$parity" | tail -n 5 | sed 's/^/[shared-feed]   /'
+    [[ $prc -eq 0 ]] || switch_fail "$unit" "feed-parity failed (exit $prc)"
+    local token served tmp2
+    token=$(status_token_for "$unit")
+    tmp2=$(mktemp)
+    if http_to_file "http://127.0.0.1:${port}/status" "$tmp2" "$token"; then
+        served=$(py get "$tmp2" market_feed.shared.served_by 2>/dev/null || true)
+        if [[ -n "$served" && "$served" != "primary" ]]; then
+            rm -f "$tmp2"
+            switch_fail "$unit" "/status served_by is $served"
+        fi
+        [[ -n "$served" ]] || warn "$unit /status gave no served_by (status token unreadable?); the journal proof above stands"
+    fi
+    rm -f "$tmp2"
+    journal_add "switch $unit config=$cfg backup=$backup pre=$pre post=$post pid=$new_pid done"
+    log "$unit switched: $sealed sealed primary keys and feed-parity PASS"
+}
+
+cmd_rollback() {
+    need_root
+    local -a units=()
+    local unit rec
+    if [[ "$OPT_ALL" == "1" ]]; then
+        while IFS= read -r rec; do
+            unit=$(printf '%s' "$rec" | awk '{print $2}')
+            [[ -n "$unit" ]] && units+=("$unit")
+        done < <(grep -E '^consumer ' "$JOURNAL" 2>/dev/null || true)
+    else
+        [[ ${#SELECTED[@]} -eq 1 ]] || die 2 "rollback takes --consumer <unit> or --all"
+        unit="${SELECTED[0]}"
+        [[ "$unit" == *.service ]] || unit="${unit}.service"
+        units=("$unit")
+    fi
+    local failed=0
+    for unit in "${units[@]}"; do
+        rec=$(journal_last "switch $unit")
+        if [[ -z "$rec" || "$rec" == *" rolled_back "* ]]; then
+            log "$unit was never switched or is already restored"
+            continue
+        fi
+        restore_consumer "$unit" || failed=1
+    done
+    [[ $failed -eq 0 ]] || die 30 "at least one consumer could not be restored; see the warnings above"
+    if [[ "$OPT_ALL" == "1" ]]; then
+        local name
+        for name in "${FEEDS[@]}"; do
+            systemctl disable --now "$(feed_unit "$name")" >/dev/null 2>&1 || true
+            journal_add "feed $name stopped_disabled at=$(date -u +%s)"
+        done
+        log "rollback OK: every consumer runs its saved config; both feeds are stopped and disabled"
+    fi
+}
+
+cmd_status() {
+    need_root
+    [[ -f "$JOURNAL" ]] && { log "journal $JOURNAL:"; sed 's/^/[shared-feed]   /' "$JOURNAL"; } || log "no journal yet"
+    local name port
+    for name in "${FEEDS[@]}"; do
+        port=$(feed_port "$name")
+        [[ -n "$port" ]] || continue
+        log "$(feed_unit "$name"): $(systemctl is-active "$(feed_unit "$name")" 2>/dev/null || true) status=$(health_get "$port" status) serving=$(health_get "$port" serving) last_seal_key=$(health_get "$port" last_seal_key) window_used=$(health_get "$port" request_budget.window_used) per_minute=$(health_get "$port" request_budget.per_minute)"
+    done
+    local rec unit cfg
+    while IFS= read -r rec; do
+        unit=$(printf '%s' "$rec" | awk '{print $2}')
+        cfg=$(journal_field "$rec" config)
+        log "$unit: $(systemctl is-active "$unit" 2>/dev/null || true) $(py summary "$cfg" 2>/dev/null || echo 'config unreadable')"
+    done < <(grep -E '^consumer ' "$JOURNAL" 2>/dev/null || true)
+}
+
+[[ $# -gt 0 ]] || { usage; exit 2; }
+SUBCOMMAND="$1"
+shift
+declare -a SELECTED=()
+OPT_PER_MINUTE=""
+OPT_STARTUP=""
+OPT_LEDGER=""
+OPT_WINDOW=""
+OPT_CONFIRM_LIVE=""
+OPT_DROPIN=0
+OPT_ALL=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --consumer) SELECTED+=("${2:-}"); shift 2 ;;
+        --per-minute) OPT_PER_MINUTE="${2:-}"; shift 2 ;;
+        --startup) OPT_STARTUP="${2:-}"; shift 2 ;;
+        --baseline-ledger) OPT_LEDGER="${2:-}"; shift 2 ;;
+        --window) OPT_WINDOW="${2:-}"; shift 2 ;;
+        --confirm-live) OPT_CONFIRM_LIVE="${2:-}"; shift 2 ;;
+        --dropin) OPT_DROPIN=1; shift ;;
+        --all) OPT_ALL=1; shift ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "unknown arg: $1" >&2; usage >&2; exit 2 ;;
+    esac
+done
+if [[ -n "$OPT_PER_MINUTE$OPT_STARTUP" ]]; then
+    [[ "$OPT_PER_MINUTE" =~ ^[1-9][0-9]*$ && "$OPT_STARTUP" =~ ^[1-9][0-9]*$ ]] || die 2 "--per-minute and --startup must both be positive integers"
+fi
+[[ -z "$OPT_WINDOW" || "$OPT_WINDOW" =~ ^[1-9][0-9]*$ ]] || die 2 "--window must be a positive number of seconds"
+
+case "$SUBCOMMAND" in
+    plan) cmd_plan ;;
+    feeds) cmd_feeds ;;
+    calibrate) cmd_calibrate ;;
+    verify) cmd_verify ;;
+    switch) cmd_switch ;;
+    rollback) cmd_rollback ;;
+    status) cmd_status ;;
+    -h|--help|help) usage ;;
+    *) echo "unknown subcommand: $SUBCOMMAND" >&2; usage >&2; exit 2 ;;
+esac
