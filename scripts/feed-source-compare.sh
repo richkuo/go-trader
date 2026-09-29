@@ -25,8 +25,9 @@ Excluded on purpose: source labels, receive times, readiness detail, instance,
 generation, seal time, forming bars, mids and current funding scalars. They
 differ between independent sources by design.
 
-Exit status: 0 when no difference is found, 3 when differences are listed,
-1 on a read error, 2 on bad usage. Every difference is printed with both values.
+Exit status: 0 when at least one closed bar was compared and no difference is
+found, 3 when differences are listed, 1 on a read error or when no closed bar
+was compared (INCONCLUSIVE), 2 on bad usage. Every difference is printed with both values.
 EOF
 }
 
@@ -163,5 +164,10 @@ for primary_path, backup_path in pairs:
                 differences += 1
                 print(f"feed-source-compare: DIFF {tag} funding {coin} time={t}: primary={pr[t]!r} backup={br[t]!r}")
 print(f"feed-source-compare: {len(pairs)} key pair(s), {compared_bars} closed bars and {compared_records} funding records compared, {skipped_keys} candle key(s) skipped as not ready, {differences} difference(s)")
-sys.exit(3 if differences else 0)
+if differences:
+    sys.exit(3)
+if compared_bars == 0:
+    print(f"feed-source-compare: INCONCLUSIVE no closed bar was compared ({skipped_keys} candle key(s) skipped as not ready); this is no evidence that the sources match")
+    sys.exit(1)
+sys.exit(0)
 PY
