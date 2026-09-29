@@ -306,10 +306,15 @@ func (c *sharedFeedClient) Fetch(ctx context.Context, key int64, reqs cycleMarke
 		}
 		break
 	}
+	stopping := false
 	if snap == nil {
 		snap = degradedSharedSnapshot(key, c.clock())
 		report.Status = feedFetchDegraded
 		report.Reason = "no endpoint served a compatible seal: " + strings.Join(report.Attempts, "; ")
+		if ctx.Err() != nil {
+			stopping = true
+			report.Reason = "the consumer is stopping; " + report.Reason
+		}
 	} else {
 		report.Gaps = applySealCoverage(snap, reqs)
 	}
@@ -318,6 +323,7 @@ func (c *sharedFeedClient) Fetch(ctx context.Context, key int64, reqs cycleMarke
 
 	c.mu.Lock()
 	switch {
+	case stopping:
 	case report.Status == feedFetchDegraded && !c.outage:
 		c.outage = true
 		report.Alerts = append(report.Alerts, fmt.Sprintf("**SHARED MARKET FEED OUTAGE** key %d: %s. Entries are held; closes, stops, ratchet and protection continue on verified inputs.", key, strings.Join(report.Attempts, "; ")))

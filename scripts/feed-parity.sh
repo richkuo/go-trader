@@ -15,7 +15,8 @@ Joins the market feed's [feed-seal] records with each shared-mode scheduler's
 [feed-audit] and [feed-payload] records by key and fails when:
   - a feed or consumer input has no records (empty input),
   - a consumer skipped a key of a cadence while its audit records listed that
-    cadence as active (missing coverage),
+    cadence as active and no consumer start ([feed-audit] event=start) fell
+    between them (missing coverage),
   - a consumer's seal hash differs from the feed's hash for that key and instance,
   - two consumers built different market payloads from the same seal and frame
     specification, or a consumer audited a key the feed never sealed.
@@ -150,6 +151,7 @@ hi = feed_keys[-1] if feed_keys else None
 audits = {}
 payloads = defaultdict(dict)
 fallbacks = []
+starts = defaultdict(list)
 for label, path in consumers:
     recs = {}
     with open(path, errors="replace") as fh:
@@ -157,6 +159,12 @@ for label, path in consumers:
             idx = line.find("[feed-audit]")
             if idx >= 0:
                 f = fields(line[idx:])
+                if f.get("event") == "start":
+                    if f.get("at", "").isdigit():
+                        starts[label].append(int(f["at"]))
+                    continue
+                if "key" not in f:
+                    continue
                 if "mark_fallback" in f:
                     if f["mark_fallback"]:
                         fallbacks.append(f"consumer {label}: key {f['key']} REST mark fallback for {f['mark_fallback']}")
@@ -189,7 +197,14 @@ for label, recs in audits.items():
             started = at if started is None else min(started, at)
     runs = defaultdict(list)
     open_runs = {}
+    prev_at = None
     for k in keys:
+        at = int(recs[k]["at"]) if recs[k].get("at", "").isdigit() else None
+        if prev_at is not None and at is not None and any(prev_at < s <= at for s in starts[label]):
+            for c in list(open_runs):
+                runs[c].append(open_runs.pop(c))
+        if at is not None:
+            prev_at = at
         active = {int(c) for c in recs[k].get("cadences", "none").split(",") if c.isdigit()}
         for c in [c for c in open_runs if c not in active]:
             runs[c].append(open_runs.pop(c))

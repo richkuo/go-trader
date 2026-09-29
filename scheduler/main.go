@@ -647,6 +647,7 @@ func main() {
 		}
 		feedReq = derived
 		sharedClient = newSharedFeedClient(cfg)
+		fmt.Printf("[feed-audit] event=start at=%d pid=%d\n", time.Now().Unix(), os.Getpid())
 		globalMarketFeedStatus.setShared(sharedClient)
 		checkSharedFeedCoverage(sharedClient, "startup", feedReq, feedConsumerCadences(cfg), notifier)
 	}
