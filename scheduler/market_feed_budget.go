@@ -225,6 +225,9 @@ func feedBudgetAcquire(ctx context.Context, reqType string) error {
 	if l == nil {
 		return nil
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	reason, _ := ctx.Value(feedReasonCtxKey{}).(string)
 	if reason == "" {
 		reason = "other"
