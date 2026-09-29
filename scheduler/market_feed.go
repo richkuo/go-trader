@@ -79,17 +79,18 @@ func sortMarketFeedKeys(keys []marketFeedKey) {
 }
 
 type feedBar struct {
-	OpenMs   int64
-	CloseMs  int64
-	HasClose bool
-	Open     float64
-	High     float64
-	Low      float64
-	Close    float64
-	Volume   float64
-	Seq      uint64
-	RecvAt   time.Time
-	Source   feedBarSource
+	OpenMs     int64
+	CloseMs    int64
+	HasClose   bool
+	Open       float64
+	High       float64
+	Low        float64
+	Close      float64
+	Volume     float64
+	Seq        uint64
+	RecvAt     time.Time
+	Source     feedBarSource
+	RestSeenAt time.Time
 }
 
 func (b feedBar) row() hlCandleRow {
@@ -172,6 +173,7 @@ type feedKeyState struct {
 	InvalidCount  int
 	LastInvalid   string
 	seq           uint64
+	corr          feedKeyCorrection
 }
 
 func newFeedKeyState(key marketFeedKey, intervalMs int64, required int) *feedKeyState {
@@ -243,9 +245,14 @@ func applySocketBar(s *feedKeyState, bar feedBar) error {
 func storeSocketBar(s *feedKeyState, bar feedBar) {
 	idx, found := s.indexOfOpen(bar.OpenMs)
 	if found {
-		if bar.CloseMs < s.Bars[idx].CloseMs {
+		stored := s.Bars[idx]
+		if bar.CloseMs < stored.CloseMs {
 			return
 		}
+		if stored.Source == feedBarSourceREST && bar.Volume < stored.Volume {
+			return
+		}
+		bar.RestSeenAt = stored.RestSeenAt
 		bar.Seq = s.nextSeq()
 		s.Bars[idx] = bar
 	} else {
@@ -286,11 +293,20 @@ func mergeRestRows(s *feedKeyState, raws []hlCandleRaw, requestedAt time.Time) m
 			out.Invalid++
 			continue
 		}
+		bar.RestSeenAt = requestedAt
 		idx, found := s.indexOfOpen(bar.OpenMs)
 		if found {
-			if s.Bars[idx].RecvAt.After(requestedAt) {
+			stored := s.Bars[idx]
+			replace, verified := feedRestBarDecision(stored, bar, requestedAt)
+			if !replace {
+				if verified && requestedAt.After(stored.RestSeenAt) {
+					s.Bars[idx].RestSeenAt = requestedAt
+				}
 				out.Kept++
 				continue
+			}
+			if stored.RestSeenAt.After(bar.RestSeenAt) {
+				bar.RestSeenAt = stored.RestSeenAt
 			}
 			bar.Seq = s.nextSeq()
 			s.Bars[idx] = bar
@@ -440,6 +456,9 @@ const (
 	feedRestRetry     feedRestReason = "retry"
 	feedRestFunding   feedRestReason = "funding"
 	feedRestMids      feedRestReason = "mids"
+
+	feedRestCorrection      feedRestReason = "correction"
+	feedRestCorrectionRetry feedRestReason = "correction_retry"
 )
 
 type feedMetrics struct {
@@ -447,6 +466,7 @@ type feedMetrics struct {
 	RepairCalls       int
 	RecoveryCalls     int
 	SteadyCandleCalls int
+	CorrectionCalls   int
 }
 
 type feedAlert struct {
@@ -476,6 +496,10 @@ type marketFeedOwner struct {
 
 	metrics feedMetrics
 
+	corrOffsets   []time.Duration
+	correction    feedCorrectionStats
+	requestLedger *feedRequestLedger
+
 	alerts chan feedAlert
 	clock  func() time.Time
 	logf   func(string, ...any)
@@ -501,10 +525,17 @@ func newMarketFeedOwner(clock func() time.Time, logf func(string, ...any)) *mark
 		midCoins:     make(map[string]bool),
 		funding:      make(map[string]*feedFunding),
 		fundingNeeds: make(map[string]feedFundingNeed),
+		corrOffsets:  append([]time.Duration(nil), feedCorrectionOffsets...),
 		alerts:       make(chan feedAlert, feedAlertChannelDepth),
 		clock:        clock,
 		logf:         logf,
 	}
+}
+
+func (o *marketFeedOwner) SetRequestLedger(l *feedRequestLedger) {
+	o.feedMu.Lock()
+	defer o.feedMu.Unlock()
+	o.requestLedger = l
 }
 
 func (o *marketFeedOwner) now() time.Time {
@@ -540,6 +571,8 @@ func (o *marketFeedOwner) countRestCall(reason feedRestReason) {
 		o.metrics.RepairCalls++
 	case feedRestRecovery:
 		o.metrics.RecoveryCalls++
+	case feedRestCorrection, feedRestCorrectionRetry:
+		o.metrics.CorrectionCalls++
 	default:
 		o.metrics.SteadyCandleCalls++
 	}
@@ -769,18 +802,23 @@ type marketFeedHealth struct {
 	Keys         []marketFeedHealthKey `json:"keys"`
 	Mids         []marketFeedHealthMid `json:"mids,omitempty"`
 	Shared       *sharedFeedStatus     `json:"shared,omitempty"`
+	Correction   *feedCorrectionHealth `json:"correction,omitempty"`
+	Requests     *feedBudgetTotals     `json:"requests,omitempty"`
 }
 
 type marketFeedHealthKey struct {
-	Key           string `json:"key"`
-	Status        string `json:"status"`
-	Bars          int    `json:"bars"`
-	Required      int    `json:"required"`
-	Ready         bool   `json:"ready"`
-	Stale         bool   `json:"stale,omitempty"`
-	CoverageShort bool   `json:"coverage_short,omitempty"`
-	Detail        string `json:"detail,omitempty"`
-	LastCloseMs   int64  `json:"last_close_ms,omitempty"`
+	Key               string `json:"key"`
+	Status            string `json:"status"`
+	Bars              int    `json:"bars"`
+	Required          int    `json:"required"`
+	Ready             bool   `json:"ready"`
+	Stale             bool   `json:"stale,omitempty"`
+	CoverageShort     bool   `json:"coverage_short,omitempty"`
+	Detail            string `json:"detail,omitempty"`
+	LastCloseMs       int64  `json:"last_close_ms,omitempty"`
+	CorrectionPending int    `json:"correction_pending,omitempty"`
+	CorrectionOverdue int    `json:"correction_overdue,omitempty"`
+	CorrectionError   string `json:"correction_error,omitempty"`
 }
 
 type marketFeedHealthMid struct {
@@ -802,6 +840,15 @@ func (o *marketFeedOwner) Health(lastSnapshotID string) marketFeedHealth {
 		Generation:   o.gen,
 		LastSnapshot: lastSnapshotID,
 		Metrics:      o.metrics,
+		Correction:   o.correctionHealthLocked(),
+	}
+	if o.requestLedger != nil {
+		totals := o.requestLedger.snapshot()
+		health.Requests = &totals
+	}
+	perKey := make(map[marketFeedKey]feedKeyCorrection, len(o.keys))
+	for k, st := range o.keys {
+		perKey[k] = st.corr
 	}
 	coins := make([]string, 0, len(o.midCoins))
 	for c := range o.midCoins {
@@ -832,6 +879,10 @@ func (o *marketFeedOwner) Health(lastSnapshotID string) marketFeedHealth {
 			CoverageShort: r.CoverageShort,
 			Detail:        r.Detail,
 			LastCloseMs:   r.LastCloseMs,
+
+			CorrectionPending: perKey[r.Key].pendingBars,
+			CorrectionOverdue: perKey[r.Key].overdueBars,
+			CorrectionError:   perKey[r.Key].lastErr,
 		})
 	}
 	return health
@@ -887,8 +938,8 @@ func marketFeedStatusBlock() *marketFeedHealth {
 }
 
 func formatFeedMetrics(m feedMetrics) string {
-	return fmt.Sprintf("rest{bootstrap,repair,recovery}=%d,%d,%d steady_candle_rest=%d",
-		m.BootstrapCalls, m.RepairCalls, m.RecoveryCalls, m.SteadyCandleCalls)
+	return fmt.Sprintf("rest{bootstrap,repair,recovery,correction}=%d,%d,%d,%d steady_candle_rest=%d",
+		m.BootstrapCalls, m.RepairCalls, m.RecoveryCalls, m.CorrectionCalls, m.SteadyCandleCalls)
 }
 
 func feedKeySummary(readiness []feedKeyReadiness) string {

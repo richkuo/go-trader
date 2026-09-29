@@ -587,6 +587,8 @@ func runFeedRole(configPath string, statusPortFlag int, once bool, summary strin
 	ledger.openStartup()
 	ready := owner.ApplyGeneration(ctx, union)
 	if cfg.Feed.Source == feedSourceWebsocket {
+		fmt.Printf("[feed] closed-bar correction: re-read at close%s, counted as request reason correction\n",
+			formatFeedCorrectionOffsets(feedCorrectionOffsets))
 		go owner.Run(ctx)
 	}
 	select {

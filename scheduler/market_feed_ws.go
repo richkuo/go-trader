@@ -70,6 +70,7 @@ func feedJitter(d time.Duration) time.Duration {
 }
 
 func (o *marketFeedOwner) Run(ctx context.Context) {
+	go o.runCorrection(ctx)
 	backoff := time.Duration(0)
 	for {
 		if ctx.Err() != nil {

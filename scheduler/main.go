@@ -636,6 +636,7 @@ func main() {
 	deadlineFeed := cfg.marketFeedDeadlineScheduled()
 	fmt.Println(marketFeedStartupLine(cfg))
 	var feedOwner *marketFeedOwner
+	feedOwnerCtx := shutdownReadOnlyCtx
 	var feedReq feedRequirements
 	var sharedClient *sharedFeedClient
 	lastEvaluated := make(map[string]feedEvaluationMark)
@@ -664,9 +665,14 @@ func main() {
 		}
 		feedReq = derived
 		feedOwner = newMarketFeedOwner(nil, func(format string, a ...any) { fmt.Printf(format+"\n", a...) })
+		feedLedger := newFeedRequestLedger(nil, false, nil)
+		feedOwner.SetRequestLedger(feedLedger)
+		feedOwnerCtx = withFeedLedger(shutdownReadOnlyCtx, feedLedger)
+		fmt.Printf("[feed] closed-bar correction: re-read at close%s, counted as request reason correction\n",
+			formatFeedCorrectionOffsets(feedCorrectionOffsets))
 		globalMarketFeedStatus.setOwner(feedOwner)
-		ready := feedOwner.ApplyGeneration(shutdownReadOnlyCtx, feedReq)
-		go feedOwner.Run(shutdownReadOnlyCtx)
+		ready := feedOwner.ApplyGeneration(feedOwnerCtx, feedReq)
+		go feedOwner.Run(feedOwnerCtx)
 		select {
 		case <-ready:
 		case <-time.After(feedStartupBudget):
@@ -723,7 +729,7 @@ func main() {
 				fmt.Fprintf(os.Stderr, "[reload] ERROR: market feed requirements rejected; keeping the previous generation: %v\n", reqErr)
 			} else {
 				feedReq = nextReq
-				<-feedOwner.ApplyGeneration(shutdownReadOnlyCtx, nextReq)
+				<-feedOwner.ApplyGeneration(feedOwnerCtx, nextReq)
 				fmt.Printf("[reload] market feed generation %d published (%d keys)\n", feedOwner.Generation(), len(nextReq.Order))
 			}
 		}
@@ -922,7 +928,7 @@ func main() {
 		if websocketFeed && feedOwner != nil {
 			cycleFeedReqs = cycleRequirementsForDue(dueStrategies, feedReq)
 			evalID := cycleEvaluationID(evaluationMarks, cycle)
-			feedCtx.Snapshot = sealCycleMarketSnapshot(shutdownReadOnlyCtx, feedOwner, cycleFeedReqs, evalID, time.Now().UTC())
+			feedCtx.Snapshot = sealCycleMarketSnapshot(feedOwnerCtx, feedOwner, cycleFeedReqs, evalID, time.Now().UTC())
 			globalMarketFeedStatus.setSnapshotID(evalID)
 			if line := marketSnapshotLogLine(feedCtx.Snapshot, cycleFeedReqs); line != "" {
 				logOnChangef("feed-snapshot", marketSnapshotHealth(feedCtx.Snapshot, cycleFeedReqs), "%s\n", line)
