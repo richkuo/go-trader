@@ -205,14 +205,22 @@ func TestManualDrainAlertsSendOutsideLock(t *testing.T) {
 	router := &hlStepRecordingRouter{mock: mock, mu: &mu}
 	sc := StrategyConfig{ID: "hl-manual-eth-live", Type: "manual", Platform: "hyperliquid", Args: []string{"manual", "ETH", "--mode=live"}}
 	rows := []Trade{{Symbol: "ETH", Side: "buy", Quantity: 1, Price: 100}, {Symbol: "ETH", Side: "sell", Quantity: 1, Price: 110, IsClose: true}}
+
+	mu.Lock()
 	sendTradeAlertRows(sc, rows, router, nil)
+	mu.Unlock()
+	if len(router.lockFree) != 1 || router.lockFree[0] {
+		t.Fatalf("lock probe = %v, want one reading of false while mu is held", router.lockFree)
+	}
+
+	router.lockFree = nil
+	mock.messages = nil
+	sendTradeAlertRows(sc, rows, router, nil)
+	if len(router.lockFree) != 1 || !router.lockFree[0] {
+		t.Fatalf("lock probe = %v, want one reading of true while mu is released", router.lockFree)
+	}
 	if len(mock.messages) != 2 {
 		t.Fatalf("sent %d alerts for %d rows, want one each", len(mock.messages), len(rows))
-	}
-	for _, free := range router.lockFree {
-		if !free {
-			t.Fatal("a drain alert was sent while mu was held")
-		}
 	}
 }
 
