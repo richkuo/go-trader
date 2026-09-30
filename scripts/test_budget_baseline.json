@@ -39,7 +39,6 @@
     "scheduler/hyperliquid_liquidation_config_test.go::TestConfigValidationRejectsMaxDrawdownFallbackPastBankruptcyDistance",
     "scheduler/portfolio_warning_e2e_test.go::TestPortfolioWarningMessageLiveLikeSample",
     "scheduler/replay_log_test.go::TestReplayLogPathHotReloadRestartRequired",
-    "scheduler/replay_log_test.go::TestReplaySharingUnknownKeyGuardAcceptsField",
     "scheduler/replay_log_test.go::TestReplaySharingValidation",
     "scheduler/risk_test.go::TestCheckRisk_SharedWalletPoolUsesMarginWithoutFakePeak",
     "scheduler/shared_wallet_reconcile_cycle_test.go::TestFormatSharedWalletJournalAlerts",
