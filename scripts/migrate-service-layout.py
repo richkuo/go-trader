@@ -2524,7 +2524,11 @@ def state_file_values(cfg):
 
 def unmapped_state_files(m, target_cfg, source_cfg):
     recorded = [(x["source"], x["target"]) for x in m["dbs"]]
-    aside = [m["target_dir"], m["target_config_dir"]]
+    aside = []
+    for d in (m["target_dir"], m["target_config_dir"]):
+        for form in (d, os.path.realpath(d)):
+            if form not in aside:
+                aside.append(form)
     target_values = dict(state_file_values(target_cfg))
     problems = []
     for label, value in state_file_values(source_cfg):
@@ -2535,14 +2539,17 @@ def unmapped_state_files(m, target_cfg, source_cfg):
         if is_memory_db(value) or is_memory_db(tvalue):
             problems.append("%s is an in-memory database" % label)
             continue
-        _src_lex, src_canon = canonical_db(m["source_dir_real"], value.strip())
+        src_lex, src_canon = canonical_db(m["source_dir_real"], value.strip())
         tgt_lex, tgt_canon = canonical_db(m["target_dir"], tvalue.strip())
         if any(src_canon == s and t in (tgt_lex, tgt_canon) for s, t in recorded):
             continue
-        if src_canon != tgt_canon:
-            problems.append("%s was added or changed after the apply: the old unit would open %s, but the target wrote %s" % (label, src_canon, tgt_canon))
-        elif any(within(src_canon, d) for d in aside):
-            problems.append("%s %s was added after the apply inside %s, which the rollback moves aside" % (label, src_canon, next(d for d in aside if within(src_canon, d))))
+        src_real, tgt_real = os.path.realpath(src_lex), os.path.realpath(tgt_lex)
+        if src_real != tgt_real:
+            problems.append("%s was added or changed after the apply: the old unit would open %s, but the target wrote %s" % (label, src_real, tgt_real))
+            continue
+        hit = next((d for d in aside for p in (src_lex, src_real, tgt_lex) if within(p, d)), None)
+        if hit:
+            problems.append("%s %s was added after the apply inside %s, which the rollback moves aside" % (label, src_lex, hit))
     return problems
 
 

@@ -637,6 +637,14 @@ PY
     expect_exit 31 tool rollback --instance "$inst"
     grep -q "paper_sources\[1\].db_file was added or changed after the apply" "$WORK/last.out" || { cat "$WORK/last.out"; fail "rollback did not name the added state file"; }
     [[ "$(systemctl is-active "go-trader@$inst.service")" == "active" ]] || fail "a refused rollback stopped the target"
+    "$PY3" - "$tcfg" "/var/lib/go-trader/$inst/paper-source-eth.db" <<'PY'
+import json, sys
+c = json.load(open(sys.argv[1]))
+c["paper_sources"][1]["db_file"] = sys.argv[2]
+json.dump(c, open(sys.argv[1], "w"), indent=2)
+PY
+    expect_exit 31 tool rollback --instance "$inst"
+    grep -q "paper_sources\[1\].db_file /var/lib/go-trader/$inst/paper-source-eth.db was added after the apply inside /var/lib/go-trader/$inst, which the rollback moves aside" "$WORK/last.out" || { cat "$WORK/last.out"; fail "rollback did not refuse a state file inside a moved-aside folder"; }
     cp -p "$WORK/cf-config.json" "$tcfg"
     sql "$src/scheduler/state.db" "INSERT INTO trades (strategy_id, timestamp, symbol, side, quantity, price, value) VALUES ('hl-cf-a', '2026-09-02T00:00:00Z', 'ETH', 'buy', 1, 1, 1)"
     expect_exit 31 tool rollback --instance "$inst"
