@@ -1057,6 +1057,30 @@ update_foreign_tree_confinement() {
     [[ -z "$out" ]] || { printf '%s' "$out"; return 1; }
 }
 
+update_tree_foreign_accounts() {
+    [[ "$EUID" == "0" ]] || return 0
+    local tree="${1%/}" uid
+    for uid in "$(update_path_uid "$tree")" "$(update_path_uid "$tree/.git")"; do
+        [[ -n "$uid" && "$uid" != "0" ]] && printf '%s\n' "$uid"
+    done | sort -u
+}
+
+update_foreign_tree_check() {
+    local tree="${1%/}" uids
+    local -a list=()
+    uids=$(update_tree_foreign_accounts "$tree")
+    [[ -n "$uids" ]] || return 0
+    while IFS= read -r uid; do
+        [[ -n "$uid" ]] && list+=("$uid")
+    done <<<"$uids"
+    if [[ ${#list[@]} -gt 1 ]]; then
+        printf '  the tree top belongs to uid %s and its .git to uid %s; root trusts a checkout only when one account besides root owns it\n' \
+            "$(update_path_uid "$tree")" "$(update_path_uid "$tree/.git")"
+        return 1
+    fi
+    update_foreign_tree_confinement "$tree" "${list[0]}"
+}
+
 update_tree_foreign_owner() {
     [[ "$EUID" == "0" ]] || return 0
     local uid gid
@@ -1157,7 +1181,7 @@ if mode == "snapshot":
     recs = []
     for e, _ in walk():
         if e.st.st_uid == 0:
-            recs.append(b"%d:%d:%s" % (e.st.st_dev, e.st.st_ino, os.fsencode(e.path)))
+            recs.append(b"%d:%d:%d:%s" % (e.st.st_dev, e.st.st_ino, e.st.st_mtime_ns, os.fsencode(e.path)))
     with open(sys.argv[3], "wb") as f:
         f.write(b"\0".join(recs))
     sys.exit(0)
@@ -1180,14 +1204,14 @@ before_paths, before_ids = set(), set()
 for rec in raw.split(b"\0"):
     if not rec:
         continue
-    dev, ino, p = rec.split(b":", 2)
-    before_ids.add((int(dev), int(ino)))
+    dev, ino, mtime, p = rec.split(b":", 3)
+    before_ids.add((int(dev), int(ino), int(mtime)))
     before_paths.add(os.fsdecode(p))
 new, old, linked, left = [], [], [], []
 for e, _ in walk():
     if e.st.st_uid != 0:
         continue
-    if e.path in before_paths or (e.st.st_dev, e.st.st_ino) in before_ids:
+    if e.path in before_paths or (e.st.st_dev, e.st.st_ino, e.st.st_mtime_ns) in before_ids:
         old.append(e.path)
         continue
     if shared_inode(e.st):

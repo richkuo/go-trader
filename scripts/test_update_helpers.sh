@@ -1596,6 +1596,33 @@ if [[ "$EUID" == "0" ]]; then
     rm -rf "$rs"
 fi
 
+if [[ "$EUID" == "0" ]]; then
+    ft=$(mktemp -d)
+    mkdir -p "$ft/tree/.git" "$ft/bin"
+    ft_tree=$(update_realpath "$ft/tree")
+    chown 65534:65534 "$ft_tree/.git"
+    cat >"$ft/bin/systemctl" <<'STUB'
+#!/bin/bash
+case "$1" in
+    list-units) printf 'loose.service loaded inactive dead x\n' ;;
+    list-unit-files) printf 'loose.service disabled enabled\n' ;;
+    show) printf 'Id=loose.service\nUser=65534\nProtectSystem=no\nReadWritePaths=\nBindPaths=\n' ;;
+esac
+STUB
+    chmod 0755 "$ft/bin/systemctl"
+    assert_eq "$(update_tree_foreign_accounts "$ft_tree")" "65534" "a foreign-owned .git under a root-owned top is a foreign account"
+    ft_out=$(PATH="$ft/bin:$PATH" update_foreign_tree_check "$ft_tree") && ft_rc=0 || ft_rc=$?
+    assert_eq "$ft_rc:$ft_out" "1:  loose.service (User=65534): ProtectSystem=no, not strict" "an unconfined unit of the .git owner refuses a root-owned tree"
+    chown 65533:65533 "$ft_tree"
+    ft_out=$(PATH="$ft/bin:$PATH" update_foreign_tree_check "$ft_tree") && ft_rc=0 || ft_rc=$?
+    assert_eq "$ft_rc" "1" "a top and a .git owned by two other accounts are refused"
+    if [[ "$ft_out" != *"uid 65533 and its .git to uid 65534"* ]]; then
+        echo "FAIL: the two-owner refusal did not name both owners: $ft_out" >&2
+        exit 1
+    fi
+    rm -rf "$ft"
+fi
+
 assert_eq "$(update_write_path_issue /opt/t /opt/t/scheduler)" "" "the scheduler directory is an allowed write path"
 assert_eq "$(update_write_path_issue /opt/t /opt/t/logs/x)" "" "a path under logs is an allowed write path"
 assert_eq "$(update_write_path_issue /opt/t /var/lib/go-trader/t)" "" "a path outside the tree is allowed"

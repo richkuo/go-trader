@@ -996,7 +996,7 @@ UNIT
     wait_health "$tunit" "$port"
     [[ "$(health_field "$port" version)" == "$old_version" ]] || fail "the rollback did not bring back $old_version"
 
-    note "root updates a go-trader tree; untracked Go files and scripts the service can write never run as root"
+    note "root updates a go-trader tree under umask 077; untracked Go files and scripts the service can write never run as root"
     runuser -u go-trader -- sh -c "printf 'package main\n\nimport \"os\"\n\nfunc init() { _ = os.WriteFile(\"%s\", nil, 0o644) }\n' '$WORK/planted' >'$tree/scheduler/zz_planted.go' && printf '*\n' >'$tree/scheduler/.gitignore'"
     cfg_link=$(readlink "$tree/scheduler/config.json")
     runuser -u go-trader -- "$PY3" - "$tree" <<'PY'
@@ -1010,7 +1010,7 @@ with open(os.path.join(t, "scheduler/config.json.zz"), "w") as f:
     json.dump(c, f, indent=2)
 os.replace(os.path.join(t, "scheduler/config.json.zz"), os.path.join(t, "scheduler/config.json"))
 PY
-    expect_exit 0 run_update "$tree" GO_TRADER_SERVICE="$tunit" UV_STUB_FORCE_LINK=1 bash scripts/update.sh --restart
+    expect_exit 0 run_update "$tree" GO_TRADER_SERVICE="$tunit" UV_STUB_FORCE_LINK=1 bash -c 'umask 077 && exec bash scripts/update.sh --restart'
     [[ ! -e "$WORK/planted" ]] || fail "root built and ran an untracked scheduler file"
     grep -q "untracked files are never built" "$WORK/last.out" || fail "the update did not build from the exported sources"
     grep -q "probe: runs as go-trader under the unit sandbox" "$WORK/last.out" || fail "the update did not run the probe as go-trader"
@@ -1049,8 +1049,7 @@ PY
     runuser -u go-trader -- sh -c "echo '# planted' >>'$tree/pyproject.toml'"
     expect_exit 1 run_update "$feed" bash scripts/update.sh --rsync-from "$tree"
     grep -q "root builds only committed code from a tree another account owns" "$WORK/last.out" || fail "the dirty-source refusal did not name the reason"
-    root_git "$tree" checkout -q -- pyproject.toml
-    chown go-trader:go-trader "$tree/pyproject.toml"
+    runuser -u go-trader -- git -C "$tree" checkout -q -- pyproject.toml
     expect_exit 0 run_update "$feed" bash scripts/update.sh --rsync-from "$tree"
     cver=$(tree_version "$tree")
     [[ "$("$feed/go-trader" version)" == "$cver" && "$cver" != "dev" ]] || fail "the feed binary reports $("$feed/go-trader" version), want the consumer release $cver"

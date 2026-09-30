@@ -32,6 +32,8 @@ unit_sync_installed_path=""
 unit_sync_backup_path=""
 tree_owner=""
 tree_owner_snapshot=""
+owner_scope=""
+probe_owner=""
 uv_bin=""
 uv_env=()
 build_export_tree=""
@@ -535,8 +537,8 @@ do_rollback() {
 
 restore_tree_owner_on_exit() {
     local rc=$?
-    if ! update_restore_tree_owner "$repo_root" "$tree_owner" "$tree_owner_snapshot"; then
-        echo "[update] WARNING: files this update wrote under $repo_root may still be owned by root; check with: find $repo_root -xdev -user root" >&2
+    if ! update_restore_tree_owner "$owner_scope" "$tree_owner" "$tree_owner_snapshot"; then
+        echo "[update] WARNING: files this update wrote under $owner_scope may still be owned by root; check with: find $owner_scope -xdev -user root" >&2
     fi
     rm -f "$tree_owner_snapshot"
     exit "$rc"
@@ -701,22 +703,38 @@ if [[ "$update_all" == "1" ]]; then
 fi
 
 refuse_unconfined_tree() {
-    local tree="$1" role="$2" issues owner
-    owner=$(update_path_owner_name "$tree")
-    if ! issues=$(update_foreign_tree_confinement "$tree" "$(update_path_uid "$tree")"); then
+    local tree="$1" role="$2" issues owners
+    owners="top $(update_path_owner_name "$tree"), .git $(update_path_owner_name "${tree%/}/.git")"
+    if ! issues=$(update_foreign_tree_check "$tree"); then
         printf '%s\n' "$issues" >&2
-        fail "$role $tree belongs to $owner, and root would build and run code from it, but the listed units that run as $owner can change files in it outside scheduler/ and logs/ (or run without ProtectSystem=strict). Run those units from the go-trader@.service template, whose sandbox keeps the rest of the tree read-only, or give the tree to root"
+        fail "$role $tree ($owners) belongs in part to an account other than root, and root would build and run code from it, but the listed units or owners let that account change files in it outside scheduler/ and logs/ (or run without ProtectSystem=strict). Run those units from the go-trader@.service template, whose sandbox keeps the rest of the tree read-only, or give the tree to root"
     fi
 }
 
-tree_owner=$(update_tree_foreign_owner "$repo_root")
-if [[ -n "$tree_owner" ]]; then
+give_back_tree_owner() {
+    [[ -n "$tree_owner" ]] || return 0
+    update_restore_tree_owner "$owner_scope" "$tree_owner" "$tree_owner_snapshot" && return 0
+    rm -f ./go-trader.new
+    fail "could not give the root-written files under $owner_scope back to $(update_path_owner_name "$owner_scope") $1; the binary and the running service are unchanged"
+}
+
+if [[ -n "$(update_tree_foreign_accounts "$repo_root")" ]]; then
     refuse_unconfined_tree "$repo_root" "the deployment"
-    echo "[update] $repo_root belongs to $(update_path_owner_name "$repo_root"); git trusts only this tree for each command, and files this update writes are given back to that owner"
+    tree_owner=$(update_tree_foreign_owner "$repo_root")
+    owner_scope="$repo_root"
+    if [[ -z "$tree_owner" && -d "$repo_root/.git" && ! -L "$repo_root/.git" ]]; then
+        tree_owner=$(update_tree_foreign_owner "$repo_root/.git")
+        owner_scope="$repo_root/.git"
+    fi
+    probe_owner=$(update_tree_foreign_owner "$repo_root")
+    [[ -n "$probe_owner" ]] || probe_owner=$(update_tree_foreign_owner "$repo_root/.git")
+fi
+if [[ -n "$tree_owner" ]]; then
+    echo "[update] $owner_scope belongs to $(update_path_owner_name "$owner_scope"); git trusts only this tree for each command, and files this update writes there are given back to that owner"
     tree_owner_snapshot=$(mktemp "${TMPDIR:-/tmp}/go-trader-owner.XXXXXX") || fail "could not create a temporary file for the ownership list"
-    if ! update_owner_snapshot "$repo_root" "$tree_owner_snapshot"; then
+    if ! update_owner_snapshot "$owner_scope" "$tree_owner_snapshot"; then
         rm -f "$tree_owner_snapshot"
-        fail "could not list the root-owned paths under $repo_root before the update; nothing changed"
+        fail "could not list the root-owned paths under $owner_scope before the update; nothing changed"
     fi
     trap restore_tree_owner_on_exit EXIT
 fi
@@ -756,9 +774,10 @@ if [[ -n "$rsync_from" ]]; then
     if [[ "$(pwd)" == "$rsync_from" ]]; then
         fail "--rsync-from cannot be the deployment directory ($(pwd))"
     fi
-    rsync_src_owner=$(update_tree_foreign_owner "$rsync_from")
+    rsync_src_top=$(update_git_top "$rsync_from" 2>/dev/null || printf '%s' "$rsync_from")
+    rsync_src_owner=$(update_tree_foreign_accounts "$rsync_src_top")
     if [[ -n "$rsync_src_owner" ]]; then
-        refuse_unconfined_tree "$rsync_from" "the --rsync-from source"
+        refuse_unconfined_tree "$rsync_src_top" "the --rsync-from source"
     fi
     if update_git_top "$rsync_from" >/dev/null; then
         ver=$(update_git_version "$rsync_from") \
@@ -883,7 +902,8 @@ fi
 
 begin_phase sync
 env ${uv_env[@]+"${uv_env[@]}"} "$uv_bin" sync
-if [[ -n "$tree_owner" ]] && ! update_owner_runs_venv "$repo_root"; then
+give_back_tree_owner "after uv sync"
+if [[ "$owner_scope" == "$repo_root" && -n "$tree_owner" ]] && ! update_owner_runs_venv "$repo_root"; then
     fail "after uv sync, $(update_path_owner_name "$repo_root") cannot run $repo_root/.venv/bin/python3 ($(readlink -f .venv/bin/python3 2>/dev/null || echo unresolved)); the service runs as that account. Install a Python every account can read, then rebuild the venv"
 fi
 end_phase
@@ -922,10 +942,11 @@ echo "[update] built ${ver}: $(stat -c '%s' ./go-trader.new 2>/dev/null || stat 
 end_phase
 
 begin_phase probe
-if [[ -n "$tree_owner" ]]; then
-    echo "[update] probe: runs as $(update_path_owner_name "$repo_root") under the unit sandbox, on a private copy of scheduler/config.json, because that account can change the config and the scripts it names"
+give_back_tree_owner "before the probe"
+if [[ -n "$probe_owner" ]]; then
+    echo "[update] probe: runs as $(id -nu "${probe_owner%%:*}" 2>/dev/null || printf 'uid %s' "${probe_owner%%:*}") under the unit sandbox, on a private copy of scheduler/config.json, because that account can change the config and the scripts it names"
     probe_ok=0
-    update_probe_as_owner "$repo_root" "$tree_owner" "$repo_root/go-trader.new" scheduler/config.json && probe_ok=1
+    update_probe_as_owner "$repo_root" "$probe_owner" "$repo_root/go-trader.new" scheduler/config.json && probe_ok=1
 else
     probe_ok=0
     ./go-trader.new probe && probe_ok=1
@@ -938,9 +959,9 @@ end_phase
 
 if [[ -n "$tree_owner" ]]; then
     begin_phase ownership
-    if ! update_restore_tree_owner "$repo_root" "$tree_owner" "$tree_owner_snapshot"; then
+    if ! update_restore_tree_owner "$owner_scope" "$tree_owner" "$tree_owner_snapshot"; then
         rm -f ./go-trader.new
-        fail "could not give the root-written files under $repo_root back to $(update_path_owner_name "$repo_root"); the binary and the running service are unchanged"
+        fail "could not give the root-written files under $owner_scope back to $(update_path_owner_name "$owner_scope"); the binary and the running service are unchanged"
     fi
     end_phase
 fi
