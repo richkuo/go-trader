@@ -87,6 +87,3 @@ Guardrails only; mechanism/flows in SKILL.md, docs/POST_UPDATE_HISTORY.md. Ceili
 - `gofmt -w` after Go edits; tabbed Go: Python `replace(old,new,1)`.
 - Entry ATR guard: `stampEntryATRIfOpened` rejects ATR>50% of AvgCost.
 - `tiered_tp_atr`/`trailing_stop_atr_mult` need `Position.EntryATR`; `*_live` recompute via `atr_source`; `avwap_stop`=virtual exit only.
-
----
-LLM: GPT-6 | high | Harness: Codex
