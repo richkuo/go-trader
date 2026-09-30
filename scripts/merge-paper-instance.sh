@@ -597,6 +597,10 @@ def cmd_root_diff(live_path, plan_path):
         print("diff: leaderboard no leaderboard_summaries entries")
     for msg in board_conflicts:
         print("diff: compose-refuse %s" % msg)
+    preview = json.loads(json.dumps(live))
+    preview["strategies"] = all_after
+    for msg in folded_tree_refusals(preview, plan):
+        print("diff: compose-refuse %s" % msg)
     print("diff: config-file preview only; inspect-based portfolio_risk refuses need a dry run")
 
 def cmd_align(live_path, paper_path, out_path):
@@ -1192,6 +1196,11 @@ def cmd_compose(live_path, plan_path, out_path, map_path, inspect_live_path, ins
     merged["strategies"] = merged_strats + added
     if legacy is not None:
         merged["paper_db_file"] = legacy["db"]
+    tree_problems = folded_tree_refusals(merged, plan)
+    if tree_problems:
+        for msg in tree_problems:
+            print("REFUSE: %s" % msg)
+        sys.exit(1)
     write_json_atomic(out_path, merged, live_path)
     fold_map = []
     all_renames = {}
@@ -1308,7 +1317,7 @@ def compare(label, before, after, problems):
             problems.append("%s %s: before=%s after=%s" % (label, k, a.get(k, "<absent>"), b.get(k, "<absent>")))
     return 1
 
-def cmd_target_base(root_path, out_path, db_file, status_port):
+def cmd_target_base(root_path, out_path, db_file, status_port, root_deploy, target_deploy):
     root = load(root_path)
     base = json.loads(json.dumps(root))
     base["strategies"] = []
@@ -1316,7 +1325,53 @@ def cmd_target_base(root_path, out_path, db_file, status_port):
     base["status_port"] = int(status_port)
     for key in ("paper_db_file", "paper_sources", "leaderboard_summaries"):
         base.pop(key, None)
+    log_dir = base.get("log_dir")
+    if isinstance(log_dir, str) and os.path.isabs(log_dir):
+        norm = os.path.normpath(log_dir)
+        for r in tree_roots([root_deploy]):
+            if norm == r or norm.startswith(r + "/"):
+                new = os.path.normpath(os.path.join(target_deploy, os.path.relpath(norm, r)))
+                base["log_dir"] = new
+                print("target-base: log_dir %s -> %s (the root deployment's tree becomes the new tree)" % (log_dir, new))
+                break
     write_json_atomic(out_path, base, root_path)
+
+def tree_roots(deploys):
+    roots = []
+    for d in deploys:
+        for r in (d, os.path.normpath(d), os.path.realpath(d)):
+            r = r.rstrip("/")
+            if r and r not in roots:
+                roots.append(r)
+    return roots
+
+def tree_refs(doc, roots, path=""):
+    found = []
+    if isinstance(doc, dict):
+        for k in sorted(doc):
+            found.extend(tree_refs(doc[k], roots, "%s.%s" % (path, k) if path else k))
+    elif isinstance(doc, list):
+        for i, v in enumerate(doc):
+            label = v["id"] if isinstance(v, dict) and isinstance(v.get("id"), str) else str(i)
+            found.extend(tree_refs(v, roots, "%s[%s]" % (path, label)))
+    elif isinstance(doc, str):
+        text = "/".join(p for i, p in enumerate(doc.split("/")) if p or i == 0) if "//" in doc else doc
+        for r in roots:
+            if text == r or (r + "/") in text or doc == r or (r + "/") in doc:
+                found.append((path, doc, r))
+                break
+    return found
+
+def folded_tree_refusals(doc, plan):
+    roots = tree_roots([f["deploy"] for f in plan["folds"]])
+    fold_dbs = set(f["db"] for f in plan["folds"] if f["db"])
+    out = []
+    for path, value, root in tree_refs(doc, roots):
+        if value in fold_dbs and (path == "paper_db_file" or (path.startswith("paper_sources[") and path.endswith("].db_file"))):
+            continue
+        out.append("config key %s names %s, a path inside the folded tree %s; the folded trees are retired after the fold. Point it inside %s or at a relative path first" % (
+            path, value, root, plan["target_deploy"]))
+    return out
 
 def cmd_root_probe(target_path, fallback_path, out_path, db_path):
     target = load(target_path)
@@ -1546,21 +1601,22 @@ write_plan() {
     local -a args=()
     for i in "${!FOLD_KEY[@]}"; do
         args+=("${FOLD_KEY[$i]}" "${FOLD_ID[$i]}" "${FOLD_INSTANCE[$i]}" "${FOLD_PARTITION[$i]}" \
-               "${FOLD_COMPOSE_CFG[$i]}" "${FOLD_DB[$i]}" "${FOLD_INSPECT[$i]}" "${FOLD_MERGED[$i]}")
+               "${FOLD_COMPOSE_CFG[$i]}" "${FOLD_DB[$i]}" "${FOLD_INSPECT[$i]}" "${FOLD_MERGED[$i]}" "${FOLD_DEPLOY[$i]}")
     done
     python3 -c '
 import json
 import sys
-path, live, new_target, root_key = sys.argv[1:5]
-rest = sys.argv[5:]
+path, live, new_target, root_key, target_deploy = sys.argv[1:6]
+rest = sys.argv[6:]
 folds = []
-for i in range(0, len(rest), 8):
-    key, sid, instance, partition, config, db, inspect, merged = rest[i:i + 8]
+for i in range(0, len(rest), 9):
+    key, sid, instance, partition, config, db, inspect, merged, deploy = rest[i:i + 9]
     folds.append({"key": key, "id": sid, "instance": instance, "partition": partition,
-                  "config": config, "db": db, "inspect": inspect, "merged": merged})
-json.dump({"live_config": live, "new_target": new_target == "1", "root_key": root_key, "folds": folds},
+                  "config": config, "db": db, "inspect": inspect, "merged": merged, "deploy": deploy})
+json.dump({"live_config": live, "new_target": new_target == "1", "root_key": root_key,
+           "target_deploy": target_deploy, "folds": folds},
           open(path, "w"), indent=2)
-' "$path" "$COMPOSE_BASE_CFG" "$NT" "${FOLD_KEY[$ROOT_IDX]}" "${args[@]}"
+' "$path" "$COMPOSE_BASE_CFG" "$NT" "${FOLD_KEY[$ROOT_IDX]}" "$LIVE_DEPLOY" "${args[@]}"
 }
 
 classify_field() {
@@ -1569,6 +1625,7 @@ classify_field() {
 
 TOOL_DEPLOY="$LIVE_DEPLOY"
 TOOL_BIN="$LIVE_BIN"
+TARGET_BASE_OUT=""
 if [[ "$NT" == "1" ]]; then
     [[ "$BASE" == /* && "$DEPLOY_ROOT" == /* ]] || fail "$EXIT_USAGE" "--new-target needs an absolute --base and --deploy-root; the new config names its database by absolute path"
     ROOT_CFG="${FOLD_CFG[$ROOT_IDX]}"
@@ -1577,7 +1634,8 @@ if [[ "$NT" == "1" ]]; then
         printf '{"db_file": "%s", "strategies": []}\n' "${TARGET_DIR}/state.db" > "$COMPOSE_BASE_CFG"
     else
         [[ -f "$ROOT_CFG" ]] || fail "$EXIT_CONFIG_MISSING" "config $ROOT_CFG is missing"
-        if ! py target-base "$ROOT_CFG" "$COMPOSE_BASE_CFG" "${TARGET_DIR}/state.db" "$STATUS_PORT" >/dev/null; then
+        if ! TARGET_BASE_OUT=$(py target-base "$ROOT_CFG" "$COMPOSE_BASE_CFG" "${TARGET_DIR}/state.db" "$STATUS_PORT" "${FOLD_DEPLOY[$ROOT_IDX]}" "$LIVE_DEPLOY"); then
+            printf '%s\n' "$TARGET_BASE_OUT" >&2
             fail "$EXIT_CONFIG_MISSING" "could not read the root config $ROOT_CFG"
         fi
     fi
@@ -1636,6 +1694,7 @@ if [[ "$MODE" == "diff" ]]; then
     done
     echo "merge-paper-instance: $TARGET_WORD=$LIVE ($LIVE_CFG) folding $FOLD_COUNT_TOTAL deployment(s) mode=diff"
     [[ "$NT" != "1" ]] || echo "  new target: root settings from ${FOLD_INSTANCE[$ROOT_IDX]} ($ROOT_CFG), status_port $STATUS_PORT, db_file ${TARGET_DIR}/state.db"
+    [[ -z "$TARGET_BASE_OUT" ]] || printf '%s\n' "$TARGET_BASE_OUT"
     for i in "${!FOLD_KEY[@]}"; do
         echo "  fold: $(fold_desc "$i") config ${FOLD_CFG[$i]}"
         FOLD_COMPOSE_CFG[$i]="${FOLD_CFG[$i]}"
@@ -1666,6 +1725,7 @@ echo "merge-paper-instance: $TARGET_WORD=$LIVE ($LIVE_DEPLOY, $LIVE_CFG) folding
 for i in "${!FOLD_KEY[@]}"; do
     echo "  fold: $(fold_desc "$i") deploy ${FOLD_DEPLOY[$i]} config ${FOLD_CFG[$i]} unit ${FOLD_UNIT[$i]}"
 done
+[[ -z "$TARGET_BASE_OUT" ]] || printf '%s\n' "$TARGET_BASE_OUT"
 
 TEMPLATE_UNIT="${UNIT_DIR%/}/go-trader@.service"
 NT_USER=""
@@ -1686,7 +1746,7 @@ nt_require_target_absent() {
     state=$(unit_state "$LIVE_UNIT")
     case "$state" in
         active|activating|reloading|deactivating|refreshing|failed)
-            fail "$EXIT_NEW_TARGET_REFUSED" "unit $LIVE_UNIT is $state; systemd already runs or ran a service with this name"
+            fail "$EXIT_NEW_TARGET_REFUSED" "unit $LIVE_UNIT is $state; systemd already runs or ran a service with this name. After a rolled-back fold, $SYSTEMCTL reset-failed $LIVE_UNIT clears a failed state"
             ;;
     esac
     enabled=$("$SYSTEMCTL" is-enabled "$LIVE_UNIT" 2>/dev/null || true)
@@ -1750,14 +1810,62 @@ nt_git() {
 NT_ORIGIN=""
 NT_SRC_SHA=""
 NT_SRC_BRANCH=""
+NT_ORIGIN_BRANCH=""
+
+nt_tree_clean() {
+    GIT_OPTIONAL_LOCKS=0 nt_git -C "$1" diff --no-ext-diff --quiet HEAD --
+}
+
+nt_origin_branch() {
+    local repo="$1" def b
+    if ! nt_git -C "$repo" cat-file -e "${NT_SRC_SHA}^{commit}" 2>/dev/null; then
+        printf '%s' "${FOLD_DEPLOY[0]} runs commit $NT_SRC_SHA, which $NT_ORIGIN does not hold; push it, or update that deployment to a pushed commit, first"
+        return 1
+    fi
+    if [[ -n "$NT_SRC_BRANCH" ]] && nt_git -C "$repo" rev-parse --verify --quiet "refs/remotes/origin/$NT_SRC_BRANCH" >/dev/null; then
+        if nt_git -C "$repo" merge-base --is-ancestor "$NT_SRC_SHA" "refs/remotes/origin/$NT_SRC_BRANCH"; then
+            printf '%s' "$NT_SRC_BRANCH"
+            return 0
+        fi
+        printf '%s' "${FOLD_DEPLOY[0]} runs commit $NT_SRC_SHA on branch $NT_SRC_BRANCH, but origin's $NT_SRC_BRANCH does not contain it; push the branch, or update that deployment, first"
+        return 1
+    fi
+    def=$(nt_git -C "$repo" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
+    def="${def#origin/}"
+    if [[ -n "$def" ]] && nt_git -C "$repo" merge-base --is-ancestor "$NT_SRC_SHA" "refs/remotes/origin/$def"; then
+        printf '%s' "$def"
+        return 0
+    fi
+    b=$(nt_git -C "$repo" for-each-ref --contains "$NT_SRC_SHA" --format='%(refname:strip=3)' refs/remotes/origin/ | grep -vx HEAD | LC_ALL=C sort | head -n 1 || true)
+    if [[ -n "$b" ]]; then
+        printf '%s' "$b"
+        return 0
+    fi
+    printf '%s' "${FOLD_DEPLOY[0]} runs commit $NT_SRC_SHA, which no branch of $NT_ORIGIN contains; push it on a branch first"
+    return 1
+}
+
 nt_preflight() {
-    local out rc=0
+    local out rc=0 probe
     nt_require_target_absent
     nt_require_template_layout
     NT_ORIGIN=$(nt_git -C "${FOLD_DEPLOY[0]}" remote get-url origin 2>/dev/null || true)
     [[ -n "$NT_ORIGIN" ]] || fail "$EXIT_NEW_TARGET_REFUSED" "${FOLD_DEPLOY[0]} has no git origin; the new deployment clones it so update.sh can update it later"
-    NT_SRC_SHA=$(nt_git -C "${FOLD_DEPLOY[0]}" rev-parse HEAD 2>/dev/null || true)
+    NT_SRC_SHA=$(nt_git -C "${FOLD_DEPLOY[0]}" rev-parse --verify --quiet HEAD 2>/dev/null || true)
+    [[ -n "$NT_SRC_SHA" ]] || fail "$EXIT_NEW_TARGET_REFUSED" "${FOLD_DEPLOY[0]} has no git commit; the new deployment is a clone at that commit"
     NT_SRC_BRANCH=$(nt_git -C "${FOLD_DEPLOY[0]}" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+    if ! nt_tree_clean "${FOLD_DEPLOY[0]}"; then
+        GIT_OPTIONAL_LOCKS=0 nt_git -C "${FOLD_DEPLOY[0]}" status --short --untracked-files=no >&2 || true
+        fail "$EXIT_NEW_TARGET_REFUSED" "${FOLD_DEPLOY[0]} has uncommitted changes to tracked files; the new tree is built from it and must match its commit, or a later update.sh refuses the new tree. Commit and push, or revert, them first"
+    fi
+    probe="$WORK/nt-origin-probe"
+    rm -rf "$probe"
+    if ! nt_git clone --quiet --no-checkout "$NT_ORIGIN" "$probe" >"$WORK/nt-origin-probe.out" 2>&1; then
+        cat "$WORK/nt-origin-probe.out" >&2
+        fail "$EXIT_NEW_TARGET_REFUSED" "could not clone $NT_ORIGIN"
+    fi
+    NT_ORIGIN_BRANCH=$(nt_origin_branch "$probe") || fail "$EXIT_NEW_TARGET_REFUSED" "$NT_ORIGIN_BRANCH"
+    rm -rf "$probe"
     [[ "$(py port-bound "$STATUS_PORT")" == "free" ]] || fail "$EXIT_NEW_TARGET_REFUSED" "status port $STATUS_PORT is bound by a running process; choose a free --status-port"
     out=$(nt_env_merge -) || rc=$?
     if [[ "$rc" != "0" ]]; then
@@ -1765,7 +1873,7 @@ nt_preflight() {
         fail "$EXIT_NEW_TARGET_REFUSED" "the folded deployments' .env files disagree; make every variable agree first"
     fi
     printf '%s\n' "$out"
-    echo "preflight: new target $LIVE_UNIT runs as $NT_USER:$NT_GROUP; tree $LIVE_DEPLOY cloned from $NT_ORIGIN and built from ${FOLD_DEPLOY[0]}; config $LIVE_CFG; status_port $STATUS_PORT"
+    echo "preflight: new target $LIVE_UNIT runs as $NT_USER:$NT_GROUP; tree $LIVE_DEPLOY cloned from $NT_ORIGIN on branch $NT_ORIGIN_BRANCH at ${FOLD_DEPLOY[0]}'s commit $NT_SRC_SHA and built from that tree; config $LIVE_CFG; status_port $STATUS_PORT"
 }
 
 nt_jv() {
@@ -2238,7 +2346,7 @@ nt_print_restart() {
 }
 
 nt_rollback() {
-    local j
+    local j later=0
     if [[ ! -f "$JOURNAL" ]]; then
         for j in "${TARGET_DIR}".rolled-back-*/"$(basename "$JOURNAL")"; do
             if [[ -f "$j" ]] && grep -qx rolled-back "$j"; then
@@ -2255,10 +2363,24 @@ nt_rollback() {
         fi
         fail "$EXIT_JOURNAL_STATE" "no journal at $JOURNAL; nothing to roll back"
     fi
+    while IFS= read -r j; do
+        [[ -n "$j" && "$j" != "$JOURNAL" ]] || continue
+        grep -qx rolled-back "$j" && continue
+        if grep -qx complete "$j"; then
+            echo "rollback: $j records a later fold into $LIVE_UNIT that is still applied" >&2
+        else
+            echo "rollback: $j records a later fold into $LIVE_UNIT that was interrupted" >&2
+        fi
+        later=1
+    done < <(merge_journals)
+    if [[ "$later" == "1" ]]; then
+        fail "$EXIT_JOURNAL_STATE" "a later fold into $LIVE_UNIT is not rolled back; undoing this one would move its journal, retained config and database route aside and leave its source deployment stopped. Roll each journal named above back first (--rollback --live $LIVE with that run's own --paper and --source arguments)"
+    fi
     if ! "$SYSTEMCTL" disable "$LIVE_UNIT" >"$WORK/disable.out" 2>&1; then
         cat "$WORK/disable.out" >&2
         fail "$EXIT_RESTORE_FAILED" "could not disable $LIVE_UNIT; nothing else changed"
     fi
+    "$SYSTEMCTL" reset-failed "$LIVE_UNIT" >/dev/null 2>&1 || true
     echo "rollback: $LIVE_UNIT disabled"
     nt_undo || exit "$EXIT_RESTORE_FAILED"
     check_db_fingerprints "rollback" || exit "$EXIT_RESTORE_FAILED"
@@ -2277,7 +2399,7 @@ nt_apply_failed() {
 }
 
 nt_apply() {
-    local run_id i sfx dropin fp_new new_version
+    local run_id i sfx dropin fp_new new_version branch
     [[ "$(update_file_fingerprint "$COMPOSE_BASE_CFG")" == "$fp_live_cfg" ]] || fail "$EXIT_SOURCE_CHANGED" "$COMPOSE_BASE_CFG changed during the run"
     for i in "${!FOLD_KEY[@]}"; do
         [[ "$(update_file_fingerprint "${FOLD_CFG[$i]}")" == "${FOLD_FP_CFG[$i]}" ]] || fail "$EXIT_SOURCE_CHANGED" "${FOLD_CFG[$i]} changed during the run"
@@ -2315,15 +2437,10 @@ nt_apply() {
 
     printf 'deploy begin\n' >> "$JOURNAL"
     nt_git clone --quiet "$NT_ORIGIN" "$LIVE_DEPLOY" || nt_apply_failed "git clone of $NT_ORIGIN into $LIVE_DEPLOY failed"
-    if [[ -n "$NT_SRC_BRANCH" ]] && nt_git -C "$LIVE_DEPLOY" rev-parse --verify --quiet "refs/remotes/origin/$NT_SRC_BRANCH" >/dev/null; then
-        nt_git -C "$LIVE_DEPLOY" checkout --quiet -B "$NT_SRC_BRANCH" --track "origin/$NT_SRC_BRANCH" || nt_apply_failed "could not check out branch $NT_SRC_BRANCH in $LIVE_DEPLOY"
-    fi
-    if [[ -n "$NT_SRC_SHA" ]] && nt_git -C "$LIVE_DEPLOY" cat-file -e "${NT_SRC_SHA}^{commit}" 2>/dev/null; then
-        nt_git -C "$LIVE_DEPLOY" reset --quiet --hard "$NT_SRC_SHA" || nt_apply_failed "could not move $LIVE_DEPLOY to ${FOLD_DEPLOY[0]}'s commit $NT_SRC_SHA"
-        echo "apply: cloned $NT_ORIGIN into $LIVE_DEPLOY at ${FOLD_DEPLOY[0]}'s commit $NT_SRC_SHA"
-    else
-        echo "apply: cloned $NT_ORIGIN into $LIVE_DEPLOY; ${FOLD_DEPLOY[0]}'s commit ${NT_SRC_SHA:-<none>} is not in origin, so the build copies its tree over the clone"
-    fi
+    branch=$(nt_origin_branch "$LIVE_DEPLOY") || nt_apply_failed "$branch"
+    nt_git -C "$LIVE_DEPLOY" checkout --quiet -B "$branch" --track "origin/$branch" || nt_apply_failed "could not check out branch $branch in $LIVE_DEPLOY"
+    nt_git -C "$LIVE_DEPLOY" reset --quiet --hard "$NT_SRC_SHA" || nt_apply_failed "could not move $LIVE_DEPLOY to ${FOLD_DEPLOY[0]}'s commit $NT_SRC_SHA"
+    echo "apply: cloned $NT_ORIGIN into $LIVE_DEPLOY on branch $branch at ${FOLD_DEPLOY[0]}'s commit $NT_SRC_SHA"
     printf 'deploy done\n' >> "$JOURNAL"
 
     printf 'config begin\n' >> "$JOURNAL"
@@ -2354,6 +2471,11 @@ nt_apply() {
     [[ -x "$LIVE_BIN" ]] || nt_apply_failed "the build left no executable $LIVE_BIN"
     new_version=$(run_bin "$LIVE_DEPLOY" "$LIVE_BIN" version 2>/dev/null || true)
     [[ "$new_version" == "$live_version" ]] || nt_apply_failed "the new binary reports version '$new_version', the folded deployments run '$live_version'"
+    [[ "$(nt_git -C "$LIVE_DEPLOY" rev-parse HEAD 2>/dev/null || true)" == "$NT_SRC_SHA" ]] || nt_apply_failed "the build moved $LIVE_DEPLOY off commit $NT_SRC_SHA"
+    if ! nt_tree_clean "$LIVE_DEPLOY"; then
+        GIT_OPTIONAL_LOCKS=0 nt_git -C "$LIVE_DEPLOY" status --short --untracked-files=no >&2 || true
+        nt_apply_failed "the build left tracked files in $LIVE_DEPLOY that differ from commit $NT_SRC_SHA (${FOLD_DEPLOY[0]} changed during the run); a later update.sh would refuse this tree"
+    fi
     mkdir -p "$LIVE_DEPLOY/logs" || nt_apply_failed "could not create $LIVE_DEPLOY/logs"
     chown -R "$NT_USER:$NT_GROUP" "$LIVE_DEPLOY" || nt_apply_failed "could not give $LIVE_DEPLOY to $NT_USER:$NT_GROUP"
     printf 'build done\n' >> "$JOURNAL"

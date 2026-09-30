@@ -1837,6 +1837,11 @@ printf 'enabled\n' > "$F/enabled-go-trader@paper.service"
 out=$(run_nt_folds 2>&1) && rc=0 || rc=$?
 assert_rc "$rc" "19" "an enabled new unit exits 19"
 rm -f "$F/enabled-go-trader@paper.service"
+printf 'failed\n' > "$F/state-go-trader@paper.service"
+out=$(run_nt_folds 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "19" "a failed new unit exits 19"
+assert_contains "$out" "reset-failed go-trader@paper.service clears a failed state" "the failed-unit refusal names the reset command"
+rm -f "$F/state-go-trader@paper.service"
 nt_nothing_created "existing-target refusals"
 
 nt_setup ntrelease
@@ -1910,6 +1915,73 @@ out=$(run_nt_folds 2>&1) && rc=0 || rc=$?
 assert_rc "$rc" "19" "a first deployment with no git origin exits 19"
 nt_nothing_created "origin refusal"
 
+nt_setup ntunpushed
+git -C "$OPT/go-trader-coin-btc" -c user.email=fixture@example.invalid -c user.name=fixture commit -q --allow-empty -m unpushed
+out=$(run_nt_folds 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "19" "a first deployment at an unpushed commit exits 19"
+assert_contains "$out" "which $F/origin-coin-btc.git does not hold" "the refusal names the missing commit"
+nt_nothing_created "unpushed-commit refusal"
+
+nt_setup ntdirty
+printf '# local edit\n' >> "$OPT/go-trader-coin-btc/.gitignore"
+out=$(run_nt_folds 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "19" "a first deployment with a tracked change exits 19"
+assert_contains "$out" "has uncommitted changes to tracked files" "the refusal names the tracked change"
+nt_nothing_created "tracked-change refusal"
+
+nt_setup ntdetached
+git -C "$OPT/go-trader-coin-btc" checkout -q --detach
+default_branch=$(git -C "$F/origin-coin-btc.git" symbolic-ref --short HEAD)
+out=$(run_nt_folds 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "a detached first deployment at a pushed commit exits 0 (rc=$rc)"; }
+assert_contains "$out" "on branch $default_branch at $OPT/go-trader-coin-btc's commit" "a detached deployment at a default-branch commit clones that branch"
+rm -rf "$(stage_dir_from "$out")"
+git -C "$OPT/go-trader-coin-btc" checkout -q -b side
+git -C "$OPT/go-trader-coin-btc" -c user.email=fixture@example.invalid -c user.name=fixture commit -q --allow-empty -m side
+git -C "$OPT/go-trader-coin-btc" push -q origin side
+git -C "$OPT/go-trader-coin-btc" checkout -q --detach side
+out=$(run_nt_folds 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "a detached first deployment on a non-default origin branch exits 0 (rc=$rc)"; }
+assert_contains "$out" "on branch side at $OPT/go-trader-coin-btc's commit" "a commit only on a non-default branch clones that branch"
+rm -rf "$(stage_dir_from "$out")"
+git -C "$OPT/go-trader-coin-btc" checkout -q side
+git -C "$OPT/go-trader-coin-btc" -c user.email=fixture@example.invalid -c user.name=fixture commit -q --allow-empty -m local-only
+out=$(run_nt_folds 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "19" "a branch ahead of its origin branch exits 19"
+nt_nothing_created "unpushed-branch refusal"
+
+echo "== new target: paths inside a folded tree"
+nt_setup ntpaths
+python3 - "$BASE/coin-btc/config.json" "$OPT/go-trader-coin-btc/logs" <<'PY'
+import json, sys
+p = sys.argv[1]
+cfg = json.load(open(p))
+cfg["log_dir"] = sys.argv[2]
+json.dump(cfg, open(p, "w"))
+PY
+out=$(run_nt_folds 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "an absolute log_dir in the root deployment's tree folds (rc=$rc)"; }
+nt_logs=$(python3 -c 'import os, sys; print(os.path.normpath(sys.argv[1]))' "$NT_DEPLOY/logs")
+assert_contains "$out" "target-base: log_dir $OPT/go-trader-coin-btc/logs -> $nt_logs" "the dry run prints the log_dir rewrite"
+stage=$(stage_dir_from "$out")
+assert_eq "$(json_get "$stage/config.json" log_dir)" "$nt_logs" "the staged log_dir sits in the new tree"
+rm -rf "$stage"
+python3 - "$BASE/coin-eth/config.json" "$OPT/go-trader-coin-eth/notes" <<'PY'
+import json, sys
+p = sys.argv[1]
+cfg = json.load(open(p))
+cfg["strategies"][0]["args"].append("--note=" + sys.argv[2])
+json.dump(cfg, open(p, "w"))
+PY
+before=$(db_fingerprints "$BTC_DB" "$ETH_DB")
+out=$(run_nt_folds 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "21" "a moved strategy value naming a folded tree exits 21"
+assert_contains "$out" "names --note=$OPT/go-trader-coin-eth/notes, a path inside the folded tree $OPT/go-trader-coin-eth" "the refusal names the key, value and tree"
+assert_eq "$(db_fingerprints "$BTC_DB" "$ETH_DB")" "$before" "the path refusal leaves every database untouched"
+nt_nothing_created "folded-tree path refusal"
+out=$(run_nt_folds --diff 2>&1) && rc=0 || rc=$?
+assert_contains "$out" "diff: compose-refuse config key strategies[hl-x-paper-eth].args" "--diff names the folded-tree path"
+
 echo "== new target: apply"
 nt_setup ntapply
 before=$(db_fingerprints "$BTC_DB" "$ETH_DB")
@@ -1955,6 +2027,18 @@ out=$(run_nt_folds --rollback 2>&1) && rc=0 || rc=$?
 assert_rc "$rc" "14" "a rollback refuses while the new unit is active"
 [[ -d "$NT_DEPLOY" && -f "$NT_CFG" && -f "$NT_DROPIN_DIR/50-merge-paper-btc.conf" ]] || fail "a refused rollback changes nothing"
 rm -f "$F/state-go-trader@paper.service"
+printf 'run_id later\nfold sol paper:sol coin-sol\nresult_config x\ncomplete\n' > "$NT_DIR/merge-paper-sol.journal"
+: > "$F/systemctl.log"
+out=$(run_nt_folds --rollback 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "24" "a rollback refuses while a later fold into the new unit is applied"
+assert_contains "$out" "merge-paper-sol.journal records a later fold into go-trader@paper.service that is still applied" "the refusal names the later journal"
+[[ -d "$NT_DEPLOY" && -f "$NT_CFG" && -f "$NT_DROPIN_DIR/50-merge-paper-btc.conf" ]] || fail "a rollback refused for a later fold changes nothing"
+! grep -q '^disable ' "$F/systemctl.log" || fail "a rollback refused for a later fold never disables the unit"
+sed -i.bak '/^complete$/d' "$NT_DIR/merge-paper-sol.journal" && rm -f "$NT_DIR/merge-paper-sol.journal.bak"
+out=$(run_nt_folds --rollback 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "24" "a rollback refuses while a later fold is interrupted"
+assert_contains "$out" "that was interrupted" "the refusal names the interrupted later journal"
+printf 'complete\nrolled-back\n' >> "$NT_DIR/merge-paper-sol.journal"
 python3 -c '
 import sqlite3, sys
 conn = sqlite3.connect(sys.argv[1])
@@ -1976,6 +2060,7 @@ target_db_fp=$(db_fingerprints "$NT_DIR/state.db")
 out=$(run_nt_folds --rollback 2>&1) && rc=0 || rc=$?
 [[ "$rc" == "0" ]] || { echo "$out" >&2; fail "new-target rollback exits 0 (rc=$rc)"; }
 grep -qx 'disable go-trader@paper.service' "$F/systemctl.log" || fail "the rollback disables the new unit"
+grep -qx 'reset-failed go-trader@paper.service' "$F/systemctl.log" || fail "the rollback clears a failed state of the new unit"
 [[ ! -e "$NT_DROPIN_DIR" ]] || fail "the rollback removes the drop-ins and their directory"
 nt_nothing_created "rollback"
 aside_dir=$(ls -d "$NT_DIR".rolled-back-* 2>/dev/null | head -n 1)
