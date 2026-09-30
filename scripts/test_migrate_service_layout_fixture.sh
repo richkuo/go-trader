@@ -1027,6 +1027,8 @@ UNIT
     ln -s "$tree" "$allroot/go-trader-a"
     ln -s "$feed" "$allroot/go-trader-b"
     ln -s "$rsrc" "$allroot/go-trader-c"
+    local rsrc_owners_before
+    rsrc_owners_before=$(find "$rsrc" -xdev ! -user root -printf '%u %p\n' | sort)
     new2=$(advance_origin "$origin" "fixture update 2")
     expect_exit 0 run_update "$tree" bash scripts/update.sh --all --restart --update-all-root "$allroot"
     grep -q "all instances OK (3 updated" "$WORK/last.out" || fail "--all did not update all three trees"
@@ -1042,7 +1044,8 @@ UNIT
     [[ "$(health_field "$rport" version)" == "$(tree_version "$rsrc")" ]] || fail "$runit runs another version after --all"
     [[ -z "$(root_owned "$tree")" ]] || { root_owned "$tree" >&2; fail "root-owned files in $tree after --all"; }
     [[ -z "$(root_owned "$feed")" ]] || { root_owned "$feed" >&2; fail "root-owned files in $feed after --all"; }
-    [[ -z "$(find "$rsrc" -xdev ! -user root -print | head -n 5)" ]] || fail "--all changed the owner of files in the root-owned $rsrc"
+    [[ "$(stat -c '%U' "$rsrc")" == "root" ]] || fail "--all changed the owner of $rsrc"
+    [[ "$(find "$rsrc" -xdev ! -user root -printf '%u %p\n' | sort)" == "$rsrc_owners_before" ]] || fail "--all changed file owners in the root-owned $rsrc"
     [[ "$(safe_dirs)" == "$safe_before" ]] || fail "--all changed a safe.directory setting"
     systemctl stop "$tunit" "$funit" "$runit"
     echo "root updates on trees another account owns OK"
