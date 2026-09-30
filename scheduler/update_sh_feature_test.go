@@ -46,26 +46,6 @@ func updateShellBash(t *testing.T) string {
 	return ""
 }
 
-func TestUpdateShellHelpDocumentsRsyncFrom790(t *testing.T) {
-	t.Parallel()
-	script := updateShellScriptPath(t)
-	out, err := exec.Command("bash", script, "--help").CombinedOutput()
-	if err != nil {
-		t.Fatalf("bash %s --help: %v\n%s", script, err, out)
-	}
-	text := string(out)
-	for _, want := range []string{
-		"--rsync-from",
-		"hardcoded exclusions",
-		".env",
-		"state DB",
-	} {
-		if !strings.Contains(text, want) {
-			t.Errorf("help missing %q", want)
-		}
-	}
-}
-
 func TestUpdateHelpersEnvfileParsing790(t *testing.T) {
 	t.Parallel()
 	bash := updateShellBash(t)

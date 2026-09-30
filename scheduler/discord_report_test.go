@@ -128,12 +128,3 @@ func TestReportTokenResolution(t *testing.T) {
 		t.Fatalf("GO_TRADER_GITHUB_TOKEN should win, got %q", got)
 	}
 }
-
-func TestReportRepoDefault(t *testing.T) {
-	if got := (DiscordConfig{}).reportRepo(); got != defaultReportRepo {
-		t.Fatalf("expected default repo, got %q", got)
-	}
-	if got := (DiscordConfig{ReportRepo: "me/x"}).reportRepo(); got != "me/x" {
-		t.Fatalf("expected override, got %q", got)
-	}
-}

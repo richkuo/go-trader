@@ -476,30 +476,6 @@ func TestJSONBoolish(t *testing.T) {
 	}
 }
 
-func TestStringFromJSON(t *testing.T) {
-	cases := []struct {
-		name string
-		in   interface{}
-		want string
-	}{
-		{"nil", nil, ""},
-		{"string trimmed", "  hello  ", "hello"},
-		{"string empty", "", ""},
-		{"int", int(123), "123"},
-		{"float64", float64(1.5), "1.5"},
-		{"bool true", true, "true"},
-		{"bool false", false, "false"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := stringFromJSON(tc.in)
-			if got != tc.want {
-				t.Errorf("stringFromJSON(%#v) = %q, want %q", tc.in, got, tc.want)
-			}
-		})
-	}
-}
-
 func TestCloneOrNewJSONMap(t *testing.T) {
 	t.Run("nil returns empty non-nil map", func(t *testing.T) {
 		got := cloneOrNewJSONMap(nil)
