@@ -874,10 +874,15 @@ advance_origin() {
     rm -rf "$work"
 }
 
+git_isolated() {
+    : >"$WORK/empty.gitconfig"
+    env -u SUDO_UID GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL="$WORK/empty.gitconfig" "$@"
+}
+
 run_update() {
     local dir="$1"
     shift
-    (cd "$dir" && env PATH="$STUBBIN:$PATH" "$@")
+    (cd "$dir" && git_isolated env PATH="$STUBBIN:$PATH" "$@")
 }
 
 scenario_update() {
@@ -930,13 +935,14 @@ scenario_update() {
     [[ "$uvp" != /root/* && "$uvp" != /home/* ]] || fail "go-trader resolved uv from a home directory: $uvp"
     helper update_tool_runs_as go-trader go >/dev/null || fail "go-trader cannot run go"
     helper update_tool_runs_as root uv >/dev/null || fail "root cannot run uv"
-    expect_exit 0 bash "$SCRIPT_DIR/shared-feed-convert.sh" plan --consumer "$tunit"
+    expect_exit 0 git_isolated bash "$SCRIPT_DIR/shared-feed-convert.sh" plan --consumer "$tunit"
     grep -q "feed trees clone $origin (the origin of $tree)" "$WORK/last.out" || fail "shared-feed plan did not read the origin of $tree"
     if grep -q "no git origin" "$WORK/last.out"; then fail "shared-feed plan reported no git origin"; fi
 
-    if git -C "$tree" rev-parse HEAD >/dev/null 2>&1; then
-        fail "root git reads $tree with no trust setting (safe.directory already set on this host?); the case would prove nothing"
+    if git_isolated git -C "$tree" rev-parse HEAD >/dev/null 2>&1; then
+        fail "root git reads $tree with no system or global config and no SUDO_UID; the case would prove nothing"
     fi
+    echo "host safe.directory entries (system, global), left in place and ignored by the isolated runs: $(safe_dirs | tr '\n' ' ')"
     safe_before=$(safe_dirs)
 
     note "a failed update rolls back a go-trader tree and keeps its owner"
