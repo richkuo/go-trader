@@ -23,6 +23,7 @@ EXIT_PAPER_NOT_PAPER=15
 EXIT_DB_IDENTITY=16
 EXIT_LIVE_PAPER_DB_CONFLICT=17
 EXIT_CONFIG_MIGRATION=18
+EXIT_NEW_TARGET_REFUSED=19
 EXIT_INSPECTION_REFUSED=20
 EXIT_COMPOSE_REFUSED=21
 EXIT_PROOF_REFUSED=22
@@ -35,11 +36,45 @@ usage: merge-paper-instance.sh --live <instance> [--paper <instance>]
          [--source <id>=<instance>]... [--apply | --rollback | --diff]
          [--align-to-live] [--base <dir>] [--deploy-root <dir>] [--unit-dir <dir>]
          [--live-unit <unit>] [--paper-unit <unit>]
+       merge-paper-instance.sh --new-target <name> --status-port <n>
+         [--root-from <instance>] [--paper <instance>] [--source <id>=<instance>]...
+         [--apply | --rollback | --diff] [--align-to-live] [--base <dir>]
+         [--deploy-root <dir>] [--unit-dir <dir>] [--paper-unit <unit>]
 
 Defaults: --base /var/lib/go-trader, --deploy-root /opt (deployments at
 <root>/go-trader-<instance>), --unit-dir /etc/systemd/system, units
 go-trader@<instance>.service. Without --apply nothing outside the staging
 area changes.
+
+--new-target <name> folds every named deployment into a new template service
+go-trader@<name>, so no folded deployment becomes the target. Every folded
+deployment must run go-trader@<instance>.service from the installed template,
+under one service user and one release. --root-from (default: the first
+folded deployment, --paper first, then --source by id) gives the root
+settings: every refuse-on-difference key must agree across the folded
+deployments, and the other dropped keys come from it. status_port comes from
+--status-port, which a running process must not have bound, and db_file is
+<base>/<name>/state.db, which starts empty. Root portfolio_risk is the root
+deployment's block, and every source keeps its own effective limits in
+paper_sources[].portfolio_risk. The dry run stages every file in a temporary
+directory and proves the fold with the first folded deployment's binary.
+--apply creates <base>/<name>/ (0700) with config.json (0600) and the journal,
+clones the first folded deployment's git origin into <deploy-root>/go-trader-<name>,
+links scheduler/config.json, writes a 0600 .env from the folded deployments'
+.env files (a variable with two values refuses, and no value is printed;
+GO_TRADER_SERVICE naming a folded unit becomes go-trader@<name>.service),
+builds the tree with scripts/update.sh --rsync-from <first folded deployment>,
+proves the fold again with the new binary, installs go-trader@.service and
+the journald namespace config only when absent, and writes the drop-ins. It
+enables and starts nothing. --rollback with the same fold arguments refuses
+while go-trader@<name> is active; otherwise it disables that unit, removes the
+drop-ins and moves both new directories aside as .rolled-back-<run_id>. The
+folded configs are never changed in this mode, and no database is rolled back.
+
+In both modes leaderboard_summaries is the union of the target's entries and
+every folded deployment's entries, keyed like the scheduler (platform, ticker
+or *, channel). An identical entry appears once, and one key with two
+different entries refuses (exit 21).
 
 --paper folds one deployment into the default paper partition: every strategy
 is aliased as <base>-paper, and the numeric suffix is incremented
@@ -75,15 +110,18 @@ Units may stay running and no lock or binary is used.
 shared root values to <paper-config>.aligned for every folded deployment and
 never changes a source; --apply then composes from those files. Exit codes:
 2 usage, 3 lock contention, 4 restore failed, 5 source changed before apply,
-10-18 preflight refusals (18: a config migration is pending or the configs
-carry different versions), 20-24 inspection, compose, proof, override and
-journal refusals. The binaries run against copies of every config; the
-deployment files are never rewritten.
+10-19 preflight refusals (18: a config migration is pending or the configs
+carry different versions; 19: a --new-target refusal), 20-24 inspection,
+compose, proof, override and journal refusals. The binaries run against
+copies of every config; the deployment files are never rewritten.
 EOF
 }
 
 LIVE=""
 PAPER=""
+NEW_TARGET=""
+STATUS_PORT=""
+ROOT_FROM=""
 MODE="dry-run"
 ALIGN_TO_LIVE=0
 BASE="/var/lib/go-trader"
@@ -94,11 +132,16 @@ PAPER_UNIT=""
 SYSTEMCTL="${MERGE_PAPER_SYSTEMCTL:-systemctl}"
 SYSTEMD_ANALYZE="${MERGE_PAPER_SYSTEMD_ANALYZE:-systemd-analyze}"
 FAIL_AFTER="${MERGE_PAPER_FAIL_AFTER:-}"
+BUILD_CMD="${MERGE_PAPER_BUILD_CMD:-}"
+JOURNALD_ETC="${MERGE_PAPER_JOURNALD_DIR:-/etc/systemd}"
 declare -a SOURCE_SPEC=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --live) LIVE="${2:-}"; shift 2 ;;
+        --new-target) NEW_TARGET="${2:-}"; shift 2 ;;
+        --status-port) STATUS_PORT="${2:-}"; shift 2 ;;
+        --root-from) ROOT_FROM="${2:-}"; shift 2 ;;
         --paper) PAPER="${2:-}"; shift 2 ;;
         --source) SOURCE_SPEC+=("${2:-}"); shift 2 ;;
         --apply)
@@ -139,6 +182,22 @@ print("ok" if paper_alias_suffix(sys.argv[1]) else "bad")
 ' "$1"
 }
 
+NT=0
+TARGET_WORD="live"
+if [[ -n "$NEW_TARGET" ]]; then
+    [[ -z "$LIVE" ]] || fail "$EXIT_USAGE" "--new-target and --live are exclusive"
+    [[ -z "$LIVE_UNIT" ]] || fail "$EXIT_USAGE" "--live-unit applies only with --live; the new target's unit is go-trader@<name>.service"
+    [[ "$(update_validate_instance_name "$NEW_TARGET")" == "ok" ]] || fail "$EXIT_USAGE" "invalid new target name '$NEW_TARGET'"
+    [[ "$STATUS_PORT" =~ ^[0-9]{1,5}$ ]] && (( 10#$STATUS_PORT >= 1 && 10#$STATUS_PORT <= 65535 )) || \
+        fail "$EXIT_USAGE" "--new-target needs --status-port <n> with 1 <= n <= 65535"
+    STATUS_PORT=$((10#$STATUS_PORT))
+    NT=1
+    TARGET_WORD="target"
+    LIVE="$NEW_TARGET"
+else
+    [[ -z "$STATUS_PORT" ]] || fail "$EXIT_USAGE" "--status-port applies only with --new-target"
+    [[ -z "$ROOT_FROM" ]] || fail "$EXIT_USAGE" "--root-from applies only with --new-target"
+fi
 [[ -n "$LIVE" ]] || { usage >&2; exit "$EXIT_USAGE"; }
 [[ -n "$PAPER" || ${#SOURCE_SPEC[@]} -gt 0 ]] || { usage >&2; exit "$EXIT_USAGE"; }
 [[ "$(update_validate_instance_name "$LIVE")" == "ok" ]] || fail "$EXIT_USAGE" "invalid live instance name '$LIVE'"
@@ -151,8 +210,31 @@ fi
 LIVE_DEPLOY="${DEPLOY_ROOT%/}/go-trader-${LIVE}"
 LIVE_BIN="${LIVE_DEPLOY}/go-trader"
 LIVE_CFG="${BASE%/}/${LIVE}/config.json"
-STAGED_CFG="${LIVE_CFG}.merge-staged"
-STAGED_MAP="${LIVE_CFG}.merge-staged.map.json"
+TARGET_DIR="${BASE%/}/${LIVE}"
+STAGE_DIR=""
+KEEP_STAGE=0
+
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/merge-paper-instance.XXXXXX")
+cleanup() {
+    update_stop_state_lock_holder
+    rm -rf "$WORK"
+    if [[ -n "$STAGE_DIR" && "$KEEP_STAGE" != "1" ]]; then
+        rm -rf "$STAGE_DIR"
+    fi
+}
+trap cleanup EXIT
+
+if [[ "$NT" == "1" ]]; then
+    STAGE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/merge-paper-new-target-${LIVE}.XXXXXX")
+    chmod 0700 "$STAGE_DIR"
+    STAGED_CFG="${STAGE_DIR}/config.json"
+    STAGED_MAP="${STAGE_DIR}/config.json.map.json"
+    STAGE_PREFIX="${STAGE_DIR}/"
+else
+    STAGED_CFG="${LIVE_CFG}.merge-staged"
+    STAGED_MAP="${LIVE_CFG}.merge-staged.map.json"
+    STAGE_PREFIX="${TARGET_DIR}/"
+fi
 
 # One row per folded deployment, in the runtime's partition order: the default
 # paper partition first, then every source by id. Every later loop (preflight,
@@ -167,7 +249,7 @@ declare -a FOLD_FP_CFG=() FOLD_FP_DB=() FOLD_MERGED=()
 add_fold() {
     local id="$1" instance="$2" key sfx partition
     [[ "$(update_validate_instance_name "$instance")" == "ok" ]] || fail "$EXIT_USAGE" "invalid instance name '$instance'"
-    [[ "$instance" != "$LIVE" ]] || fail "$EXIT_USAGE" "folded instance '$instance' is the live instance"
+    [[ "$instance" != "$LIVE" ]] || fail "$EXIT_USAGE" "folded instance '$instance' is the $TARGET_WORD instance"
     if [[ -n "$id" ]]; then
         key="$id"
         sfx=".$id"
@@ -196,7 +278,7 @@ add_fold() {
         FOLD_UNIT+=("$PAPER_UNIT")
     fi
     FOLD_DROPIN+=("$(update_unit_dropin_path "$UNIT_DIR" "$LIVE_UNIT" "50-merge-paper-${key}")")
-    FOLD_STAGED_OVERRIDE+=("${BASE%/}/${LIVE}/merge-paper-${key}.override.staged")
+    FOLD_STAGED_OVERRIDE+=("${STAGE_PREFIX}merge-paper-${key}.override.staged")
     FOLD_CFG_COPY+=("")
     FOLD_COMPOSE_CFG+=("")
     FOLD_INSPECT+=("")
@@ -248,12 +330,16 @@ fold_desc() {
     fi
 }
 
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/merge-paper-instance.XXXXXX")
-cleanup() {
-    update_stop_state_lock_holder
-    rm -rf "$WORK"
-}
-trap cleanup EXIT
+ROOT_IDX=0
+if [[ -n "$ROOT_FROM" ]]; then
+    ROOT_IDX=-1
+    for i in "${!FOLD_KEY[@]}"; do
+        if [[ "${FOLD_INSTANCE[$i]}" == "$ROOT_FROM" ]]; then
+            ROOT_IDX=$i
+        fi
+    done
+    [[ "$ROOT_IDX" -ge 0 ]] || fail "$EXIT_USAGE" "--root-from $ROOT_FROM names no folded deployment; name one --paper or --source instance"
+fi
 
 MERGE_PY=$(cat <<'PY'
 import json
@@ -267,6 +353,7 @@ from paper_alias import paper_alias_suffix
 MODE_LIVE = "live"
 MODE_PAPER = "paper"
 PAPER_SOURCE_SEPARATOR = ":"
+TARGET_LABEL = os.environ.get("MERGE_TARGET_LABEL") or "live"
 
 RISK_FIELDS = [
     "max_drawdown_pct",
@@ -299,7 +386,6 @@ DROPPED = [
     "log_level",
     "auto_update",
     "leaderboard_post_time",
-    "leaderboard_summaries",
     "summary_frequency",
     "tradingview_export",
     "tuning",
@@ -314,6 +400,7 @@ DROPPED = [
     "strategies",
     "replay_log_path",
 ]
+MERGED = ["leaderboard_summaries"]
 CHANNEL_MAPS = ["channels", "trade_alert_channels", "dm_channels"]
 CHANNEL_MAPS_WITH_BARE_KEY_FALLBACK = ["channels", "trade_alert_channels"]
 COMPOSE_DROP_SILENT = (
@@ -370,6 +457,8 @@ def collect_root_diffs(live, paper):
         if (key in paper or key in live) and root_value(paper, key) != root_value(live, key):
             refuse_keys.append(key)
     for key in sorted(set(paper) | set(live)):
+        if key in MERGED:
+            continue
         if key in DROPPED or key in REFUSE_ON_DIFFERENCE:
             if key in DROPPED and key in paper and key not in COMPOSE_DROP_SILENT:
                 if paper.get(key) != live.get(key):
@@ -380,30 +469,70 @@ def collect_root_diffs(live, paper):
     return refuse_keys, unknown_keys, dropped_keys
 
 def print_root_diff_report(live, paper, refuse_keys, unknown_keys, dropped_keys):
+    t = TARGET_LABEL
     for key in refuse_keys:
-        print("diff: refuse-on-difference %s live=%s paper=%s" % (key, dump_root(live, key), dump_root(paper, key)))
+        print("diff: refuse-on-difference %s %s=%s paper=%s" % (key, t, dump_root(live, key), dump_root(paper, key)))
     for key in unknown_keys:
-        print("diff: unknown %s live=%s paper=%s" % (key, dump_root(live, key), dump_root(paper, key)))
+        print("diff: unknown %s %s=%s paper=%s" % (key, t, dump_root(live, key), dump_root(paper, key)))
     for key in dropped_keys:
-        print("diff: dropped %s live=%s paper=%s (live value kept)" % (key, dump_root(live, key), dump_root(paper, key)))
+        print("diff: dropped %s %s=%s paper=%s (%s value kept)" % (key, t, dump_root(live, key), dump_root(paper, key), t))
     if not refuse_keys and not unknown_keys and not dropped_keys:
         print("diff: no root-key differences")
         return
     print("diff: %d refuse-on-difference, %d unknown, %d dropped" % (len(refuse_keys), len(unknown_keys), len(dropped_keys)))
 
 def refuse_root_conflicts(conflicts):
+    t = TARGET_LABEL
     for f, live, paper, refuse_keys, unknown_keys, dropped_keys in conflicts:
         pre = fold_prefix(f)
         for key in refuse_keys:
-            print("REFUSE: %sroot key %s differs between live and paper configs (an absent key is compared too, since the merged config would apply the live value to the moved strategies): live=%s paper=%s" % (
-                pre, key, dump_root(live, key), dump_root(paper, key)))
+            print("REFUSE: %sroot key %s differs between %s and paper configs (an absent key is compared too, since the merged config would apply the %s value to the moved strategies): %s=%s paper=%s" % (
+                pre, key, t, t, t, dump_root(live, key), dump_root(paper, key)))
         for key in unknown_keys:
-            print("REFUSE: %sroot key %s differs between live and paper configs and is not a known drop (an absent key is compared too): live=%s paper=%s" % (
-                pre, key, dump_root(live, key), dump_root(paper, key)))
+            print("REFUSE: %sroot key %s differs between %s and paper configs and is not a known drop (an absent key is compared too): %s=%s paper=%s" % (
+                pre, key, t, t, dump_root(live, key), dump_root(paper, key)))
         for key in dropped_keys:
-            print("%sdropped paper root key %s (live value kept): live=%s paper=%s" % (
-                pre, key, dump_root(live, key), dump_root(paper, key)))
+            print("%sdropped paper root key %s (%s value kept): %s=%s paper=%s" % (
+                pre, key, t, t, dump_root(live, key), dump_root(paper, key)))
     sys.exit(1)
+
+def leaderboard_key(e):
+    ticker = str(e.get("ticker") or "").strip().lower() or "*"
+    return "%s:%s:%s" % (str(e.get("platform") or "").lower(), ticker, str(e.get("channel") or ""))
+
+def leaderboard_entries(cfg, label):
+    v = cfg.get("leaderboard_summaries")
+    if v is None:
+        return []
+    if not isinstance(v, list) or not all(isinstance(e, dict) for e in v):
+        refuse("%s leaderboard_summaries is not a list of objects" % label)
+    return v
+
+def merge_leaderboards(sources):
+    merged = []
+    origin = []
+    seen = {}
+    conflicts = []
+    for label, entries in sources:
+        for e in entries:
+            key = leaderboard_key(e)
+            if key not in seen:
+                seen[key] = len(merged)
+                merged.append(json.loads(json.dumps(e)))
+                origin.append(label)
+                continue
+            first = merged[seen[key]]
+            if first == e:
+                continue
+            conflicts.append("leaderboard_summaries key %s: %s has %s and %s has %s" % (
+                key, origin[seen[key]], json.dumps(first, sort_keys=True), label, json.dumps(e, sort_keys=True)))
+    return merged, origin, conflicts
+
+def fold_leaderboard_sources(live, loaded):
+    out = [(TARGET_LABEL, leaderboard_entries(live, TARGET_LABEL))]
+    for f, cfg in loaded:
+        out.append((fold_label(f), leaderboard_entries(cfg, fold_label(f))))
+    return out
 
 def write_json_atomic(path, doc, chown_from):
     tmp = path + ".tmp"
@@ -455,6 +584,13 @@ def cmd_root_diff(live_path, plan_path):
         print("diff: channel-plan %s" % line)
     if not channel_lines:
         print("diff: channel-plan no discord channel keys to add")
+    boards, board_origin, board_conflicts = merge_leaderboards(fold_leaderboard_sources(live, loaded))
+    for e, label in zip(boards, board_origin):
+        print("diff: leaderboard %s (from %s)" % (json.dumps(e, sort_keys=True), label))
+    if not boards:
+        print("diff: leaderboard no leaderboard_summaries entries")
+    for msg in board_conflicts:
+        print("diff: compose-refuse %s" % msg)
     print("diff: config-file preview only; inspect-based portfolio_risk refuses need a dry run")
 
 def cmd_align(live_path, paper_path, out_path):
@@ -935,6 +1071,13 @@ def cmd_compose(live_path, plan_path, out_path, map_path, inspect_live_path):
         if isinstance(live_risk, dict) and "paper" in live_risk:
             refuse("the live config runs no live strategy and already carries portfolio_risk.paper; the effective live risk limits cannot be separated from the override")
         live_eff = effective_scope_risk(inspect_live_path, MODE_PAPER)
+    if live_eff is None and plan.get("new_target"):
+        root_fold = [f for f in plan["folds"] if f["key"] == plan["root_key"]][0]
+        live_eff = effective_scope_risk(root_fold["inspect"], MODE_PAPER)
+        if live_eff is None:
+            refuse("the root deployment %s's inspect document carries no paper-scope strategy; the effective root risk limits are unknown" % root_fold["instance"])
+        report.append("portfolio_risk root effective view taken from the root deployment %s: %s" % (
+            root_fold["instance"], json.dumps(live_eff, sort_keys=True)))
     if live_eff is None:
         refuse("the live inspect document carries no strategy; the effective live risk limits are unknown")
     root = dict(live_risk) if isinstance(live_risk, dict) else {}
@@ -1021,13 +1164,26 @@ def cmd_compose(live_path, plan_path, out_path, map_path, inspect_live_path):
             refuse("%s%s" % (fold_prefix(f), discord_conflicts[0][3]))
         report.extend(discord_report)
 
+    boards, board_origin, board_conflicts = merge_leaderboards(fold_leaderboard_sources(live, loaded))
+    if board_conflicts:
+        for msg in board_conflicts:
+            print("REFUSE: %s" % msg)
+        sys.exit(1)
+    if boards:
+        merged["leaderboard_summaries"] = boards
+        for i, (e, label) in enumerate(zip(boards, board_origin)):
+            report.append("leaderboard_summaries[%d]=%s (from %s)" % (i, json.dumps(e, sort_keys=True), label))
+
     conflicts = []
     dropped_all = []
+    dropped_lines = []
     for f, cfg, renames, new_strats, skipped in fold_blocks:
         refuse_keys, unknown_keys, dropped = collect_root_diffs(live, cfg)
         for key in dropped:
             if key not in dropped_all:
                 dropped_all.append(key)
+            dropped_lines.append("%sdropped paper root key %s (%s value kept): %s=%s paper=%s" % (
+                fold_prefix(f), key, TARGET_LABEL, TARGET_LABEL, dump_root(live, key), dump_root(cfg, key)))
         if refuse_keys or unknown_keys:
             conflicts.append((f, live, cfg, refuse_keys, unknown_keys, dropped))
     if conflicts:
@@ -1071,8 +1227,8 @@ def cmd_compose(live_path, plan_path, out_path, map_path, inspect_live_path):
         }, fh, indent=2)
     for line in report:
         print("compose: %s" % line)
-    for key in dropped_all:
-        print("compose: dropped paper root key %s (live value kept)" % key)
+    for line in dropped_lines:
+        print("compose: %s" % line)
     for sid in all_skipped:
         print("compose: %s already merged; skipped" % sid)
     print("compose: %d existing + %d added strategies%s" % (
@@ -1155,6 +1311,99 @@ def compare(label, before, after, problems):
             problems.append("%s %s: before=%s after=%s" % (label, k, a.get(k, "<absent>"), b.get(k, "<absent>")))
     return 1
 
+def cmd_target_base(root_path, out_path, db_file, status_port):
+    root = load(root_path)
+    base = json.loads(json.dumps(root))
+    base["strategies"] = []
+    base["db_file"] = db_file
+    base["status_port"] = int(status_port)
+    for key in ("paper_db_file", "paper_sources", "leaderboard_summaries"):
+        base.pop(key, None)
+    write_json_atomic(out_path, base, root_path)
+
+def env_helpers():
+    import importlib.util
+    path = os.path.join(os.environ["GO_TRADER_SCRIPT_DIR"], "migrate-service-layout.py")
+    spec = importlib.util.spec_from_file_location("migrate_service_layout", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.parse_env_file, mod.env_file_line
+
+def owner_ids(user, group):
+    import grp
+    import pwd
+    return pwd.getpwnam(user).pw_uid, grp.getgrnam(group).gr_gid
+
+def cmd_env_merge(out_path, new_unit, user, group, *pairs):
+    parse_env_file, env_file_line = env_helpers()
+    merged = {}
+    setters = {}
+    problems = []
+    instances = []
+    for i in range(0, len(pairs), 2):
+        instance, path = pairs[i], pairs[i + 1]
+        instances.append(instance)
+        env = dict(parse_env_file(path)) if os.path.isfile(path) else {}
+        own = ("go-trader@%s.service" % instance, "go-trader@%s" % instance)
+        for key in sorted(env):
+            val = env[key]
+            if key == "GO_TRADER_SERVICE" and val.strip() in own:
+                val = new_unit
+            if key in merged and merged[key] != val:
+                problems.append("variable %s differs between %s and %s" % (key, setters[key][0], instance))
+                continue
+            merged.setdefault(key, val)
+            setters.setdefault(key, []).append(instance)
+    if problems:
+        for p in problems:
+            print("REFUSE: %s (values not shown)" % p)
+        sys.exit(1)
+    for key in sorted(merged):
+        missing = [x for x in instances if x not in setters[key]]
+        note = "; absent in %s" % ", ".join(missing) if missing else ""
+        print("env: %s from %s%s" % (key, ", ".join(setters[key]), note))
+    print("env: %d variable(s) for %s" % (len(merged), new_unit))
+    if out_path == "-":
+        return
+    body = "".join(env_file_line(k, merged[k]) for k in sorted(merged))
+    uid, gid = owner_ids(user, group)
+    tmp = out_path + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(body.encode("utf-8", "surrogateescape"))
+    os.chown(tmp, uid, gid)
+    os.replace(tmp, out_path)
+    if dict(parse_env_file(out_path)) != merged:
+        refuse("the written %s does not parse back to the merged variables" % out_path)
+
+def cmd_install_file(src, dest, mode, user, group):
+    uid, gid = owner_ids(user, group)
+    with open(src, "rb") as f:
+        data = f.read()
+    tmp = dest + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, int(mode, 8))
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+    os.chmod(tmp, int(mode, 8))
+    os.chown(tmp, uid, gid)
+    os.replace(tmp, dest)
+
+def cmd_port_bound(port):
+    import errno
+    import socket
+    for host in ("127.0.0.1", "0.0.0.0"):
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            s.bind((host, int(port)))
+        except OSError as exc:
+            if exc.errno == errno.EADDRINUSE:
+                print("bound")
+                return
+            raise
+        finally:
+            s.close()
+    print("free")
+
 def main():
     cmd = sys.argv[1]
     args = sys.argv[2:]
@@ -1174,6 +1423,14 @@ def main():
         cmd_root_diff(*args)
     elif cmd == "align":
         cmd_align(*args)
+    elif cmd == "target-base":
+        cmd_target_base(*args)
+    elif cmd == "env-merge":
+        cmd_env_merge(*args)
+    elif cmd == "install-file":
+        cmd_install_file(*args)
+    elif cmd == "port-bound":
+        cmd_port_bound(*args)
     else:
         refuse("unknown helper command %s" % cmd)
 
@@ -1182,7 +1439,7 @@ PY
 )
 
 py() {
-    GO_TRADER_SCRIPT_DIR="$SCRIPT_DIR" python3 -c "$MERGE_PY" "$@"
+    GO_TRADER_SCRIPT_DIR="$SCRIPT_DIR" MERGE_TARGET_LABEL="$TARGET_WORD" python3 -c "$MERGE_PY" "$@"
 }
 
 cfg_get() {
@@ -1233,7 +1490,7 @@ fold_side() {
 
 write_aligned_fold() {
     local i="$1" aligned="${FOLD_CFG[$i]}.aligned" rc=0 out=""
-    out=$(py align "$LIVE_CFG" "${FOLD_CFG[$i]}" "$aligned") || rc=$?
+    out=$(py align "$COMPOSE_BASE_CFG" "${FOLD_CFG[$i]}" "$aligned") || rc=$?
     if [[ "$rc" != "0" ]]; then
         printf '%s\n' "$out" >&2
         fail "$EXIT_COMPOSE_REFUSED" "could not write aligned paper config $aligned"
@@ -1257,23 +1514,43 @@ write_plan() {
     python3 -c '
 import json
 import sys
-path, live = sys.argv[1], sys.argv[2]
-rest = sys.argv[3:]
+path, live, new_target, root_key = sys.argv[1:5]
+rest = sys.argv[5:]
 folds = []
 for i in range(0, len(rest), 8):
     key, sid, instance, partition, config, db, inspect, merged = rest[i:i + 8]
     folds.append({"key": key, "id": sid, "instance": instance, "partition": partition,
                   "config": config, "db": db, "inspect": inspect, "merged": merged})
-json.dump({"live_config": live, "folds": folds}, open(path, "w"), indent=2)
-' "$path" "$LIVE_CFG" "${args[@]}"
+json.dump({"live_config": live, "new_target": new_target == "1", "root_key": root_key, "folds": folds},
+          open(path, "w"), indent=2)
+' "$path" "$COMPOSE_BASE_CFG" "$NT" "${FOLD_KEY[$ROOT_IDX]}" "${args[@]}"
 }
 
 classify_field() {
     printf '%s' "$1" | python3 -c 'import json,sys; v = json.load(sys.stdin)[sys.argv[1]]; print("" if v is None else v)' "$2"
 }
 
-[[ -f "$LIVE_CFG" ]] || fail "$EXIT_CONFIG_MISSING" "config $LIVE_CFG is missing"
-live_class=$(py classify "$LIVE_CFG")
+TOOL_DEPLOY="$LIVE_DEPLOY"
+TOOL_BIN="$LIVE_BIN"
+if [[ "$NT" == "1" ]]; then
+    [[ "$BASE" == /* && "$DEPLOY_ROOT" == /* ]] || fail "$EXIT_USAGE" "--new-target needs an absolute --base and --deploy-root; the new config names its database by absolute path"
+    ROOT_CFG="${FOLD_CFG[$ROOT_IDX]}"
+    COMPOSE_BASE_CFG="$WORK/target-base.json"
+    if [[ "$MODE" == "rollback" && ! -f "$ROOT_CFG" ]]; then
+        printf '{"db_file": "%s", "strategies": []}\n' "${TARGET_DIR}/state.db" > "$COMPOSE_BASE_CFG"
+    else
+        [[ -f "$ROOT_CFG" ]] || fail "$EXIT_CONFIG_MISSING" "config $ROOT_CFG is missing"
+        if ! py target-base "$ROOT_CFG" "$COMPOSE_BASE_CFG" "${TARGET_DIR}/state.db" "$STATUS_PORT" >/dev/null; then
+            fail "$EXIT_CONFIG_MISSING" "could not read the root config $ROOT_CFG"
+        fi
+    fi
+    TOOL_DEPLOY="${FOLD_DEPLOY[0]}"
+    TOOL_BIN="${FOLD_BIN[0]}"
+else
+    [[ -f "$LIVE_CFG" ]] || fail "$EXIT_CONFIG_MISSING" "config $LIVE_CFG is missing"
+    COMPOSE_BASE_CFG="$LIVE_CFG"
+fi
+live_class=$(py classify "$COMPOSE_BASE_CFG")
 live_cv=$(classify_field "$live_class" config_version)
 live_db_rel=$(classify_field "$live_class" db_file)
 live_paper_db=$(classify_field "$live_class" paper_db_file)
@@ -1316,7 +1593,8 @@ if [[ "$MODE" == "diff" ]]; then
     for i in "${!FOLD_KEY[@]}"; do
         [[ -f "${FOLD_CFG[$i]}" ]] || fail "$EXIT_CONFIG_MISSING" "config ${FOLD_CFG[$i]} is missing"
     done
-    echo "merge-paper-instance: live=$LIVE ($LIVE_CFG) folding $FOLD_COUNT_TOTAL deployment(s) mode=diff"
+    echo "merge-paper-instance: $TARGET_WORD=$LIVE ($LIVE_CFG) folding $FOLD_COUNT_TOTAL deployment(s) mode=diff"
+    [[ "$NT" != "1" ]] || echo "  new target: root settings from ${FOLD_INSTANCE[$ROOT_IDX]} ($ROOT_CFG), status_port $STATUS_PORT, db_file ${TARGET_DIR}/state.db"
     for i in "${!FOLD_KEY[@]}"; do
         echo "  fold: $(fold_desc "$i") config ${FOLD_CFG[$i]}"
         FOLD_COMPOSE_CFG[$i]="${FOLD_CFG[$i]}"
@@ -1332,7 +1610,7 @@ if [[ "$MODE" == "diff" ]]; then
         FOLD_MERGED[$i]=$(fold_merged_flag "$i")
     done
     write_plan "$WORK/plan.json"
-    if ! py root-diff "$LIVE_CFG" "$WORK/plan.json"; then
+    if ! py root-diff "$COMPOSE_BASE_CFG" "$WORK/plan.json"; then
         fail "$EXIT_CONFIG_MISSING" "could not read the live and paper configs for --diff"
     fi
     if [[ "$ALIGN_TO_LIVE" == "1" ]]; then
@@ -1343,10 +1621,130 @@ if [[ "$MODE" == "diff" ]]; then
     exit 0
 fi
 
-echo "merge-paper-instance: live=$LIVE ($LIVE_DEPLOY, $LIVE_CFG) folding $FOLD_COUNT_TOTAL deployment(s) mode=$MODE"
+echo "merge-paper-instance: $TARGET_WORD=$LIVE ($LIVE_DEPLOY, $LIVE_CFG) folding $FOLD_COUNT_TOTAL deployment(s) mode=$MODE"
 for i in "${!FOLD_KEY[@]}"; do
     echo "  fold: $(fold_desc "$i") deploy ${FOLD_DEPLOY[$i]} config ${FOLD_CFG[$i]} unit ${FOLD_UNIT[$i]}"
 done
+
+TEMPLATE_UNIT="${UNIT_DIR%/}/go-trader@.service"
+NT_USER=""
+NT_GROUP=""
+NT_NAMESPACE=""
+NT_JOURNALD=""
+
+nt_unit_prop() {
+    "$SYSTEMCTL" show -p "$2" --value "$1" 2>/dev/null || true
+}
+
+nt_require_target_absent() {
+    local unit_file="${UNIT_DIR%/}/${LIVE_UNIT}" state enabled
+    [[ ! -e "$LIVE_DEPLOY" && ! -L "$LIVE_DEPLOY" ]] || fail "$EXIT_NEW_TARGET_REFUSED" "deployment directory $LIVE_DEPLOY already exists; choose another --new-target name or remove it by hand"
+    [[ ! -e "$TARGET_DIR" && ! -L "$TARGET_DIR" ]] || fail "$EXIT_NEW_TARGET_REFUSED" "config directory $TARGET_DIR already exists and holds no journal of this fold set; choose another --new-target name or remove it by hand"
+    [[ ! -e "$unit_file" && ! -L "$unit_file" ]] || fail "$EXIT_NEW_TARGET_REFUSED" "unit file $unit_file already exists"
+    [[ ! -e "${unit_file}.d" ]] || fail "$EXIT_NEW_TARGET_REFUSED" "drop-in directory ${unit_file}.d already exists"
+    state=$(unit_state "$LIVE_UNIT")
+    case "$state" in
+        active|activating|reloading|deactivating|refreshing|failed)
+            fail "$EXIT_NEW_TARGET_REFUSED" "unit $LIVE_UNIT is $state; systemd already runs or ran a service with this name"
+            ;;
+    esac
+    enabled=$("$SYSTEMCTL" is-enabled "$LIVE_UNIT" 2>/dev/null || true)
+    case "$enabled" in
+        enabled|enabled-runtime|linked|linked-runtime|masked|masked-runtime|alias)
+            fail "$EXIT_NEW_TARGET_REFUSED" "unit $LIVE_UNIT is $enabled; systemd already loads a service with this name"
+            ;;
+    esac
+}
+
+nt_require_template_layout() {
+    local i frag user group ns src
+    for i in "${!FOLD_KEY[@]}"; do
+        frag=$(nt_unit_prop "${FOLD_UNIT[$i]}" FragmentPath)
+        [[ "$frag" == "$TEMPLATE_UNIT" ]] || \
+            fail "$EXIT_NEW_TARGET_REFUSED" "${FOLD_UNIT[$i]} loads from '${frag:-<none>}', not from $TEMPLATE_UNIT; move it to the template layout first (scripts/migrate-service-layout.py)"
+        user=$(nt_unit_prop "${FOLD_UNIT[$i]}" User)
+        group=$(nt_unit_prop "${FOLD_UNIT[$i]}" Group)
+        [[ -n "$user" ]] || fail "$EXIT_NEW_TARGET_REFUSED" "${FOLD_UNIT[$i]} names no service user"
+        if [[ -z "$NT_USER" ]]; then
+            NT_USER="$user"
+            NT_GROUP="$group"
+        elif [[ "$user" != "$NT_USER" || "$group" != "$NT_GROUP" ]]; then
+            fail "$EXIT_NEW_TARGET_REFUSED" "service users differ: ${FOLD_UNIT[0]} runs as $NT_USER:${NT_GROUP:-<default>}, ${FOLD_UNIT[$i]} as $user:${group:-<default>}; the new service runs as one user"
+        fi
+    done
+    if [[ -z "$NT_GROUP" ]]; then
+        NT_GROUP=$(id -gn "$NT_USER" 2>/dev/null) || fail "$EXIT_NEW_TARGET_REFUSED" "service user $NT_USER does not exist on this host"
+    fi
+    id -u "$NT_USER" >/dev/null 2>&1 || fail "$EXIT_NEW_TARGET_REFUSED" "service user $NT_USER does not exist on this host"
+    src="${FOLD_DEPLOY[0]}/systemd/go-trader@.service"
+    [[ -f "$src" ]] || fail "$EXIT_NEW_TARGET_REFUSED" "$src is missing; the release ships the template unit"
+    if [[ -e "$TEMPLATE_UNIT" ]] && ! cmp -s "$src" "$TEMPLATE_UNIT"; then
+        fail "$EXIT_NEW_TARGET_REFUSED" "installed $TEMPLATE_UNIT differs from the release's $src; run scripts/update.sh --restart in a folded deployment first"
+    fi
+    ns=$(update_unit_log_namespace "$src")
+    if [[ -n "$ns" ]]; then
+        [[ "$ns" =~ ^[A-Za-z0-9_-]+$ ]] || fail "$EXIT_NEW_TARGET_REFUSED" "LogNamespace '$ns' in $src is not a plain name"
+        NT_NAMESPACE="$ns"
+        NT_JOURNALD=$(update_journald_conf_path "$JOURNALD_ETC" "$ns")
+        [[ -f "${FOLD_DEPLOY[0]}/systemd/journald@${ns}.conf" ]] || fail "$EXIT_NEW_TARGET_REFUSED" "${FOLD_DEPLOY[0]}/systemd/journald@${ns}.conf is missing; the unit logs to namespace $ns"
+        if [[ -e "$NT_JOURNALD" ]] && ! cmp -s "${FOLD_DEPLOY[0]}/systemd/journald@${ns}.conf" "$NT_JOURNALD"; then
+            fail "$EXIT_NEW_TARGET_REFUSED" "installed $NT_JOURNALD differs from the release's copy; run scripts/update.sh --restart in a folded deployment first"
+        fi
+    fi
+}
+
+nt_env_merge() {
+    local out="$1" i
+    local -a pairs=()
+    for i in "${!FOLD_KEY[@]}"; do
+        pairs+=("${FOLD_INSTANCE[$i]}" "${FOLD_DEPLOY[$i]}/.env")
+    done
+    py env-merge "$out" "$LIVE_UNIT" "$NT_USER" "$NT_GROUP" "${pairs[@]}"
+}
+
+nt_git() {
+    git -c safe.directory='*' "$@"
+}
+
+NT_ORIGIN=""
+NT_SRC_SHA=""
+NT_SRC_BRANCH=""
+nt_preflight() {
+    local out rc=0
+    nt_require_target_absent
+    nt_require_template_layout
+    NT_ORIGIN=$(nt_git -C "${FOLD_DEPLOY[0]}" remote get-url origin 2>/dev/null || true)
+    [[ -n "$NT_ORIGIN" ]] || fail "$EXIT_NEW_TARGET_REFUSED" "${FOLD_DEPLOY[0]} has no git origin; the new deployment clones it so update.sh can update it later"
+    NT_SRC_SHA=$(nt_git -C "${FOLD_DEPLOY[0]}" rev-parse HEAD 2>/dev/null || true)
+    NT_SRC_BRANCH=$(nt_git -C "${FOLD_DEPLOY[0]}" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+    [[ "$(py port-bound "$STATUS_PORT")" == "free" ]] || fail "$EXIT_NEW_TARGET_REFUSED" "status port $STATUS_PORT is bound by a running process; choose a free --status-port"
+    out=$(nt_env_merge -) || rc=$?
+    if [[ "$rc" != "0" ]]; then
+        printf '%s\n' "$out" >&2
+        fail "$EXIT_NEW_TARGET_REFUSED" "the folded deployments' .env files disagree; make every variable agree first"
+    fi
+    printf '%s\n' "$out"
+    echo "preflight: new target $LIVE_UNIT runs as $NT_USER:$NT_GROUP; tree $LIVE_DEPLOY cloned from $NT_ORIGIN and built from ${FOLD_DEPLOY[0]}; config $LIVE_CFG; status_port $STATUS_PORT"
+}
+
+nt_jv() {
+    grep "^$1 " "$JOURNAL" | tail -n 1 | cut -d' ' -f2- || true
+}
+
+nt_journal_state() {
+    local matches=1 i
+    [[ -f "$JOURNAL" ]] || return 0
+    if ! grep -qx complete "$JOURNAL"; then
+        fail "$EXIT_JOURNAL_STATE" "journal $JOURNAL records an interrupted apply; run --rollback --new-target $LIVE with the same fold arguments before a new run"
+    fi
+    [[ "$(update_file_fingerprint "$LIVE_CFG")" == "$(nt_jv result_config)" ]] || matches=0
+    for i in "${!FOLD_KEY[@]}"; do
+        [[ "$(update_file_fingerprint "${FOLD_DROPIN[$i]}")" == "$(nt_jv "result_override${FOLD_SFX[$i]}")" ]] || matches=0
+    done
+    [[ "$matches" == "1" ]] || fail "$EXIT_JOURNAL_STATE" "journal $JOURNAL is complete but $LIVE_CFG or a drop-in changed since; inspect by hand"
+    echo "journal: $JOURNAL is complete and every file matches its result; nothing to do. Run the printed cutover if it has not run yet."
+    exit 0
+}
 
 # A rollback restores the retained config and drop-ins. It needs the journal, the
 # retained files and the database locks, and nothing else: the post-apply notes
@@ -1354,30 +1752,32 @@ done
 # would make the undo impossible exactly when it is wanted.
 live_version=""
 if [[ "$MODE" != "rollback" ]]; then
-    [[ -d "$LIVE_DEPLOY" ]] || fail "$EXIT_DEPLOY_MISSING" "deployment directory $LIVE_DEPLOY is missing"
+    [[ "$NT" != "1" ]] || nt_journal_state
+    [[ "$NT" == "1" ]] || [[ -d "$LIVE_DEPLOY" ]] || fail "$EXIT_DEPLOY_MISSING" "deployment directory $LIVE_DEPLOY is missing"
     for i in "${!FOLD_KEY[@]}"; do
         [[ -d "${FOLD_DEPLOY[$i]}" ]] || fail "$EXIT_DEPLOY_MISSING" "deployment directory ${FOLD_DEPLOY[$i]} is missing"
     done
-    [[ -x "$LIVE_BIN" ]] || fail "$EXIT_DEPLOY_MISSING" "binary $LIVE_BIN is missing or not executable"
+    [[ -x "$TOOL_BIN" ]] || fail "$EXIT_DEPLOY_MISSING" "binary $TOOL_BIN is missing or not executable"
     for i in "${!FOLD_KEY[@]}"; do
         [[ -x "${FOLD_BIN[$i]}" ]] || fail "$EXIT_DEPLOY_MISSING" "binary ${FOLD_BIN[$i]} is missing or not executable"
     done
-    live_version=$(run_bin "$LIVE_DEPLOY" "$LIVE_BIN" version 2>/dev/null || true)
-    [[ -n "$live_version" ]] || fail "$EXIT_VERSION_MISMATCH" "the live binary $LIVE_BIN reports no version; update both deployments to one release first"
+    live_version=$(run_bin "$TOOL_DEPLOY" "$TOOL_BIN" version 2>/dev/null || true)
+    [[ -n "$live_version" ]] || fail "$EXIT_VERSION_MISMATCH" "the $TARGET_WORD binary $TOOL_BIN reports no version; update both deployments to one release first"
     for i in "${!FOLD_KEY[@]}"; do
         fold_version=$(run_bin "${FOLD_DEPLOY[$i]}" "${FOLD_BIN[$i]}" version 2>/dev/null || true)
         [[ "$live_version" == "$fold_version" ]] || \
-            fail "$EXIT_VERSION_MISMATCH" "binary versions differ: live='$live_version' $(fold_side "$i")='$fold_version'; update both deployments to one release first"
+            fail "$EXIT_VERSION_MISMATCH" "binary versions differ: $TARGET_WORD='$live_version' $(fold_side "$i")='$fold_version'; update both deployments to one release first"
     done
     for i in "${!FOLD_KEY[@]}"; do
         [[ -f "${FOLD_CFG[$i]}" ]] || fail "$EXIT_CONFIG_MISSING" "config ${FOLD_CFG[$i]} is missing"
     done
+    [[ "$NT" != "1" ]] || nt_preflight
 fi
 require_units_stopped
 LIVE_CFG_COPY="$WORK/live-config.json"
-fp_live_cfg=$(update_file_fingerprint "$LIVE_CFG")
+fp_live_cfg=$(update_file_fingerprint "$COMPOSE_BASE_CFG")
 if [[ "$MODE" != "rollback" ]]; then
-    cp "$LIVE_CFG" "$LIVE_CFG_COPY"
+    cp "$COMPOSE_BASE_CFG" "$LIVE_CFG_COPY"
     for i in "${!FOLD_KEY[@]}"; do
         FOLD_CFG_COPY[$i]="$WORK/fold-${FOLD_KEY[$i]}-config.json"
         cp "${FOLD_CFG[$i]}" "${FOLD_CFG_COPY[$i]}"
@@ -1410,7 +1810,7 @@ probe_side() {
 }
 
 if [[ "$MODE" != "rollback" ]]; then
-    probe_side live "$LIVE_DEPLOY" "$LIVE_BIN" "$LIVE_CFG_COPY" "$fp_live_cfg" live
+    probe_side "$TARGET_WORD" "$TOOL_DEPLOY" "$TOOL_BIN" "$LIVE_CFG_COPY" "$fp_live_cfg" live
     for i in "${!FOLD_KEY[@]}"; do
         probe_side "$(fold_side "$i")" "${FOLD_DEPLOY[$i]}" "${FOLD_BIN[$i]}" "${FOLD_CFG_COPY[$i]}" "${FOLD_FP_CFG[$i]}" "fold-${FOLD_KEY[$i]}"
     done
@@ -1496,23 +1896,29 @@ for i in "${!FOLD_KEY[@]}"; do
 done
 
 fold_db_list=""
-declare -a LOCK_DBS=("$LIVE_DB_CANON")
+declare -a LOCK_DBS=()
+if [[ "$NT" != "1" || -f "$LIVE_DB_CANON" ]]; then
+    LOCK_DBS+=("$LIVE_DB_CANON")
+fi
 for i in "${!FOLD_KEY[@]}"; do
     [[ -n "${FOLD_DB[$i]}" ]] || continue
     fold_db_list+=" $(fold_side "$i")=${FOLD_DB[$i]}"
     LOCK_DBS+=("${FOLD_DB[$i]}")
 done
-echo "preflight: versions=$live_version live_db=$LIVE_DB_CANON$fold_db_list"
+echo "preflight: versions=$live_version ${TARGET_WORD}_db=$LIVE_DB_CANON$fold_db_list"
 
-if ! update_start_state_lock_holder "${LOCK_DBS[@]}"; then
-    fail "$EXIT_LOCK_CONTENDED" "a database lock is held by another process; see the CONTENDED line above"
+HOLDER_PID=""
+if [[ ${#LOCK_DBS[@]} -gt 0 ]]; then
+    if ! update_start_state_lock_holder "${LOCK_DBS[@]}"; then
+        fail "$EXIT_LOCK_CONTENDED" "a database lock is held by another process; see the CONTENDED line above"
+    fi
+    HOLDER_PID="$UPDATE_LOCK_HOLDER_PID"
+    lock_list=""
+    for db in "${LOCK_DBS[@]}"; do
+        lock_list+=$(update_state_lock_paths "$db" | tr '\n' ' ')
+    done
+    echo "locks: held by pid $HOLDER_PID on $lock_list"
 fi
-HOLDER_PID="$UPDATE_LOCK_HOLDER_PID"
-lock_list=""
-for db in "${LOCK_DBS[@]}"; do
-    lock_list+=$(update_state_lock_paths "$db" | tr '\n' ' ')
-done
-echo "locks: held by pid $HOLDER_PID on $lock_list"
 
 fp_live_db=$(update_db_fingerprint "$LIVE_DB_CANON" | tr '\n' ' ')
 for i in "${!FOLD_KEY[@]}"; do
@@ -1709,6 +2115,262 @@ journal_that_installed_live_config() {
     done < <(merge_journals)
 }
 
+nt_undo() {
+    local run_id failed=0 i sfx dropin dropin_dir tree_aside dir_aside
+    run_id=$(journal_value run_id)
+    [[ -n "$run_id" ]] || run_id="$(date +%Y%m%d%H%M%S)-$$"
+    tree_aside="${LIVE_DEPLOY}.rolled-back-${run_id}"
+    dir_aside="${TARGET_DIR}.rolled-back-${run_id}"
+    printf 'rollback begin\n' >> "$JOURNAL"
+    for i in "${!FOLD_KEY[@]}"; do
+        sfx="${FOLD_SFX[$i]}"
+        dropin="${FOLD_DROPIN[$i]}"
+        journal_has "override begin${sfx}" || continue
+        [[ -e "$dropin" ]] || continue
+        case "$(update_file_fingerprint "$dropin")" in
+            "$(journal_value "staged_override${sfx}")"|"$(journal_value "result_override${sfx}")")
+                if rm -f "$dropin"; then
+                    echo "rollback: removed $dropin"
+                else
+                    echo "CRITICAL: could not remove $dropin" >&2
+                    failed=1
+                fi
+                ;;
+            *)
+                if mv -f "$dropin" "${TARGET_DIR}/$(basename "$dropin").edited"; then
+                    echo "rollback: $dropin was edited after the apply; moved to ${dir_aside}/$(basename "$dropin").edited"
+                else
+                    echo "CRITICAL: could not move the edited $dropin aside" >&2
+                    failed=1
+                fi
+                ;;
+        esac
+    done
+    dropin_dir="${UNIT_DIR%/}/${LIVE_UNIT}.d"
+    if [[ -d "$dropin_dir" ]]; then
+        rmdir "$dropin_dir" 2>/dev/null || echo "rollback: $dropin_dir still holds files this run did not write; left in place" >&2
+    fi
+    if journal_has "template installed"; then
+        echo "rollback: $TEMPLATE_UNIT was installed by this run and stays, since other go-trader@ units read it"
+    fi
+    if journal_has "journald installed"; then
+        echo "rollback: $(journal_value journald_path) was installed by this run and stays"
+    fi
+    if [[ "$failed" == "0" ]] && journal_has "deploy begin" && [[ -e "$LIVE_DEPLOY" || -L "$LIVE_DEPLOY" ]]; then
+        if [[ -e "$tree_aside" ]]; then
+            echo "CRITICAL: $tree_aside already exists; $LIVE_DEPLOY left in place" >&2
+            failed=1
+        elif mv "$LIVE_DEPLOY" "$tree_aside"; then
+            echo "rollback: moved $LIVE_DEPLOY to $tree_aside"
+        else
+            echo "CRITICAL: could not move $LIVE_DEPLOY aside" >&2
+            failed=1
+        fi
+    fi
+    if [[ "$failed" == "1" ]]; then
+        echo "state: journal=$JOURNAL tree=$LIVE_DEPLOY config_dir=$TARGET_DIR" >&2
+        return 1
+    fi
+    if [[ -e "$dir_aside" ]]; then
+        echo "CRITICAL: $dir_aside already exists; $TARGET_DIR left in place" >&2
+        return 1
+    fi
+    if ! mv "$TARGET_DIR" "$dir_aside"; then
+        echo "CRITICAL: could not move $TARGET_DIR aside" >&2
+        return 1
+    fi
+    echo "rollback: moved $TARGET_DIR to $dir_aside (the new target's state.db, if the service ever ran, stays there)"
+    JOURNAL="${dir_aside}/$(basename "$JOURNAL")"
+    LIVE_DB_CANON="${dir_aside}/state.db"
+    printf 'rolled-back\n' >> "$JOURNAL"
+    return 0
+}
+
+nt_print_restart() {
+    local i
+    echo "to run the folded deployments again, in this order:"
+    echo "  1. $SYSTEMCTL daemon-reload"
+    for i in "${!FOLD_KEY[@]}"; do
+        echo "  $((i + 2)). $SYSTEMCTL enable --now ${FOLD_UNIT[$i]}"
+    done
+    echo "  the folded configs were never changed, so each deployment resumes on its own status port; records the combined service wrote stay in each source database"
+}
+
+nt_rollback() {
+    local j
+    if [[ ! -f "$JOURNAL" ]]; then
+        for j in "${TARGET_DIR}".rolled-back-*/"$(basename "$JOURNAL")"; do
+            if [[ -f "$j" ]] && grep -qx rolled-back "$j"; then
+                echo "rollback: $j records a finished rollback; nothing to do"
+                check_db_fingerprints "rollback" || exit "$EXIT_RESTORE_FAILED"
+                nt_print_restart
+                exit 0
+            fi
+        done
+        if [[ -d "$TARGET_DIR" ]]; then
+            for j in "$TARGET_DIR"/merge-paper-*.journal; do
+                [[ -f "$j" ]] && echo "rollback: $TARGET_DIR holds $(basename "$j"); roll back with the fold arguments that journal names" >&2
+            done
+        fi
+        fail "$EXIT_JOURNAL_STATE" "no journal at $JOURNAL; nothing to roll back"
+    fi
+    if ! "$SYSTEMCTL" disable "$LIVE_UNIT" >"$WORK/disable.out" 2>&1; then
+        cat "$WORK/disable.out" >&2
+        fail "$EXIT_RESTORE_FAILED" "could not disable $LIVE_UNIT; nothing else changed"
+    fi
+    echo "rollback: $LIVE_UNIT disabled"
+    nt_undo || exit "$EXIT_RESTORE_FAILED"
+    check_db_fingerprints "rollback" || exit "$EXIT_RESTORE_FAILED"
+    echo "rollback: complete; no database was written or restored"
+    nt_print_restart
+    exit 0
+}
+
+nt_apply_failed() {
+    echo "apply: $1" >&2
+    if nt_undo; then
+        check_db_fingerprints "rollback" || exit "$EXIT_RESTORE_FAILED"
+        echo "apply: rolled back; every unit stays stopped and every folded deployment is unchanged" >&2
+    fi
+    exit "$EXIT_RESTORE_FAILED"
+}
+
+nt_apply() {
+    local run_id i sfx dropin fp_new new_version
+    [[ "$(update_file_fingerprint "$COMPOSE_BASE_CFG")" == "$fp_live_cfg" ]] || fail "$EXIT_SOURCE_CHANGED" "$COMPOSE_BASE_CFG changed during the run"
+    for i in "${!FOLD_KEY[@]}"; do
+        [[ "$(update_file_fingerprint "${FOLD_CFG[$i]}")" == "${FOLD_FP_CFG[$i]}" ]] || fail "$EXIT_SOURCE_CHANGED" "${FOLD_CFG[$i]} changed during the run"
+    done
+    check_db_fingerprints "pre-apply" || exit "$EXIT_SOURCE_CHANGED"
+    require_units_stopped
+    nt_require_target_absent
+
+    run_id="$(date +%Y%m%d%H%M%S)-$$"
+    mkdir -m 0700 "$TARGET_DIR" || fail "$EXIT_NEW_TARGET_REFUSED" "could not create $TARGET_DIR"
+    chown "$NT_USER:$NT_GROUP" "$TARGET_DIR" || { rmdir "$TARGET_DIR"; fail "$EXIT_NEW_TARGET_REFUSED" "could not give $TARGET_DIR to $NT_USER:$NT_GROUP"; }
+    {
+        printf 'run_id %s\n' "$run_id"
+        printf 'new_target %s\n' "$LIVE"
+        printf 'service_user %s:%s\n' "$NT_USER" "$NT_GROUP"
+        printf 'created %s\n' "$TARGET_DIR"
+        printf 'staged_config %s\n' "$fp_staged_cfg"
+        printf 'folds %s\n' "$(IFS=' '; printf '%s' "${FOLD_KEY[*]}")"
+        for i in "${!FOLD_KEY[@]}"; do
+            printf 'fold %s %s %s\n' "${FOLD_KEY[$i]}" "${FOLD_PARTITION[$i]}" "${FOLD_INSTANCE[$i]}"
+        done
+        for i in "${!FOLD_KEY[@]}"; do
+            sfx="${FOLD_SFX[$i]}"
+            printf 'source_config%s %s\n' "$sfx" "${FOLD_FP_CFG[$i]}"
+            printf 'source_db%s %s\n' "$sfx" "${FOLD_FP_DB[$i]}"
+            printf 'staged_override%s %s\n' "$sfx" "$(update_file_fingerprint "${FOLD_STAGED_OVERRIDE[$i]}")"
+            printf 'override_prior%s absent\n' "$sfx"
+        done
+        if [[ -n "$ALIGN_OUT" ]]; then
+            printf '%s' "$ALIGN_OUT"
+        fi
+    } > "$JOURNAL"
+    chmod 0600 "$JOURNAL"
+    echo "apply: created $TARGET_DIR (journal $JOURNAL)"
+
+    printf 'deploy begin\n' >> "$JOURNAL"
+    nt_git clone --quiet "$NT_ORIGIN" "$LIVE_DEPLOY" || nt_apply_failed "git clone of $NT_ORIGIN into $LIVE_DEPLOY failed"
+    if [[ -n "$NT_SRC_BRANCH" ]] && nt_git -C "$LIVE_DEPLOY" rev-parse --verify --quiet "refs/remotes/origin/$NT_SRC_BRANCH" >/dev/null; then
+        nt_git -C "$LIVE_DEPLOY" checkout --quiet -B "$NT_SRC_BRANCH" --track "origin/$NT_SRC_BRANCH" || nt_apply_failed "could not check out branch $NT_SRC_BRANCH in $LIVE_DEPLOY"
+    fi
+    if [[ -n "$NT_SRC_SHA" ]] && nt_git -C "$LIVE_DEPLOY" cat-file -e "${NT_SRC_SHA}^{commit}" 2>/dev/null; then
+        nt_git -C "$LIVE_DEPLOY" reset --quiet --hard "$NT_SRC_SHA" || nt_apply_failed "could not move $LIVE_DEPLOY to ${FOLD_DEPLOY[0]}'s commit $NT_SRC_SHA"
+        echo "apply: cloned $NT_ORIGIN into $LIVE_DEPLOY at ${FOLD_DEPLOY[0]}'s commit $NT_SRC_SHA"
+    else
+        echo "apply: cloned $NT_ORIGIN into $LIVE_DEPLOY; ${FOLD_DEPLOY[0]}'s commit ${NT_SRC_SHA:-<none>} is not in origin, so the build copies its tree over the clone"
+    fi
+    printf 'deploy done\n' >> "$JOURNAL"
+
+    printf 'config begin\n' >> "$JOURNAL"
+    py install-file "$STAGED_CFG" "$LIVE_CFG" 0600 "$NT_USER" "$NT_GROUP" || nt_apply_failed "could not install $LIVE_CFG"
+    fp_new=$(update_file_fingerprint "$LIVE_CFG")
+    [[ "$fp_new" == "$fp_staged_cfg" ]] || nt_apply_failed "the installed $LIVE_CFG differs from the proven staged config"
+    mkdir -p "$LIVE_DEPLOY/scheduler" || nt_apply_failed "could not create $LIVE_DEPLOY/scheduler"
+    ln -sfn "$LIVE_CFG" "$LIVE_DEPLOY/scheduler/config.json" || nt_apply_failed "could not link $LIVE_DEPLOY/scheduler/config.json"
+    printf 'config done\n' >> "$JOURNAL"
+    echo "apply: installed $LIVE_CFG and linked $LIVE_DEPLOY/scheduler/config.json to it"
+    [[ "$FAIL_AFTER" != "config" ]] || nt_apply_failed "MERGE_PAPER_FAIL_AFTER=config"
+
+    printf 'env begin\n' >> "$JOURNAL"
+    nt_env_merge "$LIVE_DEPLOY/.env" >/dev/null || nt_apply_failed "the folded deployments' .env files changed and now disagree"
+    printf 'env done\n' >> "$JOURNAL"
+    echo "apply: wrote $LIVE_DEPLOY/.env (0600)"
+
+    printf 'build begin\n' >> "$JOURNAL"
+    echo "apply: building $LIVE_DEPLOY from ${FOLD_DEPLOY[0]}"
+    if [[ -n "$BUILD_CMD" ]]; then
+        (cd "$LIVE_DEPLOY" && "$BUILD_CMD" --rsync-from "${FOLD_DEPLOY[0]}") || nt_apply_failed "$BUILD_CMD --rsync-from ${FOLD_DEPLOY[0]} failed in $LIVE_DEPLOY"
+    else
+        (cd "$LIVE_DEPLOY" && bash scripts/update.sh --rsync-from "${FOLD_DEPLOY[0]}") || nt_apply_failed "update.sh --rsync-from ${FOLD_DEPLOY[0]} failed in $LIVE_DEPLOY"
+    fi
+    [[ -L "$LIVE_DEPLOY/scheduler/config.json" && "$(readlink "$LIVE_DEPLOY/scheduler/config.json")" == "$LIVE_CFG" ]] || \
+        nt_apply_failed "the build replaced $LIVE_DEPLOY/scheduler/config.json; it must stay a link to $LIVE_CFG"
+    [[ "$(update_file_fingerprint "$LIVE_CFG")" == "$fp_staged_cfg" ]] || nt_apply_failed "the build rewrote $LIVE_CFG"
+    [[ -x "$LIVE_BIN" ]] || nt_apply_failed "the build left no executable $LIVE_BIN"
+    new_version=$(run_bin "$LIVE_DEPLOY" "$LIVE_BIN" version 2>/dev/null || true)
+    [[ "$new_version" == "$live_version" ]] || nt_apply_failed "the new binary reports version '$new_version', the folded deployments run '$live_version'"
+    mkdir -p "$LIVE_DEPLOY/logs" || nt_apply_failed "could not create $LIVE_DEPLOY/logs"
+    chown -R "$NT_USER:$NT_GROUP" "$LIVE_DEPLOY" || nt_apply_failed "could not give $LIVE_DEPLOY to $NT_USER:$NT_GROUP"
+    printf 'build done\n' >> "$JOURNAL"
+    echo "apply: built $LIVE_DEPLOY ($new_version)"
+    [[ "$FAIL_AFTER" != "build" ]] || nt_apply_failed "MERGE_PAPER_FAIL_AFTER=build"
+
+    ( run_staged_proof "$LIVE_DEPLOY" "$LIVE_BIN" "new tree's binary" ) || nt_apply_failed "the new tree's binary refused the staged config"
+
+    printf 'template begin\n' >> "$JOURNAL"
+    if [[ ! -e "$TEMPLATE_UNIT" ]]; then
+        install -m 0644 "$LIVE_DEPLOY/systemd/go-trader@.service" "$TEMPLATE_UNIT" || nt_apply_failed "could not install $TEMPLATE_UNIT"
+        printf 'template installed\n' >> "$JOURNAL"
+        echo "apply: installed $TEMPLATE_UNIT"
+    elif ! cmp -s "$LIVE_DEPLOY/systemd/go-trader@.service" "$TEMPLATE_UNIT"; then
+        nt_apply_failed "installed $TEMPLATE_UNIT differs from the new tree's copy"
+    fi
+    if [[ -n "$NT_NAMESPACE" ]]; then
+        if [[ ! -e "$NT_JOURNALD" ]]; then
+            install -m 0644 "$LIVE_DEPLOY/systemd/journald@${NT_NAMESPACE}.conf" "$NT_JOURNALD" || nt_apply_failed "could not install $NT_JOURNALD"
+            printf 'journald installed\njournald_path %s\n' "$NT_JOURNALD" >> "$JOURNAL"
+            "$SYSTEMCTL" try-restart "systemd-journald@${NT_NAMESPACE}.service" >/dev/null 2>&1 || true
+            echo "apply: installed $NT_JOURNALD"
+        elif ! cmp -s "$LIVE_DEPLOY/systemd/journald@${NT_NAMESPACE}.conf" "$NT_JOURNALD"; then
+            nt_apply_failed "installed $NT_JOURNALD differs from the new tree's copy"
+        fi
+    fi
+    printf 'template done\n' >> "$JOURNAL"
+
+    for i in "${!FOLD_KEY[@]}"; do
+        sfx="${FOLD_SFX[$i]}"
+        dropin="${FOLD_DROPIN[$i]}"
+        printf 'override begin%s\n' "$sfx" >> "$JOURNAL"
+        mkdir -p "$(dirname "$dropin")" || nt_apply_failed "could not create $(dirname "$dropin")"
+        cp "${FOLD_STAGED_OVERRIDE[$i]}" "$(dirname "$dropin")/.$(basename "$dropin").staged" 2>/dev/null || \
+            nt_apply_failed "could not stage the override under $(dirname "$dropin")"
+        mv -f "$(dirname "$dropin")/.$(basename "$dropin").staged" "$dropin" || nt_apply_failed "could not install $dropin"
+        chmod 0644 "$dropin"
+        printf 'override done%s\n' "$sfx" >> "$JOURNAL"
+        echo "apply: installed $dropin"
+    done
+    [[ "$FAIL_AFTER" != "override" ]] || nt_apply_failed "MERGE_PAPER_FAIL_AFTER=override"
+
+    check_db_fingerprints "post-apply" || nt_apply_failed "a database changed during the apply"
+    {
+        printf 'result_config %s\n' "$(update_file_fingerprint "$LIVE_CFG")"
+        for i in "${!FOLD_KEY[@]}"; do
+            printf 'result_override%s %s\n' "${FOLD_SFX[$i]}" "$(update_file_fingerprint "${FOLD_DROPIN[$i]}")"
+        done
+        printf 'complete\n'
+    } >> "$JOURNAL"
+    echo "VERDICT: APPLIED (journal $JOURNAL). $LIVE_UNIT is neither enabled nor started; run the commands above in order."
+    exit 0
+}
+
+if [[ "$MODE" == "rollback" && "$NT" == "1" ]]; then
+    nt_rollback
+fi
+
 if [[ "$MODE" == "rollback" ]]; then
     [[ -f "$JOURNAL" ]] || fail "$EXIT_JOURNAL_STATE" "no journal at $JOURNAL; nothing to roll back"
     scan_other_journals_interrupted "rolling this one back"
@@ -1768,17 +2430,17 @@ if [[ -f "$JOURNAL" ]]; then
     fi
 fi
 
-cp "$LIVE_CFG" "$LIVE_CFG_COPY"
-fp_live_cfg=$(update_file_fingerprint "$LIVE_CFG")
+cp "$COMPOSE_BASE_CFG" "$LIVE_CFG_COPY"
+fp_live_cfg=$(update_file_fingerprint "$COMPOSE_BASE_CFG")
 for i in "${!FOLD_KEY[@]}"; do
     cp "${FOLD_CFG[$i]}" "${FOLD_CFG_COPY[$i]}"
     FOLD_FP_CFG[$i]=$(update_file_fingerprint "${FOLD_CFG[$i]}")
 done
 
-run_bin "$LIVE_DEPLOY" "$LIVE_BIN" storage-inspect --json --config "$LIVE_CFG_COPY" >"$WORK/storage-live.json" 2>"$WORK/storage-live.err" || true
-[[ -s "$WORK/storage-live.json" ]] || { cat "$WORK/storage-live.err" >&2; fail "$EXIT_INSPECTION_REFUSED" "live storage-inspect produced no report"; }
+run_bin "$TOOL_DEPLOY" "$TOOL_BIN" storage-inspect --json --config "$LIVE_CFG_COPY" >"$WORK/storage-live.json" 2>"$WORK/storage-live.err" || true
+[[ -s "$WORK/storage-live.json" ]] || { cat "$WORK/storage-live.err" >&2; fail "$EXIT_INSPECTION_REFUSED" "$TARGET_WORD storage-inspect produced no report"; }
 if ! py storage-check "$WORK/storage-live.json" "$HOLDER_PID" - primary; then
-    fail "$EXIT_INSPECTION_REFUSED" "live storage inspection refused"
+    fail "$EXIT_INSPECTION_REFUSED" "$TARGET_WORD storage inspection refused"
 fi
 for i in "${!FOLD_KEY[@]}"; do
     tag="fold-${FOLD_KEY[$i]}"
@@ -1789,9 +2451,9 @@ for i in "${!FOLD_KEY[@]}"; do
         fail "$EXIT_INSPECTION_REFUSED" "$(fold_side "$i") storage inspection refused"
     fi
 done
-if ! run_bin "$LIVE_DEPLOY" "$LIVE_BIN" inspect --all --json --config "$LIVE_CFG_COPY" >"$WORK/inspect-live.json" 2>"$WORK/inspect-live.err"; then
+if ! run_bin "$TOOL_DEPLOY" "$TOOL_BIN" inspect --all --json --config "$LIVE_CFG_COPY" >"$WORK/inspect-live.json" 2>"$WORK/inspect-live.err"; then
     cat "$WORK/inspect-live.err" >&2
-    fail "$EXIT_INSPECTION_REFUSED" "live inspect --all --json failed"
+    fail "$EXIT_INSPECTION_REFUSED" "$TARGET_WORD inspect --all --json failed"
 fi
 for i in "${!FOLD_KEY[@]}"; do
     tag="fold-${FOLD_KEY[$i]}"
@@ -1802,8 +2464,8 @@ for i in "${!FOLD_KEY[@]}"; do
         fail "$EXIT_INSPECTION_REFUSED" "$(fold_side "$i") inspect --all --json failed"
     fi
 done
-config_copy_intact live "$LIVE_CFG_COPY" "$fp_live_cfg" "inspection"
-[[ "$(update_file_fingerprint "$LIVE_CFG")" == "$fp_live_cfg" ]] || fail "$EXIT_SOURCE_CHANGED" "$LIVE_CFG changed during inspection"
+config_copy_intact "$TARGET_WORD" "$LIVE_CFG_COPY" "$fp_live_cfg" "inspection"
+[[ "$(update_file_fingerprint "$COMPOSE_BASE_CFG")" == "$fp_live_cfg" ]] || fail "$EXIT_SOURCE_CHANGED" "$COMPOSE_BASE_CFG changed during inspection"
 for i in "${!FOLD_KEY[@]}"; do
     config_copy_intact "$(fold_side "$i")" "${FOLD_CFG_COPY[$i]}" "${FOLD_FP_CFG[$i]}" "inspection"
     [[ "$(update_file_fingerprint "${FOLD_CFG[$i]}")" == "${FOLD_FP_CFG[$i]}" ]] || fail "$EXIT_SOURCE_CHANGED" "${FOLD_CFG[$i]} changed during inspection"
@@ -1825,31 +2487,41 @@ if [[ "$ALIGN_TO_LIVE" == "1" ]]; then
 fi
 
 write_plan "$WORK/plan.json"
-if ! py compose "$LIVE_CFG" "$WORK/plan.json" "$STAGED_CFG" "$STAGED_MAP" "$WORK/inspect-live.json"; then
+if ! py compose "$COMPOSE_BASE_CFG" "$WORK/plan.json" "$STAGED_CFG" "$STAGED_MAP" "$WORK/inspect-live.json"; then
     rm -f "$STAGED_CFG" "$STAGED_MAP"
     fail "$EXIT_COMPOSE_REFUSED" "merged config could not be composed"
 fi
 
 fp_staged_cfg=$(update_file_fingerprint "$STAGED_CFG")
-run_bin "$LIVE_DEPLOY" "$LIVE_BIN" storage-inspect --json --config "$STAGED_CFG" >"$WORK/storage-staged.json" 2>"$WORK/storage-staged.err" || true
-[[ -s "$WORK/storage-staged.json" ]] || { cat "$WORK/storage-staged.err" >&2; fail "$EXIT_PROOF_REFUSED" "staged storage-inspect produced no report"; }
-echo "proof: staged layout"
-for i in "${!FOLD_KEY[@]}"; do
-    staged_count=$(py partition-count "$STAGED_CFG" "${FOLD_ID[$i]}")
-    if ! py storage-check "$WORK/storage-staged.json" "$HOLDER_PID" "$staged_count" "${FOLD_PARTITION[$i]}"; then
-        fail "$EXIT_PROOF_REFUSED" "the live binary rejects the staged storage layout for ${FOLD_PARTITION[$i]}"
+
+run_staged_proof() {
+    local deploy="$1" bin="$2" who="$3" staged_count i
+    run_bin "$deploy" "$bin" storage-inspect --json --config "$STAGED_CFG" >"$WORK/storage-staged.json" 2>"$WORK/storage-staged.err" || true
+    [[ -s "$WORK/storage-staged.json" ]] || { cat "$WORK/storage-staged.err" >&2; fail "$EXIT_PROOF_REFUSED" "staged storage-inspect produced no report"; }
+    echo "proof: staged layout ($who)"
+    for i in "${!FOLD_KEY[@]}"; do
+        staged_count=$(py partition-count "$STAGED_CFG" "${FOLD_ID[$i]}")
+        if ! py storage-check "$WORK/storage-staged.json" "$HOLDER_PID" "$staged_count" "${FOLD_PARTITION[$i]}"; then
+            fail "$EXIT_PROOF_REFUSED" "the $who rejects the staged storage layout for ${FOLD_PARTITION[$i]}"
+        fi
+    done
+    if ! run_bin "$deploy" "$bin" inspect --all --json --config "$STAGED_CFG" >"$WORK/inspect-staged.json" 2>"$WORK/inspect-staged.err"; then
+        cat "$WORK/inspect-staged.err" >&2
+        fail "$EXIT_PROOF_REFUSED" "the $who cannot load the staged config"
     fi
-done
-if ! run_bin "$LIVE_DEPLOY" "$LIVE_BIN" inspect --all --json --config "$STAGED_CFG" >"$WORK/inspect-staged.json" 2>"$WORK/inspect-staged.err"; then
-    cat "$WORK/inspect-staged.err" >&2
-    fail "$EXIT_PROOF_REFUSED" "the live binary cannot load the staged config"
+    if ! py diff "$WORK/inspect-staged.json" "$WORK/inspect-live.json" "$WORK/plan.json" "$STAGED_MAP"; then
+        fail "$EXIT_PROOF_REFUSED" "effective settings differ between the source deployments and the staged config"
+    fi
+    [[ "$(update_file_fingerprint "$STAGED_CFG")" == "$fp_staged_cfg" ]] || \
+        fail "$EXIT_PROOF_REFUSED" "the $who rewrote $STAGED_CFG during the proof; the staged config is not what was proven"
+    check_db_fingerprints "proof" || exit "$EXIT_PROOF_REFUSED"
+}
+
+if [[ "$NT" == "1" ]]; then
+    run_staged_proof "$TOOL_DEPLOY" "$TOOL_BIN" "first folded deployment's binary"
+else
+    run_staged_proof "$TOOL_DEPLOY" "$TOOL_BIN" "live binary"
 fi
-if ! py diff "$WORK/inspect-staged.json" "$WORK/inspect-live.json" "$WORK/plan.json" "$STAGED_MAP"; then
-    fail "$EXIT_PROOF_REFUSED" "effective settings differ between the source deployments and the staged config"
-fi
-[[ "$(update_file_fingerprint "$STAGED_CFG")" == "$fp_staged_cfg" ]] || \
-    fail "$EXIT_PROOF_REFUSED" "the live binary rewrote $STAGED_CFG during the proof; the staged config is not what was proven"
-check_db_fingerprints "proof" || exit "$EXIT_PROOF_REFUSED"
 
 for i in "${!FOLD_KEY[@]}"; do
     fold_db_dir=$(dirname "${FOLD_DB[$i]}")
@@ -1885,21 +2557,41 @@ else
     echo "override: systemd-analyze not available; verify skipped"
 fi
 
+if [[ "$NT" == "1" ]]; then
+    echo "new target: deployment $LIVE_DEPLOY (git clone of $NT_ORIGIN, built from ${FOLD_DEPLOY[0]})"
+    echo "new target: config $LIVE_CFG (0600, $NT_USER:$NT_GROUP), $LIVE_DEPLOY/scheduler/config.json -> $LIVE_CFG, $LIVE_DEPLOY/.env (0600)"
+    echo "new target: unit $LIVE_UNIT from $TEMPLATE_UNIT$([[ -e "$TEMPLATE_UNIT" ]] || echo " (installed by the apply)")${NT_JOURNALD:+, journald $NT_JOURNALD$([[ -e "$NT_JOURNALD" ]] || echo " (installed by the apply)")}"
+    echo "new target: root settings from ${FOLD_INSTANCE[$ROOT_IDX]}, status_port $STATUS_PORT, db_file ${TARGET_DIR}/state.db (starts empty)"
+fi
+
 {
     echo "after apply, run in this order:"
     echo "  1. $SYSTEMCTL daemon-reload"
     step=2
     for i in "${!FOLD_KEY[@]}"; do
-        echo "  $step. $SYSTEMCTL disable ${FOLD_UNIT[$i]}"
+        if [[ "$NT" == "1" ]]; then
+            echo "  $step. $SYSTEMCTL disable --now ${FOLD_UNIT[$i]}"
+        else
+            echo "  $step. $SYSTEMCTL disable ${FOLD_UNIT[$i]}"
+        fi
         step=$((step + 1))
     done
-    echo "  $step. $SYSTEMCTL start $LIVE_UNIT"
+    if [[ "$NT" == "1" ]]; then
+        echo "  $step. $SYSTEMCTL enable --now $LIVE_UNIT"
+    else
+        echo "  $step. $SYSTEMCTL start $LIVE_UNIT"
+    fi
     step=$((step + 1))
     live_log_namespace=$("$SYSTEMCTL" show -p LogNamespace --value "$LIVE_UNIT" 2>/dev/null || true)
+    [[ -n "$live_log_namespace" || "$NT" != "1" ]] || live_log_namespace="$NT_NAMESPACE"
     echo "  $step. $(update_journalctl_unit_command "$LIVE_UNIT" "$live_log_namespace") -n 50 | grep '\[storage\]'"
     step=$((step + 1))
     for i in "${!FOLD_KEY[@]}"; do
-        echo "  $step. retire the ${FOLD_INSTANCE[$i]} instance's status port${FOLD_PORT[$i]:+ (${FOLD_PORT[$i]})} and any tunnel mapping that pointed at it; the combined process serves every partition on the live port"
+        if [[ "$NT" == "1" ]]; then
+            echo "  $step. retire the ${FOLD_INSTANCE[$i]} instance's status port${FOLD_PORT[$i]:+ (${FOLD_PORT[$i]})} and any tunnel mapping that pointed at it; the combined process serves every partition on port $STATUS_PORT"
+        else
+            echo "  $step. retire the ${FOLD_INSTANCE[$i]} instance's status port${FOLD_PORT[$i]:+ (${FOLD_PORT[$i]})} and any tunnel mapping that pointed at it; the combined process serves every partition on the live port"
+        fi
         step=$((step + 1))
     done
 }
@@ -1909,9 +2601,16 @@ if [[ "$MODE" != "apply" ]]; then
     for i in "${!FOLD_KEY[@]}"; do
         staged_list+=", ${FOLD_STAGED_OVERRIDE[$i]}"
     done
-    echo "VERDICT: READY (dry run; staged files: $staged_list)"
+    if [[ "$NT" == "1" ]]; then
+        KEEP_STAGE=1
+        echo "VERDICT: READY (dry run; nothing outside the staging directory $STAGE_DIR changed; staged files: $staged_list)"
+    else
+        echo "VERDICT: READY (dry run; staged files: $staged_list)"
+    fi
     exit 0
 fi
+
+[[ "$NT" != "1" ]] || nt_apply
 
 [[ "$(update_file_fingerprint "$LIVE_CFG")" == "$fp_live_cfg" ]] || fail "$EXIT_SOURCE_CHANGED" "$LIVE_CFG changed during the run"
 for i in "${!FOLD_KEY[@]}"; do
