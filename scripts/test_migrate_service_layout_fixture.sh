@@ -85,8 +85,10 @@ unit_prop() {
 }
 
 health_field() {
-    local port="$1" field="$2"
-    curl -s -m 5 "http://127.0.0.1:$port/health" 2>/dev/null | "$PY3" -c 'import json,sys
+    local port="$1" field="$2" token="${3:-}"
+    local -a auth=()
+    [[ -n "$token" ]] && auth=(-H "Authorization: Bearer $token")
+    curl -s -m 5 "${auth[@]}" "http://127.0.0.1:$port/health" 2>/dev/null | "$PY3" -c 'import json,sys
 try:
     v = json.load(sys.stdin)
 except Exception:
@@ -744,8 +746,9 @@ scenario_confirm() {
 }
 
 scenario_latch() {
-    note "a strategy the portfolio kill switch holds passes the execution proof as held"
+    note "a strategy the portfolio kill switch holds passes the execution proof as held; run_evidence needs the status token"
     local port=$((BASE_PORT + 13)) unit="go-trader-$ID-latch.service" inst="h-$ID" src="/root/gt-$ID-latch" i
+    local token="fixture-token-$ID"
     INSTANCES+=("$inst")
     make_deployment latch "$port" split
     for i in $(seq 1 90); do
@@ -755,13 +758,15 @@ scenario_latch() {
     [[ -n "$(health_field "$port" run_evidence.last_state_save)" ]] || fail "$unit never saved its state"
     systemctl stop "$unit"
     latch_kill_switch "$src/scheduler/source-btc.db"
+    echo "STATUS_AUTH_TOKEN=$token" >>"$src/.env"
     systemctl start "$unit"
     wait_health "$unit" "$port"
     for i in $(seq 1 90); do
-        [[ "$(health_field "$port" run_evidence.held.hl-latch-src.reason)" == "portfolio_kill_switch" ]] && break
+        [[ "$(health_field "$port" run_evidence.held.hl-latch-src.reason "$token")" == "portfolio_kill_switch" ]] && break
         sleep 1
     done
-    [[ "$(health_field "$port" run_evidence.held.hl-latch-src.reason)" == "portfolio_kill_switch" ]] || fail "$unit does not report hl-latch-src as held"
+    [[ "$(health_field "$port" run_evidence.held.hl-latch-src.reason "$token")" == "portfolio_kill_switch" ]] || fail "$unit does not report hl-latch-src as held"
+    [[ -z "$(health_field "$port" run_evidence)" && -n "$(health_field "$port" pid)" ]] || fail "/health shows run_evidence without the status token"
     tool plan --unit "$unit" --instance "$inst" >"$WORK/plan.out" 2>&1 || { cat "$WORK/plan.out"; fail "plan refused"; }
     grep -q "note: the portfolio kill switch of the running daemon held hl-latch-src" "$WORK/plan.out" || { cat "$WORK/plan.out"; fail "plan did not report the kill switch hold"; }
     local plan_id sentinel="$WORK/release-latch"
@@ -775,7 +780,8 @@ scenario_latch() {
     wait "$apid" || arc=$?
     [[ "$arc" == "0" ]] || { cat "$WORK/apply.out"; fail "apply with a latched paper source exited $arc"; }
     grep -q "execution proof: .* held by the portfolio kill switch" "$WORK/apply.out" || { cat "$WORK/apply.out"; fail "the execution proof printed no kill switch count"; }
-    [[ "$(health_field "$port" run_evidence.held.hl-latch-src.reason)" == "portfolio_kill_switch" ]] || fail "the target did not hold hl-latch-src during the proof"
+    [[ "$(health_field "$port" run_evidence.held.hl-latch-src.reason "$token")" == "portfolio_kill_switch" ]] || fail "the target did not hold hl-latch-src during the proof"
+    [[ -z "$(health_field "$port" run_evidence)" && -n "$(health_field "$port" pid)" ]] || fail "the target /health shows run_evidence without the status token"
     echo "kill switch hold OK"
 }
 

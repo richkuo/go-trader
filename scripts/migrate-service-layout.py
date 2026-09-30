@@ -313,9 +313,12 @@ def is_live_args(args):
     return False
 
 
-def health(port, timeout=5):
+def health(port, timeout=5, token=None):
+    req = urllib.request.Request("http://127.0.0.1:%d/health" % port)
+    if token:
+        req.add_header("Authorization", "Bearer " + token)
     try:
-        with urllib.request.urlopen("http://127.0.0.1:%d/health" % port, timeout=timeout) as r:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read().decode("utf-8", "replace"))
     except urllib.error.HTTPError as e:
         try:
@@ -1090,14 +1093,16 @@ def inspect(unit, instance, exec_timeout=None):
             intervals.append(sc["interval_seconds"])
     d["exec_timeout"] = int(exec_timeout) if exec_timeout else max(300, max(i for i in intervals if isinstance(i, int)) + 300)
 
-    h = health(port)
+    status_token = ((proc_environ(main_pid) if main_pid else None) or {}).get("STATUS_AUTH_TOKEN")
+    h = health(port, token=status_token)
     if not h or h.get("pid") != main_pid:
         plan.refuse(EXIT_BINARY, "status port %d does not answer /health with the unit's pid %d (got %s); the effective port is unknown" % (port, main_pid, (h or {}).get("pid", "no answer")))
     else:
         d["version"] = h.get("version", "")
         rev = h.get("run_evidence")
         if not isinstance(rev, dict) or not isinstance(rev.get("held"), dict):
-            plan.refuse(EXIT_BINARY, "the running daemon's /health has no run_evidence with held strategies; run scripts/update.sh --restart first")
+            plan.refuse(EXIT_BINARY, "the running daemon's /health has no run_evidence with held strategies%s; run scripts/update.sh --restart first" % (
+                " (sent with the unit's STATUS_AUTH_TOKEN)" if status_token else ""))
         else:
             by_reason = {}
             evaluated_at = rev.get("evaluated") if isinstance(rev.get("evaluated"), dict) else {}
@@ -2180,11 +2185,12 @@ def stage_execution_proof(t, pid, started_at):
     deadline = time.time() + m["exec_timeout"]
     missing = ids
     last_save = None
+    status_token = (proc_environ(pid) or {}).get("STATUS_AUTH_TOKEN")
     while time.time() < deadline:
         st = unit_state(m["target_unit"])
         if st["active"] != "active" or st["pid"] != pid:
             raise StageFailure("%s stopped or restarted during the execution proof" % m["target_unit"])
-        h = health(m["status_port"]) or {}
+        h = health(m["status_port"], token=status_token) or {}
         ev = h.get("run_evidence") or {}
         if h.get("pid") == pid and ev:
             evaluated = ev.get("evaluated") or {}
