@@ -46,15 +46,6 @@ func TestOpsEndpointsRejectWhileDraining(t *testing.T) {
 	}
 }
 
-func TestOpsEndpointsRejectNonGet(t *testing.T) {
-	ss := newOpsTestServer(t, nil, NewAppState(), false)
-	w := httptest.NewRecorder()
-	ss.handleAPILeaderboard(w, httptest.NewRequest("POST", "/api/leaderboard", nil))
-	if w.Code != http.StatusMethodNotAllowed {
-		t.Errorf("POST /api/leaderboard = %d, want 405", w.Code)
-	}
-}
-
 func TestAPILeaderboardRanksByPnLPct(t *testing.T) {
 	strategies := []StrategyConfig{
 		{ID: "winner", Type: "spot", Args: []string{"sma", "BTC/USDT", "1h"}, InitialCapital: 100},

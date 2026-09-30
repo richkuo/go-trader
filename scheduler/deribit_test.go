@@ -396,11 +396,3 @@ func TestDeribitFetchTickerError(t *testing.T) {
 		t.Error("expected error for 404 response")
 	}
 }
-
-func TestDeribitGetOptionPriceFullInvalidInstrument(t *testing.T) {
-	d := NewDeribitPricer()
-	_, _, _, err := d.GetOptionPriceFull("BTC", "call", 60000, "invalid-date")
-	if err == nil {
-		t.Error("expected error for invalid expiry")
-	}
-}

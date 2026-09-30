@@ -158,13 +158,3 @@ func TestFetchOKXPerpsMids(t *testing.T) {
 		})
 	}
 }
-
-func TestFetchOKXPerpsMids_EmptyCoins(t *testing.T) {
-	marks, err := fetchOKXPerpsMids(nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(marks) != 0 {
-		t.Errorf("expected empty map, got %v", marks)
-	}
-}

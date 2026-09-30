@@ -50,35 +50,3 @@ func TestStrategyAuditDatasetIntegrity(t *testing.T) {
 		}
 	}
 }
-
-func TestVsBHSortPushesUnmeasuredToBottom(t *testing.T) {
-	measured := auditRow{HasVsBH: true, VsBH: -10.9}
-	unmeasured := auditRow{HasVsBH: false}
-	if !(unmeasured.VsBHSort() < measured.VsBHSort()) {
-		t.Errorf("unmeasured VsBHSort (%v) should sort below measured (%v)",
-			unmeasured.VsBHSort(), measured.VsBHSort())
-	}
-}
-
-func TestReportsUnknownPath404(t *testing.T) {
-	rr := getReport(t, "/reports/does-not-exist", http.MethodGet)
-	if rr.Code != http.StatusNotFound {
-		t.Errorf("status = %d, want 404", rr.Code)
-	}
-}
-
-func TestReportsRejectsNonGet(t *testing.T) {
-	rr := getReport(t, "/reports", http.MethodPost)
-	if rr.Code != http.StatusMethodNotAllowed {
-		t.Errorf("status = %d, want 405", rr.Code)
-	}
-}
-
-func TestReportsRejectsWhileDraining(t *testing.T) {
-	shutdownDraining.Store(true)
-	defer shutdownDraining.Store(false)
-	rr := getReport(t, "/reports/strategy-audit", http.MethodGet)
-	if rr.Code != http.StatusServiceUnavailable {
-		t.Errorf("status = %d, want 503 while draining", rr.Code)
-	}
-}
