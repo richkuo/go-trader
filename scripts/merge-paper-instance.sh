@@ -2320,6 +2320,7 @@ nt_apply() {
     [[ "$FAIL_AFTER" != "build" ]] || nt_apply_failed "MERGE_PAPER_FAIL_AFTER=build"
 
     ( run_staged_proof "$LIVE_DEPLOY" "$LIVE_BIN" "new tree's binary" ) || nt_apply_failed "the new tree's binary refused the staged config"
+    verify_overrides "" || nt_apply_failed "systemd-analyze verify rejects $LIVE_UNIT with the override and the new tree"
 
     printf 'template begin\n' >> "$JOURNAL"
     if [[ ! -e "$TEMPLATE_UNIT" ]]; then
@@ -2531,30 +2532,48 @@ for i in "${!FOLD_KEY[@]}"; do
     echo "override: ${FOLD_DROPIN[$i]}"
     sed 's/^/override:   /' "${FOLD_STAGED_OVERRIDE[$i]}"
 done
-if command -v "$SYSTEMD_ANALYZE" >/dev/null 2>&1; then
+verify_overrides() {
+    local stand_in="$1" unit_src
+    if ! command -v "$SYSTEMD_ANALYZE" >/dev/null 2>&1; then
+        echo "override: systemd-analyze not available; verify skipped"
+        return 0
+    fi
     unit_src="$UNIT_DIR/$LIVE_UNIT"
     if [[ ! -f "$unit_src" && "$LIVE_UNIT" == *@*.service ]]; then
         unit_src="$UNIT_DIR/${LIVE_UNIT%%@*}@.service"
     fi
-    if [[ -f "$unit_src" ]]; then
-        mkdir -p "$WORK/units/${LIVE_UNIT}.d"
-        cp "$unit_src" "$WORK/units/$LIVE_UNIT"
-        if [[ -d "$UNIT_DIR/${LIVE_UNIT}.d" ]]; then
-            cp "$UNIT_DIR/${LIVE_UNIT}.d"/*.conf "$WORK/units/${LIVE_UNIT}.d/" 2>/dev/null || true
-        fi
-        for i in "${!FOLD_KEY[@]}"; do
-            cp "${FOLD_STAGED_OVERRIDE[$i]}" "$WORK/units/${LIVE_UNIT}.d/50-merge-paper-${FOLD_KEY[$i]}.conf"
-        done
-        if ! "$SYSTEMD_ANALYZE" verify "$WORK/units/$LIVE_UNIT" >"$WORK/analyze.out" 2>&1; then
-            cat "$WORK/analyze.out" >&2
-            fail "$EXIT_OVERRIDE_REFUSED" "systemd-analyze verify rejects $LIVE_UNIT with the override"
-        fi
-        echo "override: systemd-analyze verify passed"
-    else
+    if [[ ! -f "$unit_src" ]]; then
         echo "override: unit file for $LIVE_UNIT not found under $UNIT_DIR; systemd-analyze verify skipped"
+        return 0
     fi
+    rm -rf "$WORK/units"
+    mkdir -p "$WORK/units/${LIVE_UNIT}.d"
+    if [[ -n "$stand_in" ]]; then
+        sed "s#/opt/go-trader-%i#${stand_in}#g" "$unit_src" > "$WORK/units/$LIVE_UNIT"
+    else
+        cp "$unit_src" "$WORK/units/$LIVE_UNIT"
+    fi
+    if [[ -d "$UNIT_DIR/${LIVE_UNIT}.d" ]]; then
+        cp "$UNIT_DIR/${LIVE_UNIT}.d"/*.conf "$WORK/units/${LIVE_UNIT}.d/" 2>/dev/null || true
+    fi
+    for i in "${!FOLD_KEY[@]}"; do
+        cp "${FOLD_STAGED_OVERRIDE[$i]}" "$WORK/units/${LIVE_UNIT}.d/50-merge-paper-${FOLD_KEY[$i]}.conf"
+    done
+    if ! "$SYSTEMD_ANALYZE" verify "$WORK/units/$LIVE_UNIT" >"$WORK/analyze.out" 2>&1; then
+        cat "$WORK/analyze.out" >&2
+        return 1
+    fi
+    if [[ -n "$stand_in" ]]; then
+        echo "override: systemd-analyze verify passed (the unit's /opt/go-trader-%i paths read from $stand_in until the new tree exists)"
+    else
+        echo "override: systemd-analyze verify passed"
+    fi
+}
+
+if [[ "$NT" == "1" ]]; then
+    verify_overrides "${FOLD_DEPLOY[0]}" || fail "$EXIT_OVERRIDE_REFUSED" "systemd-analyze verify rejects $LIVE_UNIT with the override"
 else
-    echo "override: systemd-analyze not available; verify skipped"
+    verify_overrides "" || fail "$EXIT_OVERRIDE_REFUSED" "systemd-analyze verify rejects $LIVE_UNIT with the override"
 fi
 
 if [[ "$NT" == "1" ]]; then
