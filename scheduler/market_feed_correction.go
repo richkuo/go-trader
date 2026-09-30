@@ -498,9 +498,18 @@ func (o *marketFeedOwner) runCorrectionJob(ctx context.Context, job feedCorrecti
 }
 
 func (o *marketFeedOwner) runCorrection(ctx context.Context) {
+	o.feedMu.Lock()
 	if len(o.corrOffsets) == 0 {
+		o.feedMu.Unlock()
 		return
 	}
+	o.corrRunning = true
+	o.feedMu.Unlock()
+	defer func() {
+		o.feedMu.Lock()
+		o.corrRunning = false
+		o.feedMu.Unlock()
+	}()
 	ticker := time.NewTicker(feedCorrectionTick)
 	defer ticker.Stop()
 	sem := make(chan struct{}, feedCorrectionParallel)
@@ -530,7 +539,7 @@ func (o *marketFeedOwner) runCorrection(ctx context.Context) {
 }
 
 func (o *marketFeedOwner) correctionHealthLocked() *feedCorrectionHealth {
-	if len(o.corrOffsets) == 0 {
+	if !o.corrRunning || len(o.corrOffsets) == 0 {
 		return nil
 	}
 	now := o.now()

@@ -500,6 +500,7 @@ type marketFeedOwner struct {
 	correction     feedCorrectionStats
 	corrWindow     []time.Time
 	corrPauseUntil time.Time
+	corrRunning    bool
 	requestLedger  *feedRequestLedger
 
 	alerts chan feedAlert

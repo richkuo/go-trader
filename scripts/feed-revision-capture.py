@@ -26,7 +26,8 @@ intervals:
 Capture has a hard limit of 10 reads per rolling 60s across workers (about
 210 request weight with the documented candle weights). Lower it with
 --max-reads-per-minute. Startup rejects plans whose average rate or peak
-rolling 60s schedule exceeds the cap. Run other coins in sequential captures.
+rolling 60s schedule reaches the cap. The schedule must leave at least one
+read of margin for worker start delay. Run other coins in sequential captures.
 Runtime budget refusals are reported apart from failed requests. HTTP 429
 pauses all new reads for 60s and records the pause. The window is at most 50
 bars, and delayed reads stop at the anchor interval to bound response weight.
@@ -432,8 +433,8 @@ def main():
         rate, peak = capture_plan(args)
         if rate > args.max_reads_per_minute:
             ap.error(f"planned reads per minute {rate:g} exceed cap {args.max_reads_per_minute}")
-        if peak > args.max_reads_per_minute:
-            ap.error(f"planned reads per minute {rate:g}, peak rolling 60s reads {peak} exceed cap {args.max_reads_per_minute}")
+        if peak >= args.max_reads_per_minute:
+            ap.error(f"planned reads per minute {rate:g}, peak rolling 60s reads {peak} leave no margin below cap {args.max_reads_per_minute}")
         print(f"capture plan: {rate:g} reads per minute, peak rolling 60s reads {peak}, cap {args.max_reads_per_minute}", file=sys.stderr)
         return capture(args)
     return report(args)
