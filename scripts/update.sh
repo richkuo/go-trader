@@ -707,6 +707,9 @@ refuse_unconfined_tree() {
     owners="top $(update_path_owner_name "$tree"), .git $(update_path_owner_name "${tree%/}/.git")"
     if ! issues=$(update_foreign_tree_check "$tree"); then
         printf '%s\n' "$issues" >&2
+        if [[ -n "${SUDO_UID:-}" ]] && grep -qx "$SUDO_UID" <<<"$(update_tree_foreign_accounts "$tree")"; then
+            echo "[update] you ran this through sudo, and your account owns $tree: run the update as your account without sudo (it calls sudo itself only for systemd steps)" >&2
+        fi
         fail "$role $tree ($owners) belongs in part to an account other than root, and root would build and run code from it, but the listed units or owners let that account change files in it outside scheduler/ and logs/ (or run without ProtectSystem=strict). Run those units from the go-trader@.service template, whose sandbox keeps the rest of the tree read-only, or give the tree to root"
     fi
 }

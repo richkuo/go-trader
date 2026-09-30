@@ -405,6 +405,8 @@ bash scripts/update.sh --rsync-from /path/to/staged-build --restart
 bash scripts/update.sh --all --restart                             # batch all instances
 ```
 
+When your own account owns the deployment tree, run `bash scripts/update.sh --restart` without `sudo`; the script calls `sudo` itself only for the systemd steps. As root, the update refuses a tree whose owning account runs any unit without the `go-trader@.service` sandbox (SKILL.md § Auto-Update, "Root on a tree another account owns").
+
 Optional: `sudo bash scripts/shared-feed-convert.sh plan --consumer <unit>` starts a checked, reversible conversion to the shared market feed. Updates never run it. See SKILL.md § Shared market feed.
 
 | Change | Action |

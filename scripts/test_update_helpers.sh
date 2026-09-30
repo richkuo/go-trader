@@ -1572,6 +1572,18 @@ if [[ "$give_out" != *"1 file(s) under $give_dir/tree share their data"* || "$gi
 fi
 rm -rf "$give_dir"
 
+wide=$(mktemp -d)
+mkdir -p "$wide/tree"
+for i in $(seq 1 300); do
+    mkdir "$wide/tree/d$i"
+    : >"$wide/tree/d$i/f"
+done
+wide_out=$( (ulimit -n 64 && update_give_tree "$wide/tree" "$(id -u):$(id -g)") 2>&1) && wide_rc=0 || wide_rc=$?
+[[ "$wide_rc" == "0" ]] || { echo "FAIL: the give-back failed on a wide directory: $wide_out" >&2; exit 1; }
+wide_gave=$( (ulimit -n 64 && python3 -I -c "$UPDATE_OWNER_PY" give "$wide/tree" "$(id -u):$(id -g)") | sed -n 's/^GAVE //p')
+assert_eq "$wide_gave" "601" "the give-back reaches every entry of a wide directory, with no subtree skipped"
+rm -rf "$wide"
+
 if [[ "$EUID" == "0" ]]; then
     rs=$(mktemp -d)
     mkdir -p "$rs/tree/scheduler" "$rs/outside"
@@ -1611,6 +1623,10 @@ esac
 STUB
     chmod 0755 "$ft/bin/systemctl"
     assert_eq "$(update_tree_foreign_accounts "$ft_tree")" "65534" "a foreign-owned .git under a root-owned top is a foreign account"
+    mkdir -p "$ft/plain"
+    ft_rc=0
+    (set -euo pipefail; ft_plain=$(update_tree_foreign_accounts "$ft/plain"); [[ -z "$ft_plain" ]]) || ft_rc=$?
+    assert_eq "$ft_rc" "0" "a root-owned tree with no .git has no foreign account and succeeds under pipefail"
     ft_out=$(PATH="$ft/bin:$PATH" update_foreign_tree_check "$ft_tree") && ft_rc=0 || ft_rc=$?
     assert_eq "$ft_rc:$ft_out" "1:  loose.service (User=65534): ProtectSystem=no, not strict" "an unconfined unit of the .git owner refuses a root-owned tree"
     chown 65533:65533 "$ft_tree"

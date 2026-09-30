@@ -1061,7 +1061,9 @@ update_tree_foreign_accounts() {
     [[ "$EUID" == "0" ]] || return 0
     local tree="${1%/}" uid
     for uid in "$(update_path_uid "$tree")" "$(update_path_uid "$tree/.git")"; do
-        [[ -n "$uid" && "$uid" != "0" ]] && printf '%s\n' "$uid"
+        if [[ -n "$uid" && "$uid" != "0" ]]; then
+            printf '%s\n' "$uid"
+        fi
     done | sort -u
 }
 
@@ -1128,47 +1130,53 @@ def pin(name, dfd):
         if isinstance(e, FileNotFoundError) or e.errno == errno.ELOOP:
             return False
         raise
+SKIP_OPEN = (errno.ELOOP, errno.ENOTDIR, errno.ENOENT)
+def walk_dir(path, dfd, top):
+    for name in sorted(os.listdir(dfd)):
+        fd = pin(name, dfd)
+        if fd is False:
+            continue
+        try:
+            entry = Entry(os.path.join(path, name), name, dfd, fd, None, bool(O_PATH))
+            try:
+                entry.st = entry.stat()
+            except FileNotFoundError:
+                continue
+            if entry.st.st_dev != top.st_dev:
+                continue
+            yield entry, top
+            ident = (entry.st.st_dev, entry.st.st_ino) if stat.S_ISDIR(entry.st.st_mode) else None
+        finally:
+            if fd is not None:
+                os.close(fd)
+        if ident is None:
+            continue
+        try:
+            child = os.open(name, DIR_FLAGS, dir_fd=dfd)
+        except OSError as e:
+            if e.errno in SKIP_OPEN:
+                continue
+            raise
+        try:
+            cst = os.fstat(child)
+            if (cst.st_dev, cst.st_ino) == ident:
+                yield from walk_dir(entry.path, child, top)
+        finally:
+            os.close(child)
 def walk():
     top_fd = os.open(tree, DIR_FLAGS)
-    top = os.fstat(top_fd)
-    yield Entry(tree, None, None, top_fd, top, False), top
-    stack = [(tree, top_fd)]
     try:
-        while stack:
-            path, dfd = stack.pop()
-            try:
-                names = sorted(os.listdir(dfd))
-                for name in names:
-                    fd = pin(name, dfd)
-                    if fd is False:
-                        continue
-                    try:
-                        entry = Entry(os.path.join(path, name), name, dfd, fd, None, bool(O_PATH))
-                        entry.st = entry.stat()
-                        if entry.st.st_dev != top.st_dev:
-                            continue
-                        yield entry, top
-                        if stat.S_ISDIR(entry.st.st_mode):
-                            try:
-                                child = os.open(name, DIR_FLAGS, dir_fd=dfd)
-                            except OSError:
-                                continue
-                            cst = os.fstat(child)
-                            if (cst.st_dev, cst.st_ino) != (entry.st.st_dev, entry.st.st_ino):
-                                os.close(child)
-                                continue
-                            stack.append((entry.path, child))
-                    finally:
-                        if fd is not None:
-                            os.close(fd)
-            finally:
-                if dfd != top_fd:
-                    os.close(dfd)
+        top = os.fstat(top_fd)
+        yield Entry(tree, None, None, top_fd, top, False), top
+        yield from walk_dir(tree, top_fd, top)
     finally:
-        for _, dfd in stack:
-            if dfd != top_fd:
-                os.close(dfd)
         os.close(top_fd)
+def report(kind, exc, tb):
+    if isinstance(exc, OSError):
+        sys.stderr.write("[ownership] %s: %s\n" % (exc.filename or tree, exc.strerror or exc))
+    else:
+        sys.__excepthook__(kind, exc, tb)
+sys.excepthook = report
 def shared_inode(st):
     return stat.S_ISREG(st.st_mode) and st.st_nlink > 1
 def owner_ids(spec):
