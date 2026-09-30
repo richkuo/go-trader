@@ -67,6 +67,7 @@ SHARED_FEED_JOURNAL = STATE_BASE + "/shared-feed/convert.journal"
 TEMPLATE_NAME = "go-trader@.service"
 RESERVED_INSTANCES = {"shared", "shared-feed", "service-layout", "migrate"}
 DEFAULT_STATUS_PORT = 8099
+HELD_KILL_SWITCH = "portfolio_kill_switch"
 DEFAULT_DB_FILE = "scheduler/state.db"
 FORBIDDEN_ENV = {"PATH", "UV_CACHE_DIR"}
 SYSTEMD_ENV = {
@@ -527,6 +528,19 @@ def other_can(path, need_exec_dirs=True):
     return bool(st.st_mode & stat.S_IROTH)
 
 
+def owner_text(owner):
+    uid, gid = owner
+    try:
+        u = pwd.getpwuid(uid).pw_name
+    except KeyError:
+        u = str(uid)
+    try:
+        g = grp.getgrgid(gid).gr_name
+    except KeyError:
+        g = str(gid)
+    return "%s:%s" % (u, g)
+
+
 def as_user_ok(user, argv):
     if user is None:
         return None
@@ -923,6 +937,7 @@ def inspect(unit, instance, exec_timeout=None):
     wd_real = os.path.realpath(wd)
     d["source_dir"] = wd
     d["source_dir_real"] = wd_real
+    d["tree_mode"] = 0o755 if other_can(wd_real) else 0o700
     if within(wd_real, tgt_wd) or within(tgt_wd, wd_real):
         plan.refuse(EXIT_TAKEN, "the source tree %s overlaps the target %s; choose another instance name" % (wd_real, tgt_wd))
         return plan
@@ -996,7 +1011,7 @@ def inspect(unit, instance, exec_timeout=None):
         plan.refuse(EXIT_BINARY, "%s runs a binary that differs from %s (restart pending or updated without restart); restart it first" % (unit, binary))
     with open(binary, "rb") as f:
         blob = f.read()
-    for marker in (b"run_evidence", b"storage-inspect", b"zero_capital_skipped"):
+    for marker in (b"run_evidence", b"storage-inspect", b"zero_capital_skipped", b"portfolio_kill_switch"):
         if marker not in blob:
             plan.refuse(EXIT_BINARY, "the binary %s predates the migration contract (no %s); run scripts/update.sh --restart first" % (binary, marker.decode()))
     d["source_fp"] = source_fingerprint(wd_real)
@@ -1048,6 +1063,7 @@ def inspect(unit, instance, exec_timeout=None):
     d["config_fp"] = hashlib.sha256(cfg_bytes).hexdigest()
     st = os.stat(cfg_real)
     d["config_mode"] = stat.S_IMODE(st.st_mode)
+    d["config_owner"] = [st.st_uid, st.st_gid]
     role = cfg.get("role")
     if isinstance(role, str) and role.strip() == "feed":
         plan.refuse(EXIT_CONFIG, "%s is a market feed service (role: feed); feeds are managed by scripts/shared-feed-convert.sh" % unit)
@@ -1079,8 +1095,22 @@ def inspect(unit, instance, exec_timeout=None):
         plan.refuse(EXIT_BINARY, "status port %d does not answer /health with the unit's pid %d (got %s); the effective port is unknown" % (port, main_pid, (h or {}).get("pid", "no answer")))
     else:
         d["version"] = h.get("version", "")
-        if "run_evidence" not in h:
-            plan.refuse(EXIT_BINARY, "the running daemon's /health has no run_evidence; run scripts/update.sh --restart first")
+        rev = h.get("run_evidence")
+        if not isinstance(rev, dict) or not isinstance(rev.get("held"), dict):
+            plan.refuse(EXIT_BINARY, "the running daemon's /health has no run_evidence with held strategies; run scripts/update.sh --restart first")
+        else:
+            by_reason = {}
+            evaluated_at = rev.get("evaluated") if isinstance(rev.get("evaluated"), dict) else {}
+            for sid, hold in sorted(rev["held"].items()):
+                if not isinstance(hold, dict):
+                    continue
+                if (parse_iso(evaluated_at.get(sid)) or 0) > (parse_iso(hold.get("at")) or 0):
+                    continue
+                by_reason.setdefault(hold.get("reason") or "unknown", []).append(sid)
+            if by_reason.get(HELD_KILL_SWITCH):
+                plan.note("the portfolio kill switch of the running daemon held %s in its latest cycle; the execution proof accepts a strategy the target holds the same way" % ", ".join(by_reason[HELD_KILL_SWITCH]))
+            for reason in sorted(r for r in by_reason if r != HELD_KILL_SWITCH):
+                plan.note("the running daemon held %s (%s) in its latest cycle; the execution proof fails at once if the target holds a strategy this way" % (", ".join(by_reason[reason]), reason))
 
     rewrites = []
     dbs = []
@@ -1413,6 +1443,17 @@ def inspect(unit, instance, exec_timeout=None):
         elif tuser is None or os.stat(SHARED_STATE_DIR).st_uid != tuser["uid"]:
             plan.change("systemd gives %s to %s when the new unit starts; root services keep access" % (SHARED_STATE_DIR, t_user))
 
+    if d["tree_mode"] == 0o700:
+        plan.change("access: other accounts cannot reach %s, so %s is created 0700 %s:%s; files inside keep their modes" % (wd_real, tgt_wd, t_user, t_group))
+    else:
+        plan.change("access: other accounts can reach %s, so %s is 0755 %s:%s; files inside keep their modes" % (wd_real, tgt_wd, t_user, t_group))
+    plan.change("access: config %s (%04o %s) -> %s (0600 %s:%s); %s is created 0700" % (
+        cfg_real, d["config_mode"], owner_text(d["config_owner"]), d["target_config"], t_user, t_group, cfg_dir))
+    for x in dbs:
+        if x["exists"]:
+            plan.change("access: database %s %s (%04o %s) -> %s (0600 %s:%s)" % (
+                x["role"], x["source"], x["mode"], owner_text(x["source_owner"]), x["target"], t_user, t_group))
+
     peers = [u for u in discover_scheduler_units() if u != unit]
     if peers:
         plan.note("peer units left untouched: %s" % ", ".join(peers))
@@ -1455,7 +1496,7 @@ def inspect(unit, instance, exec_timeout=None):
         "binary_sha": d["binary_sha"], "source_fp": d["source_fp"], "env_digest": d["target_env_digest"],
         "env_files": d["env_files"], "dbs": [(x["label"], x["source"], x["target"], x["rewrite"]) for x in dbs],
         "rewrites": [(r["label"], r["old"], r["new"]) for r in rewrites], "replay": d["replay"],
-        "template_fp": d["template_fp"], "target_user": t_user, "port": port, "live": live,
+        "template_fp": d["template_fp"], "target_user": t_user, "port": port, "live": live, "tree_mode": d["tree_mode"],
         "version": d.get("version", ""), "unit_file_state": d["unit_file_state"],
     }
     d["plan_id"] = hashlib.sha256(json.dumps(stable, sort_keys=True).encode()).hexdigest()[:16]
@@ -1696,16 +1737,18 @@ def stage_tree(t):
     m = t.m
     src, tgt = m["source_dir_real"], m["target_dir"]
     uid, gid = m["target_uid"], m["target_gid"]
-    os.makedirs(tgt, mode=0o755)
+    os.makedirs(tgt, mode=0o700)
+    os.chmod(tgt, 0o700)
     t.journal("tree-intent", path=tgt)
     exfile = os.path.join(t.dir, "rsync.exclude")
     with open(exfile, "w") as f:
         f.write("\n".join(build_excludes(m)) + "\n")
-    run(["rsync", "-a", "--numeric-ids", "--exclude-from=" + exfile, src + "/", tgt + "/"], timeout=3600)
+    entries = [os.path.join(src, n) for n in sorted(os.listdir(src))]
+    run(["rsync", "-a", "--numeric-ids", "--exclude-from=" + exfile] + entries + [tgt + "/"], timeout=3600)
     os.makedirs(os.path.join(tgt, "logs"), exist_ok=True)
     os.makedirs(os.path.join(tgt, "scheduler"), exist_ok=True)
     check = run(["rsync", "-a", "--numeric-ids", "--dry-run", "--checksum", "--itemize-changes",
-                 "--exclude-from=" + exfile, src + "/", tgt + "/"], timeout=3600).stdout.decode("utf-8", "replace")
+                 "--exclude-from=" + exfile] + entries + [tgt + "/"], timeout=3600).stdout.decode("utf-8", "replace")
     diffs = [ln for ln in check.splitlines() if ln.strip() and not ln.startswith(".d") and not ln.startswith(".L")]
     if diffs:
         raise StageFailure("the copied tree differs from the source: %s" % "; ".join(diffs[:5]))
@@ -1714,14 +1757,16 @@ def stage_tree(t):
     if source_fingerprint(tgt) != m["source_fp"]:
         raise StageFailure("the copied tree's tracked source differs from the source")
     chown_tree(tgt, uid, gid)
-    t.journal("tree", path=tgt, binary_sha=m["binary_sha"], source_fp=m["source_fp"])
+    os.chmod(tgt, m["tree_mode"])
+    t.journal("tree", path=tgt, binary_sha=m["binary_sha"], source_fp=m["source_fp"], mode="%04o" % m["tree_mode"])
 
 
 def stage_config(t, target_env):
     m = t.m
     uid, gid = m["target_uid"], m["target_gid"]
     cdir = m["target_config_dir"]
-    os.makedirs(cdir, mode=0o755)
+    os.makedirs(cdir, mode=0o700)
+    os.chmod(cdir, 0o700)
     t.journal("config-intent", path=cdir)
     os.chown(cdir, uid, gid)
     with open(m["source_config_real"], "rb") as f:
@@ -1730,7 +1775,7 @@ def stage_config(t, target_env):
         raise StageFailure("the source config changed after the plan")
     write_atomic(os.path.join(t.evidence, "source-config.json"), raw, 0o600)
     data = raw if m["target_config_text"] is None else m["target_config_text"].encode("utf-8")
-    write_atomic(m["target_config"], data, m["config_mode"], uid, gid)
+    write_atomic(m["target_config"], data, 0o600, uid, gid)
     src_obj = json.loads(raw.decode("utf-8"))
     tgt_obj = json.loads(open(m["target_config"], "rb").read().decode("utf-8"))
     for r in m["rewrites"]:
@@ -1760,8 +1805,7 @@ def stage_verify_runtime(t, target_env):
     m = t.m
     tgt = m["target_dir"]
     probe_cfg = os.path.join(m["target_config_dir"], ".service-layout-probe.json")
-    shutil.copyfile(m["target_config"], probe_cfg)
-    os.chown(probe_cfg, m["target_uid"], m["target_gid"])
+    write_atomic(probe_cfg, open(m["target_config"], "rb").read(), 0o600, m["target_uid"], m["target_gid"])
     before = fingerprint(probe_cfg)
     p = sandbox_run(t, [os.path.join(tgt, "go-trader"), "probe", "--config", probe_cfg])
     after = fingerprint(probe_cfg)
@@ -1990,6 +2034,7 @@ def stage_lock_and_snapshot(t):
         dest = os.path.join(m["target_config_dir"], "tuning_runs")
         run(["rsync", "-a", "--numeric-ids", m["tuning_runs_source"] + "/", dest + "/"], timeout=3600)
         chown_tree(dest, m["target_uid"], m["target_gid"])
+        os.chmod(dest, 0o700)
         t.journal("tuning-runs", source=m["tuning_runs_source"], target=dest)
     return snaps
 
@@ -2013,7 +2058,7 @@ def stage_transfer(t, snaps):
             tgt_digest = db_digest(staged)
             if src_digest["digest"] != tgt_digest["digest"]:
                 raise StageFailure("the consolidated copy of %s differs in content" % x["label"])
-            os.chmod(staged, x["mode"])
+            os.chmod(staged, 0o600)
             os.chown(staged, m["target_uid"], m["target_gid"])
             for sfx in ("-wal", "-shm"):
                 if os.path.lexists(tgt + sfx):
@@ -2048,8 +2093,7 @@ def stage_validate(t, results):
         if now["digest"] != r["digest"]:
             raise StageFailure("%s content differs from the stopped source" % r["target"])
     cfg_copy = os.path.join(m["target_config_dir"], ".service-layout-inspect.json")
-    shutil.copyfile(m["target_config"], cfg_copy)
-    os.chown(cfg_copy, m["target_uid"], m["target_gid"])
+    write_atomic(cfg_copy, open(m["target_config"], "rb").read(), 0o600, m["target_uid"], m["target_gid"])
     before = fingerprint(cfg_copy)
     p = sandbox_run(t, [os.path.join(m["target_dir"], "go-trader"), "storage-inspect", "--json", "--config", cfg_copy],
                     extra_rw=[os.path.dirname(x["target"]) for x in m["dbs"]])
@@ -2145,7 +2189,14 @@ def stage_execution_proof(t, pid, started_at):
         if h.get("pid") == pid and ev:
             evaluated = ev.get("evaluated") or {}
             skipped = ev.get("zero_capital_skipped") or {}
-            missing = [i for i in ids if i not in evaluated and i not in skipped]
+            held = ev.get("held")
+            if not isinstance(held, dict):
+                raise StageFailure("%s /health run_evidence has no held strategies; the binary predates the migration contract" % m["target_unit"])
+            latched = {i for i, v in held.items() if isinstance(v, dict) and v.get("reason") == HELD_KILL_SWITCH}
+            blocked = sorted("%s (%s)" % (i, v.get("reason") if isinstance(v, dict) else "unknown") for i, v in held.items() if i not in latched and i in ids)
+            if blocked:
+                raise StageFailure("%s held strategies for a reason other than the portfolio kill switch: %s" % (m["target_unit"], ", ".join(blocked)))
+            missing = [i for i in ids if i not in evaluated and i not in skipped and i not in latched]
             last_save = parse_iso(ev.get("last_state_save"))
             latest = max([parse_iso(v) or 0 for v in evaluated.values()] or [0])
             if not missing and last_save and last_save >= latest and last_save >= started_at - 1:
@@ -2153,9 +2204,11 @@ def stage_execution_proof(t, pid, started_at):
                 cycle = read_last_cycle(primary)
                 if cycle is not None and cycle >= started_at - 1:
                     t.journal("execution", evaluated=sorted(evaluated), zero_capital_skipped=sorted(skipped),
-                              last_state_save=ev.get("last_state_save"))
-                    log("execution proof: %d strategies ran, %d skipped at zero capital, state saved at %s and read back from %s" % (
-                        len([i for i in ids if i in evaluated]), len([i for i in ids if i in skipped]), ev.get("last_state_save"), primary))
+                              kill_switch_held=sorted(latched), last_state_save=ev.get("last_state_save"))
+                    held_only = sorted(i for i in ids if i in latched and i not in evaluated and i not in skipped)
+                    log("execution proof: %d strategies ran, %d skipped at zero capital, %d held by the portfolio kill switch%s, state saved at %s and read back from %s" % (
+                        len([i for i in ids if i in evaluated]), len([i for i in ids if i in skipped]), len(held_only),
+                        " (%s)" % ", ".join(held_only) if held_only else "", ev.get("last_state_save"), primary))
                     return
         time.sleep(5)
     raise StageFailure("execution proof timed out after %ds: not yet evaluated: %s; last state save %s" % (

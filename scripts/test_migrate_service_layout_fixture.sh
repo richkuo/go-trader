@@ -13,7 +13,7 @@ for t in systemd-run python3 rsync git runuser flock; do
     command -v "$t" >/dev/null 2>&1 || { echo "SKIP: $t required"; exit 0; }
 done
 PY3=$(command -v python3)
-SCENARIOS="${FIXTURE_SCENARIOS:-refuse plan confirm apply conflict resume signal stages kill fold}"
+SCENARIOS="${FIXTURE_SCENARIOS:-refuse plan confirm apply latch conflict resume signal stages kill fold}"
 
 ID="fx$(( RANDOM % 9000 + 1000 ))"
 BASE_PORT=$(( 18000 + RANDOM % 800 ))
@@ -231,6 +231,17 @@ UNIT
     wait_health "$unit" "$port"
 }
 
+latch_kill_switch() {
+    "$PY3" - "$1" <<'PY' || fail "could not latch the kill switch in $1"
+import sqlite3, sys
+con = sqlite3.connect(sys.argv[1], timeout=10)
+n = con.execute("UPDATE portfolio_risk SET kill_switch_active = 1, kill_switch_at = '2026-09-01T00:00:00Z'").rowcount
+con.commit()
+con.close()
+assert n > 0, "no portfolio_risk row"
+PY
+}
+
 wait_journal_stage() {
     local inst="$1" stage="$2" i
     for i in $(seq 1 300); do
@@ -402,6 +413,8 @@ scenario_apply() {
     local plan_id
     plan_id=$(sed -n 's/.*plan id: \([0-9a-f]*\).*/\1/p' "$WORK/plan.out" | tail -n 1)
     [[ -n "$plan_id" ]] || fail "no plan id"
+    grep -q "change: access: other accounts cannot reach $src, so /opt/go-trader-$inst is created 0700" "$WORK/plan.out" || { cat "$WORK/plan.out"; fail "plan did not report the private tree mode"; }
+    grep -q "change: access: config .* -> /var/lib/go-trader/$inst/config.json (0600 go-trader:go-trader)" "$WORK/plan.out" || { cat "$WORK/plan.out"; fail "plan did not report the config mode change"; }
     expect_exit 19 tool apply --unit "$unit" --instance "$inst" --plan-id 0000000000000000
     local sentinel="$WORK/release-snapshot"
     MIGRATE_SERVICE_LAYOUT_PAUSE_AT="snapshot:$sentinel" "$PY3" "$TOOL" apply --unit "$unit" --instance "$inst" --plan-id "$plan_id" >"$WORK/apply.out" 2>&1 &
@@ -444,6 +457,9 @@ assert env.get("FIXTURE_INLINE") == "x y", env.get("FIXTURE_INLINE")
 assert env.get("GO_TRADER_SERVICE") == sys.argv[2], env.get("GO_TRADER_SERVICE")
 PY
     [[ "$(stat -c '%a %U' "/opt/go-trader-$inst/.env")" == "600 go-trader" ]] || fail ".env is not 600 go-trader"
+    [[ "$(stat -c '%a %U' "/opt/go-trader-$inst")" == "700 go-trader" ]] || fail "the tree of a private source is not 700 go-trader"
+    [[ "$(stat -c '%a %U' "/var/lib/go-trader/$inst/config.json" "/opt/go-trader-$inst/scheduler/state.db" "/var/lib/go-trader/$inst/paper-state.db" "/opt/go-trader-$inst/scheduler/source-btc.db" | sort -u)" == "600 go-trader" ]] || fail "the target config or a database is not 600 go-trader"
+    [[ "$(stat -c '%a' "/var/lib/go-trader/$inst/tuning_runs")" == "700" ]] || fail "tuning_runs is not 700"
     [[ "$(stat -c '%U' "/opt/go-trader-$inst" "/opt/go-trader-$inst/scheduler" "/var/lib/go-trader/$inst/tuning_runs" | sort -u)" == "go-trader" ]] || fail "the new tree is not owned by go-trader"
     [[ ! -e "/opt/go-trader-$inst/scheduler/ohlcv_cache.sqlite3" ]] || fail "the OHLCV cache was copied"
     [[ "$(file_fp "/opt/go-trader-$inst/go-trader")" == "$(file_fp "$src/go-trader")" ]] || fail "binary differs"
@@ -701,6 +717,42 @@ scenario_confirm() {
     [[ "$(unit_prop "$unit" MainPID)" == "$pid_before" ]] || fail "a refused live apply touched $unit"
     systemctl stop "$unit"
     echo "live confirmation OK"
+}
+
+scenario_latch() {
+    note "a strategy the portfolio kill switch holds passes the execution proof as held"
+    local port=$((BASE_PORT + 13)) unit="go-trader-$ID-latch.service" inst="h-$ID" src="/root/gt-$ID-latch" i
+    INSTANCES+=("$inst")
+    make_deployment latch "$port" split
+    for i in $(seq 1 90); do
+        [[ -n "$(health_field "$port" run_evidence.last_state_save)" ]] && break
+        sleep 1
+    done
+    [[ -n "$(health_field "$port" run_evidence.last_state_save)" ]] || fail "$unit never saved its state"
+    systemctl stop "$unit"
+    latch_kill_switch "$src/scheduler/source-btc.db"
+    systemctl start "$unit"
+    wait_health "$unit" "$port"
+    for i in $(seq 1 90); do
+        [[ "$(health_field "$port" run_evidence.held.hl-latch-src.reason)" == "portfolio_kill_switch" ]] && break
+        sleep 1
+    done
+    [[ "$(health_field "$port" run_evidence.held.hl-latch-src.reason)" == "portfolio_kill_switch" ]] || fail "$unit does not report hl-latch-src as held"
+    tool plan --unit "$unit" --instance "$inst" >"$WORK/plan.out" 2>&1 || { cat "$WORK/plan.out"; fail "plan refused"; }
+    grep -q "note: the portfolio kill switch of the running daemon held hl-latch-src" "$WORK/plan.out" || { cat "$WORK/plan.out"; fail "plan did not report the kill switch hold"; }
+    local plan_id sentinel="$WORK/release-latch"
+    plan_id=$(sed -n 's/.*plan id: \([0-9a-f]*\).*/\1/p' "$WORK/plan.out" | tail -n 1)
+    MIGRATE_SERVICE_LAYOUT_PAUSE_AT="validated:$sentinel" "$PY3" "$TOOL" apply --unit "$unit" --instance "$inst" --plan-id "$plan_id" >"$WORK/apply.out" 2>&1 &
+    local apid=$!
+    wait_journal_stage "$inst" validated
+    latch_kill_switch "/opt/go-trader-$inst/scheduler/source-btc.db"
+    touch "$sentinel"
+    local arc=0
+    wait "$apid" || arc=$?
+    [[ "$arc" == "0" ]] || { cat "$WORK/apply.out"; fail "apply with a latched paper source exited $arc"; }
+    grep -q "execution proof: .* held by the portfolio kill switch" "$WORK/apply.out" || { cat "$WORK/apply.out"; fail "the execution proof printed no kill switch count"; }
+    [[ "$(health_field "$port" run_evidence.held.hl-latch-src.reason)" == "portfolio_kill_switch" ]] || fail "the target did not hold hl-latch-src during the proof"
+    echo "kill switch hold OK"
 }
 
 grep -q "migrate-service-layout" "$SCRIPT_DIR/update.sh" && fail "update.sh must never call the migration"

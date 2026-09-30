@@ -1790,6 +1790,7 @@ func main() {
 				}
 				return lg
 			})
+			recordHeldStrategies(dueStrategies, scopeRisk, store, time.Now())
 			dueUnlatched := dueStrategiesPersistable(store, dueStrategiesNotLatched(dueStrategies, scopeRisk))
 			hlBatchResults := runHyperliquidBatchPrePass(dueUnlatched, state, &mu, cfg, prices, notifier, func(format string, a ...any) {
 				fmt.Printf(format+"\n", a...)
