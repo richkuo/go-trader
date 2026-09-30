@@ -2487,6 +2487,9 @@ def config_back_mapping(t):
         obj = json.loads(raw.decode("utf-8"))
     except ValueError as e:
         return None, "the target config does not parse (%s)" % e
+    if not isinstance(obj, dict):
+        return None, "the target config is not a JSON object"
+    target_obj = json.loads(raw.decode("utf-8"))
     for r in m["rewrites"]:
         ref = obj
         try:
@@ -2498,8 +2501,49 @@ def config_back_mapping(t):
         if cur != r["new"]:
             return None, "the target config changed %s, so it cannot be mapped back" % r["label"]
         ref[r["keypath"][-1]] = r["old"]
+    problems = unmapped_state_files(m, target_obj, obj)
+    if problems:
+        return None, "the target config names state files the rollback cannot return: %s" % "; ".join(problems)
     data = raw if not m["rewrites"] else (json.dumps(obj, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
     return data, None
+
+
+def state_file_values(cfg):
+    v = cfg.get("db_file")
+    out = [("db_file", v if isinstance(v, str) and v.strip() else DEFAULT_DB_FILE)]
+    pdb = cfg.get("paper_db_file")
+    if pdb is not None and not (isinstance(pdb, str) and not pdb.strip()):
+        out.append(("paper_db_file", pdb))
+    srcs = cfg.get("paper_sources")
+    if srcs is not None and not isinstance(srcs, list):
+        out.append(("paper_sources", None))
+    for i, src in enumerate(srcs or []):
+        out.append(("paper_sources[%d].db_file" % i, src.get("db_file") if isinstance(src, dict) else None))
+    return out
+
+
+def unmapped_state_files(m, target_cfg, source_cfg):
+    recorded = [(x["source"], x["target"]) for x in m["dbs"]]
+    aside = [m["target_dir"], m["target_config_dir"]]
+    target_values = dict(state_file_values(target_cfg))
+    problems = []
+    for label, value in state_file_values(source_cfg):
+        tvalue = target_values.get(label)
+        if not isinstance(value, str) or not isinstance(tvalue, str) or not value.strip() or not tvalue.strip():
+            problems.append("%s is not a file path" % label)
+            continue
+        if is_memory_db(value) or is_memory_db(tvalue):
+            problems.append("%s is an in-memory database" % label)
+            continue
+        _src_lex, src_canon = canonical_db(m["source_dir_real"], value.strip())
+        tgt_lex, tgt_canon = canonical_db(m["target_dir"], tvalue.strip())
+        if any(src_canon == s and t in (tgt_lex, tgt_canon) for s, t in recorded):
+            continue
+        if src_canon != tgt_canon:
+            problems.append("%s was added or changed after the apply: the old unit would open %s, but the target wrote %s" % (label, src_canon, tgt_canon))
+        elif any(within(src_canon, d) for d in aside):
+            problems.append("%s %s was added after the apply inside %s, which the rollback moves aside" % (label, src_canon, next(d for d in aside if within(src_canon, d))))
+    return problems
 
 
 def cmd_apply(args):

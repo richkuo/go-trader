@@ -1038,6 +1038,7 @@ func main() {
 
 		if allPartitionsSaveBlocked(store, cfg) {
 			fmt.Println("[CRITICAL] State save failed 3x, skipping trades this cycle")
+			recordHeldStrategies(dueStrategies, nil, store, time.Now())
 			globalRegimeStore.resetForCycle(time.Now().UTC())
 			mu.Lock()
 			for _, ss := range state.Strategies {

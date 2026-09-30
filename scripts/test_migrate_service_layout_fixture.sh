@@ -609,6 +609,10 @@ scenario_fold() {
     done
     grep -q "\[storage\] layout: split" <<<"$logs" || { echo "$logs" | tail -n 60 >&2; fail "the folded live unit did not report the split layout"; }
     systemctl stop "go-trader@$linst.service"
+    grep -q '"db_file": "/opt/go-trader-'"$pinst"'/scheduler/state.db"' "/var/lib/go-trader/$linst/config.json" || fail "the fold did not keep the paper source at its own path"
+    expect_exit 0 tool rollback --instance "$linst"
+    assert_source_running "$lunit" "$lport"
+    systemctl stop "$lunit"
     echo "fold OK"
 }
 
@@ -622,6 +626,18 @@ scenario_conflict() {
     txn=$(find "$STATE_ROOT/$inst" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | tail -n 1)
     snapdir="$STATE_ROOT/$inst/$txn/evidence/snapshot"
     [[ -f "$snapdir/db_file.db" ]] || fail "no apply snapshot at $snapdir"
+    local tcfg="/var/lib/go-trader/$inst/config.json"
+    cp -p "$tcfg" "$WORK/cf-config.json"
+    "$PY3" - "$tcfg" <<'PY'
+import json, sys
+c = json.load(open(sys.argv[1]))
+c["paper_sources"].append({"id": "eth", "db_file": "scheduler/source-eth.db"})
+json.dump(c, open(sys.argv[1], "w"), indent=2)
+PY
+    expect_exit 31 tool rollback --instance "$inst"
+    grep -q "paper_sources\[1\].db_file was added or changed after the apply" "$WORK/last.out" || { cat "$WORK/last.out"; fail "rollback did not name the added state file"; }
+    [[ "$(systemctl is-active "go-trader@$inst.service")" == "active" ]] || fail "a refused rollback stopped the target"
+    cp -p "$WORK/cf-config.json" "$tcfg"
     sql "$src/scheduler/state.db" "INSERT INTO trades (strategy_id, timestamp, symbol, side, quantity, price, value) VALUES ('hl-cf-a', '2026-09-02T00:00:00Z', 'ETH', 'buy', 1, 1, 1)"
     expect_exit 31 tool rollback --instance "$inst"
     [[ "$(systemctl is-active "go-trader@$inst.service")" == "active" ]] || fail "a refused rollback stopped the target"
