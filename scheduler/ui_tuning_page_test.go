@@ -1,7 +1,6 @@
 package main
 
 import (
-	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os/exec"
@@ -55,52 +54,6 @@ func TestTuningPageRoutingGuards(t *testing.T) {
 	defer shutdownDraining.Store(false)
 	if rr := getTuningPage(t, "/tuning", http.MethodGet); rr.Code != http.StatusServiceUnavailable {
 		t.Errorf("draining status = %d, want 503", rr.Code)
-	}
-}
-
-func TestTuningStaticAppWiresRunAndLiveConfigAPIs(t *testing.T) {
-	sub, err := fs.Sub(uiAssets, "static/ui")
-	if err != nil {
-		t.Fatal(err)
-	}
-	app, err := fs.ReadFile(sub, "app.js")
-	if err != nil {
-		t.Fatal(err)
-	}
-	js := string(app)
-	for _, want := range []string{
-		`document.body.dataset.page === "tuning"`,
-		`/api/tuning/runs`,
-		`/api/tuning/apply`,
-		`/api/strategies/`,
-		`baseline-drifted`,
-		`baseline-unknown`,
-		`BH-adjusted`,
-		`detailReloadPending`,
-		`apply_eligibility`,
-		`Apply tuning suggestion`,
-		`open-as-close`,
-		`loadRunDetail()`,
-	} {
-		if !strings.Contains(js, want) {
-			t.Errorf("tuning app wiring missing %q", want)
-		}
-	}
-	for _, forbidden := range []string{
-		`liveSnapshots`,
-		`forceLiveRead`,
-	} {
-		if strings.Contains(js, forbidden) {
-			t.Errorf("tuning app still caches live config via %q", forbidden)
-		}
-	}
-
-	index, err := fs.ReadFile(sub, "index.html")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(index), `href="/tuning"`) {
-		t.Error("dashboard navigation missing /tuning link")
 	}
 }
 

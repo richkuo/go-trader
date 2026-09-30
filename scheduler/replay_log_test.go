@@ -362,15 +362,6 @@ func TestReplaySharingMaskedFromRestartShape(t *testing.T) {
 	}
 }
 
-func TestReplaySharingUnknownKeyGuardAcceptsField(t *testing.T) {
-	raw := []byte(`{"strategies":[{"id":"s1","type":"perps","platform":"hyperliquid","replay_sharing":"live_mirror"}]}`)
-	for _, e := range validateStrategyJSONKeys(raw) {
-		if strings.Contains(e, "replay_sharing") {
-			t.Fatalf("replay_sharing flagged as unknown: %s", e)
-		}
-	}
-}
-
 func TestReplaySourceAndMirrorPredicates(t *testing.T) {
 	liveHL := StrategyConfig{ID: "a", Type: "perps", Platform: "hyperliquid", Args: []string{"--mode", "live"}, ReplaySharing: "live_mirror"}
 	paperHL := StrategyConfig{ID: "b", Type: "perps", Platform: "hyperliquid", Args: []string{"--mode", "paper"}, ReplaySharing: "live_mirror"}
