@@ -55,12 +55,13 @@ live_cfg_json() {
   "replay_log_path": "$T/shared/replay.db",
   "market_feed": "rest",
   "portfolio_risk": {"max_drawdown_pct": 25, "daily_max_loss_usd": 500},
-  "discord": {"enabled": false, "token": "", "channels": {"hyperliquid": "C-live"}},
+  "paper_sources": [{"id": "own", "db_file": "$(dirname "$db")/own.db", "portfolio_risk": {"max_drawdown_pct": 25, "daily_max_loss_usd": 500}}],
+  "discord": {"enabled": false, "token": "", "channels": {"hyperliquid": "C-live", "hyperliquid-paper:own": "C-live"}},
   "strategies": [
     {"id": "hl-x", "type": "perps", "platform": "hyperliquid",
      "script": "shared_scripts/check_hyperliquid.py",
-     "args": ["vwap", "ETH", "1h", "--mode=live"],
-     "capital": 100, "leverage": 5, "margin_per_trade_usd": 50, "replay_sharing": "live_mirror"}
+     "args": ["vwap", "ETH", "1h", "--mode=paper"], "paper_source": "own",
+     "capital": 100, "leverage": 5, "margin_per_trade_usd": 50}
   ]
 }
 JSON
@@ -82,7 +83,7 @@ paper_cfg_json() {
     {"id": "hl-x", "type": "perps", "platform": "hyperliquid",
      "script": "shared_scripts/check_hyperliquid.py",
      "args": ["vwap", "ETH", "1h", "--mode=paper"],
-     "capital": 100, "leverage": 5, "margin_per_trade_usd": 50, "replay_sharing": "live_mirror"}
+     "capital": 100, "leverage": 5, "margin_per_trade_usd": 50}
   ]
 }
 JSON
@@ -100,7 +101,6 @@ setup() {
     cp "$UNIT_TEMPLATE" "$UNITS/go-trader@.service"
     printf 'HYPERLIQUID_SECRET_KEY=fixture\n' > "$OPT/go-trader-live/.env"
     printf 'HYPERLIQUID_SECRET_KEY=fixture\n' > "$OPT/go-trader-paper/.env"
-    cp "$MERGE_PAPER_FIXTURE_DIR/live.db" "$BASE/live/state.db"
     LIVE_DB="$BASE/live/state.db"
     if [[ "$paper_db_mode" == "tree" ]]; then
         cp "$MERGE_PAPER_FIXTURE_DIR/paper.db" "$OPT/go-trader-paper/scheduler/state.db"
@@ -245,7 +245,6 @@ staged="$LIVE_CFG.merge-staged"
 [[ -f "$staged" ]] || fail "staged config written"
 assert_eq "$(json_get "$staged" strategies.1.id)" "hl-x-paper" "staged paper id"
 assert_eq "$(json_get "$staged" strategies.1.storage_strategy_id)" "hl-x" "staged storage alias"
-assert_eq "$(json_get "$staged" strategies.1.replay_source_id)" "hl-x" "staged replay source"
 assert_eq "$(json_get "$staged" strategies.1.interval_seconds)" "600" "staged interval"
 assert_eq "$(json_get "$staged" paper_db_file)" "$(update_canonical_db_path "$PAPER_DB")" "staged paper_db_file"
 assert_eq "$(json_get "$staged" portfolio_risk.paper.max_drawdown_pct)" "50" "paper risk override"
@@ -295,17 +294,16 @@ out=$(run_merge 2>&1) && rc=0 || rc=$?
 assert_rc "$rc" "21" "conflicting -paper channel refuses"
 assert_contains "$out" "discord.channels.hyperliquid-paper" "channel refusal names the key"
 
-echo "== second suffix, with and without a live id collision"
+echo "== second suffix, with and without a target id collision"
 setup suffix
 python3 - "$LIVE_CFG" <<'PY'
 import json, sys
 p = sys.argv[1]
 cfg = json.load(open(p))
-del cfg["strategies"][0]["capital"]
 for sid in ("hl-x-paper", "hl-y-paper"):
     cfg["strategies"].append({"id": sid, "type": "perps", "platform": "hyperliquid",
-        "script": "shared_scripts/check_hyperliquid.py", "args": ["vwap", "BTC", "1h", "--mode=live"],
-        "leverage": 5, "margin_per_trade_usd": 50})
+        "script": "shared_scripts/check_hyperliquid.py", "args": ["vwap", "BTC", "1h", "--mode=paper"],
+        "paper_source": "own", "capital": 100, "leverage": 5, "margin_per_trade_usd": 50})
 json.dump(cfg, open(p, "w"))
 PY
 python3 - "$PAPER_CFG" <<'PY'
@@ -713,17 +711,6 @@ assert_contains "$out" "diff: channel-plan discord.channels.hyperliquid-paper=C-
 [[ ! -e "$JOURNAL" ]] || fail "--diff must not write a journal"
 
 echo "== --diff names compose refuses it can see without inspect"
-setup diffreplay
-python3 - "$PAPER_CFG" <<'PY'
-import json, sys
-p = sys.argv[1]
-cfg = json.load(open(p))
-cfg["replay_log_path"] = "/tmp/other-replay.db"
-json.dump(cfg, open(p, "w"))
-PY
-out=$(run_merge --diff 2>&1) && rc=0 || rc=$?
-assert_rc "$rc" "0" "--diff with a paper-mirror replay_log_path clash exits 0"
-assert_contains "$out" "diff: compose-refuse replay_log_path" "--diff names a paper-mirror replay_log_path clash"
 setup diffchannel
 python3 - "$LIVE_CFG" <<'PY'
 import json, sys
@@ -923,24 +910,6 @@ case "$out" in
         fail "--diff must not preview replay_log_path when the merged config has no live mirror"
         ;;
 esac
-setup diffreplayon
-python3 - "$LIVE_CFG" "$PAPER_CFG" "$PAPER_DB" <<'PY'
-import json, os, sys
-live_p, paper_p, paper_db = sys.argv[1], sys.argv[2], sys.argv[3]
-live = json.load(open(live_p))
-paper = json.load(open(paper_p))
-moved = json.loads(json.dumps(paper["strategies"][0]))
-moved["id"] = "hl-x-paper"
-moved["storage_strategy_id"] = "hl-x"
-live["strategies"].append(moved)
-live["paper_db_file"] = os.path.realpath(paper_db) if os.path.exists(paper_db) else os.path.abspath(paper_db)
-paper["replay_log_path"] = "/tmp/other-replay.db"
-json.dump(live, open(live_p, "w"))
-json.dump(paper, open(paper_p, "w"))
-PY
-out=$(run_merge --diff 2>&1) && rc=0 || rc=$?
-assert_rc "$rc" "0" "--diff with a still-active already-merged mirror exits 0"
-assert_contains "$out" "diff: compose-refuse replay_log_path" "--diff still names replay_log_path when an already-merged mirror is active"
 
 echo "== --align-to-live is opt-in"
 setup alignflag
@@ -1214,7 +1183,7 @@ python3 - "$LIVE_CFG" <<'PY'
 import json, sys
 p = sys.argv[1]
 cfg = json.load(open(p))
-cfg["paper_sources"] = [{"id": "btc", "db_file": "/somewhere/else.db"}]
+cfg["paper_sources"].append({"id": "btc", "db_file": "/somewhere/else.db"})
 json.dump(cfg, open(p, "w"))
 PY
 out=$(run_merge_args --source btc=coin-btc 2>&1) && rc=0 || rc=$?
@@ -1273,8 +1242,8 @@ json.dump(cfg, open(p, "w"))
 PY
 done
 out=$(run_merge_args --source btc=coin-btc --source eth=coin-eth 2>&1) && rc=0 || rc=$?
-assert_rc "$rc" "21" "two sources mirroring one live strategy refuse"
-assert_contains "$out" "is already mirrored by" "the replay refusal names the second owner"
+assert_rc "$rc" "21" "a folded live mirror refuses, since a paper-only target has no live strategy to mirror"
+assert_contains "$out" "does not run --mode=live" "the replay refusal names the paper source strategy"
 
 echo "== --diff previews a source alias, its channel key and a redundant one"
 setup srcdiff
@@ -1331,8 +1300,8 @@ import json, sys
 p = sys.argv[1]
 cfg = json.load(open(p))
 cfg["strategies"].append({"id": "hl-x-paper-btc", "type": "perps", "platform": "hyperliquid",
-    "script": "shared_scripts/check_hyperliquid.py", "args": ["vwap", "BTC", "1h", "--mode=live"],
-    "capital": 100, "leverage": 5, "margin_per_trade_usd": 50})
+    "script": "shared_scripts/check_hyperliquid.py", "args": ["vwap", "BTC", "1h", "--mode=paper"],
+    "paper_source": "own", "capital": 100, "leverage": 5, "margin_per_trade_usd": 50})
 json.dump(cfg, open(p, "w"))
 PY
 out=$(run_merge_args --source btc=coin-btc --diff 2>&1) && rc=0 || rc=$?
@@ -1594,6 +1563,43 @@ out=$(run_merge_args --paper paper 2>&1) && rc=0 || rc=$?
 assert_contains "$out" "1 configured strategy without a stored book yet" "the paper partition expects the live config's own paper strategy too"
 assert_contains "$out" "proof: 3 strategies compared, no effective difference" "a fold that changes nothing for the live side's own paper strategy still proves"
 
+echo "== --paper refuses a target whose primary file holds its default paper partition"
+setup defaultpaper
+cp "$MERGE_PAPER_FIXTURE_DIR/paper.db" "$LIVE_DB"
+python3 - "$LIVE_CFG" <<'PY'
+import json, sys
+p = sys.argv[1]
+cfg = json.load(open(p))
+cfg["strategies"].append({"id": "hl-d", "storage_strategy_id": "hl-x", "type": "perps", "platform": "hyperliquid",
+    "script": "shared_scripts/check_hyperliquid.py", "args": ["vwap", "ETH", "1h", "--mode=paper"],
+    "capital": 100, "leverage": 5, "margin_per_trade_usd": 50})
+json.dump(cfg, open(p, "w"))
+PY
+before=$(fingerprints)
+out=$(run_merge 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "17" "--paper over a primary file that holds default paper books exits 17"
+assert_contains "$out" "holds its default paper partition (book hl-d, a paper portfolio risk row, 1 pending manual action(s))" "the refusal names the stranded data"
+assert_eq "$(fingerprints)" "$before" "the refusal leaves both databases untouched"
+[[ ! -e "$LIVE_CFG.merge-staged" ]] || fail "the refusal writes no staged config"
+
+echo "== a target that runs a live strategy is refused in both modes"
+setup livetarget
+python3 - "$LIVE_CFG" <<'PY'
+import json, sys
+p = sys.argv[1]
+cfg = json.load(open(p))
+cfg["strategies"].append({"id": "hl-live", "type": "perps", "platform": "hyperliquid",
+    "script": "shared_scripts/check_hyperliquid.py", "args": ["vwap", "BTC", "1h", "--mode=live"],
+    "capital": 100, "leverage": 5, "margin_per_trade_usd": 50})
+json.dump(cfg, open(p, "w"))
+PY
+out=$(run_merge 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "15" "a live target exits 15"
+assert_contains "$out" "runs 1 live strategy(ies); paper and live never share a service" "the refusal names the rule"
+out=$(run_merge --diff 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "15" "--diff over a live target exits 15"
+[[ ! -e "$LIVE_CFG.merge-staged" && ! -e "$JOURNAL" ]] || fail "a refused live target writes nothing"
+
 echo "== leaderboard entries of every folded deployment reach the merged config"
 set_leaderboards() {
     python3 - "$1" "$2" <<'PY'
@@ -1766,7 +1772,7 @@ assert_contains "$out" "partition paper:btc owns $(update_canonical_db_path "$BT
 assert_contains "$out" "discord.channels.hyperliquid-paper:eth=C-eth" "the channel plan is printed"
 assert_contains "$out" "leaderboard_summaries[0]=" "the combined leaderboard list is printed"
 assert_contains "$out" "source eth: dropped paper root key status_port (target value kept): target=$NT_PORT paper=8102" "every differing source value of a dropped key is listed"
-assert_contains "$out" "portfolio_risk root effective view taken from the root deployment coin-btc" "the root risk view comes from the root deployment"
+assert_contains "$out" 'portfolio_risk root effective view (the target root block with no paper override): {"daily_max_loss_usd": 500, "max_drawdown_pct": 50' "the root risk view comes from the root deployment's block"
 assert_contains "$out" "paper_sources[eth].portfolio_risk=" "the eth source keeps its own limits"
 assert_contains "$out" "proof: 2 strategies compared, no effective difference" "every moved strategy is proven"
 assert_contains "$out" "env: GO_TRADER_SERVICE from coin-btc, coin-eth" "the per-instance service variable is merged"

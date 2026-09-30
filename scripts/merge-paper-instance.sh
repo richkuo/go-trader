@@ -46,6 +46,12 @@ Defaults: --base /var/lib/go-trader, --deploy-root /opt (deployments at
 go-trader@<instance>.service. Without --apply nothing outside the staging
 area changes.
 
+Paper and live never share a service. --live names an existing paper-only
+service (the flag name is historical), and every mode refuses a target that
+runs a --mode=live strategy (exit 15); --rollback stays allowed. --paper
+refuses a target whose primary file already holds its own default paper
+partition (exit 17); fold that deployment with --source.
+
 --new-target <name> folds every named deployment into a new template service
 go-trader@<name>, so no folded deployment becomes the target. Every folded
 deployment must run go-trader@<instance>.service from the installed template,
@@ -952,7 +958,7 @@ def effective_scope_risk(inspect_path, scope):
                 inspect_path, scope, json.dumps(risk_fields(first), sort_keys=True), json.dumps(risk_fields(v), sort_keys=True)))
     return risk_fields(first)
 
-def cmd_compose(live_path, plan_path, out_path, map_path, inspect_live_path):
+def cmd_compose(live_path, plan_path, out_path, map_path, inspect_live_path, inspect_root_path):
     live = load(live_path)
     plan = load(plan_path)
     merged = json.loads(json.dumps(live))
@@ -1066,20 +1072,11 @@ def cmd_compose(live_path, plan_path, out_path, map_path, inspect_live_path):
             refuse("%spaper config nests portfolio_risk.paper" % fold_prefix(f))
     if live_risk is not None and not isinstance(live_risk, dict):
         refuse("live config portfolio_risk is not an object")
-    live_eff = effective_scope_risk(inspect_live_path, MODE_LIVE)
+    live_eff = effective_scope_risk(inspect_root_path, MODE_PAPER)
     if live_eff is None:
-        if isinstance(live_risk, dict) and "paper" in live_risk:
-            refuse("the live config runs no live strategy and already carries portfolio_risk.paper; the effective live risk limits cannot be separated from the override")
-        live_eff = effective_scope_risk(inspect_live_path, MODE_PAPER)
-    if live_eff is None and plan.get("new_target"):
-        root_fold = [f for f in plan["folds"] if f["key"] == plan["root_key"]][0]
-        live_eff = effective_scope_risk(root_fold["inspect"], MODE_PAPER)
-        if live_eff is None:
-            refuse("the root deployment %s's inspect document carries no paper-scope strategy; the effective root risk limits are unknown" % root_fold["instance"])
-        report.append("portfolio_risk root effective view taken from the root deployment %s: %s" % (
-            root_fold["instance"], json.dumps(live_eff, sort_keys=True)))
-    if live_eff is None:
-        refuse("the live inspect document carries no strategy; the effective live risk limits are unknown")
+        refuse("the root probe inspect document carries no paper strategy; the effective root risk limits are unknown")
+    report.append("portfolio_risk root effective view (the %s root block with no paper override): %s" % (
+        TARGET_LABEL, json.dumps(live_eff, sort_keys=True)))
     root = dict(live_risk) if isinstance(live_risk, dict) else {}
     existing_paper = root.pop("paper", None)
     if not risk_fields(root):
@@ -1321,6 +1318,42 @@ def cmd_target_base(root_path, out_path, db_file, status_port):
         base.pop(key, None)
     write_json_atomic(out_path, base, root_path)
 
+def cmd_root_probe(target_path, fallback_path, out_path, db_path):
+    target = load(target_path)
+    probe = json.loads(json.dumps(target))
+    risk = probe.get("portfolio_risk")
+    if isinstance(risk, dict):
+        risk.pop("paper", None)
+    for key in ("paper_sources", "paper_db_file", "leaderboard_summaries"):
+        probe.pop(key, None)
+    probe["db_file"] = db_path
+    pool = strategies(target) or strategies(load(fallback_path))
+    if not pool:
+        refuse("neither the target nor the first folded config carries a strategy for the root probe")
+    strat = json.loads(json.dumps(pool[0]))
+    for key in ("paper_source", "storage_strategy_id", "replay_sharing", "replay_source_id"):
+        strat.pop(key, None)
+    probe["strategies"] = [strat]
+    write_json_atomic(out_path, probe, target_path)
+
+def cmd_default_paper_data(storage_path, cfg_path):
+    si = load(storage_path)
+    cfg = load(cfg_path)
+    default_ids = set(s["id"] for s in strategies(cfg) if strategy_mode(s) == MODE_PAPER and not strategy_source(s))
+    found = []
+    for fi in listof(si, "files"):
+        if fi.get("role") != "primary" or not fi.get("present"):
+            continue
+        for row in listof(fi, "strategies") + listof(fi, "orphans"):
+            pid = row.get("process_strategy_id") or row.get("storage_strategy_id")
+            if pid in default_ids:
+                found.append("book %s" % pid)
+        if any(r.get("scope") == MODE_PAPER for r in listof(fi, "portfolio_risk_rows")):
+            found.append("a paper portfolio risk row")
+        if int(fi.get("pending_manual_actions", 0)) > 0:
+            found.append("%d pending manual action(s)" % int(fi["pending_manual_actions"]))
+    print(", ".join(found))
+
 def env_helpers():
     import importlib.util
     path = os.path.join(os.environ["GO_TRADER_SCRIPT_DIR"], "migrate-service-layout.py")
@@ -1423,6 +1456,10 @@ def main():
         cmd_root_diff(*args)
     elif cmd == "align":
         cmd_align(*args)
+    elif cmd == "default-paper-data":
+        cmd_default_paper_data(*args)
+    elif cmd == "root-probe":
+        cmd_root_probe(*args)
     elif cmd == "target-base":
         cmd_target_base(*args)
     elif cmd == "env-merge":
@@ -1551,6 +1588,10 @@ else
     COMPOSE_BASE_CFG="$LIVE_CFG"
 fi
 live_class=$(py classify "$COMPOSE_BASE_CFG")
+target_live_count=$(classify_field "$live_class" live)
+if [[ "$MODE" != "rollback" && "$target_live_count" != "0" ]]; then
+    fail "$EXIT_PAPER_NOT_PAPER" "target config $LIVE_CFG runs $target_live_count live strategy(ies); paper and live never share a service. Fold paper deployments into a paper-only service: --new-target, or --live naming an existing paper service"
+fi
 live_cv=$(classify_field "$live_class" config_version)
 live_db_rel=$(classify_field "$live_class" db_file)
 live_paper_db=$(classify_field "$live_class" paper_db_file)
@@ -2443,6 +2484,11 @@ run_bin "$TOOL_DEPLOY" "$TOOL_BIN" storage-inspect --json --config "$LIVE_CFG_CO
 if ! py storage-check "$WORK/storage-live.json" "$HOLDER_PID" - primary; then
     fail "$EXIT_INSPECTION_REFUSED" "$TARGET_WORD storage inspection refused"
 fi
+if [[ "$has_legacy" == "1" && -z "$live_paper_canon" ]]; then
+    default_paper_data=$(py default-paper-data "$WORK/storage-live.json" "$COMPOSE_BASE_CFG")
+    [[ -z "$default_paper_data" ]] || \
+        fail "$EXIT_LIVE_PAPER_DB_CONFLICT" "the $TARGET_WORD primary file $LIVE_DB_CANON holds its default paper partition ($default_paper_data); --paper would move that partition to the folded database and strand that data. Fold with --source <id>=<instance> instead"
+fi
 for i in "${!FOLD_KEY[@]}"; do
     tag="fold-${FOLD_KEY[$i]}"
     run_bin "${FOLD_DEPLOY[$i]}" "${FOLD_BIN[$i]}" storage-inspect --json --config "${FOLD_CFG_COPY[$i]}" >"$WORK/storage-$tag.json" 2>"$WORK/storage-$tag.err" || true
@@ -2487,8 +2533,15 @@ if [[ "$ALIGN_TO_LIVE" == "1" ]]; then
     done
 fi
 
+py root-probe "$COMPOSE_BASE_CFG" "${FOLD_COMPOSE_CFG[0]}" "$WORK/root-probe.json" "$WORK/root-probe-absent/state.db" || \
+    fail "$EXIT_INSPECTION_REFUSED" "could not build the root risk probe config"
+if ! run_bin "$TOOL_DEPLOY" "$TOOL_BIN" inspect --all --json --config "$WORK/root-probe.json" >"$WORK/inspect-root.json" 2>"$WORK/inspect-root.err"; then
+    cat "$WORK/inspect-root.err" >&2
+    fail "$EXIT_INSPECTION_REFUSED" "inspect --all --json failed on the root risk probe"
+fi
+
 write_plan "$WORK/plan.json"
-if ! py compose "$COMPOSE_BASE_CFG" "$WORK/plan.json" "$STAGED_CFG" "$STAGED_MAP" "$WORK/inspect-live.json"; then
+if ! py compose "$COMPOSE_BASE_CFG" "$WORK/plan.json" "$STAGED_CFG" "$STAGED_MAP" "$WORK/inspect-live.json" "$WORK/inspect-root.json"; then
     rm -f "$STAGED_CFG" "$STAGED_MAP"
     fail "$EXIT_COMPOSE_REFUSED" "merged config could not be composed"
 fi
@@ -2609,7 +2662,7 @@ fi
         if [[ "$NT" == "1" ]]; then
             echo "  $step. retire the ${FOLD_INSTANCE[$i]} instance's status port${FOLD_PORT[$i]:+ (${FOLD_PORT[$i]})} and any tunnel mapping that pointed at it; the combined process serves every partition on port $STATUS_PORT"
         else
-            echo "  $step. retire the ${FOLD_INSTANCE[$i]} instance's status port${FOLD_PORT[$i]:+ (${FOLD_PORT[$i]})} and any tunnel mapping that pointed at it; the combined process serves every partition on the live port"
+            echo "  $step. retire the ${FOLD_INSTANCE[$i]} instance's status port${FOLD_PORT[$i]:+ (${FOLD_PORT[$i]})} and any tunnel mapping that pointed at it; the combined process serves every partition on the target's status port"
         fi
         step=$((step + 1))
     done
