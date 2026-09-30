@@ -77,12 +77,12 @@ FEEDS=(primary backup)
 AUDIT_KEYS="${SHARED_FEED_CONVERT_AUDIT_KEYS:-3}"
 FAIL_AFTER="${SHARED_FEED_CONVERT_FAIL_AFTER:-}"
 
-log() { echo "[shared-feed] $*"; }
-warn() { echo "[shared-feed] WARN $*" >&2; }
+log() { echo "[shared-feed] $*" || true; }
+warn() { echo "[shared-feed] WARN $*" >&2 || true; }
 die() {
     local code="$1"
     shift
-    echo "[shared-feed] ERROR $*" >&2
+    echo "[shared-feed] ERROR $*" >&2 || true
     exit "$code"
 }
 
@@ -886,8 +886,7 @@ cmd_consumers() {
 
 consumers_fail() {
     local failed="$1" keep="$CONSUMERS_KEEP" name
-    guard_clear
-    trap '' INT TERM HUP
+    undo_begin
     local restore_failed="" prev
     for name in "${FEEDS[@]}"; do
         cp -p "$keep/$name.json" "$(feed_config "$name").restore-shared-feed"
@@ -922,7 +921,7 @@ PREV_PER_MINUTE=""
 PREV_STARTUP=""
 
 calibrate_fail() {
-    guard_clear
+    undo_begin
     py set-budget "$(feed_config backup)" "$PREV_PER_MINUTE" "$PREV_STARTUP"
     systemctl kill -s HUP "$(feed_unit backup)" || true
     die 24 "$1; the backup keeps its previous budget per_minute=$PREV_PER_MINUTE startup=$PREV_STARTUP"
@@ -1160,10 +1159,16 @@ guard_clear() {
     trap - INT TERM HUP EXIT
 }
 
+undo_begin() {
+    GUARD_KIND=""
+    GUARD_UNIT=""
+    trap '' INT TERM HUP
+    trap - EXIT
+}
+
 guard_undo() {
     local kind="$GUARD_KIND" unit="$GUARD_UNIT" why="$1"
-    guard_clear
-    trap '' INT TERM HUP
+    undo_begin
     case "$kind" in
         switch) switch_fail "$unit" "$why" ;;
         calibrate) calibrate_fail "$why" ;;
@@ -1189,7 +1194,7 @@ guard_exit() {
 
 switch_fail() {
     local unit="$1" why="$2"
-    guard_clear
+    undo_begin
     warn "$unit: $why; restoring the saved config"
     if restore_consumer "$unit" always; then
         die 26 "$unit: switch failed ($why); the unit runs its original config again"
