@@ -350,6 +350,12 @@ func TestUpdateShellJournalSyncFailureLeavesBinaryUnswapped(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(deploy, ".gitignore"), []byte("go-trader\ngo-trader.*\nscheduler/config.json\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Join(deploy, "scheduler"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(deploy, "scheduler", "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	runGit("-C", deploy, "add", ".")
 	runGit("-C", deploy, "commit", "-m", "init")
 	runGit("-C", deploy, "push", "-u", "origin", "HEAD:main")
@@ -371,8 +377,9 @@ func TestUpdateShellJournalSyncFailureLeavesBinaryUnswapped(t *testing.T) {
 		"go": "#!/usr/bin/env bash\n" +
 			"dir=. out=\n" +
 			"while [[ $# -gt 0 ]]; do case \"$1\" in -C) dir=\"$2\"; shift 2 ;; -o) out=\"$2\"; shift 2 ;; *) shift ;; esac; done\n" +
-			"printf '#!/usr/bin/env bash\\nexit 0\\n' > \"$dir/$out\"\n" +
-			"chmod +x \"$dir/$out\"\n",
+			"case \"$out\" in /*) ;; *) out=\"$dir/$out\" ;; esac\n" +
+			"printf '#!/usr/bin/env bash\\nexit 0\\n' > \"$out\"\n" +
+			"chmod +x \"$out\"\n",
 		"systemctl": "#!/usr/bin/env bash\n" +
 			"case \"$*\" in\n" +
 			"  --version) echo 'systemd 255 (255.4-1ubuntu8)' ;;\n" +

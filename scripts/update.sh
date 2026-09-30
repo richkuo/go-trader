@@ -33,6 +33,9 @@ unit_sync_backup_path=""
 tree_owner=""
 tree_owner_snapshot=""
 uv_bin=""
+uv_env=()
+build_export_tree=""
+build_export_commit=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -479,7 +482,7 @@ do_rollback() {
     if [[ "$tree_mutated" == "1" && -n "$pre_pull_sha" ]]; then
         echo "[update] rollback: reverting git tree to $pre_pull_sha" >&2
         if update_git "$repo_root" reset --hard "$pre_pull_sha" >&2; then
-            if ! "$uv_bin" sync >&2; then
+            if ! env ${uv_env[@]+"${uv_env[@]}"} "$uv_bin" sync >&2; then
                 echo "[update] rollback: uv sync FAILED — Python tree may be inconsistent with .prev binary" >&2
             fi
         else
@@ -697,8 +700,18 @@ if [[ "$update_all" == "1" ]]; then
     exit 0
 fi
 
+refuse_unconfined_tree() {
+    local tree="$1" role="$2" issues owner
+    owner=$(update_path_owner_name "$tree")
+    if ! issues=$(update_foreign_tree_confinement "$tree" "$(update_path_uid "$tree")"); then
+        printf '%s\n' "$issues" >&2
+        fail "$role $tree belongs to $owner, and root would build and run code from it, but the listed units that run as $owner can change files in it outside scheduler/ and logs/ (or run without ProtectSystem=strict). Run those units from the go-trader@.service template, whose sandbox keeps the rest of the tree read-only, or give the tree to root"
+    fi
+}
+
 tree_owner=$(update_tree_foreign_owner "$repo_root")
 if [[ -n "$tree_owner" ]]; then
+    refuse_unconfined_tree "$repo_root" "the deployment"
     echo "[update] $repo_root belongs to $(update_path_owner_name "$repo_root"); git trusts only this tree for each command, and files this update writes are given back to that owner"
     tree_owner_snapshot=$(mktemp "${TMPDIR:-/tmp}/go-trader-owner.XXXXXX") || fail "could not create a temporary file for the ownership list"
     if ! update_owner_snapshot "$repo_root" "$tree_owner_snapshot"; then
@@ -710,6 +723,9 @@ fi
 
 uv_bin=$(update_resolve_tool uv) \
     || fail "uv not on PATH and not at $(update_tool_fixed_text uv) — install uv system-wide so every account finds it (SKILL.md → Prerequisites)"
+if [[ "$EUID" == "0" ]]; then
+    uv_env=(UV_LINK_MODE=copy)
+fi
 
 go_bin=$(update_resolve_tool go) \
     || fail "go not on PATH and not found at $(update_tool_fixed_text go)"
@@ -739,6 +755,27 @@ if [[ -n "$rsync_from" ]]; then
     rsync_from=$(cd "$rsync_from" && pwd)
     if [[ "$(pwd)" == "$rsync_from" ]]; then
         fail "--rsync-from cannot be the deployment directory ($(pwd))"
+    fi
+    rsync_src_owner=$(update_tree_foreign_owner "$rsync_from")
+    if [[ -n "$rsync_src_owner" ]]; then
+        refuse_unconfined_tree "$rsync_from" "the --rsync-from source"
+    fi
+    if update_git_top "$rsync_from" >/dev/null; then
+        ver=$(update_git_version "$rsync_from") \
+            || fail "could not read the version of the --rsync-from source $rsync_from, a git checkout (see the git error above); refusing to stamp the build as dev"
+        if [[ "$ver" != *-mod ]]; then
+            build_export_tree="$rsync_from"
+            build_export_commit=$(update_git "$rsync_from" rev-parse HEAD) \
+                || fail "could not read HEAD of the --rsync-from source $rsync_from (see the git error above)"
+        elif [[ -n "$rsync_src_owner" ]]; then
+            fail "the --rsync-from source $rsync_from belongs to $(update_path_owner_name "$rsync_from") and has tracked changes against its HEAD ($ver); root builds only committed code from a tree another account owns. Commit or revert the changes, or when the files already match a release, move HEAD to it without touching files (git reset <release>)"
+        fi
+    else
+        ver=dev
+        if [[ -n "$rsync_src_owner" ]]; then
+            fail "the --rsync-from source $rsync_from belongs to $(update_path_owner_name "$rsync_from") and is not a git checkout; root builds only committed code from a tree another account owns"
+        fi
+        echo "[update] --rsync-from source $rsync_from is not a git checkout; the build is stamped dev"
     fi
 fi
 
@@ -793,7 +830,7 @@ if [[ -z "$rsync_from" ]]; then
         scheduler shared_scripts shared_strategies shared_tools platforms backtest 2>/dev/null || true)
     untracked_root=$(update_git "$repo_root" ls-files --others --exclude-standard 2>/dev/null | grep -v '/' || true)
     if [[ -n "$untracked" || -n "$untracked_root" ]]; then
-        echo "[update] warning: untracked files (will not affect the build):" >&2
+        echo "[update] warning: untracked files (the Go build uses only committed sources; they stay in the tree):" >&2
         [[ -n "$untracked" ]] && echo "$untracked" >&2
         [[ -n "$untracked_root" ]] && echo "$untracked_root" >&2
     fi
@@ -845,34 +882,35 @@ else
 fi
 
 begin_phase sync
-"$uv_bin" sync
+env ${uv_env[@]+"${uv_env[@]}"} "$uv_bin" sync
 if [[ -n "$tree_owner" ]] && ! update_owner_runs_venv "$repo_root"; then
     fail "after uv sync, $(update_path_owner_name "$repo_root") cannot run $repo_root/.venv/bin/python3 ($(readlink -f .venv/bin/python3 2>/dev/null || echo unresolved)); the service runs as that account. Install a Python every account can read, then rebuild the venv"
 fi
 end_phase
 
 begin_phase build
-if [[ -n "$rsync_from" ]]; then
-    if update_git_top "$rsync_from" >/dev/null; then
-        ver=$(update_git_version "$rsync_from") \
-            || fail "could not read the version of the --rsync-from source $rsync_from, a git checkout (see the git error above); refusing to stamp the build as dev"
-    else
-        ver=dev
-        echo "[update] --rsync-from source $rsync_from is not a git checkout; the build is stamped dev"
-    fi
-else
+if [[ -z "$rsync_from" ]]; then
     ver=$(update_git_version "$repo_root") \
         || fail "could not read the version of $repo_root (see the git error above); refusing to stamp the build as dev"
+    build_export_tree="$repo_root"
+    build_export_commit=$(update_git "$repo_root" rev-parse HEAD) \
+        || fail "could not read HEAD of $repo_root (see the git error above)"
 fi
 rm -f ./go-trader.new
-declare -a build_git_env=()
-while IFS= read -r build_env_line; do
-    [[ -n "$build_env_line" ]] && build_git_env+=("$build_env_line")
-done <<<"$(update_git_env_for "$repo_root")"
-if [[ ${#build_git_env[@]} -gt 0 ]]; then
-    /usr/bin/env "${build_git_env[@]}" "$go_bin" -C scheduler build -ldflags "-X main.Version=$ver" -o ../go-trader.new .
+if [[ -n "$build_export_tree" ]]; then
+    echo "[update] build: Go sources of $build_export_commit exported from $build_export_tree (untracked files are never built)"
+    update_build_go_export "$build_export_tree" "$build_export_commit" "$go_bin" "$ver" "$repo_root/go-trader.new" \
+        || fail "go build of the exported sources failed"
 else
-    "$go_bin" -C scheduler build -ldflags "-X main.Version=$ver" -o ../go-trader.new .
+    declare -a build_git_env=()
+    while IFS= read -r build_env_line; do
+        [[ -n "$build_env_line" ]] && build_git_env+=("$build_env_line")
+    done <<<"$(update_git_env_for "$repo_root")"
+    if [[ ${#build_git_env[@]} -gt 0 ]]; then
+        /usr/bin/env "${build_git_env[@]}" "$go_bin" -C scheduler build -ldflags "-X main.Version=$ver" -o ../go-trader.new .
+    else
+        "$go_bin" -C scheduler build -ldflags "-X main.Version=$ver" -o ../go-trader.new .
+    fi
 fi
 if [[ ! -s ./go-trader.new ]]; then
     fail "go build produced empty go-trader.new"

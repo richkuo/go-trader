@@ -947,6 +947,92 @@ update_git_version() {
     printf '%s' "$base"
 }
 
+update_build_go_export() {
+    local tree="$1" commit="$2" go_bin="$3" ver="$4" out="$5" work rc=0
+    work=$(mktemp -d "${TMPDIR:-/tmp}/go-trader-build.XXXXXX") || return 1
+    if ! update_git "$tree" archive --format=tar -o "$work/src.tar" "$commit" scheduler || ! tar -x -f "$work/src.tar" -C "$work"; then
+        rm -rf "$work"
+        return 1
+    fi
+    GOWORK=off GOFLAGS=-mod=readonly "$go_bin" -C "$work/scheduler" build -buildvcs=false -ldflags "-X main.Version=$ver" -o "$out" . || rc=$?
+    rm -rf "$work"
+    return "$rc"
+}
+
+update_realpath() {
+    python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$1"
+}
+
+update_path_within() {
+    local p="${1%/}" d="${2%/}"
+    [[ -n "$p" ]] || p="/"
+    [[ -n "$d" ]] || d="/"
+    [[ "$p" == "$d" || "$d" == "/" || "$p" == "$d/"* ]]
+}
+
+update_write_path_issue() {
+    local tree="${1%/}" path="$2"
+    if update_path_within "$tree" "$path"; then
+        printf 'can write %s, which holds the whole tree' "$path"
+        return 0
+    fi
+    if update_path_within "$path" "$tree" && ! update_path_within "$path" "$tree/scheduler" && ! update_path_within "$path" "$tree/logs"; then
+        printf 'can write %s inside the tree' "$path"
+    fi
+}
+
+update_unit_confinement_issues() {
+    local tree="$1" protect="$2" rw="$3" bind="$4" entry path issue
+    local -a entries=()
+    [[ "$protect" == "strict" ]] || printf 'ProtectSystem=%s, not strict\n' "${protect:-no}"
+    read -r -a entries <<<"$rw"
+    for entry in ${entries[@]+"${entries[@]}"}; do
+        path="${entry#-}"
+        path="${path#+}"
+        [[ "$path" == /* ]] || continue
+        issue=$(update_write_path_issue "$tree" "$(update_realpath "$path")")
+        [[ -z "$issue" ]] || printf 'ReadWritePaths %s\n' "$issue"
+    done
+    entries=()
+    read -r -a entries <<<"$bind"
+    for entry in ${entries[@]+"${entries[@]}"}; do
+        path="${entry#-}"
+        path="${path%%:*}"
+        [[ "$path" == /* ]] || continue
+        issue=$(update_write_path_issue "$tree" "$(update_realpath "$path")")
+        [[ -z "$issue" ]] || printf 'BindPaths %s\n' "$issue"
+    done
+}
+
+update_foreign_tree_confinement() {
+    local tree="$1" uid="$2" unit props user unit_uid issues line out=""
+    if ! command -v systemctl >/dev/null 2>&1; then
+        printf 'systemd is not available here, so nothing shows which files the tree owner can change\n'
+        return 1
+    fi
+    tree=$(update_realpath "$tree")
+    while IFS= read -r unit; do
+        [[ -n "$unit" ]] || continue
+        props=$(systemctl show "$unit" -p User -p ProtectSystem -p ReadWritePaths -p BindPaths 2>/dev/null) || continue
+        user=$(sed -n 's/^User=//p' <<<"$props")
+        [[ -n "$user" ]] || continue
+        if [[ "$user" =~ ^[0-9]+$ ]]; then
+            unit_uid="$user"
+        else
+            unit_uid=$(id -u "$user" 2>/dev/null) || continue
+        fi
+        [[ "$unit_uid" == "$uid" ]] || continue
+        issues=$(update_unit_confinement_issues "$tree" \
+            "$(sed -n 's/^ProtectSystem=//p' <<<"$props")" \
+            "$(sed -n 's/^ReadWritePaths=//p' <<<"$props")" \
+            "$(sed -n 's/^BindPaths=//p' <<<"$props")")
+        while IFS= read -r line; do
+            [[ -n "$line" ]] && out+="  $unit (User=$user): $line"$'\n'
+        done <<<"$issues"
+    done < <(systemctl list-units --type=service --all --no-legend --plain 2>/dev/null | awk '{print $1}')
+    [[ -z "$out" ]] || { printf '%s' "$out"; return 1; }
+}
+
 update_tree_foreign_owner() {
     [[ "$EUID" == "0" ]] || return 0
     local uid gid
@@ -957,7 +1043,7 @@ update_tree_foreign_owner() {
 }
 
 UPDATE_OWNER_PY='
-import os, sys
+import os, stat, sys
 mode, tree, snap = sys.argv[1], sys.argv[2], sys.argv[3]
 top = os.lstat(tree)
 def root_owned():
@@ -984,16 +1070,45 @@ if mode == "snapshot":
     with open(snap, "wb") as f:
         f.write(b"\0".join(os.fsencode(p) for p in root_owned()))
     sys.exit(0)
+def shared_inode(st):
+    return stat.S_ISREG(st.st_mode) and st.st_nlink > 1
+if mode == "give":
+    import pwd, grp
+    user, group = sys.argv[3].split(":", 1)
+    uid = int(user) if user.isdigit() else pwd.getpwnam(user).pw_uid
+    gid = int(group) if group.isdigit() else grp.getgrnam(group).gr_gid
+    gave, linked = 0, []
+    for root, dirs, files in os.walk(tree):
+        for path in [root] + [os.path.join(root, n) for n in files] + [os.path.join(root, n) for n in dirs if os.path.islink(os.path.join(root, n))]:
+            try:
+                st = os.lstat(path)
+            except FileNotFoundError:
+                continue
+            if st.st_dev != top.st_dev:
+                continue
+            if shared_inode(st):
+                linked.append(path)
+                continue
+            os.lchown(path, uid, gid)
+            gave += 1
+        dirs[:] = [d for d in dirs if not os.path.islink(os.path.join(root, d)) and os.lstat(os.path.join(root, d)).st_dev == top.st_dev]
+    print("GAVE %d" % gave)
+    print("LINKED %d %s" % (len(linked), " ".join(linked[:5])))
+    sys.exit(0)
 uid, gid = (int(x) for x in sys.argv[4].split(":"))
 with open(snap, "rb") as f:
     raw = f.read()
 before = set(os.fsdecode(p) for p in raw.split(b"\0") if p)
 now = root_owned()
 new = []
+linked = []
 for p in now:
     if p in before:
         continue
     try:
+        if shared_inode(os.lstat(p)):
+            linked.append(p)
+            continue
         os.lchown(p, uid, gid)
     except FileNotFoundError:
         continue
@@ -1011,6 +1126,7 @@ if left:
 old = [p for p in now if p in before]
 print("GAVE %d" % len(new))
 print("KEPT %d %s" % (len(old), " ".join(old[:5])))
+print("LINKED %d %s" % (len(linked), " ".join(linked[:5])))
 '
 
 update_owner_snapshot() {
@@ -1018,13 +1134,14 @@ update_owner_snapshot() {
 }
 
 update_restore_tree_owner() {
-    local tree="$1" owner="$2" snap="$3" out rc=0 line gave=0 kept=0 examples=""
+    local tree="$1" owner="$2" snap="$3" out rc=0 line gave=0 kept=0 examples="" linked=0 linked_examples=""
     [[ -n "$tree" && -n "$owner" && -n "$snap" && -f "$snap" ]] || return 0
     out=$(python3 -c "$UPDATE_OWNER_PY" restore "$tree" "$snap" "$owner") || rc=$?
     while IFS= read -r line; do
         case "$line" in
             GAVE\ *) gave="${line#GAVE }" ;;
             KEPT\ *) line="${line#KEPT }"; kept="${line%% *}"; examples="${line#"$kept"}" ;;
+            LINKED\ *) line="${line#LINKED }"; linked="${line%% *}"; linked_examples="${line#"$linked"}" ;;
             FAILED\ *) echo "[update] ownership: could not give ${line#FAILED } back to $owner" >&2 ;;
         esac
     done <<<"$out"
@@ -1032,9 +1149,27 @@ update_restore_tree_owner() {
     if [[ "$gave" != 0 ]]; then
         echo "[update] ownership: $gave path(s) this update wrote as root under $tree given back to $(update_path_owner_name "$tree")"
     fi
+    if [[ "$linked" != 0 ]]; then
+        echo "[update] warning: $linked root-owned file(s) under $tree share their data with another path (a hard link) and stay root-owned, so their other names keep their owner (for example${linked_examples})" >&2
+    fi
     if [[ "$kept" != 0 && "${UPDATE_OWNER_KEPT_WARNED:-}" != "$tree" ]]; then
         UPDATE_OWNER_KEPT_WARNED="$tree"
-        echo "[update] warning: $kept path(s) under $tree were owned by root before this update and stay so (for example${examples}); if the tree's owner should own them, run: chown -R $(update_path_owner_name "$tree"):$(update_path_group_name "$tree") $tree" >&2
+        echo "[update] warning: $kept path(s) under $tree were owned by root before this update and stay so (for example${examples}); list them with: find $tree -xdev -user root, then give only the ones the owner needs with: chown -h $(update_path_owner_name "$tree"):$(update_path_group_name "$tree") <path>" >&2
+    fi
+    return 0
+}
+
+update_give_tree() {
+    local dir="$1" owner="$2" out line gave=0 linked=0 linked_examples=""
+    out=$(python3 -c "$UPDATE_OWNER_PY" give "$dir" "$owner") || return 1
+    while IFS= read -r line; do
+        case "$line" in
+            GAVE\ *) gave="${line#GAVE }" ;;
+            LINKED\ *) line="${line#LINKED }"; linked="${line%% *}"; linked_examples="${line#"$linked"}" ;;
+        esac
+    done <<<"$out"
+    if [[ "$linked" != 0 ]]; then
+        echo "[ownership] warning: $linked file(s) under $dir share their data with another path (a hard link) and keep their owner (for example${linked_examples})" >&2
     fi
     return 0
 }

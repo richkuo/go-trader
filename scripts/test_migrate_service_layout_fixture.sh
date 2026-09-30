@@ -800,7 +800,18 @@ write_uv_stub() {
 #!/bin/sh
 case "$1" in
     --version) echo "uv 0.0.0 (go-trader fixture stub)" ;;
-    sync) mkdir -p .venv/fixture-uv && date >.venv/fixture-uv/stamp ;;
+    sync)
+        mkdir -p .venv/fixture-uv && date >.venv/fixture-uv/stamp
+        if [ -n "${UV_STUB_CACHE:-}" ]; then
+            if [ "${UV_LINK_MODE:-}" = copy ]; then
+                cp -f "$UV_STUB_CACHE" .venv/fixture-uv/pkg
+            else
+                ln -f "$UV_STUB_CACHE" .venv/fixture-uv/pkg
+            fi
+            if [ -n "${UV_STUB_FORCE_LINK:-}" ]; then
+                ln -f "$UV_STUB_CACHE" .venv/fixture-uv/forced
+            fi
+        fi ;;
 esac
 exit 0
 UV
@@ -944,6 +955,35 @@ scenario_update() {
     fi
     echo "host safe.directory entries (system, global), left in place and ignored by the isolated runs: $(safe_dirs | tr '\n' ' ')"
     safe_before=$(safe_dirs)
+    local uvcache="/opt/go-trader-fx$ID-uvcache"
+    CREATED_DIRS+=("$uvcache")
+    mkdir -p "$uvcache"
+    echo "cached package" >"$uvcache/pkg"
+    export UV_STUB_CACHE="$uvcache/pkg"
+
+    note "a unit that runs as the tree owner without the template sandbox: root refuses to update the tree"
+    local lunit="go-trader-$ID-loose.service"
+    CREATED_UNITS+=("$lunit")
+    cat >"/etc/systemd/system/$lunit" <<UNIT
+[Unit]
+Description=fixture unit that runs as go-trader without a sandbox
+
+[Service]
+Type=oneshot
+User=go-trader
+WorkingDirectory=$tree
+ExecStart=/bin/true
+UNIT
+    systemctl daemon-reload
+    systemctl start "$lunit"
+    pre=$(root_git "$tree" rev-parse HEAD)
+    expect_exit 1 run_update "$tree" GO_TRADER_SERVICE="$tunit" bash scripts/update.sh --restart
+    grep -q "$lunit (User=go-trader): ProtectSystem=" "$WORK/last.out" || fail "the refusal did not name $lunit"
+    grep -q "Run those units from the go-trader@.service template" "$WORK/last.out" || fail "the refusal did not name the fix"
+    [[ "$(root_git "$tree" rev-parse HEAD)" == "$pre" ]] || fail "the refused update changed $tree"
+    rm -f "/etc/systemd/system/$lunit"
+    systemctl daemon-reload
+    systemctl reset-failed "$lunit" 2>/dev/null || true
 
     note "a failed update rolls back a go-trader tree and keeps its owner"
     pre=$(root_git "$tree" rev-parse HEAD)
@@ -956,8 +996,16 @@ scenario_update() {
     wait_health "$tunit" "$port"
     [[ "$(health_field "$port" version)" == "$old_version" ]] || fail "the rollback did not bring back $old_version"
 
-    note "root updates a go-trader tree"
-    expect_exit 0 run_update "$tree" GO_TRADER_SERVICE="$tunit" bash scripts/update.sh --restart
+    note "root updates a go-trader tree; untracked Go files the service can write are not built"
+    runuser -u go-trader -- sh -c "printf 'package main\n\nimport \"os\"\n\nfunc init() { _ = os.WriteFile(\"%s\", nil, 0o644) }\n' '$WORK/planted' >'$tree/scheduler/zz_planted.go' && printf '*\n' >'$tree/scheduler/.gitignore'"
+    expect_exit 0 run_update "$tree" GO_TRADER_SERVICE="$tunit" UV_STUB_FORCE_LINK=1 bash scripts/update.sh --restart
+    [[ ! -e "$WORK/planted" ]] || fail "root built and ran an untracked scheduler file"
+    grep -q "untracked files are never built" "$WORK/last.out" || fail "the update did not build from the exported sources"
+    rm -f "$tree/scheduler/zz_planted.go" "$tree/scheduler/.gitignore"
+    [[ "$(stat -c '%U' "$UV_STUB_CACHE")" == "root" ]] || fail "the ownership give-back changed the owner of root's uv cache through a hard link"
+    [[ "$(stat -c '%U %h' "$tree/.venv/fixture-uv/pkg")" == "go-trader 1" ]] || fail "uv sync as root did not copy the package into the venv"
+    grep -q "share their data with another path" "$WORK/last.out" || fail "the update did not report the hard-linked file it kept"
+    rm -f "$tree/.venv/fixture-uv/forced"
     [[ "$(root_git "$tree" rev-parse HEAD)" == "$new1" ]] || fail "$tree is not on $new1"
     want=$(tree_version "$tree")
     [[ -n "$want" && "$want" != "dev" ]] || fail "no release version for $tree"
@@ -982,6 +1030,12 @@ for k in ("db_file", "paper_db_file", "paper_sources"):
 c["status_port"] = int(sys.argv[3])
 json.dump(c, open(sys.argv[2], "w"), indent=2)
 PY
+    note "feed build refuses a go-trader source with tracked changes"
+    runuser -u go-trader -- sh -c "echo '# planted' >>'$tree/pyproject.toml'"
+    expect_exit 1 run_update "$feed" bash scripts/update.sh --rsync-from "$tree"
+    grep -q "root builds only committed code from a tree another account owns" "$WORK/last.out" || fail "the dirty-source refusal did not name the reason"
+    root_git "$tree" checkout -q -- pyproject.toml
+    chown go-trader:go-trader "$tree/pyproject.toml"
     expect_exit 0 run_update "$feed" bash scripts/update.sh --rsync-from "$tree"
     cver=$(tree_version "$tree")
     [[ "$("$feed/go-trader" version)" == "$cver" && "$cver" != "dev" ]] || fail "the feed binary reports $("$feed/go-trader" version), want the consumer release $cver"
@@ -1011,6 +1065,10 @@ WorkingDirectory=$feed
 ExecStart=$feed/go-trader --config $feed/scheduler/config.json
 Restart=always
 RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=$feed/scheduler $feed/logs
 
 [Install]
 WantedBy=multi-user.target
@@ -1048,6 +1106,7 @@ UNIT
     [[ "$(find "$rsrc" -xdev ! -user root -printf '%u %p\n' | sort)" == "$rsrc_owners_before" ]] || fail "--all changed file owners in the root-owned $rsrc"
     [[ "$(safe_dirs)" == "$safe_before" ]] || fail "--all changed a safe.directory setting"
     systemctl stop "$tunit" "$funit" "$runit"
+    unset UV_STUB_CACHE
     echo "root updates on trees another account owns OK"
 }
 

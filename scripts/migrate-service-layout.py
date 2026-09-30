@@ -742,8 +742,20 @@ def consolidate(src_db, src_wal, out_path):
         shutil.rmtree(work, ignore_errors=True)
 
 
+def git_top(tree):
+    d = os.path.realpath(tree)
+    while not os.path.exists(os.path.join(d, ".git")):
+        parent = os.path.dirname(d)
+        if parent == d:
+            return os.path.realpath(tree)
+        d = parent
+    return d
+
+
 def git(tree, *args):
-    return ["git", "-c", "safe.directory=*", "--no-optional-locks", "-C", tree] + list(args)
+    top = git_top(tree)
+    return ["git", "-c", "safe.directory=" + top, "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
+            "--no-optional-locks", "-C", tree] + list(args)
 
 
 CODE_DIRS = ("scheduler", "shared_scripts", "shared_strategies", "shared_tools", "platforms", "scripts", "systemd", "backtest")

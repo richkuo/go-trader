@@ -619,7 +619,8 @@ install_feed_unit() {
         chmod 0644 "$dropin"
         journal_add "feed-dropin $name $dropin"
     fi
-    chown -R "$FEED_USER:$FEED_GROUP" "$(feed_dir "$name")/logs" "$(dirname "$(feed_config "$name")")"
+    update_give_tree "$(feed_dir "$name")/logs" "$FEED_USER:$FEED_GROUP" || die 22 "could not give $(feed_dir "$name")/logs to $FEED_USER"
+    update_give_tree "$(dirname "$(feed_config "$name")")" "$FEED_USER:$FEED_GROUP" || die 22 "could not give $(dirname "$(feed_config "$name")") to $FEED_USER"
     systemctl daemon-reload
     systemctl enable "$unit" >/dev/null
 }
@@ -726,7 +727,9 @@ cmd_feeds() {
         log "building $dir from $first_wd"
         (cd "$dir" && bash scripts/update.sh --rsync-from "$first_wd") || die 22 "update.sh --rsync-from failed in $dir"
         [[ "$(source_fingerprint "$dir")" == "$(source_fingerprint "$first_wd")" ]] || die 22 "$dir source differs from $first_wd after the build"
-        [[ "$FEED_USER" == "root" ]] || chown -R "$FEED_USER:$FEED_GROUP" "$dir"
+        if [[ "$FEED_USER" != "root" ]]; then
+            update_give_tree "$dir" "$FEED_USER:$FEED_GROUP" || die 22 "could not give $dir to $FEED_USER"
+        fi
         install_feed_unit "$name"
         if ! systemctl is-active --quiet "$(feed_unit "$name")"; then
             systemctl start "$(feed_unit "$name")"

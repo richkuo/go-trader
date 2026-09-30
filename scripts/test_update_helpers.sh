@@ -1518,8 +1518,16 @@ mkdir -p "$tools_dir/bin"
 printf '#!/bin/sh\necho stub\n' >"$tools_dir/bin/uv"
 chmod 0755 "$tools_dir/bin/uv"
 assert_eq "$(PATH="$tools_dir/bin:/usr/bin:/bin" update_resolve_tool uv)" "$tools_dir/bin/uv" "uv resolves from PATH first"
-assert_eq "$(update_tool_fixed_text uv)" "/usr/local/bin/uv, /usr/bin/uv, /opt/homebrew/bin/uv" "uv fixed paths never include a home directory"
-assert_eq "$(update_tool_fixed_text go)" "/opt/homebrew/bin/go, /usr/local/go/bin/go" "go fixed paths are unchanged"
+home_dir=$(mktemp -d)
+mkdir -p "$home_dir/.local/bin"
+printf '#!/bin/sh\necho home\n' >"$home_dir/.local/bin/uv"
+chmod 0755 "$home_dir/.local/bin/uv"
+home_uv=$(HOME="$home_dir" PATH="/usr/bin:/bin" update_resolve_tool uv || true)
+if [[ "$home_uv" == "$home_dir"/* ]]; then
+    echo "FAIL: update_resolve_tool took uv from a home directory: $home_uv" >&2
+    exit 1
+fi
+rm -rf "$home_dir"
 for fixed in /usr/local/bin/uv /usr/bin/uv /opt/homebrew/bin/uv; do
     if [[ -x "$fixed" ]]; then
         echo "note: $fixed exists; the uv-missing case is skipped"
@@ -1550,6 +1558,75 @@ if [[ "$EUID" != "0" ]]; then
     own=$(mktemp -d)
     assert_eq "$(update_tree_foreign_owner "$own")" "" "a non-root caller never restores ownership"
     rm -rf "$own"
+fi
+
+give_dir=$(mktemp -d)
+mkdir -p "$give_dir/tree/sub"
+echo outside >"$give_dir/outside.txt"
+ln "$give_dir/outside.txt" "$give_dir/tree/sub/linked.txt"
+echo own >"$give_dir/tree/sub/own.txt"
+give_out=$(update_give_tree "$give_dir/tree" "$(id -u):$(id -g)" 2>&1)
+if [[ "$give_out" != *"1 file(s) under $give_dir/tree share their data"* || "$give_out" != *"linked.txt"* ]]; then
+    echo "FAIL: update_give_tree did not skip and report the hard-linked file: $give_out" >&2
+    exit 1
+fi
+rm -rf "$give_dir"
+
+assert_eq "$(update_write_path_issue /opt/t /opt/t/scheduler)" "" "the scheduler directory is an allowed write path"
+assert_eq "$(update_write_path_issue /opt/t /opt/t/logs/x)" "" "a path under logs is an allowed write path"
+assert_eq "$(update_write_path_issue /opt/t /var/lib/go-trader/t)" "" "a path outside the tree is allowed"
+assert_eq "$(update_write_path_issue /opt/t /opt/t-other)" "" "a sibling with the tree name as prefix is outside the tree"
+assert_eq "$(update_write_path_issue /opt/t /opt/t/.git)" "can write /opt/t/.git inside the tree" "the git directory is refused"
+assert_eq "$(update_write_path_issue /opt/t /opt)" "can write /opt, which holds the whole tree" "a parent of the tree is refused"
+assert_eq "$(update_write_path_issue /opt/t /opt/t)" "can write /opt/t, which holds the whole tree" "the tree root is refused"
+conf_dir=$(mktemp -d)
+conf_tree=$(update_realpath "$conf_dir")
+assert_eq "$(update_unit_confinement_issues "$conf_tree" strict "$conf_tree/scheduler -$conf_tree/logs" "")" "" "the template write paths pass"
+assert_eq "$(update_unit_confinement_issues "$conf_tree" no "" "")" "ProtectSystem=no, not strict" "a unit without ProtectSystem=strict is refused"
+assert_eq "$(update_unit_confinement_issues "$conf_tree" strict "$conf_tree/scheduler $conf_tree/.venv" "")" "ReadWritePaths can write $conf_tree/.venv inside the tree" "a write path over the venv is refused"
+assert_eq "$(update_unit_confinement_issues "$conf_tree" strict "" "$conf_tree/shared_scripts:/srv/x:rbind")" "BindPaths can write $conf_tree/shared_scripts inside the tree" "a bind mount from inside the tree is refused"
+mkdir -p "$conf_dir/bin"
+cat >"$conf_dir/bin/systemctl" <<STUB
+#!/bin/bash
+case "\$1" in
+    list-units) printf 'loose.service loaded inactive dead x\nsafe.service loaded active running x\nrootunit.service loaded active running x\n' ;;
+    show)
+        case "\$2" in
+            loose.service) printf 'User=$(id -un)\nProtectSystem=no\nReadWritePaths=\nBindPaths=\n' ;;
+            safe.service) printf 'User=$(id -un)\nProtectSystem=strict\nReadWritePaths=$conf_tree/scheduler $conf_tree/logs\nBindPaths=\n' ;;
+            *) printf 'User=\nProtectSystem=no\nReadWritePaths=\nBindPaths=\n' ;;
+        esac ;;
+esac
+STUB
+chmod 0755 "$conf_dir/bin/systemctl"
+conf_out=$(PATH="$conf_dir/bin:$PATH" update_foreign_tree_confinement "$conf_tree" "$(id -u)") && conf_rc=0 || conf_rc=$?
+assert_eq "$conf_rc" "1" "an unconfined unit of the tree owner fails the confinement check"
+assert_eq "$conf_out" "  loose.service (User=$(id -un)): ProtectSystem=no, not strict" "only the unconfined unit of the owner is listed"
+conf_out=$(PATH="$conf_dir/bin:$PATH" update_foreign_tree_confinement "$conf_tree" 99999) && conf_rc=0 || conf_rc=$?
+assert_eq "$conf_rc:$conf_out" "0:" "units of other accounts do not count"
+rm -rf "$conf_dir"
+
+export_go=$(update_resolve_tool go || true)
+if [[ -n "$export_go" ]] && command -v git >/dev/null 2>&1; then
+    ex=$(mktemp -d)
+    mkdir -p "$ex/tree/scheduler"
+    printf 'module fixture\n\ngo 1.21\n' >"$ex/tree/scheduler/go.mod"
+    printf 'package main\n\nimport "fmt"\n\nvar Version = "none"\n\nfunc main() { fmt.Println(Version) }\n' >"$ex/tree/scheduler/main.go"
+    git -C "$ex/tree" init -q
+    git -C "$ex/tree" add -A
+    git -C "$ex/tree" -c user.email=t@example.invalid -c user.name=t commit -qm init
+    printf 'package main\n\nimport "os"\n\nfunc init() { _ = os.WriteFile("%s/planted", nil, 0o644) }\n' "$ex" >"$ex/tree/scheduler/zz.go"
+    printf '*\n' >"$ex/tree/scheduler/.gitignore"
+    printf 'go 1.21\n\nuse ./missing\n' >"$ex/tree/scheduler/go.work"
+    update_build_go_export "$ex/tree" HEAD "$export_go" v9.9.9 "$ex/out" >/dev/null
+    assert_eq "$("$ex/out")" "v9.9.9" "the exported build carries the version stamp"
+    if [[ -e "$ex/planted" ]]; then
+        echo "FAIL: the exported build compiled an untracked scheduler file" >&2
+        exit 1
+    fi
+    rm -rf "$ex"
+else
+    echo "note: go or git not installed; the export build case is skipped"
 fi
 
 echo "OK: update_helpers tests passed"
