@@ -791,8 +791,14 @@ PY
 }
 
 run_probe_live() {
-    local name="$1"
-    (cd "$(feed_dir "$name")" && ./go-trader probe --config "$(feed_config "$name")" 2>/dev/null) || true
+    local name="$1" dir owner
+    dir=$(feed_dir "$name")
+    owner=$(update_tree_foreign_owner "$dir")
+    if [[ -n "$owner" ]]; then
+        update_probe_as_owner "$dir" "$owner" "$dir/go-trader" "$(feed_config "$name")" 2>/dev/null || true
+        return 0
+    fi
+    (cd "$dir" && ./go-trader probe --config "$(feed_config "$name")" 2>/dev/null) || true
 }
 
 max_cadence() {

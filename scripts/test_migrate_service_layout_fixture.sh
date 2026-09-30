@@ -901,7 +901,7 @@ scenario_update() {
     local port=$((BASE_PORT + 14)) fport=$((BASE_PORT + 15)) rport=$((BASE_PORT + 16))
     local unit="go-trader-$ID-upd.service" inst="u-$ID" src="/root/gt-$ID-upd"
     local origin="$WORK/upd-origin.git" roothome="$WORK/roothome/.local/bin"
-    local br tree tunit safe_before pre new1 new2 old_version want cver feed uvp
+    local br tree tunit safe_before pre new1 new2 old_version want cver feed uvp cfg_link
     INSTANCES+=("$inst")
     make_deployment upd "$port"
     br=$(git -C "$src" symbolic-ref --short HEAD)
@@ -996,11 +996,26 @@ UNIT
     wait_health "$tunit" "$port"
     [[ "$(health_field "$port" version)" == "$old_version" ]] || fail "the rollback did not bring back $old_version"
 
-    note "root updates a go-trader tree; untracked Go files the service can write are not built"
+    note "root updates a go-trader tree; untracked Go files and scripts the service can write never run as root"
     runuser -u go-trader -- sh -c "printf 'package main\n\nimport \"os\"\n\nfunc init() { _ = os.WriteFile(\"%s\", nil, 0o644) }\n' '$WORK/planted' >'$tree/scheduler/zz_planted.go' && printf '*\n' >'$tree/scheduler/.gitignore'"
+    cfg_link=$(readlink "$tree/scheduler/config.json")
+    runuser -u go-trader -- "$PY3" - "$tree" <<'PY'
+import json, os, sys
+t = sys.argv[1]
+with open(os.path.join(t, "scheduler/zz_probe.py"), "w") as f:
+    f.write("import os\nwith open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'zz_probe.uid'), 'w') as f:\n    f.write(str(os.getuid()))\n")
+c = json.load(open(os.path.join(t, "scheduler/config.json")))
+c["strategies"][0]["script"] = "scheduler/zz_probe.py"
+with open(os.path.join(t, "scheduler/config.json.zz"), "w") as f:
+    json.dump(c, f, indent=2)
+os.replace(os.path.join(t, "scheduler/config.json.zz"), os.path.join(t, "scheduler/config.json"))
+PY
     expect_exit 0 run_update "$tree" GO_TRADER_SERVICE="$tunit" UV_STUB_FORCE_LINK=1 bash scripts/update.sh --restart
     [[ ! -e "$WORK/planted" ]] || fail "root built and ran an untracked scheduler file"
     grep -q "untracked files are never built" "$WORK/last.out" || fail "the update did not build from the exported sources"
+    grep -q "probe: runs as go-trader under the unit sandbox" "$WORK/last.out" || fail "the update did not run the probe as go-trader"
+    [[ "$(cat "$tree/scheduler/zz_probe.uid" 2>/dev/null)" == "$(id -u go-trader)" ]] || fail "the probe did not run the script named by the service's config as go-trader"
+    runuser -u go-trader -- sh -c "rm -f '$tree/scheduler/zz_probe.py' '$tree/scheduler/zz_probe.uid' && ln -sfn '$cfg_link' '$tree/scheduler/config.json'"
     rm -f "$tree/scheduler/zz_planted.go" "$tree/scheduler/.gitignore"
     [[ "$(stat -c '%U' "$UV_STUB_CACHE")" == "root" ]] || fail "the ownership give-back changed the owner of root's uv cache through a hard link"
     [[ "$(stat -c '%U %h' "$tree/.venv/fixture-uv/pkg")" == "go-trader 1" ]] || fail "uv sync as root did not copy the package into the venv"

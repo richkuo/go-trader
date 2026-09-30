@@ -922,7 +922,15 @@ echo "[update] built ${ver}: $(stat -c '%s' ./go-trader.new 2>/dev/null || stat 
 end_phase
 
 begin_phase probe
-if ! ./go-trader.new probe; then
+if [[ -n "$tree_owner" ]]; then
+    echo "[update] probe: runs as $(update_path_owner_name "$repo_root") under the unit sandbox, on a private copy of scheduler/config.json, because that account can change the config and the scripts it names"
+    probe_ok=0
+    update_probe_as_owner "$repo_root" "$tree_owner" "$repo_root/go-trader.new" scheduler/config.json && probe_ok=1
+else
+    probe_ok=0
+    ./go-trader.new probe && probe_ok=1
+fi
+if [[ "$probe_ok" != 1 ]]; then
     rm -f ./go-trader.new
     fail "go-trader.new probe rejected the freshly synced Python — refusing to swap"
 fi

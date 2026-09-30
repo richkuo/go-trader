@@ -1004,32 +1004,56 @@ update_unit_confinement_issues() {
     done
 }
 
+UPDATE_CONFINEMENT_INSTANCE="update-confinement-check"
+
+update_foreign_tree_units() {
+    local listed files
+    listed=$(systemctl list-units --type=service --all --no-legend --plain 2>/dev/null) || return 1
+    files=$(systemctl list-unit-files --type=service --no-legend --plain 2>/dev/null) || return 1
+    printf '%s\n%s\n' "$listed" "$files" | awk -v inst="$UPDATE_CONFINEMENT_INSTANCE" '
+        { n = $1; sub(/@\.service$/, "@" inst ".service", n); if (n ~ /\.service$/) print n }' | sort -u
+}
+
 update_foreign_tree_confinement() {
-    local tree="$1" uid="$2" unit props user unit_uid issues line out=""
+    local tree="$1" uid="$2" units_text shown unit user protect rw bind unit_uid issues issue out=""
+    local -a units=()
     if ! command -v systemctl >/dev/null 2>&1; then
         printf 'systemd is not available here, so nothing shows which files the tree owner can change\n'
         return 1
     fi
     tree=$(update_realpath "$tree")
+    if ! units_text=$(update_foreign_tree_units); then
+        printf 'systemctl could not list the service units and unit files, so nothing shows which files the tree owner can change\n'
+        return 1
+    fi
     while IFS= read -r unit; do
-        [[ -n "$unit" ]] || continue
-        props=$(systemctl show "$unit" -p User -p ProtectSystem -p ReadWritePaths -p BindPaths 2>/dev/null) || continue
-        user=$(sed -n 's/^User=//p' <<<"$props")
-        [[ -n "$user" ]] || continue
+        [[ -n "$unit" ]] && units+=("$unit")
+    done <<<"$units_text"
+    [[ ${#units[@]} -gt 0 ]] || return 0
+    if ! shown=$(systemctl show -p Id -p User -p ProtectSystem -p ReadWritePaths -p BindPaths -- "${units[@]}" 2>/dev/null); then
+        printf 'systemctl could not read the settings of the service units, so nothing shows which files the tree owner can change\n'
+        return 1
+    fi
+    while IFS=$'\x1f' read -r unit user protect rw bind; do
+        [[ -n "$unit" && -n "$user" ]] || continue
         if [[ "$user" =~ ^[0-9]+$ ]]; then
             unit_uid="$user"
         else
             unit_uid=$(id -u "$user" 2>/dev/null) || continue
         fi
         [[ "$unit_uid" == "$uid" ]] || continue
-        issues=$(update_unit_confinement_issues "$tree" \
-            "$(sed -n 's/^ProtectSystem=//p' <<<"$props")" \
-            "$(sed -n 's/^ReadWritePaths=//p' <<<"$props")" \
-            "$(sed -n 's/^BindPaths=//p' <<<"$props")")
-        while IFS= read -r line; do
-            [[ -n "$line" ]] && out+="  $unit (User=$user): $line"$'\n'
+        [[ "$unit" == *"@$UPDATE_CONFINEMENT_INSTANCE.service" ]] && unit="${unit%"$UPDATE_CONFINEMENT_INSTANCE.service"}.service"
+        issues=$(update_unit_confinement_issues "$tree" "$protect" "$rw" "$bind")
+        while IFS= read -r issue; do
+            [[ -n "$issue" ]] && out+="  $unit (User=$user): $issue"$'\n'
         done <<<"$issues"
-    done < <(systemctl list-units --type=service --all --no-legend --plain 2>/dev/null | awk '{print $1}')
+    done < <(awk '
+        function flush() { if (id != "") printf "%s\037%s\037%s\037%s\037%s\n", id, user, protect, rw, bind; id = user = protect = rw = bind = "" }
+        /^$/ { flush(); next }
+        { k = $0; sub(/=.*/, "", k); v = substr($0, length(k) + 2) }
+        k == "Id" { id = v } k == "User" { user = v } k == "ProtectSystem" { protect = v }
+        k == "ReadWritePaths" { rw = v } k == "BindPaths" { bind = v }
+        END { flush() }' <<<"$shown")
     [[ -z "$out" ]] || { printf '%s' "$out"; return 1; }
 }
 
@@ -1043,100 +1067,153 @@ update_tree_foreign_owner() {
 }
 
 UPDATE_OWNER_PY='
-import os, stat, sys
-mode, tree, snap = sys.argv[1], sys.argv[2], sys.argv[3]
-top = os.lstat(tree)
-def root_owned():
-    found = []
-    if top.st_uid == 0:
-        found.append(tree)
-    for root, dirs, files in os.walk(tree):
-        keep = []
-        for name in dirs + files:
-            path = os.path.join(root, name)
+import errno, os, stat, sys
+mode, tree = sys.argv[1], os.path.realpath(sys.argv[2])
+O_PATH = getattr(os, "O_PATH", 0)
+if O_PATH:
+    import ctypes
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.fchownat.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_uint, ctypes.c_uint, ctypes.c_int]
+AT_EMPTY_PATH = 0x1000
+DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK
+class Entry:
+    def __init__(self, path, name, dfd, fd, st, opath):
+        self.path, self.name, self.dfd, self.fd, self.st, self.opath = path, name, dfd, fd, st, opath
+    def chown(self, uid, gid):
+        if self.fd is None:
+            os.chown(self.name, uid, gid, dir_fd=self.dfd, follow_symlinks=False)
+        elif self.opath:
+            if libc.fchownat(self.fd, b"", uid, gid, AT_EMPTY_PATH) != 0:
+                e = ctypes.get_errno()
+                raise OSError(e, os.strerror(e), self.path)
+        else:
+            os.fchown(self.fd, uid, gid)
+    def stat(self):
+        if self.fd is None:
+            return os.stat(self.name, dir_fd=self.dfd, follow_symlinks=False)
+        return os.fstat(self.fd)
+def pin(name, dfd):
+    try:
+        if O_PATH:
+            return os.open(name, O_PATH | os.O_NOFOLLOW, dir_fd=dfd)
+        st = os.stat(name, dir_fd=dfd, follow_symlinks=False)
+        if stat.S_ISREG(st.st_mode) or stat.S_ISDIR(st.st_mode) or stat.S_ISFIFO(st.st_mode):
+            return os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_NOCTTY", 0), dir_fd=dfd)
+        return None
+    except OSError as e:
+        if isinstance(e, FileNotFoundError) or e.errno == errno.ELOOP:
+            return False
+        raise
+def walk():
+    top_fd = os.open(tree, DIR_FLAGS)
+    top = os.fstat(top_fd)
+    yield Entry(tree, None, None, top_fd, top, False), top
+    stack = [(tree, top_fd)]
+    try:
+        while stack:
+            path, dfd = stack.pop()
             try:
-                st = os.lstat(path)
-            except OSError:
-                continue
-            if st.st_dev != top.st_dev:
-                continue
-            if st.st_uid == 0:
-                found.append(path)
-            if name in dirs and not os.path.islink(path):
-                keep.append(name)
-        dirs[:] = [d for d in dirs if d in keep]
-    return found
-if mode == "snapshot":
-    with open(snap, "wb") as f:
-        f.write(b"\0".join(os.fsencode(p) for p in root_owned()))
-    sys.exit(0)
+                names = sorted(os.listdir(dfd))
+                for name in names:
+                    fd = pin(name, dfd)
+                    if fd is False:
+                        continue
+                    try:
+                        entry = Entry(os.path.join(path, name), name, dfd, fd, None, bool(O_PATH))
+                        entry.st = entry.stat()
+                        if entry.st.st_dev != top.st_dev:
+                            continue
+                        yield entry, top
+                        if stat.S_ISDIR(entry.st.st_mode):
+                            try:
+                                child = os.open(name, DIR_FLAGS, dir_fd=dfd)
+                            except OSError:
+                                continue
+                            cst = os.fstat(child)
+                            if (cst.st_dev, cst.st_ino) != (entry.st.st_dev, entry.st.st_ino):
+                                os.close(child)
+                                continue
+                            stack.append((entry.path, child))
+                    finally:
+                        if fd is not None:
+                            os.close(fd)
+            finally:
+                if dfd != top_fd:
+                    os.close(dfd)
+    finally:
+        for _, dfd in stack:
+            if dfd != top_fd:
+                os.close(dfd)
+        os.close(top_fd)
 def shared_inode(st):
     return stat.S_ISREG(st.st_mode) and st.st_nlink > 1
-if mode == "give":
+def owner_ids(spec):
     import pwd, grp
-    user, group = sys.argv[3].split(":", 1)
+    user, group = spec.split(":", 1)
     uid = int(user) if user.isdigit() else pwd.getpwnam(user).pw_uid
     gid = int(group) if group.isdigit() else grp.getgrnam(group).gr_gid
+    return uid, gid
+if mode == "snapshot":
+    recs = []
+    for e, _ in walk():
+        if e.st.st_uid == 0:
+            recs.append(b"%d:%d:%s" % (e.st.st_dev, e.st.st_ino, os.fsencode(e.path)))
+    with open(sys.argv[3], "wb") as f:
+        f.write(b"\0".join(recs))
+    sys.exit(0)
+if mode == "give":
+    uid, gid = owner_ids(sys.argv[3])
     gave, linked = 0, []
-    for root, dirs, files in os.walk(tree):
-        for path in [root] + [os.path.join(root, n) for n in files] + [os.path.join(root, n) for n in dirs if os.path.islink(os.path.join(root, n))]:
-            try:
-                st = os.lstat(path)
-            except FileNotFoundError:
-                continue
-            if st.st_dev != top.st_dev:
-                continue
-            if shared_inode(st):
-                linked.append(path)
-                continue
-            os.lchown(path, uid, gid)
-            gave += 1
-        dirs[:] = [d for d in dirs if not os.path.islink(os.path.join(root, d)) and os.lstat(os.path.join(root, d)).st_dev == top.st_dev]
+    for e, _ in walk():
+        if shared_inode(e.st):
+            linked.append(e.path)
+            continue
+        e.chown(uid, gid)
+        gave += 1
     print("GAVE %d" % gave)
     print("LINKED %d %s" % (len(linked), " ".join(linked[:5])))
     sys.exit(0)
-uid, gid = (int(x) for x in sys.argv[4].split(":"))
-with open(snap, "rb") as f:
+uid, gid = owner_ids(sys.argv[4])
+with open(sys.argv[3], "rb") as f:
     raw = f.read()
-before = set(os.fsdecode(p) for p in raw.split(b"\0") if p)
-now = root_owned()
-new = []
-linked = []
-for p in now:
-    if p in before:
+before_paths, before_ids = set(), set()
+for rec in raw.split(b"\0"):
+    if not rec:
         continue
-    try:
-        if shared_inode(os.lstat(p)):
-            linked.append(p)
-            continue
-        os.lchown(p, uid, gid)
-    except FileNotFoundError:
+    dev, ino, p = rec.split(b":", 2)
+    before_ids.add((int(dev), int(ino)))
+    before_paths.add(os.fsdecode(p))
+new, old, linked, left = [], [], [], []
+for e, _ in walk():
+    if e.st.st_uid != 0:
         continue
-    new.append(p)
-left = []
-for p in new:
-    try:
-        if os.lstat(p).st_uid == 0:
-            left.append(p)
-    except FileNotFoundError:
-        pass
+    if e.path in before_paths or (e.st.st_dev, e.st.st_ino) in before_ids:
+        old.append(e.path)
+        continue
+    if shared_inode(e.st):
+        linked.append(e.path)
+        continue
+    e.chown(uid, gid)
+    if e.stat().st_uid == 0:
+        left.append(e.path)
+    else:
+        new.append(e.path)
 if left:
     print("FAILED %d %s" % (len(left), left[0]))
     sys.exit(1)
-old = [p for p in now if p in before]
 print("GAVE %d" % len(new))
 print("KEPT %d %s" % (len(old), " ".join(old[:5])))
 print("LINKED %d %s" % (len(linked), " ".join(linked[:5])))
 '
 
 update_owner_snapshot() {
-    python3 -c "$UPDATE_OWNER_PY" snapshot "$1" "$2"
+    python3 -I -c "$UPDATE_OWNER_PY" snapshot "$1" "$2"
 }
 
 update_restore_tree_owner() {
     local tree="$1" owner="$2" snap="$3" out rc=0 line gave=0 kept=0 examples="" linked=0 linked_examples=""
     [[ -n "$tree" && -n "$owner" && -n "$snap" && -f "$snap" ]] || return 0
-    out=$(python3 -c "$UPDATE_OWNER_PY" restore "$tree" "$snap" "$owner") || rc=$?
+    out=$(python3 -I -c "$UPDATE_OWNER_PY" restore "$tree" "$snap" "$owner") || rc=$?
     while IFS= read -r line; do
         case "$line" in
             GAVE\ *) gave="${line#GAVE }" ;;
@@ -1161,7 +1238,7 @@ update_restore_tree_owner() {
 
 update_give_tree() {
     local dir="$1" owner="$2" out line gave=0 linked=0 linked_examples=""
-    out=$(python3 -c "$UPDATE_OWNER_PY" give "$dir" "$owner") || return 1
+    out=$(python3 -I -c "$UPDATE_OWNER_PY" give "$dir" "$owner") || return 1
     while IFS= read -r line; do
         case "$line" in
             GAVE\ *) gave="${line#GAVE }" ;;
@@ -1172,6 +1249,24 @@ update_give_tree() {
         echo "[ownership] warning: $linked file(s) under $dir share their data with another path (a hard link) and keep their owner (for example${linked_examples})" >&2
     fi
     return 0
+}
+
+update_probe_as_owner() {
+    local tree="$1" owner="$2" binary="$3" config="$4" p
+    local -a rw=() args=()
+    if ! command -v systemd-run >/dev/null 2>&1; then
+        echo "[update] systemd-run is not installed, so the probe cannot run as the owner of $tree under the unit sandbox" >&2
+        return 1
+    fi
+    for p in "$tree/scheduler" "$tree/logs"; do
+        [[ -d "$p" ]] && rw+=("$p")
+    done
+    args=(--wait --pipe --collect --quiet --unit "go-trader-update-probe-$$-$RANDOM"
+        "--uid=${owner%%:*}" "--gid=${owner#*:}"
+        -p "WorkingDirectory=$tree" -p ProtectSystem=strict -p PrivateTmp=true -p NoNewPrivileges=true
+        -E PYTHONDONTWRITEBYTECODE=1)
+    [[ ${#rw[@]} -gt 0 ]] && args+=(-p "ReadWritePaths=${rw[*]}")
+    systemd-run "${args[@]}" -- /bin/sh -c 'd=$(mktemp -d) && cp -- "$2" "$d/config.json" && exec "$1" probe --config "$d/config.json"' sh "$binary" "$config" </dev/null
 }
 
 update_owner_runs_venv() {

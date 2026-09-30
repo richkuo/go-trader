@@ -1572,6 +1572,30 @@ if [[ "$give_out" != *"1 file(s) under $give_dir/tree share their data"* || "$gi
 fi
 rm -rf "$give_dir"
 
+if [[ "$EUID" == "0" ]]; then
+    rs=$(mktemp -d)
+    mkdir -p "$rs/tree/scheduler" "$rs/outside"
+    echo secret >"$rs/tree/scheduler/secret"
+    chmod 0600 "$rs/tree/scheduler/secret"
+    echo outside >"$rs/outside/file"
+    chown -R 65534:65534 "$rs/tree"
+    chown root:root "$rs/tree/scheduler/secret"
+    update_owner_snapshot "$rs/tree" "$rs/snap"
+    mv "$rs/tree/scheduler/secret" "$rs/tree/scheduler/renamed"
+    echo new >"$rs/tree/scheduler/new.txt"
+    ln -s "$rs/outside" "$rs/tree/scheduler/link"
+    rs_out=$(update_restore_tree_owner "$rs/tree" 65534:65534 "$rs/snap" 2>&1)
+    assert_eq "$(stat -c '%u' "$rs/tree/scheduler/new.txt")" "65534" "a file the update wrote is given back"
+    assert_eq "$(stat -c '%u' "$rs/tree/scheduler/renamed")" "0" "a root-owned file from before the update stays root-owned after a rename"
+    assert_eq "$(stat -c '%u' "$rs/outside/file")" "0" "the give-back does not follow a symlink out of the tree"
+    assert_eq "$(stat -c '%u' "$rs/tree/scheduler/link")" "65534" "the symlink itself is given back"
+    if [[ "$rs_out" != *"renamed"* ]]; then
+        echo "FAIL: the kept root-owned file was not named: $rs_out" >&2
+        exit 1
+    fi
+    rm -rf "$rs"
+fi
+
 assert_eq "$(update_write_path_issue /opt/t /opt/t/scheduler)" "" "the scheduler directory is an allowed write path"
 assert_eq "$(update_write_path_issue /opt/t /opt/t/logs/x)" "" "a path under logs is an allowed write path"
 assert_eq "$(update_write_path_issue /opt/t /var/lib/go-trader/t)" "" "a path outside the tree is allowed"
@@ -1588,20 +1612,35 @@ assert_eq "$(update_unit_confinement_issues "$conf_tree" strict "" "$conf_tree/s
 mkdir -p "$conf_dir/bin"
 cat >"$conf_dir/bin/systemctl" <<STUB
 #!/bin/bash
+block() {
+    case "\$1" in
+        loose.service) printf 'Id=loose.service\nUser=$(id -un)\nProtectSystem=no\nReadWritePaths=\nBindPaths=\n' ;;
+        safe.service) printf 'Id=safe.service\nUser=$(id -un)\nProtectSystem=strict\nReadWritePaths=$conf_tree/scheduler $conf_tree/logs\nBindPaths=\n' ;;
+        unloaded.service) printf 'Id=unloaded.service\nUser=$(id -un)\nProtectSystem=strict\nReadWritePaths=$conf_tree\nBindPaths=\n' ;;
+        tmpl@$UPDATE_CONFINEMENT_INSTANCE.service) printf 'Id=tmpl@$UPDATE_CONFINEMENT_INSTANCE.service\nUser=$(id -u)\nProtectSystem=full\nReadWritePaths=\nBindPaths=\n' ;;
+        *) printf 'Id=%s\nUser=\nProtectSystem=no\nReadWritePaths=\nBindPaths=\n' "\$1" ;;
+    esac
+}
 case "\$1" in
     list-units) printf 'loose.service loaded inactive dead x\nsafe.service loaded active running x\nrootunit.service loaded active running x\n' ;;
+    list-unit-files) printf 'loose.service disabled enabled\nunloaded.service disabled enabled\ntmpl@.service static -\nrootunit.service enabled enabled\n' ;;
     show)
-        case "\$2" in
-            loose.service) printf 'User=$(id -un)\nProtectSystem=no\nReadWritePaths=\nBindPaths=\n' ;;
-            safe.service) printf 'User=$(id -un)\nProtectSystem=strict\nReadWritePaths=$conf_tree/scheduler $conf_tree/logs\nBindPaths=\n' ;;
-            *) printf 'User=\nProtectSystem=no\nReadWritePaths=\nBindPaths=\n' ;;
-        esac ;;
+        shift
+        first=1
+        for u in "\$@"; do
+            case "\$u" in -p|--) continue ;; Id|User|ProtectSystem|ReadWritePaths|BindPaths) continue ;; esac
+            [[ \$first == 1 ]] || printf '\n'
+            first=0
+            block "\$u"
+        done ;;
 esac
 STUB
 chmod 0755 "$conf_dir/bin/systemctl"
 conf_out=$(PATH="$conf_dir/bin:$PATH" update_foreign_tree_confinement "$conf_tree" "$(id -u)") && conf_rc=0 || conf_rc=$?
 assert_eq "$conf_rc" "1" "an unconfined unit of the tree owner fails the confinement check"
-assert_eq "$conf_out" "  loose.service (User=$(id -un)): ProtectSystem=no, not strict" "only the unconfined unit of the owner is listed"
+assert_eq "$conf_out" "  loose.service (User=$(id -un)): ProtectSystem=no, not strict
+  tmpl@.service (User=$(id -u)): ProtectSystem=full, not strict
+  unloaded.service (User=$(id -un)): ReadWritePaths can write $conf_tree, which holds the whole tree" "unconfined units of the owner are listed, including unit files systemd has not loaded and templates"
 conf_out=$(PATH="$conf_dir/bin:$PATH" update_foreign_tree_confinement "$conf_tree" 99999) && conf_rc=0 || conf_rc=$?
 assert_eq "$conf_rc:$conf_out" "0:" "units of other accounts do not count"
 rm -rf "$conf_dir"
