@@ -1150,13 +1150,14 @@ guard_set() {
     trap 'guard_signal INT' INT
     trap 'guard_signal TERM' TERM
     trap 'guard_signal HUP' HUP
+    trap 'guard_signal PIPE' PIPE
     trap 'guard_exit' EXIT
 }
 
 guard_clear() {
     GUARD_KIND=""
     GUARD_UNIT=""
-    trap - INT TERM HUP EXIT
+    trap - INT TERM HUP PIPE EXIT
 }
 
 undo_begin() {
