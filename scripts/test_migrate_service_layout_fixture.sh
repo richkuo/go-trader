@@ -1031,6 +1031,20 @@ PY
     [[ "$(safe_dirs)" == "$safe_before" ]] || fail "the update changed a safe.directory setting"
     [[ -z "$(root_git "$tree" config --local --get-all safe.directory || true)" ]] || fail "the update wrote safe.directory into $tree"
 
+    note "a root-owned staged source that is not a git checkout: root never builds the deployment's scheduler/"
+    local stage="/opt/go-trader-fx$ID-stage"
+    CREATED_DIRS+=("$stage")
+    mkdir -p "$stage"
+    rsync -a --exclude=.git --exclude='trading_bot.db*' "$tree"/ "$stage"/
+    chown -R root:root "$stage"
+    runuser -u go-trader -- sh -c "printf 'package main\n\nimport \"os\"\n\nfunc init() { _ = os.WriteFile(\"%s\", nil, 0o644) }\n' '$WORK/planted-stage' >'$tree/scheduler/trading_bot.db_zz.go'"
+    expect_exit 0 run_update "$tree" GO_TRADER_SERVICE="$tunit" bash scripts/update.sh --rsync-from "$stage"
+    grep -q "never the deployment's scheduler/" "$WORK/last.out" || fail "the staged build did not build from the source"
+    "$tree/go-trader" version >/dev/null 2>&1 || fail "the staged build produced no runnable binary"
+    [[ ! -e "$WORK/planted-stage" ]] || fail "root built and ran a Go file the service wrote into the deployment's scheduler/"
+    rm -f "$tree/scheduler/trading_bot.db_zz.go"
+    [[ -z "$(root_owned "$tree")" ]] || { root_owned "$tree" >&2; fail "root-owned files in $tree after the staged build"; }
+
     note "feed bootstrap: clone the consumer origin, build from the go-trader tree"
     feed="/opt/go-trader-fx$ID-feed"
     CREATED_DIRS+=("$feed")

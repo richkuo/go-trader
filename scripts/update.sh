@@ -922,15 +922,9 @@ if [[ -n "$build_export_tree" ]]; then
     update_build_go_export "$build_export_tree" "$build_export_commit" "$go_bin" "$ver" "$repo_root/go-trader.new" \
         || fail "go build of the exported sources failed"
 else
-    declare -a build_git_env=()
-    while IFS= read -r build_env_line; do
-        [[ -n "$build_env_line" ]] && build_git_env+=("$build_env_line")
-    done <<<"$(update_git_env_for "$repo_root")"
-    if [[ ${#build_git_env[@]} -gt 0 ]]; then
-        /usr/bin/env "${build_git_env[@]}" "$go_bin" -C scheduler build -ldflags "-X main.Version=$ver" -o ../go-trader.new .
-    else
-        "$go_bin" -C scheduler build -ldflags "-X main.Version=$ver" -o ../go-trader.new .
-    fi
+    echo "[update] build: Go sources of the root-owned --rsync-from source $rsync_from/scheduler (never the deployment's scheduler/, which its service can write)"
+    GOWORK=off GOFLAGS=-mod=readonly "$go_bin" -C "$rsync_from/scheduler" build -buildvcs=false -ldflags "-X main.Version=$ver" -o "$repo_root/go-trader.new" . \
+        || fail "go build of $rsync_from/scheduler failed"
 fi
 if [[ ! -s ./go-trader.new ]]; then
     fail "go build produced empty go-trader.new"
