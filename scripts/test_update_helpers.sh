@@ -1423,4 +1423,133 @@ JSON
 )" "drift audit is read-only"
 rm -rf "$drift"
 
+assert_eq "$(update_git_trust_decision 0 1001 0)" "trust" "root trusts a tree whose top another account owns"
+assert_eq "$(update_git_trust_decision 0 0 1001)" "trust" "root trusts a tree whose .git another account owns"
+assert_eq "$(update_git_trust_decision 0 0 0)" "" "root does not add trust for its own tree"
+assert_eq "$(update_git_trust_decision 1001 0 1002)" "" "a non-root caller never adds trust"
+trust_env=$(GIT_CONFIG_COUNT='' update_git_trust_env /opt/go-trader-paper 0 1001 1001)
+assert_eq "$trust_env" "$(printf '%s\n' GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0=/opt/go-trader-paper GIT_CONFIG_KEY_1=core.fsmonitor GIT_CONFIG_VALUE_1=false GIT_CONFIG_KEY_2=core.hooksPath GIT_CONFIG_VALUE_2=/dev/null GIT_CONFIG_COUNT=3)" \
+    "trust names only the exact tree, never *"
+assert_eq "$(GIT_CONFIG_COUNT=2 update_git_trust_env /t 0 5 5 | tail -n 1)" "GIT_CONFIG_COUNT=5" "trust appends after existing GIT_CONFIG entries"
+assert_eq "$(update_git_trust_env /t 0 0 0)" "" "no trust env for a root-owned tree"
+
+if command -v git >/dev/null 2>&1; then
+    gt=$(mktemp -d)
+    gt=$(cd "$gt" && pwd -P)
+    gtenv=(GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.com)
+    env "${gtenv[@]}" git init -q "$gt/origin.git" --bare
+    env "${gtenv[@]}" git init -q "$gt/tree"
+    mkdir -p "$gt/tree/scheduler"
+    echo one >"$gt/tree/scheduler/f.txt"
+    env "${gtenv[@]}" git -C "$gt/tree" add -A
+    env "${gtenv[@]}" git -C "$gt/tree" commit -qm one
+    env "${gtenv[@]}" git -C "$gt/tree" remote add origin "$gt/origin.git"
+    assert_eq "$(update_git_top "$gt/tree/scheduler")" "$gt/tree" "update_git_top walks up to the checkout"
+    if update_git_top "$gt" >/dev/null; then
+        echo "FAIL: update_git_top found a checkout above a plain directory" >&2
+        exit 1
+    fi
+
+    dubious=$(env "${gtenv[@]}" GIT_TEST_ASSUME_DIFFERENT_OWNER=1 git -C "$gt/tree" rev-parse HEAD 2>&1) && dubious_rc=0 || dubious_rc=$?
+    if [[ "$dubious_rc" == 0 || "$dubious" != *"dubious ownership"* ]]; then
+        echo "note: this git does not simulate another owner; the trust and refusal cases are skipped ($dubious)"
+    else
+        trusted=()
+        while IFS= read -r line; do
+            [[ -n "$line" ]] && trusted+=("$line")
+        done <<<"$(update_git_trust_env "$gt/tree" 0 1001 1001)"
+        trusted_head=$(env "${gtenv[@]}" "${trusted[@]}" GIT_TEST_ASSUME_DIFFERENT_OWNER=1 git -C "$gt/tree/scheduler" rev-parse HEAD 2>&1) \
+            || { echo "FAIL: git refused the tree with the per-command trust: $trusted_head" >&2; exit 1; }
+        assert_eq "$trusted_head" "$(env "${gtenv[@]}" git -C "$gt/tree" rev-parse HEAD)" "per-command trust reads the tree another account owns"
+        other_env=()
+        while IFS= read -r line; do
+            [[ -n "$line" ]] && other_env+=("$line")
+        done <<<"$(update_git_trust_env "$gt/other" 0 1001 1001)"
+        if env "${gtenv[@]}" "${other_env[@]}" GIT_TEST_ASSUME_DIFFERENT_OWNER=1 git -C "$gt/tree" rev-parse HEAD >/dev/null 2>&1; then
+            echo "FAIL: trust for another path let git read this tree" >&2
+            exit 1
+        fi
+
+        origin_err=$(env "${gtenv[@]}" GIT_TEST_ASSUME_DIFFERENT_OWNER=1 bash -c 'source "$1"; update_git "$2" remote get-url origin' _ "$SCRIPT_DIR/update_helpers.sh" "$gt/tree" 2>&1) && origin_rc=0 || origin_rc=$?
+        if [[ "$origin_rc" == 0 ]]; then
+            echo "FAIL: update_git hid a git refusal" >&2
+            exit 1
+        fi
+        owner_name=$(update_path_owner_name "$gt/tree")
+        for want in "git refused $gt/tree" "owned by $owner_name" "dubious ownership"; do
+            if [[ "$origin_err" != *"$want"* ]]; then
+                echo "FAIL: the refusal note lacks '$want': $origin_err" >&2
+                exit 1
+            fi
+        done
+        if [[ "$origin_err" == *"no git origin"* ]]; then
+            echo "FAIL: a refusal was reported as a missing origin: $origin_err" >&2
+            exit 1
+        fi
+    fi
+
+    assert_eq "$(env "${gtenv[@]}" bash -c 'source "$1"; update_git "$2" remote get-url origin' _ "$SCRIPT_DIR/update_helpers.sh" "$gt/tree/scheduler")" \
+        "$gt/origin.git" "update_git passes stdout through"
+    env "${gtenv[@]}" git -C "$gt/tree" remote remove origin
+    missing_err=$(env "${gtenv[@]}" bash -c 'source "$1"; update_git "$2" remote get-url origin' _ "$SCRIPT_DIR/update_helpers.sh" "$gt/tree" 2>&1) && missing_rc=0 || missing_rc=$?
+    if [[ "$missing_rc" == 0 || "$missing_err" != *"git remote failed in $gt/tree"* || "$missing_err" != *"tree owner"* || "$missing_err" != *"origin"* ]]; then
+        echo "FAIL: a missing remote must name the tree, the owner and the git error: $missing_err" >&2
+        exit 1
+    fi
+    diff_rc=0
+    echo two >"$gt/tree/scheduler/f.txt"
+    diff_err=$(env "${gtenv[@]}" bash -c 'source "$1"; update_git "$2" diff --quiet' _ "$SCRIPT_DIR/update_helpers.sh" "$gt/tree" 2>&1) || diff_rc=$?
+    assert_eq "$diff_rc" "1" "git diff --quiet keeps its exit status through update_git"
+    assert_eq "$diff_err" "" "a quiet diff prints no failure note"
+
+    base=$(env "${gtenv[@]}" git -C "$gt/tree" describe --tags --always)
+    assert_eq "$(env "${gtenv[@]}" bash -c 'source "$1"; update_git_version "$2"' _ "$SCRIPT_DIR/update_helpers.sh" "$gt/tree")" "${base}-mod" "a tracked change stamps -mod"
+    env "${gtenv[@]}" git -C "$gt/tree" checkout -q -- scheduler/f.txt
+    echo new >"$gt/tree/untracked.txt"
+    assert_eq "$(env "${gtenv[@]}" bash -c 'source "$1"; update_git_version "$2"' _ "$SCRIPT_DIR/update_helpers.sh" "$gt/tree")" "$base" "an untracked file does not stamp -mod"
+    assert_eq "$base" "$(env "${gtenv[@]}" git -C "$gt/tree" describe --tags --always --dirty=-mod)" "update_git_version matches describe --dirty=-mod"
+    rm -rf "$gt"
+else
+    echo "note: git not installed; update_git cases skipped"
+fi
+
+tools_dir=$(mktemp -d)
+mkdir -p "$tools_dir/bin"
+printf '#!/bin/sh\necho stub\n' >"$tools_dir/bin/uv"
+chmod 0755 "$tools_dir/bin/uv"
+assert_eq "$(PATH="$tools_dir/bin:/usr/bin:/bin" update_resolve_tool uv)" "$tools_dir/bin/uv" "uv resolves from PATH first"
+assert_eq "$(update_tool_fixed_text uv)" "/usr/local/bin/uv, /usr/bin/uv, /opt/homebrew/bin/uv" "uv fixed paths never include a home directory"
+assert_eq "$(update_tool_fixed_text go)" "/opt/homebrew/bin/go, /usr/local/go/bin/go" "go fixed paths are unchanged"
+for fixed in /usr/local/bin/uv /usr/bin/uv /opt/homebrew/bin/uv; do
+    if [[ -x "$fixed" ]]; then
+        echo "note: $fixed exists; the uv-missing case is skipped"
+        fixed=""
+        break
+    fi
+done
+if [[ -n "${fixed:-}" ]]; then
+    if PATH="/usr/bin:/bin" update_resolve_tool uv >/dev/null; then
+        echo "FAIL: uv resolved with no uv on PATH or at a fixed path" >&2
+        exit 1
+    fi
+    tools_out=$(PATH="/usr/bin:/bin" update_build_tools_preflight "$(update_current_account)") && tools_rc=0 || tools_rc=$?
+    assert_eq "$tools_rc" "1" "the tools preflight fails without uv"
+    if [[ "$tools_out" != *"finds no uv"* || "$tools_out" != *"UV_INSTALL_DIR=/usr/local/bin"* ]]; then
+        echo "FAIL: the tools preflight did not name the missing uv and the fix: $tools_out" >&2
+        exit 1
+    fi
+fi
+tools_out=$(PATH="$tools_dir/bin:$PATH" update_build_tools_preflight "$(update_current_account)" 2>&1) && tools_rc=0 || tools_rc=$?
+if [[ "$tools_out" != *"uv: $(update_current_account) runs $tools_dir/bin/uv"* ]]; then
+    echo "FAIL: the tools preflight did not report the uv it runs: $tools_out" >&2
+    exit 1
+fi
+rm -rf "$tools_dir"
+
+if [[ "$EUID" != "0" ]]; then
+    own=$(mktemp -d)
+    assert_eq "$(update_tree_foreign_owner "$own")" "" "a non-root caller never restores ownership"
+    rm -rf "$own"
+fi
+
 echo "OK: update_helpers tests passed"

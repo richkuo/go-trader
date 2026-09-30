@@ -73,6 +73,7 @@ Guardrails only; mechanism/flows in SKILL.md, docs/POST_UPDATE_HISTORY.md. Ceili
 - **Update only with `bash scripts/update.sh --restart`. Never rebuild Go alone**: Go+Python share 1 argv contract per SHA; `update_resolve_db_exclude` lists all state files (incl. `paper_sources[].db_file`).
 - Exit codes: probe 78, singleton 79, storage 80, units `RestartPreventExitStatus=78 79 80`. Ownership over ALL files (incl. `--once`) precedes migration/startup write; unit edits: `daemon-reload`.
 - Post-update: SKILL.md Post-Update Agent Protocol; after Python-launcher change smoke `./go-trader --once` (daemon off).
+- Scripts: git ONLY via `update_git` (root: exact-tree trust per call, never `safe.directory` config); root writes in a foreign-owned tree chowned back; uv/go via `update_resolve_tool`.
 
 ## Backtest
 - Harness map `docs/backtesting-registry.md`: adding/deprecating PR updates its row.

@@ -30,6 +30,9 @@ tree_mutated=0
 unit_sync_source_path=""
 unit_sync_installed_path=""
 unit_sync_backup_path=""
+tree_owner=""
+tree_owner_snapshot=""
+uv_bin=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -389,8 +392,12 @@ run_rsync_from() {
     if [[ "$signal_log_excl" != "./go-trader-signal.log" && "$signal_log_excl" != "go-trader-signal.log" ]]; then
         rsync_excludes+=(--exclude="$signal_log_excl")
     fi
+    local -a rsync_owner=()
+    if [[ "$EUID" == "0" ]]; then
+        rsync_owner=(--no-owner --no-group)
+    fi
     echo "[update] rsync: $src/ -> $dest/ (excludes deployment .git, secrets, state DB, venv, binaries, signal log)"
-    rsync -a --delete "${rsync_excludes[@]}" "$src/" "$dest/"
+    rsync -a ${rsync_owner[@]+"${rsync_owner[@]}"} --delete "${rsync_excludes[@]}" "$src/" "$dest/"
 }
 
 warn_execstart_vs_swap() {
@@ -471,8 +478,8 @@ do_rollback() {
 
     if [[ "$tree_mutated" == "1" && -n "$pre_pull_sha" ]]; then
         echo "[update] rollback: reverting git tree to $pre_pull_sha" >&2
-        if git reset --hard "$pre_pull_sha" >&2; then
-            if ! uv sync >&2; then
+        if update_git "$repo_root" reset --hard "$pre_pull_sha" >&2; then
+            if ! "$uv_bin" sync >&2; then
                 echo "[update] rollback: uv sync FAILED — Python tree may be inconsistent with .prev binary" >&2
             fi
         else
@@ -523,6 +530,15 @@ do_rollback() {
     echo "[update] rollback: previous binary did not reach active within ${active_timeout}s" >&2
 }
 
+restore_tree_owner_on_exit() {
+    local rc=$?
+    if ! update_restore_tree_owner "$repo_root" "$tree_owner" "$tree_owner_snapshot"; then
+        echo "[update] WARNING: files this update wrote under $repo_root may still be owned by root; check with: find $repo_root -xdev -user root" >&2
+    fi
+    rm -f "$tree_owner_snapshot"
+    exit "$rc"
+}
+
 verify_cur_restart_pid() {
     if restart_uses_signal_pid; then
         signal_read_pidfile "$go_trader_pidfile" || true
@@ -540,7 +556,7 @@ verify_cur_restart_pid() {
 
 begin_phase preflight
 
-repo_root=$(git rev-parse --show-toplevel)
+repo_root=$(update_git "$PWD" rev-parse --show-toplevel) || fail "$PWD is not inside a git checkout that git can read (see the git error above)"
 cd "$repo_root"
 
 if [[ "$update_all" == "1" ]]; then
@@ -681,20 +697,22 @@ if [[ "$update_all" == "1" ]]; then
     exit 0
 fi
 
-if ! command -v uv >/dev/null 2>&1; then
-    fail "uv not on PATH — install uv first (see SKILL.md → Prerequisites)"
+tree_owner=$(update_tree_foreign_owner "$repo_root")
+if [[ -n "$tree_owner" ]]; then
+    echo "[update] $repo_root belongs to $(update_path_owner_name "$repo_root"); git trusts only this tree for each command, and files this update writes are given back to that owner"
+    tree_owner_snapshot=$(mktemp "${TMPDIR:-/tmp}/go-trader-owner.XXXXXX") || fail "could not create a temporary file for the ownership list"
+    if ! update_owner_snapshot "$repo_root" "$tree_owner_snapshot"; then
+        rm -f "$tree_owner_snapshot"
+        fail "could not list the root-owned paths under $repo_root before the update; nothing changed"
+    fi
+    trap restore_tree_owner_on_exit EXIT
 fi
 
-go_bin=""
-if command -v go >/dev/null 2>&1; then
-    go_bin=$(command -v go)
-elif [[ -x /opt/homebrew/bin/go ]]; then
-    go_bin=/opt/homebrew/bin/go
-elif [[ -x /usr/local/go/bin/go ]]; then
-    go_bin=/usr/local/go/bin/go
-else
-    fail "go not on PATH and not found at /opt/homebrew/bin/go or /usr/local/go/bin/go"
-fi
+uv_bin=$(update_resolve_tool uv) \
+    || fail "uv not on PATH and not at $(update_tool_fixed_text uv) — install uv system-wide so every account finds it (SKILL.md → Prerequisites)"
+
+go_bin=$(update_resolve_tool go) \
+    || fail "go not on PATH and not found at $(update_tool_fixed_text go)"
 
 if [[ ! -f scheduler/config.json ]]; then
     cat >&2 <<EOF
@@ -724,7 +742,7 @@ if [[ -n "$rsync_from" ]]; then
     fi
 fi
 
-pre_pull_sha=$(git rev-parse HEAD 2>/dev/null || echo "")
+pre_pull_sha=$(update_git "$repo_root" rev-parse HEAD 2>/dev/null || echo "")
 
 if [[ "$restart" == "1" && "$restart_mode" == "signal" ]]; then
     if systemd_unit_manages_this_instance "$service_unit"; then
@@ -762,18 +780,18 @@ if [[ -z "$rsync_from" ]]; then
         uv.lock
     )
 
-    if ! git diff --quiet -- "${build_paths[@]}" || ! git diff --cached --quiet -- "${build_paths[@]}"; then
-        git status --short -- "${build_paths[@]}" >&2
+    if ! update_git "$repo_root" diff --quiet -- "${build_paths[@]}" || ! update_git "$repo_root" diff --cached --quiet -- "${build_paths[@]}"; then
+        update_git "$repo_root" status --short -- "${build_paths[@]}" >&2
         fail "working tree has uncommitted changes in build-input paths; commit, stash, or revert first"
     fi
-    if ! git diff --quiet || ! git diff --cached --quiet; then
+    if ! update_git "$repo_root" diff --quiet || ! update_git "$repo_root" diff --cached --quiet; then
         echo "[update] warning: uncommitted changes outside build-input paths (will survive git pull):" >&2
-        git status --short >&2
+        update_git "$repo_root" status --short >&2
     fi
 
-    untracked=$(git ls-files --others --exclude-standard \
+    untracked=$(update_git "$repo_root" ls-files --others --exclude-standard \
         scheduler shared_scripts shared_strategies shared_tools platforms backtest 2>/dev/null || true)
-    untracked_root=$(git ls-files --others --exclude-standard 2>/dev/null | grep -v '/' || true)
+    untracked_root=$(update_git "$repo_root" ls-files --others --exclude-standard 2>/dev/null | grep -v '/' || true)
     if [[ -n "$untracked" || -n "$untracked_root" ]]; then
         echo "[update] warning: untracked files (will not affect the build):" >&2
         [[ -n "$untracked" ]] && echo "$untracked" >&2
@@ -818,8 +836,8 @@ if [[ -n "$rsync_from" ]]; then
     end_phase
 else
     begin_phase pull
-    git pull --ff-only
-    post_pull_sha=$(git rev-parse HEAD 2>/dev/null || echo "")
+    update_git "$repo_root" pull --ff-only || fail "git pull --ff-only failed in $repo_root (see the git error above)"
+    post_pull_sha=$(update_git "$repo_root" rev-parse HEAD 2>/dev/null || echo "")
     if [[ -n "$pre_pull_sha" && -n "$post_pull_sha" && "$pre_pull_sha" != "$post_pull_sha" ]]; then
         tree_mutated=1
     fi
@@ -827,17 +845,35 @@ else
 fi
 
 begin_phase sync
-uv sync
+"$uv_bin" sync
+if [[ -n "$tree_owner" ]] && ! update_owner_runs_venv "$repo_root"; then
+    fail "after uv sync, $(update_path_owner_name "$repo_root") cannot run $repo_root/.venv/bin/python3 ($(readlink -f .venv/bin/python3 2>/dev/null || echo unresolved)); the service runs as that account. Install a Python every account can read, then rebuild the venv"
+fi
 end_phase
 
 begin_phase build
 if [[ -n "$rsync_from" ]]; then
-    ver=$(git -C "$rsync_from" describe --tags --always --dirty=-mod 2>/dev/null || echo dev)
+    if update_git_top "$rsync_from" >/dev/null; then
+        ver=$(update_git_version "$rsync_from") \
+            || fail "could not read the version of the --rsync-from source $rsync_from, a git checkout (see the git error above); refusing to stamp the build as dev"
+    else
+        ver=dev
+        echo "[update] --rsync-from source $rsync_from is not a git checkout; the build is stamped dev"
+    fi
 else
-    ver=$(git describe --tags --always --dirty=-mod 2>/dev/null || echo dev)
+    ver=$(update_git_version "$repo_root") \
+        || fail "could not read the version of $repo_root (see the git error above); refusing to stamp the build as dev"
 fi
 rm -f ./go-trader.new
-"$go_bin" -C scheduler build -ldflags "-X main.Version=$ver" -o ../go-trader.new .
+declare -a build_git_env=()
+while IFS= read -r build_env_line; do
+    [[ -n "$build_env_line" ]] && build_git_env+=("$build_env_line")
+done <<<"$(update_git_env_for "$repo_root")"
+if [[ ${#build_git_env[@]} -gt 0 ]]; then
+    /usr/bin/env "${build_git_env[@]}" "$go_bin" -C scheduler build -ldflags "-X main.Version=$ver" -o ../go-trader.new .
+else
+    "$go_bin" -C scheduler build -ldflags "-X main.Version=$ver" -o ../go-trader.new .
+fi
 if [[ ! -s ./go-trader.new ]]; then
     fail "go build produced empty go-trader.new"
 fi
@@ -853,6 +889,15 @@ if ! ./go-trader.new probe; then
     fail "go-trader.new probe rejected the freshly synced Python — refusing to swap"
 fi
 end_phase
+
+if [[ -n "$tree_owner" ]]; then
+    begin_phase ownership
+    if ! update_restore_tree_owner "$repo_root" "$tree_owner" "$tree_owner_snapshot"; then
+        rm -f ./go-trader.new
+        fail "could not give the root-written files under $repo_root back to $(update_path_owner_name "$repo_root"); the binary and the running service are unchanged"
+    fi
+    end_phase
+fi
 
 if [[ "$restart" == "1" && "$restart_mode" == "systemd" && -n "$unit_sync_source_path" && -n "$unit_sync_installed_path" ]]; then
     begin_phase journal

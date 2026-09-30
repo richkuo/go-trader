@@ -471,6 +471,30 @@ check_selection() {
     done
 }
 
+check_build_tools() {
+    local out rc=0 me who
+    me=$(update_current_account)
+    local -a accounts=("$me")
+    who="$me"
+    if [[ "$FEED_USER" != "$me" ]]; then
+        accounts+=("$FEED_USER")
+        who="$me and $FEED_USER"
+    fi
+    out=$(update_build_tools_preflight "${accounts[@]}") || rc=$?
+    printf '%s\n' "$out" | sed 's/^/[shared-feed]   /'
+    [[ $rc -eq 0 ]] || die 19 "uv and Go must run as $who: the feed build runs update.sh as $me, and the feed trees belong to $FEED_USER, whose own updates use them too. Apply the fix above, then re-run. Nothing changed"
+}
+
+consumer_origin() {
+    local wd="$1" origin
+    origin=$(update_git "$wd" remote get-url origin) || return 1
+    if [[ -z "$origin" ]]; then
+        warn "$wd: git remote origin is set to an empty URL"
+        return 1
+    fi
+    printf '%s' "$origin"
+}
+
 pick_ports() {
     local name port used rec
     for name in "${FEEDS[@]}"; do
@@ -536,11 +560,15 @@ cmd_plan() {
     print_inventory
     [[ ${#SELECTED[@]} -gt 0 ]] || { log "name consumers with --consumer <unit> to check a selection and print the target"; return 0; }
     check_selection "${SELECTED[@]}"
+    check_build_tools
     pick_ports
-    local tmp first_wd probe_out rc unit cfg summary papers=0
+    local tmp first_wd probe_out rc unit cfg summary papers=0 origin
+    first_wd=$(unit_prop "${CONSUMERS[0]}" WorkingDirectory)
+    origin=$(consumer_origin "$first_wd") \
+        || die 19 "could not read the git origin of $first_wd (the git error above names the cause); feeds clones it for both feed trees"
+    log "feed trees clone $origin (the origin of $first_wd)"
     tmp=$(mktemp -d)
     build_temp_probe "$tmp"
-    first_wd=$(unit_prop "${CONSUMERS[0]}" WorkingDirectory)
     set +e
     probe_out=$(run_probe "$tmp" "$first_wd/go-trader" backup 2>&1)
     rc=$?
@@ -616,12 +644,13 @@ cmd_feeds() {
     need_root
     need_tools
     check_selection "${SELECTED[@]}"
+    check_build_tools
     pick_ports
     local first_wd first_cfg origin unit cfg shadow name
     first_wd=$(unit_prop "${CONSUMERS[0]}" WorkingDirectory)
     first_cfg=$(unit_config_path "${CONSUMERS[0]}")
-    origin=$(git -C "$first_wd" remote get-url origin 2>/dev/null || true)
-    [[ -n "$origin" ]] || die 20 "$first_wd has no git origin; the feed deployments clone it so update.sh can update them later"
+    origin=$(consumer_origin "$first_wd") \
+        || die 20 "could not read the git origin of $first_wd (the git error above names the cause); the feed deployments clone it so update.sh can update them later. Nothing changed"
     prepare_shadow_dir
     local -a entries=()
     local entry
@@ -639,7 +668,7 @@ cmd_feeds() {
         journal_add "port $name ${!portvar}"
         if [[ ! -d "$dir/.git" ]]; then
             [[ ! -e "$dir" ]] || die 20 "$dir exists but is not a git checkout; remove it or finish it by hand"
-            git clone --quiet "$origin" "$dir"
+            update_git "$(dirname "$dir")" clone --quiet "$origin" "$dir" || die 20 "git clone of $origin into $dir failed (see the git error above)"
         fi
         install -d -m 0755 "$(dirname "$config")"
         per_minute=""

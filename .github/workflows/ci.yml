@@ -102,7 +102,7 @@ jobs:
         run: sudo env GO_TRADER_BIN=/tmp/go-trader bash scripts/test_merge_paper_service_fixture.sh
 
       - name: Service layout migration fixture
-        run: sudo env GO_TRADER_BIN=/tmp/go-trader bash scripts/test_migrate_service_layout_fixture.sh
+        run: sudo env GO_TRADER_BIN=/tmp/go-trader FIXTURE_GO="$(command -v go)" bash scripts/test_migrate_service_layout_fixture.sh
 
   python:
     runs-on: ubuntu-latest

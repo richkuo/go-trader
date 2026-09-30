@@ -36,7 +36,7 @@ Walks asset/strategy/platform/capital/risk/Discord choices and writes `scheduler
 
 ```bash
 git clone https://github.com/richkuo/go-trader.git && cd go-trader
-curl -LsSf https://astral.sh/uv/install.sh | sh    # install uv if needed
+curl -LsSf https://astral.sh/uv/install.sh | sudo env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh    # uv for every account (SKILL.md Prerequisites)
 uv sync                                             # Python deps from lockfile
 
 VER=$(git describe --tags --always --dirty 2>/dev/null || echo dev)

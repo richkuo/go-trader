@@ -544,6 +544,51 @@ def owner_text(owner):
     return "%s:%s" % (u, g)
 
 
+def other_can_exec(path):
+    p = os.path.realpath(path)
+    cur = os.path.dirname(p)
+    while True:
+        try:
+            st = os.stat(cur)
+        except OSError:
+            return False
+        if not (st.st_mode & stat.S_IXOTH):
+            return False
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            break
+        cur = parent
+    try:
+        st = os.stat(p)
+    except OSError:
+        return False
+    return stat.S_ISREG(st.st_mode) and bool(st.st_mode & stat.S_IXOTH)
+
+
+def helpers_call(fn, *args):
+    return run(["bash", "-c", 'source "$0"; fn="$1"; shift; "$fn" "$@"', os.path.join(SCRIPT_DIR, "update_helpers.sh"), fn] + list(args),
+               check=False, timeout=120)
+
+
+def build_tools_problems(user, user_exists):
+    me = pwd.getpwuid(os.geteuid()).pw_name
+    accounts = [me] + ([user] if user_exists and user != me else [])
+    p = helpers_call("update_build_tools_preflight", *accounts)
+    lines = [ln.replace("[tools] ", "", 1) for ln in p.stdout.decode("utf-8", "replace").splitlines() if ln.strip()]
+    problems = [] if p.returncode == 0 else lines
+    if not user_exists:
+        for tool in ("uv", "go"):
+            r = helpers_call("update_resolve_tool_system", tool)
+            path = r.stdout.decode("utf-8", "replace").strip()
+            fixed = helpers_call("update_tool_fixed_text", tool).stdout.decode("utf-8", "replace").strip()
+            fix = helpers_call("update_build_tools_fix", tool).stdout.decode("utf-8", "replace").strip()
+            if r.returncode != 0 or not path:
+                problems.append("%s: the new account %s would find no %s (system PATH, then %s); %s" % (tool, user, tool, fixed, fix))
+            elif not other_can_exec(path):
+                problems.append("%s: other accounts cannot run %s, so the new account %s could not; %s" % (tool, path, user, fix))
+    return problems, lines
+
+
 def as_user_ok(user, argv):
     if user is None:
         return None
@@ -1368,6 +1413,12 @@ def inspect(unit, instance, exec_timeout=None):
         if not ok:
             plan.refuse(EXIT_RUNTIME, "the venv interpreter %s is not usable by %s; install a Python the service account can read and rebuild the venv (uv sync) in the source first" % (interp, t_user))
 
+    tool_problems, tool_lines = build_tools_problems(t_user, tuser is not None)
+    if tool_problems:
+        plan.refuse(EXIT_RUNTIME, "uv and Go must run as root and as %s, because scripts/update.sh builds the new tree with them: %s" % (t_user, "; ".join(tool_problems)))
+    else:
+        plan.note("build tools: " + "; ".join(tool_lines or ["uv and go found for root and %s" % t_user]))
+
     taken = []
     if os.path.lexists(tgt_wd):
         taken.append(tgt_wd + " exists")
@@ -1477,7 +1528,7 @@ def inspect(unit, instance, exec_timeout=None):
     d["tuning_runs_source"] = tuning_src if os.path.isdir(tuning_src) else None
     if d["tuning_runs_source"]:
         plan.change("tuning run history is copied from %s to %s/tuning_runs after the stop; the OHLCV cache starts empty" % (tuning_src, cfg_dir))
-    plan.change("ownership: like the README template install, %s owns the new tree, its .env (0600) and %s; git and scripts/update.sh in the tree then run as that owner, or root marks it safe with git config --system --add safe.directory %s" % (t_user, cfg_dir, tgt_wd))
+    plan.change("ownership: like the README template install, %s owns the new tree, its .env (0600) and %s; scripts/update.sh and scripts/shared-feed-convert.sh run as root trust only %s for each git command and give files they write there back to %s, so no safe.directory setting is needed" % (t_user, cfg_dir, tgt_wd, t_user))
     au = cfg.get("auto_update") or "off"
     if au != "off":
         plan.change("auto_update=%s: the in-process upgrade cannot write the tree under the template sandbox; run scripts/update.sh --restart from a shell instead" % au)

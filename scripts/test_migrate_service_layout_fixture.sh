@@ -13,13 +13,19 @@ for t in systemd-run python3 rsync git runuser flock; do
     command -v "$t" >/dev/null 2>&1 || { echo "SKIP: $t required"; exit 0; }
 done
 PY3=$(command -v python3)
-SCENARIOS="${FIXTURE_SCENARIOS:-refuse plan confirm apply latch conflict resume signal stages kill fold}"
+SCENARIOS="${FIXTURE_SCENARIOS:-refuse plan confirm apply latch conflict resume signal stages kill fold update}"
+HELPERS="$SCRIPT_DIR/update_helpers.sh"
+FIXTURE_GO="${FIXTURE_GO:-$(command -v go || true)}"
 
 ID="fx$(( RANDOM % 9000 + 1000 ))"
 BASE_PORT=$(( 18000 + RANDOM % 800 ))
 WORK=$(mktemp -d)
-declare -a CREATED_UNITS=() CREATED_DIRS=() INSTANCES=()
+declare -a CREATED_UNITS=() CREATED_DIRS=() INSTANCES=() CREATED_FILES=()
 STATE_ROOT=/var/lib/go-trader/service-layout
+FEED_STATE_PRESENT=0
+[[ -e /var/lib/go-trader/shared-feed ]] && FEED_STATE_PRESENT=1
+UV_SHIM=""
+STUBBIN=""
 TEMPLATE_PRESENT=0
 [[ -e /etc/systemd/system/go-trader@.service ]] && TEMPLATE_PRESENT=1
 JOURNALD_PRESENT=0
@@ -62,6 +68,10 @@ cleanup() {
     for d in "${CREATED_DIRS[@]}"; do
         rm -rf "$d"
     done
+    for d in "${CREATED_FILES[@]}"; do
+        rm -rf "$d"
+    done
+    [[ "$FEED_STATE_PRESENT" == "1" ]] || rm -rf /var/lib/go-trader/shared-feed
     rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -785,7 +795,255 @@ scenario_latch() {
     echo "kill switch hold OK"
 }
 
+write_uv_stub() {
+    cat >"$1" <<'UV'
+#!/bin/sh
+case "$1" in
+    --version) echo "uv 0.0.0 (go-trader fixture stub)" ;;
+    sync) mkdir -p .venv/fixture-uv && date >.venv/fixture-uv/stamp ;;
+esac
+exit 0
+UV
+    chmod 0755 "$1"
+}
+
+helper() {
+    bash -c 'source "$0"; fn="$1"; shift; "$fn" "$@"' "$HELPERS" "$@"
+}
+
+ensure_build_tools() {
+    STUBBIN="$WORK/stubbin"
+    mkdir -p "$STUBBIN"
+    write_uv_stub "$STUBBIN/uv"
+    if ! helper update_resolve_tool_system uv >/dev/null 2>&1; then
+        CREATED_FILES+=(/usr/local/bin/uv)
+        write_uv_stub /usr/local/bin/uv
+        UV_SHIM=/usr/local/bin/uv
+    fi
+    if ! helper update_resolve_tool_system go >/dev/null 2>&1; then
+        [[ -n "$FIXTURE_GO" && -x "$FIXTURE_GO" ]] || fail "no Go that other accounts can run: install /usr/local/go or set FIXTURE_GO"
+        local real
+        real=$(readlink -f "$FIXTURE_GO")
+        CREATED_FILES+=(/usr/local/bin/go)
+        ln -s "$real" /usr/local/bin/go
+        if ! runuser -u nobody -- /usr/local/bin/go version >/dev/null 2>&1; then
+            local goroot="/usr/local/lib/go-fixture-$ID"
+            CREATED_FILES+=("$goroot")
+            cp -a "$("$real" env GOROOT)" "$goroot"
+            chmod -R o+rX "$goroot"
+            ln -sfn "$goroot/bin/go" /usr/local/bin/go
+        fi
+    fi
+    runuser -u nobody -- "$(helper update_resolve_tool_system go)" version >/dev/null 2>&1 || fail "Go does not run for other accounts"
+    runuser -u nobody -- "$(helper update_resolve_tool_system uv)" --version >/dev/null 2>&1 || fail "uv does not run for other accounts"
+}
+
+safe_dirs() {
+    { git config --system --get-all safe.directory || true; git config --global --get-all safe.directory || true; } 2>/dev/null
+}
+
+root_git() {
+    local tree="$1"
+    shift
+    git -c safe.directory="$tree" --no-optional-locks -C "$tree" "$@"
+}
+
+tree_version() {
+    local base dirty
+    base=$(root_git "$1" describe --tags --always)
+    dirty=$(root_git "$1" status --porcelain --untracked-files=no)
+    if [[ -n "$dirty" ]]; then
+        printf '%s-mod' "$base"
+    else
+        printf '%s' "$base"
+    fi
+}
+
+root_owned() {
+    find "$1" -xdev -user root -print | head -n 20
+}
+
+advance_origin() {
+    local origin="$1" msg="$2" work="$WORK/advance-$RANDOM"
+    git clone -q --no-hardlinks "$origin" "$work"
+    echo "$msg" >>"$work/fixture-update.txt"
+    git -C "$work" add -A
+    git -C "$work" -c user.email=fixture@example.invalid -c user.name=fixture commit -qm "$msg"
+    git -C "$work" push -q origin HEAD
+    git -C "$work" rev-parse HEAD
+    rm -rf "$work"
+}
+
+run_update() {
+    local dir="$1"
+    shift
+    (cd "$dir" && env PATH="$STUBBIN:$PATH" "$@")
+}
+
+scenario_update() {
+    note "root runs update.sh, the feed build and --all on trees another account owns (#1627)"
+    local port=$((BASE_PORT + 14)) fport=$((BASE_PORT + 15)) rport=$((BASE_PORT + 16))
+    local unit="go-trader-$ID-upd.service" inst="u-$ID" src="/root/gt-$ID-upd"
+    local origin="$WORK/upd-origin.git" roothome="$WORK/roothome/.local/bin"
+    local br tree tunit safe_before pre new1 new2 old_version want cver feed uvp
+    INSTANCES+=("$inst")
+    make_deployment upd "$port"
+    br=$(git -C "$src" symbolic-ref --short HEAD)
+    git init -q --bare -b "$br" "$origin"
+    git -C "$src" remote add origin "$origin"
+    git -C "$src" push -q -u origin "$br"
+    mkdir -p "$roothome"
+    write_uv_stub "$roothome/uv"
+
+    if [[ -n "$UV_SHIM" ]]; then
+        note "uv only in a root-private directory: the layout plan refuses"
+        mv "$UV_SHIM" "$WORK/uv-shim.aside"
+        expect_exit 16 env PATH="$roothome:$PATH" "$PY3" "$TOOL" plan --unit "$unit" --instance "$inst"
+        grep -q "UV_INSTALL_DIR=/usr/local/bin" "$WORK/last.out" || fail "the layout plan did not name the uv fix"
+        grep -Eq "uv: go-trader finds no uv|new account go-trader would find no uv" "$WORK/last.out" || fail "the layout plan did not name the account without uv"
+        mv "$WORK/uv-shim.aside" "$UV_SHIM"
+    else
+        echo "note: this host has a system uv; the root-private uv refusals are skipped"
+    fi
+
+    expect_exit 0 tool apply --unit "$unit" --instance "$inst"
+    tree="/opt/go-trader-$inst"
+    tunit="go-trader@$inst.service"
+    [[ "$(stat -c '%U' "$tree" "$tree/.git" | sort -u)" == "go-trader" ]] || fail "$tree is not owned by go-trader"
+    wait_health "$tunit" "$port"
+
+    if [[ -n "$UV_SHIM" ]]; then
+        note "uv only in a root-private directory: shared-feed-convert plan and feeds refuse before a build"
+        local feeds_present=0
+        [[ -e /opt/go-trader-feed-primary ]] && feeds_present=1
+        mv "$UV_SHIM" "$WORK/uv-shim.aside"
+        expect_exit 19 env PATH="$roothome:$PATH" bash "$SCRIPT_DIR/shared-feed-convert.sh" plan --consumer "$tunit"
+        grep -q "UV_INSTALL_DIR=/usr/local/bin" "$WORK/last.out" || fail "shared-feed plan did not name the uv fix"
+        grep -q "uv: go-trader finds no uv" "$WORK/last.out" || fail "shared-feed plan did not name go-trader"
+        expect_exit 19 env PATH="$roothome:$PATH" bash "$SCRIPT_DIR/shared-feed-convert.sh" feeds --consumer "$tunit"
+        [[ "$feeds_present" == "1" || ! -e /opt/go-trader-feed-primary ]] || fail "feeds created a feed tree although go-trader cannot run uv"
+        mv "$WORK/uv-shim.aside" "$UV_SHIM"
+    fi
+
+    note "uv and Go resolve for root and for go-trader"
+    uvp=$(helper update_tool_runs_as go-trader uv) || fail "go-trader cannot run uv (${uvp:-not found})"
+    [[ "$uvp" != /root/* && "$uvp" != /home/* ]] || fail "go-trader resolved uv from a home directory: $uvp"
+    helper update_tool_runs_as go-trader go >/dev/null || fail "go-trader cannot run go"
+    helper update_tool_runs_as root uv >/dev/null || fail "root cannot run uv"
+    expect_exit 0 bash "$SCRIPT_DIR/shared-feed-convert.sh" plan --consumer "$tunit"
+    grep -q "feed trees clone $origin (the origin of $tree)" "$WORK/last.out" || fail "shared-feed plan did not read the origin of $tree"
+    if grep -q "no git origin" "$WORK/last.out"; then fail "shared-feed plan reported no git origin"; fi
+
+    if git -C "$tree" rev-parse HEAD >/dev/null 2>&1; then
+        fail "root git reads $tree with no trust setting (safe.directory already set on this host?); the case would prove nothing"
+    fi
+    safe_before=$(safe_dirs)
+
+    note "a failed update rolls back a go-trader tree and keeps its owner"
+    pre=$(root_git "$tree" rev-parse HEAD)
+    old_version=$(health_field "$port" version)
+    new1=$(advance_origin "$origin" "fixture update 1")
+    expect_exit 1 run_update "$tree" GO_TRADER_SERVICE="$tunit" STATUS_PORT=1 HEALTH_TIMEOUT=5 bash scripts/update.sh --restart
+    grep -q "rollback: reverting git tree to $pre" "$WORK/last.out" || fail "the failed update did not revert the tree"
+    [[ "$(root_git "$tree" rev-parse HEAD)" == "$pre" ]] || fail "the rollback left $tree off $pre"
+    [[ -z "$(root_owned "$tree")" ]] || { root_owned "$tree" >&2; fail "root-owned files in $tree after the rollback"; }
+    wait_health "$tunit" "$port"
+    [[ "$(health_field "$port" version)" == "$old_version" ]] || fail "the rollback did not bring back $old_version"
+
+    note "root updates a go-trader tree"
+    expect_exit 0 run_update "$tree" GO_TRADER_SERVICE="$tunit" bash scripts/update.sh --restart
+    [[ "$(root_git "$tree" rev-parse HEAD)" == "$new1" ]] || fail "$tree is not on $new1"
+    want=$(tree_version "$tree")
+    [[ -n "$want" && "$want" != "dev" ]] || fail "no release version for $tree"
+    wait_health "$tunit" "$port"
+    [[ "$(health_field "$port" version)" == "$want" ]] || fail "/health reports $(health_field "$port" version), want $want"
+    [[ -z "$(root_owned "$tree")" ]] || { root_owned "$tree" >&2; fail "root-owned files in $tree after the update"; }
+    [[ "$(stat -c '%U' "$tree/.venv/fixture-uv/stamp" "$tree/go-trader" "$tree/go-trader.prev" | sort -u)" == "go-trader" ]] || fail "uv or build output was not given back to go-trader"
+    [[ "$(safe_dirs)" == "$safe_before" ]] || fail "the update changed a safe.directory setting"
+    [[ -z "$(root_git "$tree" config --local --get-all safe.directory || true)" ]] || fail "the update wrote safe.directory into $tree"
+
+    note "feed bootstrap: clone the consumer origin, build from the go-trader tree"
+    feed="/opt/go-trader-fx$ID-feed"
+    CREATED_DIRS+=("$feed")
+    git clone -q --no-hardlinks "$(root_git "$tree" remote get-url origin)" "$feed"
+    mkdir -p "$feed/.venv/bin" "$feed/logs"
+    ln -s "$PY3" "$feed/.venv/bin/python3"
+    "$PY3" - "/var/lib/go-trader/$inst/config.json" "$feed/scheduler/config.json" "$fport" <<'PY'
+import json, sys
+c = json.load(open(sys.argv[1]))
+for k in ("db_file", "paper_db_file", "paper_sources"):
+    c.pop(k, None)
+c["status_port"] = int(sys.argv[3])
+json.dump(c, open(sys.argv[2], "w"), indent=2)
+PY
+    expect_exit 0 run_update "$feed" bash scripts/update.sh --rsync-from "$tree"
+    cver=$(tree_version "$tree")
+    [[ "$("$feed/go-trader" version)" == "$cver" && "$cver" != "dev" ]] || fail "the feed binary reports $("$feed/go-trader" version), want the consumer release $cver"
+    [[ -z "$(find "$feed" -xdev ! -user root -print | head -n 5)" ]] || fail "the feed build copied the consumer's owner into $feed"
+    note "feed rebuild: go-trader worktree with a root-owned .git"
+    chown -R go-trader:go-trader "$feed"
+    chown -R root:root "$feed/.git"
+    expect_exit 0 run_update "$feed" bash scripts/update.sh --rsync-from "$tree"
+    [[ "$("$feed/go-trader" version)" == "$cver" ]] || fail "the rebuilt feed binary reports $("$feed/go-trader" version), want $cver"
+    [[ -z "$(find "$feed" -xdev -user root ! -path "$feed/.git" ! -path "$feed/.git/*" -print | head -n 5)" ]] || fail "root-owned files outside .git in $feed after the rebuild"
+    grep -q "were owned by root before this update and stay so" "$WORK/last.out" || fail "the rebuild did not report the root-owned .git it kept"
+    [[ "$(safe_dirs)" == "$safe_before" ]] || fail "the feed build changed a safe.directory setting"
+    chown -R go-trader:go-trader "$feed"
+
+    note "update.sh --all --restart: migrated, feed-account and root-owned trees in one batch"
+    local funit="go-trader-$ID-ufeed.service" runit="go-trader-$ID-uroot.service" rsrc="/root/gt-$ID-uroot" allroot="$WORK/allroot"
+    CREATED_UNITS+=("$funit")
+    cat >"/etc/systemd/system/$funit" <<UNIT
+[Unit]
+Description=fixture feed-account tree
+
+[Service]
+Type=simple
+User=go-trader
+Group=go-trader
+WorkingDirectory=$feed
+ExecStart=$feed/go-trader --config $feed/scheduler/config.json
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+    systemctl daemon-reload
+    systemctl enable --now "$funit" >/dev/null 2>&1
+    wait_health "$funit" "$fport"
+    make_deployment uroot "$rport"
+    git -C "$rsrc" remote add origin "$origin"
+    git -C "$rsrc" fetch -q origin
+    git -C "$rsrc" reset -q --hard "origin/$br"
+    git -C "$rsrc" branch -q -u "origin/$br"
+    mkdir -p "$allroot"
+    ln -s "$tree" "$allroot/go-trader-a"
+    ln -s "$feed" "$allroot/go-trader-b"
+    ln -s "$rsrc" "$allroot/go-trader-c"
+    new2=$(advance_origin "$origin" "fixture update 2")
+    expect_exit 0 run_update "$tree" bash scripts/update.sh --all --restart --update-all-root "$allroot"
+    grep -q "all instances OK (3 updated" "$WORK/last.out" || fail "--all did not update all three trees"
+    local d
+    for d in "$tree" "$feed" "$rsrc"; do
+        [[ "$(root_git "$d" rev-parse HEAD)" == "$new2" ]] || fail "$d is not on $new2 after --all"
+    done
+    wait_health "$tunit" "$port"
+    [[ "$(health_field "$port" version)" == "$(tree_version "$tree")" ]] || fail "$tunit runs another version after --all"
+    wait_health "$funit" "$fport"
+    [[ "$(health_field "$fport" version)" == "$(tree_version "$feed")" ]] || fail "$funit runs another version after --all"
+    wait_health "$runit" "$rport"
+    [[ "$(health_field "$rport" version)" == "$(tree_version "$rsrc")" ]] || fail "$runit runs another version after --all"
+    [[ -z "$(root_owned "$tree")" ]] || { root_owned "$tree" >&2; fail "root-owned files in $tree after --all"; }
+    [[ -z "$(root_owned "$feed")" ]] || { root_owned "$feed" >&2; fail "root-owned files in $feed after --all"; }
+    [[ -z "$(find "$rsrc" -xdev ! -user root -print | head -n 5)" ]] || fail "--all changed the owner of files in the root-owned $rsrc"
+    [[ "$(safe_dirs)" == "$safe_before" ]] || fail "--all changed a safe.directory setting"
+    systemctl stop "$tunit" "$funit" "$runit"
+    echo "root updates on trees another account owns OK"
+}
+
 grep -q "migrate-service-layout" "$SCRIPT_DIR/update.sh" && fail "update.sh must never call the migration"
+ensure_build_tools
 for s in $SCENARIOS; do
     "scenario_$s"
 done
