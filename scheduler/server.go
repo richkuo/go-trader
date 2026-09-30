@@ -256,9 +256,10 @@ func (ss *StatusServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	ss.mu.RUnlock()
 
 	resp := map[string]any{
-		"status":  "ok",
-		"version": Version,
-		"pid":     pid,
+		"status":       "ok",
+		"version":      Version,
+		"pid":          pid,
+		"run_evidence": globalRunEvidence.healthView(),
 	}
 	if !lastCycle.IsZero() && time.Since(lastCycle) > 30*time.Minute {
 		resp["status"] = "unhealthy"

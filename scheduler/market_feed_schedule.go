@@ -172,6 +172,7 @@ func computeDueSet(now time.Time, cfg *Config, intervals map[string]int, lastRun
 
 func markStrategyEvaluated(sc StrategyConfig, websocketFeed bool, marks map[string]feedEvaluationMark,
 	lastRun map[string]time.Time, lastEvaluated map[string]feedEvaluationMark, now time.Time) {
+	globalRunEvidence.markEvaluated(sc.ID, now)
 	if websocketFeed && feedScopedStrategy(sc) {
 		if mark, ok := marks[sc.ID]; ok {
 			lastEvaluated[sc.ID] = mark

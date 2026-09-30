@@ -101,6 +101,9 @@ jobs:
       - name: Combined-unit sandbox fixture
         run: sudo env GO_TRADER_BIN=/tmp/go-trader bash scripts/test_merge_paper_service_fixture.sh
 
+      - name: Service layout migration fixture
+        run: sudo env GO_TRADER_BIN=/tmp/go-trader bash scripts/test_migrate_service_layout_fixture.sh
+
   python:
     runs-on: ubuntu-latest
     steps:

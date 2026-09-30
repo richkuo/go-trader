@@ -830,6 +830,7 @@ func main() {
 		dueStrategies, evaluationMarks, zeroCapitalSkipped := computeDueSet(dueAt, cfg, intervals, lastRun, lastEvaluated, deadlineFeed, sharedSched)
 		for _, id := range zeroCapitalSkipped {
 			fmt.Printf("[ERROR] %s: capital_pct set but capital resolved to $0 — skipping\n", id)
+			globalRunEvidence.markZeroCapitalSkipped(id, time.Now())
 		}
 		var sharedDeadline time.Time
 		if sharedFeed {
@@ -3172,6 +3173,7 @@ func main() {
 		}
 		if savedAll {
 			offCycleAuditSaveDirty = false
+			globalRunEvidence.markStateSaved(time.Now())
 		}
 
 		var postLeaderboard bool

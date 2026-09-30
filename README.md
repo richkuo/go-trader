@@ -65,6 +65,8 @@ sudo bash scripts/install-service.sh systemd/go-trader@.service paper-testing
 
 Existing in-tree deploy: **stop the service**, then `scripts/migrate-config-out-of-tree.sh --instance <name>` (refuses while daemon is live). `NO_START=1` enables without starting. Detail: [SKILL.md](SKILL.md).
 
+Hand-made unit (for example `go-trader-live.service` run as root from a workspace): `sudo python3 scripts/migrate-service-layout.py plan --unit <unit> --instance <name>` checks a move to this layout, and `apply` makes it with state transfer, proofs and automatic recovery; `rollback` returns it. Updates never run it. Detail: [SKILL.md](SKILL.md) § Run And Install Service.
+
 **Folding paper deployments into the live process.** Stop every unit named in the run, then `bash scripts/merge-paper-instance.sh --live <live> --paper <paper>` (dry run) and, once it prints `VERDICT: READY`, the same command with `--apply`. Every state file stays where it is: the live config gains `paper_db_file`, every paper id gets a `-paper` suffix (numbered on a name clash) with `storage_strategy_id` keeping the stored identity, and a systemd drop-in grants each folded database directory.
 
 `--source <id>=<instance>` folds a deployment into its **own** partition `paper:<id>` instead of the shared paper one: it adds a `paper_sources` entry with that id and the deployment's database, aliases each strategy as `<base>-paper-<id>` and stamps `paper_source=<id>`. `--paper` and `--source` may be combined and `--source` may repeat, so several deployments fold in one run, each keeping its own risk limits, latch and state file. `--diff` previews the whole plan from the config files alone, with no unit stopped.
