@@ -55,12 +55,13 @@ live_cfg_json() {
   "replay_log_path": "$T/shared/replay.db",
   "market_feed": "rest",
   "portfolio_risk": {"max_drawdown_pct": 25, "daily_max_loss_usd": 500},
-  "discord": {"enabled": false, "token": "", "channels": {"hyperliquid": "C-live"}},
+  "paper_sources": [{"id": "own", "db_file": "$(dirname "$db")/own.db", "portfolio_risk": {"max_drawdown_pct": 25, "daily_max_loss_usd": 500}}],
+  "discord": {"enabled": false, "token": "", "channels": {"hyperliquid": "C-live", "hyperliquid-paper:own": "C-live"}},
   "strategies": [
     {"id": "hl-x", "type": "perps", "platform": "hyperliquid",
      "script": "shared_scripts/check_hyperliquid.py",
-     "args": ["vwap", "ETH", "1h", "--mode=live"],
-     "capital": 100, "leverage": 5, "margin_per_trade_usd": 50, "replay_sharing": "live_mirror"}
+     "args": ["vwap", "ETH", "1h", "--mode=paper"], "paper_source": "own",
+     "capital": 100, "leverage": 5, "margin_per_trade_usd": 50}
   ]
 }
 JSON
@@ -82,7 +83,7 @@ paper_cfg_json() {
     {"id": "hl-x", "type": "perps", "platform": "hyperliquid",
      "script": "shared_scripts/check_hyperliquid.py",
      "args": ["vwap", "ETH", "1h", "--mode=paper"],
-     "capital": 100, "leverage": 5, "margin_per_trade_usd": 50, "replay_sharing": "live_mirror"}
+     "capital": 100, "leverage": 5, "margin_per_trade_usd": 50}
   ]
 }
 JSON
@@ -100,7 +101,6 @@ setup() {
     cp "$UNIT_TEMPLATE" "$UNITS/go-trader@.service"
     printf 'HYPERLIQUID_SECRET_KEY=fixture\n' > "$OPT/go-trader-live/.env"
     printf 'HYPERLIQUID_SECRET_KEY=fixture\n' > "$OPT/go-trader-paper/.env"
-    cp "$MERGE_PAPER_FIXTURE_DIR/live.db" "$BASE/live/state.db"
     LIVE_DB="$BASE/live/state.db"
     if [[ "$paper_db_mode" == "tree" ]]; then
         cp "$MERGE_PAPER_FIXTURE_DIR/paper.db" "$OPT/go-trader-paper/scheduler/state.db"
@@ -245,7 +245,6 @@ staged="$LIVE_CFG.merge-staged"
 [[ -f "$staged" ]] || fail "staged config written"
 assert_eq "$(json_get "$staged" strategies.1.id)" "hl-x-paper" "staged paper id"
 assert_eq "$(json_get "$staged" strategies.1.storage_strategy_id)" "hl-x" "staged storage alias"
-assert_eq "$(json_get "$staged" strategies.1.replay_source_id)" "hl-x" "staged replay source"
 assert_eq "$(json_get "$staged" strategies.1.interval_seconds)" "600" "staged interval"
 assert_eq "$(json_get "$staged" paper_db_file)" "$(update_canonical_db_path "$PAPER_DB")" "staged paper_db_file"
 assert_eq "$(json_get "$staged" portfolio_risk.paper.max_drawdown_pct)" "50" "paper risk override"
@@ -295,17 +294,16 @@ out=$(run_merge 2>&1) && rc=0 || rc=$?
 assert_rc "$rc" "21" "conflicting -paper channel refuses"
 assert_contains "$out" "discord.channels.hyperliquid-paper" "channel refusal names the key"
 
-echo "== second suffix, with and without a live id collision"
+echo "== second suffix, with and without a target id collision"
 setup suffix
 python3 - "$LIVE_CFG" <<'PY'
 import json, sys
 p = sys.argv[1]
 cfg = json.load(open(p))
-del cfg["strategies"][0]["capital"]
 for sid in ("hl-x-paper", "hl-y-paper"):
     cfg["strategies"].append({"id": sid, "type": "perps", "platform": "hyperliquid",
-        "script": "shared_scripts/check_hyperliquid.py", "args": ["vwap", "BTC", "1h", "--mode=live"],
-        "leverage": 5, "margin_per_trade_usd": 50})
+        "script": "shared_scripts/check_hyperliquid.py", "args": ["vwap", "BTC", "1h", "--mode=paper"],
+        "paper_source": "own", "capital": 100, "leverage": 5, "margin_per_trade_usd": 50})
 json.dump(cfg, open(p, "w"))
 PY
 python3 - "$PAPER_CFG" <<'PY'
@@ -713,17 +711,6 @@ assert_contains "$out" "diff: channel-plan discord.channels.hyperliquid-paper=C-
 [[ ! -e "$JOURNAL" ]] || fail "--diff must not write a journal"
 
 echo "== --diff names compose refuses it can see without inspect"
-setup diffreplay
-python3 - "$PAPER_CFG" <<'PY'
-import json, sys
-p = sys.argv[1]
-cfg = json.load(open(p))
-cfg["replay_log_path"] = "/tmp/other-replay.db"
-json.dump(cfg, open(p, "w"))
-PY
-out=$(run_merge --diff 2>&1) && rc=0 || rc=$?
-assert_rc "$rc" "0" "--diff with a paper-mirror replay_log_path clash exits 0"
-assert_contains "$out" "diff: compose-refuse replay_log_path" "--diff names a paper-mirror replay_log_path clash"
 setup diffchannel
 python3 - "$LIVE_CFG" <<'PY'
 import json, sys
@@ -923,24 +910,6 @@ case "$out" in
         fail "--diff must not preview replay_log_path when the merged config has no live mirror"
         ;;
 esac
-setup diffreplayon
-python3 - "$LIVE_CFG" "$PAPER_CFG" "$PAPER_DB" <<'PY'
-import json, os, sys
-live_p, paper_p, paper_db = sys.argv[1], sys.argv[2], sys.argv[3]
-live = json.load(open(live_p))
-paper = json.load(open(paper_p))
-moved = json.loads(json.dumps(paper["strategies"][0]))
-moved["id"] = "hl-x-paper"
-moved["storage_strategy_id"] = "hl-x"
-live["strategies"].append(moved)
-live["paper_db_file"] = os.path.realpath(paper_db) if os.path.exists(paper_db) else os.path.abspath(paper_db)
-paper["replay_log_path"] = "/tmp/other-replay.db"
-json.dump(live, open(live_p, "w"))
-json.dump(paper, open(paper_p, "w"))
-PY
-out=$(run_merge --diff 2>&1) && rc=0 || rc=$?
-assert_rc "$rc" "0" "--diff with a still-active already-merged mirror exits 0"
-assert_contains "$out" "diff: compose-refuse replay_log_path" "--diff still names replay_log_path when an already-merged mirror is active"
 
 echo "== --align-to-live is opt-in"
 setup alignflag
@@ -1214,7 +1183,7 @@ python3 - "$LIVE_CFG" <<'PY'
 import json, sys
 p = sys.argv[1]
 cfg = json.load(open(p))
-cfg["paper_sources"] = [{"id": "btc", "db_file": "/somewhere/else.db"}]
+cfg["paper_sources"].append({"id": "btc", "db_file": "/somewhere/else.db"})
 json.dump(cfg, open(p, "w"))
 PY
 out=$(run_merge_args --source btc=coin-btc 2>&1) && rc=0 || rc=$?
@@ -1273,8 +1242,8 @@ json.dump(cfg, open(p, "w"))
 PY
 done
 out=$(run_merge_args --source btc=coin-btc --source eth=coin-eth 2>&1) && rc=0 || rc=$?
-assert_rc "$rc" "21" "two sources mirroring one live strategy refuse"
-assert_contains "$out" "is already mirrored by" "the replay refusal names the second owner"
+assert_rc "$rc" "21" "a folded live mirror refuses, since a paper-only target has no live strategy to mirror"
+assert_contains "$out" "does not run --mode=live" "the replay refusal names the paper source strategy"
 
 echo "== --diff previews a source alias, its channel key and a redundant one"
 setup srcdiff
@@ -1331,8 +1300,8 @@ import json, sys
 p = sys.argv[1]
 cfg = json.load(open(p))
 cfg["strategies"].append({"id": "hl-x-paper-btc", "type": "perps", "platform": "hyperliquid",
-    "script": "shared_scripts/check_hyperliquid.py", "args": ["vwap", "BTC", "1h", "--mode=live"],
-    "capital": 100, "leverage": 5, "margin_per_trade_usd": 50})
+    "script": "shared_scripts/check_hyperliquid.py", "args": ["vwap", "BTC", "1h", "--mode=paper"],
+    "paper_source": "own", "capital": 100, "leverage": 5, "margin_per_trade_usd": 50})
 json.dump(cfg, open(p, "w"))
 PY
 out=$(run_merge_args --source btc=coin-btc --diff 2>&1) && rc=0 || rc=$?
@@ -1593,5 +1562,547 @@ out=$(run_merge_args --paper paper 2>&1) && rc=0 || rc=$?
 [[ "$rc" == "0" ]] || { echo "$out" >&2; fail "a dry run with a live-side paper strategy exits 0 (rc=$rc)"; }
 assert_contains "$out" "1 configured strategy without a stored book yet" "the paper partition expects the live config's own paper strategy too"
 assert_contains "$out" "proof: 3 strategies compared, no effective difference" "a fold that changes nothing for the live side's own paper strategy still proves"
+
+echo "== --paper refuses a target whose primary file holds its default paper partition"
+setup defaultpaper
+cp "$MERGE_PAPER_FIXTURE_DIR/paper.db" "$LIVE_DB"
+python3 - "$LIVE_CFG" <<'PY'
+import json, sys
+p = sys.argv[1]
+cfg = json.load(open(p))
+cfg["strategies"].append({"id": "hl-d", "storage_strategy_id": "hl-x", "type": "perps", "platform": "hyperliquid",
+    "script": "shared_scripts/check_hyperliquid.py", "args": ["vwap", "ETH", "1h", "--mode=paper"],
+    "capital": 100, "leverage": 5, "margin_per_trade_usd": 50})
+json.dump(cfg, open(p, "w"))
+PY
+before=$(fingerprints)
+out=$(run_merge 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "17" "--paper over a primary file that holds default paper books exits 17"
+assert_contains "$out" "holds its default paper partition (book hl-d, a paper portfolio risk row, 1 pending manual action(s))" "the refusal names the stranded data"
+assert_eq "$(fingerprints)" "$before" "the refusal leaves both databases untouched"
+[[ ! -e "$LIVE_CFG.merge-staged" ]] || fail "the refusal writes no staged config"
+
+echo "== a target that runs a live strategy is refused in both modes"
+setup livetarget
+python3 - "$LIVE_CFG" <<'PY'
+import json, sys
+p = sys.argv[1]
+cfg = json.load(open(p))
+cfg["strategies"].append({"id": "hl-live", "type": "perps", "platform": "hyperliquid",
+    "script": "shared_scripts/check_hyperliquid.py", "args": ["vwap", "BTC", "1h", "--mode=live"],
+    "capital": 100, "leverage": 5, "margin_per_trade_usd": 50})
+json.dump(cfg, open(p, "w"))
+PY
+out=$(run_merge 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "15" "a live target exits 15"
+assert_contains "$out" "runs 1 live strategy(ies); paper and live never share a service" "the refusal names the rule"
+out=$(run_merge --diff 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "15" "--diff over a live target exits 15"
+[[ ! -e "$LIVE_CFG.merge-staged" && ! -e "$JOURNAL" ]] || fail "a refused live target writes nothing"
+
+echo "== leaderboard entries of every folded deployment reach the merged config"
+set_leaderboards() {
+    python3 - "$1" "$2" <<'PY'
+import json, sys
+p = sys.argv[1]
+cfg = json.load(open(p))
+cfg["leaderboard_summaries"] = json.loads(sys.argv[2])
+json.dump(cfg, open(p, "w"))
+PY
+}
+setup boards
+add_source coin-btc 8101 C-btc
+add_source coin-eth 8102 C-eth
+set_leaderboards "$LIVE_CFG" '[{"platform": "hyperliquid", "ticker": "SOL", "channel": "C-lb", "top_n": 5}]'
+set_leaderboards "$BASE/coin-btc/config.json" '[{"platform": "hyperliquid", "ticker": "BTC", "channel": "C-lb", "top_n": 5}, {"platform": "hyperliquid", "ticker": "SOL", "channel": "C-lb", "top_n": 5}]'
+set_leaderboards "$BASE/coin-eth/config.json" '[{"platform": "hyperliquid", "ticker": "ETH", "channel": "C-lb", "top_n": 5, "frequency": "24h"}]'
+out=$(run_merge_args --source btc=coin-btc --source eth=coin-eth --diff 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "leaderboard --diff exits 0 (rc=$rc)"; }
+assert_contains "$out" 'diff: leaderboard {"channel": "C-lb", "platform": "hyperliquid", "ticker": "BTC", "top_n": 5} (from source btc)' "--diff prints a folded source's leaderboard entry"
+assert_contains "$out" 'diff: leaderboard {"channel": "C-lb", "platform": "hyperliquid", "ticker": "SOL", "top_n": 5} (from live)' "--diff prints the live entry"
+out=$(run_merge_args --source btc=coin-btc --source eth=coin-eth 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "leaderboard union dry run exits 0 (rc=$rc)"; }
+staged="$LIVE_CFG.merge-staged"
+assert_eq "$(json_get "$staged" leaderboard_summaries.0.ticker)" "SOL" "the live entry comes first"
+assert_eq "$(json_get "$staged" leaderboard_summaries.1.ticker)" "BTC" "the btc entry is kept"
+assert_eq "$(json_get "$staged" leaderboard_summaries.2.ticker)" "ETH" "the eth entry is kept"
+assert_eq "$(json_get "$staged" leaderboard_summaries.2.frequency)" "24h" "the eth entry keeps its frequency"
+assert_eq "$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["leaderboard_summaries"]))' "$staged")" "3" "an identical entry appears once"
+assert_contains "$out" "leaderboard_summaries[1]=" "the dry run prints the combined leaderboard list"
+set_leaderboards "$BASE/coin-eth/config.json" '[{"platform": "Hyperliquid", "ticker": " sol ", "channel": "C-lb", "top_n": 10}]'
+before=$(db_fingerprints "$LIVE_DB" "$BASE/coin-btc/state.db" "$BASE/coin-eth/state.db")
+out=$(run_merge_args --source btc=coin-btc --source eth=coin-eth 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "21" "one leaderboard key with two different entries refuses"
+assert_contains "$out" "leaderboard_summaries key hyperliquid:sol:C-lb: live has" "the refusal names the key and the first entry"
+assert_contains "$out" 'source eth has {"channel": "C-lb", "platform": "Hyperliquid", "ticker": " sol ", "top_n": 10}' "the refusal names the second entry"
+assert_eq "$(db_fingerprints "$LIVE_DB" "$BASE/coin-btc/state.db" "$BASE/coin-eth/state.db")" "$before" "the refused leaderboard fold leaves every database untouched"
+out=$(run_merge_args --source btc=coin-btc --source eth=coin-eth --diff 2>&1) && rc=0 || rc=$?
+assert_contains "$out" "diff: compose-refuse leaderboard_summaries key hyperliquid:sol:C-lb" "--diff names the leaderboard conflict"
+
+free_port() {
+    python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'
+}
+
+nt_add_source() {
+    local instance="$1" port="$2" channel="$3" risk="${4:-}"
+    add_source "$instance" "$port" "$channel" "$risk"
+    mkdir -p "$OPT/go-trader-$instance/systemd"
+    cp "$UNIT_TEMPLATE" "$OPT/go-trader-$instance/systemd/go-trader@.service"
+    cp "$SCRIPT_DIR/../systemd/journald@go-trader.conf" "$OPT/go-trader-$instance/systemd/journald@go-trader.conf"
+    printf 'GO_TRADER_SERVICE=go-trader@%s.service\n' "$instance" >> "$OPT/go-trader-$instance/.env"
+}
+
+nt_git_origin() {
+    local src="$OPT/go-trader-$1"
+    printf 'go-trader\n.env\nscheduler/\n' > "$src/.gitignore"
+    git -C "$src" init -q
+    git -C "$src" -c user.email=fixture@example.invalid -c user.name=fixture add -A
+    git -C "$src" -c user.email=fixture@example.invalid -c user.name=fixture commit -qm fixture
+    git clone -q --bare "$src" "$F/origin-$1.git"
+    git -C "$src" remote add origin "$F/origin-$1.git"
+    git -C "$src" fetch -q origin
+}
+
+nt_setup() {
+    local name="$1"
+    F="$T/$name"
+    BASE="$F/var/lib/go-trader"
+    OPT="$F/opt"
+    UNITS="$F/units"
+    mkdir -p "$BASE" "$OPT" "$UNITS" "$F/bin" "$F/journald" "$T/shared"
+    cp "$UNIT_TEMPLATE" "$UNITS/go-trader@.service"
+    : > "$F/systemctl.log"
+    cat > "$F/bin/systemctl" <<EOS
+#!/usr/bin/env bash
+echo "\$*" >> "$F/systemctl.log"
+case "\$1" in
+    is-active)
+        if [[ -f "$F/state-\$2" ]]; then cat "$F/state-\$2"; else echo inactive; fi
+        ;;
+    is-enabled)
+        if [[ -f "$F/enabled-\$2" ]]; then cat "$F/enabled-\$2"; else echo disabled; fi
+        ;;
+    show)
+        if [[ -f "$F/prop-\$5-\$3" ]]; then cat "$F/prop-\$5-\$3"; exit 0; fi
+        case "\$3" in
+            FragmentPath) [[ "\$5" == go-trader@*.service ]] && echo "$UNITS/go-trader@.service" ;;
+            User) id -un ;;
+            Group) id -gn ;;
+        esac
+        ;;
+esac
+exit 0
+EOS
+    chmod +x "$F/bin/systemctl"
+    cat > "$F/bin/build" <<'EOS'
+#!/usr/bin/env bash
+[[ "$1" == "--rsync-from" && -x "$2/go-trader" ]] || exit 2
+cp "$2/go-trader" ./go-trader
+EOS
+    chmod +x "$F/bin/build"
+    nt_add_source coin-btc 8101 C-btc
+    nt_add_source coin-eth 8102 C-eth '{"max_drawdown_pct": 60, "daily_max_loss_usd": 500}'
+    set_leaderboards "$BASE/coin-btc/config.json" '[{"platform": "hyperliquid", "ticker": "BTC", "channel": "C-lb", "top_n": 5}]'
+    set_leaderboards "$BASE/coin-eth/config.json" '[{"platform": "hyperliquid", "ticker": "ETH", "channel": "C-lb", "top_n": 5}]'
+    nt_git_origin coin-btc
+    BTC_DB="$BASE/coin-btc/state.db"
+    ETH_DB="$BASE/coin-eth/state.db"
+    NT_DEPLOY="$OPT/go-trader-paper"
+    NT_DIR="$BASE/paper"
+    NT_CFG="$NT_DIR/config.json"
+    NT_JOURNAL="$NT_DIR/merge-paper-btc+eth.journal"
+    NT_DROPIN_DIR="$UNITS/go-trader@paper.service.d"
+    NT_PORT=$(free_port)
+}
+
+run_nt() {
+    MERGE_PAPER_SYSTEMCTL="$F/bin/systemctl" MERGE_PAPER_SYSTEMD_ANALYZE="/nonexistent/systemd-analyze" \
+        MERGE_PAPER_BUILD_CMD="$F/bin/build" MERGE_PAPER_JOURNALD_DIR="$F/journald" \
+        bash "$MERGE" --base "$BASE" --deploy-root "$OPT" --unit-dir "$UNITS" "$@"
+}
+
+run_nt_folds() {
+    run_nt --new-target paper --source btc=coin-btc --source eth=coin-eth --status-port "$NT_PORT" "$@"
+}
+
+nt_nothing_created() {
+    local what="$1"
+    [[ ! -e "$NT_DEPLOY" ]] || fail "$what: $NT_DEPLOY must not exist"
+    [[ ! -e "$NT_DIR" ]] || fail "$what: $NT_DIR must not exist"
+    [[ ! -e "$NT_DROPIN_DIR" ]] || fail "$what: $NT_DROPIN_DIR must not exist"
+}
+
+stage_dir_from() {
+    printf '%s\n' "$1" | sed -n 's/.*nothing outside the staging directory \([^;]*\) changed.*/\1/p' | tail -n 1
+}
+
+echo "== new target: argument refusals"
+nt_setup ntusage
+out=$(run_nt --new-target paper --live live --source btc=coin-btc --status-port "$NT_PORT" 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "2" "--new-target with --live exits 2"
+out=$(run_nt --new-target paper --source btc=coin-btc 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "2" "--new-target without --status-port exits 2"
+out=$(run_nt --new-target paper --source btc=coin-btc --status-port 70000 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "2" "an out-of-range --status-port exits 2"
+out=$(run_nt --new-target paper --source btc=coin-btc --status-port "$NT_PORT" --root-from coin-zzz 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "2" "--root-from naming no folded deployment exits 2"
+out=$(run_nt --new-target coin-btc --source btc=coin-btc --status-port "$NT_PORT" 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "2" "a new target named like a folded instance exits 2"
+out=$(run_nt --live live --source btc=coin-btc --status-port "$NT_PORT" 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "2" "--status-port without --new-target exits 2"
+nt_nothing_created "argument refusals"
+
+echo "== new target: dry run"
+nt_setup ntdry
+before=$(db_fingerprints "$BTC_DB" "$ETH_DB")
+btc_cfg=$(cat "$BASE/coin-btc/config.json")
+out=$(run_nt_folds 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "new-target dry run exits 0 (rc=$rc)"; }
+assert_contains "$out" "VERDICT: READY" "new-target dry run verdict"
+nt_nothing_created "dry run"
+assert_eq "$(db_fingerprints "$BTC_DB" "$ETH_DB")" "$before" "the dry run leaves every source database byte-identical"
+assert_eq "$(cat "$BASE/coin-btc/config.json")" "$btc_cfg" "the dry run leaves the source config untouched"
+assert_contains "$out" "new target: deployment $NT_DEPLOY (git clone of $F/origin-coin-btc.git, built from $OPT/go-trader-coin-btc)" "the target tree is named"
+assert_contains "$out" "new target: config $NT_CFG (0600, $(id -un):$(id -gn))" "the target config and owner are named"
+assert_contains "$out" "new target: root settings from coin-btc, status_port $NT_PORT, db_file $NT_DIR/state.db (starts empty)" "the root settings are named"
+assert_contains "$out" "journald $F/journald/journald@go-trader.conf (installed by the apply)" "an absent journald config is named for install"
+assert_contains "$out" "rename hl-x -> hl-x-paper-btc (storage_strategy_id=hl-x)" "the btc alias is printed"
+assert_contains "$out" "rename hl-x -> hl-x-paper-eth (storage_strategy_id=hl-x)" "the eth alias is printed"
+assert_contains "$out" "partition paper:btc owns $(update_canonical_db_path "$BTC_DB")" "the btc partition is printed"
+assert_contains "$out" "discord.channels.hyperliquid-paper:eth=C-eth" "the channel plan is printed"
+assert_contains "$out" "leaderboard_summaries[0]=" "the combined leaderboard list is printed"
+assert_contains "$out" "source eth: dropped paper root key status_port (target value kept): target=$NT_PORT paper=8102" "every differing source value of a dropped key is listed"
+assert_contains "$out" 'portfolio_risk root effective view (the target root block with no paper override): {"daily_max_loss_usd": 500, "max_drawdown_pct": 50' "the root risk view comes from the root deployment's block"
+assert_contains "$out" "paper_sources[eth].portfolio_risk=" "the eth source keeps its own limits"
+assert_contains "$out" "proof: 2 strategies compared, no effective difference" "every moved strategy is proven"
+assert_contains "$out" "env: GO_TRADER_SERVICE from coin-btc, coin-eth" "the per-instance service variable is merged"
+assert_contains "$out" "disable --now go-trader@coin-btc.service" "the cutover stops and disables each source unit"
+assert_contains "$out" "enable --now go-trader@paper.service" "the cutover enables and starts the new unit"
+assert_contains "$out" "retire the coin-eth instance's status port (8102)" "the cutover retires each source port"
+assert_contains "$out" "serves every partition on port $NT_PORT" "the cutover names the new port"
+[[ "$out" != *"HYPERLIQUID_SECRET_KEY=fixture"* ]] || fail "the dry run must not print a .env value"
+stage=$(stage_dir_from "$out")
+[[ -n "$stage" && -f "$stage/config.json" ]] || fail "the dry run keeps its staged config (stage=$stage)"
+assert_eq "$(json_get "$stage/config.json" status_port)" "$NT_PORT" "the staged status_port is the chosen port"
+assert_eq "$(json_get "$stage/config.json" db_file)" "$NT_DIR/state.db" "the staged db_file is the new target's own file"
+assert_eq "$(json_get "$stage/config.json" strategies.0.id)" "hl-x-paper-btc" "the staged config carries the btc strategy"
+assert_eq "$(json_get "$stage/config.json" strategies.1.id)" "hl-x-paper-eth" "the staged config carries the eth strategy"
+assert_eq "$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["strategies"]))' "$stage/config.json")" "2" "the new target runs no strategy of its own"
+assert_eq "$(json_get "$stage/config.json" paper_sources.1.portfolio_risk.max_drawdown_pct)" "60" "the eth source keeps its drawdown limit"
+assert_eq "$(json_get "$stage/config.json" portfolio_risk.max_drawdown_pct)" "50" "root portfolio_risk is the root deployment's block"
+assert_eq "$(json_get "$stage/config.json" leaderboard_summaries.0.ticker)" "BTC" "the btc leaderboard entry is kept"
+assert_eq "$(json_get "$stage/config.json" leaderboard_summaries.1.ticker)" "ETH" "the eth leaderboard entry is kept"
+assert_eq "$(json_get "$stage/config.json" paper_db_file)" "" "a source-only new target sets no paper_db_file"
+rm -rf "$stage"
+
+echo "== new target: the default paper partition folds too"
+nt_setup ntpaper
+nt_add_source coin-p 8103 C-p
+nt_git_origin coin-p
+out=$(run_nt --new-target combined --paper coin-p --source btc=coin-btc --status-port "$NT_PORT" 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "a new target with --paper exits 0 (rc=$rc)"; }
+assert_contains "$out" "root settings from coin-p" "the --paper deployment is the default root"
+assert_contains "$out" "rename hl-x -> hl-x-paper (storage_strategy_id=hl-x)" "the --paper deployment takes the bare paper alias"
+assert_contains "$out" "proof: 2 strategies compared, no effective difference" "both folded deployments are proven"
+stage=$(stage_dir_from "$out")
+assert_eq "$(json_get "$stage/config.json" paper_db_file)" "$(update_canonical_db_path "$BASE/coin-p/state.db")" "the default paper partition owns the --paper database"
+assert_eq "$(json_get "$stage/config.json" strategies.0.paper_source)" "" "the default paper partition names no source"
+[[ ! -e "$OPT/go-trader-combined" && ! -e "$BASE/combined" ]] || fail "the --paper dry run creates no target path"
+rm -rf "$stage"
+
+echo "== new target: --root-from and --diff"
+out=$(run_nt_folds --root-from coin-eth --diff 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "new-target --diff exits 0 (rc=$rc)"; }
+assert_contains "$out" "root settings from coin-eth" "--root-from picks the root deployment"
+assert_contains "$out" "diff: dropped status_port target=$NT_PORT paper=8101 (target value kept)" "--diff lists each differing dropped source value"
+assert_contains "$out" 'diff: leaderboard {"channel": "C-lb", "platform": "hyperliquid", "ticker": "ETH", "top_n": 5} (from source eth)' "--diff prints the combined leaderboard list"
+nt_nothing_created "--diff"
+
+echo "== new target: preflight refusals"
+nt_setup ntexists
+mkdir -p "$NT_DEPLOY"
+out=$(run_nt_folds 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "19" "an existing target deployment directory exits 19"
+assert_contains "$out" "deployment directory $NT_DEPLOY already exists" "the refusal names the tree"
+rmdir "$NT_DEPLOY"
+mkdir -p "$NT_DIR"
+out=$(run_nt_folds 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "19" "an existing target config directory exits 19"
+rmdir "$NT_DIR"
+mkdir -p "$NT_DROPIN_DIR"
+out=$(run_nt_folds 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "19" "an existing drop-in directory for the new unit exits 19"
+rmdir "$NT_DROPIN_DIR"
+printf 'enabled\n' > "$F/enabled-go-trader@paper.service"
+out=$(run_nt_folds 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "19" "an enabled new unit exits 19"
+rm -f "$F/enabled-go-trader@paper.service"
+printf 'failed\n' > "$F/state-go-trader@paper.service"
+out=$(run_nt_folds 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "19" "a failed new unit exits 19"
+assert_contains "$out" "reset-failed go-trader@paper.service clears a failed state" "the failed-unit refusal names the reset command"
+rm -f "$F/state-go-trader@paper.service"
+nt_nothing_created "existing-target refusals"
+
+nt_setup ntrelease
+before=$(db_fingerprints "$BTC_DB" "$ETH_DB")
+printf '#!/usr/bin/env bash\necho other-version\n' > "$OPT/go-trader-coin-eth/go-trader"
+chmod +x "$OPT/go-trader-coin-eth/go-trader"
+out=$(run_nt_folds 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "11" "sources on different releases exit 11"
+nt_nothing_created "release refusal"
+
+nt_setup ntuser
+printf 'someone-else\n' > "$F/prop-go-trader@coin-eth.service-User"
+out=$(run_nt_folds 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "19" "sources under different service users exit 19"
+assert_contains "$out" "service users differ" "the refusal names the user mismatch"
+nt_nothing_created "user refusal"
+
+nt_setup ntlayout
+printf '/etc/systemd/system/go-trader-coin-eth.service\n' > "$F/prop-go-trader@coin-eth.service-FragmentPath"
+out=$(run_nt_folds 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "19" "a source outside the template layout exits 19"
+nt_nothing_created "layout refusal"
+
+nt_setup ntcv
+python3 - "$BASE/coin-eth/config.json" <<'PY'
+import json, sys
+p = sys.argv[1]
+cfg = json.load(open(p))
+cfg["config_version"] = 18
+json.dump(cfg, open(p, "w"))
+PY
+out=$(run_nt_folds 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "18" "sources on different config versions exit 18"
+nt_nothing_created "config-version refusal"
+
+nt_setup ntport
+python3 -c '
+import socket, sys, time
+s = socket.socket()
+s.bind(("127.0.0.1", int(sys.argv[1])))
+s.listen(1)
+print("held", flush=True)
+time.sleep(60)
+' "$NT_PORT" > "$T/port.out" &
+PORT_PID=$!
+for _ in $(seq 1 100); do
+    [[ -s "$T/port.out" ]] && break
+    sleep 0.05
+done
+before=$(db_fingerprints "$BTC_DB" "$ETH_DB")
+out=$(run_nt_folds 2>&1) && rc=0 || rc=$?
+kill "$PORT_PID" 2>/dev/null || true
+wait "$PORT_PID" 2>/dev/null || true
+assert_rc "$rc" "19" "a bound status port exits 19"
+assert_contains "$out" "status port $NT_PORT is bound" "the refusal names the port"
+assert_eq "$(db_fingerprints "$BTC_DB" "$ETH_DB")" "$before" "the port refusal leaves every database untouched"
+nt_nothing_created "port refusal"
+
+nt_setup ntenv
+printf 'SHARED_TOKEN=first-secret-value\n' >> "$OPT/go-trader-coin-btc/.env"
+printf 'SHARED_TOKEN=second-secret-value\n' >> "$OPT/go-trader-coin-eth/.env"
+out=$(run_nt_folds 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "19" ".env values that disagree exit 19"
+assert_contains "$out" "variable SHARED_TOKEN differs between coin-btc and coin-eth (values not shown)" "the refusal names the variable"
+[[ "$out" != *"secret-value"* ]] || fail "the .env refusal must never print a value"
+nt_nothing_created ".env refusal"
+
+nt_setup ntorigin
+git -C "$OPT/go-trader-coin-btc" remote remove origin
+out=$(run_nt_folds 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "19" "a first deployment with no git origin exits 19"
+nt_nothing_created "origin refusal"
+
+nt_setup ntunpushed
+git -C "$OPT/go-trader-coin-btc" -c user.email=fixture@example.invalid -c user.name=fixture commit -q --allow-empty -m unpushed
+out=$(run_nt_folds 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "19" "a first deployment at an unpushed commit exits 19"
+assert_contains "$out" "which $F/origin-coin-btc.git does not hold" "the refusal names the missing commit"
+nt_nothing_created "unpushed-commit refusal"
+
+nt_setup ntdirty
+printf '# local edit\n' >> "$OPT/go-trader-coin-btc/.gitignore"
+out=$(run_nt_folds 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "19" "a first deployment with a tracked change exits 19"
+assert_contains "$out" "has uncommitted changes to tracked files" "the refusal names the tracked change"
+nt_nothing_created "tracked-change refusal"
+
+nt_setup ntdetached
+git -C "$OPT/go-trader-coin-btc" checkout -q --detach
+default_branch=$(git -C "$F/origin-coin-btc.git" symbolic-ref --short HEAD)
+out=$(run_nt_folds 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "a detached first deployment at a pushed commit exits 0 (rc=$rc)"; }
+assert_contains "$out" "on branch $default_branch at $OPT/go-trader-coin-btc's commit" "a detached deployment at a default-branch commit clones that branch"
+rm -rf "$(stage_dir_from "$out")"
+git -C "$OPT/go-trader-coin-btc" checkout -q -b side
+git -C "$OPT/go-trader-coin-btc" -c user.email=fixture@example.invalid -c user.name=fixture commit -q --allow-empty -m side
+git -C "$OPT/go-trader-coin-btc" push -q origin side
+git -C "$OPT/go-trader-coin-btc" checkout -q --detach side
+out=$(run_nt_folds 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "a detached first deployment on a non-default origin branch exits 0 (rc=$rc)"; }
+assert_contains "$out" "on branch side at $OPT/go-trader-coin-btc's commit" "a commit only on a non-default branch clones that branch"
+rm -rf "$(stage_dir_from "$out")"
+git -C "$OPT/go-trader-coin-btc" checkout -q side
+git -C "$OPT/go-trader-coin-btc" -c user.email=fixture@example.invalid -c user.name=fixture commit -q --allow-empty -m local-only
+out=$(run_nt_folds 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "19" "a branch ahead of its origin branch exits 19"
+nt_nothing_created "unpushed-branch refusal"
+
+echo "== new target: paths inside a folded tree"
+nt_setup ntpaths
+python3 - "$BASE/coin-btc/config.json" "$OPT/go-trader-coin-btc/logs" <<'PY'
+import json, sys
+p = sys.argv[1]
+cfg = json.load(open(p))
+cfg["log_dir"] = sys.argv[2]
+json.dump(cfg, open(p, "w"))
+PY
+out=$(run_nt_folds 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "an absolute log_dir in the root deployment's tree folds (rc=$rc)"; }
+nt_logs=$(python3 -c 'import os, sys; print(os.path.normpath(sys.argv[1]))' "$NT_DEPLOY/logs")
+assert_contains "$out" "target-base: log_dir $OPT/go-trader-coin-btc/logs -> $nt_logs" "the dry run prints the log_dir rewrite"
+stage=$(stage_dir_from "$out")
+assert_eq "$(json_get "$stage/config.json" log_dir)" "$nt_logs" "the staged log_dir sits in the new tree"
+rm -rf "$stage"
+python3 - "$BASE/coin-eth/config.json" "$OPT/go-trader-coin-eth/notes" <<'PY'
+import json, sys
+p = sys.argv[1]
+cfg = json.load(open(p))
+cfg["strategies"][0]["args"].append("--note=" + sys.argv[2])
+json.dump(cfg, open(p, "w"))
+PY
+before=$(db_fingerprints "$BTC_DB" "$ETH_DB")
+out=$(run_nt_folds 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "21" "a moved strategy value naming a folded tree exits 21"
+assert_contains "$out" "names --note=$OPT/go-trader-coin-eth/notes, a path inside the folded tree $OPT/go-trader-coin-eth" "the refusal names the key, value and tree"
+assert_eq "$(db_fingerprints "$BTC_DB" "$ETH_DB")" "$before" "the path refusal leaves every database untouched"
+nt_nothing_created "folded-tree path refusal"
+out=$(run_nt_folds --diff 2>&1) && rc=0 || rc=$?
+assert_contains "$out" "diff: compose-refuse config key strategies[hl-x-paper-eth].args" "--diff names the folded-tree path"
+
+echo "== new target: apply"
+nt_setup ntapply
+before=$(db_fingerprints "$BTC_DB" "$ETH_DB")
+btc_cfg=$(cat "$BASE/coin-btc/config.json")
+out=$(run_nt_folds --apply 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "new-target apply exits 0 (rc=$rc)"; }
+assert_contains "$out" "VERDICT: APPLIED" "new-target apply verdict"
+assert_contains "$out" "proof: staged layout (new tree's binary)" "the apply proves the fold again with the new binary"
+assert_eq "$(db_fingerprints "$BTC_DB" "$ETH_DB")" "$before" "the apply leaves every source database byte-identical"
+assert_eq "$(cat "$BASE/coin-btc/config.json")" "$btc_cfg" "the apply leaves the source config untouched"
+[[ -d "$NT_DEPLOY/.git" ]] || fail "the new tree is a git checkout"
+assert_eq "$(git -C "$NT_DEPLOY" remote get-url origin)" "$F/origin-coin-btc.git" "the new tree tracks the first deployment's origin"
+assert_eq "$(git -C "$NT_DEPLOY" rev-parse HEAD)" "$(git -C "$OPT/go-trader-coin-btc" rev-parse HEAD)" "the new tree sits at the first deployment's commit"
+[[ -z "$(git -C "$NT_DEPLOY" status --porcelain --untracked-files=no)" ]] || fail "the new tree has no tracked change, so update.sh can pull it"
+[[ -x "$NT_DEPLOY/go-trader" ]] || fail "the build left the new binary"
+assert_eq "$(readlink "$NT_DEPLOY/scheduler/config.json")" "$NT_CFG" "scheduler/config.json links the new config"
+mode_of() {
+    python3 -c 'import os,sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o777))' "$1"
+}
+assert_eq "$(mode_of "$NT_DIR")" "0o700" "the config directory is 0700"
+assert_eq "$(mode_of "$NT_CFG")" "0o600" "the config is 0600"
+assert_eq "$(mode_of "$NT_DEPLOY/.env")" "0o600" "the .env is 0600"
+assert_eq "$(python3 -c 'import os,pwd,sys; print(pwd.getpwuid(os.stat(sys.argv[1]).st_uid).pw_name)' "$NT_CFG")" "$(id -un)" "the config belongs to the service user"
+grep -qx 'GO_TRADER_SERVICE=go-trader@paper.service' "$NT_DEPLOY/.env" || fail "GO_TRADER_SERVICE names the new unit"
+grep -qx 'HYPERLIQUID_SECRET_KEY=fixture' "$NT_DEPLOY/.env" || fail "a variable every source sets reaches the new .env"
+assert_eq "$(json_get "$NT_CFG" status_port)" "$NT_PORT" "the installed config carries the chosen port"
+assert_eq "$(cat "$NT_DROPIN_DIR/50-merge-paper-btc.conf")" $'[Service]\nReadWritePaths='"$(update_canonical_db_path "$BASE/coin-btc")" "the btc drop-in makes its database directory writable"
+assert_eq "$(cat "$NT_DROPIN_DIR/50-merge-paper-eth.conf")" $'[Service]\nReadWritePaths='"$(update_canonical_db_path "$BASE/coin-eth")" "the eth drop-in makes its database directory writable"
+cmp -s "$F/journald/journald@go-trader.conf" "$SCRIPT_DIR/../systemd/journald@go-trader.conf" || fail "the absent journald config is installed from the new tree"
+grep -qx complete "$NT_JOURNAL" || fail "the journal in the new config directory is complete"
+grep -qx "created $NT_DIR" "$NT_JOURNAL" || fail "the journal records the created config directory"
+! grep -Eq '^(enable|start) ' "$F/systemctl.log" || fail "the apply must neither enable nor start a unit"
+out=$(run_nt_folds --apply 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "0" "a repeated new-target apply is a no-op success"
+assert_contains "$out" "nothing to do" "the repeated apply reports no-op"
+out=$(run_nt_folds 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "0" "a dry run after the apply reports the finished run"
+assert_contains "$out" "nothing to do" "the dry run after the apply reports no-op"
+
+echo "== new target: rollback"
+printf 'active\n' > "$F/state-go-trader@paper.service"
+out=$(run_nt_folds --rollback 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "14" "a rollback refuses while the new unit is active"
+[[ -d "$NT_DEPLOY" && -f "$NT_CFG" && -f "$NT_DROPIN_DIR/50-merge-paper-btc.conf" ]] || fail "a refused rollback changes nothing"
+rm -f "$F/state-go-trader@paper.service"
+printf 'run_id later\nfold sol paper:sol coin-sol\nresult_config x\ncomplete\n' > "$NT_DIR/merge-paper-sol.journal"
+: > "$F/systemctl.log"
+out=$(run_nt_folds --rollback 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "24" "a rollback refuses while a later fold into the new unit is applied"
+assert_contains "$out" "merge-paper-sol.journal records a later fold into go-trader@paper.service that is still applied" "the refusal names the later journal"
+[[ -d "$NT_DEPLOY" && -f "$NT_CFG" && -f "$NT_DROPIN_DIR/50-merge-paper-btc.conf" ]] || fail "a rollback refused for a later fold changes nothing"
+! grep -q '^disable ' "$F/systemctl.log" || fail "a rollback refused for a later fold never disables the unit"
+sed -i.bak '/^complete$/d' "$NT_DIR/merge-paper-sol.journal" && rm -f "$NT_DIR/merge-paper-sol.journal.bak"
+out=$(run_nt_folds --rollback 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "24" "a rollback refuses while a later fold is interrupted"
+assert_contains "$out" "that was interrupted" "the refusal names the interrupted later journal"
+printf 'complete\nrolled-back\n' >> "$NT_DIR/merge-paper-sol.journal"
+python3 -c '
+import sqlite3, sys
+conn = sqlite3.connect(sys.argv[1])
+conn.execute("CREATE TABLE probe (k TEXT)")
+conn.execute("INSERT INTO probe VALUES (?)", ("written-by-the-combined-service",))
+conn.commit()
+conn.close()
+' "$NT_DIR/state.db"
+python3 -c '
+import sqlite3, sys
+conn = sqlite3.connect(sys.argv[1])
+conn.execute("CREATE TABLE IF NOT EXISTS merge_rollback_probe (k TEXT)")
+conn.execute("INSERT INTO merge_rollback_probe VALUES (?)", ("written-after-apply",))
+conn.commit()
+conn.close()
+' "$ETH_DB"
+written=$(db_fingerprints "$BTC_DB" "$ETH_DB")
+target_db_fp=$(db_fingerprints "$NT_DIR/state.db")
+out=$(run_nt_folds --rollback 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "new-target rollback exits 0 (rc=$rc)"; }
+grep -qx 'disable go-trader@paper.service' "$F/systemctl.log" || fail "the rollback disables the new unit"
+grep -qx 'reset-failed go-trader@paper.service' "$F/systemctl.log" || fail "the rollback clears a failed state of the new unit"
+[[ ! -e "$NT_DROPIN_DIR" ]] || fail "the rollback removes the drop-ins and their directory"
+nt_nothing_created "rollback"
+aside_dir=$(ls -d "$NT_DIR".rolled-back-* 2>/dev/null | head -n 1)
+aside_tree=$(ls -d "$NT_DEPLOY".rolled-back-* 2>/dev/null | head -n 1)
+[[ -n "$aside_dir" && -n "$aside_tree" ]] || fail "the rollback moves both new directories aside"
+grep -qx rolled-back "$aside_dir/merge-paper-btc+eth.journal" || fail "the moved journal records the rollback"
+assert_eq "$(db_fingerprints "$aside_dir/state.db")" "$target_db_fp" "the new target's database moves aside unchanged"
+assert_eq "$(db_fingerprints "$BTC_DB" "$ETH_DB")" "$written" "the rollback never rewrites a source database"
+assert_eq "$(cat "$BASE/coin-btc/config.json")" "$btc_cfg" "the rollback leaves the source config as it was"
+assert_contains "$out" "enable --now go-trader@coin-btc.service" "the rollback prints the source restart commands"
+assert_contains "$out" "enable --now go-trader@coin-eth.service" "every source gets a restart command"
+out=$(run_nt_folds --rollback 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "0" "a second rollback is a no-op success"
+assert_contains "$out" "records a finished rollback; nothing to do" "the second rollback reports no-op"
+out=$(run_nt_folds 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "a dry run after the rollback exits 0 (rc=$rc)"; }
+rm -rf "$(stage_dir_from "$out")"
+
+echo "== new target: an interrupted apply moves everything it created aside"
+nt_setup ntfail
+before=$(db_fingerprints "$BTC_DB" "$ETH_DB")
+out=$(MERGE_PAPER_FAIL_AFTER=build run_nt_folds --apply 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "4" "an interrupted new-target apply exits 4"
+nt_nothing_created "interrupted apply"
+ls -d "$NT_DIR".rolled-back-* >/dev/null 2>&1 || fail "the interrupted apply keeps its config directory aside"
+assert_eq "$(db_fingerprints "$BTC_DB" "$ETH_DB")" "$before" "the interrupted apply leaves every database untouched"
+out=$(MERGE_PAPER_FAIL_AFTER=override run_nt_folds --apply 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "4" "an interruption after the drop-ins exits 4"
+nt_nothing_created "override-step interruption"
+out=$(run_nt_folds --apply 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "a fresh apply after interrupted runs exits 0 (rc=$rc)"; }
+
+echo "== new target: a half-written journal needs --rollback first"
+nt_setup ntjournal
+out=$(run_nt_folds --apply 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "apply before the journal test exits 0 (rc=$rc)"; }
+sed -i.bak '/^complete$/d' "$NT_JOURNAL" && rm -f "$NT_JOURNAL.bak"
+out=$(run_nt_folds --apply 2>&1) && rc=0 || rc=$?
+assert_rc "$rc" "24" "an interrupted journal refuses a new apply"
+assert_contains "$out" "run --rollback --new-target paper" "the refusal names the rollback"
+out=$(run_nt_folds --rollback 2>&1) && rc=0 || rc=$?
+[[ "$rc" == "0" ]] || { echo "$out" >&2; fail "rollback of an interrupted journal exits 0 (rc=$rc)"; }
+nt_nothing_created "rollback of an interrupted journal"
 
 echo "OK: merge-paper-instance tests passed"

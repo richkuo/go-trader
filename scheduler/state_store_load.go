@@ -45,12 +45,18 @@ func LoadStateWithStore(cfg *Config, store *StateStore) (*AppState, []storageOrp
 	found := false
 
 	primary := store.primary()
+	var meta processMeta
+	metaFound := false
 	if primary == nil || primary.db == nil {
-		return nil, nil, fmt.Errorf("primary state file %q does not exist yet", cfg.DBFile)
-	}
-	meta, metaFound, err := primary.loadProcessMeta()
-	if err != nil {
-		return nil, nil, fmt.Errorf("sqlite load: %w", err)
+		if !store.readOnly() {
+			return nil, nil, fmt.Errorf("primary state file %q does not exist yet", cfg.DBFile)
+		}
+	} else {
+		var err error
+		meta, metaFound, err = primary.loadProcessMeta()
+		if err != nil {
+			return nil, nil, fmt.Errorf("sqlite load: %w", err)
+		}
 	}
 	if metaFound {
 		found = true

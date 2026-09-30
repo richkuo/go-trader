@@ -13,7 +13,7 @@ for t in systemd-run python3 rsync git runuser flock; do
     command -v "$t" >/dev/null 2>&1 || { echo "SKIP: $t required"; exit 0; }
 done
 PY3=$(command -v python3)
-SCENARIOS="${FIXTURE_SCENARIOS:-refuse plan confirm apply latch conflict resume signal stages kill fold update}"
+SCENARIOS="${FIXTURE_SCENARIOS:-refuse plan confirm apply latch conflict resume signal stages kill fold update newtarget}"
 HELPERS="$SCRIPT_DIR/update_helpers.sh"
 FIXTURE_GO="${FIXTURE_GO:-$(command -v go || true)}"
 
@@ -1136,6 +1136,78 @@ UNIT
     systemctl stop "$tunit" "$funit" "$runit"
     unset UV_STUB_CACHE
     echo "root updates on trees another account owns OK"
+}
+
+scenario_newtarget() {
+    note "paper fold into a new template service starts it under the template sandbox"
+    local aport=$((BASE_PORT + 17)) bport=$((BASE_PORT + 18)) nport=$((BASE_PORT + 19))
+    local aunit="go-trader-$ID-na.service" bunit="go-trader-$ID-nb.service"
+    local ainst="na-$ID" binst="nb-$ID" target="nt-$ID"
+    INSTANCES+=("$ainst" "$binst" "$target")
+    make_deployment na "$aport"
+    make_deployment nb "$bport"
+    expect_exit 0 tool apply --unit "$aunit" --instance "$ainst"
+    expect_exit 0 tool apply --unit "$bunit" --instance "$binst"
+    systemctl stop "go-trader@$ainst.service" "go-trader@$binst.service"
+    git -c safe.directory='*' clone -q --bare "/opt/go-trader-$ainst" "$WORK/nt-origin.git"
+    git -c safe.directory='*' -C "/opt/go-trader-$ainst" remote add origin "$WORK/nt-origin.git"
+    cat > "$WORK/nt-build" <<EOS
+#!/usr/bin/env bash
+set -e
+[[ "\$1" == "--rsync-from" ]]
+cp "\$2/go-trader" ./go-trader
+mkdir -p .venv/bin
+ln -sfn "$PY3" .venv/bin/python3
+EOS
+    chmod +x "$WORK/nt-build"
+    local adb="/opt/go-trader-$ainst/scheduler/state.db" bdb="/opt/go-trader-$binst/scheduler/state.db"
+    local books_a books_b
+    sql "$adb" "INSERT INTO trades (strategy_id, timestamp, symbol, side, quantity, price, value, trade_type, details) VALUES ('hl-na-a', '2026-09-01T00:00:00Z', 'ETH', 'buy', 1, 100, 100, 'fixture', 'nt-trade-a-$ID')"
+    sql "$bdb" "INSERT INTO trades (strategy_id, timestamp, symbol, side, quantity, price, value, trade_type, details) VALUES ('hl-nb-a', '2026-09-01T00:00:00Z', 'ETH', 'buy', 1, 100, 100, 'fixture', 'nt-trade-b-$ID')"
+    books_a=$(sql "$adb" "SELECT id FROM strategies ORDER BY id")
+    books_b=$(sql "$bdb" "SELECT id FROM strategies ORDER BY id")
+    local merge=(bash "$SCRIPT_DIR/merge-paper-instance.sh" --new-target "$target" --source "a=$ainst" --source "b=$binst" --status-port "$nport")
+    expect_exit 0 env MERGE_PAPER_BUILD_CMD="$WORK/nt-build" "${merge[@]}"
+    grep -q "VERDICT: READY" "$WORK/last.out" || fail "the new-target dry run did not pass"
+    [[ ! -e "/opt/go-trader-$target" && ! -e "/var/lib/go-trader/$target" ]] || fail "the new-target dry run created a target path"
+    expect_exit 0 env MERGE_PAPER_BUILD_CMD="$WORK/nt-build" "${merge[@]}" --apply
+    grep -q "VERDICT: APPLIED" "$WORK/last.out" || fail "the new-target apply did not finish"
+    [[ "$(systemctl is-enabled "go-trader@$target.service" 2>/dev/null || true)" != "enabled" ]] || fail "the apply enabled the new unit"
+    [[ "$(stat -c '%a %U' "/var/lib/go-trader/$target/config.json")" == "600 $(unit_prop "go-trader@$ainst.service" User)" ]] || fail "the new config is not 0600 and owned by the service user"
+    systemctl daemon-reload
+    systemctl disable --now "go-trader@$ainst.service" "go-trader@$binst.service" >/dev/null 2>&1
+    systemctl enable --now "go-trader@$target.service" >/dev/null 2>&1
+    wait_health "go-trader@$target.service" "$nport"
+    local logs="" i
+    for i in $(seq 1 30); do
+        logs=$( { journalctl --namespace=+go-trader -u "go-trader@$target.service" -n 400 --no-pager 2>/dev/null; journalctl -u "go-trader@$target.service" -n 400 --no-pager 2>/dev/null; } || true)
+        grep -q "\[storage\]   paper:b -> " <<<"$logs" && break
+        sleep 1
+    done
+    grep -q "\[storage\] layout: split" <<<"$logs" || { echo "$logs" | tail -n 60 >&2; fail "the new unit did not report the split layout"; }
+    grep -q "\[storage\]   primary -> /var/lib/go-trader/$target/state.db" <<<"$logs" || { echo "$logs" | tail -n 60 >&2; fail "the new unit does not own its own primary file"; }
+    grep -q "\[storage\]   paper:a -> $adb" <<<"$logs" || { echo "$logs" | tail -n 60 >&2; fail "the new unit does not serve partition paper:a"; }
+    grep -q "\[storage\]   paper:b -> $bdb" <<<"$logs" || { echo "$logs" | tail -n 60 >&2; fail "the new unit does not serve partition paper:b"; }
+    systemctl stop "go-trader@$target.service"
+    [[ -n "$(sql "$adb" "SELECT 1 FROM trades WHERE details = 'nt-trade-a-$ID'")" ]] || fail "source a lost its trade history"
+    [[ -n "$(sql "$bdb" "SELECT 1 FROM trades WHERE details = 'nt-trade-b-$ID'")" ]] || fail "source b lost its trade history"
+    local sid
+    for sid in $books_a; do
+        [[ -n "$(sql "$adb" "SELECT 1 FROM strategies WHERE id = '$sid'")" ]] || fail "source a lost the book of $sid"
+    done
+    for sid in $books_b; do
+        [[ -n "$(sql "$bdb" "SELECT 1 FROM strategies WHERE id = '$sid'")" ]] || fail "source b lost the book of $sid"
+    done
+    expect_exit 0 "${merge[@]}" --rollback
+    [[ ! -e "/opt/go-trader-$target" && ! -e "/var/lib/go-trader/$target" ]] || fail "the rollback left a new-target path in place"
+    [[ ! -e "/etc/systemd/system/go-trader@$target.service.d" ]] || fail "the rollback left the drop-ins"
+    assert_target_down "$target"
+    systemctl daemon-reload
+    systemctl enable --now "go-trader@$ainst.service" "go-trader@$binst.service" >/dev/null 2>&1
+    wait_health "go-trader@$ainst.service" "$aport"
+    wait_health "go-trader@$binst.service" "$bport"
+    systemctl stop "go-trader@$ainst.service" "go-trader@$binst.service"
+    echo "newtarget OK"
 }
 
 grep -q "migrate-service-layout" "$SCRIPT_DIR/update.sh" && fail "update.sh must never call the migration"
