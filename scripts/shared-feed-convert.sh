@@ -1162,7 +1162,7 @@ guard_clear() {
 undo_begin() {
     GUARD_KIND=""
     GUARD_UNIT=""
-    trap '' INT TERM HUP
+    trap '' INT TERM HUP PIPE
     trap - EXIT
 }
 
