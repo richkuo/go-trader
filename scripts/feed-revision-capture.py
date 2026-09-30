@@ -20,12 +20,14 @@ candleSnapshot at fixed offsets from the close, each read covering the last
 intervals:
 
     uv run --no-sync python scripts/feed-revision-capture.py capture \\
-        --coins BTC,ETH,SOL,HYPE,DOGE --intervals 1m,5m --minutes 90 \\
+        --coins BTC --intervals 1m,5m --offsets 1.5,5,20,60 --minutes 90 \\
         --out /var/tmp/feed-revisions.jsonl
 
 Capture has a hard limit of 10 reads per rolling 60s across workers (about
 210 request weight with the documented candle weights). Lower it with
---max-reads-per-minute. Reads above the cap are recorded as refused. HTTP 429
+--max-reads-per-minute. Startup rejects plans whose average rate or peak
+rolling 60s schedule exceeds the cap. Run other coins in sequential captures.
+Runtime budget refusals are reported apart from failed requests. HTTP 429
 pauses all new reads for 60s and records the pause. The window is at most 50
 bars, and delayed reads stop at the anchor interval to bound response weight.
 
@@ -207,6 +209,25 @@ def run_reads(args, writer, stop, deadline_ms):
     pool.shutdown(wait=True)
 
 
+def capture_plan(args):
+    rate = len(args.coins) * len(args.offsets) * sum(60_000 / INTERVAL_MS[iv] for iv in args.intervals)
+    if rate > args.max_reads_per_minute:
+        return rate, None
+    period = math.lcm(*(INTERVAL_MS[iv] for iv in args.intervals))
+    phases = sorted((close + int(off * 1000)) % period
+                    for iv in args.intervals for close in range(0, period, INTERVAL_MS[iv])
+                    for off in args.offsets for coin in args.coins)
+    window = deque()
+    peak = 0
+    for due in phases + [phase + period for phase in phases]:
+        while window and due - window[0] >= 60_000:
+            window.popleft()
+        window.append(due)
+        if due >= period:
+            peak = max(peak, len(window))
+    return rate, peak
+
+
 def capture(args):
     writer = Writer(args.out)
     stop = threading.Event()
@@ -249,6 +270,7 @@ def report(args):
     ws = defaultdict(list)
     rest = defaultdict(list)
     failures = []
+    refused = []
     reads = defaultdict(int)
     disconnects = []
     started = stopped = None
@@ -269,8 +291,10 @@ def report(args):
                 elif kind == "ws_event" and rec.get("event") in ("close", "error"):
                     disconnects.append(rec.get("at_ms"))
                 elif kind == "rest":
-                    if rec.get("sent", True):
-                        reads[rec["i"]] += 1
+                    if rec.get("sent") is False:
+                        refused.append(rec)
+                        continue
+                    reads[rec["i"]] += 1
                     if not rec.get("ok"):
                         failures.append(rec)
                         continue
@@ -330,7 +354,7 @@ def report(args):
                                    "rest_v": b["v"], "socket_v": held[-1][1]["v"]})
                 break
     out = {"started_ms": started, "stopped_ms": stopped, "final_after_s": args.final_after,
-           "read_failures": len(failures), "socket_disconnects": len(disconnects), "intervals": {}}
+           "read_failures": len(failures), "refused": len(refused), "socket_disconnects": len(disconnects), "intervals": {}}
     for iv, s in sorted(per_iv.items(), key=lambda kv: INTERVAL_MS[kv[0]]):
         between = s.pop("rest_change_between_s")
         s["socket_last_update_s"] = summarize(s["socket_last_update_s"])
@@ -340,12 +364,13 @@ def report(args):
     out["missed"] = missed
     out["rest_older"] = rest_older
     out["failures"] = [{"coin": f["coin"], "i": f["i"], "offset_s": f["offset_s"], "error": f.get("error")} for f in failures]
+    out["refusals"] = [{"coin": r["coin"], "i": r["i"], "offset_s": r["offset_s"], "error": r.get("error")} for r in refused]
     if args.json:
         json.dump(out, sys.stdout, indent=2, sort_keys=True)
         print()
         return 0
     dur = ((stopped or 0) - (started or 0)) / 60000.0 if started and stopped else float("nan")
-    print(f"capture: {dur:.1f} min, read failures {len(failures)}, socket disconnects {len(disconnects)}, "
+    print(f"capture: {dur:.1f} min, read failures {len(failures)}, refused {len(refused)}, socket disconnects {len(disconnects)}, "
           f"bars counted once a REST read at or after close+{args.final_after:g}s exists")
     for iv, s in out["intervals"].items():
         print(f"{iv}: bars={s['bars']} reads={s['reads']} socket_changed_after_close={s['changed_after_close_socket']} "
@@ -361,6 +386,8 @@ def report(args):
         print(f"REST_OLDER {r['coin']} {r['i']} open={r['t']} read=close+{r['req_s']}s rest_v={r['rest_v']} socket_v={r['socket_v']}")
     for f in out["failures"]:
         print(f"FAILED_READ {f['coin']} {f['i']} offset={f['offset_s']}s: {f['error']}")
+    for r in out["refusals"]:
+        print(f"REFUSED_READ {r['coin']} {r['i']} offset={r['offset_s']}s: {r['error']}")
     return 0
 
 
@@ -368,10 +395,10 @@ def main():
     ap = argparse.ArgumentParser(description=USAGE, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     cap = sub.add_parser("capture")
-    cap.add_argument("--coins", default="BTC,ETH,SOL,HYPE,DOGE")
+    cap.add_argument("--coins", default="BTC")
     cap.add_argument("--intervals", default="1m,5m")
     cap.add_argument("--minutes", type=float, default=60)
-    cap.add_argument("--offsets", default="1.5,3,5,8,15,30,45")
+    cap.add_argument("--offsets", default="1.5,5,20,60")
     cap.add_argument("--window-bars", type=int, default=8)
     cap.add_argument("--max-reads-per-minute", type=int, default=10,
                      help="rolling 60s read cap across workers, 1 to 10 (default 10)")
@@ -402,6 +429,12 @@ def main():
         args.offsets = sorted(float(o) for o in args.offsets.split(",") if o.strip())
         if not args.offsets or any(not math.isfinite(o) or o < 0 for o in args.offsets):
             ap.error("offsets must be finite and nonnegative")
+        rate, peak = capture_plan(args)
+        if rate > args.max_reads_per_minute:
+            ap.error(f"planned reads per minute {rate:g} exceed cap {args.max_reads_per_minute}")
+        if peak > args.max_reads_per_minute:
+            ap.error(f"planned reads per minute {rate:g}, peak rolling 60s reads {peak} exceed cap {args.max_reads_per_minute}")
+        print(f"capture plan: {rate:g} reads per minute, peak rolling 60s reads {peak}, cap {args.max_reads_per_minute}", file=sys.stderr)
         return capture(args)
     return report(args)
 
