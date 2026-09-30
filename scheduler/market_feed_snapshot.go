@@ -68,14 +68,15 @@ type marketSnapshotKey struct {
 }
 
 type marketSnapshot struct {
-	Version          int
-	EvaluationID     string
-	ConfigGeneration uint64
-	SealedAt         time.Time
-	Connected        bool
-	Metrics          feedMetrics
-	Deadline         time.Time
-	MarksAgeFromNow  bool
+	Version           int
+	EvaluationID      string
+	ConfigGeneration  uint64
+	SealedAt          time.Time
+	Connected         bool
+	Metrics           feedMetrics
+	Deadline          time.Time
+	MarksAgeFromNow   bool
+	CorrectionUnknown bool
 
 	keys    map[marketFeedKey]*marketSnapshotKey
 	mids    map[string]feedMid
@@ -490,6 +491,11 @@ func marketSnapshotLogLine(s *marketSnapshot, reqs cycleMarketRequirements) stri
 	if s == nil {
 		return ""
 	}
+	metrics := formatFeedMetrics(s.Metrics)
+	if s.CorrectionUnknown {
+		metrics = fmt.Sprintf("rest{bootstrap,repair,recovery}=%d,%d,%d correction=n/a steady_candle_rest=%d",
+			s.Metrics.BootstrapCalls, s.Metrics.RepairCalls, s.Metrics.RecoveryCalls, s.Metrics.SteadyCandleCalls)
+	}
 	return fmt.Sprintf("[feed] snapshot=%s/%d %s %s",
-		s.EvaluationID, s.ConfigGeneration, marketSnapshotHealth(s, reqs), formatFeedMetrics(s.Metrics))
+		s.EvaluationID, s.ConfigGeneration, marketSnapshotHealth(s, reqs), metrics)
 }

@@ -8,7 +8,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from collections import defaultdict
+from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 
 USAGE = """Measure when Hyperliquid revises a closed candle, from the socket and from REST.
@@ -22,6 +22,12 @@ intervals:
     uv run --no-sync python scripts/feed-revision-capture.py capture \\
         --coins BTC,ETH,SOL,HYPE,DOGE --intervals 1m,5m --minutes 90 \\
         --out /var/tmp/feed-revisions.jsonl
+
+Capture has a hard limit of 10 reads per rolling 60s across workers (about
+210 request weight with the documented candle weights). Lower it with
+--max-reads-per-minute. Reads above the cap are recorded as refused. HTTP 429
+pauses all new reads for 60s and records the pause. The window is at most 50
+bars, and delayed reads stop at the anchor interval to bound response weight.
 
 Report mode reads one or more capture files and prints, per interval, how many
 closed bars changed after their close, when the last socket update and the
@@ -112,12 +118,44 @@ def run_socket(args, writer, stop):
             time.sleep(2)
 
 
-def rest_read(args, writer, coin, iv, close_ms, offset_s):
+class ReadBudget:
+    def __init__(self, limit, writer):
+        self.lock = threading.Lock()
+        self.starts = deque()
+        self.paused_until = 0.0
+        self.limit = limit
+        self.writer = writer
+
+    def acquire(self):
+        with self.lock:
+            now = time.monotonic()
+            while self.starts and now - self.starts[0] >= 60:
+                self.starts.popleft()
+            if now < self.paused_until:
+                return "rate_limit_pause"
+            if len(self.starts) >= self.limit:
+                return "read_budget_exhausted"
+            self.starts.append(now)
+            return None
+
+    def pause(self):
+        with self.lock:
+            self.paused_until = time.monotonic() + 60
+            self.writer.write({"kind": "rate_limit_pause", "at_ms": now_ms(), "pause_s": 60})
+
+
+def rest_read(args, writer, budget, coin, iv, close_ms, offset_s):
+    refusal = budget.acquire()
+    if refusal:
+        writer.write({"kind": "rest", "coin": coin, "i": iv, "req_ms": now_ms(),
+                      "anchor_close_ms": close_ms, "offset_s": offset_s, "ok": False,
+                      "sent": False, "error": refusal, "resp_ms": now_ms()})
+        return
     iv_ms = INTERVAL_MS[iv]
     req = now_ms()
     start = close_ms - iv_ms * args.window_bars
     body = json.dumps({"type": "candleSnapshot",
-                       "req": {"coin": coin, "interval": iv, "startTime": start, "endTime": req}}).encode()
+                       "req": {"coin": coin, "interval": iv, "startTime": start, "endTime": min(req, close_ms + iv_ms)}}).encode()
     record = {"kind": "rest", "coin": coin, "i": iv, "req_ms": req, "anchor_close_ms": close_ms, "offset_s": offset_s}
     try:
         http_req = urllib.request.Request(args.url.rstrip("/") + "/info", data=body,
@@ -127,6 +165,8 @@ def rest_read(args, writer, coin, iv, close_ms, offset_s):
         record["ok"] = True
         record["bars"] = [bar_of(r) for r in rows]
     except (urllib.error.URLError, OSError, ValueError, KeyError, TypeError) as exc:
+        if isinstance(exc, urllib.error.HTTPError) and exc.code == 429:
+            budget.pause()
         record["ok"] = False
         record["error"] = str(exc)
     record["resp_ms"] = now_ms()
@@ -141,6 +181,7 @@ def run_reads(args, writer, stop, deadline_ms):
             iv_ms = INTERVAL_MS[iv]
             first_close = (start // iv_ms + 1) * iv_ms
             heapq.heappush(heap, (first_close, coin, iv))
+    budget = ReadBudget(args.max_reads_per_minute, writer)
     pool = ThreadPoolExecutor(max_workers=args.workers)
     pending = []
     while not stop.is_set():
@@ -156,13 +197,13 @@ def run_reads(args, writer, stop, deadline_ms):
             wait = (due - now_ms()) / 1000.0
             if wait > 0 and stop.wait(wait):
                 break
-            pool.submit(rest_read, args, writer, c, i, cm, off)
+            pool.submit(rest_read, args, writer, budget, c, i, cm, off)
     while pending and not stop.is_set():
         due, c, i, cm, off = heapq.heappop(pending)
         wait = (due - now_ms()) / 1000.0
         if wait > 0 and stop.wait(wait):
             break
-        pool.submit(rest_read, args, writer, c, i, cm, off)
+        pool.submit(rest_read, args, writer, budget, c, i, cm, off)
     pool.shutdown(wait=True)
 
 
@@ -171,7 +212,8 @@ def capture(args):
     stop = threading.Event()
     deadline = now_ms() + int(args.minutes * 60_000)
     writer.write({"kind": "meta", "started_ms": now_ms(), "coins": args.coins, "intervals": args.intervals,
-                  "offsets_s": args.offsets, "window_bars": args.window_bars, "minutes": args.minutes, "url": args.url})
+                  "offsets_s": args.offsets, "window_bars": args.window_bars, "minutes": args.minutes, "url": args.url,
+                  "max_reads_per_minute": args.max_reads_per_minute})
     sock = threading.Thread(target=run_socket, args=(args, writer, stop), daemon=True)
     sock.start()
     try:
@@ -227,7 +269,8 @@ def report(args):
                 elif kind == "ws_event" and rec.get("event") in ("close", "error"):
                     disconnects.append(rec.get("at_ms"))
                 elif kind == "rest":
-                    reads[rec["i"]] += 1
+                    if rec.get("sent", True):
+                        reads[rec["i"]] += 1
                     if not rec.get("ok"):
                         failures.append(rec)
                         continue
@@ -330,6 +373,8 @@ def main():
     cap.add_argument("--minutes", type=float, default=60)
     cap.add_argument("--offsets", default="1.5,3,5,8,15,30,45")
     cap.add_argument("--window-bars", type=int, default=8)
+    cap.add_argument("--max-reads-per-minute", type=int, default=10,
+                     help="rolling 60s read cap across workers, 1 to 10 (default 10)")
     cap.add_argument("--workers", type=int, default=4)
     cap.add_argument("--timeout", type=float, default=10)
     cap.add_argument("--url", default=UPSTREAM)
@@ -341,12 +386,22 @@ def main():
     rep.add_argument("--json", action="store_true")
     args = ap.parse_args()
     if args.cmd == "capture":
+        if not 1 <= args.max_reads_per_minute <= 10:
+            ap.error("--max-reads-per-minute must be between 1 and 10")
+        if not 1 <= args.window_bars <= 50:
+            ap.error("--window-bars must be between 1 and 50")
+        if args.workers < 1:
+            ap.error("--workers must be positive")
         args.coins = [c.strip() for c in args.coins.split(",") if c.strip()]
         args.intervals = [i.strip() for i in args.intervals.split(",") if i.strip()]
         for iv in args.intervals:
             if iv not in INTERVAL_MS:
                 ap.error(f"unsupported interval {iv}")
+        if not args.coins or not args.intervals:
+            ap.error("coins and intervals must be nonempty")
         args.offsets = sorted(float(o) for o in args.offsets.split(",") if o.strip())
+        if not args.offsets or any(not math.isfinite(o) or o < 0 for o in args.offsets):
+            ap.error("offsets must be finite and nonnegative")
         return capture(args)
     return report(args)
 

@@ -81,10 +81,10 @@ func feedBarSameValues(a, b feedBar) bool {
 }
 
 func feedRestBarDecision(stored, rest feedBar, requestedAt time.Time) (replace, verified bool) {
-	if rest.Volume < stored.Volume {
+	if stored.Source == feedBarSourceSocket && rest.Volume < stored.Volume {
 		return false, stored.RecvAt.After(requestedAt)
 	}
-	if rest.Volume > stored.Volume {
+	if stored.Source == feedBarSourceSocket && rest.Volume > stored.Volume {
 		return true, true
 	}
 	if stored.RecvAt.After(requestedAt) {

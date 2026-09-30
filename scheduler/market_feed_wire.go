@@ -404,11 +404,12 @@ func (doc *feedSealDoc) snapshot() *marketSnapshot {
 			RecoveryCalls:     doc.Metrics.RecoveryCalls,
 			SteadyCandleCalls: doc.Metrics.SteadyCandleCalls,
 		},
-		Deadline:        time.Unix(doc.Key, 0).UTC(),
-		MarksAgeFromNow: true,
-		keys:            make(map[marketFeedKey]*marketSnapshotKey, len(doc.Keys)),
-		mids:            make(map[string]feedMid, len(doc.Mids)),
-		funding:         make(map[string]feedFunding, len(doc.Funding)),
+		Deadline:          time.Unix(doc.Key, 0).UTC(),
+		MarksAgeFromNow:   true,
+		CorrectionUnknown: true,
+		keys:              make(map[marketFeedKey]*marketSnapshotKey, len(doc.Keys)),
+		mids:              make(map[string]feedMid, len(doc.Mids)),
+		funding:           make(map[string]feedFunding, len(doc.Funding)),
 	}
 	for _, k := range doc.Keys {
 		key := marketFeedKey{Host: k.Host, Namespace: k.Namespace, Symbol: k.Symbol, Timeframe: k.Timeframe}

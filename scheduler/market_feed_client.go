@@ -436,13 +436,14 @@ func (c *sharedFeedClient) recordEndpoint(ep sharedFeedEndpoint, key int64, h fe
 
 func degradedSharedSnapshot(key int64, now time.Time) *marketSnapshot {
 	return &marketSnapshot{
-		Version:      marketSnapshotVersion,
-		EvaluationID: feedSealEvaluationID(key),
-		SealedAt:     now.UTC(),
-		Deadline:     time.Unix(key, 0).UTC(),
-		keys:         map[marketFeedKey]*marketSnapshotKey{},
-		mids:         map[string]feedMid{},
-		funding:      map[string]feedFunding{},
+		CorrectionUnknown: true,
+		Version:           marketSnapshotVersion,
+		EvaluationID:      feedSealEvaluationID(key),
+		SealedAt:          now.UTC(),
+		Deadline:          time.Unix(key, 0).UTC(),
+		keys:              map[marketFeedKey]*marketSnapshotKey{},
+		mids:              map[string]feedMid{},
+		funding:           map[string]feedFunding{},
 	}
 }
 
