@@ -787,7 +787,7 @@ scenario_latch() {
 
 scenario_newtarget() {
     note "paper fold into a new template service starts it under the template sandbox"
-    local aport=$((BASE_PORT + 11)) bport=$((BASE_PORT + 12)) nport=$((BASE_PORT + 13))
+    local aport=$((BASE_PORT + 14)) bport=$((BASE_PORT + 15)) nport=$((BASE_PORT + 16))
     local aunit="go-trader-$ID-na.service" bunit="go-trader-$ID-nb.service"
     local ainst="na-$ID" binst="nb-$ID" target="nt-$ID"
     INSTANCES+=("$ainst" "$binst" "$target")
