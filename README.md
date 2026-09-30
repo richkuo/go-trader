@@ -403,6 +403,8 @@ bash scripts/update.sh --rsync-from /path/to/staged-build --restart
 bash scripts/update.sh --all --restart                             # batch all instances
 ```
 
+Optional: `sudo bash scripts/shared-feed-convert.sh plan --consumer <unit>` starts a checked, reversible conversion to the shared market feed. Updates never run it. See SKILL.md § Shared market feed.
+
 | Change | Action |
 |--------|--------|
 | Go or Python source | `sudo bash scripts/update.sh --restart` |
