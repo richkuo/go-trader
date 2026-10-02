@@ -62,7 +62,7 @@ Guardrails only; mechanism/flows in SKILL.md, docs/POST_UPDATE_HISTORY.md. Ceili
 - Notifications: `MultiNotifier`; paper routes via `resolveChannelKey`. `SendToPartitionChannels`: live=`SendToAllChannels`; paper=own roster (`resolveTradeChannel`, rebuilt on `ReloadConfig`), never suffix scan, `SendToAllChannels` only if empty.
 
 ## PRs and issues
-- Title `type(#<N>): summary [C<score>, <model>, <effort>]`; never bare `#N` in lists. Body: `## Plain simple English` (<55 words), then `## Summary`+verification.
+- Title `type(#<N>): summary [C<score>, <model>, <effort>]`; never bare `#N` in lists. Body: `## Summary`+verification, `## Plain simple English` (<55 words) last.
 - Commits, PR and issue bodies end `LLM: <model> | <effort> | Harness: <action>`, no `Co-authored-by`.
 - Before merging a long-lived PR, diff `origin/main..HEAD` for reverts.
 - Reviews also follow `.github/prompts/pr-review-format-local.md`, never gate on CI; findings restate as invariant, list breaking states (inverse, compound).

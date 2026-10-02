@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"reflect"
@@ -25,6 +26,8 @@ const (
 
 	llmEntryAnalysisQueueCap      = 16
 	llmEntryAnalysisMaxConcurrent = 2
+
+	llmEntryAnalysisUsageStderrPrefix = "llm_review_usage "
 )
 
 type LLMEntryAnalysisConfig struct {
@@ -182,25 +185,109 @@ func llmEntryAnalysisTimeframe(sc StrategyConfig) string {
 	return "1h"
 }
 
+type LLMEntryAnalysisUsage struct {
+	Calls        int `json:"calls"`
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+}
+
 type LLMEntryAnalysisResult struct {
-	Verdict    string            `json:"verdict"`
-	Rationale  string            `json:"rationale"`
-	PerAnalyst map[string]string `json:"per_analyst,omitempty"`
-	Model      string            `json:"model,omitempty"`
-	Error      string            `json:"error,omitempty"`
+	Verdict    string                 `json:"verdict"`
+	Rationale  string                 `json:"rationale"`
+	PerAnalyst map[string]string      `json:"per_analyst,omitempty"`
+	Model      string                 `json:"model,omitempty"`
+	Usage      *LLMEntryAnalysisUsage `json:"usage,omitempty"`
+	Error      string                 `json:"error,omitempty"`
 }
 
 var llmEntryAnalysisVerdicts = map[string]bool{"bullish": true, "bearish": true, "mixed": true}
+
+func decodeLLMEntryAnalysisUsage(raw []byte) *LLMEntryAnalysisUsage {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return nil
+	}
+	var u LLMEntryAnalysisUsage
+	if err := json.Unmarshal([]byte(trimmed), &u); err != nil {
+		return nil
+	}
+	if u.Calls < 0 || u.InputTokens < 0 || u.OutputTokens < 0 {
+		return nil
+	}
+	return &u
+}
+
+func llmEntryAnalysisReportedUsage(stdout, stderr []byte) *LLMEntryAnalysisUsage {
+	var wire struct {
+		Usage json.RawMessage `json:"usage"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(string(stdout))), &wire); err == nil {
+		if u := decodeLLMEntryAnalysisUsage(wire.Usage); u != nil {
+			return u
+		}
+	}
+	var last *LLMEntryAnalysisUsage
+	for _, line := range strings.Split(string(stderr), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, llmEntryAnalysisUsageStderrPrefix) {
+			continue
+		}
+		if u := decodeLLMEntryAnalysisUsage([]byte(strings.TrimPrefix(line, llmEntryAnalysisUsageStderrPrefix))); u != nil {
+			last = u
+		}
+	}
+	return last
+}
+
+func llmEntryAnalysisStderrLine(stderr []byte) string {
+	var kept []string
+	for _, line := range strings.Split(string(stderr), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), llmEntryAnalysisUsageStderrPrefix) {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return firstLine([]byte(strings.Join(kept, "\n")))
+}
+
+type llmEntryAnalysisFailure struct {
+	err   error
+	usage *LLMEntryAnalysisUsage
+}
+
+func (f *llmEntryAnalysisFailure) Error() string { return f.err.Error() }
+
+func (f *llmEntryAnalysisFailure) Unwrap() error { return f.err }
+
+func llmEntryAnalysisFailureUsage(err error) *LLMEntryAnalysisUsage {
+	var f *llmEntryAnalysisFailure
+	if errors.As(err, &f) {
+		return f.usage
+	}
+	return nil
+}
+
+func formatLLMEntryAnalysisUsage(u *LLMEntryAnalysisUsage) string {
+	if u == nil {
+		return "usage unavailable"
+	}
+	return fmt.Sprintf("usage calls=%d input_tokens=%d output_tokens=%d", u.Calls, u.InputTokens, u.OutputTokens)
+}
 
 func parseLLMEntryAnalysisOutput(stdout []byte) (*LLMEntryAnalysisResult, error) {
 	trimmed := strings.TrimSpace(string(stdout))
 	if trimmed == "" {
 		return nil, fmt.Errorf("empty output")
 	}
-	var res LLMEntryAnalysisResult
-	if err := json.Unmarshal([]byte(trimmed), &res); err != nil {
+	var wire struct {
+		LLMEntryAnalysisResult
+		Usage json.RawMessage `json:"usage"`
+	}
+	if err := json.Unmarshal([]byte(trimmed), &wire); err != nil {
 		return nil, fmt.Errorf("parse output: %w", err)
 	}
+	res := wire.LLMEntryAnalysisResult
+	res.Usage = decodeLLMEntryAnalysisUsage(wire.Usage)
 	if res.Error != "" {
 		return nil, fmt.Errorf("pipeline error: %s", res.Error)
 	}
@@ -290,14 +377,17 @@ func runLLMEntryAnalysisScript(ctx context.Context, job llmEntryAnalysisJob) (*L
 	}
 	stdout, stderr, runErr := spawnPythonProcess(ctx, llmEntryAnalysisScript, nil, stdin, job.Params.Timeout)
 	res, parseErr := parseLLMEntryAnalysisOutput(stdout)
-	if parseErr != nil {
-		if runErr != nil {
-			return nil, fmt.Errorf("%v (stderr: %s)", runErr, firstLine(stderr))
-		}
-		return nil, parseErr
+	var failErr error
+	switch {
+	case parseErr != nil && runErr != nil:
+		failErr = fmt.Errorf("%v: %v (stderr: %s)", runErr, parseErr, llmEntryAnalysisStderrLine(stderr))
+	case parseErr != nil:
+		failErr = parseErr
+	case runErr != nil:
+		failErr = fmt.Errorf("%v (stderr: %s)", runErr, llmEntryAnalysisStderrLine(stderr))
 	}
-	if runErr != nil {
-		return nil, fmt.Errorf("%v (stderr: %s)", runErr, firstLine(stderr))
+	if failErr != nil {
+		return nil, &llmEntryAnalysisFailure{err: failErr, usage: llmEntryAnalysisReportedUsage(stdout, stderr)}
 	}
 	return res, nil
 }
@@ -365,9 +455,10 @@ func (w *llmEntryAnalysisWorker) run(ctx context.Context) {
 func (w *llmEntryAnalysisWorker) process(ctx context.Context, job llmEntryAnalysisJob) {
 	res, err := w.runner(ctx, job)
 	if err != nil || res == nil {
-		log.Printf("[llm-analysis] %s %s: analysis failed: %v", job.StrategyID, job.Symbol, err)
+		log.Printf("[llm-analysis] %s %s: analysis failed: %v; %s", job.StrategyID, job.Symbol, err, formatLLMEntryAnalysisUsage(llmEntryAnalysisFailureUsage(err)))
 		return
 	}
+	log.Printf("[llm-analysis] %s %s: verdict %s; %s", job.StrategyID, job.Symbol, res.Verdict, formatLLMEntryAnalysisUsage(res.Usage))
 	if w.stampVerdict != nil {
 		w.stampVerdict(job, res.Verdict)
 	}

@@ -1,9 +1,12 @@
 
 import importlib.util
+import io
 import json
 import os
 import subprocess
 import sys
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
@@ -157,6 +160,7 @@ class TestSubprocessContract:
         assert r.returncode == 1
         out = json.loads(r.stdout)
         assert "ANTHROPIC_API_KEY" in out["error"]
+        assert out["usage"] == {"calls": 0, "input_tokens": 0, "output_tokens": 0}
 
     def test_garbage_stdin_errors_json(self):
         r = subprocess.run([sys.executable, SCRIPT], input="not json",
@@ -170,3 +174,82 @@ class TestBuildLLMCall:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         with pytest.raises(RuntimeError):
             mod.build_llm_call("claude-opus-5-5")
+
+
+def _reply(n, stop_reason="end_turn", text="short note"):
+    return {
+        "content": [{"type": "text", "text": text}],
+        "stop_reason": stop_reason,
+        "usage": {"input_tokens": 100 * n, "output_tokens": 10 * n},
+    }
+
+
+def _serve(reply_for):
+    seen = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            seen.append(json.loads(self.rfile.read(int(self.headers["content-length"]))))
+            data = json.dumps(reply_for(seen[-1], len(seen))).encode("utf-8")
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, seen
+
+
+class TestUsageAccounting:
+    def _run_main(self, mod, monkeypatch, capsys, reply_for):
+        server, seen = _serve(reply_for)
+        url = f"http://127.0.0.1:{server.server_port}/v1/messages"
+        real = mod.build_llm_call
+        monkeypatch.setattr(mod, "build_llm_call", lambda model, usage=None: real(model, api_url=url, usage=usage))
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+        monkeypatch.setattr(sys, "argv", [SCRIPT])
+        monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({**CTX, "platform": "nonexistent"})))
+        try:
+            rc = mod.main()
+        finally:
+            server.shutdown()
+            server.server_close()
+        captured = capsys.readouterr()
+        stderr_usage = [
+            json.loads(line[len(mod.USAGE_STDERR_PREFIX):])
+            for line in captured.err.splitlines()
+            if line.startswith(mod.USAGE_STDERR_PREFIX)
+        ]
+        return rc, json.loads(captured.out), stderr_usage, seen
+
+    def test_success_sums_every_call(self, mod, monkeypatch, capsys):
+        def reply_for(body, n):
+            if "format" in body["output_config"]:
+                return _reply(n, text='{"verdict": "bullish", "rationale": "momentum leans up"}')
+            return _reply(n)
+
+        rc, out, stderr_usage, seen = self._run_main(mod, monkeypatch, capsys, reply_for)
+        assert rc == 0
+        assert out["verdict"] == "bullish"
+        assert len(seen) == 4
+        assert out["usage"] == {"calls": 4, "input_tokens": 1000, "output_tokens": 100}
+        assert stderr_usage[-1] == out["usage"]
+
+    def test_failure_keeps_usage_of_calls_made(self, mod, monkeypatch, capsys):
+        def reply_for(body, n):
+            if n == 3:
+                return _reply(n, stop_reason="refusal", text="")
+            return _reply(n)
+
+        rc, out, stderr_usage, seen = self._run_main(mod, monkeypatch, capsys, reply_for)
+        assert rc == 1
+        assert "verdict" not in out
+        assert "refused" in out["error"]
+        assert len(seen) == 3
+        assert out["usage"] == {"calls": 3, "input_tokens": 600, "output_tokens": 60}
+        assert [u["calls"] for u in stderr_usage] == [1, 2, 3]

@@ -22,6 +22,8 @@ OHLCV_LIMIT = 100
 
 VALID_VERDICTS = ("bullish", "bearish", "mixed")
 
+USAGE_STDERR_PREFIX = "llm_review_usage "
+
 JUDGE_SCHEMA = {
     "type": "object",
     "properties": {
@@ -35,7 +37,7 @@ JUDGE_SCHEMA = {
 STYLE_RULES = (
     "Write for a smart 18-year-old with no trading background: plain language, "
     "no jargon, no indicator names without a one-word gloss. "
-    "HARD CAP: {cap} words. Never exceed it."
+    "Keep it to {cap} words or fewer; the digest cuts everything after word {cap}."
 )
 
 
@@ -129,7 +131,26 @@ def gather_market_context(ctx):
     return {"ohlcv_summary": ohlcv_summary, "funding": funding}
 
 
-def build_llm_call(model, api_url=ANTHROPIC_API_URL, timeout=PER_CALL_TIMEOUT_S):
+def new_usage():
+    return {"calls": 0, "input_tokens": 0, "output_tokens": 0}
+
+
+def record_usage(usage, reply_usage):
+    if usage is None:
+        return
+    usage["calls"] += 1
+    if isinstance(reply_usage, dict):
+        for key in ("input_tokens", "output_tokens"):
+            value = reply_usage.get(key)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                usage[key] += value
+    try:
+        print(USAGE_STDERR_PREFIX + json.dumps(usage), file=sys.stderr, flush=True)
+    except (OSError, ValueError):
+        pass
+
+
+def build_llm_call(model, api_url=ANTHROPIC_API_URL, timeout=PER_CALL_TIMEOUT_S, usage=None):
     api_key = os.environ.get(API_KEY_ENV, "")
     if not api_key:
         raise RuntimeError(f"{API_KEY_ENV} is not set")
@@ -157,6 +178,7 @@ def build_llm_call(model, api_url=ANTHROPIC_API_URL, timeout=PER_CALL_TIMEOUT_S)
             raise RuntimeError(f"API HTTP {e.code}: {api_error_message(e)}") from None
         if not isinstance(body, dict):
             raise RuntimeError("API response is not a JSON object")
+        record_usage(usage, body.get("usage"))
         stop_reason = body.get("stop_reason")
         if stop_reason == "refusal":
             details = body.get("stop_details")
@@ -280,6 +302,7 @@ def main():
     if "--probe-only" in sys.argv[1:]:
         print(json.dumps({"status": "ok"}))
         return 0
+    usage = new_usage()
     try:
         ctx = json.loads(sys.stdin.read())
         if not isinstance(ctx, dict):
@@ -289,12 +312,13 @@ def main():
         rounds = ctx.get("max_debate_rounds")
         rounds = DEFAULT_MAX_DEBATE_ROUNDS if rounds is None else int(rounds)
         market = gather_market_context(ctx)
-        llm_call = build_llm_call(model)
+        llm_call = build_llm_call(model, usage=usage)
         out = run_pipeline(ctx, market, llm_call, max_debate_rounds=rounds, word_cap=word_cap)
+        out["usage"] = dict(usage)
         print(json.dumps(out))
         return 0
     except Exception as e:
-        print(json.dumps({"error": f"{type(e).__name__}: {e}"}))
+        print(json.dumps({"error": f"{type(e).__name__}: {e}", "usage": dict(usage)}))
         return 1
 
 
