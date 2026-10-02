@@ -15,7 +15,7 @@ const (
 	llmEntryAnalysisScript    = "shared_scripts/llm_review.py"
 	llmEntryAnalysisAPIKeyEnv = "ANTHROPIC_API_KEY"
 
-	llmEntryAnalysisDefaultModel    = "claude-sonnet-5"
+	llmEntryAnalysisDefaultModel    = "claude-sonnet-5-5"
 	llmEntryAnalysisDefaultRounds   = 1
 	llmEntryAnalysisMaxRounds       = 3
 	llmEntryAnalysisDefaultTimeoutS = 120

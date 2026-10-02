@@ -36,7 +36,7 @@ CTX = {
     "regime": "trending_up",
     "is_live": True,
     "indicators": {"atr": 400.0, "rsi": 61.2},
-    "model": "claude-sonnet-5",
+    "model": "claude-sonnet-5-5",
 }
 
 
@@ -68,23 +68,36 @@ class TestSummarizeOhlcv:
 
 class TestJudgeParsing:
     @pytest.mark.parametrize("raw,verdict", [
-        ('{"verdict": "Bullish", "rationale": "looks good"}', "bullish"),
-        ('```json\n{"verdict":"bearish","rationale":"r"}\n```', "bearish"),
-        ("Overall this reads mixed to me because ...", "mixed"),
+        ('{"verdict": "bullish", "rationale": "looks good"}', "bullish"),
+        ('{"verdict":"bearish","rationale":"r"}', "bearish"),
+        ('{"rationale": "r", "verdict": "mixed"}', "mixed"),
     ])
     def test_verdict_parsing(self, mod, raw, verdict):
         v, _ = mod.parse_judge_output(raw, 55)
         assert v == verdict
 
     def test_strict_json_rationale(self, mod):
-        _, r = mod.parse_judge_output('{"verdict": "Bullish", "rationale": "looks good"}', 55)
+        _, r = mod.parse_judge_output('{"verdict": "bullish", "rationale": "looks good"}', 55)
         assert r == "looks good"
 
-    def test_ambiguous_raises(self, mod):
+    @pytest.mark.parametrize("raw", [
+        "could be bullish or bearish",
+        "no verdict here",
+        "I am not bullish here",
+        "Overall this reads mixed to me because ...",
+        '```json\n{"verdict":"bearish","rationale":"r"}\n```',
+        '{"verdict": "Bullish", "rationale": "looks good"}',
+        '{"verdict": "neutral", "rationale": "r"}',
+        '{"verdict": "bullish", "rationale": ""}',
+        '{"verdict": "bullish"}',
+        '{"verdict": "bullish", "rationale": "r", "extra": 1}',
+        '["bullish", "r"]',
+        "",
+        None,
+    ])
+    def test_non_schema_output_raises(self, mod, raw):
         with pytest.raises(RuntimeError):
-            mod.parse_judge_output("could be bullish or bearish", 55)
-        with pytest.raises(RuntimeError):
-            mod.parse_judge_output("no verdict here", 55)
+            mod.parse_judge_output(raw, 55)
 
     def test_rationale_capped(self, mod):
         long = " ".join(["w"] * 100)
@@ -94,8 +107,8 @@ class TestJudgeParsing:
 
 class TestPipeline:
     def _fake_llm(self, calls):
-        def llm_call(system, user):
-            calls.append((system, user))
+        def llm_call(system, user, schema=None):
+            calls.append((system, user, schema))
             if "risk manager" in system:
                 return '{"verdict": "bullish", "rationale": "momentum and funding both lean up"}'
             return "short note " + " ".join(["pad"] * 80)
@@ -111,6 +124,7 @@ class TestPipeline:
         for note in list(out["per_analyst"].values()) + [out["rationale"]]:
             assert len(note.split()) <= 56
         assert len(calls) == 7
+        assert [c[2] for c in calls] == [None] * 6 + [mod.JUDGE_SCHEMA]
 
     def test_zero_rounds_skips_debate(self, mod):
         calls = []
@@ -121,7 +135,7 @@ class TestPipeline:
         assert len(calls) == 2
 
     def test_llm_failure_propagates(self, mod):
-        def boom(system, user):
+        def boom(system, user, schema=None):
             raise RuntimeError("api down")
         with pytest.raises(RuntimeError):
             mod.run_pipeline(CTX, {"ohlcv_summary": None, "funding": None}, boom)
@@ -155,4 +169,4 @@ class TestBuildLLMCall:
     def test_missing_key_raises(self, mod, monkeypatch):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         with pytest.raises(RuntimeError):
-            mod.build_llm_call("claude-sonnet-5")
+            mod.build_llm_call("claude-sonnet-5-5")
