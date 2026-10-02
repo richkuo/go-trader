@@ -11,6 +11,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import pytest
 
 SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "llm_review.py")
+GO_USAGE_STDERR_PREFIX = "llm_review_usage "
 
 
 def _load():
@@ -221,9 +222,9 @@ class TestUsageAccounting:
             server.server_close()
         captured = capsys.readouterr()
         stderr_usage = [
-            json.loads(line[len(mod.USAGE_STDERR_PREFIX):])
+            json.loads(line[len(GO_USAGE_STDERR_PREFIX):])
             for line in captured.err.splitlines()
-            if line.startswith(mod.USAGE_STDERR_PREFIX)
+            if line.startswith(GO_USAGE_STDERR_PREFIX)
         ]
         return rc, json.loads(captured.out), stderr_usage, seen
 
