@@ -17,7 +17,7 @@ DEFAULT_MAX_DEBATE_ROUNDS = 1
 PER_CALL_TIMEOUT_S = 60
 MAX_TOKENS_PER_CALL = 16000
 EFFORT = "low"
-DEFAULT_MODEL = "claude-sonnet-5-5"
+DEFAULT_MODEL = "claude-opus-5-5"
 OHLCV_LIMIT = 100
 
 VALID_VERDICTS = ("bullish", "bearish", "mixed")

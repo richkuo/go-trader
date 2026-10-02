@@ -36,7 +36,7 @@ CTX = {
     "regime": "trending_up",
     "is_live": True,
     "indicators": {"atr": 400.0, "rsi": 61.2},
-    "model": "claude-sonnet-5-5",
+    "model": "claude-opus-5-5",
 }
 
 
@@ -169,4 +169,4 @@ class TestBuildLLMCall:
     def test_missing_key_raises(self, mod, monkeypatch):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         with pytest.raises(RuntimeError):
-            mod.build_llm_call("claude-sonnet-5-5")
+            mod.build_llm_call("claude-opus-5-5")
