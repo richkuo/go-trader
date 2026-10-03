@@ -1380,6 +1380,17 @@ class Backtester:
                     "indicator_frame must have a unique index that contains every "
                     "bar of the scored frame"
                 )
+            shared = [c for c in ("open", "high", "low", "close")
+                      if c in df.columns and c in indicator_frame.columns]
+            if not np.array_equal(
+                indicator_frame.loc[df.index, shared].to_numpy(dtype=float),
+                df[shared].to_numpy(dtype=float),
+                equal_nan=True,
+            ):
+                raise ValueError(
+                    "indicator_frame bars must match the scored frame's open, high, "
+                    "low and close values"
+                )
             history = indicator_frame
         else:
             history = df

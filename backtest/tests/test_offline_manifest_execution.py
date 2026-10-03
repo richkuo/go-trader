@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import sys
 
 import numpy as np
 import pandas as pd
@@ -9,6 +10,8 @@ import pytest
 import offline_manifest as om
 import data_fetcher
 import eval_windows
+import hurst_gate
+import run_backtest
 from backtester import Backtester
 from registry_loader import load_registry
 
@@ -282,3 +285,183 @@ def test_eval_windows_manifest_leg_is_offline_and_repeatable(tmp_path, monkeypat
     with pytest.raises(ValueError, match="funding as an entry input"):
         eval_windows.run_leg(reg, "funding_skew", None, "BTC", "1h", (None, None),
                              manifest_ctx=ctx)
+
+
+def _warmup_frames(tmp_path, warmup_bars=240):
+    path = _build_manifest(tmp_path)
+    raw = json.loads(path.read_text())
+    raw["warmup_bars"] = warmup_bars
+    path.write_text(json.dumps(raw))
+    m = om.load_manifest(str(path))
+    full, win, _ = om.window_frame(m, m["datasets"][0], "test")
+    full["open_action"] = "none"
+    full.loc[om.slice_window(full, win).index[0], "open_action"] = "long"
+    return full, om.slice_window(full, win)
+
+
+def _bt(**kw):
+    return Backtester(initial_capital=1000.0, platform="hyperliquid", **kw)
+
+
+def test_indicator_frame_gives_entry_atr_on_scored_bar_two(tmp_path):
+    full, scored = _warmup_frames(tmp_path)
+    cut = _bt(stop_loss_atr_mult=1.0).run(scored, save=False)
+    warm = _bt(stop_loss_atr_mult=1.0).run(scored, save=False, indicator_frame=full)
+    assert cut["trades"][0]["entry_date"] == warm["trades"][0]["entry_date"] == str(scored.index[1])
+    assert cut["trades"][0]["entry_atr"] == 0.0
+    assert warm["trades"][0]["entry_atr"] > 0.0
+
+
+def test_indicator_frame_gives_zscore_and_hurst_on_scored_bar_one(tmp_path, monkeypatch):
+    full, scored = _warmup_frames(tmp_path)
+    seen = {}
+    real_eval = Backtester._evaluate_close_strategies
+    real_step = hurst_gate.HurstGate.step
+
+    def spy_eval(self, *a, **k):
+        seen.setdefault("z", k.get("zscore_series"))
+        return real_eval(self, *a, **k)
+
+    def spy_step(self, h, flat):
+        seen.setdefault("h", h)
+        return real_step(self, h, flat)
+
+    monkeypatch.setattr(Backtester, "_evaluate_close_strategies", spy_eval)
+    monkeypatch.setattr(hurst_gate.HurstGate, "step", spy_step)
+    kw = dict(close_strategies=[{"name": "zscore_target", "params": {"lookback": 20}}],
+              hurst_gate={"enabled": True, "min": 0.0, "max": 1.0})
+    for ctx, finite in ((None, False), (full, True)):
+        seen.clear()
+        _bt(**kw).run(scored, save=False, indicator_frame=ctx)
+        assert bool(np.isfinite(seen["z"].iloc[0])) is finite
+        assert bool(np.isfinite(seen["h"])) is finite
+
+
+def test_indicator_frame_equal_to_scored_frame_changes_nothing(tmp_path):
+    _, scored = _warmup_frames(tmp_path)
+    kw = dict(stop_loss_atr_mult=1.0,
+              close_strategies=[{"name": "time_stop", "params": {"max_bars": 5}}])
+    base = _bt(**kw).run(scored, save=False)
+    same = _bt(**kw).run(scored, save=False, indicator_frame=scored)
+    assert base["trades"] and base["trades"] == same["trades"]
+    assert base["final_capital"] == same["final_capital"]
+
+
+def test_indicator_frame_must_cover_and_match_the_scored_bars(tmp_path):
+    full, scored = _warmup_frames(tmp_path)
+    with pytest.raises(ValueError, match="contains every bar"):
+        _bt(stop_loss_atr_mult=1.0).run(scored, save=False,
+                                         indicator_frame=full.drop(index=scored.index[3]))
+    altered = full.copy()
+    altered.loc[scored.index[3], "close"] += 1.0
+    with pytest.raises(ValueError, match="must match"):
+        _bt(stop_loss_atr_mult=1.0).run(scored, save=False, indicator_frame=altered)
+
+
+def _fake_info(fail_on=None):
+    def post(payload, retries=5):
+        kind = payload["type"]
+        if kind == fail_on:
+            raise om.ManifestError(f"fake {kind} failure")
+        if kind == "meta":
+            return {"universe": [{"name": "BTC", "szDecimals": 5}]}
+        req = payload["req"]
+        now_ms = int(om.time.time() * 1000)
+        out = []
+        t = int(req["startTime"])
+        while t <= min(int(req["endTime"]), now_ms):
+            px = 100.0 + (t - T0) / HOUR * 0.01
+            out.append({"t": t, "o": str(px), "h": str(px + 0.5), "l": str(px - 0.5),
+                        "c": str(px), "v": "10.0"})
+            t += HOUR
+        return out
+    return post
+
+
+def _acquire_manifest(tmp_path, monkeypatch, fail_on=None):
+    path = _build_manifest(tmp_path, funding=False)
+    raw = json.loads(path.read_text())
+    raw["acquisition"] = {"start": pd.Timestamp(T0, unit="ms").isoformat(),
+                          "end": pd.Timestamp(T0 + HOUR * 400, unit="ms").isoformat()}
+    path.write_text(json.dumps(raw))
+    monkeypatch.delenv("HYPERLIQUID_SECRET_KEY", raising=False)
+    monkeypatch.setattr(om.time, "sleep", lambda s: None)
+    monkeypatch.setattr(om, "_post_info", _fake_info(fail_on))
+    return path
+
+
+def _snapshot(root):
+    return {str(p.relative_to(root)): p.read_bytes()
+            for p in sorted(root.rglob("*")) if p.is_file()}
+
+
+def test_acquire_refuses_existing_inputs_without_overwrite(tmp_path, monkeypatch):
+    path = _acquire_manifest(tmp_path, monkeypatch)
+    monkeypatch.setattr(om, "_post_info", lambda *a, **k: pytest.fail("acquire used the network"))
+    before = _snapshot(tmp_path)
+    with pytest.raises(om.ManifestError, match="without --overwrite"):
+        om.acquire(str(path))
+    assert _snapshot(tmp_path) == before
+
+
+@pytest.mark.parametrize("stage", ["fetch", "move"])
+def test_failed_acquire_leaves_frozen_inputs_and_hashes_untouched(tmp_path, monkeypatch, stage):
+    path = _acquire_manifest(tmp_path, monkeypatch,
+                             fail_on="candleSnapshot" if stage == "fetch" else None)
+    if stage == "move":
+        real_replace = os.replace
+        calls = []
+
+        def flaky_replace(src, dst):
+            calls.append(dst)
+            if len(calls) == 4:
+                raise OSError("simulated failure while moving staged files")
+            return real_replace(src, dst)
+
+        monkeypatch.setattr(om.os, "replace", flaky_replace)
+    before = _snapshot(tmp_path)
+    with pytest.raises((om.ManifestError, OSError)):
+        om.acquire(str(path), overwrite=True)
+    assert _snapshot(tmp_path) == before
+    assert not list(tmp_path.glob(".acquire-staging-*"))
+
+
+def test_acquire_overwrite_replaces_inputs_and_hashes_together(tmp_path, monkeypatch):
+    path = _acquire_manifest(tmp_path, monkeypatch)
+    before = _snapshot(tmp_path)
+    om.acquire(str(path), overwrite=True)
+    after = _snapshot(tmp_path)
+    assert after["data/BTC.csv.gz"] != before["data/BTC.csv.gz"]
+    m = om.load_manifest(str(path))
+    assert len(om.load_candles(m["datasets"][0])) == 400
+    assert not list(tmp_path.glob(".acquire-staging-*"))
+
+
+@pytest.mark.parametrize("now_ms,last_kept", [
+    (T0 + HOUR * 10 - 1, T0 + HOUR * 8),
+    (T0 + HOUR * 10, T0 + HOUR * 9),
+    (T0 + HOUR * 10 + 1, T0 + HOUR * 9),
+])
+def test_fetch_keeps_closed_candles_only(monkeypatch, now_ms, last_kept):
+    monkeypatch.setattr(om.time, "sleep", lambda s: None)
+    monkeypatch.setattr(om.time, "time", lambda: now_ms / 1000)
+    monkeypatch.setattr(om, "_post_info", _fake_info())
+    df = om._fetch_hl_candles("BTC", "1h", T0, T0 + HOUR * 100)
+    assert int(df["timestamp"].iloc[0]) == T0
+    assert int(df["timestamp"].iloc[-1]) == last_kept
+
+
+@pytest.mark.parametrize("argv", [
+    ["--mode", "compare", "--manifest", "manifest.json"],
+    ["--mode", "multi", "--manifest-window", "test"],
+    ["--mode", "optimize", "--cost-multiplier", "2"],
+    ["--mode", "single", "--manifest-window", "test"],
+    ["--mode", "single", "--manifest-dataset", "BTC 4h"],
+])
+def test_manifest_flags_are_refused_before_any_data_load(monkeypatch, argv):
+    monkeypatch.setattr(run_backtest, "load_cached_data",
+                        lambda *a, **k: pytest.fail("data loaded despite a refused flag"))
+    monkeypatch.setattr(sys, "argv", ["run_backtest.py", "--strategy", "sma_crossover", *argv])
+    with pytest.raises(SystemExit) as exc:
+        run_backtest.main()
+    assert exc.value.code not in (0, None)

@@ -4922,7 +4922,7 @@
   "stop_loss_atr_mult": 1.0
  },
  "source_sha256": {
-  "backtest/backtester.py": "c0c5a34754db609fd342aa5588685a080365f7b0c25ceacd3ff48b88afcb9cc6",
+  "backtest/backtester.py": "35e3e2281397e0fa07496b8759e4d14777a7ddc5ee33b3820bf643ec0994a13f",
   "backtest/candidates/chaikin_money_flow_1649/run_study.py": "01edcde29952c64246ef45e5e9a175cb8d6dc8c54af9d41792ce3e60e1467727",
   "backtest/eval_windows.py": "b4546f5d9b14ce9cbc86701c47509e11e1844f364e0d6744d9c49e7558ab683a",
   "backtest/offline_manifest.py": "0c559592f81d1227323dfcd02eb804140d171a39346fcadefcbd2f7d3464a560",
