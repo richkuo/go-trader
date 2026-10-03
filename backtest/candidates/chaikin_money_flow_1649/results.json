@@ -4924,8 +4924,8 @@
  "source_sha256": {
   "backtest/backtester.py": "31a8190ae7711d5da4f828639cbf52d176590aaf1495f2c2edba5424e312eb36",
   "backtest/candidates/chaikin_money_flow_1649/run_study.py": "01edcde29952c64246ef45e5e9a175cb8d6dc8c54af9d41792ce3e60e1467727",
-  "backtest/eval_windows.py": "682176f40e5655c22ed77b03ca450f85f49b2df08fbc3d8c1427ab6f664148b0",
-  "backtest/offline_manifest.py": "4cf7948e16af346095d9ab9dc70442f0f9bb0654a7f85cb22b87fffcb6b8a61b",
+  "backtest/eval_windows.py": "b754f0971987d5b5c97e5111e36f28a28995edf25750bd0bcd86b4b8a9035df1",
+  "backtest/offline_manifest.py": "0c559592f81d1227323dfcd02eb804140d171a39346fcadefcbd2f7d3464a560",
   "backtest/optimizer.py": "1e1651e8a89be0a646dc44afce87e8ba8b7dd2d935685d06e74f4849b21bad15",
   "shared_strategies/close/time_stop.py": "da47e115c599a162a9091a245ce51dda7566716e3811b106899b2ae446f19305",
   "shared_strategies/open/chaikin_money_flow.py": "88255f658caebb876d7077ef04106d672b11d5f773192b92b47a8ff5907ff141",

@@ -360,14 +360,22 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
         if close_strategies:
             df_signals = ensure_atr_indicator(df_signals)
 
-    if manifest_window is not None:
-        import offline_manifest as om
-        df_signals = om.slice_window(df_signals, manifest_window)
-        df = om.slice_window(df, manifest_window)
-
     use_regime = (regime_enabled or bool(allowed_regimes)
                   or bool(regime_windows_spec)
                   or bool(regime_directional_policy))
+
+    if manifest_window is not None:
+        import offline_manifest as om
+        if use_regime and "regime" not in df_signals.columns:
+            from regime import ensure_regime_columns
+            ensure_regime_columns(
+                df_signals,
+                period=regime_period,
+                adx_threshold=regime_adx_threshold,
+                windows_spec=regime_windows_spec,
+            )
+        df_signals = om.slice_window(df_signals, manifest_window)
+        df = om.slice_window(df, manifest_window)
     bt_kwargs = dict(
         initial_capital=capital, platform=FEE_PLATFORM,
         open_strategy={"name": name, "params": dict(strat_params or {})},

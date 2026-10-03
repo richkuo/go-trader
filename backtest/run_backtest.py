@@ -1606,6 +1606,21 @@ def main():
     args = _build_parser().parse_args()
     args.defaults = _resolve_defaults_mode(args)
 
+    if args.mode != "single":
+        manifest_flags = [
+            flag for flag, active in (
+                ("--manifest", args.manifest is not None),
+                ("--manifest-dataset", args.manifest_dataset is not None),
+                ("--manifest-window", args.manifest_window is not None),
+                ("--cost-multiplier", args.cost_multiplier != 1.0),
+            ) if active
+        ]
+        if manifest_flags:
+            print(f"--mode {args.mode} does not support {', '.join(manifest_flags)} "
+                  "(manifest replay is single mode only); use --mode single or "
+                  "eval_windows.py --manifest")
+            sys.exit(1)
+
     close_refs = None
     if args.close_strategies:
         close_refs = [_parse_close_strategy_arg(v) for v in args.close_strategies]

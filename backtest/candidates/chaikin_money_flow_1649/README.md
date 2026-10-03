@@ -183,10 +183,14 @@ uv run --no-sync python backtest/run_backtest.py --mode single --registry future
 ```
 
 Re-acquire (network, public endpoints only, refuses to run with
-`HYPERLIQUID_SECRET_KEY` set; replaces the committed files and hashes):
+`HYPERLIQUID_SECRET_KEY` set). Without `--overwrite`, `acquire` refuses when
+any committed input exists. With it, every file is staged first and the files
+and their hashes replace the committed ones together only after every fetch
+succeeds. The endpoint can no longer serve the early bars, so a re-acquisition
+shortens the data:
 
 ```
-uv run --no-sync python backtest/offline_manifest.py acquire --manifest backtest/candidates/chaikin_money_flow_1649/study_manifest.json --write-hashes
+uv run --no-sync python backtest/offline_manifest.py acquire --manifest backtest/candidates/chaikin_money_flow_1649/study_manifest.json --overwrite
 ```
 
 `discovery_before.json` / `discovery_after.json` hold the spot and futures

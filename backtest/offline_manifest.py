@@ -7,6 +7,7 @@ import io
 import json
 import math
 import os
+import shutil
 import sys
 import tempfile
 import time
@@ -369,6 +370,8 @@ def _post_info(payload: dict, retries: int = 5) -> object:
 
 def _fetch_hl_candles(coin: str, interval: str, start_ms: int, end_ms: int) -> pd.DataFrame:
     step = INTERVAL_MS[interval]
+    now_ms = int(time.time() * 1000)
+    end_ms = min(int(end_ms), now_ms - now_ms % step)
     rows = {}
     cursor = start_ms
     while cursor < end_ms:
@@ -400,83 +403,143 @@ def _write_csv_gz(df: pd.DataFrame, path: str) -> None:
         fh.write(buf.getvalue())
 
 
-def acquire(manifest_path: str, write_hashes: bool = False) -> dict:
+def _acquire_targets(manifest: dict) -> dict:
+    base = manifest["base_dir"]
+    raw = manifest["raw"]
+    targets = {"meta": _resolve(base, raw["venue_reference"]["meta"]["path"])}
+    if "l2_snapshot" in raw["venue_reference"]:
+        targets["l2_snapshot"] = _resolve(base, raw["venue_reference"]["l2_snapshot"]["path"])
+    for i, ds_raw in enumerate(raw["datasets"]):
+        targets[f"candles:{i}"] = _resolve(base, ds_raw["candles"]["path"])
+        if ds_raw.get("funding"):
+            targets[f"funding:{i}"] = _resolve(base, ds_raw["funding"]["path"])
+    paths = list(targets.values())
+    if len(set(paths)) != len(paths) or manifest["path"] in paths:
+        raise ManifestError("acquire targets must be distinct files other than the manifest")
+    return targets
+
+
+def _commit_staged(moves: list, staging: str) -> None:
+    done = []
+    try:
+        for i, (staged, target) in enumerate(moves):
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            backup = None
+            if os.path.exists(target):
+                backup = os.path.join(staging, f"backup-{i}")
+                os.replace(target, backup)
+            done.append((target, backup))
+            os.replace(staged, target)
+    except BaseException as exc:
+        try:
+            for target, backup in reversed(done):
+                if backup is not None:
+                    os.replace(backup, target)
+                elif os.path.exists(target):
+                    os.remove(target)
+        except BaseException as rollback_exc:
+            raise ManifestError(
+                f"acquire failed while replacing files ({exc}) and the rollback also failed "
+                f"({rollback_exc}); the previous files are kept in {staging}") from exc
+        raise
+
+
+def acquire(manifest_path: str, write_hashes: bool = False, overwrite: bool = False) -> dict:
     if os.environ.get("HYPERLIQUID_SECRET_KEY"):
         raise ManifestError("refusing to acquire research data with HYPERLIQUID_SECRET_KEY set")
     manifest = load_manifest(manifest_path, verify=False)
+    targets = _acquire_targets(manifest)
+    existing = sorted(os.path.relpath(p, manifest["base_dir"])
+                      for p in targets.values() if os.path.exists(p))
+    if existing and not overwrite:
+        raise ManifestError(
+            "refusing to replace existing frozen inputs without --overwrite: "
+            + ", ".join(existing))
+    write_hashes = write_hashes or bool(existing)
     acq = manifest["acquisition"]
     start_ms, end_ms = _ts_ms(acq["start"]), _ts_ms(acq["end"])
-    base = manifest["base_dir"]
     raw = manifest["raw"]
-    report = {"acquired_at": pd.Timestamp.now(tz="UTC").isoformat(), "datasets": {}}
+    report = {"acquired_at": pd.Timestamp.now(tz="UTC").isoformat(), "datasets": {},
+              "replaced": existing, "hashes_written": write_hashes}
 
-    meta = _post_info({"type": "meta"})
-    meta_path = _resolve(base, raw["venue_reference"]["meta"]["path"])
-    os.makedirs(os.path.dirname(meta_path), exist_ok=True)
-    with open(meta_path, "w") as fh:
-        json.dump(meta, fh, sort_keys=True, indent=1)
-        fh.write("\n")
-    if "l2_snapshot" in raw["venue_reference"]:
-        books = {}
-        for ds in manifest["datasets"]:
-            book = _post_info({"type": "l2Book", "coin": ds["coin"]})
-            levels = book.get("levels") or [[], []]
-            bid = float(levels[0][0]["px"]) if levels[0] else float("nan")
-            ask = float(levels[1][0]["px"]) if levels[1] else float("nan")
-            mid = (bid + ask) / 2.0
-            books[ds["coin"]] = {"time": book.get("time"), "best_bid": bid, "best_ask": ask,
-                                 "half_spread_bps": (ask - bid) / 2.0 / mid * 10_000.0}
-        l2_path = _resolve(base, raw["venue_reference"]["l2_snapshot"]["path"])
-        with open(l2_path, "w") as fh:
-            json.dump(books, fh, sort_keys=True, indent=1)
+    staging = tempfile.mkdtemp(prefix=".acquire-staging-", dir=manifest["base_dir"])
+    keep_staging = False
+    try:
+        staged = {key: os.path.join(staging, key.replace(":", "-")) for key in targets}
+
+        meta = _post_info({"type": "meta"})
+        with open(staged["meta"], "w") as fh:
+            json.dump(meta, fh, sort_keys=True, indent=1)
             fh.write("\n")
-        report["l2_snapshot"] = books
+        if "l2_snapshot" in targets:
+            books = {}
+            for ds in manifest["datasets"]:
+                book = _post_info({"type": "l2Book", "coin": ds["coin"]})
+                levels = book.get("levels") or [[], []]
+                bid = float(levels[0][0]["px"]) if levels[0] else float("nan")
+                ask = float(levels[1][0]["px"]) if levels[1] else float("nan")
+                mid = (bid + ask) / 2.0
+                books[ds["coin"]] = {"time": book.get("time"), "best_bid": bid, "best_ask": ask,
+                                     "half_spread_bps": (ask - bid) / 2.0 / mid * 10_000.0}
+            with open(staged["l2_snapshot"], "w") as fh:
+                json.dump(books, fh, sort_keys=True, indent=1)
+                fh.write("\n")
+            report["l2_snapshot"] = books
 
-    from funding_fetcher import load_cached_funding
-    from storage import load_funding_coverage
-    with tempfile.TemporaryDirectory() as tmp:
-        db_path = os.path.join(tmp, "funding.db")
-        for ds_raw, ds in zip(raw["datasets"], manifest["datasets"]):
-            candles = _fetch_hl_candles(ds["coin"], manifest["interval"], start_ms, end_ms)
-            if candles.empty:
-                raise ManifestError(f"{ds['key']}: venue returned no candles")
-            cpath = _resolve(base, ds_raw["candles"]["path"])
-            _write_csv_gz(candles, cpath)
-            entry = {"candles": len(candles),
-                     "first": str(pd.to_datetime(int(candles["timestamp"].iloc[0]), unit="ms")),
-                     "last": str(pd.to_datetime(int(candles["timestamp"].iloc[-1]), unit="ms"))}
-            if ds_raw.get("funding"):
-                funding = None
-                for attempt in range(5):
-                    funding = load_cached_funding(ds["coin"], acq["start"], end_date=acq["end"],
-                                                  db_path=db_path)
-                    if funding is not None and not funding.empty:
-                        break
-                    time.sleep(15 * (attempt + 1))
-                if funding is None or funding.empty:
-                    raise ManifestError(f"{ds['key']}: funding acquisition returned no rows")
-                fdf = funding[["timestamp", "rate"]].copy()
-                fdf = fdf[(fdf["timestamp"] >= start_ms) & (fdf["timestamp"] < end_ms)]
-                fdf = fdf.sort_values("timestamp").drop_duplicates("timestamp")
-                fpath = _resolve(base, ds_raw["funding"]["path"])
-                _write_csv_gz(fdf.reset_index(drop=True), fpath)
-                entry["funding_rows"] = int(len(fdf))
-                entry["funding_store_coverage"] = load_funding_coverage(
-                    "hyperliquid", ds["coin"], db_path=db_path)
-            report["datasets"][ds["key"]] = entry
+        from funding_fetcher import load_cached_funding
+        from storage import load_funding_coverage
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "funding.db")
+            for i, (ds_raw, ds) in enumerate(zip(raw["datasets"], manifest["datasets"])):
+                candles = _fetch_hl_candles(ds["coin"], manifest["interval"], start_ms, end_ms)
+                if candles.empty:
+                    raise ManifestError(f"{ds['key']}: venue returned no candles")
+                _write_csv_gz(candles, staged[f"candles:{i}"])
+                entry = {"candles": len(candles),
+                         "first": str(pd.to_datetime(int(candles["timestamp"].iloc[0]), unit="ms")),
+                         "last": str(pd.to_datetime(int(candles["timestamp"].iloc[-1]), unit="ms"))}
+                if ds_raw.get("funding"):
+                    funding = None
+                    for attempt in range(5):
+                        funding = load_cached_funding(ds["coin"], acq["start"], end_date=acq["end"],
+                                                      db_path=db_path)
+                        if funding is not None and not funding.empty:
+                            break
+                        time.sleep(15 * (attempt + 1))
+                    if funding is None or funding.empty:
+                        raise ManifestError(f"{ds['key']}: funding acquisition returned no rows")
+                    fdf = funding[["timestamp", "rate"]].copy()
+                    fdf = fdf[(fdf["timestamp"] >= start_ms) & (fdf["timestamp"] < end_ms)]
+                    fdf = fdf.sort_values("timestamp").drop_duplicates("timestamp")
+                    _write_csv_gz(fdf.reset_index(drop=True), staged[f"funding:{i}"])
+                    entry["funding_rows"] = int(len(fdf))
+                    entry["funding_store_coverage"] = load_funding_coverage(
+                        "hyperliquid", ds["coin"], db_path=db_path)
+                report["datasets"][ds["key"]] = entry
 
-    if write_hashes:
-        raw["venue_reference"]["meta"]["sha256"] = sha256_file(meta_path)
-        if "l2_snapshot" in raw["venue_reference"]:
-            raw["venue_reference"]["l2_snapshot"]["sha256"] = sha256_file(
-                _resolve(base, raw["venue_reference"]["l2_snapshot"]["path"]))
-        for ds_raw in raw["datasets"]:
-            ds_raw["candles"]["sha256"] = sha256_file(_resolve(base, ds_raw["candles"]["path"]))
-            if ds_raw.get("funding"):
-                ds_raw["funding"]["sha256"] = sha256_file(_resolve(base, ds_raw["funding"]["path"]))
-        with open(manifest["path"], "w") as fh:
-            json.dump(raw, fh, indent=2)
-            fh.write("\n")
+        moves = [(staged[key], targets[key]) for key in targets]
+        if write_hashes:
+            raw["venue_reference"]["meta"]["sha256"] = sha256_file(staged["meta"])
+            if "l2_snapshot" in targets:
+                raw["venue_reference"]["l2_snapshot"]["sha256"] = sha256_file(
+                    staged["l2_snapshot"])
+            for i, ds_raw in enumerate(raw["datasets"]):
+                ds_raw["candles"]["sha256"] = sha256_file(staged[f"candles:{i}"])
+                if ds_raw.get("funding"):
+                    ds_raw["funding"]["sha256"] = sha256_file(staged[f"funding:{i}"])
+            staged_manifest = os.path.join(staging, "manifest.json")
+            with open(staged_manifest, "w") as fh:
+                json.dump(raw, fh, indent=2)
+                fh.write("\n")
+            moves.append((staged_manifest, manifest["path"]))
+        try:
+            _commit_staged(moves, staging)
+        except ManifestError:
+            keep_staging = True
+            raise
+    finally:
+        if not keep_staging:
+            shutil.rmtree(staging, ignore_errors=True)
     return report
 
 
@@ -509,12 +572,17 @@ def main(argv=None) -> int:
     a.add_argument("--manifest", required=True)
     a.add_argument("--write-hashes", action="store_true",
                    help="Record the new files' sha256 values in the manifest")
+    a.add_argument("--overwrite", action="store_true",
+                   help="Replace existing frozen inputs. Without it, acquire refuses when any "
+                        "target file exists. Files are staged and moved into place with their "
+                        "hashes only after every fetch succeeds.")
     args = p.parse_args(argv)
     try:
         if args.cmd == "verify":
             print(json.dumps(verify_report(load_manifest(args.manifest)), indent=2, default=str))
         else:
-            print(json.dumps(acquire(args.manifest, write_hashes=args.write_hashes), indent=2, default=str))
+            print(json.dumps(acquire(args.manifest, write_hashes=args.write_hashes,
+                                     overwrite=args.overwrite), indent=2, default=str))
     except ManifestError as exc:
         print(f"manifest error: {exc}", file=sys.stderr)
         return 1
