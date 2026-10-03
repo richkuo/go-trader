@@ -1,0 +1,3387 @@
+{
+  "configs": [
+    {
+      "arm": "sizing",
+      "bh_reject": false,
+      "cluster_distinct_offsets": 637,
+      "cluster_draws": 10000,
+      "cluster_excluded_datasets": [],
+      "cluster_excluded_trades": 0,
+      "cluster_offset_range": [
+        30,
+        666
+      ],
+      "cluster_reason": null,
+      "cohort": "primary",
+      "config_id": "momentum/sizing/W128/shipped",
+      "continuity_target": "pnl_pct_net",
+      "family": "momentum",
+      "held_out_windows": [
+        "2013",
+        "2014",
+        "2015",
+        "2016",
+        "2019",
+        "2020H1",
+        "2020H2",
+        "2023",
+        "2024",
+        "2025H1",
+        "is",
+        "oos"
+      ],
+      "hurst_window": 128,
+      "n_kept": 1126,
+      "n_kept_effective": 301.1839,
+      "n_pooled_effective": 456.7755,
+      "n_pooled_trades": 8035,
+      "n_suppressed": 6909,
+      "n_suppressed_effective": 441.1047,
+      "p_cluster": 0.59854,
+      "p_cluster_return": 0.979502,
+      "p_raw": 0.559744,
+      "p_raw_return": 0.713929,
+      "primary_target": "signed_fixed_horizon_efficiency",
+      "protocol_min_windows": 3,
+      "protocol_windows": [
+        "2017",
+        "2018",
+        "2021",
+        "2022"
+      ],
+      "sense": "arms_on_high_h",
+      "separation": 0.007859,
+      "windows": {
+        "2013": {
+          "chop_delta": -48.233494,
+          "dd_delta": -14.425303,
+          "n_legs": 6,
+          "ret_gated": 777.536107,
+          "ret_ungated": 1544.773616,
+          "trades_gated": 201,
+          "trades_ungated": 201
+        },
+        "2014": {
+          "chop_delta": -38.608787,
+          "dd_delta": -13.204933,
+          "n_legs": 6,
+          "ret_gated": -20.138331,
+          "ret_ungated": -33.015758,
+          "trades_gated": 155,
+          "trades_ungated": 155
+        },
+        "2015": {
+          "chop_delta": -19.248913,
+          "dd_delta": -6.091317,
+          "n_legs": 6,
+          "ret_gated": 9.364033,
+          "ret_ungated": 26.261504,
+          "trades_gated": 132,
+          "trades_ungated": 132
+        },
+        "2016": {
+          "chop_delta": -9.582704,
+          "dd_delta": -2.41044,
+          "n_legs": 3,
+          "ret_gated": 51.787135,
+          "ret_ungated": 75.873018,
+          "trades_gated": 90,
+          "trades_ungated": 90
+        },
+        "2017": {
+          "chop_delta": -43.751448,
+          "dd_delta": -10.071107,
+          "n_legs": 9,
+          "ret_gated": 476.907407,
+          "ret_ungated": 1722.768395,
+          "trades_gated": 414,
+          "trades_ungated": 414
+        },
+        "2018": {
+          "chop_delta": -68.947206,
+          "dd_delta": -19.466932,
+          "n_legs": 9,
+          "ret_gated": -25.019563,
+          "ret_ungated": -43.524563,
+          "trades_gated": 346,
+          "trades_ungated": 346
+        },
+        "2019": {
+          "chop_delta": -41.509366,
+          "dd_delta": -11.199446,
+          "n_legs": 9,
+          "ret_gated": 4.813337,
+          "ret_ungated": 17.313957,
+          "trades_gated": 332,
+          "trades_ungated": 332
+        },
+        "2020H1": {
+          "chop_delta": -20.179625,
+          "dd_delta": -7.35932,
+          "n_legs": 9,
+          "ret_gated": 17.662377,
+          "ret_ungated": 15.985577,
+          "trades_gated": 171,
+          "trades_ungated": 171
+        },
+        "2020H2": {
+          "chop_delta": -11.159479,
+          "dd_delta": -5.127138,
+          "n_legs": 48,
+          "ret_gated": 30.10977,
+          "ret_ungated": 55.499996,
+          "trades_gated": 573,
+          "trades_ungated": 573
+        },
+        "2021": {
+          "chop_delta": -52.125522,
+          "dd_delta": -12.602429,
+          "n_legs": 51,
+          "ret_gated": 149.93419,
+          "ret_ungated": 336.913846,
+          "trades_gated": 1670,
+          "trades_ungated": 1670
+        },
+        "2022": {
+          "chop_delta": -38.417626,
+          "dd_delta": -13.370804,
+          "n_legs": 51,
+          "ret_gated": -10.942986,
+          "ret_ungated": -20.8165,
+          "trades_gated": 1234,
+          "trades_ungated": 1234
+        },
+        "2023": {
+          "chop_delta": -22.474621,
+          "dd_delta": -10.846166,
+          "n_legs": 30,
+          "ret_gated": 4.401595,
+          "ret_ungated": 8.644181,
+          "trades_gated": 565,
+          "trades_ungated": 565
+        },
+        "2024": {
+          "chop_delta": -32.140236,
+          "dd_delta": -11.570842,
+          "n_legs": 36,
+          "ret_gated": 21.64309,
+          "ret_ungated": 50.729788,
+          "trades_gated": 907,
+          "trades_ungated": 907
+        },
+        "2025H1": {
+          "chop_delta": -20.101847,
+          "dd_delta": -9.268596,
+          "n_legs": 36,
+          "ret_gated": -9.662502,
+          "ret_ungated": -16.22136,
+          "trades_gated": 476,
+          "trades_ungated": 476
+        },
+        "is": {
+          "chop_delta": -20.031086,
+          "dd_delta": -11.641796,
+          "n_legs": 36,
+          "ret_gated": -2.322757,
+          "ret_ungated": -8.912194,
+          "trades_gated": 470,
+          "trades_ungated": 470
+        },
+        "oos": {
+          "chop_delta": -15.053387,
+          "dd_delta": -9.413066,
+          "n_legs": 36,
+          "ret_gated": -0.838264,
+          "ret_ungated": -5.634505,
+          "trades_gated": 426,
+          "trades_ungated": 426
+        }
+      }
+    },
+    {
+      "arm": "sizing",
+      "bh_reject": false,
+      "cluster_distinct_offsets": 637,
+      "cluster_draws": 10000,
+      "cluster_excluded_datasets": [],
+      "cluster_excluded_trades": 0,
+      "cluster_offset_range": [
+        30,
+        666
+      ],
+      "cluster_reason": null,
+      "cohort": "primary",
+      "config_id": "momentum/sizing/W256/shipped",
+      "continuity_target": "pnl_pct_net",
+      "family": "momentum",
+      "held_out_windows": [
+        "2013",
+        "2014",
+        "2015",
+        "2016",
+        "2019",
+        "2020H1",
+        "2020H2",
+        "2023",
+        "2024",
+        "2025H1",
+        "is",
+        "oos"
+      ],
+      "hurst_window": 256,
+      "n_kept": 377,
+      "n_kept_effective": 158.8169,
+      "n_pooled_effective": 456.7755,
+      "n_pooled_trades": 8035,
+      "n_suppressed": 7658,
+      "n_suppressed_effective": 447.8105,
+      "p_cluster": 0.709929,
+      "p_cluster_return": 0.087991,
+      "p_raw": 0.40116,
+      "p_raw_return": 0.0028,
+      "primary_target": "signed_fixed_horizon_efficiency",
+      "protocol_min_windows": 3,
+      "protocol_windows": [
+        "2017",
+        "2018",
+        "2021",
+        "2022"
+      ],
+      "sense": "arms_on_high_h",
+      "separation": 0.014617,
+      "windows": {
+        "2013": {
+          "chop_delta": -53.022416,
+          "dd_delta": -14.541176,
+          "n_legs": 6,
+          "ret_gated": 771.919241,
+          "ret_ungated": 1544.773616,
+          "trades_gated": 201,
+          "trades_ungated": 201
+        },
+        "2014": {
+          "chop_delta": -50.33682,
+          "dd_delta": -17.207114,
+          "n_legs": 6,
+          "ret_gated": -15.830077,
+          "ret_ungated": -33.015758,
+          "trades_gated": 155,
+          "trades_ungated": 155
+        },
+        "2015": {
+          "chop_delta": -25.487177,
+          "dd_delta": -9.139826,
+          "n_legs": 6,
+          "ret_gated": 11.770778,
+          "ret_ungated": 26.261504,
+          "trades_gated": 132,
+          "trades_ungated": 132
+        },
+        "2016": {
+          "chop_delta": -13.39399,
+          "dd_delta": -5.83221,
+          "n_legs": 3,
+          "ret_gated": 31.2861,
+          "ret_ungated": 75.873018,
+          "trades_gated": 90,
+          "trades_ungated": 90
+        },
+        "2017": {
+          "chop_delta": -52.977029,
+          "dd_delta": -13.789699,
+          "n_legs": 9,
+          "ret_gated": 322.057083,
+          "ret_ungated": 1722.768395,
+          "trades_gated": 414,
+          "trades_ungated": 414
+        },
+        "2018": {
+          "chop_delta": -79.210145,
+          "dd_delta": -23.64928,
+          "n_legs": 9,
+          "ret_gated": -22.613346,
+          "ret_ungated": -43.524563,
+          "trades_gated": 346,
+          "trades_ungated": 346
+        },
+        "2019": {
+          "chop_delta": -53.895133,
+          "dd_delta": -17.461559,
+          "n_legs": 9,
+          "ret_gated": 13.274737,
+          "ret_ungated": 17.313957,
+          "trades_gated": 332,
+          "trades_ungated": 332
+        },
+        "2020H1": {
+          "chop_delta": -27.97079,
+          "dd_delta": -11.956589,
+          "n_legs": 9,
+          "ret_gated": 13.013479,
+          "ret_ungated": 15.985577,
+          "trades_gated": 171,
+          "trades_ungated": 171
+        },
+        "2020H2": {
+          "chop_delta": -14.662103,
+          "dd_delta": -7.000199,
+          "n_legs": 48,
+          "ret_gated": 27.597798,
+          "ret_ungated": 55.499996,
+          "trades_gated": 573,
+          "trades_ungated": 573
+        },
+        "2021": {
+          "chop_delta": -65.006089,
+          "dd_delta": -16.504164,
+          "n_legs": 51,
+          "ret_gated": 94.571627,
+          "ret_ungated": 336.913846,
+          "trades_gated": 1670,
+          "trades_ungated": 1670
+        },
+        "2022": {
+          "chop_delta": -47.878927,
+          "dd_delta": -17.275356,
+          "n_legs": 51,
+          "ret_gated": -9.369856,
+          "ret_ungated": -20.8165,
+          "trades_gated": 1234,
+          "trades_ungated": 1234
+        },
+        "2023": {
+          "chop_delta": -25.713468,
+          "dd_delta": -12.092686,
+          "n_legs": 30,
+          "ret_gated": 3.626768,
+          "ret_ungated": 8.644181,
+          "trades_gated": 565,
+          "trades_ungated": 565
+        },
+        "2024": {
+          "chop_delta": -36.439466,
+          "dd_delta": -13.393538,
+          "n_legs": 36,
+          "ret_gated": 20.11481,
+          "ret_ungated": 50.729788,
+          "trades_gated": 907,
+          "trades_ungated": 907
+        },
+        "2025H1": {
+          "chop_delta": -27.201686,
+          "dd_delta": -13.269086,
+          "n_legs": 36,
+          "ret_gated": -6.567785,
+          "ret_ungated": -16.22136,
+          "trades_gated": 476,
+          "trades_ungated": 476
+        },
+        "is": {
+          "chop_delta": -26.76912,
+          "dd_delta": -16.117326,
+          "n_legs": 36,
+          "ret_gated": -2.364352,
+          "ret_ungated": -8.912194,
+          "trades_gated": 470,
+          "trades_ungated": 470
+        },
+        "oos": {
+          "chop_delta": -18.52645,
+          "dd_delta": -11.948984,
+          "n_legs": 36,
+          "ret_gated": -1.394325,
+          "ret_ungated": -5.634505,
+          "trades_gated": 426,
+          "trades_ungated": 426
+        }
+      }
+    },
+    {
+      "arm": "sizing",
+      "bh_reject": false,
+      "cluster_distinct_offsets": 637,
+      "cluster_draws": 10000,
+      "cluster_excluded_datasets": [],
+      "cluster_excluded_trades": 0,
+      "cluster_offset_range": [
+        30,
+        666
+      ],
+      "cluster_reason": null,
+      "cohort": "primary",
+      "config_id": "momentum/sizing/W512/shipped",
+      "continuity_target": "pnl_pct_net",
+      "family": "momentum",
+      "held_out_windows": [
+        "2013",
+        "2014",
+        "2015",
+        "2016",
+        "2019",
+        "2020H1",
+        "2020H2",
+        "2023",
+        "2024",
+        "2025H1",
+        "is",
+        "oos"
+      ],
+      "hurst_window": 512,
+      "n_kept": 101,
+      "n_kept_effective": 52.5033,
+      "n_pooled_effective": 456.7755,
+      "n_pooled_trades": 8035,
+      "n_suppressed": 7934,
+      "n_suppressed_effective": 453.2617,
+      "p_cluster": 0.305369,
+      "p_cluster_return": 0.225177,
+      "p_raw": 0.056794,
+      "p_raw_return": 0.0034,
+      "primary_target": "signed_fixed_horizon_efficiency",
+      "protocol_min_windows": 3,
+      "protocol_windows": [
+        "2017",
+        "2018",
+        "2021",
+        "2022"
+      ],
+      "sense": "arms_on_high_h",
+      "separation": 0.047105,
+      "windows": {
+        "2013": {
+          "chop_delta": -60.104541,
+          "dd_delta": -17.915728,
+          "n_legs": 6,
+          "ret_gated": 764.471807,
+          "ret_ungated": 1544.773616,
+          "trades_gated": 201,
+          "trades_ungated": 201
+        },
+        "2014": {
+          "chop_delta": -52.923109,
+          "dd_delta": -17.616325,
+          "n_legs": 6,
+          "ret_gated": -17.167979,
+          "ret_ungated": -33.015758,
+          "trades_gated": 155,
+          "trades_ungated": 155
+        },
+        "2015": {
+          "chop_delta": -32.311636,
+          "dd_delta": -12.622517,
+          "n_legs": 6,
+          "ret_gated": 9.310129,
+          "ret_ungated": 26.261504,
+          "trades_gated": 132,
+          "trades_ungated": 132
+        },
+        "2016": {
+          "chop_delta": -15.182199,
+          "dd_delta": -6.846692,
+          "n_legs": 3,
+          "ret_gated": 26.818486,
+          "ret_ungated": 75.873018,
+          "trades_gated": 90,
+          "trades_ungated": 90
+        },
+        "2017": {
+          "chop_delta": -64.466452,
+          "dd_delta": -15.846251,
+          "n_legs": 9,
+          "ret_gated": 213.107847,
+          "ret_ungated": 1722.768395,
+          "trades_gated": 414,
+          "trades_ungated": 414
+        },
+        "2018": {
+          "chop_delta": -86.843135,
+          "dd_delta": -27.378,
+          "n_legs": 9,
+          "ret_gated": -18.168929,
+          "ret_ungated": -43.524563,
+          "trades_gated": 346,
+          "trades_ungated": 346
+        },
+        "2019": {
+          "chop_delta": -58.728295,
+          "dd_delta": -19.599005,
+          "n_legs": 9,
+          "ret_gated": 4.513218,
+          "ret_ungated": 17.313957,
+          "trades_gated": 332,
+          "trades_ungated": 332
+        },
+        "2020H1": {
+          "chop_delta": -31.400899,
+          "dd_delta": -14.371961,
+          "n_legs": 9,
+          "ret_gated": 3.840442,
+          "ret_ungated": 15.985577,
+          "trades_gated": 171,
+          "trades_ungated": 171
+        },
+        "2020H2": {
+          "chop_delta": -16.88988,
+          "dd_delta": -8.578348,
+          "n_legs": 48,
+          "ret_gated": 21.324741,
+          "ret_ungated": 55.499996,
+          "trades_gated": 573,
+          "trades_ungated": 573
+        },
+        "2021": {
+          "chop_delta": -73.099273,
+          "dd_delta": -19.075682,
+          "n_legs": 51,
+          "ret_gated": 79.724967,
+          "ret_ungated": 336.913846,
+          "trades_gated": 1670,
+          "trades_ungated": 1670
+        },
+        "2022": {
+          "chop_delta": -56.154361,
+          "dd_delta": -22.241876,
+          "n_legs": 51,
+          "ret_gated": -6.157081,
+          "ret_ungated": -20.8165,
+          "trades_gated": 1234,
+          "trades_ungated": 1234
+        },
+        "2023": {
+          "chop_delta": -29.836503,
+          "dd_delta": -14.749705,
+          "n_legs": 30,
+          "ret_gated": 5.253691,
+          "ret_ungated": 8.644181,
+          "trades_gated": 565,
+          "trades_ungated": 565
+        },
+        "2024": {
+          "chop_delta": -43.859251,
+          "dd_delta": -17.802555,
+          "n_legs": 36,
+          "ret_gated": 21.565506,
+          "ret_ungated": 50.729788,
+          "trades_gated": 907,
+          "trades_ungated": 907
+        },
+        "2025H1": {
+          "chop_delta": -31.230179,
+          "dd_delta": -15.826941,
+          "n_legs": 36,
+          "ret_gated": -5.587342,
+          "ret_ungated": -16.22136,
+          "trades_gated": 476,
+          "trades_ungated": 476
+        },
+        "is": {
+          "chop_delta": -29.047082,
+          "dd_delta": -17.46181,
+          "n_legs": 36,
+          "ret_gated": -2.01749,
+          "ret_ungated": -8.912194,
+          "trades_gated": 470,
+          "trades_ungated": 470
+        },
+        "oos": {
+          "chop_delta": -19.340362,
+          "dd_delta": -12.415507,
+          "n_legs": 36,
+          "ret_gated": -0.890524,
+          "ret_ungated": -5.634505,
+          "trades_gated": 426,
+          "trades_ungated": 426
+        }
+      }
+    },
+    {
+      "arm": "exit",
+      "bh_reject": false,
+      "cluster_distinct_offsets": 664,
+      "cluster_draws": 10000,
+      "cluster_excluded_datasets": [],
+      "cluster_excluded_trades": 0,
+      "cluster_offset_range": [
+        30,
+        693
+      ],
+      "cluster_reason": null,
+      "cohort": "primary",
+      "config_id": "momentum/exit/W512/g0.5",
+      "continuity_target": "signed_fixed_horizon_efficiency",
+      "family": "momentum",
+      "held_out_windows": [
+        "2013",
+        "2014",
+        "2015",
+        "2016",
+        "2019",
+        "2020H1",
+        "2020H2",
+        "2023",
+        "2024",
+        "2025H1",
+        "is",
+        "oos"
+      ],
+      "hurst_window": 512,
+      "n_kept": 4397,
+      "n_kept_effective": 1033.3821,
+      "n_pooled_effective": 1382.625,
+      "n_pooled_trades": 12990,
+      "n_suppressed": 8593,
+      "n_suppressed_effective": 1256.5849,
+      "p_cluster": 0.547345,
+      "p_cluster_return": 0.547345,
+      "p_raw": 0.682332,
+      "p_raw_return": 0.682332,
+      "primary_target": "pnl_pct_net",
+      "protocol_min_windows": 3,
+      "protocol_windows": [
+        "2017",
+        "2018",
+        "2021",
+        "2022"
+      ],
+      "sense": "arms_on_high_h",
+      "separation": -0.02165,
+      "windows": {
+        "2013": {
+          "chop_delta": -4.691414,
+          "dd_delta": 3.160752,
+          "n_legs": 6,
+          "ret_gated": 113.344531,
+          "ret_ungated": 598.275554,
+          "trades_gated": 345,
+          "trades_ungated": 345
+        },
+        "2014": {
+          "chop_delta": -11.141673,
+          "dd_delta": -2.006193,
+          "n_legs": 6,
+          "ret_gated": -13.489426,
+          "ret_ungated": -18.384937,
+          "trades_gated": 218,
+          "trades_ungated": 218
+        },
+        "2015": {
+          "chop_delta": -0.946351,
+          "dd_delta": 1.43423,
+          "n_legs": 6,
+          "ret_gated": -1.069887,
+          "ret_ungated": 1.766694,
+          "trades_gated": 222,
+          "trades_ungated": 222
+        },
+        "2016": {
+          "chop_delta": -1.414532,
+          "dd_delta": -0.725141,
+          "n_legs": 3,
+          "ret_gated": 8.394381,
+          "ret_ungated": 10.365382,
+          "trades_gated": 142,
+          "trades_ungated": 142
+        },
+        "2017": {
+          "chop_delta": -17.523673,
+          "dd_delta": -9.492087,
+          "n_legs": 9,
+          "ret_gated": 81.991262,
+          "ret_ungated": 81.447418,
+          "trades_gated": 706,
+          "trades_ungated": 706
+        },
+        "2018": {
+          "chop_delta": -0.960999,
+          "dd_delta": 0.011499,
+          "n_legs": 9,
+          "ret_gated": -17.926179,
+          "ret_ungated": -16.244228,
+          "trades_gated": 535,
+          "trades_ungated": 535
+        },
+        "2019": {
+          "chop_delta": 1.078131,
+          "dd_delta": -0.823481,
+          "n_legs": 9,
+          "ret_gated": -1.689215,
+          "ret_ungated": -2.758334,
+          "trades_gated": 541,
+          "trades_ungated": 541
+        },
+        "2020H1": {
+          "chop_delta": -0.523344,
+          "dd_delta": 0.898151,
+          "n_legs": 9,
+          "ret_gated": -2.440028,
+          "ret_ungated": 0.028095,
+          "trades_gated": 289,
+          "trades_ungated": 289
+        },
+        "2020H2": {
+          "chop_delta": -1.251316,
+          "dd_delta": -0.16543,
+          "n_legs": 48,
+          "ret_gated": 11.563109,
+          "ret_ungated": 13.092642,
+          "trades_gated": 945,
+          "trades_ungated": 945
+        },
+        "2021": {
+          "chop_delta": -7.919151,
+          "dd_delta": -1.854668,
+          "n_legs": 51,
+          "ret_gated": 10.254072,
+          "ret_ungated": 8.773845,
+          "trades_gated": 2738,
+          "trades_ungated": 2738
+        },
+        "2022": {
+          "chop_delta": -1.799954,
+          "dd_delta": -0.784608,
+          "n_legs": 51,
+          "ret_gated": -13.691261,
+          "ret_ungated": -14.115678,
+          "trades_gated": 1898,
+          "trades_ungated": 1898
+        },
+        "2023": {
+          "chop_delta": -3.766487,
+          "dd_delta": -1.159849,
+          "n_legs": 30,
+          "ret_gated": -9.044968,
+          "ret_ungated": -7.366059,
+          "trades_gated": 974,
+          "trades_ungated": 974
+        },
+        "2024": {
+          "chop_delta": -2.907654,
+          "dd_delta": -0.558212,
+          "n_legs": 36,
+          "ret_gated": 5.677227,
+          "ret_ungated": 0.256976,
+          "trades_gated": 1440,
+          "trades_ungated": 1440
+        },
+        "2025H1": {
+          "chop_delta": -3.145559,
+          "dd_delta": -1.461793,
+          "n_legs": 36,
+          "ret_gated": -6.43813,
+          "ret_ungated": -8.766162,
+          "trades_gated": 685,
+          "trades_ungated": 685
+        },
+        "is": {
+          "chop_delta": -0.171173,
+          "dd_delta": 0.094761,
+          "n_legs": 36,
+          "ret_gated": -6.449195,
+          "ret_ungated": -7.727715,
+          "trades_gated": 741,
+          "trades_ungated": 741
+        },
+        "oos": {
+          "chop_delta": -2.098138,
+          "dd_delta": -1.055596,
+          "n_legs": 36,
+          "ret_gated": 3.488018,
+          "ret_ungated": 1.222051,
+          "trades_gated": 632,
+          "trades_ungated": 632
+        }
+      }
+    },
+    {
+      "arm": "sizing",
+      "bh_reject": false,
+      "cluster_distinct_offsets": 646,
+      "cluster_draws": 10000,
+      "cluster_excluded_datasets": [],
+      "cluster_excluded_trades": 0,
+      "cluster_offset_range": [
+        30,
+        675
+      ],
+      "cluster_reason": null,
+      "cohort": "primary",
+      "config_id": "mean_reversion/sizing/W128/shipped",
+      "continuity_target": "pnl_pct_net",
+      "family": "mean_reversion",
+      "held_out_windows": [
+        "2013",
+        "2014",
+        "2015",
+        "2016",
+        "2019",
+        "2020H1",
+        "2020H2",
+        "2023",
+        "2024",
+        "2025H1",
+        "is",
+        "oos"
+      ],
+      "hurst_window": 128,
+      "n_kept": 3111,
+      "n_kept_effective": 940.5159,
+      "n_pooled_effective": 1697.4207,
+      "n_pooled_trades": 21138,
+      "n_suppressed": 18027,
+      "n_suppressed_effective": 1640.6773,
+      "p_cluster": 0.807519,
+      "p_cluster_return": 0.386161,
+      "p_raw": 0.421358,
+      "p_raw_return": 0.575142,
+      "primary_target": "signed_fixed_horizon_efficiency",
+      "protocol_min_windows": 3,
+      "protocol_windows": [
+        "2017",
+        "2018",
+        "2021",
+        "2022"
+      ],
+      "sense": "arms_on_low_h",
+      "separation": 0.006299,
+      "windows": {
+        "2013": {
+          "chop_delta": -59.542976,
+          "dd_delta": -25.068299,
+          "n_legs": 4,
+          "ret_gated": 1075.327698,
+          "ret_ungated": 15453.042369,
+          "trades_gated": 321,
+          "trades_ungated": 321
+        },
+        "2014": {
+          "chop_delta": -118.460115,
+          "dd_delta": -18.164578,
+          "n_legs": 4,
+          "ret_gated": 50.088392,
+          "ret_ungated": 184.522567,
+          "trades_gated": 569,
+          "trades_ungated": 569
+        },
+        "2015": {
+          "chop_delta": -58.042126,
+          "dd_delta": -8.416703,
+          "n_legs": 4,
+          "ret_gated": 220.608079,
+          "ret_ungated": 577.284564,
+          "trades_gated": 466,
+          "trades_ungated": 466
+        },
+        "2016": {
+          "chop_delta": -55.184887,
+          "dd_delta": -11.356517,
+          "n_legs": 2,
+          "ret_gated": 117.004463,
+          "ret_ungated": 492.494635,
+          "trades_gated": 416,
+          "trades_ungated": 416
+        },
+        "2017": {
+          "chop_delta": -159.273046,
+          "dd_delta": -18.996336,
+          "n_legs": 6,
+          "ret_gated": 22158.150047,
+          "ret_ungated": 1651335.00288,
+          "trades_gated": 1727,
+          "trades_ungated": 1727
+        },
+        "2018": {
+          "chop_delta": -232.11025,
+          "dd_delta": -24.075639,
+          "n_legs": 6,
+          "ret_gated": 500.911556,
+          "ret_ungated": 7373.15728,
+          "trades_gated": 2030,
+          "trades_ungated": 2030
+        },
+        "2019": {
+          "chop_delta": -127.351644,
+          "dd_delta": -14.631205,
+          "n_legs": 6,
+          "ret_gated": 235.337793,
+          "ret_ungated": 1624.138379,
+          "trades_gated": 1413,
+          "trades_ungated": 1413
+        },
+        "2020H1": {
+          "chop_delta": -62.199745,
+          "dd_delta": -23.587266,
+          "n_legs": 6,
+          "ret_gated": 131.723594,
+          "ret_ungated": 357.966549,
+          "trades_gated": 654,
+          "trades_ungated": 654
+        },
+        "2020H2": {
+          "chop_delta": -32.027127,
+          "dd_delta": -6.77863,
+          "n_legs": 32,
+          "ret_gated": 99.522376,
+          "ret_ungated": 374.923343,
+          "trades_gated": 2339,
+          "trades_ungated": 2339
+        },
+        "2021": {
+          "chop_delta": -119.991569,
+          "dd_delta": -15.917584,
+          "n_legs": 34,
+          "ret_gated": 11516.132843,
+          "ret_ungated": 3465854.382125,
+          "trades_gated": 5195,
+          "trades_ungated": 5195
+        },
+        "2022": {
+          "chop_delta": -133.079043,
+          "dd_delta": -16.094201,
+          "n_legs": 34,
+          "ret_gated": 264.617757,
+          "ret_ungated": 2461.4694,
+          "trades_gated": 5781,
+          "trades_ungated": 5781
+        },
+        "2023": {
+          "chop_delta": -65.048459,
+          "dd_delta": -10.627203,
+          "n_legs": 20,
+          "ret_gated": 242.385847,
+          "ret_ungated": 1663.525073,
+          "trades_gated": 3610,
+          "trades_ungated": 3610
+        },
+        "2024": {
+          "chop_delta": -102.098172,
+          "dd_delta": -13.250634,
+          "n_legs": 24,
+          "ret_gated": 535.171148,
+          "ret_ungated": 6041.941381,
+          "trades_gated": 4634,
+          "trades_ungated": 4634
+        },
+        "2025H1": {
+          "chop_delta": -60.392282,
+          "dd_delta": -12.930217,
+          "n_legs": 24,
+          "ret_gated": 128.604079,
+          "ret_ungated": 371.378772,
+          "trades_gated": 2273,
+          "trades_ungated": 2273
+        },
+        "is": {
+          "chop_delta": -55.573219,
+          "dd_delta": -9.520812,
+          "n_legs": 24,
+          "ret_gated": 92.173186,
+          "ret_ungated": 257.140822,
+          "trades_gated": 2583,
+          "trades_ungated": 2583
+        },
+        "oos": {
+          "chop_delta": -54.626759,
+          "dd_delta": -13.509182,
+          "n_legs": 24,
+          "ret_gated": 44.552861,
+          "ret_ungated": 117.59273,
+          "trades_gated": 2979,
+          "trades_ungated": 2979
+        }
+      }
+    },
+    {
+      "arm": "sizing",
+      "bh_reject": false,
+      "cluster_distinct_offsets": 646,
+      "cluster_draws": 10000,
+      "cluster_excluded_datasets": [],
+      "cluster_excluded_trades": 0,
+      "cluster_offset_range": [
+        30,
+        675
+      ],
+      "cluster_reason": null,
+      "cohort": "primary",
+      "config_id": "mean_reversion/sizing/W256/shipped",
+      "continuity_target": "pnl_pct_net",
+      "family": "mean_reversion",
+      "held_out_windows": [
+        "2013",
+        "2014",
+        "2015",
+        "2016",
+        "2019",
+        "2020H1",
+        "2020H2",
+        "2023",
+        "2024",
+        "2025H1",
+        "is",
+        "oos"
+      ],
+      "hurst_window": 256,
+      "n_kept": 947,
+      "n_kept_effective": 372.5983,
+      "n_pooled_effective": 1697.4207,
+      "n_pooled_trades": 21138,
+      "n_suppressed": 20191,
+      "n_suppressed_effective": 1672.3553,
+      "p_cluster": 0.035396,
+      "p_cluster_return": 0.90131,
+      "p_raw": 0.014599,
+      "p_raw_return": 0.943106,
+      "primary_target": "signed_fixed_horizon_efficiency",
+      "protocol_min_windows": 3,
+      "protocol_windows": [
+        "2017",
+        "2018",
+        "2021",
+        "2022"
+      ],
+      "sense": "arms_on_low_h",
+      "separation": 0.001956,
+      "windows": {
+        "2013": {
+          "chop_delta": -70.887015,
+          "dd_delta": -23.055078,
+          "n_legs": 4,
+          "ret_gated": 739.341255,
+          "ret_ungated": 15453.042369,
+          "trades_gated": 321,
+          "trades_ungated": 321
+        },
+        "2014": {
+          "chop_delta": -140.37695,
+          "dd_delta": -23.277811,
+          "n_legs": 4,
+          "ret_gated": 57.972271,
+          "ret_ungated": 184.522567,
+          "trades_gated": 569,
+          "trades_ungated": 569
+        },
+        "2015": {
+          "chop_delta": -81.079336,
+          "dd_delta": -14.332713,
+          "n_legs": 4,
+          "ret_gated": 91.369947,
+          "ret_ungated": 577.284564,
+          "trades_gated": 466,
+          "trades_ungated": 466
+        },
+        "2016": {
+          "chop_delta": -59.122531,
+          "dd_delta": -9.208335,
+          "n_legs": 2,
+          "ret_gated": 113.794494,
+          "ret_ungated": 492.494635,
+          "trades_gated": 416,
+          "trades_ungated": 416
+        },
+        "2017": {
+          "chop_delta": -177.308158,
+          "dd_delta": -25.617311,
+          "n_legs": 6,
+          "ret_gated": 8575.631831,
+          "ret_ungated": 1651335.00288,
+          "trades_gated": 1727,
+          "trades_ungated": 1727
+        },
+        "2018": {
+          "chop_delta": -276.48483,
+          "dd_delta": -26.984153,
+          "n_legs": 6,
+          "ret_gated": 382.116817,
+          "ret_ungated": 7373.15728,
+          "trades_gated": 2030,
+          "trades_ungated": 2030
+        },
+        "2019": {
+          "chop_delta": -153.824875,
+          "dd_delta": -19.288263,
+          "n_legs": 6,
+          "ret_gated": 108.088772,
+          "ret_ungated": 1624.138379,
+          "trades_gated": 1413,
+          "trades_ungated": 1413
+        },
+        "2020H1": {
+          "chop_delta": -78.540927,
+          "dd_delta": -29.090901,
+          "n_legs": 6,
+          "ret_gated": 80.940331,
+          "ret_ungated": 357.966549,
+          "trades_gated": 654,
+          "trades_ungated": 654
+        },
+        "2020H2": {
+          "chop_delta": -41.354945,
+          "dd_delta": -10.66168,
+          "n_legs": 32,
+          "ret_gated": 91.465845,
+          "ret_ungated": 374.923343,
+          "trades_gated": 2339,
+          "trades_ungated": 2339
+        },
+        "2021": {
+          "chop_delta": -152.788054,
+          "dd_delta": -20.552978,
+          "n_legs": 34,
+          "ret_gated": 2505.365922,
+          "ret_ungated": 3465854.382125,
+          "trades_gated": 5195,
+          "trades_ungated": 5195
+        },
+        "2022": {
+          "chop_delta": -166.900112,
+          "dd_delta": -22.819415,
+          "n_legs": 34,
+          "ret_gated": 136.279358,
+          "ret_ungated": 2461.4694,
+          "trades_gated": 5781,
+          "trades_ungated": 5781
+        },
+        "2023": {
+          "chop_delta": -79.355209,
+          "dd_delta": -14.129309,
+          "n_legs": 20,
+          "ret_gated": 154.348106,
+          "ret_ungated": 1663.525073,
+          "trades_gated": 3610,
+          "trades_ungated": 3610
+        },
+        "2024": {
+          "chop_delta": -119.397323,
+          "dd_delta": -14.31547,
+          "n_legs": 24,
+          "ret_gated": 350.597618,
+          "ret_ungated": 6041.941381,
+          "trades_gated": 4634,
+          "trades_ungated": 4634
+        },
+        "2025H1": {
+          "chop_delta": -78.413279,
+          "dd_delta": -15.304034,
+          "n_legs": 24,
+          "ret_gated": 73.441835,
+          "ret_ungated": 371.378772,
+          "trades_gated": 2273,
+          "trades_ungated": 2273
+        },
+        "is": {
+          "chop_delta": -73.728384,
+          "dd_delta": -13.067781,
+          "n_legs": 24,
+          "ret_gated": 61.796592,
+          "ret_ungated": 257.140822,
+          "trades_gated": 2583,
+          "trades_ungated": 2583
+        },
+        "oos": {
+          "chop_delta": -58.780974,
+          "dd_delta": -12.544936,
+          "n_legs": 24,
+          "ret_gated": 20.421711,
+          "ret_ungated": 117.59273,
+          "trades_gated": 2979,
+          "trades_ungated": 2979
+        }
+      }
+    },
+    {
+      "arm": "sizing",
+      "bh_reject": false,
+      "cluster_distinct_offsets": 646,
+      "cluster_draws": 10000,
+      "cluster_excluded_datasets": [],
+      "cluster_excluded_trades": 0,
+      "cluster_offset_range": [
+        30,
+        675
+      ],
+      "cluster_reason": null,
+      "cohort": "primary",
+      "config_id": "mean_reversion/sizing/W512/shipped",
+      "continuity_target": "pnl_pct_net",
+      "family": "mean_reversion",
+      "held_out_windows": [
+        "2013",
+        "2014",
+        "2015",
+        "2016",
+        "2019",
+        "2020H1",
+        "2020H2",
+        "2023",
+        "2024",
+        "2025H1",
+        "is",
+        "oos"
+      ],
+      "hurst_window": 512,
+      "n_kept": 283,
+      "n_kept_effective": 170.8762,
+      "n_pooled_effective": 1697.4207,
+      "n_pooled_trades": 21138,
+      "n_suppressed": 20855,
+      "n_suppressed_effective": 1682.845,
+      "p_cluster": 0.892111,
+      "p_cluster_return": 0.170783,
+      "p_raw": 0.786921,
+      "p_raw_return": 0.056794,
+      "primary_target": "signed_fixed_horizon_efficiency",
+      "protocol_min_windows": 3,
+      "protocol_windows": [
+        "2017",
+        "2018",
+        "2021",
+        "2022"
+      ],
+      "sense": "arms_on_low_h",
+      "separation": 0.021251,
+      "windows": {
+        "2013": {
+          "chop_delta": -77.749243,
+          "dd_delta": -22.458174,
+          "n_legs": 4,
+          "ret_gated": 929.37069,
+          "ret_ungated": 15453.042369,
+          "trades_gated": 321,
+          "trades_ungated": 321
+        },
+        "2014": {
+          "chop_delta": -154.475931,
+          "dd_delta": -22.141066,
+          "n_legs": 4,
+          "ret_gated": 49.676818,
+          "ret_ungated": 184.522567,
+          "trades_gated": 569,
+          "trades_ungated": 569
+        },
+        "2015": {
+          "chop_delta": -101.356466,
+          "dd_delta": -21.461022,
+          "n_legs": 4,
+          "ret_gated": 64.060776,
+          "ret_ungated": 577.284564,
+          "trades_gated": 466,
+          "trades_ungated": 466
+        },
+        "2016": {
+          "chop_delta": -69.708337,
+          "dd_delta": -10.353719,
+          "n_legs": 2,
+          "ret_gated": 77.778987,
+          "ret_ungated": 492.494635,
+          "trades_gated": 416,
+          "trades_ungated": 416
+        },
+        "2017": {
+          "chop_delta": -228.366328,
+          "dd_delta": -30.290794,
+          "n_legs": 6,
+          "ret_gated": 2916.691505,
+          "ret_ungated": 1651335.00288,
+          "trades_gated": 1727,
+          "trades_ungated": 1727
+        },
+        "2018": {
+          "chop_delta": -310.454362,
+          "dd_delta": -32.533921,
+          "n_legs": 6,
+          "ret_gated": 191.705633,
+          "ret_ungated": 7373.15728,
+          "trades_gated": 2030,
+          "trades_ungated": 2030
+        },
+        "2019": {
+          "chop_delta": -171.181523,
+          "dd_delta": -24.787456,
+          "n_legs": 6,
+          "ret_gated": 81.137356,
+          "ret_ungated": 1624.138379,
+          "trades_gated": 1413,
+          "trades_ungated": 1413
+        },
+        "2020H1": {
+          "chop_delta": -85.582868,
+          "dd_delta": -29.507498,
+          "n_legs": 6,
+          "ret_gated": 49.521478,
+          "ret_ungated": 357.966549,
+          "trades_gated": 654,
+          "trades_ungated": 654
+        },
+        "2020H2": {
+          "chop_delta": -44.666266,
+          "dd_delta": -12.523035,
+          "n_legs": 32,
+          "ret_gated": 60.212609,
+          "ret_ungated": 374.923343,
+          "trades_gated": 2339,
+          "trades_ungated": 2339
+        },
+        "2021": {
+          "chop_delta": -169.48401,
+          "dd_delta": -23.697537,
+          "n_legs": 34,
+          "ret_gated": 1761.336486,
+          "ret_ungated": 3465854.382125,
+          "trades_gated": 5195,
+          "trades_ungated": 5195
+        },
+        "2022": {
+          "chop_delta": -195.326304,
+          "dd_delta": -30.901277,
+          "n_legs": 34,
+          "ret_gated": 76.819668,
+          "ret_ungated": 2461.4694,
+          "trades_gated": 5781,
+          "trades_ungated": 5781
+        },
+        "2023": {
+          "chop_delta": -88.218352,
+          "dd_delta": -17.21876,
+          "n_legs": 20,
+          "ret_gated": 120.89158,
+          "ret_ungated": 1663.525073,
+          "trades_gated": 3610,
+          "trades_ungated": 3610
+        },
+        "2024": {
+          "chop_delta": -141.898291,
+          "dd_delta": -19.742358,
+          "n_legs": 24,
+          "ret_gated": 197.995324,
+          "ret_ungated": 6041.941381,
+          "trades_gated": 4634,
+          "trades_ungated": 4634
+        },
+        "2025H1": {
+          "chop_delta": -89.255137,
+          "dd_delta": -18.422054,
+          "n_legs": 24,
+          "ret_gated": 48.658495,
+          "ret_ungated": 371.378772,
+          "trades_gated": 2273,
+          "trades_ungated": 2273
+        },
+        "is": {
+          "chop_delta": -84.029573,
+          "dd_delta": -15.274874,
+          "n_legs": 24,
+          "ret_gated": 40.350413,
+          "ret_ungated": 257.140822,
+          "trades_gated": 2583,
+          "trades_ungated": 2583
+        },
+        "oos": {
+          "chop_delta": -68.651259,
+          "dd_delta": -16.413978,
+          "n_legs": 24,
+          "ret_gated": 21.676682,
+          "ret_ungated": 117.59273,
+          "trades_gated": 2979,
+          "trades_ungated": 2979
+        }
+      }
+    },
+    {
+      "arm": "exit",
+      "bh_reject": false,
+      "cluster_distinct_offsets": 658,
+      "cluster_draws": 10000,
+      "cluster_excluded_datasets": [],
+      "cluster_excluded_trades": 0,
+      "cluster_offset_range": [
+        30,
+        687
+      ],
+      "cluster_reason": null,
+      "cohort": "primary",
+      "config_id": "mean_reversion/exit/W512/g0.5",
+      "continuity_target": "signed_fixed_horizon_efficiency",
+      "family": "mean_reversion",
+      "held_out_windows": [
+        "2013",
+        "2014",
+        "2015",
+        "2016",
+        "2019",
+        "2020H1",
+        "2020H2",
+        "2023",
+        "2024",
+        "2025H1",
+        "is",
+        "oos"
+      ],
+      "hurst_window": 512,
+      "n_kept": 13291,
+      "n_kept_effective": 2452.0823,
+      "n_pooled_effective": 3469.6875,
+      "n_pooled_trades": 41563,
+      "n_suppressed": 28272,
+      "n_suppressed_effective": 3378.7048,
+      "p_cluster": 0.308169,
+      "p_cluster_return": 0.308169,
+      "p_raw": 0.160784,
+      "p_raw_return": 0.160784,
+      "primary_target": "pnl_pct_net",
+      "protocol_min_windows": 3,
+      "protocol_windows": [
+        "2017",
+        "2018",
+        "2021",
+        "2022"
+      ],
+      "sense": "arms_on_low_h",
+      "separation": -0.021057,
+      "windows": {
+        "2013": {
+          "chop_delta": 5.747545,
+          "dd_delta": 1.706334,
+          "n_legs": 4,
+          "ret_gated": 802.483127,
+          "ret_ungated": 822.965973,
+          "trades_gated": 420,
+          "trades_ungated": 420
+        },
+        "2014": {
+          "chop_delta": 18.144525,
+          "dd_delta": 2.319834,
+          "n_legs": 4,
+          "ret_gated": -52.858097,
+          "ret_ungated": -55.559218,
+          "trades_gated": 721,
+          "trades_ungated": 721
+        },
+        "2015": {
+          "chop_delta": -4.469142,
+          "dd_delta": -0.939372,
+          "n_legs": 4,
+          "ret_gated": -28.191378,
+          "ret_ungated": -28.231551,
+          "trades_gated": 520,
+          "trades_ungated": 520
+        },
+        "2016": {
+          "chop_delta": -1.4585,
+          "dd_delta": 0.72704,
+          "n_legs": 2,
+          "ret_gated": -34.411797,
+          "ret_ungated": -31.169808,
+          "trades_gated": 514,
+          "trades_ungated": 514
+        },
+        "2017": {
+          "chop_delta": 5.785451,
+          "dd_delta": -1.506764,
+          "n_legs": 6,
+          "ret_gated": -51.26412,
+          "ret_ungated": -46.595994,
+          "trades_gated": 1586,
+          "trades_ungated": 1586
+        },
+        "2018": {
+          "chop_delta": 6.064596,
+          "dd_delta": 0.40161,
+          "n_legs": 6,
+          "ret_gated": -80.430392,
+          "ret_ungated": -80.299676,
+          "trades_gated": 2148,
+          "trades_ungated": 2148
+        },
+        "2019": {
+          "chop_delta": -2.817561,
+          "dd_delta": -0.467207,
+          "n_legs": 6,
+          "ret_gated": -51.521205,
+          "ret_ungated": -48.615053,
+          "trades_gated": 1726,
+          "trades_ungated": 1726
+        },
+        "2020H1": {
+          "chop_delta": -5.804173,
+          "dd_delta": -1.986472,
+          "n_legs": 6,
+          "ret_gated": -21.694649,
+          "ret_ungated": -24.611718,
+          "trades_gated": 782,
+          "trades_ungated": 782
+        },
+        "2020H2": {
+          "chop_delta": -4.361345,
+          "dd_delta": -1.259284,
+          "n_legs": 32,
+          "ret_gated": 3.728716,
+          "ret_ungated": 2.662904,
+          "trades_gated": 2689,
+          "trades_ungated": 2689
+        },
+        "2021": {
+          "chop_delta": 1.164046,
+          "dd_delta": 0.765193,
+          "n_legs": 34,
+          "ret_gated": 4.995842,
+          "ret_ungated": -2.135248,
+          "trades_gated": 5834,
+          "trades_ungated": 5834
+        },
+        "2022": {
+          "chop_delta": -5.936342,
+          "dd_delta": -0.387285,
+          "n_legs": 34,
+          "ret_gated": -56.510498,
+          "ret_ungated": -55.593974,
+          "trades_gated": 6982,
+          "trades_ungated": 6982
+        },
+        "2023": {
+          "chop_delta": -0.408409,
+          "dd_delta": -1.219088,
+          "n_legs": 20,
+          "ret_gated": -8.307372,
+          "ret_ungated": -13.98997,
+          "trades_gated": 3852,
+          "trades_ungated": 3852
+        },
+        "2024": {
+          "chop_delta": 3.457629,
+          "dd_delta": 2.329685,
+          "n_legs": 24,
+          "ret_gated": -43.040502,
+          "ret_ungated": -40.367501,
+          "trades_gated": 4863,
+          "trades_ungated": 4863
+        },
+        "2025H1": {
+          "chop_delta": -0.056851,
+          "dd_delta": 0.949626,
+          "n_legs": 24,
+          "ret_gated": -22.675184,
+          "ret_ungated": -20.735047,
+          "trades_gated": 2787,
+          "trades_ungated": 2787
+        },
+        "is": {
+          "chop_delta": -0.836651,
+          "dd_delta": 1.149217,
+          "n_legs": 24,
+          "ret_gated": -20.238217,
+          "ret_ungated": -16.789946,
+          "trades_gated": 2972,
+          "trades_ungated": 2972
+        },
+        "oos": {
+          "chop_delta": 3.397594,
+          "dd_delta": 2.484107,
+          "n_legs": 24,
+          "ret_gated": -34.421808,
+          "ret_ungated": -31.839498,
+          "trades_gated": 3534,
+          "trades_ungated": 3534
+        }
+      }
+    },
+    {
+      "arm": "sizing",
+      "bh_reject": false,
+      "cluster_distinct_offsets": 1259,
+      "cluster_draws": 10000,
+      "cluster_excluded_datasets": [],
+      "cluster_excluded_trades": 0,
+      "cluster_offset_range": [
+        30,
+        1288
+      ],
+      "cluster_reason": null,
+      "cohort": "exploratory",
+      "config_id": "momentum/sizing/W128/shipped",
+      "continuity_target": "pnl_pct_net",
+      "family": "momentum",
+      "held_out_windows": [
+        "2023",
+        "2024",
+        "2025H1"
+      ],
+      "hurst_window": 128,
+      "n_kept": 268,
+      "n_kept_effective": 77.5162,
+      "n_pooled_effective": 118.5012,
+      "n_pooled_trades": 2067,
+      "n_suppressed": 1799,
+      "n_suppressed_effective": 116.5226,
+      "p_cluster": 0.313969,
+      "p_cluster_return": 0.755324,
+      "p_raw": 0.19978,
+      "p_raw_return": 0.864714,
+      "primary_target": "signed_fixed_horizon_efficiency",
+      "protocol_min_windows": 2,
+      "protocol_windows": [
+        "is",
+        "oos"
+      ],
+      "sense": "arms_on_high_h",
+      "separation": -0.012068,
+      "windows": {
+        "2013": {
+          "n_legs": 0
+        },
+        "2014": {
+          "n_legs": 0
+        },
+        "2015": {
+          "n_legs": 0
+        },
+        "2016": {
+          "n_legs": 0
+        },
+        "2017": {
+          "n_legs": 0
+        },
+        "2018": {
+          "n_legs": 0
+        },
+        "2019": {
+          "n_legs": 0
+        },
+        "2020H1": {
+          "n_legs": 0
+        },
+        "2020H2": {
+          "n_legs": 0
+        },
+        "2021": {
+          "n_legs": 0
+        },
+        "2022": {
+          "n_legs": 0
+        },
+        "2023": {
+          "chop_delta": -18.489996,
+          "dd_delta": -6.516804,
+          "n_legs": 27,
+          "ret_gated": 43.869331,
+          "ret_ungated": 108.032401,
+          "trades_gated": 566,
+          "trades_ungated": 566
+        },
+        "2024": {
+          "chop_delta": -27.306795,
+          "dd_delta": -8.288057,
+          "n_legs": 27,
+          "ret_gated": 14.166361,
+          "ret_ungated": 28.990473,
+          "trades_gated": 618,
+          "trades_ungated": 618
+        },
+        "2025H1": {
+          "chop_delta": -20.093834,
+          "dd_delta": -10.586642,
+          "n_legs": 27,
+          "ret_gated": -6.568591,
+          "ret_ungated": -14.318679,
+          "trades_gated": 338,
+          "trades_ungated": 338
+        },
+        "is": {
+          "chop_delta": -12.873625,
+          "dd_delta": -7.562105,
+          "n_legs": 27,
+          "ret_gated": 2.568409,
+          "ret_ungated": 1.929564,
+          "trades_gated": 304,
+          "trades_ungated": 304
+        },
+        "oos": {
+          "chop_delta": -10.28181,
+          "dd_delta": -6.635827,
+          "n_legs": 27,
+          "ret_gated": 5.311163,
+          "ret_ungated": 5.400214,
+          "trades_gated": 301,
+          "trades_ungated": 301
+        }
+      }
+    },
+    {
+      "arm": "sizing",
+      "bh_reject": false,
+      "cluster_distinct_offsets": 1259,
+      "cluster_draws": 10000,
+      "cluster_excluded_datasets": [],
+      "cluster_excluded_trades": 0,
+      "cluster_offset_range": [
+        30,
+        1288
+      ],
+      "cluster_reason": null,
+      "cohort": "exploratory",
+      "config_id": "momentum/sizing/W256/shipped",
+      "continuity_target": "pnl_pct_net",
+      "family": "momentum",
+      "held_out_windows": [
+        "2023",
+        "2024",
+        "2025H1"
+      ],
+      "hurst_window": 256,
+      "n_kept": 56,
+      "n_kept_effective": 31.0207,
+      "n_pooled_effective": 118.5012,
+      "n_pooled_trades": 2067,
+      "n_suppressed": 2011,
+      "n_suppressed_effective": 117.1927,
+      "p_cluster": 0.767923,
+      "p_cluster_return": 0.310569,
+      "p_raw": 0.641936,
+      "p_raw_return": 0.288771,
+      "primary_target": "signed_fixed_horizon_efficiency",
+      "protocol_min_windows": 2,
+      "protocol_windows": [
+        "is",
+        "oos"
+      ],
+      "sense": "arms_on_high_h",
+      "separation": 0.005093,
+      "windows": {
+        "2013": {
+          "n_legs": 0
+        },
+        "2014": {
+          "n_legs": 0
+        },
+        "2015": {
+          "n_legs": 0
+        },
+        "2016": {
+          "n_legs": 0
+        },
+        "2017": {
+          "n_legs": 0
+        },
+        "2018": {
+          "n_legs": 0
+        },
+        "2019": {
+          "n_legs": 0
+        },
+        "2020H1": {
+          "n_legs": 0
+        },
+        "2020H2": {
+          "n_legs": 0
+        },
+        "2021": {
+          "n_legs": 0
+        },
+        "2022": {
+          "n_legs": 0
+        },
+        "2023": {
+          "chop_delta": -23.710385,
+          "dd_delta": -9.734682,
+          "n_legs": 27,
+          "ret_gated": 34.919988,
+          "ret_ungated": 108.032401,
+          "trades_gated": 566,
+          "trades_ungated": 566
+        },
+        "2024": {
+          "chop_delta": -32.444365,
+          "dd_delta": -11.213138,
+          "n_legs": 27,
+          "ret_gated": 11.703623,
+          "ret_ungated": 28.990473,
+          "trades_gated": 618,
+          "trades_ungated": 618
+        },
+        "2025H1": {
+          "chop_delta": -25.265428,
+          "dd_delta": -14.398187,
+          "n_legs": 27,
+          "ret_gated": -4.799127,
+          "ret_ungated": -14.318679,
+          "trades_gated": 338,
+          "trades_ungated": 338
+        },
+        "is": {
+          "chop_delta": -15.735276,
+          "dd_delta": -9.564248,
+          "n_legs": 27,
+          "ret_gated": 0.202211,
+          "ret_ungated": 1.929564,
+          "trades_gated": 304,
+          "trades_ungated": 304
+        },
+        "oos": {
+          "chop_delta": -14.182027,
+          "dd_delta": -9.342587,
+          "n_legs": 27,
+          "ret_gated": 5.912396,
+          "ret_ungated": 5.400214,
+          "trades_gated": 301,
+          "trades_ungated": 301
+        }
+      }
+    },
+    {
+      "arm": "sizing",
+      "bh_reject": false,
+      "cluster_distinct_offsets": 1259,
+      "cluster_draws": 10000,
+      "cluster_excluded_datasets": [],
+      "cluster_excluded_trades": 0,
+      "cluster_offset_range": [
+        30,
+        1288
+      ],
+      "cluster_reason": null,
+      "cohort": "exploratory",
+      "config_id": "momentum/sizing/W512/shipped",
+      "continuity_target": "pnl_pct_net",
+      "family": "momentum",
+      "held_out_windows": [
+        "2023",
+        "2024",
+        "2025H1"
+      ],
+      "hurst_window": 512,
+      "n_kept": 8,
+      "n_kept_effective": 4.0,
+      "n_pooled_effective": 118.5012,
+      "n_pooled_trades": 2067,
+      "n_suppressed": 2059,
+      "n_suppressed_effective": 118.4967,
+      "p_cluster": 0.845115,
+      "p_cluster_return": 0.367363,
+      "p_raw": 0.726527,
+      "p_raw_return": 0.139386,
+      "primary_target": "signed_fixed_horizon_efficiency",
+      "protocol_min_windows": 2,
+      "protocol_windows": [
+        "is",
+        "oos"
+      ],
+      "sense": "arms_on_high_h",
+      "separation": 0.070633,
+      "windows": {
+        "2013": {
+          "n_legs": 0
+        },
+        "2014": {
+          "n_legs": 0
+        },
+        "2015": {
+          "n_legs": 0
+        },
+        "2016": {
+          "n_legs": 0
+        },
+        "2017": {
+          "n_legs": 0
+        },
+        "2018": {
+          "n_legs": 0
+        },
+        "2019": {
+          "n_legs": 0
+        },
+        "2020H1": {
+          "n_legs": 0
+        },
+        "2020H2": {
+          "n_legs": 0
+        },
+        "2021": {
+          "n_legs": 0
+        },
+        "2022": {
+          "n_legs": 0
+        },
+        "2023": {
+          "chop_delta": -26.409421,
+          "dd_delta": -11.060627,
+          "n_legs": 27,
+          "ret_gated": 28.459348,
+          "ret_ungated": 108.032401,
+          "trades_gated": 566,
+          "trades_ungated": 566
+        },
+        "2024": {
+          "chop_delta": -36.467805,
+          "dd_delta": -13.671214,
+          "n_legs": 27,
+          "ret_gated": 9.825819,
+          "ret_ungated": 28.990473,
+          "trades_gated": 618,
+          "trades_ungated": 618
+        },
+        "2025H1": {
+          "chop_delta": -28.262164,
+          "dd_delta": -16.516592,
+          "n_legs": 27,
+          "ret_gated": -4.600697,
+          "ret_ungated": -14.318679,
+          "trades_gated": 338,
+          "trades_ungated": 338
+        },
+        "is": {
+          "chop_delta": -17.697363,
+          "dd_delta": -11.275164,
+          "n_legs": 27,
+          "ret_gated": 0.802924,
+          "ret_ungated": 1.929564,
+          "trades_gated": 304,
+          "trades_ungated": 304
+        },
+        "oos": {
+          "chop_delta": -16.148365,
+          "dd_delta": -10.944665,
+          "n_legs": 27,
+          "ret_gated": 5.181938,
+          "ret_ungated": 5.400214,
+          "trades_gated": 301,
+          "trades_ungated": 301
+        }
+      }
+    },
+    {
+      "arm": "exit",
+      "bh_reject": false,
+      "cluster_distinct_offsets": 1265,
+      "cluster_draws": 10000,
+      "cluster_excluded_datasets": [],
+      "cluster_excluded_trades": 0,
+      "cluster_offset_range": [
+        30,
+        1294
+      ],
+      "cluster_reason": null,
+      "cohort": "exploratory",
+      "config_id": "momentum/exit/W512/g0.5",
+      "continuity_target": "signed_fixed_horizon_efficiency",
+      "family": "momentum",
+      "held_out_windows": [
+        "2023",
+        "2024",
+        "2025H1"
+      ],
+      "hurst_window": 512,
+      "n_kept": 984,
+      "n_kept_effective": 240.8861,
+      "n_pooled_effective": 390.2449,
+      "n_pooled_trades": 3391,
+      "n_suppressed": 2407,
+      "n_suppressed_effective": 377.9602,
+      "p_cluster": 0.50175,
+      "p_cluster_return": 0.50175,
+      "p_raw": 0.440156,
+      "p_raw_return": 0.440156,
+      "primary_target": "pnl_pct_net",
+      "protocol_min_windows": 2,
+      "protocol_windows": [
+        "is",
+        "oos"
+      ],
+      "sense": "arms_on_high_h",
+      "separation": -0.056547,
+      "windows": {
+        "2013": {
+          "n_legs": 0
+        },
+        "2014": {
+          "n_legs": 0
+        },
+        "2015": {
+          "n_legs": 0
+        },
+        "2016": {
+          "n_legs": 0
+        },
+        "2017": {
+          "n_legs": 0
+        },
+        "2018": {
+          "n_legs": 0
+        },
+        "2019": {
+          "n_legs": 0
+        },
+        "2020H1": {
+          "n_legs": 0
+        },
+        "2020H2": {
+          "n_legs": 0
+        },
+        "2021": {
+          "n_legs": 0
+        },
+        "2022": {
+          "n_legs": 0
+        },
+        "2023": {
+          "chop_delta": 1.55897,
+          "dd_delta": 0.790961,
+          "n_legs": 27,
+          "ret_gated": 30.959584,
+          "ret_ungated": 37.915726,
+          "trades_gated": 929,
+          "trades_ungated": 929
+        },
+        "2024": {
+          "chop_delta": -1.459509,
+          "dd_delta": -0.114973,
+          "n_legs": 27,
+          "ret_gated": 4.875658,
+          "ret_ungated": 2.757127,
+          "trades_gated": 1039,
+          "trades_ungated": 1039
+        },
+        "2025H1": {
+          "chop_delta": -1.088334,
+          "dd_delta": -1.057623,
+          "n_legs": 27,
+          "ret_gated": -6.587437,
+          "ret_ungated": -6.343683,
+          "trades_gated": 483,
+          "trades_ungated": 483
+        },
+        "is": {
+          "chop_delta": 0.775574,
+          "dd_delta": 0.291971,
+          "n_legs": 27,
+          "ret_gated": -2.391473,
+          "ret_ungated": -4.771751,
+          "trades_gated": 496,
+          "trades_ungated": 496
+        },
+        "oos": {
+          "chop_delta": -0.53042,
+          "dd_delta": -0.158581,
+          "n_legs": 27,
+          "ret_gated": -1.193889,
+          "ret_ungated": -0.577653,
+          "trades_gated": 492,
+          "trades_ungated": 492
+        }
+      }
+    },
+    {
+      "arm": "sizing",
+      "bh_reject": false,
+      "cluster_distinct_offsets": 1241,
+      "cluster_draws": 10000,
+      "cluster_excluded_datasets": [],
+      "cluster_excluded_trades": 0,
+      "cluster_offset_range": [
+        30,
+        1270
+      ],
+      "cluster_reason": null,
+      "cohort": "exploratory",
+      "config_id": "mean_reversion/sizing/W128/shipped",
+      "continuity_target": "pnl_pct_net",
+      "family": "mean_reversion",
+      "held_out_windows": [
+        "2023",
+        "2024",
+        "2025H1"
+      ],
+      "hurst_window": 128,
+      "n_kept": 871,
+      "n_kept_effective": 271.4059,
+      "n_pooled_effective": 555.2835,
+      "n_pooled_trades": 6242,
+      "n_suppressed": 5371,
+      "n_suppressed_effective": 539.0072,
+      "p_cluster": 0.252575,
+      "p_cluster_return": 0.886111,
+      "p_raw": 0.090191,
+      "p_raw_return": 0.811919,
+      "primary_target": "signed_fixed_horizon_efficiency",
+      "protocol_min_windows": 2,
+      "protocol_windows": [
+        "is",
+        "oos"
+      ],
+      "sense": "arms_on_low_h",
+      "separation": -0.009765,
+      "windows": {
+        "2013": {
+          "n_legs": 0
+        },
+        "2014": {
+          "n_legs": 0
+        },
+        "2015": {
+          "n_legs": 0
+        },
+        "2016": {
+          "n_legs": 0
+        },
+        "2017": {
+          "n_legs": 0
+        },
+        "2018": {
+          "n_legs": 0
+        },
+        "2019": {
+          "n_legs": 0
+        },
+        "2020H1": {
+          "n_legs": 0
+        },
+        "2020H2": {
+          "n_legs": 0
+        },
+        "2021": {
+          "n_legs": 0
+        },
+        "2022": {
+          "n_legs": 0
+        },
+        "2023": {
+          "chop_delta": -49.893465,
+          "dd_delta": -7.145536,
+          "n_legs": 18,
+          "ret_gated": 309.567165,
+          "ret_ungated": 3654.95754,
+          "trades_gated": 2614,
+          "trades_ungated": 2614
+        },
+        "2024": {
+          "chop_delta": -85.157376,
+          "dd_delta": -13.807142,
+          "n_legs": 18,
+          "ret_gated": 266.874962,
+          "ret_ungated": 3068.93884,
+          "trades_gated": 2959,
+          "trades_ungated": 2959
+        },
+        "2025H1": {
+          "chop_delta": -48.346145,
+          "dd_delta": -10.013715,
+          "n_legs": 18,
+          "ret_gated": 67.486474,
+          "ret_ungated": 200.767539,
+          "trades_gated": 1459,
+          "trades_ungated": 1459
+        },
+        "is": {
+          "chop_delta": -46.323472,
+          "dd_delta": -8.74076,
+          "n_legs": 18,
+          "ret_gated": 59.616139,
+          "ret_ungated": 184.926453,
+          "trades_gated": 1734,
+          "trades_ungated": 1734
+        },
+        "oos": {
+          "chop_delta": -52.057179,
+          "dd_delta": -16.782459,
+          "n_legs": 18,
+          "ret_gated": 37.61958,
+          "ret_ungated": 79.941839,
+          "trades_gated": 1868,
+          "trades_ungated": 1868
+        }
+      }
+    },
+    {
+      "arm": "sizing",
+      "bh_reject": false,
+      "cluster_distinct_offsets": 1241,
+      "cluster_draws": 10000,
+      "cluster_excluded_datasets": [],
+      "cluster_excluded_trades": 0,
+      "cluster_offset_range": [
+        30,
+        1270
+      ],
+      "cluster_reason": null,
+      "cohort": "exploratory",
+      "config_id": "mean_reversion/sizing/W256/shipped",
+      "continuity_target": "pnl_pct_net",
+      "family": "mean_reversion",
+      "held_out_windows": [
+        "2023",
+        "2024",
+        "2025H1"
+      ],
+      "hurst_window": 256,
+      "n_kept": 167,
+      "n_kept_effective": 92.4324,
+      "n_pooled_effective": 555.2835,
+      "n_pooled_trades": 6242,
+      "n_suppressed": 6075,
+      "n_suppressed_effective": 551.3342,
+      "p_cluster": 0.249975,
+      "p_cluster_return": 0.380162,
+      "p_raw": 0.078992,
+      "p_raw_return": 0.354965,
+      "primary_target": "signed_fixed_horizon_efficiency",
+      "protocol_min_windows": 2,
+      "protocol_windows": [
+        "is",
+        "oos"
+      ],
+      "sense": "arms_on_low_h",
+      "separation": -0.030501,
+      "windows": {
+        "2013": {
+          "n_legs": 0
+        },
+        "2014": {
+          "n_legs": 0
+        },
+        "2015": {
+          "n_legs": 0
+        },
+        "2016": {
+          "n_legs": 0
+        },
+        "2017": {
+          "n_legs": 0
+        },
+        "2018": {
+          "n_legs": 0
+        },
+        "2019": {
+          "n_legs": 0
+        },
+        "2020H1": {
+          "n_legs": 0
+        },
+        "2020H2": {
+          "n_legs": 0
+        },
+        "2021": {
+          "n_legs": 0
+        },
+        "2022": {
+          "n_legs": 0
+        },
+        "2023": {
+          "chop_delta": -69.723729,
+          "dd_delta": -12.404162,
+          "n_legs": 18,
+          "ret_gated": 206.759715,
+          "ret_ungated": 3654.95754,
+          "trades_gated": 2614,
+          "trades_ungated": 2614
+        },
+        "2024": {
+          "chop_delta": -104.976612,
+          "dd_delta": -15.741512,
+          "n_legs": 18,
+          "ret_gated": 199.260982,
+          "ret_ungated": 3068.93884,
+          "trades_gated": 2959,
+          "trades_ungated": 2959
+        },
+        "2025H1": {
+          "chop_delta": -58.731726,
+          "dd_delta": -11.84199,
+          "n_legs": 18,
+          "ret_gated": 51.202121,
+          "ret_ungated": 200.767539,
+          "trades_gated": 1459,
+          "trades_ungated": 1459
+        },
+        "is": {
+          "chop_delta": -61.020501,
+          "dd_delta": -13.043451,
+          "n_legs": 18,
+          "ret_gated": 48.392286,
+          "ret_ungated": 184.926453,
+          "trades_gated": 1734,
+          "trades_ungated": 1734
+        },
+        "oos": {
+          "chop_delta": -60.544946,
+          "dd_delta": -18.730262,
+          "n_legs": 18,
+          "ret_gated": 23.815231,
+          "ret_ungated": 79.941839,
+          "trades_gated": 1868,
+          "trades_ungated": 1868
+        }
+      }
+    },
+    {
+      "arm": "sizing",
+      "bh_reject": false,
+      "cluster_distinct_offsets": 1241,
+      "cluster_draws": 10000,
+      "cluster_excluded_datasets": [],
+      "cluster_excluded_trades": 0,
+      "cluster_offset_range": [
+        30,
+        1270
+      ],
+      "cluster_reason": null,
+      "cohort": "exploratory",
+      "config_id": "mean_reversion/sizing/W512/shipped",
+      "continuity_target": "pnl_pct_net",
+      "family": "mean_reversion",
+      "held_out_windows": [
+        "2023",
+        "2024",
+        "2025H1"
+      ],
+      "hurst_window": 512,
+      "n_kept": 35,
+      "n_kept_effective": 15.4465,
+      "n_pooled_effective": 555.2835,
+      "n_pooled_trades": 6242,
+      "n_suppressed": 6207,
+      "n_suppressed_effective": 553.9897,
+      "p_cluster": 0.186381,
+      "p_cluster_return": 0.665533,
+      "p_raw": 0.035396,
+      "p_raw_return": 0.621738,
+      "primary_target": "signed_fixed_horizon_efficiency",
+      "protocol_min_windows": 2,
+      "protocol_windows": [
+        "is",
+        "oos"
+      ],
+      "sense": "arms_on_low_h",
+      "separation": -0.102633,
+      "windows": {
+        "2013": {
+          "n_legs": 0
+        },
+        "2014": {
+          "n_legs": 0
+        },
+        "2015": {
+          "n_legs": 0
+        },
+        "2016": {
+          "n_legs": 0
+        },
+        "2017": {
+          "n_legs": 0
+        },
+        "2018": {
+          "n_legs": 0
+        },
+        "2019": {
+          "n_legs": 0
+        },
+        "2020H1": {
+          "n_legs": 0
+        },
+        "2020H2": {
+          "n_legs": 0
+        },
+        "2021": {
+          "n_legs": 0
+        },
+        "2022": {
+          "n_legs": 0
+        },
+        "2023": {
+          "chop_delta": -78.480976,
+          "dd_delta": -14.665082,
+          "n_legs": 18,
+          "ret_gated": 104.652314,
+          "ret_ungated": 3654.95754,
+          "trades_gated": 2614,
+          "trades_ungated": 2614
+        },
+        "2024": {
+          "chop_delta": -119.326221,
+          "dd_delta": -19.689804,
+          "n_legs": 18,
+          "ret_gated": 113.808072,
+          "ret_ungated": 3068.93884,
+          "trades_gated": 2959,
+          "trades_ungated": 2959
+        },
+        "2025H1": {
+          "chop_delta": -67.821694,
+          "dd_delta": -14.413933,
+          "n_legs": 18,
+          "ret_gated": 34.607148,
+          "ret_ungated": 200.767539,
+          "trades_gated": 1459,
+          "trades_ungated": 1459
+        },
+        "is": {
+          "chop_delta": -68.618304,
+          "dd_delta": -15.775931,
+          "n_legs": 18,
+          "ret_gated": 28.609903,
+          "ret_ungated": 184.926453,
+          "trades_gated": 1734,
+          "trades_ungated": 1734
+        },
+        "oos": {
+          "chop_delta": -67.155683,
+          "dd_delta": -21.246151,
+          "n_legs": 18,
+          "ret_gated": 14.437634,
+          "ret_ungated": 79.941839,
+          "trades_gated": 1868,
+          "trades_ungated": 1868
+        }
+      }
+    },
+    {
+      "arm": "exit",
+      "bh_reject": false,
+      "cluster_distinct_offsets": 1247,
+      "cluster_draws": 10000,
+      "cluster_excluded_datasets": [],
+      "cluster_excluded_trades": 0,
+      "cluster_offset_range": [
+        30,
+        1276
+      ],
+      "cluster_reason": null,
+      "cohort": "exploratory",
+      "config_id": "mean_reversion/exit/W512/g0.5",
+      "continuity_target": "signed_fixed_horizon_efficiency",
+      "family": "mean_reversion",
+      "held_out_windows": [
+        "2023",
+        "2024",
+        "2025H1"
+      ],
+      "hurst_window": 512,
+      "n_kept": 3344,
+      "n_kept_effective": 726.5124,
+      "n_pooled_effective": 1120.2926,
+      "n_pooled_trades": 11909,
+      "n_suppressed": 8565,
+      "n_suppressed_effective": 1078.4671,
+      "p_cluster": 0.188181,
+      "p_cluster_return": 0.188181,
+      "p_raw": 0.159584,
+      "p_raw_return": 0.159584,
+      "primary_target": "pnl_pct_net",
+      "protocol_min_windows": 2,
+      "protocol_windows": [
+        "is",
+        "oos"
+      ],
+      "sense": "arms_on_low_h",
+      "separation": -0.025878,
+      "windows": {
+        "2013": {
+          "n_legs": 0
+        },
+        "2014": {
+          "n_legs": 0
+        },
+        "2015": {
+          "n_legs": 0
+        },
+        "2016": {
+          "n_legs": 0
+        },
+        "2017": {
+          "n_legs": 0
+        },
+        "2018": {
+          "n_legs": 0
+        },
+        "2019": {
+          "n_legs": 0
+        },
+        "2020H1": {
+          "n_legs": 0
+        },
+        "2020H2": {
+          "n_legs": 0
+        },
+        "2021": {
+          "n_legs": 0
+        },
+        "2022": {
+          "n_legs": 0
+        },
+        "2023": {
+          "chop_delta": -5.495044,
+          "dd_delta": 0.048884,
+          "n_legs": 18,
+          "ret_gated": 4.962033,
+          "ret_ungated": 6.502004,
+          "trades_gated": 2917,
+          "trades_ungated": 2917
+        },
+        "2024": {
+          "chop_delta": -3.382043,
+          "dd_delta": -1.477596,
+          "n_legs": 18,
+          "ret_gated": -31.987101,
+          "ret_ungated": -35.514558,
+          "trades_gated": 3317,
+          "trades_ungated": 3317
+        },
+        "2025H1": {
+          "chop_delta": -1.24869,
+          "dd_delta": 0.994603,
+          "n_legs": 18,
+          "ret_gated": -15.98121,
+          "ret_ungated": -15.994332,
+          "trades_gated": 1820,
+          "trades_ungated": 1820
+        },
+        "is": {
+          "chop_delta": -5.431374,
+          "dd_delta": 0.330915,
+          "n_legs": 18,
+          "ret_gated": -22.771519,
+          "ret_ungated": -20.895062,
+          "trades_gated": 1841,
+          "trades_ungated": 1841
+        },
+        "oos": {
+          "chop_delta": 2.521021,
+          "dd_delta": 1.358966,
+          "n_legs": 18,
+          "ret_gated": -36.464567,
+          "ret_ungated": -34.254925,
+          "trades_gated": 2210,
+          "trades_ungated": 2210
+        }
+      }
+    }
+  ],
+  "decision": {
+    "arms": {
+      "exit": {
+        "best": {
+          "config_id": "mean_reversion/exit/W512/g0.5",
+          "p_cluster": 0.308169,
+          "separation": -0.021057
+        },
+        "n_significant": 0,
+        "n_tested": 2,
+        "n_untestable": 0,
+        "significant_config_ids": [],
+        "validity_gate": {
+          "arm": "exit",
+          "contrast": "EXIT VALIDITY CONTRAST, stated per arm because an exit change has no kept-versus-suppressed partition at all: it modifies EVERY trade's exit rather than removing some trades. The contrast is therefore PAIRED and row-matched by construction. A bucket's masked baseline run and its masked scaled run admit the SAME entries, so each entry bar carries both outcomes, and the row's value is the signed difference `scaled - baseline` on the arm's primary target. Rows in the neutral and NaN buckets take the base distance on both sides, so their difference is exactly 0 by construction and they form the control side. The published separation is `mean(difference | scaled bucket) - mean(difference | neutral bucket)`, which is signed, row-matched, and reduces to the mean paired effect. The cluster-rotation null rotates the bucket labels over the calendar exactly as #1422 rotates the gate's, so correlated concurrent trades still move together. An entry that appears on only one side of a pair is DROPPED and counted, never imputed.",
+          "degenerate": false,
+          "family": "momentum",
+          "kept_effective": 1033.3821,
+          "kept_floor": 30.0,
+          "largest_separation": -0.02165,
+          "limit": 0.18,
+          "mode": "below_limit",
+          "n_rows": 12990,
+          "passed": false,
+          "reason": "",
+          "units": "pp of net return, as a paired difference"
+        },
+        "verdict": "inconclusive",
+        "verdict_is_confirmatory": false
+      },
+      "sizing": {
+        "best": {
+          "config_id": "mean_reversion/sizing/W256/shipped",
+          "p_cluster": 0.035396,
+          "separation": 0.001956
+        },
+        "n_significant": 0,
+        "n_tested": 6,
+        "n_untestable": 0,
+        "significant_config_ids": [],
+        "validity_gate": {
+          "arm": "sizing",
+          "contrast": "SIZING VALIDITY CONTRAST, stated per arm because the gate's own kept-versus-suppressed partition does not survive the move to sizing. #1424 already defines a size-arm contrast: weighted permutation p-values, plus a `multiplier < 1.0` versus `multiplier >= 1.0` split that feeds the effective-N coverage floors. That split is well behaved for #1410's curve, which can exceed 1.0, so its `>= 1.0` side is a genuine interval. Under the SHIPPED form the multiplier is CAPPED at 1.0, so `>= 1.0` collapses to the exact-equality set `|H - 0.5| >= 0.15`, which is the TAIL of the H distribution rather than an interval around its middle. The contrast is still row-matched and still signed, and it is the honest one for this form, but its kept side is small by construction. This study therefore reports the kept-side effective N beside every sizing verdict and treats a breach of the 30-effective-trade floor as a POWER statement, never as a null about the market.",
+          "degenerate": false,
+          "family": "momentum",
+          "kept_effective": 52.5033,
+          "kept_floor": 30.0,
+          "largest_separation": 0.047105,
+          "limit": 0.099,
+          "mode": "below_limit",
+          "n_rows": 8035,
+          "passed": false,
+          "reason": "",
+          "units": "efficiency units"
+        },
+        "verdict": "inconclusive",
+        "verdict_is_confirmatory": false
+      }
+    },
+    "claims_contract_path": false,
+    "confirmatory_arms": [],
+    "key_risk_held": true,
+    "no_promotion": "This study ships NO threshold and recommends NO configuration. Both arms measure whether a quantity SORTS outcomes; neither searches a threshold, and `decide_recommendation` has no branch that promotes one. A positive finding licenses a follow-up DESIGN issue, never a shipped constant from this run.",
+    "verdict": "inconclusive"
+  },
+  "decision_payload": {
+    "arms": {
+      "exit": {
+        "n_significant": 0,
+        "n_tested": 2,
+        "significant_config_ids": [],
+        "validity_gate": {
+          "kept_effective": 1033.3821,
+          "largest_separation": -0.02165,
+          "limit": 0.18,
+          "mode": "below_limit",
+          "passed": false
+        },
+        "verdict": "inconclusive"
+      },
+      "sizing": {
+        "n_significant": 0,
+        "n_tested": 6,
+        "significant_config_ids": [],
+        "validity_gate": {
+          "kept_effective": 52.5033,
+          "largest_separation": 0.047105,
+          "limit": 0.099,
+          "mode": "below_limit",
+          "passed": false
+        },
+        "verdict": "inconclusive"
+      }
+    },
+    "claims_contract_path": false,
+    "confirmatory_arms": [],
+    "verdict": "inconclusive"
+  },
+  "detection_limits": {
+    "by_arm": {
+      "exit": {
+        "cluster": {
+          "mean_reversion": 0.06,
+          "momentum": 0.18
+        },
+        "family_size": 2,
+        "n": {
+          "mean_reversion": 41563,
+          "momentum": 12990
+        },
+        "n_kept_effective": {},
+        "n_suppressed_effective": {},
+        "separation": {
+          "mean_reversion": -0.021057,
+          "momentum": -0.02165
+        },
+        "units": "pp of net return, as a paired difference"
+      },
+      "sizing": {
+        "cluster": {
+          "mean_reversion": 0.062,
+          "momentum": 0.099
+        },
+        "family_size": 6,
+        "n": {
+          "mean_reversion": 21138,
+          "momentum": 8035
+        },
+        "n_kept_effective": {},
+        "n_suppressed_effective": {},
+        "separation": {
+          "mean_reversion": 0.021251,
+          "momentum": 0.047105
+        },
+        "units": "efficiency units"
+      }
+    },
+    "continuity_targets": {
+      "exit": "signed_fixed_horizon_efficiency",
+      "sizing": "pnl_pct_net"
+    },
+    "exit_hurst_window": 512,
+    "horizon_hours": 96,
+    "primary_targets": {
+      "exit": "pnl_pct_net",
+      "sizing": "signed_fixed_horizon_efficiency"
+    },
+    "sizing_hurst_window": 512,
+    "two_sided": true
+  },
+  "issue": 1428,
+  "pre_registered": {
+    "adx_period": 14,
+    "adx_split": 25.0,
+    "alpha": 0.05,
+    "arm_target_statement": "TARGETS. The sizing arm keeps #1424's pairing unchanged - signed fixed-horizon Kaufman efficiency over 96h as the primary, net return as continuity - because a size change does not move when a trade ends, so a fixed-horizon outcome stays well defined on its rows. The exit arm SWAPS them: its whole purpose is to change when a trade ends, which makes a FIXED-horizon statistic a poor primary, so net return on the ACTUAL holding period is primary there and efficiency is retained as continuity. The swap is a property of the arm and is pre-registered here, not chosen after the numbers were seen.",
+    "arm_targets": {
+      "exit": {
+        "continuity": "signed_fixed_horizon_efficiency",
+        "primary": "pnl_pct_net"
+      },
+      "sizing": {
+        "continuity": "pnl_pct_net",
+        "primary": "signed_fixed_horizon_efficiency"
+      }
+    },
+    "arms": [
+      "sizing",
+      "exit"
+    ],
+    "capital": 1000.0,
+    "contract_path_claim_rule": "CONTRACT PATH, resolved MECHANICALLY from this run's verdict rather than asserted up front. `hurst_gate_calibration.md` is the live-evidence path cited by `scheduler/hurst_gate.go` and #1412's Stage 0. #1426 (PR #1452) DEFERS it because it is exploratory-only, and #1427 (PR #1473) DEFERS it because the shipped gate reads the LEVEL of H and never its change, so its committed artefact passes the supersede clause to this study alone. This study is the only remaining one that scores a quantity the shipped code implements, so the clause is available to it. It is claimed ONLY on a confirmatory result, which is the precedent #1426 set and the maintainer restated on the issue: an exploratory or inconclusive run must not move the live evidence, whatever it finds. `claims_contract_path` below reads the decision object, so no human judgement sits between the verdict and the claim.",
+    "contract_report_basename": "hurst_gate_calibration.md",
+    "datasets": [
+      "BTC/USDT 1h",
+      "BTC/USDT 4h",
+      "ETH/USDT 1h",
+      "ETH/USDT 4h",
+      "SOL/USDT 1h",
+      "SOL/USDT 4h",
+      "BTC/USDT 2h",
+      "ETH/USDT 2h",
+      "SOL/USDT 2h",
+      "BNB/USDT 1h",
+      "BNB/USDT 4h",
+      "XRP/USDT 1h",
+      "XRP/USDT 4h",
+      "DOGE/USDT 1h",
+      "DOGE/USDT 4h",
+      "LTC/USDT 1h",
+      "LTC/USDT 4h",
+      "ADA/USDT 1h",
+      "ADA/USDT 4h",
+      "LINK/USDT 1h",
+      "LINK/USDT 4h",
+      "BTC/USD@bitstamp 1h",
+      "BTC/USD@bitstamp 4h",
+      "BTC/USD@coinbaseexchange 1h",
+      "ETH/USD@coinbaseexchange 1h",
+      "LTC/USD@coinbaseexchange 1h"
+    ],
+    "degenerate_limit_disclosure": "A detection limit of 0.000 is DEGENERATE, not excellent. The injection search returns it when the zero-injection contrast already clears the significance bar, so the smallest grid step is 'detectable' only because the un-injected data was already significant. A validity gate that passes against a 0.000 limit therefore certifies nothing about the effect SIZE, and this study labels every such pass explicitly rather than reading it as a resolved measurement. #1427 hit exactly this case and its artefact says so; the same disclosure is inherited here unchanged.",
+    "exemplar_close_overrides": {
+      "atr_band_revert": {
+        "close_strategies": [
+          {
+            "name": "tiered_tp_atr",
+            "params": {}
+          }
+        ],
+        "stop_loss_atr_mult": 2.0
+      }
+    },
+    "exit_antipersistent_edge": 0.45,
+    "exit_base_trail_atr_mult": 2.0,
+    "exit_bucket_scales": {
+      "NaN": 1.0,
+      "anti_persistent": 0.5,
+      "neutral": 1.0,
+      "persistent": 1.5
+    },
+    "exit_contrast_statement": "EXIT VALIDITY CONTRAST, stated per arm because an exit change has no kept-versus-suppressed partition at all: it modifies EVERY trade's exit rather than removing some trades. The contrast is therefore PAIRED and row-matched by construction. A bucket's masked baseline run and its masked scaled run admit the SAME entries, so each entry bar carries both outcomes, and the row's value is the signed difference `scaled - baseline` on the arm's primary target. Rows in the neutral and NaN buckets take the base distance on both sides, so their difference is exactly 0 by construction and they form the control side. The published separation is `mean(difference | scaled bucket) - mean(difference | neutral bucket)`, which is signed, row-matched, and reduces to the mean paired effect. The cluster-rotation null rotates the bucket labels over the calendar exactly as #1422 rotates the gate's, so correlated concurrent trades still move together. An entry that appears on only one side of a pair is DROPPED and counted, never imputed.",
+    "exit_form": "persistence_scaled_trailing_stop",
+    "exit_form_statement": "EXIT FORM, ONE rule pre-registered before the run and never swept, because power is the binding constraint on this tape and a second form would double the hypothesis family for nothing. A trade's trailing stop distance is scaled by the PERSISTENCE side its entry bar sits on: the persistent side widens the trail by 0.5, the anti-persistent side tightens it by the same amount, the two middle buckets and the NaN bucket keep the base distance exactly. The landmarks are #1410's own committed bucket edges (0.45 and 0.55), not new constants, and 'persistent side' is read through the family's SENSE so a mean-reversion exemplar orients the same way its entry gate does. The base distance is 2 x ATR, the value this repository already uses as its manual-strategy stop default and the same multiple `EXEMPLAR_CLOSE_OVERRIDES` pins for `atr_band_revert`. THE HYPOTHESIS IS THAT PERSISTENCE PREDICTS HOW FAR A MOVE RUNS, so a persistent entry should be given more room before the trail takes it out.",
+    "exit_hurst_window": 512,
+    "exit_mechanism": "bucket_conditional_reruns",
+    "exit_mechanism_statement": "EXIT MECHANISM, named because the Backtester does not expose a per-trade trailing distance and the issue's 'real Backtester re-runs' criterion constrains the mechanism without picking it. `Backtester` takes ONE scalar `trailing_stop_atr_mult` per run, so a persistence-conditional trail cannot be expressed inside a single run. This study uses BUCKET-CONDITIONAL RE-RUNS: for each persistence bucket it masks entry signals down to that bucket exactly as the gate arm masks them, and runs the Backtester twice on the masked series - once at the base distance and once at that bucket's scaled distance. Every leg on both sides is a real `Backtester.run`, and the two sides share their entry masking, so the contrast isolates the EXIT change rather than the masking. A research-local close hook was refused: it would score a code path the live system does not have.",
+    "exit_persistent_edge": 0.55,
+    "exit_scaled_buckets": [
+      "persistent",
+      "anti_persistent"
+    ],
+    "exit_trail_by_bucket": {
+      "NaN": 2.0,
+      "anti_persistent": 1.0,
+      "neutral": 2.0,
+      "persistent": 3.0
+    },
+    "exit_trail_gain": 0.5,
+    "exit_window_statement": "EXIT ARM WINDOW. The exit arm scores exactly ONE rolling-Hurst window, W512, the window #1424's committed primary hypothesis `momentum/gate/W512/arm0.52/dis0.48` already pins. Sweeping all three would triple this arm's hypothesis family and its Backtester cost for a design question the study is not asking, and the pin is inherited rather than chosen here. It is asserted against #1424's committed config id at import time, so a drift there fails loud instead of silently scoring a different window.",
+    "exploratory_held_out_windows": [
+      "2023",
+      "2024",
+      "2025H1"
+    ],
+    "exploratory_protocol_windows": [
+      "is",
+      "oos"
+    ],
+    "families": {
+      "mean_reversion": [
+        "mean_reversion",
+        "atr_band_revert"
+      ],
+      "momentum": [
+        "momentum",
+        "vol_momentum",
+        "squeeze_momentum"
+      ]
+    },
+    "family_sense": {
+      "mean_reversion": "arms_on_low_h",
+      "momentum": "arms_on_high_h"
+    },
+    "family_size_by_arm": {
+      "exit": 2,
+      "sizing": 6
+    },
+    "fee_platform": "hyperliquid",
+    "fetch_page_limit": {
+      "binanceus": 500,
+      "bitstamp": 1000,
+      "coinbaseexchange": 300
+    },
+    "held_out_min_fraction": 0.6666666666666666,
+    "held_out_min_windows": 3,
+    "history_since": {
+      "binanceus": "2020-01-01",
+      "bitstamp": "2012-06-01",
+      "coinbaseexchange": "2015-08-01"
+    },
+    "horizon_hours": 96,
+    "hurst_windows": [
+      128,
+      256,
+      512
+    ],
+    "inference_direction": "two_sided",
+    "inference_direction_rationale": "DIRECTION, pre-registered as a constant: the test is TWO-SIDED on both arms. Both hypotheses are naturally directional - a bigger size on a more persistent entry should pay, and a wider trail on a persistent entry should pay - and a one-sided test of either would be cheaper in power. It is refused for the reason already on this repository's record: the only effect ever MEASURED on these rows, #1424's confirmatory separation of -0.005 efficiency units, pointed the way its one-sided design could not detect at any size. #1426 exists solely to remove that blind spot and #1427 kept it removed. Re-introducing it here would repeat the same mistake on the same tape. THE COST IS REAL: a two-sided limit can only be at or above its one-sided counterpart at the same alpha. The SIGN is carried and reported everywhere.",
+    "inherits_primary_config_id": "momentum/gate/W512/arm0.52/dis0.48",
+    "key_risk_prediction": "The pre-registered prediction is INCONCLUSIVE on both arms, and the reason is a power reason rather than a market one. Effective N here is set by independent CALENDAR CLUSTERS rather than rows, and this study scores the same calendar #1424 scored, so its two-sided detection limit can only be at or above the 0.013 efficiency units #1426 measured. The sizing arm carries a second, sharper power risk that is specific to the shipped form: its kept side is the tail `|H - 0.5| >= 0.15`, so the kept-side effective N may fall under the 30-trade floor on its own. The falsifiable half is the limit: if a measured limit comes back BELOW 0.013 on these rows, this prediction's stated mechanism was wrong. The machinery decides the verdict either way.",
+    "min_kept_effective": 30.0,
+    "min_offset_days": 30,
+    "min_suppressed_effective": 20.0,
+    "n_perm": 10000,
+    "n_perm_mde": 2000,
+    "no_promotion_sentence": "This study ships NO threshold and recommends NO configuration. Both arms measure whether a quantity SORTS outcomes; neither searches a threshold, and `decide_recommendation` has no branch that promotes one. A positive finding licenses a follow-up DESIGN issue, never a shipped constant from this run.",
+    "paired_exit_ns_rule": "A paired row has TWO exits, one per side, and the cluster model needs one holding interval per row. The row takes the LATER of the two, so an overlap between two rows is never understated and the effective-N correction can only be conservative. A row whose exit is unreadable on either side carries `exit_ns=None` and is dropped by `effective_n` exactly as #1422 drops such a row, rather than being imputed.",
+    "primary_family": "momentum",
+    "primary_held_out_windows": [
+      "2013",
+      "2014",
+      "2015",
+      "2016",
+      "2019",
+      "2020H1",
+      "2020H2",
+      "2023",
+      "2024",
+      "2025H1",
+      "is",
+      "oos"
+    ],
+    "primary_protocol_min_windows": 3,
+    "primary_protocol_windows": [
+      "2017",
+      "2018",
+      "2021",
+      "2022"
+    ],
+    "prior_exposure_disclosure": "PRIOR EXPOSURE, disclosed before the run. The OUTCOME rows are the same tape #1424, #1426 and #1427 scored, and their results are committed. Neither PREDICTOR is: no committed artefact in this repository has ever scored the shipped sizing form, and none has ever tested Hurst on the exit side at all, so neither contrast has been seen and neither sign was known when these constants were fixed. A pre-registered confirmatory claim is therefore available on both arms. What is NOT available is a claim of an independent sample: the outcomes are shared, the effective sample size is set by the same calendar clusters, and the detection limit is of the same order as #1424's. Read a finding here as evidence about NEW quantities on OLD rows.",
+    "return_tolerance_frac": 0.1,
+    "return_tolerance_pp": 1.0,
+    "seed": 1428,
+    "shipped_form_statement": "SHIPPED FORM, the reason this study exists. `scheduler/hurst_gate.go` implements `mode: size` as `clamp(|H - 0.5| / 0.15, size_floor, 1.0)` and applies it where the position size is COMPUTED, and `backtest/hurst_gate.py` mirrors it bar-for-bar as the parity module the Backtester already shares. #1410 swept a DIFFERENT curve, `clamp(1 + gain * e, 0, 1.5)`, which can exceed 1.0 and therefore describes something the shipped code cannot do. No committed artefact has ever scored the form the code actually implements, so the shipped multiplier is uncalibrated BY CONSTRUCTION. This study does not re-implement the form. It CALLS `hurst_gate.HurstGate.size_multiplier`, the same object the Backtester and `parity_diff.py` use, so a drift in the shipped form cannot leave this study scoring a stale curve: the import would move with it, and the import-time assertions below fail loud if the landmarks change.",
+    "shipped_nan_multiplier": 1.0,
+    "shipped_size_ceiling": 1.0,
+    "shipped_size_floor": 0.25,
+    "shipped_size_span": 0.15,
+    "size_ceiling_band": 0.15,
+    "sizing_contrast_statement": "SIZING VALIDITY CONTRAST, stated per arm because the gate's own kept-versus-suppressed partition does not survive the move to sizing. #1424 already defines a size-arm contrast: weighted permutation p-values, plus a `multiplier < 1.0` versus `multiplier >= 1.0` split that feeds the effective-N coverage floors. That split is well behaved for #1410's curve, which can exceed 1.0, so its `>= 1.0` side is a genuine interval. Under the SHIPPED form the multiplier is CAPPED at 1.0, so `>= 1.0` collapses to the exact-equality set `|H - 0.5| >= 0.15`, which is the TAIL of the H distribution rather than an interval around its middle. The contrast is still row-matched and still signed, and it is the honest one for this form, but its kept side is small by construction. This study therefore reports the kept-side effective N beside every sizing verdict and treats a breach of the 30-effective-trade floor as a POWER statement, never as a null about the market.",
+    "study_premise": "Every Hurst study on this repository's record asks ADMISSION: should this trade be allowed to happen. #1410, #1422, #1424, #1426 and #1427 all score an entry decision. Two questions that framing never reaches are how BIG the trade should be and when it should END, and this study asks exactly those two, on the same tape, under the same power discipline.",
+    "two_sided_p_definition": "p2 = min(1, 2 * min(p_ge, p_le)), each tail carrying the add-one convention over the SAME draws; the smallest reachable p is 2/(draws+1)",
+    "window_owner": {
+      "ADA|2020H2": "binanceus",
+      "ADA|2021": "binanceus",
+      "ADA|2022": "binanceus",
+      "ADA|2023": "binanceus",
+      "ADA|2024": "binanceus",
+      "ADA|2025H1": "binanceus",
+      "ADA|is": "binanceus",
+      "ADA|oos": "binanceus",
+      "BNB|2020H2": "binanceus",
+      "BNB|2021": "binanceus",
+      "BNB|2022": "binanceus",
+      "BNB|2023": "binanceus",
+      "BNB|2024": "binanceus",
+      "BNB|2025H1": "binanceus",
+      "BNB|is": "binanceus",
+      "BNB|oos": "binanceus",
+      "BTC|2013": "bitstamp",
+      "BTC|2014": "bitstamp",
+      "BTC|2015": "bitstamp",
+      "BTC|2016": "coinbaseexchange",
+      "BTC|2017": "coinbaseexchange",
+      "BTC|2018": "coinbaseexchange",
+      "BTC|2019": "coinbaseexchange",
+      "BTC|2020H1": "coinbaseexchange",
+      "BTC|2020H2": "binanceus",
+      "BTC|2021": "binanceus",
+      "BTC|2022": "binanceus",
+      "BTC|2023": "binanceus",
+      "BTC|2024": "binanceus",
+      "BTC|2025H1": "binanceus",
+      "BTC|is": "binanceus",
+      "BTC|oos": "binanceus",
+      "DOGE|2020H2": "binanceus",
+      "DOGE|2021": "binanceus",
+      "DOGE|2022": "binanceus",
+      "DOGE|2023": "binanceus",
+      "DOGE|2024": "binanceus",
+      "DOGE|2025H1": "binanceus",
+      "DOGE|is": "binanceus",
+      "DOGE|oos": "binanceus",
+      "ETH|2016": "coinbaseexchange",
+      "ETH|2017": "coinbaseexchange",
+      "ETH|2018": "coinbaseexchange",
+      "ETH|2019": "coinbaseexchange",
+      "ETH|2020H1": "coinbaseexchange",
+      "ETH|2020H2": "binanceus",
+      "ETH|2021": "binanceus",
+      "ETH|2022": "binanceus",
+      "ETH|2023": "binanceus",
+      "ETH|2024": "binanceus",
+      "ETH|2025H1": "binanceus",
+      "ETH|is": "binanceus",
+      "ETH|oos": "binanceus",
+      "LINK|2020H2": "binanceus",
+      "LINK|2021": "binanceus",
+      "LINK|2022": "binanceus",
+      "LINK|2023": "binanceus",
+      "LINK|2024": "binanceus",
+      "LINK|2025H1": "binanceus",
+      "LINK|is": "binanceus",
+      "LINK|oos": "binanceus",
+      "LTC|2016": "coinbaseexchange",
+      "LTC|2017": "coinbaseexchange",
+      "LTC|2018": "coinbaseexchange",
+      "LTC|2019": "coinbaseexchange",
+      "LTC|2020H1": "coinbaseexchange",
+      "LTC|2020H2": "binanceus",
+      "LTC|2021": "binanceus",
+      "LTC|2022": "binanceus",
+      "LTC|2023": "binanceus",
+      "LTC|2024": "binanceus",
+      "LTC|2025H1": "binanceus",
+      "LTC|is": "binanceus",
+      "LTC|oos": "binanceus",
+      "SOL|2020H2": "binanceus",
+      "SOL|2021": "binanceus",
+      "SOL|2022": "binanceus",
+      "SOL|2023": "binanceus",
+      "SOL|2024": "binanceus",
+      "SOL|2025H1": "binanceus",
+      "SOL|is": "binanceus",
+      "SOL|oos": "binanceus",
+      "XRP|2020H2": "binanceus",
+      "XRP|2021": "binanceus",
+      "XRP|2022": "binanceus",
+      "XRP|2023": "binanceus",
+      "XRP|2024": "binanceus",
+      "XRP|2025H1": "binanceus",
+      "XRP|is": "binanceus",
+      "XRP|oos": "binanceus"
+    },
+    "windows": {
+      "2013": [
+        "2013-01-01",
+        "2014-01-01"
+      ],
+      "2014": [
+        "2014-01-01",
+        "2015-01-01"
+      ],
+      "2015": [
+        "2015-01-01",
+        "2016-01-01"
+      ],
+      "2016": [
+        "2016-01-01",
+        "2017-01-01"
+      ],
+      "2017": [
+        "2017-01-01",
+        "2018-01-01"
+      ],
+      "2018": [
+        "2018-01-01",
+        "2019-01-01"
+      ],
+      "2019": [
+        "2019-01-01",
+        "2020-01-01"
+      ],
+      "2020H1": [
+        "2020-01-01",
+        "2020-07-01"
+      ],
+      "2020H2": [
+        "2020-07-01",
+        "2021-01-01"
+      ],
+      "2021": [
+        "2021-01-01",
+        "2022-01-01"
+      ],
+      "2022": [
+        "2022-01-01",
+        "2023-01-01"
+      ],
+      "2023": [
+        "2023-01-01",
+        "2024-01-01"
+      ],
+      "2024": [
+        "2024-01-01",
+        "2025-01-01"
+      ],
+      "2025H1": [
+        "2025-01-01",
+        "2025-07-01"
+      ],
+      "is": [
+        "2025-06-10",
+        "2026-01-01"
+      ],
+      "oos": [
+        "2026-01-01",
+        null
+      ]
+    }
+  },
+  "run_summary": {
+    "backfill": {},
+    "coverage": {
+      "cells": {
+        "ADA/USDT 1h|2020H2": true,
+        "ADA/USDT 1h|2021": true,
+        "ADA/USDT 1h|2022": true,
+        "ADA/USDT 1h|2023": true,
+        "ADA/USDT 1h|2024": true,
+        "ADA/USDT 1h|2025H1": true,
+        "ADA/USDT 1h|is": true,
+        "ADA/USDT 1h|oos": true,
+        "ADA/USDT 4h|2020H2": true,
+        "ADA/USDT 4h|2021": true,
+        "ADA/USDT 4h|2022": true,
+        "ADA/USDT 4h|2023": true,
+        "ADA/USDT 4h|2024": true,
+        "ADA/USDT 4h|2025H1": true,
+        "ADA/USDT 4h|is": true,
+        "ADA/USDT 4h|oos": true,
+        "BNB/USDT 1h|2020H2": true,
+        "BNB/USDT 1h|2021": true,
+        "BNB/USDT 1h|2022": true,
+        "BNB/USDT 1h|2023": true,
+        "BNB/USDT 1h|2024": true,
+        "BNB/USDT 1h|2025H1": true,
+        "BNB/USDT 1h|is": true,
+        "BNB/USDT 1h|oos": true,
+        "BNB/USDT 4h|2020H2": true,
+        "BNB/USDT 4h|2021": true,
+        "BNB/USDT 4h|2022": true,
+        "BNB/USDT 4h|2023": true,
+        "BNB/USDT 4h|2024": true,
+        "BNB/USDT 4h|2025H1": true,
+        "BNB/USDT 4h|is": true,
+        "BNB/USDT 4h|oos": true,
+        "BTC/USD@bitstamp 1h|2013": true,
+        "BTC/USD@bitstamp 1h|2014": true,
+        "BTC/USD@bitstamp 1h|2015": true,
+        "BTC/USD@bitstamp 4h|2013": true,
+        "BTC/USD@bitstamp 4h|2014": true,
+        "BTC/USD@bitstamp 4h|2015": true,
+        "BTC/USD@coinbaseexchange 1h|2016": true,
+        "BTC/USD@coinbaseexchange 1h|2017": true,
+        "BTC/USD@coinbaseexchange 1h|2018": true,
+        "BTC/USD@coinbaseexchange 1h|2019": true,
+        "BTC/USD@coinbaseexchange 1h|2020H1": true,
+        "BTC/USDT 1h|2020H2": true,
+        "BTC/USDT 1h|2021": true,
+        "BTC/USDT 1h|2022": true,
+        "BTC/USDT 1h|2023": true,
+        "BTC/USDT 1h|2024": true,
+        "BTC/USDT 1h|2025H1": true,
+        "BTC/USDT 1h|is": true,
+        "BTC/USDT 1h|oos": true,
+        "BTC/USDT 2h|2020H2": true,
+        "BTC/USDT 2h|2021": true,
+        "BTC/USDT 2h|2022": true,
+        "BTC/USDT 2h|2023": true,
+        "BTC/USDT 2h|2024": true,
+        "BTC/USDT 2h|2025H1": true,
+        "BTC/USDT 2h|is": true,
+        "BTC/USDT 2h|oos": true,
+        "BTC/USDT 4h|2020H2": true,
+        "BTC/USDT 4h|2021": true,
+        "BTC/USDT 4h|2022": true,
+        "BTC/USDT 4h|2023": true,
+        "BTC/USDT 4h|2024": true,
+        "BTC/USDT 4h|2025H1": true,
+        "BTC/USDT 4h|is": true,
+        "BTC/USDT 4h|oos": true,
+        "DOGE/USDT 1h|2020H2": true,
+        "DOGE/USDT 1h|2021": true,
+        "DOGE/USDT 1h|2022": true,
+        "DOGE/USDT 1h|2023": true,
+        "DOGE/USDT 1h|2024": true,
+        "DOGE/USDT 1h|2025H1": true,
+        "DOGE/USDT 1h|is": true,
+        "DOGE/USDT 1h|oos": true,
+        "DOGE/USDT 4h|2020H2": true,
+        "DOGE/USDT 4h|2021": true,
+        "DOGE/USDT 4h|2022": true,
+        "DOGE/USDT 4h|2023": true,
+        "DOGE/USDT 4h|2024": true,
+        "DOGE/USDT 4h|2025H1": true,
+        "DOGE/USDT 4h|is": true,
+        "DOGE/USDT 4h|oos": true,
+        "ETH/USD@coinbaseexchange 1h|2016": false,
+        "ETH/USD@coinbaseexchange 1h|2017": true,
+        "ETH/USD@coinbaseexchange 1h|2018": true,
+        "ETH/USD@coinbaseexchange 1h|2019": true,
+        "ETH/USD@coinbaseexchange 1h|2020H1": true,
+        "ETH/USDT 1h|2020H2": true,
+        "ETH/USDT 1h|2021": true,
+        "ETH/USDT 1h|2022": true,
+        "ETH/USDT 1h|2023": true,
+        "ETH/USDT 1h|2024": true,
+        "ETH/USDT 1h|2025H1": true,
+        "ETH/USDT 1h|is": true,
+        "ETH/USDT 1h|oos": true,
+        "ETH/USDT 2h|2020H2": true,
+        "ETH/USDT 2h|2021": true,
+        "ETH/USDT 2h|2022": true,
+        "ETH/USDT 2h|2023": true,
+        "ETH/USDT 2h|2024": true,
+        "ETH/USDT 2h|2025H1": true,
+        "ETH/USDT 2h|is": true,
+        "ETH/USDT 2h|oos": true,
+        "ETH/USDT 4h|2020H2": true,
+        "ETH/USDT 4h|2021": true,
+        "ETH/USDT 4h|2022": true,
+        "ETH/USDT 4h|2023": true,
+        "ETH/USDT 4h|2024": true,
+        "ETH/USDT 4h|2025H1": true,
+        "ETH/USDT 4h|is": true,
+        "ETH/USDT 4h|oos": true,
+        "LINK/USDT 1h|2020H2": false,
+        "LINK/USDT 1h|2021": false,
+        "LINK/USDT 1h|2022": false,
+        "LINK/USDT 1h|2023": true,
+        "LINK/USDT 1h|2024": true,
+        "LINK/USDT 1h|2025H1": true,
+        "LINK/USDT 1h|is": true,
+        "LINK/USDT 1h|oos": true,
+        "LINK/USDT 4h|2020H2": false,
+        "LINK/USDT 4h|2021": false,
+        "LINK/USDT 4h|2022": false,
+        "LINK/USDT 4h|2023": true,
+        "LINK/USDT 4h|2024": true,
+        "LINK/USDT 4h|2025H1": true,
+        "LINK/USDT 4h|is": true,
+        "LINK/USDT 4h|oos": true,
+        "LTC/USD@coinbaseexchange 1h|2016": false,
+        "LTC/USD@coinbaseexchange 1h|2017": true,
+        "LTC/USD@coinbaseexchange 1h|2018": true,
+        "LTC/USD@coinbaseexchange 1h|2019": true,
+        "LTC/USD@coinbaseexchange 1h|2020H1": true,
+        "LTC/USDT 1h|2020H2": true,
+        "LTC/USDT 1h|2021": true,
+        "LTC/USDT 1h|2022": true,
+        "LTC/USDT 1h|2023": true,
+        "LTC/USDT 1h|2024": true,
+        "LTC/USDT 1h|2025H1": true,
+        "LTC/USDT 1h|is": true,
+        "LTC/USDT 1h|oos": true,
+        "LTC/USDT 4h|2020H2": true,
+        "LTC/USDT 4h|2021": true,
+        "LTC/USDT 4h|2022": true,
+        "LTC/USDT 4h|2023": true,
+        "LTC/USDT 4h|2024": true,
+        "LTC/USDT 4h|2025H1": true,
+        "LTC/USDT 4h|is": true,
+        "LTC/USDT 4h|oos": true,
+        "SOL/USDT 1h|2020H2": false,
+        "SOL/USDT 1h|2021": true,
+        "SOL/USDT 1h|2022": true,
+        "SOL/USDT 1h|2023": true,
+        "SOL/USDT 1h|2024": true,
+        "SOL/USDT 1h|2025H1": true,
+        "SOL/USDT 1h|is": true,
+        "SOL/USDT 1h|oos": true,
+        "SOL/USDT 2h|2020H2": false,
+        "SOL/USDT 2h|2021": true,
+        "SOL/USDT 2h|2022": true,
+        "SOL/USDT 2h|2023": true,
+        "SOL/USDT 2h|2024": true,
+        "SOL/USDT 2h|2025H1": true,
+        "SOL/USDT 2h|is": true,
+        "SOL/USDT 2h|oos": true,
+        "SOL/USDT 4h|2020H2": false,
+        "SOL/USDT 4h|2021": true,
+        "SOL/USDT 4h|2022": true,
+        "SOL/USDT 4h|2023": true,
+        "SOL/USDT 4h|2024": true,
+        "SOL/USDT 4h|2025H1": true,
+        "SOL/USDT 4h|is": true,
+        "SOL/USDT 4h|oos": true,
+        "XRP/USDT 1h|2020H2": true,
+        "XRP/USDT 1h|2021": false,
+        "XRP/USDT 1h|2022": false,
+        "XRP/USDT 1h|2023": false,
+        "XRP/USDT 1h|2024": true,
+        "XRP/USDT 1h|2025H1": true,
+        "XRP/USDT 1h|is": true,
+        "XRP/USDT 1h|oos": true,
+        "XRP/USDT 4h|2020H2": true,
+        "XRP/USDT 4h|2021": false,
+        "XRP/USDT 4h|2022": false,
+        "XRP/USDT 4h|2023": false,
+        "XRP/USDT 4h|2024": true,
+        "XRP/USDT 4h|2025H1": true,
+        "XRP/USDT 4h|is": true,
+        "XRP/USDT 4h|oos": true
+      },
+      "dropped": [
+        {
+          "dataset": "LINK/USDT 1h",
+          "reason": "lead 0 bars before 2020-07-01 < required 514",
+          "window": "2020H2"
+        },
+        {
+          "dataset": "LINK/USDT 1h",
+          "reason": "lead 0 bars before 2021-01-01 < required 514",
+          "window": "2021"
+        },
+        {
+          "dataset": "LINK/USDT 1h",
+          "reason": "lead 0 bars before 2022-01-01 < required 514",
+          "window": "2022"
+        },
+        {
+          "dataset": "LINK/USDT 4h",
+          "reason": "lead 0 bars before 2020-07-01 < required 514",
+          "window": "2020H2"
+        },
+        {
+          "dataset": "LINK/USDT 4h",
+          "reason": "lead 0 bars before 2021-01-01 < required 514",
+          "window": "2021"
+        },
+        {
+          "dataset": "LINK/USDT 4h",
+          "reason": "lead 0 bars before 2022-01-01 < required 514",
+          "window": "2022"
+        },
+        {
+          "dataset": "SOL/USDT 1h",
+          "reason": "lead 0 bars before 2020-07-01 < required 514",
+          "window": "2020H2"
+        },
+        {
+          "dataset": "SOL/USDT 2h",
+          "reason": "lead 0 bars before 2020-07-01 < required 514",
+          "window": "2020H2"
+        },
+        {
+          "dataset": "SOL/USDT 4h",
+          "reason": "lead 0 bars before 2020-07-01 < required 514",
+          "window": "2020H2"
+        },
+        {
+          "dataset": "XRP/USDT 1h",
+          "reason": "only 300 of ~8760 expected bars inside [2021-01-01, 2022-01-01) (3% < 80%) \u2014 data gap",
+          "window": "2021"
+        },
+        {
+          "dataset": "XRP/USDT 1h",
+          "reason": "no bars inside [2022-01-01, 2023-01-01)",
+          "window": "2022"
+        },
+        {
+          "dataset": "XRP/USDT 1h",
+          "reason": "only 4091 of ~8760 expected bars inside [2023-01-01, 2024-01-01) (47% < 80%) \u2014 data gap",
+          "window": "2023"
+        },
+        {
+          "dataset": "XRP/USDT 4h",
+          "reason": "only 76 of ~2190 expected bars inside [2021-01-01, 2022-01-01) (3% < 80%) \u2014 data gap",
+          "window": "2021"
+        },
+        {
+          "dataset": "XRP/USDT 4h",
+          "reason": "no bars inside [2022-01-01, 2023-01-01)",
+          "window": "2022"
+        },
+        {
+          "dataset": "XRP/USDT 4h",
+          "reason": "only 1023 of ~2190 expected bars inside [2023-01-01, 2024-01-01) (47% < 80%) \u2014 data gap",
+          "window": "2023"
+        },
+        {
+          "dataset": "ETH/USD@coinbaseexchange 1h",
+          "reason": "lead 0 bars before 2016-01-01 < required 514",
+          "window": "2016"
+        },
+        {
+          "dataset": "LTC/USD@coinbaseexchange 1h",
+          "reason": "lead 0 bars before 2016-01-01 < required 514",
+          "window": "2016"
+        }
+      ],
+      "min_window_bar_fraction": 0.8,
+      "n_cells": 189,
+      "n_dropped": 17,
+      "n_kept": 172,
+      "n_unowned": 227,
+      "reference_last_bar": "2026-08-29 22:00:00",
+      "required_lead_bars": 514
+    },
+    "elapsed_sec": 3985.4,
+    "exit_arm_ran": true,
+    "exit_rows": 69853,
+    "exit_unpaired": 6188,
+    "legs": 860,
+    "scope": {
+      "complete": true,
+      "datasets": null,
+      "hurst_windows": null,
+      "only": null,
+      "pre_registered_inference": true,
+      "windows": null
+    },
+    "sizing_rows": 37923,
+    "warmup": {
+      "insufficient_datasets": [],
+      "lead_bars": {
+        "ADA/USDT 1h": 4359,
+        "ADA/USDT 4h": 1090,
+        "BNB/USDT 1h": 4359,
+        "BNB/USDT 4h": 1090,
+        "BTC/USD@bitstamp 1h": 5136,
+        "BTC/USD@bitstamp 4h": 1284,
+        "BTC/USD@coinbaseexchange 1h": 3672,
+        "BTC/USDT 1h": 4359,
+        "BTC/USDT 2h": 2136,
+        "BTC/USDT 4h": 1090,
+        "DOGE/USDT 1h": 4359,
+        "DOGE/USDT 4h": 1090,
+        "ETH/USD@coinbaseexchange 1h": 5101,
+        "ETH/USDT 1h": 4359,
+        "ETH/USDT 2h": 2136,
+        "ETH/USDT 4h": 1090,
+        "LINK/USDT 1h": 8447,
+        "LINK/USDT 4h": 2112,
+        "LTC/USD@coinbaseexchange 1h": 2171,
+        "LTC/USDT 1h": 4359,
+        "LTC/USDT 4h": 1090,
+        "SOL/USDT 1h": 2507,
+        "SOL/USDT 2h": 1232,
+        "SOL/USDT 4h": 627,
+        "XRP/USDT 1h": 4359,
+        "XRP/USDT 4h": 1090
+      },
+      "min_lead_bars": 627,
+      "required_bars": 514,
+      "sufficient": true
+    }
+  },
+  "schema_version": 1
+}

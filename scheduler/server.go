@@ -5,38 +5,47 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
-// StatusServer provides an HTTP endpoint for portfolio status.
 type StatusServer struct {
 	state          *AppState
 	mu             *sync.RWMutex
-	statusToken    string   // if non-empty, /status requires Authorization: Bearer <token>
-	priceSymbols   []string // BinanceUS spot symbols to always fetch prices for
-	futuresSymbols []string // CME futures contracts that need TopStep marks (#261)
-	hlPerpsCoins   []string // HL perps coins that need venue-native marks (#263)
-	okxPerpsCoins  []string // OKX perps coins that need venue-native marks (#263)
-	stateDB        *StateDB // SQLite DB for /history queries (may be nil)
+	statusToken    string
+	priceSymbols   []string
+	futuresSymbols []string
+	hlPerpsCoins   []string
+	okxPerpsCoins  []string
+	stateDB        *StateStore
 	candleFetcher  UICandleFetcher
 	candleCache    *UICandleCache
+	tuning         *tuningRunManager
 
-	// strategiesMu protects `strategies` independently of `mu`. SIGHUP holds
-	// the global state `mu.Lock()` across the reload (see config_reload.go);
-	// UpdateStrategies is invoked from that path, so reusing `mu` here would
-	// deadlock. Readers on the /api/strategies path also benefit: they no
-	// longer contend with the scheduler's state writes during dashboard polls.
-	strategiesMu sync.RWMutex
-	strategies   []StrategyConfig // strategy configs for initial capital lookup
+	strategiesMu      sync.RWMutex
+	strategies        []StrategyConfig
+	paperSourceLabels map[string]string
+	configPath        string
+	regime            *RegimeConfig
+	configWriteMu     sync.Mutex
 
-	// Throttled logging for repeated mark-fetch failures on the /status
-	// rail. /status can be polled frequently (oncall dashboard, monitoring),
-	// so we don't want to spam logs on every hit — but silently discarding
-	// errors leaves operators blind to a broken price rail. Emit the first
-	// occurrence immediately, then at most once per perpsErrLogInterval.
+	intervalSeconds   int
+	userCloseDefaults CloseDefaultsMap
+
+	globalNotifyRatchet *bool
+	reloadConfig        func() error
+
+	uiCfg         *Config
+	uiNotifier    *MultiNotifier
+	confirmMu     sync.Mutex
+	confirmNonces map[string]confirmNonceEntry
+	tradeActionMu sync.Mutex
+	tradeDepsHook func(*manualCoreDeps)
+	restartFn     func() error
+
 	perpsErrMu              sync.Mutex
 	lastFuturesErrLoggedAt  time.Time
 	lastFuturesModeLoggedAt time.Time
@@ -44,21 +53,13 @@ type StatusServer struct {
 	lastOKXPerpsErrLoggedAt time.Time
 }
 
-// perpsErrLogInterval caps how often /status logs repeated mark-fetch
-// failures. 5m produces a reasonable audit trail without drowning the log
-// on sustained outages during frequent dashboard polling.
 const perpsErrLogInterval = 5 * time.Minute
 
-// DefaultStatusPort is the default TCP port for the status HTTP server.
 const DefaultStatusPort = 8099
 
-// statusPortMaxAttempts bounds the auto-fallback sweep. On collision we try
-// port, port+1, ..., port+statusPortMaxAttempts-1 before giving up.
 const statusPortMaxAttempts = 5
 
-func NewStatusServer(state *AppState, mu *sync.RWMutex, statusToken string, strategies []StrategyConfig, stateDB *StateDB) *StatusServer {
-	// Spot symbols fetched via BinanceUS; perps marks now sourced from the
-	// venue the position lives on (#263); futures on the TopStep rail (#261).
+func NewStatusServer(state *AppState, mu *sync.RWMutex, statusToken string, strategies []StrategyConfig, stateDB *StateStore) *StatusServer {
 	symbols := collectPriceSymbols(strategies)
 	futuresSymbols := collectFuturesMarkSymbols(strategies)
 	hlCoins, okxCoins := collectPerpsMarkSymbols(strategies)
@@ -74,13 +75,10 @@ func NewStatusServer(state *AppState, mu *sync.RWMutex, statusToken string, stra
 		stateDB:        stateDB,
 		candleFetcher:  FetchUICandles,
 		candleCache:    NewUICandleCache(30 * time.Second),
+		reloadConfig:   requestSIGHUPReload,
 	}
 }
 
-// UpdateStrategies refreshes config-derived status metadata after a hot reload.
-// Uses the dedicated strategiesMu — not the global state mu — because the SIGHUP
-// reload path already holds mu.Lock() when it calls this through
-// applyHotReloadConfig (config_reload.go), and the global mu is not reentrant.
 func (ss *StatusServer) UpdateStrategies(strategies []StrategyConfig) {
 	if ss == nil {
 		return
@@ -90,10 +88,33 @@ func (ss *StatusServer) UpdateStrategies(strategies []StrategyConfig) {
 	ss.strategies = append([]StrategyConfig(nil), strategies...)
 }
 
-// logFuturesErrThrottled emits a [WARN] line for a fetch_futures_marks
-// failure on the /status path, skipping emission if we have already
-// logged within perpsErrLogInterval. Thread-safe — /status handlers
-// run concurrently across requests.
+// UpdatePaperSources records the display labels of the sources this process
+// owns. It is refreshed with the roster on every config reload.
+func (ss *StatusServer) UpdatePaperSources(sources []PaperSourceConfig) {
+	if ss == nil {
+		return
+	}
+	labels := make(map[string]string, len(sources))
+	for _, src := range sources {
+		labels[src.ID] = src.Label
+	}
+	ss.strategiesMu.Lock()
+	defer ss.strategiesMu.Unlock()
+	ss.paperSourceLabels = labels
+}
+
+func (ss *StatusServer) paperSourceLabel(id string) string {
+	if ss == nil {
+		return id
+	}
+	ss.strategiesMu.RLock()
+	defer ss.strategiesMu.RUnlock()
+	if label := strings.TrimSpace(ss.paperSourceLabels[id]); label != "" {
+		return label
+	}
+	return id
+}
+
 func (ss *StatusServer) logFuturesErrThrottled(err error) {
 	ss.perpsErrMu.Lock()
 	defer ss.perpsErrMu.Unlock()
@@ -106,8 +127,6 @@ func (ss *StatusServer) logFuturesErrThrottled(err error) {
 		ss.futuresSymbols, err, perpsErrLogInterval)
 }
 
-// logFuturesModeThrottled emits a [WARN] line when fetch_futures_marks
-// silently downgraded from live to paper mode on the /status path.
 func (ss *StatusServer) logFuturesModeThrottled() {
 	ss.perpsErrMu.Lock()
 	defer ss.perpsErrMu.Unlock()
@@ -120,8 +139,6 @@ func (ss *StatusServer) logFuturesModeThrottled() {
 		perpsErrLogInterval)
 }
 
-// logHLPerpsErrThrottled emits a [WARN] line for an HL perps marks fetch
-// failure on the /status path, throttled to once per perpsErrLogInterval.
 func (ss *StatusServer) logHLPerpsErrThrottled(err error) {
 	ss.perpsErrMu.Lock()
 	defer ss.perpsErrMu.Unlock()
@@ -134,8 +151,6 @@ func (ss *StatusServer) logHLPerpsErrThrottled(err error) {
 		ss.hlPerpsCoins, err, perpsErrLogInterval)
 }
 
-// logOKXPerpsErrThrottled emits a [WARN] line for an OKX perps marks fetch
-// failure on the /status path, throttled to once per perpsErrLogInterval.
 func (ss *StatusServer) logOKXPerpsErrThrottled(err error) {
 	ss.perpsErrMu.Lock()
 	defer ss.perpsErrMu.Unlock()
@@ -148,9 +163,6 @@ func (ss *StatusServer) logOKXPerpsErrThrottled(err error) {
 		ss.okxPerpsCoins, err, perpsErrLogInterval)
 }
 
-// resolveStatusPort applies the precedence CLI flag > config > DefaultStatusPort.
-// Non-positive values on either input are treated as "unset" and fall through
-// to the next layer. Returns DefaultStatusPort if neither is set.
 func resolveStatusPort(cliFlag, cfgPort int) int {
 	if cliFlag > 0 {
 		return cliFlag
@@ -161,12 +173,6 @@ func resolveStatusPort(cliFlag, cfgPort int) int {
 	return DefaultStatusPort
 }
 
-// bindWithFallback tries to bind localhost:port, then port+1, ..., up to
-// maxAttempts consecutive ports. Returns the bound listener and the port
-// that actually succeeded, or an error if all attempts failed. Each failed
-// attempt is logged with the real net.Listen error (not a speculative
-// "busy" message), so permission-denied and parse errors aren't masked
-// as port collisions.
 func bindWithFallback(port, maxAttempts int) (net.Listener, int, error) {
 	var lastErr error
 	for attempt := 0; attempt < maxAttempts; attempt++ {
@@ -189,7 +195,26 @@ func (ss *StatusServer) Start(port int) {
 	mux.HandleFunc("/history", ss.handleHistory)
 	mux.HandleFunc("/dashboard", ss.handleDashboard)
 	mux.HandleFunc("/dashboard/", ss.handleDashboard)
+	mux.HandleFunc("/tuning", ss.handleTuning)
+	mux.HandleFunc("/tuning/", ss.handleTuning)
+	mux.HandleFunc("/reports", ss.handleReports)
+	mux.HandleFunc("/reports/", ss.handleReports)
 	mux.HandleFunc("/api/strategies", ss.handleAPIStrategies)
+	mux.HandleFunc("/api/strategies/overview", ss.handleAPIStrategiesOverview)
+	mux.HandleFunc("/api/regime", ss.handleAPIRegime)
+	mux.HandleFunc("/api/regime/transitions", ss.handleAPIRegimeTransitions)
+	mux.HandleFunc("/api/leaderboard", ss.handleAPILeaderboard)
+	mux.HandleFunc("/api/diagnostics", ss.handleAPIDiagnostics)
+	mux.HandleFunc("/api/cashflow", ss.handleAPICashflow)
+	mux.HandleFunc("/api/strategies/dead", ss.handleAPIDeadStrategies)
+	mux.HandleFunc("/api/closing-strategies", ss.handleAPIClosingStrategies)
+	mux.HandleFunc("/api/correlation", ss.handleAPICorrelation)
+	mux.HandleFunc("/api/tuning/runs", ss.handleAPITuningRuns)
+	mux.HandleFunc("/api/tuning/runs/", ss.handleAPITuningRun)
+	mux.HandleFunc("/api/tuning/apply", ss.handleAPITuningApply)
+	mux.HandleFunc("/api/config/notifications", ss.handleAPIConfigNotifications)
+	mux.HandleFunc("/api/confirm", ss.handleAPIConfirm)
+	mux.HandleFunc("/api/config/add-strategy", ss.handleAPIAddStrategy)
 	mux.HandleFunc("/api/strategies/", ss.handleAPIStrategy)
 
 	listener, boundPort, err := bindWithFallback(port, statusPortMaxAttempts)
@@ -198,15 +223,15 @@ func (ss *StatusServer) Start(port int) {
 		return
 	}
 	if boundPort != port {
-		// Prominent fallback notice: operators running `--once` next to a
-		// live instance used to get a hard port-collision error; now the
-		// bind silently advances, so make the advance itself visible.
-		fmt.Printf("[server] NOTICE: requested port %d was in use, bound to %d instead\n", port, boundPort)
+		fmt.Printf("[server] WARNING: requested port %d was in use, bound to %d instead — another go-trader may already be running on %d; compare /health pid across ports\n", port, boundPort, port)
 	}
 	fmt.Printf("[server] Status endpoint at http://localhost:%d/status\n", boundPort)
 	fmt.Printf("[server] Dashboard at http://localhost:%d/dashboard\n", boundPort)
+	fmt.Printf("[server] Tuning at http://localhost:%d/tuning\n", boundPort)
 	if ss.statusToken != "" {
 		fmt.Printf("[server] Dashboard API requires the configured status token\n")
+	} else {
+		fmt.Printf("[server] NOTE: status_token unset — dashboard mutations are open to any local (loopback) client; set status_token if other users can reach this host\n")
 	}
 	go func() {
 		if err := http.Serve(listener, mux); err != nil {
@@ -218,12 +243,11 @@ func (ss *StatusServer) Start(port int) {
 func (ss *StatusServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
-	// 503 once SIGTERM has fired so any future load-balancer-style probe
-	// stops sending traffic immediately. Returns before the staleness check
-	// since the daemon is intentionally winding down.
+	pid := os.Getpid()
+
 	if isDraining() {
 		w.WriteHeader(http.StatusServiceUnavailable)
-		w.Write([]byte(`{"status":"draining"}`))
+		json.NewEncoder(w).Encode(map[string]any{"status": "draining", "pid": pid})
 		return
 	}
 
@@ -231,12 +255,13 @@ func (ss *StatusServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	lastCycle := ss.state.LastCycle
 	ss.mu.RUnlock()
 
-	// `version` is the build-stamped Version (#682) so scripts/update.sh can
-	// confirm the post-restart process matches the just-built binary before
-	// declaring the update successful (and rolling back otherwise).
-	resp := map[string]string{
+	resp := map[string]any{
 		"status":  "ok",
 		"version": Version,
+		"pid":     pid,
+	}
+	if ss.statusToken == "" || r.Header.Get("Authorization") == "Bearer "+ss.statusToken {
+		resp["run_evidence"] = globalRunEvidence.healthView()
 	}
 	if !lastCycle.IsZero() && time.Since(lastCycle) > 30*time.Minute {
 		resp["status"] = "unhealthy"
@@ -247,7 +272,6 @@ func (ss *StatusServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
-	// #38: Optional bearer token auth for /status.
 	if ss.statusToken != "" {
 		if r.Header.Get("Authorization") != "Bearer "+ss.statusToken {
 			w.Header().Set("Content-Type", "application/json")
@@ -257,9 +281,211 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Always fetch prices for all configured spot symbols + any with open
-	// positions (in case config changed). Perps marks come from venue-native
-	// fetchers below (#263), not BinanceUS, so we only pull spot symbols here.
+	prices := ss.fetchLiveMarkPrices()
+
+	ss.mu.RLock()
+	defer ss.mu.RUnlock()
+
+	type StratStatus struct {
+		ID                             string                     `json:"id"`
+		Type                           string                     `json:"type"`
+		Cash                           float64                    `json:"cash"`
+		InitialCapital                 float64                    `json:"initial_capital"`
+		Positions                      map[string]*Position       `json:"positions"`
+		OptionPositions                map[string]*OptionPosition `json:"option_positions"`
+		TradeCount                     int                        `json:"trade_count"`
+		PortfolioValue                 float64                    `json:"portfolio_value"`
+		PnL                            float64                    `json:"pnl"`
+		PnLPct                         float64                    `json:"pnl_pct"`
+		PoolBudget                     bool                       `json:"pool_budget,omitempty"`
+		RiskState                      RiskState                  `json:"risk_state"`
+		Regime                         string                     `json:"regime,omitempty"`
+		RegimeGateFailClosed           bool                       `json:"regime_gate_fail_closed,omitempty"`
+		BaseDirection                  string                     `json:"base_direction,omitempty"`
+		BaseInvertSignal               bool                       `json:"base_invert_signal,omitempty"`
+		EffectiveDirection             string                     `json:"effective_direction,omitempty"`
+		EffectiveInvertSignal          bool                       `json:"effective_invert_signal,omitempty"`
+		RegimeDirectionalPolicy        bool                       `json:"regime_directional_policy,omitempty"`
+		EffectivePolicyRegime          string                     `json:"effective_policy_regime,omitempty"`
+		DirectionalCertificationStatus string                     `json:"directional_certification_status,omitempty"`
+		DirectionalCertificationCell   string                     `json:"directional_certification_cell,omitempty"`
+		RegimeDivergence               *RegimeDivergenceState     `json:"regime_divergence,omitempty"`
+		RegimeProfile                  *RegimeProfileState        `json:"regime_profile,omitempty"`
+		Paused                         bool                       `json:"paused,omitempty"`
+		Hedge                          *HedgeStatus               `json:"hedge,omitempty"`
+		Partition                      string                     `json:"partition,omitempty"`
+		PaperSource                    string                     `json:"paper_source,omitempty"`
+	}
+
+	type PaperSourceStatus struct {
+		ID        string `json:"id"`
+		Label     string `json:"label,omitempty"`
+		Partition string `json:"partition"`
+	}
+
+	// PartitionStatus is the dashboard selector's roster. It carries every
+	// partition this process owns, live and default paper included, in the
+	// stable order, so the selector never has to compose one from the
+	// by-scope maps.
+	type PartitionStatus struct {
+		Partition string `json:"partition"`
+		Label     string `json:"label"`
+		Scope     string `json:"scope"`
+		Source    string `json:"source,omitempty"`
+	}
+
+	type StatusResp struct {
+		CycleCount           int                             `json:"cycle_count"`
+		Prices               map[string]float64              `json:"prices"`
+		Strategies           map[string]StratStatus          `json:"strategies"`
+		PortfolioRisk        PortfolioRiskState              `json:"portfolio_risk"`
+		PortfolioRiskByScope map[string]PortfolioRiskState   `json:"portfolio_risk_by_scope"`
+		TotalValue           float64                         `json:"total_value"`
+		TotalValueByScope    map[string]float64              `json:"total_value_by_scope,omitempty"`
+		TotalNotional        float64                         `json:"total_notional"`
+		TotalNotionalByScope map[string]float64              `json:"total_notional_by_scope,omitempty"`
+		Correlation          *CorrelationSnapshot            `json:"correlation,omitempty"`
+		CorrelationByScope   map[string]*CorrelationSnapshot `json:"correlation_by_scope,omitempty"`
+		ReconciliationGaps   map[string]*ReconciliationGap   `json:"reconciliation_gaps,omitempty"`
+		MarketFeed           *marketFeedHealth               `json:"market_feed,omitempty"`
+		PaperSources         []PaperSourceStatus             `json:"paper_sources,omitempty"`
+		Partitions           []PartitionStatus               `json:"partitions,omitempty"`
+	}
+
+	ss.strategiesMu.RLock()
+	cfgStrategies := append([]StrategyConfig(nil), ss.strategies...)
+	ss.strategiesMu.RUnlock()
+	cfgByID := make(map[string]StrategyConfig, len(cfgStrategies))
+	for _, sc := range cfgStrategies {
+		cfgByID[sc.ID] = sc
+	}
+
+	totalValue := latestDisplayTotal(ss.state, prices)
+	totalNotional := PortfolioNotional(ss.state.Strategies, prices)
+
+	// Every by-scope map is keyed by partition text, so a folded source's own
+	// risk, value, notional and correlation are distinct from every other's.
+	parts := activePartitions(cfgStrategies)
+	riskByScope := make(map[string]PortfolioRiskState, len(parts))
+	valueByScope := make(map[string]float64, len(parts))
+	notionalByScope := make(map[string]float64, len(parts))
+	corrByScope := make(map[string]*CorrelationSnapshot, len(parts))
+	for _, part := range parts {
+		key := part.String()
+		if prs := ss.state.partitionRiskIfPresent(part); prs != nil {
+			riskByScope[key] = *prs
+		} else {
+			riskByScope[key] = PortfolioRiskState{}
+		}
+		valueByScope[key] = latestDisplayTotalForPartition(ss.state, cfgStrategies, part, prices)
+		notionalByScope[key] = PortfolioNotional(filterStatesByPartition(ss.state.Strategies, cfgStrategies, part), prices)
+		if snap := ss.state.partitionCorrelation(part); snap != nil {
+			corrByScope[key] = snap
+		}
+	}
+	legacyScope := statusLegacyScope(parts)
+	if len(parts) > 0 {
+		totalValue = valueByScope[legacyScope.String()]
+		totalNotional = notionalByScope[legacyScope.String()]
+	}
+
+	resp := StatusResp{
+		CycleCount:           ss.state.CycleCount,
+		Prices:               prices,
+		Strategies:           make(map[string]StratStatus),
+		PortfolioRiskByScope: riskByScope,
+		TotalValue:           totalValue,
+		TotalValueByScope:    valueByScope,
+		TotalNotional:        totalNotional,
+		TotalNotionalByScope: notionalByScope,
+		CorrelationByScope:   corrByScope,
+		ReconciliationGaps:   ss.state.ReconciliationGaps,
+		MarketFeed:           marketFeedStatusBlock(),
+	}
+	// Only sources this process actually owns are listed, so the dashboard's
+	// selector can never offer a deployment this process does not read.
+	for _, part := range parts {
+		label := partitionLabel(part)
+		if part.Source != "" {
+			// paperSourceLabel falls back to the id, which alone cannot be
+			// told from the default paper partition in the selector, so only
+			// a configured label replaces the partition text.
+			if named := ss.paperSourceLabel(part.Source); named != "" && named != part.Source {
+				label = named
+			}
+			resp.PaperSources = append(resp.PaperSources, PaperSourceStatus{
+				ID:        part.Source,
+				Label:     ss.paperSourceLabel(part.Source),
+				Partition: part.String(),
+			})
+		}
+		resp.Partitions = append(resp.Partitions, PartitionStatus{
+			Partition: part.String(),
+			Label:     label,
+			Scope:     string(part.Scope),
+			Source:    part.Source,
+		})
+	}
+	if prs := ss.state.partitionRiskIfPresent(legacyScope); prs != nil {
+		resp.PortfolioRisk = *prs
+	}
+	resp.Correlation = ss.state.partitionCorrelation(legacyScope)
+
+	for id, s := range ss.state.Strategies {
+		pv := displayStrategyValue(s, prices)
+		sc, configured := cfgByID[id]
+		// A state row the roster no longer configures has no owning partition,
+		// and naming one would file its alerts under a deployment it may not
+		// belong to. An absent field tells the dashboard to show it always.
+		partitionText := ""
+		if configured {
+			partitionText = partitionFor(sc).String()
+		}
+		initCap := EffectiveInitialCapital(sc, s)
+		pnl := pv - initCap
+		pnlPct := 0.0
+		if initCap > 0 {
+			pnlPct = (pnl / initCap) * 100
+		}
+		dirView := directionalStatusForStrategy(sc, s, ss.regime, time.Now().UTC())
+
+		resp.Strategies[id] = StratStatus{
+			ID:                             s.ID,
+			Type:                           s.Type,
+			Cash:                           s.Cash,
+			InitialCapital:                 initCap,
+			Positions:                      s.Positions,
+			OptionPositions:                s.OptionPositions,
+			TradeCount:                     len(s.TradeHistory),
+			PortfolioValue:                 pv,
+			PnL:                            pnl,
+			PnLPct:                         pnlPct,
+			PoolBudget:                     usesSharedWalletPoolBudget(sc),
+			RiskState:                      s.RiskState,
+			Regime:                         strategyDisplayRegimeLabel(s, sc, ss.regime),
+			RegimeGateFailClosed:           regimeGateFailClosedActive(sc, s, ss.regime),
+			BaseDirection:                  dirView.BaseDirection,
+			BaseInvertSignal:               dirView.BaseInvertSignal,
+			EffectiveDirection:             dirView.EffectiveDirection,
+			EffectiveInvertSignal:          dirView.EffectiveInvertSignal,
+			RegimeDirectionalPolicy:        dirView.PolicyConfigured,
+			EffectivePolicyRegime:          dirView.EffectivePolicyRegime,
+			DirectionalCertificationStatus: dirView.CertStatus,
+			DirectionalCertificationCell:   dirView.CertCell,
+			RegimeDivergence:               s.RegimeDivergence,
+			RegimeProfile:                  s.RegimeProfile,
+			Paused:                         sc.Paused,
+			Hedge:                          buildHedgeStatus(sc, s),
+			Partition:                      partitionText,
+			PaperSource:                    sc.PaperSource,
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+func (ss *StatusServer) fetchLiveMarkPrices() map[string]float64 {
 	symbolSet := make(map[string]bool)
 	for _, sym := range ss.priceSymbols {
 		symbolSet[sym] = true
@@ -267,8 +493,6 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	ss.mu.RLock()
 	for _, s := range ss.state.Strategies {
 		for sym := range s.Positions {
-			// Include only spot-style keys (contain "/") to avoid routing
-			// HL/OKX perps position keys through BinanceUS (#263).
 			if strings.Contains(sym, "/") {
 				symbolSet[sym] = true
 			}
@@ -281,15 +505,12 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		symbols = append(symbols, s)
 	}
 
-	// Fetch live prices WITHOUT holding the lock.
 	prices := make(map[string]float64)
 	if len(symbols) > 0 {
-		p, err := FetchPrices(symbols)
-		if err == nil {
+		if p, err := FetchPrices(symbols); err == nil {
 			prices = p
 		}
 	}
-	// HL perps marks — venue-native oracle (#263). Best-effort.
 	if len(ss.hlPerpsCoins) > 0 {
 		if hlMarks, err := fetchHyperliquidMids(ss.hlPerpsCoins); err == nil {
 			mergePerpsMarks(prices, hlMarks)
@@ -297,7 +518,6 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 			ss.logHLPerpsErrThrottled(err)
 		}
 	}
-	// OKX perps marks — venue-native oracle (#263). Best-effort.
 	if len(ss.okxPerpsCoins) > 0 {
 		if okxMarks, err := fetchOKXPerpsMids(ss.okxPerpsCoins); err == nil {
 			mergePerpsMarks(prices, okxMarks)
@@ -305,10 +525,6 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 			ss.logOKXPerpsErrThrottled(err)
 		}
 	}
-	// Fetch CME futures marks on their separate rail (#261). Best-effort:
-	// on error, open futures positions fall back to pos.AvgCost. Errors are
-	// throttle-logged so repeated /status polls don't spam on a sustained
-	// outage, but the first failure (and periodic reminders) remain visible.
 	if len(ss.futuresSymbols) > 0 {
 		if marks, mode, err := FetchFuturesMarks(ss.futuresSymbols); err == nil {
 			if mode == FuturesMarkModePaperFallback {
@@ -319,90 +535,52 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 			ss.logFuturesErrThrottled(err)
 		}
 	}
+	return prices
+}
 
-	// Re-acquire read lock to build the response
-	ss.mu.RLock()
-	defer ss.mu.RUnlock()
+type directionalStatusView struct {
+	BaseDirection         string
+	BaseInvertSignal      bool
+	EffectiveDirection    string
+	EffectiveInvertSignal bool
+	PolicyConfigured      bool
+	EffectivePolicyRegime string
+	CertStatus            string
+	CertCell              string
+}
 
-	type StratStatus struct {
-		ID              string                     `json:"id"`
-		Type            string                     `json:"type"`
-		Cash            float64                    `json:"cash"`
-		InitialCapital  float64                    `json:"initial_capital"`
-		Positions       map[string]*Position       `json:"positions"`
-		OptionPositions map[string]*OptionPosition `json:"option_positions"`
-		TradeCount      int                        `json:"trade_count"`
-		PortfolioValue  float64                    `json:"portfolio_value"`
-		PnL             float64                    `json:"pnl"`
-		PnLPct          float64                    `json:"pnl_pct"`
-		RiskState       RiskState                  `json:"risk_state"`
-		Regime          string                     `json:"regime,omitempty"`
+func directionalStatusForStrategy(sc StrategyConfig, s *StrategyState, rc *RegimeConfig, now time.Time) directionalStatusView {
+	view := directionalStatusView{
+		BaseDirection:    EffectiveDirection(sc),
+		BaseInvertSignal: sc.InvertSignal,
 	}
-
-	type StatusResp struct {
-		CycleCount         int                           `json:"cycle_count"`
-		Prices             map[string]float64            `json:"prices"`
-		Strategies         map[string]StratStatus        `json:"strategies"`
-		PortfolioRisk      PortfolioRiskState            `json:"portfolio_risk"`
-		TotalValue         float64                       `json:"total_value"`
-		TotalNotional      float64                       `json:"total_notional"`
-		Correlation        *CorrelationSnapshot          `json:"correlation,omitempty"`
-		ReconciliationGaps map[string]*ReconciliationGap `json:"reconciliation_gaps,omitempty"`
+	view.EffectiveDirection = view.BaseDirection
+	view.EffectiveInvertSignal = view.BaseInvertSignal
+	view.PolicyConfigured = sc.RegimeDirectionalPolicy.IsConfigured()
+	if !view.PolicyConfigured {
+		return view
 	}
-
-	totalValue := 0.0
-	for _, s := range ss.state.Strategies {
-		totalValue += PortfolioValue(s, prices)
-	}
-	totalNotional := PortfolioNotional(ss.state.Strategies, prices)
-
-	resp := StatusResp{
-		CycleCount:         ss.state.CycleCount,
-		Prices:             prices,
-		Strategies:         make(map[string]StratStatus),
-		PortfolioRisk:      ss.state.PortfolioRisk,
-		TotalValue:         totalValue,
-		TotalNotional:      totalNotional,
-		Correlation:        ss.state.CorrelationSnapshot,
-		ReconciliationGaps: ss.state.ReconciliationGaps,
-	}
-
-	// Build config lookup for EffectiveInitialCapital. strategies has its own
-	// mutex now — see the strategiesMu doc on StatusServer.
-	ss.strategiesMu.RLock()
-	cfgByID := make(map[string]StrategyConfig, len(ss.strategies))
-	for _, sc := range ss.strategies {
-		cfgByID[sc.ID] = sc
-	}
-	ss.strategiesMu.RUnlock()
-
-	for id, s := range ss.state.Strategies {
-		pv := PortfolioValue(s, prices)
-		sc := cfgByID[id]
-		initCap := EffectiveInitialCapital(sc, s)
-		pnl := pv - initCap
-		pnlPct := 0.0
-		if initCap > 0 {
-			pnlPct = (pnl / initCap) * 100
-		}
-		resp.Strategies[id] = StratStatus{
-			ID:              s.ID,
-			Type:            s.Type,
-			Cash:            s.Cash,
-			InitialCapital:  initCap,
-			Positions:       s.Positions,
-			OptionPositions: s.OptionPositions,
-			TradeCount:      len(s.TradeHistory),
-			PortfolioValue:  pv,
-			PnL:             pnl,
-			PnLPct:          pnlPct,
-			RiskState:       s.RiskState,
-			Regime:          s.Regime,
+	posQty := 0.0
+	posRegime := ""
+	var certStates map[string]string
+	for _, p := range s.Positions {
+		if p != nil && p.Quantity > 0 {
+			posQty = p.Quantity
+			posRegime = positionDirectionalRegimeLabel(p, sc)
+			certStates = p.DirectionCertifiedStatesAtOpen
+			break
 		}
 	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	currentDirRegime := strategyCurrentDirectionalRegime(s, sc)
+	view.EffectivePolicyRegime = effectiveRegimeForPolicy(currentDirRegime, posRegime, posQty)
+	if posQty <= 0 {
+		certStates, _ = strategyDirectionalCertified(sc, rc, now)
+	}
+	view.EffectiveDirection = EffectiveDirectionForPositionGated(sc, currentDirRegime, posRegime, posQty, certStates)
+	view.EffectiveInvertSignal = EffectiveInvertSignalForPositionGated(sc, currentDirRegime, posRegime, posQty, certStates)
+	view.CertStatus = strategyDirectionalCertStatus(sc, rc, now).String()
+	_, view.CertCell = directionalCertInspectStatus(sc, &Config{Regime: rc})
+	return view
 }
 
 func (ss *StatusServer) handleHistory(w http.ResponseWriter, r *http.Request) {
@@ -465,4 +643,18 @@ func (ss *StatusServer) handleHistory(w http.ResponseWriter, r *http.Request) {
 		Limit:  limit,
 		Offset: offset,
 	})
+}
+
+// statusLegacyScope keeps the single-value status fields on the live partition
+// when one exists, else the first active partition.
+func statusLegacyScope(parts []RiskPartition) RiskPartition {
+	for _, part := range parts {
+		if part.IsLive() {
+			return livePartition
+		}
+	}
+	if len(parts) > 0 {
+		return parts[0]
+	}
+	return livePartition
 }

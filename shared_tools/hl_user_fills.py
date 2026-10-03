@@ -1,9 +1,3 @@
-"""
-Shared helpers for applying Hyperliquid userFills lookup results to fill dicts.
-
-Used by shared_scripts/check_hyperliquid.py and shared_scripts/close_hyperliquid_position.py
-to keep the shape-validation and numeric-guard logic in one place (#598).
-"""
 
 import math
 import sys
@@ -23,13 +17,6 @@ def _finite_number(value):
 
 
 def apply_user_fills_lookup(fill, lookup):
-    """Apply fee and closed_pnl from a userFills lookup result to *fill* in-place.
-
-    Returns True when fee was successfully applied, False when lookup is not a
-    Mapping or fee is malformed (caller should warn). A present-but-malformed
-    closed_pnl emits a [WARN] to stderr and is silently dropped so the fee
-    (the primary goal of #585/#587) is still recorded.
-    """
     if not isinstance(lookup, Mapping):
         return False
     fee = _finite_number(lookup.get("fee"))

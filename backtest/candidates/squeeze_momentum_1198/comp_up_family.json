@@ -1,0 +1,14 @@
+{
+  "name": "squeeze_momentum",
+  "direction": "long",
+  "allowed_regimes": [
+    "trending_up_clean",
+    "trending_up_choppy"
+  ],
+  "regime_windows_spec": {
+    "medium": {
+      "classifier": "composite",
+      "period": 14
+    }
+  }
+}

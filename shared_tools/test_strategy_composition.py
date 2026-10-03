@@ -1,256 +1,97 @@
-import importlib.util
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
-from strategy_composition import (
-    compose_signal,
-    evaluate_open_close,
-    finalize_decision,
-    max_close_fraction,
-    validate_close_strategy_names,
-)
+from shared_tools.conftest import load_module
 
-
-def test_compose_signal_close_before_open():
-    assert compose_signal("short", 1.0, "long") == -1
-    assert compose_signal("long", 1.0, "short") == 1
-    assert compose_signal("long", 1.0, "") == 0
-    assert compose_signal("short", 0.0, "long") == 0
+_STRATEGY_COMPOSITION = load_module("_strategy_composition_test", Path(__file__).with_name("strategy_composition.py"))
+evaluate_open_close = _STRATEGY_COMPOSITION.evaluate_open_close
+finalize_decision = _STRATEGY_COMPOSITION.finalize_decision
+strip_unsupported_position_context = _STRATEGY_COMPOSITION.strip_unsupported_position_context
 
 
-def test_max_close_fraction_clamps_and_is_order_independent():
-    fraction, strategy = max_close_fraction([
-        type("E", (), {"strategy": "a", "close_fraction": 0.25})(),
-        type("E", (), {"strategy": "b", "close_fraction": 1.2})(),
-        type("E", (), {"strategy": "c", "close_fraction": -1})(),
-    ])
-    assert fraction == 1.0
-    assert strategy == "b"
-
-
-def test_evaluate_open_close_reuses_legacy_strategy_once():
-    calls = []
-    df = pd.DataFrame({"close": [100, 101]})
-
-    def get_strategy(name):
-        assert name == "legacy"
-
-    def apply_strategy(name, data, params=None):
-        calls.append(name)
-        result = data.copy()
-        result["signal"] = [0, -1]
-        return result
-
-    evaluation = evaluate_open_close(
-        apply_strategy,
-        get_strategy,
-        df,
-        positional_strategy="legacy",
-        open_strategy=None,
-        close_strategies=None,
-        position_side="long",
-    )
-    decision = finalize_decision(evaluation, position_side="long")
-
-    assert calls == ["legacy"]
-    assert decision["open_strategy"] == "legacy"
-    assert decision["close_strategies"] == ["legacy"]
-    assert decision["open_action"] == "short"
-    assert decision["close_fraction"] == 1.0
-    assert decision["signal"] == -1
-
-
-def test_evaluate_open_close_passes_position_ctx_to_close_only():
-    calls = []
+@pytest.mark.parametrize("close_results,want_fraction,want_fill", [
+    ({"tier": {"close_fraction": 0.5, "tier_fill_price": 104.0}}, 0.5, 104.0),
+    ({"tier": {"close_fraction": 0.5, "tier_fill_price": 104.0},
+      "stop": {"close_fraction": 1.0}}, 1.0, None),
+    ({"tier": {"close_fraction": 0.0, "tier_fill_price": 104.0}}, 0.0, None),
+])
+def test_close_tier_fill_price_follows_the_winning_close(close_results, want_fraction, want_fill):
     df = pd.DataFrame({"close": [100, 106]})
 
-    def get_strategy(name):
-        assert name in {"open", "close"}
-
     def apply_strategy(name, data, params=None):
-        calls.append((name, dict(params or {})))
         result = data.copy()
         result["signal"] = 0
-        if name == "close":
-            result["close_fraction"] = 1.0 if params and params.get("avg_cost") == 100 else 0.0
         return result
 
     evaluation = evaluate_open_close(
         apply_strategy,
-        get_strategy,
+        lambda name: None,
         df,
-        positional_strategy="legacy",
+        positional_strategy="open",
         open_strategy="open",
-        close_strategies=["close"],
+        close_strategies=list(close_results),
         position_side="long",
-        params={"open_only": 1},
-        position_ctx={
-            "side": "long",
-            "avg_cost": 100,
-            "current_quantity": 0.5,
-            "initial_quantity": 1.0,
-            "entry_atr": 12.5,
-        },
+        position_ctx={"side": "long", "avg_cost": 100, "risk_anchor_price": 99, "tp_model": "resting_limit"},
+        close_evaluate=lambda name, position, market, params: close_results[name],
     )
     decision = finalize_decision(evaluation, position_side="long")
 
-    assert calls[0] == ("open", {"open_only": 1})
-    assert calls[1] == (
-        "close",
-        {
-            "side": "long",
-            "avg_cost": 100,
-            "current_quantity": 0.5,
-            "initial_quantity": 1.0,
-            "entry_atr": 12.5,
-        },
-    )
-    assert decision["close_fraction"] == 1.0
-    assert decision["signal"] == -1
+    def legacy_close(df, avg_cost=None):
+        return df
+
+    assert decision["close_fraction"] == want_fraction
+    assert decision.get("close_tier_fill_price") == want_fill
+    assert strip_unsupported_position_context(
+        legacy_close, {"avg_cost": 100, "risk_anchor_price": 99, "tp_model": "resting_limit", "lookback": 5},
+    ) == {"avg_cost": 100, "lookback": 5}
 
 
-def test_evaluate_open_close_uses_close_registry_before_open_fallback():
-    calls = []
-    df = pd.DataFrame({"close": [100, 106]})
+def _signal_frame(signal):
+    df = pd.DataFrame({"close": [100.0, 101.0], "signal": [0, signal]})
+    return df
 
-    def get_strategy(name):
-        assert name == "open"
 
+def _decide(raw_signal, position_side, invert, close_fraction=None):
     def apply_strategy(name, data, params=None):
-        calls.append(("open", name, dict(params or {})))
-        result = data.copy()
-        result["signal"] = [0, 0]
-        return result
+        out = data.copy()
+        out["signal"] = raw_signal
+        return out
 
-    def close_evaluate(name, position, market, params=None):
-        calls.append(("close", name, dict(position), dict(market), dict(params or {})))
-        return {"close_fraction": 1.0, "reason": "close:hit"}
+    def close_evaluate(name, position, market, params):
+        if close_fraction is None:
+            raise ValueError(f"Unknown close strategy: {name}")
+        return {"close_fraction": close_fraction}
 
     evaluation = evaluate_open_close(
         apply_strategy,
-        get_strategy,
-        df,
-        positional_strategy="legacy",
+        lambda name: None,
+        _signal_frame(raw_signal),
+        positional_strategy="open",
         open_strategy="open",
-        close_strategies=["tiered_tp_pct"],
-        position_side="long",
-        params={"lookback": 5},
-        position_ctx={"side": "long", "avg_cost": 100, "current_quantity": 1.0},
+        close_strategies=None if close_fraction is None else ["registry_close"],
+        position_side=position_side,
         close_evaluate=close_evaluate,
-        market_ctx={"mark_price": 106},
+        invert_open_signal=invert,
     )
-    decision = finalize_decision(evaluation, position_side="long")
-
-    assert calls == [
-        ("open", "open", {"lookback": 5}),
-        (
-            "close",
-            "tiered_tp_pct",
-            {"side": "long", "avg_cost": 100, "current_quantity": 1.0},
-            {"mark_price": 106},
-            {},
-        ),
-    ]
-    assert decision["close_strategy"] == "tiered_tp_pct"
-    assert decision["signal"] == -1
+    return finalize_decision(evaluation, position_side, invert_open_signal=invert)
 
 
-def test_validate_close_strategy_names_reports_both_registries():
-    def get_open_strategy(name):
-        if name == "legacy_open_close":
-            return {}
-        raise ValueError("open missing")
-
-    def get_close_strategy(name):
-        if name == "tp_at_pct":
-            return {}
-        raise ValueError("close missing")
-
-    validate_close_strategy_names(
-        ["tp_at_pct", "legacy_open_close"],
-        get_open_strategy,
-        get_close_strategy,
-        lambda: ["legacy_open_close"],
-        lambda: ["tp_at_pct"],
-    )
-
-    import pytest
-    with pytest.raises(ValueError, match="Available close strategies.*fallback open strategies"):
-        validate_close_strategy_names(
-            ["missing"],
-            get_open_strategy,
-            get_close_strategy,
-            lambda: ["legacy_open_close"],
-            lambda: ["tp_at_pct"],
-        )
-
-
-def test_evaluate_open_close_reruns_same_strategy_when_close_params_differ():
-    calls = []
-    df = pd.DataFrame({"close": [100, 106]})
-
-    def get_strategy(name):
-        assert name == "same"
-
-    def apply_strategy(name, data, params=None):
-        calls.append(dict(params or {}))
-        result = data.copy()
-        result["signal"] = [0, 0]
-        result["close_fraction"] = 1.0 if params and params.get("avg_cost") == 100 else 0.0
-        return result
-
-    evaluation = evaluate_open_close(
-        apply_strategy,
-        get_strategy,
-        df,
-        positional_strategy="same",
-        open_strategy=None,
-        close_strategies=None,
-        position_side="long",
-        params={"lookback": 5},
-        position_ctx={"avg_cost": 100},
-    )
-
-    assert calls == [{"lookback": 5}, {"lookback": 5, "avg_cost": 100}]
-    assert finalize_decision(evaluation, position_side="long")["close_fraction"] == 1.0
-
-
-def test_tp_at_pct_position_aware_close_handles_missing_and_hit():
-    strategy_path = Path(__file__).resolve().parents[1] / "shared_strategies" / "close" / "registry.py"
-    spec = importlib.util.spec_from_file_location("_close_registry_for_tp_test", strategy_path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-
-    missing = mod.evaluate("tp_at_pct", {}, {"mark_price": 106}, {})
-    assert missing["close_fraction"] == 0.0
-    assert missing["reason"] == "noop:missing_position"
-
-    strategy_path = Path(__file__).resolve().parents[1] / "shared_strategies" / "open" / "spot" / "strategies.py"
-    spec = importlib.util.spec_from_file_location("_spot_strategies_for_tp_test", strategy_path)
-    open_mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(open_mod)
-    df = pd.DataFrame({"close": [100, 106]})
-    legacy = open_mod.apply_strategy(
-        "sma_crossover",
-        df,
-        {"side": "long", "avg_cost": 100, "current_quantity": 0.5},
-    )
-    assert "signal" in legacy.columns
-
-    hit = mod.evaluate(
-        "tp_at_pct",
-        {
-            "side": "long",
-            "avg_cost": 100,
-            "current_quantity": 0.5,
-            "initial_quantity": 1.0,
-            "entry_atr": 12.5,
-        },
-        {"mark_price": 106},
-        {
-            "pct": 0.05,
-        },
-    )
-    assert hit["close_fraction"] == 1.0
-    assert hit["reason"] == "tp_at_pct:hit"
+@pytest.mark.parametrize("raw,side,invert,registry_fraction,want_signal,want_fraction", [
+    (1, "long", True, 0.4, -1, 0.4),
+    (-1, "short", True, 1.0, 1, 1.0),
+    (1, "", True, None, -1, 0.0),
+    (-1, "short", True, None, 1, 1.0),
+    (1, "short", True, None, 0, 0.0),
+    (1, "long", False, 0.4, -1, 0.4),
+    (-1, "short", False, 1.0, 1, 1.0),
+    (1, "", False, None, 1, 0.0),
+    (-1, "short", False, None, 0, 0.0),
+    (1, "short", False, None, 1, 1.0),
+])
+def test_invert_open_signal_table(raw, side, invert, registry_fraction, want_signal, want_fraction):
+    decision = _decide(raw, side, invert, registry_fraction)
+    assert decision["signal"] == want_signal
+    assert decision["close_fraction"] == want_fraction
+    assert decision.get("open_signal_inverted", False) is invert

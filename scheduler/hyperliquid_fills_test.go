@@ -2,15 +2,13 @@ package main
 
 import (
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
 )
-
-// Tests in this file mutate package-level hlMainnetURL / fetchHyperliquidUserFillsByTime
-// and must NOT use t.Parallel().
 
 func newHLUserFillsServer(t *testing.T, fills []map[string]any) *httptest.Server {
 	t.Helper()
@@ -32,146 +30,8 @@ func withFastFillRetries(t *testing.T) {
 	})
 }
 
-func TestLookupHyperliquidFillByOID_AggregatesPartialFills(t *testing.T) {
-	withFastFillRetries(t)
-	srv := newHLUserFillsServer(t, []map[string]any{
-		{"coin": "BTC", "oid": 12345, "fee": "0.50", "closedPnl": "100.00", "sz": "0.1"},
-		{"coin": "BTC", "oid": 12345, "fee": "0.30", "closedPnl": "50.00", "sz": "0.05"},
-		{"coin": "BTC", "oid": 99999, "fee": "1.00", "closedPnl": "200.00", "sz": "0.2"}, // unrelated
-	})
-	defer srv.Close()
-	origURL := hlMainnetURL
-	hlMainnetURL = srv.URL
-	defer func() { hlMainnetURL = origURL }()
-
-	got, ok := lookupHyperliquidFillByOID("0xtest", 12345, 0)
-	if !ok {
-		t.Fatal("expected ok=true")
-	}
-	if got.Count != 2 {
-		t.Errorf("Count = %d, want 2", got.Count)
-	}
-	if got.Fee < 0.799 || got.Fee > 0.801 {
-		t.Errorf("Fee = %g, want ~0.80", got.Fee)
-	}
-	if got.ClosedPnLGross < 149.99 || got.ClosedPnLGross > 150.01 {
-		t.Errorf("ClosedPnLGross = %g, want ~150.00", got.ClosedPnLGross)
-	}
-}
-
-func TestLookupHyperliquidFillByOID_NoMatchReturnsFalse(t *testing.T) {
-	withFastFillRetries(t)
-	srv := newHLUserFillsServer(t, []map[string]any{
-		{"coin": "BTC", "oid": 99999, "fee": "1.00", "sz": "0.2"},
-	})
-	defer srv.Close()
-	origURL := hlMainnetURL
-	hlMainnetURL = srv.URL
-	defer func() { hlMainnetURL = origURL }()
-
-	if _, ok := lookupHyperliquidFillByOID("0xtest", 12345, 0); ok {
-		t.Error("expected ok=false for missing OID")
-	}
-}
-
-func TestLookupHyperliquidFillByOID_EmptyAddressShortCircuits(t *testing.T) {
-	withFastFillRetries(t)
-	if _, ok := lookupHyperliquidFillByOID("", 12345, 0); ok {
-		t.Error("expected ok=false for empty address")
-	}
-}
-
-func TestLookupHyperliquidFillByCoinSize_MatchesByCoinAndSize(t *testing.T) {
-	withFastFillRetries(t)
-	srv := newHLUserFillsServer(t, []map[string]any{
-		{"coin": "BTC", "oid": 1, "fee": "0.40", "closedPnl": "75.00", "sz": "0.123456"},
-		{"coin": "ETH", "oid": 2, "fee": "0.10", "closedPnl": "5.00", "sz": "0.123456"}, // wrong coin
-		{"coin": "BTC", "oid": 3, "fee": "0.20", "closedPnl": "10.00", "sz": "0.5"},     // wrong size
-	})
-	defer srv.Close()
-	origURL := hlMainnetURL
-	hlMainnetURL = srv.URL
-	defer func() { hlMainnetURL = origURL }()
-
-	got, ok := lookupHyperliquidFillByCoinSize("0xtest", "BTC", 0.123456, 1e-4, 0)
-	if !ok {
-		t.Fatal("expected ok=true")
-	}
-	if got.Count != 1 {
-		t.Errorf("Count = %d, want 1", got.Count)
-	}
-	if got.Fee < 0.399 || got.Fee > 0.401 {
-		t.Errorf("Fee = %g, want ~0.40", got.Fee)
-	}
-}
-
-func TestLookupHyperliquidFillByCoinSize_PicksNewestGroupNotSumOfWindow(t *testing.T) {
-	// Regression for #596: two unrelated same-size BTC closes within the
-	// 24h window must not be summed. The fallback should anchor on the
-	// newest matching fill and aggregate only that OID's group.
-	withFastFillRetries(t)
-	srv := newHLUserFillsServer(t, []map[string]any{
-		{"coin": "BTC", "oid": 100, "fee": "0.40", "closedPnl": "75.00", "sz": "0.1", "time": 1_000_000_000},
-		{"coin": "BTC", "oid": 200, "fee": "0.50", "closedPnl": "90.00", "sz": "0.1", "time": 2_000_000_000},
-	})
-	defer srv.Close()
-	origURL := hlMainnetURL
-	hlMainnetURL = srv.URL
-	defer func() { hlMainnetURL = origURL }()
-
-	got, ok := lookupHyperliquidFillByCoinSize("0xtest", "BTC", 0.1, 1e-4, 0)
-	if !ok {
-		t.Fatal("expected ok=true")
-	}
-	if got.Count != 1 {
-		t.Errorf("Count = %d, want 1 (only newest OID's group)", got.Count)
-	}
-	if got.OID != 200 {
-		t.Errorf("OID = %d, want 200 (newest fill)", got.OID)
-	}
-	if got.Fee < 0.499 || got.Fee > 0.501 {
-		t.Errorf("Fee = %g, want ~0.50 (newest only, not 0.40+0.50)", got.Fee)
-	}
-	if got.ClosedPnLGross < 89.99 || got.ClosedPnLGross > 90.01 {
-		t.Errorf("ClosedPnLGross = %g, want ~90.00 (newest only)", got.ClosedPnLGross)
-	}
-}
-
-func TestLookupHyperliquidFillByCoinSize_AggregatesPartialFillsByAnchorOID(t *testing.T) {
-	// When the newest matching fill has partial siblings sharing its OID,
-	// fee/closedPnl should aggregate across the whole group.
-	withFastFillRetries(t)
-	srv := newHLUserFillsServer(t, []map[string]any{
-		{"coin": "BTC", "oid": 555, "fee": "0.20", "closedPnl": "30.00", "sz": "0.04", "time": 1_500_000_000}, // partial of OID 555
-		{"coin": "BTC", "oid": 555, "fee": "0.30", "closedPnl": "40.00", "sz": "0.10", "time": 2_000_000_000}, // anchor
-		{"coin": "BTC", "oid": 999, "fee": "0.99", "closedPnl": "99.00", "sz": "0.10", "time": 1_000_000_000}, // older same-size, different OID — must be ignored
-	})
-	defer srv.Close()
-	origURL := hlMainnetURL
-	hlMainnetURL = srv.URL
-	defer func() { hlMainnetURL = origURL }()
-
-	got, ok := lookupHyperliquidFillByCoinSize("0xtest", "BTC", 0.10, 1e-4, 0)
-	if !ok {
-		t.Fatal("expected ok=true")
-	}
-	if got.OID != 555 {
-		t.Errorf("OID = %d, want 555 (newest matching anchor)", got.OID)
-	}
-	if got.Count != 2 {
-		t.Errorf("Count = %d, want 2 (both fills sharing OID 555)", got.Count)
-	}
-	if got.Fee < 0.499 || got.Fee > 0.501 {
-		t.Errorf("Fee = %g, want ~0.50 (0.20+0.30, not including OID 999)", got.Fee)
-	}
-	if got.ClosedPnLGross < 69.99 || got.ClosedPnLGross > 70.01 {
-		t.Errorf("ClosedPnLGross = %g, want ~70.00 (30+40, not including OID 999)", got.ClosedPnLGross)
-	}
-}
-
 func TestLookupHyperliquidReconcileFillFee_OIDFirstFallsBackToCoinSize(t *testing.T) {
 	withFastFillRetries(t)
-	// First call (OID lookup) returns no match; second call (coin+size) returns hit.
 	calls := 0
 	orig := fetchHyperliquidUserFillsByTime
 	defer func() { fetchHyperliquidUserFillsByTime = orig }()
@@ -179,12 +39,10 @@ func TestLookupHyperliquidReconcileFillFee_OIDFirstFallsBackToCoinSize(t *testin
 		calls++
 		switch calls {
 		case 1:
-			// No match for OID 999.
 			return []hlFillRecord{
 				{Coin: "BTC", OID: "1", Fee: "0.10", Sz: "0.5"},
 			}, nil
 		default:
-			// Coin+size match for BTC@0.5.
 			return []hlFillRecord{
 				{Coin: "BTC", OID: "1", Fee: "0.10", ClosedPnl: "20.00", Sz: "0.5"},
 			}, nil
@@ -201,11 +59,9 @@ func TestLookupHyperliquidReconcileFillFee_OIDFirstFallsBackToCoinSize(t *testin
 }
 
 func TestReconcileHyperliquidPositions_ExternalCloseUsesFillFee(t *testing.T) {
-	// Stub the fee lookup to return a known fee for the SL trigger OID.
 	origLookup := lookupHyperliquidReconcileFillFee
 	defer func() { lookupHyperliquidReconcileFillFee = origLookup }()
 	lookupHyperliquidReconcileFillFee = func(addr, coin string, oid int64, qty float64) (HLFillLookup, bool) {
-		// #685: include FilledQty so the SL-confirmed gate accepts the fill.
 		if oid == 4242 && coin == "BTC" {
 			return HLFillLookup{Fee: 1.23, ClosedPnLGross: 0, FilledQty: 0.1, Px: 58000, Count: 1, OID: oid}, true
 		}
@@ -225,12 +81,13 @@ func TestReconcileHyperliquidPositions_ExternalCloseUsesFillFee(t *testing.T) {
 	logMgr, _ := NewLogManager(t.TempDir())
 	logger, _ := logMgr.GetStrategyLogger("hl-test")
 
-	changed := reconcileHyperliquidPositions(s, "BTC", nil, "0xtest", logger)
+	changed := reconcileHyperliquidPositionsWithResolver(s, "BTC", nil, func(coin string, oid int64, expectedQty float64) (HLFillLookup, bool) {
+		return lookupHyperliquidReconcileFillFee("0xtest", coin, oid, expectedQty)
+	}, logger, nil, nil, StrategyConfig{})
 	if !changed {
 		t.Fatal("expected changed=true")
 	}
 
-	// One open trade (none in this test) + one close trade.
 	if len(s.TradeHistory) != 1 {
 		t.Fatalf("TradeHistory = %d, want 1", len(s.TradeHistory))
 	}
@@ -247,13 +104,10 @@ func TestReconcileHyperliquidPositions_ExternalCloseUsesFillFee(t *testing.T) {
 }
 
 func TestReconcileHyperliquidAccountPositions_DetectorOneUsesFillFee(t *testing.T) {
-	// Detector 1 (Full external close on shared coin): SL owner gets OID-keyed
-	// fee lookup; non-owner peer gets coin+size match.
 	origLookup := lookupHyperliquidReconcileFillFee
 	defer func() { lookupHyperliquidReconcileFillFee = origLookup }()
 	lookupHyperliquidReconcileFillFee = func(addr, coin string, oid int64, qty float64) (HLFillLookup, bool) {
 		if oid == 5005 {
-			// #756: FilledQty + OID echo required for shared-coin SL attribution.
 			return HLFillLookup{Fee: 2.50, Count: 1, OID: oid, FilledQty: 0.2}, true
 		}
 		if oid == 0 && coin == "BTC" && qty > 0 {
@@ -293,8 +147,7 @@ func TestReconcileHyperliquidAccountPositions_DetectorOneUsesFillFee(t *testing.
 	var mu sync.RWMutex
 
 	prices := map[string]float64{"BTC": 59000}
-	// nil on-chain positions => Detector 1 fires for both peers.
-	_, _ = reconcileHyperliquidAccountPositions(scs, scs, state, &mu, logMgr, nil, prices, "0xtest", nil, false)
+	_, _, _ = reconcileHyperliquidAccountPositions(scs, scs, state, &mu, logMgr, nil, nil, prices, "0xtest", nil, false)
 
 	ownerSS := state.Strategies["hl-owner"]
 	if _, open := ownerSS.Positions["BTC"]; open {
@@ -314,8 +167,8 @@ func TestReconcileHyperliquidAccountPositions_DetectorOneUsesFillFee(t *testing.
 	if len(peerSS.TradeHistory) != 1 {
 		t.Fatalf("peer TradeHistory = %d, want 1", len(peerSS.TradeHistory))
 	}
-	if peerSS.TradeHistory[0].ExchangeFee < 0.749 || peerSS.TradeHistory[0].ExchangeFee > 0.751 {
-		t.Errorf("peer ExchangeFee = %g, want ~0.75 (coin+size fallback)", peerSS.TradeHistory[0].ExchangeFee)
+	if peerSS.TradeHistory[0].ExchangeFee < 0.249 || peerSS.TradeHistory[0].ExchangeFee > 0.251 {
+		t.Errorf("peer ExchangeFee = %g, want ~0.25 (aggregate split)", peerSS.TradeHistory[0].ExchangeFee)
 	}
 }
 
@@ -328,73 +181,159 @@ func TestReconcileFillLookupSinceMs_BoundsTo24h(t *testing.T) {
 	}
 }
 
-// #621: FilledQty must be accumulated across all OID-matching fill records.
-func TestLookupHyperliquidFillByOID_AccumulatesFilledQty(t *testing.T) {
+func withHLFillsServer(t *testing.T, fills []map[string]any) {
+	t.Helper()
 	withFastFillRetries(t)
-	srv := newHLUserFillsServer(t, []map[string]any{
-		{"coin": "ETH", "oid": 55555, "fee": "0.10", "closedPnl": "5.00", "sz": "0.211"},
-		{"coin": "ETH", "oid": 55555, "fee": "0.05", "closedPnl": "2.50", "sz": "0.100"},
-		{"coin": "ETH", "oid": 99999, "fee": "1.00", "closedPnl": "50.00", "sz": "0.422"}, // unrelated
-	})
-	defer srv.Close()
+	srv := newHLUserFillsServer(t, fills)
 	origURL := hlMainnetURL
 	hlMainnetURL = srv.URL
-	defer func() { hlMainnetURL = origURL }()
+	t.Cleanup(func() {
+		hlMainnetURL = origURL
+		srv.Close()
+	})
+}
 
-	got, ok := lookupHyperliquidFillByOID("0xtest", 55555, 0)
-	if !ok {
-		t.Fatal("expected ok=true")
-	}
-	if got.Count != 2 {
-		t.Errorf("Count = %d, want 2", got.Count)
-	}
-	wantQty := 0.311
-	if got.FilledQty < wantQty-1e-9 || got.FilledQty > wantQty+1e-9 {
-		t.Errorf("FilledQty = %g, want %g", got.FilledQty, wantQty)
+func assertFillField(t *testing.T, name string, got, want, tol float64) {
+	t.Helper()
+	if math.Abs(got-want) > tol {
+		t.Errorf("%s = %g, want ~%g", name, got, want)
 	}
 }
 
-// #621: FilledQty must be set in the coin+size fallback (no-OID anchor case).
-func TestLookupHyperliquidFillByCoinSize_SetsFilledQtyNoOIDCase(t *testing.T) {
-	withFastFillRetries(t)
-	srv := newHLUserFillsServer(t, []map[string]any{
-		{"coin": "ETH", "oid": nil, "fee": "0.08", "closedPnl": "4.00", "sz": "0.211", "time": 1000},
-	})
-	defer srv.Close()
-	origURL := hlMainnetURL
-	hlMainnetURL = srv.URL
-	defer func() { hlMainnetURL = origURL }()
-
-	got, ok := lookupHyperliquidFillByCoinSize("0xtest", "ETH", 0.211, 1e-4, 0)
-	if !ok {
-		t.Fatal("expected ok=true")
-	}
-	if got.FilledQty < 0.211-1e-9 || got.FilledQty > 0.211+1e-9 {
-		t.Errorf("FilledQty = %g, want 0.211", got.FilledQty)
+func TestLookupHyperliquidFillByOID(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		fills     []map[string]any
+		addr      string
+		oid       int64
+		wantOK    bool
+		wantCount int
+		wantFee   float64
+		wantPnL   float64
+		wantQty   float64
+	}{
+		{
+			name: "aggregates partial fills sharing the OID",
+			fills: []map[string]any{
+				{"coin": "BTC", "oid": 12345, "fee": "0.50", "closedPnl": "100.00", "sz": "0.1"},
+				{"coin": "BTC", "oid": 12345, "fee": "0.30", "closedPnl": "50.00", "sz": "0.05"},
+				{"coin": "BTC", "oid": 99999, "fee": "1.00", "closedPnl": "200.00", "sz": "0.2"},
+			},
+			addr: "0xtest", oid: 12345, wantOK: true, wantCount: 2, wantFee: 0.80, wantPnL: 150.00, wantQty: 0.15,
+		},
+		{
+			name: "accumulates filled qty across partial fills",
+			fills: []map[string]any{
+				{"coin": "ETH", "oid": 55555, "fee": "0.10", "closedPnl": "5.00", "sz": "0.211"},
+				{"coin": "ETH", "oid": 55555, "fee": "0.05", "closedPnl": "2.50", "sz": "0.100"},
+				{"coin": "ETH", "oid": 99999, "fee": "1.00", "closedPnl": "50.00", "sz": "0.422"},
+			},
+			addr: "0xtest", oid: 55555, wantOK: true, wantCount: 2, wantFee: 0.15, wantPnL: 7.50, wantQty: 0.311,
+		},
+		{
+			name: "no match returns false",
+			fills: []map[string]any{
+				{"coin": "BTC", "oid": 99999, "fee": "1.00", "sz": "0.2"},
+			},
+			addr: "0xtest", oid: 12345, wantOK: false,
+		},
+		{
+			name: "empty address short-circuits",
+			fills: []map[string]any{
+				{"coin": "BTC", "oid": 12345, "fee": "1.00", "sz": "0.2"},
+			},
+			addr: "", oid: 12345, wantOK: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withHLFillsServer(t, tc.fills)
+			got, ok := lookupHyperliquidFillByOID(tc.addr, tc.oid, 0)
+			if ok != tc.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tc.wantOK)
+			}
+			if !tc.wantOK {
+				return
+			}
+			if got.Count != tc.wantCount {
+				t.Errorf("Count = %d, want %d", got.Count, tc.wantCount)
+			}
+			assertFillField(t, "Fee", got.Fee, tc.wantFee, 1e-3)
+			assertFillField(t, "ClosedPnLGross", got.ClosedPnLGross, tc.wantPnL, 1e-2)
+			assertFillField(t, "FilledQty", got.FilledQty, tc.wantQty, 1e-9)
+		})
 	}
 }
 
-// #621: FilledQty must be accumulated across OID-aggregation fills in the
-// coin+size fallback when the anchor has a valid OID.
-func TestLookupHyperliquidFillByCoinSize_AccumulatesFilledQtyWithOID(t *testing.T) {
-	withFastFillRetries(t)
-	srv := newHLUserFillsServer(t, []map[string]any{
-		{"coin": "ETH", "oid": 77777, "fee": "0.05", "closedPnl": "2.00", "sz": "0.100", "time": 2000},
-		{"coin": "ETH", "oid": 77777, "fee": "0.06", "closedPnl": "3.00", "sz": "0.111", "time": 1900},
-		{"coin": "ETH", "oid": 88888, "fee": "0.50", "closedPnl": "10.00", "sz": "0.422", "time": 1000},
-	})
-	defer srv.Close()
-	origURL := hlMainnetURL
-	hlMainnetURL = srv.URL
-	defer func() { hlMainnetURL = origURL }()
-
-	// 0.100 is the sz of the newest fill that matches; anchor OID is 77777.
-	got, ok := lookupHyperliquidFillByCoinSize("0xtest", "ETH", 0.100, 1e-4, 0)
-	if !ok {
-		t.Fatal("expected ok=true")
-	}
-	wantQty := 0.211
-	if got.FilledQty < wantQty-1e-9 || got.FilledQty > wantQty+1e-9 {
-		t.Errorf("FilledQty = %g, want %g (sum across OID group)", got.FilledQty, wantQty)
+func TestLookupHyperliquidFillByCoinSize(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		fills     []map[string]any
+		coin      string
+		size      float64
+		wantOID   int64
+		wantCount int
+		wantFee   float64
+		wantPnL   float64
+		wantQty   float64
+	}{
+		{
+			name: "matches by coin and size",
+			fills: []map[string]any{
+				{"coin": "BTC", "oid": 1, "fee": "0.40", "closedPnl": "75.00", "sz": "0.123456"},
+				{"coin": "ETH", "oid": 2, "fee": "0.10", "closedPnl": "5.00", "sz": "0.123456"},
+				{"coin": "BTC", "oid": 3, "fee": "0.20", "closedPnl": "10.00", "sz": "0.5"},
+			},
+			coin: "BTC", size: 0.123456, wantOID: 1, wantCount: 1, wantFee: 0.40, wantPnL: 75.00, wantQty: 0.123456,
+		},
+		{
+			name: "picks the newest group and never the sum of the window",
+			fills: []map[string]any{
+				{"coin": "BTC", "oid": 100, "fee": "0.40", "closedPnl": "75.00", "sz": "0.1", "time": 1_000_000_000},
+				{"coin": "BTC", "oid": 200, "fee": "0.50", "closedPnl": "90.00", "sz": "0.1", "time": 2_000_000_000},
+			},
+			coin: "BTC", size: 0.1, wantOID: 200, wantCount: 1, wantFee: 0.50, wantPnL: 90.00, wantQty: 0.1,
+		},
+		{
+			name: "aggregates partial fills by the newest anchor OID",
+			fills: []map[string]any{
+				{"coin": "BTC", "oid": 555, "fee": "0.20", "closedPnl": "30.00", "sz": "0.04", "time": 1_500_000_000},
+				{"coin": "BTC", "oid": 555, "fee": "0.30", "closedPnl": "40.00", "sz": "0.10", "time": 2_000_000_000},
+				{"coin": "BTC", "oid": 999, "fee": "0.99", "closedPnl": "99.00", "sz": "0.10", "time": 1_000_000_000},
+			},
+			coin: "BTC", size: 0.10, wantOID: 555, wantCount: 2, wantFee: 0.50, wantPnL: 70.00, wantQty: 0.14,
+		},
+		{
+			name: "sets filled qty when the fill carries no OID",
+			fills: []map[string]any{
+				{"coin": "ETH", "oid": nil, "fee": "0.08", "closedPnl": "4.00", "sz": "0.211", "time": 1000},
+			},
+			coin: "ETH", size: 0.211, wantOID: 0, wantCount: 1, wantFee: 0.08, wantPnL: 4.00, wantQty: 0.211,
+		},
+		{
+			name: "accumulates filled qty across the OID group",
+			fills: []map[string]any{
+				{"coin": "ETH", "oid": 77777, "fee": "0.05", "closedPnl": "2.00", "sz": "0.100", "time": 2000},
+				{"coin": "ETH", "oid": 77777, "fee": "0.06", "closedPnl": "3.00", "sz": "0.111", "time": 1900},
+				{"coin": "ETH", "oid": 88888, "fee": "0.50", "closedPnl": "10.00", "sz": "0.422", "time": 1000},
+			},
+			coin: "ETH", size: 0.100, wantOID: 77777, wantCount: 2, wantFee: 0.11, wantPnL: 5.00, wantQty: 0.211,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withHLFillsServer(t, tc.fills)
+			got, ok := lookupHyperliquidFillByCoinSize("0xtest", tc.coin, tc.size, 1e-4, 0)
+			if !ok {
+				t.Fatal("expected ok=true")
+			}
+			if got.OID != tc.wantOID {
+				t.Errorf("OID = %d, want %d", got.OID, tc.wantOID)
+			}
+			if got.Count != tc.wantCount {
+				t.Errorf("Count = %d, want %d", got.Count, tc.wantCount)
+			}
+			assertFillField(t, "Fee", got.Fee, tc.wantFee, 1e-3)
+			assertFillField(t, "ClosedPnLGross", got.ClosedPnLGross, tc.wantPnL, 1e-2)
+			assertFillField(t, "FilledQty", got.FilledQty, tc.wantQty, 1e-9)
+		})
 	}
 }

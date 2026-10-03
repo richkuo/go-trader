@@ -1,26 +1,4 @@
 #!/usr/bin/env python3
-"""
-Robinhood live positions fetcher (issue #346).
-
-Fetches every open Robinhood crypto position on the account and emits a
-JSON list to stdout. Used by the portfolio kill switch in the Go scheduler
-to decide which coins need market closes — mirrors
-``fetch_okx_positions.py``. Requires authenticated session
-(robin_stocks + TOTP MFA); there is no public unauthenticated endpoint.
-
-Scope: crypto only. Stock options are NOT surfaced — the kill switch has
-no automated options close path (different buy-to-close / sell-to-close
-semantics, see ``close_robinhood_position.py``).
-
-Usage:
-    fetch_robinhood_positions.py
-
-Requires ROBINHOOD_USERNAME / ROBINHOOD_PASSWORD / ROBINHOOD_TOTP_SECRET.
-Output:
-``{"positions": [{"coin": "BTC", "size": 0.01, "avg_price": 42000.0}, ...],
-  "platform": "robinhood", "timestamp": ...}``
-Size is unsigned (Robinhood crypto is spot — no short positions).
-"""
 
 import json
 import os
@@ -39,10 +17,6 @@ def main():
         if not adapter.is_live:
             _emit_error("Robinhood adapter not live — set ROBINHOOD_USERNAME / ROBINHOOD_PASSWORD / ROBINHOOD_TOTP_SECRET")
             return
-        # Strict variant propagates exceptions instead of silently returning
-        # [] — required by the kill switch so a Robinhood outage latches
-        # rather than clears virtual state while live exposure remains
-        # (#346 review).
         raw = adapter.get_crypto_positions_strict()
     except Exception as e:
         traceback.print_exc(file=sys.stderr)

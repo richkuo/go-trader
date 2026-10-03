@@ -12,74 +12,146 @@ import (
 	"time"
 )
 
-// probeArgv is the sentinel argv shape passed to every configured check
-// script at startup (#645). It mirrors the runtime argv produced by
-// buildStrategyRefsArg + the per-platform check dispatchers, so an
-// argparse-strict script that doesn't accept these flags will reject the
-// probe and surface the binary/Python version mismatch before the trading
-// loop starts.
-//
-// When the binary's check-script CLI gains a new required flag, append it
-// here so a stale on-disk script fails the probe instead of crashing
-// during a real cycle.
-// The --strategy-refs payload mirrors buildStrategyRefsArg: top-level keys
-// are "open" and "closes" (plural) and "closes" carries at least one ref
-// so a stale parser that drops or rejects the close-ref shape fails the
-// probe instead of silently treating closes as empty.
 var probeArgv = []string{
 	"probe", "BTC", "1h",
 	"--strategy-refs", `{"open":{"name":"probe","params":{}},"closes":[{"name":"probe_close","params":{}}]}`,
-	// #768: new Go forwards --mark-price on every HL signal-check; probe it
-	// so a stale Python that doesn't accept the flag fails startup loudly
-	// instead of every cycle's argparse rejecting the cycle's argv.
 	"--mark-price=0",
+	"--ohlcv-limit", "200",
+	"--regime-windows-spec-json", `{"default":{"classifier":"adx","period":14,"adx_threshold":20}}`,
+	"--regime-atr-window", "",
+	"--regime-payload-json", `{"default":{"regime":"trending_up","score":0.5,"classifier":"adx","metrics":{"adx":25.0,"plus_di":20.0,"minus_di":10.0,"atr_pct":1.0}}}`,
+	"--atr-method=simple",
+	"--position-side", "long",
+	"--position-avg-cost=1",
+	"--position-qty=1",
+	"--position-initial-qty=1",
+	"--position-entry-atr=1",
+	"--position-regime", "trending_up",
+	"--position-risk-anchor-price=1",
 	"--probe-only",
 }
 
-// fetchATRProbeArgv probes check_hyperliquid.py's --fetch-atr mode (#689) so a
-// stale Python missing run_fetch_atr fails startup loudly instead of degrading
-// silently to computeFallbackATR on every manual-open.
-var fetchATRProbeArgv = []string{
-	"--fetch-atr", "--symbol=BTC", "--timeframe=1h", "--period=14", "--probe-only",
+var probeCompositeArgv = []string{
+	"probe", "BTC", "1h",
+	"--strategy-refs", `{"open":{"name":"probe","params":{}},"closes":[{"name":"probe_close","params":{}}]}`,
+	"--mark-price=0",
+	"--ohlcv-limit", "200",
+	"--regime-windows-spec-json", `{"macro":{"classifier":"composite","period":14,"thresholds":{"return_eff":0.05,"range_eff":0.03,"adx":25}}}`,
+	"--regime-atr-window", "",
+	"--regime-payload-json", `{"macro":{"regime":"trending_up_clean","score":0.5,"classifier":"composite","metrics":{"adx":30.0}}}`,
+	"--atr-method=simple",
+	"--position-side", "long",
+	"--position-avg-cost=1",
+	"--position-qty=1",
+	"--position-initial-qty=1",
+	"--position-entry-atr=1",
+	"--position-regime", "trending_up",
+	"--position-risk-anchor-price=1",
+	"--probe-only",
 }
 
-// executeProbeArgv probes check_hyperliquid.py's --execute mode (PR #769
-// review point 1). The signal-check probe doesn't cover the execute branch,
-// so without this an asymmetric deploy (new Go binary forwarding
-// --account-leverage / --account-margin-mode to a stale Python) would only
-// fail on the first signal-fire rather than at startup. --mode=paper so the
-// probe never enters the live-credentials branch; --probe-only short-circuits
-// at the top of run_execute before any adapter or order code runs.
+var hyperliquidMarketCheckProbeArgv = append(append([]string{}, probeArgv[:len(probeArgv)-1]...),
+	"--market-stdin", "--probe-only")
+
+var hyperliquidMarketCheckCompositeProbeArgv = append(append([]string{}, probeCompositeArgv[:len(probeCompositeArgv)-1]...),
+	"--market-stdin", "--probe-only")
+
+var fetchATRProbeArgv = []string{
+	"--fetch-atr", "--symbol=BTC", "--timeframe=1h", "--period=14", "--atr-method=simple", "--probe-only",
+}
+
+var llmReviewProbeArgv = []string{"--probe-only"}
+
 var executeProbeArgv = []string{
 	"--execute",
 	"--symbol=BTC", "--side=buy", "--size=0",
 	"--mode=paper",
 	"--margin-mode=cross", "--leverage=1",
 	"--account-leverage=1", "--account-margin-mode=cross",
+	"--close-mode=reduce_only",
 	"--probe-only",
 }
 
-// fetchCandlesProbeArgv probes the dashboard's on-demand OHLCV helper. The
-// helper is not a configured strategy script, so it needs its own argv shape to
-// catch stale Python deploys before the dashboard starts returning 500s.
+var sizedCloseProbeArgv = []string{
+	"--symbol=BTC", "--mode=live", "--sz=0.01",
+	"--side=sell", "--close-mode=reduce_only",
+	"--cancel-stop-loss-oid=1", "--cancel-protection-after-close", "--cancel-min-fill=0.01",
+	"--probe-only",
+}
+
+var limitOpenProbeArgv = []string{
+	"--limit-open",
+	"--symbol=BTC", "--side=buy", "--size=0.01", "--limit-price=1",
+	"--tif=Alo", "--margin-mode=cross", "--leverage=1",
+	"--account-leverage=1", "--account-margin-mode=cross",
+	"--probe-only",
+}
+
+var limitStatusProbeArgv = []string{
+	"--limit-status", "--symbol=BTC", "--oids-json=[1]", "--probe-only",
+}
+
+var syncProtectionProbeArgv = []string{
+	"--sync-protection",
+	"--symbol=BTC", "--side=long", "--size=0.01",
+	"--avg-cost=1", "--entry-atr=1", "--stop-loss-atr-mult=1",
+	"--mode=live",
+	"--stop-loss-trigger-px=1", "--preserve-moved-stop",
+	`--tp-tiers-json=[{"atr_multiple":1,"close_fraction":0.5},{"atr_multiple":2,"close_fraction":1}]`,
+	"--stop-loss-oid=1",
+	"--tp-oids-json=[1,2]",
+	"--tp-armed-tiers-json=[true,false]",
+	"--force-sl-replace",
+	"--force-tp-replace-json=[true,false]",
+	"--cancel-tp-oids-json=[3]",
+	"--reconcile-fill-hints-json=[]",
+	"--probe-only",
+}
+
+var cancelOrderProbeArgv = []string{
+	"--cancel-order", "--symbol=BTC", "--oid=1", "--probe-only",
+}
+
+var listOpenOrdersProbeArgv = []string{
+	"--list-open-order-oids", "--probe-only",
+}
+
+var hyperliquidBatchProbeArgv = []string{
+	"--batch-check", "--symbol=BTC", "--timeframe=1h",
+	"--ohlcv-limit", "200", "--atr-method=simple", "--mark-price=0",
+	"--regime-windows-spec-json", `{"default":{"classifier":"adx","period":14,"adx_threshold":20}}`,
+	"--regime-payload-json", `{"default":{"regime":"trending_up","score":0.5,"classifier":"adx","metrics":{"adx":25.0}}}`,
+	"--market-stdin",
+	"--probe-only",
+}
+
 var fetchCandlesProbeArgv = []string{
 	"--platform=binanceus", "--type=spot", "--symbol=BTC/USDT", "--timeframe=1h", "--limit=1", "--probe-only",
 }
 
+var checkRegimeProbeArgv = []string{
+	"--platform=binanceus", "--symbol=BTC/USDT", "--timeframe=1h",
+	"--regime-windows-spec-json", `{"default":{"classifier":"adx","period":14,"adx_threshold":20}}`,
+	"--ohlcv-limit", "200", "--min-bars", "30",
+	"--probe-only",
+}
+
+var checkRegimeMarketProbeArgv = []string{
+	"--platform=hyperliquid", "--symbol=BTC", "--timeframe=1h",
+	"--regime-windows-spec-json", `{"default":{"classifier":"adx","period":14,"adx_threshold":20}}`,
+	"--ohlcv-limit", "200", "--min-bars", "30",
+	"--market-stdin",
+	"--probe-only",
+}
+
+var strategyTunerSchemaProbeArgv = []string{
+	"--type=spot", "--strategy=sma", "--probe-only",
+}
+
+var simulateStrategyProbeArgv = []string{"--probe-only"}
+
 const probeTimeout = 15 * time.Second
 
-// probeCheckScripts invokes each unique check script configured in cfg
-// with --probe-only. Returns nil if every script accepts the probe argv;
-// returns an error describing the first failing script otherwise.
-//
-// Manual-argv scripts (check_strategy.py, check_options.py) short-circuit
-// on --probe-only without parsing, so they always pass — the probe's
-// signal value is highest for argparse-strict scripts (HL/TopStep/RH/OKX),
-// where unknown flags cause the same exit-2 the May 7 outage exhibited.
-// probeOneCheckScriptFn is the per-script probe invoker — package var so
-// tests can stub it without standing up a real .venv (Go CI doesn't have
-// one — see CLAUDE.md → Testing). The argv parameter lets a single script
-// be probed against multiple argv shapes (e.g. signal-check + --fetch-atr).
 var probeOneCheckScriptFn = probeOneCheckScript
 
 func probeCheckScripts(cfg *Config) error {
@@ -88,27 +160,79 @@ func probeCheckScripts(cfg *Config) error {
 		if err := probeOneCheckScriptFn(script, probeArgv); err != nil {
 			return err
 		}
-		// HL exposes --fetch-atr (#689) for manual-open ATR auto-fetch; probe
-		// it so an old Python without run_fetch_atr fails the probe rather
-		// than silently degrading every manual-open to computeFallbackATR.
+		if err := probeOneCheckScriptFn(script, probeCompositeArgv); err != nil {
+			return err
+		}
 		if filepath.Base(script) == "check_hyperliquid.py" {
 			if err := probeOneCheckScriptFn(script, fetchATRProbeArgv); err != nil {
 				return err
 			}
-			// PR #769: also probe --execute so the new --account-leverage /
-			// --account-margin-mode flags fail loudly at startup if Python is
-			// stale, rather than on the first signal-fire.
 			if err := probeOneCheckScriptFn(script, executeProbeArgv); err != nil {
 				return err
 			}
+			if err := probeOneCheckScriptFn(script, limitOpenProbeArgv); err != nil {
+				return err
+			}
+			if err := probeOneCheckScriptFn(script, limitStatusProbeArgv); err != nil {
+				return err
+			}
+			if err := probeOneCheckScriptFn(script, syncProtectionProbeArgv); err != nil {
+				return err
+			}
+			if err := probeOneCheckScriptFn(script, cancelOrderProbeArgv); err != nil {
+				return err
+			}
+			if err := probeOneCheckScriptFn(script, listOpenOrdersProbeArgv); err != nil {
+				return err
+			}
+			if err := probeOneCheckScriptFn(script, hyperliquidBatchProbeArgv); err != nil {
+				return err
+			}
+			if err := probeOneCheckScriptFn(script, hyperliquidMarketCheckProbeArgv); err != nil {
+				return err
+			}
+			if err := probeOneCheckScriptFn(script, hyperliquidMarketCheckCompositeProbeArgv); err != nil {
+				return err
+			}
+		}
+	}
+	if anyHLLiveReconcilable(cfg) {
+		if err := probeOneCheckScriptFn(hyperliquidLiveCloseScript, sizedCloseProbeArgv); err != nil {
+			return err
+		}
+	}
+	if anyStrategyUsesLLMEntryAnalysis(cfg) {
+		if err := probeOneCheckScriptFn(llmEntryAnalysisScript, llmReviewProbeArgv); err != nil {
+			return err
 		}
 	}
 	if len(scripts) > 0 {
 		if err := probeOneCheckScriptFn("shared_scripts/fetch_candles.py", fetchCandlesProbeArgv); err != nil {
 			return err
 		}
+		if err := probeOneCheckScriptFn("shared_scripts/strategy_tuner_schema.py", strategyTunerSchemaProbeArgv); err != nil {
+			return err
+		}
+		if err := probeOneCheckScriptFn(regimeCheckScript, checkRegimeProbeArgv); err != nil {
+			return err
+		}
+		if err := probeOneCheckScriptFn(regimeCheckScript, checkRegimeMarketProbeArgv); err != nil {
+			return err
+		}
+		if err := probeOneCheckScriptFn("shared_scripts/simulate_strategy.py", simulateStrategyProbeArgv); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+func anyHLLiveReconcilable(cfg *Config) bool {
+	for _, sc := range cfg.Strategies {
+		if isHLLiveReconcilable(sc) {
+			return true
+		}
+	}
+	return false
 }
 
 func uniqueCheckScripts(cfg *Config) []string {
@@ -162,5 +286,12 @@ func formatProbeFailure(script string, runErr error, stderr, stdout string) erro
 	if detail == "" {
 		detail = runErr.Error()
 	}
+	if probeFailureScriptMissing(detail) {
+		return fmt.Errorf("%s missing from deploy tree (sync Python with binary, e.g. scripts/update.sh): %s", script, detail)
+	}
 	return fmt.Errorf("%s rejected --probe-only argv (binary/Python version mismatch?): %s", script, detail)
+}
+
+func probeFailureScriptMissing(detail string) bool {
+	return strings.Contains(detail, "can't open file")
 }

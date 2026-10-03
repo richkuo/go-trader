@@ -1,0 +1,1337 @@
+{
+  "issue": 1152,
+  "harness": "backtest/exit_policy_ab.py (M6, #1066) \u2014 entry-locked per-entry replay, incumbent-relative, regime-gated",
+  "open_strategies": {
+    "sq": "squeeze_momentum (futures registry, direction both)",
+    "mr": "mean_reversion (futures registry, direction both)"
+  },
+  "classifier": "composite p20 (regime.windows.medium)",
+  "incumbents": {
+    "ratchet.ranging_quiet": [
+      {
+        "atr_multiple": 0.75,
+        "close_fraction": 0.4,
+        "trailing_mult_after": 1.0
+      },
+      {
+        "atr_multiple": 1.5,
+        "close_fraction": 0.8,
+        "trailing_mult_after": 0.75
+      },
+      {
+        "atr_multiple": 2.0,
+        "close_fraction": 1.0,
+        "trailing_mult_after": 0.75
+      }
+    ],
+    "ratchet.ranging_volatile": [
+      {
+        "atr_multiple": 1.0,
+        "close_fraction": 0.4,
+        "trailing_mult_after": 1.0
+      },
+      {
+        "atr_multiple": 2.0,
+        "close_fraction": 0.8,
+        "trailing_mult_after": 0.75
+      },
+      {
+        "atr_multiple": 3.0,
+        "close_fraction": 1.0,
+        "trailing_mult_after": 0.75
+      }
+    ],
+    "ratchet.ranging_directional": [
+      {
+        "atr_multiple": 1.0,
+        "close_fraction": 0.25,
+        "trailing_mult_after": 1.0
+      },
+      {
+        "atr_multiple": 2.0,
+        "close_fraction": 0.5,
+        "trailing_mult_after": 1.0
+      },
+      {
+        "atr_multiple": 3.0,
+        "close_fraction": 0.75,
+        "trailing_mult_after": 0.8
+      },
+      {
+        "atr_multiple": 4.5,
+        "close_fraction": 0.75,
+        "trailing_mult_after": 0.6
+      }
+    ],
+    "b2.ranging (collapsed)": [
+      {
+        "atr_multiple": 0.5,
+        "close_fraction": 0.5
+      },
+      {
+        "atr_multiple": 1.0,
+        "close_fraction": 1.0
+      }
+    ]
+  },
+  "runs": [
+    {
+      "key": "sq.rq_volatile_geometry",
+      "open": "squeeze_momentum",
+      "experiment": "ratchet",
+      "substate": "ranging_quiet",
+      "hypothesis": "quiet's tighter triggers over-harvest; the volatile geometry (wider rungs) does better even in quiet ranges",
+      "candidate_close": [
+        {
+          "name": "trailing_tp_ratchet_regime",
+          "params": {
+            "tp_tiers": {
+              "ranging_quiet": [
+                {
+                  "atr_multiple": 1.0,
+                  "close_fraction": 0.4,
+                  "trailing_mult_after": 1.0
+                },
+                {
+                  "atr_multiple": 2.0,
+                  "close_fraction": 0.8,
+                  "trailing_mult_after": 0.75
+                },
+                {
+                  "atr_multiple": 3.0,
+                  "close_fraction": 1.0,
+                  "trailing_mult_after": 0.75
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "status": "ok",
+      "windows": {
+        "is": {
+          "paired_n": 0,
+          "pooled_delta_net_pct_per_entry": null,
+          "datasets_delta_pos": 0,
+          "datasets_delta_neg": 0,
+          "datasets_sig_pos_p05": 0,
+          "datasets_sig_neg_p05": 0
+        },
+        "oos": {
+          "paired_n": 0,
+          "pooled_delta_net_pct_per_entry": null,
+          "datasets_delta_pos": 0,
+          "datasets_delta_neg": 0,
+          "datasets_sig_pos_p05": 0,
+          "datasets_sig_neg_p05": 0
+        }
+      },
+      "verdict": "inconclusive: insufficient paired entries"
+    },
+    {
+      "key": "sq.rq_lighter_early",
+      "open": "squeeze_momentum",
+      "experiment": "ratchet",
+      "substate": "ranging_quiet",
+      "hypothesis": "same triggers, lighter early scale-out (25/50/100) lets quiet-range winners contribute more",
+      "candidate_close": [
+        {
+          "name": "trailing_tp_ratchet_regime",
+          "params": {
+            "tp_tiers": {
+              "ranging_quiet": [
+                {
+                  "atr_multiple": 0.75,
+                  "close_fraction": 0.25,
+                  "trailing_mult_after": 1.0
+                },
+                {
+                  "atr_multiple": 1.5,
+                  "close_fraction": 0.5,
+                  "trailing_mult_after": 0.75
+                },
+                {
+                  "atr_multiple": 2.0,
+                  "close_fraction": 1.0,
+                  "trailing_mult_after": 0.75
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "status": "ok",
+      "windows": {
+        "is": {
+          "paired_n": 0,
+          "pooled_delta_net_pct_per_entry": null,
+          "datasets_delta_pos": 0,
+          "datasets_delta_neg": 0,
+          "datasets_sig_pos_p05": 0,
+          "datasets_sig_neg_p05": 0
+        },
+        "oos": {
+          "paired_n": 0,
+          "pooled_delta_net_pct_per_entry": null,
+          "datasets_delta_pos": 0,
+          "datasets_delta_neg": 0,
+          "datasets_sig_pos_p05": 0,
+          "datasets_sig_neg_p05": 0
+        }
+      },
+      "verdict": "inconclusive: insufficient paired entries"
+    },
+    {
+      "key": "sq.rv_wider",
+      "open": "squeeze_momentum",
+      "experiment": "ratchet",
+      "substate": "ranging_volatile",
+      "hypothesis": "volatile ranges still scale out on noise at 1.0/2.0/3.0; widen further (1.5/3.0/4.5)",
+      "candidate_close": [
+        {
+          "name": "trailing_tp_ratchet_regime",
+          "params": {
+            "tp_tiers": {
+              "ranging_volatile": [
+                {
+                  "atr_multiple": 1.5,
+                  "close_fraction": 0.4,
+                  "trailing_mult_after": 1.0
+                },
+                {
+                  "atr_multiple": 3.0,
+                  "close_fraction": 0.8,
+                  "trailing_mult_after": 0.75
+                },
+                {
+                  "atr_multiple": 4.5,
+                  "close_fraction": 1.0,
+                  "trailing_mult_after": 0.75
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "status": "ok",
+      "windows": {
+        "is": {
+          "paired_n": 68,
+          "pooled_delta_net_pct_per_entry": -0.0821,
+          "datasets_delta_pos": 1,
+          "datasets_delta_neg": 5,
+          "datasets_sig_pos_p05": 0,
+          "datasets_sig_neg_p05": 0
+        },
+        "oos": {
+          "paired_n": 35,
+          "pooled_delta_net_pct_per_entry": 0.0239,
+          "datasets_delta_pos": 2,
+          "datasets_delta_neg": 2,
+          "datasets_sig_pos_p05": 0,
+          "datasets_sig_neg_p05": 0
+        }
+      },
+      "verdict": "incumbent_stands"
+    },
+    {
+      "key": "sq.rv_quiet_geometry",
+      "open": "squeeze_momentum",
+      "experiment": "ratchet",
+      "substate": "ranging_volatile",
+      "hypothesis": "inverse check \u2014 if the quiet geometry wins here too, the #1059 volatile widening never earned its keep",
+      "candidate_close": [
+        {
+          "name": "trailing_tp_ratchet_regime",
+          "params": {
+            "tp_tiers": {
+              "ranging_volatile": [
+                {
+                  "atr_multiple": 0.75,
+                  "close_fraction": 0.4,
+                  "trailing_mult_after": 1.0
+                },
+                {
+                  "atr_multiple": 1.5,
+                  "close_fraction": 0.8,
+                  "trailing_mult_after": 0.75
+                },
+                {
+                  "atr_multiple": 2.0,
+                  "close_fraction": 1.0,
+                  "trailing_mult_after": 0.75
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "status": "ok",
+      "windows": {
+        "is": {
+          "paired_n": 68,
+          "pooled_delta_net_pct_per_entry": 0.0463,
+          "datasets_delta_pos": 4,
+          "datasets_delta_neg": 2,
+          "datasets_sig_pos_p05": 0,
+          "datasets_sig_neg_p05": 0
+        },
+        "oos": {
+          "paired_n": 35,
+          "pooled_delta_net_pct_per_entry": 0.092,
+          "datasets_delta_pos": 4,
+          "datasets_delta_neg": 1,
+          "datasets_sig_pos_p05": 0,
+          "datasets_sig_neg_p05": 0
+        }
+      },
+      "verdict": "positive_but_not_significant"
+    },
+    {
+      "key": "sq.rd_full_scaleout",
+      "open": "squeeze_momentum",
+      "experiment": "ratchet",
+      "substate": "ranging_directional",
+      "hypothesis": "inverse check \u2014 does the directional let-ride runner (25/50/75 + 4th rung) beat a plain full scale-out?",
+      "candidate_close": [
+        {
+          "name": "trailing_tp_ratchet_regime",
+          "params": {
+            "tp_tiers": {
+              "ranging_directional": [
+                {
+                  "atr_multiple": 1.0,
+                  "close_fraction": 0.4,
+                  "trailing_mult_after": 1.0
+                },
+                {
+                  "atr_multiple": 2.0,
+                  "close_fraction": 0.8,
+                  "trailing_mult_after": 0.75
+                },
+                {
+                  "atr_multiple": 3.0,
+                  "close_fraction": 1.0,
+                  "trailing_mult_after": 0.75
+                }
+              ],
+              "ranging_directional_up": [
+                {
+                  "atr_multiple": 1.0,
+                  "close_fraction": 0.4,
+                  "trailing_mult_after": 1.0
+                },
+                {
+                  "atr_multiple": 2.0,
+                  "close_fraction": 0.8,
+                  "trailing_mult_after": 0.75
+                },
+                {
+                  "atr_multiple": 3.0,
+                  "close_fraction": 1.0,
+                  "trailing_mult_after": 0.75
+                }
+              ],
+              "ranging_directional_down": [
+                {
+                  "atr_multiple": 1.0,
+                  "close_fraction": 0.4,
+                  "trailing_mult_after": 1.0
+                },
+                {
+                  "atr_multiple": 2.0,
+                  "close_fraction": 0.8,
+                  "trailing_mult_after": 0.75
+                },
+                {
+                  "atr_multiple": 3.0,
+                  "close_fraction": 1.0,
+                  "trailing_mult_after": 0.75
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "status": "ok",
+      "windows": {
+        "is": {
+          "paired_n": 23,
+          "pooled_delta_net_pct_per_entry": 0.1005,
+          "datasets_delta_pos": 3,
+          "datasets_delta_neg": 0,
+          "datasets_sig_pos_p05": 0,
+          "datasets_sig_neg_p05": 0
+        },
+        "oos": {
+          "paired_n": 16,
+          "pooled_delta_net_pct_per_entry": 0.1228,
+          "datasets_delta_pos": 5,
+          "datasets_delta_neg": 1,
+          "datasets_sig_pos_p05": 0,
+          "datasets_sig_neg_p05": 0
+        }
+      },
+      "verdict": "positive_but_not_significant"
+    },
+    {
+      "key": "sq.rd_lighter",
+      "open": "squeeze_momentum",
+      "experiment": "ratchet",
+      "substate": "ranging_directional",
+      "hypothesis": "directional drift rewards an even lighter early scale-out (15/35/60) \u2014 more runner",
+      "candidate_close": [
+        {
+          "name": "trailing_tp_ratchet_regime",
+          "params": {
+            "tp_tiers": {
+              "ranging_directional": [
+                {
+                  "atr_multiple": 1.0,
+                  "close_fraction": 0.15,
+                  "trailing_mult_after": 1.0
+                },
+                {
+                  "atr_multiple": 2.0,
+                  "close_fraction": 0.35,
+                  "trailing_mult_after": 1.0
+                },
+                {
+                  "atr_multiple": 3.0,
+                  "close_fraction": 0.6,
+                  "trailing_mult_after": 0.8
+                },
+                {
+                  "atr_multiple": 4.5,
+                  "close_fraction": 0.6,
+                  "trailing_mult_after": 0.6
+                }
+              ],
+              "ranging_directional_up": [
+                {
+                  "atr_multiple": 1.0,
+                  "close_fraction": 0.15,
+                  "trailing_mult_after": 1.0
+                },
+                {
+                  "atr_multiple": 2.0,
+                  "close_fraction": 0.35,
+                  "trailing_mult_after": 1.0
+                },
+                {
+                  "atr_multiple": 3.0,
+                  "close_fraction": 0.6,
+                  "trailing_mult_after": 0.8
+                },
+                {
+                  "atr_multiple": 4.5,
+                  "close_fraction": 0.6,
+                  "trailing_mult_after": 0.6
+                }
+              ],
+              "ranging_directional_down": [
+                {
+                  "atr_multiple": 1.0,
+                  "close_fraction": 0.15,
+                  "trailing_mult_after": 1.0
+                },
+                {
+                  "atr_multiple": 2.0,
+                  "close_fraction": 0.35,
+                  "trailing_mult_after": 1.0
+                },
+                {
+                  "atr_multiple": 3.0,
+                  "close_fraction": 0.6,
+                  "trailing_mult_after": 0.8
+                },
+                {
+                  "atr_multiple": 4.5,
+                  "close_fraction": 0.6,
+                  "trailing_mult_after": 0.6
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "status": "ok",
+      "windows": {
+        "is": {
+          "paired_n": 23,
+          "pooled_delta_net_pct_per_entry": -0.0313,
+          "datasets_delta_pos": 1,
+          "datasets_delta_neg": 2,
+          "datasets_sig_pos_p05": 0,
+          "datasets_sig_neg_p05": 0
+        },
+        "oos": {
+          "paired_n": 16,
+          "pooled_delta_net_pct_per_entry": -0.0628,
+          "datasets_delta_pos": 1,
+          "datasets_delta_neg": 5,
+          "datasets_sig_pos_p05": 0,
+          "datasets_sig_neg_p05": 0
+        }
+      },
+      "verdict": "incumbent_stands"
+    },
+    {
+      "key": "sq.b2_rq_wider",
+      "open": "squeeze_momentum",
+      "experiment": "b2",
+      "substate": "ranging_quiet",
+      "hypothesis": "quiet: is the collapsed fast exit (0.5/1.0) already right, or does a wider 2-rung do better?",
+      "candidate_close": [
+        {
+          "name": "tiered_tp_atr",
+          "params": {
+            "tp_tiers": [
+              {
+                "atr_multiple": 0.75,
+                "close_fraction": 0.5
+              },
+              {
+                "atr_multiple": 1.5,
+                "close_fraction": 1.0
+              }
+            ]
+          }
+        }
+      ],
+      "status": "ok",
+      "windows": {
+        "is": {
+          "paired_n": 0,
+          "pooled_delta_net_pct_per_entry": null,
+          "datasets_delta_pos": 0,
+          "datasets_delta_neg": 0,
+          "datasets_sig_pos_p05": 0,
+          "datasets_sig_neg_p05": 0
+        },
+        "oos": {
+          "paired_n": 0,
+          "pooled_delta_net_pct_per_entry": null,
+          "datasets_delta_pos": 0,
+          "datasets_delta_neg": 0,
+          "datasets_sig_pos_p05": 0,
+          "datasets_sig_neg_p05": 0
+        }
+      },
+      "verdict": "inconclusive: insufficient paired entries"
+    },
+    {
+      "key": "sq.b2_rv_wider",
+      "open": "squeeze_momentum",
+      "experiment": "b2",
+      "substate": "ranging_volatile",
+      "hypothesis": "volatile: widen the 2 rungs so wide-range noise does not cash the whole position at 0.5 ATR",
+      "candidate_close": [
+        {
+          "name": "tiered_tp_atr",
+          "params": {
+            "tp_tiers": [
+              {
+                "atr_multiple": 0.75,
+                "close_fraction": 0.5
+              },
+              {
+                "atr_multiple": 1.5,
+                "close_fraction": 1.0
+              }
+            ]
+          }
+        }
+      ],
+      "status": "ok",
+      "windows": {
+        "is": {
+          "paired_n": 68,
+          "pooled_delta_net_pct_per_entry": 0.0602,
+          "datasets_delta_pos": 4,
+          "datasets_delta_neg": 2,
+          "datasets_sig_pos_p05": 1,
+          "datasets_sig_neg_p05": 0
+        },
+        "oos": {
+          "paired_n": 34,
+          "pooled_delta_net_pct_per_entry": -0.05,
+          "datasets_delta_pos": 2,
+          "datasets_delta_neg": 3,
+          "datasets_sig_pos_p05": 0,
+          "datasets_sig_neg_p05": 0
+        }
+      },
+      "verdict": "incumbent_stands"
+    },
+    {
+      "key": "sq.b2_rv_patient3",
+      "open": "squeeze_momentum",
+      "experiment": "b2",
+      "substate": "ranging_volatile",
+      "hypothesis": "volatile: a patient 3-rung ladder (ratchet-split analogue) beats the collapsed fast exit",
+      "candidate_close": [
+        {
+          "name": "tiered_tp_atr",
+          "params": {
+            "tp_tiers": [
+              {
+                "atr_multiple": 1.0,
+                "close_fraction": 0.4
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.8
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 1.0
+              }
+            ]
+          }
+        }
+      ],
+      "status": "ok",
+      "windows": {
+        "is": {
+          "paired_n": 68,
+          "pooled_delta_net_pct_per_entry": -0.0619,
+          "datasets_delta_pos": 2,
+          "datasets_delta_neg": 4,
+          "datasets_sig_pos_p05": 0,
+          "datasets_sig_neg_p05": 0
+        },
+        "oos": {
+          "paired_n": 34,
+          "pooled_delta_net_pct_per_entry": -0.1149,
+          "datasets_delta_pos": 1,
+          "datasets_delta_neg": 4,
+          "datasets_sig_pos_p05": 0,
+          "datasets_sig_neg_p05": 0
+        }
+      },
+      "verdict": "incumbent_stands"
+    },
+    {
+      "key": "sq.b2_rd_patient3",
+      "open": "squeeze_momentum",
+      "experiment": "b2",
+      "substate": "ranging_directional",
+      "hypothesis": "directional: drift rewards patience \u2014 3 rungs mirroring the ratchet's directional split",
+      "candidate_close": [
+        {
+          "name": "tiered_tp_atr",
+          "params": {
+            "tp_tiers": [
+              {
+                "atr_multiple": 1.0,
+                "close_fraction": 0.4
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.8
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 1.0
+              }
+            ]
+          }
+        }
+      ],
+      "status": "ok",
+      "windows": {
+        "is": {
+          "paired_n": 23,
+          "pooled_delta_net_pct_per_entry": 0.0818,
+          "datasets_delta_pos": 2,
+          "datasets_delta_neg": 1,
+          "datasets_sig_pos_p05": 0,
+          "datasets_sig_neg_p05": 0
+        },
+        "oos": {
+          "paired_n": 16,
+          "pooled_delta_net_pct_per_entry": -0.0367,
+          "datasets_delta_pos": 3,
+          "datasets_delta_neg": 3,
+          "datasets_sig_pos_p05": 0,
+          "datasets_sig_neg_p05": 0
+        }
+      },
+      "verdict": "incumbent_stands"
+    },
+    {
+      "key": "sq.b2_rd_wider2",
+      "open": "squeeze_momentum",
+      "experiment": "b2",
+      "substate": "ranging_directional",
+      "hypothesis": "directional: keep 2 rungs but double the distances",
+      "candidate_close": [
+        {
+          "name": "tiered_tp_atr",
+          "params": {
+            "tp_tiers": [
+              {
+                "atr_multiple": 1.0,
+                "close_fraction": 0.5
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 1.0
+              }
+            ]
+          }
+        }
+      ],
+      "status": "ok",
+      "windows": {
+        "is": {
+          "paired_n": 23,
+          "pooled_delta_net_pct_per_entry": 0.0989,
+          "datasets_delta_pos": 2,
+          "datasets_delta_neg": 1,
+          "datasets_sig_pos_p05": 0,
+          "datasets_sig_neg_p05": 0
+        },
+        "oos": {
+          "paired_n": 16,
+          "pooled_delta_net_pct_per_entry": -0.0528,
+          "datasets_delta_pos": 3,
+          "datasets_delta_neg": 3,
+          "datasets_sig_pos_p05": 0,
+          "datasets_sig_neg_p05": 0
+        }
+      },
+      "verdict": "incumbent_stands"
+    },
+    {
+      "key": "mr.rq_volatile_geometry",
+      "open": "mean_reversion",
+      "experiment": "ratchet",
+      "substate": "ranging_quiet",
+      "hypothesis": "quiet's tighter triggers over-harvest; the volatile geometry (wider rungs) does better even in quiet ranges",
+      "candidate_close": [
+        {
+          "name": "trailing_tp_ratchet_regime",
+          "params": {
+            "tp_tiers": {
+              "ranging_quiet": [
+                {
+                  "atr_multiple": 1.0,
+                  "close_fraction": 0.4,
+                  "trailing_mult_after": 1.0
+                },
+                {
+                  "atr_multiple": 2.0,
+                  "close_fraction": 0.8,
+                  "trailing_mult_after": 0.75
+                },
+                {
+                  "atr_multiple": 3.0,
+                  "close_fraction": 1.0,
+                  "trailing_mult_after": 0.75
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "status": "ok",
+      "windows": {
+        "is": {
+          "paired_n": 0,
+          "pooled_delta_net_pct_per_entry": null,
+          "datasets_delta_pos": 0,
+          "datasets_delta_neg": 0,
+          "datasets_sig_pos_p05": 0,
+          "datasets_sig_neg_p05": 0
+        },
+        "oos": {
+          "paired_n": 0,
+          "pooled_delta_net_pct_per_entry": null,
+          "datasets_delta_pos": 0,
+          "datasets_delta_neg": 0,
+          "datasets_sig_pos_p05": 0,
+          "datasets_sig_neg_p05": 0
+        }
+      },
+      "verdict": "inconclusive: insufficient paired entries"
+    },
+    {
+      "key": "mr.rq_lighter_early",
+      "open": "mean_reversion",
+      "experiment": "ratchet",
+      "substate": "ranging_quiet",
+      "hypothesis": "same triggers, lighter early scale-out (25/50/100) lets quiet-range winners contribute more",
+      "candidate_close": [
+        {
+          "name": "trailing_tp_ratchet_regime",
+          "params": {
+            "tp_tiers": {
+              "ranging_quiet": [
+                {
+                  "atr_multiple": 0.75,
+                  "close_fraction": 0.25,
+                  "trailing_mult_after": 1.0
+                },
+                {
+                  "atr_multiple": 1.5,
+                  "close_fraction": 0.5,
+                  "trailing_mult_after": 0.75
+                },
+                {
+                  "atr_multiple": 2.0,
+                  "close_fraction": 1.0,
+                  "trailing_mult_after": 0.75
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "status": "ok",
+      "windows": {
+        "is": {
+          "paired_n": 0,
+          "pooled_delta_net_pct_per_entry": null,
+          "datasets_delta_pos": 0,
+          "datasets_delta_neg": 0,
+          "datasets_sig_pos_p05": 0,
+          "datasets_sig_neg_p05": 0
+        },
+        "oos": {
+          "paired_n": 0,
+          "pooled_delta_net_pct_per_entry": null,
+          "datasets_delta_pos": 0,
+          "datasets_delta_neg": 0,
+          "datasets_sig_pos_p05": 0,
+          "datasets_sig_neg_p05": 0
+        }
+      },
+      "verdict": "inconclusive: insufficient paired entries"
+    },
+    {
+      "key": "mr.rv_wider",
+      "open": "mean_reversion",
+      "experiment": "ratchet",
+      "substate": "ranging_volatile",
+      "hypothesis": "volatile ranges still scale out on noise at 1.0/2.0/3.0; widen further (1.5/3.0/4.5)",
+      "candidate_close": [
+        {
+          "name": "trailing_tp_ratchet_regime",
+          "params": {
+            "tp_tiers": {
+              "ranging_volatile": [
+                {
+                  "atr_multiple": 1.5,
+                  "close_fraction": 0.4,
+                  "trailing_mult_after": 1.0
+                },
+                {
+                  "atr_multiple": 3.0,
+                  "close_fraction": 0.8,
+                  "trailing_mult_after": 0.75
+                },
+                {
+                  "atr_multiple": 4.5,
+                  "close_fraction": 1.0,
+                  "trailing_mult_after": 0.75
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "status": "ok",
+      "windows": {
+        "is": {
+          "paired_n": 333,
+          "pooled_delta_net_pct_per_entry": 0.012,
+          "datasets_delta_pos": 3,
+          "datasets_delta_neg": 3,
+          "datasets_sig_pos_p05": 0,
+          "datasets_sig_neg_p05": 0
+        },
+        "oos": {
+          "paired_n": 233,
+          "pooled_delta_net_pct_per_entry": 0.0233,
+          "datasets_delta_pos": 3,
+          "datasets_delta_neg": 3,
+          "datasets_sig_pos_p05": 0,
+          "datasets_sig_neg_p05": 0
+        }
+      },
+      "verdict": "positive_but_not_significant"
+    },
+    {
+      "key": "mr.rv_quiet_geometry",
+      "open": "mean_reversion",
+      "experiment": "ratchet",
+      "substate": "ranging_volatile",
+      "hypothesis": "inverse check \u2014 if the quiet geometry wins here too, the #1059 volatile widening never earned its keep",
+      "candidate_close": [
+        {
+          "name": "trailing_tp_ratchet_regime",
+          "params": {
+            "tp_tiers": {
+              "ranging_volatile": [
+                {
+                  "atr_multiple": 0.75,
+                  "close_fraction": 0.4,
+                  "trailing_mult_after": 1.0
+                },
+                {
+                  "atr_multiple": 1.5,
+                  "close_fraction": 0.8,
+                  "trailing_mult_after": 0.75
+                },
+                {
+                  "atr_multiple": 2.0,
+                  "close_fraction": 1.0,
+                  "trailing_mult_after": 0.75
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "status": "ok",
+      "windows": {
+        "is": {
+          "paired_n": 333,
+          "pooled_delta_net_pct_per_entry": -0.0116,
+          "datasets_delta_pos": 2,
+          "datasets_delta_neg": 4,
+          "datasets_sig_pos_p05": 0,
+          "datasets_sig_neg_p05": 0
+        },
+        "oos": {
+          "paired_n": 233,
+          "pooled_delta_net_pct_per_entry": 0.0107,
+          "datasets_delta_pos": 3,
+          "datasets_delta_neg": 3,
+          "datasets_sig_pos_p05": 0,
+          "datasets_sig_neg_p05": 0
+        }
+      },
+      "verdict": "incumbent_stands"
+    },
+    {
+      "key": "mr.rd_full_scaleout",
+      "open": "mean_reversion",
+      "experiment": "ratchet",
+      "substate": "ranging_directional",
+      "hypothesis": "inverse check \u2014 does the directional let-ride runner (25/50/75 + 4th rung) beat a plain full scale-out?",
+      "candidate_close": [
+        {
+          "name": "trailing_tp_ratchet_regime",
+          "params": {
+            "tp_tiers": {
+              "ranging_directional": [
+                {
+                  "atr_multiple": 1.0,
+                  "close_fraction": 0.4,
+                  "trailing_mult_after": 1.0
+                },
+                {
+                  "atr_multiple": 2.0,
+                  "close_fraction": 0.8,
+                  "trailing_mult_after": 0.75
+                },
+                {
+                  "atr_multiple": 3.0,
+                  "close_fraction": 1.0,
+                  "trailing_mult_after": 0.75
+                }
+              ],
+              "ranging_directional_up": [
+                {
+                  "atr_multiple": 1.0,
+                  "close_fraction": 0.4,
+                  "trailing_mult_after": 1.0
+                },
+                {
+                  "atr_multiple": 2.0,
+                  "close_fraction": 0.8,
+                  "trailing_mult_after": 0.75
+                },
+                {
+                  "atr_multiple": 3.0,
+                  "close_fraction": 1.0,
+                  "trailing_mult_after": 0.75
+                }
+              ],
+              "ranging_directional_down": [
+                {
+                  "atr_multiple": 1.0,
+                  "close_fraction": 0.4,
+                  "trailing_mult_after": 1.0
+                },
+                {
+                  "atr_multiple": 2.0,
+                  "close_fraction": 0.8,
+                  "trailing_mult_after": 0.75
+                },
+                {
+                  "atr_multiple": 3.0,
+                  "close_fraction": 1.0,
+                  "trailing_mult_after": 0.75
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "status": "ok",
+      "windows": {
+        "is": {
+          "paired_n": 167,
+          "pooled_delta_net_pct_per_entry": -0.0158,
+          "datasets_delta_pos": 3,
+          "datasets_delta_neg": 3,
+          "datasets_sig_pos_p05": 0,
+          "datasets_sig_neg_p05": 3
+        },
+        "oos": {
+          "paired_n": 127,
+          "pooled_delta_net_pct_per_entry": -0.0036,
+          "datasets_delta_pos": 4,
+          "datasets_delta_neg": 2,
+          "datasets_sig_pos_p05": 1,
+          "datasets_sig_neg_p05": 0
+        }
+      },
+      "verdict": "incumbent_stands"
+    },
+    {
+      "key": "mr.rd_lighter",
+      "open": "mean_reversion",
+      "experiment": "ratchet",
+      "substate": "ranging_directional",
+      "hypothesis": "directional drift rewards an even lighter early scale-out (15/35/60) \u2014 more runner",
+      "candidate_close": [
+        {
+          "name": "trailing_tp_ratchet_regime",
+          "params": {
+            "tp_tiers": {
+              "ranging_directional": [
+                {
+                  "atr_multiple": 1.0,
+                  "close_fraction": 0.15,
+                  "trailing_mult_after": 1.0
+                },
+                {
+                  "atr_multiple": 2.0,
+                  "close_fraction": 0.35,
+                  "trailing_mult_after": 1.0
+                },
+                {
+                  "atr_multiple": 3.0,
+                  "close_fraction": 0.6,
+                  "trailing_mult_after": 0.8
+                },
+                {
+                  "atr_multiple": 4.5,
+                  "close_fraction": 0.6,
+                  "trailing_mult_after": 0.6
+                }
+              ],
+              "ranging_directional_up": [
+                {
+                  "atr_multiple": 1.0,
+                  "close_fraction": 0.15,
+                  "trailing_mult_after": 1.0
+                },
+                {
+                  "atr_multiple": 2.0,
+                  "close_fraction": 0.35,
+                  "trailing_mult_after": 1.0
+                },
+                {
+                  "atr_multiple": 3.0,
+                  "close_fraction": 0.6,
+                  "trailing_mult_after": 0.8
+                },
+                {
+                  "atr_multiple": 4.5,
+                  "close_fraction": 0.6,
+                  "trailing_mult_after": 0.6
+                }
+              ],
+              "ranging_directional_down": [
+                {
+                  "atr_multiple": 1.0,
+                  "close_fraction": 0.15,
+                  "trailing_mult_after": 1.0
+                },
+                {
+                  "atr_multiple": 2.0,
+                  "close_fraction": 0.35,
+                  "trailing_mult_after": 1.0
+                },
+                {
+                  "atr_multiple": 3.0,
+                  "close_fraction": 0.6,
+                  "trailing_mult_after": 0.8
+                },
+                {
+                  "atr_multiple": 4.5,
+                  "close_fraction": 0.6,
+                  "trailing_mult_after": 0.6
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "status": "ok",
+      "windows": {
+        "is": {
+          "paired_n": 167,
+          "pooled_delta_net_pct_per_entry": 0.0026,
+          "datasets_delta_pos": 2,
+          "datasets_delta_neg": 4,
+          "datasets_sig_pos_p05": 0,
+          "datasets_sig_neg_p05": 0
+        },
+        "oos": {
+          "paired_n": 127,
+          "pooled_delta_net_pct_per_entry": 0.0038,
+          "datasets_delta_pos": 2,
+          "datasets_delta_neg": 4,
+          "datasets_sig_pos_p05": 0,
+          "datasets_sig_neg_p05": 0
+        }
+      },
+      "verdict": "positive_but_not_significant"
+    },
+    {
+      "key": "mr.b2_rq_wider",
+      "open": "mean_reversion",
+      "experiment": "b2",
+      "substate": "ranging_quiet",
+      "hypothesis": "quiet: is the collapsed fast exit (0.5/1.0) already right, or does a wider 2-rung do better?",
+      "candidate_close": [
+        {
+          "name": "tiered_tp_atr",
+          "params": {
+            "tp_tiers": [
+              {
+                "atr_multiple": 0.75,
+                "close_fraction": 0.5
+              },
+              {
+                "atr_multiple": 1.5,
+                "close_fraction": 1.0
+              }
+            ]
+          }
+        }
+      ],
+      "status": "ok",
+      "windows": {
+        "is": {
+          "paired_n": 0,
+          "pooled_delta_net_pct_per_entry": null,
+          "datasets_delta_pos": 0,
+          "datasets_delta_neg": 0,
+          "datasets_sig_pos_p05": 0,
+          "datasets_sig_neg_p05": 0
+        },
+        "oos": {
+          "paired_n": 0,
+          "pooled_delta_net_pct_per_entry": null,
+          "datasets_delta_pos": 0,
+          "datasets_delta_neg": 0,
+          "datasets_sig_pos_p05": 0,
+          "datasets_sig_neg_p05": 0
+        }
+      },
+      "verdict": "inconclusive: insufficient paired entries"
+    },
+    {
+      "key": "mr.b2_rv_wider",
+      "open": "mean_reversion",
+      "experiment": "b2",
+      "substate": "ranging_volatile",
+      "hypothesis": "volatile: widen the 2 rungs so wide-range noise does not cash the whole position at 0.5 ATR",
+      "candidate_close": [
+        {
+          "name": "tiered_tp_atr",
+          "params": {
+            "tp_tiers": [
+              {
+                "atr_multiple": 0.75,
+                "close_fraction": 0.5
+              },
+              {
+                "atr_multiple": 1.5,
+                "close_fraction": 1.0
+              }
+            ]
+          }
+        }
+      ],
+      "status": "ok",
+      "windows": {
+        "is": {
+          "paired_n": 343,
+          "pooled_delta_net_pct_per_entry": 0.0047,
+          "datasets_delta_pos": 3,
+          "datasets_delta_neg": 3,
+          "datasets_sig_pos_p05": 2,
+          "datasets_sig_neg_p05": 0
+        },
+        "oos": {
+          "paired_n": 241,
+          "pooled_delta_net_pct_per_entry": 0.0496,
+          "datasets_delta_pos": 4,
+          "datasets_delta_neg": 2,
+          "datasets_sig_pos_p05": 2,
+          "datasets_sig_neg_p05": 0
+        }
+      },
+      "verdict": "candidate_beats_incumbent"
+    },
+    {
+      "key": "mr.b2_rv_patient3",
+      "open": "mean_reversion",
+      "experiment": "b2",
+      "substate": "ranging_volatile",
+      "hypothesis": "volatile: a patient 3-rung ladder (ratchet-split analogue) beats the collapsed fast exit",
+      "candidate_close": [
+        {
+          "name": "tiered_tp_atr",
+          "params": {
+            "tp_tiers": [
+              {
+                "atr_multiple": 1.0,
+                "close_fraction": 0.4
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.8
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 1.0
+              }
+            ]
+          }
+        }
+      ],
+      "status": "ok",
+      "windows": {
+        "is": {
+          "paired_n": 343,
+          "pooled_delta_net_pct_per_entry": 0.0654,
+          "datasets_delta_pos": 5,
+          "datasets_delta_neg": 1,
+          "datasets_sig_pos_p05": 1,
+          "datasets_sig_neg_p05": 0
+        },
+        "oos": {
+          "paired_n": 241,
+          "pooled_delta_net_pct_per_entry": -0.0017,
+          "datasets_delta_pos": 3,
+          "datasets_delta_neg": 3,
+          "datasets_sig_pos_p05": 0,
+          "datasets_sig_neg_p05": 0
+        }
+      },
+      "verdict": "incumbent_stands"
+    },
+    {
+      "key": "mr.b2_rd_patient3",
+      "open": "mean_reversion",
+      "experiment": "b2",
+      "substate": "ranging_directional",
+      "hypothesis": "directional: drift rewards patience \u2014 3 rungs mirroring the ratchet's directional split",
+      "candidate_close": [
+        {
+          "name": "tiered_tp_atr",
+          "params": {
+            "tp_tiers": [
+              {
+                "atr_multiple": 1.0,
+                "close_fraction": 0.4
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.8
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 1.0
+              }
+            ]
+          }
+        }
+      ],
+      "status": "ok",
+      "windows": {
+        "is": {
+          "paired_n": 176,
+          "pooled_delta_net_pct_per_entry": -0.1363,
+          "datasets_delta_pos": 1,
+          "datasets_delta_neg": 5,
+          "datasets_sig_pos_p05": 0,
+          "datasets_sig_neg_p05": 0
+        },
+        "oos": {
+          "paired_n": 132,
+          "pooled_delta_net_pct_per_entry": -0.0151,
+          "datasets_delta_pos": 4,
+          "datasets_delta_neg": 2,
+          "datasets_sig_pos_p05": 0,
+          "datasets_sig_neg_p05": 0
+        }
+      },
+      "verdict": "incumbent_stands"
+    },
+    {
+      "key": "mr.b2_rd_wider2",
+      "open": "mean_reversion",
+      "experiment": "b2",
+      "substate": "ranging_directional",
+      "hypothesis": "directional: keep 2 rungs but double the distances",
+      "candidate_close": [
+        {
+          "name": "tiered_tp_atr",
+          "params": {
+            "tp_tiers": [
+              {
+                "atr_multiple": 1.0,
+                "close_fraction": 0.5
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 1.0
+              }
+            ]
+          }
+        }
+      ],
+      "status": "ok",
+      "windows": {
+        "is": {
+          "paired_n": 176,
+          "pooled_delta_net_pct_per_entry": -0.1419,
+          "datasets_delta_pos": 1,
+          "datasets_delta_neg": 5,
+          "datasets_sig_pos_p05": 0,
+          "datasets_sig_neg_p05": 0
+        },
+        "oos": {
+          "paired_n": 132,
+          "pooled_delta_net_pct_per_entry": -0.0198,
+          "datasets_delta_pos": 4,
+          "datasets_delta_neg": 2,
+          "datasets_sig_pos_p05": 0,
+          "datasets_sig_neg_p05": 0
+        }
+      },
+      "verdict": "incumbent_stands"
+    }
+  ]
+}

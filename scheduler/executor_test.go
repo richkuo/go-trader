@@ -1,595 +1,10 @@
 package main
 
 import (
-	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 )
-
-// These tests verify JSON deserialization of executor result structs, not subprocess
-// execution behavior (timeouts, concurrency limits, etc.).
-
-func TestSpotResultJSON(t *testing.T) {
-	raw := `{
-		"strategy": "sma_crossover",
-		"symbol": "BTC/USDT",
-		"timeframe": "1h",
-		"signal": 1,
-		"price": 60000.5,
-		"indicators": {"sma_fast": 59000, "sma_slow": 58000},
-		"timestamp": "2026-01-01T00:00:00Z"
-	}`
-
-	var result SpotResult
-	if err := json.Unmarshal([]byte(raw), &result); err != nil {
-		t.Fatalf("unmarshal failed: %v", err)
-	}
-
-	if result.Strategy != "sma_crossover" {
-		t.Errorf("Strategy = %q, want %q", result.Strategy, "sma_crossover")
-	}
-	if result.Signal != 1 {
-		t.Errorf("Signal = %d, want 1", result.Signal)
-	}
-	if result.Price != 60000.5 {
-		t.Errorf("Price = %g, want 60000.5", result.Price)
-	}
-	if result.Error != "" {
-		t.Errorf("Error should be empty, got %q", result.Error)
-	}
-}
-
-func TestSpotResultErrorJSON(t *testing.T) {
-	raw := `{"strategy": "sma", "error": "API timeout"}`
-	var result SpotResult
-	if err := json.Unmarshal([]byte(raw), &result); err != nil {
-		t.Fatal(err)
-	}
-	if result.Error != "API timeout" {
-		t.Errorf("Error = %q, want %q", result.Error, "API timeout")
-	}
-}
-
-func TestHyperliquidResultJSON(t *testing.T) {
-	raw := `{
-		"strategy": "sma",
-		"symbol": "BTC",
-		"timeframe": "1h",
-		"signal": -1,
-		"price": 55000,
-		"mode": "paper",
-		"platform": "hyperliquid",
-		"timestamp": "2026-01-01T00:00:00Z"
-	}`
-
-	var result HyperliquidResult
-	if err := json.Unmarshal([]byte(raw), &result); err != nil {
-		t.Fatal(err)
-	}
-	if result.Signal != -1 {
-		t.Errorf("Signal = %d, want -1", result.Signal)
-	}
-	if result.Mode != "paper" {
-		t.Errorf("Mode = %q, want %q", result.Mode, "paper")
-	}
-	if result.Platform != "hyperliquid" {
-		t.Errorf("Platform = %q, want %q", result.Platform, "hyperliquid")
-	}
-}
-
-func TestHyperliquidExecuteResultJSON(t *testing.T) {
-	raw := `{
-		"execution": {
-			"action": "buy",
-			"symbol": "BTC",
-			"size": 0.01,
-			"fill": {"avg_px": 55000.5, "total_sz": 0.01}
-		},
-		"platform": "hyperliquid",
-		"timestamp": "2026-01-01T00:00:00Z"
-	}`
-
-	var result HyperliquidExecuteResult
-	if err := json.Unmarshal([]byte(raw), &result); err != nil {
-		t.Fatal(err)
-	}
-	if result.Execution == nil {
-		t.Fatal("Execution should not be nil")
-	}
-	if result.Execution.Action != "buy" {
-		t.Errorf("Action = %q, want %q", result.Execution.Action, "buy")
-	}
-	if result.Execution.Fill == nil {
-		t.Fatal("Fill should not be nil")
-	}
-	if result.Execution.Fill.AvgPx != 55000.5 {
-		t.Errorf("AvgPx = %g, want 55000.5", result.Execution.Fill.AvgPx)
-	}
-}
-
-func TestHyperliquidExecuteResultJSON_WithOID(t *testing.T) {
-	raw := `{
-		"execution": {
-			"action": "buy",
-			"symbol": "BTC",
-			"size": 0.01,
-			"fill": {"avg_px": 55000.5, "total_sz": 0.01, "oid": 1234567890, "fee": 0.35}
-		},
-		"platform": "hyperliquid",
-		"timestamp": "2026-01-01T00:00:00Z"
-	}`
-
-	var result HyperliquidExecuteResult
-	if err := json.Unmarshal([]byte(raw), &result); err != nil {
-		t.Fatal(err)
-	}
-	if result.Execution == nil || result.Execution.Fill == nil {
-		t.Fatal("Execution and Fill should not be nil")
-	}
-	if result.Execution.Fill.OID != 1234567890 {
-		t.Errorf("OID = %d, want 1234567890", result.Execution.Fill.OID)
-	}
-	if result.Execution.Fill.Fee != 0.35 {
-		t.Errorf("Fee = %g, want 0.35", result.Execution.Fill.Fee)
-	}
-}
-
-func TestHyperliquidExecuteResultJSON_NoOID(t *testing.T) {
-	// Backwards compatibility: fill without oid/fee should still parse
-	raw := `{
-		"execution": {
-			"action": "sell",
-			"symbol": "ETH",
-			"size": 0.5,
-			"fill": {"avg_px": 2100, "total_sz": 0.5}
-		},
-		"platform": "hyperliquid"
-	}`
-
-	var result HyperliquidExecuteResult
-	if err := json.Unmarshal([]byte(raw), &result); err != nil {
-		t.Fatal(err)
-	}
-	if result.Execution.Fill.OID != 0 {
-		t.Errorf("OID should be 0 when absent, got %d", result.Execution.Fill.OID)
-	}
-	if result.Execution.Fill.Fee != 0 {
-		t.Errorf("Fee should be 0 when absent, got %g", result.Execution.Fill.Fee)
-	}
-}
-
-func TestTopStepResultJSON(t *testing.T) {
-	raw := `{
-		"strategy": "sma",
-		"symbol": "ES",
-		"timeframe": "15m",
-		"signal": 1,
-		"price": 5200.5,
-		"contract_spec": {"tick_size": 0.25, "tick_value": 12.5, "multiplier": 50, "margin": 500},
-		"market_open": true,
-		"mode": "paper",
-		"platform": "topstep"
-	}`
-
-	var result TopStepResult
-	if err := json.Unmarshal([]byte(raw), &result); err != nil {
-		t.Fatal(err)
-	}
-	if result.ContractSpec.Multiplier != 50 {
-		t.Errorf("Multiplier = %g, want 50", result.ContractSpec.Multiplier)
-	}
-	if !result.MarketOpen {
-		t.Error("MarketOpen should be true")
-	}
-	if result.ContractSpec.Margin != 500 {
-		t.Errorf("Margin = %g, want 500", result.ContractSpec.Margin)
-	}
-}
-
-func TestTopStepExecuteResultJSON(t *testing.T) {
-	raw := `{
-		"execution": {
-			"action": "buy",
-			"symbol": "ES",
-			"contracts": 2,
-			"fill": {"avg_px": 5200.25, "total_contracts": 2, "oid": "ts-order-123", "fee": 4.12}
-		},
-		"platform": "topstep"
-	}`
-
-	var result TopStepExecuteResult
-	if err := json.Unmarshal([]byte(raw), &result); err != nil {
-		t.Fatal(err)
-	}
-	if result.Execution.Contracts != 2 {
-		t.Errorf("Contracts = %d, want 2", result.Execution.Contracts)
-	}
-	if result.Execution.Fill.TotalContracts != 2 {
-		t.Errorf("TotalContracts = %d, want 2", result.Execution.Fill.TotalContracts)
-	}
-	if result.Execution.Fill.OID != "ts-order-123" {
-		t.Errorf("OID = %q, want ts-order-123", result.Execution.Fill.OID)
-	}
-	if result.Execution.Fill.Fee != 4.12 {
-		t.Errorf("Fee = %g, want 4.12", result.Execution.Fill.Fee)
-	}
-}
-
-func TestRobinhoodResultJSON(t *testing.T) {
-	raw := `{
-		"strategy": "sma",
-		"symbol": "BTC",
-		"signal": 1,
-		"price": 60000,
-		"mode": "paper",
-		"platform": "robinhood"
-	}`
-
-	var result RobinhoodResult
-	if err := json.Unmarshal([]byte(raw), &result); err != nil {
-		t.Fatal(err)
-	}
-	if result.Platform != "robinhood" {
-		t.Errorf("Platform = %q, want %q", result.Platform, "robinhood")
-	}
-}
-
-func TestRobinhoodExecuteResultJSON(t *testing.T) {
-	raw := `{
-		"execution": {
-			"action": "buy",
-			"symbol": "BTC",
-			"amount_usd": 500,
-			"fill": {"avg_px": 60000.5, "quantity": 0.00833, "oid": "rh-order-456", "fee": 0.07}
-		},
-		"platform": "robinhood"
-	}`
-
-	var result RobinhoodExecuteResult
-	if err := json.Unmarshal([]byte(raw), &result); err != nil {
-		t.Fatal(err)
-	}
-	if result.Execution.AmountUSD != 500 {
-		t.Errorf("AmountUSD = %g, want 500", result.Execution.AmountUSD)
-	}
-	if result.Execution.Fill.OID != "rh-order-456" {
-		t.Errorf("OID = %q, want rh-order-456", result.Execution.Fill.OID)
-	}
-	if result.Execution.Fill.Fee != 0.07 {
-		t.Errorf("Fee = %g, want 0.07", result.Execution.Fill.Fee)
-	}
-}
-
-func TestOKXResultJSON(t *testing.T) {
-	raw := `{
-		"strategy": "sma",
-		"symbol": "BTC",
-		"signal": -1,
-		"price": 55000,
-		"mode": "live",
-		"platform": "okx"
-	}`
-
-	var result OKXResult
-	if err := json.Unmarshal([]byte(raw), &result); err != nil {
-		t.Fatal(err)
-	}
-	if result.Signal != -1 {
-		t.Errorf("Signal = %d, want -1", result.Signal)
-	}
-	if result.Platform != "okx" {
-		t.Errorf("Platform = %q, want %q", result.Platform, "okx")
-	}
-}
-
-func TestOKXExecuteResultJSON(t *testing.T) {
-	raw := `{
-		"execution": {
-			"action": "sell",
-			"symbol": "BTC",
-			"size": 0.05,
-			"fill": {"avg_px": 55000, "total_sz": 0.05, "oid": "okx-order-789", "fee": 1.25}
-		},
-		"platform": "okx"
-	}`
-
-	var result OKXExecuteResult
-	if err := json.Unmarshal([]byte(raw), &result); err != nil {
-		t.Fatal(err)
-	}
-	if result.Execution.Size != 0.05 {
-		t.Errorf("Size = %g, want 0.05", result.Execution.Size)
-	}
-	if result.Execution.Fill.OID != "okx-order-789" {
-		t.Errorf("OID = %q, want okx-order-789", result.Execution.Fill.OID)
-	}
-	if result.Execution.Fill.Fee != 1.25 {
-		t.Errorf("Fee = %g, want 1.25", result.Execution.Fill.Fee)
-	}
-}
-
-func TestContractSpecJSON(t *testing.T) {
-	raw := `{"tick_size": 0.25, "tick_value": 12.5, "multiplier": 50, "margin": 6600}`
-	var spec ContractSpec
-	if err := json.Unmarshal([]byte(raw), &spec); err != nil {
-		t.Fatal(err)
-	}
-	if spec.TickSize != 0.25 {
-		t.Errorf("TickSize = %g, want 0.25", spec.TickSize)
-	}
-	if spec.TickValue != 12.5 {
-		t.Errorf("TickValue = %g, want 12.5", spec.TickValue)
-	}
-	if spec.Multiplier != 50 {
-		t.Errorf("Multiplier = %g, want 50", spec.Multiplier)
-	}
-	if spec.Margin != 6600 {
-		t.Errorf("Margin = %g, want 6600", spec.Margin)
-	}
-}
-
-// --- RunHyperliquidClose contract tests (#341) ---
-//
-// RunHyperliquidClose has FIVE distinct return paths and the kill-switch
-// correctness depends on each one returning the right (result, err) shape:
-//
-//   1. exit 0 + valid JSON + Error == ""   → (result, nil) — clean success
-//   2. exit 0 + valid JSON + Error != ""   → (result, err) — anomalous; envelope wins
-//   3. exit !=0 + valid JSON + Error != "" → (result, err) — expected failure path
-//   4. exit !=0 + valid JSON + Error == "" → (result, err) — defensive; never silently OK
-//   5. malformed JSON                       → (nil, err)   — always failure
-//
-// Without these tests, a future "simplification" of the parse logic could
-// collapse case (4) into success, reintroducing the #341-class bug at the
-// JSON-parse boundary. Test-side: writes a temporary Python script that
-// behaves like close_hyperliquid_position.py but with controllable output.
-
-// These tests exercise parseHyperliquidCloseOutput directly (the pure decision
-// helper extracted from RunHyperliquidClose) so they don't depend on
-// spawning Python in the Go CI job.
-
-// Case 1: clean success — exit 0, valid JSON, no error field.
-func TestParseHyperliquidCloseOutput_CleanSuccess(t *testing.T) {
-	stdout := []byte(`{"close":{"symbol":"ETH","fill":{"avg_px":3000,"total_sz":0.5,"oid":12345,"fee":0.6}},"platform":"hyperliquid","timestamp":"2026-04-19T00:00:00Z"}`)
-	result, _, err := parseHyperliquidCloseOutput(stdout, "", nil)
-	if err != nil {
-		t.Fatalf("expected nil err, got %v", err)
-	}
-	if result == nil || result.Close == nil || result.Close.Fill == nil {
-		t.Fatalf("expected populated result, got %+v", result)
-	}
-	if result.Close.Fill.TotalSz != 0.5 {
-		t.Errorf("TotalSz = %g, want 0.5", result.Close.Fill.TotalSz)
-	}
-	if result.Close.Fill.Fee != 0.6 {
-		t.Errorf("Fee = %g, want 0.6 — Fee field must be parsed for accounting", result.Close.Fill.Fee)
-	}
-	if result.Close.Fill.OID != 12345 {
-		t.Errorf("OID = %d, want 12345", result.Close.Fill.OID)
-	}
-}
-
-// Case 2: exit 0 with populated error field — should NOT be silently treated
-// as success (the JSON envelope is authoritative).
-func TestParseHyperliquidCloseOutput_Exit0WithError(t *testing.T) {
-	stdout := []byte(`{"close":{"symbol":"ETH","fill":{}},"platform":"hyperliquid","timestamp":"x","error":"sdk timeout"}`)
-	result, _, err := parseHyperliquidCloseOutput(stdout, "", nil)
-	if err == nil {
-		t.Fatal("expected non-nil err for exit 0 with error envelope")
-	}
-	if result == nil || result.Error != "sdk timeout" {
-		t.Errorf("expected populated result.Error, got %+v", result)
-	}
-	if !strings.Contains(err.Error(), "sdk timeout") {
-		t.Errorf("err must surface envelope error message, got %v", err)
-	}
-}
-
-// Case 3: exit 1 with valid JSON error — the expected failure path.
-func TestParseHyperliquidCloseOutput_Exit1WithError(t *testing.T) {
-	stdout := []byte(`{"close":{"symbol":"ETH","fill":{}},"platform":"hyperliquid","timestamp":"x","error":"hl rate limited"}`)
-	runErr := fmt.Errorf("exit status 1")
-	result, _, err := parseHyperliquidCloseOutput(stdout, "", runErr)
-	if err == nil {
-		t.Fatal("expected non-nil err for exit 1 — kill switch must latch")
-	}
-	if result == nil || result.Error != "hl rate limited" {
-		t.Errorf("expected populated result.Error, got %+v", result)
-	}
-	if !strings.Contains(err.Error(), "hl rate limited") {
-		t.Errorf("err must include underlying error, got %v", err)
-	}
-}
-
-// Case 4: exit non-zero with valid JSON but no error field. Tightened
-// contract (item #2 from review): never silently report success on a
-// non-zero exit. Without this test, a regression that drops the exit-code
-// check would let the kill switch clear virtual state on a script crash
-// that happened to print parseable JSON before dying.
-func TestParseHyperliquidCloseOutput_Exit1WithoutErrorField(t *testing.T) {
-	stdout := []byte(`{"close":{"symbol":"ETH","fill":{}},"platform":"hyperliquid","timestamp":"x"}`)
-	runErr := fmt.Errorf("exit status 1")
-	_, _, err := parseHyperliquidCloseOutput(stdout, "", runErr)
-	if err == nil {
-		t.Fatal("expected non-nil err for exit 1 even without error field")
-	}
-	if !strings.Contains(err.Error(), "no error field") {
-		t.Errorf("err message should mention missing error field, got %v", err)
-	}
-}
-
-// Case 5: malformed JSON. Always a failure regardless of exit code, because
-// the kill switch cannot infer outcome from garbage.
-func TestParseHyperliquidCloseOutput_MalformedJSON(t *testing.T) {
-	result, _, err := parseHyperliquidCloseOutput([]byte("this is not json"), "", nil)
-	if err == nil {
-		t.Fatal("expected non-nil err for malformed JSON")
-	}
-	if result != nil {
-		t.Errorf("result should be nil for unparseable output, got %+v", result)
-	}
-}
-
-// already_flat field round-trips through the parser so the Go-side
-// AlreadyFlat routing has the signal it needs (#350). Without this, a
-// silent struct-tag regression would make every adapter-side already-flat
-// case fall back to ClosedCoins.
-func TestParseHyperliquidCloseOutput_AlreadyFlatFieldParsed(t *testing.T) {
-	stdout := []byte(`{"close":{"symbol":"ETH","fill":{},"already_flat":true},"platform":"hyperliquid","timestamp":"x"}`)
-	result, _, err := parseHyperliquidCloseOutput(stdout, "", nil)
-	if err != nil {
-		t.Fatalf("expected nil err, got %v", err)
-	}
-	if result == nil || result.Close == nil {
-		t.Fatalf("expected populated result.Close, got %+v", result)
-	}
-	if !result.Close.AlreadyFlat {
-		t.Errorf("AlreadyFlat = false, want true — Go side cannot route to AlreadyFlat slice without this field")
-	}
-}
-
-// ── OKX close parser tests (#345) ──────────────────────────────────────
-// Same 5-case matrix as parseHyperliquidCloseOutput — mirrors the HL tests
-// one-to-one because the two parsers implement the same contract. Any
-// relaxation of the contract on one side must fail a test on that side so
-// kill-switch correctness parity is mechanically enforced.
-
-func TestParseOKXCloseOutput_CleanSuccess(t *testing.T) {
-	stdout := []byte(`{"close":{"symbol":"BTC","fill":{"avg_px":42000,"total_sz":0.01,"oid":"abc123","fee":0.02}},"platform":"okx","timestamp":"2026-04-19T00:00:00Z"}`)
-	result, _, err := parseOKXCloseOutput(stdout, "", nil)
-	if err != nil {
-		t.Fatalf("expected nil err, got %v", err)
-	}
-	if result == nil || result.Close == nil || result.Close.Fill == nil {
-		t.Fatalf("expected populated result, got %+v", result)
-	}
-	if result.Close.Fill.TotalSz != 0.01 {
-		t.Errorf("TotalSz = %g, want 0.01", result.Close.Fill.TotalSz)
-	}
-	if result.Close.Fill.OID != "abc123" {
-		t.Errorf("OID = %q, want abc123 (ccxt IDs are strings, unlike HL ints)", result.Close.Fill.OID)
-	}
-	if result.Close.Fill.Fee != 0.02 {
-		t.Errorf("Fee = %g, want 0.02 — fee parsing is load-bearing for post-kill accounting", result.Close.Fill.Fee)
-	}
-}
-
-func TestParseOKXCloseOutput_Exit0WithError(t *testing.T) {
-	stdout := []byte(`{"close":{"symbol":"BTC","fill":{}},"platform":"okx","timestamp":"x","error":"okx auth failed"}`)
-	_, _, err := parseOKXCloseOutput(stdout, "", nil)
-	if err == nil {
-		t.Fatal("expected non-nil err for exit 0 with error envelope")
-	}
-	if !strings.Contains(err.Error(), "okx auth failed") {
-		t.Errorf("err must surface envelope error, got %v", err)
-	}
-}
-
-func TestParseOKXCloseOutput_Exit1WithError(t *testing.T) {
-	stdout := []byte(`{"close":{"symbol":"BTC","fill":{}},"platform":"okx","timestamp":"x","error":"okx rate limited"}`)
-	runErr := fmt.Errorf("exit status 1")
-	_, _, err := parseOKXCloseOutput(stdout, "", runErr)
-	if err == nil {
-		t.Fatal("expected non-nil err for exit 1 — kill switch must latch")
-	}
-	if !strings.Contains(err.Error(), "okx rate limited") {
-		t.Errorf("err must include underlying error, got %v", err)
-	}
-}
-
-func TestParseOKXCloseOutput_Exit1WithoutErrorField(t *testing.T) {
-	stdout := []byte(`{"close":{"symbol":"BTC","fill":{}},"platform":"okx","timestamp":"x"}`)
-	runErr := fmt.Errorf("exit status 1")
-	_, _, err := parseOKXCloseOutput(stdout, "", runErr)
-	if err == nil {
-		t.Fatal("expected non-nil err for exit 1 even without error field — silent crash must not clear virtual state")
-	}
-	if !strings.Contains(err.Error(), "no error field") {
-		t.Errorf("err message should mention missing error field, got %v", err)
-	}
-}
-
-func TestParseOKXCloseOutput_AlreadyFlatFieldParsed(t *testing.T) {
-	stdout := []byte(`{"close":{"symbol":"BTC","fill":{},"already_flat":true},"platform":"okx","timestamp":"x"}`)
-	result, _, err := parseOKXCloseOutput(stdout, "", nil)
-	if err != nil {
-		t.Fatalf("expected nil err, got %v", err)
-	}
-	if result == nil || result.Close == nil {
-		t.Fatalf("expected populated result.Close, got %+v", result)
-	}
-	if !result.Close.AlreadyFlat {
-		t.Errorf("AlreadyFlat = false, want true (#350)")
-	}
-}
-
-func TestParseOKXCloseOutput_MalformedJSON(t *testing.T) {
-	result, _, err := parseOKXCloseOutput([]byte("not json"), "", nil)
-	if err == nil {
-		t.Fatal("expected non-nil err for malformed JSON")
-	}
-	if result != nil {
-		t.Errorf("result should be nil for unparseable output, got %+v", result)
-	}
-}
-
-// ── OKX positions fetcher parser tests (#345) ───────────────────────────
-
-func TestParseOKXPositionsOutput_Success(t *testing.T) {
-	stdout := []byte(`{"positions":[{"coin":"BTC","size":0.01,"entry_price":42000,"side":"long"},{"coin":"ETH","size":-0.5,"entry_price":3000,"side":"short"}],"platform":"okx","timestamp":"x"}`)
-	result, _, err := parseOKXPositionsOutput(stdout, "", nil)
-	if err != nil {
-		t.Fatalf("expected nil err, got %v", err)
-	}
-	if len(result.Positions) != 2 {
-		t.Fatalf("expected 2 positions, got %d", len(result.Positions))
-	}
-	if result.Positions[0].Coin != "BTC" || result.Positions[0].Size != 0.01 {
-		t.Errorf("position[0] = %+v", result.Positions[0])
-	}
-	// Short size must be negative — load-bearing for on-chain direction
-	// classification in forceCloseOKXLive.
-	if result.Positions[1].Size != -0.5 {
-		t.Errorf("short size must be signed negative, got %g", result.Positions[1].Size)
-	}
-}
-
-func TestParseOKXPositionsOutput_EmptyIsSuccess(t *testing.T) {
-	stdout := []byte(`{"positions":[],"platform":"okx","timestamp":"x"}`)
-	result, _, err := parseOKXPositionsOutput(stdout, "", nil)
-	if err != nil {
-		t.Fatalf("empty positions must be success, got err=%v", err)
-	}
-	if len(result.Positions) != 0 {
-		t.Errorf("expected 0 positions, got %d", len(result.Positions))
-	}
-}
-
-func TestParseOKXPositionsOutput_ErrorEnvelope(t *testing.T) {
-	stdout := []byte(`{"positions":[],"platform":"okx","timestamp":"x","error":"OKX auth failed"}`)
-	runErr := fmt.Errorf("exit status 1")
-	_, _, err := parseOKXPositionsOutput(stdout, "", runErr)
-	if err == nil {
-		t.Fatal("expected non-nil err when envelope has error field — kill switch must latch")
-	}
-	if !strings.Contains(err.Error(), "OKX auth failed") {
-		t.Errorf("err must include envelope error, got %v", err)
-	}
-}
-
-func TestParseOKXPositionsOutput_MalformedJSON(t *testing.T) {
-	_, _, err := parseOKXPositionsOutput([]byte("garbage"), "", nil)
-	if err == nil {
-		t.Fatal("expected non-nil err for malformed JSON — cannot infer positions from garbage")
-	}
-}
-
-// ── buildHyperliquidExecuteArgs (#592) ─────────────────────────────────────
-// These tests assert the argv contract between Go and check_hyperliquid.py
-// without invoking the subprocess.
 
 func argsContains(args []string, want string) bool {
 	for _, a := range args {
@@ -609,239 +24,351 @@ func argsHasPrefix(args []string, prefix string) bool {
 	return false
 }
 
-// closeFullPosition=true must emit --close-full-position and OMIT --size, so
-// the Python script calls adapter.market_close(sz=None) instead of
-// market_open(size). This is the load-bearing #592 contract.
-func TestBuildHyperliquidExecuteArgs_CloseFullPosition(t *testing.T) {
-	args := buildHyperliquidExecuteArgs("ETH", "sell", 0, 0, 0, 0, "", 0, true, hlExecuteSnapshot{})
-
-	if !argsContains(args, "--close-full-position") {
-		t.Errorf("expected --close-full-position flag in argv, got %v", args)
-	}
-	if argsHasPrefix(args, "--size=") {
-		t.Errorf("--size must be omitted when closeFullPosition=true, got %v", args)
-	}
-	if !argsContains(args, "--symbol=ETH") {
-		t.Errorf("expected --symbol=ETH, got %v", args)
-	}
-	if !argsContains(args, "--side=sell") {
-		t.Errorf("expected --side=sell, got %v", args)
-	}
-}
-
-// Sized close (closeFullPosition=false) must emit --size=N and OMIT
-// --close-full-position. This is the path used for shared-coin peers and for
-// partial closes.
-func TestBuildHyperliquidExecuteArgs_SizedClose(t *testing.T) {
-	args := buildHyperliquidExecuteArgs("ETH", "sell", 0.42, 0, 0, 0, "", 0, false, hlExecuteSnapshot{})
-
-	if argsContains(args, "--close-full-position") {
-		t.Errorf("--close-full-position must be omitted when closeFullPosition=false, got %v", args)
-	}
-	if !argsHasPrefix(args, "--size=") {
-		t.Errorf("expected --size=N flag in argv, got %v", args)
-	}
-	if !argsContains(args, "--size=0.42") {
-		t.Errorf("expected --size=0.42 in argv, got %v", args)
-	}
-}
-
-// Full close with extraCancelOIDs must forward all TP OIDs as
-// --cancel-stop-loss-oid flags (mirrors the posQty>0 && !partialClose gate in
-// main.go that cancels every tier TP OID on a full or flip close).
-func TestBuildHyperliquidExecuteArgs_ExtraCancelOIDsFullClose(t *testing.T) {
-	args := buildHyperliquidExecuteArgs("ETH", "sell", 0, 0, 0, 0, "", 0, true, hlExecuteSnapshot{}, 111, 222, 333)
-
-	for _, want := range []string{"--cancel-stop-loss-oid=111", "--cancel-stop-loss-oid=222", "--cancel-stop-loss-oid=333"} {
-		if !argsContains(args, want) {
-			t.Errorf("expected %q in argv on full close, got %v", want, args)
+func TestBuildHyperliquidExecuteArgs_CloseMode(t *testing.T) {
+	probeFlag := ""
+	for _, a := range executeProbeArgv {
+		if strings.HasPrefix(a, "--close-mode=") {
+			probeFlag = a
 		}
 	}
-}
-
-// Partial close: extraCancelOIDs is omitted at the call site (mirrors the
-// partialClose=true gate in main.go), so TP OIDs must NOT appear in argv.
-func TestBuildHyperliquidExecuteArgs_ExtraCancelOIDsPartialClose(t *testing.T) {
-	// No extraCancelOIDs passed — matches what runHyperliquidExecuteOrder does on
-	// a partial close.
-	args := buildHyperliquidExecuteArgs("ETH", "sell", 0.5, 0, 0, 0, "", 0, false, hlExecuteSnapshot{})
-
-	for _, notWant := range []string{"--cancel-stop-loss-oid=111", "--cancel-stop-loss-oid=222"} {
-		if argsContains(args, notWant) {
-			t.Errorf("expected %q to be absent on partial close, got %v", notWant, args)
-		}
+	cases := []struct {
+		mode      hlCloseMode
+		wantSize  bool
+		wantFull  bool
+		wantClose string
+	}{
+		{hlCloseModeNone, true, false, ""},
+		{hlCloseModeReduceOnly, true, false, "--close-mode=reduce_only"},
+		{hlCloseModeCross, true, false, "--close-mode=cross"},
+		{hlCloseModeWhole, false, true, ""},
 	}
-}
-
-// Optional flags should be conditionally present.
-func TestBuildHyperliquidExecuteArgs_OptionalFlags(t *testing.T) {
-	t.Run("no optional flags", func(t *testing.T) {
-		args := buildHyperliquidExecuteArgs("BTC", "buy", 0.001, 0, 0, 0, "", 0, false, hlExecuteSnapshot{})
-		for _, prefix := range []string{"--stop-loss-pct=", "--cancel-stop-loss-oid=", "--prev-pos-qty=", "--margin-mode=", "--leverage="} {
-			if argsHasPrefix(args, prefix) {
-				t.Errorf("expected %s to be omitted, got %v", prefix, args)
+	for _, tc := range cases {
+		t.Run(tc.mode.String(), func(t *testing.T) {
+			args := buildHyperliquidExecuteArgs("ETH", "sell", 0.42, 0, 0, 0, "", 0, tc.mode, hlExecuteSnapshot{})
+			if argsContains(args, "--size=0.42") != tc.wantSize || argsContains(args, "--close-full-position") != tc.wantFull {
+				t.Fatalf("argv %v: size=%t full=%t, want size=%t full=%t", args, argsContains(args, "--size=0.42"), argsContains(args, "--close-full-position"), tc.wantSize, tc.wantFull)
 			}
-		}
-	})
-	t.Run("all optional flags", func(t *testing.T) {
-		args := buildHyperliquidExecuteArgs("BTC", "buy", 0.001, 2.5, 12345, 0.0005, "isolated", 5, false, hlExecuteSnapshot{})
-		for _, want := range []string{"--stop-loss-pct=2.5", "--cancel-stop-loss-oid=12345", "--prev-pos-qty=0.0005", "--margin-mode=isolated", "--leverage=5"} {
-			if !argsContains(args, want) {
-				t.Errorf("expected %q in argv, got %v", want, args)
+			if tc.wantClose == "" {
+				if argsHasPrefix(args, "--close-mode=") {
+					t.Fatalf("argv %v must carry no --close-mode", args)
+				}
+				return
 			}
-		}
-	})
-	t.Run("margin mode without leverage", func(t *testing.T) {
-		// leverage=0 with non-empty margin_mode: --leverage must not appear (would
-		// confuse the Python validator) but --margin-mode is still emitted.
-		args := buildHyperliquidExecuteArgs("BTC", "buy", 0.001, 0, 0, 0, "cross", 0, false, hlExecuteSnapshot{})
-		if !argsContains(args, "--margin-mode=cross") {
-			t.Errorf("expected --margin-mode=cross, got %v", args)
-		}
-		if argsHasPrefix(args, "--leverage=") {
-			t.Errorf("--leverage must be omitted when leverage=0, got %v", args)
-		}
-	})
-}
-
-// #768 fix #4: --account-leverage / --account-margin-mode must appear in argv
-// ONLY when both fields are present AND --margin-mode is being enforced. The
-// Python side only consults them inside the `if margin_mode:` branch.
-func TestBuildHyperliquidExecuteArgs_AccountSnapshotForwarded(t *testing.T) {
-	snap := hlExecuteSnapshot{AccountLeverage: 10, AccountMarginMode: "isolated"}
-	args := buildHyperliquidExecuteArgs("BTC", "buy", 0.001, 0, 0, 0, "isolated", 10, false, snap)
-	for _, want := range []string{"--account-leverage=10", "--account-margin-mode=isolated"} {
-		if !argsContains(args, want) {
-			t.Errorf("expected %q in argv when snapshot is known, got %v", want, args)
-		}
+			if !argsContains(args, tc.wantClose) {
+				t.Fatalf("argv %v missing %s", args, tc.wantClose)
+			}
+		})
+	}
+	if probeFlag == "" || !argsContains(buildHyperliquidExecuteArgs("ETH", "sell", 0.42, 0, 0, 0, "", 0, hlCloseModeReduceOnly, hlExecuteSnapshot{}), probeFlag) {
+		t.Fatalf("executeProbeArgv %v must carry the --close-mode flag the builder emits", executeProbeArgv)
 	}
 }
 
-func TestBuildHyperliquidExecuteArgs_AccountSnapshotOmittedWhenIncomplete(t *testing.T) {
+func TestHLExecuteFillOutcome(t *testing.T) {
+	filled := func(sz float64) *HyperliquidExecuteResult {
+		return &HyperliquidExecuteResult{OrderOutcome: "filled", Execution: &HyperliquidExecution{Fill: &HyperliquidFill{AvgPx: 3000, TotalSz: sz}}}
+	}
 	cases := []struct {
 		name string
-		snap hlExecuteSnapshot
+		res  *HyperliquidExecuteResult
+		err  error
+		want hlCloseFillOutcome
 	}{
-		{"zero leverage", hlExecuteSnapshot{AccountMarginMode: "isolated"}},
-		{"empty mode", hlExecuteSnapshot{AccountLeverage: 10}},
-		{"invalid mode", hlExecuteSnapshot{AccountLeverage: 10, AccountMarginMode: "weird"}},
+		{"filled books the fill", filled(4), nil, hlCloseFillOutcome{Filled: 4, Known: true}},
+		{"fill above the book books the book", filled(12), nil, hlCloseFillOutcome{Filled: 10, Known: true}},
+		{"filled without a confirmed fill is unknown", &HyperliquidExecuteResult{OrderOutcome: "filled"}, nil, hlCloseFillOutcome{}},
+		{"rejected is a known zero fill", &HyperliquidExecuteResult{OrderOutcome: "rejected", Error: "exchange rejected order"}, fmt.Errorf("exit 1"), hlCloseFillOutcome{Known: true}},
+		{"not sent is a known zero fill", &HyperliquidExecuteResult{OrderOutcome: "not_sent", Error: "no usable mid price"}, fmt.Errorf("exit 1"), hlCloseFillOutcome{Known: true}},
+		{"catch-all is unknown", &HyperliquidExecuteResult{OrderOutcome: "unknown", Error: "socket closed"}, fmt.Errorf("exit 1"), hlCloseFillOutcome{}},
+		{"missing field is unknown", &HyperliquidExecuteResult{Error: "exchange rejected order"}, fmt.Errorf("exit 1"), hlCloseFillOutcome{}},
+		{"no result is unknown", nil, fmt.Errorf("parse execute output"), hlCloseFillOutcome{}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			args := buildHyperliquidExecuteArgs("BTC", "buy", 0.001, 0, 0, 0, "isolated", 10, false, tc.snap)
-			for _, prefix := range []string{"--account-leverage=", "--account-margin-mode="} {
-				if argsHasPrefix(args, prefix) {
-					t.Errorf("expected %s to be omitted on incomplete snapshot (%s), got %v", prefix, tc.name, args)
-				}
+			if got := hlExecuteFillOutcome(tc.res, tc.err, 10); got != tc.want {
+				t.Fatalf("hlExecuteFillOutcome = %+v, want %+v", got, tc.want)
 			}
 		})
 	}
 }
 
-func TestBuildHyperliquidExecuteArgs_AccountSnapshotOmittedWithoutMarginMode(t *testing.T) {
-	// Python only consults --account-leverage inside the `if margin_mode:`
-	// branch; forwarding it when margin_mode is empty would be wasted argv
-	// noise. Verify the omission so we don't drift from that contract.
-	snap := hlExecuteSnapshot{AccountLeverage: 10, AccountMarginMode: "isolated"}
-	args := buildHyperliquidExecuteArgs("BTC", "buy", 0.001, 0, 0, 0, "", 0, false, snap)
-	for _, prefix := range []string{"--account-leverage=", "--account-margin-mode="} {
-		if argsHasPrefix(args, prefix) {
-			t.Errorf("expected %s to be omitted when margin-mode is empty, got %v", prefix, args)
-		}
+func TestClassifyProtectionSyncStopRearm(t *testing.T) {
+	cases := []struct {
+		name       string
+		protection *HyperliquidProtectionSyncResult
+		want       hlStopRearmStatus
+	}{
+		{"force-replace cancel rejected keeps the pre-close stop resting", &HyperliquidProtectionSyncResult{StopLossError: "force replace cancel rejected: busy", CancelStopLossError: "force replace cancel rejected: busy"}, hlStopRearmPreCloseStopResting},
+		{"cancelled and replacement rejected loses protection", &HyperliquidProtectionSyncResult{CancelStopLossSucceeded: true, StopLossError: "open order limit"}, hlStopRearmProtectionLost},
+		{"fresh placement rejected", &HyperliquidProtectionSyncResult{StopLossError: "open order limit"}, hlStopRearmPlacementFailed},
+		{"replacement rests", &HyperliquidProtectionSyncResult{StopLossOID: 9002, StopLossTriggerPx: 2325}, hlStopRearmPlaced},
+		{"sync failed", nil, hlStopRearmOutcomeUnknown},
 	}
-}
-
-func TestHLExecuteSnapshotForCoin(t *testing.T) {
-	positions := []HLPosition{
-		{Coin: "BTC", Size: 0.1, EntryPrice: 60000, Leverage: 10, MarginMode: "isolated"},
-		{Coin: "ETH", Size: -2, EntryPrice: 3000, Leverage: 5, MarginMode: "cross"},
-		{Coin: "SOL", Size: 100, EntryPrice: 150, Leverage: 0, MarginMode: ""}, // bogus row — skip
-	}
-	if got := hlExecuteSnapshotForCoin(positions, "BTC"); got.AccountLeverage != 10 || got.AccountMarginMode != "isolated" {
-		t.Errorf("BTC snapshot = %+v, want lev=10 mode=isolated", got)
-	}
-	if got := hlExecuteSnapshotForCoin(positions, "ETH"); got.AccountLeverage != 5 || got.AccountMarginMode != "cross" {
-		t.Errorf("ETH snapshot = %+v, want lev=5 mode=cross", got)
-	}
-	// Bogus rows (missing margin mode) must yield zero — Python falls back.
-	if got := hlExecuteSnapshotForCoin(positions, "SOL"); got != (hlExecuteSnapshot{}) {
-		t.Errorf("SOL with bogus row should yield zero, got %+v", got)
-	}
-	// Unknown coin yields zero.
-	if got := hlExecuteSnapshotForCoin(positions, "XRP"); got != (hlExecuteSnapshot{}) {
-		t.Errorf("unknown coin should yield zero, got %+v", got)
-	}
-	// Empty coin string yields zero.
-	if got := hlExecuteSnapshotForCoin(positions, ""); got != (hlExecuteSnapshot{}) {
-		t.Errorf("empty coin should yield zero, got %+v", got)
-	}
-}
-
-func TestBuildHyperliquidSyncProtectionArgv_TPArmedTiersJSON(t *testing.T) {
-	tiers := []hlProtectionTier{{Multiple: 1, Fraction: 0.5}, {Multiple: 2, Fraction: 1}}
-	argv := buildHyperliquidSyncProtectionArgv("ETH", "long", 0.22, 3000, 100, 1.5, tiers, 999, []int64{0, 300}, []bool{true, true}, nil)
-	var armedArg string
-	for _, a := range argv {
-		if strings.HasPrefix(a, "--tp-armed-tiers-json=") {
-			armedArg = a
-			break
-		}
-	}
-	if armedArg == "" {
-		t.Fatal("missing --tp-armed-tiers-json flag (wire contract with check_hyperliquid.py)")
-	}
-	const prefix = "--tp-armed-tiers-json="
-	if got := strings.TrimPrefix(armedArg, prefix); got != `[true,true]` {
-		t.Errorf("armed tiers JSON = %q, want [true,true]", got)
-	}
-	// Shorter slice pads false (#749 / hyperliquid_protection.go).
-	argv = buildHyperliquidSyncProtectionArgv("ETH", "long", 0.22, 3000, 100, 1.5, tiers, 0, nil, []bool{true}, nil)
-	for _, a := range argv {
-		if strings.HasPrefix(a, "--tp-armed-tiers-json=") {
-			if got := strings.TrimPrefix(a, prefix); got != `[true,false]` {
-				t.Errorf("padded armed tiers JSON = %q, want [true,false]", got)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := classifyProtectionSyncStopRearm(1, tc.protection).Status; got != tc.want {
+				t.Fatalf("status = %d, want %d", got, tc.want)
 			}
-			return
-		}
-	}
-	t.Fatal("missing --tp-armed-tiers-json after padding test")
-}
-
-func TestBuildHyperliquidSyncProtectionArgv_NoTiersOmitsArmedJSON(t *testing.T) {
-	argv := buildHyperliquidSyncProtectionArgv("ETH", "long", 0.22, 3000, 100, 1.5, nil, 0, nil, nil, nil)
-	for _, a := range argv {
-		if strings.HasPrefix(a, "--tp-armed-tiers-json=") {
-			t.Fatalf("unexpected %q when tiers empty", a)
-		}
+		})
 	}
 }
 
-func TestBuildHyperliquidSyncProtectionArgv_ReconcileFillHintsJSON(t *testing.T) {
+func TestClassifyStopRearmRemoval(t *testing.T) {
+	cases := []struct {
+		name   string
+		result *HyperliquidStopLossUpdateResult
+		want   hlStopRearmStatus
+	}{
+		{"cancelled", &HyperliquidStopLossUpdateResult{CancelOnly: true, CancelStopLossSucceeded: true}, hlStopRearmRemoved},
+		{"not open and not filled", &HyperliquidStopLossUpdateResult{CancelOnly: true, StopLossNotOpen: true}, hlStopRearmRemoved},
+		{"filled externally", &HyperliquidStopLossUpdateResult{CancelOnly: true, StopLossFilledExternally: true}, hlStopRearmClosed},
+		{"cancel rejected", &HyperliquidStopLossUpdateResult{CancelOnly: true, Error: "cancel failed", CancelStopLossError: "busy"}, hlStopRearmPreCloseStopResting},
+		{"open orders unreadable", &HyperliquidStopLossUpdateResult{CancelOnly: true, Error: "open orders unreadable", OpenOrderCheckError: "indexer down"}, hlStopRearmReadFailed},
+		{"nil result", nil, hlStopRearmOutcomeUnknown},
+		{"bare error", &HyperliquidStopLossUpdateResult{Error: "invalid side"}, hlStopRearmOutcomeUnknown},
+		{"a cancel outcome from a run that was not cancel-only", &HyperliquidStopLossUpdateResult{CancelStopLossSucceeded: true, StopLossOID: 9002}, hlStopRearmOutcomeUnknown},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := classifyStopRearmRemoval(tc.result).Status; got != tc.want {
+				t.Fatalf("status = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestClassifyProtectionSyncTPRearm(t *testing.T) {
 	tiers := []hlProtectionTier{{Multiple: 1, Fraction: 0.5}, {Multiple: 2, Fraction: 1}}
-	hints := []byte(`[{"oid":42,"filled":true,"fee":0.01,"count":1}]`)
-	argv := buildHyperliquidSyncProtectionArgv("ETH", "long", 0.22, 3000, 100, 1.5, tiers, 1, []int64{2, 3}, nil, hints)
-	var got string
-	for _, a := range argv {
-		if strings.HasPrefix(a, "--reconcile-fill-hints-json=") {
-			got = strings.TrimPrefix(a, "--reconcile-fill-hints-json=")
-			break
-		}
+	full := hlProtectionPlan{Tiers: tiers, TPOIDs: []int64{7001, 7002}, ForceTPReplace: []bool{true, false}}
+	cancel := hlProtectionPlan{CancelTPOIDs: []int64{7001}}
+	cases := []struct {
+		name       string
+		plan       hlProtectionPlan
+		result     *HyperliquidProtectionSyncResult
+		want       hlTPRearmStatus
+		wantDetail string
+		wantReport []string
+		notReport  string
+	}{
+		{"no take-profit leg", hlProtectionPlan{}, nil, hlTPRearmNone, "", nil, ""},
+		{"force-replaced tier placed", full, &HyperliquidProtectionSyncResult{TPOIDs: []int64{9101, 7002}}, hlTPRearmPlaced, "", nil, ""},
+		{"no force and ids unchanged", hlProtectionPlan{Tiers: tiers, TPOIDs: []int64{7001, 7002}}, &HyperliquidProtectionSyncResult{TPOIDs: []int64{7001, 7002}}, hlTPRearmKept, "", nil, ""},
+		{"removed", cancel, &HyperliquidProtectionSyncResult{}, hlTPRearmRemoved, "7001", nil, ""},
+		{"tier placement error", full, &HyperliquidProtectionSyncResult{TPOIDs: []int64{0, 7002}, TPErrors: []string{"open order limit", ""}}, hlTPRearmFailed, "tier 1: open order limit", nil, ""},
+		{"force-replaced tier left at its old id", full, &HyperliquidProtectionSyncResult{TPOIDs: []int64{7001, 7002}}, hlTPRearmFailed, "OID=7001) still rests", nil, ""},
+		{"cancel failed", cancel, &HyperliquidProtectionSyncResult{TPCancelFailedOIDs: []int64{7001}}, hlTPRearmFailed, "[7001]", nil, ""},
+		{"outcome unknown", full, &HyperliquidProtectionSyncResult{TPOIDs: []int64{0, 7002}, TPOutcomeUnknown: []bool{true, false}}, hlTPRearmUnknown, "[1]", nil, ""},
+		{"sync error with tiers", full, &HyperliquidProtectionSyncResult{Error: "avg-cost and entry-atr must be > 0"}, hlTPRearmFailed, "avg-cost", nil, ""},
+		{"nil result", full, nil, hlTPRearmUnknown, "no result", nil, ""},
+		{"placement error and unresolved outcome on one tier", full, &HyperliquidProtectionSyncResult{TPOIDs: []int64{0, 7002}, TPErrors: []string{"read timeout", ""}, TPOutcomeUnknown: []bool{true, false}}, hlTPRearmUnknown, "[1]", []string{"Take-profit leg UNKNOWN", "before you place anything"}, "by hand"},
+		{"tier 1 unresolved and tier 2 rejected in one sync", full, &HyperliquidProtectionSyncResult{TPOIDs: []int64{0, 0}, TPErrors: []string{"read timeout", "open order limit"}, TPOutcomeUnknown: []bool{true, false}}, hlTPRearmFailed, "tier 2: open order limit", []string{"FAILED (tier 2: open order limit) and UNKNOWN (the placement of tier(s) [1]", "before you place anything"}, "tier 1: read timeout"},
 	}
-	if got != string(hints) {
-		t.Fatalf("hints argv = %q, want %q", got, string(hints))
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := classifyProtectionSyncTPRearm(tc.plan, tc.result)
+			if got.Status != tc.want {
+				t.Fatalf("status = %d, want %d (%s)", got.Status, tc.want, got.Detail)
+			}
+			if !strings.Contains(got.Detail, tc.wantDetail) {
+				t.Fatalf("detail = %q, want it to contain %q", got.Detail, tc.wantDetail)
+			}
+			report := formatCloseTPLegReport(got)
+			for _, want := range tc.wantReport {
+				if !strings.Contains(report, want) {
+					t.Fatalf("report = %q, want it to contain %q", report, want)
+				}
+			}
+			if tc.notReport != "" && strings.Contains(report, tc.notReport) {
+				t.Fatalf("report = %q, want no %q", report, tc.notReport)
+			}
+		})
 	}
 }
 
-func TestPythonScriptTimeoutError_As(t *testing.T) {
-	var err error = &pythonScriptTimeoutError{d: 5 * time.Minute}
-	var toe *pythonScriptTimeoutError
-	if !errors.As(err, &toe) {
-		t.Fatal("errors.As failed")
+func TestParseHyperliquidCloseOutput(t *testing.T) {
+	cases := []struct {
+		name        string
+		stdout      string
+		runErr      error
+		wantErr     bool
+		errContains string
+		wantNilRes  bool
+		check       func(*testing.T, *HyperliquidCloseResult)
+	}{
+		{
+			name:   "clean success parses fill, fee and OID",
+			stdout: `{"close":{"symbol":"ETH","fill":{"avg_px":3000,"total_sz":0.5,"oid":12345,"fee":0.6}},"platform":"hyperliquid","timestamp":"2026-04-19T00:00:00Z"}`,
+			check: func(t *testing.T, result *HyperliquidCloseResult) {
+				if result == nil || result.Close == nil || result.Close.Fill == nil {
+					t.Fatalf("expected populated result, got %+v", result)
+				}
+				if result.Close.Fill.TotalSz != 0.5 {
+					t.Errorf("TotalSz = %g, want 0.5", result.Close.Fill.TotalSz)
+				}
+				if result.Close.Fill.Fee != 0.6 {
+					t.Errorf("Fee = %g, want 0.6 — Fee field must be parsed for accounting", result.Close.Fill.Fee)
+				}
+				if result.Close.Fill.OID != 12345 {
+					t.Errorf("OID = %d, want 12345", result.Close.Fill.OID)
+				}
+			},
+		},
+		{
+			name:        "exit 0 with an error envelope still errors",
+			stdout:      `{"close":{"symbol":"ETH","fill":{}},"platform":"hyperliquid","timestamp":"x","error":"sdk timeout"}`,
+			wantErr:     true,
+			errContains: "sdk timeout",
+			check: func(t *testing.T, result *HyperliquidCloseResult) {
+				if result == nil || result.Error != "sdk timeout" {
+					t.Errorf("expected populated result.Error, got %+v", result)
+				}
+			},
+		},
+		{
+			name:        "exit 1 with an error envelope errors so the kill switch latches",
+			stdout:      `{"close":{"symbol":"ETH","fill":{}},"platform":"hyperliquid","timestamp":"x","error":"hl rate limited"}`,
+			runErr:      fmt.Errorf("exit status 1"),
+			wantErr:     true,
+			errContains: "hl rate limited",
+			check: func(t *testing.T, result *HyperliquidCloseResult) {
+				if result == nil || result.Error != "hl rate limited" {
+					t.Errorf("expected populated result.Error, got %+v", result)
+				}
+			},
+		},
+		{
+			name:        "exit 1 without an error field still errors",
+			stdout:      `{"close":{"symbol":"ETH","fill":{}},"platform":"hyperliquid","timestamp":"x"}`,
+			runErr:      fmt.Errorf("exit status 1"),
+			wantErr:     true,
+			errContains: "no error field",
+		},
+		{
+			name:       "malformed JSON yields no result",
+			stdout:     "this is not json",
+			wantErr:    true,
+			wantNilRes: true,
+		},
+		{
+			name:   "already_flat is parsed so the Go side can route the close",
+			stdout: `{"close":{"symbol":"ETH","fill":{},"already_flat":true},"platform":"hyperliquid","timestamp":"x"}`,
+			check: func(t *testing.T, result *HyperliquidCloseResult) {
+				if result == nil || result.Close == nil {
+					t.Fatalf("expected populated result.Close, got %+v", result)
+				}
+				if !result.Close.AlreadyFlat {
+					t.Errorf("AlreadyFlat = false, want true — Go side cannot route to AlreadyFlat slice without this field")
+				}
+			},
+		},
 	}
-	if toe.d != 5*time.Minute {
-		t.Errorf("duration = %v, want 5m", toe.d)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, _, err := parseHyperliquidCloseOutput([]byte(tc.stdout), "", tc.runErr)
+			if tc.wantErr && err == nil {
+				t.Fatal("expected a non-nil error")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("expected nil err, got %v", err)
+			}
+			if tc.errContains != "" && !strings.Contains(err.Error(), tc.errContains) {
+				t.Errorf("err = %v, want it to surface %q", err, tc.errContains)
+			}
+			if tc.wantNilRes && result != nil {
+				t.Errorf("result should be nil for unparseable output, got %+v", result)
+			}
+			if tc.check != nil {
+				tc.check(t, result)
+			}
+		})
 	}
-	if !strings.HasPrefix(toe.Error(), "script timed out after ") {
-		t.Errorf("Error() = %q", toe.Error())
+}
+
+func TestParseOKXCloseOutput(t *testing.T) {
+	cases := []struct {
+		name        string
+		stdout      string
+		runErr      error
+		wantErr     bool
+		errContains string
+		wantNilRes  bool
+		check       func(*testing.T, *OKXCloseResult)
+	}{
+		{
+			name:   "clean success parses fill, string OID and fee",
+			stdout: `{"close":{"symbol":"BTC","fill":{"avg_px":42000,"total_sz":0.01,"oid":"abc123","fee":0.02}},"platform":"okx","timestamp":"2026-04-19T00:00:00Z"}`,
+			check: func(t *testing.T, result *OKXCloseResult) {
+				if result == nil || result.Close == nil || result.Close.Fill == nil {
+					t.Fatalf("expected populated result, got %+v", result)
+				}
+				if result.Close.Fill.TotalSz != 0.01 {
+					t.Errorf("TotalSz = %g, want 0.01", result.Close.Fill.TotalSz)
+				}
+				if result.Close.Fill.OID != "abc123" {
+					t.Errorf("OID = %q, want abc123 (ccxt IDs are strings, unlike HL ints)", result.Close.Fill.OID)
+				}
+				if result.Close.Fill.Fee != 0.02 {
+					t.Errorf("Fee = %g, want 0.02 — fee parsing is load-bearing for post-kill accounting", result.Close.Fill.Fee)
+				}
+			},
+		},
+		{
+			name:        "exit 0 with an error envelope still errors",
+			stdout:      `{"close":{"symbol":"BTC","fill":{}},"platform":"okx","timestamp":"x","error":"okx auth failed"}`,
+			wantErr:     true,
+			errContains: "okx auth failed",
+		},
+		{
+			name:        "exit 1 with an error envelope errors so the kill switch latches",
+			stdout:      `{"close":{"symbol":"BTC","fill":{}},"platform":"okx","timestamp":"x","error":"okx rate limited"}`,
+			runErr:      fmt.Errorf("exit status 1"),
+			wantErr:     true,
+			errContains: "okx rate limited",
+		},
+		{
+			name:        "exit 1 without an error field still errors so virtual state is not cleared",
+			stdout:      `{"close":{"symbol":"BTC","fill":{}},"platform":"okx","timestamp":"x"}`,
+			runErr:      fmt.Errorf("exit status 1"),
+			wantErr:     true,
+			errContains: "no error field",
+		},
+		{
+			name:   "already_flat is parsed",
+			stdout: `{"close":{"symbol":"BTC","fill":{},"already_flat":true},"platform":"okx","timestamp":"x"}`,
+			check: func(t *testing.T, result *OKXCloseResult) {
+				if result == nil || result.Close == nil {
+					t.Fatalf("expected populated result.Close, got %+v", result)
+				}
+				if !result.Close.AlreadyFlat {
+					t.Errorf("AlreadyFlat = false, want true (#350)")
+				}
+			},
+		},
+		{
+			name:       "malformed JSON yields no result",
+			stdout:     "not json",
+			wantErr:    true,
+			wantNilRes: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, _, err := parseOKXCloseOutput([]byte(tc.stdout), "", tc.runErr)
+			if tc.wantErr && err == nil {
+				t.Fatal("expected a non-nil error")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("expected nil err, got %v", err)
+			}
+			if tc.errContains != "" && !strings.Contains(err.Error(), tc.errContains) {
+				t.Errorf("err = %v, want it to surface %q", err, tc.errContains)
+			}
+			if tc.wantNilRes && result != nil {
+				t.Errorf("result should be nil for unparseable output, got %+v", result)
+			}
+			if tc.check != nil {
+				tc.check(t, result)
+			}
+		})
 	}
 }

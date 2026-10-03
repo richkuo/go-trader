@@ -1,10 +1,3 @@
-"""
-Regression tests for issue #302 — Backtester fill alignment.
-
-Live scheduler reads a completed bar's close-signal and market-orders that
-lands at the next bar's open. Backtests must match — filling at the signal
-bar's close is free look-ahead.
-"""
 import pandas as pd
 import pytest
 
@@ -27,7 +20,6 @@ def _make_df(opens, highs, lows, closes, signals):
 
 
 def test_fill_uses_next_bar_open_not_signal_bar_close():
-    """Buy signal on bar 2 must fill at bar 3's open, not bar 2's close."""
     opens = [100, 100, 100, 110, 110, 110]
     highs = [101, 101, 101, 111, 111, 111]
     lows = [99, 99, 99, 109, 109, 109]
@@ -51,7 +43,6 @@ def test_fill_uses_next_bar_open_not_signal_bar_close():
 
 
 def test_exit_uses_next_bar_open_not_signal_bar_close():
-    """Exit on sell signal must fill at the following bar's open."""
     opens = [100, 100, 100, 100, 200, 300]
     highs = [101, 101, 101, 101, 201, 301]
     lows = [99, 99, 99, 99, 199, 299]
@@ -76,7 +67,6 @@ def test_exit_uses_next_bar_open_not_signal_bar_close():
 
 
 def test_falls_back_to_close_when_open_column_missing():
-    """Legacy demos feed only 'close' — preserve that path (shift still applies)."""
     closes = [100, 100, 100, 110, 110, 110]
     signals = [0, 0, 1, 0, 0, -1]
     idx = pd.date_range("2024-01-01", periods=len(closes), freq="D")
@@ -90,7 +80,6 @@ def test_falls_back_to_close_when_open_column_missing():
 
 
 def test_signal_on_final_bar_never_fills():
-    """Signal on the last bar has no following bar to fill on."""
     opens = [100, 100, 100]
     closes = [100, 100, 100]
     signals = [0, 0, 1]
@@ -106,7 +95,6 @@ def test_signal_on_final_bar_never_fills():
 
 
 def test_signal_on_bar_zero_fills_on_bar_one():
-    """A buy at raw bar 0 is shifted to bar 1 and fills at bar 1's open."""
     opens = [100, 200, 200, 200, 200]
     closes = [100, 200, 200, 200, 200]
     signals = [1, 0, 0, 0, -1]
@@ -119,14 +107,10 @@ def test_signal_on_bar_zero_fills_on_bar_one():
     results = bt.run(df, strategy_name="bar-zero-signal", save=False)
 
     assert len(results["trades"]) == 1
-    # Buy signal on raw bar 0 → shifted to bar 1 → fills at bar 1's open = 200.
-    # A bug that drops the bar-0 signal (e.g. starts the loop at i=1) would
-    # produce 0 trades.
     assert results["trades"][0]["entry_price"] == pytest.approx(200.0, rel=1e-9)
 
 
 def test_buy_signal_while_long_is_ignored():
-    """Repeat buy must not double-up an existing long position."""
     opens = [100, 100, 100, 100, 100, 100]
     closes = [100, 100, 100, 100, 100, 100]
     signals = [0, 1, 1, 0, 0, -1]
@@ -142,7 +126,6 @@ def test_buy_signal_while_long_is_ignored():
 
 
 def test_sell_signal_while_flat_is_ignored():
-    """Sell signal with no open position must not create a phantom trade."""
     opens = [100, 100, 100, 100]
     closes = [100, 100, 100, 100]
     signals = [0, -1, 0, 0]

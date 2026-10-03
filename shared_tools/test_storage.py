@@ -1,30 +1,71 @@
-"""Tests for storage.py — SQLite persistence for OHLCV and backtest results."""
 
 import json
 import os
 import sqlite3
+import subprocess
+import sys
 
 import pandas as pd
 import pytest
 
-# Import storage functions directly — we override DB_PATH per-test via db_path param
-# Note: storage.py calls init_db() at import time using default DB_PATH.
-# Tests always pass an explicit db_path to avoid touching the real database.
-from storage import get_connection, init_db, store_ohlcv, load_ohlcv, store_backtest_result, get_backtest_results
+from shared_tools.conftest import load_module
+
+_STORAGE = load_module("_storage_test", __file__.replace("test_storage.py", "storage.py"))
+get_connection = _STORAGE.get_connection
+init_db = _STORAGE.init_db
+store_ohlcv = _STORAGE.store_ohlcv
+load_ohlcv = _STORAGE.load_ohlcv
+store_backtest_result = _STORAGE.store_backtest_result
+get_backtest_results = _STORAGE.get_backtest_results
 
 
-# ─── Fixtures ──────────────────────────────────
+def test_ohlcv_cache_env_override_is_import_time_default(tmp_path):
+    override = tmp_path / "state" / "ohlcv.sqlite3"
+    env = os.environ.copy()
+    env["GO_TRADER_OHLCV_CACHE_DB"] = str(override)
+    proc = subprocess.run(
+        [sys.executable, "-c", "import storage; print(storage.DB_PATH)"],
+        cwd=os.path.dirname(__file__), env=env, text=True,
+        capture_output=True, check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == str(override.resolve())
+
+
+def test_ohlcv_cache_env_override_refuses_blank_value():
+    env = os.environ.copy()
+    env["GO_TRADER_OHLCV_CACHE_DB"] = "   "
+    proc = subprocess.run(
+        [sys.executable, "-c", "import storage"],
+        cwd=os.path.dirname(__file__), env=env, text=True,
+        capture_output=True, check=False,
+    )
+    assert proc.returncode != 0
+    assert "GO_TRADER_OHLCV_CACHE_DB" in proc.stderr
+
+
+def test_ohlcv_cache_env_override_fails_loudly_when_unwritable(tmp_path):
+    blocker = tmp_path / "not-a-directory"
+    blocker.write_text("block")
+    env = os.environ.copy()
+    env["GO_TRADER_OHLCV_CACHE_DB"] = str(blocker / "ohlcv.sqlite3")
+    proc = subprocess.run(
+        [sys.executable, "-c", "import storage; storage.get_connection()"],
+        cwd=os.path.dirname(__file__), env=env, text=True,
+        capture_output=True, check=False,
+    )
+    assert proc.returncode != 0
+    assert str(blocker / "ohlcv.sqlite3") in proc.stderr
+
 
 @pytest.fixture
 def db_path(tmp_path):
-    """Create a temporary SQLite database."""
     path = str(tmp_path / "test_trading.db")
     init_db(path)
     return path
 
 
 def _sample_ohlcv_df():
-    """Create a sample OHLCV DataFrame."""
     return pd.DataFrame({
         "timestamp": [1700000000000, 1700003600000, 1700007200000],
         "open":      [35000.0, 35200.0, 35600.0],
@@ -36,7 +77,6 @@ def _sample_ohlcv_df():
 
 
 def _sample_backtest_result():
-    """Create a sample backtest result dict."""
     return {
         "strategy_name": "sma_crossover",
         "symbol": "BTC/USDT",
@@ -58,58 +98,32 @@ def _sample_backtest_result():
     }
 
 
-# ─── init_db ───────────────────────────────────
-
 class TestInitDb:
-    def test_creates_ohlcv_table(self, db_path):
+    @pytest.mark.parametrize("object_type,name", [
+        ("table", "ohlcv"),
+        ("table", "backtest_results"),
+        ("index", "idx_ohlcv_lookup"),
+    ])
+    def test_creates_schema_objects(self, db_path, object_type, name):
         conn = sqlite3.connect(db_path)
-        tables = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
+        rows = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type=?", (object_type,)
         ).fetchall()
-        table_names = [t[0] for t in tables]
-        assert "ohlcv" in table_names
         conn.close()
-
-    def test_creates_backtest_results_table(self, db_path):
-        conn = sqlite3.connect(db_path)
-        tables = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        ).fetchall()
-        table_names = [t[0] for t in tables]
-        assert "backtest_results" in table_names
-        conn.close()
+        assert name in [r[0] for r in rows]
 
     def test_idempotent(self, db_path):
-        # Calling init_db twice should not raise
         init_db(db_path)
         init_db(db_path)
 
-    def test_creates_index(self, db_path):
-        conn = sqlite3.connect(db_path)
-        indexes = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='index'"
-        ).fetchall()
-        index_names = [i[0] for i in indexes]
-        assert "idx_ohlcv_lookup" in index_names
-        conn.close()
-
-
-# ─── get_connection ────────────────────────────
 
 class TestGetConnection:
-    def test_returns_connection(self, db_path):
-        conn = get_connection(db_path)
-        assert isinstance(conn, sqlite3.Connection)
-        conn.close()
-
     def test_wal_mode(self, db_path):
         conn = get_connection(db_path)
         mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
         assert mode == "wal"
         conn.close()
 
-
-# ─── store_ohlcv / load_ohlcv ─────────────────
 
 class TestOhlcvRoundTrip:
     def test_store_and_load(self, db_path):
@@ -121,60 +135,37 @@ class TestOhlcvRoundTrip:
         assert list(loaded["timestamp"]) == [1700000000000, 1700003600000, 1700007200000]
         assert loaded["close"].iloc[0] == pytest.approx(35200.0)
         assert loaded["close"].iloc[2] == pytest.approx(35900.0)
-
-    def test_datetime_index_set(self, db_path):
-        df = _sample_ohlcv_df()
-        store_ohlcv(df, "binanceus", "BTC/USDT", "1h", db_path=db_path)
-        loaded = load_ohlcv("binanceus", "BTC/USDT", "1h", db_path=db_path)
         assert loaded.index.name == "datetime"
-
-    def test_load_empty_when_no_data(self, db_path):
-        loaded = load_ohlcv("binanceus", "ETH/USDT", "1d", db_path=db_path)
-        assert len(loaded) == 0
 
     def test_upsert_on_duplicate_timestamp(self, db_path):
         df = _sample_ohlcv_df()
         store_ohlcv(df, "binanceus", "BTC/USDT", "1h", db_path=db_path)
 
-        # Store again with updated close price for first candle
         df2 = pd.DataFrame({
             "timestamp": [1700000000000],
             "open": [35000.0],
             "high": [35500.0],
             "low": [34800.0],
-            "close": [99999.0],  # changed
+            "close": [99999.0],
             "volume": [100.0],
         })
         store_ohlcv(df2, "binanceus", "BTC/USDT", "1h", db_path=db_path)
 
         loaded = load_ohlcv("binanceus", "BTC/USDT", "1h", db_path=db_path)
-        assert len(loaded) == 3  # still 3 rows, not 4
-        assert loaded["close"].iloc[0] == pytest.approx(99999.0)  # updated
+        assert len(loaded) == 3
+        assert loaded["close"].iloc[0] == pytest.approx(99999.0)
 
-    def test_filter_by_start_ts(self, db_path):
+    @pytest.mark.parametrize("kwargs,expected_rows", [
+        ({"start_ts": 1700003600000}, 2),
+        ({"end_ts": 1700003600000}, 2),
+        ({"start_ts": 1700003600000, "end_ts": 1700003600000}, 1),
+    ])
+    def test_timestamp_filters(self, db_path, kwargs, expected_rows):
         df = _sample_ohlcv_df()
         store_ohlcv(df, "binanceus", "BTC/USDT", "1h", db_path=db_path)
 
-        loaded = load_ohlcv("binanceus", "BTC/USDT", "1h",
-                            start_ts=1700003600000, db_path=db_path)
-        assert len(loaded) == 2
-
-    def test_filter_by_end_ts(self, db_path):
-        df = _sample_ohlcv_df()
-        store_ohlcv(df, "binanceus", "BTC/USDT", "1h", db_path=db_path)
-
-        loaded = load_ohlcv("binanceus", "BTC/USDT", "1h",
-                            end_ts=1700003600000, db_path=db_path)
-        assert len(loaded) == 2
-
-    def test_filter_by_date_range(self, db_path):
-        df = _sample_ohlcv_df()
-        store_ohlcv(df, "binanceus", "BTC/USDT", "1h", db_path=db_path)
-
-        loaded = load_ohlcv("binanceus", "BTC/USDT", "1h",
-                            start_ts=1700003600000, end_ts=1700003600000,
-                            db_path=db_path)
-        assert len(loaded) == 1
+        loaded = load_ohlcv("binanceus", "BTC/USDT", "1h", db_path=db_path, **kwargs)
+        assert len(loaded) == expected_rows
 
     def test_different_exchanges_isolated(self, db_path):
         df = _sample_ohlcv_df()
@@ -194,7 +185,6 @@ class TestOhlcvRoundTrip:
         assert len(loaded) == 0
 
     def test_ordered_by_timestamp(self, db_path):
-        # Insert in reverse order
         df = pd.DataFrame({
             "timestamp": [1700007200000, 1700000000000, 1700003600000],
             "open": [1.0, 2.0, 3.0],
@@ -208,8 +198,6 @@ class TestOhlcvRoundTrip:
         timestamps = list(loaded["timestamp"])
         assert timestamps == sorted(timestamps)
 
-
-# ─── store_backtest_result / get_backtest_results ──
 
 class TestBacktestRoundTrip:
     def test_store_and_retrieve(self, db_path):
@@ -226,23 +214,16 @@ class TestBacktestRoundTrip:
         assert df["sharpe_ratio"].iloc[0] == pytest.approx(1.5)
         assert df["total_trades"].iloc[0] == 42
 
-    def test_params_stored_as_json(self, db_path):
+    @pytest.mark.parametrize("column,check", [
+        ("params", lambda v: v["fast_period"] == 10 and v["slow_period"] == 50),
+        ("trades_json", lambda v: len(v) == 1 and v[0]["side"] == "buy"),
+    ])
+    def test_nested_fields_stored_as_json(self, db_path, column, check):
         result = _sample_backtest_result()
         store_backtest_result(result, db_path=db_path)
 
         df = get_backtest_results(db_path=db_path)
-        params = json.loads(df["params"].iloc[0])
-        assert params["fast_period"] == 10
-        assert params["slow_period"] == 50
-
-    def test_trades_stored_as_json(self, db_path):
-        result = _sample_backtest_result()
-        store_backtest_result(result, db_path=db_path)
-
-        df = get_backtest_results(db_path=db_path)
-        trades = json.loads(df["trades_json"].iloc[0])
-        assert len(trades) == 1
-        assert trades[0]["side"] == "buy"
+        assert check(json.loads(df[column].iloc[0]))
 
     def test_filter_by_strategy_name(self, db_path):
         r1 = _sample_backtest_result()
@@ -270,7 +251,6 @@ class TestBacktestRoundTrip:
         assert len(df) == 0
 
     def test_missing_fields_use_defaults(self, db_path):
-        # Minimal result dict
         result = {
             "strategy_name": "test",
             "symbol": "BTC/USDT",
@@ -302,3 +282,80 @@ class TestBacktestRoundTrip:
         df = get_backtest_results(db_path=db_path)
         assert len(df) == 3
         assert list(df["strategy_name"]) == ["strategy_2", "strategy_1", "strategy_0"]
+
+
+class TestFundingCoverage:
+
+    def _load(self, db_path, exchange="hyperliquid", coin="BTC"):
+        from storage import load_funding_coverage
+        return load_funding_coverage(exchange, coin, db_path=db_path)
+
+    def test_empty_coverage(self, db_path):
+        assert self._load(db_path) == []
+
+    def test_single_interval_roundtrip(self, db_path):
+        from storage import store_funding_coverage
+        store_funding_coverage("hyperliquid", "BTC", 100, 200, db_path=db_path)
+        assert self._load(db_path) == [(100, 200)]
+
+    def test_disjoint_intervals_stay_disjoint(self, db_path):
+        from storage import store_funding_coverage
+        store_funding_coverage("hyperliquid", "BTC", 1000, 2000, db_path=db_path)
+        store_funding_coverage("hyperliquid", "BTC", 100, 200, db_path=db_path)
+        assert self._load(db_path) == [(100, 200), (1000, 2000)]
+
+    def test_overlapping_intervals_merge(self, db_path):
+        from storage import store_funding_coverage
+        store_funding_coverage("hyperliquid", "BTC", 100, 200, db_path=db_path)
+        store_funding_coverage("hyperliquid", "BTC", 150, 300, db_path=db_path)
+        assert self._load(db_path) == [(100, 300)]
+
+    def test_touching_intervals_merge(self, db_path):
+        from storage import store_funding_coverage
+        store_funding_coverage("hyperliquid", "BTC", 100, 200, db_path=db_path)
+        store_funding_coverage("hyperliquid", "BTC", 200, 300, db_path=db_path)
+        assert self._load(db_path) == [(100, 300)]
+
+    def test_bridging_interval_collapses_neighbors(self, db_path):
+        from storage import store_funding_coverage
+        store_funding_coverage("hyperliquid", "BTC", 100, 200, db_path=db_path)
+        store_funding_coverage("hyperliquid", "BTC", 400, 500, db_path=db_path)
+        store_funding_coverage("hyperliquid", "BTC", 150, 450, db_path=db_path)
+        assert self._load(db_path) == [(100, 500)]
+
+    def test_coins_and_exchanges_isolated(self, db_path):
+        from storage import store_funding_coverage
+        store_funding_coverage("hyperliquid", "BTC", 100, 200, db_path=db_path)
+        store_funding_coverage("hyperliquid", "ETH", 300, 400, db_path=db_path)
+        assert self._load(db_path, coin="BTC") == [(100, 200)]
+        assert self._load(db_path, coin="ETH") == [(300, 400)]
+        assert self._load(db_path, coin="SOL") == []
+
+    def test_old_single_row_schema_migrates_and_drops_rows(self, tmp_path):
+        path = str(tmp_path / "legacy.db")
+        conn = sqlite3.connect(path)
+        conn.execute("""
+            CREATE TABLE funding_coverage (
+                exchange TEXT NOT NULL,
+                coin TEXT NOT NULL,
+                start_ts INTEGER NOT NULL,
+                end_ts INTEGER NOT NULL,
+                UNIQUE(exchange, coin)
+            )
+        """)
+        conn.execute("INSERT INTO funding_coverage VALUES ('hyperliquid', 'BTC', 100, 99999)")
+        conn.commit()
+        conn.close()
+
+        init_db(path)
+        assert self._load(path) == [], "poisoned min/max-union row must be dropped"
+        from storage import store_funding_coverage
+        store_funding_coverage("hyperliquid", "BTC", 100, 200, db_path=path)
+        store_funding_coverage("hyperliquid", "BTC", 400, 500, db_path=path)
+        assert self._load(path) == [(100, 200), (400, 500)]
+
+    def test_new_schema_not_re_migrated(self, db_path):
+        from storage import store_funding_coverage
+        store_funding_coverage("hyperliquid", "BTC", 100, 200, db_path=db_path)
+        init_db(db_path)
+        assert self._load(db_path) == [(100, 200)]

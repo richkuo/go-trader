@@ -1,10 +1,4 @@
 #!/usr/bin/env python3
-"""
-Quick price fetcher for the Go scheduler.
-Fetches current prices for given symbols.
-
-Usage: python3 check_price.py BTC/USDT SOL/USDT
-"""
 
 import sys
 import json
@@ -28,7 +22,6 @@ def main():
                 prices[symbol] = round(ticker["last"], 2)
             except Exception as e:
                 print(f"Failed to fetch {symbol}: {e}", file=sys.stderr)
-                # Omit failed symbols so Go can detect missing prices
 
         print(json.dumps(prices))
 

@@ -1,9 +1,13 @@
 __pycache__/
 *.pyc
 *.pyo
+# State databases — never commit. Generic *.db plus the SQLite sidecar/lock
+# globs so a renamed or per-instance DB at any path stays protected (#1012).
+*.db
 trading_bot.db
 *.db-wal
 *.db-shm
+*.db.lock
 .env
 trading-scheduler
 # Compiled binaries
@@ -14,9 +18,15 @@ scheduler/config.json
 scheduler/state.json
 scheduler/state.db
 .worktrees/
-.claude/
+.claude/*
 local/
 
 # macOS
 .DS_Store
 architecture.md
+
+# consolidation research generated output (regenerable)
+backtest/consolidation_out/
+
+# #1051: auto-generated agent capability doc (contains a live-state snapshot; regenerable via `go-trader agent-info --bootstrap-md`)
+AGENTS.generated.md

@@ -4,33 +4,26 @@ After=network.target
 
 [Service]
 Type=simple
-# Run as a dedicated non-root user.
-# Create before deploying: useradd --system --no-create-home go-trader
 User=go-trader
 Group=go-trader
 WorkingDirectory=/opt/go-trader-%i
-ExecStart=/opt/go-trader-%i/go-trader --config /opt/go-trader-%i/scheduler/config.json
+StateDirectory=go-trader/%i go-trader/shared
+RuntimeDirectory=go-trader-%i
+RuntimeDirectoryMode=0750
+ExecStart=/opt/go-trader-%i/go-trader --config /var/lib/go-trader/%i/config.json
 Restart=always
 RestartSec=10
-# Drain budget: shutdown.go caps in-flight side-effecting subprocesses at 15s
-# (shutdownDrainCap), then the deferred state save + notifier flush + DB
-# close run. 20s gives the binary the full drain plus a 5s buffer before
-# systemd's SIGKILL backstop fires (#681).
+RestartPreventExitStatus=78 79 80
 TimeoutStopSec=20
 StandardOutput=journal
 StandardError=journal
+LogNamespace=go-trader
 
-# Prefer loading secrets from an instance-specific env file rather than embedding
-# them in the unit file or config.json:
-#   echo "DISCORD_BOT_TOKEN=Bot your-token-here" > /opt/go-trader-%i/.env
-#   chmod 600 /opt/go-trader-%i/.env
 EnvironmentFile=-/opt/go-trader-%i/.env
 
-# Security hardening
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-# Allow writes only to the data and logs directories
 ReadWritePaths=/opt/go-trader-%i/scheduler /opt/go-trader-%i/logs
 
 [Install]

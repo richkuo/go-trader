@@ -25,32 +25,80 @@ type UIStrategy struct {
 	Symbol    string `json:"symbol"`
 	Timeframe string `json:"timeframe"`
 	Direction string `json:"direction,omitempty"`
+	Paused    bool   `json:"paused,omitempty"`
+
+	Partition   string `json:"partition"`
+	PaperSource string `json:"paper_source,omitempty"`
+}
+
+type UIStrategyOverview struct {
+	ID                    string                 `json:"id"`
+	Platform              string                 `json:"platform"`
+	Symbol                string                 `json:"symbol"`
+	PnLPct                float64                `json:"pnl_pct"`
+	WinRate               float64                `json:"win_rate,omitempty"`
+	Sharpe                float64                `json:"sharpe,omitempty"`
+	Regime                string                 `json:"regime,omitempty"`
+	Direction             string                 `json:"direction,omitempty"`
+	Mode                  string                 `json:"mode"`
+	TradeCount            int                    `json:"trade_count"`
+	CloseStrategy         string                 `json:"close_strategy,omitempty"`
+	PnL                   float64                `json:"pnl"`
+	PortfolioValue        float64                `json:"portfolio_value"`
+	InitialCapital        float64                `json:"initial_capital"`
+	PoolBudget            bool                   `json:"pool_budget,omitempty"`
+	RegimeDivergence      *RegimeDivergenceState `json:"regime_divergence,omitempty"`
+	Paused                bool                   `json:"paused,omitempty"`
+	RegimeGateFailClosed  bool                   `json:"regime_gate_fail_closed,omitempty"`
+	CashReconcileRequired bool                   `json:"cash_reconcile_required,omitempty"`
+
+	Partition   string `json:"partition"`
+	PaperSource string `json:"paper_source,omitempty"`
 }
 
 type UIStrategyStatus struct {
-	ID              string                     `json:"id"`
-	Type            string                     `json:"type"`
-	Platform        string                     `json:"platform"`
-	Symbol          string                     `json:"symbol"`
-	Timeframe       string                     `json:"timeframe"`
-	Direction       string                     `json:"direction,omitempty"`
-	Cash            float64                    `json:"cash"`
-	InitialCapital  float64                    `json:"initial_capital"`
-	PortfolioValue  float64                    `json:"portfolio_value"`
-	PnL             float64                    `json:"pnl"`
-	PnLPct          float64                    `json:"pnl_pct"`
-	TradeCount      int                        `json:"trade_count"`
-	WinRate         float64                    `json:"win_rate,omitempty"`
-	LifetimeStats   LifetimeTradeStats         `json:"lifetime_stats"`
-	Sharpe          float64                    `json:"sharpe,omitempty"`
-	Regime          string                     `json:"regime,omitempty"`
-	RiskState       RiskState                  `json:"risk_state"`
-	Positions       map[string]*Position       `json:"positions"`
-	OptionPositions map[string]*OptionPosition `json:"option_positions"`
-	Leverage        float64                    `json:"leverage,omitempty"`
-	SizingLeverage  float64                    `json:"sizing_leverage,omitempty"`
-	MarginMode      string                     `json:"margin_mode,omitempty"`
+	ID                    string                     `json:"id"`
+	Type                  string                     `json:"type"`
+	Platform              string                     `json:"platform"`
+	Symbol                string                     `json:"symbol"`
+	Timeframe             string                     `json:"timeframe"`
+	Direction             string                     `json:"direction,omitempty"`
+	Cash                  float64                    `json:"cash"`
+	InitialCapital        float64                    `json:"initial_capital"`
+	PortfolioValue        float64                    `json:"portfolio_value"`
+	PnL                   float64                    `json:"pnl"`
+	PnLPct                float64                    `json:"pnl_pct"`
+	PoolBudget            bool                       `json:"pool_budget,omitempty"`
+	TradeCount            int                        `json:"trade_count"`
+	WinRate               float64                    `json:"win_rate,omitempty"`
+	LifetimeStats         LifetimeTradeStats         `json:"lifetime_stats"`
+	Sharpe                float64                    `json:"sharpe,omitempty"`
+	Regime                string                     `json:"regime,omitempty"`
+	RegimeDivergence      *RegimeDivergenceState     `json:"regime_divergence,omitempty"`
+	RiskState             RiskState                  `json:"risk_state"`
+	Positions             map[string]*Position       `json:"positions"`
+	OptionPositions       map[string]*OptionPosition `json:"option_positions"`
+	Leverage              float64                    `json:"leverage,omitempty"`
+	SizingLeverage        float64                    `json:"sizing_leverage,omitempty"`
+	MarginMode            string                     `json:"margin_mode,omitempty"`
+	Paused                bool                       `json:"paused,omitempty"`
+	CashReconcileRequired bool                       `json:"cash_reconcile_required,omitempty"`
+
+	EffectiveDirection             string              `json:"effective_direction,omitempty"`
+	EffectiveInvertSignal          bool                `json:"effective_invert_signal,omitempty"`
+	RegimeDirectionalPolicy        bool                `json:"regime_directional_policy,omitempty"`
+	EffectivePolicyRegime          string              `json:"effective_policy_regime,omitempty"`
+	DirectionalCertificationStatus string              `json:"directional_certification_status,omitempty"`
+	DirectionalCertificationCell   string              `json:"directional_certification_cell,omitempty"`
+	RegimeProfile                  *RegimeProfileState `json:"regime_profile,omitempty"`
 }
+
+type UIEquityPoint struct {
+	T int64   `json:"t"`
+	V float64 `json:"v"`
+}
+
+const uiEquityLookbackLimit = 500
 
 type UITradeMarker struct {
 	Time        int64   `json:"time"`
@@ -64,6 +112,7 @@ type UITradeMarker struct {
 	Quantity    float64 `json:"quantity"`
 	RealizedPnL float64 `json:"realized_pnl,omitempty"`
 	Details     string  `json:"details,omitempty"`
+	Regime      string  `json:"regime,omitempty"`
 }
 
 func (ss *StatusServer) rejectIfDraining(w http.ResponseWriter) bool {
@@ -109,6 +158,26 @@ func (ss *StatusServer) handleDashboard(w http.ResponseWriter, r *http.Request) 
 	http.StripPrefix("/dashboard/", http.FileServer(http.FS(sub))).ServeHTTP(w, r)
 }
 
+func (ss *StatusServer) handleTuning(w http.ResponseWriter, r *http.Request) {
+	if ss.rejectIfDraining(w) {
+		return
+	}
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if r.URL.Path != "/tuning" && r.URL.Path != "/tuning/" {
+		http.NotFound(w, r)
+		return
+	}
+	sub, err := fs.Sub(uiAssets, "static/ui")
+	if err != nil {
+		http.Error(w, "ui assets unavailable", http.StatusInternalServerError)
+		return
+	}
+	http.ServeFileFS(w, r, sub, "tuning.html")
+}
+
 func (ss *StatusServer) handleAPIStrategies(w http.ResponseWriter, r *http.Request) {
 	if ss.rejectIfDraining(w) {
 		return
@@ -124,12 +193,16 @@ func (ss *StatusServer) handleAPIStrategies(w http.ResponseWriter, r *http.Reque
 		http.NotFound(w, r)
 		return
 	}
-	strategies := ss.uiStrategies()
+	filter, ok := ss.uiPartitionParam(w, r)
+	if !ok {
+		return
+	}
+	strategies := ss.uiStrategiesInPartition(filter)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string][]UIStrategy{"strategies": strategies})
 }
 
-func (ss *StatusServer) handleAPIStrategy(w http.ResponseWriter, r *http.Request) {
+func (ss *StatusServer) handleAPIStrategiesOverview(w http.ResponseWriter, r *http.Request) {
 	if ss.rejectIfDraining(w) {
 		return
 	}
@@ -140,6 +213,34 @@ func (ss *StatusServer) handleAPIStrategy(w http.ResponseWriter, r *http.Request
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
+	if r.URL.Path != "/api/strategies/overview" && r.URL.Path != "/api/strategies/overview/" {
+		http.NotFound(w, r)
+		return
+	}
+
+	filter, ok := ss.uiPartitionParam(w, r)
+	if !ok {
+		return
+	}
+	configs := ss.uiStrategiesInPartition(filter)
+	out := make([]UIStrategyOverview, 0, len(configs))
+	for _, item := range configs {
+		overview, _, found := ss.uiStrategyOverview(item.ID)
+		if !found {
+			continue
+		}
+		out = append(out, overview)
+	}
+	writeJSON(w, map[string][]UIStrategyOverview{"strategies": out})
+}
+
+func (ss *StatusServer) handleAPIStrategy(w http.ResponseWriter, r *http.Request) {
+	if ss.rejectIfDraining(w) {
+		return
+	}
+	if !ss.requireAPIAuth(w, r) {
+		return
+	}
 	id, resource, ok := parseStrategyAPIPath(r.URL.Path)
 	if !ok {
 		http.NotFound(w, r)
@@ -147,11 +248,52 @@ func (ss *StatusServer) handleAPIStrategy(w http.ResponseWriter, r *http.Request
 	}
 	switch resource {
 	case "candles":
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
 		ss.handleAPIStrategyCandles(w, r, id)
 	case "trades":
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
 		ss.handleAPIStrategyTrades(w, r, id)
 	case "status":
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
 		ss.handleAPIStrategyStatus(w, r, id)
+	case "equity":
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		ss.handleAPIStrategyEquity(w, r, id)
+	case "config":
+		switch r.Method {
+		case http.MethodGet:
+			ss.handleAPIStrategyConfig(w, r, id)
+		case http.MethodPost:
+			ss.handleAPIStrategyApplyConfig(w, r, id)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	case "simulate":
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		ss.handleAPIStrategySimulate(w, r, id)
+	case "pause":
+		ss.handleAPIStrategyPause(w, r, id)
+	case "notifications":
+		ss.handleAPIStrategyNotifications(w, r, id)
+	case "open", "add", "close", "force-close", "update-sl", "cancel-sl":
+		ss.handleAPIStrategyTradeAction(w, r, id, resource)
+	case "remove-strategy", "paper-to-live", "apply-regime-gate":
+		ss.handleAPIStrategyStructural(w, r, id, resource)
 	default:
 		http.NotFound(w, r)
 	}
@@ -174,12 +316,19 @@ func parseStrategyAPIPath(p string) (id, resource string, ok bool) {
 }
 
 func (ss *StatusServer) uiStrategies() []UIStrategy {
+	return ss.uiStrategiesInPartition(uiPartitionFilter{All: true})
+}
+
+func (ss *StatusServer) uiStrategiesInPartition(filter uiPartitionFilter) []UIStrategy {
 	ss.strategiesMu.RLock()
 	configs := append([]StrategyConfig(nil), ss.strategies...)
 	ss.strategiesMu.RUnlock()
 
 	out := make([]UIStrategy, 0, len(configs))
 	for _, sc := range configs {
+		if !filter.includes(sc) {
+			continue
+		}
 		out = append(out, uiStrategyFromConfig(sc))
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -200,6 +349,10 @@ func uiStrategyFromConfig(sc StrategyConfig) UIStrategy {
 		Symbol:    strategyDisplaySymbol(sc),
 		Timeframe: strategyDisplayTimeframe(sc),
 		Direction: strategyDisplayDirection(sc),
+		Paused:    sc.Paused,
+
+		Partition:   partitionFor(sc).String(),
+		PaperSource: partitionFor(sc).Source,
 	}
 }
 
@@ -323,15 +476,15 @@ func (ss *StatusServer) handleAPIStrategyTrades(w http.ResponseWriter, r *http.R
 	writeJSON(w, map[string]interface{}{
 		"strategy_id": id,
 		"markers":     markers,
+		"trades":      tradeMarkersForTable(markers),
 		"total":       total,
 	})
 }
 
-func (ss *StatusServer) handleAPIStrategyStatus(w http.ResponseWriter, r *http.Request, id string) {
+func (ss *StatusServer) uiStrategyOverview(id string) (UIStrategyOverview, LifetimeTradeStats, bool) {
 	sc, ok := ss.strategyConfig(id)
 	if !ok {
-		writeJSONError(w, http.StatusNotFound, "strategy not found")
-		return
+		return UIStrategyOverview{}, LifetimeTradeStats{}, false
 	}
 
 	ss.mu.RLock()
@@ -339,19 +492,14 @@ func (ss *StatusServer) handleAPIStrategyStatus(w http.ResponseWriter, r *http.R
 	var snapshot StrategyState
 	if strat != nil {
 		snapshot = *strat
-		snapshot.Positions = cloneUIPositions(strat.Positions)
-		snapshot.OptionPositions = cloneUIOptionPositions(strat.OptionPositions)
-		snapshot.TradeHistory = append([]Trade(nil), strat.TradeHistory...)
-		snapshot.RiskState = cloneUIRiskState(strat.RiskState)
 	}
 	ss.mu.RUnlock()
 	if strat == nil {
-		writeJSONError(w, http.StatusNotFound, "strategy state not found")
-		return
+		return UIStrategyOverview{}, LifetimeTradeStats{}, false
 	}
 
-	prices := make(map[string]float64)
-	pv := PortfolioValue(&snapshot, prices)
+	prices := ss.fetchLiveMarkPrices()
+	pv := displayStrategyValue(&snapshot, prices)
 	initCap := EffectiveInitialCapital(sc, &snapshot)
 	pnl := pv - initCap
 	pnlPct := 0.0
@@ -374,31 +522,208 @@ func (ss *StatusServer) handleAPIStrategyStatus(w http.ResponseWriter, r *http.R
 		winRate = float64(lifetime.Wins) / float64(lifetime.Wins+lifetime.Losses) * 100
 	}
 
-	resp := UIStrategyStatus{
-		ID:              id,
-		Type:            sc.Type,
-		Platform:        sc.Platform,
-		Symbol:          strategyDisplaySymbol(sc),
-		Timeframe:       strategyDisplayTimeframe(sc),
-		Direction:       strategyDisplayDirection(sc),
-		Cash:            snapshot.Cash,
-		InitialCapital:  initCap,
-		PortfolioValue:  pv,
-		PnL:             pnl,
-		PnLPct:          pnlPct,
-		TradeCount:      len(snapshot.TradeHistory),
-		WinRate:         winRate,
-		LifetimeStats:   lifetime,
-		Sharpe:          sharpe,
-		Regime:          snapshot.Regime,
-		RiskState:       snapshot.RiskState,
-		Positions:       snapshot.Positions,
-		OptionPositions: snapshot.OptionPositions,
-		Leverage:        EffectiveExchangeLeverage(sc),
-		SizingLeverage:  EffectiveSizingLeverage(sc),
-		MarginMode:      sc.MarginMode,
+	return UIStrategyOverview{
+		ID:                    id,
+		Platform:              sc.Platform,
+		Symbol:                strategyDisplaySymbol(sc),
+		PnLPct:                pnlPct,
+		WinRate:               winRate,
+		Sharpe:                sharpe,
+		Regime:                strategyDisplayRegimeLabel(&snapshot, sc, ss.regime),
+		Direction:             strategyDisplayDirection(sc),
+		Mode:                  strategyDisplayMode(sc),
+		TradeCount:            lifetime.Wins + lifetime.Losses,
+		CloseStrategy:         strategyDisplayCloseStrategy(sc),
+		PnL:                   pnl,
+		PortfolioValue:        pv,
+		InitialCapital:        initCap,
+		PoolBudget:            usesSharedWalletPoolBudget(sc),
+		RegimeDivergence:      snapshot.RegimeDivergence,
+		Paused:                sc.Paused,
+		RegimeGateFailClosed:  regimeGateFailClosedActive(sc, &snapshot, ss.regime),
+		CashReconcileRequired: snapshot.CashReconcileRequired,
+
+		Partition:   partitionFor(sc).String(),
+		PaperSource: partitionFor(sc).Source,
+	}, lifetime, true
+}
+
+func (ss *StatusServer) handleAPIStrategyStatus(w http.ResponseWriter, r *http.Request, id string) {
+	sc, ok := ss.strategyConfig(id)
+	if !ok {
+		writeJSONError(w, http.StatusNotFound, "strategy not found")
+		return
 	}
+	overview, lifetime, ok := ss.uiStrategyOverview(id)
+	if !ok {
+		writeJSONError(w, http.StatusNotFound, "strategy state not found")
+		return
+	}
+
+	ss.mu.RLock()
+	strat := ss.state.Strategies[id]
+	var snapshot StrategyState
+	if strat != nil {
+		snapshot = *strat
+		snapshot.Positions = cloneUIPositions(strat.Positions)
+		snapshot.OptionPositions = cloneUIOptionPositions(strat.OptionPositions)
+		snapshot.TradeHistory = append([]Trade(nil), strat.TradeHistory...)
+		snapshot.RiskState = cloneUIRiskState(strat.RiskState)
+	}
+	ss.mu.RUnlock()
+	if strat == nil {
+		writeJSONError(w, http.StatusNotFound, "strategy state not found")
+		return
+	}
+
+	resp := UIStrategyStatus{
+		ID:                    overview.ID,
+		Type:                  sc.Type,
+		Platform:              overview.Platform,
+		Symbol:                overview.Symbol,
+		Timeframe:             strategyDisplayTimeframe(sc),
+		Direction:             overview.Direction,
+		Cash:                  snapshot.Cash,
+		InitialCapital:        overview.InitialCapital,
+		PortfolioValue:        overview.PortfolioValue,
+		PnL:                   overview.PnL,
+		PnLPct:                overview.PnLPct,
+		PoolBudget:            overview.PoolBudget,
+		TradeCount:            len(snapshot.TradeHistory),
+		WinRate:               overview.WinRate,
+		LifetimeStats:         lifetime,
+		Sharpe:                overview.Sharpe,
+		Regime:                overview.Regime,
+		RegimeDivergence:      overview.RegimeDivergence,
+		RiskState:             snapshot.RiskState,
+		Positions:             snapshot.Positions,
+		OptionPositions:       snapshot.OptionPositions,
+		Leverage:              EffectiveExchangeLeverage(sc),
+		SizingLeverage:        EffectiveSizingLeverage(sc),
+		MarginMode:            sc.MarginMode,
+		Paused:                sc.Paused,
+		CashReconcileRequired: snapshot.CashReconcileRequired,
+		RegimeProfile:         snapshot.RegimeProfile,
+	}
+	dirView := directionalStatusForStrategy(sc, &snapshot, ss.regime, time.Now().UTC())
+	resp.EffectiveDirection = dirView.EffectiveDirection
+	resp.EffectiveInvertSignal = dirView.EffectiveInvertSignal
+	resp.RegimeDirectionalPolicy = dirView.PolicyConfigured
+	resp.EffectivePolicyRegime = dirView.EffectivePolicyRegime
+	resp.DirectionalCertificationStatus = dirView.CertStatus
+	resp.DirectionalCertificationCell = dirView.CertCell
 	writeJSON(w, resp)
+}
+
+func (ss *StatusServer) handleAPIStrategyEquity(w http.ResponseWriter, r *http.Request, id string) {
+	sc, ok := ss.strategyConfig(id)
+	if !ok {
+		writeJSONError(w, http.StatusNotFound, "strategy not found")
+		return
+	}
+
+	ss.mu.RLock()
+	strat := ss.state.Strategies[id]
+	var snapshot StrategyState
+	if strat != nil {
+		snapshot = *strat
+		snapshot.Positions = cloneUIPositions(strat.Positions)
+		snapshot.OptionPositions = cloneUIOptionPositions(strat.OptionPositions)
+	}
+	ss.mu.RUnlock()
+	if strat == nil {
+		writeJSONError(w, http.StatusNotFound, "strategy state not found")
+		return
+	}
+
+	initCap := EffectiveInitialCapital(sc, &snapshot)
+	pv := displayStrategyValue(&snapshot, map[string]float64{})
+
+	var closed []ClosedPosition
+	if ss.stateDB != nil {
+		rows, _, err := ss.stateDB.QueryClosedPositions(id, "", time.Time{}, time.Time{}, uiEquityLookbackLimit, 0)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		closed = rows
+	}
+
+	limit := parseUIEquityLimit(r)
+	points := buildEquityCurvePoints(initCap, closed, pv, limit)
+	writeJSON(w, map[string]interface{}{
+		"strategy_id": id,
+		"points":      points,
+	})
+}
+
+func buildEquityCurvePoints(initCap float64, closed []ClosedPosition, currentPV float64, limit int) []UIEquityPoint {
+	if limit <= 0 {
+		limit = 40
+	}
+	if limit > 500 {
+		limit = 500
+	}
+
+	sorted := append([]ClosedPosition(nil), closed...)
+	sort.Slice(sorted, func(i, j int) bool {
+		if sorted[i].ClosedAt.Equal(sorted[j].ClosedAt) {
+			return sorted[i].OpenedAt.Before(sorted[j].OpenedAt)
+		}
+		return sorted[i].ClosedAt.Before(sorted[j].ClosedAt)
+	})
+
+	points := make([]UIEquityPoint, 0, len(sorted)+2)
+	equity := initCap
+
+	var startT int64
+	if len(sorted) > 0 {
+		cp := sorted[0]
+		if !cp.OpenedAt.IsZero() {
+			startT = cp.OpenedAt.UTC().Unix()
+		} else if !cp.ClosedAt.IsZero() {
+			startT = cp.ClosedAt.UTC().Unix()
+		}
+	}
+	if startT == 0 {
+		startT = time.Now().UTC().Unix()
+	}
+	points = append(points, UIEquityPoint{T: startT, V: initCap})
+
+	for _, cp := range sorted {
+		if cp.ClosedAt.IsZero() {
+			continue
+		}
+		equity += cp.RealizedPnL
+		points = append(points, UIEquityPoint{
+			T: cp.ClosedAt.UTC().Unix(),
+			V: equity,
+		})
+	}
+
+	now := time.Now().UTC().Unix()
+	last := points[len(points)-1]
+	if last.V != currentPV || last.T != now {
+		points = append(points, UIEquityPoint{T: now, V: currentPV})
+	}
+
+	if len(points) > limit {
+		points = points[len(points)-limit:]
+	}
+	return points
+}
+
+func parseUIEquityLimit(r *http.Request) int {
+	limit := 40
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	return limit
 }
 
 func parseUITimeQuery(r *http.Request) (from, to time.Time, limit int) {
@@ -444,8 +769,9 @@ func tradeMarkers(trades []Trade) []UITradeMarker {
 			IsClose:     tr.IsClose,
 			Price:       tr.Price,
 			Quantity:    tr.Quantity,
-			RealizedPnL: tr.RealizedPnL,
+			RealizedPnL: tradeNetPnL(tr),
 			Details:     tr.Details,
+			Regime:      tr.Regime,
 		}
 		if tr.IsClose {
 			m.Position = "aboveBar"
@@ -465,6 +791,15 @@ func tradeMarkers(trades []Trade) []UITradeMarker {
 		}
 		out = append(out, m)
 	}
+	return out
+}
+
+func tradeMarkersForTable(markers []UITradeMarker) []UITradeMarker {
+	if len(markers) == 0 {
+		return []UITradeMarker{}
+	}
+	out := make([]UITradeMarker, len(markers))
+	copy(out, markers)
 	return out
 }
 
@@ -554,6 +889,7 @@ func cloneUIPositions(in map[string]*Position) map[string]*Position {
 		cp := *v
 		cp.TPOIDs = append([]int64(nil), v.TPOIDs...)
 		cp.TPArmedTiers = append([]bool(nil), v.TPArmedTiers...)
+		cp.TPConsumptions = cloneTPConsumptions(v.TPConsumptions)
 		if v.StopLossATRMult != nil {
 			x := *v.StopLossATRMult
 			cp.StopLossATRMult = &x
@@ -597,4 +933,18 @@ func cloneUIRiskState(in RiskState) RiskState {
 		out.PendingCircuitCloses[k] = &cp
 	}
 	return out
+}
+
+func strategyDisplayMode(sc StrategyConfig) string {
+	if isLiveArgs(sc.Args) {
+		return "live"
+	}
+	return "paper"
+}
+
+func strategyDisplayCloseStrategy(sc StrategyConfig) string {
+	if sc.CloseStrategy == nil {
+		return ""
+	}
+	return sc.CloseStrategy.Name
 }

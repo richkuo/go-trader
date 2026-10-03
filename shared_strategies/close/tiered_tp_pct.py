@@ -1,12 +1,18 @@
-"""Tiered percentage take-profit close evaluator."""
 
 from __future__ import annotations
 
-from _helpers import clamp_fraction, current_close_fraction, float_from
+from _helpers import (
+    clamp_fraction,
+    current_close_fraction,
+    float_from,
+    tier_list_from_params,
+)
 
 DEFAULT_TIERS = (
-    {"profit_pct": 0.03, "close_fraction": 0.5},
-    {"profit_pct": 0.06, "close_fraction": 1.0},
+    {"profit_pct": 0.01, "close_fraction": 0.25},
+    {"profit_pct": 0.02, "close_fraction": 0.50},
+    {"profit_pct": 0.03, "close_fraction": 0.75},
+    {"profit_pct": 0.04, "close_fraction": 1.00},
 )
 
 
@@ -14,8 +20,8 @@ def _tiers(raw) -> list[tuple[float, float]]:
     parsed = []
     for tier in raw or DEFAULT_TIERS:
         if isinstance(tier, dict):
-            trigger = tier.get("profit_pct", tier.get("pct"))
-            fraction = tier.get("close_fraction", tier.get("fraction"))
+            trigger = tier.get("profit_pct")
+            fraction = tier.get("close_fraction")
         else:
             try:
                 trigger, fraction = tier
@@ -41,7 +47,7 @@ def evaluate(position: dict, market: dict, params: dict) -> dict:
         return {"close_fraction": 0.0, "reason": "noop:missing_position"}
 
     pnl_pct = (mark_price - avg_cost) / avg_cost if side == "long" else (avg_cost - mark_price) / avg_cost
-    hit_tiers = [(pct, fraction) for pct, fraction in _tiers(params.get("tiers")) if pnl_pct >= pct]
+    hit_tiers = [(pct, fraction) for pct, fraction in _tiers(tier_list_from_params(params)) if pnl_pct >= pct]
     if not hit_tiers:
         return {"close_fraction": 0.0, "reason": "noop:not_hit"}
 

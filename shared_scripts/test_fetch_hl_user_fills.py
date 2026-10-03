@@ -1,10 +1,3 @@
-"""Tests for fetch_hl_user_fills.py — userFills paging + OID aggregation
-used by `go-trader backfill hl-fees` (issue #589).
-
-Pattern mirrors test_close_hyperliquid_position.py: load the script as a
-module, mock the HL adapter, run main() with --since-ms, capture stdout +
-exit code, assert on the JSON envelope.
-"""
 
 import builtins
 import importlib.util
@@ -18,15 +11,6 @@ import pytest
 
 
 def _run_script(pages_or_exc, argv, account_address="0xabc"):
-    """Helper: invoke fetch_hl_user_fills.main() with a mocked adapter.
-
-    pages_or_exc is either:
-      - a list of pages (each page = list of fill dicts) returned by
-        successive user_fills_by_time calls, OR
-      - an Exception instance to raise on the first call.
-
-    Returns (parsed_stdout_json, exit_code).
-    """
     script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                "fetch_hl_user_fills.py")
     spec = importlib.util.spec_from_file_location("fetch_hl_user_fills", script_path)
@@ -75,12 +59,10 @@ def _run_script(pages_or_exc, argv, account_address="0xabc"):
 
 class TestSinglePage:
     def test_aggregates_per_oid(self):
-        # Two fills, different OIDs.
         page = [
-            {"oid": 111, "time": 1000, "fee": "0.40", "closedPnl": "0", "tid": 1},
-            {"oid": 222, "time": 1100, "fee": "0.30", "closedPnl": "9.7", "tid": 2},
+            {"oid": 111, "coin": "ETH", "time": 1000, "fee": "0.40", "closedPnl": "0", "tid": 1},
+            {"oid": 222, "coin": "BTC", "time": 1100, "fee": "0.30", "closedPnl": "9.7", "tid": 2},
         ]
-        # Adapter returns the page once, then [] to terminate the loop.
         out, code = _run_script([page, []], ["--since-ms=500"])
         assert code == 0, out
         assert out["error"] == ""
@@ -89,12 +71,14 @@ class TestSinglePage:
         assert out["by_oid"]["222"]["fee"] == pytest.approx(0.30)
         assert out["by_oid"]["222"]["closed_pnl"] == pytest.approx(9.7)
         assert out["by_oid"]["111"]["count"] == 1
+        assert out["by_oid"]["111"]["coin"] == "ETH"
+        assert out["by_oid"]["111"]["first_time_ms"] == 1000
+        assert out["by_oid"]["222"]["last_time_ms"] == 1100
 
     def test_partial_fills_same_oid_summed(self):
-        # One OID, two partial-fill rows — script must sum fee + closed_pnl.
         page = [
-            {"oid": 111, "time": 1000, "fee": "0.20", "closedPnl": "5.0", "tid": 1},
-            {"oid": 111, "time": 1000, "fee": "0.20", "closedPnl": "4.7", "tid": 2},
+            {"oid": 111, "coin": "eth", "time": 1000, "fee": "0.20", "closedPnl": "5.0", "tid": 1},
+            {"oid": 111, "coin": "ETH", "time": 1200, "fee": "0.20", "closedPnl": "4.7", "tid": 2},
         ]
         out, code = _run_script([page, []], ["--since-ms=500"])
         assert code == 0, out
@@ -102,6 +86,18 @@ class TestSinglePage:
         assert entry["fee"] == pytest.approx(0.40)
         assert entry["closed_pnl"] == pytest.approx(9.7)
         assert entry["count"] == 2
+        assert entry["coin"] == "ETH"
+        assert entry["first_time_ms"] == 1000
+        assert entry["last_time_ms"] == 1200
+
+    def test_conflicting_coin_metadata_fails_closed(self):
+        page = [
+            {"oid": 111, "coin": "ETH", "time": 1000, "fee": "0.20", "closedPnl": "5.0", "tid": 1},
+            {"oid": 111, "coin": "BTC", "time": 1200, "fee": "0.20", "closedPnl": "4.7", "tid": 2},
+        ]
+        out, code = _run_script([page, []], ["--since-ms=500"])
+        assert code == 0, out
+        assert out["by_oid"]["111"]["coin"] == ""
 
 
 class TestMultiPage:
@@ -111,8 +107,6 @@ class TestMultiPage:
             {"oid": 222, "time": 2000, "fee": "0.20", "closedPnl": "0", "tid": 2},
         ]
         page2 = [
-            # Same time as page1's last fill, different tid — must NOT be deduped
-            # (different leg of a different OID at the same ms boundary).
             {"oid": 333, "time": 2000, "fee": "0.30", "closedPnl": "0", "tid": 3},
             {"oid": 444, "time": 3000, "fee": "0.40", "closedPnl": "0", "tid": 4},
         ]
@@ -122,41 +116,32 @@ class TestMultiPage:
         assert out["page_count"] >= 2
 
     def test_dedups_boundary_row_seen_in_prior_page(self):
-        # The same fill (same tid + same time as the cursor) reappears on
-        # the next page — must NOT be double-counted.
         page1 = [
             {"oid": 111, "time": 1000, "fee": "0.10", "closedPnl": "0", "tid": 1},
             {"oid": 222, "time": 2000, "fee": "0.20", "closedPnl": "0", "tid": 2},
         ]
         page2 = [
-            {"oid": 222, "time": 2000, "fee": "0.20", "closedPnl": "0", "tid": 2},  # dup
+            {"oid": 222, "time": 2000, "fee": "0.20", "closedPnl": "0", "tid": 2},
             {"oid": 333, "time": 3000, "fee": "0.30", "closedPnl": "0", "tid": 3},
         ]
         out, code = _run_script([page1, page2, []], ["--since-ms=500"])
         assert code == 0, out
-        # OID 222 should have count=1, not 2.
         assert out["by_oid"]["222"]["count"] == 1
         assert out["by_oid"]["222"]["fee"] == pytest.approx(0.20)
 
 
-class TestErrorPaths:
-    def test_missing_account_address_errors_cleanly(self):
-        out, code = _run_script([], ["--since-ms=500"], account_address="")
-        assert code == 1
-        assert "HYPERLIQUID_ACCOUNT_ADDRESS" in out["error"]
-        assert out["by_oid"] == {}
-
-    def test_invalid_since_ms_errors(self):
-        out, code = _run_script([], ["--since-ms=0"], account_address="0xabc")
-        assert code == 1
-        assert "since-ms" in out["error"]
-
-    def test_user_fills_exception_surfaces(self):
-        out, code = _run_script(RuntimeError("indexer down"),
-                                ["--since-ms=500"], account_address="0xabc")
-        assert code == 1
-        assert "user_fills_by_time" in out["error"]
-        assert "indexer down" in out["error"]
+@pytest.mark.parametrize("pages_or_exc,argv,account_address,fragments", [
+    ([], ["--since-ms=500"], "", ["HYPERLIQUID_ACCOUNT_ADDRESS"]),
+    ([], ["--since-ms=0"], "0xabc", ["since-ms"]),
+    (RuntimeError("indexer down"), ["--since-ms=500"], "0xabc",
+     ["user_fills_by_time", "indexer down"]),
+])
+def test_error_paths_exit_one_with_json_envelope(pages_or_exc, argv, account_address, fragments):
+    out, code = _run_script(pages_or_exc, argv, account_address=account_address)
+    assert code == 1
+    for fragment in fragments:
+        assert fragment in out["error"]
+    assert out["by_oid"] == {}
 
 
 class TestNoFills:

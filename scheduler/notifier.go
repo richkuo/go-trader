@@ -2,13 +2,12 @@ package main
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 )
 
-// Notifier is the abstract interface for sending messages and two-way DM communication.
-// Both Discord and Telegram implement this interface.
 type Notifier interface {
 	SendMessage(channelID string, content string) error
 	SendDM(userID, content string) error
@@ -16,25 +15,24 @@ type Notifier interface {
 	Close()
 }
 
-// notifierBackend pairs a Notifier with its provider-specific config.
 type notifierBackend struct {
 	notifier           Notifier
-	channels           map[string]string // channel map from config (keyed by platform/type; "<platform>-paper" for paper-specific)
-	tradeAlertChannels map[string]string // optional override: route trade alerts to different channels than summaries
+	channels           map[string]string
+	tradeAlertChannels map[string]string
 	ownerID            string
-	leaderboardChannel string            // dedicated leaderboard channel ID (optional); when set, leaderboard posts route here
-	dmChannels         map[string]string // per-platform DM-style trade alerts (#248)
-	plainText          bool              // use plain-text formatting (no markdown)
+	leaderboardChannel string
+	dmChannels         map[string]string
+	plainText          bool
+	// partitionChannels is each paper partition's own destination set, rebuilt
+	// from that partition's roster on every ReloadConfig.
+	partitionChannels map[RiskPartition][]string
 }
 
-// MultiNotifier fans out calls to all configured notification providers.
-// It is aware of each provider's channel config and owner ID for proper routing.
 type MultiNotifier struct {
 	mu       sync.RWMutex
 	backends []notifierBackend
 }
 
-// NewMultiNotifier creates a MultiNotifier from backend descriptors.
 func NewMultiNotifier(backends ...notifierBackend) *MultiNotifier {
 	var valid []notifierBackend
 	for _, b := range backends {
@@ -42,6 +40,7 @@ func NewMultiNotifier(backends ...notifierBackend) *MultiNotifier {
 			b.channels = cloneStringMap(b.channels)
 			b.tradeAlertChannels = cloneStringMap(b.tradeAlertChannels)
 			b.dmChannels = cloneStringMap(b.dmChannels)
+			b.partitionChannels = clonePartitionChannels(b.partitionChannels)
 			valid = append(valid, b)
 		}
 	}
@@ -60,14 +59,12 @@ func (m *MultiNotifier) snapshotBackends() []notifierBackend {
 		b.channels = cloneStringMap(b.channels)
 		b.tradeAlertChannels = cloneStringMap(b.tradeAlertChannels)
 		b.dmChannels = cloneStringMap(b.dmChannels)
+		b.partitionChannels = clonePartitionChannels(b.partitionChannels)
 		out[i] = b
 	}
 	return out
 }
 
-// SendMessage sends content to backends that own the given channel/chat ID.
-// A backend receives the message only if channelID appears in its channel map.
-// Returns the first error encountered; all per-backend errors are logged.
 func (m *MultiNotifier) SendMessage(channelID string, content string) error {
 	var firstErr error
 	for _, b := range m.snapshotBackends() {
@@ -84,8 +81,6 @@ func (m *MultiNotifier) SendMessage(channelID string, content string) error {
 	return firstErr
 }
 
-// SendDM sends content as a direct message to backends whose ownerID matches userID.
-// Returns the first error encountered; all per-backend errors are logged.
 func (m *MultiNotifier) SendDM(userID, content string) error {
 	var firstErr error
 	for _, b := range m.snapshotBackends() {
@@ -102,7 +97,6 @@ func (m *MultiNotifier) SendDM(userID, content string) error {
 	return firstErr
 }
 
-// AskDM sends a question and waits for a reply. Uses the first backend with a matching owner.
 func (m *MultiNotifier) AskDM(userID, question string, timeout time.Duration) (string, error) {
 	backends := m.snapshotBackends()
 	for _, b := range backends {
@@ -116,14 +110,12 @@ func (m *MultiNotifier) AskDM(userID, question string, timeout time.Duration) (s
 	return "", fmt.Errorf("no notification backends configured")
 }
 
-// Close shuts down all backends.
 func (m *MultiNotifier) Close() {
 	for _, b := range m.snapshotBackends() {
 		b.notifier.Close()
 	}
 }
 
-// HasBackends returns true if at least one backend is configured.
 func (m *MultiNotifier) HasBackends() bool {
 	if m == nil {
 		return false
@@ -133,7 +125,6 @@ func (m *MultiNotifier) HasBackends() bool {
 	return len(m.backends) > 0
 }
 
-// BackendCount returns the number of active backends.
 func (m *MultiNotifier) BackendCount() int {
 	if m == nil {
 		return 0
@@ -143,9 +134,6 @@ func (m *MultiNotifier) BackendCount() int {
 	return len(m.backends)
 }
 
-// ReloadConfig refreshes per-provider routing maps after a hot config reload.
-// Backend construction (tokens, gateway sessions, owner identity) is intentionally
-// restart-only; this updates only the channel settings that can be changed safely.
 func (m *MultiNotifier) ReloadConfig(cfg *Config) {
 	if m == nil || cfg == nil {
 		return
@@ -158,16 +146,17 @@ func (m *MultiNotifier) ReloadConfig(cfg *Config) {
 			b.channels = cloneStringMap(cfg.Telegram.Channels)
 			b.tradeAlertChannels = cloneStringMap(cfg.Telegram.TradeAlertChannels)
 			b.dmChannels = cloneStringMap(cfg.Telegram.DMChannels)
+			b.partitionChannels = partitionChannelValues(b.channels, cfg.Strategies)
 			continue
 		}
 		b.channels = cloneStringMap(cfg.Discord.Channels)
 		b.tradeAlertChannels = cloneStringMap(cfg.Discord.TradeAlertChannels)
 		b.dmChannels = cloneStringMap(cfg.Discord.DMChannels)
 		b.leaderboardChannel = cfg.Discord.LeaderboardChannel
+		b.partitionChannels = partitionChannelValues(b.channels, cfg.Strategies)
 	}
 }
 
-// OwnerID returns the first configured owner ID across all backends.
 func (m *MultiNotifier) OwnerID() string {
 	for _, b := range m.snapshotBackends() {
 		if b.ownerID != "" {
@@ -177,12 +166,10 @@ func (m *MultiNotifier) OwnerID() string {
 	return ""
 }
 
-// HasOwner returns true if any backend has an owner configured.
 func (m *MultiNotifier) HasOwner() bool {
 	return m.OwnerID() != ""
 }
 
-// backendOwnsChannel returns true if channelID is one of the backend's configured channel values.
 func backendOwnsChannel(b notifierBackend, channelID string) bool {
 	for _, ch := range b.channels {
 		if ch == channelID {
@@ -192,8 +179,6 @@ func backendOwnsChannel(b notifierBackend, channelID string) bool {
 	return false
 }
 
-// SendToChannel sends content to all backends that have a channel configured
-// for the given platform and strategy type.
 func (m *MultiNotifier) SendToChannel(platform, stratType, content string) {
 	for _, b := range m.snapshotBackends() {
 		if ch := resolveChannel(b.channels, platform, stratType); ch != "" {
@@ -204,10 +189,6 @@ func (m *MultiNotifier) SendToChannel(platform, stratType, content string) {
 	}
 }
 
-// PostLeaderboardBroadcast routes an all-time leaderboard message
-// (top/bottom) on a per-backend basis. For each backend: if a dedicated
-// leaderboardChannel is configured, the message is sent there once; otherwise
-// it broadcasts to all unique channels on that backend.
 func (m *MultiNotifier) PostLeaderboardBroadcast(content string) {
 	for _, b := range m.snapshotBackends() {
 		if b.leaderboardChannel != "" {
@@ -228,8 +209,6 @@ func (m *MultiNotifier) PostLeaderboardBroadcast(content string) {
 	}
 }
 
-// SendToAllChannels sends content to all unique channels across all backends.
-// Used for broadcast messages (kill switch, correlation warnings).
 func (m *MultiNotifier) SendToAllChannels(content string) {
 	for _, b := range m.snapshotBackends() {
 		seen := make(map[string]bool)
@@ -244,7 +223,6 @@ func (m *MultiNotifier) SendToAllChannels(content string) {
 	}
 }
 
-// SendOwnerDM sends a DM to the owner on all backends that have an owner configured.
 func (m *MultiNotifier) SendOwnerDM(content string) {
 	for _, b := range m.snapshotBackends() {
 		if b.ownerID != "" {
@@ -255,8 +233,6 @@ func (m *MultiNotifier) SendOwnerDM(content string) {
 	}
 }
 
-// AskOwnerDM sends a question to the owner and waits for a reply.
-// Uses the first backend that has an owner configured.
 func (m *MultiNotifier) AskOwnerDM(question string, timeout time.Duration) (string, error) {
 	for _, b := range m.snapshotBackends() {
 		if b.ownerID != "" {
@@ -266,7 +242,6 @@ func (m *MultiNotifier) AskOwnerDM(question string, timeout time.Duration) (stri
 	return "", ErrDMTimeout
 }
 
-// HasChannel returns true if any backend has a channel configured for the given platform/type.
 func (m *MultiNotifier) HasChannel(platform, stratType string) bool {
 	for _, b := range m.snapshotBackends() {
 		if resolveChannel(b.channels, platform, stratType) != "" {
@@ -276,11 +251,18 @@ func (m *MultiNotifier) HasChannel(platform, stratType string) bool {
 	return false
 }
 
-// resolveChannelKey returns the logical channel key for a strategy.
-// Uses the same lookup order as resolveChannel: platform first, then stratType.
-// Returns "" if no channel is configured on any backend.
-func (m *MultiNotifier) resolveChannelKey(platform, stratType string) string {
-	for _, b := range m.snapshotBackends() {
+func (m *MultiNotifier) resolveChannelKey(platform, stratType string, isLive bool, source string) string {
+	backends := m.snapshotBackends()
+	if !isLive {
+		for _, paperKey := range paperChannelKeys(platform, source) {
+			for _, b := range backends {
+				if ch, ok := b.channels[paperKey]; ok && ch != "" {
+					return paperKey
+				}
+			}
+		}
+	}
+	for _, b := range backends {
 		if _, ok := b.channels[platform]; ok {
 			return platform
 		}
@@ -291,7 +273,75 @@ func (m *MultiNotifier) resolveChannelKey(platform, stratType string) string {
 	return ""
 }
 
-// AllChannelKeys returns all unique channel keys across all backends.
+// SendToPartitionChannels reaches only the destinations that partition's own
+// roster routes to. An empty set falls back to every channel, so a partition
+// with no resolvable route is never silent.
+func (m *MultiNotifier) SendToPartitionChannels(part RiskPartition, content string) {
+	if part.IsLive() {
+		m.SendToAllChannels(content)
+		return
+	}
+	sent := false
+	for _, b := range m.snapshotBackends() {
+		seen := make(map[string]bool)
+		for _, ch := range b.partitionChannels[part] {
+			if ch == "" || seen[ch] {
+				continue
+			}
+			seen[ch] = true
+			sent = true
+			if err := b.notifier.SendMessage(ch, content); err != nil {
+				fmt.Printf("[WARN] Notifier broadcast failed: %v\n", err)
+			}
+		}
+	}
+	if !sent {
+		m.SendToAllChannels(content)
+	}
+}
+
+func partitionChannelValues(channels map[string]string, strats []StrategyConfig) map[RiskPartition][]string {
+	out := make(map[RiskPartition][]string)
+	for _, part := range activePartitions(strats) {
+		if part.IsLive() {
+			continue
+		}
+		seen := make(map[string]bool)
+		var dests []string
+		for _, sc := range strategiesInPartition(strats, part) {
+			ch := resolveTradeChannel(channels, sc.Platform, sc.Type, false, sc.PaperSource)
+			if ch == "" || seen[ch] {
+				continue
+			}
+			seen[ch] = true
+			dests = append(dests, ch)
+		}
+		sort.Strings(dests)
+		out[part] = dests
+	}
+	return out
+}
+
+func clonePartitionChannels(m map[RiskPartition][]string) map[RiskPartition][]string {
+	if m == nil {
+		return nil
+	}
+	out := make(map[RiskPartition][]string, len(m))
+	for part, dests := range m {
+		out[part] = cloneStringSlice(dests)
+	}
+	return out
+}
+
+func cloneStringSlice(s []string) []string {
+	if s == nil {
+		return nil
+	}
+	out := make([]string, len(s))
+	copy(out, s)
+	return out
+}
+
 func (m *MultiNotifier) AllChannelKeys() map[string]bool {
 	keys := make(map[string]bool)
 	for _, b := range m.snapshotBackends() {
@@ -310,22 +360,27 @@ type tradeAlertRoute struct {
 	liveChan  string
 }
 
-func (m *MultiNotifier) tradeAlertRoutes(platform, stratType string, isLive bool) []tradeAlertRoute {
+type tradeAlertRouter interface {
+	tradeAlertRoutes(platform, stratType string, isLive bool, source string) []tradeAlertRoute
+}
+
+func (m *MultiNotifier) tradeAlertRoutes(platform, stratType string, isLive bool, source string) []tradeAlertRoute {
 	var routes []tradeAlertRoute
+	// The DM key stays an exact match with no fallback: a sourced strategy
+	// reads only its own key, so a moved book never DMs another source's route.
 	dmKey := platform
 	if !isLive {
-		dmKey = platform + "-paper"
+		dmKey = paperChannelKeys(platform, source)[0]
 	}
 	for _, b := range m.snapshotBackends() {
 		dmDest := ""
 		if b.dmChannels != nil {
 			dmDest = b.dmChannels[dmKey]
 		}
-		ch := resolveTradeAlertChannel(b.tradeAlertChannels, b.channels, platform, stratType, isLive)
+		ch := resolveTradeAlertChannel(b.tradeAlertChannels, b.channels, platform, stratType, isLive, source)
 
 		var liveCh string
 		if isLive {
-			// Direct lookup: the "-live" suffix is already the full key so no isLive re-suffix needed.
 			liveCh = b.tradeAlertChannels[platform+"-live"]
 			if liveCh == "" {
 				liveCh = b.channels[platform+"-live"]
@@ -349,10 +404,6 @@ func (m *MultiNotifier) tradeAlertRoutes(platform, stratType string, isLive bool
 	return routes
 }
 
-// sendTradeDestination delivers a trade alert to a user ID (DM) or channel ID.
-// Discord requires UserChannelCreate for DMs, so we try SendDM first and fall back to SendMessage.
-// Logs the original SendDM error before falling back so transient DM failures on valid user IDs
-// are visible instead of being masked by a misleading "Unknown Channel" from the fallback.
 func sendTradeDestination(n Notifier, id, content string) error {
 	id = strings.TrimSpace(id)
 	if id == "" {
@@ -364,4 +415,15 @@ func sendTradeDestination(n Notifier, id, content string) error {
 		fmt.Printf("[notify] SendDM(%s) failed, falling back to SendMessage: %v\n", id, err)
 	}
 	return n.SendMessage(id, content)
+}
+
+func (m *MultiNotifier) DiscordBackend() *DiscordNotifier {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, b := range m.backends {
+		if d, ok := b.notifier.(*DiscordNotifier); ok {
+			return d
+		}
+	}
+	return nil
 }

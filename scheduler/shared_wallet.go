@@ -3,68 +3,34 @@ package main
 import (
 	"fmt"
 	"os"
+	"sort"
 )
 
-// SharedWalletKey identifies a shared exchange account by platform + account ID.
-// Multiple strategies that map to the same key are assumed to trade from the
-// same on-exchange wallet, so per-strategy capital must NOT be summed when
-// computing total portfolio value.
 type SharedWalletKey struct {
 	Platform string
 	Account  string
 }
 
-// WalletBalanceFetcher returns the live wallet balance for a given key.
-// Injected so tests can stub out network calls.
-//
-// NOTE: distinct from risk.go's SharedWalletBalanceFetcher (#244), which is
-// keyed by platform string and used by ClearLatchedKillSwitchSharedWallet on
-// startup. This one is keyed by SharedWalletKey (platform + account) so a
-// single platform can host multiple distinct wallets if that ever comes up.
 type WalletBalanceFetcher func(SharedWalletKey) (float64, error)
 
-// walletKeyRegistry enumerates the (platform, instrument) pairs we recognize
-// as single-on-exchange-account trading. Each entry supplies the live-mode
-// predicate and the env-var that identifies the account. Adding a new live
-// platform = append one entry; no other code in this file changes.
-//
-// NOTE: recognition via walletKeyFor does NOT imply that a live balance can be
-// fetched — that's a separate capability tracked by hasSharedWalletBalanceFetcher.
-// detectSharedWallets filters by fetcher availability so expanding this
-// registry does not regress portfolio-value math for platforms whose balance
-// fetcher is not yet implemented (phase 1a of #357).
+type configuredWalletKey struct {
+	Platform   string
+	Instrument string
+	AccountEnv string
+}
+
 var walletKeyRegistry = []struct {
 	platform   string
-	instrument string // sc.Type value ("perps", "futures", "spot")
+	instrument string
 	liveFn     func([]string) bool
 	envVar     string
 }{
-	// Hyperliquid perps live — original entry, trades from HYPERLIQUID_ACCOUNT_ADDRESS.
 	{platform: "hyperliquid", instrument: "perps", liveFn: hyperliquidIsLive, envVar: "HYPERLIQUID_ACCOUNT_ADDRESS"},
-	// OKX perps (swap) live — multi-strategy on one API key share the same
-	// margin account; OKX_API_KEY uniquely identifies the account (#357 phase 1a).
 	{platform: "okx", instrument: "perps", liveFn: okxIsLive, envVar: "OKX_API_KEY"},
-	// TopStep futures live — TOPSTEP_ACCOUNT_ID is the natural account key
-	// (#357 phase 1a).
 	{platform: "topstep", instrument: "futures", liveFn: topstepIsLive, envVar: "TOPSTEP_ACCOUNT_ID"},
-	// Robinhood crypto spot live — multi-strategy on one username share the
-	// same spot asset balance; ROBINHOOD_USERNAME identifies the account
-	// (#357 phase 1a).
 	{platform: "robinhood", instrument: "spot", liveFn: robinhoodIsLive, envVar: "ROBINHOOD_USERNAME"},
 }
 
-// walletKeyFor returns the on-exchange account key for a strategy if it trades
-// from an identifiable live wallet, otherwise (zero, false).
-//
-// Recognition is driven by walletKeyRegistry (above). The returned key is
-// suitable for:
-//   - grouping multiple strategies on the same account for per-strategy
-//     circuit-breaker close sizing (#357)
-//   - shared-wallet double-count protection in portfolio value (#243) — but
-//     only when a balance fetcher is registered, see hasSharedWalletBalanceFetcher
-//
-// Paper-mode strategies and strategies missing their account env var return
-// (zero, false) by design.
 func walletKeyFor(sc StrategyConfig) (SharedWalletKey, bool) {
 	for _, entry := range walletKeyRegistry {
 		if sc.Platform != entry.platform || sc.Type != entry.instrument {
@@ -82,47 +48,163 @@ func walletKeyFor(sc StrategyConfig) (SharedWalletKey, bool) {
 	return SharedWalletKey{}, false
 }
 
-// platformsWithSharedWalletBalanceFetcher lists platforms for which
-// defaultSharedWalletFetcher can return a live balance. Keep this data-driven
-// (matches walletKeyRegistry style) so enabling a new platform = one-line flip
-// alongside its fetcher wiring in the corresponding phase PR.
-//
-// TODO(#357): this is keyed on platform alone, while walletKeyRegistry is keyed
-// on (platform, instrument). That's fine today because each platform has a
-// single instrument flavor in the registry, but if a platform ever gains a
-// second flavor (e.g. OKX spot in addition to OKX swap) the fetcher-capability
-// bit will auto-enable/disable both — confirm the fetcher handles every
-// registered instrument for the platform before flipping it on.
-var platformsWithSharedWalletBalanceFetcher = map[string]bool{
-	"hyperliquid": true,
-	"okx":         true, // #360 phase 2 of #357 — fetch_okx_balance.py
+func configuredWalletKeyFor(sc StrategyConfig) (configuredWalletKey, bool) {
+	for _, entry := range walletKeyRegistry {
+		if sc.Platform != entry.platform || sc.Type != entry.instrument {
+			continue
+		}
+		if !entry.liveFn(sc.Args) || !hasSharedWalletBalanceFetcher(entry.platform) {
+			continue
+		}
+		return configuredWalletKey{
+			Platform:   entry.platform,
+			Instrument: entry.instrument,
+			AccountEnv: entry.envVar,
+		}, true
+	}
+	return configuredWalletKey{}, false
 }
 
-// hasSharedWalletBalanceFetcher reports whether defaultSharedWalletFetcher can
-// return a live balance for the given platform. Platforms recognized by
-// walletKeyFor but without a fetcher are EXCLUDED from detectSharedWallets so
-// multi-strategy setups on those platforms don't cause computeTotalPortfolioValue
-// to enter fallback and freeze the portfolio peak on every cycle (#357 phase 1a
-// preserves HL-only portfolio-value behavior).
-//
-// As phase 2-4 land real balance fetchers for OKX / TopStep / Robinhood, add
-// their platform strings to platformsWithSharedWalletBalanceFetcher to enable
-// double-count protection for them.
+func usesSharedWalletPoolBudget(sc StrategyConfig) bool {
+	return sc.sharedWalletPoolBudget
+}
+
+type sharedWalletRiskBalanceSnapshot struct {
+	Balance    float64
+	Generation int
+}
+
+func resolveSharedWalletRiskBalances(
+	strategies []StrategyConfig,
+	strategyStates map[string]*StrategyState,
+	sharedWallets map[SharedWalletKey][]string,
+	current map[SharedWalletKey]float64,
+	cache map[SharedWalletKey]sharedWalletRiskBalanceSnapshot,
+	generation int,
+) (resolved map[SharedWalletKey]float64, usedStale, equityComplete bool) {
+	resolved = make(map[SharedWalletKey]float64, len(current))
+	for key, balance := range current {
+		resolved[key] = balance
+	}
+	equityComplete = true
+
+	byID := make(map[string]StrategyConfig, len(strategies))
+	for _, sc := range strategies {
+		byID[sc.ID] = sc
+	}
+	for key, memberIDs := range sharedWallets {
+		pooled := false
+		for _, id := range memberIDs {
+			sc := byID[id]
+			s := strategyStates[id]
+			if usesSharedWalletPoolBudget(sc) || sc.sharedWalletModeDeferred ||
+				(s != nil && s.SharedWalletPoolBudget) {
+				pooled = true
+				break
+			}
+		}
+		if !pooled {
+			continue
+		}
+		if balance, ok := current[key]; ok {
+			if cache != nil {
+				cache[key] = sharedWalletRiskBalanceSnapshot{Balance: balance, Generation: generation}
+			}
+			continue
+		}
+		if snapshot, ok := cache[key]; ok && snapshot.Generation == generation-1 {
+			resolved[key] = snapshot.Balance
+			usedStale = true
+			fmt.Printf("[WARN] shared-wallet %s/%s: balance fetch missing, using prior risk snapshot $%.2f for this cycle only (portfolio peak frozen)\n",
+				key.Platform, key.Account, snapshot.Balance)
+			continue
+		}
+		equityComplete = false
+		fmt.Printf("[WARN] shared-wallet %s/%s: pooled balance unavailable with no prior risk snapshot — suppressing portfolio equity drawdown this cycle (perps margin risk remains active)\n",
+			key.Platform, key.Account)
+	}
+	return resolved, usedStale, equityComplete
+}
+
+func sharedWalletPoolMarginBasisPrice(markPrice, avgCost float64) float64 {
+	if avgCost > markPrice {
+		return avgCost
+	}
+	return markPrice
+}
+
+func sharedWalletPoolMarginLeverage(positionLeverage, configLeverage float64) float64 {
+	if positionLeverage > 0 {
+		return positionLeverage
+	}
+	if configLeverage > 0 {
+		return configLeverage
+	}
+	return 1
+}
+
+func validateConfiguredSharedWalletPools(strategies []StrategyConfig) (map[string]bool, []string) {
+	groups := make(map[configuredWalletKey][]StrategyConfig)
+	for _, sc := range strategies {
+		if key, ok := configuredWalletKeyFor(sc); ok {
+			groups[key] = append(groups[key], sc)
+		}
+	}
+
+	pooledIDs := make(map[string]bool)
+	var errs []string
+	for key, members := range groups {
+		if len(members) < 2 {
+			continue
+		}
+		poolRequested := false
+		for _, sc := range members {
+			if sc.Capital == 0 && sc.CapitalPct == 0 {
+				poolRequested = true
+				pooledIDs[sc.ID] = true
+			}
+		}
+		if !poolRequested {
+			continue
+		}
+		for _, sc := range members {
+			if sc.Capital != 0 || sc.CapitalPct != 0 {
+				errs = append(errs, fmt.Sprintf(
+					"shared-wallet pool %s/%s: strategy[%s] uses a virtual capital allocation; every member must omit capital and capital_pct",
+					key.Platform, key.Instrument, sc.ID))
+				continue
+			}
+			pooledIDs[sc.ID] = true
+			if EffectiveMarginPerTradeUSD(sc) <= 0 {
+				errs = append(errs, fmt.Sprintf(
+					"strategy[%s]: shared-wallet pool members require positive margin_per_trade_usd as the per-open hard cap",
+					sc.ID))
+			}
+			if sc.InitialCapital != 0 {
+				errs = append(errs, fmt.Sprintf(
+					"strategy[%s]: initial_capital is not supported in shared-wallet pool mode; pooled performance has no per-strategy deposit baseline",
+					sc.ID))
+			}
+			if EffectiveRiskPerTradePct(sc) > 0 {
+				errs = append(errs, fmt.Sprintf(
+					"strategy[%s]: risk_per_trade_pct requires a per-strategy capital denominator and is not supported in shared-wallet pool mode",
+					sc.ID))
+			}
+		}
+	}
+	sort.Strings(errs)
+	return pooledIDs, errs
+}
+
+var platformsWithSharedWalletBalanceFetcher = map[string]bool{
+	"hyperliquid": true,
+	"okx":         true,
+}
+
 func hasSharedWalletBalanceFetcher(platform string) bool {
 	return platformsWithSharedWalletBalanceFetcher[platform]
 }
 
-// detectSharedWallets returns the set of shared-wallet keys that have more
-// than one strategy attached, mapped to the list of strategy IDs that share
-// the wallet. Wallets with only a single strategy are NOT included — for
-// those the existing per-strategy sum is already correct.
-//
-// Wallets on platforms without a registered balance fetcher (see
-// hasSharedWalletBalanceFetcher) are also excluded: without a real-balance
-// fetch, computeTotalPortfolioValue would use fallback every cycle and freeze
-// the peak (#357 phase 1a preserves HL-only behavior).
-// As phase 2-4 land balance fetchers for OKX / TS / RH, those platforms
-// become eligible for double-count protection automatically.
 func detectSharedWallets(strategies []StrategyConfig) map[SharedWalletKey][]string {
 	walletStrategies := make(map[SharedWalletKey][]string)
 	for _, sc := range strategies {
@@ -144,24 +226,89 @@ func detectSharedWallets(strategies []StrategyConfig) map[SharedWalletKey][]stri
 	return shared
 }
 
-// defaultSharedWalletFetcher dispatches to the platform-specific balance API.
+func sharedWalletPoolAvailableMargin(
+	sc StrategyConfig,
+	strategies []StrategyConfig,
+	state *AppState,
+	prices map[string]float64,
+	sharedWallets map[SharedWalletKey][]string,
+	walletBalances map[SharedWalletKey]float64,
+) (available float64, pooled bool, balanceKnown bool) {
+	if !usesSharedWalletPoolBudget(sc) {
+		return 0, false, false
+	}
+	pooled = true
+	key, ok := walletKeyFor(sc)
+	if !ok {
+		return 0, true, false
+	}
+	perpsMemberIDs, ok := sharedWallets[key]
+	if !ok {
+		return 0, true, false
+	}
+	balance, ok := walletBalances[key]
+	if !ok || balance <= 0 || state == nil {
+		return 0, true, false
+	}
+	balanceKnown = true
+
+	byID := make(map[string]StrategyConfig, len(strategies))
+	for _, member := range strategies {
+		byID[member.ID] = member
+	}
+	deployedMargin := 0.0
+	for _, id := range riskPathWalletMemberIDs(key, perpsMemberIDs, strategies) {
+		ss := state.Strategies[id]
+		if ss == nil {
+			continue
+		}
+		memberCfg := byID[id]
+		for sym, pos := range ss.Positions {
+			if pos == nil || pos.Quantity <= 0 {
+				continue
+			}
+			price := sharedWalletPoolMarginBasisPrice(prices[sym], pos.AvgCost)
+			if price <= 0 {
+				continue
+			}
+			leverage := sharedWalletPoolMarginLeverage(pos.Leverage, EffectiveExchangeLeverage(memberCfg))
+			deployedMargin += pos.Quantity * price / leverage
+		}
+	}
+	available = balance - deployedMargin
+	return available, true, true
+}
+
+func detectTopStepSharedWallet(strategies []StrategyConfig) (SharedWalletKey, bool) {
+	counts := make(map[SharedWalletKey]int)
+	for _, sc := range strategies {
+		if sc.Platform != "topstep" {
+			continue
+		}
+		key, ok := walletKeyFor(sc)
+		if !ok {
+			continue
+		}
+		counts[key]++
+	}
+	for key, n := range counts {
+		if n > 1 {
+			return key, true
+		}
+	}
+	return SharedWalletKey{}, false
+}
+
 func defaultSharedWalletFetcher(key SharedWalletKey) (float64, error) {
 	switch key.Platform {
 	case "hyperliquid":
 		return fetchHyperliquidBalance(key.Account)
+	case "okx":
+		return defaultSharedWalletBalance("okx")
 	}
 	return 0, fmt.Errorf("unsupported shared-wallet platform %q", key.Platform)
 }
 
-// fetchSharedWalletBalances fetches the live balance of every shared wallet
-// referenced by the strategy list. Performs network I/O and MUST be called
-// without holding any state lock. Wallets whose fetch fails are reported via
-// the returned error map so the caller can fall back to per-strategy sums.
-//
-// NOTE: main.go bypasses this helper and fetches clearinghouseState directly
-// so the same HTTP call can feed both the risk check and the position sync
-// (see fetchHyperliquidState). This function is retained for tests and for
-// any caller that only needs balances.
 func fetchSharedWalletBalances(
 	strategies []StrategyConfig,
 	fetcher WalletBalanceFetcher,
@@ -183,28 +330,62 @@ func fetchSharedWalletBalances(
 	return balances, errs
 }
 
-// computeTotalPortfolioValue returns the total portfolio value across all
-// strategies, using pre-fetched real exchange balances for shared wallets so
-// the same account is not double-counted across multiple strategies (#243).
-//
-// Strategies whose wallet is shared with at least one other strategy are
-// excluded from the per-strategy sum and replaced with a single fetched
-// balance per wallet.
-//
-// Fallback: when a shared-wallet balance is missing from walletBalances (e.g.
-// transient API failure), the function sums member strategies' PortfolioValue.
-// The real-balance path still contributes the wallet once (#243); fallback has
-// no real wallet balance to de-duplicate, and each strategy carries its own
-// virtual cash/position slice. The returned usedFallback flag tells the caller
-// to skip peak ratcheting for that cycle so a network blip cannot move the
-// high-water mark.
-//
-// This function only reads state and does NOT perform network I/O — call
-// fetchSharedWalletBalances (or fetch clearinghouseState directly) first
-// without the lock, then call this under the state read lock.
-//
-// The sharedWallets parameter is pre-computed by the caller so the map is
-// built once per cycle instead of twice (detection + computation).
+func computeSubsetPortfolioValue(
+	subset []StrategyConfig,
+	state *AppState,
+	prices map[string]float64,
+	walletBalances map[SharedWalletKey]float64,
+	accountShared map[SharedWalletKey][]string,
+) (float64, bool) {
+	if accountShared == nil {
+		accountShared = detectSharedWallets(subset)
+	}
+
+	subShared := detectSharedWallets(subset)
+
+	dedupeIDs := make(map[string]bool)
+	var fullyContainedKeys []SharedWalletKey
+	for key, subIDs := range subShared {
+		if len(subIDs) == len(accountShared[key]) {
+			fullyContainedKeys = append(fullyContainedKeys, key)
+			for _, id := range riskPathWalletMemberIDs(key, subIDs, subset) {
+				dedupeIDs[id] = true
+			}
+		}
+	}
+
+	total := 0.0
+
+	for _, sc := range subset {
+		if dedupeIDs[sc.ID] {
+			continue
+		}
+		if s, ok := state.Strategies[sc.ID]; ok {
+			total += PortfolioValue(s, prices)
+		}
+	}
+
+	usedFallback := false
+	for _, key := range fullyContainedKeys {
+		if bal, ok := walletBalances[key]; ok {
+			total += bal
+			continue
+		}
+		usedFallback = true
+		sumPV := 0.0
+		for _, id := range riskPathWalletMemberIDs(key, subShared[key], subset) {
+			if s, ok := state.Strategies[id]; ok {
+				sumPV += PortfolioValue(s, prices)
+			}
+		}
+		fmt.Printf("[WARN] shared-wallet %s/%s: balance fetch missing, falling back to sum(member PV)=$%.2f (peak will NOT be updated this cycle)\n",
+			key.Platform, key.Account, sumPV)
+		total += sumPV
+	}
+
+	return total, usedFallback
+}
+
 func computeTotalPortfolioValue(
 	strategies []StrategyConfig,
 	state *AppState,
@@ -215,81 +396,21 @@ func computeTotalPortfolioValue(
 	if sharedWallets == nil {
 		sharedWallets = detectSharedWallets(strategies)
 	}
-
-	// Build a quick lookup of strategy IDs that belong to a shared wallet.
-	sharedStrategyIDs := make(map[string]bool)
-	for _, ids := range sharedWallets {
-		for _, id := range ids {
-			sharedStrategyIDs[id] = true
-		}
-	}
-
-	total := 0.0
-
-	// Per-strategy sum for everything that does NOT live in a shared wallet.
-	for _, sc := range strategies {
-		if sharedStrategyIDs[sc.ID] {
-			continue
-		}
-		if s, ok := state.Strategies[sc.ID]; ok {
-			total += PortfolioValue(s, prices)
-		}
-	}
-
-	// One real-balance contribution per shared wallet. On fetch failure,
-	// sum member strategy PVs; usedFallback still freezes peak ratcheting.
-	usedFallback := false
-	for key, ids := range sharedWallets {
-		if bal, ok := walletBalances[key]; ok {
-			total += bal
-			continue
-		}
-		usedFallback = true
-		sumPV := 0.0
-		for _, id := range ids {
-			s, ok := state.Strategies[id]
-			if !ok {
-				continue
-			}
-			sumPV += PortfolioValue(s, prices)
-		}
-		fmt.Printf("[WARN] shared-wallet %s/%s: balance fetch missing, falling back to sum(member PV)=$%.2f (peak will NOT be updated this cycle)\n",
-			key.Platform, key.Account, sumPV)
-		total += sumPV
-	}
-
-	return total, usedFallback
+	return computeSubsetPortfolioValue(strategies, state, prices, walletBalances, sharedWallets)
 }
 
-// computeInitialPortfolioPeak returns the initial PortfolioRisk.PeakValue used
-// when no peak has been recorded yet. It uses real wallet balances for shared
-// wallets (#243) so the peak is not inflated by summing the same account
-// multiple times across strategies. Strategies that use capital_pct on a
-// non-shared platform fall back to the legacy "wallet balance once per
-// platform" computation (Capital / CapitalPct) so existing single-strategy
-// setups are unaffected.
-//
-// Behavioral note (for release notes): a single live HL strategy with
-// CapitalPct > 0 is NOT shared (only one strategy on the wallet) and still
-// takes the legacy Capital/CapitalPct path. Adding a second live HL strategy
-// later flips the peak init to the real on-exchange balance — usually more
-// accurate, but a visible behavior change for existing users.
-//
-// Performs network I/O for shared-wallet platforms — call from startup, not
-// from inside the hot loop.
 func computeInitialPortfolioPeak(strategies []StrategyConfig, fetcher WalletBalanceFetcher) float64 {
 	if fetcher == nil {
 		fetcher = defaultSharedWalletFetcher
 	}
 	sharedWallets := detectSharedWallets(strategies)
 	sharedStrategyIDs := make(map[string]bool)
-	for _, ids := range sharedWallets {
-		for _, id := range ids {
+	for key, ids := range sharedWallets {
+		for _, id := range riskPathWalletMemberIDs(key, ids, strategies) {
 			sharedStrategyIDs[id] = true
 		}
 	}
 
-	// Index strategies by ID once for fallback lookups.
 	byID := make(map[string]StrategyConfig, len(strategies))
 	for _, sc := range strategies {
 		byID[sc.ID] = sc
@@ -299,11 +420,8 @@ func computeInitialPortfolioPeak(strategies []StrategyConfig, fetcher WalletBala
 	walletCounted := make(map[string]bool)
 	for _, sc := range strategies {
 		if sharedStrategyIDs[sc.ID] {
-			continue // handled below via real balance fetch
+			continue
 		}
-		// Legacy: capital_pct strategies derive wallet from Capital / CapitalPct
-		// and count each platform's wallet once. Preserved unchanged for
-		// non-shared setups so existing behavior is identical.
 		if sc.CapitalPct > 0 {
 			if !walletCounted[sc.Platform] {
 				total += sc.Capital / sc.CapitalPct
@@ -318,7 +436,7 @@ func computeInitialPortfolioPeak(strategies []StrategyConfig, fetcher WalletBala
 		if err != nil {
 			fmt.Printf("[WARN] shared-wallet peak init: balance fetch failed for %s/%s: %v — falling back to summed capital\n",
 				key.Platform, key.Account, err)
-			for _, id := range ids {
+			for _, id := range riskPathWalletMemberIDs(key, ids, strategies) {
 				if sc, ok := byID[id]; ok {
 					total += sc.Capital
 				}
@@ -330,31 +448,30 @@ func computeInitialPortfolioPeak(strategies []StrategyConfig, fetcher WalletBala
 	return total
 }
 
-// rebaselinePortfolioPeakAfterPrune recomputes PortfolioRisk.PeakValue from the
-// per-strategy peaks of remaining strategies after one or more strategies are
-// pruned from config. Without this, the stale portfolio peak (which reflects
-// the pre-prune strategy set) can immediately latch the kill switch on the
-// first risk-check cycle since current portfolio value drops to the sum of
-// only the surviving strategies. See issue #650.
-//
-// For each surviving strategy, prefers RiskState.PeakValue (the per-strategy
-// high-water mark recorded by CheckRisk). Falls back to that strategy's
-// configured Capital when no per-strategy peak has been recorded yet
-// (cold-start or migrated state).
-//
-// The result is floored at computeInitialPortfolioPeak(remaining) so the
-// rebaseline never drops below the sum-of-capitals baseline that a fresh
-// install would use — protects against under-baseline when most surviving
-// strategies are themselves cold-started.
-func rebaselinePortfolioPeakAfterPrune(state *AppState, cfg *Config) float64 {
+func computeInitialPortfolioPeakForPartition(strategies []StrategyConfig, part RiskPartition, fetcher WalletBalanceFetcher) float64 {
+	return computeInitialPortfolioPeak(strategiesInPartition(strategies, part), fetcher)
+}
+
+func rebaselinePortfolioPeakAfterPruneForPartition(state *AppState, cfg *Config, part RiskPartition, fetcher WalletBalanceFetcher) float64 {
+	scopedCfg := &Config{Strategies: strategiesInPartition(cfg.Strategies, part)}
+	scopedState := &AppState{Strategies: filterStatesByPartition(state.Strategies, cfg.Strategies, part)}
+	return rebaselinePortfolioPeakAfterPrune(scopedState, scopedCfg, fetcher)
+}
+
+func rebaselinePortfolioPeakAfterPrune(state *AppState, cfg *Config, fetcher WalletBalanceFetcher) float64 {
 	byID := make(map[string]StrategyConfig, len(cfg.Strategies))
 	for _, sc := range cfg.Strategies {
 		byID[sc.ID] = sc
 	}
 
+	dedupedManual := dedupedSameAccountLiveManualIDs(cfg.Strategies)
+
 	sum := 0.0
 	for id, ss := range state.Strategies {
 		if ss == nil {
+			continue
+		}
+		if dedupedManual[id] {
 			continue
 		}
 		if ss.RiskState.PeakValue > 0 {
@@ -366,9 +483,54 @@ func rebaselinePortfolioPeakAfterPrune(state *AppState, cfg *Config) float64 {
 		}
 	}
 
-	floor := computeInitialPortfolioPeak(cfg.Strategies, nil)
+	floor := computeInitialPortfolioPeak(cfg.Strategies, fetcher)
 	if sum < floor {
 		sum = floor
+	}
+	return sum
+}
+
+func liveScopeRebasedPeak(state *AppState, cfg *Config, fetcher WalletBalanceFetcher) float64 {
+	if fetcher == nil {
+		fetcher = defaultSharedWalletFetcher
+	}
+	liveCfgs := strategiesInScope(cfg.Strategies, ScopeLive)
+	byID := make(map[string]StrategyConfig, len(liveCfgs))
+	for _, sc := range liveCfgs {
+		byID[sc.ID] = sc
+	}
+	sharedWallets := detectSharedWallets(liveCfgs)
+	pooled := make(map[string]bool)
+	for key, ids := range sharedWallets {
+		for _, id := range riskPathWalletMemberIDs(key, ids, liveCfgs) {
+			pooled[id] = true
+		}
+	}
+	dedupedManual := dedupedSameAccountLiveManualIDs(liveCfgs)
+	sum := 0.0
+	for _, sc := range liveCfgs {
+		if pooled[sc.ID] || dedupedManual[sc.ID] {
+			continue
+		}
+		if ss := state.Strategies[sc.ID]; ss != nil && ss.RiskState.PeakValue > 0 {
+			sum += ss.RiskState.PeakValue
+			continue
+		}
+		sum += sc.Capital
+	}
+	for key, ids := range sharedWallets {
+		bal, err := fetcher(key)
+		if err != nil {
+			fmt.Printf("[WARN] live scope peak re-base: balance fetch failed for %s/%s: %v — falling back to summed capital\n",
+				key.Platform, key.Account, err)
+			for _, id := range riskPathWalletMemberIDs(key, ids, liveCfgs) {
+				if sc, ok := byID[id]; ok {
+					sum += sc.Capital
+				}
+			}
+			continue
+		}
+		sum += bal
 	}
 	return sum
 }

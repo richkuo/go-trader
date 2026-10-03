@@ -1,0 +1,1992 @@
+package main
+
+import (
+	"fmt"
+	"os"
+	"strings"
+	"time"
+)
+
+type manualOutputLine struct {
+	stderr bool
+	text   string
+}
+
+type manualCoreResult struct {
+	lines  []manualOutputLine
+	queued bool
+}
+
+func (r *manualCoreResult) outf(format string, args ...interface{}) {
+	r.lines = append(r.lines, manualOutputLine{text: fmt.Sprintf(format, args...)})
+}
+
+func (r *manualCoreResult) errf(format string, args ...interface{}) {
+	r.lines = append(r.lines, manualOutputLine{stderr: true, text: fmt.Sprintf(format, args...)})
+}
+
+func (r *manualCoreResult) uiMessage() string {
+	var out []string
+	for _, l := range r.lines {
+		if !l.stderr {
+			out = append(out, l.text)
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
+type manualCoreError struct {
+	usage bool
+	msg   string
+}
+
+func (e *manualCoreError) Error() string { return e.msg }
+
+func manualUsagef(format string, args ...interface{}) error {
+	return &manualCoreError{usage: true, msg: fmt.Sprintf(format, args...)}
+}
+
+func manualFailf(format string, args ...interface{}) error {
+	return &manualCoreError{msg: fmt.Sprintf(format, args...)}
+}
+
+func manualCoreExitCode(err error) int {
+	if ce, ok := err.(*manualCoreError); ok && ce.usage {
+		return 2
+	}
+	return 1
+}
+
+type manualStateView struct {
+	KillSwitch     bool
+	HasStrategy    bool
+	PendingCBClose bool
+	DailyLossHold  bool
+	DailyLossNote  string
+	NotionalHold   bool
+	NotionalNote   string
+	// PersistenceHold marks a scope with an unacknowledged state save failure:
+	// no new exposure until a save succeeds. Closes and SL edits stay open.
+	PersistenceHold  bool
+	ExposureCap      ExposureCapStatus
+	ExposureCapAsset string
+	Pos              *Position
+	PeerVirtualQty   float64
+	PeerSameQty      float64
+	PeerOppQty       float64
+	PeerSame         []hlShareBook
+	PeerLongQty      float64
+	PeerShortQty     float64
+}
+
+func manualSubsetStateView(pr *PortfolioRiskConfig, states map[string]*StrategyState, cfgs []StrategyConfig, now time.Time) manualStateView {
+	var v manualStateView
+	if st := evaluateDailyLossLimit(pr, states, cfgs, now); st.Tripped {
+		v.DailyLossHold = true
+		v.DailyLossNote = dailyLossHoldDetail(st)
+	}
+	if held, detail := evaluateNotionalCapHold(pr, states, nil); held {
+		v.NotionalHold = true
+		v.NotionalNote = detail
+	}
+	v.ExposureCap = exposureCapStatusForSubset(pr, states, cfgs)
+	return v
+}
+
+func manualScopeStateView(cfg *Config, state *AppState, part RiskPartition, now time.Time) manualStateView {
+	v := manualStateView{KillSwitch: state.partitionLatched(part)}
+	if cfg == nil {
+		return v
+	}
+	scoped := manualSubsetStateView(partitionRiskConfig(cfg, part),
+		filterStatesByPartition(state.Strategies, cfg.Strategies, part),
+		strategiesInPartition(cfg.Strategies, part), now)
+	scoped.KillSwitch = v.KillSwitch
+	return scoped
+}
+
+func mergeManualStateViews(dst, src manualStateView) manualStateView {
+	dst.KillSwitch = dst.KillSwitch || src.KillSwitch
+	if !dst.DailyLossHold && src.DailyLossHold {
+		dst.DailyLossHold = true
+		dst.DailyLossNote = src.DailyLossNote
+	}
+	if !dst.NotionalHold && src.NotionalHold {
+		dst.NotionalHold = true
+		dst.NotionalNote = src.NotionalNote
+	}
+	dst.PersistenceHold = dst.PersistenceHold || src.PersistenceHold
+	if !dst.ExposureCap.Configured {
+		dst.ExposureCap = src.ExposureCap
+		return dst
+	}
+	if src.ExposureCap.Configured {
+		dst.ExposureCap.LongBlocked = dst.ExposureCap.LongBlocked || src.ExposureCap.LongBlocked
+		dst.ExposureCap.ShortBlocked = dst.ExposureCap.ShortBlocked || src.ExposureCap.ShortBlocked
+		dst.ExposureCap.PVBasisMiss = dst.ExposureCap.PVBasisMiss || src.ExposureCap.PVBasisMiss
+		for asset, stat := range src.ExposureCap.OverConcentrated {
+			if dst.ExposureCap.OverConcentrated == nil {
+				dst.ExposureCap.OverConcentrated = make(map[string]ExposureCapAssetStat)
+			}
+			if _, exists := dst.ExposureCap.OverConcentrated[asset]; !exists {
+				dst.ExposureCap.OverConcentrated[asset] = stat
+			}
+		}
+	}
+	return dst
+}
+
+func manualStateViewFromState(cfg *Config, state *AppState, strategyID, symbol string) manualStateView {
+	return manualStateViewFromStateWithStore(cfg, state, nil, strategyID, symbol)
+}
+
+func manualStateViewFromStateWithStore(cfg *Config, state *AppState, store *StateStore, strategyID, symbol string) manualStateView {
+	now := time.Now().UTC()
+	var v manualStateView
+	part, known := partitionOfStrategyID(configStrategyList(cfg), strategyID)
+	if known {
+		v = manualScopeStateView(cfg, state, part, now)
+		v.PersistenceHold = store.persistenceHoldsPartition(part)
+	} else {
+		v.KillSwitch = state.anyScopeLatched()
+		if cfg != nil {
+			v = mergeManualStateViews(v, manualSubsetStateView(cfg.PortfolioRisk, state.Strategies, cfg.Strategies, now))
+			for _, p := range activePartitions(cfg.Strategies) {
+				v = mergeManualStateViews(v, manualScopeStateView(cfg, state, p, now))
+				v.PersistenceHold = v.PersistenceHold || store.persistenceHoldsPartition(p)
+			}
+		}
+	}
+	if cfg != nil {
+		for _, sc := range cfg.Strategies {
+			if sc.ID == strategyID {
+				v.ExposureCapAsset = extractAsset(sc)
+				break
+			}
+		}
+	}
+	if cfg != nil && state != nil {
+		v.PeerVirtualQty = hlPeerVirtualQtyOnCoin(
+			snapshotHyperliquidVirtualQuantities(state.Strategies, hyperliquidCloseScopeStrategies(cfg.Strategies)),
+			symbol, strategyID)
+	}
+	if cfg != nil && state != nil {
+		v.PeerLongQty, v.PeerShortQty = hlPeerBooksOnCoin(state.Strategies, hyperliquidCloseScopeStrategies(cfg.Strategies), symbol, strategyID, "long")
+	}
+	ss := state.Strategies[strategyID]
+	if ss == nil {
+		return v
+	}
+	v.HasStrategy = true
+	v.PendingCBClose = ss.RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid) != nil
+	if pos := ss.Positions[symbol]; pos != nil {
+		cp := *pos
+		cp.TPOIDs = cloneInt64s(pos.TPOIDs)
+		cp.TPArmedTiers = append([]bool(nil), pos.TPArmedTiers...)
+		cp.TPConsumptions = cloneTPConsumptions(pos.TPConsumptions)
+		v.Pos = &cp
+		if cfg != nil {
+			v.PeerSame, v.PeerOppQty = hlPeerBookListOnCoin(state.Strategies, hyperliquidCloseScopeStrategies(cfg.Strategies), symbol, strategyID, pos.Side)
+			v.PeerSameQty = hlShareBookSum(v.PeerSame)
+		}
+	}
+	return v
+}
+
+type manualCoreDeps struct {
+	cfg      *Config
+	stateDB  *StateStore
+	notifier *MultiNotifier
+
+	loadState func(strategyID, symbol string) (manualStateView, error)
+
+	execute        func(script, symbol, side string, size, stopLossPct float64, cancelStopLossOID int64, prevPosQty float64, marginMode string, leverage float64, closeMode hlCloseMode, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error)
+	updateSL       func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error)
+	cancelOrder    func(script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error)
+	fetchMids      manualMarkFetcher
+	closer         HyperliquidLiveCloser
+	sizedCloser    hlSizedCloser
+	fetchPositions func(accountAddress string) ([]HLPosition, error)
+
+	// lockManualActions takes the manual-action lock of the file that owns the
+	// target strategy, so a paper command never blocks a live one.
+	lockManualActions           func(strategyID string) (release func(), err error)
+	reconcileCanceledProtection func(strategyID, symbol string, cancelOIDs []int64) error
+	recordRearmedStopLoss       func(strategyID, symbol, side string, qty float64, prevStopOID int64, result *HyperliquidStopLossUpdateResult) error
+	syncProtection              func(sc StrategyConfig, plan hlProtectionPlan) (*HyperliquidProtectionSyncResult, string, error)
+	recordRestoredTakeProfits   func(strategyID, symbol, side, positionID string, outcomes []manualCloseTPTierOutcome) error
+}
+
+func (d manualCoreDeps) acquireManualActionLock(strategyID string) (func(), error) {
+	if d.lockManualActions == nil {
+		return func() {}, nil
+	}
+	return d.lockManualActions(strategyID)
+}
+
+func newCLIManualCoreDeps(cfg *Config, store *StateStore, notifier *MultiNotifier) manualCoreDeps {
+	d := newManualCoreDeps(cfg, store, notifier)
+	d.loadState = func(strategyID, symbol string) (manualStateView, error) {
+		state, _, err := LoadStateWithStore(cfg, store)
+		if err != nil {
+			return manualStateView{}, err
+		}
+		return manualStateViewFromStateWithStore(cfg, state, store, strategyID, symbol), nil
+	}
+	return d
+}
+
+func newManualCoreDeps(cfg *Config, stateDB *StateStore, notifier *MultiNotifier) manualCoreDeps {
+	return manualCoreDeps{
+		cfg:         cfg,
+		stateDB:     stateDB,
+		notifier:    notifier,
+		execute:     runHyperliquidExecuteFn,
+		updateSL:    RunHyperliquidUpdateStopLoss,
+		cancelOrder: RunHyperliquidCancelOrder,
+		fetchMids:   fetchHyperliquidMids,
+		closer:      defaultHyperliquidForceCloseCloser,
+		sizedCloser: defaultHyperliquidSizedCloser,
+		fetchPositions: func(accountAddress string) ([]HLPosition, error) {
+			_, positions, err := fetchHyperliquidStateFn(accountAddress)
+			return positions, err
+		},
+		reconcileCanceledProtection: func(strategyID, symbol string, cancelOIDs []int64) error {
+			return reconcileCanceledExecuteProtectionInDB(cfg, stateDB, strategyID, symbol, cancelOIDs)
+		},
+		recordRearmedStopLoss: func(strategyID, symbol, side string, qty float64, prevStopOID int64, result *HyperliquidStopLossUpdateResult) error {
+			return recordRearmedStopLossInDB(cfg, stateDB, strategyID, symbol, side, qty, prevStopOID, result)
+		},
+		syncProtection: func(sc StrategyConfig, plan hlProtectionPlan) (*HyperliquidProtectionSyncResult, string, error) {
+			return RunHyperliquidSyncProtection(sc.Script, plan, nil)
+		},
+		recordRestoredTakeProfits: func(strategyID, symbol, side, positionID string, outcomes []manualCloseTPTierOutcome) error {
+			return recordRestoredTakeProfitsInDB(cfg, stateDB, strategyID, symbol, side, positionID, outcomes)
+		},
+		lockManualActions: func(strategyID string) (func(), error) {
+			return stateDB.manualActionLock(strategyID)
+		},
+	}
+}
+
+func reconcileCanceledExecuteProtectionInDB(cfg *Config, store *StateStore, strategyID, symbol string, cancelOIDs []int64) error {
+	if store == nil || len(cancelOIDs) == 0 {
+		return nil
+	}
+	state, _, err := LoadStateWithStore(cfg, store)
+	if err != nil {
+		return err
+	}
+	strategy := state.Strategies[strategyID]
+	if strategy == nil {
+		return nil
+	}
+	position := strategy.Positions[symbol]
+	if position == nil {
+		return nil
+	}
+	clearHyperliquidProtectionOIDsMatching(position, cancelOIDs)
+	return store.SaveStrategyBook(strategy)
+}
+
+func reconcileManualExecuteProtection(d manualCoreDeps, res *manualCoreResult, strategyID, symbol string, executeResult *HyperliquidExecuteResult, requestedCancelOIDs []int64) {
+	if d.reconcileCanceledProtection == nil {
+		return
+	}
+	canceledOIDs := hyperliquidExecuteSucceededCancelOIDs(executeResult, requestedCancelOIDs)
+	if len(canceledOIDs) == 0 {
+		return
+	}
+	if err := d.reconcileCanceledProtection(strategyID, symbol, canceledOIDs); err != nil {
+		res.errf("warning: could not record canceled protection for %s/%s: %v", strategyID, symbol, err)
+	}
+}
+
+func lookupManualStrategy(cfg *Config, id string) (StrategyConfig, error) {
+	for _, sc := range cfg.Strategies {
+		if sc.ID == id {
+			if sc.Type != "manual" {
+				return StrategyConfig{}, manualFailf("error: strategy %q has type=%q; manual-open/close only works with type=manual strategies", id, sc.Type)
+			}
+			return sc, nil
+		}
+	}
+	return StrategyConfig{}, manualFailf("error: strategy %q not found in config", id)
+}
+
+func lookupForceCloseStrategy(cfg *Config, id string) (StrategyConfig, string, error) {
+	for _, sc := range cfg.Strategies {
+		if sc.ID != id {
+			continue
+		}
+		if sc.Platform != "hyperliquid" || sc.Type != "perps" {
+			return StrategyConfig{}, "", manualFailf("error: strategy %q has platform=%q type=%q; force-close only works with live Hyperliquid perps strategies", id, sc.Platform, sc.Type)
+		}
+		if !hyperliquidIsLive(sc.Args) {
+			return StrategyConfig{}, "", manualFailf("error: strategy %q is not live mode; force-close only works with live Hyperliquid perps strategies", id)
+		}
+		sym := hyperliquidSymbol(sc.Args)
+		if strings.TrimSpace(sym) == "" {
+			return StrategyConfig{}, "", manualFailf("error: strategy %q has no Hyperliquid symbol in args", id)
+		}
+		return sc, sym, nil
+	}
+	return StrategyConfig{}, "", manualFailf("error: strategy %q not found in config", id)
+}
+
+func refuseIfPendingManualPositionAction(stateDB *StateStore, cmdName, strategyID, symbol string) error {
+	pending, err := pendingManualActionExists(stateDB, strategyID, symbol, "open", "add", "close")
+	if err != nil {
+		return manualFailf("error: could not check for queued position actions (%v) — refusing %s to avoid double-firing an on-chain order; retry once the scheduler is reachable", err, cmdName)
+	}
+	if pending {
+		return manualFailf("error: a position-changing action (open/add/close) for %s/%s is already submitted and awaiting the scheduler's next cycle — wait for it to apply before running %s again", strategyID, symbol, cmdName)
+	}
+	return nil
+}
+
+func refuseIfRestingLimitOrderQueued(stateDB *StateStore, cmdName, strategyID, symbol string) error {
+	existing, err := stateDB.CountPendingLimitOrders(strategyID, symbol)
+	if err != nil {
+		return manualFailf("error: could not check for resting limit orders (%v) — refusing %s to avoid double-firing an on-chain order; retry once the scheduler is reachable", err, cmdName)
+	}
+	if existing > 0 {
+		return manualFailf("error: %s already has a resting limit order for %s — cancel it first (go-trader manual-cancel %s) before running %s", strategyID, symbol, strategyID, cmdName)
+	}
+	return nil
+}
+
+func refuseIfPositionActionQueued(d manualCoreDeps, cmdName, strategyID, symbol string) error {
+	if err := refuseIfPendingManualPositionAction(d.stateDB, cmdName, strategyID, symbol); err != nil {
+		return err
+	}
+	if err := refuseIfRestingLimitOrderQueued(d.stateDB, cmdName, strategyID, symbol); err != nil {
+		return err
+	}
+	return nil
+}
+
+func pendingLimitOrdersForStrategySymbol(stateDB *StateStore, strategyID, symbol string) ([]PendingLimitOrder, error) {
+	orders, err := stateDB.LoadPendingLimitOrders()
+	if err != nil {
+		return nil, err
+	}
+	matching := make([]PendingLimitOrder, 0, len(orders))
+	for _, o := range orders {
+		if o.StrategyID == strategyID && o.Symbol == symbol {
+			matching = append(matching, o)
+		}
+	}
+	return matching, nil
+}
+
+func limitStatusForOID(res *HyperliquidLimitStatusResult, oid int64) (HyperliquidLimitOrderStatus, bool) {
+	if res == nil {
+		return HyperliquidLimitOrderStatus{}, false
+	}
+	for _, st := range res.Orders {
+		if st.OID == oid {
+			return st, true
+		}
+	}
+	return HyperliquidLimitOrderStatus{}, false
+}
+
+func clearRestingLimitRemainderForPositionAction(d manualCoreDeps, res *manualCoreResult, sc StrategyConfig, cmdName, strategyID, symbol string) (float64, float64, []int64, error) {
+	orders, err := pendingLimitOrdersForStrategySymbol(d.stateDB, strategyID, symbol)
+	if err != nil {
+		return 0, 0, nil, manualFailf("error: could not check for resting limit orders (%v) — refusing %s to avoid double-firing an on-chain order; retry once the scheduler is reachable", err, cmdName)
+	}
+	if len(orders) == 0 {
+		return 0, 0, nil, nil
+	}
+
+	if _, err := d.stateDB.MarkPendingLimitOrderCancelRequested(strategyID, symbol); err != nil {
+		return 0, 0, nil, manualFailf("error: could not mark resting limit order cancel_requested (%v) — refusing %s to avoid racing the scheduler's fill adoption", err, cmdName)
+	}
+
+	var clearedQty, clearedNotional float64
+	var cancelledOIDs []int64
+	for _, o := range orders {
+		cancelRes, cstderr, cerr := runHyperliquidCancelOrderFn(sc.Script, o.Symbol, o.OrderOID)
+		if cstderr != "" {
+			res.errf("[limit-cancel] %s stderr: %s", strategyID, cstderr)
+		}
+		if cerr != nil || cancelRes == nil || cancelRes.Error != "" {
+			msg := ""
+			if cancelRes != nil {
+				msg = cancelRes.Error
+			}
+			return 0, 0, nil, manualFailf("error: could not cancel resting limit order for %s/%s (oid=%d): %v %s — cancellation is queued for the scheduler; wait for the next cycle before running %s", strategyID, o.Symbol, o.OrderOID, cerr, msg, cmdName)
+		}
+
+		cancelledOIDs = append(cancelledOIDs, o.OrderOID)
+
+		statusRes, sstderr, serr := runHyperliquidLimitStatusFn(sc.Script, o.Symbol, []int64{o.OrderOID}, limitStatusSinceMs(o.CreatedAt))
+		if sstderr != "" {
+			res.errf("[limit-status] %s stderr: %s", strategyID, sstderr)
+		}
+		if serr != nil || statusRes == nil || statusRes.Error != "" {
+			msg := ""
+			if statusRes != nil {
+				msg = statusRes.Error
+			}
+			return 0, 0, nil, manualFailf("error: could not verify cancelled limit order for %s/%s (oid=%d): %v %s — cancellation is queued for the scheduler; wait for it to adopt any final fill before running %s", strategyID, o.Symbol, o.OrderOID, serr, msg, cmdName)
+		}
+		if statusRes.OpenOrdersError != "" {
+			return 0, 0, nil, manualFailf("error: could not verify cancelled limit order for %s/%s (oid=%d): open-orders state unknown (%s) — cancellation is queued for the scheduler; wait for the next cycle before running %s", strategyID, o.Symbol, o.OrderOID, statusRes.OpenOrdersError, cmdName)
+		}
+		st, ok := limitStatusForOID(statusRes, o.OrderOID)
+		if !ok {
+			return 0, 0, nil, manualFailf("error: could not verify cancelled limit order for %s/%s (oid=%d): status response did not include the order — cancellation is queued for the scheduler; wait for the next cycle before running %s", strategyID, o.Symbol, o.OrderOID, cmdName)
+		}
+		if st.FillsError != "" {
+			return 0, 0, nil, manualFailf("error: could not verify cancelled limit order fills for %s/%s (oid=%d): %s — cancellation is queued for the scheduler; wait for it to adopt any final fill before running %s", strategyID, o.Symbol, o.OrderOID, st.FillsError, cmdName)
+		}
+		if st.Resting == nil || *st.Resting {
+			return 0, 0, nil, manualFailf("error: resting limit order for %s/%s (oid=%d) is not yet confirmed off-book — cancellation is queued for the scheduler; wait for the next cycle before running %s", strategyID, o.Symbol, o.OrderOID, cmdName)
+		}
+		if st.FilledSize > o.FilledSize+limitFillEpsilon {
+			return 0, 0, nil, manualFailf("error: resting limit order for %s/%s (oid=%d) has an unadopted fill (tracked %.6f, exchange %.6f) — cancellation is queued; run/wait for the scheduler to adopt the fill before running %s", strategyID, o.Symbol, o.OrderOID, o.FilledSize, st.FilledSize, cmdName)
+		}
+		if err := d.stateDB.DeletePendingLimitOrder(o.ID); err != nil {
+			return 0, 0, nil, manualFailf("error: cancelled limit order for %s/%s (oid=%d) is off-book but the queue row could not be cleared (%v) — refusing %s so the scheduler can finalize it safely", strategyID, o.Symbol, o.OrderOID, err, cmdName)
+		}
+		fillPx := st.AvgPx
+		if fillPx <= 0 {
+			fillPx = o.LimitPrice
+		}
+		clearedQty += st.FilledSize
+		clearedNotional += st.FilledSize * fillPx
+		res.outf("Cancelled resting limit remainder: %s %s oid=%d before %s", strategyID, o.Symbol, o.OrderOID, cmdName)
+	}
+	clearedAvgPx := 0.0
+	if clearedQty > 0 {
+		clearedAvgPx = clearedNotional / clearedQty
+	}
+	return clearedQty, clearedAvgPx, cancelledOIDs, nil
+}
+
+type manualOpenInputs struct {
+	StrategyID string
+	Side       string
+	Size       float64
+	Notional   float64
+	Margin     float64
+	ATR        float64
+	SLATRMult  float64
+	SLPct      float64
+	RecordOnly bool
+	FillPrice  float64
+	DryRun     bool
+}
+
+func resolveManualOpenSide(cfg *Config, sc StrategyConfig, side string) (string, string, error) {
+	side = strings.ToLower(strings.TrimSpace(side))
+	if side == "" {
+		side = cfg.resolveManualSide()
+	}
+	if side != "long" && side != "short" {
+		return "", "", manualUsagef("error: --side must be \"long\" or \"short\", got %q", side)
+	}
+	if side == "short" && !PerpsAllowsShort(sc) {
+		return "", "", manualFailf("error: strategy %q direction=%q does not allow shorts (set direction to %q or %q)", sc.ID, EffectiveDirection(sc), DirectionShort, DirectionBoth)
+	}
+	if side == "long" && !PerpsAllowsLong(sc) {
+		return "", "", manualFailf("error: strategy %q direction=%q does not allow longs (set direction to %q or %q)", sc.ID, EffectiveDirection(sc), DirectionLong, DirectionBoth)
+	}
+	openSide := "buy"
+	if side == "short" {
+		openSide = "sell"
+	}
+	return side, openSide, nil
+}
+
+func validateManualSizing(cfg *Config, size, notional, margin float64, recordOnly bool) (float64, bool, error) {
+	sizingInputs := countSizingFlags(size, notional, margin)
+	defaulted := false
+	if sizingInputs == 0 && !recordOnly {
+		margin = cfg.resolveManualMarginUSD()
+		sizingInputs = 1
+		defaulted = true
+	}
+	if sizingInputs == 0 {
+		return margin, false, manualUsagef("error: one of --size, --notional, or --margin is required")
+	}
+	if sizingInputs > 1 {
+		return margin, false, manualUsagef("error: only one of --size, --notional, or --margin may be specified")
+	}
+	return margin, defaulted, nil
+}
+
+func manualOpenCore(d manualCoreDeps, sc StrategyConfig, in manualOpenInputs) (*manualCoreResult, error) {
+	res := &manualCoreResult{}
+	strategyID := in.StrategyID
+	cfg := d.cfg
+
+	side, openSide, err := resolveManualOpenSide(cfg, sc, in.Side)
+	if err != nil {
+		return res, err
+	}
+
+	margin, marginDefaulted, err := validateManualSizing(cfg, in.Size, in.Notional, in.Margin, in.RecordOnly)
+	if err != nil {
+		return res, err
+	}
+	if marginDefaulted {
+		res.errf("[manual-open] no sizing flag provided; defaulting to --margin %g", margin)
+	}
+	in.Margin = margin
+
+	if in.RecordOnly {
+		if in.Size <= 0 {
+			return res, manualUsagef("error: --record-only requires --size (coin qty of the fill you placed)")
+		}
+		if in.FillPrice <= 0 {
+			return res, manualUsagef("error: --record-only requires --fill-price (the price at which your fill executed)")
+		}
+	}
+
+	if !in.DryRun {
+		view, loadErr := d.loadState(strategyID, sc.Symbol)
+		if loadErr != nil {
+			res.errf("warning: could not load state for safety check: %v", loadErr)
+		} else {
+			if view.KillSwitch {
+				return res, manualFailf("error: portfolio kill switch is active — manual-open blocked (use manual-close to flatten)")
+			}
+			if view.PendingCBClose {
+				return res, manualFailf("error: strategy has a pending circuit-breaker close — manual-open blocked")
+			}
+			if view.DailyLossHold {
+				return res, manualFailf("error: %s — manual-open blocked until UTC rollover (closes and SL edits are unaffected)", view.DailyLossNote)
+			}
+			if view.NotionalHold {
+				return res, manualFailf("error: %s — manual-open blocked (closes and SL edits are unaffected)", view.NotionalNote)
+			}
+			if view.PersistenceHold {
+				return res, manualFailf("error: the last state save for this scope failed and has not been acknowledged — manual-open blocked until a save succeeds (closes and SL edits are unaffected)")
+			}
+			if blocked, why := exposureCapManualEntryBlock(view.ExposureCap, view.ExposureCapAsset, side); blocked {
+				return res, manualFailf("error: %s — manual-open (%s) blocked (closes and SL edits are unaffected)", why, side)
+			}
+			if view.ExposureCap.PVBasisMiss {
+				res.errf("%s", exposureCapPVBasisMissWarning)
+			}
+		}
+	}
+
+	if !in.RecordOnly && !in.DryRun {
+		unlock, lockErr := d.acquireManualActionLock(strategyID)
+		if lockErr != nil {
+			return res, manualFailf("error: %v — refusing to avoid double-firing an on-chain order", lockErr)
+		}
+		defer unlock()
+		if err := refuseIfPositionActionQueued(d, "manual-open", strategyID, sc.Symbol); err != nil {
+			return res, err
+		}
+	}
+
+	entryATR := in.ATR
+	if in.RecordOnly && entryATR > 0 && in.FillPrice > 0 && entryATR > 0.5*in.FillPrice {
+		return res, manualFailf("error: --atr %.4f exceeds 50%% of fill price %.4f (plausibility guard)", entryATR, in.FillPrice)
+	}
+
+	effectiveSLPct := 0.0
+	if in.SLPct > 0 {
+		effectiveSLPct = in.SLPct
+	}
+
+	script := sc.Script
+
+	var resolvedOrderSize, sizingMark float64
+	var sizingFailed bool
+	if !in.RecordOnly {
+		qty, mark, err := resolveManualOpenOrderSize(sc, in.Size, in.Notional, in.Margin, d.fetchMids)
+		if err != nil {
+			if in.DryRun {
+				res.errf("warning: dry-run sizing best-effort failed: %v", err)
+				sizingFailed = true
+			} else {
+				return res, manualFailf("error: %v", err)
+			}
+		}
+		resolvedOrderSize = qty
+		sizingMark = mark
+	}
+
+	var resolvedFillPrice, fillQty, fillFee float64
+	var exchangeOID string
+
+	if in.DryRun {
+		prefix := "[dry-run]"
+		if sizingFailed {
+			prefix = "[dry-run] [sizing failed]"
+		}
+		res.outf("%s manual-open %s: %s %.6f %s (script=%s, sl_pct=%.2f, mark=$%.4f)",
+			prefix, strategyID, side, resolvedOrderSize, sc.Symbol, script, effectiveSLPct, sizingMark)
+		return res, nil
+	}
+
+	if in.RecordOnly {
+		fillQty = in.Size
+		resolvedFillPrice = in.FillPrice
+		if entryATR > 0 && entryATR > 0.5*resolvedFillPrice {
+			return res, manualFailf("error: --atr %.4f exceeds 50%% of fill price %.4f (plausibility guard)", entryATR, resolvedFillPrice)
+		}
+		if in.SLATRMult > 0 || in.SLPct > 0 || (sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0) {
+			res.errf("warning: --record-only does not arm a stop-loss trigger automatically — place the SL manually on the HL UI")
+		}
+	} else {
+		execResult, execStderr, execErr := d.execute(
+			script, sc.Symbol, openSide,
+			resolvedOrderSize,
+			effectiveSLPct, 0, 0, sc.MarginMode, sc.Leverage, hlCloseModeNone,
+			hlExecuteSnapshot{},
+		)
+		if execStderr != "" {
+			res.errf("HL execute stderr: %s", execStderr)
+		}
+		execResult, execErr = confirmHyperliquidExecuteFill(execResult, execErr)
+		if execErr != nil {
+			reconcileManualExecuteProtection(d, res, strategyID, sc.Symbol, execResult, nil)
+			return res, manualFailf("error placing order: %v", execErr)
+		}
+
+		fill := execResult.Execution
+		resolvedFillPrice = fill.Fill.AvgPx
+		fillQty = fill.Fill.TotalSz
+		fillFee = fill.Fill.Fee
+		if fill.Fill.OID != 0 {
+			exchangeOID = fmt.Sprintf("%d", fill.Fill.OID)
+		}
+		if entryATR > 0 && resolvedFillPrice > 0 && entryATR > 0.5*resolvedFillPrice {
+			res.errf("warning: --atr %.4f exceeds 50%% of fill price %.4f — EntryATR will not be stamped", entryATR, resolvedFillPrice)
+			entryATR = 0
+		}
+	}
+
+	res.outf("Filled: %s %.6f %s @ $%.4f (fee=$%.4f)", side, fillQty, sc.Symbol, resolvedFillPrice, fillFee)
+
+	notifier := d.notifier
+
+	effectiveATRMult := in.SLATRMult
+	if effectiveATRMult == 0 && sc.StopLossATRMult != nil {
+		effectiveATRMult = *sc.StopLossATRMult
+	}
+
+	ratchetFallbackNormalizePending := false
+	if effectiveATRMult == 0 && !in.RecordOnly && strategyUsesTrailingTPRatchetClose(sc) &&
+		sc.TrailingStopATRMultRegime != nil && sc.TrailingStopATRMultRegime.IsConfigured() {
+		label := resolveManualRatchetRegimeLabel(sc, cfg, notifier)
+		mult, fellBack := manualRatchetOpeningTrailOrFallback(sc.TrailingStopATRMultRegime, label, cfg.resolveManualRatchetFallbackATRMult())
+		effectiveATRMult = mult
+		ratchetFallbackNormalizePending = fellBack
+		if fellBack {
+			warnNotifier(notifier, fmt.Sprintf("[manual-open] %s %s: could not resolve the live regime trail (label=%q); arming a fallback SL at %.4g×ATR (daemon will normalize once when the configured regime trail is available)", strategyID, sc.Symbol, label, effectiveATRMult))
+		} else {
+			res.errf("[manual-open] %s %s: regime=%s → initial trailing SL at %.4g×ATR", strategyID, sc.Symbol, label, mult)
+		}
+	}
+
+	if !in.RecordOnly && entryATR == 0 {
+		needsATRProtection := effectiveATRMult > 0 || strategyUsesTieredTPATRClose(sc)
+		if needsATRProtection {
+			fetched, fetchErr, fetchedOK := fetchManualEntryATR(sc, cfg)
+			if fetchedOK {
+				if resolvedFillPrice > 0 && fetched > 0.5*resolvedFillPrice {
+					fetchErr = fmt.Sprintf("fetched ATR=%.6f exceeds 50%% of fill price %.4f", fetched, resolvedFillPrice)
+					fetchedOK = false
+				} else {
+					entryATR = fetched
+					res.errf("[manual-open] %s %s: --atr omitted; auto-fetched ATR=%.6f (period=14, %s)",
+						strategyID, sc.Symbol, fetched, resolveManualATRTimeframe(sc))
+				}
+			}
+			if !fetchedOK {
+				if fb, ok := computeFallbackATR(resolvedFillPrice, sc.Leverage); ok {
+					entryATR = fb
+					warnNotifier(notifier, fmt.Sprintf(
+						"[manual-open] %s %s: ATR auto-fetch failed (%s); using fallback ATR=%.6f (0.1*%.4f/%.2f lev) — pass --atr explicitly for accuracy",
+						strategyID, sc.Symbol, fetchErr, fb, resolvedFillPrice, sc.Leverage))
+				} else {
+					warnNotifier(notifier, fmt.Sprintf(
+						"[manual-open] %s %s: ATR auto-fetch failed (%s) and leverage<=0 — cannot compute fallback; position is NAKED (no ATR-based SL/TP)",
+						strategyID, sc.Symbol, fetchErr))
+				}
+			}
+		}
+	}
+
+	var stopLossOID int64
+	var stopLossTriggerPx float64
+
+	if effectiveATRMult > 0 && entryATR > 0 && !in.RecordOnly {
+		if side == "long" {
+			stopLossTriggerPx = resolvedFillPrice - effectiveATRMult*entryATR
+		} else {
+			stopLossTriggerPx = resolvedFillPrice + effectiveATRMult*entryATR
+		}
+		if stopLossTriggerPx > 0 {
+			slResult, slStderr, slErr := d.updateSL(script, sc.Symbol, side, fillQty, stopLossTriggerPx, 0)
+			if slStderr != "" {
+				res.errf("SL arm stderr: %s", slStderr)
+			}
+			if slErr != nil {
+				res.errf("warning: SL placement failed: %v (position is open but unprotected)", slErr)
+			} else if slResult.Error != "" {
+				res.errf("warning: SL arm error: %s", slResult.Error)
+			} else {
+				stopLossOID = slResult.StopLossOID
+				stopLossTriggerPx = slResult.StopLossTriggerPx
+				res.outf("Stop-loss armed at $%.4f (OID=%d)", stopLossTriggerPx, stopLossOID)
+			}
+		}
+	}
+
+	var tpOIDs []int64
+	if !in.RecordOnly && strategyUsesTieredTPATRClose(sc) && entryATR > 0 {
+		oids, warn, err := placeManualProtectionInline(sc, side, fillQty, resolvedFillPrice, entryATR, effectiveATRMult, stopLossOID)
+		if err != nil || warn != "" {
+			warnNotifier(notifier, fmt.Sprintf(
+				"[manual-open] %s %s: TP placement issue (position open with SL only): err=%v warn=%s",
+				strategyID, sc.Symbol, err, warn))
+		}
+		tpOIDs = oids
+		if len(oids) > 0 {
+			res.outf("Take-profits armed: OIDs=%v", oids)
+		}
+	}
+
+	action := PendingManualAction{
+		StrategyID:                      strategyID,
+		Action:                          "open",
+		Symbol:                          sc.Symbol,
+		Side:                            side,
+		Quantity:                        fillQty,
+		FillPrice:                       resolvedFillPrice,
+		FillFee:                         fillFee,
+		ExchangeOrderID:                 exchangeOID,
+		StopLossOID:                     stopLossOID,
+		StopLossTriggerPx:               stopLossTriggerPx,
+		EntryATR:                        entryATR,
+		ATRMethod:                       resolveATRMethod(sc, cfg),
+		TPOIDs:                          tpOIDs,
+		RatchetFallbackNormalizePending: ratchetFallbackNormalizePending && stopLossOID > 0 && stopLossTriggerPx > 0,
+		CreatedAt:                       time.Now().UTC(),
+	}
+	if err := d.stateDB.InsertPendingManualAction(action); err != nil {
+		if in.RecordOnly {
+			return res, manualFailf("error queuing action: %v", err)
+		}
+		res.errf("CRITICAL: queue insert failed (%v); on-chain position is open but the scheduler cannot adopt it. Attempting cleanup...", err)
+		cleanupView, cleanupViewErr := d.loadState(strategyID, sc.Symbol)
+		cleanedUp, cleanupMsg := attemptManualOpenCleanup(manualOpenCleanupInput{
+			StrategyID:  strategyID,
+			Symbol:      sc.Symbol,
+			Side:        side,
+			FillQty:     fillQty,
+			StopLossOID: stopLossOID,
+			TPOIDs:      tpOIDs,
+			View:        cleanupView,
+			ViewKnown:   cleanupViewErr == nil,
+			Refetch:     d.fetchOnChainView,
+			Cfg:         cfg,
+		})
+		if cleanedUp {
+			warnNotifier(notifier, fmt.Sprintf(
+				"[manual-open] %s %s: queue insert failed (%v); position auto-flattened: %s",
+				strategyID, sc.Symbol, err, cleanupMsg))
+		} else {
+			warnNotifier(notifier, fmt.Sprintf(
+				"[manual-open] %s %s: queue insert failed (%v) AND auto-flatten failed: %s — MANUAL INTERVENTION REQUIRED on HL UI (side=%s qty=%.6f sl_oid=%d tp_oids=%v)",
+				strategyID, sc.Symbol, err, cleanupMsg, side, fillQty, stopLossOID, tpOIDs))
+		}
+		return res, manualFailf("error queuing action: %v", err)
+	}
+
+	res.queued = true
+	res.outf("Queued: %s position will appear in the dashboard after the next scheduler cycle.", strategyID)
+	return res, nil
+}
+
+type manualAddInputs struct {
+	StrategyID string
+	Size       float64
+	Notional   float64
+	Margin     float64
+	RecordOnly bool
+	FillPrice  float64
+	DryRun     bool
+}
+
+func manualAddCore(d manualCoreDeps, sc StrategyConfig, in manualAddInputs) (*manualCoreResult, error) {
+	res := &manualCoreResult{}
+	strategyID := in.StrategyID
+
+	margin, marginDefaulted, err := validateManualSizing(d.cfg, in.Size, in.Notional, in.Margin, in.RecordOnly)
+	if err != nil {
+		return res, err
+	}
+	if marginDefaulted {
+		res.errf("[manual-add] no sizing flag provided; defaulting to --margin %g", margin)
+	}
+	in.Margin = margin
+	if in.RecordOnly {
+		if in.Size <= 0 {
+			return res, manualUsagef("error: --record-only requires --size (coin qty of the fill you placed)")
+		}
+		if in.FillPrice <= 0 {
+			return res, manualUsagef("error: --record-only requires --fill-price (the price at which your fill executed)")
+		}
+	}
+
+	view, loadErr := d.loadState(strategyID, sc.Symbol)
+	if loadErr != nil {
+		return res, manualFailf("error: could not load state to locate the open position: %v", loadErr)
+	}
+	if view.KillSwitch {
+		return res, manualFailf("error: portfolio kill switch is active — manual-add blocked (use manual-close to flatten)")
+	}
+	if !view.HasStrategy {
+		return res, manualFailf("error: no state for strategy %q", strategyID)
+	}
+	if view.PendingCBClose {
+		return res, manualFailf("error: strategy has a pending circuit-breaker close — manual-add blocked")
+	}
+	if view.DailyLossHold {
+		return res, manualFailf("error: %s — manual-add blocked until UTC rollover (closes and SL edits are unaffected)", view.DailyLossNote)
+	}
+	pos := view.Pos
+	if pos == nil {
+		return res, manualFailf("error: no open position for %s/%s; open one first with manual-open", strategyID, sc.Symbol)
+	}
+	if view.NotionalHold {
+		return res, manualFailf("error: %s — manual-add blocked (closes and SL edits are unaffected)", view.NotionalNote)
+	}
+	if view.PersistenceHold {
+		return res, manualFailf("error: the last state save for this scope failed and has not been acknowledged — manual-add blocked until a save succeeds (closes and SL edits are unaffected)")
+	}
+	addDir := "long"
+	if pos.Side == "short" {
+		addDir = "short"
+	}
+	if blocked, why := exposureCapManualEntryBlock(view.ExposureCap, view.ExposureCapAsset, addDir); blocked {
+		return res, manualFailf("error: %s — manual-add (%s) blocked (closes and SL edits are unaffected)", why, addDir)
+	}
+	if view.ExposureCap.PVBasisMiss {
+		res.errf("%s", exposureCapPVBasisMissWarning)
+	}
+
+	if !in.RecordOnly && !in.DryRun {
+		unlock, lockErr := d.acquireManualActionLock(strategyID)
+		if lockErr != nil {
+			return res, manualFailf("error: %v — refusing to avoid double-firing an on-chain order", lockErr)
+		}
+		defer unlock()
+		if _, _, _, err := clearRestingLimitRemainderForPositionAction(d, res, sc, "manual-add", strategyID, sc.Symbol); err != nil {
+			return res, err
+		}
+		if err := refuseIfPositionActionQueued(d, "manual-add", strategyID, sc.Symbol); err != nil {
+			return res, err
+		}
+	}
+
+	side := pos.Side
+	addSide := "buy"
+	if side == "short" {
+		addSide = "sell"
+	}
+
+	var resolvedOrderSize, sizingMark float64
+	if !in.RecordOnly {
+		qty, mark, err := resolveManualOpenOrderSize(sc, in.Size, in.Notional, in.Margin, d.fetchMids)
+		if err != nil {
+			if in.DryRun {
+				res.errf("warning: dry-run sizing best-effort failed: %v", err)
+			} else {
+				return res, manualFailf("error: %v", err)
+			}
+		}
+		resolvedOrderSize = qty
+		sizingMark = mark
+	}
+
+	if in.DryRun {
+		res.outf("[dry-run] manual-add %s: %s +%.6f %s (script=%s, mark=$%.4f, current qty=%.6f avg=$%.4f)",
+			strategyID, side, resolvedOrderSize, sc.Symbol, sc.Script, sizingMark, pos.Quantity, pos.AvgCost)
+		return res, nil
+	}
+
+	var resolvedFillPrice, fillQty, fillFee float64
+	var exchangeOID string
+
+	if in.RecordOnly {
+		fillQty = in.Size
+		resolvedFillPrice = in.FillPrice
+	} else {
+		execResult, execStderr, execErr := d.execute(
+			sc.Script, sc.Symbol, addSide,
+			resolvedOrderSize,
+			0, 0, 0, "", 0, hlCloseModeNone,
+			hlExecuteSnapshot{},
+		)
+		if execStderr != "" {
+			res.errf("HL execute stderr: %s", execStderr)
+		}
+		execResult, execErr = confirmHyperliquidExecuteFill(execResult, execErr)
+		if execErr != nil {
+			reconcileManualExecuteProtection(d, res, strategyID, sc.Symbol, execResult, nil)
+			return res, manualFailf("error placing order: %v", execErr)
+		}
+		fill := execResult.Execution
+		resolvedFillPrice = fill.Fill.AvgPx
+		fillQty = fill.Fill.TotalSz
+		fillFee = fill.Fill.Fee
+		if fill.Fill.OID != 0 {
+			exchangeOID = fmt.Sprintf("%d", fill.Fill.OID)
+		}
+	}
+
+	res.outf("Filled scale-in: %s +%.6f %s @ $%.4f (fee=$%.4f)", side, fillQty, sc.Symbol, resolvedFillPrice, fillFee)
+
+	action := PendingManualAction{
+		StrategyID:      strategyID,
+		Action:          "add",
+		Symbol:          sc.Symbol,
+		Side:            side,
+		Quantity:        fillQty,
+		FillPrice:       resolvedFillPrice,
+		FillFee:         fillFee,
+		ExchangeOrderID: exchangeOID,
+		CreatedAt:       time.Now().UTC(),
+	}
+	if err := d.stateDB.InsertPendingManualAction(action); err != nil {
+		return res, manualFailf("error queuing action: %v", err)
+	}
+	res.queued = true
+	res.outf("Queued: scale-in for %s will blend into the position after the next scheduler cycle.", strategyID)
+	return res, nil
+}
+
+func operatorSharedCloseFloorDecision(d manualCoreDeps, symbol, posSide string, posQty, peerVirtualQty float64) operatorSharedCloseDecision {
+	var hlLiveAll []StrategyConfig
+	if d.cfg != nil {
+		hlLiveAll = hyperliquidCloseScopeStrategies(d.cfg.Strategies)
+	}
+	if len(hlLiveStrategiesForCoin(symbol, hlLiveAll)) <= 1 {
+		return operatorSharedCloseDecision{}
+	}
+	price := 0.0
+	if d.fetchMids != nil {
+		if marks, err := d.fetchMids([]string{symbol}); err == nil {
+			price = marks[symbol]
+		}
+	}
+	return decideOperatorSharedCloseFloor(symbol, posSide, posQty, price, hlLiveAll, peerVirtualQty, d.fetchOnChainView)
+}
+
+func (d manualCoreDeps) fetchOnChainView() (hlOnChainCoinView, error) {
+	if d.fetchPositions == nil {
+		return hlOnChainCoinView{}, fmt.Errorf("no Hyperliquid account reader is configured")
+	}
+	addr := os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS")
+	if addr == "" {
+		return hlOnChainCoinView{}, fmt.Errorf("HYPERLIQUID_ACCOUNT_ADDRESS is not set")
+	}
+	positions, err := d.fetchPositions(addr)
+	if err != nil {
+		return hlOnChainCoinView{}, err
+	}
+	return hlOnChainCoinViewFromPositions(positions), nil
+}
+
+func operatorSizedClosePlan(d manualCoreDeps, symbol string, pos *Position, closeQty float64, view manualStateView) (hlCloseOrderPlan, error) {
+	onChain, err := d.fetchOnChainView()
+	if err != nil {
+		onChain = hlOnChainCoinView{}
+	}
+	plan := planHLCloseOrder(symbol, pos.Side, pos.Quantity, closeQty, view.PeerSameQty, view.PeerOppQty, onChain)
+	plan.PreSend = plan.PreSend.from(hlCloseViewPreSendRefetch)
+	return plan, err
+}
+
+func operatorSizedCloseRefusal(plan hlCloseOrderPlan) string {
+	if plan.Action == hlCloseDefer {
+		return plan.Reason + " — no close order sent"
+	}
+	return plan.Reason
+}
+
+func operatorSizedCloseLabel(mode hlCloseMode) string {
+	if mode == hlCloseModeCross {
+		return "cross"
+	}
+	return "reduce-only"
+}
+
+type manualCloseInputs struct {
+	StrategyID string
+	Qty        float64
+	DryRun     bool
+}
+
+func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) (*manualCoreResult, error) {
+	res := &manualCoreResult{}
+	strategyID := in.StrategyID
+
+	view, loadErr := d.loadState(strategyID, sc.Symbol)
+	if loadErr != nil {
+		return res, manualFailf("Failed to load state: %v", loadErr)
+	}
+	pos := view.Pos
+	if pos == nil {
+		return res, manualFailf("error: no open position found for %s/%s", strategyID, sc.Symbol)
+	}
+	if !manualPositionOwnedByStrategy(pos, strategyID) {
+		return res, manualFailf("error: position %s/%s is owned by %q, not %q", strategyID, sc.Symbol, pos.OwnerStrategyID, strategyID)
+	}
+
+	if in.DryRun {
+		dryCloseSide := "sell"
+		if pos.Side == "short" {
+			dryCloseSide = "buy"
+		}
+		dryCloseQty := pos.Quantity
+		dryFullClose := true
+		if in.Qty > 0 {
+			if in.Qty > pos.Quantity {
+				return res, manualFailf("error: --qty %.6f exceeds open position %.6f", in.Qty, pos.Quantity)
+			}
+			dryCloseQty = in.Qty
+			if pos.Quantity-in.Qty > 0.0001 {
+				dryFullClose = false
+			}
+		}
+		dryWholePosition := false
+		if d.cfg != nil {
+			dryWholePosition = shouldCloseFullPosition(
+				manualCloseIntentFraction(dryFullClose, dryCloseQty, pos.Quantity),
+				sc.Symbol,
+				hyperliquidCloseScopeStrategies(d.cfg.Strategies),
+			)
+		}
+		mode := fmt.Sprintf("sized %.6f", dryCloseQty)
+		if dryWholePosition {
+			mode = "full market_close"
+		}
+		if dryFullClose && !dryWholePosition && hyperliquidIsLive(sc.Args) {
+			floor := operatorSharedCloseFloorDecision(d, sc.Symbol, pos.Side, pos.Quantity, view.PeerVirtualQty)
+			switch {
+			case floor.Refuse:
+				res.outf("[dry-run] manual-close %s: REFUSED — %s", strategyID, floor.Reason)
+				return res, nil
+			case floor.Escalate:
+				dryWholePosition = true
+				mode = "full market_close (escalated: peers flat)"
+			case floor.MarkUnreadable:
+				res.errf("[dry-run] warning: manual-close %s: %s", strategyID, floor.Reason)
+			}
+		}
+		if !dryWholePosition && hyperliquidIsLive(sc.Args) {
+			plan, fetchErr := operatorSizedClosePlan(d, sc.Symbol, pos, dryCloseQty, view)
+			if plan.Action != hlCloseSend {
+				res.outf("[dry-run] manual-close %s: REFUSED — %s", strategyID, operatorSizedCloseRefusal(plan))
+				return res, nil
+			}
+			if fetchErr != nil {
+				res.errf("[dry-run] warning: manual-close %s: the on-chain position read failed (%v); the close would be sent reduce-only at the book size", strategyID, fetchErr)
+			}
+			dryCloseQty = plan.Size
+			mode = fmt.Sprintf("sized %s %.6f", operatorSizedCloseLabel(plan.Mode), plan.Size)
+		}
+		res.outf("[dry-run] manual-close %s: %s %.6f %s (current pos=%.6f, avg_cost=$%.4f, %s)",
+			strategyID, dryCloseSide, dryCloseQty, sc.Symbol, pos.Quantity, pos.AvgCost, mode)
+		return res, nil
+	}
+
+	unlock, lockErr := d.acquireManualActionLock(strategyID)
+	if lockErr != nil {
+		return res, manualFailf("error: %v — refusing to avoid double-firing an on-chain order", lockErr)
+	}
+	defer unlock()
+
+	clearedQty, clearedAvgPx, cancelledLimitOIDs, err := clearRestingLimitRemainderForPositionAction(d, res, sc, "manual-close", strategyID, sc.Symbol)
+	if err != nil {
+		return res, err
+	}
+	if clearedQty > 0 {
+		if clearedQty > pos.Quantity+limitFillEpsilon {
+			staleQty := pos.Quantity
+			pos.Quantity = clearedQty
+			if clearedAvgPx > 0 {
+				pos.AvgCost = clearedAvgPx
+			}
+			res.errf("[manual-close] %s %s: reconciled stale position snapshot %.6f → %.6f (scheduler adopted a limit fill before flushing state); closing the true size",
+				strategyID, sc.Symbol, staleQty, pos.Quantity)
+		}
+	} else {
+		refreshed, rerr := d.loadState(strategyID, sc.Symbol)
+		if rerr != nil {
+			return res, manualFailf("Failed to re-load state: %v", rerr)
+		}
+		if refreshed.Pos == nil {
+			return res, manualFailf("error: no open position found for %s/%s", strategyID, sc.Symbol)
+		}
+		if !manualPositionOwnedByStrategy(refreshed.Pos, strategyID) {
+			return res, manualFailf("error: position %s/%s is owned by %q, not %q", strategyID, sc.Symbol, refreshed.Pos.OwnerStrategyID, strategyID)
+		}
+		view = refreshed
+		pos = refreshed.Pos
+	}
+
+	closeSide := "sell"
+	if pos.Side == "short" {
+		closeSide = "buy"
+	}
+
+	closeQty := pos.Quantity
+	intentFullClose := true
+	if in.Qty > 0 {
+		if in.Qty > pos.Quantity {
+			return res, manualFailf("error: --qty %.6f exceeds open position %.6f", in.Qty, pos.Quantity)
+		}
+		closeQty = in.Qty
+		if pos.Quantity-in.Qty > 0.0001 {
+			intentFullClose = false
+		}
+	}
+	if err := refuseIfPositionActionQueued(d, "manual-close", strategyID, sc.Symbol); err != nil {
+		return res, err
+	}
+
+	if intentFullClose {
+		if pending, perr := pendingSLActionExists(d.stateDB, strategyID, sc.Symbol, pos); perr != nil {
+			return res, manualFailf("error: could not check for queued stop-loss edits (%v) — refusing the full close to avoid orphaning an on-chain order; retry once the scheduler is reachable", perr)
+		} else if pending {
+			return res, manualFailf("error: a stop-loss edit for %s/%s is queued and not yet applied — run the scheduler (`--once`) or wait for the next cycle before a full close (closing now would orphan the new stop-loss on-chain)", strategyID, sc.Symbol)
+		}
+	}
+
+	cancelOID := int64(0)
+	if intentFullClose {
+		cancelOID = pos.StopLossOID
+	}
+	closeFullPosition := shouldCloseFullPosition(
+		manualCloseIntentFraction(intentFullClose, closeQty, pos.Quantity),
+		sc.Symbol,
+		hyperliquidCloseScopeStrategies(d.cfg.Strategies),
+	)
+	if intentFullClose && !closeFullPosition && hyperliquidIsLive(sc.Args) {
+		floor := operatorSharedCloseFloorDecision(d, sc.Symbol, pos.Side, pos.Quantity, view.PeerVirtualQty)
+		switch {
+		case floor.Refuse:
+			reason := operatorRefusalWithCancelledRestingLimits(floor.Reason, cancelledLimitOIDs)
+			notifySharedCloseStranded(d.notifier, sc, sc.Symbol, floor.RemainderUSD, reason, hlSharedCloseHoldOperatorRef)
+			return res, manualFailf("error: %s", reason)
+		case floor.Escalate:
+			closeFullPosition = true
+			res.outf("manual-close %s: the closing value $%.2f is under the $%.2f venue minimum gate and every peer is flat on-chain and in its own book — escalating to a whole-position close",
+				sc.Symbol, floor.RemainderUSD, hlVenueCloseGateThresholdUSD())
+		case floor.MarkUnreadable:
+			res.errf("warning: manual-close %s: %s", sc.Symbol, floor.Reason)
+		}
+	}
+	closeMode := hlCloseModeNone
+	var preSend hlCloseView
+	if closeFullPosition {
+		closeMode = hlCloseModeWhole
+	} else if hyperliquidIsLive(sc.Args) {
+		plan, fetchErr := operatorSizedClosePlan(d, sc.Symbol, pos, closeQty, view)
+		if plan.Action != hlCloseSend {
+			return res, manualFailf("error: %s", operatorRefusalWithCancelledRestingLimits(operatorSizedCloseRefusal(plan), cancelledLimitOIDs))
+		}
+		if fetchErr != nil {
+			res.errf("warning: manual-close %s: the on-chain position read failed (%v); sending the close reduce-only at the book size", sc.Symbol, fetchErr)
+		}
+		if plan.Capped {
+			res.errf("warning: manual-close %s: the close is capped from %.6f to %.6f by the on-chain position (%s)", sc.Symbol, closeQty, plan.Size, plan.Reason)
+		}
+		closeQty = plan.Size
+		closeMode = plan.Mode
+		preSend = plan.PreSend
+	}
+	var extraCancelOIDs []int64
+	if intentFullClose {
+		extraCancelOIDs = cloneInt64s(pos.TPOIDs)
+	}
+	protectionSnapshot := manualCloseProtectionSnapshot{
+		Symbol:          sc.Symbol,
+		Side:            pos.Side,
+		Quantity:        pos.Quantity,
+		StopLossOID:     cancelOID,
+		TriggerPx:       pos.StopLossTriggerPx,
+		PositionID:      pos.TradePositionID,
+		OwnerStrategyID: pos.OwnerStrategyID,
+		TPOIDs:          cloneInt64s(pos.TPOIDs),
+		TPArmedTiers:    append([]bool(nil), pos.TPArmedTiers...),
+		PeerSameQty:     view.PeerSameQty,
+		PeerOppQty:      view.PeerOppQty,
+		PeerSame:        view.PeerSame,
+		PreSend:         preSend,
+		AvgCost:         pos.AvgCost,
+		EntryATR:        pos.EntryATR,
+	}
+
+	execResult, stderr, execErr := d.execute(
+		sc.Script, sc.Symbol, closeSide, closeQty,
+		0, cancelOID, 0, "", 0, closeMode, hlExecuteSnapshot{}, extraCancelOIDs...,
+	)
+	if stderr != "" {
+		res.errf("HL close stderr: %s", stderr)
+	}
+	requestedCancelOIDs := append([]int64{cancelOID}, extraCancelOIDs...)
+	execResult, execErr = confirmHyperliquidExecuteFill(execResult, execErr)
+	if execErr != nil {
+		if execResult != nil && execResult.OrderOutcome == "not_sent" && len(hyperliquidExecuteSucceededCancelOIDs(execResult, requestedCancelOIDs)) == 0 {
+			res.outf("manual-close %s %s: no order was sent and no protection was cancelled; nothing to restore.", strategyID, sc.Symbol)
+			return res, manualFailf("error placing close order: %v", execErr)
+		}
+		reconcileManualExecuteProtection(d, res, strategyID, sc.Symbol, execResult, requestedCancelOIDs)
+		positionFlat := restoreManualStopLossAfterFailedClose(d, res, sc, strategyID, protectionSnapshot, execResult, requestedCancelOIDs)
+		restoreManualTakeProfitsAfterFailedClose(d, res, sc, strategyID, protectionSnapshot, execResult, requestedCancelOIDs, positionFlat)
+		return res, manualFailf("error placing close order: %v", execErr)
+	}
+	if execResult.CancelStopLossError != "" {
+		res.errf("warning: manual close cancel failed (non-fatal) for %s/%s: %s (sl_oid=%d tp_oids=%v) — verify HL on-chain triggers",
+			strategyID, sc.Symbol, execResult.CancelStopLossError, cancelOID, extraCancelOIDs)
+	}
+
+	fill := execResult.Execution
+
+	fillAvgPx := fill.Fill.AvgPx
+	filledQty, fillFee, bookedFull := manualCloseFillAttribution(pos.Quantity, fill.Fill)
+	if fill.Fill.TotalSz > pos.Quantity+1e-9 {
+		res.errf("warning: manual-close fill size %.6f exceeds virtual position %.6f for %s/%s; attributing only the virtual quantity",
+			fill.Fill.TotalSz, pos.Quantity, strategyID, sc.Symbol)
+	} else if filledQty < closeQty-1e-9 {
+		res.errf("warning: manual-close filled only %.6f of the requested %.6f for %s/%s; booking the filled quantity and leaving the remainder open",
+			filledQty, closeQty, strategyID, sc.Symbol)
+	}
+	actualFullClose := intentFullClose && bookedFull
+	var exchangeOID string
+	if fill.Fill.OID != 0 {
+		exchangeOID = fmt.Sprintf("%d", fill.Fill.OID)
+	}
+	if !actualFullClose {
+		reconcileManualExecuteProtection(d, res, strategyID, sc.Symbol, execResult, requestedCancelOIDs)
+	}
+
+	var realizedPnL float64
+	if pos.Side == "long" {
+		realizedPnL = filledQty * (fillAvgPx - pos.AvgCost)
+	} else {
+		realizedPnL = filledQty * (pos.AvgCost - fillAvgPx)
+	}
+	realizedPnL -= fillFee
+
+	res.outf("Closed: %.6f %s @ $%.4f | PnL=$%.2f (fee=$%.4f)",
+		filledQty, sc.Symbol, fillAvgPx, realizedPnL, fillFee)
+
+	action := PendingManualAction{
+		StrategyID:      strategyID,
+		Action:          "close",
+		Symbol:          sc.Symbol,
+		Side:            closeSide,
+		Quantity:        filledQty,
+		FillPrice:       fillAvgPx,
+		FillFee:         fillFee,
+		ExchangeOrderID: exchangeOID,
+		RealizedPnL:     realizedPnL,
+		IsFullClose:     actualFullClose,
+		CreatedAt:       time.Now().UTC(),
+	}
+	queueErr := d.stateDB.InsertPendingManualAction(action)
+	if intentFullClose && !actualFullClose {
+		remainderSnapshot := protectionSnapshot
+		remainderSnapshot.Quantity = pos.Quantity - filledQty
+		remainderSnapshot.FilledQty = filledQty
+		if _, tpHandled := restoreManualStopLoss(d, res, sc, strategyID, remainderSnapshot, execResult, requestedCancelOIDs, manualCloseRearmAfterShortFill); !tpHandled {
+			removeManualTakeProfitsAfterShortFill(d, res, sc, strategyID, remainderSnapshot, execResult, requestedCancelOIDs)
+		}
+	}
+	if queueErr != nil {
+		return res, manualFailf("error queuing close action: %v", queueErr)
+	}
+
+	res.queued = true
+	res.outf("Queued: close will be reflected in the dashboard after the next scheduler cycle.")
+	return res, nil
+}
+
+type forceCloseInputs struct {
+	StrategyID string
+	Qty        float64
+	DryRun     bool
+}
+
+func forceCloseCore(d manualCoreDeps, sc StrategyConfig, sym string, in forceCloseInputs) (*manualCoreResult, error) {
+	res := &manualCoreResult{}
+	strategyID := in.StrategyID
+	if in.Qty < 0 {
+		return res, manualUsagef("error: --qty must be non-negative, got %.6f", in.Qty)
+	}
+	if d.closer == nil {
+		return res, manualFailf("error: hyperliquid closer unavailable")
+	}
+
+	view, loadErr := d.loadState(strategyID, sym)
+	if loadErr != nil {
+		return res, manualFailf("Failed to load state: %v", loadErr)
+	}
+	if !view.HasStrategy {
+		return res, manualFailf("error: strategy state for %q not found", strategyID)
+	}
+	pos := view.Pos
+	if pos == nil {
+		return res, manualFailf("error: no open position found for %s/%s", strategyID, sym)
+	}
+	if !manualPositionOwnedByStrategy(pos, strategyID) {
+		return res, manualFailf("error: position %s/%s is owned by %q, not %q", strategyID, sym, pos.OwnerStrategyID, strategyID)
+	}
+
+	closeQty := pos.Quantity
+	intentFullClose := true
+	if in.Qty > 0 {
+		if in.Qty > pos.Quantity {
+			return res, manualFailf("error: --qty %.6f exceeds open position %.6f", in.Qty, pos.Quantity)
+		}
+		closeQty = in.Qty
+		if pos.Quantity-in.Qty > 0.0001 {
+			intentFullClose = false
+		}
+	}
+
+	closeSide := "sell"
+	if pos.Side == "short" {
+		closeSide = "buy"
+	}
+
+	if !in.DryRun {
+		unlock, lockErr := d.acquireManualActionLock(strategyID)
+		if lockErr != nil {
+			return res, manualFailf("error: %v — refusing to avoid double-firing an on-chain order", lockErr)
+		}
+		defer unlock()
+	}
+
+	closeFullPosition := false
+	if intentFullClose {
+		if pending, perr := pendingSLActionExists(d.stateDB, strategyID, sym, pos); perr != nil {
+			return res, manualFailf("error: could not check for queued stop-loss edits (%v) - refusing the full close to avoid orphaning an on-chain order; retry once the scheduler is reachable", perr)
+		} else if pending {
+			return res, manualFailf("error: a stop-loss edit for %s/%s is queued and not yet applied - run the scheduler (`--once`) or wait for the next cycle before a full close", strategyID, sym)
+		}
+		closeFullPosition = shouldCloseFullPosition(
+			manualCloseIntentFraction(true, closeQty, pos.Quantity),
+			sym,
+			hyperliquidCloseScopeStrategies(d.cfg.Strategies),
+		)
+	}
+
+	escalatedSharedClose := false
+	if intentFullClose && !closeFullPosition && hyperliquidIsLive(sc.Args) {
+		floor := operatorSharedCloseFloorDecision(d, sym, pos.Side, pos.Quantity, view.PeerVirtualQty)
+		switch {
+		case floor.Refuse && in.DryRun:
+			res.outf("[dry-run] force-close %s: REFUSED — %s", strategyID, floor.Reason)
+			return res, nil
+		case floor.Refuse:
+			notifySharedCloseStranded(d.notifier, sc, sym, floor.RemainderUSD, floor.Reason, hlSharedCloseHoldOperatorRef)
+			return res, manualFailf("error: %s", floor.Reason)
+		case floor.Escalate:
+			closeFullPosition = true
+			escalatedSharedClose = true
+			if !in.DryRun {
+				res.outf("force-close %s: the closing value $%.2f is under the $%.2f venue minimum gate and every peer is flat on-chain and in its own book — escalating to a whole-position close",
+					sym, floor.RemainderUSD, hlVenueCloseGateThresholdUSD())
+			}
+		case floor.MarkUnreadable:
+			prefix := "warning: "
+			if in.DryRun {
+				prefix = "[dry-run] warning: "
+			}
+			res.errf("%sforce-close %s: %s", prefix, sym, floor.Reason)
+		}
+	}
+
+	var cancelOIDs []int64
+	if intentFullClose {
+		cancelOIDs = hyperliquidProtectionCancelOIDs(pos)
+	}
+
+	if closeFullPosition {
+		if in.DryRun {
+			mode := "full market_close"
+			if escalatedSharedClose {
+				mode = "full market_close (escalated: peers flat)"
+			}
+			res.outf("[dry-run] force-close %s: %s %.6f %s (current pos=%.6f, avg_cost=$%.4f, %s)",
+				strategyID, closeSide, closeQty, sym, pos.Quantity, pos.AvgCost, mode)
+			return res, nil
+		}
+		if err := refuseIfPositionActionQueued(d, "force-close", strategyID, sym); err != nil {
+			return res, err
+		}
+		return forceCloseWholePosition(d, sc, res, strategyID, sym, pos, closeSide, cancelOIDs)
+	}
+
+	plan, fetchErr := operatorSizedClosePlan(d, sym, pos, closeQty, view)
+	if plan.Action != hlCloseSend {
+		if in.DryRun {
+			res.outf("[dry-run] force-close %s: REFUSED — %s", strategyID, operatorSizedCloseRefusal(plan))
+			return res, nil
+		}
+		return res, manualFailf("error: %s; no protection was cancelled", operatorSizedCloseRefusal(plan))
+	}
+	prefix := ""
+	if in.DryRun {
+		prefix = "[dry-run] "
+	}
+	if fetchErr != nil {
+		res.errf("%swarning: force-close %s: the on-chain position read failed (%v); the close is sent reduce-only at the book size", prefix, sym, fetchErr)
+	}
+	if plan.Capped {
+		res.errf("%swarning: force-close %s: the close is capped from %.6f to %.6f by the on-chain position (%s)", prefix, sym, closeQty, plan.Size, plan.Reason)
+	}
+	if in.DryRun {
+		res.outf("[dry-run] force-close %s: %s %.6f %s (current pos=%.6f, avg_cost=$%.4f, sized %s %.6f)",
+			strategyID, closeSide, plan.Size, sym, pos.Quantity, pos.AvgCost, operatorSizedCloseLabel(plan.Mode), plan.Size)
+		return res, nil
+	}
+	if err := refuseIfPositionActionQueued(d, "force-close", strategyID, sym); err != nil {
+		return res, err
+	}
+	return forceCloseSized(d, sc, res, strategyID, sym, pos, view, closeSide, closeQty, intentFullClose, plan, cancelOIDs)
+}
+
+func forceCloseWholePosition(d manualCoreDeps, sc StrategyConfig, res *manualCoreResult, strategyID, sym string, pos *Position, closeSide string, cancelOIDs []int64) (*manualCoreResult, error) {
+	result, execErr := d.closer(sym, nil, cancelOIDs)
+	if execErr != nil {
+		return res, manualFailf("error placing force-close order: %v", execErr)
+	}
+	if result == nil || result.Close == nil {
+		return res, manualFailf("error: no close result returned from HL")
+	}
+	if result.Error != "" {
+		return res, manualFailf("error from HL: %s", result.Error)
+	}
+	if result.CancelStopLossError != "" {
+		res.errf("warning: force-close cancel failed (non-fatal) for %s/%s: %s (oids=%v) - verify HL on-chain triggers",
+			strategyID, sym, result.CancelStopLossError, cancelOIDs)
+	}
+	if result.Close.AlreadyFlat {
+		return res, manualFailf("error: HL reports %s already flat; run the scheduler once to reconcile state", sym)
+	}
+	fill := result.Close.Fill
+	if fill == nil {
+		return res, manualFailf("error: no fill returned from force-close")
+	}
+	if !finitePositive(fill.AvgPx) {
+		return res, manualFailf("error: invalid force-close fill price %.6f", fill.AvgPx)
+	}
+	if !finitePositive(fill.TotalSz) {
+		return res, manualFailf("error: force-close returned no confirmed fill quantity (%.6f); nothing is booked — run the scheduler once so the reconciler books any fill by order id", fill.TotalSz)
+	}
+	filledQty, fillFee := forceCloseAttributedFill(res, strategyID, sym, pos, fill)
+	actualFullClose := pos.Quantity-filledQty <= 0.0001
+	var canceledSLOID int64
+	var canceledTPOIDs []int64
+	if !actualFullClose {
+		canceledSLOID, canceledTPOIDs = forceCloseCanceledProtectionSnapshot(pos, hyperliquidSucceededCancelOIDs(result, cancelOIDs))
+	}
+	if err := queueForceCloseFill(d, res, strategyID, sym, pos, closeSide, fill, filledQty, fillFee, actualFullClose, canceledSLOID, canceledTPOIDs); err != nil {
+		return res, err
+	}
+	forceCloseCoupledHedgeLeg(d, sc, res, strategyID, sym, filledQty, pos.Quantity, actualFullClose)
+	return res, nil
+}
+
+func forceCloseSized(d manualCoreDeps, sc StrategyConfig, res *manualCoreResult, strategyID, sym string, pos *Position, view manualStateView, closeSide string, closeQty float64, intentFullClose bool, plan hlCloseOrderPlan, protectionOIDs []int64) (*manualCoreResult, error) {
+	if d.sizedCloser == nil {
+		return res, manualFailf("error: hyperliquid sized closer unavailable; no order sent and no protection cancelled")
+	}
+	req := hlSizedCloseRequest{Symbol: sym, Side: closeSide, Mode: plan.Mode, Size: plan.Size}
+	if intentFullClose && !plan.Capped && len(protectionOIDs) > 0 {
+		req.CancelOIDs = cloneInt64s(protectionOIDs)
+		req.CancelMinFill = pos.Quantity - hlFullCloseTolerance(pos.Quantity)
+	}
+	result, execErr := d.sizedCloser(req)
+	outcome := classifyHLSizedClose(result, execErr)
+	if result != nil && result.Close != nil && result.Close.SubmittedSz > 0 {
+		res.outf("force-close %s: book %.6f, requested close %.6f, planned %s order %.6f, submitted %.6f after the lot floor",
+			sym, pos.Quantity, closeQty, operatorSizedCloseLabel(plan.Mode), plan.Size, result.Close.SubmittedSz)
+	}
+	switch {
+	case outcome.NotSent:
+		return res, manualFailf("error: force-close %s was not sent (%s); no protection was cancelled", sym, outcome.Detail)
+	case !outcome.Known:
+		msg := fmt.Sprintf("CRITICAL: [%s] %s: the force-close outcome is UNKNOWN (%s). No second order is sent and nothing is booked; the pre-close protection was not cancelled. The reconciler books any fill by order id at the next scheduler cycle. Read the position and open orders on Hyperliquid before you act.",
+			strategyID, sym, outcome.Detail)
+		res.outf("%s", msg)
+		notifyCloseRearm(d.notifier, msg)
+		return res, manualFailf("error: force-close %s outcome unknown: %s", sym, outcome.Detail)
+	case outcome.Filled <= 0:
+		return res, manualFailf("error: the venue rejected the force-close of %s (%s); nothing filled and no protection was cancelled", sym, outcome.Detail)
+	}
+	if result.CancelStopLossError != "" {
+		res.errf("warning: force-close cancel failed for %s/%s: %s (oids=%v) - verify HL on-chain triggers",
+			strategyID, sym, result.CancelStopLossError, req.CancelOIDs)
+	}
+	fill := result.Close.Fill
+	filledQty, fillFee := forceCloseAttributedFill(res, strategyID, sym, pos, fill)
+	actualFullClose := intentFullClose && !plan.Capped && pos.Quantity-filledQty <= hlFullCloseTolerance(pos.Quantity)
+	cancelled := hyperliquidSucceededCancelOIDs(result, req.CancelOIDs)
+	var canceledSLOID int64
+	var canceledTPOIDs []int64
+	if !actualFullClose {
+		canceledSLOID, canceledTPOIDs = forceCloseCanceledProtectionSnapshot(pos, cancelled)
+	}
+	queueErr := queueForceCloseFill(d, res, strategyID, sym, pos, closeSide, fill, filledQty, fillFee, actualFullClose, canceledSLOID, canceledTPOIDs)
+	if actualFullClose && len(req.CancelOIDs) > 0 && len(cancelled) < len(positiveInt64s(req.CancelOIDs)) {
+		msg := fmt.Sprintf("CRITICAL: [%s] %s: the force-close filled the whole %.6f book, but the cancel of the pre-close protection was not confirmed (requested %v, confirmed %v: %s). Those orders can rest over units that are not this strategy's. Read the open orders on Hyperliquid and cancel them by hand.",
+			strategyID, sym, pos.Quantity, positiveInt64s(req.CancelOIDs), cancelled, result.CancelStopLossError)
+		res.outf("%s", msg)
+		notifyCloseRearm(d.notifier, msg)
+	}
+	if intentFullClose && !actualFullClose && hyperliquidIsLive(sc.Args) {
+		snap := manualCloseProtectionSnapshot{
+			Command:         "force-close",
+			Symbol:          sym,
+			Side:            pos.Side,
+			Quantity:        pos.Quantity - filledQty,
+			FilledQty:       filledQty,
+			StopLossOID:     pos.StopLossOID,
+			TriggerPx:       pos.StopLossTriggerPx,
+			PositionID:      pos.TradePositionID,
+			OwnerStrategyID: pos.OwnerStrategyID,
+			TPOIDs:          cloneInt64s(pos.TPOIDs),
+			TPArmedTiers:    append([]bool(nil), pos.TPArmedTiers...),
+			PeerSameQty:     view.PeerSameQty,
+			PeerOppQty:      view.PeerOppQty,
+			PeerSame:        view.PeerSame,
+			PreSend:         plan.PreSend,
+			AvgCost:         pos.AvgCost,
+			EntryATR:        pos.EntryATR,
+		}
+		shim := hlSizedCloseExecuteShim(result, outcome)
+		res.errf("warning: force-close %s filled %.6f of the %.6f book; the %.6f remainder stays open and its protection is resized to the remainder", sym, filledQty, pos.Quantity, pos.Quantity-filledQty)
+		if _, tpHandled := restoreManualStopLoss(d, res, sc, strategyID, snap, shim, protectionOIDs, manualCloseRearmAfterShortFill); !tpHandled {
+			removeManualTakeProfitsAfterShortFill(d, res, sc, strategyID, snap, shim, protectionOIDs)
+		}
+	} else if !intentFullClose && filledQty < closeQty-1e-9 {
+		res.errf("warning: force-close filled only %.6f of the requested %.6f for %s/%s; booking the filled quantity and leaving the remainder open",
+			filledQty, closeQty, strategyID, sym)
+	}
+	if queueErr != nil {
+		return res, queueErr
+	}
+	forceCloseCoupledHedgeLeg(d, sc, res, strategyID, sym, filledQty, pos.Quantity, actualFullClose)
+	return res, nil
+}
+
+func positiveInt64s(in []int64) []int64 {
+	var out []int64
+	for _, v := range in {
+		if v > 0 {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+func forceCloseAttributedFill(res *manualCoreResult, strategyID, sym string, pos *Position, fill *HyperliquidCloseFill) (float64, float64) {
+	filledQty := fill.TotalSz
+	fillFee := fill.Fee
+	if filledQty > pos.Quantity+1e-9 {
+		fillFee *= pos.Quantity / fill.TotalSz
+		res.errf("warning: force-close fill size %.6f exceeds virtual position %.6f for %s/%s; attributing only the virtual quantity",
+			filledQty, pos.Quantity, strategyID, sym)
+		filledQty = pos.Quantity
+	} else if filledQty > pos.Quantity {
+		filledQty = pos.Quantity
+	}
+	return filledQty, fillFee
+}
+
+func queueForceCloseFill(d manualCoreDeps, res *manualCoreResult, strategyID, sym string, pos *Position, closeSide string, fill *HyperliquidCloseFill, filledQty, fillFee float64, actualFullClose bool, canceledSLOID int64, canceledTPOIDs []int64) error {
+	var exchangeOID string
+	if fill.OID != 0 {
+		exchangeOID = fmt.Sprintf("%d", fill.OID)
+	}
+	var realizedPnL float64
+	if pos.Side == "long" {
+		realizedPnL = filledQty * (fill.AvgPx - pos.AvgCost)
+	} else {
+		realizedPnL = filledQty * (pos.AvgCost - fill.AvgPx)
+	}
+	realizedPnL -= fillFee
+
+	res.outf("Force-closed: %.6f %s @ $%.4f | PnL=$%.2f (fee=$%.4f)",
+		filledQty, sym, fill.AvgPx, realizedPnL, fillFee)
+
+	action := PendingManualAction{
+		StrategyID:      strategyID,
+		Action:          "close",
+		Symbol:          sym,
+		Side:            closeSide,
+		Quantity:        filledQty,
+		FillPrice:       fill.AvgPx,
+		FillFee:         fillFee,
+		ExchangeOrderID: exchangeOID,
+		RealizedPnL:     realizedPnL,
+		IsFullClose:     actualFullClose,
+		StopLossOID:     canceledSLOID,
+		TPOIDs:          canceledTPOIDs,
+		CreatedAt:       time.Now().UTC(),
+	}
+	if err := d.stateDB.InsertPendingManualAction(action); err != nil {
+		return manualFailf("error queuing force-close action: %v", err)
+	}
+	res.queued = true
+	res.outf("Queued: force-close will be reflected in the dashboard after the next scheduler cycle.")
+	return nil
+}
+
+func forceCloseCoupledHedgeLeg(d manualCoreDeps, sc StrategyConfig, res *manualCoreResult, strategyID, primarySym string, primaryClosedQty, primaryQtyBefore float64, primaryFullClose bool) {
+	if !HedgeEnabled(sc) {
+		return
+	}
+	hCoin := hedgeCoin(sc)
+	if hCoin == "" {
+		return
+	}
+	hview, err := d.loadState(strategyID, hCoin)
+	if err != nil || hview.Pos == nil || !hview.Pos.isHedgeLeg() || hview.Pos.Quantity <= 0 {
+		return
+	}
+	hPos := hview.Pos
+	if hPos.HedgeFor != primarySym {
+		res.errf("warning: hedge leg on %s is stamped for primary %q, not %q — leaving it alone; reconcile manually",
+			hCoin, hPos.HedgeFor, primarySym)
+		return
+	}
+
+	closeQty := hPos.Quantity
+	fullClose := true
+	if !primaryFullClose && primaryQtyBefore > 0 {
+		fraction := primaryClosedQty / primaryQtyBefore
+		if fraction > 1 {
+			fraction = 1
+		}
+		closeQty = hPos.Quantity * fraction
+		fullClose = hPos.Quantity-closeQty <= 1e-9
+		if closeQty <= 1e-9 {
+			return
+		}
+	}
+	if fullClose {
+		closeQty = hPos.Quantity
+	}
+	if d.sizedCloser == nil {
+		res.errf("CRITICAL: no sized closer is configured for the coupled hedge leg on %s — the hedge is now OVERSIZED against %s. The scheduler will reconcile it next cycle; verify on-chain.", hCoin, primarySym)
+		return
+	}
+	plan := resolveHLCloseOrder(hCoin, hPos.Side, hPos.Quantity, closeQty, hlCloseContext{Refetch: d.fetchOnChainView})
+	switch plan.Action {
+	case hlCloseSkip:
+		res.errf("warning: the coupled hedge leg close on %s was not sent: %s. The scheduler will reconcile the hedge book next cycle; verify on-chain.", hCoin, plan.Reason)
+		return
+	case hlCloseDefer:
+		res.errf("CRITICAL: the coupled hedge leg close on %s was not sent: %s — the hedge may be OVERSIZED against %s. The scheduler will reconcile it next cycle; verify on-chain.", hCoin, plan.Reason, primarySym)
+		return
+	}
+	if plan.Capped {
+		res.errf("warning: the coupled hedge leg close on %s is capped from %.6f to %.6f by the on-chain position (%s)", hCoin, closeQty, plan.Size, plan.Reason)
+	}
+	result, execErr := d.sizedCloser(hlSizedCloseRequest{Symbol: hCoin, Side: closeTradeSide(hPos.Side), Mode: plan.Mode, Size: plan.Size})
+	outcome := classifyHLSizedClose(result, execErr)
+	switch {
+	case outcome.NotSent:
+		res.errf("CRITICAL: force-close of the coupled hedge leg on %s was not sent (%s) — the hedge is now OVERSIZED against %s. The scheduler will reconcile it next cycle; verify on-chain.", hCoin, outcome.Detail, primarySym)
+		return
+	case !outcome.Known:
+		res.errf("CRITICAL: the force-close of the coupled hedge leg on %s has an UNKNOWN outcome (%s); no second order is sent and nothing is booked — the hedge may be OVERSIZED against %s. The reconciler books any fill by order id next cycle; verify on-chain.", hCoin, outcome.Detail, primarySym)
+		return
+	case outcome.Filled <= 0:
+		res.errf("CRITICAL: force-close of the coupled hedge leg on %s failed: %s — the hedge is now OVERSIZED against %s. The scheduler will reconcile it next cycle; verify on-chain.", hCoin, outcome.Detail, primarySym)
+		return
+	}
+	fill := result.Close.Fill
+	filled := fill.TotalSz
+	sent := closeQty
+	sentLabel := "requested"
+	if result.Close.SubmittedSz > 0 {
+		sent = result.Close.SubmittedSz
+		sentLabel = "submitted"
+	}
+	if filled < sent-1e-9 {
+		res.errf("CRITICAL: the coupled hedge leg close on %s filled %.6f of the %.6f %s — %.6f of the hedge stays OVERSIZED against %s. The scheduler will reconcile it next cycle; verify on-chain.", hCoin, filled, sent, sentLabel, sent-filled, primarySym)
+	}
+	if filled > hPos.Quantity {
+		filled = hPos.Quantity
+	}
+	var pnl float64
+	if hPos.Side == "long" {
+		pnl = filled * (fill.AvgPx - hPos.AvgCost)
+	} else {
+		pnl = filled * (hPos.AvgCost - fill.AvgPx)
+	}
+	pnl -= fill.Fee
+
+	var oid string
+	if fill.OID != 0 {
+		oid = fmt.Sprintf("%d", fill.OID)
+	}
+	action := PendingManualAction{
+		StrategyID:      strategyID,
+		Action:          "close",
+		Symbol:          hCoin,
+		Side:            closeTradeSide(hPos.Side),
+		Quantity:        filled,
+		FillPrice:       fill.AvgPx,
+		FillFee:         fill.Fee,
+		ExchangeOrderID: oid,
+		RealizedPnL:     pnl,
+		IsFullClose:     hPos.Quantity-filled <= 1e-9,
+		CreatedAt:       time.Now().UTC(),
+	}
+	if err := d.stateDB.InsertPendingManualAction(action); err != nil {
+		res.errf("CRITICAL: the %s hedge leg was closed ON-CHAIN but queuing its bookkeeping row failed: %v — virtual state now overstates the hedge. Run the scheduler to reconcile.", hCoin, err)
+		return
+	}
+	res.outf("Force-closed coupled hedge: %.6f %s @ $%.4f | PnL=$%.2f (fee=$%.4f)", filled, hCoin, fill.AvgPx, pnl, fill.Fee)
+}
+
+type manualSLInputs struct {
+	StrategyID string
+	Symbol     string
+	Trigger    float64
+	DryRun     bool
+}
+
+func resolveManualSLTargetCore(d manualCoreDeps, sc StrategyConfig, cmdName, strategyID, symbolFlag string) (*Position, string, error) {
+	symbol := strings.ToUpper(strings.TrimSpace(symbolFlag))
+	if symbol == "" {
+		symbol = strings.ToUpper(strings.TrimSpace(sc.Symbol))
+	}
+	if symbol == "" {
+		return nil, "", manualUsagef("error: no --symbol provided and strategy %q has no configured symbol", strategyID)
+	}
+
+	view, err := d.loadState(strategyID, symbol)
+	if err != nil {
+		return nil, "", manualFailf("Failed to load state: %v", err)
+	}
+
+	if view.KillSwitch {
+		return nil, "", manualFailf("error: portfolio kill switch is active — %s blocked", cmdName)
+	}
+	if view.HasStrategy && view.PendingCBClose {
+		return nil, "", manualFailf("error: strategy has a pending circuit-breaker close — %s blocked", cmdName)
+	}
+
+	pos := view.Pos
+	if pos == nil {
+		return nil, "", manualFailf("error: no open position for %s/%s", strategyID, symbol)
+	}
+	if !manualPositionOwnedByStrategy(pos, strategyID) {
+		return nil, "", manualFailf("error: position %s/%s is owned by %q, not %q", strategyID, symbol, pos.OwnerStrategyID, strategyID)
+	}
+
+	if managed, reason := manualSLAutoManaged(sc, pos); managed {
+		return nil, "", manualFailf("error: %s for %s/%s — a manual stop-loss edit would be reverted on the next scheduler cycle.\n       To manage the stop-loss manually, opt the strategy out of auto-protection (set stop_loss_atr_mult: 0 and remove any trailing close).", reason, strategyID, symbol)
+	}
+
+	if pending, err := pendingSLActionExists(d.stateDB, strategyID, symbol, pos); err != nil {
+		return nil, "", manualFailf("error: could not check for queued stop-loss edits (%v) — refusing to avoid orphaning an on-chain order; retry once the scheduler is reachable", err)
+	} else if pending {
+		return nil, "", manualFailf("error: a stop-loss edit for %s/%s is already queued and not yet applied — run the scheduler (`--once`) or wait for the next cycle before editing again (a second edit now would orphan the first stop-loss on-chain)", strategyID, symbol)
+	}
+
+	if pending, err := pendingManualActionExists(d.stateDB, strategyID, symbol, "open", "add", "close"); err != nil {
+		return nil, "", manualFailf("error: could not check for queued position actions (%v) — refusing to avoid orphaning an on-chain order; retry once the scheduler is reachable", err)
+	} else if pending {
+		return nil, "", manualFailf("error: a position-changing action for %s/%s is already queued and not yet applied — wait for the next scheduler cycle before editing the stop-loss", strategyID, symbol)
+	}
+
+	return pos, symbol, nil
+}
+
+func manualUpdateSLCore(d manualCoreDeps, sc StrategyConfig, in manualSLInputs) (*manualCoreResult, error) {
+	res := &manualCoreResult{}
+	strategyID := in.StrategyID
+	if in.Trigger <= 0 {
+		return res, manualUsagef("error: --trigger must be > 0")
+	}
+
+	if !in.DryRun {
+		unlock, lockErr := d.acquireManualActionLock(strategyID)
+		if lockErr != nil {
+			return res, manualFailf("error: %v — refusing to avoid double-firing an on-chain order", lockErr)
+		}
+		defer unlock()
+	}
+
+	pos, symbol, err := resolveManualSLTargetCore(d, sc, "manual-update-sl", strategyID, in.Symbol)
+	if err != nil {
+		return res, err
+	}
+
+	mark := 0.0
+	if mids, err := d.fetchMids([]string{symbol}); err == nil {
+		mark = mids[symbol]
+	} else {
+		res.errf("warning: could not fetch mark for immediate-fill check: %v", err)
+	}
+	if slTriggerWouldFillImmediately(pos.Side, in.Trigger, mark) {
+		return res, manualFailf("error: trigger $%.4f would fill immediately against mark $%.4f for a %s position", in.Trigger, mark, pos.Side)
+	}
+
+	placeQty := pos.Quantity
+	var peers []hlShareBook
+	var peerOpp float64
+	if d.loadState != nil {
+		if v, loadErr := d.loadState(strategyID, symbol); loadErr == nil {
+			peers = v.PeerSame
+			peerOpp = v.PeerOppQty
+		}
+	}
+	onChain, chainErr := d.fetchOnChainView()
+	switch {
+	case chainErr != nil || !onChain.Known:
+		if len(peers) > 0 || peerOpp > hlSharedCloseQtyTolerance {
+			return res, manualFailf("error: the on-chain %s position is unknown and a peer book shares the coin, so the stop size cannot be chosen", symbol)
+		}
+	default:
+		shareRes := hlOwnStopShareOnView(symbol, pos.Side, hlShareBook{Qty: pos.Quantity, Armed: true}, peers, peerOpp, onChain)
+		if shareRes.Known {
+			placeQty = shareRes.Qty
+		}
+	}
+	if placeQty <= hlSharedCloseQtyTolerance {
+		return res, manualFailf("error: the chain share for %s is zero, so no stop-loss was placed", symbol)
+	}
+
+	if in.DryRun {
+		res.outf("[dry-run] manual-update-sl %s: %s stop-loss $%.4f -> $%.4f (qty %.6f, cancel OID=%d)",
+			strategyID, symbol, pos.StopLossTriggerPx, in.Trigger, placeQty, pos.StopLossOID)
+		return res, nil
+	}
+
+	slResult, slStderr, slErr := d.updateSL(sc.Script, symbol, pos.Side, placeQty, in.Trigger, pos.StopLossOID)
+	if slStderr != "" {
+		res.errf("SL update stderr: %s", slStderr)
+	}
+	if slErr != nil {
+		return res, manualFailf("error updating stop-loss: %v — the old stop-loss may have been cancelled without a replacement; verify protection on the HL UI before retrying.", slErr)
+	}
+	if slResult.Error != "" {
+		return res, manualFailf("error from HL: %s", slResult.Error)
+	}
+	if slResult.StopLossFilledImmediately {
+		return res, manualFailf("error: stop-loss filled immediately on placement — position closed on-chain; reconcile will adopt the close. Do not retry.")
+	}
+	if slResult.StopLossOID == 0 {
+		if slPlacementFailureLeftNaked(slResult.CancelStopLossSucceeded, pos.StopLossOID) {
+			return res, manualFailf("CRITICAL: stop-loss placement failed after the old order was removed (%s) — the position is now UNPROTECTED on-chain. Re-arm immediately (manual-update-sl) or close the position.", slResult.StopLossError)
+		}
+		return res, manualFailf("error: stop-loss replacement failed (%s); the previous stop-loss (OID=%d) is still resting on-chain — verify on the HL UI.", slResult.StopLossError, pos.StopLossOID)
+	}
+
+	newTrigger := slResult.StopLossTriggerPx
+	if newTrigger == 0 {
+		newTrigger = in.Trigger
+	}
+	res.outf("Stop-loss updated: %s %s -> $%.4f (OID=%d)", strategyID, symbol, newTrigger, slResult.StopLossOID)
+
+	action := PendingManualAction{
+		StrategyID:        strategyID,
+		Action:            "update-sl",
+		Symbol:            symbol,
+		Side:              pos.Side,
+		Quantity:          pos.Quantity,
+		StopLossOID:       slResult.StopLossOID,
+		StopLossTriggerPx: newTrigger,
+		CreatedAt:         time.Now().UTC(),
+	}
+	if err := d.stateDB.InsertPendingManualAction(action); err != nil {
+		return res, manualFailf("CRITICAL: stop-loss moved on-chain to $%.4f (OID=%d) but queue insert failed (%v); the scheduler still tracks the old OID until reconcile. Restart to resync.",
+			newTrigger, slResult.StopLossOID, err)
+	}
+
+	res.queued = true
+	res.outf("Queued: %s stop-loss update will sync to the dashboard after the next scheduler cycle.", strategyID)
+	return res, nil
+}
+
+func manualCancelSLCore(d manualCoreDeps, sc StrategyConfig, in manualSLInputs) (*manualCoreResult, error) {
+	res := &manualCoreResult{}
+	strategyID := in.StrategyID
+
+	if !in.DryRun {
+		unlock, lockErr := d.acquireManualActionLock(strategyID)
+		if lockErr != nil {
+			return res, manualFailf("error: %v — refusing to avoid double-firing an on-chain order", lockErr)
+		}
+		defer unlock()
+	}
+
+	pos, symbol, err := resolveManualSLTargetCore(d, sc, "manual-cancel-sl", strategyID, in.Symbol)
+	if err != nil {
+		return res, err
+	}
+
+	if pos.StopLossOID == 0 {
+		return res, manualFailf("error: no resting stop-loss to cancel for %s/%s", strategyID, symbol)
+	}
+
+	if in.DryRun {
+		res.outf("[dry-run] manual-cancel-sl %s: cancel %s stop-loss $%.4f (OID=%d)",
+			strategyID, symbol, pos.StopLossTriggerPx, pos.StopLossOID)
+		return res, nil
+	}
+
+	cancelResult, cancelStderr, cancelErr := d.cancelOrder(sc.Script, symbol, pos.StopLossOID)
+	if cancelStderr != "" {
+		res.errf("SL cancel stderr: %s", cancelStderr)
+	}
+	if cancelErr != nil {
+		return res, manualFailf("error cancelling stop-loss: %v", cancelErr)
+	}
+	if cancelResult.Error != "" {
+		return res, manualFailf("error from HL: %s", cancelResult.Error)
+	}
+	if !cancelResult.Cancelled {
+		return res, manualFailf("error: HL did not confirm cancel of OID %d: %s", pos.StopLossOID, cancelResult.CancelError)
+	}
+
+	res.outf("Stop-loss cancelled: %s %s (was OID=%d @ $%.4f)", strategyID, symbol, pos.StopLossOID, pos.StopLossTriggerPx)
+
+	action := PendingManualAction{
+		StrategyID: strategyID,
+		Action:     "cancel-sl",
+		Symbol:     symbol,
+		Side:       pos.Side,
+		CreatedAt:  time.Now().UTC(),
+	}
+	if err := d.stateDB.InsertPendingManualAction(action); err != nil {
+		return res, manualFailf("CRITICAL: stop-loss cancelled on-chain but queue insert failed (%v); the position is now UNPROTECTED and the scheduler still tracks the old OID. Re-arm protection or restart immediately.", err)
+	}
+
+	res.queued = true
+	res.outf("Queued: %s stop-loss removal will sync to the dashboard after the next scheduler cycle.", strategyID)
+	return res, nil
+}
+
+func configStrategyList(cfg *Config) []StrategyConfig {
+	if cfg == nil {
+		return nil
+	}
+	return cfg.Strategies
+}

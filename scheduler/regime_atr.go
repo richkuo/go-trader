@@ -1,31 +1,5 @@
 package main
 
-// Regime-aware ATR multiplier resolver (#733).
-//
-// This file is the single source of truth for parsing the new
-// `trend_regime` block that powers `tiered_tp_atr_regime`,
-// `tiered_tp_atr_live_regime`, `stop_loss_atr_regime`, and
-// `trailing_stop_atr_regime`.
-//
-// Existing scalar surfaces (`tiered_tp_atr`, `stop_loss_atr_mult`, etc.)
-// are untouched — operators opt in by switching to the *_regime sibling.
-//
-// Shape (use_defaults form):
-//
-//	{ "use_defaults": true }
-//
-// Shape (explicit form):
-//
-//	{ "trend_regime": {
-//	    "trending_up":   { "atr": 2.0, "close_fraction": 0.5 },
-//	    "trending_down": { "atr": 2.0, "close_fraction": 0.5 },
-//	    "ranging":       { "atr": 1.5, "close_fraction": 0.5 }
-//	  }
-//	}
-//
-// `close_fraction` per-regime is only honored inside close-evaluator tiers;
-// strategy-level SL/trailing fields reject it during validation.
-
 import (
 	"encoding/json"
 	"fmt"
@@ -33,57 +7,44 @@ import (
 	"strings"
 )
 
-// canonicalTrendRegimeLabels mirrors validRegimeLabels — when not using
-// use_defaults, every label here must appear in the trend_regime map.
 var canonicalTrendRegimeLabels = []string{"trending_up", "trending_down", "ranging"}
 
-// regimeClassifierKey is the wrapper key required around per-label blocks.
-// Reserves space for future classifiers (e.g. "vol_regime") to land as
-// sibling keys without renaming.
+const regimeDirectionalBare = "ranging_directional"
+
+var regimeDirectionalSubs = map[string]bool{
+	"ranging_directional_up":   true,
+	"ranging_directional_down": true,
+}
+
+func regimeLabelFamilyCovered(label string, bareDirectionalPresent bool) bool {
+	return bareDirectionalPresent && regimeDirectionalSubs[strings.TrimSpace(label)]
+}
+
 const regimeClassifierKey = "trend_regime"
 
-// regimeATRSurface enumerates the four call sites that consume a
-// RegimeATRBlock. Determines which `use_defaults` baseline applies and
-// whether `close_fraction` is permitted inside per-regime entries.
 type regimeATRSurface int
 
 const (
-	regimeSurfaceStopLoss       regimeATRSurface = iota // stop_loss_atr_regime: ATR only, strictly positive
-	regimeSurfaceTrailing                               // trailing_stop_atr_regime: ATR only, strictly positive
-	regimeSurfaceTPTierATROnly                          // tier with tier-level scalar close_fraction: ATR only, strictly positive
-	regimeSurfaceTPTierWithFrac                         // tier with per-regime close_fraction: ATR + close_fraction, strictly positive
-	regimeSurfaceSLAfter                                // sl_after.atr (atr_offset variant): ATR only, signed allowed (0 and negatives legal — matches the scalar sl_after atr_offset semantics where signed mults move the SL behind/ahead of entry)
-	regimeSurfaceSLAfterTrail                           // sl_after.trail_from_here.atr: ATR only, strictly positive (trail distance is a magnitude)
+	regimeSurfaceStopLoss regimeATRSurface = iota
+	regimeSurfaceTrailing
+	regimeSurfaceTPTierATROnly
+	regimeSurfaceTPTierWithFrac
+	regimeSurfaceSLAfter
+	regimeSurfaceSLAfterTrail
 )
 
-// RegimeATREntry is one resolution slot inside the trend_regime map.
-// ATR is required; CloseFraction is only set on tier surfaces.
 type RegimeATREntry struct {
 	ATR           float64
 	CloseFraction float64
 	HasCloseFrac  bool
 }
 
-// RegimeATRBlock is the parsed shape of one regime-aware multiplier spec.
-// Exactly one of UseDefaults / TrendRegime is meaningful — when UseDefaults
-// is true the TrendRegime map is still populated (expanded from the per-
-// surface baseline) so runtime resolution has a single code path. The flag
-// is preserved so `go-trader inspect` can show provenance.
-//
-// The raw field captures the JSON shape at unmarshal time so LoadConfig can
-// run the full surface-aware validation pass with the right strategy ID
-// scope; ResolveSurface() must be called before the block is used at
-// runtime, otherwise IsZero() always returns true.
 type RegimeATRBlock struct {
 	UseDefaults bool
 	TrendRegime map[string]RegimeATREntry
 	raw         map[string]interface{}
 }
 
-// UnmarshalJSON captures the raw object shape for later validation.
-// LoadConfig is the single caller of ResolveSurface() that converts the
-// raw shape into the typed UseDefaults/TrendRegime fields with strategy-
-// scoped error messages. Until then, the block is opaque to runtime code.
 func (b *RegimeATRBlock) UnmarshalJSON(data []byte) error {
 	var raw map[string]interface{}
 	if err := json.Unmarshal(data, &raw); err != nil {
@@ -93,13 +54,8 @@ func (b *RegimeATRBlock) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// MarshalJSON renders the block back out in its canonical form. Used by
-// hot-reload diff logging and `go-trader inspect`.
 func (b RegimeATRBlock) MarshalJSON() ([]byte, error) {
 	if b.UseDefaults && len(b.TrendRegime) > 0 {
-		// Preserve operator intent: render use_defaults instead of the
-		// expanded baseline so reload-diffs don't churn on equivalent
-		// configs.
 		return json.Marshal(map[string]bool{"use_defaults": true})
 	}
 	if len(b.TrendRegime) == 0 {
@@ -107,7 +63,7 @@ func (b RegimeATRBlock) MarshalJSON() ([]byte, error) {
 	}
 	out := map[string]map[string]map[string]interface{}{regimeClassifierKey: {}}
 	for label, entry := range b.TrendRegime {
-		e := map[string]interface{}{"atr": entry.ATR}
+		e := map[string]interface{}{"atr_multiple": entry.ATR}
 		if entry.HasCloseFrac {
 			e["close_fraction"] = entry.CloseFraction
 		}
@@ -116,15 +72,18 @@ func (b RegimeATRBlock) MarshalJSON() ([]byte, error) {
 	return json.Marshal(out)
 }
 
-// ResolveSurface validates and parses the captured raw JSON against the
-// given surface (which controls baseline expansion + close_fraction
-// allowance). Returns error strings for LoadConfig to surface; on success,
-// populates UseDefaults/TrendRegime.
 func (b *RegimeATRBlock) ResolveSurface(ctxLabel string, surface regimeATRSurface) []string {
+	return b.ResolveSurfaceWithLabels(ctxLabel, surface, canonicalTrendRegimeLabels)
+}
+
+func (b *RegimeATRBlock) ResolveSurfaceWithLabels(ctxLabel string, surface regimeATRSurface, labels []string) []string {
 	if b == nil {
 		return nil
 	}
-	parsed, errs := parseRegimeATRBlock(b.raw, ctxLabel, surface)
+	if len(labels) == 0 {
+		labels = canonicalTrendRegimeLabels
+	}
+	parsed, errs := parseRegimeATRBlock(b.raw, ctxLabel, surface, labels)
 	if len(errs) > 0 {
 		return errs
 	}
@@ -133,10 +92,17 @@ func (b *RegimeATRBlock) ResolveSurface(ctxLabel string, surface regimeATRSurfac
 	return nil
 }
 
-// EqualForReload reports whether two blocks have the same shape for
-// hot-reload state-compat purposes. Compares the resolved fields; the raw
-// shape is informational only.
 func (b *RegimeATRBlock) EqualForReload(other *RegimeATRBlock) bool {
+	if !b.EqualEffectiveForReload(other) {
+		return false
+	}
+	if b == nil || b.IsZero() {
+		return true
+	}
+	return b.UseDefaults == other.UseDefaults
+}
+
+func (b *RegimeATRBlock) EqualEffectiveForReload(other *RegimeATRBlock) bool {
 	aZero := b == nil || b.IsZero()
 	bZero := other == nil || other.IsZero()
 	if aZero != bZero {
@@ -144,9 +110,6 @@ func (b *RegimeATRBlock) EqualForReload(other *RegimeATRBlock) bool {
 	}
 	if aZero {
 		return true
-	}
-	if b.UseDefaults != other.UseDefaults {
-		return false
 	}
 	if len(b.TrendRegime) != len(other.TrendRegime) {
 		return false
@@ -163,25 +126,10 @@ func (b *RegimeATRBlock) EqualForReload(other *RegimeATRBlock) bool {
 	return true
 }
 
-// IsZero reports whether the block was omitted from config entirely
-// (distinct from an explicit use_defaults expansion). Designed for runtime
-// callers that have already gone through ResolveSurface (which populates
-// UseDefaults/TrendRegime from raw). Callers that may run BEFORE
-// ResolveSurface (e.g. LoadConfig's defaults loop, which runs before
-// ValidateConfig) MUST use IsConfigured instead — IsZero returns true on
-// a freshly-unmarshaled block that has captured raw JSON but not yet been
-// resolved, which would mis-apply scalar auto-defaults on top of an
-// operator's explicit regime config.
 func (b RegimeATRBlock) IsZero() bool {
 	return !b.UseDefaults && len(b.TrendRegime) == 0
 }
 
-// IsConfigured reports whether the operator explicitly supplied a value
-// for this block in config — either through use_defaults or an explicit
-// trend_regime map. Safe to call BEFORE ResolveSurface runs: relies on
-// the raw shape captured at unmarshal time. Use this when deciding
-// whether scalar auto-defaults should be applied, since `IsZero()`
-// returns true on an unresolved-but-raw-populated block (review #735.1).
 func (b *RegimeATRBlock) IsConfigured() bool {
 	if b == nil {
 		return false
@@ -192,26 +140,25 @@ func (b *RegimeATRBlock) IsConfigured() bool {
 	return len(b.raw) > 0
 }
 
-// Resolve returns the per-label entry for the given regime. The caller is
-// responsible for validating the block at config-load time so this can
-// assume label presence. Returns (entry, true) on hit, (zero, false) on miss.
 func (b RegimeATRBlock) Resolve(regime string) (RegimeATREntry, bool) {
 	if b.TrendRegime == nil {
 		return RegimeATREntry{}, false
 	}
-	entry, ok := b.TrendRegime[strings.TrimSpace(regime)]
-	return entry, ok
+	r := strings.TrimSpace(regime)
+	if entry, ok := b.TrendRegime[r]; ok {
+		return entry, true
+	}
+	if regimeDirectionalSubs[r] {
+		if entry, ok := b.TrendRegime[regimeDirectionalBare]; ok {
+			return entry, true
+		}
+	}
+	return RegimeATREntry{}, false
 }
 
-// regimeATRDefaults holds the per-surface baseline expansions for
-// `use_defaults: true`. Mirrors the table in issue #733.
 var regimeATRDefaults = struct {
 	StopLoss map[string]RegimeATREntry
 	Trailing map[string]RegimeATREntry
-	// TPTiers is a tier list — each entry is one tier's regime map. Tier
-	// indices are positional and the final close_fraction is coerced to 1.0
-	// by the consumer to match the live `strategyTPTiers` contract.
-	TPTiers []RegimeATRBlock
 }{
 	StopLoss: map[string]RegimeATREntry{
 		"trending_up":   {ATR: 2.0},
@@ -219,27 +166,50 @@ var regimeATRDefaults = struct {
 		"ranging":       {ATR: 1.5},
 	},
 	Trailing: map[string]RegimeATREntry{
-		"trending_up":   {ATR: 2.5},
-		"trending_down": {ATR: 2.5},
-		"ranging":       {ATR: 2.0},
-	},
-	TPTiers: []RegimeATRBlock{
-		{TrendRegime: map[string]RegimeATREntry{
-			"trending_up":   {ATR: 2.0, CloseFraction: 0.5, HasCloseFrac: true},
-			"trending_down": {ATR: 2.0, CloseFraction: 0.5, HasCloseFrac: true},
-			"ranging":       {ATR: 1.5, CloseFraction: 0.5, HasCloseFrac: true},
-		}},
-		{TrendRegime: map[string]RegimeATREntry{
-			"trending_up":   {ATR: 4.0, CloseFraction: 1.0, HasCloseFrac: true},
-			"trending_down": {ATR: 4.0, CloseFraction: 1.0, HasCloseFrac: true},
-			"ranging":       {ATR: 2.5, CloseFraction: 1.0, HasCloseFrac: true},
-		}},
+		"trending_up":              {ATR: 2.5},
+		"trending_down":            {ATR: 2.5},
+		"ranging":                  {ATR: 2.0},
+		"trending_up_clean":        {ATR: 2.5},
+		"trending_down_clean":      {ATR: 2.5},
+		"trending_up_choppy":       {ATR: 2.25},
+		"trending_down_choppy":     {ATR: 2.25},
+		"ranging_quiet":            {ATR: 1.0},
+		"ranging_volatile":         {ATR: 1.25},
+		"ranging_directional":      {ATR: 1.5},
+		"ranging_directional_up":   {ATR: 1.5},
+		"ranging_directional_down": {ATR: 1.5},
 	},
 }
 
-// defaultRegimeBlockForSurface returns the baseline trend_regime map for a
-// non-tier surface. Tier defaults live on regimeATRDefaults.TPTiers and are
-// resolved differently because tiers are an ordered list.
+func regimeCloseDefaultGroup(label string) (string, bool) {
+	l := strings.TrimSpace(label)
+	switch {
+	case l == "":
+		return "", false
+	case strings.HasSuffix(l, "_clean"):
+		return "clean", true
+	case strings.HasSuffix(l, "_choppy"):
+		return "choppy", true
+	case strings.HasPrefix(l, "ranging"):
+		return "ranging", true
+	case strings.HasPrefix(l, "trending_up"), strings.HasPrefix(l, "trending_down"):
+		return "choppy", true
+	}
+	return "", false
+}
+
+var regimeTPTierGroupDefaults = map[string][]hlProtectionTier{
+	"clean":   {{Multiple: 2.5, Fraction: 0.25}, {Multiple: 4.0, Fraction: 0.50}, {Multiple: 5.5, Fraction: 0.75}, {Multiple: 7.0, Fraction: 1.00}},
+	"choppy":  {{Multiple: 1.5, Fraction: 0.40}, {Multiple: 3.0, Fraction: 0.80}, {Multiple: 5.0, Fraction: 1.00}},
+	"ranging": {{Multiple: 0.5, Fraction: 0.50}, {Multiple: 1.0, Fraction: 1.00}},
+}
+
+var regimeTPFleetDefaultLabelsByGroup = map[string][]string{
+	"clean":   {"trending_up_clean", "trending_down_clean"},
+	"choppy":  {"trending_up", "trending_down", "trending_up_choppy", "trending_down_choppy"},
+	"ranging": {"ranging", "ranging_quiet", "ranging_volatile", "ranging_directional", "ranging_directional_up", "ranging_directional_down"},
+}
+
 func defaultRegimeBlockForSurface(surface regimeATRSurface) (map[string]RegimeATREntry, bool) {
 	switch surface {
 	case regimeSurfaceStopLoss:
@@ -262,19 +232,35 @@ func cloneRegimeMap(in map[string]RegimeATREntry) map[string]RegimeATREntry {
 	return out
 }
 
-// parseRegimeATRBlock validates and parses the raw map[string]interface{}
-// JSON shape into a RegimeATRBlock. ctxLabel is prefixed onto error messages
-// so callers (LoadConfig, tier parser) can scope the failures.
-//
-// Returns (block, errs). Errors are returned as a slice so the parser can
-// report multiple problems at once instead of stopping on the first; callers
-// should treat any non-empty slice as a config-load failure.
-//
-// surface controls which baseline expansion applies for `use_defaults: true`
-// (tier surfaces handle their own expansion since tiers are an ordered list,
-// so passing a tier surface here returns a zero block — the caller must
-// special-case tier-level use_defaults before reaching this function).
-func parseRegimeATRBlock(raw map[string]interface{}, ctxLabel string, surface regimeATRSurface) (RegimeATRBlock, []string) {
+func mapRegimeToBaselineFamily(baseline map[string]RegimeATREntry, label string) (RegimeATREntry, bool) {
+	if e, ok := baseline[label]; ok {
+		return e, true
+	}
+	switch {
+	case strings.HasPrefix(label, "trending_up"):
+		e, ok := baseline["trending_up"]
+		return e, ok
+	case strings.HasPrefix(label, "trending_down"):
+		e, ok := baseline["trending_down"]
+		return e, ok
+	case strings.HasPrefix(label, "ranging"):
+		e, ok := baseline["ranging"]
+		return e, ok
+	}
+	return RegimeATREntry{}, false
+}
+
+func expandRegimeATRDefaultsForLabels(baseline map[string]RegimeATREntry, labels []string) map[string]RegimeATREntry {
+	out := make(map[string]RegimeATREntry, len(labels))
+	for _, label := range labels {
+		if e, ok := mapRegimeToBaselineFamily(baseline, label); ok {
+			out[label] = e
+		}
+	}
+	return out
+}
+
+func parseRegimeATRBlock(raw map[string]interface{}, ctxLabel string, surface regimeATRSurface, labels []string) (RegimeATRBlock, []string) {
 	var errs []string
 	if raw == nil {
 		return RegimeATRBlock{}, nil
@@ -313,7 +299,10 @@ func parseRegimeATRBlock(raw map[string]interface{}, ctxLabel string, surface re
 			errs = append(errs, fmt.Sprintf("%s: use_defaults not supported on this surface (tier-level use_defaults is handled by the close evaluator parser)", ctxLabel))
 			return RegimeATRBlock{}, errs
 		}
-		return RegimeATRBlock{UseDefaults: true, TrendRegime: baseline}, errs
+		if len(labels) == 0 {
+			labels = canonicalTrendRegimeLabels
+		}
+		return RegimeATRBlock{UseDefaults: true, TrendRegime: expandRegimeATRDefaultsForLabels(baseline, labels)}, errs
 	}
 
 	if !hasTrend {
@@ -327,8 +316,11 @@ func parseRegimeATRBlock(raw map[string]interface{}, ctxLabel string, surface re
 		return RegimeATRBlock{}, errs
 	}
 
+	if len(labels) == 0 {
+		labels = canonicalTrendRegimeLabels
+	}
 	validLabels := map[string]bool{}
-	for _, l := range canonicalTrendRegimeLabels {
+	for _, l := range labels {
 		validLabels[l] = true
 	}
 
@@ -340,21 +332,26 @@ func parseRegimeATRBlock(raw map[string]interface{}, ctxLabel string, surface re
 	}
 	sort.Strings(unknownLabels)
 	for _, k := range unknownLabels {
-		errs = append(errs, fmt.Sprintf("%s.%s: unknown regime label %q (expected one of: %s)", ctxLabel, regimeClassifierKey, k, strings.Join(canonicalTrendRegimeLabels, ", ")))
+		errs = append(errs, fmt.Sprintf("%s.%s: unknown regime label %q (expected one of: %s)", ctxLabel, regimeClassifierKey, k, strings.Join(labels, ", ")))
 	}
 
 	missingLabels := []string{}
-	for _, l := range canonicalTrendRegimeLabels {
-		if _, ok := trendMap[l]; !ok {
-			missingLabels = append(missingLabels, l)
+	bareDirectional := trendMap[regimeDirectionalBare] != nil
+	for _, l := range labels {
+		if _, ok := trendMap[l]; ok {
+			continue
 		}
+		if regimeLabelFamilyCovered(l, bareDirectional) {
+			continue
+		}
+		missingLabels = append(missingLabels, l)
 	}
 	if len(missingLabels) > 0 {
 		errs = append(errs, fmt.Sprintf("%s.%s: missing required regime labels: %s (must be exhaustive — no silent fallback)", ctxLabel, regimeClassifierKey, strings.Join(missingLabels, ", ")))
 	}
 
-	result := make(map[string]RegimeATREntry, len(canonicalTrendRegimeLabels))
-	for _, label := range canonicalTrendRegimeLabels {
+	result := make(map[string]RegimeATREntry, len(labels))
+	for _, label := range labels {
 		labelRaw, ok := trendMap[label]
 		if !ok {
 			continue
@@ -366,7 +363,7 @@ func parseRegimeATRBlock(raw map[string]interface{}, ctxLabel string, surface re
 		}
 
 		allowFrac := surface == regimeSurfaceTPTierWithFrac
-		allowedEntryKeys := map[string]bool{"atr": true}
+		allowedEntryKeys := map[string]bool{"atr_multiple": true}
 		if allowFrac {
 			allowedEntryKeys["close_fraction"] = true
 		}
@@ -380,26 +377,27 @@ func parseRegimeATRBlock(raw map[string]interface{}, ctxLabel string, surface re
 		for _, k := range entryUnknown {
 			hint := ""
 			if k == "close_fraction" {
-				hint = " — close_fraction is only allowed inside close-evaluator tiers; for SL/trailing/sl_after surfaces, only atr is accepted"
+				hint = " — close_fraction is only allowed inside close-evaluator tiers; for SL/trailing/sl_after surfaces, only atr_multiple is accepted"
 			}
 			errs = append(errs, fmt.Sprintf("%s.%s.%s: unknown key %q%s", ctxLabel, regimeClassifierKey, label, k, hint))
 		}
 
-		atrRaw, hasATR := entryMap["atr"]
+		atrRaw, hasATR, atrErr := regimeEntryATRRaw(entryMap)
+		if atrErr != nil {
+			errs = append(errs, fmt.Sprintf("%s.%s.%s: %v", ctxLabel, regimeClassifierKey, label, atrErr))
+			continue
+		}
 		if !hasATR {
-			errs = append(errs, fmt.Sprintf("%s.%s.%s: missing required %q", ctxLabel, regimeClassifierKey, label, "atr"))
+			errs = append(errs, fmt.Sprintf("%s.%s.%s: missing required %q", ctxLabel, regimeClassifierKey, label, "atr_multiple"))
 			continue
 		}
 		atr, err := floatFromAnyChecked(atrRaw)
 		if err != nil {
-			errs = append(errs, fmt.Sprintf("%s.%s.%s.atr: %v", ctxLabel, regimeClassifierKey, label, err))
+			errs = append(errs, fmt.Sprintf("%s.%s.%s.atr_multiple: %v", ctxLabel, regimeClassifierKey, label, err))
 			continue
 		}
-		// sl_after atr_offset accepts signed atr (zero = breakeven, negative
-		// = SL behind entry). Every other surface requires a strictly
-		// positive magnitude. See #736.
 		if surface != regimeSurfaceSLAfter && atr <= 0 {
-			errs = append(errs, fmt.Sprintf("%s.%s.%s.atr: must be > 0, got %g", ctxLabel, regimeClassifierKey, label, atr))
+			errs = append(errs, fmt.Sprintf("%s.%s.%s.atr_multiple: must be > 0, got %g", ctxLabel, regimeClassifierKey, label, atr))
 			continue
 		}
 		entry := RegimeATREntry{ATR: atr}
@@ -424,14 +422,19 @@ func parseRegimeATRBlock(raw map[string]interface{}, ctxLabel string, surface re
 	return RegimeATRBlock{TrendRegime: result}, errs
 }
 
-// resolveRegimeATR is the single resolution entry point used by all live and
-// backtest code that needs a regime-aware ATR multiplier. Returns (mult, ok).
-// ok=false when the block is zero or the regime label is missing — callers
-// must already have validated the block at load time, so a missing label
-// in practice means the runtime regime classifier produced an unexpected
-// value (e.g. detection disabled mid-position); the live caller should
-// fall back to its scalar sibling (which validation has already ruled
-// out — see regimeFieldConflictsWithScalar).
+func regimeEntryATRRaw(entryMap map[string]interface{}) (interface{}, bool, error) {
+	canon, hasCanon := entryMap["atr_multiple"]
+	_, hasLegacy := entryMap["atr"]
+	switch {
+	case hasCanon && hasLegacy:
+		return nil, false, fmt.Errorf("set only one of %q or %q (%q is the deprecated alias)", "atr_multiple", "atr", "atr")
+	case hasCanon:
+		return canon, true, nil
+	default:
+		return nil, false, nil
+	}
+}
+
 func resolveRegimeATR(block RegimeATRBlock, regime string) (float64, bool) {
 	entry, ok := block.Resolve(regime)
 	if !ok || entry.ATR <= 0 {
@@ -440,30 +443,19 @@ func resolveRegimeATR(block RegimeATRBlock, regime string) (float64, bool) {
 	return entry.ATR, true
 }
 
-// regimeTierSpec is the parsed form of one tier inside a
-// tiered_tp_atr_regime / tiered_tp_atr_live_regime close ref. The block is
-// the per-regime ATR/close_fraction map; tierCloseFraction is the tier-level
-// scalar shape (mutually exclusive with per-regime close_fraction — the
-// parser enforces "pick one shape per tier" at config load).
 type regimeTierSpec struct {
 	Block                RegimeATRBlock
 	TierCloseFraction    float64
 	HasTierCloseFraction bool
 }
 
-// parseRegimeTPTiers parses the raw tier list from a tiered_tp_atr_regime
-// close ref's params["tiers"]. The list shape is identical to the scalar
-// tiered_tp_atr tier list except each tier carries a `trend_regime` block
-// instead of a flat `atr_multiple`. close_fraction may live per-regime or
-// at the tier level (never both within one tier).
-//
-// errs is non-empty when the operator submitted malformed tier shapes;
-// LoadConfig surfaces them as config-validation errors so a typo can't
-// silently disable the TP plan.
-func parseRegimeTPTiers(raw interface{}, ctxLabel string) ([]regimeTierSpec, []string) {
+func parseRegimeTPTiers(raw interface{}, ctxLabel string, labels []string) ([]regimeTierSpec, []string) {
 	var errs []string
 	if raw == nil {
 		return nil, errs
+	}
+	if len(labels) == 0 {
+		labels = canonicalTrendRegimeLabels
 	}
 	items, ok := raw.([]interface{})
 	if !ok {
@@ -477,7 +469,6 @@ func parseRegimeTPTiers(raw interface{}, ctxLabel string) ([]regimeTierSpec, []s
 			errs = append(errs, fmt.Sprintf("%s.tiers[%d]: must be an object, got %T", ctxLabel, idx, item))
 			continue
 		}
-		// Detect per-regime close_fraction shape vs tier-level scalar.
 		perRegimeHasFrac := false
 		if trendRaw, ok := m[regimeClassifierKey].(map[string]interface{}); ok {
 			for _, v := range trendRaw {
@@ -502,16 +493,14 @@ func parseRegimeTPTiers(raw interface{}, ctxLabel string) ([]regimeTierSpec, []s
 		if perRegimeHasFrac {
 			surface = regimeSurfaceTPTierWithFrac
 		}
-		// Pass the tier object minus close_fraction so the inner allowlist
-		// only sees use_defaults / trend_regime.
 		subset := make(map[string]interface{}, len(m))
 		for k, v := range m {
-			if k == "close_fraction" {
+			if k == "close_fraction" || k == "sl_after" {
 				continue
 			}
 			subset[k] = v
 		}
-		block, subErrs := parseRegimeATRBlock(subset, fmt.Sprintf("%s.tiers[%d]", ctxLabel, idx), surface)
+		block, subErrs := parseRegimeATRBlock(subset, fmt.Sprintf("%s.tiers[%d]", ctxLabel, idx), surface, labels)
 		errs = append(errs, subErrs...)
 
 		spec := regimeTierSpec{Block: block}
@@ -533,12 +522,38 @@ func parseRegimeTPTiers(raw interface{}, ctxLabel string) ([]regimeTierSpec, []s
 	return out, errs
 }
 
-// resolveRegimeTPTiers takes the raw tier list and a runtime regime label,
-// returning the concrete (multiple, fraction) list. Returns nil when the
-// regime is unknown or the tier specs fail to resolve — the caller falls
-// back to placing only the SL this cycle.
+func regimeLabelsFromTierRaw(raw interface{}) []string {
+	items, ok := raw.([]interface{})
+	if !ok {
+		return canonicalTrendRegimeLabels
+	}
+	set := map[string]bool{}
+	for _, item := range items {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		tr, ok := m[regimeClassifierKey].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		for k := range tr {
+			set[k] = true
+		}
+	}
+	if len(set) == 0 {
+		return canonicalTrendRegimeLabels
+	}
+	out := make([]string, 0, len(set))
+	for k := range set {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
 func resolveRegimeTPTiers(raw interface{}, regime string) []hlProtectionTier {
-	specs, errs := parseRegimeTPTiers(raw, "tiered_tp_atr_regime")
+	specs, errs := parseRegimeTPTiers(raw, "tiered_tp_atr_regime", regimeLabelsFromTierRaw(raw))
 	if len(errs) > 0 || len(specs) == 0 || regime == "" {
 		return nil
 	}
@@ -562,12 +577,6 @@ func resolveRegimeTPTiers(raw interface{}, regime string) []hlProtectionTier {
 	return out
 }
 
-// validateRegimeATRConfig runs the full surface-aware parsing pass over every
-// strategy's regime blocks and accumulates errors with strategy-scoped
-// prefixes. Mutex with scalar siblings + regime-enabled requirement are
-// also enforced here. Called from ValidateConfig before the runtime-only
-// post-validation pass; on success the strategies' RegimeATRBlock fields
-// carry typed UseDefaults / TrendRegime values for runtime resolution.
 func validateRegimeATRConfig(cfg *Config) []string {
 	if cfg == nil {
 		return nil
@@ -583,77 +592,109 @@ func validateRegimeATRConfig(cfg *Config) []string {
 
 		usesRegime := false
 
-		if sc.StopLossATRRegime != nil {
-			sub := sc.StopLossATRRegime.ResolveSurface(prefix+".stop_loss_atr_regime", regimeSurfaceStopLoss)
-			errs = append(errs, sub...)
-			if len(sub) == 0 && !sc.StopLossATRRegime.IsZero() {
+		atrLabels := canonicalTrendRegimeLabels
+		atrWindow := ""
+		atrClassifier := ""
+		if regimeEnabled {
+			atrLabels = regimeLabelsForStrategyWindow(*sc, cfg.Regime, "atr")
+			atrWindow = resolveStrategyRegimeWindow(*sc, "atr", cfg.Regime)
+			atrClassifier = regimeClassifierForWindow(cfg.Regime, atrWindow)
+		}
+		wrapATR := func(e string) string {
+			if regimeEnabled {
+				return fmt.Sprintf("%s (regime_atr_window %q, classifier %q): %s", prefix, atrWindow, atrClassifier, e)
+			}
+			return e
+		}
+
+		if sc.StopLossATRMultRegime != nil {
+			sub := sc.StopLossATRMultRegime.ResolveSurfaceWithLabels(prefix+".stop_loss_atr_mult_regime", regimeSurfaceStopLoss, atrLabels)
+			for _, e := range sub {
+				errs = append(errs, wrapATR(e))
+			}
+			if len(sub) == 0 && !sc.StopLossATRMultRegime.IsZero() {
 				usesRegime = true
-				// Mutex with scalar siblings.
 				if sc.StopLossATRMult != nil {
-					errs = append(errs, fmt.Sprintf("%s: stop_loss_atr_regime is mutually exclusive with stop_loss_atr_mult", prefix))
+					errs = append(errs, fmt.Sprintf("%s: stop_loss_atr_mult_regime is mutually exclusive with stop_loss_atr_mult", prefix))
 				}
 				if sc.StopLossPct != nil {
-					errs = append(errs, fmt.Sprintf("%s: stop_loss_atr_regime is mutually exclusive with stop_loss_pct", prefix))
+					errs = append(errs, fmt.Sprintf("%s: stop_loss_atr_mult_regime is mutually exclusive with stop_loss_pct", prefix))
 				}
 				if sc.StopLossMarginPct != nil {
-					errs = append(errs, fmt.Sprintf("%s: stop_loss_atr_regime is mutually exclusive with stop_loss_margin_pct", prefix))
+					errs = append(errs, fmt.Sprintf("%s: stop_loss_atr_mult_regime is mutually exclusive with stop_loss_margin_pct", prefix))
 				}
 				if sc.TrailingStopPct != nil {
-					errs = append(errs, fmt.Sprintf("%s: stop_loss_atr_regime is mutually exclusive with trailing_stop_pct", prefix))
+					errs = append(errs, fmt.Sprintf("%s: stop_loss_atr_mult_regime is mutually exclusive with trailing_stop_pct", prefix))
 				}
 				if sc.TrailingStopATRMult != nil {
-					errs = append(errs, fmt.Sprintf("%s: stop_loss_atr_regime is mutually exclusive with trailing_stop_atr_mult", prefix))
+					errs = append(errs, fmt.Sprintf("%s: stop_loss_atr_mult_regime is mutually exclusive with trailing_stop_atr_mult", prefix))
 				}
-				if sc.TrailingStopATRRegime != nil && !sc.TrailingStopATRRegime.IsZero() {
-					errs = append(errs, fmt.Sprintf("%s: stop_loss_atr_regime is mutually exclusive with trailing_stop_atr_regime", prefix))
+				if sc.TrailingStopATRMultRegime.IsConfigured() {
+					errs = append(errs, fmt.Sprintf("%s: stop_loss_atr_mult_regime is mutually exclusive with trailing_stop_atr_mult_regime", prefix))
 				}
 				if sc.Platform != "hyperliquid" || sc.Type != "perps" {
-					errs = append(errs, fmt.Sprintf("%s: stop_loss_atr_regime is HL perps only", prefix))
+					errs = append(errs, fmt.Sprintf("%s: stop_loss_atr_mult_regime is HL perps only", prefix))
 				}
 			}
 		}
-		if sc.TrailingStopATRRegime != nil {
-			sub := sc.TrailingStopATRRegime.ResolveSurface(prefix+".trailing_stop_atr_regime", regimeSurfaceTrailing)
-			errs = append(errs, sub...)
-			if len(sub) == 0 && !sc.TrailingStopATRRegime.IsZero() {
+		if sc.TrailingStopATRMultRegime != nil {
+			sub := sc.TrailingStopATRMultRegime.ResolveSurfaceWithLabels(prefix+".trailing_stop_atr_mult_regime", regimeSurfaceTrailing, atrLabels)
+			for _, e := range sub {
+				errs = append(errs, wrapATR(e))
+			}
+			if len(sub) == 0 && !sc.TrailingStopATRMultRegime.IsZero() {
 				usesRegime = true
 				if sc.TrailingStopATRMult != nil {
-					errs = append(errs, fmt.Sprintf("%s: trailing_stop_atr_regime is mutually exclusive with trailing_stop_atr_mult", prefix))
+					errs = append(errs, fmt.Sprintf("%s: trailing_stop_atr_mult_regime is mutually exclusive with trailing_stop_atr_mult", prefix))
 				}
 				if sc.TrailingStopPct != nil {
-					errs = append(errs, fmt.Sprintf("%s: trailing_stop_atr_regime is mutually exclusive with trailing_stop_pct", prefix))
+					errs = append(errs, fmt.Sprintf("%s: trailing_stop_atr_mult_regime is mutually exclusive with trailing_stop_pct", prefix))
 				}
 				if sc.StopLossPct != nil {
-					errs = append(errs, fmt.Sprintf("%s: trailing_stop_atr_regime is mutually exclusive with stop_loss_pct", prefix))
+					errs = append(errs, fmt.Sprintf("%s: trailing_stop_atr_mult_regime is mutually exclusive with stop_loss_pct", prefix))
 				}
 				if sc.StopLossMarginPct != nil {
-					errs = append(errs, fmt.Sprintf("%s: trailing_stop_atr_regime is mutually exclusive with stop_loss_margin_pct", prefix))
+					errs = append(errs, fmt.Sprintf("%s: trailing_stop_atr_mult_regime is mutually exclusive with stop_loss_margin_pct", prefix))
 				}
 				if sc.StopLossATRMult != nil {
-					errs = append(errs, fmt.Sprintf("%s: trailing_stop_atr_regime is mutually exclusive with stop_loss_atr_mult", prefix))
+					errs = append(errs, fmt.Sprintf("%s: trailing_stop_atr_mult_regime is mutually exclusive with stop_loss_atr_mult", prefix))
 				}
-				if sc.Platform != "hyperliquid" || sc.Type != "perps" {
-					errs = append(errs, fmt.Sprintf("%s: trailing_stop_atr_regime is HL perps only", prefix))
+				manualRatchet := sc.Type == "manual" && strategyUsesTrailingTPRatchetClose(*sc)
+				if sc.Platform != "hyperliquid" || (sc.Type != "perps" && !manualRatchet) {
+					errs = append(errs, fmt.Sprintf("%s: trailing_stop_atr_mult_regime is HL perps only (or HL manual trailing_tp_ratchet_regime)", prefix))
 				}
 			}
 		}
 
-		// Close-ref tier validation: walk each regime-aware tiered_tp_atr_regime /
-		// tiered_tp_atr_live_regime close ref and parse its tier list shape.
-		// Errors are surfaced here so a typo in tier shapes can't silently
-		// disable on-chain TPs.
-		for j, ref := range sc.CloseStrategies {
+		for _, ref := range sc.closeRefs() {
 			name := strings.ToLower(strings.TrimSpace(ref.Name))
+			if name == dynamicCloseStrategyName {
+				usesRegime = true
+				subPrefix := fmt.Sprintf("%s.close_strategy(%s)", prefix, ref.Name)
+				if sc.Platform != "hyperliquid" || (sc.Type != "perps" && sc.Type != "manual") {
+					errs = append(errs, fmt.Sprintf("%s: %s is HL perps/manual only", subPrefix, ref.Name))
+				}
+				if !closeParamsAreUnifiedRegime(ref.Params) {
+					errs = append(errs, fmt.Sprintf("%s: requires unified per-regime trend_regime block", subPrefix))
+				} else {
+					errs = append(errs, validateDynamicRegimeClose(ref.Params, atrLabels, subPrefix)...)
+				}
+				continue
+			}
 			if name != "tiered_tp_atr_regime" && name != "tiered_tp_atr_live_regime" {
 				continue
 			}
 			usesRegime = true
-			subPrefix := fmt.Sprintf("%s.close_strategies[%d](%s)", prefix, j, ref.Name)
+			subPrefix := fmt.Sprintf("%s.close_strategy(%s)", prefix, ref.Name)
+			if closeParamsAreUnifiedRegime(ref.Params) {
+				errs = append(errs, validateUnifiedRegimeClose(ref.Params, atrLabels, subPrefix)...)
+				continue
+			}
 			useDefaults := false
 			if v, ok := ref.Params["use_defaults"].(bool); ok {
 				useDefaults = v
 			}
-			tiersRaw, hasTiers := ref.Params["tiers"]
+			tiersRaw, hasTiers := closeTierListParam(ref.Params)
 			if useDefaults && hasTiers {
 				errs = append(errs, fmt.Sprintf("%s: cannot combine use_defaults:true with explicit tiers (use_defaults is all-or-nothing)", subPrefix))
 				continue
@@ -662,20 +703,17 @@ func validateRegimeATRConfig(cfg *Config) []string {
 				errs = append(errs, fmt.Sprintf("%s: missing tiers (either set use_defaults:true or supply a tiers list)", subPrefix))
 				continue
 			}
-			// Unknown-key check for the close ref params (use_defaults, tiers,
-			// atr_source, sl_after).
 			for k := range ref.Params {
 				switch k {
-				case "use_defaults", "tiers", "atr_source", "sl_after":
-					// known
+				case "use_defaults", "tp_tiers", "tiers", "atr_source", "sl_after":
 				default:
-					errs = append(errs, fmt.Sprintf("%s: unknown param %q (allowed: use_defaults, tiers, atr_source, sl_after)", subPrefix, k))
+					errs = append(errs, fmt.Sprintf("%s: unknown param %q (allowed: use_defaults, tp_tiers, atr_source, sl_after)", subPrefix, k))
 				}
 			}
 			if useDefaults {
-				continue // baseline tier list is validated at resolveDefaultRegimeTPTiers call sites
+				continue
 			}
-			if specs, subErrs := parseRegimeTPTiers(tiersRaw, subPrefix); len(subErrs) > 0 {
+			if specs, subErrs := parseRegimeTPTiers(tiersRaw, subPrefix, atrLabels); len(subErrs) > 0 {
 				errs = append(errs, subErrs...)
 			} else if len(specs) < 2 {
 				errs = append(errs, fmt.Sprintf("%s: must have at least 2 tiers, got %d", subPrefix, len(specs)))
@@ -685,40 +723,48 @@ func validateRegimeATRConfig(cfg *Config) []string {
 		if usesRegime && !regimeEnabled {
 			errs = append(errs, fmt.Sprintf("%s: regime-aware stop/TP fields require top-level regime.enabled=true", prefix))
 		}
+		errs = append(errs, validateUnifiedCloseSoleOwner(*sc, prefix)...)
+		errs = append(errs, validateTrailingTPRatchetClose(*sc, atrLabels, regimeEnabled)...)
 	}
 	return errs
 }
 
-// defaultRegimeTPTiersForRegime expands the per-surface default tier list
-// for a regime-aware close evaluator with `use_defaults: true`. Returns nil
-// when regime is empty so the caller emits only the SL until the position
-// regime is stamped.
 func defaultRegimeTPTiersForRegime(regime string) []hlProtectionTier {
 	if regime == "" {
 		return nil
 	}
-	out := make([]hlProtectionTier, 0, len(regimeATRDefaults.TPTiers))
-	for _, block := range regimeATRDefaults.TPTiers {
-		entry, ok := block.Resolve(regime)
-		if !ok || entry.ATR <= 0 {
-			return nil
-		}
-		frac := entry.CloseFraction
-		if !entry.HasCloseFrac || frac <= 0 {
-			return nil
-		}
-		out = append(out, hlProtectionTier{Multiple: entry.ATR, Fraction: frac})
+	group, ok := regimeCloseDefaultGroup(regime)
+	if !ok {
+		return nil
 	}
+	ladder := regimeTPTierGroupDefaults[group]
+	if len(ladder) < 2 {
+		return nil
+	}
+	out := make([]hlProtectionTier, len(ladder))
+	copy(out, ladder)
 	return finalizeProtectionTiers(out)
 }
 
-// InspectRegimeTPFleetDefaultBlocks returns deep copies of the fleet baseline
-// tier blocks used when a tiered_tp_atr{_live}_regime close ref sets
-// use_defaults:true. For go-trader inspect provenance (#738).
 func InspectRegimeTPFleetDefaultBlocks() []RegimeATRBlock {
-	out := make([]RegimeATRBlock, len(regimeATRDefaults.TPTiers))
-	for i, b := range regimeATRDefaults.TPTiers {
-		out[i] = RegimeATRBlock{UseDefaults: true, TrendRegime: cloneRegimeMap(b.TrendRegime)}
+	maxTiers := 0
+	for _, ladder := range regimeTPTierGroupDefaults {
+		if len(ladder) > maxTiers {
+			maxTiers = len(ladder)
+		}
+	}
+	out := make([]RegimeATRBlock, maxTiers)
+	for i := 0; i < maxTiers; i++ {
+		tr := map[string]RegimeATREntry{}
+		for group, ladder := range regimeTPTierGroupDefaults {
+			if i >= len(ladder) {
+				continue
+			}
+			for _, label := range regimeTPFleetDefaultLabelsByGroup[group] {
+				tr[label] = RegimeATREntry{ATR: ladder[i].Multiple, CloseFraction: ladder[i].Fraction, HasCloseFrac: true}
+			}
+		}
+		out[i] = RegimeATRBlock{UseDefaults: true, TrendRegime: tr}
 	}
 	return out
 }

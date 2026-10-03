@@ -1,0 +1,162 @@
+[
+  {
+    "label": "time_stop_250",
+    "stack": {
+      "close_strategies": [
+        {
+          "name": "time_stop",
+          "params": {
+            "max_bars": 250
+          }
+        }
+      ],
+      "stop_loss_atr_mult": null,
+      "trailing_stop_atr_mult": null
+    },
+    "mean_ddadj": 0.094,
+    "mean_sharpe": 0.143,
+    "mean_ret": 3.78,
+    "worst_dd": -46.55,
+    "trades": 64
+  },
+  {
+    "label": "time_stop_400",
+    "stack": {
+      "close_strategies": [
+        {
+          "name": "time_stop",
+          "params": {
+            "max_bars": 400
+          }
+        }
+      ],
+      "stop_loss_atr_mult": null,
+      "trailing_stop_atr_mult": null
+    },
+    "mean_ddadj": -0.228,
+    "mean_sharpe": -0.244,
+    "mean_ret": -10.97,
+    "worst_dd": -57.63,
+    "trades": 43
+  },
+  {
+    "label": "time_stop_225",
+    "stack": {
+      "close_strategies": [
+        {
+          "name": "time_stop",
+          "params": {
+            "max_bars": 225
+          }
+        }
+      ],
+      "stop_loss_atr_mult": null,
+      "trailing_stop_atr_mult": null
+    },
+    "mean_ddadj": -0.239,
+    "mean_sharpe": -0.207,
+    "mean_ret": -10.64,
+    "worst_dd": -54.95,
+    "trades": 70
+  },
+  {
+    "label": "time_stop_300",
+    "stack": {
+      "close_strategies": [
+        {
+          "name": "time_stop",
+          "params": {
+            "max_bars": 300
+          }
+        }
+      ],
+      "stop_loss_atr_mult": null,
+      "trailing_stop_atr_mult": null
+    },
+    "mean_ddadj": -0.267,
+    "mean_sharpe": -0.193,
+    "mean_ret": -10.25,
+    "worst_dd": -53.58,
+    "trades": 55
+  },
+  {
+    "label": "time_stop_125",
+    "stack": {
+      "close_strategies": [
+        {
+          "name": "time_stop",
+          "params": {
+            "max_bars": 125
+          }
+        }
+      ],
+      "stop_loss_atr_mult": null,
+      "trailing_stop_atr_mult": null
+    },
+    "mean_ddadj": -0.281,
+    "mean_sharpe": -0.428,
+    "mean_ret": -13.52,
+    "worst_dd": -58.23,
+    "trades": 109
+  },
+  {
+    "label": "time_stop_175",
+    "stack": {
+      "close_strategies": [
+        {
+          "name": "time_stop",
+          "params": {
+            "max_bars": 175
+          }
+        }
+      ],
+      "stop_loss_atr_mult": null,
+      "trailing_stop_atr_mult": null
+    },
+    "mean_ddadj": -0.321,
+    "mean_sharpe": -0.345,
+    "mean_ret": -13.58,
+    "worst_dd": -50.95,
+    "trades": 84
+  },
+  {
+    "label": "time_stop_200",
+    "stack": {
+      "close_strategies": [
+        {
+          "name": "time_stop",
+          "params": {
+            "max_bars": 200
+          }
+        }
+      ],
+      "stop_loss_atr_mult": null,
+      "trailing_stop_atr_mult": null
+    },
+    "mean_ddadj": -0.422,
+    "mean_sharpe": -0.62,
+    "mean_ret": -19.16,
+    "worst_dd": -59.37,
+    "trades": 80
+  },
+  {
+    "label": "time_stop_75",
+    "stack": {
+      "close_strategies": [
+        {
+          "name": "time_stop",
+          "params": {
+            "max_bars": 75
+          }
+        }
+      ],
+      "stop_loss_atr_mult": null,
+      "trailing_stop_atr_mult": null
+    },
+    "mean_ddadj": -0.513,
+    "mean_sharpe": -0.803,
+    "mean_ret": -21.41,
+    "worst_dd": -53.12,
+    "trades": 161
+  }
+]

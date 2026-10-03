@@ -1,0 +1,5 @@
+{
+  "name": "squeeze_momentum",
+  "direction": "long",
+  "stop_loss_atr_mult": 1.5
+}

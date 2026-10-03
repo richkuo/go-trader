@@ -1,6 +1,3 @@
-"""
-SQLite storage layer for price data and backtest results.
-"""
 
 import sqlite3
 import json
@@ -10,19 +7,43 @@ from typing import Optional
 
 import pandas as pd
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "trading_bot.db")
+OHLCV_CACHE_DB_ENV = "GO_TRADER_OHLCV_CACHE_DB"
 
 
-def get_connection(db_path: str = DB_PATH) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path)
+def _resolve_default_db_path() -> str:
+    configured = os.environ.get(OHLCV_CACHE_DB_ENV)
+    if configured is None:
+        return os.path.join(os.path.dirname(__file__), "trading_bot.db")
+    configured = configured.strip()
+    if not configured:
+        raise RuntimeError(f"{OHLCV_CACHE_DB_ENV} must not be blank")
+    return os.path.abspath(os.path.expanduser(configured))
+
+
+DB_PATH = _resolve_default_db_path()
+
+_SCHEMA_READY: set = set()
+
+
+def _connect(db_path: str) -> sqlite3.Connection:
+    try:
+        conn = sqlite3.connect(db_path)
+    except sqlite3.Error as exc:
+        raise sqlite3.OperationalError(
+            f"cannot open SQLite cache {db_path}: {exc}") from exc
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
 
+def get_connection(db_path: str = DB_PATH) -> sqlite3.Connection:
+    if db_path not in _SCHEMA_READY:
+        init_db(db_path)
+    return _connect(db_path)
+
+
 def init_db(db_path: str = DB_PATH):
-    """Create tables if they don't exist."""
-    conn = get_connection(db_path)
+    conn = _connect(db_path)
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS ohlcv (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -40,6 +61,26 @@ def init_db(db_path: str = DB_PATH):
 
         CREATE INDEX IF NOT EXISTS idx_ohlcv_lookup
             ON ohlcv(exchange, symbol, timeframe, timestamp);
+
+        CREATE TABLE IF NOT EXISTS funding_rates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            exchange TEXT NOT NULL,
+            coin TEXT NOT NULL,
+            timestamp INTEGER NOT NULL,
+            rate REAL NOT NULL,
+            UNIQUE(exchange, coin, timestamp)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_funding_lookup
+            ON funding_rates(exchange, coin, timestamp);
+
+        CREATE TABLE IF NOT EXISTS funding_coverage (
+            exchange TEXT NOT NULL,
+            coin TEXT NOT NULL,
+            start_ts INTEGER NOT NULL,
+            end_ts INTEGER NOT NULL,
+            UNIQUE(exchange, coin, start_ts)
+        );
 
         CREATE TABLE IF NOT EXISTS backtest_results (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -63,16 +104,35 @@ def init_db(db_path: str = DB_PATH):
             trades_json TEXT  -- JSON string of all trades
         );
     """)
+    _migrate_funding_coverage_to_intervals(conn)
     conn.commit()
     conn.close()
+    _SCHEMA_READY.add(db_path)
+
+
+def _migrate_funding_coverage_to_intervals(conn: sqlite3.Connection):
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='funding_coverage'"
+    ).fetchone()
+    if not row or not row[0]:
+        return
+    normalized = row[0].lower().replace(" ", "").replace("\n", "")
+    if "unique(exchange,coin)" not in normalized:
+        return
+    conn.executescript("""
+        DROP TABLE funding_coverage;
+        CREATE TABLE funding_coverage (
+            exchange TEXT NOT NULL,
+            coin TEXT NOT NULL,
+            start_ts INTEGER NOT NULL,
+            end_ts INTEGER NOT NULL,
+            UNIQUE(exchange, coin, start_ts)
+        );
+    """)
 
 
 def store_ohlcv(df: pd.DataFrame, exchange: str, symbol: str, timeframe: str,
                 db_path: str = DB_PATH):
-    """
-    Store OHLCV dataframe. df must have columns: timestamp, open, high, low, close, volume.
-    timestamp should be Unix ms.
-    """
     conn = get_connection(db_path)
     rows = []
     for _, row in df.iterrows():
@@ -95,7 +155,6 @@ def store_ohlcv(df: pd.DataFrame, exchange: str, symbol: str, timeframe: str,
 def load_ohlcv(exchange: str, symbol: str, timeframe: str,
                start_ts: Optional[int] = None, end_ts: Optional[int] = None,
                db_path: str = DB_PATH) -> pd.DataFrame:
-    """Load OHLCV data from DB into a DataFrame."""
     conn = get_connection(db_path)
     query = "SELECT timestamp, open, high, low, close, volume FROM ohlcv WHERE exchange=? AND symbol=? AND timeframe=?"
     params = [exchange, symbol, timeframe]
@@ -118,8 +177,79 @@ def load_ohlcv(exchange: str, symbol: str, timeframe: str,
     return df
 
 
+def store_funding_rates(records: list, exchange: str, coin: str,
+                        db_path: str = DB_PATH):
+    if not records:
+        return
+    conn = get_connection(db_path)
+    conn.executemany(
+        "INSERT OR REPLACE INTO funding_rates (exchange, coin, timestamp, rate)"
+        " VALUES (?, ?, ?, ?)",
+        [(exchange, coin, int(r["time"]), float(r["rate"])) for r in records],
+    )
+    conn.commit()
+    conn.close()
+
+
+def load_funding_rates(exchange: str, coin: str,
+                       start_ts: Optional[int] = None,
+                       end_ts: Optional[int] = None,
+                       db_path: str = DB_PATH) -> pd.DataFrame:
+    conn = get_connection(db_path)
+    query = "SELECT timestamp, rate FROM funding_rates WHERE exchange=? AND coin=?"
+    params = [exchange, coin]
+    if start_ts is not None:
+        query += " AND timestamp >= ?"
+        params.append(start_ts)
+    if end_ts is not None:
+        query += " AND timestamp <= ?"
+        params.append(end_ts)
+    query += " ORDER BY timestamp ASC"
+    df = pd.read_sql_query(query, conn, params=params)
+    conn.close()
+    if not df.empty:
+        df["datetime"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+        df.set_index("datetime", inplace=True)
+    return df
+
+
+def load_funding_coverage(exchange: str, coin: str,
+                          db_path: str = DB_PATH) -> list:
+    conn = get_connection(db_path)
+    rows = conn.execute(
+        "SELECT start_ts, end_ts FROM funding_coverage WHERE exchange=? AND coin=?"
+        " ORDER BY start_ts ASC",
+        (exchange, coin),
+    ).fetchall()
+    conn.close()
+    return [(int(s), int(e)) for s, e in rows]
+
+
+def store_funding_coverage(exchange: str, coin: str,
+                           start_ts: int, end_ts: int,
+                           db_path: str = DB_PATH):
+    intervals = load_funding_coverage(exchange, coin, db_path=db_path)
+    intervals.append((int(start_ts), int(end_ts)))
+    intervals.sort()
+    merged = []
+    for s, e in intervals:
+        if merged and s <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], e)
+        else:
+            merged.append([s, e])
+    conn = get_connection(db_path)
+    conn.execute("DELETE FROM funding_coverage WHERE exchange=? AND coin=?",
+                 (exchange, coin))
+    conn.executemany(
+        "INSERT INTO funding_coverage (exchange, coin, start_ts, end_ts)"
+        " VALUES (?, ?, ?, ?)",
+        [(exchange, coin, s, e) for s, e in merged],
+    )
+    conn.commit()
+    conn.close()
+
+
 def store_backtest_result(result: dict, db_path: str = DB_PATH):
-    """Store a backtest result dict."""
     conn = get_connection(db_path)
     conn.execute("""
         INSERT INTO backtest_results
@@ -153,7 +283,6 @@ def store_backtest_result(result: dict, db_path: str = DB_PATH):
 
 def get_backtest_results(strategy_name: Optional[str] = None,
                          db_path: str = DB_PATH) -> pd.DataFrame:
-    """Retrieve backtest results."""
     conn = get_connection(db_path)
     query = "SELECT * FROM backtest_results"
     params = []
@@ -164,7 +293,3 @@ def get_backtest_results(strategy_name: Optional[str] = None,
     df = pd.read_sql_query(query, conn, params=params)
     conn.close()
     return df
-
-
-# Initialize DB on import
-init_db()

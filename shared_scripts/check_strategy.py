@@ -1,15 +1,4 @@
 #!/usr/bin/env python3
-"""
-Stateless spot strategy check script.
-Fetches data, runs strategy, outputs JSON to stdout, exits.
-
-Usage: python3 check_strategy.py <strategy> <symbol> <timeframe> [symbol_b]
-
-  symbol_b  Optional second asset symbol for pairs_spread (e.g. ETH/USDT).
-            When provided, close prices of symbol_b are merged into the
-            dataframe as the 'close_b' column so the strategy runs proper
-            stat-arb.  Without it, pairs_spread degrades to self-mean-reversion.
-"""
 
 import sys
 import os
@@ -18,12 +7,11 @@ import math
 import traceback
 from datetime import datetime, timezone
 
-# Add parent dirs to path so we can import from strategies/ and core/
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strategies', 'open', 'spot'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
 from atr import ensure_atr_indicator, latest_atr
-from regime import latest_regime
+from regime import latest_regime, parse_regime_windows_spec_json, prepare_check_regime
 
 
 def _arg_value(flag, default=None):
@@ -58,6 +46,7 @@ def _position_ctx(position_side):
         ("--position-qty", "current_quantity"),
         ("--position-initial-qty", "initial_quantity"),
         ("--position-entry-atr", "entry_atr"),
+        ("--position-risk-anchor-price", "risk_anchor_price"),
     ):
         value = _arg_float(flag)
         if value is not None:
@@ -69,14 +58,20 @@ def _position_ctx(position_side):
 
 
 def main():
-    # #645: startup compatibility probe — exit 0 without running the strategy.
     if "--probe-only" in sys.argv:
         sys.exit(0)
-    # Parse optional flags from argv before positional args
     htf_filter_enabled = "--htf-filter" in sys.argv
     regime_enabled = "--regime-enabled" in sys.argv
-    regime_period = int(_arg_value("--regime-period") or 14)
-    regime_adx_threshold = float(_arg_value("--regime-adx-threshold") or 20.0)
+    regime_windows_spec = parse_regime_windows_spec_json(_arg_value("--regime-windows-spec-json"))
+    ohlcv_limit = int(_arg_value("--ohlcv-limit") or 200)
+    regime_atr_window = (_arg_value("--regime-atr-window") or "").strip()
+    regime_payload_json = _arg_value("--regime-payload-json")
+    atr_method = (_arg_value("--atr-method") or "simple").strip().lower()
+    if atr_method not in ("simple", "wilder"):
+        print(json.dumps({
+            "error": f"--atr-method must be 'simple' or 'wilder', got {atr_method!r}",
+        }))
+        sys.exit(1)
     open_strategy = _arg_value("--open-strategy")
     close_strategies_raw = _arg_value("--close-strategies")
     position_side = (_arg_value("--position-side", "") or "").lower()
@@ -86,7 +81,6 @@ def main():
         idx = sys.argv.index("--params")
         if idx + 1 < len(sys.argv):
             strategy_params = json.loads(sys.argv[idx + 1])
-    # #640: --strategy-refs JSON supersedes --params/--open-strategy/--close-strategies.
     close_params_by_name = None
     strategy_refs_raw = _arg_value("--strategy-refs")
     if strategy_refs_raw:
@@ -99,7 +93,6 @@ def main():
             strategy_params = refs["open_params"]
             close_params_by_name = refs["close_params_by_name"]
     open_close_enabled = bool(open_strategy or close_strategies_raw)
-    # Filter out --flag and --params <value> (skip the arg after --params)
     filtered = []
     skip_next = False
     for a in sys.argv[1:]:
@@ -110,8 +103,10 @@ def main():
             "--params", "--open-strategy", "--close-strategies", "--strategy-refs",
             "--position-side", "--position-avg-cost", "--position-qty",
             "--position-initial-qty", "--position-entry-atr",
-            "--position-regime",
-            "--regime-period", "--regime-adx-threshold",
+            "--position-regime", "--position-risk-anchor-price",
+            "--regime-windows-spec-json", "--ohlcv-limit",
+            "--regime-atr-window", "--regime-directional-window",
+            "--regime-payload-json", "--atr-method",
         ):
             skip_next = True
             continue
@@ -144,12 +139,12 @@ def main():
             finalize_decision,
             normalize_signal,
             parse_close_strategies,
+            reject_backtest_only_strategies,
             validate_close_strategy_names,
         )
 
         configured_names = [open_strategy or strategy_name]
-        for name in configured_names:
-            get_strategy(name)
+        reject_backtest_only_strategies(configured_names, get_strategy)
         validate_close_strategy_names(
             parse_close_strategies(close_strategies_raw),
             get_strategy,
@@ -158,7 +153,6 @@ def main():
             list_close_strategies,
         )
 
-        # Warn when pairs_spread will degrade due to missing secondary symbol
         needs_pair = "pairs_spread" in configured_names
         if needs_pair and not symbol_b:
             print(
@@ -168,14 +162,12 @@ def main():
                 file=sys.stderr,
             )
 
-        # Fetch primary data
         print(f"Fetching {symbol} {timeframe}...", file=sys.stderr)
-        df = fetch_ohlcv(symbol=symbol, timeframe=timeframe, limit=200, store=False)
+        df = fetch_ohlcv(symbol=symbol, timeframe=timeframe, limit=ohlcv_limit, store=False)
 
-        # Fetch and merge secondary data for pairs strategies
         if needs_pair and symbol_b:
             print(f"Fetching secondary {symbol_b} {timeframe}...", file=sys.stderr)
-            df_b = fetch_ohlcv(symbol=symbol_b, timeframe=timeframe, limit=200, store=False)
+            df_b = fetch_ohlcv(symbol=symbol_b, timeframe=timeframe, limit=ohlcv_limit, store=False)
             if df_b.empty:
                 print(json.dumps({
                     "strategy": strategy_name,
@@ -188,7 +180,6 @@ def main():
                     "error": f"No data returned for secondary symbol {symbol_b}",
                 }))
                 sys.exit(1)
-            # Inner join on datetime index so both assets have the same timestamps
             df = df.join(df_b[["close"]].rename(columns={"close": "close_b"}), how="inner")
             print(f"Merged pair: {len(df)} aligned candles ({symbol} / {symbol_b})", file=sys.stderr)
 
@@ -206,21 +197,22 @@ def main():
             }))
             return
 
-        if regime_enabled:
-            regime_payload = latest_regime(df, period=regime_period, adx_threshold=regime_adx_threshold)
-        else:
-            regime_payload = {"regime": "", "score": 0.0, "metrics": {}}
+        stdout_regime, live_regime, strategy_regime = prepare_check_regime(
+            df,
+            regime_enabled=regime_enabled,
+            windows_spec=regime_windows_spec,
+            atr_window=regime_atr_window,
+            injected_payload_json=regime_payload_json,
+        )
         strategy_params = (strategy_params or {})
-        strategy_params["regime"] = regime_payload
+        strategy_params["regime"] = strategy_regime
 
         decision = None
         if open_close_enabled:
             market_ctx = {"mark_price": float(df["close"].iloc[-1])}
-            atr_now = latest_atr(df)
+            atr_now = latest_atr(df, method=atr_method)
             if atr_now > 0:
                 market_ctx["atr"] = atr_now
-            # #733: live regime label for tiered_tp_atr_live_regime evaluator.
-            live_regime = (regime_payload or {}).get("regime") or ""
             if live_regime:
                 market_ctx["regime"] = live_regime
             evaluation = evaluate_open_close(
@@ -240,16 +232,13 @@ def main():
             result_df = evaluation.open_result_df
             signal = evaluation.open_signal
         else:
-            # Run the strategy
             result_df = apply_strategy(strategy_name, df, strategy_params)
             signal = normalize_signal(result_df.iloc[-1].get("signal", 0))
 
-        # Get the last row's signal
-        ensure_atr_indicator(result_df)
+        ensure_atr_indicator(result_df, method=atr_method)
         last = result_df.iloc[-1]
         price = float(last["close"])
 
-        # Apply HTF trend filter if enabled (skip for funding-rate strategies — #103)
         htf_info = {}
         htf_strategy_name = open_strategy or strategy_name
         if htf_filter_enabled and htf_strategy_name != "delta_neutral_funding":
@@ -268,7 +257,6 @@ def main():
             decision = finalize_decision(evaluation, position_side, signal)
             signal = decision["signal"]
 
-        # Collect relevant indicators
         indicators = {}
         indicator_cols = [c for c in result_df.columns
                          if c not in ("open", "high", "low", "close", "close_b", "volume",
@@ -283,7 +271,6 @@ def main():
                 except (ValueError, TypeError):
                     pass
 
-        # Merge HTF indicators
         if htf_info:
             for k, v in htf_info.items():
                 if isinstance(v, (int, float)):
@@ -296,7 +283,7 @@ def main():
             "signal": signal,
             "price": round(price, 2),
             "indicators": indicators,
-            "regime": regime_payload["regime"],
+            "regime": stdout_regime,
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         if decision:
@@ -316,7 +303,7 @@ def main():
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "error": str(e)
         }))
-        sys.exit(1)  # Exit 1; Go will still parse the JSON error field
+        sys.exit(1)
 
 
 if __name__ == "__main__":

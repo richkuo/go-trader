@@ -8,10 +8,9 @@ import (
 	"strings"
 )
 
-// asset represents a tradeable asset with its exchange symbol.
 type asset struct {
-	Name   string // e.g. "BTC"
-	Symbol string // e.g. "BTC/USDT"
+	Name   string
+	Symbol string
 }
 
 var supportedAssets = []asset{
@@ -22,79 +21,113 @@ var supportedAssets = []asset{
 
 const (
 	starterAssetName      = "BTC"
-	starterSpotStrategyID = "momentum"
+	starterSpotStrategyID = "chart_pattern"
 	starterSpotCapital    = 1000.0
 	starterSpotDrawdown   = 5.0
 )
 
-// stratDef defines a strategy template with its ID and short name for config IDs.
 type stratDef struct {
-	ID        string // strategy arg used in script invocation
-	ShortName string // abbreviated name used in config IDs
+	ID        string
+	ShortName string
 }
 
-// knownShortNames maps strategy IDs to abbreviated config ID prefixes.
 var knownShortNames = map[string]string{
-	"sma_crossover":         "sma",
-	"ema_crossover":         "ema",
-	"momentum":              "momentum",
-	"rsi":                   "rsi",
-	"bollinger_bands":       "bb",
-	"macd":                  "macd",
-	"mean_reversion":        "mr",
-	"volume_weighted":       "vw",
-	"triple_ema":            "tema",
-	"triple_ema_bidir":      "temab",
-	"tema_cross":            "temac",
-	"tema_cross_bd":         "temacb",
-	"rsi_macd_combo":        "rmc",
-	"vol_mean_reversion":    "vol",
-	"momentum_options":      "mom",
-	"protective_puts":       "pput",
-	"covered_calls":         "ccall",
-	"breakout":              "bo",
-	"atr_breakout":          "atrbo",
-	"stoch_rsi":             "stochrsi",
-	"ichimoku_cloud":        "ichi",
-	"order_blocks":          "ob",
-	"vwap_reversion":        "vwap",
-	"chart_pattern":         "cpat",
-	"liquidity_sweeps":      "liqsw",
-	"parabolic_sar":         "psar",
-	"delta_neutral_funding": "dnf",
-	"supertrend":            "st",
-	"squeeze_momentum":      "sqm",
-	"heikin_ashi_ema":       "hae",
-	"range_scalper":         "rs",
-	"sweep_squeeze_combo":   "ssc",
-	"adx_trend":             "adxt",
-	"donchian_breakout":     "dbo",
-	"session_breakout":      "sbo",
-	"bear_pullback_st":      "bps",
-	"vwap_rejection_st":     "vrs",
+	"sma_crossover":           "sma",
+	"ema_crossover":           "ema",
+	"momentum":                "momentum",
+	"rsi":                     "rsi",
+	"bollinger_bands":         "bb",
+	"macd":                    "macd",
+	"mean_reversion":          "mr",
+	"volume_weighted":         "vw",
+	"triple_ema":              "tema",
+	"triple_ema_bidir":        "temab",
+	"tema_cross":              "temac",
+	"tema_cross_bd":           "temacb",
+	"rsi_macd_combo":          "rmc",
+	"vol_mean_reversion":      "vol",
+	"momentum_options":        "mom",
+	"protective_puts":         "pput",
+	"covered_calls":           "ccall",
+	"breakout":                "bo",
+	"atr_breakout":            "atrbo",
+	"stoch_rsi":               "stochrsi",
+	"ichimoku_cloud":          "ichi",
+	"order_blocks":            "ob",
+	"vwap_reversion":          "vwap",
+	"anchored_vwap":           "avwap",
+	"anchored_vwap_channel":   "avwapch",
+	"anchored_vwap_reversion": "avwaprev",
+	"chart_pattern":           "cpat",
+	"liquidity_sweeps":        "liqsw",
+	"parabolic_sar":           "psar",
+	"delta_neutral_funding":   "dnf",
+	"funding_skew":            "fskew",
+	"supertrend":              "st",
+	"squeeze_momentum":        "sqm",
+	"heikin_ashi_ema":         "hae",
+	"range_scalper":           "rs",
+	"sweep_squeeze_combo":     "ssc",
+	"adx_trend":               "adxt",
+	"donchian_breakout":       "dbo",
+	"session_breakout":        "sbo",
+	"bear_pullback_st":        "bps",
+	"vwap_rejection_st":       "vrs",
+	"momentum_pro":            "mompro",
+	"mean_reversion_pro":      "mrpro",
+	"rsi_bb_combo":            "rsibb",
+	"consolidation_range":     "cr",
+	"atr_band_revert":         "abr",
+	"mtf_confluence":          "mtfc",
+	"vol_momentum":            "volmom",
+	"regime_adaptive":         "regad",
+	"regime_adaptive_htf":     "rahtf",
 }
 
-// bidirectionalPerpsStrategies lists strategy IDs that emit signal=-1 as a
-// short-entry (not just a long-exit). Configs generated for these strategies
-// set AllowShorts=true so ExecutePerpsSignal opens shorts from flat instead
-// of skipping the signal (#328).
 var bidirectionalPerpsStrategies = map[string]bool{
-	"triple_ema_bidir":  true,
-	"tema_cross_bd":     true,
-	"session_breakout":  true,
-	"donchian_breakout": true, // emits short on lower-channel breakdown (#649)
-	"chart_pattern":     true, // emits short on bearish patterns (double top, H&S, bear flag) (#649)
-	"liquidity_sweeps":  true, // emits short on stop-hunt wicks above swing highs (#649)
-	"bear_pullback_st":  true, // dedicated short-only strategy for bear-market rally rejections (#651)
-	"vwap_rejection_st": true, // dedicated short-only strategy for VWAP/EMA rally rejections in bearish regime (#652)
+	"triple_ema_bidir":        true,
+	"tema_cross_bd":           true,
+	"session_breakout":        true,
+	"donchian_breakout":       true,
+	"chart_pattern":           true,
+	"liquidity_sweeps":        true,
+	"bear_pullback_st":        true,
+	"vwap_rejection_st":       true,
+	"anchored_vwap":           true,
+	"anchored_vwap_channel":   true,
+	"anchored_vwap_reversion": true,
+	"momentum_pro":            true,
+	"mean_reversion_pro":      true,
+	"rsi_bb_combo":            true,
+	"consolidation_range":     true,
+	"atr_band_revert":         true,
+	"mtf_confluence":          true,
+	"vol_momentum":            true,
+	"funding_skew":            true,
+	"regime_adaptive":         true,
 }
 
 func isBidirectionalPerpsStrategy(id string) bool {
 	return bidirectionalPerpsStrategies[id]
 }
 
-// deriveShortName returns a short abbreviation for a strategy ID.
-// Uses knownShortNames override map; falls back to first letter of each word.
+var strategiesDefaultingToCompositeRangingGate = map[string][]string{
+	"atr_band_revert":         {"ranging_quiet", "ranging_volatile"},
+	"anchored_vwap_channel":   {"ranging_quiet", "ranging_volatile"},
+	"anchored_vwap_reversion": {"ranging_quiet", "ranging_volatile"},
+	"rsi_bb_combo":            {"ranging_quiet", "ranging_volatile"},
+}
+
+func defaultCompositeRangingGate(stratID string) []string {
+	labels, ok := strategiesDefaultingToCompositeRangingGate[stratID]
+	if !ok {
+		return nil
+	}
+	out := make([]string, len(labels))
+	copy(out, labels)
+	return out
+}
+
 func deriveShortName(id string) string {
 	if name, ok := knownShortNames[id]; ok {
 		return name
@@ -109,30 +142,16 @@ func deriveShortName(id string) string {
 	return sb.String()
 }
 
-// defaultSpotStrategies is the fallback list when Python discovery fails.
 var defaultSpotStrategies = []stratDef{
-	{ID: "sma_crossover", ShortName: "sma"},
-	{ID: "ema_crossover", ShortName: "ema"},
-	{ID: "momentum", ShortName: "momentum"},
-	{ID: "rsi", ShortName: "rsi"},
-	{ID: "bollinger_bands", ShortName: "bb"},
-	{ID: "macd", ShortName: "macd"},
-	{ID: "mean_reversion", ShortName: "mr"},
-	{ID: "volume_weighted", ShortName: "vw"},
-	{ID: "triple_ema", ShortName: "tema"},
-	{ID: "rsi_macd_combo", ShortName: "rmc"},
-	{ID: "stoch_rsi", ShortName: "stochrsi"},
-	{ID: "ichimoku_cloud", ShortName: "ichi"},
-	{ID: "order_blocks", ShortName: "ob"},
-	{ID: "vwap_reversion", ShortName: "vwap"},
+	{ID: "anchored_vwap", ShortName: "avwap"},
+	{ID: "anchored_vwap_channel", ShortName: "avwapch"},
+	{ID: "anchored_vwap_reversion", ShortName: "avwaprev"},
 	{ID: "chart_pattern", ShortName: "cpat"},
 	{ID: "liquidity_sweeps", ShortName: "liqsw"},
-	{ID: "parabolic_sar", ShortName: "psar"},
-	{ID: "range_scalper", ShortName: "rs"},
-	{ID: "sweep_squeeze_combo", ShortName: "ssc"},
-	{ID: "adx_trend", ShortName: "adxt"},
-	{ID: "donchian_breakout", ShortName: "dbo"},
-	{ID: "tema_cross", ShortName: "temac"},
+	{ID: "momentum_pro", ShortName: "mompro"},
+	{ID: "mean_reversion_pro", ShortName: "mrpro"},
+	{ID: "atr_band_revert", ShortName: "abr"},
+	{ID: "regime_adaptive_htf", ShortName: "rahtf"},
 }
 
 var defaultOptionsStrategies = []stratDef{
@@ -143,51 +162,36 @@ var defaultOptionsStrategies = []stratDef{
 }
 
 var defaultPerpsStrategies = []stratDef{
-	{ID: "momentum", ShortName: "momentum"},
-	{ID: "triple_ema_bidir", ShortName: "temab"},
-	{ID: "tema_cross_bd", ShortName: "temacb"},
 	{ID: "chart_pattern", ShortName: "cpat"},
 	{ID: "liquidity_sweeps", ShortName: "liqsw"},
+	{ID: "anchored_vwap", ShortName: "avwap"},
+	{ID: "anchored_vwap_channel", ShortName: "avwapch"},
+	{ID: "anchored_vwap_reversion", ShortName: "avwaprev"},
 	{ID: "delta_neutral_funding", ShortName: "dnf"},
-	{ID: "range_scalper", ShortName: "rs"},
-	{ID: "sweep_squeeze_combo", ShortName: "ssc"},
-	{ID: "adx_trend", ShortName: "adxt"},
-	{ID: "donchian_breakout", ShortName: "dbo"},
-	{ID: "session_breakout", ShortName: "sbo"},
+	{ID: "momentum_pro", ShortName: "mompro"},
+	{ID: "mean_reversion_pro", ShortName: "mrpro"},
+	{ID: "atr_band_revert", ShortName: "abr"},
+	{ID: "regime_adaptive_htf", ShortName: "rahtf"},
 }
 
 var defaultFuturesStrategies = []stratDef{
-	{ID: "momentum", ShortName: "momentum"},
-	{ID: "mean_reversion", ShortName: "mr"},
-	{ID: "rsi", ShortName: "rsi"},
-	{ID: "macd", ShortName: "macd"},
 	{ID: "breakout", ShortName: "bo"},
-	{ID: "triple_ema_bidir", ShortName: "temab"},
-	{ID: "stoch_rsi", ShortName: "stochrsi"},
-	{ID: "ichimoku_cloud", ShortName: "ichi"},
-	{ID: "order_blocks", ShortName: "ob"},
-	{ID: "vwap_reversion", ShortName: "vwap"},
+	{ID: "anchored_vwap", ShortName: "avwap"},
+	{ID: "anchored_vwap_channel", ShortName: "avwapch"},
+	{ID: "anchored_vwap_reversion", ShortName: "avwaprev"},
 	{ID: "chart_pattern", ShortName: "cpat"},
 	{ID: "liquidity_sweeps", ShortName: "liqsw"},
-	{ID: "parabolic_sar", ShortName: "psar"},
 	{ID: "delta_neutral_funding", ShortName: "dnf"},
-	{ID: "range_scalper", ShortName: "rs"},
-	{ID: "sweep_squeeze_combo", ShortName: "ssc"},
-	{ID: "adx_trend", ShortName: "adxt"},
-	{ID: "donchian_breakout", ShortName: "dbo"},
-	{ID: "session_breakout", ShortName: "sbo"},
-	{ID: "tema_cross", ShortName: "temac"},
-	{ID: "tema_cross_bd", ShortName: "temacb"},
+	{ID: "momentum_pro", ShortName: "mompro"},
+	{ID: "mean_reversion_pro", ShortName: "mrpro"},
+	{ID: "atr_band_revert", ShortName: "abr"},
+	{ID: "regime_adaptive_htf", ShortName: "rahtf"},
 }
 
-// Supported CME futures symbols for the init wizard.
 var supportedFuturesSymbols = []string{"ES", "NQ", "MES", "MNQ", "CL", "GC"}
 
-// Supported stock symbols for Robinhood options.
 var supportedStockSymbols = []string{"SPY", "QQQ", "AAPL", "MSFT", "AMZN", "GOOGL", "TSLA", "META"}
 
-// Live strategy lists — populated by discoverStrategies() at startup.
-// Tests set these via init() to avoid Python dependency.
 var (
 	spotStrategies    []stratDef
 	optionsStrategies []stratDef
@@ -195,14 +199,11 @@ var (
 	futuresStrategies []stratDef
 )
 
-// stratListEntry is one element from --list-json output.
 type stratListEntry struct {
 	ID          string `json:"id"`
 	Description string `json:"description"`
 }
 
-// discoverPythonStrategies calls a Python strategy module with --list-json and parses the result.
-// Returns nil on any error (caller falls back to defaults).
 func discoverPythonStrategies(script string) []stratDef {
 	stdout, _, err := RunPythonScript(script, []string{"--list-json"})
 	if err != nil {
@@ -222,8 +223,6 @@ func discoverPythonStrategies(script string) []stratDef {
 	return strats
 }
 
-// discoverStrategies populates module-level strategy lists from Python.
-// Falls back to defaults on any error — safe to call at startup.
 func discoverStrategies() {
 	spotStrategies = defaultSpotStrategies
 	optionsStrategies = defaultOptionsStrategies
@@ -246,9 +245,6 @@ func discoverStrategies() {
 	futuresStrategies = defaultFuturesStrategies
 	if discovered := discoverPythonStrategies("shared_strategies/open/futures/strategies.py"); len(discovered) > 0 {
 		futuresStrategies = discovered
-		// Perps uses the same strategy registry as futures (#221).
-		// check_hyperliquid.py and check_okx.py (swap mode) import from
-		// shared_strategies/open/futures/, so perps must match that registry.
 		perpsStrategies = discovered
 	}
 }
@@ -257,8 +253,6 @@ func hasAnyEnabledStrategyType(opts InitOptions) bool {
 	return opts.EnableSpot || opts.EnableOptions || opts.EnablePerps || opts.EnableFutures || opts.EnableRobinhood || opts.EnableLuno || opts.EnableOKX || opts.EnableManual
 }
 
-// applyMinimalStarterDefaults turns the empty/default init path into one safe,
-// easy-to-understand starter strategy: BTC spot momentum on BinanceUS.
 func applyMinimalStarterDefaults(opts *InitOptions) {
 	if !opts.EnableSpot && hasAnyEnabledStrategyType(*opts) {
 		return
@@ -268,8 +262,6 @@ func applyMinimalStarterDefaults(opts *InitOptions) {
 	}
 	if len(opts.Assets) == 0 {
 		opts.Assets = []string{starterAssetName}
-		// pairs_spread needs ≥2 assets; clear IncludePairs rather than silently
-		// generating a 1-asset config with an inert pairs flag.
 		opts.IncludePairs = false
 	}
 	if len(opts.SpotStrategies) == 0 && (!opts.IncludePairs || len(opts.Assets) < 2) {
@@ -300,78 +292,79 @@ func selectionDefaults(options []string, preferred []string, fallbackFirst bool)
 	return result
 }
 
-// InitOptions captures all user choices from the interactive wizard.
 type InitOptions struct {
-	OutputPath              string
-	Assets                  []string // selected asset names, e.g. ["BTC", "ETH"]
-	EnableSpot              bool
-	EnableOptions           bool
-	EnablePerps             bool
-	OptionPlatforms         []string // "deribit", "ibkr", or both
-	PerpsMode               string   // "paper" or "live"
-	SpotStrategies          []string // selected spot strategy IDs
-	IncludePairs            bool
-	OptStrategies           []string // selected options strategy IDs
-	PerpsStrategies         []string // selected perps strategy IDs (auto-populated if empty)
-	SpotCapital             float64
-	OptionsCapital          float64
-	PerpsCapital            float64
-	PerpsLeverage           float64  // perps exchange leverage (default 1 = no leverage) (#254/#497)
-	PerpsSizingLeverage     float64  // perps sizing multiplier; defaults to PerpsLeverage (#497)
-	HLStopLossPct           *float64 // HL perps only: per-trade stop-loss % from entry. nil = auto-derive from MaxDrawdownPct (#484); explicit 0 = disabled; >0 = override (#412)
-	HLStopLossMarginPct     *float64 // HL perps only: per-trade stop-loss as % of deployed margin. nil = auto-derive; explicit 0 = disabled; mutually exclusive with HLStopLossPct (#487, #484)
-	HLTrailingStopPct       *float64 // HL perps only: synthetic trailing stop distance from high/low-water mark; mutually exclusive with fixed SL fields (#501)
-	SpotDrawdown            float64
-	OptionsDrawdown         float64
-	PerpsDrawdown           float64
-	EnableFutures           bool
-	FuturesMode             string   // "paper" or "live"
-	FuturesStrategies       []string // selected futures strategy IDs
-	FuturesSymbols          []string // selected CME symbols (e.g. ["ES", "MES"])
-	FuturesCapital          float64
-	FuturesDrawdown         float64
-	FuturesFeePerContract   float64
-	EnableLuno              bool
-	LunoStrategies          []string // selected spot strategy IDs for Luno
-	LunoCapital             float64
-	LunoDrawdown            float64
-	EnableRobinhood         bool
-	RobinhoodMode           string   // "paper" or "live"
-	RobinhoodStrategies     []string // selected crypto strategy IDs
-	RobinhoodCapital        float64
-	RobinhoodDrawdown       float64
-	RobinhoodOptionsSymbols []string // stock tickers for Robinhood options (e.g. ["SPY", "QQQ"])
-	EnableOKX               bool
-	OKXMode                 string   // "paper" or "live"
-	OKXSpotStrategies       []string // selected spot strategy IDs for OKX
-	OKXPerpsStrategies      []string // selected perps strategy IDs for OKX
-	OKXCapital              float64
-	OKXDrawdown             float64
-	CapitalPct              float64 `json:"capitalPct,omitempty"` // 0-1; global capital_pct applied to all strategies
-	HTFFilter               bool    // higher-timeframe trend filter for all strategies
-	// Risk settings — prompted explicitly during live-mode setup (#85) so operators
-	// don't hit the post-launch migration DM for portfolio_risk fields.
-	PortfolioMaxDrawdownPct   float64 `json:"portfolioMaxDrawdownPct,omitempty"`   // kill switch threshold; 0 → default 25
-	PortfolioWarnThresholdPct float64 `json:"portfolioWarnThresholdPct,omitempty"` // % of kill switch that triggers warnings; 0 → default 60
-	DiscordEnabled            bool
-	DiscordOwnerID            string            // Discord user ID for DM features (upgrade prompts, config migration)
-	SpotChannelID             string            // deprecated: use ChannelMap
-	OptionsChannelID          string            // deprecated: use ChannelMap
-	ChannelMap                map[string]string // keyed by platform/type ("spot", "hyperliquid", "deribit", etc.)
-	TelegramEnabled           bool
-	TelegramOwnerChatID       string            // Telegram chat ID for owner DMs
-	TelegramChannelMap        map[string]string // keyed by platform/type ("spot", "hyperliquid", etc.)
-	AutoUpdate                string            // "off", "daily", "heartbeat" (default: "off")
-	// #569: Manual trading tracking strategy.
-	EnableManual    bool
-	ManualSymbol    string
-	ManualTimeframe string
-	ManualCapital   float64
-	ManualDrawdown  float64
-	ManualLeverage  float64
+	OutputPath                  string
+	Assets                      []string
+	EnableSpot                  bool
+	EnableOptions               bool
+	EnablePerps                 bool
+	OptionPlatforms             []string
+	PerpsMode                   string
+	SpotStrategies              []string
+	IncludePairs                bool
+	OptStrategies               []string
+	PerpsStrategies             []string
+	SpotCapital                 float64
+	OptionsCapital              float64
+	PerpsCapital                float64
+	PerpsLeverage               float64
+	PerpsSizingLeverage         float64
+	PerpsRiskPerTradePct        float64
+	HLStopLossPct               *float64
+	HLStopLossMarginPct         *float64
+	HLTrailingStopPct           *float64
+	SpotDrawdown                float64
+	OptionsDrawdown             float64
+	PerpsDrawdown               float64
+	EnableFutures               bool
+	FuturesMode                 string
+	FuturesStrategies           []string
+	FuturesSymbols              []string
+	FuturesCapital              float64
+	FuturesDrawdown             float64
+	FuturesFeePerContract       float64
+	EnableLuno                  bool
+	LunoStrategies              []string
+	LunoCapital                 float64
+	LunoDrawdown                float64
+	EnableRobinhood             bool
+	RobinhoodMode               string
+	RobinhoodStrategies         []string
+	RobinhoodCapital            float64
+	RobinhoodDrawdown           float64
+	RobinhoodOptionsSymbols     []string
+	EnableOKX                   bool
+	OKXMode                     string
+	OKXSpotStrategies           []string
+	OKXPerpsStrategies          []string
+	OKXCapital                  float64
+	OKXDrawdown                 float64
+	CapitalPct                  float64 `json:"capitalPct,omitempty"`
+	HTFFilter                   bool
+	DisableCircuitBreaker       bool    `json:"disableCircuitBreaker,omitempty"`
+	ATRMethod                   string  `json:"atrMethod,omitempty"`
+	CBDrawdownCooldownMinutes   int     `json:"cbDrawdownCooldownMinutes,omitempty"`
+	CBLossStreakThreshold       int     `json:"cbLossStreakThreshold,omitempty"`
+	CBLossStreakCooldownMinutes int     `json:"cbLossStreakCooldownMinutes,omitempty"`
+	PortfolioMaxDrawdownPct     float64 `json:"portfolioMaxDrawdownPct,omitempty"`
+	PortfolioWarnThresholdPct   float64 `json:"portfolioWarnThresholdPct,omitempty"`
+	DiscordEnabled              bool
+	DiscordOwnerID              string
+	SpotChannelID               string
+	OptionsChannelID            string
+	ChannelMap                  map[string]string
+	TelegramEnabled             bool
+	TelegramOwnerChatID         string
+	TelegramChannelMap          map[string]string
+	AutoUpdate                  string
+	EnableManual                bool
+	ManualSymbol                string
+	ManualTimeframe             string
+	ManualCapital               float64
+	ManualDrawdown              float64
+	ManualLeverage              float64
 }
 
-// generateConfig builds a Config from InitOptions. Pure function, no I/O.
 func generateConfig(opts InitOptions) *Config {
 	portfolioMaxDD := opts.PortfolioMaxDrawdownPct
 	if portfolioMaxDD <= 0 {
@@ -404,15 +397,14 @@ func generateConfig(opts InitOptions) *Config {
 			Channels:    opts.TelegramChannelMap,
 		},
 		AutoUpdate: opts.AutoUpdate,
+		ATRMethod:  normalizeATRMethod(opts.ATRMethod),
 	}
 
-	// Build asset name → exchange symbol map.
 	assetSymbol := make(map[string]string)
 	for _, a := range supportedAssets {
 		assetSymbol[a.Name] = a.Symbol
 	}
 
-	// Spot strategies.
 	if opts.EnableSpot {
 		for _, stratID := range opts.SpotStrategies {
 			shortName := deriveShortName(stratID)
@@ -435,7 +427,6 @@ func generateConfig(opts InitOptions) *Config {
 			}
 		}
 
-		// Pairs spread — only available with 2+ assets.
 		if opts.IncludePairs && len(opts.Assets) >= 2 {
 			for _, pair := range makePairs(opts.Assets) {
 				a1, a2 := pair[0], pair[1]
@@ -454,12 +445,10 @@ func generateConfig(opts InitOptions) *Config {
 		}
 	}
 
-	// Options strategies.
 	if opts.EnableOptions {
 		for _, stratID := range opts.OptStrategies {
 			shortName := deriveShortName(stratID)
 			for _, platform := range opts.OptionPlatforms {
-				// Robinhood options use stock symbols; others use crypto assets
 				var symbols []string
 				if platform == "robinhood" {
 					symbols = opts.RobinhoodOptionsSymbols
@@ -468,7 +457,7 @@ func generateConfig(opts InitOptions) *Config {
 					}
 				} else {
 					for _, a := range opts.Assets {
-						if a != "SOL" { // options don't support SOL
+						if a != "SOL" {
 							symbols = append(symbols, a)
 						}
 					}
@@ -500,7 +489,6 @@ func generateConfig(opts InitOptions) *Config {
 		}
 	}
 
-	// Perps strategies (Hyperliquid only).
 	if opts.EnablePerps {
 		perpsLeverage := opts.PerpsLeverage
 		if perpsLeverage <= 0 {
@@ -510,17 +498,14 @@ func generateConfig(opts InitOptions) *Config {
 		if perpsSizingLeverage <= 0 {
 			perpsSizingLeverage = perpsLeverage
 		}
+		var perpsRiskPerTradePct *float64
+		if opts.PerpsRiskPerTradePct > 0 {
+			v := opts.PerpsRiskPerTradePct
+			perpsRiskPerTradePct = &v
+			perpsSizingLeverage = 0
+		}
 		for _, stratID := range opts.PerpsStrategies {
 			shortName := deriveShortName(stratID)
-			// Strategies that emit bidirectional signals must opt in to
-			// short-opening execution, otherwise ExecutePerpsSignal drops
-			// their signal=-1 from flat and the strategy becomes effectively
-			// long-only at the executor layer (#328 review feedback).
-			// #656: direction enum replaces allow_shorts. Bidirectional
-			// strategies default to "both"; long-only signal strategies get
-			// "long". The wizard does not auto-generate "short" — operators
-			// who want a dedicated short-only instrument edit direction
-			// post-init (typically alongside allowed_regimes=["trending_down"]).
 			direction := DirectionLong
 			if isBidirectionalPerpsStrategy(stratID) {
 				direction = DirectionBoth
@@ -538,17 +523,17 @@ func generateConfig(opts InitOptions) *Config {
 					IntervalSeconds:   3600,
 					Leverage:          perpsLeverage,
 					SizingLeverage:    perpsSizingLeverage,
+					RiskPerTradePct:   perpsRiskPerTradePct,
 					Direction:         direction,
-					StopLossPct:       opts.HLStopLossPct,       // *float64 — nil falls through to MaxDrawdownPct (#484)
-					StopLossMarginPct: opts.HLStopLossMarginPct, // *float64 — nil falls through (#484/#487)
-					TrailingStopPct:   opts.HLTrailingStopPct,   // *float64 — synthetic high/low-water trailing stop (#501)
-					MarginMode:        "isolated",               // #486: hard-cap loss per position; cross would let one strategy drain another's margin
+					StopLossPct:       opts.HLStopLossPct,
+					StopLossMarginPct: opts.HLStopLossMarginPct,
+					TrailingStopPct:   opts.HLTrailingStopPct,
+					MarginMode:        "isolated",
 				})
 			}
 		}
 	}
 
-	// Futures strategies (TopStep).
 	if opts.EnableFutures {
 		feePerContract := opts.FuturesFeePerContract
 		for _, stratID := range opts.FuturesStrategies {
@@ -573,7 +558,6 @@ func generateConfig(opts InitOptions) *Config {
 		}
 	}
 
-	// Luno spot strategies (reuses check_strategy.py, platform=luno for fees).
 	if opts.EnableLuno {
 		for _, stratID := range opts.LunoStrategies {
 			shortName := deriveShortName(stratID)
@@ -597,7 +581,6 @@ func generateConfig(opts InitOptions) *Config {
 		}
 	}
 
-	// Robinhood crypto strategies (reuses spot strategies on Robinhood crypto).
 	if opts.EnableRobinhood {
 		for _, stratID := range opts.RobinhoodStrategies {
 			shortName := deriveShortName(stratID)
@@ -622,7 +605,6 @@ func generateConfig(opts InitOptions) *Config {
 		if okxMode == "" {
 			okxMode = "paper"
 		}
-		// OKX spot strategies
 		for _, stratID := range opts.OKXSpotStrategies {
 			shortName := deriveShortName(stratID)
 			for _, assetName := range opts.Assets {
@@ -639,7 +621,6 @@ func generateConfig(opts InitOptions) *Config {
 				})
 			}
 		}
-		// OKX perps strategies
 		okxPerpsLeverage := opts.PerpsLeverage
 		if okxPerpsLeverage <= 0 {
 			okxPerpsLeverage = 1
@@ -668,7 +649,6 @@ func generateConfig(opts InitOptions) *Config {
 		}
 	}
 
-	// #569: Manual trading tracking strategy.
 	if opts.EnableManual && opts.ManualSymbol != "" {
 		tf := opts.ManualTimeframe
 		if tf == "" {
@@ -695,8 +675,6 @@ func generateConfig(opts InitOptions) *Config {
 		})
 	}
 
-	// Apply HTF filter to all non-options strategies if enabled.
-	// Skip delta_neutral_funding — trend direction is irrelevant to funding-rate harvesting (#103).
 	if opts.HTFFilter {
 		for i := range cfg.Strategies {
 			if cfg.Strategies[i].Type != "options" && (len(cfg.Strategies[i].Args) == 0 || cfg.Strategies[i].Args[0] != "delta_neutral_funding") {
@@ -705,17 +683,64 @@ func generateConfig(opts InitOptions) *Config {
 		}
 	}
 
-	// #87: Apply capital_pct to all strategies if set globally.
+	if opts.DisableCircuitBreaker {
+		cbOff := false
+		for i := range cfg.Strategies {
+			if cfg.Strategies[i].Type == "manual" {
+				continue
+			}
+			cfg.Strategies[i].CircuitBreaker = &cbOff
+		}
+	}
+
+	stampCBOverride := func(v int, set func(sc *StrategyConfig, p *int)) {
+		if v <= 0 {
+			return
+		}
+		for i := range cfg.Strategies {
+			if cfg.Strategies[i].Type == "manual" {
+				continue
+			}
+			val := v
+			set(&cfg.Strategies[i], &val)
+		}
+	}
+	stampCBOverride(opts.CBDrawdownCooldownMinutes, func(sc *StrategyConfig, p *int) { sc.CBDrawdownCooldownMinutes = p })
+	stampCBOverride(opts.CBLossStreakThreshold, func(sc *StrategyConfig, p *int) { sc.CBLossStreakThreshold = p })
+	stampCBOverride(opts.CBLossStreakCooldownMinutes, func(sc *StrategyConfig, p *int) { sc.CBLossStreakCooldownMinutes = p })
+
 	if opts.CapitalPct > 0 {
 		for i := range cfg.Strategies {
 			cfg.Strategies[i].CapitalPct = opts.CapitalPct
 		}
 	}
 
+	needsCompositeRangingRegime := false
+	for i := range cfg.Strategies {
+		sc := &cfg.Strategies[i]
+		if sc.Type == "options" || len(sc.Args) == 0 || len(sc.AllowedRegimes) > 0 {
+			continue
+		}
+		if gate := defaultCompositeRangingGate(sc.Args[0]); gate != nil {
+			sc.AllowedRegimes = gate
+			sc.RegimeGateOnFailure = RegimeGateOnFailureClosed
+			needsCompositeRangingRegime = true
+		}
+	}
+	if needsCompositeRangingRegime && cfg.Regime == nil {
+		cfg.Regime = &RegimeConfig{
+			Enabled:      true,
+			Period:       14,
+			ADXThreshold: 20.0,
+			Windows: RegimeWindowsMap{
+				"medium": {Classifier: regimeClassifierComposite, Period: 20},
+			},
+		}
+	}
+
 	return cfg
 }
 
-// stratShortName returns the ShortName for a strategy ID, falling back to the ID itself.
 func stratShortName(strats []stratDef, stratID string) string {
 	for _, s := range strats {
 		if s.ID == stratID {
@@ -725,7 +750,6 @@ func stratShortName(strats []stratDef, stratID string) string {
 	return stratID
 }
 
-// makePairs returns all ordered 2-combinations of the given asset names.
 func makePairs(assets []string) [][2]string {
 	var pairs [][2]string
 	for i := 0; i < len(assets); i++ {
@@ -736,7 +760,6 @@ func makePairs(assets []string) [][2]string {
 	return pairs
 }
 
-// runInitFromJSON generates a config from a JSON blob of InitOptions. Returns exit code.
 func runInitFromJSON(jsonStr string, outputPath string) int {
 	discoverStrategies()
 
@@ -779,23 +802,32 @@ func runInitFromJSON(jsonStr string, outputPath string) int {
 	if opts.EnablePerps && opts.PerpsMode == "" {
 		opts.PerpsMode = "paper"
 	}
-	// #254/#497: perps exchange leverage defaults to 1x if not specified;
-	// sizing leverage inherits it to preserve legacy order sizing.
 	if opts.EnablePerps && opts.PerpsLeverage <= 0 {
 		opts.PerpsLeverage = 1
 	}
-	if opts.EnablePerps && opts.PerpsSizingLeverage <= 0 {
+	if !validATRMethodValue(opts.ATRMethod) {
+		fmt.Fprintf(os.Stderr, "Error: atrMethod must be %q or %q, got %q\n", ATRMethodSimple, ATRMethodWilder, opts.ATRMethod)
+		return 1
+	}
+	if opts.EnablePerps && opts.PerpsRiskPerTradePct > 0 {
+		if opts.PerpsSizingLeverage > 0 {
+			fmt.Fprintln(os.Stderr, "Error: perpsRiskPerTradePct and perpsSizingLeverage are mutually exclusive — pick one sizing mode")
+			return 1
+		}
+		if opts.PerpsRiskPerTradePct > 10 {
+			fmt.Fprintf(os.Stderr, "Error: perpsRiskPerTradePct must be in (0, 10], got %g\n", opts.PerpsRiskPerTradePct)
+			return 1
+		}
+	} else if opts.EnablePerps && opts.PerpsSizingLeverage <= 0 {
 		opts.PerpsSizingLeverage = opts.PerpsLeverage
 	}
 
-	// Auto-populate PerpsStrategies from discovered list if not specified.
 	if opts.EnablePerps && len(opts.PerpsStrategies) == 0 {
 		for _, s := range perpsStrategies {
 			opts.PerpsStrategies = append(opts.PerpsStrategies, s.ID)
 		}
 	}
 
-	// Auto-populate FuturesStrategies from discovered list if not specified.
 	if opts.EnableFutures {
 		if opts.FuturesMode == "" {
 			opts.FuturesMode = "paper"
@@ -816,7 +848,6 @@ func runInitFromJSON(jsonStr string, outputPath string) int {
 		}
 	}
 
-	// Auto-populate Robinhood options symbols.
 	if opts.EnableOptions {
 		for _, plt := range opts.OptionPlatforms {
 			if plt == "robinhood" && len(opts.RobinhoodOptionsSymbols) == 0 {
@@ -825,7 +856,6 @@ func runInitFromJSON(jsonStr string, outputPath string) int {
 		}
 	}
 
-	// Auto-populate Robinhood defaults.
 	if opts.EnableRobinhood {
 		if opts.RobinhoodMode == "" {
 			opts.RobinhoodMode = "paper"
@@ -843,7 +873,6 @@ func runInitFromJSON(jsonStr string, outputPath string) int {
 		}
 	}
 
-	// Auto-populate Luno defaults.
 	if opts.EnableLuno {
 		if len(opts.LunoStrategies) == 0 {
 			for _, s := range spotStrategies {
@@ -858,7 +887,6 @@ func runInitFromJSON(jsonStr string, outputPath string) int {
 		}
 	}
 
-	// Auto-populate OKX defaults.
 	if opts.EnableOKX {
 		if opts.OKXMode == "" {
 			opts.OKXMode = "paper"
@@ -881,7 +909,6 @@ func runInitFromJSON(jsonStr string, outputPath string) int {
 		}
 	}
 
-	// Migrate deprecated SpotChannelID/OptionsChannelID into ChannelMap.
 	if opts.ChannelMap == nil && (opts.SpotChannelID != "" || opts.OptionsChannelID != "") {
 		opts.ChannelMap = make(map[string]string)
 		if opts.SpotChannelID != "" {
@@ -908,7 +935,6 @@ func runInitFromJSON(jsonStr string, outputPath string) int {
 	return 0
 }
 
-// runInit executes the interactive init wizard. Returns exit code.
 func runInit(args []string) int {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	jsonFlag := fs.String("json", "", "JSON blob of InitOptions for non-interactive config generation")
@@ -931,7 +957,6 @@ func runInit(args []string) int {
 	fmt.Println("Interactive config setup. Press Enter to accept defaults.")
 	fmt.Println()
 
-	// Step 1: Output path.
 	outputPath := p.String("Output config path", "scheduler/config.json")
 	if _, err := os.Stat(outputPath); err == nil {
 		if !p.YesNo(fmt.Sprintf("  %s already exists. Overwrite?", outputPath), false) {
@@ -940,7 +965,6 @@ func runInit(args []string) int {
 		}
 	}
 
-	// Step 2: Asset selection.
 	assetNames := make([]string, len(supportedAssets))
 	for i, a := range supportedAssets {
 		assetNames[i] = a.Name
@@ -955,7 +979,6 @@ func runInit(args []string) int {
 		selectedAssets[i] = supportedAssets[idx].Name
 	}
 
-	// Step 3: Strategy types.
 	stratTypeNames := []string{"spot", "options", "perps", "futures", "robinhood", "luno", "okx"}
 	stratTypeIdxs := p.MultiSelectWithDefaults("\nSelect strategy types:", stratTypeNames, selectionDefaults(stratTypeNames, []string{"spot"}, true))
 	enableSpot, enableOptions, enablePerps, enableFutures, enableRobinhood, enableLuno, enableOKX := false, false, false, false, false, false, false
@@ -982,7 +1005,6 @@ func runInit(args []string) int {
 		return 1
 	}
 
-	// Step 4: Options platform.
 	var optionPlatforms []string
 	if enableOptions {
 		platOptions := []string{"deribit", "ibkr", "robinhood", "okx", "all"}
@@ -1001,7 +1023,6 @@ func runInit(args []string) int {
 		}
 	}
 
-	// Step 4b: Robinhood options stock symbols.
 	var robinhoodOptionsSymbols []string
 	for _, plt := range optionPlatforms {
 		if plt == "robinhood" {
@@ -1010,13 +1031,12 @@ func runInit(args []string) int {
 				robinhoodOptionsSymbols = append(robinhoodOptionsSymbols, supportedStockSymbols[idx])
 			}
 			if len(robinhoodOptionsSymbols) == 0 {
-				robinhoodOptionsSymbols = []string{"SPY", "QQQ"} // defaults
+				robinhoodOptionsSymbols = []string{"SPY", "QQQ"}
 			}
 			break
 		}
 	}
 
-	// Step 5: Perps mode.
 	perpsMode := "paper"
 	if enablePerps {
 		modeOptions := []string{"paper (safe default)", "live (requires HYPERLIQUID_SECRET_KEY)"}
@@ -1025,7 +1045,6 @@ func runInit(args []string) int {
 		}
 	}
 
-	// Step 5b: Futures mode and symbols.
 	futuresMode := "paper"
 	var futuresSymbols []string
 	if enableFutures {
@@ -1038,11 +1057,10 @@ func runInit(args []string) int {
 			futuresSymbols = append(futuresSymbols, supportedFuturesSymbols[idx])
 		}
 		if len(futuresSymbols) == 0 {
-			futuresSymbols = []string{"ES", "MES"} // defaults
+			futuresSymbols = []string{"ES", "MES"}
 		}
 	}
 
-	// Step 5c: Robinhood mode.
 	robinhoodMode := "paper"
 	if enableRobinhood {
 		modeOptions := []string{"paper (safe default — signal only, no orders)", "live (requires ROBINHOOD_USERNAME/PASSWORD/TOTP_SECRET)"}
@@ -1051,7 +1069,6 @@ func runInit(args []string) int {
 		}
 	}
 
-	// Step 5d: OKX mode.
 	okxMode := "paper"
 	if enableOKX {
 		modeOptions := []string{"paper (safe default)", "live (requires OKX_API_KEY/API_SECRET/PASSPHRASE)"}
@@ -1060,7 +1077,6 @@ func runInit(args []string) int {
 		}
 	}
 
-	// Step 6: Spot strategy selection.
 	var selectedSpotStrats []string
 	includePairs := false
 	if enableSpot {
@@ -1082,7 +1098,6 @@ func runInit(args []string) int {
 		}
 	}
 
-	// Step 7: Options strategy selection.
 	var selectedOptStrats []string
 	if enableOptions {
 		optNames := make([]string, len(optionsStrategies))
@@ -1095,7 +1110,6 @@ func runInit(args []string) int {
 		}
 	}
 
-	// Step 7b: Futures strategy selection.
 	var selectedFuturesStrats []string
 	if enableFutures {
 		futNames := make([]string, len(futuresStrategies))
@@ -1108,7 +1122,6 @@ func runInit(args []string) int {
 		}
 	}
 
-	// Step 7c: Luno strategy selection.
 	var selectedLunoStrats []string
 	if enableLuno {
 		lunoNames := make([]string, len(spotStrategies))
@@ -1121,7 +1134,6 @@ func runInit(args []string) int {
 		}
 	}
 
-	// Step 7d: OKX strategy selection.
 	var selectedOKXSpotStrats []string
 	var selectedOKXPerpsStrats []string
 	if enableOKX {
@@ -1151,18 +1163,16 @@ func runInit(args []string) int {
 		return 1
 	}
 
-	// Use sensible defaults for optional fields (capital, risk, notifications, etc.).
-	// Users can customize these post-setup by editing the config or asking OpenClaw.
 	spotCapital := 1000.0
 	optionsCapital := 5000.0
 	perpsCapital := 1000.0
 	spotDrawdown := 5.0
 	optionsDrawdown := 10.0
 	perpsDrawdown := 5.0
-	perpsLeverage := 1.0             // #254 default: 1x (no leverage); user can edit config
-	var hlStopLossPct *float64       // #484 default: nil → auto-derive from MaxDrawdownPct; set via wizard for an explicit override or opt-out
-	var hlStopLossMarginPct *float64 // #487/#484 same semantics — nil = auto, explicit 0 = disabled, >0 = leverage-aware override
-	var hlTrailingStopPct *float64   // #501 synthetic trailing SL; nil means use the fixed/auto path
+	perpsLeverage := 1.0
+	var hlStopLossPct *float64
+	var hlStopLossMarginPct *float64
+	var hlTrailingStopPct *float64
 	robinhoodCapital := 500.0
 	robinhoodDrawdown := 5.0
 	lunoCapital := 500.0
@@ -1173,28 +1183,14 @@ func runInit(args []string) int {
 	okxCapital := 1000.0
 	okxDrawdown := 5.0
 
-	// Portfolio risk defaults (#85); overridden below if any live mode is enabled.
 	portfolioMaxDD := 25.0
 	portfolioWarnPct := 60.0
 
-	// #85: Live trading setup must prompt for risk parameters explicitly so
-	// operators don't hit the post-launch DM migration wizard. These fields
-	// gate the portfolio kill switch (portfolio_risk.max_drawdown_pct) and
-	// early-warning alert (portfolio_risk.warn_threshold_pct) that protect
-	// the whole account, so we ask up-front when real capital is at stake.
 	anyLive := perpsMode == "live" || futuresMode == "live" || robinhoodMode == "live" || okxMode == "live"
 	if anyLive {
 		fmt.Println("\n--- Risk settings (live trading) ---")
 		fmt.Println("These guard real capital. Press Enter to accept defaults.")
-		// Default 5 matches the existing per-platform default for every live-capable
-		// platform (spot/perps/robinhood/luno/futures/okx), so pressing Enter is a
-		// no-op for those. Options default is 10, so Enter tightens options to 5 —
-		// intentional: if real capital is at stake on any platform, apply the
-		// tighter bound uniformly. Operator can type a different value to widen.
 		perStrategyDD := p.FloatRange("Per-strategy max drawdown % (applied to all strategies)", 5, 0, 100)
-		// Override applies to every strategy type including spot/options/luno
-		// even when those are paper-mode: the operator has asked for a uniform
-		// per-strategy DD across the whole account.
 		spotDrawdown = perStrategyDD
 		optionsDrawdown = perStrategyDD
 		perpsDrawdown = perStrategyDD
@@ -1202,25 +1198,10 @@ func runInit(args []string) int {
 		lunoDrawdown = perStrategyDD
 		futuresDrawdown = perStrategyDD
 		okxDrawdown = perStrategyDD
-		// Both portfolio fields are validated (0, 100] at config load time
-		// (config.go:492,498); re-prompt on out-of-range so the wizard can't
-		// produce a file that fails validateConfig on the next startup.
 		portfolioMaxDD = p.FloatRange("Portfolio kill-switch max drawdown %", 25, 0, 100)
 		portfolioWarnPct = p.FloatRange("Portfolio warn threshold % (of kill switch)", 60, 0, 100)
 	}
 
-	// #484: HL perps per-trade SL is auto-derived from each strategy's
-	// max_drawdown_pct by default (capped at 50%), so a strategy with
-	// max_drawdown_pct=5 opens every position with a 5% reduce-only trigger
-	// without any extra knob. Operators can still override with an explicit
-	// price % or leverage-aware margin %. The "Disabled" option exists for
-	// strategies that intentionally want no exchange-side stop.
-	//   - price %:  trigger when price moves X% against entry (#412)
-	//   - margin %: trigger when unrealized loss reaches X% of deployed
-	//               margin; auto-rescales when leverage changes (#487)
-	//   - trailing %: move the trigger behind the best mark seen while open;
-	//                 e.g. a 3% trail on a long entered at 100 starts at 97
-	//                 and ratchets to 106.70 after mark reaches 110 (#501)
 	if enablePerps {
 		slOptions := []string{
 			"Auto (derive from per-strategy max_drawdown_pct)",
@@ -1245,7 +1226,6 @@ func runInit(args []string) int {
 		}
 	}
 
-	// #569: Manual trading tracking strategy.
 	enableManual := false
 	manualSymbol := ""
 	manualTimeframe := "1h"
@@ -1261,7 +1241,6 @@ func runInit(args []string) int {
 		manualDrawdown = p.FloatRange("Max drawdown %", 20, 1, 100)
 	}
 
-	// Notifications default to disabled.
 	discordEnabled := false
 	channelMap := make(map[string]string)
 	discordOwnerID := ""
@@ -1269,17 +1248,14 @@ func runInit(args []string) int {
 	telegramChannelMap := make(map[string]string)
 	telegramOwnerChatID := ""
 
-	// Auto-update defaults to off; HTF filter defaults to enabled.
 	autoUpdate := "off"
 	htfFilter := true
 
-	// Collect all perps strategy IDs (auto-selected, no user prompt).
 	perpsStratIDs := make([]string, len(perpsStrategies))
 	for i, s := range perpsStrategies {
 		perpsStratIDs[i] = s.ID
 	}
 
-	// Collect futures strategy IDs.
 	futuresStratIDs := selectedFuturesStrats
 	if enableFutures && len(futuresStratIDs) == 0 {
 		for _, s := range futuresStrategies {
@@ -1287,7 +1263,6 @@ func runInit(args []string) int {
 		}
 	}
 
-	// Collect Robinhood strategy IDs (auto-selected from spot strategies).
 	robinhoodStratIDs := make([]string, 0)
 	if enableRobinhood {
 		for _, s := range spotStrategies {
@@ -1295,7 +1270,6 @@ func runInit(args []string) int {
 		}
 	}
 
-	// Collect Luno strategy IDs.
 	lunoStratIDs := selectedLunoStrats
 	if enableLuno && len(lunoStratIDs) == 0 {
 		for _, s := range spotStrategies {
@@ -1303,7 +1277,6 @@ func runInit(args []string) int {
 		}
 	}
 
-	// Collect OKX strategy IDs.
 	okxSpotStratIDs := selectedOKXSpotStrats
 	if enableOKX && len(okxSpotStratIDs) == 0 {
 		for _, s := range spotStrategies {
@@ -1382,7 +1355,6 @@ func runInit(args []string) int {
 
 	cfg := generateConfig(opts)
 
-	// Summary + confirm.
 	fmt.Println("\n--- Summary ---")
 	fmt.Printf("Output:     %s\n", outputPath)
 	fmt.Printf("Assets:     %s\n", strings.Join(selectedAssets, ", "))

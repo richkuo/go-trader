@@ -1,0 +1,29 @@
+{
+  "study": "mean_reversion_pro_1282_family",
+  "registry": "spot",
+  "harnesses": ["m1_noise", "m1"],
+  "windows": ["is", "oos", "2023", "2024", "2025H1"],
+  "correction": {"method": "benjamini_hochberg", "alpha": 0.05},
+  "candidates": [
+    {
+      "key": "baseline",
+      "candidate": {"name": "mean_reversion_pro", "direction": "long"},
+      "hypothesis": "registry default (18-trade starvation leg in M5)"
+    },
+    {
+      "key": "touch_entry",
+      "candidate": {"name": "mean_reversion_pro", "direction": "long", "params": {"touch_entry": 1}},
+      "hypothesis": "#981 band-touch frequency mechanism"
+    },
+    {
+      "key": "turn_entry",
+      "candidate": {"name": "mean_reversion_pro", "direction": "long", "params": {"turn_entry": 1}},
+      "hypothesis": "#981 stretched-turn frequency mechanism (the one #981 flagged as working)"
+    },
+    {
+      "key": "touch_plus_turn",
+      "candidate": {"name": "mean_reversion_pro", "direction": "long", "params": {"touch_entry": 1, "turn_entry": 1}},
+      "hypothesis": "both #981 mechanisms stacked"
+    }
+  ]
+}

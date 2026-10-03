@@ -3,101 +3,61 @@ package main
 import (
 	"context"
 	"fmt"
+	"math"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 )
 
-// KillSwitchCloseInputs bundles every platform-specific bit the kill-switch
-// plan builder needs. Grouped into a struct so that adding a new platform
-// (Robinhood, TopStep, etc.) is an additive change rather than a signature
-// widening that cascades through every call site and test.
-//
-// HLStateFetched / HLPositions capture whether main.go already fetched HL
-// clearinghouseState earlier in the cycle (for shared-wallet balance or
-// due reconcile). When HLStateFetched is false but HLAddr is set, the
-// plan builder does an opportunistic fetch via HLFetcher so a configured
-// account with no due strategies still gets verified (false-reassurance
-// guard from #341 review).
-//
-// OKX has no equivalent public position endpoint — we always call
-// OKXFetcher when there's at least one live OKX perps strategy, rather
-// than trying to reuse a pre-fetch. Spot OKX strategies are surfaced via
-// OKXSpotLive so the plan builder can warn in the Discord message without
-// attempting an unsafe automated close (see forceCloseOKXLive doc).
+type HLNoFillRecoverer func(since time.Time) (*HLUserFillsResult, error)
+
+const (
+	hlKillSwitchNoFillRecoveryLookback = 10 * time.Minute
+	hlKillSwitchNoFillRecoveryTimeout  = 20 * time.Second
+)
+
 type KillSwitchCloseInputs struct {
-	HLAddr         string
-	HLStateFetched bool
-	HLPositions    []HLPosition
-	HLLiveAll      []StrategyConfig
-	HLCloser       HyperliquidLiveCloser
-	HLFetcher      HLStateFetcher
-	// HLStopLossOIDs maps coin → resting per-trade SL trigger OIDs so the
-	// kill-switch close path can cancel them before flattening. Without
-	// this, kill-switch wipes virtual state but the on-chain triggers sit
-	// resting and burn HL's open-order cap (#421 review point 1, #479).
-	// nil/empty disables; coins with no resting SL are simply absent.
-	HLStopLossOIDs map[string][]int64
+	HLAddr            string
+	HLStateFetched    bool
+	HLPositions       []HLPosition
+	HLLiveAll         []StrategyConfig
+	HLHedgeCoins      map[string]bool
+	HLCloser          HyperliquidLiveCloser
+	HLFetcher         HLStateFetcher
+	HLNoFillRecoverer HLNoFillRecoverer
+	HLStopLossOIDs    map[string][]int64
 
-	// OKXLiveAllPerps: every live OKX perps strategy configured (used to
-	// decide which coins to close and to detect "unconfigured" positions).
+	HLLimitOrderLoader  func() ([]PendingLimitOrder, error)
+	HLLimitOrderRoster  []StrategyConfig
+	HLLimitOrderDeps    killSwitchLimitOrderDeps
+	HLLimitOrderTimeout time.Duration
+
 	OKXLiveAllPerps []StrategyConfig
-	// OKXLiveAllSpot: every live OKX spot strategy configured. The kill
-	// switch cannot close spot positions safely (#345) — these are surfaced
-	// in the Discord message as a known gap so the operator intervenes.
-	OKXLiveAllSpot []StrategyConfig
-	OKXCloser      OKXLiveCloser
-	OKXFetcher     OKXPositionsFetcher
+	OKXLiveAllSpot  []StrategyConfig
+	OKXCloser       OKXLiveCloser
+	OKXFetcher      OKXPositionsFetcher
 
-	// RHLiveCrypto: every live Robinhood crypto (Type=="spot") strategy
-	// configured. Used to decide which coins to close and to detect
-	// "unconfigured" crypto balances. Robinhood has no public unauthenticated
-	// position endpoint — we always call RHFetcher when there's at least
-	// one live Robinhood crypto strategy, rather than trying to reuse a
-	// pre-fetch. (#346)
-	RHLiveCrypto []StrategyConfig
-	// RHLiveOptions: every live Robinhood options strategy configured.
-	// Surfaced in the Discord message as a known gap — stock options close
-	// semantics (sell-to-close vs buy-to-close per leg) require dispatch
-	// that the kill switch doesn't yet handle (#346 follow-up). Does NOT
-	// block OnChainConfirmedFlat; matches the OKXSpotPresent semantic.
+	RHLiveCrypto  []StrategyConfig
 	RHLiveOptions []StrategyConfig
 	RHCloser      RobinhoodLiveCloser
 	RHFetcher     RobinhoodPositionsFetcher
 
-	// TSLiveAll: every live TopStep futures strategy configured. Used to
-	// decide which symbols to close and to detect "unconfigured" positions.
-	// TopStep has no public unauthenticated endpoint — we always call
-	// TSFetcher when there's at least one live TopStep futures strategy,
-	// rather than trying to reuse a pre-fetch. (#347)
 	TSLiveAll []StrategyConfig
 	TSCloser  TopStepLiveCloser
 	TSFetcher TopStepPositionsFetcher
 
 	PortfolioReason string
 
-	// CloseTimeout is the default per-platform close-budget when a
-	// platform-specific override is unset (zero). Each platform gets its
-	// OWN context.WithTimeout — they do not share a single budget — but a
-	// single tunable here was insufficient for platforms with very different
-	// per-call costs (Robinhood adds TOTP login overhead per submit). The
-	// per-platform fields below let the caller widen RH without giving HL
-	// extra headroom.
 	CloseTimeout time.Duration
 
-	// Per-platform overrides. Zero means "use CloseTimeout". Each platform's
-	// context is independent so one slow platform's budget cannot starve
-	// the others.
 	HLCloseTimeout  time.Duration
 	OKXCloseTimeout time.Duration
 	RHCloseTimeout  time.Duration
 	TSCloseTimeout  time.Duration
 }
 
-// platformCloseBudget returns the effective close-budget for a platform,
-// preferring the per-platform override and falling back to CloseTimeout.
-// Centralized so a future "minimum 30s per platform" floor lives in one
-// place rather than four switch arms.
 func (in KillSwitchCloseInputs) platformCloseBudget(override time.Duration) time.Duration {
 	if override > 0 {
 		return override
@@ -105,81 +65,42 @@ func (in KillSwitchCloseInputs) platformCloseBudget(override time.Duration) time
 	return in.CloseTimeout
 }
 
-// KillSwitchClosePlan is the output of planKillSwitchClose — everything the
-// main loop needs to apply virtual-state mutation and send notifications.
-// The plan is pure data (no goroutines, no I/O callbacks), so the main loop
-// can gate virtual state mutation on OnChainConfirmedFlat under its own
-// mutex without re-running any logic.
+func defaultHLKillSwitchNoFillRecoverer(since time.Time) (*HLUserFillsResult, error) {
+	return runFetchHLUserFillsWithTimeout(since, hlKillSwitchNoFillRecoveryTimeout)
+}
+
 type KillSwitchClosePlan struct {
-	// OnChainConfirmedFlat is the load-bearing correctness signal. True means
-	// the caller MAY clear virtual state. False means at least one live
-	// exposure (on any platform) could not be confirmed closed — caller
-	// MUST leave virtual state intact and let the next cycle retry.
 	OnChainConfirmedFlat bool
 
-	// CloseReport is the HL per-coin outcome. Zero value when no HL close
-	// was attempted.
+	LimitOrderReport killSwitchLimitOrderReport
+
 	CloseReport HyperliquidLiveCloseReport
 
-	// OKXCloseReport is the OKX per-coin outcome. Zero value when no OKX
-	// close was attempted.
 	OKXCloseReport OKXLiveCloseReport
 
-	// Unconfigured lists HL on-chain positions for coins no configured live
-	// HL strategy trades. Kept as HLPosition for backward compat with #341
-	// tests; OKX equivalent is in OKXUnconfigured.
 	Unconfigured []HLPosition
 
-	// OKXUnconfigured lists OKX on-chain positions for coins no configured
-	// live OKX strategy trades. Same manual-intervention semantic as
-	// Unconfigured.
 	OKXUnconfigured []OKXPosition
 
-	// OKXSpotPresent is true when there is at least one live OKX spot
-	// strategy configured. Signals that the kill switch left an unhandled
-	// gap — surfaced in the Discord message but does NOT block
-	// OnChainConfirmedFlat (the scheduler has no reliable way to check
-	// whether there is actual spot exposure, and blocking would latch
-	// forever).
 	OKXSpotPresent bool
 
-	// RHCloseReport is the Robinhood per-coin outcome. Zero value when no
-	// Robinhood crypto close was attempted.
 	RHCloseReport RobinhoodLiveCloseReport
 
-	// RHUnconfigured lists live Robinhood crypto balances for coins no
-	// configured live Robinhood crypto strategy trades. Same manual-
-	// intervention semantic as HL Unconfigured / OKX Unconfigured.
 	RHUnconfigured []RobinhoodPosition
 
-	// RHOptionsPresent is true when there is at least one live Robinhood
-	// options strategy configured. Signals an unhandled gap — surfaced in
-	// the Discord message but does NOT block OnChainConfirmedFlat
-	// (hard-latch would freeze the scheduler for any Robinhood options
-	// user with no available close path). Mirrors OKXSpotPresent.
 	RHOptionsPresent bool
 
-	// TSCloseReport is the TopStep per-symbol outcome. Zero value when no
-	// TopStep close was attempted.
 	TSCloseReport TopStepLiveCloseReport
 
-	// TSUnconfigured lists live TopStep positions for symbols no configured
-	// live TopStep futures strategy trades. Same manual-intervention
-	// semantic as HL/OKX/Robinhood Unconfigured.
 	TSUnconfigured []TopStepPosition
 
-	// DiscordMessage is the formatted notification string; empty when no
-	// Discord message should be sent. Caller checks notifier.HasBackends()
-	// before delivering.
 	DiscordMessage string
 
-	// LogLines are the stderr lines to print ([CRITICAL]/[INFO]). Built here
-	// rather than printed directly so tests can assert messaging.
 	LogLines []string
 }
 
 func (p KillSwitchClosePlan) CanAutoResetWithoutOwner() bool {
-	return p.OnChainConfirmedFlat && !p.OKXSpotPresent && !p.RHOptionsPresent
+	return p.OnChainConfirmedFlat && p.LimitOrderReport.ConfirmedClear() && !p.OKXSpotPresent && !p.RHOptionsPresent
 }
 
 const killSwitchManualResetLine = "Virtual state cleared. Manual reset required."
@@ -189,22 +110,13 @@ func formatKillSwitchAutoResetMessage(msg string) string {
 	return strings.Replace(msg, killSwitchManualResetLine, killSwitchAutoResetLine, 1)
 }
 
-// HLStateFetcher re-fetches Hyperliquid on-chain positions for the kill-switch
-// opportunistic-fetch path. Exposed as a function type so tests can stub the
-// HTTP call. The default wraps fetchHyperliquidState.
 type HLStateFetcher func(accountAddress string) ([]HLPosition, error)
 
-// defaultHLStateFetcher wraps fetchHyperliquidState for production use. The
-// kill-switch path discards the balance field — only positions are needed.
 func defaultHLStateFetcher(addr string) ([]HLPosition, error) {
 	_, pos, err := fetchHyperliquidState(addr)
 	return pos, err
 }
 
-// clearVerifiedFlatHLErrors removes close errors for coins that a follow-up
-// clearinghouseState fetch proves are now flat. This handles the post-submit
-// failure window where the reduce-only close filled on-chain, but the Python
-// subprocess still returned an error before Go saw a confirmed result (#452).
 func clearVerifiedFlatHLErrors(report *HyperliquidLiveCloseReport, positions []HLPosition) []string {
 	if report == nil || len(report.Errors) == 0 {
 		return nil
@@ -229,30 +141,159 @@ func clearVerifiedFlatHLErrors(report *HyperliquidLiveCloseReport, positions []H
 	return verified
 }
 
-// planKillSwitchClose runs the kill-switch close logic without touching any
-// mutable state — no locks, no virtual state mutation, no Discord delivery.
-// The caller applies mutations based on the returned plan.
-//
-// Extracted from main.go so the latch-until-flat flow (the actual #341 fix)
-// can be unit-tested with fake closers + fake fetchers. Without this seam,
-// the load-bearing `if killSwitchFired && OnChainConfirmedFlat` gate around
-// forceCloseAllPositions would regress silently — exactly the kind of bug
-// #341 was.
-//
-// Platform handling is independent: either platform (HL or OKX) being
-// un-confirmed-flat flips OnChainConfirmedFlat to false and latches the
-// switch. Messages combine both platforms' status.
+func recoverHyperliquidAlreadyFlatFills(report *HyperliquidLiveCloseReport, positions []HLPosition, recoverer HLNoFillRecoverer, since time.Time) []string {
+	if report == nil || len(report.AlreadyFlat) == 0 || recoverer == nil {
+		return nil
+	}
+	type expectedFill struct {
+		qty float64
+	}
+	expectedByCoin := make(map[string]expectedFill)
+	for _, p := range positions {
+		qty := math.Abs(p.Size)
+		if qty <= 0 {
+			continue
+		}
+		coin := normalizeHLFillCoin(p.Coin)
+		if coin == "" {
+			continue
+		}
+		expectedByCoin[coin] = expectedFill{qty: qty}
+	}
+	eligibleByRaw := make(map[string]expectedFill)
+	for _, rawCoin := range report.AlreadyFlat {
+		norm := normalizeHLFillCoin(rawCoin)
+		if norm == "" {
+			continue
+		}
+		if report.Fills != nil {
+			if _, ok := report.Fills[rawCoin]; ok {
+				continue
+			}
+			if _, ok := report.Fills[norm]; ok {
+				continue
+			}
+		}
+		expected, ok := expectedByCoin[norm]
+		if !ok || expected.qty <= 0 {
+			continue
+		}
+		eligibleByRaw[rawCoin] = expected
+	}
+	if len(eligibleByRaw) == 0 {
+		return nil
+	}
+
+	result, err := recoverer(since)
+	if err != nil {
+		return []string{fmt.Sprintf("[WARN] hl-close: unable to recover already-flat fill from userFills: %v", err)}
+	}
+	if result == nil {
+		return []string{"[WARN] hl-close: unable to recover already-flat fill from userFills: empty result"}
+	}
+	if strings.TrimSpace(result.Error) != "" {
+		return []string{fmt.Sprintf("[WARN] hl-close: unable to recover already-flat fill from userFills: %s", result.Error)}
+	}
+	if report.Fills == nil {
+		report.Fills = make(map[string]HyperliquidCloseFill)
+	}
+
+	raws := make([]string, 0, len(eligibleByRaw))
+	for r := range eligibleByRaw {
+		raws = append(raws, r)
+	}
+	sort.Strings(raws)
+	candidates := make(map[string]HLFillSummary, len(result.ByOID))
+	for oid, summary := range result.ByOID {
+		if summary.ClosedPnLGross == 0 {
+			continue
+		}
+		if t := hlFillSummaryEventTime(summary); !t.IsZero() && t.Before(since) {
+			continue
+		}
+		candidates[oid] = summary
+	}
+	var lines []string
+	for _, rawCoin := range raws {
+		expected := eligibleByRaw[rawCoin]
+		match, ok, ambiguous := findUniqueHLFillByCoinQty(candidates, rawCoin, expected.qty, true, time.Time{}, 0)
+		switch {
+		case ok:
+			report.Fills[rawCoin] = HyperliquidCloseFill{
+				AvgPx:   match.Summary.Px,
+				TotalSz: expected.qty,
+				OID:     match.OIDInt,
+				Fee:     match.Summary.Fee,
+			}
+			lines = append(lines,
+				fmt.Sprintf("[INFO] hl-close: recovered already-flat fill for %s from userFills oid=%s qty=%.6f px=%.6f fee=%.6f", rawCoin, match.OID, expected.qty, match.Summary.Px, match.Summary.Fee))
+		case ambiguous:
+			lines = append(lines,
+				fmt.Sprintf("[WARN] hl-close: multiple userFills candidates for already-flat %s qty=%.6f; falling back to model-only cleanup", rawCoin, expected.qty))
+		default:
+			lines = append(lines,
+				fmt.Sprintf("[WARN] hl-close: no userFills match for already-flat %s qty=%.6f; falling back to model-only cleanup", rawCoin, expected.qty))
+		}
+	}
+	return lines
+}
+
+func settledKillSwitchSymbols(plan *KillSwitchClosePlan) map[string]map[string]bool {
+	out := map[string]map[string]bool{}
+	add := func(platform string, coins []string) {
+		if len(coins) == 0 {
+			return
+		}
+		set := out[platform]
+		if set == nil {
+			set = map[string]bool{}
+			out[platform] = set
+		}
+		for _, c := range coins {
+			if c != "" {
+				set[c] = true
+			}
+		}
+	}
+	add("okx", plan.OKXCloseReport.ClosedCoins)
+	add("robinhood", plan.RHCloseReport.ClosedCoins)
+	add("topstep", plan.TSCloseReport.ClosedCoins)
+	return out
+}
+
+func applyKillSwitchSettledLegsWhileLatched(strategies map[string]*StrategyState, cfgs []StrategyConfig, plan *KillSwitchClosePlan, hlRoster []StrategyConfig, virtualQty hlVirtualQuantitySnapshot, prices map[string]float64, logger *StrategyLogger) {
+	if plan == nil || len(cfgs) == 0 {
+		return
+	}
+	settled := settledKillSwitchSymbols(plan)
+	hasHLFills := len(plan.CloseReport.Fills) > 0
+	for _, sc := range cfgs {
+		s, ok := strategies[sc.ID]
+		if !ok || s == nil {
+			continue
+		}
+		if hasHLFills {
+			applyHyperliquidKillSwitchCloseFill(s, sc, plan.CloseReport.Fills, hlRoster, virtualQty)
+			applyHyperliquidKillSwitchHedgeFill(s, sc, plan.CloseReport.Fills)
+		}
+		forceCloseSettledPositions(s, sc, prices, settled, logger)
+	}
+}
+
 func planKillSwitchClose(in KillSwitchCloseInputs) KillSwitchClosePlan {
 	plan := KillSwitchClosePlan{OnChainConfirmedFlat: true}
 
-	// ── Hyperliquid ─────────────────────────────────────────────────
+	plan.LimitOrderReport = cancelKillSwitchRestingLimitOrders(
+		in.HLLimitOrderLoader, in.HLLimitOrderRoster, in.HLLimitOrderDeps,
+		in.platformCloseBudget(in.HLLimitOrderTimeout))
+	plan.LogLines = append(plan.LogLines, plan.LimitOrderReport.LogLines...)
+	if !plan.LimitOrderReport.ConfirmedClear() {
+		plan.OnChainConfirmedFlat = false
+	}
+
 	hlPositions := in.HLPositions
 	hlStateFetched := in.HLStateFetched
 
-	// Opportunistic HL fetch: operator could have removed all HL strategies
-	// from config while the wallet still holds positions from a previous
-	// deploy or manual trade. Kill switch must not report "no exposure"
-	// without actually checking (#341 review, false-reassurance case).
 	if !hlStateFetched && in.HLAddr != "" {
 		switch {
 		case in.HLFetcher != nil:
@@ -266,10 +307,6 @@ func planKillSwitchClose(in KillSwitchCloseInputs) KillSwitchClosePlan {
 				hlStateFetched = true
 			}
 		default:
-			// Defense-in-depth: production wires HLFetcher in main.go, but a
-			// future regression that drops the assignment would otherwise
-			// silently bypass the kill switch (false-reassurance, latch
-			// stays clear). Latch and log instead. (#350)
 			plan.LogLines = append(plan.LogLines,
 				"[CRITICAL] hl-close: HLAddr configured but HLFetcher unwired — cannot confirm on-chain flat (kill switch will retry next cycle)")
 			plan.OnChainConfirmedFlat = false
@@ -278,8 +315,9 @@ func planKillSwitchClose(in KillSwitchCloseInputs) KillSwitchClosePlan {
 
 	switch {
 	case hlStateFetched && len(in.HLLiveAll) > 0:
+		recoverSince := time.Now().UTC().Add(-hlKillSwitchNoFillRecoveryLookback)
 		ctx, cancel := context.WithTimeout(context.Background(), in.platformCloseBudget(in.HLCloseTimeout))
-		plan.CloseReport = forceCloseHyperliquidLive(ctx, hlPositions, in.HLLiveAll, in.HLCloser, in.HLStopLossOIDs)
+		plan.CloseReport = forceCloseHyperliquidLive(ctx, hlPositions, in.HLLiveAll, in.HLHedgeCoins, in.HLCloser, in.HLStopLossOIDs)
 		cancel()
 		if !plan.CloseReport.ConfirmedFlat() {
 			if in.HLAddr != "" && in.HLFetcher != nil {
@@ -293,6 +331,8 @@ func planKillSwitchClose(in KillSwitchCloseInputs) KillSwitchClosePlan {
 				}
 			}
 		}
+		plan.LogLines = append(plan.LogLines,
+			recoverHyperliquidAlreadyFlatFills(&plan.CloseReport, hlPositions, in.HLNoFillRecoverer, recoverSince)...)
 		if !plan.CloseReport.ConfirmedFlat() {
 			plan.OnChainConfirmedFlat = false
 		}
@@ -307,6 +347,15 @@ func planKillSwitchClose(in KillSwitchCloseInputs) KillSwitchClosePlan {
 		for _, coin := range plan.CloseReport.SortedErrorCoins() {
 			plan.LogLines = append(plan.LogLines,
 				fmt.Sprintf("[CRITICAL] hl-close: %s failed: %v (kill switch will retry next cycle)", coin, plan.CloseReport.Errors[coin]))
+		}
+		if len(plan.CloseReport.Unconfigured) > 0 {
+			plan.Unconfigured = append(plan.Unconfigured, plan.CloseReport.Unconfigured...)
+			sort.Slice(plan.Unconfigured, func(i, j int) bool { return plan.Unconfigured[i].Coin < plan.Unconfigured[j].Coin })
+			plan.OnChainConfirmedFlat = false
+			for _, p := range plan.Unconfigured {
+				plan.LogLines = append(plan.LogLines,
+					fmt.Sprintf("[CRITICAL] hl-close: on-chain position for unconfigured coin %s (szi=%.6f) — manual intervention required, kill switch will retry next cycle", p.Coin, p.Size))
+			}
 		}
 
 	case hlStateFetched && len(in.HLLiveAll) == 0:
@@ -324,23 +373,14 @@ func planKillSwitchClose(in KillSwitchCloseInputs) KillSwitchClosePlan {
 		}
 	}
 
-	// ── OKX ─────────────────────────────────────────────────────────
-	// OKX spot is surfaced as a known gap but does not block flat — we
-	// cannot fetch nor safely auto-close spot balances (#345).
 	plan.OKXSpotPresent = len(in.OKXLiveAllSpot) > 0
 	if plan.OKXSpotPresent {
 		plan.LogLines = append(plan.LogLines,
 			fmt.Sprintf("[CRITICAL] okx-close: %d live OKX spot strategies configured — kill switch cannot auto-close spot (no reduce-only); operator must verify manually (#345)", len(in.OKXLiveAllSpot)))
 	}
 
-	// Perps: always attempt fetch when there's a perps strategy or fetcher
-	// — mirrors the HL opportunistic-fetch guard. Unlike HL there is no
-	// pre-fetch to reuse; OKX always requires a subprocess round-trip.
 	switch {
 	case len(in.OKXLiveAllPerps) > 0 && in.OKXFetcher == nil:
-		// Defense-in-depth (#350): a future main.go regression that drops
-		// OKXFetcher would otherwise silently skip OKX and clear virtual
-		// state with on-chain exposure live. Latch and log.
 		plan.LogLines = append(plan.LogLines,
 			"[CRITICAL] okx-close: OKX live perps strategies configured but OKXFetcher unwired — cannot confirm on-chain flat (kill switch will retry next cycle)")
 		plan.OnChainConfirmedFlat = false
@@ -370,11 +410,6 @@ func planKillSwitchClose(in KillSwitchCloseInputs) KillSwitchClosePlan {
 					fmt.Sprintf("[CRITICAL] okx-close: %s failed: %v (kill switch will retry next cycle)", coin, plan.OKXCloseReport.Errors[coin]))
 			}
 
-			// Unconfigured OKX positions are detected in forceCloseOKXLive
-			// so the traded-coins partition has a single source of truth.
-			// Semantic matches HL Unconfigured: kill switch refuses to
-			// unilaterally liquidate positions for coins it isn't
-			// configured to trade.
 			plan.OKXUnconfigured = plan.OKXCloseReport.Unconfigured
 			if len(plan.OKXUnconfigured) > 0 {
 				plan.OnChainConfirmedFlat = false
@@ -386,25 +421,14 @@ func planKillSwitchClose(in KillSwitchCloseInputs) KillSwitchClosePlan {
 		}
 	}
 
-	// ── Robinhood ───────────────────────────────────────────────────
-	// Options are surfaced as a known gap (like OKX spot) — stock options
-	// close semantics are complex enough that the kill switch cannot safely
-	// auto-close them. Crypto (spot) is handled below.
 	plan.RHOptionsPresent = len(in.RHLiveOptions) > 0
 	if plan.RHOptionsPresent {
 		plan.LogLines = append(plan.LogLines,
 			fmt.Sprintf("[CRITICAL] rh-close: %d live Robinhood options strategies configured — kill switch cannot auto-close options (sell-to-close vs buy-to-close semantics); operator must verify manually (#346)", len(in.RHLiveOptions)))
 	}
 
-	// Crypto: always attempt fetch when there's a configured crypto strategy
-	// — mirrors the OKX opportunistic-fetch guard. Robinhood has no
-	// pre-fetch to reuse; every cycle requires a subprocess round-trip
-	// (TOTP-authenticated).
 	switch {
 	case len(in.RHLiveCrypto) > 0 && in.RHFetcher == nil:
-		// Defense-in-depth (#350): a future main.go regression that drops
-		// RHFetcher would otherwise silently skip Robinhood and clear
-		// virtual state with on-account exposure live. Latch and log.
 		plan.LogLines = append(plan.LogLines,
 			"[CRITICAL] rh-close: Robinhood live crypto strategies configured but RHFetcher unwired — cannot confirm flat (kill switch will retry next cycle)")
 		plan.OnChainConfirmedFlat = false
@@ -445,20 +469,8 @@ func planKillSwitchClose(in KillSwitchCloseInputs) KillSwitchClosePlan {
 		}
 	}
 
-	// ── TopStep ─────────────────────────────────────────────────────
-	// Futures: always attempt fetch when there's a configured futures
-	// strategy — mirrors the OKX / Robinhood opportunistic-fetch guard.
-	// TopStep has no pre-fetch to reuse; every cycle requires a subprocess
-	// round-trip (TopStepX REST, authenticated).
-	//
-	// CME trading-hour restriction: fires outside RTH will surface a venue
-	// error here, latching the kill switch until the next in-hours cycle.
-	// This is the correct behavior — do not attempt to bypass the venue.
 	switch {
 	case len(in.TSLiveAll) > 0 && in.TSFetcher == nil:
-		// Defense-in-depth (#350): a future main.go regression that drops
-		// TSFetcher would otherwise silently skip TopStep and clear virtual
-		// state with on-account exposure live. Latch and log.
 		plan.LogLines = append(plan.LogLines,
 			"[CRITICAL] ts-close: TopStep live futures strategies configured but TSFetcher unwired — cannot confirm flat (kill switch will retry next cycle)")
 		plan.OnChainConfirmedFlat = false
@@ -503,18 +515,29 @@ func planKillSwitchClose(in KillSwitchCloseInputs) KillSwitchClosePlan {
 	return plan
 }
 
-// formatKillSwitchMessage builds the Discord notification string from a plan.
-// Split out so tests can call it directly and so main.go delivery stays a
-// one-liner. Returns three distinct shapes:
-//   - "PORTFOLIO KILL SWITCH" — confirmed-flat, no spot gap.
-//   - "PORTFOLIO KILL SWITCH (GAPS — VERIFY MANUALLY)" — confirmed-flat
-//     for closable platforms, but at least one unhandled exposure class
-//     (OKX spot #345, Robinhood options #346) is configured and the
-//     scheduler has no safe auto-close path. Header is distinct so an
-//     operator skimming does not read "Virtual state cleared" as
-//     "everything is closed."
-//   - "PORTFOLIO KILL SWITCH (LATCHED, RETRYING)" — some on-chain
-//     exposure could not be confirmed closed; retry next cycle.
+func collectHLKillSwitchStopOIDs(strategies map[string]*StrategyState, roster []StrategyConfig) map[string][]int64 {
+	out := map[string][]int64{}
+	for _, sc := range roster {
+		sym := hyperliquidRawCoin(sc)
+		if sym == "" {
+			continue
+		}
+		ss, ok := strategies[sc.ID]
+		if !ok || ss == nil {
+			continue
+		}
+		pos := hlVirtualPositionFor(ss, sc, sym)
+		if pos == nil {
+			continue
+		}
+		out[sym] = appendUniquePositiveStopLossOID(out[sym], pos.StopLossOID)
+		for _, tpOID := range pos.TPOIDs {
+			out[sym] = appendUniquePositiveStopLossOID(out[sym], tpOID)
+		}
+	}
+	return out
+}
+
 func formatKillSwitchMessage(hlAddr string, plan KillSwitchClosePlan, portfolioReason string) string {
 	if plan.OnChainConfirmedFlat {
 		var parts []string
@@ -534,6 +557,9 @@ func formatKillSwitchMessage(hlAddr string, plan KillSwitchClosePlan, portfolioR
 		if len(plan.TSCloseReport.ClosedCoins) > 0 {
 			parts = append(parts, fmt.Sprintf("TopStep closes: %v", plan.TSCloseReport.ClosedCoins))
 		}
+		if len(plan.LimitOrderReport.Cancelled) > 0 {
+			parts = append(parts, fmt.Sprintf("cancelled resting limit orders: %s", strings.Join(plan.LimitOrderReport.Cancelled, ", ")))
+		}
 		header := "**PORTFOLIO KILL SWITCH**"
 		gapNotes := []string{}
 		if plan.OKXSpotPresent {
@@ -552,6 +578,12 @@ func formatKillSwitchMessage(hlAddr string, plan KillSwitchClosePlan, portfolioR
 
 	var segments []string
 
+	if len(plan.LimitOrderReport.Unresolved) > 0 {
+		segments = append(segments, "Resting limit orders NOT confirmed cancelled (they can still fill and re-enter) — "+strings.Join(plan.LimitOrderReport.Unresolved, "; "))
+	}
+	if len(plan.LimitOrderReport.Cancelled) > 0 {
+		segments = append(segments, "Cancelled resting limit orders — "+strings.Join(plan.LimitOrderReport.Cancelled, ", "))
+	}
 	if len(plan.CloseReport.Errors) > 0 {
 		parts := make([]string, 0, len(plan.CloseReport.Errors))
 		for _, coin := range plan.CloseReport.SortedErrorCoins() {
@@ -619,9 +651,58 @@ func formatKillSwitchMessage(hlAddr string, plan KillSwitchClosePlan, portfolioR
 		segments = append(segments, "Robinhood options strategies present — verify manually (kill switch cannot auto-close options)")
 	}
 	if len(segments) == 0 {
-		// Fallback: HL fetch failure path doesn't populate Errors/Unconfigured.
 		segments = append(segments, "Could not fetch on-chain state to confirm flat")
 	}
 
 	return fmt.Sprintf("**PORTFOLIO KILL SWITCH (LATCHED, RETRYING)**\n%s\n%s. Virtual state preserved. Next cycle will retry.", portfolioReason, strings.Join(segments, " | "))
+}
+
+func killSwitchInstanceLabel(configPath string) string {
+	dir := filepath.Base(filepath.Dir(configPath))
+	if dir != "" && dir != "." && dir != string(filepath.Separator) {
+		return dir
+	}
+	if host, err := os.Hostname(); err == nil && host != "" {
+		return host
+	}
+	return "go-trader"
+}
+
+func formatKillSwitchResetPrompt(instanceLabel, hlAddr string, plan KillSwitchClosePlan, part RiskPartition, latched []RiskPartition) string {
+	identity := instanceLabel
+	if hlAddr != "" && part.IsLive() {
+		identity = fmt.Sprintf("%s (Hyperliquid %s)", identity, hlAddr)
+	}
+	reply := "reset"
+	if len(latched) > 1 {
+		reply = "reset " + part.String()
+	}
+	resetNote := fmt.Sprintf("Replying '%s' only clears the %s kill switch latch so trading can resume next cycle — it does not itself close or protect any position.", reply, partitionLabel(part))
+	if part.IsLive() && !plan.OnChainConfirmedFlat {
+		resetNote += " On-chain close is still retrying and resting stop-losses may already be cancelled ahead of the flatten attempt — verify positions manually before assuming they're protected."
+	}
+	if len(latched) > 1 {
+		resetNote += fmt.Sprintf(" %d scopes are latched (%s); this prompt clears the %s scope only.", len(latched), joinScopeLabels(latched), partitionLabel(part))
+	}
+	return fmt.Sprintf("[KILL SWITCH %s] %s\n%s\n\n%s\nReply '%s' to proceed.", partitionLabel(part), identity, plan.DiscordMessage, resetNote, reply)
+}
+
+func formatKillSwitchResetPromptForScopes(instanceLabel, hlAddr string, plans map[RiskPartition]KillSwitchClosePlan, parts []RiskPartition, latched []RiskPartition) string {
+	if len(parts) == 1 {
+		return formatKillSwitchResetPrompt(instanceLabel, hlAddr, plans[parts[0]], parts[0], latched)
+	}
+	sections := make([]string, 0, len(parts))
+	for _, part := range parts {
+		identity := instanceLabel
+		if hlAddr != "" && part.IsLive() {
+			identity = fmt.Sprintf("%s (Hyperliquid %s)", identity, hlAddr)
+		}
+		section := fmt.Sprintf("[KILL SWITCH %s] %s\n%s", partitionLabel(part), identity, plans[part].DiscordMessage)
+		if part.IsLive() && !plans[part].OnChainConfirmedFlat {
+			section += "\nOn-chain close is still retrying and resting stop-losses may already be cancelled ahead of the flatten attempt — verify positions manually before assuming they're protected."
+		}
+		sections = append(sections, section)
+	}
+	note := fmt.Sprintf("%d scopes are latched (%s). One reply clears one scope only and does not itself close or protect any position; a new prompt follows for any scope still latched.", len(latched), joinScopeLabels(latched))
+	return fmt.Sprintf("%s\n\n%s\nReply %s to proceed.", strings.Join(sections, "\n\n"), note, killSwitchResetReplyOptions(latched))
 }

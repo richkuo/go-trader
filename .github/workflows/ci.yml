@@ -7,6 +7,42 @@ on:
     types: [opened, synchronize, ready_for_review, reopened]
 
 jobs:
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Agent instructions size and layout
+        run: |
+          fail=0
+          if [ -L CLAUDE.md ] || [ ! -f CLAUDE.md ]; then
+            echo "::error::CLAUDE.md must be a regular file at the repository root."
+            fail=1
+          fi
+          if [ ! -L AGENTS.md ] || [ "$(readlink AGENTS.md)" != "CLAUDE.md" ]; then
+            echo "::error::AGENTS.md must be a symlink to CLAUDE.md."
+            fail=1
+          fi
+          extra=$(git ls-files | grep -E '(^|/)(CLAUDE(\.local)?\.md|AGENTS\.md)$' | grep -vx -e 'CLAUDE.md' -e 'AGENTS.md' || true)
+          if [ -n "$extra" ]; then
+            echo "::error::Agent instructions stay in one root CLAUDE.md. Remove these files:"
+            echo "$extra"
+            fail=1
+          fi
+          if [ -f CLAUDE.md ] && [ ! -L CLAUDE.md ]; then
+            bytes=$(wc -c < CLAUDE.md | tr -d ' ')
+            echo "CLAUDE.md: $bytes bytes (ceiling 17000, target 16500)"
+            if [ "$bytes" -ge 17000 ]; then
+              echo "::error::CLAUDE.md is $bytes bytes, at or above the 17000-byte ceiling. Move mechanism to SKILL.md, shorten wording, drop no guardrail."
+              echo "Bytes per section:"
+              LC_ALL=C awk 'BEGIN{h="(header)"} /^## /{printf "%6d  %s\n",n,h; h=$0; n=0} {n+=length($0)+1} END{printf "%6d  %s\n",n,h}' CLAUDE.md
+              fail=1
+            elif [ "$bytes" -gt 16500 ]; then
+              echo "::warning::CLAUDE.md is $bytes bytes, above the 16500-byte target. The CI check fails at 17000."
+            fi
+          fi
+          exit $fail
+
   go:
     runs-on: ubuntu-latest
     steps:
@@ -19,7 +55,7 @@ jobs:
       - name: Build
         run: cd scheduler && go build -ldflags "-X main.Version=$(git describe --tags --always --dirty=-mod)" .
 
-      - name: Test
+      - name: Remaining Go tests
         run: cd scheduler && go test ./...
 
       - name: Format check
@@ -49,4 +85,10 @@ jobs:
             | xargs -0 uv run python3 -m py_compile
 
       - name: Run tests
-        run: uv run pytest
+        run: uv run pytest -n auto
+
+      - name: Run shared_scripts tests (outside testpaths)
+        run: uv run pytest shared_scripts/
+
+      - name: Test budget
+        run: uv run python3 scripts/check_test_budget.py

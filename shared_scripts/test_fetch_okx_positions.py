@@ -1,12 +1,3 @@
-"""Tests for fetch_okx_positions.py — live-account position fetcher used
-by the portfolio kill switch (#345).
-
-The kill switch's flat-confirmation depends on this script reporting every
-open perps position truthfully. A regression that drops a position from
-the output would cause the switch to release its latch while on-chain
-exposure remained — the exact #345 failure mode shifted into the Python
-layer.
-"""
 
 import builtins
 import importlib.util
@@ -20,12 +11,6 @@ import pytest
 
 
 def _run_script(positions_or_exc, is_live=True):
-    """Invoke fetch_okx_positions.main() with a mocked adapter.
-
-    positions_or_exc may be either a list (returned by
-    adapter._exchange.fetch_positions) or an Exception. Returns
-    (parsed_stdout_json, exit_code).
-    """
     script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                "fetch_okx_positions.py")
     spec = importlib.util.spec_from_file_location("fetch_okx_positions", script_path)
@@ -70,61 +55,35 @@ def _run_script(positions_or_exc, is_live=True):
     return parsed, exit_code["value"]
 
 
-class TestSuccess:
-    def test_long_position(self):
-        out, code = _run_script([
-            {"symbol": "BTC/USDT:USDT", "contracts": "0.01", "side": "long",
-             "entryPrice": "42000.5"},
-        ])
-        assert code == 0
-        assert len(out["positions"]) == 1
-        p = out["positions"][0]
-        assert p["coin"] == "BTC"
-        assert p["size"] == 0.01
-        assert p["side"] == "long"
-        assert p["entry_price"] == 42000.5
-
-    def test_short_position_size_is_negative(self):
-        """Short positions must be encoded with a negative signed size to
-        mirror HLPosition — the Go-side forceCloseOKXLive treats size==0
-        as already-flat and size!=0 as something to close."""
-        out, code = _run_script([
-            {"symbol": "ETH/USDT:USDT", "contracts": "0.5", "side": "short",
-             "entryPrice": "3000"},
-        ])
-        assert code == 0
-        assert out["positions"][0]["size"] == -0.5
-        assert out["positions"][0]["side"] == "short"
-
-    def test_zero_size_filtered(self):
-        """ccxt sometimes returns stale zero-contract entries. They must
-        be filtered — passing a zero-size position to the Go side would
-        trigger the AlreadyFlat defense-in-depth branch but also pollute
-        the report's coin list."""
-        out, code = _run_script([
-            {"symbol": "BTC/USDT:USDT", "contracts": "0", "side": "long"},
-        ])
-        assert code == 0
-        assert out["positions"] == []
-
-    def test_empty_positions(self):
-        out, code = _run_script([])
-        assert code == 0
-        assert out["positions"] == []
-        assert "error" not in out
+@pytest.mark.parametrize("raw,expected", [
+    ([{"symbol": "BTC/USDT:USDT", "contracts": "0.01", "side": "long",
+       "entryPrice": "42000.5"}],
+     [{"coin": "BTC", "size": 0.01, "side": "long", "entry_price": 42000.5}]),
+    ([{"symbol": "ETH/USDT:USDT", "contracts": "0.5", "side": "short",
+       "entryPrice": "3000"}],
+     [{"coin": "ETH", "size": -0.5, "side": "short", "entry_price": 3000.0}]),
+    ([{"symbol": "BTC/USDT:USDT", "contracts": "0", "side": "long"}], []),
+    ([], []),
+])
+def test_positions_are_normalized(raw, expected):
+    out, code = _run_script(raw)
+    assert code == 0
+    assert len(out["positions"]) == len(expected)
+    for got, want in zip(out["positions"], expected):
+        for key, value in want.items():
+            assert got[key] == value
+    assert "error" not in out
 
 
-class TestFailurePaths:
-    def test_non_live_adapter(self):
-        out, code = _run_script([], is_live=False)
-        assert code == 1
-        assert "OKX_API_KEY" in out["error"]
-
-    def test_exchange_raises(self):
-        out, code = _run_script(RuntimeError("OKX 503 Service Unavailable"))
-        assert code == 1
-        assert "OKX 503" in out["error"]
-        assert out["positions"] == []
+@pytest.mark.parametrize("positions_or_exc,is_live,fragment", [
+    ([], False, "OKX_API_KEY"),
+    (RuntimeError("OKX 503 Service Unavailable"), True, "OKX 503"),
+])
+def test_failure_paths_emit_error_envelope(positions_or_exc, is_live, fragment):
+    out, code = _run_script(positions_or_exc, is_live=is_live)
+    assert code == 1
+    assert fragment in out["error"]
+    assert out["positions"] == []
 
 
 if __name__ == "__main__":

@@ -1,0 +1,379 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"math"
+	"net/http"
+	"os"
+	"strings"
+	"time"
+)
+
+func pendingManualActionExists(stateDB *StateStore, strategyID, symbol string, kinds ...string) (bool, error) {
+	actions, err := stateDB.LoadPendingManualActions()
+	if err != nil {
+		return false, err
+	}
+	for _, a := range actions {
+		if a.StrategyID != strategyID || !strings.EqualFold(a.Symbol, symbol) {
+			continue
+		}
+		for _, k := range kinds {
+			if a.Action == k {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+func (ss *StatusServer) uiTradeActionGuards(w http.ResponseWriter, r *http.Request) bool {
+	if ss.rejectIfDraining(w) {
+		return false
+	}
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return false
+	}
+	if !ss.requireMutatingAPIAuth(w, r) {
+		return false
+	}
+	if !requireJSONContentType(w, r) {
+		return false
+	}
+	if !requireSameOrigin(w, r) {
+		return false
+	}
+	return true
+}
+
+func (ss *StatusServer) uiTradeConfig() *Config {
+	ss.strategiesMu.RLock()
+	defer ss.strategiesMu.RUnlock()
+	return ss.uiCfg
+}
+
+func (ss *StatusServer) SetNotifier(notifier *MultiNotifier) {
+	if ss == nil {
+		return
+	}
+	ss.strategiesMu.Lock()
+	ss.uiNotifier = notifier
+	ss.strategiesMu.Unlock()
+}
+
+func (ss *StatusServer) daemonManualCoreDeps(cfg *Config) manualCoreDeps {
+	ss.strategiesMu.RLock()
+	notifier := ss.uiNotifier
+	ss.strategiesMu.RUnlock()
+	d := newManualCoreDeps(cfg, ss.stateDB, notifier)
+	d.loadState = func(strategyID, symbol string) (manualStateView, error) {
+		ss.mu.RLock()
+		defer ss.mu.RUnlock()
+		return manualStateViewFromStateWithStore(cfg, ss.state, ss.stateDB, strategyID, symbol), nil
+	}
+	d.reconcileCanceledProtection = func(strategyID, symbol string, cancelOIDs []int64) error {
+		if len(cancelOIDs) == 0 {
+			return nil
+		}
+		ss.mu.Lock()
+		defer ss.mu.Unlock()
+		if ss.state == nil {
+			return fmt.Errorf("state unavailable")
+		}
+		strategy := ss.state.Strategies[strategyID]
+		if strategy == nil {
+			return nil
+		}
+		position := strategy.Positions[symbol]
+		if position == nil {
+			return nil
+		}
+		clearHyperliquidProtectionOIDsMatching(position, cancelOIDs)
+		return ss.stateDB.SaveStrategyBook(strategy)
+	}
+	d.recordRearmedStopLoss = func(strategyID, symbol, side string, qty float64, prevStopOID int64, result *HyperliquidStopLossUpdateResult) error {
+		if result == nil {
+			return nil
+		}
+		logger := strategyLoggerOrStdout(cfg.LogDir, strategyID)
+		defer logger.Close()
+		ss.mu.Lock()
+		defer ss.mu.Unlock()
+		if ss.state == nil {
+			return fmt.Errorf("state unavailable")
+		}
+		strategy := ss.state.Strategies[strategyID]
+		if strategy == nil {
+			return nil
+		}
+		if result.StopLossFilledImmediately && result.StopLossTriggerPx > 0 {
+			applyTrailingStopUpdateResult(strategy, symbol, side, prevStopOID, 0, false, result, "manual_close_rearm_sl_immediate", logger, qty)
+			return ss.stateDB.SaveStrategyBook(strategy)
+		}
+		position := strategy.Positions[symbol]
+		if position == nil || position.Quantity <= 0 || (side != "" && position.Side != side) {
+			return nil
+		}
+		if applyRearmedStopLossToBook(position, prevStopOID, result) == "" {
+			return nil
+		}
+		if position.StopLossOID > 0 {
+			position.RatchetFallbackNormalizePending = false
+		}
+		return ss.stateDB.SaveStrategyBook(strategy)
+	}
+	d.recordRestoredTakeProfits = func(strategyID, symbol, side, positionID string, outcomes []manualCloseTPTierOutcome) error {
+		if len(outcomes) == 0 {
+			return nil
+		}
+		ss.mu.Lock()
+		defer ss.mu.Unlock()
+		if ss.state == nil {
+			return fmt.Errorf("state unavailable")
+		}
+		strategy := ss.state.Strategies[strategyID]
+		if strategy == nil {
+			return fmt.Errorf("strategy %q is no longer in the book", strategyID)
+		}
+		position := strategy.Positions[symbol]
+		if position == nil {
+			return fmt.Errorf("position %s/%s is no longer in the book", strategyID, symbol)
+		}
+		if positionID != "" && position.TradePositionID != "" && position.TradePositionID != positionID {
+			return fmt.Errorf("position %s/%s was replaced (trade position %q, not %q)", strategyID, symbol, position.TradePositionID, positionID)
+		}
+		if !restoredTakeProfitBookChanged(outcomes) {
+			return nil
+		}
+		applyRestoredTakeProfitTiers(position, outcomes)
+		return ss.stateDB.SaveStrategyBook(strategy)
+	}
+	return d
+}
+
+type uiTradeActionRequest struct {
+	Nonce  string          `json:"nonce"`
+	Params json.RawMessage `json:"params"`
+}
+
+type uiTradeActionResponse struct {
+	OK      bool   `json:"ok"`
+	Queued  bool   `json:"queued"`
+	Message string `json:"message"`
+}
+
+func uiTradeActionHTTPStatus(err error) int {
+	if ce, ok := err.(*manualCoreError); ok && ce.usage {
+		return http.StatusBadRequest
+	}
+	return http.StatusConflict
+}
+
+type uiTradeParams struct {
+	obj map[string]json.RawMessage
+	err error
+}
+
+func (p *uiTradeParams) num(key string) float64 {
+	raw, present := p.obj[key]
+	if !present || p.err != nil {
+		return 0
+	}
+	var v float64
+	if err := json.Unmarshal(raw, &v); err != nil {
+		p.err = fmt.Errorf("%s must be a number", key)
+		return 0
+	}
+	if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
+		p.err = fmt.Errorf("%s must be a non-negative number", key)
+		return 0
+	}
+	return v
+}
+
+func (p *uiTradeParams) str(key string) string {
+	raw, present := p.obj[key]
+	if !present || p.err != nil {
+		return ""
+	}
+	var v string
+	if err := json.Unmarshal(raw, &v); err != nil {
+		p.err = fmt.Errorf("%s must be a string", key)
+		return ""
+	}
+	return v
+}
+
+func (ss *StatusServer) handleAPIStrategyTradeAction(w http.ResponseWriter, r *http.Request, id, action string) {
+	if !ss.uiTradeActionGuards(w, r) {
+		return
+	}
+	obj, ok := readUIMutationBody(w, r)
+	if !ok {
+		return
+	}
+	var req uiTradeActionRequest
+	if raw, present := obj["nonce"]; present {
+		_ = json.Unmarshal(raw, &req.Nonce)
+	}
+	req.Params = obj["params"]
+	if req.Nonce == "" {
+		writeJSONError(w, http.StatusBadRequest, "nonce is required — call POST /api/confirm first")
+		return
+	}
+	binding, err := canonicalConfirmBinding(action, id, req.Params)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if _, err := ss.consumeConfirmNonce(req.Nonce, binding, time.Now()); err != nil {
+		writeJSONError(w, http.StatusForbidden, err.Error())
+		return
+	}
+
+	var params map[string]json.RawMessage
+	if len(req.Params) > 0 {
+		if err := json.Unmarshal(req.Params, &params); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "params must be a JSON object")
+			return
+		}
+	}
+
+	cfg := ss.uiTradeConfig()
+	if cfg == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "config not available")
+		return
+	}
+	if ss.stateDB == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "state db not available")
+		return
+	}
+	deps := ss.daemonManualCoreDeps(cfg)
+	if ss.tradeDepsHook != nil {
+		ss.tradeDepsHook(&deps)
+	}
+
+	var sc StrategyConfig
+	var sym string
+	var lookupErr error
+	if action == "force-close" {
+		sc, sym, lookupErr = lookupForceCloseStrategy(cfg, id)
+	} else {
+		sc, lookupErr = lookupManualStrategy(cfg, id)
+	}
+	if lookupErr != nil {
+		writeJSONError(w, http.StatusBadRequest, lookupErr.Error())
+		return
+	}
+
+	ss.tradeActionMu.Lock()
+	defer ss.tradeActionMu.Unlock()
+
+	guardSym := sc.Symbol
+	if action == "force-close" {
+		guardSym = sym
+	}
+	if action == "open" || action == "add" || action == "close" || action == "force-close" {
+		if pending, perr := pendingManualActionExists(ss.stateDB, id, guardSym, "open", "add", "close"); perr != nil {
+			writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("could not check pending actions: %v", perr))
+			return
+		} else if pending {
+			writeJSONError(w, http.StatusConflict, "a position-changing action (open/add/close) for this strategy is already submitted and awaiting the scheduler's next cycle — refresh after it applies before retrying")
+			return
+		}
+		if action == "open" {
+			if view, verr := deps.loadState(id, sc.Symbol); verr == nil && view.Pos != nil {
+				writeJSONError(w, http.StatusConflict, fmt.Sprintf("strategy already holds an open %s position — use add or close instead", sc.Symbol))
+				return
+			}
+		}
+	}
+
+	p := &uiTradeParams{obj: params}
+	var res *manualCoreResult
+	var coreErr error
+	switch action {
+	case "open":
+		in := manualOpenInputs{
+			StrategyID: id,
+			Side:       p.str("side"),
+			Size:       p.num("size"),
+			Notional:   p.num("notional"),
+			Margin:     p.num("margin"),
+			ATR:        p.num("atr"),
+			SLATRMult:  p.num("sl_atr_mult"),
+			SLPct:      p.num("sl_pct"),
+		}
+		if p.err != nil {
+			writeJSONError(w, http.StatusBadRequest, p.err.Error())
+			return
+		}
+		res, coreErr = manualOpenCore(deps, sc, in)
+	case "add":
+		in := manualAddInputs{
+			StrategyID: id,
+			Size:       p.num("size"),
+			Notional:   p.num("notional"),
+			Margin:     p.num("margin"),
+		}
+		if p.err != nil {
+			writeJSONError(w, http.StatusBadRequest, p.err.Error())
+			return
+		}
+		res, coreErr = manualAddCore(deps, sc, in)
+	case "close":
+		qty := p.num("qty")
+		if p.err != nil {
+			writeJSONError(w, http.StatusBadRequest, p.err.Error())
+			return
+		}
+		res, coreErr = manualCloseCore(deps, sc, manualCloseInputs{StrategyID: id, Qty: qty})
+	case "force-close":
+		qty := p.num("qty")
+		if p.err != nil {
+			writeJSONError(w, http.StatusBadRequest, p.err.Error())
+			return
+		}
+		res, coreErr = forceCloseCore(deps, sc, sym, forceCloseInputs{StrategyID: id, Qty: qty})
+	case "update-sl":
+		in := manualSLInputs{StrategyID: id, Symbol: p.str("symbol"), Trigger: p.num("trigger")}
+		if p.err != nil {
+			writeJSONError(w, http.StatusBadRequest, p.err.Error())
+			return
+		}
+		res, coreErr = manualUpdateSLCore(deps, sc, in)
+	case "cancel-sl":
+		in := manualSLInputs{StrategyID: id, Symbol: p.str("symbol")}
+		if p.err != nil {
+			writeJSONError(w, http.StatusBadRequest, p.err.Error())
+			return
+		}
+		res, coreErr = manualCancelSLCore(deps, sc, in)
+	default:
+		http.NotFound(w, r)
+		return
+	}
+
+	if coreErr != nil {
+		msg := coreErr.Error()
+		if res != nil {
+			if ctx := res.uiMessage(); ctx != "" {
+				msg = ctx + "\n" + msg
+			}
+		}
+		writeJSONError(w, uiTradeActionHTTPStatus(coreErr), msg)
+		return
+	}
+	writeJSON(w, uiTradeActionResponse{OK: true, Queued: res.queued, Message: res.uiMessage()})
+}
+
+func strategyLoggerOrStdout(logDir, strategyID string) *StrategyLogger {
+	if logMgr, err := NewLogManager(logDir); err == nil {
+		if logger, lerr := logMgr.GetStrategyLogger(strategyID); lerr == nil {
+			return logger
+		}
+	}
+	return &StrategyLogger{stratID: strategyID, writer: os.Stdout}
+}

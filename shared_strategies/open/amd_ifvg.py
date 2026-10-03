@@ -1,66 +1,60 @@
-"""
-AMD+IFVG — ICT Accumulation-Manipulation-Distribution with Implied Fair Value Gap.
-
-Session-aware price action strategy on 15m candles:
-1. Accumulation: Identify Asian session range (high/low)
-2. Manipulation: Detect London open sweep beyond Asian range (stop hunt)
-3. IFVG Detection: Find 3-candle imbalance gap created during manipulation
-4. Entry: Price retraces into the IFVG -> fire signal in direction of reversal
-
-Signal: 1 = BUY, -1 = SELL, 0 = FLAT
-"""
 
 import numpy as np
 import pandas as pd
 
 
+def _session_local(index: pd.DatetimeIndex, session_tz: str) -> pd.DatetimeIndex:
+    if index.tz is None:
+        local = index.tz_localize("UTC").tz_convert(session_tz)
+    else:
+        local = index.tz_convert(session_tz)
+    return local.tz_localize(None)
+
+
+def _hours_in_window(hours: np.ndarray, start_hour: int, end_hour: int) -> np.ndarray:
+    end_eff = 24 if end_hour == 0 else end_hour
+    start_n = start_hour % 24
+    if start_n < end_eff:
+        return (hours >= start_n) & (hours < end_eff)
+    return (hours >= start_n) | (hours < (end_eff % 24))
+
+
 def amd_ifvg_core(
     df: pd.DataFrame,
-    asian_start_hour: int = 0,
-    asian_end_hour: int = 8,
-    london_start_hour: int = 8,
-    london_end_hour: int = 12,
+    asian_start_hour: int = 20,
+    asian_end_hour: int = 0,
+    london_start_hour: int = 2,
+    london_end_hour: int = 5,
     min_ifvg_pct: float = 0.05,
     sweep_threshold_pct: float = 0.01,
+    session_tz: str = "America/New_York",
 ) -> pd.DataFrame:
-    """
-    AMD+IFVG strategy core logic.
-
-    Parameters:
-        df: OHLCV DataFrame with UTC datetime index
-        asian_start_hour: UTC hour Asian session begins (inclusive)
-        asian_end_hour: UTC hour Asian session ends (exclusive)
-        london_start_hour: UTC hour London kill zone begins (inclusive)
-        london_end_hour: UTC hour London kill zone ends (exclusive)
-        min_ifvg_pct: Minimum IFVG gap as percentage of price (0.05 = 0.05%)
-        sweep_threshold_pct: Penetration beyond Asian range as fraction of range size
-
-    Returns:
-        DataFrame with signal column and indicator columns added.
-    """
     result = df.copy()
     n = len(result)
 
-    # Initialize output columns
     result["signal"] = 0
     result["asian_high"] = np.nan
     result["asian_low"] = np.nan
     result["ifvg_high"] = np.nan
     result["ifvg_low"] = np.nan
-    result["sweep_dir"] = 0  # 1=above, -1=below, 0=none
+    result["sweep_dir"] = 0
 
     if n < 3:
         return result
 
-    hours = result.index.hour
-    dates = result.index.date
+    local = _session_local(result.index, session_tz)
+    hours = np.asarray(local.hour)
+    session_day = np.asarray(
+        (local - pd.Timedelta(hours=asian_start_hour % 24)).floor("D")
+    )
 
-    # Process each trading day
-    for day in pd.unique(dates):
-        day_mask = dates == day
+    asian_hour_mask = _hours_in_window(hours, asian_start_hour, asian_end_hour)
+    london_hour_mask = _hours_in_window(hours, london_start_hour, london_end_hour)
 
-        # --- Phase 1: Accumulation — Asian session range ---
-        asian_mask = day_mask & (hours >= asian_start_hour) & (hours < asian_end_hour)
+    for day in pd.unique(session_day):
+        day_mask = session_day == day
+
+        asian_mask = day_mask & asian_hour_mask
         asian_candles = result.loc[asian_mask]
 
         if len(asian_candles) < 2:
@@ -73,12 +67,10 @@ def amd_ifvg_core(
         if asian_range <= 0:
             continue
 
-        # Write Asian range to all candles for the day
         result.loc[day_mask, "asian_high"] = asian_high
         result.loc[day_mask, "asian_low"] = asian_low
 
-        # --- Phase 2: Manipulation — London session sweep detection ---
-        london_mask = day_mask & (hours >= london_start_hour) & (hours < london_end_hour)
+        london_mask = day_mask & london_hour_mask
         london_candles = result.loc[london_mask]
 
         if len(london_candles) < 3:
@@ -86,7 +78,6 @@ def amd_ifvg_core(
 
         sweep_threshold = asian_range * sweep_threshold_pct
 
-        # Find first sweep in each direction
         swept_below_idx = None
         swept_above_idx = None
 
@@ -97,28 +88,21 @@ def amd_ifvg_core(
             if swept_above_idx is None and row["high"] > (asian_high + sweep_threshold):
                 swept_above_idx = idx
 
-        # Determine bias from first sweep
         if swept_below_idx is not None and swept_above_idx is not None:
-            # Both swept — use whichever happened first
             if swept_below_idx <= swept_above_idx:
-                bias = -1  # swept below first → bullish reversal
+                bias = -1
             else:
-                bias = 1  # swept above first → bearish reversal
+                bias = 1
         elif swept_below_idx is not None:
-            bias = -1  # swept below → bullish reversal
+            bias = -1
         elif swept_above_idx is not None:
-            bias = 1  # swept above → bearish reversal
+            bias = 1
         else:
-            continue  # no sweep — no setup
+            continue
 
         result.loc[london_mask, "sweep_dir"] = bias
         sweep_idx = swept_below_idx if bias == -1 else swept_above_idx
 
-        # --- Phase 3+4: IFVG Detection + Entry, processed bar-by-bar ---
-        # An IFVG forms across 3 consecutive candles; it is only observable at
-        # its completion bar (c2). For each candidate entry bar K, we select
-        # the IFVG nearest to bar K's close using ONLY IFVGs that have already
-        # completed at bars strictly before K — no day-final-close peek.
         post_sweep_mask = day_mask & (result.index >= sweep_idx)
         post_sweep = result.loc[post_sweep_mask]
 
@@ -127,12 +111,10 @@ def amd_ifvg_core(
 
         ps_indices = post_sweep.index.tolist()
 
-        # Pre-compute every IFVG candidate, indexed by its completion position
-        # in ps_indices. Candidate is (gap_low, gap_high, completion_position).
         ifvg_candidates = []
         for i in range(2, len(ps_indices)):
-            c0 = post_sweep.loc[ps_indices[i - 2]]  # candle before displacement
-            c2 = post_sweep.loc[ps_indices[i]]      # candle after displacement
+            c0 = post_sweep.loc[ps_indices[i - 2]]
+            c2 = post_sweep.loc[ps_indices[i]]
 
             if bias == -1:
                 if c0["high"] >= c2["low"]:
@@ -158,9 +140,6 @@ def amd_ifvg_core(
         chosen_ifvg = None
         chosen_entry_idx = None
 
-        # Walk entry bars in time order. At each bar K, only IFVGs completed
-        # strictly before K are visible; pick the one whose midpoint is closest
-        # to THIS bar's close.
         for k in range(1, len(ps_indices)):
             available = [c for c in ifvg_candidates if c[2] < k]
             if not available:
@@ -178,12 +157,10 @@ def amd_ifvg_core(
             ifvg_low, ifvg_high = best[0], best[1]
 
             if bias == -1:
-                # Bullish entry: price dips into bullish IFVG
                 if bar_low <= ifvg_high and bar_close >= ifvg_low:
                     result.loc[bar_idx, "signal"] = 1
                     signal_fired = True
             else:
-                # Bearish entry: price rallies into bearish IFVG
                 if bar_high >= ifvg_low and bar_close <= ifvg_high:
                     result.loc[bar_idx, "signal"] = -1
                     signal_fired = True
@@ -193,8 +170,6 @@ def amd_ifvg_core(
                 chosen_entry_idx = bar_idx
                 break
 
-        # Stamp viz columns only from the entry bar onward so historical bars
-        # never carry an IFVG level chosen with future data.
         if chosen_ifvg is not None and chosen_entry_idx is not None:
             viz_mask = day_mask & (result.index >= chosen_entry_idx)
             result.loc[viz_mask, "ifvg_low"] = chosen_ifvg[0]

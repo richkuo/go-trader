@@ -1,37 +1,4 @@
 #!/usr/bin/env python3
-"""
-OKX emergency position close script (issue #345).
-
-Submits a reduce-only market close for a single coin via the OKX adapter's
-``market_close``. Used by the portfolio kill switch in the Go scheduler to
-liquidate on-chain swap (perps) exposure regardless of which strategy
-"owns" the position.
-
-Scope: swap (perps) only. OKX spot strategies are NOT closed by this script
-— spot "positions" are just balances, have no reduce-only semantics, and a
-blind sell-all would trash unrelated holdings on the same account. See #345
-for the spot follow-up.
-
-Usage:
-    close_okx_position.py --symbol=BTC --mode=live
-    close_okx_position.py --symbol=BTC --mode=live --sz=0.25
-
-Optional ``--sz`` submits a partial reduce-only close (contract units). Omit
-for full position close (portfolio kill switch and sole-owner circuit
-breakers). Used by shared-wallet per-strategy circuit breakers (#360).
-
-Live mode is required (kill switch is meaningful only against real
-positions). Stdout is always a single JSON envelope matching the shape of
-``close_hyperliquid_position.py`` so the Go caller's parser contract is
-symmetric across platforms:
-``{"close": {"symbol": ..., "fill": {...}}, "platform": "okx",
-  "timestamp": ..., "error": "..."}``
-
-The kill switch must NEVER report success unless the on-chain exposure is
-actually reduced. Credential errors, network failures, and unexpected SDK
-responses all exit 1 with a populated ``error`` field so the Go caller
-latches the kill switch and retries next cycle.
-"""
 
 import argparse
 import json
@@ -77,28 +44,14 @@ def main():
         _emit_error(args.symbol, str(e))
         return
 
-    # adapter.market_close returns:
-    #   - {} when fetch_positions returned no open position (already flat)
-    #   - the ccxt order dict from the first reduce-only close submit
-    # Any other shape is unexpected and must be treated as failure so the
-    # kill switch latches for a retry rather than clearing virtual state.
     if not isinstance(result, dict):
         _emit_error(args.symbol, f"unexpected adapter response type {type(result).__name__}: {result!r}")
         return
 
     if not result:
-        # Empty dict — adapter found no open position to close. Treat as
-        # already-flat success so the kill switch can release the latch when
-        # on-chain is genuinely flat (eventual-consistency window between the
-        # Go-side fetch and this submit). Set already_flat=True so the Go
-        # side routes this through the AlreadyFlat report slice rather than
-        # ClosedCoins — operator messaging must distinguish "we sent a
-        # close order" from "nothing to close" (#350).
         _emit_success(args.symbol, fill={}, already_flat=True)
         return
 
-    # ccxt unified order response: extract best-effort fill telemetry. Missing
-    # fields are OK — the Go caller only treats non-nil error as failure.
     fill = {}
     avg = result.get("average") or result.get("price")
     filled = result.get("filled") or result.get("amount")

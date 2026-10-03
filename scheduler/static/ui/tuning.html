@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Strategy tuning · go-trader</title>
+    <script>
+      (function () {
+        try {
+          if (window.localStorage.getItem("goTraderDarkMode") === "1") {
+            document.documentElement.classList.add("dark");
+          }
+        } catch (e) {}
+      })();
+    </script>
+    <link rel="stylesheet" href="/dashboard/styles.css">
+  </head>
+  <body data-page="tuning">
+    <main class="tuning-shell">
+      <header class="tuning-page-header">
+        <div>
+          <nav class="tuning-breadcrumbs" aria-label="Primary">
+            <a href="/dashboard">Dashboard</a>
+            <span aria-hidden="true">/</span>
+            <span>Tuning</span>
+            <span aria-hidden="true">/</span>
+            <a href="/reports">Reports</a>
+          </nav>
+          <h1>Strategy tuning</h1>
+          <p>Launch evidence-gated searches, follow progress, and compare suggestions with the live configuration.</p>
+        </div>
+        <button id="tuning-refresh" class="tuner-button secondary" type="button">Refresh</button>
+      </header>
+
+      <section id="tuning-auth" class="tuning-auth" hidden>
+        <form id="tuning-auth-form">
+          <label for="tuning-auth-token">Status token</label>
+          <input id="tuning-auth-token" type="password" autocomplete="current-password" placeholder="Paste the configured token">
+          <button class="tuner-button primary" type="submit">Save and retry</button>
+        </form>
+        <p id="tuning-auth-message">This server requires a status token for tuning API access.</p>
+      </section>
+
+      <div class="tuning-layout">
+        <section class="tuning-card tuning-launcher">
+          <div class="tuning-section-heading">
+            <div>
+              <h2>New run</h2>
+              <p>Select strategies. Override grids replace the automatic neighborhood; freeze keeps a parameter at its live value.</p>
+            </div>
+          </div>
+          <form id="tuning-launch-form">
+            <fieldset>
+              <legend>Strategies</legend>
+              <div id="tuning-strategies" class="tuning-strategy-picker">
+                <p class="panel-muted">Loading strategies…</p>
+              </div>
+            </fieldset>
+            <div id="tuning-overrides" class="tuning-overrides"></div>
+            <div class="tuning-launch-actions">
+              <button id="tuning-launch" class="tuner-button primary" type="submit">Start tuning run</button>
+              <p id="tuning-launch-message" class="controls-message" role="status" hidden></p>
+            </div>
+          </form>
+        </section>
+
+        <aside class="tuning-card tuning-run-list-card">
+          <div class="tuning-section-heading">
+            <div>
+              <h2>Runs</h2>
+              <p>Persisted runs remain available after a scheduler restart.</p>
+            </div>
+          </div>
+          <div id="tuning-runs" class="tuning-run-list">
+            <p class="panel-muted">Loading runs…</p>
+          </div>
+        </aside>
+      </div>
+
+      <section id="tuning-run-detail" class="tuning-card tuning-detail" hidden>
+        <div class="tuning-section-heading">
+          <div>
+            <h2 id="tuning-run-title">Run detail</h2>
+            <p id="tuning-run-meta"></p>
+          </div>
+          <span id="tuning-run-status" class="tuning-status-pill"></span>
+        </div>
+        <div id="tuning-progress" class="tuning-progress"></div>
+        <p id="tuning-run-error" class="tuning-error" hidden></p>
+        <div id="tuning-results" class="tuning-results"></div>
+      </section>
+    </main>
+    <script src="/dashboard/app.js"></script>
+  </body>
+</html>

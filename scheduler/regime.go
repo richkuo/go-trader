@@ -1,33 +1,73 @@
 package main
 
-// regimeAllowsEntry reports whether the current market regime permits a new
-// entry for a strategy. Returns true when:
-//   - allowed is empty (no gate configured), OR
-//   - current is empty (regime not available from check script), OR
-//   - current is in the allowed set.
-//
-// This is the core regime check; callers gate it on "is this an open?" via
-// regimeBlocksOpen so close legs always pass through.
+import (
+	"fmt"
+	"strings"
+)
+
+const (
+	RegimeGateOnFailureOpen   = "open"
+	RegimeGateOnFailureClosed = "closed"
+)
+
+func normalizeRegimeGateOnFailure(v string) string {
+	return strings.ToLower(strings.TrimSpace(v))
+}
+
+func parseRegimeGateOnFailure(v string) (string, error) {
+	n := normalizeRegimeGateOnFailure(v)
+	switch n {
+	case "", RegimeGateOnFailureOpen, RegimeGateOnFailureClosed:
+		return n, nil
+	}
+	return "", fmt.Errorf("regime_gate_on_failure must be %q or %q, got %q", RegimeGateOnFailureOpen, RegimeGateOnFailureClosed, v)
+}
+
+func resolveRegimeGateOnFailure(sc StrategyConfig, rc *RegimeConfig) string {
+	if v := normalizeRegimeGateOnFailure(sc.RegimeGateOnFailure); v != "" {
+		return v
+	}
+	if rc != nil {
+		if v := normalizeRegimeGateOnFailure(rc.GateOnFailure); v != "" {
+			return v
+		}
+	}
+	return RegimeGateOnFailureOpen
+}
+
 func regimeAllowsEntry(allowed []string, current string) bool {
 	if len(allowed) == 0 || current == "" {
 		return true
 	}
+	cur := strings.TrimSpace(current)
 	for _, label := range allowed {
-		if label == current {
+		if label == cur {
 			return true
+		}
+	}
+	if regimeDirectionalSubs[cur] {
+		for _, label := range allowed {
+			if label == regimeDirectionalBare {
+				return true
+			}
 		}
 	}
 	return false
 }
 
-// regimeBlocksOpen reports whether the regime gate should suppress this
-// dispatch. Closes (any non-zero existing position quantity) always pass
-// through — the gate only fires when no position exists, so the strategy is
-// attempting to open. This preserves the PR contract that "existing positions
-// are always managed by close paths regardless".
-func regimeBlocksOpen(allowed []string, current string, posQty float64) bool {
+func regimeBlocksOpen(allowed []string, current string, posQty float64, failClosed bool) bool {
 	if posQty > 0 {
 		return false
 	}
+	if failClosed && len(allowed) > 0 && strings.TrimSpace(current) == "" {
+		return true
+	}
 	return !regimeAllowsEntry(allowed, current)
+}
+
+func regimeGateBlockDetail(gateLabel string) string {
+	if strings.TrimSpace(gateLabel) == "" {
+		return "regime unknown, fail-closed"
+	}
+	return "regime=" + gateLabel
 }

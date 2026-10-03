@@ -1,52 +1,45 @@
-"""Standard ATR injection for check scripts.
-
-Provides a consistent ATR indicator for position entry stamping when the
-open strategy doesn't emit its own `atr` column (e.g. tema_cross, ema_crossover).
-Uses a simple rolling mean of True Range — the same method used by strategies
-that do emit ATR (see shared_strategies/open/registry.py: breakout_strategy,
-atr_breakout_strategy) — so stamped values are consistent across strategies.
-"""
 
 from __future__ import annotations
 
+import importlib.util
+import os
+
 import pandas as pd
 
-
-def standard_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
-    """Compute ATR via simple rolling mean of True Range over `period` bars.
-
-    Requires `high`, `low`, `close` columns. Returns a Series aligned to df.index.
-    Rows with insufficient history return NaN.
-    """
-    high = df["high"].astype(float)
-    low = df["low"].astype(float)
-    prev_close = df["close"].astype(float).shift(1)
-    tr = pd.concat(
-        [high - low, (high - prev_close).abs(), (low - prev_close).abs()],
-        axis=1,
-    ).max(axis=1)
-    return tr.rolling(window=period).mean()
+_INDICATORS_CORE_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "..", "shared_strategies", "open", "indicators_core.py",
+)
 
 
-def ensure_atr_indicator(df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
-    """Ensure `df` has an `atr` column, injecting standard_atr if absent.
+def _load_indicators_core():
+    spec = importlib.util.spec_from_file_location(
+        "_go_trader_indicators_core", _INDICATORS_CORE_PATH
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
-    No-op when `atr` is already present (preserves strategy-defined ATR).
-    Returns `df` with the column added in-place (the same object).
-    """
+
+_core = _load_indicators_core()
+
+
+def normalize_atr_method(method: str | None) -> str:
+    return _core.normalize_atr_method(method)
+
+
+def standard_atr(df: pd.DataFrame, period: int = 14, method: str = "simple") -> pd.Series:
+    return _core.atr_sma(df, period, method=method)
+
+
+def ensure_atr_indicator(df: pd.DataFrame, period: int = 14, method: str = "simple") -> pd.DataFrame:
     if "atr" not in df.columns:
-        df["atr"] = standard_atr(df, period)
+        df["atr"] = standard_atr(df, period, method=method)
     return df
 
 
-def latest_atr(df: pd.DataFrame, period: int = 14) -> float:
-    """Return the most recent finite, positive ATR value, or 0.0 if none.
-
-    Used by check scripts to populate `market_ctx["atr"]` so live close
-    evaluators (e.g. tiered_tp_atr_live) see current volatility instead of
-    falling back to the entry-time ATR snapshot.
-    """
-    series = standard_atr(df, period)
+def latest_atr(df: pd.DataFrame, period: int = 14, method: str = "simple") -> float:
+    series = standard_atr(df, period, method=method)
     if series.empty:
         return 0.0
     value = series.iloc[-1]
@@ -54,6 +47,6 @@ def latest_atr(df: pd.DataFrame, period: int = 14) -> float:
         value = float(value)
     except (TypeError, ValueError):
         return 0.0
-    if not (value > 0):  # rejects NaN, 0, negative (NaN > 0 is False)
+    if not (value > 0):
         return 0.0
     return value

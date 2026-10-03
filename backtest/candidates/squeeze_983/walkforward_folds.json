@@ -1,0 +1,4035 @@
+{
+  "BTC/USDT 1h": {
+    "folds": [
+      {
+        "fold": 1,
+        "best_params": {
+          "bb_period": 20,
+          "bb_std": 2.0,
+          "kc_period": 20,
+          "kc_mult": 1.5,
+          "mom_lookback": 12
+        },
+        "best_close_stack": "baseline",
+        "best_close_stack_spec": {
+          "close_strategies": [],
+          "stop_loss_atr_mult": null,
+          "trailing_stop_atr_mult": null
+        },
+        "train_metric": 3.3575374901341752,
+        "test_result": {
+          "total_return_pct": 3.62,
+          "annual_return_pct": 22.12,
+          "sharpe_ratio": 0.889,
+          "sortino_ratio": 0.963,
+          "max_drawdown_pct": -11.55,
+          "calmar_ratio": 1.915,
+          "volatility_pct": 26.02,
+          "win_rate": 27.27,
+          "profit_factor": 1.568,
+          "total_trades": 11,
+          "avg_win_pct": 5.5,
+          "avg_loss_pct": -1.22,
+          "strategy_name": "squeeze_momentum",
+          "symbol": "BTC/USDT",
+          "timeframe": "1h",
+          "start_date": "2023-06-03 15:00:00",
+          "end_date": "2023-08-08 09:00:00",
+          "initial_capital": 1000.0,
+          "final_capital": 1036.21,
+          "params": {
+            "bb_period": 20,
+            "bb_std": 2.0,
+            "kc_period": 20,
+            "kc_mult": 1.5,
+            "mom_lookback": 12
+          },
+          "open_strategy": {
+            "name": "squeeze_momentum",
+            "params": {
+              "bb_period": 20,
+              "bb_std": 2.0,
+              "kc_period": 20,
+              "kc_mult": 1.5,
+              "mom_lookback": 12
+            }
+          },
+          "close_strategies": [],
+          "trades": [
+            {
+              "entry_date": "2023-06-09 14:00:00",
+              "exit_date": "2023-06-10 02:00:00",
+              "entry_price": 26663.294985,
+              "exit_price": 26388.85897,
+              "side": "long",
+              "shares": 0.03746723728488953,
+              "pnl": -10.28,
+              "pnl_pct": -1.03,
+              "bars_held": 12,
+              "mfe_pct": 0.1377,
+              "mae_pct": -1.2875,
+              "bars_to_mfe": 1,
+              "bars_to_mae": 12,
+              "entry_atr": 144.0,
+              "entry_fee": 1.0,
+              "exit_fee": 0.988718,
+              "exit_reason": "signal"
+            },
+            {
+              "entry_date": "2023-06-11 18:00:00",
+              "exit_date": "2023-06-13 16:00:00",
+              "entry_price": 25953.480255,
+              "exit_price": 25790.948075,
+              "side": "long",
+              "shares": 0.03801960987303833,
+              "pnl": -6.18,
+              "pnl_pct": -0.63,
+              "bars_held": 46,
+              "mfe_pct": 1.5512,
+              "mae_pct": -1.073,
+              "bars_to_mfe": 43,
+              "bars_to_mae": 9,
+              "entry_atr": 92.840714,
+              "entry_fee": 0.987729,
+              "exit_fee": 0.980562,
+              "exit_reason": "signal"
+            },
+            {
+              "entry_date": "2023-06-16 17:00:00",
+              "exit_date": "2023-06-18 23:00:00",
+              "entry_price": 25940.98401,
+              "exit_price": 26425.770505000004,
+              "side": "long",
+              "shares": 0.0377241526645133,
+              "pnl": 18.29,
+              "pnl_pct": 1.87,
+              "bars_held": 54,
+              "mfe_pct": 3.1714,
+              "mae_pct": -0.0793,
+              "bars_to_mfe": 14,
+              "bars_to_mae": 1,
+              "entry_atr": 144.0,
+              "entry_fee": 0.979581,
+              "exit_fee": 0.99689,
+              "exit_reason": "signal"
+            },
+            {
+              "entry_date": "2023-06-19 18:00:00",
+              "exit_date": "2023-07-02 08:00:00",
+              "entry_price": 26676.321495,
+              "exit_price": 30479.772490000003,
+              "side": "long",
+              "shares": 0.03729513524878883,
+              "pnl": 141.85,
+              "pnl_pct": 14.26,
+              "bars_held": 302,
+              "mfe_pct": 417.5751,
+              "mae_pct": -0.7255,
+              "bars_to_mfe": 32,
+              "bars_to_mae": 2,
+              "entry_atr": 123.0,
+              "entry_fee": 0.995893,
+              "exit_fee": 1.136747,
+              "exit_reason": "signal"
+            },
+            {
+              "entry_date": "2023-07-03 03:00:00",
+              "exit_date": "2023-07-10 00:00:00",
+              "entry_price": 30780.3825,
+              "exit_price": 30179.892505000003,
+              "side": "long",
+              "shares": 0.03685707543235913,
+              "pnl": -22.13,
+              "pnl_pct": -1.95,
+              "bars_held": 165,
+              "mfe_pct": 1.9481,
+              "mae_pct": -3.4703,
+              "bars_to_mfe": 79,
+              "bars_to_mae": 94,
+              "entry_atr": 130.0,
+              "entry_fee": 1.13561,
+              "exit_fee": 1.112343,
+              "exit_reason": "signal"
+            },
+            {
+              "entry_date": "2023-07-10 15:00:00",
+              "exit_date": "2023-07-12 18:00:00",
+              "entry_price": 30330.147495,
+              "exit_price": 30444.760005000004,
+              "side": "long",
+              "shares": 0.03660117386417791,
+              "pnl": 4.19,
+              "pnl_pct": 0.38,
+              "bars_held": 51,
+              "mfe_pct": 2.3092,
+              "mae_pct": -0.3243,
+              "bars_to_mfe": 6,
+              "bars_to_mae": 2,
+              "entry_atr": 106.0,
+              "entry_fee": 1.11123,
+              "exit_fee": 1.114314,
+              "exit_reason": "signal"
+            },
+            {
+              "entry_date": "2023-07-16 15:00:00",
+              "exit_date": "2023-07-17 10:00:00",
+              "entry_price": 30410.1975,
+              "exit_price": 30164.320295,
+              "side": "long",
+              "shares": 0.036569523779046056,
+              "pnl": -8.99,
+              "pnl_pct": -0.81,
+              "bars_held": 19,
+              "mfe_pct": 0.0663,
+              "mae_pct": -0.8852,
+              "bars_to_mfe": 1,
+              "bars_to_mae": 9,
+              "entry_atr": 85.37,
+              "entry_fee": 1.1132,
+              "exit_fee": 1.103095,
+              "exit_reason": "signal"
+            },
+            {
+              "entry_date": "2023-07-19 02:00:00",
+              "exit_date": "2023-07-22 20:00:00",
+              "entry_price": 30015.0,
+              "exit_price": 29825.050015000004,
+              "side": "long",
+              "shares": 0.03667798573196666,
+              "pnl": -6.97,
+              "pnl_pct": -0.63,
+              "bars_held": 90,
+              "mfe_pct": 1.3307,
+              "mae_pct": -1.4936,
+              "bars_to_mfe": 33,
+              "bars_to_mae": 41,
+              "entry_atr": 147.0,
+              "entry_fee": 1.101992,
+              "exit_fee": 1.093923,
+              "exit_reason": "signal"
+            },
+            {
+              "entry_date": "2023-07-23 07:00:00",
+              "exit_date": "2023-07-27 16:00:00",
+              "entry_price": 29934.96,
+              "exit_price": 29276.384485,
+              "side": "long",
+              "shares": 0.03647026778423323,
+              "pnl": -24.02,
+              "pnl_pct": -2.2,
+              "bars_held": 105,
+              "mfe_pct": 1.3197,
+              "mae_pct": -3.5715,
+              "bars_to_mfe": 13,
+              "bars_to_mae": 33,
+              "entry_atr": 59.627143,
+              "entry_fee": 1.092829,
+              "exit_fee": 1.067718,
+              "exit_reason": "signal"
+            },
+            {
+              "entry_date": "2023-07-30 18:00:00",
+              "exit_date": "2023-07-30 23:00:00",
+              "entry_price": 29409.6975,
+              "exit_price": 29158.973220000003,
+              "side": "long",
+              "shares": 0.03623237588471825,
+              "pnl": -9.08,
+              "pnl_pct": -0.85,
+              "bars_held": 5,
+              "mfe_pct": 0.0,
+              "mae_pct": -1.2395,
+              "bars_to_mfe": 0,
+              "bars_to_mae": 3,
+              "entry_atr": 58.671429,
+              "entry_fee": 1.06665,
+              "exit_fee": 1.056499,
+              "exit_reason": "signal"
+            },
+            {
+              "entry_date": "2023-07-31 02:00:00",
+              "exit_date": "2023-08-04 21:00:00",
+              "entry_price": 29473.28928,
+              "exit_price": 28994.055720000004,
+              "side": "long",
+              "shares": 0.03577432185614922,
+              "pnl": -17.14,
+              "pnl_pct": -1.63,
+              "bars_held": 115,
+              "mfe_pct": 1.8835,
+              "mae_pct": -2.9994,
+              "bars_to_mfe": 48,
+              "bars_to_mae": 38,
+              "entry_atr": 117.0,
+              "entry_fee": 1.055442,
+              "exit_fee": 1.037243,
+              "exit_reason": "signal"
+            }
+          ]
+        },
+        "train_period": "2023-01-01 to 2023-06-03",
+        "test_period": "2023-06-03 to 2023-08-08"
+      },
+      {
+        "fold": 2,
+        "best_params": {
+          "bb_period": 20,
+          "bb_std": 2.0,
+          "kc_period": 20,
+          "kc_mult": 1.5,
+          "mom_lookback": 12
+        },
+        "best_close_stack": "baseline",
+        "best_close_stack_spec": {
+          "close_strategies": [],
+          "stop_loss_atr_mult": null,
+          "trailing_stop_atr_mult": null
+        },
+        "train_metric": 5.680696661828738,
+        "test_result": {
+          "total_return_pct": 17.27,
+          "annual_return_pct": 144.81,
+          "sharpe_ratio": 2.434,
+          "sortino_ratio": 2.119,
+          "max_drawdown_pct": -12.6,
+          "calmar_ratio": 11.493,
+          "volatility_pct": 39.56,
+          "win_rate": 36.36,
+          "profit_factor": 2.702,
+          "total_trades": 11,
+          "avg_win_pct": 7.79,
+          "avg_loss_pct": -1.63,
+          "strategy_name": "squeeze_momentum",
+          "symbol": "BTC/USDT",
+          "timeframe": "1h",
+          "start_date": "2024-01-08 18:00:00",
+          "end_date": "2024-03-14 12:00:00",
+          "initial_capital": 1000.0,
+          "final_capital": 1170.97,
+          "params": {
+            "bb_period": 20,
+            "bb_std": 2.0,
+            "kc_period": 20,
+            "kc_mult": 1.5,
+            "mom_lookback": 12
+          },
+          "open_strategy": {
+            "name": "squeeze_momentum",
+            "params": {
+              "bb_period": 20,
+              "bb_std": 2.0,
+              "kc_period": 20,
+              "kc_mult": 1.5,
+              "mom_lookback": 12
+            }
+          },
+          "close_strategies": [],
+          "trades": [
+            {
+              "entry_date": "2024-01-11 14:00:00",
+              "exit_date": "2024-01-12 16:00:00",
+              "entry_price": 47221.368884999996,
+              "exit_price": 44407.775005,
+              "side": "long",
+              "shares": 0.021155676414906625,
+              "pnl": -59.52,
+              "pnl_pct": -5.96,
+              "bars_held": 26,
+              "mfe_pct": 2.496,
+              "mae_pct": -5.9314,
+              "bars_to_mfe": 2,
+              "bars_to_mae": 26,
+              "entry_atr": 417.0,
+              "entry_fee": 1.0,
+              "exit_fee": 0.939477,
+              "exit_reason": "signal"
+            },
+            {
+              "entry_date": "2024-01-14 10:00:00",
+              "exit_date": "2024-01-17 07:00:00",
+              "entry_price": 42998.498505,
+              "exit_price": 42792.13323000001,
+              "side": "long",
+              "shares": 0.021805377800404504,
+              "pnl": -4.5,
+              "pnl_pct": -0.48,
+              "bars_held": 69,
+              "mfe_pct": 1.2922,
+              "mae_pct": -3.1682,
+              "bars_to_mfe": 60,
+              "bars_to_mae": 15,
+              "entry_atr": 197.0,
+              "entry_fee": 0.938537,
+              "exit_fee": 0.933099,
+              "exit_reason": "signal"
+            },
+            {
+              "entry_date": "2024-01-18 09:00:00",
+              "exit_date": "2024-01-18 17:00:00",
+              "entry_price": 42777.75818999999,
+              "exit_price": 41915.441795000006,
+              "side": "long",
+              "shares": 0.021769101682794268,
+              "pnl": -18.77,
+              "pnl_pct": -2.02,
+              "bars_held": 8,
+              "mfe_pct": 0.2127,
+              "mae_pct": -2.4764,
+              "bars_to_mfe": 1,
+              "bars_to_mae": 8,
+              "entry_atr": 179.0,
+              "entry_fee": 0.932166,
+              "exit_fee": 0.912462,
+              "exit_reason": "signal"
+            },
+            {
+              "entry_date": "2024-01-25 12:00:00",
+              "exit_date": "2024-01-31 01:00:00",
+              "entry_price": 40180.8804,
+              "exit_price": 42927.735395,
+              "side": "long",
+              "shares": 0.022663453236507113,
+              "pnl": 62.25,
+              "pnl_pct": 6.84,
+              "bars_held": 133,
+              "mfe_pct": 9.0071,
+              "mae_pct": -1.6356,
+              "bars_to_mfe": 121,
+              "bars_to_mae": 7,
+              "entry_atr": 196.0,
+              "entry_fee": 0.911549,
+              "exit_fee": 0.972891,
+              "exit_reason": "signal"
+            },
+            {
+              "entry_date": "2024-02-03 04:00:00",
+              "exit_date": "2024-02-03 12:00:00",
+              "entry_price": 43190.554485,
+              "exit_price": 42980.359070000006,
+              "side": "long",
+              "shares": 0.02248051516574805,
+              "pnl": -4.73,
+              "pnl_pct": -0.49,
+              "bars_held": 8,
+              "mfe_pct": 0.045,
+              "mae_pct": -0.4589,
+              "bars_to_mfe": 1,
+              "bars_to_mae": 8,
+              "entry_atr": 190.0,
+              "entry_fee": 0.971918,
+              "exit_fee": 0.966221,
+              "exit_reason": "signal"
+            },
+            {
+              "entry_date": "2024-02-07 18:00:00",
+              "exit_date": "2024-02-12 12:00:00",
+              "entry_price": 43543.330785,
+              "exit_price": 47844.875595,
+              "side": "long",
+              "shares": 0.02214550705035692,
+              "pnl": 95.26,
+              "pnl_pct": 9.88,
+              "bars_held": 114,
+              "mfe_pct": 11.985,
+              "mae_pct": -0.2225,
+              "bars_to_mfe": 103,
+              "bars_to_mae": 1,
+              "entry_atr": 214.0,
+              "entry_fee": 0.965254,
+              "exit_fee": 1.059549,
+              "exit_reason": "signal"
+            },
+            {
+              "entry_date": "2024-02-16 12:00:00",
+              "exit_date": "2024-02-16 21:00:00",
+              "entry_price": 52265.15952,
+              "exit_price": 51791.021535,
+              "side": "long",
+              "shares": 0.020232043698197952,
+              "pnl": -9.59,
+              "pnl_pct": -0.91,
+              "bars_held": 9,
+              "mfe_pct": 0.4936,
+              "mae_pct": -1.2727,
+              "bars_to_mfe": 3,
+              "bars_to_mae": 4,
+              "entry_atr": 252.0,
+              "entry_fee": 1.058489,
+              "exit_fee": 1.047838,
+              "exit_reason": "signal"
+            },
+            {
+              "entry_date": "2024-02-20 12:00:00",
+              "exit_date": "2024-02-25 19:00:00",
+              "entry_price": 52335.664755,
+              "exit_price": 51540.08706500001,
+              "side": "long",
+              "shares": 0.01998147128124505,
+              "pnl": -15.9,
+              "pnl_pct": -1.52,
+              "bars_held": 127,
+              "mfe_pct": 0.9828,
+              "mae_pct": -3.4084,
+              "bars_to_mfe": 2,
+              "bars_to_mae": 84,
+              "entry_atr": 238.0,
+              "entry_fee": 1.04679,
+              "exit_fee": 1.029847,
+              "exit_reason": "signal"
+            },
+            {
+              "entry_date": "2024-02-28 08:00:00",
+              "exit_date": "2024-03-07 06:00:00",
+              "entry_price": 57888.10959,
+              "exit_price": 65765.93058500001,
+              "side": "long",
+              "shares": 0.017754736043538714,
+              "pnl": 139.87,
+              "pnl_pct": 13.61,
+              "bars_held": 190,
+              "mfe_pct": 19.1366,
+              "mae_pct": -0.1154,
+              "bars_to_mfe": 152,
+              "bars_to_mae": 1,
+              "entry_atr": 387.0,
+              "entry_fee": 1.028817,
+              "exit_fee": 1.167657,
+              "exit_reason": "signal"
+            },
+            {
+              "entry_date": "2024-03-08 15:00:00",
+              "exit_date": "2024-03-10 23:00:00",
+              "entry_price": 68470.83830999999,
+              "exit_price": 68430.91742499999,
+              "side": "long",
+              "shares": 0.0170192540523419,
+              "pnl": -0.68,
+              "pnl_pct": -0.06,
+              "bars_held": 56,
+              "mfe_pct": 2.2318,
+              "mae_pct": -3.4256,
+              "bars_to_mfe": 47,
+              "bars_to_mae": 2,
+              "entry_atr": 570.0,
+              "entry_fee": 1.166489,
+              "exit_fee": 1.164643,
+              "exit_reason": "signal"
+            },
+            {
+              "entry_date": "2024-03-13 06:00:00",
+              "exit_date": "2024-03-14 12:00:00",
+              "entry_price": 72202.30311,
+              "exit_price": 72812.61548,
+              "side": "long",
+              "shares": 0.01609803284565464,
+              "pnl": 9.82,
+              "pnl_pct": 0.85,
+              "bars_held": 31,
+              "mfe_pct": 2.1841,
+              "mae_pct": -0.6969,
+              "bars_to_mfe": 26,
+              "bars_to_mae": 8,
+              "entry_atr": 576.0,
+              "entry_fee": 1.163479,
+              "exit_fee": 1.17214,
+              "exit_reason": "end_of_data"
+            }
+          ]
+        },
+        "train_period": "2023-08-08 to 2024-01-08",
+        "test_period": "2024-01-08 to 2024-03-14"
+      },
+      {
+        "fold": 3,
+        "best_params": {
+          "bb_period": 20,
+          "bb_std": 2.0,
+          "kc_period": 20,
+          "kc_mult": 1.5,
+          "mom_lookback": 12
+        },
+        "best_close_stack": "tiered_tp_atr[1.5x:0.4,3x:0.8,5x:1]",
+        "best_close_stack_spec": {
+          "close_strategies": [
+            {
+              "name": "tiered_tp_atr",
+              "params": {
+                "tp_tiers": [
+                  {
+                    "atr_multiple": 1.5,
+                    "close_fraction": 0.4
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.8
+                  },
+                  {
+                    "atr_multiple": 5.0,
+                    "close_fraction": 1.0
+                  }
+                ]
+              }
+            }
+          ],
+          "stop_loss_atr_mult": null,
+          "trailing_stop_atr_mult": null
+        },
+        "train_metric": -0.026839826839826837,
+        "test_result": {
+          "total_return_pct": 6.86,
+          "annual_return_pct": 45.17,
+          "sharpe_ratio": 1.134,
+          "sortino_ratio": 1.359,
+          "max_drawdown_pct": -18.19,
+          "calmar_ratio": 2.483,
+          "volatility_pct": 39.24,
+          "win_rate": 100.0,
+          "profit_factor": Infinity,
+          "total_trades": 10,
+          "avg_win_pct": 1.71,
+          "avg_loss_pct": 0,
+          "strategy_name": "squeeze_momentum",
+          "symbol": "BTC/USDT",
+          "timeframe": "1h",
+          "start_date": "2024-08-14 21:00:00",
+          "end_date": "2024-10-19 15:00:00",
+          "initial_capital": 1000.0,
+          "final_capital": 1067.62,
+          "params": {
+            "bb_period": 20,
+            "bb_std": 2.0,
+            "kc_period": 20,
+            "kc_mult": 1.5,
+            "mom_lookback": 12
+          },
+          "open_strategy": {
+            "name": "squeeze_momentum",
+            "params": {
+              "bb_period": 20,
+              "bb_std": 2.0,
+              "kc_period": 20,
+              "kc_mult": 1.5,
+              "mom_lookback": 12
+            }
+          },
+          "close_strategies": [
+            {
+              "name": "tiered_tp_atr",
+              "params": {
+                "tp_tiers": [
+                  {
+                    "atr_multiple": 1.5,
+                    "close_fraction": 0.4
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.8
+                  },
+                  {
+                    "atr_multiple": 5.0,
+                    "close_fraction": 1.0
+                  }
+                ]
+              }
+            }
+          ],
+          "trades": [
+            {
+              "entry_date": "2024-08-17 18:00:00",
+              "exit_date": "2024-08-18 03:00:00",
+              "entry_price": 59446.27828499999,
+              "exit_price": 60020.73462,
+              "side": "long",
+              "shares": 0.006722035618179828,
+              "pnl": 3.46,
+              "pnl_pct": 0.97,
+              "bars_held": 9,
+              "mfe_pct": 1.2833,
+              "mae_pct": -0.4669,
+              "bars_to_mfe": 9,
+              "bars_to_mae": 4,
+              "entry_atr": 202.0,
+              "entry_fee": 0.4,
+              "exit_fee": 0.403462,
+              "exit_reason": "tiered_tp_atr:1.5"
+            },
+            {
+              "entry_date": "2024-08-17 18:00:00",
+              "exit_date": "2024-08-20 01:00:00",
+              "entry_price": 59446.27828499999,
+              "exit_price": 60349.71005,
+              "side": "long",
+              "shares": 0.010083053427269742,
+              "pnl": 8.5,
+              "pnl_pct": 1.52,
+              "bars_held": 55,
+              "mfe_pct": 1.949,
+              "mae_pct": -2.4329,
+              "bars_to_mfe": 55,
+              "bars_to_mae": 41,
+              "entry_atr": 202.0,
+              "entry_fee": 0.6,
+              "exit_fee": 0.608509,
+              "exit_reason": "tiered_tp_atr:5"
+            },
+            {
+              "entry_date": "2024-08-21 18:00:00",
+              "exit_date": "2024-08-21 19:00:00",
+              "entry_price": 59996.06304,
+              "exit_price": 60771.35912000001,
+              "side": "long",
+              "shares": 0.0067334280668614665,
+              "pnl": 4.81,
+              "pnl_pct": 1.29,
+              "bars_held": 1,
+              "mfe_pct": 1.3456,
+              "mae_pct": -0.1076,
+              "bars_to_mfe": 1,
+              "bars_to_mae": 1,
+              "entry_atr": 472.0,
+              "entry_fee": 0.404384,
+              "exit_fee": 0.4092,
+              "exit_reason": "tiered_tp_atr:1.5"
+            },
+            {
+              "entry_date": "2024-08-21 18:00:00",
+              "exit_date": "2024-08-21 20:00:00",
+              "entry_price": 59996.06304,
+              "exit_price": 61565.032085000006,
+              "side": "long",
+              "shares": 0.006733428066861466,
+              "pnl": 10.15,
+              "pnl_pct": 2.62,
+              "bars_held": 2,
+              "mfe_pct": 2.6551,
+              "mae_pct": -0.1076,
+              "bars_to_mfe": 2,
+              "bars_to_mae": 1,
+              "entry_atr": 472.0,
+              "entry_fee": 0.404384,
+              "exit_fee": 0.414544,
+              "exit_reason": "tiered_tp_atr:3"
+            },
+            {
+              "entry_date": "2024-08-21 18:00:00",
+              "exit_date": "2024-08-23 18:00:00",
+              "entry_price": 59996.06304,
+              "exit_price": 62968.490005,
+              "side": "long",
+              "shares": 0.003366714033430732,
+              "pnl": 9.8,
+              "pnl_pct": 4.95,
+              "bars_held": 48,
+              "mfe_pct": 5.0069,
+              "mae_pct": -0.5114,
+              "bars_to_mfe": 48,
+              "bars_to_mae": 9,
+              "entry_atr": 472.0,
+              "entry_fee": 0.202192,
+              "exit_fee": 0.211997,
+              "exit_reason": "tiered_tp_atr:5"
+            },
+            {
+              "entry_date": "2024-08-25 22:00:00",
+              "exit_date": "2024-09-26 16:00:00",
+              "entry_price": 64403.875845,
+              "exit_price": 65205.810785,
+              "side": "long",
+              "shares": 0.012839845191326965,
+              "pnl": 9.46,
+              "pnl_pct": 1.25,
+              "bars_held": 762,
+              "mfe_pct": 1.702,
+              "mae_pct": -18.2733,
+              "bars_to_mfe": 762,
+              "bars_to_mae": 288,
+              "entry_atr": 188.0,
+              "entry_fee": 0.827764,
+              "exit_fee": 0.837233,
+              "exit_reason": "tiered_tp_atr:3"
+            },
+            {
+              "entry_date": "2024-08-25 22:00:00",
+              "exit_date": "2024-09-26 17:00:00",
+              "entry_price": 64403.875845,
+              "exit_price": 65288.949195,
+              "side": "long",
+              "shares": 0.003209961297831741,
+              "pnl": 2.63,
+              "pnl_pct": 1.37,
+              "bars_held": 763,
+              "mfe_pct": 1.7262,
+              "mae_pct": -18.2733,
+              "bars_to_mfe": 763,
+              "bars_to_mae": 288,
+              "entry_atr": 188.0,
+              "entry_fee": 0.206941,
+              "exit_fee": 0.209575,
+              "exit_reason": "tiered_tp_atr:5"
+            },
+            {
+              "entry_date": "2024-09-29 22:00:00",
+              "exit_date": "2024-10-15 14:00:00",
+              "entry_price": 65920.82394,
+              "exit_price": 67230.72782,
+              "side": "long",
+              "shares": 0.015848026245432186,
+              "pnl": 19.69,
+              "pnl_pct": 1.99,
+              "bars_held": 376,
+              "mfe_pct": 2.0381,
+              "mae_pct": -10.5779,
+              "bars_to_mfe": 376,
+              "bars_to_mae": 261,
+              "entry_atr": 199.0,
+              "entry_fee": 1.045761,
+              "exit_fee": 1.065474,
+              "exit_reason": "tiered_tp_atr:5"
+            },
+            {
+              "entry_date": "2024-10-18 03:00:00",
+              "exit_date": "2024-10-18 19:00:00",
+              "entry_price": 68085.0255,
+              "exit_price": 68765.410095,
+              "side": "long",
+              "shares": 0.00624715609917617,
+              "pnl": 3.82,
+              "pnl_pct": 1.0,
+              "bars_held": 16,
+              "mfe_pct": 1.2999,
+              "mae_pct": -0.7694,
+              "bars_to_mfe": 16,
+              "bars_to_mae": 1,
+              "entry_atr": 425.0,
+              "entry_fee": 0.425764,
+              "exit_fee": 0.429588,
+              "exit_reason": "tiered_tp_atr:1.5"
+            },
+            {
+              "entry_date": "2024-10-18 03:00:00",
+              "exit_date": "2024-10-19 15:00:00",
+              "entry_price": 68085.0255,
+              "exit_price": 68201.752065,
+              "side": "long",
+              "shares": 0.009370734148764253,
+              "pnl": 1.09,
+              "pnl_pct": 0.17,
+              "bars_held": 37,
+              "mfe_pct": 1.2999,
+              "mae_pct": -0.7694,
+              "bars_to_mfe": 16,
+              "bars_to_mae": 1,
+              "entry_atr": 425.0,
+              "entry_fee": 1.064409,
+              "exit_fee": 0.6391,
+              "exit_reason": "end_of_data"
+            }
+          ]
+        },
+        "train_period": "2024-03-14 to 2024-08-14",
+        "test_period": "2024-08-14 to 2024-10-19"
+      },
+      {
+        "fold": 4,
+        "best_params": {
+          "bb_period": 20,
+          "bb_std": 2.0,
+          "kc_period": 20,
+          "kc_mult": 1.5,
+          "mom_lookback": 12
+        },
+        "best_close_stack": "tiered_tp_atr[2x:0.33,4x:0.66,6x:1]",
+        "best_close_stack_spec": {
+          "close_strategies": [
+            {
+              "name": "tiered_tp_atr",
+              "params": {
+                "tp_tiers": [
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.33
+                  },
+                  {
+                    "atr_multiple": 4.0,
+                    "close_fraction": 0.66
+                  },
+                  {
+                    "atr_multiple": 6.0,
+                    "close_fraction": 1.0
+                  }
+                ]
+              }
+            }
+          ],
+          "stop_loss_atr_mult": null,
+          "trailing_stop_atr_mult": null
+        },
+        "train_metric": 1.5896130346232178,
+        "test_result": {
+          "total_return_pct": 10.73,
+          "annual_return_pct": 77.32,
+          "sharpe_ratio": 3.362,
+          "sortino_ratio": 2.861,
+          "max_drawdown_pct": -3.18,
+          "calmar_ratio": 24.295,
+          "volatility_pct": 17.27,
+          "win_rate": 100.0,
+          "profit_factor": Infinity,
+          "total_trades": 17,
+          "avg_win_pct": 2.4,
+          "avg_loss_pct": 0,
+          "strategy_name": "squeeze_momentum",
+          "symbol": "BTC/USDT",
+          "timeframe": "1h",
+          "start_date": "2025-03-22 00:00:00",
+          "end_date": "2025-05-26 18:00:00",
+          "initial_capital": 1000.0,
+          "final_capital": 1107.31,
+          "params": {
+            "bb_period": 20,
+            "bb_std": 2.0,
+            "kc_period": 20,
+            "kc_mult": 1.5,
+            "mom_lookback": 12
+          },
+          "open_strategy": {
+            "name": "squeeze_momentum",
+            "params": {
+              "bb_period": 20,
+              "bb_std": 2.0,
+              "kc_period": 20,
+              "kc_mult": 1.5,
+              "mom_lookback": 12
+            }
+          },
+          "close_strategies": [
+            {
+              "name": "tiered_tp_atr",
+              "params": {
+                "tp_tiers": [
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.33
+                  },
+                  {
+                    "atr_multiple": 4.0,
+                    "close_fraction": 0.66
+                  },
+                  {
+                    "atr_multiple": 6.0,
+                    "close_fraction": 1.0
+                  }
+                ]
+              }
+            }
+          ],
+          "trades": [
+            {
+              "entry_date": "2025-03-31 13:00:00",
+              "exit_date": "2025-04-01 09:00:00",
+              "entry_price": 82778.20842,
+              "exit_price": 84113.372275,
+              "side": "long",
+              "shares": 0.003982569885148042,
+              "pnl": 4.98,
+              "pnl_pct": 1.61,
+              "bars_held": 20,
+              "mfe_pct": 1.6638,
+              "mae_pct": -1.2976,
+              "bars_to_mfe": 20,
+              "bars_to_mae": 1,
+              "entry_atr": 619.0,
+              "entry_fee": 0.33,
+              "exit_fee": 0.334987,
+              "exit_reason": "tiered_tp_atr:2"
+            },
+            {
+              "entry_date": "2025-03-31 13:00:00",
+              "exit_date": "2025-04-01 16:00:00",
+              "entry_price": 82778.20842,
+              "exit_price": 85277.61986,
+              "side": "long",
+              "shares": 0.003982569885148042,
+              "pnl": 9.61,
+              "pnl_pct": 3.02,
+              "bars_held": 27,
+              "mfe_pct": 3.1869,
+              "mae_pct": -1.2976,
+              "bars_to_mfe": 27,
+              "bars_to_mae": 1,
+              "entry_atr": 619.0,
+              "entry_fee": 0.33,
+              "exit_fee": 0.339624,
+              "exit_reason": "tiered_tp_atr:4"
+            },
+            {
+              "entry_date": "2025-03-31 13:00:00",
+              "exit_date": "2025-04-02 16:00:00",
+              "entry_price": 82778.20842,
+              "exit_price": 86736.899855,
+              "side": "long",
+              "shares": 0.004103253821061617,
+              "pnl": 15.89,
+              "pnl_pct": 4.78,
+              "bars_held": 51,
+              "mfe_pct": 5.3696,
+              "mae_pct": -1.2976,
+              "bars_to_mfe": 51,
+              "bars_to_mae": 1,
+              "entry_atr": 619.0,
+              "entry_fee": 0.34,
+              "exit_fee": 0.355904,
+              "exit_reason": "tiered_tp_atr:6"
+            },
+            {
+              "entry_date": "2025-04-14 03:00:00",
+              "exit_date": "2025-04-21 02:00:00",
+              "entry_price": 85091.794635,
+              "exit_price": 87201.83727000002,
+              "side": "long",
+              "shares": 0.003988517870486926,
+              "pnl": 8.07,
+              "pnl_pct": 2.48,
+              "bars_held": 167,
+              "mfe_pct": 2.6795,
+              "mae_pct": -2.2725,
+              "bars_to_mfe": 167,
+              "bars_to_mae": 47,
+              "entry_atr": 813.0,
+              "entry_fee": 0.33973,
+              "exit_fee": 0.347806,
+              "exit_reason": "tiered_tp_atr:2"
+            },
+            {
+              "entry_date": "2025-04-14 03:00:00",
+              "exit_date": "2025-04-22 02:00:00",
+              "entry_price": 85091.794635,
+              "exit_price": 88450.49263000001,
+              "side": "long",
+              "shares": 0.003988517870486926,
+              "pnl": 13.04,
+              "pnl_pct": 3.95,
+              "bars_held": 191,
+              "mfe_pct": 4.2817,
+              "mae_pct": -2.2725,
+              "bars_to_mfe": 191,
+              "bars_to_mae": 47,
+              "entry_atr": 813.0,
+              "entry_fee": 0.33973,
+              "exit_fee": 0.352786,
+              "exit_reason": "tiered_tp_atr:4"
+            },
+            {
+              "entry_date": "2025-04-14 03:00:00",
+              "exit_date": "2025-04-22 14:00:00",
+              "entry_price": 85091.794635,
+              "exit_price": 90185.84452000001,
+              "side": "long",
+              "shares": 0.004109382048380468,
+              "pnl": 20.56,
+              "pnl_pct": 5.99,
+              "bars_held": 203,
+              "mfe_pct": 6.1336,
+              "mae_pct": -2.2725,
+              "bars_to_mfe": 203,
+              "bars_to_mae": 47,
+              "entry_atr": 813.0,
+              "entry_fee": 0.350025,
+              "exit_fee": 0.370608,
+              "exit_reason": "tiered_tp_atr:6"
+            },
+            {
+              "entry_date": "2025-04-25 12:00:00",
+              "exit_date": "2025-04-25 15:00:00",
+              "entry_price": 94607.630175,
+              "exit_price": 95634.7587,
+              "side": "long",
+              "shares": 0.00372897557086274,
+              "pnl": 3.47,
+              "pnl_pct": 1.09,
+              "bars_held": 3,
+              "mfe_pct": 1.1546,
+              "mae_pct": -0.6641,
+              "bars_to_mfe": 3,
+              "bars_to_mae": 2,
+              "entry_atr": 494.0,
+              "entry_fee": 0.353143,
+              "exit_fee": 0.35662,
+              "exit_reason": "tiered_tp_atr:2"
+            },
+            {
+              "entry_date": "2025-04-25 12:00:00",
+              "exit_date": "2025-05-01 10:00:00",
+              "entry_price": 94607.630175,
+              "exit_price": 95582.18500000001,
+              "side": "long",
+              "shares": 4.336808689942018e-19,
+              "pnl": 0.0,
+              "pnl_pct": 1.03,
+              "bars_held": 142,
+              "mfe_pct": 1.1546,
+              "mae_pct": -1.931,
+              "bars_to_mfe": 3,
+              "bars_to_mae": 62,
+              "entry_atr": 494.0,
+              "entry_fee": 0.0,
+              "exit_fee": 0.0,
+              "exit_reason": "tiered_tp_atr:2"
+            },
+            {
+              "entry_date": "2025-04-25 12:00:00",
+              "exit_date": "2025-05-01 11:00:00",
+              "entry_price": 94607.630175,
+              "exit_price": 96161.05542,
+              "side": "long",
+              "shares": 4.336808689942018e-19,
+              "pnl": 0.0,
+              "pnl_pct": 1.64,
+              "bars_held": 143,
+              "mfe_pct": 1.8148,
+              "mae_pct": -1.931,
+              "bars_to_mfe": 143,
+              "bars_to_mae": 62,
+              "entry_atr": 494.0,
+              "entry_fee": 0.0,
+              "exit_fee": 0.0,
+              "exit_reason": "tiered_tp_atr:2"
+            },
+            {
+              "entry_date": "2025-04-25 12:00:00",
+              "exit_date": "2025-05-01 12:00:00",
+              "entry_price": 94607.630175,
+              "exit_price": 96191.36026,
+              "side": "long",
+              "shares": 4.336808689942018e-19,
+              "pnl": 0.0,
+              "pnl_pct": 1.67,
+              "bars_held": 144,
+              "mfe_pct": 1.8148,
+              "mae_pct": -1.931,
+              "bars_to_mfe": 143,
+              "bars_to_mae": 62,
+              "entry_atr": 494.0,
+              "entry_fee": 0.0,
+              "exit_fee": 0.0,
+              "exit_reason": "tiered_tp_atr:2"
+            },
+            {
+              "entry_date": "2025-04-25 12:00:00",
+              "exit_date": "2025-05-01 13:00:00",
+              "entry_price": 94607.630175,
+              "exit_price": 96270.96044,
+              "side": "long",
+              "shares": 4.336808689942018e-19,
+              "pnl": 0.0,
+              "pnl_pct": 1.76,
+              "bars_held": 145,
+              "mfe_pct": 1.8932,
+              "mae_pct": -1.931,
+              "bars_to_mfe": 145,
+              "bars_to_mae": 62,
+              "entry_atr": 494.0,
+              "entry_fee": 0.0,
+              "exit_fee": 0.0,
+              "exit_reason": "tiered_tp_atr:2"
+            },
+            {
+              "entry_date": "2025-04-25 12:00:00",
+              "exit_date": "2025-05-01 14:00:00",
+              "entry_price": 94607.630175,
+              "exit_price": 95886.65269,
+              "side": "long",
+              "shares": 4.336808689942018e-19,
+              "pnl": 0.0,
+              "pnl_pct": 1.35,
+              "bars_held": 146,
+              "mfe_pct": 2.164,
+              "mae_pct": -1.931,
+              "bars_to_mfe": 146,
+              "bars_to_mae": 62,
+              "entry_atr": 494.0,
+              "entry_fee": 0.0,
+              "exit_fee": 0.0,
+              "exit_reason": "tiered_tp_atr:2"
+            },
+            {
+              "entry_date": "2025-04-25 12:00:00",
+              "exit_date": "2025-05-01 15:00:00",
+              "entry_price": 94607.630175,
+              "exit_price": 96753.549025,
+              "side": "long",
+              "shares": 0.0037289755708627406,
+              "pnl": 7.64,
+              "pnl_pct": 2.27,
+              "bars_held": 147,
+              "mfe_pct": 2.3194,
+              "mae_pct": -1.931,
+              "bars_to_mfe": 147,
+              "bars_to_mae": 62,
+              "entry_atr": 494.0,
+              "entry_fee": 0.353143,
+              "exit_fee": 0.360792,
+              "exit_reason": "tiered_tp_atr:4"
+            },
+            {
+              "entry_date": "2025-04-25 12:00:00",
+              "exit_date": "2025-05-02 15:00:00",
+              "entry_price": 94607.630175,
+              "exit_price": 97706.01255500001,
+              "side": "long",
+              "shares": 0.0038419748305858524,
+              "pnl": 11.53,
+              "pnl_pct": 3.27,
+              "bars_held": 171,
+              "mfe_pct": 3.4159,
+              "mae_pct": -1.931,
+              "bars_to_mfe": 171,
+              "bars_to_mae": 62,
+              "entry_atr": 494.0,
+              "entry_fee": 0.363844,
+              "exit_fee": 0.375384,
+              "exit_reason": "tiered_tp_atr:6"
+            },
+            {
+              "entry_date": "2025-05-10 09:00:00",
+              "exit_date": "2025-05-11 00:00:00",
+              "entry_price": 103698.55336499999,
+              "exit_price": 104656.32566,
+              "side": "long",
+              "shares": 0.003470651869640163,
+              "pnl": 2.96,
+              "pnl_pct": 0.92,
+              "bars_held": 15,
+              "mfe_pct": 1.1515,
+              "mae_pct": -0.6425,
+              "bars_to_mfe": 15,
+              "bars_to_mae": 10,
+              "entry_atr": 370.0,
+              "entry_fee": 0.360262,
+              "exit_fee": 0.363226,
+              "exit_reason": "tiered_tp_atr:2"
+            },
+            {
+              "entry_date": "2025-05-10 09:00:00",
+              "exit_date": "2025-05-18 15:00:00",
+              "entry_price": 103698.55336499999,
+              "exit_price": 105090.14864000001,
+              "side": "long",
+              "shares": 0.0034706518696401628,
+              "pnl": 4.47,
+              "pnl_pct": 1.34,
+              "bars_held": 198,
+              "mfe_pct": 1.9476,
+              "mae_pct": -2.8366,
+              "bars_to_mfe": 47,
+              "bars_to_mae": 58,
+              "entry_atr": 370.0,
+              "entry_fee": 0.360262,
+              "exit_fee": 0.364731,
+              "exit_reason": "tiered_tp_atr:4"
+            },
+            {
+              "entry_date": "2025-05-10 09:00:00",
+              "exit_date": "2025-05-19 00:00:00",
+              "entry_price": 103698.55336499999,
+              "exit_price": 106399.40368500001,
+              "side": "long",
+              "shares": 0.003575823138417137,
+              "pnl": 9.28,
+              "pnl_pct": 2.6,
+              "bars_held": 207,
+              "mfe_pct": 2.6558,
+              "mae_pct": -2.8366,
+              "bars_to_mfe": 207,
+              "bars_to_mae": 58,
+              "entry_atr": 370.0,
+              "entry_fee": 0.371179,
+              "exit_fee": 0.380465,
+              "exit_reason": "tiered_tp_atr:6"
+            }
+          ]
+        },
+        "train_period": "2024-10-19 to 2025-03-22",
+        "test_period": "2025-03-22 to 2025-05-26"
+      },
+      {
+        "fold": 5,
+        "best_params": {
+          "bb_period": 20,
+          "bb_std": 2.0,
+          "kc_period": 20,
+          "kc_mult": 1.5,
+          "mom_lookback": 12
+        },
+        "best_close_stack": "tiered_tp_atr[1x:0.5,2x:0.8,3x:1]",
+        "best_close_stack_spec": {
+          "close_strategies": [
+            {
+              "name": "tiered_tp_atr",
+              "params": {
+                "tp_tiers": [
+                  {
+                    "atr_multiple": 1.0,
+                    "close_fraction": 0.5
+                  },
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.8
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 1.0
+                  }
+                ]
+              }
+            }
+          ],
+          "stop_loss_atr_mult": null,
+          "trailing_stop_atr_mult": null
+        },
+        "train_metric": 1.5113636363636365,
+        "test_result": {
+          "total_return_pct": -10.14,
+          "annual_return_pct": -45.15,
+          "sharpe_ratio": -2.64,
+          "sortino_ratio": -3.145,
+          "max_drawdown_pct": -13.12,
+          "calmar_ratio": -3.443,
+          "volatility_pct": 21.58,
+          "win_rate": 50.0,
+          "profit_factor": 0.021,
+          "total_trades": 2,
+          "avg_win_pct": 0.54,
+          "avg_loss_pct": -20.58,
+          "strategy_name": "squeeze_momentum",
+          "symbol": "BTC/USDT",
+          "timeframe": "1h",
+          "start_date": "2025-10-27 05:00:00",
+          "end_date": "2026-01-01 00:00:00",
+          "initial_capital": 1000.0,
+          "final_capital": 898.03,
+          "params": {
+            "bb_period": 20,
+            "bb_std": 2.0,
+            "kc_period": 20,
+            "kc_mult": 1.5,
+            "mom_lookback": 12
+          },
+          "open_strategy": {
+            "name": "squeeze_momentum",
+            "params": {
+              "bb_period": 20,
+              "bb_std": 2.0,
+              "kc_period": 20,
+              "kc_mult": 1.5,
+              "mom_lookback": 12
+            }
+          },
+          "close_strategies": [
+            {
+              "name": "tiered_tp_atr",
+              "params": {
+                "tp_tiers": [
+                  {
+                    "atr_multiple": 1.0,
+                    "close_fraction": 0.5
+                  },
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.8
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 1.0
+                  }
+                ]
+              }
+            }
+          ],
+          "trades": [
+            {
+              "entry_date": "2025-11-02 10:00:00",
+              "exit_date": "2025-11-02 12:00:00",
+              "entry_price": 110568.37655999999,
+              "exit_price": 111166.74882000001,
+              "side": "long",
+              "shares": 0.004517566555107608,
+              "pnl": 2.2,
+              "pnl_pct": 0.54,
+              "bars_held": 2,
+              "mfe_pct": 0.5918,
+              "mae_pct": -0.2585,
+              "bars_to_mfe": 2,
+              "bars_to_mae": 1,
+              "entry_atr": 448.0,
+              "entry_fee": 0.5,
+              "exit_fee": 0.502203,
+              "exit_reason": "tiered_tp_atr:1"
+            },
+            {
+              "entry_date": "2025-11-02 10:00:00",
+              "exit_date": "2026-01-01 00:00:00",
+              "entry_price": 110568.37655999999,
+              "exit_price": 87817.859105,
+              "side": "long",
+              "shares": 0.004517566555107608,
+              "pnl": -102.78,
+              "pnl_pct": -20.58,
+              "bars_held": 1431,
+              "mfe_pct": 0.6025,
+              "mae_pct": -26.9128,
+              "bars_to_mfe": 3,
+              "bars_to_mae": 459,
+              "entry_atr": 448.0,
+              "entry_fee": 1.0,
+              "exit_fee": 0.396723,
+              "exit_reason": "end_of_data"
+            }
+          ]
+        },
+        "train_period": "2025-05-26 to 2025-10-27",
+        "test_period": "2025-10-27 to 2026-01-01"
+      }
+    ],
+    "picks": [
+      "baseline",
+      "baseline",
+      "tiered_tp_atr[1.5x:0.4,3x:0.8,5x:1]",
+      "tiered_tp_atr[2x:0.33,4x:0.66,6x:1]",
+      "tiered_tp_atr[1x:0.5,2x:0.8,3x:1]"
+    ]
+  },
+  "ETH/USDT 1h": {
+    "folds": [
+      {
+        "fold": 1,
+        "best_params": {
+          "bb_period": 20,
+          "bb_std": 2.0,
+          "kc_period": 20,
+          "kc_mult": 1.5,
+          "mom_lookback": 12
+        },
+        "best_close_stack": "tiered_tp_atr[2x:0.33,4x:0.66,6x:1]",
+        "best_close_stack_spec": {
+          "close_strategies": [
+            {
+              "name": "tiered_tp_atr",
+              "params": {
+                "tp_tiers": [
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.33
+                  },
+                  {
+                    "atr_multiple": 4.0,
+                    "close_fraction": 0.66
+                  },
+                  {
+                    "atr_multiple": 6.0,
+                    "close_fraction": 1.0
+                  }
+                ]
+              }
+            }
+          ],
+          "stop_loss_atr_mult": null,
+          "trailing_stop_atr_mult": null
+        },
+        "train_metric": 2.5875,
+        "test_result": {
+          "total_return_pct": -1.55,
+          "annual_return_pct": -8.42,
+          "sharpe_ratio": -0.169,
+          "sortino_ratio": -0.17,
+          "max_drawdown_pct": -7.52,
+          "calmar_ratio": -1.12,
+          "volatility_pct": 28.07,
+          "win_rate": 90.91,
+          "profit_factor": 0.78,
+          "total_trades": 11,
+          "avg_win_pct": 1.97,
+          "avg_loss_pct": -5.64,
+          "strategy_name": "squeeze_momentum",
+          "symbol": "ETH/USDT",
+          "timeframe": "1h",
+          "start_date": "2023-06-03 15:00:00",
+          "end_date": "2023-08-08 09:00:00",
+          "initial_capital": 1000.0,
+          "final_capital": 982.99,
+          "params": {
+            "bb_period": 20,
+            "bb_std": 2.0,
+            "kc_period": 20,
+            "kc_mult": 1.5,
+            "mom_lookback": 12
+          },
+          "open_strategy": {
+            "name": "squeeze_momentum",
+            "params": {
+              "bb_period": 20,
+              "bb_std": 2.0,
+              "kc_period": 20,
+              "kc_mult": 1.5,
+              "mom_lookback": 12
+            }
+          },
+          "close_strategies": [
+            {
+              "name": "tiered_tp_atr",
+              "params": {
+                "tp_tiers": [
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.33
+                  },
+                  {
+                    "atr_multiple": 4.0,
+                    "close_fraction": 0.66
+                  },
+                  {
+                    "atr_multiple": 6.0,
+                    "close_fraction": 1.0
+                  }
+                ]
+              }
+            }
+          ],
+          "trades": [
+            {
+              "entry_date": "2023-06-11 19:00:00",
+              "exit_date": "2023-06-20 19:00:00",
+              "entry_price": 1756.207665,
+              "exit_price": 1779.01005,
+              "side": "long",
+              "shares": 0.18771698049729216,
+              "pnl": 3.95,
+              "pnl_pct": 1.3,
+              "bars_held": 216,
+              "mfe_pct": 1.7562,
+              "mae_pct": -7.2587,
+              "bars_to_mfe": 216,
+              "bars_to_mae": 87,
+              "entry_atr": 8.045,
+              "entry_fee": 0.33,
+              "exit_fee": 0.33395,
+              "exit_reason": "tiered_tp_atr:2"
+            },
+            {
+              "entry_date": "2023-06-11 19:00:00",
+              "exit_date": "2023-06-20 20:00:00",
+              "entry_price": 1756.207665,
+              "exit_price": 1781.718695,
+              "side": "long",
+              "shares": 2.7755575615628914e-17,
+              "pnl": 0.0,
+              "pnl_pct": 1.45,
+              "bars_held": 217,
+              "mfe_pct": 1.7562,
+              "mae_pct": -7.2587,
+              "bars_to_mfe": 216,
+              "bars_to_mae": 87,
+              "entry_atr": 8.045,
+              "entry_fee": 0.0,
+              "exit_fee": 0.0,
+              "exit_reason": "tiered_tp_atr:2"
+            },
+            {
+              "entry_date": "2023-06-11 19:00:00",
+              "exit_date": "2023-06-20 21:00:00",
+              "entry_price": 1756.207665,
+              "exit_price": 1781.898605,
+              "side": "long",
+              "shares": 2.7755575615628914e-17,
+              "pnl": 0.0,
+              "pnl_pct": 1.46,
+              "bars_held": 218,
+              "mfe_pct": 1.8826,
+              "mae_pct": -7.2587,
+              "bars_to_mfe": 218,
+              "bars_to_mae": 87,
+              "entry_atr": 8.045,
+              "entry_fee": 0.0,
+              "exit_fee": 0.0,
+              "exit_reason": "tiered_tp_atr:2"
+            },
+            {
+              "entry_date": "2023-06-11 19:00:00",
+              "exit_date": "2023-06-20 22:00:00",
+              "entry_price": 1756.207665,
+              "exit_price": 1774.9220950000001,
+              "side": "long",
+              "shares": 2.7755575615628914e-17,
+              "pnl": 0.0,
+              "pnl_pct": 1.07,
+              "bars_held": 219,
+              "mfe_pct": 1.8826,
+              "mae_pct": -7.2587,
+              "bars_to_mfe": 218,
+              "bars_to_mae": 87,
+              "entry_atr": 8.045,
+              "entry_fee": 0.0,
+              "exit_fee": 0.0,
+              "exit_reason": "tiered_tp_atr:2"
+            },
+            {
+              "entry_date": "2023-06-11 19:00:00",
+              "exit_date": "2023-06-20 23:00:00",
+              "entry_price": 1756.207665,
+              "exit_price": 1784.18746,
+              "side": "long",
+              "shares": 2.7755575615628914e-17,
+              "pnl": 0.0,
+              "pnl_pct": 1.59,
+              "bars_held": 220,
+              "mfe_pct": 1.8826,
+              "mae_pct": -7.2587,
+              "bars_to_mfe": 218,
+              "bars_to_mae": 87,
+              "entry_atr": 8.045,
+              "entry_fee": 0.0,
+              "exit_fee": 0.0,
+              "exit_reason": "tiered_tp_atr:2"
+            },
+            {
+              "entry_date": "2023-06-11 19:00:00",
+              "exit_date": "2023-06-21 00:00:00",
+              "entry_price": 1756.207665,
+              "exit_price": 1789.035035,
+              "side": "long",
+              "shares": 0.18771698049729219,
+              "pnl": 5.83,
+              "pnl_pct": 1.87,
+              "bars_held": 221,
+              "mfe_pct": 2.1867,
+              "mae_pct": -7.2587,
+              "bars_to_mfe": 221,
+              "bars_to_mae": 87,
+              "entry_atr": 8.045,
+              "entry_fee": 0.33,
+              "exit_fee": 0.335832,
+              "exit_reason": "tiered_tp_atr:4"
+            },
+            {
+              "entry_date": "2023-06-11 19:00:00",
+              "exit_date": "2023-06-21 02:00:00",
+              "entry_price": 1756.207665,
+              "exit_price": 1809.21494,
+              "side": "long",
+              "shares": 0.19340537384569495,
+              "pnl": 9.9,
+              "pnl_pct": 3.02,
+              "bars_held": 223,
+              "mfe_pct": 3.7696,
+              "mae_pct": -7.2587,
+              "bars_to_mfe": 223,
+              "bars_to_mae": 87,
+              "entry_atr": 8.045,
+              "entry_fee": 0.34,
+              "exit_fee": 0.349912,
+              "exit_reason": "tiered_tp_atr:6"
+            },
+            {
+              "entry_date": "2023-06-23 16:00:00",
+              "exit_date": "2023-07-03 02:00:00",
+              "entry_price": 1917.8984699999999,
+              "exit_price": 1944.5872200000001,
+              "side": "long",
+              "shares": 0.17510131116987282,
+              "pnl": 4.33,
+              "pnl_pct": 1.39,
+              "bars_held": 226,
+              "mfe_pct": 2.1107,
+              "mae_pct": -4.8339,
+              "bars_to_mfe": 223,
+              "bars_to_mae": 125,
+              "entry_atr": 12.830714,
+              "entry_fee": 0.336163,
+              "exit_fee": 0.3405,
+              "exit_reason": "tiered_tp_atr:2"
+            },
+            {
+              "entry_date": "2023-06-23 16:00:00",
+              "exit_date": "2023-07-03 19:00:00",
+              "entry_price": 1917.8984699999999,
+              "exit_price": 1969.7746200000001,
+              "side": "long",
+              "shares": 0.17510131116987282,
+              "pnl": 8.74,
+              "pnl_pct": 2.7,
+              "bars_held": 243,
+              "mfe_pct": 2.9773,
+              "mae_pct": -4.8339,
+              "bars_to_mfe": 233,
+              "bars_to_mae": 125,
+              "entry_atr": 12.830714,
+              "entry_fee": 0.336163,
+              "exit_fee": 0.34491,
+              "exit_reason": "tiered_tp_atr:4"
+            },
+            {
+              "entry_date": "2023-06-23 16:00:00",
+              "exit_date": "2023-07-13 20:00:00",
+              "entry_price": 1917.8984699999999,
+              "exit_price": 1992.54323,
+              "side": "long",
+              "shares": 0.18040741150835382,
+              "pnl": 13.11,
+              "pnl_pct": 3.89,
+              "bars_held": 484,
+              "mfe_pct": 4.9435,
+              "mae_pct": -4.8339,
+              "bars_to_mfe": 483,
+              "bars_to_mae": 125,
+              "entry_atr": 12.830714,
+              "entry_fee": 0.346349,
+              "exit_fee": 0.35947,
+              "exit_reason": "tiered_tp_atr:6"
+            },
+            {
+              "entry_date": "2023-07-16 16:00:00",
+              "exit_date": "2023-08-08 09:00:00",
+              "entry_price": 1938.50877,
+              "exit_price": 1829.16496,
+              "side": "long",
+              "shares": 0.5379344984781922,
+              "pnl": -58.82,
+              "pnl_pct": -5.64,
+              "bars_held": 546,
+              "mfe_pct": 0.0,
+              "mae_pct": -7.0378,
+              "bars_to_mfe": 0,
+              "bars_to_mae": 529,
+              "entry_atr": 5.706429,
+              "entry_fee": 1.043835,
+              "exit_fee": 0.983971,
+              "exit_reason": "end_of_data"
+            }
+          ]
+        },
+        "train_period": "2023-01-01 to 2023-06-03",
+        "test_period": "2023-06-03 to 2023-08-08"
+      },
+      {
+        "fold": 2,
+        "best_params": {
+          "bb_period": 20,
+          "bb_std": 2.0,
+          "kc_period": 20,
+          "kc_mult": 1.5,
+          "mom_lookback": 12
+        },
+        "best_close_stack": "tiered_tp_atr[1.5x:0.4,3x:0.8,5x:1]",
+        "best_close_stack_spec": {
+          "close_strategies": [
+            {
+              "name": "tiered_tp_atr",
+              "params": {
+                "tp_tiers": [
+                  {
+                    "atr_multiple": 1.5,
+                    "close_fraction": 0.4
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.8
+                  },
+                  {
+                    "atr_multiple": 5.0,
+                    "close_fraction": 1.0
+                  }
+                ]
+              }
+            }
+          ],
+          "stop_loss_atr_mult": null,
+          "trailing_stop_atr_mult": null
+        },
+        "train_metric": 0.43205197617758534,
+        "test_result": {
+          "total_return_pct": 16.23,
+          "annual_return_pct": 132.83,
+          "sharpe_ratio": 2.483,
+          "sortino_ratio": 2.76,
+          "max_drawdown_pct": -18.21,
+          "calmar_ratio": 7.293,
+          "volatility_pct": 36.28,
+          "win_rate": 100.0,
+          "profit_factor": Infinity,
+          "total_trades": 17,
+          "avg_win_pct": 3.07,
+          "avg_loss_pct": 0,
+          "strategy_name": "squeeze_momentum",
+          "symbol": "ETH/USDT",
+          "timeframe": "1h",
+          "start_date": "2024-01-08 18:00:00",
+          "end_date": "2024-03-14 12:00:00",
+          "initial_capital": 1000.0,
+          "final_capital": 1162.3,
+          "params": {
+            "bb_period": 20,
+            "bb_std": 2.0,
+            "kc_period": 20,
+            "kc_mult": 1.5,
+            "mom_lookback": 12
+          },
+          "open_strategy": {
+            "name": "squeeze_momentum",
+            "params": {
+              "bb_period": 20,
+              "bb_std": 2.0,
+              "kc_period": 20,
+              "kc_mult": 1.5,
+              "mom_lookback": 12
+            }
+          },
+          "close_strategies": [
+            {
+              "name": "tiered_tp_atr",
+              "params": {
+                "tp_tiers": [
+                  {
+                    "atr_multiple": 1.5,
+                    "close_fraction": 0.4
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.8
+                  },
+                  {
+                    "atr_multiple": 5.0,
+                    "close_fraction": 1.0
+                  }
+                ]
+              }
+            }
+          ],
+          "trades": [
+            {
+              "entry_date": "2024-01-12 14:00:00",
+              "exit_date": "2024-02-14 10:00:00",
+              "entry_price": 2674.9568099999997,
+              "exit_price": 2742.2781750000004,
+              "side": "long",
+              "shares": 0.14938558951910705,
+              "pnl": 9.65,
+              "pnl_pct": 2.52,
+              "bars_held": 788,
+              "mfe_pct": 2.7157,
+              "mae_pct": -18.6903,
+              "bars_to_mfe": 788,
+              "bars_to_mae": 316,
+              "entry_atr": 25.870714,
+              "entry_fee": 0.4,
+              "exit_fee": 0.409657,
+              "exit_reason": "tiered_tp_atr:1.5"
+            },
+            {
+              "entry_date": "2024-01-12 14:00:00",
+              "exit_date": "2024-02-14 12:00:00",
+              "entry_price": 2674.9568099999997,
+              "exit_price": 2754.0822700000003,
+              "side": "long",
+              "shares": 0.14938558951910705,
+              "pnl": 11.41,
+              "pnl_pct": 2.96,
+              "bars_held": 790,
+              "mfe_pct": 3.0518,
+              "mae_pct": -18.6903,
+              "bars_to_mfe": 789,
+              "bars_to_mae": 316,
+              "entry_atr": 25.870714,
+              "entry_fee": 0.4,
+              "exit_fee": 0.41142,
+              "exit_reason": "tiered_tp_atr:3"
+            },
+            {
+              "entry_date": "2024-01-12 14:00:00",
+              "exit_date": "2024-02-15 01:00:00",
+              "entry_price": 2674.9568099999997,
+              "exit_price": 2812.0932500000004,
+              "side": "long",
+              "shares": 0.07469279475955354,
+              "pnl": 10.03,
+              "pnl_pct": 5.13,
+              "bars_held": 803,
+              "mfe_pct": 5.4854,
+              "mae_pct": -18.6903,
+              "bars_to_mfe": 803,
+              "bars_to_mae": 316,
+              "entry_atr": 25.870714,
+              "entry_fee": 0.2,
+              "exit_fee": 0.210043,
+              "exit_reason": "tiered_tp_atr:5"
+            },
+            {
+              "entry_date": "2024-02-20 20:00:00",
+              "exit_date": "2024-02-25 13:00:00",
+              "entry_price": 2988.67359,
+              "exit_price": 3043.0377200000003,
+              "side": "long",
+              "shares": 0.13772784602743404,
+              "pnl": 7.07,
+              "pnl_pct": 1.82,
+              "bars_held": 113,
+              "mfe_pct": 1.9968,
+              "mae_pct": -3.9815,
+              "bars_to_mfe": 103,
+              "bars_to_mae": 19,
+              "entry_atr": 36.245714,
+              "entry_fee": 0.412036,
+              "exit_fee": 0.419111,
+              "exit_reason": "tiered_tp_atr:1.5"
+            },
+            {
+              "entry_date": "2024-02-20 20:00:00",
+              "exit_date": "2024-02-25 21:00:00",
+              "entry_price": 2988.67359,
+              "exit_price": 3097.6204150000003,
+              "side": "long",
+              "shares": 0.13772784602743404,
+              "pnl": 14.58,
+              "pnl_pct": 3.65,
+              "bars_held": 121,
+              "mfe_pct": 4.2138,
+              "mae_pct": -3.9815,
+              "bars_to_mfe": 121,
+              "bars_to_mae": 19,
+              "entry_atr": 36.245714,
+              "entry_fee": 0.412036,
+              "exit_fee": 0.426629,
+              "exit_reason": "tiered_tp_atr:3"
+            },
+            {
+              "entry_date": "2024-02-20 20:00:00",
+              "exit_date": "2024-02-26 20:00:00",
+              "entry_price": 2988.67359,
+              "exit_price": 3168.415,
+              "side": "long",
+              "shares": 0.06886392301371702,
+              "pnl": 12.16,
+              "pnl_pct": 6.01,
+              "bars_held": 144,
+              "mfe_pct": 6.0671,
+              "mae_pct": -3.9815,
+              "bars_to_mfe": 144,
+              "bars_to_mae": 19,
+              "entry_atr": 36.245714,
+              "entry_fee": 0.206018,
+              "exit_fee": 0.218189,
+              "exit_reason": "tiered_tp_atr:5"
+            },
+            {
+              "entry_date": "2024-02-28 09:00:00",
+              "exit_date": "2024-02-28 17:00:00",
+              "entry_price": 3333.62598,
+              "exit_price": 3422.288,
+              "side": "long",
+              "shares": 0.25481018370980696,
+              "pnl": 21.72,
+              "pnl_pct": 2.66,
+              "bars_held": 8,
+              "mfe_pct": 2.711,
+              "mae_pct": -1.5498,
+              "bars_to_mfe": 8,
+              "bars_to_mae": 3,
+              "entry_atr": 24.389286,
+              "entry_fee": 0.850292,
+              "exit_fee": 0.872034,
+              "exit_reason": "tiered_tp_atr:3"
+            },
+            {
+              "entry_date": "2024-02-28 09:00:00",
+              "exit_date": "2024-02-29 06:00:00",
+              "entry_price": 3333.62598,
+              "exit_price": 3456.5308700000005,
+              "side": "long",
+              "shares": 0.06370254592745173,
+              "pnl": 7.61,
+              "pnl_pct": 3.69,
+              "bars_held": 21,
+              "mfe_pct": 4.3908,
+              "mae_pct": -4.4872,
+              "bars_to_mfe": 9,
+              "bars_to_mae": 9,
+              "entry_atr": 24.389286,
+              "entry_fee": 0.212573,
+              "exit_fee": 0.22019,
+              "exit_reason": "tiered_tp_atr:5"
+            },
+            {
+              "entry_date": "2024-03-03 04:00:00",
+              "exit_date": "2024-03-03 17:00:00",
+              "entry_price": 3434.646465,
+              "exit_price": 3468.36495,
+              "side": "long",
+              "shares": 0.12694643323721305,
+              "pnl": 3.84,
+              "pnl_pct": 0.98,
+              "bars_held": 13,
+              "mfe_pct": 1.0293,
+              "mae_pct": -1.941,
+              "bars_to_mfe": 13,
+              "bars_to_mae": 4,
+              "entry_atr": 14.661429,
+              "entry_fee": 0.436453,
+              "exit_fee": 0.440297,
+              "exit_reason": "tiered_tp_atr:1.5"
+            },
+            {
+              "entry_date": "2024-03-03 04:00:00",
+              "exit_date": "2024-03-04 00:00:00",
+              "entry_price": 3434.646465,
+              "exit_price": 3483.5373600000003,
+              "side": "long",
+              "shares": 0.12694643323721305,
+              "pnl": 5.76,
+              "pnl_pct": 1.42,
+              "bars_held": 20,
+              "mfe_pct": 1.5761,
+              "mae_pct": -1.941,
+              "bars_to_mfe": 20,
+              "bars_to_mae": 4,
+              "entry_atr": 14.661429,
+              "entry_fee": 0.436453,
+              "exit_fee": 0.442223,
+              "exit_reason": "tiered_tp_atr:3"
+            },
+            {
+              "entry_date": "2024-03-03 04:00:00",
+              "exit_date": "2024-03-04 09:00:00",
+              "entry_price": 3434.646465,
+              "exit_price": 3523.89717,
+              "side": "long",
+              "shares": 0.0634732166186065,
+              "pnl": 5.44,
+              "pnl_pct": 2.6,
+              "bars_held": 29,
+              "mfe_pct": 2.6668,
+              "mae_pct": -1.941,
+              "bars_to_mfe": 29,
+              "bars_to_mae": 4,
+              "entry_atr": 14.661429,
+              "entry_fee": 0.218226,
+              "exit_fee": 0.223673,
+              "exit_reason": "tiered_tp_atr:5"
+            },
+            {
+              "entry_date": "2024-03-04 13:00:00",
+              "exit_date": "2024-03-04 16:00:00",
+              "entry_price": 3509.363805,
+              "exit_price": 3555.9911150000003,
+              "side": "long",
+              "shares": 0.12583260942268426,
+              "pnl": 5.42,
+              "pnl_pct": 1.33,
+              "bars_held": 3,
+              "mfe_pct": 1.66,
+              "mae_pct": -1.0644,
+              "bars_to_mfe": 3,
+              "bars_to_mae": 2,
+              "entry_atr": 28.902143,
+              "entry_fee": 0.442034,
+              "exit_fee": 0.44746,
+              "exit_reason": "tiered_tp_atr:1.5"
+            },
+            {
+              "entry_date": "2024-03-04 13:00:00",
+              "exit_date": "2024-03-04 23:00:00",
+              "entry_price": 3509.363805,
+              "exit_price": 3607.0255850000003,
+              "side": "long",
+              "shares": 0.12583260942268426,
+              "pnl": 11.84,
+              "pnl_pct": 2.78,
+              "bars_held": 10,
+              "mfe_pct": 2.8674,
+              "mae_pct": -1.0644,
+              "bars_to_mfe": 10,
+              "bars_to_mae": 2,
+              "entry_atr": 28.902143,
+              "entry_fee": 0.442034,
+              "exit_fee": 0.453881,
+              "exit_reason": "tiered_tp_atr:3"
+            },
+            {
+              "entry_date": "2024-03-04 13:00:00",
+              "exit_date": "2024-03-05 04:00:00",
+              "entry_price": 3509.363805,
+              "exit_price": 3682.307925,
+              "side": "long",
+              "shares": 0.06291630471134213,
+              "pnl": 10.65,
+              "pnl_pct": 4.93,
+              "bars_held": 15,
+              "mfe_pct": 4.9806,
+              "mae_pct": -1.0644,
+              "bars_to_mfe": 15,
+              "bars_to_mae": 2,
+              "entry_atr": 28.902143,
+              "entry_fee": 0.221017,
+              "exit_fee": 0.231677,
+              "exit_reason": "tiered_tp_atr:5"
+            },
+            {
+              "entry_date": "2024-03-07 19:00:00",
+              "exit_date": "2024-03-08 09:00:00",
+              "entry_price": 3875.4067349999996,
+              "exit_price": 3939.16943,
+              "side": "long",
+              "shares": 0.11671067982365427,
+              "pnl": 6.98,
+              "pnl_pct": 1.65,
+              "bars_held": 14,
+              "mfe_pct": 1.9248,
+              "mae_pct": -0.9183,
+              "bars_to_mfe": 14,
+              "bars_to_mae": 4,
+              "entry_atr": 36.546429,
+              "entry_fee": 0.452754,
+              "exit_fee": 0.459743,
+              "exit_reason": "tiered_tp_atr:1.5"
+            },
+            {
+              "entry_date": "2024-03-07 19:00:00",
+              "exit_date": "2024-03-11 08:00:00",
+              "entry_price": 3875.4067349999996,
+              "exit_price": 3998.0,
+              "side": "long",
+              "shares": 0.11671067982365427,
+              "pnl": 13.84,
+              "pnl_pct": 3.16,
+              "bars_held": 85,
+              "mfe_pct": 3.215,
+              "mae_pct": -2.1976,
+              "bars_to_mfe": 85,
+              "bars_to_mae": 79,
+              "entry_atr": 36.546429,
+              "entry_fee": 0.452754,
+              "exit_fee": 0.466609,
+              "exit_reason": "tiered_tp_atr:3"
+            },
+            {
+              "entry_date": "2024-03-07 19:00:00",
+              "exit_date": "2024-03-11 23:00:00",
+              "entry_price": 3875.4067349999996,
+              "exit_price": 4063.2373650000004,
+              "side": "long",
+              "shares": 0.05835533991182712,
+              "pnl": 10.72,
+              "pnl_pct": 4.85,
+              "bars_held": 100,
+              "mfe_pct": 5.2295,
+              "mae_pct": -2.1976,
+              "bars_to_mfe": 96,
+              "bars_to_mae": 79,
+              "entry_atr": 36.546429,
+              "entry_fee": 0.226377,
+              "exit_fee": 0.237112,
+              "exit_reason": "tiered_tp_atr:5"
+            }
+          ]
+        },
+        "train_period": "2023-08-08 to 2024-01-08",
+        "test_period": "2024-01-08 to 2024-03-14"
+      },
+      {
+        "fold": 3,
+        "best_params": {
+          "bb_period": 20,
+          "bb_std": 2.0,
+          "kc_period": 20,
+          "kc_mult": 1.5,
+          "mom_lookback": 12
+        },
+        "best_close_stack": "tiered_tp_atr[1.5x:0.4,3x:0.8,5x:1]",
+        "best_close_stack_spec": {
+          "close_strategies": [
+            {
+              "name": "tiered_tp_atr",
+              "params": {
+                "tp_tiers": [
+                  {
+                    "atr_multiple": 1.5,
+                    "close_fraction": 0.4
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.8
+                  },
+                  {
+                    "atr_multiple": 5.0,
+                    "close_fraction": 1.0
+                  }
+                ]
+              }
+            }
+          ],
+          "stop_loss_atr_mult": null,
+          "trailing_stop_atr_mult": null
+        },
+        "train_metric": -0.10469464063149149,
+        "test_result": {
+          "total_return_pct": -2.53,
+          "annual_return_pct": -13.4,
+          "sharpe_ratio": -0.052,
+          "sortino_ratio": -0.064,
+          "max_drawdown_pct": -21.78,
+          "calmar_ratio": -0.615,
+          "volatility_pct": 48.38,
+          "win_rate": 85.71,
+          "profit_factor": 0.521,
+          "total_trades": 7,
+          "avg_win_pct": 1.53,
+          "avg_loss_pct": -4.64,
+          "strategy_name": "squeeze_momentum",
+          "symbol": "ETH/USDT",
+          "timeframe": "1h",
+          "start_date": "2024-08-14 21:00:00",
+          "end_date": "2024-10-19 15:00:00",
+          "initial_capital": 1000.0,
+          "final_capital": 973.26,
+          "params": {
+            "bb_period": 20,
+            "bb_std": 2.0,
+            "kc_period": 20,
+            "kc_mult": 1.5,
+            "mom_lookback": 12
+          },
+          "open_strategy": {
+            "name": "squeeze_momentum",
+            "params": {
+              "bb_period": 20,
+              "bb_std": 2.0,
+              "kc_period": 20,
+              "kc_mult": 1.5,
+              "mom_lookback": 12
+            }
+          },
+          "close_strategies": [
+            {
+              "name": "tiered_tp_atr",
+              "params": {
+                "tp_tiers": [
+                  {
+                    "atr_multiple": 1.5,
+                    "close_fraction": 0.4
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 0.8
+                  },
+                  {
+                    "atr_multiple": 5.0,
+                    "close_fraction": 1.0
+                  }
+                ]
+              }
+            }
+          ],
+          "trades": [
+            {
+              "entry_date": "2024-08-17 18:00:00",
+              "exit_date": "2024-08-18 03:00:00",
+              "entry_price": 2617.16793,
+              "exit_price": 2633.9623600000004,
+              "side": "long",
+              "shares": 0.15268412676904536,
+              "pnl": 2.16,
+              "pnl_pct": 0.64,
+              "bars_held": 9,
+              "mfe_pct": 0.6722,
+              "mae_pct": -0.6078,
+              "bars_to_mfe": 9,
+              "bars_to_mae": 4,
+              "entry_atr": 8.962143,
+              "entry_fee": 0.4,
+              "exit_fee": 0.402164,
+              "exit_reason": "tiered_tp_atr:1.5"
+            },
+            {
+              "entry_date": "2024-08-17 18:00:00",
+              "exit_date": "2024-08-18 10:00:00",
+              "entry_price": 2617.16793,
+              "exit_price": 2643.547565,
+              "side": "long",
+              "shares": 0.15268412676904536,
+              "pnl": 3.62,
+              "pnl_pct": 1.01,
+              "bars_held": 16,
+              "mfe_pct": 1.7134,
+              "mae_pct": -0.8142,
+              "bars_to_mfe": 16,
+              "bars_to_mae": 11,
+              "entry_atr": 8.962143,
+              "entry_fee": 0.4,
+              "exit_fee": 0.403628,
+              "exit_reason": "tiered_tp_atr:3"
+            },
+            {
+              "entry_date": "2024-08-17 18:00:00",
+              "exit_date": "2024-08-18 13:00:00",
+              "entry_price": 2617.16793,
+              "exit_price": 2665.1267700000003,
+              "side": "long",
+              "shares": 0.07634206338452265,
+              "pnl": 3.46,
+              "pnl_pct": 1.83,
+              "bars_held": 19,
+              "mfe_pct": 2.5563,
+              "mae_pct": -0.8142,
+              "bars_to_mfe": 19,
+              "bars_to_mae": 11,
+              "entry_atr": 8.962143,
+              "entry_fee": 0.2,
+              "exit_fee": 0.203461,
+              "exit_reason": "tiered_tp_atr:5"
+            },
+            {
+              "entry_date": "2024-08-21 11:00:00",
+              "exit_date": "2024-08-21 17:00:00",
+              "entry_price": 2589.53412,
+              "exit_price": 2606.27621,
+              "side": "long",
+              "shares": 0.15558563467432684,
+              "pnl": 2.2,
+              "pnl_pct": 0.65,
+              "bars_held": 6,
+              "mfe_pct": 1.0232,
+              "mae_pct": -1.9963,
+              "bars_to_mfe": 4,
+              "bars_to_mae": 3,
+              "entry_atr": 12.817857,
+              "entry_fee": 0.403298,
+              "exit_fee": 0.405499,
+              "exit_reason": "tiered_tp_atr:1.5"
+            },
+            {
+              "entry_date": "2024-08-21 11:00:00",
+              "exit_date": "2024-08-21 19:00:00",
+              "entry_price": 2589.53412,
+              "exit_price": 2637.6805,
+              "side": "long",
+              "shares": 0.15558563467432684,
+              "pnl": 7.08,
+              "pnl_pct": 1.86,
+              "bars_held": 8,
+              "mfe_pct": 2.0585,
+              "mae_pct": -1.9963,
+              "bars_to_mfe": 8,
+              "bars_to_mae": 3,
+              "entry_atr": 12.817857,
+              "entry_fee": 0.403298,
+              "exit_fee": 0.410385,
+              "exit_reason": "tiered_tp_atr:3"
+            },
+            {
+              "entry_date": "2024-08-21 11:00:00",
+              "exit_date": "2024-08-23 06:00:00",
+              "entry_price": 2589.53412,
+              "exit_price": 2671.7334650000003,
+              "side": "long",
+              "shares": 0.07779281733716342,
+              "pnl": 6.19,
+              "pnl_pct": 3.17,
+              "bars_held": 43,
+              "mfe_pct": 3.3572,
+              "mae_pct": -1.9963,
+              "bars_to_mfe": 43,
+              "bars_to_mae": 3,
+              "entry_atr": 12.817857,
+              "entry_fee": 0.201649,
+              "exit_fee": 0.207842,
+              "exit_reason": "tiered_tp_atr:5"
+            },
+            {
+              "entry_date": "2024-08-25 21:00:00",
+              "exit_date": "2024-10-19 15:00:00",
+              "entry_price": 2771.635125,
+              "exit_price": 2642.91788,
+              "side": "long",
+              "shares": 0.36861979733342076,
+              "pnl": -47.45,
+              "pnl_pct": -4.64,
+              "bars_held": 1315,
+              "mfe_pct": 0.7174,
+              "mae_pct": -22.3834,
+              "bars_to_mfe": 1,
+              "bars_to_mae": 289,
+              "entry_atr": 10.464286,
+              "entry_fee": 1.022702,
+              "exit_fee": 0.974232,
+              "exit_reason": "end_of_data"
+            }
+          ]
+        },
+        "train_period": "2024-03-14 to 2024-08-14",
+        "test_period": "2024-08-14 to 2024-10-19"
+      },
+      {
+        "fold": 4,
+        "best_params": {
+          "bb_period": 20,
+          "bb_std": 2.0,
+          "kc_period": 20,
+          "kc_mult": 1.5,
+          "mom_lookback": 12
+        },
+        "best_close_stack": "tiered_tp_atr[1x:0.5,2x:0.8,3x:1]",
+        "best_close_stack_spec": {
+          "close_strategies": [
+            {
+              "name": "tiered_tp_atr",
+              "params": {
+                "tp_tiers": [
+                  {
+                    "atr_multiple": 1.0,
+                    "close_fraction": 0.5
+                  },
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.8
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 1.0
+                  }
+                ]
+              }
+            }
+          ],
+          "stop_loss_atr_mult": null,
+          "trailing_stop_atr_mult": null
+        },
+        "train_metric": 0.28708133971291866,
+        "test_result": {
+          "total_return_pct": 4.0,
+          "annual_return_pct": 24.67,
+          "sharpe_ratio": 0.662,
+          "sortino_ratio": 0.683,
+          "max_drawdown_pct": -22.23,
+          "calmar_ratio": 1.11,
+          "volatility_pct": 60.47,
+          "win_rate": 90.0,
+          "profit_factor": 1.597,
+          "total_trades": 10,
+          "avg_win_pct": 3.3,
+          "avg_loss_pct": -6.73,
+          "strategy_name": "squeeze_momentum",
+          "symbol": "ETH/USDT",
+          "timeframe": "1h",
+          "start_date": "2025-03-22 00:00:00",
+          "end_date": "2025-05-26 18:00:00",
+          "initial_capital": 1000.0,
+          "final_capital": 1038.46,
+          "params": {
+            "bb_period": 20,
+            "bb_std": 2.0,
+            "kc_period": 20,
+            "kc_mult": 1.5,
+            "mom_lookback": 12
+          },
+          "open_strategy": {
+            "name": "squeeze_momentum",
+            "params": {
+              "bb_period": 20,
+              "bb_std": 2.0,
+              "kc_period": 20,
+              "kc_mult": 1.5,
+              "mom_lookback": 12
+            }
+          },
+          "close_strategies": [
+            {
+              "name": "tiered_tp_atr",
+              "params": {
+                "tp_tiers": [
+                  {
+                    "atr_multiple": 1.0,
+                    "close_fraction": 0.5
+                  },
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.8
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 1.0
+                  }
+                ]
+              }
+            }
+          ],
+          "trades": [
+            {
+              "entry_date": "2025-03-31 15:00:00",
+              "exit_date": "2025-04-01 09:00:00",
+              "entry_price": 1844.4117449999999,
+              "exit_price": 1884.987035,
+              "side": "long",
+              "shares": 0.4333088867854722,
+              "pnl": 16.76,
+              "pnl_pct": 2.2,
+              "bars_held": 18,
+              "mfe_pct": 2.4717,
+              "mae_pct": -1.5171,
+              "bars_to_mfe": 18,
+              "bars_to_mae": 8,
+              "entry_atr": 19.075,
+              "entry_fee": 0.8,
+              "exit_fee": 0.816782,
+              "exit_reason": "tiered_tp_atr:2"
+            },
+            {
+              "entry_date": "2025-03-31 15:00:00",
+              "exit_date": "2025-04-01 16:00:00",
+              "entry_price": 1844.4117449999999,
+              "exit_price": 1922.4882750000002,
+              "side": "long",
+              "shares": 0.10832722169636799,
+              "pnl": 8.25,
+              "pnl_pct": 4.23,
+              "bars_held": 25,
+              "mfe_pct": 4.3693,
+              "mae_pct": -1.5171,
+              "bars_to_mfe": 25,
+              "bars_to_mae": 8,
+              "entry_atr": 19.075,
+              "entry_fee": 0.2,
+              "exit_fee": 0.208258,
+              "exit_reason": "tiered_tp_atr:3"
+            },
+            {
+              "entry_date": "2025-04-04 21:00:00",
+              "exit_date": "2025-04-27 01:00:00",
+              "entry_price": 1815.9074999999998,
+              "exit_price": 1842.848115,
+              "side": "long",
+              "shares": 0.2816746980394947,
+              "pnl": 7.07,
+              "pnl_pct": 1.48,
+              "bars_held": 532,
+              "mfe_pct": 1.7745,
+              "mae_pct": -23.6453,
+              "bars_to_mfe": 532,
+              "bars_to_mae": 101,
+              "entry_atr": 23.370714,
+              "entry_fee": 0.512007,
+              "exit_fee": 0.519084,
+              "exit_reason": "tiered_tp_atr:1"
+            },
+            {
+              "entry_date": "2025-04-04 21:00:00",
+              "exit_date": "2025-05-08 04:00:00",
+              "entry_price": 1815.9074999999998,
+              "exit_price": 1903.2578950000002,
+              "side": "long",
+              "shares": 0.2816746980394947,
+              "pnl": 24.07,
+              "pnl_pct": 4.81,
+              "bars_held": 799,
+              "mfe_pct": 4.9079,
+              "mae_pct": -23.6453,
+              "bars_to_mfe": 799,
+              "bars_to_mae": 101,
+              "entry_atr": 23.370714,
+              "entry_fee": 0.512007,
+              "exit_fee": 0.5361,
+              "exit_reason": "tiered_tp_atr:3"
+            },
+            {
+              "entry_date": "2025-05-12 09:00:00",
+              "exit_date": "2025-05-13 19:00:00",
+              "entry_price": 2577.9983549999997,
+              "exit_price": 2666.6759950000005,
+              "side": "long",
+              "shares": 0.32678809612834975,
+              "pnl": 28.11,
+              "pnl_pct": 3.44,
+              "bars_held": 34,
+              "mfe_pct": 3.5435,
+              "mae_pct": -6.5174,
+              "bars_to_mfe": 34,
+              "bars_to_mae": 10,
+              "entry_atr": 33.059286,
+              "entry_fee": 0.843302,
+              "exit_fee": 0.871438,
+              "exit_reason": "tiered_tp_atr:2"
+            },
+            {
+              "entry_date": "2025-05-12 09:00:00",
+              "exit_date": "2025-05-13 20:00:00",
+              "entry_price": 2577.9983549999997,
+              "exit_price": 2692.35315,
+              "side": "long",
+              "shares": 0.0816970240320874,
+              "pnl": 9.12,
+              "pnl_pct": 4.44,
+              "bars_held": 35,
+              "mfe_pct": 6.1669,
+              "mae_pct": -6.5174,
+              "bars_to_mfe": 35,
+              "bars_to_mae": 10,
+              "entry_atr": 33.059286,
+              "entry_fee": 0.210826,
+              "exit_fee": 0.219957,
+              "exit_reason": "tiered_tp_atr:3"
+            },
+            {
+              "entry_date": "2025-05-16 04:00:00",
+              "exit_date": "2025-05-16 10:00:00",
+              "entry_price": 2581.1199149999998,
+              "exit_price": 2614.0723100000005,
+              "side": "long",
+              "shares": 0.21099630165149832,
+              "pnl": 6.4,
+              "pnl_pct": 1.28,
+              "bars_held": 6,
+              "mfe_pct": 1.4424,
+              "mae_pct": -0.8182,
+              "bars_to_mfe": 4,
+              "bars_to_mae": 5,
+              "entry_atr": 30.645714,
+              "entry_fee": 0.545152,
+              "exit_fee": 0.55156,
+              "exit_reason": "tiered_tp_atr:1"
+            },
+            {
+              "entry_date": "2025-05-16 04:00:00",
+              "exit_date": "2025-05-22 09:00:00",
+              "entry_price": 2581.1199149999998,
+              "exit_price": 2664.6670000000004,
+              "side": "long",
+              "shares": 0.126597780990899,
+              "pnl": 10.24,
+              "pnl_pct": 3.24,
+              "bars_held": 149,
+              "mfe_pct": 3.7708,
+              "mae_pct": -9.8221,
+              "bars_to_mfe": 149,
+              "bars_to_mae": 65,
+              "entry_atr": 30.645714,
+              "entry_fee": 0.327091,
+              "exit_fee": 0.337341,
+              "exit_reason": "tiered_tp_atr:2"
+            },
+            {
+              "entry_date": "2025-05-16 04:00:00",
+              "exit_date": "2025-05-23 03:00:00",
+              "entry_price": 2581.1199149999998,
+              "exit_price": 2699.36964,
+              "side": "long",
+              "shares": 0.08439852066059933,
+              "pnl": 9.75,
+              "pnl_pct": 4.58,
+              "bars_held": 167,
+              "mfe_pct": 5.8347,
+              "mae_pct": -9.8221,
+              "bars_to_mfe": 167,
+              "bars_to_mae": 65,
+              "entry_atr": 30.645714,
+              "entry_fee": 0.218061,
+              "exit_fee": 0.227823,
+              "exit_reason": "tiered_tp_atr:3"
+            },
+            {
+              "entry_date": "2025-05-23 04:00:00",
+              "exit_date": "2025-05-26 18:00:00",
+              "entry_price": 2721.7501949999996,
+              "exit_price": 2538.620055,
+              "side": "long",
+              "shares": 0.4094758568936854,
+              "pnl": -74.99,
+              "pnl_pct": -6.73,
+              "bars_held": 87,
+              "mfe_pct": 0.1091,
+              "mae_pct": -9.3837,
+              "bars_to_mfe": 1,
+              "bars_to_mae": 53,
+              "entry_atr": 29.98,
+              "entry_fee": 1.115607,
+              "exit_fee": 1.039504,
+              "exit_reason": "end_of_data"
+            }
+          ]
+        },
+        "train_period": "2024-10-19 to 2025-03-22",
+        "test_period": "2025-03-22 to 2025-05-26"
+      },
+      {
+        "fold": 5,
+        "best_params": {
+          "bb_period": 20,
+          "bb_std": 2.0,
+          "kc_period": 20,
+          "kc_mult": 1.5,
+          "mom_lookback": 12
+        },
+        "best_close_stack": "baseline",
+        "best_close_stack_spec": {
+          "close_strategies": [],
+          "stop_loss_atr_mult": null,
+          "trailing_stop_atr_mult": null
+        },
+        "train_metric": 6.43690409422322,
+        "test_result": {
+          "total_return_pct": -25.03,
+          "annual_return_pct": -80.19,
+          "sharpe_ratio": -2.907,
+          "sortino_ratio": -2.559,
+          "max_drawdown_pct": -30.64,
+          "calmar_ratio": -2.617,
+          "volatility_pct": 50.56,
+          "win_rate": 30.77,
+          "profit_factor": 0.218,
+          "total_trades": 13,
+          "avg_win_pct": 1.87,
+          "avg_loss_pct": -3.6,
+          "strategy_name": "squeeze_momentum",
+          "symbol": "ETH/USDT",
+          "timeframe": "1h",
+          "start_date": "2025-10-27 05:00:00",
+          "end_date": "2026-01-01 00:00:00",
+          "initial_capital": 1000.0,
+          "final_capital": 748.55,
+          "params": {
+            "bb_period": 20,
+            "bb_std": 2.0,
+            "kc_period": 20,
+            "kc_mult": 1.5,
+            "mom_lookback": 12
+          },
+          "open_strategy": {
+            "name": "squeeze_momentum",
+            "params": {
+              "bb_period": 20,
+              "bb_std": 2.0,
+              "kc_period": 20,
+              "kc_mult": 1.5,
+              "mom_lookback": 12
+            }
+          },
+          "close_strategies": [],
+          "trades": [
+            {
+              "entry_date": "2025-11-01 11:00:00",
+              "exit_date": "2025-11-02 14:00:00",
+              "entry_price": 3882.6903749999997,
+              "exit_price": 3866.94556,
+              "side": "long",
+              "shares": 0.2572958190105489,
+              "pnl": -4.05,
+              "pnl_pct": -0.41,
+              "bars_held": 27,
+              "mfe_pct": 0.8388,
+              "mae_pct": -0.7103,
+              "bars_to_mfe": 21,
+              "bars_to_mae": 24,
+              "entry_atr": 13.715714,
+              "entry_fee": 1.0,
+              "exit_fee": 0.994949,
+              "exit_reason": "signal"
+            },
+            {
+              "entry_date": "2025-11-09 09:00:00",
+              "exit_date": "2025-11-11 16:00:00",
+              "entry_price": 3425.842065,
+              "exit_price": 3472.3729450000005,
+              "side": "long",
+              "shares": 0.28984407430015946,
+              "pnl": 13.49,
+              "pnl_pct": 1.36,
+              "bars_held": 55,
+              "mfe_pct": 6.737,
+              "mae_pct": -1.2103,
+              "bars_to_mfe": 17,
+              "bars_to_mae": 2,
+              "entry_atr": 21.052857,
+              "entry_fee": 0.993954,
+              "exit_fee": 1.006447,
+              "exit_reason": "signal"
+            },
+            {
+              "entry_date": "2025-11-15 15:00:00",
+              "exit_date": "2025-11-24 13:00:00",
+              "entry_price": 3187.47294,
+              "exit_price": 2803.7674150000003,
+              "side": "long",
+              "shares": 0.31511948611912877,
+              "pnl": -120.91,
+              "pnl_pct": -12.04,
+              "bars_held": 214,
+              "mfe_pct": 1.9221,
+              "mae_pct": -17.6379,
+              "bars_to_mfe": 20,
+              "bars_to_mae": 142,
+              "entry_atr": 22.958571,
+              "entry_fee": 1.00544,
+              "exit_fee": 0.883522,
+              "exit_reason": "signal"
+            },
+            {
+              "entry_date": "2025-11-24 18:00:00",
+              "exit_date": "2025-11-26 10:00:00",
+              "entry_price": 2926.8927149999995,
+              "exit_price": 2913.572485,
+              "side": "long",
+              "shares": 0.3012599616382183,
+              "pnl": -4.01,
+              "pnl_pct": -0.46,
+              "bars_held": 40,
+              "mfe_pct": 1.9378,
+              "mae_pct": -2.3753,
+              "bars_to_mfe": 3,
+              "bars_to_mae": 22,
+              "entry_atr": 34.081429,
+              "entry_fee": 0.882638,
+              "exit_fee": 0.877743,
+              "exit_reason": "signal"
+            },
+            {
+              "entry_date": "2025-11-28 09:00:00",
+              "exit_date": "2025-11-29 08:00:00",
+              "entry_price": 3064.9917299999997,
+              "exit_price": 3002.0882050000005,
+              "side": "long",
+              "shares": 0.28580440161053255,
+              "pnl": -17.98,
+              "pnl_pct": -2.05,
+              "bars_held": 23,
+              "mfe_pct": 1.0482,
+              "mae_pct": -2.2829,
+              "bars_to_mfe": 6,
+              "bars_to_mae": 22,
+              "entry_atr": 21.36,
+              "entry_fee": 0.876865,
+              "exit_fee": 0.85801,
+              "exit_reason": "signal"
+            },
+            {
+              "entry_date": "2025-11-30 11:00:00",
+              "exit_date": "2025-12-05 15:00:00",
+              "entry_price": 3013.34592,
+              "exit_price": 3116.391025,
+              "side": "long",
+              "shares": 0.28416746158903045,
+              "pnl": 29.28,
+              "pnl_pct": 3.42,
+              "bars_held": 124,
+              "mfe_pct": 7.4503,
+              "mae_pct": -9.7004,
+              "bars_to_mfe": 87,
+              "bars_to_mae": 29,
+              "entry_atr": 13.470714,
+              "entry_fee": 0.857152,
+              "exit_fee": 0.885577,
+              "exit_reason": "signal"
+            },
+            {
+              "entry_date": "2025-12-07 04:00:00",
+              "exit_date": "2025-12-07 15:00:00",
+              "entry_price": 3056.54751,
+              "exit_price": 2942.46803,
+              "side": "long",
+              "shares": 0.28915194536473193,
+              "pnl": -32.99,
+              "pnl_pct": -3.73,
+              "bars_held": 11,
+              "mfe_pct": 0.0122,
+              "mae_pct": -4.3162,
+              "bars_to_mfe": 1,
+              "bars_to_mae": 11,
+              "entry_atr": 14.857143,
+              "entry_fee": 0.884691,
+              "exit_fee": 0.85082,
+              "exit_reason": "signal"
+            },
+            {
+              "entry_date": "2025-12-09 16:00:00",
+              "exit_date": "2025-12-11 01:00:00",
+              "entry_price": 3240.8596199999997,
+              "exit_price": 3272.712825,
+              "side": "long",
+              "shares": 0.2620044262078496,
+              "pnl": 8.35,
+              "pnl_pct": 0.98,
+              "bars_held": 33,
+              "mfe_pct": 6.3141,
+              "mae_pct": -0.05,
+              "bars_to_mfe": 29,
+              "bars_to_mae": 1,
+              "entry_atr": 37.231429,
+              "entry_fee": 0.84997,
+              "exit_fee": 0.857465,
+              "exit_reason": "signal"
+            },
+            {
+              "entry_date": "2025-12-15 07:00:00",
+              "exit_date": "2025-12-17 17:00:00",
+              "entry_price": 3139.138785,
+              "exit_price": 2865.4065800000003,
+              "side": "long",
+              "shares": 0.2726069891907398,
+              "pnl": -74.62,
+              "pnl_pct": -8.72,
+              "bars_held": 58,
+              "mfe_pct": 1.187,
+              "mae_pct": -9.4099,
+              "bars_to_mfe": 4,
+              "bars_to_mae": 58,
+              "entry_atr": 26.632143,
+              "entry_fee": 0.856608,
+              "exit_fee": 0.78113,
+              "exit_reason": "signal"
+            },
+            {
+              "entry_date": "2025-12-20 11:00:00",
+              "exit_date": "2025-12-21 03:00:00",
+              "entry_price": 2983.4809949999994,
+              "exit_price": 2965.5664750000005,
+              "side": "long",
+              "shares": 0.2612949046085119,
+              "pnl": -4.68,
+              "pnl_pct": -0.6,
+              "bars_held": 16,
+              "mfe_pct": 0.3365,
+              "mae_pct": -0.6865,
+              "bars_to_mfe": 2,
+              "bars_to_mae": 16,
+              "entry_atr": 10.02,
+              "entry_fee": 0.780349,
+              "exit_fee": 0.774887,
+              "exit_reason": "signal"
+            },
+            {
+              "entry_date": "2025-12-21 10:00:00",
+              "exit_date": "2025-12-24 10:00:00",
+              "entry_price": 3010.78464,
+              "exit_price": 2918.5899750000003,
+              "side": "long",
+              "shares": 0.25685610288763283,
+              "pnl": -23.68,
+              "pnl_pct": -3.06,
+              "bars_held": 72,
+              "mfe_pct": 2.1262,
+              "mae_pct": -3.6431,
+              "bars_to_mfe": 27,
+              "bars_to_mae": 53,
+              "entry_atr": 10.097143,
+              "entry_fee": 0.774113,
+              "exit_fee": 0.749658,
+              "exit_reason": "signal"
+            },
+            {
+              "entry_date": "2025-12-24 23:00:00",
+              "exit_date": "2025-12-25 11:00:00",
+              "entry_price": 2960.3094149999997,
+              "exit_price": 2920.41906,
+              "side": "long",
+              "shares": 0.2527300279755553,
+              "pnl": -10.08,
+              "pnl_pct": -1.35,
+              "bars_held": 12,
+              "mfe_pct": 0.0,
+              "mae_pct": -1.5725,
+              "bars_to_mfe": 0,
+              "bars_to_mae": 12,
+              "entry_atr": 17.383571,
+              "entry_fee": 0.748908,
+              "exit_fee": 0.738078,
+              "exit_reason": "signal"
+            },
+            {
+              "entry_date": "2025-12-27 11:00:00",
+              "exit_date": "2026-01-01 00:00:00",
+              "entry_price": 2929.594065,
+              "exit_price": 2980.0992050000004,
+              "side": "long",
+              "shares": 0.2514348941481309,
+              "pnl": 12.7,
+              "pnl_pct": 1.72,
+              "bars_held": 110,
+              "mfe_pct": 4.2895,
+              "mae_pct": -0.464,
+              "bars_to_mfe": 42,
+              "bars_to_mae": 50,
+              "entry_atr": 6.596429,
+              "entry_fee": 0.73734,
+              "exit_fee": 0.749301,
+              "exit_reason": "end_of_data"
+            }
+          ]
+        },
+        "train_period": "2025-05-26 to 2025-10-27",
+        "test_period": "2025-10-27 to 2026-01-01"
+      }
+    ],
+    "picks": [
+      "tiered_tp_atr[2x:0.33,4x:0.66,6x:1]",
+      "tiered_tp_atr[1.5x:0.4,3x:0.8,5x:1]",
+      "tiered_tp_atr[1.5x:0.4,3x:0.8,5x:1]",
+      "tiered_tp_atr[1x:0.5,2x:0.8,3x:1]",
+      "baseline"
+    ]
+  },
+  "SOL/USDT 1h": {
+    "folds": [
+      {
+        "fold": 1,
+        "best_params": {
+          "bb_period": 20,
+          "bb_std": 2.0,
+          "kc_period": 20,
+          "kc_mult": 1.5,
+          "mom_lookback": 12
+        },
+        "best_close_stack": "tiered_tp_atr[2x:0.33,4x:0.66,6x:1] sl_atr=1.5",
+        "best_close_stack_spec": {
+          "close_strategies": [
+            {
+              "name": "tiered_tp_atr",
+              "params": {
+                "tp_tiers": [
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.33
+                  },
+                  {
+                    "atr_multiple": 4.0,
+                    "close_fraction": 0.66
+                  },
+                  {
+                    "atr_multiple": 6.0,
+                    "close_fraction": 1.0
+                  }
+                ]
+              }
+            }
+          ],
+          "stop_loss_atr_mult": 1.5,
+          "trailing_stop_atr_mult": null
+        },
+        "train_metric": 5.166853303471445,
+        "test_result": {
+          "total_return_pct": -6.47,
+          "annual_return_pct": -31.31,
+          "sharpe_ratio": -1.69,
+          "sortino_ratio": -0.705,
+          "max_drawdown_pct": -14.68,
+          "calmar_ratio": -2.133,
+          "volatility_pct": 20.69,
+          "win_rate": 44.44,
+          "profit_factor": 0.576,
+          "total_trades": 9,
+          "avg_win_pct": 6.01,
+          "avg_loss_pct": -2.87,
+          "strategy_name": "squeeze_momentum",
+          "symbol": "SOL/USDT",
+          "timeframe": "1h",
+          "start_date": "2023-06-03 15:00:00",
+          "end_date": "2023-08-08 09:00:00",
+          "initial_capital": 1000.0,
+          "final_capital": 935.35,
+          "params": {
+            "bb_period": 20,
+            "bb_std": 2.0,
+            "kc_period": 20,
+            "kc_mult": 1.5,
+            "mom_lookback": 12
+          },
+          "open_strategy": {
+            "name": "squeeze_momentum",
+            "params": {
+              "bb_period": 20,
+              "bb_std": 2.0,
+              "kc_period": 20,
+              "kc_mult": 1.5,
+              "mom_lookback": 12
+            }
+          },
+          "close_strategies": [
+            {
+              "name": "tiered_tp_atr",
+              "params": {
+                "tp_tiers": [
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.33
+                  },
+                  {
+                    "atr_multiple": 4.0,
+                    "close_fraction": 0.66
+                  },
+                  {
+                    "atr_multiple": 6.0,
+                    "close_fraction": 1.0
+                  }
+                ]
+              }
+            }
+          ],
+          "trades": [
+            {
+              "entry_date": "2023-06-15 23:00:00",
+              "exit_date": "2023-06-16 21:00:00",
+              "entry_price": 14.88744,
+              "exit_price": 15.342325,
+              "side": "long",
+              "shares": 22.144169850558594,
+              "pnl": 9.73,
+              "pnl_pct": 3.06,
+              "bars_held": 22,
+              "mfe_pct": 3.9131,
+              "mae_pct": -3.3413,
+              "bars_to_mfe": 20,
+              "bars_to_mae": 16,
+              "entry_atr": 0.255714,
+              "entry_fee": 0.33,
+              "exit_fee": 0.339743,
+              "exit_reason": "tiered_tp_atr:2"
+            },
+            {
+              "entry_date": "2023-06-15 23:00:00",
+              "exit_date": "2023-06-17 06:00:00",
+              "entry_price": 14.88744,
+              "exit_price": 16.09195,
+              "side": "long",
+              "shares": 22.14416985055859,
+              "pnl": 26.32,
+              "pnl_pct": 8.09,
+              "bars_held": 31,
+              "mfe_pct": 8.1449,
+              "mae_pct": -3.3413,
+              "bars_to_mfe": 31,
+              "bars_to_mae": 16,
+              "entry_atr": 0.255714,
+              "entry_fee": 0.33,
+              "exit_fee": 0.356343,
+              "exit_reason": "tiered_tp_atr:4"
+            },
+            {
+              "entry_date": "2023-06-15 23:00:00",
+              "exit_date": "2023-06-20 21:00:00",
+              "entry_price": 14.88744,
+              "exit_price": 16.421785,
+              "side": "long",
+              "shares": 22.81520530057552,
+              "pnl": 34.63,
+              "pnl_pct": 10.31,
+              "bars_held": 118,
+              "mfe_pct": 10.966,
+              "mae_pct": -3.3413,
+              "bars_to_mfe": 118,
+              "bars_to_mae": 16,
+              "entry_atr": 0.255714,
+              "entry_fee": 0.34,
+              "exit_fee": 0.374666,
+              "exit_reason": "tiered_tp_atr:6"
+            },
+            {
+              "entry_date": "2023-07-04 04:00:00",
+              "exit_date": "2023-07-04 16:00:00",
+              "entry_price": 19.30965,
+              "exit_price": 19.810090000000002,
+              "side": "long",
+              "shares": 18.262470977748123,
+              "pnl": 8.78,
+              "pnl_pct": 2.59,
+              "bars_held": 12,
+              "mfe_pct": 2.7983,
+              "mae_pct": -1.1375,
+              "bars_to_mfe": 12,
+              "bars_to_mae": 5,
+              "entry_atr": 0.185714,
+              "entry_fee": 0.352995,
+              "exit_fee": 0.361781,
+              "exit_reason": "tiered_tp_atr:2"
+            },
+            {
+              "entry_date": "2023-07-04 04:00:00",
+              "exit_date": "2023-07-05 11:00:00",
+              "entry_price": 19.30965,
+              "exit_price": 18.590700000000002,
+              "side": "long",
+              "shares": 37.07835016694316,
+              "pnl": -27.35,
+              "pnl_pct": -3.72,
+              "bars_held": 31,
+              "mfe_pct": 2.7983,
+              "mae_pct": -3.6233,
+              "bars_to_mfe": 12,
+              "bars_to_mae": 31,
+              "entry_atr": 0.185714,
+              "entry_fee": 0.716687,
+              "exit_fee": 0.689312,
+              "exit_reason": "sl"
+            },
+            {
+              "entry_date": "2023-07-12 14:00:00",
+              "exit_date": "2023-07-12 20:00:00",
+              "entry_price": 22.43121,
+              "exit_price": 21.839075,
+              "side": "long",
+              "shares": 46.76486653540164,
+              "pnl": -28.71,
+              "pnl_pct": -2.64,
+              "bars_held": 6,
+              "mfe_pct": 1.2874,
+              "mae_pct": -2.9031,
+              "bars_to_mfe": 2,
+              "bars_to_mae": 6,
+              "entry_atr": 0.165,
+              "entry_fee": 1.050043,
+              "exit_fee": 1.021301,
+              "exit_reason": "sl"
+            },
+            {
+              "entry_date": "2023-07-16 13:00:00",
+              "exit_date": "2023-07-17 10:00:00",
+              "entry_price": 28.014,
+              "exit_price": 27.286350000000002,
+              "side": "long",
+              "shares": 36.38394538722749,
+              "pnl": -27.47,
+              "pnl_pct": -2.6,
+              "bars_held": 21,
+              "mfe_pct": 2.2346,
+              "mae_pct": -3.1913,
+              "bars_to_mfe": 2,
+              "bars_to_mae": 11,
+              "entry_atr": 0.420714,
+              "entry_fee": 1.02028,
+              "exit_fee": 0.992785,
+              "exit_reason": "sl"
+            },
+            {
+              "entry_date": "2023-07-20 09:00:00",
+              "exit_date": "2023-07-20 15:00:00",
+              "entry_price": 27.073529999999998,
+              "exit_price": 26.116935,
+              "side": "long",
+              "shares": 36.59664960075061,
+              "pnl": -35.96,
+              "pnl_pct": -3.53,
+              "bars_held": 6,
+              "mfe_pct": 1.0212,
+              "mae_pct": -3.9652,
+              "bars_to_mfe": 2,
+              "bars_to_mae": 6,
+              "entry_atr": 0.292143,
+              "entry_fee": 0.991792,
+              "exit_fee": 0.955792,
+              "exit_reason": "sl"
+            },
+            {
+              "entry_date": "2023-08-07 03:00:00",
+              "exit_date": "2023-08-07 07:00:00",
+              "entry_price": 23.481734999999997,
+              "exit_price": 23.04847,
+              "side": "long",
+              "shares": 40.62228323397813,
+              "pnl": -18.54,
+              "pnl_pct": -1.85,
+              "bars_held": 4,
+              "mfe_pct": 0.0,
+              "mae_pct": -1.9238,
+              "bars_to_mfe": 0,
+              "bars_to_mae": 4,
+              "entry_atr": 0.185714,
+              "entry_fee": 0.954837,
+              "exit_fee": 0.936281,
+              "exit_reason": "sl"
+            }
+          ]
+        },
+        "train_period": "2023-01-01 to 2023-06-03",
+        "test_period": "2023-06-03 to 2023-08-08"
+      },
+      {
+        "fold": 2,
+        "best_params": {
+          "bb_period": 20,
+          "bb_std": 2.0,
+          "kc_period": 20,
+          "kc_mult": 1.5,
+          "mom_lookback": 12
+        },
+        "best_close_stack": "sl_atr=1.5",
+        "best_close_stack_spec": {
+          "close_strategies": [],
+          "stop_loss_atr_mult": 1.5,
+          "trailing_stop_atr_mult": null
+        },
+        "train_metric": 9.172598732325694,
+        "test_result": {
+          "total_return_pct": 3.88,
+          "annual_return_pct": 23.83,
+          "sharpe_ratio": 0.722,
+          "sortino_ratio": 0.381,
+          "max_drawdown_pct": -18.83,
+          "calmar_ratio": 1.266,
+          "volatility_pct": 40.73,
+          "win_rate": 22.22,
+          "profit_factor": 1.343,
+          "total_trades": 9,
+          "avg_win_pct": 11.52,
+          "avg_loss_pct": -2.3,
+          "strategy_name": "squeeze_momentum",
+          "symbol": "SOL/USDT",
+          "timeframe": "1h",
+          "start_date": "2024-01-08 18:00:00",
+          "end_date": "2024-03-14 12:00:00",
+          "initial_capital": 1000.0,
+          "final_capital": 1037.22,
+          "params": {
+            "bb_period": 20,
+            "bb_std": 2.0,
+            "kc_period": 20,
+            "kc_mult": 1.5,
+            "mom_lookback": 12
+          },
+          "open_strategy": {
+            "name": "squeeze_momentum",
+            "params": {
+              "bb_period": 20,
+              "bb_std": 2.0,
+              "kc_period": 20,
+              "kc_mult": 1.5,
+              "mom_lookback": 12
+            }
+          },
+          "close_strategies": [],
+          "trades": [
+            {
+              "entry_date": "2024-01-14 17:00:00",
+              "exit_date": "2024-01-14 19:00:00",
+              "entry_price": 101.61077999999999,
+              "exit_price": 98.96049500000001,
+              "side": "long",
+              "shares": 9.831634005761988,
+              "pnl": -26.06,
+              "pnl_pct": -2.61,
+              "bars_held": 2,
+              "mfe_pct": 0.2059,
+              "mae_pct": -3.465,
+              "bars_to_mfe": 1,
+              "bars_to_mae": 2,
+              "entry_atr": 1.440714,
+              "entry_fee": 1.0,
+              "exit_fee": 0.972943,
+              "exit_reason": "signal_sl"
+            },
+            {
+              "entry_date": "2024-01-15 20:00:00",
+              "exit_date": "2024-01-15 22:00:00",
+              "entry_price": 96.38817,
+              "exit_price": 94.83256,
+              "side": "long",
+              "shares": 10.073834310545257,
+              "pnl": -15.67,
+              "pnl_pct": -1.61,
+              "bars_held": 2,
+              "mfe_pct": 0.116,
+              "mae_pct": -1.5647,
+              "bars_to_mfe": 1,
+              "bars_to_mae": 2,
+              "entry_atr": 0.961429,
+              "entry_fee": 0.97197,
+              "exit_fee": 0.955327,
+              "exit_reason": "signal_sl"
+            },
+            {
+              "entry_date": "2024-01-26 11:00:00",
+              "exit_date": "2024-02-03 10:00:00",
+              "entry_price": 90.00497999999999,
+              "exit_price": 99.13041000000001,
+              "side": "long",
+              "shares": 10.59294493503547,
+              "pnl": 96.67,
+              "pnl_pct": 10.14,
+              "bars_held": 191,
+              "mfe_pct": 18.1712,
+              "mae_pct": -0.0611,
+              "bars_to_mfe": 101,
+              "bars_to_mae": 1,
+              "entry_atr": 1.144286,
+              "entry_fee": 0.954372,
+              "exit_fee": 1.050083,
+              "exit_reason": "signal"
+            },
+            {
+              "entry_date": "2024-02-09 22:00:00",
+              "exit_date": "2024-02-10 00:00:00",
+              "entry_price": 109.004475,
+              "exit_price": 106.916515,
+              "side": "long",
+              "shares": 9.614136104517078,
+              "pnl": -20.07,
+              "pnl_pct": -1.92,
+              "bars_held": 2,
+              "mfe_pct": 0.0,
+              "mae_pct": -2.1967,
+              "bars_to_mfe": 0,
+              "bars_to_mae": 2,
+              "entry_atr": 1.460714,
+              "entry_fee": 1.049033,
+              "exit_fee": 1.02791,
+              "exit_reason": "signal_sl"
+            },
+            {
+              "entry_date": "2024-03-04 10:00:00",
+              "exit_date": "2024-03-04 11:00:00",
+              "entry_price": 134.16705,
+              "exit_price": 131.54419500000003,
+              "side": "long",
+              "shares": 7.646103384448772,
+              "pnl": -20.05,
+              "pnl_pct": -1.95,
+              "bars_held": 1,
+              "mfe_pct": 0.196,
+              "mae_pct": -2.6363,
+              "bars_to_mfe": 1,
+              "bars_to_mae": 1,
+              "entry_atr": 1.838571,
+              "entry_fee": 1.026882,
+              "exit_fee": 1.005801,
+              "exit_reason": "signal_sl"
+            },
+            {
+              "entry_date": "2024-03-05 15:00:00",
+              "exit_date": "2024-03-05 19:00:00",
+              "entry_price": 136.96845,
+              "exit_price": 131.484225,
+              "side": "long",
+              "shares": 7.328621440670577,
+              "pnl": -40.19,
+              "pnl_pct": -4.0,
+              "bars_held": 4,
+              "mfe_pct": 4.17,
+              "mae_pct": -5.8177,
+              "bars_to_mfe": 1,
+              "bars_to_mae": 3,
+              "entry_atr": 2.738571,
+              "entry_fee": 1.004795,
+              "exit_fee": 0.963598,
+              "exit_reason": "signal_sl"
+            },
+            {
+              "entry_date": "2024-03-10 06:00:00",
+              "exit_date": "2024-03-10 12:00:00",
+              "entry_price": 147.63378,
+              "exit_price": 145.36728,
+              "side": "long",
+              "shares": 6.513901343054245,
+              "pnl": -14.76,
+              "pnl_pct": -1.54,
+              "bars_held": 6,
+              "mfe_pct": 0.5461,
+              "mae_pct": -1.6959,
+              "bars_to_mfe": 3,
+              "bars_to_mae": 6,
+              "entry_atr": 1.222857,
+              "entry_fee": 0.962635,
+              "exit_fee": 0.946908,
+              "exit_reason": "signal_sl"
+            },
+            {
+              "entry_date": "2024-03-12 05:00:00",
+              "exit_date": "2024-03-12 09:00:00",
+              "entry_price": 153.786855,
+              "exit_price": 149.96498,
+              "side": "long",
+              "shares": 6.144967663818905,
+              "pnl": -23.49,
+              "pnl_pct": -2.49,
+              "bars_held": 4,
+              "mfe_pct": 0.2947,
+              "mae_pct": -3.1777,
+              "bars_to_mfe": 1,
+              "bars_to_mae": 4,
+              "entry_atr": 2.077143,
+              "entry_fee": 0.945961,
+              "exit_fee": 0.92153,
+              "exit_reason": "signal_sl"
+            },
+            {
+              "entry_date": "2024-03-13 09:00:00",
+              "exit_date": "2024-03-14 12:00:00",
+              "entry_price": 152.326125,
+              "exit_price": 171.96397500000003,
+              "side": "long",
+              "shares": 6.037623647483918,
+              "pnl": 118.57,
+              "pnl_pct": 12.89,
+              "bars_held": 28,
+              "mfe_pct": 14.3205,
+              "mae_pct": -1.5205,
+              "bars_to_mfe": 26,
+              "bars_to_mae": 5,
+              "entry_atr": 1.792143,
+              "entry_fee": 0.920608,
+              "exit_fee": 1.038254,
+              "exit_reason": "end_of_data"
+            }
+          ]
+        },
+        "train_period": "2023-08-08 to 2024-01-08",
+        "test_period": "2024-01-08 to 2024-03-14"
+      },
+      {
+        "fold": 3,
+        "best_params": {
+          "bb_period": 20,
+          "bb_std": 2.0,
+          "kc_period": 20,
+          "kc_mult": 1.5,
+          "mom_lookback": 12
+        },
+        "best_close_stack": "tiered_tp_atr[1x:0.5,2x:0.8,3x:1]",
+        "best_close_stack_spec": {
+          "close_strategies": [
+            {
+              "name": "tiered_tp_atr",
+              "params": {
+                "tp_tiers": [
+                  {
+                    "atr_multiple": 1.0,
+                    "close_fraction": 0.5
+                  },
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.8
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 1.0
+                  }
+                ]
+              }
+            }
+          ],
+          "stop_loss_atr_mult": null,
+          "trailing_stop_atr_mult": null
+        },
+        "train_metric": 0.5054945054945055,
+        "test_result": {
+          "total_return_pct": 2.69,
+          "annual_return_pct": 16.12,
+          "sharpe_ratio": 0.649,
+          "sortino_ratio": 0.842,
+          "max_drawdown_pct": -12.34,
+          "calmar_ratio": 1.306,
+          "volatility_pct": 29.39,
+          "win_rate": 87.5,
+          "profit_factor": 3.74,
+          "total_trades": 8,
+          "avg_win_pct": 2.01,
+          "avg_loss_pct": -2.1,
+          "strategy_name": "squeeze_momentum",
+          "symbol": "SOL/USDT",
+          "timeframe": "1h",
+          "start_date": "2024-08-14 21:00:00",
+          "end_date": "2024-10-19 15:00:00",
+          "initial_capital": 1000.0,
+          "final_capital": 1026.19,
+          "params": {
+            "bb_period": 20,
+            "bb_std": 2.0,
+            "kc_period": 20,
+            "kc_mult": 1.5,
+            "mom_lookback": 12
+          },
+          "open_strategy": {
+            "name": "squeeze_momentum",
+            "params": {
+              "bb_period": 20,
+              "bb_std": 2.0,
+              "kc_period": 20,
+              "kc_mult": 1.5,
+              "mom_lookback": 12
+            }
+          },
+          "close_strategies": [
+            {
+              "name": "tiered_tp_atr",
+              "params": {
+                "tp_tiers": [
+                  {
+                    "atr_multiple": 1.0,
+                    "close_fraction": 0.5
+                  },
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.8
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 1.0
+                  }
+                ]
+              }
+            }
+          ],
+          "trades": [
+            {
+              "entry_date": "2024-08-17 17:00:00",
+              "exit_date": "2024-08-18 01:00:00",
+              "entry_price": 141.31062,
+              "exit_price": 142.378775,
+              "side": "long",
+              "shares": 3.534766176809641,
+              "pnl": 3.27,
+              "pnl_pct": 0.76,
+              "bars_held": 8,
+              "mfe_pct": 1.1672,
+              "mae_pct": -0.793,
+              "bars_to_mfe": 8,
+              "bars_to_mae": 2,
+              "entry_atr": 0.947857,
+              "entry_fee": 0.5,
+              "exit_fee": 0.503276,
+              "exit_reason": "tiered_tp_atr:1"
+            },
+            {
+              "entry_date": "2024-08-17 17:00:00",
+              "exit_date": "2024-08-18 11:00:00",
+              "entry_price": 141.31062,
+              "exit_price": 144.30781,
+              "side": "long",
+              "shares": 2.120859706085785,
+              "pnl": 6.05,
+              "pnl_pct": 2.12,
+              "bars_held": 18,
+              "mfe_pct": 3.8988,
+              "mae_pct": -0.793,
+              "bars_to_mfe": 18,
+              "bars_to_mae": 2,
+              "entry_atr": 0.947857,
+              "entry_fee": 0.3,
+              "exit_fee": 0.306057,
+              "exit_reason": "tiered_tp_atr:2"
+            },
+            {
+              "entry_date": "2024-08-17 17:00:00",
+              "exit_date": "2024-08-18 12:00:00",
+              "entry_price": 141.31062,
+              "exit_price": 144.56768,
+              "side": "long",
+              "shares": 1.4139064707238562,
+              "pnl": 4.4,
+              "pnl_pct": 2.3,
+              "bars_held": 19,
+              "mfe_pct": 3.8988,
+              "mae_pct": -0.793,
+              "bars_to_mfe": 18,
+              "bars_to_mae": 2,
+              "entry_atr": 0.947857,
+              "entry_fee": 0.2,
+              "exit_fee": 0.204405,
+              "exit_reason": "tiered_tp_atr:3"
+            },
+            {
+              "entry_date": "2024-08-20 00:00:00",
+              "exit_date": "2024-08-20 01:00:00",
+              "entry_price": 144.39216,
+              "exit_price": 146.56668,
+              "side": "long",
+              "shares": 3.503344692202575,
+              "pnl": 7.1,
+              "pnl_pct": 1.51,
+              "bars_held": 1,
+              "mfe_pct": 1.7299,
+              "mae_pct": -0.5832,
+              "bars_to_mfe": 1,
+              "bars_to_mae": 1,
+              "entry_atr": 1.610714,
+              "entry_fee": 0.506362,
+              "exit_fee": 0.513474,
+              "exit_reason": "tiered_tp_atr:1"
+            },
+            {
+              "entry_date": "2024-08-20 00:00:00",
+              "exit_date": "2024-08-23 18:00:00",
+              "entry_price": 144.39216,
+              "exit_price": 147.975975,
+              "side": "long",
+              "shares": 2.102006815321545,
+              "pnl": 7.22,
+              "pnl_pct": 2.48,
+              "bars_held": 90,
+              "mfe_pct": 2.9003,
+              "mae_pct": -3.7621,
+              "bars_to_mfe": 6,
+              "bars_to_mae": 38,
+              "entry_atr": 1.610714,
+              "entry_fee": 0.303817,
+              "exit_fee": 0.311047,
+              "exit_reason": "tiered_tp_atr:2"
+            },
+            {
+              "entry_date": "2024-08-20 00:00:00",
+              "exit_date": "2024-08-23 20:00:00",
+              "entry_price": 144.39216,
+              "exit_price": 149.925,
+              "side": "long",
+              "shares": 1.4013378768810298,
+              "pnl": 7.54,
+              "pnl_pct": 3.83,
+              "bars_held": 92,
+              "mfe_pct": 3.9253,
+              "mae_pct": -3.7621,
+              "bars_to_mfe": 92,
+              "bars_to_mae": 38,
+              "entry_atr": 1.610714,
+              "entry_fee": 0.202545,
+              "exit_fee": 0.210096,
+              "exit_reason": "tiered_tp_atr:3"
+            },
+            {
+              "entry_date": "2024-08-25 18:00:00",
+              "exit_date": "2024-08-25 22:00:00",
+              "entry_price": 159.689805,
+              "exit_price": 161.39926,
+              "side": "long",
+              "shares": 3.2329787515662876,
+              "pnl": 5.0,
+              "pnl_pct": 1.07,
+              "bars_held": 4,
+              "mfe_pct": 1.1148,
+              "mae_pct": -0.6574,
+              "bars_to_mfe": 4,
+              "bars_to_mae": 3,
+              "entry_atr": 1.207143,
+              "entry_fee": 0.516791,
+              "exit_fee": 0.5218,
+              "exit_reason": "tiered_tp_atr:1"
+            },
+            {
+              "entry_date": "2024-08-25 18:00:00",
+              "exit_date": "2024-10-19 15:00:00",
+              "entry_price": 159.689805,
+              "exit_price": 156.331795,
+              "side": "long",
+              "shares": 3.2329787515662876,
+              "pnl": -10.86,
+              "pnl_pct": -2.1,
+              "bars_held": 1318,
+              "mfe_pct": 1.3778,
+              "mae_pct": -23.8336,
+              "bars_to_mfe": 5,
+              "bars_to_mae": 291,
+              "entry_atr": 1.207143,
+              "entry_fee": 1.033581,
+              "exit_fee": 0.505417,
+              "exit_reason": "end_of_data"
+            }
+          ]
+        },
+        "train_period": "2024-03-14 to 2024-08-14",
+        "test_period": "2024-08-14 to 2024-10-19"
+      },
+      {
+        "fold": 4,
+        "best_params": {
+          "bb_period": 20,
+          "bb_std": 2.0,
+          "kc_period": 20,
+          "kc_mult": 1.5,
+          "mom_lookback": 12
+        },
+        "best_close_stack": "tiered_tp_atr[1x:0.5,2x:0.8,3x:1]",
+        "best_close_stack_spec": {
+          "close_strategies": [
+            {
+              "name": "tiered_tp_atr",
+              "params": {
+                "tp_tiers": [
+                  {
+                    "atr_multiple": 1.0,
+                    "close_fraction": 0.5
+                  },
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.8
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 1.0
+                  }
+                ]
+              }
+            }
+          ],
+          "stop_loss_atr_mult": null,
+          "trailing_stop_atr_mult": null
+        },
+        "train_metric": -0.20694493160294633,
+        "test_result": {
+          "total_return_pct": 1.8,
+          "annual_return_pct": 10.54,
+          "sharpe_ratio": 0.445,
+          "sortino_ratio": 0.38,
+          "max_drawdown_pct": -13.11,
+          "calmar_ratio": 0.804,
+          "volatility_pct": 45.89,
+          "win_rate": 75.0,
+          "profit_factor": 2.47,
+          "total_trades": 4,
+          "avg_win_pct": 2.3,
+          "avg_loss_pct": -2.65,
+          "strategy_name": "squeeze_momentum",
+          "symbol": "SOL/USDT",
+          "timeframe": "1h",
+          "start_date": "2025-03-22 00:00:00",
+          "end_date": "2025-05-26 18:00:00",
+          "initial_capital": 1000.0,
+          "final_capital": 1017.24,
+          "params": {
+            "bb_period": 20,
+            "bb_std": 2.0,
+            "kc_period": 20,
+            "kc_mult": 1.5,
+            "mom_lookback": 12
+          },
+          "open_strategy": {
+            "name": "squeeze_momentum",
+            "params": {
+              "bb_period": 20,
+              "bb_std": 2.0,
+              "kc_period": 20,
+              "kc_mult": 1.5,
+              "mom_lookback": 12
+            }
+          },
+          "close_strategies": [
+            {
+              "name": "tiered_tp_atr",
+              "params": {
+                "tp_tiers": [
+                  {
+                    "atr_multiple": 1.0,
+                    "close_fraction": 0.5
+                  },
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.8
+                  },
+                  {
+                    "atr_multiple": 3.0,
+                    "close_fraction": 1.0
+                  }
+                ]
+              }
+            }
+          ],
+          "trades": [
+            {
+              "entry_date": "2025-04-01 09:00:00",
+              "exit_date": "2025-04-02 17:00:00",
+              "entry_price": 129.53473499999998,
+              "exit_price": 131.01446,
+              "side": "long",
+              "shares": 3.856108556519609,
+              "pnl": 5.2,
+              "pnl_pct": 1.14,
+              "bars_held": 32,
+              "mfe_pct": 1.6639,
+              "mae_pct": -4.6202,
+              "bars_to_mfe": 32,
+              "bars_to_mae": 21,
+              "entry_atr": 0.953571,
+              "entry_fee": 0.5,
+              "exit_fee": 0.505206,
+              "exit_reason": "tiered_tp_atr:1"
+            },
+            {
+              "entry_date": "2025-04-01 09:00:00",
+              "exit_date": "2025-04-12 21:00:00",
+              "entry_price": 129.53473499999998,
+              "exit_price": 132.5337,
+              "side": "long",
+              "shares": 3.856108556519609,
+              "pnl": 11.05,
+              "pnl_pct": 2.32,
+              "bars_held": 276,
+              "mfe_pct": 4.9217,
+              "mae_pct": -26.2823,
+              "bars_to_mfe": 36,
+              "bars_to_mae": 142,
+              "entry_atr": 0.953571,
+              "entry_fee": 0.5,
+              "exit_fee": 0.511064,
+              "exit_reason": "tiered_tp_atr:3"
+            },
+            {
+              "entry_date": "2025-05-11 01:00:00",
+              "exit_date": "2025-05-23 04:00:00",
+              "entry_price": 179.099505,
+              "exit_price": 185.26732,
+              "side": "long",
+              "shares": 2.831495236325896,
+              "pnl": 16.94,
+              "pnl_pct": 3.44,
+              "bars_held": 291,
+              "mfe_pct": 3.4955,
+              "mae_pct": -10.8596,
+              "bars_to_mfe": 291,
+              "bars_to_mae": 198,
+              "entry_atr": 4.635,
+              "entry_fee": 0.507627,
+              "exit_fee": 0.524584,
+              "exit_reason": "tiered_tp_atr:1"
+            },
+            {
+              "entry_date": "2025-05-11 01:00:00",
+              "exit_date": "2025-05-26 18:00:00",
+              "entry_price": 179.099505,
+              "exit_price": 174.35278,
+              "side": "long",
+              "shares": 2.831495236325896,
+              "pnl": -13.44,
+              "pnl_pct": -2.65,
+              "bars_held": 378,
+              "mfe_pct": 4.696,
+              "mae_pct": -10.8596,
+              "bars_to_mfe": 297,
+              "bars_to_mae": 198,
+              "entry_atr": 4.635,
+              "entry_fee": 1.015254,
+              "exit_fee": 0.493679,
+              "exit_reason": "end_of_data"
+            }
+          ]
+        },
+        "train_period": "2024-10-19 to 2025-03-22",
+        "test_period": "2025-03-22 to 2025-05-26"
+      },
+      {
+        "fold": 5,
+        "best_params": {
+          "bb_period": 20,
+          "bb_std": 2.0,
+          "kc_period": 20,
+          "kc_mult": 1.5,
+          "mom_lookback": 12
+        },
+        "best_close_stack": "tiered_tp_atr[2x:0.33,4x:0.66,6x:1]",
+        "best_close_stack_spec": {
+          "close_strategies": [
+            {
+              "name": "tiered_tp_atr",
+              "params": {
+                "tp_tiers": [
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.33
+                  },
+                  {
+                    "atr_multiple": 4.0,
+                    "close_fraction": 0.66
+                  },
+                  {
+                    "atr_multiple": 6.0,
+                    "close_fraction": 1.0
+                  }
+                ]
+              }
+            }
+          ],
+          "stop_loss_atr_mult": null,
+          "trailing_stop_atr_mult": null
+        },
+        "train_metric": 1.066447908121411,
+        "test_result": {
+          "total_return_pct": -37.7,
+          "annual_return_pct": -93.0,
+          "sharpe_ratio": -2.915,
+          "sortino_ratio": -3.676,
+          "max_drawdown_pct": -42.38,
+          "calmar_ratio": -2.194,
+          "volatility_pct": 79.25,
+          "win_rate": 0.0,
+          "profit_factor": 0.0,
+          "total_trades": 1,
+          "avg_win_pct": 0,
+          "avg_loss_pct": -37.66,
+          "strategy_name": "squeeze_momentum",
+          "symbol": "SOL/USDT",
+          "timeframe": "1h",
+          "start_date": "2025-10-27 05:00:00",
+          "end_date": "2026-01-01 00:00:00",
+          "initial_capital": 1000.0,
+          "final_capital": 622.11,
+          "params": {
+            "bb_period": 20,
+            "bb_std": 2.0,
+            "kc_period": 20,
+            "kc_mult": 1.5,
+            "mom_lookback": 12
+          },
+          "open_strategy": {
+            "name": "squeeze_momentum",
+            "params": {
+              "bb_period": 20,
+              "bb_std": 2.0,
+              "kc_period": 20,
+              "kc_mult": 1.5,
+              "mom_lookback": 12
+            }
+          },
+          "close_strategies": [
+            {
+              "name": "tiered_tp_atr",
+              "params": {
+                "tp_tiers": [
+                  {
+                    "atr_multiple": 2.0,
+                    "close_fraction": 0.33
+                  },
+                  {
+                    "atr_multiple": 4.0,
+                    "close_fraction": 0.66
+                  },
+                  {
+                    "atr_multiple": 6.0,
+                    "close_fraction": 1.0
+                  }
+                ]
+              }
+            }
+          ],
+          "trades": [
+            {
+              "entry_date": "2025-10-28 05:00:00",
+              "exit_date": "2026-01-01 00:00:00",
+              "entry_price": 201.18054,
+              "exit_price": 125.40726500000001,
+              "side": "long",
+              "shares": 4.965689027378095,
+              "pnl": -376.27,
+              "pnl_pct": -37.66,
+              "bars_held": 1556,
+              "mfe_pct": 1.3269,
+              "mae_pct": -41.8433,
+              "bars_to_mfe": 4,
+              "bars_to_mae": 1240,
+              "entry_atr": 1.740714,
+              "entry_fee": 1.0,
+              "exit_fee": 0.622733,
+              "exit_reason": "end_of_data"
+            }
+          ]
+        },
+        "train_period": "2025-05-26 to 2025-10-27",
+        "test_period": "2025-10-27 to 2026-01-01"
+      }
+    ],
+    "picks": [
+      "tiered_tp_atr[2x:0.33,4x:0.66,6x:1] sl_atr=1.5",
+      "sl_atr=1.5",
+      "tiered_tp_atr[1x:0.5,2x:0.8,3x:1]",
+      "tiered_tp_atr[1x:0.5,2x:0.8,3x:1]",
+      "tiered_tp_atr[2x:0.33,4x:0.66,6x:1]"
+    ]
+  }
+}

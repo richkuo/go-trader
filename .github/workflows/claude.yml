@@ -6,26 +6,35 @@ on:
   pull_request_review_comment:
     types: [created]
   issues:
-    types: [opened, assigned]
+    types: [opened]
   pull_request_review:
     types: [submitted]
 
+concurrency:
+  group: claude-${{ github.event.issue.number || github.event.pull_request.number }}
+  cancel-in-progress: false
+
 jobs:
-  claude:
+  classify:
     if: |
-      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
-      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
-      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
-      (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
+      (
+        (github.actor == 'claude[bot]' && github.event.issue.pull_request != null) ||
+        contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association || github.event.review.author_association || github.event.issue.author_association)
+      ) && (
+        (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
+        (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
+        (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
+        (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
+      )
     runs-on: ubuntu-latest
-    env:
-      CLAUDE_HARNESS: anthropics/claude-code-action@v1
-    permissions:
-      contents: write
-      pull-requests: write
-      issues: write
-      id-token: write
-      actions: read # Required for Claude to read CI results on PRs
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      invoked: ${{ steps.verify_invocation.outputs.invoked }}
+      mode: ${{ steps.classify_mode.outputs.mode }}
+      flow: ${{ steps.resolve_model.outputs.flow }}
+      model: ${{ steps.resolve_model.outputs.model }}
+      effort: ${{ steps.resolve_model.outputs.effort }}
     steps:
       - name: Verify @claude is an actual invocation (not in a code block or example)
         id: verify_invocation
@@ -34,8 +43,8 @@ jobs:
           COMMENT_BODY: ${{ github.event.comment.body }}
           REVIEW_BODY: ${{ github.event.review.body }}
           ISSUE_BODY: ${{ github.event.issue.body }}
+          TRIGGER_ACTOR: ${{ github.actor }}
         run: |
-          # Select body based on event type
           case "$EVENT_NAME" in
             issue_comment|pull_request_review_comment)
               BODY="$COMMENT_BODY"
@@ -48,255 +57,170 @@ jobs:
               ;;
           esac
 
-          # Strip fenced code blocks (``` ... ```) and inline code spans (` ... `)
-          # shellcheck disable=SC2016  # single quotes are intentional — Perl regex has no shell vars
           STRIPPED=$(printf '%s' "$BODY" | perl -0777 -pe 's/```.*?```//gs' | sed 's/`[^`]*`//g')
 
-          # @claude is a real invocation only when it appears at the start of a line
-          if printf '%s' "$STRIPPED" | grep -qE '(^|(\r?\n))[[:space:]]*@claude([[:space:]]|$)'; then
+          DELIM="STRIPPED_$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+          {
+            printf 'stripped<<%s\n' "$DELIM"
+            printf '%s\n' "$STRIPPED"
+            printf '%s\n' "$DELIM"
+          } >> "$GITHUB_OUTPUT"
+
+          if [ "$TRIGGER_ACTOR" = "claude[bot]" ]; then
+            NONBLANK=$(printf '%s' "$STRIPPED" | tr -d '\r' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e '/^$/d')
+            NONBLANK_LINES=$(printf '%s' "$NONBLANK" | awk 'END{print NR}')
+            if [ "$NONBLANK_LINES" -eq 1 ] && \
+               printf '%s' "$NONBLANK" | grep -qE '^@claude([[:space:]]+[a-z]+[0-9]*)?[[:space:]]+review([[:space:]]+effort:(low|medium|high|xhigh))?$'; then
+              echo "invoked=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "invoked=false" >> "$GITHUB_OUTPUT"
+              echo "::notice::claude[bot] comment is not an exact one-line @claude review trigger — skipping."
+            fi
+          elif printf '%s' "$STRIPPED" | grep -qE '(^|(\r?\n))[[:space:]]*@claude([[:space:]]|$)'; then
             echo "invoked=true" >> "$GITHUB_OUTPUT"
           else
             echo "invoked=false" >> "$GITHUB_OUTPUT"
             echo "::notice::@claude found but only inside code blocks or examples — skipping."
           fi
 
-      - name: Resolve model from @claude invocation
+      - name: Read model shorthand and effort from @claude invocation
         if: steps.verify_invocation.outputs.invoked == 'true'
         id: resolve_model
         env:
           EVENT_NAME: ${{ github.event_name }}
-          COMMENT_BODY: ${{ github.event.comment.body }}
-          REVIEW_BODY: ${{ github.event.review.body }}
-          ISSUE_BODY: ${{ github.event.issue.body }}
+          STRIPPED: ${{ steps.verify_invocation.outputs.stripped }}
+          DOCS_RELEASE_ENABLED: ${{ vars.DOCS_RELEASE_ENABLED }}
         run: |
-          # Select body based on event type
+          MODEL_SHORT=$(printf '%s' "$STRIPPED" | grep -ioE '(^|(\r?\n))[[:space:]]*@claude[[:space:]]+[a-z]+[0-9]*' | head -1 | awk '{print $NF}' | tr '[:upper:]' '[:lower:]' || true)
+
+          echo "model=$MODEL_SHORT" >> "$GITHUB_OUTPUT"
+
+          EFFORT_RAW=$(printf '%s' "$STRIPPED" | grep -oiE 'effort:(low|medium|xhigh|high)' | head -1 | tr '[:upper:]' '[:lower:]' | cut -d: -f2 || true)
+          echo "effort=$EFFORT_RAW" >> "$GITHUB_OUTPUT"
+
+          FLOW=""
+          if [ "$EVENT_NAME" = "issue_comment" ] && [ "$DOCS_RELEASE_ENABLED" = "true" ]; then
+            for cand in create-release sync-docs; do
+              if printf '%s' "$STRIPPED" | grep -qiE "(^|(\r?\n))[[:space:]]*@claude([[:space:]]+(opus|opus5|sonnet|sonnet5|fable|fable5))?[[:space:]]+${cand}([[:space:]]|\$)"; then
+                FLOW="$cand"
+                break
+              fi
+            done
+          fi
+          echo "flow=$FLOW" >> "$GITHUB_OUTPUT"
+          if [ -n "$FLOW" ]; then
+            echo "::notice::Docs/release flow: $FLOW"
+          fi
+
+      - name: Classify invocation route (review, implement, or fix-pr)
+        if: steps.verify_invocation.outputs.invoked == 'true'
+        id: classify_mode
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_URL: ${{ github.event.issue.pull_request.url }}
+          FLOW: ${{ steps.resolve_model.outputs.flow }}
+          STRIPPED: ${{ steps.verify_invocation.outputs.stripped }}
+          PR_AUTHOR_ASSOC: ${{ github.event.issue.author_association }}
+          PR_AUTHOR_LOGIN: ${{ github.event.issue.user.login }}
+        run: |
+          IS_ISSUE=false
           case "$EVENT_NAME" in
-            issue_comment|pull_request_review_comment)
-              BODY="$COMMENT_BODY"
-              ;;
-            pull_request_review)
-              BODY="$REVIEW_BODY"
-              ;;
-            issues)
-              BODY="$ISSUE_BODY"
-              ;;
+            issues) IS_ISSUE=true ;;
+            issue_comment) if [ -z "$PR_URL" ]; then IS_ISSUE=true; fi ;;
           esac
 
-          # Strip fenced code blocks (``` ... ```) and inline code spans (` ... `)
-          # shellcheck disable=SC2016  # single quotes are intentional — Perl regex has no shell vars
-          STRIPPED=$(printf '%s' "$BODY" | perl -0777 -pe 's/```.*?```//gs' | sed 's/`[^`]*`//g')
-
-          # Extract optional model shorthand after @claude on a line boundary
-          # e.g. "@claude sonnet fix this" → "sonnet"
-          MODEL_SHORT=$(printf '%s' "$STRIPPED" | grep -oE '(^|(\r?\n))[[:space:]]*@claude[[:space:]]+[a-z]+' | head -1 | awk '{print $NF}' || true)
-
-          case "$MODEL_SHORT" in
-            opus)    MODEL_ID="claude-opus-4-7[1m]" ;;
-            sonnet)  MODEL_ID="claude-sonnet-4-6[1m]" ;;
-            haiku)   MODEL_ID="claude-haiku-4-5" ;;
-            *)       MODEL_ID="claude-opus-4-7[1m]" ;;  # default (no model specified)
-          esac
-
-          echo "model_id=$MODEL_ID" >> "$GITHUB_OUTPUT"
-          echo "::notice::Using model: $MODEL_ID"
-
-          # Extract optional effort level from comment: "effort:low", "effort:medium", "effort:high"
-          EFFORT_RAW=$(printf '%s' "$STRIPPED" | grep -oiE 'effort:(low|medium|high)' | head -1 | tr '[:upper:]' '[:lower:]' | cut -d: -f2 || true)
-          EFFORT="${EFFORT_RAW:-high}"
-          echo "effort=$EFFORT" >> "$GITHUB_OUTPUT"
-          echo "::notice::Using effort: $EFFORT"
-
-      - name: Checkout repository
-        if: steps.verify_invocation.outputs.invoked == 'true'
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-
-      - name: Set up Go
-        if: steps.verify_invocation.outputs.invoked == 'true'
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.26'
-
-      - name: Set up Python (uv)
-        if: steps.verify_invocation.outputs.invoked == 'true'
-        uses: astral-sh/setup-uv@v6
-
-      - name: Install Python dependencies
-        if: steps.verify_invocation.outputs.invoked == 'true'
-        run: uv sync --frozen --extra test
-
-      - name: Clean up lockfile changes before Claude checkout
-        if: steps.verify_invocation.outputs.invoked == 'true'
-        run: git checkout -- uv.lock
-
-      - name: Record HEAD sha before Claude runs
-        if: steps.verify_invocation.outputs.invoked == 'true'
-        id: pre_claude
-        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-
-      - name: Run Claude Code
-        if: steps.verify_invocation.outputs.invoked == 'true'
-        id: claude
-        uses: anthropics/claude-code-action@v1
-        with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-
-          # Allow Claude's own bot user to trigger reviews on its own PRs
-          allowed_bots: 'claude'
-
-          # Show full output in the job summary (important for code review results)
-          show_full_output: true
-
-          # Load the code-review plugin so @claude review uses structured review skill
-          plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
-          plugins: 'code-review@claude-code-plugins'
-
-          # This is an optional setting that allows Claude to read CI results on PRs
-          additional_permissions: |
-            actions: read
-
-          # Optional: Give a custom prompt to Claude. If this is not specified, Claude will perform the instructions specified in the comment that tagged it.
-          # prompt: 'Update the pull request description to include a summary of changes.'
-
-          # Optional: Add claude_args to customize behavior and configuration
-          # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
-          # or https://code.claude.com/docs/en/cli-reference for available options
-          claude_args: --model ${{ steps.resolve_model.outputs.model_id }} --effort ${{ steps.resolve_model.outputs.effort }} --allowedTools "Bash(go *),Bash(cd scheduler && go *),Bash(uv run *),Bash(python3 *),Bash(.venv/bin/python3 *),Bash(gofmt *),Bash(cd scheduler && gofmt *),Bash(git *),Bash(gh *)"
-
-      - name: Detect if Claude made commits
-        if: steps.verify_invocation.outputs.invoked == 'true' && steps.claude.outcome == 'success'
-        id: claude_changes
-        env:
-          PRE_SHA: ${{ steps.pre_claude.outputs.sha }}
-        run: |
-          git fetch --quiet origin "$GITHUB_REF_NAME" 2>/dev/null || true
-          CURRENT_SHA=$(git rev-parse HEAD)
-          if [ "$PRE_SHA" != "$CURRENT_SHA" ] || ! git diff --quiet || [ -n "$(git status --porcelain)" ]; then
-            echo "made_commits=true" >> "$GITHUB_OUTPUT"
+          if [ -n "$FLOW" ] || [ "$IS_ISSUE" = "true" ]; then
+            MODE=implement
           else
-            echo "made_commits=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Claude made no code changes — skipping CLAUDE.md revision."
+            case "$EVENT_NAME" in
+              pull_request_review|pull_request_review_comment)
+                MODE=review
+                ;;
+              *)
+                KEYWORD=$(printf '%s' "$STRIPPED" | tr -d '\r' \
+                  | sed -n 's/^[[:space:]]*@claude[[:space:]]\{1,\}//p' | head -n 1 \
+                  | awk '{ if (tolower($1) ~ /^(opus|opus5|sonnet|sonnet5|fable|fable5)$/) { print $2 } else { print $1 } }' \
+                  | tr '[:upper:]' '[:lower:]')
+
+                PR_AUTHOR_TRUSTED=false
+                case "$PR_AUTHOR_ASSOC" in
+                  OWNER|MEMBER|COLLABORATOR) PR_AUTHOR_TRUSTED=true ;;
+                esac
+                if [ "$PR_AUTHOR_LOGIN" = "claude[bot]" ]; then
+                  PR_AUTHOR_TRUSTED=true
+                fi
+
+                if [ "$KEYWORD" = "review" ]; then
+                  MODE=review
+                elif [ "$PR_AUTHOR_TRUSTED" != "true" ]; then
+                  MODE=review
+                else
+                  MODE=fix-pr
+                fi
+                ;;
+            esac
           fi
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "::notice::Route: $MODE"
 
-      - name: Revise CLAUDE.md with session learnings
-        if: steps.verify_invocation.outputs.invoked == 'true' && steps.claude.outcome == 'success' && steps.claude_changes.outputs.made_commits == 'true'
-        uses: anthropics/claude-code-action@v1
-        with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          prompt: "Use the Skill tool to invoke the 'claude-md-management:revise-claude-md' skill. Review the changes made in this session (use git log and git diff to inspect them) and update CLAUDE.md with any new patterns, conventions, or important context learned."
-          plugin_marketplaces: |
-            https://github.com/anthropics/claude-code.git
-            https://github.com/anthropics/claude-plugins-official.git
-          plugins: |
-            code-review@claude-code-plugins
-            claude-md-management@claude-plugins-official
-          claude_args: --model ${{ steps.resolve_model.outputs.model_id }} --allowedTools "Bash(git *),Edit,Read,Grep,Glob,Write"
+  review:
+    needs: classify
+    if: needs.classify.outputs.invoked == 'true' && needs.classify.outputs.mode == 'review'
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    uses: richkuo/rk-skills/.github/workflows/claude-run.yml@main
+    with:
+      mode: review
+      flow: ''
+      model: ${{ needs.classify.outputs.model }}
+      effort: ${{ needs.classify.outputs.effort }}
+      timeout_minutes: 90
+      go_version: '1.26'
+      extra_allowed_tools: 'Bash(gofmt *),Bash(cd scheduler && gofmt *)'
+    secrets: inherit
 
-      - name: Append LLM footer to Claude comment
-        if: steps.verify_invocation.outputs.invoked == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          MODEL_ID: ${{ steps.resolve_model.outputs.model_id }}
-          EFFORT: ${{ steps.resolve_model.outputs.effort }}
-          CLAUDE_HARNESS: ${{ env.CLAUDE_HARNESS }}
-          ISSUE_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
-          REPO: ${{ github.repository }}
-        run: |
-          case "$MODEL_ID" in
-            "claude-opus-4-7[1m]")   MODEL_NAME="Claude Opus 4.7 (1M)" ;;
-            "claude-sonnet-4-6[1m]") MODEL_NAME="Claude Sonnet 4.6 (1M)" ;;
-            claude-haiku-4-5)        MODEL_NAME="Claude Haiku 4.5" ;;
-            *)                       MODEL_NAME="$MODEL_ID" ;;
-          esac
+  implement:
+    needs: classify
+    if: needs.classify.outputs.invoked == 'true' && needs.classify.outputs.mode == 'implement'
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+    uses: richkuo/rk-skills/.github/workflows/claude-run.yml@main
+    with:
+      mode: implement
+      flow: ${{ needs.classify.outputs.flow }}
+      model: ${{ needs.classify.outputs.model }}
+      effort: ${{ needs.classify.outputs.effort }}
+      timeout_minutes: 90
+      go_version: '1.26'
+      extra_allowed_tools: 'Bash(gofmt *),Bash(cd scheduler && gofmt *)'
+    secrets: inherit
 
-          COMMENT=$(gh api "repos/$REPO/issues/$ISSUE_NUMBER/comments" \
-            --jq '[.[] | select(.user.login == "claude[bot]")] | sort_by(.updated_at) | last')
-
-          COMMENT_ID=$(echo "$COMMENT" | jq -r '.id')
-          BODY=$(echo "$COMMENT" | jq -r '.body')
-
-          if [ -z "$COMMENT_ID" ] || [ "$COMMENT_ID" = "null" ]; then
-            echo "No claude[bot] comment found"
-            exit 0
-          fi
-
-          # Strip any stale LLM footer Claude may have written (it doesn't know
-          # the real --effort value, so it guesses). The workflow is authoritative.
-          BODY=$(printf '%s' "$BODY" | python3 .github/scripts/strip_llm_footer.py)
-
-          TODAY=$(date -u +%Y%m%d)
-
-          USAGE=$(npx --yes ccusage@latest session --json --since "$TODAY" --order desc 2>/tmp/ccusage-err || echo "[]")
-          [ -s /tmp/ccusage-err ] && echo "ccusage stderr: $(cat /tmp/ccusage-err)"
-          COST=$(printf '%s' "$USAGE" | jq -r 'if .sessions and (.sessions | length) > 0 then .sessions[0] | "Tokens: \(.inputTokens // 0) in / \(.outputTokens // 0) out | Cache: \(.cacheReadTokens // 0) read / \(.cacheCreationTokens // 0) written | Cost: $\(.totalCost // 0 | . * 100 | round / 100)" else "" end' 2>/dev/null || true)
-
-          FOOTER="---"$'\n'"LLM: ${MODEL_NAME} | ${EFFORT} | Harness: ${CLAUDE_HARNESS}"
-          if [ -n "$COST" ]; then
-            FOOTER="${FOOTER} | ${COST}"
-          fi
-
-          NEW_BODY="${BODY}"$'\n\n'"${FOOTER}"
-
-          # Rewrite the "Create PR" link's prefilled `body=` query param so the PR
-          # description ends with our model/effort footer instead of the default
-          # "Generated with [Claude Code](https://claude.com/claude-code)" line.
-          NEW_BODY=$(BODY_IN="$NEW_BODY" FOOTER_TEXT="$FOOTER" python3 .github/scripts/rewrite_create_pr_link.py)
-
-          gh api "repos/$REPO/issues/comments/$COMMENT_ID" \
-            --method PATCH \
-            --field body="$NEW_BODY"
-
-      - name: Mark cancellation for downstream status note
-        if: always() && cancelled()
-        run: echo "IS_CANCELLED=true" >> "$GITHUB_ENV"
-
-      - name: Note workflow cancellation/failure on Claude comment
-        if: always() && steps.verify_invocation.outputs.invoked == 'true' && (cancelled() || failure())
-        env:
-          GH_TOKEN: ${{ github.token }}
-          MODEL_ID: ${{ steps.resolve_model.outputs.model_id }}
-          EFFORT: ${{ steps.resolve_model.outputs.effort }}
-          CLAUDE_HARNESS: ${{ env.CLAUDE_HARNESS }}
-          ISSUE_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
-          REPO: ${{ github.repository }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          case "$MODEL_ID" in
-            "claude-opus-4-7[1m]")   MODEL_NAME="Claude Opus 4.7 (1M)" ;;
-            "claude-sonnet-4-6[1m]") MODEL_NAME="Claude Sonnet 4.6 (1M)" ;;
-            claude-haiku-4-5)        MODEL_NAME="Claude Haiku 4.5" ;;
-            "")                      MODEL_NAME="(model not resolved)" ;;
-            *)                       MODEL_NAME="$MODEL_ID" ;;
-          esac
-
-          if [ "$IS_CANCELLED" = "true" ]; then
-            STATUS_NOTE="**Workflow cancelled before completion.** See [run log]($RUN_URL)."
-          else
-            STATUS_NOTE="**Workflow failed before completion.** See [run log]($RUN_URL)."
-          fi
-
-          COMMENT=$(gh api "repos/$REPO/issues/$ISSUE_NUMBER/comments" \
-            --jq '[.[] | select(.user.login == "claude[bot]")] | sort_by(.updated_at) | last')
-
-          COMMENT_ID=$(echo "$COMMENT" | jq -r '.id')
-          BODY=$(echo "$COMMENT" | jq -r '.body')
-
-          if [ -z "$COMMENT_ID" ] || [ "$COMMENT_ID" = "null" ]; then
-            echo "No claude[bot] comment found — nothing to update."
-            exit 0
-          fi
-
-          # Strip any stale LLM footer Claude may have written so we don't stack footers.
-          BODY=$(printf '%s' "$BODY" | python3 .github/scripts/strip_llm_footer.py)
-
-          # Drop a previously appended status note (idempotent on retries / repeated failures).
-          BODY=$(printf '%s' "$BODY" | perl -0777 -pe 's/\n*\*\*Workflow (cancelled|failed) before completion\.\*\*[^\n]*\n?//g')
-
-          FOOTER="---"$'\n'"LLM: ${MODEL_NAME} | ${EFFORT:-unknown} | Harness: ${CLAUDE_HARNESS}"
-
-          NEW_BODY="${BODY}"$'\n\n'"${STATUS_NOTE}"$'\n\n'"${FOOTER}"
-
-          gh api "repos/$REPO/issues/comments/$COMMENT_ID" \
-            --method PATCH \
-            --field body="$NEW_BODY"
+  fix-pr:
+    needs: classify
+    if: >
+      needs.classify.outputs.invoked == 'true' &&
+      needs.classify.outputs.mode == 'fix-pr' &&
+      (
+        contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.issue.author_association) ||
+        github.event.issue.user.login == 'claude[bot]'
+      )
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+    uses: richkuo/rk-skills/.github/workflows/claude-run.yml@main
+    with:
+      mode: fix-pr
+      flow: ''
+      model: ${{ needs.classify.outputs.model }}
+      effort: ${{ needs.classify.outputs.effort }}
+      timeout_minutes: 90
+      go_version: '1.26'
+      extra_allowed_tools: 'Bash(gofmt *),Bash(cd scheduler && gofmt *)'
+    secrets: inherit

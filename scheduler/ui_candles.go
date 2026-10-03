@@ -111,9 +111,7 @@ func FetchUICandles(req UICandleRequest) ([]UICandle, string, error) {
 		"--timeframe", timeframe,
 		"--limit", fmt.Sprintf("%d", limit),
 	}
-	if mode := strategyMode(sc); mode != "" {
-		args = append(args, "--mode", mode)
-	}
+	args = append(args, "--mode", string(portfolioScopeFor(sc)))
 	if !req.From.IsZero() {
 		args = append(args, "--from", req.From.UTC().Format(time.RFC3339))
 	}
@@ -138,19 +136,6 @@ func FetchUICandles(req UICandleRequest) ([]UICandle, string, error) {
 	}
 	sort.Slice(resp.Candles, func(i, j int) bool { return resp.Candles[i].Time < resp.Candles[j].Time })
 	return resp.Candles, resp.Source, nil
-}
-
-func strategyMode(sc StrategyConfig) string {
-	for _, arg := range sc.Args {
-		arg = strings.TrimSpace(arg)
-		switch {
-		case arg == "live", arg == "paper":
-			return arg
-		case strings.HasPrefix(arg, "--mode="):
-			return strings.TrimPrefix(arg, "--mode=")
-		}
-	}
-	return ""
 }
 
 func (c *UICandleCache) pruneLocked(now time.Time) {

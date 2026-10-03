@@ -1,0 +1,29 @@
+{
+  "study": "chart_pattern_1282_family",
+  "registry": "spot",
+  "harnesses": ["m1_noise", "m1"],
+  "windows": ["is", "oos", "2023", "2024", "2025H1"],
+  "correction": {"method": "benjamini_hochberg", "alpha": 0.05},
+  "candidates": [
+    {
+      "key": "baseline_f0",
+      "candidate": {"name": "chart_pattern", "direction": "long"},
+      "hypothesis": "ungated default (M5 long leg, gross-negative)"
+    },
+    {
+      "key": "gate_f4",
+      "candidate": {"name": "chart_pattern", "direction": "long", "params": {"htf_gate_factor": 4}},
+      "hypothesis": "#982 chosen opt-in gate re-adjudicated under BH"
+    },
+    {
+      "key": "gate_f5",
+      "candidate": {"name": "chart_pattern", "direction": "long", "params": {"htf_gate_factor": 5}},
+      "hypothesis": "#982 factor-fragility neighbor"
+    },
+    {
+      "key": "gate_f6",
+      "candidate": {"name": "chart_pattern", "direction": "long", "params": {"htf_gate_factor": 6}},
+      "hypothesis": "#982 factor-fragility neighbor"
+    }
+  ]
+}

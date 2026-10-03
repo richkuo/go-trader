@@ -4,20 +4,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
-// collectPriceSymbols returns the list of BinanceUS-format symbols to fetch
-// for spot strategy valuation/notional. Only "spot" strategy types are
-// included — spot positions are stored and fetched under the same key
-// (e.g. "BTC/USDT"), so no aliasing is needed.
-//
-// Perps strategies are intentionally excluded: HL and OKX perps marks are
-// now sourced from the venues they live on via fetchHyperliquidMids and
-// fetchOKXPerpsMids (see collectPerpsMarkSymbols). Routing perps through
-// BinanceUS spot introduced phantom PnL on shorts due to spot/perps basis
-// drift — fixes issue #263 as a side effect (HL-only coins like HYPE,
-// kPEPE, PURR no longer emit [WARN] Skipping zero price — fixes #262).
+var schedulerStarted atomic.Bool
+
+func markSchedulerStarted() {
+	schedulerStarted.Store(true)
+}
+
 func collectPriceSymbols(strategies []StrategyConfig) []string {
 	set := make(map[string]bool)
 	for _, sc := range strategies {
@@ -40,26 +38,25 @@ func collectPriceSymbols(strategies []StrategyConfig) []string {
 	return symbols
 }
 
-// collectPerpsMarkSymbols returns two sorted slices of base-coin symbols
-// for which the scheduler should fetch venue-native perps marks this cycle.
-// hlCoins contains coins traded on Hyperliquid; okxCoins contains coins
-// traded on OKX — each slice is deduplicated and sorted for deterministic
-// iteration. Strategies with Type != "perps" are ignored.
-//
-// The returned coins are used as inputs to fetchHyperliquidMids and
-// fetchOKXPerpsMids respectively. This is the correct oracle for perps
-// positions; see issue #263 for why BinanceUS spot is wrong.
 func collectPerpsMarkSymbols(strategies []StrategyConfig) (hlCoins, okxCoins []string) {
 	hlSet := make(map[string]bool)
 	okxSet := make(map[string]bool)
 	for _, sc := range strategies {
-		if sc.Type != "perps" {
+		var coin string
+		switch sc.Type {
+		case "perps":
+			if len(sc.Args) < 2 {
+				continue
+			}
+			coin = sc.Args[1]
+		case "manual":
+			if sc.Platform != "hyperliquid" {
+				continue
+			}
+			coin = sc.Symbol
+		default:
 			continue
 		}
-		if len(sc.Args) < 2 {
-			continue
-		}
-		coin := sc.Args[1]
 		if coin == "" {
 			continue
 		}
@@ -69,6 +66,9 @@ func collectPerpsMarkSymbols(strategies []StrategyConfig) (hlCoins, okxCoins []s
 		case "okx":
 			okxSet[coin] = true
 		}
+	}
+	for _, coin := range hedgeCoinsForStrategies(strategies) {
+		hlSet[coin] = true
 	}
 	hlCoins = make([]string, 0, len(hlSet))
 	for c := range hlSet {
@@ -84,14 +84,6 @@ func collectPerpsMarkSymbols(strategies []StrategyConfig) (hlCoins, okxCoins []s
 	return hlCoins, okxCoins
 }
 
-// mergePerpsMarks copies non-zero perps mark prices into the shared prices
-// map. An existing entry wins — a mark published by a strategy earlier in
-// the cycle (ground truth for that cycle) must not be overwritten by a
-// potentially staler exchange snapshot. Zero and negative marks are skipped.
-//
-// DO NOT remove the skip-if-exists guard: it preserves the invariant that
-// strategy-published marks always win over fetcher snapshots. This mirrors
-// the mergeFuturesMarks contract (scheduler/risk.go).
 func mergePerpsMarks(prices map[string]float64, marks map[string]float64) {
 	for sym, p := range marks {
 		if p <= 0 {
@@ -104,28 +96,184 @@ func mergePerpsMarks(prices map[string]float64, marks map[string]float64) {
 	}
 }
 
-// collectFuturesMarkSymbols returns the list of CME futures contract
-// symbols (e.g. "ES", "NQ", "MES", "MNQ", "CL") that need live marks to
-// revalue open futures positions. Sibling to collectPriceSymbols — kept
-// separate because the price-source rail is different: check_price.py
-// queries BinanceUS which does not list CME futures, so the Go scheduler
-// has to dispatch these symbols to fetch_futures_marks.py (TopStep
-// adapter) instead.
-//
-// Futures strategies store positions under the bare contract symbol
-// (state.Positions["ES"]) with Multiplier > 0; the strategy's Args[1] is
-// the same symbol, so no normalization or alias mirroring is needed.
-// Issue #261: without this, PortfolioNotional / PortfolioValue fell back
-// to pos.AvgCost for futures, freezing exposure at entry cost.
-//
-// Platform filter: only "topstep" futures strategies are emitted.
-// fetch_futures_marks.py hardcodes TopStepExchangeAdapter, so routing a
-// non-TopStep futures symbol (e.g. a future IBKR futures adapter) through
-// this path would either fail outright or — worse — succeed against a
-// different contract on a different exchange. When a second futures
-// adapter is added, this helper should be generalized to return a
-// platform→symbols map (or similar) and fetch_futures_marks.py should
-// gain platform-aware dispatch.
+type missingMarkPosition struct {
+	StrategyID       string
+	Symbol           string
+	Live             bool
+	Platform         string
+	Type             string
+	DisabledManagers []string
+}
+
+func markGatedManagers(sc StrategyConfig) []string {
+	if sc.Platform != "hyperliquid" {
+		return nil
+	}
+	switch sc.Type {
+	case "perps", "manual":
+		return []string{"Trailing stop-loss walker", "Take-profit ratchet"}
+	}
+	return nil
+}
+
+func collectMissingMarkPositions(strategies []StrategyConfig, openSymbols map[string][]string, prices map[string]float64) []missingMarkPosition {
+	if len(openSymbols) == 0 {
+		return nil
+	}
+	var out []missingMarkPosition
+	for _, sc := range strategies {
+		switch sc.Type {
+		case "spot", "perps", "futures", "manual":
+		default:
+			continue
+		}
+		syms := openSymbols[sc.ID]
+		if len(syms) == 0 {
+			continue
+		}
+		live := isLiveArgs(sc.Args)
+		sorted := append([]string(nil), syms...)
+		sort.Strings(sorted)
+		for _, sym := range sorted {
+			if sym == "" {
+				continue
+			}
+			if prices[sym] > 0 {
+				continue
+			}
+			out = append(out, missingMarkPosition{
+				StrategyID:       sc.ID,
+				Symbol:           sym,
+				Live:             live,
+				Platform:         sc.Platform,
+				Type:             sc.Type,
+				DisabledManagers: markGatedManagers(sc),
+			})
+		}
+	}
+	return out
+}
+
+func snapshotOpenSymbolsByStrategy(state *AppState) map[string][]string {
+	if state == nil {
+		return nil
+	}
+	out := make(map[string][]string, len(state.Strategies))
+	for sid, s := range state.Strategies {
+		if s == nil {
+			continue
+		}
+		for sym, pos := range s.Positions {
+			if pos == nil || pos.Quantity <= 0 {
+				continue
+			}
+			out[sid] = append(out[sid], sym)
+		}
+	}
+	return out
+}
+
+func formatManualMarkBasisRebaselineDM(priorPeak, newPeak, liveTotal, legacyTotal float64) string {
+	return fmt.Sprintf("ℹ️ **Portfolio peak re-baselined once (#1444 valuation basis)**\nManual positions now value at the live mark instead of entry cost, so the stored peak was measured on the old basis.\n• Peak: $%.2f → $%.2f\n• Live-priced total: $%.2f\n• Same book on the old basis: $%.2f\n• Basis delta: $%.2f\nThe drawdown reading was NOT reset — only the units were corrected. This runs once and is recorded in the kill-switch event log.",
+		priorPeak, newPeak, liveTotal, legacyTotal, liveTotal-legacyTotal)
+}
+
+func manualOnlyMarkSymbols(strategies []StrategyConfig) []string {
+	donors := make(map[string]bool)
+	for _, sc := range strategies {
+		switch sc.Type {
+		case "perps", "spot":
+			if len(sc.Args) >= 2 && sc.Args[1] != "" {
+				donors[sc.Args[1]] = true
+			}
+		}
+	}
+	for _, coin := range hedgeCoinsForStrategies(strategies) {
+		donors[coin] = true
+	}
+	for _, sym := range collectFuturesMarkSymbols(strategies) {
+		donors[sym] = true
+	}
+
+	set := make(map[string]bool)
+	for _, sc := range strategies {
+		if sc.Type != "manual" || sc.Platform != "hyperliquid" {
+			continue
+		}
+		if sc.Symbol == "" || donors[sc.Symbol] {
+			continue
+		}
+		set[sc.Symbol] = true
+	}
+	if len(set) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(set))
+	for s := range set {
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func missingManualOnlyMarks(strategies []StrategyConfig, openSymbols map[string][]string, prices map[string]float64) []string {
+	manualOnly := manualOnlyMarkSymbols(strategies)
+	if len(manualOnly) == 0 || len(openSymbols) == 0 {
+		return nil
+	}
+	want := make(map[string]bool, len(manualOnly))
+	for _, sym := range manualOnly {
+		want[sym] = true
+	}
+	missing := make(map[string]bool)
+	for _, syms := range openSymbols {
+		for _, sym := range syms {
+			if sym == "" || !want[sym] || prices[sym] > 0 {
+				continue
+			}
+			missing[sym] = true
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(missing))
+	for sym := range missing {
+		out = append(out, sym)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func pricesWithoutSymbols(prices map[string]float64, drop []string) map[string]float64 {
+	if len(drop) == 0 {
+		return prices
+	}
+	out := make(map[string]float64, len(prices))
+	for k, v := range prices {
+		out[k] = v
+	}
+	for _, sym := range drop {
+		delete(out, sym)
+	}
+	return out
+}
+
+func manualMarkBasisPeakAdjustment(oldPeak, liveTotal, legacyTotal float64) (float64, bool) {
+	if oldPeak <= 0 {
+		return oldPeak, false
+	}
+	delta := liveTotal - legacyTotal
+	if delta == 0 {
+		return oldPeak, false
+	}
+	newPeak := oldPeak + delta
+	if newPeak <= 0 {
+		return oldPeak, false
+	}
+	return newPeak, true
+}
+
 func collectFuturesMarkSymbols(strategies []StrategyConfig) []string {
 	set := make(map[string]bool)
 	for _, sc := range strategies {
@@ -155,23 +303,6 @@ func collectFuturesMarkSymbols(strategies []StrategyConfig) []string {
 	return symbols
 }
 
-// mergeFuturesMarks copies non-zero futures mark prices into the shared
-// prices map. Existing entries win — matches mirrorPerpsPrices semantics
-// so that any live mark a strategy may have already published during the
-// cycle is not overwritten by a (possibly staler) fetch result.
-//
-// DO NOT "simplify" the skip-if-exists branch. Today the only writer
-// that could pre-populate e.g. prices["ES"] is a hypothetical futures
-// strategy publishing its own live exchange mark via result.Symbol
-// earlier in the cycle — mirrorPerpsPrices runs first but only writes
-// "/USDT"-quoted spot keys, so collisions with bare CME symbols like
-// "ES" or "NQ" are not expected in the current code paths. The guard is
-// still required: a strategy-published mark is ground truth for the
-// cycle (observed during check), whereas fetch_futures_marks is a
-// generic snapshot pulled afterwards and may be slightly stale. When
-// both exist, prefer the former. Preserving this invariant matters for
-// anyone adding strategy-level mark publishing later — removing the
-// skip would silently regress that contract.
 func mergeFuturesMarks(prices map[string]float64, marks map[string]float64) {
 	for sym, p := range marks {
 		if p <= 0 {
@@ -186,101 +317,84 @@ func mergeFuturesMarks(prices map[string]float64, marks map[string]float64) {
 
 const maxKillSwitchEvents = 50
 
-// KillSwitchEvent records a kill switch lifecycle event for audit purposes.
-//
-// Source identifies which drawdown signal drove a "triggered" or "warning"
-// event: "equity" (classic peak-relative equity drawdown) or "margin" (perps
-// unrealized loss vs. deployed margin, #296). Empty for events that predate
-// #296 or are signal-agnostic (e.g. "reset", "auto_reset"). DrawdownPct is the
-// percentage of the signal named by Source, so tailing the event log for a
-// post-incident review gives an arithmetically consistent record.
+const untrustedEquityLatchDeferral = 15 * time.Minute
+
 type KillSwitchEvent struct {
-	Timestamp      time.Time `json:"timestamp"`
-	Type           string    `json:"type"` // "triggered", "reset", "warning"
-	Source         string    `json:"source,omitempty"`
-	DrawdownPct    float64   `json:"drawdown_pct"`
-	PortfolioValue float64   `json:"portfolio_value"`
-	PeakValue      float64   `json:"peak_value"`
-	Details        string    `json:"details"`
+	Partition      RiskPartition `json:"scope,omitempty"`
+	Timestamp      time.Time     `json:"timestamp"`
+	Type           string        `json:"type"`
+	Source         string        `json:"source,omitempty"`
+	DrawdownPct    float64       `json:"drawdown_pct"`
+	PortfolioValue float64       `json:"portfolio_value"`
+	PeakValue      float64       `json:"peak_value"`
+	Details        string        `json:"details"`
 }
 
-// PortfolioRiskState tracks aggregate portfolio-level risk (#42).
-//
-// CurrentDrawdownPct is pure equity drawdown ((PeakValue - totalValue) /
-// PeakValue). CurrentMarginDrawdownPct is the #296 perps-margin drawdown
-// (perps unrealized loss / deployed margin). Keeping them as separate fields
-// preserves the arithmetic invariant that (PeakValue, CurrentDrawdownPct) is
-// reconstructable, while still exposing the margin signal for operators and
-// the kill switch. The kill switch fires on whichever signal breaches first.
-// WarningSent is retained for persisted status visibility and is true while
-// either drawdown signal is in the warning band; notifications are emitted on
-// every cycle in that band.
 type PortfolioRiskState struct {
-	PeakValue                float64           `json:"peak_value"`
-	CurrentDrawdownPct       float64           `json:"current_drawdown_pct"`
-	CurrentMarginDrawdownPct float64           `json:"current_margin_drawdown_pct,omitempty"`
-	KillSwitchActive         bool              `json:"kill_switch_active"`
-	KillSwitchAt             time.Time         `json:"kill_switch_at,omitempty"`
-	WarningSent              bool              `json:"warning_sent,omitempty"`
-	Events                   []KillSwitchEvent `json:"events,omitempty"`
+	PeakValue                  float64           `json:"peak_value"`
+	CurrentDrawdownPct         float64           `json:"current_drawdown_pct"`
+	CurrentMarginDrawdownPct   float64           `json:"current_margin_drawdown_pct,omitempty"`
+	DrawdownReadingSubstituted bool              `json:"drawdown_reading_substituted,omitempty"`
+	UntrustedOverLimitSince    time.Time         `json:"untrusted_over_limit_since,omitempty"`
+	KillSwitchActive           bool              `json:"kill_switch_active"`
+	KillSwitchAt               time.Time         `json:"kill_switch_at,omitempty"`
+	WarningSent                bool              `json:"warning_sent,omitempty"`
+	WarnBandEnteredAt          time.Time         `json:"warn_band_entered_at,omitempty"`
+	LastWarningEquityDDPct     float64           `json:"last_warning_equity_dd_pct,omitempty"`
+	LastWarningMarginDDPct     float64           `json:"last_warning_margin_dd_pct,omitempty"`
+	WarningEquityDeltaPct      float64           `json:"warning_equity_delta_pct,omitempty"`
+	WarningMarginDeltaPct      float64           `json:"warning_margin_delta_pct,omitempty"`
+	Events                     []KillSwitchEvent `json:"events,omitempty"`
+
+	ManualMarkBasisRebaselined bool `json:"manual_mark_basis_rebaselined,omitempty"`
+	KillSwitchCloseApplied     bool `json:"kill_switch_close_applied,omitempty"`
 }
 
-// SharedWalletBalanceFetcher returns the real on-chain balance for a given
-// platform. Implementations are expected to encapsulate any address/credential
-// lookup (e.g. environment variables) and return a non-nil error on any
-// network or configuration failure.
 type SharedWalletBalanceFetcher func(platform string) (float64, error)
 
-// detectSharedWalletPlatforms returns the list of platforms that have more
-// than one strategy sharing the same wallet (capital_pct > 0). A single
-// strategy with capital_pct alone is not a "shared" wallet — there is no
-// double-counting risk to recover from. The result is sorted alphabetically
-// for deterministic iteration order (callers rely on this).
 func detectSharedWalletPlatforms(strategies []StrategyConfig) []string {
-	walletCount := make(map[string]int)
+	byID := make(map[string]StrategyConfig, len(strategies))
+	walletMembers := make(map[SharedWalletKey][]string)
 	for _, sc := range strategies {
-		if sc.CapitalPct > 0 {
-			walletCount[sc.Platform]++
+		byID[sc.ID] = sc
+		if key, ok := walletKeyFor(sc); ok && hasSharedWalletBalanceFetcher(key.Platform) {
+			walletMembers[key] = append(walletMembers[key], sc.ID)
+		}
+	}
+	platformSet := make(map[string]bool)
+	for key, memberIDs := range walletMembers {
+		memberIDs = riskPathWalletMemberIDs(key, memberIDs, strategies)
+		if len(memberIDs) < 2 {
+			continue
+		}
+		allLegacyPct := true
+		for _, id := range memberIDs {
+			if byID[id].CapitalPct <= 0 {
+				allLegacyPct = false
+				break
+			}
+		}
+		if allLegacyPct {
+			platformSet[key.Platform] = true
 		}
 	}
 	var platforms []string
-	for plat, n := range walletCount {
-		if n > 1 {
-			platforms = append(platforms, plat)
-		}
+	for platform := range platformSet {
+		platforms = append(platforms, platform)
 	}
 	sort.Strings(platforms)
 	return platforms
 }
 
-// ClearLatchedKillSwitchSharedWallet auto-clears a latched portfolio kill
-// switch on startup when a shared wallet is in use AND the real on-chain
-// balance can be successfully fetched for every shared-wallet platform. This
-// protects against legacy state where an inflated PortfolioRisk.PeakValue
-// (e.g. from earlier shared-wallet double-counting) would otherwise leave the
-// kill switch latched forever across restarts. See issue #244.
-//
-// Guards (all must hold):
-//   - the kill switch must currently be active (otherwise no-op)
-//   - at least one platform must host a shared wallet (capital_pct > 0 with
-//     more than one strategy on the same platform)
-//   - fetcher must successfully return a real balance for EVERY shared-wallet
-//     platform — any network/config failure preserves the kill switch so the
-//     re-baselined peak reflects the full portfolio-wide truth rather than a
-//     partial slice that would under-baseline PeakValue
-//
-// On success, PortfolioRisk.PeakValue is re-baselined to the verified total
-// balance (and drawdown fields zeroed) so the very next CheckPortfolioRisk
-// call cannot immediately re-latch the kill switch using a stale inflated
-// peak — the original root cause from #244.
-//
-// CONCURRENCY: This function mutates state.PortfolioRisk without holding any
-// lock. It is only safe to call during startup, before the state mutex is
-// created and before any goroutines are spawned. See main.go:109.
-//
-// Returns true iff the kill switch was cleared.
 func ClearLatchedKillSwitchSharedWallet(state *AppState, strategies []StrategyConfig, fetcher SharedWalletBalanceFetcher) bool {
-	if state == nil || !state.PortfolioRisk.KillSwitchActive {
+	if schedulerStarted.Load() {
+		panic("ClearLatchedKillSwitchSharedWallet called after scheduler started")
+	}
+	if state == nil {
+		return false
+	}
+	prs := state.partitionRiskIfPresent(livePartition)
+	if prs == nil || !prs.KillSwitchActive {
 		return false
 	}
 
@@ -289,8 +403,6 @@ func ClearLatchedKillSwitchSharedWallet(state *AppState, strategies []StrategyCo
 		return false
 	}
 
-	// Fetch every shared-wallet platform up front. Any failure aborts the
-	// clear so we never re-baseline PeakValue from an incomplete picture.
 	totalBalance := 0.0
 	for _, plat := range sharedPlatforms {
 		balance, err := fetcher(plat)
@@ -301,40 +413,41 @@ func ClearLatchedKillSwitchSharedWallet(state *AppState, strategies []StrategyCo
 		totalBalance += balance
 	}
 
-	latchedAt := state.PortfolioRisk.KillSwitchAt.Format("2006-01-02 15:04 UTC")
+	latchedAt := prs.KillSwitchAt.Format("2006-01-02 15:04 UTC")
 	fmt.Printf("[INFO] Shared wallet (%v): clearing kill switch (was latched at %s, real total balance=$%.2f, prior peak=$%.2f)\n",
-		sharedPlatforms, latchedAt, totalBalance, state.PortfolioRisk.PeakValue)
+		sharedPlatforms, latchedAt, totalBalance, prs.PeakValue)
 
-	state.PortfolioRisk.KillSwitchActive = false
-	state.PortfolioRisk.KillSwitchAt = time.Time{}
-	state.PortfolioRisk.WarningSent = false
-	// Re-baseline peak to the verified on-chain total so CheckPortfolioRisk
-	// does not immediately re-latch on the first tick using the stale
-	// (potentially double-counted) peak.
-	state.PortfolioRisk.PeakValue = totalBalance
-	state.PortfolioRisk.CurrentDrawdownPct = 0
-	state.PortfolioRisk.CurrentMarginDrawdownPct = 0
-	addKillSwitchEvent(&state.PortfolioRisk, "auto_reset", "",
+	prs.KillSwitchActive = false
+	prs.KillSwitchAt = time.Time{}
+	prs.WarningSent = false
+	prs.WarnBandEnteredAt = time.Time{}
+	prs.LastWarningEquityDDPct = 0
+	prs.LastWarningMarginDDPct = 0
+	prs.WarningEquityDeltaPct = 0
+	prs.WarningMarginDeltaPct = 0
+	prs.PeakValue = totalBalance
+	prs.CurrentDrawdownPct = 0
+	prs.CurrentMarginDrawdownPct = 0
+	prs.DrawdownReadingSubstituted = false
+	prs.UntrustedOverLimitSince = time.Time{}
+	prs.KillSwitchCloseApplied = false
+	addKillSwitchEvent(prs, "auto_reset", "",
 		0, totalBalance, totalBalance,
 		fmt.Sprintf("startup auto-clear: shared wallets %v reachable, total balance=$%.2f (peak re-baselined)",
 			sharedPlatforms, totalBalance))
 	return true
 }
 
-// AutoResetConfirmedFlatKillSwitch clears a portfolio kill-switch latch after
-// live close planning has confirmed all automated venues are flat. This is used
-// only when no DM-capable owner is configured; owner-backed deployments keep the
-// existing human-in-the-loop reset path.
-//
-// rebaselineValue is the best available estimate for post-close portfolio
-// value. The hot loop typically passes the pre-close mark-to-market totalPV,
-// which closely approximates post-close cash apart from fees and slippage.
-//
-// Note: callers should suppress this auto-reset when the close plan has
-// operator-required gaps such as OKX spot or Robinhood options. Those venues do
-// not block OnChainConfirmedFlat because there is no safe automated close path,
-// but resuming trading without a human reset would hide remaining live exposure.
-func AutoResetConfirmedFlatKillSwitch(prs *PortfolioRiskState, rebaselineValue float64, details string) bool {
+func portfolioPeakRebaselineAvailable(usedPVFallback, usedStaleRiskBalance, pooledEquityComplete bool) bool {
+	return !usedPVFallback && !usedStaleRiskBalance && pooledEquityComplete
+}
+
+func AutoResetConfirmedFlatKillSwitch(
+	prs *PortfolioRiskState,
+	rebaselineValue float64,
+	rebaselineAvailable bool,
+	details string,
+) bool {
 	if prs == nil || !prs.KillSwitchActive {
 		return false
 	}
@@ -345,25 +458,46 @@ func AutoResetConfirmedFlatKillSwitch(prs *PortfolioRiskState, rebaselineValue f
 		details = fmt.Sprintf("%s (previous equity drawdown=%.2f%%, previous margin drawdown=%.2f%%)",
 			details, prevEquityDrawdownPct, prevMarginDrawdownPct)
 	}
+	if !rebaselineAvailable {
+		details = fmt.Sprintf("%s (portfolio peak retained at $%.2f because current equity is not trustworthy)",
+			details, prs.PeakValue)
+	}
 
 	prs.KillSwitchActive = false
 	prs.KillSwitchAt = time.Time{}
 	prs.WarningSent = false
-	prs.PeakValue = rebaselineValue
+	prs.WarnBandEnteredAt = time.Time{}
+	prs.LastWarningEquityDDPct = 0
+	prs.LastWarningMarginDDPct = 0
+	prs.WarningEquityDeltaPct = 0
+	prs.WarningMarginDeltaPct = 0
+	if rebaselineAvailable {
+		prs.PeakValue = rebaselineValue
+	}
 	prs.CurrentDrawdownPct = 0
 	prs.CurrentMarginDrawdownPct = 0
-	addKillSwitchEvent(prs, "auto_reset", "", 0, rebaselineValue, rebaselineValue, details)
+	prs.DrawdownReadingSubstituted = false
+	prs.UntrustedOverLimitSince = time.Time{}
+	prs.KillSwitchCloseApplied = false
+	addKillSwitchEvent(prs, "auto_reset", "", 0, rebaselineValue, prs.PeakValue, details)
 	return true
 }
 
-// addKillSwitchEvent appends an event and trims to maxKillSwitchEvents.
-//
-// source identifies which drawdown signal drove the event: "equity", "margin",
-// or "" (unknown / signal-agnostic). For "triggered" and "warning" events it
-// must be set; for "reset" / "auto_reset" it is typically empty. DrawdownPct
-// is interpreted as a pct of the signal named by source — do not pass
-// max(equity, margin) here; pass the value for the specific source, otherwise
-// the event log becomes arithmetically inconsistent.
+func ResetPortfolioKillSwitchManual(prs *PortfolioRiskState) float64 {
+	if prs == nil {
+		return 0
+	}
+	priorDrawdownPct := prs.CurrentDrawdownPct
+	prs.KillSwitchActive = false
+	prs.KillSwitchAt = time.Time{}
+	prs.CurrentDrawdownPct = 0
+	prs.CurrentMarginDrawdownPct = 0
+	prs.DrawdownReadingSubstituted = false
+	prs.UntrustedOverLimitSince = time.Time{}
+	prs.KillSwitchCloseApplied = false
+	return priorDrawdownPct
+}
+
 func addKillSwitchEvent(prs *PortfolioRiskState, eventType, source string, drawdownPct, portfolioValue, peakValue float64, details string) {
 	prs.Events = append(prs.Events, KillSwitchEvent{
 		Timestamp:      time.Now().UTC(),
@@ -379,23 +513,6 @@ func addKillSwitchEvent(prs *PortfolioRiskState, eventType, source string, drawd
 	}
 }
 
-// AggregatePerpsMarginInputs sums unrealized loss and deployed margin across
-// every perps strategy in the portfolio. It returns the numerator and
-// denominator inputs of the drawdown ratio (not a ratio itself) — matches the
-// per-strategy counterpart perpsMarginDrawdownInputs (#292), aggregated to the
-// portfolio level for the kill switch (#296).
-//
-// Only strategies with Type == "perps" contribute. configs maps strategy ID
-// to StrategyConfig — used to source exchange sc.Leverage so the margin
-// denominator matches the actual exchange leverage rather than the
-// sizing_leverage order multiplier (#497). Strategies whose config is missing or has Leverage <= 0 are
-// skipped; they don't contribute to the perps margin signal and the kill
-// switch falls back to equity drawdown for them.
-//
-// Returns (0, 0) when no perps margin is deployed — the caller treats a zero
-// margin as "no perps signal this cycle" and falls back to pure equity
-// drawdown. This preserves existing behavior for all-spot / all-options
-// portfolios.
 func AggregatePerpsMarginInputs(strategies map[string]*StrategyState, configs []StrategyConfig, prices map[string]float64) (unrealizedLoss, margin float64) {
 	leverageByID := make(map[string]float64, len(configs))
 	for _, sc := range configs {
@@ -416,105 +533,142 @@ func AggregatePerpsMarginInputs(strategies map[string]*StrategyState, configs []
 	return unrealizedLoss, margin
 }
 
-// CheckPortfolioRisk evaluates aggregate portfolio risk.
-// Returns (allowed, notionalBlocked, warning, reason).
-// allowed=false means the kill switch has fired or is latched; notionalBlocked=true
-// means new trades should be skipped but existing positions kept; warning=true
-// means drawdown is approaching the kill switch threshold.
-//
-// Two independent drawdown signals feed the kill switch:
-//
-//  1. Equity drawdown — (peak - totalValue) / peak. Captures spot/options
-//     PnL and overall cash erosion. Persisted as CurrentDrawdownPct.
-//  2. Perps margin drawdown (#296) — perpsUnrealizedLoss / perpsMargin.
-//     Captures leveraged-position losses against deployed margin, which a
-//     pure equity view understates dramatically for all-perps accounts: a
-//     50% loss on 10x margin shows up as ~5% of total account value, so the
-//     equity-only kill switch fires far too late (or not at all before
-//     liquidation). Persisted as CurrentMarginDrawdownPct.
-//
-// The two signals live on separate fields so (PeakValue, CurrentDrawdownPct)
-// remains an arithmetically consistent equity tuple for post-incident review.
-// The kill switch fires on whichever signal breaches cfg.MaxDrawdownPct
-// first, so a mixed portfolio is guarded on both fronts. For all-perps
-// accounts, the margin signal dominates; for all-spot/options, the margin
-// inputs are zero and behavior is identical to the pre-#296 baseline.
-//
-// The emitted KillSwitchEvent.Source records whether equity or margin drove
-// the fire/warning so operators can tell at a glance which lever tripped.
 func CheckPortfolioRisk(prs *PortfolioRiskState, cfg *PortfolioRiskConfig, totalValue, totalNotional, perpsUnrealizedLoss, perpsMargin float64) (allowed, notionalBlocked, warning bool, reason string) {
+	return checkPortfolioRiskWithEquityAvailability(prs, cfg, totalValue, totalNotional, perpsUnrealizedLoss, perpsMargin, true, true)
+}
+
+func checkPortfolioRiskWithEquityAvailability(prs *PortfolioRiskState, cfg *PortfolioRiskConfig, totalValue, totalNotional, perpsUnrealizedLoss, perpsMargin float64, equityAvailable, equityTrusted bool) (allowed, notionalBlocked, warning bool, reason string) {
 	if prs.KillSwitchActive {
 		return false, false, false, fmt.Sprintf("portfolio kill switch is latched (triggered at %s, manual reset required)",
 			prs.KillSwitchAt.Format("2006-01-02 15:04:05 UTC"))
 	}
 
-	// Ratchet peak high-water mark upward only.
-	if totalValue > prs.PeakValue {
+	priorEquityDD := prs.CurrentDrawdownPct
+	if priorEquityDD > cfg.MaxDrawdownPct {
+		priorEquityDD = cfg.MaxDrawdownPct
+	}
+
+	if equityAvailable && equityTrusted && totalValue > prs.PeakValue {
 		prs.PeakValue = totalValue
 	}
 
-	// Compute both drawdown signals independently. Each is persisted to its
-	// own field so (PeakValue, CurrentDrawdownPct) stays internally consistent
-	// and operators can see both lenses at once.
 	var equityDD, marginDD float64
-	if prs.PeakValue > 0 {
+	if equityAvailable && prs.PeakValue > 0 {
 		equityDD = (prs.PeakValue - totalValue) / prs.PeakValue * 100
 		if equityDD < 0 {
 			equityDD = 0
 		}
+		substituted := false
+		if !equityTrusted && equityDD < priorEquityDD {
+			equityDD = priorEquityDD
+			substituted = true
+		}
 		prs.CurrentDrawdownPct = equityDD
+		prs.DrawdownReadingSubstituted = substituted
 	}
 	if perpsMargin > 0 && perpsUnrealizedLoss > 0 {
 		marginDD = perpsUnrealizedLoss / perpsMargin * 100
 	}
 	prs.CurrentMarginDrawdownPct = marginDD
 
-	// Kill switch: fire if either signal breaches the limit. The reason names
-	// the breaching signal so operators know whether to investigate spot /
-	// options equity or perps margin.
-	//
-	// Note: this branch runs even when PeakValue == 0, so a cold-start
-	// account that blows up margin on bar 1 (before any equity snapshot) is
-	// still protected — equityDD is zero in that case and only the margin
-	// signal can fire.
-	if equityDD > cfg.MaxDrawdownPct || marginDD > cfg.MaxDrawdownPct {
+	equityGuardArmed := equityAvailable && prs.PeakValue > 0
+
+	equityLatchDeferred := false
+	if equityGuardArmed && !equityTrusted && cfg.MaxDrawdownPct > 0 && equityDD > cfg.MaxDrawdownPct {
+		now := time.Now().UTC()
+		if prs.UntrustedOverLimitSince.IsZero() {
+			prs.UntrustedOverLimitSince = now
+			addKillSwitchEvent(prs, "latch_deferred", "equity", equityDD, totalValue, prs.PeakValue,
+				fmt.Sprintf("equity drawdown %.1f%% exceeds limit %.1f%% on an untrusted total (substituted or one-generation-stale); portfolio latch deferred up to %s pending a trusted measurement",
+					equityDD, cfg.MaxDrawdownPct, formatWarningDuration(untrustedEquityLatchDeferral)))
+		}
+		equityLatchDeferred = now.Sub(prs.UntrustedOverLimitSince) < untrustedEquityLatchDeferral
+	} else {
+		prs.UntrustedOverLimitSince = time.Time{}
+	}
+
+	if (equityGuardArmed && !equityLatchDeferred && equityDD > cfg.MaxDrawdownPct) || (!equityGuardArmed && marginDD > cfg.MaxDrawdownPct) {
 		prs.KillSwitchActive = true
 		prs.KillSwitchAt = time.Now().UTC()
+		prs.WarningSent = false
+		prs.WarnBandEnteredAt = time.Time{}
+		prs.LastWarningEquityDDPct = 0
+		prs.LastWarningMarginDDPct = 0
+		prs.WarningEquityDeltaPct = 0
+		prs.WarningMarginDeltaPct = 0
 		var r, source string
 		var dd float64
-		// Tie-break to margin when the two signals are equal: the margin
-		// signal is the newer, more sensitive lens (#296) and surfacing it
-		// preferentially helps operators notice leveraged blow-ups.
-		if marginDD >= equityDD {
+		if !equityGuardArmed {
 			source = "margin"
 			dd = marginDD
-			r = fmt.Sprintf("portfolio perps margin drawdown %.1f%% exceeds limit %.1f%% (unrealized loss=$%.2f, margin=$%.2f, value=$%.2f, peak=$%.2f)",
-				marginDD, cfg.MaxDrawdownPct, perpsUnrealizedLoss, perpsMargin, totalValue, prs.PeakValue)
+			if equityAvailable {
+				r = fmt.Sprintf("portfolio perps margin drawdown %.1f%% exceeds limit %.1f%% (unrealized loss=$%.2f, margin=$%.2f, value=$%.2f, peak=$%.2f)",
+					marginDD, cfg.MaxDrawdownPct, perpsUnrealizedLoss, perpsMargin, totalValue, prs.PeakValue)
+			} else {
+				r = fmt.Sprintf("portfolio perps margin drawdown %.1f%% exceeds limit %.1f%% (unrealized loss=$%.2f, margin=$%.2f; equity unavailable)",
+					marginDD, cfg.MaxDrawdownPct, perpsUnrealizedLoss, perpsMargin)
+			}
 		} else {
 			source = "equity"
 			dd = equityDD
-			r = fmt.Sprintf("portfolio drawdown %.1f%% exceeds limit %.1f%% (value=$%.2f, peak=$%.2f)",
-				equityDD, cfg.MaxDrawdownPct, totalValue, prs.PeakValue)
+			if !prs.UntrustedOverLimitSince.IsZero() {
+				r = fmt.Sprintf("portfolio drawdown %.1f%% exceeds limit %.1f%% (value=$%.2f, peak=$%.2f); measurement is UNTRUSTED (substituted or stale total) and has read over the limit continuously since %s — latch escalated after %s",
+					equityDD, cfg.MaxDrawdownPct, totalValue, prs.PeakValue,
+					prs.UntrustedOverLimitSince.Format("2006-01-02 15:04 UTC"),
+					formatWarningDuration(untrustedEquityLatchDeferral))
+			} else {
+				r = fmt.Sprintf("portfolio drawdown %.1f%% exceeds limit %.1f%% (value=$%.2f, peak=$%.2f)",
+					equityDD, cfg.MaxDrawdownPct, totalValue, prs.PeakValue)
+			}
 		}
+		prs.UntrustedOverLimitSince = time.Time{}
 		addKillSwitchEvent(prs, "triggered", source, dd, totalValue, prs.PeakValue, r)
 		return false, false, false, r
 	}
 
-	// Warning check: approaching kill switch threshold on either signal.
 	if cfg.MaxDrawdownPct > 0 {
 		warnDrawdownPct := cfg.MaxDrawdownPct * cfg.WarnThresholdPct / 100
-		equityWarn := equityDD > warnDrawdownPct
-		marginWarn := marginDD > warnDrawdownPct
+		equityWarn, marginWarn := portfolioWarnBandSignals(cfg, prs, equityAvailable)
 		if equityWarn || marginWarn {
+			now := time.Now().UTC()
+			if !prs.WarningSent {
+				prs.WarnBandEnteredAt = now
+				prs.WarningEquityDeltaPct = 0
+				prs.WarningMarginDeltaPct = 0
+			} else {
+				if equityAvailable {
+					prs.WarningEquityDeltaPct = equityDD - prs.LastWarningEquityDDPct
+				} else {
+					prs.WarningEquityDeltaPct = 0
+				}
+				prs.WarningMarginDeltaPct = marginDD - prs.LastWarningMarginDDPct
+			}
+			if equityAvailable {
+				prs.LastWarningEquityDDPct = equityDD
+			}
+			prs.LastWarningMarginDDPct = marginDD
 			prs.WarningSent = true
 			warning = true
+			marginOverLimit := marginDD > cfg.MaxDrawdownPct
 			switch {
+			case equityLatchDeferred:
+				reason = fmt.Sprintf("portfolio equity drawdown %.1f%% exceeds limit %.1f%% (value=$%.2f, peak=$%.2f) but the total is UNTRUSTED (substituted or one-generation-stale) — full-book latch DEFERRED since %s, escalates at %s unless a trusted measurement lands first; per-strategy circuit breakers (#292) remain active",
+					equityDD, cfg.MaxDrawdownPct, totalValue, prs.PeakValue,
+					prs.UntrustedOverLimitSince.Format("2006-01-02 15:04 UTC"),
+					prs.UntrustedOverLimitSince.Add(untrustedEquityLatchDeferral).Format("2006-01-02 15:04 UTC"))
+				if marginWarn {
+					reason += fmt.Sprintf("; perps margin=%.1f%% (unrealized loss=$%.2f, margin=$%.2f)",
+						marginDD, perpsUnrealizedLoss, perpsMargin)
+				}
+			case equityWarn && marginWarn && marginOverLimit:
+				reason = fmt.Sprintf("portfolio drawdown warning: equity=%.1f%% (value=$%.2f, peak=$%.2f); perps margin=%.1f%% exceeds limit %.1f%% (unrealized loss=$%.2f, margin=$%.2f); portfolio latch governed by equity drawdown (limit %.1f%%); per-strategy circuit breakers own margin protection (#1448)",
+					equityDD, totalValue, prs.PeakValue, marginDD, cfg.MaxDrawdownPct, perpsUnrealizedLoss, perpsMargin, cfg.MaxDrawdownPct)
 			case equityWarn && marginWarn:
-				// Both breached — surface both in the reason so a
-				// correlated move is visible to the operator. Ties go
-				// to margin (see kill-switch branch above).
 				reason = fmt.Sprintf("portfolio drawdown approaching kill switch limit %.1f%% (warn at %.1f%%): equity=%.1f%% (value=$%.2f, peak=$%.2f); perps margin=%.1f%% (unrealized loss=$%.2f, margin=$%.2f)",
 					cfg.MaxDrawdownPct, warnDrawdownPct, equityDD, totalValue, prs.PeakValue, marginDD, perpsUnrealizedLoss, perpsMargin)
+			case marginWarn && marginOverLimit:
+				reason = fmt.Sprintf("portfolio perps margin drawdown %.1f%% exceeds limit %.1f%% (unrealized loss=$%.2f, margin=$%.2f); portfolio latch governed by equity drawdown %.1f%% (limit %.1f%%); per-strategy circuit breakers own margin protection (#1448)",
+					marginDD, cfg.MaxDrawdownPct, perpsUnrealizedLoss, perpsMargin, equityDD, cfg.MaxDrawdownPct)
 			case marginWarn:
 				reason = fmt.Sprintf("portfolio perps margin drawdown %.1f%% approaching kill switch limit %.1f%% (warn at %.1f%%, unrealized loss=$%.2f, margin=$%.2f)",
 					marginDD, cfg.MaxDrawdownPct, warnDrawdownPct, perpsUnrealizedLoss, perpsMargin)
@@ -522,24 +676,33 @@ func CheckPortfolioRisk(prs *PortfolioRiskState, cfg *PortfolioRiskConfig, total
 				reason = fmt.Sprintf("portfolio drawdown %.1f%% approaching kill switch limit %.1f%% (warn at %.1f%%, value=$%.2f, peak=$%.2f)",
 					equityDD, cfg.MaxDrawdownPct, warnDrawdownPct, totalValue, prs.PeakValue)
 			}
-		} else {
-			// Recovered below warning threshold — no active warning band.
+		} else if equityAvailable {
 			prs.WarningSent = false
+			prs.WarnBandEnteredAt = time.Time{}
+			prs.LastWarningEquityDDPct = 0
+			prs.LastWarningMarginDDPct = 0
+			prs.WarningEquityDeltaPct = 0
+			prs.WarningMarginDeltaPct = 0
 		}
 	}
 
-	// Check notional cap — blocks new trades but does not force-close.
 	if cfg.MaxNotionalUSD > 0 && totalNotional > cfg.MaxNotionalUSD {
-		return true, true, warning, fmt.Sprintf("portfolio notional $%.2f exceeds cap $%.2f — new trades blocked",
-			totalNotional, cfg.MaxNotionalUSD)
+		return true, true, warning, notionalCapHoldDetail(totalNotional, cfg.MaxNotionalUSD)
 	}
 
 	return true, false, warning, reason
 }
 
-// PortfolioNotional computes gross market exposure across all strategies.
-// Spot: quantity * price. Options sold: strike * quantity (max obligation).
-// Options bought: CurrentValueUSD if positive.
+func portfolioWarnBandSignals(cfg *PortfolioRiskConfig, prs *PortfolioRiskState, equityAvailable bool) (equityInBand, marginInBand bool) {
+	if cfg == nil || prs == nil || cfg.MaxDrawdownPct <= 0 {
+		return false, false
+	}
+	warnDrawdownPct := cfg.MaxDrawdownPct * cfg.WarnThresholdPct / 100
+	equityInBand = equityAvailable && prs.PeakValue > 0 && prs.CurrentDrawdownPct > warnDrawdownPct
+	marginInBand = prs.CurrentMarginDrawdownPct > warnDrawdownPct
+	return equityInBand, marginInBand
+}
+
 func PortfolioNotional(strategies map[string]*StrategyState, prices map[string]float64) float64 {
 	total := 0.0
 	for _, s := range strategies {
@@ -565,97 +728,31 @@ func PortfolioNotional(strategies map[string]*StrategyState, prices map[string]f
 	return total
 }
 
-// RiskState tracks risk metrics for a strategy.
 type RiskState struct {
-	PeakValue           float64   `json:"peak_value"`
-	MaxDrawdownPct      float64   `json:"max_drawdown_pct"`
-	CurrentDrawdownPct  float64   `json:"current_drawdown_pct"`
-	DailyPnL            float64   `json:"daily_pnl"`
-	DailyPnLDate        string    `json:"daily_pnl_date"`
-	ConsecutiveLosses   int       `json:"consecutive_losses"`
-	CircuitBreaker      bool      `json:"circuit_breaker"`
-	CircuitBreakerUntil time.Time `json:"circuit_breaker_until"`
-	// PendingCircuitCloses holds venue-appropriate reduce-only / flatten close
-	// requests queued by per-strategy circuit breakers, keyed by platform string.
-	// The key MUST match StrategyConfig.Platform ("hyperliquid", "okx",
-	// "topstep", "robinhood") — not the strategy-ID prefix (hl-/ts-/rh-/okx-)
-	// and not an ad-hoc label — so the drain runners can correlate pending
-	// entries with live strategies by platform. Use the PlatformPendingClose*
-	// constants when setting or reading entries. Serialized to SQLite as
-	// risk_pending_circuit_closes_json. Drained out-of-lock by platform-specific
-	// runners (e.g. runPendingHyperliquidCircuitCloses for "hyperliquid").
-	//
-	// Generalized from the HL-specific PendingHyperliquidCircuitClose field in
-	// #359 phase 1b. The per-platform drain code interprets the symbol/size
-	// pairs according to its API; HL uses coin name + base-unit size, other
-	// venues will use their own identifier conventions (phases 2-4).
+	PeakValue            float64                         `json:"peak_value"`
+	MaxDrawdownPct       float64                         `json:"max_drawdown_pct"`
+	CurrentDrawdownPct   float64                         `json:"current_drawdown_pct"`
+	DailyPnL             float64                         `json:"daily_pnl"`
+	DailyPnLDate         string                          `json:"daily_pnl_date"`
+	ConsecutiveLosses    int                             `json:"consecutive_losses"`
+	CircuitBreaker       bool                            `json:"circuit_breaker"`
+	CircuitBreakerUntil  time.Time                       `json:"circuit_breaker_until"`
 	PendingCircuitCloses map[string]*PendingCircuitClose `json:"pending_circuit_closes,omitempty"`
 }
 
-// PlatformPendingCloseHyperliquid is the map key in RiskState.PendingCircuitCloses
-// for Hyperliquid perps closes. Other platform constants land alongside their
-// phase PRs (#360 OKX, #361 RH, #362 TS).
 const PlatformPendingCloseHyperliquid = "hyperliquid"
 
-// PlatformPendingCloseOKX is the map key in RiskState.PendingCircuitCloses for
-// OKX perpetual swap reduce-only closes (#360 phase 2 of #357).
 const PlatformPendingCloseOKX = "okx"
 
-// PlatformPendingCloseRobinhood is the map key in RiskState.PendingCircuitCloses
-// for Robinhood crypto closes (#361 phase 3). Robinhood crypto has no
-// reduce-only primitive — the drain submits a full market_sell of the coin's
-// on-account balance, gated on sole-ownership (only one live configured RH
-// crypto strategy trading that coin on the account). Shared-coin setups
-// cannot CB-close safely and are surfaced to the owner via DM instead.
 const PlatformPendingCloseRobinhood = "robinhood"
 
-// PlatformPendingCloseTopStep is the map key in RiskState.PendingCircuitCloses
-// for TopStep futures closes. Size entries are integer contract counts encoded
-// as float64 (PendingCircuitCloseSymbol.Size is float64 across all venues for
-// storage uniformity; the TopStep drain logs the live on-account count at
-// drain time — market_close has no size argument and flattens the full position).
 const PlatformPendingCloseTopStep = "topstep"
 
-// PlatformPendingCloseOKXSpot and PlatformPendingCloseRobinhoodOptions are map
-// keys for per-strategy circuit-breaker closes the scheduler CANNOT auto-close
-// safely (#363 phase 5, mirrors the portfolio-kill gaps from #345 / #346).
-//
-// OKX spot: no reduce-only semantic for asset balances; a net-close would wipe
-// holdings that other strategies or the operator's manual positions rely on.
-//
-// Robinhood options: stock options close semantics (sell-to-close vs
-// buy-to-close per leg, multi-leg spreads) are non-trivial to automate and the
-// failure mode is high-risk.
-//
-// Pending entries under these keys carry OperatorRequired=true. The drain does
-// NOT submit orders — it emits a CRITICAL warning once per cycle and leaves
-// the pending intact until the operator intervenes (or the CB naturally
-// resets). Deliberately distinct from "okx" / "robinhood" portfolio-kill keys
-// so the auto-close drains never dequeue an operator-required entry.
 const (
 	PlatformPendingCloseOKXSpot          = "okx_spot"
 	PlatformPendingCloseRobinhoodOptions = "robinhood_options"
 )
 
-// PendingCircuitClose is a queued request to close one or more positions on a
-// single venue after a per-strategy circuit breaker fired. The drain runner
-// for that venue (platform key in RiskState.PendingCircuitCloses) translates
-// the symbol/size legs into venue-specific orders.
-//
-// When OperatorRequired is true the scheduler will not attempt an automated
-// close — the venue lacks a safe reduce-only primitive or the close semantics
-// are leg-aware enough that automation is unsafe (OKX spot, Robinhood options;
-// #363). The drain emits a CRITICAL warning each cycle instead and leaves the
-// pending populated so /status, Discord, and Telegram all surface the gap
-// continuously until the operator clears it manually.
-//
-// ConsecutiveFailures and LastNotifiedAt track consecutive close-attempt
-// failures (without any partial progress) for the throttled owner-DM alert
-// added in #427. The drain increments ConsecutiveFailures on each hard error
-// and resets it to 0 on any partial fill progress. The DM fires on the first
-// failure, every 10th consecutive failure, or once per hour — whichever fires
-// first. The counter is discarded together with the entry when the close
-// fully succeeds.
 type PendingCircuitClose struct {
 	Symbols             []PendingCircuitCloseSymbol `json:"symbols"`
 	OperatorRequired    bool                        `json:"operator_required,omitempty"`
@@ -663,63 +760,26 @@ type PendingCircuitClose struct {
 	LastNotifiedAt      time.Time                   `json:"last_notified_at,omitempty"`
 }
 
-// PendingCircuitCloseSymbol is one position leg of a pending close. Symbol is
-// venue-specific (e.g. HL coin "ETH", OKX inst_id "BTC-USDT-SWAP", TS
-// contract "ESM25"). Size is a positive magnitude; units are venue-specific
-// (coin units for HL, contracts for TS, quote-currency amount for OKX).
 type PendingCircuitCloseSymbol struct {
 	Symbol string  `json:"symbol"`
 	Size   float64 `json:"size"`
 }
 
-// PlatformRiskAssist carries pre-fetched venue state that
-// setCircuitBreakerPending helpers need to size per-strategy on-chain closes
-// when a CB fires. Nil fields disable pending enqueue for that platform; the
-// drain runner's stuck-CB recovery path then re-enqueues once the fetch
-// succeeds on a later cycle (#356).
-//
-// HL (#356), OKX (#360), Robinhood (#361), and TopStep (#362) fields are all
-// populated today. RH fields are left unpopulated at the CheckRisk call site —
-// see setRobinhoodCircuitBreakerPending for why the RH enqueue is driven
-// exclusively by the drain's stuck-CB recovery path rather than at CB-fire time.
 type PlatformRiskAssist struct {
 	HLPositions  []HLPosition
 	HLLiveAll    []StrategyConfig
 	OKXPositions []OKXPosition
 	OKXLiveAll   []StrategyConfig
-	// RHPositions is reserved for a future main.go wiring that fetches live
-	// Robinhood crypto balances once per cycle. It is intentionally left nil
-	// at the CheckRisk call site today (see setRobinhoodCircuitBreakerPending
-	// doc for rationale — fetching per cycle would cost a TOTP round-trip
-	// even when no CB fires).
-	RHPositions []RobinhoodPosition
-	// RHLiveAll mirrors HLLiveAll/OKXLiveAll: every live configured Robinhood
-	// crypto (Type=="spot") strategy. Left nil at the CheckRisk call site today
-	// — see setRobinhoodCircuitBreakerPending.
-	RHLiveAll []StrategyConfig
-	// TSPositions is the pre-fetched live TopStep futures position snapshot
-	// for the configured account. Populated in main.go from a once-per-cycle
-	// fetch_topstep_positions.py call (#362). Empty slice with TSLiveAll set
-	// is a successful fetch that found no open positions; nil slice signals
-	// a fetch failure (stuck-CB path will retry).
-	TSPositions []TopStepPosition
-	// TSLiveAll mirrors HLLiveAll — every configured live TopStep futures
-	// strategy on this scheduler. Needed by the sole-vs-shared-peer branch
-	// in computeTopStepCircuitCloseQty.
-	TSLiveAll []StrategyConfig
+	RHPositions  []RobinhoodPosition
+	RHLiveAll    []StrategyConfig
+	TSPositions  []TopStepPosition
+	TSLiveAll    []StrategyConfig
 }
 
-// MarshalPendingCircuitClosesJSON returns a DB-safe JSON blob for the pending
-// field. A marshal error is logged loudly rather than silently swallowed: the
-// map-of-struct payload is essentially unreachable for json.Marshal failures,
-// but silently returning "" would persist a blank column that wipes pending
-// closes on reload. Logging gives operators a chance to notice (#356 review).
 func (r *RiskState) MarshalPendingCircuitClosesJSON() string {
 	if r == nil || len(r.PendingCircuitCloses) == 0 {
 		return ""
 	}
-	// Drop platforms whose pending payload has no legs — persisting
-	// {"hyperliquid":{"symbols":[]}} is noise and makes reload ambiguous.
 	filtered := make(map[string]*PendingCircuitClose, len(r.PendingCircuitCloses))
 	for k, v := range r.PendingCircuitCloses {
 		if v == nil || len(v.Symbols) == 0 {
@@ -739,15 +799,6 @@ func (r *RiskState) MarshalPendingCircuitClosesJSON() string {
 	return string(b)
 }
 
-// UnmarshalPendingCircuitClosesJSON restores PendingCircuitCloses from DB.
-//
-// Accepts two JSON shapes for backwards-compatibility with rows written by
-// pre-#359 (#356) builds:
-//
-//  1. New map shape: {"hyperliquid":{"symbols":[{"symbol":"ETH","size":0.1}]}}
-//  2. Legacy HL-only shape: {"coins":[{"coin":"ETH","sz":0.1}]} — transparently
-//     converted to {"hyperliquid":{"symbols":[...]}} on first load. Subsequent
-//     saves write the new shape, so the DB self-heals within one cycle.
 func (r *RiskState) UnmarshalPendingCircuitClosesJSON(raw string) {
 	if r == nil {
 		return
@@ -757,7 +808,6 @@ func (r *RiskState) UnmarshalPendingCircuitClosesJSON(raw string) {
 		return
 	}
 
-	// Try new map shape first.
 	var asMap map[string]*PendingCircuitClose
 	if err := json.Unmarshal([]byte(raw), &asMap); err == nil {
 		filtered := make(map[string]*PendingCircuitClose, len(asMap))
@@ -773,11 +823,6 @@ func (r *RiskState) UnmarshalPendingCircuitClosesJSON(raw string) {
 		}
 	}
 
-	// Legacy shape fallback: {"coins":[{"coin":"ETH","sz":0.1}]} from #356.
-	// json.Unmarshal into map[string]*PendingCircuitClose errors out on the
-	// legacy payload (the "coins" value is an array, which cannot decode into
-	// a *PendingCircuitClose), so the new-shape attempt above returns non-nil
-	// err and execution falls through here.
 	var legacy struct {
 		Coins []struct {
 			Coin string  `json:"coin"`
@@ -797,9 +842,6 @@ func (r *RiskState) UnmarshalPendingCircuitClosesJSON(raw string) {
 	}
 }
 
-// setPendingCircuitClose stores a pending close for the given platform,
-// creating the map on first use. Passing nil or an empty-symbols close deletes
-// the platform entry instead of storing an empty shell.
 func (r *RiskState) setPendingCircuitClose(platform string, pending *PendingCircuitClose) {
 	if r == nil {
 		return
@@ -817,7 +859,6 @@ func (r *RiskState) setPendingCircuitClose(platform string, pending *PendingCirc
 	r.PendingCircuitCloses[platform] = pending
 }
 
-// clearPendingCircuitClose removes the pending entry for a platform, if any.
 func (r *RiskState) clearPendingCircuitClose(platform string) {
 	if r == nil {
 		return
@@ -828,8 +869,6 @@ func (r *RiskState) clearPendingCircuitClose(platform string) {
 	}
 }
 
-// getPendingCircuitClose returns the pending entry for a platform, or nil if
-// none is queued.
 func (r *RiskState) getPendingCircuitClose(platform string) *PendingCircuitClose {
 	if r == nil {
 		return nil
@@ -837,18 +876,6 @@ func (r *RiskState) getPendingCircuitClose(platform string) *PendingCircuitClose
 	return r.PendingCircuitCloses[platform]
 }
 
-// setTopStepCircuitBreakerPending enqueues a reduce-only flatten request for
-// the firing strategy's TopStep futures contract (#362). Sole-peer strategies
-// enqueue the full on-account contract count; multi-peer shared contracts are
-// skipped because TopStepX's market_close only flattens the entire on-account
-// size — no safe partial-close primitive exists for whole-contract futures.
-// The operator is notified via the virtual force-close (CheckRisk still calls
-// forceCloseAllPositions), and manual intervention is required to split a
-// shared contract.
-//
-// A nil or empty assist bails — same stuck-CB semantics as the HL helper:
-// a fetch failure at CB fire time leaves pending nil, and the drain's
-// stuck-CB recovery phase reconstructs the pending once TS is reachable.
 func setTopStepCircuitBreakerPending(sc *StrategyConfig, s *StrategyState, assist *PlatformRiskAssist) {
 	if sc == nil || assist == nil || len(assist.TSPositions) == 0 {
 		return
@@ -893,8 +920,14 @@ func setHyperliquidCircuitBreakerPending(sc *StrategyConfig, s *StrategyState, a
 	if !ok || qty <= 0 {
 		return
 	}
+	symbols := []PendingCircuitCloseSymbol{{Symbol: sym, Size: qty}}
+	if hCoin := heldHedgeCoin(*sc, s); hCoin != "" {
+		if hQty, hok := computeHyperliquidCircuitCloseQty(hCoin, s.ID, assist.HLPositions, assist.HLLiveAll); hok && hQty > 0 {
+			symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: hCoin, Size: hQty})
+		}
+	}
 	s.RiskState.setPendingCircuitClose(PlatformPendingCloseHyperliquid, &PendingCircuitClose{
-		Symbols: []PendingCircuitCloseSymbol{{Symbol: sym, Size: qty}},
+		Symbols: symbols,
 	})
 }
 
@@ -913,20 +946,6 @@ func shouldForceCloseAllPositionsOnCircuitBreaker(sc *StrategyConfig, assist *Pl
 	return !hyperliquidCircuitBreakerHasSharedCoin(sc, assist)
 }
 
-// setOperatorRequiredCircuitBreakerPending enqueues an OperatorRequired=true
-// pending close for OKX spot and Robinhood options strategies, the two live
-// venues the scheduler has no safe auto-close path for (#345 / #346 / #363).
-//
-// Unlike setHyperliquidCircuitBreakerPending, this helper does not size the
-// close — no subprocess round-trip is ever attempted, so a notional size is
-// unnecessary. Size is set to the strategy's virtual position quantity (or 0
-// when no virtual position exists, e.g. options strategies whose positions
-// live in OptionPositions rather than Positions) purely for operator-facing
-// context in the warning message.
-//
-// No-op when the strategy is not live, or when the strategy is not one of the
-// two covered operator-gap configurations (call sites can invoke it broadly;
-// the guard keeps it cheap).
 func setOperatorRequiredCircuitBreakerPending(sc *StrategyConfig, s *StrategyState) {
 	if sc == nil || s == nil {
 		return
@@ -946,9 +965,6 @@ func setOperatorRequiredCircuitBreakerPending(sc *StrategyConfig, s *StrategySta
 			OperatorRequired: true,
 		})
 	case sc.Platform == "robinhood" && sc.Type == "options" && robinhoodIsLive(sc.Args):
-		// Options positions live in s.OptionPositions keyed by option ID, not
-		// a single underlier. Collect every open leg's ID so the operator sees
-		// exactly which positions need manual close (not just the underlier).
 		symbols := make([]PendingCircuitCloseSymbol, 0, len(s.OptionPositions))
 		for id, op := range s.OptionPositions {
 			if op == nil {
@@ -957,9 +973,6 @@ func setOperatorRequiredCircuitBreakerPending(sc *StrategyConfig, s *StrategySta
 			symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: id, Size: op.Quantity})
 		}
 		if len(symbols) == 0 {
-			// No open option legs — emit a single marker entry with the
-			// underlier so the operator still sees the strategy-level CB fire
-			// on /status and in notifications.
 			sym := robinhoodSymbol(sc.Args)
 			if sym == "" {
 				return
@@ -974,32 +987,6 @@ func setOperatorRequiredCircuitBreakerPending(sc *StrategyConfig, s *StrategySta
 	}
 }
 
-// setRobinhoodCircuitBreakerPending enqueues a pending full-close for a live
-// Robinhood crypto strategy whose per-strategy circuit breaker fired (#361
-// phase 3). Robinhood crypto has no reduce-only primitive: market_sell
-// consumes the entire on-account balance for the coin. We still enqueue
-// unconditionally when an on-account position exists — the sole-ownership
-// gate lives in the drain (runPendingRobinhoodCircuitCloses) so that shared-
-// coin setups DM the owner exactly once per fire cycle rather than silently
-// stalling forever.
-//
-// Wiring note (important): under the current main.go wiring, `assist` is
-// built from HL and OKX pre-fetches only — `assist.RHPositions` is always
-// nil when CheckRisk calls this setter (see scheduler/main.go where the
-// riskAssist literal sets HLPositions/HLLiveAll/OKXPositions/OKXLiveAll but
-// leaves RH fields unset). This function therefore no-ops on the CB-fire
-// cycle itself and relies on the drain's stuck-CB recovery path
-// (runPendingRobinhoodCircuitCloses) to reconstruct the pending leg on the
-// next cycle once the drain's lazy RH positions fetch succeeds. The trade-
-// off is deliberate: wiring RH into CheckRisk would require a live TOTP
-// round-trip every cycle (including cycles where no RH CB fires), which is
-// the exact cost we are avoiding. Do not "fix" this by populating
-// assist.RHPositions at the CheckRisk call site without revisiting the
-// lazy-fetch design, or every cycle will pay a TOTP round-trip for an RH
-// CB that fires maybe once per month.
-//
-// No-op also when assist is nil (defensive — same code path as the design
-// above, mirroring the HL pattern).
 func setRobinhoodCircuitBreakerPending(sc *StrategyConfig, s *StrategyState, assist *PlatformRiskAssist) {
 	if sc == nil || assist == nil || len(assist.RHPositions) == 0 {
 		return
@@ -1023,8 +1010,6 @@ func setRobinhoodCircuitBreakerPending(sc *StrategyConfig, s *StrategyState, ass
 	})
 }
 
-// robinhoodOnAccountSize returns the unsigned on-account size of a coin,
-// or 0 if not found. Robinhood crypto is spot so Size is always >= 0.
 func robinhoodOnAccountSize(coin string, positions []RobinhoodPosition) float64 {
 	for i := range positions {
 		if positions[i].Coin == coin {
@@ -1037,10 +1022,6 @@ func robinhoodOnAccountSize(coin string, positions []RobinhoodPosition) float64 
 	return 0
 }
 
-// setOKXCircuitBreakerPending mirrors setHyperliquidCircuitBreakerPending for
-// OKX perps (#360 phase 2 of #357). Bails on any nil dependency or missing
-// fetched assist so the stuck-CB recovery path in runPendingOKXCircuitCloses
-// can reconstruct the pending on a later cycle once OKX is reachable again.
 func setOKXCircuitBreakerPending(sc *StrategyConfig, s *StrategyState, assist *PlatformRiskAssist) {
 	if sc == nil || assist == nil || len(assist.OKXPositions) == 0 {
 		return
@@ -1064,11 +1045,6 @@ func setOKXCircuitBreakerPending(sc *StrategyConfig, s *StrategyState, assist *P
 	})
 }
 
-// rolloverDailyPnL resets DailyPnL to zero whenever the UTC date has advanced
-// past DailyPnLDate. Calling this at both risk-check time and trade-record time
-// ensures the reset is applied regardless of which code path runs first after
-// midnight — fixing issue #27 where a skipped or late risk check could cause
-// trades to be counted against the wrong day.
 func rolloverDailyPnL(r *RiskState) {
 	today := time.Now().UTC().Format("2006-01-02")
 	if r.DailyPnLDate != today {
@@ -1077,82 +1053,38 @@ func rolloverDailyPnL(r *RiskState) {
 	}
 }
 
-// forceCloseKillSwitchPositions clears virtual positions after a confirmed
-// portfolio kill-switch close. `hlFills` carries the realized Hyperliquid
-// close fills (price/size/fee) so HL strategies record accurate Trade and
-// ClosedPosition rows; `hlVirtualQty` is the pre-close peer snapshot used to
-// split shared-coin fills by virtual quantity. Pass nil for non-HL or when no
-// fill data is available.
 func forceCloseKillSwitchPositions(s *StrategyState, sc StrategyConfig, prices map[string]float64, hlFills map[string]HyperliquidCloseFill, hlLiveAll []StrategyConfig, hlVirtualQty hlVirtualQuantitySnapshot, logger *StrategyLogger) {
-	// Live HL portfolio-kill closes can carry real exchange fills. Apply them
-	// first so Trade and ClosedPosition rows use realized fill price/fee; the
-	// generic pass below remains the cleanup path for non-HL strategies,
-	// missing-fill fallbacks, options, and any residual virtual positions.
 	applyHyperliquidKillSwitchCloseFill(s, sc, hlFills, hlLiveAll, hlVirtualQty)
-	forceCloseAllPositions(s, prices, logger)
+	applyHyperliquidKillSwitchHedgeFill(s, sc, hlFills)
+	forceCloseAllPositions(s, &sc, prices, logger)
 }
 
-// forceCloseAllPositions liquidates all open positions at current prices.
-// Called when any circuit breaker fires.
-func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger *StrategyLogger) {
-	now := time.Now().UTC()
-
-	for symbol, pos := range s.Positions {
-		price, ok := prices[symbol]
-		if !ok {
-			price = pos.AvgCost
-		}
-		var pnl, value float64
-		tradeType := "spot"
-		if pos.Multiplier > 0 {
-			// Futures: PnL-based (contracts * multiplier * price delta)
-			tradeType = "futures"
-			if pos.Side == "long" {
-				pnl = pos.Quantity * pos.Multiplier * (price - pos.AvgCost)
-			} else {
-				pnl = pos.Quantity * pos.Multiplier * (pos.AvgCost - price)
-			}
-			s.Cash += pnl
-			value = pos.Quantity * pos.Multiplier * price
-		} else if pos.Side == "long" {
-			proceeds := pos.Quantity * price
-			pnl = proceeds - pos.Quantity*pos.AvgCost
-			s.Cash += proceeds
-			value = proceeds
-		} else {
-			pnl = pos.Quantity * (pos.AvgCost - price)
-			s.Cash += pos.Quantity*pos.AvgCost - pos.Quantity*price
-			value = pos.Quantity * price
-		}
-		if logger != nil {
-			logger.Warn("Circuit breaker: force-closing %s %s @ $%.2f (PnL: $%.2f)", pos.Side, symbol, price, pnl)
-		}
-		positionID := ensurePositionTradeID(s.ID, symbol, pos)
-		trade := Trade{
-			Timestamp:         now,
-			StrategyID:        s.ID,
-			Symbol:            symbol,
-			PositionID:        positionID,
-			Side:              closeTradeSide(pos.Side),
-			Quantity:          pos.Quantity,
-			Price:             price,
-			Value:             value,
-			TradeType:         tradeType,
-			Details:           fmt.Sprintf("Circuit breaker close %s, PnL: $%.2f", pos.Side, pnl),
-			IsClose:           true,
-			RealizedPnL:       pnl,
-			Regime:            s.Regime,
-			EntryATR:          pos.EntryATR,
-			StopLossTriggerPx: pos.StopLossTriggerPx,
-			StopLossATRMult:   pos.StopLossATRMult,
-			TPTiersJSON:       pos.TPTiersJSON,
-		}
-		RecordTrade(s, trade)
-		RecordTradeResult(&s.RiskState, pnl)
-		recordClosedPosition(s, pos, price, pnl, "circuit_breaker", now)
-		delete(s.Positions, symbol)
-		clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
+func classifyPositionTradeType(s *StrategyState, pos *Position) string {
+	if pos == nil {
+		return "spot"
 	}
+	if pos.isHedgeLeg() {
+		return hedgeTradeType
+	}
+	if pos.Multiplier > 0 {
+		if s != nil {
+			switch {
+			case s.Platform == "hyperliquid" && (s.Type == "perps" || s.Type == "manual"):
+				return "perps"
+			case s.Platform == "okx" && s.Type == "perps":
+				return "perps"
+			}
+		}
+		return "futures"
+	}
+	return "spot"
+}
+
+func forceCloseAllPositions(s *StrategyState, sc *StrategyConfig, prices map[string]float64, logger *StrategyLogger) {
+	for symbol, pos := range s.Positions {
+		closeVirtualPositionAtMark(s, sc, symbol, pos, prices, logger)
+	}
+	now := time.Now().UTC()
 
 	for id, pos := range s.OptionPositions {
 		var pnl, closePrice float64
@@ -1183,6 +1115,8 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 			Details:     fmt.Sprintf("Circuit breaker force-close, PnL: $%.2f", pnl),
 			IsClose:     true,
 			RealizedPnL: pnl,
+			PnLGross:    true,
+			FeeSource:   FeeSourceReconcileAdjustment,
 			Regime:      s.Regime,
 		}
 		RecordTrade(s, trade)
@@ -1192,31 +1126,96 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 	}
 }
 
-// perpsMarginDrawdownInputs iterates open perps positions and returns the sum
-// of unrealized losses (positive number; gains clamp to zero) and the sum of
-// deployed margin (notional / leverage). These are the numerator and
-// denominator of the perps-specific drawdown ratio introduced in #292.
-//
-// configLeverage is the strategy-config exchange leverage (sc.Leverage), not
-// sc.SizingLeverage and not pos.Leverage. This lets operators size small
-// positions with sizing_leverage while calculating margin drawdown against the
-// leverage actually configured at the exchange (#497).
-//
-// Positions are filtered by Multiplier > 0 (perps marker). The outer
-// s.Type == "perps" check at the call site is the primary guard. configLeverage
-// must be > 0 — when zero, the function returns (0, 0) and the caller falls
-// back to peak-relative drawdown.
-//
-// The unrealized-loss numerator (rather than peakValue - portfolioValue) keeps
-// the drawdown ratio referenced to the currently-open position: prior realized
-// losses that already live in Cash below the high-water mark do NOT inflate
-// drawdown against a fresh small position's margin. See #292 code review.
-//
-// Mark price falls back to AvgCost when missing or non-positive so numerator
-// and denominator share the same basis as PortfolioValue's valuation.
-//
-// Returns (0, 0) when no perps positions are open; the caller uses a zero
-// margin as the signal to fall back to peak-relative drawdown.
+func closeVirtualPositionAtMark(s *StrategyState, sc *StrategyConfig, symbol string, pos *Position, prices map[string]float64, logger *StrategyLogger) {
+	now := time.Now().UTC()
+	price, ok := prices[symbol]
+	if !ok {
+		price = pos.AvgCost
+	}
+	var pnl, value float64
+	tradeType := classifyPositionTradeType(s, pos)
+	reason := "circuit_breaker"
+	details := ""
+	if closePositionIsCorrupt(pos) {
+		reason = "circuit_breaker_corrupt"
+		details = fmt.Sprintf("Circuit breaker close %s (corrupt qty=%.6f avg_cost=%.4f) — zero PnL booked", pos.Side, pos.Quantity, pos.AvgCost)
+		if logger != nil {
+			logger.Warn("Circuit breaker: corrupt %s position %s (qty=%.6f avg_cost=%.4f) — booking zero realized PnL, not qty*(price-avgCost)", pos.Side, symbol, pos.Quantity, pos.AvgCost)
+		}
+	} else if pos.Multiplier > 0 {
+		if pos.Side == "long" {
+			pnl = pos.Quantity * pos.Multiplier * (price - pos.AvgCost)
+		} else {
+			pnl = pos.Quantity * pos.Multiplier * (pos.AvgCost - price)
+		}
+		s.Cash += pnl
+		value = pos.Quantity * pos.Multiplier * price
+	} else if pos.Side == "long" {
+		proceeds := pos.Quantity * price
+		pnl = proceeds - pos.Quantity*pos.AvgCost
+		s.Cash += proceeds
+		value = proceeds
+	} else {
+		pnl = pos.Quantity * (pos.AvgCost - price)
+		s.Cash += pos.Quantity*pos.AvgCost - pos.Quantity*price
+		value = pos.Quantity * price
+	}
+	if details == "" {
+		details = fmt.Sprintf("Circuit breaker close %s, PnL: $%.2f (model-only reconciliation adjustment; no exchange fill)", pos.Side, pnl)
+		if sc != nil && isLiveArgs(sc.Args) {
+			queueModelOnlyCloseAlert(s.ID, symbol, pos.Quantity)
+		}
+	}
+	details = fmt.Sprintf("%s, pre-streak=%d", details, s.RiskState.ConsecutiveLosses)
+	if logger != nil {
+		logger.Warn("Circuit breaker: force-closing %s %s @ $%.2f (PnL: $%.2f)", pos.Side, symbol, price, pnl)
+	}
+	positionID := ensurePositionTradeID(s.ID, symbol, pos)
+	trade := Trade{
+		Timestamp:         now,
+		StrategyID:        s.ID,
+		Symbol:            symbol,
+		PositionID:        positionID,
+		Side:              closeTradeSide(pos.Side),
+		Quantity:          absQty(pos.Quantity),
+		Price:             price,
+		Value:             value,
+		TradeType:         tradeType,
+		Details:           details,
+		IsClose:           true,
+		RealizedPnL:       pnl,
+		PnLGross:          true,
+		FeeSource:         FeeSourceReconcileAdjustment,
+		Regime:            s.Regime,
+		EntryATR:          pos.EntryATR,
+		StopLossTriggerPx: pos.StopLossTriggerPx,
+		StopLossATRMult:   pos.StopLossATRMult,
+		TPTiersJSON:       pos.TPTiersJSON,
+	}
+	RecordTrade(s, trade)
+	recordPositionTradeResult(s, pos, pnl)
+	recordClosedPosition(s, pos, price, pnl, reason, now)
+	delete(s.Positions, symbol)
+	clearHLPerpsPositionAlertThrottles(s, symbol)
+}
+
+func forceCloseSettledPositions(s *StrategyState, sc StrategyConfig, prices map[string]float64, settled map[string]map[string]bool, logger *StrategyLogger) {
+	coins := settled[sc.Platform]
+	if len(coins) == 0 || s == nil {
+		return
+	}
+	var syms []string
+	for sym := range s.Positions {
+		if coins[sym] {
+			syms = append(syms, sym)
+		}
+	}
+	sort.Strings(syms)
+	for _, sym := range syms {
+		closeVirtualPositionAtMark(s, &sc, sym, s.Positions[sym], prices, logger)
+	}
+}
+
 func perpsMarginDrawdownInputs(s *StrategyState, configLeverage float64, prices map[string]float64) (unrealizedLoss, margin float64) {
 	if configLeverage <= 0 {
 		return 0, 0
@@ -1251,24 +1250,18 @@ func perpsMarginDrawdownInputs(s *StrategyState, configLeverage float64, prices 
 	return unrealizedLoss, margin
 }
 
-// Shared reason-string prefixes for CheckRisk return values. Consumers
-// (main.go notification dispatch, tests) must reference these constants
-// rather than re-typing literals so reason-string tweaks stay safe under
-// refactor.
 const (
 	RiskReasonCircuitBreakerActive = "circuit breaker active"
 	RiskReasonMaxDrawdownExceeded  = "max drawdown exceeded"
-	RiskReasonConsecutiveLosses    = "5 consecutive losses"
+	RiskReasonConsecutiveLosses    = "consecutive losses"
 )
 
-// CheckRisk evaluates risk state and returns whether trading is allowed.
-// sc is the strategy config for this state (nil in some tests — platform
-// pending logic is skipped). assist carries pre-fetched per-platform state
-// (HL clearinghouse positions today; OKX/TS/RH in later phases) so live
-// strategies can enqueue on-chain closes on circuit breaker (#356 / #359).
+func circuitBreakerPermitsManagement(reason, platform, stratType string, posQty float64) bool {
+	return reason == RiskReasonCircuitBreakerActive &&
+		platform == "hyperliquid" && stratType == "perps" && posQty > 0
+}
+
 func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, prices map[string]float64, logger *StrategyLogger, assist *PlatformRiskAssist) (bool, string) {
-	// #574: manual strategies are operator-controlled and start with capital=0
-	// funded ad-hoc, so peak-relative drawdown is meaningless.
 	if sc != nil && sc.Type == "manual" {
 		return true, ""
 	}
@@ -1277,7 +1270,6 @@ func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, pri
 
 	rolloverDailyPnL(r)
 
-	// Check circuit breaker
 	if r.CircuitBreaker {
 		if now.Before(r.CircuitBreakerUntil) {
 			return false, RiskReasonCircuitBreakerActive
@@ -1286,90 +1278,108 @@ func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, pri
 		r.ConsecutiveLosses = 0
 	}
 
-	// Update peak
-	if portfolioValue > r.PeakValue {
+	cbEnabled := sc.CircuitBreakerEnabled()
+	if cbEnabled {
+		circuitBreakerSuppressedWarned.Delete(s.ID)
+	}
+
+	poolBudget := sc != nil && usesSharedWalletPoolBudget(*sc)
+
+	if !poolBudget && portfolioValue > r.PeakValue {
 		r.PeakValue = portfolioValue
 	}
 
-	// Check drawdown.
-	//
-	// For perps strategies with open leveraged positions, drawdown is measured
-	// as unrealized loss on currently-open positions divided by deployed margin
-	// (capital at risk). A 20x leveraged position only puts ~5% of notional at
-	// risk as margin; using the full portfolio as denominator with peak-relative
-	// numerator under-states near-100% margin losses as a few-percent drawdown,
-	// so the circuit breaker would only fire after the position had already been
-	// liquidated. See #292.
-	//
-	// Referencing the numerator to unrealized PnL on *currently-open* positions
-	// (rather than peak - portfolioValue, which is cumulative from the
-	// high-water mark) keeps prior realized losses from inflating drawdown
-	// against a freshly opened position's margin. A strategy that has taken
-	// past losses but just opened a small untouched position should not fire.
-	//
-	// When the strategy has no perps margin deployed (all positions closed,
-	// leverage unset, or non-perps type), we fall back to the classic
-	// peak-relative drawdown so strategies without leverage behave identically
-	// to before.
-	if r.PeakValue > 0 {
-		loss := r.PeakValue - portfolioValue
-		denom := r.PeakValue
-		denomLabel := "peak"
-		if s.Type == "perps" {
-			var configLev float64
-			if sc != nil {
-				configLev = sc.Leverage
-			}
-			if pnlLoss, margin := perpsMarginDrawdownInputs(s, configLev, prices); margin > 0 {
-				loss = pnlLoss
-				denom = margin
-				denomLabel = "margin"
-			}
+	loss := 0.0
+	denom := 0.0
+	denomLabel := "peak"
+	if s.Type == "perps" {
+		var configLev float64
+		if sc != nil {
+			configLev = sc.Leverage
 		}
+		if pnlLoss, margin := perpsMarginDrawdownInputs(s, configLev, prices); margin > 0 {
+			loss = pnlLoss
+			denom = margin
+			denomLabel = "margin"
+		}
+	}
+	if denom <= 0 && !poolBudget && r.PeakValue > 0 {
+		loss = r.PeakValue - portfolioValue
+		denom = r.PeakValue
+	}
+	if denom > 0 {
 		if loss < 0 {
 			loss = 0
 		}
-		if denom > 0 {
-			r.CurrentDrawdownPct = (loss / denom) * 100
-		} else {
-			r.CurrentDrawdownPct = 0
-		}
-		if r.CurrentDrawdownPct > r.MaxDrawdownPct {
+		r.CurrentDrawdownPct = (loss / denom) * 100
+		if r.CurrentDrawdownPct > r.MaxDrawdownPct && cbEnabled {
 			r.CircuitBreaker = true
-			r.CircuitBreakerUntil = now.Add(24 * time.Hour)
+			r.CircuitBreakerUntil = now.Add(sc.CircuitBreakerDrawdownCooldown())
 			setHyperliquidCircuitBreakerPending(sc, s, assist)
 			setOKXCircuitBreakerPending(sc, s, assist)
 			setRobinhoodCircuitBreakerPending(sc, s, assist)
 			setTopStepCircuitBreakerPending(sc, s, assist)
 			setOperatorRequiredCircuitBreakerPending(sc, s)
 			if shouldForceCloseAllPositionsOnCircuitBreaker(sc, assist) {
-				forceCloseAllPositions(s, prices, logger)
+				forceCloseAllPositions(s, sc, prices, logger)
 			}
 			return false, fmt.Sprintf("%s (%.1f%% > %.1f%%, portfolio=$%.2f peak=$%.2f, denom=%s=$%.2f)",
 				RiskReasonMaxDrawdownExceeded, r.CurrentDrawdownPct, r.MaxDrawdownPct, portfolioValue, r.PeakValue, denomLabel, denom)
 		}
+	} else {
+		r.CurrentDrawdownPct = 0
 	}
 
-	// Consecutive losses circuit breaker (5 in a row → pause 1h, close positions)
-	if r.ConsecutiveLosses >= 5 {
+	lossStreakThreshold := sc.CircuitBreakerLossStreakThreshold()
+	if r.ConsecutiveLosses >= lossStreakThreshold && cbEnabled {
 		r.CircuitBreaker = true
-		r.CircuitBreakerUntil = now.Add(1 * time.Hour)
+		r.CircuitBreakerUntil = now.Add(sc.CircuitBreakerLossStreakCooldown())
 		setHyperliquidCircuitBreakerPending(sc, s, assist)
 		setOKXCircuitBreakerPending(sc, s, assist)
 		setRobinhoodCircuitBreakerPending(sc, s, assist)
 		setTopStepCircuitBreakerPending(sc, s, assist)
 		setOperatorRequiredCircuitBreakerPending(sc, s)
 		if shouldForceCloseAllPositionsOnCircuitBreaker(sc, assist) {
-			forceCloseAllPositions(s, prices, logger)
+			forceCloseAllPositions(s, sc, prices, logger)
 		}
-		return false, RiskReasonConsecutiveLosses
+		return false, fmt.Sprintf("%s (%d in a row, threshold %d)", RiskReasonConsecutiveLosses, r.ConsecutiveLosses, lossStreakThreshold)
 	}
+
+	recordCircuitBreakerSuppression(s, cbEnabled, lossStreakThreshold, logger)
 
 	return true, ""
 }
 
-// RecordTradeResult updates risk state with realized PnL for daily limits and
-// consecutive-loss circuit breakers. Lifetime trade stats come from SQLite.
+var circuitBreakerSuppressedWarned sync.Map
+
+func recordCircuitBreakerSuppression(s *StrategyState, cbEnabled bool, lossStreakThreshold int, logger *StrategyLogger) {
+	if s == nil {
+		return
+	}
+	r := &s.RiskState
+	drawdownBreached := r.CurrentDrawdownPct > r.MaxDrawdownPct
+	lossBreached := r.ConsecutiveLosses >= lossStreakThreshold
+	if cbEnabled || (!drawdownBreached && !lossBreached) {
+		circuitBreakerSuppressedWarned.Delete(s.ID)
+		return
+	}
+	if _, loaded := circuitBreakerSuppressedWarned.LoadOrStore(s.ID, struct{}{}); loaded {
+		return
+	}
+	var reasons []string
+	if drawdownBreached {
+		reasons = append(reasons, fmt.Sprintf("drawdown %.1f%% > %.1f%%", r.CurrentDrawdownPct, r.MaxDrawdownPct))
+	}
+	if lossBreached {
+		reasons = append(reasons, fmt.Sprintf("%d consecutive losses", r.ConsecutiveLosses))
+	}
+	if logger != nil {
+		logger.Warn("WARNING: circuit breaker is DISABLED (circuit_breaker:false) and a halt threshold was crossed (%s) — NO circuit breaker fired. This strategy is trading WITHOUT the drawdown/consecutive-loss auto-halt and positions are NOT being auto-closed on this condition. This is a warning only (nothing was closed); re-enable circuit_breaker to restore protection.",
+			strings.Join(reasons, "; "))
+	}
+	queueCircuitBreakerSuppressionAlert(s.ID, reasons)
+}
+
 func RecordTradeResult(r *RiskState, pnl float64) {
 	rolloverDailyPnL(r)
 	r.DailyPnL += pnl
@@ -1378,4 +1388,114 @@ func RecordTradeResult(r *RiskState, pnl float64) {
 	} else {
 		r.ConsecutiveLosses++
 	}
+}
+
+func RecordHedgeTradeResult(r *RiskState, pnl float64) {
+	if r == nil {
+		return
+	}
+	rolloverDailyPnL(r)
+	r.DailyPnL += pnl
+}
+
+func recordPositionTradeResult(s *StrategyState, pos *Position, pnl float64) {
+	if s == nil {
+		return
+	}
+	if pos.isHedgeLeg() {
+		RecordHedgeTradeResult(&s.RiskState, pnl)
+		return
+	}
+	RecordTradeResult(&s.RiskState, pnl)
+}
+
+func forceClosePaperScopePositions(state *AppState, cfg *Config, part RiskPartition, prices map[string]float64) []string {
+	if state == nil || cfg == nil {
+		return nil
+	}
+	var closed []string
+	for _, sc := range strategiesInPartition(cfg.Strategies, part) {
+		s, ok := state.Strategies[sc.ID]
+		if !ok || s == nil {
+			continue
+		}
+		if len(s.Positions) == 0 && len(s.OptionPositions) == 0 {
+			continue
+		}
+		scCopy := sc
+		forceCloseAllPositions(s, &scCopy, prices, nil)
+		closed = append(closed, sc.ID)
+	}
+	sort.Strings(closed)
+	return closed
+}
+
+// paperKillSwitchHeader names the partition that fired, so an operator reading
+// one broadcast never has to guess which folded source latched.
+func paperKillSwitchHeader(part RiskPartition) string {
+	return fmt.Sprintf("**PORTFOLIO KILL SWITCH (%s)**", strings.ToUpper(partitionLabel(part)))
+}
+
+// paperKillSwitchManualResetLine spells the exact reply that clears this
+// partition's latch. A bare "reset paper" would be refused when only a named
+// source is latched and would clear the default paper partition when both are,
+// so the instruction always names the partition it belongs to.
+func paperKillSwitchManualResetLine(part RiskPartition) string {
+	return fmt.Sprintf("Reply to the owner DM with 'reset %s' to clear this latch.", part.String())
+}
+
+const paperKillSwitchAutoResetLine = "Kill switch auto-reset (no DM owner configured); paper trading will resume next cycle."
+
+func formatPaperKillSwitchMessage(part RiskPartition, reason string, closed []string) string {
+	detail := "No open paper books to close."
+	if len(closed) > 0 {
+		detail = fmt.Sprintf("Paper books force-closed at mark: %s", strings.Join(closed, ", "))
+	}
+	return fmt.Sprintf("%s\n%s\n%s No exchange order was sent. Live strategies are unaffected. %s",
+		paperKillSwitchHeader(part), reason, detail, paperKillSwitchManualResetLine(part))
+}
+
+func formatPaperKillSwitchPromptMessage(part RiskPartition, reason string) string {
+	return fmt.Sprintf("%s\n%s\nPaper books were force-closed at mark when this latch fired. No exchange order was sent. Live strategies are unaffected.",
+		paperKillSwitchHeader(part), reason)
+}
+
+func formatPaperKillSwitchAutoResetMessage(part RiskPartition, msg string) string {
+	return strings.Replace(msg, paperKillSwitchManualResetLine(part), paperKillSwitchAutoResetLine, 1)
+}
+
+type paperKillSwitchOutcome struct {
+	Closed       []string
+	CloseApplied bool
+	AutoReset    bool
+	Message      string
+}
+
+// applyPaperKillSwitchCycle runs once per paper partition, on that partition's
+// own strategies: a latch in one folded source never closes another's books.
+func applyPaperKillSwitchCycle(state *AppState, cfg *Config, prices map[string]float64, paperSR *scopeCycleRisk, hasOwner bool) paperKillSwitchOutcome {
+	var out paperKillSwitchOutcome
+	if state == nil || cfg == nil || paperSR == nil || !paperSR.KillSwitchFired {
+		return out
+	}
+	prs := state.partitionRisk(paperSR.Partition)
+	if !prs.KillSwitchCloseApplied {
+		out.Closed = forceClosePaperScopePositions(state, cfg, paperSR.Partition, prices)
+		prs.KillSwitchCloseApplied = true
+		out.CloseApplied = true
+		out.Message = formatPaperKillSwitchMessage(paperSR.Partition, paperSR.Reason, out.Closed)
+	}
+	if hasOwner || !prs.KillSwitchActive {
+		return out
+	}
+	out.AutoReset = AutoResetConfirmedFlatKillSwitch(prs, paperSR.TotalPV, paperSR.PeakRebaselineAvailable,
+		"paper books closed at mark after portfolio kill-switch; no DM owner configured, paper latch auto-cleared")
+	if !out.AutoReset {
+		return out
+	}
+	if out.Message == "" {
+		out.Message = formatPaperKillSwitchMessage(paperSR.Partition, paperSR.Reason, nil)
+	}
+	out.Message = formatPaperKillSwitchAutoResetMessage(paperSR.Partition, out.Message)
+	return out
 }

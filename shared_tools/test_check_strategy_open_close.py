@@ -66,7 +66,7 @@ def test_check_strategy_open_close_uses_close_registry_loader(monkeypatch, capsy
         mod.main()
 
         output = json.loads(capsys.readouterr().out)
-        assert output["close_strategy"] == "tp_at_pct"
+        assert output["close_strategy"] == "tiered_tp_pct"
         assert output["close_fraction"] == 1.0
         assert output["signal"] == -1
     finally:

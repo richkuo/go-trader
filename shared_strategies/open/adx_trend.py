@@ -1,15 +1,3 @@
-"""
-ADX Trend Rider — core strategy logic.
-
-Uses the Average Directional Index (ADX) to measure trend strength and
-+DI/-DI crossovers for directional entry signals.
-
-Entry BUY:  ADX > threshold AND +DI crosses above -DI
-Entry SELL: ADX > threshold AND -DI crosses above +DI
-No signal:  ADX below threshold (weak/no trend)
-
-ADX and directional indicators are computed using Wilder's smoothing method.
-"""
 
 import numpy as np
 import pandas as pd
@@ -21,21 +9,6 @@ def _compute_adx_components(
     close: np.ndarray,
     period: int,
 ) -> dict:
-    """Compute ADX, +DI, and -DI using Wilder's smoothing.
-
-    Parameters
-    ----------
-    high, low, close : numpy arrays of the same length n
-    period : Wilder smoothing period
-
-    Returns
-    -------
-    dict with keys:
-        "plus_di"  : np.ndarray shape (n,), 0 during warmup
-        "minus_di" : np.ndarray shape (n,), 0 during warmup
-        "adx"      : np.ndarray shape (n,), 0 during warmup
-        "adx_start": int, index from which ADX is first valid
-    """
     n = len(high)
     tr = np.zeros(n)
     plus_dm = np.zeros(n)
@@ -107,19 +80,6 @@ def adx_trend_core(
     adx_period: int = 14,
     adx_threshold: float = 25.0,
 ) -> pd.DataFrame:
-    """
-    Detect trend-following signals via ADX + DI crossovers.
-
-    Parameters
-    ----------
-    df : DataFrame with open, high, low, close columns
-    adx_period : lookback period for ADX / DI calculation (Wilder's smoothing)
-    adx_threshold : minimum ADX value to confirm a strong trend
-
-    Returns
-    -------
-    DataFrame with added 'signal' column: 1 (buy), -1 (sell), 0 (hold)
-    """
     result = df.copy()
     result["signal"] = 0
 

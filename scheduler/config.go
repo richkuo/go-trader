@@ -5,81 +5,273 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 )
 
-// DiscordConfig holds Discord notification settings.
 type DiscordConfig struct {
 	Enabled            bool              `json:"enabled"`
 	Token              string            `json:"token"`
-	OwnerID            string            `json:"owner_id,omitempty"`             // Discord user ID for DM features (upgrade prompts, config migration)
-	DMChannels         map[string]string `json:"dm_channels,omitempty"`          // per-platform DM-style trade alerts: "<platform>" (live), "<platform>-paper" (paper); value = user ID or channel ID
-	Channels           map[string]string `json:"channels"`                       // keyed by platform or type; "<platform>-paper" for paper-specific channels
-	TradeAlertChannels map[string]string `json:"trade_alert_channels,omitempty"` // optional override: route trade alerts to different channels than summaries; same key scheme as Channels; falls back to Channels on miss
-	LeaderboardTopN    int               `json:"leaderboard_top_n,omitempty"`    // number of entries shown in leaderboard messages (default 5)
-	LeaderboardChannel string            `json:"leaderboard_channel,omitempty"`  // dedicated Discord channel ID for leaderboard posts; when set, all leaderboards route here instead of being broadcast across platform channels
+	OwnerID            string            `json:"owner_id,omitempty"`
+	DMChannels         map[string]string `json:"dm_channels,omitempty"`
+	Channels           map[string]string `json:"channels"`
+	TradeAlertChannels map[string]string `json:"trade_alert_channels,omitempty"`
+	LeaderboardTopN    int               `json:"leaderboard_top_n,omitempty"`
+	LeaderboardChannel string            `json:"leaderboard_channel,omitempty"`
+	EphemeralReplies   bool              `json:"ephemeral_replies,omitempty"`
+	ReportRepo         string            `json:"report_repo,omitempty"`
+	ReportGitHubToken  string            `json:"report_github_token,omitempty"`
 }
 
-// TelegramConfig holds Telegram notification settings.
+func (c DiscordConfig) reportRepo() string {
+	if r := strings.TrimSpace(c.ReportRepo); r != "" {
+		return r
+	}
+	return defaultReportRepo
+}
+
+func (c DiscordConfig) reportToken() string {
+	if t := strings.TrimSpace(os.Getenv("GO_TRADER_GITHUB_TOKEN")); t != "" {
+		return t
+	}
+	if t := strings.TrimSpace(os.Getenv("GITHUB_TOKEN")); t != "" {
+		return t
+	}
+	return strings.TrimSpace(c.ReportGitHubToken)
+}
+
 type TelegramConfig struct {
 	Enabled            bool              `json:"enabled"`
 	BotToken           string            `json:"bot_token"`
-	OwnerChatID        string            `json:"owner_chat_id,omitempty"`        // Owner's Telegram chat ID for DMs/upgrade prompts
-	DMChannels         map[string]string `json:"dm_channels,omitempty"`          // per-platform trade alerts: "<platform>" (live), "<platform>-paper" (paper); value = chat ID
-	Channels           map[string]string `json:"channels"`                       // keyed by platform or type; "<platform>-paper" for paper-specific channels
-	TradeAlertChannels map[string]string `json:"trade_alert_channels,omitempty"` // optional override: route trade alerts to different channels than summaries; same key scheme as Channels; falls back to Channels on miss
+	OwnerChatID        string            `json:"owner_chat_id,omitempty"`
+	DMChannels         map[string]string `json:"dm_channels,omitempty"`
+	Channels           map[string]string `json:"channels"`
+	TradeAlertChannels map[string]string `json:"trade_alert_channels,omitempty"`
 }
 
-// PortfolioRiskConfig controls aggregate portfolio-level risk (#42).
 type PortfolioRiskConfig struct {
-	MaxDrawdownPct   float64 `json:"max_drawdown_pct"`             // kill switch threshold (default 25)
-	MaxNotionalUSD   float64 `json:"max_notional_usd"`             // 0 = disabled
-	WarnThresholdPct float64 `json:"warn_threshold_pct,omitempty"` // % of MaxDrawdownPct to warn (default 60)
+	MaxDrawdownPct              float64 `json:"max_drawdown_pct"`
+	MaxNotionalUSD              float64 `json:"max_notional_usd"`
+	WarnThresholdPct            float64 `json:"warn_threshold_pct,omitempty"`
+	DailyMaxLossUSD             float64 `json:"daily_max_loss_usd,omitempty"`
+	DailyMaxLossPct             float64 `json:"daily_max_loss_pct,omitempty"`
+	MaxSameDirectionNotionalUSD float64 `json:"max_same_direction_notional_usd,omitempty"`
+	MaxAssetConcentrationPct    float64 `json:"max_asset_concentration_pct,omitempty"`
+	IncludePausedInWarning      bool    `json:"include_paused_in_warning,omitempty"`
+
+	Paper *PortfolioRiskConfig `json:"paper,omitempty"`
 }
 
-// PlatformConfig holds per-platform optional risk overrides.
+// PaperSourceConfig names one folded paper deployment. The id is the stable
+// identity: it survives restart because it is config, and it never depends on
+// an alias or a coin name.
+type PaperSourceConfig struct {
+	ID            string               `json:"id"`
+	Label         string               `json:"label,omitempty"`
+	DBFile        string               `json:"db_file"`
+	PortfolioRisk *PortfolioRiskConfig `json:"portfolio_risk,omitempty"`
+}
+
+func (c *Config) paperSource(id string) (PaperSourceConfig, bool) {
+	if c == nil {
+		return PaperSourceConfig{}, false
+	}
+	for _, src := range c.PaperSources {
+		if src.ID == id {
+			return src, true
+		}
+	}
+	return PaperSourceConfig{}, false
+}
+
+func (c *Config) paperSourceLabel(id string) string {
+	if src, ok := c.paperSource(id); ok && strings.TrimSpace(src.Label) != "" {
+		return src.Label
+	}
+	return id
+}
+
+// applyPortfolioRiskOverride layers one override onto a merged copy. Zero means
+// inherit the layer above, exactly as portfolio_risk.paper always did.
+func applyPortfolioRiskOverride(dst, override *PortfolioRiskConfig) {
+	if dst == nil || override == nil {
+		return
+	}
+	if override.MaxDrawdownPct != 0 {
+		dst.MaxDrawdownPct = override.MaxDrawdownPct
+	}
+	if override.MaxNotionalUSD != 0 {
+		dst.MaxNotionalUSD = override.MaxNotionalUSD
+	}
+	if override.WarnThresholdPct != 0 {
+		dst.WarnThresholdPct = override.WarnThresholdPct
+	}
+	if override.DailyMaxLossUSD != 0 {
+		dst.DailyMaxLossUSD = override.DailyMaxLossUSD
+	}
+	if override.DailyMaxLossPct != 0 {
+		dst.DailyMaxLossPct = override.DailyMaxLossPct
+	}
+	if override.MaxSameDirectionNotionalUSD != 0 {
+		dst.MaxSameDirectionNotionalUSD = override.MaxSameDirectionNotionalUSD
+	}
+	if override.MaxAssetConcentrationPct != 0 {
+		dst.MaxAssetConcentrationPct = override.MaxAssetConcentrationPct
+	}
+	if override.IncludePausedInWarning {
+		dst.IncludePausedInWarning = true
+	}
+}
+
+// partitionRiskConfig resolves one partition's effective limits: root
+// portfolio_risk, then portfolio_risk.paper, then the named source's override.
+// A source's limits are therefore independent of every other source.
+func partitionRiskConfig(cfg *Config, p RiskPartition) *PortfolioRiskConfig {
+	if cfg == nil || cfg.PortfolioRisk == nil {
+		return nil
+	}
+	parent := cfg.PortfolioRisk
+	if p.Scope != ScopePaper {
+		return parent
+	}
+	var source *PortfolioRiskConfig
+	if p.Source != "" {
+		if src, ok := cfg.paperSource(p.Source); ok {
+			source = src.PortfolioRisk
+		}
+	}
+	if parent.Paper == nil && source == nil {
+		return parent
+	}
+	merged := *parent
+	merged.Paper = nil
+	applyPortfolioRiskOverride(&merged, parent.Paper)
+	applyPortfolioRiskOverride(&merged, source)
+	return &merged
+}
+
 type PlatformConfig struct {
-	Risk *PortfolioRiskConfig `json:"risk,omitempty"` // overrides portfolio-level defaults
+	Risk *PortfolioRiskConfig `json:"risk,omitempty"`
 }
 
-// RegimeConfig controls the market regime detector run once per (symbol, timeframe) cycle.
-// Default disabled; strategies opt in via AllowedRegimes or by reading params["regime"].
 type RegimeConfig struct {
-	Enabled      bool    `json:"enabled"`
-	Period       int     `json:"period"`        // ADX lookback (Wilder's smoothing); default 14
-	ADXThreshold float64 `json:"adx_threshold"` // ADX below this is "ranging"; default 20.0
+	Enabled            bool                          `json:"enabled"`
+	Period             int                           `json:"period"`
+	ADXThreshold       float64                       `json:"adx_threshold"`
+	Timeframe          string                        `json:"timeframe,omitempty"`
+	Windows            RegimeWindowsMap              `json:"windows,omitempty"`
+	DisplayWindows     []string                      `json:"display_windows,omitempty"`
+	Transitions        *RegimeTransitionAlertsConfig `json:"transitions,omitempty"`
+	GateOnFailure      string                        `json:"gate_on_failure,omitempty"`
+	HurstGateOnFailure string                        `json:"hurst_gate_on_failure,omitempty"`
 }
 
-// CorrelationConfig controls portfolio-level directional exposure tracking.
+var regimeTimeframeAllowSet = map[string]bool{
+	"1m": true, "2m": true, "3m": true, "5m": true, "15m": true, "30m": true,
+	"60m": true, "90m": true,
+	"1h": true, "2h": true, "4h": true, "6h": true, "8h": true, "12h": true,
+	"1d": true, "3d": true, "5d": true, "1w": true, "1mo": true, "3mo": true,
+}
+
+func normalizeRegimeTimeframe(tf string) string {
+	return strings.ToLower(strings.TrimSpace(tf))
+}
+
+func validRegimeTimeframe(tf string) bool {
+	return regimeTimeframeAllowSet[normalizeRegimeTimeframe(tf)]
+}
+
+func validRegimeTimeframes() []string {
+	out := make([]string, 0, len(regimeTimeframeAllowSet))
+	for tf := range regimeTimeframeAllowSet {
+		out = append(out, tf)
+	}
+	sort.Strings(out)
+	return out
+}
+
+const (
+	marketFeedREST      = "rest"
+	marketFeedWebsocket = "websocket"
+	marketFeedShared    = "shared"
+)
+
+const (
+	configRoleScheduler = "scheduler"
+	configRoleFeed      = "feed"
+)
+
+type SharedMarketFeedConfig struct {
+	PrimarySocket string `json:"primary_socket"`
+	BackupSocket  string `json:"backup_socket,omitempty"`
+}
+
+func (c *Config) marketFeedSharedEnabled() bool {
+	return c.marketFeedMode() == marketFeedShared
+}
+
+func (c *Config) marketFeedDeadlineScheduled() bool {
+	mode := c.marketFeedMode()
+	return mode == marketFeedWebsocket || mode == marketFeedShared
+}
+
+func (c *Config) sharedMarketFeedSockets() (primary, backup string) {
+	if c == nil || c.SharedMarketFeed == nil {
+		return "", ""
+	}
+	return strings.TrimSpace(c.SharedMarketFeed.PrimarySocket), strings.TrimSpace(c.SharedMarketFeed.BackupSocket)
+}
+
+func (c *Config) marketFeedMode() string {
+	if c == nil {
+		return marketFeedREST
+	}
+	mode := strings.TrimSpace(c.MarketFeed)
+	if mode == "" {
+		return marketFeedREST
+	}
+	return mode
+}
+
+func (c *Config) marketFeedWebsocketEnabled() bool {
+	return c.marketFeedMode() == marketFeedWebsocket
+}
+
+func marketFeedStartupLine(cfg *Config) string {
+	if cfg.marketFeedWebsocketEnabled() {
+		return "Market feed: websocket (Hyperliquid perps + manual)"
+	}
+	if cfg.marketFeedSharedEnabled() {
+		primary, backup := cfg.sharedMarketFeedSockets()
+		if backup == "" {
+			backup = "none"
+		}
+		return fmt.Sprintf("Market feed: shared (Hyperliquid perps + manual; primary=%s backup=%s)", primary, backup)
+	}
+	return "Market feed: rest (legacy polling)"
+}
+
 type CorrelationConfig struct {
 	Enabled             bool    `json:"enabled"`
-	MaxConcentrationPct float64 `json:"max_concentration_pct"`  // warn when one asset > X% of gross (default 60)
-	MaxSameDirectionPct float64 `json:"max_same_direction_pct"` // warn when >X% of strategies share direction (default 75)
+	MaxConcentrationPct float64 `json:"max_concentration_pct"`
+	MaxSameDirectionPct float64 `json:"max_same_direction_pct"`
 }
 
-// LeaderboardSummaryConfig describes a single configurable leaderboard-summary
-// post: a platform slice (optionally filtered to one ticker), top-N sort by
-// PnL%, sent to a specific channel, optionally on a recurring frequency.
-// Issue #308.
 type LeaderboardSummaryConfig struct {
-	Platform  string `json:"platform"`            // required: e.g. "hyperliquid", "binanceus", "deribit"; matches StrategyConfig.Platform
-	Ticker    string `json:"ticker,omitempty"`    // optional: e.g. "ETH", "BTC" (case-insensitive); empty = all tickers
-	TopN      int    `json:"top_n,omitempty"`     // optional: entries shown; defaults to 5
-	Channel   string `json:"channel"`             // required: channel ID to post to (Discord)
-	Frequency string `json:"frequency,omitempty"` // optional: Go duration like "6h"; empty = on-demand only
+	Platform  string `json:"platform"`
+	Ticker    string `json:"ticker,omitempty"`
+	TopN      int    `json:"top_n,omitempty"`
+	Channel   string `json:"channel"`
+	Frequency string `json:"frequency,omitempty"`
 }
 
-// TradingViewExportConfig controls optional symbol mappings for TradingView
-// portfolio CSV exports.
 type TradingViewExportConfig struct {
-	SymbolOverrides map[string]string `json:"symbol_overrides,omitempty"` // keys may be strategy:symbol, platform:symbol, or symbol
+	SymbolOverrides map[string]string `json:"symbol_overrides,omitempty"`
 }
 
-// ParsedFrequency returns the parsed duration of Frequency, or 0 if empty/invalid.
-// Validation catches invalid values at startup; callers can treat 0 as "disabled".
 func (lc LeaderboardSummaryConfig) ParsedFrequency() time.Duration {
 	if lc.Frequency == "" {
 		return 0
@@ -91,8 +283,6 @@ func (lc LeaderboardSummaryConfig) ParsedFrequency() time.Duration {
 	return d
 }
 
-// Key returns a stable identifier for tracking last-post timestamps in state.
-// Matches the "platform:ticker:channel" format (ticker lowercased, empty = "*").
 func (lc LeaderboardSummaryConfig) Key() string {
 	ticker := strings.ToLower(strings.TrimSpace(lc.Ticker))
 	if ticker == "" {
@@ -101,92 +291,143 @@ func (lc LeaderboardSummaryConfig) Key() string {
 	return fmt.Sprintf("%s:%s:%s", strings.ToLower(lc.Platform), ticker, lc.Channel)
 }
 
-// Config is the top-level scheduler configuration.
 type Config struct {
-	ConfigVersion          int                        `json:"config_version,omitempty"` // bumped when new fields are added; 0/missing = v1 baseline
-	IntervalSeconds        int                        `json:"interval_seconds"`
-	LogDir                 string                     `json:"log_dir"`
-	DBFile                 string                     `json:"db_file,omitempty"`     // SQLite state DB path (default: "scheduler/state.db")
-	StatusPort             int                        `json:"status_port,omitempty"` // HTTP status server port (default: 8099; auto-fallback if taken)
-	StatusToken            string                     `json:"-"`                     // loaded from STATUS_AUTH_TOKEN env var only
-	Discord                DiscordConfig              `json:"discord"`
-	Telegram               TelegramConfig             `json:"telegram,omitempty"`
-	AutoUpdate             string                     `json:"auto_update,omitempty"`           // "off", "daily", "heartbeat" (default: "off")
-	LeaderboardPostTime    string                     `json:"leaderboard_post_time,omitempty"` // "HH:MM" in UTC; auto-post daily leaderboard at this time (empty = disabled)
-	Strategies             []StrategyConfig           `json:"strategies"`
-	PortfolioRisk          *PortfolioRiskConfig       `json:"portfolio_risk,omitempty"`
-	Correlation            *CorrelationConfig         `json:"correlation,omitempty"`
-	Regime                 *RegimeConfig              `json:"regime,omitempty"`
-	Platforms              map[string]*PlatformConfig `json:"platforms,omitempty"`
-	LeaderboardSummaries   []LeaderboardSummaryConfig `json:"leaderboard_summaries,omitempty"`      // #308 — configurable per-channel leaderboards
-	SummaryFrequency       map[string]string          `json:"summary_frequency,omitempty"`          // #30 — per-channel summary cadence; keys match Discord/Telegram channel keys (e.g. "spot", "options", "hyperliquid"). Values: Go duration ("30m", "2h"), alias ("hourly", "every"/"per_check"/"always"), or empty for legacy default (continuous: every channel run; spot: hourly)
-	RiskFreeRate           *float64                   `json:"risk_free_rate,omitempty"`             // #397 — annualized risk-free rate used in Sharpe-ratio calculations (e.g. 0.02 for 2%). Nil/missing falls back to DefaultAnnualRiskFreeRate; an explicit 0 is respected so backtest comparisons can pin to a 0% benchmark.
-	DefaultStopLossATRMult *float64                   `json:"default_stop_loss_atr_mult,omitempty"` // #605 — top-level default applied to HL perps/manual strategies that omit all stop_loss_* / trailing_stop_* fields. Nil/missing falls back to 1.0; explicit values let operators tune the ATR stop without recompiling.
-	NotifyTPSLFills        *bool                      `json:"notify_tp_sl_fills,omitempty"`         // #661 — owner DM when HL on-chain TP/SL fills are detected by the reconciler. Nil/missing → enabled; explicit false disables.
-	ManualDefaults         *ManualDefaultsConfig      `json:"manual_defaults,omitempty"`            // #696 — operator-tunable defaults for `manual-open` CLI and `type=manual` strategy auto-config. Each field optional; absent values fall back to the hardcoded defaults.
-	TradingViewExport      TradingViewExportConfig    `json:"tradingview_export,omitempty"`         // #3 — optional symbol overrides for TradingView portfolio CSV exports
+	ConfigVersion            int                        `json:"config_version,omitempty"`
+	IntervalSeconds          int                        `json:"interval_seconds"`
+	LogDir                   string                     `json:"log_dir"`
+	LogLevel                 string                     `json:"log_level,omitempty"`
+	DBFile                   string                     `json:"db_file,omitempty"`
+	PaperDBFile              string                     `json:"paper_db_file,omitempty"`
+	PaperSources             []PaperSourceConfig        `json:"paper_sources,omitempty"`
+	ReplayLogPath            string                     `json:"replay_log_path,omitempty"`
+	StatusPort               int                        `json:"status_port,omitempty"`
+	StatusToken              string                     `json:"-"`
+	Discord                  DiscordConfig              `json:"discord"`
+	Telegram                 TelegramConfig             `json:"telegram,omitempty"`
+	AutoUpdate               string                     `json:"auto_update,omitempty"`
+	LeaderboardPostTime      string                     `json:"leaderboard_post_time,omitempty"`
+	Strategies               []StrategyConfig           `json:"strategies"`
+	PortfolioRisk            *PortfolioRiskConfig       `json:"portfolio_risk,omitempty"`
+	Correlation              *CorrelationConfig         `json:"correlation,omitempty"`
+	Regime                   *RegimeConfig              `json:"regime,omitempty"`
+	Platforms                map[string]*PlatformConfig `json:"platforms,omitempty"`
+	LeaderboardSummaries     []LeaderboardSummaryConfig `json:"leaderboard_summaries,omitempty"`
+	SummaryFrequency         map[string]string          `json:"summary_frequency,omitempty"`
+	RiskFreeRate             *float64                   `json:"risk_free_rate,omitempty"`
+	DefaultStopLossATRMult   *float64                   `json:"default_stop_loss_atr_mult,omitempty"`
+	ATRMethod                string                     `json:"atr_method,omitempty"`
+	NotifyTPSLFills          *bool                      `json:"notify_tp_sl_fills,omitempty"`
+	NotifyRatchetTriggers    *bool                      `json:"notify_ratchet_triggers,omitempty"`
+	AlertThrottleInterval    string                     `json:"alert_throttle_interval,omitempty"`
+	KillSwitchResetDMTimeout string                     `json:"kill_switch_reset_dm_timeout,omitempty"`
+	TradingViewExport        TradingViewExportConfig    `json:"tradingview_export,omitempty"`
+	UserDefaults             *UserDefaultsConfig        `json:"user_defaults,omitempty"`
+	Tuning                   *TuningConfig              `json:"tuning,omitempty"`
+	MarketFeed               string                     `json:"market_feed,omitempty"`
+	SharedMarketFeed         *SharedMarketFeedConfig    `json:"shared_market_feed,omitempty"`
+	Role                     string                     `json:"role,omitempty"`
+	Feed                     *FeedRoleConfig            `json:"feed,omitempty"`
+
+	migrationBaseVersion    int
+	migrationBaseVersionSet bool
 }
 
-// ManualDefaultsConfig holds operator-tunable defaults for the manual-open CLI
-// and type=manual strategy auto-config. All fields are optional; missing values
-// fall back to the hardcoded constants (defaultManualMarginUSD,
-// defaultManualStopLossATRMult, "long", and the inline [{2×, 0.5}, {3×, 1.0}]
-// tier literal). The fleet-wide default_stop_loss_atr_mult=0 opt-out still
-// wins over StopLossATRMult: setting it to 0 disables the auto-default
-// globally, including for manual strategies (#696).
+func (c *Config) MigrationBaseVersion() int {
+	if c == nil {
+		return CurrentConfigVersion
+	}
+	if c.migrationBaseVersionSet {
+		return c.migrationBaseVersion
+	}
+	return c.ConfigVersion
+}
+
+type TuningConfig struct {
+	MaxRetainedRuns int `json:"max_retained_runs,omitempty"`
+}
+
+type UserDefaultsConfig struct {
+	Close     CloseDefaultsMap       `json:"close,omitempty"`
+	RegimeATR map[string]interface{} `json:"regime_atr,omitempty"`
+	Manual    *ManualDefaultsConfig  `json:"manual,omitempty"`
+}
+
+type CloseDefaultsMap map[string]map[string]interface{}
+
+func (c *Config) userDefaultsClose() CloseDefaultsMap {
+	if c == nil || c.UserDefaults == nil {
+		return nil
+	}
+	return c.UserDefaults.Close
+}
+
+func (c *Config) tuningMaxRetainedRuns() int {
+	if c == nil || c.Tuning == nil {
+		return 0
+	}
+	return c.Tuning.MaxRetainedRuns
+}
+
+func (c *Config) userDefaultsRegimeATR() map[string]interface{} {
+	if c == nil || c.UserDefaults == nil {
+		return nil
+	}
+	return c.UserDefaults.RegimeATR
+}
+
+func (c *Config) userDefaultsManual() *ManualDefaultsConfig {
+	if c == nil || c.UserDefaults == nil {
+		return nil
+	}
+	return c.UserDefaults.Manual
+}
+
 type ManualDefaultsConfig struct {
-	MarginUSD       *float64       `json:"margin_usd,omitempty"`         // implicit --margin (USD) when manual-open is invoked without --size/--notional/--margin (live mode only; --record-only still requires --size). Nil → 50.0.
-	StopLossATRMult *float64       `json:"stop_loss_atr_mult,omitempty"` // implicit stop_loss_atr_mult applied to type=manual strategies that omit all five HL stop fields. Nil → 1.5; explicit 0 opts manual strategies out without affecting non-manual perps.
-	Side            string         `json:"side,omitempty"`               // implicit --side for manual-open. Lowercase "long" or "short". Empty → "long".
-	TPTiers         []ManualTPTier `json:"tp_tiers,omitempty"`           // implicit `tiers` params for tiered_tp_atr / tiered_tp_atr_live close strategies on type=manual. Nil/omitted → [{2.0, 0.5}, {3.0, 1.0}]; empty array is rejected so operators can't accidentally fall back to defaults by zeroing the list.
+	MarginUSD       *float64       `json:"margin_usd,omitempty"`
+	StopLossATRMult *float64       `json:"stop_loss_atr_mult,omitempty"`
+	Side            string         `json:"side,omitempty"`
+	TPTiers         []ManualTPTier `json:"tp_tiers,omitempty"`
+
+	TrailingStopATRMultRegime *RegimeATRBlock `json:"trailing_stop_atr_mult_regime,omitempty"`
 }
 
-// ManualTPTier is one entry of ManualDefaultsConfig.TPTiers. Matches the JSON
-// shape consumed by the tiered_tp_atr* close evaluators ({atr_multiple,
-// close_fraction}); the final tier's close_fraction is always coerced to 1.0
-// by the evaluator regardless of the configured value.
 type ManualTPTier struct {
 	ATRMultiple   float64 `json:"atr_multiple"`
 	CloseFraction float64 `json:"close_fraction"`
 }
 
-// resolveManualMarginUSD returns the implicit margin used when manual-open is
-// invoked without any sizing flag. Operator config wins; hardcoded constant is
-// the fallback.
 func (c *Config) resolveManualMarginUSD() float64 {
-	if c != nil && c.ManualDefaults != nil && c.ManualDefaults.MarginUSD != nil {
-		return *c.ManualDefaults.MarginUSD
+	if md := c.userDefaultsManual(); md != nil && md.MarginUSD != nil {
+		return *md.MarginUSD
 	}
 	return defaultManualMarginUSD
 }
 
-// resolveManualSide returns the implicit --side for manual-open. Operator
-// config wins; "long" is the fallback.
 func (c *Config) resolveManualSide() string {
-	if c != nil && c.ManualDefaults != nil && c.ManualDefaults.Side != "" {
-		return c.ManualDefaults.Side
+	if md := c.userDefaultsManual(); md != nil && md.Side != "" {
+		return md.Side
 	}
 	return "long"
 }
 
-// resolveManualStopLossATRMult returns the implicit stop_loss_atr_mult for
-// type=manual strategies that omit all five HL stop fields. Operator config
-// wins; the 1.5× hardcoded fallback is preserved when absent.
 func (c *Config) resolveManualStopLossATRMult() float64 {
-	if c != nil && c.ManualDefaults != nil && c.ManualDefaults.StopLossATRMult != nil {
-		return *c.ManualDefaults.StopLossATRMult
+	if md := c.userDefaultsManual(); md != nil && md.StopLossATRMult != nil {
+		return *md.StopLossATRMult
 	}
 	return defaultManualStopLossATRMult
 }
 
-// resolveManualTPTiers returns the implicit `tiers` params for
-// tiered_tp_atr* close strategies on type=manual. Operator config wins; the
-// inline [{2×, 0.5}, {3×, 1.0}] literal is preserved when absent. Returns a
-// fresh slice so callers can stamp it onto Params without aliasing.
+func (c *Config) resolveManualRatchetFallbackATRMult() float64 {
+	if md := c.userDefaultsManual(); md != nil && md.StopLossATRMult != nil && *md.StopLossATRMult > 0 {
+		return *md.StopLossATRMult
+	}
+	return defaultManualStopLossATRMult
+}
+
 func (c *Config) resolveManualTPTiers() []interface{} {
-	if c != nil && c.ManualDefaults != nil && len(c.ManualDefaults.TPTiers) > 0 {
-		tiers := make([]interface{}, len(c.ManualDefaults.TPTiers))
-		for i, t := range c.ManualDefaults.TPTiers {
+	if md := c.userDefaultsManual(); md != nil && len(md.TPTiers) > 0 {
+		tiers := make([]interface{}, len(md.TPTiers))
+		for i, t := range md.TPTiers {
 			tiers[i] = map[string]interface{}{
 				"atr_multiple":   t.ATRMultiple,
 				"close_fraction": t.CloseFraction,
@@ -200,9 +441,57 @@ func (c *Config) resolveManualTPTiers() []interface{} {
 	}
 }
 
-// NotifyTPSLFillsEnabled reports whether reconciler-detected TP/SL fills should
-// trigger an owner DM. Nil pointer (missing field) defaults to true so existing
-// configs get the alert without an explicit opt-in.
+func (c *Config) resolveManualRatchetRegimeTrailBlock(sc StrategyConfig) (*RegimeATRBlock, bool) {
+	if c == nil || c.Regime == nil || !c.Regime.Enabled {
+		return nil, false
+	}
+	if sc.StopLossATRMult != nil || sc.StopLossPct != nil || sc.StopLossMarginPct != nil ||
+		sc.TrailingStopPct != nil || sc.TrailingStopATRMult != nil ||
+		sc.StopLossATRMultRegime.IsConfigured() || sc.TrailingStopATRMultRegime.IsConfigured() {
+		return nil, false
+	}
+	labels := regimeLabelsForStrategyWindow(sc, c.Regime, "atr")
+	if len(labels) == 0 {
+		return nil, false
+	}
+	if md := c.userDefaultsManual(); md != nil && md.TrailingStopATRMultRegime.IsConfigured() {
+		if block := cloneRegimeATRBlock(md.TrailingStopATRMultRegime); block != nil {
+			return block, true
+		}
+	}
+	if block, ok := userCloseDefaultTrailingStopATRMultRegime(c.userDefaultsClose()); ok {
+		return block, true
+	}
+	for _, label := range labels {
+		if _, ok := mapRegimeToBaselineFamily(regimeATRDefaults.Trailing, label); !ok {
+			return nil, false
+		}
+	}
+	return &RegimeATRBlock{raw: map[string]interface{}{"use_defaults": true}}, true
+}
+
+func cloneRegimeATRBlock(b *RegimeATRBlock) *RegimeATRBlock {
+	if b == nil {
+		return nil
+	}
+	out := &RegimeATRBlock{UseDefaults: b.UseDefaults}
+	if b.raw != nil {
+		if blob, err := json.Marshal(b.raw); err == nil {
+			var cp map[string]interface{}
+			if json.Unmarshal(blob, &cp) == nil {
+				out.raw = cp
+			}
+		}
+	}
+	if len(b.TrendRegime) > 0 {
+		out.TrendRegime = make(map[string]RegimeATREntry, len(b.TrendRegime))
+		for k, v := range b.TrendRegime {
+			out.TrendRegime[k] = v
+		}
+	}
+	return out
+}
+
 func (c *Config) NotifyTPSLFillsEnabled() bool {
 	if c == nil || c.NotifyTPSLFills == nil {
 		return true
@@ -210,10 +499,71 @@ func (c *Config) NotifyTPSLFillsEnabled() bool {
 	return *c.NotifyTPSLFills
 }
 
-// ParseSummaryFrequency converts a summary_frequency value to a duration.
-// Returns -1 to mean "use legacy default", 0 to mean "every channel run", or a
-// positive duration when caller should post every duration. An unrecognized
-// value returns a non-nil error.
+func (c *Config) NotifyRatchetTriggersEnabled() bool {
+	if c == nil || c.NotifyRatchetTriggers == nil {
+		return true
+	}
+	return *c.NotifyRatchetTriggers
+}
+
+func (sc *StrategyConfig) NotifyRatchetTriggersEnabled(cfg *Config) bool {
+	if sc != nil && sc.NotifyRatchetTriggers != nil {
+		return *sc.NotifyRatchetTriggers
+	}
+	return cfg.NotifyRatchetTriggersEnabled()
+}
+
+func (sc *StrategyConfig) CircuitBreakerEnabled() bool {
+	if sc == nil || sc.CircuitBreaker == nil {
+		return true
+	}
+	return *sc.CircuitBreaker
+}
+
+func (sc *StrategyConfig) AllowDeprecatedEffective() bool {
+	if sc == nil {
+		return false
+	}
+	if sc.AllowDeprecated != nil {
+		return *sc.AllowDeprecated
+	}
+	return !isLiveArgs(sc.Args)
+}
+
+func (sc *StrategyConfig) AllowDeprecatedAcknowledged() bool {
+	return sc != nil && sc.AllowDeprecated != nil && *sc.AllowDeprecated
+}
+
+const (
+	DefaultCBDrawdownCooldown    = 24 * time.Hour
+	DefaultCBLossStreakThreshold = 5
+	DefaultCBLossStreakCooldown  = 1 * time.Hour
+
+	maxCBCooldownMinutes     = 30 * 24 * 60
+	maxCBLossStreakThreshold = 100
+)
+
+func (sc *StrategyConfig) CircuitBreakerDrawdownCooldown() time.Duration {
+	if sc == nil || sc.CBDrawdownCooldownMinutes == nil {
+		return DefaultCBDrawdownCooldown
+	}
+	return time.Duration(*sc.CBDrawdownCooldownMinutes) * time.Minute
+}
+
+func (sc *StrategyConfig) CircuitBreakerLossStreakThreshold() int {
+	if sc == nil || sc.CBLossStreakThreshold == nil {
+		return DefaultCBLossStreakThreshold
+	}
+	return *sc.CBLossStreakThreshold
+}
+
+func (sc *StrategyConfig) CircuitBreakerLossStreakCooldown() time.Duration {
+	if sc == nil || sc.CBLossStreakCooldownMinutes == nil {
+		return DefaultCBLossStreakCooldown
+	}
+	return time.Duration(*sc.CBLossStreakCooldownMinutes) * time.Minute
+}
+
 func ParseSummaryFrequency(s string) (time.Duration, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -237,17 +587,6 @@ func ParseSummaryFrequency(s string) (time.Duration, error) {
 	return d, nil
 }
 
-// ShouldPostSummary reports whether a channel summary should be posted at now.
-// hasTrades unconditionally forces a post (users want immediate trade
-// visibility). Otherwise the cadence is derived from freq:
-//   - freq empty or invalid → legacy default: continuous channels post every
-//     channel run; non-continuous channels post hourly.
-//   - freq "every"/"per_check"/"always" → every channel run.
-//   - freq parseable as Go duration or alias → post when that wall-clock
-//     duration has elapsed since lastPost.
-//
-// continuous is true for channel types (options/perps/futures) that legacy
-// posted every channel run.
 func ShouldPostSummary(freq string, continuous, hasTrades bool, lastPost, now time.Time) bool {
 	if hasTrades {
 		return true
@@ -257,7 +596,7 @@ func ShouldPostSummary(freq string, continuous, hasTrades bool, lastPost, now ti
 		dur = -1
 	}
 	switch {
-	case dur < 0: // legacy default
+	case dur < 0:
 		if continuous {
 			return true
 		}
@@ -271,71 +610,199 @@ func ShouldPostSummary(freq string, continuous, hasTrades bool, lastPost, now ti
 	return now.Sub(lastPost) >= dur
 }
 
-// ThetaHarvestConfig controls early exit on sold options.
 type ThetaHarvestConfig struct {
 	Enabled         bool    `json:"enabled"`
-	ProfitTargetPct float64 `json:"profit_target_pct"` // Close sold options when this % of premium captured (e.g. 60)
-	StopLossPct     float64 `json:"stop_loss_pct"`     // Close if loss exceeds this % of premium (e.g. 200 = 2x premium)
-	MinDTEClose     float64 `json:"min_dte_close"`     // Force-close positions with fewer than N days to expiry
+	ProfitTargetPct float64 `json:"profit_target_pct"`
+	StopLossPct     float64 `json:"stop_loss_pct"`
+	MinDTEClose     float64 `json:"min_dte_close"`
 }
 
-// FuturesConfig holds per-contract futures trading parameters.
 type FuturesConfig struct {
 	FeePerContract float64 `json:"fee_per_contract"`
 	MaxContracts   int     `json:"max_contracts,omitempty"`
 }
 
-// StrategyRef pairs a strategy name with its evaluator params. Used for both
-// the open strategy and each close strategy on a StrategyConfig so per-strategy
-// params don't leak across roles (#640). Empty Params means "use registry
-// defaults"; the open and close registries each merge their default_params
-// over user-provided keys at evaluation time.
 type StrategyRef struct {
 	Name   string                 `json:"name"`
 	Params map[string]interface{} `json:"params,omitempty"`
 }
 
-// StrategyConfig describes a single strategy job.
 type StrategyConfig struct {
-	ID                     string              `json:"id"`
-	Type                   string              `json:"type"`                // "spot", "options", "perps", "futures", or "manual"
-	Platform               string              `json:"platform"`            // "deribit", "ibkr", "binanceus", "hyperliquid", "topstep"
-	Symbol                 string              `json:"symbol,omitempty"`    // manual strategies: trading symbol (e.g. "ETH")
-	Timeframe              string              `json:"timeframe,omitempty"` // manual strategies: OHLCV timeframe (e.g. "1h")
-	Script                 string              `json:"script"`
-	Args                   []string            `json:"args"`
-	OpenStrategy           StrategyRef         `json:"open_strategy"`              // entry strategy ref (name + params). Migrated from legacy string-typed open_strategy / args[0] in v13 (#640)
-	CloseStrategies        []StrategyRef       `json:"close_strategies,omitempty"` // exit strategy refs (name + params); max close_fraction wins (#480). Migrated from legacy []string in v13 (#640)
-	AllowedRegimes         []string            `json:"allowed_regimes,omitempty"`  // gate entries: skip signal when current regime not in this list; empty = allow all (#482)
-	Capital                float64             `json:"capital"`
-	CapitalPct             float64             `json:"capital_pct,omitempty"`     // 0-1; dynamic capital = wallet_balance * capital_pct (overrides capital)
-	InitialCapital         float64             `json:"initial_capital,omitempty"` // fixed starting balance for PnL display (never overwritten by capital_pct)
-	MaxDrawdownPct         float64             `json:"max_drawdown_pct"`
-	IntervalSeconds        int                 `json:"interval_seconds,omitempty"`           // per-strategy override (0 = use global)
-	HTFFilter              bool                `json:"htf_filter,omitempty"`                 // higher-timeframe trend filter
-	InvertSignal           bool                `json:"invert_signal,omitempty"`              // HL perps/manual only: flip BUY<->SELL on a non-zero signal before execution (HOLD/0 is never flipped). Lets inverse variants reuse the same open/close refs. Rejected with direction="short" (double-flip) and outside HL perps/manual.
-	AllowShorts            bool                `json:"allow_shorts,omitempty"`               // DEPRECATED — use Direction. Perps only; legacy boolean retained on the struct so pre-v14 JSON unmarshals cleanly. Read via EffectiveDirection / PerpsAllowsShort / PerpsAllowsLong, never directly. Migrated to Direction in v14 (#656).
-	Direction              string              `json:"direction,omitempty"`                  // perps only: "long" (default; signal=1 opens, signal=-1 closes long), "short" (signal=-1 opens, signal=1 closes short), "both" (bidirectional). Empty falls back to AllowShorts (legacy). v14 migration converts allow_shorts→direction. (#656)
-	Leverage               float64             `json:"leverage,omitempty"`                   // perps exchange leverage (default 1 = no leverage); used for exchange margin/risk and HL update_leverage (#254/#497)
-	SizingLeverage         float64             `json:"sizing_leverage,omitempty"`            // perps notional multiplier; defaults to Leverage for backwards compatibility (#497). Notional formula: notional = cash * sizing_leverage; size = notional / price. For margin-based sizing, prefer MarginPerTradeUSD (#518).
-	MarginPerTradeUSD      *float64            `json:"margin_per_trade_usd,omitempty"`       // perps only: USD margin to deploy per open. When set (positive), overrides SizingLeverage: notional = min(MarginPerTradeUSD, cash) * exchange_leverage; size = notional / price. Lets operators size in margin-space directly so high exchange_leverage doesn't decouple intent from outcome (#518).
-	StopLossPct            *float64            `json:"stop_loss_pct,omitempty"`              // HL perps only: % from entry to place a reduce-only stop-loss trigger. Pointer so omitted (nil) falls through to StopLossMarginPct then MaxDrawdownPct for single-coin strategies (#484); LoadConfig normalizes omitted same-coin peers to explicit 0 (#494); explicit 0 disables auto-SL (#412)
-	StopLossMarginPct      *float64            `json:"stop_loss_margin_pct,omitempty"`       // HL perps only: % of deployed margin to lose before stop-loss trigger; mutually exclusive with stop_loss_pct; price % derived as StopLossMarginPct / Leverage at order time. Pointer so omitted falls through to MaxDrawdownPct for single-coin strategies; LoadConfig normalizes omitted same-coin peers to explicit 0 (#494); explicit 0 disables (#487, #484)
-	TrailingStopPct        *float64            `json:"trailing_stop_pct,omitempty"`          // HL perps only: synthetic trailing SL distance from the best mark seen while open; mutually exclusive with stop_loss_pct and stop_loss_margin_pct (#501)
-	TrailingStopATRMult    *float64            `json:"trailing_stop_atr_mult,omitempty"`     // HL perps only: trailing SL distance derived from entry ATR at open (effective_pct = mult * entry_atr / avg_cost * 100); fixed for the life of the position; mutually exclusive with trailing_stop_pct, stop_loss_pct, stop_loss_margin_pct (#505)
-	StopLossATRMult        *float64            `json:"stop_loss_atr_mult,omitempty"`         // HL perps only: fixed (non-trailing) SL distance derived from entry ATR at open (trigger_px = avg_cost ± mult * entry_atr); armed once on the cycle after open and never updated; mutually exclusive with stop_loss_pct, stop_loss_margin_pct, trailing_stop_pct, trailing_stop_atr_mult. When all five stop fields are omitted on a sole-owner HL perps strategy, LoadConfig defaults this to 1.0 so every position has volatility-adjusted exchange-side protection (#562)
-	StopLossATRRegime      *RegimeATRBlock     `json:"stop_loss_atr_regime,omitempty"`       // HL perps only: regime-aware sibling of stop_loss_atr_mult — resolves the ATR multiplier from pos.Regime stamped at open. Mutually exclusive with the four scalar siblings AND stop_loss_atr_mult. Requires regime detection enabled at the top-level cfg.Regime. (#733)
-	TrailingStopATRRegime  *RegimeATRBlock     `json:"trailing_stop_atr_regime,omitempty"`   // HL perps only: regime-aware sibling of trailing_stop_atr_mult — trailing distance frozen at open via pos.Regime. Mutually exclusive with the scalar siblings. Requires regime detection. (#733)
-	TrailingStopMinMovePct *float64            `json:"trailing_stop_min_move_pct,omitempty"` // HL perps trailing SL only: minimum trigger-price move before cancel/replace; nil defaults to 0.5% (#501)
-	MarginMode             string              `json:"margin_mode,omitempty"`                // HL perps only: "isolated" (default) or "cross"; sent via update_leverage on fresh opens to enforce per-position liq isolation (#486)
-	ThetaHarvest           *ThetaHarvestConfig `json:"theta_harvest,omitempty"`
-	FuturesConfig          *FuturesConfig      `json:"futures,omitempty"`
+	ID                          string                   `json:"id"`
+	StorageStrategyID           string                   `json:"storage_strategy_id,omitempty"`
+	PaperSource                 string                   `json:"paper_source,omitempty"`
+	Type                        string                   `json:"type"`
+	Platform                    string                   `json:"platform"`
+	Symbol                      string                   `json:"symbol,omitempty"`
+	Timeframe                   string                   `json:"timeframe,omitempty"`
+	Script                      string                   `json:"script"`
+	Args                        []string                 `json:"args"`
+	OpenStrategy                StrategyRef              `json:"open_strategy"`
+	CloseStrategy               *StrategyRef             `json:"close_strategy,omitempty"`
+	closeStrategiesLegacy       []StrategyRef            `json:"-"`
+	AllowedRegimes              []string                 `json:"allowed_regimes,omitempty"`
+	RegimeGateOnFailure         string                   `json:"regime_gate_on_failure,omitempty"`
+	RegimeGateWindow            string                   `json:"regime_gate_window,omitempty"`
+	RegimeATRWindow             string                   `json:"regime_atr_window,omitempty"`
+	RegimeDirectionalWindow     string                   `json:"regime_directional_window,omitempty"`
+	HurstGate                   *HurstGateConfig         `json:"hurst_gate,omitempty"`
+	Capital                     float64                  `json:"capital"`
+	CapitalPct                  float64                  `json:"capital_pct,omitempty"`
+	InitialCapital              float64                  `json:"initial_capital,omitempty"`
+	sharedWalletPoolBudget      bool                     `json:"-"`
+	sharedWalletModeDeferred    bool                     `json:"-"`
+	MaxDrawdownPct              float64                  `json:"max_drawdown_pct"`
+	CircuitBreaker              *bool                    `json:"circuit_breaker,omitempty"`
+	CBDrawdownCooldownMinutes   *int                     `json:"cb_drawdown_cooldown_minutes,omitempty"`
+	CBLossStreakThreshold       *int                     `json:"cb_loss_streak_threshold,omitempty"`
+	CBLossStreakCooldownMinutes *int                     `json:"cb_loss_streak_cooldown_minutes,omitempty"`
+	NotifyRatchetTriggers       *bool                    `json:"notify_ratchet_triggers,omitempty"`
+	LLMEntryAnalysis            *LLMEntryAnalysisConfig  `json:"llm_entry_analysis,omitempty"`
+	AllowDeprecated             *bool                    `json:"allow_deprecated,omitempty"`
+	Paused                      bool                     `json:"paused,omitempty"`
+	IntervalSeconds             int                      `json:"interval_seconds,omitempty"`
+	HTFFilter                   bool                     `json:"htf_filter,omitempty"`
+	ATRMethod                   string                   `json:"atr_method,omitempty"`
+	InvertSignal                bool                     `json:"invert_signal,omitempty"`
+	AllowShorts                 bool                     `json:"allow_shorts,omitempty"`
+	Direction                   string                   `json:"direction,omitempty"`
+	Leverage                    float64                  `json:"leverage,omitempty"`
+	SizingLeverage              float64                  `json:"sizing_leverage,omitempty"`
+	MarginPerTradeUSD           *float64                 `json:"margin_per_trade_usd,omitempty"`
+	RiskPerTradePct             *float64                 `json:"risk_per_trade_pct,omitempty"`
+	StopLossPct                 *float64                 `json:"stop_loss_pct,omitempty"`
+	StopLossMarginPct           *float64                 `json:"stop_loss_margin_pct,omitempty"`
+	TrailingStopPct             *float64                 `json:"trailing_stop_pct,omitempty"`
+	TrailingStopATRMult         *float64                 `json:"trailing_stop_atr_mult,omitempty"`
+	StopLossATRMult             *float64                 `json:"stop_loss_atr_mult,omitempty"`
+	StopLossATRMultRegime       *RegimeATRBlock          `json:"stop_loss_atr_mult_regime,omitempty"`
+	TrailingStopATRMultRegime   *RegimeATRBlock          `json:"trailing_stop_atr_mult_regime,omitempty"`
+	TrailingStopMinMovePct      *float64                 `json:"trailing_stop_min_move_pct,omitempty"`
+	MarginMode                  string                   `json:"margin_mode,omitempty"`
+	ThetaHarvest                *ThetaHarvestConfig      `json:"theta_harvest,omitempty"`
+	FuturesConfig               *FuturesConfig           `json:"futures,omitempty"`
+	RegimeDirectionalPolicy     *RegimeDirectionalPolicy `json:"regime_directional_policy,omitempty"`
+	RegimeWindowDivergence      *RegimeWindowDivergence  `json:"regime_window_divergence,omitempty"`
+	RegimeProfileAllocation     *RegimeProfileAllocation `json:"regime_profile_allocation,omitempty"`
+	AllowScaleIn                bool                     `json:"allow_scale_in,omitempty"`
+	ReplaySharing               string                   `json:"replay_sharing,omitempty"`
+	ReplaySourceID              string                   `json:"replay_source_id,omitempty"`
+	ScaleIn                     *ScaleInConfig           `json:"scale_in,omitempty"`
+	Hedge                       *HedgeConfig             `json:"hedge,omitempty"`
 }
 
-// EffectiveSizingLeverage returns the notional-sizing multiplier for perps.
-// Omitted sizing_leverage inherits leverage so legacy configs keep the exact
-// old position sizing while new configs can run higher exchange leverage for
-// margin/risk math without increasing order size (#497).
+type HedgeConfig struct {
+	Enabled    bool    `json:"enabled"`
+	Symbol     string  `json:"symbol"`
+	Side       string  `json:"side,omitempty"`
+	Ratio      float64 `json:"ratio,omitempty"`
+	Platform   string  `json:"platform,omitempty"`
+	Type       string  `json:"type,omitempty"`
+	MarginMode string  `json:"margin_mode,omitempty"`
+	Leverage   float64 `json:"leverage,omitempty"`
+}
+
+func HedgeEnabled(sc StrategyConfig) bool {
+	return sc.Hedge != nil && sc.Hedge.Enabled
+}
+
+func hedgeCoin(sc StrategyConfig) string {
+	if !HedgeEnabled(sc) {
+		return ""
+	}
+	return normalizeHedgeCoin(sc.Hedge.Symbol)
+}
+
+func normalizeHedgeCoin(raw string) string {
+	s := strings.ToUpper(strings.TrimSpace(raw))
+	if s == "" {
+		return ""
+	}
+	if idx := strings.IndexAny(s, "/:"); idx > 0 {
+		s = s[:idx]
+	}
+	return strings.TrimSpace(s)
+}
+
+func hedgeRatio(sc StrategyConfig) float64 {
+	if sc.Hedge == nil || sc.Hedge.Ratio <= 0 {
+		return 1
+	}
+	return sc.Hedge.Ratio
+}
+
+func hedgeLeverage(sc StrategyConfig) float64 {
+	if sc.Hedge == nil || sc.Hedge.Leverage <= 0 {
+		return 1
+	}
+	return sc.Hedge.Leverage
+}
+
+func hedgeMarginMode(sc StrategyConfig) string {
+	if sc.Hedge == nil || strings.TrimSpace(sc.Hedge.MarginMode) == "" {
+		return "isolated"
+	}
+	return strings.ToLower(strings.TrimSpace(sc.Hedge.MarginMode))
+}
+
+func HedgeSideForPrimary(primarySide string) string {
+	switch primarySide {
+	case "long":
+		return "short"
+	case "short":
+		return "long"
+	default:
+		return ""
+	}
+}
+
+type ScaleInConfig struct {
+	MaxAdds             int     `json:"max_adds,omitempty"`
+	MaxAddedNotionalUSD float64 `json:"max_added_notional_usd,omitempty"`
+	AddSpacingATR       float64 `json:"add_spacing_atr,omitempty"`
+	AddNotionalUSD      float64 `json:"add_notional_usd,omitempty"`
+}
+
+func (sc *StrategyConfig) UnmarshalJSON(data []byte) error {
+	type alias StrategyConfig
+	aux := struct {
+		*alias
+		LegacyCloses []StrategyRef `json:"close_strategies"`
+	}{alias: (*alias)(sc)}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	if sc.CloseStrategy == nil && len(aux.LegacyCloses) > 0 {
+		sc.closeStrategiesLegacy = aux.LegacyCloses
+		if len(aux.LegacyCloses) == 1 {
+			ref := aux.LegacyCloses[0]
+			sc.CloseStrategy = &ref
+		}
+	}
+	return nil
+}
+
+func (sc StrategyConfig) closeRefs() []StrategyRef {
+	if sc.CloseStrategy == nil {
+		return nil
+	}
+	return []StrategyRef{*sc.CloseStrategy}
+}
+
+func cloneCloseStrategyRef(ref *StrategyRef) *StrategyRef {
+	if ref == nil {
+		return nil
+	}
+	out := StrategyRef{Name: ref.Name}
+	if len(ref.Params) > 0 {
+		out.Params = make(map[string]interface{}, len(ref.Params))
+		for k, v := range ref.Params {
+			out.Params[k] = v
+		}
+	}
+	return &out
+}
+
 func EffectiveSizingLeverage(sc StrategyConfig) float64 {
 	if sc.Type != "perps" {
 		return 1
@@ -349,7 +816,6 @@ func EffectiveSizingLeverage(sc StrategyConfig) float64 {
 	return 1
 }
 
-// EffectiveExchangeLeverage returns the actual exchange leverage for perps.
 func EffectiveExchangeLeverage(sc StrategyConfig) float64 {
 	if sc.Type != "perps" || sc.Leverage <= 0 {
 		return 1
@@ -357,11 +823,6 @@ func EffectiveExchangeLeverage(sc StrategyConfig) float64 {
 	return sc.Leverage
 }
 
-// EffectiveMarginPerTradeUSD returns the configured margin-per-trade in USD,
-// or 0 when unset / non-positive. When positive, callers should size from
-// margin-space (margin × exchange_leverage = notional) instead of the legacy
-// sizing_leverage × cash notional formula. Perps-only — returns 0 for any
-// other strategy type because validation rejects the field elsewhere (#518).
 func EffectiveMarginPerTradeUSD(sc StrategyConfig) float64 {
 	if sc.Type != "perps" || sc.MarginPerTradeUSD == nil {
 		return 0
@@ -372,20 +833,12 @@ func EffectiveMarginPerTradeUSD(sc StrategyConfig) float64 {
 	return *sc.MarginPerTradeUSD
 }
 
-// Direction enum constants for StrategyConfig.Direction (#656).
 const (
 	DirectionLong  = "long"
 	DirectionShort = "short"
 	DirectionBoth  = "both"
 )
 
-// EffectiveDirection returns the canonical direction for a perps or manual
-// strategy: "long" (signal=1 opens, signal=-1 closes long), "short" (signal=-1
-// opens, signal=1 closes short), or "both" (bidirectional). Empty Direction
-// falls back to AllowShorts (legacy pre-v14): false→"long", true→"both".
-// Non-perps/manual strategies always return "long" — direction is meaningful
-// only for perps and manual (which trades HL perps via the manual-open CLI),
-// and validation rejects Direction on other types. (#656)
 func EffectiveDirection(sc StrategyConfig) string {
 	if sc.Type != "perps" && sc.Type != "manual" {
 		return DirectionLong
@@ -400,40 +853,16 @@ func EffectiveDirection(sc StrategyConfig) string {
 	return DirectionLong
 }
 
-// PerpsAllowsLong reports whether the strategy may open long positions —
-// i.e. EffectiveDirection is "long" or "both". (#656)
 func PerpsAllowsLong(sc StrategyConfig) bool {
 	d := EffectiveDirection(sc)
 	return d == DirectionLong || d == DirectionBoth
 }
 
-// PerpsAllowsShort reports whether the strategy may open short positions —
-// i.e. EffectiveDirection is "short" or "both". (#656)
 func PerpsAllowsShort(sc StrategyConfig) bool {
 	d := EffectiveDirection(sc)
 	return d == DirectionShort || d == DirectionBoth
 }
 
-// directionFromAllowShorts is the legacy bool→direction mapping used by
-// migration and by call sites that still pass the bool. (#656)
-func directionFromAllowShorts(allowShorts bool) string {
-	if allowShorts {
-		return DirectionBoth
-	}
-	return DirectionLong
-}
-
-// PerpsOpenNotional is the primitive sizing helper: returns the USD notional
-// to open a perps position given primitive inputs. When marginPerTradeUSD is
-// positive, the formula is margin-based: min(marginPerTradeUSD, cash) ×
-// exchangeLeverage — matching the operator's mental model of "deploy $X as
-// margin per trade" regardless of how high exchange_leverage is set (#518).
-// Otherwise the legacy notional formula applies: cash × sizingLeverage. The
-// hardcoded 0.95 safety buffer was removed in #518 — operators wanting headroom
-// should set a smaller sizing_leverage (or margin_per_trade_usd) explicitly.
-//
-// Returns 0 when cash <= 0; callers must still guard for non-positive notional
-// (e.g. flip path with realized loss) before placing an order.
 func PerpsOpenNotional(cash, sizingLeverage, exchangeLeverage, marginPerTradeUSD float64) float64 {
 	if cash <= 0 {
 		return 0
@@ -454,77 +883,31 @@ func PerpsOpenNotional(cash, sizingLeverage, exchangeLeverage, marginPerTradeUSD
 	return cash * sizingLeverage
 }
 
-// ComputePerpsOpenNotional is the StrategyConfig-aware wrapper around
-// PerpsOpenNotional, resolving the three sizing inputs from the strategy
-// config. See PerpsOpenNotional for the formula.
 func ComputePerpsOpenNotional(sc StrategyConfig, cash float64) float64 {
 	return PerpsOpenNotional(cash, EffectiveSizingLeverage(sc), EffectiveExchangeLeverage(sc), EffectiveMarginPerTradeUSD(sc))
 }
 
-// MaxAutoStopLossPct caps the auto-derived per-trade stop at 50% to mirror the
-// hand-edited bound enforced on StopLossPct (#421). MaxDrawdownPct can default
-// to 50–60 across platforms; using it raw as a price stop would land triggers
-// at entry×0 / entry×2 on long/short legs.
 const MaxAutoStopLossPct = 50.0
 
-// DefaultStopLossATRMult is the fallback value for Config.DefaultStopLossATRMult
-// when the top-level config omits default_stop_loss_atr_mult. 1.0× ATR gives a
-// sensible volatility-adjusted exchange-side stop on fresh opens without any
-// operator config (#562/#605).
 const DefaultStopLossATRMult = 1.0
 
-// EffectiveStopLossPct returns the price % to use as the HL reduce-only stop-loss
-// trigger for a given strategy. Resolution order (#484):
-//  1. Explicit TrailingStopATRMult > 0 returns 0 because the price % can only
-//     be derived once a position carries EntryATR and AvgCost — initial
-//     trigger placement is deferred to the next trailing-stop cycle (#505).
-//     Explicit 0 falls through to the next priority instead of short-
-//     circuiting; a config like {trailing_stop_atr_mult: 0, stop_loss_pct: 2}
-//     is rare but well-defined and the explicit fixed stop should still arm.
-//  2. Explicit StopLossATRMult > 0 returns 0 for the same reason as
-//     TrailingStopATRMult — the per-position EntryATR/AvgCost are required
-//     to derive the price %, so initial trigger placement is deferred to the
-//     next cycle once stampEntryATRIfOpened has populated Position.EntryATR (#562).
-//     Explicit 0 falls through.
-//  3. Explicit TrailingStopPct (nil → fall through; explicit 0 → disabled).
-//  4. Explicit StopLossPct (nil → fall through; explicit 0 → disabled).
-//  5. StopLossMarginPct / Leverage (nil → fall through; explicit 0 → disabled).
-//  6. MaxDrawdownPct as a fallback for any HL perps strategy where all five
-//     stop fields are nil. Capped at MaxAutoStopLossPct. Rarely reached in
-//     practice because LoadConfig defaults all-five-omitted strategies
-//     (including shared-coin peers since #601) to Config.DefaultStopLossATRMult
-//     (#562/#605); only strategies that opt out via default_stop_loss_atr_mult=0
-//     (or an explicit per-strategy stop_loss_atr_mult=0 with no other stop
-//     field set) can reach this fallback.
-//
-// HL perps only — returns 0 for non-HL platforms or non-perps types so the
-// caller can skip the trigger placement unconditionally.
 func EffectiveStopLossPct(sc StrategyConfig) float64 {
 	if sc.Platform != "hyperliquid" || sc.Type != "perps" {
 		return 0
 	}
+	if strategyUsesUnifiedRegimeClose(sc) {
+		return 0
+	}
 	if sc.TrailingStopATRMult != nil && *sc.TrailingStopATRMult > 0 {
-		// ATR-derived trailing stop. The price % depends on per-position
-		// EntryATR and AvgCost which are not available at order placement
-		// time (the position record is created after the fill). The trailing
-		// stop loop arms the initial trigger on the next cycle once
-		// stampEntryATRIfOpened has populated Position.EntryATR (#505).
 		return 0
 	}
 	if sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0 {
-		// Fixed (non-trailing) ATR-derived stop loss. Same deferral as
-		// TrailingStopATRMult — the trigger is armed on the cycle after
-		// open by hyperliquidArmFixedATRStopLoss once EntryATR is stamped (#562).
 		return 0
 	}
-	if sc.StopLossATRRegime != nil && !sc.StopLossATRRegime.IsZero() {
-		// #733: regime-aware fixed SL. Same deferral as the scalar ATR
-		// variants — initial trigger placement is deferred to the next
-		// cycle once both Position.EntryATR AND Position.Regime are stamped.
+	if sc.StopLossATRMultRegime != nil && !sc.StopLossATRMultRegime.IsZero() {
 		return 0
 	}
-	if sc.TrailingStopATRRegime != nil && !sc.TrailingStopATRRegime.IsZero() {
-		// #733: regime-aware trailing distance. Same deferral story.
+	if sc.TrailingStopATRMultRegime != nil && !sc.TrailingStopATRMultRegime.IsZero() {
 		return 0
 	}
 	if sc.TrailingStopPct != nil {
@@ -534,7 +917,6 @@ func EffectiveStopLossPct(sc StrategyConfig) float64 {
 		return 0
 	}
 	if sc.StopLossPct != nil {
-		// Explicit value (including 0 = disabled) wins.
 		if *sc.StopLossPct > 0 {
 			return *sc.StopLossPct
 		}
@@ -556,9 +938,10 @@ func EffectiveStopLossPct(sc StrategyConfig) float64 {
 	return 0
 }
 
-// EffectiveInitialCapital returns the fixed starting balance for PnL display.
-// Priority: config InitialCapital > state InitialCapital > config Capital.
 func EffectiveInitialCapital(sc StrategyConfig, ss *StrategyState) float64 {
+	if usesSharedWalletPoolBudget(sc) {
+		return 0
+	}
 	if sc.InitialCapital > 0 {
 		return sc.InitialCapital
 	}
@@ -569,33 +952,84 @@ func EffectiveInitialCapital(sc StrategyConfig, ss *StrategyState) float64 {
 }
 
 func LoadConfig(path string) (*Config, error) {
+	return loadConfig(path, false, false)
+}
+
+func LoadConfigForProbe(path string) (*Config, error) {
+	return loadConfig(path, true, false)
+}
+
+func LoadConfigReadOnly(path string) (*Config, error) {
+	return loadConfig(path, false, true)
+}
+
+func loadConfig(path string, skipLiveCredentialChecks bool, readOnly bool) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
-	// #640: v13 introduced co-located StrategyRef shape, which is a type-changing
-	// migration json.Unmarshal cannot do on its own. Detect pre-v13 configs and
-	// run the schema rewrite synchronously before parsing — MigrateConfig writes
-	// the migrated JSON back to disk so downstream loads see the new shape and
-	// the async DM-based field migration (runConfigMigrationDM) finds the file
-	// already at the current version.
-	if needsV13SchemaMigration(data) {
+	migrate := func(label string) error {
+		if readOnly {
+			migrated, err := migrateConfigData(data, nil)
+			if err != nil {
+				return fmt.Errorf("%s (in memory): %w", label, err)
+			}
+			data = migrated
+			return nil
+		}
 		if err := MigrateConfig(path, nil, nil); err != nil {
-			return nil, fmt.Errorf("v13 schema migration: %w", err)
+			return fmt.Errorf("%s: %w", label, err)
 		}
 		data, err = os.ReadFile(path)
 		if err != nil {
-			return nil, fmt.Errorf("read config after v13 migration: %w", err)
+			return fmt.Errorf("read config after %s: %w", label, err)
+		}
+		return nil
+	}
+	if err := checkRawConfigVersionSupported(data); err != nil {
+		return nil, err
+	}
+	migrationBaseVersion := rawConfigVersion(data)
+	if migrationBaseVersion == 0 {
+		migrationBaseVersion = CurrentConfigVersion
+	}
+	if needsV13SchemaMigration(data) {
+		if err := migrate("v13 schema migration"); err != nil {
+			return nil, err
+		}
+	}
+	if needsV15CloseMigration(data) {
+		if err := migrate("v15 close-key migration"); err != nil {
+			return nil, err
+		}
+	}
+	if needsV16UserDefaultsMigration(data) {
+		if err := migrate("v16 user-defaults migration"); err != nil {
+			return nil, err
+		}
+	}
+	if needsV18TrailStopKeyMigration(data) {
+		if err := migrate("v18 trail_stop_atr_regime key migration"); err != nil {
+			return nil, err
+		}
+	}
+	if needsV19AtrMultRegimeRename(data) {
+		if err := migrate("v19 atr_mult_regime key migration"); err != nil {
+			return nil, err
 		}
 	}
 	var cfg Config
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
-	// #704: flag unknown per-strategy fields (typos like `take_profit_atr_mult`)
-	// before applying defaults; json.Unmarshal silently drops them and would
-	// otherwise produce a struct indistinguishable from "no protection configured".
-	if unknownErrs := validateStrategyJSONKeys(data); len(unknownErrs) > 0 {
+	cfg.migrationBaseVersion = migrationBaseVersion
+	cfg.migrationBaseVersionSet = true
+	if err := validateSchedulerRole(&cfg); err != nil {
+		return nil, err
+	}
+	unknownErrs := validateStrategyJSONKeys(data)
+	unknownErrs = append(unknownErrs, validateUserDefaultsJSONKeys(data)...)
+	if len(unknownErrs) > 0 {
 		return nil, fmt.Errorf("config validation errors:\n  %s", strings.Join(unknownErrs, "\n  "))
 	}
 	if cfg.IntervalSeconds <= 0 {
@@ -604,8 +1038,18 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.LogDir == "" {
 		cfg.LogDir = "logs"
 	}
+	cfg.DBFile = strings.TrimSpace(cfg.DBFile)
 	if cfg.DBFile == "" {
 		cfg.DBFile = "scheduler/state.db"
+	}
+	cfg.PaperDBFile = strings.TrimSpace(cfg.PaperDBFile)
+	for i := range cfg.PaperSources {
+		cfg.PaperSources[i].ID = strings.TrimSpace(cfg.PaperSources[i].ID)
+		cfg.PaperSources[i].Label = strings.TrimSpace(cfg.PaperSources[i].Label)
+		cfg.PaperSources[i].DBFile = strings.TrimSpace(cfg.PaperSources[i].DBFile)
+	}
+	for i := range cfg.Strategies {
+		cfg.Strategies[i].PaperSource = strings.TrimSpace(cfg.Strategies[i].PaperSource)
 	}
 	if cfg.AutoUpdate == "" {
 		cfg.AutoUpdate = "off"
@@ -618,37 +1062,29 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("default_stop_loss_atr_mult must be >= 0, got %g", *cfg.DefaultStopLossATRMult)
 	}
 
-	if cfg.ManualDefaults != nil {
-		md := cfg.ManualDefaults
+	if md := cfg.userDefaultsManual(); md != nil {
 		if md.MarginUSD != nil && *md.MarginUSD <= 0 {
-			return nil, fmt.Errorf("manual_defaults.margin_usd must be > 0, got %g", *md.MarginUSD)
+			return nil, fmt.Errorf("user_defaults.manual.margin_usd must be > 0, got %g", *md.MarginUSD)
 		}
 		if md.StopLossATRMult != nil && *md.StopLossATRMult < 0 {
-			return nil, fmt.Errorf("manual_defaults.stop_loss_atr_mult must be >= 0, got %g", *md.StopLossATRMult)
+			return nil, fmt.Errorf("user_defaults.manual.stop_loss_atr_mult must be >= 0, got %g", *md.StopLossATRMult)
 		}
 		if md.Side != "" && md.Side != "long" && md.Side != "short" {
-			return nil, fmt.Errorf("manual_defaults.side must be lowercase \"long\" or \"short\", got %q", md.Side)
+			return nil, fmt.Errorf("user_defaults.manual.side must be lowercase \"long\" or \"short\", got %q", md.Side)
 		}
-		// Reject empty tp_tiers array: omitting the field falls back to the
-		// hardcoded default, but writing `"tp_tiers": []` looks intentional
-		// (operator trying to disable tiered TPs) and would silently revert
-		// to the default — surface the misuse loudly instead.
 		if md.TPTiers != nil && len(md.TPTiers) == 0 {
-			return nil, fmt.Errorf("manual_defaults.tp_tiers must have at least one tier (omit the field to use defaults)")
+			return nil, fmt.Errorf("user_defaults.manual.tp_tiers must have at least one tier (omit the field to use defaults)")
 		}
 		for i, t := range md.TPTiers {
 			if t.ATRMultiple <= 0 {
-				return nil, fmt.Errorf("manual_defaults.tp_tiers[%d].atr_multiple must be > 0, got %g", i, t.ATRMultiple)
+				return nil, fmt.Errorf("user_defaults.manual.tp_tiers[%d].atr_multiple must be > 0, got %g", i, t.ATRMultiple)
 			}
 			if t.CloseFraction <= 0 || t.CloseFraction > 1 {
-				return nil, fmt.Errorf("manual_defaults.tp_tiers[%d].close_fraction must be in (0, 1], got %g", i, t.CloseFraction)
+				return nil, fmt.Errorf("user_defaults.manual.tp_tiers[%d].close_fraction must be in (0, 1], got %g", i, t.CloseFraction)
 			}
 		}
 	}
 
-	// Bounds-check status_port. Reject privileged ports (<1024 needs root)
-	// and values that would push the auto-fallback sweep past the TCP port
-	// ceiling. Zero/missing falls through to resolveStatusPort's default.
 	if cfg.StatusPort != 0 {
 		if cfg.StatusPort < 1024 {
 			return nil, fmt.Errorf("status_port %d is below 1024 (privileged ports require root and are not supported)", cfg.StatusPort)
@@ -658,52 +1094,16 @@ func LoadConfig(path string) (*Config, error) {
 		}
 	}
 
-	// Discord token from env var takes priority over config file.
-	// Warn if token is present in config file (env var is preferred).
-	configHasToken := cfg.Discord.Token != ""
-	envToken := os.Getenv("DISCORD_BOT_TOKEN")
-	if envToken != "" {
-		if configHasToken {
-			fmt.Println("[WARN] Discord token found in both config file and DISCORD_BOT_TOKEN env var. Remove it from config.json to avoid accidental exposure.")
-		}
-		cfg.Discord.Token = envToken
-	} else if configHasToken {
-		fmt.Println("[WARN] Discord token found in config file. Prefer setting DISCORD_BOT_TOKEN env var instead.")
-	}
+	applyNotifierEnvOverrides(&cfg)
 
-	// Discord owner ID from env var takes priority over config file.
-	if ownerID := os.Getenv("DISCORD_OWNER_ID"); ownerID != "" {
-		cfg.Discord.OwnerID = ownerID
-	}
-
-	// Telegram bot token from env var takes priority over config file.
-	// Warn if token is present in config file (env var is preferred).
-	configHasTelegramToken := cfg.Telegram.BotToken != ""
-	envTelegramToken := os.Getenv("TELEGRAM_BOT_TOKEN")
-	if envTelegramToken != "" {
-		if configHasTelegramToken {
-			fmt.Println("[WARN] Telegram bot token found in both config file and TELEGRAM_BOT_TOKEN env var. Remove it from config.json to avoid accidental exposure.")
-		}
-		cfg.Telegram.BotToken = envTelegramToken
-	} else if configHasTelegramToken {
-		fmt.Println("[WARN] Telegram bot token found in config file. Prefer setting TELEGRAM_BOT_TOKEN env var instead.")
-	}
-	// Telegram owner chat ID from env var takes priority over config file.
-	if telegramOwner := os.Getenv("TELEGRAM_OWNER_CHAT_ID"); telegramOwner != "" {
-		cfg.Telegram.OwnerChatID = telegramOwner
-	}
-
-	// Optional auth token for the /status HTTP endpoint.
 	cfg.StatusToken = os.Getenv("STATUS_AUTH_TOKEN")
 
-	// Initialize platforms map.
 	if cfg.Platforms == nil {
 		cfg.Platforms = make(map[string]*PlatformConfig)
 	}
 
-	// Apply per-strategy defaults.
 	for i := range cfg.Strategies {
-		// Infer platform from ID prefix for backwards compatibility.
+		normalizeDeprecatedCloseRef(cfg.Strategies[i].CloseStrategy)
 		if cfg.Strategies[i].Platform == "" {
 			switch {
 			case strings.HasPrefix(cfg.Strategies[i].ID, "ibkr-"):
@@ -727,43 +1127,32 @@ func LoadConfig(path string) (*Config, error) {
 			}
 		}
 
-		// Hierarchical risk: strategy-specific > platform > type default.
 		if cfg.Strategies[i].MaxDrawdownPct == 0 {
 			platform := cfg.Strategies[i].Platform
 			if pc := cfg.Platforms[platform]; pc != nil && pc.Risk != nil && pc.Risk.MaxDrawdownPct > 0 {
 				cfg.Strategies[i].MaxDrawdownPct = pc.Risk.MaxDrawdownPct
 			} else if cfg.Strategies[i].Type == "options" {
-				cfg.Strategies[i].MaxDrawdownPct = 40 // options are volatile
+				cfg.Strategies[i].MaxDrawdownPct = 40
 			} else if cfg.Strategies[i].Type == "perps" {
-				cfg.Strategies[i].MaxDrawdownPct = 50 // perps: between spot (60) and options (40)
+				cfg.Strategies[i].MaxDrawdownPct = 50
 			} else if cfg.Strategies[i].Type == "futures" {
-				cfg.Strategies[i].MaxDrawdownPct = 45 // futures: prop firm risk rules are strict
+				cfg.Strategies[i].MaxDrawdownPct = 45
 			} else {
 				cfg.Strategies[i].MaxDrawdownPct = 60
 			}
 		}
 
-		// #254/#497: Default exchange leverage for perps strategies is 1x
-		// (no leverage) when unset. sizing_leverage inherits leverage unless
-		// explicitly set so old configs keep their order sizing.
 		if cfg.Strategies[i].Type == "perps" && cfg.Strategies[i].Leverage <= 0 {
 			cfg.Strategies[i].Leverage = 1
 		}
-		if cfg.Strategies[i].Type == "perps" && cfg.Strategies[i].SizingLeverage == 0 {
+		if cfg.Strategies[i].Type == "perps" && cfg.Strategies[i].SizingLeverage == 0 && cfg.Strategies[i].RiskPerTradePct == nil {
 			cfg.Strategies[i].SizingLeverage = cfg.Strategies[i].Leverage
 		}
 
-		// #486: Default margin mode for HL perps is "isolated". Cross is the
-		// HL account default for new accounts, but cross lets a single losing
-		// strategy drain margin from unrelated positions before per-strategy
-		// drawdown checks fire — isolated aligns on-chain margin with
-		// go-trader's per-strategy risk model.
 		if cfg.Strategies[i].Type == "perps" && cfg.Strategies[i].Platform == "hyperliquid" && cfg.Strategies[i].MarginMode == "" {
 			cfg.Strategies[i].MarginMode = "isolated"
 		}
 
-		// #56: Default theta harvest for options strategies — sold options
-		// must always have an automatic exit to prevent unbounded losses.
 		if cfg.Strategies[i].Type == "options" && cfg.Strategies[i].ThetaHarvest == nil {
 			cfg.Strategies[i].ThetaHarvest = &ThetaHarvestConfig{
 				Enabled:         true,
@@ -775,14 +1164,8 @@ func LoadConfig(path string) (*Config, error) {
 		}
 	}
 
-	// #562/#601/#605: Default HL perps strategies with no explicit stop-loss /
-	// trailing-stop fields to the configurable top-level
-	// default_stop_loss_atr_mult (1.0× ATR by default). Volatility-adjusted
-	// exchange-side protection out of the box. Shared-coin peers are included
-	// because #601 places per-strategy sized reduce-only orders instead of one
-	// shared trigger owner. An explicit default_stop_loss_atr_mult=0 opts out
-	// of the auto-default entirely so the per-strategy MaxDrawdownPct fallback
-	// in EffectiveStopLossPct stays in play.
+	applyUserCloseDefaultRatchetRegimeTrails(&cfg)
+
 	defaultStopLossATRMult := *cfg.DefaultStopLossATRMult
 	if defaultStopLossATRMult > 0 {
 		for i := range cfg.Strategies {
@@ -790,13 +1173,7 @@ func LoadConfig(path string) (*Config, error) {
 			if sc.Type != "perps" || sc.Platform != "hyperliquid" {
 				continue
 			}
-			// LoadConfig runs BEFORE ResolveSurface populates the typed
-			// UseDefaults/TrendRegime fields, so the raw-aware IsConfigured()
-			// is the correct predicate here — IsZero() would return true on a
-			// freshly-unmarshaled regime block and cause the scalar default to
-			// be applied on top, triggering a spurious mutex error in
-			// validateRegimeATRConfig (review #735.1).
-			if sc.StopLossPct == nil && sc.StopLossMarginPct == nil && sc.TrailingStopPct == nil && sc.TrailingStopATRMult == nil && sc.StopLossATRMult == nil && !sc.StopLossATRRegime.IsConfigured() && !sc.TrailingStopATRRegime.IsConfigured() {
+			if sc.StopLossPct == nil && sc.StopLossMarginPct == nil && sc.TrailingStopPct == nil && sc.TrailingStopATRMult == nil && sc.StopLossATRMult == nil && !sc.StopLossATRMultRegime.IsConfigured() && !sc.TrailingStopATRMultRegime.IsConfigured() && !strategyUsesUnifiedRegimeClose(*sc) {
 				defaultMult := defaultStopLossATRMult
 				sc.StopLossATRMult = &defaultMult
 				fmt.Printf("[INFO] %s: applied default stop_loss_atr_mult=%g (no stop fields set; set stop_loss_atr_mult=0 or default_stop_loss_atr_mult=0 to opt out)\n", sc.ID, defaultStopLossATRMult)
@@ -804,8 +1181,6 @@ func LoadConfig(path string) (*Config, error) {
 		}
 	}
 
-	// #569: Apply defaults for type=manual HL strategies: auto-set script/args,
-	// default close_strategies, default stop_loss_atr_mult, default TP tiers.
 	for i := range cfg.Strategies {
 		sc := &cfg.Strategies[i]
 		if sc.Type != "manual" || sc.Platform != "hyperliquid" {
@@ -824,50 +1199,38 @@ func LoadConfig(path string) (*Config, error) {
 		if sc.MarginMode == "" {
 			sc.MarginMode = "isolated"
 		}
-		if len(sc.CloseStrategies) == 0 {
-			sc.CloseStrategies = []StrategyRef{{Name: "tiered_tp_atr_live"}}
+		if sc.CloseStrategy == nil {
+			if block, ok := cfg.resolveManualRatchetRegimeTrailBlock(*sc); ok {
+				sc.CloseStrategy = &StrategyRef{Name: trailingTPRatchetRegimeCloseName}
+				sc.TrailingStopATRMultRegime = block
+				fmt.Printf("[INFO] %s: manual close defaulted to %s (regime enabled; trailing_stop_atr_mult_regime owns the per-regime trail/SL)\n", sc.ID, trailingTPRatchetRegimeCloseName)
+			} else {
+				sc.CloseStrategy = &StrategyRef{Name: "tiered_tp_atr_live"}
+				if cfg.Regime != nil && cfg.Regime.Enabled {
+					fmt.Printf("[INFO] %s: manual close defaulted to tiered_tp_atr_live (regime enabled, but kept the scalar default — an explicit stop field is set or the classifier vocabulary has no default per-regime trail)\n", sc.ID)
+				} else {
+					fmt.Printf("[INFO] %s: manual close defaulted to tiered_tp_atr_live (regime disabled)\n", sc.ID)
+				}
+			}
 		}
-		// #691/#696: type=manual gets its own SL default (1.5× ATR by default,
-		// overridable via manual_defaults.stop_loss_atr_mult) so non-manual
-		// perps strategies stay on the fleet-wide default_stop_loss_atr_mult
-		// (typically 1.0×). Skip if any explicit stop field is set so peers
-		// and operator overrides still win. Honor the fleet-wide
-		// default_stop_loss_atr_mult=0 opt-out: when the operator disables
-		// the auto-default globally, manual strategies opt out too (the
-		// INFO message at config.go:675 advertises =0 as the global switch).
-		// Same raw-aware predicate as the perps default loop above —
-		// IsConfigured covers the pre-ResolveSurface phase (review #735.1).
-		if defaultStopLossATRMult > 0 && sc.StopLossATRMult == nil && sc.StopLossPct == nil && sc.StopLossMarginPct == nil && sc.TrailingStopPct == nil && sc.TrailingStopATRMult == nil && !sc.StopLossATRRegime.IsConfigured() && !sc.TrailingStopATRRegime.IsConfigured() {
+		if defaultStopLossATRMult > 0 && sc.StopLossATRMult == nil && sc.StopLossPct == nil && sc.StopLossMarginPct == nil && sc.TrailingStopPct == nil && sc.TrailingStopATRMult == nil && !sc.StopLossATRMultRegime.IsConfigured() && !sc.TrailingStopATRMultRegime.IsConfigured() {
 			defaultMult := cfg.resolveManualStopLossATRMult()
 			if defaultMult > 0 {
 				sc.StopLossATRMult = &defaultMult
 			}
 		}
-		// #696: Default TP tiers for manual strategies onto the matching close
-		// ref, overridable via manual_defaults.tp_tiers. Only the tiered_tp_atr*
-		// close evaluators consume `tiers`; if the operator overrode
-		// CloseStrategies to something else, leave it alone.
-		for j := range sc.CloseStrategies {
-			cs := &sc.CloseStrategies[j]
-			if !isTieredTPATRCloseName(cs.Name) {
-				continue
-			}
-			if cs.Name == "tiered_tp_atr_regime" || cs.Name == "tiered_tp_atr_live_regime" {
-				// Regime-aware variants resolve their own tier list from the
-				// trend_regime block / use_defaults shortcut — manual_defaults
-				// tier seeding doesn't apply.
-				continue
-			}
+		if cs := sc.CloseStrategy; cs != nil && isTieredTPATRCloseName(cs.Name) &&
+			cs.Name != "tiered_tp_atr_regime" && cs.Name != "tiered_tp_atr_live_regime" &&
+			cs.Name != dynamicCloseStrategyName {
 			if cs.Params == nil {
 				cs.Params = map[string]interface{}{}
 			}
-			if _, hasTP := cs.Params["tiers"]; !hasTP {
-				cs.Params["tiers"] = cfg.resolveManualTPTiers()
+			if _, hasTP := closeTierListParam(cs.Params); !hasTP {
+				cs.Params["tp_tiers"] = cfg.resolveManualTPTiers()
 			}
 		}
 	}
 
-	// #42: Apply portfolio risk defaults if not configured.
 	if cfg.PortfolioRisk == nil {
 		cfg.PortfolioRisk = &PortfolioRiskConfig{MaxDrawdownPct: 25}
 	}
@@ -875,17 +1238,14 @@ func LoadConfig(path string) (*Config, error) {
 		cfg.PortfolioRisk.WarnThresholdPct = 60
 	}
 
-	// Correlation tracking defaults.
 	if cfg.Correlation == nil {
 		cfg.Correlation = &CorrelationConfig{Enabled: false, MaxConcentrationPct: 60, MaxSameDirectionPct: 75}
 	}
 
-	// Regime detection defaults. Defaults are only injected when Enabled=true so
-	// that an explicit zero in a disabled block (e.g. {"period": 0}) round-trips
-	// instead of being silently rewritten to 14.
 	if cfg.Regime == nil {
 		cfg.Regime = &RegimeConfig{Enabled: false}
 	}
+	cfg.Regime.Timeframe = normalizeRegimeTimeframe(cfg.Regime.Timeframe)
 	if cfg.Regime.Enabled {
 		if cfg.Regime.Period == 0 {
 			cfg.Regime.Period = 14
@@ -902,103 +1262,61 @@ func LoadConfig(path string) (*Config, error) {
 		cfg.Correlation.MaxSameDirectionPct = 75
 	}
 
-	if err := ValidateConfig(&cfg); err != nil {
+	applyUserCloseDefaults(&cfg)
+
+	applyUserCloseDefaultRegimeATRs(&cfg)
+
+	if err := validateMarketFeedConfig(&cfg); err != nil {
 		return nil, err
 	}
+
+	if err := validateConfig(&cfg, skipLiveCredentialChecks); err != nil {
+		return nil, err
+	}
+	warnHyperliquidTieredATRSourceLive(&cfg)
 	return &cfg, nil
 }
 
-// normalizeHyperliquidPeerStopLosses is retained for callers/tests that still
-// reference the old #494 normalizer. It intentionally no-ops after #601:
-// shared-coin HL perps strategies now place per-strategy sized reduce-only
-// protection orders, so omitted stop fields should keep normal defaulting.
+func applyNotifierEnvOverrides(cfg *Config) {
+	configHasToken := cfg.Discord.Token != ""
+	envToken := os.Getenv("DISCORD_BOT_TOKEN")
+	if envToken != "" {
+		if configHasToken {
+			fmt.Println("[WARN] Discord token found in both config file and DISCORD_BOT_TOKEN env var. Remove it from config.json to avoid accidental exposure.")
+		}
+		cfg.Discord.Token = envToken
+	} else if configHasToken {
+		fmt.Println("[WARN] Discord token found in config file. Prefer setting DISCORD_BOT_TOKEN env var instead.")
+	}
+
+	if ownerID := os.Getenv("DISCORD_OWNER_ID"); ownerID != "" {
+		cfg.Discord.OwnerID = ownerID
+	}
+
+	configHasTelegramToken := cfg.Telegram.BotToken != ""
+	envTelegramToken := os.Getenv("TELEGRAM_BOT_TOKEN")
+	if envTelegramToken != "" {
+		if configHasTelegramToken {
+			fmt.Println("[WARN] Telegram bot token found in both config file and TELEGRAM_BOT_TOKEN env var. Remove it from config.json to avoid accidental exposure.")
+		}
+		cfg.Telegram.BotToken = envTelegramToken
+	} else if configHasTelegramToken {
+		fmt.Println("[WARN] Telegram bot token found in config file. Prefer setting TELEGRAM_BOT_TOKEN env var instead.")
+	}
+	if telegramOwner := os.Getenv("TELEGRAM_OWNER_CHAT_ID"); telegramOwner != "" {
+		cfg.Telegram.OwnerChatID = telegramOwner
+	}
+}
+
 func normalizeHyperliquidPeerStopLosses(strategies []StrategyConfig) {
 }
 
-// hasHyperliquidStopLossOwnership reports whether sc would place a reduce-only
-// HL trigger at any point in its lifecycle. It is the peer-conflict predicate
-// rather than the runtime price-% predicate: TrailingStopATRMult arms an
-// initial trigger only on the cycle after the position opens (EntryATR must be
-// stamped first), so EffectiveStopLossPct returns 0 at order-placement time.
-// Peer validation must still treat that strategy as the trigger owner.
-func hasHyperliquidStopLossOwnership(sc StrategyConfig) bool {
-	if EffectiveStopLossPct(sc) > 0 {
-		return true
-	}
-	if sc.TrailingStopATRMult != nil && *sc.TrailingStopATRMult > 0 {
-		return true
-	}
-	if sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0 {
-		return true
-	}
-	if sc.StopLossATRRegime != nil && !sc.StopLossATRRegime.IsZero() {
-		return true
-	}
-	if sc.TrailingStopATRRegime != nil && !sc.TrailingStopATRRegime.IsZero() {
-		return true
-	}
-	return false
-}
-
-// hasHyperliquidTrailingStopOwnership reports whether sc would place a
-// trailing reduce-only HL trigger that cancels and replaces the resting OID
-// as the position moves favorably. Trailing stops are special because the
-// cancel/replace cycle races on the shared on-chain position when two peers
-// both run trailing logic — the second peer's place can land before the
-// first's cancel, briefly doubling the reduce-only quantity (#604 review #5).
-// Fixed-distance triggers (StopLossPct, StopLossMarginPct, StopLossATRMult)
-// are sized per-strategy and don't cancel/replace, so they coexist safely
-// under #601's per-strategy sized protection model.
-func hasHyperliquidTrailingStopOwnership(sc StrategyConfig) bool {
-	if sc.TrailingStopPct != nil && *sc.TrailingStopPct > 0 {
-		return true
-	}
-	if sc.TrailingStopATRMult != nil && *sc.TrailingStopATRMult > 0 {
-		return true
-	}
-	if sc.TrailingStopATRRegime != nil && !sc.TrailingStopATRRegime.IsZero() {
-		return true
-	}
-	return false
-}
-
-// hyperliquidPeerStrategyErrors returns validation messages for HL wallet
-// strategies that share a coin but disagree on MarginMode or exchange Leverage (#491/#619).
-// Returns an empty slice when no peer conflicts exist.
-//
-// HL aggregates positions per coin per account, so two go-trader strategies
-// on the same coin share an on-chain position, margin assignment, and
-// reduce-only order slots. Mismatched leverage/margin would either fail
-// at first peer trade (HL rejects mode changes on an open position) or
-// silently land in the wrong mode. Per-strategy bookkeeping in SQLite keeps
-// the legs separated when peers agree.
-//
-// Sub-account isolation is the only correct path for full per-strategy
-// independence (different direction, leverage, margin); it is intentionally
-// out of scope here and tracked separately.
-//
-// Manual strategies participate in the same peer set as automated perps: HL
-// still aggregates them into one on-chain position per coin, so they must
-// agree on exchange leverage and margin mode even though their virtual state
-// and close sizing are isolated.
-//
-// Note: Direction (#656) mismatches across peers on the same coin are NOT
-// validated here. A direction="long" and a direction="short"/"both" peer on
-// the same HL coin would silently net/flip at the position level —
-// directional independence requires HL sub-accounts (out of scope for #491).
-//
-// Note: SizingLeverage is intentionally NOT required to match across peers
-// (#497). It only affects per-strategy order sizing — exchange margin and
-// liquidation are governed by the shared exchange Leverage, which IS
-// required to match. Two peers can size their entries differently without
-// any on-chain conflict.
 func hyperliquidPeerStrategyErrors(strategies []StrategyConfig) []string {
 	type peer struct {
-		ID           string
-		Coin         string
-		MarginMode   string
-		Leverage     float64
-		OwnsTrailing bool // trailing stops cancel/replace and race on shared coin (#604 review #5)
+		ID         string
+		Coin       string
+		MarginMode string
+		Leverage   float64
 	}
 	groups := make(map[string][]peer)
 	for _, sc := range strategies {
@@ -1010,11 +1328,10 @@ func hyperliquidPeerStrategyErrors(strategies []StrategyConfig) []string {
 			continue
 		}
 		groups[coin] = append(groups[coin], peer{
-			ID:           sc.ID,
-			Coin:         coin,
-			MarginMode:   sc.MarginMode,
-			Leverage:     sc.Leverage,
-			OwnsTrailing: hasHyperliquidTrailingStopOwnership(sc),
+			ID:         sc.ID,
+			Coin:       coin,
+			MarginMode: sc.MarginMode,
+			Leverage:   sc.Leverage,
 		})
 	}
 	var errs []string
@@ -1028,9 +1345,6 @@ func hyperliquidPeerStrategyErrors(strategies []StrategyConfig) []string {
 		if len(peers) < 2 {
 			continue
 		}
-		// Sort peers by ID so `base` (the comparison reference) is deterministic;
-		// any mismatch still triggers regardless of base, but a stable base lets
-		// future "report which peer is the outlier" extensions stay reproducible.
 		sort.Slice(peers, func(i, j int) bool { return peers[i].ID < peers[j].ID })
 		ids := make([]string, len(peers))
 		for i, p := range peers {
@@ -1054,29 +1368,122 @@ func hyperliquidPeerStrategyErrors(strategies []StrategyConfig) []string {
 				break
 			}
 		}
-		// Trailing-stop peers race on the shared on-chain position because
-		// each cycle's cancel/replace is non-atomic — peer A can place its
-		// new resting OID before peer B cancels its old one, briefly
-		// doubling the reduce-only quantity. Fixed-distance triggers
-		// (StopLossPct/StopLossATRMult/StopLossMarginPct) are sized
-		// per-strategy and rest forever, so they coexist safely.
-		trailingOwners := make([]string, 0)
-		for _, p := range peers {
-			if p.OwnsTrailing {
-				trailingOwners = append(trailingOwners, p.ID)
-			}
-		}
-		if len(trailingOwners) > 1 {
-			sort.Strings(trailingOwners)
-			errs = append(errs, fmt.Sprintf(
-				"hyperliquid peers on %s have multiple trailing-stop owners (strategies %s): trailing_stop_pct/trailing_stop_atr_mult cancel and replace OIDs each cycle, racing on the shared on-chain position; at most one peer may run a trailing stop",
-				coin, strings.Join(trailingOwners, ", ")))
-		}
 	}
 	return errs
 }
 
-// ParseLeaderboardPostTime parses a "HH:MM" string and returns (hour, minute, ok).
+const hedgeMaxRatio = 10.0
+
+const hedgeMaxLeverage = 50.0
+
+func hedgeCollisionCoin(sc StrategyConfig) string {
+	return normalizeHedgeCoin(hyperliquidConfiguredCoin(sc))
+}
+
+func validateHedgeConfigs(cfg *Config) []string {
+	if cfg == nil {
+		return nil
+	}
+	var errs []string
+
+	primaryCoinOwners := make(map[string][]string)
+	for _, sc := range cfg.Strategies {
+		coin := hedgeCollisionCoin(sc)
+		if coin == "" {
+			continue
+		}
+		primaryCoinOwners[coin] = append(primaryCoinOwners[coin], sc.ID)
+	}
+
+	hedgeCoinOwners := make(map[string][]string)
+
+	for _, sc := range cfg.Strategies {
+		if sc.Hedge == nil {
+			continue
+		}
+		prefix := fmt.Sprintf("strategy[%s]", sc.ID)
+
+		if p := strings.ToLower(strings.TrimSpace(sc.Hedge.Platform)); p != "" && p != "hyperliquid" {
+			errs = append(errs, fmt.Sprintf("%s: hedge.platform must be empty or %q (phase 1 is hyperliquid-only, #1159), got %q", prefix, "hyperliquid", sc.Hedge.Platform))
+		}
+		if t := strings.ToLower(strings.TrimSpace(sc.Hedge.Type)); t != "" && t != "perps" {
+			errs = append(errs, fmt.Sprintf("%s: hedge.type must be empty or %q (phase 1 is perps-only, #1159), got %q", prefix, "perps", sc.Hedge.Type))
+		}
+		if s := strings.ToLower(strings.TrimSpace(sc.Hedge.Side)); s != "" && s != "inverse" {
+			errs = append(errs, fmt.Sprintf("%s: hedge.side must be empty or %q (the only phase-1 side policy, #1159), got %q", prefix, "inverse", sc.Hedge.Side))
+		}
+		if sc.Hedge.Ratio < 0 || sc.Hedge.Ratio > hedgeMaxRatio {
+			errs = append(errs, fmt.Sprintf("%s: hedge.ratio must be in (0, %g] (0/omitted defaults to 1.0), got %g", prefix, hedgeMaxRatio, sc.Hedge.Ratio))
+		}
+		if sc.Hedge.Leverage < 0 || sc.Hedge.Leverage > hedgeMaxLeverage {
+			errs = append(errs, fmt.Sprintf("%s: hedge.leverage must be in (0, %g] (0/omitted defaults to 1), got %g", prefix, hedgeMaxLeverage, sc.Hedge.Leverage))
+		}
+		switch mm := strings.ToLower(strings.TrimSpace(sc.Hedge.MarginMode)); mm {
+		case "", "isolated", "cross":
+		default:
+			errs = append(errs, fmt.Sprintf("%s: hedge.margin_mode must be %q or %q (empty defaults to isolated), got %q", prefix, "isolated", "cross", sc.Hedge.MarginMode))
+		}
+
+		coin := normalizeHedgeCoin(sc.Hedge.Symbol)
+		if coin == "" {
+			errs = append(errs, fmt.Sprintf("%s: hedge.symbol is required and must name an HL coin (e.g. \"BTC\" or \"BTC/USDC:USDC\")", prefix))
+		}
+
+		if !sc.Hedge.Enabled {
+			continue
+		}
+
+		if sc.Type != "perps" {
+			errs = append(errs, fmt.Sprintf("%s: hedge is only supported for perps strategies in phase 1 (got type %q, #1159)", prefix, sc.Type))
+		}
+		if sc.Platform != "hyperliquid" {
+			errs = append(errs, fmt.Sprintf("%s: hedge is only supported on hyperliquid in phase 1 (got platform %q, #1159)", prefix, sc.Platform))
+		}
+		if EffectiveDirection(sc) == DirectionBoth {
+			errs = append(errs, fmt.Sprintf("%s: hedge is not supported with direction=%q in phase 1 — a bidirectional flip changes the hedge side mid-position and the catastrophic-flip close-only path cannot be mirrored deterministically (#1159); use direction=%q or %q", prefix, DirectionBoth, DirectionLong, DirectionShort))
+		}
+
+		if coin == "" {
+			continue
+		}
+
+		if own := hedgeCollisionCoin(sc); own != "" && own == coin {
+			errs = append(errs, fmt.Sprintf("%s: hedge.symbol %q is the strategy's own coin — a same-coin hedge nets the position on-chain instead of hedging it (#1159)", prefix, coin))
+		}
+
+		if owners := primaryCoinOwners[coin]; len(owners) > 0 {
+			ids := append([]string(nil), owners...)
+			sort.Strings(ids)
+			filtered := ids[:0]
+			for _, id := range ids {
+				if id != sc.ID {
+					filtered = append(filtered, id)
+				}
+			}
+			if len(filtered) > 0 {
+				errs = append(errs, fmt.Sprintf("%s: hedge.symbol %q is the primary coin of strategy/strategies %s — HL aggregates positions per coin per account, and every shared-coin mechanism (peer margin checks, circuit-breaker drain, kill-switch fill share, reconcile ownership) is blind to hedge legs in phase 1 (#1159)", prefix, coin, strings.Join(filtered, ", ")))
+			}
+		}
+
+		hedgeCoinOwners[coin] = append(hedgeCoinOwners[coin], sc.ID)
+	}
+
+	sharedHedgeCoins := make([]string, 0, len(hedgeCoinOwners))
+	for coin, owners := range hedgeCoinOwners {
+		if len(owners) > 1 {
+			sharedHedgeCoins = append(sharedHedgeCoins, coin)
+		}
+	}
+	sort.Strings(sharedHedgeCoins)
+	for _, coin := range sharedHedgeCoins {
+		ids := append([]string(nil), hedgeCoinOwners[coin]...)
+		sort.Strings(ids)
+		errs = append(errs, fmt.Sprintf("hedge coin %s is claimed by multiple hedge-enabled strategies (%s): HL aggregates positions per coin per account, so two hedge legs on one coin would share an on-chain position, margin assignment, and reduce-only order slots (#1159)", coin, strings.Join(ids, ", ")))
+	}
+
+	return errs
+}
+
 func ParseLeaderboardPostTime(s string) (int, int, bool) {
 	if s == "" {
 		return 0, 0, false
@@ -1096,8 +1503,6 @@ func ParseLeaderboardPostTime(s string) (int, int, bool) {
 	return h, m, true
 }
 
-// strategyIntervalExceedsGlobalWarning returns a [WARN] message when the
-// per-strategy interval exceeds the top-level interval (#409), or "" otherwise.
 func strategyIntervalExceedsGlobalWarning(sc StrategyConfig, globalInterval int) string {
 	if sc.IntervalSeconds <= 0 || globalInterval <= 0 || sc.IntervalSeconds <= globalInterval {
 		return ""
@@ -1110,7 +1515,6 @@ func strategyIntervalExceedsGlobalWarning(sc StrategyConfig, globalInterval int)
 		sc.ID, sc.IntervalSeconds, globalInterval, ordinal(ratio))
 }
 
-// ordinal returns the English ordinal suffix form of n (e.g. 1 → "1st", 3 → "3rd", 11 → "11th").
 func ordinal(n int) string {
 	if n < 0 {
 		n = -n
@@ -1131,22 +1535,54 @@ func ordinal(n int) string {
 	}
 }
 
-// ValidateConfig checks script paths and strategy fields (#34, #36).
-func ValidateConfig(cfg *Config) error {
+func regimeDirectionalPolicyWarnings(cfg *Config) []string {
+	if cfg == nil {
+		return nil
+	}
+	var out []string
+	for _, sc := range cfg.Strategies {
+		if sc.RegimeDirectionalPolicy.IsConfigured() {
+			out = append(out, fmt.Sprintf("[WARN] %s: regime_directional_policy selects long/short by regime, but the regime→forward-direction premise is empirically unvalidated (#1076 negative result). It is now DEFAULT-OFF / evidence-gated (#1085): the side resolves to base direction unless a per-(asset,timeframe,classifier) certification passes (none currently does). Prefer the regime for ATR-scaled SL/TP sizing (#1078); disable from flat.", sc.ID))
+		}
+	}
+	return out
+}
+
+func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 	var errs []string
 	seenIDs := make(map[string]bool)
+	mirroredReplaySources := make(map[string]string)
+	strategyByID := make(map[string]StrategyConfig, len(cfg.Strategies))
+	for _, sc := range cfg.Strategies {
+		if sc.ID != "" {
+			strategyByID[sc.ID] = sc
+		}
+	}
+	sharedWalletPoolIDs, poolErrs := validateConfiguredSharedWalletPools(cfg.Strategies)
+	errs = append(errs, poolErrs...)
+	for i := range cfg.Strategies {
+		cfg.Strategies[i].sharedWalletPoolBudget = sharedWalletPoolIDs[cfg.Strategies[i].ID]
+	}
 
-	// Validate leaderboard_post_time format if set.
 	if cfg.LeaderboardPostTime != "" {
 		if _, _, ok := ParseLeaderboardPostTime(cfg.LeaderboardPostTime); !ok {
 			errs = append(errs, fmt.Sprintf("leaderboard_post_time must be in \"HH:MM\" format (24h UTC), got %q", cfg.LeaderboardPostTime))
 		}
 	}
 
+	errs = append(errs, validateUserDefaults(cfg.UserDefaults)...)
+
+	errs = append(errs, validatePaperSourcesConfig(cfg)...)
+
+	errs = append(errs, validateStorageIdentityConfig(cfg)...)
+
+	if !validATRMethodValue(cfg.ATRMethod) {
+		errs = append(errs, fmt.Sprintf("atr_method must be %q or %q, got %q", ATRMethodSimple, ATRMethodWilder, cfg.ATRMethod))
+	}
+
 	for i, sc := range cfg.Strategies {
 		prefix := fmt.Sprintf("strategy[%d]", i)
 
-		// ID must be non-empty and unique.
 		if sc.ID == "" {
 			errs = append(errs, fmt.Sprintf("%s: id is empty", prefix))
 		} else if seenIDs[sc.ID] {
@@ -1156,7 +1592,6 @@ func ValidateConfig(cfg *Config) error {
 			prefix = fmt.Sprintf("strategy[%s]", sc.ID)
 		}
 
-		// #34: Script path validation (manual strategies auto-set their script in LoadConfig).
 		if sc.Type != "manual" {
 			if sc.Script == "" {
 				errs = append(errs, fmt.Sprintf("%s: script is empty", prefix))
@@ -1173,44 +1608,85 @@ func ValidateConfig(cfg *Config) error {
 			}
 		}
 
-		// #36: Type must be "spot", "options", "perps", "futures", or "manual" (#569).
 		if sc.Type != "spot" && sc.Type != "options" && sc.Type != "perps" && sc.Type != "futures" && sc.Type != "manual" {
 			errs = append(errs, fmt.Sprintf("%s: type must be \"spot\", \"options\", \"perps\", \"futures\", or \"manual\", got %q", prefix, sc.Type))
 		}
-		// Options strategies don't compose close evaluators yet. open_strategy
-		// is allowed as canonical metadata (post-v13 it mirrors args[0]); only
-		// close_strategies remain rejected here.
-		if len(sc.CloseStrategies) > 0 && sc.Type == "options" {
-			errs = append(errs, fmt.Sprintf("%s: close_strategies are supported for spot, perps, and futures strategies only", prefix))
+		errs = append(errs, validateLLMEntryAnalysis(prefix, sc)...)
+		if !validATRMethodValue(sc.ATRMethod) {
+			errs = append(errs, fmt.Sprintf("%s: atr_method must be %q or %q, got %q", prefix, ATRMethodSimple, ATRMethodWilder, sc.ATRMethod))
+		} else if sc.Type == "options" && normalizeATRMethod(sc.ATRMethod) != "" {
+			errs = append(errs, fmt.Sprintf("%s: atr_method is not supported on options strategies (no ATR surface); remove it", prefix))
+		}
+		if len(sc.closeStrategiesLegacy) > 1 {
+			names := make([]string, 0, len(sc.closeStrategiesLegacy))
+			for _, ref := range sc.closeStrategiesLegacy {
+				names = append(names, ref.Name)
+			}
+			errs = append(errs, fmt.Sprintf("%s: close_strategies has %d entries %v — the array model was collapsed to a single close_strategy (#842); keep one profit-taking close and move risk backstops (hard caps, time stops) to the strategy level", prefix, len(names), names))
+		}
+		if sc.CloseStrategy != nil && sc.Type == "options" {
+			errs = append(errs, fmt.Sprintf("%s: close_strategy is supported for spot, perps, and futures strategies only", prefix))
 		}
 		if sc.OpenStrategy.Name != "" {
 			if err := validateStrategyConceptName(sc.OpenStrategy.Name); err != nil {
 				errs = append(errs, fmt.Sprintf("%s: open_strategy %v", prefix, err))
 			}
 		}
-		for j, ref := range sc.CloseStrategies {
-			if err := validateStrategyConceptName(ref.Name); err != nil {
-				errs = append(errs, fmt.Sprintf("%s: close_strategies[%d] %v", prefix, j, err))
+		if sc.CloseStrategy != nil {
+			if err := validateStrategyConceptName(sc.CloseStrategy.Name); err != nil {
+				errs = append(errs, fmt.Sprintf("%s: close_strategy %v", prefix, err))
 			}
 		}
 
-		// Canonical regime label set lives in shared_tools/regime.py
-		// (_VALID_LABELS). Keep the two in sync — this validator and the Python
-		// detector must agree, or strategies will be silently misclassified.
-		validRegimeLabels := map[string]bool{"trending_up": true, "trending_down": true, "ranging": true}
-		for j, label := range sc.AllowedRegimes {
-			if !validRegimeLabels[label] {
-				errs = append(errs, fmt.Sprintf("%s: allowed_regimes[%d] unknown label %q (valid: trending_up, trending_down, ranging)", prefix, j, label))
-			}
-		}
-		// The regime gate is not wired at the options dispatch site (#553), so
-		// allowed_regimes is a silent no-op for options strategies. Reject it
-		// here until the gate is properly implemented for the multi-position model.
 		if sc.Type == "options" && len(sc.AllowedRegimes) > 0 {
 			errs = append(errs, fmt.Sprintf("%s: allowed_regimes is not enforced for type=options (gate not wired at options dispatch; see issue #553)", prefix))
 		}
 
-		// #569: manual strategies require symbol + timeframe + leverage.
+		if _, err := parseRegimeGateOnFailure(sc.RegimeGateOnFailure); err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", prefix, err))
+		}
+
+		if !validReplaySharing(sc.ReplaySharing) {
+			errs = append(errs, fmt.Sprintf("%s: replay_sharing must be %q or %q, got %q", prefix, ReplaySharingNone, ReplaySharingLiveMirror, sc.ReplaySharing))
+		} else if normalizeReplaySharing(sc.ReplaySharing) == ReplaySharingLiveMirror {
+			if sc.Type != "perps" || sc.Platform != "hyperliquid" {
+				errs = append(errs, fmt.Sprintf("%s: replay_sharing=%q is supported for HL perps strategies only (type=perps, platform=hyperliquid)", prefix, ReplaySharingLiveMirror))
+			}
+			if strings.TrimSpace(cfg.ReplayLogPath) == "" {
+				errs = append(errs, fmt.Sprintf("%s: replay_sharing=%q requires the root replay_log_path to be set", prefix, ReplaySharingLiveMirror))
+			}
+		}
+
+		if srcID := strings.TrimSpace(sc.ReplaySourceID); srcID != "" {
+			src, srcFound := strategyByID[srcID]
+			switch {
+			case normalizeReplaySharing(sc.ReplaySharing) != ReplaySharingLiveMirror:
+				errs = append(errs, fmt.Sprintf("%s: replay_source_id requires replay_sharing=%q", prefix, ReplaySharingLiveMirror))
+			case sc.Type != "perps" || sc.Platform != "hyperliquid":
+				errs = append(errs, fmt.Sprintf("%s: replay_source_id is supported for HL perps strategies only (type=perps, platform=hyperliquid)", prefix))
+			case isLiveArgs(sc.Args):
+				errs = append(errs, fmt.Sprintf("%s: replay_source_id is only valid on a paper strategy — the live source writes the decision log", prefix))
+			case srcID == sc.ID:
+				errs = append(errs, fmt.Sprintf("%s: replay_source_id must name another strategy; omit it to mirror the live twin that shares this id", prefix))
+			case !srcFound:
+				errs = append(errs, fmt.Sprintf("%s: replay_source_id %q names no strategy in this config", prefix, srcID))
+			case !isLiveArgs(src.Args):
+				errs = append(errs, fmt.Sprintf("%s: replay_source_id %q names a paper strategy; the replay source must run live (--mode=live)", prefix, srcID))
+			case src.Type != "perps" || src.Platform != "hyperliquid":
+				errs = append(errs, fmt.Sprintf("%s: replay_source_id %q must name an HL perps strategy (type=perps, platform=hyperliquid)", prefix, srcID))
+			case normalizeReplaySharing(src.ReplaySharing) != ReplaySharingLiveMirror:
+				errs = append(errs, fmt.Sprintf("%s: replay_source_id %q must set replay_sharing=%q or it never writes decisions", prefix, srcID, ReplaySharingLiveMirror))
+			case extractAsset(src) != extractAsset(sc) || extractTimeframe(src) != extractTimeframe(sc):
+				errs = append(errs, fmt.Sprintf("%s: replay_source_id %q trades %s/%s but this strategy trades %s/%s — the mirror must track the same symbol and timeframe",
+					prefix, srcID, extractAsset(src), extractTimeframe(src), extractAsset(sc), extractTimeframe(sc)))
+			case mirroredReplaySources[srcID] != "":
+				errs = append(errs, fmt.Sprintf("%s: replay_source_id %q is already mirrored by strategy %q — one paper mirror per live source (the mirrors would consume each other's rows)",
+					prefix, srcID, mirroredReplaySources[srcID]))
+			default:
+				mirroredReplaySources[srcID] = sc.ID
+			}
+		}
+
 		if sc.Type == "manual" {
 			if sc.Platform != "hyperliquid" {
 				errs = append(errs, fmt.Sprintf("%s: type=manual is only supported for platform=hyperliquid", prefix))
@@ -1226,67 +1702,65 @@ func ValidateConfig(cfg *Config) error {
 			}
 		}
 
-		// Live-mode futures require TopStep API credentials.
-		if sc.Type == "futures" {
-			for _, arg := range sc.Args {
-				if arg == "--mode=live" {
-					if os.Getenv("TOPSTEP_API_KEY") == "" {
-						errs = append(errs, fmt.Sprintf("%s: --mode=live requires TOPSTEP_API_KEY env var", prefix))
+		if !skipLiveCredentialChecks {
+			if sc.Type == "futures" {
+				for _, arg := range sc.Args {
+					if arg == "--mode=live" {
+						if os.Getenv("TOPSTEP_API_KEY") == "" {
+							errs = append(errs, fmt.Sprintf("%s: --mode=live requires TOPSTEP_API_KEY env var", prefix))
+						}
+						if os.Getenv("TOPSTEP_API_SECRET") == "" {
+							errs = append(errs, fmt.Sprintf("%s: --mode=live requires TOPSTEP_API_SECRET env var", prefix))
+						}
+						if os.Getenv("TOPSTEP_ACCOUNT_ID") == "" {
+							errs = append(errs, fmt.Sprintf("%s: --mode=live requires TOPSTEP_ACCOUNT_ID env var", prefix))
+						}
+						break
 					}
-					if os.Getenv("TOPSTEP_API_SECRET") == "" {
-						errs = append(errs, fmt.Sprintf("%s: --mode=live requires TOPSTEP_API_SECRET env var", prefix))
+				}
+			}
+
+			if sc.Platform == "robinhood" {
+				for _, arg := range sc.Args {
+					if arg == "--mode=live" {
+						if os.Getenv("ROBINHOOD_USERNAME") == "" {
+							errs = append(errs, fmt.Sprintf("%s: --mode=live requires ROBINHOOD_USERNAME env var", prefix))
+						}
+						if os.Getenv("ROBINHOOD_PASSWORD") == "" {
+							errs = append(errs, fmt.Sprintf("%s: --mode=live requires ROBINHOOD_PASSWORD env var", prefix))
+						}
+						if os.Getenv("ROBINHOOD_TOTP_SECRET") == "" {
+							errs = append(errs, fmt.Sprintf("%s: --mode=live requires ROBINHOOD_TOTP_SECRET env var", prefix))
+						}
+						break
 					}
-					if os.Getenv("TOPSTEP_ACCOUNT_ID") == "" {
-						errs = append(errs, fmt.Sprintf("%s: --mode=live requires TOPSTEP_ACCOUNT_ID env var", prefix))
+				}
+			}
+
+			if sc.Type == "perps" || (sc.Platform == "okx" && sc.Type == "spot") {
+				for _, arg := range sc.Args {
+					if arg == "--mode=live" {
+						if sc.Platform == "okx" {
+							if os.Getenv("OKX_API_KEY") == "" {
+								errs = append(errs, fmt.Sprintf("%s: --mode=live requires OKX_API_KEY env var", prefix))
+							}
+							if os.Getenv("OKX_API_SECRET") == "" {
+								errs = append(errs, fmt.Sprintf("%s: --mode=live requires OKX_API_SECRET env var", prefix))
+							}
+							if os.Getenv("OKX_PASSPHRASE") == "" {
+								errs = append(errs, fmt.Sprintf("%s: --mode=live requires OKX_PASSPHRASE env var", prefix))
+							}
+						} else if sc.Platform == "hyperliquid" || sc.Platform == "" {
+							if os.Getenv("HYPERLIQUID_SECRET_KEY") == "" {
+								errs = append(errs, fmt.Sprintf("%s: --mode=live requires HYPERLIQUID_SECRET_KEY env var", prefix))
+							}
+						}
+						break
 					}
-					break
 				}
 			}
 		}
 
-		// Live-mode Robinhood crypto requires credentials.
-		if sc.Platform == "robinhood" {
-			for _, arg := range sc.Args {
-				if arg == "--mode=live" {
-					if os.Getenv("ROBINHOOD_USERNAME") == "" {
-						errs = append(errs, fmt.Sprintf("%s: --mode=live requires ROBINHOOD_USERNAME env var", prefix))
-					}
-					if os.Getenv("ROBINHOOD_PASSWORD") == "" {
-						errs = append(errs, fmt.Sprintf("%s: --mode=live requires ROBINHOOD_PASSWORD env var", prefix))
-					}
-					if os.Getenv("ROBINHOOD_TOTP_SECRET") == "" {
-						errs = append(errs, fmt.Sprintf("%s: --mode=live requires ROBINHOOD_TOTP_SECRET env var", prefix))
-					}
-					break
-				}
-			}
-		}
-
-		// Live-mode perps require platform-specific env vars.
-		if sc.Type == "perps" || (sc.Platform == "okx" && sc.Type == "spot") {
-			for _, arg := range sc.Args {
-				if arg == "--mode=live" {
-					if sc.Platform == "okx" {
-						if os.Getenv("OKX_API_KEY") == "" {
-							errs = append(errs, fmt.Sprintf("%s: --mode=live requires OKX_API_KEY env var", prefix))
-						}
-						if os.Getenv("OKX_API_SECRET") == "" {
-							errs = append(errs, fmt.Sprintf("%s: --mode=live requires OKX_API_SECRET env var", prefix))
-						}
-						if os.Getenv("OKX_PASSPHRASE") == "" {
-							errs = append(errs, fmt.Sprintf("%s: --mode=live requires OKX_PASSPHRASE env var", prefix))
-						}
-					} else if sc.Platform == "hyperliquid" || sc.Platform == "" {
-						if os.Getenv("HYPERLIQUID_SECRET_KEY") == "" {
-							errs = append(errs, fmt.Sprintf("%s: --mode=live requires HYPERLIQUID_SECRET_KEY env var", prefix))
-						}
-					}
-					break
-				}
-			}
-		}
-
-		// #87: capital_pct validation.
 		if sc.CapitalPct != 0 {
 			if sc.CapitalPct < 0 || sc.CapitalPct > 1 {
 				errs = append(errs, fmt.Sprintf("%s: capital_pct must be in (0, 1], got %g", prefix, sc.CapitalPct))
@@ -1294,42 +1768,56 @@ func ValidateConfig(cfg *Config) error {
 			if sc.Capital > 0 {
 				fmt.Printf("[WARN] %s: both capital ($%.0f) and capital_pct (%.0f%%) set — capital_pct takes priority\n", sc.ID, sc.Capital, sc.CapitalPct*100)
 			}
-			// #101: capital_pct on hyperliquid requires account address for balance fetch.
-			if sc.CapitalPct > 0 && sc.Platform == "hyperliquid" {
+			if !skipLiveCredentialChecks && sc.CapitalPct > 0 && sc.Platform == "hyperliquid" {
 				if os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS") == "" {
 					errs = append(errs, fmt.Sprintf("%s: capital_pct requires HYPERLIQUID_ACCOUNT_ADDRESS env var", prefix))
 				}
 			}
 		}
 
-		// initial_capital validation: must be > 0 when set.
 		if sc.InitialCapital < 0 {
 			errs = append(errs, fmt.Sprintf("%s: initial_capital must be > 0 when set, got %g", prefix, sc.InitialCapital))
 		}
 
-		// #36: Capital must be > 0 (unless capital_pct is set).
-		if sc.Capital <= 0 && sc.CapitalPct == 0 {
+		if sc.Capital <= 0 && sc.CapitalPct == 0 && !sharedWalletPoolIDs[sc.ID] {
 			errs = append(errs, fmt.Sprintf("%s: capital must be > 0 (or set capital_pct), got %g", prefix, sc.Capital))
 		}
 
-		// #36: MaxDrawdownPct must be in (0, 100].
 		if sc.MaxDrawdownPct <= 0 || sc.MaxDrawdownPct > 100 {
 			errs = append(errs, fmt.Sprintf("%s: max_drawdown_pct must be in (0, 100], got %g", prefix, sc.MaxDrawdownPct))
 		}
 
-		// #36: IntervalSeconds must be >= 0 (0 means use global).
+		type cbOverrideField struct {
+			key string
+			val *int
+			max int
+		}
+		for _, f := range []cbOverrideField{
+			{"cb_drawdown_cooldown_minutes", sc.CBDrawdownCooldownMinutes, maxCBCooldownMinutes},
+			{"cb_loss_streak_threshold", sc.CBLossStreakThreshold, maxCBLossStreakThreshold},
+			{"cb_loss_streak_cooldown_minutes", sc.CBLossStreakCooldownMinutes, maxCBCooldownMinutes},
+		} {
+			if f.val == nil {
+				continue
+			}
+			if sc.Type == "manual" {
+				errs = append(errs, fmt.Sprintf("%s: %s is not supported for manual strategies (exempt from CheckRisk)", prefix, f.key))
+			}
+			if *f.val <= 0 {
+				errs = append(errs, fmt.Sprintf("%s: %s must be positive, got %d", prefix, f.key, *f.val))
+			} else if *f.val > f.max {
+				errs = append(errs, fmt.Sprintf("%s: %s must be <= %d, got %d", prefix, f.key, f.max, *f.val))
+			}
+		}
+
 		if sc.IntervalSeconds < 0 {
 			errs = append(errs, fmt.Sprintf("%s: interval_seconds must be >= 0, got %d", prefix, sc.IntervalSeconds))
 		}
 
-		// #409: warn when per-strategy interval exceeds the top-level interval;
-		// the strategy will only run every Nth portfolio cycle.
 		if msg := strategyIntervalExceedsGlobalWarning(sc, cfg.IntervalSeconds); msg != "" {
 			fmt.Println(msg)
 		}
 
-		// #254/#497: Leverage is exchange leverage and must be >= 1 when set.
-		// Only applicable to perps and manual (#569: manual uses leverage for sizing).
 		if sc.Leverage != 0 {
 			if sc.Type != "perps" && sc.Type != "manual" {
 				errs = append(errs, fmt.Sprintf("%s: leverage is only supported for perps strategies (got type %q)", prefix, sc.Type))
@@ -1338,11 +1826,6 @@ func ValidateConfig(cfg *Config) error {
 				errs = append(errs, fmt.Sprintf("%s: leverage must be in [1, 100], got %g", prefix, sc.Leverage))
 			}
 		}
-		// SizingLeverage decouples position sizing from exchange margin (#497).
-		// A legitimate use case is high exchange leverage with conservative
-		// position size (e.g. leverage=20, sizing_leverage=0.5), so the lower
-		// bound is a small positive value rather than 1. The math
-		// (cash * sizing_leverage) tolerates fractional values fine.
 		if sc.SizingLeverage != 0 {
 			if sc.Type != "perps" && sc.Type != "manual" {
 				errs = append(errs, fmt.Sprintf("%s: sizing_leverage is only supported for perps strategies (got type %q)", prefix, sc.Type))
@@ -1352,11 +1835,6 @@ func ValidateConfig(cfg *Config) error {
 			}
 		}
 
-		// MarginPerTradeUSD lets operators express open size in margin-space
-		// (#518). Mutually compatible with sizing_leverage at the schema level —
-		// when set, MarginPerTradeUSD wins inside ComputePerpsOpenNotional —
-		// but we still require a positive value because nil/0 means "use the
-		// legacy formula" and a negative value is meaningless.
 		if sc.MarginPerTradeUSD != nil {
 			if sc.Type != "perps" {
 				errs = append(errs, fmt.Sprintf("%s: margin_per_trade_usd is only supported for perps strategies (got type %q)", prefix, sc.Type))
@@ -1366,8 +1844,34 @@ func ValidateConfig(cfg *Config) error {
 			}
 		}
 
-		// #656: validate direction (perps only). Empty is allowed and falls
-		// back to AllowShorts via EffectiveDirection (legacy pre-v14 configs).
+		errs = append(errs, validateRiskPerTradePct(sc, prefix)...)
+
+		if sc.AllowScaleIn {
+			if sc.Type != "perps" && sc.Type != "manual" {
+				errs = append(errs, fmt.Sprintf("%s: allow_scale_in is only supported for perps/manual strategies (got type %q)", prefix, sc.Type))
+			}
+			if sc.Platform != "hyperliquid" {
+				errs = append(errs, fmt.Sprintf("%s: allow_scale_in is only supported on hyperliquid (got platform %q)", prefix, sc.Platform))
+			}
+			if sc.Type == "perps" && sc.Platform == "hyperliquid" && hyperliquidIsLive(sc.Args) && !scaleInLiveProtectionResizable(sc) {
+				errs = append(errs, fmt.Sprintf("%s: allow_scale_in on live perps requires an ATR/regime or trailing stop-loss that can be re-sized after an add — stop_loss_pct/stop_loss_margin_pct and the max_drawdown fallback cannot (set stop_loss_atr_mult, stop_loss_atr_mult_regime, or a trailing stop)", prefix))
+			}
+		}
+		if sc.ScaleIn != nil {
+			if !sc.AllowScaleIn {
+				errs = append(errs, fmt.Sprintf("%s: scale_in block is set but allow_scale_in is false — enable allow_scale_in or remove the block", prefix))
+			}
+			if sc.ScaleIn.MaxAdds < 0 {
+				errs = append(errs, fmt.Sprintf("%s: scale_in.max_adds must be >= 0, got %d", prefix, sc.ScaleIn.MaxAdds))
+			}
+			if sc.ScaleIn.MaxAddedNotionalUSD < 0 {
+				errs = append(errs, fmt.Sprintf("%s: scale_in.max_added_notional_usd must be >= 0, got %g", prefix, sc.ScaleIn.MaxAddedNotionalUSD))
+			}
+			if sc.ScaleIn.AddNotionalUSD < 0 {
+				errs = append(errs, fmt.Sprintf("%s: scale_in.add_notional_usd must be >= 0, got %g", prefix, sc.ScaleIn.AddNotionalUSD))
+			}
+		}
+
 		if sc.Direction != "" {
 			switch sc.Direction {
 			case DirectionLong, DirectionShort, DirectionBoth:
@@ -1377,40 +1881,47 @@ func ValidateConfig(cfg *Config) error {
 			if sc.Type != "perps" && sc.Type != "manual" {
 				errs = append(errs, fmt.Sprintf("%s: direction is only supported for perps/manual strategies (got type %q)", prefix, sc.Type))
 			}
-			// Hand-edit detection: direction="long" alongside an explicit
-			// allow_shorts=true is contradictory (Direction wins; the
-			// AllowShorts=true is dead). Catch it so the operator can clean up.
-			// The opposite case (direction set, AllowShorts=false zero value)
-			// is indistinguishable from "AllowShorts not set in JSON" so we
-			// can't reliably warn about it.
 			if sc.AllowShorts && sc.Direction == DirectionLong {
 				errs = append(errs, fmt.Sprintf("%s: direction=%q conflicts with legacy allow_shorts=true (remove allow_shorts; v14 migration normally handles this)", prefix, sc.Direction))
 			}
 		}
 
-		// invert_signal is only honored by runHyperliquidCheck — flipping a
-		// signal at the Go layer only matters for HL perps/manual where the
-		// executor consumes a numeric +1/-1/0. Spot/options/futures check
-		// scripts emit their own buy/sell logic that runHyperliquidCheck
-		// doesn't see, so the flag would be a silent no-op there. Reject
-		// the config at startup rather than letting it appear to work.
 		if sc.InvertSignal {
 			if sc.Platform != "hyperliquid" || (sc.Type != "perps" && sc.Type != "manual") {
 				errs = append(errs, fmt.Sprintf("%s: invert_signal is only supported for HL perps/manual strategies (got platform=%q type=%q)", prefix, sc.Platform, sc.Type))
 			}
-			// direction="short" already inverts open/close semantics in the
-			// executor (signal=-1 opens, signal=1 closes). Adding
-			// invert_signal=true on top double-flips back to long semantics,
-			// which is almost certainly a config mistake — reject so the
-			// operator picks one or the other.
-			if EffectiveDirection(sc) == DirectionShort {
-				errs = append(errs, fmt.Sprintf("%s: invert_signal=true with direction=%q double-flips back to long semantics; drop one of the two", prefix, DirectionShort))
+		}
+
+		if sc.RegimeDirectionalPolicy.IsConfigured() {
+			if sc.Platform != "hyperliquid" || sc.Type != "perps" {
+				errs = append(errs, fmt.Sprintf("%s: regime_directional_policy is only supported for HL perps strategies (got platform=%q type=%q)", prefix, sc.Platform, sc.Type))
+			}
+			if cfg.Regime == nil || !cfg.Regime.Enabled {
+				errs = append(errs, fmt.Sprintf("%s: regime_directional_policy requires top-level regime.enabled=true", prefix))
 			}
 		}
 
-		// #486: validate margin_mode (HL perps only). Empty is allowed
-		// (LoadConfig defaults it to "isolated" before this point); any
-		// non-default value must match the SDK's allowed set.
+		if sc.RegimeWindowDivergence.IsConfigured() {
+			if sc.Platform != "hyperliquid" || sc.Type != "perps" {
+				errs = append(errs, fmt.Sprintf("%s: regime_window_divergence is only supported for HL perps strategies (got platform=%q type=%q)", prefix, sc.Platform, sc.Type))
+			}
+			if cfg.Regime == nil || !cfg.Regime.Enabled {
+				errs = append(errs, fmt.Sprintf("%s: regime_window_divergence requires top-level regime.enabled=true", prefix))
+			}
+			if cfg.Regime != nil && cfg.Regime.Enabled && len(cfg.Regime.Windows) < 2 {
+				errs = append(errs, fmt.Sprintf("%s: regime_window_divergence requires at least two windows in regime.windows", prefix))
+			}
+		}
+
+		if sc.RegimeProfileAllocation.IsConfigured() {
+			if sc.Platform != "hyperliquid" || sc.Type != "perps" {
+				errs = append(errs, fmt.Sprintf("%s: regime_profile_allocation is only supported for HL perps strategies (got platform=%q type=%q)", prefix, sc.Platform, sc.Type))
+			}
+			if cfg.Regime == nil || !cfg.Regime.Enabled {
+				errs = append(errs, fmt.Sprintf("%s: regime_profile_allocation requires top-level regime.enabled=true", prefix))
+			}
+		}
+
 		if sc.MarginMode != "" {
 			if sc.MarginMode != "isolated" && sc.MarginMode != "cross" {
 				errs = append(errs, fmt.Sprintf("%s: margin_mode must be \"isolated\" or \"cross\", got %q", prefix, sc.MarginMode))
@@ -1420,13 +1931,6 @@ func ValidateConfig(cfg *Config) error {
 			}
 		}
 
-		// #421: bound-check stop_loss_pct to mirror the init wizard's range.
-		// A hand-edited config with stop_loss_pct=200 would otherwise silently
-		// place an SL at $0 (long) or 3× entry (short) — both never trigger,
-		// breaking the safety feature without any warning. Pointer-aware (#484):
-		// nil means the field was omitted (auto-SL falls through to margin/DD
-		// for single-coin strategies); explicit 0 means the operator opted out
-		// and is allowed. LoadConfig rewrites omitted same-coin peers to 0 (#494).
 		if sc.StopLossPct != nil {
 			pct := *sc.StopLossPct
 			if pct < 0 || pct > 50 {
@@ -1437,13 +1941,6 @@ func ValidateConfig(cfg *Config) error {
 			}
 		}
 
-		// #487: stop_loss_margin_pct expresses the trigger as a % of deployed
-		// margin (leverage-aware) and is converted to a price % at order time.
-		// Mutually exclusive with stop_loss_pct so the operator can't double up.
-		// Pointer-aware (#484): same explicit-vs-omitted distinction. The
-		// mutual-exclusion check fires only when at least one field is
-		// non-zero; both = 0 is benign (both mean "disabled" — neither
-		// places a trigger at runtime, so there is nothing to conflict).
 		if sc.StopLossMarginPct != nil {
 			marginPct := *sc.StopLossMarginPct
 			if sc.StopLossPct != nil && (*sc.StopLossPct > 0 || marginPct > 0) {
@@ -1455,11 +1952,6 @@ func ValidateConfig(cfg *Config) error {
 			if sc.Type != "perps" || sc.Platform != "hyperliquid" {
 				errs = append(errs, fmt.Sprintf("%s: stop_loss_margin_pct is only supported for HL perps strategies (got platform=%q type=%q)", prefix, sc.Platform, sc.Type))
 			}
-			// Mirror the #421 [0, 50] cap on the *derived* price stop so a
-			// hand-edited config like {StopLossMarginPct: 80, Leverage: 1}
-			// can't pass validation and silently land an HL trigger at
-			// entry×0 (long) or entry×1.8 (short). Skip when explicitly 0
-			// (disabled) — derived stop is also 0.
 			if marginPct > 0 {
 				lev := sc.Leverage
 				if lev < 1 {
@@ -1471,9 +1963,6 @@ func ValidateConfig(cfg *Config) error {
 			}
 		}
 
-		// #501: synthetic trailing stops reuse the same HL reduce-only trigger
-		// slot as fixed stop_loss_pct / stop_loss_margin_pct. Only one positive
-		// stop owner may be configured for a strategy.
 		if sc.TrailingStopPct != nil {
 			pct := *sc.TrailingStopPct
 			if pct < 0 || pct > 50 {
@@ -1494,16 +1983,18 @@ func ValidateConfig(cfg *Config) error {
 				errs = append(errs, fmt.Sprintf("%s: trailing_stop_pct is mutually exclusive with stop_loss_pct and stop_loss_margin_pct", prefix))
 			}
 		}
-		// #505: ATR-derived trailing stops. The price % is resolved per-position
-		// at runtime from EntryATR / AvgCost, so validation only enforces shape:
-		// HL perps only, > 0, mutually exclusive with the fixed-distance stops.
+
+		for _, msg := range validateHLStopWithinBankruptcyBound(sc) {
+			errs = append(errs, fmt.Sprintf("%s: %s", prefix, msg))
+		}
 		if sc.TrailingStopATRMult != nil {
 			mult := *sc.TrailingStopATRMult
 			if mult < 0 {
 				errs = append(errs, fmt.Sprintf("%s: trailing_stop_atr_mult must be >= 0, got %g", prefix, mult))
 			}
-			if sc.Type != "perps" || sc.Platform != "hyperliquid" {
-				errs = append(errs, fmt.Sprintf("%s: trailing_stop_atr_mult is only supported for HL perps strategies (got platform=%q type=%q)", prefix, sc.Platform, sc.Type))
+			manualRatchet := sc.Type == "manual" && strategyUsesTrailingTPRatchetClose(sc)
+			if sc.Platform != "hyperliquid" || (sc.Type != "perps" && !manualRatchet) {
+				errs = append(errs, fmt.Sprintf("%s: trailing_stop_atr_mult is only supported for HL perps strategies or HL manual trailing_tp_ratchet strategies (got platform=%q type=%q)", prefix, sc.Platform, sc.Type))
 			}
 			if mult > 0 {
 				fixedPct := 0.0
@@ -1523,10 +2014,6 @@ func ValidateConfig(cfg *Config) error {
 				}
 			}
 		}
-		// #562: Fixed (non-trailing) ATR-derived stop loss. Same shape rules as
-		// trailing_stop_atr_mult: HL perps only, >= 0, mutually exclusive with
-		// the other four stop-loss / trailing-stop fields. Per-position price %
-		// is derived at arming time from EntryATR / AvgCost.
 		if sc.StopLossATRMult != nil {
 			mult := *sc.StopLossATRMult
 			if mult < 0 {
@@ -1557,8 +2044,11 @@ func ValidateConfig(cfg *Config) error {
 				}
 			}
 		}
-		// #708: sl_after rules on tiered TPs (post-fill SL adjustment).
-		for _, msg := range validatePostTPStopLossRules(sc) {
+		slAfterLabels := canonicalTrendRegimeLabels
+		if cfg.Regime != nil && cfg.Regime.Enabled {
+			slAfterLabels = regimeLabelsForStrategyWindow(sc, cfg.Regime, "atr")
+		}
+		for _, msg := range validatePostTPStopLossRulesWithLabels(sc, slAfterLabels) {
 			errs = append(errs, fmt.Sprintf("%s: %s", prefix, msg))
 		}
 
@@ -1567,8 +2057,9 @@ func ValidateConfig(cfg *Config) error {
 			if pct < 0 || pct > 100 {
 				errs = append(errs, fmt.Sprintf("%s: trailing_stop_min_move_pct must be in [0, 100], got %g", prefix, pct))
 			}
-			if sc.Type != "perps" || sc.Platform != "hyperliquid" {
-				errs = append(errs, fmt.Sprintf("%s: trailing_stop_min_move_pct is only supported for HL perps strategies (got platform=%q type=%q)", prefix, sc.Platform, sc.Type))
+			manualRatchet := sc.Type == "manual" && strategyUsesTrailingTPRatchetClose(sc)
+			if sc.Platform != "hyperliquid" || (sc.Type != "perps" && !manualRatchet) {
+				errs = append(errs, fmt.Sprintf("%s: trailing_stop_min_move_pct is only supported for HL perps strategies or HL manual trailing_tp_ratchet strategies (got platform=%q type=%q)", prefix, sc.Platform, sc.Type))
 			}
 			fixedTrailingPct := 0.0
 			if sc.TrailingStopPct != nil {
@@ -1578,12 +2069,12 @@ func ValidateConfig(cfg *Config) error {
 			if sc.TrailingStopATRMult != nil {
 				atrMult = *sc.TrailingStopATRMult
 			}
-			if fixedTrailingPct <= 0 && atrMult <= 0 {
-				errs = append(errs, fmt.Sprintf("%s: trailing_stop_min_move_pct requires trailing_stop_pct > 0 or trailing_stop_atr_mult > 0", prefix))
+			regimeTrail := sc.TrailingStopATRMultRegime.IsConfigured()
+			if fixedTrailingPct <= 0 && atrMult <= 0 && !regimeTrail {
+				errs = append(errs, fmt.Sprintf("%s: trailing_stop_min_move_pct requires trailing_stop_pct > 0, trailing_stop_atr_mult > 0, or trailing_stop_atr_mult_regime", prefix))
 			}
 		}
 
-		// #36: ThetaHarvest fields must be non-negative when present.
 		if sc.ThetaHarvest != nil {
 			th := sc.ThetaHarvest
 			if th.ProfitTargetPct < 0 {
@@ -1598,34 +2089,22 @@ func ValidateConfig(cfg *Config) error {
 		}
 	}
 
-	// #491: Two HL perps strategies on the same coin land on a single on-chain
-	// position (HL nets per coin per account). Peer strategies must agree on
-	// MarginMode and Leverage, and at most one peer may carry a per-trade
-	// stop-loss — otherwise reduce-only triggers placed by both peers will
-	// race on the shared position. Validate up front instead of failing at
-	// first trade.
 	for _, msg := range hyperliquidPeerStrategyErrors(cfg.Strategies) {
 		errs = append(errs, msg)
 	}
 
-	// #42: Validate portfolio risk config.
+	errs = append(errs, validateHedgeConfigs(cfg)...)
+
 	if cfg.PortfolioRisk != nil {
-		if cfg.PortfolioRisk.MaxDrawdownPct <= 0 || cfg.PortfolioRisk.MaxDrawdownPct > 100 {
-			errs = append(errs, fmt.Sprintf("portfolio_risk.max_drawdown_pct must be in (0, 100], got %g", cfg.PortfolioRisk.MaxDrawdownPct))
-		}
-		if cfg.PortfolioRisk.MaxNotionalUSD < 0 {
-			errs = append(errs, fmt.Sprintf("portfolio_risk.max_notional_usd must be >= 0, got %g", cfg.PortfolioRisk.MaxNotionalUSD))
-		}
-		if cfg.PortfolioRisk.WarnThresholdPct <= 0 || cfg.PortfolioRisk.WarnThresholdPct > 100 {
-			errs = append(errs, fmt.Sprintf("portfolio_risk.warn_threshold_pct must be in (0, 100], got %g", cfg.PortfolioRisk.WarnThresholdPct))
+		errs = append(errs, validatePortfolioRiskFields(cfg.PortfolioRisk, "portfolio_risk.", false)...)
+		if cfg.PortfolioRisk.Paper != nil {
+			errs = append(errs, validatePortfolioRiskFields(cfg.PortfolioRisk.Paper, "portfolio_risk.paper.", true)...)
+			if cfg.PortfolioRisk.Paper.Paper != nil {
+				errs = append(errs, "portfolio_risk.paper.paper is not allowed (the paper override cannot nest another override)")
+			}
 		}
 	}
 
-	// Validate leaderboard_summaries (#308).
-	// seenKeys detects collisions on Key() (platform:ticker:channel). Two entries
-	// that share a key would share one LastLeaderboardSummaries[key] timestamp,
-	// so whichever fires first silently blocks the other for the whole Frequency
-	// window — review item 4 on #309.
 	seenKeys := make(map[string]int)
 	for i, lc := range cfg.LeaderboardSummaries {
 		prefix := fmt.Sprintf("leaderboard_summaries[%d]", i)
@@ -1658,7 +2137,6 @@ func ValidateConfig(cfg *Config) error {
 		}
 	}
 
-	// Validate correlation config.
 	if cfg.Correlation != nil && cfg.Correlation.Enabled {
 		if cfg.Correlation.MaxConcentrationPct <= 0 || cfg.Correlation.MaxConcentrationPct > 100 {
 			errs = append(errs, fmt.Sprintf("correlation.max_concentration_pct must be in (0, 100], got %g", cfg.Correlation.MaxConcentrationPct))
@@ -1668,7 +2146,6 @@ func ValidateConfig(cfg *Config) error {
 		}
 	}
 
-	// Validate regime config.
 	if cfg.Regime != nil && cfg.Regime.Enabled {
 		if cfg.Regime.Period <= 0 {
 			errs = append(errs, fmt.Sprintf("regime.period must be > 0, got %d", cfg.Regime.Period))
@@ -1676,17 +2153,35 @@ func ValidateConfig(cfg *Config) error {
 		if cfg.Regime.ADXThreshold <= 0 || cfg.Regime.ADXThreshold > 100 {
 			errs = append(errs, fmt.Sprintf("regime.adx_threshold must be in (0, 100], got %g", cfg.Regime.ADXThreshold))
 		}
+		if tf := normalizeRegimeTimeframe(cfg.Regime.Timeframe); tf != "" && !validRegimeTimeframe(tf) {
+			errs = append(errs, fmt.Sprintf("regime.timeframe must be one of %s, got %q", strings.Join(validRegimeTimeframes(), ", "), cfg.Regime.Timeframe))
+		}
 	}
+	if cfg.Regime != nil {
+		if _, err := parseRegimeGateOnFailure(cfg.Regime.GateOnFailure); err != nil {
+			errs = append(errs, fmt.Sprintf("regime.gate_on_failure: %v", err))
+		}
+	}
+	errs = append(errs, validateRegimeWindowsConfig(cfg)...)
+	errs = append(errs, validateStrategyRegimeVocabulary(cfg)...)
+	errs = append(errs, validateRegimeTransitionsConfig(cfg)...)
+	errs = append(errs, validateHurstGateConfigs(cfg)...)
 
-	// Warn when allowed_regimes is configured but regime.enabled=false — the
-	// gate reads result.Regime from the check script output, which requires
-	// regime detection to be running. Without it the gate is a no-op.
 	if cfg.Regime == nil || !cfg.Regime.Enabled {
 		for _, sc := range cfg.Strategies {
-			if len(sc.AllowedRegimes) > 0 {
-				fmt.Printf("[WARN] %s: allowed_regimes is set but regime.enabled=false — gate is a no-op until regime detection is enabled\n", sc.ID)
+			if len(sc.AllowedRegimes) == 0 {
+				continue
 			}
+			if resolveRegimeGateOnFailure(sc, cfg.Regime) == RegimeGateOnFailureClosed {
+				errs = append(errs, fmt.Sprintf("strategy[%s]: regime_gate_on_failure=closed with allowed_regimes but regime.enabled=false — the gate label is always empty, so the strategy could never open; enable regime detection or use the fail-open policy", sc.ID))
+				continue
+			}
+			fmt.Printf("[WARN] %s: allowed_regimes is set but regime.enabled=false — gate is a no-op until regime detection is enabled\n", sc.ID)
 		}
+	}
+
+	for _, w := range regimeDirectionalPolicyWarnings(cfg) {
+		fmt.Println(w)
 	}
 
 	knownPlatforms := make(map[string]bool)
@@ -1695,12 +2190,17 @@ func ValidateConfig(cfg *Config) error {
 			knownPlatforms[p] = true
 		}
 	}
-	validateDMChannelsMap(cfg.Discord.DMChannels, "discord", knownPlatforms, &errs)
-	validateDMChannelsMap(cfg.Telegram.DMChannels, "telegram", knownPlatforms, &errs)
+	knownPaperSources := make(map[string]bool, len(cfg.PaperSources))
+	for _, ps := range cfg.PaperSources {
+		if id := strings.TrimSpace(ps.ID); id != "" {
+			knownPaperSources[id] = true
+		}
+	}
+	validateDMChannelsMap(cfg.Discord.DMChannels, "discord", knownPlatforms, knownPaperSources, &errs)
+	validateDMChannelsMap(cfg.Telegram.DMChannels, "telegram", knownPlatforms, knownPaperSources, &errs)
+	warnPaperSourceDMGaps(cfg, cfg.Discord.DMChannels, "discord")
+	warnPaperSourceDMGaps(cfg, cfg.Telegram.DMChannels, "telegram")
 
-	// Validate summary_frequency values (#30). Keys are free-form channel
-	// keys (matching DiscordConfig.Channels), so we don't validate them
-	// against a fixed allow-list — only the cadence values.
 	for k, v := range cfg.SummaryFrequency {
 		if strings.TrimSpace(k) == "" {
 			errs = append(errs, "summary_frequency: empty key")
@@ -1709,6 +2209,19 @@ func ValidateConfig(cfg *Config) error {
 		if _, err := ParseSummaryFrequency(v); err != nil {
 			errs = append(errs, fmt.Sprintf("summary_frequency[%q]: %v", k, err))
 		}
+	}
+
+	if _, err := ParseAlertThrottleInterval(cfg.AlertThrottleInterval); err != nil {
+		errs = append(errs, err.Error())
+	}
+	if _, err := parseLogLevel(cfg.LogLevel); err != nil {
+		errs = append(errs, err.Error())
+	}
+	if _, err := ParseKillSwitchResetDMTimeout(cfg.KillSwitchResetDMTimeout); err != nil {
+		errs = append(errs, err.Error())
+	}
+	if cfg.Tuning != nil && cfg.Tuning.MaxRetainedRuns < 0 {
+		errs = append(errs, fmt.Sprintf("tuning.max_retained_runs must be >= 0 (0 = keep-all), got %d", cfg.Tuning.MaxRetainedRuns))
 	}
 
 	for k, v := range cfg.TradingViewExport.SymbolOverrides {
@@ -1721,11 +2234,8 @@ func ValidateConfig(cfg *Config) error {
 		}
 	}
 
-	// #733: regime-aware ATR multiplier validation. Runs the surface-aware
-	// parsing pass on each strategy's StopLossATRRegime / TrailingStopATRRegime
-	// and on every tiered_tp_atr_regime / tiered_tp_atr_live_regime close ref.
-	// Also enforces mutex with scalar siblings + regime-enabled requirement.
 	errs = append(errs, validateRegimeATRConfig(cfg)...)
+	errs = append(errs, validateTPTierLadders(cfg)...)
 
 	if len(errs) > 0 {
 		return fmt.Errorf("config validation errors:\n  %s", strings.Join(errs, "\n  "))
@@ -1733,10 +2243,25 @@ func ValidateConfig(cfg *Config) error {
 	return nil
 }
 
-// validateDMChannelsMap checks dm_channels keys and values (#248).
-// Keys must be "<platform>" or "<platform>-paper" with a non-empty platform prefix.
-// Unknown platforms (not present in cfg.Strategies) produce a warning log but not a validation error.
-func validateDMChannelsMap(m map[string]string, label string, knownPlatforms map[string]bool, errs *[]string) {
+// parseDMChannelKey splits a dm_channels key into the platform and the optional
+// paper source it routes. The accepted shapes are exactly the keys the send
+// path builds in paperChannelKeys: "<platform>", "<platform>-paper" and
+// "<platform>-paper:<source id>".
+func parseDMChannelKey(k string) (platform, source string, ok bool) {
+	base, src, hasSource := strings.Cut(k, paperSourceSeparator)
+	if hasSource {
+		if !strings.HasSuffix(base, paperChannelSuffix) || !paperSourceIDPattern.MatchString(src) {
+			return "", "", false
+		}
+		return strings.TrimSuffix(base, paperChannelSuffix), src, true
+	}
+	if strings.Contains(base, paperChannelSuffix) && !strings.HasSuffix(base, paperChannelSuffix) {
+		return "", "", false
+	}
+	return strings.TrimSuffix(base, paperChannelSuffix), "", true
+}
+
+func validateDMChannelsMap(m map[string]string, label string, knownPlatforms, knownSources map[string]bool, errs *[]string) {
 	if m == nil {
 		return
 	}
@@ -1745,11 +2270,11 @@ func validateDMChannelsMap(m map[string]string, label string, knownPlatforms map
 			*errs = append(*errs, fmt.Sprintf("%s: dm_channels has empty key", label))
 			continue
 		}
-		if strings.Contains(k, "-paper") && !strings.HasSuffix(k, "-paper") {
-			*errs = append(*errs, fmt.Sprintf("%s: dm_channels key %q is invalid (only optional suffix is \"-paper\")", label, k))
+		platform, source, ok := parseDMChannelKey(k)
+		if !ok {
+			*errs = append(*errs, fmt.Sprintf("%s: dm_channels key %q is invalid (want \"<platform>\", \"<platform>-paper\" or \"<platform>-paper%s<source id>\")", label, k, paperSourceSeparator))
 			continue
 		}
-		platform := strings.TrimSuffix(k, "-paper")
 		if platform == "" {
 			*errs = append(*errs, fmt.Sprintf("%s: dm_channels key %q is invalid (platform prefix is empty)", label, k))
 			continue
@@ -1761,5 +2286,142 @@ func validateDMChannelsMap(m map[string]string, label string, knownPlatforms map
 		if len(knownPlatforms) > 0 && !knownPlatforms[platform] {
 			fmt.Printf("[WARN] %s: dm_channels[%q] references platform %q with no configured strategies — possible typo\n", label, k, platform)
 		}
+		if source != "" && !knownSources[source] {
+			fmt.Printf("[WARN] %s: dm_channels[%q] references paper source %q with no paper_sources entry — this DM route never fires\n", label, k, source)
+		}
 	}
+}
+
+// warnPaperSourceDMGaps names every sourced strategy that had a
+// "<platform>-paper" DM route before its source existed and now reaches no DM
+// key at all: tradeAlertRoutes reads only the sourced key, with no fallback,
+// so the plain key that used to carry these DMs is never consulted again.
+func warnPaperSourceDMGaps(cfg *Config, m map[string]string, label string) {
+	if cfg == nil || len(m) == 0 {
+		return
+	}
+	gaps := make(map[string]string)
+	for _, sc := range cfg.Strategies {
+		source := partitionFor(sc).Source
+		platform := strings.TrimSpace(sc.Platform)
+		if source == "" || platform == "" {
+			continue
+		}
+		keys := paperChannelKeys(platform, source)
+		if strings.TrimSpace(m[keys[0]]) != "" || strings.TrimSpace(m[keys[1]]) == "" {
+			continue
+		}
+		gaps[keys[0]] = keys[1]
+	}
+	missing := make([]string, 0, len(gaps))
+	for key := range gaps {
+		missing = append(missing, key)
+	}
+	sort.Strings(missing)
+	for _, key := range missing {
+		fmt.Printf("[WARN] %s: no dm_channels[%q]; trade DMs for that paper source are dropped because the send path never falls back to dm_channels[%q] — add the key to restore them\n", label, key, gaps[key])
+	}
+}
+
+var paperSourceIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
+
+// reservedPaperSourceIDs cannot name a source: they already spell a partition
+// or a storage role, so a source id may never collide with one.
+var reservedPaperSourceIDs = map[string]bool{
+	string(ScopeLive):          true,
+	string(ScopePaper):         true,
+	string(storageRolePrimary): true,
+}
+
+// validatePaperSourcesConfig owns every paper-source refusal: the id shape and
+// uniqueness, the reserved ids, a blank file, a nested paper override, an
+// unknown reference and a source named by a live strategy.
+func validatePaperSourcesConfig(cfg *Config) []string {
+	if cfg == nil {
+		return nil
+	}
+	var errs []string
+	known := make(map[string]bool, len(cfg.PaperSources))
+	for i, src := range cfg.PaperSources {
+		prefix := fmt.Sprintf("paper_sources[%d]", i)
+		if src.ID != "" {
+			prefix = fmt.Sprintf("paper_sources[%s]", src.ID)
+		}
+		switch {
+		case src.ID == "":
+			errs = append(errs, fmt.Sprintf("%s: id is empty", prefix))
+		case reservedPaperSourceIDs[src.ID]:
+			errs = append(errs, fmt.Sprintf("%s: id %q is reserved; pick another source id", prefix, src.ID))
+		case !paperSourceIDPattern.MatchString(src.ID):
+			errs = append(errs, fmt.Sprintf("%s: id %q must match %s", prefix, src.ID, paperSourceIDPattern.String()))
+		case known[src.ID]:
+			errs = append(errs, fmt.Sprintf("%s: duplicate id %q", prefix, src.ID))
+		default:
+			known[src.ID] = true
+		}
+		if src.DBFile == "" {
+			errs = append(errs, fmt.Sprintf("%s: db_file is empty; every paper source owns its own state file", prefix))
+		}
+		if src.PortfolioRisk != nil {
+			errs = append(errs, validatePortfolioRiskFields(src.PortfolioRisk, prefix+".portfolio_risk.", true)...)
+			if src.PortfolioRisk.Paper != nil {
+				errs = append(errs, fmt.Sprintf("%s.portfolio_risk.paper is not allowed (a source override cannot nest another override)", prefix))
+			}
+		}
+	}
+	for i, sc := range cfg.Strategies {
+		if sc.PaperSource == "" {
+			continue
+		}
+		prefix := fmt.Sprintf("strategy[%d]", i)
+		if sc.ID != "" {
+			prefix = fmt.Sprintf("strategy[%s]", sc.ID)
+		}
+		if portfolioScopeFor(sc) == ScopeLive {
+			errs = append(errs, fmt.Sprintf("%s: paper_source %q is set on a live strategy; only paper strategies carry a source", prefix, sc.PaperSource))
+			continue
+		}
+		if !known[sc.PaperSource] {
+			errs = append(errs, fmt.Sprintf("%s: paper_source %q is not declared in paper_sources", prefix, sc.PaperSource))
+		}
+	}
+	return errs
+}
+
+func validatePortfolioRiskFields(pr *PortfolioRiskConfig, prefix string, inheritZero bool) []string {
+	if pr == nil {
+		return nil
+	}
+	var errs []string
+	if inheritZero {
+		if pr.MaxDrawdownPct < 0 || pr.MaxDrawdownPct > 100 {
+			errs = append(errs, fmt.Sprintf("%smax_drawdown_pct must be in [0, 100] (0 = inherit), got %g", prefix, pr.MaxDrawdownPct))
+		}
+		if pr.WarnThresholdPct < 0 || pr.WarnThresholdPct > 100 {
+			errs = append(errs, fmt.Sprintf("%swarn_threshold_pct must be in [0, 100] (0 = inherit), got %g", prefix, pr.WarnThresholdPct))
+		}
+	} else {
+		if pr.MaxDrawdownPct <= 0 || pr.MaxDrawdownPct > 100 {
+			errs = append(errs, fmt.Sprintf("%smax_drawdown_pct must be in (0, 100], got %g", prefix, pr.MaxDrawdownPct))
+		}
+		if pr.WarnThresholdPct <= 0 || pr.WarnThresholdPct > 100 {
+			errs = append(errs, fmt.Sprintf("%swarn_threshold_pct must be in (0, 100], got %g", prefix, pr.WarnThresholdPct))
+		}
+	}
+	if pr.MaxNotionalUSD < 0 {
+		errs = append(errs, fmt.Sprintf("%smax_notional_usd must be >= 0, got %g", prefix, pr.MaxNotionalUSD))
+	}
+	if pr.DailyMaxLossUSD < 0 {
+		errs = append(errs, fmt.Sprintf("%sdaily_max_loss_usd must be >= 0 (0 = disabled), got %g", prefix, pr.DailyMaxLossUSD))
+	}
+	if pr.DailyMaxLossPct < 0 || pr.DailyMaxLossPct > 100 {
+		errs = append(errs, fmt.Sprintf("%sdaily_max_loss_pct must be in [0, 100] (0 = disabled), got %g", prefix, pr.DailyMaxLossPct))
+	}
+	if pr.MaxSameDirectionNotionalUSD < 0 {
+		errs = append(errs, fmt.Sprintf("%smax_same_direction_notional_usd must be >= 0 (0 = disabled), got %g", prefix, pr.MaxSameDirectionNotionalUSD))
+	}
+	if pr.MaxAssetConcentrationPct < 0 || pr.MaxAssetConcentrationPct > 100 {
+		errs = append(errs, fmt.Sprintf("%smax_asset_concentration_pct must be in [0, 100] (0 = disabled), got %g", prefix, pr.MaxAssetConcentrationPct))
+	}
+	return errs
 }

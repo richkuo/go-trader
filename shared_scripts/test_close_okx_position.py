@@ -1,17 +1,3 @@
-"""Tests for close_okx_position.py — adapter response parsing for the
-portfolio kill switch (#345).
-
-Pattern mirrors test_close_hyperliquid_position.py: load the script as a
-module, mock the `adapter` import, run main() with --symbol=... --mode=live,
-capture stdout + exit code.
-
-These tests pin the contract for every branch of the adapter response
-parser. A regression that treats an ambiguous response as success would
-silently clear virtual state while on-chain exposure remained — the
-exact #345 failure mode. Every path that means "close was NOT confirmed"
-must exit 1 with a populated error field so the Go caller latches the
-kill switch.
-"""
 
 import builtins
 import importlib.util
@@ -25,18 +11,6 @@ import pytest
 
 
 def _run_script(adapter_response_or_exc, argv, is_live=True):
-    """Helper: invoke close_okx_position.main() with a mocked adapter.
-
-    adapter_response_or_exc may be either a dict/value (returned by
-    adapter.market_close) or an Exception subclass (raised by
-    market_close). argv is the list passed to main() as sys.argv
-    (excluding the program name).
-
-    is_live controls the mocked adapter's is_live property — False
-    verifies the script rejects paper/unauthenticated adapters.
-
-    Returns (parsed_stdout_json, exit_code).
-    """
     script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                "close_okx_position.py")
     spec = importlib.util.spec_from_file_location("close_okx_position", script_path)
@@ -83,7 +57,6 @@ def _run_script(adapter_response_or_exc, argv, is_live=True):
 
 
 class TestPaperModeRejected:
-    """--mode=live is required for kill-switch invocation."""
 
     def test_paper_mode_exits_nonzero(self):
         out, code = _run_script({"id": "xx"}, ["--symbol=BTC", "--mode=paper"])
@@ -92,7 +65,6 @@ class TestPaperModeRejected:
         assert out["close"] is None
 
     def test_default_mode_is_live(self):
-        """No --mode flag → default live. Must go through to the adapter."""
         out, code = _run_script({"id": "abc", "average": 42000, "filled": 0.01},
                                 ["--symbol=BTC"])
         assert code == 0, out
@@ -100,10 +72,6 @@ class TestPaperModeRejected:
 
 
 class TestNonLiveAdapterRejected:
-    """Adapter reporting is_live=False (missing credentials) must fail fast —
-    silently calling market_close on a paper adapter would raise
-    RuntimeError but the script's try/except would surface it as a generic
-    error. The explicit is_live check produces a clearer operator message."""
 
     def test_non_live_adapter_exits_nonzero(self):
         out, code = _run_script({}, ["--symbol=BTC", "--mode=live"], is_live=False)
@@ -113,7 +81,6 @@ class TestNonLiveAdapterRejected:
 
 
 class TestSuccessFill:
-    """Normal close response → success path with fill telemetry."""
 
     def test_full_fill_fields(self):
         response = {
@@ -132,9 +99,6 @@ class TestSuccessFill:
         assert fill["fee"] == 0.25
 
     def test_minimal_fill_fields(self):
-        """Older/degenerate ccxt responses may omit optional fields. Must
-        still succeed — we don't have a way to re-fetch telemetry, and the
-        kill switch only cares about the binary close-submitted signal."""
         out, code = _run_script({"id": "x"}, ["--symbol=BTC", "--mode=live"])
         assert code == 0
         assert out["close"]["symbol"] == "BTC"
@@ -142,9 +106,6 @@ class TestSuccessFill:
 
 
 class TestAlreadyFlat:
-    """Empty dict == adapter found no position. Must be success with empty
-    fill so the kill switch can release the latch during the eventual-
-    consistency window between Go-side fetch and this submit."""
 
     def test_empty_response_is_success(self):
         out, code = _run_script({}, ["--symbol=BTC", "--mode=live"])
@@ -152,15 +113,10 @@ class TestAlreadyFlat:
         assert out["close"]["symbol"] == "BTC"
         assert out["close"]["fill"] == {}
         assert "error" not in out
-        # already_flat must be set so the Go side routes this through
-        # AlreadyFlat instead of ClosedCoins (#350) — operator messaging
-        # must distinguish "we sent a close order" from "nothing to close".
         assert out["close"]["already_flat"] is True
 
 
 class TestFailurePaths:
-    """Every path that means "close was NOT confirmed" must emit error +
-    exit 1 so the Go caller latches the kill switch for retry."""
 
     def test_adapter_raises(self):
         out, code = _run_script(RuntimeError("OKX auth failed"),
@@ -170,8 +126,6 @@ class TestFailurePaths:
         assert out["close"]["fill"] == {}
 
     def test_non_dict_response(self):
-        """Defensive: unexpected ccxt response shape (list, None, string)
-        must not be treated as success — we don't know what it means."""
         out, code = _run_script("unexpected string", ["--symbol=BTC", "--mode=live"])
         assert code == 1
         assert "unexpected adapter response type" in out["error"]

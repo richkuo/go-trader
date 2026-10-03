@@ -1,7 +1,3 @@
-"""
-BinanceUS ExchangeAdapter — thin ccxt wrapper for spot trading only.
-Options methods raise NotImplementedError (BinanceUS is spot-only).
-"""
 
 import sys
 import os as _os
@@ -17,17 +13,12 @@ def _get_ccxt_exchange():
 
 
 class BinanceUSExchangeAdapter:
-    """
-    ExchangeAdapter for BinanceUS — spot trading only.
-    Provides spot price and vol metrics; options methods are not supported.
-    """
 
     @property
     def name(self) -> str:
         return "binanceus"
 
     def get_spot_price(self, underlying: str) -> float:
-        """Fetch current spot price for underlying via BinanceUS."""
         exchange = _get_ccxt_exchange()
         for suffix in ("/USDT", "/USD", "/USDC"):
             try:
@@ -40,7 +31,6 @@ class BinanceUSExchangeAdapter:
         return 0.0
 
     def get_vol_metrics(self, underlying: str) -> Tuple[float, float]:
-        """Compute 14-day historical vol and IV rank from daily OHLCV."""
         try:
             exchange = _get_ccxt_exchange()
             ohlcv = exchange.fetch_ohlcv(underlying + "/USDT", "1d", limit=90)

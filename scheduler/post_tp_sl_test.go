@@ -1,18 +1,20 @@
 package main
 
 import (
-	"math"
+	"bytes"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
-// postTPSLTestStrategy builds a perps strategy with a fixed ATR SL and a
-// tiered TP close ref carrying sl_after rules. Used by orchestrator tests.
 func postTPSLTestStrategy(slAfter interface{}, tiers []interface{}) StrategyConfig {
 	atrMult := 1.0
 	params := map[string]interface{}{
-		"tiers": tiers,
+		"tp_tiers": tiers,
 	}
 	if slAfter != nil {
 		params["sl_after"] = slAfter
@@ -23,843 +25,13 @@ func postTPSLTestStrategy(slAfter interface{}, tiers []interface{}) StrategyConf
 		Type:            "perps",
 		Script:          "shared_scripts/check_hyperliquid.py",
 		StopLossATRMult: &atrMult,
-		CloseStrategies: []StrategyRef{{
+		CloseStrategy: &StrategyRef{
 			Name:   "tiered_tp_atr_live",
 			Params: params,
-		}},
-	}
-}
-
-func TestComputePostTPStopLossTrigger_Breakeven(t *testing.T) {
-	cases := []struct {
-		name string
-		side string
-		avg  float64
-	}{
-		{"long", "long", 100},
-		{"short", "short", 200},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			px, mode, ok := computePostTPStopLossTrigger(
-				SLAfterRule{Kind: "breakeven"}, tc.side, tc.avg, 5, 0,
-			)
-			if !ok {
-				t.Fatalf("expected ok=true")
-			}
-			if px != tc.avg {
-				t.Fatalf("trigger px = %v, want %v", px, tc.avg)
-			}
-			if mode != "breakeven" {
-				t.Fatalf("mode = %q, want breakeven", mode)
-			}
-		})
-	}
-}
-
-func TestComputePostTPStopLossTrigger_ATROffset(t *testing.T) {
-	const avg, atr = 100.0, 5.0
-	cases := []struct {
-		name string
-		side string
-		mult float64
-		want float64
-	}{
-		{"long_positive_locks_profit", "long", 0.25, avg + 0.25*atr},
-		{"long_negative_loosens", "long", -0.5, avg - 0.5*atr},
-		{"long_zero_eq_breakeven", "long", 0, avg},
-		{"short_positive_locks_profit", "short", 0.25, avg - 0.25*atr},
-		{"short_negative_loosens", "short", -0.5, avg + 0.5*atr},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			px, _, ok := computePostTPStopLossTrigger(
-				SLAfterRule{Kind: "atr_offset", ATRMult: tc.mult}, tc.side, avg, atr, 0,
-			)
-			if !ok {
-				t.Fatalf("expected ok=true")
-			}
-			if math.Abs(px-tc.want) > 1e-9 {
-				t.Fatalf("trigger px = %v, want %v", px, tc.want)
-			}
-		})
-	}
-}
-
-func TestComputePostTPStopLossTrigger_ATROffsetMode(t *testing.T) {
-	cases := []struct {
-		mult float64
-		want string
-	}{
-		// {atr_mult: 0} preserves "atr+0" so logs/DMs reflect the operator's
-		// explicit kind; Kind=="breakeven" still renders as "breakeven" via
-		// the trigger helper's own branch.
-		{0, "atr+0"},
-		{0.25, "atr+0.25"},
-		{-0.5, "atr-0.5"},
-		{1, "atr+1"},
-	}
-	for _, tc := range cases {
-		_, mode, _ := computePostTPStopLossTrigger(
-			SLAfterRule{Kind: "atr_offset", ATRMult: tc.mult}, "long", 100, 5, 0,
-		)
-		if mode != tc.want {
-			t.Fatalf("mult=%v: mode = %q, want %q", tc.mult, mode, tc.want)
-		}
-	}
-}
-
-func TestComputePostTPStopLossTrigger_TrailFromHere(t *testing.T) {
-	const avg, atr = 100.0, 5.0
-	cases := []struct {
-		name string
-		side string
-		mark float64
-		mult float64
-		want float64
-	}{
-		{"long", "long", 110, 1.0, 110 - 1.0*atr},
-		{"short", "short", 90, 1.5, 90 + 1.5*atr},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			px, mode, ok := computePostTPStopLossTrigger(
-				SLAfterRule{Kind: "trail_from_here", TrailATRMult: tc.mult},
-				tc.side, avg, atr, tc.mark,
-			)
-			if !ok {
-				t.Fatalf("expected ok=true")
-			}
-			if math.Abs(px-tc.want) > 1e-9 {
-				t.Fatalf("trigger px = %v, want %v", px, tc.want)
-			}
-			if mode == "" {
-				t.Fatalf("expected non-empty mode label")
-			}
-		})
-	}
-}
-
-func TestComputePostTPStopLossTrigger_RejectsBadInputs(t *testing.T) {
-	cases := []struct {
-		name string
-		rule SLAfterRule
-		side string
-		avg  float64
-		atr  float64
-		mark float64
-	}{
-		{"empty rule", SLAfterRule{}, "long", 100, 5, 0},
-		{"unknown side", SLAfterRule{Kind: "breakeven"}, "neutral", 100, 5, 0},
-		{"non-positive avgCost", SLAfterRule{Kind: "breakeven"}, "long", 0, 5, 0},
-		{"atr_offset missing ATR", SLAfterRule{Kind: "atr_offset", ATRMult: 0.25}, "long", 100, 0, 0},
-		{"trail missing ATR", SLAfterRule{Kind: "trail_from_here", TrailATRMult: 1}, "long", 100, 0, 110},
-		{"trail missing mark", SLAfterRule{Kind: "trail_from_here", TrailATRMult: 1}, "long", 100, 5, 0},
-		{"trail non-positive mult", SLAfterRule{Kind: "trail_from_here", TrailATRMult: 0}, "long", 100, 5, 110},
-		{"unknown kind", SLAfterRule{Kind: "weird"}, "long", 100, 5, 110},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			_, _, ok := computePostTPStopLossTrigger(tc.rule, tc.side, tc.avg, tc.atr, tc.mark)
-			if ok {
-				t.Fatalf("expected ok=false")
-			}
-		})
-	}
-}
-
-func TestValidateSLAfterRule(t *testing.T) {
-	okCases := []SLAfterRule{
-		{},
-		{Kind: "breakeven"},
-		{Kind: "atr_offset", ATRMult: 0.25},
-		{Kind: "atr_offset", ATRMult: 0},
-		{Kind: "atr_offset", ATRMult: -0.5},
-		{Kind: "trail_from_here", TrailATRMult: 1.0},
-	}
-	for _, r := range okCases {
-		if err := validateSLAfterRule(r); err != nil {
-			t.Fatalf("expected nil error for %+v, got %v", r, err)
-		}
-	}
-	badCases := []SLAfterRule{
-		{Kind: "trail_from_here"},
-		{Kind: "trail_from_here", TrailATRMult: 0},
-		{Kind: "trail_from_here", TrailATRMult: -1},
-		{Kind: "weird"},
-	}
-	for _, r := range badCases {
-		if err := validateSLAfterRule(r); err == nil {
-			t.Fatalf("expected error for %+v", r)
-		}
-	}
-}
-
-func TestSLAfterRule_IsEmpty(t *testing.T) {
-	if !(SLAfterRule{}).IsEmpty() {
-		t.Fatal("zero value should be empty")
-	}
-	if (SLAfterRule{Kind: "breakeven"}).IsEmpty() {
-		t.Fatal("breakeven rule should not be empty")
-	}
-}
-
-func TestParseSLAfterRule(t *testing.T) {
-	cases := []struct {
-		name string
-		raw  interface{}
-		want SLAfterRule
-	}{
-		{"nil", nil, SLAfterRule{}},
-		{"empty_string", "", SLAfterRule{}},
-		{"string_breakeven", "breakeven", SLAfterRule{Kind: "breakeven"}},
-		{"string_breakeven_case", "BREAKEVEN", SLAfterRule{Kind: "breakeven"}},
-		{
-			"implicit_atr_offset",
-			map[string]interface{}{"atr_mult": 0.25},
-			SLAfterRule{Kind: "atr_offset", ATRMult: 0.25},
-		},
-		{
-			"implicit_atr_offset_negative",
-			map[string]interface{}{"atr_mult": -0.5},
-			SLAfterRule{Kind: "atr_offset", ATRMult: -0.5},
-		},
-		{
-			"explicit_kind_atr_offset",
-			map[string]interface{}{"kind": "atr_offset", "atr_mult": 0.25},
-			SLAfterRule{Kind: "atr_offset", ATRMult: 0.25},
-		},
-		{
-			"explicit_kind_breakeven",
-			map[string]interface{}{"kind": "breakeven"},
-			SLAfterRule{Kind: "breakeven"},
-		},
-		{
-			"nested_trail_from_here",
-			map[string]interface{}{
-				"trail_from_here": map[string]interface{}{"atr_mult": 1.0},
-			},
-			SLAfterRule{Kind: "trail_from_here", TrailATRMult: 1.0},
-		},
-		{
-			"explicit_kind_trail_from_here",
-			map[string]interface{}{"kind": "trail_from_here", "atr_mult": 1.5},
-			SLAfterRule{Kind: "trail_from_here", TrailATRMult: 1.5},
 		},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := parseSLAfterRule(tc.raw)
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if got != tc.want {
-				t.Fatalf("got %+v, want %+v", got, tc.want)
-			}
-		})
-	}
 }
 
-func TestParseSLAfterRule_Errors(t *testing.T) {
-	cases := []struct {
-		name string
-		raw  interface{}
-	}{
-		{"unknown_string", "hold"},
-		{"unknown_kind", map[string]interface{}{"kind": "weird"}},
-		{"trail_negative_mult", map[string]interface{}{
-			"trail_from_here": map[string]interface{}{"atr_mult": -1.0},
-		}},
-		{"trail_zero_mult", map[string]interface{}{
-			"trail_from_here": map[string]interface{}{"atr_mult": 0.0},
-		}},
-		{"trail_missing_mult", map[string]interface{}{
-			"trail_from_here": map[string]interface{}{},
-		}},
-		{"empty_object", map[string]interface{}{}},
-		{"wrong_type", 42},
-		{"kind_not_string", map[string]interface{}{"kind": 1}},
-		{"trail_not_object", map[string]interface{}{"trail_from_here": "1.0"}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			_, err := parseSLAfterRule(tc.raw)
-			if err == nil {
-				t.Fatalf("expected error for %v", tc.raw)
-			}
-		})
-	}
-}
-
-func TestParseStrategyTPSLAfterRules(t *testing.T) {
-	// strategy-level default + per-tier override
-	sc := StrategyConfig{
-		Type:     "perps",
-		Platform: "hyperliquid",
-		CloseStrategies: []StrategyRef{{
-			Name: "tiered_tp_atr_live",
-			Params: map[string]interface{}{
-				"sl_after": "breakeven",
-				"tiers": []interface{}{
-					// out of order intentionally — should sort by multiple
-					map[string]interface{}{"atr_multiple": 3, "close_fraction": 1.0, "sl_after": map[string]interface{}{"atr_mult": 0.25}},
-					map[string]interface{}{"atr_multiple": 2, "close_fraction": 0.5},
-				},
-			},
-		}},
-	}
-	rules, errs := parseStrategyTPSLAfterRules(sc)
-	if len(errs) != 0 {
-		t.Fatalf("unexpected errors: %v", errs)
-	}
-	if rules.Default.Kind != "breakeven" {
-		t.Fatalf("default = %+v, want breakeven", rules.Default)
-	}
-	if len(rules.PerTier) != 2 {
-		t.Fatalf("per-tier len = %d, want 2", len(rules.PerTier))
-	}
-	if !rules.PerTier[0].IsEmpty() {
-		t.Fatalf("tier 0 (mult=2) should inherit default, got %+v", rules.PerTier[0])
-	}
-	if rules.PerTier[1].Kind != "atr_offset" || rules.PerTier[1].ATRMult != 0.25 {
-		t.Fatalf("tier 1 (mult=3) = %+v, want atr_offset/0.25", rules.PerTier[1])
-	}
-	if !rules.HasAny() {
-		t.Fatal("HasAny() should be true")
-	}
-	// ForTier returns override or default
-	if got := rules.ForTier(0); got.Kind != "breakeven" {
-		t.Fatalf("ForTier(0) = %+v, want breakeven (inherited)", got)
-	}
-	if got := rules.ForTier(1); got.Kind != "atr_offset" {
-		t.Fatalf("ForTier(1) = %+v, want atr_offset (override)", got)
-	}
-	if got := rules.ForTier(5); got.Kind != "breakeven" {
-		t.Fatalf("ForTier(out-of-range) = %+v, want default", got)
-	}
-}
-
-func TestParseStrategyTPSLAfterRules_NoTieredTP(t *testing.T) {
-	sc := StrategyConfig{Type: "perps", Platform: "hyperliquid"}
-	rules, errs := parseStrategyTPSLAfterRules(sc)
-	if len(errs) != 0 || rules.HasAny() {
-		t.Fatalf("expected empty/no-errors for strategy without tiered TP")
-	}
-}
-
-func TestParseStrategyTPSLAfterRules_ReportsMalformed(t *testing.T) {
-	sc := StrategyConfig{
-		Type:     "perps",
-		Platform: "hyperliquid",
-		CloseStrategies: []StrategyRef{{
-			Name: "tiered_tp_atr",
-			Params: map[string]interface{}{
-				"sl_after": "unknown-string",
-				"tiers": []interface{}{
-					map[string]interface{}{"atr_multiple": 2, "close_fraction": 0.5, "sl_after": map[string]interface{}{"kind": "weird"}},
-					map[string]interface{}{"atr_multiple": 3, "close_fraction": 1.0},
-				},
-			},
-		}},
-	}
-	_, errs := parseStrategyTPSLAfterRules(sc)
-	if len(errs) < 2 {
-		t.Fatalf("expected at least 2 errors (default + tier), got %v", errs)
-	}
-}
-
-func TestValidatePostTPStopLossRules_RejectsTrailing(t *testing.T) {
-	trail := 1.5
-	atrSL := 1.0
-	sc := StrategyConfig{
-		Type:                "perps",
-		Platform:            "hyperliquid",
-		TrailingStopATRMult: &trail,
-		StopLossATRMult:     &atrSL,
-		CloseStrategies: []StrategyRef{{
-			Name: "tiered_tp_atr_live",
-			Params: map[string]interface{}{
-				"sl_after": "breakeven",
-				"tiers": []interface{}{
-					map[string]interface{}{"atr_multiple": 2, "close_fraction": 0.5},
-					map[string]interface{}{"atr_multiple": 3, "close_fraction": 1.0},
-				},
-			},
-		}},
-	}
-	errs := validatePostTPStopLossRules(sc)
-	found := false
-	for _, e := range errs {
-		if strings.Contains(e, "trailing_stop") {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("expected trailing_stop conflict error, got %v", errs)
-	}
-}
-
-func TestValidatePostTPStopLossRules_RejectsNoFixedSL(t *testing.T) {
-	sc := StrategyConfig{
-		Type:     "perps",
-		Platform: "hyperliquid",
-		CloseStrategies: []StrategyRef{{
-			Name: "tiered_tp_atr_live",
-			Params: map[string]interface{}{
-				"sl_after": "breakeven",
-				"tiers": []interface{}{
-					map[string]interface{}{"atr_multiple": 2, "close_fraction": 0.5},
-					map[string]interface{}{"atr_multiple": 3, "close_fraction": 1.0},
-				},
-			},
-		}},
-	}
-	errs := validatePostTPStopLossRules(sc)
-	found := false
-	for _, e := range errs {
-		if strings.Contains(e, "fixed stop-loss") {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("expected no-fixed-SL error, got %v", errs)
-	}
-}
-
-func TestValidatePostTPStopLossRules_AcceptsValid(t *testing.T) {
-	atrSL := 1.0
-	sc := StrategyConfig{
-		Type:            "perps",
-		Platform:        "hyperliquid",
-		StopLossATRMult: &atrSL,
-		CloseStrategies: []StrategyRef{{
-			Name: "tiered_tp_atr_live",
-			Params: map[string]interface{}{
-				"sl_after": "breakeven",
-				"tiers": []interface{}{
-					map[string]interface{}{"atr_multiple": 2, "close_fraction": 0.5},
-					map[string]interface{}{"atr_multiple": 3, "close_fraction": 1.0, "sl_after": map[string]interface{}{"atr_mult": 0.5}},
-				},
-			},
-		}},
-	}
-	if errs := validatePostTPStopLossRules(sc); len(errs) != 0 {
-		t.Fatalf("expected no errors, got %v", errs)
-	}
-}
-
-func TestFormatSLAdjustmentAlert(t *testing.T) {
-	cases := []struct {
-		name string
-		a    SLAdjustmentAlert
-		want []string // substrings expected in the output
-	}{
-		{
-			"breakeven",
-			SLAdjustmentAlert{
-				StrategyID: "hl-eth-st", Symbol: "ETH", Side: "long",
-				TierIdx: 0, OldTriggerPx: 95, NewTriggerPx: 100, Mode: "breakeven",
-			},
-			[]string{"SL adjusted post-TP1", "hl-eth-st", "ETH LONG", "$95.0000 → $100.0000", "(breakeven)"},
-		},
-		{
-			"atr_offset_short",
-			SLAdjustmentAlert{
-				StrategyID: "hl-btc-st", Symbol: "BTC", Side: "short",
-				TierIdx: 1, OldTriggerPx: 105, NewTriggerPx: 99.5, Mode: "atr+0.5",
-			},
-			[]string{"SL adjusted post-TP2", "BTC SHORT", "$105.0000 → $99.5000", "(atr+0.5)"},
-		},
-		{
-			"trail_transition",
-			SLAdjustmentAlert{
-				StrategyID: "hl-eth-st", Symbol: "ETH", Side: "long",
-				TierIdx: 0, OldTriggerPx: 95, NewTriggerPx: 108,
-				Mode: "trail 1.00×ATR", TransitionToTrailing: true,
-			},
-			[]string{"SL adjusted post-TP1 → trailing", "$95.0000 → $108.0000"},
-		},
-		{
-			"no_old_trigger",
-			SLAdjustmentAlert{
-				StrategyID: "hl-eth-st", Symbol: "ETH", Side: "long",
-				TierIdx: 0, OldTriggerPx: 0, NewTriggerPx: 100, Mode: "breakeven",
-			},
-			[]string{"SL: $100.0000 (breakeven)"},
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := formatSLAdjustmentAlert(tc.a)
-			for _, s := range tc.want {
-				if !strings.Contains(got, s) {
-					t.Errorf("output missing %q\nfull output:\n%s", s, got)
-				}
-			}
-		})
-	}
-}
-
-type fakeOwnerDMSender struct {
-	messages []string
-}
-
-func (f *fakeOwnerDMSender) SendOwnerDM(c string) { f.messages = append(f.messages, c) }
-
-func TestNotifySLAdjustment_GatedOnEnabled(t *testing.T) {
-	f := &fakeOwnerDMSender{}
-	alert := SLAdjustmentAlert{StrategyID: "hl-eth-st", Symbol: "ETH", Side: "long", NewTriggerPx: 100, Mode: "breakeven"}
-
-	notifySLAdjustment(f, false, alert)
-	if len(f.messages) != 0 {
-		t.Fatalf("expected no DM when disabled, got %d", len(f.messages))
-	}
-	notifySLAdjustment(f, true, alert)
-	if len(f.messages) != 1 {
-		t.Fatalf("expected 1 DM when enabled, got %d", len(f.messages))
-	}
-}
-
-func TestEffectiveTrailingStopPct_HonorsPostTPTrailingATRMult(t *testing.T) {
-	// Strategy has no sc.TrailingStop* configured — only post-TP transition.
-	sc := StrategyConfig{Platform: "hyperliquid", Type: "perps"}
-	mult := 1.0
-	pos := &Position{AvgCost: 100, EntryATR: 5, PostTPTrailingATRMult: &mult}
-	// Expected pct = 1.0 * 5 / 100 * 100 = 5%
-	got := effectiveTrailingStopPct(sc, pos)
-	if math.Abs(got-5.0) > 1e-9 {
-		t.Fatalf("effectiveTrailingStopPct = %v, want 5", got)
-	}
-}
-
-func TestEffectiveTrailingStopPct_PostTPMissingATRReturnsZero(t *testing.T) {
-	sc := StrategyConfig{Platform: "hyperliquid", Type: "perps"}
-	mult := 1.0
-	pos := &Position{AvgCost: 100, EntryATR: 0, PostTPTrailingATRMult: &mult}
-	if got := effectiveTrailingStopPct(sc, pos); got != 0 {
-		t.Fatalf("effectiveTrailingStopPct = %v, want 0", got)
-	}
-}
-
-func TestEffectiveTrailingStopPct_PostTPTakesPrecedenceOverStrategy(t *testing.T) {
-	// Hypothetically if both were set (validator would block, but the helper
-	// must still resolve unambiguously), post-TP wins because it represents
-	// state that has already transitioned post-fill.
-	trail := 2.0
-	sc := StrategyConfig{Platform: "hyperliquid", Type: "perps", TrailingStopPct: &trail}
-	mult := 1.0
-	pos := &Position{AvgCost: 100, EntryATR: 5, PostTPTrailingATRMult: &mult}
-	got := effectiveTrailingStopPct(sc, pos)
-	if math.Abs(got-5.0) > 1e-9 {
-		t.Fatalf("effectiveTrailingStopPct = %v, want 5 (post-TP)", got)
-	}
-}
-
-func TestValidatePostTPStopLossRules_RejectsTrailFromHereOnManual(t *testing.T) {
-	atrSL := 1.5
-	sc := StrategyConfig{
-		Type:            "manual",
-		Platform:        "hyperliquid",
-		StopLossATRMult: &atrSL,
-		CloseStrategies: []StrategyRef{{
-			Name: "tiered_tp_atr_live",
-			Params: map[string]interface{}{
-				"sl_after": map[string]interface{}{
-					"trail_from_here": map[string]interface{}{"atr_mult": 1.0},
-				},
-				"tiers": []interface{}{
-					map[string]interface{}{"atr_multiple": 2, "close_fraction": 0.5},
-					map[string]interface{}{"atr_multiple": 3, "close_fraction": 1.0},
-				},
-			},
-		}},
-	}
-	errs := validatePostTPStopLossRules(sc)
-	found := false
-	for _, e := range errs {
-		if strings.Contains(e, "trail_from_here is not supported on manual") {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("expected manual+trail_from_here rejection, got %v", errs)
-	}
-}
-
-// #716 item 2 regression: a non-TP partial close (e.g. close-evaluator firing
-// signal=-1 to half the position) on a position whose tier 0 was never armed
-// (transient placement failure left OID=0 with armed[0]=false) must NOT
-// trigger the sl_after rule for tier 0. Pre-#716, findHighestClearedTier
-// looked only at OID==0 and would return idx=0 here, firing breakeven against
-// a tier that never existed.
-func TestRunPostTPStopLossAdjustment_SkipsNeverArmedTier(t *testing.T) {
-	old := runHyperliquidUpdateStopLossFunc
-	defer func() { runHyperliquidUpdateStopLossFunc = old }()
-
-	calls := 0
-	runHyperliquidUpdateStopLossFunc = func(string, string, string, float64, float64, int64) (*HyperliquidStopLossUpdateResult, string, error) {
-		calls++
-		return &HyperliquidStopLossUpdateResult{StopLossOID: 999, StopLossTriggerPx: 100}, "", nil
-	}
-
-	sc := postTPSLTestStrategy("breakeven", []interface{}{
-		map[string]interface{}{"atr_multiple": 2, "close_fraction": 0.5},
-		map[string]interface{}{"atr_multiple": 3, "close_fraction": 1.0},
-	})
-	pos := &Position{
-		Symbol: "ETH", Quantity: 0.5, InitialQuantity: 1.0,
-		AvgCost: 100, EntryATR: 5, Side: "long",
-		StopLossOID: 111, StopLossTriggerPx: 95,
-		// Tier 0 placement failed transiently — OID=0 with armed[0]=false.
-		// Tier 1 is resting with OID=222. A non-TP partial close has shrunk
-		// Quantity to 0.5 (half InitialQuantity).
-		TPOIDs:                   []int64{0, 222},
-		TPArmedTiers:             []bool{false, true},
-		SLAdjustedTiersProcessed: 0,
-	}
-	state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
-	var mu sync.RWMutex
-
-	if runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, nil) {
-		t.Fatal("expected runPostTPStopLossAdjustment to skip never-armed tier")
-	}
-	if calls != 0 {
-		t.Errorf("subprocess should not be called for never-armed tier; got %d calls", calls)
-	}
-	if pos.StopLossOID != 111 {
-		t.Errorf("StopLossOID=%d, want 111 (unchanged)", pos.StopLossOID)
-	}
-	if pos.SLAdjustedTiersProcessed != 0 {
-		t.Errorf("SLAdjustedTiersProcessed=%d, want 0 (no advance)", pos.SLAdjustedTiersProcessed)
-	}
-}
-
-func TestRunPostTPStopLossAdjustment_BreakevenAfterTP1(t *testing.T) {
-	old := runHyperliquidUpdateStopLossFunc
-	defer func() { runHyperliquidUpdateStopLossFunc = old }()
-
-	var gotSymbol, gotSide string
-	var gotQty, gotTrigger float64
-	var gotCancelOID int64
-	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
-		gotSymbol, gotSide, gotQty, gotTrigger, gotCancelOID = symbol, side, size, triggerPx, cancelStopLossOID
-		return &HyperliquidStopLossUpdateResult{StopLossOID: 999, StopLossTriggerPx: triggerPx}, "", nil
-	}
-
-	sc := postTPSLTestStrategy("breakeven", []interface{}{
-		map[string]interface{}{"atr_multiple": 2, "close_fraction": 0.5},
-		map[string]interface{}{"atr_multiple": 3, "close_fraction": 1.0},
-	})
-	pos := &Position{
-		Symbol:                   "ETH",
-		Quantity:                 0.5, // half of initial = TP1 filled
-		InitialQuantity:          1.0,
-		AvgCost:                  100,
-		EntryATR:                 5,
-		Side:                     "long",
-		StopLossOID:              111,
-		StopLossTriggerPx:        95,
-		TPOIDs:                   []int64{0, 222}, // tier 0 filled
-		TPArmedTiers:             []bool{true, true},
-		SLAdjustedTiersProcessed: 0,
-	}
-	state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
-	var mu sync.RWMutex
-
-	if !runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, nil) {
-		t.Fatal("expected runPostTPStopLossAdjustment to apply")
-	}
-
-	if gotSymbol != "ETH" || gotSide != "long" || gotQty != 0.5 || gotTrigger != 100 || gotCancelOID != 111 {
-		t.Fatalf("update args=(%s,%s,%v,%v,%d), want (ETH,long,0.5,100,111)",
-			gotSymbol, gotSide, gotQty, gotTrigger, gotCancelOID)
-	}
-	if pos.StopLossOID != 999 {
-		t.Errorf("StopLossOID=%d, want 999", pos.StopLossOID)
-	}
-	if pos.StopLossTriggerPx != 100 {
-		t.Errorf("StopLossTriggerPx=%v, want 100 (breakeven)", pos.StopLossTriggerPx)
-	}
-	if pos.SLAdjustedTiersProcessed != 1 {
-		t.Errorf("SLAdjustedTiersProcessed=%d, want 1", pos.SLAdjustedTiersProcessed)
-	}
-}
-
-func TestRunPostTPStopLossAdjustment_Idempotent(t *testing.T) {
-	old := runHyperliquidUpdateStopLossFunc
-	defer func() { runHyperliquidUpdateStopLossFunc = old }()
-
-	calls := 0
-	runHyperliquidUpdateStopLossFunc = func(string, string, string, float64, float64, int64) (*HyperliquidStopLossUpdateResult, string, error) {
-		calls++
-		return &HyperliquidStopLossUpdateResult{StopLossOID: 999, StopLossTriggerPx: 100}, "", nil
-	}
-
-	sc := postTPSLTestStrategy("breakeven", []interface{}{
-		map[string]interface{}{"atr_multiple": 2, "close_fraction": 0.5},
-		map[string]interface{}{"atr_multiple": 3, "close_fraction": 1.0},
-	})
-	pos := &Position{
-		Symbol: "ETH", Quantity: 0.5, InitialQuantity: 1.0,
-		AvgCost: 100, EntryATR: 5, Side: "long",
-		StopLossOID: 111, StopLossTriggerPx: 95,
-		TPOIDs:                   []int64{0, 222},
-		TPArmedTiers:             []bool{true, true},
-		SLAdjustedTiersProcessed: 0,
-	}
-	state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
-	var mu sync.RWMutex
-
-	runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, nil)
-	runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, nil)
-	if calls != 1 {
-		t.Fatalf("expected exactly 1 subprocess call, got %d", calls)
-	}
-}
-
-func TestRunPostTPStopLossAdjustment_TrailFromHereTransition(t *testing.T) {
-	old := runHyperliquidUpdateStopLossFunc
-	defer func() { runHyperliquidUpdateStopLossFunc = old }()
-
-	runHyperliquidUpdateStopLossFunc = func(_, _, _ string, _, triggerPx float64, _ int64) (*HyperliquidStopLossUpdateResult, string, error) {
-		return &HyperliquidStopLossUpdateResult{StopLossOID: 999, StopLossTriggerPx: triggerPx}, "", nil
-	}
-
-	sc := postTPSLTestStrategy(nil, []interface{}{
-		map[string]interface{}{"atr_multiple": 2, "close_fraction": 0.5, "sl_after": map[string]interface{}{
-			"trail_from_here": map[string]interface{}{"atr_mult": 1.0},
-		}},
-		map[string]interface{}{"atr_multiple": 3, "close_fraction": 1.0},
-	})
-	pos := &Position{
-		Symbol: "ETH", Quantity: 0.5, InitialQuantity: 1.0,
-		AvgCost: 100, EntryATR: 5, Side: "long",
-		StopLossOID: 111, StopLossTriggerPx: 95,
-		TPOIDs:                   []int64{0, 222},
-		TPArmedTiers:             []bool{true, true},
-		SLAdjustedTiersProcessed: 0,
-	}
-	state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
-	var mu sync.RWMutex
-
-	if !runPostTPStopLossAdjustment(sc, state, "ETH", 110, nil, &mu, nil, nil, nil) {
-		t.Fatal("expected runPostTPStopLossAdjustment to apply")
-	}
-	// trail_from_here at mark=110, ATR=5, mult=1.0 → trigger = 110 - 5 = 105
-	if pos.StopLossTriggerPx != 105 {
-		t.Errorf("StopLossTriggerPx=%v, want 105", pos.StopLossTriggerPx)
-	}
-	if pos.PostTPTrailingATRMult == nil || *pos.PostTPTrailingATRMult != 1.0 {
-		t.Errorf("PostTPTrailingATRMult=%v, want 1.0", pos.PostTPTrailingATRMult)
-	}
-	if pos.StopLossHighWaterPx != 110 {
-		t.Errorf("StopLossHighWaterPx=%v, want 110 (seeded at mark)", pos.StopLossHighWaterPx)
-	}
-}
-
-func TestRunPostTPStopLossAdjustment_TrailDefersWithoutMark(t *testing.T) {
-	old := runHyperliquidUpdateStopLossFunc
-	defer func() { runHyperliquidUpdateStopLossFunc = old }()
-
-	calls := 0
-	runHyperliquidUpdateStopLossFunc = func(string, string, string, float64, float64, int64) (*HyperliquidStopLossUpdateResult, string, error) {
-		calls++
-		return &HyperliquidStopLossUpdateResult{}, "", nil
-	}
-
-	sc := postTPSLTestStrategy(map[string]interface{}{
-		"trail_from_here": map[string]interface{}{"atr_mult": 1.0},
-	}, []interface{}{
-		map[string]interface{}{"atr_multiple": 2, "close_fraction": 0.5},
-		map[string]interface{}{"atr_multiple": 3, "close_fraction": 1.0},
-	})
-	pos := &Position{
-		Symbol: "ETH", Quantity: 0.5, InitialQuantity: 1.0,
-		AvgCost: 100, EntryATR: 5, Side: "long",
-		StopLossOID: 111, StopLossTriggerPx: 95,
-		TPOIDs:                   []int64{0, 222},
-		TPArmedTiers:             []bool{true, true},
-		SLAdjustedTiersProcessed: 0,
-	}
-	state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
-	var mu sync.RWMutex
-
-	if runPostTPStopLossAdjustment(sc, state, "ETH", 0, nil, &mu, nil, nil, nil) {
-		t.Fatal("expected runPostTPStopLossAdjustment to defer without mark")
-	}
-	if calls != 0 {
-		t.Errorf("subprocess should not be called when mark missing; got %d calls", calls)
-	}
-	if pos.SLAdjustedTiersProcessed != 0 {
-		t.Errorf("watermark should not advance when deferring; got %d", pos.SLAdjustedTiersProcessed)
-	}
-}
-
-func TestRunPostTPStopLossAdjustment_NoRulesShortCircuits(t *testing.T) {
-	old := runHyperliquidUpdateStopLossFunc
-	defer func() { runHyperliquidUpdateStopLossFunc = old }()
-
-	calls := 0
-	runHyperliquidUpdateStopLossFunc = func(string, string, string, float64, float64, int64) (*HyperliquidStopLossUpdateResult, string, error) {
-		calls++
-		return &HyperliquidStopLossUpdateResult{}, "", nil
-	}
-
-	sc := postTPSLTestStrategy(nil, []interface{}{
-		map[string]interface{}{"atr_multiple": 2, "close_fraction": 0.5},
-		map[string]interface{}{"atr_multiple": 3, "close_fraction": 1.0},
-	})
-	pos := &Position{
-		Symbol: "ETH", Quantity: 0.5, InitialQuantity: 1.0,
-		AvgCost: 100, EntryATR: 5, Side: "long",
-		StopLossOID: 111, TPOIDs: []int64{0, 222}, TPArmedTiers: []bool{true, true},
-	}
-	state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
-	var mu sync.RWMutex
-
-	if runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, nil) {
-		t.Fatal("expected runPostTPStopLossAdjustment to return false when no rules configured")
-	}
-	if calls != 0 {
-		t.Errorf("subprocess should not be called; got %d calls", calls)
-	}
-}
-
-func TestRunPostTPStopLossAdjustment_DefersWhenSLNotArmed(t *testing.T) {
-	old := runHyperliquidUpdateStopLossFunc
-	defer func() { runHyperliquidUpdateStopLossFunc = old }()
-
-	calls := 0
-	runHyperliquidUpdateStopLossFunc = func(string, string, string, float64, float64, int64) (*HyperliquidStopLossUpdateResult, string, error) {
-		calls++
-		return &HyperliquidStopLossUpdateResult{}, "", nil
-	}
-
-	sc := postTPSLTestStrategy("breakeven", []interface{}{
-		map[string]interface{}{"atr_multiple": 2, "close_fraction": 0.5},
-		map[string]interface{}{"atr_multiple": 3, "close_fraction": 1.0},
-	})
-	pos := &Position{
-		Symbol: "ETH", Quantity: 0.5, InitialQuantity: 1.0,
-		AvgCost: 100, EntryATR: 5, Side: "long",
-		StopLossOID:  0, // not yet armed
-		TPOIDs:       []int64{0, 222},
-		TPArmedTiers: []bool{true, true},
-	}
-	state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
-	var mu sync.RWMutex
-
-	if runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, nil) {
-		t.Fatal("expected defer when SL OID is 0")
-	}
-	if calls != 0 {
-		t.Errorf("subprocess should not be called; got %d", calls)
-	}
-}
-
-// #714: SL replace must cap at on-chain qty when virtual > on-chain (e.g. a
-// manual TP shrank on-chain before the reconciler caught up). Mirrors the
-// trailing/fixed-ATR SL placement sites that already use hlSLEffectiveQty.
 func TestRunPostTPStopLossAdjustment_CapsAtOnChainQty(t *testing.T) {
 	old := runHyperliquidUpdateStopLossFunc
 	defer func() { runHyperliquidUpdateStopLossFunc = old }()
@@ -886,7 +58,8 @@ func TestRunPostTPStopLossAdjustment_CapsAtOnChainQty(t *testing.T) {
 	var mu sync.RWMutex
 
 	onChain := map[string]float64{"ETH": 0.7}
-	if !runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, onChain) {
+	applied, _, _ := runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, hlAbsShare(onChain, "long"), nil, nil)
+	if !applied {
 		t.Fatal("expected runPostTPStopLossAdjustment to apply")
 	}
 	if gotQty != 0.7 {
@@ -894,573 +67,402 @@ func TestRunPostTPStopLossAdjustment_CapsAtOnChainQty(t *testing.T) {
 	}
 }
 
-// Confirms the no-cap path: when on-chain >= virtual (or map is nil/missing),
-// the subprocess receives the virtual qty unchanged.
-func TestRunPostTPStopLossAdjustment_NoCapWhenOnChainGEVirtual(t *testing.T) {
+// The post-TP clamp fallback: the rule trigger lands past liquidation, so the
+// replace runs at the clamped trigger, with one fresh placement when the first
+// reply is protection-lost. Ground: the review finding that a deferred retry
+// was discarded, citing the first attempt's error.
+func TestRunPostTPStopLossAdjustment_LiquidationClampFallback(t *testing.T) {
 	old := runHyperliquidUpdateStopLossFunc
 	defer func() { runHyperliquidUpdateStopLossFunc = old }()
+	clearHLLiquidationAlert("hl-sl-after", "ETH")
+	defer clearHLLiquidationAlert("hl-sl-after", "ETH")
 
-	var gotQty float64
-	runHyperliquidUpdateStopLossFunc = func(_, _, _ string, size, triggerPx float64, _ int64) (*HyperliquidStopLossUpdateResult, string, error) {
-		gotQty = size
-		return &HyperliquidStopLossUpdateResult{StopLossOID: 999, StopLossTriggerPx: triggerPx}, "", nil
+	newState := func() *StrategyState {
+		return &StrategyState{ID: "hl-sl-after", Positions: map[string]*Position{"ETH": {
+			Symbol: "ETH", Quantity: 1.0, InitialQuantity: 2.0,
+			AvgCost: 100, EntryATR: 5, Side: "long",
+			StopLossOID: 111, StopLossTriggerPx: 95,
+			TPOIDs:                   []int64{0, 222},
+			TPArmedTiers:             []bool{true, true},
+			SLAdjustedTiersProcessed: 0,
+		}}}
 	}
-
 	sc := postTPSLTestStrategy("breakeven", []interface{}{
 		map[string]interface{}{"atr_multiple": 2, "close_fraction": 0.5},
 		map[string]interface{}{"atr_multiple": 3, "close_fraction": 1.0},
 	})
-	pos := &Position{
-		Symbol: "ETH", Quantity: 1.0, InitialQuantity: 2.0,
-		AvgCost: 100, EntryATR: 5, Side: "long",
-		StopLossOID: 111, StopLossTriggerPx: 95,
-		TPOIDs:                   []int64{0, 222},
-		TPArmedTiers:             []bool{true, true},
-		SLAdjustedTiersProcessed: 0,
-	}
-	state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
-	var mu sync.RWMutex
+	// Breakeven trigger is $100; liquidation at $100.4 clamps it to $100.902.
+	liqPx := map[string]float64{"ETH": 100.4}
+	netSide := map[string]string{"ETH": "long"}
+	onChain := map[string]float64{"ETH": 1.0}
+	const clampedTrigger = 100.4 * 1.005
 
-	if !runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, map[string]float64{"ETH": 1.0}) {
-		t.Fatal("expected runPostTPStopLossAdjustment to apply")
-	}
-	if gotQty != 1.0 {
-		t.Fatalf("subprocess size=%v, want 1.0 (uncapped)", gotQty)
-	}
-}
-
-func TestFindHighestClearedTier(t *testing.T) {
-	// All cases here assume tiers were armed at some point (`armed` matches
-	// `oids` shape, all true). The "never armed" variant is exercised
-	// separately in TestFindHighestClearedTier_NeverArmedSkipped (#716 item 2).
-	mkArmed := func(oids []int64) []bool {
-		out := make([]bool, len(oids))
-		for i := range out {
-			out[i] = true
-		}
-		return out
-	}
-	cases := []struct {
-		name      string
-		oids      []int64
-		from      int
-		wantIdx   int
-		wantClear bool
-	}{
-		{"empty", nil, 0, 0, false},
-		{"none cleared", []int64{1, 2, 3}, 0, 0, false},
-		{"first cleared", []int64{0, 2, 3}, 0, 0, true},
-		{"last cleared", []int64{1, 2, 0}, 0, 2, true},
-		{"multiple cleared takes highest", []int64{0, 0, 3}, 0, 1, true},
-		{"all cleared takes highest", []int64{0, 0, 0}, 0, 2, true},
-		{"from idx skips already-processed", []int64{0, 0, 3}, 2, 0, false},
-		{"from idx finds later cleared", []int64{0, 2, 0}, 1, 2, true},
-		{"negative from clamps to 0", []int64{0, 2, 3}, -5, 0, true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			gotIdx, gotClear := findHighestClearedTier(tc.oids, mkArmed(tc.oids), tc.from)
-			if gotClear != tc.wantClear {
-				t.Fatalf("cleared=%v, want %v", gotClear, tc.wantClear)
-			}
-			if tc.wantClear && gotIdx != tc.wantIdx {
-				t.Fatalf("idx=%d, want %d", gotIdx, tc.wantIdx)
-			}
+	run := func(t *testing.T, firstReply, retryReply *HyperliquidStopLossUpdateResult) (*StrategyState, *mockNotifier, bool, string) {
+		t.Helper()
+		clearHLLiquidationAlert("hl-sl-after", "ETH")
+		var logOutput bytes.Buffer
+		mock := &mockNotifier{}
+		mn := NewMultiNotifier(notifierBackend{
+			notifier:           mock,
+			tradeAlertChannels: map[string]string{"hyperliquid": "trade-alerts"},
+			ownerID:            "owner",
 		})
-	}
-}
-
-// #716 item 2 — a tier that was never armed (OID=0 with armed[i]=false) must
-// not count as cleared, even if a partial close occurred from some other path.
-func TestFindHighestClearedTier_NeverArmedSkipped(t *testing.T) {
-	cases := []struct {
-		name      string
-		oids      []int64
-		armed     []bool
-		wantIdx   int
-		wantClear bool
-	}{
-		{
-			name:  "never armed tier 0, armed tier 1 still resting",
-			oids:  []int64{0, 222},
-			armed: []bool{false, true},
-			// Neither qualifies: tier 0 never armed, tier 1 still has a positive OID.
-			wantClear: false,
-		},
-		{
-			name:      "tier 0 filled (was armed), tier 1 still resting",
-			oids:      []int64{0, 222},
-			armed:     []bool{true, true},
-			wantIdx:   0,
-			wantClear: true,
-		},
-		{
-			name:      "tier 0 never armed, tier 1 filled",
-			oids:      []int64{0, 0},
-			armed:     []bool{false, true},
-			wantIdx:   1,
-			wantClear: true,
-		},
-		{
-			name:      "armed slice shorter than oids (legacy/transitional)",
-			oids:      []int64{0, 0, 0},
-			armed:     []bool{true, true},
-			wantIdx:   1,
-			wantClear: true,
-		},
-		{
-			name:      "armed slice nil (legacy row before backfill)",
-			oids:      []int64{0, 0},
-			armed:     nil,
-			wantClear: false,
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			gotIdx, gotClear := findHighestClearedTier(tc.oids, tc.armed, 0)
-			if gotClear != tc.wantClear {
-				t.Fatalf("cleared=%v, want %v", gotClear, tc.wantClear)
+		state := newState()
+		var mu sync.RWMutex
+		runHyperliquidUpdateStopLossFunc = func(_, _, _ string, _, _ float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+			if cancelOID == 111 {
+				return firstReply, "", nil
 			}
-			if tc.wantClear && gotIdx != tc.wantIdx {
-				t.Fatalf("idx=%d, want %d", gotIdx, tc.wantIdx)
-			}
-		})
-	}
-}
-
-func TestValidatePostTPStopLossRules_RejectsSLAfterOnNonTieredCloseRef(t *testing.T) {
-	atrSL := 1.0
-	sc := StrategyConfig{
-		Type:            "perps",
-		Platform:        "hyperliquid",
-		StopLossATRMult: &atrSL,
-		CloseStrategies: []StrategyRef{{
-			Name: "tp_at_pct",
-			Params: map[string]interface{}{
-				"pct":      0.05,
-				"sl_after": "breakeven", // not honored — should be flagged
-			},
-		}},
-	}
-	errs := validatePostTPStopLossRules(sc)
-	found := false
-	for _, e := range errs {
-		if strings.Contains(e, "only honored on tiered_tp_atr") {
-			found = true
+			return retryReply, "", nil
 		}
+		logger := &StrategyLogger{stratID: "test", writer: &logOutput}
+		applied, _, _ := runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, mn, logger, hlAbsShare(onChain, "long"), liqPx, netSide)
+		return state, mock, applied, logOutput.String()
 	}
-	if !found {
-		t.Fatalf("expected rejection of sl_after on non-tiered close ref, got %v", errs)
-	}
-}
 
-func TestValidatePostTPStopLossRules_RejectsSLAfterOnNonTieredTier(t *testing.T) {
-	atrSL := 1.0
-	sc := StrategyConfig{
-		Type:            "perps",
-		Platform:        "hyperliquid",
-		StopLossATRMult: &atrSL,
-		CloseStrategies: []StrategyRef{{
-			Name: "tiered_tp_pct", // not the ATR variant
-			Params: map[string]interface{}{
-				"tiers": []interface{}{
-					map[string]interface{}{"pct": 0.05, "close_fraction": 0.5, "sl_after": "breakeven"},
-				},
-			},
-		}},
-	}
-	errs := validatePostTPStopLossRules(sc)
-	found := false
-	for _, e := range errs {
-		if strings.Contains(e, "no effect") && strings.Contains(e, "tiered_tp_pct") {
-			found = true
+	t.Run("clamped replace rests on the first attempt", func(t *testing.T) {
+		state, mock, applied, _ := run(t, &HyperliquidStopLossUpdateResult{StopLossOID: 555, StopLossTriggerPx: clampedTrigger}, nil)
+		if !applied {
+			t.Fatal("expected the clamped replace to apply")
 		}
-	}
-	if !found {
-		t.Fatalf("expected rejection of per-tier sl_after under non-tiered ref, got %v", errs)
-	}
-}
-
-func TestValidatePostTPStopLossRules_NoOpWhenAbsent(t *testing.T) {
-	atrSL := 1.0
-	sc := StrategyConfig{
-		Type:            "perps",
-		Platform:        "hyperliquid",
-		StopLossATRMult: &atrSL,
-		CloseStrategies: []StrategyRef{{
-			Name: "tiered_tp_atr_live",
-			Params: map[string]interface{}{
-				"tiers": []interface{}{
-					map[string]interface{}{"atr_multiple": 2, "close_fraction": 0.5},
-					map[string]interface{}{"atr_multiple": 3, "close_fraction": 1.0},
-				},
-			},
-		}},
-	}
-	if errs := validatePostTPStopLossRules(sc); len(errs) != 0 {
-		t.Fatalf("expected no errors when sl_after is absent, got %v", errs)
-	}
-}
-
-// --- #736: sl_after trend_regime parsing -----------------------------------
-
-// slAfterRegimeRaw is a helper that builds the implicit atr_offset trend_regime
-// shape from a (label → atr) map. Used by the regime parser tests below.
-func slAfterRegimeRaw(entries map[string]float64) map[string]interface{} {
-	tr := map[string]interface{}{}
-	for label, atr := range entries {
-		tr[label] = map[string]interface{}{"atr": atr}
-	}
-	return map[string]interface{}{"trend_regime": tr}
-}
-
-func TestParseSLAfterRule_RegimeATROffset(t *testing.T) {
-	raw := slAfterRegimeRaw(map[string]float64{
-		"trending_up":   0.0,
-		"trending_down": 0.0,
-		"ranging":       -0.5,
+		pos := state.Positions["ETH"]
+		if pos.StopLossOID != 555 || pos.StopLossTriggerPx != clampedTrigger {
+			t.Errorf("stop = oid %d @ %.4f, want 555 @ %.4f", pos.StopLossOID, pos.StopLossTriggerPx, clampedTrigger)
+		}
+		if len(mock.dms) != 1 || !strings.Contains(mock.dms[0].content, "STOP PAST LIQUIDATION") {
+			t.Fatalf("dms = %v, want one clamp alert", mock.dms)
+		}
 	})
-	got, err := parseSLAfterRule(raw)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got.Kind != "atr_offset" {
-		t.Fatalf("kind = %q, want atr_offset", got.Kind)
-	}
-	if got.ATRRegime == nil {
-		t.Fatalf("ATRRegime should be populated")
-	}
-	if got.ATRMult != 0 || got.TrailATRMult != 0 {
-		t.Fatalf("scalar fields should be zero, got %+v", got)
-	}
-	// Signed atr values must round-trip — the regime surface is the one
-	// place where 0 and negative atrs are legal.
-	for label, want := range map[string]float64{
-		"trending_up":   0.0,
-		"trending_down": 0.0,
-		"ranging":       -0.5,
-	} {
-		entry, ok := got.ATRRegime.Resolve(label)
-		if !ok {
-			t.Fatalf("missing entry for %q", label)
+
+	t.Run("protection-lost first reply, retry places", func(t *testing.T) {
+		state, _, applied, _ := run(t,
+			&HyperliquidStopLossUpdateResult{CancelStopLossSucceeded: true, StopLossError: "first boom"},
+			&HyperliquidStopLossUpdateResult{StopLossOID: 888, StopLossTriggerPx: clampedTrigger})
+		if !applied {
+			t.Fatal("expected the retry placement to apply")
 		}
-		if entry.ATR != want {
-			t.Fatalf("%s atr = %g, want %g", label, entry.ATR, want)
+		pos := state.Positions["ETH"]
+		if pos.StopLossOID != 888 || pos.StopLossTriggerPx != clampedTrigger {
+			t.Errorf("stop = oid %d @ %.4f, want the retry's 888 @ %.4f", pos.StopLossOID, pos.StopLossTriggerPx, clampedTrigger)
 		}
-	}
-}
+	})
 
-func TestParseSLAfterRule_RegimeTrailFromHere(t *testing.T) {
-	raw := map[string]interface{}{
-		"trail_from_here": map[string]interface{}{
-			"trend_regime": map[string]interface{}{
-				"trending_up":   map[string]interface{}{"atr": 1.0},
-				"trending_down": map[string]interface{}{"atr": 1.0},
-				"ranging":       map[string]interface{}{"atr": 0.5},
-			},
-		},
-	}
-	got, err := parseSLAfterRule(raw)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got.Kind != "trail_from_here" {
-		t.Fatalf("kind = %q, want trail_from_here", got.Kind)
-	}
-	if got.TrailATRRegime == nil {
-		t.Fatalf("TrailATRRegime should be populated")
-	}
-	if got.TrailATRMult != 0 {
-		t.Fatalf("scalar trail_atr_mult should be zero, got %g", got.TrailATRMult)
-	}
-}
-
-func TestParseSLAfterRule_RegimeExplicitKindAtROffset(t *testing.T) {
-	raw := map[string]interface{}{
-		"kind": "atr_offset",
-		"trend_regime": map[string]interface{}{
-			"trending_up":   map[string]interface{}{"atr": 0.25},
-			"trending_down": map[string]interface{}{"atr": 0.25},
-			"ranging":       map[string]interface{}{"atr": 0.0},
-		},
-	}
-	got, err := parseSLAfterRule(raw)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got.Kind != "atr_offset" || got.ATRRegime == nil {
-		t.Fatalf("got %+v, want atr_offset with regime block", got)
-	}
-}
-
-func TestParseSLAfterRule_RegimeRejectsTrailNonPositive(t *testing.T) {
-	cases := map[string]float64{
-		"trail_zero":     0.0,
-		"trail_negative": -1.0,
-	}
-	for name, atr := range cases {
-		t.Run(name, func(t *testing.T) {
-			raw := map[string]interface{}{
-				"trail_from_here": map[string]interface{}{
-					"trend_regime": map[string]interface{}{
-						"trending_up":   map[string]interface{}{"atr": 1.0},
-						"trending_down": map[string]interface{}{"atr": 1.0},
-						"ranging":       map[string]interface{}{"atr": atr},
-					},
-				},
+	t.Run("protection-lost first reply, retry also fails", func(t *testing.T) {
+		state, mock, applied, logOutput := run(t,
+			&HyperliquidStopLossUpdateResult{CancelStopLossSucceeded: true, StopLossError: "first boom"},
+			&HyperliquidStopLossUpdateResult{StopLossError: "retry boom"})
+		if applied {
+			t.Fatal("a deferred retry must not apply")
+		}
+		pos := state.Positions["ETH"]
+		if pos.StopLossOID != 0 {
+			t.Errorf("StopLossOID = %d, want 0 after a landed cancel with nothing resting", pos.StopLossOID)
+		}
+		if len(mock.dms) != 1 {
+			t.Fatalf("dms = %v, want exactly one clamp alert (no duplicate protection-lost alert)", mock.dms)
+		}
+		if strings.Contains(mock.dms[0].content, "first boom") {
+			t.Errorf("clamp alert cites the first attempt's error: %s", mock.dms[0].content)
+		}
+		var criticalLog string
+		for _, line := range strings.Split(logOutput, "\n") {
+			if strings.Contains(line, "CRITICAL: post-TP SL for ETH cancelled OID=111") {
+				criticalLog = line
+				break
 			}
-			if _, err := parseSLAfterRule(raw); err == nil {
-				t.Fatalf("expected error for trail_from_here ranging atr=%g", atr)
-			}
+		}
+		if !strings.Contains(criticalLog, "retry boom") || strings.Contains(criticalLog, "first boom") {
+			t.Errorf("critical log = %q, want the retry error only", criticalLog)
+		}
+	})
+}
+
+type slAfterParityPosition struct {
+	Side                     string  `json:"side"`
+	AvgCost                  float64 `json:"avg_cost"`
+	EntryATR                 float64 `json:"entry_atr"`
+	Quantity                 float64 `json:"quantity"`
+	InitialQuantity          float64 `json:"initial_quantity"`
+	StopLossTriggerPx        float64 `json:"stop_loss_trigger_px"`
+	SLAdjustedTiersProcessed int     `json:"sl_adjusted_tiers_processed"`
+	Regime                   string  `json:"regime"`
+	StopLossHighWaterPx      float64 `json:"stop_loss_high_water_px"`
+}
+
+type slAfterParityWant struct {
+	StopLossTriggerPx        float64  `json:"stop_loss_trigger_px"`
+	SLAdjustedTiersProcessed int      `json:"sl_adjusted_tiers_processed"`
+	PostTPTrailingATRMult    *float64 `json:"post_tp_trailing_atr_mult"`
+	StopLossHighWaterPx      float64  `json:"stop_loss_high_water_px"`
+}
+
+type slAfterParityFixture struct {
+	Ladders     map[string]json.RawMessage `json:"ladders"`
+	ClearedTier []struct {
+		Name        string  `json:"name"`
+		Ladder      string  `json:"ladder"`
+		Regime      string  `json:"regime"`
+		Label       string  `json:"label"`
+		ClosedRatio float64 `json:"closed_ratio"`
+		FromIdx     int     `json:"from_idx"`
+		WantIdx     int     `json:"want_idx"`
+	} `json:"cleared_tier"`
+	SLAfter []struct {
+		Name            string                 `json:"name"`
+		Ladder          string                 `json:"ladder"`
+		Label           string                 `json:"label"`
+		StopLossATRMult float64                `json:"stop_loss_atr_mult"`
+		SLAfter         interface{}            `json:"sl_after"`
+		TierSLAfter     map[string]interface{} `json:"tier_sl_after"`
+		Position        slAfterParityPosition  `json:"position"`
+		Mark            float64                `json:"mark"`
+		Want            slAfterParityWant      `json:"want"`
+	} `json:"sl_after"`
+}
+
+func loadSLAfterParityFixture(t *testing.T) slAfterParityFixture {
+	t.Helper()
+	blob, err := os.ReadFile(filepath.Join("..", "backtest", "testdata", "sl_after_paper_parity.json"))
+	if err != nil {
+		t.Fatalf("read parity fixture: %v", err)
+	}
+	var f slAfterParityFixture
+	if err := json.Unmarshal(blob, &f); err != nil {
+		t.Fatalf("decode parity fixture: %v", err)
+	}
+	return f
+}
+
+func seedBookedConsumptionsForClosedRatio(sc StrategyConfig, pos *Position) {
+	if pos == nil || pos.InitialQuantity <= 0 {
+		return
+	}
+	label := pos.Regime
+	if strategyUsesDynamicRegimeClose(sc) && pos.RegimeAppliedLabel != "" {
+		label = pos.RegimeAppliedLabel
+	}
+	ratio := 1 - pos.Quantity/pos.InitialQuantity
+	now := time.Now().UTC()
+	for i, th := range paperSLAfterTierThresholds(sc, label) {
+		if i < pos.SLAdjustedTiersProcessed || ratio+1e-9 < th {
+			continue
+		}
+		pos.TPConsumptions = append(pos.TPConsumptions, TPConsumption{
+			Label: label, Tier: i, Stage: tpConsumptionBooked,
+			UpdatedAt: now.Add(time.Duration(i) * time.Millisecond),
 		})
 	}
 }
 
-func TestParseSLAfterRule_RegimeErrors(t *testing.T) {
-	cases := []struct {
-		name      string
-		raw       interface{}
-		wantInErr string
-	}{
-		{
-			name: "bare_label_keys",
-			raw: map[string]interface{}{
-				"trending_up": map[string]interface{}{"atr": 0.25},
-			},
-			wantInErr: "trend_regime",
-		},
-		{
-			name: "missing_label",
-			raw: map[string]interface{}{
-				"trend_regime": map[string]interface{}{
-					"trending_up": map[string]interface{}{"atr": 0.25},
-					"ranging":     map[string]interface{}{"atr": 0.0},
-				},
-			},
-			wantInErr: "missing required regime labels",
-		},
-		{
-			name: "use_defaults_and_explicit",
-			raw: map[string]interface{}{
-				"use_defaults": true,
-				"trend_regime": map[string]interface{}{
-					"trending_up":   map[string]interface{}{"atr": 0.25},
-					"trending_down": map[string]interface{}{"atr": 0.25},
-					"ranging":       map[string]interface{}{"atr": 0.0},
-				},
-			},
-			wantInErr: "use_defaults",
-		},
-		{
-			name: "scalar_and_regime_mix",
-			raw: map[string]interface{}{
-				"atr_mult": 0.25,
-				"trend_regime": map[string]interface{}{
-					"trending_up":   map[string]interface{}{"atr": 0.25},
-					"trending_down": map[string]interface{}{"atr": 0.25},
-					"ranging":       map[string]interface{}{"atr": 0.0},
-				},
-			},
-			wantInErr: "pick one shape",
-		},
-		{
-			// Misplaced trail_atr_mult in an atr_offset regime config: the
-			// pre-review parser silently dropped it. Now it surfaces.
-			name: "atr_offset_regime_with_stray_trail_atr_mult",
-			raw: map[string]interface{}{
-				"kind": "atr_offset",
-				"trend_regime": map[string]interface{}{
-					"trending_up":   map[string]interface{}{"atr": 0.25},
-					"trending_down": map[string]interface{}{"atr": 0.25},
-					"ranging":       map[string]interface{}{"atr": 0.0},
-				},
-				"trail_atr_mult": 99.0,
-			},
-			wantInErr: "pick one shape",
-		},
-		{
-			// Misplaced atr_offset key inside a trail_from_here regime block.
-			name: "trail_regime_with_stray_atr_offset",
-			raw: map[string]interface{}{
-				"trail_from_here": map[string]interface{}{
-					"trend_regime": map[string]interface{}{
-						"trending_up":   map[string]interface{}{"atr": 1.0},
-						"trending_down": map[string]interface{}{"atr": 1.0},
-						"ranging":       map[string]interface{}{"atr": 0.5},
-					},
-					"atr_offset": -3.0,
-				},
-			},
-			wantInErr: "pick one shape",
-		},
-		{
-			name: "trail_use_defaults_unsupported",
-			raw: map[string]interface{}{
-				"trail_from_here": map[string]interface{}{
-					"use_defaults": true,
-				},
-			},
-			wantInErr: "use_defaults",
-		},
-		{
-			name: "atr_offset_use_defaults_unsupported",
-			raw: map[string]interface{}{
-				"use_defaults": true,
-			},
-			wantInErr: "use_defaults",
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			_, err := parseSLAfterRule(tc.raw)
-			if err == nil {
-				t.Fatalf("expected error containing %q", tc.wantInErr)
-			}
-			if !strings.Contains(err.Error(), tc.wantInErr) {
-				t.Fatalf("error %q does not contain %q", err.Error(), tc.wantInErr)
-			}
-		})
-	}
-}
-
-func TestSLAfterRule_EqualRegime(t *testing.T) {
-	makeRule := func(atr float64) SLAfterRule {
-		got, err := parseSLAfterRule(slAfterRegimeRaw(map[string]float64{
-			"trending_up":   atr,
-			"trending_down": atr,
-			"ranging":       atr,
-		}))
-		if err != nil {
-			t.Fatalf("parse: %v", err)
+func parityTierList(t *testing.T, ladder string, ref *StrategyRef, label string) []interface{} {
+	t.Helper()
+	if closeParamsAreUnifiedRegime(ref.Params) {
+		trend, _ := ref.Params["trend_regime"].(map[string]interface{})
+		block, _ := trend[label].(map[string]interface{})
+		tiers, _ := block["tp_tiers"].([]interface{})
+		if tiers == nil {
+			t.Fatalf("ladder %q label %q has no tp_tiers", ladder, label)
 		}
-		return got
+		return tiers
 	}
-	a := makeRule(0.5)
-	b := makeRule(0.5)
-	if !a.Equal(b) {
-		t.Fatalf("identically-shaped regime rules should be Equal")
-	}
-	c := makeRule(0.25)
-	if a.Equal(c) {
-		t.Fatalf("rules with different atr values should not be Equal")
-	}
-	// Scalar vs regime: different shapes.
-	scalar := SLAfterRule{Kind: "atr_offset", ATRMult: 0.5}
-	if a.Equal(scalar) {
-		t.Fatalf("scalar atr_offset must not Equal regime atr_offset")
-	}
+	tiers, _ := ref.Params["tp_tiers"].([]interface{})
+	return tiers
 }
 
-func TestParseStrategyTPSLAfterRules_RegimeRoundTrip(t *testing.T) {
-	sc := StrategyConfig{
-		Type:     "perps",
-		Platform: "hyperliquid",
-		CloseStrategies: []StrategyRef{{
-			Name: "tiered_tp_atr_live",
-			Params: map[string]interface{}{
-				"sl_after": slAfterRegimeRaw(map[string]float64{
-					"trending_up":   0.0,
-					"trending_down": 0.0,
-					"ranging":       -0.5,
-				}),
-				"tiers": []interface{}{
-					map[string]interface{}{
-						"atr_multiple":   2,
-						"close_fraction": 0.5,
-						"sl_after": map[string]interface{}{
-							"trail_from_here": map[string]interface{}{
-								"trend_regime": map[string]interface{}{
-									"trending_up":   map[string]interface{}{"atr": 1.0},
-									"trending_down": map[string]interface{}{"atr": 1.0},
-									"ranging":       map[string]interface{}{"atr": 0.5},
-								},
-							},
-						},
-					},
-					map[string]interface{}{"atr_multiple": 3, "close_fraction": 1.0},
-				},
-			},
-		}},
-	}
-	rules, errs := parseStrategyTPSLAfterRules(sc)
-	if len(errs) != 0 {
-		t.Fatalf("unexpected errs: %v", errs)
-	}
-	if rules.Default.Kind != "atr_offset" || rules.Default.ATRRegime == nil {
-		t.Fatalf("default = %+v, want atr_offset regime", rules.Default)
-	}
-	if len(rules.PerTier) != 2 {
-		t.Fatalf("per-tier len = %d, want 2", len(rules.PerTier))
-	}
-	if rules.PerTier[0].Kind != "trail_from_here" || rules.PerTier[0].TrailATRRegime == nil {
-		t.Fatalf("tier 0 = %+v, want trail_from_here regime", rules.PerTier[0])
-	}
-}
-
-func TestSLAfterRule_ResolveForRegime(t *testing.T) {
-	rule, err := parseSLAfterRule(slAfterRegimeRaw(map[string]float64{
-		"trending_up":   0.0,
-		"trending_down": 0.0,
-		"ranging":       -0.5,
-	}))
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	resolved, ok := rule.resolveForRegime("ranging")
+func (f slAfterParityFixture) strategy(t *testing.T, ladder, label string, slMult float64, slAfter interface{}, tierSLAfter map[string]interface{}) StrategyConfig {
+	t.Helper()
+	raw, ok := f.Ladders[ladder]
 	if !ok {
-		t.Fatalf("expected ok=true for ranging")
+		t.Fatalf("parity fixture has no ladder %q", ladder)
 	}
-	if resolved.Kind != "atr_offset" || resolved.ATRMult != -0.5 {
-		t.Fatalf("ranging resolution = %+v, want atr_offset/-0.5", resolved)
+	var ref StrategyRef
+	if err := json.Unmarshal(raw, &ref); err != nil {
+		t.Fatalf("decode ladder %q: %v", ladder, err)
 	}
-	if resolved.ATRRegime != nil {
-		t.Fatalf("resolved rule must drop the regime block")
+	tiers := parityTierList(t, ladder, &ref, label)
+	for key, rule := range tierSLAfter {
+		var idx int
+		if err := json.Unmarshal([]byte(key), &idx); err != nil || idx < 0 || idx >= len(tiers) {
+			t.Fatalf("ladder %q tier key %q is not a tier index", ladder, key)
+		}
+		tiers[idx].(map[string]interface{})["sl_after"] = rule
 	}
-	if _, ok := rule.resolveForRegime("unknown"); ok {
-		t.Fatalf("missing label should yield ok=false")
+	if slAfter != nil && !closeParamsAreUnifiedRegime(ref.Params) {
+		ref.Params["sl_after"] = slAfter
 	}
-	if _, ok := rule.resolveForRegime(""); ok {
-		t.Fatalf("empty regime should yield ok=false")
+	return StrategyConfig{
+		ID:              "hl-paper-sl-after",
+		Platform:        "hyperliquid",
+		Type:            "perps",
+		Script:          "shared_scripts/check_hyperliquid.py",
+		Args:            []string{"sma", "ETH", "1h"},
+		StopLossATRMult: &slMult,
+		CloseStrategy:   &ref,
 	}
 }
 
-// validatePostTPStopLossRules already rejects trail_from_here on type=manual
-// by checking rule.Kind (lines ~385-394 in scheduler/post_tp_sl.go). The
-// regime variant carries the same Kind, so the gate fires for both shapes
-// — this test makes that contract explicit (#736 acceptance criterion).
-func TestValidatePostTPStopLossRules_RejectsTrailRegimeOnManual(t *testing.T) {
-	atrSL := 1.5
-	sc := StrategyConfig{
-		Type:            "manual",
-		Platform:        "hyperliquid",
-		StopLossATRMult: &atrSL,
-		CloseStrategies: []StrategyRef{{
-			Name: "tiered_tp_atr_live",
-			Params: map[string]interface{}{
-				"sl_after": map[string]interface{}{
-					"trail_from_here": map[string]interface{}{
-						"trend_regime": map[string]interface{}{
-							"trending_up":   map[string]interface{}{"atr": 1.0},
-							"trending_down": map[string]interface{}{"atr": 1.0},
-							"ranging":       map[string]interface{}{"atr": 0.5},
-						},
-					},
-				},
-				"tiers": []interface{}{
-					map[string]interface{}{"atr_multiple": 2, "close_fraction": 0.5},
-					map[string]interface{}{"atr_multiple": 3, "close_fraction": 1.0},
-				},
-			},
-		}},
+func TestPaperSLAfterClearedTier(t *testing.T) {
+	f := loadSLAfterParityFixture(t)
+	if len(f.ClearedTier) == 0 {
+		t.Fatal("parity fixture has no cleared_tier cases")
 	}
-	errs := validatePostTPStopLossRules(sc)
-	found := false
-	for _, e := range errs {
-		if strings.Contains(e, "trail_from_here is not supported on manual") {
-			found = true
+	for _, c := range f.ClearedTier {
+		t.Run(c.Name, func(t *testing.T) {
+			label := c.Label
+			if label == "" {
+				label = c.Regime
+			}
+			sc := f.strategy(t, c.Ladder, label, 1, nil, nil)
+			idx, ok := findHighestClearedTierByClosedRatio(paperSLAfterTierThresholds(sc, c.Regime), c.ClosedRatio, c.FromIdx)
+			got := -1
+			if ok {
+				got = idx
+			}
+			if got != c.WantIdx {
+				t.Fatalf("cleared tier = %d, want %d", got, c.WantIdx)
+			}
+		})
+	}
+}
+
+func TestRunPaperPostTPStopLossAdjustment(t *testing.T) {
+	f := loadSLAfterParityFixture(t)
+	if len(f.SLAfter) == 0 {
+		t.Fatal("parity fixture has no sl_after cases")
+	}
+	type scope struct {
+		name  string
+		args  []string
+		typ   string
+		moves bool
+	}
+	scopes := []scope{
+		{name: "paper perps", args: []string{"sma", "ETH", "1h"}, typ: "perps", moves: true},
+		{name: "live perps", args: []string{"sma", "ETH", "1h", "--mode=live"}, typ: "perps"},
+		{name: "paper manual", args: []string{"sma", "ETH", "1h"}, typ: "manual"},
+	}
+	for _, c := range f.SLAfter {
+		for _, sp := range scopes {
+			t.Run(c.Name+"/"+sp.name, func(t *testing.T) {
+				sc := f.strategy(t, c.Ladder, c.Label, c.StopLossATRMult, c.SLAfter, c.TierSLAfter)
+				sc.Args = sp.args
+				sc.Type = sp.typ
+				p := c.Position
+				pos := &Position{
+					Symbol:                   "ETH",
+					Side:                     p.Side,
+					AvgCost:                  p.AvgCost,
+					EntryATR:                 p.EntryATR,
+					Quantity:                 p.Quantity,
+					InitialQuantity:          p.InitialQuantity,
+					StopLossTriggerPx:        p.StopLossTriggerPx,
+					SLAdjustedTiersProcessed: p.SLAdjustedTiersProcessed,
+					Regime:                   p.Regime,
+					StopLossHighWaterPx:      p.StopLossHighWaterPx,
+				}
+				if strategyUsesUnifiedRegimeClose(sc) && sp.moves {
+					seedBookedConsumptionsForClosedRatio(sc, pos)
+				}
+				state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{"ETH": pos}}
+				var mu sync.RWMutex
+				want := c.Want
+				if !sp.moves {
+					want = slAfterParityWant{StopLossTriggerPx: p.StopLossTriggerPx, SLAdjustedTiersProcessed: p.SLAdjustedTiersProcessed, StopLossHighWaterPx: p.StopLossHighWaterPx}
+				}
+				wantMoved := want.StopLossTriggerPx != p.StopLossTriggerPx || want.PostTPTrailingATRMult != nil
+				assertState := func(call string) {
+					t.Helper()
+					gotTrail, wantTrail := 0.0, 0.0
+					if pos.PostTPTrailingATRMult != nil {
+						gotTrail = *pos.PostTPTrailingATRMult
+					}
+					if want.PostTPTrailingATRMult != nil {
+						wantTrail = *want.PostTPTrailingATRMult
+					}
+					if !approxEq(pos.StopLossTriggerPx, want.StopLossTriggerPx) ||
+						pos.SLAdjustedTiersProcessed != want.SLAdjustedTiersProcessed ||
+						(pos.PostTPTrailingATRMult == nil) != (want.PostTPTrailingATRMult == nil) ||
+						!approxEq(gotTrail, wantTrail) ||
+						!approxEq(pos.StopLossHighWaterPx, want.StopLossHighWaterPx) {
+						t.Fatalf("%s: trigger %v processed %d trail %v high water %v, want trigger %v processed %d trail %v high water %v",
+							call, pos.StopLossTriggerPx, pos.SLAdjustedTiersProcessed, pos.PostTPTrailingATRMult, pos.StopLossHighWaterPx,
+							want.StopLossTriggerPx, want.SLAdjustedTiersProcessed, want.PostTPTrailingATRMult, want.StopLossHighWaterPx)
+					}
+				}
+				if got := runPaperPostTPStopLossAdjustment(sc, state, "ETH", c.Mark, nil, &mu, nil, nil); got != wantMoved {
+					t.Fatalf("first call moved = %v, want %v", got, wantMoved)
+				}
+				assertState("first call")
+				if runPaperPostTPStopLossAdjustment(sc, state, "ETH", c.Mark+1, nil, &mu, nil, nil) {
+					t.Fatal("second call on the same tier moved the stop again")
+				}
+				assertState("second call")
+			})
 		}
 	}
-	if !found {
-		t.Fatalf("expected manual rejection, got %v", errs)
+}
+
+func TestPaperPartialCloseMovesStopBeforeNextBreach(t *testing.T) {
+	prev := tradeRecorder
+	tradeRecorder = nil
+	t.Cleanup(func() { tradeRecorder = prev })
+	cases := []struct {
+		name          string
+		slAfter       interface{}
+		wantTrigger   float64
+		walkMark      float64
+		breachMark    float64
+		wantBreachPx  float64
+		wantTrailMult float64
+	}{
+		{name: "breakeven", slAfter: "breakeven", wantTrigger: 100, breachMark: 99.9, wantBreachPx: 99.9},
+		{name: "trail from here", slAfter: map[string]interface{}{"trail_from_here": map[string]interface{}{"atr_mult": 1.0}}, wantTrigger: 100, walkMark: 110, breachMark: 107, wantBreachPx: 107, wantTrailMult: 1},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			slMult := 1.0
+			sc := StrategyConfig{
+				ID: "hl-paper-sl-after", Platform: "hyperliquid", Type: "perps",
+				Args: []string{"sma", "ETH", "1h"}, StopLossATRMult: &slMult,
+				Direction: DirectionBoth, Leverage: 1, SizingLeverage: 1,
+				CloseStrategy: &StrategyRef{Name: "tiered_tp_atr", Params: map[string]interface{}{
+					"sl_after": c.slAfter,
+					"tp_tiers": []interface{}{
+						map[string]interface{}{"atr_multiple": 1.0, "close_fraction": 0.5},
+						map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 1.0},
+					},
+				}},
+			}
+			s := paperStopTestState(sc, &Position{Symbol: "ETH", Quantity: 1, InitialQuantity: 1, AvgCost: 100, EntryATR: 2, Side: "long", StopLossTriggerPx: 98})
+			logger := silentStrategyLogger(sc.ID)
+			var mu sync.RWMutex
+			result := &HyperliquidResult{Symbol: "ETH", Signal: -1, Price: 102}
+			result.CloseFraction = 0.5
+			if trades, _, _, _ := executeHyperliquidResultDeferredOpen(sc, s, result, nil, "SELL", 102, nil, &Config{}, HurstGateDecision{}, logger); trades != 1 {
+				t.Fatalf("paper partial close trades = %d, want 1", trades)
+			}
+			if !runPaperPostTPStopLossAdjustment(sc, s, "ETH", 102, &Config{}, &mu, nil, logger) {
+				t.Fatal("paper partial close did not move the stop")
+			}
+			pos := s.Positions["ETH"]
+			if pos == nil || !approxEq(pos.Quantity, 0.5) || !approxEq(pos.StopLossTriggerPx, c.wantTrigger) {
+				t.Fatalf("after the tier = %+v, want 0.5 left with the stop at %v", pos, c.wantTrigger)
+			}
+			if c.wantTrailMult > 0 {
+				snap := hyperliquidProtectionPositionSnapshot(pos)
+				if effectiveTrailingStopPct(sc, snap) <= 0 {
+					t.Fatal("trail handoff: the fixed paper block still owns the stop, want the trailing walker")
+				}
+				hw, trigger, breach, _ := runHyperliquidTrailingStopPaper(sc, pos.Side, snap, c.walkMark, pos.StopLossHighWaterPx, pos.StopLossTriggerPx, trailingReplacePolicy{})
+				if breach || hw != c.walkMark || trigger <= c.wantTrigger {
+					t.Fatalf("walker from the seeded high water = (hw %v trigger %v breach %v), want hw %v and a trigger above %v", hw, trigger, breach, c.walkMark, c.wantTrigger)
+				}
+				pos.StopLossHighWaterPx, pos.StopLossTriggerPx = hw, trigger
+			}
+			n, _ := applyPaperStopLossBreach(sc, s, "ETH", "long", c.breachMark, &mu, logger)
+			if n != 1 || s.Positions["ETH"] != nil || len(s.ClosedPositions) != 1 || !approxEq(s.ClosedPositions[0].ClosePrice, c.wantBreachPx) {
+				t.Fatalf("next-cycle breach = trades %d closed %+v, want the rest closed @ %v", n, s.ClosedPositions, c.wantBreachPx)
+			}
+		})
 	}
 }

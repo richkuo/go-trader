@@ -1,0 +1,27 @@
+{
+  "issue": 1120,
+  "dataset": "BTC/USDT 1h",
+  "window": "2025-06-10..2026-01-01",
+  "open_strategy": "squeeze_momentum",
+  "close": "trailing_tp_ratchet_regime use_defaults",
+  "arms": [
+    {
+      "arm": "current_system_trailing",
+      "total_return_pct": -17.04,
+      "sharpe": -1.461,
+      "max_drawdown_pct": -18.73,
+      "total_trades": 103,
+      "win_rate": 43.69
+    },
+    {
+      "arm": "proposed_mc_trailing",
+      "total_return_pct": -19.82,
+      "sharpe": -1.712,
+      "max_drawdown_pct": -21.45,
+      "total_trades": 101,
+      "win_rate": 45.54
+    }
+  ],
+  "verdict": "mixed \u2014 MC proposal adopted with documented OOS tradeoff",
+  "ratchet_tp_note": "Ratchet tier ladders and B2 ranging TP group unchanged; per-substate ratchet/TP retune deferred \u2014 bar-level harness does not isolate substate geometry without M6 entry-locked replay."
+}

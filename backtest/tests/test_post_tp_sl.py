@@ -1,13 +1,8 @@
-"""
-Tests for post-TP stop-loss adjustment (`sl_after`) parity in the backtester (#709).
-
-Mirrors the Go test coverage in scheduler/post_tp_sl_test.go: pure-helper unit
-tests for parse/validate/compute, plus end-to-end backtester tests for each
-mode (breakeven / atr_offset / trail_from_here) on long and short positions.
-"""
 from __future__ import annotations
 
+import copy
 import importlib.util
+import json
 import os
 import sys
 
@@ -23,7 +18,6 @@ def _load_post_tp_sl():
     name = "_test_post_tp_sl"
     spec = importlib.util.spec_from_file_location(name, path)
     mod = importlib.util.module_from_spec(spec)
-    # Register in sys.modules before exec so @dataclass can resolve cls.__module__.
     sys.modules[name] = mod
     spec.loader.exec_module(mod)
     return mod
@@ -31,51 +25,30 @@ def _load_post_tp_sl():
 
 sl = _load_post_tp_sl()
 
-from backtester import Backtester
+from backtester import Backtester, _close_refs_use_regime_tiered_tp
 
 
-# ─── Pure-helper coverage ───────────────────────────────────────────────────
-
-
-def test_parse_sl_after_rule_breakeven_string():
-    rule = sl.parse_sl_after_rule("breakeven")
-    assert rule.kind == "breakeven"
+@pytest.mark.parametrize("raw,kind,attr,value", [
+    ("breakeven", "breakeven", None, None),
+    ({"atr_mult": 0.25}, "atr_offset", "atr_mult", 0.25),
+    ({"atr_mult": -0.5}, "atr_offset", "atr_mult", -0.5),
+    ({"kind": "atr_offset", "atr_mult": 0.25}, "atr_offset", "atr_mult", 0.25),
+    ({"trail_from_here": {"atr_mult": 1.0}}, "trail_from_here",
+     "trail_atr_mult", 1.0),
+    ({"kind": "trail_from_here", "atr_mult": 1.5}, "trail_from_here",
+     "trail_atr_mult", 1.5),
+])
+def test_parse_sl_after_rule_accepts(raw, kind, attr, value):
+    rule = sl.parse_sl_after_rule(raw)
+    assert rule.kind == kind
     assert rule.is_empty() is False
+    if attr is not None:
+        assert getattr(rule, attr) == value
 
 
-def test_parse_sl_after_rule_empty_inputs():
-    assert sl.parse_sl_after_rule(None).is_empty()
-    assert sl.parse_sl_after_rule("").is_empty()
-
-
-def test_parse_sl_after_rule_implicit_atr_offset():
-    rule = sl.parse_sl_after_rule({"atr_mult": 0.25})
-    assert rule.kind == "atr_offset"
-    assert rule.atr_mult == 0.25
-
-
-def test_parse_sl_after_rule_negative_atr_mult():
-    rule = sl.parse_sl_after_rule({"atr_mult": -0.5})
-    assert rule.kind == "atr_offset"
-    assert rule.atr_mult == -0.5
-
-
-def test_parse_sl_after_rule_explicit_kind_atr_offset():
-    rule = sl.parse_sl_after_rule({"kind": "atr_offset", "atr_mult": 0.25})
-    assert rule.kind == "atr_offset"
-    assert rule.atr_mult == 0.25
-
-
-def test_parse_sl_after_rule_nested_trail_from_here():
-    rule = sl.parse_sl_after_rule({"trail_from_here": {"atr_mult": 1.0}})
-    assert rule.kind == "trail_from_here"
-    assert rule.trail_atr_mult == 1.0
-
-
-def test_parse_sl_after_rule_explicit_kind_trail_from_here():
-    rule = sl.parse_sl_after_rule({"kind": "trail_from_here", "atr_mult": 1.5})
-    assert rule.kind == "trail_from_here"
-    assert rule.trail_atr_mult == 1.5
+@pytest.mark.parametrize("raw", [None, ""])
+def test_parse_sl_after_rule_empty_inputs(raw):
+    assert sl.parse_sl_after_rule(raw).is_empty()
 
 
 @pytest.mark.parametrize("raw", [
@@ -103,7 +76,7 @@ def test_validate_sl_after_rule_accepts_valid():
         sl.SLAfterRule(kind="atr_offset", atr_mult=-0.5),
         sl.SLAfterRule(kind="trail_from_here", trail_atr_mult=1.0),
     ]:
-        sl.validate_sl_after_rule(r)  # must not raise
+        sl.validate_sl_after_rule(r)
 
 
 def test_validate_sl_after_rule_rejects_bad():
@@ -117,71 +90,47 @@ def test_validate_sl_after_rule_rejects_bad():
             sl.validate_sl_after_rule(r)
 
 
-def test_compute_breakeven_long_and_short():
-    px, mode, ok = sl.compute_post_tp_stop_loss_trigger(
-        sl.SLAfterRule(kind="breakeven"), "long", 100, 5, 0,
-    )
-    assert ok and px == 100 and mode == "breakeven"
-    px, mode, ok = sl.compute_post_tp_stop_loss_trigger(
-        sl.SLAfterRule(kind="breakeven"), "short", 200, 5, 0,
-    )
-    assert ok and px == 200 and mode == "breakeven"
-
-
-@pytest.mark.parametrize("side,mult,want", [
-    ("long", 0.25, 100 + 0.25 * 5),
-    ("long", -0.5, 100 - 0.5 * 5),
-    ("long", 0, 100),
-    ("short", 0.25, 100 - 0.25 * 5),
-    ("short", -0.5, 100 + 0.5 * 5),
+@pytest.mark.parametrize("rule,side,avg,atr,mark,want_ok,want_px,want_mode", [
+    (sl.SLAfterRule(kind="breakeven"), "long", 100, 5, 0, True, 100, "breakeven"),
+    (sl.SLAfterRule(kind="breakeven"), "short", 200, 5, 0, True, 200, "breakeven"),
+    (sl.SLAfterRule(kind="atr_offset", atr_mult=0.25), "long", 100, 5, 0,
+     True, 100 + 0.25 * 5, "atr+0.25"),
+    (sl.SLAfterRule(kind="atr_offset", atr_mult=-0.5), "long", 100, 5, 0,
+     True, 100 - 0.5 * 5, "atr-0.5"),
+    (sl.SLAfterRule(kind="atr_offset", atr_mult=0), "long", 100, 5, 0,
+     True, 100, "atr+0"),
+    (sl.SLAfterRule(kind="atr_offset", atr_mult=1), "long", 100, 5, 0,
+     True, 100 + 1 * 5, "atr+1"),
+    (sl.SLAfterRule(kind="atr_offset", atr_mult=0.25), "short", 100, 5, 0,
+     True, 100 - 0.25 * 5, None),
+    (sl.SLAfterRule(kind="atr_offset", atr_mult=-0.5), "short", 100, 5, 0,
+     True, 100 + 0.5 * 5, None),
+    (sl.SLAfterRule(kind="trail_from_here", trail_atr_mult=1.0), "long", 100, 5, 110,
+     True, 110 - 1.0 * 5, "trail 1×ATR"),
+    (sl.SLAfterRule(kind="trail_from_here", trail_atr_mult=1.5), "short", 100, 5, 90,
+     True, 90 + 1.5 * 5, None),
+    (sl.SLAfterRule(), "long", 100, 5, 0, False, None, None),
+    (sl.SLAfterRule(kind="breakeven"), "neutral", 100, 5, 0, False, None, None),
+    (sl.SLAfterRule(kind="breakeven"), "long", 0, 5, 0, False, None, None),
+    (sl.SLAfterRule(kind="atr_offset", atr_mult=0.25), "long", 100, 0, 0,
+     False, None, None),
+    (sl.SLAfterRule(kind="trail_from_here", trail_atr_mult=1), "long", 100, 0, 110,
+     False, None, None),
+    (sl.SLAfterRule(kind="trail_from_here", trail_atr_mult=1), "long", 100, 5, 0,
+     False, None, None),
+    (sl.SLAfterRule(kind="trail_from_here", trail_atr_mult=0), "long", 100, 5, 110,
+     False, None, None),
+    (sl.SLAfterRule(kind="weird"), "long", 100, 5, 110, False, None, None),
 ])
-def test_compute_atr_offset(side, mult, want):
-    px, _, ok = sl.compute_post_tp_stop_loss_trigger(
-        sl.SLAfterRule(kind="atr_offset", atr_mult=mult), side, 100, 5, 0,
-    )
-    assert ok
-    assert abs(px - want) < 1e-9
-
-
-@pytest.mark.parametrize("mult,want_mode", [
-    (0, "atr+0"),
-    (0.25, "atr+0.25"),
-    (-0.5, "atr-0.5"),
-    (1, "atr+1"),
-])
-def test_compute_atr_offset_mode_label(mult, want_mode):
-    _, mode, _ = sl.compute_post_tp_stop_loss_trigger(
-        sl.SLAfterRule(kind="atr_offset", atr_mult=mult), "long", 100, 5, 0,
-    )
-    assert mode == want_mode
-
-
-def test_compute_trail_from_here_long_and_short():
-    px, mode, ok = sl.compute_post_tp_stop_loss_trigger(
-        sl.SLAfterRule(kind="trail_from_here", trail_atr_mult=1.0),
-        "long", 100, 5, 110,
-    )
-    assert ok and abs(px - (110 - 1.0 * 5)) < 1e-9 and "trail" in mode
-    px, _, ok = sl.compute_post_tp_stop_loss_trigger(
-        sl.SLAfterRule(kind="trail_from_here", trail_atr_mult=1.5),
-        "short", 100, 5, 90,
-    )
-    assert ok and abs(px - (90 + 1.5 * 5)) < 1e-9
-
-
-@pytest.mark.parametrize("rule,side,avg,atr,mark", [
-    (sl.SLAfterRule(), "long", 100, 5, 0),
-    (sl.SLAfterRule(kind="breakeven"), "neutral", 100, 5, 0),
-    (sl.SLAfterRule(kind="breakeven"), "long", 0, 5, 0),
-    (sl.SLAfterRule(kind="atr_offset", atr_mult=0.25), "long", 100, 0, 0),
-    (sl.SLAfterRule(kind="trail_from_here", trail_atr_mult=1), "long", 100, 0, 110),
-    (sl.SLAfterRule(kind="trail_from_here", trail_atr_mult=1), "long", 100, 5, 0),
-    (sl.SLAfterRule(kind="trail_from_here", trail_atr_mult=0), "long", 100, 5, 110),
-    (sl.SLAfterRule(kind="weird"), "long", 100, 5, 110),
-])
-def test_compute_rejects_bad_inputs(rule, side, avg, atr, mark):
-    _, _, ok = sl.compute_post_tp_stop_loss_trigger(rule, side, avg, atr, mark)
-    assert not ok
+def test_compute_post_tp_stop_loss_trigger(
+        rule, side, avg, atr, mark, want_ok, want_px, want_mode):
+    px, mode, ok = sl.compute_post_tp_stop_loss_trigger(rule, side, avg, atr, mark)
+    assert bool(ok) is want_ok
+    if not want_ok:
+        return
+    assert abs(px - want_px) < 1e-9
+    if want_mode is not None:
+        assert mode == want_mode
 
 
 def test_parse_strategy_tp_sl_after_rules_default_and_per_tier_override():
@@ -189,8 +138,7 @@ def test_parse_strategy_tp_sl_after_rules_default_and_per_tier_override():
         "name": "tiered_tp_atr_live",
         "params": {
             "sl_after": "breakeven",
-            "tiers": [
-                # out of order — should sort ascending by atr_multiple
+            "tp_tiers": [
                 {"atr_multiple": 3, "close_fraction": 1.0,
                  "sl_after": {"atr_mult": 0.25}},
                 {"atr_multiple": 2, "close_fraction": 0.5},
@@ -201,13 +149,13 @@ def test_parse_strategy_tp_sl_after_rules_default_and_per_tier_override():
     assert errs == []
     assert rules.default.kind == "breakeven"
     assert len(rules.per_tier) == 2
-    assert rules.per_tier[0].is_empty()  # tier mult=2 → inherits default
+    assert rules.per_tier[0].is_empty()
     assert rules.per_tier[1].kind == "atr_offset"
     assert rules.per_tier[1].atr_mult == 0.25
     assert rules.has_any()
     assert rules.for_tier(0).kind == "breakeven"
     assert rules.for_tier(1).kind == "atr_offset"
-    assert rules.for_tier(99).kind == "breakeven"  # out of range → default
+    assert rules.for_tier(99).kind == "breakeven"
 
 
 def test_parse_strategy_tp_sl_after_rules_no_tiered_tp():
@@ -222,7 +170,7 @@ def test_parse_strategy_tp_sl_after_rules_reports_malformed():
         "name": "tiered_tp_atr",
         "params": {
             "sl_after": "unknown-string",
-            "tiers": [
+            "tp_tiers": [
                 {"atr_multiple": 2, "close_fraction": 0.5,
                  "sl_after": {"kind": "weird"}},
                 {"atr_multiple": 3, "close_fraction": 1.0},
@@ -233,102 +181,78 @@ def test_parse_strategy_tp_sl_after_rules_reports_malformed():
     assert len(errs) >= 2
 
 
-def test_validate_rejects_combination_with_trailing():
-    refs = [{
-        "name": "tiered_tp_atr_live",
-        "params": {
-            "sl_after": "breakeven",
-            "tiers": [{"atr_multiple": 2, "close_fraction": 0.5},
-                      {"atr_multiple": 3, "close_fraction": 1.0}],
-        },
-    }]
-    errs = sl.validate_post_tp_stop_loss_rules(
-        refs, stop_loss_atr_mult=1.0, trailing_stop_atr_mult=1.5,
-    )
-    assert any("trailing_stop" in e for e in errs)
+_TWO_TIERS = [
+    {"atr_multiple": 2, "close_fraction": 0.5},
+    {"atr_multiple": 3, "close_fraction": 1.0},
+]
 
 
-def test_validate_rejects_no_fixed_sl():
-    refs = [{
-        "name": "tiered_tp_atr_live",
-        "params": {
-            "sl_after": "breakeven",
-            "tiers": [{"atr_multiple": 2, "close_fraction": 0.5},
-                      {"atr_multiple": 3, "close_fraction": 1.0}],
-        },
-    }]
-    errs = sl.validate_post_tp_stop_loss_rules(refs)
-    assert any("fixed stop-loss" in e for e in errs)
-
-
-def test_validate_accepts_valid():
-    refs = [{
-        "name": "tiered_tp_atr_live",
-        "params": {
-            "sl_after": "breakeven",
-            "tiers": [
-                {"atr_multiple": 2, "close_fraction": 0.5},
-                {"atr_multiple": 3, "close_fraction": 1.0,
-                 "sl_after": {"atr_mult": 0.5}},
-            ],
-        },
-    }]
-    assert sl.validate_post_tp_stop_loss_rules(refs, stop_loss_atr_mult=1.0) == []
-
-
-def test_validate_rejects_trail_from_here_on_manual():
-    refs = [{
-        "name": "tiered_tp_atr_live",
-        "params": {
-            "sl_after": {"trail_from_here": {"atr_mult": 1.0}},
-            "tiers": [{"atr_multiple": 2, "close_fraction": 0.5},
-                      {"atr_multiple": 3, "close_fraction": 1.0}],
-        },
-    }]
-    errs = sl.validate_post_tp_stop_loss_rules(
-        refs, stop_loss_atr_mult=1.5, strategy_type="manual",
-    )
-    assert any("trail_from_here is not supported on manual" in e for e in errs)
-
-
-def test_validate_rejects_sl_after_on_non_tiered_close_ref():
-    refs = [{
-        "name": "tp_at_pct",
-        "params": {"pct": 0.05, "sl_after": "breakeven"},
-    }]
-    errs = sl.validate_post_tp_stop_loss_rules(refs, stop_loss_atr_mult=1.0)
-    assert any("only honored on tiered_tp_atr" in e for e in errs)
-
-
-def test_validate_rejects_per_tier_sl_after_on_non_tiered():
-    refs = [{
-        "name": "tiered_tp_pct",
-        "params": {
-            "tiers": [
-                {"pct": 0.05, "close_fraction": 0.5, "sl_after": "breakeven"},
-            ],
-        },
-    }]
-    errs = sl.validate_post_tp_stop_loss_rules(refs, stop_loss_atr_mult=1.0)
-    assert any("no effect" in e and "tiered_tp_pct" in e for e in errs)
-
-
-def test_validate_no_op_when_sl_after_absent():
-    refs = [{
-        "name": "tiered_tp_atr_live",
-        "params": {"tiers": [
-            {"atr_multiple": 2, "close_fraction": 0.5},
-            {"atr_multiple": 3, "close_fraction": 1.0},
-        ]},
-    }]
-    assert sl.validate_post_tp_stop_loss_rules(refs, stop_loss_atr_mult=1.0) == []
+@pytest.mark.parametrize("refs,kwargs,want_errs", [
+    (
+        [{"name": "tiered_tp_atr_live",
+          "params": {"sl_after": "breakeven", "tp_tiers": _TWO_TIERS}}],
+        {"stop_loss_atr_mult": 1.0, "trailing_stop_atr_mult": 1.5},
+        [("trailing_stop",)],
+    ),
+    (
+        [{"name": "tiered_tp_atr_live",
+          "params": {"sl_after": "breakeven", "tp_tiers": _TWO_TIERS}}],
+        {},
+        [("fixed stop-loss",)],
+    ),
+    (
+        [{"name": "tiered_tp_atr_live",
+          "params": {
+              "sl_after": "breakeven",
+              "tp_tiers": [
+                  {"atr_multiple": 2, "close_fraction": 0.5},
+                  {"atr_multiple": 3, "close_fraction": 1.0,
+                   "sl_after": {"atr_mult": 0.5}},
+              ],
+          }}],
+        {"stop_loss_atr_mult": 1.0},
+        [],
+    ),
+    (
+        [{"name": "tiered_tp_atr_live",
+          "params": {"sl_after": {"trail_from_here": {"atr_mult": 1.0}},
+                     "tp_tiers": _TWO_TIERS}}],
+        {"stop_loss_atr_mult": 1.5, "strategy_type": "manual"},
+        [("trail_from_here is not supported on manual",)],
+    ),
+    (
+        [{"name": "tp_at_pct", "params": {"pct": 0.05, "sl_after": "breakeven"}}],
+        {"stop_loss_atr_mult": 1.0},
+        [("only honored on tiered_tp_atr",)],
+    ),
+    (
+        [{"name": "tiered_tp_pct",
+          "params": {"tp_tiers": [
+              {"pct": 0.05, "close_fraction": 0.5, "sl_after": "breakeven"},
+          ]}}],
+        {"stop_loss_atr_mult": 1.0},
+        [("no effect", "tiered_tp_pct")],
+    ),
+    (
+        [{"name": "tiered_tp_atr_live", "params": {"tp_tiers": _TWO_TIERS}}],
+        {"stop_loss_atr_mult": 1.0},
+        [],
+    ),
+])
+def test_validate_post_tp_stop_loss_rules(refs, kwargs, want_errs):
+    errs = sl.validate_post_tp_stop_loss_rules(refs, **kwargs)
+    if not want_errs:
+        assert errs == []
+        return
+    for parts in want_errs:
+        assert any(all(p in e for p in parts) for e in errs), errs
 
 
 def test_parse_tp_tier_close_fractions_sorts_and_coerces_final():
     refs = [{
         "name": "tiered_tp_atr",
-        "params": {"tiers": [
-            {"atr_multiple": 3, "close_fraction": 0.9},  # final → coerced 1.0
+        "params": {"tp_tiers": [
+            {"atr_multiple": 3, "close_fraction": 0.9},
             {"atr_multiple": 1, "close_fraction": 0.25},
             {"atr_multiple": 2, "close_fraction": 0.5},
         ]},
@@ -338,7 +262,6 @@ def test_parse_tp_tier_close_fractions_sorts_and_coerces_final():
 
 
 def test_find_highest_cleared_tier_basic():
-    # Cumulative thresholds [0.5, 1.0]
     assert sl.find_highest_cleared_tier([0.5, 1.0], 0.0) == -1
     assert sl.find_highest_cleared_tier([0.5, 1.0], 0.5) == 0
     assert sl.find_highest_cleared_tier([0.5, 1.0], 1.0) == 1
@@ -346,12 +269,7 @@ def test_find_highest_cleared_tier_basic():
     assert sl.find_highest_cleared_tier([0.5, 1.0], 1.0, from_idx=1) == 1
 
 
-# ─── Backtester integration ────────────────────────────────────────────────
-
-
 def _df_open_then_hold(opens, closes, atrs=None, open_actions=None):
-    """Build a df with an open_action sequence; default is open at bar 0
-    then 'none' on the rest."""
     n = len(closes)
     idx = pd.date_range("2024-01-01", periods=n, freq="D")
     if open_actions is None:
@@ -362,385 +280,344 @@ def _df_open_then_hold(opens, closes, atrs=None, open_actions=None):
     return pd.DataFrame(data, index=idx)
 
 
-def test_backtester_breakeven_after_tp1_long():
-    """TP1 at +1×ATR closes 50%, then SL bumps to breakeven (avg cost). A
-    subsequent retrace below avg cost triggers the SL → full close at
-    breakeven price on the next bar."""
-    # ATR=10, entry @ $100. Bar 1 opens long. Bar 2 close=$110 → tier 1 fires,
-    # 50% closes at bar 3 open=$110. SL bumps to $100 (breakeven). Bar 4
-    # close=$95 < SL → triggers. Bar 5 opens at $95, full close.
-    df = _df_open_then_hold(
+_STANDARD_TIERS = [
+    {"atr_multiple": 1.0, "close_fraction": 0.5},
+    {"atr_multiple": 2.0, "close_fraction": 1.0},
+]
+
+_SCENARIOS = {
+    "breakeven_after_tp1_long": dict(
         opens=[100, 100, 100, 110, 100, 95],
         closes=[100, 100, 110, 110, 95, 95],
-        atrs=[10, 10, 10, 10, 10, 10],
-    )
-    bt = Backtester(
-        initial_capital=1000, commission_pct=0, slippage_pct=0,
-        platform="hyperliquid", strategy_type="perps",
+        intrabar="bar_close",
         stop_loss_atr_mult=1.0,
-        close_strategies=[{
-            "name": "tiered_tp_atr",
-            "params": {
-                "sl_after": "breakeven",
-                "tiers": [
-                    {"atr_multiple": 1.0, "close_fraction": 0.5},
-                    {"atr_multiple": 2.0, "close_fraction": 1.0},
-                ],
-            },
-        }],
-    )
-    result = bt.run(df, save=False)
-    # Two trades: TP1 partial @ $110, SL flat @ $95.
-    sides_prices = [(t["side"], t["exit_price"]) for t in result["trades"]]
-    assert ("long", 110.0) in sides_prices, sides_prices
-    assert ("long", 95.0) in sides_prices, sides_prices
-
-
-def test_backtester_breakeven_after_tp1_short():
-    """Mirror image for shorts. ATR=10, entry @ $100 short. Bar 2 close=$90
-    → tier 1 fires, half closes at bar 3 open=$90. SL bumps to $100. Bar 4
-    close=$110 > SL → full close at bar 5 open=$110."""
-    df = _df_open_then_hold(
+        params={"sl_after": "breakeven", "tp_tiers": _STANDARD_TIERS},
+        expect=[("long", 110.0), ("long", 95.0)],
+    ),
+    "breakeven_after_tp1_short": dict(
         opens=[100, 100, 100, 90, 100, 110],
         closes=[100, 100, 90, 90, 110, 110],
-        atrs=[10, 10, 10, 10, 10, 10],
-        open_actions=["short"] + ["none"] * 5,
-    )
-    bt = Backtester(
-        initial_capital=1000, commission_pct=0, slippage_pct=0,
-        platform="hyperliquid", strategy_type="perps",
+        side="short",
+        intrabar="bar_close",
         stop_loss_atr_mult=1.0,
-        close_strategies=[{
-            "name": "tiered_tp_atr",
-            "params": {
-                "sl_after": "breakeven",
-                "tiers": [
-                    {"atr_multiple": 1.0, "close_fraction": 0.5},
-                    {"atr_multiple": 2.0, "close_fraction": 1.0},
-                ],
-            },
-        }],
-    )
-    result = bt.run(df, save=False)
-    sides_prices = [(t["side"], t["exit_price"]) for t in result["trades"]]
-    assert ("short", 90.0) in sides_prices, sides_prices
-    assert ("short", 110.0) in sides_prices, sides_prices
-
-
-def test_backtester_atr_offset_after_tp1_long():
-    """sl_after = atr_offset 0.5: SL bumps to avg + 0.5×ATR = $105 after
-    TP1. Subsequent bar dipping to $104 triggers."""
-    df = _df_open_then_hold(
+        params={"sl_after": "breakeven", "tp_tiers": _STANDARD_TIERS},
+        expect=[("short", 90.0), ("short", 110.0)],
+    ),
+    "atr_offset_after_tp1_long": dict(
         opens=[100, 100, 100, 110, 105, 104],
         closes=[100, 100, 110, 110, 104, 104],
-        atrs=[10, 10, 10, 10, 10, 10],
-    )
-    bt = Backtester(
-        initial_capital=1000, commission_pct=0, slippage_pct=0,
-        platform="hyperliquid", strategy_type="perps",
+        intrabar="bar_close",
         stop_loss_atr_mult=1.0,
-        close_strategies=[{
-            "name": "tiered_tp_atr",
-            "params": {
-                "sl_after": {"atr_mult": 0.5},
-                "tiers": [
-                    {"atr_multiple": 1.0, "close_fraction": 0.5},
-                    {"atr_multiple": 2.0, "close_fraction": 1.0},
-                ],
-            },
-        }],
-    )
-    result = bt.run(df, save=False)
-    sides_prices = [(t["side"], t["exit_price"]) for t in result["trades"]]
-    assert ("long", 110.0) in sides_prices
-    # Final close fires when bar 4 closes at $104 (≤ $105 SL); fills at bar 5
-    # open = $104. Last bar would otherwise force-close at end of run.
-    assert ("long", 104.0) in sides_prices, sides_prices
-
-
-def test_backtester_trail_from_here_long_walks_up():
-    """trail_from_here at 1×ATR after TP1: SL trigger trails the high-water
-    mark by 1×ATR. Price rises to $118 (hwm), pulls back to $107 < trigger
-    ($108) → SL fires. Prices stay below TP2's 2×ATR ($120) so this isolates
-    the trail behavior from the second tier firing."""
-    # Entry at bar 1 ($100). Bar 2 close=$110 → TP1 fires.
-    # Bar 3 open=$110 (TP1 partial, seeds sl_trigger=$100).
-    # Bar 3 close=$115 → hwm=$115, trigger=$105.
-    # Bar 4 close=$118 → hwm=$118, trigger=$108.
-    # Bar 5 close=$107 → 107 < trigger ($108) → SL fires.
-    # Bar 6 open=$107 → trail SL fill.
-    df = _df_open_then_hold(
+        params={"sl_after": {"atr_mult": 0.5}, "tp_tiers": _STANDARD_TIERS},
+        expect=[("long", 110.0), ("long", 104.0)],
+    ),
+    "trail_from_here_long_walks_up": dict(
         opens=[100, 100, 100, 110, 115, 118, 107],
         closes=[100, 100, 110, 115, 118, 107, 107],
-        atrs=[10, 10, 10, 10, 10, 10, 10],
-    )
-    bt = Backtester(
-        initial_capital=1000, commission_pct=0, slippage_pct=0,
-        platform="hyperliquid", strategy_type="perps",
+        intrabar="bar_close",
         stop_loss_atr_mult=1.0,
-        close_strategies=[{
-            "name": "tiered_tp_atr",
-            "params": {
-                "sl_after": {"trail_from_here": {"atr_mult": 1.0}},
-                "tiers": [
-                    {"atr_multiple": 1.0, "close_fraction": 0.5},
-                    {"atr_multiple": 2.0, "close_fraction": 1.0},
-                ],
-            },
-        }],
-    )
-    result = bt.run(df, save=False)
-    sides_prices = [(t["side"], t["exit_price"]) for t in result["trades"]]
-    # TP1 partial close at $110.
-    assert ("long", 110.0) in sides_prices, sides_prices
-    # Trail SL fires at bar 6 open = $107.
-    assert ("long", 107.0) in sides_prices, sides_prices
-
-
-def test_backtester_trail_from_here_short_walks_down():
-    """Mirror image for shorts: hwm tracks lowest mark, trigger sits above
-    it by trail_atr_mult × ATR. Prices stay above TP2's 2×ATR ($80)
-    threshold so this isolates the trail behavior."""
-    df = _df_open_then_hold(
+        params={"sl_after": {"trail_from_here": {"atr_mult": 1.0}},
+                "tp_tiers": _STANDARD_TIERS},
+        expect=[("long", 110.0), ("long", 107.0)],
+    ),
+    "trail_from_here_short_walks_down": dict(
         opens=[100, 100, 100, 90, 85, 82, 93],
         closes=[100, 100, 90, 85, 82, 93, 93],
-        atrs=[10, 10, 10, 10, 10, 10, 10],
-        open_actions=["short"] + ["none"] * 6,
-    )
-    bt = Backtester(
-        initial_capital=1000, commission_pct=0, slippage_pct=0,
-        platform="hyperliquid", strategy_type="perps",
+        side="short",
+        intrabar="bar_close",
         stop_loss_atr_mult=1.0,
-        close_strategies=[{
-            "name": "tiered_tp_atr",
-            "params": {
-                "sl_after": {"trail_from_here": {"atr_mult": 1.0}},
-                "tiers": [
-                    {"atr_multiple": 1.0, "close_fraction": 0.5},
-                    {"atr_multiple": 2.0, "close_fraction": 1.0},
-                ],
-            },
-        }],
-    )
-    result = bt.run(df, save=False)
-    sides_prices = [(t["side"], t["exit_price"]) for t in result["trades"]]
-    assert ("short", 90.0) in sides_prices, sides_prices
-    # Bar 3 partial fill at $90, sl_trigger seeds at $90 + 10 = $100.
-    # End-of-bar 3 walk: hwm=$85, trigger=$95.
-    # End-of-bar 4 close=$82: hwm=$82, trigger=$92.
-    # End-of-bar 5 close=$93 → 93 > trigger ($92) → SL fires at bar 6 open=$93.
-    assert ("short", 93.0) in sides_prices, sides_prices
-
-
-def test_backtester_validation_rejects_no_fixed_sl():
-    with pytest.raises(ValueError, match="fixed stop-loss"):
-        Backtester(
-            initial_capital=1000, commission_pct=0, slippage_pct=0,
-            platform="hyperliquid", strategy_type="perps",
-            close_strategies=[{
-                "name": "tiered_tp_atr",
-                "params": {
-                    "sl_after": "breakeven",
-                    "tiers": [
-                        {"atr_multiple": 2, "close_fraction": 0.5},
-                        {"atr_multiple": 3, "close_fraction": 1.0},
-                    ],
-                },
-            }],
-        )
-
-
-def test_backtester_validation_rejects_combo_with_trailing():
-    with pytest.raises(ValueError, match="trailing_stop"):
-        Backtester(
-            initial_capital=1000, commission_pct=0, slippage_pct=0,
-            platform="hyperliquid", strategy_type="perps",
-            stop_loss_atr_mult=1.0, trailing_stop_atr_mult=1.5,
-            close_strategies=[{
-                "name": "tiered_tp_atr",
-                "params": {
-                    "sl_after": "breakeven",
-                    "tiers": [
-                        {"atr_multiple": 2, "close_fraction": 0.5},
-                        {"atr_multiple": 3, "close_fraction": 1.0},
-                    ],
-                },
-            }],
-        )
-
-
-def test_backtester_validation_rejects_trail_from_here_on_manual():
-    with pytest.raises(ValueError, match="trail_from_here is not supported on manual"):
-        Backtester(
-            initial_capital=1000, commission_pct=0, slippage_pct=0,
-            platform="hyperliquid", strategy_type="manual",
-            stop_loss_atr_mult=1.5,
-            close_strategies=[{
-                "name": "tiered_tp_atr_live",
-                "params": {
-                    "sl_after": {"trail_from_here": {"atr_mult": 1.0}},
-                    "tiers": [
-                        {"atr_multiple": 2, "close_fraction": 0.5},
-                        {"atr_multiple": 3, "close_fraction": 1.0},
-                    ],
-                },
-            }],
-        )
-
-
-def test_backtester_validation_rejects_sl_after_on_non_tiered_ref():
-    with pytest.raises(ValueError, match="only honored on tiered_tp_atr"):
-        Backtester(
-            initial_capital=1000, commission_pct=0, slippage_pct=0,
-            platform="hyperliquid", strategy_type="perps",
-            stop_loss_atr_mult=1.0,
-            close_strategies=[{
-                "name": "tp_at_pct",
-                "params": {"pct": 0.05, "sl_after": "breakeven"},
-            }],
-        )
-
-
-# #736 — regime-aware sl_after parses cleanly (live HL uses it) but the
-# backtester defers per-regime resolution to a follow-up parity issue. Verify
-# the loader fails loud rather than silently producing scalar=0 results.
-def test_backtester_validation_rejects_regime_sl_after_strategy_default():
-    with pytest.raises(ValueError, match="HL-live-only"):
-        Backtester(
-            initial_capital=1000, commission_pct=0, slippage_pct=0,
-            platform="hyperliquid", strategy_type="perps",
-            stop_loss_atr_mult=1.0,
-            close_strategies=[{
-                "name": "tiered_tp_atr",
-                "params": {
-                    "sl_after": {
-                        "trend_regime": {
-                            "trending_up": {"atr": 0.25},
-                            "trending_down": {"atr": 0.25},
-                            "ranging": {"atr": 0.0},
-                        },
-                    },
-                    "tiers": [
-                        {"atr_multiple": 1.0, "close_fraction": 0.5},
-                        {"atr_multiple": 2.0, "close_fraction": 1.0},
-                    ],
-                },
-            }],
-        )
-
-
-def test_backtester_validation_rejects_regime_sl_after_per_tier():
-    with pytest.raises(ValueError, match="HL-live-only"):
-        Backtester(
-            initial_capital=1000, commission_pct=0, slippage_pct=0,
-            platform="hyperliquid", strategy_type="perps",
-            stop_loss_atr_mult=1.0,
-            close_strategies=[{
-                "name": "tiered_tp_atr",
-                "params": {
-                    "tiers": [
-                        {
-                            "atr_multiple": 1.0,
-                            "close_fraction": 0.5,
-                            "sl_after": {
-                                "trail_from_here": {
-                                    "trend_regime": {
-                                        "trending_up": {"atr": 1.0},
-                                        "trending_down": {"atr": 1.0},
-                                        "ranging": {"atr": 0.5},
-                                    },
-                                },
-                            },
-                        },
-                        {"atr_multiple": 2.0, "close_fraction": 1.0},
-                    ],
-                },
-            }],
-        )
-
-
-def test_backtester_no_sl_after_unchanged_behavior():
-    """Sanity check: a strategy with tiered_tp_atr but no sl_after still
-    behaves as before — no extra SL hits, partial close at tier price."""
-    df = _df_open_then_hold(
+        params={"sl_after": {"trail_from_here": {"atr_mult": 1.0}},
+                "tp_tiers": _STANDARD_TIERS},
+        expect=[("short", 90.0), ("short", 93.0)],
+    ),
+    "tp_atr_fraction_uses_firing_tier_multiple": dict(
+        opens=[100, 100, 100, 120, 125, 128, 117],
+        closes=[100, 100, 120, 125, 128, 117, 117],
+        intrabar="bar_close",
+        stop_loss_atr_mult=1.0,
+        params={"sl_after": {"trail_from_here": {"tp_atr_fraction": 0.5}},
+                "tp_tiers": [
+                    {"atr_multiple": 2.0, "close_fraction": 0.5},
+                    {"atr_multiple": 4.0, "close_fraction": 1.0},
+                ]},
+        expect=[("long", 120.0), ("long", 117.0)],
+    ),
+    "tp_atr_fraction_uses_default_tier_multiple": dict(
+        opens=[100, 100, 100, 110, 115, 118, 112],
+        closes=[100, 100, 110, 115, 118, 112, 112],
+        stop_loss_atr_mult=1.0,
+        params={"sl_after": {"trail_from_here": {"tp_atr_fraction": 0.5}}},
+        expect=[("long", 115.0), ("long", 112.0)],
+    ),
+    "no_sl_after_unchanged_behavior": dict(
         opens=[100, 100, 100, 110, 90],
         closes=[100, 100, 110, 90, 90],
-        atrs=[10, 10, 10, 10, 10],
-    )
-    bt = Backtester(
-        initial_capital=1000, commission_pct=0, slippage_pct=0,
-        platform="hyperliquid", strategy_type="perps",
-        close_strategies=[{
-            "name": "tiered_tp_atr",
-            "params": {
-                "tiers": [
-                    {"atr_multiple": 1.0, "close_fraction": 0.5},
-                    {"atr_multiple": 2.0, "close_fraction": 1.0},
-                ],
-            },
-        }],
-    )
-    result = bt.run(df, save=False)
-    # TP1 partial @ $110, then end-of-run forced close at $90 (no SL active).
-    sides_prices = [(t["side"], t["exit_price"]) for t in result["trades"]]
-    assert ("long", 110.0) in sides_prices
-    assert ("long", 90.0) in sides_prices
-
-
-def test_backtester_multi_tier_cleared_same_bar_highest_wins():
-    """Price jumps past tier 0 directly to tier 1 in a single bar. The
-    highest cleared tier's rule must win — proves find_highest_cleared_tier
-    is wired through and a lower tier's rule doesn't shadow the higher
-    tier's intent."""
-    # 3 tiers at 1×/2×/3× ATR (cumulative close_fractions 0.3/0.6/1.0).
-    # Tier 0 rule = breakeven ($100); tier 1 rule = atr_offset +1.0×ATR
-    # ($110); tier 2 rule = atr_offset +2.0×ATR ($120). Bar 2 close jumps
-    # straight to $120 = 2×ATR → tier 0 AND tier 1 both clear in the same
-    # bar; final tier untouched (close_ratio=0.6 < 1.0).
-    #
-    # If tier 1's rule wins (correct): SL=$110. Bar 4 close=$105 < $110 →
-    # SL fires at bar 5 open=$105.
-    # If tier 0 incorrectly won: SL=$100, $105 wouldn't trigger.
-    df = _df_open_then_hold(
+        params={"tp_tiers": _STANDARD_TIERS},
+        expect=[("long", 110.0), ("long", 90.0)],
+    ),
+    "multi_tier_cleared_same_bar_highest_wins": dict(
+        platform="binanceus",
         opens=[100, 100, 100, 120, 110, 105],
         closes=[100, 100, 120, 120, 105, 105],
-        atrs=[10, 10, 10, 10, 10, 10],
+        intrabar="bar_close",
+        stop_loss_atr_mult=2.0,
+        params={"tp_tiers": [
+            {"atr_multiple": 1.0, "close_fraction": 0.3, "sl_after": "breakeven"},
+            {"atr_multiple": 2.0, "close_fraction": 0.6,
+             "sl_after": {"atr_mult": 1.0}},
+            {"atr_multiple": 3.0, "close_fraction": 1.0,
+             "sl_after": {"atr_mult": 2.0}},
+        ]},
+        expect=[("long", 120.0), ("long", 105.0)],
+    ),
+    "no_same_bar_fire_after_bump_long": dict(
+        platform="binanceus",
+        opens=[100, 100, 100, 110, 99, 99],
+        closes=[100, 100, 110, 99, 99, 99],
+        intrabar="bar_close",
+        stop_loss_atr_mult=1.0,
+        params={"sl_after": "breakeven", "tp_tiers": _STANDARD_TIERS},
+        expect=[("long", 110.0), ("long", 99.0)],
+        single_sl=(99.0, "2024-01-06 00:00:00"),
+    ),
+    "no_same_bar_fire_after_bump_short": dict(
+        platform="binanceus",
+        opens=[100, 100, 100, 90, 101, 101],
+        closes=[100, 100, 90, 101, 101, 101],
+        side="short",
+        intrabar="bar_close",
+        stop_loss_atr_mult=1.0,
+        params={"sl_after": "breakeven", "tp_tiers": _STANDARD_TIERS},
+        expect=[("short", 90.0), ("short", 101.0)],
+        single_sl=(101.0, "2024-01-06 00:00:00"),
+    ),
+    "multi_tier_cleared_same_bar_resting_limit_hyperliquid": dict(
+        opens=[100, 100, 100, 120, 110, 105],
+        closes=[100, 100, 120, 120, 105, 105],
+        intrabar="bar_close",
+        stop_loss_atr_mult=2.0,
+        params={"tp_tiers": [
+            {"atr_multiple": 1.0, "close_fraction": 0.3, "sl_after": "breakeven"},
+            {"atr_multiple": 2.0, "close_fraction": 0.6,
+             "sl_after": {"atr_mult": 1.0}},
+            {"atr_multiple": 3.0, "close_fraction": 1.0,
+             "sl_after": {"atr_mult": 2.0}},
+        ]},
+        expect=[("long", 115.0), ("long", 105.0)],
+    ),
+    "tier_bar_moves_stop_next_bar_fires_long_hyperliquid": dict(
+        opens=[100, 100, 100, 110, 99, 99],
+        closes=[100, 100, 110, 99, 99, 99],
+        intrabar="bar_close",
+        stop_loss_atr_mult=1.0,
+        params={"sl_after": "breakeven", "tp_tiers": _STANDARD_TIERS},
+        expect=[("long", 110.0), ("long", 99.0)],
+        single_sl=(99.0, "2024-01-05 00:00:00"),
+    ),
+    "tier_bar_moves_stop_next_bar_fires_short_hyperliquid": dict(
+        opens=[100, 100, 100, 90, 101, 101],
+        closes=[100, 100, 90, 101, 101, 101],
+        side="short",
+        intrabar="bar_close",
+        stop_loss_atr_mult=1.0,
+        params={"sl_after": "breakeven", "tp_tiers": _STANDARD_TIERS},
+        expect=[("short", 90.0), ("short", 101.0)],
+        single_sl=(101.0, "2024-01-05 00:00:00"),
+    ),
+    "flag_clears_for_next_bar_long": dict(
+        opens=[100, 100, 100, 110, 105, 95],
+        closes=[100, 100, 110, 105, 95, 95],
+        intrabar="bar_close",
+        stop_loss_atr_mult=1.0,
+        params={"sl_after": "breakeven", "tp_tiers": _STANDARD_TIERS},
+        expect=[("long", 110.0), ("long", 95.0)],
+        single_sl=(95.0, "2024-01-06 00:00:00"),
+    ),
+}
+
+
+@pytest.mark.parametrize("name", list(_SCENARIOS))
+def test_backtester_sl_after_scenarios(name):
+    spec = _SCENARIOS[name]
+    n = len(spec["closes"])
+    side = spec.get("side", "long")
+    df = _df_open_then_hold(
+        opens=spec["opens"],
+        closes=spec["closes"],
+        atrs=[10] * n,
+        open_actions=[side] + ["none"] * (n - 1),
     )
-    bt = Backtester(
+    kwargs = dict(
+        initial_capital=1000, commission_pct=0, slippage_pct=0,
+        platform=spec.get("platform", "hyperliquid"), strategy_type="perps",
+        close_strategies=[{"name": "tiered_tp_atr", "params": spec["params"]}],
+    )
+    if "intrabar" in spec:
+        kwargs["intrabar_resolution"] = spec["intrabar"]
+    if "stop_loss_atr_mult" in spec:
+        kwargs["stop_loss_atr_mult"] = spec["stop_loss_atr_mult"]
+    result = Backtester(**kwargs).run(df, save=False)
+    sides_prices = [(t["side"], t["exit_price"]) for t in result["trades"]]
+    for pair in spec["expect"]:
+        assert pair in sides_prices, sides_prices
+    if "single_sl" in spec:
+        price, exit_date = spec["single_sl"]
+        sl_closes = [t for t in result["trades"] if t["exit_price"] == price]
+        assert len(sl_closes) == 1, sl_closes
+        assert sl_closes[0]["exit_date"] == exit_date, sl_closes[0]
+
+
+def test_unified_backtest_moves_stop_on_the_bar_after_the_tier():
+    df = _df_open_then_hold(
+        opens=[100, 100, 100, 110, 99, 99],
+        closes=[100, 100, 110, 99, 99, 99],
+        atrs=[10] * 6,
+        open_actions=["long"] + ["none"] * 5,
+    )
+    df["regime"] = "ranging"
+    def label():
+        return {
+            "stop_loss_atr": 1.0,
+            "tp_tiers": [
+                {"atr_multiple": 1.0, "close_fraction": 0.5, "sl_after": "breakeven"},
+                {"atr_multiple": 2.0, "close_fraction": 1.0},
+            ],
+        }
+    result = Backtester(
         initial_capital=1000, commission_pct=0, slippage_pct=0,
         platform="hyperliquid", strategy_type="perps",
-        stop_loss_atr_mult=2.0,
+        intrabar_resolution="bar_close",
         close_strategies=[{
-            "name": "tiered_tp_atr",
-            "params": {
-                "tiers": [
-                    {"atr_multiple": 1.0, "close_fraction": 0.3,
-                     "sl_after": "breakeven"},
-                    {"atr_multiple": 2.0, "close_fraction": 0.6,
-                     "sl_after": {"atr_mult": 1.0}},
-                    {"atr_multiple": 3.0, "close_fraction": 1.0,
-                     "sl_after": {"atr_mult": 2.0}},
-                ],
-            },
+            "name": "tiered_tp_atr_live_regime",
+            "params": {"trend_regime": {
+                "trending_up": label(),
+                "trending_down": label(),
+                "ranging": label(),
+            }},
         }],
-    )
-    result = bt.run(df, save=False)
-    sides_prices = [(t["side"], t["exit_price"]) for t in result["trades"]]
-    # Cumulative TP fill at $120 (the cumulative-target close evaluator may
-    # emit two separate fills at the same bar's open price; that's fine —
-    # just assert the SL trigger fired post-bump).
-    assert ("long", 120.0) in sides_prices, sides_prices
-    # SL fires at $105 (only possible if tier 1's rule won — tier 0's
-    # $100 breakeven wouldn't have triggered on a $105 close).
-    assert ("long", 105.0) in sides_prices, sides_prices
+    ).run(df, save=False)
+    sl_closes = [t for t in result["trades"] if t["exit_price"] == 99.0]
+    assert len(sl_closes) == 1, result["trades"]
+    assert sl_closes[0]["exit_date"] == "2024-01-05 00:00:00"
+
+
+_REGIME_STOP_BLOCK = {
+    "trend_regime": {"trending_up": {"atr_multiple": 0.25},
+                     "trending_down": {"atr_multiple": 0.25},
+                     "ranging": {"atr_multiple": 0.0}},
+}
+
+_REGIME_TP_ATR_FRACTION = {
+    "trend_regime": {"trending_up": 0.75, "trending_down": 0.75, "ranging": 0.5},
+}
+
+
+@pytest.mark.parametrize("kwargs,match", [
+    (
+        dict(close_strategies=[{
+            "name": "tiered_tp_atr",
+            "params": {"sl_after": "breakeven", "tp_tiers": _TWO_TIERS}}]),
+        "fixed stop-loss",
+    ),
+    (
+        dict(stop_loss_atr_mult=1.0, trailing_stop_atr_mult=1.5,
+             close_strategies=[{
+                 "name": "tiered_tp_atr",
+                 "params": {"sl_after": "breakeven", "tp_tiers": _TWO_TIERS}}]),
+        "trailing_stop",
+    ),
+    (
+        dict(strategy_type="manual", stop_loss_atr_mult=1.5,
+             close_strategies=[{
+                 "name": "tiered_tp_atr_live",
+                 "params": {"sl_after": {"trail_from_here": {"atr_mult": 1.0}},
+                            "tp_tiers": _TWO_TIERS}}]),
+        "trail_from_here is not supported on manual",
+    ),
+    (
+        dict(stop_loss_atr_mult=1.0,
+             close_strategies=[{
+                 "name": "tp_at_pct",
+                 "params": {"pct": 0.05, "sl_after": "breakeven"}}]),
+        "only honored on tiered_tp_atr",
+    ),
+    (
+        dict(stop_loss_atr_mult=1.0,
+             close_strategies=[{
+                 "name": "tiered_tp_atr",
+                 "params": {"sl_after": _REGIME_STOP_BLOCK,
+                            "tp_tiers": _STANDARD_TIERS}}]),
+        "HL-live-only",
+    ),
+    (
+        dict(stop_loss_atr_mult=1.0,
+             close_strategies=[{
+                 "name": "tiered_tp_atr",
+                 "params": {"tp_tiers": [
+                     {"atr_multiple": 1.0, "close_fraction": 0.5,
+                      "sl_after": {"trail_from_here": {
+                          "trend_regime": {
+                              "trending_up": {"atr_multiple": 1.0},
+                              "trending_down": {"atr_multiple": 1.0},
+                              "ranging": {"atr_multiple": 0.5}}}}},
+                     {"atr_multiple": 2.0, "close_fraction": 1.0},
+                 ]}}]),
+        "HL-live-only",
+    ),
+    (
+        dict(stop_loss_atr_mult=1.0,
+             close_strategies=[{
+                 "name": "tiered_tp_atr",
+                 "params": {
+                     "sl_after": {"trail_from_here": {
+                         "tp_atr_fraction": _REGIME_TP_ATR_FRACTION}},
+                     "tp_tiers": [
+                         {"atr_multiple": 2.0, "close_fraction": 0.5},
+                         {"atr_multiple": 4.0, "close_fraction": 1.0},
+                     ]}}]),
+        "HL-live-only",
+    ),
+    (
+        dict(stop_loss_atr_mult=1.0,
+             close_strategies=[{
+                 "name": "tiered_tp_atr_regime",
+                 "params": {"tp_tiers": [
+                     {
+                         "trend_regime": {"trending_up": {"atr_multiple": 2.0},
+                                          "trending_down": {"atr_multiple": 2.0},
+                                          "ranging": {"atr_multiple": 1.5}},
+                         "close_fraction": 0.5,
+                         "sl_after": {"trail_from_here": {
+                             "tp_atr_fraction": _REGIME_TP_ATR_FRACTION}},
+                     },
+                     {
+                         "trend_regime": {"trending_up": {"atr_multiple": 4.0},
+                                          "trending_down": {"atr_multiple": 4.0},
+                                          "ranging": {"atr_multiple": 3.0}},
+                         "close_fraction": 1.0,
+                     },
+                 ]}}]),
+        "HL-live-only",
+    ),
+    (
+        dict(stop_loss_margin_pct=0.5,
+             close_strategies=[{
+                 "name": "tiered_tp_atr",
+                 "params": {"sl_after": "breakeven",
+                            "tp_tiers": _STANDARD_TIERS}}]),
+        "stop_loss_margin_pct",
+    ),
+])
+def test_backtester_validation_rejects(kwargs, match):
+    with pytest.raises(ValueError, match=match):
+        Backtester(
+            initial_capital=1000, commission_pct=0, slippage_pct=0,
+            platform="hyperliquid",
+            **dict({"strategy_type": "perps"}, **kwargs),
+        )
 
 
 def test_backtester_sl_after_idempotent_across_bars():
-    """A tier's sl_after rule must apply exactly once. Direct unit-level
-    check on _maybe_apply_sl_after: calling it twice with the same simulated
-    state after a tier cleared must produce a no-op the second time (the
-    watermark short-circuits re-evaluation), mirroring the live
-    SLAdjustedTiersProcessed guard."""
     bt = Backtester(
         initial_capital=1000, commission_pct=0, slippage_pct=0,
         platform="hyperliquid", strategy_type="perps",
@@ -749,14 +626,10 @@ def test_backtester_sl_after_idempotent_across_bars():
             "name": "tiered_tp_atr",
             "params": {
                 "sl_after": {"atr_mult": 0.5},
-                "tiers": [
-                    {"atr_multiple": 1.0, "close_fraction": 0.5},
-                    {"atr_multiple": 2.0, "close_fraction": 1.0},
-                ],
+                "tp_tiers": _STANDARD_TIERS,
             },
         }],
     )
-    # Simulate state right after TP1 fires: 50% of initial qty closed.
     kwargs = dict(
         side="long",
         avg_cost=100.0,
@@ -765,21 +638,16 @@ def test_backtester_sl_after_idempotent_across_bars():
         initial_qty=1.0,
         mark_price=110.0,
         fill_price=110.0,
-        sl_trigger_px=90.0,  # initial SL @ avg - 1×ATR
+        sl_trigger_px=90.0,
         sl_tiers_processed=0,
         post_tp_trail_mult=None,
         sl_high_water_px=0.0,
     )
     trig1, processed1, trail1, hwm1 = bt._maybe_apply_sl_after(**kwargs)
-    # First call applies tier 0's rule: SL bumps to $100 + 0.5×$10 = $105,
-    # watermark advances past tier 0.
     assert trig1 == 105.0
     assert processed1 == 1
     assert trail1 is None
 
-    # Second call with the now-current state (same closed_ratio, watermark
-    # already past tier 0) must be a no-op — no further bump, watermark
-    # stays put.
     kwargs2 = dict(kwargs)
     kwargs2.update(
         sl_trigger_px=trig1,
@@ -794,34 +662,7 @@ def test_backtester_sl_after_idempotent_across_bars():
     assert hwm2 == hwm1
 
 
-def test_backtester_validation_rejects_margin_pct_only():
-    """stop_loss_margin_pct cannot be the sole fixed SL in backtests —
-    the backtester does not model leverage, so the pre-TP SL would never
-    fire and post-TP bumps would silently diverge from live. Reject loudly."""
-    with pytest.raises(ValueError, match="stop_loss_margin_pct"):
-        Backtester(
-            initial_capital=1000, commission_pct=0, slippage_pct=0,
-            platform="hyperliquid", strategy_type="perps",
-            stop_loss_margin_pct=0.5,
-            close_strategies=[{
-                "name": "tiered_tp_atr",
-                "params": {
-                    "sl_after": "breakeven",
-                    "tiers": [
-                        {"atr_multiple": 1.0, "close_fraction": 0.5},
-                        {"atr_multiple": 2.0, "close_fraction": 1.0},
-                    ],
-                },
-            }],
-        )
-
-
 def test_backtester_sl_after_defers_when_sl_unarmed():
-    """Mirrors live `currentOID == 0` short-circuit: when the fixed SL
-    couldn't be seeded (e.g., ATR-mult SL but entry ATR=0 at open),
-    breakeven must defer instead of installing a fresh trigger — otherwise
-    the backtester would diverge from live by arming an SL where live
-    would not."""
     bt = Backtester(
         initial_capital=1000, commission_pct=0, slippage_pct=0,
         platform="hyperliquid", strategy_type="perps",
@@ -830,16 +671,10 @@ def test_backtester_sl_after_defers_when_sl_unarmed():
             "name": "tiered_tp_atr",
             "params": {
                 "sl_after": "breakeven",
-                "tiers": [
-                    {"atr_multiple": 1.0, "close_fraction": 0.5},
-                    {"atr_multiple": 2.0, "close_fraction": 1.0},
-                ],
+                "tp_tiers": _STANDARD_TIERS,
             },
         }],
     )
-    # Simulate state right after a TP partial fired but SL was never armed
-    # (sl_trigger_px = 0). breakeven would naturally install SL=$100, but
-    # the gate must defer.
     trig, processed, trail, hwm = bt._maybe_apply_sl_after(
         side="long",
         avg_cost=100.0,
@@ -848,203 +683,179 @@ def test_backtester_sl_after_defers_when_sl_unarmed():
         initial_qty=1.0,
         mark_price=110.0,
         fill_price=110.0,
-        sl_trigger_px=0.0,  # unarmed
+        sl_trigger_px=0.0,
         sl_tiers_processed=0,
         post_tp_trail_mult=None,
         sl_high_water_px=0.0,
     )
-    # Defer: trigger unchanged, watermark NOT advanced (so a later bar
-    # could retry if conditions improve — same as live).
     assert trig == 0.0
     assert processed == 0
     assert trail is None
     assert hwm == 0.0
 
 
-def test_backtester_sl_after_no_same_bar_fire_after_bump_long():
-    """Regression for #715: when a TP tier fills on bar N and `sl_after` bumps
-    the SL trigger, the end-of-bar SL hit check on bar N must NOT fire — the
-    new SL OID lands mid-cycle in live (after the TP fill), so collapsing both
-    events into one bar would over-trigger.
-
-    Setup (long, ATR=10, entry @ $100):
-      Bar 1 (01-02): open long @ $100, close $100
-      Bar 2 (01-03): close $110 → TP1 tier detected (queues 50% close for bar 3)
-      Bar 3 (01-04): open $110 → TP1 partial fills, SL bumps to $100 (breakeven),
-                     close $99 → WITHOUT the fix, SL hit check fires same bar
-      Bar 4 (01-05): close $99 → SL hit check fires (queues full close for bar 5)
-      Bar 5 (01-06): open $99 → full close fills here
-
-    With the fix, the SL close fills on 2024-01-06. Without it, the suppressed
-    same-bar SL fire on bar 3 would queue the full close one bar earlier
-    (exit_date 2024-01-05).
-    """
-    df = _df_open_then_hold(
-        opens=[100, 100, 100, 110, 99, 99],
-        closes=[100, 100, 110, 99, 99, 99],
-        atrs=[10, 10, 10, 10, 10, 10],
-    )
-    bt = Backtester(
-        initial_capital=1000, commission_pct=0, slippage_pct=0,
-        platform="hyperliquid", strategy_type="perps",
-        stop_loss_atr_mult=1.0,
-        close_strategies=[{
-            "name": "tiered_tp_atr",
-            "params": {
-                "sl_after": "breakeven",
-                "tiers": [
-                    {"atr_multiple": 1.0, "close_fraction": 0.5},
-                    {"atr_multiple": 2.0, "close_fraction": 1.0},
-                ],
-            },
-        }],
-    )
-    result = bt.run(df, save=False)
-
-    # Two trades expected: TP1 partial @ $110 on bar 3, SL full @ $99 on bar 5.
-    sides_prices = [(t["side"], t["exit_price"]) for t in result["trades"]]
-    assert ("long", 110.0) in sides_prices, sides_prices
-    assert ("long", 99.0) in sides_prices, sides_prices
-
-    # The SL close must NOT exit on bar 4 (same-bar fire after bump). It must
-    # exit on bar 5 (one full bar later, after the flag clears and the next
-    # bar's end-of-bar check fires).
-    sl_closes = [t for t in result["trades"] if t["exit_price"] == 99.0]
-    assert len(sl_closes) == 1, sl_closes
-    assert sl_closes[0]["exit_date"] == "2024-01-06 00:00:00", sl_closes[0]
-
-
-def test_backtester_sl_after_no_same_bar_fire_after_bump_short():
-    """Short-side mirror of the #715 regression. The gate is side-agnostic;
-    this locks in the symmetry against future refactors.
-
-    Setup (short, ATR=10, entry @ $100):
-      Bar 1 (01-02): open short @ $100
-      Bar 2 (01-03): close $90  → TP1 detected (price dropped 1×ATR)
-      Bar 3 (01-04): open $90   → TP1 partial fills, SL bumps to $100,
-                                  close $101 → WITHOUT the fix, SL fires
-                                  same bar (short: mark ≥ trigger)
-      Bar 4 (01-05): close $101 → SL hit check fires, queues full close
-      Bar 5 (01-06): open $101  → full close fills here
-    """
-    df = _df_open_then_hold(
-        opens=[100, 100, 100, 90, 101, 101],
-        closes=[100, 100, 90, 101, 101, 101],
-        atrs=[10, 10, 10, 10, 10, 10],
-        open_actions=["short"] + ["none"] * 5,
-    )
-    bt = Backtester(
-        initial_capital=1000, commission_pct=0, slippage_pct=0,
-        platform="hyperliquid", strategy_type="perps",
-        stop_loss_atr_mult=1.0,
-        close_strategies=[{
-            "name": "tiered_tp_atr",
-            "params": {
-                "sl_after": "breakeven",
-                "tiers": [
-                    {"atr_multiple": 1.0, "close_fraction": 0.5},
-                    {"atr_multiple": 2.0, "close_fraction": 1.0},
-                ],
-            },
-        }],
-    )
-    result = bt.run(df, save=False)
-    sides_prices = [(t["side"], t["exit_price"]) for t in result["trades"]]
-    assert ("short", 90.0) in sides_prices, sides_prices
-    assert ("short", 101.0) in sides_prices, sides_prices
-    sl_closes = [t for t in result["trades"] if t["exit_price"] == 101.0]
-    assert len(sl_closes) == 1, sl_closes
-    # Without the fix, the same-bar fire on bar 3 would queue the close at
-    # bar 4 open (exit_date 2024-01-05). With the fix, the next bar's hit
-    # check fires and the close fills on bar 5 open (2024-01-06).
-    assert sl_closes[0]["exit_date"] == "2024-01-06 00:00:00", sl_closes[0]
-
-
-def test_backtester_sl_after_flag_clears_for_next_bar_long():
-    """Companion to #715: the suppression flag must reset on the bar AFTER
-    the bump. If the bump bar's close is above the new trigger (no same-bar
-    fire) and the NEXT bar's close drops below the trigger, the SL must fire
-    on that next bar — not be silently skipped.
-
-    Setup (long, ATR=10, entry @ $100):
-      Bar 1 (01-02): open long @ $100
-      Bar 2 (01-03): close $110 → TP1 detected
-      Bar 3 (01-04): open $110 → TP1 partial fills, SL bumps to $100, close
-                     $105 → suppression flag set but SL not hit anyway
-      Bar 4 (01-05): close $95 → SL hit check runs (flag cleared), queues
-                     full close for bar 5
-      Bar 5 (01-06): open $95 → full close fills here
-    """
-    df = _df_open_then_hold(
-        opens=[100, 100, 100, 110, 105, 95],
-        closes=[100, 100, 110, 105, 95, 95],
-        atrs=[10, 10, 10, 10, 10, 10],
-    )
-    bt = Backtester(
-        initial_capital=1000, commission_pct=0, slippage_pct=0,
-        platform="hyperliquid", strategy_type="perps",
-        stop_loss_atr_mult=1.0,
-        close_strategies=[{
-            "name": "tiered_tp_atr",
-            "params": {
-                "sl_after": "breakeven",
-                "tiers": [
-                    {"atr_multiple": 1.0, "close_fraction": 0.5},
-                    {"atr_multiple": 2.0, "close_fraction": 1.0},
-                ],
-            },
-        }],
-    )
-    result = bt.run(df, save=False)
-    sides_prices = [(t["side"], t["exit_price"]) for t in result["trades"]]
-    assert ("long", 110.0) in sides_prices, sides_prices
-    assert ("long", 95.0) in sides_prices, sides_prices
-    sl_closes = [t for t in result["trades"] if t["exit_price"] == 95.0]
-    assert len(sl_closes) == 1, sl_closes
-    # SL queued at bar 4 close, fills at bar 5 open — confirming the flag
-    # cleared after bar 3 (the bump bar).
-    assert sl_closes[0]["exit_date"] == "2024-01-06 00:00:00", sl_closes[0]
-
-
-def test_backtester_sl_after_does_not_seed_when_no_tier_thresholds():
-    """#716 item 3 regression: a degenerate sl_after config where
-    `parse_tp_tier_close_fractions` returns [] (e.g., all tiers have
-    close_fraction=0, which the parser drops) must NOT seed a phantom
-    fixed-SL trigger at open. Without tier thresholds the post-TP
-    adjustment machinery never fires; a seeded-then-never-adjusted SL
-    would represent a fixed-SL behavior the rest of the engine doesn't
-    actually simulate.
-
-    Construct a strategy with tiers whose close_fractions are all zero
-    so the parser drops them, then verify the SL never installs.
-    """
+@pytest.mark.parametrize("platform", ["binanceus", "hyperliquid"])
+def test_backtester_sl_after_does_not_seed_when_no_tier_thresholds(platform):
     df = _df_open_then_hold(
         opens=[100, 100, 100, 80, 80],
         closes=[100, 100, 80, 80, 80],
         atrs=[10, 10, 10, 10, 10],
     )
-    bt = Backtester(
+    kwargs = dict(
+        intrabar_resolution="bar_close",
         initial_capital=1000, commission_pct=0, slippage_pct=0,
-        platform="hyperliquid", strategy_type="perps",
+        platform=platform, strategy_type="perps",
         stop_loss_atr_mult=1.0,
         close_strategies=[{
             "name": "tiered_tp_atr",
             "params": {
                 "sl_after": "breakeven",
-                # All zero close_fractions are dropped by the parser →
-                # _tp_tier_thresholds == [].
-                "tiers": [
+                "tp_tiers": [
                     {"atr_multiple": 1.0, "close_fraction": 0.0},
                     {"atr_multiple": 2.0, "close_fraction": 0.0},
                 ],
             },
         }],
     )
-    # Pre-condition: parser returned no usable thresholds.
+    if platform == "hyperliquid":
+        with pytest.raises(ValueError, match="close_fraction: must be in"):
+            Backtester(**kwargs)
+        return
+    bt = Backtester(**kwargs)
     assert bt._tp_tier_thresholds_static == []
     result = bt.run(df, save=False)
-    # No SL fire — price dropped to $80 (well below the would-be SL at $90)
-    # but the gate must skip the seed entirely. Only the end-of-run forced
-    # close should appear.
     sl_fires = [t for t in result["trades"] if t.get("exit_price") in (90.0, 89.0, 91.0)]
     assert not sl_fires, f"phantom SL fired at {[t['exit_price'] for t in sl_fires]}"
+
+
+with open(os.path.join(_REPO_ROOT, "backtest", "testdata", "sl_after_paper_parity.json")) as _fh:
+    _PAPER_PARITY = json.load(_fh)
+
+
+def _paper_parity_close_refs(ladder, sl_after=None, tier_sl_after=None, label=""):
+    ref = copy.deepcopy(_PAPER_PARITY["ladders"][ladder])
+    params = ref["params"]
+    trend = params.get("trend_regime")
+    if isinstance(trend, dict) and label:
+        block = trend[label]
+        tiers = block["tp_tiers"]
+    else:
+        tiers = params["tp_tiers"]
+    for key, rule in (tier_sl_after or {}).items():
+        tiers[int(key)]["sl_after"] = rule
+    if sl_after is not None and not isinstance(trend, dict):
+        params["sl_after"] = sl_after
+    return [ref]
+
+
+def _paper_parity_open_stamp(mod, refs, regime, labels):
+    if _close_refs_use_regime_tiered_tp(refs):
+        rules, errs = mod.parse_strategy_tp_sl_after_rules(refs, regime=regime, labels=labels)
+        thresholds = mod.parse_tp_tier_close_fractions(refs, regime=regime)
+    else:
+        rules, errs = mod.parse_strategy_tp_sl_after_rules(refs, labels=labels)
+        thresholds = mod.parse_tp_tier_close_fractions(refs)
+    assert errs == []
+    return rules, thresholds
+
+
+@pytest.mark.parametrize(
+    "case", _PAPER_PARITY["cleared_tier"], ids=[c["name"] for c in _PAPER_PARITY["cleared_tier"]],
+)
+def test_sl_after_paper_parity_cleared_tier(case):
+    refs = _paper_parity_close_refs(case["ladder"], label=case.get("label") or case.get("regime") or "")
+    _, thresholds = _paper_parity_open_stamp(sl, refs, case["regime"], None)
+    got = sl.find_highest_cleared_tier(thresholds, case["closed_ratio"], case["from_idx"])
+    assert got == case["want_idx"]
+
+
+@pytest.mark.parametrize(
+    "case", _PAPER_PARITY["sl_after"], ids=[c["name"] for c in _PAPER_PARITY["sl_after"]],
+)
+def test_sl_after_paper_parity_move(case):
+    bt = Backtester(
+        initial_capital=1000, commission_pct=0, slippage_pct=0,
+        platform="hyperliquid", strategy_type="perps",
+        stop_loss_atr_mult=case["stop_loss_atr_mult"],
+    )
+    pos = case["position"]
+    refs = _paper_parity_close_refs(case["ladder"], case["sl_after"], case["tier_sl_after"], case.get("label") or "")
+    bt._active_sl_after_rules, bt._run_tp_tier_thresholds = _paper_parity_open_stamp(
+        bt._sl_mod, refs, pos["regime"], bt._regime_primary_labels,
+    )
+    bt._run_position_regime = pos["regime"]
+    trigger = pos["stop_loss_trigger_px"]
+    processed = pos["sl_adjusted_tiers_processed"]
+    trail = None
+    high_water = pos["stop_loss_high_water_px"]
+    want = case["want"]
+    for mark in (case["mark"], case["mark"] + 1):
+        trigger, processed, trail, high_water = bt._maybe_apply_sl_after(
+            side=pos["side"],
+            avg_cost=pos["avg_cost"],
+            entry_atr=pos["entry_atr"],
+            position_qty=pos["quantity"],
+            initial_qty=pos["initial_quantity"],
+            mark_price=mark,
+            fill_price=0.0,
+            sl_trigger_px=trigger,
+            sl_tiers_processed=processed,
+            post_tp_trail_mult=trail,
+            sl_high_water_px=high_water,
+        )
+        assert trigger == pytest.approx(want["stop_loss_trigger_px"])
+        assert processed == want["sl_adjusted_tiers_processed"]
+        if want["post_tp_trailing_atr_mult"] is None:
+            assert trail is None
+        else:
+            assert trail == pytest.approx(want["post_tp_trailing_atr_mult"])
+        assert high_water == pytest.approx(want["stop_loss_high_water_px"])
+
+
+def _unified_ref(rule):
+    def label(sl):
+        return {
+            "stop_loss_atr": sl,
+            "tp_tiers": [
+                {"atr_multiple": 1.5, "close_fraction": 0.5, "sl_after": rule},
+                {"atr_multiple": 3.0, "close_fraction": 1.0},
+            ],
+        }
+    return {
+        "name": "tiered_tp_atr_live_regime",
+        "params": {
+            "trend_regime": {
+                "trending_up": label(1.5),
+                "trending_down": label(1.5),
+                "ranging": label(1.0),
+            }
+        },
+    }
+
+
+def test_unified_empty_label_parse_is_empty():
+    ref = _unified_ref("breakeven")
+    rules, errs = sl.parse_strategy_tp_sl_after_rules([ref], regime="")
+    assert errs == []
+    assert not rules.has_any()
+    absent, absent_errs = sl.parse_strategy_tp_sl_after_rules([ref], regime="not_a_label")
+    assert absent_errs == []
+    assert not absent.has_any()
+
+
+def test_unified_label_parse_and_fractions():
+    ref = _unified_ref("breakeven")
+    rules, errs = sl.parse_strategy_tp_sl_after_rules([ref], regime="ranging")
+    assert errs == []
+    assert rules.per_tier[0].kind == "breakeven"
+    assert sl.parse_tp_tier_close_fractions([ref], regime="ranging") == [0.5, 1.0]
+    assert sl.parse_tp_tier_close_fractions([ref], regime="") == []
+
+
+def test_unified_validation_counts_label_stop_and_rejects_manual_trail():
+    ref = _unified_ref("breakeven")
+    errs = sl.validate_post_tp_stop_loss_rules([ref], strategy_type="perps")
+    assert not any("fixed stop-loss" in e for e in errs)
+    trail = _unified_ref({"kind": "trail_from_here", "atr_mult": 1.0})
+    manual = sl.validate_post_tp_stop_loss_rules([trail], strategy_type="manual")
+    assert any("ranging tier[0]" in e and "trail_from_here" in e for e in manual)

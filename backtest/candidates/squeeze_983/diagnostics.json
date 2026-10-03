@@ -1,0 +1,1531 @@
+{
+  "strategy": "squeeze_momentum",
+  "registry": "spot",
+  "params": null,
+  "close_strategies": null,
+  "direction": null,
+  "windows": {
+    "is": {
+      "BTC/USDT 1h": {
+        "holding_time": {
+          "trades": 26,
+          "bars_held": {
+            "min": 6,
+            "max": 346,
+            "mean": 97.5385,
+            "median": 78.5,
+            "p25": 43.25,
+            "p75": 126.0,
+            "p90": 194.5
+          },
+          "buckets": [
+            {
+              "bucket": "6-20",
+              "count": 5,
+              "win_rate": 0.2,
+              "mean_net_pct": -0.4641,
+              "total_net_pct": -2.32,
+              "mean_gross_pct": -0.264
+            },
+            {
+              "bucket": "21-50",
+              "count": 4,
+              "win_rate": 0.75,
+              "mean_net_pct": -0.8301,
+              "total_net_pct": -3.32,
+              "mean_gross_pct": -0.63
+            },
+            {
+              "bucket": "51+",
+              "count": 17,
+              "win_rate": 0.412,
+              "mean_net_pct": 0.7793,
+              "total_net_pct": 13.25,
+              "mean_gross_pct": 0.9794
+            }
+          ]
+        },
+        "excursion": {
+          "aggregate": {
+            "count": 26,
+            "median_mfe_pct": 1.9998,
+            "median_mae_pct": -1.4383,
+            "median_mae_atr": 3.4404,
+            "p80_mae_atr": 6.601,
+            "p90_mae_atr": 9.42,
+            "median_giveback_pct": 2.1364,
+            "median_bars_to_mfe": 39.5,
+            "median_bars_to_mae": 24.5
+          },
+          "winners_only": {
+            "count": 11,
+            "median_mfe_pct": 4.5916,
+            "median_mae_pct": -0.7444,
+            "median_mae_atr": 1.2548,
+            "p80_mae_atr": 5.536,
+            "p90_mae_atr": 5.794,
+            "median_giveback_pct": 1.6161,
+            "median_bars_to_mfe": 106,
+            "median_bars_to_mae": 17
+          },
+          "buckets": [
+            {
+              "count": 5,
+              "median_mfe_pct": 0.328,
+              "median_mae_pct": -0.4836,
+              "median_mae_atr": 1.1858,
+              "p80_mae_atr": 1.419,
+              "p90_mae_atr": 1.528,
+              "median_giveback_pct": 0.868,
+              "median_bars_to_mfe": 4,
+              "median_bars_to_mae": 11,
+              "bucket": "6-20"
+            },
+            {
+              "count": 4,
+              "median_mfe_pct": 2.8408,
+              "median_mae_pct": -1.0648,
+              "median_mae_atr": 1.5587,
+              "p80_mae_atr": 7.026,
+              "p90_mae_atr": 10.538,
+              "median_giveback_pct": 2.2888,
+              "median_bars_to_mfe": 29.0,
+              "median_bars_to_mae": 5.5,
+              "bucket": "21-50"
+            },
+            {
+              "count": 17,
+              "median_mfe_pct": 2.9158,
+              "median_mae_pct": -2.1625,
+              "median_mae_atr": 5.0086,
+              "p80_mae_atr": 8.158,
+              "p90_mae_atr": 9.403,
+              "median_giveback_pct": 3.0056,
+              "median_bars_to_mfe": 48,
+              "median_bars_to_mae": 39,
+              "bucket": "51+"
+            }
+          ]
+        },
+        "bleed_modes": {
+          "late_giveback": {
+            "count": 12,
+            "share": 0.462,
+            "total_net_pct": -9.57,
+            "mean_net_pct": -0.7976
+          },
+          "early_reversal": {
+            "count": 3,
+            "share": 0.115,
+            "total_net_pct": -6.23,
+            "mean_net_pct": -2.0768
+          },
+          "clean_win": {
+            "count": 6,
+            "share": 0.231,
+            "total_net_pct": 33.01,
+            "mean_net_pct": 5.5016
+          },
+          "clean_loss": {
+            "count": 3,
+            "share": 0.115,
+            "total_net_pct": -8.87,
+            "mean_net_pct": -2.9568
+          },
+          "fee_churn": {
+            "count": 2,
+            "share": 0.077,
+            "total_net_pct": -0.73,
+            "mean_net_pct": -0.3651
+          }
+        },
+        "fee_churn": {
+          "trades": 26,
+          "mean_fee_pct": 0.2001,
+          "fee_drag_ratio": 0.0783,
+          "trades_flipped_to_loss_by_fees": 0,
+          "trades_fee_dominated": 2,
+          "exit_reasons": {
+            "end_of_data": 1,
+            "signal": 25
+          }
+        }
+      },
+      "BTC/USDT 4h": {
+        "holding_time": {
+          "trades": 8,
+          "bars_held": {
+            "min": 6,
+            "max": 181,
+            "mean": 62,
+            "median": 29.0,
+            "p25": 15.75,
+            "p75": 89.0,
+            "p90": 164.9
+          },
+          "buckets": [
+            {
+              "bucket": "6-20",
+              "count": 3,
+              "win_rate": 0.0,
+              "mean_net_pct": -2.1068,
+              "total_net_pct": -6.32,
+              "mean_gross_pct": -1.9067
+            },
+            {
+              "bucket": "21-50",
+              "count": 2,
+              "win_rate": 0.5,
+              "mean_net_pct": -1.4151,
+              "total_net_pct": -2.83,
+              "mean_gross_pct": -1.215
+            },
+            {
+              "bucket": "51+",
+              "count": 3,
+              "win_rate": 0.333,
+              "mean_net_pct": -1.2934,
+              "total_net_pct": -3.88,
+              "mean_gross_pct": -1.0933
+            }
+          ]
+        },
+        "excursion": {
+          "aggregate": {
+            "count": 8,
+            "median_mfe_pct": 2.1098,
+            "median_mae_pct": -2.7563,
+            "median_mae_atr": 3.9978,
+            "p80_mae_atr": 6.234,
+            "p90_mae_atr": 6.796,
+            "median_giveback_pct": 3.5755,
+            "median_bars_to_mfe": 8.5,
+            "median_bars_to_mae": 7.0
+          },
+          "winners_only": {
+            "count": 2,
+            "median_mfe_pct": 6.3395,
+            "median_mae_pct": -0.7053,
+            "median_mae_atr": 0.7888,
+            "p80_mae_atr": 1.145,
+            "p90_mae_atr": 1.263,
+            "median_giveback_pct": 3.0295,
+            "median_bars_to_mfe": 20.0,
+            "median_bars_to_mae": 3.0
+          },
+          "buckets": [
+            {
+              "count": 3,
+              "median_mfe_pct": 0.1908,
+              "median_mae_pct": -1.7869,
+              "median_mae_atr": 3.3128,
+              "p80_mae_atr": 4.963,
+              "p90_mae_atr": 5.514,
+              "median_giveback_pct": 2.3133,
+              "median_bars_to_mfe": 1,
+              "median_bars_to_mae": 3,
+              "bucket": "6-20"
+            },
+            {
+              "count": 2,
+              "median_mfe_pct": 2.1098,
+              "median_mae_pct": -2.3453,
+              "median_mae_atr": 3.2718,
+              "p80_mae_atr": 5.117,
+              "p90_mae_atr": 5.733,
+              "median_giveback_pct": 3.3248,
+              "median_bars_to_mfe": 8.5,
+              "median_bars_to_mae": 14.0,
+              "bucket": "21-50"
+            },
+            {
+              "count": 3,
+              "median_mfe_pct": 6.7354,
+              "median_mae_pct": -7.4413,
+              "median_mae_atr": 4.6828,
+              "p80_mae_atr": 6.578,
+              "p90_mae_atr": 7.209,
+              "median_giveback_pct": 7.8841,
+              "median_bars_to_mfe": 40,
+              "median_bars_to_mae": 28,
+              "bucket": "51+"
+            }
+          ]
+        },
+        "bleed_modes": {
+          "late_giveback": {
+            "count": 4,
+            "share": 0.5,
+            "total_net_pct": -12.03,
+            "mean_net_pct": -3.0076
+          },
+          "early_reversal": {
+            "count": 3,
+            "share": 0.375,
+            "total_net_pct": -6.32,
+            "mean_net_pct": -2.1068
+          },
+          "clean_win": {
+            "count": 1,
+            "share": 0.125,
+            "total_net_pct": 5.32,
+            "mean_net_pct": 5.3199
+          }
+        },
+        "fee_churn": {
+          "trades": 8,
+          "mean_fee_pct": 0.2001,
+          "fee_drag_ratio": 0.0649,
+          "trades_flipped_to_loss_by_fees": 0,
+          "trades_fee_dominated": 0,
+          "exit_reasons": {
+            "end_of_data": 1,
+            "signal": 7
+          }
+        }
+      },
+      "ETH/USDT 1h": {
+        "holding_time": {
+          "trades": 27,
+          "bars_held": {
+            "min": 6,
+            "max": 361,
+            "mean": 102.7407,
+            "median": 61,
+            "p25": 31.5,
+            "p75": 129.5,
+            "p90": 273.6
+          },
+          "buckets": [
+            {
+              "bucket": "6-20",
+              "count": 4,
+              "win_rate": 0.0,
+              "mean_net_pct": -2.0326,
+              "total_net_pct": -8.13,
+              "mean_gross_pct": -1.8325
+            },
+            {
+              "bucket": "21-50",
+              "count": 7,
+              "win_rate": 0.143,
+              "mean_net_pct": -0.5744,
+              "total_net_pct": -4.02,
+              "mean_gross_pct": -0.3743
+            },
+            {
+              "bucket": "51+",
+              "count": 16,
+              "win_rate": 0.625,
+              "mean_net_pct": 4.0655,
+              "total_net_pct": 65.05,
+              "mean_gross_pct": 4.2656
+            }
+          ]
+        },
+        "excursion": {
+          "aggregate": {
+            "count": 27,
+            "median_mfe_pct": 2.3831,
+            "median_mae_pct": -1.5725,
+            "median_mae_atr": 2.0607,
+            "p80_mae_atr": 9.174,
+            "p90_mae_atr": 11.283,
+            "median_giveback_pct": 4.0303,
+            "median_bars_to_mfe": 26,
+            "median_bars_to_mae": 17
+          },
+          "winners_only": {
+            "count": 11,
+            "median_mfe_pct": 7.4503,
+            "median_mae_pct": -0.5401,
+            "median_mae_atr": 1.9695,
+            "p80_mae_atr": 3.337,
+            "p90_mae_atr": 11.57,
+            "median_giveback_pct": 5.377,
+            "median_bars_to_mfe": 59,
+            "median_bars_to_mae": 2
+          },
+          "buckets": [
+            {
+              "count": 4,
+              "median_mfe_pct": 0.0847,
+              "median_mae_pct": -1.7172,
+              "median_mae_atr": 3.1242,
+              "p80_mae_atr": 5.694,
+              "p90_mae_atr": 7.287,
+              "median_giveback_pct": 1.5786,
+              "median_bars_to_mfe": 1.0,
+              "median_bars_to_mae": 11.5,
+              "bucket": "6-20"
+            },
+            {
+              "count": 7,
+              "median_mfe_pct": 1.7839,
+              "median_mae_pct": -1.0565,
+              "median_mae_atr": 1.427,
+              "p80_mae_atr": 2.034,
+              "p90_mae_atr": 2.534,
+              "median_giveback_pct": 2.3531,
+              "median_bars_to_mfe": 21,
+              "median_bars_to_mae": 22,
+              "bucket": "21-50"
+            },
+            {
+              "count": 16,
+              "median_mfe_pct": 6.2806,
+              "median_mae_pct": -2.1778,
+              "median_mae_atr": 3.3102,
+              "p80_mae_atr": 11.091,
+              "p90_mae_atr": 16.634,
+              "median_giveback_pct": 5.3928,
+              "median_bars_to_mfe": 43.5,
+              "median_bars_to_mae": 26.5,
+              "bucket": "51+"
+            }
+          ]
+        },
+        "bleed_modes": {
+          "early_reversal": {
+            "count": 4,
+            "share": 0.148,
+            "total_net_pct": -8.13,
+            "mean_net_pct": -2.0326
+          },
+          "clean_win": {
+            "count": 4,
+            "share": 0.148,
+            "total_net_pct": 86.5,
+            "mean_net_pct": 21.6249
+          },
+          "late_giveback": {
+            "count": 16,
+            "share": 0.593,
+            "total_net_pct": -24.52,
+            "mean_net_pct": -1.5326
+          },
+          "fee_churn": {
+            "count": 2,
+            "share": 0.074,
+            "total_net_pct": -0.34,
+            "mean_net_pct": -0.1701
+          },
+          "clean_loss": {
+            "count": 1,
+            "share": 0.037,
+            "total_net_pct": -0.61,
+            "mean_net_pct": -0.6101
+          }
+        },
+        "fee_churn": {
+          "trades": 27,
+          "mean_fee_pct": 0.2001,
+          "fee_drag_ratio": 0.0362,
+          "trades_flipped_to_loss_by_fees": 2,
+          "trades_fee_dominated": 2,
+          "exit_reasons": {
+            "end_of_data": 1,
+            "signal": 26
+          }
+        }
+      },
+      "ETH/USDT 4h": {
+        "holding_time": {
+          "trades": 3,
+          "bars_held": {
+            "min": 18,
+            "max": 416,
+            "mean": 209,
+            "median": 193,
+            "p25": 105.5,
+            "p75": 304.5,
+            "p90": 371.4
+          },
+          "buckets": [
+            {
+              "bucket": "6-20",
+              "count": 1,
+              "win_rate": 0.0,
+              "mean_net_pct": -2.4701,
+              "total_net_pct": -2.47,
+              "mean_gross_pct": -2.27
+            },
+            {
+              "bucket": "51+",
+              "count": 2,
+              "win_rate": 0.5,
+              "mean_net_pct": 6.9099,
+              "total_net_pct": 13.82,
+              "mean_gross_pct": 7.11
+            }
+          ]
+        },
+        "excursion": {
+          "aggregate": {
+            "count": 3,
+            "median_mfe_pct": 9.6006,
+            "median_mae_pct": -5.0149,
+            "median_mae_atr": 5.1758,
+            "p80_mae_atr": 18.624,
+            "p90_mae_atr": 23.106,
+            "median_giveback_pct": 11.7828,
+            "median_bars_to_mfe": 22,
+            "median_bars_to_mae": 12
+          },
+          "winners_only": {
+            "count": 1,
+            "median_mfe_pct": 57.5228,
+            "median_mae_pct": -5.0149,
+            "median_mae_atr": 4.95,
+            "p80_mae_atr": 4.95,
+            "p90_mae_atr": 4.95,
+            "median_giveback_pct": 11.7828,
+            "median_bars_to_mfe": 169,
+            "median_bars_to_mae": 12
+          },
+          "buckets": [
+            {
+              "count": 1,
+              "median_mfe_pct": 0.246,
+              "median_mae_pct": -4.3233,
+              "median_mae_atr": 5.1758,
+              "p80_mae_atr": 5.176,
+              "p90_mae_atr": 5.176,
+              "median_giveback_pct": 2.516,
+              "median_bars_to_mfe": 1,
+              "median_bars_to_mae": 3,
+              "bucket": "6-20"
+            },
+            {
+              "count": 2,
+              "median_mfe_pct": 33.5617,
+              "median_mae_pct": -18.2568,
+              "median_mae_atr": 16.2695,
+              "p80_mae_atr": 23.061,
+              "p90_mae_atr": 25.325,
+              "median_giveback_pct": 26.4517,
+              "median_bars_to_mfe": 95.5,
+              "median_bars_to_mae": 214.0,
+              "bucket": "51+"
+            }
+          ]
+        },
+        "bleed_modes": {
+          "clean_win": {
+            "count": 1,
+            "share": 0.333,
+            "total_net_pct": 45.54,
+            "mean_net_pct": 45.5399
+          },
+          "late_giveback": {
+            "count": 1,
+            "share": 0.333,
+            "total_net_pct": -31.72,
+            "mean_net_pct": -31.7201
+          },
+          "early_reversal": {
+            "count": 1,
+            "share": 0.333,
+            "total_net_pct": -2.47,
+            "mean_net_pct": -2.4701
+          }
+        },
+        "fee_churn": {
+          "trades": 3,
+          "mean_fee_pct": 0.2001,
+          "fee_drag_ratio": 0.0075,
+          "trades_flipped_to_loss_by_fees": 0,
+          "trades_fee_dominated": 0,
+          "exit_reasons": {
+            "end_of_data": 1,
+            "signal": 2
+          }
+        }
+      },
+      "SOL/USDT 1h": {
+        "holding_time": {
+          "trades": 15,
+          "bars_held": {
+            "min": 8,
+            "max": 238,
+            "mean": 107.4667,
+            "median": 115,
+            "p25": 28.0,
+            "p75": 157.0,
+            "p90": 222.4
+          },
+          "buckets": [
+            {
+              "bucket": "6-20",
+              "count": 3,
+              "win_rate": 0.0,
+              "mean_net_pct": -1.6434,
+              "total_net_pct": -4.93,
+              "mean_gross_pct": -1.4433
+            },
+            {
+              "bucket": "21-50",
+              "count": 2,
+              "win_rate": 0.5,
+              "mean_net_pct": -0.2301,
+              "total_net_pct": -0.46,
+              "mean_gross_pct": -0.03
+            },
+            {
+              "bucket": "51+",
+              "count": 10,
+              "win_rate": 0.4,
+              "mean_net_pct": -3.5121,
+              "total_net_pct": -35.12,
+              "mean_gross_pct": -3.312
+            }
+          ]
+        },
+        "excursion": {
+          "aggregate": {
+            "count": 15,
+            "median_mfe_pct": 2.8183,
+            "median_mae_pct": -2.0899,
+            "median_mae_atr": 2.6069,
+            "p80_mae_atr": 10.548,
+            "p90_mae_atr": 17.446,
+            "median_giveback_pct": 5.9703,
+            "median_bars_to_mfe": 13,
+            "median_bars_to_mae": 45
+          },
+          "winners_only": {
+            "count": 5,
+            "median_mfe_pct": 8.3545,
+            "median_mae_pct": -1.0936,
+            "median_mae_atr": 1.1776,
+            "p80_mae_atr": 7.701,
+            "p90_mae_atr": 9.319,
+            "median_giveback_pct": 5.8281,
+            "median_bars_to_mfe": 72,
+            "median_bars_to_mae": 3
+          },
+          "buckets": [
+            {
+              "count": 3,
+              "median_mfe_pct": 0.2758,
+              "median_mae_pct": -1.8487,
+              "median_mae_atr": 2.4036,
+              "p80_mae_atr": 2.526,
+              "p90_mae_atr": 2.566,
+              "median_giveback_pct": 1.5545,
+              "median_bars_to_mfe": 2,
+              "median_bars_to_mae": 6,
+              "bucket": "6-20"
+            },
+            {
+              "count": 2,
+              "median_mfe_pct": 2.2276,
+              "median_mae_pct": -1.07,
+              "median_mae_atr": 1.1274,
+              "p80_mae_atr": 1.715,
+              "p90_mae_atr": 1.91,
+              "median_giveback_pct": 2.2576,
+              "median_bars_to_mfe": 9.0,
+              "median_bars_to_mae": 10.0,
+              "bucket": "21-50"
+            },
+            {
+              "count": 10,
+              "median_mfe_pct": 6.8192,
+              "median_mae_pct": -6.5362,
+              "median_mae_atr": 7.6599,
+              "p80_mae_atr": 13.106,
+              "p90_mae_atr": 23.616,
+              "median_giveback_pct": 8.1826,
+              "median_bars_to_mfe": 39.5,
+              "median_bars_to_mae": 71.0,
+              "bucket": "51+"
+            }
+          ]
+        },
+        "bleed_modes": {
+          "late_giveback": {
+            "count": 12,
+            "share": 0.8,
+            "total_net_pct": -18.24,
+            "mean_net_pct": -1.5201
+          },
+          "early_reversal": {
+            "count": 2,
+            "share": 0.133,
+            "total_net_pct": -2.72,
+            "mean_net_pct": -1.3601
+          },
+          "clean_loss": {
+            "count": 1,
+            "share": 0.067,
+            "total_net_pct": -19.55,
+            "mean_net_pct": -19.5501
+          }
+        },
+        "fee_churn": {
+          "trades": 15,
+          "mean_fee_pct": 0.2001,
+          "fee_drag_ratio": 0.0443,
+          "trades_flipped_to_loss_by_fees": 0,
+          "trades_fee_dominated": 0,
+          "exit_reasons": {
+            "end_of_data": 1,
+            "signal": 14
+          }
+        }
+      },
+      "SOL/USDT 4h": {
+        "holding_time": {
+          "trades": 4,
+          "bars_held": {
+            "min": 4,
+            "max": 523,
+            "mean": 207.25,
+            "median": 151.0,
+            "p25": 19.0,
+            "p75": 339.25,
+            "p90": 449.5
+          },
+          "buckets": [
+            {
+              "bucket": "2-5",
+              "count": 1,
+              "win_rate": 0.0,
+              "mean_net_pct": -5.9501,
+              "total_net_pct": -5.95,
+              "mean_gross_pct": -5.75
+            },
+            {
+              "bucket": "21-50",
+              "count": 1,
+              "win_rate": 1.0,
+              "mean_net_pct": 0.7699,
+              "total_net_pct": 0.77,
+              "mean_gross_pct": 0.97
+            },
+            {
+              "bucket": "51+",
+              "count": 2,
+              "win_rate": 0.5,
+              "mean_net_pct": -9.2801,
+              "total_net_pct": -18.56,
+              "mean_gross_pct": -9.08
+            }
+          ]
+        },
+        "excursion": {
+          "aggregate": {
+            "count": 4,
+            "median_mfe_pct": 5.3601,
+            "median_mae_pct": -10.2178,
+            "median_mae_atr": 5.9543,
+            "p80_mae_atr": 9.298,
+            "p90_mae_atr": 9.399,
+            "median_giveback_pct": 18.8151,
+            "median_bars_to_mfe": 12.5,
+            "median_bars_to_mae": 43.5
+          },
+          "winners_only": {
+            "count": 2,
+            "median_mfe_pct": 21.9399,
+            "median_mae_pct": -7.8239,
+            "median_mae_atr": 5.1463,
+            "p80_mae_atr": 7.556,
+            "p90_mae_atr": 8.359,
+            "median_giveback_pct": 18.0699,
+            "median_bars_to_mfe": 183.0,
+            "median_bars_to_mae": 43.5
+          },
+          "buckets": [
+            {
+              "count": 1,
+              "median_mfe_pct": 0.7719,
+              "median_mae_pct": -6.2933,
+              "median_mae_atr": 2.7461,
+              "p80_mae_atr": 2.746,
+              "p90_mae_atr": 2.746,
+              "median_giveback_pct": 6.5219,
+              "median_bars_to_mfe": 1,
+              "median_bars_to_mae": 4,
+              "bucket": "2-5"
+            },
+            {
+              "count": 1,
+              "median_mfe_pct": 4.5418,
+              "median_mae_pct": -1.5055,
+              "median_mae_atr": 1.1302,
+              "p80_mae_atr": 1.13,
+              "p90_mae_atr": 1.13,
+              "median_giveback_pct": 3.5718,
+              "median_bars_to_mfe": 6,
+              "median_bars_to_mae": 9,
+              "bucket": "21-50"
+            },
+            {
+              "count": 2,
+              "median_mfe_pct": 22.7582,
+              "median_mae_pct": -20.9245,
+              "median_mae_atr": 9.3313,
+              "p80_mae_atr": 9.433,
+              "p90_mae_atr": 9.466,
+              "median_giveback_pct": 31.8382,
+              "median_bars_to_mfe": 189.5,
+              "median_bars_to_mae": 162.0,
+              "bucket": "51+"
+            }
+          ]
+        },
+        "bleed_modes": {
+          "late_giveback": {
+            "count": 3,
+            "share": 0.75,
+            "total_net_pct": -17.79,
+            "mean_net_pct": -5.9301
+          },
+          "clean_loss": {
+            "count": 1,
+            "share": 0.25,
+            "total_net_pct": -5.95,
+            "mean_net_pct": -5.9501
+          }
+        },
+        "fee_churn": {
+          "trades": 4,
+          "mean_fee_pct": 0.2001,
+          "fee_drag_ratio": 0.0208,
+          "trades_flipped_to_loss_by_fees": 0,
+          "trades_fee_dominated": 0,
+          "exit_reasons": {
+            "end_of_data": 1,
+            "signal": 3
+          }
+        }
+      }
+    },
+    "oos": {
+      "BTC/USDT 1h": {
+        "holding_time": {
+          "trades": 20,
+          "bars_held": {
+            "min": 2,
+            "max": 547,
+            "mean": 99.8,
+            "median": 63.0,
+            "p25": 19.75,
+            "p75": 157.0,
+            "p90": 188.0
+          },
+          "buckets": [
+            {
+              "bucket": "2-5",
+              "count": 2,
+              "win_rate": 0.0,
+              "mean_net_pct": -1.0901,
+              "total_net_pct": -2.18,
+              "mean_gross_pct": -0.89
+            },
+            {
+              "bucket": "6-20",
+              "count": 3,
+              "win_rate": 0.0,
+              "mean_net_pct": -2.0634,
+              "total_net_pct": -6.19,
+              "mean_gross_pct": -1.8633
+            },
+            {
+              "bucket": "21-50",
+              "count": 5,
+              "win_rate": 0.2,
+              "mean_net_pct": -0.5441,
+              "total_net_pct": -2.72,
+              "mean_gross_pct": -0.344
+            },
+            {
+              "bucket": "51+",
+              "count": 10,
+              "win_rate": 0.5,
+              "mean_net_pct": -0.0341,
+              "total_net_pct": -0.34,
+              "mean_gross_pct": 0.166
+            }
+          ]
+        },
+        "excursion": {
+          "aggregate": {
+            "count": 20,
+            "median_mfe_pct": 1.3807,
+            "median_mae_pct": -1.8722,
+            "median_mae_atr": 2.6079,
+            "p80_mae_atr": 8.49,
+            "p90_mae_atr": 12.727,
+            "median_giveback_pct": 2.7391,
+            "median_bars_to_mfe": 17.5,
+            "median_bars_to_mae": 13.0
+          },
+          "winners_only": {
+            "count": 6,
+            "median_mfe_pct": 6.367,
+            "median_mae_pct": -1.5929,
+            "median_mae_atr": 2.4767,
+            "p80_mae_atr": 3.234,
+            "p90_mae_atr": 3.655,
+            "median_giveback_pct": 2.5535,
+            "median_bars_to_mfe": 109.0,
+            "median_bars_to_mae": 13.0
+          },
+          "buckets": [
+            {
+              "count": 2,
+              "median_mfe_pct": 0.1468,
+              "median_mae_pct": -1.3704,
+              "median_mae_atr": 2.1205,
+              "p80_mae_atr": 2.291,
+              "p90_mae_atr": 2.348,
+              "median_giveback_pct": 1.0369,
+              "median_bars_to_mfe": 1.0,
+              "median_bars_to_mae": 2.0,
+              "bucket": "2-5"
+            },
+            {
+              "count": 3,
+              "median_mfe_pct": 0.1971,
+              "median_mae_pct": -1.525,
+              "median_mae_atr": 1.77,
+              "p80_mae_atr": 3.669,
+              "p90_mae_atr": 4.302,
+              "median_giveback_pct": 1.3771,
+              "median_bars_to_mfe": 3,
+              "median_bars_to_mae": 6,
+              "bucket": "6-20"
+            },
+            {
+              "count": 5,
+              "median_mfe_pct": 1.9967,
+              "median_mae_pct": -0.7692,
+              "median_mae_atr": 1.1159,
+              "p80_mae_atr": 2.019,
+              "p90_mae_atr": 2.421,
+              "median_giveback_pct": 2.1117,
+              "median_bars_to_mfe": 17,
+              "median_bars_to_mae": 10,
+              "bucket": "21-50"
+            },
+            {
+              "count": 10,
+              "median_mfe_pct": 4.7082,
+              "median_mae_pct": -3.2658,
+              "median_mae_atr": 6.1965,
+              "p80_mae_atr": 13.43,
+              "p90_mae_atr": 21.523,
+              "median_giveback_pct": 3.8013,
+              "median_bars_to_mfe": 78.0,
+              "median_bars_to_mae": 75.0,
+              "bucket": "51+"
+            }
+          ]
+        },
+        "bleed_modes": {
+          "late_giveback": {
+            "count": 8,
+            "share": 0.4,
+            "total_net_pct": -0.0,
+            "mean_net_pct": -0.0001
+          },
+          "clean_win": {
+            "count": 2,
+            "share": 0.1,
+            "total_net_pct": 12.16,
+            "mean_net_pct": 6.0799
+          },
+          "early_reversal": {
+            "count": 7,
+            "share": 0.35,
+            "total_net_pct": -16.98,
+            "mean_net_pct": -2.4258
+          },
+          "clean_loss": {
+            "count": 3,
+            "share": 0.15,
+            "total_net_pct": -6.61,
+            "mean_net_pct": -2.2034
+          }
+        },
+        "fee_churn": {
+          "trades": 20,
+          "mean_fee_pct": 0.2001,
+          "fee_drag_ratio": 0.0789,
+          "trades_flipped_to_loss_by_fees": 0,
+          "trades_fee_dominated": 0,
+          "exit_reasons": {
+            "signal": 20
+          }
+        }
+      },
+      "BTC/USDT 4h": {
+        "holding_time": {
+          "trades": 5,
+          "bars_held": {
+            "min": 9,
+            "max": 220,
+            "mean": 84.8,
+            "median": 78,
+            "p25": 11.0,
+            "p75": 106.0,
+            "p90": 174.4
+          },
+          "buckets": [
+            {
+              "bucket": "6-20",
+              "count": 2,
+              "win_rate": 0.0,
+              "mean_net_pct": -3.9301,
+              "total_net_pct": -7.86,
+              "mean_gross_pct": -3.73
+            },
+            {
+              "bucket": "51+",
+              "count": 3,
+              "win_rate": 0.333,
+              "mean_net_pct": 2.8132,
+              "total_net_pct": 8.44,
+              "mean_gross_pct": 3.0133
+            }
+          ]
+        },
+        "excursion": {
+          "aggregate": {
+            "count": 5,
+            "median_mfe_pct": 6.468,
+            "median_mae_pct": -5.2711,
+            "median_mae_atr": 2.4929,
+            "p80_mae_atr": 5.097,
+            "p90_mae_atr": 6.289,
+            "median_giveback_pct": 5.5462,
+            "median_bars_to_mfe": 13,
+            "median_bars_to_mae": 11
+          },
+          "winners_only": {
+            "count": 1,
+            "median_mfe_pct": 19.8682,
+            "median_mae_pct": -1.9198,
+            "median_mae_atr": 2.4929,
+            "p80_mae_atr": 2.493,
+            "p90_mae_atr": 2.493,
+            "median_giveback_pct": 3.7282,
+            "median_bars_to_mfe": 183,
+            "median_bars_to_mae": 10
+          },
+          "buckets": [
+            {
+              "count": 2,
+              "median_mfe_pct": 1.3203,
+              "median_mae_pct": -4.1647,
+              "median_mae_atr": 3.1565,
+              "p80_mae_atr": 3.964,
+              "p90_mae_atr": 4.233,
+              "median_giveback_pct": 5.0503,
+              "median_bars_to_mfe": 2.0,
+              "median_bars_to_mae": 10.0,
+              "bucket": "6-20"
+            },
+            {
+              "count": 3,
+              "median_mfe_pct": 9.3729,
+              "median_mae_pct": -5.6791,
+              "median_mae_atr": 2.4929,
+              "p80_mae_atr": 5.485,
+              "p90_mae_atr": 6.482,
+              "median_giveback_pct": 10.5329,
+              "median_bars_to_mfe": 77,
+              "median_bars_to_mae": 28,
+              "bucket": "51+"
+            }
+          ]
+        },
+        "bleed_modes": {
+          "late_giveback": {
+            "count": 4,
+            "share": 0.8,
+            "total_net_pct": -15.36,
+            "mean_net_pct": -3.8401
+          },
+          "clean_win": {
+            "count": 1,
+            "share": 0.2,
+            "total_net_pct": 15.94,
+            "mean_net_pct": 15.9399
+          }
+        },
+        "fee_churn": {
+          "trades": 5,
+          "mean_fee_pct": 0.2001,
+          "fee_drag_ratio": 0.0326,
+          "trades_flipped_to_loss_by_fees": 0,
+          "trades_fee_dominated": 0,
+          "exit_reasons": {
+            "signal": 5
+          }
+        }
+      },
+      "ETH/USDT 1h": {
+        "holding_time": {
+          "trades": 14,
+          "bars_held": {
+            "min": 6,
+            "max": 637,
+            "mean": 161.8571,
+            "median": 96.0,
+            "p25": 31.0,
+            "p75": 201.75,
+            "p90": 401.8
+          },
+          "buckets": [
+            {
+              "bucket": "6-20",
+              "count": 3,
+              "win_rate": 0.0,
+              "mean_net_pct": -2.3568,
+              "total_net_pct": -7.07,
+              "mean_gross_pct": -2.1567
+            },
+            {
+              "bucket": "21-50",
+              "count": 3,
+              "win_rate": 0.0,
+              "mean_net_pct": -0.9501,
+              "total_net_pct": -2.85,
+              "mean_gross_pct": -0.75
+            },
+            {
+              "bucket": "51+",
+              "count": 8,
+              "win_rate": 0.625,
+              "mean_net_pct": 3.0136,
+              "total_net_pct": 24.11,
+              "mean_gross_pct": 3.2138
+            }
+          ]
+        },
+        "excursion": {
+          "aggregate": {
+            "count": 14,
+            "median_mfe_pct": 4.7199,
+            "median_mae_pct": -2.0131,
+            "median_mae_atr": 2.8218,
+            "p80_mae_atr": 7.149,
+            "p90_mae_atr": 8.431,
+            "median_giveback_pct": 4.0349,
+            "median_bars_to_mfe": 29.0,
+            "median_bars_to_mae": 16.0
+          },
+          "winners_only": {
+            "count": 5,
+            "median_mfe_pct": 10.2141,
+            "median_mae_pct": -0.8822,
+            "median_mae_atr": 0.9166,
+            "p80_mae_atr": 5.083,
+            "p90_mae_atr": 6.808,
+            "median_giveback_pct": 6.0763,
+            "median_bars_to_mfe": 186,
+            "median_bars_to_mae": 29
+          },
+          "buckets": [
+            {
+              "count": 3,
+              "median_mfe_pct": 0.4624,
+              "median_mae_pct": -2.5425,
+              "median_mae_atr": 2.4289,
+              "p80_mae_atr": 4.843,
+              "p90_mae_atr": 5.648,
+              "median_giveback_pct": 2.9024,
+              "median_bars_to_mfe": 1,
+              "median_bars_to_mae": 11,
+              "bucket": "6-20"
+            },
+            {
+              "count": 3,
+              "median_mfe_pct": 1.1234,
+              "median_mae_pct": -1.9296,
+              "median_mae_atr": 2.8118,
+              "p80_mae_atr": 3.181,
+              "p90_mae_atr": 3.304,
+              "median_giveback_pct": 1.9634,
+              "median_bars_to_mfe": 18,
+              "median_bars_to_mae": 12,
+              "bucket": "21-50"
+            },
+            {
+              "count": 8,
+              "median_mfe_pct": 8.7688,
+              "median_mae_pct": -2.3733,
+              "median_mae_atr": 3.526,
+              "p80_mae_atr": 8.397,
+              "p90_mae_atr": 12.044,
+              "median_giveback_pct": 7.3757,
+              "median_bars_to_mfe": 103.0,
+              "median_bars_to_mae": 30.0,
+              "bucket": "51+"
+            }
+          ]
+        },
+        "bleed_modes": {
+          "late_giveback": {
+            "count": 4,
+            "share": 0.286,
+            "total_net_pct": -7.5,
+            "mean_net_pct": -1.8751
+          },
+          "early_reversal": {
+            "count": 3,
+            "share": 0.214,
+            "total_net_pct": -4.57,
+            "mean_net_pct": -1.5234
+          },
+          "clean_win": {
+            "count": 4,
+            "share": 0.286,
+            "total_net_pct": 37.77,
+            "mean_net_pct": 9.4424
+          },
+          "clean_loss": {
+            "count": 2,
+            "share": 0.143,
+            "total_net_pct": -11.23,
+            "mean_net_pct": -5.6151
+          },
+          "fee_churn": {
+            "count": 1,
+            "share": 0.071,
+            "total_net_pct": -0.28,
+            "mean_net_pct": -0.2801
+          }
+        },
+        "fee_churn": {
+          "trades": 14,
+          "mean_fee_pct": 0.2001,
+          "fee_drag_ratio": 0.0448,
+          "trades_flipped_to_loss_by_fees": 0,
+          "trades_fee_dominated": 1,
+          "exit_reasons": {
+            "end_of_data": 1,
+            "signal": 13
+          }
+        }
+      },
+      "ETH/USDT 4h": {
+        "holding_time": {
+          "trades": 3,
+          "bars_held": {
+            "min": 7,
+            "max": 384,
+            "mean": 144.3333,
+            "median": 42,
+            "p25": 24.5,
+            "p75": 213.0,
+            "p90": 315.6
+          },
+          "buckets": [
+            {
+              "bucket": "6-20",
+              "count": 1,
+              "win_rate": 0.0,
+              "mean_net_pct": -5.8801,
+              "total_net_pct": -5.88,
+              "mean_gross_pct": -5.68
+            },
+            {
+              "bucket": "21-50",
+              "count": 1,
+              "win_rate": 1.0,
+              "mean_net_pct": 1.3399,
+              "total_net_pct": 1.34,
+              "mean_gross_pct": 1.54
+            },
+            {
+              "bucket": "51+",
+              "count": 1,
+              "win_rate": 1.0,
+              "mean_net_pct": 6.2999,
+              "total_net_pct": 6.3,
+              "mean_gross_pct": 6.5
+            }
+          ]
+        },
+        "excursion": {
+          "aggregate": {
+            "count": 3,
+            "median_mfe_pct": 7.6089,
+            "median_mae_pct": -6.402,
+            "median_mae_atr": 3.9225,
+            "p80_mae_atr": 4.701,
+            "p90_mae_atr": 4.961,
+            "median_giveback_pct": 6.0818,
+            "median_bars_to_mfe": 16,
+            "median_bars_to_mae": 7
+          },
+          "winners_only": {
+            "count": 2,
+            "median_mfe_pct": 11.0508,
+            "median_mae_pct": -6.9622,
+            "median_mae_atr": 3.7806,
+            "p80_mae_atr": 3.866,
+            "p90_mae_atr": 3.894,
+            "median_giveback_pct": 7.0307,
+            "median_bars_to_mfe": 140.5,
+            "median_bars_to_mae": 14.5
+          },
+          "buckets": [
+            {
+              "count": 1,
+              "median_mfe_pct": 0.4018,
+              "median_mae_pct": -6.402,
+              "median_mae_atr": 5.2207,
+              "p80_mae_atr": 5.221,
+              "p90_mae_atr": 5.221,
+              "median_giveback_pct": 6.0818,
+              "median_bars_to_mfe": 1,
+              "median_bars_to_mae": 7,
+              "bucket": "6-20"
+            },
+            {
+              "count": 1,
+              "median_mfe_pct": 7.6089,
+              "median_mae_pct": -2.8086,
+              "median_mae_atr": 3.9225,
+              "p80_mae_atr": 3.922,
+              "p90_mae_atr": 3.922,
+              "median_giveback_pct": 6.0689,
+              "median_bars_to_mfe": 16,
+              "median_bars_to_mae": 3,
+              "bucket": "21-50"
+            },
+            {
+              "count": 1,
+              "median_mfe_pct": 14.4926,
+              "median_mae_pct": -11.1157,
+              "median_mae_atr": 3.6387,
+              "p80_mae_atr": 3.639,
+              "p90_mae_atr": 3.639,
+              "median_giveback_pct": 7.9926,
+              "median_bars_to_mfe": 265,
+              "median_bars_to_mae": 26,
+              "bucket": "51+"
+            }
+          ]
+        },
+        "bleed_modes": {
+          "late_giveback": {
+            "count": 2,
+            "share": 0.667,
+            "total_net_pct": 7.64,
+            "mean_net_pct": 3.8199
+          },
+          "early_reversal": {
+            "count": 1,
+            "share": 0.333,
+            "total_net_pct": -5.88,
+            "mean_net_pct": -5.8801
+          }
+        },
+        "fee_churn": {
+          "trades": 3,
+          "mean_fee_pct": 0.2001,
+          "fee_drag_ratio": 0.0438,
+          "trades_flipped_to_loss_by_fees": 0,
+          "trades_fee_dominated": 0,
+          "exit_reasons": {
+            "signal": 3
+          }
+        }
+      },
+      "SOL/USDT 1h": {
+        "holding_time": {
+          "trades": 8,
+          "bars_held": {
+            "min": 22,
+            "max": 1008,
+            "mean": 320.875,
+            "median": 167.5,
+            "p25": 143.25,
+            "p75": 320.75,
+            "p90": 818.3
+          },
+          "buckets": [
+            {
+              "bucket": "21-50",
+              "count": 1,
+              "win_rate": 0.0,
+              "mean_net_pct": -0.4401,
+              "total_net_pct": -0.44,
+              "mean_gross_pct": -0.24
+            },
+            {
+              "bucket": "51+",
+              "count": 7,
+              "win_rate": 0.571,
+              "mean_net_pct": -2.4401,
+              "total_net_pct": -17.08,
+              "mean_gross_pct": -2.24
+            }
+          ]
+        },
+        "excursion": {
+          "aggregate": {
+            "count": 8,
+            "median_mfe_pct": 8.3824,
+            "median_mae_pct": -2.0487,
+            "median_mae_atr": 2.2067,
+            "p80_mae_atr": 15.904,
+            "p90_mae_atr": 24.72,
+            "median_giveback_pct": 6.5416,
+            "median_bars_to_mfe": 98.5,
+            "median_bars_to_mae": 44.0
+          },
+          "winners_only": {
+            "count": 4,
+            "median_mfe_pct": 8.3824,
+            "median_mae_pct": -1.8004,
+            "median_mae_atr": 1.7832,
+            "p80_mae_atr": 2.123,
+            "p90_mae_atr": 2.375,
+            "median_giveback_pct": 5.2351,
+            "median_bars_to_mfe": 98.5,
+            "median_bars_to_mae": 3.0
+          },
+          "buckets": [
+            {
+              "count": 1,
+              "median_mfe_pct": 2.6995,
+              "median_mae_pct": -1.0472,
+              "median_mae_atr": 0.5567,
+              "p80_mae_atr": 0.557,
+              "p90_mae_atr": 0.557,
+              "median_giveback_pct": 2.9395,
+              "median_bars_to_mfe": 3,
+              "median_bars_to_mae": 15,
+              "bucket": "21-50"
+            },
+            {
+              "count": 7,
+              "median_mfe_pct": 8.4559,
+              "median_mae_pct": -2.099,
+              "median_mae_atr": 2.6275,
+              "p80_mae_atr": 18.988,
+              "p90_mae_atr": 25.603,
+              "median_giveback_pct": 6.609,
+              "median_bars_to_mfe": 100,
+              "median_bars_to_mae": 73,
+              "bucket": "51+"
+            }
+          ]
+        },
+        "bleed_modes": {
+          "late_giveback": {
+            "count": 6,
+            "share": 0.75,
+            "total_net_pct": -26.98,
+            "mean_net_pct": -4.4968
+          },
+          "clean_win": {
+            "count": 2,
+            "share": 0.25,
+            "total_net_pct": 9.46,
+            "mean_net_pct": 4.7299
+          }
+        },
+        "fee_churn": {
+          "trades": 8,
+          "mean_fee_pct": 0.2001,
+          "fee_drag_ratio": 0.0341,
+          "trades_flipped_to_loss_by_fees": 0,
+          "trades_fee_dominated": 0,
+          "exit_reasons": {
+            "end_of_data": 1,
+            "signal": 7
+          }
+        }
+      },
+      "SOL/USDT 4h": {
+        "holding_time": {
+          "trades": 2,
+          "bars_held": {
+            "min": 104,
+            "max": 209,
+            "mean": 156.5,
+            "median": 156.5,
+            "p25": 130.25,
+            "p75": 182.75,
+            "p90": 198.5
+          },
+          "buckets": [
+            {
+              "bucket": "51+",
+              "count": 2,
+              "win_rate": 0.0,
+              "mean_net_pct": -5.1651,
+              "total_net_pct": -10.33,
+              "mean_gross_pct": -4.965
+            }
+          ]
+        },
+        "excursion": {
+          "aggregate": {
+            "count": 2,
+            "median_mfe_pct": 8.8409,
+            "median_mae_pct": -10.1971,
+            "median_mae_atr": 4.4269,
+            "p80_mae_atr": 4.621,
+            "p90_mae_atr": 4.686,
+            "median_giveback_pct": 13.8059,
+            "median_bars_to_mfe": 96.0,
+            "median_bars_to_mae": 36.0
+          },
+          "winners_only": {
+            "count": 0,
+            "median_mfe_pct": null,
+            "median_mae_pct": null,
+            "median_mae_atr": null,
+            "p80_mae_atr": null,
+            "p90_mae_atr": null,
+            "median_giveback_pct": null,
+            "median_bars_to_mfe": null,
+            "median_bars_to_mae": null
+          },
+          "buckets": [
+            {
+              "count": 2,
+              "median_mfe_pct": 8.8409,
+              "median_mae_pct": -10.1971,
+              "median_mae_atr": 4.4269,
+              "p80_mae_atr": 4.621,
+              "p90_mae_atr": 4.686,
+              "median_giveback_pct": 13.8059,
+              "median_bars_to_mfe": 96.0,
+              "median_bars_to_mae": 36.0,
+              "bucket": "51+"
+            }
+          ]
+        },
+        "bleed_modes": {
+          "late_giveback": {
+            "count": 2,
+            "share": 1.0,
+            "total_net_pct": -10.33,
+            "mean_net_pct": -5.1651
+          }
+        },
+        "fee_churn": {
+          "trades": 2,
+          "mean_fee_pct": 0.2001,
+          "fee_drag_ratio": 0.0403,
+          "trades_flipped_to_loss_by_fees": 0,
+          "trades_fee_dominated": 0,
+          "exit_reasons": {
+            "signal": 2
+          }
+        }
+      }
+    }
+  }
+}

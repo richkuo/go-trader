@@ -7,35 +7,36 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 )
 
-// runInspect is the `go-trader inspect <strategy-id>` subcommand: load the
-// config, find the strategy, and print its effective (post-migration,
-// post-default) shape. Built for the incident workflow in #704 — operators
-// were grep'ing for plausible-sounding field names (`take_profit_atr_mult`,
-// `tp_tiers` per-strategy) that don't exist and concluding "no TP configured"
-// from the wrong inspection path. The output names the actual fields, their
-// resolved values, and whether each was set explicitly or filled by defaults.
 func runInspect(args []string) int {
 	fs := flag.NewFlagSet("inspect", flag.ContinueOnError)
 	configPath := fs.String("config", "scheduler/config.json", "Path to config file")
 	jsonOut := fs.Bool("json", false, "Emit the effective view as JSON (machine-readable)")
+	all := fs.Bool("all", false, "Inspect every configured strategy")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	rest := fs.Args()
-	if len(rest) == 0 {
-		fmt.Fprintln(os.Stderr, "inspect: missing <strategy-id>")
-		fmt.Fprintln(os.Stderr, "usage: go-trader inspect [--config <path>] [--json] <strategy-id>|--all")
-		return 2
+	target := "--all"
+	if !*all {
+		if len(rest) == 0 {
+			fmt.Fprintln(os.Stderr, "inspect: missing <strategy-id>")
+			fmt.Fprintln(os.Stderr, "usage: go-trader inspect [--config <path>] [--json] <strategy-id>|--all")
+			return 2
+		}
+		target = rest[0]
 	}
-	target := rest[0]
 
-	cfg, err := LoadConfig(*configPath)
+	cfg, err := loadConfigQuietForJSON(*configPath, *jsonOut)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "inspect: failed to load config %s: %v\n", *configPath, err)
 		return 1
 	}
+	setDirectionalCertStore(LoadDirectionalCertSetFailClosed(directionalCertPath(), func(f string, a ...interface{}) {
+		fmt.Fprintf(os.Stderr, f+"\n", a...)
+	}))
 	explicit, err := loadStrategyExplicitKeys(*configPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "inspect: failed to read raw config for explicit-key detection: %v\n", err)
@@ -59,10 +60,20 @@ func runInspect(args []string) int {
 		}
 	}
 
+	var inspectState *AppState
+	if *jsonOut {
+		saved := os.Stdout
+		os.Stdout = os.Stderr
+		inspectState = loadInspectState(cfg)
+		os.Stdout = saved
+	} else {
+		inspectState = loadInspectState(cfg)
+	}
+
 	if *jsonOut {
 		out := make([]map[string]interface{}, 0, len(targets))
 		for _, sc := range targets {
-			out = append(out, buildStrategyInspectionJSON(sc, explicit[sc.ID], cfg))
+			out = append(out, buildStrategyInspectionJSON(sc, explicit[sc.ID], cfg, inspectState))
 		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
@@ -77,15 +88,33 @@ func runInspect(args []string) int {
 		if i > 0 {
 			fmt.Println()
 		}
-		fmt.Print(formatStrategyInspection(sc, explicit[sc.ID], cfg))
+		fmt.Print(formatStrategyInspection(sc, explicit[sc.ID], cfg, inspectState))
 	}
 	return 0
 }
 
-// loadStrategyExplicitKeys re-reads the raw config bytes and records which
-// JSON keys are explicitly present on each strategy entry. Used by inspect to
-// distinguish "operator wrote this value" from "LoadConfig filled it in".
-// Keyed by strategy id — entries without an id fall back to "strategy[<i>]".
+// loadInspectState reads every configured state file read-only: inspect never
+// migrates and never writes.
+func loadInspectState(cfg *Config) *AppState {
+	if cfg == nil || cfg.DBFile == "" {
+		return nil
+	}
+	store, err := openToolStateStoreReadOnly(cfg)
+	if err != nil {
+		return nil
+	}
+	defer store.Close()
+	state, _, err := LoadStateWithStore(cfg, store)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[inspect] state DB unavailable: %v\n", err)
+		return nil
+	}
+	if state == nil {
+		return NewAppState()
+	}
+	return state
+}
+
 func loadStrategyExplicitKeys(path string) (map[string]map[string]bool, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -110,21 +139,19 @@ func loadStrategyExplicitKeys(path string) (map[string]map[string]bool, error) {
 		for k := range s {
 			keys[k] = true
 		}
+		if keys["close_strategies"] {
+			keys["close_strategy"] = true
+		}
 		out[id] = keys
 	}
 	return out, nil
 }
 
-// stopLossResolution summarizes which mutually-exclusive HL stop field owns
-// the effective trigger, the resolved price % (or "deferred" for ATR-based
-// stops), and whether the owner was set explicitly. Mirrors
-// EffectiveStopLossPct so display can never lie about which field is winning
-// on a hot-reload boundary.
 type stopLossResolution struct {
-	Source   string  // field name, e.g. "stop_loss_atr_mult"; "max_drawdown_pct"; "none"
-	Value    string  // human-readable value ("1.5× ATR (deferred)", "2.0% from entry", "—")
-	Explicit bool    // operator set the winning field explicitly
-	PriceTag float64 // computed price % when known (post-arming for ATR stops); 0 for deferred
+	Source   string
+	Value    string
+	Explicit bool
+	PriceTag float64
 	Detail   []string
 }
 
@@ -146,20 +173,20 @@ func resolveStopLoss(sc StrategyConfig, explicit map[string]bool) stopLossResolu
 			Explicit: explicit["stop_loss_atr_mult"],
 		}
 	}
-	if sc.StopLossATRRegime != nil && !sc.StopLossATRRegime.IsZero() {
+	if sc.StopLossATRMultRegime != nil && !sc.StopLossATRMultRegime.IsZero() {
 		return stopLossResolution{
-			Source:   "stop_loss_atr_regime",
+			Source:   "stop_loss_atr_mult_regime",
 			Value:    fmt.Sprintf("regime-aware fixed ATR (deferred until EntryATR + %s stamped)", regimeClassifierKey),
-			Explicit: explicit["stop_loss_atr_regime"],
-			Detail:   formatRegimeATRInspectDetail("stop_loss_atr_regime", *sc.StopLossATRRegime, explicit["stop_loss_atr_regime"]),
+			Explicit: explicit["stop_loss_atr_mult_regime"],
+			Detail:   formatRegimeATRInspectDetail("stop_loss_atr_mult_regime", *sc.StopLossATRMultRegime, explicit["stop_loss_atr_mult_regime"]),
 		}
 	}
-	if sc.TrailingStopATRRegime != nil && !sc.TrailingStopATRRegime.IsZero() {
+	if sc.TrailingStopATRMultRegime != nil && !sc.TrailingStopATRMultRegime.IsZero() {
 		return stopLossResolution{
-			Source:   "trailing_stop_atr_regime",
+			Source:   "trailing_stop_atr_mult_regime",
 			Value:    fmt.Sprintf("regime-aware trailing ATR (deferred until EntryATR + %s stamped)", regimeClassifierKey),
-			Explicit: explicit["trailing_stop_atr_regime"],
-			Detail:   formatRegimeATRInspectDetail("trailing_stop_atr_regime", *sc.TrailingStopATRRegime, explicit["trailing_stop_atr_regime"]),
+			Explicit: explicit["trailing_stop_atr_mult_regime"],
+			Detail:   formatRegimeATRInspectDetail("trailing_stop_atr_mult_regime", *sc.TrailingStopATRMultRegime, explicit["trailing_stop_atr_mult_regime"]),
 		}
 	}
 	if sc.TrailingStopPct != nil {
@@ -196,9 +223,6 @@ func resolveStopLoss(sc StrategyConfig, explicit map[string]bool) stopLossResolu
 		}
 		return stopLossResolution{Source: "stop_loss_margin_pct", Value: "disabled (explicit 0 or zero leverage)", Explicit: true}
 	}
-	// All five nil — only reachable when DefaultStopLossATRMult was explicitly
-	// disabled (=0). Falls back to MaxDrawdownPct (capped). LoadConfig should
-	// have filled stop_loss_atr_mult otherwise.
 	if sc.MaxDrawdownPct > 0 {
 		v := sc.MaxDrawdownPct
 		if v > MaxAutoStopLossPct {
@@ -214,23 +238,20 @@ func resolveStopLoss(sc StrategyConfig, explicit map[string]bool) stopLossResolu
 	return stopLossResolution{Source: "none", Value: "no exchange-side stop"}
 }
 
-// tpResolution summarizes which close ref owns the take-profit logic and its
-// resolved tier shape. Returns ok=false when no tiered_tp_atr* close evaluator
-// is wired.
 type tpResolution struct {
 	OK          bool
 	CloseIndex  int
 	CloseName   string
-	RegimeTP    bool // tiered_tp_atr_regime or tiered_tp_atr_live_regime
+	RegimeTP    bool
 	Tiers       []hlProtectionTier
-	TiersFrom   string // "explicit on close ref" | "default (from registry)"
+	TiersFrom   string
 	DetailLines []string
 	TierCount   int
 }
 
 func resolveTP(sc StrategyConfig, explicit map[string]bool) tpResolution {
 	res := tpResolution{}
-	for i, ref := range sc.CloseStrategies {
+	for i, ref := range sc.closeRefs() {
 		n := strings.ToLower(strings.TrimSpace(ref.Name))
 		if !isTieredTPATRCloseName(n) {
 			continue
@@ -238,7 +259,7 @@ func resolveTP(sc StrategyConfig, explicit map[string]bool) tpResolution {
 		res.OK = true
 		res.CloseIndex = i
 		res.CloseName = ref.Name
-		_, hasTiers := ref.Params["tiers"]
+		_, hasTiers := closeTierListParam(ref.Params)
 		useDefaults := false
 		if ud, ok := ref.Params["use_defaults"].(bool); ok && ud {
 			useDefaults = true
@@ -246,7 +267,7 @@ func resolveTP(sc StrategyConfig, explicit map[string]bool) tpResolution {
 		switch n {
 		case "tiered_tp_atr_regime", "tiered_tp_atr_live_regime":
 			res.RegimeTP = true
-			res.DetailLines = formatInspectRegimeTPDetailLines(ref.Name, ref, hasTiers, useDefaults, explicit["close_strategies"])
+			res.DetailLines = formatInspectRegimeTPDetailLines(ref.Name, ref, hasTiers, useDefaults, explicit["close_strategy"])
 			if tiers := strategyTPTiersForRegime(sc, canonicalTrendRegimeLabels[0]); len(tiers) > 0 {
 				res.Tiers = tiers
 			}
@@ -265,7 +286,7 @@ func resolveTP(sc StrategyConfig, explicit map[string]bool) tpResolution {
 			if hasTiers {
 				res.TiersFrom = "explicit on close ref"
 			} else {
-				res.TiersFrom = "default (canonical [1×@50%, 2×@100%])"
+				res.TiersFrom = "default (canonical [1.5×@40%, 3×@80%, 5×@100%])"
 			}
 		}
 		return res
@@ -275,7 +296,7 @@ func resolveTP(sc StrategyConfig, explicit map[string]bool) tpResolution {
 
 func inferRegimeTPTierCount(ref StrategyRef, hasTiers, useDefaults bool) int {
 	if hasTiers {
-		if raw, ok := ref.Params["tiers"]; ok {
+		if raw, ok := closeTierListParam(ref.Params); ok {
 			if items, ok := raw.([]interface{}); ok {
 				return len(items)
 			}
@@ -341,9 +362,8 @@ func formatInspectRegimeTPDetailLines(closeName string, ref StrategyRef, hasTier
 		}
 		return summarizeInspectRegimeTPSpecs(closeName, specs, tag)
 	}
-	// LoadConfig + validateRegimeATRConfig already rejected malformed tier JSON;
-	// re-parse here is defense-in-depth for inspect-only paths, not a hot path.
-	specs, errs := parseRegimeTPTiers(ref.Params["tiers"], closeName+".params")
+	tiersRaw, _ := closeTierListParam(ref.Params)
+	specs, errs := parseRegimeTPTiers(tiersRaw, closeName+".params", regimeLabelsFromTierRaw(tiersRaw))
 	if len(errs) > 0 || len(specs) == 0 {
 		return []string{fmt.Sprintf("%s: regime tiers: parse error — fix config (%v)", closeName, errs)}
 	}
@@ -389,11 +409,7 @@ func inspectRegimeTPTierProvenance(block RegimeATRBlock, closeExplicitTag string
 	return fmt.Sprintf(" (explicit %s per label)%s", regimeClassifierKey, closeExplicitTag)
 }
 
-// formatStrategyInspection renders the multi-line human-facing inspect output
-// for one strategy. Splitting from runInspect lets tests assert the formatter
-// independently of os.Args / file IO, and lets the startup logger reuse the
-// one-line summary helper below.
-func formatStrategyInspection(sc StrategyConfig, explicit map[string]bool, cfg *Config) string {
+func formatStrategyInspection(sc StrategyConfig, explicit map[string]bool, cfg *Config, state *AppState) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "strategy %s\n", sc.ID)
 	fmt.Fprintf(&b, "  type:                %s\n", sc.Type)
@@ -413,8 +429,8 @@ func formatStrategyInspection(sc StrategyConfig, explicit map[string]bool, cfg *
 	if len(sc.OpenStrategy.Params) > 0 {
 		fmt.Fprintf(&b, "    params:            %s\n", stableParamSummary(sc.OpenStrategy.Params))
 	}
-	fmt.Fprintf(&b, "  close_strategies:    %s%s\n", formatCloseStrategyList(sc.CloseStrategies), markIfDefault(explicit, "close_strategies"))
-	for i, ref := range sc.CloseStrategies {
+	fmt.Fprintf(&b, "  close_strategy:      %s%s\n", formatCloseStrategyList(sc.closeRefs()), markIfDefault(explicit, "close_strategy"))
+	for i, ref := range sc.closeRefs() {
 		if len(ref.Params) == 0 {
 			continue
 		}
@@ -422,7 +438,7 @@ func formatStrategyInspection(sc StrategyConfig, explicit map[string]bool, cfg *
 	}
 
 	if sc.Type == "perps" || sc.Type == "manual" {
-		fmt.Fprintf(&b, "  direction:           %s (%s)\n", EffectiveDirection(sc), directionProvenance(sc, explicit))
+		appendDirectionInspectLines(&b, sc, explicit, cfg, state)
 		fmt.Fprintf(&b, "  leverage:            %g%s\n", EffectiveExchangeLeverage(sc), markIfDefault(explicit, "leverage"))
 		fmt.Fprintf(&b, "  sizing_leverage:     %g%s\n", EffectiveSizingLeverage(sc), sizingLeverageProvenance(sc, explicit))
 		if m := EffectiveMarginPerTradeUSD(sc); m > 0 {
@@ -445,9 +461,9 @@ func formatStrategyInspection(sc StrategyConfig, explicit map[string]bool, cfg *
 		tp := resolveTP(sc, explicit)
 		fmt.Fprintf(&b, "  take_profit:\n")
 		if !tp.OK {
-			fmt.Fprintf(&b, "    source:            none (no tiered_tp_atr* in close_strategies)\n")
+			fmt.Fprintf(&b, "    source:            none (no tiered_tp_atr* close_strategy)\n")
 		} else {
-			fmt.Fprintf(&b, "    source:            close_strategies[%d] %s\n", tp.CloseIndex, tp.CloseName)
+			fmt.Fprintf(&b, "    source:            close_strategy %s\n", tp.CloseName)
 			for _, line := range tp.DetailLines {
 				fmt.Fprintf(&b, "    %s\n", line)
 			}
@@ -460,6 +476,24 @@ func formatStrategyInspection(sc StrategyConfig, explicit map[string]bool, cfg *
 	}
 
 	fmt.Fprintf(&b, "  max_drawdown_pct:    %g%s\n", sc.MaxDrawdownPct, markIfDefault(explicit, "max_drawdown_pct"))
+	if sc.Type != "manual" {
+		if !sc.CircuitBreakerEnabled() {
+			fmt.Fprintf(&b, "  circuit_breaker:     off (explicit) — drawdown + consecutive-loss halt disabled\n")
+		} else if ov := circuitBreakerOverrideSummary(sc); ov != "" {
+			fmt.Fprintf(&b, "  circuit_breaker:     on — %s\n", ov)
+		}
+	}
+	if sc.Paused {
+		fmt.Fprintf(&b, "  paused:              true — position-increasing signals held; closes and SL/TP management still run\n")
+	}
+	if sc.Hedge != nil {
+		state := "disabled"
+		if sc.Hedge.Enabled {
+			state = "enabled"
+		}
+		fmt.Fprintf(&b, "  hedge:               %s — %s inverse ×%.4g, margin=%s leverage=%gx (auto-managed, coupled to the primary; no independent SL/TP)\n",
+			state, normalizeHedgeCoin(sc.Hedge.Symbol), hedgeRatio(sc), hedgeMarginMode(sc), hedgeLeverage(sc))
+	}
 	if sc.IntervalSeconds > 0 {
 		fmt.Fprintf(&b, "  interval_seconds:    %d\n", sc.IntervalSeconds)
 	} else if cfg != nil {
@@ -468,8 +502,23 @@ func formatStrategyInspection(sc StrategyConfig, explicit map[string]bool, cfg *
 	if len(sc.AllowedRegimes) > 0 {
 		fmt.Fprintf(&b, "  allowed_regimes:     %v\n", sc.AllowedRegimes)
 	}
+	if cfg != nil && cfg.Regime != nil && len(cfg.Regime.Windows) > 0 {
+		fmt.Fprintf(&b, "  regime_windows:      %s\n", formatRegimeWindowsInspectMap(cfg.Regime.Windows, cfg.Regime))
+		fmt.Fprintf(&b, "  regime_gate_window:  %s\n", formatRegimeWindowSelectorInspect(sc, "gate", cfg.Regime))
+		fmt.Fprintf(&b, "  regime_atr_window:   %s\n", formatRegimeWindowSelectorInspect(sc, "atr", cfg.Regime))
+		fmt.Fprintf(&b, "  regime_directional_window: %s\n", formatRegimeWindowSelectorInspect(sc, "directional", cfg.Regime))
+	}
 	if sc.HTFFilter {
 		fmt.Fprintf(&b, "  htf_filter:          true\n")
+	}
+	if sc.Type != "options" {
+		if m := resolveATRMethod(sc, cfg); m != ATRMethodSimple {
+			src := "inherited from global"
+			if normalizeATRMethod(sc.ATRMethod) != "" {
+				src = "per-strategy"
+			}
+			fmt.Fprintf(&b, "  atr_method:          %s (%s)\n", m, src)
+		}
 	}
 	if sc.ThetaHarvest != nil {
 		fmt.Fprintf(&b, "  theta_harvest:       enabled=%v profit=%g%% stop=%g%% min_dte=%g%s\n",
@@ -479,20 +528,13 @@ func formatStrategyInspection(sc StrategyConfig, explicit map[string]bool, cfg *
 	return b.String()
 }
 
-// formatStrategySummaryLine compresses the effective resolution into one line
-// for startup logging — meant to be the operator's "did my close/SL config
-// actually land?" sanity check the moment the daemon boots (#704 suggestion 2).
-func formatStrategySummaryLine(sc StrategyConfig, explicit map[string]bool) string {
+func formatStrategySummaryLine(sc StrategyConfig, explicit map[string]bool, cfg *Config) string {
 	parts := []string{fmt.Sprintf("type=%s", sc.Type)}
 	if sc.OpenStrategy.Name != "" {
 		parts = append(parts, fmt.Sprintf("open=%s", sc.OpenStrategy.Name))
 	}
-	if len(sc.CloseStrategies) > 0 {
-		names := make([]string, 0, len(sc.CloseStrategies))
-		for _, ref := range sc.CloseStrategies {
-			names = append(names, ref.Name)
-		}
-		parts = append(parts, fmt.Sprintf("close=[%s]", strings.Join(names, ",")))
+	if sc.CloseStrategy != nil {
+		parts = append(parts, fmt.Sprintf("close=%s", sc.CloseStrategy.Name))
 	} else {
 		parts = append(parts, "close=open-as-close")
 	}
@@ -510,22 +552,54 @@ func formatStrategySummaryLine(sc StrategyConfig, explicit map[string]bool) stri
 			parts = append(parts, "tp=none")
 		}
 	}
+	if sc.Type != "manual" {
+		if !sc.CircuitBreakerEnabled() {
+			parts = append(parts, "cb=off")
+		} else if ov := circuitBreakerOverrideSummary(sc); ov != "" {
+			parts = append(parts, "cb["+ov+"]")
+		}
+	}
+	if sc.Paused {
+		parts = append(parts, "paused")
+	}
+	if sc.Type != "options" {
+		if m := resolveATRMethod(sc, cfg); m != ATRMethodSimple {
+			parts = append(parts, "atr="+m)
+		}
+	}
+	if tag := edgeStatusSummaryTag(sc); tag != "" {
+		parts = append(parts, tag)
+	}
+	if line := hedgeStatusLine(sc, nil); line != "" {
+		parts = append(parts, line)
+	}
 	return fmt.Sprintf("[config] %s: %s", sc.ID, strings.Join(parts, " "))
 }
 
-// buildStrategyInspectionJSON mirrors formatStrategyInspection in
-// machine-readable form. Keeps the same provenance info so external tools
-// (dashboards, audit scripts) can spot "field is at the default" cases.
-func buildStrategyInspectionJSON(sc StrategyConfig, explicit map[string]bool, cfg *Config) map[string]interface{} {
+func circuitBreakerOverrideSummary(sc StrategyConfig) string {
+	var parts []string
+	if sc.CBLossStreakThreshold != nil {
+		parts = append(parts, fmt.Sprintf("losses>=%d", sc.CircuitBreakerLossStreakThreshold()))
+	}
+	if sc.CBLossStreakCooldownMinutes != nil {
+		parts = append(parts, "loss_cooldown="+formatCBDuration(sc.CircuitBreakerLossStreakCooldown()))
+	}
+	if sc.CBDrawdownCooldownMinutes != nil {
+		parts = append(parts, "dd_cooldown="+formatCBDuration(sc.CircuitBreakerDrawdownCooldown()))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func buildStrategyInspectionJSON(sc StrategyConfig, explicit map[string]bool, cfg *Config, state *AppState) map[string]interface{} {
 	if explicit == nil {
 		explicit = map[string]bool{}
 	}
-	closeRefs := make([]map[string]interface{}, 0, len(sc.CloseStrategies))
-	for _, ref := range sc.CloseStrategies {
-		closeRefs = append(closeRefs, map[string]interface{}{
-			"name":   ref.Name,
-			"params": ref.Params,
-		})
+	var closeRefJSON interface{}
+	if sc.CloseStrategy != nil {
+		closeRefJSON = map[string]interface{}{
+			"name":   sc.CloseStrategy.Name,
+			"params": sc.CloseStrategy.Params,
+		}
 	}
 	out := map[string]interface{}{
 		"id":       sc.ID,
@@ -536,13 +610,35 @@ func buildStrategyInspectionJSON(sc StrategyConfig, explicit map[string]bool, cf
 			"params":   sc.OpenStrategy.Params,
 			"explicit": explicit["open_strategy"],
 		},
-		"close_strategies":          closeRefs,
-		"close_strategies_explicit": explicit["close_strategies"],
+		"close_strategy":            closeRefJSON,
+		"close_strategy_explicit":   explicit["close_strategy"],
 		"max_drawdown_pct":          sc.MaxDrawdownPct,
 		"max_drawdown_pct_explicit": explicit["max_drawdown_pct"],
 	}
+	if sc.Type != "manual" {
+		out["circuit_breaker_enabled"] = sc.CircuitBreakerEnabled()
+		out["circuit_breaker_explicit"] = explicit["circuit_breaker"]
+		out["cb_drawdown_cooldown_minutes"] = int(sc.CircuitBreakerDrawdownCooldown() / time.Minute)
+		out["cb_drawdown_cooldown_minutes_explicit"] = explicit["cb_drawdown_cooldown_minutes"]
+		out["cb_loss_streak_threshold"] = sc.CircuitBreakerLossStreakThreshold()
+		out["cb_loss_streak_threshold_explicit"] = explicit["cb_loss_streak_threshold"]
+		out["cb_loss_streak_cooldown_minutes"] = int(sc.CircuitBreakerLossStreakCooldown() / time.Minute)
+		out["cb_loss_streak_cooldown_minutes_explicit"] = explicit["cb_loss_streak_cooldown_minutes"]
+	}
+	out["paused"] = sc.Paused
+	if hs := buildHedgeStatus(sc, nil); hs != nil {
+		out["hedge"] = hs
+	}
+	if cfg != nil && cfg.Regime != nil && len(cfg.Regime.Windows) > 0 {
+		out["regime_windows"] = cfg.Regime.Windows
+		out["regime_gate_window"] = regimeWindowSelectorJSON(sc, "gate", cfg.Regime)
+		out["regime_atr_window"] = regimeWindowSelectorJSON(sc, "atr", cfg.Regime)
+		out["regime_directional_window"] = regimeWindowSelectorJSON(sc, "directional", cfg.Regime)
+	}
 	if sc.Type == "perps" || sc.Type == "manual" {
-		out["direction"] = EffectiveDirection(sc)
+		for k, v := range directionInspectJSON(sc, cfg, state) {
+			out[k] = v
+		}
 		out["leverage"] = EffectiveExchangeLeverage(sc)
 		out["sizing_leverage"] = EffectiveSizingLeverage(sc)
 		out["margin_mode"] = sc.MarginMode
@@ -563,11 +659,11 @@ func buildStrategyInspectionJSON(sc StrategyConfig, explicit map[string]bool, cf
 		if tp.OK {
 			tiers := make([]map[string]interface{}, len(tp.Tiers))
 			for i, t := range tp.Tiers {
-				tiers[i] = map[string]interface{}{"atr_multiple": t.Multiple, "fraction": t.Fraction}
+				tiers[i] = map[string]interface{}{"atr_multiple": t.Multiple, "close_fraction": t.Fraction}
 			}
 			tpMap["close_index"] = tp.CloseIndex
 			tpMap["close_name"] = tp.CloseName
-			tpMap["tiers"] = tiers
+			tpMap["tp_tiers"] = tiers
 			tpMap["tiers_source"] = tp.TiersFrom
 			tpMap["tier_count"] = tp.TierCount
 			if len(tp.DetailLines) > 0 {
@@ -586,13 +682,177 @@ func buildStrategyInspectionJSON(sc StrategyConfig, explicit map[string]bool, cf
 		out["interval_seconds"] = cfg.IntervalSeconds
 		out["interval_seconds_explicit"] = false
 	}
+	for k, v := range strategyScopeInspectJSON(sc, cfg) {
+		out[k] = v
+	}
 	return out
 }
 
-// --- formatting helpers ---
+func strategyScopeInspectJSON(sc StrategyConfig, cfg *Config) map[string]interface{} {
+	scope := portfolioScopeFor(sc)
+	part := partitionFor(sc)
+	out := map[string]interface{}{
+		"scope":                  scope,
+		"partition":              part.String(),
+		"paper_source":           sc.PaperSource,
+		"storage_strategy_id":    effectiveStorageStrategyID(sc),
+		"capital":                sc.Capital,
+		"capital_pct":            sc.CapitalPct,
+		"initial_capital":        sc.InitialCapital,
+		"margin_per_trade_usd":   EffectiveMarginPerTradeUSD(sc),
+		"htf_filter":             sc.HTFFilter,
+		"allowed_regimes":        append([]string{}, sc.AllowedRegimes...),
+		"hurst_gate_enabled":     hurstGateConfigured(sc),
+		"regime_gate_on_failure": resolveRegimeGateOnFailure(sc, regimeConfigOf(cfg)),
+	}
+	if sc.RiskPerTradePct != nil {
+		out["risk_per_trade_pct"] = *sc.RiskPerTradePct
+	} else {
+		out["risk_per_trade_pct"] = nil
+	}
+	if sc.Type != "options" {
+		out["atr_method"] = resolveATRMethod(sc, cfg)
+	}
+	out["replay"] = map[string]interface{}{
+		"sharing":          normalizeReplaySharing(sc.ReplaySharing),
+		"source_id":        strings.TrimSpace(sc.ReplaySourceID),
+		"effective_source": replayMirrorSourceID(sc),
+	}
+	out["notification"] = notificationRoutingJSON(sc, cfg, scope == ScopeLive)
+	out["scope_risk"] = scopeRiskInspectJSON(cfg, part)
+	return out
+}
 
-// inspectHLDetailIndent aligns stop_loss continuation lines with the payload
-// column of "    source:" / "    value:" (23 runes). See PR #750 review.
+func regimeConfigOf(cfg *Config) *RegimeConfig {
+	if cfg == nil {
+		return nil
+	}
+	return cfg.Regime
+}
+
+func notificationRoutingJSON(sc StrategyConfig, cfg *Config, isLive bool) map[string]interface{} {
+	var channels, alerts, dms []map[string]string
+	if cfg != nil {
+		channels = append(channels, cfg.Discord.Channels, cfg.Telegram.Channels)
+		alerts = append(alerts, cfg.Discord.TradeAlertChannels, cfg.Telegram.TradeAlertChannels)
+		dms = append(dms, cfg.Discord.DMChannels, cfg.Telegram.DMChannels)
+	}
+	chKey, chVal := resolveChannelKeyOverMaps(channels, sc.Platform, sc.Type, isLive, sc.PaperSource)
+	alertKey, alertVal := resolveTradeAlertKeyOverMaps(alerts, channels, sc.Platform, sc.Type, isLive, sc.PaperSource)
+	dmKey, dmVal := resolveDMKeyOverMaps(dms, sc.Platform, isLive, sc.PaperSource)
+	return map[string]interface{}{
+		"channel_key":         chKey,
+		"channel":             chVal,
+		"trade_alert_key":     alertKey,
+		"trade_alert_channel": alertVal,
+		"dm_key":              dmKey,
+		"dm_channel":          dmVal,
+	}
+}
+
+func resolveChannelKeyOverMaps(maps []map[string]string, platform, stratType string, isLive bool, source string) (string, string) {
+	if !isLive {
+		for _, key := range paperChannelKeys(platform, source) {
+			for _, m := range maps {
+				if ch, ok := m[key]; ok && ch != "" {
+					return key, ch
+				}
+			}
+		}
+	}
+	for _, m := range maps {
+		if ch, ok := m[platform]; ok && ch != "" {
+			return platform, ch
+		}
+		if ch, ok := m[stratType]; ok && ch != "" {
+			return stratType, ch
+		}
+	}
+	return "", ""
+}
+
+// resolveDMKeyOverMaps mirrors tradeAlertRoutes exactly: one literal key, no
+// fallback, so inspect never reports a DM route the send path disagrees with.
+func resolveDMKeyOverMaps(maps []map[string]string, platform string, isLive bool, source string) (string, string) {
+	key := platform
+	if !isLive {
+		key = paperChannelKeys(platform, source)[0]
+	}
+	for _, m := range maps {
+		if ch, ok := m[key]; ok && ch != "" {
+			return key, ch
+		}
+	}
+	return "", ""
+}
+
+func resolveTradeAlertKeyOverMaps(overrides, channels []map[string]string, platform, stratType string, isLive bool, source string) (string, string) {
+	modeKeys := []string{platform + "-live"}
+	if !isLive {
+		modeKeys = paperChannelKeys(platform, source)
+	}
+	for _, m := range overrides {
+		if len(m) == 0 {
+			continue
+		}
+		for _, key := range append(append([]string{}, modeKeys...), platform, stratType) {
+			if ch, ok := m[key]; ok && ch != "" {
+				return key, ch
+			}
+		}
+	}
+	return resolveChannelKeyOverMaps(channels, platform, stratType, isLive, source)
+}
+
+var scopeRiskInspectFields = []struct {
+	Key string
+	Get func(*PortfolioRiskConfig) float64
+}{
+	{"max_drawdown_pct", func(r *PortfolioRiskConfig) float64 { return r.MaxDrawdownPct }},
+	{"max_notional_usd", func(r *PortfolioRiskConfig) float64 { return r.MaxNotionalUSD }},
+	{"warn_threshold_pct", func(r *PortfolioRiskConfig) float64 { return r.WarnThresholdPct }},
+	{"daily_max_loss_usd", func(r *PortfolioRiskConfig) float64 { return r.DailyMaxLossUSD }},
+	{"daily_max_loss_pct", func(r *PortfolioRiskConfig) float64 { return r.DailyMaxLossPct }},
+	{"max_same_direction_notional_usd", func(r *PortfolioRiskConfig) float64 { return r.MaxSameDirectionNotionalUSD }},
+	{"max_asset_concentration_pct", func(r *PortfolioRiskConfig) float64 { return r.MaxAssetConcentrationPct }},
+}
+
+func scopeRiskInspectJSON(cfg *Config, part RiskPartition) interface{} {
+	merged := partitionRiskConfig(cfg, part)
+	if merged == nil {
+		return nil
+	}
+	out := make(map[string]interface{}, len(scopeRiskInspectFields)+2)
+	for _, f := range scopeRiskInspectFields {
+		out[f.Key] = f.Get(merged)
+	}
+	// A zero in the innermost override that names this partition inherits the
+	// layer above; the handoff proof compares this list per source.
+	inherits := []string{}
+	if part.Scope == ScopePaper {
+		override := cfg.PortfolioRisk.Paper
+		above := cfg.PortfolioRisk
+		if part.Source != "" {
+			if src, ok := cfg.paperSource(part.Source); ok && src.PortfolioRisk != nil {
+				override = src.PortfolioRisk
+				above = partitionRiskConfig(cfg, defaultPaperPartition)
+			}
+		}
+		if override != nil && above != nil {
+			for _, f := range scopeRiskInspectFields {
+				if f.Get(override) == 0 && f.Get(above) != 0 {
+					inherits = append(inherits, f.Key)
+				}
+			}
+		}
+	}
+	out["zero_override_inherits"] = inherits
+	if part.Source != "" {
+		out["paper_source"] = part.Source
+	}
+	return out
+}
+
 const inspectHLDetailIndent = "                       "
 
 func markIfDefault(explicit map[string]bool, key string) string {
@@ -638,9 +898,6 @@ func formatTiers(tiers []hlProtectionTier) string {
 	return "[" + strings.Join(parts, ", ") + "]"
 }
 
-// stableParamSummary renders a params map with deterministic key ordering so
-// inspect output is comparable across runs. Lifted instead of using fmt.Sprintf
-// directly because Go map iteration is randomized (CLAUDE.md "Map iteration").
 func stableParamSummary(params map[string]interface{}) string {
 	if len(params) == 0 {
 		return "{}"
@@ -657,11 +914,130 @@ func stableParamSummary(params map[string]interface{}) string {
 	return "{" + strings.Join(parts, ", ") + "}"
 }
 
-// directionProvenance distinguishes the four ways EffectiveDirection can land
-// on "long"/"short"/"both": explicit direction field, legacy allow_shorts
-// bool, or the implicit "long" default. Surfacing this matters because the
-// v14 migration silently rewrites allow_shorts → direction and operators
-// won't see that on a stale checkout.
+func appendDirectionInspectLines(b *strings.Builder, sc StrategyConfig, explicit map[string]bool, cfg *Config, state *AppState) {
+	baseDir := EffectiveDirection(sc)
+	prov := directionProvenance(sc, explicit)
+	policyConfigured := sc.RegimeDirectionalPolicy != nil && sc.RegimeDirectionalPolicy.IsConfigured()
+	if policyConfigured {
+		fmt.Fprintf(b, "  base_direction:      %s (%s)\n", baseDir, prov)
+	} else {
+		fmt.Fprintf(b, "  direction:           %s (%s)\n", baseDir, prov)
+	}
+	if policyConfigured {
+		fmt.Fprintf(b, "  regime_directional_policy:\n")
+		certStatus, certCell := directionalCertInspectStatus(sc, cfg)
+		fmt.Fprintf(b, "    certification:     %s %s (#1085)\n", certStatus, certCell)
+		for _, label := range canonicalTrendRegimeLabels {
+			dir := EffectiveDirectionForRegime(sc, label)
+			inv := false
+			if entry, ok := sc.RegimeDirectionalPolicy.Resolve(label); ok {
+				inv = entry.InvertSignal
+			}
+			fmt.Fprintf(b, "    %s: direction=%s invert_signal=%v (configured)\n", label, dir, inv)
+		}
+	}
+	var stratState *StrategyState
+	if state != nil {
+		stratState = state.Strategies[sc.ID]
+	}
+	if stratState != nil {
+		syms := make([]string, 0, len(stratState.Positions))
+		for sym, pos := range stratState.Positions {
+			if pos == nil || pos.Quantity <= 0 {
+				continue
+			}
+			syms = append(syms, sym)
+		}
+		sort.Strings(syms)
+		for _, sym := range syms {
+			pos := stratState.Positions[sym]
+			currentDirRegime := stratState.Regime
+			if cfg != nil && cfg.Regime != nil {
+				currentDirRegime = regimeLabelFromWindows(stratState.RegimeWindows, sc.RegimeDirectionalWindow, cfg.Regime)
+				if currentDirRegime == "" {
+					currentDirRegime = stratState.Regime
+				}
+			}
+			posDirRegime := positionDirectionalRegimeLabel(pos, sc)
+			effRegime := effectiveRegimeForPolicy(currentDirRegime, posDirRegime, pos.Quantity)
+			effDir := EffectiveDirectionForPositionGated(sc, currentDirRegime, posDirRegime, pos.Quantity, pos.DirectionCertifiedStatesAtOpen)
+			regimeSrc := "stamped at open"
+			if strings.TrimSpace(posDirRegime) == "" {
+				regimeSrc = "current cycle (position regime unknown)"
+			}
+			certSrc := "uncertified at open → base"
+			if pos.DirectionCertifiedAtOpen {
+				certSrc = "certified at open → policy"
+			}
+			fmt.Fprintf(b, "  position %s:         side=%s effective_direction=%s (regime=%s, %s; %s)\n", sym, pos.Side, effDir, effRegime, regimeSrc, certSrc)
+			if len(pos.RegimeWindows) > 0 {
+				fmt.Fprintf(b, "    regime_windows:    %v\n", pos.RegimeWindows)
+			}
+		}
+	}
+}
+
+func directionInspectJSON(sc StrategyConfig, cfg *Config, state *AppState) map[string]interface{} {
+	out := map[string]interface{}{
+		"direction":      EffectiveDirection(sc),
+		"base_direction": EffectiveDirection(sc),
+	}
+	if sc.RegimeDirectionalPolicy != nil && sc.RegimeDirectionalPolicy.IsConfigured() {
+		byRegime := make(map[string]interface{}, len(canonicalTrendRegimeLabels))
+		for _, label := range canonicalTrendRegimeLabels {
+			entry := map[string]interface{}{
+				"direction": EffectiveDirectionForRegime(sc, label),
+			}
+			if e, ok := sc.RegimeDirectionalPolicy.Resolve(label); ok {
+				entry["invert_signal"] = e.InvertSignal
+			}
+			byRegime[label] = entry
+		}
+		out["regime_directional_policy"] = byRegime
+		certStatus, certCell := directionalCertInspectStatus(sc, cfg)
+		out["regime_directional_certification"] = map[string]interface{}{
+			"status": certStatus,
+			"cell":   certCell,
+		}
+	}
+	var stratState *StrategyState
+	if state != nil {
+		stratState = state.Strategies[sc.ID]
+	}
+	if stratState != nil {
+		currentDirRegime := strategyCurrentDirectionalRegime(stratState, sc)
+		if cfg != nil && cfg.Regime != nil {
+			if label := regimeLabelFromWindows(stratState.RegimeWindows, sc.RegimeDirectionalWindow, cfg.Regime); label != "" {
+				currentDirRegime = label
+			}
+		}
+		positions := make([]map[string]interface{}, 0)
+		for sym, pos := range stratState.Positions {
+			if pos == nil || pos.Quantity <= 0 {
+				continue
+			}
+			posDirRegime := positionDirectionalRegimeLabel(pos, sc)
+			positions = append(positions, map[string]interface{}{
+				"symbol":                      sym,
+				"side":                        pos.Side,
+				"quantity":                    pos.Quantity,
+				"regime":                      pos.Regime,
+				"regime_windows":              pos.RegimeWindows,
+				"effective_direction":         EffectiveDirectionForPositionGated(sc, currentDirRegime, posDirRegime, pos.Quantity, pos.DirectionCertifiedStatesAtOpen),
+				"effective_policy_regime":     effectiveRegimeForPolicy(currentDirRegime, posDirRegime, pos.Quantity),
+				"direction_certified_at_open": pos.DirectionCertifiedAtOpen,
+			})
+		}
+		if len(positions) > 0 {
+			sort.Slice(positions, func(i, j int) bool {
+				return positions[i]["symbol"].(string) < positions[j]["symbol"].(string)
+			})
+			out["open_positions"] = positions
+		}
+	}
+	return out
+}
+
 func directionProvenance(sc StrategyConfig, explicit map[string]bool) string {
 	switch {
 	case explicit["direction"]:

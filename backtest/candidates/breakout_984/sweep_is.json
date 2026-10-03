@@ -1,0 +1,2245 @@
+{
+  "window": "is",
+  "window_range": [
+    "2025-06-10",
+    "2026-01-01"
+  ],
+  "strategy": "breakout",
+  "rows": [
+    {
+      "label": "tiered_tp_atr[1x:0.5,2x:0.8,3x:1] trail_atr=3",
+      "stack": {
+        "close_strategies": [
+          {
+            "name": "tiered_tp_atr",
+            "params": {
+              "tp_tiers": [
+                {
+                  "atr_multiple": 1.0,
+                  "close_fraction": 0.5
+                },
+                {
+                  "atr_multiple": 2.0,
+                  "close_fraction": 0.8
+                },
+                {
+                  "atr_multiple": 3.0,
+                  "close_fraction": 1.0
+                }
+              ]
+            }
+          }
+        ],
+        "stop_loss_atr_mult": null,
+        "trailing_stop_atr_mult": 3.0
+      },
+      "legs": {
+        "BTC/USDT 1h": {
+          "sharpe": -3.075,
+          "return_pct": -31.29,
+          "max_dd_pct": -35.34,
+          "ddadj": -0.885,
+          "trades": 129,
+          "bh_return_pct": -20.07,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "BTC/USDT 4h": {
+          "sharpe": -0.47,
+          "return_pct": -5.58,
+          "max_dd_pct": -10.54,
+          "ddadj": -0.529,
+          "trades": 39,
+          "bh_return_pct": -19.54,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "ETH/USDT 1h": {
+          "sharpe": 1.856,
+          "return_pct": 34.14,
+          "max_dd_pct": -11.58,
+          "ddadj": 2.948,
+          "trades": 159,
+          "bh_return_pct": 10.85,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "ETH/USDT 4h": {
+          "sharpe": 2.288,
+          "return_pct": 38.36,
+          "max_dd_pct": -9.05,
+          "ddadj": 4.239,
+          "trades": 43,
+          "bh_return_pct": 11.35,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "SOL/USDT 1h": {
+          "sharpe": -0.812,
+          "return_pct": -17.29,
+          "max_dd_pct": -23.04,
+          "ddadj": -0.75,
+          "trades": 145,
+          "bh_return_pct": -21.9,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "SOL/USDT 4h": {
+          "sharpe": 0.145,
+          "return_pct": -0.25,
+          "max_dd_pct": -29.0,
+          "ddadj": -0.009,
+          "trades": 43,
+          "bh_return_pct": -21.19,
+          "liquidated": false,
+          "span_days": 205.0
+        }
+      },
+      "mean_ddadj": 0.836,
+      "mean_sharpe": -0.011,
+      "mean_return_pct": 3.02,
+      "worst_max_dd_pct": -35.34,
+      "total_trades": 558
+    },
+    {
+      "label": "trail_atr=3",
+      "stack": {
+        "close_strategies": [],
+        "stop_loss_atr_mult": null,
+        "trailing_stop_atr_mult": 3.0
+      },
+      "legs": {
+        "BTC/USDT 1h": {
+          "sharpe": -1.936,
+          "return_pct": -24.8,
+          "max_dd_pct": -30.33,
+          "ddadj": -0.818,
+          "trades": 50,
+          "bh_return_pct": -20.07,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "BTC/USDT 4h": {
+          "sharpe": -0.601,
+          "return_pct": -8.25,
+          "max_dd_pct": -17.72,
+          "ddadj": -0.466,
+          "trades": 14,
+          "bh_return_pct": -19.54,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "ETH/USDT 1h": {
+          "sharpe": 1.24,
+          "return_pct": 27.79,
+          "max_dd_pct": -20.74,
+          "ddadj": 1.34,
+          "trades": 57,
+          "bh_return_pct": 10.85,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "ETH/USDT 4h": {
+          "sharpe": 2.369,
+          "return_pct": 57.15,
+          "max_dd_pct": -19.01,
+          "ddadj": 3.006,
+          "trades": 12,
+          "bh_return_pct": 11.35,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "SOL/USDT 1h": {
+          "sharpe": 0.555,
+          "return_pct": 8.67,
+          "max_dd_pct": -31.72,
+          "ddadj": 0.273,
+          "trades": 53,
+          "bh_return_pct": -21.9,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "SOL/USDT 4h": {
+          "sharpe": -1.104,
+          "return_pct": -24.49,
+          "max_dd_pct": -39.75,
+          "ddadj": -0.616,
+          "trades": 16,
+          "bh_return_pct": -21.19,
+          "liquidated": false,
+          "span_days": 205.0
+        }
+      },
+      "mean_ddadj": 0.453,
+      "mean_sharpe": 0.087,
+      "mean_return_pct": 6.01,
+      "worst_max_dd_pct": -39.75,
+      "total_trades": 202
+    },
+    {
+      "label": "tiered_tp_atr[1x:0.5,2x:0.8,3x:1]",
+      "stack": {
+        "close_strategies": [
+          {
+            "name": "tiered_tp_atr",
+            "params": {
+              "tp_tiers": [
+                {
+                  "atr_multiple": 1.0,
+                  "close_fraction": 0.5
+                },
+                {
+                  "atr_multiple": 2.0,
+                  "close_fraction": 0.8
+                },
+                {
+                  "atr_multiple": 3.0,
+                  "close_fraction": 1.0
+                }
+              ]
+            }
+          }
+        ],
+        "stop_loss_atr_mult": null,
+        "trailing_stop_atr_mult": null
+      },
+      "legs": {
+        "BTC/USDT 1h": {
+          "sharpe": -0.55,
+          "return_pct": -7.54,
+          "max_dd_pct": -17.51,
+          "ddadj": -0.431,
+          "trades": 21,
+          "bh_return_pct": -20.07,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "BTC/USDT 4h": {
+          "sharpe": -0.764,
+          "return_pct": -7.24,
+          "max_dd_pct": -17.27,
+          "ddadj": -0.419,
+          "trades": 10,
+          "bh_return_pct": -19.54,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "ETH/USDT 1h": {
+          "sharpe": -0.302,
+          "return_pct": -16.66,
+          "max_dd_pct": -45.32,
+          "ddadj": -0.368,
+          "trades": 42,
+          "bh_return_pct": 10.85,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "ETH/USDT 4h": {
+          "sharpe": 1.224,
+          "return_pct": 19.47,
+          "max_dd_pct": -22.07,
+          "ddadj": 0.882,
+          "trades": 20,
+          "bh_return_pct": 11.35,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "SOL/USDT 1h": {
+          "sharpe": 1.03,
+          "return_pct": 18.7,
+          "max_dd_pct": -18.68,
+          "ddadj": 1.001,
+          "trades": 36,
+          "bh_return_pct": -21.9,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "SOL/USDT 4h": {
+          "sharpe": 1.381,
+          "return_pct": 18.48,
+          "max_dd_pct": -11.84,
+          "ddadj": 1.561,
+          "trades": 19,
+          "bh_return_pct": -21.19,
+          "liquidated": false,
+          "span_days": 205.0
+        }
+      },
+      "mean_ddadj": 0.371,
+      "mean_sharpe": 0.337,
+      "mean_return_pct": 4.2,
+      "worst_max_dd_pct": -45.32,
+      "total_trades": 148
+    },
+    {
+      "label": "baseline",
+      "stack": {
+        "close_strategies": [],
+        "stop_loss_atr_mult": null,
+        "trailing_stop_atr_mult": null
+      },
+      "legs": {
+        "BTC/USDT 1h": {
+          "sharpe": -1.105,
+          "return_pct": -17.96,
+          "max_dd_pct": -25.27,
+          "ddadj": -0.711,
+          "trades": 35,
+          "bh_return_pct": -20.07,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "BTC/USDT 4h": {
+          "sharpe": -1.404,
+          "return_pct": -19.51,
+          "max_dd_pct": -24.56,
+          "ddadj": -0.794,
+          "trades": 13,
+          "bh_return_pct": -19.54,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "ETH/USDT 1h": {
+          "sharpe": 2.228,
+          "return_pct": 70.11,
+          "max_dd_pct": -19.01,
+          "ddadj": 3.688,
+          "trades": 38,
+          "bh_return_pct": 10.85,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "ETH/USDT 4h": {
+          "sharpe": 0.76,
+          "return_pct": 14.48,
+          "max_dd_pct": -35.79,
+          "ddadj": 0.405,
+          "trades": 11,
+          "bh_return_pct": 11.35,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "SOL/USDT 1h": {
+          "sharpe": -0.244,
+          "return_pct": -14.24,
+          "max_dd_pct": -42.32,
+          "ddadj": -0.336,
+          "trades": 40,
+          "bh_return_pct": -21.9,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "SOL/USDT 4h": {
+          "sharpe": -0.567,
+          "return_pct": -21.21,
+          "max_dd_pct": -52.17,
+          "ddadj": -0.407,
+          "trades": 11,
+          "bh_return_pct": -21.19,
+          "liquidated": false,
+          "span_days": 205.0
+        }
+      },
+      "mean_ddadj": 0.308,
+      "mean_sharpe": -0.055,
+      "mean_return_pct": 1.94,
+      "worst_max_dd_pct": -52.17,
+      "total_trades": 148
+    },
+    {
+      "label": "tiered_tp_atr[1.5x:0.4,3x:0.8,5x:1] trail_atr=3",
+      "stack": {
+        "close_strategies": [
+          {
+            "name": "tiered_tp_atr",
+            "params": {
+              "tp_tiers": [
+                {
+                  "atr_multiple": 1.5,
+                  "close_fraction": 0.4
+                },
+                {
+                  "atr_multiple": 3.0,
+                  "close_fraction": 0.8
+                },
+                {
+                  "atr_multiple": 5.0,
+                  "close_fraction": 1.0
+                }
+              ]
+            }
+          }
+        ],
+        "stop_loss_atr_mult": null,
+        "trailing_stop_atr_mult": 3.0
+      },
+      "legs": {
+        "BTC/USDT 1h": {
+          "sharpe": -3.186,
+          "return_pct": -32.61,
+          "max_dd_pct": -36.05,
+          "ddadj": -0.905,
+          "trades": 116,
+          "bh_return_pct": -20.07,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "BTC/USDT 4h": {
+          "sharpe": -0.716,
+          "return_pct": -7.62,
+          "max_dd_pct": -13.75,
+          "ddadj": -0.554,
+          "trades": 33,
+          "bh_return_pct": -19.54,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "ETH/USDT 1h": {
+          "sharpe": 1.077,
+          "return_pct": 19.59,
+          "max_dd_pct": -18.19,
+          "ddadj": 1.077,
+          "trades": 140,
+          "bh_return_pct": 10.85,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "ETH/USDT 4h": {
+          "sharpe": 1.883,
+          "return_pct": 30.5,
+          "max_dd_pct": -11.48,
+          "ddadj": 2.657,
+          "trades": 38,
+          "bh_return_pct": 11.35,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "SOL/USDT 1h": {
+          "sharpe": -0.475,
+          "return_pct": -12.11,
+          "max_dd_pct": -25.68,
+          "ddadj": -0.472,
+          "trades": 148,
+          "bh_return_pct": -21.9,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "SOL/USDT 4h": {
+          "sharpe": -0.725,
+          "return_pct": -14.86,
+          "max_dd_pct": -34.55,
+          "ddadj": -0.43,
+          "trades": 37,
+          "bh_return_pct": -21.19,
+          "liquidated": false,
+          "span_days": 205.0
+        }
+      },
+      "mean_ddadj": 0.229,
+      "mean_sharpe": -0.357,
+      "mean_return_pct": -2.85,
+      "worst_max_dd_pct": -36.05,
+      "total_trades": 512
+    },
+    {
+      "label": "tiered_tp_atr[2x:0.33,4x:0.66,6x:1] trail_atr=3",
+      "stack": {
+        "close_strategies": [
+          {
+            "name": "tiered_tp_atr",
+            "params": {
+              "tp_tiers": [
+                {
+                  "atr_multiple": 2.0,
+                  "close_fraction": 0.33
+                },
+                {
+                  "atr_multiple": 4.0,
+                  "close_fraction": 0.66
+                },
+                {
+                  "atr_multiple": 6.0,
+                  "close_fraction": 1.0
+                }
+              ]
+            }
+          }
+        ],
+        "stop_loss_atr_mult": null,
+        "trailing_stop_atr_mult": 3.0
+      },
+      "legs": {
+        "BTC/USDT 1h": {
+          "sharpe": -2.601,
+          "return_pct": -27.02,
+          "max_dd_pct": -30.94,
+          "ddadj": -0.873,
+          "trades": 174,
+          "bh_return_pct": -20.07,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "BTC/USDT 4h": {
+          "sharpe": -0.587,
+          "return_pct": -6.73,
+          "max_dd_pct": -14.33,
+          "ddadj": -0.47,
+          "trades": 30,
+          "bh_return_pct": -19.54,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "ETH/USDT 1h": {
+          "sharpe": 1.408,
+          "return_pct": 29.05,
+          "max_dd_pct": -17.06,
+          "ddadj": 1.703,
+          "trades": 162,
+          "bh_return_pct": 10.85,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "ETH/USDT 4h": {
+          "sharpe": 1.462,
+          "return_pct": 26.68,
+          "max_dd_pct": -17.56,
+          "ddadj": 1.519,
+          "trades": 49,
+          "bh_return_pct": 11.35,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "SOL/USDT 1h": {
+          "sharpe": -0.05,
+          "return_pct": -4.86,
+          "max_dd_pct": -28.44,
+          "ddadj": -0.171,
+          "trades": 150,
+          "bh_return_pct": -21.9,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "SOL/USDT 4h": {
+          "sharpe": -0.635,
+          "return_pct": -14.5,
+          "max_dd_pct": -36.56,
+          "ddadj": -0.397,
+          "trades": 48,
+          "bh_return_pct": -21.19,
+          "liquidated": false,
+          "span_days": 205.0
+        }
+      },
+      "mean_ddadj": 0.218,
+      "mean_sharpe": -0.167,
+      "mean_return_pct": 0.44,
+      "worst_max_dd_pct": -36.56,
+      "total_trades": 613
+    },
+    {
+      "label": "tiered_tp_atr[2x:0.33,4x:0.66,6x:1]",
+      "stack": {
+        "close_strategies": [
+          {
+            "name": "tiered_tp_atr",
+            "params": {
+              "tp_tiers": [
+                {
+                  "atr_multiple": 2.0,
+                  "close_fraction": 0.33
+                },
+                {
+                  "atr_multiple": 4.0,
+                  "close_fraction": 0.66
+                },
+                {
+                  "atr_multiple": 6.0,
+                  "close_fraction": 1.0
+                }
+              ]
+            }
+          }
+        ],
+        "stop_loss_atr_mult": null,
+        "trailing_stop_atr_mult": null
+      },
+      "legs": {
+        "BTC/USDT 1h": {
+          "sharpe": 0.135,
+          "return_pct": 0.12,
+          "max_dd_pct": -13.2,
+          "ddadj": 0.009,
+          "trades": 20,
+          "bh_return_pct": -20.07,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "BTC/USDT 4h": {
+          "sharpe": 0.96,
+          "return_pct": 10.79,
+          "max_dd_pct": -9.86,
+          "ddadj": 1.094,
+          "trades": 18,
+          "bh_return_pct": -19.54,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "ETH/USDT 1h": {
+          "sharpe": 1.158,
+          "return_pct": 21.51,
+          "max_dd_pct": -24.26,
+          "ddadj": 0.887,
+          "trades": 35,
+          "bh_return_pct": 10.85,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "ETH/USDT 4h": {
+          "sharpe": 0.13,
+          "return_pct": -4.71,
+          "max_dd_pct": -44.38,
+          "ddadj": -0.106,
+          "trades": 17,
+          "bh_return_pct": 11.35,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "SOL/USDT 1h": {
+          "sharpe": -0.341,
+          "return_pct": -12.63,
+          "max_dd_pct": -35.9,
+          "ddadj": -0.352,
+          "trades": 19,
+          "bh_return_pct": -21.9,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "SOL/USDT 4h": {
+          "sharpe": -0.263,
+          "return_pct": -10.82,
+          "max_dd_pct": -35.38,
+          "ddadj": -0.306,
+          "trades": 14,
+          "bh_return_pct": -21.19,
+          "liquidated": false,
+          "span_days": 205.0
+        }
+      },
+      "mean_ddadj": 0.204,
+      "mean_sharpe": 0.296,
+      "mean_return_pct": 0.71,
+      "worst_max_dd_pct": -44.38,
+      "total_trades": 123
+    },
+    {
+      "label": "tiered_tp_atr[1.5x:0.4,3x:0.8,5x:1]",
+      "stack": {
+        "close_strategies": [
+          {
+            "name": "tiered_tp_atr",
+            "params": {
+              "tp_tiers": [
+                {
+                  "atr_multiple": 1.5,
+                  "close_fraction": 0.4
+                },
+                {
+                  "atr_multiple": 3.0,
+                  "close_fraction": 0.8
+                },
+                {
+                  "atr_multiple": 5.0,
+                  "close_fraction": 1.0
+                }
+              ]
+            }
+          }
+        ],
+        "stop_loss_atr_mult": null,
+        "trailing_stop_atr_mult": null
+      },
+      "legs": {
+        "BTC/USDT 1h": {
+          "sharpe": -1.066,
+          "return_pct": -22.81,
+          "max_dd_pct": -33.89,
+          "ddadj": -0.673,
+          "trades": 26,
+          "bh_return_pct": -20.07,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "BTC/USDT 4h": {
+          "sharpe": 0.271,
+          "return_pct": 1.61,
+          "max_dd_pct": -7.85,
+          "ddadj": 0.205,
+          "trades": 16,
+          "bh_return_pct": -19.54,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "ETH/USDT 1h": {
+          "sharpe": -0.274,
+          "return_pct": -16.97,
+          "max_dd_pct": -45.42,
+          "ddadj": -0.374,
+          "trades": 50,
+          "bh_return_pct": 10.85,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "ETH/USDT 4h": {
+          "sharpe": 2.396,
+          "return_pct": 28.28,
+          "max_dd_pct": -9.16,
+          "ddadj": 3.087,
+          "trades": 17,
+          "bh_return_pct": 11.35,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "SOL/USDT 1h": {
+          "sharpe": -0.808,
+          "return_pct": -33.69,
+          "max_dd_pct": -53.44,
+          "ddadj": -0.63,
+          "trades": 26,
+          "bh_return_pct": -21.9,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "SOL/USDT 4h": {
+          "sharpe": -0.926,
+          "return_pct": -35.07,
+          "max_dd_pct": -52.64,
+          "ddadj": -0.666,
+          "trades": 13,
+          "bh_return_pct": -21.19,
+          "liquidated": false,
+          "span_days": 205.0
+        }
+      },
+      "mean_ddadj": 0.158,
+      "mean_sharpe": -0.068,
+      "mean_return_pct": -13.11,
+      "worst_max_dd_pct": -53.44,
+      "total_trades": 148
+    },
+    {
+      "label": "tiered_tp_atr[1x:0.5,2x:0.8,3x:1] sl_atr=1.5",
+      "stack": {
+        "close_strategies": [
+          {
+            "name": "tiered_tp_atr",
+            "params": {
+              "tp_tiers": [
+                {
+                  "atr_multiple": 1.0,
+                  "close_fraction": 0.5
+                },
+                {
+                  "atr_multiple": 2.0,
+                  "close_fraction": 0.8
+                },
+                {
+                  "atr_multiple": 3.0,
+                  "close_fraction": 1.0
+                }
+              ]
+            }
+          }
+        ],
+        "stop_loss_atr_mult": 1.5,
+        "trailing_stop_atr_mult": null
+      },
+      "legs": {
+        "BTC/USDT 1h": {
+          "sharpe": -3.365,
+          "return_pct": -27.09,
+          "max_dd_pct": -27.36,
+          "ddadj": -0.99,
+          "trades": 127,
+          "bh_return_pct": -20.07,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "BTC/USDT 4h": {
+          "sharpe": -2.706,
+          "return_pct": -21.12,
+          "max_dd_pct": -21.98,
+          "ddadj": -0.961,
+          "trades": 40,
+          "bh_return_pct": -19.54,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "ETH/USDT 1h": {
+          "sharpe": 0.014,
+          "return_pct": -2.22,
+          "max_dd_pct": -15.89,
+          "ddadj": -0.14,
+          "trades": 170,
+          "bh_return_pct": 10.85,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "ETH/USDT 4h": {
+          "sharpe": 1.971,
+          "return_pct": 29.84,
+          "max_dd_pct": -8.27,
+          "ddadj": 3.608,
+          "trades": 46,
+          "bh_return_pct": 11.35,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "SOL/USDT 1h": {
+          "sharpe": -2.159,
+          "return_pct": -34.15,
+          "max_dd_pct": -34.58,
+          "ddadj": -0.988,
+          "trades": 144,
+          "bh_return_pct": -21.9,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "SOL/USDT 4h": {
+          "sharpe": -0.155,
+          "return_pct": -4.05,
+          "max_dd_pct": -20.85,
+          "ddadj": -0.194,
+          "trades": 42,
+          "bh_return_pct": -21.19,
+          "liquidated": false,
+          "span_days": 205.0
+        }
+      },
+      "mean_ddadj": 0.056,
+      "mean_sharpe": -1.067,
+      "mean_return_pct": -9.8,
+      "worst_max_dd_pct": -34.58,
+      "total_trades": 569
+    },
+    {
+      "label": "tiered_tp_atr[1x:0.5,2x:0.8,3x:1] trail_atr=2",
+      "stack": {
+        "close_strategies": [
+          {
+            "name": "tiered_tp_atr",
+            "params": {
+              "tp_tiers": [
+                {
+                  "atr_multiple": 1.0,
+                  "close_fraction": 0.5
+                },
+                {
+                  "atr_multiple": 2.0,
+                  "close_fraction": 0.8
+                },
+                {
+                  "atr_multiple": 3.0,
+                  "close_fraction": 1.0
+                }
+              ]
+            }
+          }
+        ],
+        "stop_loss_atr_mult": null,
+        "trailing_stop_atr_mult": 2.0
+      },
+      "legs": {
+        "BTC/USDT 1h": {
+          "sharpe": -3.165,
+          "return_pct": -29.71,
+          "max_dd_pct": -30.19,
+          "ddadj": -0.984,
+          "trades": 128,
+          "bh_return_pct": -20.07,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "BTC/USDT 4h": {
+          "sharpe": -1.778,
+          "return_pct": -15.33,
+          "max_dd_pct": -16.26,
+          "ddadj": -0.943,
+          "trades": 37,
+          "bh_return_pct": -19.54,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "ETH/USDT 1h": {
+          "sharpe": 0.203,
+          "return_pct": 0.92,
+          "max_dd_pct": -17.38,
+          "ddadj": 0.053,
+          "trades": 169,
+          "bh_return_pct": 10.85,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "ETH/USDT 4h": {
+          "sharpe": 1.857,
+          "return_pct": 28.1,
+          "max_dd_pct": -9.78,
+          "ddadj": 2.873,
+          "trades": 46,
+          "bh_return_pct": 11.35,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "SOL/USDT 1h": {
+          "sharpe": -1.336,
+          "return_pct": -23.88,
+          "max_dd_pct": -25.11,
+          "ddadj": -0.951,
+          "trades": 146,
+          "bh_return_pct": -21.9,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "SOL/USDT 4h": {
+          "sharpe": 0.099,
+          "return_pct": -0.68,
+          "max_dd_pct": -19.13,
+          "ddadj": -0.036,
+          "trades": 44,
+          "bh_return_pct": -21.19,
+          "liquidated": false,
+          "span_days": 205.0
+        }
+      },
+      "mean_ddadj": 0.002,
+      "mean_sharpe": -0.687,
+      "mean_return_pct": -6.76,
+      "worst_max_dd_pct": -30.19,
+      "total_trades": 570
+    },
+    {
+      "label": "tiered_tp_atr[1x:0.5,2x:0.8,3x:1] sl_atr=3",
+      "stack": {
+        "close_strategies": [
+          {
+            "name": "tiered_tp_atr",
+            "params": {
+              "tp_tiers": [
+                {
+                  "atr_multiple": 1.0,
+                  "close_fraction": 0.5
+                },
+                {
+                  "atr_multiple": 2.0,
+                  "close_fraction": 0.8
+                },
+                {
+                  "atr_multiple": 3.0,
+                  "close_fraction": 1.0
+                }
+              ]
+            }
+          }
+        ],
+        "stop_loss_atr_mult": 3.0,
+        "trailing_stop_atr_mult": null
+      },
+      "legs": {
+        "BTC/USDT 1h": {
+          "sharpe": -3.716,
+          "return_pct": -36.93,
+          "max_dd_pct": -37.5,
+          "ddadj": -0.985,
+          "trades": 125,
+          "bh_return_pct": -20.07,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "BTC/USDT 4h": {
+          "sharpe": -0.962,
+          "return_pct": -10.54,
+          "max_dd_pct": -13.72,
+          "ddadj": -0.768,
+          "trades": 38,
+          "bh_return_pct": -19.54,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "ETH/USDT 1h": {
+          "sharpe": 0.802,
+          "return_pct": 12.24,
+          "max_dd_pct": -16.08,
+          "ddadj": 0.761,
+          "trades": 156,
+          "bh_return_pct": 10.85,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "ETH/USDT 4h": {
+          "sharpe": 1.448,
+          "return_pct": 23.34,
+          "max_dd_pct": -16.87,
+          "ddadj": 1.384,
+          "trades": 43,
+          "bh_return_pct": 11.35,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "SOL/USDT 1h": {
+          "sharpe": -0.257,
+          "return_pct": -8.26,
+          "max_dd_pct": -20.78,
+          "ddadj": -0.397,
+          "trades": 141,
+          "bh_return_pct": -21.9,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "SOL/USDT 4h": {
+          "sharpe": 0.119,
+          "return_pct": -0.65,
+          "max_dd_pct": -29.85,
+          "ddadj": -0.022,
+          "trades": 43,
+          "bh_return_pct": -21.19,
+          "liquidated": false,
+          "span_days": 205.0
+        }
+      },
+      "mean_ddadj": -0.005,
+      "mean_sharpe": -0.428,
+      "mean_return_pct": -3.47,
+      "worst_max_dd_pct": -37.5,
+      "total_trades": 546
+    },
+    {
+      "label": "tiered_tp_atr[1x:0.5,2x:0.8,3x:1] sl_atr=2",
+      "stack": {
+        "close_strategies": [
+          {
+            "name": "tiered_tp_atr",
+            "params": {
+              "tp_tiers": [
+                {
+                  "atr_multiple": 1.0,
+                  "close_fraction": 0.5
+                },
+                {
+                  "atr_multiple": 2.0,
+                  "close_fraction": 0.8
+                },
+                {
+                  "atr_multiple": 3.0,
+                  "close_fraction": 1.0
+                }
+              ]
+            }
+          }
+        ],
+        "stop_loss_atr_mult": 2.0,
+        "trailing_stop_atr_mult": null
+      },
+      "legs": {
+        "BTC/USDT 1h": {
+          "sharpe": -3.723,
+          "return_pct": -34.21,
+          "max_dd_pct": -35.88,
+          "ddadj": -0.953,
+          "trades": 128,
+          "bh_return_pct": -20.07,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "BTC/USDT 4h": {
+          "sharpe": -2.081,
+          "return_pct": -18.08,
+          "max_dd_pct": -21.42,
+          "ddadj": -0.844,
+          "trades": 40,
+          "bh_return_pct": -19.54,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "ETH/USDT 1h": {
+          "sharpe": 0.384,
+          "return_pct": 4.04,
+          "max_dd_pct": -16.4,
+          "ddadj": 0.246,
+          "trades": 165,
+          "bh_return_pct": 10.85,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "ETH/USDT 4h": {
+          "sharpe": 2.128,
+          "return_pct": 34.46,
+          "max_dd_pct": -11.63,
+          "ddadj": 2.963,
+          "trades": 43,
+          "bh_return_pct": 11.35,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "SOL/USDT 1h": {
+          "sharpe": -1.869,
+          "return_pct": -31.76,
+          "max_dd_pct": -31.91,
+          "ddadj": -0.995,
+          "trades": 143,
+          "bh_return_pct": -21.9,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "SOL/USDT 4h": {
+          "sharpe": -0.95,
+          "return_pct": -15.27,
+          "max_dd_pct": -26.25,
+          "ddadj": -0.582,
+          "trades": 41,
+          "bh_return_pct": -21.19,
+          "liquidated": false,
+          "span_days": 205.0
+        }
+      },
+      "mean_ddadj": -0.027,
+      "mean_sharpe": -1.018,
+      "mean_return_pct": -10.14,
+      "worst_max_dd_pct": -35.88,
+      "total_trades": 560
+    },
+    {
+      "label": "sl_atr=3",
+      "stack": {
+        "close_strategies": [],
+        "stop_loss_atr_mult": 3.0,
+        "trailing_stop_atr_mult": null
+      },
+      "legs": {
+        "BTC/USDT 1h": {
+          "sharpe": -1.889,
+          "return_pct": -26.17,
+          "max_dd_pct": -27.45,
+          "ddadj": -0.953,
+          "trades": 43,
+          "bh_return_pct": -20.07,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "BTC/USDT 4h": {
+          "sharpe": -0.978,
+          "return_pct": -13.75,
+          "max_dd_pct": -18.93,
+          "ddadj": -0.726,
+          "trades": 13,
+          "bh_return_pct": -19.54,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "ETH/USDT 1h": {
+          "sharpe": 1.561,
+          "return_pct": 41.6,
+          "max_dd_pct": -24.03,
+          "ddadj": 1.731,
+          "trades": 43,
+          "bh_return_pct": 10.85,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "ETH/USDT 4h": {
+          "sharpe": 0.503,
+          "return_pct": 7.26,
+          "max_dd_pct": -39.31,
+          "ddadj": 0.185,
+          "trades": 12,
+          "bh_return_pct": 11.35,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "SOL/USDT 1h": {
+          "sharpe": -0.005,
+          "return_pct": -7.21,
+          "max_dd_pct": -36.75,
+          "ddadj": -0.196,
+          "trades": 44,
+          "bh_return_pct": -21.9,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "SOL/USDT 4h": {
+          "sharpe": -0.238,
+          "return_pct": -12.9,
+          "max_dd_pct": -47.12,
+          "ddadj": -0.274,
+          "trades": 11,
+          "bh_return_pct": -21.19,
+          "liquidated": false,
+          "span_days": 205.0
+        }
+      },
+      "mean_ddadj": -0.039,
+      "mean_sharpe": -0.174,
+      "mean_return_pct": -1.86,
+      "worst_max_dd_pct": -47.12,
+      "total_trades": 166
+    },
+    {
+      "label": "tiered_tp_atr[2x:0.33,4x:0.66,6x:1] sl_atr=3",
+      "stack": {
+        "close_strategies": [
+          {
+            "name": "tiered_tp_atr",
+            "params": {
+              "tp_tiers": [
+                {
+                  "atr_multiple": 2.0,
+                  "close_fraction": 0.33
+                },
+                {
+                  "atr_multiple": 4.0,
+                  "close_fraction": 0.66
+                },
+                {
+                  "atr_multiple": 6.0,
+                  "close_fraction": 1.0
+                }
+              ]
+            }
+          }
+        ],
+        "stop_loss_atr_mult": 3.0,
+        "trailing_stop_atr_mult": null
+      },
+      "legs": {
+        "BTC/USDT 1h": {
+          "sharpe": -1.918,
+          "return_pct": -21.71,
+          "max_dd_pct": -24.57,
+          "ddadj": -0.884,
+          "trades": 155,
+          "bh_return_pct": -20.07,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "BTC/USDT 4h": {
+          "sharpe": -0.319,
+          "return_pct": -4.34,
+          "max_dd_pct": -10.48,
+          "ddadj": -0.414,
+          "trades": 29,
+          "bh_return_pct": -19.54,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "ETH/USDT 1h": {
+          "sharpe": 0.897,
+          "return_pct": 16.12,
+          "max_dd_pct": -15.92,
+          "ddadj": 1.013,
+          "trades": 223,
+          "bh_return_pct": 10.85,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "ETH/USDT 4h": {
+          "sharpe": 0.231,
+          "return_pct": 0.91,
+          "max_dd_pct": -35.05,
+          "ddadj": 0.026,
+          "trades": 36,
+          "bh_return_pct": 11.35,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "SOL/USDT 1h": {
+          "sharpe": 0.64,
+          "return_pct": 10.42,
+          "max_dd_pct": -25.01,
+          "ddadj": 0.417,
+          "trades": 167,
+          "bh_return_pct": -21.9,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "SOL/USDT 4h": {
+          "sharpe": -1.266,
+          "return_pct": -26.3,
+          "max_dd_pct": -44.97,
+          "ddadj": -0.585,
+          "trades": 44,
+          "bh_return_pct": -21.19,
+          "liquidated": false,
+          "span_days": 205.0
+        }
+      },
+      "mean_ddadj": -0.071,
+      "mean_sharpe": -0.289,
+      "mean_return_pct": -4.15,
+      "worst_max_dd_pct": -44.97,
+      "total_trades": 654
+    },
+    {
+      "label": "tiered_tp_atr[1.5x:0.4,3x:0.8,5x:1] sl_atr=3",
+      "stack": {
+        "close_strategies": [
+          {
+            "name": "tiered_tp_atr",
+            "params": {
+              "tp_tiers": [
+                {
+                  "atr_multiple": 1.5,
+                  "close_fraction": 0.4
+                },
+                {
+                  "atr_multiple": 3.0,
+                  "close_fraction": 0.8
+                },
+                {
+                  "atr_multiple": 5.0,
+                  "close_fraction": 1.0
+                }
+              ]
+            }
+          }
+        ],
+        "stop_loss_atr_mult": 3.0,
+        "trailing_stop_atr_mult": null
+      },
+      "legs": {
+        "BTC/USDT 1h": {
+          "sharpe": -3.152,
+          "return_pct": -30.58,
+          "max_dd_pct": -31.67,
+          "ddadj": -0.966,
+          "trades": 120,
+          "bh_return_pct": -20.07,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "BTC/USDT 4h": {
+          "sharpe": -0.313,
+          "return_pct": -3.94,
+          "max_dd_pct": -8.18,
+          "ddadj": -0.482,
+          "trades": 36,
+          "bh_return_pct": -19.54,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "ETH/USDT 1h": {
+          "sharpe": 0.442,
+          "return_pct": 5.42,
+          "max_dd_pct": -20.18,
+          "ddadj": 0.269,
+          "trades": 120,
+          "bh_return_pct": 10.85,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "ETH/USDT 4h": {
+          "sharpe": 0.664,
+          "return_pct": 9.24,
+          "max_dd_pct": -23.85,
+          "ddadj": 0.387,
+          "trades": 41,
+          "bh_return_pct": 11.35,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "SOL/USDT 1h": {
+          "sharpe": 0.806,
+          "return_pct": 13.63,
+          "max_dd_pct": -17.74,
+          "ddadj": 0.768,
+          "trades": 113,
+          "bh_return_pct": -21.9,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "SOL/USDT 4h": {
+          "sharpe": -1.07,
+          "return_pct": -20.23,
+          "max_dd_pct": -40.64,
+          "ddadj": -0.498,
+          "trades": 33,
+          "bh_return_pct": -21.19,
+          "liquidated": false,
+          "span_days": 205.0
+        }
+      },
+      "mean_ddadj": -0.087,
+      "mean_sharpe": -0.437,
+      "mean_return_pct": -4.41,
+      "worst_max_dd_pct": -40.64,
+      "total_trades": 463
+    },
+    {
+      "label": "tiered_tp_atr[1.5x:0.4,3x:0.8,5x:1] trail_atr=2",
+      "stack": {
+        "close_strategies": [
+          {
+            "name": "tiered_tp_atr",
+            "params": {
+              "tp_tiers": [
+                {
+                  "atr_multiple": 1.5,
+                  "close_fraction": 0.4
+                },
+                {
+                  "atr_multiple": 3.0,
+                  "close_fraction": 0.8
+                },
+                {
+                  "atr_multiple": 5.0,
+                  "close_fraction": 1.0
+                }
+              ]
+            }
+          }
+        ],
+        "stop_loss_atr_mult": null,
+        "trailing_stop_atr_mult": 2.0
+      },
+      "legs": {
+        "BTC/USDT 1h": {
+          "sharpe": -2.559,
+          "return_pct": -25.26,
+          "max_dd_pct": -27.12,
+          "ddadj": -0.931,
+          "trades": 166,
+          "bh_return_pct": -20.07,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "BTC/USDT 4h": {
+          "sharpe": -1.394,
+          "return_pct": -12.24,
+          "max_dd_pct": -17.09,
+          "ddadj": -0.716,
+          "trades": 37,
+          "bh_return_pct": -19.54,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "ETH/USDT 1h": {
+          "sharpe": -0.762,
+          "return_pct": -14.88,
+          "max_dd_pct": -24.67,
+          "ddadj": -0.603,
+          "trades": 157,
+          "bh_return_pct": 10.85,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "ETH/USDT 4h": {
+          "sharpe": 1.483,
+          "return_pct": 20.69,
+          "max_dd_pct": -12.09,
+          "ddadj": 1.711,
+          "trades": 44,
+          "bh_return_pct": 11.35,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "SOL/USDT 1h": {
+          "sharpe": -0.692,
+          "return_pct": -14.18,
+          "max_dd_pct": -23.7,
+          "ddadj": -0.598,
+          "trades": 133,
+          "bh_return_pct": -21.9,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "SOL/USDT 4h": {
+          "sharpe": 0.51,
+          "return_pct": 6.11,
+          "max_dd_pct": -23.39,
+          "ddadj": 0.261,
+          "trades": 37,
+          "bh_return_pct": -21.19,
+          "liquidated": false,
+          "span_days": 205.0
+        }
+      },
+      "mean_ddadj": -0.146,
+      "mean_sharpe": -0.569,
+      "mean_return_pct": -6.63,
+      "worst_max_dd_pct": -27.12,
+      "total_trades": 574
+    },
+    {
+      "label": "sl_atr=1.5",
+      "stack": {
+        "close_strategies": [],
+        "stop_loss_atr_mult": 1.5,
+        "trailing_stop_atr_mult": null
+      },
+      "legs": {
+        "BTC/USDT 1h": {
+          "sharpe": -2.098,
+          "return_pct": -25.4,
+          "max_dd_pct": -26.2,
+          "ddadj": -0.969,
+          "trades": 52,
+          "bh_return_pct": -20.07,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "BTC/USDT 4h": {
+          "sharpe": -2.219,
+          "return_pct": -24.59,
+          "max_dd_pct": -27.55,
+          "ddadj": -0.893,
+          "trades": 18,
+          "bh_return_pct": -19.54,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "ETH/USDT 1h": {
+          "sharpe": 1.515,
+          "return_pct": 38.23,
+          "max_dd_pct": -23.52,
+          "ddadj": 1.625,
+          "trades": 51,
+          "bh_return_pct": 10.85,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "ETH/USDT 4h": {
+          "sharpe": 0.619,
+          "return_pct": 9.88,
+          "max_dd_pct": -29.39,
+          "ddadj": 0.336,
+          "trades": 15,
+          "bh_return_pct": 11.35,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "SOL/USDT 1h": {
+          "sharpe": -1.159,
+          "return_pct": -31.42,
+          "max_dd_pct": -44.0,
+          "ddadj": -0.714,
+          "trades": 58,
+          "bh_return_pct": -21.9,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "SOL/USDT 4h": {
+          "sharpe": -0.69,
+          "return_pct": -20.19,
+          "max_dd_pct": -36.5,
+          "ddadj": -0.553,
+          "trades": 14,
+          "bh_return_pct": -21.19,
+          "liquidated": false,
+          "span_days": 205.0
+        }
+      },
+      "mean_ddadj": -0.195,
+      "mean_sharpe": -0.672,
+      "mean_return_pct": -8.92,
+      "worst_max_dd_pct": -44.0,
+      "total_trades": 208
+    },
+    {
+      "label": "sl_atr=2",
+      "stack": {
+        "close_strategies": [],
+        "stop_loss_atr_mult": 2.0,
+        "trailing_stop_atr_mult": null
+      },
+      "legs": {
+        "BTC/USDT 1h": {
+          "sharpe": -2.622,
+          "return_pct": -31.5,
+          "max_dd_pct": -33.92,
+          "ddadj": -0.929,
+          "trades": 50,
+          "bh_return_pct": -20.07,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "BTC/USDT 4h": {
+          "sharpe": -1.882,
+          "return_pct": -22.33,
+          "max_dd_pct": -28.29,
+          "ddadj": -0.789,
+          "trades": 17,
+          "bh_return_pct": -19.54,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "ETH/USDT 1h": {
+          "sharpe": 1.394,
+          "return_pct": 34.48,
+          "max_dd_pct": -25.24,
+          "ddadj": 1.366,
+          "trades": 49,
+          "bh_return_pct": 10.85,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "ETH/USDT 4h": {
+          "sharpe": 0.691,
+          "return_pct": 12.29,
+          "max_dd_pct": -36.46,
+          "ddadj": 0.337,
+          "trades": 12,
+          "bh_return_pct": 11.35,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "SOL/USDT 1h": {
+          "sharpe": -1.413,
+          "return_pct": -36.52,
+          "max_dd_pct": -49.14,
+          "ddadj": -0.743,
+          "trades": 56,
+          "bh_return_pct": -21.9,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "SOL/USDT 4h": {
+          "sharpe": -0.485,
+          "return_pct": -17.16,
+          "max_dd_pct": -40.47,
+          "ddadj": -0.424,
+          "trades": 13,
+          "bh_return_pct": -21.19,
+          "liquidated": false,
+          "span_days": 205.0
+        }
+      },
+      "mean_ddadj": -0.197,
+      "mean_sharpe": -0.72,
+      "mean_return_pct": -10.12,
+      "worst_max_dd_pct": -49.14,
+      "total_trades": 197
+    },
+    {
+      "label": "trail_atr=2",
+      "stack": {
+        "close_strategies": [],
+        "stop_loss_atr_mult": null,
+        "trailing_stop_atr_mult": 2.0
+      },
+      "legs": {
+        "BTC/USDT 1h": {
+          "sharpe": -1.746,
+          "return_pct": -20.59,
+          "max_dd_pct": -24.96,
+          "ddadj": -0.825,
+          "trades": 60,
+          "bh_return_pct": -20.07,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "BTC/USDT 4h": {
+          "sharpe": -1.251,
+          "return_pct": -13.07,
+          "max_dd_pct": -20.13,
+          "ddadj": -0.649,
+          "trades": 17,
+          "bh_return_pct": -19.54,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "ETH/USDT 1h": {
+          "sharpe": -0.176,
+          "return_pct": -7.49,
+          "max_dd_pct": -26.1,
+          "ddadj": -0.287,
+          "trades": 72,
+          "bh_return_pct": 10.85,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "ETH/USDT 4h": {
+          "sharpe": 1.366,
+          "return_pct": 24.3,
+          "max_dd_pct": -20.43,
+          "ddadj": 1.189,
+          "trades": 18,
+          "bh_return_pct": 11.35,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "SOL/USDT 1h": {
+          "sharpe": -0.625,
+          "return_pct": -16.39,
+          "max_dd_pct": -20.54,
+          "ddadj": -0.798,
+          "trades": 68,
+          "bh_return_pct": -21.9,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "SOL/USDT 4h": {
+          "sharpe": 0.158,
+          "return_pct": -0.25,
+          "max_dd_pct": -28.89,
+          "ddadj": -0.009,
+          "trades": 16,
+          "bh_return_pct": -21.19,
+          "liquidated": false,
+          "span_days": 205.0
+        }
+      },
+      "mean_ddadj": -0.23,
+      "mean_sharpe": -0.379,
+      "mean_return_pct": -5.58,
+      "worst_max_dd_pct": -28.89,
+      "total_trades": 251
+    },
+    {
+      "label": "tiered_tp_atr[2x:0.33,4x:0.66,6x:1] trail_atr=2",
+      "stack": {
+        "close_strategies": [
+          {
+            "name": "tiered_tp_atr",
+            "params": {
+              "tp_tiers": [
+                {
+                  "atr_multiple": 2.0,
+                  "close_fraction": 0.33
+                },
+                {
+                  "atr_multiple": 4.0,
+                  "close_fraction": 0.66
+                },
+                {
+                  "atr_multiple": 6.0,
+                  "close_fraction": 1.0
+                }
+              ]
+            }
+          }
+        ],
+        "stop_loss_atr_mult": null,
+        "trailing_stop_atr_mult": 2.0
+      },
+      "legs": {
+        "BTC/USDT 1h": {
+          "sharpe": -2.381,
+          "return_pct": -24.42,
+          "max_dd_pct": -26.06,
+          "ddadj": -0.937,
+          "trades": 133,
+          "bh_return_pct": -20.07,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "BTC/USDT 4h": {
+          "sharpe": -1.301,
+          "return_pct": -11.72,
+          "max_dd_pct": -16.31,
+          "ddadj": -0.719,
+          "trades": 70,
+          "bh_return_pct": -19.54,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "ETH/USDT 1h": {
+          "sharpe": -0.689,
+          "return_pct": -14.91,
+          "max_dd_pct": -27.96,
+          "ddadj": -0.533,
+          "trades": 173,
+          "bh_return_pct": 10.85,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "ETH/USDT 4h": {
+          "sharpe": 1.244,
+          "return_pct": 18.96,
+          "max_dd_pct": -17.64,
+          "ddadj": 1.075,
+          "trades": 41,
+          "bh_return_pct": 11.35,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "SOL/USDT 1h": {
+          "sharpe": -0.885,
+          "return_pct": -18.5,
+          "max_dd_pct": -24.7,
+          "ddadj": -0.749,
+          "trades": 159,
+          "bh_return_pct": -21.9,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "SOL/USDT 4h": {
+          "sharpe": 0.444,
+          "return_pct": 5.14,
+          "max_dd_pct": -25.94,
+          "ddadj": 0.198,
+          "trades": 54,
+          "bh_return_pct": -21.19,
+          "liquidated": false,
+          "span_days": 205.0
+        }
+      },
+      "mean_ddadj": -0.278,
+      "mean_sharpe": -0.595,
+      "mean_return_pct": -7.58,
+      "worst_max_dd_pct": -27.96,
+      "total_trades": 630
+    },
+    {
+      "label": "trail_atr=2.5",
+      "stack": {
+        "close_strategies": [],
+        "stop_loss_atr_mult": null,
+        "trailing_stop_atr_mult": 2.5
+      },
+      "legs": {
+        "BTC/USDT 1h": {
+          "sharpe": -1.859,
+          "return_pct": -23.22,
+          "max_dd_pct": -27.83,
+          "ddadj": -0.834,
+          "trades": 55,
+          "bh_return_pct": -20.07,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "BTC/USDT 4h": {
+          "sharpe": -1.11,
+          "return_pct": -12.46,
+          "max_dd_pct": -21.29,
+          "ddadj": -0.585,
+          "trades": 16,
+          "bh_return_pct": -19.54,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "ETH/USDT 1h": {
+          "sharpe": 0.187,
+          "return_pct": -0.22,
+          "max_dd_pct": -28.59,
+          "ddadj": -0.008,
+          "trades": 64,
+          "bh_return_pct": 10.85,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "ETH/USDT 4h": {
+          "sharpe": 1.052,
+          "return_pct": 18.1,
+          "max_dd_pct": -22.95,
+          "ddadj": 0.789,
+          "trades": 17,
+          "bh_return_pct": 11.35,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "SOL/USDT 1h": {
+          "sharpe": -0.498,
+          "return_pct": -15.66,
+          "max_dd_pct": -24.37,
+          "ddadj": -0.643,
+          "trades": 62,
+          "bh_return_pct": -21.9,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "SOL/USDT 4h": {
+          "sharpe": -0.908,
+          "return_pct": -20.1,
+          "max_dd_pct": -38.33,
+          "ddadj": -0.524,
+          "trades": 16,
+          "bh_return_pct": -21.19,
+          "liquidated": false,
+          "span_days": 205.0
+        }
+      },
+      "mean_ddadj": -0.301,
+      "mean_sharpe": -0.523,
+      "mean_return_pct": -8.93,
+      "worst_max_dd_pct": -38.33,
+      "total_trades": 230
+    },
+    {
+      "label": "tiered_tp_atr[1.5x:0.4,3x:0.8,5x:1] sl_atr=2",
+      "stack": {
+        "close_strategies": [
+          {
+            "name": "tiered_tp_atr",
+            "params": {
+              "tp_tiers": [
+                {
+                  "atr_multiple": 1.5,
+                  "close_fraction": 0.4
+                },
+                {
+                  "atr_multiple": 3.0,
+                  "close_fraction": 0.8
+                },
+                {
+                  "atr_multiple": 5.0,
+                  "close_fraction": 1.0
+                }
+              ]
+            }
+          }
+        ],
+        "stop_loss_atr_mult": 2.0,
+        "trailing_stop_atr_mult": null
+      },
+      "legs": {
+        "BTC/USDT 1h": {
+          "sharpe": -3.638,
+          "return_pct": -31.65,
+          "max_dd_pct": -33.86,
+          "ddadj": -0.935,
+          "trades": 251,
+          "bh_return_pct": -20.07,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "BTC/USDT 4h": {
+          "sharpe": -2.17,
+          "return_pct": -19.6,
+          "max_dd_pct": -21.2,
+          "ddadj": -0.925,
+          "trades": 37,
+          "bh_return_pct": -19.54,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "ETH/USDT 1h": {
+          "sharpe": 0.326,
+          "return_pct": 3.05,
+          "max_dd_pct": -22.7,
+          "ddadj": 0.134,
+          "trades": 164,
+          "bh_return_pct": 10.85,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "ETH/USDT 4h": {
+          "sharpe": 0.93,
+          "return_pct": 14.01,
+          "max_dd_pct": -18.93,
+          "ddadj": 0.74,
+          "trades": 42,
+          "bh_return_pct": 11.35,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "SOL/USDT 1h": {
+          "sharpe": -1.04,
+          "return_pct": -21.16,
+          "max_dd_pct": -33.16,
+          "ddadj": -0.638,
+          "trades": 127,
+          "bh_return_pct": -21.9,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "SOL/USDT 4h": {
+          "sharpe": -1.049,
+          "return_pct": -18.24,
+          "max_dd_pct": -32.21,
+          "ddadj": -0.566,
+          "trades": 49,
+          "bh_return_pct": -21.19,
+          "liquidated": false,
+          "span_days": 205.0
+        }
+      },
+      "mean_ddadj": -0.365,
+      "mean_sharpe": -1.107,
+      "mean_return_pct": -12.27,
+      "worst_max_dd_pct": -33.86,
+      "total_trades": 670
+    },
+    {
+      "label": "tiered_tp_atr[1.5x:0.4,3x:0.8,5x:1] sl_atr=1.5",
+      "stack": {
+        "close_strategies": [
+          {
+            "name": "tiered_tp_atr",
+            "params": {
+              "tp_tiers": [
+                {
+                  "atr_multiple": 1.5,
+                  "close_fraction": 0.4
+                },
+                {
+                  "atr_multiple": 3.0,
+                  "close_fraction": 0.8
+                },
+                {
+                  "atr_multiple": 5.0,
+                  "close_fraction": 1.0
+                }
+              ]
+            }
+          }
+        ],
+        "stop_loss_atr_mult": 1.5,
+        "trailing_stop_atr_mult": null
+      },
+      "legs": {
+        "BTC/USDT 1h": {
+          "sharpe": -2.744,
+          "return_pct": -23.24,
+          "max_dd_pct": -24.83,
+          "ddadj": -0.936,
+          "trades": 190,
+          "bh_return_pct": -20.07,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "BTC/USDT 4h": {
+          "sharpe": -2.159,
+          "return_pct": -18.27,
+          "max_dd_pct": -19.17,
+          "ddadj": -0.953,
+          "trades": 57,
+          "bh_return_pct": -19.54,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "ETH/USDT 1h": {
+          "sharpe": -0.313,
+          "return_pct": -8.51,
+          "max_dd_pct": -24.79,
+          "ddadj": -0.343,
+          "trades": 130,
+          "bh_return_pct": 10.85,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "ETH/USDT 4h": {
+          "sharpe": 1.209,
+          "return_pct": 16.14,
+          "max_dd_pct": -11.63,
+          "ddadj": 1.388,
+          "trades": 48,
+          "bh_return_pct": 11.35,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "SOL/USDT 1h": {
+          "sharpe": -1.41,
+          "return_pct": -25.56,
+          "max_dd_pct": -27.35,
+          "ddadj": -0.935,
+          "trades": 126,
+          "bh_return_pct": -21.9,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "SOL/USDT 4h": {
+          "sharpe": -0.92,
+          "return_pct": -15.65,
+          "max_dd_pct": -27.86,
+          "ddadj": -0.562,
+          "trades": 35,
+          "bh_return_pct": -21.19,
+          "liquidated": false,
+          "span_days": 205.0
+        }
+      },
+      "mean_ddadj": -0.39,
+      "mean_sharpe": -1.056,
+      "mean_return_pct": -12.51,
+      "worst_max_dd_pct": -27.86,
+      "total_trades": 586
+    },
+    {
+      "label": "tiered_tp_atr[2x:0.33,4x:0.66,6x:1] sl_atr=2",
+      "stack": {
+        "close_strategies": [
+          {
+            "name": "tiered_tp_atr",
+            "params": {
+              "tp_tiers": [
+                {
+                  "atr_multiple": 2.0,
+                  "close_fraction": 0.33
+                },
+                {
+                  "atr_multiple": 4.0,
+                  "close_fraction": 0.66
+                },
+                {
+                  "atr_multiple": 6.0,
+                  "close_fraction": 1.0
+                }
+              ]
+            }
+          }
+        ],
+        "stop_loss_atr_mult": 2.0,
+        "trailing_stop_atr_mult": null
+      },
+      "legs": {
+        "BTC/USDT 1h": {
+          "sharpe": -2.519,
+          "return_pct": -24.79,
+          "max_dd_pct": -28.78,
+          "ddadj": -0.861,
+          "trades": 158,
+          "bh_return_pct": -20.07,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "BTC/USDT 4h": {
+          "sharpe": -2.256,
+          "return_pct": -20.94,
+          "max_dd_pct": -22.85,
+          "ddadj": -0.916,
+          "trades": 50,
+          "bh_return_pct": -19.54,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "ETH/USDT 1h": {
+          "sharpe": 0.264,
+          "return_pct": 1.77,
+          "max_dd_pct": -24.15,
+          "ddadj": 0.073,
+          "trades": 189,
+          "bh_return_pct": 10.85,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "ETH/USDT 4h": {
+          "sharpe": 0.082,
+          "return_pct": -1.92,
+          "max_dd_pct": -29.53,
+          "ddadj": -0.065,
+          "trades": 64,
+          "bh_return_pct": 11.35,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "SOL/USDT 1h": {
+          "sharpe": -1.293,
+          "return_pct": -26.97,
+          "max_dd_pct": -36.74,
+          "ddadj": -0.734,
+          "trades": 128,
+          "bh_return_pct": -21.9,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "SOL/USDT 4h": {
+          "sharpe": -0.927,
+          "return_pct": -18.34,
+          "max_dd_pct": -34.24,
+          "ddadj": -0.536,
+          "trades": 44,
+          "bh_return_pct": -21.19,
+          "liquidated": false,
+          "span_days": 205.0
+        }
+      },
+      "mean_ddadj": -0.507,
+      "mean_sharpe": -1.108,
+      "mean_return_pct": -15.2,
+      "worst_max_dd_pct": -36.74,
+      "total_trades": 633
+    },
+    {
+      "label": "tiered_tp_atr[2x:0.33,4x:0.66,6x:1] sl_atr=1.5",
+      "stack": {
+        "close_strategies": [
+          {
+            "name": "tiered_tp_atr",
+            "params": {
+              "tp_tiers": [
+                {
+                  "atr_multiple": 2.0,
+                  "close_fraction": 0.33
+                },
+                {
+                  "atr_multiple": 4.0,
+                  "close_fraction": 0.66
+                },
+                {
+                  "atr_multiple": 6.0,
+                  "close_fraction": 1.0
+                }
+              ]
+            }
+          }
+        ],
+        "stop_loss_atr_mult": 1.5,
+        "trailing_stop_atr_mult": null
+      },
+      "legs": {
+        "BTC/USDT 1h": {
+          "sharpe": -1.612,
+          "return_pct": -16.13,
+          "max_dd_pct": -20.22,
+          "ddadj": -0.798,
+          "trades": 197,
+          "bh_return_pct": -20.07,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "BTC/USDT 4h": {
+          "sharpe": -2.475,
+          "return_pct": -21.08,
+          "max_dd_pct": -21.95,
+          "ddadj": -0.96,
+          "trades": 31,
+          "bh_return_pct": -19.54,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "ETH/USDT 1h": {
+          "sharpe": -0.554,
+          "return_pct": -13.62,
+          "max_dd_pct": -30.14,
+          "ddadj": -0.452,
+          "trades": 179,
+          "bh_return_pct": 10.85,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "ETH/USDT 4h": {
+          "sharpe": 0.826,
+          "return_pct": 12.35,
+          "max_dd_pct": -18.88,
+          "ddadj": 0.654,
+          "trades": 34,
+          "bh_return_pct": 11.35,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "SOL/USDT 1h": {
+          "sharpe": -1.394,
+          "return_pct": -27.83,
+          "max_dd_pct": -28.58,
+          "ddadj": -0.974,
+          "trades": 153,
+          "bh_return_pct": -21.9,
+          "liquidated": false,
+          "span_days": 205.0
+        },
+        "SOL/USDT 4h": {
+          "sharpe": -0.833,
+          "return_pct": -16.14,
+          "max_dd_pct": -30.62,
+          "ddadj": -0.527,
+          "trades": 44,
+          "bh_return_pct": -21.19,
+          "liquidated": false,
+          "span_days": 205.0
+        }
+      },
+      "mean_ddadj": -0.509,
+      "mean_sharpe": -1.007,
+      "mean_return_pct": -13.74,
+      "worst_max_dd_pct": -30.62,
+      "total_trades": 638
+    }
+  ]
+}

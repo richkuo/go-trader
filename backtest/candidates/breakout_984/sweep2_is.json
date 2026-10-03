@@ -1,0 +1,220 @@
+[
+  {
+    "label": "tp_tight",
+    "stack": {
+      "close_strategies": [
+        {
+          "name": "tiered_tp_atr",
+          "params": {
+            "tp_tiers": [
+              {
+                "atr_multiple": 1.0,
+                "close_fraction": 0.5
+              },
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.8
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 1.0
+              }
+            ]
+          }
+        }
+      ],
+      "stop_loss_atr_mult": null,
+      "trailing_stop_atr_mult": null
+    },
+    "mean_ddadj": 0.371,
+    "mean_sharpe": 0.337,
+    "mean_ret": 4.2,
+    "worst_dd": -45.32,
+    "trades": 148
+  },
+  {
+    "label": "trail_atr_4",
+    "stack": {
+      "close_strategies": null,
+      "stop_loss_atr_mult": null,
+      "trailing_stop_atr_mult": 4.0
+    },
+    "mean_ddadj": 0.253,
+    "mean_sharpe": 0.014,
+    "mean_ret": 4.46,
+    "worst_dd": -43.05,
+    "trades": 180
+  },
+  {
+    "label": "tp_runner",
+    "stack": {
+      "close_strategies": [
+        {
+          "name": "tiered_tp_atr",
+          "params": {
+            "tp_tiers": [
+              {
+                "atr_multiple": 2.0,
+                "close_fraction": 0.33
+              },
+              {
+                "atr_multiple": 4.0,
+                "close_fraction": 0.66
+              },
+              {
+                "atr_multiple": 6.0,
+                "close_fraction": 1.0
+              }
+            ]
+          }
+        }
+      ],
+      "stop_loss_atr_mult": null,
+      "trailing_stop_atr_mult": null
+    },
+    "mean_ddadj": 0.204,
+    "mean_sharpe": 0.296,
+    "mean_ret": 0.71,
+    "worst_dd": -44.38,
+    "trades": 123
+  },
+  {
+    "label": "trail_atr_5",
+    "stack": {
+      "close_strategies": null,
+      "stop_loss_atr_mult": null,
+      "trailing_stop_atr_mult": 5.0
+    },
+    "mean_ddadj": -0.013,
+    "mean_sharpe": -0.235,
+    "mean_ret": -2.19,
+    "worst_dd": -50.69,
+    "trades": 173
+  },
+  {
+    "label": "tp_default_trail4",
+    "stack": {
+      "close_strategies": [
+        {
+          "name": "tiered_tp_atr",
+          "params": {
+            "tp_tiers": [
+              {
+                "atr_multiple": 1.5,
+                "close_fraction": 0.4
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.8
+              },
+              {
+                "atr_multiple": 5.0,
+                "close_fraction": 1.0
+              }
+            ]
+          }
+        }
+      ],
+      "stop_loss_atr_mult": null,
+      "trailing_stop_atr_mult": 4.0
+    },
+    "mean_ddadj": -0.163,
+    "mean_sharpe": -0.597,
+    "mean_ret": -6.48,
+    "worst_dd": -38.12,
+    "trades": 622
+  },
+  {
+    "label": "tp_default_sl4",
+    "stack": {
+      "close_strategies": [
+        {
+          "name": "tiered_tp_atr",
+          "params": {
+            "tp_tiers": [
+              {
+                "atr_multiple": 1.5,
+                "close_fraction": 0.4
+              },
+              {
+                "atr_multiple": 3.0,
+                "close_fraction": 0.8
+              },
+              {
+                "atr_multiple": 5.0,
+                "close_fraction": 1.0
+              }
+            ]
+          }
+        }
+      ],
+      "stop_loss_atr_mult": 4.0,
+      "trailing_stop_atr_mult": null
+    },
+    "mean_ddadj": -0.285,
+    "mean_sharpe": -0.726,
+    "mean_ret": -10.35,
+    "worst_dd": -44.78,
+    "trades": 450
+  },
+  {
+    "label": "time_stop_100",
+    "stack": {
+      "close_strategies": [
+        {
+          "name": "time_stop",
+          "params": {
+            "max_bars": 100
+          }
+        }
+      ],
+      "stop_loss_atr_mult": null,
+      "trailing_stop_atr_mult": null
+    },
+    "mean_ddadj": -0.324,
+    "mean_sharpe": -0.448,
+    "mean_ret": -13.58,
+    "worst_dd": -60.38,
+    "trades": 128
+  },
+  {
+    "label": "time_stop_150",
+    "stack": {
+      "close_strategies": [
+        {
+          "name": "time_stop",
+          "params": {
+            "max_bars": 150
+          }
+        }
+      ],
+      "stop_loss_atr_mult": null,
+      "trailing_stop_atr_mult": null
+    },
+    "mean_ddadj": -0.4,
+    "mean_sharpe": -0.548,
+    "mean_ret": -18.13,
+    "worst_dd": -59.7,
+    "trades": 98
+  },
+  {
+    "label": "time_stop_200",
+    "stack": {
+      "close_strategies": [
+        {
+          "name": "time_stop",
+          "params": {
+            "max_bars": 200
+          }
+        }
+      ],
+      "stop_loss_atr_mult": null,
+      "trailing_stop_atr_mult": null
+    },
+    "mean_ddadj": -0.422,
+    "mean_sharpe": -0.62,
+    "mean_ret": -19.16,
+    "worst_dd": -59.37,
+    "trades": 80
+  }
+]

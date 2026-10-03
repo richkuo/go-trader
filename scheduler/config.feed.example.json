@@ -1,0 +1,16 @@
+{
+  "role": "feed",
+  "status_port": 8190,
+  "log_level": "info",
+  "feed": {
+    "source": "websocket",
+    "socket_path": "/run/go-trader-feed-primary/feed.sock",
+    "consumer_configs": [
+      "/var/lib/go-trader/live/config.json",
+      "/var/lib/go-trader/paper/config.json"
+    ]
+  },
+  "discord": {
+    "enabled": true
+  }
+}

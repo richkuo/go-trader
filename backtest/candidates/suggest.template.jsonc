@@ -1,0 +1,190 @@
+// =============================================================================
+// auto_suggest.py — fully-annotated spec template (#1210)
+//
+// This is a REFERENCE, not a runnable file: JSON has no comments, and the tool
+// loads specs with a strict json.load. To turn this into a runnable spec, copy
+// it, strip every `//` comment, and save as strict `.json` (e.g. into
+// backtest/candidates/<your_study>/suggest.json).
+//
+// It documents every SUGGEST-SPEC WRAPPER option the loader (load_spec /
+// expand_candidates) accepts — study/registry/harnesses/windows/datasets/
+// correction and the candidate sources. The inner OPEN-candidate dicts (the
+// `candidate` field, and `base`/gate_variants which expand into open
+// candidates) carry their OWN richer schema, validated at load by
+// eval_windows.validate_candidate — beyond the
+// name/direction/params/allowed_regimes/regime_windows_spec shown here it also
+// accepts close_strategies (required for direction "both"), type, invert_signal,
+// stop_loss_atr_mult/trailing_stop_atr_mult, profile_allocation, and
+// regime_directional_policy (#1166). See eval_windows.py's validate_candidate
+// for that full candidate-json schema; this template does not re-list it.
+// The m6 close-refs (incumbent_close / candidate_close) are a DIFFERENT shape
+// — close-strategy references like {name, params} — and get NO shape validation
+// at load: the only load-time check is a name whitelist (candidate_is_replayable
+// in exit_policy_ab.py); a malformed close-ref params shape fails later inside
+// the exit_policy_ab.py subprocess, not here.
+// Only `study` + at least one candidate source (`candidates`, or
+// `base`+`sweep`/`gate_variants`, or `m6`) are required; every other wrapper
+// key has the default noted inline, so a minimal real spec is much shorter.
+//
+// Run:  uv run --no-sync python backtest/auto_suggest.py --spec <path> [--dry-run]
+// The shipped, all-options-enabled runnable example is:
+//   backtest/candidates/squeeze_momentum_1198/suggest.json
+// =============================================================================
+{
+  // Report/label + the sub-directory tag for default run artifacts. Required.
+  "study": "my_study",
+
+  // "spot" or "futures" only (M6 is spot/futures at the registry level; perps
+  // backtest via the futures registry). Default: "spot".
+  "registry": "spot",
+
+  // Which graders to run against each OPEN-kind candidate. Any subset of:
+  //   "m1_noise" — M1 step-2 gross-edge noise gate (permutation p; runs FIRST;
+  //                a "no_positive_edge" verdict blocks the whole family).
+  //   "m1"       — M1 incumbent-relative multi-window validator (pass/fail; no p).
+  //   "m3"       — M3 exit diagnostics (bleed/fee-churn context; no p).
+  //   "m5"       — M5 fee audit / salvage verdict (context; no p; screens
+  //                registry DEFAULT params only — swept candidates get a
+  //                "m5_params_unaudited" limitation flag, never audited wrong).
+  //   "mc"       — trade-order Monte Carlo drawdown risk (#1295; ADVISORY
+  //                context; no p). Never gates promotion — not when it passes,
+  //                not when it fails (a failed run only adds an
+  //                "mc_run_failed" limitation flag). Open candidates only.
+  //                NOT run by default (#1316) — must be named explicitly.
+  // (M6 is NOT listed here — it is driven by the "m6" block below, one entry
+  // per close variant.) Default: ["m1_noise", "m1", "m3", "m5"].
+  "harnesses": ["m1_noise", "m1", "m3", "m5", "mc", "m6"],
+
+  // ---- Advisory Monte Carlo tuning (#1295). Optional; omit for the defaults
+  // (kill-switch threshold 25 = the portfolio kill-switch default; 10000
+  // paths). The threshold has exactly two sources and they are mutually
+  // exclusive: an explicit "kill_switch_pct", OR a live daemon "config" plus
+  // the "strategy_id" whose max_drawdown_pct hierarchy should resolve.
+  "mc": {"kill_switch_pct": 25, "n_paths": 10000},
+
+  // Walk-forward windows to score. Any of eval_windows.WINDOWS:
+  //   "is", "oos" (the protocol pair the promotion gate keys off),
+  //   "2023", "2024", "2025H1" (held-out; note they OVERLAP "is").
+  // Default: ["is", "oos"].
+  "windows": ["is", "oos", "2023", "2024", "2025H1"],
+
+  // Datasets as "SYMBOL:TIMEFRAME". null = the six audit datasets
+  // (BTC/ETH/SOL x 1h/4h). Default: null.
+  "datasets": null,
+
+  // Multiple-comparisons correction over the whole candidate family. Only
+  // "benjamini_hochberg" is supported (the family = every M1-step-2 permutation
+  // p + every M6 per-dataset Wilcoxon p in ONE full-spec run; M3/M5 contribute
+  // no p-values). Default: {"method": "benjamini_hochberg", "alpha": 0.05}.
+  "correction": {"method": "benjamini_hochberg", "alpha": 0.05},
+
+  // ---- OPEN-kind candidates -------------------------------------------------
+  // Three ways to produce them; use any combination.
+
+  // (1) Explicit, fully-formed candidates. Each `candidate` is either an inline
+  // eval_windows candidate-json dict, or a filename resolved against THIS spec's
+  // directory. Every candidate is run through validate_candidate at load (a bad
+  // allowed_regimes/direction fails loudly here, not deep in a subprocess).
+  "candidates": [
+    {
+      "key": "baseline",              // unique key (also the artifact/file stem)
+      "candidate": "baseline.json",   // file ref next to the spec, OR an inline dict
+      "hypothesis": "the incumbent bar"   // optional, echoed into the report
+    },
+    {
+      "key": "inline_example",
+      // optional per-candidate harness override; defaults to the spec-wide
+      // "harnesses" above. Narrow it for e.g. an M1-only smoke candidate.
+      "harnesses": ["m1_noise", "m1"],
+      "candidate": {
+        "name": "squeeze_momentum",   // registered open-strategy name (required)
+        "direction": "long",          // long | short | both (both needs close_strategies)
+        "params": {"kc_mult": 1.5},   // optional strategy params
+        "allowed_regimes": ["trending_up_clean"],   // optional entry gate
+        "regime_windows_spec": {"medium": {"classifier": "composite", "period": 14}}
+      }
+    }
+  ],
+
+  // (2) A base candidate + a param SWEEP (cartesian; reuses eval_windows
+  // expand_sweep semantics). Requires "base". Param names must be REAL strategy
+  // params. gate_variants (below) cross-multiply with these sweep rows.
+  "base": {"name": "squeeze_momentum", "direction": "long"},
+  "sweep": {"kc_mult": [1.0, 1.5], "mom_lookback": [12, 16]},
+
+  // (3) Gate VARIANTS crossed with base(+sweep). Each variant overrides the
+  // entry gate; the label becomes part of the candidate key. Applies ONLY to
+  // base/sweep-derived candidates, never to the explicit `candidates` above
+  // (those already carry their own gate). Requires "base".
+  "gate_variants": [
+    {
+      "label": "adx_up",
+      "allowed_regimes": ["trending_up", "ranging"],   // required
+      "regime_windows_spec": {"medium": {"classifier": "adx", "period": 14, "adx_threshold": 20.0}}
+    },
+    {
+      "label": "comp_up",
+      "allowed_regimes": ["trending_up_clean", "trending_up_choppy"],
+      "regime_windows_spec": {"medium": {"classifier": "composite", "period": 14}}
+    }
+  ],
+
+  // ---- M6 exit-A/B block (optional) ----------------------------------------
+  // One entry per close variant; each is graded by the M6 paired per-entry
+  // replay (Wilcoxon p per window/dataset — these p-values join the BH family).
+  // Requires EXACTLY ONE incumbent source:
+  //   "baseline_config" — a v15 live-daemon config path (relative to the spec
+  //       dir); M6 resolves the strategy's live close from it. `strategy_id` is
+  //       then the config's strategy id.
+  //   "incumbent_close" — an explicit close-ref ladder (self-contained; no
+  //       config fixture needed). `strategy_id` is then the OPEN-strategy name
+  //       (a registered strategy, e.g. "squeeze_momentum" — NOT an arbitrary id).
+  // Every candidate_close must be per-entry REPLAYABLE (atr_stop, time_stop,
+  // zscore_target, tiered_tp_atr[_regime], tiered_tp_atr_live, trailing_stop_*,
+  // stop_loss_atr_mult, trailing_tp_ratchet[_regime]); a non-replayable close is
+  // reported "excluded_not_replayable" and never run.
+  "m6": {
+    "strategy_id": "squeeze_momentum",
+    // Optional m6-level entry gate applied to close_stack_specs-generated
+    // variants (which have no per-variant allowed_regimes of their own); the
+    // ONLY way to gate them. Explicit candidate_close_variants use their own
+    // allowed_regimes (below) instead. ADX labels under the default classifier.
+    "allowed_regimes": ["ranging"],
+    "incumbent_close": [
+      {"name": "tiered_tp_atr", "params": {"tp_tiers": [
+        {"atr_multiple": 0.5, "close_fraction": 0.5},
+        {"atr_multiple": 1.0, "close_fraction": 1.0}
+      ]}}
+    ],
+    "candidate_close_variants": [
+      {
+        "key": "wider_tp",                 // -> candidate key "m6.wider_tp"
+        "hypothesis": "widen the 2-rung TP",
+        // optional per-variant strategy_id override; falls back to the m6-level
+        // strategy_id above. Lets one variant target a different open-strategy
+        // (or config strategy id under baseline_config). close_stack-generated
+        // variants cannot set this — they always use the m6-level default.
+        "strategy_id": "squeeze_momentum",
+        "candidate_close": [{"name": "tiered_tp_atr", "params": {"tp_tiers": [
+          {"atr_multiple": 0.75, "close_fraction": 0.5},
+          {"atr_multiple": 1.5, "close_fraction": 1.0}
+        ]}}],
+        // "inherit" keeps the incumbent's stops; "drop" measures the candidate
+        // stop alone. NOTE: "drop" is a NO-OP that prints a [WARN] on the
+        // incumbent_close path this template uses (no strategy-level stops
+        // resolve without baseline_config) — only meaningful with baseline_config.
+        "candidate_stops": "inherit",
+        "allowed_regimes": ["ranging"]     // optional M6 entry gate (ADX labels
+                                           // under the default classifier)
+      }
+    ],
+    // Optional: expand an M2 close-stack grid (optimizer.generate_close_stack_grid)
+    // into extra candidate_close variants keyed "m6.close_stack_<i>". Each spec:
+    //   close: {name, params:{param:[candidate values]}}  (a whole tp_tiers
+    //          ladder is ONE candidate value), and/or stop_loss_atr_mult /
+    //          trailing_stop_atr_mult lists (mutually exclusive).
+    "close_stack_specs": [
+      {"close": {"name": "atr_stop", "params": {"atr_mult": [2.0, 2.5]}}}
+    ]
+  }
+}

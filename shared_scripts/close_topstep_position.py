@@ -1,36 +1,4 @@
 #!/usr/bin/env python3
-"""
-TopStep emergency position close script (issue #347).
-
-Submits a market-flatten order for a single futures symbol via the TopStep
-adapter's ``market_close`` REST endpoint. Used by the portfolio kill switch
-in the Go scheduler to liquidate live futures exposure regardless of which
-strategy "owns" the position. Mirrors ``close_hyperliquid_position.py`` /
-``close_okx_position.py`` / ``close_robinhood_position.py`` so the Go
-caller's parser contract is symmetric across platforms.
-
-TopStep-specific notes:
-  * CME futures use whole-contract sizing — the adapter's ``market_close``
-    endpoint flattens the full contract count for the symbol, no client-side
-    rounding required.
-  * CME trading-hour restrictions apply. Kill-switch fires outside RTH may
-    fail with a venue error; the latch-until-flat semantic handles this
-    naturally (retries until in-hours).
-
-Usage:
-    close_topstep_position.py --symbol=ES --mode=live
-
-Live mode is required (kill switch is meaningful only against real
-positions). Stdout is always a single JSON envelope matching the shape of
-the other close scripts:
-``{"close": {"symbol": ..., "fill": {...}}, "platform": "topstep",
-  "timestamp": ..., "error": "..."}``
-
-The kill switch must NEVER report success unless the position is actually
-flattened. Credential errors, HTTP failures, and unexpected REST responses
-all exit 1 with a populated ``error`` field so the Go caller latches the
-kill switch and retries next cycle.
-"""
 
 import argparse
 import json
@@ -75,10 +43,6 @@ def main():
         _emit_error(args.symbol, f"unexpected adapter response type {type(result).__name__}: {result!r}")
         return
 
-    # TopStepX order/close endpoints surface an explicit status. Anything
-    # other than "ok"/"filled"/absent is a venue rejection — must not be
-    # read as confirmation. An empty dict is likewise ambiguous (#346
-    # pattern: never map "no signal" to success).
     status = (result.get("status") or "").lower()
     if status and status not in ("ok", "filled", "accepted"):
         _emit_error(args.symbol, f"venue status={result.get('status')!r}: {result}")
@@ -87,7 +51,6 @@ def main():
         _emit_error(args.symbol, "empty order response from TopStepX market_close")
         return
 
-    # Best-effort fill telemetry. TopStepX fields mirror the execute path.
     fill = {}
     try:
         filled_qty = result.get("filledQuantity") or result.get("quantity")

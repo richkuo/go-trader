@@ -1,0 +1,218 @@
+{
+  "window": {
+    "start": "2025-06-10",
+    "end": null
+  },
+  "candidates": {
+    "baseline": {
+      "summary": {
+        "legs": 6,
+        "mean_gross_return_pct": 13.25,
+        "mean_net_return_pct": -1.08,
+        "drag_pp": 14.34,
+        "trades": 260,
+        "trades_per_year": 43.7
+      },
+      "per_dataset": {
+        "BTC/USDT 1h": {
+          "gross_return_pct": -3.21,
+          "net_return_pct": -20.61,
+          "trades": 66
+        },
+        "BTC/USDT 4h": {
+          "gross_return_pct": -13.18,
+          "net_return_pct": -17.75,
+          "trades": 18
+        },
+        "ETH/USDT 1h": {
+          "gross_return_pct": 79.24,
+          "net_return_pct": 44.63,
+          "trades": 72
+        },
+        "ETH/USDT 4h": {
+          "gross_return_pct": 29.34,
+          "net_return_pct": 23.65,
+          "trades": 15
+        },
+        "SOL/USDT 1h": {
+          "gross_return_pct": 0.82,
+          "net_return_pct": -18.9,
+          "trades": 73
+        },
+        "SOL/USDT 4h": {
+          "gross_return_pct": -13.48,
+          "net_return_pct": -17.53,
+          "trades": 16
+        }
+      }
+    },
+    "comp_up_clean": {
+      "summary": {
+        "legs": 6,
+        "mean_gross_return_pct": 8.66,
+        "mean_net_return_pct": 3.56,
+        "drag_pp": 5.1,
+        "trades": 91,
+        "trades_per_year": 15.3
+      },
+      "per_dataset": {
+        "BTC/USDT 1h": {
+          "gross_return_pct": -2.76,
+          "net_return_pct": -9.52,
+          "trades": 24
+        },
+        "BTC/USDT 4h": {
+          "gross_return_pct": 6.78,
+          "net_return_pct": 4.25,
+          "trades": 8
+        },
+        "ETH/USDT 1h": {
+          "gross_return_pct": 45.81,
+          "net_return_pct": 35.27,
+          "trades": 25
+        },
+        "ETH/USDT 4h": {
+          "gross_return_pct": 4.11,
+          "net_return_pct": 1.95,
+          "trades": 7
+        },
+        "SOL/USDT 1h": {
+          "gross_return_pct": 19.83,
+          "net_return_pct": 12.85,
+          "trades": 20
+        },
+        "SOL/USDT 4h": {
+          "gross_return_pct": -21.79,
+          "net_return_pct": -23.42,
+          "trades": 7
+        }
+      }
+    },
+    "comp_up_clean_p21": {
+      "summary": {
+        "legs": 6,
+        "mean_gross_return_pct": 15.23,
+        "mean_net_return_pct": 11.42,
+        "drag_pp": 3.81,
+        "trades": 67,
+        "trades_per_year": 11.3
+      },
+      "per_dataset": {
+        "BTC/USDT 1h": {
+          "gross_return_pct": -3.72,
+          "net_return_pct": -8.51,
+          "trades": 17
+        },
+        "BTC/USDT 4h": {
+          "gross_return_pct": -0.53,
+          "net_return_pct": -2.6,
+          "trades": 7
+        },
+        "ETH/USDT 1h": {
+          "gross_return_pct": 48.96,
+          "net_return_pct": 41.13,
+          "trades": 18
+        },
+        "ETH/USDT 4h": {
+          "gross_return_pct": 32.0,
+          "net_return_pct": 30.43,
+          "trades": 4
+        },
+        "SOL/USDT 1h": {
+          "gross_return_pct": 7.92,
+          "net_return_pct": 2.56,
+          "trades": 17
+        },
+        "SOL/USDT 4h": {
+          "gross_return_pct": 6.78,
+          "net_return_pct": 5.51,
+          "trades": 4
+        }
+      }
+    },
+    "m4_bear_off": {
+      "summary": {
+        "legs": 6,
+        "mean_gross_return_pct": 20.47,
+        "mean_net_return_pct": 7.67,
+        "drag_pp": 12.81,
+        "trades": 218,
+        "trades_per_year": 36.6
+      },
+      "per_dataset": {
+        "BTC/USDT 1h": {
+          "gross_return_pct": 3.19,
+          "net_return_pct": -12.25,
+          "trades": 54
+        },
+        "BTC/USDT 4h": {
+          "gross_return_pct": -4.46,
+          "net_return_pct": -8.67,
+          "trades": 15
+        },
+        "ETH/USDT 1h": {
+          "gross_return_pct": 76.81,
+          "net_return_pct": 47.9,
+          "trades": 60
+        },
+        "ETH/USDT 4h": {
+          "gross_return_pct": 20.86,
+          "net_return_pct": 15.54,
+          "trades": 15
+        },
+        "SOL/USDT 1h": {
+          "gross_return_pct": 12.17,
+          "net_return_pct": -6.74,
+          "trades": 62
+        },
+        "SOL/USDT 4h": {
+          "gross_return_pct": 14.26,
+          "net_return_pct": 10.22,
+          "trades": 12
+        }
+      }
+    },
+    "m4_bear_selective": {
+      "summary": {
+        "legs": 6,
+        "mean_gross_return_pct": 22.94,
+        "mean_net_return_pct": 10.06,
+        "drag_pp": 12.88,
+        "trades": 211,
+        "trades_per_year": 35.5
+      },
+      "per_dataset": {
+        "BTC/USDT 1h": {
+          "gross_return_pct": 0.35,
+          "net_return_pct": -13.89,
+          "trades": 51
+        },
+        "BTC/USDT 4h": {
+          "gross_return_pct": -4.46,
+          "net_return_pct": -8.67,
+          "trades": 15
+        },
+        "ETH/USDT 1h": {
+          "gross_return_pct": 76.81,
+          "net_return_pct": 47.9,
+          "trades": 60
+        },
+        "ETH/USDT 4h": {
+          "gross_return_pct": 20.86,
+          "net_return_pct": 15.54,
+          "trades": 15
+        },
+        "SOL/USDT 1h": {
+          "gross_return_pct": 29.81,
+          "net_return_pct": 9.24,
+          "trades": 58
+        },
+        "SOL/USDT 4h": {
+          "gross_return_pct": 14.26,
+          "net_return_pct": 10.22,
+          "trades": 12
+        }
+      }
+    }
+  }
+}

@@ -1,4 +1,3 @@
-"""Load the close strategy registry without relying on ambiguous sys.path imports."""
 
 from __future__ import annotations
 
@@ -40,3 +39,31 @@ def get_strategy(name: str) -> dict:
 
 def list_strategies() -> list[str]:
     return list(_load_registry().STRATEGIES.keys())
+
+
+def list_strategies_detailed() -> list[dict]:
+    registry = _load_registry().STRATEGIES
+    return [
+        {
+            "name": name,
+            "description": registry[name]["description"],
+            "default_params": registry[name]["default_params"],
+            "platforms": list(registry[name]["platforms"]),
+        }
+        for name in sorted(registry.keys())
+    ]
+
+
+if __name__ == "__main__":
+    import json
+    import sys
+
+    if "--list-json" in sys.argv:
+        try:
+            print(json.dumps(list_strategies_detailed()))
+        except Exception as exc:
+            print(json.dumps({"error": str(exc)}))
+            sys.exit(1)
+    else:
+        print(json.dumps({"error": "usage: close_registry_loader.py --list-json"}))
+        sys.exit(1)

@@ -2,10 +2,6 @@ package main
 
 import "fmt"
 
-// buildNotifierFromConfig constructs a MultiNotifier from the Discord and Telegram
-// sections of cfg. It prints the same connection messages as the daemon startup path
-// so callers (main and CLI subcommands alike) see consistent output. The returned
-// cleanup function must be deferred by the caller to close gateway connections.
 func buildNotifierFromConfig(cfg *Config) (*MultiNotifier, func()) {
 	var backends []notifierBackend
 	var closers []func()
@@ -27,6 +23,7 @@ func buildNotifierFromConfig(cfg *Config) (*MultiNotifier, func()) {
 				ownerID:            cfg.Discord.OwnerID,
 				leaderboardChannel: cfg.Discord.LeaderboardChannel,
 				dmChannels:         cfg.Discord.DMChannels,
+				partitionChannels:  partitionChannelValues(cfg.Discord.Channels, cfg.Strategies),
 			})
 			closers = append(closers, discord.Close)
 		}
@@ -49,6 +46,7 @@ func buildNotifierFromConfig(cfg *Config) (*MultiNotifier, func()) {
 				ownerID:            cfg.Telegram.OwnerChatID,
 				dmChannels:         cfg.Telegram.DMChannels,
 				plainText:          true,
+				partitionChannels:  partitionChannelValues(cfg.Telegram.Channels, cfg.Strategies),
 			})
 			closers = append(closers, tg.Close)
 		}

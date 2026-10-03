@@ -1,0 +1,312 @@
+
+import numpy as np
+import pandas as pd
+import pytest
+
+import eval_windows as ew
+import gross_edge_noise as gen
+
+
+@pytest.mark.parametrize("values,expected", [
+    ([], {"n": 0, "mean": None, "median": None,
+          "n_pos": 0, "n_neg": 0, "n_zero": 0}),
+    ([1.0, -2.0, 0.0, 3.0], {"n": 4, "mean": 0.5, "median": 0.5,
+                             "min": -2.0, "max": 3.0,
+                             "n_pos": 2, "n_neg": 1, "n_zero": 1}),
+])
+def test_summarize_returns(values, expected):
+    s = gen.summarize_returns(values)
+    for key, want in expected.items():
+        if isinstance(want, float):
+            assert s[key] == pytest.approx(want)
+        else:
+            assert s[key] == want
+
+
+def test_permutation_empty_sample_is_p_one():
+    r = gen.sign_flip_permutation([])
+    assert r["p_value"] == 1.0 and r["n"] == 0 and r["mean"] is None
+
+
+def test_permutation_strong_positive_sample_is_significant():
+    r = gen.sign_flip_permutation([1.0] * 20, n_resamples=2000, seed=7)
+    assert r["mean"] == pytest.approx(1.0)
+    assert r["p_value"] < 0.01
+
+
+def test_permutation_symmetric_sample_is_not_significant():
+    vals = [1.0, -1.0, 2.0, -2.0, 0.5, -0.5]
+    r = gen.sign_flip_permutation(vals, n_resamples=2000, seed=7)
+    assert r["mean"] == pytest.approx(0.0)
+    assert r["p_value"] > 0.2
+
+
+def test_permutation_deterministic_under_seed():
+    vals = [0.4, -0.2, 1.1, -0.7, 0.3]
+    a = gen.sign_flip_permutation(vals, n_resamples=500, seed=1066)
+    b = gen.sign_flip_permutation(vals, n_resamples=500, seed=1066)
+    assert a == b
+    c = gen.sign_flip_permutation(vals, n_resamples=500, seed=2077)
+    assert c["n_resamples"] == a["n_resamples"]
+
+
+def test_permutation_p_never_zero():
+    r = gen.sign_flip_permutation([5.0] * 10, n_resamples=100, seed=1)
+    assert 0.0 < r["p_value"] <= 1.0
+
+
+@pytest.mark.parametrize("values,expected", [
+    ([], None),
+    ([2.0], 0.0),
+    ([-2.0], 1.0),
+    ([0.0], 1.0),
+    ([1.0, 2.0, 3.0], 0.0),
+])
+def test_bootstrap_p_mean_le_zero(values, expected):
+    assert gen.bootstrap_p_mean_le_zero(values, n_resamples=500,
+                                        seed=3) == expected
+
+
+def test_bootstrap_p_le_zero_deterministic():
+    vals = [0.4, -0.2, 1.1, -0.7, 0.3]
+    a = gen.bootstrap_p_mean_le_zero(vals, n_resamples=500, seed=1066)
+    b = gen.bootstrap_p_mean_le_zero(vals, n_resamples=500, seed=1066)
+    assert a == b
+
+
+@pytest.mark.parametrize("samples,dropped,kept_datasets", [
+    ([{"dataset": "BTC/USDT 1h", "entry_date": "2025-06-15", "pnl_pct": 1.0},
+      {"dataset": "BTC/USDT 1h", "entry_date": "2025-06-15", "pnl_pct": 1.0},
+      {"dataset": "ETH/USDT 1h", "entry_date": "2025-06-15", "pnl_pct": 2.0}],
+     1, ["BTC/USDT 1h", "ETH/USDT 1h"]),
+    ([{"dataset": "BTC/USDT 1h", "entry_date": "2025-06-15", "pnl_pct": 1.0},
+      {"dataset": "BTC/USDT 1h", "entry_date": "2025-06-16", "pnl_pct": -1.0}],
+     0, ["BTC/USDT 1h", "BTC/USDT 1h"]),
+])
+def test_dedupe_samples(samples, dropped, kept_datasets):
+    out, n_dropped = gen.dedupe_samples(samples)
+    assert n_dropped == dropped
+    assert [s["dataset"] for s in out] == kept_datasets
+
+
+@pytest.mark.parametrize("mean,permutation_p,expected", [
+    (0.0, 0.001, gen.VERDICT_NO_EDGE),
+    (-0.5, 0.001, gen.VERDICT_NO_EDGE),
+    (None, 0.001, gen.VERDICT_NO_EDGE),
+    (0.3, 0.01, gen.VERDICT_DISTINGUISHABLE),
+    (0.3, 0.39, gen.VERDICT_INDISTINGUISHABLE),
+    (0.3, 0.05, gen.VERDICT_INDISTINGUISHABLE),
+])
+def test_noise_verdict(mean, permutation_p, expected):
+    assert gen.noise_verdict(mean, permutation_p) == expected
+
+
+def test_analyze_sample_verdict_matches_primary_test():
+    strong = gen.analyze_sample([1.0] * 20, n_resamples=1000, seed=5)
+    assert strong["verdict"] == gen.VERDICT_DISTINGUISHABLE
+    assert strong["summary"]["n"] == 20
+    noisy = gen.analyze_sample([1.0, -1.0, 0.5, -0.5, 0.2],
+                               n_resamples=1000, seed=5)
+    assert noisy["verdict"] in (gen.VERDICT_INDISTINGUISHABLE,
+                                gen.VERDICT_NO_EDGE)
+    for key in ("summary", "permutation", "bootstrap",
+                "bootstrap_p_mean_le_zero", "sign_test", "wilcoxon",
+                "alpha", "verdict"):
+        assert key in strong
+
+
+@pytest.mark.parametrize("entry_date,window_range,expected", [
+    ("2025-06-10 00:00:00", ("2025-06-10", "2025-07-01"), True),
+    ("2025-06-30 23:00:00", ("2025-06-10", "2025-07-01"), True),
+    ("2025-07-01 00:00:00", ("2025-06-10", "2025-07-01"), False),
+    ("2025-06-09 23:00:00", ("2025-06-10", "2025-07-01"), False),
+    ("2099-01-01 00:00:00", ("2026-01-01", None), True),
+    ("2025-12-31 23:00:00", ("2026-01-01", None), False),
+])
+def test_entry_in_range(entry_date, window_range, expected):
+    assert bool(gen._entry_in_range(entry_date, window_range)) is expected
+
+
+def test_pool_exact_duplicate_still_dropped():
+    legs = [
+        {"dataset": "BTC/USDT 1h", "window": "is",
+         "trade_samples": [{"entry_date": "2025-08-15 04:00:00", "pnl_pct": 1.0}]},
+        {"dataset": "BTC/USDT 1h", "window": "is",
+         "trade_samples": [{"entry_date": "2025-08-15 04:00:00", "pnl_pct": 1.0}]},
+        {"dataset": "ETH/USDT 1h", "window": "is", "trade_samples": []},
+    ]
+    samples, n_exact, n_overlap = gen.pool_trade_samples(legs)
+    assert n_exact == 1 and n_overlap == 0
+    assert len(samples) == 1
+    assert samples[0]["window"] == "is"
+
+
+def test_pool_overlap_nonidentical_entries_dropped():
+    legs = [
+        {"dataset": "BTC/USDT 1h", "window": "is",
+         "trade_samples": [{"entry_date": "2025-06-17 19:00:00", "pnl_pct": 1.37}]},
+        {"dataset": "BTC/USDT 1h", "window": "2025H1",
+         "trade_samples": [{"entry_date": "2025-06-18 21:00:00", "pnl_pct": 0.22},
+                           {"entry_date": "2025-03-01 00:00:00", "pnl_pct": -0.5}]},
+    ]
+    samples, n_exact, n_overlap = gen.pool_trade_samples(legs)
+    assert n_exact == 0 and n_overlap == 1
+    assert [s["entry_date"] for s in samples] == [
+        "2025-06-17 19:00:00", "2025-03-01 00:00:00"]
+
+
+def test_pool_shared_start_windows_keep_distinct_entries():
+    windows = {"a": ("2023-01-01", "2024-01-01"),
+               "b": ("2023-01-01", "2025-01-01")}
+    legs = [
+        {"dataset": "BTC/USDT 1h", "window": "a",
+         "trade_samples": [{"entry_date": "2023-05-01 00:00:00", "pnl_pct": 1.0}]},
+        {"dataset": "BTC/USDT 1h", "window": "b",
+         "trade_samples": [{"entry_date": "2023-06-01 00:00:00", "pnl_pct": 2.0},
+                           {"entry_date": "2024-06-01 00:00:00", "pnl_pct": 3.0}]},
+    ]
+    samples, n_exact, n_overlap = gen.pool_trade_samples(legs, windows=windows)
+    assert n_exact == 0 and n_overlap == 1
+    assert [s["pnl_pct"] for s in samples] == [1.0, 3.0]
+
+
+def test_pool_zero_trade_leg_still_claims_coverage():
+    windows = {"a": ("2023-01-01", "2024-01-01"),
+               "b": ("2023-06-01", "2024-06-01")}
+    legs = [
+        {"dataset": "BTC/USDT 1h", "window": "a", "trade_samples": []},
+        {"dataset": "BTC/USDT 1h", "window": "b",
+         "trade_samples": [{"entry_date": "2023-08-01 00:00:00", "pnl_pct": 1.0},
+                           {"entry_date": "2024-03-01 00:00:00", "pnl_pct": 2.0}]},
+    ]
+    samples, n_exact, n_overlap = gen.pool_trade_samples(legs, windows=windows)
+    assert n_overlap == 1
+    assert [s["pnl_pct"] for s in samples] == [2.0]
+
+
+def test_pool_coverage_is_per_dataset():
+    windows = {"a": ("2023-01-01", "2024-01-01"),
+               "b": ("2023-01-01", "2024-01-01")}
+    legs = [
+        {"dataset": "BTC/USDT 1h", "window": "a",
+         "trade_samples": [{"entry_date": "2023-05-01 00:00:00", "pnl_pct": 1.0}]},
+        {"dataset": "ETH/USDT 1h", "window": "b",
+         "trade_samples": [{"entry_date": "2023-05-01 00:00:00", "pnl_pct": 2.0}]},
+    ]
+    samples, n_exact, n_overlap = gen.pool_trade_samples(legs, windows=windows)
+    assert n_exact == 0 and n_overlap == 0
+    assert len(samples) == 2
+
+
+def test_pool_open_ended_window_claims_to_infinity():
+    windows = {"oos": ("2026-01-01", None),
+               "late": ("2026-06-01", "2027-01-01")}
+    legs = [
+        {"dataset": "BTC/USDT 1h", "window": "oos",
+         "trade_samples": [{"entry_date": "2026-02-01 00:00:00", "pnl_pct": 1.0}]},
+        {"dataset": "BTC/USDT 1h", "window": "late",
+         "trade_samples": [{"entry_date": "2026-08-01 00:00:00", "pnl_pct": 2.0}]},
+    ]
+    samples, n_exact, n_overlap = gen.pool_trade_samples(legs, windows=windows)
+    assert n_overlap == 1
+    assert [s["pnl_pct"] for s in samples] == [1.0]
+
+
+def test_window_overlaps_is_2025h1():
+    out = gen.window_overlaps(["is", "oos", "2023", "2024", "2025H1"])
+    assert len(out) == 1
+    o = out[0]
+    assert set(o["windows"]) == {"is", "2025H1"}
+    assert o["start"] == "2025-06-10" and o["end"] == "2025-07-01"
+    assert o["days"] == pytest.approx(21.0)
+
+
+def test_window_overlaps_disjoint_windows_empty():
+    assert gen.window_overlaps(["2023", "2024", "oos"]) == []
+    assert gen.window_overlaps(["is", "oos"]) == []
+
+
+def test_trade_samples_from_results_extracts_entry_and_pnl():
+    results = {"trades": [
+        {"entry_date": "2025-06-15 04:00:00", "pnl_pct": 1.25, "pnl": 12.5},
+        {"entry_date": "2025-06-20 09:00:00", "pnl_pct": -0.4, "pnl": -4.0},
+    ]}
+    out = ew.trade_samples_from_results(results)
+    assert out == [
+        {"entry_date": "2025-06-15 04:00:00", "pnl_pct": 1.25,
+         "pnl_pct_net": 1.25},
+        {"entry_date": "2025-06-20 09:00:00", "pnl_pct": -0.4,
+         "pnl_pct_net": -0.4},
+    ]
+    assert ew.trade_samples_from_results({}) == []
+    assert ew.trade_samples_from_results({"trades": None}) == []
+
+
+class _FakeRegistry:
+    STRATEGY_REGISTRY = {"alternator": {"default_params": {"period": 2},
+                                        "description": "test"}}
+
+    @staticmethod
+    def list_strategies():
+        return ["alternator"]
+
+    @staticmethod
+    def apply_strategy(name, df, params):
+        out = df.copy()
+        sig = np.zeros(len(out), dtype=int)
+        sig[10::20] = 1
+        sig[20::20] = -1
+        out["signal"] = sig
+        return out
+
+
+def _synthetic_df(n=120):
+    idx = pd.date_range("2026-01-01", periods=n, freq="1h")
+    base = 100 + np.cumsum(np.sin(np.arange(n) / 5.0))
+    return pd.DataFrame({
+        "open": base, "high": base * 1.01, "low": base * 0.99,
+        "close": base, "volume": np.full(n, 1000.0),
+    }, index=idx)
+
+
+def test_run_leg_keep_trades_attaches_samples(monkeypatch):
+    df = _synthetic_df()
+    import data_fetcher
+    monkeypatch.setattr(data_fetcher, "load_cached_data",
+                        lambda *a, **k: df, raising=True)
+    leg = ew.run_leg(_FakeRegistry(), "alternator", None, "BTC/USDT", "1h",
+                     ("2026-01-01", None), keep_trades=True)
+    assert leg is not None and leg["trades"] > 0
+    samples = leg["trade_samples"]
+    assert len(samples) == leg["trades"]
+    for s in samples:
+        assert isinstance(s["entry_date"], str) and s["entry_date"]
+        assert isinstance(s["pnl_pct"], float)
+
+
+def test_run_leg_default_omits_trade_samples(monkeypatch):
+    df = _synthetic_df()
+    import data_fetcher
+    monkeypatch.setattr(data_fetcher, "load_cached_data",
+                        lambda *a, **k: df, raising=True)
+    leg = ew.run_leg(_FakeRegistry(), "alternator", None, "BTC/USDT", "1h",
+                     ("2026-01-01", None))
+    assert leg is not None
+    assert "trade_samples" not in leg
+
+
+def test_collect_gross_legs_zeroes_friction(monkeypatch):
+    df = _synthetic_df(n=240)
+    import data_fetcher
+    monkeypatch.setattr(data_fetcher, "load_cached_data",
+                        lambda *a, **k: df, raising=True)
+    legs = gen.collect_gross_legs(_FakeRegistry(), "alternator", None,
+                                  [("BTC/USDT", "1h")], ["oos"])
+    assert len(legs) == 1
+    gross = legs[0]
+    net = ew.run_leg(_FakeRegistry(), "alternator", None, "BTC/USDT", "1h",
+                     ew.WINDOWS["oos"])
+    assert gross["trades"] == net["trades"]
+    assert gross["return_pct"] >= net["return_pct"]
+    assert gross["window"] == "oos"
+    assert gross["dataset"] == "BTC/USDT 1h"

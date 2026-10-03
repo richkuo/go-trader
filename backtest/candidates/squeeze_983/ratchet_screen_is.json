@@ -1,0 +1,182 @@
+[
+  {
+    "label": "ratchet_def_t3",
+    "stack": {
+      "close_strategies": [
+        {
+          "name": "trailing_tp_ratchet",
+          "params": {
+            "tp_tiers": [
+              {
+                "atr_multiple": 2.0,
+                "trailing_mult_after": 1.5,
+                "close_fraction": 0.0
+              },
+              {
+                "atr_multiple": 2.5,
+                "trailing_mult_after": 1.0,
+                "close_fraction": 0.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "trailing_mult_after": 0.8,
+                "close_fraction": 0.0
+              }
+            ]
+          }
+        }
+      ],
+      "stop_loss_atr_mult": null,
+      "trailing_stop_atr_mult": 3.0
+    },
+    "mean_ddadj": -0.299,
+    "mean_sharpe": -0.346,
+    "mean_ret": -3.61,
+    "worst_dd": -19.81,
+    "trades": 126
+  },
+  {
+    "label": "ratchet_wide_t5",
+    "stack": {
+      "close_strategies": [
+        {
+          "name": "trailing_tp_ratchet",
+          "params": {
+            "tp_tiers": [
+              {
+                "atr_multiple": 3.0,
+                "trailing_mult_after": 1.5,
+                "close_fraction": 0.0
+              },
+              {
+                "atr_multiple": 4.5,
+                "trailing_mult_after": 1.0,
+                "close_fraction": 0.0
+              },
+              {
+                "atr_multiple": 6.0,
+                "trailing_mult_after": 0.8,
+                "close_fraction": 0.0
+              }
+            ]
+          }
+        }
+      ],
+      "stop_loss_atr_mult": null,
+      "trailing_stop_atr_mult": 5.0
+    },
+    "mean_ddadj": -0.365,
+    "mean_sharpe": -0.539,
+    "mean_ret": -7.81,
+    "worst_dd": -30.06,
+    "trades": 109
+  },
+  {
+    "label": "ratchet_wide_t4",
+    "stack": {
+      "close_strategies": [
+        {
+          "name": "trailing_tp_ratchet",
+          "params": {
+            "tp_tiers": [
+              {
+                "atr_multiple": 3.0,
+                "trailing_mult_after": 1.5,
+                "close_fraction": 0.0
+              },
+              {
+                "atr_multiple": 4.5,
+                "trailing_mult_after": 1.0,
+                "close_fraction": 0.0
+              },
+              {
+                "atr_multiple": 6.0,
+                "trailing_mult_after": 0.8,
+                "close_fraction": 0.0
+              }
+            ]
+          }
+        }
+      ],
+      "stop_loss_atr_mult": null,
+      "trailing_stop_atr_mult": 4.0
+    },
+    "mean_ddadj": -0.446,
+    "mean_sharpe": -0.65,
+    "mean_ret": -8.42,
+    "worst_dd": -30.23,
+    "trades": 114
+  },
+  {
+    "label": "ratchet_def_t5",
+    "stack": {
+      "close_strategies": [
+        {
+          "name": "trailing_tp_ratchet",
+          "params": {
+            "tp_tiers": [
+              {
+                "atr_multiple": 2.0,
+                "trailing_mult_after": 1.5,
+                "close_fraction": 0.0
+              },
+              {
+                "atr_multiple": 2.5,
+                "trailing_mult_after": 1.0,
+                "close_fraction": 0.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "trailing_mult_after": 0.8,
+                "close_fraction": 0.0
+              }
+            ]
+          }
+        }
+      ],
+      "stop_loss_atr_mult": null,
+      "trailing_stop_atr_mult": 5.0
+    },
+    "mean_ddadj": -0.453,
+    "mean_sharpe": -0.783,
+    "mean_ret": -9.97,
+    "worst_dd": -29.92,
+    "trades": 114
+  },
+  {
+    "label": "ratchet_def_t4",
+    "stack": {
+      "close_strategies": [
+        {
+          "name": "trailing_tp_ratchet",
+          "params": {
+            "tp_tiers": [
+              {
+                "atr_multiple": 2.0,
+                "trailing_mult_after": 1.5,
+                "close_fraction": 0.0
+              },
+              {
+                "atr_multiple": 2.5,
+                "trailing_mult_after": 1.0,
+                "close_fraction": 0.0
+              },
+              {
+                "atr_multiple": 3.0,
+                "trailing_mult_after": 0.8,
+                "close_fraction": 0.0
+              }
+            ]
+          }
+        }
+      ],
+      "stop_loss_atr_mult": null,
+      "trailing_stop_atr_mult": 4.0
+    },
+    "mean_ddadj": -0.472,
+    "mean_sharpe": -0.691,
+    "mean_ret": -8.33,
+    "worst_dd": -27.76,
+    "trades": 119
+  }
+]

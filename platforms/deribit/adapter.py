@@ -1,8 +1,3 @@
-"""
-Deribit Options Exchange Adapter — unified interface for options trading.
-Uses CCXT deribit with sandbox mode for paper trading.
-Supports option chain fetching, Greeks calculation, and paper order execution.
-"""
 
 import time
 import math
@@ -23,17 +18,9 @@ except ImportError:
     SCIPY_AVAILABLE = False
 
 
-# ─────────────────────────────────────────────
-# Constants
-# ─────────────────────────────────────────────
+RISK_FREE_RATE = 0.05
+TRADING_DAYS_PER_YEAR = 365
 
-RISK_FREE_RATE = 0.05  # 5% annualized
-TRADING_DAYS_PER_YEAR = 365  # crypto is 24/7
-
-
-# ─────────────────────────────────────────────
-# Enums and data classes
-# ─────────────────────────────────────────────
 
 class OptionType(str, Enum):
     CALL = "call"
@@ -56,12 +43,11 @@ class OptionOrderStatus(str, Enum):
 
 @dataclass
 class Greeks:
-    """Option Greeks."""
     delta: float = 0.0
     gamma: float = 0.0
-    theta: float = 0.0  # per day
+    theta: float = 0.0
     vega: float = 0.0
-    iv: float = 0.0  # implied volatility
+    iv: float = 0.0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -69,9 +55,8 @@ class Greeks:
 
 @dataclass
 class OptionContract:
-    """Represents a single option contract."""
     symbol: str
-    underlying: str  # BTC, ETH
+    underlying: str
     strike: float
     expiry: datetime
     option_type: OptionType
@@ -81,7 +66,7 @@ class OptionContract:
     volume: float = 0.0
     open_interest: float = 0.0
     greeks: Greeks = field(default_factory=Greeks)
-    spot_price: float = 0.0  # underlying spot at time of fetch
+    spot_price: float = 0.0
 
     @property
     def mid_price(self) -> float:
@@ -91,14 +76,12 @@ class OptionContract:
 
     @property
     def dte(self) -> float:
-        """Days to expiry."""
         now = datetime.now(timezone.utc) if self.expiry.tzinfo else datetime.utcnow()
         delta = self.expiry - now
         return max(delta.total_seconds() / 86400, 0.0)
 
     @property
     def time_to_expiry(self) -> float:
-        """Time to expiry in years."""
         return self.dte / TRADING_DAYS_PER_YEAR
 
     @property
@@ -120,7 +103,6 @@ class OptionContract:
 
     @property
     def usd_price(self) -> float:
-        """Price in USD (Deribit prices options in BTC/ETH)."""
         return self.mid_price * self.spot_price
 
     def to_dict(self) -> dict:
@@ -145,7 +127,6 @@ class OptionContract:
 
 @dataclass
 class OptionPosition:
-    """Tracks an open options position."""
     id: str
     symbol: str
     underlying: str
@@ -154,14 +135,14 @@ class OptionPosition:
     option_type: OptionType
     side: OptionSide
     quantity: float
-    entry_price: float  # in underlying currency (BTC/ETH)
+    entry_price: float
     entry_price_usd: float
     entry_time: datetime
-    entry_spot: float  # spot price at entry
+    entry_spot: float
     current_price: float = 0.0
     current_spot: float = 0.0
     greeks: Greeks = field(default_factory=Greeks)
-    leg_group: Optional[str] = None  # for multi-leg strategies
+    leg_group: Optional[str] = None
 
     @property
     def usd_value(self) -> float:
@@ -219,19 +200,13 @@ class OptionPosition:
         }
 
 
-# ─────────────────────────────────────────────
-# Black-Scholes pricing
-# ─────────────────────────────────────────────
-
 def _norm_cdf(x: float) -> float:
-    """Standard normal CDF (fallback when scipy not available)."""
     if SCIPY_AVAILABLE:
         return float(norm.cdf(x))
     return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
 
 
 def _norm_pdf(x: float) -> float:
-    """Standard normal PDF."""
     if SCIPY_AVAILABLE:
         return float(norm.pdf(x))
     return math.exp(-0.5 * x * x) / math.sqrt(2.0 * math.pi)
@@ -239,13 +214,7 @@ def _norm_pdf(x: float) -> float:
 
 def bs_price(S: float, K: float, T: float, r: float, sigma: float,
              option_type: OptionType) -> float:
-    """
-    Black-Scholes option price.
-    S: spot price, K: strike, T: time to expiry (years),
-    r: risk-free rate, sigma: volatility
-    """
     if T <= 0 or sigma <= 0:
-        # At expiry
         if option_type == OptionType.CALL:
             return max(S - K, 0)
         else:
@@ -262,7 +231,6 @@ def bs_price(S: float, K: float, T: float, r: float, sigma: float,
 
 def bs_greeks(S: float, K: float, T: float, r: float, sigma: float,
               option_type: OptionType) -> Greeks:
-    """Calculate Black-Scholes Greeks."""
     if T <= 0 or sigma <= 0:
         intrinsic = max(S - K, 0) if option_type == OptionType.CALL else max(K - S, 0)
         delta = 1.0 if intrinsic > 0 and option_type == OptionType.CALL else \
@@ -275,23 +243,19 @@ def bs_greeks(S: float, K: float, T: float, r: float, sigma: float,
 
     pdf_d1 = _norm_pdf(d1)
 
-    # Delta
     if option_type == OptionType.CALL:
         delta = _norm_cdf(d1)
     else:
         delta = _norm_cdf(d1) - 1.0
 
-    # Gamma (same for calls and puts)
     gamma = pdf_d1 / (S * sigma * sqrt_T)
 
-    # Theta (per day)
     theta_term1 = -(S * pdf_d1 * sigma) / (2 * sqrt_T)
     if option_type == OptionType.CALL:
         theta = (theta_term1 - r * K * math.exp(-r * T) * _norm_cdf(d2)) / TRADING_DAYS_PER_YEAR
     else:
         theta = (theta_term1 + r * K * math.exp(-r * T) * _norm_cdf(-d2)) / TRADING_DAYS_PER_YEAR
 
-    # Vega (per 1% vol change)
     vega = S * sqrt_T * pdf_d1 / 100
 
     return Greeks(delta=delta, gamma=gamma, theta=theta, vega=vega, iv=sigma)
@@ -300,11 +264,9 @@ def bs_greeks(S: float, K: float, T: float, r: float, sigma: float,
 def implied_volatility(market_price: float, S: float, K: float, T: float,
                         r: float, option_type: OptionType,
                         tol: float = 1e-6, max_iter: int = 100) -> float:
-    """Calculate implied volatility using Brent's method or bisection."""
     if market_price <= 0 or T <= 0:
         return 0.0
 
-    # Intrinsic value check
     if option_type == OptionType.CALL:
         intrinsic = max(S - K * math.exp(-r * T), 0)
     else:
@@ -322,7 +284,6 @@ def implied_volatility(market_price: float, S: float, K: float, T: float,
         except (ValueError, RuntimeError):
             pass
 
-    # Fallback: bisection
     low, high = 0.01, 10.0
     for _ in range(max_iter):
         mid = (low + high) / 2
@@ -336,15 +297,7 @@ def implied_volatility(market_price: float, S: float, K: float, T: float,
     return (low + high) / 2
 
 
-# ─────────────────────────────────────────────
-# Deribit Options Adapter
-# ─────────────────────────────────────────────
-
 class DeribitOptionsAdapter:
-    """
-    Options exchange adapter using Deribit sandbox via CCXT.
-    Paper trading with real market data.
-    """
 
     def __init__(self, api_key: Optional[str] = None, api_secret: Optional[str] = None,
                  sandbox: bool = True, initial_balance_usd: float = 10000.0):
@@ -361,29 +314,23 @@ class DeribitOptionsAdapter:
 
         self.exchange = ccxt.deribit(config)
 
-        # Paper trading state
         self._cash_usd = initial_balance_usd
         self._positions: Dict[str, OptionPosition] = {}
         self._trades: List[dict] = []
         self._order_counter = 0
         self._iv_history: Dict[str, List[Tuple[datetime, float]]] = {}
 
-        # Market data cache
         self._markets_loaded = False
         self._option_markets: Dict[str, dict] = {}
-        self._spot_cache: Dict[str, Tuple[float, float]] = {}  # symbol -> (price, timestamp)
-        self._spot_cache_ttl = 30  # seconds
+        self._spot_cache: Dict[str, Tuple[float, float]] = {}
+        self._spot_cache_ttl = 30
 
     @property
     def mode_str(self) -> str:
         return "SANDBOX" if self.sandbox else "LIVE"
 
-    # ─────────────────────────────────────────
-    # Market data
-    # ─────────────────────────────────────────
 
     def load_markets(self, force: bool = False):
-        """Load and cache option markets from Deribit."""
         if self._markets_loaded and not force:
             return
         markets = self.exchange.load_markets()
@@ -394,7 +341,6 @@ class DeribitOptionsAdapter:
         self._markets_loaded = True
 
     def get_spot_price(self, underlying: str) -> float:
-        """Get current spot price for underlying (BTC, ETH)."""
         cache_key = underlying
         now = time.time()
         if cache_key in self._spot_cache:
@@ -407,13 +353,11 @@ class DeribitOptionsAdapter:
             ticker = self.exchange.fetch_ticker(symbol)
             price = ticker["last"]
         except Exception:
-            # Fallback: try the perpetual
             try:
                 symbol = f"{underlying}/USD:{underlying}-PERPETUAL"
                 ticker = self.exchange.fetch_ticker(symbol)
                 price = ticker["last"]
             except Exception:
-                # Last resort: use index
                 symbol = f"{underlying}/USDT"
                 ticker = self.exchange.fetch_ticker(f"{underlying}/USD")
                 price = ticker["last"]
@@ -424,10 +368,6 @@ class DeribitOptionsAdapter:
     def get_option_chain(self, underlying: str = "BTC",
                           min_dte: float = 0, max_dte: float = 365,
                           max_entries: int = 500) -> List[OptionContract]:
-        """
-        Fetch option chain for an underlying.
-        Returns list of OptionContract objects grouped by expiry and strike.
-        """
         self.load_markets()
         spot = self.get_spot_price(underlying)
 
@@ -439,7 +379,6 @@ class DeribitOptionsAdapter:
             if count >= max_entries:
                 break
 
-            # Filter by underlying
             base = market.get("base", "")
             if not base.startswith(underlying):
                 continue
@@ -478,11 +417,9 @@ class DeribitOptionsAdapter:
         return chain
 
     def get_option_ticker(self, symbol: str) -> dict:
-        """Fetch live ticker for a specific option."""
         return self.exchange.fetch_ticker(symbol)
 
     def enrich_contract(self, contract: OptionContract) -> OptionContract:
-        """Fetch live pricing and calculate Greeks for a contract."""
         try:
             ticker = self.get_option_ticker(contract.symbol)
             contract.bid = ticker.get("bid") or 0.0
@@ -492,10 +429,8 @@ class DeribitOptionsAdapter:
             contract.open_interest = ticker.get("info", {}).get("open_interest", 0)
             contract.spot_price = self.get_spot_price(contract.underlying)
 
-            # Calculate IV and Greeks
             mid = contract.mid_price
             if mid > 0 and contract.spot_price > 0 and contract.time_to_expiry > 0:
-                # Deribit prices in underlying, BS expects USD
                 market_price_usd = mid * contract.spot_price
                 iv = implied_volatility(
                     market_price_usd, contract.spot_price, contract.strike,
@@ -507,19 +442,17 @@ class DeribitOptionsAdapter:
                     contract.option_type
                 )
 
-                # Track IV history
                 key = f"{contract.underlying}_{contract.strike}_{contract.option_type.value}"
                 if key not in self._iv_history:
                     self._iv_history[key] = []
                 self._iv_history[key].append((datetime.utcnow(), iv))
-                # Keep last 90 days
                 cutoff = datetime.utcnow() - timedelta(days=90)
                 self._iv_history[key] = [
                     (t, v) for t, v in self._iv_history[key] if t > cutoff
                 ]
 
         except Exception as e:
-            pass  # Ticker fetch can fail for illiquid options
+            pass
 
         return contract
 
@@ -527,17 +460,12 @@ class DeribitOptionsAdapter:
                      min_dte: float = 7, max_dte: float = 60,
                      moneyness: str = "ATM",
                      max_results: int = 10) -> List[OptionContract]:
-        """
-        Find options matching criteria.
-        moneyness: 'ATM', 'OTM', 'ITM', or 'any'
-        """
         chain = self.get_option_chain(underlying, min_dte=min_dte, max_dte=max_dte)
         filtered = [c for c in chain if c.option_type == option_type]
 
         spot = self.get_spot_price(underlying)
 
         if moneyness == "ATM":
-            # Sort by distance from spot
             filtered.sort(key=lambda c: abs(c.strike - spot))
         elif moneyness == "OTM":
             if option_type == OptionType.CALL:
@@ -557,7 +485,6 @@ class DeribitOptionsAdapter:
         return filtered[:max_results]
 
     def get_atm_iv(self, underlying: str, dte_target: float = 30) -> float:
-        """Get ATM implied volatility for an underlying at target DTE."""
         calls = self.find_options(underlying, OptionType.CALL,
                                    min_dte=dte_target - 10, max_dte=dte_target + 10,
                                    moneyness="ATM", max_results=3)
@@ -571,15 +498,10 @@ class DeribitOptionsAdapter:
         return 0.0
 
     def get_iv_rank(self, underlying: str, lookback_days: int = 60) -> float:
-        """
-        Calculate IV rank: percentile of current IV over lookback period.
-        Returns 0-100.
-        """
         current_iv = self.get_atm_iv(underlying)
         if current_iv <= 0:
-            return 50.0  # neutral default
+            return 50.0
 
-        # Collect IV history across all ATM-ish options
         all_ivs = []
         for key, history in self._iv_history.items():
             if key.startswith(underlying):
@@ -593,9 +515,6 @@ class DeribitOptionsAdapter:
         below = sum(1 for iv in all_ivs if iv < current_iv)
         return (below / len(all_ivs)) * 100
 
-    # ─────────────────────────────────────────
-    # Paper trading
-    # ─────────────────────────────────────────
 
     def _next_order_id(self) -> str:
         self._order_counter += 1
@@ -603,15 +522,13 @@ class DeribitOptionsAdapter:
 
     def buy_option(self, contract: OptionContract, quantity: float = 1.0,
                    leg_group: Optional[str] = None) -> Optional[OptionPosition]:
-        """Buy an option (paper mode)."""
         contract = self.enrich_contract(contract)
         price = contract.ask if contract.ask > 0 else contract.mid_price
         if price <= 0:
             return None
 
-        # Cost in USD
         cost_usd = price * contract.spot_price * quantity
-        commission = cost_usd * 0.0003  # Deribit taker fee ~0.03%
+        commission = cost_usd * 0.0003
 
         if cost_usd + commission > self._cash_usd:
             return None
@@ -653,13 +570,11 @@ class DeribitOptionsAdapter:
 
     def sell_option(self, contract: OptionContract, quantity: float = 1.0,
                     leg_group: Optional[str] = None) -> Optional[OptionPosition]:
-        """Sell (write) an option (paper mode). Collects premium."""
         contract = self.enrich_contract(contract)
         price = contract.bid if contract.bid > 0 else contract.mid_price
         if price <= 0:
             return None
 
-        # Premium received in USD
         premium_usd = price * contract.spot_price * quantity
         commission = premium_usd * 0.0003
 
@@ -699,7 +614,6 @@ class DeribitOptionsAdapter:
         return pos
 
     def close_position(self, position_id: str) -> Optional[dict]:
-        """Close an open position at current market price."""
         pos = self._positions.get(position_id)
         if not pos:
             return None
@@ -711,13 +625,11 @@ class DeribitOptionsAdapter:
             return None
 
         if pos.side == OptionSide.BUY:
-            # Selling to close — use bid
             close_price = ticker.get("bid") or ticker.get("last") or 0
             proceeds_usd = close_price * spot * pos.quantity
             commission = proceeds_usd * 0.0003
             self._cash_usd += (proceeds_usd - commission)
         else:
-            # Buying to close — use ask
             close_price = ticker.get("ask") or ticker.get("last") or 0
             cost_usd = close_price * spot * pos.quantity
             commission = cost_usd * 0.0003
@@ -738,7 +650,6 @@ class DeribitOptionsAdapter:
         return trade
 
     def close_leg_group(self, leg_group: str) -> List[dict]:
-        """Close all positions in a leg group (for spreads)."""
         results = []
         ids_to_close = [pid for pid, p in self._positions.items() if p.leg_group == leg_group]
         for pid in ids_to_close:
@@ -748,21 +659,18 @@ class DeribitOptionsAdapter:
         return results
 
     def handle_expiries(self):
-        """Handle expired options: exercise ITM, expire OTM."""
         expired_ids = [pid for pid, p in self._positions.items() if p.is_expired]
 
         for pid in expired_ids:
             pos = self._positions[pid]
             spot = self.get_spot_price(pos.underlying)
 
-            # Calculate intrinsic value
             if pos.option_type == OptionType.CALL:
                 intrinsic = max(spot - pos.strike, 0)
             else:
                 intrinsic = max(pos.strike - spot, 0)
 
             if intrinsic > 0:
-                # ITM — exercise
                 settlement_usd = intrinsic * pos.quantity
                 if pos.side == OptionSide.BUY:
                     self._cash_usd += settlement_usd
@@ -778,7 +686,6 @@ class DeribitOptionsAdapter:
                     "timestamp": datetime.utcnow().isoformat(),
                 })
             else:
-                # OTM — expires worthless
                 self._trades.append({
                     "action": "EXPIRED",
                     "position_id": pid,
@@ -789,7 +696,6 @@ class DeribitOptionsAdapter:
             del self._positions[pid]
 
     def update_positions(self):
-        """Update current prices and Greeks for all open positions."""
         for pos in self._positions.values():
             try:
                 ticker = self.get_option_ticker(pos.symbol)
@@ -811,13 +717,9 @@ class DeribitOptionsAdapter:
             except Exception:
                 pass
 
-    # ─────────────────────────────────────────
-    # Multi-leg strategies
-    # ─────────────────────────────────────────
 
     def open_spread(self, buy_contract: OptionContract, sell_contract: OptionContract,
                     quantity: float = 1.0, name: str = "spread") -> Optional[str]:
-        """Open a two-leg spread (buy one, sell one)."""
         group = f"{name}_{self._order_counter + 1}"
         long = self.buy_option(buy_contract, quantity, leg_group=group)
         short = self.sell_option(sell_contract, quantity, leg_group=group)
@@ -828,7 +730,6 @@ class DeribitOptionsAdapter:
     def open_straddle(self, underlying: str, dte_target: float = 30,
                       side: OptionSide = OptionSide.BUY,
                       quantity: float = 1.0) -> Optional[str]:
-        """Open a straddle (same strike call+put)."""
         calls = self.find_options(underlying, OptionType.CALL,
                                    min_dte=dte_target - 7, max_dte=dte_target + 7,
                                    moneyness="ATM", max_results=1)
@@ -850,7 +751,6 @@ class DeribitOptionsAdapter:
                       otm_pct: float = 0.05,
                       side: OptionSide = OptionSide.BUY,
                       quantity: float = 1.0) -> Optional[str]:
-        """Open a strangle (OTM call + OTM put)."""
         calls = self.find_options(underlying, OptionType.CALL,
                                    min_dte=dte_target - 7, max_dte=dte_target + 7,
                                    moneyness="OTM", max_results=5)
@@ -861,7 +761,6 @@ class DeribitOptionsAdapter:
             return None
 
         spot = self.get_spot_price(underlying)
-        # Pick strikes ~otm_pct away
         call_contract = min(calls, key=lambda c: abs(c.strike - spot * (1 + otm_pct)))
         put_contract = min(puts, key=lambda c: abs(c.strike - spot * (1 - otm_pct)))
 
@@ -873,9 +772,6 @@ class DeribitOptionsAdapter:
             return group
         return None
 
-    # ─────────────────────────────────────────
-    # Portfolio
-    # ─────────────────────────────────────────
 
     def get_cash(self) -> float:
         return self._cash_usd
@@ -887,18 +783,15 @@ class DeribitOptionsAdapter:
         return len(self._positions)
 
     def get_portfolio_value(self) -> float:
-        """Total portfolio value: cash + positions mark-to-market."""
         total = self._cash_usd
         for pos in self._positions.values():
             if pos.side == OptionSide.BUY:
                 total += pos.current_price * pos.current_spot * pos.quantity
             else:
-                # Short: liability = current value
                 total -= pos.current_price * pos.current_spot * pos.quantity
         return total
 
     def get_portfolio_greeks(self) -> Greeks:
-        """Aggregate portfolio Greeks."""
         net = Greeks()
         for pos in self._positions.values():
             sign = 1.0 if pos.side == OptionSide.BUY else -1.0
@@ -912,7 +805,6 @@ class DeribitOptionsAdapter:
         return list(self._trades)
 
     def get_premium_at_risk(self) -> float:
-        """Total premium at risk (long positions only)."""
         total = 0.0
         for pos in self._positions.values():
             if pos.side == OptionSide.BUY:
@@ -940,10 +832,6 @@ if __name__ == "__main__":
         print(f"Connection test: {e}")
 
 
-# ─────────────────────────────────────────────
-# ExchangeAdapter implementation for check_options.py
-# ─────────────────────────────────────────────
-
 import sys as _sys
 import os as _os
 _sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..', '..', 'shared_tools'))
@@ -955,18 +843,12 @@ except ImportError:
 
 
 class DeribitExchangeAdapter:
-    """
-    Lightweight ExchangeAdapter for use by shared_scripts/check_options.py.
-    Wraps platforms/deribit/utils.py for live expiry/strike/quote lookups.
-    Falls back to Black-Scholes when live Deribit data is unavailable.
-    """
 
     @property
     def name(self) -> str:
         return "deribit"
 
     def get_spot_price(self, underlying: str) -> float:
-        """Fetch spot price from Binance US via ccxt."""
         try:
             exchange = ccxt.binanceus({"enableRateLimit": True})
             ticker = exchange.fetch_ticker(f"{underlying}/USDT")
@@ -975,7 +857,6 @@ class DeribitExchangeAdapter:
             return 0.0
 
     def get_vol_metrics(self, underlying: str) -> Tuple[float, float]:
-        """Compute annualized vol and IV rank from daily OHLCV."""
         import math as _math
         try:
             exchange = ccxt.binanceus({"enableRateLimit": True})
@@ -1004,7 +885,6 @@ class DeribitExchangeAdapter:
             return 0.60, 50.0
 
     def get_real_expiry(self, underlying: str, target_dte: int) -> Tuple[str, int]:
-        """Return closest available Deribit expiry to target_dte."""
         try:
             from utils import find_closest_expiry
             result = find_closest_expiry(underlying, target_dte)
@@ -1018,7 +898,6 @@ class DeribitExchangeAdapter:
 
     def get_real_strike(self, underlying: str, expiry: str,
                         option_type: str, target_strike: float) -> float:
-        """Return closest available Deribit strike to target_strike."""
         try:
             from utils import find_closest_strike
             result = find_closest_strike(underlying, expiry, option_type, target_strike)
@@ -1026,7 +905,6 @@ class DeribitExchangeAdapter:
                 return result
         except Exception:
             pass
-        # Fallback: round to nearest 1000 (BTC) or 50 (ETH)
         if underlying.upper() == "BTC":
             return round(target_strike, -3)
         return round(target_strike / 50) * 50
@@ -1034,7 +912,6 @@ class DeribitExchangeAdapter:
     def get_premium_and_greeks(self, underlying: str, option_type: str,
                                 strike: float, expiry: str, dte: float,
                                 spot: float, vol: float) -> Tuple[float, float, dict]:
-        """Get live quote from Deribit; fall back to Black-Scholes."""
         try:
             from utils import get_live_quote
             quote = get_live_quote(underlying, option_type, strike, expiry)
@@ -1043,7 +920,6 @@ class DeribitExchangeAdapter:
                 return mark, round(mark * spot, 2), quote["greeks"]
         except Exception:
             pass
-        # Fallback: Black-Scholes
         if _bs_price_and_greeks is not None and vol > 0:
             price_usd, greeks = _bs_price_and_greeks(spot, strike, dte, vol, option_type=option_type)
             mark_pct = (price_usd / spot) if spot > 0 else 0.0

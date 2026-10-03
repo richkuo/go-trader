@@ -1,13 +1,3 @@
-"""Tests for fetch_robinhood_positions.py — live-account position fetcher
-used by the portfolio kill switch (#346).
-
-Regression target: the #346 review caught that the adapter's
-``get_crypto_positions()`` swallowed exceptions and returned [], which
-the Go-side parser would then read as "no positions" → ConfirmedFlat=True
-→ virtual state cleared while live exposure remained. The script now
-calls ``get_crypto_positions_strict()`` so any adapter failure surfaces
-as a JSON error envelope and the kill switch latches.
-"""
 
 import builtins
 import importlib.util
@@ -21,12 +11,6 @@ import pytest
 
 
 def _run_script(positions_or_exc, is_live=True):
-    """Invoke fetch_robinhood_positions.main() with a mocked adapter.
-
-    positions_or_exc may be a list (returned by
-    adapter.get_crypto_positions_strict) or an Exception. Returns
-    (parsed_stdout_json, exit_code).
-    """
     script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                "fetch_robinhood_positions.py")
     spec = importlib.util.spec_from_file_location("fetch_robinhood_positions", script_path)
@@ -71,57 +55,33 @@ def _run_script(positions_or_exc, is_live=True):
     return parsed, exit_code["value"]
 
 
-class TestSuccess:
-    def test_single_position(self):
-        out, code = _run_script([
-            {"symbol": "BTC", "quantity": 0.01, "avg_price": 42000.0},
-        ])
-        assert code == 0
-        assert len(out["positions"]) == 1
-        p = out["positions"][0]
-        assert p["coin"] == "BTC"
-        assert p["size"] == 0.01
-        assert p["avg_price"] == 42000.0
-        assert "error" not in out
-
-    def test_zero_quantity_filtered(self):
-        out, code = _run_script([
-            {"symbol": "BTC", "quantity": 0, "avg_price": 0},
-        ])
-        assert code == 0
-        assert out["positions"] == []
-
-    def test_empty_positions(self):
-        out, code = _run_script([])
-        assert code == 0
-        assert out["positions"] == []
-        assert "error" not in out
+@pytest.mark.parametrize("raw,expected", [
+    ([{"symbol": "BTC", "quantity": 0.01, "avg_price": 42000.0}],
+     [{"coin": "BTC", "size": 0.01, "avg_price": 42000.0}]),
+    ([{"symbol": "BTC", "quantity": 0, "avg_price": 0}], []),
+    ([], []),
+])
+def test_positions_are_normalized(raw, expected):
+    out, code = _run_script(raw)
+    assert code == 0
+    assert len(out["positions"]) == len(expected)
+    for got, want in zip(out["positions"], expected):
+        for key, value in want.items():
+            assert got[key] == value
+    assert "error" not in out
 
 
-class TestFailurePaths:
-    def test_non_live_adapter(self):
-        out, code = _run_script([], is_live=False)
-        assert code == 1
-        assert "ROBINHOOD" in out["error"]
-
-    def test_strict_raises_propagates_as_error_envelope(self):
-        """Regression for #346 review: if the adapter call fails, the
-        script MUST emit error envelope + exit 1 — NOT a clean
-        {positions: []}. Otherwise the Go-side kill switch reads no
-        positions, sets ConfirmedFlat=true, and clears virtual state
-        while live exposure remains.
-        """
-        out, code = _run_script(RuntimeError("Robinhood 503 Service Unavailable"))
-        assert code == 1
-        assert "503" in out["error"]
-        assert out["positions"] == []
-
-    def test_not_logged_in_raises(self):
-        out, code = _run_script(
-            RuntimeError("Robinhood adapter not logged in — cannot fetch crypto positions")
-        )
-        assert code == 1
-        assert "not logged in" in out["error"]
+@pytest.mark.parametrize("positions_or_exc,is_live,fragment", [
+    ([], False, "ROBINHOOD"),
+    (RuntimeError("Robinhood 503 Service Unavailable"), True, "503"),
+    (RuntimeError("Robinhood adapter not logged in — cannot fetch crypto positions"),
+     True, "not logged in"),
+])
+def test_failure_paths_emit_error_envelope(positions_or_exc, is_live, fragment):
+    out, code = _run_script(positions_or_exc, is_live=is_live)
+    assert code == 1
+    assert fragment in out["error"]
+    assert out["positions"] == []
 
 
 if __name__ == "__main__":

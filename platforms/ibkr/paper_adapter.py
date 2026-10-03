@@ -1,24 +1,8 @@
-"""
-Interactive Brokers adapter for crypto options trading.
-Uses ib_insync for TWS API connectivity.
-
-IBKR crypto options are traded as options on CME crypto futures:
-- BTC: CME Micro Bitcoin Options (MBT) or Bitcoin Options (BTC)
-- ETH: CME Micro Ether Options (MET) or Ether Options (ETH)
-
-Requirements:
-- IBKR Pro account (funded)
-- TWS or IB Gateway running with API enabled
-- Port 7497 (TWS paper) or 4002 (IB Gateway paper)
-- Port 7496 (TWS live) or 4001 (IB Gateway live)
-"""
 
 import math
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, List, Tuple
 
-
-# ── Black-Scholes for premium estimation (fallback when no market data) ──
 
 def norm_cdf(x: float) -> float:
     return 0.5 * (1 + math.erf(x / math.sqrt(2)))
@@ -26,7 +10,6 @@ def norm_cdf(x: float) -> float:
 
 def black_scholes(spot: float, strike: float, dte_days: float, vol: float,
                   risk_free: float = 0.05, option_type: str = "call") -> float:
-    """Black-Scholes option price."""
     if dte_days <= 0 or vol <= 0 or spot <= 0:
         if option_type == "call":
             return max(spot - strike, 0)
@@ -43,7 +26,6 @@ def black_scholes(spot: float, strike: float, dte_days: float, vol: float,
 
 def bs_greeks(spot: float, strike: float, dte_days: float, vol: float,
               risk_free: float = 0.05, option_type: str = "call") -> dict:
-    """Calculate option Greeks via Black-Scholes."""
     if dte_days <= 0 or vol <= 0 or spot <= 0:
         return {"delta": 0, "gamma": 0, "theta": 0, "vega": 0}
 
@@ -52,7 +34,6 @@ def bs_greeks(spot: float, strike: float, dte_days: float, vol: float,
     d1 = (math.log(spot / strike) + (risk_free + 0.5 * vol ** 2) * t) / (vol * sqrt_t)
     d2 = d1 - vol * sqrt_t
 
-    # PDF of standard normal
     pdf_d1 = math.exp(-0.5 * d1 ** 2) / math.sqrt(2 * math.pi)
 
     if option_type == "call":
@@ -61,11 +42,11 @@ def bs_greeks(spot: float, strike: float, dte_days: float, vol: float,
         delta = norm_cdf(d1) - 1
 
     gamma = pdf_d1 / (spot * vol * sqrt_t)
-    vega = spot * pdf_d1 * sqrt_t / 100  # per 1% vol change
+    vega = spot * pdf_d1 * sqrt_t / 100
     theta_annual = -(spot * pdf_d1 * vol) / (2 * sqrt_t) - risk_free * strike * math.exp(-risk_free * t) * (
         norm_cdf(d2) if option_type == "call" else norm_cdf(-d2)
     )
-    theta = theta_annual / 365  # daily
+    theta = theta_annual / 365
 
     return {
         "delta": round(delta, 4),
@@ -75,34 +56,17 @@ def bs_greeks(spot: float, strike: float, dte_days: float, vol: float,
     }
 
 
-# ── IBKR Contract helpers ──
-
 def make_crypto_option_contract(underlying: str, strike: float, expiry: str,
                                  option_type: str, exchange: str = "CME"):
-    """
-    Create an IBKR contract for a CME crypto option.
-    
-    Args:
-        underlying: "BTC" or "ETH"
-        strike: Strike price
-        expiry: Expiry date "YYYY-MM-DD" 
-        option_type: "call" or "put"
-        exchange: Exchange (default CME)
-    
-    Returns:
-        ib_insync FuturesOption contract
-    """
     from ib_insync import FuturesOption
 
-    # CME crypto symbols
     symbol_map = {
-        "BTC": "MBT",  # Micro Bitcoin
-        "ETH": "MET",  # Micro Ether
+        "BTC": "MBT",
+        "ETH": "MET",
     }
     symbol = symbol_map.get(underlying, underlying)
 
-    # Convert date format
-    expiry_str = expiry.replace("-", "")[:8]  # YYYYMMDD
+    expiry_str = expiry.replace("-", "")[:8]
 
     right = "C" if option_type.lower() == "call" else "P"
 
@@ -118,7 +82,6 @@ def make_crypto_option_contract(underlying: str, strike: float, expiry: str,
 
 
 def make_crypto_futures_contract(underlying: str, expiry: str = "", exchange: str = "CME"):
-    """Create an IBKR contract for CME crypto futures (for spot price reference)."""
     from ib_insync import Future
 
     symbol_map = {
@@ -136,18 +99,9 @@ def make_crypto_futures_contract(underlying: str, expiry: str = "", exchange: st
     return contract
 
 
-# ── IBKR Connection ──
-
 class IBKRConnection:
-    """Manages connection to TWS/IB Gateway."""
 
     def __init__(self, host: str = "127.0.0.1", port: int = 4002, client_id: int = 1):
-        """
-        Args:
-            host: TWS/Gateway host
-            port: 7497=TWS paper, 7496=TWS live, 4002=Gateway paper, 4001=Gateway live
-            client_id: Unique client ID for this connection
-        """
         self.host = host
         self.port = port
         self.client_id = client_id
@@ -167,27 +121,16 @@ class IBKRConnection:
         return self.ib is not None and self.ib.isConnected()
 
 
-# ── Paper trading adapter (no IBKR connection needed) ──
-
 class IBKRPaperAdapter:
-    """
-    Paper trading adapter that mimics IBKR crypto options trading.
-    Uses CME contract specs for realistic simulation.
-    
-    CME Micro Bitcoin (MBT): 0.1 BTC multiplier
-    CME Micro Ether (MET): 0.5 ETH multiplier
-    """
 
-    # CME contract multipliers
     MULTIPLIERS = {
-        "BTC": 0.1,   # Micro Bitcoin = 0.1 BTC
-        "ETH": 0.5,   # Micro Ether = 0.5 ETH
+        "BTC": 0.1,
+        "ETH": 0.5,
     }
 
-    # CME tick sizes
     TICK_SIZES = {
-        "BTC": 5.0,    # $5 per tick
-        "ETH": 0.25,   # $0.25 per tick
+        "BTC": 5.0,
+        "ETH": 0.25,
     }
 
     def __init__(self):
@@ -197,16 +140,10 @@ class IBKRPaperAdapter:
         return self.MULTIPLIERS.get(underlying, 1.0)
 
     def get_contract_value(self, underlying: str, spot_price: float) -> float:
-        """Value of one futures contract."""
         return spot_price * self.get_multiplier(underlying)
 
     def estimate_premium(self, underlying: str, spot: float, strike: float,
                           dte: int, vol: float, option_type: str) -> dict:
-        """
-        Estimate option premium and Greeks for a CME crypto option.
-        Returns premium in USD (already multiplied by contract size).
-        """
-        # Raw BS price per unit
         bs_price = black_scholes(spot, strike, dte, vol, option_type=option_type)
         greeks = bs_greeks(spot, strike, dte, vol, option_type=option_type)
 
@@ -222,12 +159,10 @@ class IBKRPaperAdapter:
 
     def get_available_strikes(self, underlying: str, spot: float,
                                strike_range_pct: float = 0.15) -> dict:
-        """Get available strike prices around spot (simulated CME strikes)."""
         tick = self.TICK_SIZES.get(underlying, 100)
 
-        # CME uses standard strike intervals
         if underlying == "BTC":
-            intervals = [500, 1000, 2500, 5000]  # Various strike intervals
+            intervals = [500, 1000, 2500, 5000]
             interval = 1000 if spot > 50000 else 500
         else:
             intervals = [25, 50, 100]
@@ -250,31 +185,26 @@ class IBKRPaperAdapter:
         }
 
     def get_available_expiries(self, days_out: int = 90) -> List[str]:
-        """Get available expiry dates (CME monthly + weekly)."""
         now = datetime.now(timezone.utc)
         expiries = []
 
-        # Weekly expiries (every Friday) for next 5 weeks
         for i in range(1, 6):
             d = now + timedelta(days=i)
-            while d.weekday() != 4:  # Friday
+            while d.weekday() != 4:
                 d += timedelta(days=1)
             if d not in [datetime.strptime(e, "%Y-%m-%d").replace(tzinfo=timezone.utc) for e in expiries]:
                 expiries.append(d.strftime("%Y-%m-%d"))
 
-        # Monthly expiries (last Friday of month) for next 3 months
         for month_offset in range(1, 4):
             year = now.year
             month = now.month + month_offset
             if month > 12:
                 month -= 12
                 year += 1
-            # Last day of month
             if month == 12:
                 last_day = datetime(year + 1, 1, 1, tzinfo=timezone.utc) - timedelta(days=1)
             else:
                 last_day = datetime(year, month + 1, 1, tzinfo=timezone.utc) - timedelta(days=1)
-            # Back up to Friday
             while last_day.weekday() != 4:
                 last_day -= timedelta(days=1)
             exp_str = last_day.strftime("%Y-%m-%d")
@@ -284,10 +214,7 @@ class IBKRPaperAdapter:
         return sorted(expiries)
 
 
-# ── Convenience functions for check_options_ibkr.py ──
-
 def get_spot_price_ibkr(underlying: str) -> float:
-    """Fetch spot price via CCXT (same as before, IBKR not needed for price)."""
     try:
         import ccxt
         exchange = ccxt.binanceus({"enableRateLimit": True})
@@ -300,7 +227,6 @@ def get_spot_price_ibkr(underlying: str) -> float:
 
 
 def calc_vol_and_iv_rank(underlying: str) -> Tuple[float, float]:
-    """Calculate historical vol and IV rank from spot data."""
     try:
         import ccxt
         exchange = ccxt.binanceus({"enableRateLimit": True})

@@ -1,14 +1,4 @@
 #!/usr/bin/env python3
-"""
-OKX spot/perps strategy check script.
-Fetches OHLCV from OKX via CCXT, runs strategy, outputs JSON to stdout, exits.
-
-Signal check mode (paper or live):
-    check_okx.py <strategy> <symbol> <timeframe> [--mode=paper|live] [--htf-filter] [--inst-type=spot|swap]
-
-Execution mode (live only, called by Go as phase 2):
-    check_okx.py --execute --symbol=BTC --side=buy|sell --size=0.01 [--mode=live] [--inst-type=spot|swap]
-"""
 
 import sys
 import os
@@ -17,15 +7,12 @@ import math
 import traceback
 from datetime import datetime, timezone
 
-# Add paths: platforms/okx/ for adapter, shared_tools/ for utilities.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'platforms', 'okx'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
 from atr import ensure_atr_indicator, latest_atr
-from regime import latest_regime
+from regime import latest_regime, parse_regime_windows_spec_json, prepare_check_regime
 
-# Use futures registry for perps (swap), spot registry for spot.
-# Default is swap, matching argparse defaults below.
 _inst_type = "swap"
 for _arg in sys.argv:
     if _arg.startswith("--inst-type="):
@@ -38,7 +25,6 @@ else:
 
 
 def _make_dataframe(candles):
-    """Convert raw OHLCV list to pandas DataFrame compatible with strategy functions."""
     import pandas as pd
     df = pd.DataFrame(candles, columns=["timestamp", "open", "high", "low", "close", "volume"])
     df["datetime"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
@@ -57,6 +43,7 @@ def _position_ctx_from_args(args):
         ("position_qty", "current_quantity"),
         ("position_initial_qty", "initial_quantity"),
         ("position_entry_atr", "entry_atr"),
+        ("position_risk_anchor_price", "risk_anchor_price"),
     ):
         value = getattr(args, attr, None)
         if value is not None:
@@ -77,7 +64,6 @@ def _float_or_none(value):
 
 
 def _extract_fee(response):
-    """Extract ccxt unified order fee.cost when present."""
     if not isinstance(response, dict):
         return None
     fee_info = response.get("fee")
@@ -90,8 +76,10 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                      inst_type="swap", strategy_params_override=None,
                      open_strategy=None, close_strategies=None,
                      position_side="", position_ctx=None,
-                     regime_enabled=False, regime_period=14, regime_adx_threshold=20.0, close_params_by_name=None):
-    """Run strategy signal check using OKX OHLCV data."""
+                     regime_enabled=False, regime_windows_spec=None, ohlcv_limit=200, regime_atr_window="",
+                     regime_payload_json=None,
+                     close_params_by_name=None,
+                     atr_method="simple"):
     try:
         from adapter import OKXExchangeAdapter
         from strategies import apply_strategy, get_strategy, list_strategies
@@ -105,13 +93,13 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             finalize_decision,
             normalize_signal,
             parse_close_strategies,
+            reject_backtest_only_strategies,
             validate_close_strategy_names,
         )
 
         open_close_enabled = bool(open_strategy or close_strategies)
         configured_names = [open_strategy or strategy_name]
-        for name in configured_names:
-            get_strategy(name)
+        reject_backtest_only_strategies(configured_names, get_strategy)
         validate_close_strategy_names(
             parse_close_strategies(close_strategies),
             get_strategy,
@@ -122,7 +110,6 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
 
         adapter = OKXExchangeAdapter()
 
-        # Fetch funding rate data for delta-neutral strategy (perps only)
         strategy_params = {}
         if strategy_name == "delta_neutral_funding" and inst_type == "swap":
             try:
@@ -139,9 +126,9 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
 
         print(f"Fetching {symbol} {timeframe} from OKX ({mode}, {inst_type})...", file=sys.stderr)
         if inst_type == "swap":
-            candles = adapter.get_perp_ohlcv(symbol, interval=timeframe, limit=200)
+            candles = adapter.get_perp_ohlcv(symbol, interval=timeframe, limit=ohlcv_limit)
         else:
-            candles = adapter.get_ohlcv(symbol, interval=timeframe, limit=200)
+            candles = adapter.get_ohlcv(symbol, interval=timeframe, limit=ohlcv_limit)
 
         if not candles or len(candles) < 30:
             print(json.dumps({
@@ -159,22 +146,23 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             sys.exit(1)
 
         df = _make_dataframe(candles)
-        if regime_enabled:
-            regime_payload = latest_regime(df, period=regime_period, adx_threshold=regime_adx_threshold)
-        else:
-            regime_payload = {"regime": "", "score": 0.0, "metrics": {}}
-        strategy_params["regime"] = regime_payload
+        stdout_regime, live_regime, strategy_regime = prepare_check_regime(
+            df,
+            regime_enabled=regime_enabled,
+            windows_spec=regime_windows_spec,
+            atr_window=regime_atr_window,
+            injected_payload_json=regime_payload_json,
+        )
+        strategy_params["regime"] = strategy_regime
         if strategy_params_override:
             merged = {**strategy_params_override, **strategy_params}
             strategy_params = merged
         decision = None
         if open_close_enabled:
             market_ctx = {"mark_price": float(df["close"].iloc[-1])}
-            atr_now = latest_atr(df)
+            atr_now = latest_atr(df, method=atr_method)
             if atr_now > 0:
                 market_ctx["atr"] = atr_now
-            # #733: live regime label for tiered_tp_atr_live_regime evaluator.
-            live_regime = (regime_payload or {}).get("regime") or ""
             if live_regime:
                 market_ctx["regime"] = live_regime
             evaluation = evaluate_open_close(
@@ -197,11 +185,10 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             result_df = apply_strategy(strategy_name, df, strategy_params or None)
             signal = normalize_signal(result_df.iloc[-1].get("signal", 0))
 
-        ensure_atr_indicator(result_df)
+        ensure_atr_indicator(result_df, method=atr_method)
         last = result_df.iloc[-1]
         price = float(last["close"])
 
-        # Apply HTF trend filter if enabled (skip for funding-rate strategies — #103)
         htf_info = {}
         htf_strategy_name = open_strategy or strategy_name
         if htf_filter_enabled and htf_strategy_name != "delta_neutral_funding":
@@ -224,7 +211,6 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             decision = finalize_decision(evaluation, position_side, signal)
             signal = decision["signal"]
 
-        # Freshen price with live mid if available
         try:
             if inst_type == "swap":
                 mid = adapter.get_perp_price(symbol)
@@ -252,7 +238,6 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                 except (ValueError, TypeError):
                     pass
 
-        # Merge HTF indicators
         if htf_info:
             for k, v in htf_info.items():
                 if isinstance(v, (int, float)):
@@ -265,7 +250,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             "signal": signal,
             "price": round(price, 2),
             "indicators": indicators,
-            "regime": regime_payload["regime"],
+            "regime": stdout_regime,
             "mode": mode,
             "platform": "okx",
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -293,7 +278,6 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
 
 
 def run_execute(symbol, side, size, mode, inst_type="swap"):
-    """Place a live market order on OKX."""
     if mode != "live":
         print(json.dumps({"error": "--execute requires --mode=live"}))
         sys.exit(1)
@@ -305,7 +289,6 @@ def run_execute(symbol, side, size, mode, inst_type="swap"):
         is_buy = side.lower() == "buy"
         result = adapter.market_open(symbol, is_buy, size, inst_type=inst_type)
 
-        # Extract fill info from ccxt response structure
         fill = {}
         try:
             fill = {
@@ -345,7 +328,6 @@ def run_execute(symbol, side, size, mode, inst_type="swap"):
 
 def main():
     if "--execute" in sys.argv:
-        # Execute mode: --execute --symbol=BTC --side=buy|sell --size=0.01 [--mode=live] [--inst-type=spot|swap]
         import argparse
         parser = argparse.ArgumentParser()
         parser.add_argument("--execute", action="store_true")
@@ -357,7 +339,6 @@ def main():
         args = parser.parse_args()
         run_execute(args.symbol, args.side, args.size, args.mode, args.inst_type)
     else:
-        # Signal check mode: <strategy> <symbol> <timeframe> [--mode=paper|live] [--htf-filter] [--inst-type=spot|swap]
         import argparse
         parser = argparse.ArgumentParser()
         parser.add_argument("strategy")
@@ -366,8 +347,12 @@ def main():
         parser.add_argument("--mode", default="paper")
         parser.add_argument("--htf-filter", action="store_true", default=False)
         parser.add_argument("--regime-enabled", action="store_true", default=False)
-        parser.add_argument("--regime-period", type=int, default=14)
-        parser.add_argument("--regime-adx-threshold", type=float, default=20.0)
+        parser.add_argument("--regime-windows-spec-json", default="")
+        parser.add_argument("--ohlcv-limit", type=int, default=200)
+        parser.add_argument("--regime-atr-window", default="")
+        parser.add_argument("--regime-payload-json", default=None)
+        parser.add_argument("--atr-method", default="simple", choices=["simple", "wilder"])
+        parser.add_argument("--regime-directional-window", default="")
         parser.add_argument("--inst-type", default="swap", choices=["spot", "swap"])
         parser.add_argument("--params", default=None)
         parser.add_argument("--open-strategy", default=None)
@@ -379,6 +364,7 @@ def main():
         parser.add_argument("--position-initial-qty", type=float, default=None)
         parser.add_argument("--position-entry-atr", type=float, default=None)
         parser.add_argument("--position-regime", default="")
+        parser.add_argument("--position-risk-anchor-price", type=float, default=None)
         parser.add_argument("--mark-price", type=float, default=0.0, help="Accepted for argv-shape compatibility with check_hyperliquid.py (#768); ignored on this platform.")
         parser.add_argument("--probe-only", action="store_true",
             help="Startup compatibility probe (#645): validate argv shape and exit 0.")
@@ -392,15 +378,19 @@ def main():
         params_override = refs["open_params"] if refs else (json.loads(args.params) if args.params else None)
         close_params_by_name = refs["close_params_by_name"] if refs else None
         position_ctx = _position_ctx_from_args(args)
+        regime_windows_spec = parse_regime_windows_spec_json(args.regime_windows_spec_json or None)
         run_signal_check(
             args.strategy, args.symbol, args.timeframe, args.mode,
             args.htf_filter, args.inst_type, params_override,
             open_strategy_name, close_strategies_arg,
             args.position_side, position_ctx,
             regime_enabled=args.regime_enabled,
-            regime_period=args.regime_period,
-            regime_adx_threshold=args.regime_adx_threshold,
+            regime_windows_spec=regime_windows_spec,
+            ohlcv_limit=args.ohlcv_limit,
+            regime_atr_window=args.regime_atr_window,
+            regime_payload_json=args.regime_payload_json,
             close_params_by_name=close_params_by_name,
+            atr_method=args.atr_method,
         )
 
 

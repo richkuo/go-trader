@@ -26,25 +26,17 @@ Give your AI agent [SKILL.md](SKILL.md) (raw: `https://raw.githubusercontent.com
 
 ### Interactive Setup (go-trader init)
 
-After building the binary, run the config wizard:
-
 ```bash
 ./go-trader init
 ```
 
-It walks asset/strategy/platform/capital/risk/Discord choices and writes `scheduler/config.json`. Defaults to a minimal BTC spot starter; risk prompts (warn threshold, portfolio kill-switch) appear only when live trading is selected.
-
-For scripted deployments, use `--json`:
-
-```bash
-./go-trader init --json '{"assets":["BTC"],"enableSpot":true,"spotStrategies":["sma_crossover"],"spotCapital":1000,"spotDrawdown":10}' --output config.json
-```
+Walks asset/strategy/platform/capital/risk/Discord choices and writes `scheduler/config.json`. Defaults to a minimal BTC spot starter; risk prompts appear only when live trading is selected. Scripted: `./go-trader init --json '{"assets":["BTC"],"enableSpot":true,"spotStrategies":["sma_crossover"],"spotCapital":1000,"spotDrawdown":10}' --output config.json`
 
 ### Manual Setup
 
 ```bash
 git clone https://github.com/richkuo/go-trader.git && cd go-trader
-curl -LsSf https://astral.sh/uv/install.sh | sh    # install uv if needed
+curl -LsSf https://astral.sh/uv/install.sh | sudo env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh    # uv for every account (SKILL.md Prerequisites)
 uv sync                                             # Python deps from lockfile
 
 VER=$(git describe --tags --always --dirty 2>/dev/null || echo dev)
@@ -60,17 +52,26 @@ curl -s localhost:8099/status | python3 -m json.tool
 
 ### Running multiple instances
 
-Use the templated unit `systemd/go-trader@.service`; each instance lives under `/opt/go-trader-<name>/`:
+Use `systemd/go-trader@.service`. Code under `/opt/go-trader-<name>/`; **runtime config outside the tree** at `/var/lib/go-trader/<name>/config.json` (#1056) so `rsync`/`git clean` cannot clobber live config. `StateDirectory=go-trader/%i` keeps that path writable under `ProtectSystem=strict`.
 
 ```bash
-sudo mkdir -p /opt/go-trader-paper-testing/scheduler
+sudo mkdir -p /opt/go-trader-paper-testing/scheduler /var/lib/go-trader/paper-testing
 sudo cp go-trader /opt/go-trader-paper-testing/
-sudo cp scheduler/config.json /opt/go-trader-paper-testing/scheduler/
-sudo chown -R go-trader:go-trader /opt/go-trader-paper-testing
+sudo cp scheduler/config.json /var/lib/go-trader/paper-testing/config.json
+sudo ln -s /var/lib/go-trader/paper-testing/config.json /opt/go-trader-paper-testing/scheduler/config.json
+sudo chown -R go-trader:go-trader /opt/go-trader-paper-testing /var/lib/go-trader/paper-testing
 sudo bash scripts/install-service.sh systemd/go-trader@.service paper-testing
 ```
 
-Set `NO_START=1` to enable without starting.
+Existing in-tree deploy: **stop the service**, then `scripts/migrate-config-out-of-tree.sh --instance <name>` (refuses while daemon is live). `NO_START=1` enables without starting. Detail: [SKILL.md](SKILL.md).
+
+Hand-made unit (for example `go-trader-live.service` run as root from a workspace): `sudo python3 scripts/migrate-service-layout.py plan --unit <unit> --instance <name>` checks a move to this layout, and `apply` makes it with state transfer, proofs and automatic recovery; `rollback` returns it. Updates never run it. Detail: [SKILL.md](SKILL.md) § Run And Install Service.
+
+**Folding paper deployments into one paper service.** Paper and live never share a service: the fold refuses any target that runs a `--mode=live` strategy. To build a new combined paper service, stop every unit named in the run, then `bash scripts/merge-paper-instance.sh --new-target <name> --status-port <n> --source <id>=<instance>...` (dry run) and, once it prints `VERDICT: READY`, the same command with `--apply`; it creates `go-trader@<name>` and enables nothing. `--live <instance>` instead names an existing paper-only service (the flag name is historical). Every state file stays where it is: the target config gains `paper_db_file` for `--paper`, every paper id gets a `-paper` suffix (numbered on a name clash) with `storage_strategy_id` keeping the stored identity, and a systemd drop-in grants each folded database directory.
+
+`--source <id>=<instance>` folds a deployment into its **own** partition `paper:<id>` instead of the shared paper one: it adds a `paper_sources` entry with that id and the deployment's database, aliases each strategy as `<base>-paper-<id>` and stamps `paper_source=<id>`. `--paper` and `--source` may be combined and `--source` may repeat, so several deployments fold in one run, each keeping its own risk limits, latch and state file. `--diff` previews the whole plan from the config files alone, with no unit stopped. Every folded deployment's `leaderboard_summaries` entries are kept.
+
+The script holds every database's locks for the run, verifies the merged config with one release's own `inspect --all --json` and `storage-inspect --json`, and never opens a database for writing. Back up every state file first, then `daemon-reload`, disable each folded unit, start the target unit, verify the boot `[storage]` lines and the first cycle, and only then retire the folded status ports. `--rollback` takes the same `--paper` and `--source` arguments as the apply it undoes, restores the config and drop-ins, never touches a database, and must run newest merge first. See `scheduler/config.live-paper.example.json` and SKILL.md § Storage Ownership, whose cutover checklist names the exact recovery boundary.
 
 ---
 
@@ -86,13 +87,64 @@ Go scheduler (always running, ~8MB idle)
 Python adapters: binanceus, deribit, ibkr, hyperliquid, topstep, robinhood, okx, luno
 ```
 
-Python provides the quant libraries (pandas, numpy, scipy, CCXT); Go provides memory efficiency. 50+ strategies peak around ~220MB for ~30s, then back to ~8MB idle.
+One deployment is one systemd instance: one config, one SQLite state file, one Go daemon. Live and paper run as separate instances today. One instance may also hold both modes, with portfolio risk partitioned by live and paper scope.
+
+```mermaid
+flowchart TB
+    subgraph Instance["go-trader instance (systemd unit)"]
+        CFG["config.json<br/>StateDirectory"]
+        DB[("state.db<br/>SQLite")]
+        subgraph Daemon["Go scheduler daemon"]
+            LOOP["Cycle loop<br/>due strategies, six-phase cycle"]
+            RISK["Portfolio risk per scope<br/>drawdown latch, kill switch,<br/>daily loss, notional and exposure caps"]
+            EXEC["Executor<br/>confirmed-fill gate, booking"]
+            PROT["Protection<br/>on-chain SL/TP, trailing,<br/>liquidation clamp"]
+            RECON["Reconciliation<br/>shared wallet, cashflow, fills"]
+            MIRROR["Replay mirror<br/>live decisions to paper"]
+            FEED["Market feed (market_feed=websocket, or shared from role=feed services over Unix sockets:<br/>websocket primary, REST backup with a request budget)<br/>one HL websocket, history repair,<br/>sealed per-evaluation snapshot"]
+            OPS["Operator surfaces<br/>Discord bot, loopback dashboard,<br/>owner DMs"]
+        end
+        subgraph Py["One-shot Python subprocesses (per cycle)"]
+            CHECK["check_&lt;platform&gt;.py<br/>candles, regime, open/close signals<br/>(HL: one batch per symbol+timeframe;<br/>market_feed=websocket: sealed Go snapshot on stdin)"]
+            XQ["check_&lt;platform&gt;.py execute<br/>live orders via adapter"]
+            REG["check_regime.py / check_price.py"]
+        end
+    end
+    EXCH["Exchanges<br/>Hyperliquid, Binance US, OKX, Deribit,<br/>IBKR, TopStep, Robinhood, Luno"]
+    DISC["Discord / Telegram"]
+    LOG["replay_log_path<br/>shared decision log"]
+
+    CFG --> LOOP
+    FEED --> LOOP
+    FEED -->|candles, mids| EXCH
+    LOOP -->|spawn, parse JSON| CHECK
+    LOOP --> REG
+    LOOP --> RISK --> EXEC
+    EXEC -->|live only| XQ
+    EXEC --> PROT
+    PROT -->|reduce-only orders| XQ
+    CHECK -->|public data| EXCH
+    XQ -->|signed orders, fills| EXCH
+    RECON --> EXCH
+    LOOP --> RECON
+    EXEC --> DB
+    RISK --> DB
+    LOOP --> MIRROR
+    MIRROR <--> LOG
+    OPS --> DISC
+    RISK -->|alerts, reset prompt| OPS
+    DB --> OPS
+```
+
+Paper instances run the same daemon without `--mode=live`: the execute subprocess is never spawned, fills are modeled, and protection is virtual.
+
+Python provides quant libraries (pandas, numpy, scipy, CCXT); Go provides memory efficiency. Peak ~220MB for ~30s during checks, then back to ~8MB idle.
 
 ---
 
 ## Strategies & Platforms
 
-Strategies are auto-discovered from `shared_strategies/` at `go-trader init` time. Common picks: spot/perps share entries like `sma_crossover`, `ema_crossover`, `momentum`, `rsi`, `bollinger_bands`, `macd`, `mean_reversion`, `triple_ema`, `tema_cross`, `pairs_spread`, `chart_pattern`, `liquidity_sweeps`, `donchian_breakout`, `session_breakout`. Options use `vol_mean_reversion`, `momentum_options`, `protective_puts`, `covered_calls` (plus `wheel` and `butterfly` on Robinhood); new trades are scored vs. existing positions (strike distance, expiry spread, Greek balance). Max 4 positions per options strategy; min score 0.3 to execute.
+Strategies are auto-discovered from `shared_strategies/` at `go-trader init` time. Common picks: spot entries include `chart_pattern` (the starter default), `anchored_vwap`, `anchored_vwap_channel`, `anchored_vwap_reversion`, `liquidity_sweeps`, `atr_band_revert`, `momentum_pro`, `mean_reversion_pro`, `regime_adaptive_htf`; futures/perps also include `bear_pullback_st`, `vwap_rejection_st`, `delta_neutral_funding`, `breakout`. Options use `vol_mean_reversion`, `momentum_options`, `protective_puts`, `covered_calls` (plus `wheel` and `butterfly` on Robinhood); new trades are scored vs. existing positions (strike distance, expiry spread, Greek balance). Max 4 positions per options strategy; min score 0.3 to execute. (Older strategies like `sma_crossover`, `rsi`, `macd`, `mean_reversion`, `momentum`, `bollinger_bands`, `triple_ema`, `tema_cross` etc. are flagged edge-deprecated after a fee-audit re-screen — #1275 — and hidden from discovery, but still load for existing configs/backtests.)
 
 | Platform | Type | Assets | Live env vars | Paper data |
 |---|---|---|---|---|
@@ -106,9 +158,9 @@ Strategies are auto-discovered from `shared_strategies/` at `go-trader init` tim
 | OKX | Spot + Perps + Options | BTC, ETH, SOL | `OKX_API_KEY` / `_SECRET` / `_PASSPHRASE` (`OKX_SANDBOX=1` for demo) | CCXT public |
 | Luno | Spot | BTC, ETH, … | Luno creds | CCXT public |
 
-**Hyperliquid perps direction** — per-strategy `direction: "long" | "short" | "both"`. `long` (default) opens longs only; `short` opens shorts only; `both` flips on reversals. Bidirectional/short-focused strategies (`triple_ema_bidir`, `bear_pullback_st`, `vwap_rejection_st`, `donchian_breakout`, `chart_pattern`, `liquidity_sweeps`) require `"short"` or `"both"`. Legacy `allow_shorts` migrates automatically.
+**Hyperliquid perps direction** — per-strategy `direction: "long" | "short" | "both"`. `long` (default) opens longs only; `short` opens shorts only; `both` flips on reversals. Bidirectional/short-focused strategies (`triple_ema_bidir`, `bear_pullback_st`, `vwap_rejection_st`, `chart_pattern`, `anchored_vwap`, `anchored_vwap_channel`, `anchored_vwap_reversion`, `liquidity_sweeps`, `momentum_pro`, `mean_reversion_pro`, `rsi_bb_combo`, `consolidation_range`, `atr_band_revert`, `mtf_confluence`, `funding_skew`, `regime_adaptive`) require `"short"` or `"both"`. Legacy `allow_shorts` migrates automatically. `donchian_breakout` is deprecated (hidden from discovery, still loadable via explicit config).
 
-**Coin sharing on Hyperliquid** — multiple HL strategies (including `type: "manual"`) can share a coin/wallet, with per-strategy SQLite bookkeeping over a single on-chain position. Peers must share `margin_mode` + `leverage`; at most one peer may run a trailing stop. Reduce-only SL and N-tier TPs are sized per strategy. Sub-accounts are the only path to fully independent direction/leverage/margin.
+**Coin sharing on Hyperliquid** — multiple HL strategies (including `type: "manual"`) can share a coin/wallet with per-strategy SQLite bookkeeping over one on-chain position. Peers must share `margin_mode` + `leverage`; reduce-only SL/TP are sized per strategy. Sub-accounts are the only path to fully independent direction/leverage/margin.
 
 ---
 
@@ -116,11 +168,11 @@ Strategies are auto-discovered from `shared_strategies/` at `go-trader init` tim
 
 ### `scheduler/config.json`
 
-Use `./go-trader init` (interactive) or `./go-trader init --json '...'` (scripted) to generate this file. The full structure:
+Generate via `./go-trader init` or `--json`. Skeleton:
 
 ```json
 {
-  "config_version": 14,
+  "config_version": 19,
   "interval_seconds": 3600,
   "db_file": "scheduler/state.db",
   "log_dir": "logs",
@@ -152,22 +204,37 @@ Use `./go-trader init` (interactive) or `./go-trader init --json '...'` (scripte
 }
 ```
 
-`config_version` is bumped automatically by `go-trader init` and migrated on startup. Recent migrations: v9 added HL perps stop-loss / margin-mode fields; v11 added the `regime` block; v13 reshaped `open_strategy`/`close_strategies` into co-located `{name, params}` refs; v14 replaced `allow_shorts` with the `direction` enum.
+`config_version` migrates on startup (current **19**: v19 renames the per-regime stop fields to `stop_loss_atr_mult_regime` / `trailing_stop_atr_mult_regime`, after v18's `trail_stop_atr_regime` rename). Configs older than **13** are rejected at load — start the pre-upgrade binary once to migrate first.
+
+### Split live, paper and paper-source state files
+
+| Field | Description | Default |
+|-------|-------------|---------|
+| `db_file` | Primary state file. In the split layout it owns the live scope, process metadata, the live-only wallet and cash-flow tables, and shared regime history. Restart-required | `scheduler/state.db` |
+| `paper_db_file` | Optional second file owning the paper scope's books, risk row, kill-switch events and correlation snapshot. Omit it and the single-file layout is unchanged. It must resolve to a different physical file than `db_file` — relative paths, symbolic links and hard links are all checked, and an alias exits with code 80. Restart-required | absent |
+| `paper_sources` | Folds several paper deployments into one process. Each entry carries `id` (`[a-z0-9][a-z0-9_-]{0,31}`, never `live`, `paper` or `primary`), `db_file`, and an optional `label` and `portfolio_risk` override. Every path must resolve to a different physical file than every other state file. Restart-required | absent |
+| `paper_source` (per strategy) | The `paper_sources` id this paper strategy belongs to. It selects the strategy's risk partition (`paper:<id>`) and therefore its limits, latch, correlation model and state file. Refused on a live strategy and on an id no entry declares. Restart-required | absent |
+| `storage_strategy_id` (per strategy) | The row identifier this strategy owns inside its file; defaults to `id`. Must be unique **within one file**; the same value in two different files is the supported alias. Set it to the previous `id` to rename a strategy with no stored rewrite and no book reset. Restart-required | `id` |
+
+Every file is locked before any migration or startup write, so a second scheduler — `--once` included — refuses to run. `./go-trader storage-inspect` prints a read-only ownership report for every file and is the discovery command for backups. Back up and restore **all** of them together — `db_file`, `paper_db_file` and each `paper_sources[].db_file`, with their `-wal` and `-shm` sidecars — while the service is stopped, restoring in the order primary, paper, then sources by id. `scripts/update.sh` excludes the same list from its rsync.
 
 ### Portfolio Risk
 
 | Field | Description | Default |
 |-------|-------------|---------|
-| `portfolio_risk.max_drawdown_pct` | Kill switch — halt all trading if portfolio drops this % from peak | 25 |
-| `portfolio_risk.max_notional_usd` | Hard cap on total notional exposure (0 = disabled) | 0 |
-| `portfolio_risk.warn_threshold_pct` | Emit a Discord/Telegram warning when drawdown reaches this % of `max_drawdown_pct` (repeats every cycle while in band) | 60 |
-| `risk_free_rate` | Annualized risk-free rate used in Sharpe-ratio calculations (e.g. `0.04` for 4%); `null`/omitted → default rate | 0.04 |
-| `status_port` | HTTP status server port; auto-falls-back up to 5 ports on collision. Override via `--status-port` CLI flag. | 8099 |
-| `default_stop_loss_atr_mult` | Top-level fallback ATR multiplier used to arm fixed-ATR stops on HL perps strategies that omit all five `stop_loss_*` / `trailing_stop_*` fields. Set to `0` to opt every such strategy out fleet-wide. | 1.0 |
+| `portfolio_risk.max_drawdown_pct` | Kill switch — halt trading in that mode when its portfolio drops this % from peak. Live and paper strategies keep separate peaks, latches and ledgers, so one mode can never halt the other | 25 |
+| `portfolio_risk.max_notional_usd` | Cap on total gross notional — holds new opens when exceeded; closes/SL keep running (0 = disabled) | 0 |
+| `portfolio_risk.warn_threshold_pct` | Warning when drawdown reaches this % of `max_drawdown_pct` | 60 |
+| `portfolio_risk.daily_max_loss_usd` / `daily_max_loss_pct` | Hard daily loss limit — holds new entries (not closes) until UTC rollover; both may be set, lower resolved USD wins (0 = disabled) | 0 |
+| `portfolio_risk.max_same_direction_notional_usd` / `max_asset_concentration_pct` | Blocks new same-direction/single-asset opens once the cap would be exceeded (0 = disabled) | 0 |
+| `portfolio_risk.paper` | Optional override block with the same fields, applied to paper strategies only. Omitted or zero fields inherit the parent; `paper.max_notional_usd` is restart-required | absent |
+| `risk_free_rate` | Annualized rate for Sharpe calculations | 0.04 |
+| `status_port` | HTTP status port (+5 fallback on collision); override with `--status-port` | 8099 |
+| `default_stop_loss_atr_mult` | Fleet-wide HL perps fallback when all five `stop_loss_*` / `trailing_stop_*` fields omitted; `0` opts out | 1.0 |
 
 ### Regime Detection
 
-Optional ADX+DI 3-state gate (`trending_up` / `trending_down` / `ranging`) computed from the strategy's own OHLCV. Per-strategy `allowed_regimes` blocks new entries when the current regime isn't whitelisted (closes always pass). `regime.enabled` requires a restart; `allowed_regimes` is SIGHUP-reloadable. Options strategies don't emit a regime label yet.
+Optional ADX+DI 3-state gate (`trending_up` / `trending_down` / `ranging`) from the strategy's OHLCV. `allowed_regimes` blocks new entries when the current regime isn't whitelisted (closes always pass). `regime.enabled` and `regime.windows` require restart; `allowed_regimes` and per-strategy window selectors are SIGHUP-reloadable when flat. Options strategies don't emit a regime label yet.
 
 ```json
 {
@@ -176,21 +243,27 @@ Optional ADX+DI 3-state gate (`trending_up` / `trending_down` / `ranging`) compu
 }
 ```
 
-`regime.period` defaults to 14, `regime.adx_threshold` to 20 (below this → `ranging`).
+`regime.period` defaults to 14; `regime.adx_threshold` to 20 (below → `ranging`).
 
-**Regime-aware ATR multipliers (HL perps).** With `regime.enabled: true`, four close-strategy / stop-loss surfaces can resolve their ATR multiplier per regime label instead of using a fixed scalar: `stop_loss_atr_regime`, `trailing_stop_atr_regime` (strategy-level), and `tiered_tp_atr_regime` / `tiered_tp_atr_live_regime` (close-strategy refs). Operators opt in by swapping the scalar field for the `*_regime` sibling. `{"use_defaults": true}` expands to a baseline table (trending: tighter SL / wider TP; ranging: opposite); explicit form is `{"trend_regime": {"trending_up": {"atr": 2.0}, "trending_down": {"atr": 2.0}, "ranging": {"atr": 1.5}}}` (all three labels required). The regime is frozen at open via `pos.Regime` for stop and `_regime` TP refs; `tiered_tp_atr_live_regime` re-resolves each tick.
+**Multi-window regime (#792).** Optional `regime.windows` runs independent ADX classifiers per named horizon (value = ADX period in bars). Empty `windows` → legacy single-window from `regime.period`. Three per-strategy selectors (empty/`default` → `regime.period`):
+
+| Selector | Consumer |
+|---|---|
+| `regime_gate_window` | Entry gate (`allowed_regimes`) |
+| `regime_atr_window` | Regime-aware SL/TP multipliers (stamped at open) |
+| `regime_directional_window` | `regime_directional_policy` resolver |
+
+OHLCV fetch scales to the longest window. `go-trader inspect <id>` shows resolved selectors and stamped windows on open positions.
+
+**Regime-aware ATR multipliers (HL perps).** With `regime.enabled`, swap scalar stop/TP fields for `*_regime` siblings (`stop_loss_atr_mult_regime`, `trailing_stop_atr_mult_regime`, `tiered_tp_atr_regime`, `tiered_tp_atr_live_regime`). `{"use_defaults": true}` expands a baseline table; explicit form requires all three ADX labels. Regime is frozen at open for stops; live TP regime refs re-resolve each tick. (Renamed #1475; pre-v19 spellings `stop_loss_atr_regime`/`trail_stop_atr_regime` migrate on load.)
 
 ### Correlation Tracking
 
-Opt-in via `correlation.enabled: true`. Warns when a single asset exceeds `max_concentration_pct` (default 60) of portfolio gross exposure or `max_same_direction_pct` (default 75) of strategies on an asset share a direction. Warnings go to active Discord channels and the owner DM; snapshot also available at `/status`.
+Opt-in via `correlation.enabled: true`. Warns when a single asset exceeds `max_concentration_pct` (default 60) of gross exposure or `max_same_direction_pct` (default 75) of strategies on an asset share a direction.
 
 ### Auto-Update & DM Upgrades
 
-`auto_update`: `"off"` (default), `"daily"`, or `"heartbeat"` (every cycle). When an update is found, all active Discord channels are notified; if `discord.owner_id` is set, the bot also DMs you `Would you like me to upgrade automatically? (yes/no)`. Reply **yes** → it runs `scripts/update.sh` (git pull → uv sync → go build) and restarts itself.
-
-After an upgrade, any new config fields introduced since your `config_version` are collected via DM (10-minute reply window per field) and written back to `config.json` atomically.
-
-Discord user ID: right-click your username → **Copy User ID** (Developer Mode: Settings → Advanced).
+`auto_update`: `"off"` (default), `"daily"`, or `"heartbeat"`. When an update is found, channels are notified; with `discord.owner_id` set, reply **yes** to a DM to run `scripts/update.sh` and restart. Post-upgrade, new config fields may be collected via DM (10-minute window per field). Discord user ID: right-click username → **Copy User ID** (Developer Mode: Settings → Advanced).
 
 ### Discord Settings
 
@@ -198,48 +271,53 @@ Discord user ID: right-click your username → **Copy User ID** (Developer Mode:
 |---|---|
 | `discord.enabled` | Toggle Discord notifications |
 | `discord.token` | Leave blank — set `DISCORD_BOT_TOKEN` env var |
-| `discord.owner_id` | Discord user ID for DM upgrade prompts + post-upgrade config migration (env: `DISCORD_OWNER_ID`) |
-| `discord.channels` | Map of channel IDs keyed by `spot` / `options` / `<platform>` / `<platform>-paper` |
-| `discord.trade_alert_channels` | Optional override routing trade-fill alerts to a separate channel; `stratType` keys (e.g. `perps`) reroute that type across all platforms. SIGHUP-reloadable. |
+| `discord.owner_id` | Owner DM for upgrades + config migration (`DISCORD_OWNER_ID`) |
+| `discord.channels` | Map keyed by `spot` / `options` / `<platform>` / `<platform>-paper` |
+| `discord.trade_alert_channels` | Optional per-type trade-alert routing; SIGHUP-reloadable |
 | `telegram.trade_alert_channels` | Same override for Telegram |
 
 ### Summary Frequency
 
-Top-level `summary_frequency` map keyed by channel name controls per-channel cadence. Trades always force an immediate post.
+Top-level `summary_frequency` map keyed by channel name. Trades always post immediately.
 
 ```json
 { "summary_frequency": { "spot": "hourly", "hyperliquid": "every", "topstep": "30m" } }
 ```
 
-Values: `every` / `per_check` / `always` (every cycle), `hourly`, `daily`, Go durations like `30m` / `2h`, or `""` (legacy: options/perps/futures every cycle, spot hourly). Wall-clock based and persisted in SQLite, so restarts and SIGHUP reloads don't reset the throttle.
+Values: `every` / `per_check` / `always`, `hourly`, `daily`, Go durations (`30m`, `2h`), or `""` (legacy defaults). Wall-clock based, persisted in SQLite.
 
 ### Strategy Entry
 
 | Field | Description | Default |
 |---|---|---|
 | `id` | Unique identifier (e.g. `hl-momentum-btc`) | required |
-| `type` | `spot` / `options` / `perps` / `futures` / `manual` (HL hand-placed positions) | required |
+| `type` | `spot` / `options` / `perps` / `futures` / `manual` | required |
 | `platform` | `binanceus` / `deribit` / `ibkr` / `hyperliquid` / `topstep` / `robinhood` / `okx` / `luno` | required |
 | `script`, `args` | Python entry-point + argv (auto-filled for `manual`) | required |
-| `capital` | Starting capital in USD | 1000 |
+| `capital` | Virtual starting capital in USD. May be omitted only when every member of one supported 2+ live perps wallet uses shared-wallet pool budgeting with `margin_per_trade_usd` | 1000 |
 | `max_drawdown_pct` | Per-strategy CB; peak-relative (spot/options/futures), margin-relative (perps) | spot 5, options 10, perps 5 |
+| `circuit_breaker` | Set `false` to disable both CB arms; latched CB still drains | enabled |
+| `llm_entry_analysis` | `{enabled, model, max_debate_rounds, timeout_s, notify_dm, notify_channel}` — post-open LLM multi-agent entry commentary (advisory only; never touches the trade). Digest defaults to DM (`notify_dm` on); the shared channel is opt-in (`notify_channel` off) | disabled |
 | `interval_seconds` | Check interval (0 → global) | 0 |
 | `htf_filter` | Higher-timeframe trend filter | false |
-| `open_strategy` | Co-located ref `{name, params}` overriding the entry; falls back to `args[0]` | null |
-| `close_strategies` | Ordered `[{name, params}, …]`; largest `close_fraction` per cycle wins | null |
+| `open_strategy` | Co-located ref `{name, params}` overriding entry; falls back to `args[0]` | null |
+| `close_strategy` | Single `{name, params}` close evaluator ref | null |
 | `leverage` | Perps — exchange leverage (also sizing if `sizing_leverage` omitted) | 1 |
-| `sizing_leverage` | Perps — order sizing multiplier (`cash × sizing_leverage`); separate from exchange leverage | `leverage` |
-| `margin_per_trade_usd` | HL perps — notional becomes `min(margin_per_trade_usd, cash) × leverage` | omitted |
-| `stop_loss_pct` / `stop_loss_margin_pct` / `stop_loss_atr_mult` / `trailing_stop_pct` / `trailing_stop_atr_mult` | HL perps — pick at most one positive value. Margin variant divides by `leverage`; ATR variants arm at open from `entry_atr`; trailing stops cap at 50% and debounce via `trailing_stop_min_move_pct`. All five omitted → scheduler arms `default_stop_loss_atr_mult * entry_atr`; explicit `0` opts out. | omitted |
-| `trailing_stop_min_move_pct` | HL trailing stop — minimum move before cancel/replace (HL caps OIDs at 1000) | 0.5 |
-| `margin_mode` | HL perps — `isolated` / `cross`; applied from flat only | `isolated` |
-| `direction` | Perps — `long` / `short` / `both`; legacy `allow_shorts` migrates automatically | `long` |
-| `allowed_regimes` | Whitelist of regime labels for new entries (closes always run); requires `regime.enabled` | (no gate) |
+| `sizing_leverage` | Perps — order sizing multiplier | `leverage` |
+| `margin_per_trade_usd` | Live HL/OKX perps — per-open margin cap. In shared-wallet pool mode, notional = `min(cap, account equity − deployed wallet margin) × leverage`, with each position reserved at the larger of entry-price or mark-price margin | omitted |
+| `stop_loss_pct` / `stop_loss_margin_pct` / `stop_loss_atr_mult` / `trailing_stop_pct` / `trailing_stop_atr_mult` | HL perps — at most one positive value; all omitted → `default_stop_loss_atr_mult × entry_atr`; `0` opts out | omitted |
+| `trailing_stop_min_move_pct` | HL trailing stop debounce (OID cap 1000) | 0.5 |
+| `margin_mode` | HL perps — `isolated` / `cross`; from flat only | `isolated` |
+| `direction` | Perps — `long` / `short` / `both` | `long` |
+| `allowed_regimes` | Whitelist for new entries; requires `regime.enabled` | (no gate) |
+| `regime_gate_window` / `regime_atr_window` / `regime_directional_window` | Multi-window selectors | legacy |
 | `theta_harvest` | Early-exit config for sold options | null |
+
+Shared-wallet pool budgeting is enabled structurally: configure at least two live Hyperliquid or OKX perps strategies on the same process account, omit `capital`, `capital_pct`, and `initial_capital` from every member, and set a positive `margin_per_trade_usd` on every member. Mixed pooled/allocated members are rejected. Missing account balance data blocks opens/adds/flips but never blocks closes. Portfolio risk may reuse the immediately preceding real pooled balance for one failed risk evaluation; without that snapshot it suppresses only equity drawdown while perps-margin protection stays active. Flip release uses the position's stored leverage so it exactly cancels reservation after config changes. Operator TOTAL counts a freshly fetched wallet balance even when per-member ledger attribution fails. Switching back to allocated capital requires a restart and reseeds the virtual cash book once while preserving pool-era gains/losses. If a `capital_pct` balance cannot resolve during that restart, the strategy stays manage-only so exits and protection continue, and a later restart retries the transition. Restart never auto-clears a pooled wallet's portfolio kill switch.
 
 ### Custom Strategy Parameters
 
-Per-strategy `params` is merged with the strategy's built-in defaults (config keys override). Runtime data (e.g. funding rates) wins over config params.
+Per-strategy `params` merges under built-in defaults (config wins; runtime data wins over config).
 
 ```json
 { "id": "ts-st-es", "type": "futures", "platform": "topstep",
@@ -250,7 +328,7 @@ Per-strategy `params` is merged with the strategy's built-in defaults (config ke
 
 ### Theta Harvesting (Options)
 
-Closes sold options early. `profit_target_pct` (% of premium captured), `stop_loss_pct` (% of premium lost, e.g. `200` = 2× premium), `min_dte_close` (force-close inside N days to expiry).
+`profit_target_pct` (% premium captured), `stop_loss_pct` (% premium lost), `min_dte_close` (force-close inside N days).
 
 ```json
 { "theta_harvest": { "enabled": true, "profit_target_pct": 60, "stop_loss_pct": 200, "min_dte_close": 3 } }
@@ -258,128 +336,143 @@ Closes sold options early. `profit_target_pct` (% of premium captured), `stop_lo
 
 ---
 
+**Dashboard partition selector.** The dashboard toolbar shows a partition selector whenever the process owns two or more partitions, which a live plus default-paper deployment already meets, folded sources or not. The selector lists live, the default paper partition and each folded source. The selection is carried on every panel read as `?partition=live|paper|paper:<source id>`, so the strategy list, overview, leaderboard, diagnostics, dead-strategy count, portfolio risk and correlation all show one partition at a time. Diagnostics pages and totals are filtered in the owning state file, so the count matches the rows you can page through. Cash flow stays live-owned and reports itself unavailable for a paper partition; the close-evaluator catalogue is shared by every partition. The selector stays hidden when the process owns one partition.
+
 ## Manual Trading on Hyperliquid
 
-For hand-placed positions (or TradingView alerts) tracked by the scheduler for P&L, stops/TPs, and Discord summaries, declare a `type: "manual"` strategy and use:
+Hand-placed positions (or TradingView alerts) tracked for P&L, stops/TPs, and Discord summaries — declare `type: "manual"` and use:
 
 ```bash
 ./go-trader manual-open  hl-manual-btc                                          # defaults: --side long --margin 50
 ./go-trader manual-open  hl-manual-btc --side long  --notional 500 --atr 250
 ./go-trader manual-open  hl-manual-btc --side short --size 0.05 --record-only --fill-price 64500
+./go-trader manual-open  hl-manual-btc --limit-price 68000 --side long --margin 50
+./go-trader manual-open  hl-manual-btc --limit-price 68000 --tif Gtc --expire-after 4h
+./go-trader manual-cancel <limit-order-id>
+./go-trader manual-clear-limit-row <order-oid> --flattened     # discard an off-book row you closed by hand
+./go-trader manual-update-sl hl-manual-btc --trigger 66000
+./go-trader manual-cancel-sl hl-manual-btc
 ./go-trader manual-close hl-manual-btc [--qty 0.025]
+./go-trader force-close hl-tcross-eth-live [--qty 0.025]                 # live HL perps strategy close
 ```
 
-Sizing flags are mutually exclusive (`--size` / `--notional` / `--margin`); when all three are omitted (and not `--record-only`), `--margin 50` is auto-applied. `--side` defaults to `long`. Omitting `--atr` auto-fetches ATR(14) from Hyperliquid OHLCV for the strategy's symbol+timeframe; a leverage-aware fallback (`0.1 * fill_price / leverage`) is used only if the fetch fails. SL + N-tier TPs are placed inline so the position is never naked; on queue-insert failure the scheduler auto-flattens and cancels the protective orders. `type=manual` strategies with no stop fields default to `stop_loss_atr_mult = 1.5×`. All four defaults (margin, SL multiplier, side, TP tiers) are overridable via an optional top-level `manual_defaults` config block (hot-reloadable via SIGHUP).
+Sizing: mutually exclusive `--size` / `--notional` / `--margin` (default `--margin 50` when omitted). `--side` defaults to `long`. Omitting `--atr` auto-fetches ATR(14); leverage-aware fallback if fetch fails. SL + tiered TPs placed inline so the position is never naked.
+
+**Close defaults (#1115/#1135):** with `regime.enabled` and a resolvable per-regime trail, manual defaults to `trailing_tp_ratchet_regime` (regime trail owns the SL); otherwise `tiered_tp_atr_live` + scalar **2.0×ATR** SL (#1121). Override via `close_strategy`, stop fields, or `user_defaults.manual` (hot-reloadable via SIGHUP). Fleet close ladders live under `user_defaults.close`; standalone `*_atr_mult_regime` defaults live under `user_defaults.regime_atr`.
+
+Operator guardrails, refusals, and the queueing model: [SKILL.md](SKILL.md) § Manual Trading.
+
+`manual-update-sl` / `manual-cancel-sl` queue daemon-side cancel-then-place edits — rejected when automated ATR/regime/trailing protection would re-pin next cycle. `force-close` is for live Hyperliquid `type=perps` strategy positions; it submits the reduce-only close and queues the fill for the scheduler to adopt into state/trades. `--dry-run` previews without exchange calls. Limit opens are post-only (ALO) by default or GTC with `--tif Gtc`; scheduler polls fills each cycle.
 
 ---
 
 ## Backfilling Hyperliquid Fees
 
-Historical `exchange_fee = 0` rows can be rewritten from Hyperliquid `userFills`:
-
 ```bash
-./go-trader backfill hl-fees --strategy hl-btc-momentum               # dry-run, single strategy
-./go-trader backfill hl-fees --all                                     # dry-run, all HL strategies
-./go-trader backfill hl-fees --strategy hl-btc-momentum --apply        # apply changes
-./go-trader backfill hl-fees --all --apply --reset-cash                # also replay strategies.cash
+./go-trader backfill hl-fees --strategy hl-btc-momentum               # dry-run
+./go-trader backfill hl-fees --all --apply                            # apply (stop daemon first)
+./go-trader backfill trade-ledger --all --apply                       # shared-wallet gross-PnL migration
 ```
 
-`--apply` refuses to run while another `go-trader` process is alive on the same DB.
+Full backfill procedure, skip reasons, and the cash-replay gate: [SKILL.md](SKILL.md).
+
+`--apply` refuses while another `go-trader` process holds the same DB. Trade-ledger backfill is idempotent — run once after adopting the gross-PnL convention.
+
+---
+
+## Trade Diagnostics
+
+```bash
+./go-trader diagnostics                              # all strategies
+./go-trader diagnostics --strategy hl-btc-momentum
+```
+
+Per-trade quality report over closed positions: MFE/MAE/capture ratio, win rate
+and NET PnL split by regime-at-open and direction, with sample-size-gated
+findings and the exact backtest command to validate each one. Read-only against
+the state DB; never blocks or alters a close.
 
 ---
 
 ## Build & Deploy
 
-The canonical update path is `scripts/update.sh` — `git pull --ff-only` → `uv sync` → `go build` (version-stamped) → atomic binary swap → optional restart with `/health`-and-PID verify and automatic rollback to the previous binary on failed restart. If `go` is not on `PATH`, the script tries common install locations (`/opt/homebrew/bin/go`, then `/usr/local/go/bin/go`). With `--restart`, it warns when systemd's `ExecStart` binary is not the same file as this checkout's `./go-trader`, so you can catch a unit pointed at the wrong path before assuming the upgrade took effect. A startup compatibility probe refuses to launch on a Go/Python version mismatch, so prefer the script over hand-rolled rebuilds. `systemctl restart` drains gracefully (in-flight `--execute` / close orders complete; read-only checks cancel immediately) and exits within ~20s instead of hanging on systemd's SIGKILL.
-
-Two restart modes are supported:
-- **`--restart-mode systemd`** (default) — `sudo systemctl restart <unit>`, polls `systemctl is-active` + `/health`.
-- **`--restart-mode signal`** — for Linux bare-process deploys without systemd. SIGTERMs the PID from a pidfile (`./go-trader.pid` by default), then respawns via a wrapper script (`./run.sh` by default) with the same `/health`+PID verify and rollback. Generate a starter wrapper with `bash scripts/create-run-sh.sh`.
-
-Use `--all` to batch-update all `go-trader-*/` sibling directories in one pass (requires `--restart`).
+Canonical path: `scripts/update.sh` — `git pull --ff-only` → `uv sync` → version-stamped `go build` → atomic binary swap → optional restart with `/health` verify and rollback on failure. Startup probe refuses Go/Python version mismatch — prefer the script over hand-rolled rebuilds.
 
 ```bash
-sudo bash scripts/update.sh --restart                  # systemd deploy
-bash scripts/update.sh --restart --restart-mode signal # bare-process deploy
-bash scripts/update.sh --all --restart                 # update all instances
-bash scripts/update.sh                                 # build only, no restart
+sudo bash scripts/update.sh --restart                              # systemd (default)
+bash scripts/update.sh --restart --restart-mode signal             # bare-process (pidfile + run.sh)
+bash scripts/update.sh --rsync-from /path/to/staged-build --restart
+bash scripts/update.sh --all --restart                             # batch all instances
 ```
+
+When your own account owns the deployment tree, run `bash scripts/update.sh --restart` without `sudo`; the script calls `sudo` itself only for the systemd steps. As root, the update refuses a tree whose owning account runs any unit without the `go-trader@.service` sandbox (SKILL.md § Auto-Update, "Root on a tree another account owns").
+
+Optional: `sudo bash scripts/shared-feed-convert.sh plan --consumer <unit>` starts a checked, reversible conversion to the shared market feed. Updates never run it. See SKILL.md § Shared market feed.
 
 | Change | Action |
 |--------|--------|
 | Go or Python source | `sudo bash scripts/update.sh --restart` |
-| Config (hot-reloadable subset) | `systemctl kill -s HUP go-trader` — applies capital/drawdown/intervals/params/risk knobs/channels/`allowed_regimes` in place; rejects shape changes (strategy add/remove, type/platform, leverage/`direction` with open positions) |
+| Config (hot-reloadable subset) | `systemctl kill -s HUP go-trader` |
 | Config (roster, script/args/type/platform, `regime` block) | `systemctl restart go-trader` |
 | Service file | `systemctl daemon-reload && systemctl restart go-trader` |
+
+Restart modes, batch discovery, and graceful drain: [SKILL.md](SKILL.md).
 
 ---
 
 ## Monitoring
 
 ```bash
-systemctl status go-trader              # service health
-curl -s localhost:8099/status            # live prices + P&L (default port 8099; override with --status-port)
-curl -s localhost:8099/health            # simple health check
-open http://localhost:8099/dashboard     # local dashboard with strategy charts and trade markers
-journalctl -u go-trader -n 50           # recent logs
-./go-trader inspect <strategy-id>        # effective post-migration config (resolved SL/TP + provenance)
-./go-trader inspect --all --json         # all strategies, machine-readable
+systemctl status go-trader
+curl -s localhost:8099/status            # live prices + P&L
+curl -s localhost:8099/health
+open http://localhost:8099/dashboard     # charts, trades, equity, regime badge, tuner, reports
+open http://localhost:8099/tuning        # research-run tuning page (suggest-only)
+journalctl --namespace=+go-trader -u go-trader -n 50
+./go-trader inspect <strategy-id>        # resolved config + SL/TP provenance
+./go-trader inspect --all --json
+./go-trader agent-info                   # capabilities, schema, env vars, live state
 ```
 
-The dashboard is served by the same loopback-only status server as `/status` and `/health` (Go binds `localhost:<port>` — use `http://127.0.0.1:<port>/dashboard` or `http://localhost:<port>/dashboard`). If `status_token` is configured, the page prompts for that token and stores it in browser local storage for API calls. Prefer leaving each instance on loopback and reaching it through your VPN or reverse proxy; do not widen the bind to `0.0.0.0` just for remote viewing.
+**Logs live in their own journal namespace.** Both shipped units set `LogNamespace=go-trader`, so every go-trader unit logs to a separate journal with its own size cap, and none of its lines go to `/var/log/syslog`. A plain `journalctl -u go-trader` shows only systemd's start and stop lines. Add `--namespace=go-trader` for the go-trader output alone, or `--namespace=+go-trader` to merge it with the default journal (systemd's own lines for the unit and anything logged before the move). `scripts/install-service.sh` and `scripts/update.sh --restart` install `systemd/journald@go-trader.conf` as `/etc/systemd/journald@go-trader.conf`: `SystemMaxUse=2G`, `ForwardToSyslog=no`, persistent storage. That file is managed by go-trader and replaced on a difference (the old copy is kept as `.prev`). Put local settings in `/etc/systemd/journald@go-trader.conf.d/*.conf` and apply them with `sudo systemctl restart systemd-journald@go-trader.service`. Journal namespaces need systemd 245 or newer; on an older systemd the installers warn, skip the config, and systemd ignores the unit line, so logs stay in the default journal.
 
-### Remote dashboard (Tailscale Serve)
+Loopback-only status server (`localhost:<port>`). Dashboard includes candle charts, trade history, equity sparklines, strategy tuner, and `/reports`. A separate `/tuning` page launches persistent research retunes across one or more strategies and diffs the ranked results against live config — suggestions are never auto-applied. Set `status_token` for mutating API calls from the browser. Prefer VPN or reverse proxy over binding `0.0.0.0`.
 
-On a host with [Tailscale](https://tailscale.com/), [Tailscale Serve](https://tailscale.com/kb/1242/tailscale-serve) can publish HTTPS on the tailnet while go-trader stays on loopback. That avoids exposing the status port on a public interface and keeps go-trader’s dashboard separate from the **OpenClaw** web UI (different process, ports, and URL paths — do not assume they are the same dashboard).
-
-Example: one HTTPS port per go-trader instance (adjust ports to match each deployment’s `status_port`):
-
-| Instance / role (example) | Typical `status_port` |
-|----------------------------|------------------------|
-| live | 8099 |
-| paper-testing | 8100 |
-| paper-hl-btc | 8101 |
-| paper-hl-eth | 8102 |
-| paper-hl-bnb | 8103 |
-| paper-hl-sol | 8104 |
+**Tailscale Serve** — publish HTTPS on the tailnet while go-trader stays on loopback:
 
 ```bash
-tailscale serve --bg --https=8443 http://127.0.0.1:8099
-tailscale serve --bg --https=8444 http://127.0.0.1:8100
+tailscale serve --bg --https=8443 http://127.0.0.1:8099   # live (8099)
+tailscale serve --bg --https=8444 http://127.0.0.1:8100   # paper instance (8100)
 ```
 
-Then open `https://<node>.tailnet.ts.net:8443/dashboard` (and `:8444/dashboard`, etc.) from another machine on the tailnet. Use Serve’s access controls as needed; `status_token` still applies to API calls from the dashboard page.
+Open `https://<node>.tailnet.ts.net:8443/dashboard`. `status_token` still applies.
 
-`inspect` is read-only and safe to run against a live deployment — it loads `scheduler/config.json`, applies migrations and defaults, and prints which `stop_loss_*` field won, the resolved tier list on the configured TP close ref, and explicit-vs-default markers from the raw JSON. Use it to diagnose why a strategy isn't behaving like the JSON suggests, or to verify a config edit before SIGHUP.
-
-Discord strategy summaries show columns `Init | Value | PnL | PnL% | DD | Wallet% | Tf | Int | #T | W/L` plus a `Book Sharpe (realized, annualized)` footer and the go-trader version + PID in the title. `okx-options` and `robinhood-options` channel keys route options summaries separately from spot/perps. `#T`/`W/L` come from the SQLite trades table; partial closes collapse into one round trip per position.
-
-Open-position lines append `SL: $<trigger_px> (<signed_pct>%)` when a Hyperliquid stop-loss trigger is set (percent sign-flipped for shorts so it always reads as the loss if hit), `<N>x ($<margin> margin)` for leveraged perps, and tier marks (`✓`) for filled TP rungs. Each TP price includes the configured ATR multiple in parentheses (for example `12345.6 (2x)`), matching trade-alert formatting. Spot and 1× perps stay clean.
+`inspect` is read-only against live deploys — shows which stop field won, resolved TP tiers, and direction provenance. Discord summaries: header shows aggregate initial capital; table columns `Value | PnL | PnL% | DD | Wallet% | Tf | Int | #T | W/L` plus Book Sharpe footer.
 
 ---
 
 ## Risk Management
 
-- **Portfolio kill switch** — halts trading at `portfolio_risk.max_drawdown_pct` (default 25); submits real close orders on HL / OKX perps / Robinhood crypto / TopStep, clearing virtual state only after every platform confirms flat.
-- **Per-strategy circuit breakers** — pause on max-drawdown breach (24h cooldown); peak-relative for spot/options/futures, margin-relative for perps. HL/OKX perps, Robinhood crypto, and TopStep CBs auto-close reduce-only; OKX spot and Robinhood options surface an `operator-required` warning every cycle until flattened by hand.
-- **Hyperliquid stop-loss** — exchange-side reduce-only trigger via one of `stop_loss_pct` / `stop_loss_margin_pct` / `stop_loss_atr_mult` / `trailing_stop_pct` / `trailing_stop_atr_mult` (mutually exclusive when positive). All five omitted → fixed ATR stop at `default_stop_loss_atr_mult * entry_atr` (default `1.0`); explicit `0` opts out. Trailing stops debounce via `trailing_stop_min_move_pct` to stay under HL's 1000-OID cap.
-- **On-chain N-tier TP/SL ladders** — `tiered_tp_atr` / `tiered_tp_atr_live` close evaluators place reduce-only TPs at configured ATR multiples (default `[{1×, 0.5}, {2×, 1.0}]`); final tier absorbs rounding dust. Full close cancels all SL+TP OIDs in one shot.
-- **Regime gate** — per-strategy `allowed_regimes` blocks new entries outside the whitelist; closes always run.
-- **HL margin mode** — defaults to `isolated`; override with `margin_mode: "cross"` (applied from flat only).
-- **Misc** — notional cap (`portfolio_risk.max_notional_usd`); correlation warnings (opt-in); 5 consecutive losses → 1h pause; spot max 95% capital per position; options max 4 positions per strategy with portfolio-aware scoring; theta harvesting on sold options.
+- **Portfolio kill switch** — halts at `portfolio_risk.max_drawdown_pct` (default 25); submits real closes on HL / OKX perps / Robinhood crypto / TopStep. Owner-DM reset confirmation wait is tunable via `kill_switch_reset_dm_timeout` (Go duration string, e.g. `"6h"`; default 6h).
+- **Per-strategy circuit breakers** — max-drawdown (24h cooldown) or consecutive losses (default 5, 1h cooldown); threshold and both cooldowns tunable per strategy via `cb_drawdown_cooldown_minutes` / `cb_loss_streak_threshold` / `cb_loss_streak_cooldown_minutes`. HL/OKX perps, Robinhood crypto, TopStep auto-close; OKX spot and Robinhood options need manual flatten. Latched HL perps CB still permits trailing-SL management. `circuit_breaker: false` disables firing.
+- **Hyperliquid stop-loss** — one positive field among seven mutually-exclusive stop owners (`stop_loss_pct`, `stop_loss_margin_pct`, `stop_loss_atr_mult`, `stop_loss_atr_mult_regime`, `trailing_stop_pct`, `trailing_stop_atr_mult`, `trailing_stop_atr_mult_regime`); all omitted → `default_stop_loss_atr_mult × entry_atr` (1.0); `0` opts out. A stop past the Hyperliquid liquidation price is clamped, never left unreachable.
+- **On-chain N-tier TP/SL** — `tiered_tp_atr` / `tiered_tp_atr_live` (default tiers `[{1.5×, 0.4}, {3×, 0.8}, {5×, 1.0}]`).
+- **Trailing-ratchet close** — `trailing_tp_ratchet` / `trailing_tp_ratchet_regime`: cleared tiers tighten a single trailing stop; no fixed on-chain TPs. HL perps + `manual`.
+- **AVWAP stop close** — `avwap_stop`: exits when price breaches the anchored VWAP by `buffer_atr_mult`× ATR on the losing side; virtual exit only (no on-chain trigger).
+- **Regime gate**, **HL margin mode** (`isolated` default), correlation warnings (opt-in), options position limits, theta harvesting.
+
+Latch ownership, the untrusted-reading deferral, the Hyperliquid liquidation guard, and every operator alert: [SKILL.md](SKILL.md).
 
 ---
 
 ## TradingView Export
-
-Export SQLite trades to a TradingView portfolio-import CSV. `--strategy` is repeatable; `--all` exports everything.
 
 ```bash
 ./go-trader export tradingview --strategy hl-btc-momentum --output tv-hl-btc.csv
 ./go-trader export tradingview --all --output tv-all.csv
 ```
 
-Built-in mappings cover known OKX/BinanceUS pairs; add `tradingview_export.symbol_overrides: { "hl:BTC": "BYBIT:BTCUSDT" }` for the rest. CB close trades are included.
+Built-in mappings cover known OKX/BinanceUS pairs; add `tradingview_export.symbol_overrides` for the rest. Export procedure: [SKILL.md](SKILL.md).
 
 ---
 
@@ -390,20 +483,20 @@ Built-in mappings cover known OKX/BinanceUS pairs; add `tradingview_export.symbo
 | Binance US Spot | 0.1% taker | ±0.05% |
 | Deribit Options | 0.03% of premium | — |
 | IBKR/CME Options | $0.25/contract | — |
-| Hyperliquid Perps | 0.035% taker | ±0.05% |
+| Hyperliquid Perps | 0.045% taker / 0.015% maker (base tier) | ±0.05% |
 | TopStep Futures | Per-contract (configurable) | ±0.05% |
 | Robinhood Crypto | No commission (spread embedded) | ±0.05% |
 | Robinhood Options | $0.03/contract (regulatory fee) | — |
 
-Live `--execute` fills on Hyperliquid / OKX / Robinhood / TopStep record the exchange-reported fee plus order ID, so backfills and TradingView exports match the venue ledger.
+Live fills record exchange-reported fees and order IDs.
 
 ---
 
 ## Layout & Dependencies
 
-`scheduler/` (Go: config, state DB, HTTP status, risk, notifications) · `shared_scripts/` (Python entry points) · `platforms/` (exchange adapters) · `shared_tools/`, `shared_strategies/` (registry + impls) · `backtest/` · `systemd/`, `scripts/` · `SKILL.md`, `AGENTS.md` (agent guides).
+`scheduler/` (Go) · `shared_scripts/` · `platforms/` · `shared_tools/`, `shared_strategies/` · `backtest/` · `systemd/`, `scripts/` · `SKILL.md`, `AGENTS.md`.
 
-Python 3.12+ via [uv](https://github.com/astral-sh/uv) (ccxt, pandas, numpy, scipy, hyperliquid-python-sdk); Go 1.26.2 with [`bwmarrin/discordgo`](https://github.com/bwmarrin/discordgo); systemd.
+Python 3.12+ via [uv](https://github.com/astral-sh/uv); Go 1.26.2; systemd.
 
 ---
 
@@ -412,12 +505,17 @@ Python 3.12+ via [uv](https://github.com/astral-sh/uv) (ccxt, pandas, numpy, sci
 | Problem | Solution |
 |---|---|
 | No Discord messages | Check `DISCORD_BOT_TOKEN`, channel IDs, bot permissions |
-| Service won't start | `journalctl -u go-trader -n 50` |
-| Didn't come back after reboot | Unit installed but not enabled — re-run `sudo bash scripts/install-service.sh` |
-| Strategy not trading | Check circuit breaker in `/status`, verify params |
-| Reset positions | `rm scheduler/state.db && systemctl restart go-trader` |
-| Live mode fails | Set the env vars listed in the Platforms table for that platform |
-| "state DB missing but live strategies configured" | Update wiped the repo dir instead of `git pull`. Restore `scheduler/state.db` from backup, or set `GO_TRADER_ALLOW_MISSING_STATE=1` for a genuine first-run deployment. |
+| Service won't start | `journalctl --namespace=+go-trader -u go-trader -n 50` (the `+` merges systemd's start and exit lines with the go-trader output) |
+| Need the per-check detail (script argv, HOLD signals, prices) | Set `"log_level": "debug"` and `sudo systemctl kill -s HUP go-trader`; set it back to `"info"` after. See `SKILL.md` § Adjustable Settings |
+| Didn't come back after reboot | Re-run `sudo bash scripts/install-service.sh` |
+| Strategy not trading | Circuit breaker in `/status`, verify params |
+| Reset positions | `rm scheduler/state.db && systemctl restart go-trader` (remove **every** configured state file: `db_file`, `paper_db_file` and each `paper_sources[].db_file`) |
+| Inspect state-file ownership | `./go-trader storage-inspect --config <path>` — read-only; add `--require-idle` to reject while the daemon owns a file |
+| Live mode fails | Set env vars from Platforms table |
+| "state DB missing but live strategies configured" | Restore `scheduler/state.db` from backup, or `GO_TRADER_ALLOW_MISSING_STATE=1` for first-run. With `paper_db_file` or `paper_sources` set, restore every file together with its `-wal` / `-shm` sidecars, in the order primary, paper, then sources by id |
+| Which files does a backup need? | `./go-trader storage-inspect --json --config <path>` names the canonical path and the partitions of every state file; `update_resolve_db_exclude` in `scripts/update_helpers.sh` enumerates the same list for the updater |
+| A unit exits 79 after a fold | Two processes cannot own one state file. Whichever scheduler starts **second** fails to take the ownership lock and refuses to start with exit 79; the process already holding the lock keeps trading, so read `journalctl --namespace=+go-trader -u <unit>` for the unit that exited and leave the running one alone. Usually a folded paper unit was restarted or came back after a reboot: disable every folded unit (`systemctl disable go-trader@<instance>.service`) and start only the merged live unit |
+| Exit code 80 on startup | The storage layout was rejected (aliased files, a book in the wrong file, an ambiguous legacy risk row). Run `./go-trader storage-inspect` — it names the file and the identifier |
 
 ---
 

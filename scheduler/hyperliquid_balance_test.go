@@ -8,12 +8,118 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 )
 
-// Tests in this file mutate package-level hlMainnetURL and must NOT use t.Parallel().
+type mockNotifier struct {
+	mu         sync.Mutex
+	messages   []mockMessage
+	dms        []mockDM
+	askResp    string
+	askErr     error
+	closed     bool
+	failSendDM bool
+}
+
+type mockMessage struct {
+	channelID string
+	content   string
+}
+
+type mockDM struct {
+	userID  string
+	content string
+}
+
+func (m *mockNotifier) SendMessage(channelID string, content string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.messages = append(m.messages, mockMessage{channelID, content})
+	return nil
+}
+
+func (m *mockNotifier) SendDM(userID, content string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.failSendDM {
+		return fmt.Errorf("mock SendDM failed")
+	}
+	m.dms = append(m.dms, mockDM{userID, content})
+	return nil
+}
+
+func (m *mockNotifier) AskDM(userID, question string, timeout time.Duration) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.dms = append(m.dms, mockDM{userID, question})
+	return m.askResp, m.askErr
+}
+
+func (m *mockNotifier) Close() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.closed = true
+}
+
+const (
+	testPrimaryPx = 2000.0
+	testHedgePx   = 50000.0
+)
+
+func hedgeTestState(id string) *StrategyState {
+	return &StrategyState{
+		ID:        id,
+		Type:      "perps",
+		Platform:  "hyperliquid",
+		Cash:      10000,
+		Positions: map[string]*Position{},
+	}
+}
+
+func withHedge(sc StrategyConfig, h *HedgeConfig) StrategyConfig {
+	sc.Hedge = h
+	return sc
+}
+
+func hedgePerpsStrategy(id, coin string) StrategyConfig {
+	return StrategyConfig{
+		ID:       id,
+		Type:     "perps",
+		Platform: "hyperliquid",
+		Script:   "shared_scripts/check_hyperliquid.py",
+		Args:     []string{"--symbol", coin, "--mode", "live"},
+	}
+}
+
+type countingDMSender struct {
+	count int
+	last  string
+}
+
+func (c *countingDMSender) SendOwnerDM(s string) {
+	c.count++
+	c.last = s
+}
+
+func hedgeTestConfig() StrategyConfig {
+	return withHedge(hedgePerpsStrategy("eth-long", "ETH"), &HedgeConfig{
+		Enabled: true, Symbol: "BTC", Ratio: 1.0, Leverage: 3, MarginMode: "cross",
+	})
+}
+
+func primaryPos(qty float64, side string) *Position {
+	return &Position{Symbol: "ETH", Quantity: qty, AvgCost: testPrimaryPx, Side: side, Multiplier: 1, OwnerStrategyID: "eth-long"}
+}
+
+func hedgePos(qty float64, side string, basis float64) *Position {
+	return &Position{
+		Symbol: "BTC", Quantity: qty, InitialQuantity: qty, AvgCost: testHedgePx, Side: side,
+		Multiplier: 1, OwnerStrategyID: "eth-long", HedgeFor: "ETH", HedgePrimaryQtyBasis: basis,
+	}
+}
 
 func TestSyncHyperliquidLiveCapitalIsNoOp(t *testing.T) {
 	sc := &StrategyConfig{
@@ -28,8 +134,6 @@ func TestSyncHyperliquidLiveCapitalIsNoOp(t *testing.T) {
 		t.Errorf("capital should not change (no-op), got %g", sc.Capital)
 	}
 }
-
-// --- fetchHyperliquidState tests ---
 
 func TestFetchHyperliquidState(t *testing.T) {
 	resp := map[string]interface{}{
@@ -78,17 +182,115 @@ func TestFetchHyperliquidState(t *testing.T) {
 	if balance != 50000.00 {
 		t.Errorf("balance = %g, want 50000", balance)
 	}
-	// Should have 2 positions (SOL has szi=0, filtered out)
 	if len(positions) != 2 {
 		t.Fatalf("positions count = %d, want 2", len(positions))
 	}
-	// BTC long
 	if positions[0].Coin != "BTC" || positions[0].Size != 0.334 || positions[0].EntryPrice != 42000.50 {
 		t.Errorf("BTC position = %+v", positions[0])
 	}
-	// ETH short (negative size)
 	if positions[1].Coin != "ETH" || positions[1].Size != -2.5 || positions[1].EntryPrice != 3100.00 {
 		t.Errorf("ETH position = %+v", positions[1])
+	}
+}
+
+func TestFetchHyperliquidStateLiquidationPx(t *testing.T) {
+	resp := map[string]interface{}{
+		"marginSummary": map[string]string{
+			"accountValue": "50000.00",
+		},
+		"assetPositions": []map[string]interface{}{
+			{
+				"position": map[string]interface{}{
+					"coin":          "ETH",
+					"szi":           "2.5",
+					"entryPx":       "2400.00",
+					"liquidationPx": "2340.5",
+				},
+			},
+			{
+				"position": map[string]interface{}{
+					"coin":    "BTC",
+					"szi":     "0.5",
+					"entryPx": "42000.00",
+				},
+			},
+			{
+				"position": map[string]interface{}{
+					"coin":          "SOL",
+					"szi":           "-10",
+					"entryPx":       "150.00",
+					"liquidationPx": nil,
+				},
+			},
+			{
+				"position": map[string]interface{}{
+					"coin":          "DOGE",
+					"szi":           "1000",
+					"entryPx":       "0.35",
+					"liquidationPx": "abc",
+				},
+			},
+			{
+				"position": map[string]interface{}{
+					"coin":          "AVAX",
+					"szi":           "5",
+					"entryPx":       "30.00",
+					"liquidationPx": "0",
+				},
+			},
+			{
+				"position": map[string]interface{}{
+					"coin":          "LINK",
+					"szi":           "50",
+					"entryPx":       "20.00",
+					"liquidationPx": 17.25,
+				},
+			},
+			{
+				"position": map[string]interface{}{
+					"coin":          "ARB",
+					"szi":           "200",
+					"entryPx":       "1.50",
+					"liquidationPx": "1.2",
+				},
+			},
+		},
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer ts.Close()
+
+	origURL := hlMainnetURL
+	hlMainnetURL = ts.URL
+	defer func() { hlMainnetURL = origURL }()
+
+	_, positions, err := fetchHyperliquidState("0xabc123")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(positions) != 7 {
+		t.Fatalf("positions count = %d, want 7", len(positions))
+	}
+	want := map[string]float64{
+		"ETH":  2340.5,
+		"BTC":  0,
+		"SOL":  0,
+		"DOGE": 0,
+		"AVAX": 0,
+		"LINK": 17.25,
+		"ARB":  1.2,
+	}
+	for _, p := range positions {
+		w, ok := want[p.Coin]
+		if !ok {
+			t.Fatalf("unexpected coin %s", p.Coin)
+		}
+		if p.LiquidationPx != w {
+			t.Errorf("%s LiquidationPx = %g, want %g", p.Coin, p.LiquidationPx, w)
+		}
 	}
 }
 
@@ -121,8 +323,6 @@ func TestFetchHyperliquidStateNoPositions(t *testing.T) {
 	}
 }
 
-// --- reconcileHyperliquidPositions tests ---
-
 func newTestLogger(t *testing.T) *StrategyLogger {
 	t.Helper()
 	return &StrategyLogger{stratID: "test", writer: os.Stdout}
@@ -139,7 +339,7 @@ func TestReconcileUpdatesExistingOwnedPosition(t *testing.T) {
 	logger := newTestLogger(t)
 	positions := []HLPosition{{Coin: "BTC", Size: 0.334, EntryPrice: 42000}}
 
-	changed := reconcileHyperliquidPositions(s, "BTC", positions, "", logger)
+	changed := reconcileHyperliquidPositionsWithResolver(s, "BTC", positions, noFillFeeResolver, logger, nil, nil, StrategyConfig{})
 
 	if !changed {
 		t.Error("expected changed=true")
@@ -150,7 +350,6 @@ func TestReconcileUpdatesExistingOwnedPosition(t *testing.T) {
 	if s.Positions["BTC"].AvgCost != 42000 {
 		t.Errorf("avg_cost = %g, want 42000", s.Positions["BTC"].AvgCost)
 	}
-	// Cash should NOT be synced from on-chain.
 	if s.Cash != 5000 {
 		t.Errorf("cash = %g, want 5000 (should not change)", s.Cash)
 	}
@@ -165,9 +364,9 @@ func TestReconcileRemoveClosedPosition(t *testing.T) {
 		},
 	}
 	logger := newTestLogger(t)
-	positions := []HLPosition{} // No on-chain position
+	positions := []HLPosition{}
 
-	changed := reconcileHyperliquidPositions(s, "BTC", positions, "", logger)
+	changed := reconcileHyperliquidPositionsWithResolver(s, "BTC", positions, noFillFeeResolver, logger, nil, nil, StrategyConfig{})
 
 	if !changed {
 		t.Error("expected changed=true")
@@ -175,122 +374,84 @@ func TestReconcileRemoveClosedPosition(t *testing.T) {
 	if _, ok := s.Positions["BTC"]; ok {
 		t.Error("BTC position should have been removed")
 	}
-	// Cash should not change.
-	if s.Cash != 5000 {
-		t.Errorf("cash = %g, want 5000", s.Cash)
+	if len(s.TradeHistory) != 1 || s.TradeHistory[0].RealizedPnL != 0 || !s.TradeHistory[0].PnLGross {
+		t.Fatalf("want one zero-gross-PnL trade row, got %+v", s.TradeHistory)
+	}
+	if got, want := s.Cash, 5000-s.TradeHistory[0].ExchangeFee; math.Abs(got-want) > 1e-9 {
+		t.Errorf("cash = %g, want %g (modeled fee only)", got, want)
 	}
 }
 
-func TestReconcileNoChange(t *testing.T) {
-	s := &StrategyState{
-		ID:   "hl-btc",
-		Cash: 5000,
-		Positions: map[string]*Position{
-			// #254: Multiplier=1 + Leverage=2 so reconcile sees a fully
-			// up-to-date perps position and doesn't flip any fields.
-			"BTC": {Symbol: "BTC", Quantity: 0.5, AvgCost: 40000, Side: "long", Multiplier: 1, Leverage: 2, OwnerStrategyID: "hl-btc"},
+func TestReconcileHyperliquidPositionsNoChange(t *testing.T) {
+	cases := []struct {
+		name        string
+		positions   map[string]*Position
+		onChain     []HLPosition
+		wantPresent bool
+	}{
+		{
+			name: "state already matches on-chain",
+			positions: map[string]*Position{
+				"BTC": {Symbol: "BTC", Quantity: 0.5, AvgCost: 40000, Side: "long", Multiplier: 1, Leverage: 2, OwnerStrategyID: "hl-btc"},
+			},
+			onChain:     []HLPosition{{Coin: "BTC", Size: 0.5, EntryPrice: 40000, Leverage: 2}},
+			wantPresent: true,
+		},
+		{
+			name:      "unowned on-chain position is never adopted",
+			positions: map[string]*Position{},
+			onChain:   []HLPosition{{Coin: "BTC", Size: 0.5, EntryPrice: 40000}},
+		},
+		{
+			name:      "no position on either side",
+			positions: map[string]*Position{},
+			onChain:   []HLPosition{},
 		},
 	}
-	logger := newTestLogger(t)
-	positions := []HLPosition{{Coin: "BTC", Size: 0.5, EntryPrice: 40000, Leverage: 2}}
-
-	changed := reconcileHyperliquidPositions(s, "BTC", positions, "", logger)
-
-	if changed {
-		t.Error("expected changed=false when state matches on-chain")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &StrategyState{ID: "hl-btc", Cash: 5000, Positions: tc.positions}
+			changed := reconcileHyperliquidPositionsWithResolver(s, "BTC", tc.onChain, noFillFeeResolver, newTestLogger(t), nil, nil, StrategyConfig{})
+			if changed {
+				t.Error("expected changed=false")
+			}
+			if _, ok := s.Positions["BTC"]; ok != tc.wantPresent {
+				t.Errorf("BTC position present = %v, want %v", ok, tc.wantPresent)
+			}
+			if s.Cash != 5000 {
+				t.Errorf("cash = %g, want 5000 (unchanged)", s.Cash)
+			}
+		})
 	}
 }
-
-func TestReconcileSkipsUnownedOnChainPosition(t *testing.T) {
-	// Strategy has no position in state; on-chain position exists.
-	// The new behavior should NOT add it (unlike the old behavior).
-	s := &StrategyState{
-		ID:        "hl-btc",
-		Cash:      5000,
-		Positions: make(map[string]*Position),
+func TestReconcileHyperliquidPositionsLeverage(t *testing.T) {
+	cases := []struct {
+		name        string
+		posLeverage float64
+		onChainLev  float64
+		want        float64
+	}{
+		{"configured leverage is preserved against on-chain", 2, 20, 2},
+		{"zero-value position is seeded from on-chain", 0, 10, 10},
 	}
-	logger := newTestLogger(t)
-	positions := []HLPosition{{Coin: "BTC", Size: 0.5, EntryPrice: 40000}}
-
-	changed := reconcileHyperliquidPositions(s, "BTC", positions, "", logger)
-
-	if changed {
-		t.Error("expected changed=false — should not adopt unowned position")
-	}
-	if _, ok := s.Positions["BTC"]; ok {
-		t.Error("BTC position should NOT be added to a strategy that doesn't own it")
-	}
-}
-
-// #418 RC3 write-path guard: a configured pos.Leverage must NOT be
-// overwritten when on-chain margin tier differs (e.g. trader sized at 2x but
-// HL exchange-side leverage is 20x). Without this guard, hl-sync corrupts
-// pos.Leverage to the on-chain value — and any future code path reading
-// pos.Leverage (legacy callers, analytics, future sizing logic) sees the
-// inflated value. The risk math now reads sc.Leverage, but this is
-// belt-and-suspenders defense at the storage layer.
-func TestReconcilePreservesConfiguredLeverage(t *testing.T) {
-	s := &StrategyState{
-		ID:   "hl-eth",
-		Cash: 1000,
-		Positions: map[string]*Position{
-			"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 3000, Side: "long",
-				Multiplier: 1, Leverage: 2, OwnerStrategyID: "hl-eth"},
-		},
-	}
-	logger := newTestLogger(t)
-	// On-chain reports 20x (HL account margin tier). Pre-fix this overwrote
-	// pos.Leverage and inflated the drawdown denominator 10x.
-	positions := []HLPosition{{Coin: "ETH", Size: 1, EntryPrice: 3000, Leverage: 20}}
-
-	reconcileHyperliquidPositions(s, "ETH", positions, "", logger)
-
-	if s.Positions["ETH"].Leverage != 2 {
-		t.Errorf("Leverage = %v; want 2 (configured value must be preserved against on-chain 20)", s.Positions["ETH"].Leverage)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &StrategyState{
+				ID:   "hl-eth",
+				Cash: 1000,
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 3000, Side: "long",
+						Multiplier: 1, Leverage: tc.posLeverage, OwnerStrategyID: "hl-eth"},
+				},
+			}
+			positions := []HLPosition{{Coin: "ETH", Size: 1, EntryPrice: 3000, Leverage: tc.onChainLev}}
+			reconcileHyperliquidPositionsWithResolver(s, "ETH", positions, noFillFeeResolver, newTestLogger(t), nil, nil, StrategyConfig{})
+			if s.Positions["ETH"].Leverage != tc.want {
+				t.Errorf("Leverage = %v; want %v", s.Positions["ETH"].Leverage, tc.want)
+			}
+		})
 	}
 }
-
-// #418 RC3 write-path guard: a zero-value pos.Leverage (legacy/migrated
-// position with no configured leverage) IS still seeded from on-chain so
-// pre-#418 state.db rows don't lose their leverage metadata entirely.
-func TestReconcileSeedsZeroLeverageFromOnChain(t *testing.T) {
-	s := &StrategyState{
-		ID:   "hl-eth",
-		Cash: 1000,
-		Positions: map[string]*Position{
-			// Leverage=0 — legacy/uninitialised
-			"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 3000, Side: "long",
-				Multiplier: 1, OwnerStrategyID: "hl-eth"},
-		},
-	}
-	logger := newTestLogger(t)
-	positions := []HLPosition{{Coin: "ETH", Size: 1, EntryPrice: 3000, Leverage: 10}}
-
-	reconcileHyperliquidPositions(s, "ETH", positions, "", logger)
-
-	if s.Positions["ETH"].Leverage != 10 {
-		t.Errorf("Leverage = %v; want 10 (zero-value position seeded from on-chain)", s.Positions["ETH"].Leverage)
-	}
-}
-
-func TestReconcileNoPositionBothSides(t *testing.T) {
-	s := &StrategyState{
-		ID:        "hl-btc",
-		Cash:      5000,
-		Positions: make(map[string]*Position),
-	}
-	logger := newTestLogger(t)
-	positions := []HLPosition{}
-
-	changed := reconcileHyperliquidPositions(s, "BTC", positions, "", logger)
-
-	if changed {
-		t.Error("expected changed=false when no position on either side")
-	}
-}
-
-// --- syncHyperliquidAccountPositions tests ---
-
 func setupHLTestServer(balance float64, positions []HLPosition) *httptest.Server {
 	resp := map[string]interface{}{
 		"marginSummary": map[string]string{
@@ -357,12 +518,11 @@ func TestAccountSyncTwoStrategiesDifferentCoins(t *testing.T) {
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
 
-	changed := syncHyperliquidAccountPositions(strategies, state, &mu, logMgr)
+	changed := syncHyperliquidAccountPositions(strategies, state, &mu, logMgr, nil)
 	if !changed {
 		t.Error("expected changed=true (quantities differ)")
 	}
 
-	// BTC should be reconciled to on-chain values, owned by hl-momentum-btc.
 	btcPos := state.Strategies["hl-momentum-btc"].Positions["BTC"]
 	if btcPos == nil {
 		t.Fatal("hl-momentum-btc should have BTC position")
@@ -374,7 +534,6 @@ func TestAccountSyncTwoStrategiesDifferentCoins(t *testing.T) {
 		t.Errorf("BTC owner = %s, want hl-momentum-btc", btcPos.OwnerStrategyID)
 	}
 
-	// ETH should be reconciled, owned by hl-amd-eth.
 	ethPos := state.Strategies["hl-amd-eth"].Positions["ETH"]
 	if ethPos == nil {
 		t.Fatal("hl-amd-eth should have ETH position")
@@ -383,7 +542,6 @@ func TestAccountSyncTwoStrategiesDifferentCoins(t *testing.T) {
 		t.Errorf("ETH quantity = %g, want 2.0", ethPos.Quantity)
 	}
 
-	// Neither strategy should have the OTHER coin's position.
 	if _, ok := state.Strategies["hl-momentum-btc"].Positions["ETH"]; ok {
 		t.Error("hl-momentum-btc should NOT have ETH position")
 	}
@@ -391,7 +549,6 @@ func TestAccountSyncTwoStrategiesDifferentCoins(t *testing.T) {
 		t.Error("hl-amd-eth should NOT have BTC position")
 	}
 
-	// Cash should NOT be synced from on-chain.
 	if state.Strategies["hl-momentum-btc"].Cash != 10000 {
 		t.Errorf("hl-momentum-btc cash = %g, want 10000", state.Strategies["hl-momentum-btc"].Cash)
 	}
@@ -401,7 +558,6 @@ func TestAccountSyncTwoStrategiesDifferentCoins(t *testing.T) {
 }
 
 func TestAccountSyncUnownedPositionNotAssigned(t *testing.T) {
-	// On-chain has SOL position, but no strategy trades SOL.
 	ts := setupHLTestServer(50000, []HLPosition{
 		{Coin: "BTC", Size: 0.5, EntryPrice: 40000},
 		{Coin: "SOL", Size: 10.0, EntryPrice: 150},
@@ -431,9 +587,8 @@ func TestAccountSyncUnownedPositionNotAssigned(t *testing.T) {
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
 
-	syncHyperliquidAccountPositions(strategies, state, &mu, logMgr)
+	syncHyperliquidAccountPositions(strategies, state, &mu, logMgr, nil)
 
-	// SOL should NOT appear in any strategy.
 	for id, ss := range state.Strategies {
 		if _, ok := ss.Positions["SOL"]; ok {
 			t.Errorf("strategy %s should NOT have SOL position", id)
@@ -457,7 +612,7 @@ func TestAccountSyncSkipsNoAddress(t *testing.T) {
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
 
-	changed := syncHyperliquidAccountPositions(strategies, state, &mu, logMgr)
+	changed := syncHyperliquidAccountPositions(strategies, state, &mu, logMgr, nil)
 	if changed {
 		t.Error("should return false without account address")
 	}
@@ -475,7 +630,7 @@ func TestValidateStateMigratesOwnership(t *testing.T) {
 		},
 	}
 
-	ValidateState(state)
+	ValidateState(state, nil)
 
 	pos := state.Strategies["hl-btc"].Positions["BTC"]
 	if pos.OwnerStrategyID != "hl-btc" {
@@ -483,22 +638,18 @@ func TestValidateStateMigratesOwnership(t *testing.T) {
 	}
 }
 
-// #254: reconcile migrates a legacy position stored with Multiplier=0 up to
-// Multiplier=1 so PortfolioValue uses the perps PnL branch. It also copies
-// the on-chain leverage into the Position.
 func TestReconcileMigratesLegacyMultiplierAndSyncsLeverage(t *testing.T) {
 	s := &StrategyState{
 		ID:   "hl-eth",
 		Cash: 27.15,
 		Positions: map[string]*Position{
-			// Legacy perps position as stored before #254: Multiplier=0.
 			"ETH": {Symbol: "ETH", Quantity: 0.279, AvgCost: 2210.71, Side: "long", OwnerStrategyID: "hl-eth"},
 		},
 	}
 	logger := newTestLogger(t)
 	positions := []HLPosition{{Coin: "ETH", Size: 0.279, EntryPrice: 2210.71, Leverage: 20}}
 
-	changed := reconcileHyperliquidPositions(s, "ETH", positions, "", logger)
+	changed := reconcileHyperliquidPositionsWithResolver(s, "ETH", positions, noFillFeeResolver, logger, nil, nil, StrategyConfig{})
 
 	if !changed {
 		t.Fatal("expected changed=true (migration)")
@@ -515,8 +666,6 @@ func TestReconcileMigratesLegacyMultiplierAndSyncsLeverage(t *testing.T) {
 	}
 }
 
-// #254: after migration, PortfolioValue reflects margin + PnL, not inflated
-// notional. This is the direct regression for the issue.
 func TestReconcileLegacyPositionPortfolioValueAfterMigration(t *testing.T) {
 	s := &StrategyState{
 		ID:              "hl-eth",
@@ -526,17 +675,15 @@ func TestReconcileLegacyPositionPortfolioValueAfterMigration(t *testing.T) {
 			"ETH": {Symbol: "ETH", Quantity: 0.279, AvgCost: 2210.71, Side: "long", OwnerStrategyID: "hl-eth"},
 		},
 	}
-	// Pre-fix value (spot branch): 27.15 + 0.279 * 2201.10 = 641.23 — inflated.
 	preFix := PortfolioValue(s, map[string]float64{"ETH": 2201.10})
 	if preFix < 600 || preFix > 700 {
 		t.Logf("pre-migration value = %v (spot branch)", preFix)
 	}
 
 	logger := newTestLogger(t)
-	reconcileHyperliquidPositions(s, "ETH",
-		[]HLPosition{{Coin: "ETH", Size: 0.279, EntryPrice: 2210.71, Leverage: 20}}, "", logger)
+	reconcileHyperliquidPositionsWithResolver(s, "ETH",
+		[]HLPosition{{Coin: "ETH", Size: 0.279, EntryPrice: 2210.71, Leverage: 20}}, noFillFeeResolver, logger, nil, nil, StrategyConfig{})
 
-	// Post-migration value: cash + qty*(price-entry) = 27.15 + 0.279*(2201.10-2210.71) = ~24.47
 	postFix := PortfolioValue(s, map[string]float64{"ETH": 2201.10})
 	expected := 27.15 + 0.279*(2201.10-2210.71)
 	if postFix-expected > 0.01 || expected-postFix > 0.01 {
@@ -547,7 +694,6 @@ func TestReconcileLegacyPositionPortfolioValueAfterMigration(t *testing.T) {
 	}
 }
 
-// #254: parse leverage out of clearinghouseState JSON.
 func TestFetchHyperliquidStateParsesLeverage(t *testing.T) {
 	body := `{
 		"marginSummary": {"accountValue": "1000.0"},
@@ -577,11 +723,6 @@ func TestFetchHyperliquidStateParsesLeverage(t *testing.T) {
 	}
 }
 
-// --- #258: shared-coin reconciliation tests ---
-
-// TestAccountSyncSharedCoinSkipsReconciliation verifies that when two strategies
-// trade the same coin on a shared wallet, per-strategy reconciliation is skipped
-// and positions are NOT modified to match on-chain.
 func TestAccountSyncSharedCoinSkipsReconciliation(t *testing.T) {
 	ts := setupHLTestServer(50000, []HLPosition{
 		{Coin: "ETH", Size: 0.315, EntryPrice: 2200},
@@ -618,9 +759,8 @@ func TestAccountSyncSharedCoinSkipsReconciliation(t *testing.T) {
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
 
-	syncHyperliquidAccountPositions(strategies, state, &mu, logMgr)
+	syncHyperliquidAccountPositions(strategies, state, &mu, logMgr, nil)
 
-	// Both virtual positions should be unchanged.
 	rmcPos := state.Strategies["hl-rmc-eth-live"].Positions["ETH"]
 	if rmcPos == nil {
 		t.Fatal("hl-rmc-eth-live should still have ETH position")
@@ -637,7 +777,6 @@ func TestAccountSyncSharedCoinSkipsReconciliation(t *testing.T) {
 		t.Errorf("tema ETH quantity = %g, want 0.212 (should not be reconciled)", temaPos.Quantity)
 	}
 
-	// Cash should not change.
 	if state.Strategies["hl-rmc-eth-live"].Cash != 27.15 {
 		t.Errorf("rmc cash = %g, want 27.15", state.Strategies["hl-rmc-eth-live"].Cash)
 	}
@@ -645,7 +784,6 @@ func TestAccountSyncSharedCoinSkipsReconciliation(t *testing.T) {
 		t.Errorf("tema cash = %g, want 27.79", state.Strategies["hl-tema-eth-live"].Cash)
 	}
 
-	// Reconciliation gap should be recorded.
 	gap := state.ReconciliationGaps["ETH"]
 	if gap == nil {
 		t.Fatal("expected reconciliation gap for ETH")
@@ -661,7 +799,6 @@ func TestAccountSyncSharedCoinSkipsReconciliation(t *testing.T) {
 	if math.Abs(gap.DeltaQty-expectedDelta) > 0.000001 {
 		t.Errorf("gap DeltaQty = %g, want %g", gap.DeltaQty, expectedDelta)
 	}
-	// Strategies field should list both strategy IDs.
 	if len(gap.Strategies) != 2 {
 		t.Errorf("gap Strategies = %v, want 2 entries", gap.Strategies)
 	}
@@ -670,14 +807,7 @@ func TestAccountSyncSharedCoinSkipsReconciliation(t *testing.T) {
 	}
 }
 
-// TestAccountSyncSharedCoinClosedWhenOnChainGone verifies #565: when one
-// strategy's virtual position is already cleared (rmc sold via
-// ExecutePerpsSignal) and on-chain is fully flat, the remaining peer's stale
-// virtual position (tema) is reconciled away via hl_sync_external. This
-// supersedes the old #258 behavior that left virtual positions intact — that
-// protection is still in place for non-zero on-chain gaps (ambiguous cases).
 func TestAccountSyncSharedCoinClosedWhenOnChainGone(t *testing.T) {
-	// On-chain ETH position is gone (rmc sold its portion, aggregate is flat).
 	ts := setupHLTestServer(1336, []HLPosition{})
 	defer ts.Close()
 
@@ -690,7 +820,7 @@ func TestAccountSyncSharedCoinClosedWhenOnChainGone(t *testing.T) {
 		Strategies: map[string]*StrategyState{
 			"hl-rmc-eth-live": {
 				ID: "hl-rmc-eth-live", Cash: 1336,
-				Positions: map[string]*Position{}, // rmc already sold via ExecutePerpsSignal
+				Positions: map[string]*Position{},
 			},
 			"hl-tema-eth-live": {
 				ID: "hl-tema-eth-live", Cash: 27.79,
@@ -709,9 +839,8 @@ func TestAccountSyncSharedCoinClosedWhenOnChainGone(t *testing.T) {
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
 
-	syncHyperliquidAccountPositions(strategies, state, &mu, logMgr)
+	syncHyperliquidAccountPositions(strategies, state, &mu, logMgr, nil)
 
-	// tema's stale virtual position must be closed by Detector 1 (#565).
 	temaPos := state.Strategies["hl-tema-eth-live"].Positions["ETH"]
 	if temaPos != nil {
 		t.Errorf("hl-tema-eth-live ETH position should be nil after external close reconcile, got %+v", temaPos)
@@ -722,7 +851,6 @@ func TestAccountSyncSharedCoinClosedWhenOnChainGone(t *testing.T) {
 		t.Errorf("CloseReason = %q, want hl_sync_external", state.Strategies["hl-tema-eth-live"].ClosedPositions[0].CloseReason)
 	}
 
-	// Gap should show zero delta after reconciliation.
 	gap := state.ReconciliationGaps["ETH"]
 	if gap == nil {
 		t.Fatal("expected reconciliation gap entry for ETH")
@@ -741,8 +869,6 @@ func TestAccountSyncSharedCoinClosedWhenOnChainGone(t *testing.T) {
 	}
 }
 
-// TestAccountSyncSharedCoinMultiplierMigration verifies that non-destructive
-// updates (multiplier migration, leverage sync) still happen for shared coins.
 func TestAccountSyncSharedCoinMultiplierMigration(t *testing.T) {
 	ts := setupHLTestServer(50000, []HLPosition{
 		{Coin: "ETH", Size: 0.5, EntryPrice: 2000, Leverage: 10},
@@ -779,7 +905,7 @@ func TestAccountSyncSharedCoinMultiplierMigration(t *testing.T) {
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
 
-	changed := syncHyperliquidAccountPositions(strategies, state, &mu, logMgr)
+	changed := syncHyperliquidAccountPositions(strategies, state, &mu, logMgr, nil)
 	if !changed {
 		t.Error("expected changed=true (multiplier migration + zero-leverage init)")
 	}
@@ -788,20 +914,15 @@ func TestAccountSyncSharedCoinMultiplierMigration(t *testing.T) {
 	if posA.Multiplier != 1 {
 		t.Errorf("hl-a-eth ETH multiplier = %v, want 1 (migrated)", posA.Multiplier)
 	}
-	// hl-a-eth had Leverage=0 (zero-value/legacy position) → seeded from on-chain.
 	if posA.Leverage != 10 {
 		t.Errorf("hl-a-eth ETH leverage = %v, want 10 (zero-value init from on-chain)", posA.Leverage)
 	}
 
-	// #418: hl-b-eth had Leverage=5 (configured) — must NOT be overwritten by
-	// on-chain margin tier (10). Risk math reads sc.Leverage, but the storage
-	// guard prevents corruption of pos.Leverage for any future readers.
 	posB := state.Strategies["hl-b-eth"].Positions["ETH"]
 	if posB.Leverage != 5 {
 		t.Errorf("hl-b-eth ETH leverage = %v, want 5 (configured leverage preserved; on-chain overwrite blocked by #418 RC3 write-path guard)", posB.Leverage)
 	}
 
-	// Quantities must NOT change.
 	if posA.Quantity != 0.3 {
 		t.Errorf("hl-a-eth ETH quantity = %g, want 0.3 (unchanged)", posA.Quantity)
 	}
@@ -810,9 +931,6 @@ func TestAccountSyncSharedCoinMultiplierMigration(t *testing.T) {
 	}
 }
 
-// TestAccountSyncMixedSharedAndNonShared verifies that shared and non-shared
-// coins are handled independently: BTC (sole owner) is reconciled normally,
-// while ETH (shared by 2 strategies) skips reconciliation.
 func TestAccountSyncMixedSharedAndNonShared(t *testing.T) {
 	ts := setupHLTestServer(50000, []HLPosition{
 		{Coin: "BTC", Size: 0.5, EntryPrice: 42000, Leverage: 5},
@@ -857,9 +975,8 @@ func TestAccountSyncMixedSharedAndNonShared(t *testing.T) {
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
 
-	syncHyperliquidAccountPositions(strategies, state, &mu, logMgr)
+	syncHyperliquidAccountPositions(strategies, state, &mu, logMgr, nil)
 
-	// BTC should be reconciled (non-shared): 0.3 → 0.5.
 	btcPos := state.Strategies["hl-btc"].Positions["BTC"]
 	if btcPos == nil {
 		t.Fatal("hl-btc should have BTC position")
@@ -868,7 +985,6 @@ func TestAccountSyncMixedSharedAndNonShared(t *testing.T) {
 		t.Errorf("BTC quantity = %g, want 0.5 (reconciled)", btcPos.Quantity)
 	}
 
-	// ETH positions should be unchanged (shared).
 	rmcETH := state.Strategies["hl-rmc-eth"].Positions["ETH"]
 	if rmcETH == nil || rmcETH.Quantity != 0.46 {
 		t.Errorf("rmc ETH = %+v, want quantity 0.46 (not reconciled)", rmcETH)
@@ -878,7 +994,6 @@ func TestAccountSyncMixedSharedAndNonShared(t *testing.T) {
 		t.Errorf("tema ETH = %+v, want quantity 0.212 (not reconciled)", temaETH)
 	}
 
-	// Only ETH should have a reconciliation gap.
 	if _, ok := state.ReconciliationGaps["BTC"]; ok {
 		t.Error("BTC should not have a reconciliation gap (non-shared)")
 	}
@@ -894,8 +1009,6 @@ func TestAccountSyncMixedSharedAndNonShared(t *testing.T) {
 	}
 }
 
-// TestAccountSyncSharedCoinGapClearedWhenNoLongerShared verifies that
-// reconciliation gaps are cleaned up when a coin is no longer shared.
 func TestAccountSyncSharedCoinGapClearedWhenNoLongerShared(t *testing.T) {
 	ts := setupHLTestServer(50000, []HLPosition{
 		{Coin: "ETH", Size: 0.3, EntryPrice: 2000, Leverage: 10},
@@ -916,13 +1029,11 @@ func TestAccountSyncSharedCoinGapClearedWhenNoLongerShared(t *testing.T) {
 				},
 			},
 		},
-		// Stale gap from when ETH was shared.
 		ReconciliationGaps: map[string]*ReconciliationGap{
 			"ETH": {Coin: "ETH", OnChainQty: 0.5, VirtualQty: 0.7, DeltaQty: 0.2, Strategies: []string{"hl-eth", "hl-old"}},
 		},
 	}
 
-	// Only one strategy trades ETH now (no longer shared).
 	strategies := []StrategyConfig{
 		{ID: "hl-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"sma", "ETH", "1h", "--mode=live"}},
 	}
@@ -930,9 +1041,8 @@ func TestAccountSyncSharedCoinGapClearedWhenNoLongerShared(t *testing.T) {
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
 
-	syncHyperliquidAccountPositions(strategies, state, &mu, logMgr)
+	syncHyperliquidAccountPositions(strategies, state, &mu, logMgr, nil)
 
-	// ETH should be reconciled normally (non-shared).
 	ethPos := state.Strategies["hl-eth"].Positions["ETH"]
 	if ethPos == nil {
 		t.Fatal("hl-eth should have ETH position")
@@ -941,15 +1051,11 @@ func TestAccountSyncSharedCoinGapClearedWhenNoLongerShared(t *testing.T) {
 		t.Errorf("ETH quantity = %g, want 0.3 (reconciled to on-chain)", ethPos.Quantity)
 	}
 
-	// Stale gap should be cleaned up.
 	if _, ok := state.ReconciliationGaps["ETH"]; ok {
 		t.Error("ETH reconciliation gap should be removed (no longer shared)")
 	}
 }
 
-// TestReconcileDueSubsetOfAllDetectsSharedCoins calls reconcileHyperliquidAccountPositions
-// directly with dueStrategies as a strict subset of allStrategies. This is the production
-// call pattern from main.go where not all strategies are due every cycle.
 func TestReconcileDueSubsetOfAllDetectsSharedCoins(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
@@ -979,7 +1085,6 @@ func TestReconcileDueSubsetOfAllDetectsSharedCoins(t *testing.T) {
 		{ID: "hl-tema-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"tema", "ETH", "1h", "--mode=live"}},
 		{ID: "hl-sma-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"sma", "ETH", "1h", "--mode=live"}},
 	}
-	// Only rmc is due this cycle.
 	dueStrategies := allStrategies[:1]
 
 	positions := []HLPosition{
@@ -989,10 +1094,8 @@ func TestReconcileDueSubsetOfAllDetectsSharedCoins(t *testing.T) {
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
 
-	_, _ = reconcileHyperliquidAccountPositions(dueStrategies, allStrategies, state, &mu, logMgr, positions, nil, "", nil, false)
+	_, _, _ = reconcileHyperliquidAccountPositions(dueStrategies, allStrategies, state, &mu, logMgr, nil, positions, nil, "", nil, false)
 
-	// Even though only rmc is due, allStrategies reveals ETH is shared by 3
-	// strategies, so rmc's position must NOT be reconciled to on-chain.
 	rmcPos := state.Strategies["hl-rmc-eth"].Positions["ETH"]
 	if rmcPos == nil {
 		t.Fatal("hl-rmc-eth should still have ETH position")
@@ -1001,7 +1104,6 @@ func TestReconcileDueSubsetOfAllDetectsSharedCoins(t *testing.T) {
 		t.Errorf("rmc ETH quantity = %g, want 0.5 (shared coin, not reconciled)", rmcPos.Quantity)
 	}
 
-	// Non-due strategies should also be untouched.
 	temaPos := state.Strategies["hl-tema-eth"].Positions["ETH"]
 	if temaPos == nil || temaPos.Quantity != 0.3 {
 		t.Errorf("tema ETH = %+v, want quantity 0.3 (not due, not reconciled)", temaPos)
@@ -1011,7 +1113,6 @@ func TestReconcileDueSubsetOfAllDetectsSharedCoins(t *testing.T) {
 		t.Errorf("sma ETH = %+v, want quantity 0.2 (not due, not reconciled)", smaPos)
 	}
 
-	// Gap should list all 3 strategies.
 	gap := state.ReconciliationGaps["ETH"]
 	if gap == nil {
 		t.Fatal("expected reconciliation gap for ETH")
@@ -1025,8 +1126,6 @@ func TestReconcileDueSubsetOfAllDetectsSharedCoins(t *testing.T) {
 	}
 }
 
-// TestReconcileSharedCoinShortAndMixedPositions verifies the signed virtual qty
-// computation for shared coins with short and mixed long/short positions.
 func TestReconcileSharedCoinShortAndMixedPositions(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
@@ -1050,7 +1149,6 @@ func TestReconcileSharedCoinShortAndMixedPositions(t *testing.T) {
 		{ID: "hl-short-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"rsi", "ETH", "1h", "--mode=live"}},
 	}
 
-	// On-chain: net long 0.5 (= 0.8 long - 0.3 short).
 	positions := []HLPosition{
 		{Coin: "ETH", Size: 0.5, EntryPrice: 2150, Leverage: 20},
 	}
@@ -1058,9 +1156,8 @@ func TestReconcileSharedCoinShortAndMixedPositions(t *testing.T) {
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
 
-	_, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, nil, "", nil, false)
+	_, _, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, nil, positions, nil, "", nil, false)
 
-	// Positions should be unchanged.
 	longPos := state.Strategies["hl-long-eth"].Positions["ETH"]
 	if longPos == nil || longPos.Quantity != 0.8 || longPos.Side != "long" {
 		t.Errorf("long ETH = %+v, want 0.8 long (unchanged)", longPos)
@@ -1074,12 +1171,10 @@ func TestReconcileSharedCoinShortAndMixedPositions(t *testing.T) {
 	if gap == nil {
 		t.Fatal("expected reconciliation gap for ETH")
 	}
-	// Virtual: +0.8 (long) - 0.3 (short) = 0.5.
 	expectedVirtual := 0.5
 	if math.Abs(gap.VirtualQty-expectedVirtual) > 0.000001 {
 		t.Errorf("gap VirtualQty = %g, want %g (long 0.8 - short 0.3)", gap.VirtualQty, expectedVirtual)
 	}
-	// On-chain is also 0.5, so delta should be ~0.
 	if math.Abs(gap.DeltaQty) > 0.000001 {
 		t.Errorf("gap DeltaQty = %g, want ~0 (virtual matches on-chain)", gap.DeltaQty)
 	}
@@ -1088,8 +1183,6 @@ func TestReconcileSharedCoinShortAndMixedPositions(t *testing.T) {
 	}
 }
 
-// TestReconcileSharedCoinBothShort verifies virtual qty computation when both
-// strategies are short on a shared coin.
 func TestReconcileSharedCoinBothShort(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
@@ -1113,7 +1206,6 @@ func TestReconcileSharedCoinBothShort(t *testing.T) {
 		{ID: "hl-b-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"rsi", "ETH", "1h", "--mode=live"}},
 	}
 
-	// On-chain: short 1.0 (negative size).
 	positions := []HLPosition{
 		{Coin: "ETH", Size: -1.0, EntryPrice: 2150, Leverage: 20},
 	}
@@ -1121,18 +1213,16 @@ func TestReconcileSharedCoinBothShort(t *testing.T) {
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
 
-	_, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, nil, "", nil, false)
+	_, _, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, nil, positions, nil, "", nil, false)
 
 	gap := state.ReconciliationGaps["ETH"]
 	if gap == nil {
 		t.Fatal("expected reconciliation gap for ETH")
 	}
-	// Virtual: -0.4 + -0.6 = -1.0.
 	expectedVirtual := -1.0
 	if math.Abs(gap.VirtualQty-expectedVirtual) > 0.000001 {
 		t.Errorf("gap VirtualQty = %g, want %g (both short)", gap.VirtualQty, expectedVirtual)
 	}
-	// On-chain is -1.0, so delta should be ~0.
 	if gap.OnChainQty != -1.0 {
 		t.Errorf("gap OnChainQty = %g, want -1.0", gap.OnChainQty)
 	}
@@ -1141,11 +1231,6 @@ func TestReconcileSharedCoinBothShort(t *testing.T) {
 	}
 }
 
-// --- #565: shared-coin close reconciliation tests ---
-
-// TestReconcileSharedCoin_OwnerStopLossFired_ClosesOwnerOnly verifies that
-// when a shared-coin SL owner's trigger fires (on-chain qty drops to the
-// non-owner peers' residual), only the owner's virtual position is closed.
 func TestReconcileSharedCoin_OwnerStopLossFired_ClosesOwnerOnly(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
@@ -1171,7 +1256,6 @@ func TestReconcileSharedCoin_OwnerStopLossFired_ClosesOwnerOnly(t *testing.T) {
 		{ID: "hl-owner-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"tema", "ETH", "1h", "--mode=live"}},
 		{ID: "hl-peer-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"rmc", "ETH", "1h", "--mode=live"}},
 	}
-	// Owner fired — on-chain residual is only the peer's 0.5 long.
 	positions := []HLPosition{{Coin: "ETH", Size: 0.5, EntryPrice: 3000, Leverage: 10}}
 
 	origLookup := lookupHyperliquidReconcileFillFee
@@ -1185,9 +1269,8 @@ func TestReconcileSharedCoin_OwnerStopLossFired_ClosesOwnerOnly(t *testing.T) {
 
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
-	_, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, nil, "0xtest", nil, false)
+	_, _, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, nil, positions, nil, "0xtest", nil, false)
 
-	// Owner position must be closed and recorded.
 	if state.Strategies["hl-owner-eth"].Positions["ETH"] != nil {
 		t.Error("owner ETH position should be nil after SL reconciliation")
 	}
@@ -1203,13 +1286,11 @@ func TestReconcileSharedCoin_OwnerStopLossFired_ClosesOwnerOnly(t *testing.T) {
 		}
 	}
 
-	// Peer position must be untouched.
 	peerPos := state.Strategies["hl-peer-eth"].Positions["ETH"]
 	if peerPos == nil || math.Abs(peerPos.Quantity-0.5) > 1e-6 {
 		t.Errorf("peer ETH = %+v, want 0.5 long (unchanged)", peerPos)
 	}
 
-	// Gap should now show ~zero delta.
 	gap := state.ReconciliationGaps["ETH"]
 	if gap == nil {
 		t.Fatal("expected gap entry for ETH")
@@ -1219,7 +1300,401 @@ func TestReconcileSharedCoin_OwnerStopLossFired_ClosesOwnerOnly(t *testing.T) {
 	}
 }
 
-// TestReconcileSharedCoin_OwnerStopLossFired_Short verifies the short-side mirror.
+func TestReconcileSoleOwnerSL_SendsTradeAlertAndProtectionDM(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-owner-eth": {
+				ID: "hl-owner-eth", Cash: 1000, Platform: "hyperliquid", Type: "perps",
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 3000, Side: "long",
+						Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-owner-eth",
+						StopLossOID: 42, StopLossTriggerPx: 2900},
+				},
+			},
+		},
+	}
+	sc := StrategyConfig{
+		ID: "hl-owner-eth", Platform: "hyperliquid", Type: "perps",
+		Args: []string{"tema", "ETH", "1h", "--mode=live"},
+	}
+	origLookup := lookupHyperliquidReconcileFillFee
+	defer func() { lookupHyperliquidReconcileFillFee = origLookup }()
+	lookupHyperliquidReconcileFillFee = func(_, _ string, oid int64, _ float64) (HLFillLookup, bool) {
+		if oid == 42 {
+			return HLFillLookup{Fee: 0.05, FilledQty: 1, Px: 2900, Count: 1, OID: 42}, true
+		}
+		return HLFillLookup{}, false
+	}
+
+	mock := &mockNotifier{}
+	mn := NewMultiNotifier(notifierBackend{
+		notifier:           mock,
+		tradeAlertChannels: map[string]string{"hyperliquid": "trade-alerts"},
+		ownerID:            "owner",
+	})
+	logMgr, err := NewLogManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.RWMutex
+	reconcileHyperliquidAccountPositions([]StrategyConfig{sc}, []StrategyConfig{sc}, state, &mu, logMgr, nil, nil, nil, "0xtest", mn, true)
+
+	if len(mock.messages) != 1 {
+		t.Fatalf("trade alert messages = %d, want 1", len(mock.messages))
+	}
+	if mock.messages[0].channelID != "trade-alerts" || !strings.Contains(mock.messages[0].content, "TRADE CLOSED") {
+		t.Errorf("trade alert = %+v, want configured live close alert", mock.messages[0])
+	}
+	if len(mock.dms) != 1 || !strings.Contains(mock.dms[0].content, "SL filled") {
+		t.Errorf("protection DMs = %+v, want one sole-owner SL fill DM", mock.dms)
+	}
+}
+
+func TestReconcileSharedCoinSLAndExternal_SendsTradeAlertPerBookedTrade(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-owner-eth": {
+				ID: "hl-owner-eth", Cash: 1000, Platform: "hyperliquid", Type: "perps",
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 3000, Side: "long",
+						Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-owner-eth",
+						StopLossOID: 42, StopLossTriggerPx: 2900},
+				},
+			},
+			"hl-peer-eth": {
+				ID: "hl-peer-eth", Cash: 500, Platform: "hyperliquid", Type: "perps",
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 3000, Side: "long",
+						Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-peer-eth"},
+				},
+			},
+		},
+	}
+	strategies := []StrategyConfig{
+		{ID: "hl-owner-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"tema", "ETH", "1h", "--mode=live"}},
+		{ID: "hl-peer-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"rmc", "ETH", "1h", "--mode=live"}},
+	}
+	origLookup := lookupHyperliquidReconcileFillFee
+	defer func() { lookupHyperliquidReconcileFillFee = origLookup }()
+	lookupHyperliquidReconcileFillFee = func(_, coin string, oid int64, qty float64) (HLFillLookup, bool) {
+		if coin != "ETH" {
+			return HLFillLookup{}, false
+		}
+		if oid == 42 {
+			return HLFillLookup{Fee: 0.05, FilledQty: 1, Px: 2900, Count: 1, OID: 42}, true
+		}
+		if oid == 0 && math.Abs(qty-1.5) < 1e-9 {
+			return HLFillLookup{Fee: 0.15, FilledQty: 1.5, Px: 2850, Count: 1, OID: 99}, true
+		}
+		return HLFillLookup{}, false
+	}
+
+	mock := &mockNotifier{}
+	mn := NewMultiNotifier(notifierBackend{
+		notifier:           mock,
+		tradeAlertChannels: map[string]string{"hyperliquid": "trade-alerts"},
+		ownerID:            "owner",
+	})
+	logMgr, err := NewLogManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.RWMutex
+	reconcileHyperliquidAccountPositions(strategies, strategies, state, &mu, logMgr, nil, nil, nil, "0xtest", mn, true)
+
+	if len(mock.messages) != 2 {
+		t.Fatalf("trade alert messages = %d, want 2", len(mock.messages))
+	}
+	counts := map[string]int{}
+	for _, message := range mock.messages {
+		if message.channelID != "trade-alerts" || !strings.Contains(message.content, "TRADE CLOSED") {
+			t.Errorf("trade alert = %+v, want configured live close alert", message)
+		}
+		for _, id := range []string{"hl-owner-eth", "hl-peer-eth"} {
+			if strings.Contains(message.content, "Strategy: "+id) {
+				counts[id]++
+			}
+		}
+	}
+	for _, id := range []string{"hl-owner-eth", "hl-peer-eth"} {
+		if counts[id] != 1 {
+			t.Errorf("trade alerts for %s = %d, want 1", id, counts[id])
+		}
+	}
+	if len(mock.dms) != 1 || !strings.Contains(mock.dms[0].content, "SL filled") {
+		t.Errorf("protection DMs = %+v, want one owner SL fill DM", mock.dms)
+	}
+}
+
+func TestReconcileHyperliquidHedgeCloseSkipsPublicTradeAlerts(t *testing.T) {
+	prev := tradeRecorder
+	tradeRecorder = nil
+	t.Cleanup(func() { tradeRecorder = prev })
+
+	cases := []struct {
+		name                 string
+		positions            []HLPosition
+		wantPublicAlerts     int
+		wantPrimaryTradeRows int
+		wantHedgeTradeRows   int
+	}{
+		{
+			name:                 "hedge-only external close",
+			positions:            []HLPosition{{Coin: "ETH", Size: 10, EntryPrice: testPrimaryPx}},
+			wantPublicAlerts:     0,
+			wantPrimaryTradeRows: 0,
+			wantHedgeTradeRows:   1,
+		},
+		{
+			name:                 "primary and hedge external close",
+			wantPublicAlerts:     1,
+			wantPrimaryTradeRows: 1,
+			wantHedgeTradeRows:   1,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sc := hedgeTestConfig()
+			s := hedgeTestState(sc.ID)
+			s.Positions["ETH"] = primaryPos(10, "long")
+			s.Positions["BTC"] = hedgePos(0.4, "short", 10)
+			state := &AppState{Strategies: map[string]*StrategyState{sc.ID: s}}
+			mock := &mockNotifier{}
+			mn := NewMultiNotifier(notifierBackend{
+				notifier:           mock,
+				tradeAlertChannels: map[string]string{"hyperliquid": "trade-alerts"},
+				ownerID:            "owner",
+			})
+			logMgr, err := NewLogManager(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var mu sync.RWMutex
+			reconcileHyperliquidAccountPositions([]StrategyConfig{sc}, []StrategyConfig{sc}, state, &mu, logMgr, nil, tc.positions, nil, "", mn, false)
+
+			if len(mock.messages) != tc.wantPublicAlerts {
+				t.Fatalf("public trade alerts = %d, want %d: %+v", len(mock.messages), tc.wantPublicAlerts, mock.messages)
+			}
+			if tc.wantPublicAlerts == 1 && (mock.messages[0].channelID != "trade-alerts" || !strings.Contains(mock.messages[0].content, "TRADE CLOSED")) {
+				t.Errorf("public trade alert = %+v, want primary close alert", mock.messages[0])
+			}
+			if len(mock.dms) != 1 || !strings.Contains(mock.dms[0].content, "Hedge leg closed externally") {
+				t.Errorf("hedge DMs = %+v, want one hedge close DM", mock.dms)
+			}
+
+			tradeRows := map[string]int{}
+			for _, trade := range s.TradeHistory {
+				tradeRows[trade.TradeType]++
+			}
+			if tradeRows["perps"] != tc.wantPrimaryTradeRows || tradeRows[hedgeTradeType] != tc.wantHedgeTradeRows {
+				t.Errorf("trade rows by type = %v, want perps=%d hedge=%d", tradeRows, tc.wantPrimaryTradeRows, tc.wantHedgeTradeRows)
+			}
+		})
+	}
+}
+
+func TestHyperliquidPublicTradeAlertRowsSkipsHedgeRows(t *testing.T) {
+	cases := []struct {
+		name      string
+		trades    []Trade
+		wantCoins []string
+	}{
+		{
+			name: "hedge-only close",
+			trades: []Trade{
+				{Symbol: "BTC", TradeType: hedgeTradeType},
+			},
+		},
+		{
+			name: "primary rows around hedge close",
+			trades: []Trade{
+				{Symbol: "ETH", TradeType: "perps"},
+				{Symbol: "BTC", TradeType: hedgeTradeType},
+				{Symbol: "SOL", TradeType: "perps"},
+			},
+			wantCoins: []string{"ETH", "SOL"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := hyperliquidPublicTradeAlertRows(tc.trades)
+			if len(got) != len(tc.wantCoins) {
+				t.Fatalf("public rows = %d, want %d: %+v", len(got), len(tc.wantCoins), got)
+			}
+			for i, want := range tc.wantCoins {
+				if got[i].Symbol != want {
+					t.Errorf("public row %d symbol = %q, want %q", i, got[i].Symbol, want)
+				}
+			}
+		})
+	}
+}
+
+func TestReconcileHyperliquidHedgeClosePublishesPrimaryTradeData(t *testing.T) {
+	prev := tradeRecorder
+	tradeRecorder = nil
+	t.Cleanup(func() { tradeRecorder = prev })
+
+	sc := hedgeTestConfig()
+	s := hedgeTestState(sc.ID)
+	s.Positions["ETH"] = primaryPos(10, "long")
+	s.Positions["BTC"] = hedgePos(0.4, "short", 10)
+	state := &AppState{Strategies: map[string]*StrategyState{sc.ID: s}}
+	mock := &mockNotifier{}
+	mn := NewMultiNotifier(notifierBackend{
+		notifier:           mock,
+		tradeAlertChannels: map[string]string{"hyperliquid": "trade-alerts"},
+		ownerID:            "owner",
+	})
+	logMgr, err := NewLogManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.RWMutex
+	reconcileHyperliquidAccountPositions([]StrategyConfig{sc}, []StrategyConfig{sc}, state, &mu, logMgr, nil, nil, nil, "", mn, false)
+
+	if len(mock.messages) != 1 {
+		t.Fatalf("public trade alerts = %d, want 1: %+v", len(mock.messages), mock.messages)
+	}
+	if !strings.Contains(mock.messages[0].content, "\nETH") || strings.Contains(mock.messages[0].content, "\nBTC") {
+		t.Errorf("public trade alert = %q, want primary ETH data only", mock.messages[0].content)
+	}
+	if len(mock.dms) != 1 || !strings.Contains(mock.dms[0].content, "Hedge leg closed externally") {
+		t.Errorf("hedge DMs = %+v, want one hedge close DM", mock.dms)
+	}
+}
+
+func TestReconcileSharedCoin_MultipleStopLossOwnersConfirmed_ClosesOwners(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-a-eth": {
+				ID: "hl-a-eth", Cash: 1000, Platform: "hyperliquid",
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 1.0, AvgCost: 3000, Side: "long",
+						Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-a-eth",
+						StopLossOID: 42, StopLossTriggerPx: 2900},
+				},
+			},
+			"hl-b-eth": {
+				ID: "hl-b-eth", Cash: 1000, Platform: "hyperliquid",
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 0.25, AvgCost: 3000, Side: "long",
+						Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-b-eth",
+						StopLossOID: 43, StopLossTriggerPx: 2910},
+				},
+			},
+			"hl-peer-eth": {
+				ID: "hl-peer-eth", Cash: 500, Platform: "hyperliquid",
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 3000, Side: "long",
+						Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-peer-eth"},
+				},
+			},
+		},
+	}
+	allStrategies := []StrategyConfig{
+		{ID: "hl-a-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"a", "ETH", "1h", "--mode=live"}},
+		{ID: "hl-b-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"b", "ETH", "1h", "--mode=live"}},
+		{ID: "hl-peer-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"peer", "ETH", "1h", "--mode=live"}},
+	}
+	positions := []HLPosition{{Coin: "ETH", Size: 0.5, EntryPrice: 3000, Leverage: 10}}
+
+	origLookup := lookupHyperliquidReconcileFillFee
+	defer func() { lookupHyperliquidReconcileFillFee = origLookup }()
+	lookupHyperliquidReconcileFillFee = func(_, _ string, oid int64, _ float64) (HLFillLookup, bool) {
+		switch oid {
+		case 42:
+			return HLFillLookup{Fee: 0.05, FilledQty: 1.0, Px: 2900, Count: 1, OID: 42}, true
+		case 43:
+			return HLFillLookup{Fee: 0.02, FilledQty: 0.25, Px: 2910, Count: 1, OID: 43}, true
+		default:
+			return HLFillLookup{}, false
+		}
+	}
+
+	logMgr, _ := NewLogManager(t.TempDir())
+	var mu sync.RWMutex
+	_, _, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, nil, positions, nil, "0xtest", nil, false)
+
+	for _, id := range []string{"hl-a-eth", "hl-b-eth"} {
+		if state.Strategies[id].Positions["ETH"] != nil {
+			t.Fatalf("%s position should be closed", id)
+		}
+		if len(state.Strategies[id].ClosedPositions) != 1 || state.Strategies[id].ClosedPositions[0].CloseReason != "hl_sync_stop_loss" {
+			t.Fatalf("%s closed positions = %+v, want one SL close", id, state.Strategies[id].ClosedPositions)
+		}
+	}
+	peerPos := state.Strategies["hl-peer-eth"].Positions["ETH"]
+	if peerPos == nil || math.Abs(peerPos.Quantity-0.5) > 1e-9 {
+		t.Fatalf("peer position = %+v, want unchanged 0.5", peerPos)
+	}
+	gap := state.ReconciliationGaps["ETH"]
+	if gap == nil || math.Abs(gap.DeltaQty) > 1e-9 {
+		t.Fatalf("gap = %+v, want reconciled delta 0", gap)
+	}
+}
+
+func TestReconcileSharedCoin_MultipleStopLossOwnersUnconfirmed_LeavesGap(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-a-eth": {
+				ID: "hl-a-eth", Cash: 1000, Platform: "hyperliquid",
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 1.0, AvgCost: 3000, Side: "long",
+						Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-a-eth",
+						StopLossOID: 42, StopLossTriggerPx: 2900},
+				},
+			},
+			"hl-b-eth": {
+				ID: "hl-b-eth", Cash: 1000, Platform: "hyperliquid",
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 0.25, AvgCost: 3000, Side: "long",
+						Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-b-eth",
+						StopLossOID: 43, StopLossTriggerPx: 2910},
+				},
+			},
+			"hl-peer-eth": {
+				ID: "hl-peer-eth", Cash: 500, Platform: "hyperliquid",
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 3000, Side: "long",
+						Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-peer-eth"},
+				},
+			},
+		},
+	}
+	allStrategies := []StrategyConfig{
+		{ID: "hl-a-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"a", "ETH", "1h", "--mode=live"}},
+		{ID: "hl-b-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"b", "ETH", "1h", "--mode=live"}},
+		{ID: "hl-peer-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"peer", "ETH", "1h", "--mode=live"}},
+	}
+	positions := []HLPosition{{Coin: "ETH", Size: 0.5, EntryPrice: 3000, Leverage: 10}}
+
+	origLookup := lookupHyperliquidReconcileFillFee
+	defer func() { lookupHyperliquidReconcileFillFee = origLookup }()
+	lookupHyperliquidReconcileFillFee = func(_, _ string, _ int64, _ float64) (HLFillLookup, bool) {
+		return HLFillLookup{}, false
+	}
+
+	logMgr, _ := NewLogManager(t.TempDir())
+	var mu sync.RWMutex
+	_, _, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, nil, positions, nil, "0xtest", nil, false)
+
+	for _, id := range []string{"hl-a-eth", "hl-b-eth", "hl-peer-eth"} {
+		if state.Strategies[id].Positions["ETH"] == nil {
+			t.Fatalf("%s position should remain open", id)
+		}
+		if len(state.Strategies[id].ClosedPositions) != 0 {
+			t.Fatalf("%s closed positions = %+v, want none", id, state.Strategies[id].ClosedPositions)
+		}
+	}
+	gap := state.ReconciliationGaps["ETH"]
+	if gap == nil || math.Abs(gap.DeltaQty-1.25) > 1e-9 {
+		t.Fatalf("gap = %+v, want unresolved delta 1.25", gap)
+	}
+}
+
 func TestReconcileSharedCoin_OwnerStopLossFired_Short(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
@@ -1245,7 +1720,6 @@ func TestReconcileSharedCoin_OwnerStopLossFired_Short(t *testing.T) {
 		{ID: "hl-owner-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"tema", "ETH", "1h", "--mode=live"}},
 		{ID: "hl-peer-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"rmc", "ETH", "1h", "--mode=live"}},
 	}
-	// Short positions: on-chain residual after owner's stop = -0.3 (peer only).
 	positions := []HLPosition{{Coin: "ETH", Size: -0.3, EntryPrice: 3000, Leverage: 10}}
 
 	origLookup := lookupHyperliquidReconcileFillFee
@@ -1259,7 +1733,7 @@ func TestReconcileSharedCoin_OwnerStopLossFired_Short(t *testing.T) {
 
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
-	_, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, nil, "0xtest", nil, false)
+	_, _, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, nil, positions, nil, "0xtest", nil, false)
 
 	if state.Strategies["hl-owner-eth"].Positions["ETH"] != nil {
 		t.Error("owner short ETH position should be nil after SL reconciliation")
@@ -1270,10 +1744,6 @@ func TestReconcileSharedCoin_OwnerStopLossFired_Short(t *testing.T) {
 	}
 }
 
-// TestReconcileSharedCoin_AllPositionsClosedExternally verifies that when
-// on-chain is fully flat, all peers are closed: SL owner via hl_sync_stop_loss
-// when userFills confirms the SL OID (#756), others via hl_sync_external with
-// close price 0 when no mark is supplied.
 func TestReconcileSharedCoin_AllPositionsClosedExternally(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
@@ -1299,7 +1769,6 @@ func TestReconcileSharedCoin_AllPositionsClosedExternally(t *testing.T) {
 		{ID: "hl-owner-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"tema", "ETH", "1h", "--mode=live"}},
 		{ID: "hl-peer-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"rmc", "ETH", "1h", "--mode=live"}},
 	}
-	// On-chain: fully flat (aggregate stop sweep / manual close).
 	positions := []HLPosition{}
 
 	origLookup := lookupHyperliquidReconcileFillFee
@@ -1314,7 +1783,7 @@ func TestReconcileSharedCoin_AllPositionsClosedExternally(t *testing.T) {
 
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
-	_, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, nil, "0xtest", nil, false)
+	_, _, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, nil, positions, nil, "0xtest", nil, false)
 
 	if state.Strategies["hl-owner-eth"].Positions["ETH"] != nil {
 		t.Error("owner ETH position should be nil")
@@ -1335,10 +1804,6 @@ func TestReconcileSharedCoin_AllPositionsClosedExternally(t *testing.T) {
 	}
 }
 
-// TestReconcileSharedCoin_AllPositionsClosedExternally_CreditsPeerCash is the
-// #584 regression: when a non-SL-owner peer's position disappears on-chain and
-// a mark price is supplied, s.Cash must be credited with the mark-based PnL so
-// PortfolioValue matches the real HL account balance.
 func TestReconcileSharedCoin_AllPositionsClosedExternally_CreditsPeerCash(t *testing.T) {
 	const peerStartCash = 500.0
 	const peerQty = 0.5
@@ -1387,7 +1852,7 @@ func TestReconcileSharedCoin_AllPositionsClosedExternally_CreditsPeerCash(t *tes
 
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
-	_, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, prices, "0xtest", nil, false)
+	_, _, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, nil, positions, prices, "0xtest", nil, false)
 
 	peer := state.Strategies["hl-peer-eth"]
 	if peer.Positions["ETH"] != nil {
@@ -1403,7 +1868,6 @@ func TestReconcileSharedCoin_AllPositionsClosedExternally_CreditsPeerCash(t *tes
 	if cp.ClosePrice != mark {
 		t.Errorf("ClosePrice = %v, want %v", cp.ClosePrice, mark)
 	}
-	// Expected: gross PnL = qty*(mark-avgCost) = 0.5*200 = 100, fee = qty*mark*HyperliquidTakerFeePct = 0.5*3200*0.00035 = 0.56.
 	wantFee := peerQty * mark * HyperliquidTakerFeePct
 	wantPnL := peerQty*(mark-peerAvgCost) - wantFee
 	wantCash := peerStartCash + wantPnL
@@ -1413,8 +1877,6 @@ func TestReconcileSharedCoin_AllPositionsClosedExternally_CreditsPeerCash(t *tes
 	if math.Abs(peer.Cash-wantCash) > 1e-6 {
 		t.Errorf("peer Cash = %v, want %v (started %v + PnL %v)", peer.Cash, wantCash, peerStartCash, wantPnL)
 	}
-	// SQLite-backed leaderboard #T / W/L reads from trades, not closed positions —
-	// assert the close Trade row mirrors the ClosedPosition.
 	var closeTrades []Trade
 	for _, tr := range peer.TradeHistory {
 		if tr.IsClose {
@@ -1425,8 +1887,8 @@ func TestReconcileSharedCoin_AllPositionsClosedExternally_CreditsPeerCash(t *tes
 		t.Fatalf("peer close trades = %d, want 1 (history=%+v)", len(closeTrades), peer.TradeHistory)
 	}
 	ct := closeTrades[0]
-	if math.Abs(ct.RealizedPnL-wantPnL) > 1e-6 {
-		t.Errorf("trade RealizedPnL = %v, want %v", ct.RealizedPnL, wantPnL)
+	if !ct.PnLGross || math.Abs(tradeNetPnL(ct)-wantPnL) > 1e-6 {
+		t.Errorf("trade net PnL = %v (gross=%v), want %v", tradeNetPnL(ct), ct.PnLGross, wantPnL)
 	}
 	if ct.Price != mark {
 		t.Errorf("trade Price = %v, want %v", ct.Price, mark)
@@ -1437,7 +1899,6 @@ func TestReconcileSharedCoin_AllPositionsClosedExternally_CreditsPeerCash(t *tes
 	if ct.TradeType != "perps" {
 		t.Errorf("trade TradeType = %q, want perps", ct.TradeType)
 	}
-	// Owner still goes through the SL path and also has its cash credited.
 	owner := state.Strategies["hl-owner-eth"]
 	if owner.Positions["ETH"] != nil {
 		t.Error("owner ETH position should be nil")
@@ -1447,9 +1908,505 @@ func TestReconcileSharedCoin_AllPositionsClosedExternally_CreditsPeerCash(t *tes
 	}
 }
 
-// TestReconcileSharedCoin_Detector1_WrongOIDInUserfillsBooksExternal is a #756
-// regression: userFills hit for the SL lookup query but with a non-matching OID
-// must not book hl_sync_stop_loss — fall back to mark-based hl_sync_external.
+func TestReconcileSharedCoin_Detector1SplitsAggregateFillAcrossPeers(t *testing.T) {
+	const (
+		fillPx    = 3200.0
+		aggFee    = 4.0
+		aggOID    = int64(98765)
+		ownerQty  = 1.5
+		peerQty   = 0.5
+		avgCost   = 3000.0
+		ownerCash = 1000.0
+		peerCash  = 500.0
+	)
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-owner-eth": {
+				ID: "hl-owner-eth", Cash: ownerCash, Platform: "hyperliquid",
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: ownerQty, AvgCost: avgCost, Side: "long",
+						Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-owner-eth"},
+				},
+			},
+			"hl-peer-eth": {
+				ID: "hl-peer-eth", Cash: peerCash, Platform: "hyperliquid",
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: peerQty, AvgCost: avgCost, Side: "long",
+						Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-peer-eth"},
+				},
+			},
+		},
+	}
+	allStrategies := []StrategyConfig{
+		{ID: "hl-owner-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"tema", "ETH", "1h", "--mode=live"}},
+		{ID: "hl-peer-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"rmc", "ETH", "1h", "--mode=live"}},
+	}
+
+	origLookup := lookupHyperliquidReconcileFillFee
+	defer func() { lookupHyperliquidReconcileFillFee = origLookup }()
+	lookupHyperliquidReconcileFillFee = func(_, coin string, oid int64, qty float64) (HLFillLookup, bool) {
+		if oid == 0 && coin == "ETH" && math.Abs(qty-(ownerQty+peerQty)) < 1e-9 {
+			return HLFillLookup{
+				Fee:            aggFee,
+				ClosedPnLGross: (ownerQty + peerQty) * (fillPx - avgCost),
+				FilledQty:      ownerQty + peerQty,
+				Px:             fillPx,
+				Count:          1,
+				OID:            aggOID,
+			}, true
+		}
+		return HLFillLookup{}, false
+	}
+
+	logMgr, _ := NewLogManager(t.TempDir())
+	var mu sync.RWMutex
+	_, _, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, nil, nil, map[string]float64{"ETH": 3100}, "0xtest", nil, false)
+
+	assertClose := func(id string, startCash, qty, wantFee float64) {
+		t.Helper()
+		ss := state.Strategies[id]
+		if ss.Positions["ETH"] != nil {
+			t.Fatalf("%s ETH position should be nil", id)
+		}
+		if len(ss.ClosedPositions) != 1 {
+			t.Fatalf("%s ClosedPositions = %d, want 1", id, len(ss.ClosedPositions))
+		}
+		cp := ss.ClosedPositions[0]
+		if cp.CloseReason != "hl_sync_external" {
+			t.Errorf("%s CloseReason = %q, want hl_sync_external", id, cp.CloseReason)
+		}
+		if cp.ClosePrice != fillPx {
+			t.Errorf("%s ClosePrice = %v, want fill %v", id, cp.ClosePrice, fillPx)
+		}
+		wantNetPnL := qty*(fillPx-avgCost) - wantFee
+		if math.Abs(cp.RealizedPnL-wantNetPnL) > 1e-9 {
+			t.Errorf("%s ClosedPosition net PnL = %v, want %v", id, cp.RealizedPnL, wantNetPnL)
+		}
+		if math.Abs(ss.Cash-(startCash+wantNetPnL)) > 1e-9 {
+			t.Errorf("%s Cash = %v, want %v", id, ss.Cash, startCash+wantNetPnL)
+		}
+		var closeTrades []Trade
+		for _, tr := range ss.TradeHistory {
+			if tr.IsClose {
+				closeTrades = append(closeTrades, tr)
+			}
+		}
+		if len(closeTrades) != 1 {
+			t.Fatalf("%s close trades = %d, want 1 (history=%+v)", id, len(closeTrades), ss.TradeHistory)
+		}
+		tr := closeTrades[0]
+		if tr.ExchangeOrderID != "98765" {
+			t.Errorf("%s ExchangeOrderID = %q, want 98765", id, tr.ExchangeOrderID)
+		}
+		if tr.FeeSource != FeeSourceUserFills {
+			t.Errorf("%s FeeSource = %q, want %q", id, tr.FeeSource, FeeSourceUserFills)
+		}
+		if math.Abs(tr.ExchangeFee-wantFee) > 1e-9 {
+			t.Errorf("%s ExchangeFee = %v, want %v", id, tr.ExchangeFee, wantFee)
+		}
+		if tr.Price != fillPx {
+			t.Errorf("%s trade Price = %v, want %v", id, tr.Price, fillPx)
+		}
+		if math.Abs(tr.RealizedPnL-qty*(fillPx-avgCost)) > 1e-9 {
+			t.Errorf("%s trade gross PnL = %v, want %v", id, tr.RealizedPnL, qty*(fillPx-avgCost))
+		}
+		if math.Abs(tradeNetPnL(tr)-wantNetPnL) > 1e-9 {
+			t.Errorf("%s trade net PnL = %v, want %v", id, tradeNetPnL(tr), wantNetPnL)
+		}
+	}
+
+	assertClose("hl-owner-eth", ownerCash, ownerQty, aggFee*(ownerQty/(ownerQty+peerQty)))
+	assertClose("hl-peer-eth", peerCash, peerQty, aggFee*(peerQty/(ownerQty+peerQty)))
+}
+
+func TestReconcileSharedCoin_Detector1BidirectionalAggregateSplitWinsOverPeerQtyMatch(t *testing.T) {
+	const (
+		fillPx    = 3200.0
+		aggFee    = 6.0
+		aggOID    = int64(87654)
+		longQty   = 1.0
+		shortQty  = 0.5
+		avgCost   = 3000.0
+		longCash  = 1000.0
+		shortCash = 600.0
+	)
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-long-eth": {
+				ID: "hl-long-eth", Cash: longCash, Platform: "hyperliquid",
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: longQty, AvgCost: avgCost, Side: "long",
+						Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-long-eth"},
+				},
+			},
+			"hl-short-eth": {
+				ID: "hl-short-eth", Cash: shortCash, Platform: "hyperliquid",
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: shortQty, AvgCost: avgCost, Side: "short",
+						Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-short-eth"},
+				},
+			},
+		},
+	}
+	allStrategies := []StrategyConfig{
+		{ID: "hl-long-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"longer", "ETH", "1h", "--mode=live"}},
+		{ID: "hl-short-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"shorter", "ETH", "1h", "--mode=live"}},
+	}
+
+	aggregateQty := math.Abs(longQty - shortQty)
+	origLookup := lookupHyperliquidReconcileFillFee
+	defer func() { lookupHyperliquidReconcileFillFee = origLookup }()
+	lookupHyperliquidReconcileFillFee = func(_, coin string, oid int64, qty float64) (HLFillLookup, bool) {
+		if oid == 0 && coin == "ETH" && math.Abs(qty-aggregateQty) < 1e-9 {
+			return HLFillLookup{
+				Fee:            aggFee,
+				ClosedPnLGross: aggregateQty * (fillPx - avgCost),
+				FilledQty:      aggregateQty,
+				Px:             fillPx,
+				Count:          1,
+				OID:            aggOID,
+			}, true
+		}
+		return HLFillLookup{}, false
+	}
+
+	logMgr, _ := NewLogManager(t.TempDir())
+	var mu sync.RWMutex
+	_, _, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, nil, nil, map[string]float64{"ETH": 3100}, "0xtest", nil, false)
+
+	denom := longQty + shortQty
+	assertClose := func(id, wantTradeSide string, startCash, qty, wantGrossPnL, wantFee float64) {
+		t.Helper()
+		ss := state.Strategies[id]
+		if ss.Positions["ETH"] != nil {
+			t.Fatalf("%s ETH position should be nil", id)
+		}
+		if len(ss.ClosedPositions) != 1 {
+			t.Fatalf("%s ClosedPositions = %d, want 1", id, len(ss.ClosedPositions))
+		}
+		wantNetPnL := wantGrossPnL - wantFee
+		if math.Abs(ss.ClosedPositions[0].RealizedPnL-wantNetPnL) > 1e-9 {
+			t.Errorf("%s ClosedPosition net PnL = %v, want %v", id, ss.ClosedPositions[0].RealizedPnL, wantNetPnL)
+		}
+		if math.Abs(ss.Cash-(startCash+wantNetPnL)) > 1e-9 {
+			t.Errorf("%s Cash = %v, want %v", id, ss.Cash, startCash+wantNetPnL)
+		}
+		if len(ss.TradeHistory) != 1 {
+			t.Fatalf("%s TradeHistory = %d, want 1 (%+v)", id, len(ss.TradeHistory), ss.TradeHistory)
+		}
+		tr := ss.TradeHistory[0]
+		if tr.ExchangeOrderID != "87654" {
+			t.Errorf("%s ExchangeOrderID = %q, want 87654", id, tr.ExchangeOrderID)
+		}
+		if tr.Side != wantTradeSide {
+			t.Errorf("%s Side = %q, want %q", id, tr.Side, wantTradeSide)
+		}
+		if math.Abs(tr.ExchangeFee-wantFee) > 1e-9 {
+			t.Errorf("%s ExchangeFee = %v, want %v", id, tr.ExchangeFee, wantFee)
+		}
+		if tr.Price != fillPx {
+			t.Errorf("%s Price = %v, want %v", id, tr.Price, fillPx)
+		}
+		if math.Abs(tr.RealizedPnL-wantGrossPnL) > 1e-9 {
+			t.Errorf("%s gross PnL = %v, want %v", id, tr.RealizedPnL, wantGrossPnL)
+		}
+	}
+
+	longFee := aggFee * (longQty / denom)
+	shortFee := aggFee * (shortQty / denom)
+	assertClose("hl-long-eth", "sell", longCash, longQty, longQty*(fillPx-avgCost), longFee)
+	assertClose("hl-short-eth", "buy", shortCash, shortQty, shortQty*(avgCost-fillPx), shortFee)
+
+	totalFee := state.Strategies["hl-long-eth"].TradeHistory[0].ExchangeFee + state.Strategies["hl-short-eth"].TradeHistory[0].ExchangeFee
+	if math.Abs(totalFee-aggFee) > 1e-9 {
+		t.Errorf("total split fee = %v, want aggregate fee %v", totalFee, aggFee)
+	}
+}
+
+func TestHlReconcileExternalClosePx(t *testing.T) {
+	const mark = 63564.5
+	const fillPx = 63597.0
+	lookup := HLFillLookup{Px: fillPx, Fee: 1.2, Count: 1}
+
+	if got := hlReconcileExternalClosePx(mark, lookup, true); got != fillPx {
+		t.Errorf("with fill Px = %v, got %v", fillPx, got)
+	}
+	if got := hlReconcileExternalClosePx(mark, HLFillLookup{Fee: 1.2, Count: 1}, true); got != mark {
+		t.Errorf("missing Px should fall back to mark %v, got %v", mark, got)
+	}
+	if got := hlReconcileExternalClosePx(mark, lookup, false); got != mark {
+		t.Errorf("useFillFee=false should fall back to mark %v, got %v", mark, got)
+	}
+}
+
+func TestReconcileSharedCoin_ExternalCloseUsesFillPriceWhenAvailable(t *testing.T) {
+	const peerStartCash = 500.0
+	const peerQty = 0.5
+	const peerAvgCost = 63000.0
+	const mark = 63564.5
+	const fillPx = 63597.0
+
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-owner-btc": {
+				ID: "hl-owner-btc", Cash: 10000, Platform: "hyperliquid",
+				Positions: map[string]*Position{
+					"BTC": {Symbol: "BTC", Quantity: 1.0, AvgCost: 63000, Side: "long",
+						Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-owner-btc",
+						StopLossOID: 7, StopLossTriggerPx: 62000},
+				},
+			},
+			"hl-peer-btc": {
+				ID: "hl-peer-btc", Cash: peerStartCash, Platform: "hyperliquid",
+				Positions: map[string]*Position{
+					"BTC": {Symbol: "BTC", Quantity: peerQty, AvgCost: peerAvgCost, Side: "long",
+						Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-peer-btc"},
+				},
+			},
+		},
+	}
+
+	allStrategies := []StrategyConfig{
+		{ID: "hl-owner-btc", Platform: "hyperliquid", Type: "perps", Args: []string{"tema", "BTC", "1h", "--mode=live"}},
+		{ID: "hl-peer-btc", Platform: "hyperliquid", Type: "perps", Args: []string{"rmc", "BTC", "1h", "--mode=live"}},
+	}
+	positions := []HLPosition{}
+	prices := map[string]float64{"BTC": mark}
+	wantPeerFee := 0.42
+
+	origLookup := lookupHyperliquidReconcileFillFee
+	defer func() { lookupHyperliquidReconcileFillFee = origLookup }()
+	lookupHyperliquidReconcileFillFee = func(_, coin string, oid int64, qty float64) (HLFillLookup, bool) {
+		if oid == 7 && coin == "BTC" {
+			return HLFillLookup{Fee: 0.02, FilledQty: 1.0, Px: 62000, Count: 1, OID: 7}, true
+		}
+		if oid == 0 && coin == "BTC" && math.Abs(qty-peerQty) < 1e-9 {
+			return HLFillLookup{Fee: wantPeerFee, Px: fillPx, Count: 1, OID: 4242}, true
+		}
+		return HLFillLookup{}, false
+	}
+
+	logMgr, _ := NewLogManager(t.TempDir())
+	var mu sync.RWMutex
+	_, _, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, nil, positions, prices, "0xtest", nil, false)
+
+	peer := state.Strategies["hl-peer-btc"]
+	if len(peer.ClosedPositions) != 1 {
+		t.Fatalf("peer ClosedPositions = %d, want 1", len(peer.ClosedPositions))
+	}
+	cp := peer.ClosedPositions[0]
+	if cp.ClosePrice != fillPx {
+		t.Errorf("ClosePrice = %v, want fill %v (not mark %v)", cp.ClosePrice, fillPx, mark)
+	}
+	wantPnL := peerQty*(fillPx-peerAvgCost) - wantPeerFee
+	if math.Abs(cp.RealizedPnL-wantPnL) > 1e-6 {
+		t.Errorf("RealizedPnL = %v, want %v", cp.RealizedPnL, wantPnL)
+	}
+	if math.Abs(peer.Cash-(peerStartCash+wantPnL)) > 1e-6 {
+		t.Errorf("peer Cash = %v, want %v", peer.Cash, peerStartCash+wantPnL)
+	}
+}
+
+func TestReconcileSharedCoin_Detector1_ExternalFallbackUsesFillPrice(t *testing.T) {
+	const mark = 61000.0
+	const fillPx = 60800.0
+	const ownerQty = 0.2
+	const ownerAvgCost = 60000.0
+	const wantFee = 0.85
+
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-owner-btc": {
+				ID: "hl-owner-btc", Cash: 10000, Platform: "hyperliquid", Type: "perps",
+				Positions: map[string]*Position{
+					"BTC": {Symbol: "BTC", Quantity: ownerQty, AvgCost: ownerAvgCost, Side: "long",
+						Multiplier: 1, Leverage: 5, OwnerStrategyID: "hl-owner-btc",
+						StopLossOID: 5005, StopLossTriggerPx: 58000},
+				},
+			},
+			"hl-peer-btc": {
+				ID: "hl-peer-btc", Cash: 10000, Platform: "hyperliquid", Type: "perps",
+				Positions: map[string]*Position{
+					"BTC": {Symbol: "BTC", Quantity: 0.1, AvgCost: 60500, Side: "long",
+						Multiplier: 1, Leverage: 5, OwnerStrategyID: "hl-peer-btc"},
+				},
+			},
+		},
+	}
+	scs := []StrategyConfig{
+		{ID: "hl-owner-btc", Platform: "hyperliquid", Type: "perps", Args: []string{"hold", "BTC", "1h", "--mode=live"}, Leverage: 5},
+		{ID: "hl-peer-btc", Platform: "hyperliquid", Type: "perps", Args: []string{"hold", "BTC", "1h", "--mode=live"}, Leverage: 5},
+	}
+	origLookup := lookupHyperliquidReconcileFillFee
+	defer func() { lookupHyperliquidReconcileFillFee = origLookup }()
+	lookupHyperliquidReconcileFillFee = func(_, coin string, oid int64, qty float64) (HLFillLookup, bool) {
+		if oid == 5005 {
+			return HLFillLookup{Fee: 1.0, FilledQty: ownerQty, Count: 1, OID: 9999}, true
+		}
+		if oid == 0 && coin == "BTC" && math.Abs(qty-ownerQty) < 1e-9 {
+			return HLFillLookup{Fee: wantFee, Px: fillPx, Count: 1, OID: 8888}, true
+		}
+		return HLFillLookup{}, false
+	}
+	logMgr, _ := NewLogManager(t.TempDir())
+	var mu sync.RWMutex
+	prices := map[string]float64{"BTC": mark}
+	_, _, _ = reconcileHyperliquidAccountPositions(scs, scs, state, &mu, logMgr, nil, nil, prices, "0xtest", nil, false)
+
+	owner := state.Strategies["hl-owner-btc"]
+	if len(owner.ClosedPositions) != 1 {
+		t.Fatalf("owner ClosedPositions = %d, want 1", len(owner.ClosedPositions))
+	}
+	cp := owner.ClosedPositions[0]
+	if cp.ClosePrice != fillPx {
+		t.Errorf("owner ClosePrice = %v, want fill %v (not mark %v)", cp.ClosePrice, fillPx, mark)
+	}
+	wantPnL := ownerQty*(fillPx-ownerAvgCost) - wantFee
+	if math.Abs(cp.RealizedPnL-wantPnL) > 1e-6 {
+		t.Errorf("owner RealizedPnL = %v, want %v", cp.RealizedPnL, wantPnL)
+	}
+}
+
+func TestReconcileSharedCoin_Detector2_UnconfirmedFillLeavesGap(t *testing.T) {
+	const mark = 3020.0
+	const fillPx = 3010.0
+	const ownerQty = 1.0
+	const ownerAvgCost = 3000.0
+	const wantFee = 1.05
+
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-owner-eth": {
+				ID: "hl-owner-eth", Cash: 1000, Platform: "hyperliquid", Type: "perps",
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: ownerQty, AvgCost: ownerAvgCost, Side: "long",
+						Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-owner-eth",
+						StopLossOID: 4242, StopLossTriggerPx: 2900},
+				},
+			},
+			"hl-peer-eth": {
+				ID: "hl-peer-eth", Cash: 500, Platform: "hyperliquid", Type: "perps",
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 3000, Side: "long",
+						Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-peer-eth"},
+				},
+			},
+		},
+	}
+	scs := []StrategyConfig{
+		{ID: "hl-owner-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"tema", "ETH", "1h", "--mode=live"}},
+		{ID: "hl-peer-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"rmc", "ETH", "1h", "--mode=live"}},
+	}
+	positions := []HLPosition{{Coin: "ETH", Size: 0.5, EntryPrice: 3000, Leverage: 10}}
+	prices := map[string]float64{"ETH": mark}
+
+	origLookup := lookupHyperliquidReconcileFillFee
+	defer func() { lookupHyperliquidReconcileFillFee = origLookup }()
+	lookupHyperliquidReconcileFillFee = func(_, coin string, oid int64, qty float64) (HLFillLookup, bool) {
+		if oid == 4242 {
+			return HLFillLookup{Fee: 0.1, FilledQty: ownerQty, Count: 1, OID: 9999}, true
+		}
+		if oid == 0 && coin == "ETH" && math.Abs(qty-ownerQty) < 1e-9 {
+			return HLFillLookup{Fee: wantFee, Px: fillPx, Count: 1, OID: 7777}, true
+		}
+		return HLFillLookup{}, false
+	}
+
+	logMgr, _ := NewLogManager(t.TempDir())
+	var mu sync.RWMutex
+	_, _, _ = reconcileHyperliquidAccountPositions(scs, scs, state, &mu, logMgr, nil, positions, prices, "0xtest", nil, false)
+
+	owner := state.Strategies["hl-owner-eth"]
+	if len(owner.ClosedPositions) != 0 {
+		t.Fatalf("owner ClosedPositions = %d, want 0 for unconfirmed SL fill", len(owner.ClosedPositions))
+	}
+	if pos := owner.Positions["ETH"]; pos == nil || math.Abs(pos.Quantity-ownerQty) > 1e-9 {
+		t.Fatalf("owner position = %+v, want unchanged qty %v", pos, ownerQty)
+	}
+	gap := state.ReconciliationGaps["ETH"]
+	if gap == nil || math.Abs(gap.DeltaQty-ownerQty) > 1e-9 {
+		t.Fatalf("gap = %+v, want unresolved delta %v", gap, ownerQty)
+	}
+}
+
+func TestReconcileSharedCoin_Detector3_PartialUsesFillPrice(t *testing.T) {
+	const ownerStartCash = 1000.0
+	const ownerQty = 0.5
+	const peerQty = 0.5
+	const avgCost = 3000.0
+	const mark = 3200.0
+	const fillPx = 3185.0
+	const closeQty = 0.25
+	const wantFee = 0.28
+
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-owner-eth": {
+				ID: "hl-owner-eth", Cash: ownerStartCash, Platform: "hyperliquid", Type: "perps",
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: ownerQty, InitialQuantity: ownerQty, AvgCost: avgCost, Side: "long",
+						Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-owner-eth",
+						EntryATR: 100, StopLossOID: 77, StopLossTriggerPx: 2900,
+						TPOIDs: []int64{0, 222, 333}},
+				},
+			},
+			"hl-peer-eth": {
+				ID: "hl-peer-eth", Cash: 500, Platform: "hyperliquid", Type: "perps",
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: peerQty, InitialQuantity: peerQty, AvgCost: avgCost, Side: "long",
+						Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-peer-eth"},
+				},
+			},
+		},
+	}
+	allStrategies := []StrategyConfig{
+		{ID: "hl-owner-eth", Platform: "hyperliquid", Type: "perps", CloseStrategy: &StrategyRef{Name: "tiered_tp_atr_live"}, Args: []string{"tema", "ETH", "1h", "--mode=live"}},
+		{ID: "hl-peer-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"rmc", "ETH", "1h", "--mode=live"}},
+	}
+	positions := []HLPosition{{Coin: "ETH", Size: 0.75, EntryPrice: avgCost, Leverage: 10}}
+	prices := map[string]float64{"ETH": mark}
+
+	origLookup := lookupHyperliquidReconcileFillFee
+	defer func() { lookupHyperliquidReconcileFillFee = origLookup }()
+	lookupHyperliquidReconcileFillFee = func(_, coin string, oid int64, qty float64) (HLFillLookup, bool) {
+		if oid == 0 && coin == "ETH" && math.Abs(qty-closeQty) < 1e-9 {
+			return HLFillLookup{Fee: wantFee, Px: fillPx, Count: 1, OID: 5555}, true
+		}
+		return HLFillLookup{}, false
+	}
+
+	logMgr, _ := NewLogManager(t.TempDir())
+	var mu sync.RWMutex
+	dm := &countingDMSender{}
+	_, _, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, nil, positions, prices, "0xtest", dm, true)
+
+	owner := state.Strategies["hl-owner-eth"]
+	if len(owner.TradeHistory) != 1 {
+		t.Fatalf("owner close trades = %d, want 1", len(owner.TradeHistory))
+	}
+	tr := owner.TradeHistory[0]
+	if !tr.IsClose || math.Abs(tr.Quantity-closeQty) > 1e-9 || tr.Price != fillPx {
+		t.Errorf("close trade = %+v, want close %.2f @ fill %v", tr, closeQty, fillPx)
+	}
+	wantPnL := closeQty*(fillPx-avgCost) - wantFee
+	if !tr.PnLGross || math.Abs(tradeNetPnL(tr)-wantPnL) > 1e-6 {
+		t.Errorf("trade net PnL = %v (gross=%v), want %v", tradeNetPnL(tr), tr.PnLGross, wantPnL)
+	}
+	if math.Abs(owner.Cash-(ownerStartCash+wantPnL)) > 1e-6 {
+		t.Errorf("owner Cash = %v, want %v", owner.Cash, ownerStartCash+wantPnL)
+	}
+	if dm.count != 1 {
+		t.Fatalf("protection fill DM = %d, want 1", dm.count)
+	}
+	wantPriceInDM := fmt.Sprintf("@ $%.4f", fillPx)
+	if !strings.Contains(dm.last, wantPriceInDM) {
+		t.Errorf("DM should report fill price %s, got:\n%s", wantPriceInDM, dm.last)
+	}
+	if strings.Contains(dm.last, fmt.Sprintf("@ $%.4f", mark)) {
+		t.Errorf("DM should not report mark %v, got:\n%s", mark, dm.last)
+	}
+}
+
 func TestReconcileSharedCoin_Detector1_WrongOIDInUserfillsBooksExternal(t *testing.T) {
 	const mark = 61000.0
 	state := &AppState{
@@ -1489,7 +2446,7 @@ func TestReconcileSharedCoin_Detector1_WrongOIDInUserfillsBooksExternal(t *testi
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
 	prices := map[string]float64{"BTC": mark}
-	_, _ = reconcileHyperliquidAccountPositions(scs, scs, state, &mu, logMgr, nil, prices, "0xtest", nil, false)
+	_, _, _ = reconcileHyperliquidAccountPositions(scs, scs, state, &mu, logMgr, nil, nil, prices, "0xtest", nil, false)
 
 	owner := state.Strategies["hl-owner-btc"]
 	if len(owner.ClosedPositions) != 1 {
@@ -1503,12 +2460,7 @@ func TestReconcileSharedCoin_Detector1_WrongOIDInUserfillsBooksExternal(t *testi
 	}
 }
 
-// TestReconcileSharedCoin_Detector2_WrongOIDInUserfillsBooksExternal mirrors
-// TestReconcileSharedCoin_Detector1_WrongOIDInUserfillsBooksExternal for
-// Detector 2 (SL-owner partial): on-chain residual matches peer-only geometry
-// but userFills returns a non-matching OID for the SL query — must not book
-// hl_sync_stop_loss at the trigger (#756).
-func TestReconcileSharedCoin_Detector2_WrongOIDInUserfillsBooksExternal(t *testing.T) {
+func TestReconcileSharedCoin_Detector2_WrongOIDInUserfillsLeavesGap(t *testing.T) {
 	const mark = 3020.0
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
@@ -1547,23 +2499,25 @@ func TestReconcileSharedCoin_Detector2_WrongOIDInUserfillsBooksExternal(t *testi
 
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
-	_, _ = reconcileHyperliquidAccountPositions(scs, scs, state, &mu, logMgr, positions, prices, "0xtest", nil, false)
+	_, _, _ = reconcileHyperliquidAccountPositions(scs, scs, state, &mu, logMgr, nil, positions, prices, "0xtest", nil, false)
 
 	owner := state.Strategies["hl-owner-eth"]
-	if len(owner.ClosedPositions) != 1 {
-		t.Fatalf("owner ClosedPositions = %d, want 1", len(owner.ClosedPositions))
+	if len(owner.ClosedPositions) != 0 {
+		t.Fatalf("owner ClosedPositions = %d, want 0 for unconfirmed SL fill", len(owner.ClosedPositions))
 	}
-	if owner.ClosedPositions[0].CloseReason != "hl_sync_external" {
-		t.Errorf("owner CloseReason = %q, want hl_sync_external (wrong userFills OID)", owner.ClosedPositions[0].CloseReason)
-	}
-	if owner.ClosedPositions[0].ClosePrice != mark {
-		t.Errorf("owner ClosePrice = %v, want mark %v", owner.ClosedPositions[0].ClosePrice, mark)
+	ownerPos := owner.Positions["ETH"]
+	if ownerPos == nil || math.Abs(ownerPos.Quantity-1.0) > 1e-9 {
+		t.Fatalf("owner position = %+v, want unchanged 1.0 long", ownerPos)
 	}
 
 	peer := state.Strategies["hl-peer-eth"]
 	p := peer.Positions["ETH"]
 	if p == nil || math.Abs(p.Quantity-0.5) > 1e-9 || p.Side != "long" {
 		t.Errorf("peer ETH = %+v, want 0.5 long unchanged", p)
+	}
+	gap := state.ReconciliationGaps["ETH"]
+	if gap == nil || math.Abs(gap.DeltaQty-1.0) > 1e-9 {
+		t.Fatalf("gap = %+v, want unresolved delta 1.0", gap)
 	}
 }
 
@@ -1582,7 +2536,7 @@ func TestReconcileSharedCoin_TPPartialFill_DecrementsOwnerAndBooksPnL(t *testing
 					"ETH": {Symbol: "ETH", Quantity: ownerQty, InitialQuantity: ownerQty, AvgCost: avgCost, Side: "long",
 						Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-owner-eth",
 						EntryATR: 100, StopLossOID: 77, StopLossTriggerPx: 2900,
-						TPOIDs: []int64{0, 222}},
+						TPOIDs: []int64{0, 222, 333}},
 				},
 			},
 			"hl-peer-eth": {
@@ -1596,7 +2550,7 @@ func TestReconcileSharedCoin_TPPartialFill_DecrementsOwnerAndBooksPnL(t *testing
 	}
 
 	allStrategies := []StrategyConfig{
-		{ID: "hl-owner-eth", Platform: "hyperliquid", Type: "perps", CloseStrategies: []StrategyRef{{Name: "tiered_tp_atr_live"}}, Args: []string{"tema", "ETH", "1h", "--mode=live"}},
+		{ID: "hl-owner-eth", Platform: "hyperliquid", Type: "perps", CloseStrategy: &StrategyRef{Name: "tiered_tp_atr_live"}, Args: []string{"tema", "ETH", "1h", "--mode=live"}},
 		{ID: "hl-peer-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"rmc", "ETH", "1h", "--mode=live"}},
 	}
 	positions := []HLPosition{{Coin: "ETH", Size: 0.75, EntryPrice: avgCost, Leverage: 10}}
@@ -1604,7 +2558,7 @@ func TestReconcileSharedCoin_TPPartialFill_DecrementsOwnerAndBooksPnL(t *testing
 
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
-	_, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, prices, "", nil, false)
+	_, _, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, nil, positions, prices, "", nil, false)
 
 	owner := state.Strategies["hl-owner-eth"]
 	ownerPos := owner.Positions["ETH"]
@@ -1636,8 +2590,8 @@ func TestReconcileSharedCoin_TPPartialFill_DecrementsOwnerAndBooksPnL(t *testing
 	if !tr.IsClose || tr.Side != "sell" || math.Abs(tr.Quantity-0.25) > 1e-9 || tr.Price != mark {
 		t.Errorf("close trade = %+v, want sell close 0.25 @ %v", tr, mark)
 	}
-	if math.Abs(tr.RealizedPnL-wantPnL) > 1e-6 {
-		t.Errorf("trade RealizedPnL = %v, want %v", tr.RealizedPnL, wantPnL)
+	if !tr.PnLGross || math.Abs(tradeNetPnL(tr)-wantPnL) > 1e-6 {
+		t.Errorf("trade net PnL = %v (gross=%v), want %v", tradeNetPnL(tr), tr.PnLGross, wantPnL)
 	}
 	if tr.EntryATR != 100 || tr.StopLossTriggerPx != 2900 {
 		t.Errorf("trade context EntryATR/SL = %v/%v, want 100/2900", tr.EntryATR, tr.StopLossTriggerPx)
@@ -1673,7 +2627,7 @@ func TestReconcileSharedCoin_TPPartialFill_Short(t *testing.T) {
 				Positions: map[string]*Position{
 					"ETH": {Symbol: "ETH", Quantity: ownerQty, InitialQuantity: ownerQty, AvgCost: avgCost, Side: "short",
 						Multiplier: 1, Leverage: 10, OwnerStrategyID: "hl-owner-eth",
-						TPOIDs: []int64{0, 222}},
+						TPOIDs: []int64{0, 222, 333}},
 				},
 			},
 			"hl-peer-eth": {
@@ -1687,7 +2641,7 @@ func TestReconcileSharedCoin_TPPartialFill_Short(t *testing.T) {
 	}
 
 	allStrategies := []StrategyConfig{
-		{ID: "hl-owner-eth", Platform: "hyperliquid", Type: "perps", CloseStrategies: []StrategyRef{{Name: "tiered_tp_atr_live"}}, Args: []string{"tema", "ETH", "1h", "--mode=live"}},
+		{ID: "hl-owner-eth", Platform: "hyperliquid", Type: "perps", CloseStrategy: &StrategyRef{Name: "tiered_tp_atr_live"}, Args: []string{"tema", "ETH", "1h", "--mode=live"}},
 		{ID: "hl-peer-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"rmc", "ETH", "1h", "--mode=live"}},
 	}
 	positions := []HLPosition{{Coin: "ETH", Size: -0.75, EntryPrice: avgCost, Leverage: 10}}
@@ -1695,7 +2649,7 @@ func TestReconcileSharedCoin_TPPartialFill_Short(t *testing.T) {
 
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
-	_, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, prices, "", nil, false)
+	_, _, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, nil, positions, prices, "", nil, false)
 
 	owner := state.Strategies["hl-owner-eth"]
 	ownerPos := owner.Positions["ETH"]
@@ -1717,8 +2671,8 @@ func TestReconcileSharedCoin_TPPartialFill_Short(t *testing.T) {
 	if !tr.IsClose || tr.Side != "buy" || math.Abs(tr.Quantity-0.25) > 1e-9 || tr.Price != mark {
 		t.Errorf("close trade = %+v, want buy close 0.25 @ %v", tr, mark)
 	}
-	if math.Abs(tr.RealizedPnL-wantPnL) > 1e-6 {
-		t.Errorf("trade RealizedPnL = %v, want %v", tr.RealizedPnL, wantPnL)
+	if !tr.PnLGross || math.Abs(tradeNetPnL(tr)-wantPnL) > 1e-6 {
+		t.Errorf("trade net PnL = %v (gross=%v), want %v", tradeNetPnL(tr), tr.PnLGross, wantPnL)
 	}
 	gap := state.ReconciliationGaps["ETH"]
 	if gap == nil {
@@ -1751,7 +2705,7 @@ func TestReconcileSharedCoin_TPPartialFill_PaddedNeverPlacedTierDoesNotAttribute
 	}
 
 	allStrategies := []StrategyConfig{
-		{ID: "hl-owner-eth", Platform: "hyperliquid", Type: "perps", CloseStrategies: []StrategyRef{{Name: "tiered_tp_atr_live"}}, Args: []string{"tema", "ETH", "1h", "--mode=live"}},
+		{ID: "hl-owner-eth", Platform: "hyperliquid", Type: "perps", CloseStrategy: &StrategyRef{Name: "tiered_tp_atr_live"}, Args: []string{"tema", "ETH", "1h", "--mode=live"}},
 		{ID: "hl-peer-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"rmc", "ETH", "1h", "--mode=live"}},
 	}
 	positions := []HLPosition{{Coin: "ETH", Size: 0.75, EntryPrice: 3000, Leverage: 10}}
@@ -1759,7 +2713,7 @@ func TestReconcileSharedCoin_TPPartialFill_PaddedNeverPlacedTierDoesNotAttribute
 
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
-	_, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, prices, "", nil, false)
+	_, _, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, nil, positions, prices, "", nil, false)
 
 	owner := state.Strategies["hl-owner-eth"]
 	ownerPos := owner.Positions["ETH"]
@@ -1804,15 +2758,15 @@ func TestReconcileSharedCoin_TPPartialFill_MultipleCandidatesDoesNotAttribute(t 
 	}
 
 	allStrategies := []StrategyConfig{
-		{ID: "hl-owner-a-eth", Platform: "hyperliquid", Type: "perps", CloseStrategies: []StrategyRef{{Name: "tiered_tp_atr_live"}}, Args: []string{"tema", "ETH", "1h", "--mode=live"}},
-		{ID: "hl-owner-b-eth", Platform: "hyperliquid", Type: "perps", CloseStrategies: []StrategyRef{{Name: "tiered_tp_atr_live"}}, Args: []string{"rmc", "ETH", "1h", "--mode=live"}},
+		{ID: "hl-owner-a-eth", Platform: "hyperliquid", Type: "perps", CloseStrategy: &StrategyRef{Name: "tiered_tp_atr_live"}, Args: []string{"tema", "ETH", "1h", "--mode=live"}},
+		{ID: "hl-owner-b-eth", Platform: "hyperliquid", Type: "perps", CloseStrategy: &StrategyRef{Name: "tiered_tp_atr_live"}, Args: []string{"rmc", "ETH", "1h", "--mode=live"}},
 	}
 	positions := []HLPosition{{Coin: "ETH", Size: 0.75, EntryPrice: 3000, Leverage: 10}}
 	prices := map[string]float64{"ETH": 3200}
 
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
-	_, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, prices, "", nil, false)
+	_, _, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, nil, positions, prices, "", nil, false)
 
 	for id, ss := range state.Strategies {
 		pos := ss.Positions["ETH"]
@@ -1835,9 +2789,6 @@ func TestReconcileSharedCoin_TPPartialFill_MultipleCandidatesDoesNotAttribute(t 
 	}
 }
 
-// TestReconcileSharedCoin_AllPositionsClosedExternally_NoMarkPrice_FallsBack
-// verifies the legacy zero-PnL path still applies when the caller supplies no
-// mark price for the coin (e.g. the syncHyperliquidAccountPositions entry).
 func TestReconcileSharedCoin_AllPositionsClosedExternally_NoMarkPrice_FallsBack(t *testing.T) {
 	const peerStartCash = 500.0
 	state := &AppState{
@@ -1866,24 +2817,24 @@ func TestReconcileSharedCoin_AllPositionsClosedExternally_NoMarkPrice_FallsBack(
 
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
-	// nil prices map → legacy zero-PnL path.
-	_, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, nil, "", nil, false)
+	_, _, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, nil, positions, nil, "", nil, false)
 
 	peer := state.Strategies["hl-peer-eth"]
 	if peer.Positions["ETH"] != nil {
 		t.Error("peer ETH position should be nil")
 	}
-	if len(peer.ClosedPositions) != 1 || peer.ClosedPositions[0].RealizedPnL != 0 {
-		t.Errorf("expected zero-PnL fallback, got %+v", peer.ClosedPositions)
+	if len(peer.TradeHistory) != 1 || peer.TradeHistory[0].RealizedPnL != 0 || !peer.TradeHistory[0].PnLGross {
+		t.Fatalf("want one zero-gross-PnL trade row, got %+v", peer.TradeHistory)
 	}
-	if peer.Cash != peerStartCash {
-		t.Errorf("peer Cash = %v, want unchanged %v (no mark price → no credit)", peer.Cash, peerStartCash)
+	fee := peer.TradeHistory[0].ExchangeFee
+	if len(peer.ClosedPositions) != 1 || math.Abs(peer.ClosedPositions[0].RealizedPnL-(-fee)) > 1e-9 {
+		t.Errorf("expected fee-only close PnL, got %+v", peer.ClosedPositions)
+	}
+	if math.Abs(peer.Cash-(peerStartCash-fee)) > 1e-9 {
+		t.Errorf("peer Cash = %v, want %v (no mark price → modeled fee only, no PnL credit)", peer.Cash, peerStartCash-fee)
 	}
 }
 
-// TestReconcileSharedCoin_GapWithoutSLOwner_LeavesPositionsAlone is the
-// regression guard for #258: when no peer holds a stop-loss OID and the gap
-// is non-zero (ambiguous on-chain mismatch), positions must not be touched.
 func TestReconcileSharedCoin_GapWithoutSLOwner_LeavesPositionsAlone(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
@@ -1908,14 +2859,12 @@ func TestReconcileSharedCoin_GapWithoutSLOwner_LeavesPositionsAlone(t *testing.T
 		{ID: "hl-a-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"tema", "ETH", "1h", "--mode=live"}},
 		{ID: "hl-b-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"rmc", "ETH", "1h", "--mode=live"}},
 	}
-	// On-chain qty differs but neither peer has a stop OID — ambiguous gap.
 	positions := []HLPosition{{Coin: "ETH", Size: 0.7, EntryPrice: 3000, Leverage: 10}}
 
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
-	_, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, nil, "", nil, false)
+	_, _, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, nil, positions, nil, "", nil, false)
 
-	// Both positions must be untouched.
 	posA := state.Strategies["hl-a-eth"].Positions["ETH"]
 	if posA == nil || math.Abs(posA.Quantity-0.6) > 1e-6 {
 		t.Errorf("hl-a-eth ETH = %+v, want 0.6 (unchanged)", posA)
@@ -1925,7 +2874,6 @@ func TestReconcileSharedCoin_GapWithoutSLOwner_LeavesPositionsAlone(t *testing.T
 		t.Errorf("hl-b-eth ETH = %+v, want 0.4 (unchanged)", posB)
 	}
 
-	// Gap should still be recorded with the correct delta.
 	gap := state.ReconciliationGaps["ETH"]
 	if gap == nil {
 		t.Fatal("expected gap entry for ETH")
@@ -1935,10 +2883,6 @@ func TestReconcileSharedCoin_GapWithoutSLOwner_LeavesPositionsAlone(t *testing.T
 	}
 }
 
-// TestReconcileSharedCoin_ResidualMismatch_LeavesPositionsAlone verifies that
-// when a SL owner exists but the on-chain qty does not match the expected
-// post-fire residual (e.g. the peer also partially closed), no position is
-// auto-closed — the ambiguous gap is left for operator review.
 func TestReconcileSharedCoin_ResidualMismatch_LeavesPositionsAlone(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
@@ -1964,15 +2908,12 @@ func TestReconcileSharedCoin_ResidualMismatch_LeavesPositionsAlone(t *testing.T)
 		{ID: "hl-owner-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"tema", "ETH", "1h", "--mode=live"}},
 		{ID: "hl-peer-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"rmc", "ETH", "1h", "--mode=live"}},
 	}
-	// On-chain = 0.2, but expected residual after owner's stop = 0.5 (peer).
-	// The mismatch (0.2 ≠ 0.5) means something else changed — leave it alone.
 	positions := []HLPosition{{Coin: "ETH", Size: 0.2, EntryPrice: 3000, Leverage: 10}}
 
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
-	_, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, nil, "", nil, false)
+	_, _, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, nil, positions, nil, "", nil, false)
 
-	// Both positions must be untouched.
 	ownerPos := state.Strategies["hl-owner-eth"].Positions["ETH"]
 	if ownerPos == nil || math.Abs(ownerPos.Quantity-1.0) > 1e-6 {
 		t.Errorf("owner ETH = %+v, want 1.0 (unchanged)", ownerPos)
@@ -1986,92 +2927,11 @@ func TestReconcileSharedCoin_ResidualMismatch_LeavesPositionsAlone(t *testing.T)
 	if gap == nil {
 		t.Fatal("expected gap entry for ETH")
 	}
-	// delta = (1.0 + 0.5) - 0.2 = 1.3
 	if math.Abs(gap.DeltaQty-1.3) > 1e-6 {
 		t.Errorf("gap DeltaQty = %g, want 1.3", gap.DeltaQty)
 	}
 }
 
-// TestReconciliationGapJSONRoundTrip verifies that AppState with ReconciliationGaps
-// survives JSON marshal/unmarshal (catches struct tag typos or type mismatches).
-func TestReconciliationGapJSONRoundTrip(t *testing.T) {
-	original := &AppState{
-		CycleCount: 42,
-		Strategies: map[string]*StrategyState{},
-		ReconciliationGaps: map[string]*ReconciliationGap{
-			"ETH": {
-				Coin:       "ETH",
-				OnChainQty: 0.5,
-				VirtualQty: 0.8,
-				DeltaQty:   0.3,
-				Strategies: []string{"hl-a", "hl-b"},
-			},
-		},
-	}
-
-	data, err := json.Marshal(original)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-
-	var restored AppState
-	if err := json.Unmarshal(data, &restored); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-
-	gap := restored.ReconciliationGaps["ETH"]
-	if gap == nil {
-		t.Fatal("ETH gap missing after round-trip")
-	}
-	if gap.Coin != "ETH" {
-		t.Errorf("Coin = %q, want ETH", gap.Coin)
-	}
-	if gap.OnChainQty != 0.5 {
-		t.Errorf("OnChainQty = %g, want 0.5", gap.OnChainQty)
-	}
-	if gap.VirtualQty != 0.8 {
-		t.Errorf("VirtualQty = %g, want 0.8", gap.VirtualQty)
-	}
-	if gap.DeltaQty != 0.3 {
-		t.Errorf("DeltaQty = %g, want 0.3", gap.DeltaQty)
-	}
-	if len(gap.Strategies) != 2 {
-		t.Errorf("Strategies = %v, want 2 entries", gap.Strategies)
-	}
-}
-
-// TestReconciliationGapOmittedWhenEmpty verifies that an empty ReconciliationGaps
-// map is omitted from JSON (omitempty behavior).
-func TestReconciliationGapOmittedWhenEmpty(t *testing.T) {
-	state := &AppState{
-		CycleCount: 1,
-		Strategies: map[string]*StrategyState{},
-	}
-
-	data, err := json.Marshal(state)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil {
-		t.Fatalf("unmarshal raw: %v", err)
-	}
-	if _, ok := raw["reconciliation_gaps"]; ok {
-		t.Error("reconciliation_gaps should be omitted when nil/empty")
-	}
-}
-
-// --- forceCloseHyperliquidLive tests (#341) ---
-//
-// These verify the kill-switch live close helper that was missing pre-#341.
-// The helper closes on-chain positions directly via the HL SDK's market_close
-// (reduce-only by construction), regardless of which strategy "owns" them, so
-// shared coins where reconciliation deliberately does not overwrite virtual
-// (#258) are still liquidated when the portfolio kill switch fires.
-
-// fakeCloser builds a HyperliquidLiveCloser test double that records every
-// invocation and returns either a canned success or an error per coin.
 func fakeCloser(errs map[string]error) (HyperliquidLiveCloser, *[]string) {
 	var calls []string
 	closer := func(symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
@@ -2092,9 +2952,6 @@ func fakeCloser(errs map[string]error) (HyperliquidLiveCloser, *[]string) {
 	return closer, &calls
 }
 
-// Non-shared coin: a single live HL strategy for ETH with an on-chain position
-// → close is submitted, no errors. Verifies the basic happy path that didn't
-// exist before #341 (the kill switch never called any exchange API).
 func TestForceCloseHyperliquidLive_NonSharedCoin(t *testing.T) {
 	hlLiveAll := []StrategyConfig{
 		{ID: "hl-ema-eth-live", Platform: "hyperliquid", Type: "perps",
@@ -2105,7 +2962,7 @@ func TestForceCloseHyperliquidLive_NonSharedCoin(t *testing.T) {
 	}
 
 	closer, calls := fakeCloser(nil)
-	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer, nil)
+	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, nil, closer, nil)
 
 	if len(report.Errors) != 0 {
 		t.Errorf("expected no errors, got %v", report.Errors)
@@ -2118,10 +2975,6 @@ func TestForceCloseHyperliquidLive_NonSharedCoin(t *testing.T) {
 	}
 }
 
-// Shared coin with empty virtual state: two strategies both trade ETH on the
-// same wallet. Per-strategy reconciliation skips shared coins (#258), so
-// virtual state is empty — but on-chain has 0.517 ETH long. The kill switch
-// must still close it. Critical regression test for #341 root cause.
 func TestForceCloseHyperliquidLive_SharedCoinEmptyVirtual(t *testing.T) {
 	hlLiveAll := []StrategyConfig{
 		{ID: "hl-tema-eth-live", Platform: "hyperliquid", Type: "perps",
@@ -2134,7 +2987,7 @@ func TestForceCloseHyperliquidLive_SharedCoinEmptyVirtual(t *testing.T) {
 	}
 
 	closer, calls := fakeCloser(nil)
-	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer, nil)
+	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, nil, closer, nil)
 
 	if len(report.Errors) != 0 {
 		t.Errorf("expected no errors, got %v", report.Errors)
@@ -2142,19 +2995,11 @@ func TestForceCloseHyperliquidLive_SharedCoinEmptyVirtual(t *testing.T) {
 	if len(report.ClosedCoins) != 1 || report.ClosedCoins[0] != "ETH" {
 		t.Errorf("ClosedCoins = %v, want [ETH]", report.ClosedCoins)
 	}
-	// Crucially: closer is invoked exactly once for ETH, not per-strategy.
-	// The HL SDK's market_close acts on the net on-chain position so a single
-	// reduce-only order liquidates the shared exposure.
 	if len(*calls) != 1 || (*calls)[0] != "ETH" {
 		t.Errorf("expected exactly 1 closer call for ETH, got %v", *calls)
 	}
 }
 
-// Net-zero szi: when bidirectional strategies on the same wallet hold equal-
-// and-opposite virtual positions that net to zero on-chain, kill switch must
-// treat the coin as already flat. Submitting a zero-size order would have the
-// HL API reject it and would inflate Errors with a meaningless failure that
-// keeps the kill switch latched forever.
 func TestForceCloseHyperliquidLive_NetZeroSziAlreadyFlat(t *testing.T) {
 	hlLiveAll := []StrategyConfig{
 		{ID: "hl-bidir-eth-live", Platform: "hyperliquid", Type: "perps",
@@ -2165,7 +3010,7 @@ func TestForceCloseHyperliquidLive_NetZeroSziAlreadyFlat(t *testing.T) {
 	}
 
 	closer, calls := fakeCloser(nil)
-	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer, nil)
+	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, nil, closer, nil)
 
 	if len(report.Errors) != 0 {
 		t.Errorf("expected no errors for net-zero coin, got %v", report.Errors)
@@ -2181,13 +3026,6 @@ func TestForceCloseHyperliquidLive_NetZeroSziAlreadyFlat(t *testing.T) {
 	}
 }
 
-// Short positions are closed identically to longs because the HL SDK's
-// market_close infers direction from the current position sign. The Go layer
-// only needs to detect non-zero szi and submit one close per coin. This test
-// guards the implicit assumption that we don't need separate buy/sell branches
-// here — and that overshooting cannot flip the position because market_close
-// is reduce-only by SDK construction (reduce_only=True is hard-coded in
-// hyperliquid.exchange.Exchange.market_close inside the SDK).
 func TestForceCloseHyperliquidLive_ShortPosition(t *testing.T) {
 	hlLiveAll := []StrategyConfig{
 		{ID: "hl-bidir-eth-live", Platform: "hyperliquid", Type: "perps",
@@ -2198,7 +3036,7 @@ func TestForceCloseHyperliquidLive_ShortPosition(t *testing.T) {
 	}
 
 	closer, calls := fakeCloser(nil)
-	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer, nil)
+	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, nil, closer, nil)
 
 	if len(report.Errors) != 0 {
 		t.Errorf("expected no errors, got %v", report.Errors)
@@ -2211,11 +3049,6 @@ func TestForceCloseHyperliquidLive_ShortPosition(t *testing.T) {
 	}
 }
 
-// Close failure: when the SDK call errors (network, exchange downtime, rate
-// limit), the coin lands in Errors so the caller keeps the kill switch latched
-// and retries next cycle. Without this, virtual state would be cleared while
-// on-chain still has exposure and no future cycle could detect the leak (the
-// original #341 failure mode, just with the close attempt added).
 func TestForceCloseHyperliquidLive_ClosePartialFailure(t *testing.T) {
 	hlLiveAll := []StrategyConfig{
 		{ID: "hl-eth", Platform: "hyperliquid", Type: "perps",
@@ -2230,7 +3063,7 @@ func TestForceCloseHyperliquidLive_ClosePartialFailure(t *testing.T) {
 	closeErr := fmt.Errorf("hl rate limited")
 	closer, _ := fakeCloser(map[string]error{"BTC": closeErr})
 
-	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer, nil)
+	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, nil, closer, nil)
 
 	if len(report.ClosedCoins) != 1 || report.ClosedCoins[0] != "ETH" {
 		t.Errorf("ClosedCoins = %v, want [ETH]", report.ClosedCoins)
@@ -2243,11 +3076,6 @@ func TestForceCloseHyperliquidLive_ClosePartialFailure(t *testing.T) {
 	}
 }
 
-// Unowned on-chain coin: if some other system has opened a position on this
-// wallet for a coin no live HL strategy in our config trades, the kill switch
-// must NOT touch it. Liquidating positions we don't own is unsafe — the
-// operator may be holding manual hedges. Such positions are surfaced as
-// warnings by reconcileHyperliquidAccountPositions, not auto-closed.
 func TestForceCloseHyperliquidLive_UnownedPositionIgnored(t *testing.T) {
 	hlLiveAll := []StrategyConfig{
 		{ID: "hl-eth", Platform: "hyperliquid", Type: "perps",
@@ -2255,11 +3083,11 @@ func TestForceCloseHyperliquidLive_UnownedPositionIgnored(t *testing.T) {
 	}
 	positions := []HLPosition{
 		{Coin: "ETH", Size: 0.5},
-		{Coin: "DOGE", Size: 1000}, // not configured — manual / external
+		{Coin: "DOGE", Size: 1000},
 	}
 
 	closer, calls := fakeCloser(nil)
-	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer, nil)
+	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, nil, closer, nil)
 
 	if len(report.ClosedCoins) != 1 || report.ClosedCoins[0] != "ETH" {
 		t.Errorf("ClosedCoins = %v, want [ETH]", report.ClosedCoins)
@@ -2271,12 +3099,8 @@ func TestForceCloseHyperliquidLive_UnownedPositionIgnored(t *testing.T) {
 	}
 }
 
-// Empty inputs: with no live HL strategies configured (e.g. an all-spot deploy
-// that nonetheless somehow tripped the kill switch), the helper is a clean
-// no-op. The caller's onChainConfirmedFlat check then proceeds straight to
-// virtual state mutation, matching pre-#341 behavior for non-HL deployments.
 func TestForceCloseHyperliquidLive_EmptyInputs(t *testing.T) {
-	report := forceCloseHyperliquidLive(context.Background(), nil, nil, func(string, *float64, []int64) (*HyperliquidCloseResult, error) {
+	report := forceCloseHyperliquidLive(context.Background(), nil, nil, nil, func(string, *float64, []int64) (*HyperliquidCloseResult, error) {
 		t.Fatalf("closer should not be called with empty inputs")
 		return nil, nil
 	}, nil)
@@ -2285,11 +3109,6 @@ func TestForceCloseHyperliquidLive_EmptyInputs(t *testing.T) {
 	}
 }
 
-// Adapter-side AlreadyFlat: closer returns success with already_flat=true
-// (eventual-consistency window — Go-side fetch saw non-zero szi, but by
-// the time the SDK submitted, the position was already flat). The coin
-// must land in AlreadyFlat, NOT ClosedCoins, so operator messaging
-// distinguishes "we sent a close order" from "nothing to close" (#350).
 func TestForceCloseHyperliquidLive_AdapterAlreadyFlatRoutedCorrectly(t *testing.T) {
 	hlLiveAll := []StrategyConfig{
 		{ID: "hl-eth", Platform: "hyperliquid", Type: "perps",
@@ -2306,7 +3125,7 @@ func TestForceCloseHyperliquidLive_AdapterAlreadyFlatRoutedCorrectly(t *testing.
 		}, nil
 	}
 
-	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer, nil)
+	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, nil, closer, nil)
 
 	if len(report.Errors) != 0 {
 		t.Errorf("expected no errors, got %v", report.Errors)
@@ -2322,77 +3141,79 @@ func TestForceCloseHyperliquidLive_AdapterAlreadyFlatRoutedCorrectly(t *testing.
 	}
 }
 
-func TestComputeHyperliquidCircuitCloseQty_SoleOwnerFullSzi(t *testing.T) {
-	hlLive := []StrategyConfig{
-		{ID: "hl-eth", Platform: "hyperliquid", Type: "perps",
-			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+func TestComputeHyperliquidCircuitCloseQty(t *testing.T) {
+	cases := []struct {
+		name    string
+		forID   string
+		hlLive  []StrategyConfig
+		pos     []HLPosition
+		wantQty float64
+		wantOK  bool
+	}{
+		{
+			name:  "sole owner takes the full abs szi",
+			forID: "hl-eth",
+			hlLive: []StrategyConfig{
+				{ID: "hl-eth", Platform: "hyperliquid", Type: "perps",
+					Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+			},
+			pos:     []HLPosition{{Coin: "ETH", Size: -0.4, EntryPrice: 3000}},
+			wantQty: 0.4,
+			wantOK:  true,
+		},
+		{
+			name: "shared coin must not enqueue a per-strategy close",
+			hlLive: []StrategyConfig{
+				{ID: "hl-a", Platform: "hyperliquid", Type: "perps", CapitalPct: 0.5, Capital: 1000,
+					Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+				{ID: "hl-b", Platform: "hyperliquid", Type: "perps", CapitalPct: 0.5, Capital: 1000,
+					Args: []string{"ema", "ETH", "1h", "--mode=live"}},
+			},
+			pos: []HLPosition{{Coin: "ETH", Size: 0.517, EntryPrice: 3000}},
+		},
+		{
+			name: "manual peer on the coin must not enqueue a per-strategy close",
+			hlLive: []StrategyConfig{
+				{ID: "hl-a", Platform: "hyperliquid", Type: "perps",
+					Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+				{ID: "hl-manual-eth", Platform: "hyperliquid", Type: "manual", Symbol: "ETH",
+					Args: []string{"hold", "ETH", "1h", "--mode=live"}},
+			},
+			pos: []HLPosition{{Coin: "ETH", Size: 0.517, EntryPrice: 3000}},
+		},
+		{
+			name: "mixed capital units on a shared coin must not enqueue a per-strategy close",
+			hlLive: []StrategyConfig{
+				{ID: "hl-a", Platform: "hyperliquid", Type: "perps", CapitalPct: 0.5,
+					Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+				{ID: "hl-b", Platform: "hyperliquid", Type: "perps", Capital: 1000,
+					Args: []string{"ema", "ETH", "1h", "--mode=live"}},
+			},
+			pos: []HLPosition{{Coin: "ETH", Size: 0.5, EntryPrice: 3000}},
+		},
 	}
-	pos := []HLPosition{{Coin: "ETH", Size: -0.4, EntryPrice: 3000}}
-	q, ok := computeHyperliquidCircuitCloseQty("ETH", "hl-eth", pos, hlLive)
-	if !ok {
-		t.Fatal("expected ok")
-	}
-	if math.Abs(q-0.4) > 1e-9 {
-		t.Errorf("qty=%.6f want 0.4 (full abs szi for sole owner)", q)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			forID := tc.forID
+			if forID == "" {
+				forID = "hl-a"
+			}
+			q, ok := computeHyperliquidCircuitCloseQty("ETH", forID, tc.pos, tc.hlLive)
+			if ok != tc.wantOK {
+				t.Fatalf("ok = %v, want %v (qty=%.6f)", ok, tc.wantOK, q)
+			}
+			if math.Abs(q-tc.wantQty) > 1e-9 {
+				t.Errorf("qty = %.6f, want %.6f", q, tc.wantQty)
+			}
+		})
 	}
 }
-
-func TestComputeHyperliquidCircuitCloseQty_SharedCoinSkipped(t *testing.T) {
-	hlLive := []StrategyConfig{
-		{ID: "hl-a", Platform: "hyperliquid", Type: "perps", CapitalPct: 0.5, Capital: 1000,
-			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
-		{ID: "hl-b", Platform: "hyperliquid", Type: "perps", CapitalPct: 0.5, Capital: 1000,
-			Args: []string{"ema", "ETH", "1h", "--mode=live"}},
-	}
-	pos := []HLPosition{{Coin: "ETH", Size: 0.517, EntryPrice: 3000}}
-	q, ok := computeHyperliquidCircuitCloseQty("ETH", "hl-a", pos, hlLive)
-	if ok || q != 0 {
-		t.Fatalf("shared Hyperliquid coin must not enqueue a per-strategy close; qty=%.6f ok=%v", q, ok)
-	}
-}
-
-func TestComputeHyperliquidCircuitCloseQty_ManualPeerSharedCoinSkipped(t *testing.T) {
-	hlLive := []StrategyConfig{
-		{ID: "hl-a", Platform: "hyperliquid", Type: "perps",
-			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
-		{ID: "hl-manual-eth", Platform: "hyperliquid", Type: "manual", Symbol: "ETH",
-			Args: []string{"hold", "ETH", "1h", "--mode=live"}},
-	}
-	pos := []HLPosition{{Coin: "ETH", Size: 0.517, EntryPrice: 3000}}
-	q, ok := computeHyperliquidCircuitCloseQty("ETH", "hl-a", pos, hlLive)
-	if ok || q != 0 {
-		t.Fatalf("manual peer on shared Hyperliquid coin must not enqueue a per-strategy close; qty=%.6f ok=%v", q, ok)
-	}
-}
-
-func TestComputeHyperliquidCircuitCloseQty_MixedUnitsSharedCoinSkipped(t *testing.T) {
-	hlLive := []StrategyConfig{
-		{ID: "hl-a", Platform: "hyperliquid", Type: "perps", CapitalPct: 0.5,
-			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
-		{ID: "hl-b", Platform: "hyperliquid", Type: "perps", Capital: 1000,
-			Args: []string{"ema", "ETH", "1h", "--mode=live"}},
-	}
-	pos := []HLPosition{{Coin: "ETH", Size: 0.5, EntryPrice: 3000}}
-	q, ok := computeHyperliquidCircuitCloseQty("ETH", "hl-a", pos, hlLive)
-	if ok || q != 0 {
-		t.Fatalf("shared Hyperliquid coin must not enqueue a per-strategy close; qty=%.6f ok=%v", q, ok)
-	}
-}
-
-// Recovery after HL-fetch-fail at CB fire time (#356 review finding 1).
-// When the clearinghouse fetch fails on the cycle a CB first fires, the
-// pending close is never enqueued (setHyperliquidCircuitBreakerPending bails
-// on nil hlAssist). Subsequent cycles must detect the stuck state (CB active,
-// pending nil, live HL perps, on-chain position still open) and reconstruct
-// the pending so the reduce-only close eventually fires.
 func TestRunPendingHyperliquidCircuitCloses_RecoversStuckCB(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
 			"hl-a": {
 				ID: "hl-a",
 				RiskState: RiskState{
-					// CB was fired on a prior cycle, but pending was never set
-					// because the HL fetch had failed at that time.
 					CircuitBreaker:       true,
 					CircuitBreakerUntil:  time.Now().Add(24 * time.Hour),
 					PendingCircuitCloses: nil,
@@ -2423,7 +3244,7 @@ func TestRunPendingHyperliquidCircuitCloses_RecoversStuckCB(t *testing.T) {
 		cfg,
 		"0xabc",
 		[]HLPosition{{Coin: "ETH", Size: 0.4, EntryPrice: 1}},
-		true, // hl state already fetched this cycle
+		true,
 		nil,
 		closer,
 		30*time.Second,
@@ -2438,9 +3259,6 @@ func TestRunPendingHyperliquidCircuitCloses_RecoversStuckCB(t *testing.T) {
 	}
 }
 
-// If the stuck-CB strategy has no on-chain position (e.g. operator already
-// closed it manually), recovery must be a no-op rather than submitting a
-// zero-size order.
 func TestRunPendingHyperliquidCircuitCloses_StuckCBNoOnChainPositionIsNoOp(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
@@ -2468,7 +3286,7 @@ func TestRunPendingHyperliquidCircuitCloses_StuckCBNoOnChainPositionIsNoOp(t *te
 		state,
 		cfg,
 		"0xabc",
-		nil, // no on-chain positions
+		nil,
 		true,
 		nil,
 		closer,
@@ -2645,9 +3463,6 @@ func TestRunPendingHyperliquidCircuitCloses_ManualPeerClearsPendingWithoutClose(
 	}
 }
 
-// #418 Fix 1: a closer that returns Fill.TotalSz < requested size must NOT
-// clear pending — the residual must remain queued for retry next cycle, and
-// virtual state must reflect only what actually filled.
 func TestRunPendingHyperliquidCircuitCloses_PartialFillKeepsPendingAndDecrements(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
@@ -2675,7 +3490,6 @@ func TestRunPendingHyperliquidCircuitCloses_PartialFillKeepsPendingAndDecrements
 	}
 	var mu sync.RWMutex
 	closer := func(sym string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
-		// HL only filled half: partial fill from market depth or slippage cap.
 		return &HyperliquidCloseResult{
 			Close:    &HyperliquidClose{Symbol: sym, Fill: &HyperliquidCloseFill{TotalSz: 0.5, AvgPx: 3000, Fee: 0.75}},
 			Platform: "hyperliquid",
@@ -2688,13 +3502,9 @@ func TestRunPendingHyperliquidCircuitCloses_PartialFillKeepsPendingAndDecrements
 		nil,
 	)
 
-	// Pending must NOT be cleared — residual 0.5 must retry next cycle.
 	if state.Strategies["hl-a"].RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid) == nil {
 		t.Error("expected pending preserved after partial fill (allOK=false), got nil")
 	}
-	// Virtual quantity must decrement by what filled (0.5), not by what was
-	// requested (1.0). Without this, next-cycle reconcile sees the residual
-	// and re-fires the CB against an inflated denominator (#418).
 	pos, ok := state.Strategies["hl-a"].Positions["ETH"]
 	if !ok || pos == nil {
 		t.Fatal("expected ETH position to remain (partial fill, residual 0.5)")
@@ -2702,11 +3512,9 @@ func TestRunPendingHyperliquidCircuitCloses_PartialFillKeepsPendingAndDecrements
 	if math.Abs(pos.Quantity-0.5) > 1e-9 {
 		t.Errorf("Quantity = %.6f; want 0.5 (1.0 - 0.5 partial fill)", pos.Quantity)
 	}
-	// AvgCost is preserved across partial closes.
 	if pos.AvgCost != 3000 {
 		t.Errorf("AvgCost = %.2f; want 3000 (must not change on partial close)", pos.AvgCost)
 	}
-	// Trade was recorded for the close fill.
 	if len(state.Strategies["hl-a"].TradeHistory) != 1 {
 		t.Errorf("expected 1 close trade recorded, got %d", len(state.Strategies["hl-a"].TradeHistory))
 	}
@@ -2718,8 +3526,6 @@ func TestRunPendingHyperliquidCircuitCloses_PartialFillKeepsPendingAndDecrements
 	}
 }
 
-// #418 Fix 2: full-fill CB close must decrement virtual state to zero,
-// remove the position, record a Trade with realized PnL, and clear pending.
 func TestRunPendingHyperliquidCircuitCloses_FullFillDecrementsAndClears(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
@@ -2747,7 +3553,6 @@ func TestRunPendingHyperliquidCircuitCloses_FullFillDecrementsAndClears(t *testi
 	}
 	var mu sync.RWMutex
 	closer := func(sym string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
-		// Adverse fill at $2900: realized PnL = 0.5 * (2900-3000) = -$50, fee $0.50.
 		return &HyperliquidCloseResult{
 			Close:    &HyperliquidClose{Symbol: sym, Fill: &HyperliquidCloseFill{TotalSz: 0.5, AvgPx: 2900, Fee: 0.5}},
 			Platform: "hyperliquid",
@@ -2766,16 +3571,13 @@ func TestRunPendingHyperliquidCircuitCloses_FullFillDecrementsAndClears(t *testi
 	if _, ok := state.Strategies["hl-a"].Positions["ETH"]; ok {
 		t.Error("expected ETH position removed after full close")
 	}
-	// Cash should reflect realized PnL: 1000 + (-50) - 0.5 = 949.5
 	wantCash := 949.5
 	if math.Abs(state.Strategies["hl-a"].Cash-wantCash) > 1e-6 {
 		t.Errorf("Cash = %.4f; want %.4f (PnL -$50 - $0.50 fee)", state.Strategies["hl-a"].Cash, wantCash)
 	}
-	// One Trade recorded.
 	if len(state.Strategies["hl-a"].TradeHistory) != 1 {
 		t.Fatalf("expected 1 close trade, got %d", len(state.Strategies["hl-a"].TradeHistory))
 	}
-	// One ClosedPosition recorded.
 	if len(state.Strategies["hl-a"].ClosedPositions) != 1 {
 		t.Fatalf("expected 1 closed-position row, got %d", len(state.Strategies["hl-a"].ClosedPositions))
 	}
@@ -2785,9 +3587,6 @@ func TestRunPendingHyperliquidCircuitCloses_FullFillDecrementsAndClears(t *testi
 	}
 }
 
-// #512: per-strategy CB on a shared Hyperliquid coin must not submit a close
-// or mutate virtual state. Hyperliquid has one exchange-side position per
-// coin/wallet; closing a "share" of it changes other strategies' exposure.
 func TestRunPendingHyperliquidCircuitCloses_SharedCoinLeavesVirtualPosition(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
@@ -2796,7 +3595,6 @@ func TestRunPendingHyperliquidCircuitCloses_SharedCoinLeavesVirtualPosition(t *t
 				Type: "perps",
 				Cash: 500,
 				Positions: map[string]*Position{
-					// Strategy thinks it owns 0.5 of a shared 1.0 wallet.
 					"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 3000, Side: "long",
 						Multiplier: 1, Leverage: 10},
 				},
@@ -2845,8 +3643,6 @@ func TestRunPendingHyperliquidCircuitCloses_SharedCoinLeavesVirtualPosition(t *t
 	}
 }
 
-// #418 Fix 1: helper-level test for applyHyperliquidCircuitCloseFill —
-// partial close preserves AvgCost and only reduces Quantity.
 func TestApplyHyperliquidCircuitCloseFill_PartialPreservesAvgCost(t *testing.T) {
 	s := &StrategyState{
 		ID:   "hl-x",
@@ -2855,7 +3651,7 @@ func TestApplyHyperliquidCircuitCloseFill_PartialPreservesAvgCost(t *testing.T) 
 			"BTC": {Symbol: "BTC", Quantity: 1.0, AvgCost: 50000, Side: "long", Multiplier: 1, Leverage: 5},
 		},
 	}
-	applyHyperliquidCircuitCloseFill(s, "BTC", 0.3, 49000, 1.5, 1.0)
+	applyHyperliquidCircuitCloseFill(s, "BTC", 0.3, 49000, 1.5, 1.0, 0, "")
 
 	pos, ok := s.Positions["BTC"]
 	if !ok {
@@ -2867,19 +3663,12 @@ func TestApplyHyperliquidCircuitCloseFill_PartialPreservesAvgCost(t *testing.T) 
 	if pos.AvgCost != 50000 {
 		t.Errorf("AvgCost = %.2f; want 50000 (must not change on partial close — #418 review gap 3)", pos.AvgCost)
 	}
-	// PnL: 0.3 * (49000 - 50000) - 1.5 = -301.5
 	wantCash := 1000 + (-301.5)
 	if math.Abs(s.Cash-wantCash) > 1e-6 {
 		t.Errorf("Cash = %.4f; want %.4f", s.Cash, wantCash)
 	}
 }
 
-// #418 review observation 1: a closer that returns success with a nil/zero
-// fill (eventual consistency, future adapter tweak) must not silently clear
-// pending. Pre-fix the `fillSz > 0` clause inside `underFill` would make a
-// zero-fill fall into the success branch and clear pending — flattening
-// nothing on-chain. With the clause removed, zero-fill is treated as
-// under-fill: pending is preserved for retry.
 func TestRunPendingHyperliquidCircuitCloses_ZeroFillKeepsPending(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
@@ -2907,7 +3696,6 @@ func TestRunPendingHyperliquidCircuitCloses_ZeroFillKeepsPending(t *testing.T) {
 	}
 	var mu sync.RWMutex
 	closer := func(sym string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
-		// Closer returns no error but also no Fill (or Fill with TotalSz=0).
 		return &HyperliquidCloseResult{
 			Close:    &HyperliquidClose{Symbol: sym, Fill: nil},
 			Platform: "hyperliquid",
@@ -2920,26 +3708,18 @@ func TestRunPendingHyperliquidCircuitCloses_ZeroFillKeepsPending(t *testing.T) {
 		nil,
 	)
 
-	// Pending must NOT be cleared — nothing on-chain has actually been flattened.
 	if state.Strategies["hl-a"].RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid) == nil {
 		t.Error("pending must be preserved on zero-fill (#418 review observation 1)")
 	}
-	// Virtual position must NOT have decremented.
 	pos := state.Strategies["hl-a"].Positions["ETH"]
 	if pos == nil || math.Abs(pos.Quantity-1.0) > 1e-9 {
 		t.Errorf("Quantity should remain 1.0 on zero-fill, got %v", pos)
 	}
-	// No Trade recorded — nothing filled.
 	if len(state.Strategies["hl-a"].TradeHistory) != 0 {
 		t.Errorf("expected no trade on zero-fill, got %d", len(state.Strategies["hl-a"].TradeHistory))
 	}
 }
 
-// #418 review followup: a partial-fill on cycle 1 followed by a full-fill on
-// cycle 2 must (a) preserve AvgCost across both fills, (b) record one
-// ClosedPosition row whose Quantity reflects the residual closed on cycle 2
-// (not the original size), and (c) remove the position only after cycle 2.
-// Locks in the partial-then-full retry semantics that the new drain enables.
 func TestRunPendingHyperliquidCircuitCloses_PartialThenFullPreservesAvgCost(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
@@ -2967,7 +3747,6 @@ func TestRunPendingHyperliquidCircuitCloses_PartialThenFullPreservesAvgCost(t *t
 	}
 	var mu sync.RWMutex
 
-	// Cycle 1: closer fills 0.4 of the requested 1.0 (partial).
 	cycle1 := func(sym string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
 		return &HyperliquidCloseResult{
 			Close:    &HyperliquidClose{Symbol: sym, Fill: &HyperliquidCloseFill{TotalSz: 0.4, AvgPx: 2950, Fee: 0.4}},
@@ -2981,7 +3760,6 @@ func TestRunPendingHyperliquidCircuitCloses_PartialThenFullPreservesAvgCost(t *t
 		nil,
 	)
 
-	// After cycle 1: pending preserved, position decremented to 0.6, AvgCost untouched.
 	if state.Strategies["hl-a"].RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid) == nil {
 		t.Fatal("cycle 1: pending must be preserved after partial fill")
 	}
@@ -2993,9 +3771,6 @@ func TestRunPendingHyperliquidCircuitCloses_PartialThenFullPreservesAvgCost(t *t
 		t.Errorf("cycle 1: AvgCost = %.2f; want 3000 (preserved on partial)", pos.AvgCost)
 	}
 
-	// Cycle 2: drain re-runs against the residual on-chain position. The drain
-	// caps `sz` to `min(c.Size, |on-chain|)`, so it'll request 0.6 (the cap from
-	// on-chain residual). The closer fills it all.
 	cycle2 := func(sym string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
 		got := *partialSz
 		if math.Abs(got-0.6) > 1e-6 {
@@ -3013,15 +3788,12 @@ func TestRunPendingHyperliquidCircuitCloses_PartialThenFullPreservesAvgCost(t *t
 		nil,
 	)
 
-	// Position fully closed; pending cleared.
 	if _, ok := state.Strategies["hl-a"].Positions["ETH"]; ok {
 		t.Error("cycle 2: position must be removed after full close")
 	}
 	if state.Strategies["hl-a"].RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid) != nil {
 		t.Error("cycle 2: pending must be cleared after full close")
 	}
-	// Exactly one ClosedPosition row, whose Quantity is the residual (0.6),
-	// because that's the snapshot taken at the moment of the final delete.
 	closed := state.Strategies["hl-a"].ClosedPositions
 	if len(closed) != 1 {
 		t.Fatalf("expected 1 ClosedPosition, got %d", len(closed))
@@ -3034,18 +3806,13 @@ func TestRunPendingHyperliquidCircuitCloses_PartialThenFullPreservesAvgCost(t *t
 	}
 }
 
-// #418 review observation 4: when no virtual position exists (defensive
-// branch), the trade-history Side must reflect what was actually closed
-// on-chain — closing a short is a buy, closing a long is a sell. Pre-fix
-// this branch hard-coded "sell" regardless of on-chain side.
 func TestApplyHyperliquidCircuitCloseFill_NoPositionShortCloseRecordsBuy(t *testing.T) {
 	s := &StrategyState{
 		ID:        "hl-x",
 		Cash:      1000,
 		Positions: map[string]*Position{},
 	}
-	// On-chain shows a short (negative size); closer reports a buy fill.
-	applyHyperliquidCircuitCloseFill(s, "ETH", 0.5, 3000, 0.5, -0.5)
+	applyHyperliquidCircuitCloseFill(s, "ETH", 0.5, 3000, 0.5, -0.5, 0, "")
 
 	if len(s.TradeHistory) != 1 {
 		t.Fatalf("expected 1 defensive trade, got %d", len(s.TradeHistory))
@@ -3061,8 +3828,7 @@ func TestApplyHyperliquidCircuitCloseFill_NoPositionLongCloseRecordsSell(t *test
 		Cash:      1000,
 		Positions: map[string]*Position{},
 	}
-	// On-chain shows a long (positive size); closer reports a sell fill.
-	applyHyperliquidCircuitCloseFill(s, "ETH", 0.5, 3000, 0.5, 0.5)
+	applyHyperliquidCircuitCloseFill(s, "ETH", 0.5, 3000, 0.5, 0.5, 0, "")
 
 	if len(s.TradeHistory) != 1 {
 		t.Fatalf("expected 1 defensive trade, got %d", len(s.TradeHistory))
@@ -3072,9 +3838,6 @@ func TestApplyHyperliquidCircuitCloseFill_NoPositionLongCloseRecordsSell(t *test
 	}
 }
 
-// TestRunPendingHyperliquidCircuitCloses_FailureIncrementsCountAndNotifies
-// verifies that a close error increments ConsecutiveFailures to 1 and fires the
-// notifier exactly once (#427).
 func TestRunPendingHyperliquidCircuitCloses_FailureIncrementsCountAndNotifies(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
@@ -3125,8 +3888,6 @@ func TestRunPendingHyperliquidCircuitCloses_FailureIncrementsCountAndNotifies(t 
 	}
 }
 
-// TestRunPendingHyperliquidCircuitCloses_RepeatedFailureThrottlesNotifier
-// verifies that failure #2 is suppressed when LastNotifiedAt was just set.
 func TestRunPendingHyperliquidCircuitCloses_RepeatedFailureThrottlesNotifier(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
@@ -3172,8 +3933,6 @@ func TestRunPendingHyperliquidCircuitCloses_RepeatedFailureThrottlesNotifier(t *
 	}
 }
 
-// TestRunPendingHyperliquidCircuitCloses_TenthFailureNotifies verifies that
-// failure #10 fires the notifier (every-10th cadence).
 func TestRunPendingHyperliquidCircuitCloses_TenthFailureNotifies(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
@@ -3223,9 +3982,6 @@ func TestRunPendingHyperliquidCircuitCloses_TenthFailureNotifies(t *testing.T) {
 	}
 }
 
-// TestReconcileManualPositionExternalClose verifies that a type=manual HL strategy
-// whose on-chain position is flat gets its virtual position removed with
-// close_reason="hl_sync_external". Regression for #576.
 func TestReconcileManualPositionExternalClose(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
@@ -3246,8 +4002,7 @@ func TestReconcileManualPositionExternalClose(t *testing.T) {
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
 
-	// Pass nil positions (on-chain flat).
-	_, _ = reconcileHyperliquidAccountPositions([]StrategyConfig{sc}, []StrategyConfig{sc}, state, &mu, logMgr, nil, nil, "", nil, false)
+	_, _, _ = reconcileHyperliquidAccountPositions([]StrategyConfig{sc}, []StrategyConfig{sc}, state, &mu, logMgr, nil, nil, nil, "", nil, false)
 
 	ss := state.Strategies["manual-eth"]
 	if _, ok := ss.Positions["ETH"]; ok {
@@ -3261,66 +4016,42 @@ func TestReconcileManualPositionExternalClose(t *testing.T) {
 	}
 }
 
-// --- #621: hyperliquidHasClearedTPTier unit tests ---
-
 func tieredTPATRSC() StrategyConfig {
 	return StrategyConfig{
 		ID: "hl-tp",
-		CloseStrategies: []StrategyRef{{Name: "tiered_tp_atr", Params: map[string]interface{}{
-			"tiers": []interface{}{
+		CloseStrategy: &StrategyRef{Name: "tiered_tp_atr", Params: map[string]interface{}{
+			"tp_tiers": []interface{}{
 				map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 0.5},
 				map[string]interface{}{"atr_multiple": 3.0, "close_fraction": 1.0},
 			},
-		}}},
+		}},
 	}
 }
 
-func TestHyperliquidHasClearedTPTier_NoTPOIDs(t *testing.T) {
+func TestHyperliquidHasClearedTPTier(t *testing.T) {
 	sc := tieredTPATRSC()
-	pos := &Position{Quantity: 0.422, TPOIDs: nil}
-	if hyperliquidHasClearedTPTier(sc, pos, 0.211) {
-		t.Error("expected false when pos.TPOIDs is nil")
+	cases := []struct {
+		name     string
+		tpOIDs   []int64
+		closeQty float64
+		want     bool
+	}{
+		{"nil TP OIDs", nil, 0.211, false},
+		{"empty TP OIDs", []int64{}, 0.211, false},
+		{"all tiers active", []int64{111, 222}, 0.211, false},
+		{"one cleared one active", []int64{0, 222}, 0.211, true},
+		{"all zero, partial close is an ambiguous gap", []int64{0, 0}, 0.211, false},
+		{"all zero, full close is a sole-peer final close", []int64{0, 0}, 0.422, true},
 	}
-	pos.TPOIDs = []int64{}
-	if hyperliquidHasClearedTPTier(sc, pos, 0.211) {
-		t.Error("expected false when pos.TPOIDs is empty")
-	}
-}
-
-func TestHyperliquidHasClearedTPTier_AllActive(t *testing.T) {
-	sc := tieredTPATRSC()
-	pos := &Position{Quantity: 0.422, TPOIDs: []int64{111, 222}}
-	if hyperliquidHasClearedTPTier(sc, pos, 0.211) {
-		t.Error("expected false when all TP OIDs are active (non-zero)")
-	}
-}
-
-func TestHyperliquidHasClearedTPTier_OneClearedOneActive(t *testing.T) {
-	sc := tieredTPATRSC()
-	pos := &Position{Quantity: 0.422, TPOIDs: []int64{0, 222}} // tier 1 cleared, tier 2 active
-	if !hyperliquidHasClearedTPTier(sc, pos, 0.211) {
-		t.Error("expected true when one tier is cleared and one is still active")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pos := &Position{Quantity: 0.422, TPOIDs: tc.tpOIDs}
+			if got := hyperliquidHasClearedTPTier(sc, pos, tc.closeQty); got != tc.want {
+				t.Errorf("hyperliquidHasClearedTPTier = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
-
-func TestHyperliquidHasClearedTPTier_AllZeroFullClose(t *testing.T) {
-	sc := tieredTPATRSC()
-	// All zero OIDs — treated as final-tier fill only if closeQty == pos.Quantity.
-	pos := &Position{Quantity: 0.422, TPOIDs: []int64{0, 0}}
-	if hyperliquidHasClearedTPTier(sc, pos, 0.211) {
-		t.Error("expected false when all OIDs zero but closeQty != pos.Quantity (ambiguous gap)")
-	}
-	if !hyperliquidHasClearedTPTier(sc, pos, 0.422) {
-		t.Error("expected true when all OIDs zero and closeQty == pos.Quantity (sole-peer final close)")
-	}
-}
-
-// --- #621: SL close bookkeeping uses actual fill qty from userFills ---
-
-// TestReconcilePositionSLClose_UsesFilledQtyFromLookup verifies that when the
-// userFills resolver returns a FilledQty smaller than pos.Quantity (e.g. the
-// SL was placed at on-chain qty after a manual TP reduced the position), the
-// close trade records the actual fill qty rather than the stale virtual qty.
 func TestReconcilePositionSLClose_UsesFilledQtyFromLookup(t *testing.T) {
 	const (
 		virtualQty  = 0.422
@@ -3339,15 +4070,12 @@ func TestReconcilePositionSLClose_UsesFilledQtyFromLookup(t *testing.T) {
 			},
 		},
 	}
-	// Resolver returns filledQty < virtualQty (SL was capped at on-chain size).
-	// OID echo matches StopLossOID so the #685 SL-confirmed gate accepts it.
 	resolver := hlReconcileFillResolver(func(_ string, oid int64, _ float64) (HLFillLookup, bool) {
 		return HLFillLookup{Fee: 0.08, FilledQty: filledQty, Count: 1, OID: oid}, true
 	})
 	logger := newTestLogger(t)
 
-	// On-chain is flat → reconcileHyperliquidPositionsWithResolver closes position.
-	changed := reconcileHyperliquidPositionsWithResolver(ss, "ETH", nil, resolver, logger, nil)
+	changed := reconcileHyperliquidPositionsWithResolver(ss, "ETH", nil, resolver, logger, nil, nil, StrategyConfig{})
 	if !changed {
 		t.Fatal("expected changed=true")
 	}
@@ -3361,20 +4089,19 @@ func TestReconcilePositionSLClose_UsesFilledQtyFromLookup(t *testing.T) {
 	if cp.Quantity < filledQty-1e-9 || cp.Quantity > filledQty+1e-9 {
 		t.Errorf("ClosedPosition.Quantity = %g, want %g (actual fill qty, not virtual)", cp.Quantity, filledQty)
 	}
-	// PnL must use filledQty: (1800 - 2000) * 0.211 - 0.08 = -42.28
-	wantPnL := filledQty*(slTriggerPx-avgCost) - 0.08
+	wantGross := filledQty * (slTriggerPx - avgCost)
 	if len(ss.TradeHistory) != 1 {
 		t.Fatalf("TradeHistory = %d, want 1", len(ss.TradeHistory))
 	}
-	if ss.TradeHistory[0].RealizedPnL < wantPnL-0.01 || ss.TradeHistory[0].RealizedPnL > wantPnL+0.01 {
-		t.Errorf("RealizedPnL = %g, want %g (based on actual fill qty)", ss.TradeHistory[0].RealizedPnL, wantPnL)
+	tr := ss.TradeHistory[0]
+	if !tr.PnLGross || math.Abs(tr.RealizedPnL-wantGross) > 0.01 {
+		t.Errorf("RealizedPnL = %g (gross=%v), want gross %g (based on actual fill qty)", tr.RealizedPnL, tr.PnLGross, wantGross)
+	}
+	if math.Abs(tradeNetPnL(tr)-(wantGross-0.08)) > 0.01 {
+		t.Errorf("tradeNetPnL = %g, want %g", tradeNetPnL(tr), wantGross-0.08)
 	}
 }
 
-// TestReconcilePositionSLClose_NoFillFallsThroughToExternal verifies the #685
-// gate: when the resolver responds but reports no SL fill (FilledQty=0), the
-// reconciler does NOT book the close at the SL trigger price — the SL was
-// cancelled, not filled. Falls through to hl_sync_external at zero PnL.
 func TestReconcilePositionSLClose_NoFillFallsThroughToExternal(t *testing.T) {
 	const virtualQty = 0.422
 	ss := &StrategyState{
@@ -3388,15 +4115,12 @@ func TestReconcilePositionSLClose_NoFillFallsThroughToExternal(t *testing.T) {
 			},
 		},
 	}
-	// Lookup succeeds (useFillFee=true) but FilledQty=0 — userFills shows the
-	// SL OID never filled. Pre-#685 this booked as SL at trigger px; post-fix
-	// it falls through to hl_sync_external.
 	resolver := hlReconcileFillResolver(func(_ string, _ int64, _ float64) (HLFillLookup, bool) {
 		return HLFillLookup{Fee: 0.15, FilledQty: 0, Count: 1}, true
 	})
 	logger := newTestLogger(t)
 	startCash := ss.Cash
-	reconcileHyperliquidPositionsWithResolver(ss, "ETH", nil, resolver, logger, nil)
+	reconcileHyperliquidPositionsWithResolver(ss, "ETH", nil, resolver, logger, nil, nil, StrategyConfig{})
 
 	if len(ss.ClosedPositions) != 1 {
 		t.Fatalf("ClosedPositions = %d, want 1", len(ss.ClosedPositions))
@@ -3405,17 +4129,302 @@ func TestReconcilePositionSLClose_NoFillFallsThroughToExternal(t *testing.T) {
 	if cp.CloseReason != "hl_sync_external" {
 		t.Errorf("CloseReason = %q, want hl_sync_external (SL not confirmed filled)", cp.CloseReason)
 	}
-	if cp.ClosePrice != 0 {
-		t.Errorf("ClosePrice = %g, want 0 (off-scheduler close, price unknown)", cp.ClosePrice)
+	if cp.ClosePrice != 2000 {
+		t.Errorf("ClosePrice = %g, want 2000 (AvgCost — zero-PnL booking, not the SL trigger)", cp.ClosePrice)
 	}
-	if ss.Cash != startCash {
-		t.Errorf("cash = %g, want unchanged (%g) on zero-PnL fallback", ss.Cash, startCash)
+	if len(ss.TradeHistory) != 1 || ss.TradeHistory[0].RealizedPnL != 0 || !ss.TradeHistory[0].PnLGross {
+		t.Fatalf("want one zero-gross-PnL trade row, got %+v", ss.TradeHistory)
+	}
+	if math.Abs(ss.Cash-(startCash-0.15)) > 1e-9 {
+		t.Errorf("cash = %g, want %g (real fee only) on zero-PnL fallback", ss.Cash, startCash-0.15)
 	}
 }
 
-// TestReconcileManualPositionSLFired verifies that a type=manual strategy with a
-// resting stop-loss OID uses the hl_sync_stop_loss close path when on-chain goes
-// flat. Regression for #576.
+func TestReconcileSoleOwnerStopFillWithOpenRemainder(t *testing.T) {
+	const (
+		stopOID     int64 = 42
+		stopTrigger       = 1850.0
+		chainEntry        = 2010.0
+	)
+	mult := 1.5
+	sc := StrategyConfig{
+		ID:              "hl-eth",
+		Type:            "manual",
+		Platform:        "hyperliquid",
+		CloseStrategy:   &StrategyRef{Name: "tiered_tp_atr_live"},
+		StopLossATRMult: &mult,
+	}
+	newState := func() *StrategyState {
+		return &StrategyState{
+			ID: sc.ID, Cash: 1000, Platform: "hyperliquid", Type: "manual",
+			Positions: map[string]*Position{
+				"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 2000, EntryATR: 100, Side: "long",
+					Multiplier: 1, Leverage: 5, OwnerStrategyID: sc.ID,
+					StopLossOID: stopOID, StopLossTriggerPx: stopTrigger},
+			},
+		}
+	}
+	reconcileStopFilled := func(t *testing.T, ss *StrategyState, chainQty, stopFilledQty float64) ([]ProtectionFillAlert, []string) {
+		t.Helper()
+		var positions []HLPosition
+		if chainQty > 0 {
+			positions = []HLPosition{{Coin: "ETH", Size: chainQty, EntryPrice: chainEntry, Leverage: 5}}
+		}
+		resolver := hlReconcileFillResolver(func(_ string, oid int64, _ float64) (HLFillLookup, bool) {
+			if stopFilledQty > 0 && oid == stopOID {
+				return HLFillLookup{Fee: 0.1 * stopFilledQty, FilledQty: stopFilledQty, Px: stopTrigger, Count: 1, OID: stopOID}, true
+			}
+			return HLFillLookup{}, false
+		})
+		var alerts []ProtectionFillAlert
+		var dms []string
+		reconcileHyperliquidPositionsForStrategy(sc, ss, "ETH", positions, resolver, newTestLogger(t), &alerts, nil, &dms)
+		return alerts, dms
+	}
+	reconcile := func(t *testing.T, ss *StrategyState, chainQty float64, confirmed bool) ([]ProtectionFillAlert, []string) {
+		t.Helper()
+		if confirmed {
+			return reconcileStopFilled(t, ss, chainQty, 0.6)
+		}
+		return reconcileStopFilled(t, ss, chainQty, 0)
+	}
+	forgetWatches := func() {
+		dropHLStopFillWatch(sc.ID, "ETH")
+		takeHLProtectionSyncStopFilled(sc.ID, "ETH")
+	}
+	reset := func(t *testing.T) {
+		forgetWatches()
+		clearHLProtectionGuardBlocks(sc.ID, "ETH")
+		t.Cleanup(func() {
+			forgetWatches()
+			clearHLProtectionGuardBlocks(sc.ID, "ETH")
+		})
+	}
+	syncReportsStopFilled := func(t *testing.T, ss *StrategyState) {
+		t.Helper()
+		withStubbedSyncHyperliquidProtection(t, func(StrategyConfig, hlProtectionPlan, *MultiNotifier, *StrategyLogger, []byte) (*HyperliquidProtectionSyncResult, bool) {
+			return &HyperliquidProtectionSyncResult{StopLossFilledExternally: true}, true
+		})
+		var mu sync.RWMutex
+		if synced, _ := runHyperliquidProtectionSync(sc, ss, nil, "ETH", &mu, nil, nil, "test", nil, nil, nil, hlProtectionGuardFull, nil); !synced {
+			t.Fatal("protection sync did not apply the result")
+		}
+		if pos := ss.Positions["ETH"]; pos == nil || pos.StopLossOID != stopOID {
+			t.Fatalf("position = %+v, want the protection sync to keep SL OID %d", pos, stopOID)
+		}
+	}
+	assertResynced := func(t *testing.T, ss *StrategyState, cycle int, wantOID int64) {
+		t.Helper()
+		pos := ss.Positions["ETH"]
+		if pos == nil || math.Abs(pos.Quantity-0.4) > 1e-9 || pos.StopLossOID != wantOID || len(ss.TradeHistory) != 0 {
+			t.Fatalf("cycle %d: position = %+v trades = %d, want qty 0.4 with SL OID %d and nothing booked", cycle, pos, len(ss.TradeHistory), wantOID)
+		}
+	}
+	assertStopBooked := func(t *testing.T, ss *StrategyState, alerts []ProtectionFillAlert, costBasis, wantAvgCost float64) {
+		t.Helper()
+		pos := ss.Positions["ETH"]
+		if pos == nil || math.Abs(pos.Quantity-0.4) > 1e-9 || pos.AvgCost != wantAvgCost {
+			t.Fatalf("position = %+v, want 0.4 ETH left open at avg cost %g", pos, wantAvgCost)
+		}
+		if pos.StopLossOID != 0 || pos.StopLossTriggerPx != 0 {
+			t.Errorf("SL = oid %d @ %g, want both cleared so the remainder gets a new stop", pos.StopLossOID, pos.StopLossTriggerPx)
+		}
+		if len(ss.TradeHistory) != 1 {
+			t.Fatalf("TradeHistory = %d rows, want 1 stop partial close", len(ss.TradeHistory))
+		}
+		tr := ss.TradeHistory[0]
+		if !tr.IsClose || tr.ExchangeOrderID != "42" || math.Abs(tr.Quantity-0.6) > 1e-9 || tr.Price != stopTrigger {
+			t.Errorf("trade = %+v, want 0.6 closed @ %g with OID 42", tr, stopTrigger)
+		}
+		wantPnL := 0.6 * (stopTrigger - costBasis)
+		if math.Abs(tr.RealizedPnL-wantPnL) > 1e-9 || math.Abs(tr.ExchangeFee-0.06) > 1e-9 {
+			t.Errorf("RealizedPnL = %g fee = %g, want %g gross and 0.06 fee", tr.RealizedPnL, tr.ExchangeFee, wantPnL)
+		}
+		if math.Abs(ss.Cash-(1000+wantPnL-0.06)) > 1e-9 {
+			t.Errorf("cash = %g, want %g", ss.Cash, 1000+wantPnL-0.06)
+		}
+		if len(alerts) != 1 || alerts[0].FillType != "SL" || !alerts[0].IsPartial || math.Abs(alerts[0].RemainingQty-0.4) > 1e-9 || alerts[0].ExchangeOrderID != "42" {
+			t.Errorf("alerts = %+v, want one partial SL alert for OID 42 with 0.4 remaining", alerts)
+		}
+		plan, ok := buildHyperliquidProtectionPlan(sc, pos, 0)
+		if !ok || plan.StopLossATRMult <= 0 || plan.StopLossOID != 0 || math.Abs(plan.Size-0.4) > 1e-9 {
+			t.Errorf("next protection plan = %+v ok=%v, want a new stop placed for 0.4", plan, ok)
+		}
+	}
+
+	t.Run("confirmed on the first cycle", func(t *testing.T) {
+		reset(t)
+		ss := newState()
+		alerts, dms := reconcile(t, ss, 0.4, true)
+		assertStopBooked(t, ss, alerts, 2000, 2000)
+		if len(dms) != 0 {
+			t.Errorf("owner DMs = %v, want none", dms)
+		}
+	})
+
+	t.Run("first lookup fails and a retry confirms", func(t *testing.T) {
+		reset(t)
+		ss := newState()
+		if _, dms := reconcile(t, ss, 0.4, false); len(dms) != 0 {
+			t.Errorf("owner DMs = %v, want none while the lookup is retried", dms)
+		}
+		assertResynced(t, ss, 1, stopOID)
+		pos := ss.Positions["ETH"]
+		size, kind, ok, _ := perpsLiveOrderSizeKind(-1, 1900, 0, pos.Quantity, pos.AvgCost, PerpsSizing{}, pos.Side, DirectionBoth, 0)
+		if !ok || kind != perpsLiveOrderFlip || math.Abs(size-0.4) > 1e-9 {
+			t.Errorf("reversal order = %g kind %v ok %v, want a flip sized from the on-chain 0.4", size, kind, ok)
+		}
+		alerts, _ := reconcile(t, ss, 0.4, true)
+		assertStopBooked(t, ss, alerts, 2000, chainEntry)
+	})
+
+	t.Run("stop fills the remainder after an external drop", func(t *testing.T) {
+		reset(t)
+		ss := newState()
+		reconcile(t, ss, 0.4, false)
+		assertResynced(t, ss, 1, stopOID)
+		alerts, dms := reconcileStopFilled(t, ss, 0, 0.4)
+		if _, open := ss.Positions["ETH"]; open {
+			t.Fatalf("position = %+v, want it closed", ss.Positions["ETH"])
+		}
+		if len(ss.TradeHistory) != 1 || ss.TradeHistory[0].ExchangeOrderID != "42" || math.Abs(ss.TradeHistory[0].Quantity-0.4) > 1e-9 {
+			t.Fatalf("TradeHistory = %+v, want one 0.4 stop close with OID 42", ss.TradeHistory)
+		}
+		if n := len(ss.ClosedPositions); n != 1 || ss.ClosedPositions[0].CloseReason != "stop_loss" {
+			t.Errorf("ClosedPositions = %+v, want one stop_loss close", ss.ClosedPositions)
+		}
+		if len(alerts) != 1 || alerts[0].FillType != "SL" || alerts[0].IsPartial || math.Abs(alerts[0].CloseQty-0.4) > 1e-9 {
+			t.Errorf("alerts = %+v, want one full SL alert for 0.4", alerts)
+		}
+		if len(dms) != 1 || !strings.Contains(dms[0], "HL STOP FILL AFTER DROP") {
+			t.Errorf("owner DMs = %v, want one alert for the unexplained 0.6 drop", dms)
+		}
+	})
+
+	t.Run("external close of the remainder after a stop fill", func(t *testing.T) {
+		reset(t)
+		ss := newState()
+		reconcile(t, ss, 0.4, false)
+		reconcileStopFilled(t, ss, 0, 0.6)
+		if _, open := ss.Positions["ETH"]; open {
+			t.Fatalf("position = %+v, want it closed", ss.Positions["ETH"])
+		}
+		if len(ss.TradeHistory) != 2 {
+			t.Fatalf("TradeHistory = %+v, want the stop close and the external close", ss.TradeHistory)
+		}
+		stop, external := ss.TradeHistory[0], ss.TradeHistory[1]
+		if stop.ExchangeOrderID != "42" || math.Abs(stop.Quantity-0.6) > 1e-9 || math.Abs(stop.RealizedPnL-0.6*(stopTrigger-2000)) > 1e-9 {
+			t.Errorf("stop trade = %+v, want 0.6 closed with OID 42 at cost 2000", stop)
+		}
+		if external.ExchangeOrderID == "42" || math.Abs(external.Quantity-0.4) > 1e-9 {
+			t.Errorf("external trade = %+v, want 0.4 closed without the stop OID", external)
+		}
+		if n := len(ss.ClosedPositions); n != 1 || ss.ClosedPositions[0].CloseReason == "stop_loss" {
+			t.Errorf("ClosedPositions = %+v, want the remainder closed as external", ss.ClosedPositions)
+		}
+	})
+
+	t.Run("never confirmed sends one alert", func(t *testing.T) {
+		reset(t)
+		ss := newState()
+		var dms []string
+		for cycle := 1; cycle <= hlStopFillLookupRetryCycles+5; cycle++ {
+			_, got := reconcile(t, ss, 0.4, false)
+			dms = append(dms, got...)
+			assertResynced(t, ss, cycle, stopOID)
+		}
+		if len(dms) != 1 || !strings.Contains(dms[0], "HL STOP FILL UNCONFIRMED") {
+			t.Errorf("owner DMs = %v, want one unconfirmed-stop alert", dms)
+		}
+	})
+
+	t.Run("protection sync reports the stop filled while the lookup is retried", func(t *testing.T) {
+		reset(t)
+		ss := newState()
+		reconcile(t, ss, 0.4, false)
+		syncReportsStopFilled(t, ss)
+		if _, dms := reconcile(t, ss, 0.4, false); len(dms) != 1 || !strings.Contains(dms[0], "HL STOP FILL PENDING") || !strings.Contains(dms[0], "OID 42") || !strings.Contains(dms[0], "0.600000") {
+			t.Errorf("owner DMs = %v, want one pending-stop alert naming OID 42 and 0.6", dms)
+		}
+		assertResynced(t, ss, 2, 0)
+		alerts, _ := reconcile(t, ss, 0.4, true)
+		assertStopBooked(t, ss, alerts, 2000, chainEntry)
+	})
+
+	t.Run("restart after the stop is cleared while the lookup is retried", func(t *testing.T) {
+		reset(t)
+		ss := newState()
+		reconcile(t, ss, 0.4, false)
+		syncReportsStopFilled(t, ss)
+		_, dms := reconcile(t, ss, 0.4, false)
+		forgetWatches()
+		for cycle := 3; cycle <= hlStopFillLookupRetryCycles+4; cycle++ {
+			_, got := reconcile(t, ss, 0.4, false)
+			dms = append(dms, got...)
+			assertResynced(t, ss, cycle, 0)
+		}
+		named := 0
+		for _, dm := range dms {
+			if strings.Contains(dm, "OID 42") && strings.Contains(dm, "0.600000") {
+				named++
+			}
+		}
+		if named != 1 {
+			t.Errorf("owner DMs = %v, want one alert naming OID 42 and the unbooked 0.6", dms)
+		}
+	})
+
+	t.Run("restart after the resync clears the filled stop", func(t *testing.T) {
+		reset(t)
+		ss := newState()
+		reconcile(t, ss, 0.4, false)
+		forgetWatches()
+		syncReportsStopFilled(t, ss)
+		_, dms := reconcile(t, ss, 0.4, false)
+		assertResynced(t, ss, 2, 0)
+		if len(dms) != 1 || !strings.Contains(dms[0], "HL STOP FILL UNBOOKED") {
+			t.Errorf("owner DMs = %v, want one unbooked-stop alert", dms)
+		}
+		plan, ok := buildHyperliquidProtectionPlan(sc, ss.Positions["ETH"], 0)
+		if !ok || plan.StopLossATRMult <= 0 || plan.StopLossOID != 0 || math.Abs(plan.Size-0.4) > 1e-9 {
+			t.Errorf("next protection plan = %+v ok=%v, want a new stop placed for 0.4", plan, ok)
+		}
+		if _, dms := reconcile(t, ss, 0.4, false); len(dms) != 0 {
+			t.Errorf("owner DMs = %v, want no repeat", dms)
+		}
+	})
+
+	t.Run("protection sync reports the stop filled before a flat chain is reconciled", func(t *testing.T) {
+		reset(t)
+		ss := newState()
+		syncReportsStopFilled(t, ss)
+		reconcile(t, ss, 0, true)
+		if _, open := ss.Positions["ETH"]; open {
+			t.Fatalf("position = %+v, want it closed", ss.Positions["ETH"])
+		}
+		if len(ss.TradeHistory) != 1 || ss.TradeHistory[0].ExchangeOrderID != "42" {
+			t.Fatalf("TradeHistory = %+v, want one stop close with OID 42", ss.TradeHistory)
+		}
+		if n := len(ss.ClosedPositions); n != 1 || ss.ClosedPositions[n-1].CloseReason != "stop_loss" {
+			t.Errorf("ClosedPositions = %+v, want one stop_loss close", ss.ClosedPositions)
+		}
+	})
+
+	t.Run("healthy resting stop with no drift", func(t *testing.T) {
+		reset(t)
+		ss := newState()
+		for cycle := 1; cycle <= hlStopFillLookupRetryCycles+1; cycle++ {
+			if _, dms := reconcile(t, ss, 1, false); len(dms) != 0 {
+				t.Fatalf("cycle %d: owner DMs = %v, want none", cycle, dms)
+			}
+			pos := ss.Positions["ETH"]
+			if pos == nil || pos.Quantity != 1 || pos.StopLossOID != stopOID || pos.StopLossTriggerPx != stopTrigger || len(ss.TradeHistory) != 0 {
+				t.Fatalf("cycle %d: position = %+v, want qty 1 with SL %d kept", cycle, pos, stopOID)
+			}
+		}
+	})
+}
+
 func TestReconcileManualPositionSLFired(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
@@ -3437,9 +4446,6 @@ func TestReconcileManualPositionSLFired(t *testing.T) {
 	logMgr, _ := NewLogManager(t.TempDir())
 	var mu sync.RWMutex
 
-	// #685: stub the HL userFills lookup to confirm the SL OID actually filled.
-	// Without confirmation, the new gate routes to hl_sync_external; production
-	// supplies an account address + real indexer, so tests do the same.
 	origLookup := lookupHyperliquidReconcileFillFee
 	defer func() { lookupHyperliquidReconcileFillFee = origLookup }()
 	lookupHyperliquidReconcileFillFee = func(_, _ string, oid int64, _ float64) (HLFillLookup, bool) {
@@ -3449,7 +4455,7 @@ func TestReconcileManualPositionSLFired(t *testing.T) {
 		return HLFillLookup{}, false
 	}
 
-	_, _ = reconcileHyperliquidAccountPositions([]StrategyConfig{sc}, []StrategyConfig{sc}, state, &mu, logMgr, nil, nil, "0xtest", nil, false)
+	_, _, _ = reconcileHyperliquidAccountPositions([]StrategyConfig{sc}, []StrategyConfig{sc}, state, &mu, logMgr, nil, nil, nil, "0xtest", nil, false)
 
 	ss := state.Strategies["manual-eth"]
 	if _, ok := ss.Positions["ETH"]; ok {
@@ -3466,13 +4472,6 @@ func TestReconcileManualPositionSLFired(t *testing.T) {
 	}
 }
 
-// --- #673: TP-fired close attributed to TP fills, not SL trigger ---
-
-// TestReconcilePosition_TPFillsAttributedNotSL is the regression test for #673:
-// when both TPs fire and HL auto-cancels the resting SL, the reconciler must
-// book the close at the actual TP fill prices, not at the (stale) SL trigger
-// price. Pre-fix this scenario produced a fictitious loss because the close
-// was mis-attributed to the SL.
 func TestReconcilePosition_TPFillsAttributedNotSL(t *testing.T) {
 	const (
 		entryPx     = 2315.70
@@ -3497,8 +4496,6 @@ func TestReconcilePosition_TPFillsAttributedNotSL(t *testing.T) {
 			},
 		},
 	}
-	// Resolver: SL OID returns no fill (SL was auto-cancelled by HL once flat).
-	// Both TP OIDs return their actual VWAP fill price + fee.
 	resolver := hlReconcileFillResolver(func(_ string, oid int64, _ float64) (HLFillLookup, bool) {
 		switch oid {
 		case 111:
@@ -3513,7 +4510,7 @@ func TestReconcilePosition_TPFillsAttributedNotSL(t *testing.T) {
 
 	var alerts []ProtectionFillAlert
 	startCash := ss.Cash
-	changed := reconcileHyperliquidPositionsWithResolver(ss, "ETH", nil, resolver, logger, &alerts)
+	changed := reconcileHyperliquidPositionsWithResolver(ss, "ETH", nil, resolver, logger, &alerts, nil, StrategyConfig{})
 	if !changed {
 		t.Fatal("expected changed=true")
 	}
@@ -3547,9 +4544,6 @@ func TestReconcilePosition_TPFillsAttributedNotSL(t *testing.T) {
 	}
 }
 
-// TestReconcilePosition_SLFillStillTakesSLPath verifies that when the SL OID
-// DID fire (userFills returns a hit), the existing SL-trigger-price path is
-// still used and the new TP attribution does not interfere.
 func TestReconcilePosition_SLFillStillTakesSLPath(t *testing.T) {
 	const slTriggerPx = 1800.0
 	ss := &StrategyState{
@@ -3564,14 +4558,13 @@ func TestReconcilePosition_SLFillStillTakesSLPath(t *testing.T) {
 		},
 	}
 	resolver := hlReconcileFillResolver(func(_ string, oid int64, _ float64) (HLFillLookup, bool) {
-		// SL fired; TPs auto-cancelled.
 		if oid == 42 {
 			return HLFillLookup{Fee: 0.05, FilledQty: 0.4, Px: slTriggerPx, Count: 1, OID: 42}, true
 		}
 		return HLFillLookup{}, false
 	})
 	logger := newTestLogger(t)
-	reconcileHyperliquidPositionsWithResolver(ss, "ETH", nil, resolver, logger, nil)
+	reconcileHyperliquidPositionsWithResolver(ss, "ETH", nil, resolver, logger, nil, nil, StrategyConfig{})
 
 	if len(ss.ClosedPositions) != 1 || ss.ClosedPositions[0].CloseReason != "stop_loss" {
 		t.Fatalf("expected one ClosedPosition with reason=stop_loss, got %+v", ss.ClosedPositions)
@@ -3581,11 +4574,6 @@ func TestReconcilePosition_SLFillStillTakesSLPath(t *testing.T) {
 	}
 }
 
-// TestReconcilePosition_PartialTPFillResidualZeroPnL covers the under-shoot
-// case: TP1 fills cleanly, TP2 OID returns no fill (indexer race or only one
-// tier configured). The booked TP1 portion credits real PnL; the residual is
-// closed at zero PnL via hl_sync_external. Locks in current behavior — see
-// PR #675 review for the trade-off vs. mark/SL-trigger pricing.
 func TestReconcilePosition_PartialTPFillResidualZeroPnL(t *testing.T) {
 	const (
 		entryPx  = 2000.0
@@ -3614,7 +4602,7 @@ func TestReconcilePosition_PartialTPFillResidualZeroPnL(t *testing.T) {
 	})
 	logger := newTestLogger(t)
 	startCash := ss.Cash
-	reconcileHyperliquidPositionsWithResolver(ss, "ETH", nil, resolver, logger, nil)
+	reconcileHyperliquidPositionsWithResolver(ss, "ETH", nil, resolver, logger, nil, nil, StrategyConfig{})
 
 	if _, open := ss.Positions["ETH"]; open {
 		t.Fatal("ETH should be removed even when TP fills under-shoot")
@@ -3635,9 +4623,6 @@ func TestReconcilePosition_PartialTPFillResidualZeroPnL(t *testing.T) {
 	}
 }
 
-// TestReconcilePosition_NoFillsFallsBackToZeroPnL verifies that when neither
-// SL nor TP OIDs return fills (e.g. manual UI close, indexer outage), the
-// legacy zero-PnL hl_sync_external path is preserved.
 func TestReconcilePosition_NoFillsFallsBackToZeroPnL(t *testing.T) {
 	ss := &StrategyState{
 		ID: "hl-eth", Cash: 100,
@@ -3652,7 +4637,7 @@ func TestReconcilePosition_NoFillsFallsBackToZeroPnL(t *testing.T) {
 	resolver := noFillFeeResolver
 	logger := newTestLogger(t)
 	startCash := ss.Cash
-	reconcileHyperliquidPositionsWithResolver(ss, "ETH", nil, resolver, logger, nil)
+	reconcileHyperliquidPositionsWithResolver(ss, "ETH", nil, resolver, logger, nil, nil, StrategyConfig{})
 
 	if _, open := ss.Positions["ETH"]; open {
 		t.Fatal("ETH should be removed even when no fills found")
@@ -3660,21 +4645,14 @@ func TestReconcilePosition_NoFillsFallsBackToZeroPnL(t *testing.T) {
 	if len(ss.ClosedPositions) != 1 || ss.ClosedPositions[0].CloseReason != "hl_sync_external" {
 		t.Fatalf("expected ClosedPosition with reason=hl_sync_external, got %+v", ss.ClosedPositions)
 	}
-	if ss.Cash != startCash {
-		t.Errorf("cash = %g, want unchanged (%g) on zero-PnL fallback", ss.Cash, startCash)
+	if len(ss.TradeHistory) != 1 || ss.TradeHistory[0].RealizedPnL != 0 || ss.TradeHistory[0].FeeSource != FeeSourceModeled {
+		t.Fatalf("want one zero-gross-PnL modeled-fee trade row, got %+v", ss.TradeHistory)
+	}
+	if math.Abs(ss.Cash-(startCash-ss.TradeHistory[0].ExchangeFee)) > 1e-9 {
+		t.Errorf("cash = %g, want %g (modeled fee only) on zero-PnL fallback", ss.Cash, startCash-ss.TradeHistory[0].ExchangeFee)
 	}
 }
 
-// --- #685: TP-fired close with all TPOIDs zeroed must not mis-book as SL ---
-
-// TestReconcilePosition_AllTPOIDsZeroedSLNotFilled is the regression for #685:
-// when applyHyperliquidProtectionSync zeroes every pos.TPOIDs[i] across
-// successive cycles, hlAttemptCloseFromTPFills returns false (nothing left to
-// look up). Pre-fix, the legacy SL fallback then booked the close at the
-// (stale) SL trigger price even though userFills shows the SL never filled —
-// producing a fictitious loss on what was actually a TP-fired win. The new
-// SL-confirmed gate falls through to hl_sync_external when the SL OID has no
-// real fill.
 func TestReconcilePosition_AllTPOIDsZeroedSLNotFilled(t *testing.T) {
 	const slTriggerPx = 1800.0
 	ss := &StrategyState{
@@ -3684,19 +4662,16 @@ func TestReconcilePosition_AllTPOIDsZeroedSLNotFilled(t *testing.T) {
 				Symbol: "ETH", Quantity: 0.215, AvgCost: 2329.8, Side: "long",
 				Multiplier: 1, Leverage: 5, OwnerStrategyID: "hl-eth",
 				StopLossOID: 999, StopLossTriggerPx: slTriggerPx,
-				// Both tiers zeroed by prior protection-sync cycles.
 				TPOIDs: []int64{0, 0},
 			},
 		},
 	}
-	// Resolver: SL OID lookup returns no fill (it was auto-cancelled when the
-	// final TP flattened the position). TP OIDs are 0 so no lookup runs.
 	resolver := hlReconcileFillResolver(func(_ string, _ int64, _ float64) (HLFillLookup, bool) {
 		return HLFillLookup{}, false
 	})
 	logger := newTestLogger(t)
 	startCash := ss.Cash
-	reconcileHyperliquidPositionsWithResolver(ss, "ETH", nil, resolver, logger, nil)
+	reconcileHyperliquidPositionsWithResolver(ss, "ETH", nil, resolver, logger, nil, nil, StrategyConfig{})
 
 	if _, open := ss.Positions["ETH"]; open {
 		t.Fatal("ETH position should be removed after reconcile")
@@ -3711,18 +4686,21 @@ func TestReconcilePosition_AllTPOIDsZeroedSLNotFilled(t *testing.T) {
 	if cp.ClosePrice == slTriggerPx {
 		t.Errorf("ClosePrice = %g matches stale SL trigger — #685 regression", cp.ClosePrice)
 	}
-	if ss.Cash != startCash {
-		t.Errorf("cash = %g, want unchanged (%g) — fictitious SL PnL must not credit/debit", ss.Cash, startCash)
+	if len(ss.TradeHistory) != 1 {
+		t.Fatalf("TradeHistory = %d, want 1 (no-mark-price close must book a row, #954)", len(ss.TradeHistory))
+	}
+	tr := ss.TradeHistory[0]
+	if !tr.PnLGross || tr.RealizedPnL != 0 || tr.Price != 2329.8 {
+		t.Errorf("zero-info close row = pnl %g px %g (gross=%v), want gross 0 @ AvgCost", tr.RealizedPnL, tr.Price, tr.PnLGross)
+	}
+	if tr.FeeSource != FeeSourceModeled {
+		t.Errorf("FeeSource = %q, want modeled (no userFills match)", tr.FeeSource)
+	}
+	if math.Abs(ss.Cash-(startCash-tr.ExchangeFee)) > 1e-9 {
+		t.Errorf("cash = %g, want %g — only the modeled fee may move cash, never fictitious SL PnL", ss.Cash, startCash-tr.ExchangeFee)
 	}
 }
 
-// TestAttemptCloseFromTPFills_CoinSizeSLFallbackDoesNotStarveTP guards the
-// review-followup tightening on the SL-filled gate inside
-// hlAttemptCloseFromTPFills: before the fix, a coin+size fallback hit on a TP
-// fill of the same size made slFilled=true (the resolver returned ok=true with
-// lookup.OID pointing at the TP, not the SL OID) and TP attribution was
-// skipped. With the OID-equality check, the SL gate rejects the non-SL match
-// and TP attribution proceeds normally.
 func TestAttemptCloseFromTPFills_CoinSizeSLFallbackDoesNotStarveTP(t *testing.T) {
 	const (
 		entryPx = 2000.0
@@ -3741,9 +4719,6 @@ func TestAttemptCloseFromTPFills_CoinSizeSLFallbackDoesNotStarveTP(t *testing.T)
 			},
 		},
 	}
-	// Resolver behavior: any (coin, oid, qty) returns a hit whose OID is the
-	// TP OID 111 — modeling the coin+size fallback hitting a TP fill record
-	// of the same size when probed for the SL OID.
 	resolver := hlReconcileFillResolver(func(_ string, _ int64, _ float64) (HLFillLookup, bool) {
 		return HLFillLookup{Fee: 0.04, FilledQty: qty, Px: tpPx, Count: 1, OID: 111}, true
 	})

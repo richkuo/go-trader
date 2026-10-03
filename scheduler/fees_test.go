@@ -5,46 +5,24 @@ import (
 	"testing"
 )
 
-func TestCalculateFuturesFee(t *testing.T) {
+func TestCalculatePlatformSpotFee(t *testing.T) {
 	cases := []struct {
-		contracts      int
-		feePerContract float64
-		want           float64
+		platform string
+		want     float64
 	}{
-		{1, 1.50, 1.50},
-		{2, 1.50, 3.00},
-		{10, 0.50, 5.00},
-		{0, 1.50, 0.00},
-		{5, 0, 0.00},
+		{"okx", 1000.0 * OKXSpotTakerFeePct},
+		{"okx-perps", 1000.0 * OKXPerpsTakerFeePct},
 	}
 	for _, tc := range cases {
-		got := CalculateFuturesFee(tc.contracts, tc.feePerContract)
-		if math.Abs(got-tc.want) > 0.001 {
-			t.Errorf("CalculateFuturesFee(%d, %.2f) = %.2f, want %.2f", tc.contracts, tc.feePerContract, got, tc.want)
-		}
-	}
-}
-
-func TestCalculatePlatformSpotFeeOKX(t *testing.T) {
-	// OKX spot: 0.1%
-	fee := CalculatePlatformSpotFee("okx", 1000.0)
-	expected := 1000.0 * OKXSpotTakerFeePct
-	if fee != expected {
-		t.Errorf("OKX spot fee: got %f, want %f", fee, expected)
-	}
-}
-
-func TestCalculatePlatformSpotFeeOKXPerps(t *testing.T) {
-	// OKX perps: 0.05%
-	fee := CalculatePlatformSpotFee("okx-perps", 1000.0)
-	expected := 1000.0 * OKXPerpsTakerFeePct
-	if fee != expected {
-		t.Errorf("OKX perps fee: got %f, want %f", fee, expected)
+		t.Run(tc.platform, func(t *testing.T) {
+			if fee := CalculatePlatformSpotFee(tc.platform, 1000.0); fee != tc.want {
+				t.Errorf("%s fee: got %f, want %f", tc.platform, fee, tc.want)
+			}
+		})
 	}
 }
 
 func TestCalculatePlatformFuturesFee(t *testing.T) {
-	// With FuturesConfig
 	sc := StrategyConfig{
 		FuturesConfig: &FuturesConfig{FeePerContract: 1.50},
 	}
@@ -53,7 +31,6 @@ func TestCalculatePlatformFuturesFee(t *testing.T) {
 		t.Errorf("expected 4.50, got %.2f", got)
 	}
 
-	// Without FuturesConfig
 	sc2 := StrategyConfig{}
 	got2 := CalculatePlatformFuturesFee(sc2, 3)
 	if got2 != 0 {

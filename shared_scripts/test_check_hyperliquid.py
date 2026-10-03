@@ -1,4 +1,3 @@
-"""Tests for check_hyperliquid.py — specifically the fill extraction logic."""
 
 import sys
 import os
@@ -15,19 +14,15 @@ _UNSET = object()
 
 
 def _load_check_module():
-    """Load check_hyperliquid.py as a module."""
     script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "check_hyperliquid.py")
     spec = importlib.util.spec_from_file_location("check_hyperliquid", script_path)
     mod = importlib.util.module_from_spec(spec)
-    # Don't execute top-level code that sets up sys.path — we'll mock the adapter
     return mod, spec
 
 
 class TestFillExtraction:
-    """Test that run_execute extracts oid and fee from Hyperliquid SDK responses."""
 
-    def _run_execute_with_mock_response(self, sdk_response, lookup_result=_UNSET):
-        """Helper: mock the adapter and capture JSON output from run_execute."""
+    def _run_execute_with_mock_response(self, sdk_response, lookup_result=_UNSET, **execute_kwargs):
         mod, spec = _load_check_module()
         spec.loader.exec_module(mod)
 
@@ -35,13 +30,16 @@ class TestFillExtraction:
         mock_adapter = MagicMock()
         mock_adapter_cls.return_value = mock_adapter
         mock_adapter.market_open.return_value = sdk_response
+        mock_adapter.cancel_trigger_order.return_value = {
+            "status": "ok",
+            "response": {"data": {"statuses": [{}]}},
+        }
         if lookup_result is not _UNSET:
             mock_adapter.lookup_fill_fee_by_oid.return_value = lookup_result
 
         captured = StringIO()
         with patch.dict(sys.modules, {}):
             with patch.object(mod, "__builtins__", mod.__builtins__):
-                # Patch the import inside run_execute
                 import builtins
                 original_import = builtins.__import__
 
@@ -54,12 +52,15 @@ class TestFillExtraction:
 
                 with patch("builtins.__import__", side_effect=mock_import):
                     with patch("sys.stdout", captured):
-                        mod.run_execute("BTC", "buy", 0.01, "live")
+                        exit_code = 0
+                        try:
+                            mod.run_execute("BTC", "buy", 0.01, "live", **execute_kwargs)
+                        except SystemExit as e:
+                            exit_code = e.code
 
-        return json.loads(captured.getvalue())
+        return json.loads(captured.getvalue()), exit_code
 
     def test_fill_with_oid_and_fee(self):
-        """SDK response includes oid and fee — both should appear in output."""
         sdk_response = {
             "status": "ok",
             "response": {
@@ -78,119 +79,55 @@ class TestFillExtraction:
                 },
             },
         }
-        result = self._run_execute_with_mock_response(sdk_response)
+        result, exit_code = self._run_execute_with_mock_response(sdk_response)
+        assert exit_code == 0
         fill = result["execution"]["fill"]
         assert fill["avg_px"] == 55000.5
         assert fill["total_sz"] == 0.01
         assert fill["oid"] == 1234567890
         assert fill["fee"] == 0.35
 
-    def test_fill_with_oid_no_fee(self):
-        """SDK response has oid but no fee — fee should be absent."""
-        sdk_response = {
-            "status": "ok",
-            "response": {
-                "type": "order",
-                "data": {
-                    "statuses": [
-                        {
-                            "filled": {
-                                "avgPx": "2100.0",
-                                "totalSz": "0.5",
-                                "oid": 9876543210,
-                            }
+    _NO_FEE_RESPONSE = {
+        "status": "ok",
+        "response": {
+            "type": "order",
+            "data": {
+                "statuses": [
+                    {
+                        "filled": {
+                            "avgPx": "2100.0",
+                            "totalSz": "0.5",
+                            "oid": 9876543210,
                         }
-                    ]
-                },
+                    }
+                ]
             },
-        }
-        result = self._run_execute_with_mock_response(sdk_response)
-        fill = result["execution"]["fill"]
-        assert fill["oid"] == 9876543210
-        assert "fee" not in fill
+        },
+    }
 
-    def test_fill_uses_numeric_lookup_result(self):
-        """userFills lookup fee + closed PnL should be copied only as numbers."""
-        sdk_response = {
-            "status": "ok",
-            "response": {
-                "type": "order",
-                "data": {
-                    "statuses": [
-                        {
-                            "filled": {
-                                "avgPx": "2100.0",
-                                "totalSz": "0.5",
-                                "oid": 9876543210,
-                            }
-                        }
-                    ]
-                },
-            },
-        }
-        result = self._run_execute_with_mock_response(
-            sdk_response,
-            lookup_result={"fee": "0.42", "closed_pnl": "3.14"},
+    @pytest.mark.parametrize("lookup_result,expected", [
+        (_UNSET, {}),
+        ({"fee": "0.42", "closed_pnl": "3.14"}, {"fee": 0.42, "closed_pnl": 3.14}),
+        (MagicMock(), {}),
+        ({"fee": MagicMock(), "closed_pnl": MagicMock()}, {}),
+    ])
+    def test_fill_lookup_result_handling(self, lookup_result, expected):
+        result, exit_code = self._run_execute_with_mock_response(
+            self._NO_FEE_RESPONSE,
+            **({} if lookup_result is _UNSET else {"lookup_result": lookup_result}),
         )
+        assert exit_code == 0
         fill = result["execution"]["fill"]
-        assert fill["fee"] == 0.42
-        assert fill["closed_pnl"] == 3.14
-
-    def test_fill_ignores_truthy_non_mapping_lookup_result(self):
-        """A bare MagicMock lookup result must not leak into JSON output."""
-        sdk_response = {
-            "status": "ok",
-            "response": {
-                "type": "order",
-                "data": {
-                    "statuses": [
-                        {
-                            "filled": {
-                                "avgPx": "2100.0",
-                                "totalSz": "0.5",
-                                "oid": 9876543210,
-                            }
-                        }
-                    ]
-                },
-            },
-        }
-        result = self._run_execute_with_mock_response(sdk_response, lookup_result=MagicMock())
-        fill = result["execution"]["fill"]
+        assert fill["avg_px"] == 2100.0
+        assert fill["total_sz"] == 0.5
         assert fill["oid"] == 9876543210
-        assert "fee" not in fill
-        assert "closed_pnl" not in fill
-
-    def test_fill_ignores_malformed_lookup_values(self):
-        """Truthy dicts with non-numeric payloads are ignored."""
-        sdk_response = {
-            "status": "ok",
-            "response": {
-                "type": "order",
-                "data": {
-                    "statuses": [
-                        {
-                            "filled": {
-                                "avgPx": "2100.0",
-                                "totalSz": "0.5",
-                                "oid": 9876543210,
-                            }
-                        }
-                    ]
-                },
-            },
-        }
-        result = self._run_execute_with_mock_response(
-            sdk_response,
-            lookup_result={"fee": MagicMock(), "closed_pnl": MagicMock()},
-        )
-        fill = result["execution"]["fill"]
-        assert fill["oid"] == 9876543210
-        assert "fee" not in fill
-        assert "closed_pnl" not in fill
+        for key in ("fee", "closed_pnl"):
+            if key in expected:
+                assert fill[key] == expected[key]
+            else:
+                assert key not in fill
 
     def test_fill_without_oid(self):
-        """SDK response has no oid — backwards compatible with old responses."""
         sdk_response = {
             "status": "ok",
             "response": {
@@ -207,7 +144,8 @@ class TestFillExtraction:
                 },
             },
         }
-        result = self._run_execute_with_mock_response(sdk_response)
+        result, exit_code = self._run_execute_with_mock_response(sdk_response)
+        assert exit_code == 0
         fill = result["execution"]["fill"]
         assert fill["avg_px"] == 50000.0
         assert fill["total_sz"] == 0.1
@@ -215,19 +153,95 @@ class TestFillExtraction:
         assert "fee" not in fill
 
     def test_fill_empty_statuses(self):
-        """SDK response with empty statuses — fill should be empty dict."""
         sdk_response = {
             "status": "ok",
             "response": {"type": "order", "data": {"statuses": []}},
         }
-        result = self._run_execute_with_mock_response(sdk_response)
-        assert result["execution"]["fill"] == {}
+        result, exit_code = self._run_execute_with_mock_response(sdk_response)
+        assert exit_code == 1
+        assert result["execution"] is None
+        assert "error" in result
+
+    @pytest.mark.parametrize(
+        "sdk_response",
+        [
+            {"status": "err", "response": "rejected"},
+            {
+                "status": "ok",
+                "response": {"type": "order", "data": {"statuses": [{}]}},
+            },
+            {
+                "status": "ok",
+                "response": {
+                    "type": "order",
+                    "data": {"statuses": [{"filled": {"avgPx": "bad", "totalSz": "0.1"}}]},
+                },
+            },
+            {
+                "status": "ok",
+                "response": {
+                    "type": "order",
+                    "data": {"statuses": [{"filled": {"avgPx": "50000", "totalSz": "bad"}}]},
+                },
+            },
+            {
+                "status": "ok",
+                "response": {
+                    "type": "order",
+                    "data": {"statuses": [{"filled": {"avgPx": "0", "totalSz": "0.1"}}]},
+                },
+            },
+            {
+                "status": "ok",
+                "response": {
+                    "type": "order",
+                    "data": {"statuses": [{"filled": {"avgPx": "50000", "totalSz": "0"}}]},
+                },
+            },
+        ],
+    )
+    def test_unconfirmed_fill_exits_with_error(self, sdk_response):
+        result, exit_code = self._run_execute_with_mock_response(sdk_response)
+        assert exit_code == 1
+        assert result["execution"] is None
+        assert result["error"]
+
+    @pytest.mark.parametrize("sdk_response,want_outcome,want_fill", [
+        ({"status": "ok", "response": {"type": "order", "data": {"statuses": [{"filled": {"avgPx": "3000", "totalSz": "0.2", "oid": 7}}]}}}, "filled", True),
+        ({"status": "err", "response": "Insufficient margin"}, "rejected", False),
+        ({"status": "ok", "response": {"type": "order", "data": {"statuses": [{"error": "Order could not immediately match"}]}}}, "rejected", False),
+        ({"status": "ok", "response": {"type": "order", "data": {"statuses": [{"filled": {"avgPx": "3000", "totalSz": "0"}}]}}}, "rejected", False),
+        ({"status": "ok", "response": {"type": "order", "data": {"statuses": []}}}, "unknown", False),
+        ({"status": "ok", "response": {"type": "order"}}, "unknown", False),
+        ({"status": "ok", "response": {"type": "order", "data": {"statuses": ["garbled"]}}}, "unknown", False),
+        ({"status": "ok", "response": {"type": "order", "data": {"statuses": [{"resting": {"oid": 5}}]}}}, "unknown", False),
+        ({"status": "ok", "response": {"type": "order", "data": {"statuses": [{"filled": {"avgPx": "bad", "totalSz": "0.2"}}]}}}, "unknown", False),
+        ({"status": "ok", "response": {"type": "order", "data": {"statuses": [{"filled": {"avgPx": "nan", "totalSz": "0.2"}}]}}}, "unknown", False),
+        (None, "unknown", False),
+    ])
+    def test_extract_execute_fill_outcome(self, sdk_response, want_outcome, want_fill):
+        mod, spec = _load_check_module()
+        spec.loader.exec_module(mod)
+        fill, error, outcome = mod._extract_execute_fill(sdk_response)
+        assert outcome == want_outcome
+        assert (fill is not None) is want_fill
+        assert bool(error) is not want_fill
+
+    def test_unconfirmed_fill_preserves_cancel_metadata(self):
+        sdk_response = {
+            "status": "ok",
+            "response": {"type": "order", "data": {"statuses": []}},
+        }
+        result, exit_code = self._run_execute_with_mock_response(
+            sdk_response,
+            cancel_oid=[111, 222],
+        )
+        assert exit_code == 1
+        assert result["cancel_stop_loss_succeeded"] is True
+        assert result["cancel_stop_loss_succeeded_oids"] == [111, 222]
 
 
 class TestMarginMode:
-    """#486: run_execute calls update_leverage with isolated/cross before placing
-    the market order. Failure of update_leverage must abort the order (fail closed)
-    so a bad config can't silently land in the wrong margin mode."""
 
     def _run_execute_with_margin(self, margin_mode, leverage, update_leverage_side_effect=None):
         mod, spec = _load_check_module()
@@ -312,12 +326,6 @@ class TestMarginMode:
 
 
 class TestPeerLeverageSkip:
-    """#491: when a peer strategy has already opened the same coin, HL has
-    (margin_mode, leverage) pinned to the existing on-chain position. A fresh
-    update_leverage call would fail, so run_execute queries get_position_leverage
-    and skips the call when state already matches. LoadConfig validates that
-    peers agree on (margin_mode, leverage), so a match is the expected case
-    when peers share a coin."""
 
     def _run_execute_with_existing_pos(self, margin_mode, leverage, current_state):
         mod, spec = _load_check_module()
@@ -355,36 +363,24 @@ class TestPeerLeverageSkip:
                     exit_code = e.code
         return json.loads(captured.getvalue()), mock_adapter, exit_code
 
-    def test_skips_update_leverage_when_state_matches(self):
+    @pytest.mark.parametrize("current_state,expect_update", [
+        ({"margin_mode": "isolated", "leverage": 5}, False),
+        ({"margin_mode": "cross", "leverage": 5}, True),
+        ({"margin_mode": "isolated", "leverage": 3}, True),
+        (None, True),
+    ])
+    def test_update_leverage_only_when_state_differs(self, current_state, expect_update):
         result, adapter, exit_code = self._run_execute_with_existing_pos(
-            "isolated", 5, {"margin_mode": "isolated", "leverage": 5})
+            "isolated", 5, current_state)
         assert exit_code == 0
-        adapter.update_leverage.assert_not_called()
+        if expect_update:
+            adapter.update_leverage.assert_called_once_with(5, "ETH", is_cross=False)
+        else:
+            adapter.update_leverage.assert_not_called()
         adapter.market_open.assert_called_once()
         assert result["execution"]["action"] == "buy"
 
-    def test_calls_update_leverage_when_mode_mismatches(self):
-        result, adapter, exit_code = self._run_execute_with_existing_pos(
-            "isolated", 5, {"margin_mode": "cross", "leverage": 5})
-        adapter.update_leverage.assert_called_once_with(5, "ETH", is_cross=False)
-
-    def test_calls_update_leverage_when_leverage_mismatches(self):
-        result, adapter, exit_code = self._run_execute_with_existing_pos(
-            "isolated", 5, {"margin_mode": "isolated", "leverage": 3})
-        adapter.update_leverage.assert_called_once_with(5, "ETH", is_cross=False)
-
-    def test_calls_update_leverage_when_no_existing_position(self):
-        # get_position_leverage returns None when HL has no open position
-        # for the coin — then update_leverage is safe to call (HL only
-        # rejects mode changes on an OPEN position).
-        result, adapter, exit_code = self._run_execute_with_existing_pos(
-            "isolated", 5, None)
-        adapter.update_leverage.assert_called_once_with(5, "ETH", is_cross=False)
-
     def test_state_fetch_failure_falls_back_to_calling_update_leverage(self):
-        # If get_position_leverage raises, fall back to calling
-        # update_leverage so the existing fail-closed safety net catches a
-        # genuine mismatch — never silently skip without confirmation.
         mod, spec = _load_check_module()
         spec.loader.exec_module(mod)
 
@@ -424,87 +420,86 @@ class TestPeerLeverageSkip:
 
 
 class TestClassifySLResponse:
-    """Unit coverage for _classify_sl_response added in #421. The classifier
-    is the load-bearing piece that distinguishes a resting SL from an instant
-    fill or rejection — getting it wrong means either virtual state thinks
-    the position is open when it's flat, or the scheduler treats a happy
-    instant fill as a placement error."""
 
     def _classify(self, response):
         mod, spec = _load_check_module()
         spec.loader.exec_module(mod)
         return mod._classify_sl_response(response)
 
-    def test_resting(self):
-        kind, oid = self._classify({
-            "response": {"type": "order", "data": {"statuses": [
-                {"resting": {"oid": 12345}}
-            ]}}
-        })
-        assert kind == "resting"
-        assert oid == 12345
+    @pytest.mark.parametrize("response,expected", [
+        ({"response": {"type": "order", "data": {"statuses": [{"resting": {"oid": 12345}}]}}},
+         ("resting", 12345)),
+        ({"response": {"type": "order", "data": {"statuses": [{"resting": {}}]}}},
+         ("resting", 0)),
+        ({"response": {"type": "order", "data": {"statuses": [
+            {"filled": {"oid": 67890, "avgPx": "3000"}}]}}},
+         ("filled", 67890)),
+        ({"response": {"type": "order", "data": {"statuses": [{"filled": {}}]}}},
+         ("filled", 0)),
+        ({"response": {"type": "order", "data": {"statuses": [
+            {"error": "Too many open trigger orders"}]}}},
+         ("error", "Too many open trigger orders")),
+        ({"response": {"type": "order", "data": {"statuses": []}}}, ("missing", None)),
+        ({}, ("missing", None)),
+        ({"response": {"type": "order", "data": {"statuses": ["not a dict"]}}},
+         ("missing", None)),
+    ])
+    def test_classify_sl_response(self, response, expected):
+        assert self._classify(response) == expected
 
-    def test_resting_missing_oid_returns_zero(self):
-        kind, oid = self._classify({
-            "response": {"type": "order", "data": {"statuses": [
-                {"resting": {}}
-            ]}}
-        })
-        assert kind == "resting"
-        assert oid == 0
 
-    def test_filled_immediate_with_oid(self):
-        kind, oid = self._classify({
-            "response": {"type": "order", "data": {"statuses": [
-                {"filled": {"oid": 67890, "avgPx": "3000"}}
-            ]}}
-        })
-        assert kind == "filled"
-        assert oid == 67890
+_CANCEL_OK_RESPONSE = {
+    "status": "ok",
+    "response": {"type": "cancel", "data": {"statuses": ["success"]}},
+}
+_CANCEL_REJECTED_RESPONSE = {
+    "status": "err",
+    "response": {"type": "cancel", "data": {"statuses": [{"error": "order already filled"}]}},
+}
 
-    def test_filled_immediate_without_oid(self):
-        kind, oid = self._classify({
-            "response": {"type": "order", "data": {"statuses": [
-                {"filled": {}}
-            ]}}
-        })
-        assert kind == "filled"
-        assert oid == 0
 
-    def test_per_status_error(self):
-        kind, payload = self._classify({
-            "response": {"type": "order", "data": {"statuses": [
-                {"error": "Too many open trigger orders"}
-            ]}}
-        })
-        assert kind == "error"
-        assert "Too many" in payload
+class TestClassifyCancelResponse:
 
-    def test_missing_when_no_statuses(self):
-        kind, payload = self._classify({
-            "response": {"type": "order", "data": {"statuses": []}}
-        })
-        assert kind == "missing"
-        assert payload is None
+    def _load(self):
+        mod, spec = _load_check_module()
+        spec.loader.exec_module(mod)
+        return mod
 
-    def test_missing_when_completely_malformed(self):
-        kind, payload = self._classify({})
-        assert kind == "missing"
-        assert payload is None
-
-    def test_missing_when_status_is_not_dict(self):
-        kind, payload = self._classify({
-            "response": {"type": "order", "data": {"statuses": ["not a dict"]}}
-        })
-        assert kind == "missing"
-        assert payload is None
+    @pytest.mark.parametrize("response,kind,fragment", [
+        (_CANCEL_OK_RESPONSE, "ok", ""),
+        ({"status": "ok", "response": {"data": {"statuses": [{}]}}}, "ok", ""),
+        ({"status": "err"}, "error", "err"),
+        ({"status": "ok", "response": {"data": {"statuses": [{"error": "no such order"}]}}},
+         "error", None),
+        ({}, "error", None),
+        (None, "error", None),
+    ])
+    def test_classify_cancel_response(self, response, kind, fragment):
+        got_kind, payload = self._load()._classify_cancel_response(response)
+        assert got_kind == kind
+        if fragment == "":
+            assert payload == ""
+        elif fragment is not None:
+            assert fragment in payload
 
 
 class TestUpdateStopLoss:
-    """#501: trailing stops reuse cancel_trigger_order + place_stop_loss without
-    submitting a market order."""
 
-    def _run_update(self, side="long", place_response=None, cancel_side_effect=None):
+    def _run_update(
+        self,
+        side="long",
+        place_response=None,
+        cancel_side_effect=None,
+        cancel_response=_UNSET,
+        place_side_effect=None,
+        open_oids=None,
+        open_oids_side_effect=None,
+        lookup_result=_UNSET,
+        cancel_oid=11111,
+        post_place_oids=_UNSET,
+        size=0.5,
+        frontend_reads=None,
+    ):
         mod, spec = _load_check_module()
         spec.loader.exec_module(mod)
 
@@ -512,14 +507,328 @@ class TestUpdateStopLoss:
         mock_adapter = MagicMock()
         mock_adapter_cls.return_value = mock_adapter
         mock_adapter.round_perps_trigger_px.side_effect = lambda _symbol, px: round(px, 2)
+        mock_adapter.cancel_trigger_order.return_value = (
+            _CANCEL_OK_RESPONSE if cancel_response is _UNSET else cancel_response
+        )
+        base_oids = {11111} if open_oids is None else open_oids
+        if open_oids_side_effect is not None:
+            mock_adapter.open_order_oids.side_effect = open_oids_side_effect
+        elif post_place_oids is not _UNSET:
+            reads = {"n": 0}
+
+            def _oids(_symbol):
+                reads["n"] += 1
+                if reads["n"] == 1:
+                    return base_oids
+                if isinstance(post_place_oids, Exception):
+                    raise post_place_oids
+                return post_place_oids
+
+            mock_adapter.open_order_oids.side_effect = _oids
+        else:
+            mock_adapter.open_order_oids.return_value = base_oids
         if cancel_side_effect is not None:
             mock_adapter.cancel_trigger_order.side_effect = cancel_side_effect
+        if lookup_result is not _UNSET:
+            mock_adapter.lookup_fill_fee_by_oid.return_value = lookup_result
         mock_adapter.place_stop_loss.return_value = place_response or {
             "response": {"type": "order", "data": {"statuses": [
                 {"resting": {"oid": 22222}}
             ]}}
         }
+        if place_side_effect is not None:
+            mock_adapter.place_stop_loss.side_effect = place_side_effect
+            mock_adapter.modify_stop_loss.side_effect = place_side_effect
+        else:
+            mock_adapter.modify_stop_loss.return_value = mock_adapter.place_stop_loss.return_value
+        if frontend_reads is not None:
+            mock_adapter.frontend_open_orders.side_effect = frontend_reads
+        else:
+            mock_adapter.frontend_open_orders.return_value = []
 
+        captured = StringIO()
+        import builtins
+        original_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "adapter":
+                fake_mod = MagicMock()
+                fake_mod.HyperliquidExchangeAdapter = mock_adapter_cls
+                return fake_mod
+            return original_import(name, *args, **kwargs)
+
+        self.exit_code = 0
+        with patch("builtins.__import__", side_effect=mock_import):
+            with patch("sys.stdout", captured):
+                try:
+                    mod.run_update_stop_loss("ETH", side, size, 3104.123, "live", cancel_oid=cancel_oid)
+                except SystemExit as exc:
+                    self.exit_code = exc.code
+        return json.loads(captured.getvalue()), mock_adapter
+
+    @pytest.mark.parametrize("open_oids,open_err,cancel_response,cancel_err,lookup,want_keys,want_exit,want_cancel", [
+        ({11111}, None, _CANCEL_OK_RESPONSE, None, _UNSET, {"cancel_stop_loss_succeeded": True}, 0, True),
+        ({11111}, None, _CANCEL_REJECTED_RESPONSE, None, _UNSET, {"cancel_stop_loss_error": "already filled"}, 1, True),
+        ({11111}, None, _UNSET, RuntimeError("cancel down"), _UNSET, {"cancel_stop_loss_error": "cancel down"}, 1, True),
+        (set(), None, _UNSET, None, {"fee": 0.01, "count": 1}, {"stop_loss_filled_externally": True}, 0, False),
+        (set(), None, _UNSET, None, None, {"stop_loss_not_open": True}, 0, False),
+        (None, RuntimeError("indexer down"), _UNSET, None, _UNSET, {"open_order_check_error": "indexer down"}, 1, False),
+    ])
+    def test_update_stop_loss_cancel_only(self, open_oids, open_err, cancel_response, cancel_err, lookup, want_keys, want_exit, want_cancel):
+        out, adapter = self._run_update(
+            size=0,
+            open_oids=open_oids,
+            open_oids_side_effect=open_err,
+            cancel_response=cancel_response,
+            cancel_side_effect=cancel_err,
+            lookup_result=lookup,
+        )
+        adapter.place_stop_loss.assert_not_called()
+        adapter.round_perps_trigger_px.assert_not_called()
+        assert out["cancel_only"] is True
+        assert self.exit_code == want_exit
+        assert bool(out.get("error")) is (want_exit == 1)
+        if want_cancel:
+            adapter.cancel_trigger_order.assert_called_once_with("ETH", 11111)
+        else:
+            adapter.cancel_trigger_order.assert_not_called()
+        for key, want in want_keys.items():
+            if isinstance(want, str):
+                assert want in out[key]
+            else:
+                assert out[key] == want
+
+    def test_modify_in_place_long_stop(self):
+        out, adapter = self._run_update(side="long")
+        adapter.modify_stop_loss.assert_called_once_with("ETH", 11111, 0.5, 3104.12, False)
+        adapter.place_stop_loss.assert_not_called()
+        adapter.cancel_trigger_order.assert_not_called()
+        assert out["stop_loss_oid"] == 22222
+        assert out["stop_loss_trigger_px"] == 3104.12
+        assert "cancel_stop_loss_succeeded" not in out
+
+    def test_short_stop_places_buy_trigger(self):
+        out, adapter = self._run_update(side="short")
+        adapter.modify_stop_loss.assert_called_once_with("ETH", 11111, 0.5, 3104.12, True)
+        adapter.place_stop_loss.assert_not_called()
+        assert out["stop_loss_oid"] == 22222
+
+    def test_unreadable_modify_does_not_add_a_second_stop(self):
+        out, adapter = self._run_update(
+            place_response={"status": "weird"},
+            post_place_oids={22222},
+        )
+        adapter.place_stop_loss.assert_not_called()
+        adapter.cancel_trigger_order.assert_not_called()
+        assert "stop_loss_oid" not in out
+        assert out.get("stop_loss_outcome_unknown") is True
+        assert out.get("stop_loss_old_still_open") is True
+
+    def test_modify_exception_does_not_add_a_second_stop(self):
+        def _boom(*_a, **_k):
+            raise RuntimeError("connection reset after submit")
+
+        out, adapter = self._run_update(place_side_effect=_boom, post_place_oids={22222})
+        adapter.place_stop_loss.assert_not_called()
+        adapter.cancel_trigger_order.assert_not_called()
+        assert "stop_loss_oid" not in out
+        assert out.get("stop_loss_old_still_open") is True
+
+    def test_unreadable_modify_with_nothing_else_resting_is_unknown(self):
+        out, adapter = self._run_update(
+            place_response={"status": "weird"},
+            post_place_oids=set(),
+        )
+        adapter.place_stop_loss.assert_not_called()
+        assert out.get("stop_loss_outcome_unknown") is True
+        assert "stop_loss_oid" not in out
+        assert "no usable status" in out["stop_loss_error"]
+
+    def test_unresolvable_diff_marks_outcome_unknown(self):
+        out, _ = self._run_update(
+            place_response={"status": "weird"},
+            post_place_oids=RuntimeError("indexer down"),
+        )
+        assert out.get("stop_loss_outcome_unknown") is True
+        assert "stop_loss_oid" not in out
+
+    def test_ambiguous_diff_marks_outcome_unknown(self):
+        out, _ = self._run_update(
+            place_response={"status": "weird"},
+            post_place_oids={22222, 33333},
+        )
+        assert out.get("stop_loss_outcome_unknown") is True
+        assert "stop_loss_oid" not in out
+
+    def test_rejected_placement_leaves_the_old_stop(self):
+        out, adapter = self._run_update(
+            place_response={"status": "err", "response": "invalid trigger price"},
+        )
+        adapter.cancel_trigger_order.assert_not_called()
+        assert out.get("stop_loss_old_still_open") is True
+        assert "stop_loss_outcome_unknown" not in out
+        assert "cancel_stop_loss_succeeded" not in out
+
+    def test_cap_rejection_does_not_add_a_second_stop(self):
+        out, adapter = self._run_update(
+            place_response={"status": "err", "response": "open order limit"},
+        )
+        adapter.modify_stop_loss.assert_called_once()
+        adapter.place_stop_loss.assert_not_called()
+        adapter.cancel_trigger_order.assert_not_called()
+        assert out.get("stop_loss_old_still_open") is True
+        assert "stop_loss_oid" not in out
+
+    def test_unreadable_place_does_not_cancel(self):
+        out, adapter = self._run_update(
+            place_response={"status": "weird"},
+            post_place_oids=RuntimeError("indexer down"),
+        )
+        adapter.cancel_trigger_order.assert_not_called()
+        assert out.get("stop_loss_outcome_unknown") is True
+        assert out.get("stop_loss_old_still_open") is True
+
+    def test_immediate_fill_does_not_cancel_a_second_stop(self):
+        out, adapter = self._run_update(
+            place_response={"response": {"data": {"statuses": [{"filled": {"totalSz": "0.5", "avgPx": "3104"}}]}}},
+        )
+        adapter.cancel_trigger_order.assert_not_called()
+        adapter.place_stop_loss.assert_not_called()
+        assert out.get("stop_loss_filled_immediately") is True
+
+    def test_modify_failure_leaves_the_old_stop(self):
+        out, adapter = self._run_update(place_side_effect=RuntimeError("cancel down"))
+        adapter.modify_stop_loss.assert_called_once()
+        adapter.place_stop_loss.assert_not_called()
+        adapter.cancel_trigger_order.assert_not_called()
+        assert "stop_loss_oid" not in out
+        assert out.get("stop_loss_old_still_open") is True
+
+    def test_modify_exception_adopts_the_landed_stop(self):
+        landed = {
+            "oid": 77, "side": "A", "sz": "0.5", "reduceOnly": True,
+            "isTrigger": True, "orderType": "Stop Market", "triggerPx": "3104.12",
+        }
+        out, adapter = self._run_update(
+            place_side_effect=RuntimeError("connection reset after submit"),
+            frontend_reads=[[], [landed]],
+        )
+        adapter.place_stop_loss.assert_not_called()
+        assert out["stop_loss_oid"] == 77
+        assert "stop_loss_outcome_unknown" not in out
+
+    def test_modify_exception_old_stop_at_old_trigger_is_unknown(self):
+        old = {
+            "oid": 11111, "side": "A", "sz": "0.5", "reduceOnly": True,
+            "isTrigger": True, "orderType": "Stop Market", "triggerPx": "3104.11",
+        }
+        out, adapter = self._run_update(
+            place_side_effect=RuntimeError("connection reset after submit"),
+            frontend_reads=[[old], [old]],
+        )
+        adapter.place_stop_loss.assert_not_called()
+        assert "stop_loss_oid" not in out
+        assert out.get("stop_loss_outcome_unknown") is True
+        assert out.get("stop_loss_old_still_open") is True
+
+    def test_modify_exception_old_stop_at_new_trigger_confirms_in_place(self):
+        moved = {
+            "oid": 11111, "side": "A", "sz": "0.5", "reduceOnly": True,
+            "isTrigger": True, "orderType": "Stop Market", "triggerPx": "3104.12",
+        }
+        out, adapter = self._run_update(
+            place_side_effect=RuntimeError("connection reset after submit"),
+            frontend_reads=[[moved], [moved]],
+        )
+        adapter.place_stop_loss.assert_not_called()
+        assert out["stop_loss_oid"] == 11111
+        assert "stop_loss_outcome_unknown" not in out
+
+    def test_modify_exception_ignores_a_peers_matching_stop(self):
+        old = {
+            "oid": 11111, "side": "A", "sz": "0.5", "reduceOnly": True,
+            "isTrigger": True, "orderType": "Stop Market", "triggerPx": "3104.11",
+        }
+        peer = {
+            "oid": 22222, "side": "A", "sz": "0.5", "reduceOnly": True,
+            "isTrigger": True, "orderType": "Stop Market", "triggerPx": "3104.12",
+        }
+        out, adapter = self._run_update(
+            place_side_effect=RuntimeError("connection reset after submit"),
+            frontend_reads=[[old, peer], [old, peer]],
+        )
+        adapter.place_stop_loss.assert_not_called()
+        assert "stop_loss_oid" not in out
+        assert out.get("stop_loss_outcome_unknown") is True
+
+    def test_modify_value_error_is_a_plain_rejection(self):
+        out, adapter = self._run_update(place_side_effect=ValueError("Size rounded to zero"))
+        adapter.place_stop_loss.assert_not_called()
+        assert "stop_loss_outcome_unknown" not in out
+        assert out.get("stop_loss_old_still_open") is True
+
+    def test_fresh_place_unreadable_reply_resolves_by_book_diff(self):
+        out, _ = self._run_update(
+            open_oids=set(),
+            lookup_result=None,
+            place_response={"status": "weird"},
+            post_place_oids={22222},
+        )
+        assert out["stop_loss_oid"] == 22222
+        assert "stop_loss_outcome_unknown" not in out
+
+    def test_resting_modify_does_not_cancel(self):
+        out, adapter = self._run_update(cancel_response=_CANCEL_REJECTED_RESPONSE)
+        adapter.modify_stop_loss.assert_called_once()
+        adapter.place_stop_loss.assert_not_called()
+        adapter.cancel_trigger_order.assert_not_called()
+        assert "cancel_stop_loss_succeeded" not in out
+        assert out["stop_loss_oid"] == 22222
+
+    def test_open_order_lookup_failure_defers_replacement(self):
+        out, adapter = self._run_update(open_oids_side_effect=RuntimeError("indexer down"))
+        adapter.cancel_trigger_order.assert_not_called()
+        adapter.place_stop_loss.assert_not_called()
+        assert out["open_order_check_error"] == "indexer down"
+        assert "stop_loss_oid" not in out
+
+    def test_missing_old_oid_with_fill_does_not_replace(self):
+        out, adapter = self._run_update(open_oids=set(), lookup_result={"fee": 0.01, "count": 1})
+        adapter.cancel_trigger_order.assert_not_called()
+        adapter.place_stop_loss.assert_not_called()
+        assert out["stop_loss_filled_externally"] is True
+        assert "stop_loss_oid" not in out
+
+    def test_missing_old_oid_without_fill_places_replacement(self):
+        out, adapter = self._run_update(open_oids=set(), lookup_result=None)
+        adapter.cancel_trigger_order.assert_not_called()
+        adapter.lookup_fill_fee_by_oid.assert_called_once()
+        adapter.place_stop_loss.assert_called_once_with("ETH", 0.5, 3104.12, False)
+        assert out["stop_loss_oid"] == 22222
+
+    def test_initial_placement_without_cancel_oid(self):
+        out, adapter = self._run_update(cancel_oid=0)
+        adapter.open_order_oids.assert_called_once_with("ETH")
+        adapter.cancel_trigger_order.assert_not_called()
+        adapter.place_stop_loss.assert_called_once_with("ETH", 0.5, 3104.12, False)
+        assert out["stop_loss_oid"] == 22222
+
+    def test_list_open_orders_reads_frontend_stop_fields(self):
+        mod, spec = _load_check_module()
+        spec.loader.exec_module(mod)
+        mock_adapter_cls = MagicMock()
+        mock_adapter = MagicMock()
+        mock_adapter_cls.return_value = mock_adapter
+        mock_adapter.frontend_open_orders.return_value = [{
+            "coin": "ETH",
+            "oid": 44444,
+            "side": "A",
+            "sz": "0.5",
+            "isTrigger": True,
+            "reduceOnly": True,
+            "orderType": "Stop Market",
+            "triggerPx": "3104.12",
+        }]
         captured = StringIO()
         import builtins
         original_import = builtins.__import__
@@ -533,27 +842,31 @@ class TestUpdateStopLoss:
 
         with patch("builtins.__import__", side_effect=mock_import):
             with patch("sys.stdout", captured):
-                mod.run_update_stop_loss("ETH", side, 0.5, 3104.123, "live", cancel_oid=11111)
-        return json.loads(captured.getvalue()), mock_adapter
+                mod.run_list_open_order_oids("ETH")
+        out = json.loads(captured.getvalue())
+        mock_adapter.open_order_oids.assert_not_called()
+        order = out["open_orders"][0]
+        assert order["oid"] == 44444
+        assert order["is_trigger"] is True
+        assert order["reduce_only"] is True
+        assert order["order_type"] == "Stop Market"
+        assert order["trigger_px"] == 3104.12
+        assert order["coin"] == "ETH"
+        assert order["sz"] == 0.5
 
-    def test_cancel_then_place_long_stop(self):
-        out, adapter = self._run_update(side="long")
-        adapter.cancel_trigger_order.assert_called_once_with("ETH", 11111)
-        adapter.place_stop_loss.assert_called_once_with("ETH", 0.5, 3104.12, False)
-        method_names = [call[0] for call in adapter.method_calls]
-        assert method_names.index("cancel_trigger_order") < method_names.index("place_stop_loss")
-        assert out["cancel_stop_loss_succeeded"] is True
-        assert out["stop_loss_oid"] == 22222
-        assert out["stop_loss_trigger_px"] == 3104.12
 
-    def test_short_stop_places_buy_trigger(self):
-        out, adapter = self._run_update(side="short")
-        adapter.place_stop_loss.assert_called_once_with("ETH", 0.5, 3104.12, True)
-        assert out["stop_loss_oid"] == 22222
+def test_compute_tp_tier_sizes_never_sums_above_the_floored_input():
+    mod, spec = _load_check_module()
+    spec.loader.exec_module(mod)
+
+    def floor(sz):
+        return math.floor(sz * 100) / 100.0
+
+    sizes = mod.compute_tp_tier_sizes(8.127, [(1.0, 0.5), (2.0, 1.0)], floor)
+    assert sum(sizes) <= floor(8.127) + 1e-9
 
 
 class TestCloseFullPosition:
-    """#592: final-tier TP close uses market_close(sz=None) instead of market_open."""
 
     def _run_close_full(self, market_close_response=None):
         mod, spec = _load_check_module()
@@ -562,7 +875,6 @@ class TestCloseFullPosition:
         mock_adapter_cls = MagicMock()
         mock_adapter = MagicMock()
         mock_adapter_cls.return_value = mock_adapter
-        # Return {} so `if lookup:` is falsy and we skip fee overwrite (#585 path)
         mock_adapter.lookup_fill_fee_by_oid.return_value = {}
         mock_adapter.market_close.return_value = market_close_response or {
             "status": "ok",
@@ -600,13 +912,11 @@ class TestCloseFullPosition:
         return json.loads(captured.getvalue()), mock_adapter
 
     def test_uses_market_close_not_market_open(self):
-        """close_full_position=True must call market_close(sz=None), not market_open."""
         _, adapter = self._run_close_full()
         adapter.market_close.assert_called_once_with("ETH", sz=None)
         adapter.market_open.assert_not_called()
 
     def test_output_shape_matches_sized_close(self):
-        """JSON output shape must be identical to a sized close so Go consumer works unchanged."""
         out, _ = self._run_close_full()
         assert "execution" in out
         fill = out["execution"]["fill"]
@@ -614,36 +924,137 @@ class TestCloseFullPosition:
         assert fill["total_sz"] == 0.211
         assert fill["oid"] == 888
 
-    def test_dust_scenario_closes_full_residual(self):
-        """Regression for #592: TP2 after a 0.421 ETH position that was half-closed to 0.211.
-        The close_full_position path closes the entire residual, not just 0.210."""
-        _, adapter = self._run_close_full(market_close_response={
-            "status": "ok",
-            "response": {
-                "type": "order",
-                "data": {
-                    "statuses": [
-                        {
-                            "filled": {
-                                "avgPx": "3100.0",
-                                "totalSz": "0.211",  # full residual, not 0.210
-                                "oid": 999,
-                            }
-                        }
-                    ]
-                },
-            },
-        })
-        # market_close called with sz=None — HL determines the size, not the caller
-        adapter.market_close.assert_called_once_with("ETH", sz=None)
+
+class TestRunExecuteCloseMode:
+
+    _FILLED = {
+        "status": "ok",
+        "response": {"type": "order", "data": {"statuses": [{"filled": {"avgPx": "3000", "totalSz": "0.2", "oid": 77}}]}},
+    }
+
+    @pytest.mark.parametrize("kwargs,mode,floored,want_exit,want_call", [
+        ({"close_mode": "reduce_only"}, "live", 0.2, 0, ("market_close_sized", ("ETH", False, 0.2, 2970.0), {"reduce_only": True})),
+        ({"close_mode": "cross"}, "live", 0.2, 0, ("market_close_sized", ("ETH", False, 0.2, 2970.0), {"reduce_only": False})),
+        ({}, "live", 0.2, 0, ("market_open", ("ETH", False, 0.2), {})),
+        ({"close_full_position": True}, "live", 0.2, 0, ("market_close", ("ETH",), {"sz": None})),
+        ({"close_mode": "reduce_only", "close_full_position": True}, "live", 0.2, 1, None),
+        ({"close_mode": "reduce_only", "stop_loss_pct": 2.0}, "live", 0.2, 1, None),
+        ({"close_mode": "cross", "prev_pos_qty": 0.1}, "live", 0.2, 1, None),
+        ({"close_mode": "reduce_only"}, "paper", 0.2, 1, None),
+        ({"close_mode": "reduce_only", "cancel_oid": [555]}, "live", 0.0, 1, None),
+    ])
+    def test_run_execute_close_mode_routes(self, kwargs, mode, floored, want_exit, want_call):
+        mod, spec = _load_check_module()
+        spec.loader.exec_module(mod)
+
+        mock_adapter_cls = MagicMock()
+        mock_adapter = MagicMock()
+        mock_adapter_cls.return_value = mock_adapter
+        mock_adapter.lookup_fill_fee_by_oid.return_value = {}
+        mock_adapter.floor_size.return_value = floored
+        mock_adapter.sized_close_price.return_value = 2970.0
+        for name in ("market_open", "market_close", "market_close_sized"):
+            getattr(mock_adapter, name).return_value = self._FILLED
+
+        captured = StringIO()
+        import builtins
+        original_import = builtins.__import__
+
+        def mock_import(name, *args, **kw):
+            if name == "adapter":
+                fake_mod = MagicMock()
+                fake_mod.HyperliquidExchangeAdapter = mock_adapter_cls
+                return fake_mod
+            return original_import(name, *args, **kw)
+
+        exit_code = 0
+        with patch("builtins.__import__", side_effect=mock_import):
+            with patch("sys.stdout", captured):
+                try:
+                    mod.run_execute("ETH", "sell", 0.2, mode, **kwargs)
+                except SystemExit as e:
+                    exit_code = e.code
+
+        order_methods = ("market_open", "market_close", "market_close_sized")
+        assert exit_code == want_exit
+        if want_call is None:
+            for name in order_methods:
+                getattr(mock_adapter, name).assert_not_called()
+            mock_adapter.cancel_trigger_order.assert_not_called()
+            assert json.loads(captured.getvalue()).get("error")
+            return
+        name, args, call_kwargs = want_call
+        getattr(mock_adapter, name).assert_called_once_with(*args, **call_kwargs)
+        for other in order_methods:
+            if other != name:
+                getattr(mock_adapter, other).assert_not_called()
+
+
+    @pytest.mark.parametrize("kwargs,mode,floored,mid,order,want_exit,want_outcome,want_cancel", [
+        ({"close_mode": "reduce_only", "cancel_oid": [555]}, "live", 0.2, 2970.0, _FILLED, 0, "filled", True),
+        ({"close_mode": "reduce_only", "cancel_oid": [555]}, "live", 0.2, 2970.0, {"status": "ok", "response": {"type": "order", "data": {"statuses": [{"error": "Order could not immediately match"}]}}}, 1, "rejected", True),
+        ({"close_mode": "reduce_only", "cancel_oid": [555]}, "live", 0.2, 2970.0, {"status": "ok", "response": {"type": "order", "data": {"statuses": []}}}, 1, "unknown", True),
+        ({"close_mode": "reduce_only", "cancel_oid": [555]}, "live", 0.2, 2970.0, RuntimeError("socket closed"), 1, "unknown", True),
+        ({"close_mode": "reduce_only", "cancel_oid": [555]}, "paper", 0.2, 2970.0, _FILLED, 1, "not_sent", False),
+        ({"close_mode": "reduce_only", "cancel_oid": [555], "stop_loss_pct": 2.0}, "live", 0.2, 2970.0, _FILLED, 1, "not_sent", False),
+        ({"close_mode": "reduce_only", "cancel_oid": [555]}, "live", 0.0, 2970.0, _FILLED, 1, "not_sent", False),
+        ({"close_mode": "reduce_only", "cancel_oid": [555]}, "live", 0.2, ValueError("no usable mid price for ETH"), _FILLED, 1, "not_sent", False),
+        ({"close_mode": "cross", "cancel_oid": [555]}, "live", 0.2, ConnectionError("allMids down"), _FILLED, 1, "not_sent", False),
+        ({"cancel_oid": [555], "margin_mode": "bogus", "leverage": 3}, "live", 0.2, 2970.0, _FILLED, 1, "not_sent", False),
+    ])
+    def test_run_execute_order_outcome(self, kwargs, mode, floored, mid, order, want_exit, want_outcome, want_cancel):
+        mod, spec = _load_check_module()
+        spec.loader.exec_module(mod)
+
+        mock_adapter_cls = MagicMock()
+        mock_adapter = MagicMock()
+        mock_adapter_cls.return_value = mock_adapter
+        mock_adapter.lookup_fill_fee_by_oid.return_value = {}
+        mock_adapter.floor_size.return_value = floored
+        mock_adapter.cancel_trigger_order.return_value = _CANCEL_OK_RESPONSE
+        if isinstance(mid, Exception):
+            mock_adapter.sized_close_price.side_effect = mid
+        else:
+            mock_adapter.sized_close_price.return_value = mid
+        for name in ("market_open", "market_close", "market_close_sized"):
+            if isinstance(order, Exception):
+                getattr(mock_adapter, name).side_effect = order
+            else:
+                getattr(mock_adapter, name).return_value = order
+
+        captured = StringIO()
+        import builtins
+        original_import = builtins.__import__
+
+        def mock_import(name, *args, **kw):
+            if name == "adapter":
+                fake_mod = MagicMock()
+                fake_mod.HyperliquidExchangeAdapter = mock_adapter_cls
+                return fake_mod
+            return original_import(name, *args, **kw)
+
+        exit_code = 0
+        with patch("builtins.__import__", side_effect=mock_import):
+            with patch("sys.stdout", captured):
+                try:
+                    mod.run_execute("ETH", "sell", 0.2, mode, **kwargs)
+                except SystemExit as e:
+                    exit_code = e.code
+
+        out = json.loads(captured.getvalue())
+        assert exit_code == want_exit
+        assert out["order_outcome"] == want_outcome
+        if want_cancel:
+            mock_adapter.cancel_trigger_order.assert_called_once_with("ETH", 555)
+            assert out["cancel_stop_loss_succeeded_oids"] == [555]
+            return
+        mock_adapter.cancel_trigger_order.assert_not_called()
+        for name in ("market_open", "market_close", "market_close_sized"):
+            getattr(mock_adapter, name).assert_not_called()
+        assert "cancel_stop_loss_succeeded_oids" not in out
 
 
 class TestSyncProtection:
-    """#601 / #604 review #1: run_sync_protection branches for OID present /
-    gone-but-cancelled / gone-but-filled. The over-close hazard arises when a
-    TP OID dropped from open_orders because it actually filled (not because
-    it was cancelled), and the script blindly re-places at the same price
-    sized off the stale virtual qty."""
 
     def _run_sync(
         self,
@@ -662,6 +1073,14 @@ class TestSyncProtection:
         fill_lookup_by_oid=None,
         place_responses=None,
         reconcile_fill_hints_json=None,
+        cancel_tp_oids=None,
+        force_sl_replace=False,
+        stop_loss_atr_mult=1.0,
+        open_orders_error=None,
+        open_oids_sequence=None,
+        tp_place_error=None,
+        cancel_response=None,
+        force_tp_replace=None,
     ):
         mod, spec = _load_check_module()
         spec.loader.exec_module(mod)
@@ -669,14 +1088,27 @@ class TestSyncProtection:
         mock_adapter_cls = MagicMock()
         mock_adapter = MagicMock()
         mock_adapter_cls.return_value = mock_adapter
-        mock_adapter.open_order_oids.return_value = (
-            set() if open_oids is None else set(open_oids)
-        )
+        if open_orders_error is not None:
+            mock_adapter.open_order_oids.side_effect = Exception(open_orders_error)
+        elif open_oids_sequence is not None:
+            reads = list(open_oids_sequence)
+
+            def open_oids_step(_symbol):
+                step = reads.pop(0) if reads else set()
+                if isinstance(step, Exception):
+                    raise step
+                return step
+
+            mock_adapter.open_order_oids.side_effect = open_oids_step
+        else:
+            mock_adapter.open_order_oids.return_value = (
+                set() if open_oids is None else set(open_oids)
+            )
         mock_adapter.round_perps_trigger_px.side_effect = lambda _sym, px: round(px, 4)
-        # ETH on HL has sz_decimals=3.  Match the real adapter's behavior so
-        # the new round-then-floor tier sizing logic exercises real lot math.
         mock_adapter.round_size.side_effect = lambda _sym, sz: round(sz, 3)
-        mock_adapter.floor_size.side_effect = lambda _sym, sz: math.floor(sz * 1000) / 1000
+        mock_adapter.floor_size.side_effect = lambda _sym, sz: math.floor(sz * 1000 + 1e-9) / 1000
+        if cancel_response is not None:
+            mock_adapter.cancel_order_by_oid.return_value = cancel_response
 
         fills = fill_lookup_by_oid or {}
 
@@ -691,8 +1123,8 @@ class TestSyncProtection:
             return responses.get("sl", {"status": "ok", "response": {"type": "order", "data": {"statuses": [{"resting": {"oid": 9000}}]}}})
 
         def tp_side_effect(symbol, sz, px, is_buy):
-            # Return distinct OIDs for TP1 vs TP2 by detecting which call this
-            # is via a counter on the side_effect itself.
+            if tp_place_error is not None:
+                raise tp_place_error
             count = mock_adapter.place_take_profit_limit.call_count
             key = "tp1" if count == 1 else "tp2"
             return responses.get(key, {
@@ -723,7 +1155,7 @@ class TestSyncProtection:
                     avg_cost,
                     entry_atr,
                     "live",
-                    stop_loss_atr_mult=1.0,
+                    stop_loss_atr_mult=stop_loss_atr_mult,
                     tp1_atr_mult=1.0,
                     tp1_fraction=0.5,
                     tp2_atr_mult=2.0,
@@ -734,11 +1166,250 @@ class TestSyncProtection:
                     tp_oids=tp_oids,
                     tp_armed_tiers=tp_armed_tiers,
                     reconcile_fill_hints_json=reconcile_fill_hints_json or "",
+                    cancel_tp_oids=cancel_tp_oids,
+                    force_sl_replace=force_sl_replace,
+                    force_tp_replace=force_tp_replace,
                 )
         return json.loads(captured.getvalue()), mock_adapter
 
+
+    @pytest.mark.parametrize("cancel_response,want_oids,want_placements,want_error", [
+        (_CANCEL_OK_RESPONSE, [9101, 7002], 1, False),
+        (_CANCEL_REJECTED_RESPONSE, [7001, 7002], 0, True),
+    ])
+    def test_force_tp_replace_places_only_after_a_confirmed_cancel(self, cancel_response, want_oids, want_placements, want_error):
+        out, adapter = self._run_sync(
+            stop_loss_atr_mult=0,
+            tp_tiers=[(1.0, 0.5), (2.0, 1.0)],
+            tp_oids=[7001, 7002],
+            tp_armed_tiers=[True, True],
+            open_oids={7001, 7002},
+            cancel_response=cancel_response,
+            force_tp_replace=[True, False],
+        )
+        adapter.cancel_order_by_oid.assert_called_once_with("ETH", 7001)
+        assert adapter.place_take_profit_limit.call_count == want_placements
+        assert out["tp_oids"] == want_oids
+        assert bool(out.get("tp_errors", [""])[0]) is want_error
+
+    @pytest.mark.parametrize("size,tiers,oids,skipped,placements", [
+        (0.003, [(1.0, 0.4), (2.0, 0.5), (3.0, 1.0)], [0, 7002, 0], [False, True, False], 2),
+        (0.0004, [(1.0, 0.5), (2.0, 1.0)], [7001, 7002], [True, True], 0),
+    ])
+    def test_size_skipped_tiers_report_unverified(self, size, tiers, oids, skipped, placements):
+        out, adapter = self._run_sync(
+            size=size, stop_loss_atr_mult=0, tp_tiers=tiers,
+            tp_oids=oids, tp_armed_tiers=[oid > 0 for oid in oids],
+            open_oids=set(),
+        )
+        assert out["tp_size_skipped"] == skipped
+        assert adapter.place_take_profit_limit.call_count == placements
+        if placements:
+            assert out["tp_oids"][1] == 7002
+            assert out["tp_oids"][0] > 0
+            assert out["tp_oids"][2] > 0
+        adapter.lookup_fill_fee_by_oid.assert_not_called()
+
+    @pytest.mark.parametrize("reads,place_error,unreadable_response,want_oid,want_unknown,want_error", [
+        ([{7002}, {7002}, {7002, 9500}], None, True, 9500, False, False),
+        ([{7002}, {7002}, {7002, 9500}], RuntimeError("read timeout"), False, 9500, False, False),
+        ([{7002}, {7002}, {7002}], RuntimeError("connection refused"), False, 0, False, True),
+        ([{7002}, {7002}, Exception("re-read failed")], RuntimeError("connection refused"), False, 0, True, True),
+        ([{7002}, Exception("snapshot failed"), {7002, 9500}], RuntimeError("connection refused"), False, 0, True, True),
+        ([{7002}, {7002}, {7002, 9500, 9501}], RuntimeError("connection refused"), False, 0, True, True),
+    ])
+    def test_unresolved_tp_placement_resolves_by_book_diff(
+        self, reads, place_error, unreadable_response, want_oid, want_unknown, want_error
+    ):
+        responses = {"tp1": {"status": "ok", "response": {"type": "order", "data": {"statuses": []}}}} if unreadable_response else None
+        out, adapter = self._run_sync(
+            stop_loss_atr_mult=0,
+            tp_tiers=[(1.0, 0.5), (2.0, 1.0)],
+            tp_oids=[0, 7002],
+            tp_armed_tiers=[False, True],
+            open_oids_sequence=reads,
+            tp_place_error=place_error,
+            place_responses=responses,
+        )
+        assert adapter.place_take_profit_limit.call_count == 1
+        assert out["tp_oids"] == [want_oid, 7002]
+        assert bool(out.get("tp_outcome_unknown", [False])[0]) is want_unknown
+        assert bool(out.get("tp_errors", [""])[0]) is want_error
+
+    def test_manual_close_recovery_leaves_the_stop_alone(self):
+        out, adapter = self._run_sync(
+            stop_loss_atr_mult=0,
+            tp_tiers=[(1.0, 0.4), (2.0, 0.8), (3.0, 1.0)],
+            tp_oids=[0, 0, 7003],
+            tp_armed_tiers=[True, False, True],
+            open_oids={7003},
+        )
+        adapter.place_stop_loss.assert_not_called()
+        adapter.cancel_order_by_oid.assert_not_called()
+        assert "stop_loss_oid" not in out
+        assert out["tp_oids"] == [0, 9101, 7003]
+        assert adapter.place_take_profit_limit.call_count == 1
+        assert not out.get("tp_errors")
+
+    def test_manual_close_recovery_reports_a_filled_tier(self):
+        out, adapter = self._run_sync(
+            stop_loss_atr_mult=0,
+            tp_tiers=[(1.0, 0.4), (2.0, 0.8), (3.0, 1.0)],
+            tp_oids=[7001, 0, 0],
+            tp_armed_tiers=[True, True, True],
+            open_oids=set(),
+            fill_lookup_by_oid={7001: {"fee": 0.05, "closed_pnl": 12.0, "count": 1}},
+        )
+        assert out["tp_filled_externally"] == [True, False, False]
+        assert out["tp_oids"] == [0, 0, 0]
+        adapter.place_take_profit_limit.assert_not_called()
+
+    def test_manual_close_recovery_leaves_an_unreadable_tier_untouched(self):
+        out, adapter = self._run_sync(
+            stop_loss_atr_mult=0,
+            tp_tiers=[(1.0, 0.4), (2.0, 0.8), (3.0, 1.0)],
+            tp_oids=[7001, 0, 0],
+            tp_armed_tiers=[True, True, True],
+            open_orders_error="userOpenOrders failed",
+        )
+        assert out["open_order_check_error"] == "userOpenOrders failed"
+        assert out["tp_oids"] == [7001, 0, 0]
+        adapter.place_take_profit_limit.assert_not_called()
+
+    def test_manual_close_recovery_reports_an_immediate_fill(self):
+        out, adapter = self._run_sync(
+            stop_loss_atr_mult=0,
+            tp_tiers=[(1.0, 0.4), (2.0, 0.8), (3.0, 1.0)],
+            tp_oids=[0, 0, 0],
+            tp_armed_tiers=[False, True, True],
+            open_oids=set(),
+            place_responses={"tp1": {
+                "status": "ok",
+                "response": {"type": "order", "data": {"statuses": [{"filled": {"oid": 9101}}]}},
+            }},
+        )
+        assert out["tp_filled_immediately"] == [True, False, False]
+        assert out["tp_oids"] == [0, 0, 0]
+        assert adapter.place_take_profit_limit.call_count == 1
+
+    def test_sl_skips_force_replace_when_size_zero(self):
+        out, adapter = self._run_sync(
+            size=0,
+            cancel_tp_oids=[303],
+            open_oids={100},
+            sl_oid=100,
+            force_sl_replace=True,
+        )
+        assert out.get("stop_loss_oid") == 100
+        adapter.place_stop_loss.assert_not_called()
+
+    def test_surplus_cancel_failed_reported(self):
+        mod, spec = _load_check_module()
+        spec.loader.exec_module(mod)
+        mock_adapter_cls = MagicMock()
+        mock_adapter = MagicMock()
+        mock_adapter_cls.return_value = mock_adapter
+        mock_adapter.open_order_oids.return_value = {303}
+        mock_adapter.round_perps_trigger_px.side_effect = lambda _sym, px: round(px, 4)
+        mock_adapter.round_size.side_effect = lambda _sym, sz: round(sz, 3)
+        mock_adapter.floor_size.side_effect = lambda _sym, sz: math.floor(sz * 1000 + 1e-9) / 1000
+        mock_adapter.lookup_fill_fee_by_oid.return_value = {}
+        mock_adapter.cancel_order_by_oid.side_effect = Exception("rpc down")
+        captured = StringIO()
+        import builtins
+        original_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "adapter":
+                fake_mod = MagicMock()
+                fake_mod.HyperliquidExchangeAdapter = mock_adapter_cls
+                return fake_mod
+            return original_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=mock_import):
+            with patch("sys.stdout", captured):
+                mod.run_sync_protection(
+                    "ETH",
+                    "long",
+                    0,
+                    2000.0,
+                    20.0,
+                    "live",
+                    stop_loss_atr_mult=0,
+                    cancel_tp_oids=[303],
+                )
+        out = json.loads(captured.getvalue())
+        assert out.get("tp_cancel_failed_oids") == [303]
+        mock_adapter.cancel_order_by_oid.assert_called_once_with("ETH", 303)
+
+    def test_surplus_cancel_filled_skips_cancel(self):
+        out, adapter = self._run_sync(
+            cancel_tp_oids=[303],
+            open_oids=set(),
+            fill_lookup_by_oid={303: {"fee": 0.05, "closed_pnl": 25.0, "count": 1}},
+        )
+        assert out.get("tp_cancel_filled_oids") == [303]
+        assert not out.get("tp_cancel_failed_oids")
+        adapter.cancel_order_by_oid.assert_not_called()
+
+
+    @pytest.mark.parametrize("open_oids,open_err,cancel_response,fills,want_cancel,want", [
+        ({303}, None, _CANCEL_OK_RESPONSE, {}, True, {}),
+        ({303}, None, _CANCEL_REJECTED_RESPONSE, {}, True, {"tp_cancel_failed_oids": [303]}),
+        (set(), None, None, {}, False, {"tp_cancel_not_open_oids": [303]}),
+        (set(), None, None, {303: {"fee": 0.05, "closed_pnl": 1.0, "count": 1}}, False, {"tp_cancel_filled_oids": [303]}),
+        (None, "userOpenOrders failed", None, {}, False, {"tp_cancel_failed_oids": [303]}),
+    ])
+    def test_sync_protection_surplus_cancel_verifies_first(self, open_oids, open_err, cancel_response, fills, want_cancel, want):
+        out, adapter = self._run_sync(
+            size=0,
+            stop_loss_atr_mult=0,
+            cancel_tp_oids=[303],
+            open_oids=open_oids,
+            open_orders_error=open_err,
+            cancel_response=cancel_response,
+            fill_lookup_by_oid=fills,
+        )
+        if want_cancel:
+            adapter.cancel_order_by_oid.assert_called_once_with("ETH", 303)
+        else:
+            adapter.cancel_order_by_oid.assert_not_called()
+        adapter.place_stop_loss.assert_not_called()
+        adapter.place_take_profit_limit.assert_not_called()
+        for key in ("tp_cancel_failed_oids", "tp_cancel_filled_oids", "tp_cancel_not_open_oids"):
+            assert out.get(key) == want.get(key)
+
+    def test_surplus_cancel_runs_when_size_zero(self):
+        out, adapter = self._run_sync(
+            size=0,
+            tp_tiers=[(1.0, 0.5), (2.0, 1.0)],
+            cancel_tp_oids=[303],
+            open_oids={303},
+        )
+        adapter.cancel_order_by_oid.assert_called_once_with("ETH", 303)
+
+    def test_sl_filled_at_submit_skips_tp_placement(self):
+        out, adapter = self._run_sync(
+            tp_tiers=[(1.0, 0.5), (2.0, 1.0)],
+            place_responses={"sl": {
+                "status": "ok",
+                "response": {"type": "order", "data": {"statuses": [
+                    {"filled": {"oid": 67890, "avgPx": "1980"}}
+                ]}},
+            }},
+        )
+        assert out.get("stop_loss_filled_immediately") is True
+        adapter.place_take_profit_limit.assert_not_called()
+        assert not out.get("tp_oids")
+
+    def test_resting_still_places_and_records_tps(self):
+        out, adapter = self._run_sync(
+            tp_tiers=[(1.0, 0.5), (2.0, 1.0)],
+        )
+        assert adapter.place_take_profit_limit.call_count == 2
+        assert len(out.get("tp_oids") or []) == 2
+
     def test_existing_oid_still_open_returns_same_oid(self):
-        """OID still in open_orders → echo it back, do NOT call place_take_profit_limit."""
         out, adapter = self._run_sync(
             tp1_oid=200,
             tp2_oid=300,
@@ -753,46 +1424,35 @@ class TestSyncProtection:
         adapter.lookup_fill_fee_by_oid.assert_not_called()
 
     def test_missing_oid_with_no_fill_places_replacement(self):
-        """OID gone from open_orders AND not in userFills → cancelled, place new."""
         out, adapter = self._run_sync(
             tp1_oid=200,
             tp2_oid=300,
-            open_oids=set(),  # empty — TP OIDs gone
-            fill_lookup_by_oid={},  # no fills for any OID
+            open_oids=set(),
+            fill_lookup_by_oid={},
         )
-        # New OIDs surfaced
         assert "tp1_oid" in out
         assert "tp2_oid" in out
-        # userFills was consulted to make sure the OID hadn't filled
         assert adapter.lookup_fill_fee_by_oid.called
-        # New TPs placed
         assert adapter.place_take_profit_limit.call_count == 2
-        # Filled-externally flag NOT set
         assert not out.get("tp1_filled_externally")
         assert not out.get("tp2_filled_externally")
 
     def test_missing_oid_with_fill_marks_externally_filled(self):
-        """OID gone AND userFills shows a fill → filled externally; do NOT re-place. (#604 review #1)"""
         out, adapter = self._run_sync(
             tp1_oid=200,
             tp2_oid=300,
             open_oids=set(),
             fill_lookup_by_oid={
                 200: {"fee": 0.05, "closed_pnl": 25.0, "count": 1},
-                # TP2 still missing (cancelled, not filled)
             },
         )
         assert out.get("tp1_filled_externally") is True
         assert "tp1_fill" in out
         assert out["tp1_fill"]["fee"] == 0.05
-        # TP2 should be placed since no fill found
         assert not out.get("tp2_filled_externally")
-        # Only ONE place_take_profit_limit call (for TP2), because TP1 was filled.
         assert adapter.place_take_profit_limit.call_count == 1
 
     def test_zero_oid_armed_true_does_not_re_place_consumed_tp1(self):
-        """#749: after TP1 fills, Go passes TPArmedTiers with tier0=true and OID 0.
-        A later sync must not treat OID 0 as 'never placed' and recreate TP1."""
         out, adapter = self._run_sync(
             size=0.22,
             tp_oids=[0, 300],
@@ -806,7 +1466,6 @@ class TestSyncProtection:
         adapter.place_take_profit_limit.assert_not_called()
 
     def test_three_tiers_places_incremental_sizes(self):
-        """#612: N-tier protection sizes each order from cumulative fractions."""
         out, adapter = self._run_sync(
             size=10.0,
             tp_tiers=[
@@ -824,7 +1483,6 @@ class TestSyncProtection:
         assert adapter.place_take_profit_limit.call_count == 3
 
     def test_final_tier_fraction_is_coerced_to_remaining_size(self):
-        """Two-tier configs ending below 1.0 keep the old TP2 remaining-size behavior."""
         out, adapter = self._run_sync(
             size=10.0,
             tp_tiers=[
@@ -839,7 +1497,6 @@ class TestSyncProtection:
         assert sizes == pytest.approx([5.0, 5.0])
 
     def test_non_increasing_sorted_tiers_are_rejected(self):
-        """Go and Python both reject configs whose fractions decrease after ATR sort."""
         out, adapter = self._run_sync(
             tp_tiers=[
                 {"atr_multiple": 1.0, "close_fraction": 0.5},
@@ -852,7 +1509,6 @@ class TestSyncProtection:
         adapter.place_take_profit_limit.assert_not_called()
 
     def test_single_tier_config_is_rejected(self):
-        """On-chain tiered protection still requires at least two TP tiers."""
         out, adapter = self._run_sync(
             tp_tiers=[
                 {"atr_multiple": 1.0, "close_fraction": 1.0},
@@ -864,7 +1520,6 @@ class TestSyncProtection:
         adapter.place_take_profit_limit.assert_not_called()
 
     def test_three_tiers_detects_middle_oid_filled_externally(self):
-        """#612: filled-externally detection is indexed, not hardcoded to TP1/TP2."""
         out, adapter = self._run_sync(
             tp_tiers=[
                 {"atr_multiple": 1.0, "close_fraction": 0.5},
@@ -881,7 +1536,6 @@ class TestSyncProtection:
         adapter.place_take_profit_limit.assert_not_called()
 
     def test_reconcile_fill_hints_skips_lookup_fill_fee_by_oid(self):
-        """#759: same-cycle Go prefetch JSON avoids duplicate userFills for that OID."""
         hints = json.dumps(
             [{"oid": 9101, "filled": True, "fee": 0.02, "closed_pnl": 1.5, "count": 2}]
         )
@@ -900,7 +1554,6 @@ class TestSyncProtection:
         adapter.lookup_fill_fee_by_oid.assert_not_called()
 
     def test_reconcile_fill_hints_filled_false_still_queries_userfills(self):
-        """#761 review: filled=false hints must not suppress Python's indexer retry."""
         hints = json.dumps([{"oid": 9101, "filled": False}])
         out, adapter = self._run_sync(
             tp1_oid=9100,
@@ -915,7 +1568,6 @@ class TestSyncProtection:
         adapter.lookup_fill_fee_by_oid.assert_called()
 
     def test_reconcile_fill_hints_malformed_json_queries_userfills(self):
-        """#761 review: invalid JSON disables hints; userFills path still works."""
         out, adapter = self._run_sync(
             tp1_oid=9100,
             tp2_oid=9101,
@@ -928,7 +1580,6 @@ class TestSyncProtection:
         adapter.lookup_fill_fee_by_oid.assert_called()
 
     def test_reconcile_fill_hints_extra_oid_does_not_skip_other_oid_lookup(self):
-        """#761 review: hints for an unrelated OID do not bypass lookup for missing TP."""
         hints = json.dumps([{"oid": 1, "filled": True, "fee": 0.0, "count": 0}])
         out, adapter = self._run_sync(
             tp1_oid=9100,
@@ -943,9 +1594,6 @@ class TestSyncProtection:
         assert 9101 in called_oids
 
     def test_open_orders_fetch_failure_defers_replacement(self):
-        """open_order_oids() raise → leave existing OIDs alone, do not re-place
-        (would double-up the protection). The script returns the failure
-        marker so the Go side knows to retry next cycle."""
         mod, spec = _load_check_module()
         spec.loader.exec_module(mod)
 
@@ -955,7 +1603,7 @@ class TestSyncProtection:
         mock_adapter.open_order_oids.side_effect = RuntimeError("indexer down")
         mock_adapter.round_perps_trigger_px.side_effect = lambda _sym, px: round(px, 4)
         mock_adapter.round_size.side_effect = lambda _sym, sz: round(sz, 3)
-        mock_adapter.floor_size.side_effect = lambda _sym, sz: math.floor(sz * 1000) / 1000
+        mock_adapter.floor_size.side_effect = lambda _sym, sz: math.floor(sz * 1000 + 1e-9) / 1000
 
         captured = StringIO()
         import builtins
@@ -978,14 +1626,10 @@ class TestSyncProtection:
                 )
         out = json.loads(captured.getvalue())
         assert out["open_order_check_error"] == "indexer down"
-        # No re-placements issued — existing OIDs are left alone.
         mock_adapter.place_take_profit_limit.assert_not_called()
         mock_adapter.place_stop_loss.assert_not_called()
 
     def test_floor_residual_absorbed_by_final_tier(self):
-        """#628 issue 1: at sz_decimals=3 a 0.003 ETH virtual qty with 50/50
-        tiers must place 0.001 + 0.002, NOT 0.001 + 0.001 (which would strand
-        0.001 ETH uncovered for the life of the position)."""
         out, adapter = self._run_sync(
             size=0.003,
             tp_tiers=[
@@ -1001,12 +1645,8 @@ class TestSyncProtection:
         assert sum(sizes) == pytest.approx(0.003)
 
     def test_float_drift_below_lot_boundary_normalizes(self):
-        """#628 issue 2: Go's `pos.Quantity -= closeQty` can produce values
-        like 0.011 - 0.010 = 0.0009999999999999992.  round_size must lift
-        this back to 0.001 so the tier loop places a real reduce-only
-        order rather than failing with `Size floored to zero`."""
-        drifted = 0.011 - 0.010  # 0.0009999999999999992
-        assert drifted < 0.001  # confirm we're testing the drift case
+        drifted = 0.011 - 0.010
+        assert drifted < 0.001
         out, adapter = self._run_sync(
             size=drifted,
             tp_tiers=[
@@ -1016,17 +1656,13 @@ class TestSyncProtection:
             tp_oids=[0, 0],
             open_oids=set(),
         )
-        # At 0.001 lot with sz_decimals=3, tier 1 floors to 0 (skipped) and
-        # tier 2 absorbs the full 0.001 remainder.
         assert out["tp_oids"]
         sizes = [call.args[1] for call in adapter.place_take_profit_limit.call_args_list]
         assert sum(sizes) == pytest.approx(0.001)
 
     def test_size_rounds_to_zero_skips_tier_block(self):
-        """When the virtual qty rounds below one lot, no TPs should be placed
-        and the output must not carry stale tp_oids/tp_pxs (#628 review #4)."""
         out, adapter = self._run_sync(
-            size=0.0004,  # rounds to 0 at sz_decimals=3
+            size=0.0004,
             tp_tiers=[
                 {"atr_multiple": 1.0, "close_fraction": 0.5},
                 {"atr_multiple": 2.0, "close_fraction": 1.0},
@@ -1039,9 +1675,6 @@ class TestSyncProtection:
         assert "tp_pxs" not in out
 
     def test_three_tier_non_uniform_flooring_zero_residual(self):
-        """Multi-tier non-uniform fractions where each tier's `size*fraction`
-        truncates differently — final tier must still cover the lot-aligned
-        remainder so `sum(tier_sizes) == floor(size)`."""
         out, adapter = self._run_sync(
             size=0.007,
             tp_tiers=[
@@ -1054,19 +1687,13 @@ class TestSyncProtection:
         )
         assert out["tp_oids"]
         sizes = [call.args[1] for call in adapter.place_take_profit_limit.call_args_list]
-        # 0.007 * 0.3 = 0.0021 → floor 0.002; 0.007 * 0.3 = 0.0021 → floor 0.002;
-        # final = 0.007 - (0.002 + 0.002) = 0.003.  No residual stranded.
         assert sum(sizes) == pytest.approx(0.007)
 
 
 class TestComputeTPTierSizes:
-    """#628 review #3: pure helper for per-tier reduce-only sizing.  Exercises
-    the same flooring math as run_sync_protection without needing the full
-    sync-protection plumbing or adapter mocks."""
 
     @staticmethod
     def _floor3(sz):
-        """sz_decimals=3 (matches ETH on Hyperliquid)."""
         return math.floor(sz * 1000) / 1000
 
     def _load(self):
@@ -1074,50 +1701,368 @@ class TestComputeTPTierSizes:
         spec.loader.exec_module(mod)
         return mod
 
-    def test_zero_size_returns_zero_sizes(self):
-        mod = self._load()
-        sizes = mod.compute_tp_tier_sizes(0.0, [(1.0, 0.5), (2.0, 1.0)], self._floor3)
-        assert sizes == [0.0, 0.0]
+    @pytest.mark.parametrize("size,tiers,expected", [
+        (0.0, [(1.0, 0.5), (2.0, 1.0)], [0.0, 0.0]),
+        (-0.5, [(1.0, 0.5), (2.0, 1.0)], [0.0, 0.0]),
+        (1.0, [], []),
+        (0.003, [(1.0, 0.5), (2.0, 1.0)], [0.001, 0.002]),
+        (0.007, [(1.0, 0.3), (2.0, 0.6), (3.0, 1.0)], [0.002, 0.002, 0.003]),
+        (10.0, [(1.0, 0.5), (2.0, 1.0)], [5.0, 5.0]),
+        (0.5, [(1.0, 0.5), (2.0, 1.0)], [0.25, 0.25]),
+    ])
+    def test_compute_tp_tier_sizes(self, size, tiers, expected):
+        sizes = self._load().compute_tp_tier_sizes(size, tiers, self._floor3)
+        assert sizes == pytest.approx(expected)
+        if expected:
+            assert sum(sizes) == pytest.approx(sum(expected))
 
-    def test_negative_size_returns_zero_sizes(self):
-        mod = self._load()
-        sizes = mod.compute_tp_tier_sizes(-0.5, [(1.0, 0.5), (2.0, 1.0)], self._floor3)
-        assert sizes == [0.0, 0.0]
 
-    def test_empty_tiers_returns_empty(self):
-        mod = self._load()
-        assert mod.compute_tp_tier_sizes(1.0, [], self._floor3) == []
+class TestProtectionSyncStopLossTriggerContract:
 
-    def test_two_tier_5050_split_zero_residual(self):
-        """0.003 / [0.5, 1.0] / sz_decimals=3 → [0.001, 0.002], NOT [0.001, 0.001]."""
-        mod = self._load()
-        sizes = mod.compute_tp_tier_sizes(0.003, [(1.0, 0.5), (2.0, 1.0)], self._floor3)
-        assert sizes == pytest.approx([0.001, 0.002])
-        assert sum(sizes) == pytest.approx(0.003)
+    def _run_sync(self, *, open_oids, stop_loss_oid, force_sl_replace, place_response):
+        mod, spec = _load_check_module()
+        spec.loader.exec_module(mod)
 
-    def test_final_tier_absorbs_subdivided_floor_loss(self):
-        """3 tiers, fractions that don't divide evenly into size."""
-        mod = self._load()
-        # 0.007 / [0.3, 0.6, 1.0]: floors are [0.002, 0.002, remainder=0.003]
-        sizes = mod.compute_tp_tier_sizes(
-            0.007, [(1.0, 0.3), (2.0, 0.6), (3.0, 1.0)], self._floor3
+        mock_adapter_cls = MagicMock()
+        adapter = MagicMock()
+        mock_adapter_cls.return_value = adapter
+        adapter.open_order_oids.return_value = set(open_oids)
+        adapter.round_perps_trigger_px.side_effect = lambda _sym, px: round(px, 2)
+        adapter.round_size.side_effect = lambda _sym, sz: sz
+        adapter.place_stop_loss.return_value = place_response
+        adapter.cancel_order_by_oid.return_value = _CANCEL_OK_RESPONSE
+
+        captured = StringIO()
+        import builtins
+        original_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "adapter":
+                fake_mod = MagicMock()
+                fake_mod.HyperliquidExchangeAdapter = mock_adapter_cls
+                return fake_mod
+            return original_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=mock_import):
+            with patch("sys.stdout", captured):
+                mod.run_sync_protection(
+                    "ETH", "long", 1.0, 2400.0, 30.0, "live",
+                    stop_loss_atr_mult=2.5,
+                    stop_loss_oid=stop_loss_oid,
+                    force_sl_replace=force_sl_replace,
+                )
+        return json.loads(captured.getvalue()), adapter
+
+    @staticmethod
+    def _resting(oid):
+        return {"status": "ok", "response": {"data": {"statuses": [{"resting": {"oid": oid}}]}}}
+
+    def test_echoed_oid_reports_no_trigger_price(self):
+        out, adapter = self._run_sync(
+            open_oids=[4242], stop_loss_oid=4242, force_sl_replace=False,
+            place_response=self._resting(9001),
         )
-        assert sizes == pytest.approx([0.002, 0.002, 0.003])
-        assert sum(sizes) == pytest.approx(0.007)
+        assert out.get("stop_loss_oid") == 4242
+        assert "stop_loss_trigger_px" not in out
+        adapter.place_stop_loss.assert_not_called()
 
-    def test_lot_aligned_size_preserves_exact_split(self):
-        """Lot-aligned size with even fraction → no residual to absorb."""
-        mod = self._load()
-        sizes = mod.compute_tp_tier_sizes(10.0, [(1.0, 0.5), (2.0, 1.0)], self._floor3)
-        assert sizes == pytest.approx([5.0, 5.0])
+    def test_force_replace_that_rests_reports_the_placed_trigger(self):
+        out, adapter = self._run_sync(
+            open_oids=[4242], stop_loss_oid=4242, force_sl_replace=True,
+            place_response=self._resting(9002),
+        )
+        assert out.get("stop_loss_oid") == 9002
+        assert out.get("stop_loss_trigger_px") == pytest.approx(2325.0)
+        adapter.place_stop_loss.assert_called_once()
 
-    def test_final_tier_below_one_uses_floored_remainder(self):
-        """When the helper is fed a normalized [(_, 0.5), (_, 0.7)] (final
-        coerced to 1.0 by _normalize_tp_tiers, but the helper itself accepts
-        any cumulative shape), the final tier still gets the floored remainder."""
-        mod = self._load()
-        # Use 1.0 final like the real normalizer produces.
-        sizes = mod.compute_tp_tier_sizes(0.5, [(1.0, 0.5), (2.0, 1.0)], self._floor3)
-        assert sum(sizes) == pytest.approx(0.5)
-        assert sizes[0] == pytest.approx(0.25)
-        assert sizes[1] == pytest.approx(0.25)
+    def test_force_replace_whose_placement_fails_reports_no_trigger_price(self):
+        out, _ = self._run_sync(
+            open_oids=[4242], stop_loss_oid=4242, force_sl_replace=True,
+            place_response={"status": "err", "response": "open order limit"},
+        )
+        assert "stop_loss_trigger_px" not in out
+        assert out.get("stop_loss_error")
+
+    def test_force_replace_cancel_rejected_defers_replacement(self):
+        out, adapter = self._run_sync_cancel_response(_CANCEL_REJECTED_RESPONSE)
+        adapter.place_stop_loss.assert_not_called()
+        assert out.get("cancel_stop_loss_succeeded") is False
+        assert "already filled" in out["stop_loss_error"]
+        assert "stop_loss_oid" not in out
+
+
+    @pytest.mark.parametrize("cancel_response", [_CANCEL_REJECTED_RESPONSE, RuntimeError("rpc down")])
+    def test_force_replace_cancel_failure_reports_cancel_error(self, cancel_response):
+        out, adapter = self._run_sync_cancel_response(cancel_response)
+        adapter.place_stop_loss.assert_not_called()
+        assert out.get("cancel_stop_loss_succeeded") is False
+        assert out["cancel_stop_loss_error"]
+        assert out["cancel_stop_loss_error"] == out["stop_loss_error"]
+
+    def _run_sync_cancel_response(self, cancel_response):
+        import builtins
+        mod, spec = _load_check_module()
+        spec.loader.exec_module(mod)
+
+        mock_adapter_cls = MagicMock()
+        adapter = MagicMock()
+        mock_adapter_cls.return_value = adapter
+        adapter.open_order_oids.return_value = {4242}
+        adapter.round_perps_trigger_px.side_effect = lambda _sym, px: round(px, 2)
+        adapter.round_size.side_effect = lambda _sym, sz: sz
+        adapter.place_stop_loss.return_value = self._resting(9002)
+        if isinstance(cancel_response, Exception):
+            adapter.cancel_order_by_oid.side_effect = cancel_response
+        else:
+            adapter.cancel_order_by_oid.return_value = cancel_response
+
+        captured = StringIO()
+        original_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "adapter":
+                fake_mod = MagicMock()
+                fake_mod.HyperliquidExchangeAdapter = mock_adapter_cls
+                return fake_mod
+            return original_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=mock_import):
+            with patch("sys.stdout", captured):
+                mod.run_sync_protection(
+                    "ETH", "long", 1.0, 2400.0, 30.0, "live",
+                    stop_loss_atr_mult=2.5,
+                    stop_loss_oid=4242,
+                    force_sl_replace=True,
+                )
+        return json.loads(captured.getvalue()), adapter
+
+    def test_fresh_placement_reports_the_placed_trigger(self):
+        out, adapter = self._run_sync(
+            open_oids=[], stop_loss_oid=0, force_sl_replace=False,
+            place_response=self._resting(9003),
+        )
+        assert out.get("stop_loss_oid") == 9003
+        assert out.get("stop_loss_trigger_px") == pytest.approx(2325.0)
+        adapter.place_stop_loss.assert_called_once()
+
+    def _run_sync_dynamic_oids(self, *, oid_reads, place_response):
+        import builtins
+        mod, spec = _load_check_module()
+        spec.loader.exec_module(mod)
+
+        mock_adapter_cls = MagicMock()
+        adapter = MagicMock()
+        mock_adapter_cls.return_value = adapter
+        adapter.open_order_oids.side_effect = [set(s) for s in oid_reads]
+        adapter.round_perps_trigger_px.side_effect = lambda _sym, px: round(px, 2)
+        adapter.round_size.side_effect = lambda _sym, sz: sz
+        adapter.place_stop_loss.return_value = place_response
+        adapter.cancel_order_by_oid.return_value = _CANCEL_OK_RESPONSE
+
+        captured = StringIO()
+        original_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "adapter":
+                fake_mod = MagicMock()
+                fake_mod.HyperliquidExchangeAdapter = mock_adapter_cls
+                return fake_mod
+            return original_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=mock_import):
+            with patch("sys.stdout", captured):
+                mod.run_sync_protection(
+                    "ETH", "long", 1.0, 2400.0, 30.0, "live",
+                    stop_loss_atr_mult=2.5,
+                    stop_loss_oid=4242,
+                    force_sl_replace=True,
+                )
+        return json.loads(captured.getvalue()), adapter
+
+    def test_unreadable_placement_resolved_to_resting_reports_no_error(self):
+        out, _ = self._run_sync_dynamic_oids(
+            oid_reads=[{4242}, {9004}],
+            place_response={"status": "weird"},
+        )
+        assert out.get("stop_loss_oid") == 9004
+        assert "stop_loss_error" not in out
+
+    def test_unreadable_placement_ambiguous_diff_reports_no_warning_error(self):
+        out, _ = self._run_sync_dynamic_oids(
+            oid_reads=[{4242}, {9004, 9005}],
+            place_response={"status": "weird"},
+        )
+        assert out.get("stop_loss_outcome_unknown") is True
+        assert "stop_loss_error" not in out
+
+    def test_unreadable_placement_nothing_resting_keeps_the_error(self):
+        out, _ = self._run_sync_dynamic_oids(
+            oid_reads=[{4242}, set()],
+            place_response={"status": "weird"},
+        )
+        assert "stop_loss_oid" not in out
+        assert "stop_loss_outcome_unknown" not in out
+        assert "no usable status" in out.get("stop_loss_error", "")
+
+
+class TestSyncProtectionPreservedTrigger:
+
+    @staticmethod
+    def _resting(oid):
+        return {"status": "ok", "response": {"data": {"statuses": [{"resting": {"oid": oid}}]}}}
+
+    def _run(self, *, trigger, preserve, side="long", decimals=2, tick=0.01,
+             open_oids=(4242,), stop_loss_oid=4242, force=True, place_response=None):
+        import builtins
+        mod, spec = _load_check_module()
+        spec.loader.exec_module(mod)
+
+        mock_adapter_cls = MagicMock()
+        adapter = MagicMock()
+        mock_adapter_cls.return_value = adapter
+        adapter.open_order_oids.return_value = set(open_oids)
+        adapter.round_perps_trigger_px.side_effect = lambda _sym, px: round(px, decimals)
+        adapter.perps_trigger_px_tick.return_value = tick
+        adapter.round_size.side_effect = lambda _sym, sz: sz
+        adapter.place_stop_loss.return_value = place_response or self._resting(9002)
+        adapter.cancel_order_by_oid.return_value = _CANCEL_OK_RESPONSE
+
+        captured = StringIO()
+        original_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "adapter":
+                fake_mod = MagicMock()
+                fake_mod.HyperliquidExchangeAdapter = mock_adapter_cls
+                return fake_mod
+            return original_import(name, *args, **kwargs)
+
+        exit_code = None
+        with patch("builtins.__import__", side_effect=mock_import):
+            with patch("sys.stdout", captured):
+                try:
+                    mod.run_sync_protection(
+                        "ETH", side, 1.0, 2400.0, 30.0, "live",
+                        stop_loss_atr_mult=2.5,
+                        stop_loss_oid=stop_loss_oid,
+                        force_sl_replace=force,
+                        stop_loss_trigger_px=trigger,
+                        preserve_moved_stop=preserve,
+                    )
+                except SystemExit as e:
+                    exit_code = e.code
+        return json.loads(captured.getvalue()), adapter, mock_adapter_cls, exit_code
+
+    def test_moved_trigger_replaces_the_label_after_a_confirmed_cancel(self):
+        out, adapter, _, code = self._run(trigger=2400.0, preserve=True)
+        assert code is None
+        adapter.cancel_order_by_oid.assert_called_once()
+        adapter.place_stop_loss.assert_called_once()
+        assert adapter.place_stop_loss.call_args.args[2] == pytest.approx(2400.0)
+        assert out["stop_loss_oid"] == 9002
+        assert out["stop_loss_trigger_px"] == pytest.approx(2400.0)
+
+    def test_moved_trigger_places_a_missing_stop_at_the_moved_price(self):
+        out, adapter, _, _ = self._run(trigger=2410.0, preserve=True, open_oids=(), stop_loss_oid=0, force=False)
+        adapter.cancel_order_by_oid.assert_not_called()
+        assert adapter.place_stop_loss.call_args.args[2] == pytest.approx(2410.0)
+        assert out["stop_loss_trigger_px"] == pytest.approx(2410.0)
+
+    def test_resting_moved_stop_is_kept_without_replacement(self):
+        out, adapter, _, _ = self._run(trigger=2400.0, preserve=True, force=False)
+        adapter.cancel_order_by_oid.assert_not_called()
+        adapter.place_stop_loss.assert_not_called()
+        assert out["stop_loss_oid"] == 4242
+
+    @pytest.mark.parametrize("trigger", [None, 0.0, -1.0, float("nan"), float("inf")])
+    def test_invalid_moved_trigger_fails_before_any_cancel_or_place(self, trigger):
+        out, adapter, adapter_cls, code = self._run(trigger=trigger, preserve=True)
+        assert code == 1
+        assert "stop-loss-trigger-px" in out["error"]
+        adapter_cls.assert_not_called()
+        adapter.cancel_order_by_oid.assert_not_called()
+        adapter.place_stop_loss.assert_not_called()
+
+    @pytest.mark.parametrize("trigger", [-1.0, float("nan")])
+    def test_invalid_supplied_trigger_fails_without_the_preserve_flag(self, trigger):
+        _, adapter, adapter_cls, code = self._run(trigger=trigger, preserve=False)
+        assert code == 1
+        adapter_cls.assert_not_called()
+        adapter.place_stop_loss.assert_not_called()
+
+    @pytest.mark.parametrize("side,requested", [("long", 2400.004), ("short", 2399.996)])
+    def test_venue_rounding_never_loosens_a_moved_trigger(self, side, requested):
+        _, adapter, _, _ = self._run(trigger=requested, preserve=True, side=side)
+        placed = adapter.place_stop_loss.call_args.args[2]
+        if side == "long":
+            assert placed >= requested
+        else:
+            assert placed <= requested
+        assert placed == pytest.approx(requested, abs=0.011)
+
+    def test_unroundable_moved_trigger_keeps_the_resting_stop(self):
+        out, adapter, _, code = self._run(trigger=2400.004, preserve=True, tick=0.0)
+        assert code is None
+        adapter.cancel_order_by_oid.assert_not_called()
+        adapter.place_stop_loss.assert_not_called()
+        assert "stop_loss_oid" not in out
+        assert out["cancel_stop_loss_succeeded"] is False
+        assert "without loosening" in out["cancel_stop_loss_error"]
+        assert "without loosening" in out["stop_loss_error"]
+
+    def test_unroundable_moved_trigger_without_force_echoes_the_resting_stop(self):
+        out, adapter, _, code = self._run(trigger=2400.004, preserve=True, tick=0.0, force=False)
+        assert code is None
+        adapter.cancel_order_by_oid.assert_not_called()
+        adapter.place_stop_loss.assert_not_called()
+        assert out["stop_loss_oid"] == 4242
+        assert "cancel_stop_loss_error" not in out
+        assert "without loosening" in out["stop_loss_error"]
+
+    def test_unroundable_moved_trigger_with_no_resting_stop_places_nothing(self):
+        out, adapter, _, code = self._run(trigger=2400.004, preserve=True, tick=0.0, open_oids=())
+        assert code is None
+        adapter.cancel_order_by_oid.assert_not_called()
+        adapter.place_stop_loss.assert_not_called()
+        assert "stop_loss_oid" not in out
+        assert "cancel_stop_loss_error" not in out
+        assert "without loosening" in out["stop_loss_error"]
+
+    def test_parser_routes_the_moved_stop_flags(self):
+        mod, spec = _load_check_module()
+        spec.loader.exec_module(mod)
+        argv = [
+            "check_hyperliquid.py", "--sync-protection", "--symbol=ETH", "--side=long",
+            "--size=1", "--avg-cost=2400", "--entry-atr=30", "--stop-loss-atr-mult=2.5",
+            "--stop-loss-trigger-px=2400.5", "--preserve-moved-stop", "--mode=live",
+        ]
+        with patch.object(mod, "run_sync_protection") as run, patch.object(sys, "argv", argv):
+            mod.main()
+        kwargs = run.call_args.kwargs
+        assert kwargs["stop_loss_trigger_px"] == pytest.approx(2400.5)
+        assert kwargs["preserve_moved_stop"] is True
+
+    def test_parser_defaults_keep_the_label_contract(self):
+        mod, spec = _load_check_module()
+        spec.loader.exec_module(mod)
+        argv = [
+            "check_hyperliquid.py", "--sync-protection", "--symbol=ETH", "--side=long",
+            "--size=1", "--avg-cost=2400", "--entry-atr=30", "--stop-loss-atr-mult=2.5", "--mode=live",
+        ]
+        with patch.object(mod, "run_sync_protection") as run, patch.object(sys, "argv", argv):
+            mod.main()
+        kwargs = run.call_args.kwargs
+        assert kwargs["stop_loss_trigger_px"] is None
+        assert kwargs["preserve_moved_stop"] is False
+
+    def test_probe_only_exits_before_any_exchange_call(self):
+        import subprocess
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "check_hyperliquid.py")
+        proc = subprocess.run(
+            [sys.executable, script, "--sync-protection", "--symbol=BTC", "--side=long",
+             "--size=0.01", "--avg-cost=1", "--entry-atr=1", "--stop-loss-atr-mult=1",
+             "--stop-loss-trigger-px=1", "--preserve-moved-stop", "--mode=live", "--probe-only"],
+            capture_output=True, text=True, timeout=60,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout == ""

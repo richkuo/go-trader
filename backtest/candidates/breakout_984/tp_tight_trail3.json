@@ -1,0 +1,26 @@
+{
+  "name": "breakout",
+  "direction": "long",
+  "trailing_stop_atr_mult": 3.0,
+  "close_strategies": [
+    {
+      "name": "tiered_tp_atr",
+      "params": {
+        "tp_tiers": [
+          {
+            "atr_multiple": 1.0,
+            "close_fraction": 0.5
+          },
+          {
+            "atr_multiple": 2.0,
+            "close_fraction": 0.8
+          },
+          {
+            "atr_multiple": 3.0,
+            "close_fraction": 1.0
+          }
+        ]
+      }
+    }
+  ]
+}

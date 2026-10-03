@@ -1,20 +1,4 @@
 #!/usr/bin/env python3
-"""Two-leg pairs backtester.
-
-Simulates a beta-hedged long/short pair (e.g. long ETH + short BTC) driven by a
-rolling z-score of the price spread. Each leg is accounted independently:
-per-fill fees, hourly funding accrual, mark-to-market P&L, and per-leg
-liquidation. Designed for research on whether a spread mean-reversion edge
-survives realistic HL costs — not for live execution.
-
-Look-ahead contract mirrors the main backtester (#730/#731): a signal at bar N
-fills at bar N+1 open. Z-score uses closed-bar values only.
-
-Not for live execution:
-- Quantities are not rounded to exchange lot/tick size, so equity curves here
-  will diverge slightly from what HL would actually fill.
-- Slippage beyond the next-bar-open assumption is not modeled.
-"""
 
 from __future__ import annotations
 
@@ -31,8 +15,8 @@ import pandas as pd
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "shared_tools"))
 
 
-SIDE_LONG_A = +1   # long A, short B
-SIDE_SHORT_A = -1  # short A, long B
+SIDE_LONG_A = +1
+SIDE_SHORT_A = -1
 SIDE_FLAT = 0
 
 
@@ -81,8 +65,6 @@ class PairsResults:
 
 
 def _compute_spread(close_a: pd.Series, close_b: pd.Series) -> pd.Series:
-    """Log spread = ln(A) - ln(B). Log scale makes the z-score symmetric
-    across price levels (a 5% move in either direction shows up the same)."""
     return np.log(close_a) - np.log(close_b)
 
 
@@ -94,13 +76,6 @@ def _rolling_zscore(series: pd.Series, lookback: int) -> pd.Series:
 
 def _liquidation_loss(notional: float, leverage: float,
                       maintenance_margin: float) -> float:
-    """Loss in dollars on a single leg that triggers liquidation.
-
-    Initial margin = notional / leverage. Liquidation fires when equity drops
-    to maintenance_margin × notional. So liquidation loss in $ is:
-        (1/leverage − maintenance_margin) × notional
-    For 20× isolated with 2% MMR on $1000 notional: (0.05 − 0.02) × 1000 = $30.
-    """
     return notional * (1.0 / leverage - maintenance_margin)
 
 
@@ -147,16 +122,11 @@ class PairsBacktester:
         self.funding_a_per_hour = float(funding_a_per_hour)
         self.funding_b_per_hour = float(funding_b_per_hour)
         self.bar_hours = float(bar_hours)
-        # Derive bars_per_year from bar_hours when not explicitly set so Sharpe
-        # annualizes correctly on 4h/1d data. 24*365/bar_hours = bars per year.
         if bars_per_year is None:
             self.bars_per_year = int(round(24 * 365 / self.bar_hours))
         else:
             self.bars_per_year = int(bars_per_year)
 
-        # Sanity: total margin shouldn't exceed available capital. Warn but
-        # don't reject — caller may be intentionally over-leveraging for stress
-        # tests against the liquidation logic.
         total_margin = (self.base_notional + self.base_notional * abs(self.beta)) / self.leverage
         if total_margin > self.initial_capital:
             print(
@@ -183,7 +153,6 @@ class PairsBacktester:
         liquidations = 0
 
         for i in range(n):
-            # Mark-to-market + funding accrual on any open position
             if position is not None:
                 mark_a = df_a["close"].iat[i]
                 mark_b = df_b["close"].iat[i]
@@ -197,11 +166,6 @@ class PairsBacktester:
                 liq_loss_a = _liquidation_loss(position.notional_a, self.leverage, self.maintenance_margin)
                 liq_loss_b = _liquidation_loss(position.notional_b, self.leverage, self.maintenance_margin)
                 if (-position.pnl_a) >= liq_loss_a or (-position.pnl_b) >= liq_loss_b:
-                    # Cap each leg's loss at the margin posted (HL isolated
-                    # mode: insurance fund absorbs anything beyond). On a gap
-                    # bar the unconstrained mark-to-market loss can exceed the
-                    # isolated margin slot, so without this cap the backtester
-                    # overstates drawdown vs. live.
                     if position.pnl_a < 0:
                         position.pnl_a = -min(-position.pnl_a, position.margin_a)
                     if position.pnl_b < 0:
@@ -219,7 +183,6 @@ class PairsBacktester:
 
             equity_curve[i] = equity + (position.net_pnl if position is not None else 0.0)
 
-            # Signal decision uses closed bar i; fill on bar i+1 open
             if i + 1 >= n:
                 continue
             z_now = z.iat[i]

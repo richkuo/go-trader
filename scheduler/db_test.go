@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,6 +23,30 @@ func openTestDB(t *testing.T) *StateDB {
 	t.Cleanup(func() { db.Close() })
 	resetInitialCapitalGuardDedup(t)
 	return db
+}
+
+// clearPendingManualActions empties the queue, which is what the old
+// high-water-mark delete did for these setup steps.
+func clearPendingManualActions(t *testing.T, db *StateDB) {
+	t.Helper()
+	rows, err := db.LoadPendingManualActions()
+	if err != nil {
+		t.Fatalf("LoadPendingManualActions: %v", err)
+	}
+	ids := make([]int64, 0, len(rows))
+	for _, r := range rows {
+		ids = append(ids, r.ID)
+	}
+	if err := db.DeletePendingManualActionsByID(ids); err != nil {
+		t.Fatalf("clear queue: %v", err)
+	}
+}
+
+// openTestStore wraps one already-open handle as a single-file store, which is
+// exactly the layout a deployment without paper_db_file runs.
+func openTestStore(t *testing.T, db *StateDB) *StateStore {
+	t.Helper()
+	return singleFileStore(db)
 }
 
 func openNullablePositionIDDB(t *testing.T) *StateDB {
@@ -48,10 +73,6 @@ func openNullablePositionIDDB(t *testing.T) *StateDB {
 	return db
 }
 
-// resetInitialCapitalGuardDedup wipes the package-level dedup map so a test
-// that asserts on warn counts (or simply triggers the guard repeatedly) is
-// not influenced by prior tests in the same package run. Registers a Cleanup
-// so the next test also starts from a clean slate even if this one panics.
 func resetInitialCapitalGuardDedup(t *testing.T) {
 	t.Helper()
 	initialCapitalGuardWarned = sync.Map{}
@@ -61,7 +82,6 @@ func resetInitialCapitalGuardDedup(t *testing.T) {
 func TestOpenStateDB(t *testing.T) {
 	db := openTestDB(t)
 
-	// Verify WAL mode.
 	var mode string
 	if err := db.db.QueryRow("PRAGMA journal_mode").Scan(&mode); err != nil {
 		t.Fatalf("query journal_mode: %v", err)
@@ -70,7 +90,6 @@ func TestOpenStateDB(t *testing.T) {
 		t.Errorf("journal_mode = %q, want %q", mode, "wal")
 	}
 
-	// Verify tables exist.
 	tables := []string{"app_state", "strategies", "positions", "option_positions", "trades", "portfolio_risk", "kill_switch_events", "correlation_snapshot"}
 	for _, table := range tables {
 		var name string
@@ -156,15 +175,23 @@ func makeTestState() *AppState {
 				},
 			},
 		},
-		PortfolioRisk: PortfolioRiskState{
+		PortfolioRisk: map[RiskPartition]*PortfolioRiskState{livePartition: {
 			PeakValue: 2050, CurrentDrawdownPct: 1.5, CurrentMarginDrawdownPct: 18.7,
-			KillSwitchActive: false,
-			WarningSent:      true,
+			KillSwitchActive:           false,
+			WarningSent:                true,
+			WarnBandEnteredAt:          now.Add(-20 * time.Minute),
+			LastWarningEquityDDPct:     1.5,
+			LastWarningMarginDDPct:     18.7,
+			WarningEquityDeltaPct:      0.3,
+			WarningMarginDeltaPct:      -0.2,
+			ManualMarkBasisRebaselined: true,
+			DrawdownReadingSubstituted: true,
+			UntrustedOverLimitSince:    now.Add(-7 * time.Minute),
 			Events: []KillSwitchEvent{
 				{Timestamp: now.Add(-3 * time.Hour), Type: "warning", Source: "margin", DrawdownPct: 18.7, PortfolioValue: 1950, PeakValue: 2050, Details: "approaching threshold"},
 			},
-		},
-		CorrelationSnapshot: &CorrelationSnapshot{
+		}},
+		CorrelationSnapshot: map[RiskPartition]*CorrelationSnapshot{livePartition: {
 			Timestamp:         now,
 			PortfolioGrossUSD: 5000,
 			Warnings:          []string{"BTC concentration 70%"},
@@ -172,7 +199,7 @@ func makeTestState() *AppState {
 				"BTC": {Asset: "BTC", NetDeltaUSD: 5000, GrossDeltaUSD: 5000, ConcentrationPct: 70,
 					Strategies: []StrategyExposure{{StrategyID: "hl-momentum-btc", DeltaUSD: 5000, Type: "perps"}}},
 			},
-		},
+		}},
 	}
 }
 
@@ -192,7 +219,6 @@ func TestSaveAndLoadDBRoundTrip(t *testing.T) {
 		t.Fatal("LoadState returned nil")
 	}
 
-	// Compare top-level fields.
 	if loaded.CycleCount != original.CycleCount {
 		t.Errorf("CycleCount = %d, want %d", loaded.CycleCount, original.CycleCount)
 	}
@@ -203,7 +229,6 @@ func TestSaveAndLoadDBRoundTrip(t *testing.T) {
 		t.Fatalf("strategies count = %d, want %d", len(loaded.Strategies), len(original.Strategies))
 	}
 
-	// Check hl-momentum-btc strategy.
 	hlStrat := loaded.Strategies["hl-momentum-btc"]
 	if hlStrat == nil {
 		t.Fatal("missing strategy hl-momentum-btc")
@@ -215,7 +240,6 @@ func TestSaveAndLoadDBRoundTrip(t *testing.T) {
 		t.Errorf("Platform = %q, want %q", hlStrat.Platform, "hyperliquid")
 	}
 
-	// Position round-trip.
 	btcPos := hlStrat.Positions["BTC"]
 	if btcPos == nil {
 		t.Fatal("missing position BTC")
@@ -230,7 +254,6 @@ func TestSaveAndLoadDBRoundTrip(t *testing.T) {
 		t.Error("position OpenedAt should round-trip, got zero")
 	}
 
-	// Option position round-trip.
 	opt := hlStrat.OptionPositions["opt-1"]
 	if opt == nil {
 		t.Fatal("missing option_position opt-1")
@@ -242,7 +265,6 @@ func TestSaveAndLoadDBRoundTrip(t *testing.T) {
 		t.Errorf("greeks mismatch: %+v", opt.Greeks)
 	}
 
-	// Trade history round-trip.
 	if len(hlStrat.TradeHistory) != 2 {
 		t.Fatalf("trade count = %d, want 2", len(hlStrat.TradeHistory))
 	}
@@ -250,12 +272,10 @@ func TestSaveAndLoadDBRoundTrip(t *testing.T) {
 		t.Errorf("trade order mismatch")
 	}
 
-	// Risk state round-trip.
 	if hlStrat.RiskState.DailyPnL != 50 || hlStrat.RiskState.CurrentDrawdownPct != 2.5 {
 		t.Errorf("risk state mismatch: %+v", hlStrat.RiskState)
 	}
 
-	// Circuit breaker round-trip on spot-rsi-eth.
 	ethStrat := loaded.Strategies["spot-rsi-eth"]
 	if ethStrat == nil {
 		t.Fatal("missing strategy spot-rsi-eth")
@@ -267,40 +287,64 @@ func TestSaveAndLoadDBRoundTrip(t *testing.T) {
 		t.Error("CircuitBreakerUntil should not be zero")
 	}
 
-	// Portfolio risk round-trip.
-	if loaded.PortfolioRisk.PeakValue != 2050 {
-		t.Errorf("PortfolioRisk.PeakValue = %f, want 2050", loaded.PortfolioRisk.PeakValue)
+	if loaded.partitionRisk(livePartition).PeakValue != 2050 {
+		t.Errorf("PortfolioRisk.PeakValue = %f, want 2050", loaded.partitionRisk(livePartition).PeakValue)
 	}
-	if loaded.PortfolioRisk.CurrentDrawdownPct != 1.5 {
-		t.Errorf("PortfolioRisk.CurrentDrawdownPct = %f, want 1.5", loaded.PortfolioRisk.CurrentDrawdownPct)
+	if loaded.partitionRisk(livePartition).CurrentDrawdownPct != 1.5 {
+		t.Errorf("PortfolioRisk.CurrentDrawdownPct = %f, want 1.5", loaded.partitionRisk(livePartition).CurrentDrawdownPct)
 	}
-	if loaded.PortfolioRisk.CurrentMarginDrawdownPct != 18.7 {
-		t.Errorf("PortfolioRisk.CurrentMarginDrawdownPct = %f, want 18.7", loaded.PortfolioRisk.CurrentMarginDrawdownPct)
+	if loaded.partitionRisk(livePartition).CurrentMarginDrawdownPct != 18.7 {
+		t.Errorf("PortfolioRisk.CurrentMarginDrawdownPct = %f, want 18.7", loaded.partitionRisk(livePartition).CurrentMarginDrawdownPct)
 	}
-	if !loaded.PortfolioRisk.WarningSent {
+	if !loaded.partitionRisk(livePartition).ManualMarkBasisRebaselined {
+		t.Error("PortfolioRisk.ManualMarkBasisRebaselined = false, want true (one-shot latch must survive a restart)")
+	}
+	if !loaded.partitionRisk(livePartition).DrawdownReadingSubstituted {
+		t.Error("PortfolioRisk.DrawdownReadingSubstituted = false, want true (a substituted reading must stay labeled across a restart)")
+	}
+	if loaded.partitionRisk(livePartition).UntrustedOverLimitSince.IsZero() ||
+		!loaded.partitionRisk(livePartition).UntrustedOverLimitSince.Equal(original.partitionRisk(livePartition).UntrustedOverLimitSince) {
+		t.Errorf("PortfolioRisk.UntrustedOverLimitSince = %v, want %v (a restart must not reopen the deferral window)",
+			loaded.partitionRisk(livePartition).UntrustedOverLimitSince, original.partitionRisk(livePartition).UntrustedOverLimitSince)
+	}
+	if !loaded.partitionRisk(livePartition).WarningSent {
 		t.Error("PortfolioRisk.WarningSent should be true")
 	}
-	if len(loaded.PortfolioRisk.Events) != 1 {
-		t.Fatalf("kill switch events = %d, want 1", len(loaded.PortfolioRisk.Events))
+	if loaded.partitionRisk(livePartition).WarnBandEnteredAt.IsZero() {
+		t.Error("PortfolioRisk.WarnBandEnteredAt should round-trip")
 	}
-	if loaded.PortfolioRisk.Events[0].Type != "warning" {
-		t.Errorf("event type = %q, want %q", loaded.PortfolioRisk.Events[0].Type, "warning")
+	if loaded.partitionRisk(livePartition).LastWarningEquityDDPct != 1.5 {
+		t.Errorf("PortfolioRisk.LastWarningEquityDDPct = %f, want 1.5", loaded.partitionRisk(livePartition).LastWarningEquityDDPct)
 	}
-	if loaded.PortfolioRisk.Events[0].Source != "margin" {
-		t.Errorf("event source = %q, want %q", loaded.PortfolioRisk.Events[0].Source, "margin")
+	if loaded.partitionRisk(livePartition).LastWarningMarginDDPct != 18.7 {
+		t.Errorf("PortfolioRisk.LastWarningMarginDDPct = %f, want 18.7", loaded.partitionRisk(livePartition).LastWarningMarginDDPct)
+	}
+	if loaded.partitionRisk(livePartition).WarningEquityDeltaPct != 0.3 {
+		t.Errorf("PortfolioRisk.WarningEquityDeltaPct = %f, want 0.3", loaded.partitionRisk(livePartition).WarningEquityDeltaPct)
+	}
+	if loaded.partitionRisk(livePartition).WarningMarginDeltaPct != -0.2 {
+		t.Errorf("PortfolioRisk.WarningMarginDeltaPct = %f, want -0.2", loaded.partitionRisk(livePartition).WarningMarginDeltaPct)
+	}
+	if len(loaded.partitionRisk(livePartition).Events) != 1 {
+		t.Fatalf("kill switch events = %d, want 1", len(loaded.partitionRisk(livePartition).Events))
+	}
+	if loaded.partitionRisk(livePartition).Events[0].Type != "warning" {
+		t.Errorf("event type = %q, want %q", loaded.partitionRisk(livePartition).Events[0].Type, "warning")
+	}
+	if loaded.partitionRisk(livePartition).Events[0].Source != "margin" {
+		t.Errorf("event source = %q, want %q", loaded.partitionRisk(livePartition).Events[0].Source, "margin")
 	}
 
-	// Correlation snapshot round-trip.
-	if loaded.CorrelationSnapshot == nil {
+	if loaded.partitionCorrelation(livePartition) == nil {
 		t.Fatal("CorrelationSnapshot is nil")
 	}
-	if loaded.CorrelationSnapshot.PortfolioGrossUSD != 5000 {
-		t.Errorf("PortfolioGrossUSD = %f, want 5000", loaded.CorrelationSnapshot.PortfolioGrossUSD)
+	if loaded.partitionCorrelation(livePartition).PortfolioGrossUSD != 5000 {
+		t.Errorf("PortfolioGrossUSD = %f, want 5000", loaded.partitionCorrelation(livePartition).PortfolioGrossUSD)
 	}
-	if len(loaded.CorrelationSnapshot.Warnings) != 1 {
-		t.Fatalf("correlation warnings = %d, want 1", len(loaded.CorrelationSnapshot.Warnings))
+	if len(loaded.partitionCorrelation(livePartition).Warnings) != 1 {
+		t.Fatalf("correlation warnings = %d, want 1", len(loaded.partitionCorrelation(livePartition).Warnings))
 	}
-	btcExposure := loaded.CorrelationSnapshot.Assets["BTC"]
+	btcExposure := loaded.partitionCorrelation(livePartition).Assets["BTC"]
 	if btcExposure == nil {
 		t.Fatal("missing BTC exposure in correlation snapshot")
 	}
@@ -331,7 +375,6 @@ func TestSaveState_AppendsTradesOnly(t *testing.T) {
 		t.Fatalf("first SaveState: %v", err)
 	}
 
-	// Second save adds one new trade.
 	state.CycleCount = 2
 	state.Strategies["test"].TradeHistory = append(state.Strategies["test"].TradeHistory,
 		Trade{Timestamp: now, StrategyID: "test", Symbol: "ETH", Side: "buy", Quantity: 2, Price: 200, Value: 400},
@@ -341,7 +384,6 @@ func TestSaveState_AppendsTradesOnly(t *testing.T) {
 		t.Fatalf("second SaveState: %v", err)
 	}
 
-	// Verify total trades in DB.
 	var count int
 	if err := db.db.QueryRow("SELECT COUNT(*) FROM trades WHERE strategy_id = 'test'").Scan(&count); err != nil {
 		t.Fatalf("count trades: %v", err)
@@ -351,17 +393,15 @@ func TestSaveState_AppendsTradesOnly(t *testing.T) {
 	}
 }
 
-func TestSaveState_KillSwitchEventsCapped(t *testing.T) {
+func TestSaveState_KillSwitchEventsStoredAsIs(t *testing.T) {
 	db := openTestDB(t)
 	now := time.Now().UTC()
 
-	state := &AppState{
-		CycleCount: 1,
-		Strategies: make(map[string]*StrategyState),
-	}
-	// Add 60 events (more than maxKillSwitchEvents=50).
+	state := NewAppState()
+	state.CycleCount = 1
 	for i := 0; i < 60; i++ {
-		state.PortfolioRisk.Events = append(state.PortfolioRisk.Events, KillSwitchEvent{
+		prs := state.partitionRisk(livePartition)
+		prs.Events = append(prs.Events, KillSwitchEvent{
 			Timestamp: now.Add(time.Duration(i) * time.Minute), Type: "warning", DrawdownPct: float64(i),
 		})
 	}
@@ -370,8 +410,6 @@ func TestSaveState_KillSwitchEventsCapped(t *testing.T) {
 		t.Fatalf("SaveState: %v", err)
 	}
 
-	// DB should have all 60 since we store what's in memory (which is already capped by addKillSwitchEvent).
-	// But let's verify the load caps at maxKillSwitchEvents.
 	var count int
 	if err := db.db.QueryRow("SELECT COUNT(*) FROM kill_switch_events").Scan(&count); err != nil {
 		t.Fatalf("count events: %v", err)
@@ -413,77 +451,64 @@ func TestLoadState_NilMapsInitialized(t *testing.T) {
 	}
 }
 
-func TestQueryTradeHistory_NoFilter(t *testing.T) {
-	db := openTestDB(t)
-	state := makeTestState()
-	if err := db.SaveState(state); err != nil {
-		t.Fatalf("SaveState: %v", err)
+func TestQueryTradeHistory_Filters(t *testing.T) {
+	cases := []struct {
+		name      string
+		strategy  string
+		symbol    string
+		limit     int
+		wantTotal int
+		wantLen   int
+		check     func(t *testing.T, trades []Trade)
+	}{
+		{
+			name: "no filter newest first", limit: 50, wantTotal: 2, wantLen: 2,
+			check: func(t *testing.T, trades []Trade) {
+				if trades[0].Side != "sell" {
+					t.Errorf("first trade should be most recent (sell), got %q", trades[0].Side)
+				}
+			},
+		},
+		{
+			name: "by strategy", strategy: "hl-momentum-btc", limit: 50, wantTotal: 2, wantLen: 2,
+			check: func(t *testing.T, trades []Trade) {
+				for _, tr := range trades {
+					if tr.StrategyID != "hl-momentum-btc" {
+						t.Errorf("trade strategy = %q, want %q", tr.StrategyID, "hl-momentum-btc")
+					}
+				}
+			},
+		},
+		{name: "by nonexistent strategy", strategy: "nonexistent", limit: 50, wantTotal: 0, wantLen: 0},
+		{
+			name: "by symbol", symbol: "BTC", limit: 50, wantTotal: 2, wantLen: 2,
+			check: func(t *testing.T, trades []Trade) {
+				for _, tr := range trades {
+					if tr.Symbol != "BTC" {
+						t.Errorf("trade symbol = %q, want %q", tr.Symbol, "BTC")
+					}
+				}
+			},
+		},
+		{name: "limit clamped", limit: 9999, wantTotal: 2, wantLen: 2},
 	}
-
-	trades, total, err := db.QueryTradeHistory("", "", time.Time{}, time.Time{}, 50, 0)
-	if err != nil {
-		t.Fatalf("QueryTradeHistory: %v", err)
-	}
-	if total != 2 {
-		t.Errorf("total = %d, want 2", total)
-	}
-	if len(trades) != 2 {
-		t.Errorf("trades len = %d, want 2", len(trades))
-	}
-	// Should be ordered by timestamp desc.
-	if len(trades) >= 2 && trades[0].Side != "sell" {
-		t.Errorf("first trade should be most recent (sell), got %q", trades[0].Side)
-	}
-}
-
-func TestQueryTradeHistory_ByStrategy(t *testing.T) {
-	db := openTestDB(t)
-	state := makeTestState()
-	if err := db.SaveState(state); err != nil {
-		t.Fatalf("SaveState: %v", err)
-	}
-
-	trades, total, err := db.QueryTradeHistory("hl-momentum-btc", "", time.Time{}, time.Time{}, 50, 0)
-	if err != nil {
-		t.Fatalf("QueryTradeHistory: %v", err)
-	}
-	if total != 2 {
-		t.Errorf("total = %d, want 2", total)
-	}
-	for _, tr := range trades {
-		if tr.StrategyID != "hl-momentum-btc" {
-			t.Errorf("trade strategy = %q, want %q", tr.StrategyID, "hl-momentum-btc")
-		}
-	}
-
-	// Query non-existent strategy.
-	trades, total, err = db.QueryTradeHistory("nonexistent", "", time.Time{}, time.Time{}, 50, 0)
-	if err != nil {
-		t.Fatalf("QueryTradeHistory: %v", err)
-	}
-	if total != 0 || len(trades) != 0 {
-		t.Errorf("expected empty result, got total=%d len=%d", total, len(trades))
-	}
-}
-
-func TestQueryTradeHistory_BySymbol(t *testing.T) {
-	db := openTestDB(t)
-	state := makeTestState()
-	if err := db.SaveState(state); err != nil {
-		t.Fatalf("SaveState: %v", err)
-	}
-
-	trades, total, err := db.QueryTradeHistory("", "BTC", time.Time{}, time.Time{}, 50, 0)
-	if err != nil {
-		t.Fatalf("QueryTradeHistory: %v", err)
-	}
-	if total != 2 {
-		t.Errorf("total = %d, want 2", total)
-	}
-	for _, tr := range trades {
-		if tr.Symbol != "BTC" {
-			t.Errorf("trade symbol = %q, want %q", tr.Symbol, "BTC")
-		}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db := openTestDB(t)
+			if err := db.SaveState(makeTestState()); err != nil {
+				t.Fatalf("SaveState: %v", err)
+			}
+			trades, total, err := db.QueryTradeHistory(tc.strategy, tc.symbol, time.Time{}, time.Time{}, tc.limit, 0)
+			if err != nil {
+				t.Fatalf("QueryTradeHistory: %v", err)
+			}
+			if total != tc.wantTotal || len(trades) != tc.wantLen {
+				t.Fatalf("total=%d len=%d, want %d/%d", total, len(trades), tc.wantTotal, tc.wantLen)
+			}
+			if tc.check != nil {
+				tc.check(t, trades)
+			}
+		})
 	}
 }
 
@@ -500,7 +525,6 @@ func TestQueryTradeHistory_Pagination(t *testing.T) {
 			},
 		},
 	}
-	// Add 10 trades.
 	for i := 0; i < 10; i++ {
 		state.Strategies["test"].TradeHistory = append(state.Strategies["test"].TradeHistory,
 			Trade{Timestamp: now.Add(time.Duration(i) * time.Minute), StrategyID: "test", Symbol: "BTC", Side: "buy", Quantity: 1, Price: float64(100 + i), Value: float64(100 + i)},
@@ -510,7 +534,6 @@ func TestQueryTradeHistory_Pagination(t *testing.T) {
 		t.Fatalf("SaveState: %v", err)
 	}
 
-	// Page 1: limit 3, offset 0.
 	trades, total, err := db.QueryTradeHistory("", "", time.Time{}, time.Time{}, 3, 0)
 	if err != nil {
 		t.Fatalf("QueryTradeHistory page 1: %v", err)
@@ -522,7 +545,6 @@ func TestQueryTradeHistory_Pagination(t *testing.T) {
 		t.Errorf("page 1 len = %d, want 3", len(trades))
 	}
 
-	// Page 2: limit 3, offset 3.
 	trades2, _, err := db.QueryTradeHistory("", "", time.Time{}, time.Time{}, 3, 3)
 	if err != nil {
 		t.Fatalf("QueryTradeHistory page 2: %v", err)
@@ -531,7 +553,6 @@ func TestQueryTradeHistory_Pagination(t *testing.T) {
 		t.Errorf("page 2 len = %d, want 3", len(trades2))
 	}
 
-	// Verify different results.
 	if len(trades) > 0 && len(trades2) > 0 && trades[0].Price == trades2[0].Price {
 		t.Error("page 1 and page 2 should have different trades")
 	}
@@ -559,8 +580,7 @@ func TestQueryTradeHistory_TimeBounds(t *testing.T) {
 		t.Fatalf("SaveState: %v", err)
 	}
 
-	// Query with since bound (should exclude the oldest trade).
-	since := now.Add(-150 * time.Minute) // 2.5 hours ago
+	since := now.Add(-150 * time.Minute)
 	trades, total, err := db.QueryTradeHistory("", "", since, time.Time{}, 50, 0)
 	if err != nil {
 		t.Fatalf("QueryTradeHistory with since: %v", err)
@@ -573,28 +593,9 @@ func TestQueryTradeHistory_TimeBounds(t *testing.T) {
 	}
 }
 
-func TestQueryTradeHistory_LimitClamped(t *testing.T) {
-	db := openTestDB(t)
-	state := makeTestState()
-	if err := db.SaveState(state); err != nil {
-		t.Fatalf("SaveState: %v", err)
-	}
-
-	// Limit > 500 should be clamped.
-	trades, _, err := db.QueryTradeHistory("", "", time.Time{}, time.Time{}, 9999, 0)
-	if err != nil {
-		t.Fatalf("QueryTradeHistory: %v", err)
-	}
-	// We only have 2 trades, so this just verifies no error with large limit.
-	if len(trades) != 2 {
-		t.Errorf("trades len = %d, want 2", len(trades))
-	}
-}
-
 func TestCorrelationSnapshotRoundTrip(t *testing.T) {
 	db := openTestDB(t)
 
-	// Save state with correlation snapshot.
 	state := makeTestState()
 	if err := db.SaveState(state); err != nil {
 		t.Fatalf("SaveState: %v", err)
@@ -604,15 +605,14 @@ func TestCorrelationSnapshotRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadState: %v", err)
 	}
-	if loaded.CorrelationSnapshot == nil {
+	if loaded.partitionCorrelation(livePartition) == nil {
 		t.Fatal("CorrelationSnapshot is nil")
 	}
-	if loaded.CorrelationSnapshot.PortfolioGrossUSD != 5000 {
-		t.Errorf("PortfolioGrossUSD = %f, want 5000", loaded.CorrelationSnapshot.PortfolioGrossUSD)
+	if loaded.partitionCorrelation(livePartition).PortfolioGrossUSD != 5000 {
+		t.Errorf("PortfolioGrossUSD = %f, want 5000", loaded.partitionCorrelation(livePartition).PortfolioGrossUSD)
 	}
 
-	// Save state without correlation snapshot.
-	state.CorrelationSnapshot = nil
+	state.CorrelationSnapshot = map[RiskPartition]*CorrelationSnapshot{}
 	if err := db.SaveState(state); err != nil {
 		t.Fatalf("SaveState nil snapshot: %v", err)
 	}
@@ -620,16 +620,14 @@ func TestCorrelationSnapshotRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadState nil snapshot: %v", err)
 	}
-	if loaded2.CorrelationSnapshot != nil {
-		t.Errorf("expected nil CorrelationSnapshot, got %+v", loaded2.CorrelationSnapshot)
+	if loaded2.partitionCorrelation(livePartition) != nil {
+		t.Errorf("expected nil CorrelationSnapshot, got %+v", loaded2.partitionCorrelation(livePartition))
 	}
 }
 
 func TestSaveState_DuplicateStrategyIDs(t *testing.T) {
 	db := openTestDB(t)
 
-	// Regression test for issue #207: two map entries with different keys but
-	// the same s.ID must not trigger a UNIQUE constraint violation.
 	state := &AppState{
 		CycleCount: 1,
 		Strategies: map[string]*StrategyState{
@@ -650,7 +648,6 @@ func TestSaveState_DuplicateStrategyIDs(t *testing.T) {
 		},
 	}
 
-	// Before the fix, this would fail with UNIQUE constraint violation.
 	if err := db.SaveState(state); err != nil {
 		t.Fatalf("SaveState with duplicate IDs should not error: %v", err)
 	}
@@ -660,7 +657,6 @@ func TestSaveState_DuplicateStrategyIDs(t *testing.T) {
 		t.Fatalf("LoadState: %v", err)
 	}
 
-	// One of the two entries wins (last-write-wins); verify only one strategy in DB.
 	if len(loaded.Strategies) != 1 {
 		t.Errorf("expected 1 strategy after dedup, got %d", len(loaded.Strategies))
 	}
@@ -691,141 +687,93 @@ func TestSaveState_EmptyStrategies(t *testing.T) {
 }
 
 func TestTradeExchangeFieldsRoundTrip(t *testing.T) {
-	db := openTestDB(t)
 	now := time.Now().UTC().Truncate(time.Nanosecond)
-
-	state := &AppState{
-		CycleCount: 1,
-		Strategies: map[string]*StrategyState{
-			"hl-test": {
-				ID: "hl-test", Type: "perps", Platform: "hyperliquid",
-				Cash: 1000, InitialCapital: 1000,
-				Positions: make(map[string]*Position), OptionPositions: make(map[string]*OptionPosition),
-				TradeHistory: []Trade{
-					{
-						Timestamp: now.Add(-1 * time.Hour), StrategyID: "hl-test", Symbol: "BTC",
-						Side: "buy", Quantity: 0.1, Price: 50000, Value: 5000, TradeType: "perps",
-						Details: "live buy", ExchangeOrderID: "1234567890", ExchangeFee: 1.75,
+	type want struct {
+		orderID string
+		fee     float64
+	}
+	cases := []struct {
+		name     string
+		typ      string
+		platform string
+		trades   []Trade
+		want     []want
+	}{
+		{
+			name: "live perps two trades", typ: "perps", platform: "hyperliquid",
+			trades: []Trade{
+				{Timestamp: now.Add(-1 * time.Hour), Symbol: "BTC", Side: "buy", Quantity: 0.1, Price: 50000, Value: 5000, TradeType: "perps", Details: "live buy", ExchangeOrderID: "1234567890", ExchangeFee: 1.75},
+				{Timestamp: now, Symbol: "BTC", Side: "sell", Quantity: 0.1, Price: 51000, Value: 5100, TradeType: "perps", Details: "live sell", ExchangeOrderID: "1234567891", ExchangeFee: 1.79},
+			},
+			want: []want{{"1234567890", 1.75}, {"1234567891", 1.79}},
+		},
+		{
+			name: "live perps single trade", typ: "perps", platform: "hyperliquid",
+			trades: []Trade{
+				{Timestamp: now, Symbol: "BTC", Side: "buy", Quantity: 0.1, Price: 50000, Value: 5000, TradeType: "perps", Details: "live", ExchangeOrderID: "9876543210", ExchangeFee: 2.50},
+			},
+			want: []want{{"9876543210", 2.50}},
+		},
+		{
+			name: "paper spot empty by default", typ: "spot", platform: "binanceus",
+			trades: []Trade{
+				{Timestamp: now, Symbol: "BTC/USDT", Side: "buy", Quantity: 0.01, Price: 50000, Value: 500, TradeType: "spot", Details: "paper trade"},
+			},
+			want: []want{{"", 0}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db := openTestDB(t)
+			const id = "trade-exchange-fields"
+			trades := make([]Trade, len(tc.trades))
+			for i, tr := range tc.trades {
+				tr.StrategyID = id
+				trades[i] = tr
+			}
+			state := &AppState{
+				CycleCount: 1,
+				Strategies: map[string]*StrategyState{
+					id: {
+						ID: id, Type: tc.typ, Platform: tc.platform,
+						Cash: 1000, InitialCapital: 1000,
+						Positions: make(map[string]*Position), OptionPositions: make(map[string]*OptionPosition),
+						TradeHistory: trades,
 					},
-					{
-						Timestamp: now, StrategyID: "hl-test", Symbol: "BTC",
-						Side: "sell", Quantity: 0.1, Price: 51000, Value: 5100, TradeType: "perps",
-						Details: "live sell", ExchangeOrderID: "1234567891", ExchangeFee: 1.79,
-					},
 				},
-			},
-		},
-	}
+			}
+			if err := db.SaveState(state); err != nil {
+				t.Fatalf("SaveState: %v", err)
+			}
 
-	if err := db.SaveState(state); err != nil {
-		t.Fatalf("SaveState: %v", err)
-	}
+			loaded, err := db.LoadState()
+			if err != nil {
+				t.Fatalf("LoadState: %v", err)
+			}
+			hist := loaded.Strategies[id].TradeHistory
+			if len(hist) != len(tc.want) {
+				t.Fatalf("LoadState trade count = %d, want %d", len(hist), len(tc.want))
+			}
+			for i, w := range tc.want {
+				if hist[i].ExchangeOrderID != w.orderID || hist[i].ExchangeFee != w.fee {
+					t.Errorf("LoadState trade[%d] = (%q, %g), want (%q, %g)", i, hist[i].ExchangeOrderID, hist[i].ExchangeFee, w.orderID, w.fee)
+				}
+			}
 
-	loaded, err := db.LoadState()
-	if err != nil {
-		t.Fatalf("LoadState: %v", err)
-	}
-
-	hlStrat := loaded.Strategies["hl-test"]
-	if hlStrat == nil {
-		t.Fatal("missing strategy hl-test")
-	}
-	if len(hlStrat.TradeHistory) != 2 {
-		t.Fatalf("trade count = %d, want 2", len(hlStrat.TradeHistory))
-	}
-
-	// Verify exchange fields persisted on first trade.
-	t1 := hlStrat.TradeHistory[0]
-	if t1.ExchangeOrderID != "1234567890" {
-		t.Errorf("trade[0].ExchangeOrderID = %q, want %q", t1.ExchangeOrderID, "1234567890")
-	}
-	if t1.ExchangeFee != 1.75 {
-		t.Errorf("trade[0].ExchangeFee = %g, want 1.75", t1.ExchangeFee)
-	}
-
-	// Verify exchange fields persisted on second trade.
-	t2 := hlStrat.TradeHistory[1]
-	if t2.ExchangeOrderID != "1234567891" {
-		t.Errorf("trade[1].ExchangeOrderID = %q, want %q", t2.ExchangeOrderID, "1234567891")
-	}
-	if t2.ExchangeFee != 1.79 {
-		t.Errorf("trade[1].ExchangeFee = %g, want 1.79", t2.ExchangeFee)
-	}
-}
-
-func TestTradeExchangeFields_EmptyByDefault(t *testing.T) {
-	db := openTestDB(t)
-	now := time.Now().UTC().Truncate(time.Nanosecond)
-
-	// Trades without exchange fields should default to empty/zero.
-	state := &AppState{
-		CycleCount: 1,
-		Strategies: map[string]*StrategyState{
-			"spot-test": {
-				ID: "spot-test", Type: "spot", Platform: "binanceus",
-				Cash: 1000, InitialCapital: 1000,
-				Positions: make(map[string]*Position), OptionPositions: make(map[string]*OptionPosition),
-				TradeHistory: []Trade{
-					{Timestamp: now, StrategyID: "spot-test", Symbol: "BTC/USDT", Side: "buy",
-						Quantity: 0.01, Price: 50000, Value: 500, TradeType: "spot", Details: "paper trade"},
-				},
-			},
-		},
-	}
-
-	if err := db.SaveState(state); err != nil {
-		t.Fatalf("SaveState: %v", err)
-	}
-	loaded, err := db.LoadState()
-	if err != nil {
-		t.Fatalf("LoadState: %v", err)
-	}
-
-	tr := loaded.Strategies["spot-test"].TradeHistory[0]
-	if tr.ExchangeOrderID != "" {
-		t.Errorf("ExchangeOrderID should be empty for paper trade, got %q", tr.ExchangeOrderID)
-	}
-	if tr.ExchangeFee != 0 {
-		t.Errorf("ExchangeFee should be 0 for paper trade, got %g", tr.ExchangeFee)
-	}
-}
-
-func TestQueryTradeHistory_ExchangeFields(t *testing.T) {
-	db := openTestDB(t)
-	now := time.Now().UTC().Truncate(time.Nanosecond)
-
-	state := &AppState{
-		CycleCount: 1,
-		Strategies: map[string]*StrategyState{
-			"hl-test": {
-				ID: "hl-test", Type: "perps", Platform: "hyperliquid",
-				Cash: 1000, InitialCapital: 1000,
-				Positions: make(map[string]*Position), OptionPositions: make(map[string]*OptionPosition),
-				TradeHistory: []Trade{
-					{Timestamp: now, StrategyID: "hl-test", Symbol: "BTC", Side: "buy",
-						Quantity: 0.1, Price: 50000, Value: 5000, TradeType: "perps",
-						Details: "live", ExchangeOrderID: "9876543210", ExchangeFee: 2.50},
-				},
-			},
-		},
-	}
-
-	if err := db.SaveState(state); err != nil {
-		t.Fatalf("SaveState: %v", err)
-	}
-
-	trades, total, err := db.QueryTradeHistory("hl-test", "", time.Time{}, time.Time{}, 50, 0)
-	if err != nil {
-		t.Fatalf("QueryTradeHistory: %v", err)
-	}
-	if total != 1 {
-		t.Fatalf("total = %d, want 1", total)
-	}
-	if trades[0].ExchangeOrderID != "9876543210" {
-		t.Errorf("ExchangeOrderID = %q, want %q", trades[0].ExchangeOrderID, "9876543210")
-	}
-	if trades[0].ExchangeFee != 2.50 {
-		t.Errorf("ExchangeFee = %g, want 2.50", trades[0].ExchangeFee)
+			queried, total, err := db.QueryTradeHistory(id, "", time.Time{}, time.Time{}, 50, 0)
+			if err != nil {
+				t.Fatalf("QueryTradeHistory: %v", err)
+			}
+			if total != len(tc.want) || len(queried) != len(tc.want) {
+				t.Fatalf("QueryTradeHistory total=%d len=%d, want %d", total, len(queried), len(tc.want))
+			}
+			for i, w := range tc.want {
+				q := queried[len(queried)-1-i]
+				if q.ExchangeOrderID != w.orderID || q.ExchangeFee != w.fee {
+					t.Errorf("QueryTradeHistory trade[%d] = (%q, %g), want (%q, %g)", i, q.ExchangeOrderID, q.ExchangeFee, w.orderID, w.fee)
+				}
+			}
+		})
 	}
 }
 
@@ -868,6 +816,38 @@ func TestSaveLoadState_PositionIDsRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSaveLoadState_ATRMethodAtOpenRoundTrip(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now().UTC().Truncate(time.Nanosecond)
+	state := &AppState{
+		CycleCount: 1,
+		Strategies: map[string]*StrategyState{
+			"hl-eth": {
+				ID: "hl-eth", Type: "perps", Platform: "hyperliquid",
+				Cash: 1000, InitialCapital: 1000,
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 3000, Side: "long", OpenedAt: now, ATRMethodAtOpen: ATRMethodWilder},
+					"BTC": {Symbol: "BTC", Quantity: 0.1, AvgCost: 50000, Side: "long", OpenedAt: now},
+				},
+				TradeHistory: []Trade{},
+			},
+		},
+	}
+	if err := db.SaveState(state); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+	loaded, err := db.LoadState()
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	if got := loaded.Strategies["hl-eth"].Positions["ETH"].ATRMethodAtOpen; got != ATRMethodWilder {
+		t.Errorf("ATRMethodAtOpen = %q, want %q", got, ATRMethodWilder)
+	}
+	if got := loaded.Strategies["hl-eth"].Positions["BTC"].ATRMethodAtOpen; got != "" {
+		t.Errorf("pre-#1277 position ATRMethodAtOpen = %q, want empty", got)
+	}
+}
+
 func TestSaveStateFlushWritesTradePositionID(t *testing.T) {
 	db := openTestDB(t)
 	now := time.Now().UTC().Truncate(time.Nanosecond)
@@ -895,6 +875,84 @@ func TestSaveStateFlushWritesTradePositionID(t *testing.T) {
 	}
 	if got != "position-save-fallback" {
 		t.Errorf("position_id = %q, want position-save-fallback", got)
+	}
+}
+
+func TestLoadState_TradeHistoryBoundedInSQL(t *testing.T) {
+	db := openTestDB(t)
+	if _, err := db.db.Exec("INSERT INTO app_state (id, cycle_count) VALUES (1, 1)"); err != nil {
+		t.Fatalf("seed app_state: %v", err)
+	}
+	if _, err := db.db.Exec("INSERT INTO strategies (id, type, platform, cash, initial_capital) VALUES (?, ?, ?, ?, ?)", "s1", "perps", "hyperliquid", 1000.0, 1000.0); err != nil {
+		t.Fatalf("seed strategy: %v", err)
+	}
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	const total = maxTradeHistory + 200
+	for i := 0; i < total; i++ {
+		ts := base.Add(time.Duration(i) * time.Minute)
+		if _, err := db.db.Exec(`INSERT INTO trades
+			(strategy_id, timestamp, symbol, side, quantity, price, value, trade_type, details, is_close, realized_pnl)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			"s1", formatTime(ts), "BTC", "buy", 0.1, 50000.0, 5000.0, "perps", "open", 0, 0.0,
+		); err != nil {
+			t.Fatalf("seed trade %d: %v", i, err)
+		}
+	}
+
+	loaded, err := db.LoadState()
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	trades := loaded.Strategies["s1"].TradeHistory
+	if len(trades) != maxTradeHistory {
+		t.Fatalf("trade count = %d, want %d", len(trades), maxTradeHistory)
+	}
+	wantOldest := base.Add(time.Duration(total-maxTradeHistory) * time.Minute)
+	wantNewest := base.Add(time.Duration(total-1) * time.Minute)
+	if !trades[0].Timestamp.Equal(wantOldest) {
+		t.Errorf("trades[0].Timestamp = %v, want %v (oldest surviving trade)", trades[0].Timestamp, wantOldest)
+	}
+	if !trades[len(trades)-1].Timestamp.Equal(wantNewest) {
+		t.Errorf("trades[last].Timestamp = %v, want %v (newest trade)", trades[len(trades)-1].Timestamp, wantNewest)
+	}
+	for i := 1; i < len(trades); i++ {
+		if trades[i].Timestamp.Before(trades[i-1].Timestamp) {
+			t.Fatalf("trades not in ascending chronological order at index %d: %v before %v", i, trades[i].Timestamp, trades[i-1].Timestamp)
+		}
+	}
+
+	rows, err := db.db.Query(`EXPLAIN QUERY PLAN SELECT timestamp FROM trades WHERE strategy_id = ? ORDER BY timestamp DESC, rowid DESC LIMIT ?`, "s1", maxTradeHistory)
+	if err != nil {
+		t.Fatalf("explain query plan: %v", err)
+	}
+	defer rows.Close()
+	var plan strings.Builder
+	for rows.Next() {
+		cols, err := rows.Columns()
+		if err != nil {
+			t.Fatalf("columns: %v", err)
+		}
+		vals := make([]any, len(cols))
+		ptrs := make([]any, len(cols))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			t.Fatalf("scan explain row: %v", err)
+		}
+		for _, v := range vals {
+			fmt.Fprintf(&plan, "%v ", v)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate explain rows: %v", err)
+	}
+	planStr := plan.String()
+	if strings.Contains(planStr, "SCAN TABLE trades") {
+		t.Errorf("query plan does a full table scan, want an index-satisfied plan: %s", planStr)
+	}
+	if !strings.Contains(planStr, "idx_trades_strategy_timestamp") {
+		t.Errorf("query plan does not use idx_trades_strategy_timestamp: %s", planStr)
 	}
 }
 
@@ -974,14 +1032,12 @@ func TestQueryTradeHistory_PositionIDRoundTripAndLegacyNull(t *testing.T) {
 }
 
 func TestMigrateSchema_AddsExchangeColumns(t *testing.T) {
-	// Create a DB with the old schema (no exchange columns), then verify migration adds them.
 	path := filepath.Join(t.TempDir(), "state.db")
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
 
-	// Create old-schema trades table without exchange columns.
 	oldSchema := `
 	CREATE TABLE IF NOT EXISTS app_state (
 	    id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -1063,7 +1119,6 @@ func TestMigrateSchema_AddsExchangeColumns(t *testing.T) {
 		t.Fatalf("create old schema: %v", err)
 	}
 
-	// Insert a trade without exchange columns.
 	if _, err := db.Exec(`INSERT INTO app_state (id, cycle_count) VALUES (1, 1)`); err != nil {
 		t.Fatalf("insert app_state: %v", err)
 	}
@@ -1080,14 +1135,12 @@ func TestMigrateSchema_AddsExchangeColumns(t *testing.T) {
 	}
 	db.Close()
 
-	// Re-open via OpenStateDB which runs migration.
 	sdb, err := OpenStateDB(path)
 	if err != nil {
 		t.Fatalf("OpenStateDB after migration: %v", err)
 	}
 	defer sdb.Close()
 
-	// Verify old trade can be loaded with new columns defaulting to empty/zero.
 	loaded, err := sdb.LoadState()
 	if err != nil {
 		t.Fatalf("LoadState after migration: %v", err)
@@ -1123,7 +1176,6 @@ func TestMigrateSchema_AddsExchangeColumns(t *testing.T) {
 		t.Errorf("migrated trade ExchangeFee = %g, want 0", tr.ExchangeFee)
 	}
 
-	// Verify new trades with exchange fields can be saved and loaded.
 	strat.TradeHistory = append(strat.TradeHistory, Trade{
 		Timestamp: time.Now().UTC(), StrategyID: "test", Symbol: "BTC", Side: "sell",
 		Quantity: 0.1, Price: 51000, Value: 5100, TradeType: "perps",
@@ -1149,9 +1201,6 @@ func TestMigrateSchema_AddsExchangeColumns(t *testing.T) {
 	}
 }
 
-// TestClosedPositions_Flush verifies that ClosedPosition buffer entries are
-// persisted to the closed_positions table on SaveState and that the buffer
-// is cleared after a successful commit (#288).
 func TestClosedPositions_Flush(t *testing.T) {
 	sdb := openTestDB(t)
 	now := time.Now().UTC().Truncate(time.Second)
@@ -1180,12 +1229,10 @@ func TestClosedPositions_Flush(t *testing.T) {
 		t.Fatalf("SaveState: %v", err)
 	}
 
-	// Buffer should be cleared after successful commit.
 	if len(state.Strategies["test"].ClosedPositions) != 0 {
 		t.Errorf("ClosedPositions buffer not cleared after save, len=%d", len(state.Strategies["test"].ClosedPositions))
 	}
 
-	// Table should contain the row.
 	var count int
 	if err := sdb.db.QueryRow("SELECT COUNT(*) FROM closed_positions").Scan(&count); err != nil {
 		t.Fatalf("count closed_positions: %v", err)
@@ -1194,7 +1241,6 @@ func TestClosedPositions_Flush(t *testing.T) {
 		t.Fatalf("closed_positions rows = %d, want 1", count)
 	}
 
-	// QueryClosedPositions round-trip.
 	rows, total, err := sdb.QueryClosedPositions("", "", time.Time{}, time.Time{}, 10, 0)
 	if err != nil {
 		t.Fatalf("QueryClosedPositions: %v", err)
@@ -1213,7 +1259,6 @@ func TestClosedPositions_Flush(t *testing.T) {
 		t.Errorf("timestamps should round-trip, got opened=%v closed=%v", cp.OpenedAt, cp.ClosedAt)
 	}
 
-	// Second save with no new closes should not re-insert.
 	if err := sdb.SaveState(state); err != nil {
 		t.Fatalf("second SaveState: %v", err)
 	}
@@ -1225,22 +1270,19 @@ func TestClosedPositions_Flush(t *testing.T) {
 	}
 }
 
-// TestRecordClosedPosition_ExecuteSignal verifies that closing a position via
-// ExecuteSpotSignal appends to the ClosedPositions buffer with the correct
-// PnL, reason, and duration (#288).
 func TestRecordClosedPosition_ExecuteSignal(t *testing.T) {
 	openedAt := time.Now().UTC().Add(-2 * time.Hour)
 	s := &StrategyState{
 		ID: "test", Type: "spot", Platform: "binanceus",
-		Cash: 0, // zero so we can't re-buy — isolates the close path
+		Cash: 0,
 		Positions: map[string]*Position{
 			"BTC": {Symbol: "BTC", Quantity: 1.0, AvgCost: 100, Side: "long", OpenedAt: openedAt},
 		},
 	}
 	lm, _ := NewLogManager("")
 	logger, _ := lm.GetStrategyLogger("test")
-	if _, err := ExecuteSpotSignal(s, -1, "BTC", 110, 0, logger); err != nil {
-		t.Fatalf("ExecuteSpotSignal: %v", err)
+	if _, err := ExecuteSpotSignalWithFillFee(s, -1, "BTC", 110, 0, 0, "", 0, logger); err != nil {
+		t.Fatalf("ExecuteSpotSignalWithFillFee: %v", err)
 	}
 	if _, exists := s.Positions["BTC"]; exists {
 		t.Fatal("position should have been closed")
@@ -1266,10 +1308,6 @@ func TestRecordClosedPosition_ExecuteSignal(t *testing.T) {
 	}
 }
 
-// TestQueryClosedPositions_Filters exercises strategy/symbol/since/until
-// filters and verifies that two successive SaveState calls append rather than
-// replace (regression guard for anyone changing formatTime away from a
-// lexicographically-comparable representation).
 func TestQueryClosedPositions_Filters(t *testing.T) {
 	sdb := openTestDB(t)
 	now := time.Now().UTC().Truncate(time.Second)
@@ -1298,7 +1336,6 @@ func TestQueryClosedPositions_Filters(t *testing.T) {
 		t.Fatalf("first SaveState: %v", err)
 	}
 
-	// Filter by strategy_id.
 	rows, total, err := sdb.QueryClosedPositions("s1", "", time.Time{}, time.Time{}, 50, 0)
 	if err != nil {
 		t.Fatalf("filter strategy: %v", err)
@@ -1312,7 +1349,6 @@ func TestQueryClosedPositions_Filters(t *testing.T) {
 		}
 	}
 
-	// Filter by symbol across strategies.
 	rows, total, err = sdb.QueryClosedPositions("", "BTC", time.Time{}, time.Time{}, 50, 0)
 	if err != nil {
 		t.Fatalf("filter symbol: %v", err)
@@ -1321,7 +1357,6 @@ func TestQueryClosedPositions_Filters(t *testing.T) {
 		t.Errorf("symbol filter: total=%d len=%d, want 2/2", total, len(rows))
 	}
 
-	// since bound excludes the oldest s1 BTC close.
 	since := now.Add(-90 * time.Minute)
 	rows, total, err = sdb.QueryClosedPositions("", "", since, time.Time{}, 50, 0)
 	if err != nil {
@@ -1331,7 +1366,6 @@ func TestQueryClosedPositions_Filters(t *testing.T) {
 		t.Errorf("since filter: total=%d len=%d, want 2/2", total, len(rows))
 	}
 
-	// until bound excludes s2 (most recent).
 	until := now.Add(-45 * time.Minute)
 	rows, total, err = sdb.QueryClosedPositions("", "", time.Time{}, until, 50, 0)
 	if err != nil {
@@ -1341,7 +1375,6 @@ func TestQueryClosedPositions_Filters(t *testing.T) {
 		t.Errorf("until filter: total=%d len=%d, want 2/2 (s1 BTC + s1 ETH)", total, len(rows))
 	}
 
-	// Combined strategy + symbol.
 	rows, total, err = sdb.QueryClosedPositions("s2", "BTC", time.Time{}, time.Time{}, 50, 0)
 	if err != nil {
 		t.Fatalf("combined filter: %v", err)
@@ -1353,7 +1386,6 @@ func TestQueryClosedPositions_Filters(t *testing.T) {
 		t.Errorf("combined filter close_reason=%q, want circuit_breaker", rows[0].CloseReason)
 	}
 
-	// Second SaveState with a fresh close appends rather than replaces.
 	state.Strategies["s1"].ClosedPositions = []ClosedPosition{
 		{StrategyID: "s1", Symbol: "SOL", Quantity: 5, AvgCost: 20, Side: "long", OpenedAt: now.Add(-30 * time.Minute), ClosedAt: now, ClosePrice: 25, RealizedPnL: 25, CloseReason: "signal", DurationSeconds: 1800},
 	}
@@ -1369,8 +1401,6 @@ func TestQueryClosedPositions_Filters(t *testing.T) {
 	}
 }
 
-// TestClosedOptionPositions_Flush verifies that ClosedOptionPosition buffer
-// entries round-trip through SaveState and QueryClosedOptionPositions (#288).
 func TestClosedOptionPositions_Flush(t *testing.T) {
 	sdb := openTestDB(t)
 	now := time.Now().UTC().Truncate(time.Second)
@@ -1419,7 +1449,6 @@ func TestClosedOptionPositions_Flush(t *testing.T) {
 		t.Errorf("DurationSeconds = %d, want 86400", cp.DurationSeconds)
 	}
 
-	// Filter by underlying.
 	rows, total, err = sdb.QueryClosedOptionPositions("", "ETH", time.Time{}, time.Time{}, 10, 0)
 	if err != nil {
 		t.Fatalf("filter underlying: %v", err)
@@ -1429,8 +1458,6 @@ func TestClosedOptionPositions_Flush(t *testing.T) {
 	}
 }
 
-// TestRecordClosedOptionPosition_ExecuteClose verifies that
-// executeOptionClose records a ClosedOptionPosition on the strategy buffer.
 func TestRecordClosedOptionPosition_ExecuteClose(t *testing.T) {
 	openedAt := time.Now().UTC().Add(-3 * time.Hour)
 	pos := &OptionPosition{
@@ -1472,12 +1499,9 @@ func TestRecordClosedOptionPosition_ExecuteClose(t *testing.T) {
 	}
 }
 
-// TestMigrateSchema_AddsOpenedAt verifies that re-opening an older DB without
-// the positions.opened_at column successfully applies the ALTER migration.
 func TestMigrateSchema_AddsOpenedAt(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "legacy.db")
 
-	// Create a DB with the legacy positions schema (no opened_at column).
 	legacy, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatalf("open legacy: %v", err)
@@ -1496,7 +1520,6 @@ func TestMigrateSchema_AddsOpenedAt(t *testing.T) {
 	}
 	legacy.Close()
 
-	// Re-open with the current code — migrateSchema should add opened_at.
 	db, err := OpenStateDB(path)
 	if err != nil {
 		t.Fatalf("OpenStateDB: %v", err)
@@ -1512,337 +1535,255 @@ func TestMigrateSchema_AddsOpenedAt(t *testing.T) {
 	}
 }
 
-func TestSaveLoadState_LeaderboardSummaries(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "state.db")
-	sdb, err := OpenStateDB(path)
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	defer sdb.Close()
-
+func TestSaveLoadState_TimestampMaps(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
-	state := NewAppState()
-	state.LastLeaderboardSummaries = map[string]time.Time{
-		"hyperliquid:*:123":   now.Add(-1 * time.Hour),
-		"hyperliquid:eth:456": now.Add(-2 * time.Hour),
+	cases := []struct {
+		name  string
+		set   func(*AppState, map[string]time.Time)
+		get   func(*AppState) map[string]time.Time
+		value map[string]time.Time
+	}{
+		{
+			name:  "last leaderboard summaries",
+			set:   func(s *AppState, m map[string]time.Time) { s.LastLeaderboardSummaries = m },
+			get:   func(s *AppState) map[string]time.Time { return s.LastLeaderboardSummaries },
+			value: map[string]time.Time{"hyperliquid:*:123": now.Add(-1 * time.Hour), "hyperliquid:eth:456": now.Add(-2 * time.Hour)},
+		},
+		{
+			name:  "last summary post",
+			set:   func(s *AppState, m map[string]time.Time) { s.LastSummaryPost = m },
+			get:   func(s *AppState) map[string]time.Time { return s.LastSummaryPost },
+			value: map[string]time.Time{"spot": now.Add(-5 * time.Minute), "hyperliquid": now.Add(-30 * time.Minute)},
+		},
 	}
-	if err := sdb.SaveState(state); err != nil {
-		t.Fatalf("save: %v", err)
-	}
-
-	loaded, err := sdb.LoadState()
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	if len(loaded.LastLeaderboardSummaries) != 2 {
-		t.Fatalf("expected 2 entries, got %d", len(loaded.LastLeaderboardSummaries))
-	}
-	for k, want := range state.LastLeaderboardSummaries {
-		got, ok := loaded.LastLeaderboardSummaries[k]
-		if !ok {
-			t.Errorf("key %q missing after reload", k)
-			continue
-		}
-		if !got.Equal(want) {
-			t.Errorf("key %q: got %v, want %v", k, got, want)
-		}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sdb := openTestDB(t)
+			state := NewAppState()
+			tc.set(state, tc.value)
+			if err := sdb.SaveState(state); err != nil {
+				t.Fatalf("save: %v", err)
+			}
+			loaded, err := sdb.LoadState()
+			if err != nil {
+				t.Fatalf("load: %v", err)
+			}
+			got := tc.get(loaded)
+			if len(got) != len(tc.value) {
+				t.Fatalf("expected %d entries, got %d", len(tc.value), len(got))
+			}
+			for k, want := range tc.value {
+				g, ok := got[k]
+				if !ok {
+					t.Errorf("key %q missing after reload", k)
+					continue
+				}
+				if !g.Equal(want) {
+					t.Errorf("key %q: got %v, want %v", k, g, want)
+				}
+			}
+		})
 	}
 }
 
-func TestSaveLoadState_LastSummaryPost(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "state.db")
-	sdb, err := OpenStateDB(path)
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	defer sdb.Close()
-
-	now := time.Now().UTC().Truncate(time.Second)
-	state := NewAppState()
-	state.LastSummaryPost = map[string]time.Time{
-		"spot":        now.Add(-5 * time.Minute),
-		"hyperliquid": now.Add(-30 * time.Minute),
-	}
-	if err := sdb.SaveState(state); err != nil {
-		t.Fatalf("save: %v", err)
-	}
-
-	loaded, err := sdb.LoadState()
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	if len(loaded.LastSummaryPost) != 2 {
-		t.Fatalf("expected 2 entries, got %d", len(loaded.LastSummaryPost))
-	}
-	for k, want := range state.LastSummaryPost {
-		got, ok := loaded.LastSummaryPost[k]
-		if !ok {
-			t.Errorf("key %q missing after reload", k)
-			continue
-		}
-		if !got.Equal(want) {
-			t.Errorf("key %q: got %v, want %v", k, got, want)
+func TestSaveState_InitialCapitalGuard(t *testing.T) {
+	strat := func(id string, cash, initial float64) *StrategyState {
+		return &StrategyState{
+			ID: id, Type: "spot", Cash: cash, InitialCapital: initial,
+			Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{},
 		}
 	}
+	type book struct{ initial, cash float64 }
+	cases := []struct {
+		name         string
+		seed         map[string]*StrategyState
+		save         map[string]*StrategyState
+		wantInMemory map[string]book
+		wantDB       map[string]book
+	}{
+		{
+			name:         "existing baseline is preserved and restored in memory",
+			seed:         map[string]*StrategyState{"hl-tema-eth": strat("hl-tema-eth", 505, 505)},
+			save:         map[string]*StrategyState{"hl-tema-eth": strat("hl-tema-eth", 632, 632)},
+			wantInMemory: map[string]book{"hl-tema-eth": {505, 632}},
+			wantDB:       map[string]book{"hl-tema-eth": {505, 632}},
+		},
+		{
+			name:         "first write lands",
+			save:         map[string]*StrategyState{"new-strat": strat("new-strat", 1000, 1000)},
+			wantInMemory: map[string]book{"new-strat": {1000, 1000}},
+			wantDB:       map[string]book{"new-strat": {1000, 1000}},
+		},
+		{
+			name: "new strategy alongside existing one",
+			seed: map[string]*StrategyState{"old": strat("old", 1000, 1000)},
+			save: map[string]*StrategyState{
+				"old":       strat("old", 1000, 1000),
+				"brand-new": strat("brand-new", 2000, 2000),
+			},
+			wantInMemory: map[string]book{"old": {1000, 1000}, "brand-new": {2000, 2000}},
+			wantDB:       map[string]book{"old": {1000, 1000}, "brand-new": {2000, 2000}},
+		},
+		{
+			name:         "prev zero allows baseline establishment",
+			seed:         map[string]*StrategyState{"legacy": strat("legacy", 0, 0)},
+			save:         map[string]*StrategyState{"legacy": strat("legacy", 1000, 1000)},
+			wantInMemory: map[string]book{"legacy": {1000, 1000}},
+			wantDB:       map[string]book{"legacy": {1000, 1000}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db := openTestDB(t)
+			if tc.seed != nil {
+				if err := db.SaveState(&AppState{Strategies: tc.seed}); err != nil {
+					t.Fatalf("seed SaveState: %v", err)
+				}
+			}
+			state := &AppState{Strategies: tc.save}
+			if err := db.SaveState(state); err != nil {
+				t.Fatalf("SaveState: %v", err)
+			}
+			for id, w := range tc.wantInMemory {
+				s := state.Strategies[id]
+				if s.InitialCapital != w.initial || s.Cash != w.cash {
+					t.Errorf("in-memory %s = (initial %g, cash %g), want (%g, %g)", id, s.InitialCapital, s.Cash, w.initial, w.cash)
+				}
+			}
+			loaded, err := db.LoadState()
+			if err != nil {
+				t.Fatalf("LoadState: %v", err)
+			}
+			for id, w := range tc.wantDB {
+				s := loaded.Strategies[id]
+				if s == nil {
+					t.Fatalf("persisted strategy %s missing", id)
+				}
+				if s.InitialCapital != w.initial || s.Cash != w.cash {
+					t.Errorf("persisted %s = (initial %g, cash %g), want (%g, %g)", id, s.InitialCapital, s.Cash, w.initial, w.cash)
+				}
+			}
+		})
+	}
 }
 
-// TestSaveState_PreservesInitialCapital verifies the #343 guard: once an
-// initial_capital baseline has been persisted, subsequent SaveState calls can
-// never silently overwrite it, even if the in-memory StrategyState has a
-// different value. Normal state persistence (cycle saves, position closes,
-// restarts) must leave the baseline untouched.
-func TestSaveState_PreservesInitialCapital(t *testing.T) {
-	db := openTestDB(t)
-
-	initial := &AppState{
-		Strategies: map[string]*StrategyState{
-			"hl-tema-eth": {
-				ID:              "hl-tema-eth",
-				Type:            "perps",
-				Platform:        "hyperliquid",
-				Cash:            505,
-				InitialCapital:  505,
-				Positions:       map[string]*Position{},
-				OptionPositions: map[string]*OptionPosition{},
+func TestSetInitialCapital(t *testing.T) {
+	seed := func(t *testing.T, cash float64) *StateDB {
+		db := openTestDB(t)
+		state := &AppState{
+			Strategies: map[string]*StrategyState{
+				"s": {
+					ID: "s", Type: "spot", Cash: cash, InitialCapital: cash,
+					Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{},
+				},
 			},
-		},
+		}
+		if err := db.SaveState(state); err != nil {
+			t.Fatalf("SaveState: %v", err)
+		}
+		return db
 	}
-	if err := db.SaveState(initial); err != nil {
-		t.Fatalf("first SaveState: %v", err)
-	}
-
-	// Simulate the incident: something (operator agent, buggy code path) tries
-	// to rewrite initial_capital alongside a normal state save.
-	mutated := &AppState{
-		Strategies: map[string]*StrategyState{
-			"hl-tema-eth": {
-				ID:              "hl-tema-eth",
-				Type:            "perps",
-				Platform:        "hyperliquid",
-				Cash:            632,
-				InitialCapital:  632,
-				Positions:       map[string]*Position{},
-				OptionPositions: map[string]*OptionPosition{},
+	t.Run("explicit override sticks across a stale save", func(t *testing.T) {
+		db := seed(t, 505)
+		if err := db.SetInitialCapital("s", 750); err != nil {
+			t.Fatalf("SetInitialCapital: %v", err)
+		}
+		state := &AppState{
+			Strategies: map[string]*StrategyState{
+				"s": {
+					ID: "s", Type: "spot", Cash: 505, InitialCapital: 505,
+					Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{},
+				},
 			},
-		},
-	}
-	if err := db.SaveState(mutated); err != nil {
-		t.Fatalf("second SaveState: %v", err)
-	}
-
-	// Guard should preserve the baseline and mutate the in-memory state so
-	// subsequent reads stay consistent with the DB.
-	if got := mutated.Strategies["hl-tema-eth"].InitialCapital; got != 505 {
-		t.Errorf("in-memory InitialCapital = %g, want 505 (guard should have restored it)", got)
-	}
-
-	// Cash is a normal runtime field — guard must not touch it.
-	if got := mutated.Strategies["hl-tema-eth"].Cash; got != 632 {
-		t.Errorf("Cash = %g, want 632 (guard must only protect initial_capital)", got)
-	}
-
-	loaded, err := db.LoadState()
-	if err != nil {
-		t.Fatalf("LoadState: %v", err)
-	}
-	if got := loaded.Strategies["hl-tema-eth"].InitialCapital; got != 505 {
-		t.Errorf("persisted initial_capital = %g, want 505", got)
-	}
-	if got := loaded.Strategies["hl-tema-eth"].Cash; got != 632 {
-		t.Errorf("persisted cash = %g, want 632", got)
-	}
+		}
+		if err := db.SaveState(state); err != nil {
+			t.Fatalf("SaveState after override: %v", err)
+		}
+		loaded, err := db.LoadState()
+		if err != nil {
+			t.Fatalf("LoadState: %v", err)
+		}
+		if got := loaded.Strategies["s"].InitialCapital; got != 750 {
+			t.Errorf("initial_capital = %g, want 750 (override must stick)", got)
+		}
+	})
+	t.Run("rejects zero, negative, and unknown strategy", func(t *testing.T) {
+		db := seed(t, 1000)
+		if err := db.SetInitialCapital("s", 0); err == nil {
+			t.Error("expected error for zero initial_capital")
+		}
+		if err := db.SetInitialCapital("s", -100); err == nil {
+			t.Error("expected error for negative initial_capital")
+		}
+		if err := db.SetInitialCapital("unknown-id", 1000); err == nil {
+			t.Error("expected error for unknown strategy id")
+		}
+	})
 }
 
-// TestSaveState_AllowsFirstInitialCapitalWrite confirms the guard only protects
-// an *existing* baseline — the very first save (DB empty, or prior row had 0)
-// must establish the baseline normally.
-func TestSaveState_AllowsFirstInitialCapitalWrite(t *testing.T) {
+func TestPersistSharedWalletPoolStateTransitionRoundTrip(t *testing.T) {
 	db := openTestDB(t)
-
-	state := &AppState{
-		Strategies: map[string]*StrategyState{
-			"new-strat": {
-				ID: "new-strat", Type: "spot", Cash: 1000, InitialCapital: 1000,
-				Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{},
-			},
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"hl-a": {
+			ID: "hl-a", Type: "perps", Platform: "hyperliquid",
+			Cash: 1000, InitialCapital: 1000,
+			Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{},
+			RiskState: RiskState{PeakValue: 1000},
 		},
-	}
+	}}
 	if err := db.SaveState(state); err != nil {
-		t.Fatalf("SaveState: %v", err)
+		t.Fatalf("seed state: %v", err)
 	}
 
+	s := state.Strategies["hl-a"]
+	poolCfg := StrategyConfig{ID: "hl-a", Type: "perps", sharedWalletPoolBudget: true}
+	if transition, err := applySharedWalletPoolStateMode(poolCfg, s); err != nil || transition != sharedWalletPoolStateEntered {
+		t.Fatalf("enter pool: transition=%q err=%v", transition, err)
+	}
+	if err := db.PersistSharedWalletPoolStateTransition(s); err != nil {
+		t.Fatalf("persist pool entry: %v", err)
+	}
 	loaded, err := db.LoadState()
 	if err != nil {
-		t.Fatalf("LoadState: %v", err)
+		t.Fatalf("load pool state: %v", err)
 	}
-	if got := loaded.Strategies["new-strat"].InitialCapital; got != 1000 {
-		t.Errorf("initial_capital = %g, want 1000 (first write must land)", got)
-	}
-}
-
-// TestSaveState_AllowsNewStrategies confirms the guard does not block strategy
-// rows that don't yet exist in the DB (new strategies added to config between
-// restarts).
-func TestSaveState_AllowsNewStrategies(t *testing.T) {
-	db := openTestDB(t)
-
-	first := &AppState{
-		Strategies: map[string]*StrategyState{
-			"old": {
-				ID: "old", Type: "spot", Cash: 1000, InitialCapital: 1000,
-				Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{},
-			},
-		},
-	}
-	if err := db.SaveState(first); err != nil {
-		t.Fatalf("first SaveState: %v", err)
+	pooled := loaded.Strategies["hl-a"]
+	if !pooled.SharedWalletPoolBudget || !pooled.SharedWalletPerformanceOnly || pooled.Cash != 0 || pooled.InitialCapital != 0 {
+		t.Fatalf("pool entry did not round-trip: %+v", pooled)
 	}
 
-	second := &AppState{
-		Strategies: map[string]*StrategyState{
-			"old": {
-				ID: "old", Type: "spot", Cash: 1000, InitialCapital: 1000,
-				Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{},
-			},
-			"brand-new": {
-				ID: "brand-new", Type: "spot", Cash: 2000, InitialCapital: 2000,
-				Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{},
-			},
-		},
+	pooled.Cash = -100
+	if err := db.SaveState(loaded); err != nil {
+		t.Fatalf("persist pool performance book: %v", err)
 	}
-	if err := db.SaveState(second); err != nil {
-		t.Fatalf("second SaveState: %v", err)
-	}
-
-	loaded, err := db.LoadState()
+	loaded, err = db.LoadState()
 	if err != nil {
-		t.Fatalf("LoadState: %v", err)
+		t.Fatalf("reload pool performance book: %v", err)
 	}
-	if got := loaded.Strategies["brand-new"].InitialCapital; got != 2000 {
-		t.Errorf("new strategy initial_capital = %g, want 2000", got)
+	ValidateState(loaded, nil)
+	pooled = loaded.Strategies["hl-a"]
+	if pooled.Cash != -100 {
+		t.Fatalf("pool loss must survive reload validation, cash=%v", pooled.Cash)
 	}
-	if got := loaded.Strategies["old"].InitialCapital; got != 1000 {
-		t.Errorf("old strategy initial_capital = %g, want 1000", got)
+	allocatedCfg := StrategyConfig{ID: "hl-a", Type: "perps", Capital: 1000}
+	if transition, err := applySharedWalletPoolStateMode(allocatedCfg, pooled); err != nil || transition != sharedWalletPoolStateLeft {
+		t.Fatalf("leave pool: transition=%q err=%v", transition, err)
 	}
-}
-
-// TestSaveState_AllowsBaselineWhenPrevZero confirms the legacy/reset path
-// (#343 review item 7): if a prior row exists with initial_capital = 0
-// (e.g. after ValidateState clamped a malformed value at state.go:144), the
-// next SaveState carrying a real positive baseline must establish it — the
-// guard's `prev > 0` precondition is what makes this work.
-func TestSaveState_AllowsBaselineWhenPrevZero(t *testing.T) {
-	db := openTestDB(t)
-
-	// Seed a strategy row with initial_capital = 0 (mimics the post-ValidateState
-	// reset path).
-	zeroState := &AppState{
-		Strategies: map[string]*StrategyState{
-			"legacy": {
-				ID: "legacy", Type: "spot", Cash: 0, InitialCapital: 0,
-				Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{},
-			},
-		},
+	if err := db.PersistSharedWalletPoolStateTransition(pooled); err != nil {
+		t.Fatalf("persist pool exit: %v", err)
 	}
-	if err := db.SaveState(zeroState); err != nil {
-		t.Fatalf("seed SaveState: %v", err)
-	}
-
-	// Now save with a real baseline. Guard must let it through (prev == 0
-	// means "no real baseline yet").
-	bumped := &AppState{
-		Strategies: map[string]*StrategyState{
-			"legacy": {
-				ID: "legacy", Type: "spot", Cash: 1000, InitialCapital: 1000,
-				Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{},
-			},
-		},
-	}
-	if err := db.SaveState(bumped); err != nil {
-		t.Fatalf("bumped SaveState: %v", err)
-	}
-
-	loaded, err := db.LoadState()
+	loaded, err = db.LoadState()
 	if err != nil {
-		t.Fatalf("LoadState: %v", err)
+		t.Fatalf("load allocated state: %v", err)
 	}
-	if got := loaded.Strategies["legacy"].InitialCapital; got != 1000 {
-		t.Errorf("initial_capital = %g, want 1000 (prev==0 must allow baseline establishment)", got)
-	}
-}
-
-// TestSetInitialCapital_ExplicitOverride is the sanctioned escape hatch —
-// admin/CLI code can permanently change the baseline through this path.
-func TestSetInitialCapital_ExplicitOverride(t *testing.T) {
-	db := openTestDB(t)
-
-	state := &AppState{
-		Strategies: map[string]*StrategyState{
-			"s": {
-				ID: "s", Type: "spot", Cash: 505, InitialCapital: 505,
-				Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{},
-			},
-		},
-	}
-	if err := db.SaveState(state); err != nil {
-		t.Fatalf("SaveState: %v", err)
-	}
-
-	if err := db.SetInitialCapital("s", 750); err != nil {
-		t.Fatalf("SetInitialCapital: %v", err)
-	}
-
-	// A subsequent SaveState must carry the new baseline forward, not revert
-	// to the in-memory (stale) value.
-	state.Strategies["s"].InitialCapital = 505 // stale in-memory value
-	if err := db.SaveState(state); err != nil {
-		t.Fatalf("SaveState after override: %v", err)
-	}
-
-	loaded, err := db.LoadState()
-	if err != nil {
-		t.Fatalf("LoadState: %v", err)
-	}
-	if got := loaded.Strategies["s"].InitialCapital; got != 750 {
-		t.Errorf("initial_capital = %g, want 750 (override must stick)", got)
+	allocated := loaded.Strategies["hl-a"]
+	if allocated.SharedWalletPoolBudget || allocated.SharedWalletPerformanceOnly || allocated.Cash != 900 || allocated.InitialCapital != 1000 {
+		t.Fatalf("pool exit did not round-trip exactly once: %+v", allocated)
 	}
 }
 
-func TestSetInitialCapital_RejectsInvalid(t *testing.T) {
-	db := openTestDB(t)
-
-	state := &AppState{
-		Strategies: map[string]*StrategyState{
-			"s": {
-				ID: "s", Type: "spot", Cash: 1000, InitialCapital: 1000,
-				Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{},
-			},
-		},
-	}
-	if err := db.SaveState(state); err != nil {
-		t.Fatalf("SaveState: %v", err)
-	}
-
-	if err := db.SetInitialCapital("s", 0); err == nil {
-		t.Error("expected error for zero initial_capital")
-	}
-	if err := db.SetInitialCapital("s", -100); err == nil {
-		t.Error("expected error for negative initial_capital")
-	}
-	if err := db.SetInitialCapital("unknown-id", 1000); err == nil {
-		t.Error("expected error for unknown strategy id")
-	}
-}
-
-// TestSaveState_GuardWarnIsOneShot covers the #343 review item 3 follow-up:
-// the baseline-guard warning must fire only once per strategy per process so
-// per-cycle SaveState calls don't spam the operator DM.
 func TestSaveState_GuardWarnIsOneShot(t *testing.T) {
 	db := openTestDB(t)
-	// Dedup map is reset by openTestDB → resetInitialCapitalGuardDedup so
-	// prior tests don't leak warn counts into this assertion.
 
 	var warns int
 	prev := initialCapitalGuardWarn
@@ -1878,8 +1819,6 @@ func TestSaveState_GuardWarnIsOneShot(t *testing.T) {
 		t.Errorf("warn fired %d times, want 1 (one-shot per strategy)", warns)
 	}
 
-	// SetInitialCapital clears the dedup so a subsequent guard violation
-	// against the new baseline fires again.
 	if err := db.SetInitialCapital("s", 200); err != nil {
 		t.Fatalf("SetInitialCapital: %v", err)
 	}
@@ -1899,104 +1838,61 @@ func TestSaveState_GuardWarnIsOneShot(t *testing.T) {
 	}
 }
 
-func TestSaveAndLoadDB_PendingCircuitCloseRoundTrip(t *testing.T) {
-	db := openTestDB(t)
-	now := time.Now().UTC().Truncate(time.Second)
-	state := &AppState{
-		CycleCount: 1,
-		LastCycle:  now,
-		Strategies: map[string]*StrategyState{
-			"hl-a": {
-				ID: "hl-a", Type: "perps", Platform: "hyperliquid", Cash: 100, InitialCapital: 100,
-				Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{},
-				RiskState: RiskState{
-					PeakValue: 100, MaxDrawdownPct: 25,
-					PendingCircuitCloses: map[string]*PendingCircuitClose{
-						PlatformPendingCloseHyperliquid: {
-							Symbols: []PendingCircuitCloseSymbol{{Symbol: "ETH", Size: 0.2585}},
-						},
-					},
+func TestSaveAndLoadDB_PendingCircuitClose(t *testing.T) {
+	seed := func(t *testing.T, pending map[string]*PendingCircuitClose) *StateDB {
+		db := openTestDB(t)
+		state := &AppState{
+			CycleCount: 1,
+			LastCycle:  time.Now().UTC().Truncate(time.Second),
+			Strategies: map[string]*StrategyState{
+				"hl-a": {
+					ID: "hl-a", Type: "perps", Platform: "hyperliquid", Cash: 100, InitialCapital: 100,
+					Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{},
+					RiskState: RiskState{PeakValue: 100, MaxDrawdownPct: 25, PendingCircuitCloses: pending},
 				},
 			},
-		},
+		}
+		if err := db.SaveState(state); err != nil {
+			t.Fatalf("SaveState: %v", err)
+		}
+		return db
 	}
-	if err := db.SaveState(state); err != nil {
-		t.Fatalf("SaveState: %v", err)
+	assertPending := func(t *testing.T, db *StateDB, label string) {
+		loaded, err := db.LoadState()
+		if err != nil {
+			t.Fatalf("LoadState: %v", err)
+		}
+		p := loaded.Strategies["hl-a"].RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid)
+		if p == nil || len(p.Symbols) != 1 {
+			t.Fatalf("%s pending missing: %+v", label, p)
+		}
+		if p.Symbols[0].Symbol != "ETH" || p.Symbols[0].Size != 0.2585 {
+			t.Errorf("%s pending symbol=%q size=%g want ETH 0.2585", label, p.Symbols[0].Symbol, p.Symbols[0].Size)
+		}
 	}
-	loaded, err := db.LoadState()
-	if err != nil {
-		t.Fatalf("LoadState: %v", err)
-	}
-	p := loaded.Strategies["hl-a"].RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid)
-	if p == nil || len(p.Symbols) != 1 {
-		t.Fatalf("pending missing: %+v", p)
-	}
-	if p.Symbols[0].Symbol != "ETH" || p.Symbols[0].Size != 0.2585 {
-		t.Errorf("pending symbol=%q size=%g want ETH 0.2585", p.Symbols[0].Symbol, p.Symbols[0].Size)
-	}
+	t.Run("round trip", func(t *testing.T) {
+		db := seed(t, map[string]*PendingCircuitClose{
+			PlatformPendingCloseHyperliquid: {Symbols: []PendingCircuitCloseSymbol{{Symbol: "ETH", Size: 0.2585}}},
+		})
+		assertPending(t, db, "round-trip")
+	})
+	t.Run("legacy pending hl json migrates on load", func(t *testing.T) {
+		db := seed(t, nil)
+		if _, err := db.db.Exec(
+			"UPDATE strategies SET risk_pending_circuit_closes_json = ? WHERE id = ?",
+			`{"coins":[{"coin":"ETH","sz":0.2585}]}`, "hl-a",
+		); err != nil {
+			t.Fatalf("inject legacy JSON: %v", err)
+		}
+		assertPending(t, db, "legacy-migrated")
+	})
 }
 
-// TestSaveAndLoadDB_LegacyPendingHLJSON_MigratesOnLoad verifies the #359 phase
-// 1b backwards-compat path: a pre-#359 row where the JSON blob is in the legacy
-// {"coins":[...]} shape must transparently convert to the new map-keyed shape
-// on load, without losing the pending close.
-func TestSaveAndLoadDB_LegacyPendingHLJSON_MigratesOnLoad(t *testing.T) {
-	db := openTestDB(t)
-	now := time.Now().UTC().Truncate(time.Second)
-
-	// Seed a strategy via the normal SaveState path (writes new-format JSON),
-	// then overwrite just the pending column with legacy-format JSON to
-	// simulate a DB carried over from a pre-#359 scheduler build.
-	state := &AppState{
-		CycleCount: 1,
-		LastCycle:  now,
-		Strategies: map[string]*StrategyState{
-			"hl-a": {
-				ID: "hl-a", Type: "perps", Platform: "hyperliquid", Cash: 100, InitialCapital: 100,
-				Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{},
-				RiskState: RiskState{PeakValue: 100, MaxDrawdownPct: 25},
-			},
-		},
-	}
-	if err := db.SaveState(state); err != nil {
-		t.Fatalf("seed SaveState: %v", err)
-	}
-
-	legacyJSON := `{"coins":[{"coin":"ETH","sz":0.2585}]}`
-	if _, err := db.db.Exec(
-		"UPDATE strategies SET risk_pending_circuit_closes_json = ? WHERE id = ?",
-		legacyJSON, "hl-a",
-	); err != nil {
-		t.Fatalf("inject legacy JSON: %v", err)
-	}
-
-	loaded, err := db.LoadState()
-	if err != nil {
-		t.Fatalf("LoadState: %v", err)
-	}
-	p := loaded.Strategies["hl-a"].RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid)
-	if p == nil || len(p.Symbols) != 1 {
-		t.Fatalf("legacy JSON did not migrate on load: %+v", p)
-	}
-	if p.Symbols[0].Symbol != "ETH" || p.Symbols[0].Size != 0.2585 {
-		t.Errorf("legacy-migrated pending symbol=%q size=%g want ETH 0.2585", p.Symbols[0].Symbol, p.Symbols[0].Size)
-	}
-}
-
-// TestMigrateSchema_PendingCircuitClosesColumn_Idempotent verifies the PR #365
-// review fix: running migrateSchema repeatedly must leave exactly one pending
-// column (risk_pending_circuit_closes_json) and never re-add the legacy
-// risk_pending_hl_close_json. The pre-fix migration unconditionally ran
-// ADD COLUMN risk_pending_hl_close_json + RENAME, which grew a ghost legacy
-// column on every post-rename startup.
 func TestMigrateSchema_PendingCircuitClosesColumn_Idempotent(t *testing.T) {
 	db := openTestDB(t)
-	// openTestDB already ran migrateSchema once via OpenStateDB. Run it again
-	// to simulate a second scheduler startup on an already-migrated DB.
 	if err := db.migrateSchema(); err != nil {
 		t.Fatalf("second migrateSchema: %v", err)
 	}
-	// And a third, to lock in the fixed-point claim.
 	if err := db.migrateSchema(); err != nil {
 		t.Fatalf("third migrateSchema: %v", err)
 	}
@@ -2013,15 +1909,9 @@ func TestMigrateSchema_PendingCircuitClosesColumn_Idempotent(t *testing.T) {
 	}
 }
 
-// TestMigrateSchema_PendingCircuitClosesColumn_FromLegacyDB verifies the
-// post-#356, pre-#359 upgrade path: a DB that has risk_pending_hl_close_json
-// but not the new column must be renamed in place, preserving row data.
 func TestMigrateSchema_PendingCircuitClosesColumn_FromLegacyDB(t *testing.T) {
 	db := openTestDB(t)
 
-	// Simulate a pre-#359 DB: drop the new column and re-add the legacy name
-	// with a row of data we can check survives the rename. SQLite doesn't
-	// support DROP COLUMN on all versions, so we rebuild the table.
 	_, err := db.db.Exec(`CREATE TABLE strategies_legacy AS SELECT
 		id, type, platform, cash, initial_capital,
 		risk_peak_value, risk_max_drawdown_pct, risk_current_drawdown_pct,
@@ -2039,7 +1929,6 @@ func TestMigrateSchema_PendingCircuitClosesColumn_FromLegacyDB(t *testing.T) {
 		t.Fatalf("rename legacy table: %v", err)
 	}
 
-	// Seed a pending value into the legacy column so we can verify data survives.
 	if _, err := db.db.Exec(
 		"INSERT INTO strategies (id, type, platform, cash, initial_capital, risk_pending_hl_close_json) VALUES (?, ?, ?, ?, ?, ?)",
 		"hl-rename", "perps", "hyperliquid", 100.0, 100.0,
@@ -2048,7 +1937,6 @@ func TestMigrateSchema_PendingCircuitClosesColumn_FromLegacyDB(t *testing.T) {
 		t.Fatalf("seed legacy row: %v", err)
 	}
 
-	// Pre-check: only the legacy column is present.
 	hasLegacy, hasNew, err := db.strategiesColumnPresence()
 	if err != nil {
 		t.Fatalf("pre-check presence: %v", err)
@@ -2083,9 +1971,6 @@ func TestMigrateSchema_PendingCircuitClosesColumn_FromLegacyDB(t *testing.T) {
 	}
 }
 
-// TestParseDetailsPnL verifies the regex used to backfill realized_pnl from
-// pre-#455 trade Details strings. Covers each of the formatter variants emitted
-// by close-leg RecordTrade call sites at the time of #455.
 func TestParseDetailsPnL(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -2116,9 +2001,6 @@ func TestParseDetailsPnL(t *testing.T) {
 	}
 }
 
-// TestBackfillTradeCloseFlags exercises the one-time legacy backfill: rows
-// whose Details contain "PnL:" or "PnL=" should flip is_close=1 and have
-// realized_pnl populated. Open-leg rows must stay is_close=0.
 func TestBackfillTradeCloseFlags(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
 	db, err := sql.Open("sqlite", path)
@@ -2184,72 +2066,98 @@ CREATE TABLE trades (
 	}
 }
 
-// TestLifetimeTradeStatsAll_FreshInsert verifies that new InsertTrade calls
-// land with is_close/realized_pnl set so LifetimeTradeStatsAll reports them
-// without depending on the legacy backfill.
-func TestLifetimeTradeStatsAll_FreshInsert(t *testing.T) {
-	sdb := openTestDB(t)
+func TestLifetimeTradeStatsAll(t *testing.T) {
 	now := time.Now().UTC()
-	trades := []Trade{
-		{StrategyID: "s1", Timestamp: now, Symbol: "BTC", Side: "buy", Quantity: 0.1, Price: 50000, Value: 5000, TradeType: "perps", Details: "Open long"},
-		{StrategyID: "s1", Timestamp: now.Add(time.Second), Symbol: "BTC", Side: "sell", Quantity: 0.1, Price: 51000, Value: 5100, TradeType: "perps", Details: "Close long, PnL: $100.00", IsClose: true, RealizedPnL: 100},
-		{StrategyID: "s1", Timestamp: now.Add(2 * time.Second), Symbol: "BTC", Side: "buy", Quantity: 0.1, Price: 51000, Value: 5100, TradeType: "perps", Details: "Open long"},
-		{StrategyID: "s1", Timestamp: now.Add(3 * time.Second), Symbol: "BTC", Side: "sell", Quantity: 0.1, Price: 50500, Value: 5050, TradeType: "perps", Details: "Close long, PnL: $-50.00", IsClose: true, RealizedPnL: -50},
-		{StrategyID: "s2", Timestamp: now, Symbol: "ETH", Side: "buy", Quantity: 0.5, Price: 2000, Value: 1000, TradeType: "perps", Details: "Open long"},
-		{StrategyID: "s2", Timestamp: now.Add(time.Second), Symbol: "ETH", Side: "sell", Quantity: 0.5, Price: 2100, Value: 1050, TradeType: "perps", Details: "Close long, PnL: $50.00", IsClose: true, RealizedPnL: 50},
+	cases := []struct {
+		name       string
+		trades     []Trade
+		want       map[string]LifetimeTradeStats
+		wantAbsent []string
+	}{
+		{
+			name: "fresh insert counts opens wins and losses per strategy",
+			trades: []Trade{
+				{StrategyID: "s1", Timestamp: now, Symbol: "BTC", Side: "buy", Quantity: 0.1, Price: 50000, Value: 5000, TradeType: "perps", Details: "Open long"},
+				{StrategyID: "s1", Timestamp: now.Add(time.Second), Symbol: "BTC", Side: "sell", Quantity: 0.1, Price: 51000, Value: 5100, TradeType: "perps", Details: "Close long, PnL: $100.00", IsClose: true, RealizedPnL: 100},
+				{StrategyID: "s1", Timestamp: now.Add(2 * time.Second), Symbol: "BTC", Side: "buy", Quantity: 0.1, Price: 51000, Value: 5100, TradeType: "perps", Details: "Open long"},
+				{StrategyID: "s1", Timestamp: now.Add(3 * time.Second), Symbol: "BTC", Side: "sell", Quantity: 0.1, Price: 50500, Value: 5050, TradeType: "perps", Details: "Close long, PnL: $-50.00", IsClose: true, RealizedPnL: -50},
+				{StrategyID: "s2", Timestamp: now, Symbol: "ETH", Side: "buy", Quantity: 0.5, Price: 2000, Value: 1000, TradeType: "perps", Details: "Open long"},
+				{StrategyID: "s2", Timestamp: now.Add(time.Second), Symbol: "ETH", Side: "sell", Quantity: 0.5, Price: 2100, Value: 1050, TradeType: "perps", Details: "Close long, PnL: $50.00", IsClose: true, RealizedPnL: 50},
+			},
+			want:       map[string]LifetimeTradeStats{"s1": {PositionsOpened: 2, Wins: 1, Losses: 1}, "s2": {PositionsOpened: 1, Wins: 1, Losses: 0}},
+			wantAbsent: []string{"s3"},
+		},
+		{
+			name: "partial closes net by position id",
+			trades: []Trade{
+				{StrategyID: "s1", Timestamp: now, Symbol: "BTC", PositionID: "s1-BTC-open-1", Side: "buy", Quantity: 0.5, Price: 50000, Value: 25000, TradeType: "perps", Details: "Open long"},
+				{StrategyID: "s1", Timestamp: now.Add(time.Second), Symbol: "BTC", PositionID: "s1-BTC-open-1", Side: "sell", Quantity: 0.25, Price: 50100, Value: 12525, TradeType: "perps", Details: "Close long, PnL: $10.00", IsClose: true, RealizedPnL: 10},
+				{StrategyID: "s1", Timestamp: now.Add(2 * time.Second), Symbol: "BTC", PositionID: "s1-BTC-open-1", Side: "sell", Quantity: 0.25, Price: 49900, Value: 12475, TradeType: "perps", Details: "Close long, PnL: $-3.00", IsClose: true, RealizedPnL: -3},
+			},
+			want: map[string]LifetimeTradeStats{"s1": {PositionsOpened: 1, Wins: 1, Losses: 0}},
+		},
+		{
+			name: "position id scoped by strategy",
+			trades: []Trade{
+				{StrategyID: "s1", Timestamp: now, Symbol: "BTC", PositionID: "shared-position", Side: "sell", Quantity: 1, Price: 101, Value: 101, TradeType: "spot", Details: "Close long, PnL: $1", IsClose: true, RealizedPnL: 1},
+				{StrategyID: "s2", Timestamp: now, Symbol: "BTC", PositionID: "shared-position", Side: "sell", Quantity: 1, Price: 99, Value: 99, TradeType: "spot", Details: "Close long, PnL: $-1", IsClose: true, RealizedPnL: -1},
+			},
+			want: map[string]LifetimeTradeStats{"s1": {PositionsOpened: 0, Wins: 1, Losses: 0}, "s2": {PositionsOpened: 0, Wins: 0, Losses: 1}},
+		},
+		{
+			name: "breakeven position is neither win nor loss",
+			trades: []Trade{
+				{StrategyID: "s1", Timestamp: now, Symbol: "BTC", PositionID: "p1", Side: "sell", Quantity: 0.25, Price: 50100, Value: 12525, TradeType: "perps", Details: "Close long, PnL: $10", IsClose: true, RealizedPnL: 10},
+				{StrategyID: "s1", Timestamp: now.Add(time.Second), Symbol: "BTC", PositionID: "p1", Side: "sell", Quantity: 0.25, Price: 49900, Value: 12475, TradeType: "perps", Details: "Close long, PnL: $-10", IsClose: true, RealizedPnL: -10},
+			},
+			want: map[string]LifetimeTradeStats{"s1": {PositionsOpened: 0, Wins: 0, Losses: 0}},
+		},
+		{
+			name: "survives risk state reset because stats derive from trades",
+			trades: []Trade{
+				{StrategyID: "s1", Timestamp: now, Symbol: "BTC", Side: "sell", Quantity: 0.1, Price: 51000, Value: 5100, TradeType: "perps", Details: "Close long, PnL: $100", IsClose: true, RealizedPnL: 100},
+				{StrategyID: "s1", Timestamp: now.Add(time.Second), Symbol: "BTC", Side: "sell", Quantity: 0.1, Price: 50500, Value: 5050, TradeType: "perps", Details: "Close long, PnL: $-25", IsClose: true, RealizedPnL: -25},
+			},
+			want: map[string]LifetimeTradeStats{"s1": {PositionsOpened: 0, Wins: 1, Losses: 1}},
+		},
 	}
-	for _, tr := range trades {
-		if err := sdb.InsertTrade(tr.StrategyID, tr); err != nil {
-			t.Fatalf("InsertTrade: %v", err)
-		}
-	}
-
-	stats, err := sdb.LifetimeTradeStatsAll()
-	if err != nil {
-		t.Fatalf("LifetimeTradeStatsAll: %v", err)
-	}
-	if got := stats["s1"]; got.PositionsOpened != 2 || got.Wins != 1 || got.Losses != 1 {
-		t.Errorf("s1 stats = %+v, want PositionsOpened=2 Wins=1 Losses=1", got)
-	}
-	if got := stats["s2"]; got.PositionsOpened != 1 || got.Wins != 1 || got.Losses != 0 {
-		t.Errorf("s2 stats = %+v, want PositionsOpened=1 Wins=1 Losses=0", got)
-	}
-	if _, ok := stats["s3"]; ok {
-		t.Errorf("unexpected entry for s3 with no trades: %+v", stats["s3"])
-	}
-	if got, err := sdb.LifetimeTradeStatsForStrategy("s1"); err != nil {
-		t.Fatalf("LifetimeTradeStatsForStrategy: %v", err)
-	} else if got.PositionsOpened != 2 || got.Wins != 1 || got.Losses != 1 {
-		t.Errorf("single-strategy stats = %+v, want PositionsOpened=2 Wins=1 Losses=1", got)
-	}
-	if got, err := sdb.LifetimeTradeStatsForStrategy("s3"); err != nil {
-		t.Fatalf("LifetimeTradeStatsForStrategy empty: %v", err)
-	} else if got.PositionsOpened != 0 || got.Wins != 0 || got.Losses != 0 {
-		t.Errorf("single-strategy empty stats = %+v, want zero", got)
-	}
-}
-
-func TestLifetimeTradeStatsAll_PartialClosesNetByPositionID(t *testing.T) {
-	sdb := openTestDB(t)
-	now := time.Now().UTC()
-	positionID := "s1-BTC-open-1"
-	trades := []Trade{
-		{StrategyID: "s1", Timestamp: now, Symbol: "BTC", PositionID: positionID, Side: "buy", Quantity: 0.5, Price: 50000, Value: 25000, TradeType: "perps", Details: "Open long"},
-		{StrategyID: "s1", Timestamp: now.Add(time.Second), Symbol: "BTC", PositionID: positionID, Side: "sell", Quantity: 0.25, Price: 50100, Value: 12525, TradeType: "perps", Details: "Close long, PnL: $10.00", IsClose: true, RealizedPnL: 10},
-		{StrategyID: "s1", Timestamp: now.Add(2 * time.Second), Symbol: "BTC", PositionID: positionID, Side: "sell", Quantity: 0.25, Price: 49900, Value: 12475, TradeType: "perps", Details: "Close long, PnL: $-3.00", IsClose: true, RealizedPnL: -3},
-	}
-	for _, tr := range trades {
-		if err := sdb.InsertTrade(tr.StrategyID, tr); err != nil {
-			t.Fatalf("InsertTrade: %v", err)
-		}
-	}
-
-	stats, err := sdb.LifetimeTradeStatsAll()
-	if err != nil {
-		t.Fatalf("LifetimeTradeStatsAll: %v", err)
-	}
-	if got := stats["s1"]; got.PositionsOpened != 1 || got.Wins != 1 || got.Losses != 0 {
-		t.Errorf("stats = %+v, want PositionsOpened=1 Wins=1 Losses=0", got)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sdb := openTestDB(t)
+			for _, tr := range tc.trades {
+				if err := sdb.InsertTrade(tr.StrategyID, tr); err != nil {
+					t.Fatalf("InsertTrade: %v", err)
+				}
+			}
+			stats, err := sdb.LifetimeTradeStatsAll()
+			if err != nil {
+				t.Fatalf("LifetimeTradeStatsAll: %v", err)
+			}
+			for id, want := range tc.want {
+				if got := stats[id]; got != want {
+					t.Errorf("%s stats = %+v, want %+v", id, got, want)
+				}
+				got, err := sdb.LifetimeTradeStatsForStrategy(id)
+				if err != nil {
+					t.Fatalf("LifetimeTradeStatsForStrategy(%s): %v", id, err)
+				}
+				if got != want {
+					t.Errorf("%s single-strategy stats = %+v, want %+v", id, got, want)
+				}
+			}
+			for _, id := range tc.wantAbsent {
+				if got, ok := stats[id]; ok {
+					t.Errorf("unexpected entry for %s with no trades: %+v", id, got)
+				}
+				got, err := sdb.LifetimeTradeStatsForStrategy(id)
+				if err != nil {
+					t.Fatalf("LifetimeTradeStatsForStrategy(%s) empty: %v", id, err)
+				}
+				if got != (LifetimeTradeStats{}) {
+					t.Errorf("%s single-strategy empty stats = %+v, want zero", id, got)
+				}
+			}
+		})
 	}
 }
 
@@ -2279,51 +2187,6 @@ func TestLifetimeTradeStatsAll_LegacyNullAndEmptyPositionIDStayPerLeg(t *testing
 	}
 	if got := stats["s1"]; got.PositionsOpened != 0 || got.Wins != 1 || got.Losses != 1 {
 		t.Errorf("legacy stats = %+v, want PositionsOpened=0 Wins=1 Losses=1 (only close legs seeded)", got)
-	}
-}
-
-func TestLifetimeTradeStatsAll_PositionIDScopedByStrategy(t *testing.T) {
-	sdb := openTestDB(t)
-	now := time.Now().UTC()
-	for _, tr := range []Trade{
-		{StrategyID: "s1", Timestamp: now, Symbol: "BTC", PositionID: "shared-position", Side: "sell", Quantity: 1, Price: 101, Value: 101, TradeType: "spot", Details: "Close long, PnL: $1", IsClose: true, RealizedPnL: 1},
-		{StrategyID: "s2", Timestamp: now, Symbol: "BTC", PositionID: "shared-position", Side: "sell", Quantity: 1, Price: 99, Value: 99, TradeType: "spot", Details: "Close long, PnL: $-1", IsClose: true, RealizedPnL: -1},
-	} {
-		if err := sdb.InsertTrade(tr.StrategyID, tr); err != nil {
-			t.Fatalf("InsertTrade: %v", err)
-		}
-	}
-
-	stats, err := sdb.LifetimeTradeStatsAll()
-	if err != nil {
-		t.Fatalf("LifetimeTradeStatsAll: %v", err)
-	}
-	if got := stats["s1"]; got.PositionsOpened != 0 || got.Wins != 1 || got.Losses != 0 {
-		t.Errorf("s1 stats = %+v, want PositionsOpened=0 Wins=1 Losses=0 (only close legs seeded)", got)
-	}
-	if got := stats["s2"]; got.PositionsOpened != 0 || got.Wins != 0 || got.Losses != 1 {
-		t.Errorf("s2 stats = %+v, want PositionsOpened=0 Wins=0 Losses=1 (only close legs seeded)", got)
-	}
-}
-
-func TestLifetimeTradeStatsAll_BreakevenPositionNeitherWinNorLoss(t *testing.T) {
-	sdb := openTestDB(t)
-	now := time.Now().UTC()
-	for _, tr := range []Trade{
-		{StrategyID: "s1", Timestamp: now, Symbol: "BTC", PositionID: "p1", Side: "sell", Quantity: 0.25, Price: 50100, Value: 12525, TradeType: "perps", Details: "Close long, PnL: $10", IsClose: true, RealizedPnL: 10},
-		{StrategyID: "s1", Timestamp: now.Add(time.Second), Symbol: "BTC", PositionID: "p1", Side: "sell", Quantity: 0.25, Price: 49900, Value: 12475, TradeType: "perps", Details: "Close long, PnL: $-10", IsClose: true, RealizedPnL: -10},
-	} {
-		if err := sdb.InsertTrade(tr.StrategyID, tr); err != nil {
-			t.Fatalf("InsertTrade: %v", err)
-		}
-	}
-
-	stats, err := sdb.LifetimeTradeStatsAll()
-	if err != nil {
-		t.Fatalf("LifetimeTradeStatsAll: %v", err)
-	}
-	if got := stats["s1"]; got.PositionsOpened != 0 || got.Wins != 0 || got.Losses != 0 {
-		t.Errorf("breakeven stats = %+v, want PositionsOpened=0 Wins=0 Losses=0 (only close legs seeded)", got)
 	}
 }
 
@@ -2402,37 +2265,5 @@ func TestLifetimeTradeStatsAll_OptionsSameContractReopenUsesDistinctPositionIDs(
 	}
 	if got := stats[s.ID]; got.PositionsOpened != 2 || got.Wins != 2 || got.Losses != 0 {
 		t.Errorf("option stats = %+v, want PositionsOpened=2 Wins=2 Losses=0", got)
-	}
-}
-
-// TestLifetimeTradeStats_SurvivesRiskStateReset is the core regression test
-// for #455: kill-switch / circuit-breaker resets of RiskState MUST NOT
-// change the lifetime stats query. The query reads from
-// trades, which is append-only, so simulating a counter reset leaves the DB
-// result intact.
-func TestLifetimeTradeStats_SurvivesRiskStateReset(t *testing.T) {
-	sdb := openTestDB(t)
-	now := time.Now().UTC()
-	closes := []Trade{
-		{StrategyID: "s1", Timestamp: now, Symbol: "BTC", Side: "sell", Quantity: 0.1, Price: 51000, Value: 5100, TradeType: "perps", Details: "Close long, PnL: $100", IsClose: true, RealizedPnL: 100},
-		{StrategyID: "s1", Timestamp: now.Add(time.Second), Symbol: "BTC", Side: "sell", Quantity: 0.1, Price: 50500, Value: 5050, TradeType: "perps", Details: "Close long, PnL: $-25", IsClose: true, RealizedPnL: -25},
-	}
-	for _, tr := range closes {
-		if err := sdb.InsertTrade(tr.StrategyID, tr); err != nil {
-			t.Fatalf("InsertTrade: %v", err)
-		}
-	}
-
-	// Simulate a kill-switch reset of in-memory RiskState. The trades table
-	// is append-only, so the lifetime query is unaffected.
-	_ = RiskState{}
-
-	stats, err := sdb.LifetimeTradeStatsAll()
-	if err != nil {
-		t.Fatalf("LifetimeTradeStatsAll: %v", err)
-	}
-	got := stats["s1"]
-	if got.PositionsOpened != 0 || got.Wins != 1 || got.Losses != 1 {
-		t.Errorf("post-reset stats = %+v, want PositionsOpened=0 Wins=1 Losses=1 (only close legs seeded)", got)
 	}
 }

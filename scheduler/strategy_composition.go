@@ -6,36 +6,41 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 )
 
-// StrategyDecisionFields is the optional open/close decision metadata emitted
-// by check scripts when a strategy opts into issue #480's split entry/exit
-// model. The legacy signal field remains authoritative for execution.
 type StrategyDecisionFields struct {
-	OpenStrategy    string   `json:"open_strategy,omitempty"`
-	CloseStrategies []string `json:"close_strategies,omitempty"`
-	OpenAction      string   `json:"open_action,omitempty"`
-	CloseFraction   float64  `json:"close_fraction"`
-	CloseStrategy   string   `json:"close_strategy,omitempty"`
-	Regime          string   `json:"regime,omitempty"`
+	OpenStrategy       string         `json:"open_strategy,omitempty"`
+	CloseStrategies    []string       `json:"close_strategies,omitempty"`
+	OpenAction         string         `json:"open_action,omitempty"`
+	CloseFraction      float64        `json:"close_fraction"`
+	CloseStrategy      string         `json:"close_strategy,omitempty"`
+	CloseGate          string         `json:"close_gate,omitempty"`
+	CloseOwner         string         `json:"close_owner,omitempty"`
+	CloseTierFillPrice float64        `json:"close_tier_fill_price,omitempty"`
+	OpenSignalInverted bool           `json:"open_signal_inverted,omitempty"`
+	Regime             *RegimePayload `json:"regime,omitempty"`
 }
 
-// PositionCtx is the optional state snapshot threaded into close evaluators
-// when a strategy opts into the open/close composition model (#496).
-// Regime carries pos.Regime (the regime stamped on the underlying Position
-// at open) so regime-aware close evaluators (tiered_tp_atr_regime, #733)
-// can resolve tier multipliers without re-running the classifier.
 type PositionCtx struct {
-	Side            string
-	AvgCost         float64
-	Quantity        float64
-	InitialQuantity float64
-	EntryATR        float64
-	Regime          string
+	Side                           string
+	AvgCost                        float64
+	Quantity                       float64
+	InitialQuantity                float64
+	EntryATR                       float64
+	RiskAnchorPrice                float64
+	Regime                         string
+	DirectionalRegime              string
+	RegimeWindows                  map[string]string
+	Profile                        string
+	DirectionCertifiedAtOpen       bool
+	DirectionCertifiedStatesAtOpen map[string]string
+	OnChainTPResting               bool
+	OnChainTPBlocked               string
 }
 
 func usesOpenCloseConfig(sc StrategyConfig) bool {
-	return strings.TrimSpace(sc.OpenStrategy.Name) != "" || len(sc.CloseStrategies) > 0
+	return strings.TrimSpace(sc.OpenStrategy.Name) != "" || sc.CloseStrategy != nil
 }
 
 func strategyNameFromArgs(args []string) string {
@@ -66,8 +71,6 @@ func validateStrategyConceptName(name string) error {
 	return nil
 }
 
-// appendOpenCloseArgs adds position-context flags. Strategy refs (open/close
-// names + per-ref params) are sent separately via buildStrategyRefsArg (#640).
 func appendOpenCloseArgs(args []string, sc StrategyConfig, pos PositionCtx) []string {
 	if !usesOpenCloseConfig(sc) {
 		return args
@@ -80,27 +83,30 @@ func appendOpenCloseArgs(args []string, sc StrategyConfig, pos PositionCtx) []st
 	out = appendPositionFloatArg(out, "--position-qty", pos.Quantity)
 	out = appendPositionFloatArg(out, "--position-initial-qty", pos.InitialQuantity)
 	out = appendPositionFloatArg(out, "--position-entry-atr", pos.EntryATR)
+	out = appendPositionFloatArg(out, "--position-risk-anchor-price", pos.RiskAnchorPrice)
 	if r := strings.TrimSpace(pos.Regime); r != "" {
 		out = append(out, "--position-regime", r)
 	}
 	return out
 }
 
-// buildStrategyRefsArg emits the --strategy-refs JSON carrying the open ref
-// and close refs (each name + params) to the Python check script (#640). Open
-// name falls back to args[0] when sc.OpenStrategy.Name is empty so legacy
-// configs that rely on the positional strategy arg keep working post-migration.
-func buildStrategyRefsArg(sc StrategyConfig) ([]string, error) {
+func buildStrategyRefsArg(sc StrategyConfig, closeOwner string, invertOpen bool) ([]string, error) {
 	openName := effectiveOpenStrategy(sc)
-	if openName == "" && len(sc.CloseStrategies) == 0 {
+	if openName == "" && sc.CloseStrategy == nil {
 		return nil, nil
 	}
 	payload := map[string]interface{}{}
 	if openName != "" {
 		payload["open"] = StrategyRef{Name: openName, Params: sc.OpenStrategy.Params}
 	}
-	if len(sc.CloseStrategies) > 0 {
-		payload["closes"] = sc.CloseStrategies
+	if refs := sc.closeRefs(); len(refs) > 0 {
+		payload["closes"] = refs
+	}
+	if closeOwner != "" {
+		payload["close_owner"] = closeOwner
+	}
+	if invertOpen {
+		payload["invert_open_signal"] = true
 	}
 	blob, err := json.Marshal(payload)
 	if err != nil {
@@ -121,16 +127,37 @@ func appendRegimeArgs(args []string, regime *RegimeConfig) []string {
 		return args
 	}
 	out := append(args, "--regime-enabled")
-	out = append(out, "--regime-period", strconv.Itoa(regime.Period))
-	out = append(out, "--regime-adx-threshold", strconv.FormatFloat(regime.ADXThreshold, 'f', -1, 64))
+	if blob := regimeWindowsSpecJSON(regime); blob != "" {
+		out = append(out, "--regime-windows-spec-json", blob)
+	}
+	out = append(out, "--ohlcv-limit", strconv.Itoa(regimeRequiredOhlcvLimit(regime)))
 	return out
 }
 
-func positionCtxForSymbol(s *StrategyState, symbol string) PositionCtx {
+func appendRegimePayloadArg(args []string, sc StrategyConfig, regime *RegimeConfig) []string {
+	raw, ok := globalRegimeStore.InjectionJSONForStrategy(sc, regime)
+	if !ok {
+		return args
+	}
+	return append(args, "--regime-payload-json", raw)
+}
+
+func appendStrategyRegimeWindowArgs(args []string, sc StrategyConfig, regime *RegimeConfig) []string {
+	if regime == nil || !regime.Enabled || !regimeMultiWindowEnabled(regime) {
+		return args
+	}
+	out := append([]string{}, args...)
+	if key := resolveStrategyRegimeWindow(sc, "atr", regime); key != "" && key != regimeWindowDefaultKey {
+		out = append(out, "--regime-atr-window", key)
+	}
+	return out
+}
+
+func positionCtxForSymbol(s *StrategyState, symbol string, sc StrategyConfig, regime *RegimeConfig) PositionCtx {
 	if s == nil || strings.TrimSpace(symbol) == "" {
 		return PositionCtx{}
 	}
-	return positionCtxFromPosition(s.Positions[symbol])
+	return positionCtxForCheck(sc, s.Positions[symbol], regime)
 }
 
 func positionCtxFromPosition(pos *Position) PositionCtx {
@@ -138,18 +165,21 @@ func positionCtxFromPosition(pos *Position) PositionCtx {
 		return PositionCtx{}
 	}
 	return PositionCtx{
-		Side:            pos.Side,
-		AvgCost:         pos.AvgCost,
-		Quantity:        pos.Quantity,
-		InitialQuantity: pos.InitialQuantity,
-		EntryATR:        pos.EntryATR,
-		Regime:          pos.Regime,
+		Side:                           pos.Side,
+		AvgCost:                        pos.AvgCost,
+		Quantity:                       pos.Quantity,
+		InitialQuantity:                pos.InitialQuantity,
+		EntryATR:                       pos.EntryATR,
+		RiskAnchorPrice:                pos.RiskAnchorPrice,
+		Regime:                         pos.Regime,
+		DirectionalRegime:              pos.Regime,
+		RegimeWindows:                  cloneStringMap(pos.RegimeWindows),
+		Profile:                        pos.OpenProfile,
+		DirectionCertifiedAtOpen:       pos.DirectionCertifiedAtOpen,
+		DirectionCertifiedStatesAtOpen: cloneStringMap(pos.DirectionCertifiedStatesAtOpen),
 	}
 }
 
-// formatStrategyRef renders a ref for human-readable change logs (#640). When
-// no params are set, prints just the quoted name; otherwise appends a
-// stable-key summary so reload diffs show param-only changes.
 func formatStrategyRef(ref StrategyRef) string {
 	if len(ref.Params) == 0 {
 		return strconv.Quote(ref.Name)
@@ -179,19 +209,6 @@ func formatParamsSummary(params map[string]interface{}) string {
 		parts = append(parts, fmt.Sprintf("%s=%v", k, params[k]))
 	}
 	return "{" + strings.Join(parts, ",") + "}"
-}
-
-func explicitCloseStrategies(sc StrategyConfig) []string {
-	if len(sc.CloseStrategies) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(sc.CloseStrategies))
-	for _, ref := range sc.CloseStrategies {
-		if trimmed := strings.TrimSpace(ref.Name); trimmed != "" {
-			out = append(out, trimmed)
-		}
-	}
-	return out
 }
 
 func maxCloseFraction(fractions []float64) float64 {
@@ -237,5 +254,41 @@ func composeOpenCloseSignal(openAction string, closeFraction float64, positionSi
 		return -1
 	default:
 		return 0
+	}
+}
+
+var sameSideCloseAlerted sync.Map
+
+func guardSameSideClose(sc StrategyConfig, result *HyperliquidResult, posSide string, posQty float64, notifier *MultiNotifier, logger *StrategyLogger) {
+	if result == nil {
+		return
+	}
+	symbol := result.Symbol
+	if symbol == "" {
+		symbol = hyperliquidSymbol(sc.Args)
+	}
+	key := sc.ID + "|" + symbol
+	if posQty <= 0 {
+		sameSideCloseAlerted.Delete(key)
+		return
+	}
+	if result.CloseFraction <= 0 {
+		return
+	}
+	sameSide := (posSide == "long" && result.Signal > 0) || (posSide == "short" && result.Signal < 0)
+	if !sameSide {
+		return
+	}
+	result.Signal = 0
+	result.CloseFraction = 0
+	if logger != nil {
+		logger.Warn("Same-side close on %s %s zeroed before the gates — a close must not become an add", posSide, symbol)
+	}
+	if _, loaded := sameSideCloseAlerted.LoadOrStore(key, struct{}{}); loaded {
+		return
+	}
+	if notifier != nil && notifier.HasBackends() {
+		msg := fmt.Sprintf("**HL SAME-SIDE CLOSE HELD** [%s] %s — a close signal arrived on the %s side already held, so this cycle takes no order. On-chain stops still rest.", sc.ID, symbol, posSide)
+		notifier.SendOwnerDM(msg)
 	}
 }

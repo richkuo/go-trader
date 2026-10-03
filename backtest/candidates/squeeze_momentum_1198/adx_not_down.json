@@ -1,0 +1,15 @@
+{
+  "name": "squeeze_momentum",
+  "direction": "long",
+  "allowed_regimes": [
+    "trending_up",
+    "ranging"
+  ],
+  "regime_windows_spec": {
+    "medium": {
+      "classifier": "adx",
+      "period": 14,
+      "adx_threshold": 20.0
+    }
+  }
+}

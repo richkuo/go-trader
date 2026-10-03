@@ -1,0 +1,26 @@
+{
+  "name": "squeeze_momentum",
+  "direction": "long",
+  "close_strategies": [
+    {
+      "name": "tiered_tp_atr",
+      "params": {
+        "tp_tiers": [
+          {
+            "atr_multiple": 2.0,
+            "close_fraction": 0.33
+          },
+          {
+            "atr_multiple": 4.0,
+            "close_fraction": 0.66
+          },
+          {
+            "atr_multiple": 6.0,
+            "close_fraction": 1.0
+          }
+        ]
+      }
+    }
+  ],
+  "trailing_stop_atr_mult": 3.0
+}

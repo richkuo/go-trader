@@ -1,29 +1,10 @@
 #!/usr/bin/env bash
-# Atomic update with pre-flight probe, staging build, atomic binary swap,
-# post-restart verification, and rollback (#682). #764: extra go(1) lookup
-# paths + ExecStart vs swap-target warning before systemd restart. #766:
-# RESTART_MODE=signal (explicit) for bare-process + pidfile deployments.
-#
-# Phases:
-#   preflight  — git/uv/go sanity checks
-#   pull       — git pull --ff-only
-#   sync       — uv sync
-#   build      — go build to go-trader.new (live binary untouched)
-#   probe      — go-trader.new probe against the just-synced Python
-#   swap       — atomic mv: live binary -> .prev, staged -> live
-#   restart    — systemd unit OR signal/kill + wrapper respawn (only with --restart)
-#   verify     — wait active (systemd) or /health + PID freshness
-#   rollback   — restore .prev on verify failure
-#
-# Use --restart (or RESTART=1) to restart after a successful build
-# AND verify the running process matches the just-built version. Without
-# --restart the script stops after swap; the caller (scheduler/updater.go's
-# applyUpgrade) handles its own restart via restartSelf.
 
 set -euo pipefail
 
 THIS_SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 THIS_SCRIPT="${THIS_SCRIPT_DIR}/$(basename "${BASH_SOURCE[0]}")"
+source "${THIS_SCRIPT_DIR}/update_helpers.sh"
 orig_argv=("$@")
 
 trim_space() {
@@ -36,6 +17,7 @@ trim_space() {
 restart=0
 restart_mode="$(trim_space "${RESTART_MODE:-systemd}")"
 restart_mode=$(printf '%s' "$restart_mode" | tr '[:upper:]' '[:lower:]')
+restart_uses_signal=0
 update_all=0
 service_unit="$(trim_space "${GO_TRADER_SERVICE:-}")"
 if [[ -z "$service_unit" ]]; then
@@ -43,6 +25,19 @@ if [[ -z "$service_unit" ]]; then
 fi
 go_trader_pidfile="$(trim_space "${GO_TRADER_PIDFILE:-./go-trader.pid}")"
 go_trader_run_sh="$(trim_space "${GO_TRADER_RUN_SH:-./run.sh}")"
+rsync_from=""
+tree_mutated=0
+unit_sync_source_path=""
+unit_sync_installed_path=""
+unit_sync_backup_path=""
+tree_owner=""
+tree_owner_snapshot=""
+owner_scope=""
+probe_owner=""
+uv_bin=""
+uv_env=()
+build_export_tree=""
+build_export_commit=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -71,10 +66,21 @@ while [[ $# -gt 0 ]]; do
                 echo "$1 requires a directory path" >&2
                 exit 2
             fi
-            # Value is applied when processing --all from orig_argv (must parse here so argv is not rejected).
             shift 2
             ;;
         --update-all-root=*)
+            shift
+            ;;
+        --rsync-from)
+            if [[ $# -lt 2 ]]; then
+                echo "$1 requires a source directory path" >&2
+                exit 2
+            fi
+            rsync_from="$(trim_space "$2")"
+            shift 2
+            ;;
+        --rsync-from=*)
+            rsync_from="$(trim_space "${1#*=}")"
             shift
             ;;
         --unit|--service)
@@ -102,17 +108,39 @@ while [[ $# -gt 0 ]]; do
         -h|--help)
             echo "Usage: $0 [--restart] [--restart-mode systemd|signal] [--unit <systemd-unit>]"
             echo "       $0 [--restart] [--service <systemd-unit>]"
+            echo "       $0 [--rsync-from <source-dir>] [--restart] ..."
             echo "       $0 --all [--restart] [--restart-mode systemd|signal] [--update-all-root <dir>] [...]"
-            echo "  With --all + systemd: each child inherits GO_TRADER_SERVICE — set per-worktree env if units differ."
+            echo "  --rsync-from <dir>  rsync code from a source clone into this deployment (skips git pull;"
+            echo "                      hardcoded exclusions protect .env, config, state DB, venv, binaries)."
+            echo "  --all               update+restart every deployment. Batch = union of ACTIVE go-trader"
+            echo "                      systemd units' WorkingDirectory (layout-independent), ENABLED units whose"
+            echo "                      --config sets role=feed, and the <root>/go-trader-*/ glob. A stopped or"
+            echo "                      failed enabled feed is updated and started. Scheduler discovery is"
+            echo "                      active-only, so it never starts a stopped/failed scheduler; the glob"
+            echo "                      still restarts anything under <root>."
+            echo "                      Deployments whose config sets role=feed run first, then schedulers."
+            echo "                      A glob dir with no discovered unit maps to an active go-trader@<name>, or an"
+            echo "                      enabled role=feed one, whose WorkingDirectory is the dir."
+            echo "                      --update-all-root pins the glob root."
+            echo "  With --all + systemd: each child resolves GO_TRADER_SERVICE from the active unit that owns"
+            echo "                      that deployment's WorkingDirectory (per-dir systemd lookup). Parent"
+            echo "                      --unit / --service / GO_TRADER_SERVICE is overridden when a per-dir"
+            echo "                      unit exists; if no active unit owns a dir, the parent's service_unit"
+            echo "                      is used and a warning is logged."
+            echo "  With --restart in systemd mode the shipped unit file for the resolved unit is installed"
+            echo "                      over the loaded one when they differ (previous kept as <unit>.prev) and"
+            echo "                      systemd is reloaded before the restart. Drop-ins under <unit>.d/ are never"
+            echo "                      touched; a unit loaded from outside /etc/systemd/system stops the update."
             echo "  RESTART=1 env var also enables restart."
             echo "  RESTART_MODE=signal requires Linux, GO_TRADER_RUN_SH, GO_TRADER_PIDFILE (see #766)."
+            echo "  systemd mode falls back to signal when the unit is not found (systemctl exit 5)."
             echo ""
             echo "Env overrides:"
             echo "  GO_TRADER_SERVICE=<unit>   systemd unit (default: go-trader; systemd mode only)"
             echo "  GO_TRADER_RUN_SH=<path>    wrapper to respawn (default: ./run.sh; signal mode)"
             echo "  GO_TRADER_PIDFILE=<path>   pidfile written by wrapper (default: ./go-trader.pid)"
             echo "  GO_TRADER_SIGNAL_LOG=<path> append stdout/stderr from wrapper (default: ./go-trader-signal.log)"
-            echo "  GO_TRADER_UPDATE_ALL_ROOT=<dir>  parent scanned by --all for go-trader-*/ (default: parent of this repo)"
+            echo "  GO_TRADER_UPDATE_ALL_ROOT=<dir>  pin --all to the <dir>/go-trader-*/ glob (skips systemd auto-discovery; default: parent of this repo)"
             echo "  STATUS_PORT=<n>            override /health port (default: read from config, else 8099)"
             echo "  ACTIVE_TIMEOUT=<sec>       systemd is-active or signal SIGTERM wait (default: 30)"
             echo "  HEALTH_TIMEOUT=<sec>       /health version-match poll timeout (default: 60)"
@@ -140,6 +168,11 @@ esac
 
 if [[ "$update_all" == "1" && "$restart" != "1" ]]; then
     echo "--all requires --restart (each instance is restarted after swap)" >&2
+    exit 2
+fi
+
+if [[ -n "$rsync_from" && ( "$rsync_from" == --* || ! -d "$rsync_from" ) ]]; then
+    echo "--rsync-from requires an existing source directory (got: ${rsync_from:-<empty>})" >&2
     exit 2
 fi
 
@@ -216,10 +249,65 @@ signal_launch_wrapper() {
     if [[ ! -x "$run_sh" ]]; then
         fail "GO_TRADER_RUN_SH ($run_sh) is not executable"
     fi
-    # Detach like a normal nohup deployment; wrapper must write GO_TRADER_PIDFILE with the trader PID.
     setsid nohup bash "$run_sh" >>"$signal_log_out" 2>&1 &
-    # Brief yield only; pidfile freshness is enforced by verify / rollback polls (not this sleep).
     sleep 1
+}
+
+restart_uses_signal_pid() {
+    [[ "$restart_mode" == "signal" || "$restart_uses_signal" == 1 ]]
+}
+
+require_signal_restart_prereqs() {
+    if [[ ! -d /proc/self ]]; then
+        fail "systemd unit missing and signal fallback requires Linux (/proc); install the unit or use --restart-mode signal on Linux with pidfile+run.sh"
+    fi
+    if [[ ! -f "$go_trader_pidfile" ]]; then
+        fail "systemd unit missing and signal fallback requires pidfile ($go_trader_pidfile); start via wrapper once (scripts/create-run-sh.sh) or install the systemd unit"
+    fi
+    if [[ ! -f "$go_trader_run_sh" ]]; then
+        fail "systemd unit missing and signal fallback requires GO_TRADER_RUN_SH ($go_trader_run_sh); create via scripts/create-run-sh.sh or install the systemd unit"
+    fi
+    if [[ ! -x "$go_trader_run_sh" ]]; then
+        fail "systemd unit missing and signal fallback requires executable GO_TRADER_RUN_SH ($go_trader_run_sh)"
+    fi
+}
+
+ensure_prev_main_pid_for_signal() {
+    if [[ -n "$prev_main_pid" ]]; then
+        return 0
+    fi
+    prev_main_pid=$(signal_read_pidfile "$go_trader_pidfile" || true)
+    if [[ -n "$prev_main_pid" ]] && kill -0 "$prev_main_pid" 2>/dev/null; then
+        signal_log_proc_snapshot "$prev_main_pid"
+    fi
+}
+
+run_signal_restart() {
+    ensure_prev_main_pid_for_signal
+    if [[ -n "$prev_main_pid" ]] && kill -0 "$prev_main_pid" 2>/dev/null; then
+        echo "[update] signal: SIGTERM old trader pid=$prev_main_pid" >&2
+        kill -TERM "$prev_main_pid" 2>/dev/null || true
+        signal_wait_pid_exit "$prev_main_pid" "post-swap-old-trader"
+    else
+        echo "[update] signal: old pid not running before respawn — launching wrapper" >&2
+    fi
+    signal_launch_wrapper "$go_trader_run_sh"
+}
+
+rollback_wait_signal_pidfile() {
+    local rb_waited=0
+    while [[ $rb_waited -lt $active_timeout ]]; do
+        local cur_rb=""
+        cur_rb=$(signal_read_pidfile "$go_trader_pidfile" || true)
+        if [[ -n "$cur_rb" ]] && kill -0 "$cur_rb" 2>/dev/null; then
+            echo "[update] rollback: signal respawn pid=$cur_rb (${rb_waited}s)"
+            return 0
+        fi
+        sleep 1
+        rb_waited=$((rb_waited + 1))
+    done
+    echo "[update] rollback: signal wrapper did not produce a live pid in $go_trader_pidfile within ${active_timeout}s" >&2
+    return 1
 }
 
 signal_kill_pidfile_process_then_respawn() {
@@ -234,6 +322,7 @@ signal_kill_pidfile_process_then_respawn() {
     else
         echo "[update] signal: no live pid in $pidfile (cur=${cur:-empty}) — starting wrapper anyway" >&2
     fi
+    signal_sweep_stray_instance_procs
     signal_launch_wrapper "$run_sh"
 }
 
@@ -271,6 +360,51 @@ update_canonicalize_path() {
     printf '%s' "$p"
 }
 
+run_rsync_from() {
+    local src="$1"
+    local dest="$2"
+    local db_excl signal_log_excl
+    local -a rsync_excludes
+    if ! command -v rsync >/dev/null 2>&1; then
+        fail "rsync not on PATH — install rsync or omit --rsync-from"
+    fi
+    signal_log_excl="${GO_TRADER_SIGNAL_LOG:-./go-trader-signal.log}"
+    rsync_excludes=(
+        --exclude='.git/'
+        --exclude='.env'
+        --exclude='scheduler/config.json'
+        --exclude='trading_bot.db*'
+    )
+    while IFS= read -r db_excl; do
+        if [[ -n "$db_excl" ]]; then
+            rsync_excludes+=(--exclude="${db_excl}*")
+        fi
+    done < <(update_resolve_db_exclude)
+    local db_glob
+    while IFS= read -r db_glob; do
+        [[ -n "$db_glob" ]] && rsync_excludes+=(--exclude="$db_glob")
+    done < <(update_db_rsync_excludes)
+    rsync_excludes+=(
+        --exclude='.venv/'
+        --exclude='node_modules/'
+        --exclude='__pycache__/'
+        --exclude='go-trader'
+        --exclude='go-trader.new'
+        --exclude='go-trader.prev'
+        --exclude='go-trader.pid'
+        --exclude='go-trader-signal.log'
+    )
+    if [[ "$signal_log_excl" != "./go-trader-signal.log" && "$signal_log_excl" != "go-trader-signal.log" ]]; then
+        rsync_excludes+=(--exclude="$signal_log_excl")
+    fi
+    local -a rsync_owner=()
+    if [[ "$EUID" == "0" ]]; then
+        rsync_owner=(--no-owner --no-group)
+    fi
+    echo "[update] rsync: $src/ -> $dest/ (excludes deployment .git, secrets, state DB, venv, binaries, signal log)"
+    rsync -a ${rsync_owner[@]+"${rsync_owner[@]}"} --delete "${rsync_excludes[@]}" "$src/" "$dest/"
+}
+
 warn_execstart_vs_swap() {
     local unit="$1"
     local exec_line binary swap_abs bin_abs swap_res
@@ -290,19 +424,67 @@ warn_execstart_vs_swap() {
     fi
 }
 
+systemd_unit_manages_this_instance() {
+    local unit="$1"
+    command -v systemctl >/dev/null 2>&1 || return 1
+    local active_state exec_line binary bin_abs swap_res
+    active_state=$(systemctl is-active "$unit" 2>/dev/null || true)
+    exec_line=$(systemctl show -p ExecStart --value "$unit" 2>/dev/null | head -n 1 || true)
+    binary=$(execstart_main_binary "$exec_line")
+    if [[ "$binary" == /* ]]; then
+        bin_abs=$(update_canonicalize_path "$binary")
+    else
+        bin_abs=""
+    fi
+    swap_res=$(update_canonicalize_path "$(pwd)/go-trader")
+    [[ "$(update_signal_redirect_decision "$active_state" "$bin_abs" "$swap_res")" == "redirect" ]]
+}
+
+signal_sweep_stray_instance_procs() {
+    [[ -d /proc ]] || return 0
+    local repo_abs
+    repo_abs=$(update_canonicalize_path "$(pwd)")
+    [[ -n "$repo_abs" ]] || return 0
+    local entry pid comm pid_cwd
+    for entry in /proc/[0-9]*; do
+        pid="${entry#/proc/}"
+        kill -0 "$pid" 2>/dev/null || continue
+        comm=$(cat "/proc/$pid/comm" 2>/dev/null || true)
+        pid_cwd=$(readlink -f "/proc/$pid/cwd" 2>/dev/null || true)
+        [[ "$(update_should_sweep_proc "$comm" "$pid_cwd" "$repo_abs")" == "sweep" ]] || continue
+        echo "[update] rollback: sweeping stray go-trader pid=$pid (cwd=$pid_cwd) sharing this instance's state DB" >&2
+        kill -TERM "$pid" 2>/dev/null || true
+        signal_wait_pid_exit "$pid" "rollback-sweep"
+    done
+    return 0
+}
+
 do_rollback() {
     local reason="$1"
     echo "[update] rollback: $reason" >&2
+
+    if [[ -n "$unit_sync_backup_path" ]]; then
+        if update_unit_restore_backup "$unit_sync_installed_path" "$unit_sync_backup_path"; then
+            unit_sync_backup_path=""
+            echo "[update] rollback: restored previous unit file $unit_sync_installed_path" >&2
+            if ! sudo systemctl daemon-reload; then
+                echo "[update] rollback: systemctl daemon-reload failed after restoring $unit_sync_installed_path — the old unit is on disk but systemd still holds the new one" >&2
+            fi
+        else
+            echo "[update] rollback: could not restore $unit_sync_installed_path from $unit_sync_backup_path — the service stays on the newly installed unit" >&2
+        fi
+    fi
+
     if [[ ! -x ./go-trader.prev ]]; then
         echo "[update] rollback: no go-trader.prev to restore — service stays on broken binary" >&2
         return
     fi
     mv -f ./go-trader.prev ./go-trader
 
-    if [[ -n "$pre_pull_sha" && -n "${post_pull_sha:-}" && "$pre_pull_sha" != "$post_pull_sha" ]]; then
+    if [[ "$tree_mutated" == "1" && -n "$pre_pull_sha" ]]; then
         echo "[update] rollback: reverting git tree to $pre_pull_sha" >&2
-        if git reset --hard "$pre_pull_sha" >&2; then
-            if ! uv sync >&2; then
+        if update_git "$repo_root" reset --hard "$pre_pull_sha" >&2; then
+            if ! env ${uv_env[@]+"${uv_env[@]}"} "$uv_bin" sync >&2; then
                 echo "[update] rollback: uv sync FAILED — Python tree may be inconsistent with .prev binary" >&2
             fi
         else
@@ -310,24 +492,37 @@ do_rollback() {
         fi
     fi
 
-    if [[ "$restart_mode" == "signal" ]]; then
+    if restart_uses_signal_pid; then
         signal_kill_pidfile_process_then_respawn "$go_trader_pidfile" "$go_trader_run_sh"
-        local rb_waited=0
-        while [[ $rb_waited -lt $active_timeout ]]; do
-            local cur_rb=""
-            cur_rb=$(signal_read_pidfile "$go_trader_pidfile" || true)
-            if [[ -n "$cur_rb" ]] && kill -0 "$cur_rb" 2>/dev/null; then
-                echo "[update] rollback: signal respawn pid=$cur_rb (${rb_waited}s)"
-                return
-            fi
-            sleep 1
-            rb_waited=$((rb_waited + 1))
-        done
-        echo "[update] rollback: signal wrapper did not produce a live pid in $go_trader_pidfile within ${active_timeout}s" >&2
+        rollback_wait_signal_pidfile || true
         return
     fi
 
-    sudo systemctl restart "$service_unit" || true
+    local rb_rc=0
+    set +e
+    sudo systemctl restart "$service_unit"
+    rb_rc=$?
+    set -e
+    if [[ $rb_rc -eq 5 ]]; then
+        echo "[update] rollback: systemd unit $service_unit not found — trying signal respawn" >&2
+        if [[ ! -d /proc/self ]] || [[ ! -f "$go_trader_pidfile" ]]; then
+            echo "[update] rollback: signal fallback unavailable (need Linux + pidfile)" >&2
+            return
+        fi
+        if [[ ! -f "$go_trader_run_sh" ]] || [[ ! -x "$go_trader_run_sh" ]]; then
+            echo "[update] rollback: signal fallback unavailable (missing executable $go_trader_run_sh)" >&2
+            return
+        fi
+        restart_uses_signal=1
+        signal_kill_pidfile_process_then_respawn "$go_trader_pidfile" "$go_trader_run_sh"
+        rollback_wait_signal_pidfile || true
+        return
+    fi
+    if [[ $rb_rc -ne 0 ]]; then
+        echo "[update] rollback: systemctl restart failed with exit $rb_rc" >&2
+        return
+    fi
+
     local rb_waited=0
     while [[ $rb_waited -lt $active_timeout ]]; do
         if systemctl is-active --quiet "$service_unit"; then
@@ -340,8 +535,17 @@ do_rollback() {
     echo "[update] rollback: previous binary did not reach active within ${active_timeout}s" >&2
 }
 
+restore_tree_owner_on_exit() {
+    local rc=$?
+    if ! update_restore_tree_owner "$owner_scope" "$tree_owner" "$tree_owner_snapshot"; then
+        echo "[update] WARNING: files this update wrote under $owner_scope may still be owned by root; check with: find $owner_scope -xdev -user root" >&2
+    fi
+    rm -f "$tree_owner_snapshot"
+    exit "$rc"
+}
+
 verify_cur_restart_pid() {
-    if [[ "$restart_mode" == "signal" ]]; then
+    if restart_uses_signal_pid; then
         signal_read_pidfile "$go_trader_pidfile" || true
     else
         local p
@@ -354,31 +558,18 @@ verify_cur_restart_pid() {
     fi
 }
 
-# --- begin single-repo update body (also invoked per dir for --all) ---
 
 begin_phase preflight
 
-if ! command -v uv >/dev/null 2>&1; then
-    fail "uv not on PATH — install uv first (see CLAUDE.md → Setup)"
-fi
-
-go_bin=""
-if command -v go >/dev/null 2>&1; then
-    go_bin=$(command -v go)
-elif [[ -x /opt/homebrew/bin/go ]]; then
-    go_bin=/opt/homebrew/bin/go
-elif [[ -x /usr/local/go/bin/go ]]; then
-    go_bin=/usr/local/go/bin/go
-else
-    fail "go not on PATH and not found at /opt/homebrew/bin/go or /usr/local/go/bin/go"
-fi
-
-repo_root=$(git rev-parse --show-toplevel)
+repo_root=$(update_git "$PWD" rev-parse --show-toplevel) || fail "$PWD is not inside a git checkout that git can read (see the git error above)"
 cd "$repo_root"
 
 if [[ "$update_all" == "1" ]]; then
     scan_root="$(trim_space "${GO_TRADER_UPDATE_ALL_ROOT:-}")"
-    if [[ -z "$scan_root" ]]; then
+    scan_root_explicit=0
+    if [[ -n "$scan_root" ]]; then
+        scan_root_explicit=1
+    else
         scan_root=$(dirname "$repo_root")
     fi
     declare -a child_args=()
@@ -394,37 +585,107 @@ if [[ "$update_all" == "1" ]]; then
         fi
         if [[ "$a" == --update-all-root=* ]]; then
             scan_root="$(trim_space "${a#*=}")"
+            scan_root_explicit=1
             continue
         fi
         if [[ "$a" == "--update-all-root" ]]; then
             scan_root="$(trim_space "${orig_argv[$((i + 1))]}")"
+            scan_root_explicit=1
             skip_next=1
             continue
         fi
         child_args+=("$a")
     done
-    if [[ ! -d "$scan_root" ]]; then
+    declare -a discovered=()
+    declare -a discovery_sources=()
+    if [[ "$scan_root_explicit" != "1" ]]; then
+        before_count=${#discovered[@]}
+        while IFS= read -r line; do
+            [[ -n "$line" ]] && discovered+=("$line")
+        done < <(discover_deployment_dirs_from_systemd)
+        [[ ${#discovered[@]} -gt $before_count ]] && discovery_sources+=("systemd")
+    fi
+    if [[ -d "$scan_root" ]]; then
+        shopt -s nullglob
+        glob_dirs=( "$scan_root"/go-trader-*/ )
+        shopt -u nullglob
+        if [[ ${#glob_dirs[@]} -gt 0 ]]; then
+            discovered+=( "${glob_dirs[@]}" )
+            discovery_sources+=("glob")
+        fi
+    elif [[ "$scan_root_explicit" == "1" ]]; then
         fail "GO_TRADER_UPDATE_ALL_ROOT / --update-all-root is not a directory: $scan_root"
     fi
-    shopt -s nullglob
-    all_dirs=( "$scan_root"/go-trader-*/ )
-    shopt -u nullglob
-    if [[ ${#all_dirs[@]} -eq 0 ]]; then
-        fail "no directories matching $scan_root/go-trader-*/ (batch root: $scan_root)"
+    if [[ ${#discovered[@]} -eq 0 ]]; then
+        fail "no deployments found: no ACTIVE go-trader systemd units (systemctl absent or none active) and no directories match $scan_root/go-trader-*/ (batch root: $scan_root). Set --update-all-root <dir> / GO_TRADER_UPDATE_ALL_ROOT, or start the deployments' systemd units."
     fi
-    declare -a sorted_dirs=()
+    declare -a canon=()
+    for d in "${discovered[@]}"; do
+        canon+=("$(canonicalize_deployment_dir "$d")")
+    done
+    declare -a all_dirs=()
     while IFS= read -r line; do
-        [[ -n "$line" ]] && sorted_dirs+=("$line")
-    done < <(printf '%s\n' "${all_dirs[@]}" | sort -u)
-    all_dirs=( "${sorted_dirs[@]}" )
-    fail_count=0
-    for d in "${all_dirs[@]}"; do
-        [[ -d "$d" ]] || continue
-        if [[ ! -f "${d}scheduler/config.json" ]]; then
+        [[ -n "$line" ]] && all_dirs+=("$line")
+    done < <(printf '%s\n' "${canon[@]}" | sort -u | order_deployments_feeds_first)
+    discovery_source=$(IFS='+'; printf '%s' "${discovery_sources[*]}")
+    echo "[update] --all: ${#all_dirs[@]} deployment dir(s) via ${discovery_source} discovery"
+    declare -A unit_for_dir=()
+    declare -a unit_map_warnings=()
+    while IFS= read -r row; do
+        [[ -n "$row" ]] || continue
+        row_canon="${row%%|*}"
+        row_unit="${row#*|}"
+        [[ -n "$row_canon" && -n "$row_unit" ]] || continue
+        if [[ -n "${unit_for_dir[$row_canon]:-}" && "${unit_for_dir[$row_canon]}" != "$row_unit" ]]; then
+            unit_map_warnings+=("$row_canon ${unit_for_dir[$row_canon]} $row_unit")
             continue
         fi
-        echo "[update] --all: $(cd "$d" && pwd)"
-        if (cd "$d" && bash "$THIS_SCRIPT" "${child_args[@]}"); then
+        unit_for_dir["$row_canon"]="$row_unit"
+    done < <(discover_deployment_unit_map)
+    if [[ ${#unit_map_warnings[@]} -gt 0 ]]; then
+        for warn_row in "${unit_map_warnings[@]}"; do
+            read -r warn_dir warn_first warn_extra <<<"$warn_row"
+            echo "[update] --all: WARNING: multiple active systemd units own $warn_dir ($warn_first, $warn_extra); using $warn_first" >&2
+        done
+    fi
+    fail_count=0
+    skip_count=0
+    update_count=0
+    for d in "${all_dirs[@]}"; do
+        if [[ ! -d "$d" ]]; then
+            echo "[update] --all: skipping $d (no longer a directory)" >&2
+            skip_count=$((skip_count + 1))
+            continue
+        fi
+        if [[ ! -f "${d}scheduler/config.json" ]]; then
+            echo "[update] --all: skipping $(cd "$d" && pwd) (no scheduler/config.json — not a deployment)" >&2
+            skip_count=$((skip_count + 1))
+            continue
+        fi
+        update_count=$((update_count + 1))
+        mapped_unit="${unit_for_dir[$d]:-}"
+        if [[ -z "$mapped_unit" ]]; then
+            mapped_unit=$(update_convention_unit_for_dir "$d")
+        fi
+        echo "[update] --all: $(cd "$d" && pwd) role=$(update_deployment_role "$d")"
+        # resolve_child_unit_override is the tested helper that decides the
+        # child's effective unit + argv. Production runs must share that
+        # single decision so tests cover the real branch.
+        declare -a _rco_lines=()
+        while IFS= read -r _line || [[ -n "$_line" ]]; do
+            _rco_lines+=("$_line")
+        done < <(resolve_child_unit_override "$service_unit" "$mapped_unit" "${child_args[@]}")
+        resolved_unit="${_rco_lines[0]:-$service_unit}"
+        declare -a resolved_child_args=()
+        for ((_i = 1; _i < ${#_rco_lines[@]}; _i++)); do
+            [[ -n "${_rco_lines[$_i]}" ]] && resolved_child_args+=("${_rco_lines[$_i]}")
+        done
+        if [[ -n "$mapped_unit" ]]; then
+            echo "[update] --all: $(cd "$d" && pwd) -> unit $resolved_unit (auto-resolved from systemd)"
+        else
+            echo "[update] --all: $(cd "$d" && pwd) -> unit $resolved_unit (no active systemd unit; falling back)"
+        fi
+        if (cd "$d" && GO_TRADER_SERVICE="$resolved_unit" bash "$THIS_SCRIPT" "${resolved_child_args[@]}"); then
             :
         else
             echo "[update] --all: FAILED in $d" >&2
@@ -432,11 +693,63 @@ if [[ "$update_all" == "1" ]]; then
         fi
     done
     if [[ $fail_count -ne 0 ]]; then
-        fail "--all completed with $fail_count failing instance(s)"
+        fail "--all completed with $fail_count failing instance(s) ($update_count updated, $skip_count skipped)"
     fi
-    echo "[update] --all: all instances OK"
+    if [[ $update_count -eq 0 ]]; then
+        fail "--all updated 0 deployments ($skip_count of ${#all_dirs[@]} discovered dir(s) skipped — none had scheduler/config.json). Check discovery: --update-all-root <dir> / GO_TRADER_UPDATE_ALL_ROOT, or systemd unit WorkingDirectory."
+    fi
+    echo "[update] --all: all instances OK ($update_count updated, $skip_count skipped of ${#all_dirs[@]} discovered)"
     exit 0
 fi
+
+refuse_unconfined_tree() {
+    local tree="$1" role="$2" issues owners
+    owners="top $(update_path_owner_name "$tree"), .git $(update_path_owner_name "${tree%/}/.git")"
+    if ! issues=$(update_foreign_tree_check "$tree"); then
+        printf '%s\n' "$issues" >&2
+        if [[ -n "${SUDO_UID:-}" ]] && grep -qx "$SUDO_UID" <<<"$(update_tree_foreign_accounts "$tree")"; then
+            echo "[update] you ran this through sudo, and your account owns $tree: run the update as your account without sudo (it calls sudo itself only for systemd steps)" >&2
+        fi
+        fail "$role $tree ($owners) belongs in part to an account other than root, and root would build and run code from it, but the listed units or owners let that account change files in it outside scheduler/ and logs/ (or run without ProtectSystem=strict). Run those units from the go-trader@.service template, whose sandbox keeps the rest of the tree read-only, or give the tree to root"
+    fi
+}
+
+give_back_tree_owner() {
+    [[ -n "$tree_owner" ]] || return 0
+    update_restore_tree_owner "$owner_scope" "$tree_owner" "$tree_owner_snapshot" && return 0
+    rm -f ./go-trader.new
+    fail "could not give the root-written files under $owner_scope back to $(update_path_owner_name "$owner_scope") $1; the binary and the running service are unchanged"
+}
+
+if [[ -n "$(update_tree_foreign_accounts "$repo_root")" ]]; then
+    refuse_unconfined_tree "$repo_root" "the deployment"
+    tree_owner=$(update_tree_foreign_owner "$repo_root")
+    owner_scope="$repo_root"
+    if [[ -z "$tree_owner" && -d "$repo_root/.git" && ! -L "$repo_root/.git" ]]; then
+        tree_owner=$(update_tree_foreign_owner "$repo_root/.git")
+        owner_scope="$repo_root/.git"
+    fi
+    probe_owner=$(update_tree_foreign_owner "$repo_root")
+    [[ -n "$probe_owner" ]] || probe_owner=$(update_tree_foreign_owner "$repo_root/.git")
+fi
+if [[ -n "$tree_owner" ]]; then
+    echo "[update] $owner_scope belongs to $(update_path_owner_name "$owner_scope"); git trusts only this tree for each command, and files this update writes there are given back to that owner"
+    tree_owner_snapshot=$(mktemp "${TMPDIR:-/tmp}/go-trader-owner.XXXXXX") || fail "could not create a temporary file for the ownership list"
+    if ! update_owner_snapshot "$owner_scope" "$tree_owner_snapshot"; then
+        rm -f "$tree_owner_snapshot"
+        fail "could not list the root-owned paths under $owner_scope before the update; nothing changed"
+    fi
+    trap restore_tree_owner_on_exit EXIT
+fi
+
+uv_bin=$(update_resolve_tool uv) \
+    || fail "uv not on PATH and not at $(update_tool_fixed_text uv) — install uv system-wide so every account finds it (SKILL.md → Prerequisites)"
+if [[ "$EUID" == "0" ]]; then
+    uv_env=(UV_LINK_MODE=copy)
+fi
+
+go_bin=$(update_resolve_tool go) \
+    || fail "go not on PATH and not found at $(update_tool_fixed_text go)"
 
 if [[ ! -f scheduler/config.json ]]; then
     cat >&2 <<EOF
@@ -447,7 +760,11 @@ exists). scheduler/config.json is gitignored, so a bare source clone has none
 and the probe phase would later fail without it.
 
 If this IS your deployment directory, copy scheduler/config.example.json to
-scheduler/config.json and fill in API keys (see CLAUDE.md → Setup).
+scheduler/config.json and fill in API keys (see SKILL.md → Configure).
+
+If you moved config out of the tree (#1056), scheduler/config.json should be a
+symlink to e.g. /var/lib/go-trader/<instance>/config.json — recreate it with
+scripts/migrate-config-out-of-tree.sh or \`ln -s <target> scheduler/config.json\`.
 
 If you are syncing source to multiple deployment instances, build in the
 source repo and run scripts/update.sh from each deployment instance.
@@ -455,42 +772,90 @@ EOF
     fail "scheduler/config.json missing — refusing to mutate tree from a non-deployment directory"
 fi
 
+if [[ -n "$rsync_from" ]]; then
+    rsync_from=$(cd "$rsync_from" && pwd)
+    if [[ "$(pwd)" == "$rsync_from" ]]; then
+        fail "--rsync-from cannot be the deployment directory ($(pwd))"
+    fi
+    rsync_src_top=$(update_git_top "$rsync_from" 2>/dev/null || printf '%s' "$rsync_from")
+    rsync_src_owner=$(update_tree_foreign_accounts "$rsync_src_top")
+    if [[ -n "$rsync_src_owner" ]]; then
+        refuse_unconfined_tree "$rsync_src_top" "the --rsync-from source"
+    fi
+    if update_git_top "$rsync_from" >/dev/null; then
+        ver=$(update_git_version "$rsync_from") \
+            || fail "could not read the version of the --rsync-from source $rsync_from, a git checkout (see the git error above); refusing to stamp the build as dev"
+        if [[ "$ver" != *-mod ]]; then
+            build_export_tree="$rsync_from"
+            build_export_commit=$(update_git "$rsync_from" rev-parse HEAD) \
+                || fail "could not read HEAD of the --rsync-from source $rsync_from (see the git error above)"
+        elif [[ -n "$rsync_src_owner" ]]; then
+            fail "the --rsync-from source $rsync_from belongs to $(update_path_owner_name "$rsync_from") and has tracked changes against its HEAD ($ver); root builds only committed code from a tree another account owns. Commit or revert the changes, or when the files already match a release, move HEAD to it without touching files (git reset <release>)"
+        fi
+    else
+        ver=dev
+        if [[ -n "$rsync_src_owner" ]]; then
+            fail "the --rsync-from source $rsync_from belongs to $(update_path_owner_name "$rsync_from") and is not a git checkout; root builds only committed code from a tree another account owns"
+        fi
+        echo "[update] --rsync-from source $rsync_from is not a git checkout; the build is stamped dev"
+    fi
+fi
+
+pre_pull_sha=$(update_git "$repo_root" rev-parse HEAD 2>/dev/null || echo "")
+
 if [[ "$restart" == "1" && "$restart_mode" == "signal" ]]; then
-    if [[ ! -d /proc/self ]]; then
-        fail "RESTART_MODE=signal requires Linux (/proc); use systemd mode on other OSes"
+    if systemd_unit_manages_this_instance "$service_unit"; then
+        echo "[update] signal: systemd unit '$service_unit' is active and its ExecStart runs this binary ($(pwd)/go-trader) — routing restart through systemctl to avoid spawning an out-of-cgroup duplicate (#850). Set GO_TRADER_SERVICE to target a different unit, or stop the unit to use signal mode." >&2
+        restart_mode="systemd"
+    else
+        if [[ ! -d /proc/self ]]; then
+            fail "RESTART_MODE=signal requires Linux (/proc); use systemd mode on other OSes"
+        fi
+        if [[ ! -f "$go_trader_pidfile" ]]; then
+            fail "signal mode: pidfile missing ($go_trader_pidfile). Start the instance once via your wrapper so it writes the pidfile."
+        fi
     fi
-    if [[ ! -f "$go_trader_pidfile" ]]; then
-        fail "signal mode: pidfile missing ($go_trader_pidfile). Start the instance once via your wrapper so it writes the pidfile."
+fi
+
+if [[ "$restart" == "1" && "$restart_mode" == "systemd" ]]; then
+    unit_sync_source_path=$(update_unit_source_path "$repo_root" "$service_unit")
+    unit_sync_installed_path=$(trim_space "$(systemctl show -p FragmentPath --value "$service_unit" 2>/dev/null || true)")
+    if [[ -n "$unit_sync_source_path" && -n "$unit_sync_installed_path" ]]; then
+        if [[ "$(update_unit_fragment_scope "$unit_sync_installed_path")" != "etc" ]]; then
+            fail "systemd unit $service_unit loads from $unit_sync_installed_path, outside /etc/systemd/system — update.sh will not overwrite a vendor or generator unit. Install the shipped unit with 'sudo bash scripts/install-service.sh', or set GO_TRADER_SERVICE / --unit to the unit this deployment owns."
+        fi
     fi
 fi
 
-build_paths=(
-    scheduler
-    shared_scripts
-    shared_strategies
-    shared_tools
-    platforms
-    backtest
-    pyproject.toml
-    uv.lock
-)
+if [[ -z "$rsync_from" ]]; then
+    build_paths=(
+        scheduler
+        shared_scripts
+        shared_strategies
+        shared_tools
+        platforms
+        backtest
+        pyproject.toml
+        uv.lock
+    )
 
-if ! git diff --quiet -- "${build_paths[@]}" || ! git diff --cached --quiet -- "${build_paths[@]}"; then
-    git status --short -- "${build_paths[@]}" >&2
-    fail "working tree has uncommitted changes in build-input paths; commit, stash, or revert first"
-fi
-if ! git diff --quiet || ! git diff --cached --quiet; then
-    echo "[update] warning: uncommitted changes outside build-input paths (will survive git pull):" >&2
-    git status --short >&2
-fi
+    if ! update_git "$repo_root" diff --quiet -- "${build_paths[@]}" || ! update_git "$repo_root" diff --cached --quiet -- "${build_paths[@]}"; then
+        update_git "$repo_root" status --short -- "${build_paths[@]}" >&2
+        fail "working tree has uncommitted changes in build-input paths; commit, stash, or revert first"
+    fi
+    if ! update_git "$repo_root" diff --quiet || ! update_git "$repo_root" diff --cached --quiet; then
+        echo "[update] warning: uncommitted changes outside build-input paths (will survive git pull):" >&2
+        update_git "$repo_root" status --short >&2
+    fi
 
-untracked=$(git ls-files --others --exclude-standard \
-    scheduler shared_scripts shared_strategies shared_tools platforms backtest 2>/dev/null || true)
-untracked_root=$(git ls-files --others --exclude-standard 2>/dev/null | grep -v '/' || true)
-if [[ -n "$untracked" || -n "$untracked_root" ]]; then
-    echo "[update] warning: untracked files (will not affect the build):" >&2
-    [[ -n "$untracked" ]] && echo "$untracked" >&2
-    [[ -n "$untracked_root" ]] && echo "$untracked_root" >&2
+    untracked=$(update_git "$repo_root" ls-files --others --exclude-standard \
+        scheduler shared_scripts shared_strategies shared_tools platforms backtest 2>/dev/null || true)
+    untracked_root=$(update_git "$repo_root" ls-files --others --exclude-standard 2>/dev/null | grep -v '/' || true)
+    if [[ -n "$untracked" || -n "$untracked_root" ]]; then
+        echo "[update] warning: untracked files (the Go build uses only committed sources; they stay in the tree):" >&2
+        [[ -n "$untracked" ]] && echo "$untracked" >&2
+        [[ -n "$untracked_root" ]] && echo "$untracked_root" >&2
+    fi
 fi
 
 prev_running_version=""
@@ -499,7 +864,6 @@ if [[ -x ./go-trader ]]; then
 fi
 echo "[update] previous binary version: ${prev_running_version:-<none>}"
 
-pre_pull_sha=$(git rev-parse HEAD 2>/dev/null || echo "")
 prev_main_pid=""
 if [[ "$restart" == "1" && "$restart_mode" == "signal" ]]; then
     prev_main_pid=$(signal_read_pidfile "$go_trader_pidfile") || fail "signal mode: could not read valid pid from $go_trader_pidfile"
@@ -513,28 +877,58 @@ if [[ "$restart" == "1" && "$restart_mode" == "signal" ]]; then
         echo "[update] signal: warning: process cwd ($proc_cwd) != repo root ($repo_abs)" >&2
     fi
 else
-    # systemd MainPID (or best-effort when --restart off — same capture for restart=0 vs systemd restart=1)
     prev_main_pid=$(systemctl show -p MainPID --value "$service_unit" 2>/dev/null || echo "")
     if [[ "$prev_main_pid" == "0" ]]; then
         prev_main_pid=""
+    fi
+    if [[ -z "$prev_main_pid" && "$restart" == "1" ]]; then
+        prev_main_pid=$(signal_read_pidfile "$go_trader_pidfile" || true)
     fi
 fi
 
 end_phase
 
-begin_phase pull
-git pull --ff-only
-post_pull_sha=$(git rev-parse HEAD 2>/dev/null || echo "")
-end_phase
+if [[ -n "$rsync_from" ]]; then
+    begin_phase rsync
+    run_rsync_from "$rsync_from" "$(pwd)"
+    tree_mutated=1
+    end_phase
+else
+    begin_phase pull
+    update_git "$repo_root" pull --ff-only || fail "git pull --ff-only failed in $repo_root (see the git error above)"
+    post_pull_sha=$(update_git "$repo_root" rev-parse HEAD 2>/dev/null || echo "")
+    if [[ -n "$pre_pull_sha" && -n "$post_pull_sha" && "$pre_pull_sha" != "$post_pull_sha" ]]; then
+        tree_mutated=1
+    fi
+    end_phase
+fi
 
 begin_phase sync
-uv sync
+env ${uv_env[@]+"${uv_env[@]}"} "$uv_bin" sync
+give_back_tree_owner "after uv sync"
+if [[ "$owner_scope" == "$repo_root" && -n "$tree_owner" ]] && ! update_owner_runs_venv "$repo_root"; then
+    fail "after uv sync, $(update_path_owner_name "$repo_root") cannot run $repo_root/.venv/bin/python3 ($(readlink -f .venv/bin/python3 2>/dev/null || echo unresolved)); the service runs as that account. Install a Python every account can read, then rebuild the venv"
+fi
 end_phase
 
 begin_phase build
-ver=$(git describe --tags --always --dirty=-mod 2>/dev/null || echo dev)
+if [[ -z "$rsync_from" ]]; then
+    ver=$(update_git_version "$repo_root") \
+        || fail "could not read the version of $repo_root (see the git error above); refusing to stamp the build as dev"
+    build_export_tree="$repo_root"
+    build_export_commit=$(update_git "$repo_root" rev-parse HEAD) \
+        || fail "could not read HEAD of $repo_root (see the git error above)"
+fi
 rm -f ./go-trader.new
-"$go_bin" -C scheduler build -ldflags "-X main.Version=$ver" -o ../go-trader.new .
+if [[ -n "$build_export_tree" ]]; then
+    echo "[update] build: Go sources of $build_export_commit exported from $build_export_tree (untracked files are never built)"
+    update_build_go_export "$build_export_tree" "$build_export_commit" "$go_bin" "$ver" "$repo_root/go-trader.new" \
+        || fail "go build of the exported sources failed"
+else
+    echo "[update] build: Go sources of the root-owned --rsync-from source $rsync_from/scheduler (never the deployment's scheduler/, which its service can write)"
+    GOWORK=off GOFLAGS=-mod=readonly "$go_bin" -C "$rsync_from/scheduler" build -buildvcs=false -ldflags "-X main.Version=$ver" -o "$repo_root/go-trader.new" . \
+        || fail "go build of $rsync_from/scheduler failed"
+fi
 if [[ ! -s ./go-trader.new ]]; then
     fail "go build produced empty go-trader.new"
 fi
@@ -545,11 +939,38 @@ echo "[update] built ${ver}: $(stat -c '%s' ./go-trader.new 2>/dev/null || stat 
 end_phase
 
 begin_phase probe
-if ! ./go-trader.new probe; then
+give_back_tree_owner "before the probe"
+if [[ -n "$probe_owner" ]]; then
+    echo "[update] probe: runs as $(id -nu "${probe_owner%%:*}" 2>/dev/null || printf 'uid %s' "${probe_owner%%:*}") under the unit sandbox, on a private copy of scheduler/config.json, because that account can change the config and the scripts it names"
+    probe_ok=0
+    update_probe_as_owner "$repo_root" "$probe_owner" "$repo_root/go-trader.new" scheduler/config.json && probe_ok=1
+else
+    probe_ok=0
+    ./go-trader.new probe && probe_ok=1
+fi
+if [[ "$probe_ok" != 1 ]]; then
     rm -f ./go-trader.new
     fail "go-trader.new probe rejected the freshly synced Python — refusing to swap"
 fi
 end_phase
+
+if [[ -n "$tree_owner" ]]; then
+    begin_phase ownership
+    if ! update_restore_tree_owner "$owner_scope" "$tree_owner" "$tree_owner_snapshot"; then
+        rm -f ./go-trader.new
+        fail "could not give the root-written files under $owner_scope back to $(update_path_owner_name "$owner_scope"); the binary and the running service are unchanged"
+    fi
+    end_phase
+fi
+
+if [[ "$restart" == "1" && "$restart_mode" == "systemd" && -n "$unit_sync_source_path" && -n "$unit_sync_installed_path" ]]; then
+    begin_phase journal
+    if ! update_sync_journal_namespace "$repo_root" "$unit_sync_source_path"; then
+        rm -f ./go-trader.new
+        fail "journald namespace config for $unit_sync_source_path could not be installed; the go-trader binary, the unit and the running service were left unchanged"
+    fi
+    end_phase
+fi
 
 begin_phase swap
 rm -f ./go-trader.prev
@@ -557,6 +978,16 @@ if [[ -e ./go-trader ]]; then
     mv -f ./go-trader ./go-trader.prev
 fi
 mv -f ./go-trader.new ./go-trader
+end_phase
+
+begin_phase agent-info
+agent_info_cfg=()
+[[ -f scheduler/config.json ]] && agent_info_cfg=(--config scheduler/config.json)
+if ./go-trader agent-info "${agent_info_cfg[@]}" --bootstrap-md --append-changelog; then
+    echo "[update] refreshed AGENTS.generated.md"
+else
+    echo "[update] warning: agent-info --bootstrap-md failed (non-fatal); AGENTS.generated.md not refreshed" >&2
+fi
 end_phase
 
 if [[ "$restart" != "1" ]]; then
@@ -580,32 +1011,76 @@ fi
 status_port="${status_port:-8099}"
 
 if [[ "$restart_mode" == "systemd" ]]; then
+    begin_phase unit
+    if [[ -z "$unit_sync_source_path" ]]; then
+        echo "[update] unit: no shipped unit file matches '$service_unit' — leaving the installed unit alone (install it by hand with scripts/install-service.sh)"
+    elif [[ -z "$unit_sync_installed_path" ]]; then
+        echo "[update] unit: systemd reports no fragment path for '$service_unit' — skipping the unit install"
+    else
+        unit_needs_reload=$(trim_space "$(systemctl show -p NeedDaemonReload --value "$service_unit" 2>/dev/null || true)")
+        unit_decision=$(update_unit_sync_decision "$unit_sync_installed_path" "$unit_sync_source_path" "$unit_needs_reload")
+        case "$unit_decision" in
+            install)
+                unit_sync_backup_path=$(update_unit_install_with_backup "$unit_sync_installed_path" "$unit_sync_source_path") \
+                    || fail "could not install $unit_sync_source_path over $unit_sync_installed_path"
+                echo "[update] unit: installed $unit_sync_installed_path from $unit_sync_source_path"
+                if [[ -n "$unit_sync_backup_path" ]]; then
+                    echo "[update] unit: previous unit retained as $unit_sync_backup_path"
+                fi
+                if ! sudo systemctl daemon-reload; then
+                    if [[ -n "$unit_sync_backup_path" ]] && update_unit_restore_backup "$unit_sync_installed_path" "$unit_sync_backup_path"; then
+                        unit_sync_backup_path=""
+                        echo "[update] unit: restored $unit_sync_installed_path after the failed daemon-reload" >&2
+                    fi
+                    fail "systemctl daemon-reload failed after installing $unit_sync_installed_path"
+                fi
+                ;;
+            skip)
+                echo "[update] unit: $unit_sync_installed_path is a symlink whose target differs from $unit_sync_source_path — leaving the operator's link alone; re-point it or run 'sudo bash scripts/install-service.sh'" >&2
+                ;;
+            reload)
+                echo "[update] unit: $unit_sync_installed_path already matches $unit_sync_source_path but systemd needs a reload"
+                sudo systemctl daemon-reload || fail "systemctl daemon-reload failed for $service_unit"
+                ;;
+            *)
+                echo "[update] unit: $unit_sync_installed_path already matches $unit_sync_source_path"
+                ;;
+        esac
+    fi
+    end_phase
+
     warn_execstart_vs_swap "$service_unit"
+    warn_missing_systemd_environment_files "$service_unit"
 
     begin_phase restart
+    restart_rc=0
+    set +e
     sudo systemctl restart "$service_unit"
-
-    waited=0
-    until systemctl is-active --quiet "$service_unit"; do
-        if [[ $waited -ge $active_timeout ]]; then
-            do_rollback "systemctl is-active timeout after ${active_timeout}s"
-            fail "service did not reach active state within ${active_timeout}s"
-        fi
-        sleep 1
-        waited=$((waited + 1))
-    done
-    echo "[update] systemd reports active: $service_unit (${waited}s)"
+    restart_rc=$?
+    set -e
+    if [[ $restart_rc -eq 0 ]]; then
+        waited=0
+        until systemctl is-active --quiet "$service_unit"; do
+            if [[ $waited -ge $active_timeout ]]; then
+                do_rollback "systemctl is-active timeout after ${active_timeout}s"
+                fail "service did not reach active state within ${active_timeout}s"
+            fi
+            sleep 1
+            waited=$((waited + 1))
+        done
+        echo "[update] systemd reports active: $service_unit (${waited}s)"
+    elif [[ $restart_rc -eq 5 ]]; then
+        echo "[update] systemd: unit $service_unit not found (exit $restart_rc) — falling back to signal restart" >&2
+        require_signal_restart_prereqs
+        restart_uses_signal=1
+        run_signal_restart
+    else
+        fail "systemctl restart $service_unit failed with exit $restart_rc"
+    fi
     end_phase
 else
     begin_phase restart
-    if [[ -n "$prev_main_pid" ]] && kill -0 "$prev_main_pid" 2>/dev/null; then
-        echo "[update] signal: SIGTERM old trader pid=$prev_main_pid" >&2
-        kill -TERM "$prev_main_pid" 2>/dev/null || true
-        signal_wait_pid_exit "$prev_main_pid" "post-swap-old-trader"
-    else
-        echo "[update] signal: old pid not running before respawn — launching wrapper" >&2
-    fi
-    signal_launch_wrapper "$go_trader_run_sh"
+    run_signal_restart
     end_phase
 fi
 
