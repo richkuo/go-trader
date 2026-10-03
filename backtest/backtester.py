@@ -1307,7 +1307,8 @@ class Backtester:
     def run(self, df: pd.DataFrame, strategy_name: str = "Unknown",
             symbol: str = "BTC/USDT", timeframe: str = "1d",
             params: Optional[dict] = None, save: bool = True,
-            starting_long: Optional[dict] = None) -> dict:
+            starting_long: Optional[dict] = None,
+            indicator_frame: Optional[pd.DataFrame] = None) -> dict:
         uses_open_close = (
             "open_action" in df.columns
             or bool(_close_fraction_columns(df))
@@ -1373,6 +1374,15 @@ class Backtester:
                 )
         if "signal" not in df.columns and not uses_open_close and not has_profile_alloc:
             raise ValueError("DataFrame must have a 'signal' column or open_action/close_fraction columns")
+        if indicator_frame is not None:
+            if not indicator_frame.index.is_unique or not df.index.isin(indicator_frame.index).all():
+                raise ValueError(
+                    "indicator_frame must have a unique index that contains every "
+                    "bar of the scored frame"
+                )
+            history = indicator_frame
+        else:
+            history = df
 
         df = df.copy()
         if has_profile_alloc:
@@ -1426,7 +1436,8 @@ class Backtester:
             df["_regime_bar_close"] = df["regime"].copy()
 
         if self.regime_enabled and "regime" in df.columns:
-            df["regime"] = df["regime"].shift(1).fillna("")
+            regime_source = history["regime"] if "regime" in history.columns else df["regime"]
+            df["regime"] = regime_source.shift(1).reindex(df.index).fillna("")
 
         hurst_runner = None
         if self.hurst_gate and self.hurst_gate.get("enabled"):
@@ -1436,7 +1447,7 @@ class Backtester:
             frame_bars = hurst_live_frame_bars(
                 self.regime_windows_spec, self.regime_period
             )
-            df["_hurst"] = rolling_hurst(df["close"], frame_bars).shift(1)
+            df["_hurst"] = rolling_hurst(history["close"], frame_bars).shift(1).reindex(df.index)
 
         has_open = "open" in df.columns
 
@@ -1481,12 +1492,14 @@ class Backtester:
         trailing_ratchet_active = self._uses_trailing_ratchet_close
 
         zscore_series = None
-        if self._zscore_lookback > 0 and "close" in df.columns:
+        if self._zscore_lookback > 0 and "close" in history.columns:
             lb = self._zscore_lookback
-            closes = df["close"].astype(float)
+            closes = history["close"].astype(float)
             roll = closes.rolling(lb)
             std = roll.std(ddof=0)
-            zscore_series = (closes - roll.mean()) / std.replace(0.0, float("nan"))
+            zscore_series = (
+                (closes - roll.mean()) / std.replace(0.0, float("nan"))
+            ).reindex(df.index)
 
         avwap_series = df["avwap"] if "avwap" in df.columns else None
         if self._close_names_include_avwap_stop():
@@ -1497,12 +1510,12 @@ class Backtester:
                 from strategy_composition import warn_avwap_stop_missing_context
                 warn_avwap_stop_missing_context()
 
-        atr_series = df["atr"] if "atr" in df.columns else None
+        atr_series = history["atr"] if "atr" in history.columns else None
         if atr_series is None and (
             (self.stop_loss_atr_mult is not None and self.stop_loss_atr_mult > 0)
             or (self.trailing_stop_atr_mult is not None and self.trailing_stop_atr_mult > 0)
         ):
-            atr_series = standard_atr(df, method=self.atr_method)
+            atr_series = standard_atr(history, method=self.atr_method)
 
         def _initial_trail_trigger(side: str, mark: float, entry_atr: float,
                                     trail_mult: float) -> float:

@@ -364,6 +364,7 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
                   or bool(regime_windows_spec)
                   or bool(regime_directional_policy))
 
+    indicator_frame = None
     if manifest_window is not None:
         import offline_manifest as om
         if use_regime and "regime" not in df_signals.columns:
@@ -374,6 +375,7 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
                 adx_threshold=regime_adx_threshold,
                 windows_spec=regime_windows_spec,
             )
+        indicator_frame = df_signals
         df_signals = om.slice_window(df_signals, manifest_window)
         df = om.slice_window(df, manifest_window)
     bt_kwargs = dict(
@@ -401,7 +403,8 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
         bt_kwargs["regime_directional_certified"] = True
     bt = Backtester(**bt_kwargs)
     results = bt.run(df_signals, strategy_name=name, symbol=symbol,
-                     timeframe=timeframe, params=strat_params, save=False)
+                     timeframe=timeframe, params=strat_params, save=False,
+                     indicator_frame=indicator_frame)
     closes = df["close"].astype(float)
     bh = round((closes.iloc[-1] - closes.iloc[0]) / closes.iloc[0] * 100, 2)
     leg = leg_from_results(results, bh_return_pct=bh)

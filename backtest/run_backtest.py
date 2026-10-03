@@ -1095,6 +1095,8 @@ def run_single_backtest(
         timeframe = manifest["interval"]
         platform = manifest["venue"]
         since = manifest["windows"][manifest_window]["start"]
+    elif manifest_dataset or manifest_window:
+        raise SystemExit("--manifest-dataset and --manifest-window need --manifest")
     elif cost_multiplier != 1.0:
         raise SystemExit("--cost-multiplier needs --manifest")
     reg = load_registry(registry)
@@ -1189,6 +1191,7 @@ def run_single_backtest(
         if df_signals is None:
             return None
 
+    indicator_frame = None
     if window_spec is not None:
         import offline_manifest as om
         if regime_enabled and "regime" not in df_signals.columns:
@@ -1198,6 +1201,7 @@ def run_single_backtest(
                 adx_threshold=regime_adx_threshold,
                 windows_spec=regime_windows_spec,
             )
+        indicator_frame = df_signals
         df_signals = om.slice_window(df_signals, window_spec)
         print(f"  Scored window: {len(df_signals)} candles from {df_signals.index[0]} "
               f"to {df_signals.index[-1]} (warm-up bars excluded)")
@@ -1255,6 +1259,7 @@ def run_single_backtest(
         timeframe=timeframe,
         params=strat_params,
         save=manifest is None,
+        indicator_frame=indicator_frame,
     )
 
     print(format_single_report(results))
