@@ -43,6 +43,7 @@ from anchored_vwap import anchored_vwap_core
 from anchored_vwap_channel import anchored_vwap_channel_core
 from anchored_vwap_reversion import anchored_vwap_reversion_core
 from analog_retrieval import analog_retrieval_core
+from chaikin_money_flow import chaikin_money_flow_breakout_core
 
 
 VALID_PLATFORMS: Tuple[str, ...] = ("spot", "futures")
@@ -87,6 +88,7 @@ M5_DEPRECATED_EDGE_STRATEGIES = frozenset({
 DISCOVERY_HIDDEN_STRATEGIES = frozenset({
     "amd_ifvg",
     "analog_retrieval",
+    "chaikin_money_flow_breakout",
     "donchian_breakout",
     "range_scalper",
     "session_breakout",
@@ -1384,6 +1386,25 @@ def analog_retrieval_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
 
 
 @register(
+    "chaikin_money_flow_breakout",
+    "RESEARCH, backtest-only (#1649) — Chaikin Money Flow breakout confirmation: long on the first close strictly above the prior breakout_window high while candle-estimated money flow (close-location value times volume over flow_window bars, not measured aggressor flow) is strictly above flow_threshold; short mirrors on the prior low with flow below -flow_threshold. Entry-only; pair with one explicit close strategy and one stop owner. Refused by every live check script; promotion requires a separate reviewed decision",
+    {"flow_window": 20, "breakout_window": 20, "flow_threshold": 0.05},
+    platforms=("futures",),
+    backtest_only=True,
+    constraints=[
+        "flow_window >= 2",
+        "flow_window <= 100",
+        "breakout_window >= 2",
+        "breakout_window <= 100",
+        "flow_threshold >= 0",
+        "flow_threshold < 1",
+    ],
+)
+def chaikin_money_flow_breakout_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
+    return chaikin_money_flow_breakout_core(df, **params)
+
+
+@register(
     "momentum_pro",
     "Momentum Pro — trend-pullback entries in a stacked-EMA trend, ADX-confirmed, on a volume-backed resumption",
     {
@@ -1629,6 +1650,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "funding_skew", "donchian_breakout", "session_breakout", "bear_pullback_st",
         "vwap_rejection_st", "momentum_pro", "mean_reversion_pro", "rsi_bb_combo",
         "consolidation_range", "atr_band_revert", "mtf_confluence", "vol_momentum",
-        "regime_adaptive", "regime_adaptive_htf", "analog_retrieval", "hold",
+        "regime_adaptive", "regime_adaptive_htf", "analog_retrieval",
+        "chaikin_money_flow_breakout", "hold",
     ],
 }

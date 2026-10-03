@@ -1059,7 +1059,44 @@ def run_single_backtest(
     allow_scale_in: bool = False,
     scale_in: Optional[dict] = None,
     atr_method: str = "simple",
+    manifest_path: Optional[str] = None,
+    manifest_dataset: Optional[str] = None,
+    manifest_window: Optional[str] = None,
+    cost_multiplier: float = 1.0,
 ) -> Optional[dict]:
+    manifest = None
+    manifest_dataset_entry = None
+    if manifest_path:
+        import offline_manifest as om
+        unsupported = [
+            label for label, active in (
+                ("--htf-filter", htf_filter),
+                ("a regime timeframe override", bool(regime_timeframe)),
+                ("profile allocation", bool(profile_allocation)),
+                ("funding-input strategies", strategy_name in FUNDING_COLUMN_STRATEGIES),
+                ("scale-in", allow_scale_in),
+                ("no close strategy (the execution spec needs the open/close engine)",
+                 not close_strategies),
+            ) if active
+        ]
+        if unsupported:
+            raise SystemExit(f"--manifest does not support: {', '.join(unsupported)}")
+        if not manifest_dataset or not manifest_window:
+            raise SystemExit("--manifest needs --manifest-dataset and --manifest-window")
+        try:
+            manifest = om.load_manifest(manifest_path)
+            manifest_dataset_entry = om.dataset_by_key(manifest, manifest_dataset)
+        except om.ManifestError as exc:
+            raise SystemExit(f"manifest error: {exc}")
+        if manifest_window not in manifest["windows"]:
+            raise SystemExit(f"manifest error: unknown window {manifest_window!r}; "
+                             f"known: {sorted(manifest['windows'])}")
+        symbol = manifest_dataset_entry["symbol"]
+        timeframe = manifest["interval"]
+        platform = manifest["venue"]
+        since = manifest["windows"][manifest_window]["start"]
+    elif cost_multiplier != 1.0:
+        raise SystemExit("--cost-multiplier needs --manifest")
     reg = load_registry(registry)
     strat = reg.STRATEGY_REGISTRY.get(strategy_name)
     if not strat:
@@ -1074,11 +1111,30 @@ def run_single_backtest(
     if close_strategies:
         print(f"  Close strategies: {[r.get('name') for r in close_strategies]}")
 
-    df = load_cached_data(symbol, timeframe, start_date=since)
-    if df.empty:
-        print("No data available!")
-        return None
-    df = _attach_funding_if_needed(df, strategy_name, symbol, since)
+    window_spec = None
+    execution_spec = None
+    if manifest is not None:
+        import offline_manifest as om
+        try:
+            df, window_spec, candle_cov = om.window_frame(
+                manifest, manifest_dataset_entry, manifest_window)
+            df, funding_cov = om.attach_funding_cost(
+                df, manifest_dataset_entry, window_spec)
+        except om.ManifestError as exc:
+            raise SystemExit(f"manifest error: {exc}")
+        execution_spec = om.execution_spec(manifest, manifest_dataset_entry, cost_multiplier)
+        print(f"  Manifest: {manifest['study']} ({manifest['provenance']['kind']}: "
+              f"{manifest['provenance']['label']}) window {manifest_window} "
+              f"[{window_spec['start']}, {window_spec['end']})")
+        print(f"  Candle coverage: {candle_cov}")
+        print(f"  Funding coverage: {funding_cov}")
+        print(f"  Execution spec: {execution_spec}")
+    else:
+        df = load_cached_data(symbol, timeframe, start_date=since)
+        if df.empty:
+            print("No data available!")
+            return None
+        df = _attach_funding_if_needed(df, strategy_name, symbol, since)
 
     print(f"  Data: {len(df)} candles from {df.index[0]} to {df.index[-1]}")
 
@@ -1133,6 +1189,19 @@ def run_single_backtest(
         if df_signals is None:
             return None
 
+    if window_spec is not None:
+        import offline_manifest as om
+        if regime_enabled and "regime" not in df_signals.columns:
+            ensure_regime_columns(
+                df_signals,
+                period=regime_period,
+                adx_threshold=regime_adx_threshold,
+                windows_spec=regime_windows_spec,
+            )
+        df_signals = om.slice_window(df_signals, window_spec)
+        print(f"  Scored window: {len(df_signals)} candles from {df_signals.index[0]} "
+              f"to {df_signals.index[-1]} (warm-up bars excluded)")
+
     if (regime_directional_policy and regime_directional_certified_states is None
             and regime_directional_certified is None):
         certs = load_certifications(directional_cert_path)
@@ -1177,6 +1246,7 @@ def run_single_backtest(
         allow_scale_in=allow_scale_in,
         scale_in=scale_in,
         atr_method=atr_method,
+        execution_spec=execution_spec,
     )
     results = bt.run(
         df_signals,
@@ -1184,6 +1254,7 @@ def run_single_backtest(
         symbol=symbol,
         timeframe=timeframe,
         params=strat_params,
+        save=manifest is None,
     )
 
     print(format_single_report(results))
@@ -1475,6 +1546,20 @@ def _build_parser() -> argparse.ArgumentParser:
                              "alongside --config (the live config's atr_method "
                              "owns it). Regime classification stays pinned to "
                              "simple either way.")
+    parser.add_argument("--manifest", default=None, metavar="PATH",
+                        help="#1649 frozen offline manifest (offline_manifest.py). "
+                             "Single mode only: replays one manifest dataset and "
+                             "window from hash-verified venue candles with warm-up "
+                             "excluded from scoring, funding attached as a cost, "
+                             "and the manifest's fee/spread/slippage/lot/minimum "
+                             "execution spec. Needs a close strategy. No network "
+                             "fetch and no results-DB write. Default: off.")
+    parser.add_argument("--manifest-dataset", default=None,
+                        help="Manifest dataset key, e.g. 'BTC 4h'")
+    parser.add_argument("--manifest-window", default=None,
+                        help="Manifest window name, e.g. 'train'")
+    parser.add_argument("--cost-multiplier", type=float, default=1.0,
+                        help="With --manifest: scale spread and slippage")
     parser.add_argument("--intrabar-resolution", dest="intrabar_resolution",
                         choices=["ohlc_walk", "bar_close"],
                         default="ohlc_walk",
@@ -1671,6 +1756,10 @@ def main():
                             regime_period=args.regime_period,
                             regime_adx_threshold=args.regime_adx_threshold,
                             allowed_regimes=args.allowed_regimes,
+                            manifest_path=args.manifest,
+                            manifest_dataset=args.manifest_dataset,
+                            manifest_window=args.manifest_window,
+                            cost_multiplier=args.cost_multiplier,
                             **live_stop_kwargs)
 
     elif args.mode == "compare":

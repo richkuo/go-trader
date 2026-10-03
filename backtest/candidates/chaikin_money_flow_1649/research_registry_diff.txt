@@ -1,0 +1,27 @@
+--- research_registry_before
++++ research_registry_after
+@@ -1442,6 +1442,24 @@
+     "k_neighbors > 0"
+    ],
+    "RESEARCH, backtest-only (#1138) \u2014 k-NN analog retrieval: matches the current bar's scale-free state vector (return efficiency, ATR-normalized momentum, ATR%, vol regime, trend) against strictly-prior windows with realized forward returns and votes them into a t-stat- and ATR-edge-gated direction signal. Refused by every live check script; promotion to live requires explicit human sign-off after parity/Sharpe/M1 checks"
++  ],
++  [
++   "chaikin_money_flow_breakout",
++   {
++    "flow_window": 20,
++    "breakout_window": 20,
++    "flow_threshold": 0.05
++   },
++   true,
++   [
++    "flow_window >= 2",
++    "flow_window <= 100",
++    "breakout_window >= 2",
++    "breakout_window <= 100",
++    "flow_threshold >= 0",
++    "flow_threshold < 1"
++   ],
++   "RESEARCH, backtest-only (#1649) \u2014 Chaikin Money Flow breakout confirmation: long on the first close strictly above the prior breakout_window high while candle-estimated money flow (close-location value times volume over flow_window bars, not measured aggressor flow) is strictly above flow_threshold; short mirrors on the prior low with flow below -flow_threshold. Entry-only; pair with one explicit close strategy and one stop owner. Refused by every live check script; promotion requires a separate reviewed decision"
+   ],
+   [
+    "hold",

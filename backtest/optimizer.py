@@ -596,6 +596,11 @@ DEFAULT_PARAM_RANGES = {
         "buffer_atr_mult": [0.1, 0.25, 0.5],
         "confirm_bars": [1, 2, 3],
     },
+    "chaikin_money_flow_breakout": {
+        "flow_window": [10, 20, 40, 80],
+        "breakout_window": [10, 20, 40, 80],
+        "flow_threshold": [0.0, 0.05, 0.10, 0.20],
+    },
     "analog_retrieval": {
         "horizon": [6, 12, 24],
         "k_neighbors": [15, 25, 50],
