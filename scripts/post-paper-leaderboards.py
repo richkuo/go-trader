@@ -11,7 +11,7 @@ import urllib.request
 EXCLUDED_TRADE_TYPES = {"scale_in", "funding", "hedge"}
 HISTORY_PAGE = 200
 LAST_N = 5
-SENTINEL_PATH = "/tmp/.paper-leaderboard-sentinel"
+DISCORD_CONTENT_LIMIT = 2000
 DEDUPE_WINDOW_S = 600
 
 
@@ -24,7 +24,18 @@ def parse_args():
     p.add_argument("--channel", required=True, help="Discord channel id")
     p.add_argument("--top", type=int, default=15, help="rows to post (default 15)")
     p.add_argument("--dry-run", action="store_true", help="print the message and post nothing")
-    return p.parse_args()
+    p.add_argument(
+        "--sentinel",
+        default=os.path.join(
+            os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"),
+            "go-trader-paper-leaderboard.sentinel",
+        ),
+        help="dedupe marker file (default: $XDG_STATE_HOME or ~/.local/state)",
+    )
+    args = p.parse_args()
+    if args.top < 1:
+        p.error("--top must be at least 1")
+    return args
 
 
 def api_get(port, path, params=None):
@@ -90,26 +101,28 @@ def fmt_month_day(ts):
     return date_part[5:10]
 
 
-def should_post():
+def should_post(sentinel):
     if os.environ.get("PAPER_LB_FORCE") == "1":
         print("[dedupe] PAPER_LB_FORCE=1, bypassing dedupe")
         return True
     try:
-        mtime = os.stat(SENTINEL_PATH).st_mtime
+        mtime = os.lstat(sentinel).st_mtime
     except FileNotFoundError:
         return True
     age = time.time() - mtime
     if age < DEDUPE_WINDOW_S:
         print(
             f"[SKIP] Last post was {int(age // 60)}m{int(age % 60):02d}s ago "
-            f"(sentinel={SENTINEL_PATH}); within dedupe window of {DEDUPE_WINDOW_S}s. Refusing to post."
+            f"(sentinel={sentinel}); within dedupe window of {DEDUPE_WINDOW_S}s. Refusing to post."
         )
         return False
     return True
 
 
-def mark_posted():
-    with open(SENTINEL_PATH, "w") as f:
+def mark_posted(sentinel):
+    os.makedirs(os.path.dirname(sentinel), mode=0o700, exist_ok=True)
+    fd = os.open(sentinel, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w") as f:
         f.write(str(time.time()))
 
 
@@ -185,9 +198,28 @@ def main():
             "last_dt": fmt_month_day(last_ts),
         })
 
+    stats_empty = all(
+        (e.get("positions_opened") or 0) == 0 and (e.get("wins") or 0) + (e.get("losses") or 0) == 0
+        for e in entries
+    )
+    if stats_empty and any(e["outcomes"] for e in top):
+        print(
+            "[ERROR] /api/leaderboard reports no trades for any strategy, but /history shows closed trades; "
+            "refusing to post an all-zero leaderboard",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     content = build_message(top, len(entries))
     print(content)
     print()
+    if len(content) > DISCORD_CONTENT_LIMIT:
+        print(
+            f"[ERROR] message is {len(content)} characters, over Discord's {DISCORD_CONTENT_LIMIT}; "
+            "lower --top",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     if args.dry_run:
         return
 
@@ -195,11 +227,11 @@ def main():
     if not token:
         print("[ERROR] DISCORD_BOT_TOKEN is not set", file=sys.stderr)
         sys.exit(1)
-    if not should_post():
+    if not should_post(args.sentinel):
         return
     if not post_discord_message(token, args.channel, content):
         sys.exit(1)
-    mark_posted()
+    mark_posted(args.sentinel)
     print(f"[dedupe] Sentinel updated; next run within {DEDUPE_WINDOW_S}s will be skipped.")
 
 
