@@ -1,9 +1,9 @@
 --- research_registry_before
 +++ research_registry_after
-@@ -534,5 +534,18 @@
-    "flow_threshold < 1"
+@@ -618,5 +618,18 @@
+    "min_separation < 1"
    ],
-   "RESEARCH, backtest-only (#1649) \u2014 Chaikin Money Flow breakout confirmation: long on the first close strictly above the prior breakout_window high while candle-estimated money flow (close-location value times volume over flow_window bars, not measured aggressor flow) is strictly above flow_threshold; short mirrors on the prior low with flow below -flow_threshold. Entry-only; pair with one explicit close strategy and one stop owner. Refused by every live check script; promotion requires a separate reviewed decision"
+   "RESEARCH, backtest-only (#1647) \u2014 Vortex trend crossover: VI+ and VI- are the period sums of |high - previous low| and |low - previous high| divided by the period sum of true range; long when VI+ minus VI- rises strictly above min_separation from at or below it on the previous bar, short on the mirror below -min_separation. Entry-only; pair with one explicit close strategy and one stop owner. Refused by every live check script; promotion requires a separate reviewed decision"
 + ],
 + [
 +  "relative_vigor_index",
