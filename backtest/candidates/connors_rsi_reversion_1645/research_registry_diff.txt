@@ -1,0 +1,32 @@
+--- research_registry_before
++++ research_registry_after
+@@ -805,6 +805,29 @@
+    "RESEARCH, backtest-only (#1649) \u2014 Chaikin Money Flow breakout confirmation: long on the first close strictly above the prior breakout_window high while candle-estimated money flow (close-location value times volume over flow_window bars, not measured aggressor flow) is strictly above flow_threshold; short mirrors on the prior low with flow below -flow_threshold. Entry-only; pair with one explicit close strategy and one stop owner. Refused by every live check script; promotion requires a separate reviewed decision"
+   ],
+   [
++   "connors_rsi_reversion",
++   {
++    "overbought": 90.0,
++    "oversold": 10.0,
++    "price_period": 3,
++    "rank_window": 100,
++    "streak_period": 2
++   },
++   true,
++   [
++    "price_period >= 2",
++    "price_period <= 10",
++    "streak_period >= 2",
++    "streak_period <= 10",
++    "rank_window >= 20",
++    "rank_window <= 150",
++    "oversold > 0",
++    "overbought < 100",
++    "oversold < overbought"
++   ],
++   "RESEARCH, backtest-only (#1645) \u2014 Connors RSI pullback: composite of a bounded Wilder RSI of closes (price_period), a bounded Wilder RSI of the consecutive up/down streak (streak_period, streak capped at 20 bars) and the mid-rank percentile of the latest one-bar return among the previous rank_window returns; long when the composite recovers to or above oversold from strictly below, short when it falls to or below overbought from strictly above. Every decision reads a fixed trailing span (at most 153 bars). Entry-only; pair with one explicit close strategy and one stop owner. Refused by every live check script; promotion requires a separate reviewed decision"
++  ],
++  [
+    "hold",
+    {},
+    false,

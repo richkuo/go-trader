@@ -1,0 +1,20 @@
+{
+  "name": "connors_rsi_reversion",
+  "params": {
+    "price_period": 3,
+    "streak_period": 2,
+    "rank_window": 100,
+    "oversold": 10.0,
+    "overbought": 90.0
+  },
+  "direction": "both",
+  "close_strategies": [
+    {
+      "name": "time_stop",
+      "params": {
+        "max_bars": 20
+      }
+    }
+  ],
+  "stop_loss_atr_mult": 1.0
+}

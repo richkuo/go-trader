@@ -46,6 +46,7 @@ from anchored_vwap_reversion import anchored_vwap_reversion_core
 from analog_retrieval import analog_retrieval_core
 from chaikin_money_flow import chaikin_money_flow_breakout_core
 from open_interest_breakout import open_interest_breakout_core
+from connors_rsi import connors_rsi_reversion_core
 
 
 VALID_PLATFORMS: Tuple[str, ...] = ("spot", "futures")
@@ -92,6 +93,7 @@ DISCOVERY_HIDDEN_STRATEGIES = frozenset({
     "analog_retrieval",
     "chaikin_money_flow_breakout",
     "commodity_channel_trend",
+    "connors_rsi_reversion",
     "donchian_breakout",
     "open_interest_breakout",
     "range_scalper",
@@ -1461,6 +1463,28 @@ def open_interest_breakout_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
 
 
 @register(
+    "connors_rsi_reversion",
+    "RESEARCH, backtest-only (#1645) — Connors RSI pullback: composite of a bounded Wilder RSI of closes (price_period), a bounded Wilder RSI of the consecutive up/down streak (streak_period, streak capped at 20 bars) and the mid-rank percentile of the latest one-bar return among the previous rank_window returns; long when the composite recovers to or above oversold from strictly below, short when it falls to or below overbought from strictly above. Every decision reads a fixed trailing span (at most 153 bars). Entry-only; pair with one explicit close strategy and one stop owner. Refused by every live check script; promotion requires a separate reviewed decision",
+    {"price_period": 3, "streak_period": 2, "rank_window": 100, "oversold": 10.0, "overbought": 90.0},
+    platforms=("futures",),
+    backtest_only=True,
+    constraints=[
+        "price_period >= 2",
+        "price_period <= 10",
+        "streak_period >= 2",
+        "streak_period <= 10",
+        "rank_window >= 20",
+        "rank_window <= 150",
+        "oversold > 0",
+        "overbought < 100",
+        "oversold < overbought",
+    ],
+)
+def connors_rsi_reversion_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
+    return connors_rsi_reversion_core(df, **params)
+
+
+@register(
     "momentum_pro",
     "Momentum Pro — trend-pullback entries in a stacked-EMA trend, ADX-confirmed, on a volume-backed resumption",
     {
@@ -1708,6 +1732,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "vwap_rejection_st", "momentum_pro", "mean_reversion_pro", "rsi_bb_combo",
         "consolidation_range", "atr_band_revert", "mtf_confluence", "vol_momentum",
         "regime_adaptive", "regime_adaptive_htf", "analog_retrieval",
-        "chaikin_money_flow_breakout", "open_interest_breakout", "hold",
+        "chaikin_money_flow_breakout", "open_interest_breakout", "connors_rsi_reversion",
+        "hold",
     ],
 }

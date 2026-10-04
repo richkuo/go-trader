@@ -606,6 +606,13 @@ DEFAULT_PARAM_RANGES = {
         "oi_lookback": [2, 4, 8],
         "oi_change_threshold": [0.0, 0.002, 0.005, 0.01],
     },
+    "connors_rsi_reversion": {
+        "price_period": [2, 3, 5],
+        "streak_period": [2, 3],
+        "rank_window": [50, 100, 150],
+        "oversold": [5.0, 10.0, 20.0],
+        "overbought": [80.0, 90.0, 95.0],
+    },
     "analog_retrieval": {
         "horizon": [6, 12, 24],
         "k_neighbors": [15, 25, 50],
