@@ -71,7 +71,8 @@ func (r *noEdgeMigrationReport) lines() []string {
 }
 
 const v20NoEdgeNotice = "**Note:** strategies without approved edge evidence now share one label, `edge_status: no_edge` (#1681). " +
-	"Paper evaluation needs an explicit `--mode=paper` in args and no acknowledgement. Live use, or args with no `--mode`, " +
+	"Paper evaluation needs exactly one `--mode=paper` in args and no acknowledgement; a `type: spot` strategy outside OKX and Robinhood " +
+	"with no `--mode` gets `--mode=paper` from the Go spot dispatch. Live use, or any other args with no `--mode`, " +
 	"needs `\"allow_no_edge\": true` on the strategy, and startup and inspect still warn. `allow_deprecated` is removed: " +
 	"the former explicit paper warning option has no successor, so paper shows the edge tag without an edge-warning direct message."
 

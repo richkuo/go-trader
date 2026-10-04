@@ -64,7 +64,7 @@ Guardrails only; mechanism/flows in SKILL.md, docs/POST_UPDATE_HISTORY.md. CI `d
 ## PRs and issues
 - Title `type(#<N>): summary [C<score>, <model>, <effort>]`; never bare `#N` in lists. Body: `## Summary`+verification, `## Plain simple English` (<55 words) last.
 - Commits, PR and issue bodies end `LLM: <model> | <effort> | Harness: <action>`, no `Co-authored-by`.
-- Before merging a long-lived PR, diff `origin/main..HEAD` for reverts.
+- Long-lived PR: diff `origin/main..HEAD` for reverts before merge.
 - Reviews also follow `.github/prompts/pr-review-format-local.md`, never gate on CI; findings restate as invariant, list breaking states (inverse, compound).
 - `.github/workflows/claude.yml`: mode routing fail-closed (untrusted/fork=review); no-execution in agent; commit/push implement-only; prompt never holds `"`, `` ` ``, `$`; `.github/scripts/` keeps ONLY `test_workflow_logic.py`.
 - rk-skills workflow skills=CI-only, no settings pin.
@@ -83,9 +83,9 @@ Guardrails only; mechanism/flows in SKILL.md, docs/POST_UPDATE_HISTORY.md. CI `d
 - M1-M6, auto_suggest, regime promotion, `tune_live.py`=SUGGEST-ONLY: **never write live defaults/config/PRs.**
 
 ## Testing
-- **Unit tests only** where a run can't prove it or a regression is silent: rare venue states (partial fill, rejected/unknown order), money math (sizing, PnL, fees), paper/live parity, DB migrations, large refactors. Else run real binaries/scripts (build, `probe`, `--once`); PR lists commands+log lines per criterion.
-- Kept test edit/removal: Outdated/Wrong/Obsolete with checkable ground, disclosed in commit+PR (`fix-pr-review` step 6); no ground=fix code.
-- Kept suites pass: `go -C scheduler test ./...`, pytest `uv run --no-sync python -m pytest shared_strategies/ shared_tools/ backtest/`, `shared_scripts/test_*.py` by path, `scripts/test_*.sh`. CI `-n auto`: never bare-`import` ambiguous name. Go CI never spawns Python.
+- **Unit tests only** if a run can't prove it or regression is silent: rare venue states (partial fill, rejected/unknown order), money math (sizing, PnL, fees), paper/live parity, DB migrations, large refactors. Else run real binaries/scripts (build, `probe`, `--once`); PR lists commands+log lines/criterion.
+- Kept test edit/removal: Outdated/Wrong/Obsolete+checkable ground, disclosed in commit+PR (`fix-pr-review` step 6); no ground=fix code.
+- Kept suites pass: `go -C scheduler test ./...` (+`-tags pyintegration`=SOLE Go tests spawning Python), pytest `uv run --no-sync python -m pytest shared_strategies/ shared_tools/ backtest/`, `shared_scripts/test_*.py` by path, `scripts/test_*.sh`. CI `-n auto`: never bare-`import` ambiguous name.
 - `gofmt -w` after Go edits; tabbed Go: Python `replace(old,new,1)`.
-- Entry ATR guard: `stampEntryATRIfOpened` rejects ATR>50% of AvgCost.
+- `stampEntryATRIfOpened` rejects entry ATR>50% of AvgCost.
 - `tiered_tp_atr`/`trailing_stop_atr_mult` need `Position.EntryATR`; `*_live` recompute via `atr_source`; `avwap_stop`=virtual exit only.
