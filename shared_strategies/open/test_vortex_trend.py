@@ -63,9 +63,10 @@ def reference(df, period, sep):
     return vip, vim, d, pd.Series(sig, index=df.index)
 
 
-def test_registered_research_only_futures_and_hidden():
+def test_registered_no_edge_futures_and_hidden():
     entry = _FUTURES.STRATEGY_REGISTRY[NAME]
-    assert entry["backtest_only"] is True
+    assert (entry["edge_status"], entry["edge_source"], entry["edge_ref"]) == (
+        "no_edge", "study_fail", "backtest/candidates/vortex_trend_1647/REPORT.md")
     assert entry["default_params"] == {"period": 14, "min_separation": 0.0}
     assert NAME not in _FUTURES.list_strategies()
     assert NAME not in _FUTURES.DISCOVERY_STRATEGY_REGISTRY
@@ -409,21 +410,32 @@ def _hl_candles(df):
             for ts, r in df.iterrows()]
 
 
-def test_production_hyperliquid_paths_reject_research_entry_and_close_fallback():
+def test_production_hyperliquid_paths_admit_explicit_paper_and_refuse_unacknowledged_live():
     df = _CHECK_HL._make_dataframe(_hl_candles(_market(200)))
     shared = _CHECK_HL.build_shared_signal_state("BTC", "4h", df=df)
-    with pytest.raises(ValueError, match="backtest_only"):
+    with pytest.raises(ValueError, match="allow_no_edge"):
         _CHECK_HL.evaluate_signal_slot(shared, {"id": "solo", "strategy": NAME})
-    with pytest.raises(ValueError, match="backtest_only"):
+    with pytest.raises(ValueError, match="allow_no_edge"):
         _CHECK_HL.evaluate_signal_slot(
-            shared, {"id": "open", "strategy": "sma_crossover", "open_strategy": NAME,
+            shared, {"id": "open", "strategy": "breakout", "open_strategy": NAME,
                      "close_strategies": "time_stop"})
-    with pytest.raises(ValueError, match="backtest_only"):
+    with pytest.raises(ValueError, match="allow_no_edge"):
         _CHECK_HL.evaluate_signal_slot(
-            shared, {"id": "close", "strategy": "sma_crossover", "open_strategy": "sma_crossover",
+            shared, {"id": "close", "strategy": "breakout", "open_strategy": "breakout",
                      "close_strategies": NAME})
     deps = _CHECK_HL._signal_check_deps()
-    peer = _CHECK_HL.evaluate_signal_slot(shared, {"id": "peer", "strategy": "sma_crossover"}, deps=deps)
-    assert peer["strategy"] == "sma_crossover"
-    with pytest.raises(ValueError, match="backtest_only"):
+    peer = _CHECK_HL.evaluate_signal_slot(shared, {"id": "peer", "strategy": "breakout"}, deps=deps)
+    assert peer["strategy"] == "breakout"
+    with pytest.raises(ValueError, match="allow_no_edge"):
         _CHECK_HL.evaluate_signal_slot(shared, {"id": "batched", "strategy": NAME}, deps=deps)
+    paper = _CHECK_HL.evaluate_signal_slot(shared, {"id": "paper", "strategy": NAME, "mode_args": ["--mode=paper"]})
+    acked = _CHECK_HL.evaluate_signal_slot(
+        shared, {"id": "acked", "strategy": NAME, "mode_args": ["--mode=live"], "allow_no_edge": True})
+    assert paper["strategy"] == acked["strategy"] == NAME
+    assert (paper["signal"], paper["price"]) == (acked["signal"], acked["price"])
+    fallback = _CHECK_HL.evaluate_signal_slot(
+        shared, {"id": "fallback", "strategy": "breakout", "open_strategy": "breakout",
+                 "close_strategies": NAME, "mode_args": ["--mode", "paper"]})
+    assert fallback["close_strategies"] == [NAME]
+
+

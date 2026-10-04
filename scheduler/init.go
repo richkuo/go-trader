@@ -32,56 +32,136 @@ type stratDef struct {
 }
 
 var knownShortNames = map[string]string{
-	"sma_crossover":           "sma",
-	"ema_crossover":           "ema",
-	"momentum":                "momentum",
-	"rsi":                     "rsi",
-	"bollinger_bands":         "bb",
-	"macd":                    "macd",
-	"mean_reversion":          "mr",
-	"volume_weighted":         "vw",
-	"triple_ema":              "tema",
-	"triple_ema_bidir":        "temab",
-	"tema_cross":              "temac",
-	"tema_cross_bd":           "temacb",
-	"rsi_macd_combo":          "rmc",
-	"vol_mean_reversion":      "vol",
-	"momentum_options":        "mom",
-	"protective_puts":         "pput",
-	"covered_calls":           "ccall",
-	"breakout":                "bo",
-	"atr_breakout":            "atrbo",
-	"stoch_rsi":               "stochrsi",
-	"ichimoku_cloud":          "ichi",
-	"order_blocks":            "ob",
-	"vwap_reversion":          "vwap",
-	"anchored_vwap":           "avwap",
-	"anchored_vwap_channel":   "avwapch",
-	"anchored_vwap_reversion": "avwaprev",
-	"chart_pattern":           "cpat",
-	"liquidity_sweeps":        "liqsw",
-	"parabolic_sar":           "psar",
-	"delta_neutral_funding":   "dnf",
-	"funding_skew":            "fskew",
-	"supertrend":              "st",
-	"squeeze_momentum":        "sqm",
-	"heikin_ashi_ema":         "hae",
-	"range_scalper":           "rs",
-	"sweep_squeeze_combo":     "ssc",
-	"adx_trend":               "adxt",
-	"donchian_breakout":       "dbo",
-	"session_breakout":        "sbo",
-	"bear_pullback_st":        "bps",
-	"vwap_rejection_st":       "vrs",
-	"momentum_pro":            "mompro",
-	"mean_reversion_pro":      "mrpro",
-	"rsi_bb_combo":            "rsibb",
-	"consolidation_range":     "cr",
-	"atr_band_revert":         "abr",
-	"mtf_confluence":          "mtfc",
-	"vol_momentum":            "volmom",
-	"regime_adaptive":         "regad",
-	"regime_adaptive_htf":     "rahtf",
+	"sma_crossover":               "sma",
+	"ema_crossover":               "ema",
+	"momentum":                    "momentum",
+	"rsi":                         "rsi",
+	"bollinger_bands":             "bb",
+	"macd":                        "macd",
+	"mean_reversion":              "mr",
+	"volume_weighted":             "vw",
+	"triple_ema":                  "tema",
+	"triple_ema_bidir":            "temab",
+	"tema_cross":                  "temac",
+	"tema_cross_bd":               "temacb",
+	"rsi_macd_combo":              "rmc",
+	"vol_mean_reversion":          "vol",
+	"momentum_options":            "mom",
+	"protective_puts":             "pput",
+	"covered_calls":               "ccall",
+	"breakout":                    "bo",
+	"atr_breakout":                "atrbo",
+	"stoch_rsi":                   "stochrsi",
+	"ichimoku_cloud":              "ichi",
+	"order_blocks":                "ob",
+	"vwap_reversion":              "vwap",
+	"anchored_vwap":               "avwap",
+	"anchored_vwap_channel":       "avwapch",
+	"anchored_vwap_reversion":     "avwaprev",
+	"chart_pattern":               "cpat",
+	"liquidity_sweeps":            "liqsw",
+	"parabolic_sar":               "psar",
+	"delta_neutral_funding":       "dnf",
+	"funding_skew":                "fskew",
+	"supertrend":                  "st",
+	"squeeze_momentum":            "sqm",
+	"heikin_ashi_ema":             "hae",
+	"range_scalper":               "rs",
+	"sweep_squeeze_combo":         "ssc",
+	"adx_trend":                   "adxt",
+	"donchian_breakout":           "dbo",
+	"session_breakout":            "sbo",
+	"bear_pullback_st":            "bps",
+	"vwap_rejection_st":           "vrs",
+	"momentum_pro":                "mompro",
+	"mean_reversion_pro":          "mrpro",
+	"rsi_bb_combo":                "rsibb",
+	"consolidation_range":         "cr",
+	"atr_band_revert":             "abr",
+	"mtf_confluence":              "mtfc",
+	"vol_momentum":                "volmom",
+	"regime_adaptive":             "regad",
+	"regime_adaptive_htf":         "rahtf",
+	"amd_ifvg":                    "amdifvg",
+	"pairs_spread":                "pairs",
+	"analog_retrieval":            "analog",
+	"awesome_oscillator":          "ao",
+	"chaikin_money_flow_breakout": "cmfbo",
+	"commodity_channel_trend":     "cci",
+	"connors_rsi_reversion":       "crsi",
+	"open_interest_breakout":      "oibo",
+	"relative_vigor_index":        "rvi",
+	"vortex_trend":                "vortex",
+	"hold":                        "hold",
+}
+
+var registeredOpenStrategyPlatforms = map[string][]string{
+	"adx_trend":                   {"spot", "futures"},
+	"amd_ifvg":                    {"spot", "futures"},
+	"analog_retrieval":            {"spot", "futures"},
+	"anchored_vwap":               {"spot", "futures"},
+	"anchored_vwap_channel":       {"spot", "futures"},
+	"anchored_vwap_reversion":     {"spot", "futures"},
+	"atr_band_revert":             {"spot", "futures"},
+	"atr_breakout":                {"spot", "futures"},
+	"awesome_oscillator":          {"futures"},
+	"bear_pullback_st":            {"futures"},
+	"bollinger_bands":             {"spot", "futures"},
+	"breakout":                    {"futures"},
+	"chaikin_money_flow_breakout": {"futures"},
+	"chart_pattern":               {"spot", "futures"},
+	"commodity_channel_trend":     {"futures"},
+	"connors_rsi_reversion":       {"futures"},
+	"consolidation_range":         {"futures"},
+	"delta_neutral_funding":       {"futures"},
+	"donchian_breakout":           {"spot", "futures"},
+	"ema_crossover":               {"spot", "futures"},
+	"funding_skew":                {"futures"},
+	"heikin_ashi_ema":             {"spot", "futures"},
+	"hold":                        {"spot", "futures"},
+	"ichimoku_cloud":              {"spot", "futures"},
+	"liquidity_sweeps":            {"spot", "futures"},
+	"macd":                        {"spot", "futures"},
+	"mean_reversion":              {"spot", "futures"},
+	"mean_reversion_pro":          {"spot", "futures"},
+	"momentum":                    {"spot", "futures"},
+	"momentum_pro":                {"spot", "futures"},
+	"mtf_confluence":              {"spot", "futures"},
+	"open_interest_breakout":      {"futures"},
+	"order_blocks":                {"spot", "futures"},
+	"pairs_spread":                {"spot"},
+	"parabolic_sar":               {"spot", "futures"},
+	"range_scalper":               {"spot", "futures"},
+	"regime_adaptive":             {"spot", "futures"},
+	"regime_adaptive_htf":         {"spot", "futures"},
+	"relative_vigor_index":        {"futures"},
+	"rsi":                         {"spot", "futures"},
+	"rsi_bb_combo":                {"spot", "futures"},
+	"rsi_macd_combo":              {"spot", "futures"},
+	"session_breakout":            {"futures"},
+	"sma_crossover":               {"spot", "futures"},
+	"squeeze_momentum":            {"spot", "futures"},
+	"stoch_rsi":                   {"spot", "futures"},
+	"supertrend":                  {"spot", "futures"},
+	"sweep_squeeze_combo":         {"spot", "futures"},
+	"tema_cross":                  {"spot", "futures"},
+	"tema_cross_bd":               {"futures"},
+	"triple_ema":                  {"spot", "futures"},
+	"triple_ema_bidir":            {"futures"},
+	"vol_momentum":                {"spot", "futures"},
+	"volume_weighted":             {"spot", "futures"},
+	"vortex_trend":                {"futures"},
+	"vwap_rejection_st":           {"futures"},
+	"vwap_reversion":              {"spot", "futures"},
+}
+
+func openStrategyRegisteredFor(name, registryPlatform string) bool {
+	for _, p := range registeredOpenStrategyPlatforms[name] {
+		if p == registryPlatform {
+			return true
+		}
+	}
+	return false
 }
 
 var bidirectionalPerpsStrategies = map[string]bool{
@@ -355,6 +435,7 @@ type InitOptions struct {
 	CBLossStreakCooldownMinutes int     `json:"cbLossStreakCooldownMinutes,omitempty"`
 	PortfolioMaxDrawdownPct     float64 `json:"portfolioMaxDrawdownPct,omitempty"`
 	PortfolioWarnThresholdPct   float64 `json:"portfolioWarnThresholdPct,omitempty"`
+	AllowNoEdge                 bool    `json:"allowNoEdge,omitempty"`
 	DiscordEnabled              bool
 	DiscordOwnerID              string
 	SpotChannelID               string
@@ -719,6 +800,17 @@ func generateConfig(opts InitOptions) *Config {
 	if opts.CapitalPct > 0 {
 		for i := range cfg.Strategies {
 			cfg.Strategies[i].CapitalPct = opts.CapitalPct
+		}
+	}
+
+	if opts.AllowNoEdge {
+		for i := range cfg.Strategies {
+			sc := &cfg.Strategies[i]
+			if len(noEdgeReferences(*sc)) == 0 || edgeGateModeForStrategy(*sc).Kind == edgeGateModePaper {
+				continue
+			}
+			ack := true
+			sc.AllowNoEdge = &ack
 		}
 	}
 

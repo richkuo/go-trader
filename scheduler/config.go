@@ -330,6 +330,14 @@ type Config struct {
 
 	migrationBaseVersion    int
 	migrationBaseVersionSet bool
+	noEdgeMigration         *noEdgeMigrationReport
+}
+
+func (c *Config) NoEdgeMigrationReport() *noEdgeMigrationReport {
+	if c == nil {
+		return nil
+	}
+	return c.noEdgeMigration
 }
 
 func (c *Config) MigrationBaseVersion() int {
@@ -520,20 +528,6 @@ func (sc *StrategyConfig) CircuitBreakerEnabled() bool {
 	return *sc.CircuitBreaker
 }
 
-func (sc *StrategyConfig) AllowDeprecatedEffective() bool {
-	if sc == nil {
-		return false
-	}
-	if sc.AllowDeprecated != nil {
-		return *sc.AllowDeprecated
-	}
-	return !isLiveArgs(sc.Args)
-}
-
-func (sc *StrategyConfig) AllowDeprecatedAcknowledged() bool {
-	return sc != nil && sc.AllowDeprecated != nil && *sc.AllowDeprecated
-}
-
 const (
 	DefaultCBDrawdownCooldown    = 24 * time.Hour
 	DefaultCBLossStreakThreshold = 5
@@ -658,7 +652,7 @@ type StrategyConfig struct {
 	CBLossStreakCooldownMinutes *int                     `json:"cb_loss_streak_cooldown_minutes,omitempty"`
 	NotifyRatchetTriggers       *bool                    `json:"notify_ratchet_triggers,omitempty"`
 	LLMEntryAnalysis            *LLMEntryAnalysisConfig  `json:"llm_entry_analysis,omitempty"`
-	AllowDeprecated             *bool                    `json:"allow_deprecated,omitempty"`
+	AllowNoEdge                 *bool                    `json:"allow_no_edge,omitempty"`
 	Paused                      bool                     `json:"paused,omitempty"`
 	IntervalSeconds             int                      `json:"interval_seconds,omitempty"`
 	HTFFilter                   bool                     `json:"htf_filter,omitempty"`
@@ -956,7 +950,7 @@ func LoadConfig(path string) (*Config, error) {
 }
 
 func LoadConfigForProbe(path string) (*Config, error) {
-	return loadConfig(path, true, false)
+	return loadConfig(path, true, true)
 }
 
 func LoadConfigReadOnly(path string) (*Config, error) {
@@ -968,18 +962,27 @@ func loadConfig(path string, skipLiveCredentialChecks bool, readOnly bool) (*Con
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
+	var noEdgeReport *noEdgeMigrationReport
+	keepNoEdgeReport := func(report *noEdgeMigrationReport) {
+		if noEdgeReport == nil && report != nil && report.Applied {
+			noEdgeReport = report
+		}
+	}
 	migrate := func(label string) error {
 		if readOnly {
-			migrated, err := migrateConfigData(data, nil)
+			migrated, report, err := migrateConfigDataReport(data, nil)
 			if err != nil {
 				return fmt.Errorf("%s (in memory): %w", label, err)
 			}
 			data = migrated
+			keepNoEdgeReport(report)
 			return nil
 		}
-		if err := MigrateConfig(path, nil, nil); err != nil {
+		report, err := migrateConfigFile(path, nil)
+		if err != nil {
 			return fmt.Errorf("%s: %w", label, err)
 		}
+		keepNoEdgeReport(report)
 		data, err = os.ReadFile(path)
 		if err != nil {
 			return fmt.Errorf("read config after %s: %w", label, err)
@@ -1018,12 +1021,23 @@ func loadConfig(path string, skipLiveCredentialChecks bool, readOnly bool) (*Con
 			return nil, err
 		}
 	}
+	if needsV20NoEdgeMigration(data) {
+		if err := migrate("v20 no-edge acknowledgement migration"); err != nil {
+			return nil, err
+		}
+	}
+	if !readOnly {
+		for _, line := range noEdgeReport.lines() {
+			fmt.Printf("[migration] %s\n", line)
+		}
+	}
 	var cfg Config
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
 	cfg.migrationBaseVersion = migrationBaseVersion
 	cfg.migrationBaseVersionSet = true
+	cfg.noEdgeMigration = noEdgeReport
 	if err := validateSchedulerRole(&cfg); err != nil {
 		return nil, err
 	}
@@ -1104,28 +1118,7 @@ func loadConfig(path string, skipLiveCredentialChecks bool, readOnly bool) (*Con
 
 	for i := range cfg.Strategies {
 		normalizeDeprecatedCloseRef(cfg.Strategies[i].CloseStrategy)
-		if cfg.Strategies[i].Platform == "" {
-			switch {
-			case strings.HasPrefix(cfg.Strategies[i].ID, "ibkr-"):
-				cfg.Strategies[i].Platform = "ibkr"
-			case strings.HasPrefix(cfg.Strategies[i].ID, "deribit-"):
-				cfg.Strategies[i].Platform = "deribit"
-			case strings.HasPrefix(cfg.Strategies[i].ID, "hl-"):
-				cfg.Strategies[i].Platform = "hyperliquid"
-			case strings.HasPrefix(cfg.Strategies[i].ID, "ts-"):
-				cfg.Strategies[i].Platform = "topstep"
-			case strings.HasPrefix(cfg.Strategies[i].ID, "rh-"):
-				cfg.Strategies[i].Platform = "robinhood"
-			case strings.HasPrefix(cfg.Strategies[i].ID, "luno-"):
-				cfg.Strategies[i].Platform = "luno"
-			case strings.HasPrefix(cfg.Strategies[i].ID, "okx-"):
-				cfg.Strategies[i].Platform = "okx"
-			case cfg.Strategies[i].Type == "options":
-				cfg.Strategies[i].Platform = "deribit"
-			default:
-				cfg.Strategies[i].Platform = "binanceus"
-			}
-		}
+		inferStrategyPlatform(&cfg.Strategies[i])
 
 		if cfg.Strategies[i].MaxDrawdownPct == 0 {
 			platform := cfg.Strategies[i].Platform
@@ -1186,13 +1179,7 @@ func loadConfig(path string, skipLiveCredentialChecks bool, readOnly bool) (*Con
 		if sc.Type != "manual" || sc.Platform != "hyperliquid" {
 			continue
 		}
-		if sc.Script == "" {
-			sc.Script = "shared_scripts/check_hyperliquid.py"
-		}
-		if len(sc.Args) == 0 && sc.Symbol != "" && sc.Timeframe != "" {
-			mode := "live"
-			sc.Args = []string{"hold", sc.Symbol, sc.Timeframe, "--mode=" + mode}
-		}
+		applyManualHyperliquidIdentityDefaults(sc)
 		if sc.Leverage > 0 && sc.SizingLeverage == 0 {
 			sc.SizingLeverage = sc.Leverage
 		}
@@ -1275,6 +1262,50 @@ func loadConfig(path string, skipLiveCredentialChecks bool, readOnly bool) (*Con
 	}
 	warnHyperliquidTieredATRSourceLive(&cfg)
 	return &cfg, nil
+}
+
+func inferStrategyPlatform(sc *StrategyConfig) {
+	if sc.Platform != "" {
+		return
+	}
+	switch {
+	case strings.HasPrefix(sc.ID, "ibkr-"):
+		sc.Platform = "ibkr"
+	case strings.HasPrefix(sc.ID, "deribit-"):
+		sc.Platform = "deribit"
+	case strings.HasPrefix(sc.ID, "hl-"):
+		sc.Platform = "hyperliquid"
+	case strings.HasPrefix(sc.ID, "ts-"):
+		sc.Platform = "topstep"
+	case strings.HasPrefix(sc.ID, "rh-"):
+		sc.Platform = "robinhood"
+	case strings.HasPrefix(sc.ID, "luno-"):
+		sc.Platform = "luno"
+	case strings.HasPrefix(sc.ID, "okx-"):
+		sc.Platform = "okx"
+	case sc.Type == "options":
+		sc.Platform = "deribit"
+	default:
+		sc.Platform = "binanceus"
+	}
+}
+
+func applyManualHyperliquidIdentityDefaults(sc *StrategyConfig) {
+	if sc.Type != "manual" || sc.Platform != "hyperliquid" {
+		return
+	}
+	if sc.Script == "" {
+		sc.Script = "shared_scripts/check_hyperliquid.py"
+	}
+	if len(sc.Args) == 0 && sc.Symbol != "" && sc.Timeframe != "" {
+		sc.Args = []string{"hold", sc.Symbol, sc.Timeframe, "--mode=live"}
+	}
+}
+
+func effectiveIdentityStrategy(sc StrategyConfig) StrategyConfig {
+	inferStrategyPlatform(&sc)
+	applyManualHyperliquidIdentityDefaults(&sc)
+	return sc
 }
 
 func applyNotifierEnvOverrides(cfg *Config) {
@@ -1571,6 +1602,8 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 	}
 
 	errs = append(errs, validateUserDefaults(cfg.UserDefaults)...)
+
+	errs = append(errs, noEdgeAdmissionErrors(cfg.Strategies)...)
 
 	errs = append(errs, validatePaperSourcesConfig(cfg)...)
 

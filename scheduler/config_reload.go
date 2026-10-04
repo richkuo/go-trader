@@ -138,9 +138,9 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 			addChange("strategy[%s].paused: %t -> %t", sc.ID, sc.Paused, ns.Paused)
 			sc.Paused = ns.Paused
 		}
-		if !boolPtrEqual(sc.AllowDeprecated, ns.AllowDeprecated) {
-			addChange("strategy[%s].allow_deprecated: %s -> %s", sc.ID, formatAllowDeprecated(sc.AllowDeprecated), formatAllowDeprecated(ns.AllowDeprecated))
-			sc.AllowDeprecated = ns.AllowDeprecated
+		if !boolPtrEqual(sc.AllowNoEdge, ns.AllowNoEdge) {
+			addChange("strategy[%s].allow_no_edge: %s -> %s", sc.ID, formatAllowNoEdge(sc.AllowNoEdge), formatAllowNoEdge(ns.AllowNoEdge))
+			sc.AllowNoEdge = ns.AllowNoEdge
 		}
 		if sc.CapitalPct == 0 && sc.Capital != ns.Capital {
 			addChange("strategy[%s].capital: $%.2f -> $%.2f", sc.ID, sc.Capital, ns.Capital)
@@ -539,6 +539,9 @@ func validateHotReloadCompatible(cfg, next *Config) error {
 		if !reflect.DeepEqual(oldShape, newShape) {
 			errs = append(errs, fmt.Sprintf("strategy[%s] changed non-hot-reloadable fields (restart required)", sc.ID))
 		}
+		if msg := liveNoEdgeAcknowledgementReloadError(sc, ns.AllowNoEdgeAcknowledged()); msg != "" {
+			errs = append(errs, msg)
+		}
 	}
 
 	for _, msg := range hyperliquidPeerStrategyErrors(next.Strategies) {
@@ -749,7 +752,7 @@ func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.Paused = false
 	sc.sharedWalletModeDeferred = false
 	sc.LLMEntryAnalysis = nil
-	sc.AllowDeprecated = nil
+	sc.AllowNoEdge = nil
 	sc.Capital = 0
 	sc.Leverage = 0
 	sc.SizingLeverage = 0
@@ -859,7 +862,7 @@ func formatCircuitBreaker(p *bool) string {
 	return "off"
 }
 
-func formatAllowDeprecated(p *bool) string {
+func formatAllowNoEdge(p *bool) string {
 	if p == nil {
 		return "unset"
 	}
@@ -1228,4 +1231,54 @@ func sortedConfigKeys[V any](a, b map[string]V) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func liveNoEdgeAcknowledgementReloadError(active StrategyConfig, nextAcknowledged bool) string {
+	if !isLiveArgs(active.Args) || active.AllowNoEdgeAcknowledged() == nextAcknowledged {
+		return ""
+	}
+	verb := "added"
+	if !nextAcknowledged {
+		verb = "removed"
+	}
+	return fmt.Sprintf("strategy[%s].allow_no_edge %s on a live strategy (restart required: live edge admission changes only at startup)", active.ID, verb)
+}
+
+type rawReloadStrategyAck struct {
+	ID          string          `json:"id"`
+	AllowNoEdge json.RawMessage `json:"allow_no_edge"`
+}
+
+func reloadNoEdgeAcknowledgementPreflight(active *Config, data []byte) error {
+	var raw struct {
+		Strategies []rawReloadStrategyAck `json:"strategies"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil
+	}
+	nextAck := make(map[string]bool, len(raw.Strategies))
+	for _, item := range raw.Strategies {
+		var ack bool
+		if len(item.AllowNoEdge) > 0 && string(item.AllowNoEdge) != "null" {
+			if err := json.Unmarshal(item.AllowNoEdge, &ack); err != nil {
+				continue
+			}
+		}
+		nextAck[item.ID] = ack
+	}
+	var errs []string
+	for _, sc := range active.Strategies {
+		ack, ok := nextAck[sc.ID]
+		if !ok {
+			continue
+		}
+		if msg := liveNoEdgeAcknowledgementReloadError(sc, ack); msg != "" {
+			errs = append(errs, msg)
+		}
+	}
+	if len(errs) == 0 {
+		return nil
+	}
+	sort.Strings(errs)
+	return fmt.Errorf("config reload rejected:\n  %s", strings.Join(errs, "\n  "))
 }

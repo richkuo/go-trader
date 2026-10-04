@@ -143,8 +143,8 @@ func main() {
 	for _, sc := range cfg.Strategies {
 		fmt.Println(formatStrategySummaryLine(sc, explicitKeys[sc.ID], cfg))
 	}
-	deprecatedEdgeWarnings := deprecatedEdgeStartupWarnings(cfg.Strategies)
-	for _, msg := range deprecatedEdgeWarnings {
+	noEdgeWarnings := noEdgeStartupWarnings(cfg.Strategies)
+	for _, msg := range noEdgeWarnings {
 		fmt.Fprintln(os.Stderr, "[config] "+msg)
 	}
 	if line := dailyLossStartupSummaryLine(cfg.PortfolioRisk); line != "" {
@@ -566,8 +566,8 @@ func main() {
 
 	notifyDirectionalCertStartupSummary(notifier, directionalCertSummaryLines)
 
-	if len(deprecatedEdgeWarnings) > 0 && notifier.HasOwner() {
-		for _, msg := range deprecatedEdgeWarnings {
+	if len(noEdgeWarnings) > 0 && notifier.HasOwner() {
+		for _, msg := range noEdgeWarnings {
 			notifier.SendOwnerDM("[config] " + msg)
 		}
 	}
@@ -613,7 +613,7 @@ func main() {
 		}
 	}()
 
-	if cfg.MigrationBaseVersion() < CurrentConfigVersion {
+	if cfg.MigrationBaseVersion() < CurrentConfigVersion || cfg.NoEdgeMigrationReport().changedLegacyInput() {
 		go runConfigMigrationDM(cfg, notifier, *configPath)
 	}
 
@@ -697,6 +697,15 @@ func main() {
 
 	reloadConfig := func() {
 		fmt.Printf("[reload] SIGHUP received; reloading config from %s\n", *configPath)
+		if data, readErr := os.ReadFile(*configPath); readErr == nil {
+			mu.RLock()
+			preErr := reloadNoEdgeAcknowledgementPreflight(cfg, data)
+			mu.RUnlock()
+			if preErr != nil {
+				fmt.Fprintf(os.Stderr, "[reload] ERROR: reload rejected; keeping previous config: %v\n", preErr)
+				return
+			}
+		}
 		nextCfg, err := LoadConfig(*configPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[reload] ERROR: reload failed; keeping previous config: %v\n", err)
@@ -746,7 +755,7 @@ func main() {
 		}
 		notifyDirectionalCertStartupSummary(notifier, reloadCertLines)
 
-		for _, msg := range newlyDeprecatedEdgeWarnings(prevStrategies, cfg.Strategies) {
+		for _, msg := range newlyIntroducedNoEdgeWarnings(prevStrategies, cfg.Strategies) {
 			fmt.Fprintln(os.Stderr, "[reload] "+msg)
 			if notifier.HasOwner() {
 				notifier.SendOwnerDM("[reload] " + msg)
@@ -3362,6 +3371,8 @@ func runSpotCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionC
 	} else if len(refsArgs) > 0 {
 		args = append(args, refsArgs...)
 	}
+	args = spotPaperDispatchArgs(sc, args)
+	args = appendAllowNoEdgeArg(args, sc)
 	logger.Running(sc.Script, args)
 
 	result, stderr, err := RunSpotCheck(sc.Script, args)
@@ -3737,6 +3748,7 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 			args = append(args, fmt.Sprintf("--mark-price=%g", mid))
 		}
 	}
+	args = appendAllowNoEdgeArg(args, *sc)
 	if marketStdin != nil {
 		args = append(args, marketStdinFlag)
 	}
@@ -4249,6 +4261,7 @@ func runTopStepCheck(sc StrategyConfig, prices map[string]float64, posCtx Positi
 	} else if len(refsArgs) > 0 {
 		args = append(args, refsArgs...)
 	}
+	args = appendAllowNoEdgeArg(args, sc)
 	logger.Running(sc.Script, args)
 
 	result, stderr, err := RunTopStepCheck(sc.Script, args)
@@ -4441,6 +4454,7 @@ func runRobinhoodCheck(sc StrategyConfig, prices map[string]float64, posCtx Posi
 	} else if len(refsArgs) > 0 {
 		args = append(args, refsArgs...)
 	}
+	args = appendAllowNoEdgeArg(args, sc)
 	logger.Running(sc.Script, args)
 
 	result, stderr, err := RunRobinhoodCheck(sc.Script, args)
@@ -4621,6 +4635,7 @@ func runOKXCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCt
 	} else if len(refsArgs) > 0 {
 		args = append(args, refsArgs...)
 	}
+	args = appendAllowNoEdgeArg(args, sc)
 	logger.Running(sc.Script, args)
 
 	result, stderr, err := RunOKXCheck(sc.Script, args)
