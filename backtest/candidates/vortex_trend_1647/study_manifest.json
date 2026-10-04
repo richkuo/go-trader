@@ -1,0 +1,113 @@
+{
+  "schema": "offline_candle_manifest/v1",
+  "study": "vortex_trend_1647",
+  "venue": "hyperliquid",
+  "provenance": {
+    "kind": "venue",
+    "label": "Hyperliquid mainnet perpetual candles from the public info API (candleSnapshot); closed bars only"
+  },
+  "interval": "4h",
+  "warmup_bars": 300,
+  "windows": {
+    "train": {
+      "start": "2024-09-01",
+      "end": "2025-09-01",
+      "role": "selection: parameter sweeps and the frozen selection rule read only this window"
+    },
+    "test": {
+      "start": "2025-09-01",
+      "end": "2026-09-01",
+      "role": "held-out: scored once with the frozen selections"
+    }
+  },
+  "acquisition": {
+    "source": "POST https://api.hyperliquid.xyz/info candleSnapshot + fundingHistory (shared_tools/funding_fetcher.py)",
+    "start": "2024-06-01",
+    "end": "2026-10-01",
+    "note": "Inputs are byte-identical copies of the frozen chaikin_money_flow_1649 inputs (same sha256 values). The venue serves only the most recent 5,000 candles, so a new acquisition cannot reproduce the earliest bars."
+  },
+  "costs": {
+    "taker_fee_pct": 0.00045,
+    "maker_fee_pct": 0.00015,
+    "slippage_bps": 5.0,
+    "min_notional_usd": 10.0,
+    "min_notional_margin": 0.03
+  },
+  "venue_reference": {
+    "meta": {
+      "path": "data/venue_meta.json",
+      "sha256": "458d89887417a477a93db9c93607de5f64b8813d88013e0f4883fc06d6c35249"
+    },
+    "l2_snapshot": {
+      "path": "data/venue_l2_snapshot.json",
+      "sha256": "d5e5369d80547b45ed22dc92a107db1af9303d997a0eef6c347994858b0b9407"
+    },
+    "documents": [
+      {
+        "url": "https://hyperliquid.gitbook.io/hyperliquid-docs/trading/fees",
+        "retrieved_at": "2026-10-03T15:33:33+00:00",
+        "supports": "perps base-tier taker and maker fee",
+        "quote": "Perps fee tiers Base rate Diamond Platinum Gold Silver Bronze Wood Tier 14d weighted volume ($) Taker Maker Taker Maker Taker Maker Taker Maker Taker Maker Taker Maker Taker Maker 0 0.045% 0.015%",
+        "quote_sha256": "8cca42ca08eea9e26b2affe200d4d958dda0d5e0310ba162a8e1f5c9554f3bd9"
+      },
+      {
+        "url": "https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/error-responses",
+        "retrieved_at": "2026-10-03T15:33:33+00:00",
+        "supports": "perps minimum order value",
+        "quote": "Order MinTradeNtl Order must have minimum value of $10.",
+        "quote_sha256": "28b93383786330e253affaed0d14b98ff3f683d9a66f0111d346f94650a2850d"
+      },
+      {
+        "url": "https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/tick-and-lot-size",
+        "retrieved_at": "2026-10-03T15:33:33+00:00",
+        "supports": "lot size from meta szDecimals",
+        "quote": "Sizes are rounded to the szDecimals of that asset. For example, if szDecimals = 3 then 1.001 is a valid size but 1.0001 is not. szDecimals for an asset is found in the meta response to the info endpoint",
+        "quote_sha256": "9ae73e64e273ae0d0d329a2cd68cdf562ee50b583d581876b5a83bd5309dbc5f"
+      }
+    ]
+  },
+  "datasets": [
+    {
+      "coin": "BTC",
+      "symbol": "BTC/USDT",
+      "size_decimals": 5,
+      "half_spread_bps": 0.06,
+      "candles": {
+        "path": "data/BTC_4h_candles.csv.gz",
+        "sha256": "89f84288d462b830ceba8108ea9d69db4d3dac417c730dc9cdd13271c10fd0f8"
+      },
+      "funding": {
+        "path": "data/BTC_funding.csv.gz",
+        "sha256": "b961391682a15a619fe131abedcc638fd2c311af7cd30a67cf4af32754cabc48"
+      }
+    },
+    {
+      "coin": "ETH",
+      "symbol": "ETH/USDT",
+      "size_decimals": 4,
+      "half_spread_bps": 0.19,
+      "candles": {
+        "path": "data/ETH_4h_candles.csv.gz",
+        "sha256": "a17523ecbb30f7b594aa80002b3c5ad80b73a7bdd8122d5512683585a8eec3ae"
+      },
+      "funding": {
+        "path": "data/ETH_funding.csv.gz",
+        "sha256": "1b541abb8801a444cac4e23ebe31d71cbd7dc3b7d185456830daca1c09c6ea66"
+      }
+    },
+    {
+      "coin": "SOL",
+      "symbol": "SOL/USDT",
+      "size_decimals": 2,
+      "half_spread_bps": 0.42,
+      "candles": {
+        "path": "data/SOL_4h_candles.csv.gz",
+        "sha256": "5ca4fa74940f38f180a85eb81ccaa96bb10f08988d1351c280abb2ce175fdd4c"
+      },
+      "funding": {
+        "path": "data/SOL_funding.csv.gz",
+        "sha256": "a498781bca4cf017f7f772f5a0c00c0853979bacfd147303394f63a63da5af40"
+      }
+    }
+  ]
+}

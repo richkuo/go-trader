@@ -109,6 +109,7 @@ var bidirectionalPerpsStrategies = map[string]bool{
 	"chaikin_money_flow_breakout": true,
 	"open_interest_breakout":      true,
 	"connors_rsi_reversion":       true,
+	"vortex_trend":                true,
 }
 
 func isBidirectionalPerpsStrategy(id string) bool {

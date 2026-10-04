@@ -47,6 +47,7 @@ from analog_retrieval import analog_retrieval_core
 from chaikin_money_flow import chaikin_money_flow_breakout_core
 from open_interest_breakout import open_interest_breakout_core
 from connors_rsi import connors_rsi_reversion_core
+from vortex_trend import vortex_trend_core
 
 
 VALID_PLATFORMS: Tuple[str, ...] = ("spot", "futures")
@@ -99,6 +100,7 @@ DISCOVERY_HIDDEN_STRATEGIES = frozenset({
     "range_scalper",
     "session_breakout",
     "vol_momentum",
+    "vortex_trend",
 }) | M5_DEPRECATED_EDGE_STRATEGIES
 
 
@@ -1485,6 +1487,23 @@ def connors_rsi_reversion_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
 
 
 @register(
+    "vortex_trend",
+    "RESEARCH, backtest-only (#1647) \u2014 Vortex trend crossover: VI+ and VI- are the period sums of |high - previous low| and |low - previous high| divided by the period sum of true range; long when VI+ minus VI- rises strictly above min_separation from at or below it on the previous bar, short on the mirror below -min_separation. Entry-only; pair with one explicit close strategy and one stop owner. Refused by every live check script; promotion requires a separate reviewed decision",
+    {"period": 14, "min_separation": 0.0},
+    platforms=("futures",),
+    backtest_only=True,
+    constraints=[
+        "period >= 2",
+        "period <= 100",
+        "min_separation >= 0",
+        "min_separation < 1",
+    ],
+)
+def vortex_trend_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
+    return vortex_trend_core(df, **params)
+
+
+@register(
     "momentum_pro",
     "Momentum Pro — trend-pullback entries in a stacked-EMA trend, ADX-confirmed, on a volume-backed resumption",
     {
@@ -1733,6 +1752,6 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "consolidation_range", "atr_band_revert", "mtf_confluence", "vol_momentum",
         "regime_adaptive", "regime_adaptive_htf", "analog_retrieval",
         "chaikin_money_flow_breakout", "open_interest_breakout", "connors_rsi_reversion",
-        "hold",
+        "vortex_trend", "hold",
     ],
 }

@@ -34,6 +34,7 @@ LIVE_BIDIRECTIONAL_STRATEGIES = frozenset({
     "anchored_vwap_channel", "anchored_vwap_reversion", "atr_band_revert",
     "chaikin_money_flow_breakout", "open_interest_breakout",
     "connors_rsi_reversion",
+    "vortex_trend",
 })
 
 DEFAULT_WINDOWS = ("is", "oos")

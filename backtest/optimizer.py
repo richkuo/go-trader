@@ -613,6 +613,10 @@ DEFAULT_PARAM_RANGES = {
         "oversold": [5.0, 10.0, 20.0],
         "overbought": [80.0, 90.0, 95.0],
     },
+    "vortex_trend": {
+        "period": [7, 14, 21, 28],
+        "min_separation": [0.0, 0.02, 0.05, 0.10],
+    },
     "analog_retrieval": {
         "horizon": [6, 12, 24],
         "k_neighbors": [15, 25, 50],
