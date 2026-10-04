@@ -24,6 +24,8 @@ from directional_certification import (
 
 FUNDING_COLUMN_STRATEGIES = {"funding_skew", "delta_neutral_funding"}
 
+OBSERVATION_INPUT_STRATEGIES = {"open_interest_breakout"}
+
 FUNDING_ACCRUAL_STRATEGIES = {"delta_neutral_funding"}
 
 
@@ -1088,6 +1090,9 @@ def run_single_backtest(
             manifest_dataset_entry = om.dataset_by_key(manifest, manifest_dataset)
         except om.ManifestError as exc:
             raise SystemExit(f"manifest error: {exc}")
+        if strategy_name in OBSERVATION_INPUT_STRATEGIES and manifest_dataset_entry.get("open_interest") is None:
+            raise SystemExit(f"--manifest: {strategy_name} reads open interest as an entry input; dataset "
+                             f"{manifest_dataset} attaches no open_interest series (schema {om.SCHEMA_V2})")
         if manifest_window not in manifest["windows"]:
             raise SystemExit(f"manifest error: unknown window {manifest_window!r}; "
                              f"known: {sorted(manifest['windows'])}")
@@ -1095,6 +1100,9 @@ def run_single_backtest(
         timeframe = manifest["interval"]
         platform = manifest["venue"]
         since = manifest["windows"][manifest_window]["start"]
+    elif strategy_name in OBSERVATION_INPUT_STRATEGIES:
+        raise SystemExit(f"{strategy_name} reads recorded open interest; run it only with --manifest "
+                         f"(schema {'offline_candle_manifest/v2'}) on a dataset that attaches an open_interest series")
     elif manifest_dataset or manifest_window:
         raise SystemExit("--manifest-dataset and --manifest-window need --manifest")
     elif cost_multiplier != 1.0:
@@ -1115,6 +1123,7 @@ def run_single_backtest(
 
     window_spec = None
     execution_spec = None
+    observation_params = {}
     if manifest is not None:
         import offline_manifest as om
         try:
@@ -1122,6 +1131,11 @@ def run_single_backtest(
                 manifest, manifest_dataset_entry, manifest_window)
             df, funding_cov = om.attach_funding_cost(
                 df, manifest_dataset_entry, window_spec)
+            if strategy_name in OBSERVATION_INPUT_STRATEGIES:
+                oi_obs, oi_cov = om.attach_open_interest(
+                    manifest, manifest_dataset_entry, window_spec)
+                observation_params = {"open_interest_observations": oi_obs}
+                print(f"  Open-interest coverage: {oi_cov}")
         except om.ManifestError as exc:
             raise SystemExit(f"manifest error: {exc}")
         execution_spec = om.execution_spec(manifest, manifest_dataset_entry, cost_multiplier)
@@ -1168,7 +1182,8 @@ def run_single_backtest(
         print(f"  Profile allocation: window={profile_allocation['window']} "
               f"profiles={names} confirm_bars={profile_allocation['confirm_bars']}")
     else:
-        df_signals = reg.apply_strategy(strategy_name, df, strat_params)
+        df_signals = reg.apply_strategy(strategy_name, df, {**(strat_params or {}), **observation_params}
+                                        if observation_params else strat_params)
 
         if close_strategies:
             df_signals = ensure_atr_indicator(df_signals, method=atr_method)
@@ -1624,6 +1639,10 @@ def main():
             print(f"--mode {args.mode} does not support {', '.join(manifest_flags)} "
                   "(manifest replay is single mode only); use --mode single or "
                   "eval_windows.py --manifest")
+            sys.exit(1)
+        if args.strategy in OBSERVATION_INPUT_STRATEGIES:
+            print(f"--mode {args.mode} cannot run {args.strategy}: it reads recorded open interest, "
+                  "which only --mode single --manifest (or eval_windows.py --manifest) attaches")
             sys.exit(1)
 
     close_refs = None

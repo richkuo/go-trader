@@ -24,9 +24,14 @@ if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 
 SCHEMA = "offline_candle_manifest/v1"
+SCHEMA_V2 = "offline_candle_manifest/v2"
+SCHEMAS = (SCHEMA, SCHEMA_V2)
+DATASET_KEYS_V1 = ("coin", "symbol", "size_decimals", "half_spread_bps", "candles", "funding")
+DATASET_KEYS_V2 = DATASET_KEYS_V1 + ("open_interest",)
 PROVENANCE_KINDS = ("venue", "proxy")
 HOUR_MS = 3_600_000
 INTERVAL_MS = {
+    "5m": 300_000,
     "15m": 900_000,
     "30m": 1_800_000,
     "1h": 3_600_000,
@@ -113,8 +118,10 @@ def load_manifest(path: str, verify: bool = True) -> dict:
     base_dir = os.path.dirname(path)
     with open(path) as fh:
         raw = json.load(fh)
-    if not isinstance(raw, dict) or raw.get("schema") != SCHEMA:
-        raise ManifestError(f"{path}: schema must be {SCHEMA!r}")
+    if not isinstance(raw, dict) or raw.get("schema") not in SCHEMAS:
+        raise ManifestError(f"{path}: schema must be one of {SCHEMAS}")
+    schema = raw["schema"]
+    allowed_dataset_keys = DATASET_KEYS_V2 if schema == SCHEMA_V2 else DATASET_KEYS_V1
     for key in ("study", "venue", "provenance", "interval", "warmup_bars",
                 "windows", "costs", "datasets", "venue_reference"):
         if key not in raw:
@@ -171,6 +178,13 @@ def load_manifest(path: str, verify: bool = True) -> dict:
     if not isinstance(raw["datasets"], list) or not raw["datasets"]:
         raise ManifestError("datasets must be a non-empty list")
     for ds in raw["datasets"]:
+        if not isinstance(ds, dict):
+            raise ManifestError(f"dataset must be an object: {ds!r}")
+        unknown = sorted(set(ds) - set(allowed_dataset_keys))
+        if unknown:
+            hint = (f"; open_interest needs schema {SCHEMA_V2!r}"
+                    if "open_interest" in unknown and schema != SCHEMA_V2 else "")
+            raise ManifestError(f"dataset {ds.get('coin')!r} has unknown keys {unknown}{hint}")
         coin = str(ds.get("coin") or "").strip()
         if not coin:
             raise ManifestError(f"dataset needs a coin: {ds!r}")
@@ -195,12 +209,15 @@ def load_manifest(path: str, verify: bool = True) -> dict:
             "candles": _file_ref(base_dir, ds.get("candles"), f"{key}.candles", verify),
             "funding": (_file_ref(base_dir, ds["funding"], f"{key}.funding", verify)
                         if ds.get("funding") else None),
+            "open_interest": (_file_ref(base_dir, ds["open_interest"], f"{key}.open_interest", verify)
+                              if ds.get("open_interest") else None),
         }
         datasets.append(entry)
 
     return {
         "path": path,
         "base_dir": base_dir,
+        "schema": schema,
         "study": raw["study"],
         "venue": raw["venue"],
         "provenance": dict(prov),
@@ -331,6 +348,40 @@ def attach_funding_cost(frame: pd.DataFrame, dataset: dict, window: dict):
         return frame.copy(), coverage
     shaped = pd.DataFrame({"timestamp": funding["timestamp"], "rate": funding["rate"]})
     return attach_funding_accrual_column(frame, shaped), coverage
+
+
+def load_open_interest(dataset: dict) -> Optional[dict]:
+    if dataset.get("open_interest") is None:
+        return None
+    from observation_replay import RecordingError, read_series
+    try:
+        series = read_series(dataset["open_interest"]["abs_path"])
+    except RecordingError as exc:
+        raise ManifestError(f"{dataset['key']}: {exc}")
+    if series.get("coin") != dataset["coin"]:
+        raise ManifestError(f"{dataset['key']}: open-interest series is for {series.get('coin')!r}")
+    return series
+
+
+def open_interest_coverage(series: Optional[dict], start_ms: int, end_ms: int) -> dict:
+    if series is None:
+        return {"available": False, "reason": "no open-interest series is attached to this dataset"}
+    from observation_replay import coverage_report
+    out = coverage_report(series, start_ms, end_ms)
+    out["time_basis"] = series["time_basis"]
+    out["source"] = series["source"]
+    out["samples_sha256"] = series["samples_sha256"]
+    return out
+
+
+def attach_open_interest(manifest: dict, dataset: dict, window: dict):
+    series = load_open_interest(dataset)
+    coverage = open_interest_coverage(series, window["start_ms"], window["end_ms"])
+    if series is None:
+        return None, coverage
+    from observation_replay import for_bars
+    step = manifest["interval_ms"]
+    return for_bars(series, step, step), coverage
 
 
 def execution_spec(manifest: dict, dataset: dict, cost_multiplier: float = 1.0) -> dict:
@@ -554,12 +605,16 @@ def verify_report(manifest: dict) -> dict:
             "windows": {},
         }
         funding = load_funding(ds)
+        oi = load_open_interest(ds)
         for name, win in manifest["windows"].items():
             _, _, cov = window_frame(manifest, ds, name)
             out["datasets"][ds["key"]]["windows"][name] = {
                 "candles": cov,
                 "funding": funding_coverage(funding, win["start_ms"], win["end_ms"]),
             }
+            if ds.get("open_interest") is not None:
+                out["datasets"][ds["key"]]["windows"][name]["open_interest"] = open_interest_coverage(
+                    oi, win["start_ms"], win["end_ms"])
     return out
 
 

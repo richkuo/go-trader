@@ -277,12 +277,17 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
     import pandas as pd
     from data_fetcher import load_cached_data
     from backtester import Backtester
-    from run_backtest import (FUNDING_COLUMN_STRATEGIES, _attach_funding_if_needed,
-                              _build_profile_label_series)
+    from run_backtest import (FUNDING_COLUMN_STRATEGIES, OBSERVATION_INPUT_STRATEGIES,
+                              _attach_funding_if_needed, _build_profile_label_series)
 
     manifest_window = None
     manifest_info = None
     execution_spec = None
+    observation_params = {}
+    if manifest_ctx is None and name in OBSERVATION_INPUT_STRATEGIES:
+        raise ValueError(
+            f"{name} reads recorded open interest as an entry input; only the --manifest path "
+            "(schema offline_candle_manifest/v2 with an open_interest series) can run it")
     if manifest_ctx is not None:
         import offline_manifest as om
         if name in FUNDING_COLUMN_STRATEGIES:
@@ -301,6 +306,14 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
         df, manifest_window, candle_cov = om.window_frame(
             manifest, dataset, manifest_ctx["window"])
         df, funding_cov = om.attach_funding_cost(df, dataset, manifest_window)
+        oi_cov = None
+        if name in OBSERVATION_INPUT_STRATEGIES:
+            if dataset.get("open_interest") is None:
+                raise ValueError(
+                    f"{name} reads open interest as an entry input; manifest dataset "
+                    f"{dataset['key']} attaches no open_interest series")
+            oi_obs, oi_cov = om.attach_open_interest(manifest, dataset, manifest_window)
+            observation_params = {"open_interest_observations": oi_obs}
         spec = om.execution_spec(manifest, dataset,
                                  manifest_ctx.get("cost_multiplier", 1.0))
         if close_strategies:
@@ -317,6 +330,8 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
             "funding_sha256": (dataset["funding"] or {}).get("sha256"),
             "candle_coverage": candle_cov,
             "funding_coverage": funding_cov,
+            "open_interest_coverage": oi_cov,
+            "open_interest_sha256": (dataset.get("open_interest") or {}).get("sha256"),
             "cost_multiplier": manifest_ctx.get("cost_multiplier", 1.0),
             "cost_model": "execution_spec" if execution_spec else "legacy_flat",
             "execution_spec": spec,
@@ -344,7 +359,7 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
         param_sets = profile_allocation["param_sets"]
         df_signals = None
         for p in sorted(param_sets):
-            p_params = {**(strat_params or {}), **(param_sets[p] or {})}
+            p_params = {**(strat_params or {}), **(param_sets[p] or {}), **observation_params}
             res = reg.apply_strategy(name, df, p_params)
             if df_signals is None:
                 df_signals = res.copy()
@@ -356,7 +371,8 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
         df_signals["_profile_label"] = _build_profile_label_series(
             df_signals, profile_allocation["window_spec"]).values
     else:
-        df_signals = reg.apply_strategy(name, df, strat_params)
+        df_signals = reg.apply_strategy(name, df, {**(strat_params or {}), **observation_params}
+                                        if observation_params else strat_params)
         if close_strategies:
             df_signals = ensure_atr_indicator(df_signals)
 

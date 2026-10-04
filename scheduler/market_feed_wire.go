@@ -16,7 +16,7 @@ import (
 
 const (
 	feedWireVersion         = 1
-	feedSealVersion         = 1
+	feedSealVersion         = 2
 	feedWireMaxRequestBytes = 4 << 10
 	feedWireMaxHeaderBytes  = 1 << 20
 	feedSealMaxBytes        = 64 << 20
@@ -72,28 +72,38 @@ type feedDescribeFunding struct {
 	Records bool   `json:"records"`
 }
 
+type feedDescribeObservation struct {
+	Host      string `json:"host"`
+	Namespace string `json:"namespace"`
+	Coin      string `json:"coin"`
+	Kind      string `json:"kind"`
+	Source    string `json:"source"`
+	WindowMs  int64  `json:"window_ms"`
+}
+
 type feedDescribeCadence struct {
 	Seconds       int   `json:"seconds"`
 	FirstDeadline int64 `json:"first_deadline"`
 }
 
 type feedDescribe struct {
-	StartedAtMs       int64                 `json:"started_at_ms"`
-	Serving           bool                  `json:"serving"`
-	FirstDeadline     int64                 `json:"first_deadline,omitempty"`
-	SettleMs          int64                 `json:"settle_ms"`
-	PrepareMs         int64                 `json:"prepare_ms"`
-	PublishGraceMs    int64                 `json:"publish_grace_ms"`
-	RetainPerCadence  int                   `json:"retain_per_cadence"`
-	RetainedKeys      []int64               `json:"retained_keys"`
-	Cadences          []feedDescribeCadence `json:"cadences"`
-	Keys              []feedDescribeKey     `json:"keys"`
-	MidCoins          []string              `json:"mid_coins"`
-	Funding           []feedDescribeFunding `json:"funding"`
-	LastSealKey       int64                 `json:"last_seal_key,omitempty"`
-	LastSealHash      string                `json:"last_seal_hash,omitempty"`
-	LastSealReady     int                   `json:"last_seal_ready"`
-	LastSealKeysTotal int                   `json:"last_seal_keys_total"`
+	StartedAtMs       int64                     `json:"started_at_ms"`
+	Serving           bool                      `json:"serving"`
+	FirstDeadline     int64                     `json:"first_deadline,omitempty"`
+	SettleMs          int64                     `json:"settle_ms"`
+	PrepareMs         int64                     `json:"prepare_ms"`
+	PublishGraceMs    int64                     `json:"publish_grace_ms"`
+	RetainPerCadence  int                       `json:"retain_per_cadence"`
+	RetainedKeys      []int64                   `json:"retained_keys"`
+	Cadences          []feedDescribeCadence     `json:"cadences"`
+	Keys              []feedDescribeKey         `json:"keys"`
+	MidCoins          []string                  `json:"mid_coins"`
+	Funding           []feedDescribeFunding     `json:"funding"`
+	Observations      []feedDescribeObservation `json:"observations,omitempty"`
+	LastSealKey       int64                     `json:"last_seal_key,omitempty"`
+	LastSealHash      string                    `json:"last_seal_hash,omitempty"`
+	LastSealReady     int                       `json:"last_seal_ready"`
+	LastSealKeysTotal int                       `json:"last_seal_keys_total"`
 }
 
 type feedSealBar struct {
@@ -152,6 +162,52 @@ type feedSealFunding struct {
 	Error       string              `json:"error"`
 }
 
+type feedSealObservationSample struct {
+	RecvAtMs  int64   `json:"r"`
+	EventAtMs int64   `json:"e"`
+	Value     float64 `json:"v"`
+	Session   uint64  `json:"s"`
+	Seq       uint64  `json:"q"`
+}
+
+type feedSealObservationGap struct {
+	StartMs int64  `json:"a"`
+	EndMs   int64  `json:"b"`
+	Reason  string `json:"why"`
+}
+
+type feedSealObservationReadiness struct {
+	Status      string `json:"status"`
+	Detail      string `json:"detail"`
+	Ready       bool   `json:"ready"`
+	Samples     int    `json:"samples"`
+	FirstRecvMs int64  `json:"first_recv_ms"`
+	LastRecvMs  int64  `json:"last_recv_ms"`
+	CoveredMs   int64  `json:"covered_ms"`
+	OpenGap     bool   `json:"open_gap"`
+	Received    uint64 `json:"received"`
+	Accepted    uint64 `json:"accepted"`
+	Refreshed   uint64 `json:"refreshed"`
+	Rejected    uint64 `json:"rejected"`
+	LastReject  string `json:"last_reject"`
+}
+
+type feedSealObservation struct {
+	Host      string                       `json:"host"`
+	Namespace string                       `json:"namespace"`
+	Coin      string                       `json:"coin"`
+	Kind      string                       `json:"kind"`
+	Source    string                       `json:"source"`
+	Units     string                       `json:"units"`
+	TimeBasis string                       `json:"time_basis"`
+	CadenceMs int64                        `json:"cadence_ms"`
+	WindowMs  int64                        `json:"window_ms"`
+	CutoffMs  int64                        `json:"cutoff_ms"`
+	Readiness feedSealObservationReadiness `json:"readiness"`
+	Samples   []feedSealObservationSample  `json:"samples"`
+	Gaps      []feedSealObservationGap     `json:"gaps"`
+}
+
 type feedSealMetrics struct {
 	BootstrapCalls    int `json:"bootstrap_calls"`
 	RepairCalls       int `json:"repair_calls"`
@@ -160,17 +216,18 @@ type feedSealMetrics struct {
 }
 
 type feedSealDoc struct {
-	V          int               `json:"v"`
-	Key        int64             `json:"key"`
-	Source     string            `json:"source"`
-	Instance   string            `json:"instance"`
-	Generation uint64            `json:"generation"`
-	SealedAtMs int64             `json:"sealed_at_ms"`
-	Connected  bool              `json:"connected"`
-	Metrics    feedSealMetrics   `json:"metrics"`
-	Keys       []feedSealKey     `json:"keys"`
-	Mids       []feedSealMid     `json:"mids"`
-	Funding    []feedSealFunding `json:"funding"`
+	V            int                   `json:"v"`
+	Key          int64                 `json:"key"`
+	Source       string                `json:"source"`
+	Instance     string                `json:"instance"`
+	Generation   uint64                `json:"generation"`
+	SealedAtMs   int64                 `json:"sealed_at_ms"`
+	Connected    bool                  `json:"connected"`
+	Metrics      feedSealMetrics       `json:"metrics"`
+	Keys         []feedSealKey         `json:"keys"`
+	Mids         []feedSealMid         `json:"mids"`
+	Funding      []feedSealFunding     `json:"funding"`
+	Observations []feedSealObservation `json:"observations,omitempty"`
 }
 
 func feedSealEvaluationID(key int64) string {
@@ -290,6 +347,38 @@ func feedSealDocFromSnapshot(snap *marketSnapshot, key int64, source, instance s
 			Error:       f.Err,
 		})
 	}
+	obsKeys := make([]feedObservationKey, 0, len(snap.observations))
+	for k := range snap.observations {
+		obsKeys = append(obsKeys, k)
+	}
+	sortFeedObservationKeys(obsKeys)
+	for _, k := range obsKeys {
+		o := snap.observations[k]
+		if o == nil {
+			continue
+		}
+		r := o.Readiness
+		so := feedSealObservation{
+			Host: k.Host, Namespace: k.Namespace, Coin: k.Coin, Kind: k.Kind,
+			Source: o.Source, Units: o.Units, TimeBasis: o.TimeBasis,
+			CadenceMs: o.CadenceMs, WindowMs: o.WindowMs, CutoffMs: o.CutoffMs,
+			Readiness: feedSealObservationReadiness{
+				Status: r.Status, Detail: r.Detail, Ready: r.Ready, Samples: r.Samples,
+				FirstRecvMs: r.FirstRecvMs, LastRecvMs: r.LastRecvMs, CoveredMs: r.CoveredMs, OpenGap: r.OpenGap,
+				Received: r.Stats.Received, Accepted: r.Stats.Accepted, Refreshed: r.Stats.Refreshed,
+				Rejected: r.Stats.Rejected, LastReject: r.Stats.LastReject,
+			},
+			Samples: make([]feedSealObservationSample, 0, len(o.Samples)),
+			Gaps:    make([]feedSealObservationGap, 0, len(o.Gaps)),
+		}
+		for _, smp := range o.Samples {
+			so.Samples = append(so.Samples, feedSealObservationSample{RecvAtMs: smp.RecvAtMs, EventAtMs: smp.EventAtMs, Value: smp.Value, Session: smp.Session, Seq: smp.Seq})
+		}
+		for _, g := range o.Gaps {
+			so.Gaps = append(so.Gaps, feedSealObservationGap{StartMs: g.StartMs, EndMs: g.EndMs, Reason: g.Reason})
+		}
+		doc.Observations = append(doc.Observations, so)
+	}
 	return doc, nil
 }
 
@@ -388,6 +477,49 @@ func validateFeedSealDoc(doc *feedSealDoc) error {
 			return fmt.Errorf("seal funding %s carries a non-finite rate", f.Coin)
 		}
 	}
+	return validateFeedSealObservations(doc.Observations)
+}
+
+func validateFeedSealObservations(obs []feedSealObservation) error {
+	var prev *feedObservationKey
+	for i := range obs {
+		o := obs[i]
+		key := feedObservationKey{Host: o.Host, Namespace: o.Namespace, Coin: o.Coin, Kind: o.Kind}
+		if prev != nil && !feedObservationKeyLess(*prev, key) {
+			return fmt.Errorf("seal observations are not strictly ordered at %s", key)
+		}
+		prev = &key
+		if o.Kind != feedObservationOpenInterest {
+			return fmt.Errorf("seal observation %s has unknown kind %q", key, o.Kind)
+		}
+		if o.Source != feedObservationSourceHLWS || o.Units != feedObservationUnitsBase || o.TimeBasis != feedObservationTimeReceipt {
+			return fmt.Errorf("seal observation %s declares source %q, units %q, time basis %q; this consumer accepts only %q, %q, %q",
+				key, o.Source, o.Units, o.TimeBasis, feedObservationSourceHLWS, feedObservationUnitsBase, feedObservationTimeReceipt)
+		}
+		if o.CadenceMs <= 0 || o.WindowMs <= 0 || o.CutoffMs <= 0 {
+			return fmt.Errorf("seal observation %s has cadence %d, window %d, cutoff %d", key, o.CadenceMs, o.WindowMs, o.CutoffMs)
+		}
+		start := o.CutoffMs - o.WindowMs
+		var lastRecv int64
+		var lastSeq uint64
+		for j, smp := range o.Samples {
+			if math.IsNaN(smp.Value) || math.IsInf(smp.Value, 0) || smp.Value < 0 {
+				return fmt.Errorf("seal observation %s sample %d value %v is negative or not finite", key, j, smp.Value)
+			}
+			if smp.RecvAtMs < start || smp.RecvAtMs > o.CutoffMs {
+				return fmt.Errorf("seal observation %s sample %d receipt %d is outside [%d, %d]", key, j, smp.RecvAtMs, start, o.CutoffMs)
+			}
+			if j > 0 && (smp.RecvAtMs < lastRecv || smp.Seq <= lastSeq) {
+				return fmt.Errorf("seal observation %s samples are not in receipt and sequence order at sample %d", key, j)
+			}
+			lastRecv, lastSeq = smp.RecvAtMs, smp.Seq
+		}
+		for j, g := range o.Gaps {
+			if g.StartMs <= 0 || (g.EndMs != 0 && g.EndMs < g.StartMs) || g.Reason == "" {
+				return fmt.Errorf("seal observation %s gap %d is malformed", key, j)
+			}
+		}
+	}
 	return nil
 }
 
@@ -410,6 +542,29 @@ func (doc *feedSealDoc) snapshot() *marketSnapshot {
 		keys:              make(map[marketFeedKey]*marketSnapshotKey, len(doc.Keys)),
 		mids:              make(map[string]feedMid, len(doc.Mids)),
 		funding:           make(map[string]feedFunding, len(doc.Funding)),
+		observations:      make(map[feedObservationKey]*marketSnapshotObservation, len(doc.Observations)),
+	}
+	for _, o := range doc.Observations {
+		key := feedObservationKey{Host: o.Host, Namespace: o.Namespace, Coin: o.Coin, Kind: o.Kind}
+		r := o.Readiness
+		entry := &marketSnapshotObservation{
+			Key: key, Source: o.Source, Units: o.Units, TimeBasis: o.TimeBasis,
+			CadenceMs: o.CadenceMs, WindowMs: o.WindowMs, CutoffMs: o.CutoffMs,
+			Samples: make([]feedObservationSample, 0, len(o.Samples)),
+			Gaps:    make([]feedObservationGap, 0, len(o.Gaps)),
+			Readiness: feedObservationReadiness{
+				Key: key, Status: r.Status, Detail: r.Detail, Ready: r.Ready, Samples: r.Samples,
+				FirstRecvMs: r.FirstRecvMs, LastRecvMs: r.LastRecvMs, CoveredMs: r.CoveredMs, WindowMs: o.WindowMs, OpenGap: r.OpenGap,
+				Stats: feedObservationStats{Received: r.Received, Accepted: r.Accepted, Refreshed: r.Refreshed, Rejected: r.Rejected, LastReject: r.LastReject},
+			},
+		}
+		for _, smp := range o.Samples {
+			entry.Samples = append(entry.Samples, feedObservationSample{RecvAtMs: smp.RecvAtMs, EventAtMs: smp.EventAtMs, Value: smp.Value, Session: smp.Session, Seq: smp.Seq})
+		}
+		for _, g := range o.Gaps {
+			entry.Gaps = append(entry.Gaps, feedObservationGap{StartMs: g.StartMs, EndMs: g.EndMs, Reason: g.Reason})
+		}
+		snap.observations[key] = entry
 	}
 	for _, k := range doc.Keys {
 		key := marketFeedKey{Host: k.Host, Namespace: k.Namespace, Symbol: k.Symbol, Timeframe: k.Timeframe}

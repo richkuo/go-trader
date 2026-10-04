@@ -81,16 +81,44 @@ type feedStrategyRequirement struct {
 	Coin           string
 	FundingScalar  bool
 	FundingRecords bool
+	OpenInterest   bool
+	ObsWindowMs    int64
+}
+
+func (e feedStrategyRequirement) observationNeeds() map[feedObservationKey]int64 {
+	if !e.OpenInterest {
+		return nil
+	}
+	return map[feedObservationKey]int64{openInterestKeyFor(e.Coin): e.ObsWindowMs}
 }
 
 type feedRequirements struct {
-	Keys        map[marketFeedKey]int
-	Order       []marketFeedKey
-	MidCoins    []string
-	Funding     map[string]feedFundingNeed
-	Strategies  map[string]feedStrategyRequirement
-	KeyCadences map[marketFeedKey][]int
-	SignalKeys  map[marketFeedKey]bool
+	Keys         map[marketFeedKey]int
+	Order        []marketFeedKey
+	MidCoins     []string
+	Funding      map[string]feedFundingNeed
+	Observations map[feedObservationKey]int64
+	Strategies   map[string]feedStrategyRequirement
+	KeyCadences  map[marketFeedKey][]int
+	SignalKeys   map[marketFeedKey]bool
+}
+
+func (r *feedRequirements) addObservation(key feedObservationKey, windowMs int64) {
+	if r.Observations == nil {
+		r.Observations = make(map[feedObservationKey]int64)
+	}
+	if existing, ok := r.Observations[key]; !ok || windowMs > existing {
+		r.Observations[key] = windowMs
+	}
+}
+
+func (r feedRequirements) observationKeys() []feedObservationKey {
+	out := make([]feedObservationKey, 0, len(r.Observations))
+	for k := range r.Observations {
+		out = append(out, k)
+	}
+	sortFeedObservationKeys(out)
+	return out
 }
 
 func (r feedRequirements) requires(key marketFeedKey) bool {
@@ -127,9 +155,10 @@ func feedKeyFor(symbol, timeframe string) marketFeedKey {
 
 func deriveFeedRequirements(cfg *Config) (feedRequirements, error) {
 	req := feedRequirements{
-		Keys:       make(map[marketFeedKey]int),
-		Funding:    make(map[string]feedFundingNeed),
-		Strategies: make(map[string]feedStrategyRequirement),
+		Keys:         make(map[marketFeedKey]int),
+		Funding:      make(map[string]feedFundingNeed),
+		Observations: make(map[feedObservationKey]int64),
+		Strategies:   make(map[string]feedStrategyRequirement),
 	}
 	if cfg == nil {
 		req.finalize()
@@ -194,6 +223,18 @@ func deriveFeedRequirements(cfg *Config) (feedRequirements, error) {
 			req.Funding[symbol] = need
 		}
 
+		if feedStrategyUsesOpenInterest(sc) {
+			intervalMs, _ := hlCandleIntervalMs(timeframe)
+			window, werr := openInterestWindowMs(sc, intervalMs)
+			if werr != nil {
+				errs = append(errs, fmt.Sprintf("strategy[%s] %s: %v", sc.ID, openInterestBreakoutStrategyName, werr))
+			} else {
+				entry.OpenInterest = true
+				entry.ObsWindowMs = window
+				req.addObservation(openInterestKeyFor(symbol), window)
+			}
+		}
+
 		req.Strategies[sc.ID] = entry
 	}
 	if len(errs) > 0 {
@@ -214,6 +255,10 @@ func validateMarketFeedConfig(cfg *Config) error {
 	case marketFeedREST:
 		if errs := sharedMarketFeedConfigErrors(cfg); len(errs) > 0 {
 			return fmt.Errorf("%s", strings.Join(errs, "; "))
+		}
+		if ids := openInterestStrategyIDs(cfg); len(ids) > 0 {
+			return fmt.Errorf("market_feed=%q cannot supply open-interest observations for %s (strategies %s); use market_feed %q or %q",
+				marketFeedREST, openInterestBreakoutStrategyName, strings.Join(ids, ", "), marketFeedWebsocket, marketFeedShared)
 		}
 		return nil
 	case marketFeedWebsocket:
@@ -257,6 +302,7 @@ func (o *marketFeedOwner) ApplyGeneration(ctx context.Context, req feedRequireme
 	for coin, need := range req.Funding {
 		o.fundingNeeds[coin] = need
 	}
+	o.applyObservationNeedsLocked(req.Observations)
 	o.subVersion++
 	o.applySeq++
 	token := o.applySeq
@@ -309,6 +355,7 @@ func (o *marketFeedOwner) publishGeneration(req feedRequirements, token uint64) 
 			delete(o.keys, key)
 		}
 	}
+	o.dropUnneededObservationsLocked(req.Observations)
 	o.published = make(map[marketFeedKey]bool, len(req.Order))
 	for _, key := range req.Order {
 		o.published[key] = true
@@ -382,4 +429,15 @@ func (o *marketFeedOwner) EnsureFunding(ctx context.Context, earliestBarMs map[s
 		o.funding[coin] = entry
 		o.feedMu.Unlock()
 	}
+}
+
+func openInterestStrategyIDs(cfg *Config) []string {
+	var ids []string
+	for _, sc := range cfg.Strategies {
+		if feedScopedStrategy(sc) && feedStrategyUsesOpenInterest(sc) {
+			ids = append(ids, sc.ID)
+		}
+	}
+	sort.Strings(ids)
+	return ids
 }

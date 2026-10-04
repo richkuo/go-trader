@@ -130,6 +130,36 @@ STRATEGY_FIXTURES = {
     "sweep_squeeze_combo": _sweep_squeeze_combo_fixture,
 }
 
+
+def _open_interest_from_bars(df: pd.DataFrame) -> dict:
+    opens = df.index.as_unit("ms").asi8.astype(np.int64)
+    interval = int(opens[1] - opens[0])
+    minutes = interval // 60_000
+    drift = 0.02 * np.sin(df["volume"].to_numpy() * 1000.0)
+    level = 1e4 * np.concatenate([[1.0], np.cumprod(1.0 + drift)[:-1]])
+    samples = []
+    seq = 0
+    for i, open_ms in enumerate(opens):
+        for k in range(minutes):
+            seq += 1
+            samples.append({"recv_ms": int(open_ms + k * 60_000 + 30_000), "event_ms": None,
+                            "value": float(level[i] * (1.0 + drift[i] * (k + 1) / minutes)),
+                            "session": 1, "seq": seq})
+    return {"available": True, "kind": "open_interest", "units": "base", "time_basis": "receipt",
+            "source": "forward_peek_fixture", "cadence_ms": 60_000, "bar_interval_ms": interval,
+            "bar_endpoint_offset_ms": interval, "samples": samples, "gaps": []}
+
+
+def _with_open_interest(fn):
+    def wrapped(df, **params):
+        return fn(df, **params, open_interest_observations=_open_interest_from_bars(df))
+    return wrapped
+
+
+STRATEGY_INPUTS = {
+    "open_interest_breakout": _with_open_interest,
+}
+
 _FIXTURE_CACHE = {}
 _PERTURBED_CACHE = {}
 
@@ -224,6 +254,8 @@ def test_registry_strategy_is_truncation_invariant(name, params):
     if name in SKIP_STRATEGIES:
         pytest.skip(f"{name}: {SKIP_STRATEGIES[name]}")
     fn = _REGISTRY.STRATEGIES[name]["fn"]
+    if name in STRATEGY_INPUTS:
+        fn = STRATEGY_INPUTS[name](fn)
     key, df = _df_for(name)
     violations, full = _prefix_violations(fn, params, df, key)
     assert not violations, (

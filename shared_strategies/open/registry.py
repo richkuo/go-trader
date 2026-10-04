@@ -44,6 +44,7 @@ from anchored_vwap_channel import anchored_vwap_channel_core
 from anchored_vwap_reversion import anchored_vwap_reversion_core
 from analog_retrieval import analog_retrieval_core
 from chaikin_money_flow import chaikin_money_flow_breakout_core
+from open_interest_breakout import open_interest_breakout_core
 
 
 VALID_PLATFORMS: Tuple[str, ...] = ("spot", "futures")
@@ -90,6 +91,7 @@ DISCOVERY_HIDDEN_STRATEGIES = frozenset({
     "analog_retrieval",
     "chaikin_money_flow_breakout",
     "donchian_breakout",
+    "open_interest_breakout",
     "range_scalper",
     "session_breakout",
     "vol_momentum",
@@ -1405,6 +1407,40 @@ def chaikin_money_flow_breakout_strategy(df: pd.DataFrame, **params) -> pd.DataF
 
 
 @register(
+    "open_interest_breakout",
+    "RESEARCH, backtest-only (#1637) \u2014 open-interest breakout confirmation: long on the first closed bar whose close is strictly above the prior price_lookback high while Hyperliquid open interest in base-coin units rose by strictly more than oi_change_threshold over oi_lookback bars; short mirrors below the prior low with the same rising-interest rule. Open interest comes only from supplied observations (open_interest_observations), each endpoint the latest sample at or before the bar close and no older than max_observation_age_ms; missing, stale, gapped or thin data gives a reasoned hold. Entry-only; pair with one explicit close strategy and one stop owner. Refused by every live check script; promotion requires a separate reviewed decision",
+    {
+        "price_lookback": 20,
+        "oi_lookback": 4,
+        "oi_change_threshold": 0.002,
+        "max_observation_age_ms": 120000,
+        "observation_cadence_ms": 60000,
+        "min_coverage": 0.95,
+        "max_gap_ms": 300000,
+    },
+    platforms=("futures",),
+    backtest_only=True,
+    constraints=[
+        "price_lookback >= 2",
+        "price_lookback <= 200",
+        "oi_lookback >= 1",
+        "oi_lookback <= 96",
+        "oi_change_threshold >= 0",
+        "oi_change_threshold < 1",
+        "max_observation_age_ms >= 1000",
+        "max_observation_age_ms <= max_gap_ms",
+        "observation_cadence_ms >= 1000",
+        "observation_cadence_ms <= max_gap_ms",
+        "min_coverage > 0",
+        "min_coverage <= 1",
+        "max_gap_ms <= 86400000",
+    ],
+)
+def open_interest_breakout_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
+    return open_interest_breakout_core(df, **params)
+
+
+@register(
     "momentum_pro",
     "Momentum Pro — trend-pullback entries in a stacked-EMA trend, ADX-confirmed, on a volume-backed resumption",
     {
@@ -1651,6 +1687,6 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "vwap_rejection_st", "momentum_pro", "mean_reversion_pro", "rsi_bb_combo",
         "consolidation_range", "atr_band_revert", "mtf_confluence", "vol_momentum",
         "regime_adaptive", "regime_adaptive_htf", "analog_retrieval",
-        "chaikin_money_flow_breakout", "hold",
+        "chaikin_money_flow_breakout", "open_interest_breakout", "hold",
     ],
 }

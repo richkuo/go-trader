@@ -485,6 +485,9 @@ type marketFeedOwner struct {
 	midCoins     map[string]bool
 	funding      map[string]*feedFunding
 	fundingNeeds map[string]feedFundingNeed
+	observations map[feedObservationKey]*feedObservationState
+	obsSession   uint64
+	recorder     *observationRecorder
 
 	gen        uint64
 	subVersion uint64
@@ -528,6 +531,7 @@ func newMarketFeedOwner(clock func() time.Time, logf func(string, ...any)) *mark
 		midCoins:     make(map[string]bool),
 		funding:      make(map[string]*feedFunding),
 		fundingNeeds: make(map[string]feedFundingNeed),
+		observations: make(map[feedObservationKey]*feedObservationState),
 		corrOffsets:  append([]time.Duration(nil), feedCorrectionOffsets...),
 		alerts:       make(chan feedAlert, feedAlertChannelDepth),
 		clock:        clock,
@@ -623,8 +627,10 @@ func (o *marketFeedOwner) SetConnected(connected bool) {
 	if changed {
 		if connected {
 			o.lastConnectAt = now
+			o.obsSession++
 		} else {
 			o.lastDisconnectAt = now
+			o.markObservationsDisconnectedLocked(now.UnixMilli())
 			for _, st := range o.keys {
 				if st.Status == feedStatusReady || st.Status == feedStatusStale {
 					st.Status = feedStatusRepairing
@@ -632,6 +638,13 @@ func (o *marketFeedOwner) SetConnected(connected bool) {
 				}
 			}
 		}
+	}
+	if changed && o.recorder != nil {
+		state := "disconnected"
+		if connected {
+			state = "connected"
+		}
+		o.recorder.offer(observationRecord{Kind: "conn", State: state, RecvMs: now.UnixMilli(), Session: o.obsSession})
 	}
 	o.feedMu.Unlock()
 }

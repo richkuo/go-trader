@@ -98,12 +98,16 @@ func (c *marketFeedContext) singleCheckPayload(sc StrategyConfig) ([]byte, error
 	if err != nil {
 		return nil, err
 	}
+	entry, _ := c.entryFor(sc.ID)
+	signalIntervalMs, _ := hlCandleIntervalMs(entry.Signal.Timeframe)
+	attachObservationPayloads(payload, c.Snapshot, entry.observationNeeds(), signalIntervalMs)
 	c.logSharedPayload("single", sc.ID, specs, []string{coin}, payload)
 	return marketStdinJSON(payload)
 }
 
 func (c *marketFeedContext) batchPayload(key hlBatchKey, members []StrategyConfig) (*marketPayload, error) {
 	seen := make(map[marketFeedKey]int)
+	obsNeeds := make(map[feedObservationKey]int64)
 	var specs []marketPayloadFrameSpec
 	raise := func(fk marketFeedKey, required int) {
 		if existing, ok := seen[fk]; ok {
@@ -134,6 +138,11 @@ func (c *marketFeedContext) batchPayload(key hlBatchKey, members []StrategyConfi
 		if held, why := c.Snapshot.fundingHold(entry.Coin, entry.FundingScalar, entry.FundingRecords); held {
 			return nil, fmt.Errorf("strategy %s: %s", sc.ID, why)
 		}
+		for key, window := range entry.observationNeeds() {
+			if existing, ok := obsNeeds[key]; !ok || window > existing {
+				obsNeeds[key] = window
+			}
+		}
 	}
 	for i := range specs {
 		specs[i].Required = seen[specs[i].Key]
@@ -142,6 +151,8 @@ func (c *marketFeedContext) batchPayload(key hlBatchKey, members []StrategyConfi
 	if err != nil {
 		return nil, err
 	}
+	batchIntervalMs, _ := hlCandleIntervalMs(key.Timeframe)
+	attachObservationPayloads(payload, c.Snapshot, obsNeeds, batchIntervalMs)
 	c.logSharedPayload("batch", key.String(), specs, []string{key.Symbol}, payload)
 	return payload, nil
 }

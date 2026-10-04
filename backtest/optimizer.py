@@ -601,6 +601,11 @@ DEFAULT_PARAM_RANGES = {
         "breakout_window": [10, 20, 40, 80],
         "flow_threshold": [0.0, 0.05, 0.10, 0.20],
     },
+    "open_interest_breakout": {
+        "price_lookback": [10, 20, 40],
+        "oi_lookback": [2, 4, 8],
+        "oi_change_threshold": [0.0, 0.002, 0.005, 0.01],
+    },
     "analog_retrieval": {
         "horizon": [6, 12, 24],
         "k_neighbors": [15, 25, 50],

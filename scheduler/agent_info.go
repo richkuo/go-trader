@@ -42,6 +42,7 @@ var agentInfoCommands = []agentCommand{
 	{Name: "storage-inspect", Summary: "Read-only ownership report for every state file: strategy mapping, orphans, risk-row scopes, held locks. Writes nothing.", Usage: "go-trader storage-inspect [--config <path>] [--json] [--require-idle]", Flags: []string{"--config", "--json", "--require-idle"}},
 	{Name: "diagnostics", Summary: "Read-only per-strategy trade-quality report (MFE/MAE/capture ratio) with backtestable tuning hypotheses (#1147).", Usage: "go-trader diagnostics [--config <path>] [--db <path>] [--strategy <id>] [--min-trades N] [--min-bucket N]", Flags: []string{"--config", "--db", "--strategy", "--min-trades", "--min-bucket"}},
 	{Name: "feed-fetch", Summary: "Read-only client of a market feed service socket: print its describe reply, or write one verified seal's bytes to a file for source comparison.", Usage: "go-trader feed-fetch --socket <path> [--key <unix>] [--out <file>] [--describe]", Flags: []string{"--socket", "--key", "--out", "--describe"}},
+	{Name: "record-observations", Summary: "Research-only recorder (#1637): subscribes to public Hyperliquid open-interest updates and writes hashed JSONL segments to an empty directory. Opens no state database, holds no trading lock, sends no order.", Usage: "go-trader record-observations --coins <BTC,ETH> --out-dir <dir> [--duration <d>] [--segment <d>]", Flags: []string{"--coins", "--out-dir", "--duration", "--segment"}},
 	{Name: "version", Summary: "Print the binary version.", Usage: "go-trader version"},
 }
 

@@ -1,0 +1,89 @@
+{
+  "schema": "go_trader_candidate_spec/v1",
+  "issue": 1637,
+  "candidate": "open_interest_breakout",
+  "frozen_at": "2026-10-04T03:35:00Z",
+  "frozen_before_results": "This file was written and committed before any study window was scored. No held-out result influenced any value here.",
+  "signal": {
+    "price_channel": "upper = max(high) and lower = min(low) over the price_lookback closed bars before the decision bar; the decision bar is excluded",
+    "long": "close > upper on a closed bar whose previous bar did not also close above its own upper (Donchian crossing convention, no repeated count for a continuing breakout), and open-interest change > oi_change_threshold",
+    "short": "close < lower on a closed bar whose previous bar did not also close below its own lower, and open-interest change > oi_change_threshold (rising participation confirms both directions; open interest has no direction of its own)",
+    "open_interest_change": "OI(E) / OI(E - oi_lookback * bar_interval) - 1, both in base-coin units, both finite and > 0",
+    "comparisons": "all strict: equality at the channel or at the threshold never triggers",
+    "endpoint_selection": "E is the decision bar close. OI(E) is the latest sample whose time-basis timestamp is at or before E; it must be no older than max_observation_age_ms. The same rule applies at the prior endpoint. No interpolation.",
+    "window_validity": "every bar from the prior endpoint to the decision bar is present at the exact bar spacing; minute-bucket coverage in (prior endpoint, E] >= min_coverage; largest spacing between consecutive samples in [prior sample, E] <= max_gap_ms; no gap marker (disconnect, recorder overflow) intersects the window; one recording session across the window",
+    "closed_bars_only": "a bar decides only when its close is at or before the decision cutoff. On the live path the forming bar carries the decision of the bar that just closed only while cutoff - close <= max_observation_age_ms, so one closed-bar decision fills once at the next bar open",
+    "failure_outcome": "any data defect gives signal 0 with a stable reason code (oib_reason); bad parameters raise",
+    "fill": "Backtester fills a bar-N signal at the bar N+1 open; the decision cutoff is the bar N close, so information is available before the fill"
+  },
+  "parameters": {
+    "signal_seed": {"price_lookback": 20, "oi_lookback": 4, "oi_change_threshold": 0.002},
+    "data_quality": {"max_observation_age_ms": 120000, "observation_cadence_ms": 60000, "min_coverage": 0.95, "max_gap_ms": 300000},
+    "bounds": {
+      "price_lookback": [2, 200],
+      "oi_lookback": [1, 96],
+      "oi_change_threshold": "[0, 1)",
+      "max_observation_age_ms": "[1000, max_gap_ms]",
+      "observation_cadence_ms": "[1000, 3600000], <= max_gap_ms",
+      "min_coverage": "(0, 1]",
+      "max_gap_ms": "[observation_cadence_ms, 86400000]"
+    },
+    "optimizer_grid": {
+      "price_lookback": [10, 20, 40],
+      "oi_lookback": [2, 4, 8],
+      "oi_change_threshold": [0.0, 0.002, 0.005, 0.01]
+    },
+    "note": "Seeds are research starting points, not endorsed trading settings. The data-quality values are fixed requirements and are not optimized."
+  },
+  "exit_and_risk": {
+    "close_strategy": {"name": "time_stop", "params": {"max_bars": 12}},
+    "stop_owner": "scalar entry-ATR stop, stop_loss_atr_mult 1.0",
+    "direction": "both",
+    "capital_usd": 1000.0,
+    "sizing": "full capital per position, unlevered (Backtester default). execution_spec models fees, spread, slippage, lot floor and the venue minimum; it does not model leverage, margin or liquidation, and at 1x a liquidation cannot occur",
+    "baselines_use_identical": "close strategy, stop, capital, sizing, costs, bars and windows"
+  },
+  "source": {
+    "live": "Hyperliquid WebSocket subscription {type: activeAssetCtx, coin}; ctx.openInterest is a decimal string",
+    "units": "base coin. Evidence: the captured public metaAndAssetCtxs response at 2026-10-04 gave BTC openInterest 37114.07922 (5 decimals = BTC szDecimals 5) and markPx 84772.0, about $3.1B notional; ETH 1199933.8030000001 with szDecimals 4; SOL 5457694.7999999998 with szDecimals 2",
+    "time_basis": "receipt: the message carries no venue event timestamp, so event_ms is null and the local receipt time is the only time basis; never described as an exchange time",
+    "cadence": "about one message per second per coin observed; the feed keeps the latest sample per one-minute bucket (bucket = receipt time rounded up to the minute)",
+    "historical_archive": {
+      "path": "s3://hyperliquid-archive/asset_ctxs/[date].csv.lz4",
+      "documented": "requester-pays, uploaded about monthly, no guarantee of timely updates, data may be missing",
+      "status": "not measured: AWS access was not available in the build environment, so cadence, units, timestamp field and coverage of the archive are unverified and no archive window is used"
+    }
+  },
+  "data_plan": {
+    "recording": "go-trader record-observations --coins BTC,ETH,SOL --segment 1h, run started 2026-10-04T03:03:56.562Z (run id MacBookPro.hitronhub.home-4395-1791083036562-1791083036)",
+    "study_span": {"start": "2026-10-04T03:10:00Z", "end": "2026-10-04T09:10:00Z"},
+    "interval": "5m",
+    "coins": ["BTC", "ETH", "SOL"],
+    "windows": {
+      "train": {"start": "2026-10-04T03:10:00Z", "end": "2026-10-04T06:10:00Z", "role": "selection only"},
+      "test": {"start": "2026-10-04T06:10:00Z", "end": "2026-10-04T09:10:00Z", "role": "held-out, scored once with the frozen selection"}
+    },
+    "m1_windows": "every eval_windows.py M1 window is listed with its open-interest coverage; a window without coverage is reported unavailable and never filled from another venue or from current snapshots",
+    "candles_and_funding": "public Hyperliquid candleSnapshot (5m, closed bars only) and fundingHistory through offline_manifest.py acquire, hash-pinned in study_manifest.json",
+    "costs": {"taker_fee_pct": 0.00045, "maker_fee_pct": 0.00015, "slippage_bps": 5.0, "min_notional_usd": 10.0, "min_notional_margin": 0.03, "half_spread_bps": "measured from a pinned public l2Book snapshot per coin", "funding": "booked hourly from the pinned funding series for every arm, never as an entry input"}
+  },
+  "selection_rule": "On train only: eligible grid points have every dataset scored, no liquidated leg and >= 6 train positions; pick max mean DD-adjusted return, then max mean Sharpe, then earliest grid order. No eligible point: the seed is used and the selection outcome is recorded.",
+  "baselines": {
+    "donchian_same_lookback": "donchian_breakout with entry_period = the candidate's selected price_lookback (exit_period unused: time_stop owns the exit)",
+    "donchian_coverage_matched": "the same Donchian signals with every bar the candidate marks oib_oi_valid = false set to 0, so the open-interest filter gets no credit for skipping bars without data"
+  },
+  "verdict_criteria": {
+    "inconclusive_if_any": [
+      "fewer than 30 candidate positions across coins on test",
+      "any coin's test window has open-interest-valid bars below 90% of its scored bars",
+      "candle coverage incomplete on test"
+    ],
+    "pass_if_all": [
+      "candidate test net PnL > 0 at cost x1 and at cost x2",
+      "candidate test mean DD-adjusted return > both baselines at cost x1",
+      "no single coin carries more than 60% of the candidate's absolute test PnL"
+    ],
+    "fail": "data sufficient and any pass check false",
+    "live_status": "backtest_only=True regardless of the verdict; promotion needs a separate reviewed decision"
+  }
+}

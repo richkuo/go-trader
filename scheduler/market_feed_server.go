@@ -322,7 +322,7 @@ func (s *feedSealer) sealOne(ctx context.Context, key int64) {
 	}
 	s.budgetAlert(key, delta, rep)
 	frozenAt := s.owner.now()
-	snap := freezeMarketSnapshot(s.owner, reqs, feedSealEvaluationID(key), frozenAt)
+	snap := freezeMarketSnapshot(s.owner, reqs, feedSealEvaluationID(key), frozenAt, time.Unix(key, 0).UTC())
 	if rep.ReadyOnlyRefreshed {
 		markUnrefreshedKeysNotReady(snap, rep.RefreshedKeys, key)
 	}
@@ -570,6 +570,12 @@ func (s *feedSealer) describe() *feedDescribe {
 		need := s.coverage.Funding[c]
 		d.Funding = append(d.Funding, feedDescribeFunding{Coin: c, Scalar: need.Scalar, Records: need.Records})
 	}
+	for _, key := range s.coverage.observationKeys() {
+		d.Observations = append(d.Observations, feedDescribeObservation{
+			Host: key.Host, Namespace: key.Namespace, Coin: key.Coin, Kind: key.Kind,
+			Source: feedObservationSourceHLWS, WindowMs: s.coverage.Observations[key],
+		})
+	}
 	if s.lastSeal != nil {
 		d.LastSealKey = s.lastSeal.Key
 		d.LastSealHash = s.lastSeal.Hash
@@ -611,7 +617,13 @@ func (o *marketFeedOwner) publishedCoverage() map[marketFeedKey]bool {
 }
 
 func fullCycleRequirements(req feedRequirements) cycleMarketRequirements {
-	out := cycleMarketRequirements{Funding: make(map[string]feedFundingNeed, len(req.Funding))}
+	out := cycleMarketRequirements{
+		Funding:      make(map[string]feedFundingNeed, len(req.Funding)),
+		Observations: make(map[feedObservationKey]int64, len(req.Observations)),
+	}
+	for key, window := range req.Observations {
+		out.Observations[key] = window
+	}
 	for _, key := range req.Order {
 		out.Keys = append(out.Keys, cycleMarketRequirement{Key: key, Required: req.Keys[key]})
 	}

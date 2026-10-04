@@ -31,7 +31,7 @@ LIVE_BIDIRECTIONAL_STRATEGIES = frozenset({
     "momentum_pro", "mean_reversion_pro", "rsi_bb_combo", "consolidation_range", "mtf_confluence",
     "vol_momentum", "funding_skew", "regime_adaptive", "anchored_vwap",
     "anchored_vwap_channel", "anchored_vwap_reversion", "atr_band_revert",
-    "chaikin_money_flow_breakout",
+    "chaikin_money_flow_breakout", "open_interest_breakout",
 })
 
 DEFAULT_WINDOWS = ("is", "oos")

@@ -22,6 +22,8 @@ const (
 	feedEstimateBarBytes  = 160
 	feedEstimateKeyBytes  = 1024
 	feedEstimateCoinBytes = 256
+
+	feedEstimateObservationBytes = 96
 )
 
 type FeedRoleConfig struct {
@@ -294,11 +296,12 @@ func feedConsumerCadences(cfg *Config) []int {
 
 func unionFeedRequirements(consumers []feedConsumer) feedRequirements {
 	union := feedRequirements{
-		Keys:        make(map[marketFeedKey]int),
-		Funding:     make(map[string]feedFundingNeed),
-		Strategies:  make(map[string]feedStrategyRequirement),
-		KeyCadences: make(map[marketFeedKey][]int),
-		SignalKeys:  make(map[marketFeedKey]bool),
+		Keys:         make(map[marketFeedKey]int),
+		Funding:      make(map[string]feedFundingNeed),
+		Observations: make(map[feedObservationKey]int64),
+		Strategies:   make(map[string]feedStrategyRequirement),
+		KeyCadences:  make(map[marketFeedKey][]int),
+		SignalKeys:   make(map[marketFeedKey]bool),
 	}
 	coins := make(map[string]bool)
 	cadenceSets := make(map[marketFeedKey]map[int]bool)
@@ -328,6 +331,9 @@ func unionFeedRequirements(consumers []feedConsumer) feedRequirements {
 			f.Scalar = f.Scalar || need.Scalar
 			f.Records = f.Records || need.Records
 			union.Funding[coin] = f
+		}
+		for key, window := range c.Req.Observations {
+			union.addObservation(key, window)
 		}
 	}
 	for coin := range coins {
@@ -371,6 +377,9 @@ func estimateFeedSealBytes(union feedRequirements) int {
 	total += len(union.MidCoins) * feedEstimateCoinBytes
 	for range union.Funding {
 		total += 7 * 24 * 64
+	}
+	for _, window := range union.Observations {
+		total += feedEstimateKeyBytes + int(window/feedObservationCadenceMs+2)*feedEstimateObservationBytes
 	}
 	return total
 }
@@ -515,6 +524,13 @@ func runFeedRole(configPath string, statusPortFlag int, once bool, summary strin
 	}
 	union := unionFeedRequirements(consumers)
 	cadences := unionFeedCadences(consumers)
+	if err := feedSourceObservationError(cfg.Feed.Source, union); err != nil {
+		msg := err.Error()
+		fmt.Fprintf(os.Stderr, "[feed] CRITICAL: %s (exit %d)\n", msg, ExitProbeFailure)
+		sendStartupRefusalDM(notifier, "Feed startup", msg)
+		cleanupNotifier()
+		os.Exit(ExitProbeFailure)
+	}
 	if est := estimateFeedSealBytes(union); est > feedSealMaxBytes {
 		msg := fmt.Sprintf("the consumer union (%d keys) needs about %d bytes per seal, over the %d-byte transport cap", len(union.Order), est, feedSealMaxBytes)
 		fmt.Fprintf(os.Stderr, "[feed] CRITICAL: %s (exit %d)\n", msg, ExitProbeFailure)
@@ -713,6 +729,10 @@ func (rt *feedRuntime) reload() {
 	}
 	union := unionFeedRequirements(consumers)
 	cadences := unionFeedCadences(consumers)
+	if err := feedSourceObservationError(next.Feed.Source, union); err != nil {
+		fmt.Fprintf(os.Stderr, "[reload] ERROR: %v; keeping the previous feed generation\n", err)
+		return
+	}
 	if est := estimateFeedSealBytes(union); est > feedSealMaxBytes {
 		fmt.Fprintf(os.Stderr, "[reload] ERROR: the new union needs about %d bytes per seal, over the %d-byte cap; keeping the previous feed generation\n", est, feedSealMaxBytes)
 		return
@@ -853,6 +873,10 @@ func runFeedProbe(configPath string) int {
 		return ExitProbeFailure
 	}
 	union := unionFeedRequirements(consumers)
+	if err := feedSourceObservationError(cfg.Feed.Source, union); err != nil {
+		fmt.Fprintf(os.Stderr, "probe: %v\n", err)
+		return ExitProbeFailure
+	}
 	if est := estimateFeedSealBytes(union); est > feedSealMaxBytes {
 		fmt.Fprintf(os.Stderr, "probe: the consumer union needs about %d bytes per seal, over the %d-byte cap\n", est, feedSealMaxBytes)
 		return ExitProbeFailure
@@ -861,7 +885,23 @@ func runFeedProbe(configPath string) int {
 	for _, key := range union.Order {
 		fmt.Printf("probe: key %s lookback=%d cadences=%s\n", key.PayloadID(), union.Keys[key], formatCadences(union.KeyCadences[key]))
 	}
+	for _, key := range union.observationKeys() {
+		fmt.Printf("probe: observation %s window_ms=%d source=%s\n", key.PayloadID(), union.Observations[key], feedObservationSourceHLWS)
+	}
 	fmt.Printf("probe: OK (role=feed, source=%s, %d of %d consumer configs, %d keys, cadences %s, check scripts not probed, version=%s)\n",
 		cfg.Feed.Source, feedConsumersLoaded(consumers), len(consumers), len(union.Order), formatCadences(unionFeedCadences(consumers)), Version)
 	return 0
+}
+
+func feedSourceObservationError(source string, union feedRequirements) error {
+	if source == feedSourceWebsocket || len(union.Observations) == 0 {
+		return nil
+	}
+	keys := union.observationKeys()
+	names := make([]string, 0, len(keys))
+	for _, k := range keys {
+		names = append(names, k.PayloadID())
+	}
+	return fmt.Errorf("feed.source=%q cannot collect observations %s; only feed.source=%q subscribes to the venue open-interest stream",
+		source, strings.Join(names, ", "), feedSourceWebsocket)
 }

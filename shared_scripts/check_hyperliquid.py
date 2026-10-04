@@ -40,6 +40,7 @@ from market_payload import (
     market_funding_records,
     market_funding_scalar,
     market_mid,
+    market_observation,
     validate_market_payload,
 )
 from regime import latest_regime, parse_regime_windows_spec_json, prepare_check_regime
@@ -367,6 +368,18 @@ def _shared_funding_records(shared, symbol):
     return shared["funding_records"]
 
 
+OPEN_INTEREST_STRATEGY = "open_interest_breakout"
+
+
+def _shared_open_interest(shared, symbol):
+    market = shared.get("market")
+    if market is None:
+        return {"available": False, "kind": "open_interest", "coin": symbol,
+                "reason": "open_interest_breakout reads open interest only from the sealed market "
+                          "feed payload; this check has none and never fetches it"}
+    return market_observation(market, symbol, "open_interest", MarketPayloadError)
+
+
 def _shared_htf_frame(shared, sym, tf, limit):
     cache = shared["htf_cache"]
     key = (sym, tf, limit)
@@ -420,6 +433,8 @@ def evaluate_signal_slot(shared, slot, deps=None):
         records = _shared_funding_records(shared, symbol)
         if records:
             strategy_params["funding_records"] = records
+    if funding_aware_name == OPEN_INTEREST_STRATEGY:
+        strategy_params["open_interest_observations"] = _shared_open_interest(shared, symbol)
 
     stdout_regime, live_regime, strategy_regime = prepare_check_regime(
         df,

@@ -124,6 +124,7 @@ func (o *marketFeedOwner) runOneSocketSession(ctx context.Context) error {
 	}
 
 	subscribed := make(map[marketFeedKey]bool)
+	obsSubscribed := make(map[string]bool)
 	midsSubscribed := false
 	syncSubscriptions := func() error {
 		keys, coins, _ := o.Subscriptions()
@@ -151,6 +152,21 @@ func (o *marketFeedOwner) runOneSocketSession(ctx context.Context) error {
 				return err
 			}
 			subscribed[key] = true
+		}
+		for _, coin := range o.ObservationCoins() {
+			if obsSubscribed[coin] {
+				continue
+			}
+			if err := writeJSON(map[string]any{
+				"method": "subscribe",
+				"subscription": map[string]any{
+					"type": "activeAssetCtx",
+					"coin": coin,
+				},
+			}); err != nil {
+				return err
+			}
+			obsSubscribed[coin] = true
 		}
 		return nil
 	}
@@ -237,6 +253,14 @@ func (o *marketFeedOwner) handleSocketMessage(payload []byte) {
 			parsed[coin] = px
 		}
 		o.IngestMids(parsed, o.now(), string(feedBarSourceSocket))
+	case "activeAssetCtx":
+		recvAt := o.now()
+		coin, value, err := parseFeedOpenInterest(env.Data)
+		if coin == "" {
+			o.logf("[feed] dropped an activeAssetCtx message with no coin: %v", err)
+			return
+		}
+		o.IngestOpenInterest(coin, value, recvAt, payload, err)
 	}
 }
 

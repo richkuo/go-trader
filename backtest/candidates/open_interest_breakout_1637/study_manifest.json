@@ -1,0 +1,111 @@
+{
+  "schema": "offline_candle_manifest/v2",
+  "study": "open_interest_breakout_1637",
+  "venue": "hyperliquid",
+  "provenance": {
+    "kind": "venue",
+    "label": "Hyperliquid mainnet perpetual 5m candles from the public info API (candleSnapshot, closed bars only); open interest from a forward recording of the public activeAssetCtx WebSocket stream (receipt-time basis)"
+  },
+  "interval": "5m",
+  "warmup_bars": 300,
+  "windows": {
+    "train": {
+      "start": "2026-10-04T03:10:00Z",
+      "end": "2026-10-04T06:10:00Z",
+      "role": "selection: the parameter grid and the frozen selection rule read only this window"
+    },
+    "test": {
+      "start": "2026-10-04T06:10:00Z",
+      "end": "2026-10-04T09:10:00Z",
+      "role": "held-out: scored once with the frozen selection"
+    }
+  },
+  "acquisition": {
+    "source": "POST https://api.hyperliquid.xyz/info candleSnapshot + fundingHistory (shared_tools/funding_fetcher.py); open interest is not acquirable here and comes only from run_study.py prepare",
+    "start": "2026-10-03T00:00:00Z",
+    "end": "2026-10-04T09:20:00Z"
+  },
+  "costs": {
+    "taker_fee_pct": 0.00045,
+    "maker_fee_pct": 0.00015,
+    "slippage_bps": 5.0,
+    "min_notional_usd": 10.0,
+    "min_notional_margin": 0.03
+  },
+  "venue_reference": {
+    "meta": {
+      "path": "data/venue_meta.json",
+      "sha256": "pending-acquire"
+    },
+    "l2_snapshot": {
+      "path": "data/venue_l2_snapshot.json",
+      "sha256": "pending-acquire"
+    },
+    "documents": [
+      {
+        "url": "https://hyperliquid.gitbook.io/hyperliquid-docs/trading/fees",
+        "retrieved_at": "2026-10-03T15:33:33+00:00",
+        "supports": "perps base-tier taker and maker fee",
+        "quote": "Perps fee tiers Base rate Diamond Platinum Gold Silver Bronze Wood Tier 14d weighted volume ($) Taker Maker Taker Maker Taker Maker Taker Maker Taker Maker Taker Maker Taker Maker 0 0.045% 0.015%",
+        "quote_sha256": "8cca42ca08eea9e26b2affe200d4d958dda0d5e0310ba162a8e1f5c9554f3bd9"
+      },
+      {
+        "url": "https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/error-responses",
+        "retrieved_at": "2026-10-03T15:33:33+00:00",
+        "supports": "perps minimum order value",
+        "quote": "Order MinTradeNtl Order must have minimum value of $10.",
+        "quote_sha256": "28b93383786330e253affaed0d14b98ff3f683d9a66f0111d346f94650a2850d"
+      },
+      {
+        "url": "https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/tick-and-lot-size",
+        "retrieved_at": "2026-10-03T15:33:33+00:00",
+        "supports": "lot size from meta szDecimals",
+        "quote": "Sizes are rounded to the szDecimals of that asset. For example, if szDecimals = 3 then 1.001 is a valid size but 1.0001 is not. szDecimals for an asset is found in the meta response to the info endpoint",
+        "quote_sha256": "9ae73e64e273ae0d0d329a2cd68cdf562ee50b583d581876b5a83bd5309dbc5f"
+      },
+      {
+        "url": "https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/websocket/subscriptions",
+        "retrieved_at": "2026-10-04T03:05:00+00:00",
+        "supports": "open-interest source: activeAssetCtx carries PerpsAssetCtx.openInterest and no event timestamp",
+        "quote": "type PerpsAssetCtx = SharedAssetCtx & { funding: number; openInterest: number; oraclePx: number; };",
+        "quote_sha256": "pending-prepare"
+      },
+      {
+        "url": "https://hyperliquid.gitbook.io/hyperliquid-docs/historical-data",
+        "retrieved_at": "2026-10-04T03:05:00+00:00",
+        "supports": "historical asset contexts exist only in a requester-pays archive with possible gaps",
+        "quote": "There is no guarantee of timely updates and data may be missing.",
+        "quote_sha256": "pending-prepare"
+      }
+    ]
+  },
+  "datasets": [
+    {
+      "coin": "BTC",
+      "symbol": "BTC/USDT",
+      "size_decimals": 5,
+      "half_spread_bps": 0.06,
+      "candles": {"path": "data/BTC_5m_candles.csv.gz", "sha256": "pending-acquire"},
+      "funding": {"path": "data/BTC_funding.csv.gz", "sha256": "pending-acquire"},
+      "open_interest": {"path": "data/BTC_open_interest.json.gz", "sha256": "pending-prepare"}
+    },
+    {
+      "coin": "ETH",
+      "symbol": "ETH/USDT",
+      "size_decimals": 4,
+      "half_spread_bps": 0.19,
+      "candles": {"path": "data/ETH_5m_candles.csv.gz", "sha256": "pending-acquire"},
+      "funding": {"path": "data/ETH_funding.csv.gz", "sha256": "pending-acquire"},
+      "open_interest": {"path": "data/ETH_open_interest.json.gz", "sha256": "pending-prepare"}
+    },
+    {
+      "coin": "SOL",
+      "symbol": "SOL/USDT",
+      "size_decimals": 2,
+      "half_spread_bps": 0.42,
+      "candles": {"path": "data/SOL_5m_candles.csv.gz", "sha256": "pending-acquire"},
+      "funding": {"path": "data/SOL_funding.csv.gz", "sha256": "pending-acquire"},
+      "open_interest": {"path": "data/SOL_open_interest.json.gz", "sha256": "pending-prepare"}
+    }
+  ]
+}

@@ -32,6 +32,7 @@ var knownSubcommands = []string{
 	"agent-info",
 	"diagnostics",
 	"feed-fetch",
+	"record-observations",
 	"version",
 }
 
@@ -86,6 +87,8 @@ func main() {
 			os.Exit(runDiagnostics(os.Args[2:]))
 		case "feed-fetch":
 			os.Exit(runFeedFetch(os.Args[2:]))
+		case "record-observations":
+			os.Exit(runRecordObservations(os.Args[2:]))
 		case "version", "--version", "-version":
 			fmt.Println(Version)
 			os.Exit(0)

@@ -98,3 +98,21 @@ def market_funding_records(market, coin: str, start_ms: int, error_cls=None) -> 
             continue
         out.append({"rate": float(record.get("rate") or 0.0), "time": ts})
     return out
+
+
+def market_observation(market, coin: str, kind: str, error_cls=None) -> dict:
+    payload = validate_market_payload(market, error_cls)
+    key = f"{coin}|{kind}"
+    observations = payload.get("observations")
+    if not isinstance(observations, dict) or key not in observations:
+        return {"available": False, "kind": kind, "coin": coin,
+                "reason": f"market payload carries no {key} observations"}
+    entry = observations[key]
+    if not isinstance(entry, dict):
+        return {"available": False, "kind": kind, "coin": coin,
+                "reason": f"market payload {key} observations are not an object"}
+    if entry.get("kind") != kind or entry.get("coin") != coin:
+        return {"available": False, "kind": kind, "coin": coin,
+                "reason": f"market payload {key} observations are labelled "
+                          f"{entry.get('coin')!r}|{entry.get('kind')!r}"}
+    return dict(entry)

@@ -50,14 +50,15 @@ type marketFundingPayload struct {
 }
 
 type marketPayload struct {
-	Version      int                             `json:"version"`
-	SnapshotID   string                          `json:"snapshot_id"`
-	Generation   uint64                          `json:"generation"`
-	SealedAtMs   int64                           `json:"sealed_at_ms"`
-	Frames       map[string]marketFrame          `json:"frames"`
-	Mids         map[string]marketMidPayload     `json:"mids,omitempty"`
-	Funding      map[string]marketFundingPayload `json:"funding,omitempty"`
-	FeedComplete bool                            `json:"feed_complete"`
+	Version      int                                 `json:"version"`
+	SnapshotID   string                              `json:"snapshot_id"`
+	Generation   uint64                              `json:"generation"`
+	SealedAtMs   int64                               `json:"sealed_at_ms"`
+	Frames       map[string]marketFrame              `json:"frames"`
+	Mids         map[string]marketMidPayload         `json:"mids,omitempty"`
+	Funding      map[string]marketFundingPayload     `json:"funding,omitempty"`
+	Observations map[string]marketObservationPayload `json:"observations,omitempty"`
+	FeedComplete bool                                `json:"feed_complete"`
 }
 
 type marketSnapshotKey struct {
@@ -78,9 +79,10 @@ type marketSnapshot struct {
 	MarksAgeFromNow   bool
 	CorrectionUnknown bool
 
-	keys    map[marketFeedKey]*marketSnapshotKey
-	mids    map[string]feedMid
-	funding map[string]feedFunding
+	keys         map[marketFeedKey]*marketSnapshotKey
+	mids         map[string]feedMid
+	funding      map[string]feedFunding
+	observations map[feedObservationKey]*marketSnapshotObservation
 }
 
 type cycleMarketRequirement struct {
@@ -89,15 +91,17 @@ type cycleMarketRequirement struct {
 }
 
 type cycleMarketRequirements struct {
-	Keys    []cycleMarketRequirement
-	Coins   []string
-	Funding map[string]feedFundingNeed
+	Keys         []cycleMarketRequirement
+	Coins        []string
+	Funding      map[string]feedFundingNeed
+	Observations map[feedObservationKey]int64
 }
 
 func cycleRequirementsForDue(due []StrategyConfig, req feedRequirements) cycleMarketRequirements {
 	need := make(map[marketFeedKey]int)
 	coins := make(map[string]bool)
 	funding := make(map[string]feedFundingNeed)
+	observations := make(map[feedObservationKey]int64)
 	raise := func(key marketFeedKey, required int) {
 		if existing, ok := need[key]; !ok || required > existing {
 			need[key] = required
@@ -122,11 +126,16 @@ func cycleRequirementsForDue(due []StrategyConfig, req feedRequirements) cycleMa
 			f.Records = f.Records || entry.FundingRecords
 			funding[entry.Coin] = f
 		}
+		for key, window := range entry.observationNeeds() {
+			if existing, ok := observations[key]; !ok || window > existing {
+				observations[key] = window
+			}
+		}
 	}
 	for _, coin := range req.MidCoins {
 		coins[coin] = true
 	}
-	out := cycleMarketRequirements{Funding: funding}
+	out := cycleMarketRequirements{Funding: funding, Observations: observations}
 	for key, required := range need {
 		out.Keys = append(out.Keys, cycleMarketRequirement{Key: key, Required: required})
 	}
@@ -175,7 +184,7 @@ func sealCycleMarketSnapshot(ctx context.Context, o *marketFeedOwner, reqs cycle
 		return nil
 	}
 	prepareMarketSnapshot(ctx, o, reqs)
-	return freezeMarketSnapshot(o, reqs, evaluationID, now)
+	return freezeMarketSnapshot(o, reqs, evaluationID, now, now)
 }
 
 func prepareMarketSnapshot(ctx context.Context, o *marketFeedOwner, reqs cycleMarketRequirements) {
@@ -195,7 +204,7 @@ func prepareMarketSnapshot(ctx context.Context, o *marketFeedOwner, reqs cycleMa
 	o.EnsureFunding(ctx, o.earliestFrameBarMs(reqs))
 }
 
-func freezeMarketSnapshot(o *marketFeedOwner, reqs cycleMarketRequirements, evaluationID string, now time.Time) *marketSnapshot {
+func freezeMarketSnapshot(o *marketFeedOwner, reqs cycleMarketRequirements, evaluationID string, now, cutoff time.Time) *marketSnapshot {
 	o.feedMu.Lock()
 	defer o.feedMu.Unlock()
 	snap := &marketSnapshot{
@@ -208,6 +217,7 @@ func freezeMarketSnapshot(o *marketFeedOwner, reqs cycleMarketRequirements, eval
 		keys:             make(map[marketFeedKey]*marketSnapshotKey, len(reqs.Keys)),
 		mids:             make(map[string]feedMid, len(reqs.Coins)),
 		funding:          make(map[string]feedFunding),
+		observations:     make(map[feedObservationKey]*marketSnapshotObservation, len(reqs.Observations)),
 	}
 	connected := o.connectedForReadinessLocked(now)
 	for _, cr := range reqs.Keys {
@@ -237,6 +247,13 @@ func freezeMarketSnapshot(o *marketFeedOwner, reqs cycleMarketRequirements, eval
 			cp.Records = append([]feedFundingRecord(nil), f.Records...)
 			snap.funding[coin] = cp
 		}
+	}
+	for key, window := range reqs.Observations {
+		st := o.observations[key]
+		if st == nil {
+			continue
+		}
+		snap.observations[key] = freezeObservation(st, window, cutoff.UTC().UnixMilli(), now.UTC().UnixMilli())
 	}
 	return snap
 }
