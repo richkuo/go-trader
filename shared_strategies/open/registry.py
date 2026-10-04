@@ -27,6 +27,7 @@ from consolidation_range import consolidation_range_core
 from atr_band_revert import atr_band_revert_core
 from sweep_squeeze_combo import sweep_squeeze_combo_core
 from adx_trend import adx_trend_core
+from commodity_channel import commodity_channel_trend_core
 from bear_pullback_st import bear_pullback_st_core
 from donchian_breakout import donchian_breakout_core
 from funding_skew import funding_skew_core
@@ -90,6 +91,7 @@ DISCOVERY_HIDDEN_STRATEGIES = frozenset({
     "amd_ifvg",
     "analog_retrieval",
     "chaikin_money_flow_breakout",
+    "commodity_channel_trend",
     "donchian_breakout",
     "open_interest_breakout",
     "range_scalper",
@@ -1145,6 +1147,24 @@ def adx_trend_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return adx_trend_core(df, **params)
 
 
+@register(
+    "commodity_channel_trend",
+    "RESEARCH, backtest-only (#1656) \u2014 Commodity Channel Index trend entries: long when the index (typical price minus its lookback mean, over 0.015 times the window's mean absolute deviation) crosses strictly above +threshold while the close is strictly above the trend_period simple moving average; short mirrors below -threshold under the average. Entry-only; pair with one explicit close strategy and one stop owner. Refused by every live check script; promotion requires a separate reviewed decision",
+    {"lookback": 20, "threshold": 100.0, "trend_period": 50},
+    platforms=("futures",),
+    backtest_only=True,
+    constraints=[
+        "lookback >= 2",
+        "lookback <= 100",
+        "threshold > 0",
+        "trend_period >= 2",
+        "trend_period <= 150",
+    ],
+)
+def commodity_channel_trend_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
+    return commodity_channel_trend_core(df, **params)
+
+
 _DELTA_FUNDING_WINDOW_DAYS = 7.0
 
 
@@ -1683,6 +1703,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "anchored_vwap_channel", "anchored_vwap_reversion", "chart_pattern",
         "liquidity_sweeps", "parabolic_sar", "range_scalper",
         "sweep_squeeze_combo", "adx_trend", "delta_neutral_funding",
+        "commodity_channel_trend",
         "funding_skew", "donchian_breakout", "session_breakout", "bear_pullback_st",
         "vwap_rejection_st", "momentum_pro", "mean_reversion_pro", "rsi_bb_combo",
         "consolidation_range", "atr_band_revert", "mtf_confluence", "vol_momentum",

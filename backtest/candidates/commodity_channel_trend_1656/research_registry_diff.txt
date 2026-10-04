@@ -1,0 +1,27 @@
+--- research_registry_before
++++ research_registry_after
+@@ -510,6 +510,24 @@
+   false,
+   [],
+   "Delta-Neutral Funding \u2014 enter when 7d avg funding rate exceeds threshold, exit when below"
++ ],
++ [
++  "futures",
++  "commodity_channel_trend",
++  {
++   "lookback": 20,
++   "threshold": 100.0,
++   "trend_period": 50
++  },
++  true,
++  [
++   "lookback >= 2",
++   "lookback <= 100",
++   "threshold > 0",
++   "trend_period >= 2",
++   "trend_period <= 150"
++  ],
++  "RESEARCH, backtest-only (#1656) \u2014 Commodity Channel Index trend entries: long when the index (typical price minus its lookback mean, over 0.015 times the window's mean absolute deviation) crosses strictly above +threshold while the close is strictly above the trend_period simple moving average; short mirrors below -threshold under the average. Entry-only; pair with one explicit close strategy and one stop owner. Refused by every live check script; promotion requires a separate reviewed decision"
+  ],
+  [
+   "futures",

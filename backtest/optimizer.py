@@ -644,6 +644,11 @@ DEFAULT_PARAM_RANGES = {
         "entry_period": [10, 20, 30],
         "exit_period": [5, 10, 15],
     },
+    "commodity_channel_trend": {
+        "lookback": [14, 20, 30, 50],
+        "threshold": [50.0, 100.0, 150.0, 200.0],
+        "trend_period": [20, 50, 100, 150],
+    },
     "momentum_pro": {
         "ema_fast": [13, 20, 26],
         "ema_mid": [34, 50, 80],

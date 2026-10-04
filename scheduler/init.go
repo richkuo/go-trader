@@ -101,6 +101,7 @@ var bidirectionalPerpsStrategies = map[string]bool{
 	"rsi_bb_combo":                true,
 	"consolidation_range":         true,
 	"atr_band_revert":             true,
+	"commodity_channel_trend":     true,
 	"mtf_confluence":              true,
 	"vol_momentum":                true,
 	"funding_skew":                true,
