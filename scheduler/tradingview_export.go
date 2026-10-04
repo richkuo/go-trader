@@ -40,11 +40,19 @@ type tradingViewExportOptions struct {
 func runExport(args []string) int {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "Usage: go-trader export tradingview [--config scheduler/config.json] (--all | --strategy <id>...) --output <file>")
+		fmt.Fprintln(os.Stderr, "       "+strings.TrimPrefix(ledgerCaptureUsage, "Usage: "))
+		fmt.Fprintln(os.Stderr, "       "+strings.TrimPrefix(ledgerExportUsage, "Usage: "))
 		return 2
 	}
 	switch args[0] {
 	case "tradingview":
 		return runTradingViewExport(args[1:])
+	case "capture":
+		return runLedgerCapture(args[1:])
+	case "ledger":
+		return runLedgerExport(args[1:])
+	case captureWorkerTarget:
+		return runLedgerCaptureWorker(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown export target %q\n", args[0])
 		return 2

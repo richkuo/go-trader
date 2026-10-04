@@ -52,6 +52,10 @@ type storageInspection struct {
 func (si storageInspection) OK() bool { return len(si.Rejections) == 0 }
 
 func inspectStorageOwnership(layout storageLayout, ident storageIdentityMap, cfg *Config, requireIdle bool) (storageInspection, error) {
+	return inspectStorageOwnershipWith(layout, ident, cfg, requireIdle, openStateDBReadOnly)
+}
+
+func inspectStorageOwnershipWith(layout storageLayout, ident storageIdentityMap, cfg *Config, requireIdle bool, open func(string) (*StateDB, error)) (storageInspection, error) {
 	out := storageInspection{Split: layout.Split, Layout: layout.describe()}
 	hasLive := cfg != nil && HasLiveStrategy(cfg.Strategies)
 
@@ -79,7 +83,7 @@ func inspectStorageOwnership(layout storageLayout, ident storageIdentityMap, cfg
 			continue
 		}
 		fi.Present = true
-		db, err := openStateDBReadOnly(spec.Canonical)
+		db, err := open(spec.Canonical)
 		if err != nil {
 			return storageInspection{}, fmt.Errorf("read-only open of the %s state file %q: %w", spec.Role, spec.Path, err)
 		}

@@ -728,3 +728,44 @@ func (st *StateStore) TradeDiagnosticsRowsPageForPartition(p RiskPartition, ids 
 	}
 	return st.stampDiagnosticsScope(rows, role), total, nil
 }
+
+func (st *StateStore) ledgerDBForStrategy(processID string) (*StateDB, storageIdentity, error) {
+	if st == nil {
+		return nil, storageIdentity{}, fmt.Errorf("state store unavailable")
+	}
+	ident, ok := st.ident.storageFor(processID)
+	if !ok {
+		return nil, storageIdentity{}, fmt.Errorf("strategy %q has no storage owner", processID)
+	}
+	db := st.file(ident.Role)
+	if db == nil {
+		return nil, storageIdentity{}, fmt.Errorf("no %s state file for strategy %q", ident.Role, processID)
+	}
+	if db.storageRoleOf() != ident.Role {
+		return nil, storageIdentity{}, fmt.Errorf("the %s state file handle is bound to role %s", ident.Role, db.storageRoleOf())
+	}
+	return db, ident, nil
+}
+
+func (st *StateStore) ReadLedgerSnapshot(processID string, pageSize int) (*ledgerFileRead, storageIdentity, error) {
+	db, ident, err := st.ledgerDBForStrategy(processID)
+	if err != nil {
+		return nil, storageIdentity{}, err
+	}
+	read, err := db.readLedgerSnapshot(processID, pageSize)
+	if err != nil {
+		return nil, storageIdentity{}, err
+	}
+	if read.StorageID != ident.StorageID {
+		return nil, storageIdentity{}, fmt.Errorf("strategy %q translated to %q in the %s state file, want %q", processID, read.StorageID, ident.Role, ident.StorageID)
+	}
+	return read, ident, nil
+}
+
+func (st *StateStore) ReadLedgerWalletOrphans(pageSize int) (*ledgerWalletRead, error) {
+	db, err := st.liveFile()
+	if err != nil {
+		return nil, err
+	}
+	return db.readLedgerWalletOrphans(pageSize)
+}

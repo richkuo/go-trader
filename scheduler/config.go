@@ -963,11 +963,20 @@ func LoadConfigReadOnly(path string) (*Config, error) {
 	return loadConfig(path, false, true)
 }
 
+func LoadConfigForLedgerExport(data []byte) (*Config, error) {
+	return loadConfigData("", append([]byte(nil), data...), true, true)
+}
+
 func loadConfig(path string, skipLiveCredentialChecks bool, readOnly bool) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
+	return loadConfigData(path, data, skipLiveCredentialChecks, readOnly)
+}
+
+func loadConfigData(path string, data []byte, skipLiveCredentialChecks bool, readOnly bool) (*Config, error) {
+	var err error
 	migrate := func(label string) error {
 		if readOnly {
 			migrated, err := migrateConfigData(data, nil)

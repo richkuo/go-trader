@@ -948,13 +948,14 @@ update_git_version() {
 }
 
 update_build_go_export() {
-    local tree="$1" commit="$2" go_bin="$3" ver="$4" out="$5" work rc=0
+    local tree="$1" commit="$2" go_bin="$3" ver="$4" out="$5" work full rc=0
+    full=$(update_git "$tree" rev-parse --verify "$commit^{commit}") || return 1
     work=$(mktemp -d "${TMPDIR:-/tmp}/go-trader-build.XXXXXX") || return 1
-    if ! update_git "$tree" archive --format=tar -o "$work/src.tar" "$commit" scheduler || ! tar -x -f "$work/src.tar" -C "$work"; then
+    if ! update_git "$tree" archive --format=tar -o "$work/src.tar" "$full" scheduler || ! tar -x -f "$work/src.tar" -C "$work"; then
         rm -rf "$work"
         return 1
     fi
-    GOWORK=off GOFLAGS=-mod=readonly "$go_bin" -C "$work/scheduler" build -buildvcs=false -ldflags "-X main.Version=$ver" -o "$out" . || rc=$?
+    GOWORK=off GOFLAGS=-mod=readonly "$go_bin" -C "$work/scheduler" build -buildvcs=false -ldflags "-X main.Version=$ver -X main.SourceCommit=$full" -o "$out" . || rc=$?
     rm -rf "$work"
     return "$rc"
 }
