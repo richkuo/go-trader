@@ -1,0 +1,38 @@
+--- research_registry_before
++++ research_registry_after
+@@ -805,6 +805,35 @@
+    "RESEARCH, backtest-only (#1649) \u2014 Chaikin Money Flow breakout confirmation: long on the first close strictly above the prior breakout_window high while candle-estimated money flow (close-location value times volume over flow_window bars, not measured aggressor flow) is strictly above flow_threshold; short mirrors on the prior low with flow below -flow_threshold. Entry-only; pair with one explicit close strategy and one stop owner. Refused by every live check script; promotion requires a separate reviewed decision"
+   ],
+   [
++   "open_interest_breakout",
++   {
++    "max_gap_ms": 300000,
++    "max_observation_age_ms": 120000,
++    "min_coverage": 0.95,
++    "observation_cadence_ms": 60000,
++    "oi_change_threshold": 0.002,
++    "oi_lookback": 4,
++    "price_lookback": 20
++   },
++   true,
++   [
++    "price_lookback >= 2",
++    "price_lookback <= 200",
++    "oi_lookback >= 1",
++    "oi_lookback <= 96",
++    "oi_change_threshold >= 0",
++    "oi_change_threshold < 1",
++    "max_observation_age_ms >= 1000",
++    "max_observation_age_ms <= max_gap_ms",
++    "observation_cadence_ms >= 1000",
++    "observation_cadence_ms <= max_gap_ms",
++    "min_coverage > 0",
++    "min_coverage <= 1",
++    "max_gap_ms <= 86400000"
++   ],
++   "RESEARCH, backtest-only (#1637) \u2014 open-interest breakout confirmation: long on the first closed bar whose close is strictly above the prior price_lookback high while Hyperliquid open interest in base-coin units rose by strictly more than oi_change_threshold over oi_lookback bars; short mirrors below the prior low with the same rising-interest rule. Open interest comes only from supplied observations (open_interest_observations), each endpoint the latest sample at or before the bar close and no older than max_observation_age_ms; missing, stale, gapped or thin data gives a reasoned hold. Entry-only; pair with one explicit close strategy and one stop owner. Refused by every live check script; promotion requires a separate reviewed decision"
++  ],
++  [
+    "hold",
+    {},
+    false,
