@@ -1,8 +1,13 @@
 
 import sys
 import os
+import copy
+import json
 import math
-from typing import Any, Optional, Tuple
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
+from types import MappingProxyType
+from typing import Any, Callable, Optional, Tuple
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -245,6 +250,742 @@ def _rewrite_deprecated_close_ref(name: str, params: dict) -> tuple[str, dict]:
     if params and "sl_after" in params:
         out["sl_after"] = params["sl_after"]
     return "tiered_tp_pct", out
+
+
+COMPARISON_MODE_STRICT = "strict"
+COMPARISON_MODE_APPROXIMATE = "approximate"
+COMPARISON_MODES = (COMPARISON_MODE_STRICT, COMPARISON_MODE_APPROXIMATE)
+CLOSE_VALIDATION_SCHEMA_VERSION = 1
+CLOSE_VALIDATION_FIELDS = (
+    "schema_version",
+    "mode",
+    "close_eligibility",
+    "approximations",
+    "incomplete_parity",
+    "parity_status",
+    "refusals",
+)
+CAPABILITY_CONSUMERS = ("engine", "decision_parity", "entry_replay")
+CAPABILITY_PHASES = ("construction", "preflight")
+CAPABILITY_INPUT_STATUSES = ("verified", "missing", "unverified", "invalid")
+
+CLOSE_CAPABILITY_REFUSAL_CODES = (
+    "INVALID_COMPARISON_MODE",
+    "INVALID_CLOSE_REFERENCE",
+    "UNKNOWN_CLOSE_STRATEGY",
+    "UNCLASSIFIED_CLOSE_CAPABILITY",
+    "LIVE_ONLY_CLOSE",
+    "UNSUPPORTED_LIVE_CONTEXT",
+    "UNSUPPORTED_REPLAY_CAPABILITY",
+    "INVALID_CAPABILITY_CONTEXT",
+)
+CLOSE_CAPABILITY_APPROXIMATION_CODES = ("RESEARCH_ONLY_CLOSE_CONTEXT",)
+
+CLOSE_LIVE_SUPPORTED = "supported"
+CLOSE_LIVE_RESEARCH_CONTEXT = "research_context"
+CLOSE_LIVE_ONLY = "live_only"
+
+
+@dataclass(frozen=True)
+class CloseCapability:
+    live: str
+    research_inputs: Tuple[str, ...] = ()
+    replayable: bool = False
+
+
+CLOSE_CAPABILITIES = MappingProxyType({
+    "tiered_tp_pct": CloseCapability(CLOSE_LIVE_SUPPORTED),
+    "tiered_tp_atr": CloseCapability(CLOSE_LIVE_SUPPORTED, replayable=True),
+    "tiered_tp_atr_live": CloseCapability(CLOSE_LIVE_SUPPORTED, replayable=True),
+    "tiered_tp_atr_regime": CloseCapability(CLOSE_LIVE_SUPPORTED, replayable=True),
+    "tiered_tp_atr_live_regime": CloseCapability(CLOSE_LIVE_SUPPORTED),
+    "tiered_tp_atr_live_regime_dynamic": CloseCapability(CLOSE_LIVE_ONLY),
+    "trailing_tp_ratchet": CloseCapability(CLOSE_LIVE_SUPPORTED, replayable=True),
+    "trailing_tp_ratchet_regime": CloseCapability(CLOSE_LIVE_SUPPORTED, replayable=True),
+    "time_stop": CloseCapability(
+        CLOSE_LIVE_RESEARCH_CONTEXT, research_inputs=("bars_held",), replayable=True),
+    "atr_stop": CloseCapability(CLOSE_LIVE_SUPPORTED, replayable=True),
+    "zscore_target": CloseCapability(
+        CLOSE_LIVE_RESEARCH_CONTEXT, research_inputs=("zscore",), replayable=True),
+    "avwap_stop": CloseCapability(CLOSE_LIVE_SUPPORTED),
+})
+
+
+def _is_json_value(value) -> bool:
+    if value is None or isinstance(value, (bool, str)):
+        return True
+    if isinstance(value, int):
+        return True
+    if isinstance(value, float):
+        return math.isfinite(value)
+    if isinstance(value, Mapping):
+        return all(isinstance(k, str) and _is_json_value(v) for k, v in value.items())
+    if isinstance(value, (list, tuple)):
+        return all(_is_json_value(v) for v in value)
+    return False
+
+
+def _freeze_json(value):
+    if isinstance(value, Mapping):
+        return MappingProxyType({k: _freeze_json(v) for k, v in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_json(v) for v in value)
+    return value
+
+
+def _thaw_json(value):
+    if isinstance(value, Mapping):
+        return {k: _thaw_json(v) for k, v in value.items()}
+    if isinstance(value, tuple):
+        return [_thaw_json(v) for v in value]
+    return value
+
+
+@dataclass(frozen=True)
+class CapabilityContext:
+    raw_fields: Mapping = field(default_factory=dict)
+    resolved_stop_owner: Optional[Mapping] = None
+    input_evidence: Mapping = field(default_factory=dict)
+    errors: Tuple[str, ...] = field(default=(), init=False, compare=False)
+
+    def __post_init__(self):
+        errors = []
+        raw = self.raw_fields
+        if not isinstance(raw, Mapping):
+            errors.append("raw_fields must be a mapping")
+            raw = {}
+        for name, entry in raw.items():
+            if not isinstance(name, str) or not name:
+                errors.append("raw_fields keys must be non-empty strings")
+                continue
+            if (not isinstance(entry, Mapping) or set(entry) != {"present", "value"}
+                    or not isinstance(entry.get("present"), bool)
+                    or not _is_json_value(entry.get("value"))):
+                errors.append(
+                    f"raw_fields[{name!r}] must be {{present: bool, value: JSON value}}")
+            elif not entry["present"] and entry["value"] is not None:
+                errors.append(f"raw_fields[{name!r}] is absent but carries a value")
+        owner = self.resolved_stop_owner
+        if owner is not None:
+            if (not isinstance(owner, Mapping) or set(owner) != {"name", "parameters"}
+                    or not isinstance(owner.get("name"), str) or not owner.get("name")
+                    or not isinstance(owner.get("parameters"), Mapping)
+                    or not _is_json_value(owner.get("parameters"))):
+                errors.append(
+                    "resolved_stop_owner must be None or {name: str, parameters: mapping}")
+        evidence = self.input_evidence
+        if not isinstance(evidence, Mapping):
+            errors.append("input_evidence must be a mapping")
+            evidence = {}
+        for name, entry in evidence.items():
+            if not isinstance(name, str) or not name:
+                errors.append("input_evidence keys must be non-empty strings")
+                continue
+            if (not isinstance(entry, Mapping)
+                    or set(entry) != {"status", "source", "value"}
+                    or entry.get("status") not in CAPABILITY_INPUT_STATUSES
+                    or not (entry.get("source") is None or isinstance(entry.get("source"), str))
+                    or not _is_json_value(entry.get("value"))):
+                errors.append(
+                    f"input_evidence[{name!r}] must be {{status: one of "
+                    f"{list(CAPABILITY_INPUT_STATUSES)}, source: str or null, value: JSON value}}")
+        object.__setattr__(self, "errors", tuple(errors))
+        if not errors:
+            object.__setattr__(self, "raw_fields", _freeze_json(raw))
+            object.__setattr__(self, "resolved_stop_owner",
+                               None if owner is None else _freeze_json(owner))
+            object.__setattr__(self, "input_evidence", _freeze_json(evidence))
+
+    def to_dict(self) -> dict:
+        return {
+            "raw_fields": _thaw_json(self.raw_fields),
+            "resolved_stop_owner": _thaw_json(self.resolved_stop_owner),
+            "input_evidence": _thaw_json(self.input_evidence),
+        }
+
+
+@dataclass(frozen=True)
+class CapabilityRecord:
+    kind: str
+    reason_code: str
+    feature: str
+    close_ref_index: Optional[int] = None
+    required_inputs: Tuple[str, ...] = ()
+    details: Mapping = field(default_factory=dict)
+
+    def to_dict(self) -> dict:
+        return {
+            "reason_code": self.reason_code,
+            "feature": self.feature,
+            "close_ref_index": self.close_ref_index,
+            "required_inputs": sorted(self.required_inputs),
+            "details": _thaw_json(self.details),
+        }
+
+
+def capability_refusal(reason_code: str, feature: str, *,
+                       close_ref_index: Optional[int] = None,
+                       required_inputs=(), details: Optional[dict] = None) -> CapabilityRecord:
+    return CapabilityRecord("refusal", reason_code, feature, close_ref_index,
+                            tuple(sorted(required_inputs)), _freeze_json(dict(details or {})))
+
+
+def capability_approximation(reason_code: str, feature: str, *,
+                             close_ref_index: Optional[int] = None,
+                             required_inputs=(), details: Optional[dict] = None) -> CapabilityRecord:
+    return CapabilityRecord("approximation", reason_code, feature, close_ref_index,
+                            tuple(sorted(required_inputs)), _freeze_json(dict(details or {})))
+
+
+@dataclass(frozen=True)
+class CloseCapabilityRequest:
+    close_refs: Tuple[Mapping, ...]
+    mode: str
+    platform: Optional[str]
+    strategy_type: Optional[str]
+    consumer: str
+    phase: str
+    capability_context: Optional[CapabilityContext]
+    registered_closes: frozenset
+
+
+@dataclass(frozen=True)
+class CloseCapabilityCheck:
+    check_id: str
+    phases: Tuple[str, ...]
+    reason_codes: Tuple[str, ...]
+    callback: Callable[[CloseCapabilityRequest], Sequence[CapabilityRecord]]
+
+
+def _check_registry_membership(request: CloseCapabilityRequest) -> list:
+    out = []
+    for idx, ref in enumerate(request.close_refs):
+        if ref["name"] not in request.registered_closes:
+            available = sorted(request.registered_closes)
+            out.append(capability_refusal(
+                "UNKNOWN_CLOSE_STRATEGY", ref["name"], close_ref_index=idx,
+                details={"message": f"Unknown close strategy: {ref['name']}. "
+                                    f"Available: {available}",
+                         "available": available}))
+    return out
+
+
+def _check_capability_declared(request: CloseCapabilityRequest) -> list:
+    out = []
+    for idx, ref in enumerate(request.close_refs):
+        name = ref["name"]
+        if name in request.registered_closes and name not in CLOSE_CAPABILITIES:
+            out.append(capability_refusal(
+                "UNCLASSIFIED_CLOSE_CAPABILITY", name, close_ref_index=idx,
+                details={"message": f"close strategy {name!r} is registered but has no "
+                                    "central capability declaration in "
+                                    "backtester.CLOSE_CAPABILITIES"}))
+    return out
+
+
+def _check_live_only_close(request: CloseCapabilityRequest) -> list:
+    out = []
+    for idx, ref in enumerate(request.close_refs):
+        cap = CLOSE_CAPABILITIES.get(ref["name"])
+        if ref["name"] in request.registered_closes and cap is not None \
+                and cap.live == CLOSE_LIVE_ONLY:
+            out.append(capability_refusal(
+                "LIVE_ONLY_CLOSE", ref["name"], close_ref_index=idx,
+                details={"message": f"{ref['name']} is HL-live-only: the common "
+                                    "backtest engine has no parity path for it in "
+                                    "any comparison mode",
+                         "mode": request.mode}))
+    return out
+
+
+def _check_live_close_context(request: CloseCapabilityRequest) -> list:
+    out = []
+    for idx, ref in enumerate(request.close_refs):
+        cap = CLOSE_CAPABILITIES.get(ref["name"])
+        if ref["name"] not in request.registered_closes or cap is None \
+                or cap.live != CLOSE_LIVE_RESEARCH_CONTEXT:
+            continue
+        details = {"mode": request.mode, "platform": request.platform,
+                   "strategy_type": request.strategy_type}
+        if request.mode == COMPARISON_MODE_STRICT:
+            details["message"] = (
+                f"{ref['name']} needs {', '.join(cap.research_inputs)}, which no live "
+                "close context supplies on any platform; strict comparison refuses it. "
+                "Pass comparison_mode='approximate' (--comparison-mode approximate) "
+                "for research that accepts incomplete parity")
+            out.append(capability_refusal(
+                "UNSUPPORTED_LIVE_CONTEXT", ref["name"], close_ref_index=idx,
+                required_inputs=cap.research_inputs, details=details))
+        else:
+            details["message"] = (
+                f"{ref['name']} reads simulator-only {', '.join(cap.research_inputs)}; "
+                "the result is research evidence with incomplete parity")
+            out.append(capability_approximation(
+                "RESEARCH_ONLY_CLOSE_CONTEXT", ref["name"], close_ref_index=idx,
+                required_inputs=cap.research_inputs, details=details))
+    return out
+
+
+def _check_entry_replay(request: CloseCapabilityRequest) -> list:
+    if request.consumer != "entry_replay":
+        return []
+    out = []
+    for idx, ref in enumerate(request.close_refs):
+        cap = CLOSE_CAPABILITIES.get(ref["name"])
+        if ref["name"] in request.registered_closes and cap is not None \
+                and not cap.replayable:
+            out.append(capability_refusal(
+                "UNSUPPORTED_REPLAY_CAPABILITY", ref["name"], close_ref_index=idx,
+                details={"message": f"{ref['name']} has no per-entry rule the "
+                                    "entry-locked replay can isolate"}))
+    return out
+
+
+CLOSE_CAPABILITY_CHECKS: Tuple[CloseCapabilityCheck, ...] = (
+    CloseCapabilityCheck("close_registry_membership", CAPABILITY_PHASES,
+                         ("UNKNOWN_CLOSE_STRATEGY",), _check_registry_membership),
+    CloseCapabilityCheck("close_capability_declared", CAPABILITY_PHASES,
+                         ("UNCLASSIFIED_CLOSE_CAPABILITY",), _check_capability_declared),
+    CloseCapabilityCheck("live_only_close", CAPABILITY_PHASES,
+                         ("LIVE_ONLY_CLOSE",), _check_live_only_close),
+    CloseCapabilityCheck("live_close_context", CAPABILITY_PHASES,
+                         ("UNSUPPORTED_LIVE_CONTEXT", "RESEARCH_ONLY_CLOSE_CONTEXT"),
+                         _check_live_close_context),
+    CloseCapabilityCheck("entry_replay_capability", CAPABILITY_PHASES,
+                         ("UNSUPPORTED_REPLAY_CAPABILITY",), _check_entry_replay),
+)
+
+
+def _validate_capability_checks(checks: Sequence[CloseCapabilityCheck]) -> None:
+    registered = set(CLOSE_CAPABILITY_REFUSAL_CODES) | set(CLOSE_CAPABILITY_APPROXIMATION_CODES)
+    seen = set()
+    for spec in checks:
+        if not isinstance(spec, CloseCapabilityCheck):
+            raise RuntimeError(f"close capability check {spec!r} is not a CloseCapabilityCheck")
+        if not spec.check_id or spec.check_id in seen:
+            raise RuntimeError(f"close capability check id {spec.check_id!r} is empty or duplicated")
+        seen.add(spec.check_id)
+        if not spec.phases or set(spec.phases) - set(CAPABILITY_PHASES):
+            raise RuntimeError(f"close capability check {spec.check_id!r} has invalid phases")
+        if not spec.reason_codes or set(spec.reason_codes) - registered:
+            raise RuntimeError(
+                f"close capability check {spec.check_id!r} declares unregistered reason codes")
+        if not callable(spec.callback):
+            raise RuntimeError(f"close capability check {spec.check_id!r} has no callback")
+
+
+_validate_capability_checks(CLOSE_CAPABILITY_CHECKS)
+
+
+def _normalize_close_ref_inputs(close_refs) -> Tuple[list, list]:
+    if close_refs is None:
+        return [], []
+    if isinstance(close_refs, (str, bytes, Mapping)) or not isinstance(close_refs, Sequence):
+        return [], [capability_refusal(
+            "INVALID_CLOSE_REFERENCE", "close_strategies",
+            details={"message": "close_strategies must be a list of "
+                                "{'name': str, 'params': dict} refs, got "
+                                f"{type(close_refs).__name__}"})]
+    refs, findings = [], []
+    for idx, ref in enumerate(close_refs):
+        if not isinstance(ref, Mapping):
+            findings.append(capability_refusal(
+                "INVALID_CLOSE_REFERENCE", "close_strategies", close_ref_index=idx,
+                details={"message": "close_strategies entries must be dicts of shape "
+                                    "{'name': str, 'params': dict}, got "
+                                    f"{type(ref).__name__}"}))
+            continue
+        raw_name = ref.get("name")
+        name = raw_name.strip() if isinstance(raw_name, str) else ""
+        if not name:
+            findings.append(capability_refusal(
+                "INVALID_CLOSE_REFERENCE", "close_strategies", close_ref_index=idx,
+                details={"message": f"close_strategies ref missing 'name': {dict(ref)}"}))
+            continue
+        raw_params = ref.get("params")
+        if raw_params is not None and not isinstance(raw_params, Mapping):
+            findings.append(capability_refusal(
+                "INVALID_CLOSE_REFERENCE", name, close_ref_index=idx,
+                details={"message": f"close_strategies ref {name!r} params must be a "
+                                    f"dict, got {type(raw_params).__name__}"}))
+            continue
+        name, params = _rewrite_deprecated_close_ref(name, dict(raw_params or {}))
+        refs.append({"name": name, "params": params})
+    return refs, findings
+
+
+@dataclass(frozen=True)
+class CloseValidation:
+    mode: Optional[str]
+    consumer: str
+    phase: str
+    platform: Optional[str]
+    strategy_type: Optional[str]
+    close_refs: Tuple[Mapping, ...]
+    approximations: Tuple[CapabilityRecord, ...]
+    refusals: Tuple[CapabilityRecord, ...]
+    capability_context: Optional[CapabilityContext] = None
+    plain_close_refs: Tuple[dict, ...] = field(default=(), repr=False, compare=False)
+
+    @property
+    def accepted(self) -> bool:
+        return not self.refusals
+
+    @property
+    def close_eligibility(self) -> str:
+        if self.refusals:
+            return "refused"
+        return "approximate" if self.approximations else "eligible"
+
+    @property
+    def incomplete_parity(self) -> bool:
+        return bool(self.refusals) or self.mode == COMPARISON_MODE_APPROXIMATE
+
+    @property
+    def parity_status(self) -> str:
+        if self.refusals:
+            return "refused"
+        return "incomplete" if self.mode == COMPARISON_MODE_APPROXIMATE else "unverified"
+
+    def normalized_close_refs(self) -> list:
+        return [copy.deepcopy(r) for r in self.plain_close_refs]
+
+    def to_dict(self) -> dict:
+        return {
+            "schema_version": CLOSE_VALIDATION_SCHEMA_VERSION,
+            "mode": self.mode,
+            "close_eligibility": self.close_eligibility,
+            "approximations": [r.to_dict() for r in self.approximations],
+            "incomplete_parity": self.incomplete_parity,
+            "parity_status": self.parity_status,
+            "refusals": [r.to_dict() for r in self.refusals],
+        }
+
+
+class CloseCapabilityError(ValueError):
+
+    def __init__(self, validation: CloseValidation, context: str = ""):
+        self.validation = validation
+        self.context = context
+        self.reasons = tuple(r.to_dict() for r in validation.refusals)
+        self.reason_code = self.reasons[0]["reason_code"]
+        parts = []
+        for rec in self.reasons:
+            msg = rec["details"].get("message") or rec["feature"]
+            parts.append(f"[{rec['reason_code']}] {msg}")
+        prefix = f"{context}: " if context else ""
+        super().__init__(prefix + "close capability refused: " + "; ".join(parts))
+
+    def with_context(self, context: str) -> "CloseCapabilityError":
+        return CloseCapabilityError(self.validation, context=context)
+
+    def to_dict(self) -> dict:
+        return {
+            "reason_code": self.reason_code,
+            "message": str(self),
+            "close_validation": self.validation.to_dict(),
+        }
+
+
+def validate_close_capabilities(*, close_refs=None, comparison_mode=None,
+                                platform: Optional[str] = None,
+                                strategy_type: Optional[str] = None,
+                                consumer: str = "engine",
+                                phase: str = "construction",
+                                capability_context: Optional[CapabilityContext] = None
+                                ) -> CloseValidation:
+    refusals: list = []
+    mode: Optional[str] = None
+    if comparison_mode is None:
+        mode = COMPARISON_MODE_STRICT
+    elif isinstance(comparison_mode, str) and comparison_mode in COMPARISON_MODES:
+        mode = comparison_mode
+    else:
+        refusals.append(capability_refusal(
+            "INVALID_COMPARISON_MODE", "comparison_mode",
+            details={"message": f"comparison_mode must be omitted (strict) or exactly "
+                                f"one of {list(COMPARISON_MODES)}, got {comparison_mode!r}",
+                     "received": repr(comparison_mode)}))
+    context_errors = []
+    if consumer not in CAPABILITY_CONSUMERS:
+        context_errors.append(
+            f"consumer must be one of {list(CAPABILITY_CONSUMERS)}, got {consumer!r}")
+    if phase not in CAPABILITY_PHASES:
+        context_errors.append(
+            f"phase must be one of {list(CAPABILITY_PHASES)}, got {phase!r}")
+    if capability_context is not None:
+        if not isinstance(capability_context, CapabilityContext):
+            context_errors.append(
+                "capability_context must be a CapabilityContext or None, got "
+                f"{type(capability_context).__name__}")
+        else:
+            context_errors.extend(capability_context.errors)
+    for err in context_errors:
+        refusals.append(capability_refusal(
+            "INVALID_CAPABILITY_CONTEXT", "capability_context",
+            details={"message": err}))
+    refs, ref_findings = _normalize_close_ref_inputs(close_refs)
+    refusals.extend(ref_findings)
+    approximations: list = []
+    frozen_refs = tuple(MappingProxyType({"name": r["name"], "params": _freeze_json(r["params"])})
+                        for r in refs)
+    if not refusals:
+        _evaluate, list_strategies = _load_close_registry()
+        request = CloseCapabilityRequest(
+            close_refs=frozen_refs,
+            mode=mode,
+            platform=(str(platform).strip().lower() or None) if platform is not None else None,
+            strategy_type=(str(strategy_type).strip().lower() or None)
+            if strategy_type is not None else None,
+            consumer=consumer,
+            phase=phase,
+            capability_context=capability_context,
+            registered_closes=frozenset(list_strategies()),
+        )
+        _validate_capability_checks(CLOSE_CAPABILITY_CHECKS)
+        for spec in CLOSE_CAPABILITY_CHECKS:
+            if phase not in spec.phases:
+                continue
+            try:
+                records = list(spec.callback(request) or [])
+            except CloseCapabilityError as exc:
+                raise RuntimeError(
+                    f"close capability check {spec.check_id!r} raised instead of "
+                    "returning findings") from exc
+            for rec in records:
+                if not isinstance(rec, CapabilityRecord) or rec.reason_code not in spec.reason_codes:
+                    raise RuntimeError(
+                        f"close capability check {spec.check_id!r} returned an "
+                        f"undeclared finding {rec!r}")
+                if rec.kind == "refusal" and rec.reason_code in CLOSE_CAPABILITY_REFUSAL_CODES:
+                    refusals.append(rec)
+                elif rec.kind == "approximation" and \
+                        rec.reason_code in CLOSE_CAPABILITY_APPROXIMATION_CODES:
+                    approximations.append(rec)
+                else:
+                    raise RuntimeError(
+                        f"close capability check {spec.check_id!r} returned a "
+                        f"{rec.kind!r} finding with code {rec.reason_code!r}")
+    validation = CloseValidation(
+        mode=mode,
+        consumer=consumer if consumer in CAPABILITY_CONSUMERS else "engine",
+        phase=phase if phase in CAPABILITY_PHASES else "construction",
+        platform=platform,
+        strategy_type=strategy_type,
+        close_refs=frozen_refs,
+        approximations=tuple(approximations),
+        refusals=tuple(refusals),
+        capability_context=capability_context,
+        plain_close_refs=tuple(copy.deepcopy(refs)),
+    )
+    if refusals:
+        raise CloseCapabilityError(validation)
+    return validation
+
+
+_UNKNOWN_CLOSE_VALIDATION = {
+    "schema_version": None,
+    "mode": None,
+    "close_eligibility": "unknown",
+    "approximations": [],
+    "incomplete_parity": True,
+    "parity_status": "unverified",
+    "refusals": [],
+}
+
+
+def _record_is_valid(rec, codes) -> bool:
+    if not isinstance(rec, Mapping):
+        return False
+    if set(rec) != {"reason_code", "feature", "close_ref_index", "required_inputs", "details"}:
+        return False
+    if rec.get("reason_code") not in codes or not isinstance(rec.get("feature"), str):
+        return False
+    idx = rec.get("close_ref_index")
+    if idx is not None and (isinstance(idx, bool) or not isinstance(idx, int) or idx < 0):
+        return False
+    inputs = rec.get("required_inputs")
+    if not isinstance(inputs, list) or not all(isinstance(x, str) for x in inputs) \
+            or inputs != sorted(inputs):
+        return False
+    return isinstance(rec.get("details"), Mapping)
+
+
+def decode_close_validation(obj) -> dict:
+    def unknown(status: str) -> dict:
+        out = copy.deepcopy(_UNKNOWN_CLOSE_VALIDATION)
+        if isinstance(obj, Mapping):
+            out["schema_version"] = obj.get("schema_version")
+        out["decode_status"] = status
+        return out
+
+    if obj is None:
+        return unknown("missing")
+    if not isinstance(obj, Mapping):
+        return unknown("inconsistent")
+    version = obj.get("schema_version")
+    if isinstance(version, bool) or version != CLOSE_VALIDATION_SCHEMA_VERSION:
+        return unknown("unknown_schema")
+    if obj.get("aggregate") is True:
+        return _decode_aggregate(obj, unknown)
+    if any(k not in obj for k in CLOSE_VALIDATION_FIELDS):
+        return unknown("inconsistent")
+    mode = obj["mode"]
+    refusals = obj["refusals"]
+    approximations = obj["approximations"]
+    if not isinstance(refusals, list) or not isinstance(approximations, list):
+        return unknown("inconsistent")
+    if not all(_record_is_valid(r, CLOSE_CAPABILITY_REFUSAL_CODES) for r in refusals):
+        return unknown("inconsistent")
+    if not all(_record_is_valid(r, CLOSE_CAPABILITY_APPROXIMATION_CODES) for r in approximations):
+        return unknown("inconsistent")
+    if not isinstance(obj["incomplete_parity"], bool):
+        return unknown("inconsistent")
+    if refusals:
+        ok = (mode is None or mode in COMPARISON_MODES) \
+            and obj["close_eligibility"] == "refused" \
+            and obj["parity_status"] == "refused" \
+            and obj["incomplete_parity"] is True
+    else:
+        ok = mode in COMPARISON_MODES \
+            and obj["close_eligibility"] == ("approximate" if approximations else "eligible") \
+            and not (approximations and mode != COMPARISON_MODE_APPROXIMATE) \
+            and obj["incomplete_parity"] is (mode == COMPARISON_MODE_APPROXIMATE) \
+            and obj["parity_status"] == (
+                "incomplete" if mode == COMPARISON_MODE_APPROXIMATE else "unverified")
+    if not ok:
+        return unknown("inconsistent")
+    out = {k: copy.deepcopy(obj[k]) for k in CLOSE_VALIDATION_FIELDS}
+    out["decode_status"] = "ok"
+    return out
+
+
+_AGGREGATE_FIELDS = (
+    "schema_version", "aggregate", "children", "modes", "close_eligibility",
+    "approximations", "refusals", "unknown_children", "incomplete_parity",
+    "parity_status", "requested_set_complete",
+)
+
+
+def _decode_aggregate(obj: Mapping, unknown) -> dict:
+    if any(k not in obj for k in _AGGREGATE_FIELDS):
+        return unknown("inconsistent")
+    if not isinstance(obj["children"], int) or isinstance(obj["children"], bool) \
+            or not isinstance(obj["unknown_children"], int) \
+            or isinstance(obj["unknown_children"], bool) \
+            or obj["unknown_children"] < 0 or obj["children"] < 0 \
+            or not isinstance(obj["modes"], list) \
+            or not all(m in COMPARISON_MODES for m in obj["modes"]) \
+            or not isinstance(obj["approximations"], list) \
+            or not isinstance(obj["refusals"], list) \
+            or not all(_record_is_valid(r, CLOSE_CAPABILITY_REFUSAL_CODES) for r in obj["refusals"]) \
+            or not all(_record_is_valid(r, CLOSE_CAPABILITY_APPROXIMATION_CODES)
+                       for r in obj["approximations"]) \
+            or not isinstance(obj["incomplete_parity"], bool) \
+            or not isinstance(obj["requested_set_complete"], bool):
+        return unknown("inconsistent")
+    expected = _aggregate_status(
+        children=obj["children"], unknown_children=obj["unknown_children"],
+        modes=set(obj["modes"]), approximations=obj["approximations"],
+        refusals=obj["refusals"])
+    for key in ("close_eligibility", "incomplete_parity", "parity_status",
+                "requested_set_complete"):
+        if obj[key] != expected[key]:
+            return unknown("inconsistent")
+    out = {k: copy.deepcopy(obj[k]) for k in _AGGREGATE_FIELDS}
+    out["decode_status"] = "ok"
+    return out
+
+
+def _aggregate_status(*, children: int, unknown_children: int, modes: set,
+                      approximations: list, refusals: list) -> dict:
+    incomplete = bool(refusals) or bool(unknown_children) or not children \
+        or COMPARISON_MODE_APPROXIMATE in modes
+    if refusals:
+        eligibility, parity = "refused", "refused"
+    elif unknown_children or not children:
+        eligibility, parity = "unknown", "incomplete"
+    else:
+        eligibility = "approximate" if approximations else "eligible"
+        parity = "incomplete" if incomplete else "unverified"
+    return {
+        "close_eligibility": eligibility,
+        "incomplete_parity": incomplete,
+        "parity_status": parity,
+        "requested_set_complete": bool(children) and not unknown_children and not refusals,
+    }
+
+
+def _dedupe_records(records: list) -> list:
+    out, seen = [], set()
+    for rec in records:
+        key = json.dumps(rec, sort_keys=True, default=str)
+        if key not in seen:
+            seen.add(key)
+            out.append(copy.deepcopy(rec))
+    return out
+
+
+def aggregate_close_validations(children) -> dict:
+    children = list(children or [])
+    modes: set = set()
+    approximations: list = []
+    refusals: list = []
+    unknown_children = 0
+    for child in children:
+        if isinstance(child, CloseValidation):
+            child = child.to_dict()
+        if isinstance(child, CloseCapabilityError):
+            child = child.validation.to_dict()
+        decoded = decode_close_validation(child)
+        if decoded["decode_status"] != "ok":
+            unknown_children += 1
+            continue
+        if decoded.get("aggregate"):
+            modes.update(decoded["modes"])
+            unknown_children += decoded["unknown_children"]
+            if not decoded["children"]:
+                unknown_children += 1
+        elif decoded["mode"] is not None:
+            modes.add(decoded["mode"])
+        approximations.extend(decoded["approximations"])
+        refusals.extend(decoded["refusals"])
+    approximations = _dedupe_records(approximations)
+    refusals = _dedupe_records(refusals)
+    out = {
+        "schema_version": CLOSE_VALIDATION_SCHEMA_VERSION,
+        "aggregate": True,
+        "children": len(children),
+        "modes": sorted(modes),
+        "approximations": approximations,
+        "refusals": refusals,
+        "unknown_children": unknown_children,
+    }
+    out.update(_aggregate_status(children=len(children), unknown_children=unknown_children,
+                                 modes=modes, approximations=approximations,
+                                 refusals=refusals))
+    return {k: out[k] for k in _AGGREGATE_FIELDS}
+
+
+def format_close_validation(obj) -> str:
+    decoded = decode_close_validation(obj)
+    if decoded["decode_status"] != "ok":
+        return (f"close validation: unknown ({decoded['decode_status']}); "
+                "not strict evidence")
+    if decoded.get("aggregate"):
+        mode = ",".join(decoded["modes"]) or "none"
+    else:
+        mode = decoded["mode"] or "invalid"
+    text = (f"close validation: mode={mode} eligibility={decoded['close_eligibility']} "
+            f"parity={decoded['parity_status']}")
+    if decoded["approximations"]:
+        text += " approximations=" + ",".join(
+            f"{r['feature']}({'+'.join(r['required_inputs'])})"
+            for r in decoded["approximations"])
+    if decoded["refusals"]:
+        text += " refusals=" + ",".join(
+            f"{r['reason_code']}:{r['feature']}" for r in decoded["refusals"])
+    return text
 
 
 TIMEFRAME_PERIODS_PER_YEAR = {
@@ -717,7 +1458,8 @@ class Backtester:
                  allow_scale_in: bool = False,
                  scale_in: Optional[dict] = None,
                  atr_method: str = "simple",
-                 execution_spec: Optional[dict] = None):
+                 execution_spec: Optional[dict] = None,
+                 comparison_mode: Optional[str] = None):
         self.initial_capital = initial_capital
         self._execution = normalize_execution_spec(execution_spec)
         if self._execution is not None and (
@@ -748,22 +1490,16 @@ class Backtester:
             )
             self._maker_fee_pct = self._execution["maker_fee_pct"]
         self.open_strategy = dict(open_strategy or {})
-        self._close_refs: list[dict] = []
-        for ref in close_strategies or []:
-            if not isinstance(ref, dict):
-                raise ValueError(
-                    f"close_strategies entries must be dicts of shape "
-                    f"{{'name': str, 'params': dict}}, got {type(ref).__name__}"
-                )
-            name = (ref.get("name") or "").strip()
-            if not name:
-                raise ValueError(f"close_strategies ref missing 'name': {ref}")
-            params = dict(ref.get("params") or {})
-            name, params = _rewrite_deprecated_close_ref(name, params)
-            self._close_refs.append({
-                "name": name,
-                "params": params,
-            })
+        self._close_validation = validate_close_capabilities(
+            close_refs=close_strategies,
+            comparison_mode=comparison_mode,
+            platform=platform,
+            strategy_type=strategy_type,
+            consumer="engine",
+            phase="construction",
+        )
+        self.comparison_mode = self._close_validation.mode
+        self._close_refs: list[dict] = self._close_validation.normalized_close_refs()
         self.close_strategies = [r["name"] for r in self._close_refs]
         self.close_params = {r["name"]: r["params"] for r in self._close_refs}
         self._resting_tp_model = str(platform or "").strip().lower() == "hyperliquid"
@@ -1066,14 +1802,6 @@ class Backtester:
             self._resolve_regime_atr = resolve_regime_atr
         else:
             self._resolve_regime_atr = None
-            _evaluate, list_strategies = _load_close_registry()
-            available = set(list_strategies())
-            for name in self.close_strategies:
-                if name not in available:
-                    raise ValueError(
-                        f"Unknown close strategy: {name}. "
-                        f"Available: {sorted(available)}"
-                    )
 
         self._sl_mod = _load_post_tp_sl()
         _tier_vocab_errs = self._sl_mod.validate_regime_tiered_tp_labels(
@@ -2628,6 +3356,7 @@ class Backtester:
             "params": open_ref.get("params") or params or {},
             "open_strategy": open_ref,
             "close_strategies": [dict(r) for r in self._close_refs],
+            "close_validation": self._close_validation.to_dict(),
             "trades": [t.to_dict() for t in trades],
         })
         if self._execution is not None:

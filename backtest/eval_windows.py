@@ -272,13 +272,18 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
             keep_trades: bool = False,
             intrabar_resolution: str = "ohlc_walk",
             exchange_id: Optional[str] = None,
-            manifest_ctx: Optional[dict] = None) -> Optional[dict]:
+            manifest_ctx: Optional[dict] = None,
+            comparison_mode: Optional[str] = None) -> Optional[dict]:
     from atr import ensure_atr_indicator
     import pandas as pd
     from data_fetcher import load_cached_data
-    from backtester import Backtester
+    from backtester import Backtester, validate_close_capabilities
     from run_backtest import (FUNDING_COLUMN_STRATEGIES, OBSERVATION_INPUT_STRATEGIES,
                               _attach_funding_if_needed, _build_profile_label_series)
+
+    validate_close_capabilities(close_refs=close_strategies,
+                                comparison_mode=comparison_mode,
+                                platform=FEE_PLATFORM, phase="preflight")
 
     manifest_window = None
     manifest_info = None
@@ -409,6 +414,7 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
         regime_windows_spec=regime_windows_spec,
         commission_pct=commission_pct,
         intrabar_resolution=intrabar_resolution,
+        comparison_mode=comparison_mode,
     )
     if slippage_pct is not None:
         bt_kwargs["slippage_pct"] = slippage_pct
@@ -429,6 +435,7 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
     except (AttributeError, TypeError):
         span_days = None
     leg["span_days"] = round(span_days, 4) if span_days else span_days
+    leg["close_validation"] = results.get("close_validation")
     if keep_trades:
         leg["trade_samples"] = trade_samples_from_results(results)
     if manifest_info is not None:
@@ -479,6 +486,11 @@ def validate_candidate(candidate: dict) -> dict:
             "close_strategies (the open/close engine models both sides) or "
             "evaluate each leg separately.")
     ctype = str(candidate.get("type") or "perps").strip().lower()
+    from backtester import validate_close_capabilities
+    validate_close_capabilities(close_refs=close_refs,
+                                comparison_mode=candidate.get("comparison_mode"),
+                                platform=FEE_PLATFORM, strategy_type=ctype,
+                                phase="preflight")
     if candidate.get("invert_signal") and ctype not in ("perps", "manual"):
         raise ValueError(
             f"candidate sets invert_signal on type={ctype!r}, but "
@@ -610,6 +622,7 @@ def run_candidate_leg(reg, candidate: dict, symbol: str, timeframe: str,
         keep_trades=keep_trades,
         intrabar_resolution=intrabar_resolution,
         manifest_ctx=manifest_ctx,
+        comparison_mode=candidate.get("comparison_mode"),
     )
 
 
@@ -647,6 +660,9 @@ def evaluate_window(reg, candidate: dict, datasets: List[tuple],
     score["window"] = window_name
     score["window_range"] = list(window)
     score["bars"] = bars
+    from backtester import aggregate_close_validations
+    score["close_validation"] = aggregate_close_validations(
+        (leg or {}).get("close_validation") for leg in candidate_legs.values())
     return score
 
 
@@ -681,6 +697,9 @@ def format_window_report(score: dict) -> str:
             f"{_fmt(leg['max_dd_pct'])} {_fmt(leg['bh_return_pct'])} "
             f"{leg['trades']:>6}  {beats}"
         )
+    if score.get("close_validation") is not None:
+        from backtester import format_close_validation
+        lines.append(format_close_validation(score["close_validation"]))
     if score.get("verdict") == "no data":
         lines.append("verdict: NO DATA")
         return "\n".join(lines)
@@ -824,6 +843,15 @@ def build_parser() -> argparse.ArgumentParser:
                    choices=["ohlc_walk", "bar_close"], default="ohlc_walk",
                    help="SL race resolution (#1271): ohlc_walk (default) or "
                         "bar_close (reproduce pre-#1271 documented baselines).")
+    p.add_argument("--comparison-mode", dest="comparison_mode", default=None,
+                   metavar="MODE",
+                   help="#1683 close comparison mode for the candidate. Omitted = "
+                        "strict (refuses time_stop/zscore_target, whose live "
+                        "inputs no platform supplies, and HL-live-only closes). "
+                        "'approximate' opts research into those exits; every leg, "
+                        "window and the JSON payload carry close_validation with "
+                        "incomplete parity. Overrides nothing: a candidate JSON "
+                        "comparison_mode that differs is an error.")
     return p
 
 
@@ -857,6 +885,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.regime_directional_policy:
         candidate["regime_directional_policy"] = json.loads(
             args.regime_directional_policy)
+
+    if args.comparison_mode is not None:
+        if "comparison_mode" in candidate and candidate["comparison_mode"] != args.comparison_mode:
+            raise SystemExit(
+                f"--comparison-mode {args.comparison_mode!r} conflicts with the candidate "
+                f"JSON comparison_mode {candidate['comparison_mode']!r}; pick one")
+        candidate["comparison_mode"] = args.comparison_mode
 
     try:
         validate_candidate(candidate)
@@ -920,6 +955,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(format_window_report(score))
 
     print(format_summary(window_scores))
+    from backtester import aggregate_close_validations, format_close_validation
+    print(format_close_validation(aggregate_close_validations(
+        s.get("close_validation") for s in window_scores)))
 
     sweep_rows = []
     if args.sweep:
@@ -955,6 +993,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             "manifest": manifest_meta,
             "window_scores": window_scores,
             "sweep": sweep_rows,
+            "close_validation": aggregate_close_validations(
+                [s.get("close_validation") for s in window_scores]
+                + [r["score"].get("close_validation") for r in sweep_rows]),
         }
         with open(args.json_out, "w") as fh:
             json.dump(payload, fh, indent=2, default=str)

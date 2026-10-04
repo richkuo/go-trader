@@ -95,6 +95,7 @@ def build_profile_grid() -> list:
 def candidate_leg_kwargs(candidate: dict) -> dict:
     return dict(
         close_strategies=candidate.get("close_strategies"),
+        comparison_mode=candidate.get("comparison_mode"),
         direction=candidate.get("direction") or "long",
         invert_signal=bool(candidate.get("invert_signal")),
         stop_loss_atr_mult=candidate.get("stop_loss_atr_mult"),

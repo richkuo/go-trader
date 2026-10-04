@@ -182,7 +182,7 @@ Offline (no network; verifies hashes, then reruns everything):
 uv run --no-sync python backtest/offline_manifest.py verify --manifest backtest/candidates/vortex_trend_1647/study_manifest.json
 uv run --no-sync python backtest/candidates/vortex_trend_1647/run_study.py
 uv run --no-sync python backtest/eval_windows.py --registry futures --candidate-json backtest/candidates/vortex_trend_1647/candidate_seed.json --manifest backtest/candidates/vortex_trend_1647/study_manifest.json --sweep-window train --sweep period=7,14,21,28
-uv run --no-sync python backtest/run_backtest.py --mode single --registry futures --strategy vortex_trend --close-strategy '{"name":"time_stop","params":{"max_bars":20}}' --stop-loss-atr-mult 1.0 --direction both --manifest backtest/candidates/vortex_trend_1647/study_manifest.json --manifest-dataset "BTC 4h" --manifest-window test
+uv run --no-sync python backtest/run_backtest.py --mode single --registry futures --strategy vortex_trend --close-strategy '{"name":"time_stop","params":{"max_bars":20}}' --stop-loss-atr-mult 1.0 --direction both --manifest backtest/candidates/vortex_trend_1647/study_manifest.json --manifest-dataset "BTC 4h" --manifest-window test --comparison-mode approximate
 ```
 
 `discovery_before.json` / `discovery_after.json` hold the spot and futures

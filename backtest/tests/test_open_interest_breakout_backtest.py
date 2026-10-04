@@ -171,9 +171,11 @@ def test_manifest_leg_runs_the_candidate_with_attached_open_interest(tmp_path):
     ctx = {"manifest": m, "window": "test", "cost_multiplier": 1.0}
     close = [{"name": "time_stop", "params": {"max_bars": 3}}]
     leg = eval_windows.run_leg(reg, NAME, PARAMS, "BTC", "1h", (None, None), close_strategies=close,
-                               direction="both", stop_loss_atr_mult=1.0, manifest_ctx=ctx, keep_trades=True)
+                               direction="both", stop_loss_atr_mult=1.0, manifest_ctx=ctx, keep_trades=True,
+                               comparison_mode="approximate")
     again = eval_windows.run_leg(reg, NAME, PARAMS, "BTC", "1h", (None, None), close_strategies=close,
-                                 direction="both", stop_loss_atr_mult=1.0, manifest_ctx=ctx, keep_trades=True)
+                                 direction="both", stop_loss_atr_mult=1.0, manifest_ctx=ctx, keep_trades=True,
+                               comparison_mode="approximate")
     assert leg == again
     cov = leg["manifest"]["open_interest_coverage"]
     assert cov["available"] and cov["bucket_coverage"] == 1.0
@@ -189,7 +191,8 @@ def test_manifest_leg_without_coverage_holds_and_non_manifest_paths_refuse(tmp_p
     ctx = {"manifest": m, "window": "test", "cost_multiplier": 1.0}
     close = [{"name": "time_stop", "params": {"max_bars": 3}}]
     leg = eval_windows.run_leg(reg, NAME, PARAMS, "BTC", "1h", (None, None), close_strategies=close,
-                               direction="both", stop_loss_atr_mult=1.0, manifest_ctx=ctx)
+                               direction="both", stop_loss_atr_mult=1.0, manifest_ctx=ctx,
+                               comparison_mode="approximate")
     assert leg["execution"]["positions"] == 0
     assert leg["manifest"]["open_interest_coverage"]["bucket_coverage"] < 0.2
 
@@ -198,7 +201,8 @@ def test_manifest_leg_without_coverage_holds_and_non_manifest_paths_refuse(tmp_p
     m2 = om.load_manifest(str(_build(bare, with_oi=False)))
     with pytest.raises(ValueError, match="attaches no open_interest"):
         eval_windows.run_leg(reg, NAME, PARAMS, "BTC", "1h", (None, None), close_strategies=close,
-                             direction="both", manifest_ctx={"manifest": m2, "window": "test"})
+                             direction="both", manifest_ctx={"manifest": m2, "window": "test"},
+                             comparison_mode="approximate")
     with pytest.raises(ValueError, match="only the --manifest path"):
         eval_windows.run_leg(reg, NAME, PARAMS, "BTC/USDT", "1h", ("2026-01-01", None))
     with pytest.raises(SystemExit, match="only with --manifest"):
@@ -225,7 +229,7 @@ def test_entry_fills_next_bar_open_and_close_survives_missing_open_interest():
     bt = Backtester(initial_capital=1000.0, platform="hyperliquid",
                     open_strategy={"name": NAME, "params": PARAMS},
                     close_strategies=[{"name": "time_stop", "params": {"max_bars": 3}}],
-                    stop_loss_atr_mult=1.0, direction="both")
+                    stop_loss_atr_mult=1.0, direction="both", comparison_mode="approximate")
     res = bt.run(signals, strategy_name=NAME, symbol="BTC", timeframe="1h", params=PARAMS, save=False)
     trade = res["trades"][0]
     assert pd.Timestamp(trade["entry_date"]) == df.index[21]

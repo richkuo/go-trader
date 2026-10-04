@@ -236,7 +236,7 @@ def _load_reg_and_window(registry: str, window_name: str):
 def run_leg_trades(strategy: str, registry: str, params: Optional[dict],
                    dataset: str, window_name: str,
                    capital: float, direction: Optional[str],
-                   returns: str) -> List[float]:
+                   returns: str, validations: Optional[list] = None) -> List[float]:
     from eval_windows import parse_dataset_arg, run_leg
 
     reg, window = _load_reg_and_window(registry, window_name)
@@ -247,10 +247,11 @@ def run_leg_trades(strategy: str, registry: str, params: Optional[dict],
     if strategy not in reg.STRATEGY_REGISTRY:
         raise SystemExit(f"Unknown strategy {strategy!r}; available: "
                          f"{reg.list_strategies()}")
-    values = _leg_returns(
-        run_leg(reg, strategy, params, symbol, timeframe, window,
-                capital=capital, direction=direction, keep_trades=True),
-        returns)
+    leg = run_leg(reg, strategy, params, symbol, timeframe, window,
+                  capital=capital, direction=direction, keep_trades=True)
+    if validations is not None:
+        validations.append((leg or {}).get("close_validation"))
+    values = _leg_returns(leg, returns)
     if values is None:
         raise SystemExit(f"no cached data for {dataset} in window "
                          f"{window_name!r}")
@@ -259,7 +260,8 @@ def run_leg_trades(strategy: str, registry: str, params: Optional[dict],
 
 def run_candidate_leg_trades(candidate: dict, registry: str, dataset: str,
                              window_name: str, capital: float,
-                             returns: str) -> Optional[List[float]]:
+                             returns: str,
+                             validations: Optional[list] = None) -> Optional[List[float]]:
     from eval_windows import parse_dataset_arg, run_candidate_leg
 
     reg, window = _load_reg_and_window(registry, window_name)
@@ -270,10 +272,11 @@ def run_candidate_leg_trades(candidate: dict, registry: str, dataset: str,
     if candidate["name"] not in reg.STRATEGY_REGISTRY:
         raise SystemExit(f"Unknown strategy {candidate['name']!r}; available: "
                          f"{reg.list_strategies()}")
-    return _leg_returns(
-        run_candidate_leg(reg, candidate, symbol, timeframe, window,
-                          capital=capital, keep_trades=True),
-        returns)
+    leg = run_candidate_leg(reg, candidate, symbol, timeframe, window,
+                            capital=capital, keep_trades=True)
+    if validations is not None:
+        validations.append((leg or {}).get("close_validation"))
+    return _leg_returns(leg, returns)
 
 
 def default_dataset_args() -> List[str]:
@@ -524,6 +527,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     common = dict(n_paths=args.n_paths, block_len=args.block_len,
                   seed=args.seed, kill_switch_pct=kill_switch,
                   percentiles=percentiles)
+    from backtester import aggregate_close_validations, format_close_validation
+    validations: list = []
 
     if multileg:
         from eval_windows import dataset_key, parse_dataset_arg, run_leg
@@ -551,19 +556,20 @@ def main(argv: Optional[List[str]] = None) -> int:
                 if candidate is not None:
                     values = run_candidate_leg_trades(
                         candidate, args.registry, ds, wname, args.capital,
-                        args.returns)
+                        args.returns, validations)
                 else:
                     reg, window = _load_reg_and_window(args.registry, wname)
                     if args.strategy not in reg.STRATEGY_REGISTRY:
                         raise SystemExit(
                             f"Unknown strategy {args.strategy!r}; available: "
                             f"{reg.list_strategies()}")
-                    values = _leg_returns(
-                        run_leg(reg, args.strategy, params, symbol, timeframe,
-                                window, capital=args.capital,
-                                direction=args.direction, keep_trades=True),
-                        args.returns)
-                leg = {"window": wname, "dataset": dataset_key(symbol, timeframe)}
+                    raw_leg = run_leg(reg, args.strategy, params, symbol, timeframe,
+                                      window, capital=args.capital,
+                                      direction=args.direction, keep_trades=True)
+                    validations.append((raw_leg or {}).get("close_validation"))
+                    values = _leg_returns(raw_leg, args.returns)
+                leg = {"window": wname, "dataset": dataset_key(symbol, timeframe),
+                       "close_validation": validations[-1]}
                 if values is None:
                     leg.update({"status": "no_data", "n_trades": 0,
                                 "observed": None, "schemes": []})
@@ -581,6 +587,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                   f"({args.registry} registry)")
         print(format_multileg_report(source, args.returns, threshold_source,
                                      kill_switch, legs))
+        close_validation = aggregate_close_validations(validations)
+        print(format_close_validation(close_validation))
 
         if not any(leg["status"] == "ok" for leg in legs):
             sys.stderr.write("no cached data for any (window, dataset) leg\n")
@@ -593,6 +601,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "kill_switch_pct": kill_switch,
                 "kill_switch_source": threshold_source,
                 "candidate": candidate,
+                "close_validation": close_validation,
                 "legs": legs,
             }
             with open(args.json_out, "w") as fh:
@@ -618,10 +627,13 @@ def main(argv: Optional[List[str]] = None) -> int:
             values = trade_returns(trades, returns=args.returns)
         except ValueError as exc:
             raise SystemExit(str(exc))
+        validations.append(payload.get("close_validation")
+                           if isinstance(payload, dict) else None)
         source = args.trades_json
     elif candidate is not None:
         values = run_candidate_leg_trades(candidate, args.registry, dataset,
-                                          window, args.capital, args.returns)
+                                          window, args.capital, args.returns,
+                                          validations)
         if values is None:
             raise SystemExit(f"no cached data for {dataset} in window "
                              f"{window!r}")
@@ -634,7 +646,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             raise SystemExit(f"--params must be valid JSON: {exc}")
         values = run_leg_trades(args.strategy, args.registry, params,
                                 dataset, window, args.capital,
-                                args.direction, args.returns)
+                                args.direction, args.returns, validations)
         source = (f"{args.strategy} {dataset} window={window} "
                   f"({args.registry} registry)")
 
@@ -643,6 +655,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     print(format_report(source, args.returns, observed, threshold_source,
                         blocks))
+    close_validation = aggregate_close_validations(validations)
+    print(format_close_validation(close_validation))
 
     if args.json_out:
         payload = {
@@ -656,6 +670,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             "kill_switch_source": threshold_source,
             "observed": {"max_dd_pct": round(observed[0], 4),
                          "final_return_pct": round(observed[1], 4)},
+            "close_validation": close_validation,
             "schemes": blocks,
         }
         with open(args.json_out, "w") as fh:

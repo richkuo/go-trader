@@ -237,7 +237,7 @@ def test_no_reopen_after_short_blowup_engine_path(closes, signals, extra_kw):
     df = _df(closes, signals, atr=2.0)
     res = _run(df, close_strategies=[
         {"name": "time_stop", "params": {"max_bars": 2}},
-    ], **extra_kw)
+    ], comparison_mode="approximate", **extra_kw)
     assert res["total_trades"] == 1
     assert res["trades"][0]["side"] == "short"
     assert res["final_capital"] == pytest.approx(-10000.0)

@@ -4,7 +4,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from backtester import Backtester
+from backtester import CLOSE_CAPABILITIES, Backtester, CloseCapabilityError
 
 
 def _df_open_then_hold(opens, closes, atrs=None):
@@ -813,6 +813,25 @@ def test_hyperliquid_tier_close_matches_the_parity_fixture(case):
     market = case["market"]
     idx = pd.Timestamp("2024-01-02")
     atr_series = pd.Series([market["atr"]], index=[idx]) if market["atr"] else None
+    if CLOSE_CAPABILITIES[ref["name"]].live == "live_only":
+        with pytest.raises(CloseCapabilityError) as refused:
+            Backtester(platform="hyperliquid", close_strategies=[{"name": ref["name"], "params": params}])
+        assert refused.value.reason_code == "LIVE_ONLY_CLOSE"
+        from close_registry_loader import evaluate
+        side_qty = p["quantity"]
+        anchor = p["risk_anchor_price"] or p["avg_cost"]
+        live_market = {"mark_price": market["mark_price"], "regime": market["regime"]}
+        if market["atr"]:
+            live_market["atr"] = market["atr"]
+        result = evaluate(ref["name"], {
+            "side": p["side"], "avg_cost": anchor, "risk_anchor_price": anchor,
+            "current_quantity": side_qty, "initial_quantity": p["initial_quantity"],
+            "entry_atr": p["entry_atr"], "regime": p["regime_applied_label"] or p["regime"],
+            "bars_held": 0, "tp_model": "resting_limit",
+        }, live_market, params)
+        assert result["close_fraction"] == pytest.approx(case["want"]["close_fraction"])
+        assert result.get("tier_fill_price", 0.0) == pytest.approx(case["want"]["fill_price"])
+        return
     bt = Backtester(platform="hyperliquid", close_strategies=[{"name": ref["name"], "params": params}])
 
     fraction, _reason, fill = bt._evaluate_close_strategies(

@@ -196,7 +196,7 @@ def test_zscore_target_close_uses_closed_bar_z_and_fills_next_open():
                     open_strategy={"name": "x"},
                     close_strategies=[{"name": "zscore_target",
                                        "params": {"lookback": 4, "z_target": 1.0}}],
-                    direction="long")
+                    direction="long", comparison_mode="approximate")
     result = bt.run(df, strategy_name="x", save=False)
     assert result["total_trades"] == 1
     exit_date = pd.Timestamp(result["trades"][0]["exit_date"])

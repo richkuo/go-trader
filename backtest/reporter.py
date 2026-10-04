@@ -14,6 +14,11 @@ import pandas as pd
 from storage import get_backtest_results
 
 
+def _close_validation_line(obj) -> str:
+    from backtester import format_close_validation
+    return format_close_validation(obj)
+
+
 def _fmt_opt(value, spec: str = ".3f", none_text: str = "n/a") -> str:
     if value is None:
         m = re.match(r">?(\d+)", spec)
@@ -50,6 +55,8 @@ def format_single_report(results: dict) -> str:
         f"    Profit Factor:   {_fmt_opt(results.get('profit_factor', 0))}",
         f"    Avg Win:         {results.get('avg_win_pct', 0):+.2f}%",
         f"    Avg Loss:        {results.get('avg_loss_pct', 0):+.2f}%",
+        f"{'─'*70}",
+        f"  {_close_validation_line(results.get('close_validation'))}",
     ]
 
     trades = results.get("trades", [])
@@ -106,6 +113,10 @@ def format_comparison_report(results_list: List[dict], title: str = "STRATEGY CO
         f"  {'─'*88}",
         f"  Best Return: {max(returns):+.2f}% | Best Sharpe: {max(sharpes):.3f}",
         f"  Mean Return: {np.mean(returns):+.2f}% | Mean Sharpe: {np.mean(sharpes):.3f}",
+    ])
+    from backtester import aggregate_close_validations
+    lines.extend([
+        f"  {_close_validation_line(aggregate_close_validations(r.get('close_validation') for r in results_list))}",
         f"{'='*90}",
     ])
     return "\n".join(lines)
@@ -164,6 +175,7 @@ def format_walk_forward_report(wf_result: dict) -> str:
         f"  STABILITY",
         f"    Most Stable Params: {wf_result.get('most_common_best_params', 'N/A')}",
     ]
+    lines.append(f"    {_close_validation_line(wf_result.get('close_validation'))}")
     swept_closes = wf_result.get("close_stack_grid_size", 1) > 1
     if swept_closes:
         lines.append(

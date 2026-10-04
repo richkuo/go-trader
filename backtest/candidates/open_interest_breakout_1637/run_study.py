@@ -21,6 +21,7 @@ sys.path.insert(0, os.path.join(_REPO, "shared_tools"))
 
 import observation_replay as orp
 import offline_manifest as om
+from backtester import aggregate_close_validations
 from eval_windows import (INCUMBENTS, WINDOWS, evaluate_window, execution_metrics, expand_sweep,
                           leg_from_results, manifest_datasets)
 from optimizer import DEFAULT_PARAM_RANGES
@@ -147,11 +148,14 @@ def verify_recording(manifest: dict) -> dict:
     return out
 
 
+COMPARISON_MODE = "approximate"
+
+
 def arm(spec: dict, name: str, params: dict) -> dict:
     ex = spec["exit_and_risk"]
     return {"name": name, "params": dict(params), "direction": ex["direction"],
             "close_strategies": [dict(ex["close_strategy"], params=dict(ex["close_strategy"]["params"]))],
-            "stop_loss_atr_mult": 1.0}
+            "stop_loss_atr_mult": 1.0, "comparison_mode": COMPARISON_MODE}
 
 
 def _grid(defaults: dict) -> list:
@@ -210,7 +214,7 @@ def matched_leg(reg, spec, manifest, dataset, window_name, params, cost) -> dict
     bt = Backtester(initial_capital=ex["capital_usd"], platform="hyperliquid",
                     open_strategy={"name": MATCHED, "params": {"entry_period": params["price_lookback"]}},
                     close_strategies=[ex["close_strategy"]], direction=ex["direction"],
-                    stop_loss_atr_mult=1.0,
+                    stop_loss_atr_mult=1.0, comparison_mode=COMPARISON_MODE,
                     execution_spec=om.execution_spec(manifest, dataset, cost))
     results = bt.run(scored, strategy_name=MATCHED, symbol=dataset["symbol"], timeframe=manifest["interval"],
                      params={"entry_period": params["price_lookback"]}, save=False, indicator_frame=base)
@@ -218,13 +222,14 @@ def matched_leg(reg, spec, manifest, dataset, window_name, params, cost) -> dict
     leg = leg_from_results(results, bh_return_pct=round((closes.iloc[-1] - closes.iloc[0]) / closes.iloc[0] * 100, 2))
     leg["execution"] = execution_metrics(results, ex["capital_usd"])
     leg["manifest"] = {"funding_coverage": funding_cov}
+    leg["close_validation"] = results.get("close_validation")
     return leg
 
 
 def summarize(legs: dict) -> dict:
     present = {k: v for k, v in legs.items() if v is not None}
     if not present:
-        return {"datasets": 0, "positions": 0}
+        return {"datasets": 0, "positions": 0, "close_validation": aggregate_close_validations([])}
     positions = []
     per = {}
     for key, leg in sorted(present.items()):
@@ -256,6 +261,8 @@ def summarize(legs: dict) -> dict:
         "top_dataset_abs_pnl_share": round(max(abs_ds) / sum(abs_ds), 4) if sum(abs_ds) > 0 else None,
         "same_side_cross_asset_overlap_share": round(overlap / len(positions), 4) if positions else None,
         "per_dataset": per,
+        "close_validation": aggregate_close_validations(
+            leg.get("close_validation") for leg in present.values()),
     }
 
 
@@ -391,6 +398,7 @@ def run(manifest_path: str) -> dict:
         "source_sha256": {p: _sha(os.path.join(_REPO, p)) for p in SOURCE_FILES},
         "protocol": {
             "close_strategy": spec["exit_and_risk"]["close_strategy"],
+            "comparison_mode": COMPARISON_MODE,
             "stop": spec["exit_and_risk"]["stop_owner"],
             "direction": spec["exit_and_risk"]["direction"],
             "capital_usd": spec["exit_and_risk"]["capital_usd"],
@@ -412,6 +420,8 @@ def run(manifest_path: str) -> dict:
     }
     result["verdict"] = verdict(held[CANDIDATE]["base"], held[CANDIDATE]["stress"], held[BASELINE]["base"],
                                 held[MATCHED]["base"], oi_share[HELD_OUT_WINDOW])
+    result["close_validation"] = aggregate_close_validations(
+        held[a][k].get("close_validation") for a in held for k in ("base", "stress"))
     return result
 
 
@@ -465,6 +475,9 @@ def render(result: dict) -> str:
         f"- Every arm: direction `{result['protocol']['direction']}`, close `time_stop` "
         f"(max_bars {result['protocol']['close_strategy']['params']['max_bars']}), {result['protocol']['stop']}, "
         f"capital ${result['protocol']['capital_usd']:.0f}; {result['protocol']['sizing']}.",
+        f"- Close comparison mode: `{result['protocol'].get('comparison_mode') or 'not recorded (pre-#1683 run)'}`. "
+        "time_stop reads the simulator's held-bar count, which no live close context supplies, so every arm here is "
+        "research evidence with incomplete close parity, never strict live parity proof.",
         f"- Selection: {result['protocol']['selection_rule']}",
         f"- Selection outcome: {result['selection']['choice']['rule_outcome']}; scored params "
         f"`{json.dumps(result['selection']['selected_params'], sort_keys=True)}`",

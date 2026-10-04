@@ -16,5 +16,6 @@
       }
     }
   ],
-  "stop_loss_atr_mult": 1.0
+  "stop_loss_atr_mult": 1.0,
+  "comparison_mode": "approximate"
 }

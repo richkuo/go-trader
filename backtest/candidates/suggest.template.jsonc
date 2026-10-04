@@ -139,10 +139,13 @@
   //   "incumbent_close" — an explicit close-ref ladder (self-contained; no
   //       config fixture needed). `strategy_id` is then the OPEN-strategy name
   //       (a registered strategy, e.g. "squeeze_momentum" — NOT an arbitrary id).
-  // Every candidate_close must be per-entry REPLAYABLE (atr_stop, time_stop,
-  // zscore_target, tiered_tp_atr[_regime], tiered_tp_atr_live, trailing_stop_*,
-  // stop_loss_atr_mult, trailing_tp_ratchet[_regime]); a non-replayable close is
-  // reported "excluded_not_replayable" and never run.
+  // Every candidate_close passes the central close-capability policy
+  // (backtester.CLOSE_CAPABILITIES, #1683) as an entry replay: a registered
+  // close without a per-entry rule is reported "excluded_not_replayable"; any
+  // other refusal (unknown or HL-live-only close, or time_stop/zscore_target
+  // without an explicit "comparison_mode": "approximate" on the m6 block or the
+  // variant) is reported "excluded_close_capability", recorded with its reason
+  // code, marks the shortlist INCOMPLETE and exits 1. Neither is ever run.
   "m6": {
     "strategy_id": "squeeze_momentum",
     // Optional m6-level entry gate applied to close_stack_specs-generated

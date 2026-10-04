@@ -30,7 +30,7 @@ def _bt(**kw):
     base = dict(initial_capital=1000.0, platform="hyperliquid",
                 open_strategy={"name": NAME, "params": PARAMS},
                 close_strategies=[{"name": "time_stop", "params": {"max_bars": 3}}],
-                stop_loss_atr_mult=1.0, direction="both")
+                stop_loss_atr_mult=1.0, direction="both", comparison_mode="approximate")
     base.update(kw)
     return Backtester(**base)
 

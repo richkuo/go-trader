@@ -51,6 +51,7 @@ def main(argv=None):
                 "gross_return_pct": None if gross is None else gross["return_pct"],
                 "net_return_pct": None if net is None else net["return_pct"],
                 "trades": None if net is None else net["trades"],
+                "close_validation": None if net is None else net.get("close_validation"),
             }
         summary = summarize_fee_drag(gross_legs, net_legs)
         out["candidates"][label] = {"summary": summary,

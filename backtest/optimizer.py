@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 
 from registry_loader import load_registry
-from backtester import Backtester
+from backtester import Backtester, CloseCapabilityError, aggregate_close_validations
 from atr import ensure_atr_indicator
 
 
@@ -228,6 +228,7 @@ def walk_forward_optimize(
     close_strategies: Optional[List[dict]] = None,
     close_stack_grid: Optional[List[dict]] = None,
     direction: Optional[str] = None,
+    comparison_mode: Optional[str] = None,
 ) -> dict:
     total_len = len(df)
     window_size = total_len // n_splits
@@ -284,10 +285,17 @@ def walk_forward_optimize(
             trailing_stop_atr_mult=stack.get("trailing_stop_atr_mult"),
             close_strategies=stack.get("close_strategies"),
             direction=direction,
+            comparison_mode=comparison_mode,
         ))
         for stack in stacks
     ]
     bt = stack_bts[0][1]
+    stack_validations = [
+        {"label": stack["label"], "close_validation": stack_bt._close_validation.to_dict()}
+        for stack, stack_bt in stack_bts
+    ]
+    grid_validation = aggregate_close_validations(
+        v["close_validation"] for v in stack_validations)
 
     needs_atr = any(stack.get("close_strategies") for stack, _ in stack_bts)
     uses_exits = needs_atr or any(
@@ -349,6 +357,8 @@ def walk_forward_optimize(
                 train_seed = warmup_exit_long_entry(
                     signals_ext.iloc[:train_boundary_idx], bt.slippage_pct,
                 ) if train_boundary_idx else None
+            except CloseCapabilityError:
+                raise
             except _EXPECTED_FOLD_ERRORS as e:
                 if verbose:
                     print(f"    [skip] fold {fold+1} {strategy_name} {params}: {type(e).__name__}: {e}")
@@ -365,6 +375,8 @@ def walk_forward_optimize(
                         best_params = params
                         best_stack = stack
                         best_bt = stack_bt
+                except CloseCapabilityError:
+                    raise
                 except _EXPECTED_FOLD_ERRORS as e:
                     if verbose:
                         print(f"    [skip] fold {fold+1} {strategy_name} {params} "
@@ -387,6 +399,8 @@ def walk_forward_optimize(
                                       symbol=symbol, timeframe=timeframe,
                                       params=best_params, save=False,
                                       starting_long=test_seed)
+        except CloseCapabilityError:
+            raise
         except _EXPECTED_FOLD_ERRORS as e:
             if verbose:
                 print(f"    [skip] fold {fold+1} validation {strategy_name}: {type(e).__name__}: {e}")
@@ -400,6 +414,7 @@ def walk_forward_optimize(
                 k: best_stack.get(k) for k in
                 ("close_strategies", "stop_loss_atr_mult", "trailing_stop_atr_mult")
             },
+            "best_close_stack_validation": best_bt._close_validation.to_dict(),
             "train_metric": best_metric,
             "test_result": test_result,
             "train_period": f"{train_df.index[0].strftime('%Y-%m-%d')} to {train_df.index[-1].strftime('%Y-%m-%d')}",
@@ -416,7 +431,9 @@ def walk_forward_optimize(
                   f"MaxDD: {test_result['max_drawdown_pct']:.2f}%")
 
     if not window_results:
-        return {"error": "No valid optimization windows", "strategy": strategy_name}
+        return {"error": "No valid optimization windows", "strategy": strategy_name,
+                "close_validation": grid_validation,
+                "close_stack_validations": stack_validations}
 
     oos_returns = [w["test_result"]["total_return_pct"] for w in window_results]
     oos_sharpes = [w["test_result"]["sharpe_ratio"] for w in window_results]
@@ -444,6 +461,8 @@ def walk_forward_optimize(
         "oos_worst_drawdown": round(min(oos_drawdowns), 2),
         "most_common_best_params": most_common_params,
         "most_common_best_close_stack": most_common_stack,
+        "close_validation": grid_validation,
+        "close_stack_validations": stack_validations,
         "window_results": window_results,
     }
 
@@ -461,6 +480,8 @@ def walk_forward_optimize(
         print(f"  Most Stable Params: {summary['most_common_best_params']}")
         if len(stack_bts) > 1:
             print(f"  Most Stable Close Stack: {summary['most_common_best_close_stack']}")
+        from backtester import format_close_validation
+        print(f"  {format_close_validation(grid_validation)}")
 
     return summary
 

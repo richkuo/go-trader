@@ -1,2 +1,2 @@
-{"name": "ichimoku_cloud", "direction": "long",
+{"name": "ichimoku_cloud", "direction": "long", "comparison_mode": "approximate",
  "close_strategies": [{"name": "zscore_target", "params": {"lookback": 20, "z_target": 2.0}}]}

@@ -10,6 +10,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(_HERE, "..", ".."))
 sys.path.insert(0, os.path.join(_HERE, "..", "..", "..", "shared_tools"))
 
+from backtester import aggregate_close_validations
 from eval_windows import DATASETS, WINDOWS, dataset_key, run_leg
 from optimizer import (DEFAULT_CLOSE_STACK_SPECS,
                        generate_close_stack_grid)
@@ -39,6 +40,8 @@ def score_stack(reg, stack, window, capital=1000.0):
         "mean_return_pct": round(statistics.mean(l["return_pct"] for l in present), 2),
         "worst_max_dd_pct": round(min(l["max_dd_pct"] for l in present), 2),
         "total_trades": sum(l["trades"] for l in present),
+        "close_validation": aggregate_close_validations(
+            l.get("close_validation") for l in legs.values() if l is not None),
     }
 
 

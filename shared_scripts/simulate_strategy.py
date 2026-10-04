@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.join(ROOT, "backtest"))
 
 from atr import ensure_atr_indicator
 from regime import normalize_regime_gate_on_failure
-from backtester import Backtester
+from backtester import Backtester, CloseCapabilityError
 from registry_loader import load_registry, registry_for_strategy_type
 from run_backtest import _apply_htf_filter_to_df
 
@@ -273,6 +273,9 @@ def _run_payload(payload: dict) -> dict:
         cfg = dict(item.get("config") or item)
         try:
             out[label] = _simulate_one(cfg, candles)
+        except CloseCapabilityError as exc:
+            return {"error": f"{label}: {exc}", "markers": {},
+                    "label": label, "close_capability": exc.to_dict()}
         except Exception as exc:
             return {"error": f"{label}: {exc}", "markers": out}
     return {"markers": out}

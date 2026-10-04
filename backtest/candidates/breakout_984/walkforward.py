@@ -41,7 +41,8 @@ def main(argv=None):
                                     direction="long", verbose=False)
         folds = res.get("window_results") or []
         picks = [w["best_close_stack"] for w in folds]
-        out[f"{symbol} {tf}"] = {"folds": folds, "picks": picks}
+        out[f"{symbol} {tf}"] = {"folds": folds, "picks": picks,
+                                 "close_validation": res.get("close_validation")}
         print(f"\n{symbol} {tf}: fold winners (train-selected by DDadj):")
         for w in folds:
             t = w.get("test_result") or {}

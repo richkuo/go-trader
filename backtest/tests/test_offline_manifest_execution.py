@@ -271,10 +271,12 @@ def test_eval_windows_manifest_leg_is_offline_and_repeatable(tmp_path, monkeypat
     close = [{"name": "time_stop", "params": {"max_bars": 5}}]
     leg = eval_windows.run_leg(reg, "breakout", None, "BTC", "1h", (None, None),
                                close_strategies=close, direction="both",
-                               stop_loss_atr_mult=1.0, manifest_ctx=ctx)
+                               stop_loss_atr_mult=1.0, manifest_ctx=ctx,
+                               comparison_mode="approximate")
     again = eval_windows.run_leg(reg, "breakout", None, "BTC", "1h", (None, None),
                                  close_strategies=close, direction="both",
-                                 stop_loss_atr_mult=1.0, manifest_ctx=ctx)
+                                 stop_loss_atr_mult=1.0, manifest_ctx=ctx,
+                                 comparison_mode="approximate")
     assert leg == again
     assert leg["manifest"]["cost_model"] == "execution_spec"
     assert leg["manifest"]["candle_coverage"]["present_bars"] == 150
@@ -329,7 +331,8 @@ def test_indicator_frame_gives_zscore_and_hurst_on_scored_bar_one(tmp_path, monk
     monkeypatch.setattr(Backtester, "_evaluate_close_strategies", spy_eval)
     monkeypatch.setattr(hurst_gate.HurstGate, "step", spy_step)
     kw = dict(close_strategies=[{"name": "zscore_target", "params": {"lookback": 20}}],
-              hurst_gate={"enabled": True, "min": 0.0, "max": 1.0})
+              hurst_gate={"enabled": True, "min": 0.0, "max": 1.0},
+              comparison_mode="approximate")
     for ctx, finite in ((None, False), (full, True)):
         seen.clear()
         _bt(**kw).run(scored, save=False, indicator_frame=ctx)
@@ -340,7 +343,8 @@ def test_indicator_frame_gives_zscore_and_hurst_on_scored_bar_one(tmp_path, monk
 def test_indicator_frame_equal_to_scored_frame_changes_nothing(tmp_path):
     _, scored = _warmup_frames(tmp_path)
     kw = dict(stop_loss_atr_mult=1.0,
-              close_strategies=[{"name": "time_stop", "params": {"max_bars": 5}}])
+              close_strategies=[{"name": "time_stop", "params": {"max_bars": 5}}],
+              comparison_mode="approximate")
     base = _bt(**kw).run(scored, save=False)
     same = _bt(**kw).run(scored, save=False, indicator_frame=scored)
     assert base["trades"] and base["trades"] == same["trades"]

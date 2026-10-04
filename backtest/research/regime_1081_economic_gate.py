@@ -18,7 +18,8 @@ for _p in (_THIS_DIR, _BACKTEST, _ROOT, os.path.join(_ROOT, "shared_tools")):
         sys.path.insert(0, _p)
 
 from atr import ensure_atr_indicator
-from backtester import Backtester
+from backtester import (Backtester, CloseCapabilityError, aggregate_close_validations,
+                        validate_close_capabilities)
 from data_fetcher import load_cached_data
 from eval_windows import DEFAULT_CAPITAL, PLATFORM, WINDOWS, dd_adjusted_return
 from registry_loader import load_registry
@@ -65,7 +66,6 @@ SUPPORTED_CLOSE_NAMES = {
     "trailing_tp_ratchet",
     "trailing_tp_ratchet_regime",
 }
-UNSUPPORTED_CLOSE_NAMES = {"tiered_tp_atr_live_regime_dynamic"}
 
 STOP_REASON_PREFIXES = (
     "sl",
@@ -126,10 +126,11 @@ def _has_regime_sl_after(obj) -> bool:
 
 
 def validate_arm_config(arm: dict) -> None:
+    validate_close_capabilities(close_refs=arm.get("close_strategies"),
+                                comparison_mode=arm.get("comparison_mode"),
+                                strategy_type="perps", phase="preflight")
     for ref in arm.get("close_strategies") or []:
         name = str(ref.get("name") or "").strip()
-        if name in UNSUPPORTED_CLOSE_NAMES:
-            raise ValueError(f"{name} is HL-live-only and not supported by #1081")
         if name and name not in SUPPORTED_CLOSE_NAMES:
             raise ValueError(
                 f"close strategy {name!r} is outside the #1081 ATR surface set"
@@ -385,6 +386,7 @@ def summarize_results(results: dict) -> dict:
         "median_mfe_pct": None,
         "exit_reasons": {},
         "liquidated": bool(results.get("liquidated")),
+        "close_validation": results.get("close_validation"),
     }
     if mae_by_entry:
         out["median_mae_pct"] = _round_or_none(float(np.median(mae_by_entry)), 4)
@@ -506,6 +508,7 @@ def _backtester_kwargs(arm: dict, *, capital: float, platform: str, strategy: st
         "trailing_stop_atr_mult": arm.get("trailing_stop_atr_mult"),
         "stop_loss_atr_mult_regime": deepcopy(arm.get("stop_loss_atr_mult_regime")),
         "trailing_stop_atr_mult_regime": deepcopy(arm.get("trailing_stop_atr_mult_regime")),
+        "comparison_mode": arm.get("comparison_mode"),
     }
 
 
@@ -639,6 +642,8 @@ def run_gate(
                         control_grids=control_grids,
                     )
                     cell.update({"window": window, "label_source": source})
+                except CloseCapabilityError:
+                    raise
                 except Exception as exc:
                     cell = {
                         "window": window,
@@ -682,6 +687,10 @@ def run_gate(
         "control_grids": control_grids or {},
         "label_stats": label_stats,
         "rows": rows,
+        "close_validation": aggregate_close_validations(
+            summary.get("close_validation")
+            for r in rows if "candidate" in r
+            for summary in [r["candidate"]] + [c["summary"] for c in r.get("controls") or []]),
         "summary": {
             "pass": not blocking,
             "blocking_reasons": sorted(blocking),

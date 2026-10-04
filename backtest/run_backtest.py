@@ -53,7 +53,9 @@ def _attach_funding_if_needed(df, strategy_name, symbol, since):
     return out
 from htf_filter import get_default_htf, apply_htf_filter
 from registry_loader import load_registry
-from backtester import Backtester, format_results
+from backtester import (Backtester, CloseCapabilityError, aggregate_close_validations,
+                        format_close_validation, format_results,
+                        validate_close_capabilities)
 from optimizer import (walk_forward_optimize, DEFAULT_PARAM_RANGES,
                        DEFAULT_CLOSE_STACK_SPECS, generate_close_stack_grid)
 from reporter import (
@@ -669,7 +671,8 @@ def _capture_promotion_baseline(cfg: dict, sc: dict) -> dict:
 
 def load_strategy_config(config_path: str, strategy_id: str,
                          inject_user_defaults: bool = False,
-                         include_promotion_baseline: bool = False) -> dict:
+                         include_promotion_baseline: bool = False,
+                         comparison_mode: Optional[str] = None) -> dict:
     import json as _json
     with open(config_path) as fh:
         cfg = _normalize_atr_regime_keys(_json.load(fh))
@@ -753,18 +756,22 @@ def load_strategy_config(config_path: str, strategy_id: str,
             for ref in legacy:
                 if isinstance(ref, dict) and ref.get("name"):
                     close_refs.append({"name": ref["name"], "params": dict(ref.get("params") or {})})
-        for ref in close_refs:
-            if ref.get("name") == "tiered_tp_atr_live_regime_dynamic":
-                raise ValueError(
-                    f"{config_path}: strategy {strategy_id!r} uses "
-                    f"tiered_tp_atr_live_regime_dynamic, which is HL-live-only "
-                    f"in this release (backtester parity deferred — see #843)."
-                )
         if inject_user_defaults:
             _apply_user_close_defaults(close_refs, user_defaults, sc)
         direction = _effective_direction(sc)
         invert_signal = bool(sc.get("invert_signal"))
         strategy_type = str(sc.get("type") or "perps")
+        try:
+            close_validation = validate_close_capabilities(
+                close_refs=close_refs,
+                comparison_mode=comparison_mode,
+                platform=str(sc.get("platform") or "").strip().lower() or None,
+                strategy_type=strategy_type,
+                phase="preflight",
+            )
+        except CloseCapabilityError as exc:
+            raise exc.with_context(
+                f"{config_path}: strategy {strategy_id!r}") from exc
         if invert_signal and strategy_type not in ("perps", "manual"):
             raise ValueError(
                 f"{config_path}: strategy {strategy_id!r} sets invert_signal "
@@ -1012,6 +1019,7 @@ def load_strategy_config(config_path: str, strategy_id: str,
             "scale_in": dict(scale_in_cfg) if scale_in_cfg else None,
             "atr_method": atr_method,
             "platform": str(sc.get("platform") or "").strip().lower(),
+            "comparison_mode": close_validation.mode,
         }
         if include_promotion_baseline:
             out["promotion_baseline"] = promotion_baseline
@@ -1065,6 +1073,7 @@ def run_single_backtest(
     manifest_dataset: Optional[str] = None,
     manifest_window: Optional[str] = None,
     cost_multiplier: float = 1.0,
+    comparison_mode: Optional[str] = None,
 ) -> Optional[dict]:
     manifest = None
     manifest_dataset_entry = None
@@ -1107,6 +1116,13 @@ def run_single_backtest(
         raise SystemExit("--manifest-dataset and --manifest-window need --manifest")
     elif cost_multiplier != 1.0:
         raise SystemExit("--cost-multiplier needs --manifest")
+    validate_close_capabilities(
+        close_refs=close_strategies,
+        comparison_mode=comparison_mode,
+        platform=platform,
+        strategy_type=strategy_type,
+        phase="preflight",
+    )
     reg = load_registry(registry)
     strat = reg.STRATEGY_REGISTRY.get(strategy_name)
     if not strat:
@@ -1266,6 +1282,7 @@ def run_single_backtest(
         scale_in=scale_in,
         atr_method=atr_method,
         execution_spec=execution_spec,
+        comparison_mode=comparison_mode,
     )
     results = bt.run(
         df_signals,
@@ -1298,7 +1315,11 @@ def run_all_strategies(
     direction: Optional[str] = None,
     intrabar_resolution: str = "ohlc_walk",
     atr_method: str = "simple",
+    comparison_mode: Optional[str] = None,
 ) -> list:
+    validate_close_capabilities(close_refs=close_strategies,
+                                comparison_mode=comparison_mode,
+                                platform=platform, phase="preflight")
     reg = load_registry(registry)
     strat_list = strategies or reg.list_strategies()
     print(f"\n{'#'*60}")
@@ -1318,12 +1339,15 @@ def run_all_strategies(
             direction=direction,
             intrabar_resolution=intrabar_resolution,
             atr_method=atr_method,
+            comparison_mode=comparison_mode,
         )
         if result:
             all_results.append(result)
 
     if all_results:
         print(format_comparison_report(all_results))
+        print("  " + format_close_validation(aggregate_close_validations(
+            r.get("close_validation") for r in all_results)))
 
     return all_results
 
@@ -1345,7 +1369,11 @@ def run_multi_asset(
     direction: Optional[str] = None,
     intrabar_resolution: str = "ohlc_walk",
     atr_method: str = "simple",
+    comparison_mode: Optional[str] = None,
 ) -> dict:
+    validate_close_capabilities(close_refs=close_strategies,
+                                comparison_mode=comparison_mode,
+                                platform=platform, phase="preflight")
     reg = load_registry(registry)
     strat_list = strategies or reg.list_strategies()
     sym_list = symbols or DEFAULT_SYMBOLS
@@ -1373,11 +1401,15 @@ def run_multi_asset(
                 direction=direction,
                 intrabar_resolution=intrabar_resolution,
                 atr_method=atr_method,
+                comparison_mode=comparison_mode,
             )
             if result:
                 results_by_asset[symbol].append(result)
 
     print(format_multi_asset_report(results_by_asset))
+    print("  " + format_close_validation(aggregate_close_validations(
+        r.get("close_validation")
+        for results in results_by_asset.values() for r in results)))
     return results_by_asset
 
 
@@ -1400,7 +1432,12 @@ def run_walk_forward(
     close_stack_grid: Optional[List[dict]] = None,
     optimize_metric: str = "sharpe_ratio",
     direction: Optional[str] = None,
+    comparison_mode: Optional[str] = None,
 ) -> Optional[dict]:
+    for stack in (close_stack_grid or [{"close_strategies": close_strategies}]):
+        validate_close_capabilities(close_refs=stack.get("close_strategies"),
+                                    comparison_mode=comparison_mode,
+                                    platform=platform, phase="preflight")
     reg = load_registry(registry)
     strat = reg.STRATEGY_REGISTRY.get(strategy_name)
     if not strat:
@@ -1443,6 +1480,7 @@ def run_walk_forward(
         close_stack_grid=close_stack_grid,
         optimize_metric=optimize_metric,
         direction=direction,
+        comparison_mode=comparison_mode,
     )
 
     print(format_walk_forward_report(result))
@@ -1592,6 +1630,16 @@ def _build_parser() -> argparse.ArgumentParser:
                              "detected on the close only, filled at the next "
                              "bar's open) for reproducing documented "
                              "baselines. Single mode only.")
+    parser.add_argument("--comparison-mode", dest="comparison_mode", default=None,
+                        metavar="MODE",
+                        help="#1683 close comparison mode, every --mode. Omitted = "
+                             "strict on every platform: refuses closes that need "
+                             "inputs no live close context supplies (time_stop "
+                             "bars_held, zscore_target zscore) and always refuses "
+                             "HL-live-only closes. 'approximate' opts research into "
+                             "those simulator-only exits; results carry "
+                             "close_validation with incomplete parity. Any other "
+                             "value is an error.")
     return parser
 
 
@@ -1623,6 +1671,15 @@ def _resolve_defaults_mode(args) -> str:
 
 
 def main():
+    try:
+        _main()
+    except CloseCapabilityError as exc:
+        print(str(exc))
+        print(json.dumps(exc.to_dict(), sort_keys=True))
+        sys.exit(1)
+
+
+def _main():
     args = _build_parser().parse_args()
     args.defaults = _resolve_defaults_mode(args)
 
@@ -1673,7 +1730,8 @@ def main():
             print("--config is only valid with --mode single (loads one strategy by --strategy <id>)")
             sys.exit(1)
         live_kwargs = load_strategy_config(args.config, args.strategy,
-                                           inject_user_defaults=(args.defaults == "user"))
+                                           inject_user_defaults=(args.defaults == "user"),
+                                           comparison_mode=args.comparison_mode)
         config_platform = live_kwargs.get("platform", "")
         if close_refs:
             print("--close-strategy is not allowed alongside --config (refs come from the live config)")
@@ -1799,6 +1857,7 @@ def main():
                             manifest_dataset=args.manifest_dataset,
                             manifest_window=args.manifest_window,
                             cost_multiplier=args.cost_multiplier,
+                            comparison_mode=args.comparison_mode,
                             **live_stop_kwargs)
 
     elif args.mode == "compare":
@@ -1814,7 +1873,8 @@ def main():
                            allowed_regimes=args.allowed_regimes,
                            direction=args.direction,
                            intrabar_resolution=args.intrabar_resolution,
-                           atr_method=args.atr_method or "simple")
+                           atr_method=args.atr_method or "simple",
+                           comparison_mode=args.comparison_mode)
 
     elif args.mode == "multi":
         strategies = None if args.strategy == "all" else [args.strategy]
@@ -1830,7 +1890,8 @@ def main():
                         allowed_regimes=args.allowed_regimes,
                         direction=args.direction,
                         intrabar_resolution=args.intrabar_resolution,
-                        atr_method=args.atr_method or "simple")
+                        atr_method=args.atr_method or "simple",
+                        comparison_mode=args.comparison_mode)
 
     elif args.mode == "optimize":
         close_stack_grid = None
@@ -1875,7 +1936,8 @@ def main():
                                  close_strategies=close_refs,
                                  close_stack_grid=close_stack_grid,
                                  optimize_metric=args.optimize_metric,
-                                 direction=args.direction)
+                                 direction=args.direction,
+                                 comparison_mode=args.comparison_mode)
         else:
             run_walk_forward(args.strategy, args.symbol, args.timeframe,
                              args.since, args.splits, args.capital,
@@ -1889,7 +1951,8 @@ def main():
                              close_strategies=close_refs,
                              close_stack_grid=close_stack_grid,
                              optimize_metric=args.optimize_metric,
-                             direction=args.direction)
+                             direction=args.direction,
+                             comparison_mode=args.comparison_mode)
 
 
 if __name__ == "__main__":

@@ -252,7 +252,7 @@ def test_arm_summary_none_results():
     [
         ([{"name": "atr_stop", "params": {}}], True),
         ([{"name": "tiered_tp_atr", "params": {}},
-          {"name": "trailing_stop_atr_mult", "params": {"atr_mult": 3}}], True),
+          {"name": "trailing_stop_atr_mult", "params": {"atr_mult": 3}}], False),
         ([{"name": "trailing_tp_ratchet", "params": {}}], True),
         ([{"name": "trailing_tp_ratchet_regime",
            "params": {"use_defaults": True}}], True),
@@ -511,13 +511,15 @@ def test_replay_positions_anchored_on_df_signals_not_df(monkeypatch):
         return ["r"] * len(frame)
 
     def fake_run_free_arm(reg, open_name, params, sig, close_refs, direction,
-                          capital, gate, symbol, timeframe, stops=None):
+                          capital, gate, symbol, timeframe, stops=None,
+                          comparison_mode=None):
         return {"total_trades": 1, "total_return_pct": 0.0, "max_drawdown_pct": 0.0,
                 "sharpe_ratio": 0.0, "liquidated": False,
                 "trades": [_leg(entry_date=entry_ts, side="long")]}
 
     def fake_replay(reg, open_name, params, sig, sig_pos, side_sign, candidate_close,
-                    direction, capital, gate, symbol, timeframe, stops=None):
+                    direction, capital, gate, symbol, timeframe, stops=None,
+                    comparison_mode=None):
         captured["sig_pos"] = sig_pos
         return {"net_pct": 1.0, "mfe_pct": 1.0, "mae_pct": -1.0, "bars_held": 2}
 

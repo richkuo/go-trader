@@ -62,6 +62,7 @@ def main(argv=None):
             leg = run_leg(reg, candidate["name"], candidate.get("params"),
                           symbol, tf, window,
                           close_strategies=candidate.get("close_strategies"),
+                          comparison_mode=candidate.get("comparison_mode"),
                           direction=candidate.get("direction") or "long",
                           invert_signal=bool(candidate.get("invert_signal")),
                           stop_loss_atr_mult=candidate.get("stop_loss_atr_mult"),

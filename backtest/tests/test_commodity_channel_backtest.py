@@ -38,7 +38,7 @@ def _bt(**kw):
     base = dict(initial_capital=1000.0, platform="hyperliquid",
                 open_strategy={"name": NAME, "params": PARAMS},
                 close_strategies=[{"name": "time_stop", "params": {"max_bars": 3}}],
-                stop_loss_atr_mult=1.0, direction="both")
+                stop_loss_atr_mult=1.0, direction="both", comparison_mode="approximate")
     base.update(kw)
     return Backtester(**base)
 
@@ -134,11 +134,13 @@ def test_non_batched_parity_clean_on_frozen_hyperliquid_candles(window):
 @pytest.mark.parametrize("window", [200, None])
 def test_non_batched_parity_with_close_owner_and_both_directions(window):
     df = _frozen_btc(600)
-    cfg = _cfg(close_refs=[dict(c, params=dict(c["params"])) for c in CLOSE], direction="both")
+    cfg = _cfg(close_refs=[dict(c, params=dict(c["params"])) for c in CLOSE], direction="both",
+               comparison_mode="approximate")
     frame = compute_parity_frame(df, cfg=cfg, window=window)
     result = summarize(frame)
     assert result["bars_compared"] >= 400
-    assert result["clean"], frame[~frame["match"]].head()
+    assert result["mismatches"] == 0, frame[~frame["match"]].head()
+    assert result["close_parity"] == "incomplete" and not result["clean"]
     assert (frame["live_open_action"] == "long").any()
     assert (frame["live_open_action"] == "short").any()
 

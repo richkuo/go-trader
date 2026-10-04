@@ -1,4 +1,4 @@
-{"name": "ichimoku_cloud", "direction": "long",
+{"name": "ichimoku_cloud", "direction": "long", "comparison_mode": "approximate",
  "close_strategies": [
    {"name": "atr_stop", "params": {"atr_mult": 3.0, "atr_source": "entry"}},
    {"name": "time_stop", "params": {"max_bars": 50}}

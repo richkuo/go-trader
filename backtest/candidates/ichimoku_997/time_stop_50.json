@@ -1,2 +1,2 @@
-{"name": "ichimoku_cloud", "direction": "long",
+{"name": "ichimoku_cloud", "direction": "long", "comparison_mode": "approximate",
  "close_strategies": [{"name": "time_stop", "params": {"max_bars": 50}}]}

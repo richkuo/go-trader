@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.join(_HERE, "..", "..", "..", "shared_tools"))
 sys.path.insert(0, os.path.join(_HERE, "..", "..", "..",
                                 "shared_strategies", "close"))
 
+from backtester import aggregate_close_validations
 from eval_windows import DATASETS, WINDOWS, run_leg
 
 STRATEGY = "squeeze_momentum"
@@ -90,6 +91,10 @@ def main(argv=None):
     p.add_argument("--screen", required=True, choices=sorted(SCREENS))
     p.add_argument("--window", default="is", choices=list(WINDOWS))
     p.add_argument("--json", default=None, dest="json_out")
+    p.add_argument("--comparison-mode", dest="comparison_mode", default=None,
+                   help="#1683: omitted = strict, which refuses time_stop and "
+                        "zscore_target stacks; pass 'approximate' to screen them "
+                        "as research with incomplete close parity")
     args = p.parse_args(argv)
 
     from registry_loader import load_registry
@@ -106,7 +111,8 @@ def main(argv=None):
                         close_strategies=st["close_strategies"],
                         direction="long",
                         stop_loss_atr_mult=st["stop_loss_atr_mult"],
-                        trailing_stop_atr_mult=st["trailing_stop_atr_mult"])
+                        trailing_stop_atr_mult=st["trailing_stop_atr_mult"],
+                        comparison_mode=args.comparison_mode)
                 for symbol, tf in DATASETS]
         rows.append({
             "label": label,
@@ -116,6 +122,8 @@ def main(argv=None):
             "mean_ret": round(statistics.mean(l["return_pct"] for l in legs), 2),
             "worst_dd": round(min(l["max_dd_pct"] for l in legs), 2),
             "trades": sum(l["trades"] for l in legs),
+            "close_validation": aggregate_close_validations(
+                l.get("close_validation") for l in legs),
         })
         r = rows[-1]
         print(f"{label:<20} DDadj {r['mean_ddadj']:>7.3f}  "

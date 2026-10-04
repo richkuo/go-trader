@@ -24,12 +24,12 @@ from strategy_composition import (
     open_action_from_signal,
     rewrite_deprecated_close_ref,
 )
-from close_registry_loader import (
-    evaluate as close_evaluate,
-    list_strategies as close_list_strategies,
-)
+from close_registry_loader import evaluate as close_evaluate
 from backtester import (
     Backtester,
+    decode_close_validation,
+    format_close_validation,
+    validate_close_capabilities,
     _apply_direction_invert_value,
     _max_close_fraction_series,
     _normalize_open_action,
@@ -67,6 +67,7 @@ class ParityConfig:
     regime_windows_spec: Optional[dict] = None
     batched: bool = False
     open_close_config: bool = False
+    comparison_mode: Optional[str] = None
 
     def __post_init__(self):
         self.regime_directional_policy = _normalize_regime_directional_policy(
@@ -75,10 +76,12 @@ class ParityConfig:
 
 
 def config_from_live_config(config_path: str, strategy_id: str,
-                            platform: str = "") -> ParityConfig:
+                            platform: str = "",
+                            comparison_mode: Optional[str] = None) -> ParityConfig:
     from run_backtest import load_strategy_config
     loaded = load_strategy_config(config_path, strategy_id,
-                                  inject_user_defaults=True)
+                                  inject_user_defaults=True,
+                                  comparison_mode=comparison_mode)
     with open(config_path) as fh:
         raw = json.load(fh)
     entry = next(
@@ -123,6 +126,7 @@ def config_from_live_config(config_path: str, strategy_id: str,
         hurst_gate=loaded.get("hurst_gate"),
         regime_windows_spec=loaded.get("regime_windows_spec"),
         open_close_config=bool(entry.get("open_strategy") or entry.get("close_strategy")),
+        comparison_mode=comparison_mode,
     )
 
 
@@ -544,6 +548,7 @@ def compute_parity_frame(
     regime_adx_threshold: float = 20.0,
     close_refs: Optional[list] = None,
     cfg: Optional[ParityConfig] = None,
+    comparison_mode: Optional[str] = None,
 ) -> pd.DataFrame:
     if cfg is None:
         if not strategy_name:
@@ -556,11 +561,23 @@ def compute_parity_frame(
             regime_enabled=regime_enabled,
             regime_period=regime_period,
             regime_adx_threshold=regime_adx_threshold,
+            comparison_mode=comparison_mode,
         )
+    elif comparison_mode is not None and comparison_mode != cfg.comparison_mode:
+        raise ValueError(
+            f"comparison_mode {comparison_mode!r} conflicts with the ParityConfig "
+            f"comparison_mode {cfg.comparison_mode!r}")
     if stride < 1:
         raise ValueError("stride must be >= 1")
     if window is not None and window < LIVE_MIN_CANDLES:
         raise ValueError(f"window must be >= {LIVE_MIN_CANDLES} (live minimum)")
+    close_validation = validate_close_capabilities(
+        close_refs=cfg.close_refs,
+        comparison_mode=cfg.comparison_mode,
+        platform=cfg.platform,
+        consumer="decision_parity",
+        phase="preflight",
+    )
     reg = load_registry(cfg.registry)
     full_result = reg.apply_strategy(
         cfg.strategy_name, df.copy(), dict(cfg.params or {}))
@@ -576,17 +593,6 @@ def compute_parity_frame(
         )["regime"]
 
     has_close_refs = bool(_close_names(cfg.close_refs))
-    if has_close_refs:
-        available = set(close_list_strategies())
-        for name in _close_names(cfg.close_refs):
-            resolved, _ = rewrite_deprecated_close_ref(name, None)
-            if resolved not in available:
-                raise ValueError(
-                    f"Unknown close strategy: {resolved}. The backtester "
-                    f"rejects non-registry close refs at init, so there is "
-                    f"no engine path to diff; the live signal-strategy close "
-                    f"fallback is live-only. Available: {sorted(available)}"
-                )
     needs_decision_walk = (
         has_close_refs
         or bool(cfg.open_close_config)
@@ -688,10 +694,16 @@ def compute_parity_frame(
                     regime_full.iloc[i - 1])
         row["match"] = match
         rows.append(row)
-    return pd.DataFrame(rows)
+    out = pd.DataFrame(rows)
+    out.attrs["close_validation"] = close_validation.to_dict()
+    return out
 
 
 def extract_fills(df: pd.DataFrame, cfg: ParityConfig) -> list:
+    return extract_fills_report(df, cfg)["fills"]
+
+
+def extract_fills_report(df: pd.DataFrame, cfg: ParityConfig) -> dict:
     reg = load_registry(cfg.registry)
     work = reg.apply_strategy(
         cfg.strategy_name, df.copy(), dict(cfg.params or {}))
@@ -712,6 +724,7 @@ def extract_fills(df: pd.DataFrame, cfg: ParityConfig) -> list:
         invert_signal=cfg.invert_signal,
         regime_directional_policy=cfg.regime_directional_policy,
         regime_directional_certified_states=cfg.regime_directional_certified_states,
+        comparison_mode=cfg.comparison_mode,
     )
     metrics = bt.run(
         work,
@@ -743,17 +756,27 @@ def extract_fills(df: pd.DataFrame, cfg: ParityConfig) -> list:
                 "fee": round(exit_px * shares * fee_pct, 6),
                 "pnl": float(trade.get("pnl", 0) or 0),
             })
-    return fills
+    return {"fills": fills, "close_validation": metrics.get("close_validation")}
 
 
 def summarize(frame: pd.DataFrame) -> dict:
+    validation = frame.attrs.get("close_validation")
+    decoded = decode_close_validation(validation)
+    close_complete = decoded["decode_status"] == "ok" and not decoded["incomplete_parity"]
+    close_parity = (decoded["parity_status"] if decoded["decode_status"] == "ok"
+                    else "unknown")
     if frame.empty:
-        return {"bars_compared": 0, "mismatches": 0, "clean": True}
+        return {"bars_compared": 0, "mismatches": 0, "decision_agreement": True,
+                "close_parity": close_parity, "close_validation": validation,
+                "clean": close_complete}
     mismatched = frame[~frame["match"]]
     summary = {
         "bars_compared": int(len(frame)),
         "mismatches": int(len(mismatched)),
-        "clean": bool(mismatched.empty),
+        "decision_agreement": bool(mismatched.empty),
+        "close_parity": close_parity,
+        "close_validation": validation,
+        "clean": bool(mismatched.empty) and close_complete,
     }
     if not mismatched.empty:
         summary["first_mismatch"] = str(mismatched.iloc[0]["ts"])
@@ -836,6 +859,14 @@ def main(argv: Optional[list] = None) -> int:
                              "as JSON lines to this path")
     parser.add_argument("--max-print", type=int, default=20,
                         help="Max mismatching rows printed to stdout")
+    parser.add_argument("--comparison-mode", dest="comparison_mode", default=None,
+                        metavar="MODE",
+                        help="#1683 close comparison mode. Omitted = strict: refuses "
+                             "closes whose live inputs no platform supplies "
+                             "(time_stop, zscore_target) and HL-live-only closes. "
+                             "'approximate' compares them for research only: "
+                             "zero mismatches then report decision agreement with "
+                             "INCOMPLETE close parity (exit 3), never CLEAN.")
     args = parser.parse_args(argv)
 
     if args.config:
@@ -844,7 +875,8 @@ def main(argv: Optional[list] = None) -> int:
             return 2
         try:
             cfg = config_from_live_config(args.config, args.strategy_id,
-                                          platform=args.platform or "")
+                                          platform=args.platform or "",
+                                          comparison_mode=args.comparison_mode)
         except (ValueError, OSError, json.JSONDecodeError) as e:
             print(f"--config: {e}", file=sys.stderr)
             return 2
@@ -883,8 +915,18 @@ def main(argv: Optional[list] = None) -> int:
             regime_period=args.regime_period,
             regime_adx_threshold=args.regime_adx_threshold,
             batched=args.batched,
+            comparison_mode=args.comparison_mode,
         )
         symbol, timeframe = args.symbol, args.timeframe
+        try:
+            validate_close_capabilities(close_refs=cfg.close_refs,
+                                        comparison_mode=cfg.comparison_mode,
+                                        platform=cfg.platform,
+                                        consumer="decision_parity",
+                                        phase="preflight")
+        except ValueError as e:
+            print(f"parity: {e}", file=sys.stderr)
+            return 2
 
     from data_fetcher import load_cached_data
     df = load_cached_data(symbol, timeframe, start_date=args.since)
@@ -919,6 +961,9 @@ def main(argv: Optional[list] = None) -> int:
                 fh.write(json.dumps(rec, sort_keys=True, default=str) + "\n")
             for fill in fills:
                 fh.write(json.dumps({"fill": fill}, sort_keys=True) + "\n")
+            fh.write(json.dumps({"close_validation": result["close_validation"],
+                                 "close_parity": result["close_parity"]},
+                                sort_keys=True) + "\n")
         print(f"JSONL written to {args.jsonl}")
 
     print(f"\nParity diff: {cfg.strategy_name} on {symbol} {timeframe} "
@@ -931,9 +976,15 @@ def main(argv: Optional[list] = None) -> int:
               f"(batched slot vs solo evaluation, #1442)")
     if args.fills:
         print(f"  Fills:         {len(fills)}")
+    print(f"  {format_close_validation(result['close_validation'])}")
     if result["clean"]:
         print("  CLEAN — backtest and live paths agree on every compared bar.")
         return 0
+    if result["decision_agreement"]:
+        print("  DECISIONS AGREE on every compared bar, but close parity is "
+              f"{result['close_parity'].upper()}: the comparison ran in approximate "
+              "mode or without close validation, so it is not parity proof.")
+        return 3
 
     print(f"  First mismatch: {result['first_mismatch']}")
     print(f"  Last mismatch:  {result['last_mismatch']}")

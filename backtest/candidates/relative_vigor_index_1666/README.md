@@ -216,7 +216,7 @@ Offline (no network; verifies hashes, then reruns everything):
 uv run --no-sync python backtest/offline_manifest.py verify --manifest backtest/candidates/relative_vigor_index_1666/study_manifest.json
 uv run --no-sync python backtest/candidates/relative_vigor_index_1666/run_study.py
 uv run --no-sync python backtest/eval_windows.py --registry futures --candidate-json backtest/candidates/relative_vigor_index_1666/candidate_seed.json --manifest backtest/candidates/relative_vigor_index_1666/study_manifest.json --sweep-window train --sweep period=4,6,8,10,14,20,30
-uv run --no-sync python backtest/run_backtest.py --mode single --registry futures --strategy relative_vigor_index --close-strategy '{"name":"time_stop","params":{"max_bars":20}}' --stop-loss-atr-mult 1.0 --direction both --manifest backtest/candidates/relative_vigor_index_1666/study_manifest.json --manifest-dataset "BTC 4h" --manifest-window test
+uv run --no-sync python backtest/run_backtest.py --mode single --registry futures --strategy relative_vigor_index --close-strategy '{"name":"time_stop","params":{"max_bars":20}}' --stop-loss-atr-mult 1.0 --direction both --manifest backtest/candidates/relative_vigor_index_1666/study_manifest.json --manifest-dataset "BTC 4h" --manifest-window test --comparison-mode approximate
 ```
 
 `run_study.py --render-only` re-renders `REPORT.md` from the committed
