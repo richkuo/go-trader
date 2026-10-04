@@ -617,6 +617,10 @@ DEFAULT_PARAM_RANGES = {
         "period": [7, 14, 21, 28],
         "min_separation": [0.0, 0.02, 0.05, 0.10],
     },
+    "relative_vigor_index": {
+        "period": [4, 6, 8, 10, 14, 20, 30],
+        "zero_line_filter": [True],
+    },
     "analog_retrieval": {
         "horizon": [6, 12, 24],
         "k_neighbors": [15, 25, 50],

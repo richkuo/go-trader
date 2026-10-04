@@ -1,0 +1,21 @@
+--- research_registry_before
++++ research_registry_after
+@@ -534,5 +534,18 @@
+    "flow_threshold < 1"
+   ],
+   "RESEARCH, backtest-only (#1649) \u2014 Chaikin Money Flow breakout confirmation: long on the first close strictly above the prior breakout_window high while candle-estimated money flow (close-location value times volume over flow_window bars, not measured aggressor flow) is strictly above flow_threshold; short mirrors on the prior low with flow below -flow_threshold. Entry-only; pair with one explicit close strategy and one stop owner. Refused by every live check script; promotion requires a separate reviewed decision"
++ ],
++ [
++  "relative_vigor_index",
++  {
++   "period": 10,
++   "zero_line_filter": true
++  },
++  true,
++  [
++   "period >= 2",
++   "period <= 100"
++  ],
++  "RESEARCH, backtest-only (#1666) \u2014 Relative Vigor Index crossover: the period-bar mean of 1-2-2-1 smoothed close-minus-open over the mean of smoothed high-minus-low, with a 1-2-2-1 smoothed signal line; long on a strict upward cross of the signal line while the index is above zero, short on the mirror below zero (zero_line_filter). Any bad candle, timestamp defect or cadence gap inside the window holds. Entry-only; pair with one explicit close strategy and one stop owner. Refused by every live check script; promotion requires a separate reviewed decision"
+  ]
+ ]

@@ -1,0 +1,17 @@
+{
+  "name": "relative_vigor_index",
+  "params": {
+    "period": 10,
+    "zero_line_filter": true
+  },
+  "direction": "both",
+  "close_strategies": [
+    {
+      "name": "time_stop",
+      "params": {
+        "max_bars": 20
+      }
+    }
+  ],
+  "stop_loss_atr_mult": 1.0
+}

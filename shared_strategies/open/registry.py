@@ -48,6 +48,7 @@ from chaikin_money_flow import chaikin_money_flow_breakout_core
 from open_interest_breakout import open_interest_breakout_core
 from connors_rsi import connors_rsi_reversion_core
 from vortex_trend import vortex_trend_core
+from relative_vigor_index import relative_vigor_index_core
 
 
 VALID_PLATFORMS: Tuple[str, ...] = ("spot", "futures")
@@ -98,6 +99,7 @@ DISCOVERY_HIDDEN_STRATEGIES = frozenset({
     "donchian_breakout",
     "open_interest_breakout",
     "range_scalper",
+    "relative_vigor_index",
     "session_breakout",
     "vol_momentum",
     "vortex_trend",
@@ -1504,6 +1506,21 @@ def vortex_trend_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
 
 
 @register(
+    "relative_vigor_index",
+    "RESEARCH, backtest-only (#1666) \u2014 Relative Vigor Index crossover: the period-bar mean of 1-2-2-1 smoothed close-minus-open over the mean of smoothed high-minus-low, with a 1-2-2-1 smoothed signal line; long on a strict upward cross of the signal line while the index is above zero, short on the mirror below zero (zero_line_filter). Any bad candle, timestamp defect or cadence gap inside the window holds. Entry-only; pair with one explicit close strategy and one stop owner. Refused by every live check script; promotion requires a separate reviewed decision",
+    {"period": 10, "zero_line_filter": True},
+    platforms=("futures",),
+    backtest_only=True,
+    constraints=[
+        "period >= 2",
+        "period <= 100",
+    ],
+)
+def relative_vigor_index_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
+    return relative_vigor_index_core(df, **params)
+
+
+@register(
     "momentum_pro",
     "Momentum Pro — trend-pullback entries in a stacked-EMA trend, ADX-confirmed, on a volume-backed resumption",
     {
@@ -1752,6 +1769,6 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "consolidation_range", "atr_band_revert", "mtf_confluence", "vol_momentum",
         "regime_adaptive", "regime_adaptive_htf", "analog_retrieval",
         "chaikin_money_flow_breakout", "open_interest_breakout", "connors_rsi_reversion",
-        "vortex_trend", "hold",
+        "vortex_trend", "relative_vigor_index", "hold",
     ],
 }
