@@ -181,7 +181,7 @@ def entry_diagnostics(reg, manifest, window_name, params) -> list:
     cols = ["close", "oib_upper", "oib_lower", "oib_endpoint_ms", "oib_oi_current", "oib_oi_prior",
             "oib_oi_current_ms", "oib_oi_prior_ms", "oib_oi_current_age_ms", "oib_oi_prior_age_ms",
             "oib_oi_change", "oib_threshold", "oib_coverage", "oib_max_gap_ms", "oib_reason",
-            "oib_source", "oib_time_basis", "oib_samples_sha256", "signal"]
+            "oib_source", "oib_time_basis", "oib_window_sha256", "signal"]
     rows = []
     for ds in manifest["datasets"]:
         _, win, cand = candidate_frame(reg, manifest, ds, window_name, params)

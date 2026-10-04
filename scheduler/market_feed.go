@@ -817,6 +817,7 @@ type marketFeedHealth struct {
 	Metrics      feedMetrics           `json:"metrics"`
 	Keys         []marketFeedHealthKey `json:"keys"`
 	Mids         []marketFeedHealthMid `json:"mids,omitempty"`
+	Observations []marketFeedHealthObs `json:"observations,omitempty"`
 	Shared       *sharedFeedStatus     `json:"shared,omitempty"`
 	Correction   *feedCorrectionHealth `json:"correction,omitempty"`
 	Requests     *feedBudgetTotals     `json:"requests,omitempty"`
@@ -837,6 +838,22 @@ type marketFeedHealthKey struct {
 	CorrectionError   string `json:"correction_error,omitempty"`
 }
 
+type marketFeedHealthObs struct {
+	Key        string `json:"key"`
+	Status     string `json:"status"`
+	Ready      bool   `json:"ready"`
+	Samples    int    `json:"samples"`
+	CoveredMs  int64  `json:"covered_ms"`
+	WindowMs   int64  `json:"window_ms"`
+	LastRecvMs int64  `json:"last_recv_ms,omitempty"`
+	OpenGap    bool   `json:"open_gap,omitempty"`
+	Received   uint64 `json:"received"`
+	Refreshed  uint64 `json:"refreshed"`
+	Rejected   uint64 `json:"rejected"`
+	LastReject string `json:"last_reject,omitempty"`
+	Detail     string `json:"detail,omitempty"`
+}
+
 type marketFeedHealthMid struct {
 	Coin     string  `json:"coin"`
 	Px       float64 `json:"px"`
@@ -848,6 +865,7 @@ type marketFeedHealthMid struct {
 
 func (o *marketFeedOwner) Health(lastSnapshotID string) marketFeedHealth {
 	readiness := o.Readiness()
+	obsReadiness := o.ObservationReadiness()
 	o.feedMu.Lock()
 	now := o.now()
 	health := marketFeedHealth{
@@ -884,6 +902,14 @@ func (o *marketFeedOwner) Health(lastSnapshotID string) marketFeedHealth {
 	}
 	o.feedMu.Unlock()
 
+	for _, r := range obsReadiness {
+		health.Observations = append(health.Observations, marketFeedHealthObs{
+			Key: r.Key.PayloadID(), Status: r.Status, Ready: r.Ready, Samples: r.Samples,
+			CoveredMs: r.CoveredMs, WindowMs: r.WindowMs, LastRecvMs: r.LastRecvMs, OpenGap: r.OpenGap,
+			Received: r.Stats.Received, Refreshed: r.Stats.Refreshed, Rejected: r.Stats.Rejected,
+			LastReject: r.Stats.LastReject, Detail: r.Detail,
+		})
+	}
 	for _, r := range readiness {
 		health.Keys = append(health.Keys, marketFeedHealthKey{
 			Key:           r.Key.String(),

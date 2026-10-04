@@ -171,9 +171,10 @@ type feedSealObservationSample struct {
 }
 
 type feedSealObservationGap struct {
-	StartMs int64  `json:"a"`
-	EndMs   int64  `json:"b"`
-	Reason  string `json:"why"`
+	StartMs    int64  `json:"a"`
+	EndMs      int64  `json:"b"`
+	DetectedMs int64  `json:"d"`
+	Reason     string `json:"why"`
 }
 
 type feedSealObservationReadiness struct {
@@ -375,7 +376,7 @@ func feedSealDocFromSnapshot(snap *marketSnapshot, key int64, source, instance s
 			so.Samples = append(so.Samples, feedSealObservationSample{RecvAtMs: smp.RecvAtMs, EventAtMs: smp.EventAtMs, Value: smp.Value, Session: smp.Session, Seq: smp.Seq})
 		}
 		for _, g := range o.Gaps {
-			so.Gaps = append(so.Gaps, feedSealObservationGap{StartMs: g.StartMs, EndMs: g.EndMs, Reason: g.Reason})
+			so.Gaps = append(so.Gaps, feedSealObservationGap{StartMs: g.StartMs, EndMs: g.EndMs, DetectedMs: g.DetectedMs, Reason: g.Reason})
 		}
 		doc.Observations = append(doc.Observations, so)
 	}
@@ -515,7 +516,8 @@ func validateFeedSealObservations(obs []feedSealObservation) error {
 			lastRecv, lastSeq = smp.RecvAtMs, smp.Seq
 		}
 		for j, g := range o.Gaps {
-			if g.StartMs <= 0 || (g.EndMs != 0 && g.EndMs < g.StartMs) || g.Reason == "" {
+			if g.StartMs <= 0 || (g.EndMs != 0 && g.EndMs < g.StartMs) || g.Reason == "" ||
+				g.DetectedMs < g.StartMs || g.DetectedMs > o.CutoffMs {
 				return fmt.Errorf("seal observation %s gap %d is malformed", key, j)
 			}
 		}
@@ -562,7 +564,7 @@ func (doc *feedSealDoc) snapshot() *marketSnapshot {
 			entry.Samples = append(entry.Samples, feedObservationSample{RecvAtMs: smp.RecvAtMs, EventAtMs: smp.EventAtMs, Value: smp.Value, Session: smp.Session, Seq: smp.Seq})
 		}
 		for _, g := range o.Gaps {
-			entry.Gaps = append(entry.Gaps, feedObservationGap{StartMs: g.StartMs, EndMs: g.EndMs, Reason: g.Reason})
+			entry.Gaps = append(entry.Gaps, feedObservationGap{StartMs: g.StartMs, EndMs: g.EndMs, DetectedMs: g.DetectedMs, Reason: g.Reason})
 		}
 		snap.observations[key] = entry
 	}

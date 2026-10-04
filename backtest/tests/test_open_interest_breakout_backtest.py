@@ -111,6 +111,60 @@ def test_series_sample_hash_detects_edited_samples(tmp_path):
         orp.read_series(str(target))
 
 
+def _obs_record(recv, session, seq, value, refreshed=False):
+    raw = json.dumps({"channel": "activeAssetCtx",
+                      "data": {"coin": "BTC", "ctx": {"openInterest": repr(value)}}})
+    return {"k": "obs", "coin": "BTC", "kind": "open_interest", "recv_ms": recv, "session": session,
+            "raw": raw, "accepted": True, "value": value, "seq": seq, "refreshed": refreshed, "event_ms": None}
+
+
+def _write_run(tmp_path, records, closed=True):
+    lines = [{"k": "header", "schema": orp.RECORDING_SCHEMA, "run_id": "r", "index": 1, "recv_ms": records[0]["recv_ms"],
+              "source": orp.ACCEPTED_SOURCE, "units": "base", "time_basis": "receipt", "cadence_ms": MINUTE,
+              "coins": ["BTC"]}]
+    lines += records
+    lines.append({"k": "end", "recv_ms": records[-1]["recv_ms"], "records": len(records), "dropped": 0})
+    blob = "".join(json.dumps(x, sort_keys=True) + "\n" for x in lines).encode()
+    (tmp_path / "segment-00001.jsonl").write_bytes(blob)
+    seg = {"schema": orp.SEGMENT_SCHEMA, "run_id": "r", "index": 1, "file": "segment-00001.jsonl",
+           "sha256": hashlib.sha256(blob).hexdigest(), "records": len(records)}
+    (tmp_path / "segment-00001.jsonl.manifest.json").write_text(json.dumps(seg))
+    run = {"schema": orp.RUN_SCHEMA, "run_id": "r", "closed": closed, "source": orp.ACCEPTED_SOURCE,
+           "units": "base", "time_basis": "receipt", "cadence_ms": MINUTE, "coins": ["BTC"], "segments": [seg]}
+    (tmp_path / "run.manifest.json").write_text(json.dumps(run))
+    return tmp_path
+
+
+def test_importer_closes_a_disconnect_gap_even_after_an_overflow_marker(tmp_path):
+    t = T0
+    records = [{"k": "conn", "state": "connected", "recv_ms": t, "session": 1},
+               _obs_record(t + 1_000, 1, 1, 100.0),
+               _obs_record(t + 61_000, 1, 2, 101.0),
+               {"k": "conn", "state": "disconnected", "recv_ms": t + 90_000, "session": 1},
+               {"k": "drop", "count": 3, "from_ms": t + 91_000, "to_ms": t + 92_000, "recv_ms": t + 93_000, "session": 1},
+               {"k": "conn", "state": "connected", "recv_ms": t + 95_000, "session": 2},
+               _obs_record(t + 125_000, 2, 1, 102.0)]
+    series = orp.load_recording(str(_write_run(tmp_path, records)))["series"]["BTC"]
+    gaps = {g["reason"]: g for g in series["gaps"]}
+    assert gaps["disconnected"]["start_ms"] == t + 61_000
+    assert gaps["disconnected"]["detected_ms"] == t + 90_000
+    assert gaps["disconnected"]["end_ms"] == t + 125_000
+    assert gaps["recorder_overflow"]["start_ms"] == gaps["recorder_overflow"]["detected_ms"] == t + 91_000
+    assert [s["value"] for s in series["samples"]] == [100.0, 101.0, 102.0]
+
+
+def test_importer_refuses_an_unclosed_run_and_a_wrong_refresh_flag(tmp_path):
+    t = T0
+    base = [{"k": "conn", "state": "connected", "recv_ms": t, "session": 1}, _obs_record(t + 1_000, 1, 1, 100.0)]
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    with pytest.raises(orp.RecordingError, match="not closed"):
+        orp.load_recording(str(_write_run(tmp_path / "a", base, closed=False)))
+    flagged = base + [_obs_record(t + 2_000, 1, 2, 100.5, refreshed=False)]
+    with pytest.raises(orp.RecordingError, match="refresh flag"):
+        orp.load_recording(str(_write_run(tmp_path / "b", flagged)))
+
+
 def test_manifest_leg_runs_the_candidate_with_attached_open_interest(tmp_path):
     m = om.load_manifest(str(_build(tmp_path)))
     reg = load_registry("futures")

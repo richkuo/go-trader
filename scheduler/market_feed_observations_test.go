@@ -95,8 +95,22 @@ func TestOpenInterestObservationPipeline(t *testing.T) {
 	if err := validateMarketFeedConfig(restCfg); err == nil || !strings.Contains(err.Error(), "cannot supply open-interest observations") {
 		t.Fatalf("market_feed=rest with an open-interest strategy: err %v, want a preflight refusal", err)
 	}
-	if err := feedSourceObservationError(feedSourceREST, req); err == nil {
-		t.Fatalf("a REST feed source must refuse a consumer union that needs observations")
+	plain, err := deriveFeedRequirements(&Config{Strategies: []StrategyConfig{{
+		ID: "plain", Type: "perps", Platform: "hyperliquid", Script: hyperliquidCheckScript,
+		Args: []string{"donchian_breakout", "BTC", "5m", "--mode=paper"},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	served := skipObservationConsumers(feedSourceREST, []feedConsumer{{Path: "oi", Loaded: true, Req: req}, {Path: "plain", Loaded: true, Req: plain}})
+	if served[0].Loaded || !strings.Contains(served[0].Err, "cannot collect observations") || !served[1].Loaded {
+		t.Fatalf("a REST feed source must skip only the consumer that needs observations: %+v", served)
+	}
+	if union := unionFeedRequirements(served); len(union.Observations) != 0 || len(union.Order) != 1 {
+		t.Fatalf("the REST union must keep the other consumer and carry no observation: %+v", union)
+	}
+	if kept := skipObservationConsumers(feedSourceWebsocket, []feedConsumer{{Path: "oi", Loaded: true, Req: req}}); !kept[0].Loaded {
+		t.Fatalf("a websocket feed source must serve an observation consumer")
 	}
 
 	fs := newFeedSocketServer(t)
@@ -212,6 +226,11 @@ func TestOpenInterestObservationPipeline(t *testing.T) {
 	}
 	if retain := st.retainMs(); firstRecv < boundary+10_000-retain || nSamples > int(retain/feedObservationCadenceMs)+1 {
 		t.Fatalf("bounded storage: first sample %d, %d samples, retention %dms", firstRecv, nSamples, retain)
+	}
+	health := owner.Health("")
+	if len(health.Observations) != 2 || health.Observations[0].Key != "BTC|open_interest" ||
+		health.Observations[0].Rejected != 3 || health.Observations[1].Status != feedObservationStatusEmpty {
+		t.Fatalf("feed health must report each observation key with its counters: %+v", health.Observations)
 	}
 	if retainedGaps != 0 {
 		t.Fatalf("a gap marker older than the retention window was kept (%d gaps)", retainedGaps)
@@ -333,6 +352,20 @@ func TestOpenInterestObservationPipeline(t *testing.T) {
 	}
 	if !ob2.Available || !gapInWindow {
 		t.Fatalf("the second payload must carry the in-window disconnect gap: %+v", ob2.Gaps)
+	}
+	for _, g := range ob2.Gaps {
+		if g.DetectedMs < g.StartMs || g.DetectedMs > ob2.CutoffMs {
+			t.Fatalf("a sealed gap must carry a detection time between its start and the cutoff: %+v", g)
+		}
+	}
+	late := newFeedObservationState(btcKey, wantWindow)
+	late.ingest(1000, 0, boundary-60_000, 1)
+	late.markDisconnected(boundary + 30_000)
+	if frozen := freezeObservation(late, wantWindow, boundary, boundary+40_000); len(frozen.Gaps) != 0 {
+		t.Fatalf("a gap detected after the cutoff must not enter a seal for that cutoff: %+v", frozen.Gaps)
+	}
+	if frozen := freezeObservation(late, wantWindow, boundary+30_000, boundary+40_000); len(frozen.Gaps) != 1 || frozen.Gaps[0].StartMs != boundary-60_000 {
+		t.Fatalf("a gap detected at the cutoff starts at the last sample: %+v", frozen.Gaps)
 	}
 
 	oldSeal := oiTestOldPeer(t, sockDir)

@@ -78,9 +78,10 @@ type feedObservationSample struct {
 }
 
 type feedObservationGap struct {
-	StartMs int64
-	EndMs   int64
-	Reason  string
+	StartMs    int64
+	EndMs      int64
+	DetectedMs int64
+	Reason     string
 }
 
 type feedObservationStats struct {
@@ -152,7 +153,11 @@ func (s *feedObservationState) markDisconnected(atMs int64) {
 	if atMs > 0 && atMs < start {
 		start = atMs
 	}
-	s.Gaps = append(s.Gaps, feedObservationGap{StartMs: start, Reason: feedObservationGapDisconnected})
+	detected := atMs
+	if detected < start {
+		detected = start
+	}
+	s.Gaps = append(s.Gaps, feedObservationGap{StartMs: start, DetectedMs: detected, Reason: feedObservationGapDisconnected})
 }
 
 type feedObservationOutcome struct {
@@ -472,13 +477,13 @@ func freezeObservation(st *feedObservationState, windowMs, cutoffMs, nowMs int64
 		if end != 0 && end < start {
 			continue
 		}
-		if g.StartMs > cutoffMs {
+		if g.StartMs > cutoffMs || g.DetectedMs > cutoffMs {
 			continue
 		}
 		if end > cutoffMs {
 			end = 0
 		}
-		out.Gaps = append(out.Gaps, feedObservationGap{StartMs: g.StartMs, EndMs: end, Reason: g.Reason})
+		out.Gaps = append(out.Gaps, feedObservationGap{StartMs: g.StartMs, EndMs: end, DetectedMs: g.DetectedMs, Reason: g.Reason})
 	}
 	return out
 }
@@ -492,9 +497,10 @@ type marketObservationSample struct {
 }
 
 type marketObservationGap struct {
-	StartMs int64  `json:"start_ms"`
-	EndMs   *int64 `json:"end_ms"`
-	Reason  string `json:"reason"`
+	StartMs    int64  `json:"start_ms"`
+	EndMs      *int64 `json:"end_ms"`
+	DetectedMs int64  `json:"detected_ms"`
+	Reason     string `json:"reason"`
 }
 
 type marketObservationPayload struct {
@@ -514,18 +520,6 @@ type marketObservationPayload struct {
 	FeedStatus    string                    `json:"feed_status,omitempty"`
 	Samples       []marketObservationSample `json:"samples"`
 	Gaps          []marketObservationGap    `json:"gaps"`
-	SamplesSha256 string                    `json:"samples_sha256"`
-}
-
-func observationSamplesHash(samples []marketObservationSample, gaps []marketObservationGap) string {
-	blob, err := json.Marshal(struct {
-		Samples []marketObservationSample `json:"samples"`
-		Gaps    []marketObservationGap    `json:"gaps"`
-	}{samples, gaps})
-	if err != nil {
-		return ""
-	}
-	return feedSealHash(blob)
 }
 
 func (s *marketSnapshot) observationPayload(key feedObservationKey, windowMs, barIntervalMs int64) marketObservationPayload {
@@ -551,7 +545,6 @@ func (s *marketSnapshot) observationPayload(key feedObservationKey, windowMs, ba
 	if !ok || entry == nil {
 		out.Reason = fmt.Sprintf("%s is not in the sealed snapshot", key.PayloadID())
 		out.CutoffMs = s.observationCutoff().UnixMilli()
-		out.SamplesSha256 = observationSamplesHash(out.Samples, out.Gaps)
 		return out
 	}
 	out.Source, out.Units, out.TimeBasis, out.CadenceMs = entry.Source, entry.Units, entry.TimeBasis, entry.CadenceMs
@@ -559,7 +552,6 @@ func (s *marketSnapshot) observationPayload(key feedObservationKey, windowMs, ba
 	out.FeedStatus = entry.Readiness.Status
 	if entry.WindowMs < windowMs {
 		out.Reason = fmt.Sprintf("%s window %dms in the seal is below the %dms this strategy needs", key.PayloadID(), entry.WindowMs, windowMs)
-		out.SamplesSha256 = observationSamplesHash(out.Samples, out.Gaps)
 		return out
 	}
 	start := entry.CutoffMs - windowMs
@@ -578,7 +570,7 @@ func (s *marketSnapshot) observationPayload(key feedObservationKey, windowMs, ba
 		if g.EndMs != 0 && g.EndMs < start {
 			continue
 		}
-		mg := marketObservationGap{StartMs: g.StartMs, Reason: g.Reason}
+		mg := marketObservationGap{StartMs: g.StartMs, DetectedMs: g.DetectedMs, Reason: g.Reason}
 		if g.EndMs != 0 {
 			end := g.EndMs
 			mg.EndMs = &end
@@ -586,7 +578,6 @@ func (s *marketSnapshot) observationPayload(key feedObservationKey, windowMs, ba
 		out.Gaps = append(out.Gaps, mg)
 	}
 	out.Available = true
-	out.SamplesSha256 = observationSamplesHash(out.Samples, out.Gaps)
 	return out
 }
 

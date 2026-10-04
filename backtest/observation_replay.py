@@ -65,8 +65,9 @@ class _CoinState:
         self.seen = {}
 
     def open_gap(self):
-        if self.gaps and self.gaps[-1][1] is None:
-            return self.gaps[-1]
+        for gap in reversed(self.gaps):
+            if gap[1] is None:
+                return gap
         return None
 
 
@@ -131,7 +132,8 @@ def load_recording(run_dir: str) -> dict:
                 elif rec.get("state") == "disconnected":
                     for st in states.values():
                         if st.last_recv and st.open_gap() is None:
-                            st.gaps.append([min(st.last_recv, recv), None, "disconnected"])
+                            start = min(st.last_recv, recv)
+                            st.gaps.append([start, None, "disconnected", max(recv, start)])
                 else:
                     raise RecordingError(f"{seg['file']}:{line_no} has unknown connection state {rec.get('state')!r}")
                 continue
@@ -139,7 +141,7 @@ def load_recording(run_dir: str) -> dict:
                 report["dropped"] += int(rec.get("count") or 0)
                 start, stop = rec.get("from_ms"), rec.get("to_ms")
                 for st in states.values():
-                    st.gaps.append([int(start), int(max(stop, recv)), "recorder_overflow"])
+                    st.gaps.append([int(start), int(max(stop, recv)), "recorder_overflow", int(start)])
                 continue
             if kind != "obs":
                 raise RecordingError(f"{seg['file']}:{line_no} has unknown record kind {kind!r}")
@@ -188,7 +190,8 @@ def load_recording(run_dir: str) -> dict:
     out = {}
     for coin, st in states.items():
         out[coin] = build_series(coin, cadence, st.samples,
-                                 [{"start_ms": g[0], "end_ms": g[1], "reason": g[2]} for g in st.gaps],
+                                 [{"start_ms": g[0], "end_ms": g[1], "detected_ms": g[3], "reason": g[2]}
+                                  for g in st.gaps],
                                  {"run_id": run.get("run_id"), "segments": report["segments"]})
     return {"series": out, "report": report}
 
@@ -296,7 +299,7 @@ def _decisions(df, observations: dict, params: dict) -> list:
     out = futures_registry.apply_strategy("open_interest_breakout", df,
                                           {**params, "open_interest_observations": observations})
     cols = ["timestamp", "oib_reason", "oib_oi_valid", "oib_oi_current", "oib_oi_prior", "oib_oi_change",
-            "oib_coverage", "oib_max_gap_ms", "oib_carried", "signal"]
+            "oib_coverage", "oib_max_gap_ms", "oib_window_sha256", "oib_carried", "signal"]
     return json.loads(out[cols].to_json(orient="values", double_precision=15))
 
 
@@ -320,8 +323,10 @@ def _harness_case(directory: str, harness: dict, case: dict, loaded: dict) -> di
     cutoff, window = live_obs["cutoff_ms"], live_obs["window_ms"]
     replay_obs = for_bars(series, live_obs["bar_interval_ms"], live_obs["bar_endpoint_offset_ms"], cutoff)
     replay_obs["samples"] = [s for s in replay_obs["samples"] if cutoff - window <= s["recv_ms"] <= cutoff]
-    replay_obs["gaps"] = [g for g in replay_obs["gaps"]
-                          if g["start_ms"] <= cutoff and (g["end_ms"] is None or g["end_ms"] >= cutoff - window)]
+    replay_obs["gaps"] = [dict(g, end_ms=None if g["end_ms"] is not None and g["end_ms"] > cutoff else g["end_ms"])
+                          for g in replay_obs["gaps"]
+                          if g["start_ms"] <= cutoff and g["detected_ms"] <= cutoff
+                          and (g["end_ms"] is None or g["end_ms"] >= cutoff - window)]
     replay = _decisions(df, replay_obs, params)
     live_samples = [(s["recv_ms"], s["value"], s["session"], s["seq"]) for s in live_obs["samples"]]
     replay_samples = [(s["recv_ms"], s["value"], s["session"], s["seq"]) for s in replay_obs["samples"]]

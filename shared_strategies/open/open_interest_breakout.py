@@ -1,3 +1,5 @@
+import hashlib
+import json
 import math
 from numbers import Real
 
@@ -52,7 +54,7 @@ DIAGNOSTIC_COLUMNS = (
     "oib_oi_current", "oib_oi_prior", "oib_oi_current_ms", "oib_oi_prior_ms",
     "oib_oi_current_age_ms", "oib_oi_prior_age_ms", "oib_oi_change", "oib_threshold",
     "oib_coverage", "oib_max_gap_ms", "oib_oi_valid", "oib_valid", "oib_reason",
-    "oib_reason_code", "oib_carried", "oib_source", "oib_time_basis", "oib_samples_sha256",
+    "oib_reason_code", "oib_carried", "oib_source", "oib_time_basis", "oib_window_sha256",
 )
 
 
@@ -159,7 +161,6 @@ class _Series:
         self.cutoff = None
         self.offset = None
         self.interval = None
-        self.sha = ""
 
 
 def _int_or_none(value):
@@ -184,7 +185,6 @@ def parse_observations(obs, cadence_ms: int) -> _Series:
     series = _Series()
     series.source = str(obs.get("source") or "")
     series.time_basis = str(obs.get("time_basis") or "")
-    series.sha = str(obs.get("samples_sha256") or "")
     if obs.get("kind") != OBSERVATION_KIND:
         return _Series("unsupported_observations", f"kind {obs.get('kind')!r} is not {OBSERVATION_KIND!r}")
     if obs.get("units") not in ACCEPTED_UNITS:
@@ -240,9 +240,11 @@ def parse_observations(obs, cadence_ms: int) -> _Series:
             return _Series("unsupported_observations", f"gap {i} is not an object")
         start = _int_or_none(g.get("start_ms"))
         end = None if g.get("end_ms") is None else _int_or_none(g.get("end_ms"))
-        if start is None or (g.get("end_ms") is not None and end is None) or (end is not None and end < start):
+        detected = start if g.get("detected_ms") is None else _int_or_none(g.get("detected_ms"))
+        if (start is None or detected is None or (g.get("end_ms") is not None and end is None)
+                or (end is not None and end < start) or detected < start):
             return _Series("unsupported_observations", f"gap {i} is malformed")
-        gaps.append((start, end, str(g.get("reason") or "gap")))
+        gaps.append((start, end, detected, str(g.get("reason") or "gap")))
     series.t, series.v, series.session, series.gaps = t, v, sess, gaps
     return series
 
@@ -259,7 +261,7 @@ def _empty_columns(result: pd.DataFrame, threshold: float, reason: str) -> pd.Da
     result["oib_reason_code"] = np.full(n, REASON_CODES[reason], dtype=np.int64)
     result["oib_source"] = np.full(n, "", dtype=object)
     result["oib_time_basis"] = np.full(n, "", dtype=object)
-    result["oib_samples_sha256"] = np.full(n, "", dtype=object)
+    result["oib_window_sha256"] = np.full(n, "", dtype=object)
     result["signal"] = np.zeros(n, dtype=np.int64)
     return result
 
@@ -268,10 +270,19 @@ def _endpoint_index(t: np.ndarray, endpoints: np.ndarray) -> np.ndarray:
     return np.searchsorted(t, endpoints, side="right") - 1
 
 
+def _window_sha256(series: _Series, q: int, c: int, gaps: list) -> str:
+    doc = {
+        "samples": [[int(series.t[k]), float(series.v[k]), int(series.session[k])] for k in range(q, c + 1)],
+        "gaps": [[g[0], g[1], g[2], g[3]] for g in gaps],
+    }
+    return hashlib.sha256(json.dumps(doc, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
 def _open_interest_state(series: _Series, endpoints: np.ndarray, prior_endpoints: np.ndarray,
-                         rows_ok: np.ndarray, p: dict):
+                         rows_ok: np.ndarray, p: dict, hash_rows: np.ndarray):
     n = len(endpoints)
     reason = np.full(n, "", dtype=object)
+    window_sha = np.full(n, "", dtype=object)
     cur = np.full(n, np.nan)
     prior = np.full(n, np.nan)
     cur_t = np.full(n, np.nan)
@@ -280,11 +291,11 @@ def _open_interest_state(series: _Series, endpoints: np.ndarray, prior_endpoints
     max_gap = np.full(n, np.nan)
     if series.error:
         reason[:] = series.error
-        return reason, cur, prior, cur_t, prior_t, coverage, max_gap
+        return reason, cur, prior, cur_t, prior_t, coverage, max_gap, window_sha
     cadence = series.cadence
     if series.interval % cadence != 0:
         reason[:] = "unaligned_endpoint"
-        return reason, cur, prior, cur_t, prior_t, coverage, max_gap
+        return reason, cur, prior, cur_t, prior_t, coverage, max_gap, window_sha
     t, v, sess = series.t, series.v, series.session
     ci = _endpoint_index(t, endpoints)
     pi = _endpoint_index(t, prior_endpoints)
@@ -302,12 +313,11 @@ def _open_interest_state(series: _Series, endpoints: np.ndarray, prior_endpoints
             continue
         cur_t[i], prior_t[i] = t[c], t[q]
         cur[i], prior[i] = v[c], v[q]
-        gap_hit = False
-        for g_start, g_end, _ in series.gaps:
-            if g_start < e and (g_end is None or g_end > t[q]):
-                gap_hit = True
-                break
-        if gap_hit:
+        window_gaps = [g for g in series.gaps
+                       if g[0] < e and g[2] <= e and (g[1] is None or g[1] > t[q])]
+        if hash_rows[i]:
+            window_sha[i] = _window_sha256(series, q, c, window_gaps)
+        if window_gaps:
             reason[i] = "observation_gap"
             continue
         if e - t[c] > p["max_observation_age_ms"] or pe - t[q] > p["max_observation_age_ms"]:
@@ -334,7 +344,7 @@ def _open_interest_state(series: _Series, endpoints: np.ndarray, prior_endpoints
         if cur[i] <= 0 or prior[i] <= 0:
             reason[i] = "nonpositive_open_interest"
             continue
-    return reason, cur, prior, cur_t, prior_t, coverage, max_gap
+    return reason, cur, prior, cur_t, prior_t, coverage, max_gap, window_sha
 
 
 def open_interest_breakout_core(
@@ -415,16 +425,15 @@ def open_interest_breakout_core(
     interval = series.interval or 0
     prior_endpoints = endpoints - p["oi_lookback"] * interval
     eval_rows = price_ok & closed & np.isfinite(endpoints)
-    oi_reason, cur, prior, cur_t, prior_t, coverage, max_gap = _open_interest_state(
+    new_up = price_ok & closed & up & ~prev_up
+    new_down = price_ok & closed & down & ~prev_down
+    oi_reason, cur, prior, cur_t, prior_t, coverage, max_gap, window_sha = _open_interest_state(
         series, np.nan_to_num(endpoints).astype(np.int64), np.nan_to_num(prior_endpoints).astype(np.int64),
-        eval_rows, p)
+        eval_rows, p, new_up | new_down)
     oi_valid = eval_rows & (oi_reason == "")
     with np.errstate(invalid="ignore", divide="ignore"):
         change = np.where(oi_valid, cur / prior - 1.0, np.nan)
     confirm = oi_valid & (change > p["oi_change_threshold"])
-
-    new_up = price_ok & closed & up & ~prev_up
-    new_down = price_ok & closed & down & ~prev_down
     long_entry = new_up & confirm
     short_entry = new_down & confirm
     signal = np.zeros(n, dtype=np.int64)
@@ -471,6 +480,7 @@ def open_interest_breakout_core(
             for col in diag:
                 diag[col][-1] = diag[col][-2]
             oi_valid[-1] = oi_valid[-2]
+            window_sha[-1] = window_sha[-2]
             valid[-1] = True
             carried[-1] = True
 
@@ -485,6 +495,6 @@ def open_interest_breakout_core(
     result["oib_reason_code"] = np.array([REASON_CODES[r] for r in reason], dtype=np.int64)
     result["oib_source"] = np.full(n, series.source if not series.error else f"{series.error}: {series.detail}", dtype=object)
     result["oib_time_basis"] = np.full(n, series.time_basis, dtype=object)
-    result["oib_samples_sha256"] = np.full(n, series.sha, dtype=object)
+    result["oib_window_sha256"] = window_sha
     result["signal"] = signal
     return result

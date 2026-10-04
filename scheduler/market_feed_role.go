@@ -506,7 +506,7 @@ func runFeedRole(configPath string, statusPortFlag int, once bool, summary strin
 	}
 	defer lock.Release()
 
-	consumers := loadFeedConsumers(cfg.Feed.ConsumerConfigs, cfg.Feed.SocketPath, nil, startedAt)
+	consumers := skipObservationConsumers(cfg.Feed.Source, loadFeedConsumers(cfg.Feed.ConsumerConfigs, cfg.Feed.SocketPath, nil, startedAt))
 	for _, line := range formatFeedConsumerLines("[feed]", consumers) {
 		fmt.Println(line)
 	}
@@ -524,13 +524,6 @@ func runFeedRole(configPath string, statusPortFlag int, once bool, summary strin
 	}
 	union := unionFeedRequirements(consumers)
 	cadences := unionFeedCadences(consumers)
-	if err := feedSourceObservationError(cfg.Feed.Source, union); err != nil {
-		msg := err.Error()
-		fmt.Fprintf(os.Stderr, "[feed] CRITICAL: %s (exit %d)\n", msg, ExitProbeFailure)
-		sendStartupRefusalDM(notifier, "Feed startup", msg)
-		cleanupNotifier()
-		os.Exit(ExitProbeFailure)
-	}
 	if est := estimateFeedSealBytes(union); est > feedSealMaxBytes {
 		msg := fmt.Sprintf("the consumer union (%d keys) needs about %d bytes per seal, over the %d-byte transport cap", len(union.Order), est, feedSealMaxBytes)
 		fmt.Fprintf(os.Stderr, "[feed] CRITICAL: %s (exit %d)\n", msg, ExitProbeFailure)
@@ -710,7 +703,7 @@ func (rt *feedRuntime) reload() {
 	}
 	rt.mu.Unlock()
 	now := time.Now().UTC()
-	consumers := loadFeedConsumers(next.Feed.ConsumerConfigs, next.Feed.SocketPath, previous, now)
+	consumers := skipObservationConsumers(next.Feed.Source, loadFeedConsumers(next.Feed.ConsumerConfigs, next.Feed.SocketPath, previous, now))
 	for _, line := range formatFeedConsumerLines("[reload]", consumers) {
 		fmt.Println(line)
 	}
@@ -729,10 +722,6 @@ func (rt *feedRuntime) reload() {
 	}
 	union := unionFeedRequirements(consumers)
 	cadences := unionFeedCadences(consumers)
-	if err := feedSourceObservationError(next.Feed.Source, union); err != nil {
-		fmt.Fprintf(os.Stderr, "[reload] ERROR: %v; keeping the previous feed generation\n", err)
-		return
-	}
 	if est := estimateFeedSealBytes(union); est > feedSealMaxBytes {
 		fmt.Fprintf(os.Stderr, "[reload] ERROR: the new union needs about %d bytes per seal, over the %d-byte cap; keeping the previous feed generation\n", est, feedSealMaxBytes)
 		return
@@ -864,7 +853,7 @@ func runFeedProbe(configPath string) int {
 		fmt.Fprintf(os.Stderr, "probe: feed config %s has no status_port; the feed needs an explicit port\n", configPath)
 		return 1
 	}
-	consumers := loadFeedConsumers(cfg.Feed.ConsumerConfigs, cfg.Feed.SocketPath, nil, time.Now().UTC())
+	consumers := skipObservationConsumers(cfg.Feed.Source, loadFeedConsumers(cfg.Feed.ConsumerConfigs, cfg.Feed.SocketPath, nil, time.Now().UTC()))
 	for _, line := range formatFeedConsumerLines("probe:", consumers) {
 		fmt.Println(line)
 	}
@@ -873,10 +862,6 @@ func runFeedProbe(configPath string) int {
 		return ExitProbeFailure
 	}
 	union := unionFeedRequirements(consumers)
-	if err := feedSourceObservationError(cfg.Feed.Source, union); err != nil {
-		fmt.Fprintf(os.Stderr, "probe: %v\n", err)
-		return ExitProbeFailure
-	}
 	if est := estimateFeedSealBytes(union); est > feedSealMaxBytes {
 		fmt.Fprintf(os.Stderr, "probe: the consumer union needs about %d bytes per seal, over the %d-byte cap\n", est, feedSealMaxBytes)
 		return ExitProbeFailure
@@ -893,15 +878,24 @@ func runFeedProbe(configPath string) int {
 	return 0
 }
 
-func feedSourceObservationError(source string, union feedRequirements) error {
-	if source == feedSourceWebsocket || len(union.Observations) == 0 {
-		return nil
+func skipObservationConsumers(source string, consumers []feedConsumer) []feedConsumer {
+	if source == feedSourceWebsocket {
+		return consumers
 	}
-	keys := union.observationKeys()
-	names := make([]string, 0, len(keys))
-	for _, k := range keys {
-		names = append(names, k.PayloadID())
+	for i := range consumers {
+		c := &consumers[i]
+		if !c.Loaded || len(c.Req.Observations) == 0 {
+			continue
+		}
+		keys := c.Req.observationKeys()
+		names := make([]string, 0, len(keys))
+		for _, k := range keys {
+			names = append(names, k.PayloadID())
+		}
+		c.Loaded = false
+		c.Retained = false
+		c.Err = fmt.Sprintf("feed.source=%q cannot collect observations %s for this consumer; only feed.source=%q subscribes to the venue open-interest stream",
+			source, strings.Join(names, ", "), feedSourceWebsocket)
 	}
-	return fmt.Errorf("feed.source=%q cannot collect observations %s; only feed.source=%q subscribes to the venue open-interest stream",
-		source, strings.Join(names, ", "), feedSourceWebsocket)
+	return consumers
 }

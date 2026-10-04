@@ -193,6 +193,34 @@ def test_observation_defects_hold_with_a_reason(case):
     assert not row["oib_oi_valid"]
 
 
+def test_gap_counts_only_once_it_was_detected_before_the_close():
+    df = frame(FLAT + [110.0])
+    e = endpoint(df, len(df) - 1)
+    good = ramp(df, 1000.0, 1030.0, len(df) - 1)
+    late = observations(df, good, gaps=[{"start_ms": e - 40 * MINUTE, "end_ms": e - 39 * MINUTE,
+                                         "detected_ms": e + 30_000, "reason": "disconnected"}])
+    assert last(df, late)["signal"] == 1
+    known = observations(df, good, gaps=[{"start_ms": e - 40 * MINUTE, "end_ms": e - 39 * MINUTE,
+                                          "detected_ms": e - 39 * MINUTE, "reason": "disconnected"}])
+    row = last(df, known)
+    assert row["signal"] == 0 and row["oib_reason"] == "observation_gap"
+    bad = observations(df, good, gaps=[{"start_ms": e - 40 * MINUTE, "end_ms": None,
+                                        "detected_ms": e - 41 * MINUTE, "reason": "disconnected"}])
+    assert last(df, bad)["oib_reason"] == "unsupported_observations"
+
+
+def test_entry_window_hash_identifies_the_samples_used():
+    df = frame(FLAT + [110.0])
+    obs = observations(df, ramp(df, 1000.0, 1030.0, len(df) - 1))
+    a = last(df, obs)
+    later = dict(obs, samples=obs["samples"] + [{"recv_ms": endpoint(df, len(df) - 1) + 5_000, "event_ms": None,
+                                                  "value": 5.0, "session": 1, "seq": 10**6}])
+    assert last(df, later)["oib_window_sha256"] == a["oib_window_sha256"] != ""
+    edited = dict(obs, samples=[dict(s, value=s["value"] + 1e-6) if i == len(obs["samples"]) - 5 else s
+                                for i, s in enumerate(obs["samples"])])
+    assert last(df, edited)["oib_window_sha256"] != a["oib_window_sha256"]
+
+
 def test_order_and_duplicate_identities_are_refused():
     df = frame(FLAT + [110.0])
     obs = observations(df, ramp(df, 1000.0, 1030.0, len(df) - 1))
