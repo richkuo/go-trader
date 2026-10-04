@@ -102,15 +102,21 @@ func TestOpenInterestObservationPipeline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	served := skipObservationConsumers(feedSourceREST, []feedConsumer{{Path: "oi", Loaded: true, Req: req}, {Path: "plain", Loaded: true, Req: plain}})
-	if served[0].Loaded || !strings.Contains(served[0].Err, "cannot collect observations") || !served[1].Loaded {
-		t.Fatalf("a REST feed source must skip only the consumer that needs observations: %+v", served)
+	served := dropUncollectableObservations(feedSourceREST, []feedConsumer{{Path: "oi", Loaded: true, Req: req}, {Path: "plain", Loaded: true, Req: plain}})
+	if !served[0].Loaded || served[0].Err != "" || !strings.Contains(served[0].Notice, "cannot collect observations") || !served[1].Loaded || served[1].Notice != "" {
+		t.Fatalf("a REST feed source must keep every consumer loaded and note only the dropped observations: %+v", served)
 	}
-	if union := unionFeedRequirements(served); len(union.Observations) != 0 || len(union.Order) != 1 {
-		t.Fatalf("the REST union must keep the other consumer and carry no observation: %+v", union)
+	if len(served[0].Req.Observations) != 0 || served[0].Req.Strategies["oi-btc"].OpenInterest || len(served[0].Req.Order) != len(req.Order) {
+		t.Fatalf("a REST feed source must drop only the observation need and keep the consumer's candle keys: %+v", served[0].Req)
 	}
-	if kept := skipObservationConsumers(feedSourceWebsocket, []feedConsumer{{Path: "oi", Loaded: true, Req: req}}); !kept[0].Loaded {
-		t.Fatalf("a websocket feed source must serve an observation consumer")
+	if len(req.Observations) != 2 || !req.Strategies["oi-btc"].OpenInterest {
+		t.Fatalf("dropping observations for a REST source must not mutate the consumer's derived requirements: %+v", req)
+	}
+	if union := unionFeedRequirements(served); len(union.Observations) != 0 || !union.requires(feedKeyFor("ETH", "5m")) {
+		t.Fatalf("the REST union must serve the observation consumer's candle keys and carry no observation: %+v", union)
+	}
+	if kept := dropUncollectableObservations(feedSourceWebsocket, []feedConsumer{{Path: "oi", Loaded: true, Req: req}}); !kept[0].Loaded || kept[0].Notice != "" || len(kept[0].Req.Observations) != 2 {
+		t.Fatalf("a websocket feed source must serve an observation consumer unchanged: %+v", kept[0])
 	}
 
 	fs := newFeedSocketServer(t)
@@ -265,8 +271,31 @@ func TestOpenInterestObservationPipeline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode seal: %v", err)
 	}
-	if doc.V != 2 || len(doc.Observations) != 2 {
-		t.Fatalf("seal v%d carries %d observation entries, want v2 with BTC and ETH", doc.V, len(doc.Observations))
+	if doc.V != feedSealVersion || len(doc.Observations) != 2 {
+		t.Fatalf("seal v%d carries %d observation entries, want v%d with BTC and ETH", doc.V, len(doc.Observations), feedSealVersion)
+	}
+	if h := sealer.lookup(key1); h.SealVersion != feedSealVersion {
+		t.Fatalf("a seal carrying observations must announce seal v%d so a v1-only consumer refuses it: %+v", feedSealVersion, h)
+	}
+	relabeled := *doc
+	relabeled.V = feedSealVersionBase
+	if blob, _, err := encodeFeedSeal(&relabeled); err != nil {
+		t.Fatal(err)
+	} else if _, err := decodeFeedSeal(blob, key1); err == nil {
+		t.Fatal("a seal v1 carrying observations must be refused")
+	}
+	stripped := *doc
+	stripped.Observations = nil
+	if blob, _, err := encodeFeedSeal(&stripped); err != nil {
+		t.Fatal(err)
+	} else if _, err := decodeFeedSeal(blob, key1); err == nil {
+		t.Fatal("a seal v2 without observations must be refused, so each content has one canonical encoding")
+	}
+	stripped.V = feedSealVersionBase
+	if blob, _, err := encodeFeedSeal(&stripped); err != nil {
+		t.Fatal(err)
+	} else if _, err := decodeFeedSeal(blob, key1); err != nil {
+		t.Fatalf("a seal v1 without observations must decode: %v", err)
 	}
 	for _, smp := range doc.Observations[0].Samples {
 		if smp.RecvAtMs > boundary {
@@ -368,10 +397,52 @@ func TestOpenInterestObservationPipeline(t *testing.T) {
 		t.Fatalf("a gap detected at the cutoff starts at the last sample: %+v", frozen.Gaps)
 	}
 
-	oldSeal := oiTestOldPeer(t, sockDir)
-	oldClient := newSharedFeedClientWithEndpoints([]sharedFeedEndpoint{{Name: "old", Socket: oldSeal}})
-	if _, _, err := oldClient.roundTrip(ctx, oldSeal, feedWireRequest{V: feedWireVersion, Op: feedWireOpDescribe}); err == nil || !strings.Contains(err.Error(), feedErrIncompatible) {
-		t.Fatalf("a seal-v1 peer must be rejected as incompatible, got %v", err)
+	plainSealer := newFeedSealer(owner, feedSourceWebsocket, "inst-plain", clock, t.Logf)
+	plainSealer.settle = 0
+	plainSealer.prepare = time.Hour
+	plainSealer.prepareFn = websocketFeedPrepare(owner)
+	plainSealer.setGeneration(served[0].Req, []int{300}, time.UnixMilli(boundary-3_600_000))
+	plainSealer.startServing(time.UnixMilli(boundary - 3_600_000))
+	plainSock := filepath.Join(sockDir, "p.sock")
+	plainSrv, err := listenFeedSocket(plainSock, plainSealer, t.Logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go plainSrv.serve()
+	defer plainSrv.close()
+	plainSealer.sealOne(ctx, key2)
+	if h := plainSealer.lookup(key2); h.Status != feedWireStatusSealed || h.SealVersion != feedSealVersionBase || bytes.Contains(plainSealer.sealBytes(key2), []byte(`"observations"`)) {
+		t.Fatalf("a feed with no observation coverage must seal v%d bytes a v1-only consumer reads: %+v", feedSealVersionBase, h)
+	}
+	if h, _, err := client.roundTrip(ctx, plainSock, feedWireRequest{V: feedWireVersion, Op: feedWireOpDescribe}); err != nil || h.SealVersion != feedSealVersionBase || len(h.Describe.Observations) != 0 {
+		t.Fatalf("a feed with no observation coverage must describe itself as seal v%d: %+v, %v", feedSealVersionBase, h, err)
+	}
+	plainClient := newSharedFeedClientWithEndpoints([]sharedFeedEndpoint{{Name: "backup", Socket: plainSock}})
+	plainClient.settle, plainClient.prepare = 0, time.Hour
+	snapP, repP := plainClient.Fetch(ctx, key2, reqs)
+	if repP.Status != feedFetchSealed || !strings.Contains(strings.Join(repP.Gaps, "; "), "BTC|open_interest is not in the seal") {
+		t.Fatalf("a v1 seal must serve an open-interest consumer with a coverage gap for the missing window: %+v", repP)
+	}
+	payloadP := oiTestPayload(t, &marketFeedContext{Enabled: true, Requirements: req, Snapshot: snapP, SharedKey: key2}, btc)
+	if ob := payloadP.Observations["BTC|open_interest"]; ob.Available || ob.Reason == "" {
+		t.Fatalf("an observation missing from a v1 seal must be unavailable with a reason: %+v", ob)
+	}
+	if _, ok := payloadP.Frames["BTC|5m"]; !ok {
+		t.Fatalf("a v1 seal must keep the open-interest strategy's candle frame")
+	}
+
+	for _, tc := range []struct {
+		sealVersion int
+		compatible  bool
+	}{{feedSealVersionBase, true}, {feedSealVersion, true}, {feedSealVersion + 1, false}} {
+		peer := oiTestOldPeer(t, sockDir, tc.sealVersion)
+		_, _, err := client.roundTrip(ctx, peer, feedWireRequest{V: feedWireVersion, Op: feedWireOpDescribe})
+		if tc.compatible && err != nil {
+			t.Fatalf("a seal-v%d peer must be accepted, got %v", tc.sealVersion, err)
+		}
+		if !tc.compatible && (err == nil || !strings.Contains(err.Error(), feedErrIncompatible)) {
+			t.Fatalf("a seal-v%d peer must be rejected as incompatible, got %v", tc.sealVersion, err)
+		}
 	}
 
 	cancel()
@@ -406,9 +477,9 @@ func oiTestPayload(t *testing.T, feed *marketFeedContext, sc StrategyConfig) *ma
 	return env.Market
 }
 
-func oiTestOldPeer(t *testing.T, dir string) string {
+func oiTestOldPeer(t *testing.T, dir string, sealVersion int) string {
 	t.Helper()
-	path := filepath.Join(dir, "old.sock")
+	path := filepath.Join(dir, fmt.Sprintf("peer-v%d.sock", sealVersion))
 	ln, err := net.Listen("unix", path)
 	if err != nil {
 		t.Fatal(err)
@@ -423,7 +494,7 @@ func oiTestOldPeer(t *testing.T, dir string) string {
 			_, _ = readFeedFrame(conn, feedWireMaxRequestBytes)
 			_ = writeFeedJSONFrame(conn, map[string]any{
 				"v": feedWireVersion, "status": feedWireStatusDescribe, "instance": "old", "source": feedSourceWebsocket,
-				"generation": 1, "seal_version": 1, "payload_version": marketSnapshotVersion,
+				"generation": 1, "seal_version": sealVersion, "payload_version": marketSnapshotVersion,
 			})
 			conn.Close()
 		}

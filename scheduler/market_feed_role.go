@@ -223,6 +223,7 @@ type feedConsumer struct {
 	Loaded     bool
 	Retained   bool
 	Err        string
+	Notice     string
 	Req        feedRequirements
 	Cadences   []int
 	Strategies int
@@ -401,6 +402,9 @@ func formatFeedConsumerLines(prefix string, consumers []feedConsumer) []string {
 		case c.Loaded && c.Retained:
 			out = append(out, fmt.Sprintf("%s consumer %s: unreadable (%s); keeping its previous contribution (%d strategies, cadences %s)",
 				prefix, c.Path, c.Err, c.Strategies, formatCadences(c.Cadences)))
+		case c.Loaded && c.Notice != "":
+			out = append(out, fmt.Sprintf("%s consumer %s: %d feed strategies, %d keys, cadences %s; %s",
+				prefix, c.Path, c.Strategies, len(c.Req.Order), formatCadences(c.Cadences), c.Notice))
 		case c.Loaded:
 			out = append(out, fmt.Sprintf("%s consumer %s: %d feed strategies, %d keys, cadences %s",
 				prefix, c.Path, c.Strategies, len(c.Req.Order), formatCadences(c.Cadences)))
@@ -506,13 +510,15 @@ func runFeedRole(configPath string, statusPortFlag int, once bool, summary strin
 	}
 	defer lock.Release()
 
-	consumers := skipObservationConsumers(cfg.Feed.Source, loadFeedConsumers(cfg.Feed.ConsumerConfigs, cfg.Feed.SocketPath, nil, startedAt))
+	consumers := dropUncollectableObservations(cfg.Feed.Source, loadFeedConsumers(cfg.Feed.ConsumerConfigs, cfg.Feed.SocketPath, nil, startedAt))
 	for _, line := range formatFeedConsumerLines("[feed]", consumers) {
 		fmt.Println(line)
 	}
 	for _, c := range consumers {
 		if !c.Loaded {
 			sendStartupRefusalDM(notifier, "Feed consumer skipped", fmt.Sprintf("%s: %s", c.Path, c.Err))
+		} else if c.Notice != "" {
+			sendStartupRefusalDM(notifier, "Feed consumer observations dropped", fmt.Sprintf("%s: %s", c.Path, c.Notice))
 		}
 	}
 	if feedConsumersLoaded(consumers) == 0 {
@@ -703,7 +709,7 @@ func (rt *feedRuntime) reload() {
 	}
 	rt.mu.Unlock()
 	now := time.Now().UTC()
-	consumers := skipObservationConsumers(next.Feed.Source, loadFeedConsumers(next.Feed.ConsumerConfigs, next.Feed.SocketPath, previous, now))
+	consumers := dropUncollectableObservations(next.Feed.Source, loadFeedConsumers(next.Feed.ConsumerConfigs, next.Feed.SocketPath, previous, now))
 	for _, line := range formatFeedConsumerLines("[reload]", consumers) {
 		fmt.Println(line)
 	}
@@ -714,6 +720,8 @@ func (rt *feedRuntime) reload() {
 			} else {
 				rt.notifier.SendOwnerDM(fmt.Sprintf("**Feed reload** consumer %s skipped: %s", c.Path, c.Err))
 			}
+		} else if c.Notice != "" && rt.notifier != nil && rt.notifier.HasOwner() {
+			rt.notifier.SendOwnerDM(fmt.Sprintf("**Feed reload** consumer %s: %s", c.Path, c.Notice))
 		}
 	}
 	if feedConsumersLoaded(consumers) == 0 {
@@ -797,6 +805,7 @@ type feedStatusConsumer struct {
 	Loaded     bool   `json:"loaded"`
 	Retained   bool   `json:"retained,omitempty"`
 	Error      string `json:"error,omitempty"`
+	Notice     string `json:"notice,omitempty"`
 	Strategies int    `json:"strategies"`
 	Keys       int    `json:"keys"`
 	Cadences   []int  `json:"cadences"`
@@ -816,7 +825,7 @@ func (rt *feedRuntime) handleStatus(w http.ResponseWriter, r *http.Request) {
 	consumers := make([]feedStatusConsumer, 0, len(rt.consumers))
 	for _, c := range rt.consumers {
 		consumers = append(consumers, feedStatusConsumer{
-			Path: c.Path, Loaded: c.Loaded, Retained: c.Retained, Error: c.Err,
+			Path: c.Path, Loaded: c.Loaded, Retained: c.Retained, Error: c.Err, Notice: c.Notice,
 			Strategies: c.Strategies, Keys: len(c.Req.Order), Cadences: append([]int{}, c.Cadences...),
 		})
 	}
@@ -853,7 +862,7 @@ func runFeedProbe(configPath string) int {
 		fmt.Fprintf(os.Stderr, "probe: feed config %s has no status_port; the feed needs an explicit port\n", configPath)
 		return 1
 	}
-	consumers := skipObservationConsumers(cfg.Feed.Source, loadFeedConsumers(cfg.Feed.ConsumerConfigs, cfg.Feed.SocketPath, nil, time.Now().UTC()))
+	consumers := dropUncollectableObservations(cfg.Feed.Source, loadFeedConsumers(cfg.Feed.ConsumerConfigs, cfg.Feed.SocketPath, nil, time.Now().UTC()))
 	for _, line := range formatFeedConsumerLines("probe:", consumers) {
 		fmt.Println(line)
 	}
@@ -878,7 +887,7 @@ func runFeedProbe(configPath string) int {
 	return 0
 }
 
-func skipObservationConsumers(source string, consumers []feedConsumer) []feedConsumer {
+func dropUncollectableObservations(source string, consumers []feedConsumer) []feedConsumer {
 	if source == feedSourceWebsocket {
 		return consumers
 	}
@@ -892,9 +901,16 @@ func skipObservationConsumers(source string, consumers []feedConsumer) []feedCon
 		for _, k := range keys {
 			names = append(names, k.PayloadID())
 		}
-		c.Loaded = false
-		c.Retained = false
-		c.Err = fmt.Sprintf("feed.source=%q cannot collect observations %s for this consumer; only feed.source=%q subscribes to the venue open-interest stream",
+		req := c.Req
+		req.Observations = nil
+		req.Strategies = make(map[string]feedStrategyRequirement, len(c.Req.Strategies))
+		for id, entry := range c.Req.Strategies {
+			entry.OpenInterest = false
+			entry.ObsWindowMs = 0
+			req.Strategies[id] = entry
+		}
+		c.Req = req
+		c.Notice = fmt.Sprintf("feed.source=%q cannot collect observations %s; only feed.source=%q subscribes to the venue open-interest stream, so this feed serves the consumer's candle, mid and funding keys without them and its open-interest strategies hold entries",
 			source, strings.Join(names, ", "), feedSourceWebsocket)
 	}
 	return consumers

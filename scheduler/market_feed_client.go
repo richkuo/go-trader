@@ -202,10 +202,10 @@ func (c *sharedFeedClient) roundTrip(ctx context.Context, socket string, req fee
 	if err := json.Unmarshal(blob, &head); err != nil {
 		return h, nil, &feedEndpointError{Kind: feedErrMalformed, Detail: fmt.Sprintf("reply header: %v", err)}
 	}
-	if head.V != feedWireVersion || head.SealVersion != feedSealVersion || head.PayloadVersion != marketSnapshotVersion {
+	if head.V != feedWireVersion || !feedSealVersionSupported(head.SealVersion) || head.PayloadVersion != marketSnapshotVersion {
 		return h, nil, &feedEndpointError{Kind: feedErrIncompatible, Detail: fmt.Sprintf(
-			"feed speaks wire v%d, seal v%d, payload v%d; this consumer needs wire v%d, seal v%d, payload v%d",
-			head.V, head.SealVersion, head.PayloadVersion, feedWireVersion, feedSealVersion, marketSnapshotVersion)}
+			"feed speaks wire v%d, seal v%d, payload v%d; this consumer needs wire v%d, seal v%d or v%d, payload v%d",
+			head.V, head.SealVersion, head.PayloadVersion, feedWireVersion, feedSealVersionBase, feedSealVersion, marketSnapshotVersion)}
 	}
 	if err := decodeFeedStrict(blob, &h); err != nil {
 		return h, nil, &feedEndpointError{Kind: feedErrMalformed, Detail: fmt.Sprintf("reply header: %v", err)}
@@ -245,7 +245,7 @@ func (c *sharedFeedClient) fetchFrom(ctx context.Context, ep sharedFeedEndpoint,
 			if derr != nil {
 				return nil, h, &feedEndpointError{Kind: feedErrMalformed, Detail: derr.Error()}
 			}
-			if doc.Instance != h.Instance || doc.Generation != h.Generation || doc.Source != h.Source || doc.SealedAtMs != h.SealedAtMs {
+			if doc.Instance != h.Instance || doc.Generation != h.Generation || doc.Source != h.Source || doc.SealedAtMs != h.SealedAtMs || doc.V != h.SealVersion {
 				return nil, h, &feedEndpointError{Kind: feedErrMalformed, Detail: "seal metadata does not match its reply header"}
 			}
 			return doc, h, nil

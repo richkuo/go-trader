@@ -16,6 +16,7 @@ import (
 
 const (
 	feedWireVersion         = 1
+	feedSealVersionBase     = 1
 	feedSealVersion         = 2
 	feedWireMaxRequestBytes = 4 << 10
 	feedWireMaxHeaderBytes  = 1 << 20
@@ -231,6 +232,17 @@ type feedSealDoc struct {
 	Observations []feedSealObservation `json:"observations,omitempty"`
 }
 
+func feedSealVersionFor(hasObservations bool) int {
+	if hasObservations {
+		return feedSealVersion
+	}
+	return feedSealVersionBase
+}
+
+func feedSealVersionSupported(v int) bool {
+	return v == feedSealVersionBase || v == feedSealVersion
+}
+
 func feedSealEvaluationID(key int64) string {
 	return fmt.Sprintf("feed/%d", key)
 }
@@ -254,7 +266,6 @@ func feedSealDocFromSnapshot(snap *marketSnapshot, key int64, source, instance s
 		return nil, errors.New("no snapshot to seal")
 	}
 	doc := &feedSealDoc{
-		V:          feedSealVersion,
 		Key:        key,
 		Source:     source,
 		Instance:   instance,
@@ -380,6 +391,7 @@ func feedSealDocFromSnapshot(snap *marketSnapshot, key int64, source, instance s
 		}
 		doc.Observations = append(doc.Observations, so)
 	}
+	doc.V = feedSealVersionFor(len(doc.Observations) > 0)
 	return doc, nil
 }
 
@@ -419,8 +431,11 @@ func decodeFeedSeal(blob []byte, wantKey int64) (*feedSealDoc, error) {
 	if !bytes.Equal(canonical, blob) {
 		return nil, errors.New("seal bytes are not in canonical form")
 	}
-	if doc.V != feedSealVersion {
-		return nil, fmt.Errorf("seal version %d, want %d", doc.V, feedSealVersion)
+	if !feedSealVersionSupported(doc.V) {
+		return nil, fmt.Errorf("seal version %d, want %d or %d", doc.V, feedSealVersionBase, feedSealVersion)
+	}
+	if want := feedSealVersionFor(len(doc.Observations) > 0); doc.V != want {
+		return nil, fmt.Errorf("seal version %d carries %d observations; that content seals as version %d", doc.V, len(doc.Observations), want)
 	}
 	if doc.Key != wantKey {
 		return nil, fmt.Errorf("seal key %d, requested %d", doc.Key, wantKey)
