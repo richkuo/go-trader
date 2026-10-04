@@ -49625,12 +49625,12 @@
  "source_sha256": {
   "backtest/backtester.py": "35e3e2281397e0fa07496b8759e4d14777a7ddc5ee33b3820bf643ec0994a13f",
   "backtest/candidates/connors_rsi_reversion_1645/run_study.py": "f23f7c940266f1dfb62641b815f52c7dba9529d685062157fbc8428db429515d",
-  "backtest/eval_windows.py": "b4546f5d9b14ce9cbc86701c47509e11e1844f364e0d6744d9c49e7558ab683a",
-  "backtest/offline_manifest.py": "0c559592f81d1227323dfcd02eb804140d171a39346fcadefcbd2f7d3464a560",
-  "backtest/optimizer.py": "def933cdb76dc080c683ed36fd9b3cc9340ef4d61618ab6c8522cb33082687ba",
+  "backtest/eval_windows.py": "ebac9ff9de105c2dc9fda2a1d22e2cae1f704e7f30f010bfae7c9fe925f28362",
+  "backtest/offline_manifest.py": "86063fa21c1fecc3131ef928ba9e9f45a5e58fb76b9750db0aadc74275d49100",
+  "backtest/optimizer.py": "79a325fabd1ef0b7e99418b4c7d6e8ab24e11fe5c51fcc9ed3cfeabf82ffc4a7",
   "shared_strategies/close/time_stop.py": "da47e115c599a162a9091a245ce51dda7566716e3811b106899b2ae446f19305",
   "shared_strategies/open/connors_rsi.py": "dda14b1560fbad98c66e968a37878e98dba3cfdb62b443a83c8c0ba512bdb8f0",
-  "shared_strategies/open/registry.py": "4721f1b07ed6d6efcb5515329cb31e82c2c172a356f2dfc29ecda9b2d06e4b32",
+  "shared_strategies/open/registry.py": "67e4af71ce72ef68d249dae7924d29a65a9d1cacf2beac5afe6fd637f60aedc6",
   "shared_tools/strategy_composition.py": "648b3e89038f0785d1fa474d0239f16e9a6993f56969b934f650db1aa9b659dc"
  },
  "study": "connors_rsi_reversion_1645",
