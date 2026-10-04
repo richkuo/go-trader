@@ -13121,14 +13121,14 @@
  "source_sha256": {
   "backtest/backtester.py": "35e3e2281397e0fa07496b8759e4d14777a7ddc5ee33b3820bf643ec0994a13f",
   "backtest/candidates/commodity_channel_trend_1656/run_study.py": "d7a619716cd046c7ad7c2b089b5654bc0527acc03469f5a843ea0768ab7f6a6d",
-  "backtest/eval_windows.py": "b4546f5d9b14ce9cbc86701c47509e11e1844f364e0d6744d9c49e7558ab683a",
-  "backtest/offline_manifest.py": "0c559592f81d1227323dfcd02eb804140d171a39346fcadefcbd2f7d3464a560",
-  "backtest/optimizer.py": "cfd3eb2af0ff9245b359d2a2a9756da72aa60a3aa54bda7c413a5864a2f90817",
+  "backtest/eval_windows.py": "ebac9ff9de105c2dc9fda2a1d22e2cae1f704e7f30f010bfae7c9fe925f28362",
+  "backtest/offline_manifest.py": "86063fa21c1fecc3131ef928ba9e9f45a5e58fb76b9750db0aadc74275d49100",
+  "backtest/optimizer.py": "28b4ee5ab741194f57ecdce5dddf074d6ae531721984be95fdacbe0e547e0490",
   "shared_strategies/close/time_stop.py": "da47e115c599a162a9091a245ce51dda7566716e3811b106899b2ae446f19305",
   "shared_strategies/open/adx_trend.py": "9ed424ddbeec3471e0b3725ba54938bc38e88689e6b70da41d87f063f951bc17",
   "shared_strategies/open/commodity_channel.py": "80b1fa852372b73d67615c82039ed20b0bd015d40d661824b00fc24972bc6517",
   "shared_strategies/open/momentum_pro.py": "4221e0e40e9b7fd7126825e3df2c5421a9313a8a4051c993c4f57e4dc44e53ee",
-  "shared_strategies/open/registry.py": "78773704fe6eed7ea9eefc601156ab9a78180535916d7b561ae14088f21689c6",
+  "shared_strategies/open/registry.py": "fa7090a496afaea6e63a315a0b8330af1b3ee01651983a3ba64a4b9b9fe19cd3",
   "shared_tools/strategy_composition.py": "648b3e89038f0785d1fa474d0239f16e9a6993f56969b934f650db1aa9b659dc"
  },
  "study": "commodity_channel_trend_1656",
