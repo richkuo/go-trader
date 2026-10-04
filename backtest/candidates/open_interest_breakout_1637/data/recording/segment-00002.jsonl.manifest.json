@@ -1,0 +1,27 @@
+{
+  "schema": "go_trader_observation_segment/v1",
+  "run_id": "MacBookPro.hitronhub.home-4395-1791083036562-1791083036",
+  "index": 2,
+  "file": "segment-00002.jsonl",
+  "sha256": "4691fa9e926e10ad8fbf097b82e9ea0f4547a368e0fa825d8f410b172ee226dc",
+  "bytes": 5750743,
+  "records": 10581,
+  "obs_records": 10581,
+  "rejected": 0,
+  "dropped": 0,
+  "first_recv_ms": 1791086637093,
+  "last_recv_ms": 1791090236998,
+  "opened_ms": 1791086637093,
+  "closed_ms": 1791090238020,
+  "sessions": [
+    1
+  ],
+  "coins": [
+    "BTC",
+    "ETH",
+    "SOL"
+  ],
+  "complete": true,
+  "close_reason": "rotation",
+  "recorder_version": "dev"
+}

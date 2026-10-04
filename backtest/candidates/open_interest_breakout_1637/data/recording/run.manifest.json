@@ -1,0 +1,191 @@
+{
+  "schema": "go_trader_observation_run/v1",
+  "run_id": "MacBookPro.hitronhub.home-4395-1791083036562-1791083036",
+  "source": "hyperliquid_ws_activeAssetCtx",
+  "units": "base",
+  "time_basis": "receipt",
+  "cadence_ms": 60000,
+  "host": "https://api.hyperliquid.xyz",
+  "ws_url": "wss://api.hyperliquid.xyz/ws",
+  "coins": [
+    "BTC",
+    "ETH",
+    "SOL"
+  ],
+  "started_ms": 1791083036562,
+  "closed_ms": 1791105136591,
+  "closed": true,
+  "dropped_total": 0,
+  "recorder_version": "dev",
+  "segments": [
+    {
+      "schema": "go_trader_observation_segment/v1",
+      "run_id": "MacBookPro.hitronhub.home-4395-1791083036562-1791083036",
+      "index": 1,
+      "file": "segment-00001.jsonl",
+      "sha256": "01a432367db4ccdb25f5354c0ff73c012fe987650075dfad07dbdb30ad52dec1",
+      "bytes": 5750783,
+      "records": 10591,
+      "obs_records": 10590,
+      "rejected": 0,
+      "dropped": 0,
+      "first_recv_ms": 1791083036728,
+      "last_recv_ms": 1791086636032,
+      "opened_ms": 1791083036728,
+      "closed_ms": 1791086637093,
+      "sessions": [
+        1
+      ],
+      "coins": [
+        "BTC",
+        "ETH",
+        "SOL"
+      ],
+      "complete": true,
+      "close_reason": "rotation",
+      "recorder_version": "dev"
+    },
+    {
+      "schema": "go_trader_observation_segment/v1",
+      "run_id": "MacBookPro.hitronhub.home-4395-1791083036562-1791083036",
+      "index": 2,
+      "file": "segment-00002.jsonl",
+      "sha256": "4691fa9e926e10ad8fbf097b82e9ea0f4547a368e0fa825d8f410b172ee226dc",
+      "bytes": 5750743,
+      "records": 10581,
+      "obs_records": 10581,
+      "rejected": 0,
+      "dropped": 0,
+      "first_recv_ms": 1791086637093,
+      "last_recv_ms": 1791090236998,
+      "opened_ms": 1791086637093,
+      "closed_ms": 1791090238020,
+      "sessions": [
+        1
+      ],
+      "coins": [
+        "BTC",
+        "ETH",
+        "SOL"
+      ],
+      "complete": true,
+      "close_reason": "rotation",
+      "recorder_version": "dev"
+    },
+    {
+      "schema": "go_trader_observation_segment/v1",
+      "run_id": "MacBookPro.hitronhub.home-4395-1791083036562-1791083036",
+      "index": 3,
+      "file": "segment-00003.jsonl",
+      "sha256": "14d6496b9f659499dfd4e100b8dc68b3f8762816d882dded585c8c79eab0c5e2",
+      "bytes": 3683506,
+      "records": 6800,
+      "obs_records": 6798,
+      "rejected": 0,
+      "dropped": 0,
+      "first_recv_ms": 1791090238020,
+      "last_recv_ms": 1791093371918,
+      "opened_ms": 1791090238020,
+      "closed_ms": 1791094402908,
+      "sessions": [
+        1,
+        2
+      ],
+      "coins": [
+        "BTC",
+        "ETH",
+        "SOL"
+      ],
+      "complete": true,
+      "close_reason": "rotation",
+      "recorder_version": "dev"
+    },
+    {
+      "schema": "go_trader_observation_segment/v1",
+      "run_id": "MacBookPro.hitronhub.home-4395-1791083036562-1791083036",
+      "index": 4,
+      "file": "segment-00004.jsonl",
+      "sha256": "05dfb6c7913f9ec9d0bc7e2b66d06df170b42c97919de71894c45d67243e3245",
+      "bytes": 251527,
+      "records": 468,
+      "obs_records": 462,
+      "rejected": 0,
+      "dropped": 0,
+      "first_recv_ms": 1791094402908,
+      "last_recv_ms": 1791097862795,
+      "opened_ms": 1791094402908,
+      "closed_ms": 1791099838321,
+      "sessions": [
+        2,
+        3,
+        4,
+        5
+      ],
+      "coins": [
+        "BTC",
+        "ETH",
+        "SOL"
+      ],
+      "complete": true,
+      "close_reason": "rotation",
+      "recorder_version": "dev"
+    },
+    {
+      "schema": "go_trader_observation_segment/v1",
+      "run_id": "MacBookPro.hitronhub.home-4395-1791083036562-1791083036",
+      "index": 5,
+      "file": "segment-00005.jsonl",
+      "sha256": "114e76dc3dbf247212fed5cbab5dc8485a5b061d4bfa549fb0a93b4c5575bef7",
+      "bytes": 1401783,
+      "records": 2590,
+      "obs_records": 2585,
+      "rejected": 0,
+      "dropped": 0,
+      "first_recv_ms": 1791099838321,
+      "last_recv_ms": 1791102718330,
+      "opened_ms": 1791099838321,
+      "closed_ms": 1791103663880,
+      "sessions": [
+        5,
+        6,
+        7
+      ],
+      "coins": [
+        "BTC",
+        "ETH",
+        "SOL"
+      ],
+      "complete": true,
+      "close_reason": "rotation",
+      "recorder_version": "dev"
+    },
+    {
+      "schema": "go_trader_observation_segment/v1",
+      "run_id": "MacBookPro.hitronhub.home-4395-1791083036562-1791083036",
+      "index": 6,
+      "file": "segment-00006.jsonl",
+      "sha256": "c72cfb41aa2aa02aeb64b66f60f8300afc4764db7acc124a0121b1df64751257",
+      "bytes": 677710,
+      "records": 1252,
+      "obs_records": 1248,
+      "rejected": 0,
+      "dropped": 0,
+      "first_recv_ms": 1791103663880,
+      "last_recv_ms": 1791105136557,
+      "opened_ms": 1791103663880,
+      "closed_ms": 1791105136557,
+      "sessions": [
+        8,
+        9
+      ],
+      "coins": [
+        "BTC",
+        "ETH",
+        "SOL"
+      ],
+      "complete": true,
+      "close_reason": "shutdown",
+      "recorder_version": "dev"
+    }
+  ]
+}

@@ -35,11 +35,11 @@
   "venue_reference": {
     "meta": {
       "path": "data/venue_meta.json",
-      "sha256": "pending-acquire"
+      "sha256": "458d89887417a477a93db9c93607de5f64b8813d88013e0f4883fc06d6c35249"
     },
     "l2_snapshot": {
       "path": "data/venue_l2_snapshot.json",
-      "sha256": "pending-acquire"
+      "sha256": "25319e4d9cd9d9ea40f797924217d8335ca12c96081d5d10539026d77531aef8"
     },
     "documents": [
       {
@@ -68,14 +68,14 @@
         "retrieved_at": "2026-10-04T03:05:00+00:00",
         "supports": "open-interest source: activeAssetCtx carries PerpsAssetCtx.openInterest and no event timestamp",
         "quote": "type PerpsAssetCtx = SharedAssetCtx & { funding: number; openInterest: number; oraclePx: number; };",
-        "quote_sha256": "pending-prepare"
+        "quote_sha256": "3208d363bbab01ccbba7feccff1214cf32091886f9ce7dbf9238f0e40c6bcf88"
       },
       {
         "url": "https://hyperliquid.gitbook.io/hyperliquid-docs/historical-data",
         "retrieved_at": "2026-10-04T03:05:00+00:00",
         "supports": "historical asset contexts exist only in a requester-pays archive with possible gaps",
         "quote": "There is no guarantee of timely updates and data may be missing.",
-        "quote_sha256": "pending-prepare"
+        "quote_sha256": "23b96d72f9cd0b9660204a4b101ccd8c5cbdfe1190096a6a2e6eac56b201b674"
       }
     ]
   },
@@ -84,28 +84,60 @@
       "coin": "BTC",
       "symbol": "BTC/USDT",
       "size_decimals": 5,
-      "half_spread_bps": 0.06,
-      "candles": {"path": "data/BTC_5m_candles.csv.gz", "sha256": "pending-acquire"},
-      "funding": {"path": "data/BTC_funding.csv.gz", "sha256": "pending-acquire"},
-      "open_interest": {"path": "data/BTC_open_interest.json.gz", "sha256": "pending-prepare"}
+      "half_spread_bps": 0.0587,
+      "candles": {
+        "path": "data/BTC_5m_candles.csv.gz",
+        "sha256": "1cb60915a557a7ab2ed8bcec0bbefa05b3ddc1bacea89b370cc51ec62bfde5f1"
+      },
+      "funding": {
+        "path": "data/BTC_funding.csv.gz",
+        "sha256": "0d33e0eccadebc9468da7bc9b0763d2bf62636c6a2fb585026ff3153cabfba13"
+      },
+      "open_interest": {
+        "path": "data/BTC_open_interest.json.gz",
+        "sha256": "ab76015829a800efae7b374afe76723fd30b9f08349dc1b3d88348e25eb5e613"
+      }
     },
     {
       "coin": "ETH",
       "symbol": "ETH/USDT",
       "size_decimals": 4,
-      "half_spread_bps": 0.19,
-      "candles": {"path": "data/ETH_5m_candles.csv.gz", "sha256": "pending-acquire"},
-      "funding": {"path": "data/ETH_funding.csv.gz", "sha256": "pending-acquire"},
-      "open_interest": {"path": "data/ETH_open_interest.json.gz", "sha256": "pending-prepare"}
+      "half_spread_bps": 0.1853,
+      "candles": {
+        "path": "data/ETH_5m_candles.csv.gz",
+        "sha256": "3e8d439d7af8d3edbe762838396d3326941bcbd0ebb9e6708e2ef6084bf296e5"
+      },
+      "funding": {
+        "path": "data/ETH_funding.csv.gz",
+        "sha256": "2a2c5de032b35d16c39c8ab789d8deb4be1d05c0bd59256feafff22aba3bc65b"
+      },
+      "open_interest": {
+        "path": "data/ETH_open_interest.json.gz",
+        "sha256": "25a420de755fd5e0d2f684145b9e1aa5c488464978c422b843880897ec0a2ad6"
+      }
     },
     {
       "coin": "SOL",
       "symbol": "SOL/USDT",
       "size_decimals": 2,
-      "half_spread_bps": 0.42,
-      "candles": {"path": "data/SOL_5m_candles.csv.gz", "sha256": "pending-acquire"},
-      "funding": {"path": "data/SOL_funding.csv.gz", "sha256": "pending-acquire"},
-      "open_interest": {"path": "data/SOL_open_interest.json.gz", "sha256": "pending-prepare"}
+      "half_spread_bps": 0.4138,
+      "candles": {
+        "path": "data/SOL_5m_candles.csv.gz",
+        "sha256": "7fe1bd7302c225942dd684c824360528610a8775b7233765a0839dde8d904d9e"
+      },
+      "funding": {
+        "path": "data/SOL_funding.csv.gz",
+        "sha256": "ca5729c98e890fb7f7d97e7291b385b742323ed3c0675e42f024dbf7ec38e1aa"
+      },
+      "open_interest": {
+        "path": "data/SOL_open_interest.json.gz",
+        "sha256": "1bdee0820d3b51847ecfb32a00212fdedc3d45dbfafdc2a2a37a92d75a88a6db"
+      }
     }
-  ]
+  ],
+  "recording": {
+    "path": "data/recording/run.manifest.json",
+    "sha256": "0b99457a4553ad2d0e459803cd1c079317b7209d84c81375f3fa57b5246987e7",
+    "run_id": "MacBookPro.hitronhub.home-4395-1791083036562-1791083036"
+  }
 }

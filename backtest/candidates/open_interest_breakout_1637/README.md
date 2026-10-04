@@ -32,6 +32,10 @@ uv run --no-sync python backtest/candidates/open_interest_breakout_1637/run_stud
 
 `run` needs no network. It re-imports the committed raw recording and refuses when the rebuilt series differs from the committed series files. `prepare` never overwrites a frozen recording.
 
+## Result
+
+The verdict is **INCONCLUSIVE** (see `REPORT.md`). The recording run had nine sessions. It was continuous from 03:04 to 05:41 UTC. After that the stream stopped eight times, for 14 to 33 minutes each (about 3.1 hours in total), with connection resets. The host appears to have slept, but this is not verified. Every stopped stretch is in the data as a disconnect gap or a stale sample, so 0% of held-out bars had a valid open-interest window. The candidate and the coverage-matched Donchian baseline therefore made no held-out entries, while the unfiltered Donchian made 7 entries (net $-15.55 at cost x1). No train grid point reached 6 positions, so the seed parameters were scored. A useful verdict needs a recorder on an always-on host for weeks of 5m bars (or the archive, once measured), followed by a new frozen specification.
+
 ## Limits
 
 - The recorded span is six hours. That is far too short for an economic claim, so the frozen criteria make the expected verdict inconclusive. The study demonstrates the pipeline end to end on real venue data.
