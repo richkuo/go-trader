@@ -2452,13 +2452,13 @@
  "source_sha256": {
   "backtest/backtester.py": "35e3e2281397e0fa07496b8759e4d14777a7ddc5ee33b3820bf643ec0994a13f",
   "backtest/candidates/vortex_trend_1647/run_study.py": "57f4848950b384b6d378e99f8b46c85a0b4fa7b87fed730916e85ec2b5d9e597",
-  "backtest/eval_windows.py": "b4546f5d9b14ce9cbc86701c47509e11e1844f364e0d6744d9c49e7558ab683a",
-  "backtest/offline_manifest.py": "0c559592f81d1227323dfcd02eb804140d171a39346fcadefcbd2f7d3464a560",
-  "backtest/optimizer.py": "3dd4ef3a5eab2a86f39f27b5cf09111de40d8a4b3e108ee9101b2b223d6a3ed8",
+  "backtest/eval_windows.py": "ebac9ff9de105c2dc9fda2a1d22e2cae1f704e7f30f010bfae7c9fe925f28362",
+  "backtest/offline_manifest.py": "86063fa21c1fecc3131ef928ba9e9f45a5e58fb76b9750db0aadc74275d49100",
+  "backtest/optimizer.py": "98675e918f651663b8bc5b84ad0392c2480e88b1844c56a9d50fe3a614664bac",
   "shared_strategies/close/time_stop.py": "da47e115c599a162a9091a245ce51dda7566716e3811b106899b2ae446f19305",
   "shared_strategies/open/adx_trend.py": "9ed424ddbeec3471e0b3725ba54938bc38e88689e6b70da41d87f063f951bc17",
   "shared_strategies/open/indicators_core.py": "7d7345f6dc26a24b828885f62715e69d264d01d1e3608fc9e5a9432825105ee6",
-  "shared_strategies/open/registry.py": "2e2287bbfc345d6c8e4e8578f07805d2574e4773bde121a218412325c2ab60bf",
+  "shared_strategies/open/registry.py": "e599d7aebeb2171e1da8ecd60f6ae30335081a579e52f79962a437fce7fbb95f",
   "shared_strategies/open/vortex_trend.py": "1d0af477a3b106c9e5e1524fecd0a0cb5e2657ffacb0a0ef7af7bf37d7c5634d",
   "shared_tools/strategy_composition.py": "648b3e89038f0785d1fa474d0239f16e9a6993f56969b934f650db1aa9b659dc"
  },
