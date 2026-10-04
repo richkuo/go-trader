@@ -3274,12 +3274,12 @@
  "source_sha256": {
   "backtest/backtester.py": "35e3e2281397e0fa07496b8759e4d14777a7ddc5ee33b3820bf643ec0994a13f",
   "backtest/candidates/awesome_oscillator_1660/run_study.py": "0f7d4b6aa38bb48d125a916db22a7809f044560fb25fc2efdac6ad2875bccda5",
-  "backtest/eval_windows.py": "b4546f5d9b14ce9cbc86701c47509e11e1844f364e0d6744d9c49e7558ab683a",
-  "backtest/offline_manifest.py": "0c559592f81d1227323dfcd02eb804140d171a39346fcadefcbd2f7d3464a560",
-  "backtest/optimizer.py": "9f235ceca89bb8128f31c8c8680c21c41efcec53d362a50ca092abfcc60b424d",
+  "backtest/eval_windows.py": "ebac9ff9de105c2dc9fda2a1d22e2cae1f704e7f30f010bfae7c9fe925f28362",
+  "backtest/offline_manifest.py": "86063fa21c1fecc3131ef928ba9e9f45a5e58fb76b9750db0aadc74275d49100",
+  "backtest/optimizer.py": "a278e58dcd27fac73157e3386b43315c75e530803876a840c3098c7aec5f5c18",
   "shared_strategies/close/time_stop.py": "da47e115c599a162a9091a245ce51dda7566716e3811b106899b2ae446f19305",
   "shared_strategies/open/awesome_oscillator.py": "bfd860f2de644c3bde7f2a489110bbed90656e095de06b888194c912aa341a68",
-  "shared_strategies/open/registry.py": "34e4ac4ef2cb20eb565e8399d919d81295112c74c2fe0ab778139370146e957a",
+  "shared_strategies/open/registry.py": "bd103eb81a140282091dd282c35f743b2159dbba61b42cbdf485fd457632707f",
   "shared_tools/strategy_composition.py": "648b3e89038f0785d1fa474d0239f16e9a6993f56969b934f650db1aa9b659dc"
  },
  "study": "awesome_oscillator_1660",
