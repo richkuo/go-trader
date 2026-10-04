@@ -174,9 +174,15 @@ parameters, all at cost x1, plus the candidate at cost x2.
 4. Otherwise fail.
 
 A pass would not change availability. The candidate stays `backtest_only`
-until a separate reviewed promotion. Proposed for that promotion: short name
-`ao`, direction `both`, added to `knownShortNames`, the bidirectional set and
-`fee_audit.py` together.
+until a separate reviewed promotion. The name is already in the bidirectional
+set (`bidirectionalPerpsStrategies` in `scheduler/init.go`) and in
+`LIVE_BIDIRECTIONAL_STRATEGIES` in `backtest/fee_audit.py`. The fee audit
+screens every futures registry entry, so it must measure the short side of a
+strategy that opens shorts or mark that side unmeasured. This membership does
+not make the strategy live: it is not in `knownShortNames`, it stays hidden
+from discovery, and every live check script still refuses it. Proposed for
+that promotion: short name `ao` and direction `both`, added to
+`knownShortNames`.
 
 ## Reproduce
 

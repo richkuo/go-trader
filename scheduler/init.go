@@ -111,6 +111,7 @@ var bidirectionalPerpsStrategies = map[string]bool{
 	"connors_rsi_reversion":       true,
 	"vortex_trend":                true,
 	"relative_vigor_index":        true,
+	"awesome_oscillator":          true,
 }
 
 func isBidirectionalPerpsStrategy(id string) bool {

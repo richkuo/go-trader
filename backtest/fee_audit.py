@@ -36,6 +36,7 @@ LIVE_BIDIRECTIONAL_STRATEGIES = frozenset({
     "connors_rsi_reversion",
     "vortex_trend",
     "relative_vigor_index",
+    "awesome_oscillator",
 })
 
 DEFAULT_WINDOWS = ("is", "oos")
