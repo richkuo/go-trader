@@ -621,6 +621,10 @@ DEFAULT_PARAM_RANGES = {
         "period": [4, 6, 8, 10, 14, 20, 30],
         "zero_line_filter": [True],
     },
+    "awesome_oscillator": {
+        "fast_period": [3, 5, 8, 13],
+        "slow_period": [21, 34, 55, 89],
+    },
     "analog_retrieval": {
         "horizon": [6, 12, 24],
         "k_neighbors": [15, 25, 50],

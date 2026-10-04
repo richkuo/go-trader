@@ -1,0 +1,17 @@
+{
+  "name": "awesome_oscillator",
+  "params": {
+    "fast_period": 5,
+    "slow_period": 34
+  },
+  "direction": "both",
+  "close_strategies": [
+    {
+      "name": "time_stop",
+      "params": {
+        "max_bars": 20
+      }
+    }
+  ],
+  "stop_loss_atr_mult": 1.0
+}

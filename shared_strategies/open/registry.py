@@ -49,6 +49,7 @@ from open_interest_breakout import open_interest_breakout_core
 from connors_rsi import connors_rsi_reversion_core
 from vortex_trend import vortex_trend_core
 from relative_vigor_index import relative_vigor_index_core
+from awesome_oscillator import awesome_oscillator_core
 
 
 VALID_PLATFORMS: Tuple[str, ...] = ("spot", "futures")
@@ -93,6 +94,7 @@ M5_DEPRECATED_EDGE_STRATEGIES = frozenset({
 DISCOVERY_HIDDEN_STRATEGIES = frozenset({
     "amd_ifvg",
     "analog_retrieval",
+    "awesome_oscillator",
     "chaikin_money_flow_breakout",
     "commodity_channel_trend",
     "connors_rsi_reversion",
@@ -1521,6 +1523,22 @@ def relative_vigor_index_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
 
 
 @register(
+    "awesome_oscillator",
+    "RESEARCH, backtest-only (#1660) \u2014 Awesome Oscillator zero cross: the mean candle midpoint over fast_period bars minus the mean over slow_period bars; long when it turns positive after a negative value, short when it turns negative after a positive value, crossing at most 7 exact-zero bars (8-bar predecessor horizon). Entry-only; pair with one explicit close strategy and one stop owner. Refused by every live check script; promotion requires a separate reviewed decision",
+    {"fast_period": 5, "slow_period": 34},
+    platforms=("futures",),
+    backtest_only=True,
+    constraints=[
+        "fast_period >= 1",
+        "fast_period < slow_period",
+        "slow_period <= 100",
+    ],
+)
+def awesome_oscillator_strategy(df: pd.DataFrame, fast_period: int = 5, slow_period: int = 34) -> pd.DataFrame:
+    return awesome_oscillator_core(df, fast_period=fast_period, slow_period=slow_period)
+
+
+@register(
     "momentum_pro",
     "Momentum Pro — trend-pullback entries in a stacked-EMA trend, ADX-confirmed, on a volume-backed resumption",
     {
@@ -1769,6 +1787,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "consolidation_range", "atr_band_revert", "mtf_confluence", "vol_momentum",
         "regime_adaptive", "regime_adaptive_htf", "analog_retrieval",
         "chaikin_money_flow_breakout", "open_interest_breakout", "connors_rsi_reversion",
-        "vortex_trend", "relative_vigor_index", "hold",
+        "vortex_trend", "relative_vigor_index", "awesome_oscillator",
+        "hold",
     ],
 }

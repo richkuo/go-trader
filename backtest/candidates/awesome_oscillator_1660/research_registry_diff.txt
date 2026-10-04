@@ -1,0 +1,23 @@
+--- research_registry_before
++++ research_registry_after
+@@ -802,6 +802,20 @@
+    "flow_threshold < 1"
+   ],
+   "RESEARCH, backtest-only (#1649) \u2014 Chaikin Money Flow breakout confirmation: long on the first close strictly above the prior breakout_window high while candle-estimated money flow (close-location value times volume over flow_window bars, not measured aggressor flow) is strictly above flow_threshold; short mirrors on the prior low with flow below -flow_threshold. Entry-only; pair with one explicit close strategy and one stop owner. Refused by every live check script; promotion requires a separate reviewed decision"
++ ],
++ [
++  "awesome_oscillator",
++  {
++   "fast_period": 5,
++   "slow_period": 34
++  },
++  true,
++  [
++   "fast_period >= 1",
++   "fast_period < slow_period",
++   "slow_period <= 100"
++  ],
++  "RESEARCH, backtest-only (#1660) \u2014 Awesome Oscillator zero cross: the mean candle midpoint over fast_period bars minus the mean over slow_period bars; long when it turns positive after a negative value, short when it turns negative after a positive value, crossing at most 7 exact-zero bars (8-bar predecessor horizon). Entry-only; pair with one explicit close strategy and one stop owner. Refused by every live check script; promotion requires a separate reviewed decision"
+  ],
+  [
+   "hold",
