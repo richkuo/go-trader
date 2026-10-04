@@ -117,9 +117,13 @@ through the real registry and composer.
 - Proposed scheduler short name: `rvi` (the derived name; no collision in the
   short-name map). Direction: `both`.
 - Required lookback: `period + 7` candles (at most 107).
-- This issue adds no short-name, bidirectional-set, fee-audit or default-list
-  entry, so the Discord add command and the status-page add action refuse the
-  name. The fee audit treats it as long-only until promotion.
+- The name is in the scheduler bidirectional set and the fee-audit
+  bidirectional set (the fee-audit test requires the two sets to match). The
+  strategy opens shorts, so the fee audit marks its short side as unmeasured.
+  It does not treat the strategy as long-only.
+- This issue adds no short-name or default-list entry. The Discord add command
+  and the status-page add action refuse the name. Discovery hides it, and every
+  live check script refuses it.
 
 ## Research settings (not trading settings)
 

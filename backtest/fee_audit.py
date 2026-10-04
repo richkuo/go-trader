@@ -35,6 +35,7 @@ LIVE_BIDIRECTIONAL_STRATEGIES = frozenset({
     "chaikin_money_flow_breakout", "open_interest_breakout",
     "connors_rsi_reversion",
     "vortex_trend",
+    "relative_vigor_index",
 })
 
 DEFAULT_WINDOWS = ("is", "oos")
