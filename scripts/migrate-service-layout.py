@@ -1801,6 +1801,18 @@ def build_excludes(m):
     return sorted(set(ex))
 
 
+def tracked_copy_list(src, excludes):
+    if not os.path.isdir(os.path.join(src, ".git")):
+        return []
+    p = run(git(src, "ls-files", "-z"), check=False)
+    if p.returncode != 0:
+        return []
+    anchored = {e for e in excludes if e.startswith("/")}
+    return [rel for rel in p.stdout.split(b"\0")
+            if rel and "/" + rel.decode("utf-8", "surrogateescape") not in anchored
+            and os.path.lexists(os.path.join(os.fsencode(src), rel))]
+
+
 def stage_tree(t):
     m = t.m
     src, tgt = m["source_dir_real"], m["target_dir"]
@@ -1808,11 +1820,18 @@ def stage_tree(t):
     os.makedirs(tgt, mode=0o700)
     os.chmod(tgt, 0o700)
     t.journal("tree-intent", path=tgt)
+    excludes = build_excludes(m)
     exfile = os.path.join(t.dir, "rsync.exclude")
     with open(exfile, "w") as f:
-        f.write("\n".join(build_excludes(m)) + "\n")
+        f.write("\n".join(excludes) + "\n")
     entries = [os.path.join(src, n) for n in sorted(os.listdir(src))]
     run(["rsync", "-a", "--numeric-ids", "--exclude-from=" + exfile] + entries + [tgt + "/"], timeout=3600)
+    tracked = tracked_copy_list(src, excludes)
+    if tracked:
+        trackedfile = os.path.join(t.dir, "rsync.tracked")
+        with open(trackedfile, "wb") as f:
+            f.write(b"\0".join(tracked) + b"\0")
+        run(["rsync", "-a", "--numeric-ids", "--from0", "--files-from=" + trackedfile, src + "/", tgt + "/"], timeout=3600)
     os.makedirs(os.path.join(tgt, "logs"), exist_ok=True)
     os.makedirs(os.path.join(tgt, "scheduler"), exist_ok=True)
     check = run(["rsync", "-a", "--numeric-ids", "--dry-run", "--checksum", "--itemize-changes",

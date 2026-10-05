@@ -140,22 +140,6 @@ jobs:
             --forbid 'note: this host has a system uv; the root-private uv refusals are skipped' \
             -- sudo env GO_TRADER_BIN="$RUNNER_TEMP/go-trader" FIXTURE_GO="$(command -v go)" MIGRATE_SERVICE_LAYOUT_FIXTURE_REQUIRE_RUN=1 bash scripts/test_migrate_service_layout_fixture.sh
 
-  migrate-debug:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.26'
-
-      - name: Debug apply scenario
-        run: |
-          go -C scheduler build -o /tmp/go-trader .
-          sed 's#tail -n 80 "$WORK/last.out" >&2#tail -n 80 "$WORK/last.out" >\&2; echo "--- apply.out" >\&2; cat "$WORK/apply.out" >\&2 || true; ls -la /var/lib/go-trader/service-layout/*/ >\&2 || true; cat /var/lib/go-trader/service-layout/*/journal.jsonl >\&2 || true#' scripts/test_migrate_service_layout_fixture.sh > scripts/dbg_migrate.sh
-          grep -n 'apply.out" >&2' scripts/dbg_migrate.sh
-          sudo env GO_TRADER_BIN=/tmp/go-trader FIXTURE_GO="$(command -v go)" FIXTURE_SCENARIOS=apply bash scripts/dbg_migrate.sh || true
-
   python:
     runs-on: ubuntu-latest
     steps:
