@@ -267,7 +267,7 @@ When in doubt, treat a commit as a runtime default and prompt. Per-release narra
 | Open-position constraint | The change needs flat positions to apply | List affected strategies, warn, and skip until flat |
 | Internal / no-op | Refactors, tests, docs, dashboard and formatting work | Mention briefly |
 
-**Config-version floor.** `MinSupportedConfigVersion` is 13. A stamped `config_version` below that fails loudly at load instead of migrating. Run `scripts/check-config-versions.sh` and confirm the whole fleet is at or above the floor before raising it again.
+**Config-version floor.** `CurrentConfigVersion` is 20 and `MinSupportedConfigVersion` is 13 (`scheduler/config_migration.go`; `config_migration_test.go` pins the floor). A stamped `config_version` below that fails loudly at load instead of migrating. Run `scripts/check-config-versions.sh` and confirm the whole fleet is at or above the floor before raising it again.
 
 **Opt-in fields** stay dormant until set. Adjustable Settings is the complete list, with each shape, default, and reload rule.
 
@@ -854,7 +854,7 @@ New spot or futures strategy:
 1. Add the implementation and its `@register(...)` in `shared_strategies/open/registry.py`. Declare the required `short_entries=True|False`: True only when the strategy ships short entries (a -1 that opens a short, not a long exit). A missing or non-bool value fails at import. True needs `"futures"` in `platforms`, and any shipped `allow_short: True` (base or variant) needs True. `short_entry_strategies()` derives the fee-audit short set (`LIVE_BIDIRECTIONAL_STRATEGIES`).
 2. Set `platforms=(…)` correctly; use variants for platform-specific defaults.
 3. Append the name to `PLATFORM_ORDER`.
-4. Add the short name, the `registeredOpenStrategyPlatforms` row and default entries in `scheduler/init.go`; with `short_entries=True`, also add it to `bidirectionalPerpsStrategies` (wizard and Discord add write `direction: both` only for listed names).
+4. Add the short name to `knownShortNames`, the `registeredOpenStrategyPlatforms` row and default entries in `scheduler/init.go`; with `short_entries=True`, also add it to `bidirectionalPerpsStrategies` (wizard and Discord add write `direction: both` only for listed names).
 5. Add a param grid to `DEFAULT_PARAM_RANGES` in `backtest/optimizer.py`.
 6. A strategy without approved edge evidence registers `edge_status="no_edge"` with a valid `edge_source` and a nonempty `edge_ref` (the evidence file); mirror it in `noEdgeStrategies` in `scheduler/edge_status.go`. That hides it from discovery, runs it with explicit `--mode=paper`, and needs `allow_no_edge: true` for live use. A new study records its verdict without changing that rule.
 7. Run the registry, optimizer and `scripts/test_go_python_registry_parity.py` tests.
@@ -877,7 +877,7 @@ uv run --no-sync python shared_strategies/open/futures/strategies.py --list-json
 Gather first: platform name and ID prefix; products (spot, perps, futures, options); API docs URL or `ccxt` coverage; credential environment variable names; fees; assets and strategies; paper and live requirements.
 
 1. `platforms/<name>/__init__.py`
-2. `platforms/<name>/adapter.py` — exactly one class whose name ends in `ExchangeAdapter`
+2. `platforms/<name>/adapter.py` — exactly one class whose name ends in `ExchangeAdapter`; check scripts load the file through `importlib` and pick the class by `endswith("ExchangeAdapter")`
 3. Implement public adapter methods only; check scripts must never touch private attributes
 4. `shared_scripts/check_<name>.py`, only if an existing entry script does not fit
 5. ID-prefix inference in `scheduler/config.go`
@@ -1176,6 +1176,7 @@ Full coding constraints live in [CLAUDE.md](CLAUDE.md) § Patterns. Notes that b
 - Category-summary row labels use a fixed-width label helper; assert the exact text in tests.
 - A new side-effecting subprocess wrapper goes through the side-effect runner, never the plain runner.
 - Hedge PnL is recorded through the hedge recorder, never the ordinary trade recorder.
+- A new per-strategy flag needs the `StrategyConfig` field, the `run*Check` CLI argument, the Python parse in the check script, and `InitOptions`/wizard support. A runtime-required flag also goes into both probe argvs.
 
 Audits:
 
@@ -1302,7 +1303,7 @@ Enabled by `replay_log_path` plus per-strategy `replay_sharing="live_mirror"`. P
 
 ### Notifications and channels
 
-Channels are `spot`, `options`, `<platform>`, `<platform>-paper`, `<platform>-paper:<id>`. `resolveChannelKey(platform, type, isLive, source)` resolves a paper strategy's key in the order `<platform>-paper:<source>` (only when `source` names a paper source), then `<platform>-paper`; after those, and first for a live strategy, it takes the first backend holding a `<platform>` key, else a `<type>` key. Summaries, leaderboards, and Sharpe groups therefore split by mode only when a paper key is configured. `SendToPartitionChannels(part, msg)` sends a live-partition message to every channel through `SendToAllChannels`. For a paper partition it sends to the channels that partition's own roster resolves to (`partitionChannelValues` with `resolveTradeChannel`, rebuilt on `ReloadConfig`), never by scanning key suffixes, and falls back to `SendToAllChannels` only when that set is empty.
+Every send goes through `MultiNotifier`, which fans out to its backends. Channels are `spot`, `options`, `<platform>`, `<platform>-paper`, `<platform>-paper:<id>`. `resolveChannelKey(platform, type, isLive, source)` resolves a paper strategy's key in the order `<platform>-paper:<source>` (only when `source` names a paper source), then `<platform>-paper`; after those, and first for a live strategy, it takes the first backend holding a `<platform>` key, else a `<type>` key. Summaries, leaderboards, and Sharpe groups therefore split by mode only when a paper key is configured. `SendToPartitionChannels(part, msg)` sends a live-partition message to every channel through `SendToAllChannels`. For a paper partition it sends to the channels that partition's own roster resolves to (`partitionChannelValues` with `resolveTradeChannel`, rebuilt on `ReloadConfig`), never by scanning key suffixes, and falls back to `SendToAllChannels` only when that set is empty.
 
 ### Build, deploy, and test mechanics
 
@@ -1331,6 +1332,8 @@ uv run --no-sync python shared_strategies/open/test_registry_parity.py
 
 If the Go cache needs an explicit writable path: `env GOCACHE=/tmp/go-build-cache /opt/homebrew/bin/go -C scheduler test ./...`.
 
+Test fixtures: `stampEntryATRIfOpened` (`scheduler/main.go`) sets `Position.EntryATR` only when the ATR is positive, not NaN, and no more than 50% of `AvgCost`, and never overwrites a set value. A fixture with a larger ATR gets no entry ATR.
+
 Go CI must not depend on a Python runtime, so a test for a subprocess-based live helper extracts the pure parser or decision helper rather than invoking Python. A Go test that runs a shell suite or script which starts Python (the bankruptcy-bound preflight parity, the merge-paper-instance and update-helper suites) carries `//go:build pyintegration` and runs in the separate `go-python-integration` CI job (`go -C scheduler test -tags pyintegration -run <names> ./...`); Go-to-Python registry parity lives in `scripts/test_go_python_registry_parity.py`.
 
 **Shell suites in CI.** Every `scripts/test_*.sh` has exactly one wiring in `shellSuiteWirings` (`scheduler/update_sh_syntax_test.go`): a `pyintegration` Go wrapper that the `go-python-integration` `-run` regex selects (`test_merge_paper_instance.sh`, `test_update_helpers.sh`), a step in the `shell-suites` CI job (`test_observation_replay.sh`, `test_ledger_export.sh`, `test_merge_paper_service_fixture.sh`, `test_migrate_service_layout_fixture.sh`), or manual-only with a reason (none today). Green must mean the suite proved its criteria:
@@ -1338,6 +1341,11 @@ Go CI must not depend on a Python runtime, so a test for a subprocess-based live
 - The two systemd fixtures run one after the other under `sudo env GO_TRADER_BIN=... [FIXTURE_GO=...]` (secure_path does not find the setup-go toolchain). `MERGE_PAPER_SERVICE_FIXTURE_REQUIRE_RUN=1` and `MIGRATE_SERVICE_LAYOUT_FIXTURE_REQUIRE_RUN=1` turn each SKIP into a failure, as `LEDGER_EXPORT_REQUIRE_CAPTURE=1` does for the ledger suite; unset, the suites still SKIP for manual runs. The migrate fixture changes host-wide systemd files and state, so it runs only on the ephemeral CI runner, never beside another root fixture, with `FIXTURE_SCENARIOS` unset (the success line must list all 13 scenarios).
 - Omission checks match each suite's exact omission text, never a generic `NOTE`/`note:` (the tools print benign notes). Every `echo "NOTE: ..."`/`echo "note: ..."` line in a suite must match exactly one forbidden or permitted omission in the map. Permitted omissions in CI: none. The ledger suite runs as the runner user after `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`: with the Ubuntu 24.04 default (1) the capture worker cannot start (`fork/exec /proc/self/exe: permission denied`), and under `sudo` the shared-mount-namespace worker check exits 126 instead of 1. As the runner user, `strace` is installed and the permission-denied refusal runs, so all three ledger omissions are forbidden.
 - `TestShellSuiteCIWiring` (the untagged `go` job) fails when a suite has no wiring, when the `-run` regex does not select its wrapper, when a wrapper lacks the `pyintegration` tag or does not run its script, when a `shell-suites` command does not run its script once (a comment or a `#` on the line does not count), or when a step drops its success line, a forbidden omission, a require flag, or `sudo`. It fails closed when it cannot read the workflow (one `-run '...'` argument after `set -o pipefail` in the same step, piped to `tee` with the `--- SKIP` gate reading that log, `run:` as a plain value or `|` block, no `continue-on-error`, `if:`, `shell:` or `defaults:` in either job, no top-level `defaults:`). `TestUpdateShellScriptSyntax` runs `bash -n` on every `scripts/test_*.sh` and the listed operator scripts.
+
+**Format, layout and PR metadata checks.** These checks replace CLAUDE.md prose, so keep each one exact:
+- The `go` job format step runs `gofmt -l` over every tracked Go file (`git ls-files '*.go'`, so `scripts/fixtures/ledger_fixture.go` too) and fails on any output or parse error. Run `gofmt -w` after Go edits.
+- The `docs` job fails unless `git ls-files .github/scripts` is exactly `.github/scripts/test_workflow_logic.py`. Put any other script under `scripts/`.
+- `.github/workflows/pr-metadata.yml` runs `scripts/check_pr_metadata.py` on `pull_request` `opened`, `edited`, `synchronize` and `reopened`, with `contents: read`. It is its own workflow so a title or body edit does not re-run the `ci.yml` jobs. The PR title and body reach the script only through `env:`, never `${{ }}` inside `run:`. The `title` step matches `^[a-z]+(\([^)]*\))?: .+ \[C[0-9]+, [^,]+, [a-z]+(, (plan|fableplan))?\]$`. The `body` step needs `## Summary` as the first `## ` heading and `## Plain simple English` as the last, fewer than 55 words in that section before the `---` footer separator, and a footer: the last `---` line, then a `LLM: <model> | <effort> | Harness: <name>` line (an optional `<Verb> with ` prefix). After it only more footer lines, blank lines and `https://claude.ai/code/session_...` lines may follow. The `commits` step applies the same footer rule to every non-merge commit reachable from the PR head and not from the base SHA or the fetched `origin/<base branch>` (so merged-in base commits are skipped), with `Claude-Session: https://claude.ai/code/session_...` as the allowed trailer, and fails on any `Co-authored-by:` line. Code fences hide headings and `---` lines from the body check. Commit titles on `main` are not checked (squash merges drop the bracket). Issue bodies have no CI check.
 
 ---
 LLM: GPT-6 | high | Harness: fix-pr-review

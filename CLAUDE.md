@@ -14,7 +14,7 @@ Guardrails only; mechanism/flows in SKILL.md, docs/POST_UPDATE_HISTORY.md. CI `d
 - `executor.go`/`shutdown.go`: side effects via `runPythonSideEffect`, NEVER `runPython`. Live HL book needs `confirmHyperliquidExecuteFill` (finite `Fill.AvgPx>0`+`TotalSz>0`); `check_hyperliquid.py execute` exits 1 if no fill.
 - `planHLCloseOrder`=SOLE size+mode for SIZED live closes (execute, `type=manual`, force-close, hedge, open cleanup; not whole/ForceFullClose); refetch fail=uncapped reduce_only; short fill books fill. Rearm ONLY `resolveHLCloseRemainderStop`; Q=0 verify-first cancels unconfirmed SL/TP; ONE CRITICAL; `order_outcome`=SOLE outcome.
 - `server.go`/`ui_*.go`: lock `mu>strategiesMu`, loopback only. `/tuning` never writes config; `ui_tuning.go`=`spawnPythonProcessWithEnv`, NEVER `runPython*`; `POST /api/tuning/apply`=sole promotion. `uiPartitionParam`=sole `?partition=` resolver: unparseable=400, unowned=404; diagnostics filter `SourceRole` before paging+total; cash flow `live_owned`; selected correlation/portfolio-risk NEVER use untagged legacy.
-- `config*.go`: `CurrentConfigVersion=20`, `MinSupportedConfigVersion=13`; `close_strategy` canonical, unknown-key guard. On-chain TP gate!=`len(tiers)>0`. `CircuitBreaker *bool` via accessors ONLY. `portfolio_risk.paper`/`paper_sources[].portfolio_risk`: evaluators use `partitionRiskConfig`; nested `paper` rejected. `portfolio_warning.go` drops paused from Top Contributors ONLY if flat (`Quantity==0` regular+option).
+- `config*.go`: `close_strategy` canonical, unknown-key guard. On-chain TP gate!=`len(tiers)>0`. `CircuitBreaker *bool` via accessors ONLY. `portfolio_risk.paper`/`paper_sources[].portfolio_risk`: evaluators use `partitionRiskConfig`; nested `paper` rejected. `portfolio_warning.go` drops paused from Top Contributors ONLY if flat (`Quantity==0` regular+option).
 - `close_defaults.go`: system>user>strategy; explicit `tp_tiers` wins; `applyUserCloseDefaultRatchetRegimeTrails` runs in `loadConfig` BEFORE scalar ATR-stop default.
 - `portfolio_scope.go`/`risk_partition.go`: `PortfolioScope` from `isLiveArgs`=SOLE mode classifier; `RiskPartition{Scope,Source}` (`live`/`paper`/`paper:<id>`; `paper_source`=`paper_sources` id, never live)=SOLE risk+storage owner. New surface: `activePartitions`, `filterStatesByPartition`/`strategiesInPartition`, never roster.
 - `state.go`/`db.go`: SQLite-only, idempotent migrations. `AppState.PortfolioRisk`/`CorrelationSnapshot`=per-`RiskPartition` maps, read only via `partitionRisk(IfPresent)`/`partitionCorrelation`; `initial_capital` only via `SetInitialCapital`.
@@ -46,7 +46,7 @@ Guardrails only; mechanism/flows in SKILL.md, docs/POST_UPDATE_HISTORY.md. CI `d
 
 ## Patterns
 - Git from repo root; `go -C scheduler build .`, no `cd scheduler &&`.
-- New platform: SKILL.md Custom Platform Integration touchpoints; adapters via `importlib`, class `endswith("ExchangeAdapter")`; check scripts use public methods.
+- New platform: SKILL.md Custom Platform Integration touchpoints; check scripts use public methods.
 - Subprocess: stdout JSON, exit 1 on error; Go parses anyway.
 - Locking: `mu RWMutex`, 6 phases (RLock>Lock(CheckRisk)>no-lock subprocess>Lock(execute)>marks>RLock(status)); symbol locks>`mu`. OUTSIDE `mu`: HL fill resolver, reconciliation-close alerts, `cashflow_journal.go`. Skip-reason checks BEFORE spawn; Phase 1 captures `posSide`+`posQty`; `liveExecFailed` guards live exec.
 - Dispatch by `s.Platform`, never ID prefix. Perps paper=`ExecuteSpotSignalWithFillFee`, live=`RunHyperliquidExecute`; futures=`ExecuteFuturesSignalWithFillFee`.
@@ -54,19 +54,18 @@ Guardrails only; mechanism/flows in SKILL.md, docs/POST_UPDATE_HISTORY.md. CI `d
 - `dueStrategies` value-copied: update `cfg.Strategies` first. Owner=`OwnerStrategyID`; shared-coin reconcile non-destructive; SL attribution by OID+qty, else `hl_sync_external`.
 - Trades: `is_close`/`realized_pnl`; `#T` counts opens by `(strategy_id,position_id)`. HL kill-switch shared-coin fill split fails closed; close side short=buy else sell. Invert: composer (`invert_open_signal`+echo); Go never negates; same-side close zeroed.
 - ALWAYS `sort.Strings(keys)` for operator/test output. Regime: `adx` default, `composite` opt-in; bare `ranging_directional` covers `_up`/`_down` for gating, certs exact-match.
-- Registries: `open/registry.py`+`PLATFORM_ORDER`+`knownShortNames`+`DEFAULT_PARAM_RANGES`; `no_edge`: one `--mode=paper`, else `allow_no_edge:true`; snapshot `--list-json` first.
+- Registries: every SKILL.md Add Or Change Strategies step; `no_edge`: one `--mode=paper`, else `allow_no_edge:true`; snapshot `--list-json` first.
 - CB disable suppresses new fires only; latched HL-perps manage-only (`Signal=0`, not `continue`). Kill switch: `planKillSwitchClose`>`OnChainConfirmedFlat`; reset prompt single-flight.
 - HL stops (`EffectiveStopLossPct`): 7 exclusive owners (none=`DefaultStopLossATRMult=1.0`); scalar-regime swap blocked while open. `risk_per_trade_pct` fails closed on unresolvable stop, exclusive vs sizing_leverage/margin/scale_in. Trailing SL replace only past `TrailingStopMinMovePct`; `stop/TP Q=hlOwnStopShare`; snapshot=full protection surface. Peers share `margin_mode`+`leverage`; `update_leverage` if flat.
 - SIGHUP `validateHotReloadCompatible` blocks add/remove, script/args/type/platform/HTFFilter, kill-switch identity, `db_file`/`paper_db_file`/`paper_source(s)`, effective `storage_strategy_id`, `max_notional_usd` (per partition), `market_feed`, live `allow_no_edge`.
-- New per-strategy flag: field, `run*Check` CLI, Python parse, InitOptions/wizard (+probe argvs if runtime-required).
-- Notifications: `MultiNotifier`; paper routes via `resolveChannelKey`. `SendToPartitionChannels`: live=`SendToAllChannels`; paper=own roster (`resolveTradeChannel`, rebuilt on `ReloadConfig`), never suffix scan, `SendToAllChannels` only if empty.
+- New per-strategy flag: every SKILL.md Implementation Patterns touchpoint.
+- Notifications: `SendToPartitionChannels`: live=`SendToAllChannels`; paper=own roster (`resolveTradeChannel`, rebuilt on `ReloadConfig`), never suffix scan, `SendToAllChannels` only if empty.
 
 ## PRs and issues
-- Title `type(#<N>): summary [C<score>, <model>, <effort>]`; never bare `#N` in lists. Body: `## Summary`+verification, `## Plain simple English` (<55 words) last.
-- Commits, PR and issue bodies end `LLM: <model> | <effort> | Harness: <action>`, no `Co-authored-by`.
+- Never bare `#N` in lists; PR verification follows `## Summary`; issue bodies end `LLM: <model> | <effort> | Harness: <action>`; PR/commit format: `scripts/check_pr_metadata.py`.
 - Long-lived PR: diff `origin/main..HEAD` for reverts before merge.
 - Reviews also follow `.github/prompts/pr-review-format-local.md`, never gate on CI; findings restate as invariant, list breaking states (inverse, compound).
-- `.github/workflows/claude.yml`: mode routing fail-closed (untrusted/fork=review); no-execution in agent; commit/push implement-only; prompt never holds `"`, `` ` ``, `$`; `.github/scripts/` keeps ONLY `test_workflow_logic.py`.
+- `.github/workflows/claude.yml`: mode routing fail-closed (untrusted/fork=review); no-execution in agent; commit/push implement-only; prompt never holds `"`, `` ` ``, `$`.
 - rk-skills workflow skills=CI-only, no settings pin.
 
 ## Deploy
@@ -77,7 +76,7 @@ Guardrails only; mechanism/flows in SKILL.md, docs/POST_UPDATE_HISTORY.md. CI `d
 
 ## Backtest
 - Harness map `docs/backtesting-registry.md`: add/deprecate PR updates its row.
-- `--config` needs `config_version>=15`; SL-vs-TP races default `ohlc_walk`.
+- SL-vs-TP races default `ohlc_walk`.
 - Look-ahead: bar N signal fills at N+1 open; regime gate reads N-1; closes use closed-bar ATR. **HTF series indexed by candle OPEN time MUST `.shift(1)` BEFORE `reindex(..,method="ffill")`.**
 - Backtester rejects HL-live-only closes (`regime_window_divergence`/`tiered_tp_atr_live_regime_dynamic`); no options regime gating.
 - M1-M6, auto_suggest, regime promotion, `tune_live.py`=SUGGEST-ONLY: **never write live defaults/config/PRs.**
@@ -85,7 +84,6 @@ Guardrails only; mechanism/flows in SKILL.md, docs/POST_UPDATE_HISTORY.md. CI `d
 ## Testing
 - **Unit tests only** if a run can't prove it or regression is silent: rare venue states (partial fill, rejected/unknown order), money math (sizing, PnL, fees), paper/live parity, DB migrations, large refactors. Else run real binaries/scripts (build, `probe`, `--once`); PR lists commands+log lines/criterion.
 - Kept test edit/removal: Outdated/Wrong/Obsolete+checkable ground, disclosed in commit+PR (`fix-pr-review` step 6); no ground=fix code.
-- Kept suites pass: `go -C scheduler test ./...` (+`-tags pyintegration`=SOLE Go tests spawning Python), pytest `uv run --no-sync python -m pytest shared_strategies/ shared_tools/ backtest/`, `shared_scripts/test_*.py` by path, `scripts/test_*.sh`. CI `-n auto`: never bare-`import` ambiguous name.
-- `gofmt -w` after Go edits; tabbed Go: Python `replace(old,new,1)`.
-- `stampEntryATRIfOpened` rejects entry ATR>50% of AvgCost.
+- Kept suites pass: `go -C scheduler test ./...` (+`-tags pyintegration`=SOLE Go tests spawning Python), pytest `uv run --no-sync python -m pytest shared_strategies/ shared_tools/ backtest/`, `shared_scripts/test_*.py` by path. CI `-n auto`: never bare-`import` ambiguous name.
+- Tabbed Go: Python `replace(old,new,1)`.
 - `tiered_tp_atr`/`trailing_stop_atr_mult` need `Position.EntryATR`; `*_live` recompute via `atr_source`; `avwap_stop`=virtual exit only.

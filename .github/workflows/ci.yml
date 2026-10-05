@@ -43,6 +43,15 @@ jobs:
           fi
           exit $fail
 
+      - name: .github/scripts holds only test_workflow_logic.py
+        run: |
+          files=$(git ls-files .github/scripts)
+          if [ "$files" != ".github/scripts/test_workflow_logic.py" ]; then
+            echo "::error::.github/scripts must hold exactly test_workflow_logic.py. Put other scripts under scripts/. Tracked files:"
+            echo "$files"
+            exit 1
+          fi
+
   go:
     runs-on: ubuntu-latest
     steps:
@@ -58,12 +67,12 @@ jobs:
       - name: Remaining Go tests
         run: cd scheduler && go test ./...
 
-      - name: Format check
+      - name: Format check (every tracked Go file)
         run: |
-          cd scheduler
-          unformatted=$(gofmt -l *.go)
+          set -o pipefail
+          unformatted=$(git ls-files -z '*.go' | xargs -0 -r gofmt -l)
           if [ -n "$unformatted" ]; then
-            echo "Files need formatting:"
+            echo "::error::Go files need gofmt -w:"
             echo "$unformatted"
             exit 1
           fi
