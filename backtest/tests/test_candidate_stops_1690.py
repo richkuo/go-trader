@@ -244,6 +244,42 @@ def test_baseline_config_short_leg_replaces_inherited_percent_stop(candle_env, t
     assert all(c == controls[0] for c in controls)
 
 
+def test_stop_only_variant_without_candidate_close_runs_like_empty_close(candle_env, tmp_path):
+    stops = {"trailing_stop_atr_mult": 3.0}
+    spec = _spec({
+        "strategy_id": "sma_crossover",
+        "incumbent_close": INCUMBENT,
+        "candidate_close_variants": [
+            {"key": "trail_no_close", "candidate_stops": stops},
+            {"key": "trail_empty_close", "candidate_close": [], "candidate_stops": stops},
+            {"key": "inherit_no_close"},
+        ],
+    })
+    proc, report, out_dir = _auto_suggest(candle_env, tmp_path, spec)
+    entries = {e["key"]: e for e in report["ranked"]}
+    results = {}
+    for key in ("m6.trail_no_close", "m6.trail_empty_close"):
+        entry = entries[key]
+        assert entry["precondition_errors"] == []
+        assert entry["verdict"] not in ("excluded_close_capability",
+                                        "excluded_not_replayable", "run_failed")
+        assert entry["candidate"]["candidate_close"] == []
+        assert entry["candidate"]["candidate_stop_only"] is True
+        assert entry["evidence"]["m6"]["data"][WINDOW]["paired_n"] > 0
+        assert "--candidate-close '[]'" in entry["reproduce"][0]
+        res = _dataset(_m6_payload(out_dir, key))
+        assert res["paired_diag"]["paired"] > 0
+        assert set(res["candidate_arm"]["exit_reasons"]) <= STOP_ONLY_REASONS
+        results[key] = res
+    assert results["m6.trail_no_close"] == results["m6.trail_empty_close"]
+    inherit = entries["m6.inherit_no_close"]
+    assert inherit["verdict"] == "excluded_not_replayable"
+    assert inherit["precondition_errors"] == ["excluded_not_replayable"]
+    assert inherit["candidate"]["candidate_stop_only"] is False
+    assert inherit["evidence"] == {}
+    assert not (out_dir / "m6.inherit_no_close.m6.json").exists()
+
+
 def test_central_policy_refusal_and_reversal_limitation_are_kept(candle_env, tmp_path):
     spec = _spec({
         "strategy_id": "sma_crossover",

@@ -283,6 +283,8 @@ def _exit_ab_entry(key: str, variant: dict, m6: dict) -> dict:
     comparison_mode = variant.get("comparison_mode", m6.get("comparison_mode"))
     strategy_id = variant.get("strategy_id") or m6.get("strategy_id")
     selection = parse_candidate_stops(variant.get("candidate_stops", "inherit"))
+    if close_refs is None and isinstance(selection, dict):
+        close_refs = []
     errors = []
     replay = replay_capability(close_refs, comparison_mode, selection)
     refusal = replay["refusal"]
