@@ -5,6 +5,9 @@ import subprocess
 import sys
 
 TITLE_RE = re.compile(r"^[a-z]+(\([^)]*\))?: .+ \[C[0-9]+, [^,]+, [a-z]+(, (plan|fableplan))?\]$")
+TITLE_SCOPE_RE = re.compile(r"^[a-z]+\(([^)]*)\)")
+CLOSING_RE = re.compile(r"(?<![\w/])(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s+#([0-9]+)\b", re.IGNORECASE)
+INLINE_CODE_RE = re.compile(r"`[^`]*`")
 FOOTER_LINE_RE = re.compile(r"^(?:[A-Z][a-z]+ with )?LLM: [^|\s][^|]* \| [^|\s][^|]* \| Harness: [^|\s][^|]*$")
 PR_TRAILER_RE = re.compile(r"^https://claude\.ai/code/session_[A-Za-z0-9]+$")
 COMMIT_TRAILER_RE = re.compile(r"^Claude-Session: https://claude\.ai/code/session_[A-Za-z0-9]+$")
@@ -52,13 +55,30 @@ def co_author_errors(lines):
     return [f"Co-authored-by trailer is not allowed: {line.strip()!r}" for line in lines if CO_AUTHOR_RE.match(line)]
 
 
-def check_title(title):
-    if TITLE_RE.fullmatch(title):
+def closed_issues(body):
+    numbers = []
+    for _, line in outside_fences(normalize(body)):
+        for match in CLOSING_RE.finditer(INLINE_CODE_RE.sub("", line)):
+            if match.group(1) not in numbers:
+                numbers.append(match.group(1))
+    return numbers
+
+
+def check_title(title, body):
+    if not TITLE_RE.fullmatch(title):
+        return [
+            f"PR title {title!r} does not match type(scope): summary [C<score>, <model>, <effort>] "
+            f"with an optional , plan (or legacy , fableplan) suffix; regex {TITLE_RE.pattern}"
+        ]
+    closed = closed_issues(body)
+    if not closed:
         return []
-    return [
-        f"PR title {title!r} does not match type(scope): summary [C<score>, <model>, <effort>] "
-        f"with an optional , plan (or legacy , fableplan) suffix; regex {TITLE_RE.pattern}"
-    ]
+    scope = TITLE_SCOPE_RE.match(title)
+    allowed = [f"#{number}" for number in closed]
+    if scope and scope.group(1) in allowed:
+        return []
+    found = f"({scope.group(1)})" if scope else "no scope"
+    return [f"the PR body closes {', '.join(allowed)}, so the title scope must be ({' or '.join(allowed)}); found {found}"]
 
 
 def check_body(body):
@@ -138,11 +158,11 @@ def require_env(name):
 
 def main(argv):
     if len(argv) != 2 or argv[1] not in ("title", "body", "commits"):
-        print("usage: check_pr_metadata.py title|body|commits (reads PR_TITLE, PR_BODY, or BASE_SHA, HEAD_SHA and optional BASE_REF)")
+        print("usage: check_pr_metadata.py title|body|commits (reads PR_TITLE and PR_BODY, PR_BODY, or BASE_SHA, HEAD_SHA and optional BASE_REF)")
         return 2
     mode = argv[1]
     if mode == "title":
-        errors = check_title(require_env("PR_TITLE"))
+        errors = check_title(require_env("PR_TITLE"), require_env("PR_BODY"))
     elif mode == "body":
         errors = check_body(require_env("PR_BODY"))
     else:

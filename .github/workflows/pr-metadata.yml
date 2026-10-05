@@ -25,6 +25,7 @@ jobs:
         if: ${{ !cancelled() }}
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
         run: python3 scripts/check_pr_metadata.py title
 
       - name: PR body
