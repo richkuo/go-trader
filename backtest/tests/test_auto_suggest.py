@@ -193,8 +193,10 @@ def test_shipped_full_options_spec_loads_and_expands():
     kinds = {e["kind"] for e in entries}
     assert kinds == {"open", "exit_ab"}
     ab = {e["key"]: e for e in entries if e["kind"] == "exit_ab"}
-    assert ab.pop("m6.atr_trail")["precondition_errors"] == [
-        "close_capability_refused:UNKNOWN_CLOSE_STRATEGY"]
+    atr_trail = ab["m6.atr_trail"]["candidate"]
+    assert atr_trail["candidate_close"] == []
+    assert atr_trail["candidate_stops"] == {"trailing_stop_atr_mult": 3.0}
+    assert atr_trail["candidate_stop_only"] is True
     assert all(e["precondition_errors"] == [] for e in ab.values())
     assert len({e["key"] for e in entries}) == len(entries)
 

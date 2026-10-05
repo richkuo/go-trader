@@ -21,7 +21,15 @@ from eval_windows import (
     expand_sweep,
     validate_candidate,
 )
-from exit_policy_ab import replay_capability
+from exit_policy_ab import (
+    STOP_OWNER_SELECTOR_KEYS,
+    candidate_stops_mode,
+    is_stop_only_candidate,
+    parse_candidate_stops,
+    replay_capability,
+    resolve_candidate_stop_policy,
+    resolve_from_baseline,
+)
 from regime_stats import benjamini_hochberg
 
 HARNESS_REL = {
@@ -70,6 +78,38 @@ def _resolve_ref(ref, spec_dir: str) -> dict:
         with open(path) as fh:
             return json.load(fh)
     raise ValueError(f"expected an inline object or a filename, got {ref!r}")
+
+
+def _reject_stop_field_close_refs(close_refs, where: str) -> None:
+    for ref in close_refs or []:
+        name = ref.get("name") if isinstance(ref, dict) else None
+        if name in STOP_OWNER_SELECTOR_KEYS:
+            raise ValueError(
+                f"{where} uses the stop field {name!r} as a close ref; stop fields are not "
+                "close strategies. Set the candidate stop through candidate_stops (an "
+                "object with exactly one of stop_loss_atr_mult or trailing_stop_atr_mult, "
+                'e.g. {"trailing_stop_atr_mult": 3.0}) or, in close_stack_specs, the '
+                "stack-level stop_loss_atr_mult/trailing_stop_atr_mult lists.")
+
+
+def _validate_m6_variants(m6: dict) -> None:
+    variants = []
+    for v in m6.get("candidate_close_variants") or []:
+        v = dict(v)
+        label = "m6 candidate_close_variant " + repr(v.get("key") or "<unkeyed>")
+        _reject_stop_field_close_refs(v.get("candidate_close"), label)
+        if "candidate_stops" in v:
+            try:
+                v["candidate_stops"] = parse_candidate_stops(v["candidate_stops"])
+            except ValueError as exc:
+                raise ValueError(f"{label}: {exc}") from None
+        variants.append(v)
+    if "candidate_close_variants" in m6:
+        m6["candidate_close_variants"] = variants
+    for i, stack in enumerate(m6.get("close_stack_specs") or []):
+        close = stack.get("close") if isinstance(stack, dict) else None
+        if isinstance(close, dict):
+            _reject_stop_field_close_refs([close], f"m6 close_stack_specs[{i}].close")
 
 
 def load_spec(raw: dict, spec_dir: str) -> dict:
@@ -173,6 +213,7 @@ def load_spec(raw: dict, spec_dir: str) -> dict:
                         "default; add an m6-level 'strategy_id' or a per-variant "
                         "override (the open-strategy name, or the config's "
                         "strategy id when using 'baseline_config').")
+        _validate_m6_variants(m6)
 
     return {
         "study": str(raw.get("study") or "unnamed_study"),
@@ -211,21 +252,54 @@ def _open_entry(key: str, candidate: dict, harnesses: list, hypothesis) -> dict:
     }
 
 
+def _incumbent_stop_inputs(m6: dict, strategy_id, comparison_mode) -> tuple:
+    if not m6.get("baseline_config"):
+        return {}, None
+    try:
+        resolved = resolve_from_baseline(m6["baseline_config"], strategy_id,
+                                         comparison_mode)
+    except (ValueError, SystemExit) as exc:
+        raise ValueError(
+            f"m6 candidate_stops replacement needs the incumbent stops from "
+            f"{m6['baseline_config']} strategy {strategy_id!r}: {exc}") from None
+    return resolved["stops"], (resolved["regime_section"] or {}).get("windows") or None
+
+
+def _candidate_stop_refusal(close_refs, selection, m6: dict, strategy_id,
+                            comparison_mode):
+    from backtester import CloseCapabilityError
+    incumbent_stops, windows_spec = _incumbent_stop_inputs(m6, strategy_id,
+                                                           comparison_mode)
+    try:
+        resolve_candidate_stop_policy(close_refs, selection, incumbent_stops,
+                                      comparison_mode, windows_spec)
+    except CloseCapabilityError as exc:
+        return exc.to_dict()
+    return None
+
+
 def _exit_ab_entry(key: str, variant: dict, m6: dict) -> dict:
     close_refs = variant.get("candidate_close")
     comparison_mode = variant.get("comparison_mode", m6.get("comparison_mode"))
+    strategy_id = variant.get("strategy_id") or m6.get("strategy_id")
+    selection = parse_candidate_stops(variant.get("candidate_stops", "inherit"))
     errors = []
-    replay = replay_capability(close_refs, comparison_mode)
-    if replay["refusal"] is not None:
-        errors.append(CLOSE_CAPABILITY_ERROR_PREFIX + replay["refusal"]["reason_code"])
+    replay = replay_capability(close_refs, comparison_mode, selection)
+    refusal = replay["refusal"]
+    if refusal is None and replay["replayable"] and isinstance(selection, dict):
+        refusal = _candidate_stop_refusal(close_refs, selection, m6, strategy_id,
+                                          comparison_mode)
+    if refusal is not None:
+        errors.append(CLOSE_CAPABILITY_ERROR_PREFIX + refusal["reason_code"])
     elif not replay["replayable"]:
         errors.append("excluded_not_replayable")
     candidate = {
         "baseline_config": m6.get("baseline_config"),
         "incumbent_close": m6.get("incumbent_close"),
-        "strategy_id": variant.get("strategy_id") or m6.get("strategy_id"),
+        "strategy_id": strategy_id,
         "candidate_close": close_refs,
-        "candidate_stops": variant.get("candidate_stops", "inherit"),
+        "candidate_stops": selection,
+        "candidate_stop_only": is_stop_only_candidate(close_refs, selection),
         "allowed_regimes": list(variant.get("allowed_regimes") or []),
     }
     if comparison_mode is not None:
@@ -239,9 +313,20 @@ def _exit_ab_entry(key: str, variant: dict, m6: dict) -> dict:
         "precondition_errors": errors,
         "limitations": [],
     }
-    if replay["refusal"] is not None:
-        entry["close_capability_refusal"] = replay["refusal"]
+    if refusal is not None:
+        entry["close_capability_refusal"] = refusal
     return entry
+
+
+def _stack_stop_selection(stack: dict):
+    selection = None
+    for key in ("stop_loss_atr_mult", "trailing_stop_atr_mult"):
+        value = stack.get(key)
+        if value is None or (not isinstance(value, bool)
+                             and isinstance(value, (int, float)) and value == 0):
+            continue
+        selection = parse_candidate_stops({key: value})
+    return selection
 
 
 def expand_candidates(spec: dict) -> list:
@@ -290,18 +375,15 @@ def expand_candidates(spec: dict) -> list:
         if stack_specs:
             from optimizer import generate_close_stack_grid
             for i, stack in enumerate(generate_close_stack_grid(stack_specs)):
-                close_refs = list(stack.get("close_strategies") or [])
-                if stack.get("stop_loss_atr_mult"):
-                    close_refs.append({"name": "stop_loss_atr_mult",
-                                       "params": {"atr_mult": stack["stop_loss_atr_mult"]}})
-                elif stack.get("trailing_stop_atr_mult"):
-                    close_refs.append({"name": "trailing_stop_atr_mult",
-                                       "params": {"atr_mult": stack["trailing_stop_atr_mult"]}})
-                variants.append({
+                variant = {
                     "key": f"close_stack_{i}",
-                    "candidate_close": close_refs,
+                    "candidate_close": list(stack.get("close_strategies") or []),
                     "allowed_regimes": m6.get("allowed_regimes"),
-                })
+                }
+                selection = _stack_stop_selection(stack)
+                if selection is not None:
+                    variant["candidate_stops"] = selection
+                variants.append(variant)
         for v in variants:
             if "key" not in v:
                 raise ValueError("each m6 candidate_close_variants[] entry needs 'key'")
@@ -383,11 +465,18 @@ def mc_argv_tail(candidate_path, registry, windows, datasets, n_paths, seed,
     return tail
 
 
+def _candidate_stops_arg(selection) -> str:
+    if isinstance(selection, dict):
+        return json.dumps(selection, sort_keys=True)
+    return selection
+
+
 def m6_argv_tail(m6_candidate, registry, windows, datasets, resamples, seed, out_json) -> list:
     tail = ["--strategy", m6_candidate["strategy_id"],
             "--registry", registry,
             "--candidate-close", json.dumps(m6_candidate["candidate_close"]),
-            "--candidate-stops", m6_candidate.get("candidate_stops", "inherit"),
+            "--candidate-stops", _candidate_stops_arg(m6_candidate.get("candidate_stops",
+                                                                       "inherit")),
             "--windows", _csv(windows),
             "--bootstrap-resamples", str(resamples),
             "--seed", str(seed), "--json", out_json]
@@ -460,6 +549,26 @@ def m6_window_rollup(payload: dict) -> dict:
             "per_dataset": per_dataset,
         }
     return out
+
+
+M6_STOP_POLICY_KEYS = (
+    "candidate_stops_mode", "candidate_stops_selection", "candidate_stop_only",
+    "control_stops", "candidate_stops", "control_stop_owner", "candidate_stop_owner",
+    "stop_units", "replayable",
+)
+
+
+def m6_stop_policy(payload: dict) -> dict:
+    return {k: payload.get(k) for k in M6_STOP_POLICY_KEYS}
+
+
+def describe_candidate_stops(candidate: dict) -> str:
+    selection = candidate.get("candidate_stops", "inherit")
+    mode = candidate_stops_mode(selection)
+    if not isinstance(selection, dict):
+        return mode
+    text = mode + ":" + ",".join(f"{k}={v:g}" for k, v in sorted(selection.items()))
+    return text + (" stop-only" if candidate.get("candidate_stop_only") else "")
 
 
 def extract_m3(payload: dict) -> dict:
@@ -760,6 +869,8 @@ def format_shortlist(report: dict) -> str:
             pis = (m6.get("is") or {}).get("pooled_delta_net_pct_per_entry")
             poos = (m6.get("oos") or {}).get("pooled_delta_net_pct_per_entry")
             extra = f"  pooledΔ/e is={pis} oos={poos}"
+        if e.get("kind") == "exit_ab":
+            extra += f"  stops={describe_candidate_stops(e['candidate'])}"
         m1 = (r.get("m1") or {}).get("data")
         if m1:
             v = {w: s.get("verdict") for w, s in m1.items()}
@@ -925,6 +1036,7 @@ def run_exit_ab_entry(entry: dict, spec: dict, out_dir: str) -> dict:
     run = _run_harness("m6", tail, out)
     if run["status"] == "ok":
         run["close_validation"] = run["payload"].get("close_validation")
+        run["stop_policy"] = m6_stop_policy(run["payload"])
         run["data"] = m6_window_rollup(run.pop("payload"))
     entry["results"] = {"m6": run}
     return entry
@@ -989,6 +1101,9 @@ def _serializable(entry: dict) -> dict:
     out["evidence"] = {h: {"status": r.get("status"), "data": r.get("data"),
                            "close_validation": r.get("close_validation")}
                        for h, r in (entry.get("results") or {}).items()}
+    for h, r in (entry.get("results") or {}).items():
+        if "stop_policy" in r:
+            out["evidence"][h]["stop_policy"] = r["stop_policy"]
     if entry.get("close_capability_refusal") is not None:
         out["close_capability_refusal"] = entry["close_capability_refusal"]
     out["reproduce"] = reproduction_command(entry)
