@@ -1332,7 +1332,7 @@ uv run --no-sync python shared_strategies/open/test_registry_parity.py
 
 If the Go cache needs an explicit writable path: `env GOCACHE=/tmp/go-build-cache /opt/homebrew/bin/go -C scheduler test ./...`.
 
-Test fixtures: `stampEntryATRIfOpened` (`scheduler/main.go`) sets `Position.EntryATR` only when the ATR is positive, not NaN, and no more than 50% of `AvgCost`, and never overwrites a set value. A fixture with a larger ATR gets no entry ATR.
+Test fixtures: `stampEntryATRIfOpened` (`scheduler/main.go`) sets `Position.EntryATR` only when the ATR is positive and not NaN and, when `AvgCost` is positive, no more than 50% of `AvgCost`, and never overwrites a set value. A fixture with a positive `AvgCost` and a larger ATR gets no entry ATR; a fixture with `AvgCost` 0 gets any positive ATR.
 
 Go CI must not depend on a Python runtime, so a test for a subprocess-based live helper extracts the pure parser or decision helper rather than invoking Python. A Go test that runs a shell suite or script which starts Python (the bankruptcy-bound preflight parity, the merge-paper-instance and update-helper suites) carries `//go:build pyintegration` and runs in the separate `go-python-integration` CI job (`go -C scheduler test -tags pyintegration -run <names> ./...`); Go-to-Python registry parity lives in `scripts/test_go_python_registry_parity.py`.
 
