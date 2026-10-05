@@ -838,6 +838,87 @@ def test_strict_fixture_arms_the_drawdown_fallback_on_both_bases(tmp_path):
     assert approx["stops"]["arm_events"] == stops["arm_events"]
 
 
+def _drawdown_free_fixture(fx, resolved_entry):
+    cin = _load(fx / "comparison_input.json")
+    seg = cin["historical_configuration"]["timeline"][0]
+    seg["strategy"].pop("max_drawdown_pct")
+    if resolved_entry is None:
+        seg["stop_evidence"]["resolved_fields"].pop("max_drawdown_pct")
+    else:
+        seg["stop_evidence"]["resolved_fields"]["max_drawdown_pct"] = resolved_entry
+    _dump(fx / "comparison_input.json", cin)
+
+
+def _stop_refusals(rep):
+    return {(r["reason"], r["field"]) for r in rep["eligibility"]["refusals"]
+            if r["reason"].startswith("stop_")}
+
+
+def test_loader_drawdown_without_verified_provenance_never_reaches_strict_success(tmp_path):
+    fx = _copy(tmp_path)
+    _drawdown_free_fixture(fx, None)
+    rc, rep = _run(fx, tmp_path, name="missing.json")
+    assert rc == 1 and rep["outcome"] != "strict_success"
+    assert rep["stops"]["owner"] == "none" and rep["stops"]["status"] == "refused"
+    assert _stop_refusals(rep) == {("stop_inputs_unverified", "max_drawdown_pct")}
+
+    fx = _copy(tmp_path / "null")
+    _drawdown_free_fixture(fx, {"status": "verified", "source": "test edit", "value": None})
+    rc, rep = _run(fx, tmp_path, name="null.json")
+    assert rc == 1 and rep["outcome"] != "strict_success"
+    assert rep["stops"]["status"] == "refused"
+    assert ("stop_evidence_contradictory", "max_drawdown_pct") in _stop_refusals(rep)
+
+
+def test_drawdown_provenance_is_required_only_where_precedence_reaches_it(tmp_path):
+    cfg, strategy, _, _ = _parity_case("explicit_zero_stop_pct_disables")
+    seg = _loader_segment(tmp_path, cfg, strategy)
+    seg["stop_evidence"]["resolved_fields"]["max_drawdown_pct"]["status"] = "unverified"
+    verdict = lc.resolve_historical_stops(seg, 2, "strict")
+    assert verdict["owner"] == "none" and verdict["status"] == "modeled", verdict["refusals"]
+    assert "max_drawdown_pct" not in verdict["required_inputs"]
+    cfg, strategy, _, _ = _parity_case("platform_drawdown_fallback")
+    seg = _raw_segment(cfg, dict(strategy, max_drawdown_pct=-5))
+    verdict = lc.resolve_historical_stops(seg, 2, "strict")
+    assert verdict["owner"] == "none" and verdict["status"] == "refused"
+    assert ("stop_configuration_invalid", "max_drawdown_pct") in {
+        (r["reason"], r["field"]) for r in verdict["refusals"]}
+
+
+@pytest.mark.parametrize("basis", ["raw_config", "loader_resolved"])
+def test_unverified_leverage_refuses_a_margin_stop_on_both_bases(tmp_path, basis):
+    strategy = {"stop_loss_margin_pct": 10, "leverage": 1}
+    if basis == "raw_config":
+        seg = _raw_segment({}, strategy)
+        seg["stop_evidence"]["raw_fields"]["leverage"]["status"] = "unverified"
+    else:
+        seg = _loader_segment(tmp_path, {}, strategy)
+        assert seg["stop_evidence"]["leverage_origin"] == {
+            "status": "verified", "source": "synthetic test evidence", "value": "config"}
+        seg["stop_evidence"]["resolved_fields"]["leverage"]["status"] = "unverified"
+    verdict = lc.resolve_historical_stops(seg, 2, "strict")
+    assert verdict["owner"] == "margin_pct" and verdict["status"] == "refused"
+    assert {(r["reason"], r.get("reason_code")) for r in verdict["refusals"]} == {
+        ("stop_capability_refused", "UNVERIFIED_MARGIN_LEVERAGE")}
+
+
+def test_loader_scalar_default_follows_the_live_default_rule_under_a_unified_close(tmp_path):
+    cfg, strategy, _, _ = _parity_case("unified_regime_close")
+    seg = _loader_segment(tmp_path, cfg, strategy)
+    assert seg["stop_evidence"]["resolved_fields"]["stop_loss_atr_mult"]["value"] is None
+    verdict = lc.resolve_historical_stops(seg, 2, "strict")
+    assert verdict["owner"] == "unified_regime" and verdict["status"] == "modeled", verdict["refusals"]
+    seg["strategy"]["stop_loss_atr_mult"] = 1.0
+    seg["stop_evidence"]["resolved_fields"]["stop_loss_atr_mult"]["value"] = 1.0
+    verdict = lc.resolve_historical_stops(seg, 2, "strict")
+    assert ("stop_evidence_contradictory", "stop_loss_atr_mult") in {
+        (r["reason"], r["field"]) for r in verdict["refusals"]}
+    cfg, strategy, _, _ = _parity_case("default_scalar_atr")
+    seg = _loader_segment(tmp_path, cfg, strategy)
+    assert seg["stop_evidence"]["resolved_fields"]["stop_loss_atr_mult"]["value"] == 1.0
+    assert lc.resolve_historical_stops(seg, 2, "strict")["status"] == "modeled"
+
+
 def test_version_one_input_is_read_and_refused_for_unverified_stops(tmp_path):
     fx = _copy(tmp_path)
     cin = _load(fx / "comparison_input.json")

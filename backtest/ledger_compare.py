@@ -43,6 +43,7 @@ from backtester import (
     _open_action_from_signal,
     _thaw_json,
     _unified_close_params,
+    build_stop_capability_context,
     decode_close_validation,
     leverage_evidence,
 )
@@ -868,12 +869,20 @@ def _raw_stop_contradictions(strategy: dict, evidence: dict) -> list:
     return out
 
 
-def _loader_stop_contradictions(strategy: dict, evidence: dict) -> list:
+def _loader_stop_contradictions(strategy: dict, evidence: dict, close_refs: list) -> list:
     out = []
     raw, resolved = evidence["raw_fields"], evidence["resolved_fields"]
     raw_owner_present = any(raw.get(k, {}).get("present") for k in STOP_FIELD_KEYS)
+    raw_scalar_present = any(raw.get(k, {}).get("present") for k in STOP_SCALAR_FIELD_KEYS)
+
+    def resolved_value(key):
+        entry = resolved.get(key)
+        return entry["value"] if entry is not None else strategy.get(key)
+
+    regime_block = any(isinstance(resolved_value(k), dict) and resolved_value(k) for k in STOP_REGIME_FIELD_KEYS)
     close_name = str((strategy.get("close_strategy") or {}).get("name") or "").strip().lower()
-    defaultable = {"stop_loss_atr_mult": not raw_owner_present,
+    defaultable = {"stop_loss_atr_mult": (not raw_scalar_present and not regime_block
+                                          and _unified_close_params(close_refs) is None),
                    "trailing_stop_atr_mult_regime": close_name == "trailing_tp_ratchet_regime" and not raw_owner_present}
     for key, entry in sorted(resolved.items()):
         declared = strategy.get(key)
@@ -898,6 +907,13 @@ def _loader_stop_contradictions(strategy: dict, evidence: dict) -> list:
                 out.append((key, "resolved regime block has no raw field and no loader default produces it"))
         elif rv["present"] and (_finite_number(rv["value"]) or 0) > 0 and not _same_value(rv["value"], value):
             out.append((key, f"explicit raw value {rv['value']!r} differs from the resolved value {value!r}"))
+    drawdown = resolved.get("max_drawdown_pct")
+    if drawdown is not None:
+        value = _finite_number(drawdown["value"])
+        if value is None or not 0 < value <= 100:
+            out.append(("max_drawdown_pct", f"resolved value {drawdown['value']!r} is outside (0, 100]; the live "
+                                             "loader always resolves a Hyperliquid perps max_drawdown_pct into "
+                                             "that range"))
     origin = evidence["leverage_origin"]
     raw_lev = raw.get("leverage")
     if origin["status"] == "verified" and _provenance_verified(raw_lev):
@@ -932,6 +948,17 @@ def _default_requirements(seg: dict, close_refs: list) -> list:
     return needed
 
 
+def _precedence_reaches_drawdown(owner: str, kwargs: dict, context, close_refs: list, spec) -> bool:
+    if owner != "none":
+        return owner == "drawdown_fallback"
+    probe = dict(kwargs)
+    probe["max_drawdown_pct"] = 0.5
+    reached = build_stop_capability_context(
+        platform="hyperliquid", strategy_type="perps", close_refs=close_refs, fields=probe,
+        regime_windows_spec=spec, capability_context=context)
+    return reached.resolved_stop_owner is not None and reached.resolved_stop_owner["name"] == "drawdown_fallback"
+
+
 def resolve_historical_stops(seg: dict, input_version: int, comparison_mode: str) -> dict:
     from run_backtest import (_atr_window_evidence, _resolve_regime_windows_spec,
                               live_stop_engine_inputs, live_stop_preflight, resolve_raw_config_stops,
@@ -952,7 +979,8 @@ def resolve_historical_stops(seg: dict, input_version: int, comparison_mode: str
     try:
         if basis == "loader_resolved":
             evidence = seg["stop_evidence"]
-            for key, why in _loader_stop_contradictions(strategy, evidence):
+            close_refs = strategy_close_refs(strategy, label)
+            for key, why in _loader_stop_contradictions(strategy, evidence, close_refs):
                 refusals.append(_stop_refusal("stop_evidence_contradictory", key, why, False))
             resolved = {}
             for key in STOP_EVIDENCE_FIELDS:
@@ -960,10 +988,10 @@ def resolve_historical_stops(seg: dict, input_version: int, comparison_mode: str
                 resolved[key] = copy.deepcopy(entry["value"] if entry is not None else strategy.get(key))
             origin = evidence["leverage_origin"]
             lev = resolved.get("leverage")
-            if _provenance_verified(origin) and origin["value"] == "config":
-                lev_ev = leverage_evidence(lev, "config", True)
-            elif _provenance_verified(origin):
+            if _provenance_verified(origin) and origin["value"] == "default":
                 lev_ev = {"status": "unverified", "source": "default", "value": _finite_number(lev)}
+            elif _provenance_verified(origin) and _provenance_verified(evidence["resolved_fields"].get("leverage")):
+                lev_ev = leverage_evidence(lev, "config", True)
             else:
                 lev_ev = {"status": "unverified", "source": "historical_unverified", "value": _finite_number(lev)}
             raw_fields = {k: {"present": e["present"], "value": copy.deepcopy(e["value"])}
@@ -974,7 +1002,6 @@ def resolve_historical_stops(seg: dict, input_version: int, comparison_mode: str
                 extra_evidence={"atr_regime_window": _atr_window_evidence(
                     {"regime_atr_window": window_value}, regime)})
             kwargs["stop_platform"] = "hyperliquid"
-            close_refs = strategy_close_refs(strategy, label)
         else:
             if basis == "raw_config":
                 evidence = seg["stop_evidence"]
@@ -1012,6 +1039,12 @@ def resolve_historical_stops(seg: dict, input_version: int, comparison_mode: str
     verdict.update(owner=owner, close_refs=close_refs,
                    resolved_live_units=_thaw_json(context.input_evidence["resolved_live_units"]["value"]),
                    capability_context=preflight.to_dict())
+    drawdown = _finite_number(verdict["resolved_live_units"].get("max_drawdown_pct"))
+    if basis != "loader_resolved" and (drawdown is None or not 0 < drawdown <= 100):
+        refusals.append(_stop_refusal(
+            "stop_configuration_invalid", "max_drawdown_pct",
+            f"the configuration resolves max_drawdown_pct to {drawdown!r}; live config validation rejects a "
+            "Hyperliquid perps max_drawdown_pct outside (0, 100]", False))
     for rec in central:
         refusals.append(_stop_refusal("stop_capability_refused", rec["feature"],
                                       rec["details"].get("message") or rec["reason_code"], False,
@@ -1052,7 +1085,10 @@ def resolve_historical_stops(seg: dict, input_version: int, comparison_mode: str
             need(key, evidence["raw_fields"].get(key))
             if loader:
                 need(key, evidence["resolved_fields"].get(key))
-        for field in OWNER_INPUT_FIELDS.get(owner, ()):
+        owner_inputs = list(OWNER_INPUT_FIELDS.get(owner, ()))
+        if owner == "none" and _precedence_reaches_drawdown(owner, kwargs, context, close_refs, spec):
+            owner_inputs.append("max_drawdown_pct")
+        for field in owner_inputs:
             if field in ("close_strategy", "leverage") or field in STOP_FIELD_KEYS:
                 continue
             if field == "regime_atr_window":
