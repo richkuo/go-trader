@@ -844,10 +844,10 @@ Open registry: `shared_strategies/open/registry.py`. Close registry: `shared_str
 
 New spot or futures strategy:
 
-1. Add the implementation and its `@register(...)` in `shared_strategies/open/registry.py`.
+1. Add the implementation and its `@register(...)` in `shared_strategies/open/registry.py`. Declare the required `short_entries=True|False`: True only when the strategy ships short entries (a -1 that opens a short, not a long exit). A missing or non-bool value fails at import. True needs `"futures"` in `platforms`, and any shipped `allow_short: True` (base or variant) needs True. `short_entry_strategies()` derives the fee-audit short set (`LIVE_BIDIRECTIONAL_STRATEGIES`).
 2. Set `platforms=(…)` correctly; use variants for platform-specific defaults.
 3. Append the name to `PLATFORM_ORDER`.
-4. Add the short name, the `registeredOpenStrategyPlatforms` row and default entries in `scheduler/init.go`.
+4. Add the short name, the `registeredOpenStrategyPlatforms` row and default entries in `scheduler/init.go`; with `short_entries=True`, also add it to `bidirectionalPerpsStrategies` (wizard and Discord add write `direction: both` only for listed names).
 5. Add a param grid to `DEFAULT_PARAM_RANGES` in `backtest/optimizer.py`.
 6. A strategy without approved edge evidence registers `edge_status="no_edge"` with a valid `edge_source` and a nonempty `edge_ref` (the evidence file); mirror it in `noEdgeStrategies` in `scheduler/edge_status.go`. That hides it from discovery, runs it with explicit `--mode=paper`, and needs `allow_no_edge: true` for live use. A new study records its verdict without changing that rule.
 7. Run the registry, optimizer and `scripts/test_go_python_registry_parity.py` tests.
@@ -1187,7 +1187,7 @@ Per-subsystem mechanism notes for coding agents. `CLAUDE.md` keeps only the guar
 
 - `runPythonSideEffect` is the runner for every subprocess that can place, cancel, or modify an order; `runPython` is read-only. Graceful shutdown drains side-effecting subprocesses for at most `shutdownDrainCap=15s` and then SIGKILLs; state save, notifier flush, and DB close run afterwards through deferred LIFO. `TimeoutStopSec=20` in the units.
 - `confirmHyperliquidExecuteFill` covers open, close, scale-in, hedge, manual, and UI paths. A response without a confirmed fill returns `"exchange returned no confirmed fill"` and books nothing. `hyperliquidExecuteSucceededCancelOIDs` retains the confirmed cancel OIDs so protection reconciliation can tell a cancelled trigger from a lost one.
-- Bidirectional perps: a short entry registers in `bidirectionalPerpsStrategies`; flip sizing uses `perpsLiveOrderSize`.
+- Bidirectional perps: `bidirectionalPerpsStrategies` mirrors the open registry `short_entries=True` set (`short_entry_strategies()`); `scripts/test_go_python_registry_parity.py` fails on a name missing from either side. Flip sizing uses `perpsLiveOrderSize`.
 
 ### Loopback UI and tuning (`server.go`, `ui_*.go`, `static/ui/*`, `ui_tuning.go`)
 
