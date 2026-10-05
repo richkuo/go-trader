@@ -556,3 +556,41 @@ func TestShellSuiteCIWiring(t *testing.T) {
 		}
 	}
 }
+
+func TestRunCIShellSuiteVerdicts(t *testing.T) {
+	t.Parallel()
+	_, repoRoot := shellSuiteRepoRoot(t)
+	runner := filepath.Join(repoRoot, "scripts", "run_ci_shell_suite.sh")
+	const marker = "OK: stub suite passed"
+	const forbidden = "note: stub check skipped"
+	cases := []struct {
+		name   string
+		script string
+		pass   bool
+	}{
+		{"marker only", `printf '%s\n' "$1"; exit 0`, true},
+		{"marker and SKIP line", `printf '%s\nSKIP: x\n' "$1"; exit 0`, false},
+		{"marker as a prefix only", `printf '%s extra\n' "$1"; exit 0`, false},
+		{"marker, exit 3 and forbidden text", `printf '%s\n%s\n' "$1" "$2"; exit 3`, false},
+		{"marker and exit 3", `printf '%s\n' "$1"; exit 3`, false},
+		{"marker and forbidden text", `printf '%s\nx %s\n' "$1" "$2"; exit 0`, false},
+		{"marker and SKIP not at line start", `printf '%s\nnote: SKIP: x\n' "$1"; exit 0`, true},
+		{"no marker", `printf 'OK\n'; exit 0`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cmd := exec.Command("bash", runner, "--marker", marker, "--forbid", forbidden, "--", "bash", "-c", tc.script, "stub", marker, forbidden)
+			cmd.Env = append(os.Environ(), "RUNNER_TEMP="+t.TempDir())
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				if _, ok := err.(*exec.ExitError); !ok {
+					t.Fatalf("run %s: %v\n%s", runner, err, out)
+				}
+			}
+			if got := err == nil; got != tc.pass {
+				t.Fatalf("run_ci_shell_suite.sh passed=%v, want %v\n%s", got, tc.pass, out)
+			}
+		})
+	}
+}
