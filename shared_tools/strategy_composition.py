@@ -247,29 +247,101 @@ def rewrite_deprecated_close_ref(name: str, params: Optional[dict]) -> tuple[str
     return resolved, out
 
 
-def reject_backtest_only_strategies(
-    names: Iterable[str],
-    get_strategy: Callable[[str], dict],
-) -> None:
-    for name in names:
-        entry = get_strategy(name)
-        if isinstance(entry, dict) and entry.get("backtest_only"):
-            raise ValueError(
-                f"Strategy '{name}' is registered backtest_only (offline "
-                "research, #1138) — it must not be evaluated on a live check "
-                "path. Wiring it to live requires explicit human sign-off "
-                "after parity/Sharpe/M1 checks."
-            )
+EDGE_STATUS_NO_EDGE = "no_edge"
+ALLOW_NO_EDGE_FLAG = "--allow-no-edge"
+MODE_FLAG = "--mode"
+GATE_MODE_PAPER = "paper"
+GATE_MODE_LIVE = "live"
+GATE_MODE_MISSING = "missing"
+GATE_MODE_INVALID = "invalid"
 
 
-def validate_close_strategy_names(
-    close_names: Iterable[str],
+@dataclass(frozen=True)
+class GateMode:
+    kind: str
+    detail: str = ""
+
+
+@dataclass(frozen=True)
+class Acknowledgement:
+    value: bool
+    error: str = ""
+
+
+@dataclass(frozen=True)
+class StrategyReference:
+    role: str
+    name: str
+
+
+def parse_raw_gate_mode(tokens) -> GateMode:
+    if tokens is None:
+        return GateMode(GATE_MODE_MISSING)
+    if not isinstance(tokens, (list, tuple)) or not all(isinstance(t, str) for t in tokens):
+        return GateMode(GATE_MODE_INVALID, f"mode evidence must be a list of strings, got {tokens!r}")
+    tokens = list(tokens)
+    values: list[str] = []
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if token == MODE_FLAG:
+            if i + 1 >= len(tokens):
+                return GateMode(GATE_MODE_INVALID, "dangling --mode with no value")
+            values.append(tokens[i + 1])
+            i += 2
+            continue
+        if token.startswith(MODE_FLAG + "="):
+            values.append(token[len(MODE_FLAG) + 1:])
+        i += 1
+    if not values:
+        return GateMode(GATE_MODE_MISSING)
+    if len(values) > 1:
+        return GateMode(GATE_MODE_INVALID, f"--mode given {len(values)} times ({values!r})")
+    value = values[0]
+    if value == GATE_MODE_PAPER:
+        return GateMode(GATE_MODE_PAPER)
+    if value == GATE_MODE_LIVE:
+        return GateMode(GATE_MODE_LIVE)
+    return GateMode(GATE_MODE_INVALID, f"--mode value {value!r} is not exactly 'paper' or 'live'")
+
+
+def parse_allow_no_edge_tokens(tokens) -> Acknowledgement:
+    hits = [
+        t for t in (tokens or [])
+        if isinstance(t, str) and (t == ALLOW_NO_EDGE_FLAG or t.startswith(ALLOW_NO_EDGE_FLAG + "="))
+    ]
+    if not hits:
+        return Acknowledgement(False)
+    if len(hits) > 1:
+        return Acknowledgement(False, f"{ALLOW_NO_EDGE_FLAG} given {len(hits)} times")
+    if hits[0] != ALLOW_NO_EDGE_FLAG:
+        return Acknowledgement(False, f"{ALLOW_NO_EDGE_FLAG} takes no value, got {hits[0]!r}")
+    return Acknowledgement(True)
+
+
+def parse_allow_no_edge_value(slot: dict, key: str = "allow_no_edge") -> Acknowledgement:
+    if key not in slot:
+        return Acknowledgement(False)
+    value = slot[key]
+    if value is True:
+        return Acknowledgement(True)
+    if value is False:
+        return Acknowledgement(False)
+    return Acknowledgement(False, f"{key} must be a JSON boolean, got {value!r}")
+
+
+def resolve_strategy_references(
+    positional_strategy: str,
+    open_strategy: Optional[str],
+    close_strategies: Optional[str | Iterable[str]],
     get_open_strategy: Callable[[str], object],
     get_close_strategy: Callable[[str], object],
     list_open_strategies: Optional[Callable[[], Iterable[str]]] = None,
     list_close_strategies: Optional[Callable[[], Iterable[str]]] = None,
-) -> None:
-    for name in close_names:
+) -> list[StrategyReference]:
+    open_name = (open_strategy or positional_strategy or "").strip()
+    refs = [StrategyReference("open", open_name)] if open_name else []
+    for name in parse_close_strategies(close_strategies):
         resolved = canonical_close_name(name)
         try:
             get_close_strategy(resolved)
@@ -277,19 +349,67 @@ def validate_close_strategy_names(
         except ValueError:
             pass
         try:
-            entry = get_open_strategy(resolved)
+            get_open_strategy(resolved)
         except ValueError as exc:
             raise ValueError(
                 f"Unknown close strategy: {name}. "
                 f"Available close strategies: {_safe_list_strategy_names(list_close_strategies)}; "
                 f"fallback open strategies: {_safe_list_strategy_names(list_open_strategies)}"
             ) from exc
-        if isinstance(entry, dict) and entry.get("backtest_only"):
-            raise ValueError(
-                f"Close strategy '{name}' resolves to the backtest_only open "
-                "strategy fallback (offline research, #1138) — it must not be "
-                "evaluated on a live check path."
-            )
+        refs.append(StrategyReference("close", resolved))
+    return refs
+
+
+def admit_strategy_references(
+    references: Iterable[StrategyReference],
+    gate_mode: GateMode,
+    acknowledgement: Acknowledgement,
+    get_strategy: Callable[[str], object],
+) -> None:
+    for ref in references:
+        entry = get_strategy(ref.name)
+        if not isinstance(entry, dict) or entry.get("edge_status") != EDGE_STATUS_NO_EDGE:
+            continue
+        source = entry.get("edge_source") or "unknown"
+        evidence = entry.get("edge_ref") or "unknown"
+        label = f"{ref.role} strategy '{ref.name}' is edge_status=no_edge (source {source}, evidence {evidence})"
+        if gate_mode.kind == GATE_MODE_INVALID:
+            raise ValueError(f"{label}: invalid mode input refused ({gate_mode.detail})")
+        if acknowledgement.error:
+            raise ValueError(f"{label}: invalid acknowledgement refused ({acknowledgement.error})")
+        if gate_mode.kind == GATE_MODE_PAPER:
+            continue
+        if acknowledgement.value is True:
+            continue
+        mode_text = "explicit live mode" if gate_mode.kind == GATE_MODE_LIVE else "missing mode (treated as live)"
+        raise ValueError(
+            f"{label}: {mode_text} requires allow_no_edge: true on the strategy "
+            f"({ALLOW_NO_EDGE_FLAG}); paper evaluation needs an explicit --mode=paper"
+        )
+
+
+def admit_configured_strategies(
+    positional_strategy: str,
+    open_strategy: Optional[str],
+    close_strategies: Optional[str | Iterable[str]],
+    gate_mode: GateMode,
+    acknowledgement: Acknowledgement,
+    get_open_strategy: Callable[[str], object],
+    get_close_strategy: Callable[[str], object],
+    list_open_strategies: Optional[Callable[[], Iterable[str]]] = None,
+    list_close_strategies: Optional[Callable[[], Iterable[str]]] = None,
+) -> list[StrategyReference]:
+    references = resolve_strategy_references(
+        positional_strategy,
+        open_strategy,
+        close_strategies,
+        get_open_strategy,
+        get_close_strategy,
+        list_open_strategies,
+        list_close_strategies,
+    )
+    admit_strategy_references(references, gate_mode, acknowledgement, get_open_strategy)
+    return references
 
 
 def _last_signal(result_df: pd.DataFrame) -> int:

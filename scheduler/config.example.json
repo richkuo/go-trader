@@ -1,5 +1,5 @@
 {
-  "config_version": 19,
+  "config_version": 20,
   "interval_seconds": 300,
   "db_file": "scheduler/state.db",
   "replay_log_path": "",

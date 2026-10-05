@@ -103,6 +103,11 @@ its row here in the same PR. A new row is part of the change, not a follow-up.
 ## Candidate studies (`backtest/candidates/`)
 
 Each `backtest/candidates/<study>/` is a self-contained study for one strategy.
+Candidate reports, manifests and results are frozen evidence: older ones still
+say `backtest_only=True` because that was the policy when they ran. The current
+availability rule (#1681) is the registry's `edge_status="no_edge"` with
+`edge_source`/`edge_ref` pointing at the study: explicit `--mode=paper` runs it,
+live use needs `allow_no_edge: true`, and the study's verdict is unchanged.
 Most bundle **executable driver scripts** — per-study screens and gates that
 shell out to the M-series harnesses above (M1 shortlist scoring, M2 close-stack
 sweeps, M4 regime-gate sweeps, walk-forward fold stability, fee-drag screens,

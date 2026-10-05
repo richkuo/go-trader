@@ -129,23 +129,25 @@ def test_non_batched_parity_on_frozen_hyperliquid_frame_is_clean(window):
     assert (frame["live_signal"] != 0).sum() > 0
 
 
-def test_batched_parity_refuses_the_research_entry():
+def test_batched_parity_admits_explicit_paper_and_matches_solo():
     df = _frozen_frame(260)
-    with pytest.raises(ValueError, match="backtest_only"):
-        compute_parity_frame(df, cfg=_parity_cfg(batched=True), window=200)
+    frame = compute_parity_frame(df, cfg=_parity_cfg(batched=True), window=200)
+    result = summarize(frame)
+    assert result["bars_compared"] > 0
+    assert result["mismatches"] == 0 and result["clean"]
 
 
-def test_production_solo_check_subprocess_refuses_before_any_exchange_call():
+def test_production_solo_check_subprocess_refuses_unacknowledged_live_before_any_exchange_call():
     env = {k: v for k, v in os.environ.items() if not k.startswith("HYPERLIQUID")}
     proc = subprocess.run(
         [sys.executable, os.path.join(REPO, "shared_scripts", "check_hyperliquid.py"),
-         NAME, "BTC", "4h", "--mode=paper"],
+         NAME, "BTC", "4h", "--mode=live"],
         cwd=REPO, capture_output=True, text=True, timeout=120, env=env)
     assert proc.returncode == 1
     payload = json.loads(proc.stdout.strip().splitlines()[-1])
     assert payload["strategy"] == NAME
     assert payload["signal"] == 0
-    assert "backtest_only" in payload["error"]
+    assert "allow_no_edge" in payload["error"] and "explicit live mode" in payload["error"]
 
 
 def test_manifest_leg_books_funding_and_execution_spec_for_the_candidate():

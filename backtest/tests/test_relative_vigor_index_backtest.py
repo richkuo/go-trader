@@ -130,11 +130,12 @@ def test_non_batched_parity_matches_full_series(window):
     assert (frame["live_signal"] != 0).sum() > 0
 
 
-def test_batched_parity_refuses_research_entry():
+def test_batched_parity_admits_explicit_paper_and_matches_solo():
     cfg = ParityConfig(strategy_name=NAME, params={"period": 10, "zero_line_filter": True},
                        registry="futures", batched=True, symbol="BTC", timeframe="4h")
-    with pytest.raises(ValueError, match="backtest_only"):
-        compute_parity_frame(_market(240), cfg=cfg, window=200)
+    frame = compute_parity_frame(_market(240), cfg=cfg, window=200)
+    assert len(frame) > 0
+    assert bool(frame["match"].all())
 
 
 def test_frozen_manifest_frame_full_series_prefix_and_bounded_window_agree():

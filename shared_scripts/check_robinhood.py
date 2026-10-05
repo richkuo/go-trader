@@ -107,7 +107,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                      regime_enabled=False, regime_windows_spec=None, ohlcv_limit=200, regime_atr_window="",
                      regime_payload_json=None,
                      close_params_by_name=None,
-                     atr_method="simple"):
+                     atr_method="simple", gate_mode=None, acknowledgement=None):
     try:
         from adapter import RobinhoodExchangeAdapter
         from strategies import apply_strategy, get_strategy, list_strategies
@@ -121,15 +121,19 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             finalize_decision,
             normalize_signal,
             parse_close_strategies,
-            reject_backtest_only_strategies,
-            validate_close_strategy_names,
+            admit_configured_strategies,
+            GateMode,
+            Acknowledgement,
+            GATE_MODE_MISSING,
         )
 
         open_close_enabled = bool(open_strategy or close_strategies)
-        configured_names = [open_strategy or strategy_name]
-        reject_backtest_only_strategies(configured_names, get_strategy)
-        validate_close_strategy_names(
-            parse_close_strategies(close_strategies),
+        admit_configured_strategies(
+            strategy_name,
+            open_strategy,
+            close_strategies,
+            gate_mode if gate_mode is not None else GateMode(GATE_MODE_MISSING),
+            acknowledgement if acknowledgement is not None else Acknowledgement(False),
             get_strategy,
             get_close_strategy,
             list_strategies,
@@ -378,12 +382,13 @@ def main():
         parser.add_argument("--position-regime", default="")
         parser.add_argument("--position-risk-anchor-price", type=float, default=None)
         parser.add_argument("--mark-price", type=float, default=0.0, help="Accepted for argv-shape compatibility with check_hyperliquid.py (#768); ignored on this platform.")
+        parser.add_argument("--allow-no-edge", nargs="?", const=True, default=None)
         parser.add_argument("--probe-only", action="store_true",
             help="Startup compatibility probe (#645): validate argv shape and exit 0.")
         args = parser.parse_args()
         if args.probe_only:
             sys.exit(0)
-        from strategy_composition import parse_strategy_refs_arg
+        from strategy_composition import parse_allow_no_edge_tokens, parse_raw_gate_mode, parse_strategy_refs_arg
         refs = parse_strategy_refs_arg(args.strategy_refs)
         open_strategy_name = refs["open_name"] if refs else args.open_strategy
         close_strategies_arg = refs["close_csv"] if refs else args.close_strategies
@@ -403,6 +408,8 @@ def main():
             regime_payload_json=args.regime_payload_json,
             close_params_by_name=close_params_by_name,
             atr_method=args.atr_method,
+            gate_mode=parse_raw_gate_mode(sys.argv[1:]),
+            acknowledgement=parse_allow_no_edge_tokens(sys.argv[1:]),
         )
 
 

@@ -145,7 +145,9 @@ def test_non_batched_parity_with_close_owner_and_both_directions(window):
     assert (frame["live_open_action"] == "short").any()
 
 
-def test_batched_parity_mode_refuses_research_entry():
+def test_batched_parity_mode_admits_explicit_paper_and_matches_solo():
     df = _frozen_btc(260)
-    with pytest.raises(ValueError, match="backtest_only"):
-        compute_parity_frame(df, cfg=_cfg(batched=True), window=200)
+    frame = compute_parity_frame(df, cfg=_cfg(batched=True), window=200)
+    result = summarize(frame)
+    assert result["bars_compared"] > 0
+    assert result["clean"], frame[~frame["match"]].head()

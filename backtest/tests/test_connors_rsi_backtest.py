@@ -74,6 +74,8 @@ def test_non_batched_parity_runner_is_clean_on_bounded_window_and_every_prefix(w
     assert (frame["live_signal"] != 0).any()
 
 
-def test_batched_parity_mode_refuses_the_research_entry():
-    with pytest.raises(ValueError, match="backtest_only"):
-        compute_parity_frame(_market(260), cfg=_parity_cfg(batched=True), window=200)
+def test_batched_parity_mode_admits_explicit_paper_and_matches_solo():
+    frame = compute_parity_frame(_market(260), cfg=_parity_cfg(batched=True), window=200)
+    result = summarize(frame)
+    assert result["bars_compared"] > 0
+    assert result["clean"], frame[~frame["match"]].head()

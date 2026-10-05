@@ -704,7 +704,7 @@ def _register_flip(name):
         "fn": flip,
         "description": "test-only flip",
         "default_params": {},
-        "backtest_only": False,
+        "edge_status": None,
     }
     return name
 
