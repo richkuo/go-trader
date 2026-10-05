@@ -1,6 +1,6 @@
 {
   "schema": "go-trader.ledger-comparison-input",
-  "schema_version": 1,
+  "schema_version": 2,
   "description": "Manual-owner fixture: hl-manual-eth; strict comparison refuses it and reports every event as not comparable.",
   "export": {
     "schema": "go-trader.booked-ledger",
@@ -121,7 +121,49 @@
         },
         "status": "verified",
         "rule": "attested",
-        "evidence": "synthetic fixture: source/config.json is the only configuration this strategy ever ran with; it is the effective (post-load) configuration, unchanged since 2026-01-01"
+        "evidence": "synthetic fixture: source/config.json is the only configuration this strategy ever ran with; it is the effective (post-load) configuration, unchanged since 2026-01-01",
+        "basis": "loader_resolved",
+        "stop_defaults": {
+          "default_stop_loss_atr_mult": {
+            "status": "unverified",
+            "source": null,
+            "present": false,
+            "value": null
+          },
+          "user_close_defaults": {
+            "status": "unverified",
+            "source": null,
+            "present": false,
+            "value": null
+          },
+          "user_regime_atr_defaults": {
+            "status": "unverified",
+            "source": null,
+            "present": false,
+            "value": null
+          },
+          "platform_max_drawdown_pct": {
+            "status": "unverified",
+            "source": null,
+            "present": false,
+            "value": null
+          }
+        },
+        "stop_evidence": {
+          "raw_fields": {},
+          "resolved_fields": {},
+          "leverage_origin": {
+            "status": "unverified",
+            "source": null,
+            "value": null
+          },
+          "regime_atr_window": {
+            "status": "unverified",
+            "source": null,
+            "present": false,
+            "value": null
+          }
+        }
       }
     ]
   },

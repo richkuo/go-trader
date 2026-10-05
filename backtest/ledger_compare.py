@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import copy
 import hashlib
 import itertools
 import json
@@ -25,22 +26,31 @@ from backtester import (
     COMPARISON_MODE_STRICT,
     LEDGER_EVENTS_SCHEMA,
     LEDGER_EVENTS_SCHEMA_VERSION,
+    STOP_FIELD_KEYS,
+    STOP_GEOMETRY_INPUT_KEYS,
+    STOP_OWNERS_NEEDING_ATR,
+    STOP_OWNERS_NEEDING_LABEL,
+    STOP_REGIME_FIELD_KEYS,
+    STOP_SCALAR_FIELD_KEYS,
     STOP_UNITS_LIVE_CONFIG,
     Backtester,
+    CapabilityContext,
     CloseCapabilityError,
     _apply_direction_invert_value,
     _close_fraction_columns,
+    _finite_number,
     _normalize_open_action,
     _open_action_from_signal,
+    _thaw_json,
+    _unified_close_params,
     decode_close_validation,
     leverage_evidence,
-    stop_raw_fields,
 )
 
 REPORT_SCHEMA = "go-trader.ledger-reconciliation-report"
 REPORT_SCHEMA_VERSION = 1
 INPUT_SCHEMA = "go-trader.ledger-comparison-input"
-INPUT_SCHEMA_VERSION = 1
+SUPPORTED_INPUT_VERSIONS = (1, 2)
 EXPORT_SCHEMA = "go-trader.booked-ledger"
 SUPPORTED_EXPORT_VERSIONS = (1,)
 EXIT_STRICT_SUCCESS = 0
@@ -75,12 +85,37 @@ PROTECTION_FIELDS = (
     "stop_loss_pct", "stop_loss_margin_pct", "trailing_stop_pct", "trailing_stop_atr_mult",
     "stop_loss_atr_mult", "stop_loss_atr_mult_regime", "trailing_stop_atr_mult_regime",
 )
+STOP_ROLE_FIELDS = PROTECTION_FIELDS + ("trailing_stop_min_move_pct", "max_drawdown_pct", "regime_atr_window")
+STOP_EVIDENCE_FIELDS = STOP_FIELD_KEYS + STOP_GEOMETRY_INPUT_KEYS
+STOP_BASES = ("raw_config", "loader_resolved")
+STOP_DEFAULT_KEYS = ("default_stop_loss_atr_mult", "user_close_defaults", "user_regime_atr_defaults",
+                     "platform_max_drawdown_pct")
+STOP_EVIDENCE_KEYS = ("raw_fields", "resolved_fields", "leverage_origin", "regime_atr_window")
+PROVENANCE_STATUSES = ("verified", "unverified")
+LEVERAGE_ORIGINS = ("config", "default")
+STOP_CENTRAL_CODES = ("UNSUPPORTED_STOP_OWNER", "MISSING_STOP_INPUT", "UNVERIFIED_MARGIN_LEVERAGE")
+STOP_UNAPPROXIMABLE_REASONS = ("stop_capability_refused", "stop_evidence_contradictory",
+                               "stop_configuration_invalid")
+OWNER_INPUT_FIELDS = {
+    "trailing_pct": ("trailing_stop_pct", "trailing_stop_min_move_pct"),
+    "trailing_atr": ("trailing_stop_atr_mult", "trailing_stop_min_move_pct"),
+    "trailing_atr_regime": ("trailing_stop_atr_mult_regime", "regime_atr_window", "trailing_stop_min_move_pct"),
+    "unified_regime": ("close_strategy", "regime_atr_window", "trailing_stop_min_move_pct"),
+    "fixed_atr": ("stop_loss_atr_mult", "trailing_stop_min_move_pct"),
+    "fixed_atr_regime": ("stop_loss_atr_mult_regime", "regime_atr_window", "trailing_stop_min_move_pct"),
+    "fixed_pct": ("stop_loss_pct", "trailing_stop_min_move_pct"),
+    "margin_pct": ("stop_loss_margin_pct", "leverage", "trailing_stop_min_move_pct"),
+    "drawdown_fallback": ("max_drawdown_pct", "trailing_stop_min_move_pct"),
+    "none": (),
+}
+INITIAL_GEOMETRY_STAMP = "initial_entry"
+GEOMETRY_STATUSES = ("agreement", "mismatch", "unverified", "unavailable")
 PORTFOLIO_CONTROL_FIELDS = (
     "max_drawdown_pct", "circuit_breaker", "cb_drawdown_cooldown_minutes",
     "cb_loss_streak_threshold", "cb_loss_streak_cooldown_minutes",
 )
 REGIME_FIELDS = (
-    "allowed_regimes", "regime_gate_on_failure", "regime_gate_window", "regime_atr_window",
+    "allowed_regimes", "regime_gate_on_failure", "regime_gate_window",
     "regime_directional_window", "regime_directional_policy", "regime_window_divergence",
     "regime_profile_allocation",
 )
@@ -109,7 +144,6 @@ INFORMATIONAL_FIELDS = {
     "notify_ratchet_triggers": "notification",
     "llm_entry_analysis": "advisory",
     "interval_seconds": "observation_cadence_within_time_tolerance",
-    "trailing_stop_min_move_pct": "protection_replacement_threshold",
 }
 
 
@@ -267,8 +301,10 @@ def _require(obj, key, kind, label):
 def validate_comparison_input(doc, base_dir: str) -> dict:
     if not isinstance(doc, dict):
         raise LedgerInputError("comparison input is not a JSON object")
-    if doc.get("schema") != INPUT_SCHEMA or doc.get("schema_version") != INPUT_SCHEMA_VERSION:
-        raise LedgerInputError(f"comparison input must be {INPUT_SCHEMA!r} version {INPUT_SCHEMA_VERSION}")
+    version = doc.get("schema_version")
+    if doc.get("schema") != INPUT_SCHEMA or isinstance(version, bool) or version not in SUPPORTED_INPUT_VERSIONS:
+        raise LedgerInputError(
+            f"comparison input must be {INPUT_SCHEMA!r} version {list(SUPPORTED_INPUT_VERSIONS)}")
     exp = doc.get("export")
     for key in ("schema", "capture_manifest_sha256", "booked_sections_sha256"):
         _require(exp, key, str, "export")
@@ -316,10 +352,100 @@ def validate_comparison_input(doc, base_dir: str) -> dict:
         _validate_strategy_shape(seg["strategy"], f"{label}.strategy")
         if seg.get("status") not in ("verified", "unverified"):
             raise LedgerInputError(f"{label}.status must be verified or unverified")
+        if version >= 2:
+            _validate_stop_segment(seg, label)
+        else:
+            extra = sorted(k for k in ("basis", "stop_defaults", "stop_evidence") if k in seg)
+            if extra:
+                raise LedgerInputError(f"{label} carries version 2 stop evidence {extra} in a version 1 input")
     capev = doc.get("capability_evidence", {})
     if not isinstance(capev, dict):
         raise LedgerInputError("capability_evidence must be an object")
-    return {"manifest_path": manifest_path, "start": start, "end": end, "tolerances": tolerances}
+    geometry = doc.get("initial_stop_geometry_evidence")
+    if geometry is not None:
+        if version < 2:
+            raise LedgerInputError("initial_stop_geometry_evidence needs comparison input version 2")
+        _validate_geometry_evidence(geometry)
+    return {"manifest_path": manifest_path, "start": start, "end": end, "tolerances": tolerances,
+            "input_version": version}
+
+
+def _validate_provenance(entry, label: str, presence: bool) -> None:
+    keys = ("status", "source", "present", "value") if presence else ("status", "source", "value")
+    if not isinstance(entry, dict) or set(entry) != set(keys):
+        raise LedgerInputError(f"{label} must be an object with keys {list(keys)}")
+    if entry["status"] not in PROVENANCE_STATUSES:
+        raise LedgerInputError(f"{label}.status must be one of {list(PROVENANCE_STATUSES)}")
+    source = entry["source"]
+    if source is not None and not isinstance(source, str):
+        raise LedgerInputError(f"{label}.source must be a string or null")
+    if entry["status"] == "verified" and not (isinstance(source, str) and source.strip()):
+        raise LedgerInputError(f"{label} is verified without a source")
+    if presence:
+        if not isinstance(entry["present"], bool):
+            raise LedgerInputError(f"{label}.present must be a boolean")
+        if not entry["present"] and entry["value"] is not None:
+            raise LedgerInputError(f"{label} is absent but carries a value")
+        if entry["present"] and entry["value"] is None:
+            raise LedgerInputError(f"{label} is present without a value; an absent field has present=false")
+
+
+def _validate_stop_segment(seg: dict, label: str) -> None:
+    if seg.get("basis") not in STOP_BASES:
+        raise LedgerInputError(f"{label}.basis must be one of {list(STOP_BASES)}")
+    defaults = _require(seg, "stop_defaults", dict, label)
+    if set(defaults) != set(STOP_DEFAULT_KEYS):
+        raise LedgerInputError(f"{label}.stop_defaults must have exactly the keys {list(STOP_DEFAULT_KEYS)}")
+    for key in STOP_DEFAULT_KEYS:
+        _validate_provenance(defaults[key], f"{label}.stop_defaults.{key}", True)
+    for key in ("user_close_defaults", "user_regime_atr_defaults"):
+        value = defaults[key]["value"]
+        if value is not None and not isinstance(value, dict):
+            raise LedgerInputError(f"{label}.stop_defaults.{key}.value must be an object or null")
+    evidence = _require(seg, "stop_evidence", dict, label)
+    unknown = sorted(set(evidence) - set(STOP_EVIDENCE_KEYS))
+    if unknown:
+        raise LedgerInputError(f"{label}.stop_evidence has unknown keys {unknown}")
+    raw = _require(evidence, "raw_fields", dict, f"{label}.stop_evidence")
+    for key, entry in raw.items():
+        if key not in STOP_EVIDENCE_FIELDS:
+            raise LedgerInputError(f"{label}.stop_evidence.raw_fields has unknown field {key!r}")
+        _validate_provenance(entry, f"{label}.stop_evidence.raw_fields.{key}", True)
+    if seg["basis"] == "loader_resolved":
+        resolved = _require(evidence, "resolved_fields", dict, f"{label}.stop_evidence")
+        for key, entry in resolved.items():
+            if key not in STOP_EVIDENCE_FIELDS:
+                raise LedgerInputError(f"{label}.stop_evidence.resolved_fields has unknown field {key!r}")
+            _validate_provenance(entry, f"{label}.stop_evidence.resolved_fields.{key}", False)
+    elif "resolved_fields" in evidence:
+        raise LedgerInputError(f"{label}.stop_evidence.resolved_fields applies only to basis loader_resolved")
+    origin = evidence.get("leverage_origin")
+    _validate_provenance(origin, f"{label}.stop_evidence.leverage_origin", False)
+    if origin["value"] not in LEVERAGE_ORIGINS + (None,) or (
+            origin["status"] == "verified" and origin["value"] not in LEVERAGE_ORIGINS):
+        raise LedgerInputError(
+            f"{label}.stop_evidence.leverage_origin.value must be one of {list(LEVERAGE_ORIGINS)}")
+    window = evidence.get("regime_atr_window")
+    _validate_provenance(window, f"{label}.stop_evidence.regime_atr_window", True)
+    if window["value"] is not None and not isinstance(window["value"], str):
+        raise LedgerInputError(f"{label}.stop_evidence.regime_atr_window.value must be a string or null")
+
+
+def _validate_geometry_evidence(geometry) -> None:
+    if not isinstance(geometry, dict):
+        raise LedgerInputError("initial_stop_geometry_evidence must be an object keyed by booked event_key")
+    for key, entry in geometry.items():
+        label = f"initial_stop_geometry_evidence[{key!r}]"
+        if not isinstance(entry, dict) or set(entry) != {"status", "source", "stamp"}:
+            raise LedgerInputError(f"{label} must be an object with keys ['status', 'source', 'stamp']")
+        if entry["status"] not in PROVENANCE_STATUSES:
+            raise LedgerInputError(f"{label}.status must be one of {list(PROVENANCE_STATUSES)}")
+        if entry["source"] is not None and not isinstance(entry["source"], str):
+            raise LedgerInputError(f"{label}.source must be a string or null")
+        if entry["status"] == "verified" and not (isinstance(entry["source"], str) and entry["source"].strip()):
+            raise LedgerInputError(f"{label} is verified without a source")
+        if entry["stamp"] != INITIAL_GEOMETRY_STAMP:
+            raise LedgerInputError(f"{label}.stamp must be {INITIAL_GEOMETRY_STAMP!r}")
 
 
 def _validate_strategy_shape(strategy: dict, label: str) -> None:
@@ -394,6 +520,8 @@ def normalize_booked(doc: dict, start: pd.Timestamp, end: pd.Timestamp, coin: st
             "close_reason": _ev(ev, "close_reason"),
             "close_extent": _ev(ev, "close_extent"),
             "fee_source": _ev(ev, "fee_source"),
+            "_stop_trigger": ev["stop_loss_trigger_px"],
+            "_entry_atr": ev["entry_atr"],
         }
         records.append(rec)
     records.sort(key=lambda r: (r["ts"], r["event_key"]))
@@ -659,13 +787,328 @@ def _active(value) -> bool:
     return True
 
 
-def _regime_block_active(value) -> bool:
-    if not isinstance(value, dict):
-        return _active(value)
-    return any(_active(v) for v in value.values())
+def _same_value(a, b) -> bool:
+    if _is_number(a) and _is_number(b):
+        return float(a) == float(b)
+    if isinstance(a, dict) and isinstance(b, dict):
+        return set(a) == set(b) and all(_same_value(a[k], b[k]) for k in a)
+    if isinstance(a, list) and isinstance(b, list):
+        return len(a) == len(b) and all(_same_value(x, y) for x, y in zip(a, b))
+    return type(a) is type(b) and a == b
 
 
-def capability_matrix(seg: dict, capability_evidence: dict, market: dict) -> list:
+def _provenance_verified(entry) -> bool:
+    return (isinstance(entry, dict) and entry.get("status") == "verified"
+            and isinstance(entry.get("source"), str) and entry["source"].strip() != "")
+
+
+def _use_defaults_only(block) -> bool:
+    return isinstance(block, dict) and block.get("use_defaults") is True and block.get("trend_regime") is None
+
+
+def _jsonable_stop_inputs(kwargs: dict) -> dict:
+    return {k: _thaw_json(kwargs.get(k)) for k in STOP_EVIDENCE_FIELDS}
+
+
+def _stop_refusal(reason: str, field: str, detail: str, approximable: bool, **extra) -> dict:
+    out = {"reason": reason, "field": field, "detail": detail, "approximable": approximable}
+    out.update(extra)
+    return out
+
+
+def _raw_config_document(seg: dict, with_defaults: bool) -> dict:
+    cfg = {"regime": copy.deepcopy(seg.get("regime") or {}),
+           "strategies": [copy.deepcopy(seg.get("strategy") or {})]}
+    if not with_defaults:
+        return cfg
+    defaults = seg["stop_defaults"]
+
+    def present(key):
+        entry = defaults[key]
+        return entry["present"], copy.deepcopy(entry["value"])
+
+    ok, value = present("default_stop_loss_atr_mult")
+    if ok:
+        cfg["default_stop_loss_atr_mult"] = value
+    user = {}
+    ok, value = present("user_close_defaults")
+    if ok:
+        user["close"] = value
+    ok, value = present("user_regime_atr_defaults")
+    if ok:
+        user["regime_atr"] = value
+    if user:
+        cfg["user_defaults"] = user
+    ok, value = present("platform_max_drawdown_pct")
+    if ok:
+        cfg["platforms"] = {"hyperliquid": {"risk": {"max_drawdown_pct": value}}}
+    return cfg
+
+
+def _raw_stop_contradictions(strategy: dict, evidence: dict) -> list:
+    out = []
+    for key, entry in sorted(evidence["raw_fields"].items()):
+        declared = strategy.get(key)
+        if entry["present"] != (declared is not None) or (
+                entry["present"] and not _same_value(entry["value"], declared)):
+            out.append((key, f"raw evidence {{present: {entry['present']}, value: {entry['value']!r}}} "
+                             f"disagrees with the raw strategy value {declared!r}"))
+    window = evidence["regime_atr_window"]
+    declared = strategy.get("regime_atr_window")
+    if window["present"] != (declared is not None) or (
+            window["present"] and not _same_value(window["value"], declared)):
+        out.append(("regime_atr_window", f"window evidence {window['value']!r} disagrees with the raw "
+                                         f"strategy value {declared!r}"))
+    origin = evidence["leverage_origin"]
+    if origin["status"] == "verified":
+        expected = "config" if (_finite_number(strategy.get("leverage")) or 0) > 0 else "default"
+        if origin["value"] != expected:
+            out.append(("leverage", f"leverage origin {origin['value']!r} disagrees with the raw leverage "
+                                    f"{strategy.get('leverage')!r}"))
+    return out
+
+
+def _loader_stop_contradictions(strategy: dict, evidence: dict) -> list:
+    out = []
+    raw, resolved = evidence["raw_fields"], evidence["resolved_fields"]
+    raw_owner_present = any(raw.get(k, {}).get("present") for k in STOP_FIELD_KEYS)
+    close_name = str((strategy.get("close_strategy") or {}).get("name") or "").strip().lower()
+    defaultable = {"stop_loss_atr_mult": not raw_owner_present,
+                   "trailing_stop_atr_mult_regime": close_name == "trailing_tp_ratchet_regime" and not raw_owner_present}
+    for key, entry in sorted(resolved.items()):
+        declared = strategy.get(key)
+        if declared is not None and not _same_value(entry["value"], declared):
+            out.append((key, f"resolved evidence {entry['value']!r} disagrees with the loader-resolved "
+                             f"strategy value {declared!r}"))
+    for key in STOP_EVIDENCE_FIELDS:
+        rv, sv = raw.get(key), resolved.get(key)
+        if rv is None or sv is None:
+            continue
+        value = sv["value"]
+        if key in STOP_SCALAR_FIELD_KEYS or key == "trailing_stop_min_move_pct":
+            if rv["present"] and not _same_value(rv["value"], value):
+                out.append((key, f"explicit raw value {rv['value']!r} differs from the resolved value {value!r}; "
+                                 "the loader never rewrites an explicit stop field"))
+            elif not rv["present"] and value is not None and not defaultable.get(key):
+                out.append((key, f"resolved value {value!r} has no raw field and no loader default produces it"))
+        elif key in STOP_REGIME_FIELD_KEYS:
+            if rv["present"] and not _use_defaults_only(rv["value"]) and not _same_value(rv["value"], value):
+                out.append((key, "explicit raw regime block differs from the resolved block"))
+            elif not rv["present"] and value is not None and not defaultable.get(key):
+                out.append((key, "resolved regime block has no raw field and no loader default produces it"))
+        elif rv["present"] and (_finite_number(rv["value"]) or 0) > 0 and not _same_value(rv["value"], value):
+            out.append((key, f"explicit raw value {rv['value']!r} differs from the resolved value {value!r}"))
+    origin = evidence["leverage_origin"]
+    raw_lev = raw.get("leverage")
+    if origin["status"] == "verified" and _provenance_verified(raw_lev):
+        explicit = raw_lev["present"] and (_finite_number(raw_lev["value"]) or 0) > 0
+        if (origin["value"] == "config") != explicit:
+            out.append(("leverage", f"leverage origin {origin['value']!r} disagrees with the raw leverage "
+                                    f"evidence {raw_lev['value']!r}"))
+    window = evidence["regime_atr_window"]
+    declared = strategy.get("regime_atr_window")
+    if declared is not None and not (window["present"] and _same_value(window["value"], declared)):
+        out.append(("regime_atr_window", f"window evidence {window['value']!r} disagrees with the strategy "
+                                         f"value {declared!r}"))
+    return out
+
+
+def _default_requirements(seg: dict, close_refs: list) -> list:
+    from run_backtest import _USER_CLOSE_DEFAULTS_SUPPORTED
+    strategy = seg.get("strategy") or {}
+    needed = []
+    scalar = any(strategy.get(k) is not None for k in STOP_SCALAR_FIELD_KEYS)
+    block = any(isinstance(strategy.get(k), dict) and strategy.get(k) for k in STOP_REGIME_FIELD_KEYS)
+    if not scalar and not block and _unified_close_params(close_refs) is None:
+        needed.append("default_stop_loss_atr_mult")
+    for ref in close_refs:
+        name = str(ref.get("name") or "").strip().lower()
+        if name in _USER_CLOSE_DEFAULTS_SUPPORTED and (
+                (ref.get("params") or {}).get("tp_tiers") is None or name == "trailing_tp_ratchet_regime"):
+            needed.append("user_close_defaults")
+            break
+    if any(_use_defaults_only(strategy.get(k)) for k in STOP_REGIME_FIELD_KEYS):
+        needed.append("user_regime_atr_defaults")
+    return needed
+
+
+def resolve_historical_stops(seg: dict, input_version: int, comparison_mode: str) -> dict:
+    from run_backtest import (_atr_window_evidence, _resolve_regime_windows_spec,
+                              live_stop_engine_inputs, live_stop_preflight, resolve_raw_config_stops,
+                              strategy_close_refs)
+    strategy = seg.get("strategy") or {}
+    regime = seg.get("regime") or {}
+    basis = seg.get("basis") if input_version >= 2 else None
+    verdict = {"applicable": True, "input_version": input_version, "basis": basis, "status": "refused",
+               "owner": None, "refusals": [], "kwargs": None, "close_refs": None, "needs_labels": False,
+               "labels": None, "required_inputs": [], "resolved_live_units": None, "capability_context": None}
+    stype = str(strategy.get("type") or "")
+    platform = str(strategy.get("platform") or "").strip().lower()
+    if stype != "perps" or platform != "hyperliquid":
+        verdict.update(applicable=False, status="not_applicable")
+        return verdict
+    label = f"historical strategy {strategy.get('id')!r}"
+    refusals = verdict["refusals"]
+    try:
+        if basis == "loader_resolved":
+            evidence = seg["stop_evidence"]
+            for key, why in _loader_stop_contradictions(strategy, evidence):
+                refusals.append(_stop_refusal("stop_evidence_contradictory", key, why, False))
+            resolved = {}
+            for key in STOP_EVIDENCE_FIELDS:
+                entry = evidence["resolved_fields"].get(key)
+                resolved[key] = copy.deepcopy(entry["value"] if entry is not None else strategy.get(key))
+            origin = evidence["leverage_origin"]
+            lev = resolved.get("leverage")
+            if _provenance_verified(origin) and origin["value"] == "config":
+                lev_ev = leverage_evidence(lev, "config", True)
+            elif _provenance_verified(origin):
+                lev_ev = {"status": "unverified", "source": "default", "value": _finite_number(lev)}
+            else:
+                lev_ev = {"status": "unverified", "source": "historical_unverified", "value": _finite_number(lev)}
+            raw_fields = {k: {"present": e["present"], "value": copy.deepcopy(e["value"])}
+                          for k, e in sorted(evidence["raw_fields"].items())}
+            window_value = evidence["regime_atr_window"]["value"]
+            kwargs, context = live_stop_engine_inputs(
+                resolved, raw_fields=raw_fields, source=STOP_UNITS_LIVE_CONFIG, leverage=lev_ev,
+                extra_evidence={"atr_regime_window": _atr_window_evidence(
+                    {"regime_atr_window": window_value}, regime)})
+            kwargs["stop_platform"] = "hyperliquid"
+            close_refs = strategy_close_refs(strategy, label)
+        else:
+            if basis == "raw_config":
+                evidence = seg["stop_evidence"]
+                for key, why in _raw_stop_contradictions(strategy, evidence):
+                    refusals.append(_stop_refusal("stop_evidence_contradictory", key, why, False))
+            stops = resolve_raw_config_stops(_raw_config_document(seg, basis == "raw_config"),
+                                             strategy.get("id"), label)
+            kwargs, context, close_refs = stops["stop_kwargs"], stops["stop_context"], stops["close_refs"]
+            lev_ev = dict(context.input_evidence.get("leverage") or {})
+            if basis == "raw_config" and lev_ev.get("status") == "verified" and not _provenance_verified(
+                    seg["stop_evidence"]["raw_fields"].get("leverage")):
+                lev_ev = {"status": "unverified", "source": "historical_unverified", "value": lev_ev.get("value")}
+                merged = _thaw_json(context.input_evidence)
+                merged["leverage"] = lev_ev
+                context = CapabilityContext(raw_fields=_thaw_json(context.raw_fields), input_evidence=merged)
+        spec = _resolve_regime_windows_spec(regime)
+        try:
+            validation = live_stop_preflight(
+                kwargs, context, platform="hyperliquid", strategy_type="perps", close_refs=close_refs,
+                regime_windows_spec=spec, risk_per_trade_pct=strategy.get("risk_per_trade_pct"),
+                comparison_mode=comparison_mode)
+            preflight, central = validation.capability_context, []
+        except CloseCapabilityError as exc:
+            preflight = exc.validation.capability_context
+            central = [r for r in exc.reasons if r["reason_code"] in STOP_CENTRAL_CODES]
+    except (ValueError, TypeError) as exc:
+        refusals.append(_stop_refusal("stop_configuration_invalid", "stop_configuration",
+                                      f"the historical stop configuration cannot be resolved: {exc}", False))
+        return verdict
+    if preflight is None or preflight.errors or preflight.resolved_stop_owner is None:
+        refusals.append(_stop_refusal("stop_configuration_invalid", "capability_context",
+                                      "the central stop context could not be built", False))
+        return verdict
+    owner = preflight.resolved_stop_owner["name"]
+    verdict.update(owner=owner, close_refs=close_refs,
+                   resolved_live_units=_thaw_json(context.input_evidence["resolved_live_units"]["value"]),
+                   capability_context=preflight.to_dict())
+    for rec in central:
+        refusals.append(_stop_refusal("stop_capability_refused", rec["feature"],
+                                      rec["details"].get("message") or rec["reason_code"], False,
+                                      reason_code=rec["reason_code"]))
+    needs_labels = owner in STOP_OWNERS_NEEDING_LABEL
+    verdict["needs_labels"] = needs_labels
+    if needs_labels:
+        verdict["labels"] = {"enabled": bool(regime.get("enabled")),
+                             "period": int(regime.get("period", 14) or 14),
+                             "adx_threshold": float(regime.get("adx_threshold", 20.0) or 20.0),
+                             "windows_spec": spec, "timeframe": regime.get("timeframe")}
+        if not regime.get("enabled"):
+            refusals.append(_stop_refusal(
+                "stop_capability_refused", owner,
+                f"{owner} resolves its stop from a regime label, but the historical regime configuration is "
+                "disabled; the comparison cannot establish the label live used", False,
+                reason_code="MISSING_STOP_INPUT"))
+    required = []
+    if input_version < 2:
+        required = ["basis"] + [f for f in OWNER_INPUT_FIELDS.get(owner, ()) if f != "trailing_stop_min_move_pct"]
+        for field in required:
+            refusals.append(_stop_refusal(
+                "stop_inputs_unverified", field,
+                f"comparison input version 1 has no raw or loader-resolved basis and no stop provenance, so it "
+                f"cannot rule out an explicit stop, an implicit ATR default, a close-owned stop or the drawdown "
+                f"fallback; read as raw configuration the owner is {owner!r}", True))
+    else:
+        evidence = seg["stop_evidence"]
+        loader = basis == "loader_resolved"
+        unverified = []
+
+        def need(field, entry):
+            required.append(field)
+            if not _provenance_verified(entry):
+                unverified.append(field)
+
+        for key in STOP_FIELD_KEYS:
+            need(key, evidence["raw_fields"].get(key))
+            if loader:
+                need(key, evidence["resolved_fields"].get(key))
+        for field in OWNER_INPUT_FIELDS.get(owner, ()):
+            if field in ("close_strategy", "leverage") or field in STOP_FIELD_KEYS:
+                continue
+            if field == "regime_atr_window":
+                need(field, evidence["regime_atr_window"])
+            elif loader:
+                need(field, evidence["resolved_fields"].get(field))
+            else:
+                entry = evidence["raw_fields"].get(field)
+                need(field, entry)
+                if field == "max_drawdown_pct" and not (
+                        isinstance(entry, dict) and entry["present"] and (_finite_number(entry["value"]) or 0) != 0):
+                    need("platform_max_drawdown_pct", seg["stop_defaults"]["platform_max_drawdown_pct"])
+        if not loader:
+            for key in _default_requirements(seg, strategy_close_refs(strategy, label)):
+                need(key, seg["stop_defaults"][key])
+        for field in sorted(set(unverified)):
+            refusals.append(_stop_refusal(
+                "stop_inputs_unverified", field,
+                f"the {basis} segment has no verified provenance for {field}, an input of the {owner!r} stop "
+                "owner or of its precedence", True))
+    verdict["required_inputs"] = sorted(set(required))
+    kwargs["capability_context"] = preflight
+    verdict["kwargs"] = kwargs
+    verdict["status"] = "modeled" if not refusals else "refused"
+    return verdict
+
+
+def _stop_rows(verdict: dict, strategy: dict) -> list:
+    named = {r["field"] for r in verdict["refusals"]}
+    rows = []
+    for field in STOP_ROLE_FIELDS:
+        value = strategy.get(field)
+        present = value is not None
+        if not verdict["applicable"]:
+            decision = "informational" if present else "inactive"
+            reason = "no Hyperliquid perps stop model for this owner"
+        elif field in named or (verdict["status"] != "modeled" and present):
+            decision = "refused"
+            reason = "the stop verdict refused this input; see eligibility.refusals"
+        elif field == "regime_atr_window" and not verdict["needs_labels"]:
+            decision = "informational" if present else "inactive"
+            reason = "no regime-owned stop reads the regime ATR window"
+        elif present or field in OWNER_INPUT_FIELDS.get(verdict["owner"], ()):
+            decision = "modeled"
+            reason = (f"verified historical stop input; the common engine arms owner {verdict['owner']!r} "
+                      "with the central capability context")
+        else:
+            decision = "inactive"
+            reason = "not configured and not an input of the resolved owner"
+        rows.append({"field": field, "category": "protection", "present": field in strategy, "value": value,
+                     "active": decision not in ("inactive", "informational"), "decision": decision,
+                     "reason": reason, "approximable": False, "stop_owner": verdict["owner"]})
+    return rows
+
+
+def capability_matrix(seg: dict, capability_evidence: dict, market: dict, stop_verdict: dict) -> list:
     strategy = seg.get("strategy") or {}
     regime = seg.get("regime") or {}
     risk = seg.get("portfolio_risk") or {}
@@ -751,13 +1194,8 @@ def capability_matrix(seg: dict, capability_evidence: dict, market: dict) -> lis
     row("margin_mode", "margin_liquidation", strategy.get("margin_mode"),
         "inactive" if lev is None or (_is_number(lev) and lev <= 1) else "refused",
         "margin mode matters only with leverage above 1")
-    for field in PROTECTION_FIELDS:
-        handled.add(field)
-        v = strategy.get(field)
-        active = _regime_block_active(v) if field.endswith("_regime") else _active(v)
-        row(field, "protection", v, "refused" if active else "inactive",
-            "protective stop geometry parity is owned by issue 1684 and is not verified" if active
-            else "no protective stop", approximable=active)
+    handled.update(STOP_ROLE_FIELDS)
+    rows.extend(_stop_rows(stop_verdict, strategy))
     handled.update(("allow_scale_in", "scale_in"))
     if strategy.get("allow_scale_in"):
         row("allow_scale_in", "execution_cost", True, "refused",
@@ -801,8 +1239,23 @@ def capability_matrix(seg: dict, capability_evidence: dict, market: dict) -> lis
         v = strategy[field]
         row(field, "unknown", v, "refused" if _active(v) else "inactive",
             "unknown active field: unknown behavior prevents strict eligibility" if _active(v) else "unknown field, inactive")
-    row("regime.enabled", "regime", regime.get("enabled"), "refused" if regime.get("enabled") else "inactive",
-        "regime classification is not modeled by this comparison" if regime.get("enabled") else "regime disabled")
+    needs_labels = bool(stop_verdict.get("needs_labels"))
+    if not regime.get("enabled"):
+        row("regime.enabled", "regime", regime.get("enabled"), "inactive", "regime disabled")
+    elif needs_labels:
+        row("regime.enabled", "regime", True, "modeled",
+            "label input only: the primary-window classification supplies the regime-owned stop label; "
+            "no entry gating is added")
+    else:
+        row("regime.enabled", "regime", True, "refused",
+            "regime classification is modeled only as the label input of a regime-owned stop")
+    timeframe = str(regime.get("timeframe") or "").strip().lower()
+    if timeframe:
+        differs = timeframe != str(market.get("interval") or "").strip().lower()
+        row("regime.timeframe", "regime", regime.get("timeframe"),
+            "refused" if differs and needs_labels else "informational",
+            "regime labels from another timeframe are not prepared by the frozen comparison"
+            if differs and needs_labels else "labels come from the frozen dataset interval")
     for field in sorted(risk):
         v = risk[field]
         if field == "warn_threshold_pct":
@@ -836,7 +1289,7 @@ def _signal_columns(frame: pd.DataFrame) -> list:
 def _frames_equal(a: pd.DataFrame, b: pd.DataFrame, cols: list) -> bool:
     for c in cols:
         x, y = a[c], b[c]
-        if x.dtype == object or y.dtype == object:
+        if not (pd.api.types.is_numeric_dtype(x) and pd.api.types.is_numeric_dtype(y)):
             if not x.astype(str).equals(y.astype(str)):
                 return False
         elif not np.array_equal(x.to_numpy(dtype=float), y.to_numpy(dtype=float), equal_nan=True):
@@ -916,9 +1369,21 @@ def prepare_market(manifest_path: str, manifest_sha: str, dataset_key: str, wind
     return out
 
 
-def market_strategy_checks(market: dict, name: str, params: dict, direction: str, invert: bool,
-                           needs_oi: bool, has_close: bool) -> dict:
+def _with_stop_inputs(frame: pd.DataFrame, atr: bool, atr_method: str, labels: Optional[dict]) -> pd.DataFrame:
     from atr import ensure_atr_indicator
+    frame = frame.copy()
+    if atr:
+        frame = ensure_atr_indicator(frame, method=atr_method)
+    if labels is not None:
+        from regime import ensure_regime_columns
+        ensure_regime_columns(frame, period=labels["period"], adx_threshold=labels["adx_threshold"],
+                              windows_spec=labels["windows_spec"])
+    return frame
+
+
+def market_strategy_checks(market: dict, name: str, params: dict, direction: str, invert: bool,
+                           needs_oi: bool, has_close: bool, atr_method: str = "simple",
+                           stop_needs_atr: bool = False, labels: Optional[dict] = None) -> dict:
     from registry_loader import load_registry
     reg = load_registry("futures")
     manifest, dataset, win = market["manifest"], market["dataset"], market["window"]
@@ -952,20 +1417,26 @@ def market_strategy_checks(market: dict, name: str, params: dict, direction: str
             out["refusals"].append({"reason": "market_observations_incomplete",
                                     "detail": "recorded observations are stale, gapped or missing at a decision cutoff"
                                     if invalid else "the strategy reports no per-bar observation validity"})
-    if has_close:
-        signals = ensure_atr_indicator(signals)
+    with_atr = has_close or stop_needs_atr
+    signals = _with_stop_inputs(signals, with_atr, atr_method, labels)
     warm = manifest["warmup_bars"]
     trim = warm // 3
     cols = _signal_columns(signals)
+    if stop_needs_atr:
+        cols.append("atr")
+    if labels is not None:
+        cols.append("regime")
     stable = True
     if trim > 0:
-        trimmed = reg.apply_strategy(name, frame.iloc[trim:].copy(), p)
+        trimmed = _with_stop_inputs(reg.apply_strategy(name, frame.iloc[trim:].copy(), p), with_atr,
+                                    atr_method, labels)
         scored_full = om.slice_window(signals, win)
         scored_trim = om.slice_window(trimmed, win)
         stable = len(scored_full) == len(scored_trim) and _frames_equal(scored_full, scored_trim, cols)
     out["checks"]["indicator_history"] = {
         "ok": bool(stable), "trimmed_warmup_bars": trim, "compared_columns": cols,
-        "rule": "scored-window decisions are identical when the first third of warm-up is removed",
+        "rule": "scored-window decisions, and the ATR and regime labels a stop owner reads, are identical "
+                "when the first third of warm-up is removed",
     }
     if not stable:
         out["refusals"].append({"reason": "market_indicator_history_insufficient",
@@ -977,23 +1448,6 @@ def market_strategy_checks(market: dict, name: str, params: dict, direction: str
     out["pending_decision"] = pending
     out["signals"] = signals
     return out
-
-
-def _live_stop_kwargs(stops: dict, leverage) -> dict:
-    from run_backtest import live_stop_engine_inputs
-    raw = dict(stops, leverage=leverage)
-    resolved = dict(stops)
-    if _is_number(leverage) and leverage > 0:
-        resolved["leverage"] = leverage
-        lev = leverage_evidence(leverage, "config", True)
-    else:
-        resolved["leverage"] = 1.0
-        lev = {"status": "unverified", "source": "default", "value": 1.0}
-    kwargs, context = live_stop_engine_inputs(
-        resolved, raw_fields=stop_raw_fields(raw), source=STOP_UNITS_LIVE_CONFIG, leverage=lev)
-    kwargs["capability_context"] = context
-    kwargs["stop_platform"] = "hyperliquid"
-    return kwargs
 
 
 def run_simulation(market: dict, signals: pd.DataFrame, plan: dict) -> dict:
@@ -1015,23 +1469,30 @@ def run_simulation(market: dict, signals: pd.DataFrame, plan: dict) -> dict:
         kwargs["slippage_pct"] = spec["half_spread_pct"] + spec["slippage_pct"]
         cost_model = {"kind": "flat_taker_fee_and_adverse_price",
                       "commission_pct": kwargs["commission_pct"], "slippage_pct": kwargs["slippage_pct"]}
-    stops = {key: plan[key] for key in ("stop_loss_atr_mult", "stop_loss_pct", "trailing_stop_atr_mult",
-                                        "trailing_stop_pct", "stop_loss_margin_pct") if plan.get(key)}
-    if stops:
-        kwargs.update(_live_stop_kwargs(stops, plan.get("leverage")))
+    stop = plan.get("stop") or {}
+    if stop.get("kwargs"):
+        kwargs.update(stop["kwargs"])
+        if stop.get("needs_labels"):
+            labels = stop["labels"]
+            kwargs.update(regime_enabled=True, regime_period=labels["period"],
+                          regime_adx_threshold=labels["adx_threshold"],
+                          regime_windows_spec=labels["windows_spec"])
     if plan.get("allow_scale_in"):
         kwargs["allow_scale_in"] = True
         kwargs["scale_in"] = plan.get("scale_in")
+    stop_events: list = []
     bt = Backtester(**kwargs)
     res = bt.run(scored, strategy_name=plan["open_name"], symbol=dataset["symbol"],
                  timeframe=manifest["interval"], params=plan["params"], save=False,
-                 indicator_frame=signals, record_events=True)
+                 indicator_frame=signals, record_events=True, stop_observer=stop_events.append)
     env = res["ledger_events"]
     if env.get("schema") != LEDGER_EVENTS_SCHEMA or env.get("schema_version") != LEDGER_EVENTS_SCHEMA_VERSION:
         raise RuntimeError("simulator event envelope has an unexpected schema")
     return {"envelope": env, "close_validation": res.get("close_validation"),
             "execution": res.get("execution"), "cost_model": cost_model,
-            "interval_ms": manifest["interval_ms"]}
+            "interval_ms": manifest["interval_ms"], "stop_events": stop_events,
+            "stop_owner": bt._stop_owner,
+            "stop_warmup_skipped_entries": res.get("stop_warmup_skipped_entries", 0)}
 
 
 def normalize_simulated(env: dict) -> dict:
@@ -1209,6 +1670,111 @@ def reconcile_pair(bp: dict, sp: dict, step_s: float, tol: dict) -> dict:
         "cause": None,
     })
     return out
+
+
+def _arm_timestamp(value) -> Optional[str]:
+    try:
+        ts = pd.Timestamp(value)
+    except (ValueError, TypeError):
+        return None
+    ts = ts.tz_localize("UTC") if ts.tz is None else ts.tz_convert("UTC")
+    return _iso(ts)
+
+
+def map_first_arms(simulated: dict, stop_events: list) -> dict:
+    arms = [e for e in stop_events if e.get("event") == "arm"]
+    opens = []
+    for sp in simulated["positions"]:
+        first = sp["_events"][0] if sp["_events"] else None
+        if first is not None and first["kind"] == "open":
+            opens.append((sp["position_local_id"], first))
+    opens.sort(key=lambda o: o[1]["seq"])
+    keys = {}
+    for _, ev in opens:
+        k = (ev["bar_timestamp"], ev["side"])
+        keys[k] = keys.get(k, 0) + 1
+    mapped, unmapped = {}, {}
+    if len(arms) != len(opens):
+        for pid, _ in opens:
+            unmapped[pid] = (f"{len(arms)} first-arm events for {len(opens)} simulated openings; the arm "
+                             "sequence cannot be mapped one to one")
+        return {"mapped": mapped, "unmapped": unmapped, "arm_events": len(arms)}
+    for (pid, ev), arm in zip(opens, arms):
+        if keys[(ev["bar_timestamp"], ev["side"])] > 1:
+            unmapped[pid] = "more than one simulated opening shares this bar and side"
+        elif _arm_timestamp(arm.get("date")) != ev["bar_timestamp"] or arm.get("side") != ev["side"]:
+            unmapped[pid] = "the arm in sequence does not have the opening's bar time and side"
+        else:
+            mapped[pid] = arm
+    return {"mapped": mapped, "unmapped": unmapped, "arm_events": len(arms)}
+
+
+def _stamp_value(item: dict):
+    return item["value"] if item["status"] == "available" else None
+
+
+def compare_initial_stop_geometry(pairs: list, arm_map: dict, attestations: dict, tol: dict) -> dict:
+    results = []
+    used = set()
+    for bp, sp in pairs:
+        opening = _booked_opening(bp)
+        initial = (opening is not None and opening["kind"] == "non_close"
+                   and not any(e["relation"] == "before" for e in bp["_events"]))
+        keys = {e["event_key"] for e in bp["_events"]}
+        attested = sorted(k for k in attestations if k in keys and _provenance_verified(attestations[k]))
+        used.update(k for k in attestations if k in keys)
+        b_trigger = _stamp_value(opening["_stop_trigger"]) if opening is not None else None
+        later = [e["event_key"] for e in bp["_events"]
+                 if e is not opening and _stamp_value(e["_stop_trigger"]) is not None]
+        arm = arm_map["mapped"].get(sp["position_local_id"])
+        res = {
+            "booked_position_id": bp["position_id"], "simulated_position_id": sp["position_local_id"],
+            "booked_event_key": opening["event_key"] if opening is not None else None,
+            "booked_trigger": b_trigger,
+            "booked_entry_atr": _stamp_value(opening["_entry_atr"]) if opening is not None else None,
+            "simulated_trigger": arm.get("trigger") if arm else None,
+            "simulated_entry_atr": arm.get("entry_atr") if arm else None,
+            "simulated_geometry": arm.get("geometry") if arm else None,
+            "simulated_owner": arm.get("owner") if arm else None,
+            "later_stamps": later, "attested_event_keys": attested, "relative_delta": None,
+        }
+        foreign = [k for k in attested if opening is None or k != opening["event_key"]]
+        if not initial:
+            if b_trigger is not None or later or attested:
+                res.update(status="unverified", reason="the booked opening inside the interval is not the "
+                                                       "position's initial entry; a later stamp cannot establish "
+                                                       "the first arm")
+            else:
+                res.update(status="unavailable", reason="no initial-entry row inside the interval")
+        elif foreign:
+            res.update(status="unverified", reason=f"attested rows {foreign} are not the initial-entry row; a close "
+                                                   "or scale-in stamp can carry later geometry")
+        elif b_trigger is None:
+            res.update(status="unavailable", reason="the initial-entry row has no recorded stop trigger")
+        elif not attested:
+            res.update(status="unverified", reason="the initial-entry stop trigger has no verified "
+                                                   "initial_stop_geometry_evidence entry")
+        elif arm is None:
+            res.update(status="unverified", reason=arm_map["unmapped"].get(
+                sp["position_local_id"], "no simulated first arm maps to this position"))
+        else:
+            s_trigger = float(arm.get("trigger") or 0.0)
+            rel = abs(b_trigger - s_trigger) / s_trigger if s_trigger > 0 else math.inf
+            ok = rel <= tol["price_relative"]
+            res.update(status="agreement" if ok else "mismatch",
+                       relative_delta=rel if math.isfinite(rel) else None,
+                       reason=None if ok else "booked initial stop trigger differs from the simulated first arm "
+                                              "beyond the price tolerance")
+        results.append(res)
+    counts = {status: sum(1 for r in results if r["status"] == status) for status in GEOMETRY_STATUSES}
+    return {
+        "rule": "the booked initial-entry stop_loss_trigger_px, with verified initial-entry provenance, is "
+                "compared with the simulated first arm mapped by sequence, bar time and side; missing geometry "
+                "is unavailable and is never agreement",
+        "positions": results, "counts": counts,
+        "unused_attestations": sorted(k for k in attestations if k not in used),
+        "arm_mapping": {"arm_events": arm_map["arm_events"], "unmapped": arm_map["unmapped"]},
+    }
 
 
 BOOKED_SECTION_DISPOSITIONS = {
@@ -1425,16 +1991,31 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
         coin = args[1]
     else:
         coin = market_ctx["coin"]
-    matrix = capability_matrix(seg, cin.get("capability_evidence", {}), market_ctx) if seg else []
+    input_version = parsed["input_version"]
+    stop_verdict = (resolve_historical_stops(seg, input_version, mode) if seg else
+                    {"applicable": False, "status": "not_applicable", "refusals": [], "owner": None,
+                     "needs_labels": False, "kwargs": None, "labels": None, "required_inputs": [],
+                     "input_version": input_version, "basis": None, "resolved_live_units": None,
+                     "capability_context": None, "close_refs": None})
+    matrix = capability_matrix(seg, cin.get("capability_evidence", {}), market_ctx, stop_verdict) if seg else []
     cap_refusals, cap_evidence = _decision_class(matrix)
     manual = strategy.get("type") == "manual"
     approx_ok = mode == COMPARISON_MODE_APPROXIMATE
     for r in cap_refusals:
+        if r["category"] == "protection":
+            continue
         if approx_ok and r["approximable"]:
             approximations.append({"feature": r["field"], "category": r["category"],
                                    "assumption": r["reason"], "effect": "simulated with an unverified substitute"})
         else:
             refusals.append({"reason": f"capability_{r['category']}", "field": r["field"], "detail": r["reason"]})
+    for r in stop_verdict["refusals"]:
+        if approx_ok and r["approximable"]:
+            approximations.append({"feature": r["field"], "category": "protection",
+                                   "assumption": f"{r['reason']}: {r['detail']}",
+                                   "effect": "simulated with the declared, unverified stop input"})
+        else:
+            refusals.append({k: v for k, v in r.items() if k != "approximable"})
 
     booked = normalize_booked(doc, start, end, coin or "",
                               "manual owner: no simulator signal model; events are not comparable" if manual else None)
@@ -1452,7 +2033,10 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
         try:
             strategy_checks = market_strategy_checks(
                 market, open_name, open_ref.get("params") or {}, direction, invert,
-                open_name in market_ctx["observation_input_strategies"], has_close)
+                open_name in market_ctx["observation_input_strategies"], has_close,
+                atr_method=strategy.get("atr_method") or "simple",
+                stop_needs_atr=stop_verdict.get("owner") in STOP_OWNERS_NEEDING_ATR,
+                labels=stop_verdict.get("labels") if stop_verdict.get("needs_labels") else None)
         except ValueError as exc:
             refusals.append({"reason": "strategy_rejected_inputs", "detail": f"{open_name}: {exc}"})
         else:
@@ -1486,7 +2070,8 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
         sim_status["reasons"].append("strict comparison refused before simulation; no substitute is simulated")
     elif approx_ok and any(r["reason"] in ("input_binding", "seeded_inventory_unsupported",
                                            "configuration_transition_unsupported", "market_input_integrity",
-                                           "market_manifest_hash_mismatch") or r["reason"].startswith("capability_")
+                                           "market_manifest_hash_mismatch") + STOP_UNAPPROXIMABLE_REASONS
+                           or r["reason"].startswith("capability_")
                            for r in refusals):
         can_sim = False
         sim_status["reasons"].append("an unapproximable refusal blocks simulation")
@@ -1501,18 +2086,15 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
                                    "effect": "fills are not lot-floored or minimum-checked"})
         plan = {
             "open_name": open_name, "params": dict(open_ref.get("params") or {}),
-            "close_refs": [strategy["close_strategy"]] if has_close else None,
+            "close_refs": ((copy.deepcopy(stop_verdict["close_refs"]) if stop_verdict.get("close_refs") is not None
+                            else [strategy["close_strategy"]]) if has_close else None),
             "direction": direction, "invert_signal": invert,
             "atr_method": strategy.get("atr_method") or "simple",
             "comparison_mode": mode, "initial_cash": float(cin["starting_state"]["cash_usd"]["value"]),
             "execution_spec": use_spec,
+            "stop": stop_verdict,
         }
         if approx_ok:
-            for key in ("stop_loss_atr_mult", "stop_loss_pct", "trailing_stop_atr_mult", "trailing_stop_pct",
-                        "stop_loss_margin_pct"):
-                if _active(strategy.get(key)):
-                    plan[key] = strategy[key]
-            plan["leverage"] = strategy.get("leverage")
             if strategy.get("allow_scale_in"):
                 plan["allow_scale_in"] = True
                 plan["scale_in"] = strategy.get("scale_in")
@@ -1540,6 +2122,7 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
     simulated = normalize_simulated(sim["envelope"]) if sim else None
     step_s = (sim["interval_ms"] / 1000.0) if sim else 0.0
     matched, ambiguous, unmatched_b, unmatched_s, weak = [], [], [], [], []
+    geometry_pairs = []
     booked_disp = dict(booked["dispositions"])
     sim_disp = dict(simulated["dispositions"]) if simulated else {}
     if simulated is not None:
@@ -1553,6 +2136,7 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
             bp, sp = m["bps"][bi], m["sps"][si]
             pair = reconcile_pair(bp, sp, step_s, tol)
             matched.append(pair)
+            geometry_pairs.append((bp, sp, pair))
             comp_b = {c["booked_event_key"] for c in pair["components"]}
             comp_s = {c["simulated_event_id"] for c in pair["components"]}
             for k in bp["in_interval_event_keys"]:
@@ -1601,6 +2185,20 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
                                     "opened_qty": p["opened_qty"], "closed_qty": p["closed_qty"],
                                     "residual_qty": p["residual_qty"], "ledger_delta": p["ledger_delta"],
                                     "weak_candidates": [], "cause": "simulation_not_run"})
+
+    initial_geometry = None
+    if simulated is not None:
+        arm_map = map_first_arms(simulated, sim["stop_events"])
+        initial_geometry = compare_initial_stop_geometry(
+            [(bp, sp) for bp, sp, _ in geometry_pairs], arm_map,
+            cin.get("initial_stop_geometry_evidence") or {}, tol)
+        for (_, _, pair), res in zip(geometry_pairs, initial_geometry["positions"]):
+            pair["initial_stop_geometry"] = res
+            if res["status"] == "mismatch":
+                pair["within_tolerance"] = False
+            elif res["status"] == "unverified":
+                unverified.append({"input": "initial_stop_geometry", "reason": res["reason"],
+                                   "booked_position_id": res["booked_position_id"]})
 
     pos_by_id = {p["position_id"]: p for p in booked["positions"]}
     booked_sections = {
@@ -1673,6 +2271,8 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
         "no_unresolved_in_interval": not booked["unresolved"] and not in_interval_out,
         "matched_within_tolerance": all(p["within_tolerance"] for p in matched),
         "strategy_totals_within_tolerance": bool(totals_ok),
+        "initial_stop_geometry_consistent": initial_geometry is None or all(
+            r["status"] in ("agreement", "unavailable") for r in initial_geometry["positions"]),
     }
     strict_success = all(strict_checks.values())
     if strict_success:
@@ -1712,7 +2312,7 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
             "snapshot_files": doc["snapshot_files"],
             "selection": doc["selection"],
             "comparison_input_sha256": _sha256(input_bytes),
-            "comparison_input_schema": [INPUT_SCHEMA, INPUT_SCHEMA_VERSION],
+            "comparison_input_schema": [INPUT_SCHEMA, input_version],
             "input_binding": binding,
             "market": market.get("provenance"),
             "simulator_events_schema": [LEDGER_EVENTS_SCHEMA, LEDGER_EVENTS_SCHEMA_VERSION],
@@ -1773,6 +2373,25 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
             "dispositions": sim_disp,
         },
         "simulation": sim_status,
+        "stops": {
+            "input_version": input_version,
+            "basis": stop_verdict.get("basis"),
+            "applicable": stop_verdict["applicable"],
+            "status": stop_verdict["status"],
+            "owner": stop_verdict.get("owner"),
+            "required_inputs": stop_verdict.get("required_inputs"),
+            "refusals": [{k: v for k, v in r.items()} for r in stop_verdict["refusals"]],
+            "resolved_live_units": stop_verdict.get("resolved_live_units"),
+            "engine_inputs": (_jsonable_stop_inputs(stop_verdict["kwargs"])
+                              if stop_verdict.get("kwargs") else None),
+            "capability_context": stop_verdict.get("capability_context"),
+            "labels": stop_verdict.get("labels") if stop_verdict.get("needs_labels") else None,
+            "simulated_owner": sim["stop_owner"] if sim else None,
+            "warmup_skipped_entries": sim["stop_warmup_skipped_entries"] if sim else None,
+            "arm_events": ([{k: _json_safe(v) for k, v in e.items()} for e in sim["stop_events"]
+                            if e.get("event") == "arm"] if sim else None),
+        },
+        "initial_stop_geometry": initial_geometry,
         "matching": {
             "matched": matched,
             "ambiguous": ambiguous,
@@ -1797,6 +2416,16 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
         "conservation": cons,
     }
     return report
+
+
+def _json_safe(value):
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, (np.floating,)):
+        return float(value) if math.isfinite(float(value)) else None
+    if isinstance(value, (np.integer,)):
+        return int(value)
+    return value
 
 
 def _json_default(obj):
