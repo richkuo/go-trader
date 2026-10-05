@@ -168,6 +168,7 @@ var (
 	ciRunPattern  = regexp.MustCompile(`-run '([^']*)'`)
 	ciSuiteInvoke = regexp.MustCompile(`bash scripts/(test_[A-Za-z0-9_.-]+\.sh)`)
 	ciOmissionMsg = regexp.MustCompile(`^\s*echo "((?:NOTE|note): [^"]*)"`)
+	ciGateEcho    = regexp.MustCompile("^echo \"[^\"$`\\\\]*\"$")
 )
 
 func parseCIWorkflowJobs(t *testing.T, path string) map[string]*ciWorkflowJob {
@@ -346,16 +347,40 @@ func TestShellSuiteCIWiring(t *testing.T) {
 	for _, step := range pyJob.logical {
 		pipefail := false
 		teeLog := ""
+		gateOpen := false
+		gateExits := false
 		for _, line := range step {
 			matches := ciRunPattern.FindAllStringSubmatch(line, -1)
 			if strings.Count(line, "-run") != len(matches) {
 				t.Fatalf("go-python-integration has a -run flag this guard cannot read: %s", line)
 			}
+			if gateOpen {
+				switch {
+				case line == "fi":
+					if !gateExits {
+						t.Fatal("the go-python-integration SKIP gate must run exit 1 before fi, or a --- SKIP line does not fail the step")
+					}
+					gateOpen = false
+					sawSkipGate = true
+				case line == "exit 1":
+					gateExits = true
+				case ciGateEcho.MatchString(line):
+				default:
+					t.Fatalf("the go-python-integration SKIP gate may hold only plain echo lines and exit 1 before fi: %s", line)
+				}
+				continue
+			}
 			if line == "set -o pipefail" {
 				pipefail = true
 			}
-			if teeLog != "" && strings.Contains(line, "grep") && strings.Contains(line, "'--- SKIP' "+teeLog) {
-				sawSkipGate = true
+			if teeLog != "" && strings.Contains(line, "--- SKIP") {
+				want := "if grep -n -- '--- SKIP' " + teeLog + "; then"
+				if line != want {
+					t.Fatalf("the go-python-integration SKIP gate must be exactly %q: %s", want, line)
+				}
+				gateOpen = true
+				gateExits = false
+				continue
 			}
 			if len(matches) == 0 {
 				continue
@@ -378,6 +403,9 @@ func TestShellSuiteCIWiring(t *testing.T) {
 			if err != nil {
 				t.Fatalf("go-python-integration -run regex does not compile: %v", err)
 			}
+		}
+		if gateOpen {
+			t.Fatal("the go-python-integration SKIP gate has no closing fi")
 		}
 	}
 	if runRegex == nil {
