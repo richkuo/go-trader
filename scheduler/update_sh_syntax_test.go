@@ -1,29 +1,502 @@
 package main
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"sort"
+	"strings"
 	"testing"
 )
 
-func TestUpdateShellScriptSyntax(t *testing.T) {
-	t.Parallel()
+type shellSuiteWiring struct {
+	goTest       string
+	goTestFile   string
+	ciStep       bool
+	sudo         bool
+	manualReason string
+	marker       string
+	requireEnv   []string
+	forbidden    []string
+	permitted    map[string]string
+}
+
+var shellSuiteWirings = map[string]shellSuiteWiring{
+	"test_merge_paper_instance.sh": {
+		goTest:     "TestMergePaperInstance",
+		goTestFile: "merge_paper_instance_test.go",
+		marker:     "OK: merge-paper-instance tests passed",
+	},
+	"test_update_helpers.sh": {
+		goTest:     "TestUpdateHelpersEnvfileParsing790",
+		goTestFile: "update_sh_pyintegration_test.go",
+		marker:     "OK: update_helpers tests passed",
+		forbidden: []string{
+			"note: GO_TRADER_BIN unset; effective-cadence drift case skipped",
+			"note: this git does not simulate another owner; the trust and refusal cases are skipped",
+			"note: git not installed; update_git cases skipped",
+			"exists; the uv-missing case is skipped",
+			"note: go or git not installed; the export build case is skipped",
+		},
+	},
+	"test_observation_replay.sh": {
+		ciStep: true,
+		marker: "PASS: observation replay harness (sealed payload decisions match recording replay; tampered and truncated recordings refused)",
+	},
+	"test_ledger_export.sh": {
+		ciStep:     true,
+		marker:     "PASS: ledger capture and export (active-WAL capture without source effects, version 1 export contract, every refusal leaves inputs unchanged)",
+		requireEnv: []string{"LEDGER_EXPORT_REQUIRE_CAPTURE", "LEDGER_EXPORT_REQUIRE_STRACE"},
+		forbidden: []string{
+			"NOTE: strace is not installed; the syscall audit of capture is skipped",
+			"NOTE: unshare --user is unavailable here; the shared-mount-namespace worker refusal in a new user namespace is not checked",
+			"NOTE: running as root; the permission-denied refusal is not exercised",
+		},
+	},
+	"test_merge_paper_service_fixture.sh": {
+		ciStep:     true,
+		sudo:       true,
+		marker:     "OK: merge-paper service fixture passed (exit 79 for the second start)",
+		requireEnv: []string{"MERGE_PAPER_SERVICE_FIXTURE_REQUIRE_RUN"},
+	},
+	"test_migrate_service_layout_fixture.sh": {
+		ciStep:     true,
+		sudo:       true,
+		marker:     "OK: migrate-service-layout fixture passed (refuse plan confirm apply latch conflict resume signal stages kill fold update newtarget)",
+		requireEnv: []string{"MIGRATE_SERVICE_LAYOUT_FIXTURE_REQUIRE_RUN"},
+		forbidden: []string{
+			"note: this host has a system uv; the root-private uv refusals are skipped",
+		},
+	},
+}
+
+func assertShellSuiteOutput(t *testing.T, script string, out []byte) {
+	t.Helper()
+	w, ok := shellSuiteWirings[script]
+	if !ok {
+		t.Fatalf("scripts/%s has no declared wiring in shellSuiteWirings", script)
+	}
+	sawMarker := false
+	var problems []string
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimRight(line, "\r")
+		if line == w.marker {
+			sawMarker = true
+		}
+		if strings.HasPrefix(line, "SKIP:") {
+			problems = append(problems, "SKIP line: "+line)
+		}
+		for _, text := range w.forbidden {
+			if strings.Contains(line, text) {
+				problems = append(problems, "omission not on the permitted list: "+line)
+			}
+		}
+		for text, reason := range w.permitted {
+			if strings.Contains(line, text) {
+				t.Logf("permitted omission (%s): %s", reason, line)
+			}
+		}
+	}
+	if !sawMarker {
+		problems = append(problems, "missing success line: "+w.marker)
+	}
+	if len(problems) > 0 {
+		t.Fatalf("scripts/%s did not prove its criteria:\n%s\n--- output:\n%s", script, strings.Join(problems, "\n"), out)
+	}
+}
+
+func shellSuiteRepoRoot(t *testing.T) (string, string) {
+	t.Helper()
 	_, thisFile, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("runtime.Caller failed")
 	}
 	schedDir := filepath.Dir(thisFile)
-	repoRoot := filepath.Join(schedDir, "..")
+	return schedDir, filepath.Join(schedDir, "..")
+}
+
+func TestUpdateShellScriptSyntax(t *testing.T) {
+	t.Parallel()
+	_, repoRoot := shellSuiteRepoRoot(t)
+	names := map[string]struct{}{}
 	for _, name := range []string{
 		"update.sh", "update_helpers.sh", "create-run-sh.sh", "test_update_helpers.sh", "migrate-config-out-of-tree.sh",
 		"check-live-paper-config-drift.sh", "merge-paper-instance.sh", "test_merge_paper_instance.sh", "test_merge_paper_service_fixture.sh",
-		"shared-feed-convert.sh", "feed-parity.sh", "feed-source-compare.sh",
+		"shared-feed-convert.sh", "feed-parity.sh", "feed-source-compare.sh", "run_ci_shell_suite.sh",
 	} {
+		names[name] = struct{}{}
+	}
+	suites, err := filepath.Glob(filepath.Join(repoRoot, "scripts", "test_*.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(suites) == 0 {
+		t.Fatal("found no scripts/test_*.sh suites")
+	}
+	for _, suite := range suites {
+		names[filepath.Base(suite)] = struct{}{}
+	}
+	sorted := make([]string, 0, len(names))
+	for name := range names {
+		sorted = append(sorted, name)
+	}
+	sort.Strings(sorted)
+	for _, name := range sorted {
 		script := filepath.Join(repoRoot, "scripts", name)
 		out, err := exec.Command("bash", "-n", script).CombinedOutput()
 		if err != nil {
 			t.Fatalf("bash -n scripts/%s: %v\n%s", name, err, out)
+		}
+	}
+}
+
+type ciWorkflowJob struct {
+	raw     []string
+	logical [][]string
+}
+
+var (
+	ciJobHeader   = regexp.MustCompile(`^  ([A-Za-z0-9_-]+):\s*$`)
+	ciRunKey      = regexp.MustCompile(`^(\s*)(- )?run:\s*(.*)$`)
+	ciStepIf      = regexp.MustCompile(`^\s*(- )?if:`)
+	ciRunPattern  = regexp.MustCompile(`-run '([^']*)'`)
+	ciSuiteInvoke = regexp.MustCompile(`bash scripts/(test_[A-Za-z0-9_.-]+\.sh)`)
+	ciOmissionMsg = regexp.MustCompile(`^\s*echo "((?:NOTE|note): [^"]*)"`)
+)
+
+func parseCIWorkflowJobs(t *testing.T, path string) map[string]*ciWorkflowJob {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	lines := strings.Split(string(data), "\n")
+	jobsAt := -1
+	for i, line := range lines {
+		if line == "jobs:" {
+			if jobsAt >= 0 {
+				t.Fatalf("%s has more than one top-level jobs: key", path)
+			}
+			jobsAt = i
+		}
+	}
+	if jobsAt < 0 {
+		t.Fatalf("%s has no top-level jobs: key", path)
+	}
+	jobs := map[string]*ciWorkflowJob{}
+	var cur *ciWorkflowJob
+	for _, line := range lines[jobsAt+1:] {
+		if line != "" && line[0] != ' ' {
+			break
+		}
+		if m := ciJobHeader.FindStringSubmatch(line); m != nil {
+			if _, dup := jobs[m[1]]; dup {
+				t.Fatalf("%s declares job %s twice", path, m[1])
+			}
+			cur = &ciWorkflowJob{}
+			jobs[m[1]] = cur
+			continue
+		}
+		if cur != nil {
+			cur.raw = append(cur.raw, line)
+		}
+	}
+	for name, job := range jobs {
+		for i := 0; i < len(job.raw); i++ {
+			m := ciRunKey.FindStringSubmatch(job.raw[i])
+			if m == nil {
+				continue
+			}
+			keyCol := len(m[1]) + len(m[2])
+			value := strings.TrimSpace(m[3])
+			var body []string
+			switch value {
+			case "|", "|-":
+				for i+1 < len(job.raw) {
+					next := job.raw[i+1]
+					if strings.TrimSpace(next) != "" && len(next)-len(strings.TrimLeft(next, " ")) <= keyCol {
+						break
+					}
+					body = append(body, strings.TrimSpace(next))
+					i++
+				}
+			case "":
+				t.Fatalf("job %s has an empty run: value", name)
+			default:
+				if strings.ContainsAny(value[:1], `|>'"`) {
+					t.Fatalf("job %s uses a run: form this guard cannot read (%s); use a plain value or a | block", name, value)
+				}
+				body = []string{value}
+			}
+			job.logical = append(job.logical, ciLogicalLines(body))
+		}
+	}
+	return jobs
+}
+
+func ciLogicalLines(body []string) []string {
+	var out []string
+	pending := ""
+	for _, line := range body {
+		if strings.HasSuffix(line, `\`) {
+			pending += strings.TrimSuffix(line, `\`)
+			continue
+		}
+		line = pending + line
+		pending = ""
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		out = append(out, strings.Join(strings.Fields(trimmed), " "))
+	}
+	if strings.TrimSpace(pending) != "" {
+		out = append(out, strings.Join(strings.Fields(pending), " "))
+	}
+	return out
+}
+
+func requireCIJob(t *testing.T, jobs map[string]*ciWorkflowJob, name string) *ciWorkflowJob {
+	t.Helper()
+	job, ok := jobs[name]
+	if !ok {
+		t.Fatalf(".github/workflows/ci.yml has no %s job", name)
+	}
+	for _, line := range job.raw {
+		if strings.Contains(line, "continue-on-error") {
+			t.Fatalf("job %s sets continue-on-error, so a failing suite would not fail CI", name)
+		}
+		if ciStepIf.MatchString(line) {
+			t.Fatalf("job %s has a conditional (%s), so a suite step might not run", name, strings.TrimSpace(line))
+		}
+	}
+	if len(job.logical) == 0 {
+		t.Fatalf("job %s has no run: steps", name)
+	}
+	return job
+}
+
+func goTestFuncBody(t *testing.T, path, name string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	src := string(data)
+	if !strings.HasPrefix(src, "//go:build pyintegration\n") {
+		t.Fatalf("%s does not carry the pyintegration build tag the go-python-integration job passes", filepath.Base(path))
+	}
+	decl := "\nfunc " + name + "(t *testing.T) {\n"
+	if strings.Count(src, decl) != 1 {
+		t.Fatalf("%s does not declare %s exactly once", filepath.Base(path), name)
+	}
+	body := src[strings.Index(src, decl)+len(decl):]
+	end := strings.Index(body, "\n}\n")
+	if end < 0 {
+		t.Fatalf("cannot find the end of %s in %s", name, filepath.Base(path))
+	}
+	return body[:end]
+}
+
+func TestShellSuiteCIWiring(t *testing.T) {
+	t.Parallel()
+	schedDir, repoRoot := shellSuiteRepoRoot(t)
+	suites, err := filepath.Glob(filepath.Join(repoRoot, "scripts", "test_*.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	present := map[string]bool{}
+	for _, suite := range suites {
+		present[filepath.Base(suite)] = true
+	}
+	var names []string
+	for name := range present {
+		names = append(names, name)
+	}
+	for name := range shellSuiteWirings {
+		if !present[name] {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+
+	jobs := parseCIWorkflowJobs(t, filepath.Join(repoRoot, ".github", "workflows", "ci.yml"))
+	pyJob := requireCIJob(t, jobs, "go-python-integration")
+	shellJob := requireCIJob(t, jobs, "shell-suites")
+
+	var runRegex *regexp.Regexp
+	sawSkipGate := false
+	for _, step := range pyJob.logical {
+		for _, line := range step {
+			matches := ciRunPattern.FindAllStringSubmatch(line, -1)
+			if strings.Count(line, "-run") != len(matches) {
+				t.Fatalf("go-python-integration has a -run flag this guard cannot read: %s", line)
+			}
+			if strings.Contains(line, "--- SKIP") && strings.Contains(line, "grep") {
+				sawSkipGate = true
+			}
+			if len(matches) == 0 {
+				continue
+			}
+			if runRegex != nil || len(matches) != 1 {
+				t.Fatal("go-python-integration must have exactly one -run '...' argument")
+			}
+			if !strings.HasPrefix(line, "go -C scheduler test ") || !strings.Contains(line, " -tags pyintegration ") || !strings.Contains(line, " -v ") {
+				t.Fatalf("the go-python-integration -run line must be a verbose pyintegration go test: %s", line)
+			}
+			runRegex, err = regexp.Compile(matches[0][1])
+			if err != nil {
+				t.Fatalf("go-python-integration -run regex does not compile: %v", err)
+			}
+		}
+	}
+	if runRegex == nil {
+		t.Fatal("go-python-integration has no -run '...' argument")
+	}
+	if !sawSkipGate {
+		t.Fatal("go-python-integration does not fail when a selected test reports --- SKIP")
+	}
+
+	invoked := map[string]int{}
+	for _, step := range shellJob.logical {
+		for _, line := range step {
+			all := strings.Count(line, "scripts/test_")
+			found := ciSuiteInvoke.FindAllStringSubmatch(line, -1)
+			if all == 0 {
+				continue
+			}
+			if all != 1 || len(found) != 1 {
+				t.Fatalf("shell-suites must invoke one suite per command as bash scripts/test_<name>.sh: %s", line)
+			}
+			script := found[0][1]
+			invoked[script]++
+			w, ok := shellSuiteWirings[script]
+			if !ok || !w.ciStep {
+				t.Fatalf("shell-suites runs scripts/%s, which is not declared as a shell-suites step", script)
+			}
+			if strings.Contains(line, "#") {
+				t.Fatalf("the shell-suites command for scripts/%s contains #, so part of it may be a comment: %s", script, line)
+			}
+			const runner = "bash scripts/run_ci_shell_suite.sh "
+			if !strings.HasPrefix(line, runner) {
+				t.Fatalf("shell-suites must run scripts/%s through scripts/run_ci_shell_suite.sh: %s", script, line)
+			}
+			sep := strings.Index(line, " -- ")
+			if sep < 0 || strings.Count(line, " -- ") != 1 {
+				t.Fatalf("shell-suites command for scripts/%s must have one -- separator: %s", script, line)
+			}
+			opts, cmd := line[len(runner):sep], line[sep+len(" -- "):]
+			if !strings.HasSuffix(cmd, "bash scripts/"+script) {
+				t.Fatalf("shell-suites command for scripts/%s must end with bash scripts/%s: %s", script, script, cmd)
+			}
+			if w.sudo != strings.HasPrefix(cmd, "sudo env ") || (!w.sudo && strings.Contains(cmd, "sudo")) {
+				t.Fatalf("scripts/%s sudo=%v, but its shell-suites command is: %s", script, w.sudo, cmd)
+			}
+			if !strings.Contains(opts, "--marker '"+w.marker+"'") {
+				t.Fatalf("shell-suites command for scripts/%s does not require its success line %q", script, w.marker)
+			}
+			if strings.Count(opts, "--forbid '") != len(w.forbidden) {
+				t.Fatalf("shell-suites command for scripts/%s must forbid exactly its %d unpermitted omissions: %s", script, len(w.forbidden), opts)
+			}
+			for _, text := range w.forbidden {
+				if !strings.Contains(opts, "--forbid '"+text+"'") {
+					t.Fatalf("shell-suites command for scripts/%s does not forbid %q", script, text)
+				}
+			}
+			for _, env := range w.requireEnv {
+				if !strings.Contains(" "+cmd+" ", " "+env+"=1 ") {
+					t.Fatalf("shell-suites command for scripts/%s does not set %s=1", script, env)
+				}
+			}
+		}
+	}
+
+	for _, name := range names {
+		w, ok := shellSuiteWirings[name]
+		if !ok {
+			t.Errorf("scripts/%s has no declared wiring: add it to shellSuiteWirings as a Go wrapper test, a shell-suites step, or manual-only with a reason", name)
+			continue
+		}
+		if !present[name] {
+			t.Errorf("shellSuiteWirings declares scripts/%s, which does not exist", name)
+			continue
+		}
+		kinds := 0
+		if w.goTest != "" {
+			kinds++
+		}
+		if w.ciStep {
+			kinds++
+		}
+		if w.manualReason != "" {
+			kinds++
+		}
+		if kinds != 1 {
+			t.Errorf("scripts/%s must declare exactly one wiring (Go wrapper, shell-suites step, or manual-only reason)", name)
+			continue
+		}
+		if w.manualReason == "" && w.marker == "" {
+			t.Errorf("scripts/%s declares no success line", name)
+		}
+		switch {
+		case w.goTest != "":
+			if !runRegex.MatchString(w.goTest) {
+				t.Errorf("the go-python-integration -run regex does not select %s, so scripts/%s never runs", w.goTest, name)
+			}
+			body := goTestFuncBody(t, filepath.Join(schedDir, w.goTestFile), w.goTest)
+			if !strings.Contains(body, `"`+name+`"`) || !strings.Contains(body, "exec.Command(") {
+				t.Errorf("%s does not run scripts/%s", w.goTest, name)
+			}
+			if !strings.Contains(body, `assertShellSuiteOutput(t, "`+name+`", `) {
+				t.Errorf("%s does not check scripts/%s output with assertShellSuiteOutput", w.goTest, name)
+			}
+		case w.ciStep:
+			if invoked[name] != 1 {
+				t.Errorf("shell-suites runs scripts/%s %d times, want exactly once", name, invoked[name])
+			}
+		}
+
+		src, err := os.ReadFile(filepath.Join(repoRoot, "scripts", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, env := range w.requireEnv {
+			if !strings.Contains(string(src), env) {
+				t.Errorf("scripts/%s does not read %s", name, env)
+			}
+		}
+		for text, reason := range w.permitted {
+			if strings.TrimSpace(reason) == "" {
+				t.Errorf("scripts/%s permits omission %q without a reason", name, text)
+			}
+		}
+		declared := append([]string{}, w.forbidden...)
+		for text := range w.permitted {
+			declared = append(declared, text)
+		}
+		used := map[string]bool{}
+		for _, line := range strings.Split(string(src), "\n") {
+			m := ciOmissionMsg.FindStringSubmatch(line)
+			if m == nil {
+				continue
+			}
+			hits := 0
+			for _, text := range declared {
+				if strings.Contains(m[1], text) {
+					hits++
+					used[text] = true
+				}
+			}
+			if hits != 1 {
+				t.Errorf("scripts/%s omission line %q must match exactly one forbidden or permitted omission", name, m[1])
+			}
+		}
+		for _, text := range declared {
+			if !used[text] {
+				t.Errorf("scripts/%s declares omission %q, which the script never prints", name, text)
+			}
 		}
 	}
 }

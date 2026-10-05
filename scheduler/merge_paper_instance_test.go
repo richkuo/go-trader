@@ -79,9 +79,7 @@ func TestMergePaperInstance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bash %s: %v\n%s", script, err, out)
 	}
-	if !strings.Contains(string(out), "OK: merge-paper-instance tests passed") {
-		t.Fatalf("missing OK marker:\n%s", out)
-	}
+	assertShellSuiteOutput(t, "test_merge_paper_instance.sh", out)
 }
 
 func TestUpdateCanonicalDBPathMatchesScheduler(t *testing.T) {

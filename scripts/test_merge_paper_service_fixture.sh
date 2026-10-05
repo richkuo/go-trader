@@ -5,10 +5,18 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 source "${SCRIPT_DIR}/update_helpers.sh"
 
 : "${GO_TRADER_BIN:?set GO_TRADER_BIN to a built go-trader binary}"
-[[ "$(uname -s)" == "Linux" ]] || { echo "SKIP: Linux with systemd required"; exit 0; }
-[[ "$(id -u)" == "0" ]] || { echo "SKIP: root required"; exit 0; }
-command -v systemd-run >/dev/null 2>&1 || { echo "SKIP: systemd-run required"; exit 0; }
-PY3=$(command -v python3) || { echo "SKIP: python3 required"; exit 0; }
+skip() {
+    if [[ "${MERGE_PAPER_SERVICE_FIXTURE_REQUIRE_RUN:-0}" == "1" ]]; then
+        echo "FAIL: MERGE_PAPER_SERVICE_FIXTURE_REQUIRE_RUN=1 but this host cannot run the fixture: $*" >&2
+        exit 1
+    fi
+    echo "SKIP: $*"
+    exit 0
+}
+[[ "$(uname -s)" == "Linux" ]] || skip "Linux with systemd required"
+[[ "$(id -u)" == "0" ]] || skip "root required"
+command -v systemd-run >/dev/null 2>&1 || skip "systemd-run required"
+PY3=$(command -v python3) || skip "python3 required"
 
 fail() {
     echo "FAIL: $*" >&2

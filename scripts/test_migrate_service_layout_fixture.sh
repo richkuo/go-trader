@@ -6,11 +6,19 @@ REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 TOOL="$SCRIPT_DIR/migrate-service-layout.py"
 
 : "${GO_TRADER_BIN:?set GO_TRADER_BIN to a built go-trader binary}"
-[[ "$(uname -s)" == "Linux" ]] || { echo "SKIP: Linux with systemd required"; exit 0; }
-[[ "$(id -u)" == "0" ]] || { echo "SKIP: root required"; exit 0; }
-[[ -d /run/systemd/system ]] || { echo "SKIP: systemd must be PID 1"; exit 0; }
+skip() {
+    if [[ "${MIGRATE_SERVICE_LAYOUT_FIXTURE_REQUIRE_RUN:-0}" == "1" ]]; then
+        echo "FAIL: MIGRATE_SERVICE_LAYOUT_FIXTURE_REQUIRE_RUN=1 but this host cannot run the fixture: $*" >&2
+        exit 1
+    fi
+    echo "SKIP: $*"
+    exit 0
+}
+[[ "$(uname -s)" == "Linux" ]] || skip "Linux with systemd required"
+[[ "$(id -u)" == "0" ]] || skip "root required"
+[[ -d /run/systemd/system ]] || skip "systemd must be PID 1"
 for t in systemd-run python3 rsync git runuser flock; do
-    command -v "$t" >/dev/null 2>&1 || { echo "SKIP: $t required"; exit 0; }
+    command -v "$t" >/dev/null 2>&1 || skip "$t required"
 done
 PY3=$(command -v python3)
 SCENARIOS="${FIXTURE_SCENARIOS:-refuse plan confirm apply latch conflict resume signal stages kill fold update newtarget}"
