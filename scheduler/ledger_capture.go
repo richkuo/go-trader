@@ -88,7 +88,6 @@ type captureWorkerFile struct {
 }
 
 type captureWorkerPlan struct {
-	ParentMountNS  string              `json:"parent_mount_ns"`
 	Protect        []string            `json:"protect"`
 	DestinationDir string              `json:"destination_dir"`
 	Files          []captureWorkerFile `json:"files"`
@@ -240,6 +239,18 @@ func inspectCaptureSource(spec storageFileSpec) (captureSourceFile, error) {
 	return captureSourceFile{Spec: spec, Stamp: stamp}, nil
 }
 
+var captureConfigCredentialKeys = map[string][]string{
+	"discord":  {"token", "report_github_token"},
+	"telegram": {"bot_token"},
+}
+
+func withoutCaptureConfigCredentials(cfg Config) Config {
+	cfg.Discord.Token = ""
+	cfg.Discord.ReportGitHubToken = ""
+	cfg.Telegram.BotToken = ""
+	return cfg
+}
+
 func rewriteCaptureConfigStorage(data []byte, rel map[storageRole]string) ([]byte, error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
@@ -249,6 +260,19 @@ func rewriteCaptureConfigStorage(data []byte, rel map[storageRole]string) ([]byt
 	}
 	if dec.More() {
 		return nil, fmt.Errorf("parse configuration for the copy: trailing data")
+	}
+	for section, keys := range captureConfigCredentialKeys {
+		raw, ok := root[section]
+		if !ok || raw == nil {
+			continue
+		}
+		obj, ok := raw.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("%s is not an object", section)
+		}
+		for _, key := range keys {
+			delete(obj, key)
+		}
 	}
 	assigned := make(map[storageRole]bool)
 	p, ok := rel[storageRolePrimary]
@@ -309,11 +333,11 @@ func verifyCaptureConfigCopy(orig *Config, copyData []byte) error {
 	for i := range copyCfg.PaperSources {
 		copyCfg.PaperSources[i].DBFile = orig.PaperSources[i].DBFile
 	}
-	a, err := json.Marshal(orig)
+	a, err := json.Marshal(withoutCaptureConfigCredentials(*orig))
 	if err != nil {
 		return fmt.Errorf("encode source configuration: %w", err)
 	}
-	b, err := json.Marshal(copyCfg)
+	b, err := json.Marshal(withoutCaptureConfigCredentials(*copyCfg))
 	if err != nil {
 		return fmt.Errorf("encode configuration copy: %w", err)
 	}

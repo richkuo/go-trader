@@ -105,7 +105,8 @@ make_config() {
   "config_version": $version,
   "interval_seconds": 600,
   $storage
-  "discord": {"token": "fixture-discord-token-not-exported"},
+  "discord": {"token": "fixture-discord-token-not-exported", "report_github_token": "fixture-report-token-not-copied"},
+  "telegram": {"bot_token": "fixture-telegram-token-not-copied"},
   "strategies": [$extra
     {"id": "hl-live-btc", "type": "perps", "platform": "hyperliquid", "script": "shared_scripts/check_hyperliquid.py", "args": ["sma_crossover", "BTC", "1h", "--mode=live"], "capital": 1000},
     {"id": "hl-live-eth", "type": "perps", "platform": "hyperliquid", "script": "shared_scripts/check_hyperliquid.py", "args": ["sma_crossover", "ETH", "1h", "--mode=live"], "capital": 1000},
@@ -283,8 +284,12 @@ for f in primary paper paper-source-alpha; do
 done
 ls -A "$SNAP/state" | sort | tr '\n' ' ' | grep -qx "paper-source-alpha.db paper.db primary.db " || fail "snapshot state directory holds sidecars: $(ls -A "$SNAP/state")"
 grep -q '"db_file": "state/primary.db"' "$SNAP/config.json" || fail "config copy does not point at the snapshot"
-grep -q 'fixture-discord-token' "$SNAP/config.json" || fail "config copy changed more than storage paths"
-ok "snapshot set: integrity ok, rollback mode, WAL-only rows and noncontiguous row ids preserved, config copy and manifest hashed"
+for token in fixture-discord-token fixture-report-token fixture-telegram-token; do
+    grep -q "$token" "$SPLIT/cfg/config.json" || fail "source configuration lost $token"
+    grep -q "$token" "$SNAP/config.json" && fail "config copy kept the credential $token"
+done
+grep -q '"telegram"' "$SNAP/config.json" || fail "config copy dropped the notifier sections"
+ok "snapshot set: integrity ok, rollback mode, WAL-only rows and noncontiguous row ids preserved, config copy (no notifier or report credentials) and manifest hashed"
 
 writer_cmd "exec 0 INSERT INTO trades ($T_COLS) VALUES (7000,'hl-live-btc','2026-05-01T00:00:00Z','BTC','pos-9','buy',1,1,1,'perps','after capture','',0,0,0,0,'','',0,NULL,0,0,'','',0)"
 stop_writer close
@@ -356,13 +361,37 @@ make_config "$MIG" unsplit 15
 MIG_SHA=$("$FX" sha256 "$MIG/cfg/config.json")
 start_writer "$MIG/state/primary.db"
 "$FX" fingerprint "$WORK/mig.before.json" "$MIG/state" "$MIG/cfg"
-capture "$MIG/cfg/config.json" "$WORK/snapshots/migrate" || fail "capture of a migration-needed configuration refused"
+env -i "PATH=/usr/bin:/bin" "HOME=$WORK" DISCORD_BOT_TOKEN=fixture-env-discord-token TELEGRAM_BOT_TOKEN=fixture-env-telegram-token GO_TRADER_GITHUB_TOKEN=fixture-env-report-token \
+    "$GO_TRADER_BIN" export capture --config "$MIG/cfg/config.json" --output-dir "$WORK/snapshots/migrate" >"$WORK/last.out" 2>"$WORK/last.err" \
+    || fail "capture of a migration-needed configuration with environment notifier tokens refused"
 "$FX" fingerprint "$WORK/mig.after.json" "$MIG/state" "$MIG/cfg"
 stop_writer close
 cmp -s "$WORK/mig.before.json" "$WORK/mig.after.json" || fail "capture changed a migration-needed source"
 eq "migration-needed source config hash" "$("$FX" sha256 "$MIG/cfg/config.json")" "$MIG_SHA"
 grep -q '"config_version": 15' "$WORK/snapshots/migrate/config.json" || fail "config copy was migrated on disk"
-ok "a configuration that needs migration is captured with its source bytes unchanged (migration stays in memory)"
+grep -q 'fixture-' "$WORK/snapshots/migrate/config.json" && fail "migration-needed config copy kept a credential: $(grep -o 'fixture-[a-z-]*' "$WORK/snapshots/migrate/config.json" | sort -u | tr '\n' ' ')"
+ok "a configuration that needs migration is captured with its source bytes unchanged (migration stays in memory) and no credential in the copy, with environment tokens set"
+
+FORGED="$WORK/forged"
+mkdir -p "$FORGED/state" "$FORGED/out"
+printf '{"protect": ["%s"], "destination_dir": "%s", "files": [{"role": "primary", "source": "%s/primary.db", "dev": 0, "ino": 0, "dest": "%s/primary.db"}]}\n' \
+    "$FORGED/state" "$FORGED/out" "$FORGED/state" "$FORGED/out" >"$WORK/forged.plan"
+MOUNTS_BEFORE=$(sort /proc/self/mountinfo | awk '{print $5, $6}')
+rc=0; "${CLEAN_ENV[@]}" "$GO_TRADER_BIN" export __capture-worker <"$WORK/forged.plan" >"$WORK/last.out" 2>"$WORK/last.err" || rc=$?
+eq "worker run directly with a hand-written plan" "$rc" "1"
+grep -q "not in a private mount namespace" "$WORK/last.err" || fail "direct worker run was not refused by the namespace guard"
+eq "mount table after a direct worker run" "$(sort /proc/self/mountinfo | awk '{print $5, $6}')" "$MOUNTS_BEFORE"
+touch "$FORGED/state/still-writable" || fail "a direct worker run left the protected directory read-only"
+ok "the capture worker run directly (same mount namespace as its parent) refuses before changing any mount"
+if command -v unshare >/dev/null 2>&1 && unshare --user --map-root-user true >/dev/null 2>&1; then
+    rc=0; "${CLEAN_ENV[@]}" unshare --user --map-root-user "$GO_TRADER_BIN" export __capture-worker <"$WORK/forged.plan" >"$WORK/last.out" 2>"$WORK/last.err" || rc=$?
+    eq "worker run in a new user namespace that shares the parent's mount namespace" "$rc" "1"
+    grep -q "not in a private mount namespace" "$WORK/last.err" || fail "worker in a shared mount namespace was not refused by the namespace guard"
+    eq "mount table after a user-namespace worker run" "$(sort /proc/self/mountinfo | awk '{print $5, $6}')" "$MOUNTS_BEFORE"
+    ok "the capture worker in a new user namespace without its own mount namespace refuses before changing any mount"
+else
+    echo "NOTE: unshare --user is unavailable here; the shared-mount-namespace worker refusal in a new user namespace is not checked"
+fi
 
 # ------------------------------------------------------------- exports
 EXPORTS="$WORK/exports"

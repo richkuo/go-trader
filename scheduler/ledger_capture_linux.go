@@ -29,6 +29,8 @@ const (
 	msNosymfollow = 0x100
 
 	sqliteShmDMSOffset = 128
+
+	nsGetUserNS = 0xb701
 )
 
 func ledgerCaptureConfinementAvailable() error {
@@ -39,12 +41,79 @@ func currentMountNamespace() (string, error) {
 	return os.Readlink("/proc/self/ns/mnt")
 }
 
-func runCaptureWorker(plan captureWorkerPlan) (captureWorkerResult, bool, error) {
+func captureNSIdentity(f *os.File) (uint64, uint64, error) {
+	var st syscall.Stat_t
+	if err := syscall.Fstat(int(f.Fd()), &st); err != nil {
+		return 0, 0, err
+	}
+	return uint64(st.Dev), st.Ino, nil
+}
+
+func captureOwnsMountNamespace() error {
+	uidMap, err := os.ReadFile("/proc/self/uid_map")
+	if err != nil {
+		return fmt.Errorf("read the worker's user namespace map: %w", err)
+	}
+	fields := bytes.Fields(uidMap)
+	if len(fields) == 3 && string(fields[0]) == "0" && string(fields[1]) == "0" && string(fields[2]) == "4294967295" {
+		return fmt.Errorf("the worker is in the initial user namespace")
+	}
+	mnt, err := os.Open("/proc/self/ns/mnt")
+	if err != nil {
+		return fmt.Errorf("open the worker's mount namespace: %w", err)
+	}
+	defer mnt.Close()
+	r, _, errno := syscall.Syscall(syscall.SYS_IOCTL, mnt.Fd(), nsGetUserNS, 0)
+	if errno != 0 {
+		return fmt.Errorf("read the owner of the worker's mount namespace: %w", errno)
+	}
+	owner := os.NewFile(r, "mount-namespace-owner")
+	defer owner.Close()
+	user, err := os.Open("/proc/self/ns/user")
+	if err != nil {
+		return fmt.Errorf("open the worker's user namespace: %w", err)
+	}
+	defer user.Close()
+	ownerDev, ownerIno, err := captureNSIdentity(owner)
+	if err != nil {
+		return err
+	}
+	userDev, userIno, err := captureNSIdentity(user)
+	if err != nil {
+		return err
+	}
+	if ownerDev != userDev || ownerIno != userIno {
+		return fmt.Errorf("the worker's mount namespace is owned by another user namespace")
+	}
+	return nil
+}
+
+func captureRequirePrivateMountNamespace() error {
 	ns, err := currentMountNamespace()
 	if err != nil {
-		return captureWorkerResult{}, false, fmt.Errorf("read the current mount namespace: %w", err)
+		return fmt.Errorf("read mount namespace: %w", err)
 	}
-	plan.ParentMountNS = ns
+	ppid := os.Getppid()
+	parentNS, readErr := os.Readlink(fmt.Sprintf("/proc/%d/ns/mnt", ppid))
+	if now := os.Getppid(); now != ppid {
+		return fmt.Errorf("the capture worker's parent changed (%d then %d); it is not in a private mount namespace", ppid, now)
+	}
+	if ns == "" {
+		return fmt.Errorf("the capture worker cannot name its own mount namespace; it is not in a private mount namespace")
+	}
+	if readErr == nil && parentNS != "" {
+		if parentNS == ns {
+			return fmt.Errorf("the capture worker is not in a private mount namespace (it shares %s with its parent)", ns)
+		}
+		return nil
+	}
+	if err := captureOwnsMountNamespace(); err != nil {
+		return fmt.Errorf("the capture worker cannot read its parent's mount namespace and is not in a private mount namespace of its own user namespace: %v", err)
+	}
+	return nil
+}
+
+func runCaptureWorker(plan captureWorkerPlan) (captureWorkerResult, bool, error) {
 	payload, err := json.Marshal(plan)
 	if err != nil {
 		return captureWorkerResult{}, false, fmt.Errorf("encode capture plan: %w", err)
@@ -223,12 +292,8 @@ func ledgerCaptureWorkerMain(r io.Reader) (captureWorkerResult, error) {
 	if err := dec.Decode(&plan); err != nil {
 		return captureWorkerResult{}, fmt.Errorf("decode capture plan: %w", err)
 	}
-	ns, err := currentMountNamespace()
-	if err != nil {
-		return captureWorkerResult{}, fmt.Errorf("read mount namespace: %w", err)
-	}
-	if plan.ParentMountNS == "" || ns == plan.ParentMountNS {
-		return captureWorkerResult{}, fmt.Errorf("the capture worker is not in a private mount namespace; refusing to change any mount")
+	if err := captureRequirePrivateMountNamespace(); err != nil {
+		return captureWorkerResult{}, fmt.Errorf("%v; refusing to change any mount", err)
 	}
 	if len(plan.Protect) == 0 || len(plan.Files) == 0 {
 		return captureWorkerResult{}, fmt.Errorf("empty capture plan")
