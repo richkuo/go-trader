@@ -1,0 +1,101 @@
+{
+  "config_version": 20,
+  "db_file": "state/primary.db",
+  "interval_seconds": 3600,
+  "strategies": [
+    {
+      "allow_no_edge": true,
+      "args": [
+        "sma_crossover",
+        "BTC",
+        "1h",
+        "--mode=live"
+      ],
+      "capital": 1000,
+      "close_strategy": {
+        "name": "tiered_tp_pct",
+        "params": {
+          "tp_tiers": [
+            {
+              "close_fraction": 0.5,
+              "profit_pct": 0.01
+            },
+            {
+              "close_fraction": 1.0,
+              "profit_pct": 0.02
+            }
+          ]
+        }
+      },
+      "direction": "long",
+      "id": "hl-strict-btc",
+      "leverage": 1,
+      "margin_mode": "isolated",
+      "open_strategy": {
+        "name": "sma_crossover",
+        "params": {
+          "fast_period": 5,
+          "slow_period": 20
+        }
+      },
+      "platform": "hyperliquid",
+      "script": "shared_scripts/check_hyperliquid.py",
+      "stop_loss_atr_mult": 0,
+      "type": "perps"
+    },
+    {
+      "allow_no_edge": true,
+      "allow_scale_in": true,
+      "args": [
+        "sma_crossover",
+        "BTC",
+        "1h",
+        "--mode=live"
+      ],
+      "capital": 1000,
+      "close_strategy": {
+        "name": "tiered_tp_pct",
+        "params": {
+          "tp_tiers": [
+            {
+              "close_fraction": 0.5,
+              "profit_pct": 0.01
+            },
+            {
+              "close_fraction": 1.0,
+              "profit_pct": 0.02
+            }
+          ]
+        }
+      },
+      "direction": "long",
+      "id": "hl-scalein-btc",
+      "leverage": 1,
+      "margin_mode": "isolated",
+      "open_strategy": {
+        "name": "sma_crossover",
+        "params": {
+          "fast_period": 5,
+          "slow_period": 20
+        }
+      },
+      "platform": "hyperliquid",
+      "scale_in": {
+        "add_notional_usd": 250,
+        "max_adds": 2
+      },
+      "script": "shared_scripts/check_hyperliquid.py",
+      "stop_loss_atr_mult": 1.5,
+      "type": "perps"
+    },
+    {
+      "capital": 500,
+      "id": "hl-manual-eth",
+      "leverage": 1,
+      "platform": "hyperliquid",
+      "symbol": "ETH",
+      "timeframe": "1h",
+      "type": "manual"
+    }
+  ]
+}

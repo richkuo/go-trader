@@ -1,0 +1,48 @@
+{
+  "config_version": 20,
+  "interval_seconds": 3600,
+  "db_file": "/srv/go-trader-ledger-fixture/state/primary.db",
+  "strategies": [
+    {
+      "id": "hl-strict-btc",
+      "type": "perps",
+      "platform": "hyperliquid",
+      "script": "shared_scripts/check_hyperliquid.py",
+      "args": ["sma_crossover", "BTC", "1h", "--mode=live"],
+      "open_strategy": {"name": "sma_crossover", "params": {"fast_period": 5, "slow_period": 20}},
+      "close_strategy": {"name": "tiered_tp_pct", "params": {"tp_tiers": [{"profit_pct": 0.01, "close_fraction": 0.5}, {"profit_pct": 0.02, "close_fraction": 1.0}]}},
+      "capital": 1000,
+      "direction": "long",
+      "leverage": 1,
+      "margin_mode": "isolated",
+      "stop_loss_atr_mult": 0,
+      "allow_no_edge": true
+    },
+    {
+      "id": "hl-scalein-btc",
+      "type": "perps",
+      "platform": "hyperliquid",
+      "script": "shared_scripts/check_hyperliquid.py",
+      "args": ["sma_crossover", "BTC", "1h", "--mode=live"],
+      "open_strategy": {"name": "sma_crossover", "params": {"fast_period": 5, "slow_period": 20}},
+      "close_strategy": {"name": "tiered_tp_pct", "params": {"tp_tiers": [{"profit_pct": 0.01, "close_fraction": 0.5}, {"profit_pct": 0.02, "close_fraction": 1.0}]}},
+      "capital": 1000,
+      "direction": "long",
+      "leverage": 1,
+      "margin_mode": "isolated",
+      "stop_loss_atr_mult": 1.5,
+      "allow_no_edge": true,
+      "allow_scale_in": true,
+      "scale_in": {"max_adds": 2, "add_notional_usd": 250}
+    },
+    {
+      "id": "hl-manual-eth",
+      "type": "manual",
+      "platform": "hyperliquid",
+      "symbol": "ETH",
+      "timeframe": "1h",
+      "capital": 500,
+      "leverage": 1
+    }
+  ]
+}

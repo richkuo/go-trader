@@ -1,0 +1,1001 @@
+{
+  "schema": "go-trader.booked-ledger",
+  "schema_version": 1,
+  "inspected_revision": null,
+  "capture_manifest_sha256": "a35623c14d5675b735b9a7ba01f0cd574c0b06bf280ea67ed8acf2a437cf0703",
+  "time_basis": "UTC",
+  "timestamp_meanings": {
+    "trades": "stored ledger timestamp; exchange fill time is not established",
+    "wallet_transfers": "stored exchange ledger event time in Unix milliseconds"
+  },
+  "selection": {
+    "partition": "live",
+    "process_strategy_id": "hl-manual-eth",
+    "storage_strategy_id": "hl-manual-eth",
+    "source_role": "primary",
+    "platform": "hyperliquid"
+  },
+  "capture": {
+    "started_at": "2026-10-05T04:26:24.306986545Z",
+    "completed_at": "2026-10-05T04:26:24.329850003Z",
+    "source_revision": null,
+    "consistency": "transactional_per_file"
+  },
+  "snapshot_files": [
+    {
+      "source_role": "primary",
+      "relative_path": "state/primary.db",
+      "sha256": "7f98bf61a0b8057917eb62304cfd6b09c6435ba5a2f10eafef6e26176190daa5"
+    }
+  ],
+  "current_effective_configuration": {
+    "basis": "current_at_capture",
+    "config_version": 20,
+    "strategy": {
+      "id": "hl-manual-eth",
+      "type": "manual",
+      "platform": "hyperliquid",
+      "symbol": "ETH",
+      "timeframe": "1h",
+      "script": "shared_scripts/check_hyperliquid.py",
+      "args": [
+        "hold",
+        "ETH",
+        "1h",
+        "--mode=live"
+      ],
+      "open_strategy": {
+        "name": ""
+      },
+      "close_strategy": {
+        "name": "tiered_tp_atr_live",
+        "params": {
+          "tp_tiers": [
+            {
+              "atr_multiple": 2,
+              "close_fraction": 0.5
+            },
+            {
+              "atr_multiple": 3,
+              "close_fraction": 1
+            }
+          ]
+        }
+      },
+      "capital": 500,
+      "max_drawdown_pct": 60,
+      "leverage": 1,
+      "sizing_leverage": 1,
+      "stop_loss_atr_mult": 2,
+      "margin_mode": "isolated"
+    },
+    "regime": {
+      "enabled": false,
+      "period": 0,
+      "adx_threshold": 0
+    },
+    "portfolio_risk": {
+      "max_drawdown_pct": 25,
+      "max_notional_usd": 0,
+      "warn_threshold_pct": 60
+    }
+  },
+  "events": [
+    {
+      "event_key": "primary/trades/352",
+      "source_role": "primary",
+      "source_table": "trades",
+      "source_row_id": "352",
+      "partition": "live",
+      "process_strategy_id": "hl-manual-eth",
+      "storage_strategy_id": "hl-manual-eth",
+      "timestamp_raw": "2026-01-05T01:30:41Z",
+      "timestamp": "2026-01-05T01:30:41Z",
+      "timestamp_meaning": "ledger_record_time",
+      "symbol": {
+        "value": "ETH",
+        "raw_value": "ETH",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "stored",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "352",
+            "source_field": "symbol"
+          }
+        ]
+      },
+      "side": {
+        "value": "buy",
+        "raw_value": "buy",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "stored",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "352",
+            "source_field": "side"
+          }
+        ]
+      },
+      "trade_type": {
+        "value": "manual",
+        "raw_value": "manual",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "stored",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "352",
+            "source_field": "trade_type"
+          }
+        ]
+      },
+      "details": {
+        "value": "Manual open",
+        "raw_value": "Manual open",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "stored",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "352",
+            "source_field": "details"
+          }
+        ]
+      },
+      "position_id": {
+        "value": "pos-m-1",
+        "raw_value": "pos-m-1",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "stored",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "352",
+            "source_field": "position_id"
+          }
+        ]
+      },
+      "exchange_order_id": {
+        "value": "oid-m-1",
+        "raw_value": "oid-m-1",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "stored",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "352",
+            "source_field": "exchange_order_id"
+          }
+        ]
+      },
+      "fee_source": {
+        "value": "userfills",
+        "raw_value": "userfills",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "stored",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "352",
+            "source_field": "fee_source"
+          }
+        ]
+      },
+      "regime": {
+        "value": null,
+        "raw_value": "",
+        "status": "unavailable",
+        "reason": "unstamped",
+        "provenance": [
+          {
+            "kind": "stored",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "352",
+            "source_field": "regime"
+          }
+        ]
+      },
+      "quantity": {
+        "value": 1,
+        "raw_value": 1,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "stored",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "352",
+            "source_field": "quantity"
+          }
+        ]
+      },
+      "price": {
+        "value": 3000,
+        "raw_value": 3000,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "stored",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "352",
+            "source_field": "price"
+          }
+        ]
+      },
+      "value": {
+        "value": 3000,
+        "raw_value": 3000,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "stored",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "352",
+            "source_field": "value"
+          }
+        ]
+      },
+      "exchange_fee": {
+        "value": 1.35,
+        "raw_value": 1.35,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "stored",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "352",
+            "source_field": "exchange_fee"
+          }
+        ]
+      },
+      "realized_pnl": {
+        "value": 0,
+        "raw_value": 0,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "stored",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "352",
+            "source_field": "realized_pnl"
+          }
+        ]
+      },
+      "is_close": {
+        "value": false,
+        "raw_value": false,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "stored",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "352",
+            "source_field": "is_close"
+          }
+        ]
+      },
+      "pnl_gross": {
+        "value": true,
+        "raw_value": true,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "stored",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "352",
+            "source_field": "pnl_gross"
+          }
+        ]
+      },
+      "manual": {
+        "value": true,
+        "raw_value": true,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "stored",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "352",
+            "source_field": "manual"
+          }
+        ]
+      },
+      "row_net_pnl": {
+        "value": -1.35,
+        "raw_value": null,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "derived",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "352",
+            "source_field": "tradeNetPnL(pnl_gross, realized_pnl, exchange_fee)"
+          }
+        ]
+      },
+      "ledger_delta": {
+        "value": -1.35,
+        "raw_value": null,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "derived",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "352",
+            "source_field": "tradeLedgerDelta(pnl_gross, is_close, realized_pnl, exchange_fee)"
+          }
+        ]
+      },
+      "event_kind": {
+        "value": "non_close",
+        "raw_value": null,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "derived",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "352",
+            "source_field": "event_kind(trade_type, is_close, side)"
+          }
+        ]
+      },
+      "close_reason": {
+        "value": null,
+        "raw_value": null,
+        "status": "not_applicable",
+        "reason": "not_applicable",
+        "provenance": []
+      },
+      "close_extent": {
+        "value": null,
+        "raw_value": null,
+        "status": "not_applicable",
+        "reason": "not_applicable",
+        "provenance": []
+      },
+      "position_allocation": {
+        "value": "recorded",
+        "raw_value": null,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "derived",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "352",
+            "source_field": "position_allocation(position_id)"
+          }
+        ]
+      },
+      "entry_atr": {
+        "value": null,
+        "raw_value": 0,
+        "status": "unavailable",
+        "reason": "unstamped",
+        "provenance": [
+          {
+            "kind": "stored",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "352",
+            "source_field": "entry_atr"
+          }
+        ]
+      },
+      "stop_loss_atr_mult": {
+        "value": null,
+        "raw_value": null,
+        "status": "unavailable",
+        "reason": "unstamped",
+        "provenance": [
+          {
+            "kind": "stored",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "352",
+            "source_field": "stop_loss_atr_mult"
+          }
+        ]
+      },
+      "stop_loss_trigger_px": {
+        "value": null,
+        "raw_value": 0,
+        "status": "unavailable",
+        "reason": "unstamped",
+        "provenance": [
+          {
+            "kind": "stored",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "352",
+            "source_field": "stop_loss_trigger_px"
+          }
+        ]
+      },
+      "stop_loss_oid": {
+        "value": null,
+        "raw_value": "0",
+        "status": "unavailable",
+        "reason": "unstamped",
+        "provenance": [
+          {
+            "kind": "stored",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "352",
+            "source_field": "stop_loss_oid"
+          }
+        ]
+      },
+      "tp_oids_json": {
+        "value": null,
+        "raw_value": "",
+        "status": "unavailable",
+        "reason": "unstamped",
+        "provenance": [
+          {
+            "kind": "stored",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "352",
+            "source_field": "tp_oids_json"
+          }
+        ]
+      },
+      "tp_tiers_json": {
+        "value": null,
+        "raw_value": "",
+        "status": "unavailable",
+        "reason": "unstamped",
+        "provenance": [
+          {
+            "kind": "stored",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "352",
+            "source_field": "tp_tiers_json"
+          }
+        ]
+      }
+    },
+    {
+      "event_key": "primary/trades/359",
+      "source_role": "primary",
+      "source_table": "trades",
+      "source_row_id": "359",
+      "partition": "live",
+      "process_strategy_id": "hl-manual-eth",
+      "storage_strategy_id": "hl-manual-eth",
+      "timestamp_raw": "2026-01-05T09:10:41Z",
+      "timestamp": "2026-01-05T09:10:41Z",
+      "timestamp_meaning": "ledger_record_time",
+      "symbol": {
+        "value": "ETH",
+        "raw_value": "ETH",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "stored",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "359",
+            "source_field": "symbol"
+          }
+        ]
+      },
+      "side": {
+        "value": "sell",
+        "raw_value": "sell",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "stored",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "359",
+            "source_field": "side"
+          }
+        ]
+      },
+      "trade_type": {
+        "value": "manual",
+        "raw_value": "manual",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "stored",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "359",
+            "source_field": "trade_type"
+          }
+        ]
+      },
+      "details": {
+        "value": "Manual close",
+        "raw_value": "Manual close",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "stored",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "359",
+            "source_field": "details"
+          }
+        ]
+      },
+      "position_id": {
+        "value": "pos-m-1",
+        "raw_value": "pos-m-1",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "stored",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "359",
+            "source_field": "position_id"
+          }
+        ]
+      },
+      "exchange_order_id": {
+        "value": "oid-m-2",
+        "raw_value": "oid-m-2",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "stored",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "359",
+            "source_field": "exchange_order_id"
+          }
+        ]
+      },
+      "fee_source": {
+        "value": "userfills",
+        "raw_value": "userfills",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "stored",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "359",
+            "source_field": "fee_source"
+          }
+        ]
+      },
+      "regime": {
+        "value": null,
+        "raw_value": "",
+        "status": "unavailable",
+        "reason": "unstamped",
+        "provenance": [
+          {
+            "kind": "stored",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "359",
+            "source_field": "regime"
+          }
+        ]
+      },
+      "quantity": {
+        "value": 1,
+        "raw_value": 1,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "stored",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "359",
+            "source_field": "quantity"
+          }
+        ]
+      },
+      "price": {
+        "value": 3090,
+        "raw_value": 3090,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "stored",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "359",
+            "source_field": "price"
+          }
+        ]
+      },
+      "value": {
+        "value": 3090,
+        "raw_value": 3090,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "stored",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "359",
+            "source_field": "value"
+          }
+        ]
+      },
+      "exchange_fee": {
+        "value": 1.3905,
+        "raw_value": 1.3905,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "stored",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "359",
+            "source_field": "exchange_fee"
+          }
+        ]
+      },
+      "realized_pnl": {
+        "value": 90,
+        "raw_value": 90,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "stored",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "359",
+            "source_field": "realized_pnl"
+          }
+        ]
+      },
+      "is_close": {
+        "value": true,
+        "raw_value": true,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "stored",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "359",
+            "source_field": "is_close"
+          }
+        ]
+      },
+      "pnl_gross": {
+        "value": true,
+        "raw_value": true,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "stored",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "359",
+            "source_field": "pnl_gross"
+          }
+        ]
+      },
+      "manual": {
+        "value": true,
+        "raw_value": true,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "stored",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "359",
+            "source_field": "manual"
+          }
+        ]
+      },
+      "row_net_pnl": {
+        "value": 88.6095,
+        "raw_value": null,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "derived",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "359",
+            "source_field": "tradeNetPnL(pnl_gross, realized_pnl, exchange_fee)"
+          }
+        ]
+      },
+      "ledger_delta": {
+        "value": 88.6095,
+        "raw_value": null,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "derived",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "359",
+            "source_field": "tradeLedgerDelta(pnl_gross, is_close, realized_pnl, exchange_fee)"
+          }
+        ]
+      },
+      "event_kind": {
+        "value": "close",
+        "raw_value": null,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "derived",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "359",
+            "source_field": "event_kind(trade_type, is_close, side)"
+          }
+        ]
+      },
+      "close_reason": {
+        "value": "manual",
+        "raw_value": "manual",
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "matched",
+            "source_role": "primary",
+            "source_table": "trade_diagnostics",
+            "source_row_id": "31",
+            "source_field": "close_reason; unique match on strategy_id, position_id, symbol, closed_at, quantity, exit_price"
+          }
+        ]
+      },
+      "close_extent": {
+        "value": "full",
+        "raw_value": null,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "matched",
+            "source_role": "primary",
+            "source_table": "trade_diagnostics",
+            "source_row_id": "31",
+            "source_field": "full: the position summary's closed quantity equals this close row's quantity"
+          }
+        ]
+      },
+      "position_allocation": {
+        "value": "recorded",
+        "raw_value": null,
+        "status": "available",
+        "reason": null,
+        "provenance": [
+          {
+            "kind": "derived",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "359",
+            "source_field": "position_allocation(position_id)"
+          }
+        ]
+      },
+      "entry_atr": {
+        "value": null,
+        "raw_value": 0,
+        "status": "unavailable",
+        "reason": "unstamped",
+        "provenance": [
+          {
+            "kind": "stored",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "359",
+            "source_field": "entry_atr"
+          }
+        ]
+      },
+      "stop_loss_atr_mult": {
+        "value": null,
+        "raw_value": null,
+        "status": "unavailable",
+        "reason": "unstamped",
+        "provenance": [
+          {
+            "kind": "stored",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "359",
+            "source_field": "stop_loss_atr_mult"
+          }
+        ]
+      },
+      "stop_loss_trigger_px": {
+        "value": null,
+        "raw_value": 0,
+        "status": "unavailable",
+        "reason": "unstamped",
+        "provenance": [
+          {
+            "kind": "stored",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "359",
+            "source_field": "stop_loss_trigger_px"
+          }
+        ]
+      },
+      "stop_loss_oid": {
+        "value": null,
+        "raw_value": "0",
+        "status": "unavailable",
+        "reason": "unstamped",
+        "provenance": [
+          {
+            "kind": "stored",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "359",
+            "source_field": "stop_loss_oid"
+          }
+        ]
+      },
+      "tp_oids_json": {
+        "value": null,
+        "raw_value": "",
+        "status": "unavailable",
+        "reason": "unstamped",
+        "provenance": [
+          {
+            "kind": "stored",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "359",
+            "source_field": "tp_oids_json"
+          }
+        ]
+      },
+      "tp_tiers_json": {
+        "value": null,
+        "raw_value": "",
+        "status": "unavailable",
+        "reason": "unstamped",
+        "provenance": [
+          {
+            "kind": "stored",
+            "source_role": "primary",
+            "source_table": "trades",
+            "source_row_id": "359",
+            "source_field": "tp_tiers_json"
+          }
+        ]
+      }
+    }
+  ],
+  "wallet_orphan_context": {
+    "status": "available",
+    "reason": null,
+    "ownership": "live_wallet",
+    "allocation": "unallocated",
+    "records": [
+      {
+        "event_key": "primary/wallet_transfers/3",
+        "source_role": "primary",
+        "source_table": "wallet_transfers",
+        "source_row_id": "3",
+        "platform": "hyperliquid",
+        "account": "0xfixture",
+        "kind": "funding_orphan",
+        "dedup_id": "funding_orphan:f1",
+        "timestamp": "2026-01-05T04:00:00Z",
+        "time_ms": "1767585600000",
+        "amount_usd": -0.0042,
+        "process_strategy_id": null,
+        "storage_strategy_id": null,
+        "position_id": null,
+        "provenance": [
+          {
+            "kind": "stored",
+            "source_role": "primary",
+            "source_table": "wallet_transfers",
+            "source_row_id": "3",
+            "source_field": "platform"
+          },
+          {
+            "kind": "stored",
+            "source_role": "primary",
+            "source_table": "wallet_transfers",
+            "source_row_id": "3",
+            "source_field": "account"
+          },
+          {
+            "kind": "stored",
+            "source_role": "primary",
+            "source_table": "wallet_transfers",
+            "source_row_id": "3",
+            "source_field": "time_ms"
+          },
+          {
+            "kind": "stored",
+            "source_role": "primary",
+            "source_table": "wallet_transfers",
+            "source_row_id": "3",
+            "source_field": "kind"
+          },
+          {
+            "kind": "stored",
+            "source_role": "primary",
+            "source_table": "wallet_transfers",
+            "source_row_id": "3",
+            "source_field": "amount_usd"
+          },
+          {
+            "kind": "stored",
+            "source_role": "primary",
+            "source_table": "wallet_transfers",
+            "source_row_id": "3",
+            "source_field": "dedup_id"
+          }
+        ]
+      }
+    ]
+  }
+}
