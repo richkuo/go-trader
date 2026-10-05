@@ -309,9 +309,10 @@ def test_indicator_frame_gives_entry_atr_on_scored_bar_two(tmp_path):
     full, scored = _warmup_frames(tmp_path)
     cut = _bt(stop_loss_atr_mult=1.0).run(scored, save=False)
     warm = _bt(stop_loss_atr_mult=1.0).run(scored, save=False, indicator_frame=full)
-    assert cut["trades"][0]["entry_date"] == warm["trades"][0]["entry_date"] == str(scored.index[1])
-    assert cut["trades"][0]["entry_atr"] == 0.0
+    assert cut["trades"] == [] and cut["stop_warmup_skipped_entries"] == 1
+    assert warm["trades"][0]["entry_date"] == str(scored.index[1])
     assert warm["trades"][0]["entry_atr"] > 0.0
+    assert "stop_warmup_skipped_entries" not in warm
 
 
 def test_indicator_frame_gives_zscore_and_hurst_on_scored_bar_one(tmp_path, monkeypatch):
@@ -342,7 +343,7 @@ def test_indicator_frame_gives_zscore_and_hurst_on_scored_bar_one(tmp_path, monk
 
 def test_indicator_frame_equal_to_scored_frame_changes_nothing(tmp_path):
     _, scored = _warmup_frames(tmp_path)
-    kw = dict(stop_loss_atr_mult=1.0,
+    kw = dict(stop_loss_pct=0.05,
               close_strategies=[{"name": "time_stop", "params": {"max_bars": 5}}],
               comparison_mode="approximate")
     base = _bt(**kw).run(scored, save=False)

@@ -1,0 +1,1854 @@
+{
+  "admission": [
+    {
+      "id": "unified_explicit_zero_scalar",
+      "regime": true,
+      "unified": true,
+      "strategy": {
+        "stop_loss_atr_mult": 0
+      },
+      "go_accept": false,
+      "python_refusal": "UNSUPPORTED_STOP_OWNER"
+    },
+    {
+      "id": "unified_positive_pct",
+      "regime": true,
+      "unified": true,
+      "strategy": {
+        "stop_loss_pct": 2
+      },
+      "go_accept": false,
+      "python_refusal": "UNSUPPORTED_STOP_OWNER"
+    },
+    {
+      "id": "unified_empty_regime_block",
+      "regime": true,
+      "unified": true,
+      "strategy": {
+        "stop_loss_atr_mult_regime": {}
+      },
+      "go_accept": false,
+      "python_refusal": "MISSING_STOP_INPUT"
+    },
+    {
+      "id": "unified_use_defaults_false_block",
+      "regime": true,
+      "unified": true,
+      "strategy": {
+        "stop_loss_atr_mult_regime": {
+          "use_defaults": false
+        }
+      },
+      "go_accept": false,
+      "python_refusal": "MISSING_STOP_INPUT"
+    },
+    {
+      "id": "unified_null_regime_block",
+      "regime": true,
+      "unified": true,
+      "strategy": {
+        "stop_loss_atr_mult_regime": null
+      },
+      "go_accept": true,
+      "python_refusal": null
+    },
+    {
+      "id": "regime_and_scalar_stop",
+      "regime": true,
+      "strategy": {
+        "stop_loss_atr_mult": 1,
+        "stop_loss_atr_mult_regime": {
+          "use_defaults": true
+        }
+      },
+      "go_accept": false,
+      "python_refusal": "UNSUPPORTED_STOP_OWNER"
+    },
+    {
+      "id": "risk_explicit_zero_trailing_pct",
+      "strategy": {
+        "risk_per_trade_pct": 1,
+        "trailing_stop_pct": 0
+      },
+      "go_accept": false,
+      "python_refusal": "UNSUPPORTED_STOP_OWNER"
+    },
+    {
+      "id": "margin_with_defaulted_leverage",
+      "strategy": {
+        "stop_loss_margin_pct": 20
+      },
+      "go_accept": true,
+      "python_refusal": "UNVERIFIED_MARGIN_LEVERAGE",
+      "note": "live defaults leverage to 1; a defaulted leverage is not verified leverage, so the backtest refuses"
+    },
+    {
+      "id": "named_atr_window_not_modeled",
+      "config": {
+        "regime": {
+          "enabled": true,
+          "period": 14,
+          "adx_threshold": 20,
+          "windows": {
+            "medium": {
+              "classifier": "adx",
+              "period": 14
+            },
+            "slow": {
+              "classifier": "adx",
+              "period": 50
+            }
+          }
+        }
+      },
+      "strategy": {
+        "regime_atr_window": "slow",
+        "stop_loss_atr_mult_regime": {
+          "use_defaults": true
+        }
+      },
+      "go_accept": true,
+      "python_refusal": "MISSING_STOP_INPUT",
+      "note": "the backtester stamps only the primary window label"
+    }
+  ],
+  "base_config": {
+    "config_version": 20
+  },
+  "base_strategy": {
+    "id": "hl-stop-geo",
+    "type": "perps",
+    "platform": "hyperliquid",
+    "script": "shared_scripts/check_hyperliquid.py",
+    "args": [
+      "sma_crossover",
+      "BTC",
+      "1h",
+      "--mode=paper"
+    ],
+    "capital": 1000
+  },
+  "expected": {
+    "admission": {
+      "margin_with_defaulted_leverage": true,
+      "named_atr_window_not_modeled": true,
+      "regime_and_scalar_stop": false,
+      "risk_explicit_zero_trailing_pct": false,
+      "unified_empty_regime_block": false,
+      "unified_explicit_zero_scalar": false,
+      "unified_null_regime_block": true,
+      "unified_positive_pct": false,
+      "unified_use_defaults_false_block": false
+    },
+    "geometry": {
+      "default_opt_out_custom_drawdown": {
+        "resolved": {
+          "leverage": 1,
+          "max_drawdown_pct": 20,
+          "stop_loss_atr_mult": null,
+          "stop_loss_atr_mult_regime": false,
+          "stop_loss_margin_pct": null,
+          "stop_loss_pct": null,
+          "trailing_stop_atr_mult": null,
+          "trailing_stop_atr_mult_regime": false,
+          "trailing_stop_min_move_pct": null,
+          "trailing_stop_pct": null
+        },
+        "owner": "percent",
+        "trailing_pct": 0,
+        "fixed_atr_pct": 0,
+        "percent_pct": 20,
+        "min_move_pct": 0.5,
+        "arm_trigger": 80,
+        "arm_high_water": 0,
+        "path": []
+      },
+      "default_scalar_atr": {
+        "resolved": {
+          "leverage": 1,
+          "max_drawdown_pct": 50,
+          "stop_loss_atr_mult": 1,
+          "stop_loss_atr_mult_regime": false,
+          "stop_loss_margin_pct": null,
+          "stop_loss_pct": null,
+          "trailing_stop_atr_mult": null,
+          "trailing_stop_atr_mult_regime": false,
+          "trailing_stop_min_move_pct": null,
+          "trailing_stop_pct": null
+        },
+        "owner": "fixed_atr",
+        "trailing_pct": 0,
+        "fixed_atr_pct": 2,
+        "percent_pct": 0,
+        "min_move_pct": 0.5,
+        "arm_trigger": 98,
+        "arm_high_water": 0,
+        "path": []
+      },
+      "default_scalar_atr_custom": {
+        "resolved": {
+          "leverage": 1,
+          "max_drawdown_pct": 50,
+          "stop_loss_atr_mult": 2.5,
+          "stop_loss_atr_mult_regime": false,
+          "stop_loss_margin_pct": null,
+          "stop_loss_pct": null,
+          "trailing_stop_atr_mult": null,
+          "trailing_stop_atr_mult_regime": false,
+          "trailing_stop_min_move_pct": null,
+          "trailing_stop_pct": null
+        },
+        "owner": "fixed_atr",
+        "trailing_pct": 0,
+        "fixed_atr_pct": 5,
+        "percent_pct": 0,
+        "min_move_pct": 0.5,
+        "arm_trigger": 95,
+        "arm_high_water": 0,
+        "path": []
+      },
+      "drawdown_fallback_cap": {
+        "resolved": {
+          "leverage": 1,
+          "max_drawdown_pct": 80,
+          "stop_loss_atr_mult": 0,
+          "stop_loss_atr_mult_regime": false,
+          "stop_loss_margin_pct": null,
+          "stop_loss_pct": null,
+          "trailing_stop_atr_mult": null,
+          "trailing_stop_atr_mult_regime": false,
+          "trailing_stop_min_move_pct": null,
+          "trailing_stop_pct": null
+        },
+        "owner": "percent",
+        "trailing_pct": 0,
+        "fixed_atr_pct": 0,
+        "percent_pct": 50,
+        "min_move_pct": 0.5,
+        "arm_trigger": 50,
+        "arm_high_water": 0,
+        "path": []
+      },
+      "explicit_zero_atr_drawdown_fallback": {
+        "resolved": {
+          "leverage": 1,
+          "max_drawdown_pct": 50,
+          "stop_loss_atr_mult": 0,
+          "stop_loss_atr_mult_regime": false,
+          "stop_loss_margin_pct": null,
+          "stop_loss_pct": null,
+          "trailing_stop_atr_mult": null,
+          "trailing_stop_atr_mult_regime": false,
+          "trailing_stop_min_move_pct": null,
+          "trailing_stop_pct": null
+        },
+        "owner": "percent",
+        "trailing_pct": 0,
+        "fixed_atr_pct": 0,
+        "percent_pct": 50,
+        "min_move_pct": 0.5,
+        "arm_trigger": 50,
+        "arm_high_water": 0,
+        "path": []
+      },
+      "explicit_zero_stop_pct_disables": {
+        "resolved": {
+          "leverage": 1,
+          "max_drawdown_pct": 50,
+          "stop_loss_atr_mult": null,
+          "stop_loss_atr_mult_regime": false,
+          "stop_loss_margin_pct": null,
+          "stop_loss_pct": 0,
+          "trailing_stop_atr_mult": null,
+          "trailing_stop_atr_mult_regime": false,
+          "trailing_stop_min_move_pct": null,
+          "trailing_stop_pct": null
+        },
+        "owner": "none",
+        "trailing_pct": 0,
+        "fixed_atr_pct": 0,
+        "percent_pct": 0,
+        "min_move_pct": 0.5,
+        "arm_trigger": 0,
+        "arm_high_water": 0,
+        "path": []
+      },
+      "explicit_zero_trailing_pct_disables": {
+        "resolved": {
+          "leverage": 1,
+          "max_drawdown_pct": 50,
+          "stop_loss_atr_mult": null,
+          "stop_loss_atr_mult_regime": false,
+          "stop_loss_margin_pct": null,
+          "stop_loss_pct": null,
+          "trailing_stop_atr_mult": null,
+          "trailing_stop_atr_mult_regime": false,
+          "trailing_stop_min_move_pct": null,
+          "trailing_stop_pct": 0
+        },
+        "owner": "none",
+        "trailing_pct": 0,
+        "fixed_atr_pct": 0,
+        "percent_pct": 0,
+        "min_move_pct": 0.5,
+        "arm_trigger": 0,
+        "arm_high_water": 0,
+        "path": []
+      },
+      "fixed_atr_cap": {
+        "resolved": {
+          "leverage": 1,
+          "max_drawdown_pct": 50,
+          "stop_loss_atr_mult": 30,
+          "stop_loss_atr_mult_regime": false,
+          "stop_loss_margin_pct": null,
+          "stop_loss_pct": null,
+          "trailing_stop_atr_mult": null,
+          "trailing_stop_atr_mult_regime": false,
+          "trailing_stop_min_move_pct": null,
+          "trailing_stop_pct": null
+        },
+        "owner": "fixed_atr",
+        "trailing_pct": 0,
+        "fixed_atr_pct": 50,
+        "percent_pct": 0,
+        "min_move_pct": 0.5,
+        "arm_trigger": 50,
+        "arm_high_water": 0,
+        "path": []
+      },
+      "fixed_atr_long": {
+        "resolved": {
+          "leverage": 1,
+          "max_drawdown_pct": 50,
+          "stop_loss_atr_mult": 1.5,
+          "stop_loss_atr_mult_regime": false,
+          "stop_loss_margin_pct": null,
+          "stop_loss_pct": null,
+          "trailing_stop_atr_mult": null,
+          "trailing_stop_atr_mult_regime": false,
+          "trailing_stop_min_move_pct": null,
+          "trailing_stop_pct": null
+        },
+        "owner": "fixed_atr",
+        "trailing_pct": 0,
+        "fixed_atr_pct": 3,
+        "percent_pct": 0,
+        "min_move_pct": 0.5,
+        "arm_trigger": 97,
+        "arm_high_water": 0,
+        "path": []
+      },
+      "fixed_atr_short": {
+        "resolved": {
+          "leverage": 1,
+          "max_drawdown_pct": 50,
+          "stop_loss_atr_mult": 1.5,
+          "stop_loss_atr_mult_regime": false,
+          "stop_loss_margin_pct": null,
+          "stop_loss_pct": null,
+          "trailing_stop_atr_mult": null,
+          "trailing_stop_atr_mult_regime": false,
+          "trailing_stop_min_move_pct": null,
+          "trailing_stop_pct": null
+        },
+        "owner": "fixed_atr",
+        "trailing_pct": 0,
+        "fixed_atr_pct": 3,
+        "percent_pct": 0,
+        "min_move_pct": 0.5,
+        "arm_trigger": 103,
+        "arm_high_water": 0,
+        "path": []
+      },
+      "margin_verified_leverage": {
+        "resolved": {
+          "leverage": 5,
+          "max_drawdown_pct": 50,
+          "stop_loss_atr_mult": null,
+          "stop_loss_atr_mult_regime": false,
+          "stop_loss_margin_pct": 20,
+          "stop_loss_pct": null,
+          "trailing_stop_atr_mult": null,
+          "trailing_stop_atr_mult_regime": false,
+          "trailing_stop_min_move_pct": null,
+          "trailing_stop_pct": null
+        },
+        "owner": "percent",
+        "trailing_pct": 0,
+        "fixed_atr_pct": 0,
+        "percent_pct": 4,
+        "min_move_pct": 0.5,
+        "arm_trigger": 96,
+        "arm_high_water": 0,
+        "path": []
+      },
+      "pct_long": {
+        "resolved": {
+          "leverage": 1,
+          "max_drawdown_pct": 50,
+          "stop_loss_atr_mult": null,
+          "stop_loss_atr_mult_regime": false,
+          "stop_loss_margin_pct": null,
+          "stop_loss_pct": 2,
+          "trailing_stop_atr_mult": null,
+          "trailing_stop_atr_mult_regime": false,
+          "trailing_stop_min_move_pct": null,
+          "trailing_stop_pct": null
+        },
+        "owner": "percent",
+        "trailing_pct": 0,
+        "fixed_atr_pct": 0,
+        "percent_pct": 2,
+        "min_move_pct": 0.5,
+        "arm_trigger": 98,
+        "arm_high_water": 0,
+        "path": []
+      },
+      "pct_short": {
+        "resolved": {
+          "leverage": 1,
+          "max_drawdown_pct": 50,
+          "stop_loss_atr_mult": null,
+          "stop_loss_atr_mult_regime": false,
+          "stop_loss_margin_pct": null,
+          "stop_loss_pct": 2,
+          "trailing_stop_atr_mult": null,
+          "trailing_stop_atr_mult_regime": false,
+          "trailing_stop_min_move_pct": null,
+          "trailing_stop_pct": null
+        },
+        "owner": "percent",
+        "trailing_pct": 0,
+        "fixed_atr_pct": 0,
+        "percent_pct": 2,
+        "min_move_pct": 0.5,
+        "arm_trigger": 102,
+        "arm_high_water": 0,
+        "path": []
+      },
+      "platform_drawdown_fallback": {
+        "resolved": {
+          "leverage": 1,
+          "max_drawdown_pct": 30,
+          "stop_loss_atr_mult": 0,
+          "stop_loss_atr_mult_regime": false,
+          "stop_loss_margin_pct": null,
+          "stop_loss_pct": null,
+          "trailing_stop_atr_mult": null,
+          "trailing_stop_atr_mult_regime": false,
+          "trailing_stop_min_move_pct": null,
+          "trailing_stop_pct": null
+        },
+        "owner": "percent",
+        "trailing_pct": 0,
+        "fixed_atr_pct": 0,
+        "percent_pct": 30,
+        "min_move_pct": 0.5,
+        "arm_trigger": 130,
+        "arm_high_water": 0,
+        "path": []
+      },
+      "post_tp_trail_from_here": {
+        "resolved": {
+          "leverage": 1,
+          "max_drawdown_pct": 50,
+          "stop_loss_atr_mult": 1,
+          "stop_loss_atr_mult_regime": false,
+          "stop_loss_margin_pct": null,
+          "stop_loss_pct": null,
+          "trailing_stop_atr_mult": null,
+          "trailing_stop_atr_mult_regime": false,
+          "trailing_stop_min_move_pct": null,
+          "trailing_stop_pct": null
+        },
+        "owner": "fixed_atr",
+        "trailing_pct": 0,
+        "fixed_atr_pct": 2,
+        "percent_pct": 0,
+        "min_move_pct": 0.5,
+        "arm_trigger": 98,
+        "arm_high_water": 0,
+        "path": [
+          {
+            "mark": 103,
+            "high_water": 103,
+            "trigger": 99.5,
+            "replaced": false,
+            "bypass_min_move": false
+          },
+          {
+            "mark": 105,
+            "high_water": 105,
+            "trigger": 101.85,
+            "replaced": true,
+            "bypass_min_move": false
+          },
+          {
+            "mark": 104.8,
+            "high_water": 105,
+            "trigger": 101.85,
+            "replaced": false,
+            "bypass_min_move": false
+          }
+        ],
+        "sl_after": {
+          "mark": 102.5,
+          "high_water": 102.5,
+          "trigger": 99.5,
+          "replaced": true,
+          "bypass_min_move": false
+        }
+      },
+      "regime_fixed_atr": {
+        "resolved": {
+          "leverage": 1,
+          "max_drawdown_pct": 50,
+          "stop_loss_atr_mult": null,
+          "stop_loss_atr_mult_regime": true,
+          "stop_loss_margin_pct": null,
+          "stop_loss_pct": null,
+          "trailing_stop_atr_mult": null,
+          "trailing_stop_atr_mult_regime": false,
+          "trailing_stop_min_move_pct": null,
+          "trailing_stop_pct": null
+        },
+        "owner": "fixed_atr",
+        "trailing_pct": 0,
+        "fixed_atr_pct": 2.5,
+        "percent_pct": 0,
+        "min_move_pct": 0.5,
+        "arm_trigger": 97.5,
+        "arm_high_water": 0,
+        "path": []
+      },
+      "regime_fixed_atr_user_defaults": {
+        "resolved": {
+          "leverage": 1,
+          "max_drawdown_pct": 50,
+          "stop_loss_atr_mult": null,
+          "stop_loss_atr_mult_regime": true,
+          "stop_loss_margin_pct": null,
+          "stop_loss_pct": null,
+          "trailing_stop_atr_mult": null,
+          "trailing_stop_atr_mult_regime": false,
+          "trailing_stop_min_move_pct": null,
+          "trailing_stop_pct": null
+        },
+        "owner": "fixed_atr",
+        "trailing_pct": 0,
+        "fixed_atr_pct": 6,
+        "percent_pct": 0,
+        "min_move_pct": 0.5,
+        "arm_trigger": 106,
+        "arm_high_water": 0,
+        "path": []
+      },
+      "regime_trailing_system_defaults": {
+        "resolved": {
+          "leverage": 1,
+          "max_drawdown_pct": 50,
+          "stop_loss_atr_mult": null,
+          "stop_loss_atr_mult_regime": false,
+          "stop_loss_margin_pct": null,
+          "stop_loss_pct": null,
+          "trailing_stop_atr_mult": null,
+          "trailing_stop_atr_mult_regime": true,
+          "trailing_stop_min_move_pct": null,
+          "trailing_stop_pct": null
+        },
+        "owner": "trailing",
+        "trailing_pct": 5,
+        "fixed_atr_pct": 0,
+        "percent_pct": 0,
+        "min_move_pct": 0.5,
+        "arm_trigger": 95.94999999999999,
+        "arm_high_water": 101,
+        "path": [
+          {
+            "mark": 101,
+            "high_water": 101,
+            "trigger": 95.94999999999999,
+            "replaced": false,
+            "bypass_min_move": false
+          },
+          {
+            "mark": 104,
+            "high_water": 104,
+            "trigger": 98.8,
+            "replaced": true,
+            "bypass_min_move": false
+          },
+          {
+            "mark": 108,
+            "high_water": 108,
+            "trigger": 102.6,
+            "replaced": true,
+            "bypass_min_move": false
+          }
+        ]
+      },
+      "risk_fixed_atr": {
+        "resolved": {
+          "leverage": 1,
+          "max_drawdown_pct": 50,
+          "stop_loss_atr_mult": 1.5,
+          "stop_loss_atr_mult_regime": false,
+          "stop_loss_margin_pct": null,
+          "stop_loss_pct": null,
+          "trailing_stop_atr_mult": null,
+          "trailing_stop_atr_mult_regime": false,
+          "trailing_stop_min_move_pct": null,
+          "trailing_stop_pct": null
+        },
+        "owner": "fixed_atr",
+        "trailing_pct": 0,
+        "fixed_atr_pct": 3,
+        "percent_pct": 0,
+        "min_move_pct": 0.5,
+        "arm_trigger": 97,
+        "arm_high_water": 0,
+        "path": [],
+        "risk_distance": 3
+      },
+      "risk_fixed_pct": {
+        "resolved": {
+          "leverage": 1,
+          "max_drawdown_pct": 50,
+          "stop_loss_atr_mult": null,
+          "stop_loss_atr_mult_regime": false,
+          "stop_loss_margin_pct": null,
+          "stop_loss_pct": 2,
+          "trailing_stop_atr_mult": null,
+          "trailing_stop_atr_mult_regime": false,
+          "trailing_stop_min_move_pct": null,
+          "trailing_stop_pct": null
+        },
+        "owner": "percent",
+        "trailing_pct": 0,
+        "fixed_atr_pct": 0,
+        "percent_pct": 2,
+        "min_move_pct": 0.5,
+        "arm_trigger": 98,
+        "arm_high_water": 0,
+        "path": [],
+        "risk_distance": 2
+      },
+      "risk_trailing_pct": {
+        "resolved": {
+          "leverage": 1,
+          "max_drawdown_pct": 50,
+          "stop_loss_atr_mult": null,
+          "stop_loss_atr_mult_regime": false,
+          "stop_loss_margin_pct": null,
+          "stop_loss_pct": null,
+          "trailing_stop_atr_mult": null,
+          "trailing_stop_atr_mult_regime": false,
+          "trailing_stop_min_move_pct": null,
+          "trailing_stop_pct": 4
+        },
+        "owner": "trailing",
+        "trailing_pct": 4,
+        "fixed_atr_pct": 0,
+        "percent_pct": 4,
+        "min_move_pct": 0.5,
+        "arm_trigger": 96.96,
+        "arm_high_water": 101,
+        "path": [
+          {
+            "mark": 101,
+            "high_water": 101,
+            "trigger": 96.96,
+            "replaced": false,
+            "bypass_min_move": false
+          }
+        ],
+        "risk_distance": 4
+      },
+      "scale_in_frozen_anchor": {
+        "resolved": {
+          "leverage": 1,
+          "max_drawdown_pct": 50,
+          "stop_loss_atr_mult": null,
+          "stop_loss_atr_mult_regime": false,
+          "stop_loss_margin_pct": null,
+          "stop_loss_pct": null,
+          "trailing_stop_atr_mult": 2,
+          "trailing_stop_atr_mult_regime": false,
+          "trailing_stop_min_move_pct": null,
+          "trailing_stop_pct": null
+        },
+        "owner": "trailing",
+        "trailing_pct": 4,
+        "fixed_atr_pct": 0,
+        "percent_pct": 0,
+        "min_move_pct": 0.5,
+        "arm_trigger": 96.96,
+        "arm_high_water": 101,
+        "path": [
+          {
+            "mark": 101,
+            "high_water": 101,
+            "trigger": 96.96,
+            "replaced": false,
+            "bypass_min_move": false
+          },
+          {
+            "mark": 103,
+            "high_water": 103,
+            "trigger": 98.88,
+            "replaced": true,
+            "bypass_min_move": false
+          },
+          {
+            "mark": 104,
+            "high_water": 104,
+            "trigger": 99.84,
+            "replaced": true,
+            "bypass_min_move": false
+          },
+          {
+            "mark": 106,
+            "high_water": 106,
+            "trigger": 101.75999999999999,
+            "replaced": true,
+            "bypass_min_move": false
+          }
+        ]
+      },
+      "trailing_atr_cap": {
+        "resolved": {
+          "leverage": 1,
+          "max_drawdown_pct": 50,
+          "stop_loss_atr_mult": null,
+          "stop_loss_atr_mult_regime": false,
+          "stop_loss_margin_pct": null,
+          "stop_loss_pct": null,
+          "trailing_stop_atr_mult": 30,
+          "trailing_stop_atr_mult_regime": false,
+          "trailing_stop_min_move_pct": null,
+          "trailing_stop_pct": null
+        },
+        "owner": "trailing",
+        "trailing_pct": 50,
+        "fixed_atr_pct": 0,
+        "percent_pct": 0,
+        "min_move_pct": 0.5,
+        "arm_trigger": 50.5,
+        "arm_high_water": 101,
+        "path": [
+          {
+            "mark": 101,
+            "high_water": 101,
+            "trigger": 50.5,
+            "replaced": false,
+            "bypass_min_move": false
+          },
+          {
+            "mark": 110,
+            "high_water": 110,
+            "trigger": 55,
+            "replaced": true,
+            "bypass_min_move": false
+          }
+        ]
+      },
+      "trailing_atr_long": {
+        "resolved": {
+          "leverage": 1,
+          "max_drawdown_pct": 50,
+          "stop_loss_atr_mult": null,
+          "stop_loss_atr_mult_regime": false,
+          "stop_loss_margin_pct": null,
+          "stop_loss_pct": null,
+          "trailing_stop_atr_mult": 2,
+          "trailing_stop_atr_mult_regime": false,
+          "trailing_stop_min_move_pct": null,
+          "trailing_stop_pct": null
+        },
+        "owner": "trailing",
+        "trailing_pct": 5,
+        "fixed_atr_pct": 0,
+        "percent_pct": 0,
+        "min_move_pct": 0.5,
+        "arm_trigger": 95.94999999999999,
+        "arm_high_water": 101,
+        "path": [
+          {
+            "mark": 101,
+            "high_water": 101,
+            "trigger": 95.94999999999999,
+            "replaced": false,
+            "bypass_min_move": false
+          },
+          {
+            "mark": 104,
+            "high_water": 104,
+            "trigger": 98.8,
+            "replaced": true,
+            "bypass_min_move": false
+          },
+          {
+            "mark": 104.3,
+            "high_water": 104.3,
+            "trigger": 98.8,
+            "replaced": false,
+            "bypass_min_move": false
+          },
+          {
+            "mark": 108,
+            "high_water": 108,
+            "trigger": 102.6,
+            "replaced": true,
+            "bypass_min_move": false
+          }
+        ]
+      },
+      "trailing_atr_short": {
+        "resolved": {
+          "leverage": 1,
+          "max_drawdown_pct": 50,
+          "stop_loss_atr_mult": null,
+          "stop_loss_atr_mult_regime": false,
+          "stop_loss_margin_pct": null,
+          "stop_loss_pct": null,
+          "trailing_stop_atr_mult": 2,
+          "trailing_stop_atr_mult_regime": false,
+          "trailing_stop_min_move_pct": null,
+          "trailing_stop_pct": null
+        },
+        "owner": "trailing",
+        "trailing_pct": 5,
+        "fixed_atr_pct": 0,
+        "percent_pct": 0,
+        "min_move_pct": 0.5,
+        "arm_trigger": 103.95,
+        "arm_high_water": 99,
+        "path": [
+          {
+            "mark": 99,
+            "high_water": 99,
+            "trigger": 103.95,
+            "replaced": false,
+            "bypass_min_move": false
+          },
+          {
+            "mark": 96,
+            "high_water": 96,
+            "trigger": 100.80000000000001,
+            "replaced": true,
+            "bypass_min_move": false
+          },
+          {
+            "mark": 95.7,
+            "high_water": 95.7,
+            "trigger": 100.80000000000001,
+            "replaced": false,
+            "bypass_min_move": false
+          },
+          {
+            "mark": 92,
+            "high_water": 92,
+            "trigger": 96.60000000000001,
+            "replaced": true,
+            "bypass_min_move": false
+          }
+        ]
+      },
+      "trailing_pct_long": {
+        "resolved": {
+          "leverage": 1,
+          "max_drawdown_pct": 50,
+          "stop_loss_atr_mult": null,
+          "stop_loss_atr_mult_regime": false,
+          "stop_loss_margin_pct": null,
+          "stop_loss_pct": null,
+          "trailing_stop_atr_mult": null,
+          "trailing_stop_atr_mult_regime": false,
+          "trailing_stop_min_move_pct": null,
+          "trailing_stop_pct": 3
+        },
+        "owner": "trailing",
+        "trailing_pct": 3,
+        "fixed_atr_pct": 0,
+        "percent_pct": 3,
+        "min_move_pct": 0.5,
+        "arm_trigger": 97.97,
+        "arm_high_water": 101,
+        "path": [
+          {
+            "mark": 101,
+            "high_water": 101,
+            "trigger": 97.97,
+            "replaced": false,
+            "bypass_min_move": false
+          },
+          {
+            "mark": 103,
+            "high_water": 103,
+            "trigger": 99.91,
+            "replaced": true,
+            "bypass_min_move": false
+          },
+          {
+            "mark": 103.2,
+            "high_water": 103.2,
+            "trigger": 99.91,
+            "replaced": false,
+            "bypass_min_move": false
+          },
+          {
+            "mark": 106,
+            "high_water": 106,
+            "trigger": 102.82,
+            "replaced": true,
+            "bypass_min_move": false
+          },
+          {
+            "mark": 105,
+            "high_water": 106,
+            "trigger": 102.82,
+            "replaced": false,
+            "bypass_min_move": false
+          }
+        ]
+      },
+      "trailing_pct_min_move_one_pct": {
+        "resolved": {
+          "leverage": 1,
+          "max_drawdown_pct": 50,
+          "stop_loss_atr_mult": null,
+          "stop_loss_atr_mult_regime": false,
+          "stop_loss_margin_pct": null,
+          "stop_loss_pct": null,
+          "trailing_stop_atr_mult": null,
+          "trailing_stop_atr_mult_regime": false,
+          "trailing_stop_min_move_pct": 1,
+          "trailing_stop_pct": 3
+        },
+        "owner": "trailing",
+        "trailing_pct": 3,
+        "fixed_atr_pct": 0,
+        "percent_pct": 3,
+        "min_move_pct": 1,
+        "arm_trigger": 97,
+        "arm_high_water": 100,
+        "path": [
+          {
+            "mark": 100,
+            "high_water": 100,
+            "trigger": 97,
+            "replaced": false,
+            "bypass_min_move": false
+          },
+          {
+            "mark": 100.6,
+            "high_water": 100.6,
+            "trigger": 97,
+            "replaced": false,
+            "bypass_min_move": false
+          },
+          {
+            "mark": 101.2,
+            "high_water": 101.2,
+            "trigger": 98.164,
+            "replaced": true,
+            "bypass_min_move": false
+          },
+          {
+            "mark": 102.5,
+            "high_water": 102.5,
+            "trigger": 99.425,
+            "replaced": true,
+            "bypass_min_move": false
+          }
+        ]
+      },
+      "trailing_pct_short": {
+        "resolved": {
+          "leverage": 1,
+          "max_drawdown_pct": 50,
+          "stop_loss_atr_mult": null,
+          "stop_loss_atr_mult_regime": false,
+          "stop_loss_margin_pct": null,
+          "stop_loss_pct": null,
+          "trailing_stop_atr_mult": null,
+          "trailing_stop_atr_mult_regime": false,
+          "trailing_stop_min_move_pct": null,
+          "trailing_stop_pct": 3
+        },
+        "owner": "trailing",
+        "trailing_pct": 3,
+        "fixed_atr_pct": 0,
+        "percent_pct": 3,
+        "min_move_pct": 0.5,
+        "arm_trigger": 101.97,
+        "arm_high_water": 99,
+        "path": [
+          {
+            "mark": 99,
+            "high_water": 99,
+            "trigger": 101.97,
+            "replaced": false,
+            "bypass_min_move": false
+          },
+          {
+            "mark": 97,
+            "high_water": 97,
+            "trigger": 99.91,
+            "replaced": true,
+            "bypass_min_move": false
+          },
+          {
+            "mark": 96.8,
+            "high_water": 96.8,
+            "trigger": 99.91,
+            "replaced": false,
+            "bypass_min_move": false
+          },
+          {
+            "mark": 94,
+            "high_water": 94,
+            "trigger": 96.82000000000001,
+            "replaced": true,
+            "bypass_min_move": false
+          },
+          {
+            "mark": 95,
+            "high_water": 94,
+            "trigger": 96.82000000000001,
+            "replaced": false,
+            "bypass_min_move": false
+          }
+        ]
+      },
+      "trailing_pct_zero_min_move": {
+        "resolved": {
+          "leverage": 1,
+          "max_drawdown_pct": 50,
+          "stop_loss_atr_mult": null,
+          "stop_loss_atr_mult_regime": false,
+          "stop_loss_margin_pct": null,
+          "stop_loss_pct": null,
+          "trailing_stop_atr_mult": null,
+          "trailing_stop_atr_mult_regime": false,
+          "trailing_stop_min_move_pct": 0,
+          "trailing_stop_pct": 3
+        },
+        "owner": "trailing",
+        "trailing_pct": 3,
+        "fixed_atr_pct": 0,
+        "percent_pct": 3,
+        "min_move_pct": 0,
+        "arm_trigger": 97,
+        "arm_high_water": 100,
+        "path": [
+          {
+            "mark": 100,
+            "high_water": 100,
+            "trigger": 97,
+            "replaced": false,
+            "bypass_min_move": false
+          },
+          {
+            "mark": 100.05,
+            "high_water": 100.05,
+            "trigger": 97.04849999999999,
+            "replaced": true,
+            "bypass_min_move": false
+          },
+          {
+            "mark": 100.1,
+            "high_water": 100.1,
+            "trigger": 97.097,
+            "replaced": true,
+            "bypass_min_move": false
+          },
+          {
+            "mark": 100.08,
+            "high_water": 100.1,
+            "trigger": 97.097,
+            "replaced": false,
+            "bypass_min_move": false
+          }
+        ]
+      },
+      "trailing_ratchet_bypass": {
+        "resolved": {
+          "leverage": 1,
+          "max_drawdown_pct": 50,
+          "stop_loss_atr_mult": null,
+          "stop_loss_atr_mult_regime": false,
+          "stop_loss_margin_pct": null,
+          "stop_loss_pct": null,
+          "trailing_stop_atr_mult": 2,
+          "trailing_stop_atr_mult_regime": false,
+          "trailing_stop_min_move_pct": null,
+          "trailing_stop_pct": null
+        },
+        "owner": "trailing",
+        "trailing_pct": 4,
+        "fixed_atr_pct": 0,
+        "percent_pct": 0,
+        "min_move_pct": 0.5,
+        "arm_trigger": 96.96,
+        "arm_high_water": 101,
+        "path": [
+          {
+            "mark": 101,
+            "high_water": 101,
+            "trigger": 96.96,
+            "replaced": false,
+            "bypass_min_move": false
+          },
+          {
+            "mark": 103,
+            "high_water": 103,
+            "trigger": 98.88,
+            "replaced": true,
+            "bypass_min_move": false
+          },
+          {
+            "mark": 104.2,
+            "high_water": 104.2,
+            "trigger": 101.074,
+            "replaced": true,
+            "bypass_min_move": true
+          },
+          {
+            "mark": 104.3,
+            "high_water": 104.3,
+            "trigger": 101.074,
+            "replaced": false,
+            "bypass_min_move": false
+          },
+          {
+            "mark": 106,
+            "high_water": 106,
+            "trigger": 104.304,
+            "replaced": true,
+            "bypass_min_move": true
+          }
+        ]
+      },
+      "unified_regime_close": {
+        "resolved": {
+          "leverage": 1,
+          "max_drawdown_pct": 50,
+          "stop_loss_atr_mult": null,
+          "stop_loss_atr_mult_regime": false,
+          "stop_loss_margin_pct": null,
+          "stop_loss_pct": null,
+          "trailing_stop_atr_mult": null,
+          "trailing_stop_atr_mult_regime": false,
+          "trailing_stop_min_move_pct": null,
+          "trailing_stop_pct": null
+        },
+        "owner": "fixed_atr",
+        "trailing_pct": 0,
+        "fixed_atr_pct": 3,
+        "percent_pct": 0,
+        "min_move_pct": 0.5,
+        "arm_trigger": 97,
+        "arm_high_water": 0,
+        "path": []
+      },
+      "unified_regime_close_short": {
+        "resolved": {
+          "leverage": 1,
+          "max_drawdown_pct": 50,
+          "stop_loss_atr_mult": null,
+          "stop_loss_atr_mult_regime": false,
+          "stop_loss_margin_pct": null,
+          "stop_loss_pct": null,
+          "trailing_stop_atr_mult": null,
+          "trailing_stop_atr_mult_regime": false,
+          "trailing_stop_min_move_pct": null,
+          "trailing_stop_pct": null
+        },
+        "owner": "fixed_atr",
+        "trailing_pct": 0,
+        "fixed_atr_pct": 4,
+        "percent_pct": 0,
+        "min_move_pct": 0.5,
+        "arm_trigger": 104,
+        "arm_high_water": 0,
+        "path": []
+      }
+    },
+    "resolver_order": {
+      "scalar_before_regime": 18,
+      "unified_before_scalar_and_regime": 3
+    }
+  },
+  "geometry": [
+    {
+      "id": "pct_long",
+      "strategy": {
+        "stop_loss_pct": 2
+      },
+      "position": {
+        "side": "long",
+        "anchor": 100,
+        "entry_atr": 2
+      },
+      "marks": [
+        101,
+        102.5
+      ]
+    },
+    {
+      "id": "pct_short",
+      "strategy": {
+        "stop_loss_pct": 2,
+        "direction": "short"
+      },
+      "position": {
+        "side": "short",
+        "anchor": 100,
+        "entry_atr": 2
+      },
+      "marks": [
+        99,
+        97.5
+      ]
+    },
+    {
+      "id": "trailing_pct_long",
+      "strategy": {
+        "trailing_stop_pct": 3
+      },
+      "position": {
+        "side": "long",
+        "anchor": 100,
+        "entry_atr": 2
+      },
+      "marks": [
+        101,
+        103,
+        103.2,
+        106,
+        105
+      ]
+    },
+    {
+      "id": "trailing_pct_short",
+      "strategy": {
+        "trailing_stop_pct": 3,
+        "direction": "short"
+      },
+      "position": {
+        "side": "short",
+        "anchor": 100,
+        "entry_atr": 2
+      },
+      "marks": [
+        99,
+        97,
+        96.8,
+        94,
+        95
+      ]
+    },
+    {
+      "id": "trailing_pct_zero_min_move",
+      "strategy": {
+        "trailing_stop_pct": 3,
+        "trailing_stop_min_move_pct": 0
+      },
+      "position": {
+        "side": "long",
+        "anchor": 100,
+        "entry_atr": 2
+      },
+      "marks": [
+        100,
+        100.05,
+        100.1,
+        100.08
+      ]
+    },
+    {
+      "id": "trailing_pct_min_move_one_pct",
+      "strategy": {
+        "trailing_stop_pct": 3,
+        "trailing_stop_min_move_pct": 1
+      },
+      "position": {
+        "side": "long",
+        "anchor": 100,
+        "entry_atr": 2
+      },
+      "marks": [
+        100,
+        100.6,
+        101.2,
+        102.5
+      ]
+    },
+    {
+      "id": "trailing_atr_long",
+      "strategy": {
+        "trailing_stop_atr_mult": 2
+      },
+      "position": {
+        "side": "long",
+        "anchor": 100,
+        "entry_atr": 2.5
+      },
+      "marks": [
+        101,
+        104,
+        104.3,
+        108
+      ]
+    },
+    {
+      "id": "trailing_atr_short",
+      "strategy": {
+        "trailing_stop_atr_mult": 2,
+        "direction": "short"
+      },
+      "position": {
+        "side": "short",
+        "anchor": 100,
+        "entry_atr": 2.5
+      },
+      "marks": [
+        99,
+        96,
+        95.7,
+        92
+      ]
+    },
+    {
+      "id": "trailing_atr_cap",
+      "strategy": {
+        "trailing_stop_atr_mult": 30
+      },
+      "position": {
+        "side": "long",
+        "anchor": 100,
+        "entry_atr": 2
+      },
+      "marks": [
+        101,
+        110
+      ]
+    },
+    {
+      "id": "fixed_atr_long",
+      "strategy": {
+        "stop_loss_atr_mult": 1.5
+      },
+      "position": {
+        "side": "long",
+        "anchor": 100,
+        "entry_atr": 2
+      },
+      "marks": [
+        101,
+        102
+      ]
+    },
+    {
+      "id": "fixed_atr_short",
+      "strategy": {
+        "stop_loss_atr_mult": 1.5,
+        "direction": "short"
+      },
+      "position": {
+        "side": "short",
+        "anchor": 100,
+        "entry_atr": 2
+      },
+      "marks": [
+        99,
+        98
+      ]
+    },
+    {
+      "id": "fixed_atr_cap",
+      "strategy": {
+        "stop_loss_atr_mult": 30
+      },
+      "position": {
+        "side": "long",
+        "anchor": 100,
+        "entry_atr": 2
+      },
+      "marks": [
+        101
+      ]
+    },
+    {
+      "id": "default_scalar_atr",
+      "strategy": {},
+      "position": {
+        "side": "long",
+        "anchor": 100,
+        "entry_atr": 2
+      },
+      "marks": [
+        101,
+        102
+      ]
+    },
+    {
+      "id": "default_scalar_atr_custom",
+      "config": {
+        "default_stop_loss_atr_mult": 2.5
+      },
+      "strategy": {},
+      "position": {
+        "side": "long",
+        "anchor": 100,
+        "entry_atr": 2
+      },
+      "marks": [
+        101
+      ]
+    },
+    {
+      "id": "explicit_zero_atr_drawdown_fallback",
+      "strategy": {
+        "stop_loss_atr_mult": 0
+      },
+      "position": {
+        "side": "long",
+        "anchor": 100,
+        "entry_atr": 2
+      },
+      "marks": [
+        101
+      ]
+    },
+    {
+      "id": "default_opt_out_custom_drawdown",
+      "config": {
+        "default_stop_loss_atr_mult": 0
+      },
+      "strategy": {
+        "max_drawdown_pct": 20
+      },
+      "position": {
+        "side": "long",
+        "anchor": 100,
+        "entry_atr": 2
+      },
+      "marks": [
+        101
+      ]
+    },
+    {
+      "id": "platform_drawdown_fallback",
+      "config": {
+        "platforms": {
+          "hyperliquid": {
+            "risk": {
+              "max_drawdown_pct": 30
+            }
+          }
+        }
+      },
+      "strategy": {
+        "stop_loss_atr_mult": 0,
+        "direction": "short"
+      },
+      "position": {
+        "side": "short",
+        "anchor": 100,
+        "entry_atr": 2
+      },
+      "marks": [
+        99
+      ]
+    },
+    {
+      "id": "drawdown_fallback_cap",
+      "strategy": {
+        "stop_loss_atr_mult": 0,
+        "max_drawdown_pct": 80
+      },
+      "position": {
+        "side": "long",
+        "anchor": 100,
+        "entry_atr": 2
+      },
+      "marks": [
+        101
+      ]
+    },
+    {
+      "id": "margin_verified_leverage",
+      "strategy": {
+        "stop_loss_margin_pct": 20,
+        "leverage": 5
+      },
+      "position": {
+        "side": "long",
+        "anchor": 100,
+        "entry_atr": 2
+      },
+      "marks": [
+        101
+      ]
+    },
+    {
+      "id": "explicit_zero_trailing_pct_disables",
+      "strategy": {
+        "trailing_stop_pct": 0
+      },
+      "position": {
+        "side": "long",
+        "anchor": 100,
+        "entry_atr": 2
+      },
+      "marks": [
+        101
+      ]
+    },
+    {
+      "id": "explicit_zero_stop_pct_disables",
+      "strategy": {
+        "stop_loss_pct": 0
+      },
+      "position": {
+        "side": "long",
+        "anchor": 100,
+        "entry_atr": 2
+      },
+      "marks": [
+        101
+      ]
+    },
+    {
+      "id": "regime_fixed_atr",
+      "regime": true,
+      "strategy": {
+        "stop_loss_atr_mult_regime": {
+          "trend_regime": {
+            "trending_up": {
+              "atr_multiple": 2
+            },
+            "trending_down": {
+              "atr_multiple": 2.5
+            },
+            "ranging": {
+              "atr_multiple": 1.25
+            }
+          }
+        }
+      },
+      "position": {
+        "side": "long",
+        "anchor": 100,
+        "entry_atr": 2,
+        "regime": "ranging"
+      },
+      "marks": [
+        101,
+        102
+      ]
+    },
+    {
+      "id": "regime_fixed_atr_user_defaults",
+      "regime": true,
+      "config": {
+        "user_defaults": {
+          "regime_atr": {
+            "stop_loss_atr_mult_regime": {
+              "trend_regime": {
+                "trending_up": {
+                  "atr_multiple": 1.75
+                },
+                "trending_down": {
+                  "atr_multiple": 3
+                },
+                "ranging": {
+                  "atr_multiple": 1.1
+                }
+              }
+            }
+          }
+        }
+      },
+      "strategy": {
+        "direction": "short",
+        "stop_loss_atr_mult_regime": {
+          "use_defaults": true
+        }
+      },
+      "position": {
+        "side": "short",
+        "anchor": 100,
+        "entry_atr": 2,
+        "regime": "trending_down"
+      },
+      "marks": [
+        99,
+        98
+      ]
+    },
+    {
+      "id": "regime_trailing_system_defaults",
+      "regime": true,
+      "strategy": {
+        "trailing_stop_atr_mult_regime": {
+          "use_defaults": true
+        }
+      },
+      "position": {
+        "side": "long",
+        "anchor": 100,
+        "entry_atr": 2,
+        "regime": "trending_up"
+      },
+      "marks": [
+        101,
+        104,
+        108
+      ]
+    },
+    {
+      "id": "unified_regime_close",
+      "regime": true,
+      "unified": true,
+      "strategy": {},
+      "position": {
+        "side": "long",
+        "anchor": 100,
+        "entry_atr": 2,
+        "regime": "trending_up"
+      },
+      "marks": [
+        101,
+        102
+      ]
+    },
+    {
+      "id": "unified_regime_close_short",
+      "regime": true,
+      "unified": true,
+      "strategy": {
+        "direction": "short"
+      },
+      "position": {
+        "side": "short",
+        "anchor": 100,
+        "entry_atr": 2,
+        "regime": "trending_down"
+      },
+      "marks": [
+        99,
+        98
+      ]
+    },
+    {
+      "id": "trailing_ratchet_bypass",
+      "strategy": {
+        "trailing_stop_atr_mult": 2,
+        "close_strategy": {
+          "name": "trailing_tp_ratchet"
+        }
+      },
+      "position": {
+        "side": "long",
+        "anchor": 100,
+        "entry_atr": 2
+      },
+      "ratchet": true,
+      "marks": [
+        101,
+        103,
+        104.2,
+        104.3,
+        106
+      ]
+    },
+    {
+      "id": "post_tp_trail_from_here",
+      "strategy": {
+        "stop_loss_atr_mult": 1,
+        "close_strategy": {
+          "name": "tiered_tp_atr",
+          "params": {
+            "tp_tiers": [
+              {
+                "atr_multiple": 1,
+                "close_fraction": 0.5,
+                "sl_after": {
+                  "trail_from_here": {
+                    "atr_mult": 1.5
+                  }
+                }
+              },
+              {
+                "atr_multiple": 10,
+                "close_fraction": 1
+              }
+            ]
+          }
+        }
+      },
+      "position": {
+        "side": "long",
+        "anchor": 100,
+        "entry_atr": 2
+      },
+      "post_tp": {
+        "mark_index": 1,
+        "trail_atr_mult": 1.5
+      },
+      "marks": [
+        101,
+        102.5,
+        103,
+        105,
+        104.8
+      ]
+    },
+    {
+      "id": "scale_in_frozen_anchor",
+      "strategy": {
+        "trailing_stop_atr_mult": 2,
+        "allow_scale_in": true
+      },
+      "position": {
+        "side": "long",
+        "anchor": 100,
+        "entry_atr": 2
+      },
+      "scale_in": {
+        "mark_index": 2,
+        "price": 103.5
+      },
+      "marks": [
+        101,
+        103,
+        104,
+        106
+      ]
+    },
+    {
+      "id": "risk_fixed_atr",
+      "strategy": {
+        "stop_loss_atr_mult": 1.5,
+        "risk_per_trade_pct": 1
+      },
+      "position": {
+        "side": "long",
+        "anchor": 100,
+        "entry_atr": 2
+      },
+      "risk": true,
+      "marks": [
+        101
+      ]
+    },
+    {
+      "id": "risk_fixed_pct",
+      "strategy": {
+        "stop_loss_pct": 2,
+        "risk_per_trade_pct": 1
+      },
+      "position": {
+        "side": "long",
+        "anchor": 100,
+        "entry_atr": 2
+      },
+      "risk": true,
+      "marks": [
+        101
+      ]
+    },
+    {
+      "id": "risk_trailing_pct",
+      "strategy": {
+        "trailing_stop_pct": 4,
+        "risk_per_trade_pct": 1
+      },
+      "position": {
+        "side": "long",
+        "anchor": 100,
+        "entry_atr": 2
+      },
+      "risk": true,
+      "marks": [
+        101
+      ]
+    }
+  ],
+  "regime_enabled": {
+    "regime": {
+      "enabled": true,
+      "period": 14,
+      "adx_threshold": 20
+    }
+  },
+  "resolver_order": [
+    {
+      "id": "unified_before_scalar_and_regime",
+      "base_case": "unified_regime_close",
+      "inject_stop_loss_atr_mult": 9,
+      "inject_stop_loss_atr_mult_regime": true,
+      "drop_unified": false
+    },
+    {
+      "id": "scalar_before_regime",
+      "base_case": "unified_regime_close",
+      "inject_stop_loss_atr_mult": 9,
+      "inject_stop_loss_atr_mult_regime": true,
+      "drop_unified": true
+    }
+  ],
+  "schema_version": 1,
+  "tolerance": 1e-09,
+  "unified_close": {
+    "name": "tiered_tp_atr_regime",
+    "params": {
+      "trend_regime": {
+        "trending_up": {
+          "tp_tiers": [
+            {
+              "atr_multiple": 5,
+              "close_fraction": 0.5
+            },
+            {
+              "atr_multiple": 8,
+              "close_fraction": 1
+            }
+          ],
+          "stop_loss_atr": 1.5
+        },
+        "trending_down": {
+          "tp_tiers": [
+            {
+              "atr_multiple": 5,
+              "close_fraction": 0.5
+            },
+            {
+              "atr_multiple": 8,
+              "close_fraction": 1
+            }
+          ],
+          "stop_loss_atr": 2
+        },
+        "ranging": {
+          "tp_tiers": [
+            {
+              "atr_multiple": 5,
+              "close_fraction": 0.5
+            },
+            {
+              "atr_multiple": 8,
+              "close_fraction": 1
+            }
+          ],
+          "stop_loss_atr": 1
+        }
+      }
+    }
+  },
+  "units": "live config values are live percent; expected *_pct values are live percent; prices are absolute"
+}

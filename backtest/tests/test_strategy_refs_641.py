@@ -3,7 +3,7 @@ import json
 import pandas as pd
 import pytest
 
-from backtester import Backtester
+from backtester import Backtester, CloseCapabilityError
 import run_backtest
 
 
@@ -173,6 +173,12 @@ def _dig(obj, path):
 
 def _assert_config_kwargs(tmp_path, spec):
     path = _write_full_config(tmp_path, spec["cfg"])
+    if "refusal" in spec:
+        with pytest.raises(CloseCapabilityError, match=spec["refusal"]) as exc:
+            run_backtest.load_strategy_config(
+                path, spec["sid"], inject_user_defaults=spec.get("inject", False))
+        assert exc.value.reason_code == "UNSUPPORTED_STOP_OWNER"
+        return
     kwargs = run_backtest.load_strategy_config(
         path, spec["sid"], inject_user_defaults=spec.get("inject", False))
     for check_path, expected in spec["checks"]:
@@ -514,10 +520,7 @@ _USER_DEFAULTS_CASES = {
                  user_defaults={"close": _USER_RATCHET_REGIME}),
         sid="hl-rr",
         inject=False,
-        checks=[
-            (("trailing_stop_atr_mult_regime",), None),
-            (_RATCHET_TP, None),
-        ],
+        refusal="trailing_tp_ratchet_regime requires trailing_stop_atr_mult_regime",
     ),
     "ratchet_regime_trail_does_not_override_stop_owner": dict(
         cfg=_cfg(16, [_ratchet_regime_strategy(trailing_stop_atr_mult=3.0)],
@@ -525,10 +528,7 @@ _USER_DEFAULTS_CASES = {
                  user_defaults={"close": _USER_RATCHET_REGIME}),
         sid="hl-rr",
         inject=True,
-        checks=[
-            (("trailing_stop_atr_mult_regime",), None),
-            (("trailing_stop_atr_mult",), 3.0),
-        ],
+        refusal="trailing_tp_ratchet_regime requires trailing_stop_atr_mult_regime",
     ),
 }
 

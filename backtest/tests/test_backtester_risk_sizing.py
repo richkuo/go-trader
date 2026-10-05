@@ -9,7 +9,7 @@ import pytest
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent.parent / "shared_tools"))
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
-from backtester import Backtester
+from backtester import Backtester, CloseCapabilityError
 import run_backtest
 
 
@@ -193,7 +193,6 @@ def test_config_threads_risk_per_trade_pct(tmp_path):
         ({"sizing_leverage": 2.0}, False, "sizing_leverage"),
         ({"margin_per_trade_usd": 50.0}, False, "margin_per_trade_usd"),
         ({"allow_scale_in": True}, False, "allow_scale_in"),
-        ({"stop_loss_pct": 2.0}, True, "fraction-denominated"),
     ],
 )
 def test_config_rejects_invalid_risk_sizing_combo(tmp_path, overrides,
@@ -206,6 +205,15 @@ def test_config_rejects_invalid_risk_sizing_combo(tmp_path, overrides,
         run_backtest.load_strategy_config(path, "hl-r-btc")
 
 
+def test_config_percent_risk_owner_converts_once(tmp_path):
+    sc = _risk_strategy(stop_loss_pct=2.0)
+    del sc["stop_loss_atr_mult"]
+    path = _write_config(tmp_path, sc)
+    kwargs = run_backtest.load_strategy_config(path, "hl-r-btc")
+    assert kwargs["stop_loss_pct"] == pytest.approx(0.02)
+    assert kwargs["stop_loss_atr_mult"] is None
+
+
 def test_config_explicit_zero_stop_owner_rejects(tmp_path):
     for owner in ("stop_loss_pct", "trailing_stop_pct", "stop_loss_margin_pct",
                   "stop_loss_atr_mult", "trailing_stop_atr_mult"):
@@ -213,17 +221,9 @@ def test_config_explicit_zero_stop_owner_rejects(tmp_path):
         if owner != "stop_loss_atr_mult":
             del sc["stop_loss_atr_mult"]
         path = _write_config(tmp_path, sc)
-        kwargs = run_backtest.load_strategy_config(path, "hl-r-btc")
-        assert kwargs[owner] == 0, owner
-        with pytest.raises(ValueError, match="stop"):
-            Backtester(
-                risk_per_trade_pct=kwargs["risk_per_trade_pct"],
-                stop_loss_atr_mult=kwargs["stop_loss_atr_mult"],
-                stop_loss_pct=kwargs["stop_loss_pct"],
-                stop_loss_margin_pct=kwargs["stop_loss_margin_pct"],
-                trailing_stop_atr_mult=kwargs["trailing_stop_atr_mult"],
-                trailing_stop_pct=kwargs["trailing_stop_pct"],
-            )
+        with pytest.raises(CloseCapabilityError, match="stop") as exc:
+            run_backtest.load_strategy_config(path, "hl-r-btc")
+        assert exc.value.reason_code == "UNSUPPORTED_STOP_OWNER", owner
 
 
 def test_config_materializes_default_stop_owner(tmp_path):

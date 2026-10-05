@@ -53,9 +53,14 @@ def _attach_funding_if_needed(df, strategy_name, symbol, since):
     return out
 from htf_filter import get_default_htf, apply_htf_filter
 from registry_loader import load_registry
-from backtester import (Backtester, CloseCapabilityError, aggregate_close_validations,
-                        format_close_validation, format_results,
-                        validate_close_capabilities)
+from backtester import (Backtester, CapabilityContext, CloseCapabilityError,
+                        STOP_FIELD_KEYS, STOP_GEOMETRY_INPUT_KEYS,
+                        STOP_PERCENT_FIELD_KEYS, STOP_REGIME_FIELD_KEYS,
+                        STOP_SCALAR_FIELD_KEYS, STOP_UNITS_LIVE_CONFIG,
+                        STOP_UNITS_PREVIEW, _finite_number, _unified_close_params,
+                        aggregate_close_validations, build_stop_capability_context,
+                        format_close_validation, format_results, leverage_evidence,
+                        stop_raw_fields, validate_close_capabilities)
 from optimizer import (walk_forward_optimize, DEFAULT_PARAM_RANGES,
                        DEFAULT_CLOSE_STACK_SPECS, generate_close_stack_grid)
 from reporter import (
@@ -669,6 +674,177 @@ def _capture_promotion_baseline(cfg: dict, sc: dict) -> dict:
     }
 
 
+_PLATFORM_ID_PREFIXES = (
+    ("ibkr-", "ibkr"),
+    ("deribit-", "deribit"),
+    ("hl-", "hyperliquid"),
+    ("ts-", "topstep"),
+    ("rh-", "robinhood"),
+    ("luno-", "luno"),
+    ("okx-", "okx"),
+)
+_LIVE_DRAWDOWN_DEFAULT_PCT = {"options": 40.0, "perps": 50.0, "futures": 45.0}
+_LIVE_DEFAULT_STOP_LOSS_ATR_MULT = 1.0
+
+
+LIVE_STOP_KWARG_KEYS = STOP_FIELD_KEYS + STOP_GEOMETRY_INPUT_KEYS + (
+    "stop_platform", "capability_context")
+
+
+def live_stop_kwargs(loaded: dict) -> dict:
+    return {k: loaded[k] for k in LIVE_STOP_KWARG_KEYS if k in loaded}
+
+
+def stop_context_to_json(loaded: dict) -> dict:
+    out = {k: deepcopy(loaded[k]) for k in STOP_FIELD_KEYS + STOP_GEOMETRY_INPUT_KEYS
+           + ("stop_platform", "strategy_type") if loaded.get(k) is not None}
+    context = loaded.get("capability_context")
+    if context is not None:
+        out["capability_context"] = context.to_dict()
+    out["stop_units"] = "engine_fraction"
+    return out
+
+
+def stop_kwargs_from_json(payload) -> dict:
+    if not isinstance(payload, dict):
+        raise ValueError(f"stop_context must be an object, got {type(payload).__name__}")
+    if payload.get("stop_units") != "engine_fraction":
+        raise ValueError(
+            "stop_context.stop_units must be 'engine_fraction' (the translator already "
+            f"converted live percent units once), got {payload.get('stop_units')!r}")
+    allowed = set(STOP_FIELD_KEYS + STOP_GEOMETRY_INPUT_KEYS) | {
+        "stop_platform", "strategy_type", "capability_context", "stop_units"}
+    unknown = sorted(set(payload) - allowed)
+    if unknown:
+        raise ValueError(f"stop_context has unknown key(s) {unknown}")
+    out = {k: deepcopy(v) for k, v in payload.items()
+           if k not in ("capability_context", "stop_units")}
+    context = payload.get("capability_context")
+    if context is not None:
+        if not isinstance(context, dict) or set(context) != {
+                "raw_fields", "resolved_stop_owner", "input_evidence"}:
+            raise ValueError("stop_context.capability_context must be a serialized "
+                             "CapabilityContext")
+        out["capability_context"] = CapabilityContext(**context)
+    return out
+
+
+def live_strategy_platform(sc: dict) -> str:
+    raw = str(sc.get("platform") or "").strip()
+    if raw:
+        return raw.lower()
+    sid = str(sc.get("id") or "")
+    for prefix, name in _PLATFORM_ID_PREFIXES:
+        if sid.startswith(prefix):
+            return name
+    return "deribit" if str(sc.get("type") or "") == "options" else "binanceus"
+
+
+def _live_max_drawdown_pct(cfg: dict, sc: dict, platform: str, strategy_type: str) -> float:
+    explicit = _finite_number(sc.get("max_drawdown_pct"))
+    if explicit is not None and explicit != 0:
+        return explicit
+    platform_cfg = (cfg.get("platforms") or {}).get(platform)
+    risk = platform_cfg.get("risk") if isinstance(platform_cfg, dict) else None
+    if isinstance(risk, dict) and (_finite_number(risk.get("max_drawdown_pct")) or 0) > 0:
+        return float(risk["max_drawdown_pct"])
+    return _LIVE_DRAWDOWN_DEFAULT_PCT.get(strategy_type, 60.0)
+
+
+def apply_live_scalar_stop_default(cfg: dict, sc: dict, platform: str, strategy_type: str,
+                                   close_refs: list) -> None:
+    default = cfg.get("default_stop_loss_atr_mult")
+    default = _LIVE_DEFAULT_STOP_LOSS_ATR_MULT if default is None else _finite_number(default)
+    if default is None or default < 0:
+        raise ValueError(
+            f"default_stop_loss_atr_mult must be >= 0, got {cfg.get('default_stop_loss_atr_mult')!r}")
+    if default == 0 or strategy_type != "perps" or platform != "hyperliquid":
+        return
+    if any(sc.get(k) is not None for k in STOP_SCALAR_FIELD_KEYS):
+        return
+    if any(isinstance(sc.get(k), dict) and sc.get(k) for k in STOP_REGIME_FIELD_KEYS):
+        return
+    if _unified_close_params(close_refs) is not None:
+        return
+    sc["stop_loss_atr_mult"] = default
+
+
+def _atr_window_evidence(sc: dict, regime_cfg: dict) -> dict:
+    window = str(sc.get("regime_atr_window") or "").strip().lower()
+    if window in ("", "default"):
+        return {"status": "verified", "source": "regime_atr_window", "value": window or None}
+    windows = regime_cfg.get("windows") if regime_cfg.get("enabled") else None
+    names = sorted(str(k).strip().lower() for k in (windows or {}))
+    primary = "medium" if "medium" in names else (names[0] if names else "")
+    status = "verified" if window == primary else "missing"
+    return {"status": status, "source": "regime_atr_window", "value": window}
+
+
+def _jsonable_live_value(value):
+    if isinstance(value, dict):
+        return deepcopy(value)
+    number = _finite_number(value)
+    return number if number is not None else value
+
+
+def live_stop_engine_inputs(resolved: dict, *, raw_fields: dict, source: str,
+                            leverage: dict, extra_evidence: Optional[dict] = None):
+    if source not in (STOP_UNITS_LIVE_CONFIG, STOP_UNITS_PREVIEW):
+        raise ValueError(f"unknown live stop unit source {source!r}")
+    kwargs: dict = {}
+    for key in STOP_FIELD_KEYS + STOP_GEOMETRY_INPUT_KEYS:
+        value = resolved.get(key)
+        if key in STOP_PERCENT_FIELD_KEYS and value is not None:
+            number = _finite_number(value)
+            if number is None:
+                raise ValueError(f"{key} must be a finite number in live percent units, "
+                                 f"got {value!r}")
+            value = number / 100.0
+        kwargs[key] = deepcopy(value)
+    evidence = {
+        "stop_units": {"status": "verified", "source": source,
+                       "value": "live_percent_to_engine_fraction"},
+        "leverage": leverage,
+        "resolved_live_units": {
+            "status": "verified", "source": source,
+            "value": {k: _jsonable_live_value(resolved.get(k))
+                      for k in STOP_FIELD_KEYS + STOP_GEOMETRY_INPUT_KEYS}},
+    }
+    evidence.update(extra_evidence or {})
+    return kwargs, CapabilityContext(raw_fields=raw_fields, input_evidence=evidence)
+
+
+def translate_live_stop_config(cfg: dict, sc: dict, raw_fields: dict, *, platform: str,
+                               strategy_type: str, close_refs: list, regime_cfg: dict,
+                               regime_windows_spec, risk_per_trade_pct,
+                               comparison_mode=None, consumer: str = "engine",
+                               phase: str = "preflight"):
+    apply_live_scalar_stop_default(cfg, sc, platform, strategy_type, close_refs)
+    resolved = {k: sc.get(k) for k in STOP_FIELD_KEYS}
+    resolved["max_drawdown_pct"] = _live_max_drawdown_pct(cfg, sc, platform, strategy_type)
+    resolved["trailing_stop_min_move_pct"] = sc.get("trailing_stop_min_move_pct")
+    raw_leverage = sc.get("leverage")
+    if strategy_type == "perps" and not ((_finite_number(raw_leverage) or 0) > 0):
+        resolved["leverage"] = 1.0
+        lev = {"status": "unverified", "source": "default", "value": 1.0}
+    else:
+        resolved["leverage"] = raw_leverage
+        lev = leverage_evidence(raw_leverage, "config", True)
+    kwargs, context = live_stop_engine_inputs(
+        resolved, raw_fields=raw_fields, source=STOP_UNITS_LIVE_CONFIG, leverage=lev,
+        extra_evidence={"atr_regime_window": _atr_window_evidence(sc, regime_cfg)})
+    kwargs["stop_platform"] = platform
+    preflight = build_stop_capability_context(
+        platform=platform, strategy_type=strategy_type, close_refs=close_refs,
+        fields=kwargs, regime_windows_spec=regime_windows_spec,
+        risk_per_trade_pct=risk_per_trade_pct, capability_context=context)
+    validation = validate_close_capabilities(
+        close_refs=close_refs, comparison_mode=comparison_mode, platform=platform,
+        strategy_type=strategy_type, consumer=consumer, phase=phase,
+        capability_context=preflight)
+    return kwargs, context, validation
+
+
 def load_strategy_config(config_path: str, strategy_id: str,
                          inject_user_defaults: bool = False,
                          include_promotion_baseline: bool = False,
@@ -692,6 +868,7 @@ def load_strategy_config(config_path: str, strategy_id: str,
     for sc in cfg.get("strategies", []) or []:
         if sc.get("id") != strategy_id:
             continue
+        raw_stop_fields = stop_raw_fields(sc)
         promotion_baseline = (
             _capture_promotion_baseline(cfg, sc)
             if include_promotion_baseline else None
@@ -762,12 +939,15 @@ def load_strategy_config(config_path: str, strategy_id: str,
         invert_signal = bool(sc.get("invert_signal"))
         strategy_type = str(sc.get("type") or "perps")
         try:
-            close_validation = validate_close_capabilities(
-                close_refs=close_refs,
-                comparison_mode=comparison_mode,
-                platform=str(sc.get("platform") or "").strip().lower() or None,
+            stop_kwargs, stop_context, close_validation = translate_live_stop_config(
+                cfg, sc, raw_stop_fields,
+                platform=live_strategy_platform(sc),
                 strategy_type=strategy_type,
-                phase="preflight",
+                close_refs=close_refs,
+                regime_cfg=regime_cfg,
+                regime_windows_spec=_resolve_regime_windows_spec(regime_cfg),
+                risk_per_trade_pct=sc.get("risk_per_trade_pct"),
+                comparison_mode=comparison_mode,
             )
         except CloseCapabilityError as exc:
             raise exc.with_context(
@@ -893,30 +1073,6 @@ def load_strategy_config(config_path: str, strategy_id: str,
                     f"re-size off frozen SL geometry, breaking the "
                     f"constant-dollar-risk invariant)."
                 )
-            for _pk in ("stop_loss_pct", "trailing_stop_pct", "stop_loss_margin_pct"):
-                if (sc.get(_pk) or 0) > 0:
-                    raise ValueError(
-                        f"{config_path}: strategy {strategy_id!r} sizes "
-                        f"risk_per_trade_pct from {_pk}, but the backtester's "
-                        f"pct-stop fields are fraction-denominated (live is "
-                        f"percent), so the risk formula would skew 100×. Use "
-                        f"an ATR-mult stop owner (stop_loss_atr_mult / "
-                        f"trailing_stop_atr_mult) for risk-sizing backtests."
-                    )
-            if not any(sc.get(k) is not None for k in _STOP_OWNER_KEYS):
-                _default_mult = cfg.get("default_stop_loss_atr_mult")
-                if _default_mult is None:
-                    _default_mult = 1.0
-                _default_mult = float(_default_mult or 0)
-                if _default_mult <= 0:
-                    raise ValueError(
-                        f"{config_path}: strategy {strategy_id!r} sets "
-                        f"risk_per_trade_pct with no stop owner and "
-                        f"default_stop_loss_atr_mult=0 (auto-default opted "
-                        f"out) — no stop distance to size risk from (the "
-                        f"live daemon rejects this config at startup; #1268)."
-                    )
-                sc["stop_loss_atr_mult"] = _default_mult
         cfg_args = sc.get("args") or []
         allow_scale_in = bool(sc.get("allow_scale_in"))
         scale_in_cfg = sc.get("scale_in")
@@ -992,13 +1148,8 @@ def load_strategy_config(config_path: str, strategy_id: str,
                 "params": dict(open_ref.get("params") or {}),
             },
             "close_strategies": close_refs,
-            "stop_loss_atr_mult": sc.get("stop_loss_atr_mult"),
-            "stop_loss_pct": sc.get("stop_loss_pct"),
-            "stop_loss_margin_pct": sc.get("stop_loss_margin_pct"),
-            "trailing_stop_atr_mult": sc.get("trailing_stop_atr_mult"),
-            "trailing_stop_pct": sc.get("trailing_stop_pct"),
-            "stop_loss_atr_mult_regime": sc.get(_V19_STOP_LOSS_KEY),
-            "trailing_stop_atr_mult_regime": sc.get(_V19_TRAIL_STOP_KEY),
+            **stop_kwargs,
+            "capability_context": stop_context,
             "strategy_type": strategy_type,
             "direction": direction,
             "invert_signal": invert_signal,
@@ -1018,7 +1169,7 @@ def load_strategy_config(config_path: str, strategy_id: str,
             "allow_scale_in": allow_scale_in,
             "scale_in": dict(scale_in_cfg) if scale_in_cfg else None,
             "atr_method": atr_method,
-            "platform": str(sc.get("platform") or "").strip().lower(),
+            "platform": live_strategy_platform(sc),
             "comparison_mode": close_validation.mode,
         }
         if include_promotion_baseline:
@@ -1074,6 +1225,11 @@ def run_single_backtest(
     manifest_window: Optional[str] = None,
     cost_multiplier: float = 1.0,
     comparison_mode: Optional[str] = None,
+    leverage: Optional[float] = None,
+    max_drawdown_pct: Optional[float] = None,
+    trailing_stop_min_move_pct: Optional[float] = None,
+    stop_platform: Optional[str] = None,
+    capability_context: Optional[CapabilityContext] = None,
 ) -> Optional[dict]:
     manifest = None
     manifest_dataset_entry = None
@@ -1269,6 +1425,11 @@ def run_single_backtest(
         trailing_stop_pct=trailing_stop_pct,
         stop_loss_atr_mult_regime=stop_loss_atr_mult_regime,
         trailing_stop_atr_mult_regime=trailing_stop_atr_mult_regime,
+        leverage=leverage,
+        max_drawdown_pct=max_drawdown_pct,
+        trailing_stop_min_move_pct=trailing_stop_min_move_pct,
+        stop_platform=stop_platform,
+        capability_context=capability_context,
         strategy_type=strategy_type,
         direction=direction,
         invert_signal=invert_signal,
@@ -1782,6 +1943,11 @@ def _main():
             "scale_in",
             "atr_method",
             "hurst_gate",
+            "leverage",
+            "max_drawdown_pct",
+            "trailing_stop_min_move_pct",
+            "stop_platform",
+            "capability_context",
         )
         live_stop_kwargs = {k: live_kwargs[k] for k in stop_keys if k in live_kwargs}
         args.regime_enabled = live_kwargs.get("regime_enabled", args.regime_enabled)

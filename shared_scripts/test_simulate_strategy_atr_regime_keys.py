@@ -78,7 +78,8 @@ def _payload(cfg: dict) -> dict:
     full = {
         "type": "perps", "platform": "hyperliquid", "symbol": "BTC/USDC",
         "timeframe": "1h", "open_strategy": {"name": "hold", "params": {}},
-        "initial_capital": 1000,
+        "initial_capital": 1000, "stop_units": "live_percent",
+        "leverage_source": "loaded_config",
     }
     full.update(cfg)
     return _run_payload({"candles": candles, "configs": [{"label": "x", "config": full}]})

@@ -68,6 +68,8 @@ class ParityConfig:
     batched: bool = False
     open_close_config: bool = False
     comparison_mode: Optional[str] = None
+    strategy_type: str = "perps"
+    stop_kwargs: dict = field(default_factory=dict)
 
     def __post_init__(self):
         self.regime_directional_policy = _normalize_regime_directional_policy(
@@ -78,7 +80,7 @@ class ParityConfig:
 def config_from_live_config(config_path: str, strategy_id: str,
                             platform: str = "",
                             comparison_mode: Optional[str] = None) -> ParityConfig:
-    from run_backtest import load_strategy_config
+    from run_backtest import live_stop_kwargs, load_strategy_config
     loaded = load_strategy_config(config_path, strategy_id,
                                   inject_user_defaults=True,
                                   comparison_mode=comparison_mode)
@@ -127,6 +129,8 @@ def config_from_live_config(config_path: str, strategy_id: str,
         regime_windows_spec=loaded.get("regime_windows_spec"),
         open_close_config=bool(entry.get("open_strategy") or entry.get("close_strategy")),
         comparison_mode=comparison_mode,
+        strategy_type=str(loaded.get("strategy_type") or "perps"),
+        stop_kwargs=live_stop_kwargs(loaded),
     )
 
 
@@ -726,6 +730,8 @@ def extract_fills_report(df: pd.DataFrame, cfg: ParityConfig) -> dict:
         regime_directional_policy=cfg.regime_directional_policy,
         regime_directional_certified_states=cfg.regime_directional_certified_states,
         comparison_mode=cfg.comparison_mode,
+        strategy_type=cfg.strategy_type,
+        **cfg.stop_kwargs,
     )
     metrics = bt.run(
         work,

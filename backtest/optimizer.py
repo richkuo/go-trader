@@ -10,7 +10,8 @@ import numpy as np
 import pandas as pd
 
 from registry_loader import load_registry
-from backtester import Backtester, CloseCapabilityError, aggregate_close_validations
+from backtester import (STOP_OWNERS_NEEDING_ATR, Backtester, CloseCapabilityError,
+                        aggregate_close_validations)
 from atr import ensure_atr_indicator
 
 
@@ -229,6 +230,7 @@ def walk_forward_optimize(
     close_stack_grid: Optional[List[dict]] = None,
     direction: Optional[str] = None,
     comparison_mode: Optional[str] = None,
+    stop_kwargs: Optional[dict] = None,
 ) -> dict:
     total_len = len(df)
     window_size = total_len // n_splits
@@ -236,11 +238,21 @@ def walk_forward_optimize(
         raise ValueError(f"Not enough data: {total_len} rows / {n_splits} splits = {window_size} rows per window. Need >= 50.")
 
     if close_stack_grid and (close_strategies or stop_loss_atr_mult
-                             or trailing_stop_atr_mult):
+                             or trailing_stop_atr_mult or stop_kwargs):
         raise ValueError(
             "close_stack_grid is mutually exclusive with the fixed "
-            "close_strategies / stop_loss_atr_mult / trailing_stop_atr_mult "
-            "kwargs — the grid owns the close stack")
+            "close_strategies / stop_loss_atr_mult / trailing_stop_atr_mult / "
+            "stop_kwargs inputs — the grid owns the close stack")
+    extra_stop_kwargs = {}
+    for key, value in (stop_kwargs or {}).items():
+        if key in ("stop_loss_atr_mult", "trailing_stop_atr_mult"):
+            expected = stop_loss_atr_mult if key == "stop_loss_atr_mult" \
+                else trailing_stop_atr_mult
+            if value != expected:
+                raise ValueError(
+                    f"stop_kwargs.{key}={value!r} disagrees with {key}={expected!r}")
+            continue
+        extra_stop_kwargs[key] = value
     if close_stack_grid and direction is None:
         direction = "long"
     if direction == "short":
@@ -286,6 +298,7 @@ def walk_forward_optimize(
             close_strategies=stack.get("close_strategies"),
             direction=direction,
             comparison_mode=comparison_mode,
+            **extra_stop_kwargs,
         ))
         for stack in stacks
     ]
@@ -301,7 +314,7 @@ def walk_forward_optimize(
     uses_exits = needs_atr or any(
         stack.get("stop_loss_atr_mult") or stack.get("trailing_stop_atr_mult")
         for stack, _ in stack_bts
-    )
+    ) or any(stack_bt.stop_owner in STOP_OWNERS_NEEDING_ATR for _, stack_bt in stack_bts)
     if uses_exits:
         warmup = max(warmup, ATR_CLOSE_WARMUP)
 

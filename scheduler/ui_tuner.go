@@ -153,6 +153,9 @@ func (ss *StatusServer) handleAPIStrategySimulate(w http.ResponseWriter, r *http
 	uiCfg := ss.uiTradeConfig()
 	livePayload["atr_method"] = resolveATRMethod(liveCfg, uiCfg)
 	simPayload["atr_method"] = resolveATRMethod(simCfg, uiCfg)
+	if _, ok := req.Overrides["leverage"]; ok {
+		simPayload["leverage_source"] = "tuner_override"
+	}
 	markersByLabel, simErr := runStrategySimulate(candles, map[string]map[string]interface{}{
 		"live":      livePayload,
 		"simulated": simPayload,
@@ -670,6 +673,14 @@ func simulateConfigPayload(sc StrategyConfig, regime *RegimeConfig) map[string]i
 		"initial_capital":    sc.InitialCapital,
 		"stop_loss_pct":      sc.StopLossPct,
 		"stop_loss_atr_mult": sc.StopLossATRMult,
+		"stop_units":         "live_percent",
+		"leverage":           sc.Leverage,
+		"leverage_source":    "loaded_config",
+		"max_drawdown_pct":   sc.MaxDrawdownPct,
+		"regime_atr_window":  sc.RegimeATRWindow,
+	}
+	if sc.TrailingStopMinMovePct != nil {
+		payload["trailing_stop_min_move_pct"] = *sc.TrailingStopMinMovePct
 	}
 	if sc.StopLossMarginPct != nil {
 		payload["stop_loss_margin_pct"] = *sc.StopLossMarginPct

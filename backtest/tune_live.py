@@ -24,7 +24,9 @@ from registry_loader import load_registry, registry_for_strategy_type
 from run_backtest import (
     FUNDING_COLUMN_STRATEGIES,
     _attach_funding_if_needed,
+    live_stop_kwargs,
     load_strategy_config,
+    stop_context_to_json,
 )
 
 SCHEMA_VERSION = 2
@@ -220,14 +222,17 @@ def build_candidate(open_name: str, params: dict, resolution: dict) -> dict:
         cand["stop_loss_atr_mult"] = resolution["stop_loss_atr_mult"]
     if resolution.get("trailing_stop_atr_mult") is not None:
         cand["trailing_stop_atr_mult"] = resolution["trailing_stop_atr_mult"]
+    if resolution.get("capability_context") is not None:
+        cand["stop_context"] = stop_context_to_json(resolution)
     if resolution.get("regime_enabled"):
+        cand["regime_enabled"] = True
         if resolution.get("allowed_regimes"):
             cand["allowed_regimes"] = list(resolution["allowed_regimes"])
-            if not resolution.get("regime_windows_spec"):
-                cand["regime_period"] = int(
-                    resolution.get("regime_period") or 14)
-                cand["regime_adx_threshold"] = float(
-                    resolution.get("regime_adx_threshold") or 20.0)
+        if not resolution.get("regime_windows_spec"):
+            cand["regime_period"] = int(
+                resolution.get("regime_period") or 14)
+            cand["regime_adx_threshold"] = float(
+                resolution.get("regime_adx_threshold") or 20.0)
         if resolution.get("regime_windows_spec"):
             cand["regime_windows_spec"] = copy.deepcopy(
                 resolution["regime_windows_spec"])
@@ -328,6 +333,8 @@ def run_stage1(open_name: str, grid: dict, resolution: dict, symbol: str,
         close_strategies=resolution.get("close_strategies") or None,
         stop_loss_atr_mult=resolution.get("stop_loss_atr_mult"),
         trailing_stop_atr_mult=resolution.get("trailing_stop_atr_mult"),
+        stop_kwargs=dict(live_stop_kwargs(resolution),
+                         strategy_type=resolution.get("strategy_type") or "perps"),
         optimize_metric=metric,
         direction=resolution.get("direction"),
         comparison_mode=resolution.get("comparison_mode"),
@@ -438,12 +445,24 @@ def tune_strategy(config_path: str, strategy_id: str, symbol: str,
     result["baseline_params"] = baseline_params
     result["promotion_baseline"] = resolution.pop("promotion_baseline")
     result["close_strategies"] = copy.deepcopy(resolution.get("close_strategies") or [])
+    context = resolution.get("capability_context")
+    live_units = {}
+    if context is not None:
+        live_units = dict(context.to_dict()["input_evidence"]
+                          .get("resolved_live_units", {}).get("value") or {})
     result["stop_owner"] = {
-        k: resolution.get(k) for k in
+        k: live_units.get(k) for k in
         ("stop_loss_atr_mult", "trailing_stop_atr_mult",
          "stop_loss_atr_mult_regime", "trailing_stop_atr_mult_regime",
          "stop_loss_pct", "trailing_stop_pct", "stop_loss_margin_pct")
-        if resolution.get(k) not in (None, 0, 0.0)
+        if live_units.get(k) not in (None, 0, 0.0)
+    }
+    result["stop_owner_units"] = {
+        "stop_loss_pct": "live_percent", "trailing_stop_pct": "live_percent",
+        "stop_loss_margin_pct": "live_percent_of_margin",
+        "stop_loss_atr_mult": "atr_multiple", "trailing_stop_atr_mult": "atr_multiple",
+        "stop_loss_atr_mult_regime": "atr_multiple",
+        "trailing_stop_atr_mult_regime": "atr_multiple",
     }
 
     if not symbol or not timeframe:

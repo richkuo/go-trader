@@ -273,7 +273,8 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
             intrabar_resolution: str = "ohlc_walk",
             exchange_id: Optional[str] = None,
             manifest_ctx: Optional[dict] = None,
-            comparison_mode: Optional[str] = None) -> Optional[dict]:
+            comparison_mode: Optional[str] = None,
+            stop_kwargs: Optional[dict] = None) -> Optional[dict]:
     from atr import ensure_atr_indicator
     import pandas as pd
     from data_fetcher import load_cached_data
@@ -423,6 +424,13 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
     if regime_directional_policy:
         bt_kwargs["regime_directional_policy"] = regime_directional_policy
         bt_kwargs["regime_directional_certified"] = True
+    for key, value in (stop_kwargs or {}).items():
+        if key in ("stop_loss_atr_mult", "trailing_stop_atr_mult"):
+            if value != bt_kwargs[key]:
+                raise ValueError(
+                    f"stop_kwargs.{key}={value!r} disagrees with {key}={bt_kwargs[key]!r}")
+            continue
+        bt_kwargs[key] = value
     bt = Backtester(**bt_kwargs)
     results = bt.run(df_signals, strategy_name=name, symbol=symbol,
                      timeframe=timeframe, params=strat_params, save=False,
@@ -508,6 +516,7 @@ def validate_candidate(candidate: dict) -> dict:
             "candidate sets both stop_loss_atr_mult and "
             "trailing_stop_atr_mult; the stop owners are mutually exclusive "
             "— pick one.")
+    candidate_stop_kwargs(candidate)
     pal = candidate.get("profile_allocation")
     if pal:
         from backtester import _parse_profile_allocation
@@ -605,6 +614,19 @@ def validate_candidate(candidate: dict) -> dict:
     return candidate
 
 
+def candidate_stop_kwargs(candidate: dict) -> Optional[dict]:
+    if candidate.get("stop_context") is None:
+        return None
+    from run_backtest import stop_kwargs_from_json
+    kwargs = stop_kwargs_from_json(candidate["stop_context"])
+    for key in ("stop_loss_atr_mult", "trailing_stop_atr_mult"):
+        if kwargs.get(key) != candidate.get(key):
+            raise ValueError(
+                f"candidate.{key}={candidate.get(key)!r} disagrees with "
+                f"candidate.stop_context.{key}={kwargs.get(key)!r}")
+    return kwargs
+
+
 def run_candidate_leg(reg, candidate: dict, symbol: str, timeframe: str,
                       window: tuple, capital: float = DEFAULT_CAPITAL, *,
                       keep_trades: bool = False,
@@ -625,10 +647,12 @@ def run_candidate_leg(reg, candidate: dict, symbol: str, timeframe: str,
             candidate.get("regime_adx_threshold") or 20.0),
         regime_windows_spec=candidate.get("regime_windows_spec"),
         regime_directional_policy=candidate.get("regime_directional_policy"),
+        regime_enabled=bool(candidate.get("regime_enabled")),
         keep_trades=keep_trades,
         intrabar_resolution=intrabar_resolution,
         manifest_ctx=manifest_ctx,
         comparison_mode=candidate.get("comparison_mode"),
+        stop_kwargs=candidate_stop_kwargs(candidate),
     )
 
 
@@ -782,10 +806,14 @@ def build_parser() -> argparse.ArgumentParser:
                         "close_strategies?, direction?, invert_signal?, "
                         "stop_loss_atr_mult?, trailing_stop_atr_mult?, "
                         "allowed_regimes?, regime_windows_spec?, "
-                        "regime_directional_policy?, profile_allocation?}. "
+                        "regime_enabled?, regime_directional_policy?, "
+                        "profile_allocation?, stop_context?}. "
                         "Overrides --strategy/--params. allowed_regimes enables "
                         "the entry gate on the M1 bar (legacy lookback unless "
-                        "regime_windows_spec picks another classifier).")
+                        "regime_windows_spec picks another classifier); "
+                        "regime_enabled stamps the regime label a regime or "
+                        "unified stop owner resolves from; stop_context is "
+                        "the engine-fraction stop context tune_live.py writes.")
     p.add_argument("--registry", choices=["spot", "futures"], default="spot")
     p.add_argument("--direction", default=None,
                    choices=["long", "short", "both"],

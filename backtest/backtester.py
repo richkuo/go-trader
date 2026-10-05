@@ -266,7 +266,8 @@ CLOSE_VALIDATION_FIELDS = (
     "refusals",
 )
 CAPABILITY_CONSUMERS = ("engine", "decision_parity", "entry_replay")
-CAPABILITY_PHASES = ("construction", "preflight")
+CAPABILITY_PHASES = ("construction", "preflight", "runtime")
+_STATIC_CAPABILITY_PHASES = ("construction", "preflight")
 CAPABILITY_INPUT_STATUSES = ("verified", "missing", "unverified", "invalid")
 
 CLOSE_CAPABILITY_REFUSAL_CODES = (
@@ -278,7 +279,38 @@ CLOSE_CAPABILITY_REFUSAL_CODES = (
     "UNSUPPORTED_LIVE_CONTEXT",
     "UNSUPPORTED_REPLAY_CAPABILITY",
     "INVALID_CAPABILITY_CONTEXT",
+    "MISSING_STOP_INPUT",
+    "UNSUPPORTED_STOP_OWNER",
+    "UNVERIFIED_MARGIN_LEVERAGE",
 )
+
+STOP_SCALAR_FIELD_KEYS = (
+    "stop_loss_atr_mult",
+    "stop_loss_pct",
+    "stop_loss_margin_pct",
+    "trailing_stop_atr_mult",
+    "trailing_stop_pct",
+)
+STOP_REGIME_FIELD_KEYS = ("stop_loss_atr_mult_regime", "trailing_stop_atr_mult_regime")
+STOP_FIELD_KEYS = STOP_SCALAR_FIELD_KEYS + STOP_REGIME_FIELD_KEYS
+STOP_GEOMETRY_INPUT_KEYS = ("leverage", "max_drawdown_pct", "trailing_stop_min_move_pct")
+STOP_PERCENT_FIELD_KEYS = (
+    "stop_loss_pct",
+    "stop_loss_margin_pct",
+    "trailing_stop_pct",
+    "max_drawdown_pct",
+    "trailing_stop_min_move_pct",
+)
+STOP_UNITS_DIRECT = "direct_fraction"
+STOP_UNITS_LIVE_CONFIG = "live_config"
+STOP_UNITS_PREVIEW = "preview_payload"
+STOP_UNIT_SOURCES = (STOP_UNITS_DIRECT, STOP_UNITS_LIVE_CONFIG, STOP_UNITS_PREVIEW)
+MAX_AUTO_STOP_LOSS_FRACTION = 0.5
+DEFAULT_TRAILING_STOP_MIN_MOVE_FRACTION = 0.005
+STOP_OWNERS_NEEDING_ATR = (
+    "trailing_atr", "trailing_atr_regime", "fixed_atr", "fixed_atr_regime", "unified_regime",
+)
+STOP_OWNERS_NEEDING_LABEL = ("trailing_atr_regime", "fixed_atr_regime", "unified_regime")
 CLOSE_CAPABILITY_APPROXIMATION_CODES = ("RESEARCH_ONLY_CLOSE_CONTEXT",)
 
 CLOSE_LIVE_SUPPORTED = "supported"
@@ -402,6 +434,11 @@ class CapabilityContext:
             "resolved_stop_owner": _thaw_json(self.resolved_stop_owner),
             "input_evidence": _thaw_json(self.input_evidence),
         }
+
+    def __reduce__(self):
+        return (CapabilityContext, (_thaw_json(self.raw_fields),
+                                    _thaw_json(self.resolved_stop_owner),
+                                    _thaw_json(self.input_evidence)))
 
 
 @dataclass(frozen=True)
@@ -541,18 +578,328 @@ def _check_entry_replay(request: CloseCapabilityRequest) -> list:
     return out
 
 
+def uses_hyperliquid_stop_geometry(platform, strategy_type) -> bool:
+    return (str(platform or "").strip().lower() == "hyperliquid"
+            and str(strategy_type or "").strip().lower() == "perps")
+
+
+def _finite_number(value) -> Optional[float]:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if math.isfinite(out) else None
+
+
+def _positive(value) -> bool:
+    v = _finite_number(value)
+    return v is not None and v > 0
+
+
+def _unified_close_params(close_refs) -> Optional[dict]:
+    for ref in close_refs or ():
+        name = str(ref.get("name") or "").strip().lower()
+        if name not in ("tiered_tp_atr_regime", "tiered_tp_atr_live_regime"):
+            continue
+        params = _thaw_json(ref.get("params") or {})
+        if isinstance(params, dict) and "trend_regime" in params:
+            return params
+        return None
+    return None
+
+
+def _parse_stop_regime_blocks(fields: Mapping, labels, live: bool) -> Tuple[dict, list]:
+    _ensure_close_strategies_path()
+    from regime_atr import SURFACE_STOP_LOSS, SURFACE_TRAILING, parse_regime_atr_block
+    blocks: dict = {}
+    errs: list = []
+    for key, surface in (("stop_loss_atr_mult_regime", SURFACE_STOP_LOSS),
+                         ("trailing_stop_atr_mult_regime", SURFACE_TRAILING)):
+        raw = fields.get(key)
+        if raw is None or (not live and not raw):
+            blocks[key] = None
+            continue
+        blk, block_errs = parse_regime_atr_block(
+            _thaw_json(raw), key, surface, labels=tuple(labels) if labels else None)
+        errs.extend(block_errs)
+        blocks[key] = blk
+    return blocks, errs
+
+
+def _regime_block_active(block) -> bool:
+    return block is not None and not block.is_zero()
+
+
+def resolve_static_stop_owner(fields: Mapping, blocks: Mapping, unified: bool,
+                              hyperliquid: bool) -> str:
+    if not hyperliquid:
+        return "legacy"
+    tsp = _finite_number(fields.get("trailing_stop_pct"))
+    tsp_present = fields.get("trailing_stop_pct") is not None
+    sl_regime = _regime_block_active(blocks.get("stop_loss_atr_mult_regime"))
+    trail_regime = _regime_block_active(blocks.get("trailing_stop_atr_mult_regime"))
+    if tsp_present:
+        if tsp is not None and tsp > 0:
+            return "trailing_pct"
+    elif _positive(fields.get("trailing_stop_atr_mult")):
+        return "trailing_atr"
+    elif trail_regime:
+        return "trailing_atr_regime"
+    if unified:
+        return "unified_regime"
+    if _positive(fields.get("stop_loss_atr_mult")):
+        return "fixed_atr"
+    if sl_regime:
+        return "fixed_atr_regime"
+    if _positive(fields.get("trailing_stop_atr_mult")) or trail_regime or tsp_present:
+        return "none"
+    if fields.get("stop_loss_pct") is not None:
+        return "fixed_pct" if _positive(fields.get("stop_loss_pct")) else "none"
+    if fields.get("stop_loss_margin_pct") is not None:
+        return "margin_pct" if _positive(fields.get("stop_loss_margin_pct")) else "none"
+    if _positive(fields.get("max_drawdown_pct")):
+        return "drawdown_fallback"
+    return "none"
+
+
+def resolve_risk_stop_owner(fields: Mapping, unified: bool,
+                            live: bool) -> Tuple[Optional[str], Optional[str], str]:
+    if unified:
+        return None, None, (
+            "risk_per_trade_pct cannot size from the unified per-regime close block — "
+            "its SL resolves per-regime after open, so the stop distance is unknowable "
+            "at sizing time (#1268; live rejects this at config load)")
+    if _positive(fields.get("trailing_stop_atr_mult")):
+        return "atr", "trailing_stop_atr_mult", ""
+    if _positive(fields.get("stop_loss_atr_mult")):
+        return "atr", "stop_loss_atr_mult", ""
+    if fields.get("stop_loss_atr_mult_regime") or fields.get("trailing_stop_atr_mult_regime"):
+        return None, None, (
+            "risk_per_trade_pct cannot size from a regime-resolved stop owner "
+            "(stop_loss_atr_mult_regime / trailing_stop_atr_mult_regime) — the SL "
+            "resolves from the regime stamped after open (#1268; live rejects this at "
+            "config load)")
+    for key in ("trailing_stop_pct", "stop_loss_pct"):
+        if live and fields.get(key) is not None:
+            if _positive(fields.get(key)):
+                return "pct", key, ""
+            return None, None, (
+                f"risk_per_trade_pct requires a stop owner whose distance is resolvable "
+                f"at sizing time — {key}=0 explicitly disables the stop")
+        if not live and _positive(fields.get(key)):
+            return "pct", key, ""
+    if _positive(fields.get("stop_loss_margin_pct")):
+        return None, None, (
+            "risk_per_trade_pct cannot size from a stop_loss_margin_pct-only stop in "
+            "backtests — margin-percent risk sizing has no proven parity path. Use "
+            "stop_loss_atr_mult, trailing_stop_atr_mult, stop_loss_pct, or "
+            "trailing_stop_pct.")
+    return None, None, (
+        "risk_per_trade_pct requires an explicit stop owner (stop_loss_atr_mult, "
+        "trailing_stop_atr_mult, stop_loss_pct, or trailing_stop_pct) to derive the "
+        "stop distance from (#1268); no stop owner is configured, and the "
+        "max_drawdown_pct fallback is an account backstop, not a per-trade stop")
+
+
+def _stop_context_parameters(request: CloseCapabilityRequest) -> Optional[Mapping]:
+    ctx = request.capability_context
+    if not isinstance(ctx, CapabilityContext) or ctx.resolved_stop_owner is None:
+        return None
+    params = ctx.resolved_stop_owner.get("parameters")
+    if not isinstance(params, Mapping) or "fields" not in params:
+        return None
+    return params
+
+
+def _stop_evidence(request: CloseCapabilityRequest, name: str) -> Optional[Mapping]:
+    ctx = request.capability_context
+    if not isinstance(ctx, CapabilityContext):
+        return None
+    entry = ctx.input_evidence.get(name)
+    return entry if isinstance(entry, Mapping) else None
+
+
+def _stop_refusal(code: str, feature: str, message: str, *, required_inputs=(),
+                  details: Optional[dict] = None) -> CapabilityRecord:
+    payload = {"message": message}
+    payload.update(details or {})
+    return capability_refusal(code, feature, required_inputs=required_inputs, details=payload)
+
+
+def _check_stop_owner_support(request: CloseCapabilityRequest) -> list:
+    params = _stop_context_parameters(request)
+    if params is None:
+        return []
+    fields = params["fields"]
+    live = params.get("admission") == "live"
+    owner = request.capability_context.resolved_stop_owner["name"]
+    labels = params.get("regime_labels")
+    blocks, _ = _parse_stop_regime_blocks(fields, labels, live)
+    refs = [{"name": r["name"], "params": _thaw_json(r["params"])} for r in request.close_refs]
+    unified = _unified_close_params(refs) is not None
+    out: list = []
+
+    def refuse(feature: str, message: str, **extra) -> None:
+        out.append(_stop_refusal("UNSUPPORTED_STOP_OWNER", feature, message, **extra))
+
+    declared = params.get("declared_owner")
+    if declared is not None and declared != owner:
+        refuse("resolved_stop_owner",
+               f"caller-declared stop owner {declared!r} differs from the engine-resolved "
+               f"owner {owner!r}")
+
+    ratchet_ref = next((r for r in refs if str(r["name"]).strip().lower()
+                        in ("trailing_tp_ratchet", "trailing_tp_ratchet_regime")), None)
+    if ratchet_ref is not None:
+        if str(ratchet_ref["name"]).strip().lower() == "trailing_tp_ratchet_regime":
+            if fields.get("trailing_stop_atr_mult_regime") is None:
+                refuse("trailing_tp_ratchet_regime",
+                       "trailing_tp_ratchet_regime requires trailing_stop_atr_mult_regime")
+        elif not _positive(fields.get("trailing_stop_atr_mult")):
+            refuse("trailing_tp_ratchet", "trailing_tp_ratchet requires trailing_stop_atr_mult > 0")
+        if _positive(fields.get("trailing_stop_pct")):
+            refuse(str(ratchet_ref["name"]),
+                   "trailing_tp_ratchet* cannot combine with trailing_stop_pct")
+
+    def set_field(key: str) -> bool:
+        return fields.get(key) is not None if live else _positive(fields.get(key))
+
+    if unified:
+        for key in STOP_SCALAR_FIELD_KEYS:
+            if set_field(key):
+                refuse(key, f"{key} is not allowed alongside a unified per-regime close — "
+                            "the close owns the SL via per-regime stop_loss_atr")
+        regime_conflict = (
+            any(_regime_block_active(blocks.get(k)) for k in STOP_REGIME_FIELD_KEYS)
+            if live else any(fields.get(k) for k in STOP_REGIME_FIELD_KEYS))
+        if regime_conflict:
+            refuse("stop_loss_atr_mult_regime",
+                   "stop_loss_atr_mult_regime/trailing_stop_atr_mult_regime are not allowed "
+                   "alongside a unified per-regime close — the close owns the SL via "
+                   "per-regime stop_loss_atr")
+
+    if _regime_block_active(blocks.get("stop_loss_atr_mult_regime")):
+        for key in ("stop_loss_atr_mult", "stop_loss_pct", "stop_loss_margin_pct",
+                    "trailing_stop_pct", "trailing_stop_atr_mult"):
+            if set_field(key):
+                refuse("stop_loss_atr_mult_regime",
+                       f"stop_loss_atr_mult_regime is mutually exclusive with {key}")
+        trail_blk = blocks.get("trailing_stop_atr_mult_regime")
+        if (trail_blk is not None) if live else _regime_block_active(trail_blk):
+            refuse("stop_loss_atr_mult_regime",
+                   "stop_loss_atr_mult_regime is mutually exclusive with "
+                   "trailing_stop_atr_mult_regime")
+    if _regime_block_active(blocks.get("trailing_stop_atr_mult_regime")):
+        for key in ("trailing_stop_atr_mult", "trailing_stop_pct", "stop_loss_pct",
+                    "stop_loss_margin_pct", "stop_loss_atr_mult"):
+            if set_field(key):
+                refuse("trailing_stop_atr_mult_regime",
+                       f"trailing_stop_atr_mult_regime is mutually exclusive with {key}")
+
+    sl_mod = _load_post_tp_sl()
+    rules, _ = sl_mod.parse_strategy_tp_sl_after_rules(refs, labels=labels)
+    if rules.has_any():
+        has_atr_sl = (_positive(fields.get("stop_loss_atr_mult"))
+                      or _regime_block_active(blocks.get("stop_loss_atr_mult_regime")))
+        if _positive(fields.get("stop_loss_margin_pct")) and not (
+                has_atr_sl or _positive(fields.get("stop_loss_pct"))):
+            refuse("stop_loss_margin_pct",
+                   "Invalid sl_after configuration: stop_loss_margin_pct cannot be the sole "
+                   "fixed SL in backtests — the post-TP margin-stop bump has no proven "
+                   "parity path, so it would diverge from live. Use stop_loss_atr_mult or "
+                   "stop_loss_pct.")
+
+    if params.get("risk_per_trade_pct") is not None:
+        _, _, reason = resolve_risk_stop_owner(fields, unified, live)
+        if reason:
+            refuse("risk_per_trade_pct", reason)
+    return out
+
+
+def _check_stop_inputs(request: CloseCapabilityRequest) -> list:
+    params = _stop_context_parameters(request)
+    if params is None:
+        return []
+    fields = params["fields"]
+    owner = request.capability_context.resolved_stop_owner["name"]
+    out: list = []
+    if request.phase in _STATIC_CAPABILITY_PHASES:
+        _, errs = _parse_stop_regime_blocks(
+            fields, params.get("regime_labels"), params.get("admission") == "live")
+        if errs:
+            out.append(_stop_refusal(
+                "MISSING_STOP_INPUT", "regime_atr_stop",
+                "Invalid regime ATR stop configuration: " + "; ".join(errs),
+                required_inputs=("regime_atr_block",)))
+        window = _stop_evidence(request, "atr_regime_window")
+        if owner in STOP_OWNERS_NEEDING_LABEL and window is not None \
+                and window.get("status") != "verified":
+            out.append(_stop_refusal(
+                "MISSING_STOP_INPUT", owner,
+                f"{owner} resolves from the regime_atr_window {window.get('value')!r} label, "
+                "which the backtester does not compute (it stamps only the primary regime "
+                "window); refusing instead of resolving the stop from the wrong label",
+                required_inputs=("atr_regime_label",),
+                details={"window": window.get("value")}))
+        return out
+    for name, needs in (("entry_atr", owner in STOP_OWNERS_NEEDING_ATR),
+                        ("risk_anchor", owner not in ("none", "legacy")),
+                        ("atr_regime_label", owner in STOP_OWNERS_NEEDING_LABEL),
+                        ("sl_after_entry_atr", True)):
+        evidence = _stop_evidence(request, name)
+        if not needs or evidence is None or evidence.get("status") == "verified":
+            continue
+        out.append(_stop_refusal(
+            "MISSING_STOP_INPUT", owner,
+            f"active stop owner {owner!r} has {evidence.get('status')} {name} "
+            f"({evidence.get('source')}: {evidence.get('value')!r}) at "
+            f"{params.get('event_date')}; live would leave this position without its "
+            "protective stop, so the run is refused instead of simulated unprotected",
+            required_inputs=(name,),
+            details={"input": name, "status": evidence.get("status"),
+                     "event_date": params.get("event_date")}))
+    return out
+
+
+def _check_margin_leverage(request: CloseCapabilityRequest) -> list:
+    params = _stop_context_parameters(request)
+    if params is None or request.capability_context.resolved_stop_owner["name"] != "margin_pct":
+        return []
+    evidence = _stop_evidence(request, "leverage")
+    status = evidence.get("status") if evidence is not None else "missing"
+    if status == "verified" and _positive(params["fields"].get("leverage")):
+        return []
+    return [_stop_refusal(
+        "UNVERIFIED_MARGIN_LEVERAGE", "stop_loss_margin_pct",
+        "stop_loss_margin_pct owns the stop, but its price distance needs a verified "
+        f"leverage input (leverage evidence is {status}"
+        + (f", source {evidence.get('source')}" if evidence is not None else "")
+        + "); a defaulted or missing leverage cannot prove the margin-stop geometry",
+        required_inputs=("leverage",),
+        details={"leverage_status": status,
+                 "leverage": params["fields"].get("leverage")})]
+
+
 CLOSE_CAPABILITY_CHECKS: Tuple[CloseCapabilityCheck, ...] = (
-    CloseCapabilityCheck("close_registry_membership", CAPABILITY_PHASES,
+    CloseCapabilityCheck("close_registry_membership", _STATIC_CAPABILITY_PHASES,
                          ("UNKNOWN_CLOSE_STRATEGY",), _check_registry_membership),
-    CloseCapabilityCheck("close_capability_declared", CAPABILITY_PHASES,
+    CloseCapabilityCheck("close_capability_declared", _STATIC_CAPABILITY_PHASES,
                          ("UNCLASSIFIED_CLOSE_CAPABILITY",), _check_capability_declared),
-    CloseCapabilityCheck("live_only_close", CAPABILITY_PHASES,
+    CloseCapabilityCheck("live_only_close", _STATIC_CAPABILITY_PHASES,
                          ("LIVE_ONLY_CLOSE",), _check_live_only_close),
-    CloseCapabilityCheck("live_close_context", CAPABILITY_PHASES,
+    CloseCapabilityCheck("live_close_context", _STATIC_CAPABILITY_PHASES,
                          ("UNSUPPORTED_LIVE_CONTEXT", "RESEARCH_ONLY_CLOSE_CONTEXT"),
                          _check_live_close_context),
-    CloseCapabilityCheck("entry_replay_capability", CAPABILITY_PHASES,
+    CloseCapabilityCheck("entry_replay_capability", _STATIC_CAPABILITY_PHASES,
                          ("UNSUPPORTED_REPLAY_CAPABILITY",), _check_entry_replay),
+    CloseCapabilityCheck("stop_owner_support", _STATIC_CAPABILITY_PHASES,
+                         ("UNSUPPORTED_STOP_OWNER",), _check_stop_owner_support),
+    CloseCapabilityCheck("stop_owner_inputs", CAPABILITY_PHASES,
+                         ("MISSING_STOP_INPUT",), _check_stop_inputs),
+    CloseCapabilityCheck("stop_margin_leverage", _STATIC_CAPABILITY_PHASES,
+                         ("UNVERIFIED_MARGIN_LEVERAGE",), _check_margin_leverage),
 )
 
 
@@ -781,6 +1128,76 @@ def validate_close_capabilities(*, close_refs=None, comparison_mode=None,
     if refusals:
         raise CloseCapabilityError(validation)
     return validation
+
+
+def _jsonable_stop_value(value):
+    if isinstance(value, Mapping):
+        return copy.deepcopy(dict(value))
+    if value is None or isinstance(value, (bool, str)):
+        return value
+    number = _finite_number(value)
+    return number if number is not None else value
+
+
+def stop_raw_fields(values: Mapping) -> dict:
+    out = {}
+    for key in STOP_FIELD_KEYS + STOP_GEOMETRY_INPUT_KEYS:
+        value = values.get(key)
+        out[key] = {"present": value is not None, "value": _jsonable_stop_value(value)}
+    return out
+
+
+def leverage_evidence(value, source: str, verified: bool) -> dict:
+    if value is None:
+        return {"status": "missing", "source": source, "value": None}
+    lev = _finite_number(value)
+    if lev is None or lev <= 0:
+        return {"status": "invalid", "source": source, "value": lev}
+    return {"status": "verified" if verified else "unverified", "source": source, "value": lev}
+
+
+def build_stop_capability_context(*, platform, strategy_type, close_refs, fields: Mapping,
+                                  regime_windows_spec=None, risk_per_trade_pct=None,
+                                  capability_context=None):
+    if capability_context is not None and (
+            not isinstance(capability_context, CapabilityContext) or capability_context.errors):
+        return capability_context
+    refs, _ = _normalize_close_ref_inputs(close_refs)
+    plain = {k: _jsonable_stop_value(fields.get(k))
+             for k in STOP_FIELD_KEYS + STOP_GEOMETRY_INPUT_KEYS}
+    if capability_context is None:
+        raw_fields = stop_raw_fields(plain)
+        evidence = {
+            "stop_units": {"status": "verified", "source": STOP_UNITS_DIRECT,
+                           "value": "engine_fraction"},
+            "leverage": leverage_evidence(plain.get("leverage"), "caller", True),
+        }
+        declared = None
+    else:
+        raw_fields = _thaw_json(capability_context.raw_fields)
+        evidence = _thaw_json(capability_context.input_evidence)
+        owner = capability_context.resolved_stop_owner
+        declared = owner["name"] if owner is not None else None
+    units = evidence.get("stop_units") if isinstance(evidence.get("stop_units"), dict) else {}
+    live = units.get("status") == "verified" and units.get("source") in (
+        STOP_UNITS_LIVE_CONFIG, STOP_UNITS_PREVIEW)
+    labels = _regime_primary_labels(regime_windows_spec)
+    blocks, _ = _parse_stop_regime_blocks(plain, labels, live)
+    unified = _unified_close_params(refs) is not None
+    owner = resolve_static_stop_owner(
+        plain, blocks, unified, uses_hyperliquid_stop_geometry(platform, strategy_type))
+    parameters = {
+        "fields": plain,
+        "admission": "live" if live else "direct",
+        "geometry": "legacy" if owner == "legacy" else "hyperliquid",
+        "regime_labels": list(labels) if labels else None,
+        "risk_per_trade_pct": _jsonable_stop_value(risk_per_trade_pct),
+        "unified_close": unified,
+        "declared_owner": declared,
+    }
+    return CapabilityContext(raw_fields=raw_fields,
+                             resolved_stop_owner={"name": owner, "parameters": parameters},
+                             input_evidence=evidence)
 
 
 _UNKNOWN_CLOSE_VALIDATION = {
@@ -1459,7 +1876,12 @@ class Backtester:
                  scale_in: Optional[dict] = None,
                  atr_method: str = "simple",
                  execution_spec: Optional[dict] = None,
-                 comparison_mode: Optional[str] = None):
+                 comparison_mode: Optional[str] = None,
+                 leverage: Optional[float] = None,
+                 max_drawdown_pct: Optional[float] = None,
+                 trailing_stop_min_move_pct: Optional[float] = None,
+                 capability_context: Optional[CapabilityContext] = None,
+                 stop_platform: Optional[str] = None):
         self.initial_capital = initial_capital
         self._execution = normalize_execution_spec(execution_spec)
         if self._execution is not None and (
@@ -1490,6 +1912,27 @@ class Backtester:
             )
             self._maker_fee_pct = self._execution["maker_fee_pct"]
         self.open_strategy = dict(open_strategy or {})
+        stop_inputs = {
+            "stop_loss_atr_mult": stop_loss_atr_mult,
+            "stop_loss_pct": stop_loss_pct,
+            "stop_loss_margin_pct": stop_loss_margin_pct,
+            "trailing_stop_atr_mult": trailing_stop_atr_mult,
+            "trailing_stop_pct": trailing_stop_pct,
+            "stop_loss_atr_mult_regime": stop_loss_atr_mult_regime,
+            "trailing_stop_atr_mult_regime": trailing_stop_atr_mult_regime,
+            "leverage": leverage,
+            "max_drawdown_pct": max_drawdown_pct,
+            "trailing_stop_min_move_pct": trailing_stop_min_move_pct,
+        }
+        self._stop_context = build_stop_capability_context(
+            platform=stop_platform or platform,
+            strategy_type=strategy_type,
+            close_refs=close_strategies,
+            fields=stop_inputs,
+            regime_windows_spec=regime_windows_spec,
+            risk_per_trade_pct=risk_per_trade_pct,
+            capability_context=capability_context,
+        )
         self._close_validation = validate_close_capabilities(
             close_refs=close_strategies,
             comparison_mode=comparison_mode,
@@ -1497,6 +1940,18 @@ class Backtester:
             strategy_type=strategy_type,
             consumer="engine",
             phase="construction",
+            capability_context=self._stop_context,
+        )
+        self._stop_owner = self._stop_context.resolved_stop_owner["name"]
+        self._stop_parameters = _thaw_json(self._stop_context.resolved_stop_owner["parameters"])
+        self._hl_stop_geometry = self._stop_owner != "legacy"
+        self._stop_admission_live = self._stop_parameters["admission"] == "live"
+        self.leverage = _finite_number(leverage)
+        self.max_drawdown_pct = _finite_number(max_drawdown_pct)
+        _min_move = _finite_number(trailing_stop_min_move_pct)
+        self.trailing_stop_min_move_pct = (
+            _min_move if _min_move is not None and _min_move >= 0
+            else DEFAULT_TRAILING_STOP_MIN_MOVE_FRACTION
         )
         self.comparison_mode = self._close_validation.mode
         self._close_refs: list[dict] = self._close_validation.normalized_close_refs()
@@ -1617,25 +2072,6 @@ class Backtester:
                 if n in ("trailing_tp_ratchet", "trailing_tp_ratchet_regime"):
                     self._ratchet_ref = ref
                     break
-            _regime_ratchet = (
-                (self._ratchet_ref or {}).get("name") or ""
-            ).strip().lower() == "trailing_tp_ratchet_regime"
-            if _regime_ratchet:
-                if self.trailing_stop_atr_mult_regime is None:
-                    raise ValueError(
-                        "trailing_tp_ratchet_regime requires trailing_stop_atr_mult_regime"
-                    )
-            elif (
-                self.trailing_stop_atr_mult is None
-                or self.trailing_stop_atr_mult <= 0
-            ):
-                raise ValueError(
-                    "trailing_tp_ratchet requires trailing_stop_atr_mult > 0"
-                )
-            if self.trailing_stop_pct is not None and self.trailing_stop_pct > 0:
-                raise ValueError(
-                    "trailing_tp_ratchet* cannot combine with trailing_stop_pct"
-                )
         _needs_regime_atr = (
             self.stop_loss_atr_mult_regime is not None
             or self.trailing_stop_atr_mult_regime is not None
@@ -1644,10 +2080,7 @@ class Backtester:
         if _needs_regime_atr:
             _ensure_close_strategies_path()
             from regime_atr import (
-                SURFACE_STOP_LOSS,
-                SURFACE_TRAILING,
                 close_params_are_unified_regime,
-                parse_regime_atr_block,
                 resolve_regime_atr,
                 unified_regime_scalar_params,
                 validate_unified_regime_close,
@@ -1673,132 +2106,16 @@ class Backtester:
                         "Invalid unified per-regime close block: "
                         + "; ".join(_unified_errs)
                     )
-                _sole_owner_conflicts = [
-                    ("stop_loss_atr_mult", self.stop_loss_atr_mult),
-                    ("stop_loss_pct", self.stop_loss_pct),
-                    ("stop_loss_margin_pct", self.stop_loss_margin_pct),
-                    ("trailing_stop_atr_mult", self.trailing_stop_atr_mult),
-                    ("trailing_stop_pct", self.trailing_stop_pct),
-                ]
-                for _field, _val in _sole_owner_conflicts:
-                    if _val is not None and _val > 0:
-                        raise ValueError(
-                            f"{_field} is not allowed alongside a unified "
-                            "per-regime close — the close owns the SL via "
-                            "per-regime stop_loss_atr"
-                        )
-                if self.stop_loss_atr_mult_regime is not None or (
-                    self.trailing_stop_atr_mult_regime is not None
-                ):
-                    raise ValueError(
-                        "stop_loss_atr_mult_regime/trailing_stop_atr_mult_regime are not "
-                        "allowed alongside a unified per-regime close — the "
-                        "close owns the SL via per-regime stop_loss_atr"
-                    )
-
-            regime_errs: list[str] = []
-            if self.stop_loss_atr_mult_regime is not None:
-                blk, errs = parse_regime_atr_block(
-                    self.stop_loss_atr_mult_regime,
-                    "stop_loss_atr_mult_regime",
-                    SURFACE_STOP_LOSS,
-                    labels=self._regime_primary_labels,
-                )
-                regime_errs.extend(errs)
-                self._stop_loss_regime_block = blk
-            if self.trailing_stop_atr_mult_regime is not None:
-                blk, errs = parse_regime_atr_block(
-                    self.trailing_stop_atr_mult_regime,
-                    "trailing_stop_atr_mult_regime",
-                    SURFACE_TRAILING,
-                    labels=self._regime_primary_labels,
-                )
-                regime_errs.extend(errs)
-                self._trailing_stop_regime_block = blk
-            if regime_errs:
-                raise ValueError(
-                    "Invalid regime ATR stop configuration: " + "; ".join(regime_errs)
-                )
-
-            def _active_regime_sl(blk) -> bool:
-                return blk is not None and not blk.is_zero()
-
-            if _active_regime_sl(self._stop_loss_regime_block):
-                if (
-                    self.stop_loss_atr_mult is not None
-                    and self.stop_loss_atr_mult > 0
-                ):
-                    raise ValueError(
-                        "stop_loss_atr_mult_regime is mutually exclusive with "
-                        "stop_loss_atr_mult"
-                    )
-                if self.stop_loss_pct is not None and self.stop_loss_pct > 0:
-                    raise ValueError(
-                        "stop_loss_atr_mult_regime is mutually exclusive with "
-                        "stop_loss_pct"
-                    )
-                if (
-                    self.stop_loss_margin_pct is not None
-                    and self.stop_loss_margin_pct > 0
-                ):
-                    raise ValueError(
-                        "stop_loss_atr_mult_regime is mutually exclusive with "
-                        "stop_loss_margin_pct"
-                    )
-                if self.trailing_stop_pct is not None and self.trailing_stop_pct > 0:
-                    raise ValueError(
-                        "stop_loss_atr_mult_regime is mutually exclusive with "
-                        "trailing_stop_pct"
-                    )
-                if (
-                    self.trailing_stop_atr_mult is not None
-                    and self.trailing_stop_atr_mult > 0
-                ):
-                    raise ValueError(
-                        "stop_loss_atr_mult_regime is mutually exclusive with "
-                        "trailing_stop_atr_mult"
-                    )
-                if _active_regime_sl(self._trailing_stop_regime_block):
-                    raise ValueError(
-                        "stop_loss_atr_mult_regime is mutually exclusive with "
-                        "trailing_stop_atr_mult_regime"
-                    )
-
-            if _active_regime_sl(self._trailing_stop_regime_block):
-                if (
-                    self.trailing_stop_atr_mult is not None
-                    and self.trailing_stop_atr_mult > 0
-                ):
-                    raise ValueError(
-                        "trailing_stop_atr_mult_regime is mutually exclusive with "
-                        "trailing_stop_atr_mult"
-                    )
-                if self.trailing_stop_pct is not None and self.trailing_stop_pct > 0:
-                    raise ValueError(
-                        "trailing_stop_atr_mult_regime is mutually exclusive with "
-                        "trailing_stop_pct"
-                    )
-                if self.stop_loss_pct is not None and self.stop_loss_pct > 0:
-                    raise ValueError(
-                        "trailing_stop_atr_mult_regime is mutually exclusive with "
-                        "stop_loss_pct"
-                    )
-                if (
-                    self.stop_loss_margin_pct is not None
-                    and self.stop_loss_margin_pct > 0
-                ):
-                    raise ValueError(
-                        "trailing_stop_atr_mult_regime is mutually exclusive with "
-                        "stop_loss_margin_pct"
-                    )
-                if (
-                    self.stop_loss_atr_mult is not None
-                    and self.stop_loss_atr_mult > 0
-                ):
-                    raise ValueError(
-                        "trailing_stop_atr_mult_regime is mutually exclusive with "
-                        "stop_loss_atr_mult"
-                    )
+            _blocks, _ = _parse_stop_regime_blocks(
+                {
+                    "stop_loss_atr_mult_regime": self.stop_loss_atr_mult_regime,
+                    "trailing_stop_atr_mult_regime": self.trailing_stop_atr_mult_regime,
+                },
+                self._regime_primary_labels,
+                self._stop_admission_live,
+            )
+            self._stop_loss_regime_block = _blocks["stop_loss_atr_mult_regime"]
+            self._trailing_stop_regime_block = _blocks["trailing_stop_atr_mult_regime"]
             self._resolve_regime_atr = resolve_regime_atr
         else:
             self._resolve_regime_atr = None
@@ -1888,32 +2205,6 @@ class Backtester:
                         + ". Use the scalar atr_mult / trail_from_here.atr_mult "
                         "form for backtesting."
                     )
-                has_atr_sl = (
-                    (
-                        self.stop_loss_atr_mult is not None
-                        and self.stop_loss_atr_mult > 0
-                    )
-                    or (
-                        self._stop_loss_regime_block is not None
-                        and not self._stop_loss_regime_block.is_zero()
-                    )
-                )
-                has_pct_sl = (
-                    self.stop_loss_pct is not None and self.stop_loss_pct > 0
-                )
-                has_margin_sl = (
-                    self.stop_loss_margin_pct is not None
-                    and self.stop_loss_margin_pct > 0
-                )
-                if has_margin_sl and not (has_atr_sl or has_pct_sl):
-                    raise ValueError(
-                        "Invalid sl_after configuration: "
-                        "stop_loss_margin_pct cannot be the sole fixed SL "
-                        "in backtests — the backtester does not model "
-                        "leverage, so the pre-TP SL would never fire and "
-                        "the post-TP bump would diverge from live. Use "
-                        "stop_loss_atr_mult or stop_loss_pct."
-                    )
 
         self.risk_per_trade_pct: Optional[float] = None
         if risk_per_trade_pct is not None:
@@ -1922,48 +2213,18 @@ class Backtester:
                 raise ValueError(
                     f"risk_per_trade_pct must be in (0, 10], got {pct}"
                 )
-            if self._unified_close_params is not None:
-                raise ValueError(
-                    "risk_per_trade_pct cannot size from the unified "
-                    "per-regime close block — its SL resolves per-regime "
-                    "after open, so the stop distance is unknowable at "
-                    "sizing time (#1268; live rejects this at config load)"
-                )
-            if self.stop_loss_atr_mult_regime or self.trailing_stop_atr_mult_regime:
-                raise ValueError(
-                    "risk_per_trade_pct cannot size from a regime-resolved "
-                    "stop owner (stop_loss_atr_mult_regime / "
-                    "trailing_stop_atr_mult_regime) — the SL resolves from the "
-                    "regime stamped after open (#1268; live rejects this at "
-                    "config load)"
-                )
-            has_atr_owner = (
-                (self.trailing_stop_atr_mult or 0) > 0
-                or (self.stop_loss_atr_mult or 0) > 0
-            )
-            has_pct_owner = (
-                (self.trailing_stop_pct or 0) > 0
-                or (self.stop_loss_pct or 0) > 0
-            )
-            if not (has_atr_owner or has_pct_owner):
-                if (self.stop_loss_margin_pct or 0) > 0:
-                    raise ValueError(
-                        "risk_per_trade_pct cannot size from a "
-                        "stop_loss_margin_pct-only stop in backtests — the "
-                        "backtester does not model leverage, so the price "
-                        "distance cannot be derived. Use stop_loss_atr_mult, "
-                        "trailing_stop_atr_mult, stop_loss_pct, or "
-                        "trailing_stop_pct."
-                    )
-                raise ValueError(
-                    "risk_per_trade_pct requires an explicit stop owner "
-                    "(stop_loss_atr_mult, trailing_stop_atr_mult, "
-                    "stop_loss_pct, or trailing_stop_pct) to derive the "
-                    "stop distance from (#1268)"
-                )
             self.risk_per_trade_pct = pct
+        self._risk_owner: Tuple[Optional[str], Optional[str]] = (None, None)
+        if self.risk_per_trade_pct is not None:
+            _risk_kind, _risk_field, _ = resolve_risk_stop_owner(
+                self._stop_parameters["fields"],
+                self._unified_close_params is not None,
+                self._stop_admission_live,
+            )
+            self._risk_owner = (_risk_kind, _risk_field)
         self._risk_cap_warned = False
         self._risk_skip_warned = False
+        self._stop_observer: Optional[Callable[[dict], None]] = None
 
         self.allow_scale_in = bool(allow_scale_in)
         if scale_in and not self.allow_scale_in:
@@ -1980,6 +2241,10 @@ class Backtester:
                 "the constant-dollar-risk invariant; the live daemon rejects "
                 "this config at startup)"
             )
+
+    @property
+    def stop_owner(self) -> str:
+        return self._stop_owner
 
     def _apply_direction_invert(self, sig_int: pd.Series,
                                 uses_open_close: bool) -> pd.Series:
@@ -2036,7 +2301,9 @@ class Backtester:
             symbol: str = "BTC/USDT", timeframe: str = "1d",
             params: Optional[dict] = None, save: bool = True,
             starting_long: Optional[dict] = None,
-            indicator_frame: Optional[pd.DataFrame] = None) -> dict:
+            indicator_frame: Optional[pd.DataFrame] = None,
+            stop_observer: Optional[Callable[[dict], None]] = None) -> dict:
+        self._stop_observer = stop_observer
         uses_open_close = (
             "open_action" in df.columns
             or bool(_close_fraction_columns(df))
@@ -2253,6 +2520,7 @@ class Backtester:
         if atr_series is None and (
             (self.stop_loss_atr_mult is not None and self.stop_loss_atr_mult > 0)
             or (self.trailing_stop_atr_mult is not None and self.trailing_stop_atr_mult > 0)
+            or self._stop_owner in STOP_OWNERS_NEEDING_ATR
         ):
             atr_series = standard_atr(history, method=self.atr_method)
 
@@ -2300,46 +2568,55 @@ class Backtester:
                     )
                 self._ratchet_tiers_run = tiers
 
-            self._run_stop_loss_atr_mult = None
+            self._run_stop_loss_atr_mult = self._hl_fixed_atr_mult(lab) or None
             self._run_trailing_stop_atr_mult = None
-            if self._resolve_regime_atr is not None and lab:
-                if (
-                    self._stop_loss_regime_block is not None
-                    and not self._stop_loss_regime_block.is_zero()
-                ):
-                    self._run_stop_loss_atr_mult = self._resolve_regime_atr(
-                        self._stop_loss_regime_block, lab,
-                    )
-                if (
-                    self._trailing_stop_regime_block is not None
-                    and not self._trailing_stop_regime_block.is_zero()
-                ):
-                    self._run_trailing_stop_atr_mult = self._resolve_regime_atr(
-                        self._trailing_stop_regime_block, lab,
-                    )
-            if (
-                self._run_stop_loss_atr_mult is None
-                and self._unified_close_params is not None
-                and self._unified_scalar_params is not None
-                and lab
-            ):
-                _, _usl = self._unified_scalar_params(
-                    self._unified_close_params, lab
+            if _positive(self.trailing_stop_atr_mult):
+                self._run_trailing_stop_atr_mult = self.trailing_stop_atr_mult
+            elif self._hl_regime_mult(self._trailing_stop_regime_block, lab) > 0:
+                self._run_trailing_stop_atr_mult = self._hl_regime_mult(
+                    self._trailing_stop_regime_block, lab,
                 )
-                if _usl and _usl > 0:
-                    self._run_stop_loss_atr_mult = float(_usl)
-            if self._run_stop_loss_atr_mult is None:
-                if (
-                    self.stop_loss_atr_mult is not None
-                    and self.stop_loss_atr_mult > 0
-                ):
-                    self._run_stop_loss_atr_mult = self.stop_loss_atr_mult
-            if self._run_trailing_stop_atr_mult is None:
-                if (
-                    self.trailing_stop_atr_mult is not None
-                    and self.trailing_stop_atr_mult > 0
-                ):
-                    self._run_trailing_stop_atr_mult = self.trailing_stop_atr_mult
+
+        stop_needs_atr = self._hl_stop_geometry and self._stop_owner in STOP_OWNERS_NEEDING_ATR
+        stop_needs_label = (self._hl_stop_geometry
+                            and self._stop_owner in STOP_OWNERS_NEEDING_LABEL)
+        stop_atr_seen = None
+        if stop_needs_atr and atr_series is not None:
+            _atr_vals = pd.to_numeric(atr_series, errors="coerce").to_numpy(dtype=float)
+            stop_atr_seen = np.logical_or.accumulate(
+                np.isfinite(_atr_vals) & (_atr_vals > 0)) if len(_atr_vals) else _atr_vals
+        stop_label_seen = False
+        stop_warmup_skipped_entries = 0
+        stop_seed_dropped = False
+
+        def _stop_inputs_warming(idx) -> bool:
+            if stop_needs_label and not stop_label_seen:
+                return True
+            if not stop_needs_atr:
+                return False
+            if stop_atr_seen is None:
+                return True
+            try:
+                pos = int(atr_series.index.get_loc(idx))
+            except (KeyError, TypeError, ValueError):
+                return False
+            return pos < 1 or not bool(stop_atr_seen[pos - 1])
+
+        if starting_long and (stop_needs_atr or stop_needs_label):
+            try:
+                _seed_atr = float(starting_long.get("entry_atr", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                _seed_atr = 0.0
+            _seed_entry = float(starting_long["entry_price"])
+            _seed_label = (str(starting_long.get("entry_regime", "") or "").strip()
+                           or _entry_stamp(df.iloc[0]))
+            if (stop_needs_atr and not (0 < _seed_atr <= 0.5 * _seed_entry)) or (
+                    stop_needs_label and not _seed_label):
+                stop_seed_dropped = True
+                starting_long = None
+                print(f"[#1684] seeded position dropped: its {self._stop_owner} stop has no "
+                      "entry ATR or regime label yet, so the run starts flat instead of "
+                      "carrying an unprotected position.", file=sys.stderr)
 
         if starting_long:
             effective_entry = starting_long["entry_price"]
@@ -2374,7 +2651,13 @@ class Backtester:
             except (TypeError, ValueError):
                 seed_hwm = 0.0
             hwm_anchor = max(effective_entry, seed_hwm)
-            if sl_after_active and self._run_tp_tier_thresholds:
+            if self._hl_stop_geometry:
+                sl_trigger_px, sl_high_water_px, _ = self._hl_arm_stop(
+                    "long", avg_cost, entry_atr_value, self._run_position_regime,
+                    hwm_anchor, high_water=hwm_anchor,
+                    event_date=starting_long.get("entry_date", df.index[0]),
+                )
+            elif sl_after_active and self._run_tp_tier_thresholds:
                 sl_trigger_px = self._initial_sl_trigger(
                     "long", avg_cost, entry_atr_value,
                 )
@@ -2614,6 +2897,7 @@ class Backtester:
                         sl_tiers_processed=sl_tiers_processed,
                         post_tp_trail_mult=post_tp_trail_mult,
                         sl_high_water_px=sl_high_water_px,
+                        event_date=idx,
                     )
                 if (
                     sl_trigger_px != prev_trigger
@@ -2631,6 +2915,23 @@ class Backtester:
                 float(row["_entry_fraction"]) if has_entry_fraction else 1.0
             )
             risk_entry_blocked = False
+            if stop_needs_label and _entry_stamp(row):
+                stop_label_seen = True
+            if (stop_needs_atr or stop_needs_label) and position == 0 \
+                    and _stop_inputs_warming(idx):
+                risk_entry_blocked = True
+                entry_wanted = (
+                    str(row.get("_open_action", "none")) in ("long", "short")
+                    if uses_open_close
+                    else int(signal) != 0
+                )
+                if entry_wanted:
+                    if not stop_warmup_skipped_entries:
+                        print(f"[#1684] entry skipped at {idx}: the {self._stop_owner} stop "
+                              "has no entry ATR or regime label history yet (indicator "
+                              "warm-up); live would hold that history. Further warm-up "
+                              "skips are counted silently.", file=sys.stderr)
+                    stop_warmup_skipped_entries += 1
             if risk_mode:
                 risk_fraction = self._risk_entry_fraction(
                     atr_series, idx, fill_price,
@@ -2681,6 +2982,7 @@ class Backtester:
                     plain_short_for_bar = effective_direction == "short"
 
             sl_after_just_applied = False
+            ratchet_tightened = False
 
             if book_funding and position != 0:
                 accrual = row.get("funding_accrual", 0.0)
@@ -2794,7 +3096,14 @@ class Backtester:
                         shares * effective_price, hurst_size_mult,
                     )
                     stamp_open_from_label(_entry_stamp(row))
-                    if sl_after_active and self._run_tp_tier_thresholds:
+                    if self._hl_stop_geometry:
+                        sl_trigger_px, sl_high_water_px, sl_pierce_armed = self._hl_arm_stop(
+                            "long", avg_cost, entry_atr_value, self._run_position_regime,
+                            mark_price, event_date=idx,
+                        )
+                        sl_tiers_processed = 0
+                        post_tp_trail_mult = None
+                    elif sl_after_active and self._run_tp_tier_thresholds:
                         sl_trigger_px = self._initial_sl_trigger(
                             "long", avg_cost, entry_atr_value,
                         )
@@ -2850,7 +3159,14 @@ class Backtester:
                         shares * effective_price, hurst_size_mult,
                     )
                     stamp_open_from_label(_entry_stamp(row))
-                    if sl_after_active and self._run_tp_tier_thresholds:
+                    if self._hl_stop_geometry:
+                        sl_trigger_px, sl_high_water_px, sl_pierce_armed = self._hl_arm_stop(
+                            "short", avg_cost, entry_atr_value, self._run_position_regime,
+                            mark_price, event_date=idx,
+                        )
+                        sl_tiers_processed = 0
+                        post_tp_trail_mult = None
+                    elif sl_after_active and self._run_tp_tier_thresholds:
                         sl_trigger_px = self._initial_sl_trigger(
                             "short", avg_cost, entry_atr_value,
                         )
@@ -2998,6 +3314,7 @@ class Backtester:
                         and entry_atr_value > 0
                     ):
                         side_now = "long" if position > 0 else "short"
+                        ratchet_prev_trail = post_tp_trail_mult
                         base_trail = self._run_trailing_stop_atr_mult or 0.0
                         sl_tiers_processed, post_tp_trail_mult = (
                             self._ratchet_mod.maybe_apply_mark_ratchet(
@@ -3011,6 +3328,7 @@ class Backtester:
                                 trailing_stop_atr_mult=base_trail,
                             )
                         )
+                        ratchet_tightened = post_tp_trail_mult != ratchet_prev_trail
 
                 scalar_stop_active = (
                     (self._run_stop_loss_atr_mult or 0) > 0
@@ -3018,6 +3336,24 @@ class Backtester:
                     or (self.stop_loss_pct or 0) > 0
                 )
                 if (
+                    self._hl_stop_geometry
+                    and not sl_after_just_applied
+                    and position != 0
+                    and avg_cost > 0
+                ):
+                    side_now = "long" if position > 0 else "short"
+                    sl_trigger_px, sl_high_water_px = self._hl_trail_step(
+                        side_now, scale.geom_cost(avg_cost), entry_atr_value,
+                        self._run_position_regime, mark_price, post_tp_trail_mult,
+                        sl_trigger_px, sl_high_water_px, ratchet_tightened,
+                        event_date=idx,
+                    )
+                    if not walk_mode and sl_trigger_px > 0 and self._sl_hit(
+                        side_now, mark_price, sl_trigger_px,
+                    ):
+                        pending_close_fraction = 1.0
+                        pending_close_reason = "sl"
+                elif (
                     (sl_after_active or trailing_ratchet_active
                      or scalar_stop_active)
                     and not sl_after_just_applied
@@ -3117,7 +3453,12 @@ class Backtester:
                 sl_trigger_px = 0.0
                 sl_high_water_px = mark_price
                 sl_pierce_armed = False
-                if (
+                if self._hl_stop_geometry:
+                    sl_trigger_px, sl_high_water_px, sl_pierce_armed = self._hl_arm_stop(
+                        "short", avg_cost, entry_atr_value, self._run_position_regime,
+                        mark_price, event_date=idx,
+                    )
+                elif (
                     self.stop_loss_atr_mult is not None
                     and self.stop_loss_atr_mult > 0
                     and entry_atr_value > 0
@@ -3178,7 +3519,12 @@ class Backtester:
                 sl_trigger_px = 0.0
                 sl_high_water_px = mark_price
                 sl_pierce_armed = False
-                if (
+                if self._hl_stop_geometry:
+                    sl_trigger_px, sl_high_water_px, sl_pierce_armed = self._hl_arm_stop(
+                        "long", avg_cost, entry_atr_value, self._run_position_regime,
+                        mark_price, event_date=idx,
+                    )
+                elif (
                     self.stop_loss_atr_mult is not None
                     and self.stop_loss_atr_mult > 0
                     and entry_atr_value > 0
@@ -3279,7 +3625,16 @@ class Backtester:
                     scale.reset()
                     self._run_position_regime = ""
 
-            if position > 0 and sl_trigger_px > 0:
+            if self._hl_stop_geometry and position != 0 and avg_cost > 0:
+                side_now = "long" if position > 0 else "short"
+                sl_trigger_px, sl_high_water_px = self._hl_trail_step(
+                    side_now, scale.geom_cost(avg_cost), entry_atr_value,
+                    self._run_position_regime, mark_price, None,
+                    sl_trigger_px, sl_high_water_px, False, event_date=idx,
+                )
+                if not walk_mode and self._sl_hit(side_now, mark_price, sl_trigger_px):
+                    pending_signal_sl_close = True
+            elif position > 0 and sl_trigger_px > 0:
                 if (
                     self.trailing_stop_atr_mult is not None
                     and self.trailing_stop_atr_mult > 0
@@ -3373,6 +3728,10 @@ class Backtester:
                 "skipped_partial_closes": execution_log["skipped_partial_closes"],
                 "close_residuals": execution_log["close_residuals"],
             }
+        if stop_warmup_skipped_entries:
+            metrics["stop_warmup_skipped_entries"] = stop_warmup_skipped_entries
+        if stop_seed_dropped:
+            metrics["stop_seed_dropped"] = True
         if risk_mode:
             metrics["risk_per_trade_pct"] = self.risk_per_trade_pct
             metrics["risk_sizing_skipped_entries"] = risk_skipped_entries
@@ -3393,20 +3752,14 @@ class Backtester:
         if pct <= 0 or price <= 0:
             return None
         dist = None
-        atr_mult = 0.0
-        if (self.trailing_stop_atr_mult or 0) > 0:
-            atr_mult = float(self.trailing_stop_atr_mult)
-        elif (self.stop_loss_atr_mult or 0) > 0:
-            atr_mult = float(self.stop_loss_atr_mult)
-        if atr_mult > 0:
+        kind, field_name = self._risk_owner
+        if kind == "atr":
             atr = self._stamp_entry_atr(atr_series, idx, price)
             if atr <= 0:
                 return None
-            dist = atr_mult * atr
-        elif (self.trailing_stop_pct or 0) > 0:
-            dist = price * float(self.trailing_stop_pct)
-        elif (self.stop_loss_pct or 0) > 0:
-            dist = price * float(self.stop_loss_pct)
+            dist = float(getattr(self, field_name)) * atr
+        elif kind == "pct":
+            dist = price * float(getattr(self, field_name))
         if dist is None or dist <= 0:
             return None
         fraction = (pct / 100.0) * price / dist
@@ -3537,6 +3890,207 @@ class Backtester:
             )
         return 0.0
 
+    def _hl_regime_mult(self, block, label: str) -> float:
+        if not _regime_block_active(block) or not label or self._resolve_regime_atr is None:
+            return 0.0
+        mult = self._resolve_regime_atr(block, label)
+        return float(mult) if mult and mult > 0 else 0.0
+
+    def _hl_unified_stop_mult(self, label: str) -> Tuple[bool, float]:
+        if self._unified_close_params is None or self._unified_scalar_params is None:
+            return False, 0.0
+        scalar, sl = self._unified_scalar_params(self._unified_close_params, label or "")
+        return scalar is not None, float(sl or 0.0)
+
+    @staticmethod
+    def _capped_atr_fraction(mult: float, entry_atr: float, anchor: float) -> float:
+        if mult <= 0 or entry_atr <= 0 or anchor <= 0:
+            return 0.0
+        return min(mult * entry_atr / anchor, MAX_AUTO_STOP_LOSS_FRACTION)
+
+    def _hl_trailing_fraction(self, anchor: float, entry_atr: float, label: str,
+                              post_tp_trail_mult: Optional[float]) -> float:
+        if post_tp_trail_mult is not None and post_tp_trail_mult > 0:
+            return self._capped_atr_fraction(post_tp_trail_mult, entry_atr, anchor)
+        if self.trailing_stop_pct is not None:
+            return float(self.trailing_stop_pct) if self.trailing_stop_pct > 0 else 0.0
+        if _positive(self.trailing_stop_atr_mult):
+            return self._capped_atr_fraction(float(self.trailing_stop_atr_mult), entry_atr, anchor)
+        mult = self._hl_regime_mult(self._trailing_stop_regime_block, label)
+        return self._capped_atr_fraction(mult, entry_atr, anchor)
+
+    def _hl_fixed_atr_mult(self, label: str) -> float:
+        _, unified_sl = self._hl_unified_stop_mult(label)
+        if unified_sl > 0:
+            return unified_sl
+        if _positive(self.stop_loss_atr_mult):
+            return float(self.stop_loss_atr_mult)
+        return self._hl_regime_mult(self._stop_loss_regime_block, label)
+
+    def _hl_percent_fraction(self) -> float:
+        if self._unified_close_params is not None:
+            return 0.0
+        if _positive(self.trailing_stop_atr_mult) or _positive(self.stop_loss_atr_mult):
+            return 0.0
+        if _regime_block_active(self._stop_loss_regime_block) \
+                or _regime_block_active(self._trailing_stop_regime_block):
+            return 0.0
+        if self.trailing_stop_pct is not None:
+            return float(self.trailing_stop_pct) if self.trailing_stop_pct > 0 else 0.0
+        if self.stop_loss_pct is not None:
+            return float(self.stop_loss_pct) if self.stop_loss_pct > 0 else 0.0
+        if self.stop_loss_margin_pct is not None:
+            if self.stop_loss_margin_pct > 0 and _positive(self.leverage):
+                return float(self.stop_loss_margin_pct) / float(self.leverage)
+            return 0.0
+        if _positive(self.max_drawdown_pct):
+            return min(float(self.max_drawdown_pct), MAX_AUTO_STOP_LOSS_FRACTION)
+        return 0.0
+
+    @staticmethod
+    def _trailing_stop_update(side: str, mark: float, high_water: float, fraction: float,
+                              min_move: float, current_trigger: float,
+                              allow_one_shot_widen: bool = False,
+                              bypass_min_move: bool = False) -> Tuple[float, float, bool]:
+        if mark <= 0 or fraction <= 0:
+            return high_water, 0.0, False
+        if high_water <= 0:
+            high_water = mark
+        candidate_hw = high_water
+        if side == "long":
+            if mark > candidate_hw:
+                candidate_hw = mark
+        elif side == "short":
+            if mark < candidate_hw:
+                candidate_hw = mark
+        else:
+            return high_water, 0.0, False
+        if candidate_hw <= 0:
+            return high_water, 0.0, False
+        if side == "long":
+            candidate = candidate_hw * (1.0 - fraction)
+        else:
+            candidate = candidate_hw * (1.0 + fraction)
+        if candidate <= 0:
+            return candidate_hw, 0.0, False
+        if current_trigger <= 0:
+            return candidate_hw, candidate, True
+        favorable = (side == "long" and candidate > current_trigger) or (
+            side == "short" and candidate < current_trigger)
+        if not favorable:
+            if allow_one_shot_widen and abs(candidate - current_trigger) > 1e-9:
+                return candidate_hw, candidate, True
+            return candidate_hw, 0.0, False
+        if bypass_min_move and abs(candidate - current_trigger) > 1e-9:
+            return candidate_hw, candidate, True
+        if abs(candidate - current_trigger) / current_trigger >= min_move:
+            return candidate_hw, candidate, True
+        return candidate_hw, 0.0, False
+
+    def _hl_label_evidence(self, label: str) -> dict:
+        owner = self._stop_owner
+        if not label:
+            return {"status": "missing", "source": "position_regime", "value": None}
+        if owner == "unified_regime":
+            resolved, _ = self._hl_unified_stop_mult(label)
+        elif owner == "fixed_atr_regime":
+            resolved = self._hl_regime_mult(self._stop_loss_regime_block, label) > 0
+        else:
+            resolved = self._hl_regime_mult(self._trailing_stop_regime_block, label) > 0
+        return {"status": "verified" if resolved else "invalid",
+                "source": "position_regime", "value": label}
+
+    def _validate_stop_runtime(self, event_date, evidence: dict) -> None:
+        if all(e.get("status") == "verified" for e in evidence.values()):
+            return
+        params = dict(self._stop_parameters)
+        params["event_date"] = str(event_date)
+        merged = _thaw_json(self._stop_context.input_evidence)
+        merged.update(evidence)
+        context = CapabilityContext(
+            raw_fields=_thaw_json(self._stop_context.raw_fields),
+            resolved_stop_owner={"name": self._stop_owner, "parameters": params},
+            input_evidence=merged,
+        )
+        validate_close_capabilities(
+            close_refs=self._close_refs,
+            comparison_mode=self.comparison_mode,
+            platform=self.platform,
+            strategy_type=self.strategy_type,
+            consumer="engine",
+            phase="runtime",
+            capability_context=context,
+        )
+
+    def _validate_stop_entry_inputs(self, event_date, anchor: float, entry_atr: float,
+                                    label: str) -> None:
+        owner = self._stop_owner
+        evidence = {"risk_anchor": {
+            "status": "verified" if _positive(anchor) else "invalid",
+            "source": "entry_fill", "value": _finite_number(anchor)}}
+        if owner in STOP_OWNERS_NEEDING_ATR:
+            evidence["entry_atr"] = {
+                "status": "verified" if _positive(entry_atr) else "missing",
+                "source": "closed_bar_atr", "value": _finite_number(entry_atr)}
+        if owner in STOP_OWNERS_NEEDING_LABEL:
+            evidence["atr_regime_label"] = self._hl_label_evidence(label)
+        self._validate_stop_runtime(event_date, evidence)
+
+    def _emit_stop_event(self, event: str, **fields) -> None:
+        if self._stop_observer is None:
+            return
+        payload = {"event": event, "owner": self._stop_owner}
+        payload.update(fields)
+        self._stop_observer(payload)
+
+    def _hl_arm_stop(self, side: str, anchor: float, entry_atr: float, label: str,
+                     mark: float, high_water: float = 0.0,
+                     event_date=None) -> Tuple[float, float, bool]:
+        self._validate_stop_entry_inputs(event_date, anchor, entry_atr, label)
+        tf = self._hl_trailing_fraction(anchor, entry_atr, label, None)
+        kind, fraction, trigger, hw, pierce = "none", 0.0, 0.0, 0.0, False
+        if tf > 0:
+            hw, trigger, _ = self._trailing_stop_update(
+                side, mark, high_water if high_water > 0 else anchor, tf,
+                self.trailing_stop_min_move_pct, 0.0)
+            kind, fraction = "trailing", tf
+        else:
+            ff = self._capped_atr_fraction(self._hl_fixed_atr_mult(label), entry_atr, anchor)
+            if ff <= 0:
+                ff = self._hl_percent_fraction()
+                kind = "percent" if ff > 0 else "none"
+            else:
+                kind = "fixed_atr"
+            if ff > 0 and anchor > 0:
+                trigger = anchor * (1.0 - ff) if side == "long" else anchor * (1.0 + ff)
+                if trigger <= 0:
+                    trigger = 0.0
+                fraction = ff
+                pierce = trigger > 0
+        self._emit_stop_event(
+            "arm", date=str(event_date), side=side, geometry=kind, anchor=anchor,
+            entry_atr=entry_atr, regime=label, fraction=fraction, mark=mark,
+            trigger=trigger, high_water=hw, replaced=trigger > 0)
+        return trigger, hw, pierce
+
+    def _hl_trail_step(self, side: str, anchor: float, entry_atr: float, label: str,
+                       mark: float, post_tp_trail_mult: Optional[float],
+                       trigger: float, high_water: float, bypass_min_move: bool,
+                       event_date=None) -> Tuple[float, float]:
+        tf = self._hl_trailing_fraction(anchor, entry_atr, label, post_tp_trail_mult)
+        if tf <= 0:
+            return trigger, high_water
+        new_hw, candidate, replaced = self._trailing_stop_update(
+            side, mark, high_water if high_water > 0 else anchor, tf,
+            self.trailing_stop_min_move_pct, trigger, bypass_min_move=bypass_min_move)
+        new_trigger = candidate if replaced else trigger
+        self._emit_stop_event(
+            "trail", date=str(event_date), side=side, anchor=anchor, entry_atr=entry_atr,
+            regime=label, fraction=tf, mark=mark, post_tp_trail_mult=post_tp_trail_mult,
+            bypass_min_move=bypass_min_move, trigger=new_trigger, high_water=new_hw,
+            replaced=replaced)
+        return new_trigger, new_hw
+
     @staticmethod
     def _intrabar_sl_fill(side: str, open_px: float, high_px: float,
                           low_px: float, trigger_px: float) -> Optional[float]:
@@ -3591,6 +4145,7 @@ class Backtester:
         position_qty: float, initial_qty: float, mark_price: float,
         fill_price: float, sl_trigger_px: float, sl_tiers_processed: int,
         post_tp_trail_mult: Optional[float], sl_high_water_px: float,
+        event_date=None,
     ) -> Tuple[float, int, Optional[float], float]:
         if initial_qty <= 0 or position_qty <= 0:
             return sl_trigger_px, sl_tiers_processed, post_tp_trail_mult, sl_high_water_px
@@ -3612,6 +4167,10 @@ class Backtester:
         if rule is None:
             return sl_trigger_px, sl_tiers_processed, post_tp_trail_mult, sl_high_water_px
         seed_mark = fill_price if fill_price > 0 else mark_price
+        if self._hl_stop_geometry and rule.kind in ("atr_offset", "trail_from_here"):
+            self._validate_stop_runtime(event_date, {"sl_after_entry_atr": {
+                "status": "verified" if _positive(entry_atr) else "missing",
+                "source": "closed_bar_atr", "value": _finite_number(entry_atr)}})
         new_trigger, _mode, ok = self._sl_mod.compute_post_tp_stop_loss_trigger(
             rule, side, avg_cost, entry_atr, seed_mark,
         )
@@ -3622,6 +4181,11 @@ class Backtester:
         if rule.kind == "trail_from_here":
             new_post_tp_trail = rule.trail_atr_mult
             new_hwm = seed_mark
+        self._emit_stop_event(
+            "sl_after", date=str(event_date), side=side, anchor=avg_cost,
+            entry_atr=entry_atr, regime=self._run_position_regime, tier=highest,
+            rule=rule.kind, mark=seed_mark, post_tp_trail_mult=new_post_tp_trail,
+            trigger=new_trigger, high_water=new_hwm, replaced=True)
         return new_trigger, highest + 1, new_post_tp_trail, new_hwm
 
     def _calculate_metrics(self, equity_df: pd.DataFrame, trades: list,
