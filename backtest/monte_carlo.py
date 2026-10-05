@@ -249,8 +249,8 @@ def run_leg_trades(strategy: str, registry: str, params: Optional[dict],
                          f"{reg.list_strategies()}")
     leg = run_leg(reg, strategy, params, symbol, timeframe, window,
                   capital=capital, direction=direction, keep_trades=True)
-    if validations is not None:
-        validations.append((leg or {}).get("close_validation"))
+    if validations is not None and leg is not None:
+        validations.append(leg.get("close_validation"))
     values = _leg_returns(leg, returns)
     if values is None:
         raise SystemExit(f"no cached data for {dataset} in window "
@@ -274,8 +274,8 @@ def run_candidate_leg_trades(candidate: dict, registry: str, dataset: str,
                          f"{reg.list_strategies()}")
     leg = run_candidate_leg(reg, candidate, symbol, timeframe, window,
                             capital=capital, keep_trades=True)
-    if validations is not None:
-        validations.append((leg or {}).get("close_validation"))
+    if validations is not None and leg is not None:
+        validations.append(leg.get("close_validation"))
     return _leg_returns(leg, returns)
 
 
@@ -553,6 +553,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 except ValueError:
                     raise SystemExit(f"--datasets expects SYMBOL:TIMEFRAME, "
                                      f"got: {ds!r}")
+                ran_before = len(validations)
                 if candidate is not None:
                     values = run_candidate_leg_trades(
                         candidate, args.registry, ds, wname, args.capital,
@@ -566,10 +567,12 @@ def main(argv: Optional[List[str]] = None) -> int:
                     raw_leg = run_leg(reg, args.strategy, params, symbol, timeframe,
                                       window, capital=args.capital,
                                       direction=args.direction, keep_trades=True)
-                    validations.append((raw_leg or {}).get("close_validation"))
+                    if raw_leg is not None:
+                        validations.append(raw_leg.get("close_validation"))
                     values = _leg_returns(raw_leg, args.returns)
                 leg = {"window": wname, "dataset": dataset_key(symbol, timeframe),
-                       "close_validation": validations[-1]}
+                       "close_validation": (validations[-1]
+                                            if len(validations) > ran_before else None)}
                 if values is None:
                     leg.update({"status": "no_data", "n_trades": 0,
                                 "observed": None, "schemes": []})

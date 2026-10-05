@@ -662,8 +662,12 @@ def evaluate_window(reg, candidate: dict, datasets: List[tuple],
     score["bars"] = bars
     from backtester import aggregate_close_validations
     score["close_validation"] = aggregate_close_validations(
-        (leg or {}).get("close_validation") for leg in candidate_legs.values())
+        leg.get("close_validation") for leg in candidate_legs.values() if leg is not None)
     return score
+
+
+def window_ran(score: dict) -> bool:
+    return any(row.get("leg") is not None for row in score.get("rows") or [])
 
 
 def _fmt(v, width=8, prec=2):
@@ -957,7 +961,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     print(format_summary(window_scores))
     from backtester import aggregate_close_validations, format_close_validation
     print(format_close_validation(aggregate_close_validations(
-        s.get("close_validation") for s in window_scores)))
+        s.get("close_validation") for s in window_scores if window_ran(s))))
 
     sweep_rows = []
     if args.sweep:
@@ -994,8 +998,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             "window_scores": window_scores,
             "sweep": sweep_rows,
             "close_validation": aggregate_close_validations(
-                [s.get("close_validation") for s in window_scores]
-                + [r["score"].get("close_validation") for r in sweep_rows]),
+                [s.get("close_validation") for s in window_scores if window_ran(s)]
+                + [r["score"].get("close_validation") for r in sweep_rows
+                   if window_ran(r["score"])]),
         }
         with open(args.json_out, "w") as fh:
             json.dump(payload, fh, indent=2, default=str)

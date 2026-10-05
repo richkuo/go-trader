@@ -399,7 +399,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             )
             diag = diagnose_trades((results or {}).get("trades") or [])
             diag["close_validation"] = (results or {}).get("close_validation")
-            validations.append(diag["close_validation"])
+            if results is not None:
+                validations.append(diag["close_validation"])
             per_window[wname][ds] = diag
     close_validation = aggregate_close_validations(validations)
 

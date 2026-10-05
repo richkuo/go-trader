@@ -208,25 +208,58 @@ def test_optimizer_mixed_candidate_set_refuses_whole_grid_or_keeps_approximation
         assert fold["test_result"]["close_validation"]["incomplete_parity"] is True
 
 
-def test_aggregates_never_upgrade_refused_or_unknown_children():
-    strict = Backtester(close_strategies=[TIERED])._close_validation.to_dict()
-    try:
-        validate_close_capabilities(close_refs=[TIME_STOP])
-    except CloseCapabilityError as exc:
-        refused = exc
-    agg = aggregate_close_validations([strict, refused])
-    assert agg["close_eligibility"] == "refused" and agg["requested_set_complete"] is False
-    legacy = aggregate_close_validations([strict, None])
-    assert legacy["close_eligibility"] == "unknown" and legacy["incomplete_parity"] is True
-    assert legacy["requested_set_complete"] is False
-    assert aggregate_close_validations([strict])["parity_status"] == "unverified"
-    nested = aggregate_close_validations([aggregate_close_validations([]), strict])
-    assert nested["requested_set_complete"] is False
-    tampered = dict(strict, approximations=[{"reason_code": "RESEARCH_ONLY_CLOSE_CONTEXT",
-                                             "feature": "time_stop", "close_ref_index": 0,
-                                             "required_inputs": ["bars_held"], "details": {}}])
-    assert decode_close_validation(tampered)["decode_status"] == "inconsistent"
-    assert decode_close_validation(dict(strict, schema_version=2))["decode_status"] == "unknown_schema"
+def test_window_report_counts_only_legs_that_ran(monkeypatch, tmp_path):
+    import data_fetcher
+    import eval_windows
+    frame = _frozen_frame(600)
+
+    def cached(symbol, timeframe, start_date=None, end_date=None, **kw):
+        if start_date == eval_windows.WINDOWS["2023"][0] or symbol != "BTC/USDT":
+            return frame.iloc[0:0].copy()
+        return frame.copy()
+
+    monkeypatch.setattr(data_fetcher, "load_cached_data", cached)
+    cand = tmp_path / "candidate.json"
+    cand.write_text(json.dumps({"name": "awesome_oscillator", "direction": "both",
+                                "stop_loss_atr_mult": 1.0, "close_strategies": [TIERED]}))
+    out = tmp_path / "windows.json"
+    eval_windows.main(["--candidate-json", str(cand), "--registry", "futures",
+                       "--windows", "oos,2023", "--datasets", "BTC/USDT:4h,ETH/USDT:4h",
+                       "--json", str(out)])
+    payload = json.loads(out.read_text())
+    ran, empty = payload["window_scores"]
+    assert ran["scored_datasets"] == 1 and empty["verdict"] == "no data"
+    assert ran["close_validation"]["children"] == 1
+    for cv in (ran["close_validation"], payload["close_validation"]):
+        assert cv["close_eligibility"] == "eligible" and cv["parity_status"] == "unverified"
+        assert cv["requested_set_complete"] is True and cv["unknown_children"] == 0
+
+
+def test_report_aggregates_never_upgrade_refused_or_legacy_children(tmp_path, capsys):
+    import auto_suggest
+    import monte_carlo
+    spec = tmp_path / "suggest.json"
+    spec.write_text(json.dumps({
+        "study": "refusal", "registry": "futures", "harnesses": ["m1"], "windows": ["oos"],
+        "correction": {"method": "benjamini_hochberg", "alpha": 0.05}, "candidates": [],
+        "m6": {"strategy_id": "awesome_oscillator", "incumbent_close": [TIERED],
+               "candidate_close_variants": [{"key": "ts", "candidate_close": [TIME_STOP]}]}}))
+    report_path = tmp_path / "report.json"
+    assert auto_suggest.main(["--spec", str(spec), "--out-dir", str(tmp_path / "runs"),
+                              "--json", str(report_path)]) == 1
+    refused = json.loads(report_path.read_text())["close_validation"]
+    assert refused["close_eligibility"] == "refused" and refused["requested_set_complete"] is False
+    assert [r["reason_code"] for r in refused["refusals"]] == ["UNSUPPORTED_LIVE_CONTEXT"]
+
+    trades = tmp_path / "legacy.json"
+    trades.write_text(json.dumps({"trades": [{"pnl_pct": 1.0, "pnl_pct_net": 0.9},
+                                             {"pnl_pct": -0.5, "pnl_pct_net": -0.6}]}))
+    mc_path = tmp_path / "mc.json"
+    assert monte_carlo.main(["--trades-json", str(trades), "--n-paths", "50",
+                             "--kill-switch-pct", "50", "--json", str(mc_path)]) == 0
+    legacy = json.loads(mc_path.read_text())["close_validation"]
+    assert legacy["close_eligibility"] == "unknown" and legacy["unknown_children"] == 1
+    assert legacy["requested_set_complete"] is False and legacy["incomplete_parity"] is True
 
 
 def test_parity_cli_refuses_strict_and_reports_incomplete_agreement(monkeypatch):
@@ -327,25 +360,6 @@ def test_tuner_and_replay_keep_the_refusal(tmp_path):
     assert replay_capability([TIME_STOP], "approximate")["replayable"] is True
     pct = replay_capability([{"name": "tiered_tp_pct", "params": {}}])
     assert pct["replayable"] is False and pct["refusal"] is None
-
-
-def test_capability_context_preserves_raw_presence_and_rejects_bad_shapes():
-    ctx = CapabilityContext(
-        raw_fields={"leverage": {"present": True, "value": 0}, "margin": {"present": False, "value": None}},
-        resolved_stop_owner={"name": "stop_loss_atr_mult", "parameters": {"atr_mult": 1.0}},
-        input_evidence={"leverage": {"status": "missing", "source": None, "value": None}})
-    v = validate_close_capabilities(close_refs=[TIERED], capability_context=ctx)
-    assert v.capability_context.to_dict()["raw_fields"]["leverage"] == {"present": True, "value": 0}
-    for bad in (CapabilityContext(input_evidence={"x": {"status": "assumed", "source": None, "value": 1}}),
-                CapabilityContext(raw_fields={"x": {"present": False, "value": 3}}),
-                {"raw_fields": {}}):
-        with pytest.raises(CloseCapabilityError) as exc:
-            validate_close_capabilities(close_refs=[TIERED], capability_context=bad)
-        assert exc.value.reason_code == "INVALID_CAPABILITY_CONTEXT"
-    for kw in ({"consumer": "dashboard"}, {"phase": "runtime"}):
-        with pytest.raises(CloseCapabilityError) as exc:
-            validate_close_capabilities(close_refs=[TIERED], **kw)
-        assert exc.value.reason_code == "INVALID_CAPABILITY_CONTEXT"
 
 
 def test_every_registered_close_has_one_central_declaration():

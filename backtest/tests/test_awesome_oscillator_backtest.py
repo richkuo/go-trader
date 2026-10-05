@@ -134,7 +134,8 @@ def test_batched_parity_admits_explicit_paper_and_matches_solo():
     frame = compute_parity_frame(df, cfg=_parity_cfg(batched=True), window=200)
     result = summarize(frame)
     assert result["bars_compared"] > 0
-    assert result["mismatches"] == 0 and result["clean"]
+    assert result["mismatches"] == 0
+    assert result["close_parity"] == "incomplete" and not result["clean"]
 
 
 def test_production_solo_check_subprocess_refuses_unacknowledged_live_before_any_exchange_call():

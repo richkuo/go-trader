@@ -78,4 +78,5 @@ def test_batched_parity_mode_admits_explicit_paper_and_matches_solo():
     frame = compute_parity_frame(_market(260), cfg=_parity_cfg(batched=True), window=200)
     result = summarize(frame)
     assert result["bars_compared"] > 0
-    assert result["clean"], frame[~frame["match"]].head()
+    assert result["mismatches"] == 0, frame[~frame["match"]].head()
+    assert result["close_parity"] == "incomplete" and not result["clean"]
