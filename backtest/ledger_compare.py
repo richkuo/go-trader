@@ -7,6 +7,7 @@ import json
 import math
 import os
 import sys
+import traceback
 from typing import Optional
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -42,6 +43,7 @@ SUPPORTED_EXPORT_VERSIONS = (1,)
 EXIT_STRICT_SUCCESS = 0
 EXIT_NOT_STRICT = 1
 EXIT_INPUT_ERROR = 2
+EXIT_INTERNAL_ERROR = 3
 
 TOLERANCE_UNITS = {
     "time_seconds": "s",
@@ -308,12 +310,33 @@ def validate_comparison_input(doc, base_dir: str) -> dict:
             _utc(seg.get("effective_to"), f"{label}.effective_to")
         for key in ("strategy", "regime", "portfolio_risk"):
             _require(seg, key, dict, label)
+        _validate_strategy_shape(seg["strategy"], f"{label}.strategy")
         if seg.get("status") not in ("verified", "unverified"):
             raise LedgerInputError(f"{label}.status must be verified or unverified")
     capev = doc.get("capability_evidence", {})
     if not isinstance(capev, dict):
         raise LedgerInputError("capability_evidence must be an object")
     return {"manifest_path": manifest_path, "start": start, "end": end, "tolerances": tolerances}
+
+
+def _validate_strategy_shape(strategy: dict, label: str) -> None:
+    args = strategy.get("args")
+    if args is not None and not (isinstance(args, list) and all(isinstance(a, str) for a in args)):
+        raise LedgerInputError(f"{label}.args must be a list of strings")
+    open_ref = strategy.get("open_strategy")
+    if open_ref is not None:
+        if not isinstance(open_ref, dict):
+            raise LedgerInputError(f"{label}.open_strategy must be an object")
+        name = open_ref.get("name")
+        if name is not None and not isinstance(name, str):
+            raise LedgerInputError(f"{label}.open_strategy.name must be a string")
+        params = open_ref.get("params")
+        if params is not None and not isinstance(params, dict):
+            raise LedgerInputError(f"{label}.open_strategy.params must be an object")
+    for key in ("type", "platform", "symbol", "direction", "atr_method"):
+        value = strategy.get(key)
+        if value is not None and not isinstance(value, str):
+            raise LedgerInputError(f"{label}.{key} must be a string")
 
 
 def _evidence_verified(entry: Optional[dict]) -> bool:
@@ -561,22 +584,23 @@ def verify_starting_state(spec: dict, booked_start: dict, pending_recomputed: Op
     inv = spec["inventory"]
     inv_value = inv.get("quantity")
     inv_ok = _is_number(inv_value)
-    recomputed = None
+    recomputed = booked_start["inventory_before_start"]
     note = None
-    if inv.get("rule") == "booked_ledger_replay":
-        recomputed = booked_start["inventory_before_start"]
-        if recomputed is None:
-            inv_ok = False
-            note = "booked events before the interval have unresolved position identity"
-        else:
-            inv_ok = inv_ok and abs(recomputed - inv_value) <= qty_tol
-            if not inv_ok:
-                note = "declared starting inventory differs from the booked-ledger replay"
-    elif inv.get("rule") != "attested":
+    if inv.get("rule") not in ("booked_ledger_replay", "attested"):
         inv_ok = False
         note = f"rule {inv.get('rule')!r} cannot verify starting inventory"
+    elif recomputed is None:
+        inv_ok = False
+        note = ("booked events before the interval have unresolved position identity; the booked ledger "
+                "cannot confirm the starting inventory")
+    else:
+        inv_ok = inv_ok and abs(recomputed - inv_value) <= qty_tol
+        if not inv_ok:
+            note = "declared starting inventory differs from the booked-ledger replay"
     out["inventory"] = entry("inventory", inv_ok, recomputed, note)
     out["inventory"]["value"] = inv_value
+    if inv.get("rule") == "attested":
+        out["inventory"]["verification"] = "attested_and_checked_against_booked_ledger_replay"
 
     pend = spec["pending_decision"]
     pend_ok = isinstance(pend.get("value"), str)
@@ -1167,47 +1191,120 @@ def reconcile_pair(bp: dict, sp: dict, step_s: float, tol: dict) -> dict:
     return out
 
 
+BOOKED_SECTION_DISPOSITIONS = {
+    "matched_components": ("matched",),
+    "matched_pair_unmatched_components": ("unmatched",),
+    "ambiguous": ("ambiguous",),
+    "unmatched_booked": ("unmatched", "not_simulated"),
+    "strategy_funding": ("strategy_funding",),
+    "unresolved": ("unresolved_identity",),
+    "outside_interval": ("outside_interval",),
+    "not_comparable": ("not_comparable",),
+}
+
+
+def _expected_row_accounting(r: dict) -> tuple:
+    fee, rp = r["fee"], r["realized_pnl"]
+    if r["pnl_gross"]:
+        return rp - fee, rp - fee
+    if r["is_close"]:
+        return rp, rp
+    return -fee, rp
+
+
 def conservation(booked_doc: dict, norm: dict, sim: Optional[dict], sim_env: Optional[dict],
-                 booked_dispositions: dict, sim_dispositions: dict, tol: dict) -> dict:
+                 booked_dispositions: dict, sim_dispositions: dict, tol: dict, booked_sections: dict,
+                 matched: list) -> dict:
     checks = []
+    informational = []
 
     def check(name, ok, **detail):
         checks.append({"check": name, "ok": bool(ok), **detail})
 
+    records = {r["event_key"]: r for r in norm["records"]}
     all_keys = [e["event_key"] for e in booked_doc["events"]]
     check("booked_each_event_one_disposition", set(booked_dispositions) == set(all_keys)
           and len(booked_dispositions) == len(all_keys), events=len(all_keys),
           dispositions=len(booked_dispositions))
-    fees = [r["fee"] for r in norm["records"]]
-    deltas = [r["ledger_delta"] for r in norm["records"]]
-    groups = {}
+
+    bad_rows = []
     for r in norm["records"]:
-        groups.setdefault(booked_dispositions.get(r["event_key"]), []).append(r)
-    fee_by_group = {g: _fsum(r["fee"] for r in rs) for g, rs in groups.items()}
-    delta_by_group = {g: _fsum(r["ledger_delta"] for r in rs) for g, rs in groups.items()}
-    bound = _sum_bound(fees) + _sum_bound(deltas) + 1e-12
-    check("booked_fees_counted_once", abs(_fsum(fees) - _fsum(fee_by_group.values())) <= bound,
-          total=_fsum(fees), by_disposition=fee_by_group, numerical_bound=bound)
-    check("booked_ledger_delta_conserved", abs(_fsum(deltas) - _fsum(delta_by_group.values())) <= bound,
-          total=_fsum(deltas), by_disposition=delta_by_group, numerical_bound=bound)
+        delta, net = _expected_row_accounting(r)
+        b = 4 * sys.float_info.epsilon * max(1.0, abs(r["realized_pnl"]) + abs(r["fee"]))
+        if abs(r["ledger_delta"] - delta) > b or abs(r["row_net_pnl"] - net) > b:
+            bad_rows.append({"event_key": r["event_key"], "ledger_delta": r["ledger_delta"],
+                             "expected_ledger_delta": delta, "row_net_pnl": r["row_net_pnl"],
+                             "expected_row_net_pnl": net})
+    check("booked_row_accounting_identity", not bad_rows, rows=len(norm["records"]),
+          mismatched_count=len(bad_rows), mismatched=bad_rows[:50],
+          rule="each row's ledger_delta and row_net_pnl equal the exporter formulas recomputed from "
+               "realized_pnl, exchange_fee, is_close and pnl_gross")
+
+    listed = {}
+    disagree = []
+    unknown = []
+    for section in sorted(booked_sections):
+        for k in booked_sections[section]:
+            listed[k] = listed.get(k, 0) + 1
+            if k not in records:
+                unknown.append({"section": section, "event_key": k})
+            elif booked_dispositions.get(k) not in BOOKED_SECTION_DISPOSITIONS[section]:
+                disagree.append({"section": section, "event_key": k,
+                                 "disposition": booked_dispositions.get(k)})
+    missing = sorted(set(all_keys) - set(listed))
+    duplicated = sorted(k for k, n in listed.items() if n > 1)
+    check("booked_report_sections_partition_events", not (missing or duplicated or unknown or disagree),
+          missing=missing, duplicated=duplicated, unknown=unknown, disposition_disagreements=disagree,
+          rule="every booked event is listed in exactly one report section, and that section agrees with "
+               "its disposition")
+    total_fees = [r["fee"] for r in norm["records"]]
+    total_deltas = [r["ledger_delta"] for r in norm["records"]]
+    section_fees = [records[k]["fee"] for keys in booked_sections.values() for k in keys if k in records]
+    section_deltas = [records[k]["ledger_delta"] for keys in booked_sections.values() for k in keys if k in records]
+    bound = _sum_bound(total_fees + section_fees) + _sum_bound(total_deltas + section_deltas) + 1e-12
+    by_section = {sec: {"fees": _fsum(records[k]["fee"] for k in keys if k in records),
+                        "ledger_delta": _fsum(records[k]["ledger_delta"] for k in keys if k in records)}
+                  for sec, keys in sorted(booked_sections.items())}
+    check("booked_fees_counted_once", abs(_fsum(total_fees) - _fsum(section_fees)) <= bound,
+          total=_fsum(total_fees), report_sections_total=_fsum(section_fees), by_section=by_section,
+          numerical_bound=bound)
+    check("booked_ledger_delta_conserved", abs(_fsum(total_deltas) - _fsum(section_deltas)) <= bound,
+          total=_fsum(total_deltas), report_sections_total=_fsum(section_deltas), by_section=by_section,
+          numerical_bound=bound)
+
+    for pair in matched:
+        keys = [c["booked_event_key"] for c in pair["components"]] + list(pair["unmatched_booked_components"])
+        fees = [records[k]["fee"] for k in keys]
+        deltas = [records[k]["ledger_delta"] for k in keys]
+        pos_fees = pair["booked"]["entry_fees"] + pair["booked"]["exit_fees"]
+        pos_delta = pair["booked"]["ledger_delta"]
+        b = _sum_bound(fees + [pos_fees]) + _sum_bound(deltas + [pos_delta]) + 1e-12
+        check(f"booked_matched_pair_components:{pair['booked_position_id']}",
+              len(keys) == len(set(keys)) and abs(_fsum(fees) - pos_fees) <= b and abs(_fsum(deltas) - pos_delta) <= b,
+              components_fees=_fsum(fees), position_fees=pos_fees, components_ledger_delta=_fsum(deltas),
+              position_ledger_delta=pos_delta, numerical_bound=b,
+              rule="the pair's compared and leftover booked components add up to the position's in-interval totals")
+
     qty_tol = tol["quantity_absolute"]
     for p in norm["positions"]:
-        evs = p["_events"]
-        opened = _fsum(e["quantity"] for e in evs if e["kind"] != "close")
-        closed = _fsum(e["quantity"] for e in evs if e["kind"] == "close")
-        after_open = _fsum(e["quantity"] for e in evs if e["relation"] == "after" and e["kind"] != "close")
-        after_closed = _fsum(e["quantity"] for e in evs if e["relation"] == "after" and e["kind"] == "close")
-        lhs = p["start_inventory"] + p["opened_qty"] - p["closed_qty"] + after_open - after_closed
-        check(f"booked_position_quantity:{p['position_id']}", abs(lhs - (opened - closed)) <= qty_tol
-              and p["residual_qty"] >= -qty_tol, start_inventory=p["start_inventory"], opened_in=p["opened_qty"],
-              closed_in=p["closed_qty"], residual=p["residual_qty"], lifetime_open=opened - closed)
-        entry = _fsum(e["fee"] for e in evs if e["kind"] != "close")
-        exit_ = _fsum(e["fee"] for e in evs if e["kind"] == "close")
-        check(f"booked_position_fees:{p['position_id']}", abs(entry + exit_ - _fsum(e["fee"] for e in evs)) <= 1e-9,
-              entry_fees=entry, exit_fees=exit_)
+        running, low = 0.0, 0.0
+        for _, group in itertools.groupby(p["_events"], key=lambda e: e["ts"]):
+            group = list(group)
+            running += (_fsum(e["quantity"] for e in group if e["kind"] != "close")
+                        - _fsum(e["quantity"] for e in group if e["kind"] == "close"))
+            low = min(low, running)
+        check(f"booked_position_inventory_never_negative:{p['position_id']}",
+              low >= -qty_tol and p["residual_qty"] >= -qty_tol, min_running_inventory=low,
+              residual_at_interval_end=p["residual_qty"], lifetime_residual=running,
+              rule="in record-time order (same-time rows applied together), a position never closes more "
+                   "than it has opened")
+
     funding_total = _fsum(r["realized_pnl"] for r in norm["funding_in"])
-    check("booked_strategy_funding_unallocated", True, strategy_funding=funding_total, allocated_to_positions=0.0,
-          unallocated=funding_total, rule="strategy funding rows carry no position identity; they stay unallocated")
+    informational.append({"total": "booked_strategy_funding_unallocated", "strategy_funding": funding_total,
+                          "allocated_to_positions": 0.0, "unallocated": funding_total,
+                          "rows_with_position_id": sum(1 for r in norm["funding_in"] if r["position_id"]),
+                          "rule": "strategy funding is compared only as a strategy total; this is a total, "
+                                  "not a check"})
     wallet = booked_doc["wallet_orphan_context"]
     in_totals = any(rec.get("event_key") in booked_dispositions for rec in wallet["records"])
     check("wallet_orphan_excluded_from_strategy_totals", not in_totals,
@@ -1244,7 +1341,7 @@ def conservation(booked_doc: dict, norm: dict, sim: Optional[dict], sim_env: Opt
         closed = _fsum(e["quantity"] for e in pre if e["kind"] == "close")
         check("simulated_quantity_conserved", abs(opened - closed - abs(end["position_qty"])) <= 1e-9,
               opened=opened, closed=closed, residual=abs(end["position_qty"]))
-    return {"checks": checks, "all_passed": all(c["ok"] for c in checks)}
+    return {"checks": checks, "all_passed": all(c["ok"] for c in checks), "informational_totals": informational}
 
 
 def _decision_class(rows: list) -> tuple:
@@ -1332,11 +1429,15 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
     open_name = open_ref.get("name") or ((strategy.get("args") or [None])[0])
     signal_refused = any(r["field"] in ("type", "platform", "args", "open_strategy") for r in cap_refusals)
     if "dataset" in market and not manual and not signal_refused and open_name:
-        strategy_checks = market_strategy_checks(
-            market, open_name, open_ref.get("params") or {}, direction, invert,
-            open_name in market_ctx["observation_input_strategies"], has_close)
-        refusals.extend(strategy_checks["refusals"])
-        pending = strategy_checks["pending_decision"]
+        try:
+            strategy_checks = market_strategy_checks(
+                market, open_name, open_ref.get("params") or {}, direction, invert,
+                open_name in market_ctx["observation_input_strategies"], has_close)
+        except ValueError as exc:
+            refusals.append({"reason": "strategy_rejected_inputs", "detail": f"{open_name}: {exc}"})
+        else:
+            refusals.extend(strategy_checks["refusals"])
+            pending = strategy_checks["pending_decision"]
         if pending not in (None, "none"):
             refusals.append({"reason": "boundary_pending_decision_unmodeled",
                              "detail": f"the strategy emitted {pending!r} on the last warm-up bar; the simulator "
@@ -1347,9 +1448,13 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
         if res["status"] != "verified":
             unverified.append({"input": f"starting_state.{name}", "reason": res.get("note") or "not verified"})
     inv_value = state["inventory"]["value"]
-    if _is_number(inv_value) and abs(inv_value) > tol["quantity_absolute"]:
+    replay_inv = booked_start["inventory_before_start"]
+    if ((_is_number(inv_value) and abs(inv_value) > tol["quantity_absolute"])
+            or (replay_inv is not None and abs(replay_inv) > tol["quantity_absolute"])):
         refusals.append({"reason": "seeded_inventory_unsupported",
-                         "detail": "a non-flat starting inventory cannot be reproduced; execution-spec runs refuse seeded inventory"})
+                         "detail": "a non-flat starting inventory (declared or replayed from the booked ledger) cannot "
+                                   "be reproduced; execution-spec runs refuse seeded inventory",
+                         "declared": inv_value, "booked_replay": replay_inv})
 
     close_validation = None
     sim = None
@@ -1476,7 +1581,20 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
                                     "residual_qty": p["residual_qty"], "ledger_delta": p["ledger_delta"],
                                     "weak_candidates": [], "cause": "simulation_not_run"})
 
-    cons = conservation(doc, booked, simulated, sim["envelope"] if sim else None, booked_disp, sim_disp, tol)
+    pos_by_id = {p["position_id"]: p for p in booked["positions"]}
+    booked_sections = {
+        "matched_components": [c["booked_event_key"] for p in matched for c in p["components"]],
+        "matched_pair_unmatched_components": [k for p in matched for k in p["unmatched_booked_components"]],
+        "ambiguous": [k for a in ambiguous for pid in a["booked_position_ids"]
+                      for k in pos_by_id[pid]["in_interval_event_keys"]],
+        "unmatched_booked": [k for u in unmatched_b for k in u["event_keys"]],
+        "strategy_funding": [r["event_key"] for r in booked["funding_in"]],
+        "unresolved": [u["event_key"] for u in booked["unresolved"]],
+        "outside_interval": [o["event_key"] for o in booked["outside"]],
+        "not_comparable": [n["event_key"] for n in booked["not_comparable"]],
+    }
+    cons = conservation(doc, booked, simulated, sim["envelope"] if sim else None, booked_disp, sim_disp, tol,
+                        booked_sections, matched)
 
     in_records = [r for r in booked["records"] if r["relation"] == "in"]
     booked_funding = _fsum(r["realized_pnl"] for r in booked["funding_in"])
@@ -1485,8 +1603,15 @@ def compare(export_path: str, input_path: str, mode: str = COMPARISON_MODE_STRIC
     if not booked["unresolved"] and not manual:
         end_inv = 0.0
         for p in booked["positions"]:
-            if p["status"] == "comparable" and p["residual_qty"]:
-                end_inv += p["residual_qty"] * (1.0 if p["ownership"]["side"] == "long" else -1.0)
+            if p["status"] not in ("comparable", "outside_interval") or not p["residual_qty"]:
+                continue
+            side = p["ownership"]["side"]
+            if side not in ("long", "short"):
+                if abs(p["residual_qty"]) > tol["quantity_absolute"]:
+                    end_inv = None
+                    break
+                continue
+            end_inv += p["residual_qty"] * (1.0 if side == "long" else -1.0)
     strategy_totals = {
         "booked": {"funding": booked_funding, "ledger_delta": booked_net, "fees": _fsum(r["fee"] for r in in_records),
                    "end_inventory_signed": end_inv, "events_in_interval": len(in_records)},
@@ -1696,6 +1821,10 @@ def main(argv=None) -> int:
     except (LedgerInputError, OSError) as exc:
         print(f"ledger_compare: {exc}", file=sys.stderr)
         return EXIT_INPUT_ERROR
+    except Exception as exc:
+        traceback.print_exc(file=sys.stderr)
+        print(f"ledger_compare: internal error, no report written: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return EXIT_INTERNAL_ERROR
     print(f"ledger_compare: outcome={report['outcome']} strict_success={report['strict_success']} "
           f"matched={len(report['matching']['matched'])} ambiguous={len(report['matching']['ambiguous'])} "
           f"unmatched_booked={len(report['matching']['unmatched_booked'])} "

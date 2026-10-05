@@ -417,3 +417,102 @@ def test_malformed_inputs_exit_without_a_report(tmp_path, capsys):
     rc = lc.main(["--export", str(fx2 / "export.json"), "--comparison-input", str(fx2 / "comparison_input.json"),
                   "--output", str(out)])
     assert rc == 2 and out.read_text() == "{}"
+
+
+def _template(doc, kind):
+    return next(e for e in doc["events"] if e["event_kind"]["value"] == kind and e["position_id"]["value"])
+
+
+def test_attested_inventory_is_checked_against_the_booked_replay(tmp_path):
+    fx = _copy(tmp_path)
+    original = _load(fx / "export.json")
+    base = _load(fx / "comparison_input.json")
+    attested = {"quantity": 0.0, "status": "verified", "rule": "attested", "evidence": "operator says flat"}
+
+    doc = copy.deepcopy(original)
+    doc["events"] += [
+        _new_event(_template(doc, "non_close"), "primary/trades/9101", "2026-01-04T20:00:41Z", "pos-held", 0.002, 60000.0),
+        _new_event(_template(doc, "close"), "primary/trades/9102", "2026-01-07T01:00:41Z", "pos-held", 0.002, 61000.0),
+    ]
+    _dump(fx / "export.json", doc)
+    cin = copy.deepcopy(base)
+    cin["starting_state"]["inventory"] = attested
+    _dump(fx / "comparison_input.json", cin)
+    _rebind(fx)
+    rc, rep = _run(fx, tmp_path, name="held.json")
+    assert rc == 1 and rep["strict_success"] is False
+    inv = rep["starting_state"]["inventory"]
+    assert inv["status"] == "unverified" and inv["recomputed"] == pytest.approx(0.002)
+    assert inv["verification"] == "attested_and_checked_against_booked_ledger_replay"
+    seeded = next(r for r in rep["eligibility"]["refusals"] if r["reason"] == "seeded_inventory_unsupported")
+    assert seeded["declared"] == 0.0 and seeded["booked_replay"] == pytest.approx(0.002)
+    assert rep["strategy_totals"]["booked"]["end_inventory_signed"] == pytest.approx(0.002 + 0.01719)
+
+    doc = copy.deepcopy(original)
+    orphan = _new_event(_template(doc, "non_close"), "primary/trades/9103", "2026-01-04T20:00:41Z", None, 0.002, 60000.0)
+    orphan["position_id"] = {"value": None, "raw_value": None, "status": "unavailable",
+                             "reason": "legacy_row_without_position_id", "provenance": []}
+    doc["events"].append(orphan)
+    _dump(fx / "export.json", doc)
+    _rebind(fx)
+    rc, rep = _run(fx, tmp_path, name="unresolved.json")
+    assert rc == 1 and rep["strict_success"] is False
+    inv = rep["starting_state"]["inventory"]
+    assert inv["status"] == "unverified" and "unresolved position identity" in inv["note"]
+    assert "starting_state.inventory" in {u["input"] for u in rep["eligibility"]["unverified"]}
+
+    (fx / "export.json").write_text(json.dumps(original, indent=2) + "\n")
+    _dump(fx / "comparison_input.json", base)
+    _rebind(fx)
+    rc, rep = _run(fx, tmp_path, name="restored.json")
+    assert rc == 0 and rep["outcome"] == "strict_success"
+
+
+@pytest.mark.parametrize("field,value", [
+    ("open_strategy", "sma_crossover"),
+    ("params", ["fast", 10]),
+    ("args", "sma_crossover BTC 1h"),
+])
+def test_malformed_strategy_shapes_exit_without_a_report(tmp_path, field, value):
+    fx = _copy(tmp_path)
+    cin = _load(fx / "comparison_input.json")
+    strategy = cin["historical_configuration"]["timeline"][0]["strategy"]
+    if field == "params":
+        strategy["open_strategy"]["params"] = value
+    else:
+        strategy[field] = value
+    _dump(fx / "comparison_input.json", cin)
+    rc, rep = _run(fx, tmp_path)
+    assert rc == lc.EXIT_INPUT_ERROR and rep is None
+
+
+def test_unexpected_errors_exit_without_a_report(tmp_path, monkeypatch):
+    def broken(*a, **k):
+        raise RuntimeError("disposable internal failure")
+
+    monkeypatch.setattr(lc, "run_simulation", broken)
+    rc, rep = _run(_copy(tmp_path), tmp_path)
+    assert rc == lc.EXIT_INTERNAL_ERROR and rep is None
+
+
+def test_booked_conservation_checks_fail_on_inconsistent_ledgers(tmp_path):
+    fx = _copy(tmp_path)
+    doc = _load(fx / "export.json")
+    row = next(e for e in doc["events"] if e["event_kind"]["value"] == "close" and _in_interval(e))
+    row["ledger_delta"]["value"] += 0.5
+    doc["events"] += [
+        _new_event(_template(doc, "close"), "primary/trades/9201", "2026-01-05T10:00:41Z", "pos-early-close", 0.001, 61000.0),
+        _new_event(_template(doc, "non_close"), "primary/trades/9202", "2026-01-05T11:00:41Z", "pos-early-close", 0.001, 61000.0),
+    ]
+    _dump(fx / "export.json", doc)
+    _rebind(fx)
+    rc, rep = _run(fx, tmp_path)
+    assert rc == 1 and rep["strict_success"] is False
+    assert rep["strict_checks"]["conservation_passed"] is False
+    checks = {c["check"]: c for c in rep["conservation"]["checks"]}
+    identity = checks["booked_row_accounting_identity"]
+    assert identity["ok"] is False and [m["event_key"] for m in identity["mismatched"]] == [row["event_key"]]
+    early = checks["booked_position_inventory_never_negative:pos-early-close"]
+    assert early["ok"] is False and early["min_running_inventory"] == pytest.approx(-0.001)
+    assert checks["booked_report_sections_partition_events"]["ok"] is True
+    assert {i["total"] for i in rep["conservation"]["informational_totals"]} == {"booked_strategy_funding_unallocated"}
