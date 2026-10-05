@@ -43,6 +43,21 @@ jobs:
           fi
           exit $fail
 
+      - name: SKILL.md and POST_UPDATE_HISTORY.md line length
+        run: |
+          limit=1000
+          LC_ALL=C awk -v limit="$limit" '
+            FNR == 1 { fence = 0 }
+            match($0, /^ *```/) && RLENGTH <= 6 { fence = !fence; next }
+            fence { next }
+            $0 ~ /^[ \t]*\|/ { next }
+            length($0) > limit {
+              printf "::error file=%s,line=%d::line is %d bytes, above the %d-byte limit. Put one sentence per line.\n", FILENAME, FNR, length($0), limit
+              bad = 1
+            }
+            END { exit bad }
+          ' SKILL.md docs/POST_UPDATE_HISTORY.md
+
       - name: .github/scripts holds only test_workflow_logic.py
         run: |
           files=$(git ls-files .github/scripts)
