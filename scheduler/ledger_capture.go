@@ -251,6 +251,14 @@ func withoutCaptureConfigCredentials(cfg Config) Config {
 	return cfg
 }
 
+func deleteCaptureConfigKeyFold(obj map[string]any, key string) {
+	for k := range obj {
+		if strings.EqualFold(k, key) {
+			delete(obj, k)
+		}
+	}
+}
+
 func rewriteCaptureConfigStorage(data []byte, rel map[storageRole]string) ([]byte, error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
@@ -262,16 +270,22 @@ func rewriteCaptureConfigStorage(data []byte, rel map[storageRole]string) ([]byt
 		return nil, fmt.Errorf("parse configuration for the copy: trailing data")
 	}
 	for section, keys := range captureConfigCredentialKeys {
-		raw, ok := root[section]
-		if !ok || raw == nil {
-			continue
+		for name, raw := range root {
+			if !strings.EqualFold(name, section) || raw == nil {
+				continue
+			}
+			obj, ok := raw.(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("%s is not an object", name)
+			}
+			for _, key := range keys {
+				deleteCaptureConfigKeyFold(obj, key)
+			}
 		}
-		obj, ok := raw.(map[string]any)
-		if !ok {
-			return nil, fmt.Errorf("%s is not an object", section)
-		}
-		for _, key := range keys {
-			delete(obj, key)
+	}
+	for name := range root {
+		if strings.EqualFold(name, "paper_sources") && name != "paper_sources" {
+			return nil, fmt.Errorf("configuration key %q differs in case from paper_sources; refusing an ambiguous storage layout", name)
 		}
 	}
 	assigned := make(map[storageRole]bool)
@@ -279,9 +293,11 @@ func rewriteCaptureConfigStorage(data []byte, rel map[storageRole]string) ([]byt
 	if !ok {
 		return nil, fmt.Errorf("no primary snapshot path")
 	}
+	deleteCaptureConfigKeyFold(root, "db_file")
 	root["db_file"] = p
 	assigned[storageRolePrimary] = true
 	if p, ok := rel[storageRolePaper]; ok {
+		deleteCaptureConfigKeyFold(root, "paper_db_file")
 		root["paper_db_file"] = p
 		assigned[storageRolePaper] = true
 	}
@@ -301,6 +317,7 @@ func rewriteCaptureConfigStorage(data []byte, rel map[storageRole]string) ([]byt
 			if !ok {
 				return nil, fmt.Errorf("paper_sources[%d] (%q) has no snapshot file", i, id)
 			}
+			deleteCaptureConfigKeyFold(obj, "db_file")
 			obj["db_file"] = p
 			assigned[role] = true
 		}
@@ -316,6 +333,24 @@ func rewriteCaptureConfigStorage(data []byte, rel map[storageRole]string) ([]byt
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(root); err != nil {
 		return nil, fmt.Errorf("encode configuration copy: %w", err)
+	}
+	var decoded Config
+	if err := json.Unmarshal(buf.Bytes(), &decoded); err != nil {
+		return nil, fmt.Errorf("decode configuration copy: %w", err)
+	}
+	if decoded.Discord.Token != "" || decoded.Discord.ReportGitHubToken != "" || decoded.Telegram.BotToken != "" {
+		return nil, fmt.Errorf("the configuration copy still holds a notifier or report credential")
+	}
+	if decoded.DBFile != rel[storageRolePrimary] {
+		return nil, fmt.Errorf("the configuration copy's db_file does not point at the primary snapshot")
+	}
+	if want, ok := rel[storageRolePaper]; ok && decoded.PaperDBFile != want {
+		return nil, fmt.Errorf("the configuration copy's paper_db_file does not point at the paper snapshot")
+	}
+	for i, src := range decoded.PaperSources {
+		if want := rel[paperSourceRole(strings.TrimSpace(src.ID))]; src.DBFile == "" || src.DBFile != want {
+			return nil, fmt.Errorf("the configuration copy's paper_sources[%d].db_file does not point at its snapshot", i)
+		}
 	}
 	return buf.Bytes(), nil
 }

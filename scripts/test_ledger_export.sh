@@ -106,7 +106,7 @@ make_config() {
   "interval_seconds": 600,
   $storage
   "discord": {"token": "fixture-discord-token-not-exported", "report_github_token": "fixture-report-token-not-copied"},
-  "telegram": {"bot_token": "fixture-telegram-token-not-copied"},
+  "telegram": {"Bot_Token": "fixture-telegram-token-not-copied"},
   "strategies": [$extra
     {"id": "hl-live-btc", "type": "perps", "platform": "hyperliquid", "script": "shared_scripts/check_hyperliquid.py", "args": ["sma_crossover", "BTC", "1h", "--mode=live"], "capital": 1000},
     {"id": "hl-live-eth", "type": "perps", "platform": "hyperliquid", "script": "shared_scripts/check_hyperliquid.py", "args": ["sma_crossover", "ETH", "1h", "--mode=live"], "capital": 1000},
