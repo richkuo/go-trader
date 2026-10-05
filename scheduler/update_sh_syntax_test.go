@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -153,14 +154,17 @@ func TestUpdateShellScriptSyntax(t *testing.T) {
 }
 
 type ciWorkflowJob struct {
-	raw     []string
-	logical [][]string
+	raw      []string
+	logical  [][]string
+	problems []string
 }
 
 var (
 	ciJobHeader   = regexp.MustCompile(`^  ([A-Za-z0-9_-]+):\s*$`)
 	ciRunKey      = regexp.MustCompile(`^(\s*)(- )?run:\s*(.*)$`)
 	ciStepIf      = regexp.MustCompile(`^\s*(- )?if:`)
+	ciShellKey    = regexp.MustCompile(`^\s*(- )?(shell|defaults):`)
+	ciTeeTarget   = regexp.MustCompile(`2>&1 \| tee ("[^"]+"|\S+)$`)
 	ciRunPattern  = regexp.MustCompile(`-run '([^']*)'`)
 	ciSuiteInvoke = regexp.MustCompile(`bash scripts/(test_[A-Za-z0-9_.-]+\.sh)`)
 	ciOmissionMsg = regexp.MustCompile(`^\s*echo "((?:NOTE|note): [^"]*)"`)
@@ -175,6 +179,9 @@ func parseCIWorkflowJobs(t *testing.T, path string) map[string]*ciWorkflowJob {
 	lines := strings.Split(string(data), "\n")
 	jobsAt := -1
 	for i, line := range lines {
+		if strings.HasPrefix(line, "defaults:") {
+			t.Fatalf("%s has a top-level defaults: block, which can change the shell every run: step uses", path)
+		}
 		if line == "jobs:" {
 			if jobsAt >= 0 {
 				t.Fatalf("%s has more than one top-level jobs: key", path)
@@ -223,10 +230,12 @@ func parseCIWorkflowJobs(t *testing.T, path string) map[string]*ciWorkflowJob {
 					i++
 				}
 			case "":
-				t.Fatalf("job %s has an empty run: value", name)
+				job.problems = append(job.problems, fmt.Sprintf("job %s has an empty run: value", name))
+				continue
 			default:
 				if strings.ContainsAny(value[:1], `|>'"`) {
-					t.Fatalf("job %s uses a run: form this guard cannot read (%s); use a plain value or a | block", name, value)
+					job.problems = append(job.problems, fmt.Sprintf("job %s uses a run: form this guard cannot read (%s); use a plain value or a | block", name, value))
+					continue
 				}
 				body = []string{value}
 			}
@@ -271,6 +280,12 @@ func requireCIJob(t *testing.T, jobs map[string]*ciWorkflowJob, name string) *ci
 		if ciStepIf.MatchString(line) {
 			t.Fatalf("job %s has a conditional (%s), so a suite step might not run", name, strings.TrimSpace(line))
 		}
+		if ciShellKey.MatchString(line) {
+			t.Fatalf("job %s overrides the step shell or defaults (%s), so a failing command might not fail the step", name, strings.TrimSpace(line))
+		}
+	}
+	if len(job.problems) > 0 {
+		t.Fatal(strings.Join(job.problems, "\n"))
 	}
 	if len(job.logical) == 0 {
 		t.Fatalf("job %s has no run: steps", name)
@@ -329,12 +344,17 @@ func TestShellSuiteCIWiring(t *testing.T) {
 	var runRegex *regexp.Regexp
 	sawSkipGate := false
 	for _, step := range pyJob.logical {
+		pipefail := false
+		teeLog := ""
 		for _, line := range step {
 			matches := ciRunPattern.FindAllStringSubmatch(line, -1)
 			if strings.Count(line, "-run") != len(matches) {
 				t.Fatalf("go-python-integration has a -run flag this guard cannot read: %s", line)
 			}
-			if strings.Contains(line, "--- SKIP") && strings.Contains(line, "grep") {
+			if line == "set -o pipefail" {
+				pipefail = true
+			}
+			if teeLog != "" && strings.Contains(line, "grep") && strings.Contains(line, "'--- SKIP' "+teeLog) {
 				sawSkipGate = true
 			}
 			if len(matches) == 0 {
@@ -346,6 +366,14 @@ func TestShellSuiteCIWiring(t *testing.T) {
 			if !strings.HasPrefix(line, "go -C scheduler test ") || !strings.Contains(line, " -tags pyintegration ") || !strings.Contains(line, " -v ") {
 				t.Fatalf("the go-python-integration -run line must be a verbose pyintegration go test: %s", line)
 			}
+			if !pipefail {
+				t.Fatalf("the go-python-integration step must run set -o pipefail before the piped go test, or a failing test passes: %s", line)
+			}
+			tee := ciTeeTarget.FindStringSubmatch(line)
+			if tee == nil {
+				t.Fatalf("the go-python-integration go test must end with 2>&1 | tee <log> so the SKIP gate reads its output: %s", line)
+			}
+			teeLog = tee[1]
 			runRegex, err = regexp.Compile(matches[0][1])
 			if err != nil {
 				t.Fatalf("go-python-integration -run regex does not compile: %v", err)
@@ -356,7 +384,7 @@ func TestShellSuiteCIWiring(t *testing.T) {
 		t.Fatal("go-python-integration has no -run '...' argument")
 	}
 	if !sawSkipGate {
-		t.Fatal("go-python-integration does not fail when a selected test reports --- SKIP")
+		t.Fatal("go-python-integration does not fail when a selected test reports --- SKIP in the log its go test writes")
 	}
 
 	invoked := map[string]int{}
