@@ -52,6 +52,59 @@ STOP_FIELD_KEYS = (
 )
 
 
+CANDIDATE_STOP_MODES = ("inherit", "drop")
+CANDIDATE_STOP_OVERRIDE_KEYS = ("stop_loss_atr_mult", "trailing_stop_atr_mult")
+STOP_OWNER_SELECTOR_KEYS = (
+    "stop_loss_atr_mult",
+    "stop_loss_pct",
+    "stop_loss_margin_pct",
+    "trailing_stop_atr_mult",
+    "trailing_stop_pct",
+    "stop_loss_atr_mult_regime",
+    "trailing_stop_atr_mult_regime",
+)
+CANDIDATE_STOP_OVERRIDE_SOURCE = "candidate_stops"
+
+
+def parse_candidate_stops(value):
+    if isinstance(value, str):
+        if value in CANDIDATE_STOP_MODES:
+            return value
+        raise ValueError(
+            f"candidate_stops must be one of {list(CANDIDATE_STOP_MODES)} or an object "
+            f"with exactly one of {list(CANDIDATE_STOP_OVERRIDE_KEYS)}, got {value!r}")
+    if not isinstance(value, dict):
+        raise ValueError(
+            f"candidate_stops must be one of {list(CANDIDATE_STOP_MODES)} or an object "
+            f"with exactly one of {list(CANDIDATE_STOP_OVERRIDE_KEYS)}, got "
+            f"{type(value).__name__}")
+    unknown = sorted(str(k) for k in value if k not in CANDIDATE_STOP_OVERRIDE_KEYS)
+    if unknown:
+        raise ValueError(
+            f"candidate_stops has unknown key(s) {unknown}; the object takes exactly one "
+            f"of {list(CANDIDATE_STOP_OVERRIDE_KEYS)} (ATR multipliers)")
+    if len(value) != 1:
+        raise ValueError(
+            f"candidate_stops object must set exactly one of "
+            f"{list(CANDIDATE_STOP_OVERRIDE_KEYS)}, got {sorted(value)}")
+    (key, raw), = value.items()
+    number = None
+    if not isinstance(raw, bool) and isinstance(raw, (int, float)):
+        number = float(raw)
+    if number is None or not math.isfinite(number) or number <= 0:
+        raise ValueError(
+            f"candidate_stops {key} must be a finite positive ATR multiplier, got {raw!r}")
+    return {key: number}
+
+
+def candidate_stops_mode(selection) -> str:
+    return "replace" if isinstance(selection, dict) else selection
+
+
+def is_stop_only_candidate(close_refs: Optional[Sequence[dict]], selection) -> bool:
+    return not close_refs and isinstance(selection, dict)
+
+
 def _norm_cdf(z: float) -> float:
     return 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
 
@@ -263,14 +316,25 @@ def free_arm_entries(trades: Sequence[dict]) -> List[dict]:
     return out
 
 
+def exit_reason_counts(entries: Sequence[Optional[dict]]) -> dict:
+    counts: Dict[str, int] = {}
+    for e in entries:
+        if e:
+            reason = str(e.get("exit_reason") or "")
+            counts[reason] = counts.get(reason, 0) + 1
+    return {k: counts[k] for k in sorted(counts)}
+
+
 def arm_summary(results: Optional[dict]) -> dict:
     if not results:
         return {"trades": 0, "entries": 0, "win_rate": None, "mean_net_pct": None,
                 "total_net_pct": None, "total_return_pct": None,
-                "max_drawdown_pct": None, "sharpe": None, "liquidated": False}
+                "max_drawdown_pct": None, "sharpe": None, "liquidated": False,
+                "exit_reasons": {}}
     entries = free_arm_entries(results.get("trades", []) or [])
     nets = [e["net_pct"] for e in entries]
     return {
+        "exit_reasons": exit_reason_counts(entries),
         "trades": int(results.get("total_trades", len(entries)) or 0),
         "entries": len(entries),
         "win_rate": (round(sum(1 for x in nets if x > 0) / len(nets), 4) if nets else None),
@@ -366,10 +430,12 @@ def per_regime_table(rows: Sequence[dict], n_resamples: int = DEFAULT_BOOTSTRAP_
 
 
 def replay_capability(close_refs: Optional[Sequence[dict]],
-                      comparison_mode: Optional[str] = None) -> dict:
+                      comparison_mode: Optional[str] = None,
+                      candidate_stops=None) -> dict:
     from backtester import CloseCapabilityError, validate_close_capabilities
     if not close_refs:
-        return {"replayable": False, "refusal": None, "close_validation": None}
+        stop_only = is_stop_only_candidate(close_refs, candidate_stops)
+        return {"replayable": stop_only, "refusal": None, "close_validation": None}
     try:
         validation = validate_close_capabilities(
             close_refs=close_refs, comparison_mode=comparison_mode,
@@ -457,6 +523,18 @@ def _backtester_kwargs(open_name: str, params: Optional[dict],
     return kw
 
 
+def _stop_only_frame(df_signals):
+    if "open_action" in df_signals.columns or any(
+            c == "close_fraction" or str(c).startswith("close_fraction:")
+            for c in df_signals.columns):
+        raise ValueError(
+            "a stop-only candidate needs a signal-only open frame, but the open strategy "
+            "already emits open_action/close_fraction columns")
+    out = df_signals.copy()
+    out["close_fraction"] = 0.0
+    return out
+
+
 def run_free_arm(reg, open_name: str, params: Optional[dict], df_signals,
                  close_refs: Optional[Sequence[dict]], direction: Optional[str],
                  capital: float, gate: dict, symbol: str, timeframe: str,
@@ -503,13 +581,16 @@ def evaluate_dataset_window(reg, spec: dict, symbol: str, timeframe: str,
     regime_series = _regime_label_series(df_signals, spec["regime_cfg"])
     pos_by_date = {str(ts): i for i, ts in enumerate(df_signals.index)}
 
+    candidate_signals = (_stop_only_frame(df_signals) if spec.get("candidate_stop_only")
+                         else df_signals)
+
     control_results = run_free_arm(
         reg, spec["open_name"], spec.get("params"), df_signals,
         spec.get("incumbent_close"), spec.get("direction"), spec["capital"],
         spec["gate"], symbol, timeframe, spec.get("control_stops"),
         comparison_mode=spec.get("comparison_mode"))
     candidate_results = run_free_arm(
-        reg, spec["open_name"], spec.get("params"), df_signals,
+        reg, spec["open_name"], spec.get("params"), candidate_signals,
         spec.get("candidate_close"), spec.get("direction"), spec["capital"],
         spec["gate"], symbol, timeframe, spec.get("candidate_stops"),
         comparison_mode=spec.get("comparison_mode"))
@@ -533,7 +614,7 @@ def evaluate_dataset_window(reg, spec: dict, symbol: str, timeframe: str,
             regime_by_date[date] = label or UNKNOWN_REGIME
             side_sign = -1 if ctrl["side"] == "short" else 1
             candidate_by_date[date] = replay_candidate_for_entry(
-                reg, spec["open_name"], spec.get("params"), df_signals, sig_pos,
+                reg, spec["open_name"], spec.get("params"), candidate_signals, sig_pos,
                 side_sign, spec["candidate_close"], spec.get("direction"),
                 spec["capital"], spec["gate"], symbol, timeframe,
                 spec.get("candidate_stops"),
@@ -541,6 +622,8 @@ def evaluate_dataset_window(reg, spec: dict, symbol: str, timeframe: str,
         paired_rows, paired_diag = build_paired_rows(
             control_entries, candidate_by_date, regime_by_date)
         paired_diag["replayable"] = True
+        paired_diag["candidate_exit_reasons"] = exit_reason_counts(
+            list(candidate_by_date.values()))
 
     table = per_regime_table(paired_rows, n_resamples=spec["n_resamples"],
                              ci=spec["ci"], seed=spec["seed"]) if paired_rows else None
@@ -627,10 +710,64 @@ def _stops_have_owner(stops: Optional[dict]) -> bool:
     return owner != "none"
 
 
-def _candidate_stops(mode: str, incumbent_stops: dict) -> dict:
-    if mode == "drop":
+def _override_capability_context(context, key: str, value: float):
+    from backtester import CapabilityContext
+    if not isinstance(context, CapabilityContext) or context.errors:
+        return context
+    thawed = context.to_dict()
+    raw = thawed["raw_fields"]
+    for k in STOP_OWNER_SELECTOR_KEYS:
+        raw[k] = {"present": False, "value": None}
+    raw[key] = {"present": True, "value": value}
+    evidence = thawed["input_evidence"]
+    live_units = evidence.get("resolved_live_units")
+    if isinstance(live_units, dict) and isinstance(live_units.get("value"), dict):
+        values = dict(live_units["value"])
+        for k in STOP_OWNER_SELECTOR_KEYS:
+            values[k] = None
+        values[key] = value
+        evidence["resolved_live_units"] = {**live_units, "value": values}
+    evidence["candidate_stop_override"] = {
+        "status": "verified", "source": CANDIDATE_STOP_OVERRIDE_SOURCE,
+        "value": {key: value}}
+    return CapabilityContext(raw_fields=raw, resolved_stop_owner=None,
+                             input_evidence=evidence)
+
+
+def _candidate_stops(selection, incumbent_stops: dict) -> dict:
+    if selection == "drop":
         return {}
-    return dict(incumbent_stops or {})
+    if not isinstance(selection, dict):
+        return dict(incumbent_stops or {})
+    (key, value), = parse_candidate_stops(selection).items()
+    out = {k: v for k, v in (incumbent_stops or {}).items()
+           if k not in STOP_OWNER_SELECTOR_KEYS}
+    out[key] = value
+    if out.get("capability_context") is not None:
+        out["capability_context"] = _override_capability_context(
+            out["capability_context"], key, value)
+    return out
+
+
+def resolve_candidate_stop_policy(close_refs: Optional[Sequence[dict]], selection,
+                                  incumbent_stops: Optional[dict],
+                                  comparison_mode: Optional[str] = None,
+                                  regime_windows_spec=None) -> Tuple[dict, str]:
+    from backtester import build_stop_capability_context, validate_close_capabilities
+    stops = _candidate_stops(selection, incumbent_stops or {})
+    fields = {k: v for k, v in stops.items()
+              if k not in ("stop_platform", "strategy_type", "capability_context")}
+    strategy_type = stops.get("strategy_type") or "perps"
+    context = build_stop_capability_context(
+        platform=stops.get("stop_platform") or FEE_PLATFORM,
+        strategy_type=strategy_type, close_refs=close_refs, fields=fields,
+        regime_windows_spec=regime_windows_spec,
+        capability_context=stops.get("capability_context"))
+    validate_close_capabilities(
+        close_refs=close_refs, comparison_mode=comparison_mode, platform=FEE_PLATFORM,
+        strategy_type=strategy_type, consumer="engine", phase="preflight",
+        capability_context=context)
+    return stops, context.resolved_stop_owner["name"]
 
 
 _STOP_CLASS_CANDIDATE_NAMES = {
@@ -805,14 +942,20 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--candidate-close", required=True,
                    help="Candidate close refs JSON under test (or 'none' to test "
                         "removing the exit). The thing being A/B'd.")
-    p.add_argument("--candidate-stops", choices=["inherit", "drop"], default="inherit",
+    p.add_argument("--candidate-stops", default="inherit",
                    help="How the candidate arm treats the incumbent's strategy-level "
                         "stops (resolved from --baseline-config). 'inherit' (default) "
                         "holds them fixed so the A/B isolates the close-evaluator "
                         "change; 'drop' runs the candidate with NO strategy-level stop "
                         "so its close refs are the entire exit (full-policy "
-                        "replacement). The control arm always keeps the incumbent "
-                        "stops either way.")
+                        "replacement). A JSON object with exactly one of "
+                        "stop_loss_atr_mult or trailing_stop_atr_mult (a finite "
+                        "positive ATR multiplier) REPLACES every inherited stop-owner "
+                        "selector on the candidate arm and keeps the platform, type, "
+                        "leverage, drawdown and trailing-move inputs; with an empty "
+                        "--candidate-close it is a stop-only candidate (no close "
+                        "evaluator, no signal-reversal exit, paired replay enabled). "
+                        "The control arm always keeps the incumbent stops.")
     p.add_argument("--direction", default=None, choices=["long", "short", "both"],
                    help="Entry side held fixed across both arms (default: long, "
                         "or the baseline config's direction)")
@@ -852,8 +995,25 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _parse_candidate_stops_arg(raw: str):
+    text = str(raw).strip()
+    if text in CANDIDATE_STOP_MODES:
+        return text
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(
+            f"--candidate-stops must be {' or '.join(CANDIDATE_STOP_MODES)}, or a JSON "
+            f"object with exactly one of {list(CANDIDATE_STOP_OVERRIDE_KEYS)}: {exc}")
+    try:
+        return parse_candidate_stops(value)
+    except ValueError as exc:
+        raise SystemExit(f"--candidate-stops: {exc}")
+
+
 def _resolve_spec(args) -> dict:
     open_name = args.strategy
+    stop_selection = _parse_candidate_stops_arg(args.candidate_stops)
     params = json.loads(args.params) if args.params else None
     direction = args.direction
     incumbent_close = None
@@ -890,7 +1050,7 @@ def _resolve_spec(args) -> dict:
                 "to resolve the live close, or --incumbent-close '<json>' (or "
                 "--incumbent-close none for an explicit open-as-close control).")
         incumbent_close = _parse_close_arg(args.incumbent_close, "--incumbent-close")
-        if args.candidate_stops == "drop":
+        if stop_selection == "drop":
             print("[WARN] --candidate-stops drop has no effect without --baseline-config "
                   "(the explicit --incumbent-close path resolves no strategy-level stops).",
                   file=sys.stderr)
@@ -906,12 +1066,12 @@ def _resolve_spec(args) -> dict:
                                         platform=FEE_PLATFORM, phase="preflight")
         except CloseCapabilityError as exc:
             raise SystemExit(f"{label}: {exc}")
-    replay = replay_capability(candidate_close, args.comparison_mode)
+    replay = replay_capability(candidate_close, args.comparison_mode, stop_selection)
     if replay["refusal"] is not None:
         raise SystemExit(f"candidate close: {replay['refusal']['message']}")
 
-    candidate_stops = _candidate_stops(args.candidate_stops, incumbent_stops)
-    if _candidate_stacks_on_inherited_stop(candidate_close, args.candidate_stops,
+    candidate_stops = _candidate_stops(stop_selection, incumbent_stops)
+    if _candidate_stacks_on_inherited_stop(candidate_close, stop_selection,
                                            incumbent_stops):
         print("[WARN] the candidate is a protective stop AND --candidate-stops inherit "
               "(default) keeps the incumbent's stop, so the candidate stacks under it "
@@ -946,6 +1106,13 @@ def _resolve_spec(args) -> dict:
         "windows_spec": regime_cfg["windows_spec"],
         "gate_window": regime_cfg["gate_window"],
     }
+    if isinstance(stop_selection, dict):
+        try:
+            candidate_stops, _ = resolve_candidate_stop_policy(
+                candidate_close, stop_selection, incumbent_stops,
+                args.comparison_mode, gate["windows_spec"])
+        except CloseCapabilityError as exc:
+            raise SystemExit(f"candidate stops: {exc}")
     return {
         "open_name": open_name,
         "params": params,
@@ -954,7 +1121,14 @@ def _resolve_spec(args) -> dict:
         "candidate_close": candidate_close,
         "control_stops": incumbent_stops,
         "candidate_stops": candidate_stops,
-        "candidate_stops_mode": args.candidate_stops,
+        "candidate_stops_mode": candidate_stops_mode(stop_selection),
+        "candidate_stops_selection": (stop_selection if isinstance(stop_selection, dict)
+                                      else None),
+        "candidate_stop_only": is_stop_only_candidate(candidate_close, stop_selection),
+        "control_stop_owner": _arm_stop_owner(incumbent_close, incumbent_stops,
+                                              gate["windows_spec"]),
+        "candidate_stop_owner": _arm_stop_owner(candidate_close, candidate_stops,
+                                                gate["windows_spec"]),
         "replayable": replay["replayable"],
         "comparison_mode": args.comparison_mode,
         "gate": gate,
@@ -991,11 +1165,20 @@ def main(argv: Optional[List[str]] = None) -> int:
     print(f"open: {spec['open_name']} (params: {spec['params'] or 'registry defaults'}, "
           f"registry: {args.registry}, direction: {spec['direction']})")
     print(f"incumbent close: {spec['incumbent_close'] or 'open-as-close (signal reversal)'}")
-    print(f"candidate close: {spec['candidate_close'] or 'open-as-close (signal reversal)'}")
+    if spec.get("candidate_stop_only"):
+        print("candidate close: none (stop-only: the candidate stop is the whole exit; "
+              "no signal-reversal exit)")
+    else:
+        print(f"candidate close: "
+              f"{spec['candidate_close'] or 'open-as-close (signal reversal)'}")
     ctrl_stops = spec.get("control_stops") or {}
+    show_candidate = ctrl_stops or spec.get("candidate_stops_selection")
     print(f"incumbent stops (control arm): {ctrl_stops or 'none'}"
           + (f"  |  candidate arm stops: {spec['candidate_stops_mode']} "
-             f"({spec.get('candidate_stops') or 'none'})" if ctrl_stops else ""))
+             f"({spec.get('candidate_stops') or 'none'})" if show_candidate else ""))
+    print(f"stop owners: control={spec.get('control_stop_owner')} "
+          f"candidate={spec.get('candidate_stop_owner')} (stop_units: engine_fraction; "
+          f"ATR multipliers are unitless)")
     print(f"regime: classifier={spec['regime_cfg']['classifier']}"
           + (f", gate={spec['gate']['allowed_regimes']}" if spec['gate']['allowed_regimes']
              else ", gate=none (attribution only)"))
@@ -1031,6 +1214,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             "candidate_stops": _stops_for_json(spec.get("candidate_stops")),
             "stop_units": "engine_fraction",
             "candidate_stops_mode": spec.get("candidate_stops_mode"),
+            "candidate_stops_selection": spec.get("candidate_stops_selection"),
+            "candidate_stop_only": bool(spec.get("candidate_stop_only")),
+            "control_stop_owner": spec.get("control_stop_owner"),
+            "candidate_stop_owner": spec.get("candidate_stop_owner"),
             "replayable": spec["replayable"],
             "comparison_mode": spec.get("comparison_mode"),
             "close_validation": aggregate_close_validations(
