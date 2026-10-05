@@ -21,7 +21,7 @@ from eval_windows import (
     expand_sweep,
     validate_candidate,
 )
-from exit_policy_ab import candidate_is_replayable
+from exit_policy_ab import replay_capability
 from regime_stats import benjamini_hochberg
 
 HARNESS_REL = {
@@ -52,8 +52,11 @@ VERDICT_ORDER = [
     "inconclusive",
     "noise_gate_blocked",
     "excluded_not_replayable",
+    "excluded_close_capability",
     "run_failed",
 ]
+
+CLOSE_CAPABILITY_ERROR_PREFIX = "close_capability_refused:"
 
 FOOTER = ("Suggest-only. No config was modified and no live default was written. "
           "Promotion is a human decision.")
@@ -210,25 +213,35 @@ def _open_entry(key: str, candidate: dict, harnesses: list, hypothesis) -> dict:
 
 def _exit_ab_entry(key: str, variant: dict, m6: dict) -> dict:
     close_refs = variant.get("candidate_close")
+    comparison_mode = variant.get("comparison_mode", m6.get("comparison_mode"))
     errors = []
-    if not candidate_is_replayable(close_refs):
+    replay = replay_capability(close_refs, comparison_mode)
+    if replay["refusal"] is not None:
+        errors.append(CLOSE_CAPABILITY_ERROR_PREFIX + replay["refusal"]["reason_code"])
+    elif not replay["replayable"]:
         errors.append("excluded_not_replayable")
-    return {
+    candidate = {
+        "baseline_config": m6.get("baseline_config"),
+        "incumbent_close": m6.get("incumbent_close"),
+        "strategy_id": variant.get("strategy_id") or m6.get("strategy_id"),
+        "candidate_close": close_refs,
+        "candidate_stops": variant.get("candidate_stops", "inherit"),
+        "allowed_regimes": list(variant.get("allowed_regimes") or []),
+    }
+    if comparison_mode is not None:
+        candidate["comparison_mode"] = comparison_mode
+    entry = {
         "key": key,
         "kind": "exit_ab",
-        "candidate": {
-            "baseline_config": m6.get("baseline_config"),
-            "incumbent_close": m6.get("incumbent_close"),
-            "strategy_id": variant.get("strategy_id") or m6.get("strategy_id"),
-            "candidate_close": close_refs,
-            "candidate_stops": variant.get("candidate_stops", "inherit"),
-            "allowed_regimes": list(variant.get("allowed_regimes") or []),
-        },
+        "candidate": candidate,
         "harnesses": ["m6"],
         "hypothesis": variant.get("hypothesis"),
         "precondition_errors": errors,
         "limitations": [],
     }
+    if replay["refusal"] is not None:
+        entry["close_capability_refusal"] = replay["refusal"]
+    return entry
 
 
 def expand_candidates(spec: dict) -> list:
@@ -329,7 +342,7 @@ def noise_argv_tail(strategy, params_json, registry, direction, windows,
 
 
 def m3_argv_tail(strategy, params_json, registry, direction, close_json,
-                 windows, datasets, out_json) -> list:
+                 windows, datasets, out_json, comparison_mode=None) -> list:
     tail = ["--strategy", strategy, "--registry", registry,
             "--windows", _csv(windows), "--json", out_json]
     if params_json:
@@ -338,6 +351,8 @@ def m3_argv_tail(strategy, params_json, registry, direction, close_json,
         tail += ["--direction", direction]
     if close_json:
         tail += ["--close-strategies", close_json]
+    if comparison_mode is not None:
+        tail += ["--comparison-mode", comparison_mode]
     if datasets:
         tail += ["--datasets", _csv(datasets)]
     return tail
@@ -382,6 +397,8 @@ def m6_argv_tail(m6_candidate, registry, windows, datasets, resamples, seed, out
         tail += ["--incumbent-close", json.dumps(m6_candidate["incumbent_close"])]
     for label in m6_candidate.get("allowed_regimes") or []:
         tail += ["--allowed-regimes", label]
+    if m6_candidate.get("comparison_mode") is not None:
+        tail += ["--comparison-mode", m6_candidate["comparison_mode"]]
     if datasets:
         tail += ["--datasets", _csv(datasets)]
     return tail
@@ -397,6 +414,7 @@ def extract_m1(payload: dict) -> dict:
             "verdict": score.get("verdict"),
             "mean_sharpe": score.get("mean_sharpe"),
             "mean_ddadj": score.get("mean_ddadj"),
+            "close_validation": score.get("close_validation"),
         }
     return out
 
@@ -587,7 +605,10 @@ def advisory_failures(entry: dict) -> list:
 
 
 def candidate_verdict(entry: dict, tests: list) -> str:
-    if entry.get("precondition_errors"):
+    errors = entry.get("precondition_errors") or []
+    if any(str(e).startswith(CLOSE_CAPABILITY_ERROR_PREFIX) for e in errors):
+        return "excluded_close_capability"
+    if errors:
         return "excluded_not_replayable"
     r = gate_relevant_results(entry)
     if any((v or {}).get("status") == "failed" for v in r.values()):
@@ -708,6 +729,14 @@ def _mc_segment(mc: dict) -> str:
 def format_shortlist(report: dict) -> str:
     corr = report["correction"]
     lines = [f"== auto-suggest shortlist: {report['study']} =="]
+    cv = report.get("close_validation")
+    if cv is not None:
+        from backtester import format_close_validation
+        lines.append(format_close_validation(cv))
+        if not cv.get("requested_set_complete", False):
+            lines.append("*** INCOMPLETE — the requested candidate set has close-capability "
+                         "refusals or unverified close metadata; the shortlist covers only "
+                         "the surviving candidates and is not a complete comparison ***")
     if report.get("exploratory"):
         lines.append("*** EXPLORATORY — correction family incomplete "
                      f"(ran {report['ran']} of {report['total']} candidates; "
@@ -847,6 +876,7 @@ def run_open_entry(entry: dict, spec: dict, out_dir: str,
         out = os.path.join(out_dir, f"{key}.m1.json")
         run = _run_harness("m1", m1_argv_tail(cand_path, reg, windows, datasets, out), out)
         if run["status"] == "ok":
+            run["close_validation"] = run["payload"].get("close_validation")
             run["data"] = extract_m1(run.pop("payload"))
         results["m1"] = run
 
@@ -856,9 +886,11 @@ def run_open_entry(entry: dict, spec: dict, out_dir: str,
                       if cand.get("close_strategies") else None)
         tail = m3_argv_tail(cand["name"],
                             json.dumps(cand["params"]) if cand.get("params") else None,
-                            reg, _direction_for(cand), close_json, windows, datasets, out)
+                            reg, _direction_for(cand), close_json, windows, datasets, out,
+                            cand.get("comparison_mode"))
         run = _run_harness("m3", tail, out)
         if run["status"] == "ok":
+            run["close_validation"] = run["payload"].get("close_validation")
             run["data"] = extract_m3(run.pop("payload"))
         results["m3"] = run
 
@@ -873,6 +905,7 @@ def run_open_entry(entry: dict, spec: dict, out_dir: str,
                             spec["seed"], mc, out)
         run = _run_harness("mc", tail, out)
         if run["status"] == "ok":
+            run["close_validation"] = run["payload"].get("close_validation")
             run["data"] = extract_mc(run.pop("payload"))
         results["mc"] = run
 
@@ -891,6 +924,7 @@ def run_exit_ab_entry(entry: dict, spec: dict, out_dir: str) -> dict:
                         spec["datasets"], spec["resamples"], spec["seed"], out)
     run = _run_harness("m6", tail, out)
     if run["status"] == "ok":
+        run["close_validation"] = run["payload"].get("close_validation")
         run["data"] = m6_window_rollup(run.pop("payload"))
     entry["results"] = {"m6": run}
     return entry
@@ -927,7 +961,8 @@ def _dry_run_commands(entries: list, spec: dict, out_dir: str) -> list:
                               if cand.get("close_strategies") else None)
                 cmds.append(_cmd("m3", m3_argv_tail(
                     cand["name"], params_json, reg, direction, close_json,
-                    windows, datasets, os.path.join(out_dir, f"{key}.m3.json"))))
+                    windows, datasets, os.path.join(out_dir, f"{key}.m3.json"),
+                    cand.get("comparison_mode"))))
             if "m5" in e["harnesses"]:
                 cmds.append(_cmd("m5", m5_argv_tail(
                     cand["name"], reg, direction, windows, datasets,
@@ -951,10 +986,28 @@ def _serializable(entry: dict) -> dict:
     out = {k: entry[k] for k in ("key", "kind", "hypothesis", "verdict",
                                  "limitations", "precondition_errors")}
     out["candidate"] = entry["candidate"]
-    out["evidence"] = {h: {"status": r.get("status"), "data": r.get("data")}
+    out["evidence"] = {h: {"status": r.get("status"), "data": r.get("data"),
+                           "close_validation": r.get("close_validation")}
                        for h, r in (entry.get("results") or {}).items()}
+    if entry.get("close_capability_refusal") is not None:
+        out["close_capability_refusal"] = entry["close_capability_refusal"]
     out["reproduce"] = reproduction_command(entry)
     return out
+
+
+def report_close_validation(entries: list) -> dict:
+    from backtester import aggregate_close_validations
+    children = []
+    for e in entries:
+        refusal = e.get("close_capability_refusal")
+        if refusal is not None:
+            children.append(refusal["close_validation"])
+        for run in (e.get("results") or {}).values():
+            if (run or {}).get("status") == "ok" and "close_validation" in run:
+                children.append(run["close_validation"])
+    if not children:
+        return None
+    return aggregate_close_validations(children)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1051,6 +1104,7 @@ def main(argv=None) -> int:
         "ran": len(entries),
         "total": total,
         "ranked": [_serializable(e) for e in ranked],
+        "close_validation": report_close_validation(entries),
         "note": FOOTER,
     }
 
@@ -1066,7 +1120,8 @@ def main(argv=None) -> int:
             fh.write("```\n" + text + "\n```\n")
         print(f"wrote {args.markdown_out}")
 
-    return 1 if any_gate_failure(entries) else 0
+    refused = any(e.get("close_capability_refusal") is not None for e in entries)
+    return 1 if (any_gate_failure(entries) or refused) else 0
 
 
 if __name__ == "__main__":

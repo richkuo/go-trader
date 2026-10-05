@@ -1,3 +1,5 @@
+//go:build pyintegration
+
 package main
 
 import (

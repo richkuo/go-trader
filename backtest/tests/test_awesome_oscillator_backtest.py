@@ -40,7 +40,7 @@ def _bt(**kw):
     base = dict(initial_capital=1000.0, platform="hyperliquid",
                 open_strategy={"name": NAME, "params": PARAMS},
                 close_strategies=[{"name": "time_stop", "params": {"max_bars": 3}}],
-                stop_loss_atr_mult=1.0, direction="both")
+                stop_loss_atr_mult=1.0, direction="both", comparison_mode="approximate")
     base.update(kw)
     return Backtester(**base)
 
@@ -113,7 +113,7 @@ def _frozen_frame(rows=520):
 
 def _parity_cfg(**kw):
     return ParityConfig(strategy_name=NAME, registry="futures", platform="hyperliquid",
-                        close_refs=[TIME_STOP], **kw)
+                        close_refs=[TIME_STOP], comparison_mode="approximate", **kw)
 
 
 @pytest.mark.parametrize("window", [200, None])
@@ -124,27 +124,31 @@ def test_non_batched_parity_on_frozen_hyperliquid_frame_is_clean(window):
     frame = compute_parity_frame(df, cfg=_parity_cfg(), window=window)
     result = summarize(frame)
     assert result["bars_compared"] >= 300
-    assert result["mismatches"] == 0 and result["clean"]
+    assert result["mismatches"] == 0
+    assert result["close_parity"] == "incomplete" and not result["clean"]
     assert (frame["live_signal"] != 0).sum() > 0
 
 
-def test_batched_parity_refuses_the_research_entry():
+def test_batched_parity_admits_explicit_paper_and_matches_solo():
     df = _frozen_frame(260)
-    with pytest.raises(ValueError, match="backtest_only"):
-        compute_parity_frame(df, cfg=_parity_cfg(batched=True), window=200)
+    frame = compute_parity_frame(df, cfg=_parity_cfg(batched=True), window=200)
+    result = summarize(frame)
+    assert result["bars_compared"] > 0
+    assert result["mismatches"] == 0
+    assert result["close_parity"] == "incomplete" and not result["clean"]
 
 
-def test_production_solo_check_subprocess_refuses_before_any_exchange_call():
+def test_production_solo_check_subprocess_refuses_unacknowledged_live_before_any_exchange_call():
     env = {k: v for k, v in os.environ.items() if not k.startswith("HYPERLIQUID")}
     proc = subprocess.run(
         [sys.executable, os.path.join(REPO, "shared_scripts", "check_hyperliquid.py"),
-         NAME, "BTC", "4h", "--mode=paper"],
+         NAME, "BTC", "4h", "--mode=live"],
         cwd=REPO, capture_output=True, text=True, timeout=120, env=env)
     assert proc.returncode == 1
     payload = json.loads(proc.stdout.strip().splitlines()[-1])
     assert payload["strategy"] == NAME
     assert payload["signal"] == 0
-    assert "backtest_only" in payload["error"]
+    assert "allow_no_edge" in payload["error"] and "explicit live mode" in payload["error"]
 
 
 def test_manifest_leg_books_funding_and_execution_spec_for_the_candidate():
@@ -152,7 +156,8 @@ def test_manifest_leg_books_funding_and_execution_spec_for_the_candidate():
     reg = load_registry("futures")
     leg = run_leg(reg, NAME, None, "BTC", "4h", ("2025-09-01", "2026-09-01"),
                   close_strategies=[TIME_STOP], direction="both", stop_loss_atr_mult=1.0,
-                  manifest_ctx={"manifest": manifest, "window": "test"})
+                  manifest_ctx={"manifest": manifest, "window": "test"},
+                  comparison_mode="approximate")
     assert leg["manifest"]["cost_model"] == "execution_spec"
     assert leg["manifest"]["candle_coverage"]["complete"]
     assert leg["manifest"]["funding_coverage"]["complete"]

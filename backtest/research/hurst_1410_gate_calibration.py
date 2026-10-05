@@ -524,6 +524,7 @@ def _run_arm(reg, name: str, symbol: str, timeframe: str, df: pd.DataFrame,
                      timeframe=timeframe, params=strat_params, save=False)
     leg = leg_from_results(results)
     leg["trade_samples"] = trade_samples_from_results(results)
+    leg["close_validation"] = results.get("close_validation")
     return leg
 
 

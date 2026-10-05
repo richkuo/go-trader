@@ -296,6 +296,7 @@ def main() -> int:
             with open(res["json"]) as fh:
                 payload = json.load(fh)
             entry["windows"] = _window_rollup(payload)
+            entry["close_validation"] = payload.get("close_validation")
             entry["verdict"] = _verdict(entry["windows"])
         else:
             failed += 1

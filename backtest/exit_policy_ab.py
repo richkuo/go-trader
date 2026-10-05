@@ -359,26 +359,28 @@ def per_regime_table(rows: Sequence[dict], n_resamples: int = DEFAULT_BOOTSTRAP_
     }
 
 
-_REPLAYABLE_CLOSE_NAMES = {
-    "atr_stop",
-    "time_stop",
-    "zscore_target",
-    "tiered_tp_atr",
-    "tiered_tp_atr_live",
-    "trailing_stop_atr_mult",
-    "trailing_stop_atr_mult_regime",
-    "stop_loss_atr_mult",
-    "trailing_tp_ratchet",
-    "trailing_tp_ratchet_regime",
-    "tiered_tp_atr_regime",
-}
-
-
-def candidate_is_replayable(close_refs: Optional[Sequence[dict]]) -> bool:
+def replay_capability(close_refs: Optional[Sequence[dict]],
+                      comparison_mode: Optional[str] = None) -> dict:
+    from backtester import CloseCapabilityError, validate_close_capabilities
     if not close_refs:
-        return False
-    return all(isinstance(r, dict) and r.get("name") in _REPLAYABLE_CLOSE_NAMES
-               for r in close_refs)
+        return {"replayable": False, "refusal": None, "close_validation": None}
+    try:
+        validation = validate_close_capabilities(
+            close_refs=close_refs, comparison_mode=comparison_mode,
+            platform=FEE_PLATFORM, consumer="entry_replay", phase="preflight")
+    except CloseCapabilityError as exc:
+        replay_only = all(r["reason_code"] == "UNSUPPORTED_REPLAY_CAPABILITY"
+                          for r in exc.reasons)
+        return {"replayable": False,
+                "refusal": None if replay_only else exc.to_dict(),
+                "close_validation": exc.validation.to_dict()}
+    return {"replayable": True, "refusal": None,
+            "close_validation": validation.to_dict()}
+
+
+def candidate_is_replayable(close_refs: Optional[Sequence[dict]],
+                            comparison_mode: Optional[str] = None) -> bool:
+    return replay_capability(close_refs, comparison_mode)["replayable"]
 
 
 def _prepare_signals(reg, open_name: str, params: Optional[dict], df):
@@ -406,9 +408,11 @@ def _regime_label_series(df, regime_cfg: dict):
 def _backtester_kwargs(open_name: str, params: Optional[dict],
                        close_refs: Optional[Sequence[dict]], direction: Optional[str],
                        capital: float, gate: dict,
-                       stops: Optional[dict] = None) -> dict:
+                       stops: Optional[dict] = None,
+                       comparison_mode: Optional[str] = None) -> dict:
     use_regime = bool(gate.get("allowed_regimes"))
     kw = dict(
+        comparison_mode=comparison_mode,
         initial_capital=capital, platform=FEE_PLATFORM,
         intrabar_resolution=INTRABAR_RESOLUTION,
         open_strategy={"name": open_name, "params": dict(params or {})},
@@ -430,10 +434,11 @@ def _backtester_kwargs(open_name: str, params: Optional[dict],
 def run_free_arm(reg, open_name: str, params: Optional[dict], df_signals,
                  close_refs: Optional[Sequence[dict]], direction: Optional[str],
                  capital: float, gate: dict, symbol: str, timeframe: str,
-                 stops: Optional[dict] = None) -> dict:
+                 stops: Optional[dict] = None,
+                 comparison_mode: Optional[str] = None) -> dict:
     from backtester import Backtester
     bt = Backtester(**_backtester_kwargs(open_name, params, close_refs, direction,
-                                         capital, gate, stops))
+                                         capital, gate, stops, comparison_mode))
     return bt.run(df_signals.copy(), strategy_name=open_name, symbol=symbol,
                   timeframe=timeframe, params=params, save=False)
 
@@ -442,14 +447,15 @@ def replay_candidate_for_entry(reg, open_name: str, params: Optional[dict], df_s
                                sig_pos: int, side_sign: int,
                                candidate_close: Sequence[dict], direction: Optional[str],
                                capital: float, gate: dict, symbol: str,
-                               timeframe: str, stops: Optional[dict] = None) -> Optional[dict]:
+                               timeframe: str, stops: Optional[dict] = None,
+                               comparison_mode: Optional[str] = None) -> Optional[dict]:
     from backtester import Backtester
     one = df_signals.copy()
     sig_col = one.columns.get_loc("signal")
     one.iloc[:, sig_col] = 0
     one.iloc[sig_pos, sig_col] = int(side_sign)
     bt = Backtester(**_backtester_kwargs(open_name, params, candidate_close, direction,
-                                         capital, gate, stops))
+                                         capital, gate, stops, comparison_mode))
     results = bt.run(one, strategy_name=open_name, symbol=symbol,
                      timeframe=timeframe, params=params, save=False)
     return collapse_entry(results.get("trades", []) or [])
@@ -474,11 +480,13 @@ def evaluate_dataset_window(reg, spec: dict, symbol: str, timeframe: str,
     control_results = run_free_arm(
         reg, spec["open_name"], spec.get("params"), df_signals,
         spec.get("incumbent_close"), spec.get("direction"), spec["capital"],
-        spec["gate"], symbol, timeframe, spec.get("control_stops"))
+        spec["gate"], symbol, timeframe, spec.get("control_stops"),
+        comparison_mode=spec.get("comparison_mode"))
     candidate_results = run_free_arm(
         reg, spec["open_name"], spec.get("params"), df_signals,
         spec.get("candidate_close"), spec.get("direction"), spec["capital"],
-        spec["gate"], symbol, timeframe, spec.get("candidate_stops"))
+        spec["gate"], symbol, timeframe, spec.get("candidate_stops"),
+        comparison_mode=spec.get("comparison_mode"))
 
     control_entries = free_arm_entries(control_results.get("trades", []) or [])
 
@@ -502,7 +510,8 @@ def evaluate_dataset_window(reg, spec: dict, symbol: str, timeframe: str,
                 reg, spec["open_name"], spec.get("params"), df_signals, sig_pos,
                 side_sign, spec["candidate_close"], spec.get("direction"),
                 spec["capital"], spec["gate"], symbol, timeframe,
-                spec.get("candidate_stops"))
+                spec.get("candidate_stops"),
+                comparison_mode=spec.get("comparison_mode"))
         paired_rows, paired_diag = build_paired_rows(
             control_entries, candidate_by_date, regime_by_date)
         paired_diag["replayable"] = True
@@ -524,6 +533,10 @@ def evaluate_dataset_window(reg, spec: dict, symbol: str, timeframe: str,
         "unpaired_delta_net_pct": unpaired,
         "paired_diag": paired_diag,
         "per_regime": table,
+        "close_validation": {
+            "control": control_results.get("close_validation"),
+            "candidate": candidate_results.get("close_validation"),
+        },
     }
 
 
@@ -588,10 +601,12 @@ def _candidate_stacks_on_inherited_stop(candidate_close: Optional[Sequence[dict]
                for r in candidate_close)
 
 
-def resolve_from_baseline(config_path: str, strategy_id: str) -> dict:
+def resolve_from_baseline(config_path: str, strategy_id: str,
+                          comparison_mode: Optional[str] = None) -> dict:
     from run_backtest import load_strategy_config
     import json as _json
-    kwargs = load_strategy_config(config_path, strategy_id)
+    kwargs = load_strategy_config(config_path, strategy_id,
+                                  comparison_mode=comparison_mode)
     _reject_unreplayable_entry_shapers(kwargs)
     open_ref = kwargs.get("open_strategy") or {}
     with open(config_path) as fh:
@@ -779,6 +794,13 @@ def build_parser() -> argparse.ArgumentParser:
                    choices=["ohlc_walk", "bar_close"], default="ohlc_walk",
                    help="Same-bar SL/TP race resolution (#1271); bar_close "
                         "reproduces pre-#1271 legacy baselines")
+    p.add_argument("--comparison-mode", dest="comparison_mode", default=None,
+                   metavar="MODE",
+                   help="#1683 close comparison mode for both arms. Omitted = "
+                        "strict: refuses time_stop/zscore_target (no live input) "
+                        "and HL-live-only closes. 'approximate' A/Bs research "
+                        "exits; the JSON carries close_validation with incomplete "
+                        "parity.")
     return p
 
 
@@ -792,7 +814,11 @@ def _resolve_spec(args) -> dict:
     config_allowed_regimes = None
 
     if args.baseline_config:
-        resolved = resolve_from_baseline(args.baseline_config, args.strategy)
+        try:
+            resolved = resolve_from_baseline(args.baseline_config, args.strategy,
+                                             args.comparison_mode)
+        except ValueError as exc:
+            raise SystemExit(str(exc))
         if not resolved["open_name"]:
             raise SystemExit(
                 f"{args.baseline_config}: strategy {args.strategy!r} resolved no "
@@ -823,6 +849,18 @@ def _resolve_spec(args) -> dict:
 
     candidate_close = _parse_close_arg(args.candidate_close, "--candidate-close")
     direction = direction or "long"
+    from backtester import CloseCapabilityError, validate_close_capabilities
+    for label, refs in (("incumbent close", incumbent_close),
+                        ("candidate close", candidate_close)):
+        try:
+            validate_close_capabilities(close_refs=refs,
+                                        comparison_mode=args.comparison_mode,
+                                        platform=FEE_PLATFORM, phase="preflight")
+        except CloseCapabilityError as exc:
+            raise SystemExit(f"{label}: {exc}")
+    replay = replay_capability(candidate_close, args.comparison_mode)
+    if replay["refusal"] is not None:
+        raise SystemExit(f"candidate close: {replay['refusal']['message']}")
 
     candidate_stops = _candidate_stops(args.candidate_stops, incumbent_stops)
     if _candidate_stacks_on_inherited_stop(candidate_close, args.candidate_stops,
@@ -869,7 +907,8 @@ def _resolve_spec(args) -> dict:
         "control_stops": incumbent_stops,
         "candidate_stops": candidate_stops,
         "candidate_stops_mode": args.candidate_stops,
-        "replayable": candidate_is_replayable(candidate_close),
+        "replayable": replay["replayable"],
+        "comparison_mode": args.comparison_mode,
         "gate": gate,
         "regime_cfg": regime_cfg,
         "capital": args.capital,
@@ -929,6 +968,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(format_window_report(wname, window, results))
 
     print(format_summary(per_window))
+    from backtester import aggregate_close_validations, format_close_validation
+    print(format_close_validation(aggregate_close_validations(
+        v for results in per_window.values() for d in results
+        for v in (d["close_validation"]["control"], d["close_validation"]["candidate"]))))
 
     if args.json_out:
         payload = {
@@ -940,6 +983,11 @@ def main(argv: Optional[List[str]] = None) -> int:
             "candidate_stops": spec.get("candidate_stops"),
             "candidate_stops_mode": spec.get("candidate_stops_mode"),
             "replayable": spec["replayable"],
+            "comparison_mode": spec.get("comparison_mode"),
+            "close_validation": aggregate_close_validations(
+                v for results in per_window.values() for d in results
+                for v in (d["close_validation"]["control"],
+                          d["close_validation"]["candidate"])),
             "regime_cfg": spec["regime_cfg"],
             "gate_allowed_regimes": spec["gate"]["allowed_regimes"],
             "registry": args.registry,

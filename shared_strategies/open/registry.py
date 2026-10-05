@@ -56,56 +56,46 @@ VALID_PLATFORMS: Tuple[str, ...] = ("spot", "futures")
 
 STRATEGIES: Dict[str, Dict[str, Any]] = {}
 
-M5_DEPRECATED_EDGE_STRATEGIES = frozenset({
-    "adx_trend",
-    "amd_ifvg",
-    "atr_breakout",
-    "bollinger_bands",
-    "consolidation_range",
-    "ema_crossover",
-    "funding_skew",
-    "heikin_ashi_ema",
-    "ichimoku_cloud",
-    "macd",
-    "mean_reversion",
-    "momentum",
-    "mtf_confluence",
-    "order_blocks",
-    "pairs_spread",
-    "parabolic_sar",
-    "range_scalper",
-    "regime_adaptive",
-    "rsi",
-    "rsi_macd_combo",
-    "sma_crossover",
-    "squeeze_momentum",
-    "stoch_rsi",
-    "supertrend",
-    "sweep_squeeze_combo",
-    "tema_cross",
-    "tema_cross_bd",
-    "triple_ema",
-    "triple_ema_bidir",
-    "vol_momentum",
-    "volume_weighted",
-    "vwap_reversion",
-})
+EDGE_STATUS_NO_EDGE = "no_edge"
 
-DISCOVERY_HIDDEN_STRATEGIES = frozenset({
-    "amd_ifvg",
-    "analog_retrieval",
-    "awesome_oscillator",
-    "chaikin_money_flow_breakout",
-    "commodity_channel_trend",
-    "connors_rsi_reversion",
-    "donchian_breakout",
-    "open_interest_breakout",
-    "range_scalper",
-    "relative_vigor_index",
-    "session_breakout",
-    "vol_momentum",
-    "vortex_trend",
-}) | M5_DEPRECATED_EDGE_STRATEGIES
+VALID_EDGE_STATUSES: Tuple[str, ...] = (EDGE_STATUS_NO_EDGE,)
+
+VALID_EDGE_SOURCES: Tuple[str, ...] = (
+    "fee_audit_m5",
+    "study_fail",
+    "study_inconclusive",
+    "unvalidated",
+)
+
+
+def no_edge_strategies() -> frozenset:
+    return frozenset(
+        name for name, entry in STRATEGIES.items()
+        if entry.get("edge_status") == EDGE_STATUS_NO_EDGE
+    )
+
+
+def _validate_edge_metadata(name: str, edge_status, edge_source, edge_ref) -> None:
+    if edge_status is None:
+        if edge_source is not None or edge_ref is not None:
+            raise ValueError(
+                f"{name}: edge_source/edge_ref require edge_status; "
+                f"got edge_source={edge_source!r}, edge_ref={edge_ref!r}"
+            )
+        return
+    if edge_status not in VALID_EDGE_STATUSES:
+        raise ValueError(
+            f"{name}: unknown edge_status {edge_status!r}; expected one of {VALID_EDGE_STATUSES}"
+        )
+    if edge_source not in VALID_EDGE_SOURCES:
+        raise ValueError(
+            f"{name}: edge_status={edge_status!r} needs edge_source in "
+            f"{VALID_EDGE_SOURCES}, got {edge_source!r}"
+        )
+    if not isinstance(edge_ref, str) or not edge_ref.strip():
+        raise ValueError(
+            f"{name}: edge_status={edge_status!r} needs a nonempty edge_ref, got {edge_ref!r}"
+        )
 
 
 _CONSTRAINT_RE = re.compile(
@@ -224,11 +214,14 @@ def register(
     default_params: dict,
     platforms: Tuple[str, ...] = ("spot", "futures"),
     variants: Optional[Dict[str, Dict[str, Any]]] = None,
-    backtest_only: bool = False,
     constraints: Optional[List[str]] = None,
+    edge_status: Optional[str] = None,
+    edge_source: Optional[str] = None,
+    edge_ref: Optional[str] = None,
 ):
     if name in STRATEGIES:
         raise ValueError(f"Strategy '{name}' is already registered")
+    _validate_edge_metadata(name, edge_status, edge_source, edge_ref)
     platforms = tuple(platforms)
     if not platforms:
         raise ValueError(f"{name}: platforms must be non-empty")
@@ -267,10 +260,9 @@ def register(
             "constraints": constraint_list,
             "platforms": platforms,
             "variants": variants,
-            "backtest_only": bool(backtest_only),
-            "edge_status": (
-                "deprecated_m5" if name in M5_DEPRECATED_EDGE_STRATEGIES else None
-            ),
+            "edge_status": edge_status,
+            "edge_source": edge_source,
+            "edge_ref": edge_ref,
         }
         return fn
 
@@ -299,7 +291,7 @@ def build_registry(platform: str, *, include_hidden: bool = False) -> Dict[str, 
 
     out: Dict[str, Dict[str, Any]] = {}
     for name in order:
-        if not include_hidden and name in DISCOVERY_HIDDEN_STRATEGIES:
+        if not include_hidden and STRATEGIES[name].get("edge_status") == EDGE_STATUS_NO_EDGE:
             continue
         entry = STRATEGIES[name]
         variant = entry["variants"].get(platform, {})
@@ -311,8 +303,9 @@ def build_registry(platform: str, *, include_hidden: bool = False) -> Dict[str, 
                 **variant.get("default_params", {}),
             },
             "constraints": entry["constraints"],
-            "backtest_only": entry.get("backtest_only", False),
             "edge_status": entry.get("edge_status"),
+            "edge_source": entry.get("edge_source"),
+            "edge_ref": entry.get("edge_ref"),
         }
     return out
 
@@ -325,6 +318,9 @@ def build_registry(platform: str, *, include_hidden: bool = False) -> Dict[str, 
         "fast_period > 0",
         "fast_period < slow_period",
     ],
+    edge_status="no_edge",
+    edge_source="fee_audit_m5",
+    edge_ref="docs/research/fee-audit-m5.md",
 )
 def sma_crossover_strategy(df: pd.DataFrame, fast_period: int = 20, slow_period: int = 50) -> pd.DataFrame:
     result = df.copy()
@@ -343,6 +339,9 @@ def sma_crossover_strategy(df: pd.DataFrame, fast_period: int = 20, slow_period:
         "fast_period > 0",
         "fast_period < slow_period",
     ],
+    edge_status="no_edge",
+    edge_source="fee_audit_m5",
+    edge_ref="docs/research/fee-audit-m5.md",
 )
 def ema_crossover_strategy(df: pd.DataFrame, fast_period: int = 12, slow_period: int = 26) -> pd.DataFrame:
     result = df.copy()
@@ -364,6 +363,9 @@ def ema_crossover_strategy(df: pd.DataFrame, fast_period: int = 12, slow_period:
         "period > 0",
         "oversold < overbought",
     ],
+    edge_status="no_edge",
+    edge_source="fee_audit_m5",
+    edge_ref="docs/research/fee-audit-m5.md",
 )
 def rsi_strategy(df: pd.DataFrame, period: int = 14, overbought: float = 70, oversold: float = 30) -> pd.DataFrame:
     result = df.copy()
@@ -379,6 +381,9 @@ def rsi_strategy(df: pd.DataFrame, period: int = 14, overbought: float = 70, ove
     "Bollinger Bands \u2014 mean reversion at band touches",
     {"period": 20, "num_std": 2.0},
     constraints=["period > 0"],
+    edge_status="no_edge",
+    edge_source="fee_audit_m5",
+    edge_ref="docs/research/fee-audit-m5.md",
 )
 def bollinger_strategy(df: pd.DataFrame, period: int = 20, num_std: float = 2.0) -> pd.DataFrame:
     result = df.copy()
@@ -404,6 +409,9 @@ def bollinger_strategy(df: pd.DataFrame, period: int = 20, num_std: float = 2.0)
         "signal_period > 0",
         "fast_period < slow_period",
     ],
+    edge_status="no_edge",
+    edge_source="fee_audit_m5",
+    edge_ref="docs/research/fee-audit-m5.md",
 )
 def macd_strategy(df: pd.DataFrame, fast_period: int = 12, slow_period: int = 26, signal_period: int = 9) -> pd.DataFrame:
     result = df.copy()
@@ -428,6 +436,9 @@ def macd_strategy(df: pd.DataFrame, fast_period: int = 12, slow_period: int = 26
         "lookback > 0",
         "exit_std < entry_std",
     ],
+    edge_status="no_edge",
+    edge_source="fee_audit_m5",
+    edge_ref="docs/research/fee-audit-m5.md",
 )
 def mean_reversion_strategy(df: pd.DataFrame, lookback: int = 30, entry_std: float = 1.5, exit_std: float = 0.5) -> pd.DataFrame:
     result = df.copy()
@@ -451,6 +462,9 @@ def mean_reversion_strategy(df: pd.DataFrame, lookback: int = 30, entry_std: flo
         },
     },
     constraints=["roc_period > 0"],
+    edge_status="no_edge",
+    edge_source="fee_audit_m5",
+    edge_ref="docs/research/fee-audit-m5.md",
 )
 def momentum_strategy(df: pd.DataFrame, roc_period: int = 14, threshold: float = 5.0) -> pd.DataFrame:
     result = df.copy()
@@ -466,6 +480,9 @@ def momentum_strategy(df: pd.DataFrame, roc_period: int = 14, threshold: float =
     "Volume-Weighted \u2014 confirms trend with volume analysis",
     {"sma_period": 20, "vol_multiplier": 1.5},
     constraints=["sma_period > 0"],
+    edge_status="no_edge",
+    edge_source="fee_audit_m5",
+    edge_ref="docs/research/fee-audit-m5.md",
 )
 def volume_weighted_strategy(df: pd.DataFrame, sma_period: int = 20, vol_multiplier: float = 1.5) -> pd.DataFrame:
     result = df.copy()
@@ -489,6 +506,9 @@ def volume_weighted_strategy(df: pd.DataFrame, sma_period: int = 20, vol_multipl
         "short_period < mid_period",
         "mid_period < long_period",
     ],
+    edge_status="no_edge",
+    edge_source="fee_audit_m5",
+    edge_ref="docs/research/fee-audit-m5.md",
 )
 def triple_ema_strategy(df: pd.DataFrame, short_period: int = 8, mid_period: int = 21, long_period: int = 55) -> pd.DataFrame:
     result = df.copy()
@@ -511,6 +531,9 @@ def triple_ema_strategy(df: pd.DataFrame, short_period: int = 8, mid_period: int
         "short_period < mid_period",
         "mid_period < long_period",
     ],
+    edge_status="no_edge",
+    edge_source="fee_audit_m5",
+    edge_ref="docs/research/1282-m5-limbo-verdicts.md",
 )
 def triple_ema_bidir_strategy(df: pd.DataFrame, short_period: int = 8, mid_period: int = 21, long_period: int = 55) -> pd.DataFrame:
     result = df.copy()
@@ -533,6 +556,9 @@ def triple_ema_bidir_strategy(df: pd.DataFrame, short_period: int = 8, mid_perio
         "short_period < mid_period",
         "mid_period < long_period",
     ],
+    edge_status="no_edge",
+    edge_source="fee_audit_m5",
+    edge_ref="docs/research/1282-m5-limbo-verdicts.md",
 )
 def tema_cross_strategy(df: pd.DataFrame, short_period: int = 5, mid_period: int = 13, long_period: int = 34) -> pd.DataFrame:
     result = df.copy()
@@ -564,6 +590,9 @@ def tema_cross_strategy(df: pd.DataFrame, short_period: int = 5, mid_period: int
         "short_period < mid_period",
         "mid_period < long_period",
     ],
+    edge_status="no_edge",
+    edge_source="fee_audit_m5",
+    edge_ref="docs/research/1282-m5-limbo-verdicts.md",
 )
 def tema_cross_bd_strategy(df: pd.DataFrame, short_period: int = 5, mid_period: int = 13, long_period: int = 34) -> pd.DataFrame:
     result = df.copy()
@@ -601,6 +630,9 @@ def tema_cross_bd_strategy(df: pd.DataFrame, short_period: int = 5, mid_period: 
         "macd_fast < macd_slow",
         "rsi_oversold < rsi_overbought",
     ],
+    edge_status="no_edge",
+    edge_source="fee_audit_m5",
+    edge_ref="docs/research/fee-audit-m5.md",
 )
 def rsi_macd_combo_strategy(df: pd.DataFrame,
                              rsi_period: int = 14, rsi_oversold: float = 35, rsi_overbought: float = 65,
@@ -634,6 +666,9 @@ def rsi_macd_combo_strategy(df: pd.DataFrame,
         "d_smooth > 0",
         "oversold < overbought",
     ],
+    edge_status="no_edge",
+    edge_source="fee_audit_m5",
+    edge_ref="docs/research/fee-audit-m5.md",
 )
 def stoch_rsi_strategy(df: pd.DataFrame,
                        rsi_period: int = 14, stoch_period: int = 14,
@@ -659,6 +694,9 @@ def stoch_rsi_strategy(df: pd.DataFrame,
     "Supertrend \u2014 ATR-based trend following with dynamic support/resistance",
     {"atr_period": 10, "multiplier": 3.0},
     constraints=["atr_period > 0"],
+    edge_status="no_edge",
+    edge_source="fee_audit_m5",
+    edge_ref="docs/research/fee-audit-m5.md",
 )
 def supertrend_strategy(df: pd.DataFrame, atr_period: int = 10, multiplier: float = 3.0) -> pd.DataFrame:
     result = df.copy()
@@ -716,6 +754,9 @@ def supertrend_strategy(df: pd.DataFrame, atr_period: int = 10, multiplier: floa
         "kijun_period > 0",
         "senkou_b_period > 0",
     ],
+    edge_status="no_edge",
+    edge_source="fee_audit_m5",
+    edge_ref="docs/research/fee-audit-m5.md",
 )
 def ichimoku_cloud_strategy(df: pd.DataFrame, tenkan_period: int = 9, kijun_period: int = 26, senkou_b_period: int = 52) -> pd.DataFrame:
     result = df.copy()
@@ -755,6 +796,9 @@ def ichimoku_cloud_strategy(df: pd.DataFrame, tenkan_period: int = 9, kijun_peri
         "lookback > 0",
         "exit_z < entry_z",
     ],
+    edge_status="no_edge",
+    edge_source="fee_audit_m5",
+    edge_ref="docs/research/fee-audit-m5.md",
 )
 def pairs_spread_strategy(df: pd.DataFrame, lookback: int = 30, entry_z: float = 2.0, exit_z: float = 0.5) -> pd.DataFrame:
     result = df.copy()
@@ -781,6 +825,9 @@ def pairs_spread_strategy(df: pd.DataFrame, lookback: int = 30, entry_z: float =
         "kc_period > 0",
         "mom_lookback > 0",
     ],
+    edge_status="no_edge",
+    edge_source="fee_audit_m5",
+    edge_ref="docs/research/fee-audit-m5.md",
 )
 def squeeze_momentum_strategy(df: pd.DataFrame,
                               bb_period: int = 20, bb_std: float = 2.0,
@@ -847,6 +894,9 @@ def breakout_strategy(df: pd.DataFrame, lookback: int = 20, atr_period: int = 14
     "ATR Breakout \u2014 enter on volatility breakout beyond ATR band",
     {"atr_period": 14, "multiplier": 1.5},
     constraints=["atr_period > 0"],
+    edge_status="no_edge",
+    edge_source="fee_audit_m5",
+    edge_ref="docs/research/fee-audit-m5.md",
 )
 def atr_breakout_strategy(df: pd.DataFrame, atr_period: int = 14, multiplier: float = 1.5) -> pd.DataFrame:
     result = df.copy()
@@ -869,6 +919,9 @@ def atr_breakout_strategy(df: pd.DataFrame, atr_period: int = 14, multiplier: fl
         "min_ifvg_pct": 0.05, "sweep_threshold_pct": 0.01,
         "session_tz": "America/New_York",
     },
+    edge_status="no_edge",
+    edge_source="study_fail",
+    edge_ref="docs/research/amd_ifvg_1023.md",
 )
 def amd_ifvg_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return amd_ifvg_core(df, **params)
@@ -879,6 +932,9 @@ def amd_ifvg_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     "Heikin Ashi + EMA \u2014 smoothed candles with EMA trend filter; 2 consecutive HA candles + price side of EMA",
     {"ema_period": 21, "confirmation": 2},
     constraints=["ema_period > 0"],
+    edge_status="no_edge",
+    edge_source="fee_audit_m5",
+    edge_ref="docs/research/fee-audit-m5.md",
 )
 def heikin_ashi_ema_strategy(df: pd.DataFrame, ema_period: int = 21, confirmation: int = 2) -> pd.DataFrame:
     result = df.copy()
@@ -915,6 +971,9 @@ def heikin_ashi_ema_strategy(df: pd.DataFrame, ema_period: int = 21, confirmatio
         "atr_period > 0",
         "ob_lookback > 0",
     ],
+    edge_status="no_edge",
+    edge_source="fee_audit_m5",
+    edge_ref="docs/research/fee-audit-m5.md",
 )
 def order_blocks_strategy(df: pd.DataFrame,
                           atr_period: int = 14, displacement_mult: float = 1.5,
@@ -983,6 +1042,9 @@ def order_blocks_strategy(df: pd.DataFrame,
     "VWAP Reversion \u2014 buy when price drops below VWAP by N std devs, sell when above",
     {"entry_std": 1.5, "exit_std": 0.2},
     constraints=["exit_std < entry_std"],
+    edge_status="no_edge",
+    edge_source="fee_audit_m5",
+    edge_ref="docs/research/fee-audit-m5.md",
 )
 def vwap_reversion_strategy(df: pd.DataFrame, entry_std: float = 1.5, exit_std: float = 0.2) -> pd.DataFrame:
     result = df.copy()
@@ -1046,6 +1108,9 @@ def liquidity_sweeps_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     "parabolic_sar",
     "Parabolic SAR \u2014 trend-following stop and reverse with accelerating trailing stop",
     {"iaf": 0.02, "af_step": 0.02, "max_af": 0.2},
+    edge_status="no_edge",
+    edge_source="fee_audit_m5",
+    edge_ref="docs/research/fee-audit-m5.md",
 )
 def parabolic_sar_strategy(df: pd.DataFrame, iaf: float = 0.02, af_step: float = 0.02, max_af: float = 0.2) -> pd.DataFrame:
     result = df.copy()
@@ -1130,6 +1195,9 @@ def parabolic_sar_strategy(df: pd.DataFrame, iaf: float = 0.02, af_step: float =
         "rsi_period > 0",
         "rsi_os < rsi_ob",
     ],
+    edge_status="no_edge",
+    edge_source="study_fail",
+    edge_ref="docs/research/range_scalper_987.md",
 )
 def range_scalper_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return range_scalper_core(df, **params)
@@ -1140,6 +1208,9 @@ def range_scalper_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     "Sweep Squeeze Combo \u2014 2-of-3 consensus (liquidity sweeps + squeeze momentum + stochastic RSI) for high-conviction reversals",
     {"swing_lookback": 10, "min_agree": 2},
     constraints=["swing_lookback > 0"],
+    edge_status="no_edge",
+    edge_source="fee_audit_m5",
+    edge_ref="docs/research/fee-audit-m5.md",
 )
 def sweep_squeeze_combo_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return sweep_squeeze_combo_core(df, **params)
@@ -1150,6 +1221,9 @@ def sweep_squeeze_combo_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     "ADX Trend Rider \u2014 enters on DI crossovers when ADX confirms strong trend (>25)",
     {"adx_period": 14, "adx_threshold": 25},
     constraints=["adx_period > 0"],
+    edge_status="no_edge",
+    edge_source="fee_audit_m5",
+    edge_ref="docs/research/fee-audit-m5.md",
 )
 def adx_trend_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return adx_trend_core(df, **params)
@@ -1157,10 +1231,9 @@ def adx_trend_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
 
 @register(
     "commodity_channel_trend",
-    "RESEARCH, backtest-only (#1656) \u2014 Commodity Channel Index trend entries: long when the index (typical price minus its lookback mean, over 0.015 times the window's mean absolute deviation) crosses strictly above +threshold while the close is strictly above the trend_period simple moving average; short mirrors below -threshold under the average. Entry-only; pair with one explicit close strategy and one stop owner. Refused by every live check script; promotion requires a separate reviewed decision",
+    "RESEARCH, no-edge (#1656) \u2014 Commodity Channel Index trend entries: long when the index (typical price minus its lookback mean, over 0.015 times the window's mean absolute deviation) crosses strictly above +threshold while the close is strictly above the trend_period simple moving average; short mirrors below -threshold under the average. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
     {"lookback": 20, "threshold": 100.0, "trend_period": 50},
     platforms=("futures",),
-    backtest_only=True,
     constraints=[
         "lookback >= 2",
         "lookback <= 100",
@@ -1168,6 +1241,9 @@ def adx_trend_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
         "trend_period >= 2",
         "trend_period <= 150",
     ],
+    edge_status="no_edge",
+    edge_source="study_fail",
+    edge_ref="backtest/candidates/commodity_channel_trend_1656/REPORT.md",
 )
 def commodity_channel_trend_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return commodity_channel_trend_core(df, **params)
@@ -1250,6 +1326,9 @@ def delta_neutral_funding_strategy(df: pd.DataFrame,
         "funding_window > 0",
         "z_exit < z_entry",
     ],
+    edge_status="no_edge",
+    edge_source="fee_audit_m5",
+    edge_ref="docs/research/1282-m5-limbo-verdicts.md",
 )
 def funding_skew_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return funding_skew_core(df, **params)
@@ -1263,6 +1342,9 @@ def funding_skew_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
         "entry_period > 0",
         "exit_period > 0",
     ],
+    edge_status="no_edge",
+    edge_source="study_fail",
+    edge_ref="docs/research/985-donchian-regime-gate-m1.md",
 )
 def donchian_breakout_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return donchian_breakout_core(df, **params)
@@ -1305,6 +1387,9 @@ def bear_pullback_st_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
         "vol_period > 0",
         "atr_period > 0",
     ],
+    edge_status="no_edge",
+    edge_source="study_fail",
+    edge_ref="docs/research/1031-session-breakout-short-m1.md",
 )
 def session_breakout_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return session_breakout_core(df, **params)
@@ -1391,7 +1476,7 @@ def anchored_vwap_reversion_strategy(df: pd.DataFrame, **params) -> pd.DataFrame
 
 @register(
     "analog_retrieval",
-    "RESEARCH, backtest-only (#1138) — k-NN analog retrieval: matches the current bar's scale-free state vector (return efficiency, ATR-normalized momentum, ATR%, vol regime, trend) against strictly-prior windows with realized forward returns and votes them into a t-stat- and ATR-edge-gated direction signal. Refused by every live check script; promotion to live requires explicit human sign-off after parity/Sharpe/M1 checks",
+    "RESEARCH, no-edge (#1138) — k-NN analog retrieval: matches the current bar's scale-free state vector (return efficiency, ATR-normalized momentum, ATR%, vol regime, trend) against strictly-prior windows with realized forward returns and votes them into a t-stat- and ATR-edge-gated direction signal. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
     {
         "feat_window": 20,
         "atr_period": 14,
@@ -1403,13 +1488,15 @@ def anchored_vwap_reversion_strategy(df: pd.DataFrame, **params) -> pd.DataFrame
         "min_t_stat": 2.0,
         "min_edge_atr": 0.25,
     },
-    backtest_only=True,
     constraints=[
         "feat_window > 0",
         "atr_period > 0",
         "horizon > 0",
         "k_neighbors > 0",
     ],
+    edge_status="no_edge",
+    edge_source="study_fail",
+    edge_ref="docs/research/1138-analog-retrieval-m1.md",
 )
 def analog_retrieval_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return analog_retrieval_core(df, **params)
@@ -1417,10 +1504,9 @@ def analog_retrieval_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
 
 @register(
     "chaikin_money_flow_breakout",
-    "RESEARCH, backtest-only (#1649) — Chaikin Money Flow breakout confirmation: long on the first close strictly above the prior breakout_window high while candle-estimated money flow (close-location value times volume over flow_window bars, not measured aggressor flow) is strictly above flow_threshold; short mirrors on the prior low with flow below -flow_threshold. Entry-only; pair with one explicit close strategy and one stop owner. Refused by every live check script; promotion requires a separate reviewed decision",
+    "RESEARCH, no-edge (#1649) — Chaikin Money Flow breakout confirmation: long on the first close strictly above the prior breakout_window high while candle-estimated money flow (close-location value times volume over flow_window bars, not measured aggressor flow) is strictly above flow_threshold; short mirrors on the prior low with flow below -flow_threshold. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
     {"flow_window": 20, "breakout_window": 20, "flow_threshold": 0.05},
     platforms=("futures",),
-    backtest_only=True,
     constraints=[
         "flow_window >= 2",
         "flow_window <= 100",
@@ -1429,6 +1515,9 @@ def analog_retrieval_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
         "flow_threshold >= 0",
         "flow_threshold < 1",
     ],
+    edge_status="no_edge",
+    edge_source="study_fail",
+    edge_ref="backtest/candidates/chaikin_money_flow_1649/REPORT.md",
 )
 def chaikin_money_flow_breakout_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return chaikin_money_flow_breakout_core(df, **params)
@@ -1436,7 +1525,7 @@ def chaikin_money_flow_breakout_strategy(df: pd.DataFrame, **params) -> pd.DataF
 
 @register(
     "open_interest_breakout",
-    "RESEARCH, backtest-only (#1637) \u2014 open-interest breakout confirmation: long on the first closed bar whose close is strictly above the prior price_lookback high while Hyperliquid open interest in base-coin units rose by strictly more than oi_change_threshold over oi_lookback bars; short mirrors below the prior low with the same rising-interest rule. Open interest comes only from supplied observations (open_interest_observations), each endpoint the latest sample at or before the bar close and no older than max_observation_age_ms; missing, stale, gapped or thin data gives a reasoned hold. Entry-only; pair with one explicit close strategy and one stop owner. Refused by every live check script; promotion requires a separate reviewed decision",
+    "RESEARCH, no-edge (#1637) \u2014 open-interest breakout confirmation: long on the first closed bar whose close is strictly above the prior price_lookback high while Hyperliquid open interest in base-coin units rose by strictly more than oi_change_threshold over oi_lookback bars; short mirrors below the prior low with the same rising-interest rule. Open interest comes only from supplied observations (open_interest_observations), each endpoint the latest sample at or before the bar close and no older than max_observation_age_ms; missing, stale, gapped or thin data gives a reasoned hold. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
     {
         "price_lookback": 20,
         "oi_lookback": 4,
@@ -1447,7 +1536,6 @@ def chaikin_money_flow_breakout_strategy(df: pd.DataFrame, **params) -> pd.DataF
         "max_gap_ms": 300000,
     },
     platforms=("futures",),
-    backtest_only=True,
     constraints=[
         "price_lookback >= 2",
         "price_lookback <= 200",
@@ -1463,6 +1551,9 @@ def chaikin_money_flow_breakout_strategy(df: pd.DataFrame, **params) -> pd.DataF
         "min_coverage <= 1",
         "max_gap_ms <= 86400000",
     ],
+    edge_status="no_edge",
+    edge_source="study_inconclusive",
+    edge_ref="backtest/candidates/open_interest_breakout_1637/REPORT.md",
 )
 def open_interest_breakout_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return open_interest_breakout_core(df, **params)
@@ -1470,10 +1561,9 @@ def open_interest_breakout_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
 
 @register(
     "connors_rsi_reversion",
-    "RESEARCH, backtest-only (#1645) — Connors RSI pullback: composite of a bounded Wilder RSI of closes (price_period), a bounded Wilder RSI of the consecutive up/down streak (streak_period, streak capped at 20 bars) and the mid-rank percentile of the latest one-bar return among the previous rank_window returns; long when the composite recovers to or above oversold from strictly below, short when it falls to or below overbought from strictly above. Every decision reads a fixed trailing span (at most 153 bars). Entry-only; pair with one explicit close strategy and one stop owner. Refused by every live check script; promotion requires a separate reviewed decision",
+    "RESEARCH, no-edge (#1645) — Connors RSI pullback: composite of a bounded Wilder RSI of closes (price_period), a bounded Wilder RSI of the consecutive up/down streak (streak_period, streak capped at 20 bars) and the mid-rank percentile of the latest one-bar return among the previous rank_window returns; long when the composite recovers to or above oversold from strictly below, short when it falls to or below overbought from strictly above. Every decision reads a fixed trailing span (at most 153 bars). Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
     {"price_period": 3, "streak_period": 2, "rank_window": 100, "oversold": 10.0, "overbought": 90.0},
     platforms=("futures",),
-    backtest_only=True,
     constraints=[
         "price_period >= 2",
         "price_period <= 10",
@@ -1485,6 +1575,9 @@ def open_interest_breakout_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
         "overbought < 100",
         "oversold < overbought",
     ],
+    edge_status="no_edge",
+    edge_source="study_fail",
+    edge_ref="backtest/candidates/connors_rsi_reversion_1645/REPORT.md",
 )
 def connors_rsi_reversion_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return connors_rsi_reversion_core(df, **params)
@@ -1492,16 +1585,18 @@ def connors_rsi_reversion_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
 
 @register(
     "vortex_trend",
-    "RESEARCH, backtest-only (#1647) \u2014 Vortex trend crossover: VI+ and VI- are the period sums of |high - previous low| and |low - previous high| divided by the period sum of true range; long when VI+ minus VI- rises strictly above min_separation from at or below it on the previous bar, short on the mirror below -min_separation. Entry-only; pair with one explicit close strategy and one stop owner. Refused by every live check script; promotion requires a separate reviewed decision",
+    "RESEARCH, no-edge (#1647) \u2014 Vortex trend crossover: VI+ and VI- are the period sums of |high - previous low| and |low - previous high| divided by the period sum of true range; long when VI+ minus VI- rises strictly above min_separation from at or below it on the previous bar, short on the mirror below -min_separation. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
     {"period": 14, "min_separation": 0.0},
     platforms=("futures",),
-    backtest_only=True,
     constraints=[
         "period >= 2",
         "period <= 100",
         "min_separation >= 0",
         "min_separation < 1",
     ],
+    edge_status="no_edge",
+    edge_source="study_fail",
+    edge_ref="backtest/candidates/vortex_trend_1647/REPORT.md",
 )
 def vortex_trend_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return vortex_trend_core(df, **params)
@@ -1509,14 +1604,16 @@ def vortex_trend_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
 
 @register(
     "relative_vigor_index",
-    "RESEARCH, backtest-only (#1666) \u2014 Relative Vigor Index crossover: the period-bar mean of 1-2-2-1 smoothed close-minus-open over the mean of smoothed high-minus-low, with a 1-2-2-1 smoothed signal line; long on a strict upward cross of the signal line while the index is above zero, short on the mirror below zero (zero_line_filter). Any bad candle, timestamp defect or cadence gap inside the window holds. Entry-only; pair with one explicit close strategy and one stop owner. Refused by every live check script; promotion requires a separate reviewed decision",
+    "RESEARCH, no-edge (#1666) \u2014 Relative Vigor Index crossover: the period-bar mean of 1-2-2-1 smoothed close-minus-open over the mean of smoothed high-minus-low, with a 1-2-2-1 smoothed signal line; long on a strict upward cross of the signal line while the index is above zero, short on the mirror below zero (zero_line_filter). Any bad candle, timestamp defect or cadence gap inside the window holds. Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
     {"period": 10, "zero_line_filter": True},
     platforms=("futures",),
-    backtest_only=True,
     constraints=[
         "period >= 2",
         "period <= 100",
     ],
+    edge_status="no_edge",
+    edge_source="study_fail",
+    edge_ref="backtest/candidates/relative_vigor_index_1666/REPORT.md",
 )
 def relative_vigor_index_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return relative_vigor_index_core(df, **params)
@@ -1524,15 +1621,17 @@ def relative_vigor_index_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
 
 @register(
     "awesome_oscillator",
-    "RESEARCH, backtest-only (#1660) \u2014 Awesome Oscillator zero cross: the mean candle midpoint over fast_period bars minus the mean over slow_period bars; long when it turns positive after a negative value, short when it turns negative after a positive value, crossing at most 7 exact-zero bars (8-bar predecessor horizon). Entry-only; pair with one explicit close strategy and one stop owner. Refused by every live check script; promotion requires a separate reviewed decision",
+    "RESEARCH, no-edge (#1660) \u2014 Awesome Oscillator zero cross: the mean candle midpoint over fast_period bars minus the mean over slow_period bars; long when it turns positive after a negative value, short when it turns negative after a positive value, crossing at most 7 exact-zero bars (8-bar predecessor horizon). Entry-only; pair with one explicit close strategy and one stop owner. Paper evaluation needs explicit paper mode; live use needs allow_no_edge: true",
     {"fast_period": 5, "slow_period": 34},
     platforms=("futures",),
-    backtest_only=True,
     constraints=[
         "fast_period >= 1",
         "fast_period < slow_period",
         "slow_period <= 100",
     ],
+    edge_status="no_edge",
+    edge_source="study_fail",
+    edge_ref="backtest/candidates/awesome_oscillator_1660/REPORT.md",
 )
 def awesome_oscillator_strategy(df: pd.DataFrame, fast_period: int = 5, slow_period: int = 34) -> pd.DataFrame:
     return awesome_oscillator_core(df, fast_period=fast_period, slow_period=slow_period)
@@ -1606,6 +1705,9 @@ def rsi_bb_combo_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     {"box_width_pct": 0.05, "min_bars": 16, "edge_entry_frac": 0.2},
     platforms=("futures",),
     constraints=["min_bars > 0"],
+    edge_status="no_edge",
+    edge_source="fee_audit_m5",
+    edge_ref="docs/research/1282-m5-limbo-verdicts.md",
 )
 def consolidation_range_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return consolidation_range_core(df, **params)
@@ -1651,6 +1753,9 @@ def atr_band_revert_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
         "pullback_window > 0",
         "htf_ema_fast < htf_ema_slow",
     ],
+    edge_status="no_edge",
+    edge_source="fee_audit_m5",
+    edge_ref="docs/research/fee-audit-m5.md",
 )
 def mtf_confluence_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return mtf_confluence_core(df, **params)
@@ -1675,6 +1780,9 @@ def mtf_confluence_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
         "mom_window > 0",
         "atr_period > 0",
     ],
+    edge_status="no_edge",
+    edge_source="study_fail",
+    edge_ref="docs/research/vol_momentum_1021.md",
 )
 def vol_momentum_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return vol_momentum_core(df, **params)
@@ -1705,6 +1813,9 @@ def vol_momentum_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
         "breakout_lookback > 0",
         "mr_lookback > 0",
     ],
+    edge_status="no_edge",
+    edge_source="fee_audit_m5",
+    edge_ref="docs/research/1282-m5-limbo-verdicts.md",
 )
 def regime_adaptive_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return regime_adaptive_core(df, **params)
@@ -1791,3 +1902,5 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "hold",
     ],
 }
+
+DISCOVERY_HIDDEN_STRATEGIES = no_edge_strategies()

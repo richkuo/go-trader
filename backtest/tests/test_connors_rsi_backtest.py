@@ -31,7 +31,8 @@ def _signals(df, params=None):
 def _bt(**kw):
     base = dict(initial_capital=1000.0, platform="hyperliquid",
                 open_strategy={"name": NAME, "params": {}},
-                close_strategies=CLOSE, stop_loss_atr_mult=1.0, direction="both")
+                close_strategies=CLOSE, stop_loss_atr_mult=1.0, direction="both",
+                comparison_mode="approximate")
     base.update(kw)
     return Backtester(**base)
 
@@ -56,7 +57,8 @@ def test_entries_fill_next_bar_open_both_sides_and_time_stop_owns_exits():
 
 def _parity_cfg(**kw):
     base = dict(strategy_name=NAME, registry="futures", platform="hyperliquid",
-                symbol="BTC", timeframe="4h", close_refs=CLOSE, direction="both")
+                symbol="BTC", timeframe="4h", close_refs=CLOSE, direction="both",
+                comparison_mode="approximate")
     base.update(kw)
     return ParityConfig(**base)
 
@@ -67,10 +69,14 @@ def test_non_batched_parity_runner_is_clean_on_bounded_window_and_every_prefix(w
     frame = compute_parity_frame(df, cfg=_parity_cfg(), window=window)
     result = summarize(frame)
     assert result["bars_compared"] > 0
-    assert result["clean"], frame[~frame["match"]].head()
+    assert result["mismatches"] == 0, frame[~frame["match"]].head()
+    assert result["close_parity"] == "incomplete" and not result["clean"]
     assert (frame["live_signal"] != 0).any()
 
 
-def test_batched_parity_mode_refuses_the_research_entry():
-    with pytest.raises(ValueError, match="backtest_only"):
-        compute_parity_frame(_market(260), cfg=_parity_cfg(batched=True), window=200)
+def test_batched_parity_mode_admits_explicit_paper_and_matches_solo():
+    frame = compute_parity_frame(_market(260), cfg=_parity_cfg(batched=True), window=200)
+    result = summarize(frame)
+    assert result["bars_compared"] > 0
+    assert result["mismatches"] == 0, frame[~frame["match"]].head()
+    assert result["close_parity"] == "incomplete" and not result["clean"]

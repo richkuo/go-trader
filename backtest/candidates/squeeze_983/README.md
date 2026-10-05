@@ -91,8 +91,15 @@ every artifact row embeds its full stack spec):
 ```
 uv run --no-sync python backtest/candidates/squeeze_983/sweep_supplementary.py \
     --screen <sweep2|timestop|ratchet> \
+    [--comparison-mode approximate] \
     --json backtest/candidates/squeeze_983/<sweep2_is|timestop_plateau_is|ratchet_screen_is>.json
 ```
+
+Since #1683 the `sweep2` and `timestop` screens contain `time_stop` or `zscore_target` stacks,
+which strict mode (the default) refuses because no live close context supplies
+their inputs. Rerun them with `--comparison-mode approximate`; each row then
+carries `close_validation` with incomplete parity. The committed artifacts below
+predate the flag and stay unchanged.
 
 - `sweep2_is.json` — ladder plateau, wide trails (4/5 ATR), time stops,
   ladder+wide-stop combos. Only `time_stop` produced a positive IS profile.

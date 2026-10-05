@@ -28,6 +28,7 @@ var probeArgv = []string{
 	"--position-entry-atr=1",
 	"--position-regime", "trending_up",
 	"--position-risk-anchor-price=1",
+	allowNoEdgeFlag,
 	"--probe-only",
 }
 
@@ -47,6 +48,7 @@ var probeCompositeArgv = []string{
 	"--position-entry-atr=1",
 	"--position-regime", "trending_up",
 	"--position-risk-anchor-price=1",
+	allowNoEdgeFlag,
 	"--probe-only",
 }
 

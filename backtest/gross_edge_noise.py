@@ -373,6 +373,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                         n_exact, n_overlap, overlaps, trade_stats, leg_stats))
 
     if args.json_out:
+        from backtester import aggregate_close_validations
         payload = {
             "strategy": args.strategy,
             "registry": args.registry,
@@ -390,6 +391,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             "window_overlaps": overlaps,
             "trade_level": trade_stats,
             "leg_level": leg_stats,
+            "close_validation": aggregate_close_validations(
+                l.get("close_validation") for l in legs),
         }
         with open(args.json_out, "w") as fh:
             json.dump(payload, fh, indent=2, default=str)

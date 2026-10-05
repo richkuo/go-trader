@@ -88,9 +88,10 @@ def last(df, obs, params=SMALL):
     return run(df, obs, params).iloc[-1]
 
 
-def test_registered_research_only_futures_and_hidden():
+def test_registered_no_edge_futures_and_hidden():
     entry = _FUTURES.STRATEGY_REGISTRY[NAME]
-    assert entry["backtest_only"] is True
+    assert (entry["edge_status"], entry["edge_source"], entry["edge_ref"]) == (
+        "no_edge", "study_inconclusive", "backtest/candidates/open_interest_breakout_1637/REPORT.md")
     assert entry["default_params"] == {
         "price_lookback": 20, "oi_lookback": 4, "oi_change_threshold": 0.002,
         "max_observation_age_ms": 120000, "observation_cadence_ms": 60000,
@@ -360,7 +361,7 @@ def _hl_candles(df):
             for t, r in zip(df["timestamp"], df.itertuples())]
 
 
-def test_production_hyperliquid_paths_reject_research_entry_and_close_fallback():
+def test_production_hyperliquid_paths_admit_explicit_paper_and_refuse_unacknowledged_live():
     df, value = _market(120, seed=3)
     rows = _hl_candles(df)
     obs = observations(df, value, bar_endpoint_offset_ms=1, cutoff_ms=int(df["timestamp"].iloc[-1]) + HOUR)
@@ -368,14 +369,23 @@ def test_production_hyperliquid_paths_reject_research_entry_and_close_fallback()
               "observations": {"BTC|open_interest": dict(obs, coin="BTC")}}
     shared = _CHECK_HL.build_shared_signal_state("BTC", "1h", market=market)
     for slot in ({"id": "solo", "strategy": NAME},
-                 {"id": "open", "strategy": "sma_crossover", "open_strategy": NAME,
+                 {"id": "open", "strategy": "breakout", "open_strategy": NAME,
                   "close_strategies": "time_stop"},
-                 {"id": "close", "strategy": "sma_crossover", "open_strategy": "sma_crossover",
+                 {"id": "close", "strategy": "breakout", "open_strategy": "breakout",
                   "close_strategies": NAME}):
-        with pytest.raises(ValueError, match="backtest_only"):
+        with pytest.raises(ValueError, match="allow_no_edge"):
             _CHECK_HL.evaluate_signal_slot(shared, slot)
-    peer = _CHECK_HL.evaluate_signal_slot(shared, {"id": "peer", "strategy": "sma_crossover"})
-    assert peer["strategy"] == "sma_crossover"
+    peer = _CHECK_HL.evaluate_signal_slot(shared, {"id": "peer", "strategy": "breakout"})
+    assert peer["strategy"] == "breakout"
+    paper = _CHECK_HL.evaluate_signal_slot(shared, {"id": "paper", "strategy": NAME, "mode_args": ["--mode=paper"]})
+    acked = _CHECK_HL.evaluate_signal_slot(
+        shared, {"id": "acked", "strategy": NAME, "mode_args": ["--mode=live"], "allow_no_edge": True})
+    assert paper["strategy"] == acked["strategy"] == NAME
+    assert (paper["signal"], paper["price"]) == (acked["signal"], acked["price"])
+    fallback = _CHECK_HL.evaluate_signal_slot(
+        shared, {"id": "fallback", "strategy": "breakout", "open_strategy": "breakout",
+                 "close_strategies": NAME, "mode_args": ["--mode", "paper"]})
+    assert fallback["close_strategies"] == [NAME]
 
 
 def test_payload_observation_lookup_never_invents_data():

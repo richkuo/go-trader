@@ -138,8 +138,9 @@ def _signal_check_deps():
         normalize_signal,
         parse_close_strategies,
         parse_invert_open_signal,
-        reject_backtest_only_strategies,
-        validate_close_strategy_names,
+        admit_configured_strategies,
+        parse_allow_no_edge_value,
+        parse_raw_gate_mode,
     )
 
     return SimpleNamespace(
@@ -154,8 +155,9 @@ def _signal_check_deps():
         parse_invert_open_signal=parse_invert_open_signal,
         normalize_signal=normalize_signal,
         parse_close_strategies=parse_close_strategies,
-        reject_backtest_only_strategies=reject_backtest_only_strategies,
-        validate_close_strategy_names=validate_close_strategy_names,
+        admit_configured_strategies=admit_configured_strategies,
+        parse_allow_no_edge_value=parse_allow_no_edge_value,
+        parse_raw_gate_mode=parse_raw_gate_mode,
     )
 
 
@@ -248,11 +250,21 @@ def apply_venue_close_gate(decision, position_ctx, price, lot_decimals, min_noti
     return gated
 
 
-def _validate_slot_strategy_names(deps, strategy_name, open_strategy, close_strategies):
-    configured_names = [open_strategy or strategy_name]
-    deps.reject_backtest_only_strategies(configured_names, deps.get_strategy)
-    deps.validate_close_strategy_names(
-        deps.parse_close_strategies(close_strategies),
+def slot_admission(slot, deps):
+    return (
+        deps.parse_raw_gate_mode(slot.get("mode_args")),
+        deps.parse_allow_no_edge_value(slot),
+    )
+
+
+def _validate_slot_strategy_names(deps, strategy_name, open_strategy, close_strategies, admission):
+    gate_mode, acknowledgement = admission
+    deps.admit_configured_strategies(
+        strategy_name,
+        open_strategy,
+        close_strategies,
+        gate_mode,
+        acknowledgement,
         deps.get_strategy,
         deps.get_close_strategy,
         deps.list_strategies,
@@ -396,9 +408,11 @@ def _shared_htf_frame(shared, sym, tf, limit):
     return frame.copy() if frame is not None else None
 
 
-def evaluate_signal_slot(shared, slot, deps=None):
+def evaluate_signal_slot(shared, slot, deps=None, admission=None):
     if deps is None:
         deps = _signal_check_deps()
+    if admission is None:
+        admission = slot_admission(slot, deps)
 
     strategy_name = slot["strategy"]
     mode = slot.get("mode") or shared.get("mode") or "paper"
@@ -416,7 +430,7 @@ def evaluate_signal_slot(shared, slot, deps=None):
     invert_present = "invert_open_signal" in slot
     invert_open_signal = deps.parse_invert_open_signal(slot.get("invert_open_signal")) if invert_present else False
 
-    _validate_slot_strategy_names(deps, strategy_name, open_strategy, close_strategies)
+    _validate_slot_strategy_names(deps, strategy_name, open_strategy, close_strategies, admission)
 
     symbol = shared["symbol"]
     timeframe = shared["timeframe"]
@@ -572,10 +586,13 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                      mark_price=0.0,
                      market=None,
                      close_owner=None,
-                     invert_open_signal=None):
+                     invert_open_signal=None,
+                     mode_args=None):
     try:
         deps = _signal_check_deps()
-        _validate_slot_strategy_names(deps, strategy_name, open_strategy, close_strategies)
+        from strategy_composition import parse_allow_no_edge_tokens
+        admission = (deps.parse_raw_gate_mode(mode_args), parse_allow_no_edge_tokens(mode_args))
+        _validate_slot_strategy_names(deps, strategy_name, open_strategy, close_strategies, admission)
 
         adapter = None
         if market is None:
@@ -611,7 +628,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
         }
         if invert_open_signal is not None:
             slot["invert_open_signal"] = invert_open_signal
-        output = evaluate_signal_slot(shared, slot, deps=deps)
+        output = evaluate_signal_slot(shared, slot, deps=deps, admission=admission)
         print(json.dumps(output, cls=SafeEncoder))
 
     except InsufficientCandlesError as e:
@@ -692,6 +709,12 @@ def parse_batch_request(raw_stdin):
         if slot_id in seen:
             raise ValueError(f"duplicate slot id {slot_id!r}")
         seen.add(slot_id)
+        if "mode_args" in slot:
+            mode_args = slot["mode_args"]
+            if not isinstance(mode_args, list) or not all(isinstance(t, str) for t in mode_args):
+                raise ValueError(f"slot {slot_id!r} mode_args must be a list of strings, got {mode_args!r}")
+        if "allow_no_edge" in slot and not isinstance(slot["allow_no_edge"], bool):
+            raise ValueError(f"slot {slot_id!r} allow_no_edge must be a JSON boolean, got {slot['allow_no_edge']!r}")
         refs = slot.get("strategy_refs")
         if refs:
             from strategy_composition import parse_strategy_refs_arg
@@ -2546,6 +2569,8 @@ def main():
             help="Optional mid from Go's fetchHyperliquidMids cycle; when >0 skips adapter.get_spot_price's duplicate /info allMids call (#768).")
         parser.add_argument("--market-stdin", action="store_true", default=False,
             help="#1524: read the sealed market payload from stdin; never fetch candles, higher-timeframe frames or funding here.")
+        parser.add_argument("--allow-no-edge", nargs="?", const=True, default=None,
+            help="#1681: operator acknowledgement for a no_edge open/close-fallback reference outside explicit paper mode.")
         parser.add_argument("--probe-only", action="store_true",
             help="Startup compatibility probe (#645): validate argv shape and exit 0.")
         args = parser.parse_args()
@@ -2595,6 +2620,7 @@ def main():
             market=market,
             close_owner=refs["close_owner"] if refs else None,
             invert_open_signal=refs.get("invert_open_signal") if refs and "invert_open_signal" in refs else None,
+            mode_args=sys.argv[1:],
         )
 
 

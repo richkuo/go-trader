@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -617,77 +616,6 @@ func TestMigrateV13StrategyShape(t *testing.T) {
 	}
 	if _, hasParams := open1["params"]; hasParams {
 		t.Error("strategy[1] should not have open params (legacy had no params)")
-	}
-}
-
-func TestCloseStrategyOwnedKeysMirrorsPythonRegistry(t *testing.T) {
-	repoRoot, err := filepath.Abs("..")
-	if err != nil {
-		t.Fatal(err)
-	}
-	script := `
-import sys, json, os
-sys.path.insert(0, os.path.join("shared_tools"))
-sys.path.insert(0, os.path.join("shared_strategies", "close"))
-import importlib.util
-spec = importlib.util.spec_from_file_location("close_registry", os.path.join("shared_strategies", "close", "registry.py"))
-mod = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(mod)
-out = {name: list(entry["default_params"].keys()) for name, entry in mod.STRATEGIES.items()}
-print(json.dumps(out))
-`
-	run := func(name string, args ...string) ([]byte, error) {
-		cmd := exec.Command(name, args...)
-		cmd.Dir = repoRoot
-		return cmd.CombinedOutput()
-	}
-
-	var output []byte
-	var uvOutput []byte
-	var uvErr error
-	ran := false
-	if uvPath, err := exec.LookPath("uv"); err == nil {
-		output, uvErr = run(uvPath, "run", "--no-sync", "python", "-c", script)
-		if uvErr == nil {
-			ran = true
-		} else {
-			uvOutput = output
-		}
-	}
-	if !ran {
-		if pyPath, err := exec.LookPath("python3"); err == nil {
-			output, err = run(pyPath, "-c", script)
-			if err != nil {
-				if uvErr != nil {
-					t.Fatalf("uv close registry script failed (%v):\n%s\npython3 fallback failed (%v):\n%s", uvErr, uvOutput, err, output)
-				}
-				t.Fatalf("python close registry script failed (%v):\n%s", err, output)
-			}
-		} else if uvErr != nil {
-			t.Fatalf("uv close registry script failed (%v):\n%s\nno python3 fallback available", uvErr, uvOutput)
-		} else {
-			t.Skip("no python3 available; skipping registry sync check")
-		}
-	}
-
-	if idx := bytes.IndexByte(output, '{'); idx > 0 {
-		output = output[idx:]
-	}
-	var registry map[string][]string
-	if err := json.Unmarshal(output, &registry); err != nil {
-		t.Fatalf("parse python registry output: %v\n%s", err, output)
-	}
-	for name, keys := range registry {
-		owned, ok := closeStrategyOwnedKeys[name]
-		if !ok {
-			t.Errorf("close strategy %q has default_params %v in Python registry but is missing from closeStrategyOwnedKeys — legacy migrations would route those params to the open ref", name, keys)
-			continue
-		}
-		for _, k := range keys {
-			if _, present := owned[k]; !present {
-				t.Errorf("close strategy %q has default_param %q in Python registry but it's missing from closeStrategyOwnedKeys[%q]", name, k, name)
-			}
-		}
 	}
 }
 

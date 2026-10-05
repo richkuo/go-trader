@@ -112,8 +112,15 @@ every artifact row embeds its full stack spec):
 ```
 uv run --no-sync python backtest/candidates/breakout_984/sweep_supplementary.py \
     --screen <sweep2|timestop|ratchet|atrstop|zscore> \
+    [--comparison-mode approximate] \
     --json backtest/candidates/breakout_984/<artifact>.json
 ```
+
+Since #1683 the `sweep2`, `timestop` and `zscore` screens contain `time_stop` or `zscore_target` stacks,
+which strict mode (the default) refuses because no live close context supplies
+their inputs. Rerun them with `--comparison-mode approximate`; each row then
+carries `close_validation` with incomplete parity. The committed artifacts below
+predate the flag and stay unchanged.
 
 - `sweep2_is.json` — ladder plateau, wide trails (4/5 ATR), time stops,
   ladder+wide-stop combos: `tp_tight` (+0.371) and `trail_atr_4` (+0.253)

@@ -225,12 +225,29 @@ def run_leg_trades(reg, name: str, params: Optional[dict], symbol: str,
                    timeframe: str, window: tuple, capital: float,
                    close_strategies: Optional[List[dict]] = None,
                    direction: Optional[str] = None,
-                   invert_signal: bool = False) -> Optional[List[dict]]:
+                   invert_signal: bool = False,
+                   comparison_mode: Optional[str] = None) -> Optional[List[dict]]:
+    results = run_leg_results(reg, name, params, symbol, timeframe, window, capital,
+                              close_strategies=close_strategies, direction=direction,
+                              invert_signal=invert_signal,
+                              comparison_mode=comparison_mode)
+    return None if results is None else results.get("trades", [])
+
+
+def run_leg_results(reg, name: str, params: Optional[dict], symbol: str,
+                    timeframe: str, window: tuple, capital: float,
+                    close_strategies: Optional[List[dict]] = None,
+                    direction: Optional[str] = None,
+                    invert_signal: bool = False,
+                    comparison_mode: Optional[str] = None) -> Optional[dict]:
     from atr import ensure_atr_indicator
     from data_fetcher import load_cached_data
-    from backtester import Backtester
+    from backtester import Backtester, validate_close_capabilities
     from run_backtest import FUNDING_COLUMN_STRATEGIES, _attach_funding_if_needed
 
+    validate_close_capabilities(close_refs=close_strategies,
+                                comparison_mode=comparison_mode,
+                                platform=FEE_PLATFORM, phase="preflight")
     start, end = window
     df = load_cached_data(symbol, timeframe, start_date=start, end_date=end)
     if df.empty:
@@ -251,10 +268,10 @@ def run_leg_trades(reg, name: str, params: Optional[dict], symbol: str,
         open_strategy={"name": name, "params": dict(strat_params or {})},
         close_strategies=close_strategies,
         direction=direction, invert_signal=invert_signal,
+        comparison_mode=comparison_mode,
     )
-    results = bt.run(df_signals, strategy_name=name, symbol=symbol,
-                     timeframe=timeframe, params=strat_params, save=False)
-    return results.get("trades", [])
+    return bt.run(df_signals, strategy_name=name, symbol=symbol,
+                  timeframe=timeframe, params=strat_params, save=False)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -276,6 +293,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--invert-signal", action="store_true")
     p.add_argument("--json", default=None, dest="json_out",
                    help="Write the full structured diagnostic to this path")
+    p.add_argument("--comparison-mode", dest="comparison_mode", default=None,
+                   metavar="MODE",
+                   help="#1683 close comparison mode. Omitted = strict (refuses "
+                        "time_stop/zscore_target and HL-live-only closes); "
+                        "'approximate' diagnoses research exits and carries "
+                        "close_validation with incomplete parity.")
     return p
 
 
@@ -336,6 +359,15 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     params = json.loads(args.params) if args.params else None
 
+    from backtester import (CloseCapabilityError, aggregate_close_validations,
+                            format_close_validation, validate_close_capabilities)
+    try:
+        validate_close_capabilities(close_refs=close_strategies,
+                                    comparison_mode=args.comparison_mode,
+                                    platform=FEE_PLATFORM, phase="preflight")
+    except CloseCapabilityError as exc:
+        raise SystemExit(str(exc))
+
     if args.windows:
         window_names = [w.strip() for w in args.windows.split(",") if w.strip()]
         unknown = [w for w in window_names if w not in WINDOWS]
@@ -353,21 +385,34 @@ def main(argv: Optional[List[str]] = None) -> int:
     reg = load_registry(args.registry)
 
     per_window: dict = {}
+    validations = []
     for wname in window_names:
         window = WINDOWS[wname]
         per_window[wname] = {}
         for symbol, timeframe in datasets:
             ds = dataset_key(symbol, timeframe)
-            trades = run_leg_trades(
+            results = run_leg_results(
                 reg, args.strategy, params, symbol, timeframe, window,
                 args.capital, close_strategies=close_strategies,
                 direction=args.direction, invert_signal=args.invert_signal,
+                comparison_mode=args.comparison_mode,
             )
-            per_window[wname][ds] = diagnose_trades(trades or [])
+            diag = diagnose_trades((results or {}).get("trades") or [])
+            diag["close_validation"] = (results or {}).get("close_validation")
+            if results is not None:
+                validations.append(diag["close_validation"])
+            per_window[wname][ds] = diag
+    if not validations:
+        from backtester import validate_close_capabilities
+        validations.append(validate_close_capabilities(
+            close_refs=close_strategies, comparison_mode=args.comparison_mode,
+            platform=FEE_PLATFORM, phase="preflight").to_dict())
+    close_validation = aggregate_close_validations(validations)
 
     print(f"strategy: {args.strategy}  registry: {args.registry}  "
           f"close: {close_strategies or 'none'}  direction: {args.direction or 'default'}")
     print(format_report(per_window))
+    print(format_close_validation(close_validation))
 
     if args.json_out:
         payload = {
@@ -376,6 +421,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             "params": params,
             "close_strategies": close_strategies,
             "direction": args.direction,
+            "comparison_mode": args.comparison_mode,
+            "close_validation": close_validation,
             "windows": per_window,
         }
         with open(args.json_out, "w") as fh:

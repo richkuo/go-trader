@@ -8,7 +8,7 @@ import offline_manifest as om
 from atr import ensure_atr_indicator
 from backtester import Backtester
 from eval_windows import run_leg
-from parity_diff import ParityConfig, compute_parity_frame
+from parity_diff import ParityConfig, compute_parity_frame, summarize
 from registry_loader import load_registry
 
 NAME = "relative_vigor_index"
@@ -41,7 +41,8 @@ def _signals(df, params=PARAMS):
 def _bt(**kw):
     base = dict(initial_capital=1000.0, platform="hyperliquid",
                 open_strategy={"name": NAME, "params": PARAMS},
-                close_strategies=TIME_STOP, stop_loss_atr_mult=1.0, direction="both")
+                close_strategies=TIME_STOP, stop_loss_atr_mult=1.0, direction="both",
+                comparison_mode="approximate")
     base.update(kw)
     return Backtester(**base)
 
@@ -121,18 +122,20 @@ def test_non_batched_parity_matches_full_series(window):
     df = _market()
     cfg = ParityConfig(strategy_name=NAME, params={"period": 10, "zero_line_filter": True},
                        registry="futures", close_refs=[{"name": "time_stop", "params": {"max_bars": 20}}],
-                       direction="both")
+                       direction="both", comparison_mode="approximate")
     frame = compute_parity_frame(df, cfg=cfg, window=window)
     assert len(frame) > 0
     assert bool(frame["match"].all())
+    assert summarize(frame)["close_parity"] == "incomplete" and not summarize(frame)["clean"]
     assert (frame["live_signal"] != 0).sum() > 0
 
 
-def test_batched_parity_refuses_research_entry():
+def test_batched_parity_admits_explicit_paper_and_matches_solo():
     cfg = ParityConfig(strategy_name=NAME, params={"period": 10, "zero_line_filter": True},
                        registry="futures", batched=True, symbol="BTC", timeframe="4h")
-    with pytest.raises(ValueError, match="backtest_only"):
-        compute_parity_frame(_market(240), cfg=cfg, window=200)
+    frame = compute_parity_frame(_market(240), cfg=cfg, window=200)
+    assert len(frame) > 0
+    assert bool(frame["match"].all())
 
 
 def test_frozen_manifest_frame_full_series_prefix_and_bounded_window_agree():
@@ -143,10 +146,11 @@ def test_frozen_manifest_frame_full_series_prefix_and_bounded_window_agree():
     sub = frame.iloc[:420]
     cfg = ParityConfig(strategy_name=NAME, params={"period": 10, "zero_line_filter": True},
                        registry="futures", close_refs=[{"name": "time_stop", "params": {"max_bars": 20}}],
-                       direction="both")
+                       direction="both", comparison_mode="approximate")
     for window in (None, 200):
         parity = compute_parity_frame(sub, cfg=cfg, window=window)
         assert bool(parity["match"].all())
+        assert summarize(parity)["close_parity"] == "incomplete" and not summarize(parity)["clean"]
 
 
 def test_manifest_leg_books_funding_and_execution_spec():
@@ -155,7 +159,8 @@ def test_manifest_leg_books_funding_and_execution_spec():
     leg = run_leg(reg, NAME, {"period": 10, "zero_line_filter": True}, "BTC", "4h", ("", ""),
                   capital=1000.0, close_strategies=[{"name": "time_stop", "params": {"max_bars": 20}}],
                   direction="both", stop_loss_atr_mult=1.0,
-                  manifest_ctx={"manifest": manifest, "window": "train"})
+                  manifest_ctx={"manifest": manifest, "window": "train"},
+                  comparison_mode="approximate")
     info = leg["manifest"]
     assert info["cost_model"] == "execution_spec"
     assert info["funding_coverage"]["available"] is True

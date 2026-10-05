@@ -15,6 +15,7 @@ sys.path.insert(0, _BACKTEST)
 sys.path.insert(0, os.path.join(_REPO, "shared_tools"))
 
 import offline_manifest as om
+from backtester import aggregate_close_validations
 from eval_windows import (INCUMBENTS, evaluate_window, expand_sweep,
                           manifest_datasets)
 from optimizer import DEFAULT_PARAM_RANGES
@@ -23,6 +24,7 @@ MANIFEST = os.path.join(_HERE, "study_manifest.json")
 CANDIDATE = "commodity_channel_trend"
 COMPARATORS = ("momentum_pro", "adx_trend")
 CLOSE_STRATEGIES = [{"name": "time_stop", "params": {"max_bars": 20}}]
+COMPARISON_MODE = "approximate"
 STOP_LOSS_ATR_MULT = 1.0
 DIRECTION = "both"
 CAPITAL = 1000.0
@@ -58,6 +60,7 @@ def arm_candidate(name: str, params: dict) -> dict:
         "direction": DIRECTION,
         "close_strategies": [dict(c, params=dict(c["params"])) for c in CLOSE_STRATEGIES],
         "stop_loss_atr_mult": STOP_LOSS_ATR_MULT,
+        "comparison_mode": COMPARISON_MODE,
     }
 
 
@@ -134,6 +137,7 @@ def summarize(score: dict, window_bars: dict) -> dict:
         "incumbent_bar_mean_sharpe": score.get("mean_bar_sharpe"),
         "incumbent_bar_mean_ddadj": score.get("mean_bar_ddadj"),
         "per_dataset": per_dataset,
+        "close_validation": score.get("close_validation"),
     }
 
 
@@ -310,6 +314,7 @@ def run(manifest_path: str) -> dict:
         "source_sha256": {p: _sha(os.path.join(_REPO, p)) for p in SOURCE_FILES},
         "protocol": {
             "close_strategies": CLOSE_STRATEGIES,
+            "comparison_mode": COMPARISON_MODE,
             "stop_loss_atr_mult": STOP_LOSS_ATR_MULT,
             "direction": DIRECTION,
             "capital": CAPITAL,
@@ -328,6 +333,10 @@ def run(manifest_path: str) -> dict:
         "candidate_variants_held_out": variants,
         "parameter_stability": stability,
         "verdict": verdict(test),
+        "close_validation": aggregate_close_validations(
+            s.get("close_validation") for arm_test in test.values()
+            for s in (arm_test["selected"]["base"], arm_test["selected"]["stress"],
+                      arm_test["defaults"]["base"])),
     }
 
 
@@ -374,6 +383,9 @@ def render(result: dict) -> str:
         f"- Every arm: direction `{p['direction']}`, close owner `time_stop` (max_bars "
         f"{p['close_strategies'][0]['params']['max_bars']}), stop owner fixed entry ATR x{p['stop_loss_atr_mult']}, "
         f"capital ${p['capital']:.0f}, fills at the next bar open.",
+        f"- Close comparison mode: `{p.get('comparison_mode') or 'not recorded (pre-#1683 run)'}`. time_stop reads the "
+        "simulator's held-bar count, which no live close context supplies, so every result here is research evidence "
+        "with incomplete close parity, never strict live parity proof.",
         f"- Selection: {p['selection_rule']}; scored on `{p['selection_window']}` only.",
         f"- Held-out `{p['held_out_window']}` scored once per arm at cost x{p['cost_multipliers']['base']} "
         f"and x{p['cost_multipliers']['stress']}.",

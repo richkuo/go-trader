@@ -75,6 +75,7 @@ def _run_arm(df, label: str, trail: dict) -> dict:
         "max_drawdown_pct": round(r.get("max_drawdown_pct", 0.0), 4),
         "total_trades": r.get("total_trades", 0),
         "win_rate": round(r.get("win_rate", 0.0), 4),
+        "close_validation": r.get("close_validation"),
     }
 
 

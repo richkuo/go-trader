@@ -96,8 +96,21 @@ func buildAddStrategyEntry(name, platform, asset string) (string, json.RawMessag
 	if name == "" || asset == "" {
 		return "", nil, fmt.Errorf("name and asset are required")
 	}
-	if _, ok := knownShortNames[name]; !ok {
-		return "", nil, fmt.Errorf("unknown strategy %q — only strategies in knownShortNames are addable via slash command; use the init wizard for others", name)
+	registryPlatform := ""
+	switch platform {
+	case "hyperliquid":
+		registryPlatform = "futures"
+	case "binanceus":
+		registryPlatform = "spot"
+	}
+	if registryPlatform != "" && !openStrategyRegisteredFor(name, registryPlatform) {
+		if _, registered := registeredOpenStrategyPlatforms[name]; registered {
+			return "", nil, fmt.Errorf("strategy %q is not registered for %s (registry platforms: %s)", name, platform, strings.Join(registeredOpenStrategyPlatforms[name], ", "))
+		}
+		return "", nil, fmt.Errorf("unknown strategy %q — only registered open strategies are addable via slash command; use the init wizard for others", name)
+	}
+	if _, ok := knownShortNames[name]; !ok && registryPlatform != "" {
+		return "", nil, fmt.Errorf("strategy %q has no short name for its strategy id; add it to knownShortNames", name)
 	}
 	if !isSimpleAssetToken(asset) {
 		return "", nil, fmt.Errorf("asset %q must be a plain ticker like BTC/ETH/SOL", asset)

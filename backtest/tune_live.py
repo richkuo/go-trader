@@ -18,6 +18,7 @@ for _p in (_THIS_DIR, os.path.join(_REPO, "shared_tools")):
 import auto_suggest
 from data_fetcher import load_cached_data
 from eval_windows import WINDOWS as M1_WINDOWS, PLATFORM as DATA_PLATFORM, FEE_PLATFORM
+from backtester import CloseCapabilityError
 from optimizer import DEFAULT_PARAM_RANGES, generate_param_grid, walk_forward_optimize
 from registry_loader import load_registry, registry_for_strategy_type
 from run_backtest import (
@@ -329,9 +330,11 @@ def run_stage1(open_name: str, grid: dict, resolution: dict, symbol: str,
         trailing_stop_atr_mult=resolution.get("trailing_stop_atr_mult"),
         optimize_metric=metric,
         direction=resolution.get("direction"),
+        comparison_mode=resolution.get("comparison_mode"),
     )
     if summary.get("error"):
-        return {"error": summary["error"], "n_bars": int(len(df))}
+        return {"error": summary["error"], "n_bars": int(len(df)),
+                "close_validation": summary.get("close_validation")}
     seen, survivors = set(), []
     for w in summary.get("window_results") or []:
         bp = w.get("best_params")
@@ -345,6 +348,7 @@ def run_stage1(open_name: str, grid: dict, resolution: dict, symbol: str,
         "survivors": survivors,
         "n_folds": int(summary.get("n_valid_folds") or 0),
         "n_bars": int(len(df)),
+        "close_validation": summary.get("close_validation"),
     }
 
 
@@ -417,6 +421,11 @@ def tune_strategy(config_path: str, strategy_id: str, symbol: str,
             inject_user_defaults=True,
             include_promotion_baseline=True,
         )
+    except CloseCapabilityError as exc:
+        result["status"] = "close_capability_refused"
+        result["error"] = str(exc)
+        result["close_capability"] = exc.to_dict()
+        return result
     except ValueError as exc:
         result["status"] = "config_error"
         result["error"] = str(exc)
@@ -532,7 +541,8 @@ def tune_strategy(config_path: str, strategy_id: str, symbol: str,
             return result
         result["stage1"] = {"ran": True, "n_folds": s1["n_folds"],
                             "n_bars": s1["n_bars"],
-                            "n_survivors": len(s1["survivors"])}
+                            "n_survivors": len(s1["survivors"]),
+                            "close_validation": s1.get("close_validation")}
         survivor_params = s1["survivors"]
 
     baseline_cand = build_candidate(open_name, baseline_params, resolution)
@@ -711,8 +721,12 @@ def main(argv=None) -> int:
         "stage2_windows": args.windows,
         "correction_alpha": args.alpha,
         "footer": FOOTER,
+        "close_capability_refusals": sorted(
+            r["strategy_id"] for r in results
+            if r.get("status") == "close_capability_refused"),
         "strategies": results,
     }
+    artifact["requested_set_complete"] = not artifact["close_capability_refusals"]
     write_progress(out_dir, {"phase": "done", "n_strategies": n,
                              "strategy_index": n})
 
@@ -747,6 +761,11 @@ def format_summary(artifact: dict) -> str:
         for s in r.get("survivors") or []:
             lines.append(f"      SURVIVOR {s['key']}: "
                          f"{(s.get('patch') or {}).get('param_changes')}")
+    if artifact.get("close_capability_refusals"):
+        lines.append("")
+        lines.append("*** INCOMPLETE — close capability refused: "
+                     + ", ".join(artifact["close_capability_refusals"])
+                     + "; the surviving set is not a complete tuning of this config ***")
     lines.append("")
     lines.append(FOOTER)
     return "\n".join(lines)

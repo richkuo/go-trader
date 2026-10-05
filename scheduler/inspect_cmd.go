@@ -499,6 +499,13 @@ func formatStrategyInspection(sc StrategyConfig, explicit map[string]bool, cfg *
 	} else if cfg != nil {
 		fmt.Fprintf(&b, "  interval_seconds:    %d (inherited from global)\n", cfg.IntervalSeconds)
 	}
+	if tag := edgeStatusSummaryTag(sc); tag != "" {
+		fmt.Fprintf(&b, "  edge:                %s\n", tag)
+		for _, ref := range noEdgeReferences(sc) {
+			ev, _ := noEdgeEvidenceFor(ref.Name)
+			fmt.Fprintf(&b, "    %s: source=%s evidence=%s\n", ref.String(), ev.Source, ev.Ref)
+		}
+	}
 	if len(sc.AllowedRegimes) > 0 {
 		fmt.Fprintf(&b, "  allowed_regimes:     %v\n", sc.AllowedRegimes)
 	}
@@ -681,6 +688,24 @@ func buildStrategyInspectionJSON(sc StrategyConfig, explicit map[string]bool, cf
 	} else if cfg != nil {
 		out["interval_seconds"] = cfg.IntervalSeconds
 		out["interval_seconds_explicit"] = false
+	}
+	if refs := noEdgeReferences(sc); len(refs) > 0 {
+		entries := make([]map[string]interface{}, 0, len(refs))
+		for _, ref := range refs {
+			ev, _ := noEdgeEvidenceFor(ref.Name)
+			entries = append(entries, map[string]interface{}{
+				"role":   ref.Role,
+				"name":   ref.Name,
+				"status": edgeStatusNoEdge,
+				"source": ev.Source,
+				"ref":    ev.Ref,
+			})
+		}
+		out["edge"] = map[string]interface{}{
+			"tag":           edgeStatusSummaryTag(sc),
+			"references":    entries,
+			"allow_no_edge": sc.AllowNoEdgeAcknowledged(),
+		}
 	}
 	for k, v := range strategyScopeInspectJSON(sc, cfg) {
 		out[k] = v

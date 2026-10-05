@@ -8,7 +8,7 @@ from backtester import Backtester
 from registry_loader import load_registry
 from atr import ensure_atr_indicator
 from eval_windows import run_leg
-from parity_diff import compute_parity_frame
+from parity_diff import compute_parity_frame, summarize
 
 NAME = "vortex_trend"
 PARAMS = {"period": 2, "min_separation": 0.0}
@@ -35,7 +35,8 @@ def _signals(df, params=PARAMS):
 def _bt(**kw):
     base = dict(initial_capital=1000.0, platform="hyperliquid",
                 open_strategy={"name": NAME, "params": PARAMS},
-                close_strategies=TIME_STOP, stop_loss_atr_mult=1.0, direction="both")
+                close_strategies=TIME_STOP, stop_loss_atr_mult=1.0, direction="both",
+                comparison_mode="approximate")
     base.update(kw)
     return Backtester(**base)
 
@@ -114,9 +115,11 @@ def test_non_batched_parity_frame_matches_on_the_bounded_check_window(params):
     df = _market()
     frame = compute_parity_frame(
         df, NAME, params=params, registry="futures",
-        close_refs=[{"name": "time_stop", "params": {"max_bars": 20}}])
+        close_refs=[{"name": "time_stop", "params": {"max_bars": 20}}],
+        comparison_mode="approximate")
     assert len(frame) == len(df) - 199
     assert bool(frame["match"].all())
+    assert summarize(frame)["close_parity"] == "incomplete" and not summarize(frame)["clean"]
     assert (frame["bt_signal"] != 0).sum() > 0
     assert set(frame["live_open_action"]) >= {"long", "short"}
 
@@ -129,7 +132,8 @@ def test_manifest_leg_books_funding_and_uses_the_execution_spec():
                   (None, None), capital=1000.0,
                   close_strategies=[{"name": "time_stop", "params": {"max_bars": 20}}],
                   direction="both", stop_loss_atr_mult=1.0,
-                  manifest_ctx={"manifest": manifest, "window": "test", "cost_multiplier": 1.0})
+                  manifest_ctx={"manifest": manifest, "window": "test", "cost_multiplier": 1.0},
+                  comparison_mode="approximate")
     info = leg["manifest"]
     assert info["cost_model"] == "execution_spec"
     assert info["candle_coverage"]["complete"] is True

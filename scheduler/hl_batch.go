@@ -90,6 +90,13 @@ func hyperliquidBatchArgsSupported(args []string) bool {
 	return true
 }
 
+func hyperliquidBatchModeArgs(args []string) []string {
+	if len(args) <= 3 {
+		return nil
+	}
+	return append([]string(nil), args[3:]...)
+}
+
 func hyperliquidModeFromArgs(args []string) string {
 	if isLiveArgs(args) {
 		return string(ScopeLive)
@@ -151,6 +158,8 @@ type hlBatchSlot struct {
 	ID              string          `json:"id"`
 	Strategy        string          `json:"strategy"`
 	Mode            string          `json:"mode"`
+	ModeArgs        []string        `json:"mode_args,omitempty"`
+	AllowNoEdge     bool            `json:"allow_no_edge,omitempty"`
 	HTFFilter       bool            `json:"htf_filter,omitempty"`
 	StrategyRefs    json.RawMessage `json:"strategy_refs,omitempty"`
 	RegimeATRWindow string          `json:"regime_atr_window,omitempty"`
@@ -186,6 +195,8 @@ func buildHyperliquidBatchSlot(sc StrategyConfig, posCtx PositionCtx, regime *Re
 		ID:              sc.ID,
 		Strategy:        strategyNameFromArgs(sc.Args),
 		Mode:            hyperliquidModeFromArgs(sc.Args),
+		ModeArgs:        hyperliquidBatchModeArgs(sc.Args),
+		AllowNoEdge:     sc.AllowNoEdgeAcknowledged(),
 		HTFFilter:       sc.HTFFilter,
 		RegimeATRWindow: hlBatchRegimeATRWindow(sc, regime),
 	}

@@ -59,6 +59,7 @@ def test_check_strategy_open_close_uses_close_registry_loader(monkeypatch, capsy
             "100",
             "--position-qty",
             "1",
+            "--mode=paper",
         ],
     )
 

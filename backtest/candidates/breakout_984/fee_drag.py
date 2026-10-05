@@ -61,6 +61,7 @@ def main(argv=None):
         label = fn[:-5] if fn.endswith(".json") else fn
         common = dict(
             close_strategies=candidate.get("close_strategies"),
+            comparison_mode=candidate.get("comparison_mode"),
             direction=candidate.get("direction") or "long",
             invert_signal=bool(candidate.get("invert_signal")),
             stop_loss_atr_mult=candidate.get("stop_loss_atr_mult"),
@@ -79,6 +80,7 @@ def main(argv=None):
                 "gross_return_pct": None if gross is None else gross["return_pct"],
                 "net_return_pct": None if net is None else net["return_pct"],
                 "trades": None if net is None else net["trades"],
+                "close_validation": None if net is None else net.get("close_validation"),
             }
         summary = summarize_fee_drag(gross_legs, net_legs)
         out["candidates"][label] = {"summary": summary,

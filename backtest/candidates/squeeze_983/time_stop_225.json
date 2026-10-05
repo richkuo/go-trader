@@ -8,5 +8,6 @@
         "max_bars": 225
       }
     }
-  ]
+  ],
+  "comparison_mode": "approximate"
 }

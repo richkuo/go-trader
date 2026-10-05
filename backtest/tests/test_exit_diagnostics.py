@@ -85,7 +85,7 @@ def test_backtester_stamps_exact_excursions():
     bt = Backtester(initial_capital=1000.0, commission_pct=0.001, slippage_pct=0.0,
                     open_strategy={"name": "x"},
                     close_strategies=[{"name": "time_stop", "params": {"max_bars": 3}}],
-                    direction="long")
+                    direction="long", comparison_mode="approximate")
     r = bt.run(df, strategy_name="x", save=False)
     assert r["total_trades"] == 1
     t = r["trades"][0]
@@ -129,7 +129,7 @@ def test_zscore_target_engine_uses_closed_bar_z():
                     open_strategy={"name": "x"},
                     close_strategies=[{"name": "zscore_target",
                                        "params": {"lookback": 3, "z_target": 1.0}}],
-                    direction="long")
+                    direction="long", comparison_mode="approximate")
     r = bt.run(df, strategy_name="x", save=False)
     assert r["total_trades"] == 1
     assert r["trades"][0]["exit_reason"].startswith("zscore_target:")
@@ -144,4 +144,5 @@ def test_duplicate_zscore_target_rejected():
                 {"name": "zscore_target", "params": {"lookback": 10, "z_target": 2.0}},
                 {"name": "zscore_target", "params": {"lookback": 20, "z_target": 2.0}},
             ],
+            comparison_mode="approximate",
         )

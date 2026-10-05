@@ -106,7 +106,7 @@ def main():
             "--position-regime", "--position-risk-anchor-price",
             "--regime-windows-spec-json", "--ohlcv-limit",
             "--regime-atr-window", "--regime-directional-window",
-            "--regime-payload-json", "--atr-method",
+            "--regime-payload-json", "--atr-method", "--mode",
         ):
             skip_next = True
             continue
@@ -135,18 +135,22 @@ def main():
         )
         from data_fetcher import fetch_ohlcv
         from strategy_composition import (
+            admit_configured_strategies,
             evaluate_open_close,
             finalize_decision,
             normalize_signal,
+            parse_allow_no_edge_tokens,
             parse_close_strategies,
-            reject_backtest_only_strategies,
-            validate_close_strategy_names,
+            parse_raw_gate_mode,
         )
 
         configured_names = [open_strategy or strategy_name]
-        reject_backtest_only_strategies(configured_names, get_strategy)
-        validate_close_strategy_names(
-            parse_close_strategies(close_strategies_raw),
+        admit_configured_strategies(
+            strategy_name,
+            open_strategy,
+            close_strategies_raw,
+            parse_raw_gate_mode(sys.argv[1:]),
+            parse_allow_no_edge_tokens(sys.argv[1:]),
             get_strategy,
             get_close_strategy,
             list_strategies,

@@ -120,7 +120,13 @@ def aggregate_strategy(strategy: str, registry_label: str,
         "n_errors": len(errors),
         "errors": errors,
         "verdict": verdict,
+        "close_validation": _aggregate_validations(data_legs),
     }
+
+
+def _aggregate_validations(data_legs: List[dict]) -> dict:
+    from backtester import aggregate_close_validations
+    return aggregate_close_validations(l.get("close_validation") for l in data_legs)
 
 
 def rank_rows(rows: List[dict]) -> List[dict]:
@@ -262,9 +268,12 @@ def render_markdown(ranked: List[dict], meta: dict) -> str:
 def screen_leg(reg, name: str, symbol: str, timeframe: str,
                window: tuple, capital: float,
                direction: Optional[str] = None) -> Optional[dict]:
+    from backtester import CloseCapabilityError
     try:
         net = run_leg(reg, name, None, symbol, timeframe, window,
                       capital=capital, direction=direction)
+    except CloseCapabilityError:
+        raise
     except Exception as exc:
         return {"dataset": dataset_key(symbol, timeframe), "error": f"net: {exc}"}
     if net is None:
@@ -273,6 +282,8 @@ def screen_leg(reg, name: str, symbol: str, timeframe: str,
         gross = run_leg(reg, name, None, symbol, timeframe, window,
                         capital=capital, direction=direction,
                         commission_pct=0.0, slippage_pct=0.0)
+    except CloseCapabilityError:
+        raise
     except Exception as exc:
         return {"dataset": dataset_key(symbol, timeframe), "error": f"gross: {exc}"}
     if gross is None:
@@ -293,6 +304,7 @@ def screen_leg(reg, name: str, symbol: str, timeframe: str,
         "gross_ret": gross["return_pct"],
         "net_sharpe": net["sharpe"],
         "liquidated": bool(net.get("liquidated") or gross.get("liquidated")),
+        "close_validation": net.get("close_validation"),
     }
 
 

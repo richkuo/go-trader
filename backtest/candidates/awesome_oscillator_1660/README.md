@@ -192,7 +192,7 @@ Offline (no network; verifies hashes, then reruns everything):
 uv run --no-sync python backtest/offline_manifest.py verify --manifest backtest/candidates/awesome_oscillator_1660/study_manifest.json
 uv run --no-sync python backtest/candidates/awesome_oscillator_1660/run_study.py
 uv run --no-sync python backtest/eval_windows.py --registry futures --candidate-json backtest/candidates/awesome_oscillator_1660/candidate_seed.json --manifest backtest/candidates/awesome_oscillator_1660/study_manifest.json --sweep-window train --sweep fast_period=3,5,8,13
-uv run --no-sync python backtest/run_backtest.py --mode single --registry futures --strategy awesome_oscillator --close-strategy '{"name":"time_stop","params":{"max_bars":20}}' --stop-loss-atr-mult 1.0 --direction both --manifest backtest/candidates/awesome_oscillator_1660/study_manifest.json --manifest-dataset "BTC 4h" --manifest-window test
+uv run --no-sync python backtest/run_backtest.py --mode single --registry futures --strategy awesome_oscillator --close-strategy '{"name":"time_stop","params":{"max_bars":20}}' --stop-loss-atr-mult 1.0 --direction both --manifest backtest/candidates/awesome_oscillator_1660/study_manifest.json --manifest-dataset "BTC 4h" --manifest-window test --comparison-mode approximate
 ```
 
 Parity: `backtest/tests/test_awesome_oscillator_backtest.py` runs the
@@ -203,8 +203,8 @@ Binance US candle cache and has no manifest input, so command-line runs are
 supplementary evidence on proxy candles:
 
 ```
-uv run --no-sync python backtest/parity_diff.py --strategy awesome_oscillator --registry futures --platform hyperliquid --symbol BTC/USDT --timeframe 4h --since 2026-01-01 --close 'time_stop:{"max_bars":20}' --window 200
-uv run --no-sync python backtest/parity_diff.py --strategy awesome_oscillator --registry futures --platform hyperliquid --symbol BTC/USDT --timeframe 4h --since 2026-01-01 --close 'time_stop:{"max_bars":20}' --window 0
+uv run --no-sync python backtest/parity_diff.py --strategy awesome_oscillator --registry futures --platform hyperliquid --symbol BTC/USDT --timeframe 4h --since 2026-01-01 --close 'time_stop:{"max_bars":20}' --window 200 --comparison-mode approximate
+uv run --no-sync python backtest/parity_diff.py --strategy awesome_oscillator --registry futures --platform hyperliquid --symbol BTC/USDT --timeframe 4h --since 2026-01-01 --close 'time_stop:{"max_bars":20}' --window 0 --comparison-mode approximate
 ```
 
 `discovery_before.json` / `discovery_after.json` hold the spot and futures
