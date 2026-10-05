@@ -2588,6 +2588,11 @@ class Backtester:
         stop_label_seen = False
         stop_warmup_skipped_entries = 0
         stop_seed_dropped = False
+        if stop_needs_label and not self.regime_enabled and "regime" not in df.columns:
+            self._validate_stop_runtime(
+                df.index[0] if len(df) else None,
+                {"atr_regime_label": {"status": "missing", "source": "no_regime_label_source",
+                                      "value": None}})
 
         def _stop_inputs_warming(idx) -> bool:
             if stop_needs_label and not stop_label_seen:

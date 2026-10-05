@@ -645,6 +645,7 @@ type StrategyConfig struct {
 	InitialCapital              float64                  `json:"initial_capital,omitempty"`
 	sharedWalletPoolBudget      bool                     `json:"-"`
 	sharedWalletModeDeferred    bool                     `json:"-"`
+	leverageDefaulted           bool                     `json:"-"`
 	MaxDrawdownPct              float64                  `json:"max_drawdown_pct"`
 	CircuitBreaker              *bool                    `json:"circuit_breaker,omitempty"`
 	CBDrawdownCooldownMinutes   *int                     `json:"cb_drawdown_cooldown_minutes,omitempty"`
@@ -1137,6 +1138,7 @@ func loadConfig(path string, skipLiveCredentialChecks bool, readOnly bool) (*Con
 
 		if cfg.Strategies[i].Type == "perps" && cfg.Strategies[i].Leverage <= 0 {
 			cfg.Strategies[i].Leverage = 1
+			cfg.Strategies[i].leverageDefaulted = true
 		}
 		if cfg.Strategies[i].Type == "perps" && cfg.Strategies[i].SizingLeverage == 0 && cfg.Strategies[i].RiskPerTradePct == nil {
 			cfg.Strategies[i].SizingLeverage = cfg.Strategies[i].Leverage

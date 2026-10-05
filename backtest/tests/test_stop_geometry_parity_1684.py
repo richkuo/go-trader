@@ -173,16 +173,30 @@ def test_engine_geometry_matches_real_go_functions(tmp_path, case):
         assert result["trades"][0]["entry_price"] > case["position"]["anchor"]
 
 
-def test_resolver_order_evidence_is_labelled_and_refused_as_config():
-    order = EXPECTED["resolver_order"]
-    base = GEOMETRY["unified_regime_close"]
-    assert order["unified_before_scalar_and_regime"] == pytest.approx(
-        EXPECTED["geometry"]["unified_regime_close"]["fixed_atr_pct"])
-    assert order["scalar_before_regime"] == pytest.approx(
-        9 * base["position"]["entry_atr"] / base["position"]["anchor"] * 100.0)
-    refused = {c["id"]: c for c in FIXTURE["admission"]}
-    assert refused["unified_explicit_zero_scalar"]["go_accept"] is False
-    assert refused["regime_and_scalar_stop"]["go_accept"] is False
+@pytest.mark.parametrize("rc", FIXTURE["resolver_order"], ids=lambda c: c["id"])
+def test_fixed_atr_resolver_order_matches_go(tmp_path, rc):
+    from backtester import _parse_stop_regime_blocks
+    base = GEOMETRY[rc["base_case"]]
+    bt = Backtester(**_load(tmp_path, base))
+    pos = base["position"]
+    regime_only, _ = _parse_stop_regime_blocks(
+        {"stop_loss_atr_mult_regime": {"use_defaults": True}}, None, True)
+    bt._unified_close_params = None
+    bt.stop_loss_atr_mult = None
+    bt._stop_loss_regime_block = regime_only["stop_loss_atr_mult_regime"]
+    regime_pct = bt._capped_atr_fraction(
+        bt._hl_fixed_atr_mult(pos["regime"]), pos["entry_atr"], pos["anchor"]) * 100.0
+    assert regime_pct > 0
+    bt = Backtester(**_load(tmp_path, base))
+    bt.stop_loss_atr_mult = float(rc["inject_stop_loss_atr_mult"])
+    if rc["inject_stop_loss_atr_mult_regime"]:
+        bt._stop_loss_regime_block = regime_only["stop_loss_atr_mult_regime"]
+    if rc["drop_unified"]:
+        bt._unified_close_params = None
+    got = bt._capped_atr_fraction(
+        bt._hl_fixed_atr_mult(pos["regime"]), pos["entry_atr"], pos["anchor"]) * 100.0
+    assert _near(got, EXPECTED["resolver_order"][rc["id"]]), (rc["id"], got)
+    assert not _near(got, regime_pct), (rc["id"], got, regime_pct)
 
 
 def test_direct_fraction_contract_is_unchanged():
@@ -221,7 +235,7 @@ def test_preview_payload_converts_once_and_requires_unit_marker():
     sim = _simulate_module()
     payload = {"type": "perps", "platform": "hyperliquid", "stop_loss_pct": 2,
                "stop_units": "live_percent", "leverage": 1,
-               "leverage_source": "loaded_config", "max_drawdown_pct": 50}
+               "leverage_source": "strategy_config", "max_drawdown_pct": 50}
     kwargs = sim._preview_stop_kwargs(payload)
     assert kwargs["stop_loss_pct"] == pytest.approx(0.02)
     assert kwargs["max_drawdown_pct"] == pytest.approx(0.5)
@@ -231,10 +245,102 @@ def test_preview_payload_converts_once_and_requires_unit_marker():
     with pytest.raises(ValueError, match="stop_units"):
         sim._preview_stop_kwargs(dict(payload, stop_units=None))
     margin = dict(payload, stop_loss_pct=None, stop_loss_margin_pct=20, leverage=5)
+    Backtester(**sim._preview_stop_kwargs(margin))
     with pytest.raises(CloseCapabilityError) as exc:
-        Backtester(**sim._preview_stop_kwargs(margin))
+        Backtester(**sim._preview_stop_kwargs(dict(margin, leverage=1,
+                                                   leverage_source="loader_default")))
     assert exc.value.reason_code == "UNVERIFIED_MARGIN_LEVERAGE"
     Backtester(**sim._preview_stop_kwargs(dict(margin, leverage_source="tuner_override")))
+    with pytest.raises(ValueError, match="leverage_source"):
+        sim._preview_stop_kwargs(dict(margin, leverage_source="loaded_config"))
+
+
+@pytest.mark.parametrize("window,windows,accepted", [
+    ("medium", {"medium": 14, "long": 50}, True),
+    ("long", {"medium": 14, "long": 50}, False),
+    ("", {"medium": 14, "long": 50}, True),
+    ("short", {"long": 50, "short": 7}, False),
+    ("long", {"long": 50, "short": 7}, True),
+])
+def test_preview_regime_window_follows_translator_rule(tmp_path, window, windows, accepted):
+    sim = _simulate_module()
+    regime = {"enabled": True, "period": 14, "adx_threshold": 20, "windows": windows}
+    strategy = {"trailing_stop_atr_mult_regime": {"use_defaults": True},
+                "regime_atr_window": window}
+    payload = {"type": "perps", "platform": "hyperliquid", "stop_units": "live_percent",
+               "leverage": 1, "leverage_source": "strategy_config", "max_drawdown_pct": 50,
+               "regime": regime, **strategy}
+    case = {"config": {"regime": regime}, "strategy": strategy}
+    if accepted:
+        Backtester(**_load(tmp_path, case))
+        Backtester(**sim._preview_stop_kwargs(payload))
+        return
+    with pytest.raises(CloseCapabilityError) as loaded:
+        Backtester(**_load(tmp_path, case))
+    with pytest.raises(CloseCapabilityError) as previewed:
+        Backtester(**sim._preview_stop_kwargs(payload))
+    assert loaded.value.reason_code == previewed.value.reason_code == "MISSING_STOP_INPUT"
+
+
+def test_preview_composite_primary_window_uses_the_translator_label_vocabulary(tmp_path):
+    from regime import valid_labels_for_classifier
+    sim = _simulate_module()
+    labels = sorted(valid_labels_for_classifier("composite"))
+    block = {"trend_regime": {
+        label: {"atr_multiple": 2.0} for label in labels
+        if label not in ("ranging_directional_up", "ranging_directional_down")}}
+    regime = {"enabled": True, "period": 14, "adx_threshold": 20,
+              "windows": {"medium": {"classifier": "composite", "period": 14}}}
+    strategy = {"trailing_stop_atr_mult_regime": block}
+    Backtester(**_load(tmp_path, {"config": {"regime": regime}, "strategy": strategy}))
+    candles = [{"time": 1767225600 + i * 3600, "open": 100.0 + (i % 17) - (i % 7),
+                "high": 101.0 + (i % 17) - (i % 7), "low": 99.0 + (i % 17) - (i % 7),
+                "close": 100.5 + (i % 17) - (i % 7), "volume": 10.0} for i in range(120)]
+    payload = {"type": "perps", "platform": "hyperliquid", "symbol": "BTC", "timeframe": "1h",
+               "open_strategy": {"name": "sma_crossover"}, "stop_units": "live_percent",
+               "leverage": 1, "leverage_source": "strategy_config", "max_drawdown_pct": 50,
+               "regime": regime, **strategy}
+    out = sim._run_payload({"candles": candles,
+                            "configs": [{"label": "live", "config": payload}]})
+    assert "error" not in out, out
+    assert out["markers"]["live"], out
+
+
+def test_label_owner_without_label_source_refuses_before_the_loop(tmp_path):
+    case = GEOMETRY["regime_fixed_atr"]
+    kwargs = dict(_load(tmp_path, case), regime_enabled=False)
+    frame = _frame(case).drop(columns=["regime"])
+    events: list = []
+    with pytest.raises(CloseCapabilityError) as exc:
+        _bt_for(kwargs).run(frame, save=False, stop_observer=events.append)
+    assert exc.value.reason_code == "MISSING_STOP_INPUT"
+    assert exc.value.validation.phase == "runtime"
+    assert events == []
+
+
+def test_m6_arm_stamps_labels_for_a_label_owner(tmp_path):
+    case = GEOMETRY["unified_regime_close"]
+    gate = {"allowed_regimes": None, "period": 14, "adx_threshold": 20.0,
+            "windows_spec": None}
+    baseline = exit_policy_ab.resolve_from_baseline(
+        _write(tmp_path, _config(case)), STRATEGY_ID)
+    kw = exit_policy_ab._backtester_kwargs(
+        "sma_crossover", None, baseline["incumbent_close"], "long", 1000.0, gate,
+        baseline["stops"])
+    assert kw["regime_enabled"] is True and kw["allowed_regimes"] is None
+    dropped = exit_policy_ab._backtester_kwargs(
+        "sma_crossover", None, baseline["incumbent_close"], "long", 1000.0, gate, {})
+    assert dropped["regime_enabled"] is True
+    plain = exit_policy_ab._backtester_kwargs(
+        "sma_crossover", None, None, "long", 1000.0, gate,
+        exit_policy_ab.resolve_from_baseline(
+            _write(tmp_path, _config(GEOMETRY["pct_long"])), STRATEGY_ID)["stops"])
+    assert plain["regime_enabled"] is False
+    frame = _frame(case).drop(columns=["regime"])
+    Backtester(**kw).run(frame, save=False)
+    with pytest.raises(CloseCapabilityError) as exc:
+        Backtester(**dict(kw, regime_enabled=False)).run(frame, save=False)
+    assert exc.value.reason_code == "MISSING_STOP_INPUT"
 
 
 def _bt_for(kwargs):

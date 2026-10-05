@@ -339,7 +339,7 @@ def test_check_simulation_returns_named_per_label_refusal_and_keeps_probe():
                for ts, r in frame.iterrows()]
     base = {"type": "perps", "platform": "hyperliquid", "symbol": "BTC", "timeframe": "4h",
             "open_strategy": {"name": "sma_crossover"}, "stop_loss_atr_mult": 1.0,
-            "stop_units": "live_percent", "leverage_source": "loaded_config"}
+            "stop_units": "live_percent", "leverage_source": "strategy_config"}
     for refused, code in ((TIME_STOP, "UNSUPPORTED_LIVE_CONTEXT"), (_dynamic_ref(), "LIVE_ONLY_CLOSE")):
         proc = _sim({"candles": candles, "configs": [
             {"label": "a_supported", "config": dict(base, close_strategy=TIERED)},

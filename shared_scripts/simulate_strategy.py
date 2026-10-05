@@ -20,7 +20,8 @@ from atr import ensure_atr_indicator
 from regime import normalize_regime_gate_on_failure
 from backtester import Backtester, CloseCapabilityError
 from registry_loader import load_registry, registry_for_strategy_type
-from run_backtest import (_apply_htf_filter_to_df, live_stop_engine_inputs,
+from run_backtest import (_apply_htf_filter_to_df, _atr_window_evidence,
+                          _resolve_regime_windows_spec, live_stop_engine_inputs,
                           stop_raw_fields)
 from backtester import STOP_FIELD_KEYS, STOP_GEOMETRY_INPUT_KEYS, STOP_UNITS_PREVIEW
 
@@ -173,7 +174,11 @@ def _resolve_atr_regime_stop(cfg: dict, canon: str):
     return resolved
 
 
-_PREVIEW_LEVERAGE_SOURCES = {"tuner_override": True, "loaded_config": False}
+_PREVIEW_LEVERAGE_SOURCES = {
+    "tuner_override": True,
+    "strategy_config": True,
+    "loader_default": False,
+}
 
 
 def _preview_stop_kwargs(cfg: dict) -> dict:
@@ -200,10 +205,7 @@ def _preview_stop_kwargs(cfg: dict) -> dict:
     else:
         lev = {"status": "verified" if _PREVIEW_LEVERAGE_SOURCES[source] else "unverified",
                "source": source, "value": float(leverage)}
-    window = str(cfg.get("regime_atr_window") or "").strip().lower()
-    window_evidence = {
-        "status": "verified" if window in ("", "default") else "missing",
-        "source": "regime_atr_window", "value": window or None}
+    window_evidence = _atr_window_evidence(cfg, dict(cfg.get("regime") or {}))
     kwargs, context = live_stop_engine_inputs(
         resolved, raw_fields=stop_raw_fields(resolved), source=STOP_UNITS_PREVIEW,
         leverage=lev, extra_evidence={"atr_regime_window": window_evidence})
@@ -272,6 +274,7 @@ def _simulate_one(cfg: dict, candles: List[dict]) -> List[dict]:
         regime_enabled=regime_enabled,
         regime_period=int(regime_cfg.get("period") or 14),
         regime_adx_threshold=float(regime_cfg.get("adx_threshold") or 20),
+        regime_windows_spec=_resolve_regime_windows_spec(regime_cfg),
         allowed_regimes=allowed,
         regime_gate_on_failure=gate_on_failure,
         strategy_type=strategy_type,

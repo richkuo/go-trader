@@ -149,6 +149,7 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 				ss.Cash += ns.Capital - oldCapital
 			}
 		}
+		sc.leverageDefaulted = ns.leverageDefaulted
 		if sc.Leverage != ns.Leverage {
 			addChange("strategy[%s].leverage: %.2fx -> %.2fx", sc.ID, sc.Leverage, ns.Leverage)
 			sc.Leverage = ns.Leverage
@@ -755,6 +756,7 @@ func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.AllowNoEdge = nil
 	sc.Capital = 0
 	sc.Leverage = 0
+	sc.leverageDefaulted = false
 	sc.SizingLeverage = 0
 	sc.MarginPerTradeUSD = nil
 	sc.RiskPerTradePct = nil

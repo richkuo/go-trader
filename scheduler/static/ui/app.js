@@ -145,6 +145,7 @@
       overrides: {},
       liveMarkers: [],
       simulatedMarkers: [],
+      liveRefusal: "",
       previewActive: false,
       simulateTimer: 0,
       loading: false,
@@ -1325,6 +1326,7 @@
     state.tuner.overrides = {};
     state.tuner.liveMarkers = [];
     state.tuner.simulatedMarkers = [];
+    state.tuner.liveRefusal = "";
     state.tuner.previewActive = false;
     if (state.tuner.simulateTimer) {
       clearTimeout(state.tuner.simulateTimer);
@@ -1351,7 +1353,9 @@
       return;
     }
     if (tunerHasOverrides()) {
-      els.tunerStatus.textContent = "Preview active";
+      els.tunerStatus.textContent = state.tuner.liveRefusal
+        ? "Preview active; live markers unavailable: " + state.tuner.liveRefusal
+        : "Preview active";
       els.tunerStatus.className = "tuner-status preview";
       return;
     }
@@ -1764,6 +1768,7 @@
       state.tuner.previewActive = false;
       state.tuner.liveMarkers = [];
       state.tuner.simulatedMarkers = [];
+      state.tuner.liveRefusal = "";
       updateTunerStatus();
       await refreshChart();
       return;
@@ -1777,6 +1782,7 @@
       );
       state.tuner.liveMarkers = resp.live_markers || [];
       state.tuner.simulatedMarkers = resp.simulated_markers || [];
+      state.tuner.liveRefusal = resp.live_refusal || "";
       state.tuner.previewActive = true;
       await refreshChart();
     } finally {
@@ -1818,6 +1824,7 @@
     state.tuner.previewActive = false;
     state.tuner.liveMarkers = [];
     state.tuner.simulatedMarkers = [];
+    state.tuner.liveRefusal = "";
     updateTunerStatus();
     refreshChart().catch(handleRefreshError);
   }

@@ -411,12 +411,32 @@ def _regime_label_series(df, regime_cfg: dict):
     return [str(x or "") for x in work["regime"].tolist()]
 
 
+def _arm_stop_owner(close_refs: Optional[Sequence[dict]], stops: Optional[dict],
+                    regime_windows_spec=None) -> Optional[str]:
+    from backtester import CapabilityContext, build_stop_capability_context
+    stops = stops or {}
+    fields = {k: v for k, v in stops.items()
+              if k not in ("stop_platform", "strategy_type", "capability_context")}
+    context = build_stop_capability_context(
+        platform=stops.get("stop_platform") or FEE_PLATFORM,
+        strategy_type=stops.get("strategy_type") or "perps",
+        close_refs=close_refs, fields=fields,
+        regime_windows_spec=regime_windows_spec,
+        capability_context=stops.get("capability_context"))
+    if not isinstance(context, CapabilityContext) or context.resolved_stop_owner is None:
+        return None
+    return context.resolved_stop_owner["name"]
+
+
 def _backtester_kwargs(open_name: str, params: Optional[dict],
                        close_refs: Optional[Sequence[dict]], direction: Optional[str],
                        capital: float, gate: dict,
                        stops: Optional[dict] = None,
                        comparison_mode: Optional[str] = None) -> dict:
-    use_regime = bool(gate.get("allowed_regimes"))
+    from backtester import STOP_OWNERS_NEEDING_LABEL
+    use_regime = (bool(gate.get("allowed_regimes"))
+                  or _arm_stop_owner(close_refs, stops, gate.get("windows_spec"))
+                  in STOP_OWNERS_NEEDING_LABEL)
     kw = dict(
         comparison_mode=comparison_mode,
         initial_capital=capital, platform=FEE_PLATFORM,

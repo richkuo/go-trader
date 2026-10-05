@@ -711,9 +711,9 @@ func TestHandleAPIStrategyEquity(t *testing.T) {
 }
 
 func TestHandleAPIReturnsDraining(t *testing.T) {
-	shutdownDraining.Store(false)
+	resetShutdownState(t)
+	t.Cleanup(func() { resetShutdownState(t) })
 	beginDrain()
-	defer shutdownDraining.Store(false)
 
 	state := NewAppState()
 	var mu sync.RWMutex

@@ -79,7 +79,7 @@ def _payload(cfg: dict) -> dict:
         "type": "perps", "platform": "hyperliquid", "symbol": "BTC/USDC",
         "timeframe": "1h", "open_strategy": {"name": "hold", "params": {}},
         "initial_capital": 1000, "stop_units": "live_percent",
-        "leverage_source": "loaded_config",
+        "leverage_source": "strategy_config",
     }
     full.update(cfg)
     return _run_payload({"candles": candles, "configs": [{"label": "x", "config": full}]})
@@ -92,6 +92,7 @@ def test_conflict_surfaces_as_a_json_error_not_a_crash():
 
 
 def test_agreeing_spellings_simulate_normally():
-    out = _payload({SL_LEGACY: A, SL_CANON: A})
+    out = _payload({SL_LEGACY: A, SL_CANON: A,
+                    "regime": {"enabled": True, "period": 14, "adx_threshold": 20}})
     assert not out.get("error")
     assert "x" in out["markers"]

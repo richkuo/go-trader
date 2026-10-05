@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -57,6 +58,7 @@ type UISimulateResponse struct {
 	LiveMarkers      []UITradeMarker `json:"live_markers"`
 	SimulatedMarkers []UITradeMarker `json:"simulated_markers"`
 	PreviewNote      string          `json:"preview_note,omitempty"`
+	LiveRefusal      string          `json:"live_refusal,omitempty"`
 	Error            string          `json:"error,omitempty"`
 }
 
@@ -156,21 +158,23 @@ func (ss *StatusServer) handleAPIStrategySimulate(w http.ResponseWriter, r *http
 	if _, ok := req.Overrides["leverage"]; ok {
 		simPayload["leverage_source"] = "tuner_override"
 	}
-	markersByLabel, simErr := runStrategySimulate(candles, map[string]map[string]interface{}{
-		"live":      livePayload,
-		"simulated": simPayload,
-	})
+	markersByLabel, liveRefusal, simErr := runTunerPreviewSimulate(candles, livePayload, simPayload)
 	if simErr != nil {
 		writeJSONError(w, http.StatusBadGateway, simErr.Error())
 		return
 	}
 
+	previewNote := "Gray markers replay the live config over fetched candles; they are not recorded trade history."
+	if liveRefusal != "" {
+		previewNote = "The live config was refused by the backtest stop policy, so only the simulated markers are shown."
+	}
 	writeJSON(w, UISimulateResponse{
 		StrategyID:       id,
 		Source:           source,
 		LiveMarkers:      markersByLabel["live"],
 		SimulatedMarkers: markersByLabel["simulated"],
-		PreviewNote:      "Gray markers replay the live config over fetched candles; they are not recorded trade history.",
+		PreviewNote:      previewNote,
+		LiveRefusal:      liveRefusal,
 	})
 }
 
@@ -305,6 +309,15 @@ func requireSameOrigin(w http.ResponseWriter, r *http.Request) bool {
 
 type pythonErrorResponse struct {
 	Error string `json:"error,omitempty"`
+}
+
+type simulateLabelRefusal struct {
+	Label   string
+	Message string
+}
+
+func (e *simulateLabelRefusal) Error() string {
+	return e.Message
 }
 
 type strategySchemaCacheEntry struct {
@@ -675,9 +688,12 @@ func simulateConfigPayload(sc StrategyConfig, regime *RegimeConfig) map[string]i
 		"stop_loss_atr_mult": sc.StopLossATRMult,
 		"stop_units":         "live_percent",
 		"leverage":           sc.Leverage,
-		"leverage_source":    "loaded_config",
+		"leverage_source":    "strategy_config",
 		"max_drawdown_pct":   sc.MaxDrawdownPct,
 		"regime_atr_window":  sc.RegimeATRWindow,
+	}
+	if sc.leverageDefaulted {
+		payload["leverage_source"] = "loader_default"
 	}
 	if sc.TrailingStopMinMovePct != nil {
 		payload["trailing_stop_min_move_pct"] = *sc.TrailingStopMinMovePct
@@ -698,11 +714,15 @@ func simulateConfigPayload(sc StrategyConfig, regime *RegimeConfig) map[string]i
 		payload["trailing_stop_atr_mult_regime"] = sc.TrailingStopATRMultRegime
 	}
 	if regime != nil {
-		payload["regime"] = map[string]interface{}{
+		regimePayload := map[string]interface{}{
 			"enabled":       regime.Enabled,
 			"period":        regimePeriod(regime),
 			"adx_threshold": regimeADXThreshold(regime),
 		}
+		if len(regime.Windows) > 0 {
+			regimePayload["windows"] = regime.Windows
+		}
+		payload["regime"] = regimePayload
 	}
 	if sc.OpenStrategy.Name == "" && effectiveOpenStrategy(sc) != "" {
 		open := sc.OpenStrategy
@@ -732,6 +752,21 @@ func regimeADXThreshold(regime *RegimeConfig) float64 {
 	return 20
 }
 
+func runTunerPreviewSimulate(candles []UICandle, livePayload, simPayload map[string]interface{}) (map[string][]UITradeMarker, string, error) {
+	markersByLabel, err := runStrategySimulate(candles, map[string]map[string]interface{}{
+		"live":      livePayload,
+		"simulated": simPayload,
+	})
+	var refusal *simulateLabelRefusal
+	if !errors.As(err, &refusal) || refusal.Label != "live" {
+		return markersByLabel, "", err
+	}
+	markersByLabel, err = runStrategySimulate(candles, map[string]map[string]interface{}{
+		"simulated": simPayload,
+	})
+	return markersByLabel, refusal.Error(), err
+}
+
 func runStrategySimulate(candles []UICandle, configs map[string]map[string]interface{}) (map[string][]UITradeMarker, error) {
 	type cfgItem struct {
 		Label  string                 `json:"label"`
@@ -757,7 +792,9 @@ func runStrategySimulate(candles []UICandle, configs map[string]map[string]inter
 	stdout, stderr, runErr := runPythonReadOnlyWithStdin("shared_scripts/simulate_strategy.py", nil, stdin)
 	var resp struct {
 		pythonErrorResponse
-		Markers map[string][]UITradeMarker `json:"markers"`
+		Markers         map[string][]UITradeMarker `json:"markers"`
+		Label           string                     `json:"label"`
+		CloseCapability json.RawMessage            `json:"close_capability"`
 	}
 	if err := json.Unmarshal(stdout, &resp); err != nil {
 		if runErr != nil {
@@ -766,6 +803,9 @@ func runStrategySimulate(candles []UICandle, configs map[string]map[string]inter
 		return nil, fmt.Errorf("parse simulate response: %w", err)
 	}
 	if resp.Error != "" {
+		if resp.Label != "" && len(resp.CloseCapability) > 0 {
+			return nil, &simulateLabelRefusal{Label: resp.Label, Message: resp.Error}
+		}
 		return nil, fmt.Errorf("%s", resp.Error)
 	}
 	if runErr != nil {
