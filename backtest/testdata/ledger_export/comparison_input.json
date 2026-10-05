@@ -1,6 +1,6 @@
 {
   "schema": "go-trader.ledger-comparison-input",
-  "schema_version": 1,
+  "schema_version": 2,
   "description": "Strict-supported fixture: hl-strict-btc over the frozen synthetic BTC 1h window.",
   "export": {
     "schema": "go-trader.booked-ledger",
@@ -129,7 +129,161 @@
         },
         "status": "verified",
         "rule": "attested",
-        "evidence": "synthetic fixture: source/config.json is the only configuration this strategy ever ran with; it is the effective (post-load) configuration, unchanged since 2026-01-01"
+        "evidence": "synthetic fixture: source/config.json is the only configuration this strategy ever ran with; it is the effective (post-load) configuration, unchanged since 2026-01-01",
+        "basis": "loader_resolved",
+        "stop_defaults": {
+          "default_stop_loss_atr_mult": {
+            "status": "verified",
+            "source": "synthetic fixture: source/config.json has no root default_stop_loss_atr_mult, so the live default 1.0 applies to a strategy with no stop field",
+            "present": false,
+            "value": null
+          },
+          "user_close_defaults": {
+            "status": "verified",
+            "source": "synthetic fixture: source/config.json has no user_defaults.close or user_close_defaults",
+            "present": false,
+            "value": null
+          },
+          "user_regime_atr_defaults": {
+            "status": "verified",
+            "source": "synthetic fixture: source/config.json has no user_defaults.regime_atr",
+            "present": false,
+            "value": null
+          },
+          "platform_max_drawdown_pct": {
+            "status": "verified",
+            "source": "synthetic fixture: source/config.json has no platforms.hyperliquid.risk.max_drawdown_pct",
+            "present": false,
+            "value": null
+          }
+        },
+        "stop_evidence": {
+          "raw_fields": {
+            "stop_loss_atr_mult": {
+              "status": "verified",
+              "source": "synthetic fixture: source/config.json, strategy hl-strict-btc",
+              "present": true,
+              "value": 0
+            },
+            "stop_loss_pct": {
+              "status": "verified",
+              "source": "synthetic fixture: source/config.json, strategy hl-strict-btc",
+              "present": false,
+              "value": null
+            },
+            "stop_loss_margin_pct": {
+              "status": "verified",
+              "source": "synthetic fixture: source/config.json, strategy hl-strict-btc",
+              "present": false,
+              "value": null
+            },
+            "trailing_stop_atr_mult": {
+              "status": "verified",
+              "source": "synthetic fixture: source/config.json, strategy hl-strict-btc",
+              "present": false,
+              "value": null
+            },
+            "trailing_stop_pct": {
+              "status": "verified",
+              "source": "synthetic fixture: source/config.json, strategy hl-strict-btc",
+              "present": false,
+              "value": null
+            },
+            "stop_loss_atr_mult_regime": {
+              "status": "verified",
+              "source": "synthetic fixture: source/config.json, strategy hl-strict-btc",
+              "present": false,
+              "value": null
+            },
+            "trailing_stop_atr_mult_regime": {
+              "status": "verified",
+              "source": "synthetic fixture: source/config.json, strategy hl-strict-btc",
+              "present": false,
+              "value": null
+            },
+            "leverage": {
+              "status": "verified",
+              "source": "synthetic fixture: source/config.json, strategy hl-strict-btc",
+              "present": true,
+              "value": 1
+            },
+            "max_drawdown_pct": {
+              "status": "verified",
+              "source": "synthetic fixture: source/config.json, strategy hl-strict-btc",
+              "present": false,
+              "value": null
+            },
+            "trailing_stop_min_move_pct": {
+              "status": "verified",
+              "source": "synthetic fixture: source/config.json, strategy hl-strict-btc",
+              "present": false,
+              "value": null
+            }
+          },
+          "resolved_fields": {
+            "stop_loss_atr_mult": {
+              "status": "verified",
+              "source": "synthetic fixture: loader-resolved values of strategy hl-strict-btc; every stop field equals the source value, and max_drawdown_pct is the perps type default 50 because neither the strategy nor platforms.hyperliquid.risk sets it",
+              "value": 0
+            },
+            "stop_loss_pct": {
+              "status": "verified",
+              "source": "synthetic fixture: loader-resolved values of strategy hl-strict-btc; every stop field equals the source value, and max_drawdown_pct is the perps type default 50 because neither the strategy nor platforms.hyperliquid.risk sets it",
+              "value": null
+            },
+            "stop_loss_margin_pct": {
+              "status": "verified",
+              "source": "synthetic fixture: loader-resolved values of strategy hl-strict-btc; every stop field equals the source value, and max_drawdown_pct is the perps type default 50 because neither the strategy nor platforms.hyperliquid.risk sets it",
+              "value": null
+            },
+            "trailing_stop_atr_mult": {
+              "status": "verified",
+              "source": "synthetic fixture: loader-resolved values of strategy hl-strict-btc; every stop field equals the source value, and max_drawdown_pct is the perps type default 50 because neither the strategy nor platforms.hyperliquid.risk sets it",
+              "value": null
+            },
+            "trailing_stop_pct": {
+              "status": "verified",
+              "source": "synthetic fixture: loader-resolved values of strategy hl-strict-btc; every stop field equals the source value, and max_drawdown_pct is the perps type default 50 because neither the strategy nor platforms.hyperliquid.risk sets it",
+              "value": null
+            },
+            "stop_loss_atr_mult_regime": {
+              "status": "verified",
+              "source": "synthetic fixture: loader-resolved values of strategy hl-strict-btc; every stop field equals the source value, and max_drawdown_pct is the perps type default 50 because neither the strategy nor platforms.hyperliquid.risk sets it",
+              "value": null
+            },
+            "trailing_stop_atr_mult_regime": {
+              "status": "verified",
+              "source": "synthetic fixture: loader-resolved values of strategy hl-strict-btc; every stop field equals the source value, and max_drawdown_pct is the perps type default 50 because neither the strategy nor platforms.hyperliquid.risk sets it",
+              "value": null
+            },
+            "leverage": {
+              "status": "verified",
+              "source": "synthetic fixture: loader-resolved values of strategy hl-strict-btc; every stop field equals the source value, and max_drawdown_pct is the perps type default 50 because neither the strategy nor platforms.hyperliquid.risk sets it",
+              "value": 1
+            },
+            "max_drawdown_pct": {
+              "status": "verified",
+              "source": "synthetic fixture: loader-resolved values of strategy hl-strict-btc; every stop field equals the source value, and max_drawdown_pct is the perps type default 50 because neither the strategy nor platforms.hyperliquid.risk sets it",
+              "value": 50
+            },
+            "trailing_stop_min_move_pct": {
+              "status": "verified",
+              "source": "synthetic fixture: loader-resolved values of strategy hl-strict-btc; every stop field equals the source value, and max_drawdown_pct is the perps type default 50 because neither the strategy nor platforms.hyperliquid.risk sets it",
+              "value": null
+            }
+          },
+          "leverage_origin": {
+            "status": "verified",
+            "source": "synthetic fixture: source/config.json, strategy hl-strict-btc sets leverage 1",
+            "value": "config"
+          },
+          "regime_atr_window": {
+            "status": "verified",
+            "source": "synthetic fixture: source/config.json, strategy hl-strict-btc has no regime_atr_window",
+            "present": false,
+            "value": null
+          }
+        }
       }
     ]
   },

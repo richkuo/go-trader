@@ -207,6 +207,26 @@ def test_direct_fraction_contract_is_unchanged():
     assert _near(arm["trigger"], EXPECTED["geometry"]["pct_long"]["arm_trigger"])
 
 
+def _ledger_segment(sc: dict, basis: str) -> dict:
+    proof = {"status": "verified", "source": "stop geometry parity fixture"}
+    raw = {k: dict(proof, present=sc.get(k) is not None, value=sc.get(k))
+           for k in ledger_compare.STOP_EVIDENCE_FIELDS}
+    segment = {
+        "basis": basis, "strategy": copy.deepcopy(sc), "regime": {},
+        "stop_defaults": {k: dict(proof, present=False, value=None)
+                          for k in ledger_compare.STOP_DEFAULT_KEYS},
+        "stop_evidence": {"raw_fields": raw, "leverage_origin": dict(proof, value="default"),
+                          "regime_atr_window": dict(proof, present=False, value=None)},
+    }
+    if basis == "loader_resolved":
+        resolved = {k: sc.get(k) for k in ledger_compare.STOP_EVIDENCE_FIELDS}
+        resolved.update(leverage=1, max_drawdown_pct=50)
+        segment["strategy"].update(leverage=1, max_drawdown_pct=50)
+        segment["stop_evidence"]["resolved_fields"] = {
+            k: dict(proof, value=v) for k, v in resolved.items()}
+    return segment
+
+
 def test_every_live_config_consumer_converts_once(tmp_path):
     case = GEOMETRY["pct_long"]
     path = _write(tmp_path, _config(case))
@@ -221,10 +241,15 @@ def test_every_live_config_consumer_converts_once(tmp_path):
     assert candidate["stop_context"]["stop_loss_pct"] == pytest.approx(0.02)
     round_trip = eval_windows.candidate_stop_kwargs(json.loads(json.dumps(candidate)))
     assert round_trip["stop_loss_pct"] == pytest.approx(0.02)
-    ledger = ledger_compare._live_stop_kwargs(
-        {"stop_loss_pct": case["strategy"]["stop_loss_pct"]}, None)
-    assert ledger["stop_loss_pct"] == pytest.approx(0.02)
-    for kwargs in (parity.stop_kwargs, baseline["stops"], round_trip, ledger):
+    ledger_inputs = []
+    for basis in ledger_compare.STOP_BASES:
+        segment = _ledger_segment(_config(case)["strategies"][0], basis)
+        verdict = ledger_compare.resolve_historical_stops(segment, 2, "strict")
+        assert verdict["status"] == "modeled" and verdict["owner"] == "fixed_pct"
+        assert verdict["resolved_live_units"]["stop_loss_pct"] == 2
+        assert verdict["kwargs"]["stop_loss_pct"] == pytest.approx(0.02)
+        ledger_inputs.append(verdict["kwargs"])
+    for kwargs in (parity.stop_kwargs, baseline["stops"], round_trip, *ledger_inputs):
         _, _, events = _run(dict(kwargs, platform="hyperliquid"), case)
         arm = next(e for e in events if e["event"] == "arm")
         assert _near(arm["trigger"], EXPECTED["geometry"]["pct_long"]["arm_trigger"])

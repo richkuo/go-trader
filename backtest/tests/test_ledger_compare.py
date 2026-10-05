@@ -220,7 +220,11 @@ def test_scale_in_fixture_conserves_booked_accounting_and_refuses_strict(tmp_pat
     rc, rep = _run(fx, tmp_path, "export_scale_in.json")
     assert rc == 1 and rep["outcome"] == "refused"
     fields = {r.get("field") for r in rep["eligibility"]["refusals"]}
-    assert {"allow_scale_in", "scale_in", "stop_loss_atr_mult"} <= fields
+    assert {"allow_scale_in", "scale_in"} <= fields
+    assert not fields & set(lc.STOP_ROLE_FIELDS)
+    assert not any(r["reason"] == "capability_protection" or r["reason"].startswith("stop_")
+                   for r in rep["eligibility"]["refusals"])
+    assert rep["stops"]["owner"] == "fixed_atr" and rep["stops"]["status"] == "modeled"
     assert rep["simulation"]["status"] == "not_run"
     positions = {p["position_id"]: p for p in rep["booked"]["positions"]}
     closed = positions["pos-c-1"]
@@ -246,7 +250,10 @@ def test_scale_in_fixture_conserves_booked_accounting_and_refuses_strict(tmp_pat
     rc, rep = _run(fx, tmp_path, "export_scale_in.json", mode="approximate", name="approx.json")
     assert rc == 1 and rep["outcome"] == "incomplete" and rep["strict_success"] is False
     assumed = {a["feature"] for a in rep["eligibility"]["approximations"]}
-    assert {"comparison_mode", "allow_scale_in", "stop_loss_atr_mult", "execution_cost"} <= assumed
+    assert {"comparison_mode", "allow_scale_in", "execution_cost"} <= assumed
+    assert "stop_loss_atr_mult" not in assumed
+    arms = rep["stops"]["arm_events"]
+    assert arms and all(a["owner"] == "fixed_atr" and a["trigger"] > 0 for a in arms)
     assert rep["simulation"]["status"] == "run"
     assert rep["simulation"]["cost_model"]["kind"] == "flat_taker_fee_and_adverse_price"
     assert all(c["ok"] for c in rep["conservation"]["checks"])
@@ -516,3 +523,571 @@ def test_booked_conservation_checks_fail_on_inconsistent_ledgers(tmp_path):
     assert early["ok"] is False and early["min_running_inventory"] == pytest.approx(-0.001)
     assert checks["booked_report_sections_partition_events"]["ok"] is True
     assert {i["total"] for i in rep["conservation"]["informational_totals"]} == {"booked_strategy_funding_unallocated"}
+
+
+STOP_KEYS = lc.STOP_EVIDENCE_FIELDS
+PARITY = _load(os.path.join(os.path.dirname(FIXTURE), "stop_geometry_parity.json"))
+PARITY_CASES = {c["id"]: c for c in PARITY["geometry"] + PARITY["admission"]}
+UNIFIED_CLOSE = PARITY["unified_close"]
+REGIME_ON = {"enabled": True, "period": 14, "adx_threshold": 20}
+USER_RATCHET_REGIME = {"trailing_tp_ratchet_regime": {
+    "tp_tiers": {label: [{"atr_multiple": 1.0, "trailing_mult_after": 1.0, "close_fraction": 0.0}]
+                 for label in ("trending_up", "trending_down", "ranging")},
+    "trailing_stop_atr_mult_regime": {"trend_regime": {
+        "trending_up": {"atr_multiple": 2.75}, "trending_down": {"atr_multiple": 2.75},
+        "ranging": {"atr_multiple": 1.5}}},
+}}
+EXTRA_CASES = {
+    "user_close_default_tp_tiers": {
+        "config": {"user_defaults": {"close": {"tiered_tp_atr": {"tp_tiers": [
+            {"atr_multiple": 2, "close_fraction": 0.5}, {"atr_multiple": 4, "close_fraction": 1}]}}}},
+        "strategy": {"stop_loss_atr_mult": 1.5, "close_strategy": {"name": "tiered_tp_atr", "params": {}}},
+        "side": "long", "regime": None},
+    "user_ratchet_regime_trail": {
+        "config": {"user_defaults": {"close": USER_RATCHET_REGIME}, "regime": REGIME_ON},
+        "strategy": {"close_strategy": {"name": "trailing_tp_ratchet_regime", "params": {"use_defaults": True}}},
+        "side": "long", "regime": "trending_up"},
+}
+
+
+def _parity_case(case_id):
+    if case_id in EXTRA_CASES:
+        c = EXTRA_CASES[case_id]
+        return copy.deepcopy(c["config"]), copy.deepcopy(c["strategy"]), c["side"], c["regime"]
+    c = PARITY_CASES[case_id]
+    cfg = copy.deepcopy(c.get("config") or {})
+    if c.get("regime"):
+        cfg.setdefault("regime", copy.deepcopy(PARITY["regime_enabled"]["regime"]))
+    strategy = copy.deepcopy(c.get("strategy") or {})
+    if c.get("unified"):
+        strategy["close_strategy"] = copy.deepcopy(UNIFIED_CLOSE)
+    pos = c.get("position") or {}
+    return cfg, strategy, pos.get("side", strategy.get("direction") or "long"), pos.get("regime")
+
+
+def _raw_strategy(strategy):
+    sc = copy.deepcopy(PARITY["base_strategy"])
+    sc.update(strategy)
+    return sc
+
+
+def _prov(value, present=True, source="synthetic test evidence"):
+    return {"status": "verified", "source": source, "present": present, "value": value}
+
+
+def _raw_segment(cfg, strategy):
+    sc = _raw_strategy(strategy)
+    platform_dd = ((cfg.get("platforms") or {}).get("hyperliquid") or {}).get("risk", {}).get("max_drawdown_pct")
+    user = cfg.get("user_defaults") or {}
+
+    def default(value):
+        return _prov(value, value is not None)
+
+    return {
+        "effective_from": "2026-01-01T00:00:00Z", "effective_to": None, "status": "verified",
+        "rule": "attested", "evidence": "synthetic test segment", "basis": "raw_config",
+        "strategy": sc, "regime": copy.deepcopy(cfg.get("regime") or {"enabled": False}), "portfolio_risk": {},
+        "stop_defaults": {
+            "default_stop_loss_atr_mult": default(cfg.get("default_stop_loss_atr_mult")),
+            "user_close_defaults": default(user.get("close")),
+            "user_regime_atr_defaults": default(user.get("regime_atr")),
+            "platform_max_drawdown_pct": default(platform_dd),
+        },
+        "stop_evidence": {
+            "raw_fields": {k: _prov(sc.get(k), sc.get(k) is not None) for k in STOP_KEYS},
+            "leverage_origin": {"status": "verified", "source": "synthetic test evidence",
+                                "value": "config" if (sc.get("leverage") or 0) > 0 else "default"},
+            "regime_atr_window": _prov(sc.get("regime_atr_window"), sc.get("regime_atr_window") is not None),
+        },
+    }
+
+
+def _loader_segment(tmp_path, cfg, strategy):
+    import run_backtest
+    raw = _raw_segment(cfg, strategy)
+    doc = copy.deepcopy(cfg)
+    doc["config_version"] = 20
+    doc["strategies"] = [_raw_strategy(strategy)]
+    path = tmp_path / "loader_config.json"
+    path.write_text(json.dumps(doc))
+    from backtester import CloseCapabilityError
+    try:
+        loaded = run_backtest.load_strategy_config(str(path), "hl-stop-geo", inject_user_defaults=True)
+        context, close_refs = loaded["capability_context"], loaded["close_strategies"]
+    except CloseCapabilityError:
+        stops = run_backtest.resolve_raw_config_stops(doc, "hl-stop-geo", "refused test config")
+        context, close_refs = stops["stop_context"], stops["close_refs"]
+    resolved = context.to_dict()["input_evidence"]["resolved_live_units"]["value"]
+    sc = _raw_strategy(strategy)
+    for k in STOP_KEYS:
+        if resolved[k] is None:
+            sc.pop(k, None)
+        else:
+            sc[k] = copy.deepcopy(resolved[k])
+    if close_refs:
+        sc["close_strategy"] = copy.deepcopy(close_refs[0])
+    seg = copy.deepcopy(raw)
+    seg["basis"] = "loader_resolved"
+    seg["strategy"] = sc
+    seg["stop_evidence"]["resolved_fields"] = {
+        k: {"status": "verified", "source": "synthetic loader output", "value": copy.deepcopy(resolved[k])}
+        for k in STOP_KEYS}
+    return seg
+
+
+def _stop_frame(side, regime, anchor=100.0, marks=(99.0, 101.0, 100.0), entry_atr=2.0):
+    import pandas as pd
+    n = len(marks) + 1
+    opens = [anchor, anchor] + list(marks[:-1])
+    closes = [anchor] + list(marks)
+    df = pd.DataFrame({
+        "open": opens, "high": [max(o, c) for o, c in zip(opens, closes)],
+        "low": [min(o, c) for o, c in zip(opens, closes)], "close": closes,
+        "volume": [1000.0] * n, "atr": [entry_atr] * n,
+        "signal": [1 if side == "long" else -1] + [0] * (n - 1),
+    }, index=pd.date_range("2026-03-01", periods=n, freq="1h"))
+    if regime:
+        df["regime"] = regime
+    return df
+
+
+def _engine_events(verdict, side, regime, **frame):
+    from backtester import Backtester
+    events = []
+    bt = Backtester(initial_capital=1000.0, commission_pct=0.0, slippage_pct=0.0, platform="hyperliquid",
+                    intrabar_resolution="bar_close", direction=side,
+                    close_strategies=copy.deepcopy(verdict["close_refs"]) or None, **verdict["kwargs"])
+    bt.run(_stop_frame(side, regime, **frame), save=False, stop_observer=events.append)
+    return bt, events
+
+
+EQUIVALENCE_CASES = [
+    "default_scalar_atr", "default_scalar_atr_custom", "explicit_zero_atr_drawdown_fallback",
+    "explicit_zero_stop_pct_disables", "default_opt_out_custom_drawdown", "platform_drawdown_fallback",
+    "margin_verified_leverage", "regime_fixed_atr_user_defaults", "regime_trailing_system_defaults",
+    "unified_regime_close", "user_close_default_tp_tiers", "user_ratchet_regime_trail",
+]
+
+
+@pytest.mark.parametrize("case_id", EQUIVALENCE_CASES)
+def test_raw_and_loader_resolved_segments_resolve_identically(tmp_path, case_id):
+    cfg, strategy, side, regime = _parity_case(case_id)
+    raw = lc.resolve_historical_stops(_raw_segment(cfg, strategy), 2, "strict")
+    loader = lc.resolve_historical_stops(_loader_segment(tmp_path, cfg, strategy), 2, "strict")
+    assert raw["status"] == loader["status"] == "modeled", (raw["refusals"], loader["refusals"])
+    assert raw["owner"] == loader["owner"]
+    assert lc._jsonable_stop_inputs(raw["kwargs"]) == lc._jsonable_stop_inputs(loader["kwargs"])
+    assert raw["capability_context"] == loader["capability_context"]
+    assert raw["close_refs"] == loader["close_refs"]
+    raw_bt, raw_events = _engine_events(raw, side, regime)
+    load_bt, load_events = _engine_events(loader, side, regime)
+    assert raw_bt._stop_owner == load_bt._stop_owner == raw["owner"]
+    assert raw_events == load_events
+    arms = [e for e in raw_events if e["event"] == "arm"]
+    assert len(arms) == 1
+    if raw["owner"] != "none":
+        assert arms[0]["trigger"] > 0
+
+
+def test_defaults_apply_in_order_and_convert_once(tmp_path):
+    cfg, strategy, _, _ = _parity_case("default_scalar_atr_custom")
+    raw = lc.resolve_historical_stops(_raw_segment(cfg, strategy), 2, "strict")
+    assert raw["owner"] == "fixed_atr" and raw["kwargs"]["stop_loss_atr_mult"] == 2.5
+    assert raw["kwargs"]["max_drawdown_pct"] == pytest.approx(0.5)
+    assert raw["capability_context"]["raw_fields"]["stop_loss_atr_mult"] == {"present": False, "value": None}
+    cfg, strategy, _, _ = _parity_case("regime_fixed_atr_user_defaults")
+    raw = lc.resolve_historical_stops(_raw_segment(cfg, strategy), 2, "strict")
+    assert raw["owner"] == "fixed_atr_regime"
+    assert raw["kwargs"]["stop_loss_atr_mult"] is None
+    assert raw["kwargs"]["stop_loss_atr_mult_regime"] == cfg["user_defaults"]["regime_atr"]["stop_loss_atr_mult_regime"]
+    cfg, strategy, _, _ = _parity_case("pct_long")
+    seg = _loader_segment(tmp_path, cfg, strategy)
+    loader = lc.resolve_historical_stops(seg, 2, "strict")
+    assert loader["kwargs"]["stop_loss_pct"] == pytest.approx(0.02)
+    assert loader["resolved_live_units"]["stop_loss_pct"] == 2
+    seg["stop_defaults"]["default_stop_loss_atr_mult"] = _prov(3.0)
+    seg["stop_evidence"]["resolved_fields"]["stop_loss_pct"]["value"] = 2
+    again = lc.resolve_historical_stops(seg, 2, "strict")
+    assert again["kwargs"]["stop_loss_atr_mult"] is None and again["owner"] == "fixed_pct"
+
+
+def test_drawdown_fallback_geometry_matches_the_platform_oracle_case():
+    case = PARITY_CASES["platform_drawdown_fallback"]
+    want = PARITY["expected"]["geometry"]["platform_drawdown_fallback"]
+    cfg, strategy, side, regime = _parity_case("platform_drawdown_fallback")
+    verdict = lc.resolve_historical_stops(_raw_segment(cfg, strategy), 2, "strict")
+    assert verdict["status"] == "modeled" and verdict["owner"] == "drawdown_fallback"
+    assert verdict["required_inputs"] >= ["max_drawdown_pct", "platform_max_drawdown_pct"][:1]
+    assert "platform_max_drawdown_pct" in verdict["required_inputs"]
+    pos = case["position"]
+    _, events = _engine_events(verdict, side, regime, anchor=float(pos["anchor"]),
+                               marks=tuple(float(m) for m in case["marks"]), entry_atr=float(pos["entry_atr"]))
+    arm = next(e for e in events if e["event"] == "arm")
+    assert abs(arm["trigger"] - want["arm_trigger"]) <= PARITY["tolerance"] * max(1.0, abs(want["arm_trigger"]))
+    seg = _raw_segment(cfg, strategy)
+    seg["stop_defaults"]["platform_max_drawdown_pct"]["status"] = "unverified"
+    refused = lc.resolve_historical_stops(seg, 2, "strict")
+    assert [(r["reason"], r["field"]) for r in refused["refusals"]] == [
+        ("stop_inputs_unverified", "platform_max_drawdown_pct")]
+
+
+@pytest.mark.parametrize("basis", ["raw_config", "loader_resolved"])
+def test_both_bases_refuse_unverified_margin_leverage_and_unsupported_windows(tmp_path, basis):
+    def build(case_id, extra_cfg=None, extra_strategy=None):
+        cfg, strategy, _, _ = _parity_case(case_id)
+        cfg.update(extra_cfg or {})
+        strategy.update(extra_strategy or {})
+        return (_raw_segment(cfg, strategy) if basis == "raw_config"
+                else _loader_segment(tmp_path, cfg, strategy))
+
+    def codes(seg):
+        return {(r["reason"], r.get("reason_code")) for r in lc.resolve_historical_stops(seg, 2, "strict")["refusals"]}
+
+    want_margin = ("stop_capability_refused", "UNVERIFIED_MARGIN_LEVERAGE")
+    assert want_margin in codes(build("margin_with_defaulted_leverage"))
+    seg = build("margin_verified_leverage")
+    assert lc.resolve_historical_stops(seg, 2, "strict")["status"] == "modeled"
+    if basis == "raw_config":
+        seg["stop_evidence"]["raw_fields"]["leverage"]["status"] = "unverified"
+    else:
+        seg["stop_evidence"]["leverage_origin"]["status"] = "unverified"
+    assert want_margin in codes(seg)
+    named = build("named_atr_window_not_modeled")
+    assert ("stop_capability_refused", "MISSING_STOP_INPUT") in codes(named)
+
+
+@pytest.mark.parametrize("basis", ["raw_config", "loader_resolved"])
+def test_contradictory_stop_evidence_refuses_before_simulation(tmp_path, basis):
+    cfg, strategy, _, _ = _parity_case("pct_long")
+    seg = _raw_segment(cfg, strategy) if basis == "raw_config" else _loader_segment(tmp_path, cfg, strategy)
+    seg["stop_evidence"]["raw_fields"]["stop_loss_pct"] = _prov(3)
+    verdict = lc.resolve_historical_stops(seg, 2, "strict")
+    assert ("stop_evidence_contradictory", "stop_loss_pct") in {(r["reason"], r["field"]) for r in verdict["refusals"]}
+    assert all(r["approximable"] is False for r in verdict["refusals"] if r["reason"] == "stop_evidence_contradictory")
+    seg = _raw_segment(cfg, strategy) if basis == "raw_config" else _loader_segment(tmp_path, cfg, strategy)
+    seg["stop_evidence"]["raw_fields"]["trailing_stop_pct"]["status"] = "unverified"
+    verdict = lc.resolve_historical_stops(seg, 2, "strict")
+    assert [(r["reason"], r["field"]) for r in verdict["refusals"]] == [("stop_inputs_unverified", "trailing_stop_pct")]
+
+
+@pytest.mark.parametrize("case_id,owner,fields", [
+    ("pct_long", "fixed_pct", {"basis", "stop_loss_pct"}),
+    ("default_scalar_atr", "fixed_atr", {"basis", "stop_loss_atr_mult"}),
+    ("unified_regime_close", "unified_regime", {"basis", "close_strategy", "regime_atr_window"}),
+    ("explicit_zero_atr_drawdown_fallback", "drawdown_fallback", {"basis", "max_drawdown_pct"}),
+])
+def test_version_one_segments_cannot_rule_out_a_protective_owner(case_id, owner, fields):
+    cfg, strategy, _, _ = _parity_case(case_id)
+    seg = _raw_segment(cfg, strategy)
+    for key in ("basis", "stop_defaults", "stop_evidence"):
+        seg.pop(key)
+    verdict = lc.resolve_historical_stops(seg, 1, "strict")
+    assert verdict["owner"] == owner and verdict["status"] == "refused"
+    assert {r["reason"] for r in verdict["refusals"]} == {"stop_inputs_unverified"}
+    assert {r["field"] for r in verdict["refusals"]} == fields
+
+
+def _as_raw_basis(cin):
+    seg = cin["historical_configuration"]["timeline"][0]
+    src = next(s for s in _load(os.path.join(FIXTURE, "source", "config.json"))["strategies"]
+               if s["id"] == seg["strategy"]["id"])
+    seg["basis"] = "raw_config"
+    seg["strategy"] = copy.deepcopy(src)
+    seg["stop_evidence"].pop("resolved_fields")
+    return cin
+
+
+def _stop_free_loader_segment(seg):
+    for k in ("stop_loss_atr_mult",):
+        seg["strategy"].pop(k, None)
+        seg["stop_evidence"]["raw_fields"][k] = {"status": "verified", "source": "test edit", "present": False,
+                                                 "value": None}
+        seg["stop_evidence"]["resolved_fields"][k]["value"] = None
+
+
+def test_strict_fixture_arms_the_drawdown_fallback_on_both_bases(tmp_path):
+    fx = _copy(tmp_path)
+    rc, rep = _run(fx, tmp_path, name="loader.json")
+    assert rc == 0 and rep["outcome"] == "strict_success"
+    assert rep["provenance"]["comparison_input_schema"] == [lc.INPUT_SCHEMA, 2]
+    stops = rep["stops"]
+    assert stops["basis"] == "loader_resolved" and stops["owner"] == "drawdown_fallback"
+    assert stops["status"] == "modeled" and stops["simulated_owner"] == "drawdown_fallback"
+    assert stops["engine_inputs"]["max_drawdown_pct"] == pytest.approx(0.5)
+    assert stops["engine_inputs"]["stop_loss_atr_mult"] == 0
+    arms = stops["arm_events"]
+    assert len(arms) == len(rep["matching"]["matched"]) == 2
+    for arm in arms:
+        assert arm["geometry"] == "percent" and arm["trigger"] == pytest.approx(arm["anchor"] * 0.5)
+    assert not any(r["reason"] == "capability_protection" for r in rep["eligibility"]["refusals"])
+    rows = {(r["field"], r["category"]): r for r in rep["eligibility"]["capability_matrix"]}
+    assert rows[("max_drawdown_pct", "portfolio_controls")]["decision"] == "requires_evidence_verified"
+    assert rows[("max_drawdown_pct", "protection")]["decision"] == "modeled"
+    assert rep["initial_stop_geometry"]["counts"]["unavailable"] == 2
+
+    _dump(fx / "comparison_input.json", _as_raw_basis(_load(fx / "comparison_input.json")))
+    rc, raw_rep = _run(fx, tmp_path, name="raw.json")
+    assert rc == 0 and raw_rep["outcome"] == "strict_success"
+    assert raw_rep["stops"]["basis"] == "raw_config"
+    for key in ("owner", "engine_inputs", "capability_context", "arm_events"):
+        assert raw_rep["stops"][key] == stops[key], key
+
+    rc, approx = _run(fx, tmp_path, mode="approximate", name="approx.json")
+    assert rc == 1 and approx["outcome"] == "incomplete"
+    assert approx["stops"]["engine_inputs"] == stops["engine_inputs"]
+    assert approx["stops"]["arm_events"] == stops["arm_events"]
+
+
+def _drawdown_free_fixture(fx, resolved_entry):
+    cin = _load(fx / "comparison_input.json")
+    seg = cin["historical_configuration"]["timeline"][0]
+    seg["strategy"].pop("max_drawdown_pct")
+    if resolved_entry is None:
+        seg["stop_evidence"]["resolved_fields"].pop("max_drawdown_pct")
+    else:
+        seg["stop_evidence"]["resolved_fields"]["max_drawdown_pct"] = resolved_entry
+    _dump(fx / "comparison_input.json", cin)
+
+
+def _stop_refusals(rep):
+    return {(r["reason"], r["field"]) for r in rep["eligibility"]["refusals"]
+            if r["reason"].startswith("stop_")}
+
+
+def test_loader_drawdown_without_verified_provenance_never_reaches_strict_success(tmp_path):
+    fx = _copy(tmp_path)
+    _drawdown_free_fixture(fx, None)
+    rc, rep = _run(fx, tmp_path, name="missing.json")
+    assert rc == 1 and rep["outcome"] != "strict_success"
+    assert rep["stops"]["owner"] == "none" and rep["stops"]["status"] == "refused"
+    assert _stop_refusals(rep) == {("stop_inputs_unverified", "max_drawdown_pct")}
+
+    fx = _copy(tmp_path / "null")
+    _drawdown_free_fixture(fx, {"status": "verified", "source": "test edit", "value": None})
+    rc, rep = _run(fx, tmp_path, name="null.json")
+    assert rc == 1 and rep["outcome"] != "strict_success"
+    assert rep["stops"]["status"] == "refused"
+    assert ("stop_evidence_contradictory", "max_drawdown_pct") in _stop_refusals(rep)
+
+
+def test_drawdown_provenance_is_required_only_where_precedence_reaches_it(tmp_path):
+    cfg, strategy, _, _ = _parity_case("explicit_zero_stop_pct_disables")
+    seg = _loader_segment(tmp_path, cfg, strategy)
+    seg["stop_evidence"]["resolved_fields"]["max_drawdown_pct"]["status"] = "unverified"
+    verdict = lc.resolve_historical_stops(seg, 2, "strict")
+    assert verdict["owner"] == "none" and verdict["status"] == "modeled", verdict["refusals"]
+    assert "max_drawdown_pct" not in verdict["required_inputs"]
+    cfg, strategy, _, _ = _parity_case("platform_drawdown_fallback")
+    seg = _raw_segment(cfg, dict(strategy, max_drawdown_pct=-5))
+    verdict = lc.resolve_historical_stops(seg, 2, "strict")
+    assert verdict["owner"] == "none" and verdict["status"] == "refused"
+    assert ("stop_configuration_invalid", "max_drawdown_pct") in {
+        (r["reason"], r["field"]) for r in verdict["refusals"]}
+
+
+@pytest.mark.parametrize("basis", ["raw_config", "loader_resolved"])
+def test_unverified_leverage_refuses_a_margin_stop_on_both_bases(tmp_path, basis):
+    strategy = {"stop_loss_margin_pct": 10, "leverage": 1}
+    if basis == "raw_config":
+        seg = _raw_segment({}, strategy)
+        seg["stop_evidence"]["raw_fields"]["leverage"]["status"] = "unverified"
+    else:
+        seg = _loader_segment(tmp_path, {}, strategy)
+        assert seg["stop_evidence"]["leverage_origin"] == {
+            "status": "verified", "source": "synthetic test evidence", "value": "config"}
+        seg["stop_evidence"]["resolved_fields"]["leverage"]["status"] = "unverified"
+    verdict = lc.resolve_historical_stops(seg, 2, "strict")
+    assert verdict["owner"] == "margin_pct" and verdict["status"] == "refused"
+    assert {(r["reason"], r.get("reason_code")) for r in verdict["refusals"]} == {
+        ("stop_capability_refused", "UNVERIFIED_MARGIN_LEVERAGE")}
+
+
+def test_loader_scalar_default_follows_the_live_default_rule_under_a_unified_close(tmp_path):
+    cfg, strategy, _, _ = _parity_case("unified_regime_close")
+    seg = _loader_segment(tmp_path, cfg, strategy)
+    assert seg["stop_evidence"]["resolved_fields"]["stop_loss_atr_mult"]["value"] is None
+    verdict = lc.resolve_historical_stops(seg, 2, "strict")
+    assert verdict["owner"] == "unified_regime" and verdict["status"] == "modeled", verdict["refusals"]
+    seg["strategy"]["stop_loss_atr_mult"] = 1.0
+    seg["stop_evidence"]["resolved_fields"]["stop_loss_atr_mult"]["value"] = 1.0
+    verdict = lc.resolve_historical_stops(seg, 2, "strict")
+    assert ("stop_evidence_contradictory", "stop_loss_atr_mult") in {
+        (r["reason"], r["field"]) for r in verdict["refusals"]}
+    cfg, strategy, _, _ = _parity_case("default_scalar_atr")
+    seg = _loader_segment(tmp_path, cfg, strategy)
+    assert seg["stop_evidence"]["resolved_fields"]["stop_loss_atr_mult"]["value"] == 1.0
+    assert lc.resolve_historical_stops(seg, 2, "strict")["status"] == "modeled"
+
+
+def test_version_one_input_is_read_and_refused_for_unverified_stops(tmp_path):
+    fx = _copy(tmp_path)
+    cin = _load(fx / "comparison_input.json")
+    cin["schema_version"] = 1
+    for key in ("basis", "stop_defaults", "stop_evidence"):
+        cin["historical_configuration"]["timeline"][0].pop(key)
+    _dump(fx / "comparison_input.json", cin)
+    rc, rep = _run(fx, tmp_path)
+    assert rc == 1 and rep["outcome"] == "refused"
+    assert rep["provenance"]["comparison_input_schema"] == [lc.INPUT_SCHEMA, 1]
+    stop = [r for r in rep["eligibility"]["refusals"] if r["reason"] == "stop_inputs_unverified"]
+    assert {r["field"] for r in stop} == {"basis", "max_drawdown_pct"}
+    assert rep["simulation"]["status"] == "not_run"
+    rc, rep = _run(fx, tmp_path, mode="approximate", name="approx.json")
+    assert rc == 1 and rep["outcome"] == "incomplete" and rep["simulation"]["status"] == "run"
+    assert {"basis", "max_drawdown_pct"} <= {a["feature"] for a in rep["eligibility"]["approximations"]}
+    assert rep["stops"]["owner"] == "drawdown_fallback" and rep["stops"]["arm_events"]
+
+
+@pytest.mark.parametrize("variant", ["unified_close", "trailing_regime"])
+def test_regime_owned_stops_simulate_with_labels_and_no_gating(tmp_path, variant):
+    from regime import valid_labels_for_classifier
+    fx = _copy(tmp_path)
+    _rehash_market(fx, warmup=72)
+    base = _load(fx / "comparison_input.json")
+    cin = copy.deepcopy(base)
+    seg = cin["historical_configuration"]["timeline"][0]
+    seg["regime"] = dict(REGIME_ON)
+    _stop_free_loader_segment(seg)
+    if variant == "unified_close":
+        seg["strategy"]["close_strategy"] = copy.deepcopy(UNIFIED_CLOSE)
+        owner = "unified_regime"
+    else:
+        block = {"use_defaults": True}
+        seg["strategy"]["trailing_stop_atr_mult_regime"] = block
+        seg["stop_evidence"]["raw_fields"]["trailing_stop_atr_mult_regime"] = {
+            "status": "verified", "source": "test edit", "present": True, "value": block}
+        seg["stop_evidence"]["resolved_fields"]["trailing_stop_atr_mult_regime"]["value"] = block
+        owner = "trailing_atr_regime"
+    _dump(fx / "comparison_input.json", cin)
+    rc, rep = _run(fx, tmp_path, name=f"{variant}.json")
+    checks = rep["eligibility"]["market"]["strategy_checks"]["indicator_history"]
+    assert {"atr", "regime"} <= set(checks["compared_columns"]) and checks["ok"] is True
+    assert rep["stops"]["owner"] == owner and rep["stops"]["status"] == "modeled"
+    assert rep["simulation"]["status"] == "run", rep["eligibility"]["refusals"]
+    assert not any(r["reason"] in ("capability_regime", "capability_protection") for r in rep["eligibility"]["refusals"])
+    assert rep["stops"]["labels"]["enabled"] is True
+    labels = set(valid_labels_for_classifier("adx"))
+    arms = rep["stops"]["arm_events"]
+    assert arms and all(a["trigger"] > 0 and a["regime"] in labels for a in arms)
+    rows = {(r["field"], r["category"]): r for r in rep["eligibility"]["capability_matrix"]}
+    assert rows[("regime.enabled", "regime")]["decision"] == "modeled"
+    assert rows[("allowed_regimes", "regime")]["decision"] == "inactive"
+
+    seg["strategy"]["allowed_regimes"] = ["trending_up"]
+    _dump(fx / "comparison_input.json", cin)
+    rc, rep = _run(fx, tmp_path, name=f"{variant}_gated.json")
+    assert rc == 1 and rep["outcome"] == "refused"
+    assert ("capability_regime", "allowed_regimes") in {(r["reason"], r.get("field"))
+                                                        for r in rep["eligibility"]["refusals"]}
+
+    seg["strategy"].pop("allowed_regimes")
+    seg["regime"]["enabled"] = False
+    _dump(fx / "comparison_input.json", cin)
+    rc, rep = _run(fx, tmp_path, name=f"{variant}_disabled.json")
+    assert rc == 1 and ("stop_capability_refused", "MISSING_STOP_INPUT") in {
+        (r["reason"], r.get("reason_code")) for r in rep["eligibility"]["refusals"]}
+
+
+def test_regime_labels_that_depend_on_warmup_refuse_strict(tmp_path):
+    fx = _copy(tmp_path)
+    cin = _load(fx / "comparison_input.json")
+    seg = cin["historical_configuration"]["timeline"][0]
+    seg["regime"] = dict(REGIME_ON)
+    _stop_free_loader_segment(seg)
+    seg["strategy"]["close_strategy"] = copy.deepcopy(UNIFIED_CLOSE)
+    _dump(fx / "comparison_input.json", cin)
+    rc, rep = _run(fx, tmp_path)
+    assert rc == 1 and rep["outcome"] == "refused" and rep["simulation"]["status"] == "not_run"
+    assert {r["reason"] for r in rep["eligibility"]["refusals"]} == {"market_indicator_history_insufficient"}
+    assert rep["stops"]["status"] == "modeled"
+
+
+def _synthetic_stamp(value):
+    return {"value": value, "raw_value": value, "status": "available", "reason": None,
+            "provenance": [{"kind": "synthetic_test_evidence", "source_role": "primary", "source_table": "trades",
+                            "source_row_id": "test", "source_field": "inserted by test_ledger_compare"}]}
+
+
+def _geometry_fixture(tmp_path, scale=1.0, attest=True, stamp_close=False, name="g"):
+    fx = _copy(tmp_path / name)
+    _, base = _run(fx, tmp_path, name=f"{name}_base.json")
+    doc = _load(fx / "export.json")
+    events = {e["event_key"]: e for e in doc["events"]}
+    cin = _load(fx / "comparison_input.json")
+    attested = {}
+    for res in base["initial_stop_geometry"]["positions"]:
+        key = res["booked_event_key"]
+        if stamp_close:
+            pid = res["booked_position_id"]
+            key = next(e["event_key"] for e in doc["events"]
+                       if e["position_id"]["value"] == pid and e["event_kind"]["value"] == "close")
+        events[key]["stop_loss_trigger_px"] = _synthetic_stamp(res["simulated_trigger"] * scale)
+        events[key]["entry_atr"] = _synthetic_stamp(res["simulated_entry_atr"])
+        attested[key] = {"status": "verified", "source": "synthetic test evidence: initial-entry stamp",
+                         "stamp": "initial_entry"}
+    if attest:
+        cin["initial_stop_geometry_evidence"] = attested
+    _dump(fx / "export.json", doc)
+    _dump(fx / "comparison_input.json", cin)
+    _rebind(fx)
+    return fx
+
+
+def test_verified_initial_geometry_agrees_and_an_altered_trigger_mismatches(tmp_path):
+    fx = _geometry_fixture(tmp_path, name="agree")
+    rc, rep = _run(fx, tmp_path, name="agree.json")
+    assert rc == 0 and rep["outcome"] == "strict_success"
+    geo = rep["initial_stop_geometry"]
+    assert geo["counts"]["agreement"] == 2
+    for res in geo["positions"]:
+        assert res["booked_entry_atr"] == res["simulated_entry_atr"] and res["relative_delta"] == pytest.approx(0.0)
+    assert all(m["initial_stop_geometry"]["status"] == "agreement" for m in rep["matching"]["matched"])
+
+    fx = _geometry_fixture(tmp_path, scale=1.01, name="altered")
+    rc, rep = _run(fx, tmp_path, name="altered.json")
+    assert rc == 1 and rep["outcome"] == "mismatch"
+    assert rep["initial_stop_geometry"]["counts"]["mismatch"] == 2
+    assert rep["strict_checks"]["initial_stop_geometry_consistent"] is False
+    assert rep["strict_checks"]["matched_within_tolerance"] is False
+    assert all(m["within_tolerance"] is False for m in rep["matching"]["matched"])
+
+
+@pytest.mark.parametrize("variant", ["no_attestation", "later_stamp", "ambiguous_arms"])
+def test_unproven_initial_geometry_never_reports_agreement(tmp_path, monkeypatch, variant):
+    fx = _geometry_fixture(tmp_path, attest=variant != "no_attestation", stamp_close=variant == "later_stamp",
+                           name=variant)
+    if variant == "ambiguous_arms":
+        from backtester import Backtester
+        original = Backtester._emit_stop_event
+
+        def doubled(self, event, **fields):
+            original(self, event, **fields)
+            if event == "arm":
+                original(self, event, **fields)
+
+        monkeypatch.setattr(Backtester, "_emit_stop_event", doubled)
+    rc, rep = _run(fx, tmp_path, name=f"{variant}.json")
+    assert rc == 1 and rep["strict_success"] is False and rep["outcome"] == "unverified"
+    geo = rep["initial_stop_geometry"]
+    assert geo["counts"]["agreement"] == 0 and geo["counts"]["unverified"] == 2
+    assert rep["strict_checks"]["initial_stop_geometry_consistent"] is False
+    assert {u["input"] for u in rep["eligibility"]["unverified"]} == {"initial_stop_geometry"}
+    if variant == "later_stamp":
+        assert all(r["later_stamps"] for r in geo["positions"])
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda seg: seg.pop("basis"),
+    lambda seg: seg["stop_defaults"].pop("user_close_defaults"),
+    lambda seg: seg["stop_evidence"]["raw_fields"].update(bogus=seg["stop_evidence"]["raw_fields"]["leverage"]),
+    lambda seg: seg["stop_evidence"]["raw_fields"]["leverage"].update(status="verified", source=""),
+    lambda seg: seg["stop_evidence"]["raw_fields"]["trailing_stop_pct"].update(value=1),
+    lambda seg: seg["stop_evidence"].pop("resolved_fields"),
+])
+def test_malformed_stop_evidence_exits_without_a_report(tmp_path, mutate):
+    fx = _copy(tmp_path)
+    cin = _load(fx / "comparison_input.json")
+    mutate(cin["historical_configuration"]["timeline"][0])
+    _dump(fx / "comparison_input.json", cin)
+    rc, rep = _run(fx, tmp_path)
+    assert rc == lc.EXIT_INPUT_ERROR and rep is None

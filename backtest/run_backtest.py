@@ -814,11 +814,8 @@ def live_stop_engine_inputs(resolved: dict, *, raw_fields: dict, source: str,
     return kwargs, CapabilityContext(raw_fields=raw_fields, input_evidence=evidence)
 
 
-def translate_live_stop_config(cfg: dict, sc: dict, raw_fields: dict, *, platform: str,
-                               strategy_type: str, close_refs: list, regime_cfg: dict,
-                               regime_windows_spec, risk_per_trade_pct,
-                               comparison_mode=None, consumer: str = "engine",
-                               phase: str = "preflight"):
+def live_stop_resolution(cfg: dict, sc: dict, raw_fields: dict, *, platform: str,
+                         strategy_type: str, close_refs: list, regime_cfg: dict):
     apply_live_scalar_stop_default(cfg, sc, platform, strategy_type, close_refs)
     resolved = {k: sc.get(k) for k in STOP_FIELD_KEYS}
     resolved["max_drawdown_pct"] = _live_max_drawdown_pct(cfg, sc, platform, strategy_type)
@@ -834,15 +831,95 @@ def translate_live_stop_config(cfg: dict, sc: dict, raw_fields: dict, *, platfor
         resolved, raw_fields=raw_fields, source=STOP_UNITS_LIVE_CONFIG, leverage=lev,
         extra_evidence={"atr_regime_window": _atr_window_evidence(sc, regime_cfg)})
     kwargs["stop_platform"] = platform
+    return kwargs, context
+
+
+def live_stop_preflight(kwargs: dict, context, *, platform: str, strategy_type: str,
+                        close_refs: list, regime_windows_spec, risk_per_trade_pct,
+                        comparison_mode=None, consumer: str = "engine",
+                        phase: str = "preflight"):
     preflight = build_stop_capability_context(
         platform=platform, strategy_type=strategy_type, close_refs=close_refs,
         fields=kwargs, regime_windows_spec=regime_windows_spec,
         risk_per_trade_pct=risk_per_trade_pct, capability_context=context)
-    validation = validate_close_capabilities(
+    return validate_close_capabilities(
         close_refs=close_refs, comparison_mode=comparison_mode, platform=platform,
         strategy_type=strategy_type, consumer=consumer, phase=phase,
         capability_context=preflight)
+
+
+def translate_live_stop_config(cfg: dict, sc: dict, raw_fields: dict, *, platform: str,
+                               strategy_type: str, close_refs: list, regime_cfg: dict,
+                               regime_windows_spec, risk_per_trade_pct,
+                               comparison_mode=None, consumer: str = "engine",
+                               phase: str = "preflight"):
+    kwargs, context = live_stop_resolution(
+        cfg, sc, raw_fields, platform=platform, strategy_type=strategy_type,
+        close_refs=close_refs, regime_cfg=regime_cfg)
+    validation = live_stop_preflight(
+        kwargs, context, platform=platform, strategy_type=strategy_type,
+        close_refs=close_refs, regime_windows_spec=regime_windows_spec,
+        risk_per_trade_pct=risk_per_trade_pct, comparison_mode=comparison_mode,
+        consumer=consumer, phase=phase)
     return kwargs, context, validation
+
+
+def strategy_close_refs(sc: dict, label: str) -> list:
+    close_refs = []
+    single = sc.get("close_strategy")
+    if isinstance(single, dict) and single.get("name"):
+        close_refs.append({"name": single["name"], "params": dict(single.get("params") or {})})
+        return close_refs
+    legacy = sc.get("close_strategies", []) or []
+    if len(legacy) > 1:
+        raise ValueError(
+            f"{label} has "
+            f"{len(legacy)} close_strategies; the array model was "
+            f"collapsed to a single close_strategy (#842). Keep one "
+            f"profit-taking close and move risk backstops to "
+            f"strategy-level stop fields."
+        )
+    for ref in legacy:
+        if isinstance(ref, dict) and ref.get("name"):
+            close_refs.append({"name": ref["name"], "params": dict(ref.get("params") or {})})
+    return close_refs
+
+
+def resolve_live_strategy_stops(cfg: dict, sc: dict, user_defaults: Optional[dict], *,
+                                inject_user_defaults: bool, label: str) -> dict:
+    raw_stop_fields = stop_raw_fields(sc)
+    close_refs = strategy_close_refs(sc, label)
+    if inject_user_defaults:
+        _apply_user_close_defaults(close_refs, user_defaults, sc)
+    regime_cfg = cfg.get("regime") or {}
+    if not isinstance(regime_cfg, dict):
+        regime_cfg = {}
+    platform = live_strategy_platform(sc)
+    strategy_type = str(sc.get("type") or "perps")
+    kwargs, context = live_stop_resolution(
+        cfg, sc, raw_stop_fields, platform=platform, strategy_type=strategy_type,
+        close_refs=close_refs, regime_cfg=regime_cfg)
+    return {
+        "raw_stop_fields": raw_stop_fields,
+        "close_refs": close_refs,
+        "regime_cfg": regime_cfg,
+        "regime_windows_spec": _resolve_regime_windows_spec(regime_cfg),
+        "platform": platform,
+        "strategy_type": strategy_type,
+        "stop_kwargs": kwargs,
+        "stop_context": context,
+    }
+
+
+def resolve_raw_config_stops(cfg: dict, strategy_id: str, label: str) -> dict:
+    cfg = _normalize_atr_regime_keys(cfg)
+    user_defaults = _effective_user_close_defaults(cfg)
+    _validate_user_close_defaults_regime_atr(user_defaults)
+    for sc in cfg.get("strategies", []) or []:
+        if sc.get("id") == strategy_id:
+            return resolve_live_strategy_stops(
+                cfg, sc, user_defaults, inject_user_defaults=True, label=label)
+    raise ValueError(f"{label}: no strategy with id={strategy_id!r}")
 
 
 def load_strategy_config(config_path: str, strategy_id: str,
@@ -868,7 +945,6 @@ def load_strategy_config(config_path: str, strategy_id: str,
     for sc in cfg.get("strategies", []) or []:
         if sc.get("id") != strategy_id:
             continue
-        raw_stop_fields = stop_raw_fields(sc)
         promotion_baseline = (
             _capture_promotion_baseline(cfg, sc)
             if include_promotion_baseline else None
@@ -916,36 +992,22 @@ def load_strategy_config(config_path: str, strategy_id: str,
                 f"strategy. Set hedge.enabled=false (or remove the block) to "
                 f"backtest the primary leg alone."
             )
-        close_refs = []
-        single = sc.get("close_strategy")
-        if isinstance(single, dict) and single.get("name"):
-            close_refs.append({"name": single["name"], "params": dict(single.get("params") or {})})
-        else:
-            legacy = sc.get("close_strategies", []) or []
-            if len(legacy) > 1:
-                raise ValueError(
-                    f"{config_path}: strategy {strategy_id!r} has "
-                    f"{len(legacy)} close_strategies; the array model was "
-                    f"collapsed to a single close_strategy (#842). Keep one "
-                    f"profit-taking close and move risk backstops to "
-                    f"strategy-level stop fields."
-                )
-            for ref in legacy:
-                if isinstance(ref, dict) and ref.get("name"):
-                    close_refs.append({"name": ref["name"], "params": dict(ref.get("params") or {})})
-        if inject_user_defaults:
-            _apply_user_close_defaults(close_refs, user_defaults, sc)
+        stops = resolve_live_strategy_stops(
+            cfg, sc, user_defaults, inject_user_defaults=inject_user_defaults,
+            label=f"{config_path}: strategy {strategy_id!r}")
+        close_refs = stops["close_refs"]
+        stop_kwargs = stops["stop_kwargs"]
+        stop_context = stops["stop_context"]
         direction = _effective_direction(sc)
         invert_signal = bool(sc.get("invert_signal"))
-        strategy_type = str(sc.get("type") or "perps")
+        strategy_type = stops["strategy_type"]
         try:
-            stop_kwargs, stop_context, close_validation = translate_live_stop_config(
-                cfg, sc, raw_stop_fields,
-                platform=live_strategy_platform(sc),
+            close_validation = live_stop_preflight(
+                stop_kwargs, stop_context,
+                platform=stops["platform"],
                 strategy_type=strategy_type,
                 close_refs=close_refs,
-                regime_cfg=regime_cfg,
-                regime_windows_spec=_resolve_regime_windows_spec(regime_cfg),
+                regime_windows_spec=stops["regime_windows_spec"],
                 risk_per_trade_pct=sc.get("risk_per_trade_pct"),
                 comparison_mode=comparison_mode,
             )
