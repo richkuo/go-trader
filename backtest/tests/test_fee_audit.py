@@ -127,17 +127,10 @@ def test_strategy_is_short_capable_predicate():
     assert fa.strategy_is_short_capable({"allow_short": True}, "mtf_confluence") is True
 
 
-def test_live_bidirectional_set_matches_go_source():
-    import re
-    init_go = os.path.abspath(os.path.join(
-        _BT_DIR, "..", "scheduler", "init.go"))
-    with open(init_go) as fh:
-        src = fh.read()
-    block = src.split("bidirectionalPerpsStrategies = map[string]bool{", 1)[1]
-    block = block.split("}", 1)[0]
-    go_names = set(re.findall(r'"([^"]+)":\s*true', block))
-    assert go_names, "failed to parse init.go bidirectional set"
-    assert set(fa.LIVE_BIDIRECTIONAL_STRATEGIES) == go_names
+def test_live_bidirectional_set_is_the_registry_short_entry_set():
+    from registry_loader import load_registry
+    registry = load_registry("futures")._registry
+    assert fa.LIVE_BIDIRECTIONAL_STRATEGIES == registry.short_entry_strategies()
 
 
 def test_rank_rows_orders_by_drag_then_no_trades_last():

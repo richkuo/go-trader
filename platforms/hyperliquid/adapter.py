@@ -292,7 +292,7 @@ class HyperliquidExchangeAdapter:
     def __init__(self):
         if not _SDK_AVAILABLE:
             raise ImportError(
-                "hyperliquid-python-sdk not installed. Run: uv sync"
+                "hyperliquid-python-sdk not installed. Run: uv sync --no-dev (service host) or uv sync (development)"
             )
 
         secret = os.environ.get("HYPERLIQUID_SECRET_KEY", "")

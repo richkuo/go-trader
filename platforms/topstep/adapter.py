@@ -64,7 +64,7 @@ class TopStepExchangeAdapter:
                     "Content-Type": "application/json",
                 })
             except ImportError:
-                raise ImportError("requests package required for live mode. Run: uv sync")
+                raise ImportError("requests package required for live mode. Run: uv sync --no-dev (service host) or uv sync (development)")
 
     @property
     def is_live(self) -> bool:

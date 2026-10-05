@@ -22,22 +22,11 @@ from eval_windows import (
     parse_dataset_arg,
     run_leg,
 )
+from registry_loader import load_registry
 
 SKIP_STRATEGIES = {"hold"}
 
-LIVE_BIDIRECTIONAL_STRATEGIES = frozenset({
-    "triple_ema_bidir", "tema_cross_bd", "session_breakout", "donchian_breakout",
-    "commodity_channel_trend",
-    "chart_pattern", "liquidity_sweeps", "bear_pullback_st", "vwap_rejection_st",
-    "momentum_pro", "mean_reversion_pro", "rsi_bb_combo", "consolidation_range", "mtf_confluence",
-    "vol_momentum", "funding_skew", "regime_adaptive", "anchored_vwap",
-    "anchored_vwap_channel", "anchored_vwap_reversion", "atr_band_revert",
-    "chaikin_money_flow_breakout", "open_interest_breakout",
-    "connors_rsi_reversion",
-    "vortex_trend",
-    "relative_vigor_index",
-    "awesome_oscillator",
-})
+LIVE_BIDIRECTIONAL_STRATEGIES = load_registry("futures")._registry.short_entry_strategies()
 
 DEFAULT_WINDOWS = ("is", "oos")
 
